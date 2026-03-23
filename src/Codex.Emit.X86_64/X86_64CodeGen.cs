@@ -72,19 +72,19 @@ sealed class X86_64CodeGen
         m_loadLocalToggle = 0;
         m_locals = [];
 
-        // Prologue: push rbp; mov rbp, rsp; sub rsp, <frameSize>
-        // We'll patch the frame size later
+        // Prologue: push rbp; mov rbp, rsp; push callee-saved; sub rsp, <spillFrame>
+        // Callee-saved pushes come BEFORE sub rsp so spill offsets (below callee
+        // saves, relative to rbp) don't collide with the saved registers.
         X86_64Encoder.PushR(m_text, Reg.RBP);
         X86_64Encoder.MovRR(m_text, Reg.RBP, Reg.RSP);
 
-        int frameSizePatchOffset = m_text.Count;
-        // Placeholder: sub rsp, 0 (will be patched)
-        X86_64Encoder.SubRI(m_text, Reg.RSP, 0);
-
-        // Save callee-saved registers
-        int calleeSaveStart = m_text.Count;
+        // Save callee-saved registers (immediately after rbp)
         foreach (byte reg in LocalRegs)
             X86_64Encoder.PushR(m_text, reg);
+
+        int frameSizePatchOffset = m_text.Count;
+        // Placeholder: sub rsp, 0 (will be patched for spill slots)
+        X86_64Encoder.SubRI(m_text, Reg.RSP, 0);
 
         // Bind parameters
         for (int i = 0; i < def.Parameters.Length; i++)
@@ -104,11 +104,12 @@ sealed class X86_64CodeGen
         if (result != Reg.RAX)
             X86_64Encoder.MovRR(m_text, Reg.RAX, result);
 
-        // Epilogue: restore callee-saved, leave, ret
+        // Epilogue: skip spill space, restore callee-saved, pop rbp, ret
+        // lea rsp, [rbp - 40] points rsp at saved r15 (5 callee-saved × 8 bytes)
+        X86_64Encoder.Lea(m_text, Reg.RSP, Reg.RBP, -LocalRegs.Length * 8);
         for (int i = LocalRegs.Length - 1; i >= 0; i--)
             X86_64Encoder.PopR(m_text, LocalRegs[i]);
 
-        X86_64Encoder.MovRR(m_text, Reg.RSP, Reg.RBP);
         X86_64Encoder.PopR(m_text, Reg.RBP);
         X86_64Encoder.Ret(m_text);
 
