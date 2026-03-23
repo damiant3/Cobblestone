@@ -66,7 +66,8 @@ public sealed class Lowering(
             currentType = skipFt2.Return;
 
         IRExpr body = LowerExpr(def.Body, currentType);
-        body = new IRRegion(body, body.Type);
+        bool needsEscape = IRRegion.TypeNeedsHeapEscape(body.Type);
+        body = new IRRegion(body, body.Type, needsEscape);
         m_localEnv = savedEnv;
         return new(def.Name.Value, parameters.ToImmutable(), fullType, body);
     }

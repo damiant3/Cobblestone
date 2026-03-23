@@ -84,7 +84,12 @@ public sealed record IRRecord(string TypeName, ImmutableArray<(string FieldName,
 
 public sealed record IRFieldAccess(IRExpr Record, string FieldName, CodexType Type) : IRExpr(Type);
 
-public sealed record IRRegion(IRExpr Body, CodexType Type) : IRExpr(Type);
+public sealed record IRRegion(IRExpr Body, CodexType Type, bool NeedsEscapeCopy) : IRExpr(Type)
+{
+    public static bool TypeNeedsHeapEscape(CodexType type) => type is
+        TextType or RecordType or SumType or ListType or ConstructedType
+        or FunctionType { Return: not null };
+}
 
 public sealed record IRRunState(
     IRExpr InitialState,
