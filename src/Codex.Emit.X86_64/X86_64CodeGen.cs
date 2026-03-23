@@ -12,6 +12,7 @@ sealed class X86_64CodeGen
     readonly Dictionary<string, int> m_functionOffsets = [];
     readonly List<(int PatchOffset, string Target)> m_callPatches = [];
     readonly List<RodataFixup> m_rodataFixups = [];
+    readonly List<FuncAddrFixup> m_funcAddrFixups = [];
     readonly Dictionary<string, int> m_stringOffsets = [];
     Map<string, CodexType> m_typeDefs = Map<string, CodexType>.s_empty;
     readonly Dictionary<string, string> m_escapeHelperNames = [];
@@ -34,6 +35,7 @@ sealed class X86_64CodeGen
     Dictionary<string, byte> m_locals = [];
 
     readonly record struct RodataFixup(int PatchOffset, int RodataOffset);
+    readonly record struct FuncAddrFixup(int PatchOffset, byte Rd, string FuncName);
 
     public void EmitModule(IRModule module)
     {
@@ -185,8 +187,35 @@ sealed class X86_64CodeGen
         if (builtinResult != byte.MaxValue)
             return builtinResult;
 
-        // Function reference — return as closure/pointer
-        // For now, just return 0 for unknown names
+        // Function used as a value — wrap as 0-capture closure
+        if (name.Type is FunctionType)
+            return EmitPartialApplication(name.Name, []);
+
+        // Zero-arg sum type constructor
+        if (name.Type is SumType sumType)
+        {
+            int tag = -1;
+            for (int i = 0; i < sumType.Constructors.Length; i++)
+            {
+                if (sumType.Constructors[i].Name.Value == name.Name)
+                {
+                    tag = i;
+                    break;
+                }
+            }
+            if (tag >= 0 && sumType.Constructors[tag].Fields.IsEmpty)
+            {
+                // Allocate [tag:8] on heap
+                byte ptrReg = AllocTemp();
+                X86_64Encoder.MovRR(m_text, ptrReg, HeapReg);
+                X86_64Encoder.AddRI(m_text, HeapReg, 8);
+                byte tagReg = AllocTemp();
+                X86_64Encoder.Li(m_text, tagReg, tag);
+                X86_64Encoder.MovStore(m_text, ptrReg, tagReg, 0);
+                return ptrReg;
+            }
+        }
+
         byte rd = AllocTemp();
         X86_64Encoder.Li(m_text, rd, 0);
         return rd;
@@ -374,9 +403,21 @@ sealed class X86_64CodeGen
             byte builtinResult = TryEmitBuiltin(funcName, args);
             if (builtinResult != byte.MaxValue)
                 return builtinResult;
+
+            // Sum type constructor: allocate [tag][field0][field1]... on heap
+            if (apply.Type is SumType sumType)
+            {
+                byte ctorResult = EmitConstructor(funcName, args, sumType);
+                if (ctorResult != byte.MaxValue)
+                    return ctorResult;
+            }
+
+            // Partial application: result is a function → create closure
+            if (apply.Type is FunctionType && !m_locals.ContainsKey(funcName))
+                return EmitPartialApplication(funcName, args);
         }
 
-        // Regular function call — evaluate args, place in arg registers
+        // Evaluate and save args
         List<byte> argLocals = [];
         foreach (IRExpr arg in args)
         {
@@ -393,11 +434,126 @@ sealed class X86_64CodeGen
         }
 
         if (funcName is not null)
-            EmitCallTo(funcName);
+        {
+            if (m_locals.ContainsKey(funcName))
+            {
+                // Indirect call via closure: R11=closure, load code_ptr, call
+                byte closureReg = LoadLocal(m_locals[funcName]);
+                X86_64Encoder.MovRR(m_text, Reg.R11, closureReg);
+                X86_64Encoder.MovLoad(m_text, Reg.RAX, Reg.R11, 0);
+                // call rax (indirect call — 2 bytes: FF D0)
+                m_text.Add(0xFF); m_text.Add(0xD0);
+            }
+            else
+            {
+                EmitCallTo(funcName);
+            }
+        }
 
         byte result = AllocTemp();
         X86_64Encoder.MovRR(m_text, result, Reg.RAX);
         return result;
+    }
+
+    byte EmitConstructor(string ctorName, List<IRExpr> args, SumType sumType)
+    {
+        int tag = -1;
+        for (int i = 0; i < sumType.Constructors.Length; i++)
+        {
+            if (sumType.Constructors[i].Name.Value == ctorName)
+            {
+                tag = i;
+                break;
+            }
+        }
+        if (tag < 0) return byte.MaxValue;
+
+        List<byte> argLocals = [];
+        foreach (IRExpr arg in args)
+        {
+            byte r = EmitExpr(arg);
+            byte saved = AllocLocal();
+            StoreLocal(saved, r);
+            argLocals.Add(saved);
+        }
+
+        int totalSize = (1 + args.Count) * 8;
+        byte ptrReg = AllocTemp();
+        X86_64Encoder.MovRR(m_text, ptrReg, HeapReg);
+        X86_64Encoder.AddRI(m_text, HeapReg, totalSize);
+
+        byte tagReg = AllocTemp();
+        X86_64Encoder.Li(m_text, tagReg, tag);
+        X86_64Encoder.MovStore(m_text, ptrReg, tagReg, 0);
+
+        for (int i = 0; i < argLocals.Count; i++)
+        {
+            byte val = LoadLocal(argLocals[i]);
+            X86_64Encoder.MovStore(m_text, ptrReg, val, 8 + i * 8);
+        }
+
+        return ptrReg;
+    }
+
+    byte EmitPartialApplication(string funcName, List<IRExpr> capturedArgs)
+    {
+        // Evaluate and save captured args
+        List<byte> capLocals = [];
+        foreach (IRExpr arg in capturedArgs)
+        {
+            byte r = EmitExpr(arg);
+            byte saved = AllocLocal();
+            StoreLocal(saved, r);
+            capLocals.Add(saved);
+        }
+
+        int numCaptures = capLocals.Count;
+        string trampolineName = $"__tramp_{funcName}_{numCaptures}_{m_text.Count}";
+
+        // Jump over trampoline code
+        int jumpOverOffset = m_text.Count;
+        X86_64Encoder.Jmp(m_text, 0); // patched
+
+        m_functionOffsets[trampolineName] = m_text.Count;
+
+        // Trampoline: R11 = closure pointer
+        // Shift visible args right by numCaptures (backward to avoid clobbering)
+        for (int i = Reg.ArgRegs.Length - 1; i >= 0; i--)
+        {
+            if (i + numCaptures < Reg.ArgRegs.Length)
+                X86_64Encoder.MovRR(m_text, Reg.ArgRegs[i + numCaptures], Reg.ArgRegs[i]);
+        }
+
+        // Load captured args from closure into first N arg registers
+        for (int i = 0; i < numCaptures && i < Reg.ArgRegs.Length; i++)
+            X86_64Encoder.MovLoad(m_text, Reg.ArgRegs[i], Reg.R11, 8 + i * 8);
+
+        // Tail-jump to the real function (load address, jmp via rax)
+        EmitLoadFunctionAddress(Reg.RAX, funcName);
+        m_text.Add(0xFF); m_text.Add(0xE0); // jmp rax (tail-call, no stack frame)
+
+        // Patch jump-over
+        int afterTrampoline = m_text.Count;
+        PatchJmp(jumpOverOffset, afterTrampoline);
+
+        // Allocate closure on heap: [trampoline_addr][cap_0][cap_1]...
+        int closureSize = (1 + numCaptures) * 8;
+        byte ptrReg = AllocTemp();
+        X86_64Encoder.MovRR(m_text, ptrReg, HeapReg);
+        X86_64Encoder.AddRI(m_text, HeapReg, closureSize);
+
+        // Store trampoline address
+        EmitLoadFunctionAddress(Reg.RAX, trampolineName);
+        X86_64Encoder.MovStore(m_text, ptrReg, Reg.RAX, 0);
+
+        // Store captured args
+        for (int i = 0; i < capLocals.Count; i++)
+        {
+            byte val = LoadLocal(capLocals[i]);
+            X86_64Encoder.MovStore(m_text, ptrReg, val, 8 + i * 8);
+        }
+
+        return ptrReg;
     }
 
     byte EmitNegate(IRNegate neg)
@@ -1655,6 +1811,13 @@ sealed class X86_64CodeGen
         X86_64Encoder.MovRI64(m_text, rd, 0); // placeholder
     }
 
+    void EmitLoadFunctionAddress(byte rd, string funcName)
+    {
+        // movabs rd, <text_vaddr + func_offset> — patched in PatchFuncAddrRefs
+        m_funcAddrFixups.Add(new FuncAddrFixup(m_text.Count + 2, rd, funcName));
+        X86_64Encoder.MovRI64(m_text, rd, 0); // placeholder
+    }
+
     // ── Call and patch infrastructure ────────────────────────────
 
     void EmitCallTo(string targetName)
@@ -1702,6 +1865,21 @@ sealed class X86_64CodeGen
             byte[] bytes = BitConverter.GetBytes((long)addr);
             for (int i = 0; i < 8; i++)
                 m_text[fixup.PatchOffset + i] = bytes[i];
+        }
+
+        // Patch function address references (for closures/trampolines)
+        int textFileOffset = ElfWriterX86_64.ComputeTextFileOffset();
+        ulong textVaddr = 0x400000UL + (ulong)textFileOffset;
+
+        foreach (FuncAddrFixup fixup in m_funcAddrFixups)
+        {
+            if (m_functionOffsets.TryGetValue(fixup.FuncName, out int funcOffset))
+            {
+                ulong addr = textVaddr + (ulong)funcOffset;
+                byte[] bytes = BitConverter.GetBytes((long)addr);
+                for (int i = 0; i < 8; i++)
+                    m_text[fixup.PatchOffset + i] = bytes[i];
+            }
         }
     }
 
