@@ -98,6 +98,10 @@ static class RiscVEncoder
     public static uint Xori(uint rd, uint rs1, int imm) => IType(0x13, rd, 0x4, rs1, imm);
     public static uint Slti(uint rd, uint rs1, int imm) => IType(0x13, rd, 0x2, rs1, imm);
 
+    // Shift immediate (RV64I: 6-bit shift amount in imm[5:0])
+    public static uint Slli(uint rd, uint rs1, int shamt) => IType(0x13, rd, 0x1, rs1, shamt & 0x3F);
+    public static uint Srli(uint rd, uint rs1, int shamt) => IType(0x13, rd, 0x5, rs1, shamt & 0x3F);
+
     // 64-bit word immediate
     public static uint Addiw(uint rd, uint rs1, int imm) => IType(0x1B, rd, 0x0, rs1, imm);
 

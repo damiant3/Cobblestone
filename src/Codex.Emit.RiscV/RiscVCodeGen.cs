@@ -834,13 +834,163 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     uint EmitRegion(IRRegion region)
     {
-        // Skip all regions — no heap reclamation. The text escape mechanism
-        // restores S1 and copies the return string, but this reclaims heap
-        // space that may still be referenced by records, lists, and strings
-        // allocated during the function body. With 1MB heap, reclamation is
-        // unnecessary for compilation. Region support (with proper escape
-        // analysis or GC) can be added in a future phase.
-        return EmitExpr(region.Body);
+        // Sum types and closures: skip region (deep copy not yet implemented)
+        if (region.Type is SumType or FunctionType)
+            return EmitExpr(region.Body);
+
+        // Save heap pointer (region entry)
+        uint savedHeap = AllocLocal();
+        uint hpTmp = AllocTemp();
+        Emit(RiscVEncoder.Mv(hpTmp, Reg.S1));
+        StoreLocal(savedHeap, hpTmp);
+
+        uint bodyResult = EmitExpr(region.Body);
+
+        if (!region.NeedsEscapeCopy)
+        {
+            // Scalar return — restore S1, value survives in register
+            Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(savedHeap)));
+            return bodyResult;
+        }
+
+        // Save result pointer before restoring S1
+        uint savedResult = AllocLocal();
+        StoreLocal(savedResult, bodyResult);
+
+        // Restore S1 (reclaim region — old data still physically present)
+        Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(savedHeap)));
+
+        // Deep copy result from old region to parent
+        return EmitEscapeCopy(savedResult, region.Type);
+    }
+
+    uint EmitEscapeCopy(uint srcLocal, CodexType type)
+    {
+        if (type is TextType)
+            return EmitTextEscapeCopy(srcLocal);
+        if (type is RecordType rt)
+            return EmitRecordEscapeCopy(srcLocal, rt);
+        if (type is ListType lt)
+            return EmitListEscapeCopy(srcLocal, lt);
+        // ConstructedType — treat as opaque pointer (no deep copy)
+        return LoadLocal(srcLocal);
+    }
+
+    uint EmitTextEscapeCopy(uint srcLocal)
+    {
+        // Call __escape_text runtime helper: a0 = old ptr → a0 = new ptr
+        uint src = LoadLocal(srcLocal);
+        Emit(RiscVEncoder.Mv(Reg.A0, src));
+        EmitCallTo("__escape_text");
+        uint result = AllocTemp();
+        Emit(RiscVEncoder.Mv(result, Reg.A0));
+        return result;
+    }
+
+    uint EmitRecordEscapeCopy(uint srcLocal, RecordType rt)
+    {
+        int fieldCount = rt.Fields.Length;
+        int totalSize = fieldCount * 8;
+
+        // Allocate new record in parent region
+        uint newPtr = AllocLocal();
+        uint tmp = AllocTemp();
+        Emit(RiscVEncoder.Mv(tmp, Reg.S1));
+        StoreLocal(newPtr, tmp);
+        Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, totalSize));
+
+        // Copy each field, deep-copying heap types
+        for (int i = 0; i < fieldCount; i++)
+        {
+            CodexType fieldType = rt.Fields[i].Type;
+            uint fieldVal = AllocTemp();
+            Emit(RiscVEncoder.Ld(fieldVal, LoadLocal(srcLocal), i * 8));
+
+            if (IRRegion.TypeNeedsHeapEscape(fieldType))
+            {
+                uint fieldLocal = AllocLocal();
+                StoreLocal(fieldLocal, fieldVal);
+                fieldVal = EmitEscapeCopy(fieldLocal, fieldType);
+            }
+
+            Emit(RiscVEncoder.Sd(LoadLocal(newPtr), fieldVal, i * 8));
+        }
+
+        return LoadLocal(newPtr);
+    }
+
+    uint EmitListEscapeCopy(uint srcLocal, ListType lt)
+    {
+        CodexType elemType = lt.Element;
+        bool deepCopyElems = IRRegion.TypeNeedsHeapEscape(elemType);
+
+        // Load length from old list
+        uint lenReg = AllocTemp();
+        Emit(RiscVEncoder.Ld(lenReg, LoadLocal(srcLocal), 0));
+        uint savedLen = AllocLocal();
+        StoreLocal(savedLen, lenReg);
+
+        // totalSize = (1 + len) * 8
+        uint sizeReg = AllocTemp();
+        Emit(RiscVEncoder.Addi(sizeReg, LoadLocal(savedLen), 1));
+        Emit(RiscVEncoder.Slli(sizeReg, sizeReg, 3)); // * 8
+
+        // Allocate new list in parent region
+        uint newPtr = AllocLocal();
+        uint tmp = AllocTemp();
+        Emit(RiscVEncoder.Mv(tmp, Reg.S1));
+        StoreLocal(newPtr, tmp);
+        Emit(RiscVEncoder.Add(Reg.S1, Reg.S1, sizeReg));
+
+        // Store length
+        Emit(RiscVEncoder.Sd(LoadLocal(newPtr), LoadLocal(savedLen), 0));
+
+        // Copy loop: for i = 0..len-1
+        uint idxLocal = AllocLocal();
+        uint tmpZero = AllocTemp();
+        foreach (uint insn in RiscVEncoder.Li(tmpZero, 0)) Emit(insn);
+        StoreLocal(idxLocal, tmpZero);
+
+        // Loop header: reload idx/len each iteration (safe for spilled locals)
+        int loopStart = m_instructions.Count;
+        uint idxForCmp = LoadLocal(idxLocal);   // emits load if spilled
+        uint lenForCmp = LoadLocal(savedLen);    // emits load if spilled
+        int exitIdx = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge idx, len → done
+
+        // Load element from old list: elem = old[8 + idx*8]
+        uint idxReg = AllocTemp();
+        Emit(RiscVEncoder.Mv(idxReg, LoadLocal(idxLocal)));
+        Emit(RiscVEncoder.Slli(idxReg, idxReg, 3)); // idx * 8
+        Emit(RiscVEncoder.Add(idxReg, LoadLocal(srcLocal), idxReg));
+        uint elemReg = AllocTemp();
+        Emit(RiscVEncoder.Ld(elemReg, idxReg, 8)); // skip length prefix
+
+        if (deepCopyElems)
+        {
+            uint elemLocal = AllocLocal();
+            StoreLocal(elemLocal, elemReg);
+            elemReg = EmitEscapeCopy(elemLocal, elemType);
+        }
+
+        // Store to new list: new[8 + idx*8] = elem
+        uint dstOff = AllocTemp();
+        Emit(RiscVEncoder.Mv(dstOff, LoadLocal(idxLocal)));
+        Emit(RiscVEncoder.Slli(dstOff, dstOff, 3));
+        Emit(RiscVEncoder.Add(dstOff, LoadLocal(newPtr), dstOff));
+        Emit(RiscVEncoder.Sd(dstOff, elemReg, 8));
+
+        // idx++
+        uint nextIdx = AllocTemp();
+        Emit(RiscVEncoder.Addi(nextIdx, LoadLocal(idxLocal), 1));
+        StoreLocal(idxLocal, nextIdx);
+
+        Emit(RiscVEncoder.J((loopStart - m_instructions.Count) * 4));
+        int exitTarget = m_instructions.Count;
+        m_instructions[exitIdx] = RiscVEncoder.Bge(idxForCmp, lenForCmp,
+            (exitTarget - exitIdx) * 4);
+
+        return LoadLocal(newPtr);
     }
 
     uint EmitList(IRList list)
@@ -1371,6 +1521,51 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         EmitReadFileHelper();
         EmitReadLineHelper();
         EmitStrReplaceHelper();
+        EmitEscapeTextHelper();
+    }
+
+    void EmitEscapeTextHelper()
+    {
+        // __escape_text: a0 = old text ptr → a0 = new text ptr (allocated at S1)
+        // Copies length-prefixed string [8-byte len][data] to parent region.
+        // Leaf function — no stack frame needed.
+        m_functionOffsets["__escape_text"] = m_instructions.Count;
+
+        // t0 = length
+        Emit(RiscVEncoder.Ld(Reg.T0, Reg.A0, 0));
+
+        // t1 = align8(8 + length) = (length + 15) & ~7
+        Emit(RiscVEncoder.Addi(Reg.T1, Reg.T0, 15));
+        Emit(RiscVEncoder.Andi(Reg.T1, Reg.T1, -8));
+
+        // a1 = new ptr = s1; s1 += t1
+        Emit(RiscVEncoder.Mv(Reg.A1, Reg.S1));
+        Emit(RiscVEncoder.Add(Reg.S1, Reg.S1, Reg.T1));
+
+        // Store length at new ptr
+        Emit(RiscVEncoder.Sd(Reg.A1, Reg.T0, 0));
+
+        // Byte copy loop: for t2=0; t2 < t0; t2++
+        foreach (uint insn in RiscVEncoder.Li(Reg.T2, 0)) Emit(insn);
+
+        int loopStart = m_instructions.Count;
+        int exitIdx = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge t2, t0 → done
+
+        Emit(RiscVEncoder.Add(Reg.T3, Reg.A0, Reg.T2));
+        Emit(RiscVEncoder.Lbu(Reg.T3, Reg.T3, 8));     // byte = old[8+i]
+        Emit(RiscVEncoder.Add(Reg.T4, Reg.A1, Reg.T2));
+        Emit(RiscVEncoder.Sb(Reg.T4, Reg.T3, 8));       // new[8+i] = byte
+        Emit(RiscVEncoder.Addi(Reg.T2, Reg.T2, 1));
+        Emit(RiscVEncoder.J((loopStart - m_instructions.Count) * 4));
+
+        int exitTarget = m_instructions.Count;
+        m_instructions[exitIdx] = RiscVEncoder.Bge(Reg.T2, Reg.T0,
+            (exitTarget - exitIdx) * 4);
+
+        // Return new pointer
+        Emit(RiscVEncoder.Mv(Reg.A0, Reg.A1));
+        Emit(RiscVEncoder.Ret());
     }
 
     void EmitStrEqHelper()
