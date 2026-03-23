@@ -25,6 +25,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     int m_spillCount;           // number of spilled locals beyond S-registers
     int m_prologueIndex = -1;   // instruction index of the frame size addi (patched)
     Dictionary<string, uint> m_locals = [];
+    Map<string, CodexType> m_typeDefs = Map<string, CodexType>.s_empty;
 
     // S1 is reserved as the global heap pointer — NOT saved/restored by functions.
     static readonly uint[] CalleeSaved = {
@@ -42,6 +43,8 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             trampolineIndex = m_instructions.Count;
             Emit(RiscVEncoder.Nop()); // patched after _start is emitted
         }
+
+        m_typeDefs = module.TypeDefinitions;
 
         EmitRuntimeHelpers();
 
@@ -834,8 +837,8 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     uint EmitRegion(IRRegion region)
     {
-        // Sum types and closures: skip region (deep copy not yet implemented)
-        if (region.Type is SumType or FunctionType)
+        // Closures: skip region (capture types unknown at region exit)
+        if (region.Type is FunctionType)
             return EmitExpr(region.Body);
 
         // Save heap pointer (region entry)
@@ -866,13 +869,19 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     uint EmitEscapeCopy(uint srcLocal, CodexType type)
     {
+        // Resolve ConstructedType to its underlying concrete type
+        if (type is ConstructedType ct && m_typeDefs[ct.Constructor.Value] is CodexType resolved)
+            type = resolved;
+
         if (type is TextType)
             return EmitTextEscapeCopy(srcLocal);
         if (type is RecordType rt)
             return EmitRecordEscapeCopy(srcLocal, rt);
         if (type is ListType lt)
             return EmitListEscapeCopy(srcLocal, lt);
-        // ConstructedType — treat as opaque pointer (no deep copy)
+        if (type is SumType st)
+            return EmitSumTypeEscapeCopy(srcLocal, st);
+        // FunctionType, unresolved ConstructedType — no deep copy
         return LoadLocal(srcLocal);
     }
 
@@ -991,6 +1000,96 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             (exitTarget - exitIdx) * 4);
 
         return LoadLocal(newPtr);
+    }
+
+    uint EmitSumTypeEscapeCopy(uint srcLocal, SumType st)
+    {
+        // Sum layout: [tag:8][arg_0:8]...[arg_N:8]
+        // Each constructor may have different field count and types.
+        // Branch on tag to dispatch to constructor-specific copy code.
+
+        // Load tag from old pointer
+        uint tagReg = AllocTemp();
+        Emit(RiscVEncoder.Ld(tagReg, LoadLocal(srcLocal), 0));
+        uint savedTag = AllocLocal();
+        StoreLocal(savedTag, tagReg);
+
+        // Result register — all branches converge here
+        uint resultLocal = AllocLocal();
+
+        List<int> jumpToEndIdxs = new();
+
+        for (int ctorIdx = 0; ctorIdx < st.Constructors.Length; ctorIdx++)
+        {
+            SumConstructorType ctor = st.Constructors[ctorIdx];
+            int fieldCount = ctor.Fields.Length;
+            int totalSize = (1 + fieldCount) * 8;
+
+            if (ctorIdx < st.Constructors.Length - 1)
+            {
+                // Branch: if tag != ctorIdx, skip to next constructor
+                uint expectedTag = AllocTemp();
+                foreach (uint insn in RiscVEncoder.Li(expectedTag, ctorIdx)) Emit(insn);
+                int branchIdx = m_instructions.Count;
+                Emit(RiscVEncoder.Nop()); // patched: bne tag, expected → next ctor
+
+                // -- This constructor's copy code --
+                EmitSumCtorCopy(srcLocal, savedTag, resultLocal, ctor, fieldCount, totalSize);
+
+                // Jump to end
+                jumpToEndIdxs.Add(m_instructions.Count);
+                Emit(RiscVEncoder.Nop()); // patched: j → end
+
+                // Patch branch to here (next constructor)
+                int nextCtorStart = m_instructions.Count;
+                m_instructions[branchIdx] = RiscVEncoder.Bne(
+                    LoadLocal(savedTag), expectedTag,
+                    (nextCtorStart - branchIdx) * 4);
+            }
+            else
+            {
+                // Last constructor — no branch needed (fall-through)
+                EmitSumCtorCopy(srcLocal, savedTag, resultLocal, ctor, fieldCount, totalSize);
+            }
+        }
+
+        // Patch all jump-to-end
+        int endIdx = m_instructions.Count;
+        foreach (int jIdx in jumpToEndIdxs)
+            m_instructions[jIdx] = RiscVEncoder.J((endIdx - jIdx) * 4);
+
+        return LoadLocal(resultLocal);
+    }
+
+    void EmitSumCtorCopy(uint srcLocal, uint savedTag, uint resultLocal,
+        SumConstructorType ctor, int fieldCount, int totalSize)
+    {
+        // Allocate new sum value in parent region
+        uint newPtr = AllocTemp();
+        Emit(RiscVEncoder.Mv(newPtr, Reg.S1));
+        Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, totalSize));
+
+        // Copy tag
+        Emit(RiscVEncoder.Sd(newPtr, LoadLocal(savedTag), 0));
+
+        // Copy each field, deep-copying heap types
+        for (int i = 0; i < fieldCount; i++)
+        {
+            CodexType fieldType = ctor.Fields[i];
+            uint fieldVal = AllocTemp();
+            Emit(RiscVEncoder.Ld(fieldVal, LoadLocal(srcLocal), (1 + i) * 8));
+
+            if (IRRegion.TypeNeedsHeapEscape(fieldType))
+            {
+                uint fieldLocal = AllocLocal();
+                StoreLocal(fieldLocal, fieldVal);
+                fieldVal = EmitEscapeCopy(fieldLocal, fieldType);
+            }
+
+            Emit(RiscVEncoder.Sd(newPtr, fieldVal, (1 + i) * 8));
+        }
+
+        StoreLocal(resultLocal, newPtr);
     }
 
     uint EmitList(IRList list)

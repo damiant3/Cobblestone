@@ -1,6 +1,6 @@
 # Camp III-A Phase 2 — Escape Analysis for Regions
 
-**Status**: Phase 2a + 2b implemented (RISC-V escape copy for Text, Record, List)
+**Status**: Phase 2a–2b implemented (RISC-V escape copy for Text, Record, List, Sum; ConstructedType resolved)
 **Prerequisite for**: Re-enabling RISC-V region reclamation
 **Date**: 2026-03-23
 
