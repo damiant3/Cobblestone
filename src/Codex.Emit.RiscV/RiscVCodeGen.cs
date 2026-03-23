@@ -25,6 +25,9 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     int m_spillCount;           // number of spilled locals beyond S-registers
     int m_prologueIndex = -1;   // instruction index of the frame size addi (patched)
     Dictionary<string, uint> m_locals = [];
+    Map<string, CodexType> m_typeDefs = Map<string, CodexType>.s_empty;
+    readonly Dictionary<string, string> m_escapeHelperNames = [];
+    readonly Queue<(string Key, string Name, CodexType Type)> m_escapeHelperQueue = new();
 
     // S1 is reserved as the global heap pointer — NOT saved/restored by functions.
     static readonly uint[] CalleeSaved = {
@@ -43,11 +46,15 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             Emit(RiscVEncoder.Nop()); // patched after _start is emitted
         }
 
+        m_typeDefs = module.TypeDefinitions;
+        m_escapeHelperNames["text"] = "__escape_text"; // pre-registered
+
         EmitRuntimeHelpers();
 
         foreach (IRDefinition def in module.Definitions)
             EmitFunction(def);
 
+        EmitEscapeCopyHelpers();
 
         EmitStart(module);
 
@@ -834,13 +841,273 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     uint EmitRegion(IRRegion region)
     {
-        // Skip all regions — no heap reclamation. The text escape mechanism
-        // restores S1 and copies the return string, but this reclaims heap
-        // space that may still be referenced by records, lists, and strings
-        // allocated during the function body. With 1MB heap, reclamation is
-        // unnecessary for compilation. Region support (with proper escape
-        // analysis or GC) can be added in a future phase.
-        return EmitExpr(region.Body);
+        // Closures: skip region (capture types unknown at region exit)
+        if (region.Type is FunctionType)
+            return EmitExpr(region.Body);
+
+        // Save heap pointer (region entry)
+        uint savedHeap = AllocLocal();
+        uint hpTmp = AllocTemp();
+        Emit(RiscVEncoder.Mv(hpTmp, Reg.S1));
+        StoreLocal(savedHeap, hpTmp);
+
+        uint bodyResult = EmitExpr(region.Body);
+
+        if (!region.NeedsEscapeCopy)
+        {
+            // Scalar return — restore S1, value survives in register
+            Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(savedHeap)));
+            return bodyResult;
+        }
+
+        // Save result pointer before restoring S1
+        uint savedResult = AllocLocal();
+        StoreLocal(savedResult, bodyResult);
+
+        // Restore S1 (reclaim region — old data still physically present)
+        Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(savedHeap)));
+
+        // Deep copy result from old region to parent
+        return EmitEscapeCopy(savedResult, region.Type);
+    }
+
+    uint EmitEscapeCopy(uint srcLocal, CodexType type)
+    {
+        CodexType resolved = ResolveType(type);
+        if (!IRRegion.TypeNeedsHeapEscape(resolved))
+            return LoadLocal(srcLocal);
+
+        string helperName = GetOrQueueEscapeHelper(resolved);
+        uint src = LoadLocal(srcLocal);
+        Emit(RiscVEncoder.Mv(Reg.A0, src));
+        EmitCallTo(helperName);
+        uint result = AllocTemp();
+        Emit(RiscVEncoder.Mv(result, Reg.A0));
+        return result;
+    }
+
+    CodexType ResolveType(CodexType type)
+    {
+        if (type is ConstructedType ct && m_typeDefs[ct.Constructor.Value] is CodexType resolved)
+            return resolved;
+        return type;
+    }
+
+    static string EscapeCopyKey(CodexType type) => type switch
+    {
+        TextType => "text",
+        RecordType rt => $"record_{rt.TypeName.Value}",
+        SumType st => $"sum_{st.TypeName.Value}",
+        ListType lt => $"list_{EscapeCopyKey(lt.Element)}",
+        _ => $"type_{type.GetType().Name}"
+    };
+
+    string GetOrQueueEscapeHelper(CodexType type)
+    {
+        string key = EscapeCopyKey(type);
+        if (m_escapeHelperNames.TryGetValue(key, out string? name))
+            return name;
+        name = $"__escape_{key}";
+        m_escapeHelperNames[key] = name;
+        m_escapeHelperQueue.Enqueue((key, name, type));
+        return name;
+    }
+
+    // ── Escape copy helper emission (standalone functions) ───────
+
+    void EmitEscapeCopyHelpers()
+    {
+        // Drain queue — helpers may enqueue new types for nested fields
+        while (m_escapeHelperQueue.Count > 0)
+        {
+            (string _, string name, CodexType type) = m_escapeHelperQueue.Dequeue();
+            switch (type)
+            {
+                case TextType:
+                    break; // __escape_text already emitted in EmitRuntimeHelpers
+                case RecordType rt:
+                    EmitRecordEscapeHelper(name, rt);
+                    break;
+                case ListType lt:
+                    EmitListEscapeHelper(name, lt);
+                    break;
+                case SumType st:
+                    EmitSumTypeEscapeHelper(name, st);
+                    break;
+            }
+        }
+    }
+
+    // All escape helpers use a fixed convention:
+    //   A0 = old pointer in, A0 = new pointer out
+    //   S2 = old ptr, S3 = new ptr, S4/S5 = extra (tag, length, index)
+    //   Frame: 48 bytes (ra, s2, s3, s4, s5, pad)
+    const int EscapeFrameSize = 48;
+
+    void EmitEscapeHelperPrologue(string name)
+    {
+        m_functionOffsets[name] = m_instructions.Count;
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -EscapeFrameSize));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.Ra, 40));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S2, 32));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S3, 24));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S4, 16));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S5, 8));
+        Emit(RiscVEncoder.Mv(Reg.S2, Reg.A0)); // s2 = old ptr
+    }
+
+    void EmitEscapeHelperEpilogue()
+    {
+        Emit(RiscVEncoder.Mv(Reg.A0, Reg.S3)); // return new ptr
+        Emit(RiscVEncoder.Ld(Reg.S5, Reg.Sp, 8));
+        Emit(RiscVEncoder.Ld(Reg.S4, Reg.Sp, 16));
+        Emit(RiscVEncoder.Ld(Reg.S3, Reg.Sp, 24));
+        Emit(RiscVEncoder.Ld(Reg.S2, Reg.Sp, 32));
+        Emit(RiscVEncoder.Ld(Reg.Ra, Reg.Sp, 40));
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, EscapeFrameSize));
+        Emit(RiscVEncoder.Ret());
+    }
+
+    void EmitEscapeFieldCopy(int srcOffset, int dstOffset, CodexType fieldType)
+    {
+        CodexType resolved = ResolveType(fieldType);
+        if (IRRegion.TypeNeedsHeapEscape(resolved))
+        {
+            string helper = GetOrQueueEscapeHelper(resolved);
+            Emit(RiscVEncoder.Ld(Reg.A0, Reg.S2, srcOffset));
+            EmitCallTo(helper);
+            Emit(RiscVEncoder.Sd(Reg.S3, Reg.A0, dstOffset));
+        }
+        else
+        {
+            Emit(RiscVEncoder.Ld(Reg.T0, Reg.S2, srcOffset));
+            Emit(RiscVEncoder.Sd(Reg.S3, Reg.T0, dstOffset));
+        }
+    }
+
+    void EmitRecordEscapeHelper(string name, RecordType rt)
+    {
+        EmitEscapeHelperPrologue(name);
+
+        int totalSize = rt.Fields.Length * 8;
+        Emit(RiscVEncoder.Mv(Reg.S3, Reg.S1));
+        Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, totalSize));
+
+        for (int i = 0; i < rt.Fields.Length; i++)
+            EmitEscapeFieldCopy(i * 8, i * 8, rt.Fields[i].Type);
+
+        EmitEscapeHelperEpilogue();
+    }
+
+    void EmitListEscapeHelper(string name, ListType lt)
+    {
+        EmitEscapeHelperPrologue(name);
+
+        // s4 = length
+        Emit(RiscVEncoder.Ld(Reg.S4, Reg.S2, 0));
+
+        // totalSize = (1 + len) * 8; allocate
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.S4, 1));
+        Emit(RiscVEncoder.Slli(Reg.T0, Reg.T0, 3));
+        Emit(RiscVEncoder.Mv(Reg.S3, Reg.S1));
+        Emit(RiscVEncoder.Add(Reg.S1, Reg.S1, Reg.T0));
+
+        // Store length
+        Emit(RiscVEncoder.Sd(Reg.S3, Reg.S4, 0));
+
+        // s5 = loop index = 0
+        foreach (uint insn in RiscVEncoder.Li(Reg.S5, 0)) Emit(insn);
+
+        // Loop: bge s5, s4 → done
+        int loopStart = m_instructions.Count;
+        int exitIdx = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched
+
+        // Load element: a0 = old[8 + s5*8]
+        Emit(RiscVEncoder.Slli(Reg.T0, Reg.S5, 3));
+        Emit(RiscVEncoder.Add(Reg.T0, Reg.S2, Reg.T0));
+        Emit(RiscVEncoder.Ld(Reg.A0, Reg.T0, 8));
+
+        // Deep copy element if needed
+        CodexType elemType = ResolveType(lt.Element);
+        if (IRRegion.TypeNeedsHeapEscape(elemType))
+        {
+            string elemHelper = GetOrQueueEscapeHelper(elemType);
+            EmitCallTo(elemHelper);
+            // a0 now holds copied element
+        }
+
+        // Store: new[8 + s5*8] = a0
+        Emit(RiscVEncoder.Slli(Reg.T0, Reg.S5, 3));
+        Emit(RiscVEncoder.Add(Reg.T0, Reg.S3, Reg.T0));
+        Emit(RiscVEncoder.Sd(Reg.T0, Reg.A0, 8));
+
+        // s5++
+        Emit(RiscVEncoder.Addi(Reg.S5, Reg.S5, 1));
+        Emit(RiscVEncoder.J((loopStart - m_instructions.Count) * 4));
+
+        int exitTarget = m_instructions.Count;
+        m_instructions[exitIdx] = RiscVEncoder.Bge(Reg.S5, Reg.S4,
+            (exitTarget - exitIdx) * 4);
+
+        EmitEscapeHelperEpilogue();
+    }
+
+    void EmitSumTypeEscapeHelper(string name, SumType st)
+    {
+        EmitEscapeHelperPrologue(name);
+
+        // s4 = tag
+        Emit(RiscVEncoder.Ld(Reg.S4, Reg.S2, 0));
+
+        List<int> jumpToEndIdxs = new();
+
+        for (int ctorIdx = 0; ctorIdx < st.Constructors.Length; ctorIdx++)
+        {
+            SumConstructorType ctor = st.Constructors[ctorIdx];
+            int totalSize = (1 + ctor.Fields.Length) * 8;
+
+            if (ctorIdx < st.Constructors.Length - 1)
+            {
+                // Branch: bne s4, expected → next constructor
+                foreach (uint insn in RiscVEncoder.Li(Reg.T0, ctorIdx)) Emit(insn);
+                int branchIdx = m_instructions.Count;
+                Emit(RiscVEncoder.Nop()); // patched
+
+                EmitSumCtorHelper(ctor, totalSize);
+
+                jumpToEndIdxs.Add(m_instructions.Count);
+                Emit(RiscVEncoder.Nop()); // j → end
+
+                int nextStart = m_instructions.Count;
+                m_instructions[branchIdx] = RiscVEncoder.Bne(Reg.S4, Reg.T0,
+                    (nextStart - branchIdx) * 4);
+            }
+            else
+            {
+                EmitSumCtorHelper(ctor, totalSize);
+            }
+        }
+
+        int endIdx = m_instructions.Count;
+        foreach (int jIdx in jumpToEndIdxs)
+            m_instructions[jIdx] = RiscVEncoder.J((endIdx - jIdx) * 4);
+
+        EmitEscapeHelperEpilogue();
+    }
+
+    void EmitSumCtorHelper(SumConstructorType ctor, int totalSize)
+    {
+        // Allocate in parent region
+        Emit(RiscVEncoder.Mv(Reg.S3, Reg.S1));
+        Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, totalSize));
+
+        // Copy tag
+        Emit(RiscVEncoder.Sd(Reg.S3, Reg.S4, 0));
+
+        // Copy fields
+        for (int i = 0; i < ctor.Fields.Length; i++)
+            EmitEscapeFieldCopy((1 + i) * 8, (1 + i) * 8, ctor.Fields[i]);
     }
 
     uint EmitList(IRList list)
@@ -1371,6 +1638,51 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         EmitReadFileHelper();
         EmitReadLineHelper();
         EmitStrReplaceHelper();
+        EmitEscapeTextHelper();
+    }
+
+    void EmitEscapeTextHelper()
+    {
+        // __escape_text: a0 = old text ptr → a0 = new text ptr (allocated at S1)
+        // Copies length-prefixed string [8-byte len][data] to parent region.
+        // Leaf function — no stack frame needed.
+        m_functionOffsets["__escape_text"] = m_instructions.Count;
+
+        // t0 = length
+        Emit(RiscVEncoder.Ld(Reg.T0, Reg.A0, 0));
+
+        // t1 = align8(8 + length) = (length + 15) & ~7
+        Emit(RiscVEncoder.Addi(Reg.T1, Reg.T0, 15));
+        Emit(RiscVEncoder.Andi(Reg.T1, Reg.T1, -8));
+
+        // a1 = new ptr = s1; s1 += t1
+        Emit(RiscVEncoder.Mv(Reg.A1, Reg.S1));
+        Emit(RiscVEncoder.Add(Reg.S1, Reg.S1, Reg.T1));
+
+        // Store length at new ptr
+        Emit(RiscVEncoder.Sd(Reg.A1, Reg.T0, 0));
+
+        // Byte copy loop: for t2=0; t2 < t0; t2++
+        foreach (uint insn in RiscVEncoder.Li(Reg.T2, 0)) Emit(insn);
+
+        int loopStart = m_instructions.Count;
+        int exitIdx = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge t2, t0 → done
+
+        Emit(RiscVEncoder.Add(Reg.T3, Reg.A0, Reg.T2));
+        Emit(RiscVEncoder.Lbu(Reg.T3, Reg.T3, 8));     // byte = old[8+i]
+        Emit(RiscVEncoder.Add(Reg.T4, Reg.A1, Reg.T2));
+        Emit(RiscVEncoder.Sb(Reg.T4, Reg.T3, 8));       // new[8+i] = byte
+        Emit(RiscVEncoder.Addi(Reg.T2, Reg.T2, 1));
+        Emit(RiscVEncoder.J((loopStart - m_instructions.Count) * 4));
+
+        int exitTarget = m_instructions.Count;
+        m_instructions[exitIdx] = RiscVEncoder.Bge(Reg.T2, Reg.T0,
+            (exitTarget - exitIdx) * 4);
+
+        // Return new pointer
+        Emit(RiscVEncoder.Mv(Reg.A0, Reg.A1));
+        Emit(RiscVEncoder.Ret());
     }
 
     void EmitStrEqHelper()
