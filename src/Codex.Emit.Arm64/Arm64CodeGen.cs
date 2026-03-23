@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using Codex.Core;
 using Codex.IR;
 using Codex.Types;
@@ -19,9 +19,9 @@ sealed class Arm64CodeGen
     // x28 is reserved as the global heap pointer (callee-saved).
     const uint HeapReg = Arm64Reg.X28;
 
-    // Temps: x9â€“x15 (caller-saved). We rotate through x12â€“x15 for AllocTemp.
+    // Temps: x9--x15 (caller-saved). We rotate through x12--x15 for AllocTemp.
     uint m_nextTemp = Arm64Reg.X12;
-    // Locals: x19â€“x27 (callee-saved, x28=heap). Monotonic allocation.
+    // Locals: x19--x27 (callee-saved, x28=heap). Monotonic allocation.
     uint m_nextLocal = Arm64Reg.X19;
     int m_spillCount;
     int m_prologueIndex = -1;
@@ -60,7 +60,7 @@ sealed class Arm64CodeGen
         return ElfWriterArm64.WriteExecutable(textSection, m_rodata.ToArray(), (ulong)startOffset);
     }
 
-    // â”€â”€ Function emission â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- Function emission ----------------------------------------
 
     void EmitFunction(IRDefinition def)
     {
@@ -153,7 +153,7 @@ sealed class Arm64CodeGen
         }
     }
 
-    // â”€â”€ Expression emission â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- Expression emission --------------------------------------
 
     uint EmitExpr(IRExpr expr) => expr switch
     {
@@ -286,7 +286,7 @@ sealed class Arm64CodeGen
                     Emit(Arm64Encoder.Csel(rd, leftReg, Arm64Reg.Xzr, Arm64Encoder.CondEq));
                     // Normalize to 1/0: we need CSET which is CSINC xd, xzr, xzr, invert(cond)
                     // CSET EQ = CSINC xd, xzr, xzr, NE
-                    m_instructions[^1] = 0x9A9F17E0u | rd; // CSINC rd, XZR, XZR, NE â†’ 1 if EQ
+                    m_instructions[^1] = 0x9A9F17E0u | rd; // CSINC rd, XZR, XZR, NE -> 1 if EQ
                 }
                 break;
             case IRBinaryOp.NotEq:
@@ -304,7 +304,7 @@ sealed class Arm64CodeGen
                 else
                 {
                     Emit(Arm64Encoder.Cmp(leftReg, right));
-                    m_instructions.Add(0x9A9F07E0u | rd); // CSINC rd, XZR, XZR, EQ â†’ 1 if NE
+                    m_instructions.Add(0x9A9F07E0u | rd); // CSINC rd, XZR, XZR, EQ -> 1 if NE
                 }
                 break;
             case IRBinaryOp.AppendText:
@@ -315,19 +315,19 @@ sealed class Arm64CodeGen
                 break;
             case IRBinaryOp.Lt:
                 Emit(Arm64Encoder.Cmp(leftReg, right));
-                m_instructions.Add(0x9A9FA7E0u | rd); // CSINC rd, XZR, XZR, GE â†’ 1 if LT
+                m_instructions.Add(0x9A9FA7E0u | rd); // CSINC rd, XZR, XZR, GE -> 1 if LT
                 break;
             case IRBinaryOp.Gt:
                 Emit(Arm64Encoder.Cmp(leftReg, right));
-                m_instructions.Add(0x9A9FD7E0u | rd); // CSINC rd, XZR, XZR, LE â†’ 1 if GT
+                m_instructions.Add(0x9A9FD7E0u | rd); // CSINC rd, XZR, XZR, LE -> 1 if GT
                 break;
             case IRBinaryOp.LtEq:
                 Emit(Arm64Encoder.Cmp(leftReg, right));
-                m_instructions.Add(0x9A9FC7E0u | rd); // CSINC rd, XZR, XZR, GT â†’ 1 if LE
+                m_instructions.Add(0x9A9FC7E0u | rd); // CSINC rd, XZR, XZR, GT -> 1 if LE
                 break;
             case IRBinaryOp.GtEq:
                 Emit(Arm64Encoder.Cmp(leftReg, right));
-                m_instructions.Add(0x9A9FB7E0u | rd); // CSINC rd, XZR, XZR, LT â†’ 1 if GE
+                m_instructions.Add(0x9A9FB7E0u | rd); // CSINC rd, XZR, XZR, LT -> 1 if GE
                 break;
             case IRBinaryOp.And: Emit(Arm64Encoder.And(rd, leftReg, right)); break;
             case IRBinaryOp.Or:  Emit(Arm64Encoder.Or(rd, leftReg, right)); break;
@@ -356,14 +356,14 @@ sealed class Arm64CodeGen
         uint cond = EmitExpr(ifExpr.Condition);
 
         int cbzIndex = m_instructions.Count;
-        Emit(Arm64Encoder.Nop()); // patched: CBZ â†’ else
+        Emit(Arm64Encoder.Nop()); // patched: CBZ -> else
 
         uint thenReg = EmitExpr(ifExpr.Then);
         uint resultReg = AllocLocal();
         StoreLocal(resultReg, thenReg);
 
         int jEndIndex = m_instructions.Count;
-        Emit(Arm64Encoder.Nop()); // patched: B â†’ end
+        Emit(Arm64Encoder.Nop()); // patched: B -> end
 
         int elseStart = m_instructions.Count;
         uint elseReg = EmitExpr(ifExpr.Else);
@@ -444,7 +444,7 @@ sealed class Arm64CodeGen
             return rd;
         }
 
-        Console.Error.WriteLine($"ARM64 WARNING: EmitApply fallthrough â€” {func.GetType().Name}");
+        Console.Error.WriteLine($"ARM64 WARNING: EmitApply fallthrough -- {func.GetType().Name}");
         return Arm64Reg.Xzr;
     }
 
@@ -529,7 +529,7 @@ sealed class Arm64CodeGen
         return lastReg;
     }
 
-    // â”€â”€ Records, sum types, pattern matching â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- Records, sum types, pattern matching ---------------------
 
     uint EmitRecord(IRRecord rec)
     {
@@ -659,12 +659,12 @@ sealed class Arm64CodeGen
                 uint scrutVal = LoadLocal(scrutReg);
                 Emit(Arm64Encoder.Cmp(scrutVal, litReg));
                 int branchIdx = m_instructions.Count;
-                Emit(Arm64Encoder.Nop()); // patched: B.NE â†’ not_eq
+                Emit(Arm64Encoder.Nop()); // patched: B.NE -> not_eq
 
                 uint bodyReg = EmitExpr(branch.Body);
                 StoreLocal(resultReg, bodyReg);
                 int jumpEndIdx = m_instructions.Count;
-                Emit(Arm64Encoder.Nop()); // patched: B â†’ end
+                Emit(Arm64Encoder.Nop()); // patched: B -> end
 
                 int nextStart = m_instructions.Count;
                 EmitMatchBranches(match, index + 1, scrutReg, resultReg);
@@ -695,7 +695,7 @@ sealed class Arm64CodeGen
 
                 Emit(Arm64Encoder.Cmp(tagReg, expectedReg));
                 int branchIdx = m_instructions.Count;
-                Emit(Arm64Encoder.Nop()); // patched: B.NE â†’ next
+                Emit(Arm64Encoder.Nop()); // patched: B.NE -> next
 
                 for (int i = 0; i < ctorPat.SubPatterns.Length; i++)
                 {
@@ -783,7 +783,7 @@ sealed class Arm64CodeGen
         _ => Arm64Reg.Xzr
     };
 
-    // â”€â”€ Builtins â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- Builtins -------------------------------------------------
 
     bool TryEmitBuiltin(string name, List<IRExpr> args)
     {
@@ -863,7 +863,7 @@ sealed class Arm64CodeGen
                 int loopStart = m_instructions.Count;
                 Emit(Arm64Encoder.Cmp(Arm64Reg.X12, Arm64Reg.X10));
                 int exitIdx = m_instructions.Count;
-                Emit(Arm64Encoder.Nop()); // B.GE â†’ exit
+                Emit(Arm64Encoder.Nop()); // B.GE -> exit
                 Emit(Arm64Encoder.LdrbReg(Arm64Reg.X13, Arm64Reg.X9, Arm64Reg.X12));
                 Emit(Arm64Encoder.StrbReg(Arm64Reg.X13, Arm64Reg.X11, Arm64Reg.X12));
                 Emit(Arm64Encoder.AddImm(Arm64Reg.X12, Arm64Reg.X12, 1));
@@ -1064,7 +1064,7 @@ sealed class Arm64CodeGen
         int falseOffset = AddRodataString("False\n");
 
         int branchIndex = m_instructions.Count;
-        Emit(Arm64Encoder.Nop()); // patched: CBZ â†’ false
+        Emit(Arm64Encoder.Nop()); // patched: CBZ -> false
 
         uint trueReg = AllocTemp();
         EmitLoadRodataAddress(trueReg, trueOffset);
@@ -1072,7 +1072,7 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.AddImm(Arm64Reg.X1, trueReg, 8));
         EmitSyscallWrite();
         int jEndIndex = m_instructions.Count;
-        Emit(Arm64Encoder.Nop()); // patched: B â†’ end
+        Emit(Arm64Encoder.Nop()); // patched: B -> end
 
         int falseStart = m_instructions.Count;
         uint falseReg = AllocTemp();
@@ -1112,7 +1112,7 @@ sealed class Arm64CodeGen
         return offset;
     }
 
-    // â”€â”€ Runtime helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- Runtime helpers ------------------------------------------
     // These are simplified stubs. Full implementations mirror RISC-V
     // runtime helpers but with ARM64 instructions.
 
@@ -1136,7 +1136,7 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.Ldr(Arm64Reg.X10, Arm64Reg.X1, 0));  // len2
         Emit(Arm64Encoder.Cmp(Arm64Reg.X9, Arm64Reg.X10));
         int bneLen = m_instructions.Count;
-        Emit(Arm64Encoder.Nop()); // B.NE â†’ not_eq
+        Emit(Arm64Encoder.Nop()); // B.NE -> not_eq
 
         Emit(Arm64Encoder.AddImm(Arm64Reg.X0, Arm64Reg.X0, 8));
         Emit(Arm64Encoder.AddImm(Arm64Reg.X1, Arm64Reg.X1, 8));
@@ -1145,13 +1145,13 @@ sealed class Arm64CodeGen
         int loopStart = m_instructions.Count;
         Emit(Arm64Encoder.Cmp(Arm64Reg.X11, Arm64Reg.X9));
         int bgeIdx = m_instructions.Count;
-        Emit(Arm64Encoder.Nop()); // B.GE â†’ equal
+        Emit(Arm64Encoder.Nop()); // B.GE -> equal
 
         Emit(Arm64Encoder.LdrbReg(Arm64Reg.X12, Arm64Reg.X0, Arm64Reg.X11));
         Emit(Arm64Encoder.LdrbReg(Arm64Reg.X13, Arm64Reg.X1, Arm64Reg.X11));
         Emit(Arm64Encoder.Cmp(Arm64Reg.X12, Arm64Reg.X13));
         int bneByte = m_instructions.Count;
-        Emit(Arm64Encoder.Nop()); // B.NE â†’ not_eq
+        Emit(Arm64Encoder.Nop()); // B.NE -> not_eq
 
         Emit(Arm64Encoder.AddImm(Arm64Reg.X11, Arm64Reg.X11, 1));
         Emit(Arm64Encoder.B((loopStart - m_instructions.Count) * 4));
@@ -1226,7 +1226,7 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.Str(Arm64Reg.Lr, Arm64Reg.Sp, 40));
         Emit(Arm64Encoder.Mov(Arm64Reg.X13, Arm64Reg.X0));
         Emit(Arm64Encoder.Cmp(Arm64Reg.X13, Arm64Reg.Xzr));
-        // X14 = is_negative: CSINC X14, XZR, XZR, GE â†’ 1 if LT (negative)
+        // X14 = is_negative: CSINC X14, XZR, XZR, GE -> 1 if LT (negative)
         m_instructions.Add(0x9A9FA7E0u | Arm64Reg.X14);
 
         int skipNeg = m_instructions.Count;
@@ -1546,7 +1546,7 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.Ret());
     }
 
-    // â”€â”€ Syscalls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- Syscalls -------------------------------------------------
 
     void EmitSyscallWrite()
     {
@@ -1561,7 +1561,7 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.Svc());
     }
 
-    // â”€â”€ _start â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- _start ---------------------------------------------------
 
     void EmitStart(IRModule module)
     {
@@ -1603,7 +1603,7 @@ sealed class Arm64CodeGen
         EmitSyscallExit();
     }
 
-    // â”€â”€ Call patching â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- Call patching --------------------------------------------
 
     void EmitCallTo(string targetName)
     {
@@ -1645,7 +1645,7 @@ sealed class Arm64CodeGen
         }
     }
 
-    // â”€â”€ Register allocation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- Register allocation --------------------------------------
 
     uint AllocTemp()
     {
