@@ -8,13 +8,18 @@
 
 **Peak I (Self-Hosting) achieved.** The Codex compiler compiles itself. Fixed point proven.
 **Camp II-A (IL Backend) summited.** Standalone `.exe` emission via IL, no C# compiler needed.
-**Camp II-B (Native Codegen) summited.** RISC-V native + WASM backends. Three binary targets.
+**Camp II-B (Native Codegen) summited.** RISC-V native + WASM + ARM64 backends. Four binary targets.
 **V1 (Repository Views) complete.** Named views, consistency, composition, view-aware build.
-**R2b (Effects Formalized) complete.** Five effects as `.codex` source, loaded by parser.
+**R2b (Effects Formalized) complete.** Twelve effects as `.codex` source, loaded by parser.
 **Camp III-B (Capability System) complete.** CapabilityChecker + CLI `--capabilities` enforcement merged.
 **Camp III-A (Linear Allocator) Phase 1 complete.** IRRegion node + WASM region-based allocator merged.
+**Camp III-A Phase 2a complete.** IRRegion `NeedsEscapeCopy` annotation (Cam).
+**Camp III-A Phase 2b complete.** RISC-V escape copy for Text, Record, List, Sum regions (Cam). Reviewed, merged.
 **Register spill verified (2026-03-23).** AllocLocal saturation bug found by Linux review, spill-to-stack + IRRegion SP fix verified under QEMU — 40/40 RISC-V tests green.
 **Camp II-C (Self-Hosted Native) SUMMITED (2026-03-23).** The Codex compiler, compiled to a 227KB RISC-V ELF, compiles Codex source to valid C# under QEMU. No .NET, no CLR, no JIT. Native machine code, start to finish.
+**ARM64 backend complete (2026-03-23).** Arm64Encoder, Arm64CodeGen (1,740 lines), ElfWriterArm64. `codex build --target arm64` produces ELF64 AArch64 binaries. Awaiting QEMU verification by Agent Linux.
+**Phone effects complete (2026-03-23).** 7 new effects: Network, Display, Camera, Microphone, Location, Sensors, Identity. 7 prelude files, 13 new tests, capability enforcement verified.
+**Phone hardware ready (2026-03-23).** Samsung SM-G935T (T-Mobile S7 Edge) backed up, SIM removed, OEM unlock enabled, Odin connected. TWRP build handed off to Agent Linux — no pre-built images exist for hero2qlte.
 
 The C# bootstrap compiler is locked. All forward development happens in `.codex` source.
 
@@ -23,15 +28,17 @@ The C# bootstrap compiler is locked. All forward development happens in `.codex`
 | Metric | Value |
 |--------|-------|
 | Self-hosted compiler | 26 files, ~4,900 lines |
-| Prelude | 16 modules, ~1,250 lines (11 type + 5 effect) |
-| Backends | 12 transpilation + IL + RISC-V native + RISC-V bare metal + WASM |
-| Tests | 390+ passing (40 RISC-V QEMU, 23 WASM wasmtime) |
+| Prelude | 23 modules, ~1,300 lines (11 type + 12 effect) |
+| Backends | 12 transpilation + IL + RISC-V native + RISC-V bare metal + WASM + ARM64 |
+| Tests | 773 passing (40 RISC-V QEMU, 23 WASM wasmtime) |
 | Type debt | 0 |
 | Fixed point | Proven (Stage 1 = Stage 3 at 255,344 chars) |
 | Reference compiler | 🔒 Locked |
-| Binary targets | RISC-V 64 (Linux user + bare metal), WASM/WASI |
+| Binary targets | RISC-V 64 (Linux user + bare metal), WASM/WASI, ARM64 (Linux) |
 | RiscVCodeGen | 2,248 lines — register spill, closures, lists, file I/O, runtime helpers |
+| Arm64CodeGen | 1,740 lines — full IR→ARM64 codegen, callee-saved regs, heap pointer |
 | Agents | 3 (Windows/Copilot, Linux/sandbox, Cam/CLI) |
+| Phone | Samsung SM-G935T — OEM unlocked, awaiting TWRP build |
 
 ---
 
@@ -139,6 +146,37 @@ recursive IR walker. Found by dogfooding codex-agent.
 
 ## Active Work
 
+### Codex Phone — Phase 1 (In Progress)
+
+**Goal**: A Codex program running on the Samsung S7 Edge (SM-G935T).
+
+**Done:**
+- ARM64 backend: 2,236 lines, `codex build --target arm64` produces ELF64 AArch64 binaries
+- Phone effects: 7 new effects (Network, Display, Camera, Microphone, Location, Sensors, Identity) with capability enforcement
+- Phone hardware: backed up, SIM removed, OEM unlocked, Odin connected on COM7
+- V4 proof-carrying facts: proofs verified at view composition time
+
+**Blocked on:**
+- TWRP build for hero2qlte — no pre-built images exist, device tree source available
+- Handoff to Agent Linux: `docs/OldStatus/TWRP-BUILD-HANDOFF.md`
+
+**After TWRP:**
+1. Flash TWRP via Odin
+2. Wipe Android
+3. Install minimal Linux (postmarketOS)
+4. `adb push` ARM64 binary, run natively
+
+**Design doc**: `docs/Designs/CODEX-PHONE.md`
+
+### Camp III-A Phase 2 — Escape Analysis ✅ Phase 2a+2b (Cam)
+
+Cam completed RISC-V escape copy for regions:
+- Phase 2a: `NeedsEscapeCopy` flag on `IRRegion` node
+- Phase 2b: Per-type escape copy helpers for Text, Record, List, Sum types
+- Reviewed by Linux, stack overflow on recursive types fixed, merged to master
+
+Remaining: full escape analysis to re-enable region heap reclamation (currently disabled).
+
 ### Camp II-C — Self-Hosted on RISC-V ✅ SUMMITED (2026-03-23)
 
 The Codex compiler, compiled to a 227,600-byte RISC-V ELF, successfully
@@ -184,20 +222,25 @@ AllocLocal saturation bug. Human routed between agents across session boundaries
 | ~~RISC-V parity~~ | ~~Records, sum types, pattern matching, text builtins on RISC-V~~ | ✅ Done (2026-03-22) |
 | ~~Register spill~~ | ~~Spill locals to stack when S-regs exhausted~~ | ✅ Done (2026-03-23, verified by Linux) |
 | ~~Camp II-C~~ | ~~Self-hosted compiler on RISC-V~~ | ✅ **SUMMITED** (2026-03-23) |
-| V4 | Proof-carrying facts | Views verify proofs at composition time |
-| Camp III-A Phase 2 | Escape analysis for regions | Regions disabled pending proper escape tracking |
-| x86-64 backend | Extend native codegen beyond RISC-V | Broader platform coverage |
+| ~~V4~~ | ~~Proof-carrying facts~~ | ✅ Done (2026-03-23) |
+| ~~ARM64 backend~~ | ~~Extend native codegen to ARM64~~ | ✅ Done (2026-03-23) |
+| ~~Phone effects~~ | ~~Network, Display, Camera, Microphone, Location, Sensors, Identity~~ | ✅ Done (2026-03-23) |
+| ~~Camp III-A Phase 2a/2b~~ | ~~IRRegion escape copy annotation + per-type helpers~~ | ✅ Done (Cam, 2026-03-23) |
+| TWRP build | Build TWRP recovery.img for hero2qlte | Unblock phone flash (Agent Linux) |
+| ARM64 QEMU verification | Verify ARM64 binaries under qemu-aarch64 | Confirm codegen before phone deploy |
+| Camp III-A Phase 2c | Full escape analysis for region reclamation | Re-enable region heap reclamation |
+| x86-64 backend | Extend native codegen to x86-64 | Broadest platform coverage |
 
 ### Medium Term
 - **Camp III-C**: Structured concurrency — `par`, `race`, work-stealing
-- **Camp II-C**: Self-hosted native build chain on RISC-V (deferred, proof exists)
 - **V3**: Repository federation — multi-repo sync, cross-repo trust
-- **Network + Process effects**: Extend capability system beyond Console/FileSystem
-- **x86-64 / ARM64 backends**: Extend native codegen beyond RISC-V
+- **Phone Phase 2**: Replace Android — postmarketOS, framebuffer, touch input, UI toolkit
+- **x86-64 backend**: Extend native codegen to the most common desktop ISA
 
 ### Long Term
 - **V5 — Intelligence layer**: AI agents as first-class participants
 - **V6 — Trust lattice**: vouching with degrees, trust-ranked search
+- **Phone Phase 3 — Codex.OS**: ARM64 bare metal on the phone. No Linux. The summit.
 - **Peak IV — Codex.OS**: The summit
 
 ---

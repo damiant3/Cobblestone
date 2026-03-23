@@ -202,6 +202,27 @@ Codex.OS is not "build an OS from scratch" — it's "extend what we already
 have until it manages resources for multiple programs." The foundation is
 poured.
 
+#### ARM64 Backend ✅ (2026-03-23)
+
+The third native backend targets AArch64 — the dominant mobile and server
+ISA. Arm64Encoder, Arm64CodeGen (1,740 lines), ElfWriterArm64. Produces
+valid ELF64 AArch64 binaries. Full IR→ARM64 codegen: function
+prologue/epilogue, callee-saved x19–x27, register spill to stack, records,
+sum types, pattern matching, closures, text builtins, runtime helpers,
+Linux AArch64 syscalls (write=64, exit=93, brk=214, openat=56, read=63).
+
+```
+codex build samples/hello.codex --target arm64
+qemu-aarch64 ./hello
+Hello, world!
+```
+
+**What we carried up**: The phone ISA. ARM64 is what runs on the Samsung
+S7 Edge sitting on the desk. This backend is the bridge between "compiler
+that targets bare metal" and "program running in your hand."
+
+Awaiting `qemu-aarch64` verification by Agent Linux.
+
 ### Camp II-C: Self-Hosted Build Chain
 
 The compiler compiles itself to native code. The native compiler compiles
@@ -285,6 +306,13 @@ The runtime's allocator is a region-based system driven by the linear type
 checker's analysis. Regions nest. When a region closes, everything in it is
 freed in one operation. No tracing. No reference counting. No pauses.
 
+#### Progress (2026-03-23)
+
+- Phase 1 ✅: IRRegion node wraps every definition body. WASM backend implements real region-based allocation.
+- Phase 2a ✅: `NeedsEscapeCopy` flag on IRRegion (Cam).
+- Phase 2b ✅: Per-type escape copy helpers for Text, Record, List, Sum on RISC-V (Cam). Reviewed by Linux — stack overflow on recursive types found and fixed.
+- Phase 2c (next): Full escape analysis to re-enable region heap reclamation. Currently disabled — 1MB bump allocator sufficient for compilation.
+
 ### Camp III-B: I/O — The Capability System
 
 Every side effect in Codex is tracked in the type system via algebraic effects.
@@ -304,17 +332,25 @@ This is not a sandbox bolted on after the fact. It's the type system.
 The compiler won't emit code that accesses a capability the function
 doesn't declare.
 
-#### Progress (2026-03-22)
+#### Progress (2026-03-23)
 
-The foundation is built:
-- Effects formalized as `.codex` source (Console, FileSystem, State, Time, Random)
-- `CapabilityChecker` extracts effect annotations from every definition
-- `CapabilityReport` summarizes what a program requires
-- `CDX4001` diagnostic fires when a required capability wasn't granted
-- Wired into all three compilation pipelines
+Complete. Twelve effects formalized as `.codex` prelude source:
+- **Original 5**: Console, FileSystem, State, Time, Random
+- **Phone 7**: Network, Display, Camera, Microphone, Location, Sensors, Identity
 
-What remains: CLI `--capabilities` flag, runtime enforcement at program launch,
-and the `Network` and `Process` effects.
+`CapabilityChecker` extracts effect annotations from every definition.
+`CapabilityReport` summarizes what a program requires. `CDX4001` diagnostic
+fires when a required capability wasn't granted. CLI `--capabilities` flag
+wired into `codex build` and `codex check`. 773 tests passing.
+
+Phone capability enforcement tests verify the core promise:
+- Network rejected without grant (CDX4001)
+- Camera rejected without grant (CDX4001)
+- Microphone rejected without grant (CDX4001)
+- Display-only app rejects Network (the flashlight test)
+- Multi-capability app accepted with all grants
+
+What remains: runtime enforcement at program launch, `Process` effect.
 
 ### Camp III-C: Concurrency — Structured, Deterministic
 
@@ -457,19 +493,23 @@ enough.
 
 Peak II — from IL backend to native RISC-V self-hosting — in **3 more days**.
 Camp II-C summit push: 11 bugs found and fixed in a single session across
-three agents. The compiler compiles itself on bare metal.
+three agents. The compiler compiles itself on bare metal. Then ARM64 backend
+built the same day — 1,740 lines of codegen, ELF64 AArch64 binaries, wired
+into the CLI. Phone effects (7 new capabilities) and escape copy (4 region
+types) also landed on day 10. The pace hasn't slowed.
 
 That pace recalibrates everything.
 
 | Camp | Visibility | Honest Estimate |
 |------|-----------|----------------|
 | II-A (IL maturity) | ✅ Summited 2026-03-21 | — |
-| II-B (Native codegen) | ✅ RISC-V + WASM 2026-03-22 | x86-64/ARM64: weeks |
+| II-B (Native codegen) | ✅ RISC-V + WASM + ARM64 2026-03-23 | x86-64: weeks |
 | II-C (Self-hosted native) | ✅ **Summited 2026-03-23** | — |
-| III-A (Linear allocator) | Foundation built, escape analysis needed | Weeks |
-| III-B (Capability I/O) | Foundation built (checker + effects) | Weeks–months |
+| III-A (Linear allocator) | ✅ Phase 2b (escape copy), full analysis needed | Weeks |
+| III-B (Capability I/O) | ✅ 12 effects, checker, CLI enforcement | Runtime enforcement: weeks |
 | III-C (Structured concurrency) | Know it's there | Months |
 | III-R (Repository) | ✅ V1 complete (views, consistency, build) | Federation: months |
+| Phone Phase 1 | ARM64 backend done, TWRP build in progress | Days after TWRP |
 | IV (Codex.OS) | Not theoretical anymore | 2026 |
 
 These are not promises. They're sightlines. But we've been consistently
