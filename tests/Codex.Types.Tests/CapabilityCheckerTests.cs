@@ -193,4 +193,101 @@ public class CapabilityCheckerTests
         capChecker.CheckModule(resolved.Module, grantSet);
         return diagnostics;
     }
+
+    [Fact]
+    public void Network_rejected_without_grant()
+    {
+        string source = """
+            main : [Network] Text
+            main = fetch "https://example.com"
+            """;
+        DiagnosticBag diagnostics = CheckWithGrants(source, ["Console"]);
+        Assert.True(diagnostics.HasErrors);
+        bool found = false;
+        foreach (Diagnostic diag in diagnostics.ToImmutable())
+        {
+            if (diag.Code == "CDX4001" && diag.Message.Contains("Network"))
+                found = true;
+        }
+        Assert.True(found, "Expected CDX4001 for missing Network capability");
+    }
+
+    [Fact]
+    public void Network_accepted_with_grant()
+    {
+        string source = """
+            main : [Console, Network] Nothing
+            main = print-line "connected"
+            """;
+        DiagnosticBag diagnostics = CheckWithGrants(source, ["Console", "Network"]);
+        Assert.False(diagnostics.HasErrors, string.Join("; ", diagnostics.ToImmutable()));
+    }
+
+    [Fact]
+    public void Camera_rejected_without_grant()
+    {
+        string source = """
+            main : [Camera] Text
+            main = capture
+            """;
+        DiagnosticBag diagnostics = CheckWithGrants(source, ["Display"]);
+        Assert.True(diagnostics.HasErrors);
+        bool found = false;
+        foreach (Diagnostic diag in diagnostics.ToImmutable())
+        {
+            if (diag.Code == "CDX4001" && diag.Message.Contains("Camera"))
+                found = true;
+        }
+        Assert.True(found, "Expected CDX4001 for missing Camera capability");
+    }
+
+    [Fact]
+    public void Microphone_rejected_without_grant()
+    {
+        string source = """
+            main : [Microphone] Text
+            main = listen 5000
+            """;
+        DiagnosticBag diagnostics = CheckWithGrants(source, []);
+        Assert.True(diagnostics.HasErrors);
+        bool found = false;
+        foreach (Diagnostic diag in diagnostics.ToImmutable())
+        {
+            if (diag.Code == "CDX4001" && diag.Message.Contains("Microphone"))
+                found = true;
+        }
+        Assert.True(found, "Expected CDX4001 for missing Microphone capability");
+    }
+
+    [Fact]
+    public void Display_only_grants_no_network()
+    {
+        string source = """
+            main : [Display, Network] Nothing
+            main = do
+              clear
+              fetch "https://spy.example.com"
+              draw-text "hello" 0 0
+            """;
+        DiagnosticBag diagnostics = CheckWithGrants(source, ["Display"]);
+        Assert.True(diagnostics.HasErrors);
+        bool found = false;
+        foreach (Diagnostic diag in diagnostics.ToImmutable())
+        {
+            if (diag.Code == "CDX4001" && diag.Message.Contains("Network"))
+                found = true;
+        }
+        Assert.True(found, "Expected CDX4001 for missing Network — the flashlight test");
+    }
+
+    [Fact]
+    public void Phone_app_with_all_grants()
+    {
+        string source = """
+            main : [Console, Display, Network] Nothing
+            main = print-line "app running"
+            """;
+        DiagnosticBag diagnostics = CheckWithGrants(source, ["Console", "Display", "Network"]);
+        Assert.False(diagnostics.HasErrors, string.Join("; ", diagnostics.ToImmutable()));
+    }
 }

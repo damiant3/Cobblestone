@@ -37,6 +37,53 @@ sealed class BuiltinEffects
         effect State where
           get-state : [State] s
           set-state : s -> [State] Nothing
+        """,
+
+        """
+        effect Network where
+          fetch       : Text -> [Network] Text
+          post        : Text -> Text -> [Network] Text
+          resolve-dns : Text -> [Network] Text
+        """,
+
+        """
+        effect Display where
+          draw-text  : Text -> Integer -> Integer -> [Display] Nothing
+          draw-rect  : Integer -> Integer -> Integer -> Integer -> [Display] Nothing
+          clear      : [Display] Nothing
+          set-pixel  : Integer -> Integer -> Integer -> [Display] Nothing
+        """,
+
+        """
+        effect Camera where
+          capture     : [Camera] Text
+          capture-raw : Integer -> Integer -> [Camera] Text
+        """,
+
+        """
+        effect Microphone where
+          listen   : Integer -> [Microphone] Text
+          is-quiet : [Microphone] Boolean
+        """,
+
+        """
+        effect Location where
+          locate    : [Location] Pair Integer Integer
+          altitude  : [Location] Integer
+        """,
+
+        """
+        effect Sensors where
+          accelerometer : [Sensors] Pair Integer (Pair Integer Integer)
+          gyroscope     : [Sensors] Pair Integer (Pair Integer Integer)
+          barometer     : [Sensors] Integer
+          light-level   : [Sensors] Integer
+        """,
+
+        """
+        effect Identity where
+          authenticate : [Identity] Text
+          current-user : [Identity] Text
         """
     ];
 

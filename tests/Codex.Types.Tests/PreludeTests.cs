@@ -135,6 +135,55 @@ public class PreludeTests
     }
 
     [Fact]
+    public void Network_effect_compiles()
+    {
+        DiagnosticBag diag = CompilePreludeFile("Network.codex");
+        Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
+    }
+
+    [Fact]
+    public void Display_effect_compiles()
+    {
+        DiagnosticBag diag = CompilePreludeFile("Display.codex");
+        Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
+    }
+
+    [Fact]
+    public void Camera_effect_compiles()
+    {
+        DiagnosticBag diag = CompilePreludeFile("Camera.codex");
+        Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
+    }
+
+    [Fact]
+    public void Microphone_effect_compiles()
+    {
+        DiagnosticBag diag = CompilePreludeFile("Microphone.codex");
+        Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
+    }
+
+    [Fact]
+    public void Location_effect_compiles()
+    {
+        DiagnosticBag diag = CompilePreludeFile("Location.codex");
+        Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
+    }
+
+    [Fact]
+    public void Sensors_effect_compiles()
+    {
+        DiagnosticBag diag = CompilePreludeFile("Sensors.codex");
+        Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
+    }
+
+    [Fact]
+    public void Identity_effect_compiles()
+    {
+        DiagnosticBag diag = CompilePreludeFile("Identity.codex");
+        Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
+    }
+
+    [Fact]
     public void Maybe_used_in_program()
     {
         string source = """
