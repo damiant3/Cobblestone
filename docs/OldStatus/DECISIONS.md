@@ -1,3 +1,5 @@
+File: docs\OldStatus\DECISIONS.md
+````````markdown
 # Decision Log
 
 > **Date correction (2026-03-18)**: Several dates in this file were hallucinated by
@@ -244,3 +246,12 @@ Significant design and engineering decisions are recorded here in chronological 
 **Decision**: The parser now records the column of the first `if` keyword in a `when` expression and only accepts subsequent `if` keywords at the same column (or on the same line for inline matches). This distinguishes inner vs outer branches without requiring explicit delimiters.
 **Rationale**: Column-based scoping is consistent with Codex's existing indentation sensitivity. Alternatives considered: (1) explicit `end` keyword — verbose and un-Codex-like; (2) parenthesization — adds noise. The column rule is invisible to the programmer when code is properly formatted, which is always the case in practice.
 **Consequences**: Nested `when` expressions now emit all branches correctly. This required a companion fix: unique pattern binding names in the C# emitter (via `m_matchCounter`) to avoid C# variable name clashes between outer and inner matches in the same expression scope. A third fix in `Lowering.cs` was also needed: `LowerMatch` now infers its result type from the first non-error branch body when `expectedType` is `ErrorType`, matching how `LowerIf` already works.
+
+---
+
+## Decision: x86-64 Frame Layout — Callee-Saved Pushes Before Sub RSP
+**Date**: 2026-03-23
+**Context**: The x86-64 backend's prologue emitted `push rbp; mov rbp,rsp; sub rsp,frameSize; push callee-saved`. Spill offsets in `StoreLocal`/`LoadLocal` were computed as `rbp - (slot+1)*8 - calleeSavedCount*8`, assuming callee saves sat immediately below rbp. But because `sub rsp` came first, callee saves were below the frame space. When a function used >5 locals (triggering spills), spill slot 0 at `[rbp-48]` overwrote saved R14 — causing silent corruption in recursive functions like factorial.
+**Decision**: Reorder prologue to `push rbp; mov rbp,rsp; push callee-saved; sub rsp,spillFrame`. Epilogue uses `lea rsp, [rbp - 40]` to skip spill space before popping callee-saved regs.
+**Rationale**: This matches the standard System V AMD64 convention where callee-saved registers are at fixed offsets from rbp. The spill offset formula `rbp - (slot+1)*8 - 5*8` now correctly places spills below the 5 callee-saved registers (rbx, r12-r15) without collision.
+**Consequences**: Stack layout is clean. Spill slot 0 at `[rbp-48]`, safely below saved r15 at `[rbp-40]`. No changes to `StoreLocal`/`LoadLocal` offset math needed — they already computed the right offsets, the prologue was just putting the saved registers in the wrong place.
