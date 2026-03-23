@@ -266,7 +266,7 @@ public static partial class Program
             Console.WriteLine($"  {kv.Key} : {kv.Value}");
     }
 
-    static bool IsAssemblyTarget(string target) => target is "il" or "exe" or "riscv" or "riscv-bare" or "wasm" or "arm64";
+    static bool IsAssemblyTarget(string target) => target is "il" or "exe" or "riscv" or "riscv-bare" or "wasm" or "arm64" or "x86-64";
 
     static int EmitAssembly(IRCompilationResult irResult, string outputDir, string moduleName, string target)
     {
@@ -299,6 +299,17 @@ public static partial class Program
         {
             Emit.Arm64.Arm64Emitter arm64Emitter = new();
             byte[] elf = arm64Emitter.EmitAssembly(irResult.Module, moduleName);
+            string outputPath = Path.Combine(outputDir, moduleName);
+            File.WriteAllBytes(outputPath, elf);
+            Console.WriteLine($"✓ Compiled to {outputPath} ({target}, {elf.Length:N0} bytes)");
+            PrintTypes(irResult);
+            return 0;
+        }
+
+        if (target == "x86-64")
+        {
+            Emit.X86_64.X86_64Emitter x64Emitter = new();
+            byte[] elf = x64Emitter.EmitAssembly(irResult.Module, moduleName);
             string outputPath = Path.Combine(outputDir, moduleName);
             File.WriteAllBytes(outputPath, elf);
             Console.WriteLine($"✓ Compiled to {outputPath} ({target}, {elf.Length:N0} bytes)");
