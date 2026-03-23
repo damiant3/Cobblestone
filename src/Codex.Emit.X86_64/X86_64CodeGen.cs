@@ -18,11 +18,12 @@ sealed class X86_64CodeGen
     readonly Queue<(string Key, string Name, CodexType Type)> m_escapeHelperQueue = new();
 
     // Register allocator state (per-function)
-    // Temps: RAX, RCX, RDX, RSI, RDI, R8-R11 (caller-saved, recycled)
+    // Temps: RAX, RCX, RDX, RSI, RDI, R11 (caller-saved, recycled)
     // Locals: RBX, R12-R15 (callee-saved, monotonic)
+    // Spill scratch: R8, R9 (used by LoadLocal for spilled values — NOT in TempRegs)
     // Reserved: RSP (stack), RBP (frame), R10 (heap pointer)
     const byte HeapReg = Reg.R10; // global heap pointer — NOT callee-saved
-    static readonly byte[] TempRegs = [Reg.RAX, Reg.RCX, Reg.RDX, Reg.RSI, Reg.R8, Reg.R9, Reg.R11];
+    static readonly byte[] TempRegs = [Reg.RAX, Reg.RCX, Reg.RDX, Reg.RSI, Reg.RDI, Reg.R11];
     static readonly byte[] LocalRegs = [Reg.RBX, Reg.R12, Reg.R13, Reg.R14, Reg.R15];
     const uint SpillBase = 32; // virtual register numbers for spilled locals
 
@@ -283,7 +284,6 @@ sealed class X86_64CodeGen
             if (cc == X86_64Encoder.CC_NE)
             {
                 X86_64Encoder.CmpRI(m_text, Reg.RAX, 0);
-                X86_64Encoder.Li(m_text, rd, 0);
                 X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_E, rd);
                 X86_64Encoder.MovzxByteSelf(m_text, rd);
             }
@@ -296,7 +296,6 @@ sealed class X86_64CodeGen
 
         X86_64Encoder.CmpRR(m_text, lReg, rReg);
         byte result = AllocTemp();
-        X86_64Encoder.Li(m_text, result, 0);
         X86_64Encoder.Setcc(m_text, cc, result);
         X86_64Encoder.MovzxByteSelf(m_text, result);
         return result;
@@ -1002,7 +1001,7 @@ sealed class X86_64CodeGen
     {
         if (local < SpillBase)
             return local;
-        byte scratch = (m_loadLocalToggle++ % 2 == 0) ? Reg.RAX : Reg.RCX;
+        byte scratch = (m_loadLocalToggle++ % 2 == 0) ? Reg.R8 : Reg.R9;
         int offset = -((int)(local - SpillBase) + 1) * 8 - LocalRegs.Length * 8;
         X86_64Encoder.MovLoad(m_text, scratch, Reg.RBP, offset);
         return scratch;
