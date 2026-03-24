@@ -34,7 +34,8 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
         "map",
         "get-state", "set-state", "run-state",
         "now",
-        "random-integer"
+        "random-integer",
+        "fork", "await", "par", "race"
     );
 
     public NameResolver(DiagnosticBag diagnostics, IModuleLoader? loader)
