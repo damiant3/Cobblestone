@@ -863,6 +863,15 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             return bodyResult;
         }
 
+        // Heap-returning: skip reclamation.
+        // Copy-above-then-compact is implemented below but crashes the
+        // self-hosted compiler. GDB trace shows the Document record's
+        // list field contains length (2) instead of pointer — either
+        // memmove/relocate corruption or a pre-existing data layout bug
+        // exposed by the escape copy. Needs further investigation.
+        return bodyResult;
+
+#if false
         // ── Copy-Above-Then-Compact ────────────────────────────────
         // Deep copy ABOVE body data (no overlap with source), then
         // memmove the copy down to saved_hp and relocate pointers.
@@ -920,6 +929,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Add(Reg.S1, LoadLocal(savedHeap), LoadLocal(copySizeLocal)));
 
         return LoadLocal(adjLocal);
+#endif
     }
 
     void EmitRelocateCall(uint ptrLocal, uint deltaLocal, CodexType type)
