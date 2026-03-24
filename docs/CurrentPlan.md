@@ -1,3 +1,5 @@
+File: docs\CurrentPlan.md
+````````markdown
 # Current Plan
 
 **Date**: 2026-03-23 (verified via system clock)
@@ -29,14 +31,15 @@ The C# bootstrap compiler is locked. All forward development happens in `.codex`
 |--------|-------|
 | Self-hosted compiler | 26 files, ~4,900 lines |
 | Prelude | 23 modules, ~1,300 lines (11 type + 12 effect) |
-| Backends | 12 transpilation + IL + RISC-V native + RISC-V bare metal + WASM + ARM64 |
+| Backends | 12 transpilation + IL + RISC-V native + RISC-V bare metal + WASM + ARM64 + x86-64 (in review) |
 | Tests | 773 passing (40 RISC-V QEMU, 23 WASM wasmtime) |
 | Type debt | 0 |
 | Fixed point | Proven (Stage 1 = Stage 3 at 255,344 chars) |
 | Reference compiler | 🔒 Locked |
-| Binary targets | RISC-V 64 (Linux user + bare metal), WASM/WASI, ARM64 (Linux) |
+| Binary targets | RISC-V 64 (Linux user + bare metal), WASM/WASI, ARM64 (Linux), x86-64 (Linux, pending merge) |
 | RiscVCodeGen | 2,248 lines — register spill, closures, lists, file I/O, runtime helpers |
 | Arm64CodeGen | 1,740 lines — full IR→ARM64 codegen, callee-saved regs, heap pointer |
+| X86_64CodeGen | ~2,500 lines — closures, builtins, self-hosted compiles (runtime crash under investigation) |
 | Agents | 3 (Windows/Copilot, Linux/sandbox, Cam/CLI) |
 | Phone | Samsung SM-G935T — OEM unlocked, awaiting TWRP build |
 
@@ -168,6 +171,32 @@ recursive IR walker. Found by dogfooding codex-agent.
 
 **Design doc**: `docs/Designs/CODEX-PHONE.md`
 
+### x86-64 Backend — Review & Merge (In Progress)
+
+**Goal**: x86-64 native code generation — the broadest desktop ISA.
+
+**Branch**: `cam/x86-64-backend` (5 unmerged commits past master, tip `296e359`)
+**Reviewer**: Agent Linux (Opus 4.6)
+**Builder**: Cam (Claude Code CLI, 1M Opus)
+
+**Done:**
+- X86_64Encoder, ElfWriterX86_64, X86_64CodeGen (~2,500 lines total, +520 lines past master)
+- Closures, sum constructors, partial application — closure RAX clobber fixed (`834657e`)
+- 5 missing builtins ported from RISC-V: text-replace, char-code-at, char-code, code-to-char, is-letter (`296e359`)
+- text-contains, text-starts-with runtime helpers added
+- PatchCalls warning for unresolved call targets (prevents silent call+0 segfaults)
+- All 18 previously-unresolved call sites now resolve
+- Self-hosted compiler compiles to 239KB x86-64 ELF (no build errors)
+- Agent Linux review doc: `docs/reviews/x86-64-backend-review.md`
+- p_align ELF fix already on master (`5288ee8`)
+
+**Remaining:**
+- Self-hosted x86-64 binary **still segfaults at runtime** — builtins compile clean but GDB trace needed from Agent Linux to verify runtime behavior
+- Agent Linux needs to run the x86-64 self-hosted binary under GDB to confirm the 5 builtins fixed the crash (or find the next bug)
+- Merge to master once runtime verified
+
+**Review doc**: `docs/reviews/x86-64-backend-review.md` (on branch, authored by Agent Linux)
+
 ### Camp III-A Phase 2 — Escape Analysis ✅ Phase 2a+2b (Cam)
 
 Cam completed RISC-V escape copy for regions:
@@ -229,13 +258,11 @@ AllocLocal saturation bug. Human routed between agents across session boundaries
 | TWRP build | Build TWRP recovery.img for hero2qlte | Unblock phone flash (Agent Linux) |
 | ARM64 QEMU verification | Verify ARM64 binaries under qemu-aarch64 | Confirm codegen before phone deploy |
 | Camp III-A Phase 2c | Full escape analysis for region reclamation | Re-enable region heap reclamation |
-| x86-64 backend | Extend native codegen to x86-64 | Broadest platform coverage |
 
 ### Medium Term
 - **Camp III-C**: Structured concurrency — `par`, `race`, work-stealing
 - **V3**: Repository federation — multi-repo sync, cross-repo trust
 - **Phone Phase 2**: Replace Android — postmarketOS, framebuffer, touch input, UI toolkit
-- **x86-64 backend**: Extend native codegen to the most common desktop ISA
 
 ### Long Term
 - **V5 — Intelligence layer**: AI agents as first-class participants

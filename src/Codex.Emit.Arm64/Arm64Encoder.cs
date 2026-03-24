@@ -1,7 +1,5 @@
 namespace Codex.Emit.Arm64;
 
-/// Encodes AArch64 (ARM64) instructions as 32-bit words.
-/// All methods are pure — they take operands and return a uint.
 static class Arm64Encoder
 {
     // ═════════════════════════════════════════════════════════════
@@ -90,9 +88,7 @@ static class Arm64Encoder
     public static uint Movn(uint rd, int imm16, int shift = 0) =>
         0x92800000u | ((uint)(shift / 16) << 21) | ((uint)(imm16 & 0xFFFF) << 5) | rd;
 
-    // AND Xd, Xn, #bitmask_imm — limited encoding. For simple masks
-    // we use a register-based AND instead. This encodes AND with 0xFF (byte mask).
-    // ARM64 bitmask immediate encoding is complex; we only provide commonly needed ones.
+    // AND Xd, Xn, #bitmask_imm
     public static uint AndImm(uint rd, uint rn, int imm)
     {
         // For simple power-of-2 - 1 masks, encode the bitmask immediate.
@@ -100,8 +96,6 @@ static class Arm64Encoder
         // For 0xFFF (12 bits): N=1, immr=0, imms=0b001011 (= 11)
         // For 0xFF (8 bits): N=1, immr=0, imms=0b000111 (= 7)
         // For -8 (= 0xFFFFFFFFFFFFFFF8): N=1, immr=61, imms=60 (61 ones rotated right by 61)
-        // General formula for contiguous bit patterns is complex.
-        // We only support the specific values used by the code generator.
         uint n_immr_imms;
         if (imm == -8)
             n_immr_imms = (1u << 22) | (61u << 16) | (60u << 10); // N=1 immr=61 imms=60
@@ -241,6 +235,7 @@ static class Arm64Encoder
     // Pseudo-instructions
     // ═════════════════════════════════════════════════════════════
 
+    // ADD encodes reg 31 as SP; ORR encodes it as XZR
     public static uint Mov(uint rd, uint rm)
     {
         if (rm == Arm64Reg.Sp || rd == Arm64Reg.Sp) return AddImm(rd, rm, 0);
@@ -248,7 +243,6 @@ static class Arm64Encoder
     }
 
     // MOV Xd, #imm (alias for MOVZ when non-negative, MOVN when negative)
-    // For values that fit in 16 bits.
     public static uint MovImm(uint rd, long value)
     {
         if (value >= 0 && value <= 0xFFFF)
@@ -258,17 +252,14 @@ static class Arm64Encoder
         throw new ArgumentException($"MovImm value {value} doesn't fit in 16 bits. Use Li().");
     }
 
-    /// Load a full 64-bit immediate into rd. Returns 1-4 instructions.
     public static uint[] Li(uint rd, long value)
     {
-        // Single instruction cases
         if (value >= 0 && value <= 0xFFFF)
             return [Movz(rd, (int)value)];
 
         if (value < 0 && value >= -0x10000)
             return [Movn(rd, (int)(~value))];
 
-        // Check if value fits in 32 bits unsigned (common for addresses)
         if (value >= 0 && value <= 0xFFFFFFFF)
         {
             int lo16 = (int)(value & 0xFFFF);
@@ -280,7 +271,6 @@ static class Arm64Encoder
             return [Movz(rd, lo16), Movk(rd, hi16, 16)];
         }
 
-        // Full 64-bit: up to 4 MOVZ/MOVK instructions
         List<uint> insns = [];
         bool first = true;
         for (int shift = 0; shift < 64; shift += 16)
@@ -301,7 +291,6 @@ static class Arm64Encoder
             }
         }
 
-        // If all chunks were 0, we still need one instruction
         if (insns.Count == 0)
             insns.Add(Movz(rd, 0));
 
@@ -312,9 +301,9 @@ static class Arm64Encoder
     public static uint Neg(uint rd, uint rm) => Sub(rd, Arm64Reg.Xzr, rm);
 }
 
-/// AArch64 register constants. ARM64 has 31 GP registers (X0-X30),
-/// SP (stack pointer, encoded as 31 in some contexts), and
-/// XZR (zero register, also encoded as 31 in other contexts).
+// AArch64 register constants. ARM64 has 31 GP registers (X0-X30),
+// SP (stack pointer, encoded as 31 in some contexts), and
+// XZR (zero register, also encoded as 31 in other contexts).
 static class Arm64Reg
 {
     // Arguments / return value (caller-saved)
