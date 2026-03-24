@@ -21,7 +21,7 @@ hardware. Region-based memory reclamation works via sub-expression regions.
 | Fixed point | Proven (Stage 1 = Stage 3 at 255,344 chars) |
 | Reference compiler | Locked |
 | Memory | Sub-expression regions: scalar lets reclaim intermediates at let boundary |
-| Agents | 3 (Windows/Copilot, Linux/sandbox, Cam/CLI) |
+| Agents | 4 (Windows/Copilot, Linux/sandbox, Cam/CLI, Nut/garage-box) |
 
 **History**: `docs/OldStatus/CurrentPlan-2026-03-24-peak2-complete.md`
 **Route map**: `docs/THE-ASCENT.md`
@@ -86,7 +86,8 @@ Sub-expression regions handle scalar returns. Remaining:
 
 - **Reference compiler is LOCKED.** See `docs/REFERENCE-COMPILER-LOCK.md`.
 - **Principles**: `docs/10-PRINCIPLES.md` — unchanged, still governing.
-- **Three-agent workflow**: Git is the coordination protocol.
-  - Windows (Copilot/VS): builds features, reviews code, pushes to master
+- **Four-agent workflow**: Git is the coordination protocol. Any agent can push to master.
+  - Windows (Copilot/VS): builds features, reviews code
   - Linux (Claude/sandbox): tests on real hardware/emulators, finds bugs by tracing
   - Cam (Claude Code CLI, 1M Opus): fast iteration, parallel work, GDB debugging
+  - Nut (Copilot/VS2026, garage box): hardware lab, OS dev, phone flash
