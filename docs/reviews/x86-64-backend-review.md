@@ -13,74 +13,56 @@ x86-64 native backend: encoder, ELF writer, codegen for all IR nodes. Integer-re
 programs run correctly natively on Linux (`factorial` → exit 10! mod 256 = 0, `hello` →
 exit 25). Self-hosted compiler compiles to 235KB ELF but segfaults at runtime.
 
-**Verdict:** One blocker (closure register conflict), one known ELF alignment issue
-(same as ARM64/RISC-V). The segfault is a clean one-variable fix.
+**Verdict:** Closure bug fixed (verified). Self-hosted segfault is caused by 5 missing
+builtins producing silent unresolved `call +0` instructions that corrupt the stack.
+Implement the builtins and add an unresolved-call warning.
 
 ---
 
-## Bug 1 — BLOCKER: Register conflict in closure allocation clobbers heap pointer
+## Bug 1 — FIXED: Register conflict in closure allocation clobbers heap pointer
 
-**File:** `X86_64CodeGen.cs`, `EmitPartialApplication` method, lines ~540–546
+*Fixed by Cam in `834657e`.* Verified: `apply double 21` → exit 42. ✓
 
-**Repro (minimal):**
+---
+
+## Bug 2 — BLOCKER: 5 missing builtins → unresolved calls → stack corruption → segfault
+
+**Root cause of the self-hosted compiler segfault.**
+
+Added diagnostic `else` branch to `PatchCalls()` and found **18 unresolved calls** to
+5 builtins that exist in the RISC-V backend but are missing from x86-64:
+
 ```
-apply : (Integer -> Integer) -> Integer -> Integer
-apply (f) (x) = f x
-
-double : Integer -> Integer
-double (x) = x + x
-
-main : Integer
-main = apply double 21
-```
-→ Segfault at 0x4005f3. GDB confirms: `SIGSEGV` writing to text segment.
-
-**Root cause:** `EmitPartialApplication` allocates the closure on the heap:
-
-```csharp
-byte ptrReg = AllocTemp();                           // line 541 — returns RAX
-X86_64Encoder.MovRR(m_text, ptrReg, HeapReg);        // RAX = heap pointer
-X86_64Encoder.AddRI(m_text, HeapReg, closureSize);   // bump heap
-
-EmitLoadFunctionAddress(Reg.RAX, trampolineName);    // line 546 — CLOBBERS ptrReg!
-X86_64Encoder.MovStore(m_text, ptrReg, Reg.RAX, 0);  // mov [RAX], RAX → writes to text!
+text-replace    (6 call sites)
+char-code-at    (5 call sites)
+code-to-char    (4 call sites)
+char-code       (2 call sites)
+is-letter       (1 call site)
 ```
 
-`TempRegs = [RAX, RCX, RDX, RSI, RDI, R11]`. After the trampoline emission,
-`AllocTemp()` cycles back to RAX. Then `EmitLoadFunctionAddress` hardcodes `Reg.RAX`
-for the trampoline address, clobbering the heap pointer. The `MovStore` becomes
-`mov [trampoline_addr], trampoline_addr` — a write to the read-only text segment.
+An unresolved `call rel32` has rel32=0, meaning `call current_addr+5` — falls through
+to the next instruction without a frame, pushing a garbage return address. The self-hosted
+compiler hits `text-replace` in the lexer almost immediately, corrupting the stack.
+Subsequent code dereferences a NULL from the corrupted stack and crashes.
 
-**Disassembly proof** (text section offsets):
-```asm
-532: mov rax, r10              ; ptrReg(RAX) = heap pointer ✓
-535: add r10, 0x8              ; bump heap ✓
-539: movabs rax, 0x4005c4     ; CLOBBER — rax now = trampoline vaddr
-543: mov [rax], rax           ; CRASH — writing to text segment (0x4005f3)
-```
+**GDB confirmation:** Crash at `0x41cbdf` (text offset 117,551). First unresolved
+`char-code-at` is at text offset 117,672 — 121 bytes later in the same function.
+Stack backtrace shows heap addresses (`0x43b050`) where return addresses should be.
 
-GDB: `Program received signal SIGSEGV at 0x00000000004005f3` — matches exactly.
+**Fix:** Implement these 5 builtins in `TryEmitBuiltin` + emit runtime helpers. The
+RISC-V backend (`RiscVCodeGen.cs`) has working implementations of all five — same
+algorithms, different register encoding:
 
-**Fix:** Use `AllocLocal()` for `ptrReg` (same pattern as record/list allocation):
+| Builtin | RISC-V helper | What it does |
+|---------|---------------|-------------|
+| `text-replace` | `__str_replace` | Find/replace in length-prefixed string |
+| `char-code-at` | inline | Load byte at offset from string data |
+| `char-code` | inline | First byte of a 1-char string |
+| `code-to-char` | inline | Allocate 1-byte string from integer |
+| `is-letter` | inline | Check if char code is [A-Z] or [a-z] |
 
-```csharp
-byte ptrLocal = AllocLocal();
-byte tmp = AllocTemp();
-X86_64Encoder.MovRR(m_text, tmp, HeapReg);
-StoreLocal(ptrLocal, tmp);
-X86_64Encoder.AddRI(m_text, HeapReg, closureSize);
-
-EmitLoadFunctionAddress(Reg.RAX, trampolineName);
-X86_64Encoder.MovStore(m_text, LoadLocal(ptrLocal), Reg.RAX, 0);
-
-for (int i = 0; i < capLocals.Count; i++)
-{
-    byte val = LoadLocal(capLocals[i]);
-    X86_64Encoder.MovStore(m_text, LoadLocal(ptrLocal), val, 8 + i * 8);
-}
-
-return LoadLocal(ptrLocal);
-```
+**Also:** `PatchCalls()` should warn on unresolved targets (the ARM64 backend does,
+x86-64 doesn't). Silent `call +0` is extremely dangerous.
 
 ---
 
@@ -119,5 +101,9 @@ Not blocking — x86-64 binaries run natively despite the wrong alignment.
 | `hello.codex` → x86-64 | ✓ exit 25 (square 5) |
 | `factorial.codex` → x86-64 | ✓ exit 0 (3628800 mod 256) |
 | `closure-test.codex` (add 3 4, no HOF) | ✓ exit 7 |
-| `closure-test2.codex` (apply double 21) | ✗ SIGSEGV — Bug 1 |
-| Self-hosted → x86-64 (235KB) | Compiles ✓, SIGSEGV at runtime |
+| `closure-test2.codex` (apply double 21) | ✓ exit 42 (Bug 1 fixed) |
+| Record with text field | ✓ exit 30 |
+| List length | ✓ exit 5 |
+| String equality | ✓ exit 1 |
+| Text-length | ✓ exit 5 |
+| Self-hosted → x86-64 (239KB) | Compiles ✓, SIGSEGV at runtime — Bug 2 |
