@@ -206,13 +206,15 @@ sealed class X86_64CodeGen
             if (tag >= 0 && sumType.Constructors[tag].Fields.IsEmpty)
             {
                 // Allocate [tag:8] on heap
-                byte ptrReg = AllocTemp();
-                X86_64Encoder.MovRR(m_text, ptrReg, HeapReg);
+                byte nullaryPtr = AllocLocal();
+                byte nullaryTmp = AllocTemp();
+                X86_64Encoder.MovRR(m_text, nullaryTmp, HeapReg);
+                StoreLocal(nullaryPtr, nullaryTmp);
                 X86_64Encoder.AddRI(m_text, HeapReg, 8);
                 byte tagReg = AllocTemp();
                 X86_64Encoder.Li(m_text, tagReg, tag);
-                X86_64Encoder.MovStore(m_text, ptrReg, tagReg, 0);
-                return ptrReg;
+                X86_64Encoder.MovStore(m_text, LoadLocal(nullaryPtr), tagReg, 0);
+                return LoadLocal(nullaryPtr);
             }
         }
 
@@ -914,13 +916,17 @@ sealed class X86_64CodeGen
                     X86_64Encoder.AddRR(m_text, idx, strLoaded);
                     X86_64Encoder.MovzxByte(m_text, idx, idx, 8);
                     // Allocate 1-char string on heap: [len=1][byte]
-                    byte rd = AllocTemp();
-                    X86_64Encoder.MovRR(m_text, rd, HeapReg);
-                    X86_64Encoder.AddRI(m_text, HeapReg, 16); // 8 len + 1 byte + padding
+                    byte charAtSaved = AllocLocal();
+                    StoreLocal(charAtSaved, idx); // save the byte value
+                    byte charAtPtr = AllocLocal();
+                    byte charAtTmp = AllocTemp();
+                    X86_64Encoder.MovRR(m_text, charAtTmp, HeapReg);
+                    StoreLocal(charAtPtr, charAtTmp);
+                    X86_64Encoder.AddRI(m_text, HeapReg, 16);
                     X86_64Encoder.Li(m_text, Reg.R11, 1);
-                    X86_64Encoder.MovStore(m_text, rd, Reg.R11, 0);
-                    X86_64Encoder.MovStoreByte(m_text, rd, idx, 8);
-                    return rd;
+                    X86_64Encoder.MovStore(m_text, LoadLocal(charAtPtr), Reg.R11, 0);
+                    X86_64Encoder.MovStoreByte(m_text, LoadLocal(charAtPtr), LoadLocal(charAtSaved), 8);
+                    return LoadLocal(charAtPtr);
                 }
                 return byte.MaxValue;
             case "substring":
@@ -936,15 +942,17 @@ sealed class X86_64CodeGen
                     byte savedLen = AllocLocal();
                     StoreLocal(savedLen, len);
                     // Allocate result: [len][bytes]
-                    byte rd = AllocTemp();
-                    X86_64Encoder.MovRR(m_text, rd, HeapReg);
+                    byte subPtr = AllocLocal();
+                    byte subTmp = AllocTemp();
+                    X86_64Encoder.MovRR(m_text, subTmp, HeapReg);
+                    StoreLocal(subPtr, subTmp);
                     byte lenLoaded = LoadLocal(savedLen);
                     X86_64Encoder.MovRR(m_text, Reg.R11, lenLoaded);
                     X86_64Encoder.AddRI(m_text, Reg.R11, 15);
                     X86_64Encoder.AndRI(m_text, Reg.R11, -8);
                     X86_64Encoder.AddRR(m_text, HeapReg, Reg.R11);
                     lenLoaded = LoadLocal(savedLen);
-                    X86_64Encoder.MovStore(m_text, rd, lenLoaded, 0);
+                    X86_64Encoder.MovStore(m_text, LoadLocal(subPtr), lenLoaded, 0);
                     // Copy bytes
                     X86_64Encoder.Li(m_text, Reg.R11, 0);
                     int subLoop = m_text.Count;
@@ -958,13 +966,13 @@ sealed class X86_64CodeGen
                     X86_64Encoder.AddRR(m_text, Reg.RSI, startOff);
                     X86_64Encoder.AddRR(m_text, Reg.RSI, Reg.R11);
                     X86_64Encoder.MovzxByte(m_text, Reg.RSI, Reg.RSI, 8);
-                    X86_64Encoder.MovRR(m_text, Reg.RDX, rd);
+                    X86_64Encoder.MovRR(m_text, Reg.RDX, LoadLocal(subPtr));
                     X86_64Encoder.AddRR(m_text, Reg.RDX, Reg.R11);
                     X86_64Encoder.MovStoreByte(m_text, Reg.RDX, Reg.RSI, 8);
                     X86_64Encoder.AddRI(m_text, Reg.R11, 1);
                     X86_64Encoder.Jmp(m_text, subLoop - (m_text.Count + 5));
                     PatchJcc(subExit, m_text.Count);
-                    return rd;
+                    return LoadLocal(subPtr);
                 }
                 return byte.MaxValue;
             case "list-cons":
@@ -1050,14 +1058,16 @@ sealed class X86_64CodeGen
                 byte codeReg = EmitExpr(args[0]);
                 byte savedCode = AllocLocal();
                 StoreLocal(savedCode, codeReg);
-                byte rd = AllocTemp();
-                X86_64Encoder.MovRR(m_text, rd, HeapReg);
+                byte c2cPtr = AllocLocal();
+                byte c2cTmp = AllocTemp();
+                X86_64Encoder.MovRR(m_text, c2cTmp, HeapReg);
+                StoreLocal(c2cPtr, c2cTmp);
                 X86_64Encoder.AddRI(m_text, HeapReg, 16);
                 X86_64Encoder.Li(m_text, Reg.R11, 1);
-                X86_64Encoder.MovStore(m_text, rd, Reg.R11, 0);
+                X86_64Encoder.MovStore(m_text, LoadLocal(c2cPtr), Reg.R11, 0);
                 byte code = LoadLocal(savedCode);
-                X86_64Encoder.MovStoreByte(m_text, rd, code, 8);
-                return rd;
+                X86_64Encoder.MovStoreByte(m_text, LoadLocal(c2cPtr), code, 8);
+                return LoadLocal(c2cPtr);
             }
             case "is-letter" when args.Count >= 1:
             {
