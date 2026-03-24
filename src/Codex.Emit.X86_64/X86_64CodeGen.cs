@@ -1850,14 +1850,17 @@ sealed class X86_64CodeGen
         X86_64Encoder.Li(m_text, Reg.RAX, 3);                 // SYS_close
         X86_64Encoder.Syscall(m_text);
 
-        // Store length, bump heap
+        // Store length, bump heap past BOTH filename scratch AND text content
+        // R13 = text header (already past filename copy + padding)
+        // HeapReg = R13 + 8 (length prefix) + align8(content_len)
         X86_64Encoder.MovStore(m_text, Reg.R13, Reg.RBX, 0);
         X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RBX);
         X86_64Encoder.AddRI(m_text, Reg.RAX, 15);
         X86_64Encoder.AndRI(m_text, Reg.RAX, -8);
         X86_64Encoder.AddRI(m_text, Reg.RAX, 8);
-        X86_64Encoder.AddRR(m_text, HeapReg, Reg.RAX);
-        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.R13);        // return result ptr
+        X86_64Encoder.Lea(m_text, HeapReg, Reg.R13, 0);       // HeapReg = R13 (past filename)
+        X86_64Encoder.AddRR(m_text, HeapReg, Reg.RAX);         // + text allocation
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.R13);         // return result ptr
 
         X86_64Encoder.PopR(m_text, Reg.R14);
         X86_64Encoder.PopR(m_text, Reg.R13);
