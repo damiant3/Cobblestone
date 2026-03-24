@@ -73,11 +73,11 @@ public class CodexAgentExeTests : IDisposable
     {
         string path = m_runner.CreateTempFile("peek-abc.txt", "hello\nworld\n");
         string rel = m_runner.RelativePath(path);
-        (int exit, _, string stderr) = m_runner.Run("codex-agent.exe", "peek", rel, "abc", "5");
-        // BUG: text-to-integer throws FormatException on non-numeric input.
-        // This test documents the crash. When fixed, exit should be 0.
-        Assert.True(exit == 0 || stderr.Contains("FormatException"),
-            $"Expected graceful handling or known FormatException. Exit={exit}, stderr={stderr}");
+        (int exit, string stdout, string stderr) = m_runner.Run("codex-agent.exe", "peek", rel, "abc", "5");
+        // text-to-integer returns 0 for non-numeric input; start is clamped to 1.
+        Assert.Equal(0, exit);
+        Assert.Empty(stderr);
+        Assert.Contains("hello", stdout);
     }
 
     [Fact]
@@ -85,9 +85,11 @@ public class CodexAgentExeTests : IDisposable
     {
         string path = m_runner.CreateTempFile("peek-abc2.txt", "hello\nworld\n");
         string rel = m_runner.RelativePath(path);
-        (int exit, _, string stderr) = m_runner.Run("codex-agent.exe", "peek", rel, "1", "xyz");
-        Assert.True(exit == 0 || stderr.Contains("FormatException"),
-            $"Expected graceful handling or known FormatException. Exit={exit}, stderr={stderr}");
+        (int exit, string stdout, string stderr) = m_runner.Run("codex-agent.exe", "peek", rel, "1", "xyz");
+        // text-to-integer returns 0 for non-numeric end; end=0 means whole file.
+        Assert.Equal(0, exit);
+        Assert.Empty(stderr);
+        Assert.Contains("hello", stdout);
     }
 
     [Fact]
@@ -95,10 +97,11 @@ public class CodexAgentExeTests : IDisposable
     {
         string path = m_runner.CreateTempFile("peek-00.txt", "alpha\nbeta\ngamma\n");
         string rel = m_runner.RelativePath(path);
-        (int exit, _, string stderr) = m_runner.Run("codex-agent.exe", "peek", rel, "0", "0");
-        // BUG: start=0 causes list-at with index -1 → ArgumentOutOfRangeException.
-        Assert.True(exit == 0 || stderr.Contains("ArgumentOutOfRangeException"),
-            $"Expected graceful output or known crash. Exit={exit}, stderr={stderr}");
+        (int exit, string stdout, string stderr) = m_runner.Run("codex-agent.exe", "peek", rel, "0", "0");
+        // 0 0 means whole file: start clamped to 1, end=0 means total.
+        Assert.Equal(0, exit);
+        Assert.Empty(stderr);
+        Assert.Contains("alpha", stdout);
     }
 
     [Fact]
@@ -106,9 +109,11 @@ public class CodexAgentExeTests : IDisposable
     {
         string path = m_runner.CreateTempFile("peek-neg.txt", "hello\nworld\n");
         string rel = m_runner.RelativePath(path);
-        (int exit, _, string stderr) = m_runner.Run("codex-agent.exe", "peek", rel, "-1", "5");
-        Assert.True(exit == 0 || stderr.Contains("FormatException") || stderr.Contains("ArgumentOutOfRangeException"),
-            $"Expected graceful handling or known crash. Exit={exit}, stderr={stderr}");
+        (int exit, string stdout, string stderr) = m_runner.Run("codex-agent.exe", "peek", rel, "-1", "5");
+        // Negative start: text-to-integer returns 0 for "-1" (no sign support), clamped to 1.
+        Assert.Equal(0, exit);
+        Assert.Empty(stderr);
+        Assert.Contains("hello", stdout);
     }
 
     [Fact]
