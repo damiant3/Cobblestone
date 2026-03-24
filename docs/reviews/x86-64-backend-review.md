@@ -25,44 +25,64 @@ Implement the builtins and add an unresolved-call warning.
 
 ---
 
-## Bug 2 — BLOCKER: 5 missing builtins → unresolved calls → stack corruption → segfault
+## Bug 2 — FIXED: 5 missing builtins → unresolved calls
 
-**Root cause of the self-hosted compiler segfault.**
+Fixed by Cam in `296e359`. Verified: zero unresolved call warnings on self-hosted compile.
 
-Added diagnostic `else` branch to `PatchCalls()` and found **18 unresolved calls** to
-5 builtins that exist in the RISC-V backend but are missing from x86-64:
+The 5 builtins (`text-replace`, `char-code-at`, `code-to-char`, `char-code`, `is-letter`)
+were ported from the RISC-V backend and `PatchCalls()` now warns on unresolved targets.
 
+---
+
+## Bug 3 — BLOCKER: ConstructedType not resolved in record allocation → undersized heap object
+
+**Root cause of the REMAINING self-hosted segfault** (after Bug 1 and Bug 2 fixes).
+
+**Crash:** `is-at-end` (Lexer.codex:143) does `st.offset >= text-length st.source`.
+Segfaults dereferencing `st.source` which is NULL.
+
+**GDB trace:**
 ```
-text-replace    (6 call sites)
-char-code-at    (5 call sites)
-code-to-char    (4 call sites)
-char-code       (2 call sites)
-is-letter       (1 call site)
+SIGSEGV at 0x41cd5c: mov rdx, [rcx]   ; rcx = 0 (NULL)
+
+Function map (from diagnostic build):
+  0x41cd38 = is-at-end
+  0x41cf9a = skip-spaces  
+  0x41e9dc = scan-token
+
+Call chain: scan-token → skip-spaces → is-at-end → CRASH
 ```
 
-An unresolved `call rel32` has rel32=0, meaning `call current_addr+5` — falls through
-to the next instruction without a frame, pushing a garbage return address. The self-hosted
-compiler hits `text-replace` in the lexer almost immediately, corrupting the stack.
-Subsequent code dereferences a NULL from the corrupted stack and crashes.
+**Heap state at crash:**
+```
+LexState record at 0x43b050: [0x0000000000000000, 0x0000000000000000]
+Heap pointer R10 = 0x43b058 = record_addr + 8
+```
 
-**GDB confirmation:** Crash at `0x41cbdf` (text offset 117,551). First unresolved
-`char-code-at` is at text offset 117,672 — 121 bytes later in the same function.
-Stack backtrace shows heap addresses (`0x43b050`) where return addresses should be.
+`LexState` has 4 fields (`source : Text, offset : Integer, line : Integer, column : Integer`)
+requiring 32 bytes. But R10 only advanced 8 bytes past the record base — the allocation
+treated the record as having 1 field instead of 4.
 
-**Fix:** Implement these 5 builtins in `TryEmitBuiltin` + emit runtime helpers. The
-RISC-V backend (`RiscVCodeGen.cs`) has working implementations of all five — same
-algorithms, different register encoding:
+**Root cause:** `LexState` is a `ConstructedType` at the IR level. The codegen's record
+allocation computes size from the type's field count, but doesn't resolve `ConstructedType`
+→ `RecordType` first. With an unresolved type, the field count is 0 or 1, producing an
+8-byte allocation for a 32-byte record. The subsequent field stores write past the
+allocated space into uninitialized heap, and reads return zeros.
 
-| Builtin | RISC-V helper | What it does |
-|---------|---------------|-------------|
-| `text-replace` | `__str_replace` | Find/replace in length-prefixed string |
-| `char-code-at` | inline | Load byte at offset from string data |
-| `char-code` | inline | First byte of a 1-char string |
-| `code-to-char` | inline | Allocate 1-byte string from integer |
-| `is-letter` | inline | Check if char code is [A-Z] or [a-z] |
+**Where to fix:** Check every place that reads field count or field list from a type:
 
-**Also:** `PatchCalls()` should warn on unresolved targets (the ARM64 backend does,
-x86-64 doesn't). Silent `call +0` is extremely dangerous.
+1. `EmitRecord` (line ~580) — computes allocation size from field count
+2. `EmitFieldAccess` (line 604) — `fa.Record.Type is RecordType rt` misses ConstructedType
+3. `EmitConstructor` — same pattern for sum types
+
+All need a ConstructedType resolution step, same as exists in escape copy at line 2001:
+```csharp
+if (type is ConstructedType ct && m_typeDefs[ct.Constructor.Value] is CodexType resolved)
+    type = resolved;
+```
+
+The RISC-V backend hit the same bug and fixed it in `LowerFieldAccess` at the IR level.
+The x86-64 backend needs the same resolution, either at the IR level or in the codegen.
 
 ---
 
