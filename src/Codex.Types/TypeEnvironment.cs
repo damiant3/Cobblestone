@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Codex.Core;
 
 namespace Codex.Types;
@@ -109,23 +110,32 @@ public sealed class TypeEnvironment
                         new FunctionType(runCompType, runStateReturn))))));
 
         // Structured concurrency (Camp III-C)
+        // All concurrency primitives carry the [Concurrent] effect.
+        EffectType concurrentEffect = new(new Name("Concurrent"));
+        ImmutableArray<EffectType> concurrentEffects = [concurrentEffect];
+
         TypeVariable forkA = new(300);
         ConstructedType taskOfA = new(new Name("Task"), [forkA]);
+        EffectfulType forkReturn = new(concurrentEffects, taskOfA);
         env = env.Bind("fork", new ForAllType(300,
-            new FunctionType(new FunctionType(NothingType.s_instance, forkA), taskOfA)));
+            new FunctionType(new FunctionType(NothingType.s_instance, forkA), forkReturn)));
+
+        EffectfulType awaitReturn = new(concurrentEffects, forkA);
         env = env.Bind("await", new ForAllType(300,
-            new FunctionType(taskOfA, forkA)));
+            new FunctionType(taskOfA, awaitReturn)));
 
         TypeVariable parA = new(310);
         TypeVariable parB = new(311);
+        EffectfulType parReturn = new(concurrentEffects, new ListType(parB));
         env = env.Bind("par", new ForAllType(310,
             new ForAllType(311,
                 new FunctionType(new FunctionType(parA, parB),
-                    new FunctionType(new ListType(parA), new ListType(parB))))));
+                    new FunctionType(new ListType(parA), parReturn)))));
 
         TypeVariable raceA = new(320);
+        EffectfulType raceReturn = new(concurrentEffects, raceA);
         env = env.Bind("race", new ForAllType(320,
-            new FunctionType(new ListType(new FunctionType(NothingType.s_instance, raceA)), raceA)));
+            new FunctionType(new ListType(new FunctionType(NothingType.s_instance, raceA)), raceReturn)));
 
         return env;
     }
