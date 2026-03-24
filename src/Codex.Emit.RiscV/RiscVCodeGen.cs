@@ -1015,6 +1015,15 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     void EmitEscapeHelperPrologue(string name)
     {
         m_functionOffsets[name] = m_instructions.Count;
+        // Null guard: if a0 == 0, return 0 immediately
+        int notNull = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bnez a0 → continue
+        Emit(RiscVEncoder.Mv(Reg.A0, Reg.Zero));
+        Emit(RiscVEncoder.Ret());
+        int continueLabel = m_instructions.Count;
+        m_instructions[notNull] = RiscVEncoder.Bne(Reg.A0, Reg.Zero,
+            (continueLabel - notNull) * 4);
+
         Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -EscapeFrameSize));
         Emit(RiscVEncoder.Sd(Reg.Sp, Reg.Ra, 40));
         Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S2, 32));
