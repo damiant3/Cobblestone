@@ -997,6 +997,114 @@ sealed class X86_64CodeGen
                     return rd;
                 }
                 return byte.MaxValue;
+            case "char-code-at" when args.Count >= 2:
+            {
+                byte textReg = EmitExpr(args[0]);
+                byte savedText = AllocLocal();
+                StoreLocal(savedText, textReg);
+                byte idxReg = EmitExpr(args[1]);
+                byte savedIdx = AllocLocal();
+                StoreLocal(savedIdx, idxReg);
+                byte text = LoadLocal(savedText);
+                byte idx = LoadLocal(savedIdx);
+                byte rd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd, text);
+                X86_64Encoder.AddRR(m_text, rd, idx);
+                X86_64Encoder.MovzxByte(m_text, rd, rd, 8);
+                return rd;
+            }
+            case "char-code" when args.Count >= 1:
+            {
+                byte textReg = EmitExpr(args[0]);
+                byte rd = AllocTemp();
+                X86_64Encoder.MovzxByte(m_text, rd, textReg, 8);
+                return rd;
+            }
+            case "code-to-char" when args.Count >= 1:
+            {
+                byte codeReg = EmitExpr(args[0]);
+                byte savedCode = AllocLocal();
+                StoreLocal(savedCode, codeReg);
+                byte rd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd, HeapReg);
+                X86_64Encoder.AddRI(m_text, HeapReg, 16);
+                X86_64Encoder.Li(m_text, Reg.R11, 1);
+                X86_64Encoder.MovStore(m_text, rd, Reg.R11, 0);
+                byte code = LoadLocal(savedCode);
+                X86_64Encoder.MovStoreByte(m_text, rd, code, 8);
+                return rd;
+            }
+            case "is-letter" when args.Count >= 1:
+            {
+                byte textReg = EmitExpr(args[0]);
+                byte rd = AllocTemp();
+                X86_64Encoder.MovzxByte(m_text, rd, textReg, 8); // first byte
+                // Check lowercase: rd >= 'a' && rd <= 'z'
+                byte lo = AllocTemp();
+                X86_64Encoder.MovRR(m_text, lo, rd);
+                X86_64Encoder.SubRI(m_text, lo, 'a');
+                X86_64Encoder.CmpRI(m_text, lo, 'z' - 'a');
+                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_LE, lo);
+                // Check uppercase: rd >= 'A' && rd <= 'Z'
+                byte hi = AllocTemp();
+                X86_64Encoder.MovRR(m_text, hi, rd);
+                X86_64Encoder.SubRI(m_text, hi, 'A');
+                X86_64Encoder.CmpRI(m_text, hi, 'Z' - 'A');
+                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_LE, hi);
+                // Result = lower || upper (both are 0 or 1 in low byte)
+                byte result = AllocTemp();
+                X86_64Encoder.MovRR(m_text, result, lo);
+                // or result, hi — need to add OrRR or use existing mechanism
+                X86_64Encoder.AddRR(m_text, result, hi); // 0+0=0, 0+1=1, 1+0=1
+                // Clamp to 0/1
+                X86_64Encoder.CmpRI(m_text, result, 0);
+                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_NE, result);
+                X86_64Encoder.MovzxByteSelf(m_text, result);
+                return result;
+            }
+            case "text-replace" when args.Count >= 3:
+            {
+                byte textReg = EmitExpr(args[0]);
+                byte savedText = AllocLocal();
+                StoreLocal(savedText, textReg);
+                byte oldReg = EmitExpr(args[1]);
+                byte savedOld = AllocLocal();
+                StoreLocal(savedOld, oldReg);
+                byte newReg = EmitExpr(args[2]);
+                X86_64Encoder.MovRR(m_text, Reg.RDX, newReg);
+                X86_64Encoder.MovRR(m_text, Reg.RSI, LoadLocal(savedOld));
+                X86_64Encoder.MovRR(m_text, Reg.RDI, LoadLocal(savedText));
+                EmitCallTo("__str_replace");
+                byte rd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd, Reg.RAX);
+                return rd;
+            }
+            case "text-contains" when args.Count >= 2:
+            {
+                byte textReg = EmitExpr(args[0]);
+                byte savedText = AllocLocal();
+                StoreLocal(savedText, textReg);
+                byte needleReg = EmitExpr(args[1]);
+                X86_64Encoder.MovRR(m_text, Reg.RSI, needleReg);
+                X86_64Encoder.MovRR(m_text, Reg.RDI, LoadLocal(savedText));
+                EmitCallTo("__text_contains");
+                byte rd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd, Reg.RAX);
+                return rd;
+            }
+            case "text-starts-with" when args.Count >= 2:
+            {
+                byte textReg = EmitExpr(args[0]);
+                byte savedText = AllocLocal();
+                StoreLocal(savedText, textReg);
+                byte prefixReg = EmitExpr(args[1]);
+                X86_64Encoder.MovRR(m_text, Reg.RSI, prefixReg);
+                X86_64Encoder.MovRR(m_text, Reg.RDI, LoadLocal(savedText));
+                EmitCallTo("__text_starts_with");
+                byte rd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd, Reg.RAX);
+                return rd;
+            }
             default:
                 return byte.MaxValue;
         }
@@ -1121,6 +1229,9 @@ sealed class X86_64CodeGen
         EmitReadLineHelper();
         EmitListConsHelper();
         EmitListAppendHelper();
+        EmitStrReplaceHelper();
+        EmitTextContainsHelper();
+        EmitTextStartsWithHelper();
         EmitEscapeTextHelper();
     }
 
@@ -1328,6 +1439,222 @@ sealed class X86_64CodeGen
         X86_64Encoder.AddRI(m_text, Reg.RSP, 32);
         X86_64Encoder.PopR(m_text, Reg.R12);
         X86_64Encoder.PopR(m_text, Reg.RBX);
+        X86_64Encoder.Ret(m_text);
+    }
+
+    void EmitStrReplaceHelper()
+    {
+        // __str_replace: rdi=text, rsi=old, rdx=new → rax=result
+        // Scan text for occurrences of old, replace with new.
+        m_functionOffsets["__str_replace"] = m_text.Count;
+
+        X86_64Encoder.PushR(m_text, Reg.RBX);
+        X86_64Encoder.PushR(m_text, Reg.R12);
+        X86_64Encoder.PushR(m_text, Reg.R13);
+        X86_64Encoder.PushR(m_text, Reg.R14);
+        X86_64Encoder.PushR(m_text, Reg.R15);
+
+        // Save inputs: rbx=text, r12=old, r13=new
+        X86_64Encoder.MovRR(m_text, Reg.RBX, Reg.RDI);
+        X86_64Encoder.MovRR(m_text, Reg.R12, Reg.RSI);
+        X86_64Encoder.MovRR(m_text, Reg.R13, Reg.RDX);
+
+        // r14 = result base (heap), r15 = out_len, rcx = source index i
+        X86_64Encoder.MovRR(m_text, Reg.R14, HeapReg);
+        X86_64Encoder.Li(m_text, Reg.R15, 0);
+        X86_64Encoder.Li(m_text, Reg.RCX, 0);
+
+        // Load lengths
+        X86_64Encoder.MovLoad(m_text, Reg.RAX, Reg.RBX, 0);   // text_len in rax (reloaded as needed)
+
+        // Main loop
+        int mainLoop = m_text.Count;
+        X86_64Encoder.MovLoad(m_text, Reg.RAX, Reg.RBX, 0);
+        X86_64Encoder.CmpRR(m_text, Reg.RCX, Reg.RAX);
+        int doneCheck = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+
+        // Check if old_len == 0 → copy byte (prevent infinite loop)
+        X86_64Encoder.MovLoad(m_text, Reg.RDX, Reg.R12, 0);
+        X86_64Encoder.TestRR(m_text, Reg.RDX, Reg.RDX);
+        int noMatchOldEmpty = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
+
+        // Check if i + old_len > text_len
+        X86_64Encoder.MovRR(m_text, Reg.RSI, Reg.RCX);
+        X86_64Encoder.AddRR(m_text, Reg.RSI, Reg.RDX);
+        X86_64Encoder.CmpRR(m_text, Reg.RSI, Reg.RAX);
+        int cantMatch = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_G, 0);
+
+        // Compare text[i..i+old_len] with old
+        X86_64Encoder.Li(m_text, Reg.RSI, 0); // j = 0
+        int cmpLoop = m_text.Count;
+        X86_64Encoder.CmpRR(m_text, Reg.RSI, Reg.RDX);
+        int matchFound = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+
+        // text[i+j+8] vs old[j+8]
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RBX);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.RCX);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.RSI);
+        X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RAX, 8);
+        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.R12);
+        X86_64Encoder.AddRR(m_text, Reg.RDI, Reg.RSI);
+        X86_64Encoder.MovzxByte(m_text, Reg.RDI, Reg.RDI, 8);
+        X86_64Encoder.CmpRR(m_text, Reg.RAX, Reg.RDI);
+        int mismatch = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+        X86_64Encoder.AddRI(m_text, Reg.RSI, 1);
+        X86_64Encoder.Jmp(m_text, cmpLoop - (m_text.Count + 5));
+
+        // Match found: copy new_str bytes to output
+        PatchJcc(matchFound, m_text.Count);
+        X86_64Encoder.MovLoad(m_text, Reg.RDX, Reg.R13, 0); // new_len
+        X86_64Encoder.Li(m_text, Reg.RSI, 0);
+        int copyNewLoop = m_text.Count;
+        X86_64Encoder.CmpRR(m_text, Reg.RSI, Reg.RDX);
+        int copyNewDone = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.R13);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.RSI);
+        X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RAX, 8);
+        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.R14);
+        X86_64Encoder.AddRR(m_text, Reg.RDI, Reg.R15);
+        X86_64Encoder.MovStoreByte(m_text, Reg.RDI, Reg.RAX, 8);
+        X86_64Encoder.AddRI(m_text, Reg.R15, 1);
+        X86_64Encoder.AddRI(m_text, Reg.RSI, 1);
+        X86_64Encoder.Jmp(m_text, copyNewLoop - (m_text.Count + 5));
+        PatchJcc(copyNewDone, m_text.Count);
+
+        // Advance i by old_len
+        X86_64Encoder.MovLoad(m_text, Reg.RDX, Reg.R12, 0);
+        X86_64Encoder.AddRR(m_text, Reg.RCX, Reg.RDX);
+        X86_64Encoder.Jmp(m_text, mainLoop - (m_text.Count + 5));
+
+        // No match: copy one byte
+        PatchJcc(mismatch, m_text.Count);
+        PatchJcc(noMatchOldEmpty, m_text.Count);
+        PatchJcc(cantMatch, m_text.Count);
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RBX);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.RCX);
+        X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RAX, 8);
+        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.R14);
+        X86_64Encoder.AddRR(m_text, Reg.RDI, Reg.R15);
+        X86_64Encoder.MovStoreByte(m_text, Reg.RDI, Reg.RAX, 8);
+        X86_64Encoder.AddRI(m_text, Reg.R15, 1);
+        X86_64Encoder.AddRI(m_text, Reg.RCX, 1);
+        X86_64Encoder.Jmp(m_text, mainLoop - (m_text.Count + 5));
+
+        // Done: store length, bump heap
+        PatchJcc(doneCheck, m_text.Count);
+        X86_64Encoder.MovStore(m_text, Reg.R14, Reg.R15, 0);
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.R15);
+        X86_64Encoder.AddRI(m_text, Reg.RAX, 15);
+        X86_64Encoder.AndRI(m_text, Reg.RAX, -8);
+        X86_64Encoder.Lea(m_text, HeapReg, Reg.R14, 0);
+        X86_64Encoder.AddRR(m_text, HeapReg, Reg.RAX);
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.R14);
+
+        X86_64Encoder.PopR(m_text, Reg.R15);
+        X86_64Encoder.PopR(m_text, Reg.R14);
+        X86_64Encoder.PopR(m_text, Reg.R13);
+        X86_64Encoder.PopR(m_text, Reg.R12);
+        X86_64Encoder.PopR(m_text, Reg.RBX);
+        X86_64Encoder.Ret(m_text);
+    }
+
+    void EmitTextContainsHelper()
+    {
+        // __text_contains: rdi=text, rsi=needle → rax=1/0
+        m_functionOffsets["__text_contains"] = m_text.Count;
+
+        X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RDI, 0); // text_len
+        X86_64Encoder.MovLoad(m_text, Reg.RDX, Reg.RSI, 0); // needle_len
+        X86_64Encoder.Li(m_text, Reg.R11, 0); // i = 0
+
+        int searchLoop = m_text.Count;
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RCX);
+        X86_64Encoder.SubRR(m_text, Reg.RAX, Reg.RDX);
+        X86_64Encoder.AddRI(m_text, Reg.RAX, 1); // max start = text_len - needle_len + 1
+        X86_64Encoder.CmpRR(m_text, Reg.R11, Reg.RAX);
+        int notFound = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+
+        // Compare text[i..i+needle_len] with needle
+        X86_64Encoder.PushR(m_text, Reg.R11); // save i
+        X86_64Encoder.Li(m_text, Reg.RAX, 0); // j = 0
+        int cmpLoop = m_text.Count;
+        X86_64Encoder.CmpRR(m_text, Reg.RAX, Reg.RDX);
+        int found = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+
+        X86_64Encoder.MovRR(m_text, Reg.R8, Reg.RDI);
+        X86_64Encoder.AddRR(m_text, Reg.R8, Reg.R11);
+        X86_64Encoder.AddRR(m_text, Reg.R8, Reg.RAX);
+        X86_64Encoder.MovzxByte(m_text, Reg.R8, Reg.R8, 8);
+        X86_64Encoder.MovRR(m_text, Reg.R9, Reg.RSI);
+        X86_64Encoder.AddRR(m_text, Reg.R9, Reg.RAX);
+        X86_64Encoder.MovzxByte(m_text, Reg.R9, Reg.R9, 8);
+        X86_64Encoder.CmpRR(m_text, Reg.R8, Reg.R9);
+        int byteMismatch = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+        X86_64Encoder.AddRI(m_text, Reg.RAX, 1);
+        X86_64Encoder.Jmp(m_text, cmpLoop - (m_text.Count + 5));
+
+        PatchJcc(found, m_text.Count);
+        X86_64Encoder.PopR(m_text, Reg.R11);
+        X86_64Encoder.Li(m_text, Reg.RAX, 1);
+        X86_64Encoder.Ret(m_text);
+
+        PatchJcc(byteMismatch, m_text.Count);
+        X86_64Encoder.PopR(m_text, Reg.R11);
+        X86_64Encoder.AddRI(m_text, Reg.R11, 1);
+        X86_64Encoder.Jmp(m_text, searchLoop - (m_text.Count + 5));
+
+        PatchJcc(notFound, m_text.Count);
+        X86_64Encoder.Li(m_text, Reg.RAX, 0);
+        X86_64Encoder.Ret(m_text);
+    }
+
+    void EmitTextStartsWithHelper()
+    {
+        // __text_starts_with: rdi=text, rsi=prefix → rax=1/0
+        m_functionOffsets["__text_starts_with"] = m_text.Count;
+
+        X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RDI, 0); // text_len
+        X86_64Encoder.MovLoad(m_text, Reg.RDX, Reg.RSI, 0); // prefix_len
+
+        // If prefix_len > text_len → false
+        X86_64Encoder.CmpRR(m_text, Reg.RDX, Reg.RCX);
+        int tooLong = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_G, 0);
+
+        X86_64Encoder.Li(m_text, Reg.R11, 0);
+        int loop = m_text.Count;
+        X86_64Encoder.CmpRR(m_text, Reg.R11, Reg.RDX);
+        int matched = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RDI);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.R11);
+        X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RAX, 8);
+        X86_64Encoder.MovRR(m_text, Reg.R8, Reg.RSI);
+        X86_64Encoder.AddRR(m_text, Reg.R8, Reg.R11);
+        X86_64Encoder.MovzxByte(m_text, Reg.R8, Reg.R8, 8);
+        X86_64Encoder.CmpRR(m_text, Reg.RAX, Reg.R8);
+        int mismatch = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+        X86_64Encoder.AddRI(m_text, Reg.R11, 1);
+        X86_64Encoder.Jmp(m_text, loop - (m_text.Count + 5));
+
+        PatchJcc(matched, m_text.Count);
+        X86_64Encoder.Li(m_text, Reg.RAX, 1);
+        X86_64Encoder.Ret(m_text);
+
+        PatchJcc(tooLong, m_text.Count);
+        PatchJcc(mismatch, m_text.Count);
+        X86_64Encoder.Li(m_text, Reg.RAX, 0);
         X86_64Encoder.Ret(m_text);
     }
 
@@ -1846,12 +2173,15 @@ sealed class X86_64CodeGen
         {
             if (m_functionOffsets.TryGetValue(target, out int targetOffset))
             {
-                // call rel32: the rel32 starts at patchOffset+1, relative to patchOffset+5
                 int rel32 = targetOffset - (patchOffset + 5);
                 m_text[patchOffset + 1] = (byte)(rel32 & 0xFF);
                 m_text[patchOffset + 2] = (byte)((rel32 >> 8) & 0xFF);
                 m_text[patchOffset + 3] = (byte)((rel32 >> 16) & 0xFF);
                 m_text[patchOffset + 4] = (byte)((rel32 >> 24) & 0xFF);
+            }
+            else
+            {
+                Console.Error.WriteLine($"X86_64 WARNING: unresolved call to '{target}' at text offset {patchOffset}");
             }
         }
     }
