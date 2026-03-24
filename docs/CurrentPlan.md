@@ -40,7 +40,7 @@ A Codex program running on the Samsung S7 Edge (SM-G935T).
 - Awaiting human go/no-go for Odin flash
 - After flash: TWRP recovery → `adb push` ARM64 binary → run on Android/Linux shell
 
-**Design**: `docs/Designs/CODEX-PHONE.md` | **Flash procedure**: `docs/PHONE-WIPE.md`
+**Design**: `docs/Projects/CODEX-PHONE.md` | **Flash procedure**: `docs/Projects/PHONE-WIPE.md`
 
 ---
 
