@@ -153,7 +153,7 @@ namespace Codex.Types.Tests
         public static string? CompileToCobol(string source, string moduleName = "test") => null;
 #endif
 
-        public static byte[]? CompileToIL(string source, string moduleName = "test")
+        public static IRModule? CompileToIR(string source, string moduleName = "test")
         {
             SourceText src = new("test.codex", source);
             DiagnosticBag diagnostics = new();
@@ -192,6 +192,13 @@ namespace Codex.Types.Tests
             IRModule irModule = lowering.Lower(resolved.Module);
             if (diagnostics.HasErrors) return null;
 
+            return irModule;
+        }
+
+        public static byte[]? CompileToIL(string source, string moduleName = "test")
+        {
+            IRModule? irModule = CompileToIR(source, moduleName);
+            if (irModule is null) return null;
             ILEmitter emitter = new();
             return emitter.EmitAssembly(irModule, moduleName);
         }
@@ -208,129 +215,24 @@ namespace Codex.Types.Tests
 
         static byte[]? CompileToRiscVTarget(string source, string moduleName, Codex.Emit.RiscV.RiscVTarget target)
         {
-            SourceText src = new("test.codex", source);
-            DiagnosticBag diagnostics = new();
-
-            DocumentNode document;
-            if (ProseParser.IsProseDocument(source))
-            {
-                ProseParser proseParser = new(src, diagnostics);
-                document = proseParser.ParseDocument();
-            }
-            else
-            {
-                Lexer lexer = new(src, diagnostics);
-                IReadOnlyList<Token> tokens = lexer.TokenizeAll();
-                Parser parser = new(tokens, diagnostics);
-                document = parser.ParseDocument();
-            }
-
-            Desugarer desugarer = new(diagnostics);
-            Module module = desugarer.Desugar(document, moduleName);
-            if (diagnostics.HasErrors) return null;
-
-            NameResolver resolver = new(diagnostics);
-            ResolvedModule resolved = resolver.Resolve(module);
-            if (diagnostics.HasErrors) return null;
-
-            TypeChecker checker = new(diagnostics);
-            Map<string, CodexType> types = checker.CheckModule(resolved.Module);
-            if (diagnostics.HasErrors) return null;
-
-            LinearityChecker linearityChecker = new(diagnostics, types);
-            linearityChecker.CheckModule(resolved.Module);
-            if (diagnostics.HasErrors) return null;
-
-            Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, diagnostics);
-            IRModule irModule = lowering.Lower(resolved.Module);
-            if (diagnostics.HasErrors) return null;
-
+            IRModule? irModule = CompileToIR(source, moduleName);
+            if (irModule is null) return null;
             Codex.Emit.RiscV.RiscVEmitter riscvEmitter = new(target);
             return riscvEmitter.EmitAssembly(irModule, moduleName);
         }
 
         public static byte[]? CompileToWasm(string source, string moduleName = "test")
         {
-            SourceText src = new("test.codex", source);
-            DiagnosticBag diagnostics = new();
-
-            DocumentNode document;
-            if (ProseParser.IsProseDocument(source))
-            {
-                ProseParser proseParser = new(src, diagnostics);
-                document = proseParser.ParseDocument();
-            }
-            else
-            {
-                Lexer lexer = new(src, diagnostics);
-                IReadOnlyList<Token> tokens = lexer.TokenizeAll();
-                Parser parser = new(tokens, diagnostics);
-                document = parser.ParseDocument();
-            }
-
-            Desugarer desugarer = new(diagnostics);
-            Module module = desugarer.Desugar(document, moduleName);
-            if (diagnostics.HasErrors) return null;
-
-            NameResolver resolver = new(diagnostics);
-            ResolvedModule resolved = resolver.Resolve(module);
-            if (diagnostics.HasErrors) return null;
-
-            TypeChecker checker = new(diagnostics);
-            Map<string, CodexType> types = checker.CheckModule(resolved.Module);
-            if (diagnostics.HasErrors) return null;
-
-            LinearityChecker linearityChecker = new(diagnostics, types);
-            linearityChecker.CheckModule(resolved.Module);
-            if (diagnostics.HasErrors) return null;
-
-            Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, diagnostics);
-            IRModule irModule = lowering.Lower(resolved.Module);
-            if (diagnostics.HasErrors) return null;
-
+            IRModule? irModule = CompileToIR(source, moduleName);
+            if (irModule is null) return null;
             WasmEmitter emitter = new();
             return emitter.EmitAssembly(irModule, moduleName);
         }
 
         public static string? CompileToTarget(string source, string moduleName, Codex.Emit.ICodeEmitter emitter)
         {
-            SourceText src = new("test.codex", source);
-            DiagnosticBag diagnostics = new();
-
-            DocumentNode document;
-            if (ProseParser.IsProseDocument(source))
-            {
-                ProseParser proseParser = new(src, diagnostics);
-                document = proseParser.ParseDocument();
-            }
-            else
-            {
-                Lexer lexer = new(src, diagnostics);
-                IReadOnlyList<Token> tokens = lexer.TokenizeAll();
-                Parser parser = new(tokens, diagnostics);
-                document = parser.ParseDocument();
-            }
-
-            Desugarer desugarer = new(diagnostics);
-            Module module = desugarer.Desugar(document, moduleName);
-            if (diagnostics.HasErrors) return null;
-
-            NameResolver resolver = new(diagnostics);
-            ResolvedModule resolved = resolver.Resolve(module);
-            if (diagnostics.HasErrors) return null;
-
-            TypeChecker checker = new(diagnostics);
-            Map<string, CodexType> types = checker.CheckModule(resolved.Module);
-            if (diagnostics.HasErrors) return null;
-
-            LinearityChecker linearityChecker = new(diagnostics, types);
-            linearityChecker.CheckModule(resolved.Module);
-            if (diagnostics.HasErrors) return null;
-
-            Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, diagnostics);
-            IRModule irModule = lowering.Lower(resolved.Module);
-            if (diagnostics.HasErrors) return null;
-
+            IRModule? irModule = CompileToIR(source, moduleName);
+            if (irModule is null) return null;
             return emitter.Emit(irModule);
         }
 
@@ -370,86 +272,16 @@ namespace Codex.Types.Tests
 
         public static byte[]? CompileToX86_64(string source, string moduleName = "test")
         {
-            SourceText src = new("test.codex", source);
-            DiagnosticBag diagnostics = new();
-
-            DocumentNode document;
-            if (ProseParser.IsProseDocument(source))
-            {
-                ProseParser proseParser = new(src, diagnostics);
-                document = proseParser.ParseDocument();
-            }
-            else
-            {
-                Lexer lexer = new(src, diagnostics);
-                IReadOnlyList<Token> tokens = lexer.TokenizeAll();
-                Parser parser = new(tokens, diagnostics);
-                document = parser.ParseDocument();
-            }
-
-            Desugarer desugarer = new(diagnostics);
-            Module module = desugarer.Desugar(document, moduleName);
-            if (diagnostics.HasErrors) return null;
-
-            NameResolver resolver = new(diagnostics);
-            ResolvedModule resolved = resolver.Resolve(module);
-            if (diagnostics.HasErrors) return null;
-
-            TypeChecker checker = new(diagnostics);
-            Map<string, CodexType> types = checker.CheckModule(resolved.Module);
-            if (diagnostics.HasErrors) return null;
-
-            LinearityChecker linearityChecker = new(diagnostics, types);
-            linearityChecker.CheckModule(resolved.Module);
-            if (diagnostics.HasErrors) return null;
-
-            Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, diagnostics);
-            IRModule irModule = lowering.Lower(resolved.Module);
-            if (diagnostics.HasErrors) return null;
-
+            IRModule? irModule = CompileToIR(source, moduleName);
+            if (irModule is null) return null;
             Codex.Emit.X86_64.X86_64Emitter emitter = new();
             return emitter.EmitAssembly(irModule, moduleName);
         }
 
         public static byte[]? CompileToArm64(string source, string moduleName = "test")
         {
-            SourceText src = new("test.codex", source);
-            DiagnosticBag diagnostics = new();
-
-            DocumentNode document;
-            if (ProseParser.IsProseDocument(source))
-            {
-                ProseParser proseParser = new(src, diagnostics);
-                document = proseParser.ParseDocument();
-            }
-            else
-            {
-                Lexer lexer = new(src, diagnostics);
-                IReadOnlyList<Token> tokens = lexer.TokenizeAll();
-                Parser parser = new(tokens, diagnostics);
-                document = parser.ParseDocument();
-            }
-
-            Desugarer desugarer = new(diagnostics);
-            Module module = desugarer.Desugar(document, moduleName);
-            if (diagnostics.HasErrors) return null;
-
-            NameResolver resolver = new(diagnostics);
-            ResolvedModule resolved = resolver.Resolve(module);
-            if (diagnostics.HasErrors) return null;
-
-            TypeChecker checker = new(diagnostics);
-            Map<string, CodexType> types = checker.CheckModule(resolved.Module);
-            if (diagnostics.HasErrors) return null;
-
-            LinearityChecker linearityChecker = new(diagnostics, types);
-            linearityChecker.CheckModule(resolved.Module);
-            if (diagnostics.HasErrors) return null;
-
-            Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, diagnostics);
-            IRModule irModule = lowering.Lower(resolved.Module);
-            if (diagnostics.HasErrors) return null;
-
+            IRModule? irModule = CompileToIR(source, moduleName);
+            if (irModule is null) return null;
             Codex.Emit.Arm64.Arm64Emitter emitter = new();
             return emitter.EmitAssembly(irModule, moduleName);
         }
