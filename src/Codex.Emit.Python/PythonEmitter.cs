@@ -825,6 +825,32 @@ public sealed class PythonEmitter : ICodeEmitter
                 sb.Append(')');
                 return true;
 
+            case "fork" when args.Count == 1:
+                sb.Append("__import__('concurrent.futures').ThreadPoolExecutor().submit(lambda: (");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(")(None))");
+                return true;
+
+            case "await" when args.Count == 1:
+                sb.Append('(');
+                EmitExpr(sb, args[0], indent);
+                sb.Append(").result()");
+                return true;
+
+            case "par" when args.Count == 2:
+                sb.Append("list(__import__('concurrent.futures').ThreadPoolExecutor().map(");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(", ");
+                EmitExpr(sb, args[1], indent);
+                sb.Append("))");
+                return true;
+
+            case "race" when args.Count == 1:
+                sb.Append("next(iter(__import__('concurrent.futures').as_completed([__import__('concurrent.futures').ThreadPoolExecutor().submit(lambda t=_t_: _t_(None)) for _t_ in ");
+                EmitExpr(sb, args[0], indent);
+                sb.Append("]))).result()");
+                return true;
+
             default:
                 return false;
         }
@@ -877,7 +903,8 @@ public sealed class PythonEmitter : ICodeEmitter
     }
 
     static readonly Set<string> s_multiArgBuiltins = Set<string>.Of(
-        "char-at", "substring", "list-at", "text-replace");
+        "char-at", "substring", "list-at", "text-replace",
+        "fork", "await", "par", "race");
 
     static string? FindBuiltinRoot(IRApply app)
     {
