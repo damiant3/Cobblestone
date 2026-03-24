@@ -446,11 +446,18 @@ sealed class X86_64CodeGen
             argLocals.Add(saved);
         }
 
-        for (int i = 0; i < argLocals.Count && i < Reg.ArgRegs.Length; i++)
+        // Two-phase arg setup to avoid R8/R9 conflict:
+        // R8/R9 are used by LoadLocal as spill scratch AND are arg registers 5-6.
+        // Phase 1: push all arg values onto the stack
+        // Phase 2: pop into arg registers in reverse order
+        int argCount = Math.Min(argLocals.Count, Reg.ArgRegs.Length);
+        for (int i = 0; i < argCount; i++)
         {
             byte loaded = LoadLocal(argLocals[i]);
-            X86_64Encoder.MovRR(m_text, Reg.ArgRegs[i], loaded);
+            X86_64Encoder.PushR(m_text, loaded);
         }
+        for (int i = argCount - 1; i >= 0; i--)
+            X86_64Encoder.PopR(m_text, Reg.ArgRegs[i]);
 
         if (funcName is not null)
         {
