@@ -1274,14 +1274,11 @@ sealed class X86_64CodeGen
         int savedTask = AllocLocal();
         StoreLocal(savedTask, taskPtr);
 
-        // Call thunk(null): thunk is a function pointer, call with RDI=0
+        // Call thunk(null): thunk is a closure [code_ptr, ...], load code ptr then call
         byte thunkLoaded = LoadLocal(savedThunk);
         X86_64Encoder.Li(m_text, Reg.RDI, 0);  // arg = null
-        X86_64Encoder.MovRR(m_text, Reg.R11, thunkLoaded);
-        X86_64Encoder.Call(m_text, 0); // placeholder — we need indirect call
-        // Actually, use indirect call via R11
-        m_text.RemoveRange(m_text.Count - 5, 5); // remove the placeholder Call
-        // Emit: call r11 (FF D3 for R11 = FF /2 with REX)
+        X86_64Encoder.MovLoad(m_text, Reg.R11, thunkLoaded, 0); // R11 = [thunk+0] = code ptr
+        // Emit: call r11 (41 FF D3)
         m_text.Add(0x41); // REX.B (R11 needs extension)
         m_text.Add(0xFF);
         m_text.Add(0xD3); // ModRM: mod=11, reg=010 (/2=call), rm=011 (R11)

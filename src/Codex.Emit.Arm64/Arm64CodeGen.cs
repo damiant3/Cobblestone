@@ -1073,10 +1073,10 @@ sealed class Arm64CodeGen
                 uint savedTask = AllocLocal();
                 StoreLocal(savedTask, taskPtr);
 
-                // Call thunk(null): X0 = 0
+                // Call thunk(null): thunk is a closure [code_ptr, ...], load code ptr then call
                 uint thunkLoaded = LoadLocal(savedThunk);
                 foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0)) Emit(insn);
-                Emit(Arm64Encoder.Mov(Arm64Reg.X9, thunkLoaded));
+                Emit(Arm64Encoder.Ldr(Arm64Reg.X9, thunkLoaded, 0)); // X9 = [thunk+0] = code ptr
                 Emit(Arm64Encoder.Blr(Arm64Reg.X9));
 
                 // Store result (X0) into task[8], set done
