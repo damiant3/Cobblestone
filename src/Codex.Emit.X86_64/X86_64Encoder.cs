@@ -1,9 +1,9 @@
 namespace Codex.Emit.X86_64;
 
-/// x86-64 instruction encoder. Variable-length encoding (1-15 bytes).
-/// All methods append to a byte list. Register numbering follows AMD64:
-///   RAX=0, RCX=1, RDX=2, RBX=3, RSP=4, RBP=5, RSI=6, RDI=7,
-///   R8=8, R9=9, R10=10, R11=11, R12=12, R13=13, R14=14, R15=15
+// x86-64 instruction encoder. Variable-length encoding (1-15 bytes).
+// All methods append to a byte list. Register numbering follows AMD64:
+//   RAX=0, RCX=1, RDX=2, RBX=3, RSP=4, RBP=5, RSI=6, RDI=7,
+//   R8=8, R9=9, R10=10, R11=11, R12=12, R13=13, R14=14, R15=15
 static class Reg
 {
     public const byte RAX = 0;
@@ -57,7 +57,7 @@ static class X86_64Encoder
     // MOV instructions
     // ═════════════════════════════════════════════════════════════
 
-    /// mov rd, rs (64-bit register to register)
+    // mov rd, rs (64-bit register to register)
     public static void MovRR(List<byte> buf, byte rd, byte rs)
     {
         buf.Add(RexW(rs, rd));
@@ -65,7 +65,7 @@ static class X86_64Encoder
         buf.Add(ModRM(0b11, rs, rd));
     }
 
-    /// mov rd, imm64 (movabs — 10-byte encoding)
+    // mov rd, imm64 (movabs — 10-byte encoding)
     public static void MovRI64(List<byte> buf, byte rd, long imm)
     {
         buf.Add(Rex(true, false, false, rd >= 8));
@@ -73,7 +73,7 @@ static class X86_64Encoder
         WriteI64(buf, imm);
     }
 
-    /// mov rd, imm32 (sign-extended to 64-bit)
+    // mov rd, imm32 (sign-extended to 64-bit)
     public static void MovRI32(List<byte> buf, byte rd, int imm)
     {
         buf.Add(RexW(0, rd));
@@ -82,7 +82,7 @@ static class X86_64Encoder
         WriteI32(buf, imm);
     }
 
-    /// mov rd, [rs + offset] (64-bit load)
+    // mov rd, [rs + offset] (64-bit load)
     public static void MovLoad(List<byte> buf, byte rd, byte rs, int offset)
     {
         buf.Add(RexW(rd, rs));
@@ -90,7 +90,7 @@ static class X86_64Encoder
         EmitMemOperand(buf, rd, rs, offset);
     }
 
-    /// mov [rd + offset], rs (64-bit store)
+    // mov [rd + offset], rs (64-bit store)
     public static void MovStore(List<byte> buf, byte rd, byte rs, int offset)
     {
         buf.Add(RexW(rs, rd));
@@ -98,7 +98,7 @@ static class X86_64Encoder
         EmitMemOperand(buf, rs, rd, offset);
     }
 
-    /// movzx rd, byte [rs + offset] (zero-extend byte load)
+    // movzx rd, byte [rs + offset] (zero-extend byte load)
     public static void MovzxByte(List<byte> buf, byte rd, byte rs, int offset)
     {
         buf.Add(RexW(rd, rs));
@@ -107,7 +107,7 @@ static class X86_64Encoder
         EmitMemOperand(buf, rd, rs, offset);
     }
 
-    /// mov byte [rd + offset], rs_low (byte store)
+    // mov byte [rd + offset], rs_low (byte store)
     public static void MovStoreByte(List<byte> buf, byte rd, byte rs, int offset)
     {
         // REX needed for SPL/BPL/SIL/DIL or extended registers
@@ -122,7 +122,7 @@ static class X86_64Encoder
     // Arithmetic
     // ═════════════════════════════════════════════════════════════
 
-    /// add rd, rs
+    // add rd, rs
     public static void AddRR(List<byte> buf, byte rd, byte rs)
     {
         buf.Add(RexW(rs, rd));
@@ -130,7 +130,7 @@ static class X86_64Encoder
         buf.Add(ModRM(0b11, rs, rd));
     }
 
-    /// add rd, imm32
+    // add rd, imm32
     public static void AddRI(List<byte> buf, byte rd, int imm)
     {
         if (imm >= -128 && imm <= 127)
@@ -149,7 +149,7 @@ static class X86_64Encoder
         }
     }
 
-    /// sub rd, rs
+    // sub rd, rs
     public static void SubRR(List<byte> buf, byte rd, byte rs)
     {
         buf.Add(RexW(rs, rd));
@@ -157,7 +157,7 @@ static class X86_64Encoder
         buf.Add(ModRM(0b11, rs, rd));
     }
 
-    /// sub rd, imm32
+    // sub rd, imm32
     public static void SubRI(List<byte> buf, byte rd, int imm)
     {
         if (imm >= -128 && imm <= 127)
@@ -176,7 +176,7 @@ static class X86_64Encoder
         }
     }
 
-    /// imul rd, rs (signed multiply, result in rd)
+    // imul rd, rs (signed multiply, result in rd)
     public static void ImulRR(List<byte> buf, byte rd, byte rs)
     {
         buf.Add(RexW(rd, rs));
@@ -185,7 +185,7 @@ static class X86_64Encoder
         buf.Add(ModRM(0b11, rd, rs));
     }
 
-    /// neg rd (two's complement negate)
+    // neg rd (two's complement negate)
     public static void NegR(List<byte> buf, byte rd)
     {
         buf.Add(RexW(0, rd));
@@ -193,14 +193,14 @@ static class X86_64Encoder
         buf.Add(ModRM(0b11, 3, rd));
     }
 
-    /// cqo (sign-extend RAX into RDX:RAX for idiv)
+    // cqo (sign-extend RAX into RDX:RAX for idiv)
     public static void Cqo(List<byte> buf)
     {
         buf.Add(Rex(true, false, false, false));
         buf.Add(0x99);
     }
 
-    /// idiv rs (signed divide RDX:RAX by rs, quotient in RAX, remainder in RDX)
+    // idiv rs (signed divide RDX:RAX by rs, quotient in RAX, remainder in RDX)
     public static void IdivR(List<byte> buf, byte rs)
     {
         buf.Add(RexW(0, rs));
@@ -208,7 +208,7 @@ static class X86_64Encoder
         buf.Add(ModRM(0b11, 7, rs));
     }
 
-    /// and rd, rs
+    // and rd, rs
     public static void AndRR(List<byte> buf, byte rd, byte rs)
     {
         buf.Add(RexW(rs, rd));
@@ -216,7 +216,7 @@ static class X86_64Encoder
         buf.Add(ModRM(0b11, rs, rd));
     }
 
-    /// and rd, imm32
+    // and rd, imm32
     public static void AndRI(List<byte> buf, byte rd, int imm)
     {
         if (imm >= -128 && imm <= 127)
@@ -235,7 +235,7 @@ static class X86_64Encoder
         }
     }
 
-    /// shl rd, imm8
+    // shl rd, imm8
     public static void ShlRI(List<byte> buf, byte rd, byte imm)
     {
         buf.Add(RexW(0, rd));
@@ -244,7 +244,7 @@ static class X86_64Encoder
         buf.Add(imm);
     }
 
-    /// shr rd, imm8 (logical shift right)
+    // shr rd, imm8 (logical shift right)
     public static void ShrRI(List<byte> buf, byte rd, byte imm)
     {
         buf.Add(RexW(0, rd));
@@ -253,7 +253,7 @@ static class X86_64Encoder
         buf.Add(imm);
     }
 
-    /// sar rd, imm8 (arithmetic shift right)
+    // sar rd, imm8 (arithmetic shift right)
     public static void SarRI(List<byte> buf, byte rd, byte imm)
     {
         buf.Add(RexW(0, rd));
@@ -266,7 +266,7 @@ static class X86_64Encoder
     // Compare and test
     // ═════════════════════════════════════════════════════════════
 
-    /// cmp rd, rs
+    // cmp rd, rs
     public static void CmpRR(List<byte> buf, byte rd, byte rs)
     {
         buf.Add(RexW(rs, rd));
@@ -274,7 +274,7 @@ static class X86_64Encoder
         buf.Add(ModRM(0b11, rs, rd));
     }
 
-    /// cmp rd, imm32
+    // cmp rd, imm32
     public static void CmpRI(List<byte> buf, byte rd, int imm)
     {
         if (imm >= -128 && imm <= 127)
@@ -293,7 +293,7 @@ static class X86_64Encoder
         }
     }
 
-    /// test rd, rs
+    // test rd, rs
     public static void TestRR(List<byte> buf, byte rd, byte rs)
     {
         buf.Add(RexW(rs, rd));
@@ -305,7 +305,7 @@ static class X86_64Encoder
     // Setcc (set byte on condition)
     // ═════════════════════════════════════════════════════════════
 
-    /// setcc rd (set low byte of rd based on condition code)
+    // setcc rd (set low byte of rd based on condition code)
     public static void Setcc(List<byte> buf, byte cc, byte rd)
     {
         if (rd >= 8 || rd >= 4) // need REX for uniform byte access
@@ -327,7 +327,7 @@ static class X86_64Encoder
     // movzx for zero-extending setcc result
     // ═════════════════════════════════════════════════════════════
 
-    /// movzx rd, rd_low8 (zero-extend byte to 64-bit)
+    // movzx rd, rd_low8 (zero-extend byte to 64-bit)
     public static void MovzxByteSelf(List<byte> buf, byte rd)
     {
         buf.Add(RexW(rd, rd));
@@ -340,7 +340,7 @@ static class X86_64Encoder
     // Branches and jumps
     // ═════════════════════════════════════════════════════════════
 
-    /// jcc rel32 (conditional jump, 6-byte encoding)
+    // jcc rel32 (conditional jump, 6-byte encoding)
     public static void Jcc(List<byte> buf, byte cc, int rel32)
     {
         buf.Add(0x0F);
@@ -348,27 +348,27 @@ static class X86_64Encoder
         WriteI32(buf, rel32);
     }
 
-    /// jmp rel32 (5-byte encoding)
+    // jmp rel32 (5-byte encoding)
     public static void Jmp(List<byte> buf, int rel32)
     {
         buf.Add(0xE9);
         WriteI32(buf, rel32);
     }
 
-    /// call rel32
+    // call rel32
     public static void Call(List<byte> buf, int rel32)
     {
         buf.Add(0xE8);
         WriteI32(buf, rel32);
     }
 
-    /// ret
+    // ret
     public static void Ret(List<byte> buf)
     {
         buf.Add(0xC3);
     }
 
-    /// nop (1-byte)
+    // nop (1-byte)
     public static void Nop(List<byte> buf)
     {
         buf.Add(0x90);
@@ -378,7 +378,7 @@ static class X86_64Encoder
     // Push / Pop
     // ═════════════════════════════════════════════════════════════
 
-    /// push r64
+    // push r64
     public static void PushR(List<byte> buf, byte rd)
     {
         if (rd >= 8)
@@ -386,7 +386,7 @@ static class X86_64Encoder
         buf.Add((byte)(0x50 + (rd & 7)));
     }
 
-    /// pop r64
+    // pop r64
     public static void PopR(List<byte> buf, byte rd)
     {
         if (rd >= 8)
@@ -398,7 +398,7 @@ static class X86_64Encoder
     // LEA
     // ═════════════════════════════════════════════════════════════
 
-    /// lea rd, [rs + offset]
+    // lea rd, [rs + offset]
     public static void Lea(List<byte> buf, byte rd, byte rs, int offset)
     {
         buf.Add(RexW(rd, rs));
@@ -410,7 +410,7 @@ static class X86_64Encoder
     // Syscall
     // ═════════════════════════════════════════════════════════════
 
-    /// syscall (2 bytes)
+    // syscall (2 bytes)
     public static void Syscall(List<byte> buf)
     {
         buf.Add(0x0F);
@@ -421,7 +421,7 @@ static class X86_64Encoder
     // Load immediate (helper that picks best encoding)
     // ═════════════════════════════════════════════════════════════
 
-    /// Load a 64-bit immediate into rd. Uses shortest encoding available.
+    // Load a 64-bit immediate into rd. Uses shortest encoding available.
     public static void Li(List<byte> buf, byte rd, long value)
     {
         if (value == 0)
@@ -439,7 +439,7 @@ static class X86_64Encoder
         }
     }
 
-    /// xor rd, rs (32-bit — used for zeroing, implicitly zero-extends to 64-bit)
+    // xor rd, rs (32-bit — used for zeroing, implicitly zero-extends to 64-bit)
     public static void XorRR(List<byte> buf, byte rd, byte rs)
     {
         // No REX.W — 32-bit XOR implicitly zero-extends

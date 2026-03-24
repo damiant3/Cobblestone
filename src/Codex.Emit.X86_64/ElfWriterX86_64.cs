@@ -1,6 +1,5 @@
 namespace Codex.Emit.X86_64;
 
-/// Writes a minimal ELF64 executable for Linux x86-64.
 sealed class ElfWriterX86_64
 {
     const byte ELFCLASS64 = 2;

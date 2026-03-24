@@ -158,7 +158,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Ret());
     }
 
-    /// Patch 3 instruction slots with rd = rs1 + imm (handles large immediates).
+    // Patch 3 instruction slots with rd = rs1 + imm (handles large immediates).
     void PatchFrameAdjust(int index, uint rd, uint rs1, int imm)
     {
         if (imm >= -2048 && imm <= 2047)
@@ -177,7 +177,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         }
     }
 
-    /// Emit SP += imm (handles large immediates).
+    // Emit SP += imm (handles large immediates).
     void EmitAddSp(int imm)
     {
         if (imm >= -2048 && imm <= 2047)
@@ -491,10 +491,10 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         return Reg.Zero;
     }
 
-    /// Emit a partial application as a closure.
-    /// Creates a trampoline that unpacks captures and tail-calls the real function.
-    /// Closure layout: [trampoline_addr:8][cap_0:8][cap_1:8]...
-    /// Convention: caller sets T2=closure_ptr before jumping to trampoline.
+    // Emit a partial application as a closure.
+    // Creates a trampoline that unpacks captures and tail-calls the real function.
+    // Closure layout: [trampoline_addr:8][cap_0:8][cap_1:8]...
+    // Convention: caller sets T2=closure_ptr before jumping to trampoline.
     uint EmitPartialApplication(string funcName, List<IRExpr> capturedArgs)
     {
         // Evaluate and save captured args

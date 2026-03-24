@@ -1,7 +1,5 @@
 namespace Codex.Emit.Arm64;
 
-/// Writes a minimal ELF64 executable for Linux AArch64.
-/// Same structure as the RISC-V ElfWriter but with ARM64 constants.
 sealed class ElfWriterArm64
 {
     const byte ELFCLASS64 = 2;

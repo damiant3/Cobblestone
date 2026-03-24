@@ -1,7 +1,7 @@
 namespace Codex.Emit.RiscV;
 
-/// Encodes RISC-V RV64IMD instructions as 32-bit words.
-/// All methods are pure — they take operands and return a uint.
+// Encodes RISC-V RV64IMD instructions as 32-bit words.
+// All methods are pure — they take operands and return a uint.
 static class RiscVEncoder
 {
     // ── R-type: [funct7 | rs2 | rs1 | funct3 | rd | opcode] ─────
@@ -164,8 +164,8 @@ static class RiscVEncoder
     public static uint J(int offset) => Jal(0, offset); // jal x0, offset
     public static uint Call(int offset) => Jal(1, offset); // jal ra, offset
 
-    /// Load a full 64-bit immediate into rd. Returns 2-8 instructions.
-    /// For small values (fits in 12-bit signed), returns a single addi.
+    // Load a full 64-bit immediate into rd. Returns 2-8 instructions.
+    // For small values (fits in 12-bit signed), returns a single addi.
     public static uint[] Li(uint rd, long value)
     {
         // Small immediate: fits in signed 12-bit
@@ -215,7 +215,7 @@ static class RiscVEncoder
     }
 }
 
-/// ABI register names as constants for readability.
+// ABI register names as constants for readability.
 static class Reg
 {
     public const uint Zero = 0;

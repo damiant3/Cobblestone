@@ -1,8 +1,5 @@
 namespace Codex.Emit.RiscV;
 
-/// Writes a minimal ELF64 executable for Linux RISC-V.
-/// No section headers, no symbol table, no relocations.
-/// Just headers + loadable segments.
 sealed class ElfWriter
 {
     // ELF constants
@@ -122,8 +119,8 @@ sealed class ElfWriter
         return ms.ToArray();
     }
 
-    /// Writes a flat binary for bare metal: just code + rodata, no headers.
-    /// QEMU -kernel loads this at the base address and jumps to byte 0.
+    // Writes a flat binary for bare metal: just code + rodata, no headers.
+    // QEMU -kernel loads this at the base address and jumps to byte 0.
     public static byte[] WriteFlatBinary(byte[] textSection, byte[] rodataSection)
     {
         int rodataOffset = Align(textSection.Length, 16);
@@ -135,8 +132,7 @@ sealed class ElfWriter
         return result;
     }
 
-    /// Returns the virtual address where .rodata starts.
-    /// Used by the code generator to compute string literal addresses.
+    // Returns the virtual address where .rodata starts.
     public static ulong ComputeRodataVaddr(int textSize, RiscVTarget target = RiscVTarget.LinuxUser)
     {
         if (target == RiscVTarget.BareMetal)

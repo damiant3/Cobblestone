@@ -1663,7 +1663,7 @@ sealed class X86_64CodeGen
         X86_64Encoder.Call(m_text, 0); // placeholder — patched after all code emitted
     }
 
-    /// Emit sub rsp, imm32 (always 7 bytes — REX.W 81 EC <imm32>)
+    // Emit sub rsp, imm32 (always 7 bytes — REX.W 81 EC <imm32>)
     void EmitSubRspImm32(int imm)
     {
         m_text.Add(0x48); // REX.W
