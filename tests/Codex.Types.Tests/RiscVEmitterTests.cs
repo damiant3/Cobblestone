@@ -115,6 +115,24 @@ public class RiscVEmitterTests
     }
 
     [Fact]
+    public void Fork_await_compiles_riscv()
+    {
+        string source = """
+            compute : Nothing -> Integer
+            compute (x) = 42
+
+            do-fork : [Concurrent] Integer
+            do-fork = let t = fork compute in await t
+
+            main : Integer
+            main = do-fork
+            """;
+        byte[]? bytes = Helpers.CompileToRiscV(source, "fork_rv");
+        Assert.NotNull(bytes);
+        AssertValidElf(bytes);
+    }
+
+    [Fact]
     public void Elf_has_valid_entry_point()
     {
         string source = """

@@ -497,7 +497,27 @@ public class Arm64EmitterTests
         Assert.Equal("5", output.Trim());
     }
 
-    // â”€â”€ Helper infrastructure â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Concurrency (sequential fork/await) ─────────────────────
+
+    [Fact]
+    public void Fork_await_compiles_arm64()
+    {
+        string source = """
+            compute : Nothing -> Integer
+            compute (x) = 42
+
+            do-fork : [Concurrent] Integer
+            do-fork = let t = fork compute in await t
+
+            main : Integer
+            main = do-fork
+            """;
+        byte[]? bytes = Helpers.CompileToArm64(source, "fork_a64");
+        Assert.NotNull(bytes);
+        AssertValidElf(bytes);
+    }
+
+    //â”€â”€ Helper infrastructure â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     static void AssertValidElf(byte[] bytes)
     {

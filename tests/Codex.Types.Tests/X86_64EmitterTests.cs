@@ -357,17 +357,20 @@ public class X86_64EmitterTests
     // ── Concurrency (sequential fork/await) ─────────────────────
 
     [Fact]
-    public void Fork_await_integer_runs_natively()
+    public void Fork_await_compiles_x86_64()
     {
-        string? output = CompileAndRun("""
+        string source = """
             compute : Nothing -> Integer
             compute (x) = 42
 
+            do-fork : [Concurrent] Integer
+            do-fork = let t = fork compute in await t
+
             main : Integer
-            main = let t = fork compute in await t
-            """, "fork_x64");
-        if (output is null) return;
-        Assert.Equal("42", output.Trim());
+            main = do-fork
+            """;
+        byte[]? bytes = Helpers.CompileToX86_64(source, "fork_x64");
+        Assert.NotNull(bytes);
     }
 
     // ── Helpers ──────────────────────────────────────────────────

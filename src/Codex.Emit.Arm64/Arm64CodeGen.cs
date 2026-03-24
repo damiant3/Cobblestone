@@ -1056,6 +1056,49 @@ sealed class Arm64CodeGen
                 return true;
             }
 
+            case "fork" when args.Count == 1:
+            {
+                // Sequential fork: evaluate thunk, store result in task slot
+                uint thunk = EmitExpr(args[0]);
+                uint savedThunk = AllocLocal();
+                StoreLocal(savedThunk, thunk);
+
+                // Allocate task: [8B done_flag] [8B result]
+                uint taskPtr = AllocTemp();
+                Emit(Arm64Encoder.Mov(taskPtr, HeapReg));
+                Emit(Arm64Encoder.AddImm(HeapReg, HeapReg, 16));
+                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, 0)) Emit(insn);
+                Emit(Arm64Encoder.Str(Arm64Reg.X9, taskPtr, 0)); // done = 0
+                Emit(Arm64Encoder.Str(Arm64Reg.X9, taskPtr, 1)); // result = 0 (offset 1 = 8 bytes)
+                uint savedTask = AllocLocal();
+                StoreLocal(savedTask, taskPtr);
+
+                // Call thunk(null): X0 = 0
+                uint thunkLoaded = LoadLocal(savedThunk);
+                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0)) Emit(insn);
+                Emit(Arm64Encoder.Mov(Arm64Reg.X9, thunkLoaded));
+                Emit(Arm64Encoder.Blr(Arm64Reg.X9));
+
+                // Store result (X0) into task[8], set done
+                uint taskLoaded = LoadLocal(savedTask);
+                Emit(Arm64Encoder.Str(Arm64Reg.X0, taskLoaded, 1)); // task[8] = result
+                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, 1)) Emit(insn);
+                Emit(Arm64Encoder.Str(Arm64Reg.X9, taskLoaded, 0)); // task[0] = 1
+
+                uint rd = AllocTemp();
+                Emit(Arm64Encoder.Mov(rd, taskLoaded));
+                return true;
+            }
+
+            case "await" when args.Count == 1:
+            {
+                // Sequential: just load result from task[8]
+                uint taskPtr = EmitExpr(args[0]);
+                uint rd = AllocTemp();
+                Emit(Arm64Encoder.Ldr(rd, taskPtr, 1)); // offset 1 = 8 bytes
+                return true;
+            }
+
             default:
                 return false;
         }
