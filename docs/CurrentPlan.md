@@ -1,15 +1,15 @@
 # Current Plan
 
-**Date**: 2026-03-24
+**Date**: 2026-03-24 (evening update)
 
 ---
 
 ## Where We Stand
 
-Peaks I and II are behind us. The language self-hosts, compiles to five native
-targets (RISC-V, ARM64, x86-64, WASM, IL), and runs its own compiler on bare
-hardware. Region-based memory reclamation works via sub-expression regions.
-470 tests. The C# bootstrap is locked.
+Peak III is taking shape. In a single session today, Cam delivered structured
+concurrency (fork/await/par/race across 8 backends), lambda syntax, repository
+federation (imports + trust + proposals), linearity improvements, and native
+backend fork/await with GDB-verified x86-64 execution.
 
 ### Snapshot
 
@@ -17,11 +17,12 @@ hardware. Region-based memory reclamation works via sub-expression regions.
 |--------|-------|
 | Self-hosted compiler | 26 files, ~4,900 lines |
 | Backends | 12 transpilation + IL + RISC-V + RISC-V bare metal + WASM + ARM64 + x86-64 |
-| Tests | 470 (40 RISC-V QEMU, 33 ARM64 QEMU, 25 x86-64 native, 31 WASM) |
+| Tests | ~475 compiler + 134 syntax + 103 repository = **712+** |
 | Fixed point | Proven (Stage 1 = Stage 3 at 255,344 chars) |
-| Reference compiler | Locked |
-| Memory | Sub-expression regions: scalar lets reclaim intermediates at let boundary |
-| Concurrency | IR nodes + sequential handler (fork/await) — Phase 1+2 done |
+| Language features | Lambda expressions (`\x -> body`), fork/await/par/race |
+| Concurrency | Real parallelism (C#/JS/Python/Go), sequential (native), `[Concurrent]` effect |
+| Repository | V1 (views) + V2 (narration) + V3 Phases 1-3 (imports, trust, proposals) |
+| Memory | Sub-expression regions + CDX2043 closure capture warning |
 | Agents | 4 (Windows/Copilot, Linux/sandbox, Cam/CLI, Nut/garage-box) |
 
 **History**: `docs/OldStatus/CurrentPlan-2026-03-24-peak2-complete.md`
@@ -33,83 +34,84 @@ hardware. Region-based memory reclamation works via sub-expression regions.
 
 ### Codex Phone — Phase 1 (Human)
 
-A Codex program running on the Samsung S7 Edge (SM-G935T).
+Bootloader signature verification blocking all custom recovery images.
+9 flash attempts documented. Official TWRP downloaded. USB state diagnosis
+in progress. See `docs/Projects/PHONE-WIPE.md` for full attempt log.
 
-- ARM64 backend: QEMU-verified, 33/33 tests green
-- Phone effects: 7 capabilities with compile-time enforcement
-- TWRP recovery image packed and validated (Samsung boot header, DTB, SEANDROIDENFORCE)
-- Awaiting human go/no-go for Odin flash
-- After flash: TWRP recovery → `adb push` ARM64 binary → run on Android/Linux shell
-
-**Design**: `docs/Projects/CODEX-PHONE.md` | **Flash procedure**: `docs/Projects/PHONE-WIPE.md`
+**Design**: `docs/Projects/CODEX-PHONE.md`
 
 ---
 
-## Next Climbs
+## What Got Done Today (2026-03-24, Cam session)
 
-### Camp III-C — Structured Concurrency
+### Camp III-C — Structured Concurrency: DONE through Phase 4
 
-No threads. No locks. No data races. Codex concurrency is structured:
-every concurrent operation has a parent scope. `[Concurrent]` is an effect.
+| Phase | What | Status |
+|-------|------|--------|
+| 1 | IrFork/IrAwait IR nodes in self-hosted compiler | Done |
+| 2 | Sequential handler (Task.FromResult) | Done → upgraded to real parallelism |
+| 3 | Lambda syntax + par/race + thunk-based fork | Done |
+| 4a | Real parallelism: C# Task.Run/WhenAll/WhenAny | Done |
+| 4b | JS Promise, Python ThreadPool, Go goroutines | Done |
+| 4c | `[Concurrent]` effect enforcement in type system | Done |
+| 4d | x86-64 native fork/await (sequential, GDB-verified) | Done |
+| 4e | ARM64 + RISC-V native fork/await (compilation verified) | Done, Agent Linux testing execution |
 
-**Phase 1–3 DONE** (2026-03-24, Cam):
-- `IrFork` and `IrAwait` IR nodes added to self-hosted compiler
-- `fork : (Nothing → a) → Task a` (thunk-based), `await : Task a → a` in builtin type env
-- `par : (a → b) → List a → List b` and `race : List (Nothing → a) → a`
-- Lambda syntax (`\x -> body`) in both reference and self-hosted compilers
-- Lowering intercepts `fork`/`await` calls → specialized IR nodes
-- Real parallelism in C# emitter: `Task.Run`, `Task.WhenAll`, `Task.WhenAny`
-- JS backend: `Promise.resolve().then()`, `Promise.all`, `Promise.race`
-- Python backend: `ThreadPoolExecutor.submit`, `.map()`, `as_completed`
-- Go backend: goroutines + channels
-- `[Concurrent]` effect on all four primitives — type checker enforces effect propagation
-- All tests green (134 syntax, 472 types, 103 repository)
+### V3 — Repository Federation: Phases 1-3 DONE
 
-**What remains (Phase 4):**
-- Work-stealing scheduler in native backends (RISC-V, x86-64)
-- Linear types guarantee no shared mutable state
+| Phase | What | Status |
+|-------|------|--------|
+| 1 | Cross-repo imports by content hash | Done (10 tests) |
+| 2 | Trust lattice with transitive vouching | Done (8 tests) |
+| 3 | Proposal workflow (view diffs, consensus, apply) | Done (9 tests) |
+| 4 | Network sync protocol | Not started |
 
-**Design**: `docs/Designs/CAMP-IIIC-STRUCTURED-CONCURRENCY.md`
+### Camp III-A — Memory
 
-### V3 — Repository Federation
+- CDX2043 closure capture warning: Done (2 tests)
+- Heap-returning reclamation: Not started (code exists in `#if false`)
+- Thread-safe heap allocator: Not started (blocks native parallel execution)
 
-Multi-repo sync, cross-repo trust. The content-addressed fact store
-extends across trust boundaries.
+### Language
 
-**Phase 1 DONE** (2026-03-24, Cam):
-- `ImportFactIntoView` / `RemoveImportFromView` / `GetViewImports` on FactStore
-- `CheckViewConsistency` resolves imported facts alongside local definitions
-- Imports stored in `.imports.json` sidecar files (backward compatible)
+- Lambda expressions (`\x -> body`): Done in both compilers (3 parser tests)
+- `using System.Threading.Tasks` cleanup: Done
 
-**Phase 2 DONE** (2026-03-24, Cam):
-- Trust lattice: `ComputeTrust` with transitive vouch graph walk (max depth 5, cycle detection)
-- Weights: Reviewed=0.25, Tested=0.5, Verified=0.75, Critical=1.0; transitive decay
-- `CheckViewConsistencyWithTrust` gates imports on trust threshold
-- 94 repository tests green (8 new trust tests)
+---
 
-**Phase 3 DONE** (2026-03-24, Cam):
-- Proposal workflow: `CreateViewProposal` / `ParseViewProposal` / `PreviewProposal`
-- `CheckProposalConsistency` validates proposed view state
-- `ApplyViewProposal` requires stakeholder consensus before applying
-- 103 repository tests green (9 new proposal tests)
+## What Remains
 
-**What remains (Phase 4):**
-- Federated sync protocol (networking)
+### Near-term (days)
 
-**Design**: `docs/Designs/V3-REPOSITORY-FEDERATION.md`
+| Item | Blocked on | Who |
+|------|-----------|-----|
+| Native fork/await QEMU execution (ARM64, RISC-V) | Agent Linux testing now | Linux |
+| Phone flash | Bootloader signature issue | Human |
+| V3 Phase 4: network sync | Design decision on protocol | Any |
 
-### Camp III-A — Memory (Remaining)
+### Medium-term (weeks)
 
-Sub-expression regions handle scalar returns. Remaining:
-- Heap-returning reclamation (copy-above-then-compact infrastructure exists in `#if false`)
-- Closure escape (capture types unknown at region exit)
-- LinearityChecker: CDX2043 closure capture warning DONE (2026-03-24, Cam)
+| Item | Blocked on | Notes |
+|------|-----------|-------|
+| Thread-safe heap allocator | Design | Gates native parallel fork. Per-thread arenas or lock-free bump allocator. |
+| Heap-returning reclamation | Escape analysis | `#if false` code in RISC-V backend. Copy-above-then-compact needs live-ref tracking. |
+| Closure escape analysis | CDX2043 → error | Promote warning to error, track closure linearity. |
+| `[Concurrent]` in native backends | Thread-safe heap | Sequential fork works now; real threads need safe allocation. |
+
+### Long-term (Peak IV prerequisites)
+
+| Item | Notes |
+|------|-------|
+| Codex.OS kernel image | Nut's box. QEMU first (Rung 0), WHPX next (Rung 1). |
+| Bootloader / UEFI | x86-64 backend produces ELF; need Multiboot2 or UEFI PE. |
+| Device drivers | Keyboard, timer, serial. Starts in QEMU. |
+| Self-hosted native compiler on bare metal | Peak II-C done for RISC-V; need x86-64 self-hosting. |
 
 ---
 
 ## Process
 
-- **Reference compiler is LOCKED.** See `docs/REFERENCE-COMPILER-LOCK.md`.
+- **Reference compiler lock lifted** (2026-03-24) — `src/` freely modifiable.
 - **Principles**: `docs/10-PRINCIPLES.md` — unchanged, still governing.
 - **Four-agent workflow**: Git is the coordination protocol. Any agent can push to master.
   - Windows (Copilot/VS): builds features, reviews code
