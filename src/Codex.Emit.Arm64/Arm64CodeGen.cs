@@ -1166,8 +1166,8 @@ sealed class Arm64CodeGen
     void EmitEscapeTextHelper()
     {
         m_functionOffsets["__escape_text"] = m_instructions.Count;
-        // Null guard
-        Emit(Arm64Encoder.Cbz(Arm64Reg.X0, 2 * 4));
+        // Null guard: if non-null, skip to copy code; null falls through to return 0
+        Emit(Arm64Encoder.Cbnz(Arm64Reg.X0, 3 * 4));
         foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0)) Emit(insn);
         Emit(Arm64Encoder.Ret());
         // Save LR + x19-x21
@@ -1278,7 +1278,7 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.B((loop1 - m_instructions.Count) * 4));
         m_instructions[exit1] = Arm64Encoder.Bcond(Arm64Encoder.CondGe, (m_instructions.Count - exit1) * 4);
 
-        // Copy second string
+        // Copy second string — byte by byte, same pattern as first loop
         Emit(Arm64Encoder.Add(Arm64Reg.X11, Arm64Reg.X11, Arm64Reg.X9)); // dst += len1
         Emit(Arm64Encoder.AddImm(Arm64Reg.X12, Arm64Reg.X14, 8));        // src2
         foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X2, 0)) Emit(insn);
@@ -1286,12 +1286,9 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.Cmp(Arm64Reg.X2, Arm64Reg.X10));
         int exit2 = m_instructions.Count;
         Emit(Arm64Encoder.Nop());
-        Emit(Arm64Encoder.Add(Arm64Reg.X3, Arm64Reg.X14, Arm64Reg.X2));
-        Emit(Arm64Encoder.Ldr(Arm64Reg.X3, Arm64Reg.X3, 8));
-        Emit(Arm64Encoder.Add(Arm64Reg.X4, Arm64Reg.X12, Arm64Reg.X2));
-        Emit(Arm64Encoder.Add(Arm64Reg.X4, Arm64Reg.X0, Arm64Reg.X4));
-        Emit(Arm64Encoder.Str(Arm64Reg.X3, Arm64Reg.X4, 8));
-        Emit(Arm64Encoder.AddImm(Arm64Reg.X2, Arm64Reg.X2, 8));
+        Emit(Arm64Encoder.LdrbReg(Arm64Reg.X3, Arm64Reg.X12, Arm64Reg.X2));
+        Emit(Arm64Encoder.StrbReg(Arm64Reg.X3, Arm64Reg.X11, Arm64Reg.X2));
+        Emit(Arm64Encoder.AddImm(Arm64Reg.X2, Arm64Reg.X2, 1));
         Emit(Arm64Encoder.B((loop2 - m_instructions.Count) * 4));
         m_instructions[exit2] = Arm64Encoder.Bcond(Arm64Encoder.CondGe, (m_instructions.Count - exit2) * 4);
 
