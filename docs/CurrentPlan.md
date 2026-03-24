@@ -65,13 +65,18 @@ every concurrent operation has a parent scope. `[Concurrent]` is an effect.
 Multi-repo sync, cross-repo trust. The content-addressed fact store
 extends across trust boundaries.
 
-**What to build:**
-- Proposal workflow (replace pull requests)
-- Trust lattice (vouching with degrees, trust-ranked search)
-- Cross-repo dependency resolution by hash, not name
-- Federated sync protocol
+**Phase 1 DONE** (2026-03-24, Cam):
+- `ImportFactIntoView` / `RemoveImportFromView` / `GetViewImports` on FactStore
+- `CheckViewConsistency` resolves imported facts alongside local definitions
+- Imports stored in `.imports.json` sidecar files (backward compatible)
+- 10 new tests, 86 repository tests green
 
-**Design needed**: `docs/Designs/V3-REPOSITORY-FEDERATION.md`
+**What remains (Phase 2-4):**
+- Trust lattice (vouching with degrees, trust-ranked search)
+- Proposal workflow (replace pull requests)
+- Federated sync protocol (networking)
+
+**Design**: `docs/Designs/V3-REPOSITORY-FEDERATION.md`
 
 ### Camp III-A — Memory (Remaining)
 
