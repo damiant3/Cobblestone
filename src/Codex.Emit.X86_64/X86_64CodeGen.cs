@@ -538,22 +538,24 @@ sealed class X86_64CodeGen
 
         // Allocate closure on heap: [trampoline_addr][cap_0][cap_1]...
         int closureSize = (1 + numCaptures) * 8;
-        byte ptrReg = AllocTemp();
-        X86_64Encoder.MovRR(m_text, ptrReg, HeapReg);
+        byte ptrLocal = AllocLocal();
+        byte tmp = AllocTemp();
+        X86_64Encoder.MovRR(m_text, tmp, HeapReg);
+        StoreLocal(ptrLocal, tmp);
         X86_64Encoder.AddRI(m_text, HeapReg, closureSize);
 
         // Store trampoline address
         EmitLoadFunctionAddress(Reg.RAX, trampolineName);
-        X86_64Encoder.MovStore(m_text, ptrReg, Reg.RAX, 0);
+        X86_64Encoder.MovStore(m_text, LoadLocal(ptrLocal), Reg.RAX, 0);
 
         // Store captured args
         for (int i = 0; i < capLocals.Count; i++)
         {
             byte val = LoadLocal(capLocals[i]);
-            X86_64Encoder.MovStore(m_text, ptrReg, val, 8 + i * 8);
+            X86_64Encoder.MovStore(m_text, LoadLocal(ptrLocal), val, 8 + i * 8);
         }
 
-        return ptrReg;
+        return LoadLocal(ptrLocal);
     }
 
     byte EmitNegate(IRNegate neg)
