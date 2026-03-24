@@ -361,7 +361,8 @@ public sealed partial class CSharpEmitter
 
     static readonly Set<string> s_multiArgBuiltins = Set<string>.Of(
         "char-at", "char-code-at", "substring", "list-at", "text-replace",
-        "write-file", "run-process", "list-files", "text-split", "text-contains", "text-starts-with");
+        "write-file", "run-process", "list-files", "text-split", "text-contains", "text-starts-with",
+        "fork", "await", "par", "race");
 
     static string? FindBuiltinRoot(IRApply app)
     {
@@ -469,6 +470,31 @@ public sealed partial class CSharpEmitter
                 sb.Append(".StartsWith(");
                 EmitExpr(sb, args[1], indent);
                 sb.Append(')');
+                return true;
+
+            case "fork" when args.Count == 1:
+                sb.Append("System.Threading.Tasks.Task.FromResult((");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(")(null))");
+                return true;
+
+            case "await" when args.Count == 1:
+                sb.Append('(');
+                EmitExpr(sb, args[0], indent);
+                sb.Append(").Result");
+                return true;
+
+            case "par" when args.Count == 2:
+                EmitExpr(sb, args[1], indent);
+                sb.Append(".Select(");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(").ToList()");
+                return true;
+
+            case "race" when args.Count == 1:
+                sb.Append('(');
+                EmitExpr(sb, args[0], indent);
+                sb.Append("[0])(null)");
                 return true;
 
             default:

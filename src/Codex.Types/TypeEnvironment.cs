@@ -108,6 +108,25 @@ public sealed class TypeEnvironment
                     new FunctionType(stateS,
                         new FunctionType(runCompType, runStateReturn))))));
 
+        // Structured concurrency (Camp III-C)
+        TypeVariable forkA = new(300);
+        ConstructedType taskOfA = new(new Name("Task"), [forkA]);
+        env = env.Bind("fork", new ForAllType(300,
+            new FunctionType(new FunctionType(NothingType.s_instance, forkA), taskOfA)));
+        env = env.Bind("await", new ForAllType(300,
+            new FunctionType(taskOfA, forkA)));
+
+        TypeVariable parA = new(310);
+        TypeVariable parB = new(311);
+        env = env.Bind("par", new ForAllType(310,
+            new ForAllType(311,
+                new FunctionType(new FunctionType(parA, parB),
+                    new FunctionType(new ListType(parA), new ListType(parB))))));
+
+        TypeVariable raceA = new(320);
+        env = env.Bind("race", new ForAllType(320,
+            new FunctionType(new ListType(new FunctionType(NothingType.s_instance, raceA)), raceA)));
+
         return env;
     }
 }
