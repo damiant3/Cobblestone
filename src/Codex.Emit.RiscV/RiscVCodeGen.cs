@@ -28,6 +28,8 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     Map<string, CodexType> m_typeDefs = Map<string, CodexType>.s_empty;
     readonly Dictionary<string, string> m_escapeHelperNames = [];
     readonly Queue<(string Key, string Name, CodexType Type)> m_escapeHelperQueue = new();
+    readonly Dictionary<string, string> m_relocateHelperNames = [];
+    readonly Queue<(string Key, string Name, CodexType Type)> m_relocateHelperQueue = new();
 
     // S1 is reserved as the global heap pointer — NOT saved/restored by functions.
     static readonly uint[] CalleeSaved = {
@@ -55,6 +57,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             EmitFunction(def);
 
         EmitEscapeCopyHelpers();
+        EmitRelocateHelpers();
 
         EmitStart(module);
 
@@ -845,15 +848,6 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         if (region.Type is FunctionType)
             return EmitExpr(region.Body);
 
-        // Heap-returning functions: skip region reclamation.
-        // Deep-copying the return value is correct, but pattern matching can
-        // extract pointers to intermediate allocations that are still live in
-        // locals. Those pointers become dangling after heap restore.
-        // Safe reclamation requires tracking all live heap refs, not just the
-        // return value. For now, only reclaim scalar-returning regions.
-        if (region.NeedsEscapeCopy)
-            return EmitExpr(region.Body);
-
         // Save heap pointer (region entry)
         uint savedHeap = AllocLocal();
         uint hpTmp = AllocTemp();
@@ -862,9 +856,87 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
         uint bodyResult = EmitExpr(region.Body);
 
-        // Scalar return — restore S1, value survives in register
-        Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(savedHeap)));
-        return bodyResult;
+        if (!region.NeedsEscapeCopy)
+        {
+            // Scalar return — restore S1, value survives in register
+            Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(savedHeap)));
+            return bodyResult;
+        }
+
+        // ── Copy-Above-Then-Compact ────────────────────────────────
+        // Deep copy ABOVE body data (no overlap with source), then
+        // memmove the copy down to saved_hp and relocate pointers.
+
+        // Save body_end = current S1 (watermark after body allocations)
+        uint bodyEnd = AllocLocal();
+        uint t1 = AllocTemp();
+        Emit(RiscVEncoder.Mv(t1, Reg.S1));
+        StoreLocal(bodyEnd, t1);
+
+        // Save body result
+        uint resultLocal = AllocLocal();
+        StoreLocal(resultLocal, bodyResult);
+
+        // Deep copy above body_end — S1 is at body_end, copy allocates above
+        uint escapedResult = EmitEscapeCopy(resultLocal, region.Type);
+        // S1 now points to copy_end (after all deep copy allocations)
+
+        // Save escaped result pointer and copy_end
+        uint escapedLocal = AllocLocal();
+        StoreLocal(escapedLocal, escapedResult);
+        uint copyEndLocal = AllocLocal();
+        uint t2 = AllocTemp();
+        Emit(RiscVEncoder.Mv(t2, Reg.S1));
+        StoreLocal(copyEndLocal, t2);
+
+        // copy_size = copy_end - body_end
+        uint copySizeLocal = AllocLocal();
+        uint t3 = AllocTemp();
+        Emit(RiscVEncoder.Sub(t3, LoadLocal(copyEndLocal), LoadLocal(bodyEnd)));
+        StoreLocal(copySizeLocal, t3);
+
+        // delta = body_end - saved_hp
+        uint deltaLocal = AllocLocal();
+        uint t4 = AllocTemp();
+        Emit(RiscVEncoder.Sub(t4, LoadLocal(bodyEnd), LoadLocal(savedHeap)));
+        StoreLocal(deltaLocal, t4);
+
+        // memmove(dst=saved_hp, src=body_end, len=copy_size)
+        Emit(RiscVEncoder.Mv(Reg.A0, LoadLocal(savedHeap)));
+        Emit(RiscVEncoder.Mv(Reg.A1, LoadLocal(bodyEnd)));
+        Emit(RiscVEncoder.Mv(Reg.A2, LoadLocal(copySizeLocal)));
+        EmitCallTo("__memmove");
+
+        // adjusted_result = escaped_result - delta
+        uint adjLocal = AllocLocal();
+        uint t5 = AllocTemp();
+        Emit(RiscVEncoder.Sub(t5, LoadLocal(escapedLocal), LoadLocal(deltaLocal)));
+        StoreLocal(adjLocal, t5);
+
+        // Relocate internal pointers in the compacted copy
+        EmitRelocateCall(adjLocal, deltaLocal, region.Type);
+
+        // S1 = saved_hp + copy_size (heap pointer after compacted copy)
+        Emit(RiscVEncoder.Add(Reg.S1, LoadLocal(savedHeap), LoadLocal(copySizeLocal)));
+
+        return LoadLocal(adjLocal);
+    }
+
+    void EmitRelocateCall(uint ptrLocal, uint deltaLocal, CodexType type)
+    {
+        CodexType resolved = ResolveType(type);
+        if (!IRRegion.TypeNeedsHeapEscape(resolved))
+            return;
+
+        // Text: no internal pointers to relocate (only the pointer TO text
+        // needs adjusting, which was done by the caller's subtract)
+        if (resolved is TextType)
+            return;
+
+        string helperName = GetOrQueueRelocateHelper(resolved);
+        Emit(RiscVEncoder.Mv(Reg.A0, LoadLocal(ptrLocal)));
+        Emit(RiscVEncoder.Mv(Reg.A1, LoadLocal(deltaLocal)));
+        EmitCallTo(helperName);
     }
 
     uint EmitEscapeCopy(uint srcLocal, CodexType type)
@@ -1104,6 +1176,215 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         // Copy fields
         for (int i = 0; i < ctor.Fields.Length; i++)
             EmitEscapeFieldCopy((1 + i) * 8, (1 + i) * 8, ctor.Fields[i]);
+    }
+
+    // ── Relocate helpers (pointer fixup after memmove) ──────────
+
+    string GetOrQueueRelocateHelper(CodexType type)
+    {
+        string key = EscapeCopyKey(type);
+        if (m_relocateHelperNames.TryGetValue(key, out string? name))
+            return name;
+        name = $"__relocate_{key}";
+        m_relocateHelperNames[key] = name;
+        m_relocateHelperQueue.Enqueue((key, name, type));
+        return name;
+    }
+
+    void EmitRelocateHelpers()
+    {
+        while (m_relocateHelperQueue.Count > 0)
+        {
+            (string _, string name, CodexType type) = m_relocateHelperQueue.Dequeue();
+            switch (type)
+            {
+                case TextType:
+                    break; // text has no internal pointers
+                case RecordType rt:
+                    EmitRecordRelocateHelper(name, rt);
+                    break;
+                case ListType lt:
+                    EmitListRelocateHelper(name, lt);
+                    break;
+                case SumType st:
+                    EmitSumTypeRelocateHelper(name, st);
+                    break;
+            }
+        }
+    }
+
+    // All relocate helpers: a0=ptr (already at final position), a1=delta
+    // In-place: subtract delta from each heap-typed field pointer, then recurse.
+    // Convention: s2=ptr, s3=delta. Frame: 32 bytes (ra, s2, s3, pad).
+
+    void EmitRelocateHelperPrologue(string name)
+    {
+        m_functionOffsets[name] = m_instructions.Count;
+        // Null guard
+        int notNull = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bnez a0 → continue
+        Emit(RiscVEncoder.Ret());
+        int continueLabel = m_instructions.Count;
+        m_instructions[notNull] = RiscVEncoder.Bne(Reg.A0, Reg.Zero,
+            (continueLabel - notNull) * 4);
+
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -48));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.Ra, 40));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S2, 32));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S3, 24));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S4, 16));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S5, 8));
+        Emit(RiscVEncoder.Mv(Reg.S2, Reg.A0)); // s2 = ptr
+        Emit(RiscVEncoder.Mv(Reg.S3, Reg.A1)); // s3 = delta
+    }
+
+    void EmitRelocateHelperEpilogue()
+    {
+        Emit(RiscVEncoder.Ld(Reg.S5, Reg.Sp, 8));
+        Emit(RiscVEncoder.Ld(Reg.S4, Reg.Sp, 16));
+        Emit(RiscVEncoder.Ld(Reg.S3, Reg.Sp, 24));
+        Emit(RiscVEncoder.Ld(Reg.S2, Reg.Sp, 32));
+        Emit(RiscVEncoder.Ld(Reg.Ra, Reg.Sp, 40));
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, 48));
+        Emit(RiscVEncoder.Ret());
+    }
+
+    void EmitRelocateFieldAdjust(int offset, CodexType fieldType)
+    {
+        CodexType resolved = ResolveType(fieldType);
+        if (!IRRegion.TypeNeedsHeapEscape(resolved))
+            return;
+
+        // Load field pointer, subtract delta, store back
+        Emit(RiscVEncoder.Ld(Reg.T0, Reg.S2, offset));
+        // Null guard for the field pointer
+        int skipNull = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: beqz t0 → skip
+        Emit(RiscVEncoder.Sub(Reg.T0, Reg.T0, Reg.S3));
+        Emit(RiscVEncoder.Sd(Reg.S2, Reg.T0, offset));
+
+        // Recurse into nested type (if not text — text has no internal pointers)
+        if (resolved is not TextType)
+        {
+            string helper = GetOrQueueRelocateHelper(resolved);
+            Emit(RiscVEncoder.Mv(Reg.A0, Reg.T0));
+            Emit(RiscVEncoder.Mv(Reg.A1, Reg.S3));
+            EmitCallTo(helper);
+        }
+
+        int skipLabel = m_instructions.Count;
+        m_instructions[skipNull] = RiscVEncoder.Beq(Reg.T0, Reg.Zero,
+            (skipLabel - skipNull) * 4);
+    }
+
+    void EmitRecordRelocateHelper(string name, RecordType rt)
+    {
+        EmitRelocateHelperPrologue(name);
+        for (int i = 0; i < rt.Fields.Length; i++)
+            EmitRelocateFieldAdjust(i * 8, rt.Fields[i].Type);
+        EmitRelocateHelperEpilogue();
+    }
+
+    void EmitListRelocateHelper(string name, ListType lt)
+    {
+        EmitRelocateHelperPrologue(name);
+
+        CodexType elemType = ResolveType(lt.Element);
+        bool needsReloc = IRRegion.TypeNeedsHeapEscape(elemType);
+        if (!needsReloc)
+        {
+            EmitRelocateHelperEpilogue();
+            return;
+        }
+
+        string? elemHelper = elemType is not TextType
+            ? GetOrQueueRelocateHelper(elemType)
+            : null;
+
+        // s4 = length, s5 = index
+        Emit(RiscVEncoder.Ld(Reg.S4, Reg.S2, 0));
+        foreach (uint insn in RiscVEncoder.Li(Reg.S5, 0)) Emit(insn);
+
+        int loopStart = m_instructions.Count;
+        int loopExit = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge s5, s4 → done
+
+        // offset = 8 + s5 * 8
+        Emit(RiscVEncoder.Slli(Reg.T0, Reg.S5, 3));
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.T0, 8));
+
+        // Load element pointer, subtract delta, store back
+        Emit(RiscVEncoder.Add(Reg.T1, Reg.S2, Reg.T0));
+        Emit(RiscVEncoder.Ld(Reg.T2, Reg.T1, 0));
+        // Null guard
+        int skipElem = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: beqz t2 → skip
+        Emit(RiscVEncoder.Sub(Reg.T2, Reg.T2, Reg.S3));
+        Emit(RiscVEncoder.Sd(Reg.T1, Reg.T2, 0));
+
+        // Recurse if needed
+        if (elemHelper is not null)
+        {
+            Emit(RiscVEncoder.Mv(Reg.A0, Reg.T2));
+            Emit(RiscVEncoder.Mv(Reg.A1, Reg.S3));
+            EmitCallTo(elemHelper);
+        }
+
+        int skipLabel = m_instructions.Count;
+        m_instructions[skipElem] = RiscVEncoder.Beq(Reg.T2, Reg.Zero,
+            (skipLabel - skipElem) * 4);
+
+        Emit(RiscVEncoder.Addi(Reg.S5, Reg.S5, 1));
+        Emit(RiscVEncoder.J((loopStart - m_instructions.Count) * 4));
+
+        int doneLabel = m_instructions.Count;
+        m_instructions[loopExit] = RiscVEncoder.Bge(Reg.S5, Reg.S4,
+            (doneLabel - loopExit) * 4);
+
+        EmitRelocateHelperEpilogue();
+    }
+
+    void EmitSumTypeRelocateHelper(string name, SumType st)
+    {
+        EmitRelocateHelperPrologue(name);
+
+        // s4 = tag
+        Emit(RiscVEncoder.Ld(Reg.S4, Reg.S2, 0));
+
+        List<int> jumpToEndIdxs = [];
+
+        for (int ctorIdx = 0; ctorIdx < st.Constructors.Length; ctorIdx++)
+        {
+            SumConstructorType ctor = st.Constructors[ctorIdx];
+
+            if (ctorIdx < st.Constructors.Length - 1)
+            {
+                foreach (uint insn in RiscVEncoder.Li(Reg.T0, ctorIdx)) Emit(insn);
+                int branchIdx = m_instructions.Count;
+                Emit(RiscVEncoder.Nop()); // patched: bne s4, t0 → next
+
+                for (int i = 0; i < ctor.Fields.Length; i++)
+                    EmitRelocateFieldAdjust((1 + i) * 8, ctor.Fields[i]);
+
+                jumpToEndIdxs.Add(m_instructions.Count);
+                Emit(RiscVEncoder.Nop()); // patched: j → end
+
+                int nextLabel = m_instructions.Count;
+                m_instructions[branchIdx] = RiscVEncoder.Bne(Reg.S4, Reg.T0,
+                    (nextLabel - branchIdx) * 4);
+            }
+            else
+            {
+                for (int i = 0; i < ctor.Fields.Length; i++)
+                    EmitRelocateFieldAdjust((1 + i) * 8, ctor.Fields[i]);
+            }
+        }
+
+        int endLabel = m_instructions.Count;
+        foreach (int jIdx in jumpToEndIdxs)
+            m_instructions[jIdx] = RiscVEncoder.J((endLabel - jIdx) * 4);
+
+        EmitRelocateHelperEpilogue();
     }
 
     uint EmitList(IRList list)
@@ -1635,6 +1916,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         EmitReadLineHelper();
         EmitStrReplaceHelper();
         EmitEscapeTextHelper();
+        EmitMemmoveHelper();
     }
 
     void EmitEscapeTextHelper()
@@ -1678,6 +1960,44 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
         // Return new pointer
         Emit(RiscVEncoder.Mv(Reg.A0, Reg.A1));
+        Emit(RiscVEncoder.Ret());
+    }
+
+    void EmitMemmoveHelper()
+    {
+        // __memmove: a0=dst, a1=src, a2=len → copies len bytes from src to dst
+        // Forward copy (safe when dst < src, which is always our case).
+        // Leaf function — no stack frame.
+        m_functionOffsets["__memmove"] = m_instructions.Count;
+
+        // if len == 0, return immediately
+        int exitCheck = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: beqz a2 → done
+
+        // t0 = index = 0
+        foreach (uint insn in RiscVEncoder.Li(Reg.T0, 0)) Emit(insn);
+
+        int loopStart = m_instructions.Count;
+        // if t0 >= a2 → done
+        int loopExit = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge t0, a2 → done
+
+        // t1 = src[t0]
+        Emit(RiscVEncoder.Add(Reg.T1, Reg.A1, Reg.T0));
+        Emit(RiscVEncoder.Lbu(Reg.T1, Reg.T1, 0));
+        // dst[t0] = t1
+        Emit(RiscVEncoder.Add(Reg.T2, Reg.A0, Reg.T0));
+        Emit(RiscVEncoder.Sb(Reg.T2, Reg.T1, 0));
+
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.T0, 1));
+        Emit(RiscVEncoder.J((loopStart - m_instructions.Count) * 4));
+
+        int doneLabel = m_instructions.Count;
+        m_instructions[exitCheck] = RiscVEncoder.Beq(Reg.A2, Reg.Zero,
+            (doneLabel - exitCheck) * 4);
+        m_instructions[loopExit] = RiscVEncoder.Bge(Reg.T0, Reg.A2,
+            (doneLabel - loopExit) * 4);
+
         Emit(RiscVEncoder.Ret());
     }
 
