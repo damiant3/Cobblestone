@@ -17,6 +17,8 @@ public interface IViewConsistencyChecker
 
 public sealed record ViewDefinition(string Name, string Source);
 
+public sealed record ImportedFact(ContentHash Hash, string LocalName);
+
 public sealed record ViewMergeConflict(string DefinitionName, ContentHash HashA, ContentHash HashB);
 
 public sealed record ViewMergeResult(bool Success, IReadOnlyList<ViewMergeConflict> Conflicts);
@@ -45,6 +47,22 @@ partial class FactStore
                     [$"View entry '{kv.Key}' references a {fact.Kind} fact, expected Definition"]);
             }
             definitions.Add(new ViewDefinition(kv.Key, fact.Content));
+        }
+
+        foreach (ImportedFact import in LoadViewImports(viewName))
+        {
+            Fact? fact = Load(import.Hash);
+            if (fact is null)
+            {
+                return new ViewConsistencyResult(false,
+                    [$"Import '{import.LocalName}' references missing fact {import.Hash.ToShortHex()}"]);
+            }
+            if (fact.Kind != FactKind.Definition)
+            {
+                return new ViewConsistencyResult(false,
+                    [$"Import '{import.LocalName}' references a {fact.Kind} fact, expected Definition"]);
+            }
+            definitions.Add(new ViewDefinition(import.LocalName, fact.Content));
         }
 
         if (definitions.Count == 0)
@@ -135,6 +153,10 @@ partial class FactStore
             throw new InvalidOperationException($"View '{name}' does not exist.");
 
         File.Delete(viewFile);
+
+        string importsFile = ImportsFilePath(name);
+        if (File.Exists(importsFile))
+            File.Delete(importsFile);
 
         if (GetCurrentViewName() == name)
             File.WriteAllText(m_currentViewMarker, "canonical");
@@ -327,5 +349,80 @@ partial class FactStore
             raw[kv.Key] = kv.Value;
         string json = System.Text.Json.JsonSerializer.Serialize(raw, s_jsonOptions);
         File.WriteAllText(path, json);
+    }
+
+    // --- Cross-repo imports (V3 Federation Phase 1) ---
+
+    public void ImportFactIntoView(string viewName, ContentHash factHash, string localName)
+    {
+        RequireViewExists(viewName);
+        Fact? fact = Load(factHash);
+        if (fact is null)
+            throw new InvalidOperationException(
+                $"Fact {factHash.ToShortHex()} not found in local store.");
+        if (fact.Kind != FactKind.Definition)
+            throw new InvalidOperationException(
+                $"Cannot import {fact.Kind} fact, expected Definition.");
+
+        List<ImportedFact> imports = LoadViewImports(viewName);
+        if (imports.Any(i => i.LocalName == localName))
+            throw new InvalidOperationException(
+                $"Import with local name '{localName}' already exists in view '{viewName}'.");
+
+        imports.Add(new ImportedFact(factHash, localName));
+        SaveViewImports(viewName, imports);
+    }
+
+    public void RemoveImportFromView(string viewName, string localName)
+    {
+        RequireViewExists(viewName);
+        List<ImportedFact> imports = LoadViewImports(viewName);
+        imports.RemoveAll(i => i.LocalName == localName);
+        SaveViewImports(viewName, imports);
+    }
+
+    public IReadOnlyList<ImportedFact> GetViewImports(string viewName)
+    {
+        RequireViewExists(viewName);
+        return LoadViewImports(viewName);
+    }
+
+    string ImportsFilePath(string viewName)
+        => Path.Combine(m_viewsPath, viewName + ".imports.json");
+
+    List<ImportedFact> LoadViewImports(string viewName)
+    {
+        string path = ImportsFilePath(viewName);
+        if (!File.Exists(path))
+            return [];
+        string json = File.ReadAllText(path);
+        List<ImportEntryDto>? raw =
+            System.Text.Json.JsonSerializer.Deserialize<List<ImportEntryDto>>(json, s_jsonOptions);
+        if (raw is null)
+            return [];
+        return raw.Select(e => new ImportedFact(ContentHash.FromHex(e.Hash), e.LocalName)).ToList();
+    }
+
+    void SaveViewImports(string viewName, List<ImportedFact> imports)
+    {
+        string path = ImportsFilePath(viewName);
+        if (imports.Count == 0)
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+            return;
+        }
+        List<ImportEntryDto> raw = imports
+            .Select(i => new ImportEntryDto { Hash = i.Hash.ToHex(), LocalName = i.LocalName })
+            .ToList();
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        string json = System.Text.Json.JsonSerializer.Serialize(raw, s_jsonOptions);
+        File.WriteAllText(path, json);
+    }
+
+    sealed class ImportEntryDto
+    {
+        public string Hash { get; set; } = "";
+        public string LocalName { get; set; } = "";
     }
 }
