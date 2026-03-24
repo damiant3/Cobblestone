@@ -367,5 +367,91 @@ namespace Codex.Types.Tests
             Map<string, CodexType> types = checker.CheckModule(resolved.Module);
             return diagnostics.HasErrors ? null : types;
         }
+
+        public static byte[]? CompileToX86_64(string source, string moduleName = "test")
+        {
+            SourceText src = new("test.codex", source);
+            DiagnosticBag diagnostics = new();
+
+            DocumentNode document;
+            if (ProseParser.IsProseDocument(source))
+            {
+                ProseParser proseParser = new(src, diagnostics);
+                document = proseParser.ParseDocument();
+            }
+            else
+            {
+                Lexer lexer = new(src, diagnostics);
+                IReadOnlyList<Token> tokens = lexer.TokenizeAll();
+                Parser parser = new(tokens, diagnostics);
+                document = parser.ParseDocument();
+            }
+
+            Desugarer desugarer = new(diagnostics);
+            Module module = desugarer.Desugar(document, moduleName);
+            if (diagnostics.HasErrors) return null;
+
+            NameResolver resolver = new(diagnostics);
+            ResolvedModule resolved = resolver.Resolve(module);
+            if (diagnostics.HasErrors) return null;
+
+            TypeChecker checker = new(diagnostics);
+            Map<string, CodexType> types = checker.CheckModule(resolved.Module);
+            if (diagnostics.HasErrors) return null;
+
+            LinearityChecker linearityChecker = new(diagnostics, types);
+            linearityChecker.CheckModule(resolved.Module);
+            if (diagnostics.HasErrors) return null;
+
+            Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, diagnostics);
+            IRModule irModule = lowering.Lower(resolved.Module);
+            if (diagnostics.HasErrors) return null;
+
+            Codex.Emit.X86_64.X86_64Emitter emitter = new();
+            return emitter.EmitAssembly(irModule, moduleName);
+        }
+
+        public static byte[]? CompileToArm64(string source, string moduleName = "test")
+        {
+            SourceText src = new("test.codex", source);
+            DiagnosticBag diagnostics = new();
+
+            DocumentNode document;
+            if (ProseParser.IsProseDocument(source))
+            {
+                ProseParser proseParser = new(src, diagnostics);
+                document = proseParser.ParseDocument();
+            }
+            else
+            {
+                Lexer lexer = new(src, diagnostics);
+                IReadOnlyList<Token> tokens = lexer.TokenizeAll();
+                Parser parser = new(tokens, diagnostics);
+                document = parser.ParseDocument();
+            }
+
+            Desugarer desugarer = new(diagnostics);
+            Module module = desugarer.Desugar(document, moduleName);
+            if (diagnostics.HasErrors) return null;
+
+            NameResolver resolver = new(diagnostics);
+            ResolvedModule resolved = resolver.Resolve(module);
+            if (diagnostics.HasErrors) return null;
+
+            TypeChecker checker = new(diagnostics);
+            Map<string, CodexType> types = checker.CheckModule(resolved.Module);
+            if (diagnostics.HasErrors) return null;
+
+            LinearityChecker linearityChecker = new(diagnostics, types);
+            linearityChecker.CheckModule(resolved.Module);
+            if (diagnostics.HasErrors) return null;
+
+            Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, diagnostics);
+            IRModule irModule = lowering.Lower(resolved.Module);
+            if (diagnostics.HasErrors) return null;
+
+            Codex.Emit.Arm64.Arm64Emitter emitter = new();
+            return emitter.EmitAssembly(irModule, moduleName);
+        }
     }
 }
