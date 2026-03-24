@@ -232,10 +232,10 @@ Section: Apply Chain
    else if n == "get-env" then "(Environment.GetEnvironmentVariable(" ++ emit-expr (list-at args 0) arities ++ ") ?? \"\")"
    else if n == "run-process" then "((Func<string>)(() => { var _psi = new System.Diagnostics.ProcessStartInfo(" ++ emit-expr (list-at args 0) arities ++ ", " ++ emit-expr (list-at args 1) arities ++ ") { RedirectStandardOutput = true, UseShellExecute = false }; var _p = System.Diagnostics.Process.Start(_psi)!; var _o = _p.StandardOutput.ReadToEnd(); _p.WaitForExit(); return _o; }))()"
    else if n == "current-dir" then "Directory.GetCurrentDirectory()"
-   else if n == "fork" then "System.Threading.Tasks.Task.FromResult((" ++ emit-expr (list-at args 0) arities ++ ")(null))"
+   else if n == "fork" then "System.Threading.Tasks.Task.Run(() => (" ++ emit-expr (list-at args 0) arities ++ ")(null))"
    else if n == "await" then "(" ++ emit-expr (list-at args 0) arities ++ ").Result"
-   else if n == "par" then emit-expr (list-at args 1) arities ++ ".Select(" ++ emit-expr (list-at args 0) arities ++ ").ToList()"
-   else if n == "race" then "(" ++ emit-expr (list-at args 0) arities ++ "[0])(null)"
+   else if n == "par" then "System.Threading.Tasks.Task.WhenAll(" ++ emit-expr (list-at args 1) arities ++ ".Select(_x_ => System.Threading.Tasks.Task.Run(() => (" ++ emit-expr (list-at args 0) arities ++ ")(_x_)))).Result.ToList()"
+   else if n == "race" then "System.Threading.Tasks.Task.WhenAny(" ++ emit-expr (list-at args 0) arities ++ ".Select(_t_ => System.Threading.Tasks.Task.Run(() => _t_(null)))).Result.Result"
    else ""
 
   emit-apply : IRExpr -> List ArityEntry -> Text
@@ -287,7 +287,7 @@ Section: Expression Emission
     if IrHandle (eff) (body) (clauses) (ty) -> emit-handle eff body clauses ty arities
     if IrRecord (name) (fields) (ty) -> emit-record name fields arities
     if IrFieldAccess (rec) (field) (ty) -> emit-expr rec arities ++ "." ++ sanitize field
-    if IrFork (body) (ty) -> "System.Threading.Tasks.Task.FromResult((" ++ emit-expr body arities ++ ")(null))"
+    if IrFork (body) (ty) -> "System.Threading.Tasks.Task.Run(() => (" ++ emit-expr body arities ++ ")(null))"
     if IrAwait (task) (ty) -> "(" ++ emit-expr task arities ++ ").Result"
     if IrError (msg) (ty) -> "/* error: " ++ msg ++ " */ default"
 
