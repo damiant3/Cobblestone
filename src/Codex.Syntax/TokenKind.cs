@@ -89,6 +89,7 @@ public enum TokenKind
     Dot,                // .
     DashGreater,        // -> (ASCII arrow)
     Underscore,         // _
+    Backslash,          // \
 
     // Special
     Error,              // unrecognized input

@@ -493,6 +493,7 @@ public sealed class Lexer
                 return new Token(TokenKind.Pipe, "|", MakeSpan(start));
 
             case '&' : return new Token(TokenKind.Ampersand, "&", MakeSpan(start));
+            case '\\' : return new Token(TokenKind.Backslash, "\\", MakeSpan(start));
 
             case '<':
                 if (!IsAtEnd && Current == '=') { Advance(); return new Token(TokenKind.LessOrEqual, "<=", MakeSpan(start)); }

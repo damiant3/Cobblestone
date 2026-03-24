@@ -169,6 +169,9 @@ public sealed partial class Parser
             case TokenKind.WithKeyword:
                 return ParseHandleExpression();
 
+            case TokenKind.Backslash:
+                return ParseLambdaExpression();
+
             default:
             {
                 m_diagnostics.Error("CDX1020", $"Expected an expression, found {Current.Kind}", Current.Span);
@@ -177,6 +180,26 @@ public sealed partial class Parser
                 return new ErrorExpressionNode(err);
             }
         }
+    }
+
+    ExpressionNode ParseLambdaExpression()
+    {
+        SourceSpan start = Current.Span;
+        Advance(); // consume backslash
+
+        // Collect parameters: identifiers before ->
+        List<Token> parameters = [];
+        while (Current.Kind == TokenKind.Identifier && !IsAtEnd)
+        {
+            parameters.Add(Current);
+            Advance();
+        }
+
+        Expect(TokenKind.Arrow);
+        SkipNewlines();
+        ExpressionNode body = ParseExpression();
+
+        return new LambdaExpressionNode(parameters, body, start.Through(body.Span));
     }
 
     ExpressionNode ParseRecordExpression(Token typeName)
