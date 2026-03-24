@@ -87,7 +87,9 @@ Section: Expression Parsing
             then parse-do-expr st
             else if is-with-keyword (current-kind st)
              then parse-handle-expr st
-             else ExprOk (ErrExpr (current st)) (advance st)
+             else if is-backslash (current-kind st)
+              then parse-lambda-expr st
+              else ExprOk (ErrExpr (current st)) (advance st)
 
   parse-field-access : Expr -> ParseState -> ParseExprResult
   parse-field-access (node) (st) =
@@ -377,4 +379,25 @@ Section: Compound Expression Parsing
      let clause = HandleClause { op-name = op-tok, resume-name = resume-tok, body = body }
      in let st2 = skip-newlines st
       in parse-handle-clauses st2 (acc ++ [clause])
+
+  parse-lambda-expr : ParseState -> ParseExprResult
+  parse-lambda-expr (st) =
+   let st2 = advance st
+   in let params-result = collect-lambda-params st2 []
+    in let st3 = expect Arrow params-result.state
+     in let st4 = skip-newlines st3
+      in let body = parse-expr st4
+       in unwrap-expr-ok body (finish-lambda params-result.toks)
+
+  LambdaParamsResult = record { toks : List Token, state : ParseState }
+
+  collect-lambda-params : ParseState -> List Token -> LambdaParamsResult
+  collect-lambda-params (st) (acc) =
+   if is-ident (current-kind st)
+    then let tok = current st
+     in collect-lambda-params (advance st) (acc ++ [tok])
+    else LambdaParamsResult { toks = acc, state = st }
+
+  finish-lambda : List Token -> Expr -> ParseState -> ParseExprResult
+  finish-lambda (params) (body) (st) = ExprOk (LambdaExpr params body) st
 

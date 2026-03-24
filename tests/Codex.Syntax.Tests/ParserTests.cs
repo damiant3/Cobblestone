@@ -349,6 +349,37 @@ public class ParserTests
         Assert.Equal("n", inner.ParamName.Text);
     }
 
+    // --- Lambda expressions ---
+
+    [Fact]
+    public void Parse_lambda_single_param()
+    {
+        DocumentNode doc = Parse("f = \\x -> x + 1");
+        Assert.Single(doc.Definitions);
+        ExpressionNode body = doc.Definitions[0].Body;
+        Assert.IsType<LambdaExpressionNode>(body);
+        LambdaExpressionNode lam = (LambdaExpressionNode)body;
+        Assert.Single(lam.Parameters);
+        Assert.Equal("x", lam.Parameters[0].Text);
+    }
+
+    [Fact]
+    public void Parse_lambda_multiple_params()
+    {
+        DocumentNode doc = Parse("f = \\x y -> x + y");
+        LambdaExpressionNode lam = Assert.IsType<LambdaExpressionNode>(doc.Definitions[0].Body);
+        Assert.Equal(2, lam.Parameters.Count);
+        Assert.Equal("x", lam.Parameters[0].Text);
+        Assert.Equal("y", lam.Parameters[1].Text);
+    }
+
+    [Fact]
+    public void Parse_lambda_in_application()
+    {
+        DocumentNode doc = Parse("f = map (\\x -> x + 1) xs");
+        Assert.Single(doc.Definitions);
+    }
+
     // --- Claims and Proofs (Milestone 10) ---
 
     [Fact]
