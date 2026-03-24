@@ -40,14 +40,14 @@ pipeline.
 
 ## Tests
 
-### Peek_non_numeric_start_does_not_crash — KNOWN BUG, DOCUMENTED
+### Peek_non_numeric_start_does_not_crash — FIXED (2026-03-24)
 
-`Codex.AgentToolkit.Tests.CodexAgentExeTests.Peek_non_numeric_start_does_not_crash`
-may fail because `text-to-integer` throws `FormatException` on non-numeric input.
-The test is written to accept either exit code 0 or a FormatException in stderr.
+`codex-agent peek` previously crashed with `ArgumentOutOfRangeException` when given
+non-numeric, zero, or negative start arguments. Fixed by clamping `start` to >= 1
+in both `codex-agent.codex` and `peek.codex`. `text-to-integer` returns 0 for
+non-numeric input; the clamp catches that and all other sub-1 values.
 
-**Action**: Do not investigate this failure. It is a known limitation of `parse-int-or`
-using the raw `text-to-integer` builtin which lacks error handling.
+**Action**: No special handling needed. All edge cases now return exit code 0.
 
 ## Agent Toolkit
 
