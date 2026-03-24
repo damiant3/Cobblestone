@@ -52,16 +52,16 @@ A Codex program running on the Samsung S7 Edge (SM-G935T).
 No threads. No locks. No data races. Codex concurrency is structured:
 every concurrent operation has a parent scope. `[Concurrent]` is an effect.
 
-**Phase 1+2 DONE** (2026-03-24, Cam):
+**Phase 1–3 DONE** (2026-03-24, Cam):
 - `IrFork` and `IrAwait` IR nodes added to self-hosted compiler
-- `fork : a -> Task a` and `await : Task a -> a` in builtin type env
+- `fork : (Nothing → a) → Task a` (thunk-based), `await : Task a → a` in builtin type env
+- `par : (a → b) → List a → List b` and `race : List (Nothing → a) → a`
+- Lambda syntax (`\x -> body`) in both reference and self-hosted compilers
 - Lowering intercepts `fork`/`await` calls → specialized IR nodes
-- Sequential C# handler: `Task.FromResult(...)` / `.Result`
-- 470 tests pass, self-hosted compiler builds clean
+- Sequential C# handlers: `Task.FromResult`, `.Result`, `Select`, thunk invocation
+- All tests green (134 syntax, 470 types, 86 repository)
 
-**What remains (Phase 3+4):**
-- Lambda syntax (`\x -> body`) for thunks — needed before `par`/`race`
-- `par` (parallel map) and `race` (first result wins)
+**What remains (Phase 4):**
 - Work-stealing scheduler in native backends (RISC-V, x86-64)
 - Effect system tracks `[Concurrent]`
 - Linear types guarantee no shared mutable state
