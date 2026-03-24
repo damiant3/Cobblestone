@@ -1243,9 +1243,66 @@ sealed class X86_64CodeGen
                 X86_64Encoder.MovRR(m_text, rd, Reg.RAX);
                 return rd;
             }
+            case "fork" when args.Count == 1:
+                return EmitFork(args[0]);
+            case "await" when args.Count == 1:
+                return EmitAwait(args[0]);
+
             default:
                 return byte.MaxValue;
         }
+    }
+
+    byte EmitFork(IRExpr thunkExpr)
+    {
+        // Sequential fork: evaluate thunk immediately, store result in task slot.
+        // Real threading requires a thread-safe heap allocator (HeapReg is shared).
+        // This gets the API working; parallel execution layers on top later.
+
+        // Evaluate the thunk (a closure/function pointer)
+        byte thunk = EmitExpr(thunkExpr);
+        int savedThunk = AllocLocal();
+        StoreLocal(savedThunk, thunk);
+
+        // Allocate task slot on heap: [8B done_flag] [8B result]
+        byte taskPtr = AllocTemp();
+        X86_64Encoder.MovRR(m_text, taskPtr, HeapReg);
+        X86_64Encoder.Li(m_text, Reg.R11, 0);
+        X86_64Encoder.MovStore(m_text, HeapReg, Reg.R11, 0);  // done = 0
+        X86_64Encoder.MovStore(m_text, HeapReg, Reg.R11, 8);  // result = 0
+        X86_64Encoder.AddRI(m_text, HeapReg, 16);
+        int savedTask = AllocLocal();
+        StoreLocal(savedTask, taskPtr);
+
+        // Call thunk(null): thunk is a function pointer, call with RDI=0
+        byte thunkLoaded = LoadLocal(savedThunk);
+        X86_64Encoder.Li(m_text, Reg.RDI, 0);  // arg = null
+        X86_64Encoder.MovRR(m_text, Reg.R11, thunkLoaded);
+        X86_64Encoder.Call(m_text, 0); // placeholder — we need indirect call
+        // Actually, use indirect call via R11
+        m_text.RemoveRange(m_text.Count - 5, 5); // remove the placeholder Call
+        // Emit: call r11 (FF D3 for R11 = FF /2 with REX)
+        m_text.Add(0x41); // REX.B (R11 needs extension)
+        m_text.Add(0xFF);
+        m_text.Add(0xD3); // ModRM: mod=11, reg=010 (/2=call), rm=011 (R11)
+
+        // Store result (RAX) into task[8], set done flag
+        byte taskLoaded = LoadLocal(savedTask);
+        X86_64Encoder.MovStore(m_text, taskLoaded, Reg.RAX, 8);  // task[8] = result
+        X86_64Encoder.Li(m_text, Reg.R11, 1);
+        X86_64Encoder.MovStore(m_text, taskLoaded, Reg.R11, 0);  // task[0] = 1 (done)
+
+        return taskLoaded;
+    }
+
+    byte EmitAwait(IRExpr taskExpr)
+    {
+        // Sequential await: task is already done (fork runs synchronously).
+        // Just load the result from task[8].
+        byte taskPtr = EmitExpr(taskExpr);
+        byte result = AllocTemp();
+        X86_64Encoder.MovLoad(m_text, result, taskPtr, 8);
+        return result;
     }
 
     byte EmitPrintLine(List<IRExpr> args)

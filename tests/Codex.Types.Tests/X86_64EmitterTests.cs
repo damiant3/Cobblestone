@@ -354,6 +354,22 @@ public class X86_64EmitterTests
         Assert.Equal("21", output.Trim());
     }
 
+    // ── Concurrency (sequential fork/await) ─────────────────────
+
+    [Fact]
+    public void Fork_await_integer_runs_natively()
+    {
+        string? output = CompileAndRun("""
+            compute : Nothing -> Integer
+            compute (x) = 42
+
+            main : Integer
+            main = let t = fork compute in await t
+            """, "fork_x64");
+        if (output is null) return;
+        Assert.Equal("42", output.Trim());
+    }
+
     // ── Helpers ──────────────────────────────────────────────────
 
     static void AssertValidElf(byte[] bytes)
