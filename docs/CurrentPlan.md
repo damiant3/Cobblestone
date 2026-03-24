@@ -1,5 +1,3 @@
-File: docs\CurrentPlan.md
-````````markdown
 # Current Plan
 
 **Date**: 2026-03-23 (verified via system clock)
@@ -22,6 +20,7 @@ File: docs\CurrentPlan.md
 **ARM64 backend complete (2026-03-23).** Arm64Encoder, Arm64CodeGen (1,740 lines), ElfWriterArm64. `codex build --target arm64` produces ELF64 AArch64 binaries. Awaiting QEMU verification by Agent Linux.
 **Phone effects complete (2026-03-23).** 7 new effects: Network, Display, Camera, Microphone, Location, Sensors, Identity. 7 prelude files, 13 new tests, capability enforcement verified.
 **Phone hardware ready (2026-03-23).** Samsung SM-G935T (T-Mobile S7 Edge) backed up, SIM removed, OEM unlock enabled, Odin connected. TWRP build handed off to Agent Linux — no pre-built images exist for hero2qlte.
+**x86-64 backend SUMMITED (2026-03-23).** X86_64Encoder, X86_64CodeGen (~2,500 lines), ElfWriterX86_64. Self-hosted compiler compiles to 248KB x86-64 ELF and produces correct C# output running natively in WSL. 20 bugs found and fixed in one evening session (Cam + Agent Linux). No QEMU — native execution on the dev machine.
 
 The C# bootstrap compiler is locked. All forward development happens in `.codex` source.
 
@@ -31,15 +30,15 @@ The C# bootstrap compiler is locked. All forward development happens in `.codex`
 |--------|-------|
 | Self-hosted compiler | 26 files, ~4,900 lines |
 | Prelude | 23 modules, ~1,300 lines (11 type + 12 effect) |
-| Backends | 12 transpilation + IL + RISC-V native + RISC-V bare metal + WASM + ARM64 + x86-64 (in review) |
+| Backends | 12 transpilation + IL + RISC-V native + RISC-V bare metal + WASM + ARM64 + x86-64 |
 | Tests | 773 passing (40 RISC-V QEMU, 23 WASM wasmtime) |
 | Type debt | 0 |
 | Fixed point | Proven (Stage 1 = Stage 3 at 255,344 chars) |
 | Reference compiler | 🔒 Locked |
-| Binary targets | RISC-V 64 (Linux user + bare metal), WASM/WASI, ARM64 (Linux), x86-64 (Linux, pending merge) |
+| Binary targets | RISC-V 64 (Linux user + bare metal), WASM/WASI, ARM64 (Linux), x86-64 (Linux) |
 | RiscVCodeGen | 2,248 lines — register spill, closures, lists, file I/O, runtime helpers |
 | Arm64CodeGen | 1,740 lines — full IR→ARM64 codegen, callee-saved regs, heap pointer |
-| X86_64CodeGen | ~2,500 lines — closures, builtins, self-hosted compiles (runtime crash under investigation) |
+| X86_64CodeGen | ~2,500 lines — closures, builtins, 7+ param stack passing, self-hosted verified |
 | Agents | 3 (Windows/Copilot, Linux/sandbox, Cam/CLI) |
 | Phone | Samsung SM-G935T — OEM unlocked, awaiting TWRP build |
 
@@ -171,31 +170,45 @@ recursive IR walker. Found by dogfooding codex-agent.
 
 **Design doc**: `docs/Designs/CODEX-PHONE.md`
 
-### x86-64 Backend — Review & Merge (In Progress)
+### x86-64 Backend ✅ SUMMITED (2026-03-23)
 
-**Goal**: x86-64 native code generation — the broadest desktop ISA.
+**Camp II-C x86-64**: Self-hosted Codex compiler runs natively on x86-64.
 
-**Branch**: `cam/x86-64-backend` (5 unmerged commits past master, tip `296e359`)
-**Reviewer**: Agent Linux (Opus 4.6)
-**Builder**: Cam (Claude Code CLI, 1M Opus)
+248KB ELF binary, running in WSL (no QEMU). Compiles Codex source to valid C#.
+Built in one evening session — 21 commits, 20 bugs found and fixed:
 
-**Done:**
-- X86_64Encoder, ElfWriterX86_64, X86_64CodeGen (~2,500 lines total, +520 lines past master)
-- Closures, sum constructors, partial application — closure RAX clobber fixed (`834657e`)
-- 5 missing builtins ported from RISC-V: text-replace, char-code-at, char-code, code-to-char, is-letter (`296e359`)
-- text-contains, text-starts-with runtime helpers added
-- PatchCalls warning for unresolved call targets (prevents silent call+0 segfaults)
-- All 18 previously-unresolved call sites now resolve
-- Self-hosted compiler compiles to 239KB x86-64 ELF (no build errors)
-- Agent Linux review doc: `docs/reviews/x86-64-backend-review.md`
-- p_align ELF fix already on master (`5288ee8`)
+- X86_64Encoder (REX/ModR/M/SIB), ElfWriterX86_64, X86_64CodeGen (~2,500 lines)
+- Closures, sum constructors, partial application, 7+ parameter stack passing
+- All runtime helpers: itoa, str_concat, str_eq, escape_text, read_file, read_line,
+  text_to_int, list_cons, list_append, str_replace, text_contains, text_starts_with
+- 20 builtins: text-replace, char-code-at, char-code, code-to-char, is-letter,
+  char-at, substring, list-at, list-length, list-cons, list-append, And, Or, etc.
+- Region reclamation disabled (pure bump allocator, same as RISC-V before escape copy)
 
-**Remaining:**
-- Self-hosted x86-64 binary **still segfaults at runtime** — builtins compile clean but GDB trace needed from Agent Linux to verify runtime behavior
-- Agent Linux needs to run the x86-64 self-hosted binary under GDB to confirm the 5 builtins fixed the crash (or find the next bug)
-- Merge to master once runtime verified
+**Bugs fixed during summit push:**
 
-**Review doc**: `docs/reviews/x86-64-backend-review.md` (on branch, authored by Agent Linux)
+| Bug | Root Cause |
+|-----|-----------|
+| Frame layout | Callee-saved pushes after sub rsp |
+| EFLAGS clobbering | xor before setcc |
+| Register pool aliasing | R8/R9 shared between spill scratch and temps |
+| Closure heap clobber | AllocTemp ptrReg recycled before store |
+| 18 unresolved calls | 5 missing builtins from RISC-V |
+| ConstructedType | 4 codegen paths not resolving |
+| Escape copy stubs | Real per-type helpers needed |
+| Record/list/ctor AllocLocal | HeapReg in recycled temp |
+| __read_file heap bump | Didn't account for filename scratch |
+| __read_file alignment | Variable-length filename not padded to 8 |
+| Null escape helpers | Empty lists as null pointers |
+| AppendList/ConsList | Binary ops not handled |
+| R8/R9 arg conflict | Push/pop arg setup for 6-arg functions |
+| Byte overflow | Spill IDs wrapped at 224 |
+| Top-level constants | EmitName fallthrough didn't call zero-arg functions |
+| And/Or ops | Boolean logic returned 0 |
+| 7+ parameters | Stack passing for args beyond 6 registers |
+| list-at clobber | shl/add modified index register in place |
+
+Three-agent collaboration: Cam built + debugged (GDB in WSL), Agent Linux traced with GDB on sandbox, Human routed between agents.
 
 ### Camp III-A Phase 2 — Escape Analysis ✅ Phase 2a+2b (Cam)
 

@@ -223,6 +223,30 @@ that targets bare metal" and "program running in your hand."
 
 Awaiting `qemu-aarch64` verification by Agent Linux.
 
+#### x86-64 Backend ✅ (2026-03-23)
+
+The fourth native backend targets x86-64 — the dominant desktop ISA and the
+machine we develop on. X86_64Encoder (REX/ModR/M/SIB variable-length encoding),
+X86_64CodeGen (~2,500 lines), ElfWriterX86_64. Produces ELF64 x86-64 binaries
+that run natively in WSL — no QEMU, no emulation.
+
+The x86-64 backend was built and debugged to self-hosting in a single evening
+session. 21 commits, 20 bugs found and fixed. Three AI agents collaborated
+through GDB traces, hardware watchpoints, and Python single-step scripts.
+The final bug — `list-at` clobbering a callee-saved register by shifting
+the index in place — was found by a custom GDB Python script that traced
+every R15 change instruction by instruction.
+
+```
+codex build samples/hello.codex --target x86-64
+wsl ./hello          # runs natively, no QEMU
+# exit code 25 (square 5)
+```
+
+**What we carried up**: The dev machine ISA. x86-64 is what runs on the
+Windows box where all three agents work. This backend closes the loop —
+the compiler can target the machine it's developed on.
+
 ### Camp II-C: Self-Hosted Build Chain
 
 The compiler compiles itself to native code. The native compiler compiles
@@ -496,15 +520,19 @@ Camp II-C summit push: 11 bugs found and fixed in a single session across
 three agents. The compiler compiles itself on bare metal. Then ARM64 backend
 built the same day — 1,740 lines of codegen, ELF64 AArch64 binaries, wired
 into the CLI. Phone effects (7 new capabilities) and escape copy (4 region
-types) also landed on day 10. The pace hasn't slowed.
+types) also landed on day 10.
+
+Then x86-64 — the fourth native backend — in **one evening**. 21 commits,
+20 bugs found and fixed, self-hosted compiler verified running natively in
+WSL. No QEMU. The estimated "weeks" for x86-64 took hours.
 
 That pace recalibrates everything.
 
 | Camp | Visibility | Honest Estimate |
 |------|-----------|----------------|
 | II-A (IL maturity) | ✅ Summited 2026-03-21 | — |
-| II-B (Native codegen) | ✅ RISC-V + WASM + ARM64 2026-03-23 | x86-64: weeks |
-| II-C (Self-hosted native) | ✅ **Summited 2026-03-23** | — |
+| II-B (Native codegen) | ✅ RISC-V + WASM + ARM64 + x86-64 2026-03-23 | — |
+| II-C (Self-hosted native) | ✅ **Summited 2026-03-23** (RISC-V + x86-64) | — |
 | III-A (Linear allocator) | ✅ Phase 2b (escape copy), full analysis needed | Weeks |
 | III-B (Capability I/O) | ✅ 12 effects, checker, CLI enforcement | Runtime enforcement: weeks |
 | III-C (Structured concurrency) | Know it's there | Months |
