@@ -625,6 +625,8 @@ sealed class X86_64CodeGen
                     byte ptr = LoadLocal(ptrLocal);
                     X86_64Encoder.MovStore(m_text, ptr, val, i * 8);
                 }
+                // Field not found in IR — this should not happen
+                // (all record constructions include all fields)
             }
         }
 
