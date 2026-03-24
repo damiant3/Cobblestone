@@ -481,21 +481,24 @@ sealed class X86_64CodeGen
         }
 
         int totalSize = (1 + args.Count) * 8;
-        byte ptrReg = AllocTemp();
-        X86_64Encoder.MovRR(m_text, ptrReg, HeapReg);
+        byte ctorPtrLocal = AllocLocal();
+        byte ctorTmp = AllocTemp();
+        X86_64Encoder.MovRR(m_text, ctorTmp, HeapReg);
+        StoreLocal(ctorPtrLocal, ctorTmp);
         X86_64Encoder.AddRI(m_text, HeapReg, totalSize);
 
         byte tagReg = AllocTemp();
         X86_64Encoder.Li(m_text, tagReg, tag);
-        X86_64Encoder.MovStore(m_text, ptrReg, tagReg, 0);
+        X86_64Encoder.MovStore(m_text, LoadLocal(ctorPtrLocal), tagReg, 0);
 
         for (int i = 0; i < argLocals.Count; i++)
         {
             byte val = LoadLocal(argLocals[i]);
-            X86_64Encoder.MovStore(m_text, ptrReg, val, 8 + i * 8);
+            byte ptr = LoadLocal(ctorPtrLocal);
+            X86_64Encoder.MovStore(m_text, ptr, val, 8 + i * 8);
         }
 
-        return ptrReg;
+        return LoadLocal(ctorPtrLocal);
     }
 
     byte EmitPartialApplication(string funcName, List<IRExpr> capturedArgs)
@@ -589,8 +592,10 @@ sealed class X86_64CodeGen
 
         int fieldCount = rt?.Fields.Length ?? rec.Fields.Length;
         int totalSize = fieldCount * 8;
-        byte ptrReg = AllocTemp();
-        X86_64Encoder.MovRR(m_text, ptrReg, HeapReg);
+        byte ptrLocal = AllocLocal();
+        byte tmpPtr = AllocTemp();
+        X86_64Encoder.MovRR(m_text, tmpPtr, HeapReg);
+        StoreLocal(ptrLocal, tmpPtr);
         X86_64Encoder.AddRI(m_text, HeapReg, totalSize);
 
         if (rt is not null)
@@ -601,12 +606,13 @@ sealed class X86_64CodeGen
                 if (fieldMap.TryGetValue(fieldName, out byte saved))
                 {
                     byte val = LoadLocal(saved);
-                    X86_64Encoder.MovStore(m_text, ptrReg, val, i * 8);
+                    byte ptr = LoadLocal(ptrLocal);
+                    X86_64Encoder.MovStore(m_text, ptr, val, i * 8);
                 }
             }
         }
 
-        return ptrReg;
+        return LoadLocal(ptrLocal);
     }
 
     byte EmitFieldAccess(IRFieldAccess fa)
@@ -758,23 +764,26 @@ sealed class X86_64CodeGen
         }
 
         int totalSize = (1 + list.Elements.Length) * 8;
-        byte ptrReg = AllocTemp();
-        X86_64Encoder.MovRR(m_text, ptrReg, HeapReg);
+        byte listPtrLocal = AllocLocal();
+        byte listTmp = AllocTemp();
+        X86_64Encoder.MovRR(m_text, listTmp, HeapReg);
+        StoreLocal(listPtrLocal, listTmp);
         X86_64Encoder.AddRI(m_text, HeapReg, totalSize);
 
         // Store length
         byte lenReg = AllocTemp();
         X86_64Encoder.Li(m_text, lenReg, list.Elements.Length);
-        X86_64Encoder.MovStore(m_text, ptrReg, lenReg, 0);
+        X86_64Encoder.MovStore(m_text, LoadLocal(listPtrLocal), lenReg, 0);
 
         // Store elements
         for (int i = 0; i < elemLocals.Count; i++)
         {
             byte val = LoadLocal(elemLocals[i]);
-            X86_64Encoder.MovStore(m_text, ptrReg, val, 8 + i * 8);
+            byte ptr = LoadLocal(listPtrLocal);
+            X86_64Encoder.MovStore(m_text, ptr, val, 8 + i * 8);
         }
 
-        return ptrReg;
+        return LoadLocal(listPtrLocal);
     }
 
     // ── Regions ──────────────────────────────────────────────────
