@@ -15,7 +15,7 @@
 **Camp III-A (Linear Allocator) Phase 1 complete.** IRRegion node + WASM region-based allocator merged.
 **Camp III-A Phase 2a complete.** IRRegion `NeedsEscapeCopy` annotation (Cam).
 **Camp III-A Phase 2b complete.** RISC-V escape copy for Text, Record, List, Sum regions (Cam). Reviewed, merged.
-**Camp III-A Phase 2c complete (2026-03-24).** Region reclamation enabled on all native backends (x86-64, ARM64, WASM extended). Escape copy deep-copies return values to parent region on function exit. Closures skip regions (capture types unknown).
+**Camp III-A Phase 2c complete (2026-03-24).** Sub-expression regions: each let binding's initializer wrapped in its own region. Scalar-returning expressions reclaim intermediates immediately at the let boundary. Heap-returning expressions skip reclamation (value survives in bound variable). Four lines in Lowering.cs. Verified by Agent Linux: self-hosted RISC-V compiler produces correct C# under QEMU.
 **Register spill verified (2026-03-23).** AllocLocal saturation bug found by Linux review, spill-to-stack + IRRegion SP fix verified under QEMU — 40/40 RISC-V tests green.
 **Camp II-C (Self-Hosted Native) SUMMITED (2026-03-23).** The Codex compiler, compiled to a 227KB RISC-V ELF, compiles Codex source to valid C# under QEMU. No .NET, no CLR, no JIT. Native machine code, start to finish.
 **ARM64 backend complete (2026-03-23).** Arm64Encoder, Arm64CodeGen (1,740 lines), ElfWriterArm64. `codex build --target arm64` produces ELF64 AArch64 binaries. **QEMU-verified (2026-03-24)** — 33/33 tests green under qemu-aarch64. Two bugs found and fixed by Agent Linux: `__escape_text` null guard (CBZ→CBNZ), `__str_concat` byte copy. ELF section headers added for Android bionic compatibility.
