@@ -99,12 +99,12 @@ static class Arm64Encoder
         // ARM64 logical immediate encoding: N:immr:imms
         // For 0xFFF (12 bits): N=1, immr=0, imms=0b001011 (= 11)
         // For 0xFF (8 bits): N=1, immr=0, imms=0b000111 (= 7)
-        // For -8 (= 0xFFFFFFFFFFFFFF8): N=1, immr=0, imms=0b111100 (= 60)
+        // For -8 (= 0xFFFFFFFFFFFFFFF8): N=1, immr=61, imms=60 (61 ones rotated right by 61)
         // General formula for contiguous bit patterns is complex.
         // We only support the specific values used by the code generator.
         uint n_immr_imms;
         if (imm == -8)
-            n_immr_imms = (1u << 22) | (0u << 16) | (60u << 10); // N=1 immr=0 imms=111100
+            n_immr_imms = (1u << 22) | (61u << 16) | (60u << 10); // N=1 immr=61 imms=60
         else if (imm == 0xFF)
             n_immr_imms = (1u << 22) | (0u << 16) | (7u << 10);
         else if (imm == 0xFFF)
@@ -241,7 +241,11 @@ static class Arm64Encoder
     // Pseudo-instructions
     // ═════════════════════════════════════════════════════════════
 
-    public static uint Mov(uint rd, uint rm) => Or(rd, Arm64Reg.Xzr, rm);
+    public static uint Mov(uint rd, uint rm)
+    {
+        if (rm == Arm64Reg.Sp || rd == Arm64Reg.Sp) return AddImm(rd, rm, 0);
+        return Or(rd, Arm64Reg.Xzr, rm);
+    }
 
     // MOV Xd, #imm (alias for MOVZ when non-negative, MOVN when negative)
     // For values that fit in 16 bits.

@@ -1,3 +1,5 @@
+File: docs\OldStatus\X86-64-REVIEW-HANDOFF.md
+````````markdown
 # x86-64 Backend Review & Merge — Handoff Summary
 
 **Date**: 2026-03-23 (verified via `Get-Date`)
@@ -82,6 +84,35 @@ Merged `cam/x86-64-backend` into `master` via `--no-ff` and pushed to `origin/ma
 2. Fix any encoding bugs found during verification.
 3. Implement remaining builtins (`__str_concat`, `__itoa`, `__read_file`).
 4. Test with self-hosted compiler samples.
+5. Implement closures / partial application.
+6. Handle large frame sizes (>127 bytes spill space) with imm32 encoding.
+
+---
+
+## Native WSL Verification (2026-03-23)
+
+First correct x86-64 execution on real hardware — verified natively in WSL, no QEMU needed.
+
+| Program | Expected | Result |
+|---------|----------|--------|
+| `factorial(5)` | 120 | 120 ✓ |
+| `factorial(10)` | 3628800 (exit 0, mod 256 = 0) | exit 0 ✓ |
+| `sum-to(5)` | 15 | 15 ✓ |
+| `square(5)` | 25 | 25 ✓ |
+
+### Bugs Found and Fixed
+
+1. **Frame layout collision** — Callee-saved pushes after `sub rsp` overlapped spill slots.
+   Spill slot writes clobbered saved registers when functions had >5 locals.
+   *Fix*: Reordered prologue to push callee-saved regs *before* `sub rsp,spillFrame`.
+
+2. **EFLAGS clobbering** — `xor` used to zero a register before `setcc` destroyed the
+   comparison flags set by the preceding `cmp`/`test` instruction.
+   *Fix*: Use `movzx` or reorder to avoid clearing flags before `setcc`.
+
+3. **Register pool aliasing** — `LoadLocal` and `AllocTemp` both handed out RAX/RCX,
+   causing the second operand of a binary op to clobber the first.
+   *Fix*: Separated the register pools so temporaries don't alias local-load destinations.
 
 ---
 

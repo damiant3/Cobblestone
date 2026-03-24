@@ -93,7 +93,7 @@ sealed class ElfWriter
         w.Write(textVaddr);                    // p_paddr
         w.Write((ulong)textSection.Length);     // p_filesz
         w.Write((ulong)textSection.Length);     // p_memsz
-        w.Write((ulong)16);                    // p_align
+        w.Write((ulong)0x1000);                // p_align
 
         // ── Program Header 1: .rodata (r--) ───────────────────
         w.Write(PT_LOAD);                      // p_type

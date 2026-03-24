@@ -63,7 +63,7 @@ sealed class ElfWriterX86_64
         w.Write(textVaddr);
         w.Write((ulong)textSection.Length);
         w.Write((ulong)textSection.Length);
-        w.Write((ulong)16);
+        w.Write((ulong)0x1000);
 
         // ── Program Header 1: .rodata (r--) ───────────────────
         w.Write(PT_LOAD);
@@ -73,7 +73,7 @@ sealed class ElfWriterX86_64
         w.Write(rodataVaddr);
         w.Write((ulong)rodataSection.Length);
         w.Write((ulong)rodataSection.Length);
-        w.Write((ulong)16);
+        w.Write((ulong)0x1000);
 
         // ── Pad to text offset ─────────────────────────────────
         while (ms.Position < textFileOffset)
