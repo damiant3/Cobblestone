@@ -36,10 +36,11 @@ A Codex program running on the Samsung S7 Edge (SM-G935T).
 
 - ARM64 backend: QEMU-verified, 33/33 tests green
 - Phone effects: 7 capabilities with compile-time enforcement
-- Boot image packer validated, awaiting human go/no-go for flash
-- After flash: postmarketOS → `adb push` ARM64 binary → run natively
+- TWRP recovery image packed and validated (Samsung boot header, DTB, SEANDROIDENFORCE)
+- Awaiting human go/no-go for Odin flash
+- After flash: TWRP recovery → `adb push` ARM64 binary → run on Android/Linux shell
 
-**Design**: `docs/Designs/CODEX-PHONE.md`
+**Design**: `docs/Designs/CODEX-PHONE.md` | **Flash procedure**: `docs/PHONE-WIPE.md`
 
 ---
 
