@@ -1054,11 +1054,13 @@ sealed class X86_64CodeGen
                     StoreLocal(savedList, list);
                     byte idx = EmitExpr(args[1]);
                     byte listLoaded = LoadLocal(savedList);
-                    // elem = list[8 + idx*8]
-                    X86_64Encoder.ShlRI(m_text, idx, 3);
-                    X86_64Encoder.AddRR(m_text, idx, listLoaded);
+                    // elem = list[8 + idx*8] — use temp to avoid clobbering idx
+                    byte addr = AllocTemp();
+                    X86_64Encoder.MovRR(m_text, addr, idx);
+                    X86_64Encoder.ShlRI(m_text, addr, 3);
+                    X86_64Encoder.AddRR(m_text, addr, listLoaded);
                     byte rd = AllocTemp();
-                    X86_64Encoder.MovLoad(m_text, rd, idx, 8);
+                    X86_64Encoder.MovLoad(m_text, rd, addr, 8);
                     return rd;
                 }
                 return byte.MaxValue;
