@@ -1698,6 +1698,14 @@ sealed class X86_64CodeGen
         // __escape_text: rdi=old text ptr → rax=new text ptr
         m_functionOffsets["__escape_text"] = m_text.Count;
 
+        // Null guard
+        X86_64Encoder.TestRR(m_text, Reg.RDI, Reg.RDI);
+        int notNullText = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+        X86_64Encoder.Li(m_text, Reg.RAX, 0);
+        X86_64Encoder.Ret(m_text);
+        PatchJcc(notNullText, m_text.Count);
+
         X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RDI, 0);
         X86_64Encoder.MovRR(m_text, Reg.RAX, HeapReg);
         X86_64Encoder.MovRR(m_text, Reg.R11, Reg.RCX);
@@ -2091,6 +2099,14 @@ sealed class X86_64CodeGen
     void EmitEscapeHelperPrologue(string name)
     {
         m_functionOffsets[name] = m_text.Count;
+        // Null guard: if rdi == 0, return 0 immediately (empty list/null field)
+        X86_64Encoder.TestRR(m_text, Reg.RDI, Reg.RDI);
+        int notNull = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+        X86_64Encoder.Li(m_text, Reg.RAX, 0);
+        X86_64Encoder.Ret(m_text);
+        PatchJcc(notNull, m_text.Count);
+
         X86_64Encoder.PushR(m_text, Reg.RBX);
         X86_64Encoder.PushR(m_text, Reg.R12);
         X86_64Encoder.PushR(m_text, Reg.R13);
