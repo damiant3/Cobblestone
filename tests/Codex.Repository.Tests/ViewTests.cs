@@ -649,6 +649,162 @@ public class ViewCompositionTests : IDisposable
     }
 }
 
+public class ViewImportTests : IDisposable
+{
+    readonly string m_tempDir;
+    readonly FactStore m_store;
+
+    public ViewImportTests()
+    {
+        m_tempDir = Path.Combine(Path.GetTempPath(), "codex_import_test_" + Guid.NewGuid().ToString("N")[..8]);
+        m_store = FactStore.Init(m_tempDir);
+    }
+
+    public void Dispose()
+    {
+        try { Directory.Delete(m_tempDir, true); } catch { }
+    }
+
+    Fact StoreDef(string source)
+    {
+        Fact def = Fact.CreateDefinition(source, "alice", "init");
+        m_store.Store(def);
+        return def;
+    }
+
+    [Fact]
+    public void ImportFact_by_hash_roundtrips()
+    {
+        Fact external = StoreDef("json-parse s = s");
+        m_store.CreateView("app");
+        m_store.ImportFactIntoView("app", external.Hash, "json-parser");
+
+        IReadOnlyList<ImportedFact> imports = m_store.GetViewImports("app");
+        Assert.Single(imports);
+        Assert.Equal(external.Hash, imports[0].Hash);
+        Assert.Equal("json-parser", imports[0].LocalName);
+    }
+
+    [Fact]
+    public void ImportFact_missing_hash_throws()
+    {
+        ContentHash fakeHash = ContentHash.Of("nonexistent-fact-content");
+        m_store.CreateView("app");
+        Assert.Throws<InvalidOperationException>(
+            () => m_store.ImportFactIntoView("app", fakeHash, "missing"));
+    }
+
+    [Fact]
+    public void ImportFact_non_definition_throws()
+    {
+        ContentHash defHash = ContentHash.Of("some-def");
+        Fact trust = Fact.CreateTrust(defHash, TrustDegree.Reviewed, "bob", "ok");
+        m_store.Store(trust);
+        m_store.CreateView("app");
+        Assert.Throws<InvalidOperationException>(
+            () => m_store.ImportFactIntoView("app", trust.Hash, "bad"));
+    }
+
+    [Fact]
+    public void ImportFact_duplicate_local_name_throws()
+    {
+        Fact def1 = StoreDef("a = 1");
+        Fact def2 = StoreDef("b = 2");
+        m_store.CreateView("app");
+        m_store.ImportFactIntoView("app", def1.Hash, "util");
+        Assert.Throws<InvalidOperationException>(
+            () => m_store.ImportFactIntoView("app", def2.Hash, "util"));
+    }
+
+    [Fact]
+    public void RemoveImport_removes_by_local_name()
+    {
+        Fact def = StoreDef("x = 1");
+        m_store.CreateView("app");
+        m_store.ImportFactIntoView("app", def.Hash, "x-lib");
+
+        m_store.RemoveImportFromView("app", "x-lib");
+
+        IReadOnlyList<ImportedFact> imports = m_store.GetViewImports("app");
+        Assert.Empty(imports);
+    }
+
+    [Fact]
+    public void RemoveImport_missing_name_is_silent()
+    {
+        m_store.CreateView("app");
+        m_store.RemoveImportFromView("app", "nonexistent");
+        Assert.Empty(m_store.GetViewImports("app"));
+    }
+
+    [Fact]
+    public void GetViewImports_empty_view_returns_empty()
+    {
+        m_store.CreateView("app");
+        Assert.Empty(m_store.GetViewImports("app"));
+    }
+
+    [Fact]
+    public void Consistency_check_includes_imports()
+    {
+        Fact local = StoreDef("local-fn x = x");
+        Fact external = StoreDef("imported-fn y = y + 1");
+
+        m_store.CreateView("app");
+        m_store.UpdateNamedView("app", "local-fn", local.Hash);
+        m_store.ImportFactIntoView("app", external.Hash, "imported-fn");
+
+        ImportTestChecker checker = new();
+        ViewConsistencyResult result = m_store.CheckViewConsistency("app", checker);
+
+        Assert.True(result.IsConsistent);
+        Assert.Equal(2, checker.ReceivedDefinitions.Count);
+        Assert.Contains(checker.ReceivedDefinitions, d => d.Name == "imported-fn");
+    }
+
+    [Fact]
+    public void Consistency_check_fails_on_missing_import()
+    {
+        m_store.CreateView("app");
+
+        // Manually write an imports file referencing a hash not in the store
+        string importsPath = Path.Combine(m_tempDir, ".codex", "views", "app.imports.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(importsPath)!);
+        File.WriteAllText(importsPath,
+            "[{\"hash\":\"" + ContentHash.Of("ghost").ToHex() + "\",\"localName\":\"ghost\"}]");
+
+        ImportTestChecker checker = new();
+        ViewConsistencyResult result = m_store.CheckViewConsistency("app", checker);
+
+        Assert.False(result.IsConsistent);
+        Assert.Contains(result.Errors, e => e.Contains("ghost") && e.Contains("missing fact"));
+    }
+
+    sealed class ImportTestChecker : IViewConsistencyChecker
+    {
+        public List<ViewDefinition> ReceivedDefinitions { get; } = [];
+
+        public ViewConsistencyResult Check(IReadOnlyList<ViewDefinition> definitions)
+        {
+            ReceivedDefinitions.AddRange(definitions);
+            return new ViewConsistencyResult(true, []);
+        }
+    }
+
+    [Fact]
+    public void DeleteView_cleans_up_imports()
+    {
+        Fact def = StoreDef("x = 1");
+        m_store.CreateView("temp");
+        m_store.ImportFactIntoView("temp", def.Hash, "x-lib");
+
+        m_store.DeleteView("temp");
+
+        string importsPath = Path.Combine(m_tempDir, ".codex", "views", "temp.imports.json");
+        Assert.False(File.Exists(importsPath));
+    }
+}
+
 public class ProofFactTests : IDisposable
 {
     readonly string m_tempDir;
