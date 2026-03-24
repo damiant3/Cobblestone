@@ -218,8 +218,10 @@ sealed class X86_64CodeGen
             }
         }
 
+        // Top-level constant or zero-arg function — call it
+        EmitCallTo(name.Name);
         byte rd = AllocTemp();
-        X86_64Encoder.Li(m_text, rd, 0);
+        X86_64Encoder.MovRR(m_text, rd, Reg.RAX);
         return rd;
     }
 
@@ -276,6 +278,18 @@ sealed class X86_64CodeGen
                 return EmitComparison(X86_64Encoder.CC_LE, lReg, rReg, bin.Left.Type);
             case IRBinaryOp.GtEq:
                 return EmitComparison(X86_64Encoder.CC_GE, lReg, rReg, bin.Left.Type);
+            case IRBinaryOp.And:
+                X86_64Encoder.MovRR(m_text, rd, lReg);
+                X86_64Encoder.AndRR(m_text, rd, rReg);
+                break;
+            case IRBinaryOp.Or:
+                // Boolean OR: (lReg | rReg) != 0
+                X86_64Encoder.MovRR(m_text, rd, lReg);
+                X86_64Encoder.AddRR(m_text, rd, rReg);
+                X86_64Encoder.CmpRI(m_text, rd, 0);
+                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_NE, rd);
+                X86_64Encoder.MovzxByteSelf(m_text, rd);
+                break;
             case IRBinaryOp.AppendText:
                 X86_64Encoder.MovRR(m_text, Reg.RDI, lReg);
                 X86_64Encoder.MovRR(m_text, Reg.RSI, rReg);
@@ -298,6 +312,7 @@ sealed class X86_64CodeGen
                 X86_64Encoder.MovRR(m_text, consResult, Reg.RAX);
                 return consResult;
             default:
+                Console.Error.WriteLine($"X86_64 WARNING: unhandled binary op {bin.Op}");
                 X86_64Encoder.Li(m_text, rd, 0);
                 break;
         }
