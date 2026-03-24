@@ -59,13 +59,15 @@ every concurrent operation has a parent scope. `[Concurrent]` is an effect.
 - Lambda syntax (`\x -> body`) in both reference and self-hosted compilers
 - Lowering intercepts `fork`/`await` calls → specialized IR nodes
 - Real parallelism in C# emitter: `Task.Run`, `Task.WhenAll`, `Task.WhenAny`
+- JS backend: `Promise.resolve().then()`, `Promise.all`, `Promise.race`
+- Python backend: `ThreadPoolExecutor.submit`, `.map()`, `as_completed`
+- Go backend: goroutines + channels
 - All tests green (134 syntax, 472 types, 103 repository)
 
 **What remains (Phase 4):**
 - Work-stealing scheduler in native backends (RISC-V, x86-64)
 - Effect system tracks `[Concurrent]`
 - Linear types guarantee no shared mutable state
-- Additional transpilation targets (JS `Promise`, etc.)
 
 **Design**: `docs/Designs/CAMP-IIIC-STRUCTURED-CONCURRENCY.md`
 
