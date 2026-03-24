@@ -205,6 +205,7 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
 
         CheckExpr(lam.Body);
 
+        // Check lambda's own linear parameters
         foreach (Parameter param in lam.Parameters)
         {
             if (m_linearBindings[param.Name.Value] is not null
@@ -218,6 +219,20 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
                         "(linear resources must be consumed)",
                         lam.Span);
                 }
+            }
+        }
+
+        // Detect closure capture of outer linear variables (CDX2043)
+        foreach (KeyValuePair<string, CodexType> kv in savedLinear)
+        {
+            int beforeCount = savedCounts[kv.Key] ?? 0;
+            int afterCount = m_usageCounts[kv.Key] ?? 0;
+            if (afterCount > beforeCount)
+            {
+                m_diagnostics.Warning("CDX2043",
+                    $"Linear variable '{kv.Key}' is captured by a closure. " +
+                    "The closure must be used exactly once to preserve linearity.",
+                    lam.Span);
             }
         }
 
