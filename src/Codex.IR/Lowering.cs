@@ -221,7 +221,12 @@ public sealed class Lowering(
         for (int i = loweredBindings.Count - 1; i >= 0; i--)
         {
             (string name, IRExpr value) = loweredBindings[i];
-            body = new IRLet(name, value.Type, value, body);
+            // Wrap each let binding's value in its own region.
+            // Scalar-returning expressions reclaim intermediates immediately.
+            // Heap-returning expressions skip reclamation (handled by EmitRegion).
+            bool letNeedsEscape = IRRegion.TypeNeedsHeapEscape(value.Type);
+            IRExpr regionValue = new IRRegion(value, value.Type, letNeedsEscape);
+            body = new IRLet(name, value.Type, regionValue, body);
         }
 
         m_localEnv = savedEnv;
