@@ -1625,8 +1625,144 @@ sealed class Arm64CodeGen
 
     void EmitStrReplaceHelper()
     {
+        // __str_replace: x0=text, x1=old, x2=new → x0=result string
+        // Scans text for occurrences of old, replaces with new.
         m_functionOffsets["__str_replace"] = m_instructions.Count;
-        // Simplified stub: return original text (full impl needed for self-host)
+
+        // Frame: 80 bytes — save LR + 8 slots
+        Emit(Arm64Encoder.SubImm(Arm64Reg.Sp, Arm64Reg.Sp, 80));
+        Emit(Arm64Encoder.Str(Arm64Reg.Lr, Arm64Reg.Sp, 72));
+        Emit(Arm64Encoder.Str(Arm64Reg.X0, Arm64Reg.Sp, 0));   // [sp+0]  = text
+        Emit(Arm64Encoder.Str(Arm64Reg.X1, Arm64Reg.Sp, 8));   // [sp+8]  = old
+        Emit(Arm64Encoder.Str(Arm64Reg.X2, Arm64Reg.Sp, 16));  // [sp+16] = new
+
+        // Load lengths
+        Emit(Arm64Encoder.Ldr(Arm64Reg.X9, Arm64Reg.X0, 0));   // x9  = text_len
+        Emit(Arm64Encoder.Ldr(Arm64Reg.X10, Arm64Reg.X1, 0));  // x10 = old_len
+        Emit(Arm64Encoder.Ldr(Arm64Reg.X11, Arm64Reg.X2, 0));  // x11 = new_len
+        Emit(Arm64Encoder.Str(Arm64Reg.X9, Arm64Reg.Sp, 24));  // [sp+24] = text_len
+        Emit(Arm64Encoder.Str(Arm64Reg.X10, Arm64Reg.Sp, 32)); // [sp+32] = old_len
+        Emit(Arm64Encoder.Str(Arm64Reg.X11, Arm64Reg.Sp, 40)); // [sp+40] = new_len
+
+        // Result buffer at current heap ptr
+        Emit(Arm64Encoder.Mov(Arm64Reg.X12, HeapReg));          // x12 = result base
+        Emit(Arm64Encoder.Str(Arm64Reg.X12, Arm64Reg.Sp, 48)); // [sp+48] = result base
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X13, 0)) Emit(insn); // x13 = out_len
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X14, 0)) Emit(insn); // x14 = source index i
+
+        // ── Main loop ──
+        int mainLoop = m_instructions.Count;
+
+        // if i >= text_len → done
+        Emit(Arm64Encoder.Ldr(Arm64Reg.X9, Arm64Reg.Sp, 24));
+        Emit(Arm64Encoder.Cmp(Arm64Reg.X14, Arm64Reg.X9));
+        int doneCheck = m_instructions.Count;
+        Emit(Arm64Encoder.Nop()); // B.GE → done
+
+        // Check if old_len == 0 → skip match
+        Emit(Arm64Encoder.Ldr(Arm64Reg.X10, Arm64Reg.Sp, 32));
+        int skipMatch = m_instructions.Count;
+        Emit(Arm64Encoder.Nop()); // CBZ → no_match
+
+        // Check if i + old_len > text_len → can't match
+        Emit(Arm64Encoder.Add(Arm64Reg.X11, Arm64Reg.X14, Arm64Reg.X10));
+        Emit(Arm64Encoder.Cmp(Arm64Reg.X11, Arm64Reg.X9));
+        int cantMatch = m_instructions.Count;
+        Emit(Arm64Encoder.Nop()); // B.GT → no_match
+
+        // Compare text[i..i+old_len] with old
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X15, 0)) Emit(insn); // j = 0
+        Emit(Arm64Encoder.Ldr(Arm64Reg.X0, Arm64Reg.Sp, 0));   // text_ptr
+        Emit(Arm64Encoder.Ldr(Arm64Reg.X1, Arm64Reg.Sp, 8));   // old_ptr
+
+        int cmpLoop = m_instructions.Count;
+        // if j >= old_len → full match
+        Emit(Arm64Encoder.Cmp(Arm64Reg.X15, Arm64Reg.X10));
+        int matchFound = m_instructions.Count;
+        Emit(Arm64Encoder.Nop()); // B.GE → match
+
+        // Load text[i+j+8] and old[j+8]
+        Emit(Arm64Encoder.Add(Arm64Reg.X11, Arm64Reg.X14, Arm64Reg.X15)); // i + j
+        Emit(Arm64Encoder.Add(Arm64Reg.X11, Arm64Reg.X0, Arm64Reg.X11)); // text + i + j
+        Emit(Arm64Encoder.Ldrb(Arm64Reg.X11, Arm64Reg.X11, 8));          // text_data[i+j]
+        Emit(Arm64Encoder.Add(Arm64Reg.X3, Arm64Reg.X1, Arm64Reg.X15)); // old + j
+        Emit(Arm64Encoder.Ldrb(Arm64Reg.X3, Arm64Reg.X3, 8));            // old_data[j]
+
+        Emit(Arm64Encoder.Cmp(Arm64Reg.X11, Arm64Reg.X3));
+        int mismatch = m_instructions.Count;
+        Emit(Arm64Encoder.Nop()); // B.NE → no_match
+
+        Emit(Arm64Encoder.AddImm(Arm64Reg.X15, Arm64Reg.X15, 1));
+        Emit(Arm64Encoder.B((cmpLoop - m_instructions.Count) * 4));
+
+        // ── Match found: copy new_str bytes to output ──
+        int matchLabel = m_instructions.Count;
+        m_instructions[matchFound] = Arm64Encoder.Bcond(Arm64Encoder.CondGe,
+            (matchLabel - matchFound) * 4);
+
+        Emit(Arm64Encoder.Ldr(Arm64Reg.X2, Arm64Reg.Sp, 16));  // new_ptr
+        Emit(Arm64Encoder.Ldr(Arm64Reg.X11, Arm64Reg.Sp, 40)); // new_len
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X15, 0)) Emit(insn); // j = 0
+        Emit(Arm64Encoder.Ldr(Arm64Reg.X12, Arm64Reg.Sp, 48)); // result base
+
+        int copyNewLoop = m_instructions.Count;
+        Emit(Arm64Encoder.Cmp(Arm64Reg.X15, Arm64Reg.X11));
+        int copyNewExit = m_instructions.Count;
+        Emit(Arm64Encoder.Nop()); // B.GE → done copying
+
+        Emit(Arm64Encoder.Add(Arm64Reg.X3, Arm64Reg.X2, Arm64Reg.X15));
+        Emit(Arm64Encoder.Ldrb(Arm64Reg.X3, Arm64Reg.X3, 8));            // new_data[j]
+        Emit(Arm64Encoder.Add(Arm64Reg.X4, Arm64Reg.X12, Arm64Reg.X13));
+        Emit(Arm64Encoder.Strb(Arm64Reg.X3, Arm64Reg.X4, 8));            // out[out_len]
+        Emit(Arm64Encoder.AddImm(Arm64Reg.X13, Arm64Reg.X13, 1));
+        Emit(Arm64Encoder.AddImm(Arm64Reg.X15, Arm64Reg.X15, 1));
+        Emit(Arm64Encoder.B((copyNewLoop - m_instructions.Count) * 4));
+
+        int copyNewTarget = m_instructions.Count;
+        m_instructions[copyNewExit] = Arm64Encoder.Bcond(Arm64Encoder.CondGe,
+            (copyNewTarget - copyNewExit) * 4);
+
+        // Advance source by old_len
+        Emit(Arm64Encoder.Ldr(Arm64Reg.X10, Arm64Reg.Sp, 32));
+        Emit(Arm64Encoder.Add(Arm64Reg.X14, Arm64Reg.X14, Arm64Reg.X10));
+        Emit(Arm64Encoder.B((mainLoop - m_instructions.Count) * 4));
+
+        // ── No match: copy one byte ──
+        int noMatchLabel = m_instructions.Count;
+        m_instructions[skipMatch] = Arm64Encoder.Cbz(Arm64Reg.X10,
+            (noMatchLabel - skipMatch) * 4);
+        m_instructions[cantMatch] = Arm64Encoder.Bcond(Arm64Encoder.CondGt,
+            (noMatchLabel - cantMatch) * 4);
+        m_instructions[mismatch] = Arm64Encoder.Bcond(Arm64Encoder.CondNe,
+            (noMatchLabel - mismatch) * 4);
+
+        Emit(Arm64Encoder.Ldr(Arm64Reg.X0, Arm64Reg.Sp, 0));    // text_ptr
+        Emit(Arm64Encoder.Add(Arm64Reg.X9, Arm64Reg.X0, Arm64Reg.X14));
+        Emit(Arm64Encoder.Ldrb(Arm64Reg.X9, Arm64Reg.X9, 8));   // text_data[i]
+        Emit(Arm64Encoder.Ldr(Arm64Reg.X12, Arm64Reg.Sp, 48));  // result base
+        Emit(Arm64Encoder.Add(Arm64Reg.X10, Arm64Reg.X12, Arm64Reg.X13));
+        Emit(Arm64Encoder.Strb(Arm64Reg.X9, Arm64Reg.X10, 8));  // out[out_len]
+        Emit(Arm64Encoder.AddImm(Arm64Reg.X13, Arm64Reg.X13, 1));
+        Emit(Arm64Encoder.AddImm(Arm64Reg.X14, Arm64Reg.X14, 1));
+        Emit(Arm64Encoder.B((mainLoop - m_instructions.Count) * 4));
+
+        // ── Done ──
+        int doneLabel = m_instructions.Count;
+        m_instructions[doneCheck] = Arm64Encoder.Bcond(Arm64Encoder.CondGe,
+            (doneLabel - doneCheck) * 4);
+
+        // Store length and finalize
+        Emit(Arm64Encoder.Ldr(Arm64Reg.X12, Arm64Reg.Sp, 48));  // result base
+        Emit(Arm64Encoder.Str(Arm64Reg.X13, Arm64Reg.X12, 0));  // store length
+
+        // Bump heap: HeapReg = result + align8(8 + out_len)
+        Emit(Arm64Encoder.AddImm(Arm64Reg.X0, Arm64Reg.X13, 15));
+        Emit(Arm64Encoder.AndImm(Arm64Reg.X0, Arm64Reg.X0, -8));
+        Emit(Arm64Encoder.Add(HeapReg, Arm64Reg.X12, Arm64Reg.X0));
+
+        Emit(Arm64Encoder.Mov(Arm64Reg.X0, Arm64Reg.X12));      // return result
+        Emit(Arm64Encoder.Ldr(Arm64Reg.Lr, Arm64Reg.Sp, 72));
+        Emit(Arm64Encoder.AddImm(Arm64Reg.Sp, Arm64Reg.Sp, 80));
         Emit(Arm64Encoder.Ret());
     }
 
