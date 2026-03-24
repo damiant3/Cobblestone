@@ -1256,10 +1256,10 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.Mov(Arm64Reg.X14, Arm64Reg.X1));       // save ptr2
         Emit(Arm64Encoder.Add(Arm64Reg.X15, Arm64Reg.X9, Arm64Reg.X10)); // total
 
+        // Allocate: x0 = HeapReg; HeapReg += align8(8 + total)
         Emit(Arm64Encoder.Mov(Arm64Reg.X0, HeapReg));
-        Emit(Arm64Encoder.AddImm(Arm64Reg.X11, Arm64Reg.X15, 1));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X12, 8)) Emit(insn);
-        Emit(Arm64Encoder.Mul(Arm64Reg.X11, Arm64Reg.X11, Arm64Reg.X12));
+        Emit(Arm64Encoder.AddImm(Arm64Reg.X11, Arm64Reg.X15, 15));
+        Emit(Arm64Encoder.AndImm(Arm64Reg.X11, Arm64Reg.X11, -8));
         Emit(Arm64Encoder.Add(HeapReg, HeapReg, Arm64Reg.X11));
 
         Emit(Arm64Encoder.Str(Arm64Reg.X15, Arm64Reg.X0, 0));

@@ -14,6 +14,10 @@ sealed class ElfWriterArm64
     const ulong LinuxBaseAddress = 0x400000;  // standard AArch64 Linux base
     const int ElfHeaderSize = 64;
     const int ProgramHeaderSize = 56;
+    const int SectionHeaderSize = 64;
+
+    // Minimal .shstrtab: "\0.shstrtab\0" = 11 bytes
+    static readonly byte[] ShstrtabData = { 0, 0x2E, 0x73, 0x68, 0x73, 0x74, 0x72, 0x74, 0x61, 0x62, 0 };
 
     public static byte[] WriteExecutable(byte[] textSection, byte[] rodataSection, ulong entryOffset)
     {
@@ -27,7 +31,13 @@ sealed class ElfWriterArm64
         int rodataFileOffset = Align(textFileOffset + textSection.Length, 4096);
         ulong rodataVaddr = LinuxBaseAddress + (ulong)rodataFileOffset;
 
-        int totalSize = rodataFileOffset + rodataSection.Length;
+        // .shstrtab section data follows rodata
+        int shstrtabOffset = Align(rodataFileOffset + rodataSection.Length, 8);
+        int shstrtabSize = ShstrtabData.Length;
+
+        // Section header table follows .shstrtab (2 entries: SHT_NULL + .shstrtab)
+        int shOffset = Align(shstrtabOffset + shstrtabSize, 8);
+        int totalSize = shOffset + SectionHeaderSize * 2;
 
         MemoryStream ms = new(totalSize);
         BinaryWriter w = new(ms);
@@ -45,14 +55,14 @@ sealed class ElfWriterArm64
         w.Write((uint)1);   // EV_CURRENT
         w.Write(entryPoint);
         w.Write((ulong)ElfHeaderSize);
-        w.Write((ulong)0);  // no section headers
-        w.Write((uint)0);   // e_flags
+        w.Write((ulong)shOffset);        // e_shoff
+        w.Write((uint)0);                // e_flags
         w.Write((ushort)ElfHeaderSize);
         w.Write((ushort)ProgramHeaderSize);
         w.Write((ushort)phdrCount);
-        w.Write((ushort)0);
-        w.Write((ushort)0);
-        w.Write((ushort)0);
+        w.Write((ushort)SectionHeaderSize); // e_shentsize
+        w.Write((ushort)2);              // e_shnum: SHT_NULL + .shstrtab
+        w.Write((ushort)1);              // e_shstrndx: index 1 = .shstrtab
 
         // ── Program Header 0: .text (r-x) ─────────────────────
         w.Write(PT_LOAD);
@@ -84,6 +94,30 @@ sealed class ElfWriterArm64
             w.Write((byte)0);
 
         w.Write(rodataSection);
+
+        // ── .shstrtab data ─────────────────────────────────────
+        while (ms.Position < shstrtabOffset)
+            w.Write((byte)0);
+        w.Write(ShstrtabData);
+
+        // ── Section Header Table ───────────────────────────────
+        while (ms.Position < shOffset)
+            w.Write((byte)0);
+
+        // Entry 0: SHT_NULL (64 bytes of zeros)
+        w.Write(new byte[SectionHeaderSize]);
+
+        // Entry 1: .shstrtab (SHT_STRTAB)
+        w.Write((uint)1);                  // sh_name: offset 1 in shstrtab (".shstrtab")
+        w.Write((uint)3);                  // sh_type: SHT_STRTAB
+        w.Write((ulong)0);                 // sh_flags
+        w.Write((ulong)0);                 // sh_addr
+        w.Write((ulong)shstrtabOffset);    // sh_offset
+        w.Write((ulong)shstrtabSize);      // sh_size
+        w.Write((uint)0);                  // sh_link
+        w.Write((uint)0);                  // sh_info
+        w.Write((ulong)1);                 // sh_addralign
+        w.Write((ulong)0);                 // sh_entsize
 
         return ms.ToArray();
     }
