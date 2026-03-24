@@ -1,11 +1,11 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using Xunit;
 
 namespace Codex.Types.Tests;
 
 public class Arm64EmitterTests
 {
-    // ── ELF structure tests ──────────────────────────────────────
+    // â”€â”€ ELF structure tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     [Fact]
     public void Simple_integer_emits_elf_bytes()
@@ -88,7 +88,7 @@ public class Arm64EmitterTests
         AssertValidElf(bytes);
     }
 
-    // ── QEMU execution tests (require qemu-aarch64) ─────────────
+    // â”€â”€ QEMU execution tests (require qemu-aarch64) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     [Fact]
     public void Integer_42_runs_under_qemu()
@@ -497,7 +497,7 @@ public class Arm64EmitterTests
         Assert.Equal("5", output.Trim());
     }
 
-    // ── Helper infrastructure ────────────────────────────────────
+    // â”€â”€ Helper infrastructure â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     static void AssertValidElf(byte[] bytes)
     {
@@ -529,9 +529,13 @@ public class Arm64EmitterTests
             string elfPath = Path.Combine(tempDir, moduleName);
             File.WriteAllBytes(elfPath, bytes);
 
-            // Make executable and run under qemu-aarch64
-            ProcessStartInfo psi = new("bash",
-                $"-c \"chmod +x '{elfPath}' && qemu-aarch64 '{elfPath}'; EXIT=$?; exit $EXIT\"")
+            string wslPath = ToWslPath(elfPath);
+            string wslTmp = $"/tmp/codex_a64_{moduleName}_{Guid.NewGuid().ToString("N")[..8]}";
+
+            // Copy into WSL filesystem, make executable, run under qemu-aarch64
+            // Use 'wsl' explicitly â€” 'bash' on Windows may be Git Bash, not WSL
+            ProcessStartInfo psi = new("wsl",
+                $"bash -c \"cp '{wslPath}' '{wslTmp}' && chmod +x '{wslTmp}' && qemu-aarch64 '{wslTmp}'; EXIT=$?; rm -f '{wslTmp}'; exit $EXIT\"")
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -563,7 +567,7 @@ public class Arm64EmitterTests
     {
         try
         {
-            ProcessStartInfo psi = new("bash", "-c \"qemu-aarch64 --version\"")
+            ProcessStartInfo psi = new("wsl", "bash -c \"qemu-aarch64 --version\"")
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -579,5 +583,17 @@ public class Arm64EmitterTests
         {
             return false;
         }
+    }
+
+    static string ToWslPath(string windowsPath)
+    {
+        string full = Path.GetFullPath(windowsPath);
+        if (full.Length >= 2 && full[1] == ':')
+        {
+            char drive = char.ToLowerInvariant(full[0]);
+            string rest = full[2..].Replace('\\', '/');
+            return $"/mnt/{drive}{rest}";
+        }
+        return full.Replace('\\', '/');
     }
 }
