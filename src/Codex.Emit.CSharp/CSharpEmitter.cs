@@ -35,6 +35,7 @@ public sealed partial class CSharpEmitter : ICodeEmitter
         sb.AppendLine("using System.Collections.Generic;");
         sb.AppendLine("using System.IO;");
         sb.AppendLine("using System.Linq;");
+        sb.AppendLine("using System.Threading.Tasks;");
         sb.AppendLine();
 
         string className = "Codex_" + SanitizeIdentifier(module.Name.Leaf.Value);
