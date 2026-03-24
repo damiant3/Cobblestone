@@ -1178,10 +1178,10 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.Mov(Arm64Reg.X14, Arm64Reg.X1));       // save ptr2
         Emit(Arm64Encoder.Add(Arm64Reg.X15, Arm64Reg.X9, Arm64Reg.X10)); // total
 
+        // Allocate: x0 = HeapReg; HeapReg += align8(8 + total)
         Emit(Arm64Encoder.Mov(Arm64Reg.X0, HeapReg));
-        Emit(Arm64Encoder.AddImm(Arm64Reg.X11, Arm64Reg.X15, 1));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X12, 8)) Emit(insn);
-        Emit(Arm64Encoder.Mul(Arm64Reg.X11, Arm64Reg.X11, Arm64Reg.X12));
+        Emit(Arm64Encoder.AddImm(Arm64Reg.X11, Arm64Reg.X15, 15));
+        Emit(Arm64Encoder.AndImm(Arm64Reg.X11, Arm64Reg.X11, -8));
         Emit(Arm64Encoder.Add(HeapReg, HeapReg, Arm64Reg.X11));
 
         Emit(Arm64Encoder.Str(Arm64Reg.X15, Arm64Reg.X0, 0));
@@ -1208,12 +1208,9 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.Cmp(Arm64Reg.X2, Arm64Reg.X10));
         int exit2 = m_instructions.Count;
         Emit(Arm64Encoder.Nop());
-        Emit(Arm64Encoder.Add(Arm64Reg.X3, Arm64Reg.X14, Arm64Reg.X2));
-        Emit(Arm64Encoder.Ldr(Arm64Reg.X3, Arm64Reg.X3, 8));
-        Emit(Arm64Encoder.Add(Arm64Reg.X4, Arm64Reg.X12, Arm64Reg.X2));
-        Emit(Arm64Encoder.Add(Arm64Reg.X4, Arm64Reg.X0, Arm64Reg.X4));
-        Emit(Arm64Encoder.Str(Arm64Reg.X3, Arm64Reg.X4, 8));
-        Emit(Arm64Encoder.AddImm(Arm64Reg.X2, Arm64Reg.X2, 8));
+        Emit(Arm64Encoder.LdrbReg(Arm64Reg.X3, Arm64Reg.X12, Arm64Reg.X2));
+        Emit(Arm64Encoder.StrbReg(Arm64Reg.X3, Arm64Reg.X11, Arm64Reg.X2));
+        Emit(Arm64Encoder.AddImm(Arm64Reg.X2, Arm64Reg.X2, 1));
         Emit(Arm64Encoder.B((loop2 - m_instructions.Count) * 4));
         m_instructions[exit2] = Arm64Encoder.Bcond(Arm64Encoder.CondGe, (m_instructions.Count - exit2) * 4);
 
