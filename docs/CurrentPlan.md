@@ -32,7 +32,7 @@ The C# bootstrap compiler is locked. All forward development happens in `.codex`
 | Self-hosted compiler | 26 files, ~4,900 lines |
 | Prelude | 23 modules, ~1,300 lines (11 type + 12 effect) |
 | Backends | 12 transpilation + IL + RISC-V native + RISC-V bare metal + WASM + ARM64 + x86-64 |
-| Tests | 793+ passing (40 RISC-V QEMU, 31 WASM wasmtime, 22 x86-64 WSL native) |
+| Tests | 810+ passing (40 RISC-V QEMU, 31 WASM wasmtime, 25 x86-64 WSL native, 16 ARM64) |
 | Type debt | 0 |
 | Fixed point | Proven (Stage 1 = Stage 3 at 255,344 chars) |
 | Reference compiler | 🔒 Locked |
