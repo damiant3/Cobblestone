@@ -740,6 +740,13 @@ sealed class Arm64CodeGen
         if (region.Type is FunctionType)
             return EmitExpr(region.Body);
 
+        // Heap-returning functions: skip region reclamation.
+        // Pattern matching extracts pointers to intermediate heap allocations
+        // that are still live in locals — reclaiming corrupts them.
+        // Only scalar-returning regions are safe to reclaim.
+        if (region.NeedsEscapeCopy)
+            return EmitExpr(region.Body);
+
         // Save heap pointer (region entry)
         uint savedHeap = AllocLocal();
         uint hpTmp = AllocTemp();
@@ -748,22 +755,9 @@ sealed class Arm64CodeGen
 
         uint bodyResult = EmitExpr(region.Body);
 
-        if (!region.NeedsEscapeCopy)
-        {
-            // Scalar return — restore HeapReg, value survives in register
-            Emit(Arm64Encoder.Mov(HeapReg, LoadLocal(savedHeap)));
-            return bodyResult;
-        }
-
-        // Save result pointer before restoring heap
-        uint savedResult = AllocLocal();
-        StoreLocal(savedResult, bodyResult);
-
-        // Restore HeapReg (reclaim region — old data still physically present)
+        // Scalar return — restore HeapReg, value survives in register
         Emit(Arm64Encoder.Mov(HeapReg, LoadLocal(savedHeap)));
-
-        // Deep copy result from old region to parent
-        return EmitEscapeCopy(savedResult, region.Type);
+        return bodyResult;
     }
 
     uint EmitList(IRList list)

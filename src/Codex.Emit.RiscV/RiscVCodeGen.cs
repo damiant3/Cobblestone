@@ -845,6 +845,15 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         if (region.Type is FunctionType)
             return EmitExpr(region.Body);
 
+        // Heap-returning functions: skip region reclamation.
+        // Deep-copying the return value is correct, but pattern matching can
+        // extract pointers to intermediate allocations that are still live in
+        // locals. Those pointers become dangling after heap restore.
+        // Safe reclamation requires tracking all live heap refs, not just the
+        // return value. For now, only reclaim scalar-returning regions.
+        if (region.NeedsEscapeCopy)
+            return EmitExpr(region.Body);
+
         // Save heap pointer (region entry)
         uint savedHeap = AllocLocal();
         uint hpTmp = AllocTemp();
@@ -853,22 +862,9 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
         uint bodyResult = EmitExpr(region.Body);
 
-        if (!region.NeedsEscapeCopy)
-        {
-            // Scalar return — restore S1, value survives in register
-            Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(savedHeap)));
-            return bodyResult;
-        }
-
-        // Save result pointer before restoring S1
-        uint savedResult = AllocLocal();
-        StoreLocal(savedResult, bodyResult);
-
-        // Restore S1 (reclaim region — old data still physically present)
+        // Scalar return — restore S1, value survives in register
         Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(savedHeap)));
-
-        // Deep copy result from old region to parent
-        return EmitEscapeCopy(savedResult, region.Type);
+        return bodyResult;
     }
 
     uint EmitEscapeCopy(uint srcLocal, CodexType type)
