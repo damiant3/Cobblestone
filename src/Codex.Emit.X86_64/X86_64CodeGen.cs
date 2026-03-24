@@ -283,6 +283,20 @@ sealed class X86_64CodeGen
                 byte concatResult = AllocTemp();
                 X86_64Encoder.MovRR(m_text, concatResult, Reg.RAX);
                 return concatResult;
+            case IRBinaryOp.AppendList:
+                X86_64Encoder.MovRR(m_text, Reg.RDI, lReg);
+                X86_64Encoder.MovRR(m_text, Reg.RSI, rReg);
+                EmitCallTo("__list_append");
+                byte appendResult = AllocTemp();
+                X86_64Encoder.MovRR(m_text, appendResult, Reg.RAX);
+                return appendResult;
+            case IRBinaryOp.ConsList:
+                X86_64Encoder.MovRR(m_text, Reg.RDI, lReg);
+                X86_64Encoder.MovRR(m_text, Reg.RSI, rReg);
+                EmitCallTo("__list_cons");
+                byte consResult = AllocTemp();
+                X86_64Encoder.MovRR(m_text, consResult, Reg.RAX);
+                return consResult;
             default:
                 X86_64Encoder.Li(m_text, rd, 0);
                 break;
