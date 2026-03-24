@@ -939,6 +939,8 @@ sealed class X86_64CodeGen
                     return rd;
                 }
                 return byte.MaxValue;
+            case "show" when args.Count == 1:
+                return EmitShow(args[0]);
             case "text-to-integer":
                 if (args.Count >= 1)
                 {
@@ -1243,6 +1245,44 @@ sealed class X86_64CodeGen
         byte rd = AllocTemp();
         X86_64Encoder.Li(m_text, rd, 0);
         return rd;
+    }
+
+    byte EmitShow(IRExpr arg)
+    {
+        byte valReg = EmitExpr(arg);
+        switch (arg.Type)
+        {
+            case IntegerType:
+                X86_64Encoder.MovRR(m_text, Reg.RDI, valReg);
+                EmitCallTo("__itoa");
+                byte iRd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, iRd, Reg.RAX);
+                return iRd;
+            case BooleanType:
+            {
+                int trueOff = AddRodataString("True");
+                int falseOff = AddRodataString("False");
+                int savedVal = AllocLocal();
+                StoreLocal(savedVal, valReg);
+                byte val = LoadLocal(savedVal);
+                X86_64Encoder.TestRR(m_text, val, val);
+                int jeFalse = m_text.Count;
+                X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
+                byte trRd = AllocTemp();
+                EmitLoadRodataAddress(trRd, trueOff);
+                int jmpEnd = m_text.Count;
+                X86_64Encoder.Jmp(m_text, 0);
+                int falseLbl = m_text.Count;
+                PatchJcc(jeFalse, falseLbl);
+                byte flRd = AllocTemp();
+                EmitLoadRodataAddress(flRd, falseOff);
+                int endLbl = m_text.Count;
+                PatchJmp(jmpEnd, endLbl);
+                return flRd;
+            }
+            default:
+                return valReg;
+        }
     }
 
     void EmitPrintText(byte ptrReg)

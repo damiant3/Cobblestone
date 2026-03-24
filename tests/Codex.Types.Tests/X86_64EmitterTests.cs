@@ -264,7 +264,7 @@ public class X86_64EmitterTests
         Assert.Equal("hello world", output.Trim());
     }
 
-    [Fact(Skip = "show builtin returns empty text in x86-64 — needs investigation")]
+    [Fact]
     public void Show_integer_runs_natively()
     {
         string? output = CompileAndRun("""
