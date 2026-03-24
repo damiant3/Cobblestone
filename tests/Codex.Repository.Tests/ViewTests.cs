@@ -805,6 +805,150 @@ public class ViewImportTests : IDisposable
     }
 }
 
+public class TrustLatticeTests : IDisposable
+{
+    readonly string m_tempDir;
+    readonly FactStore m_store;
+
+    public TrustLatticeTests()
+    {
+        m_tempDir = Path.Combine(Path.GetTempPath(), "codex_trust_test_" + Guid.NewGuid().ToString("N")[..8]);
+        m_store = FactStore.Init(m_tempDir);
+    }
+
+    public void Dispose()
+    {
+        try { Directory.Delete(m_tempDir, true); } catch { }
+    }
+
+    Fact StoreDef(string source, string author = "alice")
+    {
+        Fact def = Fact.CreateDefinition(source, author, "init");
+        m_store.Store(def);
+        return def;
+    }
+
+    [Fact]
+    public void Direct_vouch_gives_full_weight()
+    {
+        Fact def = StoreDef("f x = x");
+        Fact trust = Fact.CreateTrust(def.Hash, TrustDegree.Verified, "bob", "reviewed");
+        m_store.Store(trust);
+
+        TrustScore score = m_store.ComputeTrust(def.Hash, "bob");
+        Assert.Equal(0.75, score.Weight);
+        Assert.Contains("direct vouch", score.Reason);
+    }
+
+    [Fact]
+    public void No_vouch_gives_zero()
+    {
+        Fact def = StoreDef("f x = x");
+        TrustScore score = m_store.ComputeTrust(def.Hash, "bob");
+        Assert.Equal(0.0, score.Weight);
+    }
+
+    [Fact]
+    public void Direct_vouch_critical_gives_1()
+    {
+        Fact def = StoreDef("f x = x");
+        Fact trust = Fact.CreateTrust(def.Hash, TrustDegree.Critical, "bob", "critical");
+        m_store.Store(trust);
+
+        TrustScore score = m_store.ComputeTrust(def.Hash, "bob");
+        Assert.Equal(1.0, score.Weight);
+    }
+
+    [Fact]
+    public void Transitive_trust_decays()
+    {
+        // Alice creates a fact
+        Fact def = StoreDef("f x = x", "alice");
+
+        // Alice vouches for her own fact (Verified = 0.75)
+        Fact aliceVouch = Fact.CreateTrust(def.Hash, TrustDegree.Verified, "alice", "self-review");
+        m_store.Store(aliceVouch);
+
+        // Bob vouches for something by alice (Tested = 0.5) — establishes trust in alice
+        Fact aliceDef2 = StoreDef("g y = y", "alice");
+        Fact bobVouchAlice = Fact.CreateTrust(aliceDef2.Hash, TrustDegree.Tested, "bob", "alice seems good");
+        m_store.Store(bobVouchAlice);
+
+        // Bob's trust in def = bob's trust in alice (0.5) * alice's vouch weight (0.75) = 0.375
+        TrustScore score = m_store.ComputeTrust(def.Hash, "bob");
+        Assert.True(score.Weight > 0.0, "Should have transitive trust");
+        Assert.True(score.Weight <= 0.5, $"Transitive trust should decay, got {score.Weight}");
+    }
+
+    [Fact]
+    public void Trust_threshold_rejects_untrusted_imports()
+    {
+        Fact local = StoreDef("local-fn x = x");
+        Fact external = StoreDef("external-fn y = y", "stranger");
+
+        m_store.CreateView("app");
+        m_store.UpdateNamedView("app", "local-fn", local.Hash);
+        m_store.ImportFactIntoView("app", external.Hash, "ext");
+
+        // No vouches for external — trust is 0.0
+        TrustChecker checker = new();
+        ViewConsistencyResult result = m_store.CheckViewConsistencyWithTrust("app", checker, 0.5, "bob");
+
+        Assert.False(result.IsConsistent);
+        Assert.Contains(result.Errors, e => e.Contains("trust") && e.Contains("0.00"));
+    }
+
+    [Fact]
+    public void Trust_threshold_accepts_vouched_imports()
+    {
+        Fact external = StoreDef("external-fn y = y", "alice");
+
+        // Bob vouches for alice's fact
+        Fact vouch = Fact.CreateTrust(external.Hash, TrustDegree.Verified, "bob", "reviewed");
+        m_store.Store(vouch);
+
+        m_store.CreateView("app");
+        m_store.ImportFactIntoView("app", external.Hash, "ext");
+
+        TrustChecker checker = new();
+        ViewConsistencyResult result = m_store.CheckViewConsistencyWithTrust("app", checker, 0.5, "bob");
+
+        Assert.True(result.IsConsistent);
+    }
+
+    [Fact]
+    public void Trust_threshold_zero_skips_check()
+    {
+        Fact external = StoreDef("f x = x", "stranger");
+        m_store.CreateView("app");
+        m_store.ImportFactIntoView("app", external.Hash, "ext");
+
+        TrustChecker checker = new();
+        ViewConsistencyResult result = m_store.CheckViewConsistencyWithTrust("app", checker, 0.0, "bob");
+
+        Assert.True(result.IsConsistent);
+    }
+
+    [Fact]
+    public void Multiple_vouchers_takes_max()
+    {
+        Fact def = StoreDef("f x = x");
+        Fact v1 = Fact.CreateTrust(def.Hash, TrustDegree.Reviewed, "bob", "quick look");
+        Fact v2 = Fact.CreateTrust(def.Hash, TrustDegree.Verified, "bob", "deep review");
+        m_store.Store(v1);
+        m_store.Store(v2);
+
+        TrustScore score = m_store.ComputeTrust(def.Hash, "bob");
+        Assert.Equal(0.75, score.Weight); // max(Reviewed=0.25, Verified=0.75)
+    }
+
+    sealed class TrustChecker : IViewConsistencyChecker
+    {
+        public ViewConsistencyResult Check(IReadOnlyList<ViewDefinition> definitions)
+            => new(true, []);
+    }
+}
+
 public class ProofFactTests : IDisposable
 {
     readonly string m_tempDir;
