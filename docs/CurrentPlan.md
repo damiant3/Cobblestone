@@ -58,14 +58,14 @@ every concurrent operation has a parent scope. `[Concurrent]` is an effect.
 - `par : (a → b) → List a → List b` and `race : List (Nothing → a) → a`
 - Lambda syntax (`\x -> body`) in both reference and self-hosted compilers
 - Lowering intercepts `fork`/`await` calls → specialized IR nodes
-- Sequential C# handlers: `Task.FromResult`, `.Result`, `Select`, thunk invocation
-- All tests green (134 syntax, 470 types, 86 repository)
+- Real parallelism in C# emitter: `Task.Run`, `Task.WhenAll`, `Task.WhenAny`
+- All tests green (134 syntax, 472 types, 103 repository)
 
 **What remains (Phase 4):**
 - Work-stealing scheduler in native backends (RISC-V, x86-64)
 - Effect system tracks `[Concurrent]`
 - Linear types guarantee no shared mutable state
-- Transpilation targets (C# `Task.Run`, JS `Promise`, etc.)
+- Additional transpilation targets (JS `Promise`, etc.)
 
 **Design**: `docs/Designs/CAMP-IIIC-STRUCTURED-CONCURRENCY.md`
 
@@ -85,8 +85,13 @@ extends across trust boundaries.
 - `CheckViewConsistencyWithTrust` gates imports on trust threshold
 - 94 repository tests green (8 new trust tests)
 
-**What remains (Phase 3-4):**
-- Proposal workflow (replace pull requests)
+**Phase 3 DONE** (2026-03-24, Cam):
+- Proposal workflow: `CreateViewProposal` / `ParseViewProposal` / `PreviewProposal`
+- `CheckProposalConsistency` validates proposed view state
+- `ApplyViewProposal` requires stakeholder consensus before applying
+- 103 repository tests green (9 new proposal tests)
+
+**What remains (Phase 4):**
 - Federated sync protocol (networking)
 
 **Design**: `docs/Designs/V3-REPOSITORY-FEDERATION.md`
@@ -96,7 +101,7 @@ extends across trust boundaries.
 Sub-expression regions handle scalar returns. Remaining:
 - Heap-returning reclamation (copy-above-then-compact infrastructure exists in `#if false`)
 - Closure escape (capture types unknown at region exit)
-- LinearityChecker integration for formal soundness proof
+- LinearityChecker: CDX2043 closure capture warning DONE (2026-03-24, Cam)
 
 ---
 
