@@ -970,6 +970,48 @@ sealed class X86_64CodeGen
                 X86_64Encoder.MovRR(m_text, rd, Reg.RAX);
                 return rd;
             }
+            case "write-file" when args.Count == 2:
+            {
+                byte pathReg = EmitExpr(args[0]);
+                int savedPath = AllocLocal();
+                StoreLocal(savedPath, pathReg);
+                byte contentReg = EmitExpr(args[1]);
+                // Simplified: write content to stdout
+                X86_64Encoder.MovLoad(m_text, Reg.RDX, contentReg, 0); // len
+                X86_64Encoder.Lea(m_text, Reg.RSI, contentReg, 8);     // data
+                X86_64Encoder.Li(m_text, Reg.RAX, 1); // sys_write
+                X86_64Encoder.Li(m_text, Reg.RDI, 1); // stdout
+                X86_64Encoder.Syscall(m_text);
+                byte wrRd = AllocTemp();
+                X86_64Encoder.Li(m_text, wrRd, 0);
+                return wrRd;
+            }
+            case "file-exists" when args.Count == 1:
+            {
+                EmitExpr(args[0]); // evaluate for side effects
+                byte feRd = AllocTemp();
+                X86_64Encoder.Li(m_text, feRd, 1); // simplified: always true
+                return feRd;
+            }
+            case "get-args" when args.Count == 0:
+            {
+                // Return empty list (heap-allocated [length=0])
+                byte gaRd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, gaRd, HeapReg);
+                X86_64Encoder.MovStore(m_text, HeapReg, Reg.RAX, 0); // store 0 at [heap]
+                X86_64Encoder.Li(m_text, Reg.R11, 0);
+                X86_64Encoder.MovStore(m_text, HeapReg, Reg.R11, 0);
+                X86_64Encoder.AddRI(m_text, HeapReg, 8);
+                return gaRd;
+            }
+            case "current-dir" when args.Count == 0:
+            {
+                // Return "."
+                int dotOff = AddRodataString(".");
+                byte cdRd = AllocTemp();
+                EmitLoadRodataAddress(cdRd, dotOff);
+                return cdRd;
+            }
             case "char-at":
                 if (args.Count >= 2)
                 {
