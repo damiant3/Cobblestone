@@ -1,8 +1,7 @@
 # Camp III-A Phase 2 — Escape Analysis for Regions
 
-**Status**: Phase 2a–2b implemented (RISC-V escape copy for Text, Record, List, Sum; ConstructedType resolved)
-**Prerequisite for**: Re-enabling RISC-V region reclamation
-**Date**: 2026-03-23
+**Status**: Phase 2a–2c implemented. Region reclamation enabled on RISC-V, x86-64, ARM64. WASM extended.
+**Date**: 2026-03-24
 
 ---
 
@@ -11,11 +10,6 @@
 Region-based allocation works by saving the heap pointer on region entry
 and restoring it on exit, bulk-freeing everything allocated in that region.
 But some values must survive the region — they "escape."
-
-Currently:
-- **WASM**: Handles text escape only (copies string to parent region before exit)
-- **RISC-V**: Regions disabled entirely — all allocations are permanent (1MB bump)
-- **IL**: No-op (CLR GC handles it)
 
 The 1MB bump allocator works for compilation but won't scale to long-running
 programs or constrained environments.
@@ -37,7 +31,7 @@ In Codex today, (1) is the common case. (2) exists (closures are implemented).
 
 ## Approach: Type-Driven Escape Analysis
 
-Codex already has the type information to determine what escapes:
+The return type alone determines what escapes. No flow-sensitive analysis needed.
 
 ### Scalars never allocate
 - `Integer`, `Boolean`, `Number` — live in registers/stack, not heap
@@ -50,14 +44,11 @@ Codex already has the type information to determine what escapes:
 - If a function returns `List Token`, the list spine + all elements + their fields escape
 
 ### The IR already knows the return type
-`IRRegion(Body, Type)` — `Type` is the return type. The escape analysis
-only needs to walk this type to determine what to copy.
+`IRRegion(Body, Type, NeedsEscapeCopy)` — `Type` is the return type.
 
 ---
 
 ## Escape Copy Strategy
-
-For each type that can escape:
 
 | Type | Escape action |
 |------|--------------|
@@ -66,90 +57,94 @@ For each type that can escape:
 | Record | Deep copy: allocate in parent, copy each field recursively |
 | Sum type | Deep copy: copy tag + active variant's fields |
 | List | Deep copy: walk spine, copy each cons cell + element |
-| Function (closure) | Deep copy: copy closure struct + captured values |
+| Function (closure) | Skip region (capture types unknown at region exit) |
 
-### Deep Copy Complexity
-
-Records and sum types have finite depth — walk the type definition.
-Lists are recursive — need a copy loop.
-Closures capture a fixed set of values — walk the capture list.
-
-The WASM text escape is already doing this for Text. The pattern generalizes.
+Specialized per-type helper functions are emitted at compile time.
+Helpers may enqueue additional helpers for nested types (e.g., a record
+containing a list field triggers emission of both record and list helpers).
 
 ---
 
-## Implementation Plan
+## Implementation Status
 
-### Phase 2a: Annotate IRRegion with escape info
+### Phase 2a: IRRegion annotation ✅
 
 ```csharp
-public sealed record IRRegion(
-    IRExpr Body,
-    CodexType Type,
-    bool NeedsEscapeCopy)  // true if Type contains heap-allocated data
-    : IRExpr(Type);
+public sealed record IRRegion(IRExpr Body, CodexType Type, bool NeedsEscapeCopy) : IRExpr(Type)
+{
+    public static bool TypeNeedsHeapEscape(CodexType type) => type is
+        TextType or RecordType or SumType or ListType or ConstructedType
+        or FunctionType { Return: not null };
+}
 ```
 
-Add a static helper `NeedsHeapEscape(CodexType)` that returns true for
-Text, RecordType, SumType, ListType, FunctionType (closures).
+Set in `Lowering.cs` when wrapping function bodies.
 
-### Phase 2b: Implement escape copy in RISC-V
+### Phase 2b: RISC-V escape copy ✅
 
-```
-enter_region:
-    sd s1, offset(sp)      ; save heap pointer
+Full deep copy for Text, Record, List, Sum types. Standalone helper
+functions with A0=in/A0=out convention. Region reclamation enabled.
+~300 lines in `RiscVCodeGen.cs`.
 
-    ... body ...
+### Phase 2c: All backends ✅ (2026-03-24)
 
-exit_region:
-    mv t0, a0              ; save return value
-    ld s1, offset(sp)      ; restore heap pointer (reclaim region)
-    ; if return type needs escape copy:
-    call __deep_copy        ; copy return value from old region to parent
-    mv a0, t0              ; return copied value
-```
+| Backend | Region reclamation | Escape copy |
+|---------|-------------------|-------------|
+| **RISC-V** | ✅ Enabled | Deep copy: Text, Record, List, Sum |
+| **x86-64** | ✅ Enabled | Deep copy: Text, Record, List, Sum |
+| **ARM64** | ✅ Enabled | Deep copy: Text, Record, List, Sum |
+| **WASM** | ✅ Enabled | Text deep copy + flat copy for scalar-only records/sums |
+| **IL** | N/A | CLR GC handles it |
 
-The `__deep_copy` runtime helper would dispatch on a type tag or be
-specialized per return type at compile time.
+**x86-64**: EmitRegion mirrors RISC-V pattern (save HeapReg R10, emit body,
+restore, call escape helper). Escape helpers were already written during
+the x86-64 summit push — just needed the EmitRegion wiring.
 
-### Phase 2c: Generalize WASM escape beyond text
+**ARM64**: Full escape infrastructure built from scratch (~200 lines):
+EmitRegion, EmitEscapeCopy, ResolveType, per-type helpers (Record, List,
+Sum), `__escape_text` runtime helper. Uses X19-X22 as working registers
+in helpers, X28 as HeapReg.
 
-Extend `EmitRegion` in WASM to handle records, sum types, and lists
-using the same deep-copy pattern already proven for text.
+**WASM**: Extended beyond text-only. Records/sums with scalar-only fields
+get flat memcopy escape (safe because no pointers to become dangling).
+Types with nested heap pointers still skip the region. Full WASM deep
+copy would require function-table-based helpers — deferred.
+
+### Closures
+
+All backends skip regions for `FunctionType` returns. Closure capture
+types are not statically known at region exit, so region reclamation
+is not safe. This is the remaining gap — closures allocated in a region
+will never be reclaimed until the program exits.
 
 ---
 
 ## Open Questions
 
-1. **Compile-time vs runtime dispatch**: Should escape copy be specialized
-   per function (emitter generates type-specific copy code) or generic
-   (runtime helper walks type tags)? Specialized is faster but bloats code.
+1. **Closure escape**: Requires tracking what each closure captures and
+   deep-copying the environment. Interacts with trampoline implementation.
 
-2. **Closure escapes**: When a closure captures a value that was allocated
-   in the current region, the closure's environment must be copied too.
-   This interacts with the trampoline-based closure implementation.
+2. **Nested regions**: Phase 1 only has function-level regions. Sub-function
+   regions (around `let` bindings) would need escape analysis within a
+   single function, not just at return boundaries.
 
-3. **Nested regions**: Phase 1 only has function-level regions. When we add
-   sub-function regions (around `let` bindings), escape analysis must handle
-   values escaping to the parent region within the same function, not just
-   at function return boundaries.
+3. **LinearityChecker integration**: Linear values consumed exactly once
+   could provide formal proof that non-escaping values are dead at region
+   exit. This would close the soundness gap.
 
-4. **LinearityChecker integration**: Linear values are consumed exactly once.
-   A linear value that's returned (escapes) is consumed by the caller.
-   Can we use linearity to prove that non-escaping values are dead at
-   region exit? This would be a formal safety guarantee.
+4. **WASM deep copy for nested types**: Records/sums/lists with heap-pointer
+   fields need recursive copy in WASM. Would require emitting WASM helper
+   functions via the function table.
 
 ---
 
-## What's Already Built
+## What's Built
 
-- `IRRegion` node wraps every function body (Lowering.cs:68-71)
-- WASM region stack with enter/exit and text escape promotion
-- RISC-V region infrastructure (currently no-op, but save/restore S1 pattern exists)
+- `IRRegion` node wraps every function body (Lowering.cs)
+- RISC-V: full escape copy + region reclamation (RiscVCodeGen.cs)
+- x86-64: full escape copy + region reclamation (X86_64CodeGen.cs)
+- ARM64: full escape copy + region reclamation (Arm64CodeGen.cs)
+- WASM: text + scalar-only record/sum escape (WasmModuleBuilder.Emit.cs)
+- IL: no-op (CLR GC handles it)
 - `LinearityChecker` tracks consume-once semantics
-- Type definitions accessible via `m_typeDefMap` in lowering and `IRModule.TypeDefinitions` in emitters
-
-## Dependencies
-
-- None. Can be implemented independently of V4 or other work.
-- Should be tested with the self-hosted compiler (the real workload).
+- Type definitions accessible via `IRModule.TypeDefinitions` in all emitters

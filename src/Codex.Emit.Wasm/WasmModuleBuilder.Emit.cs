@@ -529,8 +529,18 @@ sealed partial class WasmModuleBuilder
     void EmitRegion(MemoryStream body, IRRegion region,
         ValueMap<string, int> localMap, ref int nextLocal, List<byte> localTypes)
     {
-        // Records, sum types, lists: skip region (deep copy needed — Phase 3)
+        // Types with nested heap pointers need deep copy — skip region for now
         if (region.Type is RecordType or SumType or ListType)
+        {
+            if (TypeHasNestedHeapPointers(region.Type))
+            {
+                EmitExpr(body, region.Body, localMap, ref nextLocal, localTypes, region.Type);
+                return;
+            }
+        }
+
+        // Closures: skip region (capture types unknown at region exit)
+        if (region.Type is FunctionType)
         {
             EmitExpr(body, region.Body, localMap, ref nextLocal, localTypes, region.Type);
             return;
@@ -542,28 +552,35 @@ sealed partial class WasmModuleBuilder
         // Emit body
         EmitExpr(body, region.Body, localMap, ref nextLocal, localTypes, region.Type);
 
-        if (region.Type is TextType)
+        if (region.NeedsEscapeCopy)
         {
-            // Text escape promotion: copy the returned string to the parent region
-            // The old data is still physically in memory after region exit
+            // Heap escape promotion: copy the return value to the parent region
             int oldPtr = nextLocal++; localTypes.Add(WasmI32);
-            int len = nextLocal++; localTypes.Add(WasmI32);
-            int totalSize = nextLocal++; localTypes.Add(WasmI32);
+            int totalSizeLocal = nextLocal++; localTypes.Add(WasmI32);
             int newPtr = nextLocal++; localTypes.Add(WasmI32);
 
             // Save result pointer
             body.WriteByte(OpLocalSet); WriteUnsignedLeb128(body, oldPtr);
 
-            // Load string length (4-byte prefix)
-            body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, oldPtr);
-            body.WriteByte(OpI32Load); body.WriteByte(0x02); WriteUnsignedLeb128(body, 0);
-            body.WriteByte(OpLocalSet); WriteUnsignedLeb128(body, len);
-
-            // totalSize = 4 + len
-            body.WriteByte(OpI32Const); WriteSignedLeb128(body, 4);
-            body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, len);
-            body.WriteByte(OpI32Add);
-            body.WriteByte(OpLocalSet); WriteUnsignedLeb128(body, totalSize);
+            if (region.Type is TextType)
+            {
+                // Text: totalSize = 4 + len (4-byte length prefix + data)
+                int len = nextLocal++; localTypes.Add(WasmI32);
+                body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, oldPtr);
+                body.WriteByte(OpI32Load); body.WriteByte(0x02); WriteUnsignedLeb128(body, 0);
+                body.WriteByte(OpLocalSet); WriteUnsignedLeb128(body, len);
+                body.WriteByte(OpI32Const); WriteSignedLeb128(body, 4);
+                body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, len);
+                body.WriteByte(OpI32Add);
+                body.WriteByte(OpLocalSet); WriteUnsignedLeb128(body, totalSizeLocal);
+            }
+            else
+            {
+                // Record/sum with scalar-only fields: fixed-size flat copy
+                int flatSize = ComputeFlatSize(region.Type);
+                body.WriteByte(OpI32Const); WriteSignedLeb128(body, flatSize);
+                body.WriteByte(OpLocalSet); WriteUnsignedLeb128(body, totalSizeLocal);
+            }
 
             // Exit region (heap_ptr restored — old data still physically present)
             EmitRegionExit(body);
@@ -572,12 +589,12 @@ sealed partial class WasmModuleBuilder
             body.WriteByte(OpGlobalGet); WriteUnsignedLeb128(body, m_heapPtrGlobalIndex);
             body.WriteByte(OpLocalSet); WriteUnsignedLeb128(body, newPtr);
             body.WriteByte(OpGlobalGet); WriteUnsignedLeb128(body, m_heapPtrGlobalIndex);
-            body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, totalSize);
+            body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, totalSizeLocal);
             body.WriteByte(OpI32Add);
             body.WriteByte(OpGlobalSet); WriteUnsignedLeb128(body, m_heapPtrGlobalIndex);
 
-            // Copy bytes from oldPtr to newPtr (length prefix + data)
-            EmitMemCopyDirect(body, newPtr, oldPtr, 0, totalSize, ref nextLocal, localTypes);
+            // Copy bytes from oldPtr to newPtr
+            EmitMemCopyDirect(body, newPtr, oldPtr, 0, totalSizeLocal, ref nextLocal, localTypes);
 
             // Push new pointer as the result
             body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, newPtr);
@@ -588,6 +605,21 @@ sealed partial class WasmModuleBuilder
             EmitRegionExit(body);
         }
     }
+
+    static bool TypeHasNestedHeapPointers(CodexType type) => type switch
+    {
+        RecordType rt => rt.Fields.Any(f => IRRegion.TypeNeedsHeapEscape(f.Type)),
+        SumType st => st.Constructors.Any(c => c.Fields.Any(f => IRRegion.TypeNeedsHeapEscape(f))),
+        ListType lt => IRRegion.TypeNeedsHeapEscape(lt.Element),
+        _ => false
+    };
+
+    static int ComputeFlatSize(CodexType type) => type switch
+    {
+        RecordType rt => rt.Fields.Length * 8,
+        SumType st => (1 + st.Constructors.Max(c => c.Fields.Length)) * 8,
+        _ => 8
+    };
 
     void EmitRegionEnter(MemoryStream body)
     {

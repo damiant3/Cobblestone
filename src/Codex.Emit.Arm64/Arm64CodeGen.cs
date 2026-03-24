@@ -15,6 +15,9 @@ sealed class Arm64CodeGen
     readonly List<FuncAddrFixup> m_funcAddrFixups = [];
     readonly Dictionary<string, int> m_stringOffsets = [];
     readonly Dictionary<string, int> m_spillCounts = [];
+    readonly Dictionary<string, string> m_escapeHelperNames = [];
+    readonly Queue<(string Key, string Name, CodexType Type)> m_escapeHelperQueue = [];
+    Map<string, CodexType> m_typeDefs = Map<string, CodexType>.s_empty;
 
     // x28 is reserved as the global heap pointer (callee-saved).
     const uint HeapReg = Arm64Reg.X28;
@@ -35,11 +38,15 @@ sealed class Arm64CodeGen
 
     public void EmitModule(IRModule module)
     {
+        m_typeDefs = module.TypeDefinitions;
+        m_escapeHelperNames["text"] = "__escape_text";
+
         EmitRuntimeHelpers();
 
         foreach (IRDefinition def in module.Definitions)
             EmitFunction(def);
 
+        EmitEscapeCopyHelpers();
         EmitStart(module);
         PatchCalls();
     }
@@ -727,7 +734,37 @@ sealed class Arm64CodeGen
         }
     }
 
-    uint EmitRegion(IRRegion region) => EmitExpr(region.Body);
+    uint EmitRegion(IRRegion region)
+    {
+        // Closures: skip region (capture types unknown at region exit)
+        if (region.Type is FunctionType)
+            return EmitExpr(region.Body);
+
+        // Save heap pointer (region entry)
+        uint savedHeap = AllocLocal();
+        uint hpTmp = AllocTemp();
+        Emit(Arm64Encoder.Mov(hpTmp, HeapReg));
+        StoreLocal(savedHeap, hpTmp);
+
+        uint bodyResult = EmitExpr(region.Body);
+
+        if (!region.NeedsEscapeCopy)
+        {
+            // Scalar return — restore HeapReg, value survives in register
+            Emit(Arm64Encoder.Mov(HeapReg, LoadLocal(savedHeap)));
+            return bodyResult;
+        }
+
+        // Save result pointer before restoring heap
+        uint savedResult = AllocLocal();
+        StoreLocal(savedResult, bodyResult);
+
+        // Restore HeapReg (reclaim region — old data still physically present)
+        Emit(Arm64Encoder.Mov(HeapReg, LoadLocal(savedHeap)));
+
+        // Deep copy result from old region to parent
+        return EmitEscapeCopy(savedResult, region.Type);
+    }
 
     uint EmitList(IRList list)
     {
@@ -1127,6 +1164,53 @@ sealed class Arm64CodeGen
         EmitReadFileHelper();
         EmitReadLineHelper();
         EmitStrReplaceHelper();
+        EmitEscapeTextHelper();
+    }
+
+    // __escape_text: x0=old text ptr → x0=new text ptr
+    // Layout: [len:8B][data:len bytes, padded to 8]
+    void EmitEscapeTextHelper()
+    {
+        m_functionOffsets["__escape_text"] = m_instructions.Count;
+        // Null guard
+        Emit(Arm64Encoder.Cbz(Arm64Reg.X0, 2 * 4));
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0)) Emit(insn);
+        Emit(Arm64Encoder.Ret());
+        // Save LR + x19-x21
+        Emit(Arm64Encoder.SubImm(Arm64Reg.Sp, Arm64Reg.Sp, 32));
+        Emit(Arm64Encoder.Str(Arm64Reg.Lr, Arm64Reg.Sp, 0));
+        Emit(Arm64Encoder.Stp(Arm64Reg.X19, Arm64Reg.X20, Arm64Reg.Sp, 16));
+        Emit(Arm64Encoder.Mov(Arm64Reg.X19, Arm64Reg.X0)); // x19 = old ptr
+        // x20 = length
+        Emit(Arm64Encoder.Ldr(Arm64Reg.X20, Arm64Reg.X19, 0));
+        // Allocate: totalBytes = align8(8 + len)
+        Emit(Arm64Encoder.AddImm(Arm64Reg.X9, Arm64Reg.X20, 8 + 7));
+        Emit(Arm64Encoder.AndImm(Arm64Reg.X9, Arm64Reg.X9, -8));
+        // new ptr = HeapReg; HeapReg += totalBytes
+        Emit(Arm64Encoder.Mov(Arm64Reg.X0, HeapReg));
+        Emit(Arm64Encoder.Add(HeapReg, HeapReg, Arm64Reg.X9));
+        // Store length
+        Emit(Arm64Encoder.Str(Arm64Reg.X20, Arm64Reg.X0, 0));
+        // Copy bytes: index in x9
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, 0)) Emit(insn);
+        int loopStart = m_instructions.Count;
+        Emit(Arm64Encoder.Cmp(Arm64Reg.X9, Arm64Reg.X20));
+        int exitIdx = m_instructions.Count;
+        Emit(Arm64Encoder.Nop()); // B.GE -> done
+        // Load byte from old[8+i], store to new[8+i]
+        Emit(Arm64Encoder.AddImm(Arm64Reg.X10, Arm64Reg.X19, 8));
+        Emit(Arm64Encoder.LdrbReg(Arm64Reg.X11, Arm64Reg.X10, Arm64Reg.X9));
+        Emit(Arm64Encoder.AddImm(Arm64Reg.X10, Arm64Reg.X0, 8));
+        Emit(Arm64Encoder.StrbReg(Arm64Reg.X11, Arm64Reg.X10, Arm64Reg.X9));
+        Emit(Arm64Encoder.AddImm(Arm64Reg.X9, Arm64Reg.X9, 1));
+        Emit(Arm64Encoder.B((loopStart - m_instructions.Count) * 4));
+        m_instructions[exitIdx] = Arm64Encoder.Bcond(Arm64Encoder.CondGe,
+            (m_instructions.Count - exitIdx) * 4);
+        // Restore and return (x0 already has new ptr)
+        Emit(Arm64Encoder.Ldr(Arm64Reg.Lr, Arm64Reg.Sp, 0));
+        Emit(Arm64Encoder.Ldp(Arm64Reg.X19, Arm64Reg.X20, Arm64Reg.Sp, 16));
+        Emit(Arm64Encoder.AddImm(Arm64Reg.Sp, Arm64Reg.Sp, 32));
+        Emit(Arm64Encoder.Ret());
     }
 
     void EmitStrEqHelper()
@@ -1559,6 +1643,236 @@ sealed class Arm64CodeGen
     {
         foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X8, 93)) Emit(insn);
         Emit(Arm64Encoder.Svc());
+    }
+
+    // -- Escape copy infrastructure ---------------------------------
+
+    uint EmitEscapeCopy(uint srcLocal, CodexType type)
+    {
+        CodexType resolved = ResolveType(type);
+        if (!IRRegion.TypeNeedsHeapEscape(resolved))
+            return LoadLocal(srcLocal);
+
+        string helperName = GetOrQueueEscapeHelper(resolved);
+        uint src = LoadLocal(srcLocal);
+        Emit(Arm64Encoder.Mov(Arm64Reg.X0, src));
+        EmitCallTo(helperName);
+        uint result = AllocTemp();
+        Emit(Arm64Encoder.Mov(result, Arm64Reg.X0));
+        return result;
+    }
+
+    CodexType ResolveType(CodexType type)
+    {
+        if (type is ConstructedType ct && m_typeDefs[ct.Constructor.Value] is CodexType resolved)
+            return resolved;
+        return type;
+    }
+
+    static string EscapeCopyKey(CodexType type) => type switch
+    {
+        TextType => "text",
+        RecordType rt => $"record_{rt.TypeName.Value}",
+        SumType st => $"sum_{st.TypeName.Value}",
+        ListType lt => $"list_{EscapeCopyKey(lt.Element)}",
+        _ => $"type_{type.GetType().Name}"
+    };
+
+    string GetOrQueueEscapeHelper(CodexType type)
+    {
+        string key = EscapeCopyKey(type);
+        if (m_escapeHelperNames.TryGetValue(key, out string? name))
+            return name;
+        name = $"__escape_{key}";
+        m_escapeHelperNames[key] = name;
+        m_escapeHelperQueue.Enqueue((key, name, type));
+        return name;
+    }
+
+    void EmitEscapeCopyHelpers()
+    {
+        while (m_escapeHelperQueue.Count > 0)
+        {
+            (string _, string name, CodexType type) = m_escapeHelperQueue.Dequeue();
+            switch (type)
+            {
+                case TextType:
+                    break; // __escape_text already emitted in runtime helpers
+                case RecordType rt:
+                    EmitRecordEscapeHelper(name, rt);
+                    break;
+                case ListType lt:
+                    EmitListEscapeHelper(name, lt);
+                    break;
+                case SumType st:
+                    EmitSumTypeEscapeHelper(name, st);
+                    break;
+            }
+        }
+    }
+
+    // All escape helpers: X0 = old ptr in, X0 = new ptr out
+    // Working regs: X19=old, X20=new, X21=extra1, X22=extra2
+    // Frame: 48 bytes (x30, x19, x20, x21, x22 + pad)
+
+    void EmitEscapeHelperPrologue(string name)
+    {
+        m_functionOffsets[name] = m_instructions.Count;
+        // Null guard: if x0 == 0, return 0 immediately
+        Emit(Arm64Encoder.Cbz(Arm64Reg.X0, 2 * 4)); // skip ret
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0)) Emit(insn);
+        Emit(Arm64Encoder.Ret());
+        // Save callee-saved regs + LR
+        Emit(Arm64Encoder.SubImm(Arm64Reg.Sp, Arm64Reg.Sp, 48));
+        Emit(Arm64Encoder.Str(Arm64Reg.Lr, Arm64Reg.Sp, 0));
+        Emit(Arm64Encoder.Stp(Arm64Reg.X19, Arm64Reg.X20, Arm64Reg.Sp, 16));
+        Emit(Arm64Encoder.Stp(Arm64Reg.X21, Arm64Reg.X22, Arm64Reg.Sp, 32));
+        Emit(Arm64Encoder.Mov(Arm64Reg.X19, Arm64Reg.X0)); // x19 = old ptr
+    }
+
+    void EmitEscapeHelperEpilogue()
+    {
+        Emit(Arm64Encoder.Mov(Arm64Reg.X0, Arm64Reg.X20)); // return new ptr
+        Emit(Arm64Encoder.Ldr(Arm64Reg.Lr, Arm64Reg.Sp, 0));
+        Emit(Arm64Encoder.Ldp(Arm64Reg.X19, Arm64Reg.X20, Arm64Reg.Sp, 16));
+        Emit(Arm64Encoder.Ldp(Arm64Reg.X21, Arm64Reg.X22, Arm64Reg.Sp, 32));
+        Emit(Arm64Encoder.AddImm(Arm64Reg.Sp, Arm64Reg.Sp, 48));
+        Emit(Arm64Encoder.Ret());
+    }
+
+    void EmitEscapeFieldCopy(int srcOffset, int dstOffset, CodexType fieldType)
+    {
+        CodexType resolved = ResolveType(fieldType);
+        if (IRRegion.TypeNeedsHeapEscape(resolved))
+        {
+            string helper = GetOrQueueEscapeHelper(resolved);
+            Emit(Arm64Encoder.Ldr(Arm64Reg.X0, Arm64Reg.X19, srcOffset));
+            EmitCallTo(helper);
+            Emit(Arm64Encoder.Str(Arm64Reg.X0, Arm64Reg.X20, dstOffset));
+        }
+        else
+        {
+            Emit(Arm64Encoder.Ldr(Arm64Reg.X9, Arm64Reg.X19, srcOffset));
+            Emit(Arm64Encoder.Str(Arm64Reg.X9, Arm64Reg.X20, dstOffset));
+        }
+    }
+
+    void EmitRecordEscapeHelper(string name, RecordType rt)
+    {
+        EmitEscapeHelperPrologue(name);
+
+        int totalSize = rt.Fields.Length * 8;
+        Emit(Arm64Encoder.Mov(Arm64Reg.X20, HeapReg));
+        Emit(Arm64Encoder.AddImm(HeapReg, HeapReg, totalSize));
+
+        for (int i = 0; i < rt.Fields.Length; i++)
+            EmitEscapeFieldCopy(i * 8, i * 8, rt.Fields[i].Type);
+
+        EmitEscapeHelperEpilogue();
+    }
+
+    void EmitListEscapeHelper(string name, ListType lt)
+    {
+        EmitEscapeHelperPrologue(name);
+
+        // x21 = length
+        Emit(Arm64Encoder.Ldr(Arm64Reg.X21, Arm64Reg.X19, 0));
+        // totalSize = (1 + len) * 8
+        Emit(Arm64Encoder.AddImm(Arm64Reg.X9, Arm64Reg.X21, 1));
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 3)) Emit(insn);
+        Emit(Arm64Encoder.Lsl(Arm64Reg.X9, Arm64Reg.X9, Arm64Reg.X10));
+        Emit(Arm64Encoder.Mov(Arm64Reg.X20, HeapReg));
+        Emit(Arm64Encoder.Add(HeapReg, HeapReg, Arm64Reg.X9));
+        // Store length
+        Emit(Arm64Encoder.Str(Arm64Reg.X21, Arm64Reg.X20, 0));
+
+        CodexType elemType = ResolveType(lt.Element);
+        bool deepCopy = IRRegion.TypeNeedsHeapEscape(elemType);
+        string? elemHelper = deepCopy ? GetOrQueueEscapeHelper(elemType) : null;
+
+        // x22 = index = 0
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X22, 0)) Emit(insn);
+        int loopStart = m_instructions.Count;
+        Emit(Arm64Encoder.Cmp(Arm64Reg.X22, Arm64Reg.X21));
+        int exitIdx = m_instructions.Count;
+        Emit(Arm64Encoder.Nop()); // B.GE -> exit
+
+        // Load element: x0 = old[8 + index*8]
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 3)) Emit(insn);
+        Emit(Arm64Encoder.Lsl(Arm64Reg.X9, Arm64Reg.X22, Arm64Reg.X10));
+        Emit(Arm64Encoder.Add(Arm64Reg.X9, Arm64Reg.X9, Arm64Reg.X19));
+        Emit(Arm64Encoder.Ldr(Arm64Reg.X0, Arm64Reg.X9, 8));
+
+        if (deepCopy)
+        {
+            EmitCallTo(elemHelper!);
+            // x0 = copied element
+        }
+
+        // Store to new list: new[8 + index*8] = x0
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 3)) Emit(insn);
+        Emit(Arm64Encoder.Lsl(Arm64Reg.X9, Arm64Reg.X22, Arm64Reg.X10));
+        Emit(Arm64Encoder.Add(Arm64Reg.X9, Arm64Reg.X9, Arm64Reg.X20));
+        Emit(Arm64Encoder.Str(Arm64Reg.X0, Arm64Reg.X9, 8));
+
+        Emit(Arm64Encoder.AddImm(Arm64Reg.X22, Arm64Reg.X22, 1));
+        Emit(Arm64Encoder.B((loopStart - m_instructions.Count) * 4));
+        m_instructions[exitIdx] = Arm64Encoder.Bcond(Arm64Encoder.CondGe,
+            (m_instructions.Count - exitIdx) * 4);
+
+        EmitEscapeHelperEpilogue();
+    }
+
+    void EmitSumTypeEscapeHelper(string name, SumType st)
+    {
+        EmitEscapeHelperPrologue(name);
+
+        // x21 = tag
+        Emit(Arm64Encoder.Ldr(Arm64Reg.X21, Arm64Reg.X19, 0));
+
+        List<int> jumpToEndIdxs = [];
+
+        for (int ctorIdx = 0; ctorIdx < st.Constructors.Length; ctorIdx++)
+        {
+            SumConstructorType ctor = st.Constructors[ctorIdx];
+            int totalSize = (1 + ctor.Fields.Length) * 8;
+
+            if (ctorIdx < st.Constructors.Length - 1)
+            {
+                Emit(Arm64Encoder.CmpImm(Arm64Reg.X21, ctorIdx));
+                int branchIdx = m_instructions.Count;
+                Emit(Arm64Encoder.Nop()); // B.NE -> next ctor
+
+                EmitSumCtorEscapeCopy(ctor, totalSize);
+
+                jumpToEndIdxs.Add(m_instructions.Count);
+                Emit(Arm64Encoder.Nop()); // B -> end
+
+                m_instructions[branchIdx] = Arm64Encoder.Bcond(Arm64Encoder.CondNe,
+                    (m_instructions.Count - branchIdx) * 4);
+            }
+            else
+            {
+                EmitSumCtorEscapeCopy(ctor, totalSize);
+            }
+        }
+
+        int endIdx = m_instructions.Count;
+        foreach (int jIdx in jumpToEndIdxs)
+            m_instructions[jIdx] = Arm64Encoder.B((endIdx - jIdx) * 4);
+
+        EmitEscapeHelperEpilogue();
+    }
+
+    void EmitSumCtorEscapeCopy(SumConstructorType ctor, int totalSize)
+    {
+        Emit(Arm64Encoder.Mov(Arm64Reg.X20, HeapReg));
+        Emit(Arm64Encoder.AddImm(HeapReg, HeapReg, totalSize));
+        // Copy tag
+        Emit(Arm64Encoder.Str(Arm64Reg.X21, Arm64Reg.X20, 0));
+        // Copy fields
+        for (int i = 0; i < ctor.Fields.Length; i++)
+            EmitEscapeFieldCopy((1 + i) * 8, (1 + i) * 8, ctor.Fields[i]);
     }
 
     // -- _start ---------------------------------------------------

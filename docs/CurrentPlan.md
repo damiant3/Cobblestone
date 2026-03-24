@@ -1,6 +1,6 @@
 # Current Plan
 
-**Date**: 2026-03-23 (verified via system clock)
+**Date**: 2026-03-24 (verified via system clock)
 
 ---
 
@@ -15,6 +15,7 @@
 **Camp III-A (Linear Allocator) Phase 1 complete.** IRRegion node + WASM region-based allocator merged.
 **Camp III-A Phase 2a complete.** IRRegion `NeedsEscapeCopy` annotation (Cam).
 **Camp III-A Phase 2b complete.** RISC-V escape copy for Text, Record, List, Sum regions (Cam). Reviewed, merged.
+**Camp III-A Phase 2c complete (2026-03-24).** Region reclamation enabled on all native backends (x86-64, ARM64, WASM extended). Escape copy deep-copies return values to parent region on function exit. Closures skip regions (capture types unknown).
 **Register spill verified (2026-03-23).** AllocLocal saturation bug found by Linux review, spill-to-stack + IRRegion SP fix verified under QEMU — 40/40 RISC-V tests green.
 **Camp II-C (Self-Hosted Native) SUMMITED (2026-03-23).** The Codex compiler, compiled to a 227KB RISC-V ELF, compiles Codex source to valid C# under QEMU. No .NET, no CLR, no JIT. Native machine code, start to finish.
 **ARM64 backend complete (2026-03-23).** Arm64Encoder, Arm64CodeGen (1,740 lines), ElfWriterArm64. `codex build --target arm64` produces ELF64 AArch64 binaries. Awaiting QEMU verification by Agent Linux.
@@ -31,7 +32,7 @@ The C# bootstrap compiler is locked. All forward development happens in `.codex`
 | Self-hosted compiler | 26 files, ~4,900 lines |
 | Prelude | 23 modules, ~1,300 lines (11 type + 12 effect) |
 | Backends | 12 transpilation + IL + RISC-V native + RISC-V bare metal + WASM + ARM64 + x86-64 |
-| Tests | 773 passing (40 RISC-V QEMU, 23 WASM wasmtime) |
+| Tests | 793+ passing (40 RISC-V QEMU, 31 WASM wasmtime, 22 x86-64 WSL native) |
 | Type debt | 0 |
 | Fixed point | Proven (Stage 1 = Stage 3 at 255,344 chars) |
 | Reference compiler | 🔒 Locked |
@@ -210,14 +211,17 @@ Built in one evening session — 21 commits, 20 bugs found and fixed:
 
 Three-agent collaboration: Cam built + debugged (GDB in WSL), Agent Linux traced with GDB on sandbox, Human routed between agents.
 
-### Camp III-A Phase 2 — Escape Analysis ✅ Phase 2a+2b (Cam)
+### Camp III-A Phase 2 — Escape Analysis ✅ Phase 2a+2b+2c (Cam)
 
-Cam completed RISC-V escape copy for regions:
+Escape copy and region reclamation across all backends:
 - Phase 2a: `NeedsEscapeCopy` flag on `IRRegion` node
-- Phase 2b: Per-type escape copy helpers for Text, Record, List, Sum types
-- Reviewed by Linux, stack overflow on recursive types fixed, merged to master
+- Phase 2b: RISC-V per-type escape copy helpers for Text, Record, List, Sum types
+- Phase 2c (2026-03-24): Region reclamation enabled on x86-64, ARM64, WASM
+  - x86-64: EmitRegion wired to existing escape helpers
+  - ARM64: Full escape infrastructure built from scratch (~200 lines)
+  - WASM: Extended to scalar-only records/sums (flat copy)
 
-Remaining: full escape analysis to re-enable region heap reclamation (currently disabled).
+Remaining: closure escape (capture types unknown), WASM deep copy for nested heap types.
 
 ### Camp II-C — Self-Hosted on RISC-V ✅ SUMMITED (2026-03-23)
 
@@ -270,7 +274,7 @@ AllocLocal saturation bug. Human routed between agents across session boundaries
 | ~~Camp III-A Phase 2a/2b~~ | ~~IRRegion escape copy annotation + per-type helpers~~ | ✅ Done (Cam, 2026-03-23) |
 | TWRP build | Build TWRP recovery.img for hero2qlte | Unblock phone flash (Agent Linux) |
 | ARM64 QEMU verification | Verify ARM64 binaries under qemu-aarch64 | Confirm codegen before phone deploy |
-| Camp III-A Phase 2c | Full escape analysis for region reclamation | Re-enable region heap reclamation |
+| ~~Camp III-A Phase 2c~~ | ~~Full escape analysis for region reclamation~~ | ✅ Done (2026-03-24) |
 
 ### Medium Term
 - **Camp III-C**: Structured concurrency — `par`, `race`, work-stealing

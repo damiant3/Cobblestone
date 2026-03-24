@@ -850,14 +850,37 @@ sealed class X86_64CodeGen
 
     byte EmitRegion(IRRegion region)
     {
-        // Disable ALL region reclamation — pure bump allocator.
-        // The 1MB heap is sufficient for compilation.
-        // Region reclamation with proper escape copy needs work on
-        // nested pointers extracted via pattern matching (Camp III-A Phase 2c).
-        return EmitExpr(region.Body);
+        // Closures: skip region (capture types unknown at region exit)
+        if (region.Type is FunctionType)
+            return EmitExpr(region.Body);
+
+        // Save heap pointer (region entry)
+        int savedHeap = AllocLocal();
+        byte hpTmp = AllocTemp();
+        X86_64Encoder.MovRR(m_text, hpTmp, HeapReg);
+        StoreLocal(savedHeap, hpTmp);
+
+        byte bodyResult = EmitExpr(region.Body);
+
+        if (!region.NeedsEscapeCopy)
+        {
+            // Scalar return — restore HeapReg, value survives in register
+            X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(savedHeap));
+            return bodyResult;
+        }
+
+        // Save result pointer before restoring heap
+        int savedResult = AllocLocal();
+        StoreLocal(savedResult, bodyResult);
+
+        // Restore HeapReg (reclaim region — old data still physically present)
+        X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(savedHeap));
+
+        // Deep copy result from old region to parent
+        return EmitEscapeCopy(savedResult, region.Type);
     }
 
-    byte EmitEscapeCopy(byte srcLocal, CodexType type)
+    byte EmitEscapeCopy(int srcLocal, CodexType type)
     {
         CodexType resolved = ResolveType(type);
         if (!IRRegion.TypeNeedsHeapEscape(resolved))
@@ -2310,6 +2333,20 @@ sealed class X86_64CodeGen
     void EmitStart(IRModule module)
     {
         m_functionOffsets["__start"] = m_text.Count;
+        m_currentFunction = "__start";
+        m_nextTemp = 0;
+        m_nextLocal = 0;
+        m_spillCount = 0;
+        m_loadLocalToggle = 0;
+        m_locals = [];
+
+        // Prologue (needed for AllocLocal/StoreLocal in print helpers)
+        X86_64Encoder.PushR(m_text, Reg.RBP);
+        X86_64Encoder.MovRR(m_text, Reg.RBP, Reg.RSP);
+        foreach (byte reg in LocalRegs)
+            X86_64Encoder.PushR(m_text, reg);
+        int frameSizePatchOffset = m_text.Count;
+        EmitSubRspImm32(0); // patched later
 
         // Set up heap via brk(0) then brk(brk_result + 1MB)
         X86_64Encoder.Li(m_text, Reg.RAX, 12); // sys_brk
@@ -2318,10 +2355,6 @@ sealed class X86_64CodeGen
         X86_64Encoder.MovRR(m_text, HeapReg, Reg.RAX); // heap start
 
         // Grow by 1MB
-        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
-        X86_64Encoder.AddRI(m_text, Reg.RDI, 1024 * 1024);
-        // Actually need to add a large immediate — use Li + add
-        // For simplicity, use two-step:
         byte growReg = Reg.R11;
         X86_64Encoder.Li(m_text, growReg, 1024 * 1024);
         X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
@@ -2329,13 +2362,62 @@ sealed class X86_64CodeGen
         X86_64Encoder.Li(m_text, Reg.RAX, 12); // sys_brk
         X86_64Encoder.Syscall(m_text);
 
-        // Call main
+        IRDefinition? mainDef = null;
+        foreach (IRDefinition def in module.Definitions)
+        {
+            if (def.Name == "main") { mainDef = def; break; }
+        }
+
+        if (mainDef is null)
+        {
+            X86_64Encoder.Li(m_text, Reg.RDI, 0);
+            X86_64Encoder.Li(m_text, Reg.RAX, 60);
+            X86_64Encoder.Syscall(m_text);
+            return;
+        }
+
         EmitCallTo("main");
 
-        // Exit with return value
-        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
+        CodexType returnType = ComputeReturnType(mainDef.Type, mainDef.Parameters.Length);
+        switch (returnType)
+        {
+            case IntegerType:
+                // Convert to text via __itoa, then print
+                X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
+                EmitCallTo("__itoa");
+                EmitPrintText(Reg.RAX);
+                break;
+            case BooleanType:
+                EmitPrintBool(Reg.RAX);
+                break;
+            case TextType:
+                EmitPrintText(Reg.RAX);
+                break;
+        }
+
+        // Exit with code 0
+        X86_64Encoder.Li(m_text, Reg.RDI, 0);
         X86_64Encoder.Li(m_text, Reg.RAX, 60); // sys_exit
         X86_64Encoder.Syscall(m_text);
+
+        // Patch frame size for spill slots
+        int frameSize = m_spillCount * 8;
+        frameSize = (frameSize + 15) & ~15;
+        m_text[frameSizePatchOffset + 3] = (byte)(frameSize & 0xFF);
+        m_text[frameSizePatchOffset + 4] = (byte)((frameSize >> 8) & 0xFF);
+        m_text[frameSizePatchOffset + 5] = (byte)((frameSize >> 16) & 0xFF);
+        m_text[frameSizePatchOffset + 6] = (byte)((frameSize >> 24) & 0xFF);
+    }
+
+    static CodexType ComputeReturnType(CodexType type, int paramCount)
+    {
+        CodexType current = type;
+        for (int i = 0; i < paramCount; i++)
+        {
+            if (current is FunctionType ft) current = ft.Return;
+            else break;
+        }
+        return current;
     }
 
     // ── Register allocation ──────────────────────────────────────
