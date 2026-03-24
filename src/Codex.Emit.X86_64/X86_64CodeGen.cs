@@ -33,6 +33,7 @@ sealed class X86_64CodeGen
     int m_spillCount;
     int m_loadLocalToggle;
     Dictionary<string, int> m_locals = [];
+    string m_currentFunction = "";
 
     readonly record struct RodataFixup(int PatchOffset, int RodataOffset);
     readonly record struct FuncAddrFixup(int PatchOffset, byte Rd, string FuncName);
@@ -69,6 +70,7 @@ sealed class X86_64CodeGen
     void EmitFunction(IRDefinition def)
     {
         m_functionOffsets[def.Name] = m_text.Count;
+        m_currentFunction = def.Name;
         m_nextTemp = 0;
         m_nextLocal = 0;
         m_spillCount = 0;
@@ -89,15 +91,23 @@ sealed class X86_64CodeGen
         // Always use imm32 encoding for sub rsp so patch works for any frame size
         EmitSubRspImm32(0); // placeholder — patched after body emission
 
-        // Bind parameters
+        // Bind parameters (first 6 in registers, rest on stack per System V AMD64)
         for (int i = 0; i < def.Parameters.Length; i++)
         {
+            int local = AllocLocal();
             if (i < Reg.ArgRegs.Length)
             {
-                int local = AllocLocal();
                 StoreLocal(local, Reg.ArgRegs[i]);
-                m_locals[def.Parameters[i].Name] = local;
             }
+            else
+            {
+                // Stack params at [rbp+16], [rbp+24], ... (after saved rbp + return addr)
+                int stackOffset = 16 + (i - Reg.ArgRegs.Length) * 8;
+                byte tmp = AllocTemp();
+                X86_64Encoder.MovLoad(m_text, tmp, Reg.RBP, stackOffset);
+                StoreLocal(local, tmp);
+            }
+            m_locals[def.Parameters[i].Name] = local;
         }
 
         // Emit body
@@ -461,17 +471,22 @@ sealed class X86_64CodeGen
             argLocals.Add(saved);
         }
 
-        // Two-phase arg setup to avoid R8/R9 conflict:
-        // R8/R9 are used by LoadLocal as spill scratch AND are arg registers 5-6.
-        // Phase 1: push all arg values onto the stack
-        // Phase 2: pop into arg registers in reverse order
-        int argCount = Math.Min(argLocals.Count, Reg.ArgRegs.Length);
-        for (int i = 0; i < argCount; i++)
+        // Push stack args first (7th+), then set up register args (1st-6th).
+        // Stack args pushed in reverse order so callee sees them at [rbp+16], [rbp+24]...
+        for (int i = argLocals.Count - 1; i >= Reg.ArgRegs.Length; i--)
         {
             byte loaded = LoadLocal(argLocals[i]);
             X86_64Encoder.PushR(m_text, loaded);
         }
-        for (int i = argCount - 1; i >= 0; i--)
+
+        // Register args: two-phase push/pop to avoid R8/R9 spill/arg conflict
+        int regArgCount = Math.Min(argLocals.Count, Reg.ArgRegs.Length);
+        for (int i = 0; i < regArgCount; i++)
+        {
+            byte loaded = LoadLocal(argLocals[i]);
+            X86_64Encoder.PushR(m_text, loaded);
+        }
+        for (int i = regArgCount - 1; i >= 0; i--)
             X86_64Encoder.PopR(m_text, Reg.ArgRegs[i]);
 
         if (funcName is not null)
@@ -490,6 +505,11 @@ sealed class X86_64CodeGen
                 EmitCallTo(funcName);
             }
         }
+
+        // Clean up stack args after call
+        int stackArgCount = argLocals.Count - Reg.ArgRegs.Length;
+        if (stackArgCount > 0)
+            X86_64Encoder.AddRI(m_text, Reg.RSP, stackArgCount * 8);
 
         byte result = AllocTemp();
         X86_64Encoder.MovRR(m_text, result, Reg.RAX);
