@@ -737,7 +737,9 @@ public sealed class JavaScriptEmitter : ICodeEmitter
         args.Add(app.Argument);
     }
 
-    static readonly Set<string> s_multiArgBuiltins = Set<string>.Of("char-at", "substring", "list-at", "text-replace");
+    static readonly Set<string> s_multiArgBuiltins = Set<string>.Of(
+        "char-at", "substring", "list-at", "text-replace",
+        "fork", "await", "par", "race");
 
     static string? FindBuiltinRoot(IRApply app)
     {
@@ -791,6 +793,32 @@ public sealed class JavaScriptEmitter : ICodeEmitter
                 sb.Append(", ");
                 EmitExpr(sb, args[2], indent);
                 sb.Append(')');
+                return true;
+
+            case "fork" when args.Count == 1:
+                sb.Append("Promise.resolve().then(() => (");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(")(null))");
+                return true;
+
+            case "await" when args.Count == 1:
+                sb.Append("(await ");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(')');
+                return true;
+
+            case "par" when args.Count == 2:
+                sb.Append("await Promise.all(");
+                EmitExpr(sb, args[1], indent);
+                sb.Append(".map(_x_ => Promise.resolve().then(() => (");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(")(_x_))))");
+                return true;
+
+            case "race" when args.Count == 1:
+                sb.Append("await Promise.race(");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(".map(_t_ => Promise.resolve().then(() => _t_(null))))");
                 return true;
 
             default:
