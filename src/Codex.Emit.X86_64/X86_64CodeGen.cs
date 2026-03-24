@@ -26,13 +26,13 @@ sealed class X86_64CodeGen
     const byte HeapReg = Reg.R10; // global heap pointer — NOT callee-saved
     static readonly byte[] TempRegs = [Reg.RAX, Reg.RCX, Reg.RDX, Reg.RSI, Reg.RDI, Reg.R11];
     static readonly byte[] LocalRegs = [Reg.RBX, Reg.R12, Reg.R13, Reg.R14, Reg.R15];
-    const uint SpillBase = 32; // virtual register numbers for spilled locals
+    const int SpillBase = 32; // virtual register numbers for spilled locals
 
     int m_nextTemp;
     int m_nextLocal;
     int m_spillCount;
     int m_loadLocalToggle;
-    Dictionary<string, byte> m_locals = [];
+    Dictionary<string, int> m_locals = [];
 
     readonly record struct RodataFixup(int PatchOffset, int RodataOffset);
     readonly record struct FuncAddrFixup(int PatchOffset, byte Rd, string FuncName);
@@ -94,7 +94,7 @@ sealed class X86_64CodeGen
         {
             if (i < Reg.ArgRegs.Length)
             {
-                byte local = AllocLocal();
+                int local = AllocLocal();
                 StoreLocal(local, Reg.ArgRegs[i]);
                 m_locals[def.Parameters[i].Name] = local;
             }
@@ -179,7 +179,7 @@ sealed class X86_64CodeGen
 
     byte EmitName(IRName name)
     {
-        if (m_locals.TryGetValue(name.Name, out byte local))
+        if (m_locals.TryGetValue(name.Name, out int local))
             return LoadLocal(local);
 
         // Try zero-arg builtins
@@ -206,7 +206,7 @@ sealed class X86_64CodeGen
             if (tag >= 0 && sumType.Constructors[tag].Fields.IsEmpty)
             {
                 // Allocate [tag:8] on heap
-                byte nullaryPtr = AllocLocal();
+                int nullaryPtr = AllocLocal();
                 byte nullaryTmp = AllocTemp();
                 X86_64Encoder.MovRR(m_text, nullaryTmp, HeapReg);
                 StoreLocal(nullaryPtr, nullaryTmp);
@@ -230,11 +230,11 @@ sealed class X86_64CodeGen
     byte EmitBinary(IRBinary bin)
     {
         byte left = EmitExpr(bin.Left);
-        byte savedLeft = AllocLocal();
+        int savedLeft = AllocLocal();
         StoreLocal(savedLeft, left);
 
         byte right = EmitExpr(bin.Right);
-        byte savedRight = AllocLocal();
+        int savedRight = AllocLocal();
         StoreLocal(savedRight, right);
 
         byte lReg = LoadLocal(savedLeft);
@@ -361,7 +361,7 @@ sealed class X86_64CodeGen
 
         // Then branch
         byte thenResult = EmitExpr(ifExpr.Then);
-        byte resultLocal = AllocLocal();
+        int resultLocal = AllocLocal();
         StoreLocal(resultLocal, thenResult);
 
         // jmp end
@@ -384,7 +384,7 @@ sealed class X86_64CodeGen
     byte EmitLet(IRLet letExpr)
     {
         byte value = EmitExpr(letExpr.Value);
-        byte local = AllocLocal();
+        int local = AllocLocal();
         StoreLocal(local, value);
         m_locals[letExpr.Name] = local;
         return EmitExpr(letExpr.Body);
@@ -403,7 +403,7 @@ sealed class X86_64CodeGen
                     break;
                 case IRDoBind bind:
                     byte valReg = EmitExpr(bind.Value);
-                    byte savedReg = AllocLocal();
+                    int savedReg = AllocLocal();
                     StoreLocal(savedReg, valReg);
                     m_locals[bind.Name] = savedReg;
                     break;
@@ -452,11 +452,11 @@ sealed class X86_64CodeGen
         }
 
         // Evaluate and save args
-        List<byte> argLocals = [];
+        List<int> argLocals = [];
         foreach (IRExpr arg in args)
         {
             byte r = EmitExpr(arg);
-            byte saved = AllocLocal();
+            int saved = AllocLocal();
             StoreLocal(saved, r);
             argLocals.Add(saved);
         }
@@ -509,17 +509,17 @@ sealed class X86_64CodeGen
         }
         if (tag < 0) return byte.MaxValue;
 
-        List<byte> argLocals = [];
+        List<int> argLocals = [];
         foreach (IRExpr arg in args)
         {
             byte r = EmitExpr(arg);
-            byte saved = AllocLocal();
+            int saved = AllocLocal();
             StoreLocal(saved, r);
             argLocals.Add(saved);
         }
 
         int totalSize = (1 + args.Count) * 8;
-        byte ctorPtrLocal = AllocLocal();
+        int ctorPtrLocal = AllocLocal();
         byte ctorTmp = AllocTemp();
         X86_64Encoder.MovRR(m_text, ctorTmp, HeapReg);
         StoreLocal(ctorPtrLocal, ctorTmp);
@@ -542,11 +542,11 @@ sealed class X86_64CodeGen
     byte EmitPartialApplication(string funcName, List<IRExpr> capturedArgs)
     {
         // Evaluate and save captured args
-        List<byte> capLocals = [];
+        List<int> capLocals = [];
         foreach (IRExpr arg in capturedArgs)
         {
             byte r = EmitExpr(arg);
-            byte saved = AllocLocal();
+            int saved = AllocLocal();
             StoreLocal(saved, r);
             capLocals.Add(saved);
         }
@@ -582,7 +582,7 @@ sealed class X86_64CodeGen
 
         // Allocate closure on heap: [trampoline_addr][cap_0][cap_1]...
         int closureSize = (1 + numCaptures) * 8;
-        byte ptrLocal = AllocLocal();
+        int ptrLocal = AllocLocal();
         byte tmp = AllocTemp();
         X86_64Encoder.MovRR(m_text, tmp, HeapReg);
         StoreLocal(ptrLocal, tmp);
@@ -615,11 +615,11 @@ sealed class X86_64CodeGen
 
     byte EmitRecord(IRRecord rec)
     {
-        Dictionary<string, byte> fieldMap = [];
+        Dictionary<string, int> fieldMap = [];
         foreach ((string name, IRExpr value) in rec.Fields)
         {
             byte r = EmitExpr(value);
-            byte saved = AllocLocal();
+            int saved = AllocLocal();
             StoreLocal(saved, r);
             fieldMap[name] = saved;
         }
@@ -630,7 +630,7 @@ sealed class X86_64CodeGen
 
         int fieldCount = rt?.Fields.Length ?? rec.Fields.Length;
         int totalSize = fieldCount * 8;
-        byte ptrLocal = AllocLocal();
+        int ptrLocal = AllocLocal();
         byte tmpPtr = AllocTemp();
         X86_64Encoder.MovRR(m_text, tmpPtr, HeapReg);
         StoreLocal(ptrLocal, tmpPtr);
@@ -641,7 +641,7 @@ sealed class X86_64CodeGen
             for (int i = 0; i < rt.Fields.Length; i++)
             {
                 string fieldName = rt.Fields[i].FieldName.Value;
-                if (fieldMap.TryGetValue(fieldName, out byte saved))
+                if (fieldMap.TryGetValue(fieldName, out int saved))
                 {
                     byte val = LoadLocal(saved);
                     byte ptr = LoadLocal(ptrLocal);
@@ -686,10 +686,10 @@ sealed class X86_64CodeGen
     byte EmitMatch(IRMatch match)
     {
         byte scrutReg = EmitExpr(match.Scrutinee);
-        byte savedScrut = AllocLocal();
+        int savedScrut = AllocLocal();
         StoreLocal(savedScrut, scrutReg);
 
-        byte resultLocal = AllocLocal();
+        int resultLocal = AllocLocal();
 
         List<int> jumpToEndOffsets = [];
 
@@ -708,7 +708,7 @@ sealed class X86_64CodeGen
                 }
                 case IRVarPattern varPat:
                 {
-                    byte local = AllocLocal();
+                    int local = AllocLocal();
                     StoreLocal(local, LoadLocal(savedScrut));
                     m_locals[varPat.Name] = local;
                     byte bodyResult = EmitExpr(branch.Body);
@@ -758,7 +758,7 @@ sealed class X86_64CodeGen
                     {
                         if (ctorPat.SubPatterns[f] is IRVarPattern fieldVar)
                         {
-                            byte fieldLocal = AllocLocal();
+                            int fieldLocal = AllocLocal();
                             byte scrutReload = LoadLocal(savedScrut);
                             byte fieldVal = AllocTemp();
                             X86_64Encoder.MovLoad(m_text, fieldVal, scrutReload, (1 + f) * 8);
@@ -794,17 +794,17 @@ sealed class X86_64CodeGen
 
     byte EmitList(IRList list)
     {
-        List<byte> elemLocals = [];
+        List<int> elemLocals = [];
         foreach (IRExpr elem in list.Elements)
         {
             byte r = EmitExpr(elem);
-            byte saved = AllocLocal();
+            int saved = AllocLocal();
             StoreLocal(saved, r);
             elemLocals.Add(saved);
         }
 
         int totalSize = (1 + list.Elements.Length) * 8;
-        byte listPtrLocal = AllocLocal();
+        int listPtrLocal = AllocLocal();
         byte listTmp = AllocTemp();
         X86_64Encoder.MovRR(m_text, listTmp, HeapReg);
         StoreLocal(listPtrLocal, listTmp);
@@ -929,7 +929,7 @@ sealed class X86_64CodeGen
                 if (args.Count >= 2)
                 {
                     byte str = EmitExpr(args[0]);
-                    byte savedStr = AllocLocal();
+                    int savedStr = AllocLocal();
                     StoreLocal(savedStr, str);
                     byte idx = EmitExpr(args[1]);
                     byte strLoaded = LoadLocal(savedStr);
@@ -937,9 +937,9 @@ sealed class X86_64CodeGen
                     X86_64Encoder.AddRR(m_text, idx, strLoaded);
                     X86_64Encoder.MovzxByte(m_text, idx, idx, 8);
                     // Allocate 1-char string on heap: [len=1][byte]
-                    byte charAtSaved = AllocLocal();
+                    int charAtSaved = AllocLocal();
                     StoreLocal(charAtSaved, idx); // save the byte value
-                    byte charAtPtr = AllocLocal();
+                    int charAtPtr = AllocLocal();
                     byte charAtTmp = AllocTemp();
                     X86_64Encoder.MovRR(m_text, charAtTmp, HeapReg);
                     StoreLocal(charAtPtr, charAtTmp);
@@ -954,16 +954,16 @@ sealed class X86_64CodeGen
                 if (args.Count >= 3)
                 {
                     byte str = EmitExpr(args[0]);
-                    byte savedStr = AllocLocal();
+                    int savedStr = AllocLocal();
                     StoreLocal(savedStr, str);
                     byte start = EmitExpr(args[1]);
-                    byte savedStart = AllocLocal();
+                    int savedStart = AllocLocal();
                     StoreLocal(savedStart, start);
                     byte len = EmitExpr(args[2]);
-                    byte savedLen = AllocLocal();
+                    int savedLen = AllocLocal();
                     StoreLocal(savedLen, len);
                     // Allocate result: [len][bytes]
-                    byte subPtr = AllocLocal();
+                    int subPtr = AllocLocal();
                     byte subTmp = AllocTemp();
                     X86_64Encoder.MovRR(m_text, subTmp, HeapReg);
                     StoreLocal(subPtr, subTmp);
@@ -1000,7 +1000,7 @@ sealed class X86_64CodeGen
                 if (args.Count >= 2)
                 {
                     byte head = EmitExpr(args[0]);
-                    byte savedHead = AllocLocal();
+                    int savedHead = AllocLocal();
                     StoreLocal(savedHead, head);
                     byte tail = EmitExpr(args[1]);
                     X86_64Encoder.MovRR(m_text, Reg.RSI, tail);
@@ -1015,7 +1015,7 @@ sealed class X86_64CodeGen
                 if (args.Count >= 2)
                 {
                     byte l1 = EmitExpr(args[0]);
-                    byte savedL1 = AllocLocal();
+                    int savedL1 = AllocLocal();
                     StoreLocal(savedL1, l1);
                     byte l2 = EmitExpr(args[1]);
                     X86_64Encoder.MovRR(m_text, Reg.RSI, l2);
@@ -1030,7 +1030,7 @@ sealed class X86_64CodeGen
                 if (args.Count >= 2)
                 {
                     byte list = EmitExpr(args[0]);
-                    byte savedList = AllocLocal();
+                    int savedList = AllocLocal();
                     StoreLocal(savedList, list);
                     byte idx = EmitExpr(args[1]);
                     byte listLoaded = LoadLocal(savedList);
@@ -1054,10 +1054,10 @@ sealed class X86_64CodeGen
             case "char-code-at" when args.Count >= 2:
             {
                 byte textReg = EmitExpr(args[0]);
-                byte savedText = AllocLocal();
+                int savedText = AllocLocal();
                 StoreLocal(savedText, textReg);
                 byte idxReg = EmitExpr(args[1]);
-                byte savedIdx = AllocLocal();
+                int savedIdx = AllocLocal();
                 StoreLocal(savedIdx, idxReg);
                 byte text = LoadLocal(savedText);
                 byte idx = LoadLocal(savedIdx);
@@ -1077,9 +1077,9 @@ sealed class X86_64CodeGen
             case "code-to-char" when args.Count >= 1:
             {
                 byte codeReg = EmitExpr(args[0]);
-                byte savedCode = AllocLocal();
+                int savedCode = AllocLocal();
                 StoreLocal(savedCode, codeReg);
-                byte c2cPtr = AllocLocal();
+                int c2cPtr = AllocLocal();
                 byte c2cTmp = AllocTemp();
                 X86_64Encoder.MovRR(m_text, c2cTmp, HeapReg);
                 StoreLocal(c2cPtr, c2cTmp);
@@ -1121,10 +1121,10 @@ sealed class X86_64CodeGen
             case "text-replace" when args.Count >= 3:
             {
                 byte textReg = EmitExpr(args[0]);
-                byte savedText = AllocLocal();
+                int savedText = AllocLocal();
                 StoreLocal(savedText, textReg);
                 byte oldReg = EmitExpr(args[1]);
-                byte savedOld = AllocLocal();
+                int savedOld = AllocLocal();
                 StoreLocal(savedOld, oldReg);
                 byte newReg = EmitExpr(args[2]);
                 X86_64Encoder.MovRR(m_text, Reg.RDX, newReg);
@@ -1138,7 +1138,7 @@ sealed class X86_64CodeGen
             case "text-contains" when args.Count >= 2:
             {
                 byte textReg = EmitExpr(args[0]);
-                byte savedText = AllocLocal();
+                int savedText = AllocLocal();
                 StoreLocal(savedText, textReg);
                 byte needleReg = EmitExpr(args[1]);
                 X86_64Encoder.MovRR(m_text, Reg.RSI, needleReg);
@@ -1151,7 +1151,7 @@ sealed class X86_64CodeGen
             case "text-starts-with" when args.Count >= 2:
             {
                 byte textReg = EmitExpr(args[0]);
-                byte savedText = AllocLocal();
+                int savedText = AllocLocal();
                 StoreLocal(savedText, textReg);
                 byte prefixReg = EmitExpr(args[1]);
                 X86_64Encoder.MovRR(m_text, Reg.RSI, prefixReg);
@@ -1203,7 +1203,7 @@ sealed class X86_64CodeGen
     void EmitPrintText(byte ptrReg)
     {
         // Linux x86-64 syscall write: rax=1, rdi=1(stdout), rsi=buf, rdx=len
-        byte savedPtr = AllocLocal();
+        int savedPtr = AllocLocal();
         StoreLocal(savedPtr, ptrReg);
 
         byte ptr = LoadLocal(savedPtr);
@@ -1221,7 +1221,7 @@ sealed class X86_64CodeGen
     void EmitPrintBool(byte valueReg)
     {
         // TODO: emit "True"/"False" string
-        byte savedVal = AllocLocal();
+        int savedVal = AllocLocal();
         StoreLocal(savedVal, valueReg);
 
         int trueOffset = AddRodataString("True");
@@ -2325,40 +2325,40 @@ sealed class X86_64CodeGen
         return reg;
     }
 
-    byte AllocLocal()
+    int AllocLocal()
     {
         if (m_nextLocal < LocalRegs.Length)
         {
-            byte reg = LocalRegs[m_nextLocal];
+            int reg = LocalRegs[m_nextLocal];
             m_nextLocal++;
             return reg;
         }
         // Spill to stack
-        byte slot = (byte)(SpillBase + m_spillCount);
+        int slot = SpillBase + m_spillCount;
         m_spillCount++;
         return slot;
     }
 
-    void StoreLocal(byte local, byte valueReg)
+    void StoreLocal(int local, byte valueReg)
     {
         if (local < SpillBase)
         {
             if (local != valueReg)
-                X86_64Encoder.MovRR(m_text, local, valueReg);
+                X86_64Encoder.MovRR(m_text, (byte)local, valueReg);
         }
         else
         {
-            int offset = -((int)(local - SpillBase) + 1) * 8 - LocalRegs.Length * 8;
+            int offset = -((local - SpillBase) + 1) * 8 - LocalRegs.Length * 8;
             X86_64Encoder.MovStore(m_text, Reg.RBP, valueReg, offset);
         }
     }
 
-    byte LoadLocal(byte local)
+    byte LoadLocal(int local)
     {
         if (local < SpillBase)
-            return local;
+            return (byte)local;
         byte scratch = (m_loadLocalToggle++ % 2 == 0) ? Reg.R8 : Reg.R9;
-        int offset = -((int)(local - SpillBase) + 1) * 8 - LocalRegs.Length * 8;
+        int offset = -((local - SpillBase) + 1) * 8 - LocalRegs.Length * 8;
         X86_64Encoder.MovLoad(m_text, scratch, Reg.RBP, offset);
         return scratch;
     }
