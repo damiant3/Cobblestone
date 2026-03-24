@@ -78,10 +78,14 @@ extends across trust boundaries.
 - `ImportFactIntoView` / `RemoveImportFromView` / `GetViewImports` on FactStore
 - `CheckViewConsistency` resolves imported facts alongside local definitions
 - Imports stored in `.imports.json` sidecar files (backward compatible)
-- 10 new tests, 86 repository tests green
 
-**What remains (Phase 2-4):**
-- Trust lattice (vouching with degrees, trust-ranked search)
+**Phase 2 DONE** (2026-03-24, Cam):
+- Trust lattice: `ComputeTrust` with transitive vouch graph walk (max depth 5, cycle detection)
+- Weights: Reviewed=0.25, Tested=0.5, Verified=0.75, Critical=1.0; transitive decay
+- `CheckViewConsistencyWithTrust` gates imports on trust threshold
+- 94 repository tests green (8 new trust tests)
+
+**What remains (Phase 3-4):**
 - Proposal workflow (replace pull requests)
 - Federated sync protocol (networking)
 
