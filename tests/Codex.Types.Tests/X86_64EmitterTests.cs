@@ -276,6 +276,28 @@ public class X86_64EmitterTests
     }
 
     [Fact]
+    public void Show_true_runs_natively()
+    {
+        string? output = CompileAndRun("""
+            main : Text
+            main = show True
+            """, "show_true_x64");
+        if (output is null) return;
+        Assert.Equal("True", output.Trim());
+    }
+
+    [Fact]
+    public void Show_false_runs_natively()
+    {
+        string? output = CompileAndRun("""
+            main : Text
+            main = show False
+            """, "show_false_x64");
+        if (output is null) return;
+        Assert.Equal("False", output.Trim());
+    }
+
+    [Fact]
     public void String_equality_runs_natively()
     {
         string? output = CompileAndRun("""

@@ -998,7 +998,6 @@ sealed class X86_64CodeGen
                 // Return empty list (heap-allocated [length=0])
                 byte gaRd = AllocTemp();
                 X86_64Encoder.MovRR(m_text, gaRd, HeapReg);
-                X86_64Encoder.MovStore(m_text, HeapReg, Reg.RAX, 0); // store 0 at [heap]
                 X86_64Encoder.Li(m_text, Reg.R11, 0);
                 X86_64Encoder.MovStore(m_text, HeapReg, Reg.R11, 0);
                 X86_64Encoder.AddRI(m_text, HeapReg, 8);
@@ -1307,20 +1306,19 @@ sealed class X86_64CodeGen
                 int savedVal = AllocLocal();
                 StoreLocal(savedVal, valReg);
                 byte val = LoadLocal(savedVal);
+                byte rd = AllocTemp();
                 X86_64Encoder.TestRR(m_text, val, val);
                 int jeFalse = m_text.Count;
                 X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
-                byte trRd = AllocTemp();
-                EmitLoadRodataAddress(trRd, trueOff);
+                EmitLoadRodataAddress(rd, trueOff);
                 int jmpEnd = m_text.Count;
                 X86_64Encoder.Jmp(m_text, 0);
                 int falseLbl = m_text.Count;
                 PatchJcc(jeFalse, falseLbl);
-                byte flRd = AllocTemp();
-                EmitLoadRodataAddress(flRd, falseOff);
+                EmitLoadRodataAddress(rd, falseOff);
                 int endLbl = m_text.Count;
                 PatchJmp(jmpEnd, endLbl);
-                return flRd;
+                return rd;
             }
             default:
                 return valReg;
