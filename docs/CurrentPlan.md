@@ -21,6 +21,7 @@ hardware. Region-based memory reclamation works via sub-expression regions.
 | Fixed point | Proven (Stage 1 = Stage 3 at 255,344 chars) |
 | Reference compiler | Locked |
 | Memory | Sub-expression regions: scalar lets reclaim intermediates at let boundary |
+| Concurrency | IR nodes + sequential handler (fork/await) — Phase 1+2 done |
 | Agents | 4 (Windows/Copilot, Linux/sandbox, Cam/CLI, Nut/garage-box) |
 
 **History**: `docs/OldStatus/CurrentPlan-2026-03-24-peak2-complete.md`
@@ -51,14 +52,22 @@ A Codex program running on the Samsung S7 Edge (SM-G935T).
 No threads. No locks. No data races. Codex concurrency is structured:
 every concurrent operation has a parent scope. `[Concurrent]` is an effect.
 
-**What to build:**
+**Phase 1+2 DONE** (2026-03-24, Cam):
+- `IrFork` and `IrAwait` IR nodes added to self-hosted compiler
+- `fork : a -> Task a` and `await : Task a -> a` in builtin type env
+- Lowering intercepts `fork`/`await` calls → specialized IR nodes
+- Sequential C# handler: `Task.FromResult(...)` / `.Result`
+- 470 tests pass, self-hosted compiler builds clean
+
+**What remains (Phase 3+4):**
+- Lambda syntax (`\x -> body`) for thunks — needed before `par`/`race`
 - `par` (parallel map) and `race` (first result wins)
-- Work-stealing scheduler in the runtime
+- Work-stealing scheduler in native backends (RISC-V, x86-64)
 - Effect system tracks `[Concurrent]`
 - Linear types guarantee no shared mutable state
-- Type system proves the task DAG has no cycles
+- Transpilation targets (C# `Task.Run`, JS `Promise`, etc.)
 
-**Design needed**: `docs/Designs/CAMP-IIIC-STRUCTURED-CONCURRENCY.md`
+**Design**: `docs/Designs/CAMP-IIIC-STRUCTURED-CONCURRENCY.md`
 
 ### V3 — Repository Federation
 
