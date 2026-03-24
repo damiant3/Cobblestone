@@ -808,28 +808,11 @@ sealed class X86_64CodeGen
 
     byte EmitRegion(IRRegion region)
     {
-        if (region.Type is FunctionType)
-            return EmitExpr(region.Body);
-
-        byte savedHeap = AllocLocal();
-        StoreLocal(savedHeap, HeapReg);
-
-        byte bodyResult = EmitExpr(region.Body);
-
-        if (!region.NeedsEscapeCopy)
-        {
-            byte restored = LoadLocal(savedHeap);
-            X86_64Encoder.MovRR(m_text, HeapReg, restored);
-            return bodyResult;
-        }
-
-        byte savedResult = AllocLocal();
-        StoreLocal(savedResult, bodyResult);
-
-        byte heapRestored = LoadLocal(savedHeap);
-        X86_64Encoder.MovRR(m_text, HeapReg, heapRestored);
-
-        return EmitEscapeCopy(savedResult, region.Type);
+        // Disable ALL region reclamation — pure bump allocator.
+        // The 1MB heap is sufficient for compilation.
+        // Region reclamation with proper escape copy needs work on
+        // nested pointers extracted via pattern matching (Camp III-A Phase 2c).
+        return EmitExpr(region.Body);
     }
 
     byte EmitEscapeCopy(byte srcLocal, CodexType type)
