@@ -192,6 +192,8 @@ Section: Apply Chain
    else if n == "get-env" then True
    else if n == "current-dir" then True
    else if n == "run-process" then True
+   else if n == "fork" then True
+   else if n == "await" then True
    else False
 
   emit-builtin : Text -> List IRExpr -> List ArityEntry -> Text
@@ -228,6 +230,8 @@ Section: Apply Chain
    else if n == "get-env" then "(Environment.GetEnvironmentVariable(" ++ emit-expr (list-at args 0) arities ++ ") ?? \"\")"
    else if n == "run-process" then "((Func<string>)(() => { var _psi = new System.Diagnostics.ProcessStartInfo(" ++ emit-expr (list-at args 0) arities ++ ", " ++ emit-expr (list-at args 1) arities ++ ") { RedirectStandardOutput = true, UseShellExecute = false }; var _p = System.Diagnostics.Process.Start(_psi)!; var _o = _p.StandardOutput.ReadToEnd(); _p.WaitForExit(); return _o; }))()"
    else if n == "current-dir" then "Directory.GetCurrentDirectory()"
+   else if n == "fork" then "System.Threading.Tasks.Task.FromResult(" ++ emit-expr (list-at args 0) arities ++ ")"
+   else if n == "await" then "(" ++ emit-expr (list-at args 0) arities ++ ").Result"
    else ""
 
   emit-apply : IRExpr -> List ArityEntry -> Text
@@ -279,6 +283,8 @@ Section: Expression Emission
     if IrHandle (eff) (body) (clauses) (ty) -> emit-handle eff body clauses ty arities
     if IrRecord (name) (fields) (ty) -> emit-record name fields arities
     if IrFieldAccess (rec) (field) (ty) -> emit-expr rec arities ++ "." ++ sanitize field
+    if IrFork (body) (ty) -> "System.Threading.Tasks.Task.FromResult(" ++ emit-expr body arities ++ ")"
+    if IrAwait (task) (ty) -> "(" ++ emit-expr task arities ++ ").Result"
     if IrError (msg) (ty) -> "/* error: " ++ msg ++ " */ default"
 
   escape-text : Text -> Text
