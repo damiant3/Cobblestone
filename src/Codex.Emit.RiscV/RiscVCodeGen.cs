@@ -1704,6 +1704,48 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 return true;
             }
 
+            case "fork" when args.Count == 1:
+            {
+                // Sequential fork: evaluate thunk, store result in task slot
+                uint thunk = EmitExpr(args[0]);
+                uint savedThunk = AllocLocal();
+                StoreLocal(savedThunk, thunk);
+
+                // Allocate task: [8B done_flag] [8B result]
+                uint taskPtr = AllocTemp();
+                Emit(RiscVEncoder.Mv(taskPtr, Reg.S1));
+                Emit(RiscVEncoder.Sd(Reg.S1, Reg.Zero, 0)); // done = 0
+                Emit(RiscVEncoder.Sd(Reg.S1, Reg.Zero, 8)); // result = 0
+                Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, 16));
+                uint savedTask = AllocLocal();
+                StoreLocal(savedTask, taskPtr);
+
+                // Call thunk(null): A0 = 0
+                uint thunkLoaded = LoadLocal(savedThunk);
+                Emit(RiscVEncoder.Mv(Reg.A0, Reg.Zero)); // arg = null
+                Emit(RiscVEncoder.Mv(Reg.T0, thunkLoaded));
+                Emit(RiscVEncoder.Jalr(Reg.Ra, Reg.T0, 0));
+
+                // Store result (A0) into task[8], set done
+                uint taskLoaded = LoadLocal(savedTask);
+                Emit(RiscVEncoder.Sd(taskLoaded, Reg.A0, 8)); // task[8] = result
+                foreach (uint insn in RiscVEncoder.Li(Reg.T0, 1)) Emit(insn);
+                Emit(RiscVEncoder.Sd(taskLoaded, Reg.T0, 0)); // task[0] = 1
+
+                uint rd = AllocTemp();
+                Emit(RiscVEncoder.Mv(rd, taskLoaded));
+                return true;
+            }
+
+            case "await" when args.Count == 1:
+            {
+                // Sequential: just load result from task[8]
+                uint taskPtr = EmitExpr(args[0]);
+                uint rd = AllocTemp();
+                Emit(RiscVEncoder.Ld(rd, taskPtr, 8));
+                return true;
+            }
+
             default:
                 return false;
         }
