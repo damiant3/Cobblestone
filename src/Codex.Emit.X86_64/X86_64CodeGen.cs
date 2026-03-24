@@ -1849,7 +1849,8 @@ sealed class X86_64CodeGen
         // Result buffer: after null-terminated path on heap
         X86_64Encoder.MovRR(m_text, Reg.R13, HeapReg);
         X86_64Encoder.AddRR(m_text, Reg.R13, Reg.RBX);
-        X86_64Encoder.AddRI(m_text, Reg.R13, 16);             // skip path + align
+        X86_64Encoder.AddRI(m_text, Reg.R13, 23);             // skip path + null + round up
+        X86_64Encoder.AndRI(m_text, Reg.R13, -8);              // align down to 8 bytes
         X86_64Encoder.Li(m_text, Reg.RBX, 0);                 // rbx = total bytes read
 
         // Read loop: read(fd, buf, 4096) until 0
