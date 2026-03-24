@@ -2041,18 +2041,186 @@ sealed class X86_64CodeGen
 
     void EmitEscapeCopyHelpers()
     {
+        // Drain queue — helpers may enqueue new types for nested fields
         while (m_escapeHelperQueue.Count > 0)
         {
             (string _, string name, CodexType type) = m_escapeHelperQueue.Dequeue();
-            // TODO: emit per-type helpers (same architecture as RISC-V)
-            if (type is not TextType)
+            switch (type)
             {
-                // Stub: return input unchanged
-                m_functionOffsets[name] = m_text.Count;
-                X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RDI);
-                X86_64Encoder.Ret(m_text);
+                case TextType:
+                    break; // __escape_text already emitted
+                case RecordType rt:
+                    EmitRecordEscapeHelper(name, rt);
+                    break;
+                case ListType lt:
+                    EmitListEscapeHelper(name, lt);
+                    break;
+                case SumType st:
+                    EmitSumTypeEscapeHelper(name, st);
+                    break;
             }
         }
+    }
+
+    // All escape helpers: RDI = old ptr in, RAX = new ptr out
+    // Working regs: RBX=old, R12=new, R13=extra1, R14=extra2
+    // Frame: push rbx, r12, r13, r14 (32 bytes + alignment)
+
+    void EmitEscapeHelperPrologue(string name)
+    {
+        m_functionOffsets[name] = m_text.Count;
+        X86_64Encoder.PushR(m_text, Reg.RBX);
+        X86_64Encoder.PushR(m_text, Reg.R12);
+        X86_64Encoder.PushR(m_text, Reg.R13);
+        X86_64Encoder.PushR(m_text, Reg.R14);
+        X86_64Encoder.MovRR(m_text, Reg.RBX, Reg.RDI); // rbx = old ptr
+    }
+
+    void EmitEscapeHelperEpilogue()
+    {
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.R12); // return new ptr
+        X86_64Encoder.PopR(m_text, Reg.R14);
+        X86_64Encoder.PopR(m_text, Reg.R13);
+        X86_64Encoder.PopR(m_text, Reg.R12);
+        X86_64Encoder.PopR(m_text, Reg.RBX);
+        X86_64Encoder.Ret(m_text);
+    }
+
+    void EmitEscapeFieldCopy(int srcOffset, int dstOffset, CodexType fieldType)
+    {
+        CodexType resolved = ResolveType(fieldType);
+        if (IRRegion.TypeNeedsHeapEscape(resolved))
+        {
+            string helper = GetOrQueueEscapeHelper(resolved);
+            X86_64Encoder.MovLoad(m_text, Reg.RDI, Reg.RBX, srcOffset);
+            EmitCallTo(helper);
+            X86_64Encoder.MovStore(m_text, Reg.R12, Reg.RAX, dstOffset);
+        }
+        else
+        {
+            X86_64Encoder.MovLoad(m_text, Reg.RAX, Reg.RBX, srcOffset);
+            X86_64Encoder.MovStore(m_text, Reg.R12, Reg.RAX, dstOffset);
+        }
+    }
+
+    void EmitRecordEscapeHelper(string name, RecordType rt)
+    {
+        EmitEscapeHelperPrologue(name);
+
+        int totalSize = rt.Fields.Length * 8;
+        X86_64Encoder.MovRR(m_text, Reg.R12, HeapReg);
+        X86_64Encoder.AddRI(m_text, HeapReg, totalSize);
+
+        for (int i = 0; i < rt.Fields.Length; i++)
+            EmitEscapeFieldCopy(i * 8, i * 8, rt.Fields[i].Type);
+
+        EmitEscapeHelperEpilogue();
+    }
+
+    void EmitListEscapeHelper(string name, ListType lt)
+    {
+        EmitEscapeHelperPrologue(name);
+
+        // r13 = length
+        X86_64Encoder.MovLoad(m_text, Reg.R13, Reg.RBX, 0);
+        // totalSize = (1 + len) * 8
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.R13);
+        X86_64Encoder.AddRI(m_text, Reg.RAX, 1);
+        X86_64Encoder.ShlRI(m_text, Reg.RAX, 3);
+        X86_64Encoder.MovRR(m_text, Reg.R12, HeapReg);
+        X86_64Encoder.AddRR(m_text, HeapReg, Reg.RAX);
+        // Store length
+        X86_64Encoder.MovStore(m_text, Reg.R12, Reg.R13, 0);
+
+        CodexType elemType = ResolveType(lt.Element);
+        bool deepCopy = IRRegion.TypeNeedsHeapEscape(elemType);
+        string? elemHelper = deepCopy ? GetOrQueueEscapeHelper(elemType) : null;
+
+        // r14 = index = 0
+        X86_64Encoder.Li(m_text, Reg.R14, 0);
+        int loopStart = m_text.Count;
+        X86_64Encoder.CmpRR(m_text, Reg.R14, Reg.R13);
+        int exitIdx = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+
+        // Load element
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.R14);
+        X86_64Encoder.ShlRI(m_text, Reg.RAX, 3);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.RBX);
+        X86_64Encoder.MovLoad(m_text, Reg.RDI, Reg.RAX, 8);
+
+        if (deepCopy)
+        {
+            EmitCallTo(elemHelper!);
+            // rax = copied element
+        }
+        else
+        {
+            X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RDI);
+        }
+
+        // Store to new list
+        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.R14);
+        X86_64Encoder.ShlRI(m_text, Reg.RDI, 3);
+        X86_64Encoder.AddRR(m_text, Reg.RDI, Reg.R12);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 8);
+
+        X86_64Encoder.AddRI(m_text, Reg.R14, 1);
+        X86_64Encoder.Jmp(m_text, loopStart - (m_text.Count + 5));
+        PatchJcc(exitIdx, m_text.Count);
+
+        EmitEscapeHelperEpilogue();
+    }
+
+    void EmitSumTypeEscapeHelper(string name, SumType st)
+    {
+        EmitEscapeHelperPrologue(name);
+
+        // r13 = tag
+        X86_64Encoder.MovLoad(m_text, Reg.R13, Reg.RBX, 0);
+
+        List<int> jumpToEndIdxs = [];
+
+        for (int ctorIdx = 0; ctorIdx < st.Constructors.Length; ctorIdx++)
+        {
+            SumConstructorType ctor = st.Constructors[ctorIdx];
+            int totalSize = (1 + ctor.Fields.Length) * 8;
+
+            if (ctorIdx < st.Constructors.Length - 1)
+            {
+                X86_64Encoder.CmpRI(m_text, Reg.R13, ctorIdx);
+                int branchIdx = m_text.Count;
+                X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+
+                EmitSumCtorEscapeHelper(ctor, totalSize);
+
+                jumpToEndIdxs.Add(m_text.Count);
+                X86_64Encoder.Jmp(m_text, 0);
+
+                PatchJcc(branchIdx, m_text.Count);
+            }
+            else
+            {
+                EmitSumCtorEscapeHelper(ctor, totalSize);
+            }
+        }
+
+        int endIdx = m_text.Count;
+        foreach (int jIdx in jumpToEndIdxs)
+            PatchJmp(jIdx, endIdx);
+
+        EmitEscapeHelperEpilogue();
+    }
+
+    void EmitSumCtorEscapeHelper(SumConstructorType ctor, int totalSize)
+    {
+        X86_64Encoder.MovRR(m_text, Reg.R12, HeapReg);
+        X86_64Encoder.AddRI(m_text, HeapReg, totalSize);
+        // Copy tag
+        X86_64Encoder.MovStore(m_text, Reg.R12, Reg.R13, 0);
+        // Copy fields
+        for (int i = 0; i < ctor.Fields.Length; i++)
+            EmitEscapeFieldCopy((1 + i) * 8, (1 + i) * 8, ctor.Fields[i]);
     }
 
     // ── _start entry point ───────────────────────────────────────
