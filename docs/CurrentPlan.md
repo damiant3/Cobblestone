@@ -18,7 +18,7 @@
 **Camp III-A Phase 2c complete (2026-03-24).** Region reclamation enabled on all native backends (x86-64, ARM64, WASM extended). Escape copy deep-copies return values to parent region on function exit. Closures skip regions (capture types unknown).
 **Register spill verified (2026-03-23).** AllocLocal saturation bug found by Linux review, spill-to-stack + IRRegion SP fix verified under QEMU — 40/40 RISC-V tests green.
 **Camp II-C (Self-Hosted Native) SUMMITED (2026-03-23).** The Codex compiler, compiled to a 227KB RISC-V ELF, compiles Codex source to valid C# under QEMU. No .NET, no CLR, no JIT. Native machine code, start to finish.
-**ARM64 backend complete (2026-03-23).** Arm64Encoder, Arm64CodeGen (1,740 lines), ElfWriterArm64. `codex build --target arm64` produces ELF64 AArch64 binaries. Awaiting QEMU verification by Agent Linux.
+**ARM64 backend complete (2026-03-23).** Arm64Encoder, Arm64CodeGen (1,740 lines), ElfWriterArm64. `codex build --target arm64` produces ELF64 AArch64 binaries. **QEMU-verified (2026-03-24)** — 33/33 tests green under qemu-aarch64. Two bugs found and fixed by Agent Linux: `__escape_text` null guard (CBZ→CBNZ), `__str_concat` byte copy. ELF section headers added for Android bionic compatibility.
 **Phone effects complete (2026-03-23).** 7 new effects: Network, Display, Camera, Microphone, Location, Sensors, Identity. 7 prelude files, 13 new tests, capability enforcement verified.
 **Phone hardware ready (2026-03-23).** Samsung SM-G935T (T-Mobile S7 Edge) backed up, SIM removed, OEM unlock enabled, Odin connected. TWRP build handed off to Agent Linux — no pre-built images exist for hero2qlte.
 **x86-64 backend SUMMITED (2026-03-23).** X86_64Encoder, X86_64CodeGen (~2,500 lines), ElfWriterX86_64. Self-hosted compiler compiles to 248KB x86-64 ELF and produces correct C# output running natively in WSL. 20 bugs found and fixed in one evening session (Cam + Agent Linux). No QEMU — native execution on the dev machine.
@@ -32,7 +32,7 @@ The C# bootstrap compiler is locked. All forward development happens in `.codex`
 | Self-hosted compiler | 26 files, ~4,900 lines |
 | Prelude | 23 modules, ~1,300 lines (11 type + 12 effect) |
 | Backends | 12 transpilation + IL + RISC-V native + RISC-V bare metal + WASM + ARM64 + x86-64 |
-| Tests | 810+ passing (40 RISC-V QEMU, 31 WASM wasmtime, 25 x86-64 WSL native, 16 ARM64) |
+| Tests | 470 in Codex.Types.Tests (40 RISC-V QEMU, 33 ARM64 QEMU, 23 x86-64 native, 31 WASM wasmtime) |
 | Type debt | 0 |
 | Fixed point | Proven (Stage 1 = Stage 3 at 255,344 chars) |
 | Reference compiler | 🔒 Locked |
@@ -160,8 +160,7 @@ recursive IR walker. Found by dogfooding codex-agent.
 - V4 proof-carrying facts: proofs verified at view composition time
 
 **Blocked on:**
-- TWRP build for hero2qlte — no pre-built images exist, device tree source available
-- Handoff to Agent Linux: `docs/OldStatus/TWRP-BUILD-HANDOFF.md`
+- Phase D: Flash to phone — recovery image packed and validated, awaiting human go/no-go
 
 **After TWRP:**
 1. Flash TWRP via Odin
@@ -272,8 +271,8 @@ AllocLocal saturation bug. Human routed between agents across session boundaries
 | ~~ARM64 backend~~ | ~~Extend native codegen to ARM64~~ | ✅ Done (2026-03-23) |
 | ~~Phone effects~~ | ~~Network, Display, Camera, Microphone, Location, Sensors, Identity~~ | ✅ Done (2026-03-23) |
 | ~~Camp III-A Phase 2a/2b~~ | ~~IRRegion escape copy annotation + per-type helpers~~ | ✅ Done (Cam, 2026-03-23) |
-| TWRP build | Build TWRP recovery.img for hero2qlte | Unblock phone flash (Agent Linux) |
-| ARM64 QEMU verification | Verify ARM64 binaries under qemu-aarch64 | Confirm codegen before phone deploy |
+| ~~TWRP build~~ | ~~Build TWRP recovery.img for hero2qlte~~ | ✅ Boot image packer validated, ready for flash |
+| ~~ARM64 QEMU verification~~ | ~~Verify ARM64 binaries under qemu-aarch64~~ | ✅ 33/33 (Agent Linux, 2026-03-24) |
 | ~~Camp III-A Phase 2c~~ | ~~Full escape analysis for region reclamation~~ | ✅ Done (2026-03-24) |
 
 ### Medium Term
