@@ -405,7 +405,10 @@ sealed class X86_64CodeGen
                 return builtinResult;
 
             // Sum type constructor: allocate [tag][field0][field1]... on heap
-            if (apply.Type is SumType sumType)
+            SumType? sumType = apply.Type as SumType;
+            if (sumType is null && apply.Type is ConstructedType ctApply)
+                sumType = m_typeDefs[ctApply.Constructor.Value] as SumType;
+            if (sumType is not null)
             {
                 byte ctorResult = EmitConstructor(funcName, args, sumType);
                 if (ctorResult != byte.MaxValue)
@@ -580,12 +583,17 @@ sealed class X86_64CodeGen
             fieldMap[name] = saved;
         }
 
-        int totalSize = rec.Fields.Length * 8;
+        RecordType? rt = rec.Type as RecordType;
+        if (rt is null && rec.Type is ConstructedType ctRec)
+            rt = m_typeDefs[ctRec.Constructor.Value] as RecordType;
+
+        int fieldCount = rt?.Fields.Length ?? rec.Fields.Length;
+        int totalSize = fieldCount * 8;
         byte ptrReg = AllocTemp();
         X86_64Encoder.MovRR(m_text, ptrReg, HeapReg);
         X86_64Encoder.AddRI(m_text, HeapReg, totalSize);
 
-        if (rec.Type is RecordType rt)
+        if (rt is not null)
         {
             for (int i = 0; i < rt.Fields.Length; i++)
             {
@@ -605,7 +613,12 @@ sealed class X86_64CodeGen
     {
         byte baseReg = EmitExpr(fa.Record);
         int fieldIndex = 0;
-        if (fa.Record.Type is RecordType rt)
+
+        RecordType? rt = fa.Record.Type as RecordType;
+        if (rt is null && fa.Record.Type is ConstructedType ctFa)
+            rt = m_typeDefs[ctFa.Constructor.Value] as RecordType;
+
+        if (rt is not null)
         {
             for (int i = 0; i < rt.Fields.Length; i++)
             {
@@ -671,7 +684,10 @@ sealed class X86_64CodeGen
                 {
                     // Resolve tag from SumType
                     int expectedTag = 0;
-                    if (ctorPat.Type is SumType sumType)
+                    SumType? matchSumType = ctorPat.Type as SumType;
+                    if (matchSumType is null && ctorPat.Type is ConstructedType ctMatch)
+                        matchSumType = m_typeDefs[ctMatch.Constructor.Value] as SumType;
+                    if (matchSumType is SumType sumType)
                     {
                         for (int t = 0; t < sumType.Constructors.Length; t++)
                         {
