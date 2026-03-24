@@ -473,7 +473,7 @@ public sealed partial class CSharpEmitter
                 return true;
 
             case "fork" when args.Count == 1:
-                sb.Append("System.Threading.Tasks.Task.FromResult((");
+                sb.Append("System.Threading.Tasks.Task.Run(() => (");
                 EmitExpr(sb, args[0], indent);
                 sb.Append(")(null))");
                 return true;
@@ -485,16 +485,17 @@ public sealed partial class CSharpEmitter
                 return true;
 
             case "par" when args.Count == 2:
+                sb.Append("System.Threading.Tasks.Task.WhenAll(");
                 EmitExpr(sb, args[1], indent);
-                sb.Append(".Select(");
+                sb.Append(".Select(_x_ => System.Threading.Tasks.Task.Run(() => (");
                 EmitExpr(sb, args[0], indent);
-                sb.Append(").ToList()");
+                sb.Append(")(_x_)))).Result.ToList()");
                 return true;
 
             case "race" when args.Count == 1:
-                sb.Append('(');
+                sb.Append("System.Threading.Tasks.Task.WhenAny(");
                 EmitExpr(sb, args[0], indent);
-                sb.Append("[0])(null)");
+                sb.Append(".Select(_t_ => System.Threading.Tasks.Task.Run(() => _t_(null)))).Result.Result");
                 return true;
 
             default:
