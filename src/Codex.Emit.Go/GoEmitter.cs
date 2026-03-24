@@ -754,6 +754,32 @@ public sealed class GoEmitter : ICodeEmitter
                 sb.Append(')');
                 return true;
 
+            case "fork" when args.Count == 1:
+                sb.Append("func() chan interface{} { ch := make(chan interface{}, 1); go func() { ch <- (");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(")(nil) }(); return ch }()");
+                return true;
+
+            case "await" when args.Count == 1:
+                sb.Append("<-(");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(')');
+                return true;
+
+            case "par" when args.Count == 2:
+                sb.Append("func() []interface{} { _xs_ := ");
+                EmitExpr(sb, args[1], indent);
+                sb.Append("; _chs_ := make([]chan interface{}, len(_xs_)); for _i_, _x_ := range _xs_ { _chs_[_i_] = make(chan interface{}, 1); go func(v interface{}) { _chs_[_i_] <- (");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(")(v) }(_x_) }; _rs_ := make([]interface{}, len(_xs_)); for _i_ := range _chs_ { _rs_[_i_] = <-_chs_[_i_] }; return _rs_ }()");
+                return true;
+
+            case "race" when args.Count == 1:
+                sb.Append("func() interface{} { _ts_ := ");
+                EmitExpr(sb, args[0], indent);
+                sb.Append("; _ch_ := make(chan interface{}, len(_ts_)); for _, _t_ := range _ts_ { go func(t func(interface{}) interface{}) { _ch_ <- t(nil) }(_t_) }; return <-_ch_ }()");
+                return true;
+
             default:
                 return false;
         }
@@ -823,7 +849,9 @@ public sealed class GoEmitter : ICodeEmitter
         args.Add(app.Argument);
     }
 
-    static readonly Set<string> s_multiArgBuiltins = Set<string>.Of("char-at", "substring", "list-at", "text-replace");
+    static readonly Set<string> s_multiArgBuiltins = Set<string>.Of(
+        "char-at", "substring", "list-at", "text-replace",
+        "fork", "await", "par", "race");
 
     static string? FindBuiltinRoot(IRApply app)
     {
