@@ -618,6 +618,7 @@ print-help =
   "  recall [n]                         Show last N session log entries (default 10)\n" ++
   "  build                              Build + compact summary (full log stored)\n" ++
   "  test [filter]                      Test + compact summary (full log stored)\n" ++
+  "  init                               Full session start (doctor+check+status+handoff+sweep+git)\n" ++
   "  help                               This message\n" ++
   "\n" ++
   "Handoff lifecycle: draft -> awaiting-review -> under-review -> approved -> merged\n" ++
@@ -626,6 +627,19 @@ print-help =
   "Usage: dotnet codex-agent.exe <command> [args]\n" ++
   "Built from codex-agent.codex via the Codex IL backend."
  )
+
+do-init : List Text -> [Console, FileSystem] Nothing
+do-init (args) =
+ let self = "dotnet"
+ in let agent = "tools/codex-agent/codex-agent.exe"
+  in let doctor-out = run-process self (agent ++ " doctor")
+   in let check-out = run-process self (agent ++ " check")
+    in let status-out = run-process self (agent ++ " status")
+     in let handoff-out = run-process self (agent ++ " handoff show")
+      in let verify-out = run-process "pwsh" "-File tools/codex-agent-verify.ps1 docs/CurrentPlan.md docs/ToDo/CSharpCleanup.md docs/TOOL-ERROR-REGISTRY.md docs/KNOWN-CONDITIONS.md .github/copilot-instructions.md"
+       in let git-log = run-process "git" "log --oneline -5"
+        in let git-branches = run-process "git" "branch -r"
+         in print-line (doctor-out ++ "\n" ++ check-out ++ "\n" ++ status-out ++ "\n" ++ handoff-out ++ "\n" ++ verify-out ++ "\n=== Recent Commits ===\n" ++ git-log ++ "\n=== Remote Branches ===\n" ++ git-branches)
 
 main : [Console, FileSystem] Nothing
 main = do
@@ -636,14 +650,15 @@ main = do
     in if cmd == "peek" then do-peek args
      else if cmd == "stat" then do-stat args
       else if cmd == "snap" then do-snap args
-       else if cmd == "status" then do-status args
-        else if cmd == "plan" then do-plan args
-         else if cmd == "check" then do-check args
-          else if cmd == "doctor" then do-doctor args
-           else if cmd == "handoff" then do-handoff args
-            else if cmd == "log" then do-log args
-             else if cmd == "recall" then do-recall args
-              else if cmd == "build" then do-build args
-               else if cmd == "test" then do-test args
-                else if cmd == "help" then print-help
-                 else print-line ("Unknown command: " ++ cmd ++ ". Run 'codex-agent help' for usage.")
+       else if cmd == "init" then do-init args
+        else if cmd == "status" then do-status args
+         else if cmd == "plan" then do-plan args
+          else if cmd == "check" then do-check args
+           else if cmd == "doctor" then do-doctor args
+            else if cmd == "handoff" then do-handoff args
+             else if cmd == "log" then do-log args
+              else if cmd == "recall" then do-recall args
+               else if cmd == "build" then do-build args
+                else if cmd == "test" then do-test args
+                 else if cmd == "help" then print-help
+                  else print-line ("Unknown command: " ++ cmd ++ ". Run 'codex-agent help' for usage.")

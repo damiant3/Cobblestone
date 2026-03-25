@@ -97,12 +97,11 @@ dotnet tools/codex-agent/codex-agent.exe <command> [args]
 ### Session Start
 
 ```powershell
-dotnet tools/codex-agent/codex-agent.exe doctor
-dotnet tools/codex-agent/codex-agent.exe check
-dotnet tools/codex-agent/codex-agent.exe status
-dotnet tools/codex-agent/codex-agent.exe handoff show
-pwsh -File tools/codex-agent-verify.ps1 docs/**/*.md   # sweep for TEF-008 pollution
+dotnet tools/codex-agent/codex-agent.exe init
 ```
+
+Runs: doctor → check → status → handoff → TEF-008 sweep → git log → git branches.
+All in one call. No steps to forget.
 
 Key doc locations (memorize, don't search):
 - `docs/TOOL-ERROR-REGISTRY.md` — tool failure log
