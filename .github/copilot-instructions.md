@@ -263,7 +263,7 @@ usings are all build failures.
 
 ## Project Structure (quick ref)
 
-Dependencies flow one way: `Core  Syntax  Ast  Semantics  Types  IR  Emit  Emit.*  Cli`
+Dependencies flow one way: `Core -> Syntax -> Ast -> Semantics -> Types -> IR -> Emit -> Emit.* -> Cli`
 
 `Codex.Core` has zero project deps (root). `Codex.Cli` references everything (composition root).
 
