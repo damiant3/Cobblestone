@@ -98,9 +98,11 @@ then delete it.
 top of the file as actual content. These are tool metadata that should never appear
 in the file. The agent may not notice because `get_file` renders them as part of
 its own output framing (see TEF-003).
-**Frequency**: Observed on markdown files after `edit_file` edits.
+**Frequency**: Every `edit_file` call on markdown files. 100% reproduction rate in
+the 2026-03-25 session — including while editing *this file*.
 **Workaround**: Always verify with `codex-agent peek <file> 1 5` after ANY edit.
 If metadata lines appear, use the safe path (create_file + swap) to rewrite the file.
+Now auto-stripped by `codex-agent-verify.ps1` and wired into `codex-agent build`.
 
 ---
 
@@ -109,7 +111,10 @@ If metadata lines appear, use the safe path (create_file + swap) to rewrite the 
 Format: `DATE | ERROR-CLASS | FILE | DESCRIPTION | OUTCOME`
 
 ```
-2026-03-25 | TEF-008 | docs/CurrentPlan.md | edit_file injected "File:" header and code fence as lines 1-2 on markdown edit | cleaned via codex-agent-verify.ps1
+2026-03-25 | TEF-008 | tools/codex-agent/codex-agent.codex | edit_file injected "File:" header while wiring verify into build | cleaned via codex-agent-verify.ps1
+2026-03-25 | TEF-008 | .github/copilot-instructions.md | edit_file injected "File:" header while adding sweep to session start | cleaned via codex-agent-verify.ps1
+2026-03-25 | TEF-008 | docs/ToDo/CSharpCleanup.md | edit_file injected "File:" header while updating Section 9 exemption | shipped to origin, caught by user, cleaned post-push
+2026-03-25 | TEF-008 | docs/CurrentPlan.md | edit_file injected "File:" header and code fence on markdown edit | cleaned via codex-agent-verify.ps1
 2026-03-25 | TEF-008 | docs/TOOL-ERROR-REGISTRY.md | edit_file injected "File:" header again while updating TEF-001 description | cleaned via codex-agent-verify.ps1
 2026-03-25 | TEF-001 | docs/CurrentPlan.md | edit_file dropped # Current Plan heading from line 1 during section insertion | recovered via snap restore + create_file rewrite
 2026-03-25 | TEF-001 | docs/CurrentPlan.md | edit_file duplicated "What Remains" and "Process" sections instead of inserting before them | recovered via snap restore + create_file rewrite
@@ -119,6 +124,10 @@ Format: `DATE | ERROR-CLASS | FILE | DESCRIPTION | OUTCOME`
 2026-03-25 | TEF-004 | .github/copilot-instructions.md | terminal WriteAllText mangled em dashes to garbage | recovered via snap restore
 2026-03-25 | TEF-003 | .github/copilot-instructions.md | get_file could not show # heading line, appeared missing | used codex-agent peek to confirm
 2026-03-25 | TEF-007 | (terminal) | multi-line Remove-Item fused into garbage, partial execution | re-ran as individual commands
+2026-03-25 | TEF-008 | docs/OldStatus/DECISIONS.md | latent pollution from prior session, discovered by full docs sweep | cleaned via codex-agent-verify.ps1
+2026-03-25 | TEF-008 | docs/OldStatus/X86-64-REVIEW-HANDOFF.md | latent pollution from prior session | cleaned via codex-agent-verify.ps1
+2026-03-25 | TEF-008 | docs/Projects/PHONE-WIPE.md | latent pollution from prior session | cleaned via codex-agent-verify.ps1
+2026-03-25 | TEF-008 | docs/Projects/TWRP-BUILD-HANDOFF.md | latent pollution from prior session | cleaned via codex-agent-verify.ps1
 2026-03-21 | TEF-005 | tools/codex-agent/codex-agent.codex | else->then swap on line 53 | caught by snap diff
 2026-03-21 | TEF-005 | tools/codex-agent/peek.codex | else->then swap in if/then/else chain | caught by snap diff
 ```
@@ -136,9 +145,9 @@ Format: `DATE | ERROR-CLASS | FILE | DESCRIPTION | OUTCOME`
 | TEF-005 else/then swap | 2+ | 0 | CRITICAL |
 | TEF-006 boundary truncation | 1 | 1 | LOW |
 | TEF-007 terminal multi-line | 1 | 1 | HIGH |
-| TEF-008 edit_file injects metadata | 3 | 3 | HIGH |
+| TEF-008 edit_file injects metadata | 10 | 10 | HIGH |
 
-**Total tool failures logged**: 13
+**Total tool failures logged**: 22
 **Files requiring recovery**: 3
 **Recovery method**: snap restore + create_file rewrite
 
@@ -167,3 +176,37 @@ The "large file rule" (>300 lines requires special handling) should be the
 
 This is not optional caution. It is the only reliable path. The toolkit exists
 because the native tools cannot be trusted.
+
+---
+
+## Turtles All the Way Down
+
+On 2026-03-25, an agent session was dedicated to fixing the process failures
+caused by tool errors. The session went like this:
+
+1. Audit found style violations in C# code — written to `CSharpCleanup.md`.
+2. `edit_file` injected TEF-008 pollution into `CSharpCleanup.md`. **Shipped to origin unnoticed.**
+3. Updating `CurrentPlan.md` with audit results: `edit_file` dropped the heading (TEF-001),
+   duplicated sections (TEF-001), and injected metadata (TEF-008). Three attempts, three failures.
+   Recovered via snap restore + create_file rewrite.
+4. Documenting those failures in this file: `edit_file` injected TEF-008 into *this file*.
+5. Updating TEF-001's description to document the duplication variant: TEF-008 again, *in this file*.
+6. Adding TEF-008 sweep to session start in `copilot-instructions.md`: TEF-008 again.
+7. Full docs sweep discovered **4 more files** with latent TEF-008 from prior sessions — pollution
+   that had been sitting in committed, pushed docs for days.
+8. Wiring the verify script into `codex-agent build` so it can't be skipped:
+   `edit_file` on `codex-agent.codex` injected TEF-008. The verify script caught it.
+9. Writing this summary of tool failures while fixing tool failures: used `create_file` + swap
+   because — at this point — any agent that uses `edit_file` on a markdown file deserves
+   what it gets.
+
+The tool that documents tool errors is corrupted by the tool error it documents.
+The fix for the process failure is corrupted by the same process failure it fixes.
+The file you are reading was written via the safe path specifically because the
+normal path would have corrupted it while describing its own corruption.
+
+It's turtles all the way down.
+
+**Mitigation shipped**: `codex-agent build` now runs `codex-agent-verify.ps1` on all
+key docs automatically. The sweep is in the path agents can't skip. The verify script
+has a 100% catch rate on TEF-008. Automation works. Discipline doesn't.
