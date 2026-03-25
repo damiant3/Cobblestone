@@ -22,6 +22,17 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     uint m_nextTemp = Reg.T0;
     uint m_nextLocal = Reg.S2;
+
+    string m_currentFunction = "";
+
+    // TCO state
+    bool m_inTCOFunction;
+    bool m_inTailPosition;
+    int m_tcoLoopTop;
+    uint[] m_tcoParamLocals = [];
+    uint[] m_tcoTempLocals = [];
+    int m_tcoSavedNextLocal;
+    uint m_tcoSavedNextTemp;
     int m_spillCount;           // number of spilled locals beyond S-registers
     int m_prologueIndex = -1;   // instruction index of the frame size addi (patched)
     Dictionary<string, uint> m_locals = [];
@@ -100,13 +111,39 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     // ── Function emission ────────────────────────────────────────
 
+    static bool ShouldTCO(IRDefinition def)
+    {
+        return def.Parameters.Length > 0 && HasTailCall(def.Body, def.Name);
+    }
+
+    static bool HasTailCall(IRExpr expr, string funcName) => expr switch
+    {
+        IRIf iff => HasTailCall(iff.Then, funcName) || HasTailCall(iff.Else, funcName),
+        IRLet let => HasTailCall(let.Body, funcName),
+        IRMatch match => match.Branches.Any(b => HasTailCall(b.Body, funcName)),
+        IRApply app => IsSelfCall(app, funcName),
+        IRDo doExpr => doExpr.Statements.Length > 0 &&
+            doExpr.Statements[^1] is IRDoExec exec &&
+            HasTailCall(exec.Expression, funcName),
+        _ => false
+    };
+
+    static bool IsSelfCall(IRExpr expr, string funcName)
+    {
+        IRExpr current = expr;
+        while (current is IRApply app) current = app.Function;
+        return current is IRName name && name.Name == funcName;
+    }
+
     void EmitFunction(IRDefinition def)
     {
         m_functionOffsets[def.Name] = m_instructions.Count;
+        m_currentFunction = def.Name;
         m_locals = new Dictionary<string, uint>();
         m_nextTemp = Reg.T3;
         m_nextLocal = Reg.S2;
         m_spillCount = 0;
+        m_inTCOFunction = ShouldTCO(def);
 
         // Prologue: base frame = 96 bytes (ra + s0 + s2-s11).
         // If spills are needed, frame grows — patched after body emission.
@@ -126,12 +163,25 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Nop());                        // slot B: patched or nop
         Emit(RiscVEncoder.Nop());                        // slot C: patched or nop
 
+        m_tcoParamLocals = new uint[def.Parameters.Length];
         for (int i = 0; i < def.Parameters.Length && i < 8; i++)
         {
             uint savedReg = AllocLocal();
             StoreLocal(savedReg, Reg.A0 + (uint)i);
             m_locals[def.Parameters[i].Name] = savedReg;
+            m_tcoParamLocals[i] = savedReg;
         }
+
+        if (m_inTCOFunction)
+        {
+            m_tcoTempLocals = new uint[def.Parameters.Length];
+            for (int i = 0; i < def.Parameters.Length; i++)
+                m_tcoTempLocals[i] = AllocLocal();
+        }
+        m_tcoLoopTop = m_instructions.Count;
+        m_tcoSavedNextLocal = (int)m_nextLocal;
+        m_tcoSavedNextTemp = m_nextTemp;
+        m_inTailPosition = m_inTCOFunction;
 
         uint resultReg = EmitExpr(def.Body);
         if (resultReg >= SpillBase)
@@ -393,19 +443,23 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     uint EmitIf(IRIf ifExpr)
     {
+        bool savedTail = m_inTailPosition;
+        m_inTailPosition = false;
         uint cond = EmitExpr(ifExpr.Condition);
 
         int beqzIndex = m_instructions.Count;
-        Emit(RiscVEncoder.Nop()); // patched: beqz → else
+        Emit(RiscVEncoder.Nop());
 
+        m_inTailPosition = savedTail;
         uint thenReg = EmitExpr(ifExpr.Then);
         uint resultReg = AllocLocal();
         StoreLocal(resultReg, thenReg);
 
         int jEndIndex = m_instructions.Count;
-        Emit(RiscVEncoder.Nop()); // patched: j → end
+        Emit(RiscVEncoder.Nop());
 
         int elseStart = m_instructions.Count;
+        m_inTailPosition = savedTail;
         uint elseReg = EmitExpr(ifExpr.Else);
         StoreLocal(resultReg, elseReg);
 
@@ -419,15 +473,51 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     uint EmitLet(IRLet letExpr)
     {
+        bool savedTail = m_inTailPosition;
+        m_inTailPosition = false;
         uint valReg = EmitExpr(letExpr.Value);
         uint savedReg = AllocLocal();
         StoreLocal(savedReg, valReg);
         m_locals[letExpr.Name] = savedReg;
+        m_inTailPosition = savedTail;
         return EmitExpr(letExpr.Body);
+    }
+
+    void EmitRiscVTailCall(IRApply app)
+    {
+        List<IRExpr> args = new();
+        IRExpr cur = app;
+        while (cur is IRApply a) { args.Insert(0, a.Argument); cur = a.Function; }
+
+        m_nextLocal = (uint)m_tcoSavedNextLocal;
+        m_nextTemp = m_tcoSavedNextTemp;
+
+        for (int i = 0; i < args.Count && i < m_tcoTempLocals.Length; i++)
+        {
+            bool saved = m_inTailPosition; m_inTailPosition = false;
+            uint r = EmitExpr(args[i]);
+            m_inTailPosition = saved;
+            StoreLocal(m_tcoTempLocals[i], r);
+        }
+        for (int i = 0; i < args.Count && i < m_tcoParamLocals.Length; i++)
+        {
+            uint val = LoadLocal(m_tcoTempLocals[i]);
+            StoreLocal(m_tcoParamLocals[i], val);
+        }
+        Emit(RiscVEncoder.J((m_tcoLoopTop - m_instructions.Count) * 4));
     }
 
     uint EmitApply(IRApply apply)
     {
+        // TCO interception
+        if (m_inTCOFunction && m_inTailPosition && IsSelfCall(apply, m_currentFunction))
+        {
+            EmitRiscVTailCall(apply);
+            uint dummy = AllocTemp();
+            foreach (uint insn in RiscVEncoder.Li(dummy, 0)) Emit(insn);
+            return dummy;
+        }
+
         List<IRExpr> args = new();
         IRExpr func = apply;
         while (func is IRApply inner)
@@ -726,7 +816,10 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     uint EmitMatch(IRMatch match)
     {
+        bool savedTail = m_inTailPosition;
+        m_inTailPosition = false;
         uint scrutReg = EmitExpr(match.Scrutinee);
+        m_inTailPosition = savedTail;
         uint savedScrut = AllocLocal();
         StoreLocal(savedScrut, scrutReg);
 
@@ -1663,9 +1756,51 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 return true;
             }
 
+            case "is-digit" when args.Count == 1:
+            {
+                uint textReg = EmitExpr(args[0]);
+                Emit(RiscVEncoder.Lbu(Reg.T0, textReg, 8));
+                foreach (uint insn in RiscVEncoder.Li(Reg.T1, '0')) Emit(insn);
+                foreach (uint insn in RiscVEncoder.Li(Reg.T2, '9' + 1)) Emit(insn);
+                Emit(RiscVEncoder.Slt(Reg.T3, Reg.T0, Reg.T1));
+                Emit(RiscVEncoder.Slt(Reg.T4, Reg.T0, Reg.T2));
+                Emit(RiscVEncoder.Xori(Reg.T3, Reg.T3, 1));
+                Emit(RiscVEncoder.And(Reg.A0, Reg.T3, Reg.T4));
+                return true;
+            }
+
+            case "is-whitespace" when args.Count == 1:
+            {
+                uint textReg = EmitExpr(args[0]);
+                Emit(RiscVEncoder.Lbu(Reg.T0, textReg, 8));
+                // space=32, tab=9, newline=10, cr=13
+                foreach (uint insn in RiscVEncoder.Li(Reg.T1, ' ')) Emit(insn);
+                Emit(RiscVEncoder.Sub(Reg.T2, Reg.T0, Reg.T1));
+                Emit(RiscVEncoder.Sltiu(Reg.T2, Reg.T2, 1)); // t2 = (t0 == ' ')
+                foreach (uint insn in RiscVEncoder.Li(Reg.T1, '\t')) Emit(insn);
+                Emit(RiscVEncoder.Sub(Reg.T3, Reg.T0, Reg.T1));
+                Emit(RiscVEncoder.Sltiu(Reg.T3, Reg.T3, 1)); // t3 = (t0 == '\t')
+                Emit(RiscVEncoder.Or(Reg.T2, Reg.T2, Reg.T3));
+                foreach (uint insn in RiscVEncoder.Li(Reg.T1, '\n')) Emit(insn);
+                Emit(RiscVEncoder.Sub(Reg.T3, Reg.T0, Reg.T1));
+                Emit(RiscVEncoder.Sltiu(Reg.T3, Reg.T3, 1));
+                Emit(RiscVEncoder.Or(Reg.T2, Reg.T2, Reg.T3));
+                foreach (uint insn in RiscVEncoder.Li(Reg.T1, '\r')) Emit(insn);
+                Emit(RiscVEncoder.Sub(Reg.T3, Reg.T0, Reg.T1));
+                Emit(RiscVEncoder.Sltiu(Reg.T3, Reg.T3, 1));
+                Emit(RiscVEncoder.Or(Reg.A0, Reg.T2, Reg.T3));
+                return true;
+            }
+
+            case "negate" when args.Count == 1:
+            {
+                uint val = EmitExpr(args[0]);
+                Emit(RiscVEncoder.Sub(Reg.A0, Reg.Zero, val));
+                return true;
+            }
+
             case "text-replace" when args.Count == 3:
             {
-                // text-replace text old new → call __str_replace helper
                 uint textReg = EmitExpr(args[0]);
                 uint savedText = AllocLocal();
                 StoreLocal(savedText, textReg);
