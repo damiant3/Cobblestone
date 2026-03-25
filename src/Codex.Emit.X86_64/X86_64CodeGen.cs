@@ -137,6 +137,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             IRIf iff => HasTailCall(iff.Then, funcName) || HasTailCall(iff.Else, funcName),
             IRLet let => HasTailCall(let.Body, funcName),
             IRMatch match => match.Branches.Any(b => HasTailCall(b.Body, funcName)),
+            IRRegion region => HasTailCall(region.Body, funcName),
             IRApply app => IsSelfCall(app, funcName),
             IRDo doExpr => doExpr.Statements.Length > 0 &&
                 doExpr.Statements[^1] is IRDoExec exec &&
@@ -591,6 +592,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         if (func is IRName name)
             funcName = name.Name;
 
+        // Sub-expressions of a call (args, constructor fields, builtins) are NOT in tail position
+        bool savedTailPos = m_inTailPosition;
+        m_inTailPosition = false;
+
         // Try builtins first
         if (funcName is not null)
         {
@@ -664,6 +669,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         if (stackArgCount > 0)
             X86_64Encoder.AddRI(m_text, Reg.RSP, stackArgCount * 8);
 
+        m_inTailPosition = savedTailPos;
         byte result = AllocTemp();
         X86_64Encoder.MovRR(m_text, result, Reg.RAX);
         return result;
