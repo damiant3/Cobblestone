@@ -1720,9 +1720,11 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 uint savedTask = AllocLocal();
                 StoreLocal(savedTask, taskPtr);
 
-                // Call thunk(null): thunk is a closure [code_ptr, ...], load code ptr then call
+                // Call thunk(null): thunk is a closure [code_ptr, caps...], load code ptr then call
+                // Trampoline expects T2 = closure pointer (for captured arg access)
                 uint thunkLoaded = LoadLocal(savedThunk);
                 Emit(RiscVEncoder.Mv(Reg.A0, Reg.Zero)); // arg = null
+                Emit(RiscVEncoder.Mv(Reg.T2, thunkLoaded)); // T2 = closure (trampoline convention)
                 Emit(RiscVEncoder.Ld(Reg.T0, thunkLoaded, 0)); // T0 = [thunk+0] = code ptr
                 Emit(RiscVEncoder.Jalr(Reg.Ra, Reg.T0, 0));
 

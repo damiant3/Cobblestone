@@ -1073,9 +1073,11 @@ sealed class Arm64CodeGen
                 uint savedTask = AllocLocal();
                 StoreLocal(savedTask, taskPtr);
 
-                // Call thunk(null): thunk is a closure [code_ptr, ...], load code ptr then call
+                // Call thunk(null): thunk is a closure [code_ptr, caps...], load code ptr then call
+                // Trampoline expects X11 = closure pointer (for captured arg access)
                 uint thunkLoaded = LoadLocal(savedThunk);
                 foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0)) Emit(insn);
+                Emit(Arm64Encoder.Mov(Arm64Reg.X11, thunkLoaded)); // X11 = closure (trampoline convention)
                 Emit(Arm64Encoder.Ldr(Arm64Reg.X9, thunkLoaded, 0)); // X9 = [thunk+0] = code ptr
                 Emit(Arm64Encoder.Blr(Arm64Reg.X9));
 
