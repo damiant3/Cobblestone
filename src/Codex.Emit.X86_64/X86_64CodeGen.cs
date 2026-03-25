@@ -55,9 +55,12 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
         EmitEscapeCopyHelpers();
 
-        // Bare metal: emit ISR stubs (must be before EmitStart so addresses are known)
+        // Bare metal: emit ISR stubs and process 1 entry function
         if (m_target == X86_64Target.BareMetal)
+        {
             EmitIsrStubsAndIdt();
+            EmitProcess1Entry(); // records m_process1EntryOffset
+        }
         EmitStart(module);
         PatchCalls();
         PatchRodataRefs();
@@ -3051,6 +3054,93 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.MovLoad(m_text, HeapReg, Reg.RAX, 48);
     }
 
+    int m_process1EntryOffset = -1; // patched after __proc1_entry is emitted
+
+    void EmitProcess1Setup()
+    {
+        // Process 1 runs __proc1_entry (emitted after all functions).
+        // Same page tables as kernel (CR3 = 0x1000).
+        // Own stack at 0x70000 (grows down, below kernel stack at 0x80000).
+        // Own heap at 0x300000.
+
+        const long proc1Stack = 0x70000;
+        const long proc1Heap = 0x300000;
+
+        EmitCreateProcess(1, 0x1000 /* shared CR3 */, proc1Heap);
+
+        // Build a fake interrupt frame on process 1's stack so the first
+        // context switch can "iretq" into it.
+        // Stack layout (growing down from proc1Stack):
+        //   [RSP+32] SS     = 0x10 (kernel data segment)
+        //   [RSP+24] RSP    = proc1Stack (will be the running RSP)
+        //   [RSP+16] RFLAGS = 0x202 (IF=1, reserved bit 1 = 1)
+        //   [RSP+8]  CS     = 0x08 (kernel code segment)
+        //   [RSP+0]  RIP    = __proc1_entry (patched later)
+        // Then our saved registers: RDI, RSI, RDX, RCX, RAX (5 words)
+        // Total: 10 words = 80 bytes
+
+        long frameBase = proc1Stack - 80;
+
+        // Write SS
+        X86_64Encoder.Li(m_text, Reg.RDI, frameBase + 72);
+        X86_64Encoder.Li(m_text, Reg.RAX, 0x10);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+
+        // Write RSP
+        X86_64Encoder.Li(m_text, Reg.RDI, frameBase + 64);
+        X86_64Encoder.Li(m_text, Reg.RAX, proc1Stack);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+
+        // Write RFLAGS (IF=1)
+        X86_64Encoder.Li(m_text, Reg.RDI, frameBase + 56);
+        X86_64Encoder.Li(m_text, Reg.RAX, 0x202);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+
+        // Write CS
+        X86_64Encoder.Li(m_text, Reg.RDI, frameBase + 48);
+        X86_64Encoder.Li(m_text, Reg.RAX, 0x08);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+
+        // Write RIP = __proc1_entry (already emitted, address known)
+        long proc1Vaddr = 0x100000 + m_process1EntryOffset;
+        X86_64Encoder.Li(m_text, Reg.RDI, frameBase + 40);
+        X86_64Encoder.Li(m_text, Reg.RAX, proc1Vaddr);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+
+        // Write saved registers (all zero)
+        X86_64Encoder.Li(m_text, Reg.RAX, 0);
+        for (int i = 0; i < 5; i++)
+        {
+            X86_64Encoder.Li(m_text, Reg.RDI, frameBase + i * 8);
+            X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+        }
+
+        // Set process 1's saved RSP to point to the fake frame
+        long proc1Entry = ProcTableBase + 1 * ProcEntrySize;
+        X86_64Encoder.Li(m_text, Reg.RDI, proc1Entry + 8); // rsp field
+        X86_64Encoder.Li(m_text, Reg.RAX, frameBase);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+    }
+
+    void EmitProcess1Entry()
+    {
+        // A simple process that loops printing "B" to serial
+        m_process1EntryOffset = m_text.Count;
+
+        // Set up this process's heap pointer
+        X86_64Encoder.Li(m_text, HeapReg, 0x300000);
+
+        // Infinite loop: print "B" to serial, then hlt (wait for timer)
+        int loopTop = m_text.Count;
+        X86_64Encoder.Li(m_text, Reg.RAX, 'B');
+        X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+        X86_64Encoder.OutDxAl(m_text);
+
+        // Halt and wait for timer interrupt (which will switch away from us)
+        X86_64Encoder.Hlt(m_text);
+        X86_64Encoder.Jmp(m_text, loopTop - (m_text.Count + 5));
+    }
+
     // ── Interrupt Handling (Ring 1) ──────────────────────────────
 
     const long IdtBase = 0x6000;
@@ -3217,13 +3307,41 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         int notTimer = m_text.Count;
         X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
 
-        // ── Timer handler: increment tick counter ──
+        // ── Timer handler: increment tick counter + context switch ──
         X86_64Encoder.Li(m_text, Reg.RDI, TickCountAddr);
         X86_64Encoder.MovLoad(m_text, Reg.RSI, Reg.RDI, 0);
         X86_64Encoder.AddRI(m_text, Reg.RSI, 1);
         X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RSI, 0);
-        int doneTimer = m_text.Count;
-        X86_64Encoder.Jmp(m_text, 0); // jump to EOI
+
+        // Send EOI early (before potential stack switch)
+        EmitOutByte(0x20, 0x20);
+
+        // Context switch if more than one active process
+        // Check proc_table[1].state != 0 (any second process exists)
+        X86_64Encoder.Li(m_text, Reg.RDI, ProcTableBase + ProcEntrySize);
+        X86_64Encoder.MovLoad(m_text, Reg.RDI, Reg.RDI, 0);
+        X86_64Encoder.CmpRI(m_text, Reg.RDI, 0);
+        int skipCtxSwitch = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0); // skip if no second process
+
+        // Do context switch — this changes RSP to next process's saved frame
+        EmitContextSwitch();
+
+        PatchJcc(skipCtxSwitch, m_text.Count);
+
+        // Restore registers and iretq — works for BOTH paths:
+        // - No switch: RSP still points to current process's saved regs
+        // - Switch: RSP now points to next process's saved regs
+        X86_64Encoder.PopR(m_text, Reg.RDI);
+        X86_64Encoder.PopR(m_text, Reg.RSI);
+        X86_64Encoder.PopR(m_text, Reg.RDX);
+        X86_64Encoder.PopR(m_text, Reg.RCX);
+        X86_64Encoder.PopR(m_text, Reg.RAX);
+        X86_64Encoder.Iretq(m_text);
+
+        // Timer is fully handled above — skip the normal EOI path
+        int doneTimer = m_text.Count; // not used, but needed for the jmp below
+        // (fall through to notTimer which will jmp to EOI for other vectors)
 
         // ── Not timer ──
         PatchJcc(notTimer, m_text.Count);
@@ -3243,9 +3361,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // ── Not keyboard (fall through to EOI) ──
         PatchJcc(notKeyboard, m_text.Count);
 
-        // ── Send EOI to PIC ──
-        int eoiAddr = m_text.Count;
-        PatchJmp(doneTimer, eoiAddr);
+        // ── Send EOI to PIC (for non-timer interrupts) ──
         EmitOutByte(0x20, 0x20); // EOI to PIC1
 
         // Restore registers
@@ -3311,8 +3427,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             // Set up heap at 0x200000 (2MB — above identity-mapped pages)
             X86_64Encoder.Li(m_text, HeapReg, 0x200000);
 
-            // Initialize process table
+            // Initialize process table and create process 1
+            // (process 1 entry code already emitted in EmitModule)
             EmitProcessSetup();
+            EmitProcess1Setup();
 
             // Build IDT, load IDTR, init PIC, enable interrupts
             EmitIdtEntries();
@@ -3371,9 +3489,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // Exit
         if (m_target == X86_64Target.BareMetal)
         {
-            // Bare metal: halt
-            X86_64Encoder.Cli(m_text);
+            // Bare metal: loop printing "A" and halting (timer wakes us)
             int hltLoop = m_text.Count;
+            X86_64Encoder.Li(m_text, Reg.RAX, 'A');
+            X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+            X86_64Encoder.OutDxAl(m_text);
             X86_64Encoder.Hlt(m_text);
             X86_64Encoder.Jmp(m_text, hltLoop - (m_text.Count + 5));
         }
