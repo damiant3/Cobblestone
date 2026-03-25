@@ -21,14 +21,26 @@ sealed class AgentExeRunner
     public (int ExitCode, string StdOut, string StdErr) Run(string exe, params string[] args)
     {
         string exePath = ExePath(exe);
-        ProcessStartInfo psi = new("dotnet", $"\"{exePath}\" {string.Join(' ', args.Select(a => $"\"{a}\""))}")
+
+        // Prefer the native apphost .exe if it exists, fall back to dotnet + .dll
+        string dllPath = Path.ChangeExtension(exePath, ".dll");
+        ProcessStartInfo psi;
+        if (File.Exists(exePath) && File.Exists(dllPath))
         {
-            WorkingDirectory = m_solutionRoot,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
+            // Native apphost — run directly
+            psi = new(exePath, string.Join(' ', args.Select(a => $"\"{a}\"")));
+        }
+        else
+        {
+            // Legacy: framework-dependent managed .exe, invoke via dotnet
+            psi = new("dotnet", $"\"{exePath}\" {string.Join(' ', args.Select(a => $"\"{a}\""))}");
+        }
+
+        psi.WorkingDirectory = m_solutionRoot;
+        psi.RedirectStandardOutput = true;
+        psi.RedirectStandardError = true;
+        psi.UseShellExecute = false;
+        psi.CreateNoWindow = true;
 
         using Process proc = Process.Start(psi)!;
         string stdout = proc.StandardOutput.ReadToEnd();

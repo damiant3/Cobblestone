@@ -322,8 +322,10 @@ public static partial class Program
 
         Emit.IL.ILEmitter emitter = new();
         byte[] assembly = emitter.EmitAssembly(irResult.Module, moduleName);
-        string ilOutputPath = Path.Combine(outputDir, moduleName + ".exe");
-        File.WriteAllBytes(ilOutputPath, assembly);
+
+        // Write managed assembly as .dll — the native apphost .exe will load it
+        string dllPath = Path.Combine(outputDir, moduleName + ".dll");
+        File.WriteAllBytes(dllPath, assembly);
 
         string runtimeConfigPath = Path.Combine(outputDir, moduleName + ".runtimeconfig.json");
         File.WriteAllText(runtimeConfigPath, """
@@ -338,9 +340,93 @@ public static partial class Program
             }
             """);
 
-        Console.WriteLine($"✓ Compiled to {ilOutputPath} ({target})");
+        // Generate native apphost .exe stub that bootstraps the .NET runtime
+        string exePath = Path.Combine(outputDir, moduleName + ".exe");
+        bool appHostCreated = TryCreateAppHost(dllPath, exePath, moduleName + ".dll");
+
+        if (appHostCreated)
+            Console.WriteLine($"✓ Compiled to {exePath} ({target}, apphost + {moduleName}.dll)");
+        else
+            Console.WriteLine($"✓ Compiled to {dllPath} ({target}, run with: dotnet {dllPath})");
+
         PrintTypes(irResult);
         return 0;
+    }
+
+    static bool TryCreateAppHost(string dllPath, string exePath, string dllFileName)
+    {
+        // The .NET SDK ships a native apphost template that we copy and patch.
+        // The template contains a SHA-256 placeholder ("c3ab8ff1...") that we
+        // replace with the actual DLL filename (null-padded to 1024 bytes).
+        try
+        {
+            // Find the .NET SDK root — try multiple strategies
+            string? dotnetRoot = null;
+            string[] candidates = new[]
+            {
+                Environment.GetEnvironmentVariable("DOTNET_ROOT") ?? "",
+                Path.GetDirectoryName(Environment.ProcessPath ?? "") ?? "",
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "dotnet"),
+            };
+            foreach (string candidate in candidates)
+            {
+                string? dir = candidate;
+                // Walk up from candidate until we find a dir containing "sdk/"
+                while (dir != null && !Directory.Exists(Path.Combine(dir, "sdk")))
+                    dir = Path.GetDirectoryName(dir);
+                if (dir != null) { dotnetRoot = dir; break; }
+            }
+
+            if (dotnetRoot == null) return false;
+
+            // Find the latest SDK's AppHostTemplate
+            string sdkDir = Path.Combine(dotnetRoot, "sdk");
+            string? latestSdk = Directory.GetDirectories(sdkDir)
+                .Where(d => File.Exists(Path.Combine(d, "AppHostTemplate", "apphost.exe")))
+                .OrderByDescending(d => d)
+                .FirstOrDefault();
+
+            if (latestSdk == null) return false;
+
+            string templatePath = Path.Combine(latestSdk, "AppHostTemplate", "apphost.exe");
+            byte[] appHost = File.ReadAllBytes(templatePath);
+
+            // The placeholder is the SHA-256 of "foobar", null-padded to 1024 bytes
+            byte[] placeholder = System.Text.Encoding.UTF8.GetBytes(
+                "c3ab8ff13720e8ad9047dd39466b3c8974e592c2fa383d4a3960714caef0c4f2");
+
+            int offset = FindBytes(appHost, placeholder);
+            if (offset < 0) return false;
+
+            // Write the DLL filename (UTF-8, null-terminated, padded to 1024)
+            byte[] dllNameBytes = System.Text.Encoding.UTF8.GetBytes(dllFileName);
+            if (dllNameBytes.Length >= 1024) return false;
+
+            // Clear the 1024-byte slot and write the filename
+            Array.Clear(appHost, offset, 1024);
+            Array.Copy(dllNameBytes, 0, appHost, offset, dllNameBytes.Length);
+
+            File.WriteAllBytes(exePath, appHost);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    static int FindBytes(byte[] haystack, byte[] needle)
+    {
+        for (int i = 0; i <= haystack.Length - needle.Length; i++)
+        {
+            bool match = true;
+            for (int j = 0; j < needle.Length; j++)
+            {
+                if (haystack[i + j] != needle[j]) { match = false; break; }
+            }
+            if (match) return i;
+        }
+        return -1;
     }
 
     static Emit.ICodeEmitter CreateEmitter(string target) => target switch

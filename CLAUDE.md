@@ -36,8 +36,17 @@ Do not modify Vision docs (`docs/Vision/`) without explicit permission.
 - **Agent Windows** (GitHub Copilot in VS): Builds features, reviews code, pushes to master.
 - **Agent Linux** (Claude on sandbox): Pulls, tests on real hardware/emulators, finds bugs by tracing.
 - **Cam** (Claude Code CLI): Local agent. Fast iteration, direct file access, parallel work.
+- **Nut** (VS 2026 + Copilot, garage box): Hardware lab, OS dev, phone flash. Branch: `nut/`.
 
 Git is the shared state. Push to master is the handoff. `dotnet test` is the acceptance criterion.
+
+### Environment (Cam's workstation)
+
+- WSL available — use for Linux tools, GDB, QEMU, strace.
+- GDB available via WSL — use for native backend debugging (RISC-V, ARM64, x86-64).
+- .NET 8.0 + 9.0 installed. SDK 9.0.312.
+- Agent toolkit runs natively: `tools/codex-agent/codex-agent.exe <cmd>`
+- Run `codex-agent orient` for a condensed project map.
 
 ---
 

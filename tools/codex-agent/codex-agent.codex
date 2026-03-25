@@ -618,28 +618,233 @@ print-help =
   "  recall [n]                         Show last N session log entries (default 10)\n" ++
   "  build                              Build + compact summary (full log stored)\n" ++
   "  test [filter]                      Test + compact summary (full log stored)\n" ++
-  "  init                               Full session start (doctor+check+status+handoff+sweep+git)\n" ++
-  "  help                               This message\n" ++
+  "  orient [topic]                      Project map (topics: syntax, pipeline, agents, style, git, tools, structure, pitfalls)\n" ++
+  "  greet <name> [--context N] [...]    Register agent identity and capabilities\n" ++
+  "  roster                              Show registered agents and capabilities\n" ++
+  "  init                                Full session start (doctor+check+status+handoff+sweep+git)\n" ++
+  "  help                                This message\n" ++
   "\n" ++
   "Handoff lifecycle: draft -> awaiting-review -> under-review -> approved -> merged\n" ++
   "                                             \\-> changes-requested -> awaiting-review\n" ++
   "\n" ++
-  "Usage: dotnet codex-agent.exe <command> [args]\n" ++
+  "Usage: codex-agent <command> [args]\n" ++
   "Built from codex-agent.codex via the Codex IL backend."
  )
 
+agents-dir : Text
+agents-dir = ".codex-agent/agents"
+
+agent-file : Text -> Text
+agent-file (name) = agents-dir ++ "/" ++ name ++ ".txt"
+
+do-greet : List Text -> [Console, FileSystem] Nothing
+do-greet (args) =
+ let argc = list-length args
+ in if argc < 3 then print-line "Usage: codex-agent greet <name> <context> <tools> <os> <workdir>"
+  else let name = list-at args 2
+   in let _ = if file-exists agents-dir then "" else run-process "mkdir" ("-p " ++ agents-dir)
+    in let ctx = if argc > 3 then list-at args 3 else ""
+     in let tools-val = if argc > 4 then list-at args 4 else ""
+      in let os-val = if argc > 5 then list-at args 5 else ""
+       in let workdir-val = if argc > 6 then list-at args 6 else current-dir
+        in let dotnet-ver = run-process "dotnet" "--version"
+         in let content = "agent=" ++ name ++ "\ncontext=" ++ ctx ++ "\ntools=" ++ tools-val ++ "\nos=" ++ os-val ++ "\nworkdir=" ++ workdir-val ++ "\ndotnet=" ++ dotnet-ver ++ "last-seen=see-git-log\n"
+          in let _ = write-file (agent-file name) content
+           in print-line ("  Agent registered: " ++ name ++ "\n  Context: " ++ (if text-length ctx > 0 then ctx else "(default)") ++ "\n  Tools: " ++ (if text-length tools-val > 0 then tools-val else "(none)") ++ "\n  OS: " ++ (if text-length os-val > 0 then os-val else "(unknown)") ++ "\n  Workdir: " ++ workdir-val)
+
+format-agent-entry : Text -> Text
+format-agent-entry (content) =
+ let lines = text-split content "\n"
+ in let name = kv-get "agent" lines 0
+  in let ctx = kv-get "context" lines 0
+   in let tools-val = kv-get "tools" lines 0
+    in let os-val = kv-get "os" lines 0
+     in let workdir-val = kv-get "workdir" lines 0
+      in "  " ++ pad-right name 10 ++ pad-right (if text-length ctx > 0 then ctx ++ " ctx" else "?") 12 ++ pad-right os-val 16 ++ pad-right tools-val 24 ++ workdir-val
+
+format-roster-loop : List Text -> Integer -> [FileSystem] Text
+format-roster-loop (files) (idx) =
+ if idx >= list-length files then ""
+ else let path = list-at files idx
+  in let content = read-file path
+   in let entry = format-agent-entry content
+    in let rest = format-roster-loop files (idx + 1)
+     in if text-length rest == 0 then entry
+      else entry ++ "\n" ++ rest
+
+do-roster : List Text -> [Console, FileSystem] Nothing
+do-roster (args) =
+ let files = list-files agents-dir "*.txt"
+ in if list-length files == 0 then print-line "  No agents registered. Use 'codex-agent greet <name>' to register."
+  else let header = "=== Agent Roster ==="
+   in let entries = format-roster-loop files 0
+    in print-line (header ++ "\n" ++ entries ++ "\n=====================")
+
+orient-level0 : [Console, FileSystem] Nothing
+orient-level0 =
+ let lock-status = if file-exists "docs/REFERENCE-COMPILER-LOCK.md" then
+   let lock-content = read-file "docs/REFERENCE-COMPILER-LOCK.md"
+   in if text-contains lock-content "LIFTED" then "LIFTED — src/ is modifiable"
+    else if text-contains lock-content "LOCKED" then "LOCKED — do not modify src/"
+     else "see docs/REFERENCE-COMPILER-LOCK.md"
+  else "unknown"
+ in let roster-files = list-files agents-dir "*.txt"
+ in let roster-info = if list-length roster-files > 0 then format-roster-loop roster-files 0
+  else "  (none registered -- use 'codex-agent greet <name>')"
+ in let plan-info = if file-exists "docs/CurrentPlan.md" then
+   let pc = read-file "docs/CurrentPlan.md"
+   in let pl = text-split pc "\n"
+    in "  Current plan: docs/CurrentPlan.md (" ++ integer-to-text (list-length pl) ++ " lines)"
+  else "  Current plan: (none)"
+ in print-line (
+  "=== Codex Project — Quick Orientation ===\n" ++
+  "\n" ++
+  "  Language:  Self-hosting compiler, .codex source, ML-family syntax\n" ++
+  "  Pipeline:  Lexer -> Parser -> Desugarer -> NameResolver -> TypeChecker -> Lowering -> Emitter\n" ++
+  "  Backends:  15 (C#, JS, Python, Rust, C++, Go, Java, Ada, Fortran, COBOL, IL, RISC-V, ARM64, x86-64, WASM)\n" ++
+  "  Tests:     900+, run with: dotnet test Codex.sln\n" ++
+  "  Build:     dotnet build Codex.sln (.NET 8, TreatWarningsAsErrors)\n" ++
+  "  Self-host: 26 .codex files in Codex.Codex/\n" ++
+  "\n" ++
+  "  Ref compiler lock: " ++ lock-status ++ "\n" ++
+  "\n" ++
+  "  Agents:\n" ++ roster-info ++ "\n" ++
+  "\n" ++
+  plan-info ++ "\n" ++
+  "\n" ++
+  "  Key docs:\n" ++
+  "    Overview:     docs/00-OVERVIEW.md\n" ++
+  "    Principles:   docs/10-PRINCIPLES.md\n" ++
+  "    Syntax:       docs/SYNTAX-QUICKREF.md\n" ++
+  "    Pitfalls:     docs/KNOWN-CONDITIONS.md\n" ++
+  "    Tool errors:  docs/TOOL-ERROR-REGISTRY.md\n" ++
+  "    Code style:   .github/copilot-instructions.md\n" ++
+  "    Route map:    docs/THE-LAST-PEAK.md\n" ++
+  "\n" ++
+  "  Project structure:\n" ++
+  "    Core -> Syntax -> Ast -> Semantics -> Types -> IR -> Emit -> Emit.* -> Cli\n" ++
+  "    Codex.Core has zero deps (root). Codex.Cli references everything.\n" ++
+  "\n" ++
+  "  Topics (use 'orient <topic>' for detail):\n" ++
+  "    syntax, pipeline, agents, style, git, tools, structure, pitfalls\n" ++
+  "\n" ++
+  "=========================================")
+
+orient-topic : Text -> [Console, FileSystem] Nothing
+orient-topic (topic) =
+ if topic == "syntax" then
+  if file-exists "docs/SYNTAX-QUICKREF.md" then print-line (read-file "docs/SYNTAX-QUICKREF.md")
+  else print-line "  docs/SYNTAX-QUICKREF.md not found"
+ else if topic == "pitfalls" then
+  if file-exists "docs/KNOWN-CONDITIONS.md" then print-line (read-file "docs/KNOWN-CONDITIONS.md")
+  else print-line "  docs/KNOWN-CONDITIONS.md not found"
+ else if topic == "style" then
+  print-line (
+   "=== Code Style Quick Reference ===\n" ++
+   "\n" ++
+   "  C#:\n" ++
+   "    Private fields: m_ prefix (m_diagnostics)\n" ++
+   "    Properties/types: PascalCase. Locals: camelCase.\n" ++
+   "    sealed record for immutable ref. readonly record struct for values.\n" ++
+   "    No XML doc comments (///). No var. No unused fields.\n" ++
+   "    Prefer Map<K,V> (Codex.Core) over ImmutableDictionary.\n" ++
+   "    4 spaces, UTF-8, max 120 chars/line. TreatWarningsAsErrors.\n" ++
+   "\n" ++
+   "  Codex (.codex):\n" ++
+   "    Booleans: True / False (capital T/F)\n" ++
+   "    Application: left-assoc, f x y = (f x) y\n" ++
+   "    Pattern matching: when/if, not match/case\n" ++
+   "    All functions curried. Effects in brackets: [Console] Nothing\n" ++
+   "    Do NOT extract effectful helper functions — inline instead.\n" ++
+   "\n" ++
+   "  Full details: .github/copilot-instructions.md\n" ++
+   "=================================")
+ else if topic == "agents" then
+  let agent-files = list-files agents-dir "*.txt"
+  in if list-length agent-files > 0 then
+   let entries = format-roster-loop agent-files 0
+   in print-line ("=== Agent Roster (detailed) ===\n" ++ entries ++ "\n\n  Register: codex-agent greet <name> <context> <tools> <os> <workdir>\n" ++ "  Branch prefixes: windows/, linux/, cam/, nut/\n" ++ "  No agent merges own work to master without review.\n" ++ "==============================")
+  else print-line "  No agents registered. Use 'codex-agent greet <name>'."
+ else if topic == "git" then
+  print-line (
+   "=== Git Workflow ===\n" ++
+   "  Branch naming: windows/<topic>, linux/<topic>, cam/<topic>, nut/<topic>\n" ++
+   "  Conventional Commits: feat:, fix:, docs:, test:, chore:, refactor:\n" ++
+   "  No agent merges own work to master without review.\n" ++
+   "  Handoff: codex-agent handoff push/review/approve/merge\n" ++
+   "===================")
+ else if topic == "tools" then
+  print-line (
+   "=== Agent Toolkit ===\n" ++
+   "  All tools run natively: tools/codex-agent/<tool>.exe <args>\n" ++
+   "  Or via dotnet:          dotnet tools/codex-agent/<tool>.exe <args>\n" ++
+   "\n" ++
+   "  codex-agent  Main toolkit (init, build, test, doctor, handoff, etc.)\n" ++
+   "  peek         Read file lines with line numbers\n" ++
+   "  fstat        File statistics\n" ++
+   "  sdiff        Side-by-side diff\n" ++
+   "\n" ++
+   "  Run 'codex-agent help' for full command list.\n" ++
+   "====================")
+ else if topic == "structure" then
+  print-line (
+   "=== Project Structure ===\n" ++
+   "  Dependency flow (one way):\n" ++
+   "    Core -> Syntax -> Ast -> Semantics -> Types -> IR -> Emit -> Emit.* -> Cli\n" ++
+   "\n" ++
+   "  Codex.Core      Zero deps (root). Map<K,V>, ValueMap, SourceSpan.\n" ++
+   "  Codex.Syntax    Lexer + Parser. Token, SyntaxTree.\n" ++
+   "  Codex.Ast       AST nodes. Expression, Declaration.\n" ++
+   "  Codex.Semantics Name resolution. NameResolver, Scope.\n" ++
+   "  Codex.Types     Type checking + inference. TypeChecker, Unifier.\n" ++
+   "  Codex.IR        IR lowering. IRModule, IRNode.\n" ++
+   "  Codex.Emit      Emitter interface. ICodeEmitter.\n" ++
+   "  Codex.Emit.*    15 backend emitters (CSharp, IL, RiscV, Arm64, etc.)\n" ++
+   "  Codex.Cli       Composition root. build/run/repl/bootstrap commands.\n" ++
+   "\n" ++
+   "  Self-hosted: 26 .codex files in Codex.Codex/\n" ++
+   "  Bootstrap:   tools/Codex.Bootstrap/\n" ++
+   "  Tests:       Codex.Core.Tests, Codex.Syntax.Tests, etc.\n" ++
+   "========================")
+ else if topic == "pipeline" then
+  print-line (
+   "=== Compiler Pipeline ===\n" ++
+   "  Source (.codex)\n" ++
+   "    |-> Lexer      tokenizes source text\n" ++
+   "    |-> Parser     builds syntax tree\n" ++
+   "    |-> Desugarer  expands syntactic sugar\n" ++
+   "    |-> NameResolver  resolves identifiers to bindings\n" ++
+   "    |-> TypeChecker   Hindley-Milner inference + effect tracking\n" ++
+   "    |-> Lowering      AST -> IR (IRModule, IRNode)\n" ++
+   "    |-> Emitter       IR -> target code\n" ++
+   "\n" ++
+   "  Hot path files (self-hosted):\n" ++
+   "    Codex.Codex/Syntax/Lexer.codex\n" ++
+   "    Codex.Codex/Syntax/Parser.codex\n" ++
+   "    Codex.Codex/Types/TypeChecker.codex\n" ++
+   "    Codex.Codex/Types/Unifier.codex\n" ++
+   "    Codex.Codex/IR/Lowering.codex\n" ++
+   "    Codex.Codex/Emit/CSharpEmitter.codex\n" ++
+   "=========================")
+ else print-line ("  Unknown topic: " ++ topic ++ ". Available: syntax, pipeline, agents, style, git, tools, structure, pitfalls")
+
+do-orient : List Text -> [Console, FileSystem] Nothing
+do-orient (args) =
+ let argc = list-length args
+ in if argc < 3 then orient-level0
+  else orient-topic (list-at args 2)
+
 do-init : List Text -> [Console, FileSystem] Nothing
 do-init (args) =
- let self = "dotnet"
- in let agent = "tools/codex-agent/codex-agent.exe"
-  in let doctor-out = run-process self (agent ++ " doctor")
-   in let check-out = run-process self (agent ++ " check")
-    in let status-out = run-process self (agent ++ " status")
-     in let handoff-out = run-process self (agent ++ " handoff show")
-      in let verify-out = run-process "pwsh" "-File tools/codex-agent-verify.ps1 docs/CurrentPlan.md docs/ToDo/CSharpCleanup.md docs/TOOL-ERROR-REGISTRY.md docs/KNOWN-CONDITIONS.md .github/copilot-instructions.md"
-       in let git-log = run-process "git" "log --oneline -5"
-        in let git-branches = run-process "git" "branch -r"
-         in print-line (doctor-out ++ "\n" ++ check-out ++ "\n" ++ status-out ++ "\n" ++ handoff-out ++ "\n" ++ verify-out ++ "\n=== Recent Commits ===\n" ++ git-log ++ "\n=== Remote Branches ===\n" ++ git-branches)
+ let agent = "tools/codex-agent/codex-agent.dll"
+ in let doctor-out = run-process "dotnet" (agent ++ " doctor")
+  in let check-out = run-process "dotnet" (agent ++ " check")
+   in let status-out = run-process "dotnet" (agent ++ " status")
+    in let handoff-out = run-process "dotnet" (agent ++ " handoff show")
+     in let verify-out = run-process "pwsh" "-File tools/codex-agent-verify.ps1 docs/CurrentPlan.md docs/ToDo/CSharpCleanup.md docs/TOOL-ERROR-REGISTRY.md docs/KNOWN-CONDITIONS.md .github/copilot-instructions.md"
+      in let git-log = run-process "git" "log --oneline -5"
+       in let git-branches = run-process "git" "branch -r"
+        in print-line (doctor-out ++ "\n" ++ check-out ++ "\n" ++ status-out ++ "\n" ++ handoff-out ++ "\n" ++ verify-out ++ "\n=== Recent Commits ===\n" ++ git-log ++ "\n=== Remote Branches ===\n" ++ git-branches)
 
 main : [Console, FileSystem] Nothing
 main = do
@@ -660,5 +865,8 @@ main = do
               else if cmd == "recall" then do-recall args
                else if cmd == "build" then do-build args
                 else if cmd == "test" then do-test args
-                 else if cmd == "help" then print-help
-                  else print-line ("Unknown command: " ++ cmd ++ ". Run 'codex-agent help' for usage.")
+                 else if cmd == "orient" then do-orient args
+                  else if cmd == "greet" then do-greet args
+                   else if cmd == "roster" then do-roster args
+                    else if cmd == "help" then print-help
+                     else print-line ("Unknown command: " ++ cmd ++ ". Run 'codex-agent help' for usage.")
