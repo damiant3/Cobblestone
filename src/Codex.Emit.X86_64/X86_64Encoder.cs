@@ -492,6 +492,30 @@ static class X86_64Encoder
         buf.Add((byte)((value >> 24) & 0xFF));
     }
 
+    // OUT DX, AL — write byte in AL to I/O port in DX
+    public static void OutDxAl(List<byte> buf)
+    {
+        buf.Add(0xEE);
+    }
+
+    // IN AL, DX — read byte from I/O port in DX into AL
+    public static void InAlDx(List<byte> buf)
+    {
+        buf.Add(0xEC);
+    }
+
+    // HLT — halt the processor
+    public static void Hlt(List<byte> buf)
+    {
+        buf.Add(0xF4);
+    }
+
+    // CLI — disable interrupts
+    public static void Cli(List<byte> buf)
+    {
+        buf.Add(0xFA);
+    }
+
     static void WriteI64(List<byte> buf, long value)
     {
         for (int i = 0; i < 8; i++)
