@@ -2893,11 +2893,169 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.OutDxAl(m_text);
     }
 
+    // ── Memory Map (Bare Metal) ──────────────────────────────────
+    //
+    // 0x0000-0x0FFF  Reserved (real mode IVT, BIOS data)
+    // 0x1000-0x1FFF  Boot PML4
+    // 0x2000-0x2FFF  Boot PDPT
+    // 0x3000-0x3FFF  Boot PD (2x 2MB huge pages)
+    // 0x4000-0x4FFF  TSS (Task State Segment)
+    // 0x5000-0x5FFF  Process table (max 16 processes x 256 bytes each)
+    // 0x6000-0x6FFF  IDT (256 entries x 16 bytes)
+    // 0x7000-0x700F  Tick counter + key buffer
+    // 0x8000-0x8FFF  Process 0 PML4
+    // 0x9000-0x9FFF  Process 0 PDPT
+    // 0xA000-0xAFFF  Process 0 PD
+    // 0xB000-0xBFFF  Process 1 PML4
+    // 0xC000-0xCFFF  Process 1 PDPT
+    // 0xD000-0xDFFF  Process 1 PD
+    // 0x10000-0x7FFFF  Kernel stack (grows down from 0x80000)
+    // 0x100000+       Kernel code (.text + .rodata)
+    // 0x200000+       Kernel heap
+    // 0x400000+       Process 0 user-space (code + heap)
+    // 0x600000+       Process 1 user-space (code + heap)
+
+    // ── Process Management (Ring 2) ──────────────────────────────
+
+    const long TssBase = 0x4000;
+    const long ProcTableBase = 0x5000;
+    const int MaxProcesses = 16;
+    const int ProcEntrySize = 256;
+    // Process entry layout (256 bytes):
+    //   [0]   state: 0=free, 1=running, 2=ready, 3=blocked
+    //   [8]   rsp: saved stack pointer
+    //   [16]  cr3: page table root
+    //   [24]  rip: saved instruction pointer
+    //   [32]  rflags: saved flags
+    //   [40]  heap_base: process heap start
+    //   [48]  heap_ptr: current heap position
+
+    const long CurrentProcAddr = 0x7010;  // index of currently running process
+
+    void EmitProcessSetup()
+    {
+        // Initialize process table to all zeros (free)
+        X86_64Encoder.Li(m_text, Reg.RDI, ProcTableBase);
+        X86_64Encoder.Li(m_text, Reg.RCX, MaxProcesses * ProcEntrySize / 8);
+        X86_64Encoder.Li(m_text, Reg.RAX, 0);
+        // rep stosq: fill [RDI] with RAX, RCX times
+        m_text.Add(0x48); // REX.W
+        m_text.Add(0xF3); // REP
+        m_text.Add(0xAB); // STOS (stosq with REX.W)
+
+        // Set current process = 0
+        X86_64Encoder.Li(m_text, Reg.RDI, CurrentProcAddr);
+        X86_64Encoder.Li(m_text, Reg.RAX, 0);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+
+        // Create process 0: the kernel itself (runs in Ring 0 with boot page tables)
+        EmitCreateProcess(0, 0x1000 /* boot CR3 */, 0x200000 /* heap base */);
+    }
+
+    void EmitCreateProcess(int procIndex, long cr3, long heapBase)
+    {
+        long entryAddr = ProcTableBase + procIndex * ProcEntrySize;
+        X86_64Encoder.Li(m_text, Reg.RDI, entryAddr);
+
+        // state = 1 (running) for process 0, 2 (ready) for others
+        X86_64Encoder.Li(m_text, Reg.RAX, procIndex == 0 ? 1 : 2);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+
+        // cr3
+        X86_64Encoder.Li(m_text, Reg.RAX, cr3);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 16);
+
+        // heap_base and heap_ptr
+        X86_64Encoder.Li(m_text, Reg.RAX, heapBase);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 40);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 48);
+    }
+
+    void EmitContextSwitch()
+    {
+        // Called from timer interrupt handler.
+        // Saves current process state, picks next ready process, restores it.
+        //
+        // Current process RSP is already on the interrupt stack frame.
+        // We need to:
+        // 1. Save current process's RSP to its proc table entry
+        // 2. Find next ready process (round-robin)
+        // 3. Load next process's CR3 and RSP
+        // 4. Return via iretq (which pops RIP, CS, RFLAGS, RSP, SS)
+
+        // Load current process index
+        X86_64Encoder.Li(m_text, Reg.RDI, CurrentProcAddr);
+        X86_64Encoder.MovLoad(m_text, Reg.RAX, Reg.RDI, 0); // RAX = current proc index
+
+        // Save RSP to proc table[current].rsp
+        // RSP at this point includes the interrupt frame
+        X86_64Encoder.Li(m_text, Reg.RCX, ProcEntrySize);
+        X86_64Encoder.ImulRR(m_text, Reg.RAX, Reg.RCX); // RAX = index * ProcEntrySize
+        X86_64Encoder.Li(m_text, Reg.RCX, ProcTableBase);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.RCX);   // RAX = &proc_table[current]
+        X86_64Encoder.MovStore(m_text, Reg.RAX, Reg.RSP, 8); // save RSP
+
+        // Mark current as ready (state = 2)
+        X86_64Encoder.Li(m_text, Reg.RCX, 2);
+        X86_64Encoder.MovStore(m_text, Reg.RAX, Reg.RCX, 0);
+
+        // Find next ready process (round-robin)
+        // Simple: try (current+1) % MaxProcesses, then (current+2), etc.
+        X86_64Encoder.Li(m_text, Reg.RDI, CurrentProcAddr);
+        X86_64Encoder.MovLoad(m_text, Reg.RSI, Reg.RDI, 0); // RSI = current index
+        X86_64Encoder.AddRI(m_text, Reg.RSI, 1);
+
+        int searchLoop = m_text.Count;
+        // if RSI >= MaxProcesses, wrap to 0
+        X86_64Encoder.CmpRI(m_text, Reg.RSI, MaxProcesses);
+        int wrapJump = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_L, 0); // skip wrap if < MaxProcesses
+        X86_64Encoder.Li(m_text, Reg.RSI, 0);
+        PatchJcc(wrapJump, m_text.Count);
+
+        // Check if proc_table[RSI].state == 1 or 2 (running/ready)
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RSI);
+        X86_64Encoder.Li(m_text, Reg.RCX, ProcEntrySize);
+        X86_64Encoder.ImulRR(m_text, Reg.RAX, Reg.RCX);
+        X86_64Encoder.Li(m_text, Reg.RCX, ProcTableBase);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.RCX); // RAX = &proc_table[RSI]
+        X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RAX, 0); // state
+        X86_64Encoder.CmpRI(m_text, Reg.RCX, 0); // free?
+        int foundReady = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0); // not free = usable
+
+        // Free slot, try next
+        X86_64Encoder.AddRI(m_text, Reg.RSI, 1);
+        X86_64Encoder.Jmp(m_text, searchLoop - (m_text.Count + 5));
+
+        PatchJcc(foundReady, m_text.Count);
+
+        // RSI = next process index, RAX = &proc_table[next]
+        // Update current process index
+        X86_64Encoder.Li(m_text, Reg.RDI, CurrentProcAddr);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RSI, 0);
+
+        // Mark new process as running (state = 1)
+        X86_64Encoder.Li(m_text, Reg.RCX, 1);
+        X86_64Encoder.MovStore(m_text, Reg.RAX, Reg.RCX, 0);
+
+        // Load new process's CR3
+        X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RAX, 16); // cr3
+        // mov cr3, rcx
+        m_text.Add(0x0F); m_text.Add(0x22); m_text.Add(0xD9); // mov cr3, rcx
+
+        // Load new process's RSP
+        X86_64Encoder.MovLoad(m_text, Reg.RSP, Reg.RAX, 8);
+
+        // Load new process's HeapReg
+        X86_64Encoder.MovLoad(m_text, HeapReg, Reg.RAX, 48);
+    }
+
     // ── Interrupt Handling (Ring 1) ──────────────────────────────
 
-    const long IdtBase = 0x6000;       // IDT: 256 entries x 16 bytes = 4096 (above page tables at 0x1000-0x3FFF)
-    const long TickCountAddr = 0x7000; // Timer tick counter (8 bytes)
-    const long KeyBufferAddr = 0x7008; // Last keycode (8 bytes)
+    const long IdtBase = 0x6000;
+    const long TickCountAddr = 0x7000;
+    const long KeyBufferAddr = 0x7008;
 
     void EmitInterruptSetup()
     {
@@ -3152,6 +3310,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
             // Set up heap at 0x200000 (2MB — above identity-mapped pages)
             X86_64Encoder.Li(m_text, HeapReg, 0x200000);
+
+            // Initialize process table
+            EmitProcessSetup();
 
             // Build IDT, load IDTR, init PIC, enable interrupts
             EmitIdtEntries();
