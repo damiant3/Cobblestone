@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace Codex.AgentToolkit.Tests;
 
@@ -22,13 +23,20 @@ sealed class AgentExeRunner
     {
         string exePath = ExePath(exe);
 
-        // Prefer the native apphost .exe if it exists, fall back to dotnet + .dll
+        // Prefer the native apphost .exe if it exists and we're on Windows,
+        // fall back to dotnet + .dll on Linux/macOS (apphost is a Windows PE binary)
         string dllPath = Path.ChangeExtension(exePath, ".dll");
         ProcessStartInfo psi;
-        if (File.Exists(exePath) && File.Exists(dllPath))
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+            && File.Exists(exePath) && File.Exists(dllPath))
         {
-            // Native apphost — run directly
+            // Native apphost — run directly (Windows only)
             psi = new(exePath, string.Join(' ', args.Select(a => $"\"{a}\"")));
+        }
+        else if (File.Exists(dllPath))
+        {
+            // Cross-platform: run managed DLL via dotnet
+            psi = new("dotnet", $"\"{dllPath}\" {string.Join(' ', args.Select(a => $"\"{a}\""))}");
         }
         else
         {
