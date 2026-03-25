@@ -1361,13 +1361,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
                 X86_64Encoder.MovRR(m_text, lo, rd);
                 X86_64Encoder.SubRI(m_text, lo, 'a');
                 X86_64Encoder.CmpRI(m_text, lo, 'z' - 'a');
-                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_LE, lo);
+                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_BE, lo); // unsigned
                 // Check uppercase: rd >= 'A' && rd <= 'Z'
                 byte hi = AllocTemp();
                 X86_64Encoder.MovRR(m_text, hi, rd);
                 X86_64Encoder.SubRI(m_text, hi, 'A');
                 X86_64Encoder.CmpRI(m_text, hi, 'Z' - 'A');
-                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_LE, hi);
+                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_BE, hi); // unsigned
                 // Result = lower || upper (both are 0 or 1 in low byte)
                 byte result = AllocTemp();
                 X86_64Encoder.MovRR(m_text, result, lo);
@@ -4201,8 +4201,17 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         }
 
         // Patch function address references (for closures/trampolines)
-        int textFileOffset = ElfWriterX86_64.ComputeTextFileOffset();
-        ulong textVaddr = 0x400000UL + (ulong)textFileOffset;
+        ulong textVaddr;
+        if (m_target == X86_64Target.BareMetal)
+        {
+            // Bare metal: text loaded at 0x100000 (1MB), no file offset adjustment
+            textVaddr = 0x100000;
+        }
+        else
+        {
+            int textFileOffset = ElfWriterX86_64.ComputeTextFileOffset();
+            textVaddr = 0x400000UL + (ulong)textFileOffset;
+        }
 
         foreach (FuncAddrFixup fixup in m_funcAddrFixups)
         {
