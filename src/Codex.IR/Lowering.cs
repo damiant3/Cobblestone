@@ -684,23 +684,24 @@ public sealed class Lowering(
             new FunctionType(TextType.s_instance, TextType.s_instance)));
 
         map = map.Set("char-at", new FunctionType(TextType.s_instance,
-            new FunctionType(IntegerType.s_instance, TextType.s_instance)));
+            new FunctionType(IntegerType.s_instance, CharType.s_instance)));
+        map = map.Set("char-to-text", new FunctionType(CharType.s_instance, TextType.s_instance));
         map = map.Set("text-length", new FunctionType(TextType.s_instance, IntegerType.s_instance));
         map = map.Set("substring", new FunctionType(TextType.s_instance,
             new FunctionType(IntegerType.s_instance,
                 new FunctionType(IntegerType.s_instance, TextType.s_instance))));
-        map = map.Set("is-letter", new FunctionType(TextType.s_instance, BooleanType.s_instance));
-        map = map.Set("is-digit", new FunctionType(TextType.s_instance, BooleanType.s_instance));
-        map = map.Set("is-whitespace", new FunctionType(TextType.s_instance, BooleanType.s_instance));
+        map = map.Set("is-letter", new FunctionType(CharType.s_instance, BooleanType.s_instance));
+        map = map.Set("is-digit", new FunctionType(CharType.s_instance, BooleanType.s_instance));
+        map = map.Set("is-whitespace", new FunctionType(CharType.s_instance, BooleanType.s_instance));
         map = map.Set("text-to-integer", new FunctionType(TextType.s_instance, IntegerType.s_instance));
         map = map.Set("integer-to-text", new FunctionType(IntegerType.s_instance, TextType.s_instance));
         map = map.Set("text-replace", new FunctionType(TextType.s_instance,
             new FunctionType(TextType.s_instance,
                 new FunctionType(TextType.s_instance, TextType.s_instance))));
-        map = map.Set("char-code", new FunctionType(TextType.s_instance, IntegerType.s_instance));
+        map = map.Set("char-code", new FunctionType(CharType.s_instance, IntegerType.s_instance));
         map = map.Set("char-code-at", new FunctionType(TextType.s_instance,
             new FunctionType(IntegerType.s_instance, IntegerType.s_instance)));
-        map = map.Set("code-to-char", new FunctionType(IntegerType.s_instance, TextType.s_instance));
+        map = map.Set("code-to-char", new FunctionType(IntegerType.s_instance, CharType.s_instance));
 
         map = map.Set("list-length", new ForAllType(0,
             new FunctionType(new ListType(new TypeVariable(0)), IntegerType.s_instance)));

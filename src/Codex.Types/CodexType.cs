@@ -29,6 +29,12 @@ public sealed record BooleanType : CodexType
     public override string ToString() => "Boolean";
 }
 
+public sealed record CharType : CodexType
+{
+    public static readonly CharType s_instance = new();
+    public override string ToString() => "Char";
+}
+
 public sealed record NothingType : CodexType
 {
     public static readonly NothingType s_instance = new();

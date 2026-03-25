@@ -41,6 +41,7 @@ public sealed partial class TypeChecker
             "Number" => NumberType.s_instance,
             "Text" => TextType.s_instance,
             "Boolean" => BooleanType.s_instance,
+            "Char" => CharType.s_instance,
             "Nothing" => NothingType.s_instance,
             "Void" => VoidType.s_instance,
             _ => null

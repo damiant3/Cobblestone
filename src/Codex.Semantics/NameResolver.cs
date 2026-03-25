@@ -23,7 +23,7 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
         "print-line", "read-line",
         "open-file", "read-all", "close-file", "read-file",
         "write-file", "file-exists", "list-files",
-        "char-at", "text-length", "substring",
+        "char-at", "char-to-text", "text-length", "substring",
         "is-letter", "is-digit", "is-whitespace",
         "text-to-integer", "integer-to-text", "text-replace",
         "text-split", "text-contains", "text-starts-with",

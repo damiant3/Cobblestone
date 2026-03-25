@@ -149,6 +149,12 @@ public sealed partial class CSharpEmitter
             EmitExpr(sb, app.Argument, indent);
             sb.Append(')');
         }
+        else if (app.Function is IRName fnCtt && fnCtt.Name == "char-to-text")
+        {
+            sb.Append("((char)");
+            EmitExpr(sb, app.Argument, indent);
+            sb.Append(").ToString()");
+        }
         else if (app.Function is IRName fn2 && fn2.Name == "negate")
         {
             sb.Append("(-");
@@ -204,27 +210,21 @@ public sealed partial class CSharpEmitter
         }
         else if (app.Function is IRName fn8 && fn8.Name == "is-letter")
         {
-            sb.Append('(');
+            sb.Append("char.IsLetter((char)");
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(".Length > 0 && char.IsLetter(");
-            EmitExpr(sb, app.Argument, indent);
-            sb.Append("[0]))");
+            sb.Append(')');
         }
         else if (app.Function is IRName fn9 && fn9.Name == "is-digit")
         {
-            sb.Append('(');
+            sb.Append("char.IsDigit((char)");
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(".Length > 0 && char.IsDigit(");
-            EmitExpr(sb, app.Argument, indent);
-            sb.Append("[0]))");
+            sb.Append(')');
         }
         else if (app.Function is IRName fn10 && fn10.Name == "is-whitespace")
         {
-            sb.Append('(');
+            sb.Append("char.IsWhiteSpace((char)");
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(".Length > 0 && char.IsWhiteSpace(");
-            EmitExpr(sb, app.Argument, indent);
-            sb.Append("[0]))");
+            sb.Append(')');
         }
         else if (app.Function is IRName fn11 && fn11.Name == "text-to-integer")
         {
@@ -240,15 +240,13 @@ public sealed partial class CSharpEmitter
         }
         else if (app.Function is IRName fn12 && fn12.Name == "char-code")
         {
-            sb.Append("((long)");
+            // Char -> Integer: identity at runtime (both are long)
             EmitExpr(sb, app.Argument, indent);
-            sb.Append("[0])");
         }
         else if (app.Function is IRName fn13 && fn13.Name == "code-to-char")
         {
-            sb.Append("((char)");
+            // Integer -> Char: identity at runtime (both are long)
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(").ToString()");
         }
         else if (app.Function is IRName fn14 && fn14.Name == "list-length")
         {
@@ -385,10 +383,11 @@ public sealed partial class CSharpEmitter
         switch (name)
         {
             case "char-at" when args.Count == 2:
+                sb.Append("((long)");
                 EmitExpr(sb, args[0], indent);
                 sb.Append("[(int)");
                 EmitExpr(sb, args[1], indent);
-                sb.Append("].ToString()");
+                sb.Append("])");
                 return true;
 
             case "char-code-at" when args.Count == 2:
