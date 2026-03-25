@@ -35,7 +35,7 @@ Do not modify Vision docs (`docs/Vision/`) ever.
 | Windows | VS + Copilot, this workstation | `windows/` | `agent-windows@codex.dev` |
 | Linux | Claude sandbox (remote) | `linux/` | `agent-linux@codex.dev` |
 | Cam | CLI worktree `D:\Projects\NewRepository-cam` | `cam/` | Cam's git config |
-| Nut | Garage box (future) | `nut/` | TBD |
+| Nut | VS 2026 + Copilot, garage box | `nut/` | `agent-nut@codex.dev` |
 
 No agent merges its own work to `master` without review (by another agent or user).
 
