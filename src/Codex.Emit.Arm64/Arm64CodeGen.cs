@@ -1164,6 +1164,30 @@ sealed class Arm64CodeGen
                 return true;
             }
 
+            case "text-contains" when args.Count == 2:
+            {
+                uint textReg = EmitExpr(args[0]);
+                uint savedText = AllocLocal();
+                StoreLocal(savedText, textReg);
+                uint needleReg = EmitExpr(args[1]);
+                Emit(Arm64Encoder.Mov(Arm64Reg.X1, needleReg));
+                Emit(Arm64Encoder.Mov(Arm64Reg.X0, LoadLocal(savedText)));
+                EmitCallTo("__text_contains");
+                return true;
+            }
+
+            case "text-starts-with" when args.Count == 2:
+            {
+                uint textReg = EmitExpr(args[0]);
+                uint savedText = AllocLocal();
+                StoreLocal(savedText, textReg);
+                uint prefixReg = EmitExpr(args[1]);
+                Emit(Arm64Encoder.Mov(Arm64Reg.X1, prefixReg));
+                Emit(Arm64Encoder.Mov(Arm64Reg.X0, LoadLocal(savedText)));
+                EmitCallTo("__text_starts_with");
+                return true;
+            }
+
             case "text-replace" when args.Count == 3:
             {
                 uint textReg = EmitExpr(args[0]);
@@ -1326,7 +1350,125 @@ sealed class Arm64CodeGen
         EmitReadFileHelper();
         EmitReadLineHelper();
         EmitStrReplaceHelper();
+        EmitTextContainsHelper();
+        EmitTextStartsWithHelper();
         EmitEscapeTextHelper();
+    }
+
+    void EmitTextContainsHelper()
+    {
+        // __text_contains: x0=text, x1=needle → x0=1/0
+        m_functionOffsets["__text_contains"] = m_instructions.Count;
+
+        Emit(Arm64Encoder.SubImm(Arm64Reg.Sp, Arm64Reg.Sp, 48));
+        Emit(Arm64Encoder.Stp(Arm64Reg.Fp, Arm64Reg.Lr, Arm64Reg.Sp, 0));
+        Emit(Arm64Encoder.Mov(Arm64Reg.Fp, Arm64Reg.Sp));
+        // x19=text, x20=needle, x21=text_len, x22=needle_len, x23=i
+        Emit(Arm64Encoder.Stp(Arm64Reg.X19, Arm64Reg.X20, Arm64Reg.Sp, 16));
+        Emit(Arm64Encoder.Stp(Arm64Reg.X21, Arm64Reg.X22, Arm64Reg.Sp, 32));
+
+        Emit(Arm64Encoder.Mov(Arm64Reg.X19, Arm64Reg.X0));
+        Emit(Arm64Encoder.Mov(Arm64Reg.X20, Arm64Reg.X1));
+        Emit(Arm64Encoder.Ldr(Arm64Reg.X21, Arm64Reg.X19, 0));
+        Emit(Arm64Encoder.Ldr(Arm64Reg.X22, Arm64Reg.X20, 0));
+        Emit(Arm64Encoder.Mov(Arm64Reg.X23, Arm64Reg.Xzr)); // i=0
+
+        // Outer: i <= text_len - needle_len
+        int outer = m_instructions.Count;
+        Emit(Arm64Encoder.Sub(Arm64Reg.X9, Arm64Reg.X21, Arm64Reg.X22));
+        Emit(Arm64Encoder.AddImm(Arm64Reg.X9, Arm64Reg.X9, 1));
+        Emit(Arm64Encoder.Cmp(Arm64Reg.X23, Arm64Reg.X9));
+        int notFoundBr = m_instructions.Count;
+        Emit(Arm64Encoder.Nop()); // B.GE → not found
+
+        // Inner: j from 0 to needle_len
+        Emit(Arm64Encoder.Mov(Arm64Reg.X10, Arm64Reg.Xzr)); // j=0
+        int inner = m_instructions.Count;
+        Emit(Arm64Encoder.Cmp(Arm64Reg.X10, Arm64Reg.X22));
+        int foundBr = m_instructions.Count;
+        Emit(Arm64Encoder.Nop()); // B.GE → found
+
+        Emit(Arm64Encoder.Add(Arm64Reg.X11, Arm64Reg.X19, Arm64Reg.X23));
+        Emit(Arm64Encoder.Add(Arm64Reg.X11, Arm64Reg.X11, Arm64Reg.X10));
+        Emit(Arm64Encoder.Ldrb(Arm64Reg.X11, Arm64Reg.X11, 8));
+        Emit(Arm64Encoder.Add(Arm64Reg.X12, Arm64Reg.X20, Arm64Reg.X10));
+        Emit(Arm64Encoder.Ldrb(Arm64Reg.X12, Arm64Reg.X12, 8));
+        Emit(Arm64Encoder.Cmp(Arm64Reg.X11, Arm64Reg.X12));
+        int mismatchBr = m_instructions.Count;
+        Emit(Arm64Encoder.Nop()); // B.NE → mismatch
+        Emit(Arm64Encoder.AddImm(Arm64Reg.X10, Arm64Reg.X10, 1));
+        Emit(Arm64Encoder.B((inner - m_instructions.Count) * 4));
+
+        // Found
+        int foundLbl = m_instructions.Count;
+        m_instructions[foundBr] = Arm64Encoder.Bge(foundLbl - foundBr);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 1)) Emit(insn);
+        int doneBr = m_instructions.Count;
+        Emit(Arm64Encoder.Nop()); // B → done
+
+        // Mismatch
+        int mismatchLbl = m_instructions.Count;
+        m_instructions[mismatchBr] = Arm64Encoder.Bne(mismatchLbl - mismatchBr);
+        Emit(Arm64Encoder.AddImm(Arm64Reg.X23, Arm64Reg.X23, 1));
+        Emit(Arm64Encoder.B((outer - m_instructions.Count) * 4));
+
+        // Not found
+        int notFoundLbl = m_instructions.Count;
+        m_instructions[notFoundBr] = Arm64Encoder.Bge(notFoundLbl - notFoundBr);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0)) Emit(insn);
+
+        // Done
+        int doneLbl = m_instructions.Count;
+        m_instructions[doneBr] = Arm64Encoder.B((doneLbl - doneBr) * 4);
+        Emit(Arm64Encoder.Ldp(Arm64Reg.X21, Arm64Reg.X22, Arm64Reg.Sp, 32));
+        Emit(Arm64Encoder.Ldp(Arm64Reg.X19, Arm64Reg.X20, Arm64Reg.Sp, 16));
+        Emit(Arm64Encoder.Ldp(Arm64Reg.Fp, Arm64Reg.Lr, Arm64Reg.Sp, 0));
+        Emit(Arm64Encoder.AddImm(Arm64Reg.Sp, Arm64Reg.Sp, 48));
+        Emit(Arm64Encoder.Ret());
+    }
+
+    void EmitTextStartsWithHelper()
+    {
+        // __text_starts_with: x0=text, x1=prefix → x0=1/0
+        m_functionOffsets["__text_starts_with"] = m_instructions.Count;
+
+        Emit(Arm64Encoder.Ldr(Arm64Reg.X9, Arm64Reg.X0, 0));  // text_len
+        Emit(Arm64Encoder.Ldr(Arm64Reg.X10, Arm64Reg.X1, 0)); // prefix_len
+
+        // prefix_len > text_len → false
+        Emit(Arm64Encoder.Cmp(Arm64Reg.X9, Arm64Reg.X10));
+        int tooLongBr = m_instructions.Count;
+        Emit(Arm64Encoder.Nop()); // B.LT → false
+
+        Emit(Arm64Encoder.Mov(Arm64Reg.X11, Arm64Reg.Xzr)); // i=0
+
+        int loop = m_instructions.Count;
+        Emit(Arm64Encoder.Cmp(Arm64Reg.X11, Arm64Reg.X10));
+        int matchedBr = m_instructions.Count;
+        Emit(Arm64Encoder.Nop()); // B.GE → true
+
+        Emit(Arm64Encoder.Add(Arm64Reg.X12, Arm64Reg.X0, Arm64Reg.X11));
+        Emit(Arm64Encoder.Ldrb(Arm64Reg.X12, Arm64Reg.X12, 8));
+        Emit(Arm64Encoder.Add(Arm64Reg.X13, Arm64Reg.X1, Arm64Reg.X11));
+        Emit(Arm64Encoder.Ldrb(Arm64Reg.X13, Arm64Reg.X13, 8));
+        Emit(Arm64Encoder.Cmp(Arm64Reg.X12, Arm64Reg.X13));
+        int mismatchBr = m_instructions.Count;
+        Emit(Arm64Encoder.Nop()); // B.NE → false
+        Emit(Arm64Encoder.AddImm(Arm64Reg.X11, Arm64Reg.X11, 1));
+        Emit(Arm64Encoder.B((loop - m_instructions.Count) * 4));
+
+        // Matched
+        int matchedLbl = m_instructions.Count;
+        m_instructions[matchedBr] = Arm64Encoder.Bge(matchedLbl - matchedBr);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 1)) Emit(insn);
+        Emit(Arm64Encoder.Ret());
+
+        // False
+        int falseLbl = m_instructions.Count;
+        m_instructions[tooLongBr] = Arm64Encoder.Blt(falseLbl - tooLongBr);
+        m_instructions[mismatchBr] = Arm64Encoder.Bne(falseLbl - mismatchBr);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0)) Emit(insn);
+        Emit(Arm64Encoder.Ret());
     }
 
     // __escape_text: x0=old text ptr → x0=new text ptr

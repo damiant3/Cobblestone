@@ -1799,6 +1799,30 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 return true;
             }
 
+            case "text-contains" when args.Count == 2:
+            {
+                uint textReg = EmitExpr(args[0]);
+                uint savedText = AllocLocal();
+                StoreLocal(savedText, textReg);
+                uint needleReg = EmitExpr(args[1]);
+                Emit(RiscVEncoder.Mv(Reg.A1, needleReg));
+                Emit(RiscVEncoder.Mv(Reg.A0, LoadLocal(savedText)));
+                EmitCallTo("__text_contains");
+                return true;
+            }
+
+            case "text-starts-with" when args.Count == 2:
+            {
+                uint textReg = EmitExpr(args[0]);
+                uint savedText = AllocLocal();
+                StoreLocal(savedText, textReg);
+                uint prefixReg = EmitExpr(args[1]);
+                Emit(RiscVEncoder.Mv(Reg.A1, prefixReg));
+                Emit(RiscVEncoder.Mv(Reg.A0, LoadLocal(savedText)));
+                EmitCallTo("__text_starts_with");
+                return true;
+            }
+
             case "text-replace" when args.Count == 3:
             {
                 uint textReg = EmitExpr(args[0]);
@@ -2124,8 +2148,123 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         EmitReadFileHelper();
         EmitReadLineHelper();
         EmitStrReplaceHelper();
+        EmitTextContainsHelper();
+        EmitTextStartsWithHelper();
         EmitEscapeTextHelper();
         EmitMemmoveHelper();
+    }
+
+    void EmitTextContainsHelper()
+    {
+        // __text_contains: a0=text, a1=needle → a0=1/0
+        m_functionOffsets["__text_contains"] = m_instructions.Count;
+
+        // Save callee-saved regs
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -48));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.Ra, 40));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S2, 32));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S3, 24));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S4, 16));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S5, 8));
+
+        Emit(RiscVEncoder.Mv(Reg.S2, Reg.A0)); // s2 = text
+        Emit(RiscVEncoder.Mv(Reg.S3, Reg.A1)); // s3 = needle
+        Emit(RiscVEncoder.Ld(Reg.S4, Reg.S2, 0)); // s4 = text_len
+        Emit(RiscVEncoder.Ld(Reg.S5, Reg.S3, 0)); // s5 = needle_len
+        foreach (uint insn in RiscVEncoder.Li(Reg.T0, 0)) Emit(insn); // t0 = i
+
+        // Outer loop: i from 0 to text_len - needle_len
+        int outerLoop = m_instructions.Count;
+        Emit(RiscVEncoder.Sub(Reg.T1, Reg.S4, Reg.S5));
+        Emit(RiscVEncoder.Addi(Reg.T1, Reg.T1, 1)); // max = text_len - needle_len + 1
+        int notFound = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge t0, t1 → not found
+
+        // Inner loop: compare text[i+j] with needle[j]
+        foreach (uint insn in RiscVEncoder.Li(Reg.T2, 0)) Emit(insn); // t2 = j
+        int innerLoop = m_instructions.Count;
+        int foundMatch = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge t2, s5 → found
+
+        Emit(RiscVEncoder.Add(Reg.T3, Reg.S2, Reg.T0));
+        Emit(RiscVEncoder.Add(Reg.T3, Reg.T3, Reg.T2));
+        Emit(RiscVEncoder.Lbu(Reg.T3, Reg.T3, 8)); // text[i+j]
+        Emit(RiscVEncoder.Add(Reg.T4, Reg.S3, Reg.T2));
+        Emit(RiscVEncoder.Lbu(Reg.T4, Reg.T4, 8)); // needle[j]
+        int mismatch = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bne → mismatch
+        Emit(RiscVEncoder.Addi(Reg.T2, Reg.T2, 1));
+        Emit(RiscVEncoder.J((innerLoop - m_instructions.Count) * 4));
+
+        // Found
+        int foundLabel = m_instructions.Count;
+        m_instructions[foundMatch] = RiscVEncoder.Bge(Reg.T2, Reg.S5, (foundLabel - foundMatch) * 4);
+        foreach (uint insn in RiscVEncoder.Li(Reg.A0, 1)) Emit(insn);
+        int doneJmp = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // j done
+
+        // Mismatch — advance i
+        int mismatchLabel = m_instructions.Count;
+        m_instructions[mismatch] = RiscVEncoder.Bne(Reg.T3, Reg.T4, (mismatchLabel - mismatch) * 4);
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.T0, 1));
+        Emit(RiscVEncoder.J((outerLoop - m_instructions.Count) * 4));
+
+        // Not found
+        int notFoundLabel = m_instructions.Count;
+        m_instructions[notFound] = RiscVEncoder.Bge(Reg.T0, Reg.T1, (notFoundLabel - notFound) * 4);
+        foreach (uint insn in RiscVEncoder.Li(Reg.A0, 0)) Emit(insn);
+
+        // Done — restore and return
+        int doneLabel = m_instructions.Count;
+        m_instructions[doneJmp] = RiscVEncoder.J((doneLabel - doneJmp) * 4);
+        Emit(RiscVEncoder.Ld(Reg.S5, Reg.Sp, 8));
+        Emit(RiscVEncoder.Ld(Reg.S4, Reg.Sp, 16));
+        Emit(RiscVEncoder.Ld(Reg.S3, Reg.Sp, 24));
+        Emit(RiscVEncoder.Ld(Reg.S2, Reg.Sp, 32));
+        Emit(RiscVEncoder.Ld(Reg.Ra, Reg.Sp, 40));
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, 48));
+        Emit(RiscVEncoder.Ret());
+    }
+
+    void EmitTextStartsWithHelper()
+    {
+        // __text_starts_with: a0=text, a1=prefix → a0=1/0
+        m_functionOffsets["__text_starts_with"] = m_instructions.Count;
+
+        Emit(RiscVEncoder.Ld(Reg.T0, Reg.A0, 0)); // text_len
+        Emit(RiscVEncoder.Ld(Reg.T1, Reg.A1, 0)); // prefix_len
+
+        // If prefix_len > text_len → false
+        int tooLong = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: blt t0, t1 → false
+
+        foreach (uint insn in RiscVEncoder.Li(Reg.T2, 0)) Emit(insn); // i = 0
+
+        int loop = m_instructions.Count;
+        int matched = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge t2, t1 → true
+
+        Emit(RiscVEncoder.Add(Reg.T3, Reg.A0, Reg.T2));
+        Emit(RiscVEncoder.Lbu(Reg.T3, Reg.T3, 8));
+        Emit(RiscVEncoder.Add(Reg.T4, Reg.A1, Reg.T2));
+        Emit(RiscVEncoder.Lbu(Reg.T4, Reg.T4, 8));
+        int mismatch = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bne → false
+        Emit(RiscVEncoder.Addi(Reg.T2, Reg.T2, 1));
+        Emit(RiscVEncoder.J((loop - m_instructions.Count) * 4));
+
+        // Matched
+        int matchedLabel = m_instructions.Count;
+        m_instructions[matched] = RiscVEncoder.Bge(Reg.T2, Reg.T1, (matchedLabel - matched) * 4);
+        foreach (uint insn in RiscVEncoder.Li(Reg.A0, 1)) Emit(insn);
+        Emit(RiscVEncoder.Ret());
+
+        // False (too long or mismatch)
+        int falseLabel = m_instructions.Count;
+        m_instructions[tooLong] = RiscVEncoder.Blt(Reg.T0, Reg.T1, (falseLabel - tooLong) * 4);
+        m_instructions[mismatch] = RiscVEncoder.Bne(Reg.T3, Reg.T4, (falseLabel - mismatch) * 4);
+        foreach (uint insn in RiscVEncoder.Li(Reg.A0, 0)) Emit(insn);
+        Emit(RiscVEncoder.Ret());
     }
 
     void EmitEscapeTextHelper()
