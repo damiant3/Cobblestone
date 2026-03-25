@@ -118,6 +118,81 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
     // ── Function emission ────────────────────────────────────────
 
+    // ── Tail Call Optimization ─────────────────────────────────
+
+    bool m_inTCOFunction;
+    bool m_inTailPosition;
+    int m_tcoLoopTop;
+    int[] m_tcoParamLocals = [];
+
+    static bool ShouldTCO(IRDefinition def)
+    {
+        return def.Parameters.Length > 0 && HasTailCall(def.Body, def.Name);
+    }
+
+    static bool HasTailCall(IRExpr expr, string funcName)
+    {
+        return expr switch
+        {
+            IRIf iff => HasTailCall(iff.Then, funcName) || HasTailCall(iff.Else, funcName),
+            IRLet let => HasTailCall(let.Body, funcName),
+            IRMatch match => match.Branches.Any(b => HasTailCall(b.Body, funcName)),
+            IRApply app => IsSelfCall(app, funcName),
+            IRDo doExpr => doExpr.Statements.Length > 0 &&
+                doExpr.Statements[^1] is IRDoExec exec &&
+                HasTailCall(exec.Expression, funcName),
+            _ => false
+        };
+    }
+
+    static bool IsSelfCall(IRExpr expr, string funcName)
+    {
+        IRExpr current = expr;
+        while (current is IRApply app)
+            current = app.Function;
+        return current is IRName name && name.Name == funcName;
+    }
+
+    int[] m_tcoTempLocals = []; // pre-allocated locals for tail call arg temps
+    int m_tcoSavedNextLocal;
+    int m_tcoSavedNextTemp;
+
+    void EmitTailCall(IRApply app)
+    {
+        // Collect all arguments
+        List<IRExpr> args = [];
+        IRExpr current = app;
+        while (current is IRApply a)
+        {
+            args.Insert(0, a.Argument);
+            current = a.Function;
+        }
+
+        // Reset allocators so iterations don't grow the stack
+        m_nextLocal = m_tcoSavedNextLocal;
+        m_nextTemp = m_tcoSavedNextTemp;
+
+        // Evaluate all args into PRE-ALLOCATED temps (avoid growing stack)
+        for (int i = 0; i < args.Count && i < m_tcoTempLocals.Length; i++)
+        {
+            bool savedTail = m_inTailPosition;
+            m_inTailPosition = false; // arg evaluation is NOT tail position
+            byte r = EmitExpr(args[i]);
+            m_inTailPosition = savedTail;
+            StoreLocal(m_tcoTempLocals[i], r);
+        }
+
+        // Reassign params from temps
+        for (int i = 0; i < args.Count && i < m_tcoParamLocals.Length; i++)
+        {
+            byte val = LoadLocal(m_tcoTempLocals[i]);
+            StoreLocal(m_tcoParamLocals[i], val);
+        }
+
+        // Jump to loop top
+        X86_64Encoder.Jmp(m_text, m_tcoLoopTop - (m_text.Count + 5));
+    }
+
     void EmitFunction(IRDefinition def)
     {
         m_functionOffsets[def.Name] = m_text.Count;
@@ -127,22 +202,20 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         m_spillCount = 0;
         m_loadLocalToggle = 0;
         m_locals = [];
+        m_inTCOFunction = ShouldTCO(def);
 
-        // Prologue: push rbp; mov rbp, rsp; push callee-saved; sub rsp, <spillFrame>
-        // Callee-saved pushes come BEFORE sub rsp so spill offsets (below callee
-        // saves, relative to rbp) don't collide with the saved registers.
+        // Prologue
         X86_64Encoder.PushR(m_text, Reg.RBP);
         X86_64Encoder.MovRR(m_text, Reg.RBP, Reg.RSP);
 
-        // Save callee-saved registers (immediately after rbp)
         foreach (byte reg in LocalRegs)
             X86_64Encoder.PushR(m_text, reg);
 
         int frameSizePatchOffset = m_text.Count;
-        // Always use imm32 encoding for sub rsp so patch works for any frame size
-        EmitSubRspImm32(0); // placeholder — patched after body emission
+        EmitSubRspImm32(0);
 
-        // Bind parameters (first 6 in registers, rest on stack per System V AMD64)
+        // Bind parameters
+        m_tcoParamLocals = new int[def.Parameters.Length];
         for (int i = 0; i < def.Parameters.Length; i++)
         {
             int local = AllocLocal();
@@ -152,14 +225,26 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             }
             else
             {
-                // Stack params at [rbp+16], [rbp+24], ... (after saved rbp + return addr)
                 int stackOffset = 16 + (i - Reg.ArgRegs.Length) * 8;
                 byte tmp = AllocTemp();
                 X86_64Encoder.MovLoad(m_text, tmp, Reg.RBP, stackOffset);
                 StoreLocal(local, tmp);
             }
             m_locals[def.Parameters[i].Name] = local;
+            m_tcoParamLocals[i] = local;
         }
+
+        // TCO: pre-allocate temp locals for tail call args and record loop top
+        if (m_inTCOFunction)
+        {
+            m_tcoTempLocals = new int[def.Parameters.Length];
+            for (int i = 0; i < def.Parameters.Length; i++)
+                m_tcoTempLocals[i] = AllocLocal();
+        }
+        m_tcoLoopTop = m_text.Count;
+        m_tcoSavedNextLocal = m_nextLocal;   // save for reset on each iteration
+        m_tcoSavedNextTemp = m_nextTemp;
+        m_inTailPosition = m_inTCOFunction;
 
         // Emit body
         byte result = EmitExpr(def.Body);
@@ -413,14 +498,16 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
     byte EmitIf(IRIf ifExpr)
     {
+        bool savedTail = m_inTailPosition;
+        m_inTailPosition = false; // condition is NOT in tail position
         byte cond = EmitExpr(ifExpr.Condition);
         X86_64Encoder.TestRR(m_text, cond, cond);
 
-        // je else_branch
         int jeFalseOffset = m_text.Count;
-        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0); // patched
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
 
-        // Then branch
+        // Then branch IS in tail position (if outer was)
+        m_inTailPosition = savedTail;
         byte thenResult = EmitExpr(ifExpr.Then);
         int resultLocal = AllocLocal();
         StoreLocal(resultLocal, thenResult);
@@ -429,10 +516,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         int jmpEndOffset = m_text.Count;
         X86_64Encoder.Jmp(m_text, 0); // patched
 
-        // Else branch
+        // Else branch IS in tail position (if outer was)
         int elseStart = m_text.Count;
         PatchJcc(jeFalseOffset, elseStart);
 
+        m_inTailPosition = savedTail;
         byte elseResult = EmitExpr(ifExpr.Else);
         StoreLocal(resultLocal, elseResult);
 
@@ -444,10 +532,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
     byte EmitLet(IRLet letExpr)
     {
+        bool savedTail = m_inTailPosition;
+        m_inTailPosition = false; // value is NOT in tail position
         byte value = EmitExpr(letExpr.Value);
         int local = AllocLocal();
         StoreLocal(local, value);
         m_locals[letExpr.Name] = local;
+        m_inTailPosition = savedTail; // body IS in tail position
         return EmitExpr(letExpr.Body);
     }
 
@@ -477,6 +568,17 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
     byte EmitApply(IRApply apply)
     {
+        // TCO: if in tail position of a TCO function, emit jump instead of call
+        if (m_inTCOFunction && m_inTailPosition && IsSelfCall(apply, m_currentFunction))
+        {
+            EmitTailCall(apply);
+            // Return a dummy register — the jmp means we never reach here,
+            // but the caller expects a register value
+            byte dummy = AllocTemp();
+            X86_64Encoder.Li(m_text, dummy, 0);
+            return dummy;
+        }
+
         // Collect function name and all arguments
         string? funcName = null;
         List<IRExpr> args = [apply.Argument];
@@ -756,7 +858,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
     byte EmitMatch(IRMatch match)
     {
+        bool savedTail = m_inTailPosition;
+        m_inTailPosition = false; // scrutinee is NOT tail position
         byte scrutReg = EmitExpr(match.Scrutinee);
+        m_inTailPosition = savedTail; // branch bodies ARE tail position
         int savedScrut = AllocLocal();
         StoreLocal(savedScrut, scrutReg);
 
