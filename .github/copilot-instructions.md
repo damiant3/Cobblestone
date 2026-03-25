@@ -172,19 +172,21 @@ size (see `docs/TOOL-ERROR-REGISTRY.md`). Required workflow:
 
 1. `codex-agent snap save <file>`
 2. Make the edit (try `edit_file` for small surgical changes to `.cs` files only).
-3. `codex-agent peek <file> 1 10` to verify (NOT `get_file` — it hides headings).
-4. `codex-agent snap diff <file>` to confirm delta.
-5. If anything looks wrong: `codex-agent snap restore <file>` and switch to the safe path.
+3. `pwsh -File tools/codex-agent-verify.ps1 <file>` — auto-strips tool pollution.
+4. `codex-agent peek <file> 1 10` to verify (NOT `get_file` — it hides headings).
+5. `codex-agent snap diff <file>` to confirm delta.
+6. If anything looks wrong: `codex-agent snap restore <file>` and switch to the safe path.
 
 **Safe path** (use when `edit_file` fails, or for any markdown/`.codex`/config file):
 
 1. `codex-agent snap save <file>`
 2. `create_file` to `<filename>.new` with complete content.
 3. `Copy-Item <filename>.new <filename> -Force`
-4. `codex-agent peek <file> 1 10` to verify.
-5. `codex-agent snap diff <file>` to confirm only intended changes.
-6. If build fails: `snap restore`, inspect, retry.
-7. `Remove-Item <filename>.new`
+4. `pwsh -File tools/codex-agent-verify.ps1 <filename>` — auto-strips tool pollution.
+5. `codex-agent peek <file> 1 10` to verify.
+6. `codex-agent snap diff <file>` to confirm only intended changes.
+7. If build fails: `snap restore`, inspect, retry.
+8. `Remove-Item <filename>.new`
 
 **Alternative: Partial class.** For large `.cs` files needing new methods, create a second
 file (e.g., `Foo.Bar.cs`) with `partial class`. Merge when stable.
