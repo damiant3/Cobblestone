@@ -2826,7 +2826,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // mov dword [0x2000], 0x3003
         m_text.AddRange([0xC7, 0x05, 0x00, 0x20, 0x00, 0x00, 0x03, 0x30, 0x00, 0x00]);
 
-        // ── Set up PD entries: 4 x 2MB huge pages (0-8MB identity mapped) ──
+        // ── Set up PD entries: 8 x 2MB huge pages (0-16MB identity mapped) ──
         // PD[0] → 0x000000 (present + writable + huge = 0x83)
         m_text.AddRange([0xC7, 0x05, 0x00, 0x30, 0x00, 0x00, 0x83, 0x00, 0x00, 0x00]);
         // PD[1] → 0x200000
@@ -2835,6 +2835,14 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         m_text.AddRange([0xC7, 0x05, 0x10, 0x30, 0x00, 0x00, 0x83, 0x00, 0x40, 0x00]);
         // PD[3] → 0x600000
         m_text.AddRange([0xC7, 0x05, 0x18, 0x30, 0x00, 0x00, 0x83, 0x00, 0x60, 0x00]);
+        // PD[4] → 0x800000
+        m_text.AddRange([0xC7, 0x05, 0x20, 0x30, 0x00, 0x00, 0x83, 0x00, 0x80, 0x00]);
+        // PD[5] → 0xA00000
+        m_text.AddRange([0xC7, 0x05, 0x28, 0x30, 0x00, 0x00, 0x83, 0x00, 0xA0, 0x00]);
+        // PD[6] → 0xC00000
+        m_text.AddRange([0xC7, 0x05, 0x30, 0x30, 0x00, 0x00, 0x83, 0x00, 0xC0, 0x00]);
+        // PD[7] → 0xE00000
+        m_text.AddRange([0xC7, 0x05, 0x38, 0x30, 0x00, 0x00, 0x83, 0x00, 0xE0, 0x00]);
 
         // ── Load PML4 into CR3 ──
         // mov eax, 0x1000
@@ -3151,24 +3159,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.Li(m_text, Reg.RAX, pdAddr | 0x03);
         X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
 
-        // PD[0] → 0x000000 (2MB, present + writable + huge = 0x83)
-        X86_64Encoder.Li(m_text, Reg.RDI, pdAddr);
-        X86_64Encoder.Li(m_text, Reg.RAX, 0x000000 | 0x83);
-        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
-
-        // PD[1] → 0x200000 (2MB kernel heap, shared)
-        X86_64Encoder.Li(m_text, Reg.RAX, 0x200000 | 0x83);
-        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 8);
-
-        // Map the process's private user heap:
-        // userHeapPhys is the physical 2MB page for this process
-        // Map it at its identity-mapped address (PD entry = phys / 0x200000)
-        int pdIndex = (int)(userHeapPhys / 0x200000);
-        X86_64Encoder.Li(m_text, Reg.RAX, userHeapPhys | 0x83);
-        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, pdIndex * 8);
-
-        // Also map PD[0x80] = the kernel code region at 0x100000
-        // (already covered by PD[0] which maps 0x0-0x1FFFFF)
+        // Map all 8 x 2MB pages (0-16MB) — full identity map per process
+        for (int i = 0; i < 8; i++)
+        {
+            long physAddr = i * 0x200000L;
+            X86_64Encoder.Li(m_text, Reg.RAX, physAddr | 0x83); // present + writable + huge
+            X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, i * 8);
+        }
     }
 
     void EmitProcess1Setup()
@@ -3746,9 +3743,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             // Set up heap at 0x200000 (2MB — above identity-mapped pages)
             X86_64Encoder.Li(m_text, HeapReg, 0x200000);
 
-            // Initialize process table and create process 1
+            // Initialize process table (process 1 disabled for compiler test)
             EmitProcessSetup();
-            EmitProcess1Setup();
+            // EmitProcess1Setup(); // disabled — let compiler run alone
 
             // Grant capabilities
             EmitGrantCapability(0, CAP_CONSOLE);    // kernel can write serial
@@ -3974,7 +3971,18 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     void PatchRodataRefs()
     {
         int textSize = m_text.Count;
-        ulong rodataVaddr = ElfWriterX86_64.ComputeRodataVaddr(textSize);
+        ulong rodataVaddr;
+
+        if (m_target == X86_64Target.BareMetal)
+        {
+            // Bare metal: text at 0x100000, rodata follows text (aligned to 8)
+            int rodataOffset = (textSize + 7) & ~7;
+            rodataVaddr = 0x100000 + (ulong)rodataOffset;
+        }
+        else
+        {
+            rodataVaddr = ElfWriterX86_64.ComputeRodataVaddr(textSize);
+        }
 
         foreach (RodataFixup fixup in m_rodataFixups)
         {
