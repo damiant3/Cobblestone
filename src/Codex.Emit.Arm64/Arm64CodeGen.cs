@@ -1087,8 +1087,8 @@ sealed class Arm64CodeGen
                 foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, 1)) Emit(insn);
                 Emit(Arm64Encoder.Str(Arm64Reg.X9, taskLoaded, 0)); // task[0] = 1
 
-                uint rd = AllocTemp();
-                Emit(Arm64Encoder.Mov(rd, taskLoaded));
+                // TryEmitBuiltin caller expects result in X0
+                Emit(Arm64Encoder.Mov(Arm64Reg.X0, taskLoaded));
                 return true;
             }
 
@@ -1096,8 +1096,7 @@ sealed class Arm64CodeGen
             {
                 // Sequential: just load result from task[8]
                 uint taskPtr = EmitExpr(args[0]);
-                uint rd = AllocTemp();
-                Emit(Arm64Encoder.Ldr(rd, taskPtr, 8)); // byte offset 8
+                Emit(Arm64Encoder.Ldr(Arm64Reg.X0, taskPtr, 8)); // byte offset 8
                 return true;
             }
 

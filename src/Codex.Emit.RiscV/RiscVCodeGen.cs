@@ -1734,8 +1734,8 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 foreach (uint insn in RiscVEncoder.Li(Reg.T0, 1)) Emit(insn);
                 Emit(RiscVEncoder.Sd(taskLoaded, Reg.T0, 0)); // task[0] = 1
 
-                uint rd = AllocTemp();
-                Emit(RiscVEncoder.Mv(rd, taskLoaded));
+                // TryEmitBuiltin caller expects result in A0
+                Emit(RiscVEncoder.Mv(Reg.A0, taskLoaded));
                 return true;
             }
 
@@ -1743,8 +1743,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             {
                 // Sequential: just load result from task[8]
                 uint taskPtr = EmitExpr(args[0]);
-                uint rd = AllocTemp();
-                Emit(RiscVEncoder.Ld(rd, taskPtr, 8));
+                Emit(RiscVEncoder.Ld(Reg.A0, taskPtr, 8));
                 return true;
             }
 
