@@ -278,6 +278,14 @@ namespace Codex.Types.Tests
             return emitter.EmitAssembly(irModule, moduleName);
         }
 
+        public static byte[]? CompileToX86_64BareMetal(string source, string moduleName = "test")
+        {
+            IRModule? irModule = CompileToIR(source, moduleName);
+            if (irModule is null) return null;
+            Codex.Emit.X86_64.X86_64Emitter emitter = new(Codex.Emit.X86_64.X86_64Target.BareMetal);
+            return emitter.EmitAssembly(irModule, moduleName);
+        }
+
         public static byte[]? CompileToArm64(string source, string moduleName = "test")
         {
             IRModule? irModule = CompileToIR(source, moduleName);

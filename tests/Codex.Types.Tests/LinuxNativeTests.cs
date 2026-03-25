@@ -162,6 +162,41 @@ public class LinuxNativeTests
 
     // ── Compile-and-run helpers ──────────────────────────────────
 
+    // ── Bare Metal x86-64 Boot Tests (qemu-system) ──────────────
+
+    [Fact]
+    public void BareMetal_integer_42_boots_under_qemu_system()
+    {
+        if (!IsLinux()) { m_output.WriteLine("SKIP: not Linux"); return; }
+        if (!HasQemuSystem()) { m_output.WriteLine("SKIP: no qemu-system-x86_64"); return; }
+
+        string? output = CompileAndBootBareMetal(SimpleSource, "bm_simple_x64");
+        Assert.NotNull(output);
+        m_output.WriteLine($"Bare metal boot output: [{output.Trim()}]");
+        Assert.Equal("42", output.Trim());
+    }
+
+    [Fact]
+    public void BareMetal_factorial_boots_under_qemu_system()
+    {
+        if (!IsLinux()) { m_output.WriteLine("SKIP: not Linux"); return; }
+        if (!HasQemuSystem()) { m_output.WriteLine("SKIP: no qemu-system-x86_64"); return; }
+
+        string source = """
+            factorial : Integer -> Integer
+            factorial (n) = if n <= 1 then 1 else n * factorial (n - 1)
+
+            main : Integer
+            main = factorial 10
+            """;
+        string? output = CompileAndBootBareMetal(source, "bm_fact_x64");
+        Assert.NotNull(output);
+        m_output.WriteLine($"Bare metal factorial output: [{output.Trim()}]");
+        Assert.Equal("3628800", output.Trim());
+    }
+
+    // ── User-mode compile-and-run helpers ─────────────────────────
+
     static string? CompileAndRunX86_64(string source, string moduleName)
     {
         byte[]? bytes = Helpers.CompileToX86_64(source, moduleName);
@@ -181,6 +216,55 @@ public class LinuxNativeTests
         byte[]? bytes = Helpers.CompileToRiscV(source, moduleName);
         if (bytes is null) return null;
         return RunElf(bytes, moduleName, "qemu-riscv64");
+    }
+
+    // ── Bare metal boot helper ───────────────────────────────────
+
+    static string? CompileAndBootBareMetal(string source, string moduleName)
+    {
+        byte[]? bytes = Helpers.CompileToX86_64BareMetal(source, moduleName);
+        if (bytes is null) return null;
+
+        string tempDir = Path.Combine(Path.GetTempPath(),
+            $"codex_bm_{moduleName}_{Guid.NewGuid().ToString("N")[..8]}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            string elfPath = Path.Combine(tempDir, moduleName + ".elf");
+            File.WriteAllBytes(elfPath, bytes);
+
+            // Boot under qemu-system-x86_64, capture serial output.
+            // QEMU doesn't exit after kernel halt, so wrap with timeout.
+            ProcessStartInfo psi = new("timeout",
+                $"5 qemu-system-x86_64 -kernel {elfPath} -nographic -no-reboot")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = tempDir
+            };
+
+            using Process? proc = Process.Start(psi);
+            if (proc is null) return null;
+
+            string stdout = proc.StandardOutput.ReadToEnd();
+            proc.WaitForExit(10_000);
+
+            // Extract kernel output from after "Booting from ROM.."
+            int marker = stdout.IndexOf("Booting from ROM..");
+            if (marker >= 0)
+            {
+                string afterBoot = stdout[(marker + "Booting from ROM..".Length)..];
+                return afterBoot.Trim();
+            }
+
+            return stdout;
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
     }
 
     /// <summary>
@@ -280,4 +364,6 @@ public class LinuxNativeTests
             return false;
         }
     }
+
+    static bool HasQemuSystem() => HasQemu("qemu-system-x86_64");
 }
