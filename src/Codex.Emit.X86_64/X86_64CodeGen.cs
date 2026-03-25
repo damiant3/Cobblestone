@@ -4201,8 +4201,17 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         }
 
         // Patch function address references (for closures/trampolines)
-        int textFileOffset = ElfWriterX86_64.ComputeTextFileOffset();
-        ulong textVaddr = 0x400000UL + (ulong)textFileOffset;
+        ulong textVaddr;
+        if (m_target == X86_64Target.BareMetal)
+        {
+            // Bare metal: text loaded at 0x100000 (1MB), no file offset adjustment
+            textVaddr = 0x100000;
+        }
+        else
+        {
+            int textFileOffset = ElfWriterX86_64.ComputeTextFileOffset();
+            textVaddr = 0x400000UL + (ulong)textFileOffset;
+        }
 
         foreach (FuncAddrFixup fixup in m_funcAddrFixups)
         {
