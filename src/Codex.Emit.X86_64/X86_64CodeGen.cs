@@ -3033,23 +3033,24 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // mov dword [0x2000], 0x3003
         m_text.AddRange([0xC7, 0x05, 0x00, 0x20, 0x00, 0x00, 0x03, 0x30, 0x00, 0x00]);
 
-        // ── Set up PD entries: 8 x 2MB huge pages (0-16MB identity mapped) ──
-        // PD[0] → 0x000000 (present + writable + huge = 0x83)
-        m_text.AddRange([0xC7, 0x05, 0x00, 0x30, 0x00, 0x00, 0x83, 0x00, 0x00, 0x00]);
-        // PD[1] → 0x200000
-        m_text.AddRange([0xC7, 0x05, 0x08, 0x30, 0x00, 0x00, 0x83, 0x00, 0x20, 0x00]);
-        // PD[2] → 0x400000
-        m_text.AddRange([0xC7, 0x05, 0x10, 0x30, 0x00, 0x00, 0x83, 0x00, 0x40, 0x00]);
-        // PD[3] → 0x600000
-        m_text.AddRange([0xC7, 0x05, 0x18, 0x30, 0x00, 0x00, 0x83, 0x00, 0x60, 0x00]);
-        // PD[4] → 0x800000
-        m_text.AddRange([0xC7, 0x05, 0x20, 0x30, 0x00, 0x00, 0x83, 0x00, 0x80, 0x00]);
-        // PD[5] → 0xA00000
-        m_text.AddRange([0xC7, 0x05, 0x28, 0x30, 0x00, 0x00, 0x83, 0x00, 0xA0, 0x00]);
-        // PD[6] → 0xC00000
-        m_text.AddRange([0xC7, 0x05, 0x30, 0x30, 0x00, 0x00, 0x83, 0x00, 0xC0, 0x00]);
-        // PD[7] → 0xE00000
-        m_text.AddRange([0xC7, 0x05, 0x38, 0x30, 0x00, 0x00, 0x83, 0x00, 0xE0, 0x00]);
+        // ── Set up PD entries: 128 x 2MB huge pages (0-256MB identity mapped) ──
+        // Use a 32-bit loop: edi=PD base, ecx=count, eax=phys|flags
+        // mov edi, 0x3000
+        m_text.AddRange([0xBF, 0x00, 0x30, 0x00, 0x00]);
+        // mov ecx, 128
+        m_text.AddRange([0xB9, 0x80, 0x00, 0x00, 0x00]);
+        // mov eax, 0x83 (present + writable + huge, phys=0)
+        m_text.AddRange([0xB8, 0x83, 0x00, 0x00, 0x00]);
+        // loop: mov [edi], eax; mov [edi+4], 0; add edi, 8; add eax, 0x200000; dec ecx; jnz loop
+        int pdLoopTop = m_text.Count;
+        m_text.AddRange([0x89, 0x07]);              // mov [edi], eax
+        m_text.AddRange([0xC7, 0x47, 0x04, 0x00, 0x00, 0x00, 0x00]); // mov dword [edi+4], 0
+        m_text.AddRange([0x83, 0xC7, 0x08]);        // add edi, 8
+        m_text.AddRange([0x05, 0x00, 0x00, 0x20, 0x00]); // add eax, 0x200000
+        m_text.AddRange([0x49]);                     // dec ecx (32-bit)
+        // jnz loop (2-byte short jump)
+        int jnzOffset = -(m_text.Count - pdLoopTop + 2);
+        m_text.AddRange([0x75, (byte)(jnzOffset & 0xFF)]);
 
         // ── Load PML4 into CR3 ──
         // mov eax, 0x1000
@@ -3366,11 +3367,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.Li(m_text, Reg.RAX, pdAddr | 0x03);
         X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
 
-        // Map all 8 x 2MB pages (0-16MB) — full identity map per process
-        for (int i = 0; i < 8; i++)
+        // Map 128 x 2MB pages (0-256MB) — full identity map per process
+        for (int i = 0; i < 128; i++)
         {
             long physAddr = i * 0x200000L;
-            X86_64Encoder.Li(m_text, Reg.RAX, physAddr | 0x83); // present + writable + huge
+            X86_64Encoder.Li(m_text, Reg.RAX, physAddr | 0x83);
             X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, i * 8);
         }
     }
