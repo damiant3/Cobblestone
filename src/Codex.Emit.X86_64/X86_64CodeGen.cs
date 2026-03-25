@@ -3861,33 +3861,52 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
     void EmitIdtEntries()
     {
-        // Emit runtime code that writes all 256 IDT entries
-        for (int vec = 0; vec < 256; vec++)
-        {
-            long addr = m_isrStubAddrs[vec];
-            long idtEntry = IdtBase + vec * 16;
+        // Emit a runtime loop that writes all 256 IDT entries.
+        // Replaces the previous unrolled version which emitted ~12.8KB of code.
+        // Each ISR stub is 8 bytes (push rax + mov al,vec + jmp rel32),
+        // contiguous starting at m_isrStubAddrs[0].
+        //
+        // Registers used:
+        //   RCX = loop counter (256 → 0)
+        //   RDI = IDT entry pointer (IdtBase, += 16 each iteration)
+        //   RSI = stub virtual address (firstStubAddr, += 8 each iteration)
+        //   RAX, RDX = scratch
 
-            X86_64Encoder.Li(m_text, Reg.RDI, idtEntry);
+        const int StubSize = 8; // push rax(1) + mov al,vec(2) + jmp rel32(5)
 
-            // offset_low (16 bits) + selector (16 bits) = 4 bytes
-            int low32 = (int)((addr & 0xFFFF) | (0x08 << 16)); // selector = 0x08
-            X86_64Encoder.Li(m_text, Reg.RAX, low32);
-            X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+        long firstStubAddr = m_isrStubAddrs[0];
 
-            // IST(0) + type_attr(0x8E) + offset_mid(16 bits) = 4 bytes
-            int mid32 = (int)((0x8E << 8) | (((addr >> 16) & 0xFFFF) << 16));
-            X86_64Encoder.Li(m_text, Reg.RAX, mid32);
-            X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 4);
+        X86_64Encoder.Li(m_text, Reg.RCX, 256);
+        X86_64Encoder.Li(m_text, Reg.RDI, IdtBase);
+        X86_64Encoder.Li(m_text, Reg.RSI, firstStubAddr);
 
-            // offset_high (32 bits)
-            int high32 = (int)((addr >> 32) & 0xFFFFFFFF);
-            X86_64Encoder.Li(m_text, Reg.RAX, high32);
-            X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 8);
+        int loopTop = m_text.Count;
 
-            // reserved (32 bits = 0)
-            X86_64Encoder.Li(m_text, Reg.RAX, 0);
-            X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 12);
-        }
+        // ── dword 0: offset_low(16) | selector(16) ──
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RSI);
+        X86_64Encoder.AndRI(m_text, Reg.RAX, 0xFFFF);       // addr & 0xFFFF
+        X86_64Encoder.AddRI(m_text, Reg.RAX, 0x08 << 16);   // | selector=0x08
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+
+        // ── dword 1: IST(0) | type_attr(0x8E) | offset_mid(16) ──
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RSI);
+        X86_64Encoder.ShrRI(m_text, Reg.RAX, 16);            // addr >> 16
+        X86_64Encoder.ShlRI(m_text, Reg.RAX, 16);            // (addr >> 16) << 16
+        X86_64Encoder.AddRI(m_text, Reg.RAX, 0x8E << 8);     // | type_attr
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 4);
+
+        // ── dwords 2-3: offset_high(32) | reserved(32) = 0 (addr < 4GB) ──
+        X86_64Encoder.Li(m_text, Reg.RAX, 0);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 8);
+
+        // ── Advance pointers, decrement counter ──
+        X86_64Encoder.AddRI(m_text, Reg.RDI, 16);            // next IDT entry
+        X86_64Encoder.AddRI(m_text, Reg.RSI, StubSize);      // next stub
+        X86_64Encoder.SubRI(m_text, Reg.RCX, 1);
+
+        int jccOffset = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);   // loop if RCX != 0
+        PatchJcc(jccOffset, loopTop);
     }
 
     void EmitCommonInterruptHandler()
