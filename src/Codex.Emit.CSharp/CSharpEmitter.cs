@@ -207,7 +207,7 @@ public sealed partial class CSharpEmitter : ICodeEmitter
         sb.AppendLine(")");
         sb.AppendLine("    {");
 
-        if (IsEffectfulDefinition(def))
+        if (IsEffectfulDefinition(def) && IsVoidLikeDefinition(def))
         {
             sb.Append("        ");
             EmitExpr(sb, def.Body, 2);
