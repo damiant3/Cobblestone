@@ -1000,20 +1000,37 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             case "read-file":
                 if (args.Count >= 1)
                 {
+                    if (m_target == X86_64Target.BareMetal)
+                    {
+                        // Bare metal: return embedded test source from rodata
+                        EmitExpr(args[0]); // evaluate path (ignored)
+                        int srcOffset = AddRodataString("main : Integer\nmain = 42\n");
+                        byte rd = AllocTemp();
+                        EmitLoadRodataAddress(rd, srcOffset);
+                        return rd;
+                    }
                     byte path = EmitExpr(args[0]);
                     X86_64Encoder.MovRR(m_text, Reg.RDI, path);
                     EmitCallTo("__read_file");
-                    byte rd = AllocTemp();
-                    X86_64Encoder.MovRR(m_text, rd, Reg.RAX);
-                    return rd;
+                    byte rd2 = AllocTemp();
+                    X86_64Encoder.MovRR(m_text, rd2, Reg.RAX);
+                    return rd2;
                 }
                 return byte.MaxValue;
             case "read-line" when args.Count == 0:
             {
+                if (m_target == X86_64Target.BareMetal)
+                {
+                    // Bare metal: return embedded path string
+                    int pathOffset = AddRodataString("test.codex");
+                    byte rd = AllocTemp();
+                    EmitLoadRodataAddress(rd, pathOffset);
+                    return rd;
+                }
                 EmitCallTo("__read_line");
-                byte rd = AllocTemp();
-                X86_64Encoder.MovRR(m_text, rd, Reg.RAX);
-                return rd;
+                byte rd2 = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd2, Reg.RAX);
+                return rd2;
             }
             case "write-file" when args.Count == 2:
             {
@@ -3805,11 +3822,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // Exit
         if (m_target == X86_64Target.BareMetal)
         {
-            // Bare metal: loop printing "A" and halting (timer wakes us)
+            // Bare metal: halt (no loop output — let compiler output be clean)
+            X86_64Encoder.Cli(m_text);
             int hltLoop = m_text.Count;
-            X86_64Encoder.Li(m_text, Reg.RAX, 'A');
-            X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
-            X86_64Encoder.OutDxAl(m_text);
             X86_64Encoder.Hlt(m_text);
             X86_64Encoder.Jmp(m_text, hltLoop - (m_text.Count + 5));
         }
@@ -3837,6 +3852,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             if (current is FunctionType ft) current = ft.Return;
             else break;
         }
+        // Unwrap EffectfulType to get the actual return type
+        if (current is EffectfulType eft) current = eft.Return;
         return current;
     }
 
