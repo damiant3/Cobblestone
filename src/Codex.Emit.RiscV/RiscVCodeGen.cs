@@ -1738,8 +1738,8 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 // Check lowercase: t0 >= 'a' && t0 <= 'z'
                 foreach (uint insn in RiscVEncoder.Li(Reg.T1, 'a')) Emit(insn);
                 foreach (uint insn in RiscVEncoder.Li(Reg.T2, 'z' + 1)) Emit(insn);
-                Emit(RiscVEncoder.Slt(Reg.T3, Reg.T0, Reg.T1));  // t3 = (t0 < 'a')
-                Emit(RiscVEncoder.Slt(Reg.T4, Reg.T0, Reg.T2));  // t4 = (t0 < 'z'+1)
+                Emit(RiscVEncoder.Sltu(Reg.T3, Reg.T0, Reg.T1));  // unsigned: t3 = (t0 < 'a')
+                Emit(RiscVEncoder.Sltu(Reg.T4, Reg.T0, Reg.T2));  // unsigned: t4 = (t0 < 'z'+1)
                 // lowercase = !t3 && t4 = t4 & ~t3
                 Emit(RiscVEncoder.Xori(Reg.T3, Reg.T3, 1));
                 Emit(RiscVEncoder.And(Reg.T3, Reg.T3, Reg.T4));  // t3 = is_lower
@@ -1747,8 +1747,8 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 // Check uppercase: t0 >= 'A' && t0 <= 'Z'
                 foreach (uint insn in RiscVEncoder.Li(Reg.T1, 'A')) Emit(insn);
                 foreach (uint insn in RiscVEncoder.Li(Reg.T2, 'Z' + 1)) Emit(insn);
-                Emit(RiscVEncoder.Slt(Reg.T4, Reg.T0, Reg.T1));
-                Emit(RiscVEncoder.Slt(Reg.T5, Reg.T0, Reg.T2));
+                Emit(RiscVEncoder.Sltu(Reg.T4, Reg.T0, Reg.T1)); // unsigned
+                Emit(RiscVEncoder.Sltu(Reg.T5, Reg.T0, Reg.T2)); // unsigned
                 Emit(RiscVEncoder.Xori(Reg.T4, Reg.T4, 1));
                 Emit(RiscVEncoder.And(Reg.T4, Reg.T4, Reg.T5));  // t4 = is_upper
 
@@ -1762,8 +1762,8 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 Emit(RiscVEncoder.Lbu(Reg.T0, textReg, 8));
                 foreach (uint insn in RiscVEncoder.Li(Reg.T1, '0')) Emit(insn);
                 foreach (uint insn in RiscVEncoder.Li(Reg.T2, '9' + 1)) Emit(insn);
-                Emit(RiscVEncoder.Slt(Reg.T3, Reg.T0, Reg.T1));
-                Emit(RiscVEncoder.Slt(Reg.T4, Reg.T0, Reg.T2));
+                Emit(RiscVEncoder.Sltu(Reg.T3, Reg.T0, Reg.T1)); // unsigned
+                Emit(RiscVEncoder.Sltu(Reg.T4, Reg.T0, Reg.T2)); // unsigned
                 Emit(RiscVEncoder.Xori(Reg.T3, Reg.T3, 1));
                 Emit(RiscVEncoder.And(Reg.A0, Reg.T3, Reg.T4));
                 return true;
