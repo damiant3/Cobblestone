@@ -54,6 +54,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             EmitFunction(def);
 
         EmitEscapeCopyHelpers();
+
+        // Bare metal: emit ISR stubs (must be before EmitStart so addresses are known)
+        if (m_target == X86_64Target.BareMetal)
+            EmitIsrStubsAndIdt();
         EmitStart(module);
         PatchCalls();
         PatchRodataRefs();
@@ -2886,6 +2890,227 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.OutDxAl(m_text);
     }
 
+    // ── Interrupt Handling (Ring 1) ──────────────────────────────
+
+    const long IdtBase = 0x6000;       // IDT: 256 entries x 16 bytes = 4096 (above page tables at 0x1000-0x3FFF)
+    const long TickCountAddr = 0x7000; // Timer tick counter (8 bytes)
+    const long KeyBufferAddr = 0x7008; // Last keycode (8 bytes)
+
+    void EmitInterruptSetup()
+    {
+        // 1. Remap PIC: IRQ 0-7 → vectors 32-39, IRQ 8-15 → vectors 40-47
+        EmitPicInit();
+
+        // 2. Emit ISR stubs and build IDT entries
+        EmitIsrStubsAndIdt();
+
+        // 3. Load IDT register
+        // IDTR: [limit:16][base:64] at a temp location on stack
+        X86_64Encoder.SubRI(m_text, Reg.RSP, 16);
+        // limit = 256*16 - 1 = 4095
+        X86_64Encoder.Li(m_text, Reg.RAX, 4095);
+        X86_64Encoder.MovStore(m_text, Reg.RSP, Reg.RAX, 0); // limit (low 16 bits used)
+        X86_64Encoder.Li(m_text, Reg.RAX, IdtBase);
+        X86_64Encoder.MovStore(m_text, Reg.RSP, Reg.RAX, 2); // base (stored at offset 2)
+        // Actually IDTR is packed: 2 bytes limit + 8 bytes base = 10 bytes
+        // Let's build it properly at a known address
+        X86_64Encoder.AddRI(m_text, Reg.RSP, 16); // undo
+
+        // Use a fixed address for IDTR: 0x5010
+        const long idtrAddr = 0x5010;
+        X86_64Encoder.Li(m_text, Reg.RDI, idtrAddr);
+        // Store limit (16-bit)
+        X86_64Encoder.Li(m_text, Reg.RAX, 4095);
+        // mov word [rdi], ax
+        m_text.Add(0x66); // operand size prefix (16-bit)
+        m_text.Add(0x89); // mov [rdi], ax (but we need the right encoding)
+        m_text.Add(0x07); // ModRM: [rdi], eax → but with 0x66 prefix, it's ax
+        // Store base (64-bit) at [rdi+2]
+        X86_64Encoder.Li(m_text, Reg.RAX, IdtBase);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 2);
+
+        // lidt [rdi]
+        X86_64Encoder.LidtRdi(m_text);
+
+        // 4. Initialize tick counter and key buffer to 0
+        X86_64Encoder.Li(m_text, Reg.RDI, TickCountAddr);
+        X86_64Encoder.Li(m_text, Reg.RAX, 0);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+        X86_64Encoder.Li(m_text, Reg.RDI, KeyBufferAddr);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+
+        // 5. Enable interrupts
+        X86_64Encoder.Sti(m_text);
+    }
+
+    void EmitPicInit()
+    {
+        // ICW1: begin init (0x11)
+        EmitOutByte(0x20, 0x11); // PIC1 command
+        EmitOutByte(0xA0, 0x11); // PIC2 command
+        // ICW2: vector offset
+        EmitOutByte(0x21, 32);   // PIC1: IRQ 0-7 → vectors 32-39
+        EmitOutByte(0xA1, 40);   // PIC2: IRQ 8-15 → vectors 40-47
+        // ICW3: cascading
+        EmitOutByte(0x21, 4);    // PIC1: IRQ2 has slave
+        EmitOutByte(0xA1, 2);    // PIC2: cascade identity 2
+        // ICW4: 8086 mode
+        EmitOutByte(0x21, 1);
+        EmitOutByte(0xA1, 1);
+        // Mask all except timer (IRQ0) and keyboard (IRQ1)
+        EmitOutByte(0x21, 0xFC); // PIC1: unmask IRQ0 + IRQ1 (bits 0,1 = 0)
+        EmitOutByte(0xA1, 0xFF); // PIC2: mask all
+    }
+
+    void EmitOutByte(int port, int value)
+    {
+        X86_64Encoder.Li(m_text, Reg.RDX, port);
+        X86_64Encoder.Li(m_text, Reg.RAX, value);
+        X86_64Encoder.OutDxAl(m_text);
+    }
+
+    void EmitIsrStubsAndIdt()
+    {
+        // For each of the 256 interrupt vectors, emit a tiny ISR stub
+        // and write the IDT entry pointing to it.
+        //
+        // ISR stub pattern:
+        //   push rax (save)
+        //   mov al, <vector>
+        //   jmp common_handler
+        //
+        // IDT entry (16 bytes, 64-bit interrupt gate):
+        //   [0:2]  offset_low
+        //   [2:4]  selector (0x08 = kernel code segment from GDT)
+        //   [4]    IST (0)
+        //   [5]    type_attr (0x8E = present + DPL0 + 64-bit interrupt gate)
+        //   [6:8]  offset_mid
+        //   [8:12] offset_high
+        //   [12:16] reserved (0)
+
+        // First emit the common handler
+        int commonHandlerOffset = m_text.Count;
+        EmitCommonInterruptHandler();
+
+        // Now emit 256 stubs and build IDT
+        for (int vec = 0; vec < 256; vec++)
+        {
+            int stubOffset = m_text.Count;
+
+            // push rax
+            X86_64Encoder.PushR(m_text, Reg.RAX);
+            // mov al, <vec>
+            m_text.Add(0xB0); m_text.Add((byte)vec);
+            // jmp common_handler
+            int rel = commonHandlerOffset - (m_text.Count + 5);
+            X86_64Encoder.Jmp(m_text, rel);
+
+            // Compute the stub's virtual address
+            // In bare metal, m_text[0] maps to 0x100000
+            long stubVaddr = 0x100000 + stubOffset;
+
+            // Write IDT entry at IdtBase + vec*16
+            // We can't write to arbitrary memory at compile time —
+            // we need to emit code that writes the IDT at runtime.
+            // Let me emit the IDT writes in EmitInterruptSetup instead.
+
+            // Store stub address for later IDT construction
+            if (vec < m_isrStubAddrs.Length)
+                m_isrStubAddrs[vec] = stubVaddr;
+        }
+    }
+
+    readonly long[] m_isrStubAddrs = new long[256];
+
+    void EmitIdtEntries()
+    {
+        // Emit runtime code that writes all 256 IDT entries
+        for (int vec = 0; vec < 256; vec++)
+        {
+            long addr = m_isrStubAddrs[vec];
+            long idtEntry = IdtBase + vec * 16;
+
+            X86_64Encoder.Li(m_text, Reg.RDI, idtEntry);
+
+            // offset_low (16 bits) + selector (16 bits) = 4 bytes
+            int low32 = (int)((addr & 0xFFFF) | (0x08 << 16)); // selector = 0x08
+            X86_64Encoder.Li(m_text, Reg.RAX, low32);
+            X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+
+            // IST(0) + type_attr(0x8E) + offset_mid(16 bits) = 4 bytes
+            int mid32 = (int)((0x8E << 8) | (((addr >> 16) & 0xFFFF) << 16));
+            X86_64Encoder.Li(m_text, Reg.RAX, mid32);
+            X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 4);
+
+            // offset_high (32 bits)
+            int high32 = (int)((addr >> 32) & 0xFFFFFFFF);
+            X86_64Encoder.Li(m_text, Reg.RAX, high32);
+            X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 8);
+
+            // reserved (32 bits = 0)
+            X86_64Encoder.Li(m_text, Reg.RAX, 0);
+            X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 12);
+        }
+    }
+
+    void EmitCommonInterruptHandler()
+    {
+        // On entry: RAX was pushed, AL = vector number
+        // Save all registers
+        X86_64Encoder.PushR(m_text, Reg.RCX);
+        X86_64Encoder.PushR(m_text, Reg.RDX);
+        X86_64Encoder.PushR(m_text, Reg.RSI);
+        X86_64Encoder.PushR(m_text, Reg.RDI);
+
+        // Zero-extend AL to RAX (vector number)
+        // movzx eax, al = 0F B6 C0
+        m_text.Add(0x0F); m_text.Add(0xB6); m_text.Add(0xC0);
+
+        // Check: vector 32 = timer, vector 33 = keyboard
+        X86_64Encoder.CmpRI(m_text, Reg.RAX, 32);
+        int notTimer = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+
+        // ── Timer handler: increment tick counter ──
+        X86_64Encoder.Li(m_text, Reg.RDI, TickCountAddr);
+        X86_64Encoder.MovLoad(m_text, Reg.RSI, Reg.RDI, 0);
+        X86_64Encoder.AddRI(m_text, Reg.RSI, 1);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RSI, 0);
+        int doneTimer = m_text.Count;
+        X86_64Encoder.Jmp(m_text, 0); // jump to EOI
+
+        // ── Not timer ──
+        PatchJcc(notTimer, m_text.Count);
+        X86_64Encoder.CmpRI(m_text, Reg.RAX, 33);
+        int notKeyboard = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+
+        // ── Keyboard handler: read scancode from port 0x60 ──
+        X86_64Encoder.Li(m_text, Reg.RDX, 0x60);
+        X86_64Encoder.InAlDx(m_text);
+        // Store scancode
+        X86_64Encoder.Li(m_text, Reg.RDI, KeyBufferAddr);
+        // movzx rax, al
+        m_text.Add(0x48); m_text.Add(0x0F); m_text.Add(0xB6); m_text.Add(0xC0);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+
+        // ── Not keyboard (fall through to EOI) ──
+        PatchJcc(notKeyboard, m_text.Count);
+
+        // ── Send EOI to PIC ──
+        int eoiAddr = m_text.Count;
+        PatchJmp(doneTimer, eoiAddr);
+        EmitOutByte(0x20, 0x20); // EOI to PIC1
+
+        // Restore registers
+        X86_64Encoder.PopR(m_text, Reg.RDI);
+        X86_64Encoder.PopR(m_text, Reg.RSI);
+        X86_64Encoder.PopR(m_text, Reg.RDX);
+        X86_64Encoder.PopR(m_text, Reg.RCX);
+        X86_64Encoder.PopR(m_text, Reg.RAX);
+        X86_64Encoder.Iretq(m_text);
+    }
+
     void EmitSerialString(string s)
     {
         // Emit each byte of the string to COM1
@@ -2936,6 +3161,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
             // Set up heap at 0x200000 (2MB — above identity-mapped pages)
             X86_64Encoder.Li(m_text, HeapReg, 0x200000);
+
+            // TODO: IDT setup causes triple fault — needs GDB debugging.
+            // The ISR stubs and handlers are emitted but the runtime IDT
+            // construction (256 entries x 4 stores each) may have address
+            // calculation issues. Enable when debugged:
+            // EmitIdtEntries();
+            // EmitInterruptSetup();
         }
         else
         {
