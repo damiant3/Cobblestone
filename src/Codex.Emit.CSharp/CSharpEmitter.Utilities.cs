@@ -90,7 +90,7 @@ public sealed partial class CSharpEmitter
         }
     }
 
-    static bool IsEffectfulDefinition(IRDefinition def)
+    static CodexType FinalReturnType(IRDefinition def)
     {
         CodexType type = def.Type;
         for (int i = 0; i < def.Parameters.Length; i++)
@@ -106,8 +106,14 @@ public sealed partial class CSharpEmitter
         }
         while (type is FunctionType pft2 && pft2.Parameter is ProofType)
             type = pft2.Return;
-        return type is EffectfulType;
+        return type;
     }
+
+    static bool IsEffectfulDefinition(IRDefinition def) =>
+        FinalReturnType(def) is EffectfulType;
+
+    static bool IsVoidLikeDefinition(IRDefinition def) =>
+        IsVoidLike(FinalReturnType(def));
 
     static string SanitizeIdentifier(string name)
     {

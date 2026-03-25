@@ -7,10 +7,7 @@ Format: `BUG-NNN | severity | component | status | summary`
 
 ## Open
 
-| ID      | Severity | Component          | Status | Summary |
-|---------|----------|--------------------|--------|---------|
-| BUG-001 | medium   | Emit.IL / CSharp   | open   | Recursive string-returning functions emit `return null` instead of computed value |
-| BUG-002 | low      | codex-agent        | open   | `do-greet` uses `mkdir -p` via `run-process` — Unix-only, fails on Windows without WSL |
+(none)
 
 ---
 
@@ -50,4 +47,7 @@ The `do-greet` function creates the agents directory via `run-process "mkdir" ("
 
 ## Closed
 
-(none yet)
+| ID      | Severity | Component          | Status | Summary |
+|---------|----------|--------------------|--------|---------|
+| BUG-001 | medium   | Emit.CSharp        | fixed  | Effectful non-void functions emitted `return null` — fixed in `IsVoidLikeDefinition` |
+| BUG-002 | low      | codex-agent        | fixed  | `mkdir -p` replaced with cross-platform `pwsh New-Item` |

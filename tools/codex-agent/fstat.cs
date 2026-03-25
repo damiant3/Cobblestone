@@ -58,14 +58,12 @@ public static class Codex_fstat
 
     public static string stat_line(string file)
     {
-        ((Func<string, string>)((content) => ((Func<long, string>)((lines) => ((Func<long, string>)((chars) => string.Concat(pad_right(file, 55L), string.Concat(pad_left((lines).ToString(), 7L), string.Concat(pad_left((chars).ToString(), 9L), size_hint(lines))))))(((long)content.Length))))(count_lines(content))))(File.ReadAllText(file));
-        return null;
+        return ((Func<string, string>)((content) => ((Func<long, string>)((lines) => ((Func<long, string>)((chars) => string.Concat(pad_right(file, 55L), string.Concat(pad_left((lines).ToString(), 7L), string.Concat(pad_left((chars).ToString(), 9L), size_hint(lines))))))(((long)content.Length))))(count_lines(content))))(File.ReadAllText(file));
     }
 
     public static string stat_loop(List<string> args, long idx, long total_lines, long total_chars)
     {
-        ((idx >= ((long)args.Count)) ? ((idx > 2L) ? string.Concat("\n", string.Concat(pad_right(string.Concat("TOTAL (", string.Concat(((idx - 1L)).ToString(), " files)")), 55L), string.Concat(pad_left((total_lines).ToString(), 7L), pad_left((total_chars).ToString(), 9L)))) : "") : ((Func<string, string>)((file) => (File.Exists(file) ? ((Func<string, string>)((content) => ((Func<long, string>)((lines) => ((Func<long, string>)((chars) => ((Func<string, string>)((row) => ((Func<string, string>)((rest) => string.Concat(row, string.Concat("\n", rest))))(stat_loop(args, (idx + 1L), (total_lines + lines), (total_chars + chars)))))(string.Concat(pad_right(file, 55L), string.Concat(pad_left((lines).ToString(), 7L), string.Concat(pad_left((chars).ToString(), 9L), size_hint(lines)))))))(((long)content.Length))))(count_lines(content))))(File.ReadAllText(file)) : ((Func<string, string>)((rest) => string.Concat("  (not found: ", string.Concat(file, string.Concat(")\n", rest)))))(stat_loop(args, (idx + 1L), total_lines, total_chars)))))(args[(int)idx]));
-        return null;
+        return ((idx >= ((long)args.Count)) ? ((idx > 2L) ? string.Concat("\n", string.Concat(pad_right(string.Concat("TOTAL (", string.Concat(((idx - 1L)).ToString(), " files)")), 55L), string.Concat(pad_left((total_lines).ToString(), 7L), pad_left((total_chars).ToString(), 9L)))) : "") : ((Func<string, string>)((file) => (File.Exists(file) ? ((Func<string, string>)((content) => ((Func<long, string>)((lines) => ((Func<long, string>)((chars) => ((Func<string, string>)((row) => ((Func<string, string>)((rest) => string.Concat(row, string.Concat("\n", rest))))(stat_loop(args, (idx + 1L), (total_lines + lines), (total_chars + chars)))))(string.Concat(pad_right(file, 55L), string.Concat(pad_left((lines).ToString(), 7L), string.Concat(pad_left((chars).ToString(), 9L), size_hint(lines)))))))(((long)content.Length))))(count_lines(content))))(File.ReadAllText(file)) : ((Func<string, string>)((rest) => string.Concat("  (not found: ", string.Concat(file, string.Concat(")\n", rest)))))(stat_loop(args, (idx + 1L), total_lines, total_chars)))))(args[(int)idx]));
     }
 
     public static object main()
