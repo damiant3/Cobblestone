@@ -194,6 +194,12 @@ static class Arm64Encoder
         return 0x54000000u | (imm19 << 5) | cond;
     }
 
+    // Condition code helpers for Bcond
+    public static uint Beq(int offset) => Bcond(0x0, offset * 4);  // EQ
+    public static uint Bne(int offset) => Bcond(0x1, offset * 4);  // NE
+    public static uint Bge(int offset) => Bcond(0xA, offset * 4);  // GE (signed)
+    public static uint Blt(int offset) => Bcond(0xB, offset * 4);  // LT (signed)
+
     // CBZ Xt, offset (compare and branch if zero, 19-bit)
     public static uint Cbz(uint rt, int offset)
     {
