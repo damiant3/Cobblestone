@@ -320,8 +320,10 @@ static class X86_64Encoder
     public const byte CC_NE = 0x5;  // not equal (ZF=0)
     public const byte CC_L  = 0xC;  // less (SF≠OF)
     public const byte CC_GE = 0xD;  // greater or equal (SF=OF)
-    public const byte CC_LE = 0xE;  // less or equal (ZF=1 or SF≠OF)
-    public const byte CC_G  = 0xF;  // greater (ZF=0 and SF=OF)
+    public const byte CC_LE = 0xE;  // less or equal (ZF=1 or SF≠OF), signed
+    public const byte CC_G  = 0xF;  // greater (ZF=0 and SF=OF), signed
+    public const byte CC_BE = 0x6;  // below or equal (CF=1 or ZF=1), unsigned
+    public const byte CC_A  = 0x7;  // above (CF=0 and ZF=0), unsigned
 
     // ═════════════════════════════════════════════════════════════
     // movzx for zero-extending setcc result
