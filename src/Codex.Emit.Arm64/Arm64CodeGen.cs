@@ -29,6 +29,16 @@ sealed class Arm64CodeGen
     int m_spillCount;
     int m_prologueIndex = -1;
     Dictionary<string, uint> m_locals = [];
+    string m_currentFunction = "";
+
+    // TCO
+    bool m_inTCOFunction;
+    bool m_inTailPosition;
+    int m_tcoLoopTop;
+    uint[] m_tcoParamLocals = [];
+    uint[] m_tcoTempLocals = [];
+    int m_tcoSavedNextLocal;
+    uint m_tcoSavedNextTemp;
 
     static readonly uint[] CalleeSaved = {
         Arm64Reg.X19, Arm64Reg.X20, Arm64Reg.X21, Arm64Reg.X22,
@@ -69,13 +79,34 @@ sealed class Arm64CodeGen
 
     // -- Function emission ----------------------------------------
 
+    static bool ShouldTCO(IRDefinition def)
+    {
+        return def.Parameters.Length > 0 && HasTailCall(def.Body, def.Name);
+    }
+    static bool HasTailCall(IRExpr expr, string fn) => expr switch
+    {
+        IRIf iff => HasTailCall(iff.Then, fn) || HasTailCall(iff.Else, fn),
+        IRLet let => HasTailCall(let.Body, fn),
+        IRMatch m => m.Branches.Any(b => HasTailCall(b.Body, fn)),
+        IRApply app => IsSelfCall(app, fn),
+        IRDo d => d.Statements.Length > 0 && d.Statements[^1] is IRDoExec e && HasTailCall(e.Expression, fn),
+        _ => false
+    };
+    static bool IsSelfCall(IRExpr expr, string fn)
+    {
+        IRExpr c = expr; while (c is IRApply a) c = a.Function;
+        return c is IRName n && n.Name == fn;
+    }
+
     void EmitFunction(IRDefinition def)
     {
         m_functionOffsets[def.Name] = m_instructions.Count;
+        m_currentFunction = def.Name;
         m_locals = new Dictionary<string, uint>();
         m_nextTemp = Arm64Reg.X12;
         m_nextLocal = Arm64Reg.X19;
         m_spillCount = 0;
+        m_inTCOFunction = ShouldTCO(def);
 
         // Prologue: save FP, LR, callee-saved regs, allocate frame.
         // Base frame: 16 (FP+LR) + 9*8 (callee-saved x19-x27) + 8 (x28/heap) = 96 bytes.
@@ -98,12 +129,24 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.Mov(Arm64Reg.Fp, Arm64Reg.Sp));
 
         // Save parameters to callee-saved locals
+        m_tcoParamLocals = new uint[def.Parameters.Length];
         for (int i = 0; i < def.Parameters.Length && i < 8; i++)
         {
             uint savedReg = AllocLocal();
             StoreLocal(savedReg, Arm64Reg.X0 + (uint)i);
             m_locals[def.Parameters[i].Name] = savedReg;
+            m_tcoParamLocals[i] = savedReg;
         }
+        if (m_inTCOFunction)
+        {
+            m_tcoTempLocals = new uint[def.Parameters.Length];
+            for (int i = 0; i < def.Parameters.Length; i++)
+                m_tcoTempLocals[i] = AllocLocal();
+        }
+        m_tcoLoopTop = m_instructions.Count;
+        m_tcoSavedNextLocal = (int)m_nextLocal;
+        m_tcoSavedNextTemp = m_nextTemp;
+        m_inTailPosition = m_inTCOFunction;
 
         uint resultReg = EmitExpr(def.Body);
         if (resultReg >= SpillBase)
@@ -360,19 +403,23 @@ sealed class Arm64CodeGen
 
     uint EmitIf(IRIf ifExpr)
     {
+        bool savedTail = m_inTailPosition;
+        m_inTailPosition = false;
         uint cond = EmitExpr(ifExpr.Condition);
 
         int cbzIndex = m_instructions.Count;
-        Emit(Arm64Encoder.Nop()); // patched: CBZ -> else
+        Emit(Arm64Encoder.Nop());
 
+        m_inTailPosition = savedTail;
         uint thenReg = EmitExpr(ifExpr.Then);
         uint resultReg = AllocLocal();
         StoreLocal(resultReg, thenReg);
 
         int jEndIndex = m_instructions.Count;
-        Emit(Arm64Encoder.Nop()); // patched: B -> end
+        Emit(Arm64Encoder.Nop());
 
         int elseStart = m_instructions.Count;
+        m_inTailPosition = savedTail;
         uint elseReg = EmitExpr(ifExpr.Else);
         StoreLocal(resultReg, elseReg);
 
@@ -386,15 +433,49 @@ sealed class Arm64CodeGen
 
     uint EmitLet(IRLet letExpr)
     {
+        bool savedTail = m_inTailPosition;
+        m_inTailPosition = false;
         uint valReg = EmitExpr(letExpr.Value);
         uint savedReg = AllocLocal();
         StoreLocal(savedReg, valReg);
         m_locals[letExpr.Name] = savedReg;
+        m_inTailPosition = savedTail;
         return EmitExpr(letExpr.Body);
+    }
+
+    void EmitArm64TailCall(IRApply app)
+    {
+        List<IRExpr> args = new();
+        IRExpr cur = app;
+        while (cur is IRApply a) { args.Insert(0, a.Argument); cur = a.Function; }
+
+        m_nextLocal = (uint)m_tcoSavedNextLocal;
+        m_nextTemp = m_tcoSavedNextTemp;
+
+        for (int i = 0; i < args.Count && i < m_tcoTempLocals.Length; i++)
+        {
+            bool saved = m_inTailPosition; m_inTailPosition = false;
+            uint r = EmitExpr(args[i]);
+            m_inTailPosition = saved;
+            StoreLocal(m_tcoTempLocals[i], r);
+        }
+        for (int i = 0; i < args.Count && i < m_tcoParamLocals.Length; i++)
+        {
+            uint val = LoadLocal(m_tcoTempLocals[i]);
+            StoreLocal(m_tcoParamLocals[i], val);
+        }
+        Emit(Arm64Encoder.B((m_tcoLoopTop - m_instructions.Count) * 4));
     }
 
     uint EmitApply(IRApply apply)
     {
+        if (m_inTCOFunction && m_inTailPosition && IsSelfCall(apply, m_currentFunction))
+        {
+            EmitArm64TailCall(apply);
+            uint dummy = AllocTemp();
+            foreach (uint insn in Arm64Encoder.Li(dummy, 0)) Emit(insn);
+            return dummy;
+        }
         List<IRExpr> args = new();
         IRExpr func = apply;
         while (func is IRApply inner)
@@ -629,7 +710,10 @@ sealed class Arm64CodeGen
 
     uint EmitMatch(IRMatch match)
     {
+        bool savedTail = m_inTailPosition;
+        m_inTailPosition = false;
         uint scrutReg = EmitExpr(match.Scrutinee);
+        m_inTailPosition = savedTail;
         uint savedScrut = AllocLocal();
         StoreLocal(savedScrut, scrutReg);
 
@@ -1037,6 +1121,46 @@ sealed class Arm64CodeGen
                 Emit(Arm64Encoder.CmpImm(Arm64Reg.X11, 26));
                 m_instructions.Add(0x9A9F37E0u | Arm64Reg.X13); // CSINC X13, XZR, XZR, CC
                 Emit(Arm64Encoder.Or(Arm64Reg.X0, Arm64Reg.X12, Arm64Reg.X13));
+                return true;
+            }
+
+            case "is-digit" when args.Count == 1:
+            {
+                uint textReg = EmitExpr(args[0]);
+                Emit(Arm64Encoder.Ldrb(Arm64Reg.X9, textReg, 8));
+                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, '0')) Emit(insn);
+                Emit(Arm64Encoder.Sub(Arm64Reg.X11, Arm64Reg.X9, Arm64Reg.X10));
+                Emit(Arm64Encoder.CmpImm(Arm64Reg.X11, 10));
+                m_instructions.Add(0x9A9F37E0u | Arm64Reg.X0); // CSINC X0, XZR, XZR, CC
+                return true;
+            }
+
+            case "is-whitespace" when args.Count == 1:
+            {
+                uint textReg = EmitExpr(args[0]);
+                Emit(Arm64Encoder.Ldrb(Arm64Reg.X9, textReg, 8));
+                // space=32
+                Emit(Arm64Encoder.CmpImm(Arm64Reg.X9, 32));
+                m_instructions.Add(0x9A9F17E0u | Arm64Reg.X10); // CSINC X10, XZR, XZR, NE → 1 if EQ
+                // tab=9
+                Emit(Arm64Encoder.CmpImm(Arm64Reg.X9, 9));
+                m_instructions.Add(0x9A9F17E0u | Arm64Reg.X11); // CSINC X11, XZR, XZR, NE
+                Emit(Arm64Encoder.Or(Arm64Reg.X10, Arm64Reg.X10, Arm64Reg.X11));
+                // newline=10
+                Emit(Arm64Encoder.CmpImm(Arm64Reg.X9, 10));
+                m_instructions.Add(0x9A9F17E0u | Arm64Reg.X11);
+                Emit(Arm64Encoder.Or(Arm64Reg.X10, Arm64Reg.X10, Arm64Reg.X11));
+                // cr=13
+                Emit(Arm64Encoder.CmpImm(Arm64Reg.X9, 13));
+                m_instructions.Add(0x9A9F17E0u | Arm64Reg.X11);
+                Emit(Arm64Encoder.Or(Arm64Reg.X0, Arm64Reg.X10, Arm64Reg.X11));
+                return true;
+            }
+
+            case "negate" when args.Count == 1:
+            {
+                uint val = EmitExpr(args[0]);
+                Emit(Arm64Encoder.Sub(Arm64Reg.X0, Arm64Reg.Xzr, val));
                 return true;
             }
 
