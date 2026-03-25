@@ -2322,7 +2322,7 @@ sealed class Arm64CodeGen
         foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X8, 214)) Emit(insn);
         Emit(Arm64Encoder.Svc());
         Emit(Arm64Encoder.Mov(HeapReg, Arm64Reg.X0));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, 1048576)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, 64 * 1024 * 1024)) Emit(insn); // 64MB heap
         Emit(Arm64Encoder.Add(Arm64Reg.X0, HeapReg, Arm64Reg.X9));
         foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X8, 214)) Emit(insn);
         Emit(Arm64Encoder.Svc());

@@ -3042,7 +3042,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             foreach (uint insn in RiscVEncoder.Li(Reg.A7, 214)) Emit(insn);
             Emit(RiscVEncoder.Ecall());
             Emit(RiscVEncoder.Mv(Reg.S1, Reg.A0));
-            foreach (uint insn in RiscVEncoder.Li(Reg.T0, 1048576)) Emit(insn);
+            foreach (uint insn in RiscVEncoder.Li(Reg.T0, 64 * 1024 * 1024)) Emit(insn); // 64MB heap
             Emit(RiscVEncoder.Add(Reg.A0, Reg.S1, Reg.T0));
             foreach (uint insn in RiscVEncoder.Li(Reg.A7, 214)) Emit(insn);
             Emit(RiscVEncoder.Ecall());
