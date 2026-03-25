@@ -56,23 +56,24 @@ public sealed class TypeEnvironment
             new FunctionType(TextType.s_instance, TextType.s_instance)));
 
         env = env.Bind("char-at", new FunctionType(TextType.s_instance,
-            new FunctionType(IntegerType.s_instance, TextType.s_instance)));
+            new FunctionType(IntegerType.s_instance, CharType.s_instance)));
+        env = env.Bind("char-to-text", new FunctionType(CharType.s_instance, TextType.s_instance));
         env = env.Bind("text-length", new FunctionType(TextType.s_instance, IntegerType.s_instance));
         env = env.Bind("substring", new FunctionType(TextType.s_instance,
             new FunctionType(IntegerType.s_instance,
                 new FunctionType(IntegerType.s_instance, TextType.s_instance))));
-        env = env.Bind("is-letter", new FunctionType(TextType.s_instance, BooleanType.s_instance));
-        env = env.Bind("is-digit", new FunctionType(TextType.s_instance, BooleanType.s_instance));
-        env = env.Bind("is-whitespace", new FunctionType(TextType.s_instance, BooleanType.s_instance));
+        env = env.Bind("is-letter", new FunctionType(CharType.s_instance, BooleanType.s_instance));
+        env = env.Bind("is-digit", new FunctionType(CharType.s_instance, BooleanType.s_instance));
+        env = env.Bind("is-whitespace", new FunctionType(CharType.s_instance, BooleanType.s_instance));
         env = env.Bind("text-to-integer", new FunctionType(TextType.s_instance, IntegerType.s_instance));
         env = env.Bind("integer-to-text", new FunctionType(IntegerType.s_instance, TextType.s_instance));
         env = env.Bind("text-replace", new FunctionType(TextType.s_instance,
             new FunctionType(TextType.s_instance,
                 new FunctionType(TextType.s_instance, TextType.s_instance))));
-        env = env.Bind("char-code", new FunctionType(TextType.s_instance, IntegerType.s_instance));
+        env = env.Bind("char-code", new FunctionType(CharType.s_instance, IntegerType.s_instance));
         env = env.Bind("char-code-at", new FunctionType(TextType.s_instance,
             new FunctionType(IntegerType.s_instance, IntegerType.s_instance)));
-        env = env.Bind("code-to-char", new FunctionType(IntegerType.s_instance, TextType.s_instance));
+        env = env.Bind("code-to-char", new FunctionType(IntegerType.s_instance, CharType.s_instance));
 
         env = env.Bind("list-length", new ForAllType(0,
             new FunctionType(new ListType(new TypeVariable(0)), IntegerType.s_instance)));

@@ -312,7 +312,7 @@ namespace Codex.Types.Tests
         public void Char_at_type_checks()
         {
             string source =
-                "first-char : Text -> Text\n" +
+                "first-char : Text -> Char\n" +
                 "first-char (s) = char-at s 0\n";
             Map<string, CodexType>? types = Helpers.TypeCheck(source);
             Assert.NotNull(types);
@@ -323,11 +323,11 @@ namespace Codex.Types.Tests
         public void Char_at_compiles_to_csharp()
         {
             string source =
-                "main : Text\n" +
+                "main : Char\n" +
                 "main = char-at \"hello\" 0\n";
             string? cs = Helpers.CompileToCS(source, "charat");
             Assert.NotNull(cs);
-            Assert.Contains("ToString()", cs!);
+            Assert.Contains("(long)", cs!);
         }
 
         [Fact]
@@ -356,7 +356,7 @@ namespace Codex.Types.Tests
         public void Is_letter_type_checks()
         {
             string source =
-                "check : Text -> Boolean\n" +
+                "check : Char -> Boolean\n" +
                 "check (s) = is-letter s\n";
             Map<string, CodexType>? types = Helpers.TypeCheck(source);
             Assert.NotNull(types);
@@ -367,7 +367,7 @@ namespace Codex.Types.Tests
         public void Is_digit_type_checks()
         {
             string source =
-                "check : Text -> Boolean\n" +
+                "check : Char -> Boolean\n" +
                 "check (s) = is-digit s\n";
             Map<string, CodexType>? types = Helpers.TypeCheck(source);
             Assert.NotNull(types);
@@ -378,7 +378,7 @@ namespace Codex.Types.Tests
         public void Is_whitespace_type_checks()
         {
             string source =
-                "check : Text -> Boolean\n" +
+                "check : Char -> Boolean\n" +
                 "check (s) = is-whitespace s\n";
             Map<string, CodexType>? types = Helpers.TypeCheck(source);
             Assert.NotNull(types);
@@ -400,7 +400,7 @@ namespace Codex.Types.Tests
         public void Char_code_type_checks()
         {
             string source =
-                "code : Text -> Integer\n" +
+                "code : Char -> Integer\n" +
                 "code (s) = char-code s\n";
             Map<string, CodexType>? types = Helpers.TypeCheck(source);
             Assert.NotNull(types);
@@ -411,7 +411,7 @@ namespace Codex.Types.Tests
         public void Code_to_char_type_checks()
         {
             string source =
-                "from-code : Integer -> Text\n" +
+                "from-code : Integer -> Char\n" +
                 "from-code (n) = code-to-char n\n";
             Map<string, CodexType>? types = Helpers.TypeCheck(source);
             Assert.NotNull(types);
@@ -500,9 +500,9 @@ namespace Codex.Types.Tests
                 "}\n\n" +
                 "at-end : LexState -> Boolean\n" +
                 "at-end (s) = s.pos >= text-length s.source\n\n" +
-                "peek : LexState -> Text\n" +
+                "peek : LexState -> Char\n" +
                 "peek (s) =\n" +
-                "  if at-end s then \"\"\n" +
+                "  if at-end s then code-to-char 0\n" +
                 "  else char-at s.source s.pos\n\n" +
                 "main : Boolean\n" +
                 "main = at-end (LexState { source = \"hello\", pos = 5 })\n";

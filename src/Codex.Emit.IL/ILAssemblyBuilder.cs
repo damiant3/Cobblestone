@@ -833,7 +833,7 @@ sealed partial class ILAssemblyBuilder
             il.Call(m_definedMethods["main"]!.Value);
             MemberReferenceHandle writeLine = mainDef.Type switch
             {
-                IntegerType => m_writeLineInt64Ref,
+                IntegerType or CharType => m_writeLineInt64Ref,
                 NumberType => m_writeLineDoubleRef,
                 BooleanType => m_writeLineBoolRef,
                 _ => m_writeLineStringRef,
@@ -1159,7 +1159,7 @@ sealed partial class ILAssemblyBuilder
                 // Choose the right overload based on the argument type
                 MemberReferenceHandle writeLine = args[0].Type switch
                 {
-                    IntegerType => m_writeLineInt64Ref,
+                    IntegerType or CharType => m_writeLineInt64Ref,
                     NumberType => m_writeLineDoubleRef,
                     BooleanType => m_writeLineBoolRef,
                     _ => m_writeLineStringRef,
@@ -1183,11 +1183,18 @@ sealed partial class ILAssemblyBuilder
                 return true;
 
             case "char-at" when args.Count == 2:
-                // s[(int)i].ToString()
+                // (long)s[(int)i] — returns Char as i64, zero allocation
                 emitSub(args[0]);
                 emitSub(args[1]);
                 il.OpCode(ILOpCode.Conv_i4);
                 il.Call(m_stringGetCharsRef);
+                il.OpCode(ILOpCode.Conv_i8);
+                return true;
+
+            case "char-to-text" when args.Count == 1:
+                // ((char)val).ToString()
+                emitSub(args[0]);
+                il.OpCode(ILOpCode.Conv_u2);
                 EmitCharToString(il, locals);
                 return true;
 
@@ -1201,18 +1208,13 @@ sealed partial class ILAssemblyBuilder
                 return true;
 
             case "char-code" when args.Count == 1:
-                // (long)s[0]
+                // Char -> Integer: identity (both are i64)
                 emitSub(args[0]);
-                il.LoadConstantI4(0);
-                il.Call(m_stringGetCharsRef);
-                il.OpCode(ILOpCode.Conv_i8);
                 return true;
 
             case "code-to-char" when args.Count == 1:
-                // ((char)n).ToString()
+                // Integer -> Char: identity (both are i64)
                 emitSub(args[0]);
-                il.OpCode(ILOpCode.Conv_u2);
-                EmitCharToString(il, locals);
                 return true;
 
             case "substring" when args.Count == 3:
@@ -1258,24 +1260,21 @@ sealed partial class ILAssemblyBuilder
                 return true;
 
             case "is-letter" when args.Count == 1:
-                // Char.IsLetter(s[0])
+                // Char.IsLetter((char)val)
                 emitSub(args[0]);
-                il.LoadConstantI4(0);
-                il.Call(m_stringGetCharsRef);
+                il.OpCode(ILOpCode.Conv_u2);
                 il.Call(m_charIsLetterRef);
                 return true;
 
             case "is-digit" when args.Count == 1:
                 emitSub(args[0]);
-                il.LoadConstantI4(0);
-                il.Call(m_stringGetCharsRef);
+                il.OpCode(ILOpCode.Conv_u2);
                 il.Call(m_charIsDigitRef);
                 return true;
 
             case "is-whitespace" when args.Count == 1:
                 emitSub(args[0]);
-                il.LoadConstantI4(0);
-                il.Call(m_stringGetCharsRef);
+                il.OpCode(ILOpCode.Conv_u2);
                 il.Call(m_charIsWhiteSpaceRef);
                 return true;
 
@@ -1471,6 +1470,11 @@ sealed partial class ILAssemblyBuilder
                 il.Call(m_boolToStringRef);
                 break;
             }
+            case CharType:
+                // Convert i64 -> char -> string
+                il.OpCode(ILOpCode.Conv_u2);
+                EmitCharToString(il, locals);
+                break;
             case TextType:
                 // Already a string, nothing to do
                 break;
@@ -1674,6 +1678,9 @@ sealed partial class ILAssemblyBuilder
             case BooleanType:
                 encoder.Boolean();
                 break;
+            case CharType:
+                encoder.Int64();
+                break;
             case VoidType or NothingType:
                 encoder.Builder.WriteByte((byte)SignatureTypeCode.Void);
                 break;
@@ -1771,7 +1778,7 @@ sealed partial class ILAssemblyBuilder
             return;
         TypeReferenceHandle? boxTarget = actualType switch
         {
-            IntegerType => m_int64Ref,
+            IntegerType or CharType => m_int64Ref,
             NumberType => m_doubleRef,
             BooleanType => m_booleanRef,
             _ => null
@@ -1789,7 +1796,7 @@ sealed partial class ILAssemblyBuilder
             return;
         TypeReferenceHandle? unboxTarget = targetType switch
         {
-            IntegerType => m_int64Ref,
+            IntegerType or CharType => m_int64Ref,
             NumberType => m_doubleRef,
             BooleanType => m_booleanRef,
             _ => null

@@ -456,6 +456,21 @@ public class X86_64EmitterTests
         }
     }
 
+    [Fact]
+    public void BareMetal_kernel_size_under_5KB_after_idt_loop_optimization()
+    {
+        string source = """
+            main : Integer
+            main = 42
+            """;
+        byte[]? bytes = Helpers.CompileToX86_64BareMetal(source, "bm_size_check");
+        Assert.NotNull(bytes);
+        // Before IDT loop optimization: ~19KB+ (IDT unroll alone was ~12.8KB).
+        // After: ~7KB for a trivial program. Guard against regression.
+        Assert.True(bytes.Length < 8192,
+            $"Bare metal kernel too large: {bytes.Length} bytes (expected < 8192)");
+    }
+
     static string ToWslPath(string windowsPath)
     {
         string full = Path.GetFullPath(windowsPath);

@@ -13,6 +13,7 @@ public sealed partial class CSharpEmitter
             NumberType => "decimal",
             TextType => "string",
             BooleanType => "bool",
+            CharType => "long",
             NothingType => "object",
             VoidType => "void",
             EffectfulType eft => EmitType(eft.Return),
