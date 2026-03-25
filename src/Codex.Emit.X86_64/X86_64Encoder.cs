@@ -516,6 +516,38 @@ static class X86_64Encoder
         buf.Add(0xFA);
     }
 
+    // STI — enable interrupts
+    public static void Sti(List<byte> buf)
+    {
+        buf.Add(0xFB);
+    }
+
+    // IRETQ — return from 64-bit interrupt
+    public static void Iretq(List<byte> buf)
+    {
+        buf.Add(0x48); // REX.W prefix
+        buf.Add(0xCF);
+    }
+
+    // LIDT [addr] — load IDT register from memory at addr in RAX
+    // We emit: lea rdi, [rax]; lidt [rdi]
+    // Actually, lidt m16&64 = 0F 01 /3 with mod/rm
+    // lidt [rdi] = 0F 01 1F (ModRM: mod=00, reg=011 (/3), rm=111 (RDI))
+    public static void LidtRdi(List<byte> buf)
+    {
+        buf.Add(0x0F);
+        buf.Add(0x01);
+        buf.Add(0x1F); // ModRM: [RDI]
+    }
+
+    // SWAPGS — swap GS base (needed for interrupt handling in long mode)
+    public static void Swapgs(List<byte> buf)
+    {
+        buf.Add(0x0F);
+        buf.Add(0x01);
+        buf.Add(0xF8);
+    }
+
     static void WriteI64(List<byte> buf, long value)
     {
         for (int i = 0; i < 8; i++)
