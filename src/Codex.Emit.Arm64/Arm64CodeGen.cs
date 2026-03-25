@@ -1069,7 +1069,7 @@ sealed class Arm64CodeGen
                 Emit(Arm64Encoder.AddImm(HeapReg, HeapReg, 16));
                 foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, 0)) Emit(insn);
                 Emit(Arm64Encoder.Str(Arm64Reg.X9, taskPtr, 0)); // done = 0
-                Emit(Arm64Encoder.Str(Arm64Reg.X9, taskPtr, 1)); // result = 0 (offset 1 = 8 bytes)
+                Emit(Arm64Encoder.Str(Arm64Reg.X9, taskPtr, 8)); // result = 0 (byte offset 8)
                 uint savedTask = AllocLocal();
                 StoreLocal(savedTask, taskPtr);
 
@@ -1081,7 +1081,7 @@ sealed class Arm64CodeGen
 
                 // Store result (X0) into task[8], set done
                 uint taskLoaded = LoadLocal(savedTask);
-                Emit(Arm64Encoder.Str(Arm64Reg.X0, taskLoaded, 1)); // task[8] = result
+                Emit(Arm64Encoder.Str(Arm64Reg.X0, taskLoaded, 8)); // task[8] = result
                 foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, 1)) Emit(insn);
                 Emit(Arm64Encoder.Str(Arm64Reg.X9, taskLoaded, 0)); // task[0] = 1
 
@@ -1095,7 +1095,7 @@ sealed class Arm64CodeGen
                 // Sequential: just load result from task[8]
                 uint taskPtr = EmitExpr(args[0]);
                 uint rd = AllocTemp();
-                Emit(Arm64Encoder.Ldr(rd, taskPtr, 1)); // offset 1 = 8 bytes
+                Emit(Arm64Encoder.Ldr(rd, taskPtr, 8)); // byte offset 8
                 return true;
             }
 
