@@ -101,7 +101,14 @@ dotnet tools/codex-agent/codex-agent.exe doctor
 dotnet tools/codex-agent/codex-agent.exe check
 dotnet tools/codex-agent/codex-agent.exe status
 dotnet tools/codex-agent/codex-agent.exe handoff show
+pwsh -File tools/codex-agent-verify.ps1 docs/**/*.md   # sweep for TEF-008 pollution
 ```
+
+Key doc locations (memorize, don't search):
+- `docs/TOOL-ERROR-REGISTRY.md` — tool failure log
+- `docs/KNOWN-CONDITIONS.md` — pre-existing issues
+- `docs/CurrentPlan.md` — current plan and status
+- `docs/ToDo/CSharpCleanup.md` — style audit tracker
 
 On first session or after context loss, also orient:
 ```powershell
