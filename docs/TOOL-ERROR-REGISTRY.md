@@ -13,7 +13,9 @@ Last updated: 2026-03-25
 **Tool**: `edit_file` (VS Copilot built-in)
 **Symptom**: Lines at the top of a file (especially `# heading` on line 1) are silently
 dropped. The tool reports success but the line is gone. No error, no warning.
-**Frequency**: Common on markdown files. Observed on files as small as 240 lines.
+A variant duplicates entire sections: content is inserted but the original block
+it should replace remains, producing a file with two copies of the same section.
+**Frequency**: Common on markdown files. Observed on files as small as 152 lines.
 **Workaround**: Use `create_file` + swap for any file where line 1 content matters.
 Always verify with `codex-agent peek` (not `get_file`) after any edit.
 
@@ -107,6 +109,10 @@ If metadata lines appear, use the safe path (create_file + swap) to rewrite the 
 Format: `DATE | ERROR-CLASS | FILE | DESCRIPTION | OUTCOME`
 
 ```
+2026-03-25 | TEF-008 | docs/CurrentPlan.md | edit_file injected "File:" header and code fence as lines 1-2 on markdown edit | cleaned via codex-agent-verify.ps1
+2026-03-25 | TEF-008 | docs/TOOL-ERROR-REGISTRY.md | edit_file injected "File:" header again while updating TEF-001 description | cleaned via codex-agent-verify.ps1
+2026-03-25 | TEF-001 | docs/CurrentPlan.md | edit_file dropped # Current Plan heading from line 1 during section insertion | recovered via snap restore + create_file rewrite
+2026-03-25 | TEF-001 | docs/CurrentPlan.md | edit_file duplicated "What Remains" and "Process" sections instead of inserting before them | recovered via snap restore + create_file rewrite
 2026-03-25 | TEF-008 | docs/TOOL-ERROR-REGISTRY.md | edit_file injected "File:" header and code fence as lines 1-2 | rewrote via create_file
 2026-03-25 | TEF-001 | .github/copilot-instructions.md | edit_file dropped # heading on line 1 | recovered via snap restore
 2026-03-25 | TEF-002 | .github/copilot-instructions.md | 3 consecutive "no edits produced" on trivial line-1 insert | switched to create_file
@@ -123,17 +129,17 @@ Format: `DATE | ERROR-CLASS | FILE | DESCRIPTION | OUTCOME`
 
 | Error Class | Total | Last 7 days | Severity |
 |-------------|-------|-------------|----------|
-| TEF-001 edit_file drops lines | 1 | 1 | HIGH |
+| TEF-001 edit_file drops lines | 3 | 3 | HIGH |
 | TEF-002 edit_file no edits | 3 | 3 | MEDIUM |
 | TEF-003 get_file hides headings | 1 | 1 | MEDIUM |
 | TEF-004 terminal encoding | 1 | 1 | HIGH |
 | TEF-005 else/then swap | 2+ | 0 | CRITICAL |
 | TEF-006 boundary truncation | 1 | 1 | LOW |
 | TEF-007 terminal multi-line | 1 | 1 | HIGH |
-| TEF-008 edit_file injects metadata | 1 | 1 | HIGH |
+| TEF-008 edit_file injects metadata | 3 | 3 | HIGH |
 
-**Total tool failures this session**: 9
-**Files requiring recovery**: 2
+**Total tool failures logged**: 13
+**Files requiring recovery**: 3
 **Recovery method**: snap restore + create_file rewrite
 
 ---
