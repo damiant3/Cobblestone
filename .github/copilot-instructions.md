@@ -1,6 +1,6 @@
 # Copilot Instructions for Codex
 
-> Single file — VS Copilot only reads `.github/copilot-instructions.md`.
+> Single file - VS Copilot only reads `.github/copilot-instructions.md`.
 > Keep this lean. Every char here is burned on every prompt.
 
 ## Repository Identity
@@ -19,7 +19,7 @@ Codex is a self-hosting programming language compiler (written in Codex, compile
 C# bootstrap (.NET 8) is locked. Solution: `Codex.sln`. Pipeline:
 
 ```
-Source (.codex) → Lexer → Parser → Desugarer → NameResolver → TypeChecker → Lowering → Emitter
+Source (.codex)  Lexer  Parser  Desugarer  NameResolver  TypeChecker  Lowering  Emitter
 ```
 
 15 backends (12 transpilation + IL + RISC-V + ARM64 + x86-64 + WASM + bare metal).
@@ -61,12 +61,12 @@ The Codex project began ~**2026-03-13**. Any earlier date in project docs is wro
 
 ---
 
-## Agent Toolkit — codex-agent
+## Agent Toolkit - codex-agent
 
 **Use this for all file ops.** It's a Codex-compiled .exe in `tools/codex-agent/`.
 
 ```
-dotnet tools/codex-agent/codex-agent.exe <command> [args]
+tools/codex-agent/codex-agent.exe <command> [args]
 ```
 
 | Command | What it does |
@@ -80,7 +80,7 @@ dotnet tools/codex-agent/codex-agent.exe <command> [args]
 | `plan add <task>` | Stash a task (survives context loss) |
 | `plan` / `plan show` | Show current task list |
 | `plan clear` | Clear task list |
-| `check` | Cognitive load estimate — hot-path sizes vs budget |
+| `check` | Cognitive load estimate - hot-path sizes vs budget |
 | `doctor` | Known conditions & diagnostics briefing (run at session start) |
 | `handoff [show]` | Show current handoff state machine status |
 | `handoff push <summary>` | Create/update handoff, auto-commits `.handoff`, requests review |
@@ -91,23 +91,23 @@ dotnet tools/codex-agent/codex-agent.exe <command> [args]
 | `handoff abandon` | Abandon handoff |
 | `log <message>` | Append to persistent session log (decisions, errors, notes) |
 | `recall [n]` | Show last N session log entries (default 10) |
-| `build` | `dotnet build Codex.sln` — stores full log, prints compact summary |
-| `test [filter]` | `dotnet test Codex.sln` — stores full log, prints compact summary |
+| `build` | `dotnet build Codex.sln` - stores full log, prints compact summary |
+| `test [filter]` | `dotnet test Codex.sln` - stores full log, prints compact summary |
 
 ### Session Start
 
 ```powershell
-dotnet tools/codex-agent/codex-agent.exe init
+tools/codex-agent/codex-agent.exe init
 ```
 
-Runs: doctor → check → status → handoff → TEF-008 sweep → git log → git branches.
+Runs: doctor  check  status  handoff  TEF-008 sweep  git log  git branches.
 All in one call. No steps to forget.
 
 Key doc locations (memorize, don't search):
-- `docs/TOOL-ERROR-REGISTRY.md` — tool failure log
-- `docs/KNOWN-CONDITIONS.md` — pre-existing issues
-- `docs/CurrentPlan.md` — current plan and status
-- `docs/ToDo/CSharpCleanup.md` — style audit tracker
+- `docs/TOOL-ERROR-REGISTRY.md` - tool failure log
+- `docs/KNOWN-CONDITIONS.md` - pre-existing issues
+- `docs/CurrentPlan.md` - current plan and status
+- `docs/ToDo/CSharpCleanup.md` - style audit tracker
 
 On first session or after context loss, also orient:
 ```powershell
@@ -118,11 +118,11 @@ git -C D:\Projects\NewRepository branch -r           # outstanding branches
 ### Before Editing Any File
 
 ```powershell
-dotnet tools/codex-agent/codex-agent.exe stat <file>
-dotnet tools/codex-agent/codex-agent.exe peek <file> 1 30
-dotnet tools/codex-agent/codex-agent.exe snap save <file>
+tools/codex-agent/codex-agent.exe stat <file>
+tools/codex-agent/codex-agent.exe peek <file> 1 30
+tools/codex-agent/codex-agent.exe snap save <file>
 # ... make edit ...
-dotnet tools/codex-agent/codex-agent.exe snap diff <file>
+tools/codex-agent/codex-agent.exe snap diff <file>
 ```
 
 ---
@@ -159,7 +159,7 @@ dotnet tools/codex-agent/codex-agent.exe snap diff <file>
 These are implicit (don't add them): `System`, `System.Collections.Generic`, `System.Linq`,
 `System.IO`, `System.Net.Http`, `System.Threading`, `System.Threading.Tasks`.
 
-`System.Collections.Immutable` is **NOT** implicit — add only when needed.
+`System.Collections.Immutable` is **NOT** implicit - add only when needed.
 
 ### Formatting
 
@@ -178,22 +178,36 @@ These are implicit (don't add them): `System`, `System.Collections.Generic`, `Sy
 
 ## File Editing Rules
 
-**All files, any size.** `edit_file` has documented failure modes on files of every
-size (see `docs/TOOL-ERROR-REGISTRY.md`). Required workflow:
+**Edits without snapshots produce unrecoverable corruption.** This is not a
+theoretical risk. On 2026-03-25, `edit_file` silently deleted ~100 lines from a
+source file. No snapshot existed. The user had to `git undo` the entire session.
+The agent could not even detect the damage because it verified with `get_file`
+(which hides content) instead of `peek`. See TEF-009 in `docs/TOOL-ERROR-REGISTRY.md`.
 
-1. `codex-agent snap save <file>`
-2. Make the edit (try `edit_file` for small surgical changes to `.cs` files only).
-3. `pwsh -File tools/codex-agent-verify.ps1 <file>` — auto-strips tool pollution.
-4. `codex-agent peek <file> 1 10` to verify (NOT `get_file` — it hides headings).
+The native editing tools (`edit_file`, `get_file`, `create_file`) have 8 documented
+failure modes that corrupt files silently. The workflow below exists because every
+shortcut has been tried and has destroyed work. Bulk tasks (many files) do not
+exempt you from per-file verification - they make verification more important,
+because one silent corruption in 40 files is invisible without `snap diff`.
+
+**Writing a script to update many files is fine.** Skipping `snap save` is not.
+Skipping `peek` verification is not. Using `get_file` instead of `peek` is not.
+
+### Per-file workflow (every file, every time)
+
+1. `codex-agent snap save <file>` - **non-negotiable, do this first**
+2. Make the edit (`edit_file` for small surgical `.cs` changes only).
+3. `pwsh -File tools/codex-agent-verify.ps1 <file>` - auto-strips tool pollution.
+4. `codex-agent peek <file> 1 10` to verify (NOT `get_file` - it hides headings).
 5. `codex-agent snap diff <file>` to confirm delta.
 6. If anything looks wrong: `codex-agent snap restore <file>` and switch to the safe path.
 
-**Safe path** (use when `edit_file` fails, or for any markdown/`.codex`/config file):
+### Safe path (use when `edit_file` fails, or for any markdown/`.codex`/config file)
 
 1. `codex-agent snap save <file>`
 2. `create_file` to `<filename>.new` with complete content.
 3. `Copy-Item <filename>.new <filename> -Force`
-4. `pwsh -File tools/codex-agent-verify.ps1 <filename>` — auto-strips tool pollution.
+4. `pwsh -File tools/codex-agent-verify.ps1 <filename>` - auto-strips tool pollution.
 5. `codex-agent peek <file> 1 10` to verify.
 6. `codex-agent snap diff <file>` to confirm only intended changes.
 7. If build fails: `snap restore`, inspect, retry.
@@ -206,7 +220,7 @@ file (e.g., `Foo.Bar.cs`) with `partial class`. Merge when stable.
 
 - Never print a full file as a code block for the user to paste.
 - Never use terminal redirects (`>`, `Set-Content`) when file tools are available.
-- Never retry a failed edit approach — switch strategies.
+- Never retry a failed edit approach - switch strategies.
 
 ---
 
@@ -215,11 +229,11 @@ file (e.g., `Foo.Bar.cs`) with `partial class`. Merge when stable.
 Every task touching source code must end with a green build.
 
 ```powershell
-dotnet tools/codex-agent/codex-agent.exe build
-dotnet tools/codex-agent/codex-agent.exe test
+tools/codex-agent/codex-agent.exe build
+tools/codex-agent/codex-agent.exe test
 ```
 
-`TreatWarningsAsErrors` is on — unused fields, variables, parameters, and redundant
+`TreatWarningsAsErrors` is on - unused fields, variables, parameters, and redundant
 usings are all build failures.
 
 ### Quick Checklist
@@ -227,7 +241,7 @@ usings are all build failures.
 - [ ] Build passes (zero warnings)
 - [ ] Tests pass
 - [ ] `m_` prefix on private instance fields, `s_` prefix on private static fields
-- [ ] No `var` — always explicit types
+- [ ] No `var` - always explicit types
 - [ ] No XML doc comments
 - [ ] No dead code
 
@@ -249,7 +263,7 @@ usings are all build failures.
 
 ## Project Structure (quick ref)
 
-Dependencies flow one way: `Core → Syntax → Ast → Semantics → Types → IR → Emit → Emit.* → Cli`
+Dependencies flow one way: `Core  Syntax  Ast  Semantics  Types  IR  Emit  Emit.*  Cli`
 
 `Codex.Core` has zero project deps (root). `Codex.Cli` references everything (composition root).
 
@@ -268,9 +282,9 @@ Use Conventional Commits: `feat:`, `fix:`, `docs:`, `test:`, `chore:`, `refactor
 
 When reviewing other agents' branches:
 1. `git fetch --all`
-2. `git branch -r --merged origin/master` — delete these (cleanup)
-3. `git branch -r --no-merged origin/master` — review these
-4. `git diff --stat origin/master..origin/<branch>` — scope the change
+2. `git branch -r --merged origin/master` - delete these (cleanup)
+3. `git branch -r --no-merged origin/master` - review these
+4. `git diff --stat origin/master..origin/<branch>` - scope the change
 5. Build + test on master after merge
 
 ---
