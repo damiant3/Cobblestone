@@ -1160,6 +1160,156 @@ public class ProposalWorkflowTests : IDisposable
     }
 }
 
+public class NetworkSyncTests : IDisposable
+{
+    readonly string m_tempDirA;
+    readonly string m_tempDirB;
+    readonly FactStore m_storeA;
+    readonly FactStore m_storeB;
+
+    public NetworkSyncTests()
+    {
+        m_tempDirA = Path.Combine(Path.GetTempPath(), "codex_net_a_" + Guid.NewGuid().ToString("N")[..8]);
+        m_tempDirB = Path.Combine(Path.GetTempPath(), "codex_net_b_" + Guid.NewGuid().ToString("N")[..8]);
+        m_storeA = FactStore.Init(m_tempDirA);
+        m_storeB = FactStore.Init(m_tempDirB);
+    }
+
+    public void Dispose()
+    {
+        try { Directory.Delete(m_tempDirA, true); } catch { }
+        try { Directory.Delete(m_tempDirB, true); } catch { }
+    }
+
+    [Fact]
+    public void AddPeer_and_ListPeers_roundtrip()
+    {
+        m_storeA.AddPeer("http://localhost:9999/", "store-b");
+        IReadOnlyList<Peer> peers = m_storeA.ListPeers();
+        Assert.Single(peers);
+        Assert.Equal("http://localhost:9999", peers[0].Url);
+        Assert.Equal("store-b", peers[0].Name);
+    }
+
+    [Fact]
+    public void AddPeer_deduplicates()
+    {
+        m_storeA.AddPeer("http://localhost:9999", "b1");
+        m_storeA.AddPeer("http://localhost:9999", "b2");
+        Assert.Single(m_storeA.ListPeers());
+    }
+
+    [Fact]
+    public void RemovePeer_removes()
+    {
+        m_storeA.AddPeer("http://localhost:9999", "b");
+        m_storeA.RemovePeer("http://localhost:9999");
+        Assert.Empty(m_storeA.ListPeers());
+    }
+
+    [Fact]
+    public async Task Network_sync_exchanges_facts()
+    {
+        Fact defA = Fact.CreateDefinition("a = 1", "alice", "init");
+        m_storeA.Store(defA);
+
+        Fact defB = Fact.CreateDefinition("b = 2", "bob", "init");
+        m_storeB.Store(defB);
+
+        string prefix = $"http://localhost:{50000 + Random.Shared.Next(10000)}/";
+        System.Net.HttpListener listener = m_storeB.StartFactServer(prefix);
+
+        try
+        {
+            using HttpClient client = new();
+            NetworkSyncResult result = await m_storeA.SyncWithPeer(client, prefix.TrimEnd('/'));
+
+            Assert.True(result.Received > 0, $"Expected to receive facts. Errors: {string.Join(", ", result.Errors)}");
+            Assert.True(result.Sent > 0, $"Expected to send facts. Errors: {string.Join(", ", result.Errors)}");
+
+            Fact? loaded = m_storeA.Load(defB.Hash);
+            Assert.NotNull(loaded);
+            Assert.Equal("b = 2", loaded.Content);
+
+            Fact? loadedB = m_storeB.Load(defA.Hash);
+            Assert.NotNull(loadedB);
+            Assert.Equal("a = 1", loadedB.Content);
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Network_sync_no_duplicates()
+    {
+        Fact def = Fact.CreateDefinition("shared = 42", "alice", "init");
+        m_storeA.Store(def);
+        m_storeB.Store(def);
+
+        string prefix = $"http://localhost:{50000 + Random.Shared.Next(10000)}/";
+        System.Net.HttpListener listener = m_storeB.StartFactServer(prefix);
+
+        try
+        {
+            using HttpClient client = new();
+            NetworkSyncResult result = await m_storeA.SyncWithPeer(client, prefix.TrimEnd('/'));
+
+            Assert.Equal(0, result.Received);
+            Assert.Equal(0, result.Sent);
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Fetch_single_fact_from_peer()
+    {
+        Fact def = Fact.CreateDefinition("remote-fn x = x", "alice", "init");
+        m_storeB.Store(def);
+
+        string prefix = $"http://localhost:{50000 + Random.Shared.Next(10000)}/";
+        System.Net.HttpListener listener = m_storeB.StartFactServer(prefix);
+
+        try
+        {
+            using HttpClient client = new();
+            Fact? fetched = await m_storeA.FetchFactFromPeer(client, prefix.TrimEnd('/'), def.Hash);
+
+            Assert.NotNull(fetched);
+            Assert.Equal(def.Hash, fetched.Hash);
+            Assert.Equal("remote-fn x = x", fetched.Content);
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Fetch_missing_fact_returns_null()
+    {
+        string prefix = $"http://localhost:{50000 + Random.Shared.Next(10000)}/";
+        System.Net.HttpListener listener = m_storeB.StartFactServer(prefix);
+
+        try
+        {
+            using HttpClient client = new();
+            ContentHash fakeHash = ContentHash.Of("does-not-exist");
+            Fact? fetched = await m_storeA.FetchFactFromPeer(client, prefix.TrimEnd('/'), fakeHash);
+
+            Assert.Null(fetched);
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+}
+
 public class ProofFactTests : IDisposable
 {
     readonly string m_tempDir;
