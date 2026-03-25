@@ -1107,11 +1107,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
                 {
                     if (m_target == X86_64Target.BareMetal)
                     {
-                        // Bare metal: return embedded test source from rodata
+                        // Bare metal: read source from serial (COM1) until EOT/null
                         EmitExpr(args[0]); // evaluate path (ignored)
-                        int srcOffset = AddRodataString("main : Integer\nmain = 42\n");
+                        EmitCallTo("__bare_metal_read_serial");
                         byte rd = AllocTemp();
-                        EmitLoadRodataAddress(rd, srcOffset);
+                        X86_64Encoder.MovRR(m_text, rd, Reg.RAX);
                         return rd;
                     }
                     byte path = EmitExpr(args[0]);
@@ -1935,6 +1935,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         EmitTextToIntHelper();
         EmitReadFileHelper();
         EmitReadLineHelper();
+        if (m_target == X86_64Target.BareMetal)
+            EmitBareMetalReadSerialHelper();
         EmitListConsHelper();
         EmitListAppendHelper();
         EmitStrReplaceHelper();
@@ -2635,6 +2637,74 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.AddRR(m_text, HeapReg, Reg.RAX);
         X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RBX);
 
+        X86_64Encoder.PopR(m_text, Reg.RBX);
+        X86_64Encoder.Ret(m_text);
+    }
+
+    void EmitBareMetalReadSerialHelper()
+    {
+        // __bare_metal_read_serial: → rax=string ptr (reads COM1 until \x04 EOT)
+        // Returns a length-prefixed string on heap: [len:8][data...]
+        m_functionOffsets["__bare_metal_read_serial"] = m_text.Count;
+
+        X86_64Encoder.PushR(m_text, Reg.RBX);
+        X86_64Encoder.PushR(m_text, Reg.RCX);
+
+        X86_64Encoder.MovRR(m_text, Reg.RBX, HeapReg); // RBX = buffer start
+        X86_64Encoder.Li(m_text, Reg.RCX, 0);           // RCX = byte count
+
+        // Read loop: poll COM1, read byte, check for EOT
+        int readLoop = m_text.Count;
+
+        // Poll: check LSR bit 0 (data ready)
+        int pollLoop = m_text.Count;
+        X86_64Encoder.Li(m_text, Reg.RDX, 0x3FD);       // line status register
+        X86_64Encoder.InAlDx(m_text);                     // AL = status
+        X86_64Encoder.Li(m_text, Reg.R11, 1);
+        X86_64Encoder.AndRR(m_text, Reg.RAX, Reg.R11);
+        X86_64Encoder.TestRR(m_text, Reg.RAX, Reg.RAX);
+        int dataReady = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+        X86_64Encoder.Hlt(m_text);                        // wait for interrupt
+        X86_64Encoder.Jmp(m_text, pollLoop - (m_text.Count + 5));
+        PatchJcc(dataReady, m_text.Count);
+
+        // Read byte from COM1
+        X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+        X86_64Encoder.InAlDx(m_text);                     // AL = byte
+
+        // Check for EOT (\x04) — end of source
+        X86_64Encoder.CmpRI(m_text, Reg.RAX, 0x04);
+        int gotEot = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
+
+        // Also check for \0 as alternate terminator
+        X86_64Encoder.TestRR(m_text, Reg.RAX, Reg.RAX);
+        int gotNull = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
+
+        // Store byte: buffer[8 + count]
+        X86_64Encoder.MovRR(m_text, Reg.RSI, Reg.RBX);
+        X86_64Encoder.AddRR(m_text, Reg.RSI, Reg.RCX);
+        X86_64Encoder.AddRI(m_text, Reg.RSI, 8);
+        m_text.Add(0x88); m_text.Add(0x06); // mov [rsi], al
+
+        X86_64Encoder.AddRI(m_text, Reg.RCX, 1);
+        X86_64Encoder.Jmp(m_text, readLoop - (m_text.Count + 5));
+
+        // Done: store length, bump heap, return
+        PatchJcc(gotEot, m_text.Count);
+        PatchJcc(gotNull, m_text.Count);
+
+        X86_64Encoder.MovStore(m_text, Reg.RBX, Reg.RCX, 0); // [buf+0] = length
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RCX);
+        X86_64Encoder.AddRI(m_text, Reg.RAX, 15);
+        X86_64Encoder.AndRI(m_text, Reg.RAX, -8);
+        X86_64Encoder.AddRI(m_text, Reg.RAX, 8);             // total = 8 + align8(len)
+        X86_64Encoder.AddRR(m_text, HeapReg, Reg.RAX);        // bump heap
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RBX);        // return buffer ptr
+
+        X86_64Encoder.PopR(m_text, Reg.RCX);
         X86_64Encoder.PopR(m_text, Reg.RBX);
         X86_64Encoder.Ret(m_text);
     }
