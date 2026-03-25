@@ -1,5 +1,3 @@
-File: docs\ToDo\CSharpCleanup.md
-````````markdown
 # C# Style Cleanup Audit
 
 **Date:** 2026-03-25
