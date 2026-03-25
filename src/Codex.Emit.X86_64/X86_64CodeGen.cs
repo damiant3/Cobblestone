@@ -55,9 +55,12 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
         EmitEscapeCopyHelpers();
 
-        // Bare metal: emit ISR stubs (must be before EmitStart so addresses are known)
+        // Bare metal: emit ISR stubs and process 1 entry function
         if (m_target == X86_64Target.BareMetal)
+        {
             EmitIsrStubsAndIdt();
+            EmitProcess1Entry(); // records m_process1EntryOffset
+        }
         EmitStart(module);
         PatchCalls();
         PatchRodataRefs();
@@ -2771,13 +2774,15 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // mov dword [0x2000], 0x3003
         m_text.AddRange([0xC7, 0x05, 0x00, 0x20, 0x00, 0x00, 0x03, 0x30, 0x00, 0x00]);
 
-        // ── Set up PD[0] → 2MB huge page at 0x0 ──
-        // mov dword [0x3000], 0x83 (present + writable + huge)
+        // ── Set up PD entries: 4 x 2MB huge pages (0-8MB identity mapped) ──
+        // PD[0] → 0x000000 (present + writable + huge = 0x83)
         m_text.AddRange([0xC7, 0x05, 0x00, 0x30, 0x00, 0x00, 0x83, 0x00, 0x00, 0x00]);
-
-        // ── Set up PD[1] → 2MB huge page at 0x200000 ──
-        // mov dword [0x3008], 0x200083
+        // PD[1] → 0x200000
         m_text.AddRange([0xC7, 0x05, 0x08, 0x30, 0x00, 0x00, 0x83, 0x00, 0x20, 0x00]);
+        // PD[2] → 0x400000
+        m_text.AddRange([0xC7, 0x05, 0x10, 0x30, 0x00, 0x00, 0x83, 0x00, 0x40, 0x00]);
+        // PD[3] → 0x600000
+        m_text.AddRange([0xC7, 0x05, 0x18, 0x30, 0x00, 0x00, 0x83, 0x00, 0x60, 0x00]);
 
         // ── Load PML4 into CR3 ──
         // mov eax, 0x1000
@@ -2948,8 +2953,16 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.Li(m_text, Reg.RAX, 0);
         X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
 
-        // Create process 0: the kernel itself (runs in Ring 0 with boot page tables)
-        EmitCreateProcess(0, 0x1000 /* boot CR3 */, 0x200000 /* heap base */);
+        // Build process 0 page tables at 0x8000 (maps kernel + 0x400000 user heap)
+        EmitBuildProcessPageTables(0, 0x8000, 0x400000);
+        EmitCreateProcess(0, 0x8000 /* process 0 CR3 */, 0x400000 /* heap base */);
+
+        // Switch to process 0's page tables
+        X86_64Encoder.Li(m_text, Reg.RAX, 0x8000);
+        m_text.Add(0x0F); m_text.Add(0x22); m_text.Add(0xD8); // mov cr3, rax
+
+        // Update kernel heap pointer to process 0's private heap
+        X86_64Encoder.Li(m_text, HeapReg, 0x400000);
     }
 
     void EmitCreateProcess(int procIndex, long cr3, long heapBase)
@@ -3049,6 +3062,148 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
         // Load new process's HeapReg
         X86_64Encoder.MovLoad(m_text, HeapReg, Reg.RAX, 48);
+    }
+
+    int m_process1EntryOffset = -1; // patched after __proc1_entry is emitted
+
+    void EmitBuildProcessPageTables(int procIndex, long pml4Addr, long userHeapPhys)
+    {
+        // Build a per-process page table set:
+        //   PML4 at pml4Addr
+        //   PDPT at pml4Addr + 0x1000
+        //   PD   at pml4Addr + 0x2000
+        //
+        // Maps:
+        //   PD[0] → 0x000000 (2MB, kernel low memory: IDT, proc table, etc.)
+        //   PD[1] → 0x200000 (2MB, kernel heap — shared read-only in future)
+        //   PD[N] → userHeapPhys (2MB, this process's private heap)
+        //
+        // All entries use 2MB huge pages (PS bit = 0x80).
+
+        long pdptAddr = pml4Addr + 0x1000;
+        long pdAddr = pml4Addr + 0x2000;
+
+        // Zero all three pages (3 * 4096 / 8 = 1536 qwords)
+        X86_64Encoder.Li(m_text, Reg.RDI, pml4Addr);
+        X86_64Encoder.Li(m_text, Reg.RCX, 1536);
+        X86_64Encoder.Li(m_text, Reg.RAX, 0);
+        m_text.Add(0x48); m_text.Add(0xF3); m_text.Add(0xAB); // rep stosq
+
+        // PML4[0] → PDPT (present + writable = 0x03)
+        X86_64Encoder.Li(m_text, Reg.RDI, pml4Addr);
+        X86_64Encoder.Li(m_text, Reg.RAX, pdptAddr | 0x03);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+
+        // PDPT[0] → PD (present + writable = 0x03)
+        X86_64Encoder.Li(m_text, Reg.RDI, pdptAddr);
+        X86_64Encoder.Li(m_text, Reg.RAX, pdAddr | 0x03);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+
+        // PD[0] → 0x000000 (2MB, present + writable + huge = 0x83)
+        X86_64Encoder.Li(m_text, Reg.RDI, pdAddr);
+        X86_64Encoder.Li(m_text, Reg.RAX, 0x000000 | 0x83);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+
+        // PD[1] → 0x200000 (2MB kernel heap, shared)
+        X86_64Encoder.Li(m_text, Reg.RAX, 0x200000 | 0x83);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 8);
+
+        // Map the process's private user heap:
+        // userHeapPhys is the physical 2MB page for this process
+        // Map it at its identity-mapped address (PD entry = phys / 0x200000)
+        int pdIndex = (int)(userHeapPhys / 0x200000);
+        X86_64Encoder.Li(m_text, Reg.RAX, userHeapPhys | 0x83);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, pdIndex * 8);
+
+        // Also map PD[0x80] = the kernel code region at 0x100000
+        // (already covered by PD[0] which maps 0x0-0x1FFFFF)
+    }
+
+    void EmitProcess1Setup()
+    {
+        // Process 1 runs __proc1_entry (emitted after all functions).
+        // Same page tables as kernel (CR3 = 0x1000).
+        // Own stack at 0x70000 (grows down, below kernel stack at 0x80000).
+        // Own heap at 0x300000.
+
+        const long proc1Stack = 0x70000;
+        const long proc1Heap = 0x600000;
+
+        // Build process 1 page tables at 0xB000 (maps kernel + 0x600000 user heap)
+        EmitBuildProcessPageTables(1, 0xB000, proc1Heap);
+        EmitCreateProcess(1, 0xB000 /* process 1 CR3 */, proc1Heap);
+
+        // Build a fake interrupt frame on process 1's stack so the first
+        // context switch can "iretq" into it.
+        // Stack layout (growing down from proc1Stack):
+        //   [RSP+32] SS     = 0x10 (kernel data segment)
+        //   [RSP+24] RSP    = proc1Stack (will be the running RSP)
+        //   [RSP+16] RFLAGS = 0x202 (IF=1, reserved bit 1 = 1)
+        //   [RSP+8]  CS     = 0x08 (kernel code segment)
+        //   [RSP+0]  RIP    = __proc1_entry (patched later)
+        // Then our saved registers: RDI, RSI, RDX, RCX, RAX (5 words)
+        // Total: 10 words = 80 bytes
+
+        long frameBase = proc1Stack - 80;
+
+        // Write SS
+        X86_64Encoder.Li(m_text, Reg.RDI, frameBase + 72);
+        X86_64Encoder.Li(m_text, Reg.RAX, 0x10);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+
+        // Write RSP
+        X86_64Encoder.Li(m_text, Reg.RDI, frameBase + 64);
+        X86_64Encoder.Li(m_text, Reg.RAX, proc1Stack);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+
+        // Write RFLAGS (IF=1)
+        X86_64Encoder.Li(m_text, Reg.RDI, frameBase + 56);
+        X86_64Encoder.Li(m_text, Reg.RAX, 0x202);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+
+        // Write CS
+        X86_64Encoder.Li(m_text, Reg.RDI, frameBase + 48);
+        X86_64Encoder.Li(m_text, Reg.RAX, 0x08);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+
+        // Write RIP = __proc1_entry (already emitted, address known)
+        long proc1Vaddr = 0x100000 + m_process1EntryOffset;
+        X86_64Encoder.Li(m_text, Reg.RDI, frameBase + 40);
+        X86_64Encoder.Li(m_text, Reg.RAX, proc1Vaddr);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+
+        // Write saved registers (all zero)
+        X86_64Encoder.Li(m_text, Reg.RAX, 0);
+        for (int i = 0; i < 5; i++)
+        {
+            X86_64Encoder.Li(m_text, Reg.RDI, frameBase + i * 8);
+            X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+        }
+
+        // Set process 1's saved RSP to point to the fake frame
+        long proc1Entry = ProcTableBase + 1 * ProcEntrySize;
+        X86_64Encoder.Li(m_text, Reg.RDI, proc1Entry + 8); // rsp field
+        X86_64Encoder.Li(m_text, Reg.RAX, frameBase);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+    }
+
+    void EmitProcess1Entry()
+    {
+        // A simple process that loops printing "B" to serial
+        m_process1EntryOffset = m_text.Count;
+
+        // Set up this process's heap pointer
+        X86_64Encoder.Li(m_text, HeapReg, 0x600000);
+
+        // Infinite loop: print "B" to serial, then hlt (wait for timer)
+        int loopTop = m_text.Count;
+        X86_64Encoder.Li(m_text, Reg.RAX, 'B');
+        X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+        X86_64Encoder.OutDxAl(m_text);
+
+        // Halt and wait for timer interrupt (which will switch away from us)
+        X86_64Encoder.Hlt(m_text);
+        X86_64Encoder.Jmp(m_text, loopTop - (m_text.Count + 5));
     }
 
     // ── Interrupt Handling (Ring 1) ──────────────────────────────
@@ -3217,13 +3372,41 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         int notTimer = m_text.Count;
         X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
 
-        // ── Timer handler: increment tick counter ──
+        // ── Timer handler: increment tick counter + context switch ──
         X86_64Encoder.Li(m_text, Reg.RDI, TickCountAddr);
         X86_64Encoder.MovLoad(m_text, Reg.RSI, Reg.RDI, 0);
         X86_64Encoder.AddRI(m_text, Reg.RSI, 1);
         X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RSI, 0);
-        int doneTimer = m_text.Count;
-        X86_64Encoder.Jmp(m_text, 0); // jump to EOI
+
+        // Send EOI early (before potential stack switch)
+        EmitOutByte(0x20, 0x20);
+
+        // Context switch if more than one active process
+        // Check proc_table[1].state != 0 (any second process exists)
+        X86_64Encoder.Li(m_text, Reg.RDI, ProcTableBase + ProcEntrySize);
+        X86_64Encoder.MovLoad(m_text, Reg.RDI, Reg.RDI, 0);
+        X86_64Encoder.CmpRI(m_text, Reg.RDI, 0);
+        int skipCtxSwitch = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0); // skip if no second process
+
+        // Do context switch — this changes RSP to next process's saved frame
+        EmitContextSwitch();
+
+        PatchJcc(skipCtxSwitch, m_text.Count);
+
+        // Restore registers and iretq — works for BOTH paths:
+        // - No switch: RSP still points to current process's saved regs
+        // - Switch: RSP now points to next process's saved regs
+        X86_64Encoder.PopR(m_text, Reg.RDI);
+        X86_64Encoder.PopR(m_text, Reg.RSI);
+        X86_64Encoder.PopR(m_text, Reg.RDX);
+        X86_64Encoder.PopR(m_text, Reg.RCX);
+        X86_64Encoder.PopR(m_text, Reg.RAX);
+        X86_64Encoder.Iretq(m_text);
+
+        // Timer is fully handled above — skip the normal EOI path
+        int doneTimer = m_text.Count; // not used, but needed for the jmp below
+        // (fall through to notTimer which will jmp to EOI for other vectors)
 
         // ── Not timer ──
         PatchJcc(notTimer, m_text.Count);
@@ -3243,9 +3426,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // ── Not keyboard (fall through to EOI) ──
         PatchJcc(notKeyboard, m_text.Count);
 
-        // ── Send EOI to PIC ──
-        int eoiAddr = m_text.Count;
-        PatchJmp(doneTimer, eoiAddr);
+        // ── Send EOI to PIC (for non-timer interrupts) ──
         EmitOutByte(0x20, 0x20); // EOI to PIC1
 
         // Restore registers
@@ -3311,8 +3492,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             // Set up heap at 0x200000 (2MB — above identity-mapped pages)
             X86_64Encoder.Li(m_text, HeapReg, 0x200000);
 
-            // Initialize process table
+            // Initialize process table and create process 1
+            // (process 1 entry code already emitted in EmitModule)
             EmitProcessSetup();
+            EmitProcess1Setup();
 
             // Build IDT, load IDTR, init PIC, enable interrupts
             EmitIdtEntries();
@@ -3371,9 +3554,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // Exit
         if (m_target == X86_64Target.BareMetal)
         {
-            // Bare metal: halt
-            X86_64Encoder.Cli(m_text);
+            // Bare metal: loop printing "A" and halting (timer wakes us)
             int hltLoop = m_text.Count;
+            X86_64Encoder.Li(m_text, Reg.RAX, 'A');
+            X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+            X86_64Encoder.OutDxAl(m_text);
             X86_64Encoder.Hlt(m_text);
             X86_64Encoder.Jmp(m_text, hltLoop - (m_text.Count + 5));
         }
