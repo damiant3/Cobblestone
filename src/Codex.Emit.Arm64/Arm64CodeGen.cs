@@ -1114,12 +1114,12 @@ sealed class Arm64CodeGen
                 Emit(Arm64Encoder.Sub(Arm64Reg.X11, Arm64Reg.X9, Arm64Reg.X10));
                 Emit(Arm64Encoder.CmpImm(Arm64Reg.X11, 26));
                 // X12 = 1 if < 26 (unsigned), else 0
-                m_instructions.Add(0x9A9F37E0u | Arm64Reg.X12); // CSINC X12, XZR, XZR, CC (carry clear = unsigned <)
+                m_instructions.Add(0x9A9F27E0u | Arm64Reg.X12); // CSINC X12, XZR, XZR, CS (carry set = unsigned <)
                 // Check uppercase A-Z
                 foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 'A')) Emit(insn);
                 Emit(Arm64Encoder.Sub(Arm64Reg.X11, Arm64Reg.X9, Arm64Reg.X10));
                 Emit(Arm64Encoder.CmpImm(Arm64Reg.X11, 26));
-                m_instructions.Add(0x9A9F37E0u | Arm64Reg.X13); // CSINC X13, XZR, XZR, CC
+                m_instructions.Add(0x9A9F27E0u | Arm64Reg.X13); // CSINC X13, XZR, XZR, CS
                 Emit(Arm64Encoder.Or(Arm64Reg.X0, Arm64Reg.X12, Arm64Reg.X13));
                 return true;
             }
@@ -1131,7 +1131,7 @@ sealed class Arm64CodeGen
                 foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, '0')) Emit(insn);
                 Emit(Arm64Encoder.Sub(Arm64Reg.X11, Arm64Reg.X9, Arm64Reg.X10));
                 Emit(Arm64Encoder.CmpImm(Arm64Reg.X11, 10));
-                m_instructions.Add(0x9A9F37E0u | Arm64Reg.X0); // CSINC X0, XZR, XZR, CC
+                m_instructions.Add(0x9A9F27E0u | Arm64Reg.X0); // CSINC X0, XZR, XZR, CS (carry set = unsigned <)
                 return true;
             }
 
