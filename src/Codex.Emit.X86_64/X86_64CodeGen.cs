@@ -1379,6 +1379,50 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
                 X86_64Encoder.MovzxByteSelf(m_text, result);
                 return result;
             }
+            case "is-digit" when args.Count >= 1:
+            {
+                byte textReg = EmitExpr(args[0]);
+                byte rd = AllocTemp();
+                X86_64Encoder.MovzxByte(m_text, rd, textReg, 8);
+                X86_64Encoder.SubRI(m_text, rd, '0');
+                X86_64Encoder.CmpRI(m_text, rd, '9' - '0');
+                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_LE, rd);
+                X86_64Encoder.MovzxByteSelf(m_text, rd);
+                return rd;
+            }
+            case "is-whitespace" when args.Count >= 1:
+            {
+                byte textReg = EmitExpr(args[0]);
+                byte rd = AllocTemp();
+                X86_64Encoder.MovzxByte(m_text, rd, textReg, 8);
+                // space=32, tab=9, newline=10, carriage-return=13
+                byte result = AllocTemp();
+                X86_64Encoder.Li(m_text, result, 0);
+                X86_64Encoder.CmpRI(m_text, rd, ' ');
+                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_E, result);
+                byte t2 = AllocTemp();
+                X86_64Encoder.CmpRI(m_text, rd, '\t');
+                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_E, t2);
+                X86_64Encoder.AddRR(m_text, result, t2);
+                X86_64Encoder.CmpRI(m_text, rd, '\n');
+                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_E, t2);
+                X86_64Encoder.AddRR(m_text, result, t2);
+                X86_64Encoder.CmpRI(m_text, rd, '\r');
+                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_E, t2);
+                X86_64Encoder.AddRR(m_text, result, t2);
+                X86_64Encoder.CmpRI(m_text, result, 0);
+                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_NE, result);
+                X86_64Encoder.MovzxByteSelf(m_text, result);
+                return result;
+            }
+            case "negate" when args.Count >= 1:
+            {
+                byte val = EmitExpr(args[0]);
+                byte rd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd, val);
+                X86_64Encoder.NegR(m_text, rd);
+                return rd;
+            }
             case "text-replace" when args.Count >= 3:
             {
                 byte textReg = EmitExpr(args[0]);
