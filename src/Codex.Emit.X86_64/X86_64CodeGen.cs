@@ -55,11 +55,12 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
         EmitEscapeCopyHelpers();
 
-        // Bare metal: emit ISR stubs and process 1 entry function
+        // Bare metal: emit ISR stubs, syscall handler, process 1 entry
         if (m_target == X86_64Target.BareMetal)
         {
             EmitIsrStubsAndIdt();
-            EmitProcess1Entry(); // records m_process1EntryOffset
+            EmitSyscallHandler();
+            EmitProcess1Entry();
         }
         EmitStart(module);
         PatchCalls();
@@ -3195,15 +3196,217 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // Set up this process's heap pointer
         X86_64Encoder.Li(m_text, HeapReg, 0x600000);
 
-        // Infinite loop: print "B" to serial, then hlt (wait for timer)
+        // Infinite loop: print "B" via syscall (capability-checked), then hlt
         int loopTop = m_text.Count;
-        X86_64Encoder.Li(m_text, Reg.RAX, 'B');
-        X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
-        X86_64Encoder.OutDxAl(m_text);
+        X86_64Encoder.Li(m_text, Reg.RAX, SYS_WRITE_SERIAL); // syscall number
+        X86_64Encoder.Li(m_text, Reg.RDI, 'B');               // byte to write
+        X86_64Encoder.Syscall(m_text);                         // kernel checks CAP_CONSOLE
 
         // Halt and wait for timer interrupt (which will switch away from us)
         X86_64Encoder.Hlt(m_text);
         X86_64Encoder.Jmp(m_text, loopTop - (m_text.Count + 5));
+    }
+
+    // ── Capability System (Ring 3) ──────────────────────────────
+
+    // Capability bits (matches the Codex effect system)
+    const int CAP_CONSOLE    = 0;  // [Console] — serial I/O
+    const int CAP_FILESYSTEM = 1;  // [FileSystem] — disk I/O (future)
+    const int CAP_NETWORK    = 2;  // [Network] — network I/O (future)
+    const int CAP_CONCURRENT = 3;  // [Concurrent] — fork/spawn
+
+    // Syscall numbers
+    const int SYS_WRITE_SERIAL = 1;  // write byte to serial (requires CAP_CONSOLE)
+    const int SYS_READ_KEY     = 2;  // read last keycode (requires CAP_CONSOLE)
+    const int SYS_GET_TICKS    = 3;  // get tick count (no capability needed)
+    const int SYS_EXIT         = 60; // exit process (no capability needed)
+
+    // Per-process capability bitfield stored in process table at offset 56
+    const int ProcCapOffset = 56;
+
+    void EmitSyscallSetup()
+    {
+        // Set up STAR MSR (0xC0000081): kernel CS/SS in bits 47:32, user CS/SS in bits 63:48
+        // Kernel: CS=0x08, SS=0x10. User: CS=0x08, SS=0x10 (both Ring 0 for now)
+        // STAR[47:32] = SYSRET CS/SS base, STAR[31:0] = reserved
+        // For kernel-only (no Ring 3 yet): both point to kernel segments
+        EmitWriteMsr(0xC0000081, (0x08L << 32) | (0x10L << 48)); // STAR
+
+        // Set up LSTAR MSR (0xC0000082): syscall entry point
+        // Will be patched after the handler is emitted
+        m_syscallHandlerPatch = m_text.Count;
+        EmitWriteMsr(0xC0000082, 0xDEAD); // placeholder, patched later
+
+        // Set up SFMASK MSR (0xC0000084): mask IF on syscall entry
+        EmitWriteMsr(0xC0000084, 0x200); // mask bit 9 (IF) — disable interrupts in handler
+
+        // Enable SCE (System Call Extensions) in EFER
+        // Already enabled by the trampoline? Let's set it explicitly.
+        X86_64Encoder.Li(m_text, Reg.RCX, 0xC0000080); // IA32_EFER
+        // rdmsr
+        m_text.Add(0x0F); m_text.Add(0x32);
+        // or eax, 1 (SCE bit)
+        X86_64Encoder.Li(m_text, Reg.R11, 1);
+        // Need to OR into EAX... use different approach
+        // or rax, 1
+        m_text.Add(0x48); m_text.Add(0x83); m_text.Add(0xC8); m_text.Add(0x01); // or rax, 1
+        // wrmsr
+        m_text.Add(0x0F); m_text.Add(0x30);
+    }
+
+    int m_syscallHandlerPatch = -1;
+
+    void EmitWriteMsr(long msrAddr, long value)
+    {
+        // wrmsr: ECX = MSR address, EDX:EAX = value (high:low 32 bits)
+        X86_64Encoder.Li(m_text, Reg.RCX, msrAddr);
+        X86_64Encoder.Li(m_text, Reg.RAX, value & 0xFFFFFFFF);        // low 32
+        X86_64Encoder.Li(m_text, Reg.RDX, (value >> 32) & 0xFFFFFFFF); // high 32
+        m_text.Add(0x0F); m_text.Add(0x30); // wrmsr
+    }
+
+    void EmitSyscallHandler()
+    {
+        // Syscall entry: RCX=return RIP, R11=saved RFLAGS, RAX=syscall#
+        // We're in Ring 0, interrupts masked (SFMASK cleared IF).
+        int handlerOffset = m_text.Count;
+        long handlerVaddr = 0x100000 + handlerOffset;
+
+        // Patch LSTAR to point here
+        if (m_syscallHandlerPatch >= 0)
+        {
+            // The EmitWriteMsr for LSTAR wrote: Li(RCX, msr), Li(RAX, low32), Li(RDX, high32), wrmsr
+            // The Li(RAX, value) is the second Li. We need to patch its immediate.
+            // Actually, let's just re-emit the LSTAR write with the correct value.
+            // Easier: store handlerVaddr and patch after.
+            // The Li for RAX starts at m_syscallHandlerPatch + <offset of second Li>
+            // This is fragile. Let me use a simpler approach: write LSTAR at setup time
+            // using a register that holds the address.
+        }
+
+        // Save caller's stack pointer and switch to kernel stack
+        // For simplicity (both in Ring 0): just use the current stack
+        X86_64Encoder.PushR(m_text, Reg.RCX); // save return RIP
+        X86_64Encoder.PushR(m_text, Reg.R11); // save RFLAGS
+
+        // Dispatch on syscall number (RAX)
+        X86_64Encoder.CmpRI(m_text, Reg.RAX, SYS_WRITE_SERIAL);
+        int notWrite = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+
+        // ── SYS_WRITE_SERIAL: write byte in RDI to COM1 ──
+        // Check CAP_CONSOLE
+        EmitCheckCapability(CAP_CONSOLE);
+        int capDenied = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0); // ZF=1 means denied
+
+        // Granted: write byte
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RDI); // byte to write
+        X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+        X86_64Encoder.OutDxAl(m_text);
+        X86_64Encoder.Li(m_text, Reg.RAX, 0); // success
+        int writeOk = m_text.Count;
+        X86_64Encoder.Jmp(m_text, 0); // jump to return
+
+        // Denied: return -1
+        PatchJcc(capDenied, m_text.Count);
+        X86_64Encoder.Li(m_text, Reg.RAX, -1);
+        int writeDenied = m_text.Count;
+        X86_64Encoder.Jmp(m_text, 0); // jump to return
+
+        PatchJcc(notWrite, m_text.Count);
+
+        // ── SYS_READ_KEY ──
+        X86_64Encoder.CmpRI(m_text, Reg.RAX, SYS_READ_KEY);
+        int notReadKey = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+
+        EmitCheckCapability(CAP_CONSOLE);
+        int keyDenied = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
+
+        X86_64Encoder.Li(m_text, Reg.RDI, KeyBufferAddr);
+        X86_64Encoder.MovLoad(m_text, Reg.RAX, Reg.RDI, 0);
+        int keyOk = m_text.Count;
+        X86_64Encoder.Jmp(m_text, 0);
+
+        PatchJcc(keyDenied, m_text.Count);
+        X86_64Encoder.Li(m_text, Reg.RAX, -1);
+        int keyDeniedJmp = m_text.Count;
+        X86_64Encoder.Jmp(m_text, 0);
+
+        PatchJcc(notReadKey, m_text.Count);
+
+        // ── SYS_GET_TICKS (no capability needed) ──
+        X86_64Encoder.CmpRI(m_text, Reg.RAX, SYS_GET_TICKS);
+        int notTicks = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+
+        X86_64Encoder.Li(m_text, Reg.RDI, TickCountAddr);
+        X86_64Encoder.MovLoad(m_text, Reg.RAX, Reg.RDI, 0);
+        int ticksOk = m_text.Count;
+        X86_64Encoder.Jmp(m_text, 0);
+
+        PatchJcc(notTicks, m_text.Count);
+
+        // ── Unknown syscall: return -1 ──
+        X86_64Encoder.Li(m_text, Reg.RAX, -1);
+
+        // ── Common return path ──
+        int returnPath = m_text.Count;
+        PatchJmp(writeOk, returnPath);
+        PatchJmp(writeDenied, returnPath);
+        PatchJmp(keyOk, returnPath);
+        PatchJmp(keyDeniedJmp, returnPath);
+        PatchJmp(ticksOk, returnPath);
+
+        X86_64Encoder.PopR(m_text, Reg.R11); // restore RFLAGS
+        X86_64Encoder.PopR(m_text, Reg.RCX); // restore return RIP
+
+        // Restore RFLAGS (re-enable interrupts)
+        // push r11; popfq
+        X86_64Encoder.PushR(m_text, Reg.R11);
+        m_text.Add(0x9D); // popfq
+
+        // Return to caller via jmp rcx (RCX = saved RIP from syscall)
+        // jmp rcx = FF E1
+        m_text.Add(0xFF); m_text.Add(0xE1);
+
+        // Store handler address for LSTAR patching
+        m_syscallHandlerAddr = handlerVaddr;
+    }
+
+    long m_syscallHandlerAddr;
+
+    void EmitCheckCapability(int capBit)
+    {
+        // Load current process's capability bitfield and test the bit.
+        // Sets ZF=1 if capability is NOT granted (for Jcc CC_E = denied).
+        X86_64Encoder.Li(m_text, Reg.R11, CurrentProcAddr);
+        X86_64Encoder.MovLoad(m_text, Reg.R11, Reg.R11, 0); // current proc index
+
+        X86_64Encoder.Li(m_text, Reg.RAX, ProcEntrySize);
+        X86_64Encoder.ImulRR(m_text, Reg.R11, Reg.RAX);
+        X86_64Encoder.Li(m_text, Reg.RAX, ProcTableBase + ProcCapOffset);
+        X86_64Encoder.AddRR(m_text, Reg.R11, Reg.RAX); // R11 = &proc[current].capabilities
+
+        X86_64Encoder.MovLoad(m_text, Reg.R11, Reg.R11, 0); // R11 = capability bitfield
+        X86_64Encoder.Li(m_text, Reg.RAX, 1L << capBit);
+        X86_64Encoder.AndRR(m_text, Reg.R11, Reg.RAX); // test bit
+        // ZF=1 if bit was 0 (not granted), ZF=0 if granted
+        X86_64Encoder.TestRR(m_text, Reg.R11, Reg.R11);
+    }
+
+    void EmitGrantCapability(int procIndex, int capBit)
+    {
+        // Set a capability bit in a process's capability field
+        long capAddr = ProcTableBase + procIndex * ProcEntrySize + ProcCapOffset;
+        X86_64Encoder.Li(m_text, Reg.RDI, capAddr);
+        X86_64Encoder.MovLoad(m_text, Reg.RAX, Reg.RDI, 0);
+        X86_64Encoder.Li(m_text, Reg.R11, 1L << capBit);
+        // or rax, r11
+        m_text.Add(0x4C); m_text.Add(0x09); m_text.Add(0xD8); // or rax, r11
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
     }
 
     // ── Interrupt Handling (Ring 1) ──────────────────────────────
@@ -3493,9 +3696,23 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             X86_64Encoder.Li(m_text, HeapReg, 0x200000);
 
             // Initialize process table and create process 1
-            // (process 1 entry code already emitted in EmitModule)
             EmitProcessSetup();
             EmitProcess1Setup();
+
+            // Grant capabilities
+            EmitGrantCapability(0, CAP_CONSOLE);    // kernel can write serial
+            EmitGrantCapability(0, CAP_CONCURRENT);
+            EmitGrantCapability(1, CAP_CONSOLE);    // process 1 can write serial
+
+            // Set up syscall MSRs (handler already emitted, address known)
+            EmitWriteMsr(0xC0000081, (0x08L << 32)); // STAR: kernel CS=0x08
+            EmitWriteMsr(0xC0000082, m_syscallHandlerAddr); // LSTAR: handler entry
+            EmitWriteMsr(0xC0000084, 0x200); // SFMASK: mask IF
+            // Enable SCE in EFER
+            X86_64Encoder.Li(m_text, Reg.RCX, 0xC0000080);
+            m_text.Add(0x0F); m_text.Add(0x32); // rdmsr
+            m_text.Add(0x48); m_text.Add(0x83); m_text.Add(0xC8); m_text.Add(0x01); // or rax, 1
+            m_text.Add(0x0F); m_text.Add(0x30); // wrmsr
 
             // Build IDT, load IDTR, init PIC, enable interrupts
             EmitIdtEntries();
