@@ -66,7 +66,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
         if (m_target == X86_64Target.BareMetal)
         {
-            // Multiboot requires 32-bit ELF. Entry at byte 12 (after multiboot header).
+            // 32-bit ELF with PVH note for QEMU direct boot.
+            // QEMU requires ELFCLASS32 and jumps to the PVH entry in
+            // 32-bit protected mode. Our trampoline sets up long mode.
             return ElfWriter32.WriteExecutable(text, rodata, 12);
         }
 
