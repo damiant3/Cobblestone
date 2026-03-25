@@ -77,13 +77,14 @@ This project builds on decades of programming language research. Before implemen
 ### C# Conventions
 
 - Follow standard .NET naming conventions (PascalCase for public members, camelCase for locals)
-- Use `record` types for immutable data (AST nodes, IR nodes, types, diagnostics)
-- Use `sealed` on classes that are not designed for inheritance
-- Use `ImmutableArray<T>` for collections in immutable types
+- Use `sealed record` for immutable reference types (AST nodes, IR nodes, types, diagnostics)
 - Use `readonly record struct` for small value types (Span, ContentHash)
+- For immutable collections, prefer `Codex.Core` wrappers over raw BCL types:
+  - `Map<K,V>` for reference-value dictionaries, `ValueMap<K,V>` for struct-value dictionaries (both in `Codex.Core`)
+  - `ImmutableArray<T>` for sequences (`System.Collections.Immutable` is **not** implicit — add the using when needed)
 - Pattern matching (`switch` expressions) over visitor pattern where possible
 - `nullable` annotations enabled — no null surprises
-- No `var` for complex types where the type is not obvious from context
+- No `var`. Always use explicit types
 
 ### File Organization
 

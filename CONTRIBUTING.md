@@ -37,14 +37,24 @@ These rules must be enforced by all contributors and automated agents when gener
 - Use 4 spaces for indentation.
 - End files with a single newline.
 - Maximum line length: 120 characters.
-- Encoding: UTF-8.
+- Encoding: UTF-8. Line endings: CRLF (normalized by `.editorconfig`).
 - **Private instance fields MUST use the `m_` prefix** (e.g. `m_root`, `m_diagnostics`, `m_localEnv`).
+- **Private static fields MUST use the `s_` prefix** (e.g. `s_instance`, `s_cache`). Constants are exempt (PascalCase).
 - Private `readonly` fields: `m_` prefix and `readonly` where appropriate.
 - Property and type names: **PascalCase**. Local variables and parameters: **camelCase**.
 - Constants: PascalCase.
-- Avoid `var` when the type is not obvious from the right-hand side.
+- **Omit default accessibility modifiers.** Don't write `private` on members or `internal` on top-level types.
+- **No `var`.** Always use explicit types. Agents and humans both benefit from seeing the type on each line.
+- Use `new()` when the target type is on the left side (e.g. `List<int> items = new();`).
 - Prefer `readonly record struct` for small value types; `sealed record` for immutable reference types.
+- Prefer `Map<K,V>` / `ValueMap<K,V>` (in `Codex.Core`) over `ImmutableDictionary`.
+- `Nullable` is enabled project-wide — no null surprises.
 - `TreatWarningsAsErrors` is `true` in `Directory.Build.props`. Do not leave unused variables, fields, or parameters.
+- `LangVersion` is `12`. `ImplicitUsings` is enabled — `System`, `System.Collections.Generic`, `System.Linq`, `System.IO`, `System.Net.Http`, `System.Threading`, and `System.Threading.Tasks` are implicit. `System.Collections.Immutable` is **NOT** implicit — add it explicitly when needed.
+- One primary type per file (matching the filename). Related small types (e.g., an enum used by one class) can share a file.
+- File-scoped namespace declarations. One namespace per file.
+- Use xUnit for tests. Match the style of existing test files in each project.
+- Pattern matching (`switch` expressions) over visitor pattern where possible.
 
 ---
 
@@ -132,8 +142,10 @@ To add a new emission target (e.g., Rust, Python):
 - **Run `dotnet build Codex.sln` and `dotnet test Codex.sln`** before concluding a task.
 - **Produce minimal diffs** — do not reformat unrelated code, rename symbols, or restructure files unless that is the explicit task.
 - **Follow the `m_` field prefix rule** without exception — `TreatWarningsAsErrors` is on and an unused field is a build failure.
-- **Do not modify `docs/` planning documents** (`00-OVERVIEW.md` through `10-PRINCIPLES.md`) unless explicitly asked. They are the north-star specification.
-- **When adding a new compiler phase**, update `docs/ITERATION-*-HANDOFF.md` with a brief summary of what was done.
+- **Do not modify `docs/Vision/`** (`NewRepository.txt`, `IntelligenceLayer.txt`) — ever.
+- **Do not modify `docs/00-OVERVIEW.md` or `docs/10-PRINCIPLES.md`** unless explicitly asked. They are the north-star specification.
+- **Do not modify `Directory.Build.props`** without permission.
+- **When adding a new compiler phase**, update `docs/OldStatus/ITERATION-*-HANDOFF.md` with a brief summary of what was done.
 - See [`.github/copilot-instructions.md`](.github/copilot-instructions.md) for terminal and file-editing discipline rules.
 
 ---
@@ -150,5 +162,10 @@ To add a new emission target (e.g., Rust, Python):
 
 - [ ] `dotnet build Codex.sln` passes (zero warnings).
 - [ ] `dotnet test Codex.sln` passes (all existing tests + new tests).
-- [ ] Private fields use the `m_` prefix.
-- [ ] No `var` where the type is non-obvious.
+- [ ] Private instance fields use the `m_` prefix.
+- [ ] Private static fields use the `s_` prefix (constants exempt).
+- [ ] No `var` — always explicit types.
+- [ ] No `///` XML doc comments.
+- [ ] No dead code (unused fields, variables, parameters).
+- [ ] Default accessibility modifiers omitted (`private`, `internal`).
+- [ ] Temp files cleaned up (`.bak`, `.new`, `.tmp`, `.snap`).

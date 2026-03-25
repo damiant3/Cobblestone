@@ -128,6 +128,7 @@ dotnet tools/codex-agent/codex-agent.exe snap diff <file>
 | Element | Convention | Example |
 |---------|-----------|---------|
 | Private instance fields | `m_` prefix | `m_diagnostics` |
+| Private static fields | `s_` prefix | `s_instance` |
 | Private readonly fields | `m_` prefix + `readonly` | `readonly List<Token> m_tokens` |
 | Properties, types | PascalCase | `SourceSpan`, `TokenKind` |
 | Locals, parameters | camelCase | `localEnv`, `tokenIndex` |
@@ -139,9 +140,13 @@ dotnet tools/codex-agent/codex-agent.exe snap diff <file>
 - Use `new()` when the target type is on the left side.
 - **Omit default modifiers.** Don't write `private` on members or `internal` on top-level types.
 - **No XML doc comments** (`///`). Code should be self-documenting.
-- **No `var`** when the type is not obvious from the RHS.
+- **No `var`.** Always use explicit types. Agents and humans both benefit from seeing the type on each line.
 - **No unused fields/variables/parameters.** `TreatWarningsAsErrors` catches these.
 - Prefer `Map<K,V>` (in `Codex.Core`) over `ImmutableDictionary`.  There is an equivalent ValueMap<K,V> for value types.
+- `Nullable` is enabled project-wide. `LangVersion` is `12`.
+- Pattern matching (`switch` expressions) over visitor pattern where possible.
+- File-scoped namespace declarations. One primary type per file.
+- Use xUnit for tests. Match the style of existing test files.
 
 ### Implicit Usings
 
@@ -215,11 +220,10 @@ usings are all build failures.
 
 - [ ] Build passes (zero warnings)
 - [ ] Tests pass
-- [ ] `m_` prefix on private fields
-- [ ] No `var` where type is non-obvious
+- [ ] `m_` prefix on private instance fields, `s_` prefix on private static fields
+- [ ] No `var` — always explicit types
 - [ ] No XML doc comments
 - [ ] No dead code
-- [ ] Temp files cleaned up
 
 ---
 
@@ -232,7 +236,8 @@ usings are all build failures.
 `README.md`, `CONTRIBUTING.md`, `.github/copilot-instructions.md`, `.gitignore`, `Codex.sln`
 
 ### Do Not Modify Without Permission
-`Directory.Build.props`, `docs/Vision/NewRepository.txt`, `docs/Vision/IntelligenceLayer.txt`
+`Directory.Build.props`, `docs/Vision/NewRepository.txt`, `docs/Vision/IntelligenceLayer.txt`,
+`docs/00-OVERVIEW.md`, `docs/10-PRINCIPLES.md`
 
 ---
 
