@@ -266,7 +266,7 @@ public static partial class Program
             Console.WriteLine($"  {kv.Key} : {kv.Value}");
     }
 
-    static bool IsAssemblyTarget(string target) => target is "il" or "exe" or "riscv" or "riscv-bare" or "wasm" or "arm64" or "x86-64";
+    static bool IsAssemblyTarget(string target) => target is "il" or "exe" or "riscv" or "riscv-bare" or "wasm" or "arm64" or "x86-64" or "x86-64-bare";
 
     static int EmitAssembly(IRCompilationResult irResult, string outputDir, string moduleName, string target)
     {
@@ -306,11 +306,14 @@ public static partial class Program
             return 0;
         }
 
-        if (target == "x86-64")
+        if (target is "x86-64" or "x86-64-bare")
         {
-            Emit.X86_64.X86_64Emitter x64Emitter = new();
+            Emit.X86_64.X86_64Target x64Target = target == "x86-64-bare"
+                ? Emit.X86_64.X86_64Target.BareMetal : Emit.X86_64.X86_64Target.LinuxUser;
+            Emit.X86_64.X86_64Emitter x64Emitter = new(x64Target);
             byte[] elf = x64Emitter.EmitAssembly(irResult.Module, moduleName);
-            string outputPath = Path.Combine(outputDir, moduleName);
+            string ext = target == "x86-64-bare" ? ".elf" : "";
+            string outputPath = Path.Combine(outputDir, moduleName + ext);
             File.WriteAllBytes(outputPath, elf);
             Console.WriteLine($"✓ Compiled to {outputPath} ({target}, {elf.Length:N0} bytes)");
             PrintTypes(irResult);
