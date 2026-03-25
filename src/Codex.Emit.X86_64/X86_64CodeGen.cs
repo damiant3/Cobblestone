@@ -1386,7 +1386,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
                 X86_64Encoder.MovzxByte(m_text, rd, textReg, 8);
                 X86_64Encoder.SubRI(m_text, rd, '0');
                 X86_64Encoder.CmpRI(m_text, rd, '9' - '0');
-                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_LE, rd);
+                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_BE, rd); // unsigned: below or equal
                 X86_64Encoder.MovzxByteSelf(m_text, rd);
                 return rd;
             }
