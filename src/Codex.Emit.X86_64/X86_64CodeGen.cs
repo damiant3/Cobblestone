@@ -5,8 +5,9 @@ using Codex.Types;
 
 namespace Codex.Emit.X86_64;
 
-sealed class X86_64CodeGen
+sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 {
+    readonly X86_64Target m_target = target;
     readonly List<byte> m_text = [];
     readonly List<byte> m_rodata = [];
     readonly Dictionary<string, int> m_functionOffsets = [];
@@ -40,6 +41,10 @@ sealed class X86_64CodeGen
 
     public void EmitModule(IRModule module)
     {
+        // Bare metal: emit multiboot header + 32→64 trampoline at byte 0
+        if (m_target == X86_64Target.BareMetal)
+            EmitMultibootHeader();
+
         m_typeDefs = module.TypeDefinitions;
         m_escapeHelperNames["text"] = "__escape_text";
 
@@ -59,10 +64,46 @@ sealed class X86_64CodeGen
         byte[] text = m_text.ToArray();
         byte[] rodata = m_rodata.ToArray();
 
+        if (m_target == X86_64Target.BareMetal)
+        {
+            // Multiboot requires 32-bit ELF. Entry at byte 12 (after multiboot header).
+            return ElfWriter32.WriteExecutable(text, rodata, 12);
+        }
+
         if (m_functionOffsets.TryGetValue("__start", out int startOffset))
             return ElfWriterX86_64.WriteExecutable(text, rodata, (ulong)startOffset);
 
         return ElfWriterX86_64.WriteExecutable(text, rodata, 0);
+    }
+
+    public byte[] BuildFlatBinary()
+    {
+        // Bare metal flat binary: text + rodata concatenated.
+        // Multiboot header is at the start of m_text (emitted by EmitStart).
+        // Rodata is appended after text, aligned to 8 bytes.
+        List<byte> binary = new(m_text);
+        while (binary.Count % 8 != 0)
+            binary.Add(0);
+        int rodataOffset = binary.Count;
+        binary.AddRange(m_rodata);
+
+        // Patch rodata references to use flat binary offsets
+        // (in ELF mode, rodata is at a separate vaddr; in flat mode, it's inline)
+        foreach (RodataFixup fixup in m_rodataFixups)
+        {
+            long addr = rodataOffset + fixup.RodataOffset;
+            // MovRI64 is 10 bytes: REX.W + B8+rd + imm64. The imm64 starts at PatchOffset.
+            binary[fixup.PatchOffset] = (byte)(addr & 0xFF);
+            binary[fixup.PatchOffset + 1] = (byte)((addr >> 8) & 0xFF);
+            binary[fixup.PatchOffset + 2] = (byte)((addr >> 16) & 0xFF);
+            binary[fixup.PatchOffset + 3] = (byte)((addr >> 24) & 0xFF);
+            binary[fixup.PatchOffset + 4] = (byte)((addr >> 32) & 0xFF);
+            binary[fixup.PatchOffset + 5] = (byte)((addr >> 40) & 0xFF);
+            binary[fixup.PatchOffset + 6] = (byte)((addr >> 48) & 0xFF);
+            binary[fixup.PatchOffset + 7] = (byte)((addr >> 56) & 0xFF);
+        }
+
+        return binary.ToArray();
     }
 
     // ── Function emission ────────────────────────────────────────
@@ -1375,20 +1416,61 @@ sealed class X86_64CodeGen
 
     void EmitPrintText(byte ptrReg)
     {
-        // Linux x86-64 syscall write: rax=1, rdi=1(stdout), rsi=buf, rdx=len
         int savedPtr = AllocLocal();
         StoreLocal(savedPtr, ptrReg);
 
-        byte ptr = LoadLocal(savedPtr);
-        // Load data pointer BEFORE length (ptr might alias RDX)
-        X86_64Encoder.Lea(m_text, Reg.RSI, ptr, 8);
-        X86_64Encoder.MovLoad(m_text, Reg.RDX, ptr, 0);
-        X86_64Encoder.Li(m_text, Reg.RAX, 1); // sys_write
-        X86_64Encoder.Li(m_text, Reg.RDI, 1); // stdout
-        X86_64Encoder.Syscall(m_text);
+        if (m_target == X86_64Target.BareMetal)
+        {
+            // Serial output: loop over bytes, write each to COM1
+            byte ptr = LoadLocal(savedPtr);
+            byte len = AllocTemp();
+            X86_64Encoder.MovLoad(m_text, len, ptr, 0); // len = [ptr+0]
+            int savedLen = AllocLocal();
+            StoreLocal(savedLen, len);
+            int savedIdx = AllocLocal();
+            X86_64Encoder.Li(m_text, Reg.R11, 0);
+            StoreLocal(savedIdx, Reg.R11);
 
-        // Print newline
-        EmitPrintNewline();
+            int loopTop = m_text.Count;
+            byte idx = LoadLocal(savedIdx);
+            byte lenCheck = LoadLocal(savedLen);
+            X86_64Encoder.CmpRR(m_text, idx, lenCheck);
+            int doneJump = m_text.Count;
+            X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+
+            // Load byte: ptr + 8 + idx
+            byte ptrL = LoadLocal(savedPtr);
+            idx = LoadLocal(savedIdx);
+            X86_64Encoder.Lea(m_text, Reg.RSI, ptrL, 8);
+            X86_64Encoder.AddRR(m_text, Reg.RSI, idx);
+            X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RSI, 0);
+            X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+            X86_64Encoder.OutDxAl(m_text);
+
+            // idx++
+            idx = LoadLocal(savedIdx);
+            X86_64Encoder.AddRI(m_text, idx, 1);
+            StoreLocal(savedIdx, idx);
+            X86_64Encoder.Jmp(m_text, loopTop - (m_text.Count + 5));
+
+            PatchJcc(doneJump, m_text.Count);
+
+            // Newline
+            X86_64Encoder.Li(m_text, Reg.RAX, '\n');
+            X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+            X86_64Encoder.OutDxAl(m_text);
+        }
+        else
+        {
+            byte ptr = LoadLocal(savedPtr);
+            X86_64Encoder.Lea(m_text, Reg.RSI, ptr, 8);
+            X86_64Encoder.MovLoad(m_text, Reg.RDX, ptr, 0);
+            X86_64Encoder.Li(m_text, Reg.RAX, 1); // sys_write
+            X86_64Encoder.Li(m_text, Reg.RDI, 1); // stdout
+            X86_64Encoder.Syscall(m_text);
+
+            EmitPrintNewline();
+        }
     }
 
     void EmitPrintBool(byte valueReg)
@@ -2458,6 +2540,199 @@ sealed class X86_64CodeGen
 
     // ── _start entry point ───────────────────────────────────────
 
+    // ── Bare Metal (Codex.OS Rung 0) ────────────────────────────
+
+    void EmitMultibootHeader()
+    {
+        // Multiboot1 header: must be 4-byte aligned in first 8KB.
+        // Magic: 0x1BADB002, Flags: 0 (no special requirements), Checksum: -(magic + flags)
+        const uint MULTIBOOT_MAGIC = 0x1BADB002;
+        const uint MULTIBOOT_FLAGS = 0;
+        const uint MULTIBOOT_CHECKSUM = unchecked(0u - MULTIBOOT_MAGIC - MULTIBOOT_FLAGS);
+
+        // Emit header at byte 0
+        EmitU32(MULTIBOOT_MAGIC);
+        EmitU32(MULTIBOOT_FLAGS);
+        EmitU32(MULTIBOOT_CHECKSUM);
+
+        // 32-bit entry point: GRUB/QEMU jumps here in protected mode, no paging.
+        // We need to set up long mode (64-bit) manually.
+        // For now, emit a placeholder — the 32→64 trampoline.
+        // This is 32-bit x86 code (NOT 64-bit), hand-assembled.
+        Emit32BitTrampoline();
+    }
+
+    void Emit32BitTrampoline()
+    {
+        // This code runs in 32-bit protected mode (no paging).
+        // It sets up identity-mapped page tables, enables long mode, and
+        // far-jumps to 64-bit code.
+        //
+        // Page table layout (at fixed address 0x1000):
+        //   PML4[0] → PDPT at 0x2000
+        //   PDPT[0] → PD at 0x3000
+        //   PD[0]   → 2MB huge page identity-mapping 0x0..0x1FFFFF
+        //   PD[1]   → 2MB huge page identity-mapping 0x200000..0x3FFFFF
+        //
+        // Registers on entry (from multiboot):
+        //   EAX = 0x2BADB002 (multiboot magic)
+        //   EBX = pointer to multiboot info struct
+        //   CS  = 32-bit code segment
+        //   Paging disabled, A20 enabled
+
+        // All 32-bit code is raw bytes (the encoder only does 64-bit)
+
+        // ── Clear page table area (0x1000..0x3FFF) ──
+        // mov edi, 0x1000
+        m_text.AddRange([0xBF, 0x00, 0x10, 0x00, 0x00]);
+        // mov ecx, 0xC00 (3 pages * 1024 dwords = 3072)
+        m_text.AddRange([0xB9, 0x00, 0x0C, 0x00, 0x00]);
+        // xor eax, eax
+        m_text.AddRange([0x31, 0xC0]);
+        // rep stosd
+        m_text.AddRange([0xF3, 0xAB]);
+
+        // ── Set up PML4[0] → PDPT ──
+        // mov dword [0x1000], 0x2003 (present + writable + addr 0x2000)
+        m_text.AddRange([0xC7, 0x05, 0x00, 0x10, 0x00, 0x00, 0x03, 0x20, 0x00, 0x00]);
+
+        // ── Set up PDPT[0] → PD ──
+        // mov dword [0x2000], 0x3003
+        m_text.AddRange([0xC7, 0x05, 0x00, 0x20, 0x00, 0x00, 0x03, 0x30, 0x00, 0x00]);
+
+        // ── Set up PD[0] → 2MB huge page at 0x0 ──
+        // mov dword [0x3000], 0x83 (present + writable + huge)
+        m_text.AddRange([0xC7, 0x05, 0x00, 0x30, 0x00, 0x00, 0x83, 0x00, 0x00, 0x00]);
+
+        // ── Set up PD[1] → 2MB huge page at 0x200000 ──
+        // mov dword [0x3008], 0x200083
+        m_text.AddRange([0xC7, 0x05, 0x08, 0x30, 0x00, 0x00, 0x83, 0x00, 0x20, 0x00]);
+
+        // ── Load PML4 into CR3 ──
+        // mov eax, 0x1000
+        m_text.AddRange([0xB8, 0x00, 0x10, 0x00, 0x00]);
+        // mov cr3, eax
+        m_text.AddRange([0x0F, 0x22, 0xD8]);
+
+        // ── Enable PAE in CR4 ──
+        // mov eax, cr4
+        m_text.AddRange([0x0F, 0x20, 0xE0]);
+        // or eax, 0x20 (bit 5 = PAE)
+        m_text.AddRange([0x83, 0xC8, 0x20]);
+        // mov cr4, eax
+        m_text.AddRange([0x0F, 0x22, 0xE0]);
+
+        // ── Enable long mode in EFER MSR ──
+        // mov ecx, 0xC0000080 (IA32_EFER)
+        m_text.AddRange([0xB9, 0x80, 0x00, 0x00, 0xC0]);
+        // rdmsr
+        m_text.AddRange([0x0F, 0x32]);
+        // or eax, 0x100 (bit 8 = LME)
+        m_text.AddRange([0x0D, 0x00, 0x01, 0x00, 0x00]);
+        // wrmsr
+        m_text.AddRange([0x0F, 0x30]);
+
+        // ── Enable paging in CR0 ──
+        // mov eax, cr0
+        m_text.AddRange([0x0F, 0x20, 0xC0]);
+        // or eax, 0x80000000 (bit 31 = PG)
+        m_text.AddRange([0x0D, 0x00, 0x00, 0x00, 0x80]);
+        // mov cr0, eax
+        m_text.AddRange([0x0F, 0x22, 0xC0]);
+
+        // ── Load 64-bit GDT and far jump to long mode ──
+        // We need a GDT with a 64-bit code segment. Embed it inline.
+        int gdtOffset = m_text.Count;
+
+        // lgdt [gdt_ptr] — but we need the GDT first.
+        // Emit GDT at current position, then jump over it.
+        // jmp short over_gdt (2 bytes)
+        int jmpOverGdt = m_text.Count;
+        m_text.AddRange([0xEB, 0x00]); // patched
+
+        // GDT: null descriptor + 64-bit code segment
+        int gdtStart = m_text.Count;
+        // Null descriptor (8 bytes)
+        m_text.AddRange([0, 0, 0, 0, 0, 0, 0, 0]);
+        // 64-bit code segment: base=0, limit=0, L=1, P=1, type=code(exec+read)
+        // Byte layout: limit_lo(2), base_lo(2), base_mid(1), access(1), granularity(1), base_hi(1)
+        m_text.AddRange([0xFF, 0xFF,  // limit low
+                         0x00, 0x00,  // base low
+                         0x00,        // base mid
+                         0x9A,        // access: present + code + exec + read
+                         0xAF,        // granularity: 4KB + long mode (L=1) + limit high
+                         0x00]);      // base high
+        // 64-bit data segment
+        m_text.AddRange([0xFF, 0xFF, 0x00, 0x00, 0x00, 0x92, 0xCF, 0x00]);
+
+        // GDT pointer (6 bytes: 2-byte limit + 4-byte base)
+        int gdtPtrOffset = m_text.Count;
+        int gdtSize = m_text.Count - gdtStart - 1;
+        m_text.Add((byte)(gdtSize & 0xFF));
+        m_text.Add((byte)((gdtSize >> 8) & 0xFF));
+        // Base address (32-bit, will be the flat binary load address + offset)
+        // For multiboot, code is loaded at the address specified or at 1MB (0x100000)
+        // We assume load at 0x100000
+        int gdtAddr = 0x100000 + gdtStart;
+        m_text.Add((byte)(gdtAddr & 0xFF));
+        m_text.Add((byte)((gdtAddr >> 8) & 0xFF));
+        m_text.Add((byte)((gdtAddr >> 16) & 0xFF));
+        m_text.Add((byte)((gdtAddr >> 24) & 0xFF));
+
+        // Patch jump over GDT
+        m_text[jmpOverGdt + 1] = (byte)(m_text.Count - (jmpOverGdt + 2));
+
+        // lgdt [gdt_ptr]
+        // This is tricky in raw bytes. lgdt m16&32:
+        // 0F 01 15 [addr32] — lgdt [disp32]
+        int gdtPtrAddr = 0x100000 + gdtPtrOffset;
+        m_text.AddRange([0x0F, 0x01, 0x15]);
+        m_text.Add((byte)(gdtPtrAddr & 0xFF));
+        m_text.Add((byte)((gdtPtrAddr >> 8) & 0xFF));
+        m_text.Add((byte)((gdtPtrAddr >> 16) & 0xFF));
+        m_text.Add((byte)((gdtPtrAddr >> 24) & 0xFF));
+
+        // Far jump to 64-bit code segment (selector 0x08)
+        // EA [offset32] [selector16] — but this is 32-bit far jump
+        // jmp 0x08:<64bit_entry>
+        // Record where 64-bit code starts (will be patched when __start is emitted)
+        m_bareMetalLongModeJumpPatch = m_text.Count;
+        m_text.Add(0xEA);
+        m_text.AddRange([0x00, 0x00, 0x00, 0x00]); // 32-bit offset (patched later)
+        m_text.AddRange([0x08, 0x00]); // selector = GDT entry 1 (64-bit code)
+    }
+
+    int m_bareMetalLongModeJumpPatch = -1;
+
+    void EmitU32(uint value)
+    {
+        m_text.Add((byte)(value & 0xFF));
+        m_text.Add((byte)((value >> 8) & 0xFF));
+        m_text.Add((byte)((value >> 16) & 0xFF));
+        m_text.Add((byte)((value >> 24) & 0xFF));
+    }
+
+    void EmitSerialChar(byte reg)
+    {
+        // Write byte in `reg` to COM1 (port 0x3F8) via OUT
+        X86_64Encoder.MovRR(m_text, Reg.RDX, 0); // clear RDX
+        X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+        if (reg != Reg.RAX)
+            X86_64Encoder.MovRR(m_text, Reg.RAX, reg);
+        X86_64Encoder.OutDxAl(m_text);
+    }
+
+    void EmitSerialString(string s)
+    {
+        // Emit each byte of the string to COM1
+        foreach (char c in s)
+        {
+            X86_64Encoder.Li(m_text, Reg.RAX, c);
+            X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+            X86_64Encoder.OutDxAl(m_text);
+        }
+    }
+
     void EmitStart(IRModule module)
     {
         m_functionOffsets["__start"] = m_text.Count;
@@ -2476,19 +2751,44 @@ sealed class X86_64CodeGen
         int frameSizePatchOffset = m_text.Count;
         EmitSubRspImm32(0); // patched later
 
-        // Set up heap via brk(0) then brk(brk_result + 1MB)
-        X86_64Encoder.Li(m_text, Reg.RAX, 12); // sys_brk
-        X86_64Encoder.Li(m_text, Reg.RDI, 0);
-        X86_64Encoder.Syscall(m_text);
-        X86_64Encoder.MovRR(m_text, HeapReg, Reg.RAX); // heap start
+        if (m_target == X86_64Target.BareMetal)
+        {
+            // Bare metal: patch the 32→64 far jump to land here
+            if (m_bareMetalLongModeJumpPatch >= 0)
+            {
+                int entryAddr = 0x100000 + m_text.Count - 1; // -1 because we're mid-function
+                // Actually, the jump target is the instruction AFTER the prologue.
+                // The far jump lands at __start which starts with push rbp etc.
+                entryAddr = 0x100000 + m_functionOffsets["__start"];
+                m_text[m_bareMetalLongModeJumpPatch + 1] = (byte)(entryAddr & 0xFF);
+                m_text[m_bareMetalLongModeJumpPatch + 2] = (byte)((entryAddr >> 8) & 0xFF);
+                m_text[m_bareMetalLongModeJumpPatch + 3] = (byte)((entryAddr >> 16) & 0xFF);
+                m_text[m_bareMetalLongModeJumpPatch + 4] = (byte)((entryAddr >> 24) & 0xFF);
+            }
 
-        // Grow by 1MB
-        byte growReg = Reg.R11;
-        X86_64Encoder.Li(m_text, growReg, 1024 * 1024);
-        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
-        X86_64Encoder.AddRR(m_text, Reg.RDI, growReg);
-        X86_64Encoder.Li(m_text, Reg.RAX, 12); // sys_brk
-        X86_64Encoder.Syscall(m_text);
+            // Set up stack at 0x80000 (512KB, grows down)
+            X86_64Encoder.Li(m_text, Reg.RSP, 0x80000);
+            X86_64Encoder.MovRR(m_text, Reg.RBP, Reg.RSP);
+
+            // Set up heap at 0x200000 (2MB — above identity-mapped pages)
+            X86_64Encoder.Li(m_text, HeapReg, 0x200000);
+        }
+        else
+        {
+            // Linux user mode: set up heap via brk(0) then brk(brk_result + 1MB)
+            X86_64Encoder.Li(m_text, Reg.RAX, 12); // sys_brk
+            X86_64Encoder.Li(m_text, Reg.RDI, 0);
+            X86_64Encoder.Syscall(m_text);
+            X86_64Encoder.MovRR(m_text, HeapReg, Reg.RAX); // heap start
+
+            // Grow by 1MB
+            byte growReg = Reg.R11;
+            X86_64Encoder.Li(m_text, growReg, 1024 * 1024);
+            X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
+            X86_64Encoder.AddRR(m_text, Reg.RDI, growReg);
+            X86_64Encoder.Li(m_text, Reg.RAX, 12); // sys_brk
+            X86_64Encoder.Syscall(m_text);
+        }
 
         IRDefinition? mainDef = null;
         foreach (IRDefinition def in module.Definitions)
@@ -2523,10 +2823,21 @@ sealed class X86_64CodeGen
                 break;
         }
 
-        // Exit with code 0
-        X86_64Encoder.Li(m_text, Reg.RDI, 0);
-        X86_64Encoder.Li(m_text, Reg.RAX, 60); // sys_exit
-        X86_64Encoder.Syscall(m_text);
+        // Exit
+        if (m_target == X86_64Target.BareMetal)
+        {
+            // Bare metal: halt
+            X86_64Encoder.Cli(m_text);
+            int hltLoop = m_text.Count;
+            X86_64Encoder.Hlt(m_text);
+            X86_64Encoder.Jmp(m_text, hltLoop - (m_text.Count + 5));
+        }
+        else
+        {
+            X86_64Encoder.Li(m_text, Reg.RDI, 0);
+            X86_64Encoder.Li(m_text, Reg.RAX, 60); // sys_exit
+            X86_64Encoder.Syscall(m_text);
+        }
 
         // Patch frame size for spill slots
         int frameSize = m_spillCount * 8;
