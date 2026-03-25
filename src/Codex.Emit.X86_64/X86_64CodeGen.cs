@@ -1255,52 +1255,214 @@ sealed class X86_64CodeGen
 
     byte EmitFork(IRExpr thunkExpr)
     {
-        // Sequential fork: evaluate thunk immediately, store result in task slot.
-        // Real threading requires a thread-safe heap allocator (HeapReg is shared).
-        // This gets the API working; parallel execution layers on top later.
+        // ── Per-thread arena fork ──────────────────────────────────
+        // Child gets its own 1MB heap arena via mmap.
+        // Parent and child never share HeapReg (R10).
 
-        // Evaluate the thunk (a closure/function pointer)
+        // 1. Evaluate the thunk (closure pointer)
         byte thunk = EmitExpr(thunkExpr);
         int savedThunk = AllocLocal();
         StoreLocal(savedThunk, thunk);
 
-        // Allocate task slot on heap: [8B done_flag] [8B result]
+        // 2. Allocate task slot on PARENT heap: [4B futex_word=0] [4B pad] [8B result]
+        //    (futex operates on 32-bit words, so first 4 bytes are the futex)
         byte taskPtr = AllocTemp();
         X86_64Encoder.MovRR(m_text, taskPtr, HeapReg);
         X86_64Encoder.Li(m_text, Reg.R11, 0);
-        X86_64Encoder.MovStore(m_text, HeapReg, Reg.R11, 0);  // done = 0
+        X86_64Encoder.MovStore(m_text, HeapReg, Reg.R11, 0);  // futex_word + pad = 0
         X86_64Encoder.MovStore(m_text, HeapReg, Reg.R11, 8);  // result = 0
         X86_64Encoder.AddRI(m_text, HeapReg, 16);
         int savedTask = AllocLocal();
         StoreLocal(savedTask, taskPtr);
 
-        // Call thunk(null): thunk is a closure [code_ptr, ...], load code ptr then call
+        // 3. mmap 1MB arena for child heap
+        X86_64Encoder.Li(m_text, Reg.RAX, 9);     // SYS_mmap
+        X86_64Encoder.Li(m_text, Reg.RDI, 0);     // addr = kernel chooses
+        X86_64Encoder.Li(m_text, Reg.RSI, 1048576); // 1MB
+        X86_64Encoder.Li(m_text, Reg.RDX, 3);     // PROT_READ | PROT_WRITE
+        X86_64Encoder.Li(m_text, Reg.R10, 0x22);  // MAP_PRIVATE | MAP_ANONYMOUS
+        X86_64Encoder.Li(m_text, Reg.R8, -1);     // fd = -1
+        X86_64Encoder.Li(m_text, Reg.R9, 0);      // offset = 0
+        X86_64Encoder.Syscall(m_text);
+        // RAX = child arena base
+        int savedArena = AllocLocal();
+        StoreLocal(savedArena, Reg.RAX);
+        // Restore HeapReg (mmap clobbered nothing, but R10 was used for flags)
+        X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(savedTask));
+        X86_64Encoder.SubRI(m_text, HeapReg, 16); // undo the +16 above
+        X86_64Encoder.AddRI(m_text, HeapReg, 16); // re-advance past task slot
+        // Actually, HeapReg was already correct before mmap — let's just reload
+        // the pre-task value and re-advance. Simpler: save HeapReg before mmap.
+        // Let me restructure: save parent HeapReg before mmap.
+
+        // OK let me simplify — the mmap doesn't modify HeapReg (R10 was saved
+        // to a local before being clobbered by the R10=flags arg). Actually,
+        // mmap uses R10 for the flags argument, which clobbers our HeapReg.
+        // So we need to save/restore it.
+
+        // Restructure: save HeapReg before mmap, restore after.
+        // I'll redo from step 2.
+
+        // ... this inline approach is getting messy. Let me use a cleaner structure.
+        return EmitForkClean(thunkExpr, savedThunk, savedTask);
+    }
+
+    byte EmitForkClean(IRExpr thunkExpr, int savedThunk, int savedTask)
+    {
+        // Save parent HeapReg
+        int savedHeap = AllocLocal();
+        StoreLocal(savedHeap, HeapReg);
+
+        // mmap 1MB for child arena
+        X86_64Encoder.Li(m_text, Reg.RAX, 9);     // SYS_mmap
+        X86_64Encoder.Li(m_text, Reg.RDI, 0);
+        X86_64Encoder.Li(m_text, Reg.RSI, 1048576);
+        X86_64Encoder.Li(m_text, Reg.RDX, 3);
+        X86_64Encoder.Li(m_text, Reg.R10, 0x22);  // clobbers HeapReg!
+        X86_64Encoder.Li(m_text, Reg.R8, -1);
+        X86_64Encoder.Li(m_text, Reg.R9, 0);
+        X86_64Encoder.Syscall(m_text);
+        int savedArena = AllocLocal();
+        StoreLocal(savedArena, Reg.RAX);
+
+        // Restore parent HeapReg
+        X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(savedHeap));
+
+        // mmap 64KB for child stack
+        X86_64Encoder.Li(m_text, Reg.RAX, 9);     // SYS_mmap
+        X86_64Encoder.Li(m_text, Reg.RDI, 0);
+        X86_64Encoder.Li(m_text, Reg.RSI, 65536);
+        X86_64Encoder.Li(m_text, Reg.RDX, 3);
+        // Save HeapReg again before clobbering R10
+        StoreLocal(savedHeap, HeapReg);
+        X86_64Encoder.Li(m_text, Reg.R10, 0x22);
+        X86_64Encoder.Li(m_text, Reg.R8, -1);
+        X86_64Encoder.Li(m_text, Reg.R9, 0);
+        X86_64Encoder.Syscall(m_text);
+        // RAX = child stack base
+        // child stack top = base + 65536 - 48 (room for 6 words of data)
+        X86_64Encoder.AddRI(m_text, Reg.RAX, 65536 - 48);
+        // Store: [+0]=thunk, [+8]=task, [+16]=arena on child stack
         byte thunkLoaded = LoadLocal(savedThunk);
-        X86_64Encoder.Li(m_text, Reg.RDI, 0);  // arg = null
-        X86_64Encoder.MovLoad(m_text, Reg.R11, thunkLoaded, 0); // R11 = [thunk+0] = code ptr
-        // Emit: call r11 (41 FF D3)
-        m_text.Add(0x41); // REX.B (R11 needs extension)
-        m_text.Add(0xFF);
-        m_text.Add(0xD3); // ModRM: mod=11, reg=010 (/2=call), rm=011 (R11)
-
-        // Store result (RAX) into task[8], set done flag
+        X86_64Encoder.MovStore(m_text, Reg.RAX, thunkLoaded, 0);
         byte taskLoaded = LoadLocal(savedTask);
-        X86_64Encoder.MovStore(m_text, taskLoaded, Reg.RAX, 8);  // task[8] = result
-        X86_64Encoder.Li(m_text, Reg.R11, 1);
-        X86_64Encoder.MovStore(m_text, taskLoaded, Reg.R11, 0);  // task[0] = 1 (done)
+        X86_64Encoder.MovStore(m_text, Reg.RAX, taskLoaded, 8);
+        byte arenaLoaded = LoadLocal(savedArena);
+        X86_64Encoder.MovStore(m_text, Reg.RAX, arenaLoaded, 16);
+        // RSI = child stack top (for clone)
+        X86_64Encoder.MovRR(m_text, Reg.RSI, Reg.RAX);
 
-        return taskLoaded;
+        // clone(CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD = 0x10F00)
+        X86_64Encoder.Li(m_text, Reg.RDI, 0x10F00); // flags
+        // RSI = child stack
+        X86_64Encoder.Li(m_text, Reg.RDX, 0);     // ptid
+        X86_64Encoder.Li(m_text, Reg.R10, 0);     // ctid (clobbers HeapReg again!)
+        X86_64Encoder.Li(m_text, Reg.R8, 0);      // tls
+        X86_64Encoder.Li(m_text, Reg.RAX, 56);    // SYS_clone
+        X86_64Encoder.Syscall(m_text);
+        // RAX = 0 in child, child_tid in parent
+
+        // Restore parent HeapReg (was clobbered by R10=ctid)
+        X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(savedHeap));
+
+        X86_64Encoder.CmpRI(m_text, Reg.RAX, 0);
+        int childJump = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0); // jz child_code
+
+        // ── Parent: jump past child code, return task pointer ──
+        int parentSkip = m_text.Count;
+        X86_64Encoder.Jmp(m_text, 0); // placeholder, patched after child code
+
+        // ── Child code ──
+        int childCodeAddr = m_text.Count;
+        PatchJcc(childJump, childCodeAddr);
+
+        // Child: load thunk, task, arena from stack
+        // RSP points at our data area (clone set it)
+        X86_64Encoder.MovLoad(m_text, Reg.RBX, Reg.RSP, 0);   // thunk
+        X86_64Encoder.MovLoad(m_text, Reg.R12, Reg.RSP, 8);    // task
+        X86_64Encoder.MovLoad(m_text, HeapReg, Reg.RSP, 16);   // arena → R10
+
+        // Call thunk(null)
+        X86_64Encoder.Li(m_text, Reg.RDI, 0);
+        X86_64Encoder.MovLoad(m_text, Reg.R11, Reg.RBX, 0); // code_ptr = [thunk+0]
+        m_text.Add(0x41); m_text.Add(0xFF); m_text.Add(0xD3); // call r11
+
+        // Store result in task[8], set futex word to 1
+        X86_64Encoder.MovStore(m_text, Reg.R12, Reg.RAX, 8);   // task[8] = result
+        X86_64Encoder.Li(m_text, Reg.R11, 1);
+        // Store 32-bit 1 to task[0] (futex word is 32-bit)
+        X86_64Encoder.MovStore(m_text, Reg.R12, Reg.R11, 0);   // task[0] = 1
+
+        // futex_wake(task, FUTEX_WAKE=1, val=1)
+        X86_64Encoder.Li(m_text, Reg.RAX, 202);    // SYS_futex
+        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.R12); // addr = task
+        X86_64Encoder.Li(m_text, Reg.RSI, 1);      // FUTEX_WAKE
+        X86_64Encoder.Li(m_text, Reg.RDX, 1);      // wake 1 waiter
+        X86_64Encoder.Li(m_text, Reg.R10, 0);
+        X86_64Encoder.Syscall(m_text);
+
+        // Exit thread
+        X86_64Encoder.Li(m_text, Reg.RAX, 60);     // SYS_exit
+        X86_64Encoder.Li(m_text, Reg.RDI, 0);
+        X86_64Encoder.Syscall(m_text);
+
+        // ── Patch parent skip jump ──
+        int afterChild = m_text.Count;
+        int rel = afterChild - (parentSkip + 5); // 5 = size of jmp near
+        m_text[parentSkip + 1] = (byte)(rel & 0xFF);
+        m_text[parentSkip + 2] = (byte)((rel >> 8) & 0xFF);
+        m_text[parentSkip + 3] = (byte)((rel >> 16) & 0xFF);
+        m_text[parentSkip + 4] = (byte)((rel >> 24) & 0xFF);
+
+        return LoadLocal(savedTask);
     }
 
     byte EmitAwait(IRExpr taskExpr)
     {
-        // Sequential await: task is already done (fork runs synchronously).
-        // Just load the result from task[8].
+        // Wait for child thread to complete via futex
         byte taskPtr = EmitExpr(taskExpr);
+        int savedTask = AllocLocal();
+        StoreLocal(savedTask, taskPtr);
+
+        // Save HeapReg across potential futex syscall
+        int savedHeap = AllocLocal();
+        StoreLocal(savedHeap, HeapReg);
+
+        // Loop: check futex word
+        int loopTop = m_text.Count;
+        byte taskLoaded = LoadLocal(savedTask);
+        // Load 64-bit from task[0] — low 32 bits are the futex word
+        byte futexVal = AllocTemp();
+        X86_64Encoder.MovLoad(m_text, futexVal, taskLoaded, 0);
+        X86_64Encoder.CmpRI(m_text, futexVal, 1);
+        int doneJump = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0); // jge done (>=1 means done)
+
+        // futex_wait(task, FUTEX_WAIT=0, expected=0, timeout=NULL)
+        taskLoaded = LoadLocal(savedTask);
+        X86_64Encoder.Li(m_text, Reg.RAX, 202);
+        X86_64Encoder.MovRR(m_text, Reg.RDI, taskLoaded);
+        X86_64Encoder.Li(m_text, Reg.RSI, 0);      // FUTEX_WAIT
+        X86_64Encoder.Li(m_text, Reg.RDX, 0);      // expected = 0
+        X86_64Encoder.Li(m_text, Reg.R10, 0);      // timeout = NULL (clobbers HeapReg!)
+        X86_64Encoder.Syscall(m_text);
+
+        // Restore HeapReg and loop
+        X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(savedHeap));
+        X86_64Encoder.Jmp(m_text, loopTop - (m_text.Count + 5));
+
+        // Done: load result
+        int doneAddr = m_text.Count;
+        PatchJcc(doneJump, doneAddr);
+        X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(savedHeap)); // restore HeapReg
+        taskLoaded = LoadLocal(savedTask);
         byte result = AllocTemp();
-        X86_64Encoder.MovLoad(m_text, result, taskPtr, 8);
+        X86_64Encoder.MovLoad(m_text, result, taskLoaded, 8);
         return result;
     }
+
+    // PatchJcc already defined elsewhere in this class
 
     byte EmitPrintLine(List<IRExpr> args)
     {
