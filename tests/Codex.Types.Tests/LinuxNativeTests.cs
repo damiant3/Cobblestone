@@ -160,6 +160,273 @@ public class LinuxNativeTests
         Assert.Equal("3628800", output.Trim());
     }
 
+    // ── TCO (Tail Call Optimization) Tests ─────────────────────────
+
+    // Small TCO: sum 1..10 = 55 (verifies TCO works at all)
+    const string TCOSmallSource = """
+        sum-to : Integer -> Integer -> Integer
+        sum-to (n) (acc) =
+          if n == 0
+            then acc
+            else sum-to (n - 1) (acc + n)
+
+        main : Integer
+        main = sum-to 10 0
+        """;
+
+    // Large TCO: sum 1..100000 = 5000050000 (would segfault without TCO)
+    const string TCOSource = """
+        sum-to : Integer -> Integer -> Integer
+        sum-to (n) (acc) =
+          if n == 0
+            then acc
+            else sum-to (n - 1) (acc + n)
+
+        main : Integer
+        main = sum-to 100000 0
+        """;
+
+    [Fact]
+    public void TCO_sum_to_10_runs_x86_64()
+    {
+        if (!IsLinuxX64()) { m_output.WriteLine("SKIP: not Linux x86-64"); return; }
+        string? output = CompileAndRunX86_64(TCOSmallSource, "tco_sm_x64");
+        Assert.NotNull(output);
+        m_output.WriteLine($"x86-64 TCO small: [{output.Trim()}]");
+        Assert.Equal("55", output.Trim());
+    }
+
+    [Fact]
+    public void TCO_sum_to_1000_runs_x86_64()
+    {
+        if (!IsLinuxX64()) { m_output.WriteLine("SKIP: not Linux x86-64"); return; }
+        string source = """
+            sum-to : Integer -> Integer -> Integer
+            sum-to (n) (acc) =
+              if n == 0
+                then acc
+                else sum-to (n - 1) (acc + n)
+
+            main : Integer
+            main = sum-to 1000 0
+            """;
+        string? output = CompileAndRunX86_64(source, "tco_1k_x64");
+        Assert.NotNull(output);
+        m_output.WriteLine($"x86-64 TCO 1k: [{output.Trim()}]");
+        Assert.Equal("500500", output.Trim());
+    }
+
+    [Fact]
+    public void TCO_sum_to_100k_runs_x86_64()
+    {
+        if (!IsLinuxX64()) { m_output.WriteLine("SKIP: not Linux x86-64"); return; }
+        string? output = CompileAndRunX86_64(TCOSource, "tco_x64");
+        Assert.NotNull(output);
+        m_output.WriteLine($"x86-64 TCO output: [{output.Trim()}]");
+        Assert.Equal("5000050000", output.Trim());
+    }
+
+    [Fact]
+    public void TCO_sum_to_100k_runs_arm64()
+    {
+        if (!IsLinux()) { m_output.WriteLine("SKIP: not Linux"); return; }
+        if (!HasQemu("qemu-aarch64")) { m_output.WriteLine("SKIP: no qemu-aarch64"); return; }
+        string? output = CompileAndRunArm64(TCOSource, "tco_a64");
+        Assert.NotNull(output);
+        m_output.WriteLine($"ARM64 TCO output: [{output.Trim()}]");
+        Assert.Equal("5000050000", output.Trim());
+    }
+
+    [Fact]
+    public void TCO_sum_to_100k_runs_riscv()
+    {
+        if (!IsLinux()) { m_output.WriteLine("SKIP: not Linux"); return; }
+        if (!HasQemu("qemu-riscv64")) { m_output.WriteLine("SKIP: no qemu-riscv64"); return; }
+        string? output = CompileAndRunRiscV(TCOSource, "tco_rv");
+        Assert.NotNull(output);
+        m_output.WriteLine($"RISC-V TCO output: [{output.Trim()}]");
+        Assert.Equal("5000050000", output.Trim());
+    }
+
+    // ── is-digit Tests ──────────────────────────────────────────
+
+    // Positive case: '5' is a digit
+    const string IsDigitPositiveSource = """
+        main : Integer
+        main = if is-digit "5" then 1 else 0
+        """;
+
+    // Negative case: space is NOT a digit (this was the signed comparison bug)
+    const string IsDigitNegativeSource = """
+        main : Integer
+        main = if is-digit " " then 1 else 0
+        """;
+
+    [Fact]
+    public void IsDigit_positive_runs_x86_64()
+    {
+        if (!IsLinuxX64()) { m_output.WriteLine("SKIP: not Linux x86-64"); return; }
+        string? output = CompileAndRunX86_64(IsDigitPositiveSource, "isdigit_pos_x64");
+        Assert.NotNull(output);
+        Assert.Equal("1", output.Trim());
+    }
+
+    [Fact]
+    public void IsDigit_space_rejected_x86_64()
+    {
+        if (!IsLinuxX64()) { m_output.WriteLine("SKIP: not Linux x86-64"); return; }
+        string? output = CompileAndRunX86_64(IsDigitNegativeSource, "isdigit_neg_x64");
+        Assert.NotNull(output);
+        m_output.WriteLine($"x86-64 is-digit space: [{output.Trim()}]");
+        Assert.Equal("0", output.Trim());
+    }
+
+    [Fact]
+    public void IsDigit_positive_runs_arm64()
+    {
+        if (!IsLinux()) { m_output.WriteLine("SKIP: not Linux"); return; }
+        if (!HasQemu("qemu-aarch64")) { m_output.WriteLine("SKIP: no qemu-aarch64"); return; }
+        string? output = CompileAndRunArm64(IsDigitPositiveSource, "isdigit_pos_a64");
+        Assert.NotNull(output);
+        Assert.Equal("1", output.Trim());
+    }
+
+    [Fact]
+    public void IsDigit_space_rejected_arm64()
+    {
+        if (!IsLinux()) { m_output.WriteLine("SKIP: not Linux"); return; }
+        if (!HasQemu("qemu-aarch64")) { m_output.WriteLine("SKIP: no qemu-aarch64"); return; }
+        string? output = CompileAndRunArm64(IsDigitNegativeSource, "isdigit_neg_a64");
+        Assert.NotNull(output);
+        Assert.Equal("0", output.Trim());
+    }
+
+    [Fact]
+    public void IsDigit_positive_runs_riscv()
+    {
+        if (!IsLinux()) { m_output.WriteLine("SKIP: not Linux"); return; }
+        if (!HasQemu("qemu-riscv64")) { m_output.WriteLine("SKIP: no qemu-riscv64"); return; }
+        string? output = CompileAndRunRiscV(IsDigitPositiveSource, "isdigit_pos_rv");
+        Assert.NotNull(output);
+        Assert.Equal("1", output.Trim());
+    }
+
+    [Fact]
+    public void IsDigit_space_rejected_riscv()
+    {
+        if (!IsLinux()) { m_output.WriteLine("SKIP: not Linux"); return; }
+        if (!HasQemu("qemu-riscv64")) { m_output.WriteLine("SKIP: no qemu-riscv64"); return; }
+        string? output = CompileAndRunRiscV(IsDigitNegativeSource, "isdigit_neg_rv");
+        Assert.NotNull(output);
+        Assert.Equal("0", output.Trim());
+    }
+
+    // ── is-whitespace Tests ─────────────────────────────────────
+
+    const string IsWhitespacePositiveSource = """
+        main : Integer
+        main = if is-whitespace " " then 1 else 0
+        """;
+
+    const string IsWhitespaceNegativeSource = """
+        main : Integer
+        main = if is-whitespace "a" then 1 else 0
+        """;
+
+    [Fact]
+    public void IsWhitespace_space_detected_x86_64()
+    {
+        if (!IsLinuxX64()) { m_output.WriteLine("SKIP: not Linux x86-64"); return; }
+        string? output = CompileAndRunX86_64(IsWhitespacePositiveSource, "isws_pos_x64");
+        Assert.NotNull(output);
+        Assert.Equal("1", output.Trim());
+    }
+
+    [Fact]
+    public void IsWhitespace_letter_rejected_x86_64()
+    {
+        if (!IsLinuxX64()) { m_output.WriteLine("SKIP: not Linux x86-64"); return; }
+        string? output = CompileAndRunX86_64(IsWhitespaceNegativeSource, "isws_neg_x64");
+        Assert.NotNull(output);
+        Assert.Equal("0", output.Trim());
+    }
+
+    [Fact]
+    public void IsWhitespace_space_detected_arm64()
+    {
+        if (!IsLinux()) { m_output.WriteLine("SKIP: not Linux"); return; }
+        if (!HasQemu("qemu-aarch64")) { m_output.WriteLine("SKIP: no qemu-aarch64"); return; }
+        string? output = CompileAndRunArm64(IsWhitespacePositiveSource, "isws_pos_a64");
+        Assert.NotNull(output);
+        Assert.Equal("1", output.Trim());
+    }
+
+    [Fact]
+    public void IsWhitespace_letter_rejected_arm64()
+    {
+        if (!IsLinux()) { m_output.WriteLine("SKIP: not Linux"); return; }
+        if (!HasQemu("qemu-aarch64")) { m_output.WriteLine("SKIP: no qemu-aarch64"); return; }
+        string? output = CompileAndRunArm64(IsWhitespaceNegativeSource, "isws_neg_a64");
+        Assert.NotNull(output);
+        Assert.Equal("0", output.Trim());
+    }
+
+    [Fact]
+    public void IsWhitespace_space_detected_riscv()
+    {
+        if (!IsLinux()) { m_output.WriteLine("SKIP: not Linux"); return; }
+        if (!HasQemu("qemu-riscv64")) { m_output.WriteLine("SKIP: no qemu-riscv64"); return; }
+        string? output = CompileAndRunRiscV(IsWhitespacePositiveSource, "isws_pos_rv");
+        Assert.NotNull(output);
+        Assert.Equal("1", output.Trim());
+    }
+
+    [Fact]
+    public void IsWhitespace_letter_rejected_riscv()
+    {
+        if (!IsLinux()) { m_output.WriteLine("SKIP: not Linux"); return; }
+        if (!HasQemu("qemu-riscv64")) { m_output.WriteLine("SKIP: no qemu-riscv64"); return; }
+        string? output = CompileAndRunRiscV(IsWhitespaceNegativeSource, "isws_neg_rv");
+        Assert.NotNull(output);
+        Assert.Equal("0", output.Trim());
+    }
+
+    // ── negate Tests ────────────────────────────────────────────
+
+    const string NegateSource = """
+        main : Integer
+        main = negate 42
+        """;
+
+    [Fact]
+    public void Negate_runs_x86_64()
+    {
+        if (!IsLinuxX64()) { m_output.WriteLine("SKIP: not Linux x86-64"); return; }
+        string? output = CompileAndRunX86_64(NegateSource, "negate_x64");
+        Assert.NotNull(output);
+        Assert.Equal("-42", output.Trim());
+    }
+
+    [Fact]
+    public void Negate_runs_arm64()
+    {
+        if (!IsLinux()) { m_output.WriteLine("SKIP: not Linux"); return; }
+        if (!HasQemu("qemu-aarch64")) { m_output.WriteLine("SKIP: no qemu-aarch64"); return; }
+        string? output = CompileAndRunArm64(NegateSource, "negate_a64");
+        Assert.NotNull(output);
+        Assert.Equal("-42", output.Trim());
+    }
+
+    [Fact]
+    public void Negate_runs_riscv()
+    {
+        if (!IsLinux()) { m_output.WriteLine("SKIP: not Linux"); return; }
+        if (!HasQemu("qemu-riscv64")) { m_output.WriteLine("SKIP: no qemu-riscv64"); return; }
+        string? output = CompileAndRunRiscV(NegateSource, "negate_rv");
+        Assert.NotNull(output);
+        Assert.Equal("-42", output.Trim());
+    }
+
     // ── Compile-and-run helpers ──────────────────────────────────
 
     // ── Bare Metal x86-64 Boot Tests (qemu-system) ──────────────
