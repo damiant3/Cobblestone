@@ -88,6 +88,7 @@ sealed class Arm64CodeGen
         IRIf iff => HasTailCall(iff.Then, fn) || HasTailCall(iff.Else, fn),
         IRLet let => HasTailCall(let.Body, fn),
         IRMatch m => m.Branches.Any(b => HasTailCall(b.Body, fn)),
+        IRRegion region => HasTailCall(region.Body, fn),
         IRApply app => IsSelfCall(app, fn),
         IRDo d => d.Statements.Length > 0 && d.Statements[^1] is IRDoExec e && HasTailCall(e.Expression, fn),
         _ => false
@@ -476,6 +477,10 @@ sealed class Arm64CodeGen
             foreach (uint insn in Arm64Encoder.Li(dummy, 0)) Emit(insn);
             return dummy;
         }
+        // Sub-expressions of a call are NOT in tail position
+        bool savedTailPos = m_inTailPosition;
+        m_inTailPosition = false;
+
         List<IRExpr> args = new();
         IRExpr func = apply;
         while (func is IRApply inner)
@@ -527,11 +532,13 @@ sealed class Arm64CodeGen
             {
                 EmitCallTo(funcName.Name);
             }
+            m_inTailPosition = savedTailPos;
             uint rd = AllocTemp();
             Emit(Arm64Encoder.Mov(rd, Arm64Reg.X0));
             return rd;
         }
 
+        m_inTailPosition = savedTailPos;
         Console.Error.WriteLine($"ARM64 WARNING: EmitApply fallthrough -- {func.GetType().Name}");
         return Arm64Reg.Xzr;
     }

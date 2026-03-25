@@ -121,6 +121,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         IRIf iff => HasTailCall(iff.Then, funcName) || HasTailCall(iff.Else, funcName),
         IRLet let => HasTailCall(let.Body, funcName),
         IRMatch match => match.Branches.Any(b => HasTailCall(b.Body, funcName)),
+        IRRegion region => HasTailCall(region.Body, funcName),
         IRApply app => IsSelfCall(app, funcName),
         IRDo doExpr => doExpr.Statements.Length > 0 &&
             doExpr.Statements[^1] is IRDoExec exec &&
@@ -518,6 +519,10 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             return dummy;
         }
 
+        // Sub-expressions of a call are NOT in tail position
+        bool savedTailPos = m_inTailPosition;
+        m_inTailPosition = false;
+
         List<IRExpr> args = new();
         IRExpr func = apply;
         while (func is IRApply inner)
@@ -575,11 +580,13 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             {
                 EmitCallTo(funcName.Name);
             }
+            m_inTailPosition = savedTailPos;
             uint rd = AllocTemp();
             Emit(RiscVEncoder.Mv(rd, Reg.A0));
             return rd;
         }
 
+        m_inTailPosition = savedTailPos;
         Console.Error.WriteLine($"RISCV WARNING: EmitApply fallthrough — function expr is {func.GetType().Name}, not IRName");
         return Reg.Zero;
     }
