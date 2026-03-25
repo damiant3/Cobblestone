@@ -1,7 +1,9 @@
 # Known Conditions
 
 Persistent record of known build/test conditions that agents should NOT re-investigate.
-Read by `codex-agent doctor`. Last updated: 2026-03-21.
+Read by `codex-agent doctor`. Last updated: 2026-03-25.
+
+Tool failures are tracked separately in `docs/TOOL-ERROR-REGISTRY.md`.
 
 ## Build
 
@@ -97,3 +99,39 @@ Select-String -Path "file.codex.new" -Pattern "^\s+then\s" | Select-Object LineN
 ```
 
 **Status**: Under investigation as of 2026-03-21. Documenting all occurrences.
+
+### edit_file drops lines / produces no edits — RECURRING
+
+The VS Copilot `edit_file` tool silently drops lines (especially `# heading` on line 1
+of markdown files) or returns "No edits were produced" on trivial changes. Observed on
+files as small as 240 lines. See `docs/TOOL-ERROR-REGISTRY.md` TEF-001, TEF-002.
+
+**Action**: Use the safe workflow for ALL files, not just large ones:
+`snap save` → `create_file .new` → `Copy-Item` swap → `peek` verify → `snap diff`.
+
+### get_file cannot verify markdown headings — PERMANENT
+
+The `get_file` built-in renders `# heading` lines as markdown, making them invisible
+in output. Agents cannot confirm whether line 1 of a markdown file exists using
+`get_file`. See `docs/TOOL-ERROR-REGISTRY.md` TEF-003.
+
+**Action**: Use `codex-agent peek` for all verification, not `get_file`.
+
+### Terminal writes corrupt encoding — PERMANENT
+
+PowerShell file writes (`Set-Content`, `WriteAllText`, `>`) mangle non-ASCII
+characters (em dashes, arrows, etc.). See `docs/TOOL-ERROR-REGISTRY.md` TEF-004.
+
+**Action**: NEVER write files via terminal. This is tempting when `edit_file` fails
+but creates worse problems. Use `create_file` only.
+
+### Multi-line terminal commands silently mangle — PERMANENT
+
+The VS Copilot `run_command_in_terminal` tool concatenates multi-line input
+unpredictably. Newlines disappear, adjacent commands fuse into garbage strings,
+and partial execution occurs with no error. See `docs/TOOL-ERROR-REGISTRY.md` TEF-007.
+
+**Action**: ONE command per `run_command_in_terminal` call. Always. No exceptions.
+If you need to run N commands, make N separate tool calls. Do not use semicolons
+to chain commands — use separate calls. If the operation truly requires a script,
+write a `.ps1` file with `create_file`, run it with `pwsh -File`, then delete it.

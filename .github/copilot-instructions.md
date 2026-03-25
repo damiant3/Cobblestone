@@ -3,6 +3,16 @@
 > Single file — VS Copilot only reads `.github/copilot-instructions.md`.
 > Keep this lean. Every char here is burned on every prompt.
 
+## Repository Identity
+
+| | |
+|---|---|
+| **Repo** | `https://github.com/damiant3/NewRepository` |
+| **Local** | `D:\Projects\NewRepository` (Windows workstation) |
+| **Solution** | `Codex.sln` |
+| **Agent** | Agent Windows (GitHub Copilot in Visual Studio) |
+| **Git identity** | `Agent Windows` / `agent-windows@codex.dev` |
+
 ## What This Repository Is
 
 Codex is a self-hosting programming language compiler (written in Codex, compiles itself).
@@ -12,17 +22,29 @@ C# bootstrap (.NET 8) is locked. Solution: `Codex.sln`. Pipeline:
 Source (.codex) → Lexer → Parser → Desugarer → NameResolver → TypeChecker → Lowering → Emitter
 ```
 
-12 backends. 800+ tests. Self-hosting achieved. Content-addressed fact store.
+15 backends (12 transpilation + IL + RISC-V + ARM64 + x86-64 + WASM + bare metal).
+890+ tests. Self-hosting achieved. Content-addressed fact store with network sync.
 
 Design docs: `docs/00-OVERVIEW.md`, `docs/10-PRINCIPLES.md`.
-Do not modify Vision docs (`docs/Vision/`) without explicit permission.
+Do not modify Vision docs (`docs/Vision/`) ever.
+
+### Agents
+
+| Agent | Environment | Branch prefix | Identity |
+|-------|-------------|---------------|----------|
+| Windows | VS + Copilot, this workstation | `windows/` | `agent-windows@codex.dev` |
+| Linux | Claude sandbox (remote) | `linux/` | `agent-linux@codex.dev` |
+| Cam | CLI worktree `D:\Projects\NewRepository-cam` | `cam/` | Cam's git config |
+| Nut | Garage box (future) | `nut/` | TBD |
+
+No agent merges its own work to `master` without review (by another agent or user).
 
 ---
 
 ## Session Rules
 
 1. **Read before you write.** Always read a file before editing it.
-2. **Build before you commit.** `dotnet build Codex.sln` + `dotnet test Codex.sln`.
+2. **Build before you commit.** Use `codex-agent build` + `codex-agent test`.
 3. **Clean up temp files.** Delete `.bak`, `.new`, `.tmp`, `.snap`, scratch scripts before ending.
 4. **One logical change per commit.** Don't bundle unrelated fixes.
 5. **Leave a handoff.** After meaningful work, update `docs/OldStatus/` handoff docs.
@@ -81,6 +103,12 @@ dotnet tools/codex-agent/codex-agent.exe status
 dotnet tools/codex-agent/codex-agent.exe handoff show
 ```
 
+On first session or after context loss, also orient:
+```powershell
+git -C D:\Projects\NewRepository log --oneline -5   # recent history
+git -C D:\Projects\NewRepository branch -r           # outstanding branches
+```
+
 ### Before Editing Any File
 
 ```powershell
@@ -113,7 +141,7 @@ dotnet tools/codex-agent/codex-agent.exe snap diff <file>
 - **No XML doc comments** (`///`). Code should be self-documenting.
 - **No `var`** when the type is not obvious from the RHS.
 - **No unused fields/variables/parameters.** `TreatWarningsAsErrors` catches these.
-- Prefer `Map<K,V>` (in `Codex.Core`) over `ImmutableDictionary`.
+- Prefer `Map<K,V>` (in `Codex.Core`) over `ImmutableDictionary`.  There is an equivalent ValueMap<K,V> for value types.
 
 ### Implicit Usings
 
@@ -139,23 +167,26 @@ These are implicit (don't add them): `System`, `System.Collections.Generic`, `Sy
 
 ## File Editing Rules
 
-### Small Files (< 100 lines)
-`edit_file` is fine. Verify result by reading back.
+**All files, any size.** `edit_file` has documented failure modes on files of every
+size (see `docs/TOOL-ERROR-REGISTRY.md`). Required workflow:
 
-### Medium Files (100–300 lines)
-`edit_file` with generous context. Always `snap save` first. `snap diff` after.
+1. `codex-agent snap save <file>`
+2. Make the edit (try `edit_file` for small surgical changes to `.cs` files only).
+3. `codex-agent peek <file> 1 10` to verify (NOT `get_file` — it hides headings).
+4. `codex-agent snap diff <file>` to confirm delta.
+5. If anything looks wrong: `codex-agent snap restore <file>` and switch to the safe path.
 
-### Large Files (> 300 lines)
-`edit_file` can silently corrupt large files. Required workflow:
+**Safe path** (use when `edit_file` fails, or for any markdown/`.codex`/config file):
 
-1. `snap save` the file.
-2. Write complete new file to `<filename>.new` using `create_file`.
-3. Swap in terminal: `Copy-Item <filename>.new <filename> -Force`
-4. `snap diff` to confirm only intended changes. Check line count with `stat`.
-5. If build fails: `snap restore`, inspect, retry.
-6. Clean up `.new` files.
+1. `codex-agent snap save <file>`
+2. `create_file` to `<filename>.new` with complete content.
+3. `Copy-Item <filename>.new <filename> -Force`
+4. `codex-agent peek <file> 1 10` to verify.
+5. `codex-agent snap diff <file>` to confirm only intended changes.
+6. If build fails: `snap restore`, inspect, retry.
+7. `Remove-Item <filename>.new`
 
-**Alternative: Partial class.** For >300-line files needing new methods, create a second
+**Alternative: Partial class.** For large `.cs` files needing new methods, create a second
 file (e.g., `Foo.Bar.cs`) with `partial class`. Merge when stable.
 
 ### Never Do
@@ -218,17 +249,29 @@ Self-hosted source: 26 `.codex` files in `Codex.Codex/`. Bootstrap runner: `tool
 
 ## Git Workflow
 
-Branch naming: `windows/<topic>`, `linux/<topic>`, `staging/<topic>`.
-No agent merges its own work to `master` without review (by the other agent or user).
+Branch naming: `windows/<topic>`, `linux/<topic>`, `cam/<topic>`, `nut/<topic>`.
+No agent merges its own work to `master` without review (by another agent or user).
 Use Conventional Commits: `feat:`, `fix:`, `docs:`, `test:`, `chore:`, `refactor:`.
+
+When reviewing other agents' branches:
+1. `git fetch --all`
+2. `git branch -r --merged origin/master` — delete these (cleanup)
+3. `git branch -r --no-merged origin/master` — review these
+4. `git diff --stat origin/master..origin/<branch>` — scope the change
+5. Build + test on master after merge
 
 ---
 
 ## Terminal Discipline
 
-- **Never paste multi-line PowerShell.** Write to `.ps1` file, run with `pwsh -File`, delete after.
+- **ONE command per terminal call.** Multi-line input is silently mangled (TEF-007).
+  Never send two commands in one call. If you need N commands, make N calls.
+- **Never write files via terminal.** No `>`, `Set-Content`, `WriteAllText`. Encoding
+  corruption is guaranteed on non-ASCII content (TEF-004). Use `create_file` only.
 - Terminal is for **read-only queries and builds**. Use `edit_file`/`create_file` for mutations.
 - If a command hangs, kill it and switch to a file-based approach.
+- If you truly need a multi-command script, write a `.ps1` with `create_file`,
+  run with `pwsh -File <script>`, then `Remove-Item <script>`.
 
 ---
 

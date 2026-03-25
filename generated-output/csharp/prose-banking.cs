@@ -2,15 +2,16 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 
 Console.WriteLine(Codex_prose_banking.main());
+
+public sealed record Account(string owner, long balance);
 
 public abstract record Transactionresult;
 
 public sealed record Success(long Field0) : Transactionresult;
 public sealed record Insufficientfunds(long Field0, long Field1) : Transactionresult;
-
-public sealed record Account(string owner, long balance);
 
 public static class Codex_prose_banking
 {

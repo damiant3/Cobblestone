@@ -2,10 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 
 Codex_expr_calculator.main();
-
-public sealed record ParseResult(Expr expr, long pos);
 
 public abstract record Expr;
 
@@ -14,6 +13,8 @@ public sealed record Add(Expr Field0, Expr Field1) : Expr;
 public sealed record Sub(Expr Field0, Expr Field1) : Expr;
 public sealed record Mul(Expr Field0, Expr Field1) : Expr;
 public sealed record Div(Expr Field0, Expr Field1) : Expr;
+
+public sealed record ParseResult(Expr expr, long pos);
 
 public static class Codex_expr_calculator
 {
