@@ -98,14 +98,14 @@ system).
 **The route:**
 
 ```
-Rung 0  ✅  Flat binary boots in QEMU, serial output
-Rung 1      Interrupt handling (keyboard, timer)
-Rung 2      Process isolation (page tables per process)
-Rung 3      Capability-granted device access
-Rung 4      Self-hosting: the compiler runs ON Codex.OS
+Ring 0  ✅  Flat binary boots in QEMU, serial output
+Ring 1      Interrupt handling (keyboard, timer)
+Ring 2      Process isolation (page tables per process)
+Ring 3      Capability-granted device access
+Ring 4      Self-hosting: the compiler runs ON Codex.OS
 ```
 
-Rung 4 is the summit marker. When the Codex compiler compiles itself on
+Ring 4 is the summit marker. When the Codex compiler compiles itself on
 Codex.OS, the system is self-sustaining.
 
 ---
