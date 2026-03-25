@@ -863,52 +863,36 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             return bodyResult;
         }
 
-        // Heap-returning functions: skip reclamation entirely.
-        //
-        // Copy-above-then-compact (below, disabled) is sound for the deep copy
-        // itself, but restoring the heap pointer in the skip-escape path
-        // reclaims intermediate allocations that may be in the return value's
-        // transitive closure. Full reclamation requires tracking ALL live heap
-        // references, not just the root return value.
-        //
-        // Scalar reclamation IS safe: scalars live in registers, not the heap,
-        // so no heap data is referenced after S1 restore.
-        return bodyResult;
-
-
-#if false // Copy-above-then-compact: disabled pending full live-ref tracking
         // ── Copy-Above-Then-Compact ────────────────────────────────
-        // Deep copy ABOVE body data (no overlap with source), then
-        // memmove the copy down to saved_hp and relocate pointers.
+        // When the return value was allocated IN this region, deep copy it
+        // above the body data, then memmove down to saved_hp and relocate
+        // pointers. This reclaims all body intermediates.
         //
-        // Skip if the result pointer is outside [saved_hp, body_end):
-        // the value lives in a parent scope and survives region reset.
+        // When the return value is OUTSIDE this region (parent scope),
+        // we do NOT reclaim — the return value may reference body
+        // intermediates through its transitive closure.
 
-        // Save body_end = current S1 (watermark after body allocations)
+        // Save body_end = current S1
         uint bodyEnd = AllocLocal();
         uint t1 = AllocTemp();
         Emit(RiscVEncoder.Mv(t1, Reg.S1));
         StoreLocal(bodyEnd, t1);
 
-        // Save body result
         uint resultLocal = AllocLocal();
         StoreLocal(resultLocal, bodyResult);
 
-        // Check: if result < saved_hp OR result >= body_end, skip escape copy.
-        // The value was allocated outside this region and survives naturally.
+        // Range check: if result < saved_hp OR result >= body_end → skip
         uint rPtr = LoadLocal(resultLocal);
         uint rSaved = LoadLocal(savedHeap);
         int skipBelow = m_instructions.Count;
-        Emit(RiscVEncoder.Nop()); // patched: blt rPtr, rSaved → skipEscape
+        Emit(RiscVEncoder.Nop()); // patched: blt → skip
         uint rEnd = LoadLocal(bodyEnd);
         int skipAbove = m_instructions.Count;
-        Emit(RiscVEncoder.Nop()); // patched: bge rPtr, rEnd → skipEscape
+        Emit(RiscVEncoder.Nop()); // patched: bge → skip
 
-        // Deep copy above body_end — S1 is at body_end, copy allocates above
+        // ── Escape path: result is IN the region ──
         uint escapedResult = EmitEscapeCopy(resultLocal, region.Type);
-        // S1 now points to copy_end (after all deep copy allocations)
 
-        // Save escaped result pointer and copy_end
         uint escapedLocal = AllocLocal();
         StoreLocal(escapedLocal, escapedResult);
         uint copyEndLocal = AllocLocal();
@@ -916,56 +900,48 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Mv(t2, Reg.S1));
         StoreLocal(copyEndLocal, t2);
 
-        // copy_size = copy_end - body_end
         uint copySizeLocal = AllocLocal();
         uint t3 = AllocTemp();
         Emit(RiscVEncoder.Sub(t3, LoadLocal(copyEndLocal), LoadLocal(bodyEnd)));
         StoreLocal(copySizeLocal, t3);
 
-        // delta = body_end - saved_hp
         uint deltaLocal = AllocLocal();
         uint t4 = AllocTemp();
         Emit(RiscVEncoder.Sub(t4, LoadLocal(bodyEnd), LoadLocal(savedHeap)));
         StoreLocal(deltaLocal, t4);
 
-        // memmove(dst=saved_hp, src=body_end, len=copy_size)
         Emit(RiscVEncoder.Mv(Reg.A0, LoadLocal(savedHeap)));
         Emit(RiscVEncoder.Mv(Reg.A1, LoadLocal(bodyEnd)));
         Emit(RiscVEncoder.Mv(Reg.A2, LoadLocal(copySizeLocal)));
         EmitCallTo("__memmove");
 
-        // adjusted_result = escaped_result - delta
         uint adjLocal = AllocLocal();
         uint t5 = AllocTemp();
         Emit(RiscVEncoder.Sub(t5, LoadLocal(escapedLocal), LoadLocal(deltaLocal)));
         StoreLocal(adjLocal, t5);
 
-        // Relocate internal pointers in the compacted copy
         EmitRelocateCall(adjLocal, deltaLocal, region.Type);
 
-        // S1 = saved_hp + copy_size (heap pointer after compacted copy)
         Emit(RiscVEncoder.Add(Reg.S1, LoadLocal(savedHeap), LoadLocal(copySizeLocal)));
 
-        // Store adjusted result for shared return path
         StoreLocal(resultLocal, LoadLocal(adjLocal));
         int skipToEnd = m_instructions.Count;
         Emit(RiscVEncoder.Nop()); // patched: j → end
 
-        // Skip escape path: result is outside region, just restore S1
+        // ── Skip path: result is OUTSIDE the region ──
+        // Do NOT restore S1 — the return value may reference body
+        // intermediates. This wastes memory but is correct.
         int skipLabel = m_instructions.Count;
         m_instructions[skipBelow] = RiscVEncoder.Blt(rPtr, rSaved,
             (skipLabel - skipBelow) * 4);
         m_instructions[skipAbove] = RiscVEncoder.Bge(rPtr, rEnd,
             (skipLabel - skipAbove) * 4);
-
-        // Restore S1 to saved_hp (reclaim body, value survives in parent scope)
-        Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(savedHeap)));
+        // S1 stays at body_end — no reclamation for external results
 
         int endLabel = m_instructions.Count;
         m_instructions[skipToEnd] = RiscVEncoder.J((endLabel - skipToEnd) * 4);
 
         return LoadLocal(resultLocal);
-#endif
     }
 
     void EmitRelocateCall(uint ptrLocal, uint deltaLocal, CodexType type)
