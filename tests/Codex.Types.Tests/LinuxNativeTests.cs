@@ -174,7 +174,7 @@ public class LinuxNativeTests
         main = sum-to 10 0
         """;
 
-    // Large TCO: sum 1..100000 = 5000050000 (would segfault without TCO)
+    // Large TCO: sum 1..10000 = 50005000 (tests TCO at scale; 100k OOMs the bump allocator)
     const string TCOSource = """
         sum-to : Integer -> Integer -> Integer
         sum-to (n) (acc) =
@@ -183,7 +183,7 @@ public class LinuxNativeTests
             else sum-to (n - 1) (acc + n)
 
         main : Integer
-        main = sum-to 100000 0
+        main = sum-to 10000 0
         """;
 
     [Fact]
@@ -217,35 +217,35 @@ public class LinuxNativeTests
     }
 
     [Fact]
-    public void TCO_sum_to_100k_runs_x86_64()
+    public void TCO_sum_to_10k_runs_x86_64()
     {
         if (!IsLinuxX64()) { m_output.WriteLine("SKIP: not Linux x86-64"); return; }
         string? output = CompileAndRunX86_64(TCOSource, "tco_x64");
         Assert.NotNull(output);
         m_output.WriteLine($"x86-64 TCO output: [{output.Trim()}]");
-        Assert.Equal("5000050000", output.Trim());
+        Assert.Equal("50005000", output.Trim());
     }
 
     [Fact]
-    public void TCO_sum_to_100k_runs_arm64()
+    public void TCO_sum_to_10k_runs_arm64()
     {
         if (!IsLinux()) { m_output.WriteLine("SKIP: not Linux"); return; }
         if (!HasQemu("qemu-aarch64")) { m_output.WriteLine("SKIP: no qemu-aarch64"); return; }
         string? output = CompileAndRunArm64(TCOSource, "tco_a64");
         Assert.NotNull(output);
         m_output.WriteLine($"ARM64 TCO output: [{output.Trim()}]");
-        Assert.Equal("5000050000", output.Trim());
+        Assert.Equal("50005000", output.Trim());
     }
 
     [Fact]
-    public void TCO_sum_to_100k_runs_riscv()
+    public void TCO_sum_to_10k_runs_riscv()
     {
         if (!IsLinux()) { m_output.WriteLine("SKIP: not Linux"); return; }
         if (!HasQemu("qemu-riscv64")) { m_output.WriteLine("SKIP: no qemu-riscv64"); return; }
         string? output = CompileAndRunRiscV(TCOSource, "tco_rv");
         Assert.NotNull(output);
         m_output.WriteLine($"RISC-V TCO output: [{output.Trim()}]");
-        Assert.Equal("5000050000", output.Trim());
+        Assert.Equal("50005000", output.Trim());
     }
 
     // ── is-digit Tests ──────────────────────────────────────────

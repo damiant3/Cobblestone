@@ -1401,6 +1401,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
                 X86_64Encoder.CmpRI(m_text, rd, ' ');
                 X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_E, result);
                 byte t2 = AllocTemp();
+                X86_64Encoder.Li(m_text, t2, 0); // zero all 64 bits — Setcc only writes low byte
                 X86_64Encoder.CmpRI(m_text, rd, '\t');
                 X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_E, t2);
                 X86_64Encoder.AddRR(m_text, result, t2);
