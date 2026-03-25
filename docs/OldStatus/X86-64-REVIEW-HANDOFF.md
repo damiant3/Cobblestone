@@ -1,5 +1,3 @@
-File: docs\OldStatus\X86-64-REVIEW-HANDOFF.md
-````````markdown
 # x86-64 Backend Review & Merge — Handoff Summary
 
 **Date**: 2026-03-23 (verified via `Get-Date`)

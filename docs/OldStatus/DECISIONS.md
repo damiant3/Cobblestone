@@ -1,5 +1,3 @@
-File: docs\OldStatus\DECISIONS.md
-````````markdown
 # Decision Log
 
 > **Date correction (2026-03-18)**: Several dates in this file were hallucinated by
