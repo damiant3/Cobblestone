@@ -89,6 +89,28 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════
+# STEP 2b: Install QEMU and cross-compilers
+# ═══════════════════════════════════════════════════════════════
+
+step "Step 2b: Checking QEMU & cross-compilers"
+
+NEED_INSTALL=false
+for tool in qemu-system-x86_64 qemu-aarch64 qemu-riscv64 aarch64-linux-gnu-gcc riscv64-linux-gnu-gcc; do
+    command -v "$tool" &>/dev/null || NEED_INSTALL=true
+done
+
+if [ "$NEED_INSTALL" = true ]; then
+    echo "  Installing QEMU + cross-compilers..."
+    apt-get update -qq 2>/dev/null
+    apt-get install -y -qq qemu-user qemu-system-x86 qemu-system-arm \
+        qemu-system-misc binutils gcc gcc-aarch64-linux-gnu \
+        gcc-riscv64-linux-gnu 2>&1 | tail -2
+    ok "QEMU $(qemu-system-x86_64 --version 2>/dev/null | head -1 | grep -oP '[\d.]+' | head -1) + cross-compilers installed"
+else
+    ok "QEMU + cross-compilers already present"
+fi
+
+# ═══════════════════════════════════════════════════════════════
 # STEP 3: Clone or pull repo
 # ═══════════════════════════════════════════════════════════════
 
@@ -115,24 +137,36 @@ else
 fi
 
 # Set git identity for this session
-git config user.email "claude@anthropic.com"
-git config user.name "Claude (Opus 4.6, Linux)"
+git config user.email "agent-linux@codex.dev"
+git config user.name "Agent Linux"
 
 # ═══════════════════════════════════════════════════════════════
 # STEP 4: Build
 # ═══════════════════════════════════════════════════════════════
 
-step "Step 4: Building Codex.sln"
+step "Step 4: Building"
 START=$SECONDS
 
-BUILD_OUTPUT=$(dotnet build Codex.sln -v q 2>&1)
+# Build CLI (all backends) and test projects separately.
+# Codex.sln includes Bootstrap which requires pre-generated output from self-hosting.
+BUILD_OUTPUT=$(dotnet build tools/Codex.Cli/Codex.Cli.csproj -v q 2>&1)
 BUILD_EXIT=$?
-ERRORS=$(echo "$BUILD_OUTPUT" | grep -oP '\d+(?= Error)' | tail -1)
-WARNINGS=$(echo "$BUILD_OUTPUT" | grep -oP '\d+(?= Warning)' | tail -1)
+
+if [ "$BUILD_EXIT" -eq 0 ]; then
+    # Build test projects
+    for tp in tests/Codex.Types.Tests tests/Codex.Repository.Tests tests/Codex.Syntax.Tests \
+              tests/Codex.Ast.Tests tests/Codex.Core.Tests tests/Codex.Semantics.Tests \
+              tests/Codex.Lsp.Tests; do
+        if [ -d "$tp" ]; then
+            dotnet build "$tp" -v q 2>&1 | tail -1
+        fi
+    done
+fi
+
 ELAPSED=$((SECONDS - START))
 
 if [ "$BUILD_EXIT" -eq 0 ]; then
-    ok "Build succeeded (${ELAPSED}s) — ${ERRORS:-0} errors, ${WARNINGS:-0} warnings"
+    ok "Build succeeded (${ELAPSED}s)"
 else
     fail "Build failed (${ELAPSED}s) — check output above"
 fi
@@ -144,26 +178,45 @@ fi
 step "Step 5: Running tests"
 START=$SECONDS
 
-TEST_OUTPUT=$(dotnet test Codex.sln --no-build -v q 2>&1)
-PASSED=$(echo "$TEST_OUTPUT" | grep -oP 'Passed:\s+\K\d+' | awk '{s+=$1}END{print s+0}')
-FAILED=$(echo "$TEST_OUTPUT" | grep -oP 'Failed:\s+\K\d+' | awk '{s+=$1}END{print s+0}')
+TOTAL_PASSED=0
+TOTAL_FAILED=0
+for tp in tests/Codex.Types.Tests tests/Codex.Repository.Tests tests/Codex.Syntax.Tests \
+          tests/Codex.Ast.Tests tests/Codex.Core.Tests tests/Codex.Semantics.Tests \
+          tests/Codex.Lsp.Tests; do
+    if [ -d "$tp" ]; then
+        TEST_OUTPUT=$(dotnet test "$tp" --no-build -v q 2>&1)
+        P=$(echo "$TEST_OUTPUT" | grep -oP 'Passed:\s+\K\d+' | tail -1)
+        F=$(echo "$TEST_OUTPUT" | grep -oP 'Failed:\s+\K\d+' | tail -1)
+        TOTAL_PASSED=$((TOTAL_PASSED + ${P:-0}))
+        TOTAL_FAILED=$((TOTAL_FAILED + ${F:-0}))
+    fi
+done
 ELAPSED=$((SECONDS - START))
 
-if [ "${FAILED:-0}" -eq 0 ]; then
-    ok "All $PASSED tests passed (${ELAPSED}s)"
+if [ "${TOTAL_FAILED}" -eq 0 ]; then
+    ok "All $TOTAL_PASSED tests passed (${ELAPSED}s)"
 else
-    warn "$PASSED passed, $FAILED FAILED (${ELAPSED}s)"
-    echo "$TEST_OUTPUT" | grep -A2 "Failed " | head -20
+    warn "$TOTAL_PASSED passed, $TOTAL_FAILED FAILED (${ELAPSED}s)"
 fi
 
 # ═══════════════════════════════════════════════════════════════
-# STEP 6: Dashboard (if available)
+# STEP 6: Show unmerged feature branches
 # ═══════════════════════════════════════════════════════════════
 
-DASHBOARD="$REPO_DIR/tools/codexdashboard.sh"
-if [ -f "$DASHBOARD" ] && [ -x "$DASHBOARD" ]; then
-    step "Step 6: Dashboard"
-    bash "$DASHBOARD" 2>/dev/null || warn "Dashboard had errors (non-fatal)"
+step "Step 6: Unmerged branches"
+
+UNMERGED=0
+for b in $(git branch -r | grep -v HEAD | grep -v master); do
+    count=$(git log origin/master..$b --oneline 2>/dev/null | wc -l)
+    if [ "$count" -gt 0 ]; then
+        echo -e "  ${YELLOW}$b${RESET}: $count commit(s)"
+        git log origin/master..$b --oneline 2>/dev/null | sed 's/^/    /'
+        UNMERGED=$((UNMERGED + 1))
+    fi
+done
+
+if [ "$UNMERGED" -eq 0 ]; then
+    ok "All branches merged to master"
 fi
 
 # ═══════════════════════════════════════════════════════════════
