@@ -2774,13 +2774,15 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // mov dword [0x2000], 0x3003
         m_text.AddRange([0xC7, 0x05, 0x00, 0x20, 0x00, 0x00, 0x03, 0x30, 0x00, 0x00]);
 
-        // ── Set up PD[0] → 2MB huge page at 0x0 ──
-        // mov dword [0x3000], 0x83 (present + writable + huge)
+        // ── Set up PD entries: 4 x 2MB huge pages (0-8MB identity mapped) ──
+        // PD[0] → 0x000000 (present + writable + huge = 0x83)
         m_text.AddRange([0xC7, 0x05, 0x00, 0x30, 0x00, 0x00, 0x83, 0x00, 0x00, 0x00]);
-
-        // ── Set up PD[1] → 2MB huge page at 0x200000 ──
-        // mov dword [0x3008], 0x200083
+        // PD[1] → 0x200000
         m_text.AddRange([0xC7, 0x05, 0x08, 0x30, 0x00, 0x00, 0x83, 0x00, 0x20, 0x00]);
+        // PD[2] → 0x400000
+        m_text.AddRange([0xC7, 0x05, 0x10, 0x30, 0x00, 0x00, 0x83, 0x00, 0x40, 0x00]);
+        // PD[3] → 0x600000
+        m_text.AddRange([0xC7, 0x05, 0x18, 0x30, 0x00, 0x00, 0x83, 0x00, 0x60, 0x00]);
 
         // ── Load PML4 into CR3 ──
         // mov eax, 0x1000
@@ -2951,8 +2953,16 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.Li(m_text, Reg.RAX, 0);
         X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
 
-        // Create process 0: the kernel itself (runs in Ring 0 with boot page tables)
-        EmitCreateProcess(0, 0x1000 /* boot CR3 */, 0x200000 /* heap base */);
+        // Build process 0 page tables at 0x8000 (maps kernel + 0x400000 user heap)
+        EmitBuildProcessPageTables(0, 0x8000, 0x400000);
+        EmitCreateProcess(0, 0x8000 /* process 0 CR3 */, 0x400000 /* heap base */);
+
+        // Switch to process 0's page tables
+        X86_64Encoder.Li(m_text, Reg.RAX, 0x8000);
+        m_text.Add(0x0F); m_text.Add(0x22); m_text.Add(0xD8); // mov cr3, rax
+
+        // Update kernel heap pointer to process 0's private heap
+        X86_64Encoder.Li(m_text, HeapReg, 0x400000);
     }
 
     void EmitCreateProcess(int procIndex, long cr3, long heapBase)
@@ -3056,6 +3066,59 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
     int m_process1EntryOffset = -1; // patched after __proc1_entry is emitted
 
+    void EmitBuildProcessPageTables(int procIndex, long pml4Addr, long userHeapPhys)
+    {
+        // Build a per-process page table set:
+        //   PML4 at pml4Addr
+        //   PDPT at pml4Addr + 0x1000
+        //   PD   at pml4Addr + 0x2000
+        //
+        // Maps:
+        //   PD[0] → 0x000000 (2MB, kernel low memory: IDT, proc table, etc.)
+        //   PD[1] → 0x200000 (2MB, kernel heap — shared read-only in future)
+        //   PD[N] → userHeapPhys (2MB, this process's private heap)
+        //
+        // All entries use 2MB huge pages (PS bit = 0x80).
+
+        long pdptAddr = pml4Addr + 0x1000;
+        long pdAddr = pml4Addr + 0x2000;
+
+        // Zero all three pages (3 * 4096 / 8 = 1536 qwords)
+        X86_64Encoder.Li(m_text, Reg.RDI, pml4Addr);
+        X86_64Encoder.Li(m_text, Reg.RCX, 1536);
+        X86_64Encoder.Li(m_text, Reg.RAX, 0);
+        m_text.Add(0x48); m_text.Add(0xF3); m_text.Add(0xAB); // rep stosq
+
+        // PML4[0] → PDPT (present + writable = 0x03)
+        X86_64Encoder.Li(m_text, Reg.RDI, pml4Addr);
+        X86_64Encoder.Li(m_text, Reg.RAX, pdptAddr | 0x03);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+
+        // PDPT[0] → PD (present + writable = 0x03)
+        X86_64Encoder.Li(m_text, Reg.RDI, pdptAddr);
+        X86_64Encoder.Li(m_text, Reg.RAX, pdAddr | 0x03);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+
+        // PD[0] → 0x000000 (2MB, present + writable + huge = 0x83)
+        X86_64Encoder.Li(m_text, Reg.RDI, pdAddr);
+        X86_64Encoder.Li(m_text, Reg.RAX, 0x000000 | 0x83);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+
+        // PD[1] → 0x200000 (2MB kernel heap, shared)
+        X86_64Encoder.Li(m_text, Reg.RAX, 0x200000 | 0x83);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 8);
+
+        // Map the process's private user heap:
+        // userHeapPhys is the physical 2MB page for this process
+        // Map it at its identity-mapped address (PD entry = phys / 0x200000)
+        int pdIndex = (int)(userHeapPhys / 0x200000);
+        X86_64Encoder.Li(m_text, Reg.RAX, userHeapPhys | 0x83);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, pdIndex * 8);
+
+        // Also map PD[0x80] = the kernel code region at 0x100000
+        // (already covered by PD[0] which maps 0x0-0x1FFFFF)
+    }
+
     void EmitProcess1Setup()
     {
         // Process 1 runs __proc1_entry (emitted after all functions).
@@ -3064,9 +3127,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // Own heap at 0x300000.
 
         const long proc1Stack = 0x70000;
-        const long proc1Heap = 0x300000;
+        const long proc1Heap = 0x600000;
 
-        EmitCreateProcess(1, 0x1000 /* shared CR3 */, proc1Heap);
+        // Build process 1 page tables at 0xB000 (maps kernel + 0x600000 user heap)
+        EmitBuildProcessPageTables(1, 0xB000, proc1Heap);
+        EmitCreateProcess(1, 0xB000 /* process 1 CR3 */, proc1Heap);
 
         // Build a fake interrupt frame on process 1's stack so the first
         // context switch can "iretq" into it.
@@ -3128,7 +3193,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         m_process1EntryOffset = m_text.Count;
 
         // Set up this process's heap pointer
-        X86_64Encoder.Li(m_text, HeapReg, 0x300000);
+        X86_64Encoder.Li(m_text, HeapReg, 0x600000);
 
         // Infinite loop: print "B" to serial, then hlt (wait for timer)
         int loopTop = m_text.Count;
