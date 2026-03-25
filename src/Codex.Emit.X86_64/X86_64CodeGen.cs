@@ -2337,16 +2337,50 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.Li(m_text, Reg.RCX, 0);  // length counter
 
         int readByte = m_text.Count;
-        // read(0, heap+8+rcx, 1)
-        X86_64Encoder.PushR(m_text, Reg.RCX);   // save counter (clobbered by syscall)
-        X86_64Encoder.Li(m_text, Reg.RDI, 0);   // stdin
-        X86_64Encoder.Lea(m_text, Reg.RSI, Reg.RBX, 8);
-        X86_64Encoder.PopR(m_text, Reg.RCX);
-        X86_64Encoder.PushR(m_text, Reg.RCX);
-        X86_64Encoder.AddRR(m_text, Reg.RSI, Reg.RCX);
-        X86_64Encoder.Li(m_text, Reg.RDX, 1);
-        X86_64Encoder.Li(m_text, Reg.RAX, 0);   // SYS_read
-        X86_64Encoder.Syscall(m_text);
+        X86_64Encoder.PushR(m_text, Reg.RCX);   // save counter
+
+        if (m_target == X86_64Target.BareMetal)
+        {
+            // Bare metal: poll COM1 (0x3FD bit 0) until data ready, read from 0x3F8
+            int pollLoop = m_text.Count;
+            X86_64Encoder.Li(m_text, Reg.RDX, 0x3FD); // line status register
+            X86_64Encoder.InAlDx(m_text);               // AL = status
+            X86_64Encoder.Li(m_text, Reg.R11, 1);
+            X86_64Encoder.AndRR(m_text, Reg.RAX, Reg.R11); // test bit 0 (data ready)
+            X86_64Encoder.TestRR(m_text, Reg.RAX, Reg.RAX);
+            int dataReady = m_text.Count;
+            X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0); // got data
+            X86_64Encoder.Hlt(m_text); // wait for interrupt (saves power)
+            X86_64Encoder.Jmp(m_text, pollLoop - (m_text.Count + 5));
+            PatchJcc(dataReady, m_text.Count);
+
+            // Read the byte
+            X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+            X86_64Encoder.InAlDx(m_text); // AL = received byte
+
+            // Store it: heap[8 + counter]
+            X86_64Encoder.PopR(m_text, Reg.RCX);
+            X86_64Encoder.PushR(m_text, Reg.RCX);
+            X86_64Encoder.MovRR(m_text, Reg.RSI, Reg.RBX);
+            X86_64Encoder.AddRR(m_text, Reg.RSI, Reg.RCX);
+            X86_64Encoder.AddRI(m_text, Reg.RSI, 8);
+            // mov byte [rsi], al
+            m_text.Add(0x88); m_text.Add(0x06); // mov [rsi], al
+            X86_64Encoder.Li(m_text, Reg.RAX, 1); // return 1 (bytes read)
+        }
+        else
+        {
+            // Linux: read(0, heap+8+rcx, 1)
+            X86_64Encoder.Li(m_text, Reg.RDI, 0);   // stdin
+            X86_64Encoder.Lea(m_text, Reg.RSI, Reg.RBX, 8);
+            X86_64Encoder.PopR(m_text, Reg.RCX);
+            X86_64Encoder.PushR(m_text, Reg.RCX);
+            X86_64Encoder.AddRR(m_text, Reg.RSI, Reg.RCX);
+            X86_64Encoder.Li(m_text, Reg.RDX, 1);
+            X86_64Encoder.Li(m_text, Reg.RAX, 0);   // SYS_read
+            X86_64Encoder.Syscall(m_text);
+        }
+
         X86_64Encoder.PopR(m_text, Reg.RCX);
 
         // Check EOF
