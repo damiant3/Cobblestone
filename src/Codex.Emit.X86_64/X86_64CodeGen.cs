@@ -1361,13 +1361,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
                 X86_64Encoder.MovRR(m_text, lo, rd);
                 X86_64Encoder.SubRI(m_text, lo, 'a');
                 X86_64Encoder.CmpRI(m_text, lo, 'z' - 'a');
-                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_LE, lo);
+                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_BE, lo); // unsigned
                 // Check uppercase: rd >= 'A' && rd <= 'Z'
                 byte hi = AllocTemp();
                 X86_64Encoder.MovRR(m_text, hi, rd);
                 X86_64Encoder.SubRI(m_text, hi, 'A');
                 X86_64Encoder.CmpRI(m_text, hi, 'Z' - 'A');
-                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_LE, hi);
+                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_BE, hi); // unsigned
                 // Result = lower || upper (both are 0 or 1 in low byte)
                 byte result = AllocTemp();
                 X86_64Encoder.MovRR(m_text, result, lo);
