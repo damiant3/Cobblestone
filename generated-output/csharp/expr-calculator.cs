@@ -6,6 +6,8 @@ using System.Threading.Tasks;
 
 Codex_expr_calculator.main();
 
+public sealed record ParseResult(Expr expr, long pos);
+
 public abstract record Expr;
 
 public sealed record Lit(long Field0) : Expr;
@@ -13,8 +15,6 @@ public sealed record Add(Expr Field0, Expr Field1) : Expr;
 public sealed record Sub(Expr Field0, Expr Field1) : Expr;
 public sealed record Mul(Expr Field0, Expr Field1) : Expr;
 public sealed record Div(Expr Field0, Expr Field1) : Expr;
-
-public sealed record ParseResult(Expr expr, long pos);
 
 public static class Codex_expr_calculator
 {
@@ -28,7 +28,7 @@ public static class Codex_expr_calculator
             }
             else
             {
-                if ((input[(int)pos].ToString().Length > 0 && char.IsWhiteSpace(input[(int)pos].ToString()[0])))
+                if (char.IsWhiteSpace((char)((long)input[(int)pos])))
                 {
                     var _tco_0 = input;
                     var _tco_1 = (pos + 1L);
@@ -54,9 +54,9 @@ public static class Codex_expr_calculator
             }
             else
             {
-                if ((input[(int)pos].ToString().Length > 0 && char.IsDigit(input[(int)pos].ToString()[0])))
+                if (char.IsDigit((char)((long)input[(int)pos])))
                 {
-                    var d = long.Parse(input[(int)pos].ToString());
+                    var d = (((long)input[(int)pos]) - 48L);
                     var _tco_0 = input;
                     var _tco_1 = (pos + 1L);
                     var _tco_2 = len;
@@ -77,12 +77,12 @@ public static class Codex_expr_calculator
 
     public static long digit_count(string input, long pos, long len)
     {
-        return ((pos >= len) ? 0L : ((input[(int)pos].ToString().Length > 0 && char.IsDigit(input[(int)pos].ToString()[0])) ? (1L + digit_count(input, (pos + 1L), len)) : 0L));
+        return ((pos >= len) ? 0L : (char.IsDigit((char)((long)input[(int)pos])) ? (1L + digit_count(input, (pos + 1L), len)) : 0L));
     }
 
     public static ParseResult parse_atom(string input, long start)
     {
-        return ((Func<long, ParseResult>)((pos) => ((Func<long, ParseResult>)((len) => ((pos >= len) ? new ParseResult(new Lit(0L), pos) : ((input[(int)pos].ToString() == "(") ? ((Func<ParseResult, ParseResult>)((inner) => ((Func<long, ParseResult>)((after) => ((after < len) ? new ParseResult(inner.expr, (after + 1L)) : new ParseResult(inner.expr, after))))(skip_ws(input, inner.pos))))(parse_additive(input, (pos + 1L))) : ((Func<long, ParseResult>)((digits) => ((digits > 0L) ? ((Func<long, ParseResult>)((value) => new ParseResult(new Lit(value), (pos + digits))))(collect_digits(input, pos, len, 0L)) : new ParseResult(new Lit(0L), pos))))(digit_count(input, pos, len))))))(((long)input.Length))))(skip_ws(input, start));
+        return ((Func<long, ParseResult>)((pos) => ((Func<long, ParseResult>)((len) => ((pos >= len) ? new ParseResult(new Lit(0L), pos) : ((((char)((long)input[(int)pos])).ToString() == "(") ? ((Func<ParseResult, ParseResult>)((inner) => ((Func<long, ParseResult>)((after) => ((after < len) ? new ParseResult(inner.expr, (after + 1L)) : new ParseResult(inner.expr, after))))(skip_ws(input, inner.pos))))(parse_additive(input, (pos + 1L))) : ((Func<long, ParseResult>)((digits) => ((digits > 0L) ? ((Func<long, ParseResult>)((value) => new ParseResult(new Lit(value), (pos + digits))))(collect_digits(input, pos, len, 0L)) : new ParseResult(new Lit(0L), pos))))(digit_count(input, pos, len))))))(((long)input.Length))))(skip_ws(input, start));
     }
 
     public static ParseResult parse_multiplicative(string input, long start)
@@ -102,7 +102,7 @@ public static class Codex_expr_calculator
             }
             else
             {
-                if ((input[(int)pos].ToString() == "*"))
+                if ((((char)((long)input[(int)pos])).ToString() == "*"))
                 {
                     var right = parse_atom(input, (pos + 1L));
                     var _tco_0 = input;
@@ -113,7 +113,7 @@ public static class Codex_expr_calculator
                 }
                 else
                 {
-                    if ((input[(int)pos].ToString() == "/"))
+                    if ((((char)((long)input[(int)pos])).ToString() == "/"))
                     {
                         var right = parse_atom(input, (pos + 1L));
                         var _tco_0 = input;
@@ -148,7 +148,7 @@ public static class Codex_expr_calculator
             }
             else
             {
-                if ((input[(int)pos].ToString() == "+"))
+                if ((((char)((long)input[(int)pos])).ToString() == "+"))
                 {
                     var right = parse_multiplicative(input, (pos + 1L));
                     var _tco_0 = input;
@@ -159,7 +159,7 @@ public static class Codex_expr_calculator
                 }
                 else
                 {
-                    if ((input[(int)pos].ToString() == "-"))
+                    if ((((char)((long)input[(int)pos])).ToString() == "-"))
                     {
                         var right = parse_multiplicative(input, (pos + 1L));
                         var _tco_0 = input;

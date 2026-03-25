@@ -8,9 +8,9 @@ Console.WriteLine(Codex_string_ops.main());
 
 public static class Codex_string_ops
 {
-    public static bool is_identifier_char(string ch)
+    public static bool is_identifier_char(long ch)
     {
-        return ((ch.Length > 0 && char.IsLetter(ch[0])) ? true : ((ch.Length > 0 && char.IsDigit(ch[0])) ? true : ((ch == "-") ? true : false)));
+        return (char.IsLetter((char)ch) ? true : (char.IsDigit((char)ch) ? true : ((((char)ch).ToString() == "-") ? true : false)));
     }
 
     public static long count_letters(string s, long i, long acc)
@@ -23,8 +23,8 @@ public static class Codex_string_ops
             }
             else
             {
-                var ch = s[(int)i].ToString();
-                if ((ch.Length > 0 && char.IsLetter(ch[0])))
+                var ch = ((long)s[(int)i]);
+                if (char.IsLetter((char)ch))
                 {
                     var _tco_0 = s;
                     var _tco_1 = (i + 1L);
