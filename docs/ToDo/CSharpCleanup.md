@@ -1,3 +1,5 @@
+File: docs\ToDo\CSharpCleanup.md
+````````markdown
 # C# Style Cleanup Audit
 
 **Date:** 2026-03-25
@@ -160,18 +162,15 @@ Rules reference: `.github/copilot-instructions.md` → **C# Code Style** section
 
 ---
 
-## 9. Constants not PascalCase (P3 — spec-standard naming)
+## 9. Constants not PascalCase — EXEMPTED
 
-**Rule:** Constants use PascalCase. However, the following use ELF/ISA/Wasm spec naming (SCREAMING_CASE) which arguably aids spec cross-reference.
+**Status:** Blanket exemption granted (2026-03-25).
 
-| File | Lines | Examples |
-|------|-------|---------|
-| `src/Codex.Emit.Arm64/ElfWriterArm64.cs` | 5–12 | `ELFCLASS64`, `EM_AARCH64`, `PT_LOAD`, `PF_X`, etc. |
-| `src/Codex.Emit.RiscV/ElfWriter.cs` | 6–13 | `ELFCLASS64`, `EM_RISCV`, `ET_EXEC`, etc. |
-| `src/Codex.Emit.X86_64/ElfWriterX86_64.cs` | (similar) | Same ELF constants |
-| `src/Codex.Emit.Wasm/WasmModuleBuilder.cs` | 10–43 | `SectionType`, `OpI32Load`, `WasmI32`, etc. |
+ELF, ISA, and Wasm spec-standard constant names (`ELFCLASS64`, `EM_RISCV`, `PT_LOAD`,
+`OpI32Load`, `WasmI32`, etc.) in native-emit code are exempt from the PascalCase rule.
+These names match the specs they implement and aid readability for domain experts.
 
-> **Recommendation:** These follow their respective ISA/binary specs. Converting to PascalCase would hurt readability for anyone cross-referencing specs. Consider granting a blanket exemption for ELF/ISA/Wasm constants in native-emit code.
+No action required.
 
 ---
 
@@ -181,7 +180,7 @@ Rules reference: `.github/copilot-instructions.md` → **C# Code Style** section
 |----------|-------|-------------|
 | **P1** | ~70 items | `s_` on public statics, `var`, `///`, `private`, redundant usings, block namespaces |
 | **P2** | ~20 items | Fully-qualified types |
-| **P3** | ~30 items | ISA/spec constant naming |
+| **P3** | ~0 items | ISA/spec constant naming — exempted |
 
 ### Suggested Fix Order
 
@@ -193,4 +192,3 @@ Rules reference: `.github/copilot-instructions.md` → **C# Code Style** section
 6. **Section 3** (remove `///` comments) — spread across 7 files
 7. **Section 2** (private static `s_` prefix) — 7 fields across 4 files
 8. **Section 7** (FQ types → using) — many files, add usings + shorten
-9. **Section 9** (spec constants) — decide policy, then possibly skip

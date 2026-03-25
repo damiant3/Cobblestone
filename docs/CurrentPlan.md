@@ -1,6 +1,6 @@
 # Current Plan
 
-**Date**: 2026-03-25 (post-session update)
+**Date**: 2026-03-25 (evening update)
 
 ---
 
@@ -48,9 +48,9 @@ federation, and lambda syntax.
 
 ---
 
-## What Got Done (2026-03-25 session, Agent Linux + Cam)
+## What Got Done (2026-03-25 session)
 
-### Native Fork/Await: 3 bugs found and fixed
+### Native Fork/Await: 3 bugs found and fixed (Agent Linux + Cam)
 
 | Bug | Backend | Fix |
 |-----|---------|-----|
@@ -59,6 +59,23 @@ federation, and lambda syntax.
 | TryEmitBuiltin result in temp reg, caller expects A0/X0 | ARM64/RISC-V | Mv to A0/X0 before return |
 
 All 3 backends verified under QEMU: x86-64 (native), ARM64 (qemu-aarch64), RISC-V (qemu-riscv64).
+
+### C# Style Audit (Agent Windows)
+
+Full audit of all C# source against the reconciled coding standards. Results in
+`docs/ToDo/CSharpCleanup.md`. Found ~90 P1/P2 violations across 8 categories:
+
+| Category | Items | Status |
+|----------|-------|--------|
+| Public statics with `s_` prefix → PascalCase | 12 | To do |
+| Private statics missing `s_` prefix | 7 | To do |
+| XML doc comments (`///`) | 7 files | To do |
+| `var` usage (Bootstrap) | 15 | To do |
+| Explicit `private` modifier | 10 | To do |
+| Redundant implicit usings | 5 | To do |
+| Fully-qualified types → `using` | ~20 | To do |
+| Block-scoped namespaces | 2 | To do |
+| Spec-standard constants (ELF/ISA/Wasm) | ~30 | **Exempted** |
 
 ### Branches Merged to Master
 
@@ -75,6 +92,16 @@ All 3 backends verified under QEMU: x86-64 (native), ARM64 (qemu-aarch64), RISC-
 | cam/ring3-capabilities | Capability-enforced syscalls |
 | cam/ring4-self-hosting | Self-hosting compiler on bare metal, TCO, serial I/O fix |
 
+### Recent Commits (master)
+
+```
+f2766bb docs: add C# style cleanup audit (CSharpCleanup.md)
+f48bef3 docs: harmonize coding standards across all rule documents
+e9b06d8 reorg docs in filesystem and .sln
+09b9bda feat: add codex-agent-verify.ps1 — auto-decontamination after tool writes
+f79edba fix: RISC-V is-digit/is-letter signed comparison — Slt → Sltu
+```
+
 ### Additional Bug Found During OS Work
 
 ELF32 LOAD segment p_offset=0 caused all trampoline addresses (GDT, far jump target)
@@ -88,6 +115,7 @@ to be off by 0x80 (textStart). Fix: LOAD segment starts at textStart, maps to Lo
 
 | Item | Blocked on | Who |
 |------|-----------|-----|
+| C# style cleanup (8 categories, ~90 items) | None — ready to iterate | Windows |
 | Ring 4 completion: serial REPL | Compiler hang under QEMU (heavy computation) | Cam/Linux |
 | Kernel size optimization | Optional: runtime IDT loop saves ~12KB (15KB to 3KB) | Any |
 | Phone flash | Bootloader signature issue | Human |
