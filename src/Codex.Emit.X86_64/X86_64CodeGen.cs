@@ -1038,12 +1038,18 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
                 int savedPath = AllocLocal();
                 StoreLocal(savedPath, pathReg);
                 byte contentReg = EmitExpr(args[1]);
-                // Simplified: write content to stdout
-                X86_64Encoder.MovLoad(m_text, Reg.RDX, contentReg, 0); // len
-                X86_64Encoder.Lea(m_text, Reg.RSI, contentReg, 8);     // data
-                X86_64Encoder.Li(m_text, Reg.RAX, 1); // sys_write
-                X86_64Encoder.Li(m_text, Reg.RDI, 1); // stdout
-                X86_64Encoder.Syscall(m_text);
+                if (m_target == X86_64Target.BareMetal)
+                {
+                    EmitSerialStringFromPtr(contentReg);
+                }
+                else
+                {
+                    X86_64Encoder.MovLoad(m_text, Reg.RDX, contentReg, 0);
+                    X86_64Encoder.Lea(m_text, Reg.RSI, contentReg, 8);
+                    X86_64Encoder.Li(m_text, Reg.RAX, 1);
+                    X86_64Encoder.Li(m_text, Reg.RDI, 1);
+                    X86_64Encoder.Syscall(m_text);
+                }
                 byte wrRd = AllocTemp();
                 X86_64Encoder.Li(m_text, wrRd, 0);
                 return wrRd;
@@ -1698,23 +1704,75 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
     void EmitPrintTextNoNewline(byte ptrReg)
     {
-        X86_64Encoder.Lea(m_text, Reg.RSI, ptrReg, 8);
-        X86_64Encoder.MovLoad(m_text, Reg.RDX, ptrReg, 0);
-        X86_64Encoder.Li(m_text, Reg.RAX, 1);
-        X86_64Encoder.Li(m_text, Reg.RDI, 1);
-        X86_64Encoder.Syscall(m_text);
+        if (m_target == X86_64Target.BareMetal)
+        {
+            EmitSerialStringFromPtr(ptrReg);
+        }
+        else
+        {
+            X86_64Encoder.Lea(m_text, Reg.RSI, ptrReg, 8);
+            X86_64Encoder.MovLoad(m_text, Reg.RDX, ptrReg, 0);
+            X86_64Encoder.Li(m_text, Reg.RAX, 1);
+            X86_64Encoder.Li(m_text, Reg.RDI, 1);
+            X86_64Encoder.Syscall(m_text);
+        }
     }
 
     void EmitPrintNewline()
     {
-        int nlOffset = AddRodataString("\n");
-        byte nlReg = AllocTemp();
-        EmitLoadRodataAddress(nlReg, nlOffset);
-        X86_64Encoder.Lea(m_text, Reg.RSI, nlReg, 8);
-        X86_64Encoder.MovLoad(m_text, Reg.RDX, nlReg, 0);
-        X86_64Encoder.Li(m_text, Reg.RAX, 1);
-        X86_64Encoder.Li(m_text, Reg.RDI, 1);
-        X86_64Encoder.Syscall(m_text);
+        if (m_target == X86_64Target.BareMetal)
+        {
+            X86_64Encoder.Li(m_text, Reg.RAX, '\n');
+            X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+            X86_64Encoder.OutDxAl(m_text);
+        }
+        else
+        {
+            int nlOffset = AddRodataString("\n");
+            byte nlReg = AllocTemp();
+            EmitLoadRodataAddress(nlReg, nlOffset);
+            X86_64Encoder.Lea(m_text, Reg.RSI, nlReg, 8);
+            X86_64Encoder.MovLoad(m_text, Reg.RDX, nlReg, 0);
+            X86_64Encoder.Li(m_text, Reg.RAX, 1);
+            X86_64Encoder.Li(m_text, Reg.RDI, 1);
+            X86_64Encoder.Syscall(m_text);
+        }
+    }
+
+    void EmitSerialStringFromPtr(byte ptrReg)
+    {
+        // Print string at [ptrReg+0]=len, [ptrReg+8..]=data to COM1
+        int savedPtr = AllocLocal();
+        StoreLocal(savedPtr, ptrReg);
+        byte len = AllocTemp();
+        X86_64Encoder.MovLoad(m_text, len, ptrReg, 0);
+        int savedLen = AllocLocal();
+        StoreLocal(savedLen, len);
+        int savedIdx = AllocLocal();
+        X86_64Encoder.Li(m_text, Reg.R11, 0);
+        StoreLocal(savedIdx, Reg.R11);
+
+        int loopTop = m_text.Count;
+        byte idx = LoadLocal(savedIdx);
+        byte lenCheck = LoadLocal(savedLen);
+        X86_64Encoder.CmpRR(m_text, idx, lenCheck);
+        int doneJump = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+
+        byte ptrL = LoadLocal(savedPtr);
+        idx = LoadLocal(savedIdx);
+        X86_64Encoder.Lea(m_text, Reg.RSI, ptrL, 8);
+        X86_64Encoder.AddRR(m_text, Reg.RSI, idx);
+        X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RSI, 0);
+        X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+        X86_64Encoder.OutDxAl(m_text);
+
+        idx = LoadLocal(savedIdx);
+        X86_64Encoder.AddRI(m_text, idx, 1);
+        StoreLocal(savedIdx, idx);
+        X86_64Encoder.Jmp(m_text, loopTop - (m_text.Count + 5));
+
+        PatchJcc(doneJump, m_text.Count);
     }
 
     // ── Runtime helpers ──────────────────────────────────────────
