@@ -253,13 +253,13 @@ public class LinuxNativeTests
     // Positive case: '5' is a digit
     const string IsDigitPositiveSource = """
         main : Integer
-        main = if is-digit "5" then 1 else 0
+        main = if is-digit (char-at "5" 0) then 1 else 0
         """;
 
     // Negative case: space is NOT a digit (this was the signed comparison bug)
     const string IsDigitNegativeSource = """
         main : Integer
-        main = if is-digit " " then 1 else 0
+        main = if is-digit (char-at " " 0) then 1 else 0
         """;
 
     [Fact]
@@ -325,12 +325,12 @@ public class LinuxNativeTests
 
     const string IsWhitespacePositiveSource = """
         main : Integer
-        main = if is-whitespace " " then 1 else 0
+        main = if is-whitespace (char-at " " 0) then 1 else 0
         """;
 
     const string IsWhitespaceNegativeSource = """
         main : Integer
-        main = if is-whitespace "a" then 1 else 0
+        main = if is-whitespace (char-at "a" 0) then 1 else 0
         """;
 
     [Fact]
