@@ -1,6 +1,6 @@
 # Current Plan
 
-**Date**: 2026-03-26 evening
+**Date**: 2026-03-26 late evening
 
 ---
 
@@ -8,12 +8,15 @@
 
 All major items from today's sessions are **merged, tested, and verified**. The
 repo is clean: one branch (`master`), zero dirty files, zero stale feature
-branches.
+branches. `cam/ring4-cleanup` fully merged and closed.
 
-CCE-native text is complete. The whitespace decision is closed (forward path,
-no dual mode). Closure escape analysis is shipped. The bare metal REPL loop
-is verified under QEMU. The CCE encoding tooling (`CceTable` single source
-of truth, `codex encode` CLI, 11 consistency tests) is on master.
+CCE-native text is complete across all backends including x86-64 native. The
+x86-64 backend now stores all strings as CCE bytes internally, converting at
+I/O boundaries only (print, serial, REPL input). The whitespace decision is
+closed (forward path, no dual mode). Closure escape analysis is shipped. The
+bare metal REPL loop is verified under QEMU. The CCE encoding tooling
+(`CceTable` single source of truth, `codex encode` CLI, 11 consistency tests)
+is on master. Generated-output conflict markers cleaned.
 
 ### Snapshot
 
@@ -28,7 +31,7 @@ of truth, `codex encode` CLI, 11 consistency tests) is on master.
 | Codex.OS | 7 KB kernel, Rings 0-4, arena REPL, preemptive multitasking, capability-enforced syscalls |
 | Agents | 4 (Windows/Copilot, Linux/sandbox, Cam/CLI, Nut/garage-box) |
 
-**History**: `docs/OldStatus/CurrentPlan-2026-03-26-morning.md`
+**History**: `docs/OldStatus/CurrentPlan-2026-03-26-evening.md`
 **Route map**: `docs/THE-ASCENT.md`, `docs/THE-LAST-PEAK.md`
 
 ---
@@ -94,6 +97,24 @@ of truth, `codex encode` CLI, 11 consistency tests) is on master.
 - QEMU verified: bare metal boot tests pass (first-line extraction for REPL output).
 - Review: `docs/reviews/arena-repl-review.md`.
 
+### x86-64 CCE-Native Backend Migration (Cam + Linux review)
+
+- All internal strings now CCE-encoded in `.rodata` (was UTF-8).
+- `IRCharLit` emits via `CceTable.UnicharToCce` (was: silently emitting 0).
+- Classification intrinsics rewritten for CCE ranges: `is-letter` (13–64),
+  `is-digit` (3–12), `is-whitespace` (≤2) — single `sub`/`cmp`/`setcc`
+  instead of multi-branch Unicode logic.
+- `__itoa` / `__text_to_int` use CCE digit offset (3).
+- 128-byte CCE→Unicode + 256-byte Unicode→CCE lookup tables in `.rodata`.
+- Print paths (`EmitPrintText`, `EmitPrintTextNoNewline`, `EmitSerialStringFromPtr`)
+  do per-byte CCE→Unicode conversion at I/O boundary.
+- Input paths (`__read_line`, `__bare_metal_read_serial`) convert Unicode→CCE in-place.
+- `EmitPrintNewline` fixed: was emitting CCE byte 0x01 (SOH) via
+  `AddRodataString("\n")` instead of literal Unicode 0x0A — root cause of
+  24 test failures in the WIP commit.
+- 38/38 x86-64 tests green. 844/844 full suite green.
+- Merged via `cam/ring4-cleanup` (commits `fcf39e2`, `96ff068`).
+
 ### Docs & Design
 
 - Janus reflection: `docs/Designs/CCE-NATIVE-TEXT.md`, "Cam's Think" section.
@@ -110,7 +131,7 @@ of truth, `codex encode` CLI, 11 consistency tests) is on master.
 | 1 | IDT (256 vectors), PIC, timer interrupts, keyboard input | Done (7KB) |
 | 2 | Process table (16 slots), preemptive context switch, per-process page tables | Done |
 | 3 | Capability-enforced syscalls (SYS_WRITE_SERIAL, SYS_READ_KEY, SYS_GET_TICKS, SYS_EXIT) | Done |
-| 4 | Self-hosting compiler on bare metal, TCO, serial I/O, **arena REPL** | REPL loop verified under QEMU |
+| 4 | Self-hosting compiler on bare metal, TCO, serial I/O, **arena REPL**, **CCE-native text** | REPL loop verified under QEMU, CCE I/O boundaries complete |
 
 ---
 

@@ -1,6 +1,6 @@
 # Closure Escape Analysis
 
-**Status**: Design
+**Status**: Shipped (Steps 1-4 complete)
 **Date**: 2026-03-26
 
 ---
@@ -142,9 +142,15 @@ Option C: **Defer.** Make the programmer use direct application for now.
 Most use cases are `let f = ... in f x` or immediate application. The
 higher-order case can wait.
 
-**Recommendation**: Option C now, Option A later. Direct application and
+**Recommendation**: Option C now, Option A later. ~~Direct application and
 let-binding cover the practical cases. Higher-order linear callbacks are
-a language feature unto themselves.
+a language feature unto themselves.~~
+
+**Update**: Option A shipped (2026-03-26). `linear` function types enforce
+exactly-once consumption. The `LinearityChecker` resolves parameter types
+at call sites and allows linear-capturing lambdas when the target parameter
+is `LinearType`. 6 tests validate the behavior. See `LinearityChecker.cs`
+`TryResolveExprType` and the `ApplyExpr` case for lambda arguments.
 
 ---
 
@@ -152,12 +158,13 @@ a language feature unto themselves.
 
 | Step | What | Effort | Risk |
 |------|------|--------|------|
-| 1 | CDX2043 warning → error | One line | Low — may break existing code |
-| 2 | Linear closure bindings in `let` | ~20 lines in LinearityChecker | Low |
-| 3 | Direct application bypass | ~10 lines in CheckExpr | Low |
-| 4 | Higher-order linear callbacks | Language feature (linear function types) | Future |
+| 1 | CDX2043 warning → error | One line | Low — may break existing code | **Shipped** |
+| 2 | Linear closure bindings in `let` | ~20 lines in LinearityChecker | Low | **Shipped** |
+| 3 | Direct application bypass | ~10 lines in CheckExpr | Low | **Shipped** |
+| 4 | Higher-order linear callbacks | ~40 lines (TryResolveExprType + ApplyExpr case) | Low | **Shipped** |
 
-Steps 1-3 can be done in one session. Step 4 is medium-term.
+All four steps shipped 2026-03-26. Step 4 implemented via `TryResolveExprType`
+which resolves function parameter types through curried application chains.
 
 ---
 
