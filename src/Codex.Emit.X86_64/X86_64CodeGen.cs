@@ -1389,28 +1389,36 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             }
             case "is-whitespace" when args.Count >= 1:
             {
+                // Branch-based: compare rd against each whitespace char,
+                // jump to 'yes' on match, fall through to 'no'.
+                // Uses only rd — no temp registers, no aliasing risk.
                 byte rd = EmitExpr(args[0]);
-                // Char is already a byte value in register
-                // space=32, tab=9, newline=10, carriage-return=13
-                byte result = AllocTemp();
-                X86_64Encoder.Li(m_text, result, 0);
                 X86_64Encoder.CmpRI(m_text, rd, ' ');
-                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_E, result);
-                byte t2 = AllocTemp();
-                X86_64Encoder.Li(m_text, t2, 0); // zero all 64 bits — Setcc only writes low byte
+                int jSpace = m_text.Count;
+                X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
                 X86_64Encoder.CmpRI(m_text, rd, '\t');
-                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_E, t2);
-                X86_64Encoder.AddRR(m_text, result, t2);
+                int jTab = m_text.Count;
+                X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
                 X86_64Encoder.CmpRI(m_text, rd, '\n');
-                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_E, t2);
-                X86_64Encoder.AddRR(m_text, result, t2);
+                int jNl = m_text.Count;
+                X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
                 X86_64Encoder.CmpRI(m_text, rd, '\r');
-                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_E, t2);
-                X86_64Encoder.AddRR(m_text, result, t2);
-                X86_64Encoder.CmpRI(m_text, result, 0);
-                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_NE, result);
-                X86_64Encoder.MovzxByteSelf(m_text, result);
-                return result;
+                int jCr = m_text.Count;
+                X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
+                // Not whitespace
+                X86_64Encoder.Li(m_text, rd, 0);
+                int jDone = m_text.Count;
+                X86_64Encoder.Jmp(m_text, 0);
+                // Whitespace — all four jumps land here
+                int yesAddr = m_text.Count;
+                X86_64Encoder.Li(m_text, rd, 1);
+                int doneAddr = m_text.Count;
+                PatchJcc(jSpace, yesAddr);
+                PatchJcc(jTab, yesAddr);
+                PatchJcc(jNl, yesAddr);
+                PatchJcc(jCr, yesAddr);
+                PatchJmp(jDone, doneAddr);
+                return rd;
             }
             case "negate" when args.Count >= 1:
             {
