@@ -1,6 +1,6 @@
 # Current Plan
 
-**Date**: 2026-03-26 morning (post-CCE reflection)
+**Date**: 2026-03-26 afternoon (Ring 4 push)
 
 ---
 
@@ -93,25 +93,34 @@ items from that doc are partially resolved (see below).
 
 ## What's Next
 
-### The next rock — candidates for discussion
+### Done this session (2026-03-26)
 
-| Candidate | What | Why now |
-|-----------|------|---------|
-| Closure escape analysis | CDX2043 to error, linear closures | Blocks correctness guarantees for closures; design doc exists (`docs/Designs/CLOSURE-ESCAPE-ANALYSIS.md`) |
-| Silent NUL fix | Option D from whitespace decision | Independent of TAB/CR decision; silent corruption is a bug |
-| CCE Tier 1 multi-byte | 2-byte encoding for extended scripts | Load-bearing for the repository's "remembers everything" promise |
-| `codex encode` CLI | Phase 0 from encoding integration design | Low effort, immediate utility for debugging CCE files |
-| Codex.OS Ring 4 push | Self-hosting compiler on bare metal | MM2 milestone marker; serial REPL already works |
-| Perf tracking | Automated benchmark in CI or session init | Track compound regression before it bites |
+| Item | Commit | Notes |
+|------|--------|-------|
+| Janus reflection | `1640e79` | CCE trade-off analysis, forward-path decision |
+| Silent NUL fix | `cd69946` | Unmapped chars → '?' not NUL. Option D shipped. |
+| Closure escape analysis (Cam) | `54b24e7` | CDX2043 → error, linear propagation, direct-apply bypass |
+| Closure escape analysis (Linux) | `f894a3e` | Better architecture: CheckLambdaExpr returns captured set |
+| Merged closure analysis | `f74e1e3` | Linux's architecture + Cam's severity test, on `cam/closure-escape-merged` |
+| `is-whitespace` x86-64 fix | `f43018a` | Register aliasing → branch-based rewrite. Unblocks bare metal lexer. |
+| Arena-based REPL loop | `606c8b3` | Heap reset between compilations. Infinite REPL. Enables MM2/MM3. |
+| `codex encode` CLI | Already existed | Roundtrip verified working. |
 
-### Near-term (days)
+### Waiting on
 
 | Item | Blocked on | Who |
 |------|-----------|-----|
-| Decide CCE whitespace (A/B/C/D/E) | Team discussion | All |
-| Fix silent NUL (Option D) | Nothing — orthogonal | Any agent |
-| Closure escape analysis | CDX2043 design review | Any agent |
+| QEMU verification of Ring 4 REPL | QEMU install on Linux sandbox | Agent Linux |
+| Merge `cam/closure-escape-merged` | Linux review | Agent Linux |
 | Phone flash | Bootloader signature issue | Human |
+
+### Near-term (days)
+
+| Item | Notes |
+|------|-------|
+| QEMU test: send .codex over serial, verify compilation output | First real MM2 validation |
+| CCE Tier 1 multi-byte | Load-bearing for repository promise |
+| Perf tracking | Track compound regression before it bites |
 
 ### Medium-term (weeks)
 
