@@ -22,6 +22,9 @@ Section: Character Code Constants
   cc-double-quote : Integer
   cc-double-quote = 34
 
+  cc-single-quote : Integer
+  cc-single-quote = 39
+
   cc-ampersand : Integer
   cc-ampersand = 38
 
@@ -304,6 +307,8 @@ Section: Single Token Scanning
          in let text-len = after.offset - start - 1
           in let raw = substring s.source start text-len
            in LexToken (make-token TextLiteral (process-escapes raw 0 (text-length raw) "") s) after
+       else if c == cc-single-quote
+        then scan-char-literal s
        else if is-letter-code c
         then let start = s.offset
          in let after = scan-ident-rest (advance-char s)
@@ -401,6 +406,32 @@ Section: Single Token Scanning
                then LexToken (make-token GreaterOrEqual ">=" s) (advance-char next)
                else LexToken (make-token GreaterThan ">" s) next
               else LexToken (make-token ErrorToken (char-to-text (char-at s.source s.offset)) s) next
+
+Section: Char Literal
+
+  scan-char-literal : LexState -> LexResult
+  scan-char-literal (s) =
+   let s1 = advance-char s
+   in if is-at-end s1
+    then LexToken (make-token ErrorToken "'" s) s1
+    else if peek-code s1 == cc-backslash
+     then let s2 = advance-char s1
+      in if is-at-end s2
+       then LexToken (make-token ErrorToken "'\\" s) s2
+       else let esc-code = peek-code s2
+        in let char-val = if esc-code == cc-lower-n then 10
+         else if esc-code == cc-lower-t then 9
+         else if esc-code == cc-lower-r then 13
+         else if esc-code == cc-backslash then cc-backslash
+         else if esc-code == cc-single-quote then cc-single-quote
+         else esc-code
+        in let s3 = advance-char s2
+         in let s4 = if is-at-end s3 then s3 else if peek-code s3 == cc-single-quote then advance-char s3 else s3
+          in LexToken (make-token CharLiteral (integer-to-text char-val) s) s4
+     else let char-val = peek-code s1
+      in let s2 = advance-char s1
+       in let s3 = if is-at-end s2 then s2 else if peek-code s2 == cc-single-quote then advance-char s2 else s2
+        in LexToken (make-token CharLiteral (integer-to-text char-val) s) s3
 
 Section: Tokenize All
 

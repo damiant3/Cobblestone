@@ -44,7 +44,8 @@ public enum LiteralKind
     Integer,
     Number,
     Text,
-    Boolean
+    Boolean,
+    Char
 }
 
 public sealed record NameExpr(Name Name, SourceSpan Span) : Expr(Span);

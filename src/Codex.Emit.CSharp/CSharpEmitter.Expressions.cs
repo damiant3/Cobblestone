@@ -28,6 +28,11 @@ public sealed partial class CSharpEmitter
                 sb.Append(lit.Value ? "true" : "false");
                 break;
 
+            case IRCharLit lit:
+                // Char is long at runtime (same as Integer)
+                sb.Append($"{lit.Value}L");
+                break;
+
             case IRName name:
                 if (name.Name == "read-line")
                     sb.Append("(Console.ReadLine() ?? \"\")");

@@ -56,6 +56,7 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
                 TokenKind.IntegerLiteral => LiteralKind.Integer,
                 TokenKind.NumberLiteral => LiteralKind.Number,
                 TokenKind.TextLiteral => LiteralKind.Text,
+                TokenKind.CharLiteral => LiteralKind.Char,
                 TokenKind.TrueKeyword or TokenKind.FalseKeyword => LiteralKind.Boolean,
                 _ => LiteralKind.Text
             },

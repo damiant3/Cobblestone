@@ -120,6 +120,11 @@ public sealed class Lexer
             return ScanTextLiteral();
         }
 
+        if (c == '\'')
+        {
+            return ScanCharLiteral();
+        }
+
         if (CharHelpers.IsAsciiDigit(c))
         {
             return ScanNumber();
@@ -217,6 +222,57 @@ public sealed class Lexer
         return new Token(TokenKind.TextLiteral, m_text[start.Offset..span.End.Offset], span)
         {
             LiteralValue = sb.ToString()
+        };
+    }
+
+    Token ScanCharLiteral()
+    {
+        SourcePosition start = MakePosition();
+        Advance(); // skip opening '
+
+        if (IsAtEnd || Current == '\n')
+        {
+            SourceSpan errSpan = MakeSpan(start);
+            return new Token(TokenKind.Error, m_text[start.Offset..errSpan.End.Offset], errSpan);
+        }
+
+        long charValue;
+        if (Current == '\\')
+        {
+            Advance(); // skip backslash
+            if (IsAtEnd)
+            {
+                SourceSpan errSpan = MakeSpan(start);
+                return new Token(TokenKind.Error, m_text[start.Offset..errSpan.End.Offset], errSpan);
+            }
+            charValue = Current switch
+            {
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                '\\' => '\\',
+                '\'' => '\'',
+                '0' => '\0',
+                _ => Current
+            };
+            Advance();
+        }
+        else
+        {
+            charValue = Current;
+            Advance();
+        }
+
+        // Expect closing '
+        if (!IsAtEnd && Current == '\'')
+        {
+            Advance();
+        }
+
+        SourceSpan span = MakeSpan(start);
+        return new Token(TokenKind.CharLiteral, m_text[start.Offset..span.End.Offset], span)
+        {
+            LiteralValue = charValue
         };
     }
 

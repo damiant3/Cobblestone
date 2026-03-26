@@ -10,6 +10,7 @@ public abstract record LiteralKind;
 public sealed record IntLit : LiteralKind;
 public sealed record NumLit : LiteralKind;
 public sealed record TextLit : LiteralKind;
+public sealed record CharLit : LiteralKind;
 public sealed record BoolLit : LiteralKind;
 
 
@@ -144,6 +145,7 @@ public sealed record IrIntLit(long Field0) : IRExpr;
 public sealed record IrNumLit(long Field0) : IRExpr;
 public sealed record IrTextLit(string Field0) : IRExpr;
 public sealed record IrBoolLit(bool Field0) : IRExpr;
+public sealed record IrCharLit(long Field0) : IRExpr;
 public sealed record IrName(string Field0, CodexType Field1) : IRExpr;
 public sealed record IrBinary(IRBinaryOp Field0, IRExpr Field1, IRExpr Field2, CodexType Field3) : IRExpr;
 public sealed record IrNegate(IRExpr Field0) : IRExpr;
@@ -319,6 +321,7 @@ public sealed record Dedent : TokenKind;
 public sealed record IntegerLiteral : TokenKind;
 public sealed record NumberLiteral : TokenKind;
 public sealed record TextLiteral : TokenKind;
+public sealed record CharLiteral : TokenKind;
 public sealed record TrueKeyword : TokenKind;
 public sealed record FalseKeyword : TokenKind;
 public sealed record Identifier : TokenKind;
@@ -552,7 +555,7 @@ public static class Codex_Codex_Codex
 
     public static AExpr desugar_literal(Token tok) => (is_literal(tok.kind) ? new ALitExpr(tok.text, classify_literal(tok.kind)) : new AErrorExpr(tok.text));
 
-    public static LiteralKind classify_literal(TokenKind k) => k switch { IntegerLiteral { } => new IntLit(), NumberLiteral { } => new NumLit(), TextLiteral { } => new TextLit(), TrueKeyword { } => new BoolLit(), FalseKeyword { } => new BoolLit(), _ => new TextLit(), };
+    public static LiteralKind classify_literal(TokenKind k) => k switch { IntegerLiteral { } => new IntLit(), NumberLiteral { } => new NumLit(), TextLiteral { } => new TextLit(), CharLiteral { } => new CharLit(), TrueKeyword { } => new BoolLit(), FalseKeyword { } => new BoolLit(), _ => new TextLit(), };
 
     public static ALetBind desugar_let_bind(LetBind b) => new ALetBind(name: make_name(b.name.text), value: desugar_expr(b.value));
 
@@ -1346,7 +1349,7 @@ public static class Codex_Codex_Codex
 
     public static string emit_expr_curried(IRExpr e, List<ArityEntry> arities) => e switch { IrApply(var f, var a, var ty) => (emit_expr(f, arities) + ("(" + (emit_expr(a, arities) + ")"))), _ => emit_expr(e, arities), };
 
-    public static string emit_expr(IRExpr e, List<ArityEntry> arities) => e switch { IrIntLit(var n) => (n).ToString(), IrNumLit(var n) => (n).ToString(), IrTextLit(var s) => ("\"" + (escape_text(s) + "\"")), IrBoolLit(var b) => (b ? "true" : "false"), IrName(var n, var ty) => ((n == "read-line") ? "Console.ReadLine()" : ((n == "get-args") ? "new List<string>(Environment.GetCommandLineArgs())" : ((n == "current-dir") ? "Directory.GetCurrentDirectory()" : (((((long)n.Length) > 0) && is_upper_letter(((long)n[(int)0]))) ? ("new " + (sanitize(n) + "()")) : ((lookup_arity(arities, n) == 0) ? (sanitize(n) + "()") : ((Func<long, string>)((ar) => ((ar >= 2) ? (emit_partial_wrappers(0, ar) + (sanitize(n) + ("(" + (emit_partial_params(0, ar) + ")")))) : sanitize(n))))(lookup_arity(arities, n))))))), IrBinary(var op, var l, var r, var ty) => emit_binary(op, l, r, ty, arities), IrNegate(var operand) => ("(-" + (emit_expr(operand, arities) + ")")), IrIf(var c, var t, var el, var ty) => ("(" + (emit_expr(c, arities) + (" ? " + (emit_expr(t, arities) + (" : " + (emit_expr(el, arities) + ")")))))), IrLet(var name, var ty, var val, var body) => emit_let(name, ty, val, body, arities), IrApply(var f, var a, var ty) => emit_apply(e, arities), IrLambda(var @params, var body, var ty) => emit_lambda(@params, body, arities), IrList(var elems, var ty) => emit_list(elems, ty, arities), IrMatch(var scrut, var branches, var ty) => emit_match(scrut, branches, ty, arities), IrDo(var stmts, var ty) => emit_do(stmts, ty, arities), IrHandle(var eff, var body, var clauses, var ty) => emit_handle(eff, body, clauses, ty, arities), IrRecord(var name, var fields, var ty) => emit_record(name, fields, arities), IrFieldAccess(var rec, var field, var ty) => (emit_expr(rec, arities) + ("." + sanitize(field))), IrFork(var body, var ty) => ("Task.Run(() => (" + (emit_expr(body, arities) + ")(null))")), IrAwait(var task, var ty) => ("(" + (emit_expr(task, arities) + ").Result")), IrError(var msg, var ty) => ("/* error: " + (msg + " */ default")), _ => throw new InvalidOperationException("Non-exhaustive match"), };
+    public static string emit_expr(IRExpr e, List<ArityEntry> arities) => e switch { IrIntLit(var n) => (n).ToString(), IrNumLit(var n) => (n).ToString(), IrTextLit(var s) => ("\"" + (escape_text(s) + "\"")), IrBoolLit(var b) => (b ? "true" : "false"), IrCharLit(var n) => (n).ToString(), IrName(var n, var ty) => ((n == "read-line") ? "Console.ReadLine()" : ((n == "get-args") ? "new List<string>(Environment.GetCommandLineArgs())" : ((n == "current-dir") ? "Directory.GetCurrentDirectory()" : (((((long)n.Length) > 0) && is_upper_letter(((long)n[(int)0]))) ? ("new " + (sanitize(n) + "()")) : ((lookup_arity(arities, n) == 0) ? (sanitize(n) + "()") : ((Func<long, string>)((ar) => ((ar >= 2) ? (emit_partial_wrappers(0, ar) + (sanitize(n) + ("(" + (emit_partial_params(0, ar) + ")")))) : sanitize(n))))(lookup_arity(arities, n))))))), IrBinary(var op, var l, var r, var ty) => emit_binary(op, l, r, ty, arities), IrNegate(var operand) => ("(-" + (emit_expr(operand, arities) + ")")), IrIf(var c, var t, var el, var ty) => ("(" + (emit_expr(c, arities) + (" ? " + (emit_expr(t, arities) + (" : " + (emit_expr(el, arities) + ")")))))), IrLet(var name, var ty, var val, var body) => emit_let(name, ty, val, body, arities), IrApply(var f, var a, var ty) => emit_apply(e, arities), IrLambda(var @params, var body, var ty) => emit_lambda(@params, body, arities), IrList(var elems, var ty) => emit_list(elems, ty, arities), IrMatch(var scrut, var branches, var ty) => emit_match(scrut, branches, ty, arities), IrDo(var stmts, var ty) => emit_do(stmts, ty, arities), IrHandle(var eff, var body, var clauses, var ty) => emit_handle(eff, body, clauses, ty, arities), IrRecord(var name, var fields, var ty) => emit_record(name, fields, arities), IrFieldAccess(var rec, var field, var ty) => (emit_expr(rec, arities) + ("." + sanitize(field))), IrFork(var body, var ty) => ("Task.Run(() => (" + (emit_expr(body, arities) + ")(null))")), IrAwait(var task, var ty) => ("(" + (emit_expr(task, arities) + ").Result")), IrError(var msg, var ty) => ("/* error: " + (msg + " */ default")), _ => throw new InvalidOperationException("Non-exhaustive match"), };
 
     public static string escape_text(string s) => ((Func<string, string>)((s1) => ((Func<string, string>)((s2) => ((Func<string, string>)((s3) => s3.Replace("\"", "\\\"")))(s2.Replace(((char)13).ToString(), "\\r"))))(s1.Replace(((char)10).ToString(), "\\n"))))(s.Replace("\\", "\\\\"));
 
@@ -1442,114 +1445,119 @@ public static class Codex_Codex_Codex
                 var v = _tco_m3.Field0;
             return new BooleanTy();
             }
-            else if (_tco_s is IrName _tco_m4)
+            else if (_tco_s is IrCharLit _tco_m4)
             {
-                var n = _tco_m4.Field0;
-                var t = _tco_m4.Field1;
+                var v = _tco_m4.Field0;
+            return new CharTy();
+            }
+            else if (_tco_s is IrName _tco_m5)
+            {
+                var n = _tco_m5.Field0;
+                var t = _tco_m5.Field1;
             return t;
             }
-            else if (_tco_s is IrBinary _tco_m5)
+            else if (_tco_s is IrBinary _tco_m6)
             {
-                var op = _tco_m5.Field0;
-                var l = _tco_m5.Field1;
-                var r = _tco_m5.Field2;
-                var t = _tco_m5.Field3;
+                var op = _tco_m6.Field0;
+                var l = _tco_m6.Field1;
+                var r = _tco_m6.Field2;
+                var t = _tco_m6.Field3;
             return t;
             }
-            else if (_tco_s is IrNegate _tco_m6)
+            else if (_tco_s is IrNegate _tco_m7)
             {
-                var x = _tco_m6.Field0;
+                var x = _tco_m7.Field0;
             return new IntegerTy();
             }
-            else if (_tco_s is IrIf _tco_m7)
+            else if (_tco_s is IrIf _tco_m8)
             {
-                var c = _tco_m7.Field0;
-                var th = _tco_m7.Field1;
-                var el = _tco_m7.Field2;
-                var t = _tco_m7.Field3;
+                var c = _tco_m8.Field0;
+                var th = _tco_m8.Field1;
+                var el = _tco_m8.Field2;
+                var t = _tco_m8.Field3;
             return t;
             }
-            else if (_tco_s is IrLet _tco_m8)
+            else if (_tco_s is IrLet _tco_m9)
             {
-                var n = _tco_m8.Field0;
-                var t = _tco_m8.Field1;
-                var v = _tco_m8.Field2;
-                var b = _tco_m8.Field3;
+                var n = _tco_m9.Field0;
+                var t = _tco_m9.Field1;
+                var v = _tco_m9.Field2;
+                var b = _tco_m9.Field3;
             var _tco_0 = b;
             e = _tco_0;
             continue;
             }
-            else if (_tco_s is IrApply _tco_m9)
+            else if (_tco_s is IrApply _tco_m10)
             {
-                var f = _tco_m9.Field0;
-                var a = _tco_m9.Field1;
-                var t = _tco_m9.Field2;
-            return t;
-            }
-            else if (_tco_s is IrLambda _tco_m10)
-            {
-                var ps = _tco_m10.Field0;
-                var b = _tco_m10.Field1;
+                var f = _tco_m10.Field0;
+                var a = _tco_m10.Field1;
                 var t = _tco_m10.Field2;
             return t;
             }
-            else if (_tco_s is IrList _tco_m11)
+            else if (_tco_s is IrLambda _tco_m11)
             {
-                var es = _tco_m11.Field0;
-                var t = _tco_m11.Field1;
+                var ps = _tco_m11.Field0;
+                var b = _tco_m11.Field1;
+                var t = _tco_m11.Field2;
+            return t;
+            }
+            else if (_tco_s is IrList _tco_m12)
+            {
+                var es = _tco_m12.Field0;
+                var t = _tco_m12.Field1;
             return new ListTy(t);
             }
-            else if (_tco_s is IrMatch _tco_m12)
+            else if (_tco_s is IrMatch _tco_m13)
             {
-                var s = _tco_m12.Field0;
-                var bs = _tco_m12.Field1;
-                var t = _tco_m12.Field2;
+                var s = _tco_m13.Field0;
+                var bs = _tco_m13.Field1;
+                var t = _tco_m13.Field2;
             return t;
             }
-            else if (_tco_s is IrDo _tco_m13)
+            else if (_tco_s is IrDo _tco_m14)
             {
-                var ss = _tco_m13.Field0;
-                var t = _tco_m13.Field1;
+                var ss = _tco_m14.Field0;
+                var t = _tco_m14.Field1;
             return t;
             }
-            else if (_tco_s is IrHandle _tco_m14)
+            else if (_tco_s is IrHandle _tco_m15)
             {
-                var eff = _tco_m14.Field0;
-                var h = _tco_m14.Field1;
-                var cs = _tco_m14.Field2;
-                var t = _tco_m14.Field3;
+                var eff = _tco_m15.Field0;
+                var h = _tco_m15.Field1;
+                var cs = _tco_m15.Field2;
+                var t = _tco_m15.Field3;
             return t;
             }
-            else if (_tco_s is IrRecord _tco_m15)
+            else if (_tco_s is IrRecord _tco_m16)
             {
-                var n = _tco_m15.Field0;
-                var fs = _tco_m15.Field1;
-                var t = _tco_m15.Field2;
-            return t;
-            }
-            else if (_tco_s is IrFieldAccess _tco_m16)
-            {
-                var r = _tco_m16.Field0;
-                var f = _tco_m16.Field1;
+                var n = _tco_m16.Field0;
+                var fs = _tco_m16.Field1;
                 var t = _tco_m16.Field2;
             return t;
             }
-            else if (_tco_s is IrFork _tco_m17)
+            else if (_tco_s is IrFieldAccess _tco_m17)
             {
-                var body = _tco_m17.Field0;
-                var t = _tco_m17.Field1;
+                var r = _tco_m17.Field0;
+                var f = _tco_m17.Field1;
+                var t = _tco_m17.Field2;
             return t;
             }
-            else if (_tco_s is IrAwait _tco_m18)
+            else if (_tco_s is IrFork _tco_m18)
             {
-                var task = _tco_m18.Field0;
+                var body = _tco_m18.Field0;
                 var t = _tco_m18.Field1;
             return t;
             }
-            else if (_tco_s is IrError _tco_m19)
+            else if (_tco_s is IrAwait _tco_m19)
             {
-                var m = _tco_m19.Field0;
+                var task = _tco_m19.Field0;
                 var t = _tco_m19.Field1;
+            return t;
+            }
+            else if (_tco_s is IrError _tco_m20)
+            {
+                var m = _tco_m20.Field0;
+                var t = _tco_m20.Field1;
             return t;
             }
         }
@@ -1559,7 +1567,7 @@ public static class Codex_Codex_Codex
 
     public static IRExpr lower_name(string name, CodexType ty, LowerCtx ctx) => ((Func<CodexType, IRExpr>)((raw) => raw switch { ErrorTy { } => new IrName(name, ty), _ => ((Func<CodexType, IRExpr>)((resolved) => ((Func<CodexType, IRExpr>)((stripped) => new IrName(name, stripped)))(strip_forall_ty(resolved))))(deep_resolve(ctx.ust, raw)), }))(lookup_type(ctx.types, name));
 
-    public static IRExpr lower_literal(string text, LiteralKind kind) => kind switch { IntLit { } => new IrIntLit(long.Parse(text)), NumLit { } => new IrIntLit(long.Parse(text)), TextLit { } => new IrTextLit(text), BoolLit { } => new IrBoolLit((text == "True")), _ => throw new InvalidOperationException("Non-exhaustive match"), };
+    public static IRExpr lower_literal(string text, LiteralKind kind) => kind switch { IntLit { } => new IrIntLit(long.Parse(text)), NumLit { } => new IrIntLit(long.Parse(text)), TextLit { } => new IrTextLit(text), CharLit { } => new IrCharLit(long.Parse(text)), BoolLit { } => new IrBoolLit((text == "True")), _ => throw new InvalidOperationException("Non-exhaustive match"), };
 
     public static IRExpr lower_apply(AExpr f, AExpr a, CodexType ty, LowerCtx ctx) => ((Func<IRExpr, IRExpr>)((func_ir) => ((Func<CodexType, IRExpr>)((func_ty) => ((Func<CodexType, IRExpr>)((arg_ty) => ((Func<CodexType, IRExpr>)((ret_ty) => ((Func<IRExpr, IRExpr>)((arg_ir) => ((Func<CodexType, IRExpr>)((resolved_ret) => ((Func<CodexType, IRExpr>)((actual_ret) => lower_apply_dispatch(func_ir, arg_ir, actual_ret)))(resolved_ret switch { ErrorTy { } => ty, _ => resolved_ret, })))(subst_type_vars_from_arg(arg_ty, ir_expr_type(arg_ir), ret_ty))))(lower_expr(a, arg_ty, ctx))))(peel_fun_return(func_ty))))(peel_fun_param(func_ty))))(deep_resolve(ctx.ust, ir_expr_type(func_ir)))))(lower_expr(f, new ErrorTy(), ctx));
 
@@ -2592,6 +2600,8 @@ public static class Codex_Codex_Codex
 
     public static long cc_double_quote() => 34;
 
+    public static long cc_single_quote() => 39;
+
     public static long cc_ampersand() => 38;
 
     public static long cc_left_paren() => 40;
@@ -2968,11 +2978,13 @@ public static class Codex_Codex_Codex
 
     public static string extract_text(LexState st, long start, LexState end_st) => st.source.Substring((int)start, (int)(end_st.offset - start));
 
-    public static LexResult scan_token(LexState st) => ((Func<LexState, LexResult>)((s) => (is_at_end(s) ? new LexEnd() : ((Func<long, LexResult>)((c) => ((c == cc_newline()) ? new LexToken(make_token(new Newline(), "\n", s), advance_char(s)) : ((c == cc_double_quote()) ? ((Func<long, LexResult>)((start) => ((Func<LexState, LexResult>)((after) => ((Func<long, LexResult>)((text_len) => ((Func<string, LexResult>)((raw) => new LexToken(make_token(new TextLiteral(), process_escapes(raw, 0, ((long)raw.Length), ""), s), after)))(s.source.Substring((int)start, (int)text_len))))(((after.offset - start) - 1))))(scan_string_body(advance_char(s)))))((s.offset + 1)) : (is_letter_code(c) ? ((Func<long, LexResult>)((start) => ((Func<LexState, LexResult>)((after) => ((Func<string, LexResult>)((word) => new LexToken(make_token(classify_word(word), word, s), after)))(extract_text(s, start, after))))(scan_ident_rest(advance_char(s)))))(s.offset) : ((c == cc_underscore()) ? ((Func<long, LexResult>)((start) => ((Func<LexState, LexResult>)((after) => ((Func<string, LexResult>)((word) => ((((long)word.Length) == 1) ? new LexToken(make_token(new Underscore(), "_", s), after) : new LexToken(make_token(classify_word(word), word, s), after))))(extract_text(s, start, after))))(scan_ident_rest(advance_char(s)))))(s.offset) : (is_digit_code(c) ? ((Func<long, LexResult>)((start) => ((Func<LexState, LexResult>)((after) => (is_at_end(after) ? new LexToken(make_token(new IntegerLiteral(), extract_text(s, start, after), s), after) : ((peek_code(after) == cc_dot()) ? ((Func<LexState, LexResult>)((after2) => new LexToken(make_token(new NumberLiteral(), extract_text(s, start, after2), s), after2)))(scan_digits(advance_char(after))) : new LexToken(make_token(new IntegerLiteral(), extract_text(s, start, after), s), after)))))(scan_digits(advance_char(s)))))(s.offset) : scan_operator(s))))))))(peek_code(s)))))(skip_spaces(st));
+    public static LexResult scan_token(LexState st) => ((Func<LexState, LexResult>)((s) => (is_at_end(s) ? new LexEnd() : ((Func<long, LexResult>)((c) => ((c == cc_newline()) ? new LexToken(make_token(new Newline(), "\n", s), advance_char(s)) : ((c == cc_double_quote()) ? ((Func<long, LexResult>)((start) => ((Func<LexState, LexResult>)((after) => ((Func<long, LexResult>)((text_len) => ((Func<string, LexResult>)((raw) => new LexToken(make_token(new TextLiteral(), process_escapes(raw, 0, ((long)raw.Length), ""), s), after)))(s.source.Substring((int)start, (int)text_len))))(((after.offset - start) - 1))))(scan_string_body(advance_char(s)))))((s.offset + 1)) : ((c == cc_single_quote()) ? scan_char_literal(s) : (is_letter_code(c) ? ((Func<long, LexResult>)((start) => ((Func<LexState, LexResult>)((after) => ((Func<string, LexResult>)((word) => new LexToken(make_token(classify_word(word), word, s), after)))(extract_text(s, start, after))))(scan_ident_rest(advance_char(s)))))(s.offset) : ((c == cc_underscore()) ? ((Func<long, LexResult>)((start) => ((Func<LexState, LexResult>)((after) => ((Func<string, LexResult>)((word) => ((((long)word.Length) == 1) ? new LexToken(make_token(new Underscore(), "_", s), after) : new LexToken(make_token(classify_word(word), word, s), after))))(extract_text(s, start, after))))(scan_ident_rest(advance_char(s)))))(s.offset) : (is_digit_code(c) ? ((Func<long, LexResult>)((start) => ((Func<LexState, LexResult>)((after) => (is_at_end(after) ? new LexToken(make_token(new IntegerLiteral(), extract_text(s, start, after), s), after) : ((peek_code(after) == cc_dot()) ? ((Func<LexState, LexResult>)((after2) => new LexToken(make_token(new NumberLiteral(), extract_text(s, start, after2), s), after2)))(scan_digits(advance_char(after))) : new LexToken(make_token(new IntegerLiteral(), extract_text(s, start, after), s), after)))))(scan_digits(advance_char(s)))))(s.offset) : scan_operator(s)))))))))(peek_code(s)))))(skip_spaces(st));
 
     public static LexResult scan_operator(LexState s) => ((Func<long, LexResult>)((c) => ((Func<LexState, LexResult>)((next) => ((c == cc_left_paren()) ? new LexToken(make_token(new LeftParen(), "(", s), next) : ((c == cc_right_paren()) ? new LexToken(make_token(new RightParen(), ")", s), next) : ((c == cc_left_bracket()) ? new LexToken(make_token(new LeftBracket(), "[", s), next) : ((c == cc_right_bracket()) ? new LexToken(make_token(new RightBracket(), "]", s), next) : ((c == cc_left_brace()) ? new LexToken(make_token(new LeftBrace(), "{", s), next) : ((c == cc_right_brace()) ? new LexToken(make_token(new RightBrace(), "}", s), next) : ((c == cc_comma()) ? new LexToken(make_token(new Comma(), ",", s), next) : ((c == cc_dot()) ? new LexToken(make_token(new Dot(), ".", s), next) : ((c == cc_caret()) ? new LexToken(make_token(new Caret(), "^", s), next) : ((c == cc_ampersand()) ? new LexToken(make_token(new Ampersand(), "&", s), next) : ((c == cc_backslash()) ? new LexToken(make_token(new Backslash(), "\\", s), next) : scan_multi_char_operator(s))))))))))))))(advance_char(s))))(peek_code(s));
 
     public static LexResult scan_multi_char_operator(LexState s) => ((Func<long, LexResult>)((c) => ((Func<LexState, LexResult>)((next) => ((Func<long, LexResult>)((nc) => ((c == cc_plus()) ? ((nc == cc_plus()) ? new LexToken(make_token(new PlusPlus(), "++", s), advance_char(next)) : new LexToken(make_token(new Plus(), "+", s), next)) : ((c == cc_minus()) ? ((nc == cc_greater()) ? new LexToken(make_token(new Arrow(), "->", s), advance_char(next)) : new LexToken(make_token(new Minus(), "-", s), next)) : ((c == cc_star()) ? new LexToken(make_token(new Star(), "*", s), next) : ((c == cc_slash()) ? ((nc == cc_equals()) ? new LexToken(make_token(new NotEquals(), "/=", s), advance_char(next)) : new LexToken(make_token(new Slash(), "/", s), next)) : ((c == cc_equals()) ? ((nc == cc_equals()) ? ((Func<LexState, LexResult>)((next2) => ((Func<long, LexResult>)((nc2) => ((nc2 == cc_equals()) ? new LexToken(make_token(new TripleEquals(), "===", s), advance_char(next2)) : new LexToken(make_token(new DoubleEquals(), "==", s), next2))))((is_at_end(next2) ? 0 : peek_code(next2)))))(advance_char(next)) : new LexToken(make_token(new Equals_(), "=", s), next)) : ((c == cc_colon()) ? ((nc == cc_colon()) ? new LexToken(make_token(new ColonColon(), "::", s), advance_char(next)) : new LexToken(make_token(new Colon(), ":", s), next)) : ((c == cc_pipe()) ? ((nc == cc_minus()) ? new LexToken(make_token(new Turnstile(), "|-", s), advance_char(next)) : new LexToken(make_token(new Pipe(), "|", s), next)) : ((c == cc_less()) ? ((nc == cc_equals()) ? new LexToken(make_token(new LessOrEqual(), "<=", s), advance_char(next)) : ((nc == cc_minus()) ? new LexToken(make_token(new LeftArrow(), "<-", s), advance_char(next)) : new LexToken(make_token(new LessThan(), "<", s), next))) : ((c == cc_greater()) ? ((nc == cc_equals()) ? new LexToken(make_token(new GreaterOrEqual(), ">=", s), advance_char(next)) : new LexToken(make_token(new GreaterThan(), ">", s), next)) : new LexToken(make_token(new ErrorToken(), ((char)((long)s.source[(int)s.offset])).ToString(), s), next))))))))))))((is_at_end(next) ? 0 : peek_code(next)))))(advance_char(s))))(peek_code(s));
+
+    public static LexResult scan_char_literal(LexState s) => ((Func<LexState, LexResult>)((s1) => (is_at_end(s1) ? new LexToken(make_token(new ErrorToken(), "'", s), s1) : ((peek_code(s1) == cc_backslash()) ? ((Func<LexState, LexResult>)((s2) => (is_at_end(s2) ? new LexToken(make_token(new ErrorToken(), "'\\", s), s2) : ((Func<long, LexResult>)((esc_code) => ((Func<long, LexResult>)((char_val) => ((Func<LexState, LexResult>)((s3) => ((Func<LexState, LexResult>)((s4) => new LexToken(make_token(new CharLiteral(), (char_val).ToString(), s), s4)))((is_at_end(s3) ? s3 : ((peek_code(s3) == cc_single_quote()) ? advance_char(s3) : s3)))))(advance_char(s2))))(((esc_code == cc_lower_n()) ? 10 : ((esc_code == cc_lower_t()) ? 9 : ((esc_code == cc_lower_r()) ? 13 : ((esc_code == cc_backslash()) ? cc_backslash() : ((esc_code == cc_single_quote()) ? cc_single_quote() : esc_code))))))))(peek_code(s2)))))(advance_char(s1)) : ((Func<long, LexResult>)((char_val) => ((Func<LexState, LexResult>)((s2) => ((Func<LexState, LexResult>)((s3) => new LexToken(make_token(new CharLiteral(), (char_val).ToString(), s), s3)))((is_at_end(s2) ? s2 : ((peek_code(s2) == cc_single_quote()) ? advance_char(s2) : s2)))))(advance_char(s1))))(peek_code(s1))))))(advance_char(s));
 
     public static List<Token> tokenize_loop(LexState st, List<Token> acc)
     {
@@ -3327,9 +3339,9 @@ public static class Codex_Codex_Codex
 
     public static bool is_backslash(TokenKind k) => k switch { Backslash { } => true, _ => false, };
 
-    public static bool is_literal(TokenKind k) => k switch { IntegerLiteral { } => true, NumberLiteral { } => true, TextLiteral { } => true, TrueKeyword { } => true, FalseKeyword { } => true, _ => false, };
+    public static bool is_literal(TokenKind k) => k switch { IntegerLiteral { } => true, NumberLiteral { } => true, TextLiteral { } => true, CharLiteral { } => true, TrueKeyword { } => true, FalseKeyword { } => true, _ => false, };
 
-    public static bool is_app_start(TokenKind k) => k switch { Identifier { } => true, TypeIdentifier { } => true, IntegerLiteral { } => true, NumberLiteral { } => true, TextLiteral { } => true, TrueKeyword { } => true, FalseKeyword { } => true, LeftParen { } => true, LeftBracket { } => true, _ => false, };
+    public static bool is_app_start(TokenKind k) => k switch { Identifier { } => true, TypeIdentifier { } => true, IntegerLiteral { } => true, NumberLiteral { } => true, TextLiteral { } => true, CharLiteral { } => true, TrueKeyword { } => true, FalseKeyword { } => true, LeftParen { } => true, LeftBracket { } => true, _ => false, };
 
     public static bool is_compound(Expr e) => e switch { MatchExpr(var s, var arms) => true, IfExpr(var c, var t, var el) => true, LetExpr(var binds, var body) => true, DoExpr(var stmts) => true, _ => false, };
 
@@ -4024,7 +4036,7 @@ public static class Codex_Codex_Codex
 
     public static CodexType build_record_ctor_type(List<TypeBinding> tdm, List<ARecordFieldDef> fields, CodexType result, long i, long len) => ((i == len) ? result : ((Func<ARecordFieldDef, CodexType>)((f) => ((Func<CodexType, CodexType>)((rest) => new FunTy(resolve_type_expr(tdm, f.type_expr), rest)))(build_record_ctor_type(tdm, fields, result, (i + 1), len))))(fields[(int)i]));
 
-    public static CheckResult infer_literal(UnificationState st, LiteralKind kind) => kind switch { IntLit { } => new CheckResult(inferred_type: new IntegerTy(), state: st), NumLit { } => new CheckResult(inferred_type: new NumberTy(), state: st), TextLit { } => new CheckResult(inferred_type: new TextTy(), state: st), BoolLit { } => new CheckResult(inferred_type: new BooleanTy(), state: st), _ => throw new InvalidOperationException("Non-exhaustive match"), };
+    public static CheckResult infer_literal(UnificationState st, LiteralKind kind) => kind switch { IntLit { } => new CheckResult(inferred_type: new IntegerTy(), state: st), NumLit { } => new CheckResult(inferred_type: new NumberTy(), state: st), TextLit { } => new CheckResult(inferred_type: new TextTy(), state: st), CharLit { } => new CheckResult(inferred_type: new CharTy(), state: st), BoolLit { } => new CheckResult(inferred_type: new BooleanTy(), state: st), _ => throw new InvalidOperationException("Non-exhaustive match"), };
 
     public static CheckResult infer_name(UnificationState st, TypeEnv env, string name) => (env_has(env, name) ? ((Func<CodexType, CheckResult>)((raw) => ((Func<FreshResult, CheckResult>)((inst) => new CheckResult(inferred_type: inst.var_type, state: inst.state)))(instantiate_type(st, raw))))(env_lookup(env, name)) : new CheckResult(inferred_type: new ErrorTy(), state: add_unify_error(st, "CDX2002", ("Unknown name: " + name))));
 

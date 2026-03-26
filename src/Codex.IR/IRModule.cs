@@ -27,6 +27,8 @@ public sealed record IRTextLit(string Value) : IRExpr(TextType.s_instance);
 
 public sealed record IRBoolLit(bool Value) : IRExpr(BooleanType.s_instance);
 
+public sealed record IRCharLit(long Value) : IRExpr(CharType.s_instance);
+
 public sealed record IRName(string Name, CodexType Type) : IRExpr(Type);
 
 public sealed record IRBinary(IRBinaryOp Op, IRExpr Left, IRExpr Right, CodexType Type) : IRExpr(Type);

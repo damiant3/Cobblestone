@@ -12,6 +12,7 @@ public enum TokenKind
     IntegerLiteral,
     NumberLiteral,
     TextLiteral,
+    CharLiteral,
     TrueKeyword,
     FalseKeyword,
 

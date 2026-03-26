@@ -86,6 +86,7 @@ public sealed partial class Parser
             or TokenKind.IntegerLiteral
             or TokenKind.NumberLiteral
             or TokenKind.TextLiteral
+            or TokenKind.CharLiteral
             or TokenKind.TrueKeyword
             or TokenKind.FalseKeyword
             or TokenKind.LeftParen
@@ -101,6 +102,7 @@ public sealed partial class Parser
             case TokenKind.IntegerLiteral:
             case TokenKind.NumberLiteral:
             case TokenKind.TextLiteral:
+            case TokenKind.CharLiteral:
             case TokenKind.TrueKeyword:
             case TokenKind.FalseKeyword:
             {
@@ -515,6 +517,7 @@ public sealed partial class Parser
 
             case TokenKind.IntegerLiteral:
             case TokenKind.TextLiteral:
+            case TokenKind.CharLiteral:
             case TokenKind.TrueKeyword:
             case TokenKind.FalseKeyword:
             {

@@ -150,6 +150,7 @@ public sealed class Lowering(
             LiteralKind.Number => new IRNumberLit(Convert.ToDecimal(lit.Value)),
             LiteralKind.Text => new IRTextLit((string)lit.Value),
             LiteralKind.Boolean => new IRBoolLit((bool)lit.Value),
+            LiteralKind.Char => new IRCharLit(Convert.ToInt64(lit.Value)),
             _ => new IRError("Unknown literal kind", ErrorType.s_instance)
         };
     }
@@ -458,6 +459,7 @@ public sealed class Lowering(
                 LiteralKind.Number => NumberType.s_instance,
                 LiteralKind.Text => TextType.s_instance,
                 LiteralKind.Boolean => BooleanType.s_instance,
+                LiteralKind.Char => CharType.s_instance,
                 _ => ErrorType.s_instance
             },
             _ => ErrorType.s_instance
