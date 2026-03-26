@@ -363,10 +363,23 @@ the tables. The tables come from the data. The data comes from the world.
   converts to Unicode because the host terminal expects it. When Codex.OS is the
   host, there is no console — there's an agent.
 
-## Open Questions for Damian
+## Decisions (2026-03-25)
 
-1. **Tier 0 only for now?** Unmapped characters → CCE 0 (lossy). OK for initial
-   implementation?
-2. **Test updates**: Many existing tests compare against specific string values.
-   These all change. Brute-force update, or worth writing a migration script?
-3. **Encoding version tag**: Magic byte, filesystem metadata, or self-describing?
+1. **Tier 0 only for the compiler.** The compiler is Tier 0. Period. Anything
+   beyond Tier 0 is userspace — the Clarifier translates any language to the
+   canonical Tier 0 form. We don't sacrifice compiler performance because someone
+   wrote their source in Elvish. (And yes, Codex in Tolkien's Elvish is a real
+   thing we're doing — via the multi-language syntax layer, translated from
+   English and back.)
+
+2. **Encoding version tag**: Filesystem metadata. Files are a transitional concept
+   — Codex.OS will move past them. While we still have files, the OS's
+   capability-enforced metadata tracks the encoding version. BOM as fallback for
+   foreign filesystems.
+
+3. **Test updates**: Brute force. It's mechanical work, not design work.
+
+4. **Collation/sort order**: CCE order everywhere. User-facing sorting is a
+   userspace concern handled by the agent.
+
+5. **Console**: A debugging crutch for the transition. Not a design commitment.
