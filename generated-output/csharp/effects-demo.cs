@@ -54,11 +54,7 @@ public static class Codex_effects_demo
 {
     public static object greet(string name)
     {
-<<<<<<< Updated upstream
         Console.WriteLine(_Cce.ToUnicode(string.Concat(".\u000D\u0017\u0017\u0010B\u0002", name, "C")));
-=======
-        Console.WriteLine(string.Concat("Hello, ", name, "!"));
->>>>>>> Stashed changes
         return null;
     }
 

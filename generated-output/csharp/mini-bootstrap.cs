@@ -6,15 +6,14 @@ using System.Threading.Tasks;
 
 Console.WriteLine(Codex_mini_bootstrap.main());
 
-public sealed record Point(long x, long y);
-
 public abstract record Color;
 
 public sealed record Red : Color;
 public sealed record Green : Color;
 public sealed record Blue(long Field0) : Color;
 
-<<<<<<< Updated upstream
+public sealed record Point(long x, long y);
+
 static class _Cce {
     static readonly int[] _toUni = {
         0, 10, 32,
@@ -59,8 +58,6 @@ static class _Cce {
     }
 }
 
-=======
->>>>>>> Stashed changes
 public static class Codex_mini_bootstrap
 {
     public static string show_color(Color c)

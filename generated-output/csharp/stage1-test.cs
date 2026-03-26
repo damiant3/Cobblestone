@@ -59,11 +59,7 @@ public static class Codex_stage1_test
 
     public static string greet(string name)
     {
-<<<<<<< Updated upstream
         return string.Concat(".\u000D\u0017\u0017\u0010B\u0002", name, "C");
-=======
-        return string.Concat("Hello, ", name, "!");
->>>>>>> Stashed changes
     }
 
     public static object main()
