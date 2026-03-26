@@ -124,26 +124,88 @@ Cons:
 - `?` is already a valid character (CCE 68). Need a different sentinel or
   a side-channel diagnostic.
 
+### Option E: Two compilation modes — forward-looking and backward-looking
+
+Same compiler, same source language, one flag:
+
+**`codex build --encoding unicode`** — backward-looking. Unicode on the inside,
+no CCE conversion, no I/O boundaries, full fidelity for every character on earth.
+`"\t"` is a tab. `read-file` returns the bytes as-is. `is-letter` calls
+`char.IsLetter`. This is the mode for programs that live in the barbarian world:
+data pipelines reading CSVs, code generators emitting Go/Python/YAML, anything
+that processes external text.
+
+**`codex build --encoding cce`** — forward-looking. CCE on the inside, boundaries
+at I/O, frequency-sorted classification, the full vision. This is the mode for
+programs that live in the Codex world: the self-hosted compiler, Codex.OS, agents,
+anything that doesn't need to care about the outside.
+
+The difference is entirely in the emitter layer:
+- What the runtime preamble looks like (with or without `_Cce` class)
+- How string literals are encoded (CCE-escaped or plain Unicode)
+- How builtins like `is-letter`, `is-digit` are emitted (range checks or
+  `char.IsLetter`)
+- Whether I/O builtins wrap in conversion calls
+
+The source language, parser, type checker, IR — all identical. The flag affects
+code generation only.
+
+Pros:
+- **The TAB/CR question dissolves.** Unicode mode has them. CCE mode doesn't
+  need them. No evictions. No silent corruption. No compromises.
+- The user chooses based on their program's world, not the encoding's limits.
+- The self-hosted compiler bootstraps in CCE mode (it IS a Codex-native program).
+  A data processing tool compiles in unicode mode. Each gets the right tradeoffs.
+- TAB and CR aren't a birth defect we carry forward OR a capability we lose.
+  They're just irrelevant in one mode and available in the other.
+- Relatively low maintenance cost — the emitter already has the CCE and non-CCE
+  code paths from the migration. This is formalizing what was previously a
+  before/after into a side-by-side.
+- The compiler can default to one mode and evolve: maybe unicode today (safe),
+  cce tomorrow (once the ecosystem is ready), cce-only eventually (when Codex.OS
+  is the host and Unicode is the foreign encoding).
+
+Cons:
+- Two code paths in the emitter to maintain. Every new builtin needs both a CCE
+  and Unicode emission. This is manageable but not free.
+- Testing surface doubles for the emitter layer. Every sample needs to compile
+  and run correctly in both modes.
+- Risk of drift: one mode gets all the attention and the other rots. Need
+  discipline to keep both green.
+- "Which mode should I use?" is a question new users have to answer. Defaults
+  matter.
+
+Open questions:
+- What's the default? Unicode (safe, backward-compatible) or CCE (forward-looking,
+  the vision)?
+- Does the flag live in `codex.project.json` per-project, or is it per-invocation?
+- Can a CCE-mode program call into a unicode-mode library, or vice versa? (Probably
+  not without boundary conversion — but is that a real use case?)
+- How much of the emitter is actually duplicated? The CCE migration touched ~30
+  builtin emission sites. That's the maintenance surface.
+
 ---
 
 ## What We Think (But Want Cam's Input On)
 
-**Option A (boundary normalization) is the leading candidate.** The reasoning:
+**Option E (two compilation modes) is the new leading candidate.** The reasoning:
 
-1. Codex is building its own world. Inside that world, the meaningful whitespace
-   characters are newline (structure) and space (separation). Tab is "some spaces"
-   — a rendering decision, not a semantic one.
+1. It reframes the question. Instead of "how do we fit legacy characters into
+   the encoding," it asks "does this program live in the Codex world or the
+   Unicode world?" That's the right question.
 
-2. External text is a boundary concern. The boundary translates. This is the
-   same principle as CCE itself — Unicode exists at the I/O edges, not inside.
+2. TAB and CR aren't characters we need to accommodate — they're artifacts of a
+   hardware birth defect from 1963 that every system since has carried forward
+   because the last one did. CCE mode is free of that. Unicode mode isn't, and
+   that's fine — it exists specifically for interop with the world as it is.
 
-3. Evicting letters for machine codes (Option B) is philosophically backwards.
+3. No evictions. The Cyrillic letters stay. The encoding stays principled.
 
-4. Multi-byte (Option C) is the right long-term answer for Tier 1 but is scope
-   we don't need today.
+4. The maintenance cost is real but bounded — the emitter already has both code
+   paths from the migration. This formalizes them.
 
-5. Loud failure (Option D) should happen regardless of which option we pick.
-   Silent NUL is a bug.
+5. Loud failure (Option D) should still happen in CCE mode regardless. Silent
+   NUL is a bug.
 
 **But we haven't fully enumerated the tradeoffs.** Specifically:
 
@@ -177,5 +239,7 @@ be fixed regardless of the TAB/CR decision:
 - [ ] Cam: Read this, think about it, enumerate any tradeoffs we're missing
 - [ ] Cam: Search codebase for `"\t"` and `"\r"` usage in .codex source
 - [ ] Cam: Check Go and Python emitter indentation strategy
-- [ ] All: Decide on Option A/B/C/D or a hybrid
+- [ ] Cam: Estimate emitter maintenance surface for dual-mode (Option E) —
+      how many emission sites need both paths? How much is already there?
+- [ ] All: Decide on Option A/B/C/D/E or a hybrid
 - [ ] All: Fix silent NUL regardless of decision (Option D is orthogonal)
