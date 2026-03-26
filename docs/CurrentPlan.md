@@ -1,14 +1,21 @@
 # Current Plan
 
-**Date**: 2026-03-26 (Cam session — CCE complete)
+**Date**: 2026-03-26 morning (post-CCE reflection)
 
 ---
 
 ## Where We Stand
 
-CCE (Codex Character Encoding) is **complete**. The compiler is fully self-hosting
-with CCE-native text: Char = CCE byte, Text = CCE string, Unicode only at I/O
-boundaries. Fixed point proven at 298,328 chars.
+CCE is **merged to master and reflected on**. The Janus reflection
+(`docs/Designs/CCE-NATIVE-TEXT.md`, "Cam's Think" section) assessed the
+trade-offs honestly: 34% overhead in the .NET pipeline, temporary and diffuse,
+paid in a depreciating currency. Decision: stay on the forward path. No shortcut
+trail back to Unicode internals.
+
+The CCE whitespace decision (`docs/Designs/CCE-WHITESPACE-DECISION.md`) is
+**open** — Options A through E on the table. Option E (dual compilation modes:
+`--encoding cce` vs `--encoding unicode`) is the leading candidate. Cam's action
+items from that doc are partially resolved (see below).
 
 ### Snapshot
 
@@ -16,10 +23,11 @@ boundaries. Fixed point proven at 298,328 chars.
 |--------|-------|
 | Self-hosted compiler | 26 files, ~5,000 lines |
 | Backends | 15 (12 transpilation + IL + RISC-V + WASM + ARM64 + x86-64, including bare metal) |
-| Tests | 915 (507 compiler + 134 syntax + 110 repository + 86 toolkit + 23 semantics + 21 core + 18 LSP + 16 AST) |
-| Self-compile time | 208ms median (9.2x faster than pre-optimization) |
+| Tests | 926 |
+| Self-compile time | 279ms median (CCE-native), 208ms pre-CCE |
 | Fixed point | **Proven** (Stage 2 = Stage 3 at 298,328 chars, CCE-native) |
-| Language features | Lambda expressions, fork/await/par/race, Char type, CCE-native text |
+| CCE perf overhead | 34% constant-factor, diffuse across all stages |
+| Language features | Lambda, fork/await/par/race, Char, CCE-native text |
 | Codex.OS | 7 KB kernel, Rings 0-4, preemptive multitasking, capability-enforced syscalls |
 | Agents | 4 (Windows/Copilot, Linux/sandbox, Cam/CLI, Nut/garage-box) |
 
@@ -28,49 +36,46 @@ boundaries. Fixed point proven at 298,328 chars.
 
 ---
 
-## What Got Done (2026-03-26 Cam session)
+## What Got Done (2026-03-26)
 
-### CCE-Native Text — All 6 Phases Complete
+### CCE-Native Text — Complete, Merged, Reflected
 
-Branch: `cam/cce-native-text`. Design: `docs/Designs/CCE-NATIVE-TEXT.md`.
+- All 6 phases complete. Branch `cam/cce-native-text` merged to master.
+- Tier 0 revision: 128 chars, frequency-sorted, 3 whitespace + 10 digits +
+  26 lower + 26 upper + 29 punct + 19 accented + 15 Cyrillic.
+- Self-hosted emitter fully CCE-native: `_Cce` runtime, I/O wrapping, escape
+  rewrite, char-literal-based classification.
+- Fixed point proven at 298,328 chars.
+- Perf report: `docs/reviews/CCE-PERF-IMPACT.md` — 34% overhead, no algorithmic
+  regression.
+- P1 optimization done (`text-concat-list`, commit `a46bcf1`): O(n²) escape-text
+  fixed but didn't move the needle — n too small. Confirms overhead is diffuse.
+- Janus reflection: `docs/Designs/CCE-NATIVE-TEXT.md`, "Cam's Think" section.
+  Conclusion: forward path, no dual-encoding retreat.
 
-**Tier 0 revision** — corpus was prose-only, missing syntax chars:
-- Whitespace trimmed 8→3 (NUL, LF, Space — no typewriter legacy)
-- 9 syntax chars added: `| [ ] { } < > ~ `` `
-- 4 chars demoted to Tier 1: ì, î, ß, г (lowest global frequency)
-- Punctuation organized: prose (11) + operators (5) + syntax (13) = 29
+### CCE Whitespace Decision — Open
 
-**New Tier 0 layout (128):**
+- Linux + Damian identified TAB/CR silent NUL corruption.
+- Five options documented. Option E (dual compilation modes) leading.
+- **Cam's action items resolved**:
+  - `\t` and `\r` in `.codex` source: only in `Lexer.codex` escape handler
+    (lines 230-231). This is correct — the Lexer processes escape sequences in
+    string literals. No `.codex` source uses literal tabs.
+  - Go/Python emitter indentation: **spaces, not tabs.** The emitters do have
+    `Replace("\t", "\\t")` for string escaping in output, but indentation is
+    spaces throughout. No tab dependency.
+  - Emitter maintenance surface for Option E: ~30 builtin emission sites were
+    touched during CCE migration. Both code paths already exist in git history.
+    Formalizing them is bounded work, not open-ended.
+- **Still open**: silent NUL fix (Option D, orthogonal), default mode choice,
+  per-project vs per-invocation flag.
 
-| Range | Category | Count |
-|-------|----------|-------|
-| 0-2 | Whitespace | 3 |
-| 3-12 | Digits | 10 |
-| 13-38 | Lowercase | 26 |
-| 39-64 | Uppercase | 26 |
-| 65-93 | Punctuation | 29 |
-| 94-112 | Accented | 19 |
-| 113-127 | Cyrillic | 15 |
+### Docs
 
-**Self-hosted emitter CCE-native:**
-- `_Cce` runtime class generation (FromUnicode/ToUnicode)
-- All I/O builtins wrapped with CCE↔Unicode conversion
-- `is-letter`/`is-digit`/`is-whitespace` use CCE range checks (not Unicode APIs)
-- `escape-text` rewritten as per-character `EscapeCceString` (handles `\uXXXX`)
-- `show`/`integer-to-text`/`text-to-integer` use `_Cce` conversion
-
-**Phase 6 cleanup:**
-- `is-cce-*` → `is-*`, `CCEClass` → `CharClass`, etc.
-- Lexer escape processing uses char literals instead of hardcoded Unicode code points
-
-**Design philosophy**: All dependencies shallow. Encoding carries meaning only.
-Typographic/legacy concerns (CR, Tab, NBSP, hair space) belong at the I/O boundary.
-
-### Previous sessions (on master)
-
-- Performance P2-alt: sorted binary search + list-snoc (9.2x speedup)
-- P4 string.Concat flattening
-- Char type across all 16 backends
+- README refreshed: 15 backends, CCE, Codex.OS, 926 tests.
+- Milestones named: MM2 The High Camp, MM3 Summit.
+- CCE encoding integration design (Linux): gconv, EncodingProvider, editor
+  plugins — the rope from the col back to base camp.
 
 ---
 
@@ -79,31 +84,34 @@ Typographic/legacy concerns (CR, Tab, NBSP, hair space) belong at the I/O bounda
 | Ring | What | Status |
 |------|------|--------|
 | 0 | Multiboot boot, 32-to-64 trampoline, serial I/O, heap + stack | Done |
-| 1 | IDT (256 vectors), PIC, timer interrupts, keyboard input | Done (**optimized: 7KB**) |
+| 1 | IDT (256 vectors), PIC, timer interrupts, keyboard input | Done (7KB) |
 | 2 | Process table (16 slots), preemptive context switch, per-process page tables | Done |
 | 3 | Capability-enforced syscalls (SYS_WRITE_SERIAL, SYS_READ_KEY, SYS_GET_TICKS, SYS_EXIT) | Done |
 | 4 | Self-hosting compiler on bare metal, TCO, serial I/O | Serial REPL works for short programs |
 
 ---
 
-## What Remains
+## What's Next
+
+### The next rock — candidates for discussion
+
+| Candidate | What | Why now |
+|-----------|------|---------|
+| Closure escape analysis | CDX2043 to error, linear closures | Blocks correctness guarantees for closures; design doc exists (`docs/Designs/CLOSURE-ESCAPE-ANALYSIS.md`) |
+| Silent NUL fix | Option D from whitespace decision | Independent of TAB/CR decision; silent corruption is a bug |
+| CCE Tier 1 multi-byte | 2-byte encoding for extended scripts | Load-bearing for the repository's "remembers everything" promise |
+| `codex encode` CLI | Phase 0 from encoding integration design | Low effort, immediate utility for debugging CCE files |
+| Codex.OS Ring 4 push | Self-hosting compiler on bare metal | MM2 milestone marker; serial REPL already works |
+| Perf tracking | Automated benchmark in CI or session init | Track compound regression before it bites |
 
 ### Near-term (days)
 
 | Item | Blocked on | Who |
 |------|-----------|-----|
-| Merge `cam/cce-native-text` to master | Review | Any agent |
-| Closure escape analysis | CDX2043 to error | Any agent |
+| Decide CCE whitespace (A/B/C/D/E) | Team discussion | All |
+| Fix silent NUL (Option D) | Nothing — orthogonal | Any agent |
+| Closure escape analysis | CDX2043 design review | Any agent |
 | Phone flash | Bootloader signature issue | Human |
-
-### Completed
-
-| Item | Status |
-|------|--------|
-| **CCE-native text (all 6 phases)** | Branch `cam/cce-native-text`. Fixed point at 298,328 chars. |
-| Char type — all 16 backends | On master. |
-| P4 string.Concat flattening | On master. |
-| P2 sorted binary search + list-snoc | On master. |
 
 ### Medium-term (weeks)
 
@@ -112,7 +120,7 @@ Typographic/legacy concerns (CR, Tab, NBSP, hair space) belong at the I/O bounda
 | Codex.UI substrate | Design: semantic primitives, typed themes |
 | Capability refinement | Direction, scope, time-boxing in effect syntax |
 | Multi-language syntax | Parser per locale, shared AST |
-| Remaining ~2-3x perf gap to reference | Profile to find next bottleneck |
+| CCE Tier 1 encoding | Multi-byte for CJK, Arabic, extended Latin |
 
 ### Long-term
 
@@ -120,7 +128,7 @@ Typographic/legacy concerns (CR, Tab, NBSP, hair space) belong at the I/O bounda
 |------|-------|
 | Codex.OS on real hardware | WHPX (Nut's box), then actual boot device |
 | Ring 5+: filesystem, networking | Content-addressed FactStore as the filesystem? |
-| Self-hosted compiler compiling itself on bare metal | The ultimate fixed-point |
+| Self-hosted compiler compiling itself on bare metal (MM3) | The ultimate fixed-point |
 | Floppy disk image | Boot → compiler → self-compile, all in 1.44 MB |
 
 ---
