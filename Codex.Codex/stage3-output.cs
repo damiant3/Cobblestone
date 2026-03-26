@@ -726,9 +726,9 @@ public static class Codex_Codex_Codex
 
     public static long span_length(SourceSpan span) => (span.end.offset - span.start.offset);
 
-    public static string emit_type_defs(List<ATypeDef> tds, long i) => ((i() == ((long)tds.Count)) ? "" : (emit_type_def(tds[(int)i()]) + ("\u000A" + emit_type_defs(tds, (i() + 1)))));
+    public static string emit_type_defs(List<ATypeDef> tds, long i) => ((i() == ((long)tds.Count)) ? "" : (emit_type_def(tds[(int)i()]) + ("\u0001" + emit_type_defs(tds, (i() + 1)))));
 
-    public static string emit_type_def(ATypeDef td) => td switch { ARecordTypeDef(var name, var tparams, var fields) => ((Func<string, string>)((gen) => ("\u001F\u0019b\u0017\u0011\u0018\u0002\u0013\u000D\u000F\u0017\u000D\u0016\u0002\u0015\u000D\u0018\u0010\u0015\u0016\u0002" + (sanitize(name().value) + (gen + ("(" + (emit_record_field_defs(fields, tparams(), 0) + ");\u000A")))))))(emit_tparameter_suffix(tparams())), AVariantTypeDef(var name, var tparams, var ctors) => ((Func<string, string>)((gen) => ("\u001F\u0019b\u0017\u0011\u0018\u0002\u000Fb\u0013\u000E\u0015\u000F\u0018\u000E\u0002\u0015\u000D\u0018\u0010\u0015\u0016\u0002" + (sanitize(name().value) + (gen + (";\u000A" + (emit_variant_ctors(ctors, name(), tparams(), 0) + "\u000A")))))))(emit_tparameter_suffix(tparams())), _ => throw new InvalidOperationException("Non-exhaustive match"), };
+    public static string emit_type_def(ATypeDef td) => td switch { ARecordTypeDef(var name, var tparams, var fields) => ((Func<string, string>)((gen) => ("\u001F\u0019b\u0017\u0011\u0018\u0002\u0013\u000D\u000F\u0017\u000D\u0016\u0002\u0015\u000D\u0018\u0010\u0015\u0016\u0002" + (sanitize(name().value) + (gen + ("(" + (emit_record_field_defs(fields, tparams(), 0) + ");\u0001")))))))(emit_tparameter_suffix(tparams())), AVariantTypeDef(var name, var tparams, var ctors) => ((Func<string, string>)((gen) => ("\u001F\u0019b\u0017\u0011\u0018\u0002\u000Fb\u0013\u000E\u0015\u000F\u0018\u000E\u0002\u0015\u000D\u0018\u0010\u0015\u0016\u0002" + (sanitize(name().value) + (gen + (";\u0001" + (emit_variant_ctors(ctors, name(), tparams(), 0) + "\u0001")))))))(emit_tparameter_suffix(tparams())), _ => throw new InvalidOperationException("Non-exhaustive match"), };
 
     public static string emit_tparameter_suffix(List<Name> tparams) => ((((long)tparams().Count) == 0) ? "" : ("<" + (emit_tparameter_names(tparams(), 0) + ">")));
 
@@ -738,7 +738,7 @@ public static class Codex_Codex_Codex
 
     public static string emit_variant_ctors(List<AVariantCtorDef> ctors, Name base_name, List<Name> tparams, long i) => ((i() == ((long)ctors.Count)) ? "" : ((Func<AVariantCtorDef, string>)((c) => (emit_variant_ctor(c, base_name, tparams()) + emit_variant_ctors(ctors, base_name, tparams(), (i() + 1)))))(ctors[(int)i()]));
 
-    public static string emit_variant_ctor(AVariantCtorDef c, Name base_name, List<Name> tparams) => ((Func<string, string>)((gen) => ((((long)c.fields.Count) == 0) ? ("\u001F\u0019b\u0017\u0011\u0018\u0002\u0013\u000D\u000F\u0017\u000D\u0016\u0002\u0015\u000D\u0018\u0010\u0015\u0016\u0002" + (sanitize(c.name.value) + (gen + ("\u0002:\u0002" + (sanitize(base_name.value) + (gen + ";\u000A")))))) : ("\u001F\u0019b\u0017\u0011\u0018\u0002\u0013\u000D\u000F\u0017\u000D\u0016\u0002\u0015\u000D\u0018\u0010\u0015\u0016\u0002" + (sanitize(c.name.value) + (gen + ("(" + (emit_ctor_fields(c.fields, tparams(), 0) + (")\u0002:\u0002" + (sanitize(base_name.value) + (gen + ";\u000A")))))))))))(emit_tparameter_suffix(tparams()));
+    public static string emit_variant_ctor(AVariantCtorDef c, Name base_name, List<Name> tparams) => ((Func<string, string>)((gen) => ((((long)c.fields.Count) == 0) ? ("\u001F\u0019b\u0017\u0011\u0018\u0002\u0013\u000D\u000F\u0017\u000D\u0016\u0002\u0015\u000D\u0018\u0010\u0015\u0016\u0002" + (sanitize(c.name.value) + (gen + ("\u0002:\u0002" + (sanitize(base_name.value) + (gen + ";\u0001")))))) : ("\u001F\u0019b\u0017\u0011\u0018\u0002\u0013\u000D\u000F\u0017\u000D\u0016\u0002\u0015\u000D\u0018\u0010\u0015\u0016\u0002" + (sanitize(c.name.value) + (gen + ("(" + (emit_ctor_fields(c.fields, tparams(), 0) + (")\u0002:\u0002" + (sanitize(base_name.value) + (gen + ";\u0001")))))))))))(emit_tparameter_suffix(tparams()));
 
     public static string emit_ctor_fields(List<ATypeExpr> fields, List<Name> tparams, long i) => ((i() == ((long)fields.Count)) ? "" : (emit_type_expr_tp(fields[(int)i()], tparams()) + ("\u0002F\u0011\u000D\u0017\u0016" + (_Cce.FromUnicode(i().ToString()) + (((i() < (((long)fields.Count) - 1)) ? ",\u0002" : "") + emit_ctor_fields(fields, tparams(), (i() + 1)))))));
 
@@ -945,33 +945,33 @@ public static class Codex_Codex_Codex
 
     public static bool should_tco(IRDef d) => ((((long)d.@params.Count) == 0) ? false : has_tail_call(d.body, d.name));
 
-    public static string emit_tco_def(IRDef d, List<ArityEntry> arities) => ((Func<CodexType, string>)((ret) => ((Func<string, string>)((gen) => ("\u0002\u0002\u0002\u0002\u001F\u0019b\u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002" + (cs_type(ret) + ("\u0002" + (sanitize(d.name) + (gen + ("(" + (emit_def_params(d.@params, 0) + (")\u000A\u0002\u0002\u0002\u0002{\u000A\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u001B\u0014\u0011\u0017\u000D\u0002(\u000E\u0015\u0019\u000D)\u000A\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002{\u000A" + (emit_tco_body(d.body, d.name, d.@params, arities) + "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002}\u000A\u0002\u0002\u0002\u0002}\u000A")))))))))))(generic_suffix(d.type_val))))(get_return_type(d.type_val, ((long)d.@params.Count)));
+    public static string emit_tco_def(IRDef d, List<ArityEntry> arities) => ((Func<CodexType, string>)((ret) => ((Func<string, string>)((gen) => ("\u0002\u0002\u0002\u0002\u001F\u0019b\u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002" + (cs_type(ret) + ("\u0002" + (sanitize(d.name) + (gen + ("(" + (emit_def_params(d.@params, 0) + (")\u0001\u0002\u0002\u0002\u0002{\u0001\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u001B\u0014\u0011\u0017\u000D\u0002(\u000E\u0015\u0019\u000D)\u0001\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002{\u0001" + (emit_tco_body(d.body, d.name, d.@params, arities) + "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002}\u0001\u0002\u0002\u0002\u0002}\u0001")))))))))))(generic_suffix(d.type_val))))(get_return_type(d.type_val, ((long)d.@params.Count)));
 
-    public static string emit_tco_body(IRExpr e, string func_name, List<IRParam> @params, List<ArityEntry> arities) => e() switch { IrIf(var c, var t, var el, var ty) => emit_tco_if(c, t, el, func_name, @params, arities), IrLet(var name, var ty, var val, var body) => emit_tco_let(name(), ty(), val, body(), func_name, @params, arities), IrMatch(var scrut, var branches, var ty) => emit_tco_match(scrut, branches, func_name, @params, arities), IrApply(var f, var a, var rty) => emit_tco_apply(e(), func_name, @params, arities), _ => ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002" + (emit_expr(e(), arities) + ";\u000A")), };
+    public static string emit_tco_body(IRExpr e, string func_name, List<IRParam> @params, List<ArityEntry> arities) => e() switch { IrIf(var c, var t, var el, var ty) => emit_tco_if(c, t, el, func_name, @params, arities), IrLet(var name, var ty, var val, var body) => emit_tco_let(name(), ty(), val, body(), func_name, @params, arities), IrMatch(var scrut, var branches, var ty) => emit_tco_match(scrut, branches, func_name, @params, arities), IrApply(var f, var a, var rty) => emit_tco_apply(e(), func_name, @params, arities), _ => ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002" + (emit_expr(e(), arities) + ";\u0001")), };
 
-    public static string emit_tco_apply(IRExpr e, string func_name, List<IRParam> @params, List<ArityEntry> arities) => (is_self_call(e(), func_name) ? emit_tco_jump(e(), @params, arities) : ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002" + (emit_expr(e(), arities) + ";\u000A")));
+    public static string emit_tco_apply(IRExpr e, string func_name, List<IRParam> @params, List<ArityEntry> arities) => (is_self_call(e(), func_name) ? emit_tco_jump(e(), @params, arities) : ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002" + (emit_expr(e(), arities) + ";\u0001")));
 
-    public static string emit_tco_if(IRExpr cond, IRExpr t, IRExpr el, string func_name, List<IRParam> @params, List<ArityEntry> arities) => ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0011\u001C\u0002(" + (emit_expr(cond, arities) + (")\u000A\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002{\u000A" + (emit_tco_body(t, func_name, @params, arities) + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002}\u000A\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u000D\u0017\u0013\u000D\u000A\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002{\u000A" + (emit_tco_body(el, func_name, @params, arities) + "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002}\u000A"))))));
+    public static string emit_tco_if(IRExpr cond, IRExpr t, IRExpr el, string func_name, List<IRParam> @params, List<ArityEntry> arities) => ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0011\u001C\u0002(" + (emit_expr(cond, arities) + (")\u0001\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002{\u0001" + (emit_tco_body(t, func_name, @params, arities) + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002}\u0001\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u000D\u0017\u0013\u000D\u0001\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002{\u0001" + (emit_tco_body(el, func_name, @params, arities) + "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002}\u0001"))))));
 
-    public static string emit_tco_let(string name, CodexType ty, IRExpr val, IRExpr body, string func_name, List<IRParam> @params, List<ArityEntry> arities) => ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002v\u000F\u0015\u0002" + (sanitize(name()) + ("\u0002=\u0002" + (emit_expr(val, arities) + (";\u000A" + emit_tco_body(body(), func_name, @params, arities))))));
+    public static string emit_tco_let(string name, CodexType ty, IRExpr val, IRExpr body, string func_name, List<IRParam> @params, List<ArityEntry> arities) => ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002v\u000F\u0015\u0002" + (sanitize(name()) + ("\u0002=\u0002" + (emit_expr(val, arities) + (";\u0001" + emit_tco_body(body(), func_name, @params, arities))))));
 
-    public static string emit_tco_match(IRExpr scrut, List<IRBranch> branches, string func_name, List<IRParam> @params, List<ArityEntry> arities) => ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002v\u000F\u0015\u0002_\u000E\u0018\u0010_\u0013\u0002=\u0002" + (emit_expr(scrut, arities) + (";\u000A" + emit_tco_match_branches(branches, func_name, @params, arities, 0, true))));
+    public static string emit_tco_match(IRExpr scrut, List<IRBranch> branches, string func_name, List<IRParam> @params, List<ArityEntry> arities) => ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002v\u000F\u0015\u0002_\u000E\u0018\u0010_\u0013\u0002=\u0002" + (emit_expr(scrut, arities) + (";\u0001" + emit_tco_match_branches(branches, func_name, @params, arities, 0, true))));
 
     public static string emit_tco_match_branches(List<IRBranch> branches, string func_name, List<IRParam> @params, List<ArityEntry> arities, long i, bool is_first) => ((i() == ((long)branches.Count)) ? "" : ((Func<IRBranch, string>)((b) => (emit_tco_match_branch(b(), func_name, @params, arities, i(), is_first) + emit_tco_match_branches(branches, func_name, @params, arities, (i() + 1), false))))(branches[(int)i()]));
 
-    public static string emit_tco_match_branch(IRBranch b, string func_name, List<IRParam> @params, List<ArityEntry> arities, long idx, bool is_first) => b().pattern switch { IrWildPat { } => ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002{\u000A" + (emit_tco_body(b().body, func_name, @params, arities) + "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002}\u000A")), IrVarPat(var name, var ty) => ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002{\u000A\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002v\u000F\u0015\u0002" + (sanitize(name()) + ("\u0002=\u0002_\u000E\u0018\u0010_\u0013;\u000A" + (emit_tco_body(b().body, func_name, @params, arities) + "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002}\u000A")))), IrCtorPat(var name, var subs, var ty) => ((Func<string, string>)((keyword) => ((Func<string, string>)((match_var) => ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002" + (keyword + ("\u0002(_\u000E\u0018\u0010_\u0013\u0002\u0011\u0013\u0002" + (sanitize(name()) + ("\u0002" + (match_var + (")\u000A\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002{\u000A" + (emit_tco_ctor_bindings(subs, match_var, 0) + (emit_tco_body(b().body, func_name, @params, arities) + "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002}\u000A")))))))))))(("_\u000E\u0018\u0010_\u001A" + _Cce.FromUnicode(idx.ToString())))))((is_first ? "\u0011\u001C" : "\u000D\u0017\u0013\u000D\u0002\u0011\u001C")), IrLitPat(var text, var ty) => ((Func<string, string>)((keyword) => ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002" + (keyword + ("\u0002(\u0010bj\u000D\u0018\u000E.Eq\u0019\u000F\u0017\u0013(_\u000E\u0018\u0010_\u0013,\u0002" + (text() + ("))\u000A\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002{\u000A" + (emit_tco_body(b().body, func_name, @params, arities) + "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002}\u000A"))))))))((is_first ? "\u0011\u001C" : "\u000D\u0017\u0013\u000D\u0002\u0011\u001C")), _ => throw new InvalidOperationException("Non-exhaustive match"), };
+    public static string emit_tco_match_branch(IRBranch b, string func_name, List<IRParam> @params, List<ArityEntry> arities, long idx, bool is_first) => b().pattern switch { IrWildPat { } => ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002{\u0001" + (emit_tco_body(b().body, func_name, @params, arities) + "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002}\u0001")), IrVarPat(var name, var ty) => ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002{\u0001\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002v\u000F\u0015\u0002" + (sanitize(name()) + ("\u0002=\u0002_\u000E\u0018\u0010_\u0013;\u0001" + (emit_tco_body(b().body, func_name, @params, arities) + "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002}\u0001")))), IrCtorPat(var name, var subs, var ty) => ((Func<string, string>)((keyword) => ((Func<string, string>)((match_var) => ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002" + (keyword + ("\u0002(_\u000E\u0018\u0010_\u0013\u0002\u0011\u0013\u0002" + (sanitize(name()) + ("\u0002" + (match_var + (")\u0001\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002{\u0001" + (emit_tco_ctor_bindings(subs, match_var, 0) + (emit_tco_body(b().body, func_name, @params, arities) + "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002}\u0001")))))))))))(("_\u000E\u0018\u0010_\u001A" + _Cce.FromUnicode(idx.ToString())))))((is_first ? "\u0011\u001C" : "\u000D\u0017\u0013\u000D\u0002\u0011\u001C")), IrLitPat(var text, var ty) => ((Func<string, string>)((keyword) => ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002" + (keyword + ("\u0002(\u0010bj\u000D\u0018\u000E.Eq\u0019\u000F\u0017\u0013(_\u000E\u0018\u0010_\u0013,\u0002" + (text() + ("))\u0001\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002{\u0001" + (emit_tco_body(b().body, func_name, @params, arities) + "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002}\u0001"))))))))((is_first ? "\u0011\u001C" : "\u000D\u0017\u0013\u000D\u0002\u0011\u001C")), _ => throw new InvalidOperationException("Non-exhaustive match"), };
 
     public static string emit_tco_ctor_bindings(List<IRPat> subs, string match_var, long i) => ((i() == ((long)subs.Count)) ? "" : ((Func<IRPat, string>)((sub) => (emit_tco_ctor_binding(sub, match_var, i()) + emit_tco_ctor_bindings(subs, match_var, (i() + 1)))))(subs[(int)i()]));
 
-    public static string emit_tco_ctor_binding(IRPat sub, string match_var, long i) => sub switch { IrVarPat(var name, var ty) => ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002v\u000F\u0015\u0002" + (sanitize(name()) + ("\u0002=\u0002" + (match_var + (".F\u0011\u000D\u0017\u0016" + (_Cce.FromUnicode(i().ToString()) + ";\u000A")))))), _ => "", };
+    public static string emit_tco_ctor_binding(IRPat sub, string match_var, long i) => sub switch { IrVarPat(var name, var ty) => ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002v\u000F\u0015\u0002" + (sanitize(name()) + ("\u0002=\u0002" + (match_var + (".F\u0011\u000D\u0017\u0016" + (_Cce.FromUnicode(i().ToString()) + ";\u0001")))))), _ => "", };
 
-    public static string emit_tco_jump(IRExpr e, List<IRParam> @params, List<ArityEntry> arities) => ((Func<ApplyChain, string>)((chain) => (emit_tco_temps(chain.args, arities, 0) + (emit_tco_assigns(@params, 0) + "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0018\u0010\u0012\u000E\u0011\u0012\u0019\u000D;\u000A"))))(collect_apply_chain(e(), new List<IRExpr>()));
+    public static string emit_tco_jump(IRExpr e, List<IRParam> @params, List<ArityEntry> arities) => ((Func<ApplyChain, string>)((chain) => (emit_tco_temps(chain.args, arities, 0) + (emit_tco_assigns(@params, 0) + "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0018\u0010\u0012\u000E\u0011\u0012\u0019\u000D;\u0001"))))(collect_apply_chain(e(), new List<IRExpr>()));
 
-    public static string emit_tco_temps(List<IRExpr> args, List<ArityEntry> arities, long i) => ((i() == ((long)args.Count)) ? "" : ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002v\u000F\u0015\u0002_\u000E\u0018\u0010_" + (_Cce.FromUnicode(i().ToString()) + ("\u0002=\u0002" + (emit_expr(args[(int)i()], arities) + (";\u000A" + emit_tco_temps(args, arities, (i() + 1))))))));
+    public static string emit_tco_temps(List<IRExpr> args, List<ArityEntry> arities, long i) => ((i() == ((long)args.Count)) ? "" : ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002v\u000F\u0015\u0002_\u000E\u0018\u0010_" + (_Cce.FromUnicode(i().ToString()) + ("\u0002=\u0002" + (emit_expr(args[(int)i()], arities) + (";\u0001" + emit_tco_temps(args, arities, (i() + 1))))))));
 
-    public static string emit_tco_assigns(List<IRParam> @params, long i) => ((i() == ((long)@params.Count)) ? "" : ((Func<IRParam, string>)((p) => ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002" + (sanitize(p.name) + ("\u0002=\u0002_\u000E\u0018\u0010_" + (_Cce.FromUnicode(i().ToString()) + (";\u000A" + emit_tco_assigns(@params, (i() + 1)))))))))(@params[(int)i()]));
+    public static string emit_tco_assigns(List<IRParam> @params, long i) => ((i() == ((long)@params.Count)) ? "" : ((Func<IRParam, string>)((p) => ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002" + (sanitize(p.name) + ("\u0002=\u0002_\u000E\u0018\u0010_" + (_Cce.FromUnicode(i().ToString()) + (";\u0001" + emit_tco_assigns(@params, (i() + 1)))))))))(@params[(int)i()]));
 
-    public static string emit_def(IRDef d, List<ArityEntry> arities) => (should_tco(d) ? emit_tco_def(d, arities) : ((Func<CodexType, string>)((ret) => ((Func<string, string>)((gen) => ("\u0002\u0002\u0002\u0002\u001F\u0019b\u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002" + (cs_type(ret) + ("\u0002" + (sanitize(d.name) + (gen + ("(" + (emit_def_params(d.@params, 0) + (")\u0002=>\u0002" + (emit_expr(d.body, arities) + ";\u000A")))))))))))(generic_suffix(d.type_val))))(get_return_type(d.type_val, ((long)d.@params.Count))));
+    public static string emit_def(IRDef d, List<ArityEntry> arities) => (should_tco(d) ? emit_tco_def(d, arities) : ((Func<CodexType, string>)((ret) => ((Func<string, string>)((gen) => ("\u0002\u0002\u0002\u0002\u001F\u0019b\u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002" + (cs_type(ret) + ("\u0002" + (sanitize(d.name) + (gen + ("(" + (emit_def_params(d.@params, 0) + (")\u0002=>\u0002" + (emit_expr(d.body, arities) + ";\u0001")))))))))))(generic_suffix(d.type_val))))(get_return_type(d.type_val, ((long)d.@params.Count))));
 
     public static CodexType get_return_type(CodexType ty, long n)
     {
@@ -1022,15 +1022,15 @@ public static class Codex_Codex_Codex
 
     public static string emit_def_params(List<IRParam> @params, long i) => ((i() == ((long)@params.Count)) ? "" : ((Func<IRParam, string>)((p) => (cs_type(p.type_val) + ("\u0002" + (sanitize(p.name) + (((i() < (((long)@params.Count) - 1)) ? ",\u0002" : "") + emit_def_params(@params, (i() + 1))))))))(@params[(int)i()]));
 
-    public static string emit_cce_runtime() => ("\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0018\u0017\u000F\u0013\u0013\u0002_C\u0018\u000D\u0002{\u000A" + ("\u0002\u0002\u0002\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0015\u000D\u000F\u0016\u0010\u0012\u0017\u001E\u0002\u0011\u0012\u000E[]\u0002_\u000E\u0010U\u0012\u0011\u0002=\u0002{\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0003,\u0002\u0004\u0003,\u0002\u0006\u0005,\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0007\u000B,\u0002\u0007\u000C,\u0002\u0008\u0003,\u0002\u0008\u0004,\u0002\u0008\u0005,\u0002\u0008\u0006,\u0002\u0008\u0007,\u0002\u0008\u0008,\u0002\u0008\u0009,\u0002\u0008\u000A,\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0004\u0003\u0004,\u0002\u0004\u0004\u0009,\u0002\u000C\u000A,\u0002\u0004\u0004\u0004,\u0002\u0004\u0003\u0008,\u0002\u0004\u0004\u0003,\u0002\u0004\u0004\u0008,\u0002\u0004\u0003\u0007,\u0002\u0004\u0004\u0007,\u0002\u0004\u0003\u0003,\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0004\u0003\u000B,\u0002\u000C\u000C,\u0002\u0004\u0004\u000A,\u0002\u0004\u0003\u000C,\u0002\u0004\u0004\u000C,\u0002\u0004\u0003\u0005,\u0002\u0004\u0003\u0006,\u0002\u0004\u0005\u0004,\u0002\u0004\u0004\u0005,\u0002\u000C\u000B,\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0004\u0004\u000B,\u0002\u0004\u0003\u000A,\u0002\u0004\u0003\u0009,\u0002\u0004\u0005\u0003,\u0002\u0004\u0004\u0006,\u0002\u0004\u0005\u0005,\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0009\u000C,\u0002\u000B\u0007,\u0002\u0009\u0008,\u0002\u000A\u000C,\u0002\u000A\u0006,\u0002\u000A\u000B,\u0002\u000B\u0006,\u0002\u000A\u0005,\u0002\u000B\u0005,\u0002\u0009\u000B,\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u000A\u0009,\u0002\u0009\u000A,\u0002\u000B\u0008,\u0002\u000A\u000A,\u0002\u000B\u000A,\u0002\u000A\u0003,\u0002\u000A\u0004,\u0002\u000B\u000C,\u0002\u000B\u0003,\u0002\u0009\u0009,\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u000B\u0009,\u0002\u000A\u0008,\u0002\u000A\u0007,\u0002\u000B\u000B,\u0002\u000B\u0004,\u0002\u000C\u0003,\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0007\u0009,\u0002\u0007\u0007,\u0002\u0006\u0006,\u0002\u0009\u0006,\u0002\u0008\u000B,\u0002\u0008\u000C,\u0002\u0006\u000C,\u0002\u0006\u0007,\u0002\u0007\u0008,\u0002\u0007\u0003,\u0002\u0007\u0004,\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0007\u0006,\u0002\u0009\u0004,\u0002\u0007\u0005,\u0002\u0009\u0003,\u0002\u0009\u0005,\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0007\u000A,\u0002\u0009\u0007,\u0002\u0006\u0008,\u0002\u0006\u000B,\u0002\u000C\u0008,\u0002\u000C\u0005,\u0002\u0004\u0005\u0007,\u0002\u000C\u0004,\u0002\u000C\u0006,\u0002\u0004\u0005\u0006,\u0002\u0004\u0005\u0008,\u0002\u0004\u0005\u0009,\u0002\u000C\u0009,\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0005\u0006\u0006,\u0002\u0005\u0006\u0005,\u0002\u0005\u0006\u0007,\u0002\u0005\u0006\u0008,\u0002\u0005\u0005\u0008,\u0002\u0005\u0005\u0007,\u0002\u0005\u0005\u0009,\u0002\u0005\u0005\u000B,\u0002\u0005\u0007\u0006,\u0002\u0005\u0007\u0005,\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0005\u0007\u0007,\u0002\u0005\u0007\u0009,\u0002\u0005\u0008\u0003,\u0002\u0005\u0007\u000C,\u0002\u0005\u0008\u0004,\u0002\u0005\u0008\u0005,\u0002\u0005\u0007\u0004,\u0002\u0005\u0006\u0004,\u0002\u0005\u0006\u000A,\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0004\u0003\u000A\u0005,\u0002\u0004\u0003\u000B\u0009,\u0002\u0004\u0003\u000A\u000A,\u0002\u0004\u0003\u000B\u0003,\u0002\u0004\u0003\u000B\u0008,\u0002\u0004\u0003\u000C\u0003,\u0002\u0004\u0003\u000B\u000C,\u0002\u0004\u0003\u000B\u000B,\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0004\u0003\u000A\u0007,\u0002\u0004\u0003\u000B\u0006,\u0002\u0004\u0003\u000B\u0005,\u0002\u0004\u0003\u000B\u0007,\u0002\u0004\u0003\u000A\u0009,\u0002\u0004\u0003\u000B\u000A,\u0002\u0004\u0003\u000C\u0004\u000A" + ("\u0002\u0002\u0002\u0002};\u000A" + ("\u0002\u0002\u0002\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0015\u000D\u000F\u0016\u0010\u0012\u0017\u001E\u0002D\u0011\u0018\u000E\u0011\u0010\u0012\u000F\u0015\u001E<\u0011\u0012\u000E,\u0002\u0011\u0012\u000E>\u0002_\u001C\u0015\u0010\u001AU\u0012\u0011\u0002=\u0002\u0012\u000D\u001B();\u000A" + ("\u0002\u0002\u0002\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002_C\u0018\u000D()\u0002{\u0002\u001C\u0010\u0015\u0002(\u0011\u0012\u000E\u0002\u0011\u0002=\u0002\u0003;\u0002\u0011\u0002<\u0002\u0004\u0005\u000B;\u0002\u0011++)\u0002_\u001C\u0015\u0010\u001AU\u0012\u0011[_\u000E\u0010U\u0012\u0011[\u0011]]\u0002=\u0002\u0011;\u0002}\u000A" + ("\u0002\u0002\u0002\u0002\u001F\u0019b\u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0013\u000E\u0015\u0011\u0012\u001D\u0002F\u0015\u0010\u001AU\u0012\u0011\u0018\u0010\u0016\u000D(\u0013\u000E\u0015\u0011\u0012\u001D\u0002\u0013)\u0002{\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002v\u000F\u0015\u0002\u0018\u0013\u0002=\u0002\u0012\u000D\u001B\u0002\u0018\u0014\u000F\u0015[\u0013.L\u000D\u0012\u001D\u000E\u0014];\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u001C\u0010\u0015\u0002(\u0011\u0012\u000E\u0002\u0011\u0002=\u0002\u0003;\u0002\u0011\u0002<\u0002\u0013.L\u000D\u0012\u001D\u000E\u0014;\u0002\u0011++)\u0002{\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0011\u0012\u000E\u0002\u0019\u0002=\u0002\u0013[\u0011];\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0018\u0013[\u0011]\u0002=\u0002_\u001C\u0015\u0010\u001AU\u0012\u0011.T\u0015\u001EG\u000D\u000EV\u000F\u0017\u0019\u000D(\u0019,\u0002\u0010\u0019\u000E\u0002\u0011\u0012\u000E\u0002\u0018)\u0002?\u0002(\u0018\u0014\u000F\u0015)\u0018\u0002:\u0002(\u0018\u0014\u000F\u0015)\u0003;\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002}\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002\u0012\u000D\u001B\u0002\u0013\u000E\u0015\u0011\u0012\u001D(\u0018\u0013);\u000A" + ("\u0002\u0002\u0002\u0002}\u000A" + ("\u0002\u0002\u0002\u0002\u001F\u0019b\u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0013\u000E\u0015\u0011\u0012\u001D\u0002T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(\u0013\u000E\u0015\u0011\u0012\u001D\u0002\u0013)\u0002{\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002v\u000F\u0015\u0002\u0018\u0013\u0002=\u0002\u0012\u000D\u001B\u0002\u0018\u0014\u000F\u0015[\u0013.L\u000D\u0012\u001D\u000E\u0014];\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u001C\u0010\u0015\u0002(\u0011\u0012\u000E\u0002\u0011\u0002=\u0002\u0003;\u0002\u0011\u0002<\u0002\u0013.L\u000D\u0012\u001D\u000E\u0014;\u0002\u0011++)\u0002{\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0011\u0012\u000E\u0002b\u0002=\u0002\u0013[\u0011];\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0018\u0013[\u0011]\u0002=\u0002(b\u0002>=\u0002\u0003\u0002&&\u0002b\u0002<\u0002\u0004\u0005\u000B)\u0002?\u0002(\u0018\u0014\u000F\u0015)_\u000E\u0010U\u0012\u0011[b]\u0002:\u0002'\\u0019FFFD';\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002}\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002\u0012\u000D\u001B\u0002\u0013\u000E\u0015\u0011\u0012\u001D(\u0018\u0013);\u000A" + ("\u0002\u0002\u0002\u0002}\u000A" + ("\u0002\u0002\u0002\u0002\u001F\u0019b\u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0017\u0010\u0012\u001D\u0002U\u0012\u0011T\u0010C\u0018\u000D(\u0017\u0010\u0012\u001D\u0002\u0019)\u0002{\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002_\u001C\u0015\u0010\u001AU\u0012\u0011.T\u0015\u001EG\u000D\u000EV\u000F\u0017\u0019\u000D((\u0011\u0012\u000E)\u0019,\u0002\u0010\u0019\u000E\u0002\u0011\u0012\u000E\u0002\u0018)\u0002?\u0002\u0018\u0002:\u0002\u0003;\u000A" + ("\u0002\u0002\u0002\u0002}\u000A" + ("\u0002\u0002\u0002\u0002\u001F\u0019b\u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0017\u0010\u0012\u001D\u0002C\u0018\u000DT\u0010U\u0012\u0011(\u0017\u0010\u0012\u001D\u0002b)\u0002{\u000A" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002(b\u0002>=\u0002\u0003\u0002&&\u0002b\u0002<\u0002\u0004\u0005\u000B)\u0002?\u0002_\u000E\u0010U\u0012\u0011[(\u0011\u0012\u000E)b]\u0002:\u0002\u0009\u0008\u0008\u0006\u0006;\u000A" + ("\u0002\u0002\u0002\u0002}\u000A" + "}\u000A\u000A"))))))))))))))))))))))))))))))))))))))))));
+    public static string emit_cce_runtime() => ("\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0018\u0017\u000F\u0013\u0013\u0002_C\u0018\u000D\u0002{\u0001" + ("\u0002\u0002\u0002\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0015\u000D\u000F\u0016\u0010\u0012\u0017\u001E\u0002\u0011\u0012\u000E[]\u0002_\u000E\u0010U\u0012\u0011\u0002=\u0002{\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0003,\u0002\u0004\u0003,\u0002\u0006\u0005,\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0007\u000B,\u0002\u0007\u000C,\u0002\u0008\u0003,\u0002\u0008\u0004,\u0002\u0008\u0005,\u0002\u0008\u0006,\u0002\u0008\u0007,\u0002\u0008\u0008,\u0002\u0008\u0009,\u0002\u0008\u000A,\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0004\u0003\u0004,\u0002\u0004\u0004\u0009,\u0002\u000C\u000A,\u0002\u0004\u0004\u0004,\u0002\u0004\u0003\u0008,\u0002\u0004\u0004\u0003,\u0002\u0004\u0004\u0008,\u0002\u0004\u0003\u0007,\u0002\u0004\u0004\u0007,\u0002\u0004\u0003\u0003,\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0004\u0003\u000B,\u0002\u000C\u000C,\u0002\u0004\u0004\u000A,\u0002\u0004\u0003\u000C,\u0002\u0004\u0004\u000C,\u0002\u0004\u0003\u0005,\u0002\u0004\u0003\u0006,\u0002\u0004\u0005\u0004,\u0002\u0004\u0004\u0005,\u0002\u000C\u000B,\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0004\u0004\u000B,\u0002\u0004\u0003\u000A,\u0002\u0004\u0003\u0009,\u0002\u0004\u0005\u0003,\u0002\u0004\u0004\u0006,\u0002\u0004\u0005\u0005,\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0009\u000C,\u0002\u000B\u0007,\u0002\u0009\u0008,\u0002\u000A\u000C,\u0002\u000A\u0006,\u0002\u000A\u000B,\u0002\u000B\u0006,\u0002\u000A\u0005,\u0002\u000B\u0005,\u0002\u0009\u000B,\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u000A\u0009,\u0002\u0009\u000A,\u0002\u000B\u0008,\u0002\u000A\u000A,\u0002\u000B\u000A,\u0002\u000A\u0003,\u0002\u000A\u0004,\u0002\u000B\u000C,\u0002\u000B\u0003,\u0002\u0009\u0009,\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u000B\u0009,\u0002\u000A\u0008,\u0002\u000A\u0007,\u0002\u000B\u000B,\u0002\u000B\u0004,\u0002\u000C\u0003,\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0007\u0009,\u0002\u0007\u0007,\u0002\u0006\u0006,\u0002\u0009\u0006,\u0002\u0008\u000B,\u0002\u0008\u000C,\u0002\u0006\u000C,\u0002\u0006\u0007,\u0002\u0007\u0008,\u0002\u0007\u0003,\u0002\u0007\u0004,\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0007\u0006,\u0002\u0009\u0004,\u0002\u0007\u0005,\u0002\u0009\u0003,\u0002\u0009\u0005,\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0007\u000A,\u0002\u0009\u0007,\u0002\u0006\u0008,\u0002\u0006\u000B,\u0002\u000C\u0008,\u0002\u000C\u0005,\u0002\u0004\u0005\u0007,\u0002\u000C\u0004,\u0002\u000C\u0006,\u0002\u0004\u0005\u0006,\u0002\u0004\u0005\u0008,\u0002\u0004\u0005\u0009,\u0002\u000C\u0009,\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0005\u0006\u0006,\u0002\u0005\u0006\u0005,\u0002\u0005\u0006\u0007,\u0002\u0005\u0006\u0008,\u0002\u0005\u0005\u0008,\u0002\u0005\u0005\u0007,\u0002\u0005\u0005\u0009,\u0002\u0005\u0005\u000B,\u0002\u0005\u0007\u0006,\u0002\u0005\u0007\u0005,\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0005\u0007\u0007,\u0002\u0005\u0007\u0009,\u0002\u0005\u0008\u0003,\u0002\u0005\u0007\u000C,\u0002\u0005\u0008\u0004,\u0002\u0005\u0008\u0005,\u0002\u0005\u0007\u0004,\u0002\u0005\u0006\u0004,\u0002\u0005\u0006\u000A,\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0004\u0003\u000A\u0005,\u0002\u0004\u0003\u000B\u0009,\u0002\u0004\u0003\u000A\u000A,\u0002\u0004\u0003\u000B\u0003,\u0002\u0004\u0003\u000B\u0008,\u0002\u0004\u0003\u000C\u0003,\u0002\u0004\u0003\u000B\u000C,\u0002\u0004\u0003\u000B\u000B,\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0004\u0003\u000A\u0007,\u0002\u0004\u0003\u000B\u0006,\u0002\u0004\u0003\u000B\u0005,\u0002\u0004\u0003\u000B\u0007,\u0002\u0004\u0003\u000A\u0009,\u0002\u0004\u0003\u000B\u000A,\u0002\u0004\u0003\u000C\u0004\u0001" + ("\u0002\u0002\u0002\u0002};\u0001" + ("\u0002\u0002\u0002\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0015\u000D\u000F\u0016\u0010\u0012\u0017\u001E\u0002D\u0011\u0018\u000E\u0011\u0010\u0012\u000F\u0015\u001E<\u0011\u0012\u000E,\u0002\u0011\u0012\u000E>\u0002_\u001C\u0015\u0010\u001AU\u0012\u0011\u0002=\u0002\u0012\u000D\u001B();\u0001" + ("\u0002\u0002\u0002\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002_C\u0018\u000D()\u0002{\u0002\u001C\u0010\u0015\u0002(\u0011\u0012\u000E\u0002\u0011\u0002=\u0002\u0003;\u0002\u0011\u0002<\u0002\u0004\u0005\u000B;\u0002\u0011++)\u0002_\u001C\u0015\u0010\u001AU\u0012\u0011[_\u000E\u0010U\u0012\u0011[\u0011]]\u0002=\u0002\u0011;\u0002}\u0001" + ("\u0002\u0002\u0002\u0002\u001F\u0019b\u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0013\u000E\u0015\u0011\u0012\u001D\u0002F\u0015\u0010\u001AU\u0012\u0011\u0018\u0010\u0016\u000D(\u0013\u000E\u0015\u0011\u0012\u001D\u0002\u0013)\u0002{\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002v\u000F\u0015\u0002\u0018\u0013\u0002=\u0002\u0012\u000D\u001B\u0002\u0018\u0014\u000F\u0015[\u0013.L\u000D\u0012\u001D\u000E\u0014];\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u001C\u0010\u0015\u0002(\u0011\u0012\u000E\u0002\u0011\u0002=\u0002\u0003;\u0002\u0011\u0002<\u0002\u0013.L\u000D\u0012\u001D\u000E\u0014;\u0002\u0011++)\u0002{\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0011\u0012\u000E\u0002\u0019\u0002=\u0002\u0013[\u0011];\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0018\u0013[\u0011]\u0002=\u0002_\u001C\u0015\u0010\u001AU\u0012\u0011.T\u0015\u001EG\u000D\u000EV\u000F\u0017\u0019\u000D(\u0019,\u0002\u0010\u0019\u000E\u0002\u0011\u0012\u000E\u0002\u0018)\u0002?\u0002(\u0018\u0014\u000F\u0015)\u0018\u0002:\u0002(\u0018\u0014\u000F\u0015)\u0003;\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002}\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002\u0012\u000D\u001B\u0002\u0013\u000E\u0015\u0011\u0012\u001D(\u0018\u0013);\u0001" + ("\u0002\u0002\u0002\u0002}\u0001" + ("\u0002\u0002\u0002\u0002\u001F\u0019b\u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0013\u000E\u0015\u0011\u0012\u001D\u0002T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(\u0013\u000E\u0015\u0011\u0012\u001D\u0002\u0013)\u0002{\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002v\u000F\u0015\u0002\u0018\u0013\u0002=\u0002\u0012\u000D\u001B\u0002\u0018\u0014\u000F\u0015[\u0013.L\u000D\u0012\u001D\u000E\u0014];\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u001C\u0010\u0015\u0002(\u0011\u0012\u000E\u0002\u0011\u0002=\u0002\u0003;\u0002\u0011\u0002<\u0002\u0013.L\u000D\u0012\u001D\u000E\u0014;\u0002\u0011++)\u0002{\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0011\u0012\u000E\u0002b\u0002=\u0002\u0013[\u0011];\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0018\u0013[\u0011]\u0002=\u0002(b\u0002>=\u0002\u0003\u0002&&\u0002b\u0002<\u0002\u0004\u0005\u000B)\u0002?\u0002(\u0018\u0014\u000F\u0015)_\u000E\u0010U\u0012\u0011[b]\u0002:\u0002'\\u0019FFFD';\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002}\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002\u0012\u000D\u001B\u0002\u0013\u000E\u0015\u0011\u0012\u001D(\u0018\u0013);\u0001" + ("\u0002\u0002\u0002\u0002}\u0001" + ("\u0002\u0002\u0002\u0002\u001F\u0019b\u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0017\u0010\u0012\u001D\u0002U\u0012\u0011T\u0010C\u0018\u000D(\u0017\u0010\u0012\u001D\u0002\u0019)\u0002{\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002_\u001C\u0015\u0010\u001AU\u0012\u0011.T\u0015\u001EG\u000D\u000EV\u000F\u0017\u0019\u000D((\u0011\u0012\u000E)\u0019,\u0002\u0010\u0019\u000E\u0002\u0011\u0012\u000E\u0002\u0018)\u0002?\u0002\u0018\u0002:\u0002\u0003;\u0001" + ("\u0002\u0002\u0002\u0002}\u0001" + ("\u0002\u0002\u0002\u0002\u001F\u0019b\u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0017\u0010\u0012\u001D\u0002C\u0018\u000DT\u0010U\u0012\u0011(\u0017\u0010\u0012\u001D\u0002b)\u0002{\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002(b\u0002>=\u0002\u0003\u0002&&\u0002b\u0002<\u0002\u0004\u0005\u000B)\u0002?\u0002_\u000E\u0010U\u0012\u0011[(\u0011\u0012\u000E)b]\u0002:\u0002\u0009\u0008\u0008\u0006\u0006;\u0001" + ("\u0002\u0002\u0002\u0002}\u0001" + "}\u0001\u0001"))))))))))))))))))))))))))))))))))))))))));
 
-    public static string emit_full_module(IRModule m, List<ATypeDef> type_defs) => ((Func<List<ArityEntry>, string>)((arities) => ("\u0019\u0013\u0011\u0012\u001D\u0002S\u001E\u0013\u000E\u000D\u001A;\u000A\u0019\u0013\u0011\u0012\u001D\u0002S\u001E\u0013\u000E\u000D\u001A.C\u0010\u0017\u0017\u000D\u0018\u000E\u0011\u0010\u0012\u0013.G\u000D\u0012\u000D\u0015\u0011\u0018;\u000A\u0019\u0013\u0011\u0012\u001D\u0002S\u001E\u0013\u000E\u000D\u001A.IO;\u000A\u0019\u0013\u0011\u0012\u001D\u0002S\u001E\u0013\u000E\u000D\u001A.L\u0011\u0012q;\u000A\u0019\u0013\u0011\u0012\u001D\u0002S\u001E\u0013\u000E\u000D\u001A.T\u0014\u0015\u000D\u000F\u0016\u0011\u0012\u001D.T\u000F\u0013\"\u0013;\u000A\u000A" + ("C\u0010\u0016\u000Dx_" + (sanitize(m.name.value) + (".\u001A\u000F\u0011\u0012();\u000A\u000A" + (emit_cce_runtime() + (emit_type_defs(type_defs, 0) + (emit_class_header(m.name.value) + (emit_defs(m.defs, 0, arities) + "}\u000A"))))))))))(build_arity_map(m.defs, 0));
+    public static string emit_full_module(IRModule m, List<ATypeDef> type_defs) => ((Func<List<ArityEntry>, string>)((arities) => ("\u0019\u0013\u0011\u0012\u001D\u0002S\u001E\u0013\u000E\u000D\u001A;\u0001\u0019\u0013\u0011\u0012\u001D\u0002S\u001E\u0013\u000E\u000D\u001A.C\u0010\u0017\u0017\u000D\u0018\u000E\u0011\u0010\u0012\u0013.G\u000D\u0012\u000D\u0015\u0011\u0018;\u0001\u0019\u0013\u0011\u0012\u001D\u0002S\u001E\u0013\u000E\u000D\u001A.IO;\u0001\u0019\u0013\u0011\u0012\u001D\u0002S\u001E\u0013\u000E\u000D\u001A.L\u0011\u0012q;\u0001\u0019\u0013\u0011\u0012\u001D\u0002S\u001E\u0013\u000E\u000D\u001A.T\u0014\u0015\u000D\u000F\u0016\u0011\u0012\u001D.T\u000F\u0013\"\u0013;\u0001\u0001" + ("C\u0010\u0016\u000Dx_" + (sanitize(m.name.value) + (".\u001A\u000F\u0011\u0012();\u0001\u0001" + (emit_cce_runtime() + (emit_type_defs(type_defs, 0) + (emit_class_header(m.name.value) + (emit_defs(m.defs, 0, arities) + "}\u0001"))))))))))(build_arity_map(m.defs, 0));
 
-    public static string emit_module(IRModule m) => ((Func<List<ArityEntry>, string>)((arities) => ("\u0019\u0013\u0011\u0012\u001D\u0002S\u001E\u0013\u000E\u000D\u001A;\u000A\u0019\u0013\u0011\u0012\u001D\u0002S\u001E\u0013\u000E\u000D\u001A.C\u0010\u0017\u0017\u000D\u0018\u000E\u0011\u0010\u0012\u0013.G\u000D\u0012\u000D\u0015\u0011\u0018;\u000A\u0019\u0013\u0011\u0012\u001D\u0002S\u001E\u0013\u000E\u000D\u001A.IO;\u000A\u0019\u0013\u0011\u0012\u001D\u0002S\u001E\u0013\u000E\u000D\u001A.L\u0011\u0012q;\u000A\u0019\u0013\u0011\u0012\u001D\u0002S\u001E\u0013\u000E\u000D\u001A.T\u0014\u0015\u000D\u000F\u0016\u0011\u0012\u001D.T\u000F\u0013\"\u0013;\u000A\u000A" + ("C\u0010\u0016\u000Dx_" + (sanitize(m.name.value) + (".\u001A\u000F\u0011\u0012();\u000A\u000A" + (emit_cce_runtime() + (emit_class_header(m.name.value) + (emit_defs(m.defs, 0, arities) + "}\u000A")))))))))(build_arity_map(m.defs, 0));
+    public static string emit_module(IRModule m) => ((Func<List<ArityEntry>, string>)((arities) => ("\u0019\u0013\u0011\u0012\u001D\u0002S\u001E\u0013\u000E\u000D\u001A;\u0001\u0019\u0013\u0011\u0012\u001D\u0002S\u001E\u0013\u000E\u000D\u001A.C\u0010\u0017\u0017\u000D\u0018\u000E\u0011\u0010\u0012\u0013.G\u000D\u0012\u000D\u0015\u0011\u0018;\u0001\u0019\u0013\u0011\u0012\u001D\u0002S\u001E\u0013\u000E\u000D\u001A.IO;\u0001\u0019\u0013\u0011\u0012\u001D\u0002S\u001E\u0013\u000E\u000D\u001A.L\u0011\u0012q;\u0001\u0019\u0013\u0011\u0012\u001D\u0002S\u001E\u0013\u000E\u000D\u001A.T\u0014\u0015\u000D\u000F\u0016\u0011\u0012\u001D.T\u000F\u0013\"\u0013;\u0001\u0001" + ("C\u0010\u0016\u000Dx_" + (sanitize(m.name.value) + (".\u001A\u000F\u0011\u0012();\u0001\u0001" + (emit_cce_runtime() + (emit_class_header(m.name.value) + (emit_defs(m.defs, 0, arities) + "}\u0001")))))))))(build_arity_map(m.defs, 0));
 
-    public static string emit_class_header(string name) => ("\u001F\u0019b\u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0018\u0017\u000F\u0013\u0013\u0002C\u0010\u0016\u000Dx_" + (sanitize(name()) + "\u000A{\u000A"));
+    public static string emit_class_header(string name) => ("\u001F\u0019b\u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0018\u0017\u000F\u0013\u0013\u0002C\u0010\u0016\u000Dx_" + (sanitize(name()) + "\u0001{\u0001"));
 
-    public static string emit_defs(List<IRDef> defs, long i, List<ArityEntry> arities) => ((i() == ((long)defs.Count)) ? "" : (emit_def(defs[(int)i()], arities) + ("\u000A" + emit_defs(defs, (i() + 1), arities))));
+    public static string emit_defs(List<IRDef> defs, long i, List<ArityEntry> arities) => ((i() == ((long)defs.Count)) ? "" : (emit_def(defs[(int)i()], arities) + ("\u0001" + emit_defs(defs, (i() + 1), arities))));
 
     public static bool is_cs_keyword(string n) => ((n == "\u0018\u0017\u000F\u0013\u0013") ? true : ((n == "\u0013\u000E\u000F\u000E\u0011\u0018") ? true : ((n == "v\u0010\u0011\u0016") ? true : ((n == "\u0015\u000D\u000E\u0019\u0015\u0012") ? true : ((n == "\u0011\u001C") ? true : ((n == "\u000D\u0017\u0013\u000D") ? true : ((n == "\u001C\u0010\u0015") ? true : ((n == "\u001B\u0014\u0011\u0017\u000D") ? true : ((n == "\u0016\u0010") ? true : ((n == "\u0013\u001B\u0011\u000E\u0018\u0014") ? true : ((n == "\u0018\u000F\u0013\u000D") ? true : ((n == "b\u0015\u000D\u000F\"") ? true : ((n == "\u0018\u0010\u0012\u000E\u0011\u0012\u0019\u000D") ? true : ((n == "\u0012\u000D\u001B") ? true : ((n == "\u000E\u0014\u0011\u0013") ? true : ((n == "b\u000F\u0013\u000D") ? true : ((n == "\u0012\u0019\u0017\u0017") ? true : ((n == "\u000E\u0015\u0019\u000D") ? true : ((n == "\u001C\u000F\u0017\u0013\u000D") ? true : ((n == "\u0011\u0012\u000E") ? true : ((n == "\u0017\u0010\u0012\u001D") ? true : ((n == "\u0013\u000E\u0015\u0011\u0012\u001D") ? true : ((n == "b\u0010\u0010\u0017") ? true : ((n == "\u0016\u0010\u0019b\u0017\u000D") ? true : ((n == "\u0016\u000D\u0018\u0011\u001A\u000F\u0017") ? true : ((n == "\u0010bj\u000D\u0018\u000E") ? true : ((n == "\u0011\u0012") ? true : ((n == "\u0011\u0013") ? true : ((n == "\u000F\u0013") ? true : ((n == "\u000E\u001E\u001F\u000D\u0010\u001C") ? true : ((n == "\u0016\u000D\u001C\u000F\u0019\u0017\u000E") ? true : ((n == "\u000E\u0014\u0015\u0010\u001B") ? true : ((n == "\u000E\u0015\u001E") ? true : ((n == "\u0018\u000F\u000E\u0018\u0014") ? true : ((n == "\u001C\u0011\u0012\u000F\u0017\u0017\u001E") ? true : ((n == "\u0019\u0013\u0011\u0012\u001D") ? true : ((n == "\u0012\u000F\u001A\u000D\u0013\u001F\u000F\u0018\u000D") ? true : ((n == "\u001F\u0019b\u0017\u0011\u0018") ? true : ((n == "\u001F\u0015\u0011v\u000F\u000E\u000D") ? true : ((n == "\u001F\u0015\u0010\u000E\u000D\u0018\u000E\u000D\u0016") ? true : ((n == "\u0011\u0012\u000E\u000D\u0015\u0012\u000F\u0017") ? true : ((n == "\u000Fb\u0013\u000E\u0015\u000F\u0018\u000E") ? true : ((n == "\u0013\u000D\u000F\u0017\u000D\u0016") ? true : ((n == "\u0010v\u000D\u0015\u0015\u0011\u0016\u000D") ? true : ((n == "v\u0011\u0015\u000E\u0019\u000F\u0017") ? true : ((n == "\u000Dv\u000D\u0012\u000E") ? true : ((n == "\u0016\u000D\u0017\u000D\u001D\u000F\u000E\u000D") ? true : ((n == "\u0010\u0019\u000E") ? true : ((n == "\u0015\u000D\u001C") ? true : ((n == "\u001F\u000F\u0015\u000F\u001A\u0013") ? true : false))))))))))))))))))))))))))))))))))))))))))))))))));
 
@@ -1117,9 +1117,9 @@ public static class Codex_Codex_Codex
 
     public static string emit_partial_wrappers(long i, long count) => ((i() == count) ? "" : ("(_\u001F" + (_Cce.FromUnicode(i().ToString()) + ("_)\u0002=>\u0002" + emit_partial_wrappers((i() + 1), count)))));
 
-    public static bool is_builtin_name(string n) => ((n == "\u0013\u0014\u0010\u001B") ? true : ((n == "\u0012\u000D\u001D\u000F\u000E\u000D") ? true : ((n == "\u001F\u0015\u0011\u0012\u000E-\u0017\u0011\u0012\u000D") ? true : ((n == "\u000E\u000Dx\u000E-\u0017\u000D\u0012\u001D\u000E\u0014") ? true : ((n == "\u0011\u0013-\u0017\u000D\u000E\u000E\u000D\u0015") ? true : ((n == "\u0011\u0013-\u0016\u0011\u001D\u0011\u000E") ? true : ((n == "\u0011\u0013-\u001B\u0014\u0011\u000E\u000D\u0013\u001F\u000F\u0018\u000D") ? true : ((n == "\u000E\u000Dx\u000E-\u000E\u0010-\u0011\u0012\u000E\u000D\u001D\u000D\u0015") ? true : ((n == "\u0011\u0012\u000E\u000D\u001D\u000D\u0015-\u000E\u0010-\u000E\u000Dx\u000E") ? true : ((n == "\u0018\u0014\u000F\u0015-\u0018\u0010\u0016\u000D") ? true : ((n == "\u0018\u0014\u000F\u0015-\u0018\u0010\u0016\u000D-\u000F\u000E") ? true : ((n == "\u0018\u0010\u0016\u000D-\u000E\u0010-\u0018\u0014\u000F\u0015") ? true : ((n == "\u0018\u0014\u000F\u0015-\u000E\u0010-\u000E\u000Dx\u000E") ? true : ((n == "\u0017\u0011\u0013\u000E-\u0017\u000D\u0012\u001D\u000E\u0014") ? true : ((n == "\u0018\u0014\u000F\u0015-\u000F\u000E") ? true : ((n == "\u0013\u0019b\u0013\u000E\u0015\u0011\u0012\u001D") ? true : ((n == "\u0017\u0011\u0013\u000E-\u000F\u000E") ? true : ((n == "\u0017\u0011\u0013\u000E-\u0011\u0012\u0013\u000D\u0015\u000E-\u000F\u000E") ? true : ((n == "\u0017\u0011\u0013\u000E-\u0013\u0012\u0010\u0018") ? true : ((n == "\u000E\u000Dx\u000E-\u0018\u0010\u001A\u001F\u000F\u0015\u000D") ? true : ((n == "\u000E\u000Dx\u000E-\u0015\u000D\u001F\u0017\u000F\u0018\u000D") ? true : ((n == "\u0010\u001F\u000D\u0012-\u001C\u0011\u0017\u000D") ? true : ((n == "\u0015\u000D\u000F\u0016-\u000F\u0017\u0017") ? true : ((n == "\u0018\u0017\u0010\u0013\u000D-\u001C\u0011\u0017\u000D") ? true : ((n == "\u0015\u000D\u000F\u0016-\u0017\u0011\u0012\u000D") ? true : ((n == "\u0015\u000D\u000F\u0016-\u001C\u0011\u0017\u000D") ? true : ((n == "\u001B\u0015\u0011\u000E\u000D-\u001C\u0011\u0017\u000D") ? true : ((n == "\u001C\u0011\u0017\u000D-\u000Dx\u0011\u0013\u000E\u0013") ? true : ((n == "\u0017\u0011\u0013\u000E-\u001C\u0011\u0017\u000D\u0013") ? true : ((n == "\u000E\u000Dx\u000E-\u0013\u001F\u0017\u0011\u000E") ? true : ((n == "\u000E\u000Dx\u000E-\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? true : ((n == "\u000E\u000Dx\u000E-\u0013\u000E\u000F\u0015\u000E\u0013-\u001B\u0011\u000E\u0014") ? true : ((n == "\u001D\u000D\u000E-\u000F\u0015\u001D\u0013") ? true : ((n == "\u001D\u000D\u000E-\u000D\u0012v") ? true : ((n == "\u0018\u0019\u0015\u0015\u000D\u0012\u000E-\u0016\u0011\u0015") ? true : ((n == "\u0015\u0019\u0012-\u001F\u0015\u0010\u0018\u000D\u0013\u0013") ? true : ((n == "\u001C\u0010\u0015\"") ? true : ((n == "\u000F\u001B\u000F\u0011\u000E") ? true : ((n == "\u001F\u000F\u0015") ? true : ((n == "\u0015\u000F\u0018\u000D") ? true : false))))))))))))))))))))))))))))))))))))))));
+    public static bool is_builtin_name(string n) => ((n == "\u0013\u0014\u0010\u001B") ? true : ((n == "\u0012\u000D\u001D\u000F\u000E\u000D") ? true : ((n == "\u001F\u0015\u0011\u0012\u000E-\u0017\u0011\u0012\u000D") ? true : ((n == "\u000E\u000Dx\u000E-\u0017\u000D\u0012\u001D\u000E\u0014") ? true : ((n == "\u0011\u0013-\u0017\u000D\u000E\u000E\u000D\u0015") ? true : ((n == "\u0011\u0013-\u0016\u0011\u001D\u0011\u000E") ? true : ((n == "\u0011\u0013-\u001B\u0014\u0011\u000E\u000D\u0013\u001F\u000F\u0018\u000D") ? true : ((n == "\u000E\u000Dx\u000E-\u000E\u0010-\u0011\u0012\u000E\u000D\u001D\u000D\u0015") ? true : ((n == "\u0011\u0012\u000E\u000D\u001D\u000D\u0015-\u000E\u0010-\u000E\u000Dx\u000E") ? true : ((n == "\u0018\u0014\u000F\u0015-\u0018\u0010\u0016\u000D") ? true : ((n == "\u0018\u0014\u000F\u0015-\u0018\u0010\u0016\u000D-\u000F\u000E") ? true : ((n == "\u0018\u0010\u0016\u000D-\u000E\u0010-\u0018\u0014\u000F\u0015") ? true : ((n == "\u0018\u0014\u000F\u0015-\u000E\u0010-\u000E\u000Dx\u000E") ? true : ((n == "\u0017\u0011\u0013\u000E-\u0017\u000D\u0012\u001D\u000E\u0014") ? true : ((n == "\u0018\u0014\u000F\u0015-\u000F\u000E") ? true : ((n == "\u0013\u0019b\u0013\u000E\u0015\u0011\u0012\u001D") ? true : ((n == "\u0017\u0011\u0013\u000E-\u000F\u000E") ? true : ((n == "\u0017\u0011\u0013\u000E-\u0011\u0012\u0013\u000D\u0015\u000E-\u000F\u000E") ? true : ((n == "\u0017\u0011\u0013\u000E-\u0013\u0012\u0010\u0018") ? true : ((n == "\u000E\u000Dx\u000E-\u0018\u0010\u001A\u001F\u000F\u0015\u000D") ? true : ((n == "\u000E\u000Dx\u000E-\u0015\u000D\u001F\u0017\u000F\u0018\u000D") ? true : ((n == "\u0010\u001F\u000D\u0012-\u001C\u0011\u0017\u000D") ? true : ((n == "\u0015\u000D\u000F\u0016-\u000F\u0017\u0017") ? true : ((n == "\u0018\u0017\u0010\u0013\u000D-\u001C\u0011\u0017\u000D") ? true : ((n == "\u0015\u000D\u000F\u0016-\u0017\u0011\u0012\u000D") ? true : ((n == "\u0015\u000D\u000F\u0016-\u001C\u0011\u0017\u000D") ? true : ((n == "\u001B\u0015\u0011\u000E\u000D-\u001C\u0011\u0017\u000D") ? true : ((n == "\u001C\u0011\u0017\u000D-\u000Dx\u0011\u0013\u000E\u0013") ? true : ((n == "\u0017\u0011\u0013\u000E-\u001C\u0011\u0017\u000D\u0013") ? true : ((n == "\u000E\u000Dx\u000E-\u0018\u0010\u0012\u0018\u000F\u000E-\u0017\u0011\u0013\u000E") ? true : ((n == "\u000E\u000Dx\u000E-\u0013\u001F\u0017\u0011\u000E") ? true : ((n == "\u000E\u000Dx\u000E-\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? true : ((n == "\u000E\u000Dx\u000E-\u0013\u000E\u000F\u0015\u000E\u0013-\u001B\u0011\u000E\u0014") ? true : ((n == "\u001D\u000D\u000E-\u000F\u0015\u001D\u0013") ? true : ((n == "\u001D\u000D\u000E-\u000D\u0012v") ? true : ((n == "\u0018\u0019\u0015\u0015\u000D\u0012\u000E-\u0016\u0011\u0015") ? true : ((n == "\u0015\u0019\u0012-\u001F\u0015\u0010\u0018\u000D\u0013\u0013") ? true : ((n == "\u001C\u0010\u0015\"") ? true : ((n == "\u000F\u001B\u000F\u0011\u000E") ? true : ((n == "\u001F\u000F\u0015") ? true : ((n == "\u0015\u000F\u0018\u000D") ? true : false)))))))))))))))))))))))))))))))))))))))));
 
-    public static string emit_builtin(string n, List<IRExpr> args, List<ArityEntry> arities) => ((n == "\u0013\u0014\u0010\u001B") ? ("_C\u0018\u000D.F\u0015\u0010\u001AU\u0012\u0011\u0018\u0010\u0016\u000D(C\u0010\u0012v\u000D\u0015\u000E.T\u0010S\u000E\u0015\u0011\u0012\u001D(" + (emit_expr(args[(int)0], arities) + "))")) : ((n == "\u0012\u000D\u001D\u000F\u000E\u000D") ? ("(-" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "\u001F\u0015\u0011\u0012\u000E-\u0017\u0011\u0012\u000D") ? ("C\u0010\u0012\u0013\u0010\u0017\u000D.W\u0015\u0011\u000E\u000DL\u0011\u0012\u000D(_C\u0018\u000D.T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)0], arities) + "))")) : ((n == "\u000E\u000Dx\u000E-\u0017\u000D\u0012\u001D\u000E\u0014") ? ("((\u0017\u0010\u0012\u001D)" + (emit_expr(args[(int)0], arities) + ".L\u000D\u0012\u001D\u000E\u0014)")) : ((n == "\u0011\u0013-\u0017\u000D\u000E\u000E\u000D\u0015") ? ("(" + (emit_expr(args[(int)0], arities) + ("\u0002>=\u0002\u0004\u0006L\u0002&&\u0002" + (emit_expr(args[(int)0], arities) + "\u0002<=\u0002\u0009\u0007L)")))) : ((n == "\u0011\u0013-\u0016\u0011\u001D\u0011\u000E") ? ("(" + (emit_expr(args[(int)0], arities) + ("\u0002>=\u0002\u0006L\u0002&&\u0002" + (emit_expr(args[(int)0], arities) + "\u0002<=\u0002\u0004\u0005L)")))) : ((n == "\u0011\u0013-\u001B\u0014\u0011\u000E\u000D\u0013\u001F\u000F\u0018\u000D") ? ("(" + (emit_expr(args[(int)0], arities) + "\u0002<=\u0002\u0005L)")) : ((n == "\u000E\u000Dx\u000E-\u000E\u0010-\u0011\u0012\u000E\u000D\u001D\u000D\u0015") ? ("\u0017\u0010\u0012\u001D.P\u000F\u0015\u0013\u000D(_C\u0018\u000D.T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)0], arities) + "))")) : ((n == "\u0011\u0012\u000E\u000D\u001D\u000D\u0015-\u000E\u0010-\u000E\u000Dx\u000E") ? ("_C\u0018\u000D.F\u0015\u0010\u001AU\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)0], arities) + ".T\u0010S\u000E\u0015\u0011\u0012\u001D())")) : ((n == "\u0018\u0014\u000F\u0015-\u0018\u0010\u0016\u000D") ? emit_expr(args[(int)0], arities) : ((n == "\u0018\u0014\u000F\u0015-\u0018\u0010\u0016\u000D-\u000F\u000E") ? ("((\u0017\u0010\u0012\u001D)" + (emit_expr(args[(int)0], arities) + ("[(\u0011\u0012\u000E)" + (emit_expr(args[(int)1], arities) + "])")))) : ((n == "\u0018\u0010\u0016\u000D-\u000E\u0010-\u0018\u0014\u000F\u0015") ? emit_expr(args[(int)0], arities) : ((n == "\u0018\u0014\u000F\u0015-\u000E\u0010-\u000E\u000Dx\u000E") ? ("((\u0018\u0014\u000F\u0015)" + (emit_expr(args[(int)0], arities) + ").T\u0010S\u000E\u0015\u0011\u0012\u001D()")) : ((n == "\u0017\u0011\u0013\u000E-\u0017\u000D\u0012\u001D\u000E\u0014") ? ("((\u0017\u0010\u0012\u001D)" + (emit_expr(args[(int)0], arities) + ".C\u0010\u0019\u0012\u000E)")) : ((n == "\u0018\u0014\u000F\u0015-\u000F\u000E") ? ("((\u0017\u0010\u0012\u001D)" + (emit_expr(args[(int)0], arities) + ("[(\u0011\u0012\u000E)" + (emit_expr(args[(int)1], arities) + "])")))) : ((n == "\u0013\u0019b\u0013\u000E\u0015\u0011\u0012\u001D") ? (emit_expr(args[(int)0], arities) + (".S\u0019b\u0013\u000E\u0015\u0011\u0012\u001D((\u0011\u0012\u000E)" + (emit_expr(args[(int)1], arities) + (",\u0002(\u0011\u0012\u000E)" + (emit_expr(args[(int)2], arities) + ")"))))) : ((n == "\u0017\u0011\u0013\u000E-\u000F\u000E") ? (emit_expr(args[(int)0], arities) + ("[(\u0011\u0012\u000E)" + (emit_expr(args[(int)1], arities) + "]"))) : ((n == "\u0017\u0011\u0013\u000E-\u0011\u0012\u0013\u000D\u0015\u000E-\u000F\u000E") ? ((Func<bool, string>)((elem_ty) => ("((F\u0019\u0012\u0018<L\u0011\u0013\u000E<" + (cs_type(elem_ty) + (">>)(()\u0002=>\u0002{\u0002v\u000F\u0015\u0002_\u0017\u0002=\u0002\u0012\u000D\u001B\u0002L\u0011\u0013\u000E<" + (cs_type(elem_ty) + (">(" + (emit_expr(args[(int)0], arities) + (");\u0002_\u0017.I\u0012\u0013\u000D\u0015\u000E((\u0011\u0012\u000E)" + (emit_expr(args[(int)1], arities) + (",\u0002" + (emit_expr(args[(int)2], arities) + ");\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002_\u0017;\u0002}))()"))))))))))))(ir_expr_type(args[(int)0]) switch { ListTy(var et) => et, _ => ErrorTy(), }) : ((n == "\u0017\u0011\u0013\u000E-\u0013\u0012\u0010\u0018") ? ((Func<bool, string>)((elem_ty) => ("((F\u0019\u0012\u0018<L\u0011\u0013\u000E<" + (cs_type(elem_ty) + (">>)(()\u0002=>\u0002{\u0002v\u000F\u0015\u0002_\u0017\u0002=\u0002" + (emit_expr(args[(int)0], arities) + (";\u0002_\u0017.A\u0016\u0016(" + (emit_expr(args[(int)1], arities) + ");\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002_\u0017;\u0002}))()"))))))))(ir_expr_type(args[(int)0]) switch { ListTy(var et) => et, _ => ErrorTy(), }) : ((n == "\u000E\u000Dx\u000E-\u0018\u0010\u001A\u001F\u000F\u0015\u000D") ? ("(\u0017\u0010\u0012\u001D)\u0013\u000E\u0015\u0011\u0012\u001D.C\u0010\u001A\u001F\u000F\u0015\u000DO\u0015\u0016\u0011\u0012\u000F\u0017(" + (emit_expr(args[(int)0], arities) + (",\u0002" + (emit_expr(args[(int)1], arities) + ")")))) : ((n == "\u000E\u000Dx\u000E-\u0015\u000D\u001F\u0017\u000F\u0018\u000D") ? (emit_expr(args[(int)0], arities) + (".R\u000D\u001F\u0017\u000F\u0018\u000D(" + (emit_expr(args[(int)1], arities) + (",\u0002" + (emit_expr(args[(int)2], arities) + ")"))))) : ((n == "\u0010\u001F\u000D\u0012-\u001C\u0011\u0017\u000D") ? ("F\u0011\u0017\u000D.O\u001F\u000D\u0012R\u000D\u000F\u0016(" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "\u0015\u000D\u000F\u0016-\u000F\u0017\u0017") ? ("\u0012\u000D\u001B\u0002S\u001E\u0013\u000E\u000D\u001A.IO.S\u000E\u0015\u000D\u000F\u001AR\u000D\u000F\u0016\u000D\u0015(" + (emit_expr(args[(int)0], arities) + ").R\u000D\u000F\u0016T\u0010E\u0012\u0016()")) : ((n == "\u0018\u0017\u0010\u0013\u000D-\u001C\u0011\u0017\u000D") ? (emit_expr(args[(int)0], arities) + ".D\u0011\u0013\u001F\u0010\u0013\u000D()") : ((n == "\u0015\u000D\u000F\u0016-\u0017\u0011\u0012\u000D") ? "_C\u0018\u000D.F\u0015\u0010\u001AU\u0012\u0011\u0018\u0010\u0016\u000D(C\u0010\u0012\u0013\u0010\u0017\u000D.R\u000D\u000F\u0016L\u0011\u0012\u000D()\u0002??\u0002"")" : ((n == "\u0015\u000D\u000F\u0016-\u001C\u0011\u0017\u000D") ? ("_C\u0018\u000D.F\u0015\u0010\u001AU\u0012\u0011\u0018\u0010\u0016\u000D(F\u0011\u0017\u000D.R\u000D\u000F\u0016A\u0017\u0017T\u000Dx\u000E(_C\u0018\u000D.T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)0], arities) + ")))")) : ((n == "\u001B\u0015\u0011\u000E\u000D-\u001C\u0011\u0017\u000D") ? ("F\u0011\u0017\u000D.W\u0015\u0011\u000E\u000DA\u0017\u0017T\u000Dx\u000E(_C\u0018\u000D.T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)0], arities) + ("),\u0002_C\u0018\u000D.T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)1], arities) + "))")))) : ((n == "\u001C\u0011\u0017\u000D-\u000Dx\u0011\u0013\u000E\u0013") ? ("F\u0011\u0017\u000D.Ex\u0011\u0013\u000E\u0013(_C\u0018\u000D.T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)0], arities) + "))")) : ((n == "\u0017\u0011\u0013\u000E-\u001C\u0011\u0017\u000D\u0013") ? ("D\u0011\u0015\u000D\u0018\u000E\u0010\u0015\u001E.G\u000D\u000EF\u0011\u0017\u000D\u0013(_C\u0018\u000D.T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)0], arities) + ("),\u0002_C\u0018\u000D.T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)1], arities) + ")).S\u000D\u0017\u000D\u0018\u000E(_C\u0018\u000D.F\u0015\u0010\u001AU\u0012\u0011\u0018\u0010\u0016\u000D).T\u0010L\u0011\u0013\u000E()")))) : ((n == "\u000E\u000Dx\u000E-\u0013\u001F\u0017\u0011\u000E") ? ("\u0012\u000D\u001B\u0002L\u0011\u0013\u000E<\u0013\u000E\u0015\u0011\u0012\u001D>(" + (emit_expr(args[(int)0], arities) + (".S\u001F\u0017\u0011\u000E(" + (emit_expr(args[(int)1], arities) + "))")))) : ((n == "\u000E\u000Dx\u000E-\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? (emit_expr(args[(int)0], arities) + (".C\u0010\u0012\u000E\u000F\u0011\u0012\u0013(" + (emit_expr(args[(int)1], arities) + ")"))) : ((n == "\u000E\u000Dx\u000E-\u0013\u000E\u000F\u0015\u000E\u0013-\u001B\u0011\u000E\u0014") ? (emit_expr(args[(int)0], arities) + (".S\u000E\u000F\u0015\u000E\u0013W\u0011\u000E\u0014(" + (emit_expr(args[(int)1], arities) + ")"))) : ((n == "\u001D\u000D\u000E-\u000F\u0015\u001D\u0013") ? "E\u0012v\u0011\u0015\u0010\u0012\u001A\u000D\u0012\u000E.G\u000D\u000EC\u0010\u001A\u001A\u000F\u0012\u0016L\u0011\u0012\u000DA\u0015\u001D\u0013().S\u000D\u0017\u000D\u0018\u000E(_C\u0018\u000D.F\u0015\u0010\u001AU\u0012\u0011\u0018\u0010\u0016\u000D).T\u0010L\u0011\u0013\u000E()" : ((n == "\u001D\u000D\u000E-\u000D\u0012v") ? ("_C\u0018\u000D.F\u0015\u0010\u001AU\u0012\u0011\u0018\u0010\u0016\u000D(E\u0012v\u0011\u0015\u0010\u0012\u001A\u000D\u0012\u000E.G\u000D\u000EE\u0012v\u0011\u0015\u0010\u0012\u001A\u000D\u0012\u000EV\u000F\u0015\u0011\u000Fb\u0017\u000D(_C\u0018\u000D.T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)0], arities) + "))\u0002??\u0002"")")) : ((n == "\u0015\u0019\u0012-\u001F\u0015\u0010\u0018\u000D\u0013\u0013") ? ("_C\u0018\u000D.F\u0015\u0010\u001AU\u0012\u0011\u0018\u0010\u0016\u000D(((F\u0019\u0012\u0018<\u0013\u000E\u0015\u0011\u0012\u001D>)(()\u0002=>\u0002{\u0002v\u000F\u0015\u0002_\u001F\u0013\u0011\u0002=\u0002\u0012\u000D\u001B\u0002S\u001E\u0013\u000E\u000D\u001A.D\u0011\u000F\u001D\u0012\u0010\u0013\u000E\u0011\u0018\u0013.P\u0015\u0010\u0018\u000D\u0013\u0013S\u000E\u000F\u0015\u000EI\u0012\u001C\u0010(_C\u0018\u000D.T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)0], arities) + ("),\u0002_C\u0018\u000D.T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)1], arities) + "))\u0002{\u0002R\u000D\u0016\u0011\u0015\u000D\u0018\u000ES\u000E\u000F\u0012\u0016\u000F\u0015\u0016O\u0019\u000E\u001F\u0019\u000E\u0002=\u0002\u000E\u0015\u0019\u000D,\u0002U\u0013\u000DS\u0014\u000D\u0017\u0017Ex\u000D\u0018\u0019\u000E\u000D\u0002=\u0002\u001C\u000F\u0017\u0013\u000D\u0002};\u0002v\u000F\u0015\u0002_\u001F\u0002=\u0002S\u001E\u0013\u000E\u000D\u001A.D\u0011\u000F\u001D\u0012\u0010\u0013\u000E\u0011\u0018\u0013.P\u0015\u0010\u0018\u000D\u0013\u0013.S\u000E\u000F\u0015\u000E(_\u001F\u0013\u0011)!;\u0002v\u000F\u0015\u0002_\u0010\u0002=\u0002_\u001F.S\u000E\u000F\u0012\u0016\u000F\u0015\u0016O\u0019\u000E\u001F\u0019\u000E.R\u000D\u000F\u0016T\u0010E\u0012\u0016();\u0002_\u001F.W\u000F\u0011\u000EF\u0010\u0015Ex\u0011\u000E();\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002_\u0010;\u0002}))()")))) : ((n == "\u0018\u0019\u0015\u0015\u000D\u0012\u000E-\u0016\u0011\u0015") ? "_C\u0018\u000D.F\u0015\u0010\u001AU\u0012\u0011\u0018\u0010\u0016\u000D(D\u0011\u0015\u000D\u0018\u000E\u0010\u0015\u001E.G\u000D\u000EC\u0019\u0015\u0015\u000D\u0012\u000ED\u0011\u0015\u000D\u0018\u000E\u0010\u0015\u001E())" : ((n == "\u001C\u0010\u0015\"") ? ("T\u000F\u0013\".R\u0019\u0012(()\u0002=>\u0002(" + (emit_expr(args[(int)0], arities) + ")(\u0012\u0019\u0017\u0017))")) : ((n == "\u000F\u001B\u000F\u0011\u000E") ? ("(" + (emit_expr(args[(int)0], arities) + ").R\u000D\u0013\u0019\u0017\u000E")) : ((n == "\u001F\u000F\u0015") ? ("T\u000F\u0013\".W\u0014\u000D\u0012A\u0017\u0017(" + (emit_expr(args[(int)1], arities) + (".S\u000D\u0017\u000D\u0018\u000E(_x_\u0002=>\u0002T\u000F\u0013\".R\u0019\u0012(()\u0002=>\u0002(" + (emit_expr(args[(int)0], arities) + ")(_x_)))).R\u000D\u0013\u0019\u0017\u000E.T\u0010L\u0011\u0013\u000E()")))) : ((n == "\u0015\u000F\u0018\u000D") ? ("T\u000F\u0013\".W\u0014\u000D\u0012A\u0012\u001E(" + (emit_expr(args[(int)0], arities) + ".S\u000D\u0017\u000D\u0018\u000E(_\u000E_\u0002=>\u0002T\u000F\u0013\".R\u0019\u0012(()\u0002=>\u0002_\u000E_(\u0012\u0019\u0017\u0017)))).R\u000D\u0013\u0019\u0017\u000E.R\u000D\u0013\u0019\u0017\u000E")) : ""))))))))))))))))))))))))))))))))))))))));
+    public static string emit_builtin(string n, List<IRExpr> args, List<ArityEntry> arities) => ((n == "\u0013\u0014\u0010\u001B") ? ("_C\u0018\u000D.F\u0015\u0010\u001AU\u0012\u0011\u0018\u0010\u0016\u000D(C\u0010\u0012v\u000D\u0015\u000E.T\u0010S\u000E\u0015\u0011\u0012\u001D(" + (emit_expr(args[(int)0], arities) + "))")) : ((n == "\u0012\u000D\u001D\u000F\u000E\u000D") ? ("(-" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "\u001F\u0015\u0011\u0012\u000E-\u0017\u0011\u0012\u000D") ? ("C\u0010\u0012\u0013\u0010\u0017\u000D.W\u0015\u0011\u000E\u000DL\u0011\u0012\u000D(_C\u0018\u000D.T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)0], arities) + "))")) : ((n == "\u000E\u000Dx\u000E-\u0017\u000D\u0012\u001D\u000E\u0014") ? ("((\u0017\u0010\u0012\u001D)" + (emit_expr(args[(int)0], arities) + ".L\u000D\u0012\u001D\u000E\u0014)")) : ((n == "\u0011\u0013-\u0017\u000D\u000E\u000E\u000D\u0015") ? ("(" + (emit_expr(args[(int)0], arities) + ("\u0002>=\u0002\u0004\u0006L\u0002&&\u0002" + (emit_expr(args[(int)0], arities) + "\u0002<=\u0002\u0009\u0007L)")))) : ((n == "\u0011\u0013-\u0016\u0011\u001D\u0011\u000E") ? ("(" + (emit_expr(args[(int)0], arities) + ("\u0002>=\u0002\u0006L\u0002&&\u0002" + (emit_expr(args[(int)0], arities) + "\u0002<=\u0002\u0004\u0005L)")))) : ((n == "\u0011\u0013-\u001B\u0014\u0011\u000E\u000D\u0013\u001F\u000F\u0018\u000D") ? ("(" + (emit_expr(args[(int)0], arities) + "\u0002<=\u0002\u0005L)")) : ((n == "\u000E\u000Dx\u000E-\u000E\u0010-\u0011\u0012\u000E\u000D\u001D\u000D\u0015") ? ("\u0017\u0010\u0012\u001D.P\u000F\u0015\u0013\u000D(_C\u0018\u000D.T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)0], arities) + "))")) : ((n == "\u0011\u0012\u000E\u000D\u001D\u000D\u0015-\u000E\u0010-\u000E\u000Dx\u000E") ? ("_C\u0018\u000D.F\u0015\u0010\u001AU\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)0], arities) + ".T\u0010S\u000E\u0015\u0011\u0012\u001D())")) : ((n == "\u0018\u0014\u000F\u0015-\u0018\u0010\u0016\u000D") ? emit_expr(args[(int)0], arities) : ((n == "\u0018\u0014\u000F\u0015-\u0018\u0010\u0016\u000D-\u000F\u000E") ? ("((\u0017\u0010\u0012\u001D)" + (emit_expr(args[(int)0], arities) + ("[(\u0011\u0012\u000E)" + (emit_expr(args[(int)1], arities) + "])")))) : ((n == "\u0018\u0010\u0016\u000D-\u000E\u0010-\u0018\u0014\u000F\u0015") ? emit_expr(args[(int)0], arities) : ((n == "\u0018\u0014\u000F\u0015-\u000E\u0010-\u000E\u000Dx\u000E") ? ("((\u0018\u0014\u000F\u0015)" + (emit_expr(args[(int)0], arities) + ").T\u0010S\u000E\u0015\u0011\u0012\u001D()")) : ((n == "\u0017\u0011\u0013\u000E-\u0017\u000D\u0012\u001D\u000E\u0014") ? ("((\u0017\u0010\u0012\u001D)" + (emit_expr(args[(int)0], arities) + ".C\u0010\u0019\u0012\u000E)")) : ((n == "\u0018\u0014\u000F\u0015-\u000F\u000E") ? ("((\u0017\u0010\u0012\u001D)" + (emit_expr(args[(int)0], arities) + ("[(\u0011\u0012\u000E)" + (emit_expr(args[(int)1], arities) + "])")))) : ((n == "\u0013\u0019b\u0013\u000E\u0015\u0011\u0012\u001D") ? (emit_expr(args[(int)0], arities) + (".S\u0019b\u0013\u000E\u0015\u0011\u0012\u001D((\u0011\u0012\u000E)" + (emit_expr(args[(int)1], arities) + (",\u0002(\u0011\u0012\u000E)" + (emit_expr(args[(int)2], arities) + ")"))))) : ((n == "\u0017\u0011\u0013\u000E-\u000F\u000E") ? (emit_expr(args[(int)0], arities) + ("[(\u0011\u0012\u000E)" + (emit_expr(args[(int)1], arities) + "]"))) : ((n == "\u0017\u0011\u0013\u000E-\u0011\u0012\u0013\u000D\u0015\u000E-\u000F\u000E") ? ((Func<bool, string>)((elem_ty) => ("((F\u0019\u0012\u0018<L\u0011\u0013\u000E<" + (cs_type(elem_ty) + (">>)(()\u0002=>\u0002{\u0002v\u000F\u0015\u0002_\u0017\u0002=\u0002\u0012\u000D\u001B\u0002L\u0011\u0013\u000E<" + (cs_type(elem_ty) + (">(" + (emit_expr(args[(int)0], arities) + (");\u0002_\u0017.I\u0012\u0013\u000D\u0015\u000E((\u0011\u0012\u000E)" + (emit_expr(args[(int)1], arities) + (",\u0002" + (emit_expr(args[(int)2], arities) + ");\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002_\u0017;\u0002}))()"))))))))))))(ir_expr_type(args[(int)0]) switch { ListTy(var et) => et, _ => ErrorTy(), }) : ((n == "\u0017\u0011\u0013\u000E-\u0013\u0012\u0010\u0018") ? ((Func<bool, string>)((elem_ty) => ("((F\u0019\u0012\u0018<L\u0011\u0013\u000E<" + (cs_type(elem_ty) + (">>)(()\u0002=>\u0002{\u0002v\u000F\u0015\u0002_\u0017\u0002=\u0002" + (emit_expr(args[(int)0], arities) + (";\u0002_\u0017.A\u0016\u0016(" + (emit_expr(args[(int)1], arities) + ");\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002_\u0017;\u0002}))()"))))))))(ir_expr_type(args[(int)0]) switch { ListTy(var et) => et, _ => ErrorTy(), }) : ((n == "\u000E\u000Dx\u000E-\u0018\u0010\u001A\u001F\u000F\u0015\u000D") ? ("(\u0017\u0010\u0012\u001D)\u0013\u000E\u0015\u0011\u0012\u001D.C\u0010\u001A\u001F\u000F\u0015\u000DO\u0015\u0016\u0011\u0012\u000F\u0017(" + (emit_expr(args[(int)0], arities) + (",\u0002" + (emit_expr(args[(int)1], arities) + ")")))) : ((n == "\u000E\u000Dx\u000E-\u0015\u000D\u001F\u0017\u000F\u0018\u000D") ? (emit_expr(args[(int)0], arities) + (".R\u000D\u001F\u0017\u000F\u0018\u000D(" + (emit_expr(args[(int)1], arities) + (",\u0002" + (emit_expr(args[(int)2], arities) + ")"))))) : ((n == "\u0010\u001F\u000D\u0012-\u001C\u0011\u0017\u000D") ? ("F\u0011\u0017\u000D.O\u001F\u000D\u0012R\u000D\u000F\u0016(" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "\u0015\u000D\u000F\u0016-\u000F\u0017\u0017") ? ("\u0012\u000D\u001B\u0002S\u001E\u0013\u000E\u000D\u001A.IO.S\u000E\u0015\u000D\u000F\u001AR\u000D\u000F\u0016\u000D\u0015(" + (emit_expr(args[(int)0], arities) + ").R\u000D\u000F\u0016T\u0010E\u0012\u0016()")) : ((n == "\u0018\u0017\u0010\u0013\u000D-\u001C\u0011\u0017\u000D") ? (emit_expr(args[(int)0], arities) + ".D\u0011\u0013\u001F\u0010\u0013\u000D()") : ((n == "\u0015\u000D\u000F\u0016-\u0017\u0011\u0012\u000D") ? "_C\u0018\u000D.F\u0015\u0010\u001AU\u0012\u0011\u0018\u0010\u0016\u000D(C\u0010\u0012\u0013\u0010\u0017\u000D.R\u000D\u000F\u0016L\u0011\u0012\u000D()\u0002??\u0002"")" : ((n == "\u0015\u000D\u000F\u0016-\u001C\u0011\u0017\u000D") ? ("_C\u0018\u000D.F\u0015\u0010\u001AU\u0012\u0011\u0018\u0010\u0016\u000D(F\u0011\u0017\u000D.R\u000D\u000F\u0016A\u0017\u0017T\u000Dx\u000E(_C\u0018\u000D.T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)0], arities) + ")))")) : ((n == "\u001B\u0015\u0011\u000E\u000D-\u001C\u0011\u0017\u000D") ? ("F\u0011\u0017\u000D.W\u0015\u0011\u000E\u000DA\u0017\u0017T\u000Dx\u000E(_C\u0018\u000D.T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)0], arities) + ("),\u0002_C\u0018\u000D.T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)1], arities) + "))")))) : ((n == "\u001C\u0011\u0017\u000D-\u000Dx\u0011\u0013\u000E\u0013") ? ("F\u0011\u0017\u000D.Ex\u0011\u0013\u000E\u0013(_C\u0018\u000D.T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)0], arities) + "))")) : ((n == "\u0017\u0011\u0013\u000E-\u001C\u0011\u0017\u000D\u0013") ? ("D\u0011\u0015\u000D\u0018\u000E\u0010\u0015\u001E.G\u000D\u000EF\u0011\u0017\u000D\u0013(_C\u0018\u000D.T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)0], arities) + ("),\u0002_C\u0018\u000D.T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)1], arities) + ")).S\u000D\u0017\u000D\u0018\u000E(_C\u0018\u000D.F\u0015\u0010\u001AU\u0012\u0011\u0018\u0010\u0016\u000D).T\u0010L\u0011\u0013\u000E()")))) : ((n == "\u000E\u000Dx\u000E-\u0018\u0010\u0012\u0018\u000F\u000E-\u0017\u0011\u0013\u000E") ? ("\u0013\u000E\u0015\u0011\u0012\u001D.C\u0010\u0012\u0018\u000F\u000E(" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "\u000E\u000Dx\u000E-\u0013\u001F\u0017\u0011\u000E") ? ("\u0012\u000D\u001B\u0002L\u0011\u0013\u000E<\u0013\u000E\u0015\u0011\u0012\u001D>(" + (emit_expr(args[(int)0], arities) + (".S\u001F\u0017\u0011\u000E(" + (emit_expr(args[(int)1], arities) + "))")))) : ((n == "\u000E\u000Dx\u000E-\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? (emit_expr(args[(int)0], arities) + (".C\u0010\u0012\u000E\u000F\u0011\u0012\u0013(" + (emit_expr(args[(int)1], arities) + ")"))) : ((n == "\u000E\u000Dx\u000E-\u0013\u000E\u000F\u0015\u000E\u0013-\u001B\u0011\u000E\u0014") ? (emit_expr(args[(int)0], arities) + (".S\u000E\u000F\u0015\u000E\u0013W\u0011\u000E\u0014(" + (emit_expr(args[(int)1], arities) + ")"))) : ((n == "\u001D\u000D\u000E-\u000F\u0015\u001D\u0013") ? "E\u0012v\u0011\u0015\u0010\u0012\u001A\u000D\u0012\u000E.G\u000D\u000EC\u0010\u001A\u001A\u000F\u0012\u0016L\u0011\u0012\u000DA\u0015\u001D\u0013().S\u000D\u0017\u000D\u0018\u000E(_C\u0018\u000D.F\u0015\u0010\u001AU\u0012\u0011\u0018\u0010\u0016\u000D).T\u0010L\u0011\u0013\u000E()" : ((n == "\u001D\u000D\u000E-\u000D\u0012v") ? ("_C\u0018\u000D.F\u0015\u0010\u001AU\u0012\u0011\u0018\u0010\u0016\u000D(E\u0012v\u0011\u0015\u0010\u0012\u001A\u000D\u0012\u000E.G\u000D\u000EE\u0012v\u0011\u0015\u0010\u0012\u001A\u000D\u0012\u000EV\u000F\u0015\u0011\u000Fb\u0017\u000D(_C\u0018\u000D.T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)0], arities) + "))\u0002??\u0002"")")) : ((n == "\u0015\u0019\u0012-\u001F\u0015\u0010\u0018\u000D\u0013\u0013") ? ("_C\u0018\u000D.F\u0015\u0010\u001AU\u0012\u0011\u0018\u0010\u0016\u000D(((F\u0019\u0012\u0018<\u0013\u000E\u0015\u0011\u0012\u001D>)(()\u0002=>\u0002{\u0002v\u000F\u0015\u0002_\u001F\u0013\u0011\u0002=\u0002\u0012\u000D\u001B\u0002S\u001E\u0013\u000E\u000D\u001A.D\u0011\u000F\u001D\u0012\u0010\u0013\u000E\u0011\u0018\u0013.P\u0015\u0010\u0018\u000D\u0013\u0013S\u000E\u000F\u0015\u000EI\u0012\u001C\u0010(_C\u0018\u000D.T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)0], arities) + ("),\u0002_C\u0018\u000D.T\u0010U\u0012\u0011\u0018\u0010\u0016\u000D(" + (emit_expr(args[(int)1], arities) + "))\u0002{\u0002R\u000D\u0016\u0011\u0015\u000D\u0018\u000ES\u000E\u000F\u0012\u0016\u000F\u0015\u0016O\u0019\u000E\u001F\u0019\u000E\u0002=\u0002\u000E\u0015\u0019\u000D,\u0002U\u0013\u000DS\u0014\u000D\u0017\u0017Ex\u000D\u0018\u0019\u000E\u000D\u0002=\u0002\u001C\u000F\u0017\u0013\u000D\u0002};\u0002v\u000F\u0015\u0002_\u001F\u0002=\u0002S\u001E\u0013\u000E\u000D\u001A.D\u0011\u000F\u001D\u0012\u0010\u0013\u000E\u0011\u0018\u0013.P\u0015\u0010\u0018\u000D\u0013\u0013.S\u000E\u000F\u0015\u000E(_\u001F\u0013\u0011)!;\u0002v\u000F\u0015\u0002_\u0010\u0002=\u0002_\u001F.S\u000E\u000F\u0012\u0016\u000F\u0015\u0016O\u0019\u000E\u001F\u0019\u000E.R\u000D\u000F\u0016T\u0010E\u0012\u0016();\u0002_\u001F.W\u000F\u0011\u000EF\u0010\u0015Ex\u0011\u000E();\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002_\u0010;\u0002}))()")))) : ((n == "\u0018\u0019\u0015\u0015\u000D\u0012\u000E-\u0016\u0011\u0015") ? "_C\u0018\u000D.F\u0015\u0010\u001AU\u0012\u0011\u0018\u0010\u0016\u000D(D\u0011\u0015\u000D\u0018\u000E\u0010\u0015\u001E.G\u000D\u000EC\u0019\u0015\u0015\u000D\u0012\u000ED\u0011\u0015\u000D\u0018\u000E\u0010\u0015\u001E())" : ((n == "\u001C\u0010\u0015\"") ? ("T\u000F\u0013\".R\u0019\u0012(()\u0002=>\u0002(" + (emit_expr(args[(int)0], arities) + ")(\u0012\u0019\u0017\u0017))")) : ((n == "\u000F\u001B\u000F\u0011\u000E") ? ("(" + (emit_expr(args[(int)0], arities) + ").R\u000D\u0013\u0019\u0017\u000E")) : ((n == "\u001F\u000F\u0015") ? ("T\u000F\u0013\".W\u0014\u000D\u0012A\u0017\u0017(" + (emit_expr(args[(int)1], arities) + (".S\u000D\u0017\u000D\u0018\u000E(_x_\u0002=>\u0002T\u000F\u0013\".R\u0019\u0012(()\u0002=>\u0002(" + (emit_expr(args[(int)0], arities) + ")(_x_)))).R\u000D\u0013\u0019\u0017\u000E.T\u0010L\u0011\u0013\u000E()")))) : ((n == "\u0015\u000F\u0018\u000D") ? ("T\u000F\u0013\".W\u0014\u000D\u0012A\u0012\u001E(" + (emit_expr(args[(int)0], arities) + ".S\u000D\u0017\u000D\u0018\u000E(_\u000E_\u0002=>\u0002T\u000F\u0013\".R\u0019\u0012(()\u0002=>\u0002_\u000E_(\u0012\u0019\u0017\u0017)))).R\u000D\u0013\u0019\u0017\u000E.R\u000D\u0013\u0019\u0017\u000E")) : "")))))))))))))))))))))))))))))))))))))))));
 
     public static string emit_apply(IRExpr e, List<ArityEntry> arities) => ((Func<ApplyChain, string>)((chain) => ((Func<IRExpr, string>)((root) => ((Func<List<IRExpr>, string>)((args) => root switch { IrName(var n, var ty) => (is_builtin_name(n) ? emit_builtin(n, args, arities) : (((((long)n.Length) > 0) && is_upper_letter(((long)n[(int)0]))) ? ((Func<CodexType, string>)((result_ty) => ((Func<string, string>)((ctor_type_args) => ("\u0012\u000D\u001B\u0002" + (sanitize(n) + (ctor_type_args + ("(" + (emit_apply_args(args, arities, 0) + ")")))))))(extract_ctor_type_args(result_ty))))(ir_expr_type(e())) : ((Func<long, string>)((ar) => (((ar > 1) && (((long)args.Count) == ar)) ? (sanitize(n) + ("(" + (emit_apply_args(args, arities, 0) + ")"))) : (((ar > 1) && (((long)args.Count) < ar)) ? ((Func<long, string>)((remaining) => (emit_partial_wrappers(0, remaining) + (sanitize(n) + ("(" + (emit_apply_args(args, arities, 0) + (",\u0002" + (emit_partial_params(0, remaining) + ")"))))))))((ar - ((long)args.Count))) : emit_expr_curried(e(), arities)))))(lookup_arity(arities, n)))), _ => emit_expr_curried(e(), arities), }))(chain.args)))(chain.root)))(collect_apply_chain(e(), new List<IRExpr>()));
 
@@ -1133,7 +1133,7 @@ public static class Codex_Codex_Codex
 
     public static string escape_cce_char(long c) => ((c == 92) ? "\\" : ((c == 34) ? "\"" : ((c >= 32) ? ((c < 127) ? ((char)c).ToString() : ("\\u0019" + hex4(c))) : ("\\u0019" + hex4(c)))));
 
-    public static string escape_text_loop(string s, long i, long len, string acc)
+    public static List<string> escape_text_loop(string s, long i, long len, List<string> acc)
     {
         while (true)
         {
@@ -1146,7 +1146,7 @@ public static class Codex_Codex_Codex
             var _tco_0 = s;
             var _tco_1 = (i() + 1);
             var _tco_2 = len;
-            var _tco_3 = (acc() + escape_cce_char(((long)s[(int)i()])));
+            var _tco_3 = ((Func<List<string>>)(() => { var _l = acc(); _l.Add(escape_cce_char(((long)s[(int)i()]))); return _l; }))();
             s = _tco_0;
             i = _tco_1;
             len = _tco_2;
@@ -1156,7 +1156,7 @@ public static class Codex_Codex_Codex
         }
     }
 
-    public static string escape_text(string s) => escape_text_loop(s, 0, ((long)s.Length), "");
+    public static string escape_text(string s) => text_concat_list(escape_text_loop(s, 0, ((long)s.Length), new List<string>()));
 
     public static string emit_bin_op(IRBinaryOp op) => op switch { IrAddInt { } => "+", IrSubInt { } => "-", IrMulInt { } => "*", IrDivInt { } => "/", IrPowInt { } => "\u0000", IrAddNum { } => "+", IrSubNum { } => "-", IrMulNum { } => "*", IrDivNum { } => "/", IrEq { } => "==", IrNotEq { } => "!=", IrLt { } => "<", IrGt { } => ">", IrLtEq { } => "<=", IrGtEq { } => ">=", IrAnd { } => "&&", IrOr { } => "||", IrAppendText { } => "+", IrAppendList { } => "+", IrConsList { } => "+", _ => throw new InvalidOperationException("Non-exhaustive match"), };
 
@@ -1712,13 +1712,13 @@ public static class Codex_Codex_Codex
 
     public static CodexType subst_type_vars_from_arg(CodexType param_ty, CodexType arg_ty, CodexType target) => param_ty switch { object TypeVar => id(), };
 
-    public static T2423 subst_type_var_in_target<T2423>() => id()(arg_ty);
+    public static T2433 subst_type_var_in_target<T2433>() => id()(arg_ty);
 
     public static List<long> ListTy(object pe) => subst_from_list(pe, arg_ty, target());
 
     public static List<long> FunTy(object pp, object pr) => subst_from_fun(pp, pr, arg_ty, target());
 
-    public static Func<T2425, Func<object, Func<CodexType, T2428>>> target<T2425, T2428>() => (_p0_) => (_p1_) => (_p2_) => subst_from_list(_p0_, _p1_, _p2_);
+    public static Func<T2435, Func<object, Func<CodexType, T2438>>> target<T2435, T2438>() => (_p0_) => (_p1_) => (_p2_) => subst_from_list(_p0_, _p1_, _p2_);
 
     public static Token CodexType() => new CodexType();
 
@@ -1728,7 +1728,7 @@ public static class Codex_Codex_Codex
 
     public static CodexType subst_from_fun(CodexType pp, CodexType pr, CodexType arg_ty, CodexType target) => arg_ty switch { FunTy(var ap, var ar) => ((Func<CodexType, CodexType>)((t2) => subst_type_vars_from_arg(pr, ar, t2)))(subst_type_vars_from_arg(pp, ap, target())), _ => target(), };
 
-    public static T2423 subst_type_var_in_target<T2423>(object ty, object var_id, object replacement) => ty() switch { object TypeVar => id(), };
+    public static T2433 subst_type_var_in_target<T2433>(object ty, object var_id, object replacement) => ty() switch { object TypeVar => id(), };
 
     public static object id() => var_id;
 
@@ -2849,15 +2849,15 @@ public static class Codex_Codex_Codex
 
     public static string text() => text();
 
-    public static T3122 offset<T3122>() => st().offset;
+    public static T3129 offset<T3129>() => st().offset;
 
-    public static T3124 line<T3124>() => st().line;
+    public static T3131 line<T3131>() => st().line;
 
-    public static T3126 column<T3126>() => st().column;
+    public static T3133 column<T3133>() => st().column;
 
     public static string extract_text(LexState st, long start, LexState end_st) => st().source.Substring((int)start, (int)(end_st.offset - start));
 
-    public static LexResult scan_token(LexState st) => ((Func<LexState, LexResult>)((s) => (is_at_end(s) ? new LexEnd() : ((Func<long, LexResult>)((c) => ((c == cc_newline()) ? new LexToken(make_token(new Newline(), "\u000A", s), advance_char(s)) : ((c == cc_double_quote()) ? ((Func<long, LexResult>)((start) => ((Func<LexState, LexResult>)((after) => ((Func<long, LexResult>)((text_len) => ((Func<string, LexResult>)((raw) => new LexToken(make_token(TextLiteral, process_escapes(raw, 0, ((long)raw.Length), ""), s), after)))(s.source.Substring((int)start, (int)text_len))))(((after.offset - start) - 1))))(scan_string_body(advance_char(s)))))((s.offset + 1)) : ((c == cc_single_quote()) ? scan_char_literal(s) : (is_letter_code(c) ? ((Func<long, LexResult>)((start) => ((Func<LexState, LexResult>)((after) => ((Func<string, LexResult>)((word) => new LexToken(make_token(classify_word(word), word, s), after)))(extract_text(s, start, after))))(scan_ident_rest(advance_char(s)))))(s.offset) : ((c == cc_underscore()) ? ((Func<long, LexResult>)((start) => ((Func<LexState, LexResult>)((after) => ((Func<string, LexResult>)((word) => ((((long)word.Length) == 1) ? new LexToken(make_token(new Underscore(), "_", s), after) : new LexToken(make_token(classify_word(word), word, s), after))))(extract_text(s, start, after))))(scan_ident_rest(advance_char(s)))))(s.offset) : (is_digit_code(c) ? ((Func<long, LexResult>)((start) => ((Func<LexState, LexResult>)((after) => (is_at_end(after) ? new LexToken(make_token(new IntegerLiteral(), extract_text(s, start, after), s), after) : ((peek_code(after) == cc_dot()) ? ((Func<LexState, LexResult>)((after2) => new LexToken(make_token(new NumberLiteral(), extract_text(s, start, after2), s), after2)))(scan_digits(advance_char(after))) : new LexToken(make_token(new IntegerLiteral(), extract_text(s, start, after), s), after)))))(scan_digits(advance_char(s)))))(s.offset) : scan_operator(s)))))))))(peek_code(s)))))(skip_spaces(st()));
+    public static LexResult scan_token(LexState st) => ((Func<LexState, LexResult>)((s) => (is_at_end(s) ? new LexEnd() : ((Func<long, LexResult>)((c) => ((c == cc_newline()) ? new LexToken(make_token(new Newline(), "\u0001", s), advance_char(s)) : ((c == cc_double_quote()) ? ((Func<long, LexResult>)((start) => ((Func<LexState, LexResult>)((after) => ((Func<long, LexResult>)((text_len) => ((Func<string, LexResult>)((raw) => new LexToken(make_token(TextLiteral, process_escapes(raw, 0, ((long)raw.Length), ""), s), after)))(s.source.Substring((int)start, (int)text_len))))(((after.offset - start) - 1))))(scan_string_body(advance_char(s)))))((s.offset + 1)) : ((c == cc_single_quote()) ? scan_char_literal(s) : (is_letter_code(c) ? ((Func<long, LexResult>)((start) => ((Func<LexState, LexResult>)((after) => ((Func<string, LexResult>)((word) => new LexToken(make_token(classify_word(word), word, s), after)))(extract_text(s, start, after))))(scan_ident_rest(advance_char(s)))))(s.offset) : ((c == cc_underscore()) ? ((Func<long, LexResult>)((start) => ((Func<LexState, LexResult>)((after) => ((Func<string, LexResult>)((word) => ((((long)word.Length) == 1) ? new LexToken(make_token(new Underscore(), "_", s), after) : new LexToken(make_token(classify_word(word), word, s), after))))(extract_text(s, start, after))))(scan_ident_rest(advance_char(s)))))(s.offset) : (is_digit_code(c) ? ((Func<long, LexResult>)((start) => ((Func<LexState, LexResult>)((after) => (is_at_end(after) ? new LexToken(make_token(new IntegerLiteral(), extract_text(s, start, after), s), after) : ((peek_code(after) == cc_dot()) ? ((Func<LexState, LexResult>)((after2) => new LexToken(make_token(new NumberLiteral(), extract_text(s, start, after2), s), after2)))(scan_digits(advance_char(after))) : new LexToken(make_token(new IntegerLiteral(), extract_text(s, start, after), s), after)))))(scan_digits(advance_char(s)))))(s.offset) : scan_operator(s)))))))))(peek_code(s)))))(skip_spaces(st()));
 
     public static LexResult scan_operator(LexState s) => ((Func<long, LexResult>)((c) => ((Func<LexState, LexResult>)((next) => ((c == cc_left_paren()) ? new LexToken(make_token(new LeftParen(), "(", s), next) : ((c == cc_right_paren()) ? new LexToken(make_token(new RightParen(), ")", s), next) : ((c == cc_left_bracket()) ? new LexToken(make_token(new LeftBracket(), "[", s), next) : ((c == cc_right_bracket()) ? new LexToken(make_token(new RightBracket(), "]", s), next) : ((c == cc_left_brace()) ? new LexToken(make_token(new LeftBrace(), "{", s), next) : ((c == cc_right_brace()) ? new LexToken(make_token(new RightBrace(), "}", s), next) : ((c == cc_comma()) ? new LexToken(make_token(new Comma(), ",", s), next) : ((c == cc_dot()) ? new LexToken(make_token(new Dot(), ".", s), next) : ((c == cc_caret()) ? new LexToken(make_token(new Caret(), "\u0000", s), next) : ((c == cc_ampersand()) ? new LexToken(make_token(new Ampersand(), "&", s), next) : ((c == cc_backslash()) ? new LexToken(make_token(new Backslash(), "\", s), next) : scan_multi_char_operator(s))))))))))))))(advance_char(s))))(peek_code(s));
 
@@ -2904,7 +2904,7 @@ public static class Codex_Codex_Codex
 
     public static ParseTypeResult unwrap_type_ok(ParseTypeResult r, Func<TypeExpr, Func<ParseState, ParseTypeResult>> f) => r switch { object TypeOk => t, };
 
-    public static T3471 st<T3471>() => /* error: -> */ default(f)(t)(st());
+    public static T3478 st<T3478>() => /* error: -> */ default(f)(t)(st());
 
     public static ParseTypeResult parse_type_atom(ParseState st) => (is_ident(current_kind(st())) ? ((Func<Token, ParseTypeResult>)((tok) => parse_type_args(new NamedType(tok), advance()(st()))))(current(st())) : (is_type_ident(current_kind(st())) ? ((Func<Token, ParseTypeResult>)((tok) => parse_type_args(new NamedType(tok), advance()(st()))))(current(st())) : (is_left_paren(current_kind(st())) ? parse_paren_type(advance()(st())) : (is_left_bracket(current_kind(st())) ? parse_effect_type(advance()(st())) : ((Func<Token, ParseTypeResult>)((tok) => TypeOk(new NamedType(tok))(advance()(st()))))(current(st()))))));
 
@@ -2960,7 +2960,7 @@ public static class Codex_Codex_Codex
 
     public static ParseDefResult unwrap_type_for_def(ParseTypeResult r) => r switch { object TypeOk => ann_type, };
 
-    public static T3471 st<T3471>() => /* error: -> */ default;
+    public static T3478 st<T3478>() => /* error: -> */ default;
 
     public static Token name_tok() => Token();
 
@@ -2968,11 +2968,11 @@ public static class Codex_Codex_Codex
 
     public static string text() => "";
 
-    public static T3122 offset<T3122>() => 0;
+    public static T3129 offset<T3129>() => 0;
 
-    public static T3124 line<T3124>() => 0;
+    public static T3131 line<T3131>() => 0;
 
-    public static T3126 column<T3126>() => 0;
+    public static T3133 column<T3133>() => 0;
 
     public static List<object> ann() => new List<object> { TypeAnn(), /* error: { */ default(name()), /* error: = */ default(name_tok()), type_expr, /* error: = */ default(ann_type), /* error: } */ default };
 
@@ -3020,11 +3020,11 @@ public static class Codex_Codex_Codex
 
     public static ParseDefResult unwrap_def_body(ParseExprResult r, List<TypeAnn> ann, Token name_tok, List<Token> @params) => r switch { object ExprOk => b(), };
 
-    public static T3471 st<T3471>() => /* error: -> */ default;
+    public static T3478 st<T3478>() => /* error: -> */ default;
 
     public static Func<Def, Func<ParseState, ParseDefResult>> DefOk() => new Def(name: name_tok(), @params: @params, ann: ann(), body: b());
 
-    public static T3471 st<T3471>() => is_paren_type_param;
+    public static T3478 st<T3478>() => is_paren_type_param;
 
     public static Func<List<Token>, Func<long, ParseState>> ParseState() => new Boolean();
 
@@ -3094,31 +3094,31 @@ public static class Codex_Codex_Codex
 
     public static ParseTypeDefResult parse_type_def(ParseState st) => (is_type_ident(current_kind(st())) ? ((Func<Token, ParseTypeDefResult>)((name_tok) => ((Func<object, ParseTypeDefResult>)((st2) => ((Func<List<Token>, ParseTypeDefResult>)((tparams) => ((Func<ParseState, ParseTypeDefResult>)((st3) => (is_equals(current_kind(st3())) ? ((Func<ParseState, ParseTypeDefResult>)((st4) => (is_record_keyword(current_kind(st4)) ? parse_record_type(name_tok(), tparams(), st4) : (is_pipe(current_kind(st4)) ? parse_variant_type(name_tok(), tparams(), st4) : TypeDefNone(st())))))(skip_newlines(advance()(st3()))) : TypeDefNone(st()))))(parse_type_params(st2(), new List<Token>()))))(collect_type_params(st2(), new List<Token>()))))(advance()(st()))))(current(st())) : TypeDefNone(st()));
 
-    public static ParseTypeDefResult parse_record_type(Token name_tok, List<Token> tparams, ParseState st) => ((Func<object, ParseTypeDefResult>)((st2) => ((Func<ParseState, ParseTypeDefResult>)((st3) => ((Func<ParseState, ParseTypeDefResult>)((st4) => parse_record_fields_loop(name_tok(), tparams(), new List<T3761>(), st4)))(skip_newlines(st3()))))(expect(new LeftBrace(), st2()))))(advance()(st()));
+    public static ParseTypeDefResult parse_record_type(Token name_tok, List<Token> tparams, ParseState st) => ((Func<object, ParseTypeDefResult>)((st2) => ((Func<ParseState, ParseTypeDefResult>)((st3) => ((Func<ParseState, ParseTypeDefResult>)((st4) => parse_record_fields_loop(name_tok(), tparams(), new List<T3768>(), st4)))(skip_newlines(st3()))))(expect(new LeftBrace(), st2()))))(advance()(st()));
 
-    public static ParseTypeDefResult parse_record_fields_loop<T3761>(Token name_tok, List<Token> tparams, List<T3761> acc, ParseState st) => (is_right_brace(current_kind(st())) ? TypeDefOk(TypeDef())(name()) : name_tok());
+    public static ParseTypeDefResult parse_record_fields_loop<T3768>(Token name_tok, List<Token> tparams, List<T3768> acc, ParseState st) => (is_right_brace(current_kind(st())) ? TypeDefOk(TypeDef())(name()) : name_tok());
 
-    public static Func<List<long>, Func<ParseState, Func<T69, T3811>>> type_params<T69, T3811>() => tparams();
+    public static Func<List<long>, Func<ParseState, Func<T69, T3818>>> type_params<T69, T3818>() => tparams();
 
-    public static T3774 body<T3774>() => new RecordBody(acc());
+    public static T3781 body<T3781>() => new RecordBody(acc());
 
     public static object advance() => /* error: ) */ default;
 
-    public static T3782 is_ident<T3782>(object current_kind) => /* error: then */ default(parse_one_record_field)(name_tok())(tparams())(acc())(st());
+    public static T3789 is_ident<T3789>(object current_kind) => /* error: then */ default(parse_one_record_field)(name_tok())(tparams())(acc())(st());
 
     public static Func<ParseState, ParseTypeDefResult> TypeDefOk(TypeDef TypeDef) => /* error: = */ default(name_tok());
 
-    public static Func<List<long>, Func<ParseState, Func<T69, T3811>>> type_params<T69, T3811>() => tparams();
+    public static Func<List<long>, Func<ParseState, Func<T69, T3818>>> type_params<T69, T3818>() => tparams();
 
-    public static T3774 body<T3774>() => new RecordBody(acc());
+    public static T3781 body<T3781>() => new RecordBody(acc());
 
-    public static T3471 st<T3471>() => parse_one_record_field;
+    public static T3478 st<T3478>() => parse_one_record_field;
 
-    public static T5444 Token<T5444>() => new List(Token());
+    public static T5451 Token<T5451>() => new List(Token());
 
     public static T784 List<T784>() => /* error: -> */ default(new ParseState());
 
-    public static T3798 ParseTypeDefResult<T3798>() => parse_one_record_field(name_tok())(tparams())(acc())(st());
+    public static T3805 ParseTypeDefResult<T3805>() => parse_one_record_field(name_tok())(tparams())(acc())(st());
 
     public static Token field_name() => current(st());
 
@@ -3128,23 +3128,23 @@ public static class Codex_Codex_Codex
 
     public static ParseTypeResult field_type_result() => parse_type(st3());
 
-    public static T3811 unwrap_record_field_type<T3811>() => tparams()(acc())(field_name())(field_type_result());
+    public static T3818 unwrap_record_field_type<T3818>() => tparams()(acc())(field_name())(field_type_result());
 
-    public static T3811 unwrap_record_field_type<T3811>(object name_tok, object tparams, object acc, object field_name, object r) => r switch { object TypeOk => ft, };
+    public static T3818 unwrap_record_field_type<T3818>(object name_tok, object tparams, object acc, object field_name, object r) => r switch { object TypeOk => ft, };
 
-    public static T3471 st<T3471>() => /* error: -> */ default;
+    public static T3478 st<T3478>() => /* error: -> */ default;
 
     public static RecordFieldDef field() => new RecordFieldDef(name: field_name(), type_expr: ft);
 
     public static ParseState st2() => skip_newlines(st());
 
-    public static T3828 is_comma<T3828>(object current_kind) => /* error: then */ default((_p0_) => (_p1_) => (_p2_) => (_p3_) => parse_record_fields_loop(_p0_, _p1_, _p2_, _p3_))(name_tok())(tparams())(((Func<List<object>>)(() => { var _l = acc(); _l.Add(field()); return _l; }))())(skip_newlines(advance()(st2())));
+    public static T3835 is_comma<T3835>(object current_kind) => /* error: then */ default((_p0_) => (_p1_) => (_p2_) => (_p3_) => parse_record_fields_loop(_p0_, _p1_, _p2_, _p3_))(name_tok())(tparams())(((Func<List<object>>)(() => { var _l = acc(); _l.Add(field()); return _l; }))())(skip_newlines(advance()(st2())));
 
-    public static Func<Token, Func<List<Token>, Func<List<T3761>, Func<ParseState, ParseTypeDefResult>>>> parse_record_fields_loop<T3761>() => tparams()(((Func<List<object>>)(() => { var _l = acc(); _l.Add(field()); return _l; }))())(st2());
+    public static Func<Token, Func<List<Token>, Func<List<T3768>, Func<ParseState, ParseTypeDefResult>>>> parse_record_fields_loop<T3768>() => tparams()(((Func<List<object>>)(() => { var _l = acc(); _l.Add(field()); return _l; }))())(st2());
 
-    public static ParseTypeDefResult parse_variant_type(Token name_tok, List<Token> tparams, ParseState st) => parse_variant_ctors(name_tok(), tparams(), new List<T3761>(), st());
+    public static ParseTypeDefResult parse_variant_type(Token name_tok, List<Token> tparams, ParseState st) => parse_variant_ctors(name_tok(), tparams(), new List<T3768>(), st());
 
-    public static ParseTypeDefResult parse_variant_ctors<T3761>(Token name_tok, List<Token> tparams, List<T3761> acc, ParseState st) => (is_pipe(current_kind(st())) ? ((Func<ParseState, ParseTypeDefResult>)((st2) => ((Func<Token, ParseTypeDefResult>)((ctor_name) => ((Func<object, ParseTypeDefResult>)((st3) => parse_ctor_fields()(ctor_name)(new List<object>())(st3())(name_tok())(tparams())(acc())))(advance()(st2()))))(current(st2()))))(skip_newlines(advance()(st()))) : TypeDefOk(TypeDef())(name()));
+    public static ParseTypeDefResult parse_variant_ctors<T3768>(Token name_tok, List<Token> tparams, List<T3768> acc, ParseState st) => (is_pipe(current_kind(st())) ? ((Func<ParseState, ParseTypeDefResult>)((st2) => ((Func<Token, ParseTypeDefResult>)((ctor_name) => ((Func<object, ParseTypeDefResult>)((st3) => parse_ctor_fields()(ctor_name)(new List<object>())(st3())(name_tok())(tparams())(acc())))(advance()(st2()))))(current(st2()))))(skip_newlines(advance()(st()))) : TypeDefOk(TypeDef())(name()));
 
     public static Token name_tok() => type_params();
 
@@ -3152,35 +3152,35 @@ public static class Codex_Codex_Codex
 
     public static object VariantBody() => /* error: } */ default;
 
-    public static T3471 st<T3471>() => parse_ctor_fields();
+    public static T3478 st<T3478>() => parse_ctor_fields();
 
-    public static T5444 Token<T5444>() => new List(TypeExpr());
+    public static T5451 Token<T5451>() => new List(TypeExpr());
 
     public static Func<List<Token>, Func<long, ParseState>> ParseState() => Token();
 
     public static T784 List<T784>() => /* error: -> */ default(new List())(new VariantCtorDef());
 
-    public static T3798 ParseTypeDefResult<T3798>() => parse_ctor_fields()(ctor_name)(fields)(st())(name_tok())(tparams())(acc());
+    public static T3805 ParseTypeDefResult<T3805>() => parse_ctor_fields()(ctor_name)(fields)(st())(name_tok())(tparams())(acc());
 
     public static object is_left_paren(object current_kind) => /* error: then */ default;
 
     public static ParseTypeResult field_result() => parse_type(advance()(st()));
 
-    public static T3885 unwrap_ctor_field<T3885>() => ctor_name(fields)(name_tok())(tparams())(acc());
+    public static T3892 unwrap_ctor_field<T3892>() => ctor_name(fields)(name_tok())(tparams())(acc());
 
     public static ParseState st2() => skip_newlines(st());
 
     public static VariantCtorDef ctor() => new VariantCtorDef(name: ctor_name, fields: fields);
 
-    public static Func<Token, Func<List<Token>, Func<List<T3761>, Func<ParseState, ParseTypeDefResult>>>> parse_variant_ctors<T3761>() => tparams()(((Func<List<object>>)(() => { var _l = acc(); _l.Add(ctor()); return _l; }))())(st2());
+    public static Func<Token, Func<List<Token>, Func<List<T3768>, Func<ParseState, ParseTypeDefResult>>>> parse_variant_ctors<T3768>() => tparams()(((Func<List<object>>)(() => { var _l = acc(); _l.Add(ctor()); return _l; }))())(st2());
 
-    public static T3885 unwrap_ctor_field<T3885>(object r, object ctor_name, object fields, object name_tok, object tparams, object acc) => r switch { object TypeOk => ty(), };
+    public static T3892 unwrap_ctor_field<T3892>(object r, object ctor_name, object fields, object name_tok, object tparams, object acc) => r switch { object TypeOk => ty(), };
 
-    public static T3471 st<T3471>() => /* error: -> */ default;
+    public static T3478 st<T3478>() => /* error: -> */ default;
 
     public static ParseState st2() => expect(new RightParen(), st());
 
-    public static T3904 parse_ctor_fields<T3904>() => Enumerable.Concat(fields, new List<Func<CodexType, CodexType>> { ty() }).ToList()(st2())(name_tok())(tparams())(acc());
+    public static T3911 parse_ctor_fields<T3911>() => Enumerable.Concat(fields, new List<Func<CodexType, CodexType>> { ty() }).ToList()(st2())(name_tok())(tparams())(acc());
 
     public static Document parse_document(ParseState st) => ((Func<ParseState, Document>)((st2) => ((Func<ImportParseResult, Document>)((imp_result) => parse_top_level(new List<Def>(), new List<TypeDef>(), new List<EffectDef>(), imp_result.imports, imp_result.state)))(parse_imports(st2(), new List<ImportDecl>()))))(skip_newlines(st()));
 
@@ -3230,7 +3230,7 @@ public static class Codex_Codex_Codex
 
     public static T759 acc<T759>() => state();
 
-    public static T3471 st<T3471>() => /* error: else */ default(EffectOpsResult());
+    public static T3478 st<T3478>() => /* error: else */ default(EffectOpsResult());
 
     public static string ops() => acc();
 
@@ -3258,7 +3258,7 @@ public static class Codex_Codex_Codex
 
     public static TokenKind peek_kind(ParseState st, long offset) => ((Func<long, TokenKind>)((idx) => ((idx >= ((long)st().tokens.Count)) ? EndOfFile : st().tokens[(int)idx].kind)))((st().pos + offset()));
 
-    public static T3782 is_ident<T3782>(object k) => k switch { Identifier { } => true, _ => false, };
+    public static T3789 is_ident<T3789>(object k) => k switch { Identifier { } => true, _ => false, };
 
     public static bool is_type_ident(TokenKind k) => k switch { object TypeIdentifier => true, };
 
@@ -3268,7 +3268,7 @@ public static class Codex_Codex_Codex
 
     public static bool is_colon(TokenKind k) => k switch { Colon { } => true, _ => false, };
 
-    public static T3828 is_comma<T3828>(object k) => k switch { Comma { } => true, _ => false, };
+    public static T3835 is_comma<T3835>(object k) => k switch { Comma { } => true, _ => false, };
 
     public static bool is_pipe(TokenKind k) => k switch { Pipe { } => true, _ => false, };
 
@@ -3370,7 +3370,7 @@ public static class Codex_Codex_Codex
 
     public static ParseExprResult unwrap_expr_ok(ParseExprResult r, Func<Expr, Func<ParseState, ParseExprResult>> f) => r switch { object ExprOk => e(), };
 
-    public static T3471 st<T3471>() => /* error: -> */ default(f)(e())(st());
+    public static T3478 st<T3478>() => /* error: -> */ default(f)(e())(st());
 
     public static ParseExprResult parse_binary(ParseState st, long min_prec) => ((Func<ParseExprResult, ParseExprResult>)((left_result) => unwrap_expr_ok(left_result, (_p0_) => (_p1_) => start_binary_loop(min_prec, _p0_, _p1_))))(parse_unary(st()));
 
@@ -3504,9 +3504,9 @@ public static class Codex_Codex_Codex
 
     public static ParseExprResult parse_handle_expr(ParseState st) => ((Func<object, ParseExprResult>)((st1) => ((Func<Token, ParseExprResult>)((eff_tok) => ((Func<object, ParseExprResult>)((st2) => ((Func<ParseExprResult, ParseExprResult>)((body_result) => unwrap_expr_ok(body_result, (_p0_) => (_p1_) => finish_handle_body(eff_tok, _p0_, _p1_))))(parse_expr(st2()))))(advance()(st1))))(current(st1))))(advance()(st()));
 
-    public static ParseExprResult finish_handle_body(Token eff_tok, Expr body, ParseState st) => ((Func<ParseState, ParseExprResult>)((st2) => ((Func<T4539, ParseExprResult>)((clauses) => ExprOk(new HandleExpr(eff_tok, body(), clauses.clauses))(clauses.state)))(parse_handle_clauses(st2(), new List<T4538>()))))(skip_newlines(st()));
+    public static ParseExprResult finish_handle_body(Token eff_tok, Expr body, ParseState st) => ((Func<ParseState, ParseExprResult>)((st2) => ((Func<T4546, ParseExprResult>)((clauses) => ExprOk(new HandleExpr(eff_tok, body(), clauses.clauses))(clauses.state)))(parse_handle_clauses(st2(), new List<T4545>()))))(skip_newlines(st()));
 
-    public static T4539 parse_handle_clauses<T4538, T4539>(ParseState st, List<T4538> acc) => (is_ident(current_kind(st())) ? ((Func<Token, T4539>)((op_tok) => ((Func<object, T4539>)((st1) => ((Func<HandleParamsResult, T4539>)((@params) => ((((long)@params.toks.Count) > 0) ? ((Func<Token, HandleParseResult>)((resume_tok) => ((Func<ParseState, HandleParseResult>)((st5) => ((Func<ParseState, HandleParseResult>)((st6) => ((Func<ParseExprResult, HandleParseResult>)((body_result) => unwrap_handle_clause_body(op_tok(), resume_tok, body_result, acc())))(parse_expr(st6))))(skip_newlines(st5))))(expect(Equals_, @params.state))))(@params.toks[(int)(((long)@params.toks.Count) - 1)]) : new HandleParseResult(clauses: acc(), state: st()))))(parse_handle_params(st1, new List<Token>()))))(advance()(st()))))(current(st())) : new HandleParseResult(clauses: acc(), state: st()));
+    public static T4546 parse_handle_clauses<T4545, T4546>(ParseState st, List<T4545> acc) => (is_ident(current_kind(st())) ? ((Func<Token, T4546>)((op_tok) => ((Func<object, T4546>)((st1) => ((Func<HandleParamsResult, T4546>)((@params) => ((((long)@params.toks.Count) > 0) ? ((Func<Token, HandleParseResult>)((resume_tok) => ((Func<ParseState, HandleParseResult>)((st5) => ((Func<ParseState, HandleParseResult>)((st6) => ((Func<ParseExprResult, HandleParseResult>)((body_result) => unwrap_handle_clause_body(op_tok(), resume_tok, body_result, acc())))(parse_expr(st6))))(skip_newlines(st5))))(expect(Equals_, @params.state))))(@params.toks[(int)(((long)@params.toks.Count) - 1)]) : new HandleParseResult(clauses: acc(), state: st()))))(parse_handle_params(st1, new List<Token>()))))(advance()(st()))))(current(st())) : new HandleParseResult(clauses: acc(), state: st()));
 
     public static HandleParamsResult parse_handle_params(ParseState st, List<Token> acc)
     {
@@ -3533,13 +3533,13 @@ public static class Codex_Codex_Codex
 
     public static HandleParseResult unwrap_handle_clause_body(Token op_tok, Token resume_tok, ParseExprResult result, List<HandleClause> acc) => result switch { object ExprOk => body(), };
 
-    public static T3471 st<T3471>() => /* error: -> */ default;
+    public static T3478 st<T3478>() => /* error: -> */ default;
 
     public static HandleClause clause() => new HandleClause(op_name: op_tok(), resume_name: resume_tok, body: body());
 
     public static ParseState st2() => skip_newlines(st());
 
-    public static Func<ParseState, Func<List<T4538>, T4539>> parse_handle_clauses<T4538, T4539>() => ((Func<List<object>>)(() => { var _l = acc(); _l.Add(clause()); return _l; }))();
+    public static Func<ParseState, Func<List<T4545>, T4546>> parse_handle_clauses<T4545, T4546>() => ((Func<List<object>>)(() => { var _l = acc(); _l.Add(clause()); return _l; }))();
 
     public static ParseExprResult parse_lambda_expr(ParseState st) => ((Func<object, ParseExprResult>)((st2) => ((Func<LambdaParamsResult, ParseExprResult>)((params_result) => ((Func<ParseState, ParseExprResult>)((st3) => ((Func<ParseState, ParseExprResult>)((st4) => ((Func<ParseExprResult, ParseExprResult>)((body) => unwrap_expr_ok(body(), (_p0_) => (_p1_) => finish_lambda(params_result.toks, _p0_, _p1_))))(parse_expr(st4))))(skip_newlines(st3()))))(expect(new Arrow(), params_result.state))))(collect_lambda_params(st2(), new List<Token>()))))(advance()(st()));
 
@@ -3565,49 +3565,49 @@ public static class Codex_Codex_Codex
 
     public static ParseExprResult finish_lambda(List<Token> @params, Expr body, ParseState st) => ExprOk(new LambdaExpr(@params, body()))(st());
 
-    public static T4618 Expr<T4618>() => /* error: | */ default(new LitExpr())(Token());
+    public static T4625 Expr<T4625>() => /* error: | */ default(new LitExpr())(Token());
 
-    public static T4623 NameExpr<T4623>(object Token) => /* error: | */ default(new AppExpr())(Expr())(Expr());
+    public static T4630 NameExpr<T4630>(object Token) => /* error: | */ default(new AppExpr())(Expr())(Expr());
 
-    public static T4630 BinExpr<T4630>(object Expr, object Token, object Expr) => /* error: | */ default(new UnaryExpr())(Token())(Expr());
+    public static T4637 BinExpr<T4637>(object Expr, object Token, object Expr) => /* error: | */ default(new UnaryExpr())(Token())(Expr());
 
-    public static T4638 IfExpr<T4638>(object Expr, object Expr, object Expr) => /* error: | */ default(new LetExpr())(new List(new LetBind()))(Expr());
+    public static T4645 IfExpr<T4645>(object Expr, object Expr, object Expr) => /* error: | */ default(new LetExpr())(new List(new LetBind()))(Expr());
 
-    public static T4641 MatchExpr<T4641>(object Expr) => new List(new MatchArm());
+    public static T4648 MatchExpr<T4648>(object Expr) => new List(new MatchArm());
 
-    public static T5444 ListExpr<T5444>() => new List(Expr());
+    public static T5451 ListExpr<T5451>() => new List(Expr());
 
-    public static T4646 RecordExpr<T4646>(object Token) => new List(new RecordFieldExpr());
+    public static T4653 RecordExpr<T4653>(object Token) => new List(new RecordFieldExpr());
 
-    public static T4651 FieldExpr<T4651>(object Expr, object Token) => /* error: | */ default(new ParenExpr())(Expr());
+    public static T4658 FieldExpr<T4658>(object Expr, object Token) => /* error: | */ default(new ParenExpr())(Expr());
 
-    public static T5444 DoExpr<T5444>() => new List(new DoStmt());
+    public static T5451 DoExpr<T5451>() => new List(new DoStmt());
 
-    public static T4657 HandleExpr<T4657>(object Token, object Expr) => new List(new HandleClause());
+    public static T4664 HandleExpr<T4664>(object Token, object Expr) => new List(new HandleClause());
 
-    public static T5444 LambdaExpr<T5444>() => new List(Token());
+    public static T5451 LambdaExpr<T5451>() => new List(Token());
 
-    public static T4618 Expr<T4618>() => /* error: | */ default(ErrExpr)(Token());
+    public static T4625 Expr<T4625>() => /* error: | */ default(ErrExpr)(Token());
 
-    public static T4665 TypeExpr<T4665>() => /* error: | */ default(new NamedType())(Token());
+    public static T4672 TypeExpr<T4672>() => /* error: | */ default(new NamedType())(Token());
 
-    public static T4672 FunType<T4672>(object TypeExpr, object TypeExpr) => /* error: | */ default(new AppType())(TypeExpr())(new List(TypeExpr()));
+    public static T4679 FunType<T4679>(object TypeExpr, object TypeExpr) => /* error: | */ default(new AppType())(TypeExpr())(new List(TypeExpr()));
 
-    public static T4676 ParenType<T4676>(object TypeExpr) => /* error: | */ default(new ListType())(TypeExpr());
+    public static T4683 ParenType<T4683>(object TypeExpr) => /* error: | */ default(new ListType())(TypeExpr());
 
-    public static T4682 LinearTypeExpr<T4682>(object TypeExpr) => /* error: | */ default(EffectTypeExpr)(new List(Token()))(TypeExpr());
+    public static T4689 LinearTypeExpr<T4689>(object TypeExpr) => /* error: | */ default(EffectTypeExpr)(new List(Token()))(TypeExpr());
 
     public static object TypeAnn() => /* error: record */ default;
 
     public static string ,() => type_expr;
 
-    public static T4665 TypeExpr<T4665>() => /* error: } */ default;
+    public static T4672 TypeExpr<T4672>() => /* error: } */ default;
 
     public static object EffectOpDef() => /* error: record */ default;
 
     public static string ,() => type_expr;
 
-    public static T4665 TypeExpr<T4665>() => /* error: } */ default;
+    public static T4672 TypeExpr<T4672>() => /* error: } */ default;
 
     public static object EffectDef() => /* error: record */ default;
 
@@ -3615,7 +3615,7 @@ public static class Codex_Codex_Codex
 
     public static T784 List<T784>() => /* error: } */ default;
 
-    public static T4692 TypeBody<T4692>() => /* error: | */ default(new RecordBody())(new List(new RecordFieldDef()));
+    public static T4699 TypeBody<T4699>() => /* error: | */ default(new RecordBody())(new List(new RecordFieldDef()));
 
     public static object VariantBody() => new List(new VariantCtorDef());
 
@@ -3637,7 +3637,7 @@ public static class Codex_Codex_Codex
 
     public static T784 List<T784>() => /* error: } */ default;
 
-    public static T5444 Token<T5444>() => /* error: record */ default;
+    public static T5451 Token<T5451>() => /* error: record */ default;
 
     public static string ,() => text();
 
@@ -3651,85 +3651,85 @@ public static class Codex_Codex_Codex
 
     public static long token_length(Token t) => ((long)t.text.Length);
 
-    public static T4707 TokenKind<T4707>() => /* error: | */ default(EndOfFile);
+    public static T4714 TokenKind<T4714>() => /* error: | */ default(EndOfFile);
 
-    public static T4709 Newline<T4709>() => /* error: | */ default(new Indent());
+    public static T4716 Newline<T4716>() => /* error: | */ default(new Indent());
 
-    public static T4711 Dedent<T4711>() => /* error: | */ default(new IntegerLiteral());
+    public static T4718 Dedent<T4718>() => /* error: | */ default(new IntegerLiteral());
 
-    public static T4713 NumberLiteral<T4713>() => /* error: | */ default(TextLiteral);
+    public static T4720 NumberLiteral<T4720>() => /* error: | */ default(TextLiteral);
 
-    public static T4715 CharLiteral<T4715>() => /* error: | */ default(TrueKeyword);
+    public static T4722 CharLiteral<T4722>() => /* error: | */ default(TrueKeyword);
 
-    public static T4717 FalseKeyword<T4717>() => /* error: | */ default(new Identifier());
+    public static T4724 FalseKeyword<T4724>() => /* error: | */ default(new Identifier());
 
-    public static T4719 TypeIdentifier<T4719>() => /* error: | */ default(new ProseText());
+    public static T4726 TypeIdentifier<T4726>() => /* error: | */ default(new ProseText());
 
-    public static T4721 ChapterHeader<T4721>() => /* error: | */ default(new SectionHeader());
+    public static T4728 ChapterHeader<T4728>() => /* error: | */ default(new SectionHeader());
 
-    public static T4723 LetKeyword<T4723>() => /* error: | */ default(new InKeyword());
+    public static T4730 LetKeyword<T4730>() => /* error: | */ default(new InKeyword());
 
-    public static T4725 IfKeyword<T4725>() => /* error: | */ default(ThenKeyword);
+    public static T4732 IfKeyword<T4732>() => /* error: | */ default(ThenKeyword);
 
-    public static T4727 ElseKeyword<T4727>() => /* error: | */ default(new WhenKeyword());
+    public static T4734 ElseKeyword<T4734>() => /* error: | */ default(new WhenKeyword());
 
-    public static T4729 WhereKeyword<T4729>() => /* error: | */ default(new SuchThatKeyword());
+    public static T4736 WhereKeyword<T4736>() => /* error: | */ default(new SuchThatKeyword());
 
-    public static T4731 DoKeyword<T4731>() => /* error: | */ default(new RecordKeyword());
+    public static T4738 DoKeyword<T4738>() => /* error: | */ default(new RecordKeyword());
 
-    public static T4733 ImportKeyword<T4733>() => /* error: | */ default(ExportKeyword);
+    public static T4740 ImportKeyword<T4740>() => /* error: | */ default(ExportKeyword);
 
-    public static T4735 ClaimKeyword<T4735>() => /* error: | */ default(new ProofKeyword());
+    public static T4742 ClaimKeyword<T4742>() => /* error: | */ default(new ProofKeyword());
 
-    public static T4737 ForAllKeyword<T4737>() => /* error: | */ default(ThereExistsKeyword);
+    public static T4744 ForAllKeyword<T4744>() => /* error: | */ default(ThereExistsKeyword);
 
-    public static T4739 LinearKeyword<T4739>() => /* error: | */ default(EffectKeyword);
+    public static T4746 LinearKeyword<T4746>() => /* error: | */ default(EffectKeyword);
 
-    public static T4741 WithKeyword<T4741>() => /* error: | */ default(Equals_);
+    public static T4748 WithKeyword<T4748>() => /* error: | */ default(Equals_);
 
-    public static T4743 Colon<T4743>() => /* error: | */ default(new Arrow());
+    public static T4750 Colon<T4750>() => /* error: | */ default(new Arrow());
 
-    public static T4745 LeftArrow<T4745>() => /* error: | */ default(new Pipe());
+    public static T4752 LeftArrow<T4752>() => /* error: | */ default(new Pipe());
 
-    public static T4747 Ampersand<T4747>() => /* error: | */ default(new Plus());
+    public static T4754 Ampersand<T4754>() => /* error: | */ default(new Plus());
 
-    public static T4749 Minus<T4749>() => /* error: | */ default(new Star());
+    public static T4756 Minus<T4756>() => /* error: | */ default(new Star());
 
-    public static T4751 Slash<T4751>() => /* error: | */ default(new Caret());
+    public static T4758 Slash<T4758>() => /* error: | */ default(new Caret());
 
-    public static T4753 PlusPlus<T4753>() => /* error: | */ default(new ColonColon());
+    public static T4760 PlusPlus<T4760>() => /* error: | */ default(new ColonColon());
 
-    public static T4755 DoubleEquals<T4755>() => /* error: | */ default(new NotEquals());
+    public static T4762 DoubleEquals<T4762>() => /* error: | */ default(new NotEquals());
 
-    public static T4757 LessThan<T4757>() => /* error: | */ default(new GreaterThan());
+    public static T4764 LessThan<T4764>() => /* error: | */ default(new GreaterThan());
 
-    public static T4759 LessOrEqual<T4759>() => /* error: | */ default(new GreaterOrEqual());
+    public static T4766 LessOrEqual<T4766>() => /* error: | */ default(new GreaterOrEqual());
 
-    public static T4761 TripleEquals<T4761>() => /* error: | */ default(Turnstile);
+    public static T4768 TripleEquals<T4768>() => /* error: | */ default(Turnstile);
 
-    public static T4763 LinearProduct<T4763>() => /* error: | */ default(new ForAllSymbol());
+    public static T4770 LinearProduct<T4770>() => /* error: | */ default(new ForAllSymbol());
 
-    public static T4765 ExistsSymbol<T4765>() => /* error: | */ default(new LeftParen());
+    public static T4772 ExistsSymbol<T4772>() => /* error: | */ default(new LeftParen());
 
-    public static T4767 RightParen<T4767>() => /* error: | */ default(new LeftBracket());
+    public static T4774 RightParen<T4774>() => /* error: | */ default(new LeftBracket());
 
-    public static T4769 RightBracket<T4769>() => /* error: | */ default(new LeftBrace());
+    public static T4776 RightBracket<T4776>() => /* error: | */ default(new LeftBrace());
 
-    public static T4771 RightBrace<T4771>() => /* error: | */ default(new Comma());
+    public static T4778 RightBrace<T4778>() => /* error: | */ default(new Comma());
 
-    public static T4773 Dot<T4773>() => /* error: | */ default(new DashGreater());
+    public static T4780 Dot<T4780>() => /* error: | */ default(new DashGreater());
 
-    public static T4775 Underscore<T4775>() => /* error: | */ default(new Backslash());
+    public static T4782 Underscore<T4782>() => /* error: | */ default(new Backslash());
 
     public static Token ErrorToken() => new CodexType();
 
-    public static T4778 IntegerTy<T4778>() => /* error: | */ default(new NumberTy());
+    public static T4785 IntegerTy<T4785>() => /* error: | */ default(new NumberTy());
 
-    public static T4780 TextTy<T4780>() => /* error: | */ default(new BooleanTy());
+    public static T4787 TextTy<T4787>() => /* error: | */ default(new BooleanTy());
 
-    public static T4782 CharTy<T4782>() => /* error: | */ default(new VoidTy());
+    public static T4789 CharTy<T4789>() => /* error: | */ default(new VoidTy());
 
-    public static T4784 NothingTy<T4784>() => /* error: | */ default(ErrorTy());
+    public static T4791 NothingTy<T4791>() => /* error: | */ default(ErrorTy());
 
     public static List<long> FunTy() => new CodexType();
 
@@ -3816,7 +3816,7 @@ public static class Codex_Codex_Codex
 
     public static object fr() => state();
 
-    public static T4933 args_r<T4933>() => parameterize_walk_list(st(), entries(), args, 0, ((long)args.Count), new List<CodexType>());
+    public static T4940 args_r<T4940>() => parameterize_walk_list(st(), entries(), args, 0, ((long)args.Count), new List<CodexType>());
 
     public static Func<CodexType, Func<List<ParamEntry>, Func<UnificationState, WalkResult>>> WalkResult() => walked;
 
@@ -3838,7 +3838,7 @@ public static class Codex_Codex_Codex
 
     public static List<ParamEntry> entries() => state();
 
-    public static T3471 st<T3471>() => find_param_entry();
+    public static T3478 st<T3478>() => find_param_entry();
 
     public static T784 List<T784>() => /* error: -> */ default(Text());
 
@@ -3854,7 +3854,7 @@ public static class Codex_Codex_Codex
 
     public static ParamEntry e() => var_id;
 
-    public static T4996 find_param_entry<T4996>() => name()((i() + 1))(len);
+    public static T5003 find_param_entry<T5003>() => name()((i() + 1))(len);
 
     public static WalkListResult parameterize_walk_list(UnificationState st, List<ParamEntry> entries, List<CodexType> args, long i, long len, List<CodexType> acc)
     {
@@ -3940,7 +3940,7 @@ public static class Codex_Codex_Codex
         }
     }
 
-    public static ModuleResult check_module(AModule mod) => ((Func<List<TypeBinding>, ModuleResult>)((tdm) => ((Func<LetBindResult, ModuleResult>)((tenv) => ((Func<LetBindResult, ModuleResult>)((env) => check_all_defs(env.state, env.env, mod.defs, 0, ((long)mod.defs.Count), new List<T5091>())))(register_all_defs(tenv.state, tenv.env, tdm, mod.defs, 0, ((long)mod.defs.Count)))))(register_type_defs(empty_unification_state(), builtin_type_env(), tdm, mod.type_defs, 0, ((long)mod.type_defs.Count)))))(build_type_def_map(mod.type_defs, 0, ((long)mod.type_defs.Count), new List<T5066>()));
+    public static ModuleResult check_module(AModule mod) => ((Func<List<TypeBinding>, ModuleResult>)((tdm) => ((Func<LetBindResult, ModuleResult>)((tenv) => ((Func<LetBindResult, ModuleResult>)((env) => check_all_defs(env.state, env.env, mod.defs, 0, ((long)mod.defs.Count), new List<T5098>())))(register_all_defs(tenv.state, tenv.env, tdm, mod.defs, 0, ((long)mod.defs.Count)))))(register_type_defs(empty_unification_state(), builtin_type_env(), tdm, mod.type_defs, 0, ((long)mod.type_defs.Count)))))(build_type_def_map(mod.type_defs, 0, ((long)mod.type_defs.Count), new List<T5073>()));
 
     public static LetBindResult register_all_defs(UnificationState st, TypeEnv env, List<TypeBinding> tdm, List<ADef> defs, long i, long len)
     {
@@ -3971,15 +3971,15 @@ public static class Codex_Codex_Codex
         }
     }
 
-    public static ModuleResult check_all_defs<T5091>(UnificationState st, TypeEnv env, List<ADef> defs, long i, long len, List<T5091> acc) => ((i() == len) ? new ModuleResult(types: acc(), state: st()) : ((Func<ADef, ModuleResult>)((def) => ((Func<CheckResult, ModuleResult>)((r) => ((Func<CodexType, ModuleResult>)((resolved) => ((Func<object, ModuleResult>)((entry) => /* error: { */ default(name())))(TypeBinding)))(deep_resolve(r.state, r.inferred_type))))(check_def(st(), env, def()))))(defs[(int)i()]));
+    public static ModuleResult check_all_defs<T5098>(UnificationState st, TypeEnv env, List<ADef> defs, long i, long len, List<T5098> acc) => ((i() == len) ? new ModuleResult(types: acc(), state: st()) : ((Func<ADef, ModuleResult>)((def) => ((Func<CheckResult, ModuleResult>)((r) => ((Func<CodexType, ModuleResult>)((resolved) => ((Func<object, ModuleResult>)((entry) => /* error: { */ default(name())))(TypeBinding)))(deep_resolve(r.state, r.inferred_type))))(check_def(st(), env, def()))))(defs[(int)i()]));
 
-    public static T5134 def<T5134>() => name().value;
+    public static T5141 def<T5141>() => name().value;
 
     public static object bound_type() => resolved;
 
-    public static Func<UnificationState, Func<TypeEnv, Func<List<ADef>, Func<long, Func<long, Func<List<T5091>, ModuleResult>>>>>> check_all_defs<T5091>() => /* error: . */ default(state())(env)(defs)((i() + 1))(len)(((Func<List<object>>)(() => { var _l = acc(); _l.Add(entry()); return _l; }))());
+    public static Func<UnificationState, Func<TypeEnv, Func<List<ADef>, Func<long, Func<long, Func<List<T5098>, ModuleResult>>>>>> check_all_defs<T5098>() => /* error: . */ default(state())(env)(defs)((i() + 1))(len)(((Func<List<object>>)(() => { var _l = acc(); _l.Add(entry()); return _l; }))());
 
-    public static List<TypeBinding> build_type_def_map<T5066>(List<ATypeDef> tdefs, long i, long len, List<T5066> acc) => ((i() == len) ? acc() : ((Func<ATypeDef, List<TypeBinding>>)((td) => ((Func<object, List<TypeBinding>>)((entry) => /* error: { */ default(name())))(td switch { AVariantTypeDef(var name, var type_params, var ctors) => ((Func<List<SumCtor>, object>)((sum_ctors) => TypeBinding))(build_sum_ctors(tdefs, ctors, 0, ((long)ctors.Count), new List<SumCtor>(), acc())), _ => throw new InvalidOperationException("Non-exhaustive match"), })))(tdefs[(int)i()]));
+    public static List<TypeBinding> build_type_def_map<T5073>(List<ATypeDef> tdefs, long i, long len, List<T5073> acc) => ((i() == len) ? acc() : ((Func<ATypeDef, List<TypeBinding>>)((td) => ((Func<object, List<TypeBinding>>)((entry) => /* error: { */ default(name())))(td switch { AVariantTypeDef(var name, var type_params, var ctors) => ((Func<List<SumCtor>, object>)((sum_ctors) => TypeBinding))(build_sum_ctors(tdefs, ctors, 0, ((long)ctors.Count), new List<SumCtor>(), acc())), _ => throw new InvalidOperationException("Non-exhaustive match"), })))(tdefs[(int)i()]));
 
     public static object name() => value;
 
@@ -3991,7 +3991,7 @@ public static class Codex_Codex_Codex
 
     public static object bound_type() => new RecordTy(name(), rec_fields);
 
-    public static Func<List<ATypeDef>, Func<long, Func<long, Func<List<T5066>, List<TypeBinding>>>>> build_type_def_map<T5066>() => (i() + 1)(len)(((Func<List<object>>)(() => { var _l = new List<object>(acc()); _l.Insert((int)bsearch_text_pos(acc(), entry().name, 0, ((long)acc().Count)), entry()); return _l; }))());
+    public static Func<List<ATypeDef>, Func<long, Func<long, Func<List<T5073>, List<TypeBinding>>>>> build_type_def_map<T5073>() => (i() + 1)(len)(((Func<List<object>>)(() => { var _l = new List<object>(acc()); _l.Insert((int)bsearch_text_pos(acc(), entry().name, 0, ((long)acc().Count)), entry()); return _l; }))());
 
     public static List<SumCtor> build_sum_ctors(List<ATypeDef> tdefs, List<AVariantCtorDef> ctors, long i, long len, List<SumCtor> acc, List<TypeBinding> partial_tdm)
     {
@@ -4648,7 +4648,7 @@ public static class Codex_Codex_Codex
 
     public static TypeEnv empty_type_env() => TypeEnv();
 
-    public static List<T5896> bindings<T5896>() => new List<T5896>();
+    public static List<T5903> bindings<T5903>() => new List<T5903>();
 
     public static CodexType env_lookup(TypeEnv env, string name) => ((Func<long, CodexType>)((len) => ((len == 0) ? ErrorTy() : ((Func<long, CodexType>)((pos) => ((pos() >= len) ? ErrorTy() : ((Func<T0, CodexType>)((b) => ((b().name == name()) ? b().bound_type : ErrorTy())))(env.bindings[(int)pos()]))))(bsearch_text_pos(env.bindings, name(), 0, len)))))(((long)env.bindings.Count));
 
@@ -4656,7 +4656,7 @@ public static class Codex_Codex_Codex
 
     public static TypeEnv env_bind(TypeEnv env, string name, CodexType ty) => ((Func<long, TypeEnv>)((len) => ((Func<long, TypeEnv>)((pos) => TypeEnv()))(bsearch_text_pos(env.bindings, name(), 0, len))))(((long)env.bindings.Count));
 
-    public static List<T5896> bindings<T5896>() => ((Func<List<object>>)(() => { var _l = new List<object>(env.bindings); _l.Insert((int)pos(), TypeBinding); return _l; }))();
+    public static List<T5903> bindings<T5903>() => ((Func<List<object>>)(() => { var _l = new List<object>(env.bindings); _l.Insert((int)pos(), TypeBinding); return _l; }))();
 
     public static object name() => bound_type();
 
@@ -4694,7 +4694,7 @@ public static class Codex_Codex_Codex
 
     public static Func<List<SubstEntry>, Func<long, Func<List<Diagnostic>, UnificationState>>> UnificationState() => substitutions;
 
-    public static T6320 list_insert_at<T6320>() => /* error: . */ default(substitutions)(pos())(entry());
+    public static T6327 list_insert_at<T6327>() => /* error: . */ default(substitutions)(pos())(entry());
 
     public static object next_id() => st().next_id;
 
@@ -4724,29 +4724,29 @@ public static class Codex_Codex_Codex
 
     public static ParseState state() => add_subst(st())(id_a)(b());
 
-    public static T6369 unify_rhs<T6369>() => a(b());
+    public static T6376 unify_rhs<T6376>() => a(b());
 
     public static bool types_equal(CodexType a, CodexType b) => a switch { object TypeVar => id_a, };
 
     public static bool b() => (TypeVar()(id_b) ? (id_a == id_b) : /* error: _ */ default);
 
-    public static T4778 IntegerTy<T4778>() => b() switch { IntegerTy { } => true, _ => false, };
+    public static T4785 IntegerTy<T4785>() => b() switch { IntegerTy { } => true, _ => false, };
 
     public static bool NumberTy() => b() switch { NumberTy { } => true, _ => false, };
 
-    public static T4780 TextTy<T4780>() => b() switch { object TextTy => true, };
+    public static T4787 TextTy<T4787>() => b() switch { object TextTy => true, };
 
     public static bool BooleanTy() => b() switch { BooleanTy { } => true, _ => false, };
 
-    public static T4782 CharTy<T4782>() => b() switch { CharTy { } => true, _ => false, };
+    public static T4789 CharTy<T4789>() => b() switch { CharTy { } => true, _ => false, };
 
-    public static T4784 NothingTy<T4784>() => b() switch { NothingTy { } => true, _ => false, };
+    public static T4791 NothingTy<T4791>() => b() switch { NothingTy { } => true, _ => false, };
 
     public static bool VoidTy() => b() switch { VoidTy { } => true, _ => false, };
 
     public static bool ErrorTy() => b() switch { object ErrorTy => true, };
 
-    public static T6369 unify_rhs<T6369>(object st, object a, object b) => b() switch { object TypeVar => id_b, };
+    public static T6376 unify_rhs<T6376>(object st, object a, object b) => b() switch { object TypeVar => id_b, };
 
     public static List<long> occurs_in() => id_b(a);
 
@@ -4758,9 +4758,9 @@ public static class Codex_Codex_Codex
 
     public static ParseState state() => add_subst(st())(id_b)(a);
 
-    public static T6403 unify_structural<T6403>() => a(b());
+    public static T6410 unify_structural<T6410>() => a(b());
 
-    public static T6403 unify_structural<T6403>(object st, object a, object b) => a switch { IntegerTy { } => b() switch { IntegerTy { } => new UnifyResult(success: true, state: st()), object ErrorTy => new UnifyResult(success: true, state: st()), }, NumberTy { } => b() switch { NumberTy { } => new UnifyResult(success: true, state: st()), object ErrorTy => new UnifyResult(success: true, state: st()), }, object TextTy => b() switch { object TextTy => new UnifyResult(success: true, state: st()), }, };
+    public static T6410 unify_structural<T6410>(object st, object a, object b) => a switch { IntegerTy { } => b() switch { IntegerTy { } => new UnifyResult(success: true, state: st()), object ErrorTy => new UnifyResult(success: true, state: st()), }, NumberTy { } => b() switch { NumberTy { } => new UnifyResult(success: true, state: st()), object ErrorTy => new UnifyResult(success: true, state: st()), }, object TextTy => b() switch { object TextTy => new UnifyResult(success: true, state: st()), }, };
 
     public static UnifyResult unify_constructed_args(UnificationState st, List<CodexType> args_a, List<CodexType> args_b, long i, long len)
     {
