@@ -433,20 +433,29 @@ public sealed class PythonEmitter : ICodeEmitter
             EmitExpr(sb, app.Argument, indent);
             sb.Append(')');
         }
+        else if (app.Function is IRName fnCtt && fnCtt.Name == "char-to-text")
+        {
+            sb.Append("chr(");
+            EmitExpr(sb, app.Argument, indent);
+            sb.Append(')');
+        }
         else if (app.Function is IRName fn8 && fn8.Name == "is-letter")
         {
+            sb.Append("chr(");
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(".isalpha()");
+            sb.Append(").isalpha()");
         }
         else if (app.Function is IRName fn9 && fn9.Name == "is-digit")
         {
+            sb.Append("chr(");
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(".isdigit()");
+            sb.Append(").isdigit()");
         }
         else if (app.Function is IRName fn10 && fn10.Name == "is-whitespace")
         {
+            sb.Append("chr(");
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(".isspace()");
+            sb.Append(").isspace()");
         }
         else if (app.Function is IRName fn11 && fn11.Name == "text-to-integer")
         {
@@ -462,15 +471,13 @@ public sealed class PythonEmitter : ICodeEmitter
         }
         else if (app.Function is IRName fn12 && fn12.Name == "char-code")
         {
-            sb.Append("ord(");
+            // Char -> Integer: identity (both are int)
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(')');
         }
         else if (app.Function is IRName fn13 && fn13.Name == "code-to-char")
         {
-            sb.Append("chr(");
+            // Integer -> Char: identity (both are int)
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(')');
         }
         else if (app.Function is IRName fn14 && fn14.Name == "list-length")
         {
@@ -792,10 +799,11 @@ public sealed class PythonEmitter : ICodeEmitter
         switch (name)
         {
             case "char-at" when args.Count == 2:
+                sb.Append("ord(");
                 EmitExpr(sb, args[0], indent);
                 sb.Append('[');
                 EmitExpr(sb, args[1], indent);
-                sb.Append(']');
+                sb.Append("])");
                 return true;
 
             case "substring" when args.Count == 3:
