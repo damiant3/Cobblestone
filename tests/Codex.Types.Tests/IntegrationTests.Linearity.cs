@@ -74,11 +74,12 @@ public partial class IntegrationTests
             d.Code == "CDX2040" || d.Code == "CDX2041");
     }
 
-    // --- Closure capture (CDX2043) ---
+    // --- Closure capture (CDX2043) — promoted to error, with safe patterns ---
 
     [Fact]
-    public void Linear_captured_by_closure_is_error()
+    public void Linear_captured_by_naked_closure_errors()
     {
+        // Naked closure (not in let, not directly applied) — CDX2043 error.
         string source =
             "capture : linear FileHandle -> (Integer -> [FileSystem] Nothing)\n" +
             "capture (h) = \\x -> close-file h\n";
@@ -100,54 +101,58 @@ public partial class IntegrationTests
     [Fact]
     public void Linear_closure_let_used_once_ok()
     {
-        // let f = \x -> close-file h in f 42 — closure used exactly once
+        // let f = \x -> close-file h in f 42 — safe pattern.
+        // Let-binding recognizes the capture, consumes h, makes f linear.
+        // f used once — no CDX2040/2041/2043.
         string source =
-            "use-once : linear FileHandle -> [FileSystem] Nothing\n" +
-            "use-once (h) = let f = \\x -> close-file h in f 42\n";
+            "safe : linear FileHandle -> [FileSystem] Nothing\n" +
+            "safe (h) = let f = \\x -> close-file h\n" +
+            "  in f 42\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
-        // CDX2043 fires (closure captures linear), but f is used once so CDX2040/2041 don't.
-        Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2043");
-        Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == "CDX2040");
-        Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == "CDX2041");
+        Assert.DoesNotContain(diag.ToImmutable(), d =>
+            d.Code == "CDX2040" || d.Code == "CDX2041" || d.Code == "CDX2043");
     }
 
     [Fact]
-    public void Linear_closure_let_unused_produces_error()
+    public void Linear_closure_let_unused_errors()
     {
-        // let f = \x -> close-file h in 42 — closure never called, h leaked
-        // CDX2043 fires for the capture; CDX2040 fires for f (the linear closure) being unused.
-        // h itself is counted as consumed by the capture (obligation transfers to f).
+        // let f = \x -> close-file h in 42 — f never called, h leaked via f.
+        // CDX2040 fires for f (the linear closure binding).
+        // No CDX2043 — the let pattern is recognized, just unused.
         string source =
             "waste : linear FileHandle -> Integer\n" +
-            "waste (h) = let f = \\x -> close-file h in 42\n";
+            "waste (h) = let f = \\x -> close-file h\n" +
+            "  in 42\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
-        Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2043");
-        Assert.Contains(diag.ToImmutable(), d =>
-            d.Code == "CDX2040" && d.Message.Contains("'f'"));
+        Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2040");
+        Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == "CDX2043");
     }
 
     [Fact]
-    public void Linear_closure_let_used_twice_produces_error()
+    public void Linear_closure_let_used_twice_errors()
     {
-        // let f = \x -> close-file h in (f 1, f 2) — closure called twice
+        // let f = \x -> close-file h in (f 1; f 2) — f used twice, double-close.
+        // CDX2041 fires for f. No CDX2043 — let pattern recognized.
         string source =
-            "double : linear FileHandle -> [FileSystem] Nothing\n" +
-            "double (h) = let f = \\x -> close-file h in do\n" +
-            "  f 1\n" +
-            "  f 2\n";
+            "bad : linear FileHandle -> [FileSystem] Nothing\n" +
+            "bad (h) = let f = \\x -> close-file h\n" +
+            "  in let a = f 1\n" +
+            "  in f 2\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
-        Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2043");
         Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2041");
+        Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == "CDX2043");
     }
 
     [Fact]
     public void Linear_closure_direct_apply_ok()
     {
-        // (\x -> close-file h) 42 — lambda applied immediately, no escape
+        // (\x -> close-file h) 42 — immediate application, closure never escapes.
+        // No CDX2040/2041/2043.
         string source =
-            "direct-apply : linear FileHandle -> [FileSystem] Nothing\n" +
-            "direct-apply (h) = (\\x -> close-file h) 42\n";
+            "immediate : linear FileHandle -> [FileSystem] Nothing\n" +
+            "immediate (h) = (\\x -> close-file h) 42\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
-        Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == "CDX2043");
+        Assert.DoesNotContain(diag.ToImmutable(), d =>
+            d.Code == "CDX2040" || d.Code == "CDX2041" || d.Code == "CDX2043");
     }
 }
