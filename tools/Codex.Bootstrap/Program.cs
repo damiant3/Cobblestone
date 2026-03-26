@@ -22,6 +22,8 @@ class Program
             return RunMini(args[1]);
         if (args.Length > 0 && args[0] == "--bench")
             return RunBench(args.Length > 1 ? args[1] : null);
+        if (args.Length > 0 && args[0] == "--bench-check")
+            return RunBenchCheck(args.Length > 1 ? args[1] : null);
 
         string codexDir = args.Length > 0 ? args[0] : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Codex.Codex"));
         string? outputOverride = args.Length > 1 ? args[1] : null;
@@ -458,5 +460,118 @@ class Program
         sw.Stop(); emitMs = sw.Elapsed.TotalMilliseconds;
 
         total.Stop(); totalMs = total.Elapsed.TotalMilliseconds;
+    }
+
+    static int RunBenchCheck(string? codexDirOverride)
+    {
+        // Load baseline
+        string baselinePath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "bench-baseline.json");
+        if (!File.Exists(baselinePath))
+        {
+            // Try relative to project dir
+            baselinePath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+                "..", "..", "..", "..", "..", "tools", "Codex.Bootstrap", "bench-baseline.json"));
+        }
+        if (!File.Exists(baselinePath))
+        {
+            Console.Error.WriteLine("bench-baseline.json not found");
+            return 1;
+        }
+
+        string json = File.ReadAllText(baselinePath);
+        // Minimal JSON parsing — extract medianMs and thresholdPercent
+        double baselineMs = ExtractJsonDouble(json, "medianMs");
+        double threshold = ExtractJsonDouble(json, "thresholdPercent");
+        var baselineStages = new Dictionary<string, double>();
+        foreach (string stage in new[] { "lex", "parse", "desugar", "resolve", "typecheck", "lower", "emit" })
+            baselineStages[stage] = ExtractJsonDouble(json, stage);
+
+        Console.WriteLine($"Baseline: {baselineMs:F2}ms (threshold: {threshold}%)");
+        Console.WriteLine();
+
+        // Run benchmark (same protocol as --bench)
+        string codexDir = codexDirOverride ?? Path.GetFullPath(
+            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Codex.Codex"));
+        if (!Directory.Exists(codexDir)) { Console.Error.WriteLine($"Not found: {codexDir}"); return 1; }
+
+        string[] files = Directory.GetFiles(codexDir, "*.codex", SearchOption.AllDirectories)
+            .OrderBy(f => f, StringComparer.Ordinal).ToArray();
+        List<string> codeBlocks = [];
+        foreach (string f in files)
+        {
+            string content = File.ReadAllText(f);
+            codeBlocks.Add(IsProseDocument(content) ? ExtractCodeBlocks(content) : content);
+        }
+        string source = _Cce.FromUnicode(string.Join("\n\n", codeBlocks));
+
+        int warmup = 3, measured = 10;
+        for (int w = 0; w < warmup; w++)
+        {
+            RunPipeline(source, out _, out _, out _, out _, out _, out _, out _, out _);
+            Console.Write($"  warmup {w + 1}/{warmup}\r");
+        }
+        Console.WriteLine($"  warmup done          ");
+
+        double[] lexT = new double[measured], parseT = new double[measured], desugarT = new double[measured];
+        double[] resolveT = new double[measured], checkT = new double[measured];
+        double[] lowerT = new double[measured], emitT = new double[measured], totalT = new double[measured];
+
+        for (int r = 0; r < measured; r++)
+        {
+            RunPipeline(source, out lexT[r], out parseT[r], out desugarT[r],
+                out resolveT[r], out checkT[r], out lowerT[r], out emitT[r], out totalT[r]);
+            Console.Write($"  run {r + 1}/{measured}\r");
+        }
+        Console.WriteLine($"  measured done         ");
+        Console.WriteLine();
+
+        Array.Sort(lexT); Array.Sort(parseT); Array.Sort(desugarT);
+        Array.Sort(resolveT); Array.Sort(checkT); Array.Sort(lowerT);
+        Array.Sort(emitT); Array.Sort(totalT);
+        int mid = measured / 2;
+
+        var current = new Dictionary<string, double>
+        {
+            ["lex"] = lexT[mid], ["parse"] = parseT[mid], ["desugar"] = desugarT[mid],
+            ["resolve"] = resolveT[mid], ["typecheck"] = checkT[mid],
+            ["lower"] = lowerT[mid], ["emit"] = emitT[mid]
+        };
+
+        Console.WriteLine("Stage        Baseline    Current     Delta");
+        Console.WriteLine("───────────  ──────────  ──────────  ──────────");
+        foreach (string stage in new[] { "lex", "parse", "desugar", "resolve", "typecheck", "lower", "emit" })
+        {
+            double b = baselineStages[stage], c = current[stage];
+            double pct = b > 0 ? ((c - b) / b) * 100 : 0;
+            string sign = pct >= 0 ? "+" : "";
+            Console.WriteLine($"  {stage,-10}  {b,8:F2}ms  {c,8:F2}ms  {sign}{pct:F1}%");
+        }
+        Console.WriteLine("  ───────────────────────────────────────────");
+        double totalPct = baselineMs > 0 ? ((totalT[mid] - baselineMs) / baselineMs) * 100 : 0;
+        string totalSign = totalPct >= 0 ? "+" : "";
+        Console.WriteLine($"  {"total",-10}  {baselineMs,8:F2}ms  {totalT[mid],8:F2}ms  {totalSign}{totalPct:F1}%");
+        Console.WriteLine();
+
+        if (totalPct > threshold)
+        {
+            Console.WriteLine($"REGRESSION: {totalPct:F1}% exceeds {threshold}% threshold");
+            return 1;
+        }
+        Console.WriteLine($"OK: within {threshold}% threshold ({totalSign}{totalPct:F1}%)");
+        return 0;
+    }
+
+    static double ExtractJsonDouble(string json, string key)
+    {
+        // Simple: find "key": value
+        int idx = json.IndexOf($"\"{key}\"");
+        if (idx < 0) return 0;
+        int colon = json.IndexOf(':', idx);
+        if (colon < 0) return 0;
+        int start = colon + 1;
+        while (start < json.Length && (json[start] == ' ' || json[start] == '\t')) start++;
+        int end = start;
+        while (end < json.Length && (char.IsDigit(json[end]) || json[end] == '.' || json[end] == '-')) end++;
+        return double.TryParse(json[start..end], System.Globalization.CultureInfo.InvariantCulture, out double v) ? v : 0;
     }
 }
