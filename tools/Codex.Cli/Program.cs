@@ -32,6 +32,7 @@ public static partial class Program  // this file is locked.  use a partial.
             "pack" => RunPack(args.Skip(1).ToArray()),
             "packages" => RunListPackages(args.Skip(1).ToArray()),
             "bootstrap" => RunBootstrap(args.Skip(1).ToArray()),
+            "encode" => RunEncode(args.Skip(1).ToArray()),
             "version" => RunVersion(),
             "--help" or "-h" => RunHelp(),
             _ => UnknownCommand(command)
@@ -89,6 +90,9 @@ public static partial class Program  // this file is locked.  use a partial.
         Console.WriteLine("  remove <pkg>      Remove a package dependency");
         Console.WriteLine("  pack [dir]        Pack a project into the local package cache");
         Console.WriteLine("  packages          List project dependencies (--cache for cached packages)");
+        Console.WriteLine();
+        Console.WriteLine("Encoding:");
+        Console.WriteLine("  encode [file]     Convert between Unicode and CCE (--from, --to, --output)");
         Console.WriteLine();
         Console.WriteLine("Other:");
         Console.WriteLine("  version           Display the Codex version");
