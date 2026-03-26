@@ -20,7 +20,7 @@ public static class Codex_type_checker_test
 
     public static string greet(string name)
     {
-        return string.Concat("Hello, ", string.Concat(name, "!"));
+        return string.Concat("Hello, ", name, "!");
     }
 
     public static bool is_positive(long x)

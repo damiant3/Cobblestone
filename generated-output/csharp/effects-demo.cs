@@ -10,7 +10,7 @@ public static class Codex_effects_demo
 {
     public static object greet(string name)
     {
-        Console.WriteLine(string.Concat("Hello, ", string.Concat(name, "!")));
+        Console.WriteLine(string.Concat("Hello, ", name, "!"));
         return null;
     }
 

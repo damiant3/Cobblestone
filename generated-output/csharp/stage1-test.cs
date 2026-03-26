@@ -15,7 +15,7 @@ public static class Codex_stage1_test
 
     public static string greet(string name)
     {
-        return string.Concat("Hello, ", string.Concat(name, "!"));
+        return string.Concat("Hello, ", name, "!");
     }
 
     public static object main()

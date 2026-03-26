@@ -10,7 +10,7 @@ public static class Codex_prose_greeting
 {
     public static string greet(string name)
     {
-        return string.Concat("Hello, ", string.Concat(name, "!"));
+        return string.Concat("Hello, ", name, "!");
     }
 
     public static string main()

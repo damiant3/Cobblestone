@@ -10,7 +10,7 @@ public static class Codex_greeting
 {
     public static string greeting(string name)
     {
-        return string.Concat("Hello, ", string.Concat(name, "!"));
+        return string.Concat("Hello, ", name, "!");
     }
 
     public static string main()

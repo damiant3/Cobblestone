@@ -13,9 +13,14 @@ Chapter: Unification
 Section: State
 
   UnificationState = record {
-   substitutions : TypeMap,
+   substitutions : List SubstEntry,
    next-id : Integer,
    errors : List Diagnostic
+  }
+
+  SubstEntry = record {
+   var-id : Integer,
+   resolved-type : CodexType
   }
 
   UnifyResult = record {
@@ -27,7 +32,7 @@ Section: Construction
 
   empty-unification-state : UnificationState
   empty-unification-state =
-   UnificationState { substitutions = tm-empty, next-id = 2, errors = [] }
+   UnificationState { substitutions = [], next-id = 2, errors = [] }
 
 Section: Fresh Variables
 
@@ -49,15 +54,29 @@ Section: Fresh Variables
 
 Section: Substitution Lookup
 
-  subst-lookup : Integer -> TypeMap -> CodexType
+  subst-lookup : Integer -> List SubstEntry -> CodexType
   subst-lookup (var-id) (entries) =
-   when tm-get entries (integer-to-text var-id)
-    if JustType (ty) -> ty
-    if MaybeNoneType -> ErrorTy
+   subst-lookup-loop var-id entries 0 (list-length entries)
 
-  has-subst : Integer -> TypeMap -> Boolean
+  subst-lookup-loop : Integer -> List SubstEntry -> Integer -> Integer -> CodexType
+  subst-lookup-loop (var-id) (entries) (i) (len) =
+   if i == len then ErrorTy
+   else
+    let entry = list-at entries i
+    in if entry.var-id == var-id then entry.resolved-type
+     else subst-lookup-loop var-id entries (i + 1) len
+
+  has-subst : Integer -> List SubstEntry -> Boolean
   has-subst (var-id) (entries) =
-   tm-contains entries (integer-to-text var-id)
+   has-subst-loop var-id entries 0 (list-length entries)
+
+  has-subst-loop : Integer -> List SubstEntry -> Integer -> Integer -> Boolean
+  has-subst-loop (var-id) (entries) (i) (len) =
+   if i == len then False
+   else
+    let entry = list-at entries i
+    in if entry.var-id == var-id then True
+     else has-subst-loop var-id entries (i + 1) len
 
 Section: Resolve
 
@@ -75,7 +94,7 @@ Section: Add Substitution
   add-subst : UnificationState -> Integer -> CodexType -> UnificationState
   add-subst (st) (var-id) (ty) =
    UnificationState {
-    substitutions = tm-set st.substitutions (integer-to-text var-id) ty,
+    substitutions = st.substitutions ++ [SubstEntry { var-id = var-id, resolved-type = ty }],
     next-id = st.next-id,
     errors = st.errors
    }
@@ -136,6 +155,9 @@ Section: Unify
      if _ -> False
     if BooleanTy -> when b
      if BooleanTy -> True
+     if _ -> False
+    if CharTy -> when b
+     if CharTy -> True
      if _ -> False
     if NothingTy -> when b
      if NothingTy -> True

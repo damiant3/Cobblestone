@@ -41,7 +41,7 @@ public static class Codex_is_prime
 
     public static string main()
     {
-        return ((Func<bool, string>)((a) => ((Func<bool, string>)((b) => ((Func<bool, string>)((c) => ((Func<bool, string>)((d) => string.Concat(Convert.ToString(a), string.Concat(" ", string.Concat(Convert.ToString(b), string.Concat(" ", string.Concat(Convert.ToString(c), string.Concat(" ", Convert.ToString(d)))))))))(is_prime(97L))))(is_prime(49L))))(is_prime(17L))))(is_prime(2L));
+        return ((Func<bool, string>)((a) => ((Func<bool, string>)((b) => ((Func<bool, string>)((c) => ((Func<bool, string>)((d) => string.Concat(Convert.ToString(a), " ", Convert.ToString(b), " ", Convert.ToString(c), " ", Convert.ToString(d))))(is_prime(97L))))(is_prime(49L))))(is_prime(17L))))(is_prime(2L));
     }
 
 }

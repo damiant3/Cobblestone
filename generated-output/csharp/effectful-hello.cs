@@ -13,7 +13,7 @@ public static class Codex_effectful_hello
         ((Func<object>)(() => {
                 Console.WriteLine("What is your name?");
                 var name = (Console.ReadLine() ?? "");
-                Console.WriteLine(string.Concat("Hello, ", string.Concat(name, "!")));
+                Console.WriteLine(string.Concat("Hello, ", name, "!"));
                 return null;
             }))();
         return null;

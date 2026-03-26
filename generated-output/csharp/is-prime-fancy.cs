@@ -116,7 +116,7 @@ public static class Codex_is_prime_fancy
 
     public static string join_with_spaces(List<string> xs, long i, long len)
     {
-        return ((i == len) ? "" : ((i == (len - 1L)) ? xs[(int)i] : string.Concat(xs[(int)i], string.Concat(" ", join_with_spaces(xs, (i + 1L), len)))));
+        return ((i == len) ? "" : ((i == (len - 1L)) ? xs[(int)i] : string.Concat(xs[(int)i], " ", join_with_spaces(xs, (i + 1L), len))));
     }
 
     public static string main()

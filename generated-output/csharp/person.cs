@@ -12,7 +12,7 @@ public static class Codex_person
 {
     public static string greet(Person p)
     {
-        return string.Concat("Hello, ", string.Concat(p.name, "!"));
+        return string.Concat("Hello, ", p.name, "!");
     }
 
     public static string main()
