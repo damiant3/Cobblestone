@@ -1198,21 +1198,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
                     StoreLocal(savedStr, str);
                     byte idx = EmitExpr(args[1]);
                     byte strLoaded = LoadLocal(savedStr);
-                    // Result = str[8 + idx] as a 1-char string on heap
+                    // char-at returns byte value as integer: movzx byte at [str+8+idx]
                     X86_64Encoder.AddRR(m_text, idx, strLoaded);
                     X86_64Encoder.MovzxByte(m_text, idx, idx, 8);
-                    // Allocate 1-char string on heap: [len=1][byte]
-                    int charAtSaved = AllocLocal();
-                    StoreLocal(charAtSaved, idx); // save the byte value
-                    int charAtPtr = AllocLocal();
-                    byte charAtTmp = AllocTemp();
-                    X86_64Encoder.MovRR(m_text, charAtTmp, HeapReg);
-                    StoreLocal(charAtPtr, charAtTmp);
-                    X86_64Encoder.AddRI(m_text, HeapReg, 16);
-                    X86_64Encoder.Li(m_text, Reg.R11, 1);
-                    X86_64Encoder.MovStore(m_text, LoadLocal(charAtPtr), Reg.R11, 0);
-                    X86_64Encoder.MovStoreByte(m_text, LoadLocal(charAtPtr), LoadLocal(charAtSaved), 8);
-                    return LoadLocal(charAtPtr);
+                    return idx;
                 }
                 return byte.MaxValue;
             case "substring":
@@ -1336,32 +1325,35 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             }
             case "char-code" when args.Count >= 1:
             {
-                byte textReg = EmitExpr(args[0]);
-                byte rd = AllocTemp();
-                X86_64Encoder.MovzxByte(m_text, rd, textReg, 8);
-                return rd;
+                // char-code: identity — Char is already an integer
+                return EmitExpr(args[0]);
             }
             case "code-to-char" when args.Count >= 1:
             {
+                // code-to-char: identity — Char is already an integer
+                return EmitExpr(args[0]);
+            }
+            case "char-to-text" when args.Count >= 1:
+            {
+                // Allocate 1-char string on heap: [len=1][byte]
                 byte codeReg = EmitExpr(args[0]);
                 int savedCode = AllocLocal();
                 StoreLocal(savedCode, codeReg);
-                int c2cPtr = AllocLocal();
-                byte c2cTmp = AllocTemp();
-                X86_64Encoder.MovRR(m_text, c2cTmp, HeapReg);
-                StoreLocal(c2cPtr, c2cTmp);
+                int c2tPtr = AllocLocal();
+                byte c2tTmp = AllocTemp();
+                X86_64Encoder.MovRR(m_text, c2tTmp, HeapReg);
+                StoreLocal(c2tPtr, c2tTmp);
                 X86_64Encoder.AddRI(m_text, HeapReg, 16);
                 X86_64Encoder.Li(m_text, Reg.R11, 1);
-                X86_64Encoder.MovStore(m_text, LoadLocal(c2cPtr), Reg.R11, 0);
+                X86_64Encoder.MovStore(m_text, LoadLocal(c2tPtr), Reg.R11, 0);
                 byte code = LoadLocal(savedCode);
-                X86_64Encoder.MovStoreByte(m_text, LoadLocal(c2cPtr), code, 8);
-                return LoadLocal(c2cPtr);
+                X86_64Encoder.MovStoreByte(m_text, LoadLocal(c2tPtr), code, 8);
+                return LoadLocal(c2tPtr);
             }
             case "is-letter" when args.Count >= 1:
             {
-                byte textReg = EmitExpr(args[0]);
-                byte rd = AllocTemp();
-                X86_64Encoder.MovzxByte(m_text, rd, textReg, 8); // first byte
+                byte rd = EmitExpr(args[0]);
+                // Char is already a byte value in register
                 // Check lowercase: rd >= 'a' && rd <= 'z'
                 byte lo = AllocTemp();
                 X86_64Encoder.MovRR(m_text, lo, rd);
@@ -1387,9 +1379,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             }
             case "is-digit" when args.Count >= 1:
             {
-                byte textReg = EmitExpr(args[0]);
-                byte rd = AllocTemp();
-                X86_64Encoder.MovzxByte(m_text, rd, textReg, 8);
+                byte rd = EmitExpr(args[0]);
+                // Char is already a byte value in register
                 X86_64Encoder.SubRI(m_text, rd, '0');
                 X86_64Encoder.CmpRI(m_text, rd, '9' - '0');
                 X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_BE, rd); // unsigned: below or equal
@@ -1398,9 +1389,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             }
             case "is-whitespace" when args.Count >= 1:
             {
-                byte textReg = EmitExpr(args[0]);
-                byte rd = AllocTemp();
-                X86_64Encoder.MovzxByte(m_text, rd, textReg, 8);
+                byte rd = EmitExpr(args[0]);
+                // Char is already a byte value in register
                 // space=32, tab=9, newline=10, carriage-return=13
                 byte result = AllocTemp();
                 X86_64Encoder.Li(m_text, result, 0);
