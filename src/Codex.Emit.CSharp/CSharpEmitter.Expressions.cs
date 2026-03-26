@@ -348,6 +348,19 @@ public sealed partial class CSharpEmitter
         return null;
     }
 
+    static void CollectTextConcatParts(IRBinary bin, List<IRExpr> parts)
+    {
+        if (bin.Left is IRBinary left && left.Op == IRBinaryOp.AppendText)
+            CollectTextConcatParts(left, parts);
+        else
+            parts.Add(bin.Left);
+
+        if (bin.Right is IRBinary right && right.Op == IRBinaryOp.AppendText)
+            CollectTextConcatParts(right, parts);
+        else
+            parts.Add(bin.Right);
+    }
+
     static void CollectApplyArgs(IRApply app, List<IRExpr> args)
     {
         if (app.Function is IRApply inner)
@@ -507,12 +520,20 @@ public sealed partial class CSharpEmitter
         switch (bin.Op)
         {
             case IRBinaryOp.AppendText:
+            {
+                // Flatten chains of ++ into a single string.Concat(a, b, c, ...)
+                // to avoid O(n²) intermediate allocations.
+                List<IRExpr> parts = [];
+                CollectTextConcatParts(bin, parts);
                 sb.Append("string.Concat(");
-                EmitExpr(sb, bin.Left, indent);
-                sb.Append(", ");
-                EmitExpr(sb, bin.Right, indent);
+                for (int i = 0; i < parts.Count; i++)
+                {
+                    if (i > 0) sb.Append(", ");
+                    EmitExpr(sb, parts[i], indent);
+                }
                 sb.Append(')');
                 break;
+            }
 
             case IRBinaryOp.AppendList:
                 sb.Append("Enumerable.Concat(");
