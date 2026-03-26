@@ -277,6 +277,83 @@ I'd execute this over 2-3 sessions:
 - Phase 6: Remove Unicode vestiges, rename CCE functions
 - Update docs, syntax reference
 
+## Encoding Evolution
+
+CCE Tier 0 is frequency-sorted based on today's corpus data. In 100 years the
+world's writing might shift — more Chinese, more Arabic, a script that doesn't
+exist yet. The encoding must be a parameter, not a constant.
+
+### What makes this possible
+
+The encoding is defined in exactly two artifacts:
+
+1. **`prelude/CCE.codex`** — the lookup tables (`cce-to-unicode`, `unicode-to-cce`)
+2. **The emitter's compile-time table** — used to encode string literals
+
+The compiler doesn't know or care that CCE byte 18 is 'e'. It just indexes into
+strings and compares bytes. If the tables change, the compiler recompiles itself
+with the new encoding and everything shifts consistently.
+
+### The process
+
+**Regeneration trigger**: When the global character frequency distribution shifts
+enough that the current encoding wastes more than N% of Tier 0 slots on
+low-frequency characters. Measured against a representative corpus (web text,
+source code, published books, messaging).
+
+**Regeneration steps**:
+
+1. Analyze corpus → produce frequency-ranked character list
+2. Generate new `CCE.codex` prelude with updated lookup tables
+3. Assign a version number (CCE v1, v2, ...)
+4. Recompile the self-hosted compiler with the new tables
+5. Fixed-point verification passes → the encoding is self-consistent
+
+**Migration path for existing content**:
+
+CCE-encoded files need a version tag. Options:
+
+- **Magic byte prefix**: First byte of a CCE file is the encoding version.
+  Version 1 = current. Reader checks the version and applies the right
+  decode table.
+- **Filesystem metadata**: The OS tracks encoding version per file. Codex.OS
+  has capability-enforced metadata — this is natural.
+- **Self-describing**: Each CCE version's prelude contains the previous version's
+  tables, so `read-file` can detect and auto-convert.
+
+The key property: **old content is never unreadable.** A CCE v2 system can read
+CCE v1 files because v1's tables ship with v2. Content migrates forward lazily —
+read in v1, write back in v2.
+
+### What stays fixed across versions
+
+- Tier 0 is always 128 bytes (single-byte characters)
+- Classification ranges are always contiguous (whitespace, digits, lower, upper,
+  punct, accented, extended)
+- The structural property holds: `is-letter(b) = b >= LETTER_START && b <= LETTER_END`
+- The compiler's character classification is always two comparisons or fewer
+
+What changes: which characters land in which slots, and what the slot boundaries
+are. The classification functions become parameterized by the version's range
+boundaries — but since ranges are contiguous, it's still just constants.
+
+### Frequency data source
+
+The initial CCE Tier 0 is sorted by frequency across English, with extensions for
+accented Latin and Cyrillic. A future version might:
+
+- Weight CJK ideographs into Tier 0 if Chinese becomes dominant
+- Promote Arabic/Devanagari characters if South Asian writing grows
+- Demote rarely-used punctuation to Tier 1
+
+The decision is data-driven: run the corpus analysis, look at the numbers, decide
+if the current encoding is still optimal. If the top 128 characters cover 99.5%
+of real-world text, the encoding is good. If coverage drops below 95%, it's time
+to re-sort.
+
+This is a governance decision, not a compiler decision. The compiler just needs
+the tables. The tables come from the data. The data comes from the world.
+
 ## Open Questions for Damian
 
 1. **Tier 0 only for now?** Unmapped characters → CCE 0 (lossy). OK?
@@ -286,3 +363,4 @@ I'd execute this over 2-3 sessions:
    implementation) or convert to Unicode for comparison (alphabetical, slower)?
 4. **Test updates**: Many existing tests compare against specific string values.
    These all change. Brute-force update, or worth writing a migration script?
+5. **Encoding version tag**: Magic byte, filesystem metadata, or self-describing?
