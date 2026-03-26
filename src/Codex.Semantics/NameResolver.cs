@@ -28,7 +28,7 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
         "text-to-integer", "integer-to-text", "text-replace",
         "text-split", "text-contains", "text-starts-with",
         "char-code", "char-code-at", "code-to-char",
-        "list-length", "list-at", "list-insert-at", "list-snoc",
+        "list-length", "list-at", "list-insert-at", "list-snoc", "list-contains",
         "text-compare", "text-concat-list",
         "get-args", "get-env", "current-dir",
         "run-process",

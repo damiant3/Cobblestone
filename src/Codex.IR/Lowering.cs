@@ -679,6 +679,20 @@ public sealed class Lowering(
             new FunctionType(TextType.s_instance, BooleanType.s_instance)));
         map = map.Set("text-starts-with", new FunctionType(TextType.s_instance,
             new FunctionType(TextType.s_instance, BooleanType.s_instance)));
+        map = map.Set("text-compare", new FunctionType(TextType.s_instance,
+            new FunctionType(TextType.s_instance, IntegerType.s_instance)));
+        map = map.Set("text-concat-list", new FunctionType(
+            new ListType(TextType.s_instance), TextType.s_instance));
+        map = map.Set("list-insert-at", new ForAllType(0,
+            new FunctionType(new ListType(new TypeVariable(0)),
+                new FunctionType(IntegerType.s_instance,
+                    new FunctionType(new TypeVariable(0), new ListType(new TypeVariable(0)))))));
+        map = map.Set("list-snoc", new ForAllType(0,
+            new FunctionType(new ListType(new TypeVariable(0)),
+                new FunctionType(new TypeVariable(0), new ListType(new TypeVariable(0))))));
+        map = map.Set("list-contains", new ForAllType(0,
+            new FunctionType(new ListType(new TypeVariable(0)),
+                new FunctionType(new TypeVariable(0), BooleanType.s_instance))));
         map = map.Set("get-args", new ListType(TextType.s_instance));
         map = map.Set("get-env", new FunctionType(TextType.s_instance, TextType.s_instance));
         map = map.Set("current-dir", TextType.s_instance);

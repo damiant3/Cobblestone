@@ -91,6 +91,9 @@ public sealed class TypeEnvironment
         env = env.Bind("list-snoc", new ForAllType(0,
             new FunctionType(new ListType(new TypeVariable(0)),
                 new FunctionType(new TypeVariable(0), new ListType(new TypeVariable(0))))));
+        env = env.Bind("list-contains", new ForAllType(0,
+            new FunctionType(new ListType(new TypeVariable(0)),
+                new FunctionType(new TypeVariable(0), BooleanType.s_instance))));
 
         // map : (a → [e] b) → List a → [e] List b
         // ForAll e. ForAll a. ForAll b. ...

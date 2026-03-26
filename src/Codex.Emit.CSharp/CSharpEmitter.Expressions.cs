@@ -402,7 +402,7 @@ public sealed partial class CSharpEmitter
     }
 
     static readonly Set<string> s_multiArgBuiltins = Set<string>.Of(
-        "char-at", "char-code-at", "substring", "list-at", "list-insert-at", "list-snoc",
+        "char-at", "char-code-at", "substring", "list-at", "list-insert-at", "list-snoc", "list-contains",
         "text-replace", "text-compare", "text-concat-list",
         "write-file", "run-process", "list-files", "text-split", "text-contains", "text-starts-with",
         "fork", "await", "par", "race");
@@ -485,6 +485,13 @@ public sealed partial class CSharpEmitter
                 sb.Append("); return _l; }))()");
                 return true;
             }
+
+            case "list-contains" when args.Count == 2:
+                EmitExpr(sb, args[0], indent);
+                sb.Append(".Contains(");
+                EmitExpr(sb, args[1], indent);
+                sb.Append(')');
+                return true;
 
             case "text-compare" when args.Count == 2:
                 sb.Append("(long)string.CompareOrdinal(");
