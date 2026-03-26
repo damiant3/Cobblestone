@@ -94,7 +94,7 @@ is sometimes silently replaced with `then`, producing invalid Codex syntax such 
 
 ```
 if text-contains line ": error " then line
- then first-error-line lines (idx + 1)   hould be `else`
+ then first-error-line lines (idx + 1)   <- should be `else`
 ```
 
 This has been observed multiple times across different sessions and different files.
@@ -102,11 +102,11 @@ The corruption appears to happen during tool-mediated writes, not in manual edit
 Root cause is unknown - may be a tokenization issue in the edit tool's diff engine
 treating `else` and `then` as interchangeable Codex keywords.
 
-Also observed: `else 0`  `then 0` on if/then/else ternary expressions (line 53 of
+Also observed: `else 0` -> `then 0` on if/then/else ternary expressions (line 53 of
 `codex-agent.codex` in the original doctor/session-memory session).
 
 **Action**: After ANY edit to a `.codex` file, always verify with `snap diff` and
-visually inspect for `then``else` swaps. Use `peek` to check if/then/else chains.
+visually inspect for `then`->`else` swaps. Use `peek` to check if/then/else chains.
 When using the `.new` file swap approach for large files, grep the output for
 suspicious `then` patterns before swapping:
 
@@ -123,7 +123,7 @@ of markdown files) or returns "No edits were produced" on trivial changes. Obser
 files as small as 240 lines. See `docs/TOOL-ERROR-REGISTRY.md` TEF-001, TEF-002.
 
 **Action**: Use the safe workflow for ALL files, not just large ones:
-`snap save`  `create_file .new`  `Copy-Item` swap  `peek` verify  `snap diff`.
+`snap save` -> `create_file .new` -> `Copy-Item` swap -> `peek` verify -> `snap diff`.
 
 ### get_file cannot verify markdown headings - PERMANENT
 
