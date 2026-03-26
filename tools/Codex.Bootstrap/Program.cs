@@ -72,6 +72,16 @@ class Program
             var tokens = Codex_Codex_Codex.tokenize(cceCombined);
             Console.WriteLine($"  Tokens: {tokens.Count}");
 
+            // Debug: dump first 80 tokens
+            for (int ti = 0; ti < Math.Min(80, tokens.Count); ti++)
+            {
+                var tok = tokens[ti];
+                string kindName = tok.kind.GetType().Name;
+                string tokText = _Cce.ToUnicode(tok.text);
+                if (tokText == "\n") tokText = "\\n";
+                Console.WriteLine($"    [{ti}] {kindName,-20} \"{tokText}\"");
+            }
+
             var st = Codex_Codex_Codex.make_parse_state(tokens);
             var doc = Codex_Codex_Codex.parse_document(st);
             Console.WriteLine($"  Parsed defs: {doc.defs.Count}");
