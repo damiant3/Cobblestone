@@ -348,6 +348,18 @@ public sealed partial class CSharpEmitter
         return null;
     }
 
+    static IRExpr? TryGetSingleListElement(IRExpr expr)
+    {
+        // [x] as IRList with one element
+        if (expr is IRList list && list.Elements.Length == 1)
+            return list.Elements[0];
+        // [x] ++ [] as ConsList(x, emptyList)
+        if (expr is IRBinary cons && cons.Op == IRBinaryOp.ConsList
+            && cons.Right is IRList empty && empty.Elements.Length == 0)
+            return cons.Left;
+        return null;
+    }
+
     static void CollectTextConcatParts(IRBinary bin, List<IRExpr> parts)
     {
         if (bin.Left is IRBinary left && left.Op == IRBinaryOp.AppendText)
@@ -536,14 +548,19 @@ public sealed partial class CSharpEmitter
             }
 
             case IRBinaryOp.AppendList:
+            {
                 sb.Append("Enumerable.Concat(");
                 EmitExpr(sb, bin.Left, indent);
                 sb.Append(", ");
                 EmitExpr(sb, bin.Right, indent);
                 sb.Append(").ToList()");
+
                 break;
+            }
 
             case IRBinaryOp.ConsList:
+            {
+                // Detect [x] ++ acc pattern (single element prepend)
                 sb.Append("new List<");
                 sb.Append(EmitType(bin.Left.Type));
                 sb.Append("> { ");
@@ -552,6 +569,7 @@ public sealed partial class CSharpEmitter
                 EmitExpr(sb, bin.Right, indent);
                 sb.Append(").ToList()");
                 break;
+            }
 
             case IRBinaryOp.PowInt:
                 sb.Append("(long)Math.Pow((double)");

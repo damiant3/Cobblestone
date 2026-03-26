@@ -20,6 +20,8 @@ class Program
     {
         if (args.Length > 0 && args[0] == "--mini" && args.Length > 1)
             return RunMini(args[1]);
+        if (args.Length > 0 && args[0] == "--bench")
+            return RunBench(args.Length > 1 ? args[1] : null);
 
         string codexDir = args.Length > 0 ? args[0] : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Codex.Codex"));
         string? outputOverride = args.Length > 1 ? args[1] : null;
@@ -327,5 +329,118 @@ class Program
             Console.Error.WriteLine(ex.StackTrace);
             return 1;
         }
+    }
+
+    static int RunBench(string? codexDirOverride)
+    {
+        string codexDir = codexDirOverride ?? Path.GetFullPath(
+            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Codex.Codex"));
+
+        if (!Directory.Exists(codexDir)) { Console.Error.WriteLine($"Not found: {codexDir}"); return 1; }
+
+        // Load source once
+        string[] files = Directory.GetFiles(codexDir, "*.codex", SearchOption.AllDirectories)
+            .OrderBy(f => f, StringComparer.Ordinal).ToArray();
+        List<string> codeBlocks = [];
+        foreach (string f in files)
+        {
+            string content = File.ReadAllText(f);
+            codeBlocks.Add(IsProseDocument(content) ? ExtractCodeBlocks(content) : content);
+        }
+        string source = string.Join("\n\n", codeBlocks);
+
+        Console.WriteLine($"Benchmark: {source.Length} chars, {files.Length} files");
+        Console.WriteLine("Protocol: 3 warmup + 10 measured, median reported");
+        Console.WriteLine();
+
+        int warmup = 3;
+        int measured = 10;
+
+        // Warmup
+        for (int w = 0; w < warmup; w++)
+        {
+            RunPipeline(source, out _, out _, out _, out _, out _, out _, out _, out _);
+            Console.Write($"  warmup {w + 1}/{warmup}\r");
+        }
+        Console.WriteLine($"  warmup done ({warmup} iterations)          ");
+
+        // Measured runs
+        double[] lexTimes = new double[measured];
+        double[] parseTimes = new double[measured];
+        double[] desugarTimes = new double[measured];
+        double[] resolveTimes = new double[measured];
+        double[] checkTimes = new double[measured];
+        double[] lowerTimes = new double[measured];
+        double[] emitTimes = new double[measured];
+        double[] totalTimes = new double[measured];
+
+        for (int r = 0; r < measured; r++)
+        {
+            RunPipeline(source,
+                out lexTimes[r], out parseTimes[r], out desugarTimes[r],
+                out resolveTimes[r], out checkTimes[r], out lowerTimes[r],
+                out emitTimes[r], out totalTimes[r]);
+            Console.Write($"  run {r + 1}/{measured}\r");
+        }
+        Console.WriteLine($"  measured done ({measured} iterations)       ");
+        Console.WriteLine();
+
+        Array.Sort(lexTimes); Array.Sort(parseTimes); Array.Sort(desugarTimes);
+        Array.Sort(resolveTimes); Array.Sort(checkTimes); Array.Sort(lowerTimes);
+        Array.Sort(emitTimes); Array.Sort(totalTimes);
+
+        int mid = measured / 2;
+        Console.WriteLine("Per-stage (median ms):");
+        Console.WriteLine($"  lex        {lexTimes[mid]:F2}ms");
+        Console.WriteLine($"  parse      {parseTimes[mid]:F2}ms");
+        Console.WriteLine($"  desugar    {desugarTimes[mid]:F2}ms");
+        Console.WriteLine($"  resolve    {resolveTimes[mid]:F2}ms");
+        Console.WriteLine($"  typecheck  {checkTimes[mid]:F2}ms");
+        Console.WriteLine($"  lower      {lowerTimes[mid]:F2}ms");
+        Console.WriteLine($"  emit       {emitTimes[mid]:F2}ms");
+        Console.WriteLine($"  ─────────────────────");
+        Console.WriteLine($"  total      {totalTimes[mid]:F2}ms");
+        Console.WriteLine();
+        Console.WriteLine($"  min={totalTimes[0]:F2}ms  max={totalTimes[measured - 1]:F2}ms");
+        return 0;
+    }
+
+    static void RunPipeline(string source,
+        out double lexMs, out double parseMs, out double desugarMs,
+        out double resolveMs, out double checkMs, out double lowerMs,
+        out double emitMs, out double totalMs)
+    {
+        var total = System.Diagnostics.Stopwatch.StartNew();
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var tokens = Codex_Codex_Codex.tokenize(source);
+        sw.Stop(); lexMs = sw.Elapsed.TotalMilliseconds;
+
+        sw.Restart();
+        var pst = Codex_Codex_Codex.make_parse_state(tokens);
+        var doc = Codex_Codex_Codex.parse_document(pst);
+        sw.Stop(); parseMs = sw.Elapsed.TotalMilliseconds;
+
+        sw.Restart();
+        var ast = Codex_Codex_Codex.desugar_document(doc, "Bench");
+        sw.Stop(); desugarMs = sw.Elapsed.TotalMilliseconds;
+
+        sw.Restart();
+        var resolved = Codex_Codex_Codex.resolve_module(ast);
+        sw.Stop(); resolveMs = sw.Elapsed.TotalMilliseconds;
+
+        sw.Restart();
+        var checkResult = Codex_Codex_Codex.check_module(ast);
+        sw.Stop(); checkMs = sw.Elapsed.TotalMilliseconds;
+
+        sw.Restart();
+        var ir = Codex_Codex_Codex.lower_module(ast, checkResult.types, checkResult.state);
+        sw.Stop(); lowerMs = sw.Elapsed.TotalMilliseconds;
+
+        sw.Restart();
+        var output = Codex_Codex_Codex.emit_full_module(ir, ast.type_defs);
+        sw.Stop(); emitMs = sw.Elapsed.TotalMilliseconds;
+
+        total.Stop(); totalMs = total.Elapsed.TotalMilliseconds;
     }
 }
