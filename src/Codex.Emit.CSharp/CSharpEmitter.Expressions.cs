@@ -530,6 +530,12 @@ public sealed partial class CSharpEmitter
                 sb.Append(")).Select(_Cce.FromUnicode).ToList()");
                 return true;
 
+            case "text-concat-list" when args.Count == 1:
+                sb.Append("string.Concat(");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(')');
+                return true;
+
             case "text-split" when args.Count == 2:
                 sb.Append("new List<string>(");
                 EmitExpr(sb, args[0], indent);

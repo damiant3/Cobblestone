@@ -86,6 +86,8 @@ public sealed class TypeEnvironment
                     new FunctionType(new TypeVariable(0), new ListType(new TypeVariable(0)))))));
         env = env.Bind("text-compare", new FunctionType(TextType.s_instance,
             new FunctionType(TextType.s_instance, IntegerType.s_instance)));
+        env = env.Bind("text-concat-list", new FunctionType(
+            new ListType(TextType.s_instance), TextType.s_instance));
         env = env.Bind("list-snoc", new ForAllType(0,
             new FunctionType(new ListType(new TypeVariable(0)),
                 new FunctionType(new TypeVariable(0), new ListType(new TypeVariable(0))))));
