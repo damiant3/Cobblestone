@@ -38,6 +38,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
     readonly record struct RodataFixup(int PatchOffset, int RodataOffset);
     readonly record struct FuncAddrFixup(int PatchOffset, byte Rd, string FuncName);
+    int m_cceToUnicodeTableOffset = -1; // rodata offset for 128-byte CCE→Unicode lookup
 
     public void EmitModule(IRModule module)
     {
@@ -47,6 +48,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
         m_typeDefs = module.TypeDefinitions;
         m_escapeHelperNames["text"] = "__escape_text";
+
+        // Emit CCE→Unicode lookup table (128 bytes) into .rodata.
+        // Used by print helpers to convert CCE bytes back to Unicode for output.
+        m_cceToUnicodeTableOffset = m_rodata.Count;
+        for (int i = 0; i < 128; i++)
+            m_rodata.Add((byte)CceTable.ToUnicode[i]);
+        while (m_rodata.Count % 8 != 0) m_rodata.Add(0);
 
         EmitRuntimeHelpers();
 
@@ -278,6 +286,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     {
         IRIntegerLit intLit => EmitIntegerLit(intLit.Value),
         IRBoolLit boolLit => EmitIntegerLit(boolLit.Value ? 1 : 0),
+        IRCharLit charLit => EmitIntegerLit(CceTable.UnicharToCce(charLit.Value)),
         IRTextLit textLit => EmitTextLit(textLit.Value),
         IRName name => EmitName(name),
         IRBinary bin => EmitBinary(bin),
@@ -309,10 +318,16 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         if (!m_stringOffsets.TryGetValue(value, out int rodataOffset))
         {
             rodataOffset = m_rodata.Count;
-            byte[] utf8 = Encoding.UTF8.GetBytes(value);
-            // Length-prefixed: 8-byte i64 length + UTF-8 data, 8-byte aligned
-            m_rodata.AddRange(BitConverter.GetBytes((long)utf8.Length));
-            m_rodata.AddRange(utf8);
+            // CCE-encode: each character becomes one CCE byte (Tier 0).
+            // This matches the C# emitter's CCE-native text model — strings
+            // contain CCE bytes, Unicode only at I/O boundaries.
+            string cceEncoded = CceTable.Encode(value);
+            byte[] cceBytes = new byte[cceEncoded.Length];
+            for (int i = 0; i < cceEncoded.Length; i++)
+                cceBytes[i] = (byte)cceEncoded[i];
+            // Length-prefixed: 8-byte i64 length + CCE data, 8-byte aligned
+            m_rodata.AddRange(BitConverter.GetBytes((long)cceBytes.Length));
+            m_rodata.AddRange(cceBytes);
             while (m_rodata.Count % 8 != 0) m_rodata.Add(0);
             m_stringOffsets[value] = rodataOffset;
         }
@@ -1352,72 +1367,34 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             }
             case "is-letter" when args.Count >= 1:
             {
+                // CCE: letters are 13-64 (lowercase 13-38, uppercase 39-64)
+                // Single range check: (rd - 13) <= (64 - 13)
                 byte rd = EmitExpr(args[0]);
-                // Char is already a byte value in register
-                // Check lowercase: rd >= 'a' && rd <= 'z'
-                byte lo = AllocTemp();
-                X86_64Encoder.MovRR(m_text, lo, rd);
-                X86_64Encoder.SubRI(m_text, lo, 'a');
-                X86_64Encoder.CmpRI(m_text, lo, 'z' - 'a');
-                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_BE, lo); // unsigned
-                // Check uppercase: rd >= 'A' && rd <= 'Z'
-                byte hi = AllocTemp();
-                X86_64Encoder.MovRR(m_text, hi, rd);
-                X86_64Encoder.SubRI(m_text, hi, 'A');
-                X86_64Encoder.CmpRI(m_text, hi, 'Z' - 'A');
-                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_BE, hi); // unsigned
-                // Result = lower || upper (both are 0 or 1 in low byte)
-                byte result = AllocTemp();
-                X86_64Encoder.MovRR(m_text, result, lo);
-                // or result, hi — need to add OrRR or use existing mechanism
-                X86_64Encoder.AddRR(m_text, result, hi); // 0+0=0, 0+1=1, 1+0=1
-                // Clamp to 0/1
-                X86_64Encoder.CmpRI(m_text, result, 0);
-                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_NE, result);
-                X86_64Encoder.MovzxByteSelf(m_text, result);
-                return result;
+                X86_64Encoder.SubRI(m_text, rd, 13); // CCE letter start
+                X86_64Encoder.CmpRI(m_text, rd, 64 - 13); // CCE letter range
+                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_BE, rd);
+                X86_64Encoder.MovzxByteSelf(m_text, rd);
+                return rd;
             }
             case "is-digit" when args.Count >= 1:
             {
+                // CCE: digits are 3-12
+                // (rd - 3) <= (12 - 3)
                 byte rd = EmitExpr(args[0]);
-                // Char is already a byte value in register
-                X86_64Encoder.SubRI(m_text, rd, '0');
-                X86_64Encoder.CmpRI(m_text, rd, '9' - '0');
-                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_BE, rd); // unsigned: below or equal
+                X86_64Encoder.SubRI(m_text, rd, 3); // CCE digit start
+                X86_64Encoder.CmpRI(m_text, rd, 12 - 3); // CCE digit range
+                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_BE, rd);
                 X86_64Encoder.MovzxByteSelf(m_text, rd);
                 return rd;
             }
             case "is-whitespace" when args.Count >= 1:
             {
-                // Branch-based: compare rd against each whitespace char,
-                // jump to 'yes' on match, fall through to 'no'.
-                // Uses only rd — no temp registers, no aliasing risk.
+                // CCE: whitespace is 0-2 (NUL, LF, Space)
+                // Single comparison: rd <= 2
                 byte rd = EmitExpr(args[0]);
-                X86_64Encoder.CmpRI(m_text, rd, ' ');
-                int jSpace = m_text.Count;
-                X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
-                X86_64Encoder.CmpRI(m_text, rd, '\t');
-                int jTab = m_text.Count;
-                X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
-                X86_64Encoder.CmpRI(m_text, rd, '\n');
-                int jNl = m_text.Count;
-                X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
-                X86_64Encoder.CmpRI(m_text, rd, '\r');
-                int jCr = m_text.Count;
-                X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
-                // Not whitespace
-                X86_64Encoder.Li(m_text, rd, 0);
-                int jDone = m_text.Count;
-                X86_64Encoder.Jmp(m_text, 0);
-                // Whitespace — all four jumps land here
-                int yesAddr = m_text.Count;
-                X86_64Encoder.Li(m_text, rd, 1);
-                int doneAddr = m_text.Count;
-                PatchJcc(jSpace, yesAddr);
-                PatchJcc(jTab, yesAddr);
-                PatchJcc(jNl, yesAddr);
-                PatchJcc(jCr, yesAddr);
-                PatchJmp(jDone, doneAddr);
+                X86_64Encoder.CmpRI(m_text, rd, 2);
+                X86_64Encoder.Setcc(m_text, X86_64Encoder.CC_BE, rd);
+                X86_64Encoder.MovzxByteSelf(m_text, rd);
                 return rd;
             }
             case "negate" when args.Count >= 1:
@@ -1765,59 +1742,81 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
     void EmitPrintText(byte ptrReg)
     {
+        // Strings are CCE-encoded. Output requires CCE→Unicode conversion per byte.
+        // The CceToUnicode table (128 bytes) lives in .rodata at m_cceToUnicodeTableOffset.
         int savedPtr = AllocLocal();
         StoreLocal(savedPtr, ptrReg);
 
+        // Load CCE→Unicode table address into a local
+        int savedTable = AllocLocal();
+        byte tableReg = AllocTemp();
+        m_rodataFixups.Add(new RodataFixup(m_text.Count + 2, m_cceToUnicodeTableOffset));
+        X86_64Encoder.MovRI64(m_text, tableReg, 0); // patched to rodata+table
+        StoreLocal(savedTable, tableReg);
+
+        byte ptr = LoadLocal(savedPtr);
+        byte len = AllocTemp();
+        X86_64Encoder.MovLoad(m_text, len, ptr, 0);
+        int savedLen = AllocLocal();
+        StoreLocal(savedLen, len);
+        int savedIdx = AllocLocal();
+        X86_64Encoder.Li(m_text, Reg.R11, 0);
+        StoreLocal(savedIdx, Reg.R11);
+
+        int loopTop = m_text.Count;
+        byte idx = LoadLocal(savedIdx);
+        byte lenCheck = LoadLocal(savedLen);
+        X86_64Encoder.CmpRR(m_text, idx, lenCheck);
+        int doneJump = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+
+        // Load CCE byte: ptr + 8 + idx
+        byte ptrL = LoadLocal(savedPtr);
+        idx = LoadLocal(savedIdx);
+        X86_64Encoder.Lea(m_text, Reg.RSI, ptrL, 8);
+        X86_64Encoder.AddRR(m_text, Reg.RSI, idx);
+        X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RSI, 0); // RAX = CCE byte
+
+        // Convert CCE→Unicode: table[CCE byte]
+        byte tbl = LoadLocal(savedTable);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, tbl);
+        X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RAX, 0); // RAX = Unicode byte
+
         if (m_target == X86_64Target.BareMetal)
         {
-            // Serial output: loop over bytes, write each to COM1
-            byte ptr = LoadLocal(savedPtr);
-            byte len = AllocTemp();
-            X86_64Encoder.MovLoad(m_text, len, ptr, 0); // len = [ptr+0]
-            int savedLen = AllocLocal();
-            StoreLocal(savedLen, len);
-            int savedIdx = AllocLocal();
-            X86_64Encoder.Li(m_text, Reg.R11, 0);
-            StoreLocal(savedIdx, Reg.R11);
-
-            int loopTop = m_text.Count;
-            byte idx = LoadLocal(savedIdx);
-            byte lenCheck = LoadLocal(savedLen);
-            X86_64Encoder.CmpRR(m_text, idx, lenCheck);
-            int doneJump = m_text.Count;
-            X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
-
-            // Load byte: ptr + 8 + idx
-            byte ptrL = LoadLocal(savedPtr);
-            idx = LoadLocal(savedIdx);
-            X86_64Encoder.Lea(m_text, Reg.RSI, ptrL, 8);
-            X86_64Encoder.AddRR(m_text, Reg.RSI, idx);
-            X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RSI, 0);
             X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
             X86_64Encoder.OutDxAl(m_text);
+        }
+        else
+        {
+            // Write single byte via sys_write: buf on stack
+            X86_64Encoder.SubRI(m_text, Reg.RSP, 8);
+            X86_64Encoder.MovStore(m_text, Reg.RSP, Reg.RAX, 0);
+            X86_64Encoder.MovRR(m_text, Reg.RSI, Reg.RSP); // buf
+            X86_64Encoder.Li(m_text, Reg.RDX, 1); // count = 1
+            X86_64Encoder.Li(m_text, Reg.RAX, 1); // sys_write
+            X86_64Encoder.Li(m_text, Reg.RDI, 1); // stdout
+            X86_64Encoder.Syscall(m_text);
+            X86_64Encoder.AddRI(m_text, Reg.RSP, 8);
+        }
 
-            // idx++
-            idx = LoadLocal(savedIdx);
-            X86_64Encoder.AddRI(m_text, idx, 1);
-            StoreLocal(savedIdx, idx);
-            X86_64Encoder.Jmp(m_text, loopTop - (m_text.Count + 5));
+        // idx++
+        idx = LoadLocal(savedIdx);
+        X86_64Encoder.AddRI(m_text, idx, 1);
+        StoreLocal(savedIdx, idx);
+        X86_64Encoder.Jmp(m_text, loopTop - (m_text.Count + 5));
 
-            PatchJcc(doneJump, m_text.Count);
+        PatchJcc(doneJump, m_text.Count);
 
-            // Newline
+        // Newline
+        if (m_target == X86_64Target.BareMetal)
+        {
             X86_64Encoder.Li(m_text, Reg.RAX, '\n');
             X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
             X86_64Encoder.OutDxAl(m_text);
         }
         else
         {
-            byte ptr = LoadLocal(savedPtr);
-            X86_64Encoder.Lea(m_text, Reg.RSI, ptr, 8);
-            X86_64Encoder.MovLoad(m_text, Reg.RDX, ptr, 0);
-            X86_64Encoder.Li(m_text, Reg.RAX, 1); // sys_write
-            X86_64Encoder.Li(m_text, Reg.RDI, 1); // stdout
-            X86_64Encoder.Syscall(m_text);
-
             EmitPrintNewline();
         }
     }
@@ -1858,18 +1857,65 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
     void EmitPrintTextNoNewline(byte ptrReg)
     {
+        // Per-byte CCE→Unicode conversion + output (same logic as EmitPrintText without newline)
+        int savedPtr = AllocLocal();
+        StoreLocal(savedPtr, ptrReg);
+
+        int savedTable = AllocLocal();
+        byte tableReg = AllocTemp();
+        m_rodataFixups.Add(new RodataFixup(m_text.Count + 2, m_cceToUnicodeTableOffset));
+        X86_64Encoder.MovRI64(m_text, tableReg, 0);
+        StoreLocal(savedTable, tableReg);
+
+        byte ptr = LoadLocal(savedPtr);
+        byte len = AllocTemp();
+        X86_64Encoder.MovLoad(m_text, len, ptr, 0);
+        int savedLen = AllocLocal();
+        StoreLocal(savedLen, len);
+        int savedIdx = AllocLocal();
+        X86_64Encoder.Li(m_text, Reg.R11, 0);
+        StoreLocal(savedIdx, Reg.R11);
+
+        int loopTop = m_text.Count;
+        byte idx = LoadLocal(savedIdx);
+        byte lenCheck = LoadLocal(savedLen);
+        X86_64Encoder.CmpRR(m_text, idx, lenCheck);
+        int doneJump = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+
+        byte ptrL = LoadLocal(savedPtr);
+        idx = LoadLocal(savedIdx);
+        X86_64Encoder.Lea(m_text, Reg.RSI, ptrL, 8);
+        X86_64Encoder.AddRR(m_text, Reg.RSI, idx);
+        X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RSI, 0);
+
+        byte tbl = LoadLocal(savedTable);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, tbl);
+        X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RAX, 0);
+
         if (m_target == X86_64Target.BareMetal)
         {
-            EmitSerialStringFromPtr(ptrReg);
+            X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+            X86_64Encoder.OutDxAl(m_text);
         }
         else
         {
-            X86_64Encoder.Lea(m_text, Reg.RSI, ptrReg, 8);
-            X86_64Encoder.MovLoad(m_text, Reg.RDX, ptrReg, 0);
+            X86_64Encoder.SubRI(m_text, Reg.RSP, 8);
+            X86_64Encoder.MovStore(m_text, Reg.RSP, Reg.RAX, 0);
+            X86_64Encoder.MovRR(m_text, Reg.RSI, Reg.RSP);
+            X86_64Encoder.Li(m_text, Reg.RDX, 1);
             X86_64Encoder.Li(m_text, Reg.RAX, 1);
             X86_64Encoder.Li(m_text, Reg.RDI, 1);
             X86_64Encoder.Syscall(m_text);
+            X86_64Encoder.AddRI(m_text, Reg.RSP, 8);
         }
+
+        idx = LoadLocal(savedIdx);
+        X86_64Encoder.AddRI(m_text, idx, 1);
+        StoreLocal(savedIdx, idx);
+        X86_64Encoder.Jmp(m_text, loopTop - (m_text.Count + 5));
+
+        PatchJcc(doneJump, m_text.Count);
     }
 
     void EmitPrintNewline()
@@ -2083,11 +2129,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.Li(m_text, Reg.RCX, 0); // digit count
         X86_64Encoder.Li(m_text, Reg.R11, 10); // divisor
 
-        // Handle zero
+        // Handle zero (CCE digit '0' = 3)
         X86_64Encoder.TestRR(m_text, Reg.RBX, Reg.RBX);
         int notZero = m_text.Count;
         X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
-        X86_64Encoder.Li(m_text, Reg.RSI, '0');
+        X86_64Encoder.Li(m_text, Reg.RSI, 3); // CCE '0'
         X86_64Encoder.MovStoreByte(m_text, Reg.RSP, Reg.RSI, 0);
         X86_64Encoder.Li(m_text, Reg.RCX, 1);
         int skipDigits = m_text.Count;
@@ -2103,7 +2149,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.Cqo(m_text);
         X86_64Encoder.IdivR(m_text, Reg.R11);
         X86_64Encoder.MovRR(m_text, Reg.RBX, Reg.RAX);
-        X86_64Encoder.AddRI(m_text, Reg.RDX, '0');
+        X86_64Encoder.AddRI(m_text, Reg.RDX, 3); // CCE digit offset: '0' = 3
         X86_64Encoder.MovRR(m_text, Reg.RSI, Reg.RSP);
         X86_64Encoder.AddRR(m_text, Reg.RSI, Reg.RCX);
         X86_64Encoder.MovStoreByte(m_text, Reg.RSI, Reg.RDX, 0);
@@ -2129,7 +2175,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.TestRR(m_text, Reg.R12, Reg.R12);
         int noMinus = m_text.Count;
         X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
-        X86_64Encoder.Li(m_text, Reg.RSI, '-');
+        X86_64Encoder.Li(m_text, Reg.RSI, 73); // CCE '-'
         X86_64Encoder.MovStoreByte(m_text, Reg.RAX, Reg.RSI, 8);
         X86_64Encoder.Li(m_text, Reg.R11, 1);
         PatchJcc(noMinus, m_text.Count);
@@ -2427,7 +2473,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         int emptyStr = m_text.Count;
         X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
         X86_64Encoder.MovzxByte(m_text, Reg.RDX, Reg.RDI, 0);
-        X86_64Encoder.CmpRI(m_text, Reg.RDX, '-');
+        X86_64Encoder.CmpRI(m_text, Reg.RDX, 73); // CCE '-'
         int notMinus = m_text.Count;
         X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
         X86_64Encoder.Li(m_text, Reg.RSI, 1);
@@ -2442,7 +2488,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.MovRR(m_text, Reg.RDX, Reg.RDI);
         X86_64Encoder.AddRR(m_text, Reg.RDX, Reg.R11);
         X86_64Encoder.MovzxByte(m_text, Reg.RDX, Reg.RDX, 0);
-        X86_64Encoder.SubRI(m_text, Reg.RDX, '0');
+        X86_64Encoder.SubRI(m_text, Reg.RDX, 3); // CCE '0' = 3
         // rax = rax * 10 + rdx
         X86_64Encoder.PushR(m_text, Reg.RDX);
         X86_64Encoder.MovRR(m_text, Reg.RDX, Reg.RAX);
@@ -4235,9 +4281,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         if (m_stringOffsets.TryGetValue(value, out int offset))
             return offset;
         offset = m_rodata.Count;
-        byte[] utf8 = Encoding.UTF8.GetBytes(value);
-        m_rodata.AddRange(BitConverter.GetBytes((long)utf8.Length));
-        m_rodata.AddRange(utf8);
+        // CCE-encode, matching EmitTextLit
+        string cceEncoded = CceTable.Encode(value);
+        byte[] cceBytes = new byte[cceEncoded.Length];
+        for (int i = 0; i < cceEncoded.Length; i++)
+            cceBytes[i] = (byte)cceEncoded[i];
+        m_rodata.AddRange(BitConverter.GetBytes((long)cceBytes.Length));
+        m_rodata.AddRange(cceBytes);
         while (m_rodata.Count % 8 != 0) m_rodata.Add(0);
         m_stringOffsets[value] = offset;
         return offset;
