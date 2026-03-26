@@ -357,7 +357,9 @@ Syntax highlighting, bracket matching, auto-indentation, and LSP integration
 | **MM1** | **Freedom** | Reference compiler locked. All development in Codex. |
 | Peak II | Native backends | RISC-V, ARM64, x86-64, WASM. Bare metal code generation. |
 | Peak III | Codex.OS | 7KB kernel. Preemptive multitasking. Capability-enforced syscalls. |
-| **CCE** | **Own encoding** | Frequency-sorted character encoding. Fixed point at 298,752 chars. |
+| CCE | Own encoding | Frequency-sorted character encoding. Fixed point at 298,752 chars. |
+| **MM2** | **Bare metal** | Compiler runs on bare hardware. Compiles programs over serial. No OS beneath but ours. |
+| **MM3** | **???** | The compiler compiles itself on bare metal. The ultimate fixed point. |
 
 ---
 
