@@ -11,14 +11,14 @@ Chapter: Type Checker
 
 Section: Resolve Type Expression
 
-  resolve-type-expr : HamtMap CodexType -> ATypeExpr -> CodexType
+  resolve-type-expr : TypeMap -> ATypeExpr -> CodexType
   resolve-type-expr (tdm) (texpr) =
    when texpr
     if ANamedType (name) -> resolve-type-name tdm name.value
     if AFunType (param) (ret) -> FunTy (resolve-type-expr tdm param) (resolve-type-expr tdm ret)
     if AAppType (ctor) (args) -> resolve-applied-type tdm ctor args
 
-  resolve-applied-type : HamtMap CodexType -> ATypeExpr -> List ATypeExpr -> CodexType
+  resolve-applied-type : TypeMap -> ATypeExpr -> List ATypeExpr -> CodexType
   resolve-applied-type (tdm) (ctor) (args) =
    when ctor
     if ANamedType (name) ->
@@ -29,12 +29,12 @@ Section: Resolve Type Expression
       else ConstructedTy name (resolve-type-expr-list tdm args 0 (list-length args) [])
     if _ -> resolve-type-expr tdm ctor
 
-  resolve-type-expr-list : HamtMap CodexType -> List ATypeExpr -> Integer -> Integer -> List CodexType -> List CodexType
+  resolve-type-expr-list : TypeMap -> List ATypeExpr -> Integer -> Integer -> List CodexType -> List CodexType
   resolve-type-expr-list (tdm) (args) (i) (len) (acc) =
    if i == len then acc
    else resolve-type-expr-list tdm args (i + 1) len (acc ++ [resolve-type-expr tdm (list-at args i)])
 
-  resolve-type-name : HamtMap CodexType -> Text -> CodexType
+  resolve-type-name : TypeMap -> Text -> CodexType
   resolve-type-name (tdm) (name) =
    if name == "Integer" then IntegerTy
    else if name == "Number" then NumberTy
@@ -44,11 +44,11 @@ Section: Resolve Type Expression
    else if name == "Nothing" then NothingTy
    else lookup-type-def tdm name
 
-  lookup-type-def : HamtMap CodexType -> Text -> CodexType
+  lookup-type-def : TypeMap -> Text -> CodexType
   lookup-type-def (tdm) (name) =
-   when hamt-get tdm name
-    if Just (ty) -> ty
-    if MaybeNone -> ConstructedTy (Name { value = name }) []
+   when tm-get tdm name
+    if JustType (ty) -> ty
+    if MaybeNoneType -> ConstructedTy (Name { value = name }) []
 
 Section: Parameterize Type
 
@@ -191,18 +191,18 @@ Section: Check Definition
 Section: Check Module
 
   ModuleResult = record {
-   types : HamtMap CodexType,
+   types : TypeMap,
    state : UnificationState
   }
 
   check-module : AModule -> ModuleResult
   check-module (mod) =
-   let tdm = build-type-def-map mod.type-defs 0 (list-length mod.type-defs) hamt-empty
+   let tdm = build-type-def-map mod.type-defs 0 (list-length mod.type-defs) tm-empty
    in let tenv = register-type-defs empty-unification-state builtin-type-env tdm mod.type-defs 0 (list-length mod.type-defs)
    in let env = register-all-defs tenv.state tenv.env tdm mod.defs 0 (list-length mod.defs)
-   in check-all-defs env.state env.env mod.defs 0 (list-length mod.defs) hamt-empty
+   in check-all-defs env.state env.env mod.defs 0 (list-length mod.defs) tm-empty
 
-  register-all-defs : UnificationState -> TypeEnv -> HamtMap CodexType -> List ADef -> Integer -> Integer -> LetBindResult
+  register-all-defs : UnificationState -> TypeEnv -> TypeMap -> List ADef -> Integer -> Integer -> LetBindResult
   register-all-defs (st) (env) (tdm) (defs) (i) (len) =
    if i == len then LetBindResult { state = st, env = env }
    else
@@ -216,18 +216,18 @@ Section: Check Module
          in LetBindResult { state = pr.state, env = env-bind env def.name.value pr.parameterized }
     in register-all-defs ty.state ty.env tdm defs (i + 1) len
 
-  check-all-defs : UnificationState -> TypeEnv -> List ADef -> Integer -> Integer -> HamtMap CodexType -> ModuleResult
+  check-all-defs : UnificationState -> TypeEnv -> List ADef -> Integer -> Integer -> TypeMap -> ModuleResult
   check-all-defs (st) (env) (defs) (i) (len) (acc) =
    if i == len then ModuleResult { types = acc, state = st }
    else
     let def = list-at defs i
     in let r = check-def st env def
     in let resolved = deep-resolve r.state r.inferred-type
-    in check-all-defs r.state env defs (i + 1) len (hamt-set acc def.name.value resolved)
+    in check-all-defs r.state env defs (i + 1) len (tm-set acc def.name.value resolved)
 
 Section: Register Type Definitions
 
-  build-type-def-map : List ATypeDef -> Integer -> Integer -> HamtMap CodexType -> HamtMap CodexType
+  build-type-def-map : List ATypeDef -> Integer -> Integer -> TypeMap -> TypeMap
   build-type-def-map (tdefs) (i) (len) (acc) =
    if i == len then acc
    else
@@ -235,13 +235,13 @@ Section: Register Type Definitions
     in let acc2 = when td
        if AVariantTypeDef (name) (type-params) (ctors) ->
         let sum-ctors = build-sum-ctors tdefs ctors 0 (list-length ctors) [] acc
-        in hamt-set acc name.value (SumTy name sum-ctors)
+        in tm-set acc name.value (SumTy name sum-ctors)
        if ARecordTypeDef (name) (type-params) (fields) ->
         let rec-fields = build-record-fields-for-map tdefs fields 0 (list-length fields) [] acc
-        in hamt-set acc name.value (RecordTy name rec-fields)
+        in tm-set acc name.value (RecordTy name rec-fields)
     in build-type-def-map tdefs (i + 1) len acc2
 
-  build-sum-ctors : List ATypeDef -> List AVariantCtorDef -> Integer -> Integer -> List SumCtor -> HamtMap CodexType -> List SumCtor
+  build-sum-ctors : List ATypeDef -> List AVariantCtorDef -> Integer -> Integer -> List SumCtor -> TypeMap -> List SumCtor
   build-sum-ctors (tdefs) (ctors) (i) (len) (acc) (partial-tdm) =
    if i == len then acc
    else
@@ -250,7 +250,7 @@ Section: Register Type Definitions
     in let sc = SumCtor { name = c.name, fields = field-types }
     in build-sum-ctors tdefs ctors (i + 1) len (acc ++ [sc]) partial-tdm
 
-  build-record-fields-for-map : List ATypeDef -> List ARecordFieldDef -> Integer -> Integer -> List RecordField -> HamtMap CodexType -> List RecordField
+  build-record-fields-for-map : List ATypeDef -> List ARecordFieldDef -> Integer -> Integer -> List RecordField -> TypeMap -> List RecordField
   build-record-fields-for-map (tdefs) (fields) (i) (len) (acc) (partial-tdm) =
    if i == len then acc
    else
@@ -258,12 +258,12 @@ Section: Register Type Definitions
     in let rfield = RecordField { name = f.name, type-val = resolve-type-expr partial-tdm f.type-expr }
     in build-record-fields-for-map tdefs fields (i + 1) len (acc ++ [rfield]) partial-tdm
 
-  resolve-type-expr-list-for-map : List ATypeDef -> List ATypeExpr -> Integer -> Integer -> List CodexType -> HamtMap CodexType -> List CodexType
+  resolve-type-expr-list-for-map : List ATypeDef -> List ATypeExpr -> Integer -> Integer -> List CodexType -> TypeMap -> List CodexType
   resolve-type-expr-list-for-map (tdefs) (args) (i) (len) (acc) (partial-tdm) =
    if i == len then acc
    else resolve-type-expr-list-for-map tdefs args (i + 1) len (acc ++ [resolve-type-expr partial-tdm (list-at args i)]) partial-tdm
 
-  register-type-defs : UnificationState -> TypeEnv -> HamtMap CodexType -> List ATypeDef -> Integer -> Integer -> LetBindResult
+  register-type-defs : UnificationState -> TypeEnv -> TypeMap -> List ATypeDef -> Integer -> Integer -> LetBindResult
   register-type-defs (st) (env) (tdm) (tdefs) (i) (len) =
    if i == len then LetBindResult { state = st, env = env }
    else
@@ -271,7 +271,7 @@ Section: Register Type Definitions
     in let r = register-one-type-def st env tdm td
     in register-type-defs r.state r.env tdm tdefs (i + 1) len
 
-  register-one-type-def : UnificationState -> TypeEnv -> HamtMap CodexType -> ATypeDef -> LetBindResult
+  register-one-type-def : UnificationState -> TypeEnv -> TypeMap -> ATypeDef -> LetBindResult
   register-one-type-def (st) (env) (tdm) (td) =
    when td
     if AVariantTypeDef (name) (type-params) (ctors) ->
@@ -283,7 +283,7 @@ Section: Register Type Definitions
      in let ctor-ty = build-record-ctor-type tdm fields result-ty 0 (list-length fields)
      in LetBindResult { state = st, env = env-bind env name.value ctor-ty }
 
-  build-record-fields : HamtMap CodexType -> List ARecordFieldDef -> Integer -> Integer -> List RecordField -> List RecordField
+  build-record-fields : TypeMap -> List ARecordFieldDef -> Integer -> Integer -> List RecordField -> List RecordField
   build-record-fields (tdm) (fields) (i) (len) (acc) =
    if i == len then acc
    else
@@ -307,7 +307,7 @@ Section: Register Type Definitions
     in if f.name.value == name then f.type-val
     else lookup-record-field-loop fields name (i + 1) len
 
-  register-variant-ctors : UnificationState -> TypeEnv -> HamtMap CodexType -> List AVariantCtorDef -> CodexType -> Integer -> Integer -> LetBindResult
+  register-variant-ctors : UnificationState -> TypeEnv -> TypeMap -> List AVariantCtorDef -> CodexType -> Integer -> Integer -> LetBindResult
   register-variant-ctors (st) (env) (tdm) (ctors) (result-ty) (i) (len) =
    if i == len then LetBindResult { state = st, env = env }
    else
@@ -316,14 +316,14 @@ Section: Register Type Definitions
     in let env2 = env-bind env ctor.name.value ctor-ty
     in register-variant-ctors st env2 tdm ctors result-ty (i + 1) len
 
-  build-ctor-type : HamtMap CodexType -> List ATypeExpr -> CodexType -> Integer -> Integer -> CodexType
+  build-ctor-type : TypeMap -> List ATypeExpr -> CodexType -> Integer -> Integer -> CodexType
   build-ctor-type (tdm) (fields) (result) (i) (len) =
    if i == len then result
    else
     let rest = build-ctor-type tdm fields result (i + 1) len
     in FunTy (resolve-type-expr tdm (list-at fields i)) rest
 
-  build-record-ctor-type : HamtMap CodexType -> List ARecordFieldDef -> CodexType -> Integer -> Integer -> CodexType
+  build-record-ctor-type : TypeMap -> List ARecordFieldDef -> CodexType -> Integer -> Integer -> CodexType
   build-record-ctor-type (tdm) (fields) (result) (i) (len) =
    if i == len then result
    else
