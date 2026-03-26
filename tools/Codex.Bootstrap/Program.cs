@@ -87,7 +87,7 @@ class Program
             Console.WriteLine($"  Parsed defs: {doc.defs.Count}");
             Console.WriteLine($"  Parsed type-defs: {doc.type_defs.Count}");
 
-            var ast = Codex_Codex_Codex.desugar_document(doc, "Codex_Codex");
+            var ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("Codex_Codex"));
             Console.WriteLine($"  AST defs: {ast.defs.Count}");
             Console.WriteLine($"  AST type-defs: {ast.type_defs.Count}");
 
@@ -303,7 +303,7 @@ class Program
             List<Token> tokens = Codex_Codex_Codex.tokenize(cceSource);
             ParseState st = Codex_Codex_Codex.make_parse_state(tokens);
             Document doc = Codex_Codex_Codex.parse_document(st);
-            AModule ast = Codex_Codex_Codex.desugar_document(doc, "MiniTest");
+            AModule ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("MiniTest"));
 
             Console.WriteLine($"  Defs: {ast.defs.Count}, TypeDefs: {ast.type_defs.Count}");
 
@@ -438,7 +438,7 @@ class Program
         sw.Stop(); parseMs = sw.Elapsed.TotalMilliseconds;
 
         sw.Restart();
-        var ast = Codex_Codex_Codex.desugar_document(doc, "Bench");
+        var ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("Bench"));
         sw.Stop(); desugarMs = sw.Elapsed.TotalMilliseconds;
 
         sw.Restart();
