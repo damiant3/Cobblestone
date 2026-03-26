@@ -5,17 +5,11 @@ Chapter: Lowering Types
 
 Section: Type Lookup
 
-  lookup-type : List TypeBinding -> Text -> CodexType
+  lookup-type : HamtMap CodexType -> Text -> CodexType
   lookup-type (bindings) (name) =
-   lookup-type-loop bindings name 0 (list-length bindings)
-
-  lookup-type-loop : List TypeBinding -> Text -> Integer -> Integer -> CodexType
-  lookup-type-loop (bindings) (name) (i) (len) =
-   if i == len then ErrorTy
-   else
-    let b = list-at bindings i
-    in if b.name == name then b.bound-type
-     else lookup-type-loop bindings name (i + 1) len
+   when hamt-get bindings name
+    if Just (ty) -> ty
+    if MaybeNone -> ErrorTy
 
   peel-fun-param : CodexType -> CodexType
   peel-fun-param (ty) =
@@ -87,33 +81,33 @@ Section: Type Substitution
 
 Section: Constructor Bindings
 
-  collect-ctor-bindings : List ATypeDef -> Integer -> Integer -> List TypeBinding -> List TypeBinding
+  collect-ctor-bindings : List ATypeDef -> Integer -> Integer -> HamtMap CodexType -> HamtMap CodexType
   collect-ctor-bindings (tdefs) (i) (len) (acc) =
    if i == len then acc
    else
     let td = list-at tdefs i
-    in let bindings = ctor-bindings-for-typedef td
-    in collect-ctor-bindings tdefs (i + 1) len (acc ++ bindings)
+    in let acc2 = add-typedef-bindings td acc
+    in collect-ctor-bindings tdefs (i + 1) len acc2
 
-  ctor-bindings-for-typedef : ATypeDef -> List TypeBinding
-  ctor-bindings-for-typedef (td) =
+  add-typedef-bindings : ATypeDef -> HamtMap CodexType -> HamtMap CodexType
+  add-typedef-bindings (td) (acc) =
    when td
     if AVariantTypeDef (name) (type-params) (ctors) ->
      let result-ty = ConstructedTy name []
-     in collect-variant-ctor-bindings ctors result-ty 0 (list-length ctors) []
+     in collect-variant-ctor-bindings ctors result-ty 0 (list-length ctors) acc
     if ARecordTypeDef (name) (type-params) (fields) ->
      let resolved-fields = build-record-fields-for-lower fields 0 (list-length fields) []
      in let result-ty = RecordTy name resolved-fields
      in let ctor-ty = build-record-ctor-type-for-lower fields result-ty 0 (list-length fields)
-     in [TypeBinding { name = name.value, bound-type = ctor-ty }]
+     in hamt-set acc name.value ctor-ty
 
-  collect-variant-ctor-bindings : List AVariantCtorDef -> CodexType -> Integer -> Integer -> List TypeBinding -> List TypeBinding
+  collect-variant-ctor-bindings : List AVariantCtorDef -> CodexType -> Integer -> Integer -> HamtMap CodexType -> HamtMap CodexType
   collect-variant-ctor-bindings (ctors) (result-ty) (i) (len) (acc) =
    if i == len then acc
    else
     let ctor = list-at ctors i
     in let ctor-ty = build-ctor-type-for-lower ctor.fields result-ty 0 (list-length ctor.fields)
-    in collect-variant-ctor-bindings ctors result-ty (i + 1) len (acc ++ [TypeBinding { name = ctor.name.value, bound-type = ctor-ty }])
+    in collect-variant-ctor-bindings ctors result-ty (i + 1) len (hamt-set acc ctor.name.value ctor-ty)
 
   build-ctor-type-for-lower : List ATypeExpr -> CodexType -> Integer -> Integer -> CodexType
   build-ctor-type-for-lower (fields) (result) (i) (len) =

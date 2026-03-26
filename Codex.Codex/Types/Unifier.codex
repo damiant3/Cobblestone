@@ -13,14 +13,9 @@ Chapter: Unification
 Section: State
 
   UnificationState = record {
-   substitutions : List SubstEntry,
+   substitutions : HamtMap CodexType,
    next-id : Integer,
    errors : List Diagnostic
-  }
-
-  SubstEntry = record {
-   var-id : Integer,
-   resolved-type : CodexType
   }
 
   UnifyResult = record {
@@ -32,7 +27,7 @@ Section: Construction
 
   empty-unification-state : UnificationState
   empty-unification-state =
-   UnificationState { substitutions = [], next-id = 2, errors = [] }
+   UnificationState { substitutions = hamt-empty, next-id = 2, errors = [] }
 
 Section: Fresh Variables
 
@@ -54,29 +49,15 @@ Section: Fresh Variables
 
 Section: Substitution Lookup
 
-  subst-lookup : Integer -> List SubstEntry -> CodexType
+  subst-lookup : Integer -> HamtMap CodexType -> CodexType
   subst-lookup (var-id) (entries) =
-   subst-lookup-loop var-id entries 0 (list-length entries)
+   when hamt-get entries (integer-to-text var-id)
+    if Just (ty) -> ty
+    if MaybeNone -> ErrorTy
 
-  subst-lookup-loop : Integer -> List SubstEntry -> Integer -> Integer -> CodexType
-  subst-lookup-loop (var-id) (entries) (i) (len) =
-   if i == len then ErrorTy
-   else
-    let entry = list-at entries i
-    in if entry.var-id == var-id then entry.resolved-type
-     else subst-lookup-loop var-id entries (i + 1) len
-
-  has-subst : Integer -> List SubstEntry -> Boolean
+  has-subst : Integer -> HamtMap CodexType -> Boolean
   has-subst (var-id) (entries) =
-   has-subst-loop var-id entries 0 (list-length entries)
-
-  has-subst-loop : Integer -> List SubstEntry -> Integer -> Integer -> Boolean
-  has-subst-loop (var-id) (entries) (i) (len) =
-   if i == len then False
-   else
-    let entry = list-at entries i
-    in if entry.var-id == var-id then True
-     else has-subst-loop var-id entries (i + 1) len
+   hamt-contains entries (integer-to-text var-id)
 
 Section: Resolve
 
@@ -94,7 +75,7 @@ Section: Add Substitution
   add-subst : UnificationState -> Integer -> CodexType -> UnificationState
   add-subst (st) (var-id) (ty) =
    UnificationState {
-    substitutions = st.substitutions ++ [SubstEntry { var-id = var-id, resolved-type = ty }],
+    substitutions = hamt-set st.substitutions (integer-to-text var-id) ty,
     next-id = st.next-id,
     errors = st.errors
    }
