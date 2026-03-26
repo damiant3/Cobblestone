@@ -64,7 +64,7 @@ public static class Codex_type_checker_test
 
     public static string greet(string name)
     {
-        return string.Concat("3\u0012\u001C\u001C\u0015G\u0004", name, "H");
+        return string.Concat(".\u000D\u0017\u0017\u0010B\u0002", name, "C");
     }
 
     public static bool is_positive(long x)

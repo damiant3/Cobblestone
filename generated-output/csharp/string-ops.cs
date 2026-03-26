@@ -54,7 +54,7 @@ public static class Codex_string_ops
 {
     public static bool is_identifier_char(long ch)
     {
-        return ((ch >= 18L && ch <= 69L) ? true : ((ch >= 8L && ch <= 17L) ? true : ((((char)ch).ToString() == "N") ? true : false)));
+        return ((ch >= 13L && ch <= 64L) ? true : ((ch >= 3L && ch <= 12L) ? true : ((((char)ch).ToString() == "I") ? true : false)));
     }
 
     public static long count_letters(string s, long i, long acc)
@@ -68,7 +68,7 @@ public static class Codex_string_ops
             else
             {
                 var ch = ((long)s[(int)i]);
-                if ((ch >= 18L && ch <= 69L))
+                if ((ch >= 13L && ch <= 64L))
                 {
                     var _tco_0 = s;
                     var _tco_1 = (i + 1L);
@@ -94,7 +94,7 @@ public static class Codex_string_ops
 
     public static long main()
     {
-        return count_letters("\u0019\u0012\u001C\u001C\u0015\u0004 \u0015\u001A\u001C\u001B\u0004\u0009\u000A\u000B", 0L, 0L);
+        return count_letters("\u0014\u000D\u0017\u0017\u0010\u0002\u001B\u0010\u0015\u0017\u0016\u0002\u0004\u0005\u0006", 0L, 0L);
     }
 
 }

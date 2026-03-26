@@ -62,7 +62,7 @@ public static class Codex_mini_bootstrap
 {
     public static string show_color(Color c)
     {
-        return ((Func<Color, string>)((_scrutinee0_) => (_scrutinee0_ is Red _mRed0_ ? "\u001A\u0012\u001B" : (_scrutinee0_ is Green _mGreen0_ ? "\"\u001A\u0012\u0012\u0017" : (_scrutinee0_ is Blue _mBlue0_ ? ((Func<long, string>)((n) => "%\u001C\u001E\u0012"))((long)_mBlue0_.Field0) : throw new InvalidOperationException("Non-exhaustive match"))))))(c);
+        return ((Func<Color, string>)((_scrutinee0_) => (_scrutinee0_ is Red _mRed0_ ? "\u0015\u000D\u0016" : (_scrutinee0_ is Green _mGreen0_ ? "\u001D\u0015\u000D\u000D\u0012" : (_scrutinee0_ is Blue _mBlue0_ ? ((Func<long, string>)((n) => " \u0017\u0019\u000D"))((long)_mBlue0_.Field0) : throw new InvalidOperationException("Non-exhaustive match"))))))(c);
     }
 
     public static long get_x(Point p)

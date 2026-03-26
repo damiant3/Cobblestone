@@ -6,8 +6,6 @@ using System.Threading.Tasks;
 
 Codex_expr_calculator.main();
 
-public sealed record ParseResult(Expr expr, long pos);
-
 public abstract record Expr;
 
 public sealed record Lit(long Field0) : Expr;
@@ -15,6 +13,8 @@ public sealed record Add(Expr Field0, Expr Field1) : Expr;
 public sealed record Sub(Expr Field0, Expr Field1) : Expr;
 public sealed record Mul(Expr Field0, Expr Field1) : Expr;
 public sealed record Div(Expr Field0, Expr Field1) : Expr;
+
+public sealed record ParseResult(Expr expr, long pos);
 
 static class _Cce {
     static readonly int[] _toUni = {
@@ -72,7 +72,7 @@ public static class Codex_expr_calculator
             }
             else
             {
-                if ((((long)input[(int)pos]) <= 7L))
+                if ((((long)input[(int)pos]) <= 2L))
                 {
                     var _tco_0 = input;
                     var _tco_1 = (pos + 1L);
@@ -98,7 +98,7 @@ public static class Codex_expr_calculator
             }
             else
             {
-                if ((((long)input[(int)pos]) >= 8L && ((long)input[(int)pos]) <= 17L))
+                if ((((long)input[(int)pos]) >= 3L && ((long)input[(int)pos]) <= 12L))
                 {
                     var d = (((long)input[(int)pos]) - 48L);
                     var _tco_0 = input;
@@ -121,12 +121,12 @@ public static class Codex_expr_calculator
 
     public static long digit_count(string input, long pos, long len)
     {
-        return ((pos >= len) ? 0L : ((((long)input[(int)pos]) >= 8L && ((long)input[(int)pos]) <= 17L) ? (1L + digit_count(input, (pos + 1L), len)) : 0L));
+        return ((pos >= len) ? 0L : ((((long)input[(int)pos]) >= 3L && ((long)input[(int)pos]) <= 12L) ? (1L + digit_count(input, (pos + 1L), len)) : 0L));
     }
 
     public static ParseResult parse_atom(string input, long start)
     {
-        return ((Func<long, ParseResult>)((pos) => ((Func<long, ParseResult>)((len) => ((pos >= len) ? new ParseResult(new Lit(0L), pos) : ((((char)((long)input[(int)pos])).ToString() == "O") ? ((Func<ParseResult, ParseResult>)((inner) => ((Func<long, ParseResult>)((after) => ((after < len) ? new ParseResult(inner.expr, (after + 1L)) : new ParseResult(inner.expr, after))))(skip_ws(input, inner.pos))))(parse_additive(input, (pos + 1L))) : ((Func<long, ParseResult>)((digits) => ((digits > 0L) ? ((Func<long, ParseResult>)((value) => new ParseResult(new Lit(value), (pos + digits))))(collect_digits(input, pos, len, 0L)) : new ParseResult(new Lit(0L), pos))))(digit_count(input, pos, len))))))(((long)input.Length))))(skip_ws(input, start));
+        return ((Func<long, ParseResult>)((pos) => ((Func<long, ParseResult>)((len) => ((pos >= len) ? new ParseResult(new Lit(0L), pos) : ((((char)((long)input[(int)pos])).ToString() == "J") ? ((Func<ParseResult, ParseResult>)((inner) => ((Func<long, ParseResult>)((after) => ((after < len) ? new ParseResult(inner.expr, (after + 1L)) : new ParseResult(inner.expr, after))))(skip_ws(input, inner.pos))))(parse_additive(input, (pos + 1L))) : ((Func<long, ParseResult>)((digits) => ((digits > 0L) ? ((Func<long, ParseResult>)((value) => new ParseResult(new Lit(value), (pos + digits))))(collect_digits(input, pos, len, 0L)) : new ParseResult(new Lit(0L), pos))))(digit_count(input, pos, len))))))(((long)input.Length))))(skip_ws(input, start));
     }
 
     public static ParseResult parse_multiplicative(string input, long start)
@@ -146,7 +146,7 @@ public static class Codex_expr_calculator
             }
             else
             {
-                if ((((char)((long)input[(int)pos])).ToString() == "V"))
+                if ((((char)((long)input[(int)pos])).ToString() == "N"))
                 {
                     var right = parse_atom(input, (pos + 1L));
                     var _tco_0 = input;
@@ -192,7 +192,7 @@ public static class Codex_expr_calculator
             }
             else
             {
-                if ((((char)((long)input[(int)pos])).ToString() == "T"))
+                if ((((char)((long)input[(int)pos])).ToString() == "L"))
                 {
                     var right = parse_multiplicative(input, (pos + 1L));
                     var _tco_0 = input;
@@ -203,7 +203,7 @@ public static class Codex_expr_calculator
                 }
                 else
                 {
-                    if ((((char)((long)input[(int)pos])).ToString() == "N"))
+                    if ((((char)((long)input[(int)pos])).ToString() == "I"))
                     {
                         var right = parse_multiplicative(input, (pos + 1L));
                         var _tco_0 = input;
@@ -233,32 +233,32 @@ public static class Codex_expr_calculator
 
     public static string format(Expr e)
     {
-        return ((Func<Expr, string>)((_scrutinee1_) => (_scrutinee1_ is Lit _mLit1_ ? ((Func<long, string>)((n) => _Cce.FromUnicode(Convert.ToString(n))))((long)_mLit1_.Field0) : (_scrutinee1_ is Add _mAdd1_ ? ((Func<Expr, string>)((b) => ((Func<Expr, string>)((a) => string.Concat("O", format(a), "\u0004T\u0004", format(b), "P")))((Expr)_mAdd1_.Field0)))((Expr)_mAdd1_.Field1) : (_scrutinee1_ is Sub _mSub1_ ? ((Func<Expr, string>)((b) => ((Func<Expr, string>)((a) => string.Concat("O", format(a), "\u0004N\u0004", format(b), "P")))((Expr)_mSub1_.Field0)))((Expr)_mSub1_.Field1) : (_scrutinee1_ is Mul _mMul1_ ? ((Func<Expr, string>)((b) => ((Func<Expr, string>)((a) => string.Concat("O", format(a), "\u0004V\u0004", format(b), "P")))((Expr)_mMul1_.Field0)))((Expr)_mMul1_.Field1) : (_scrutinee1_ is Div _mDiv1_ ? ((Func<Expr, string>)((b) => ((Func<Expr, string>)((a) => string.Concat("O", format(a), "\u0004Q\u0004", format(b), "P")))((Expr)_mDiv1_.Field0)))((Expr)_mDiv1_.Field1) : throw new InvalidOperationException("Non-exhaustive match"))))))))(e);
+        return ((Func<Expr, string>)((_scrutinee1_) => (_scrutinee1_ is Lit _mLit1_ ? ((Func<long, string>)((n) => _Cce.FromUnicode(Convert.ToString(n))))((long)_mLit1_.Field0) : (_scrutinee1_ is Add _mAdd1_ ? ((Func<Expr, string>)((b) => ((Func<Expr, string>)((a) => string.Concat("J", format(a), "\u0002L\u0002", format(b), "K")))((Expr)_mAdd1_.Field0)))((Expr)_mAdd1_.Field1) : (_scrutinee1_ is Sub _mSub1_ ? ((Func<Expr, string>)((b) => ((Func<Expr, string>)((a) => string.Concat("J", format(a), "\u0002I\u0002", format(b), "K")))((Expr)_mSub1_.Field0)))((Expr)_mSub1_.Field1) : (_scrutinee1_ is Mul _mMul1_ ? ((Func<Expr, string>)((b) => ((Func<Expr, string>)((a) => string.Concat("J", format(a), "\u0002N\u0002", format(b), "K")))((Expr)_mMul1_.Field0)))((Expr)_mMul1_.Field1) : (_scrutinee1_ is Div _mDiv1_ ? ((Func<Expr, string>)((b) => ((Func<Expr, string>)((a) => string.Concat("J", format(a), "\u0002Q\u0002", format(b), "K")))((Expr)_mDiv1_.Field0)))((Expr)_mDiv1_.Field1) : throw new InvalidOperationException("Non-exhaustive match"))))))))(e);
     }
 
     public static string test_expr(string input, long expected)
     {
-        return ((Func<Expr, string>)((tree) => ((Func<long, string>)((result) => ((Func<string, string>)((status) => string.Concat(status, "J\u0004", input, "\u0004U\u0004", _Cce.FromUnicode(Convert.ToString(result)), "\u0004O\u0012)$\u0012\u001D\u0013\u0012\u001B\u0004", _Cce.FromUnicode(Convert.ToString(expected)), "P\u0004\u0004\u0013\u001A\u0012\u0012J\u0004", format(tree))))(((result == expected) ? ">.22" : ";.06"))))(eval(tree))))(parse(input));
+        return ((Func<Expr, string>)((tree) => ((Func<long, string>)((result) => ((Func<string, string>)((status) => string.Concat(status, "E\u0002", input, "\u0002M\u0002", _Cce.FromUnicode(Convert.ToString(result)), "\u0002J\u000D$\u001F\u000D\u0018\u000E\u000D\u0016\u0002", _Cce.FromUnicode(Convert.ToString(expected)), "K\u0002\u0002\u000E\u0015\u000D\u000DE\u0002", format(tree))))(((result == expected) ? "9)--" : "6)+1"))))(eval(tree))))(parse(input));
     }
 
     public static object main()
     {
         ((Func<object>)(() => {
-                Console.WriteLine(_Cce.ToUnicode("UUU\u0004,)$\u001A\u0012\u0018\u0018\u0016\u0015\u0017\u00047\u0014\u001C\u001D\u001E\u001C\u0014\u0013\u0015\u001A\u0004UUU"));
+                Console.WriteLine(_Cce.ToUnicode("MMM\u0002'$\u001F\u0015\u000D\u0013\u0013\u0011\u0010\u0012\u00022\u000F\u0017\u0018\u0019\u0017\u000F\u000E\u0010\u0015\u0002MMM"));
                 Console.WriteLine(_Cce.ToUnicode(""));
-                Console.WriteLine(_Cce.ToUnicode(test_expr("\u000C\u000A", 42L)));
-                Console.WriteLine(_Cce.ToUnicode(test_expr("\u000A\u0004T\u0004\u000B", 5L)));
-                Console.WriteLine(_Cce.ToUnicode(test_expr("\u0009\u0008\u0004N\u0004\u000C", 6L)));
-                Console.WriteLine(_Cce.ToUnicode(test_expr("\u000B\u0004V\u0004\u000F", 21L)));
-                Console.WriteLine(_Cce.ToUnicode(test_expr("\u0009\u0008\u0008\u0004Q\u0004\u000D", 20L)));
-                Console.WriteLine(_Cce.ToUnicode(test_expr("\u000A\u0004T\u0004\u000B\u0004V\u0004\u000C", 14L)));
-                Console.WriteLine(_Cce.ToUnicode(test_expr("\u0009\u0008\u0004N\u0004\u000A\u0004V\u0004\u000B", 4L)));
-                Console.WriteLine(_Cce.ToUnicode(test_expr("O\u000A\u0004T\u0004\u000BP\u0004V\u0004\u000C", 20L)));
-                Console.WriteLine(_Cce.ToUnicode(test_expr("\u0009\u0004T\u0004\u000A\u0004T\u0004\u000B\u0004T\u0004\u000C", 10L)));
-                Console.WriteLine(_Cce.ToUnicode(test_expr("\u000A\u0004V\u0004\u000B\u0004T\u0004\u000C\u0004V\u0004\u000D", 26L)));
+                Console.WriteLine(_Cce.ToUnicode(test_expr("\u0007\u0005", 42L)));
+                Console.WriteLine(_Cce.ToUnicode(test_expr("\u0005\u0002L\u0002\u0006", 5L)));
+                Console.WriteLine(_Cce.ToUnicode(test_expr("\u0004\u0003\u0002I\u0002\u0007", 6L)));
+                Console.WriteLine(_Cce.ToUnicode(test_expr("\u0006\u0002N\u0002\u000A", 21L)));
+                Console.WriteLine(_Cce.ToUnicode(test_expr("\u0004\u0003\u0003\u0002Q\u0002\u0008", 20L)));
+                Console.WriteLine(_Cce.ToUnicode(test_expr("\u0005\u0002L\u0002\u0006\u0002N\u0002\u0007", 14L)));
+                Console.WriteLine(_Cce.ToUnicode(test_expr("\u0004\u0003\u0002I\u0002\u0005\u0002N\u0002\u0006", 4L)));
+                Console.WriteLine(_Cce.ToUnicode(test_expr("J\u0005\u0002L\u0002\u0006K\u0002N\u0002\u0007", 20L)));
+                Console.WriteLine(_Cce.ToUnicode(test_expr("\u0004\u0002L\u0002\u0005\u0002L\u0002\u0006\u0002L\u0002\u0007", 10L)));
+                Console.WriteLine(_Cce.ToUnicode(test_expr("\u0005\u0002N\u0002\u0006\u0002L\u0002\u0007\u0002N\u0002\u0008", 26L)));
                 Console.WriteLine(_Cce.ToUnicode(""));
-                Console.WriteLine(_Cce.ToUnicode(".\u001C\u001C\u0004>.22\u0004U\u0004\u001D\u0015\u001F$\u0016\u001C\u0012\u001A\u0004\u001D\u0015\u001A\u001A\u0012\u001D\u0013\u001C#\u0004\u001D\u0015\u001F$\u0016\u001C\u0012\u0018\u0004\u0014\u0004\u001A\u0012\u001D\u001E\u001A\u0018\u0016&\u0012\u0004\u001B\u0012\u0018\u001D\u0012\u0017\u0013\u0004$\u0014\u001A\u0018\u0012\u001AF"));
-                Console.WriteLine(_Cce.ToUnicode("D,5J\u0004\u0017\u0015\u0013\u0004\u0014\u0004*\u001E\u0016\u0017\u0012F"));
+                Console.WriteLine(_Cce.ToUnicode(")\u0017\u0017\u00029)--\u0002M\u0002\u0018\u0010\u001A\u001F\u0011\u0017\u000D\u0015\u0002\u0018\u0010\u0015\u0015\u000D\u0018\u000E\u0017\u001E\u0002\u0018\u0010\u001A\u001F\u0011\u0017\u000D\u0013\u0002\u000F\u0002\u0015\u000D\u0018\u0019\u0015\u0013\u0011!\u000D\u0002\u0016\u000D\u0013\u0018\u000D\u0012\u000E\u0002\u001F\u000F\u0015\u0013\u000D\u0015A"));
+                Console.WriteLine(_Cce.ToUnicode("?'0E\u0002\u0012\u0010\u000E\u0002\u000F\u0002%\u0019\u0011\u0012\u000DA"));
                 return null;
             }))();
         return null;

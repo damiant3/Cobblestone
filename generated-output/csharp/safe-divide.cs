@@ -59,12 +59,12 @@ public static class Codex_safe_divide
 {
     public static Result safe_divide(long x, long y)
     {
-        return ((y == 0L) ? new Failure("\u001B\u0016&\u0016\u0018\u0016\u0015\u0017\u0004%#\u0004+\u0012\u001A\u0015") : new Success((x / y)));
+        return ((y == 0L) ? new Failure("\u0016\u0011!\u0011\u0013\u0011\u0010\u0012\u0002 \u001E\u0002&\u000D\u0015\u0010") : new Success((x / y)));
     }
 
     public static string describe(Result result)
     {
-        return ((Func<Result, string>)((_scrutinee0_) => (_scrutinee0_ is Success _mSuccess0_ ? ((Func<long, string>)((n) => string.Concat("\"\u0015\u0013\u0004", _Cce.FromUnicode(Convert.ToString(n)))))((long)_mSuccess0_.Field0) : (_scrutinee0_ is Failure _mFailure0_ ? ((Func<string, string>)((msg) => string.Concat("\u0012\u001A\u001A\u0015\u001AJ\u0004", msg)))((string)_mFailure0_.Field0) : throw new InvalidOperationException("Non-exhaustive match")))))(result);
+        return ((Func<Result, string>)((_scrutinee0_) => (_scrutinee0_ is Success _mSuccess0_ ? ((Func<long, string>)((n) => string.Concat("\u001D\u0010\u000E\u0002", _Cce.FromUnicode(Convert.ToString(n)))))((long)_mSuccess0_.Field0) : (_scrutinee0_ is Failure _mFailure0_ ? ((Func<string, string>)((msg) => string.Concat("\u000D\u0015\u0015\u0010\u0015E\u0002", msg)))((string)_mFailure0_.Field0) : throw new InvalidOperationException("Non-exhaustive match")))))(result);
     }
 
     public static string main()

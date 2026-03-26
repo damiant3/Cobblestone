@@ -54,12 +54,12 @@ public static class Codex_prose_greeting
 {
     public static string greet(string name)
     {
-        return string.Concat("3\u0012\u001C\u001C\u0015G\u0004", name, "H");
+        return string.Concat(".\u000D\u0017\u0017\u0010B\u0002", name, "C");
     }
 
     public static string main()
     {
-        return greet(":\u0015\u001A\u001C\u001B");
+        return greet("5\u0010\u0015\u0017\u0016");
     }
 
 }

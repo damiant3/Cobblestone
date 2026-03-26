@@ -160,12 +160,12 @@ public static class Codex_is_prime_fancy
 
     public static string join_with_spaces(List<string> xs, long i, long len)
     {
-        return ((i == len) ? "" : ((i == (len - 1L)) ? xs[(int)i] : string.Concat(xs[(int)i], "\u0004", join_with_spaces(xs, (i + 1L), len))));
+        return ((i == len) ? "" : ((i == (len - 1L)) ? xs[(int)i] : string.Concat(xs[(int)i], "\u0002", join_with_spaces(xs, (i + 1L), len))));
     }
 
     public static string main()
     {
-        return ((Func<List<long>, string>)((candidates) => ((Func<List<string>, string>)((primes) => string.Concat(">\u001A\u0016\u001F\u0012\u0018\u0004\u001E$\u0004\u0013\u0015\u0004\u000D\u0008J\u0004", join_with_spaces(primes, 0L, ((long)primes.Count)))))(collect_primes(candidates, 0L, ((long)candidates.Count)))))(range(2L, 50L));
+        return ((Func<List<long>, string>)((candidates) => ((Func<List<string>, string>)((primes) => string.Concat("9\u0015\u0011\u001A\u000D\u0013\u0002\u0019\u001F\u0002\u000E\u0010\u0002\u0008\u0003E\u0002", join_with_spaces(primes, 0L, ((long)primes.Count)))))(collect_primes(candidates, 0L, ((long)candidates.Count)))))(range(2L, 50L));
     }
 
 }

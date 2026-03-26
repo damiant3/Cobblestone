@@ -59,13 +59,13 @@ public static class Codex_stage1_test
 
     public static string greet(string name)
     {
-        return string.Concat("3\u0012\u001C\u001C\u0015G\u0004", name, "H");
+        return string.Concat(".\u000D\u0017\u0017\u0010B\u0002", name, "C");
     }
 
     public static object main()
     {
         ((Func<object>)(() => {
-                Console.WriteLine(_Cce.ToUnicode(greet("7\u0015\u001B\u0012)")));
+                Console.WriteLine(_Cce.ToUnicode(greet("2\u0010\u0016\u000D$")));
                 Console.WriteLine(_Cce.ToUnicode(_Cce.FromUnicode(Convert.ToString(square(7L)))));
                 return null;
             }))();

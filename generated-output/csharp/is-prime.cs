@@ -85,7 +85,7 @@ public static class Codex_is_prime
 
     public static string main()
     {
-        return ((Func<bool, string>)((a) => ((Func<bool, string>)((b) => ((Func<bool, string>)((c) => ((Func<bool, string>)((d) => string.Concat(_Cce.FromUnicode(Convert.ToString(a)), "\u0004", _Cce.FromUnicode(Convert.ToString(b)), "\u0004", _Cce.FromUnicode(Convert.ToString(c)), "\u0004", _Cce.FromUnicode(Convert.ToString(d)))))(is_prime(97L))))(is_prime(49L))))(is_prime(17L))))(is_prime(2L));
+        return ((Func<bool, string>)((a) => ((Func<bool, string>)((b) => ((Func<bool, string>)((c) => ((Func<bool, string>)((d) => string.Concat(_Cce.FromUnicode(Convert.ToString(a)), "\u0002", _Cce.FromUnicode(Convert.ToString(b)), "\u0002", _Cce.FromUnicode(Convert.ToString(c)), "\u0002", _Cce.FromUnicode(Convert.ToString(d)))))(is_prime(97L))))(is_prime(49L))))(is_prime(17L))))(is_prime(2L));
     }
 
 }

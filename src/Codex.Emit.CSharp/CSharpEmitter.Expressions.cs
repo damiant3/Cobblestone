@@ -220,28 +220,28 @@ public sealed partial class CSharpEmitter
         }
         else if (app.Function is IRName fn8 && fn8.Name == "is-letter")
         {
-            // CCE: letters are 18-69
+            // CCE: letters are 13-64
             sb.Append('(');
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(" >= 18L && ");
+            sb.Append(" >= 13L && ");
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(" <= 69L)");
+            sb.Append(" <= 64L)");
         }
         else if (app.Function is IRName fn9 && fn9.Name == "is-digit")
         {
-            // CCE: digits are 8-17
+            // CCE: digits are 3-12
             sb.Append('(');
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(" >= 8L && ");
+            sb.Append(" >= 3L && ");
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(" <= 17L)");
+            sb.Append(" <= 12L)");
         }
         else if (app.Function is IRName fn10 && fn10.Name == "is-whitespace")
         {
-            // CCE: whitespace is 0-7
+            // CCE: whitespace is 0-2
             sb.Append('(');
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(" <= 7L)");
+            sb.Append(" <= 2L)");
         }
         else if (app.Function is IRName fn11 && fn11.Name == "text-to-integer")
         {

@@ -56,12 +56,12 @@ public static class Codex_person
 {
     public static string greet(Person p)
     {
-        return string.Concat("3\u0012\u001C\u001C\u0015G\u0004", p.name, "H");
+        return string.Concat(".\u000D\u0017\u0017\u0010B\u0002", p.name, "C");
     }
 
     public static string main()
     {
-        return greet(new Person(".\u001C\u0016\u001D\u0012", 30L));
+        return greet(new Person(")\u0017\u0011\u0018\u000D", 30L));
     }
 
 }

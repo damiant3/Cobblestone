@@ -6,12 +6,12 @@ using System.Threading.Tasks;
 
 Console.WriteLine(Codex_prose_banking.main());
 
+public sealed record Account(string owner, long balance);
+
 public abstract record Transactionresult;
 
 public sealed record Success(long Field0) : Transactionresult;
 public sealed record Insufficientfunds(long Field0, long Field1) : Transactionresult;
-
-public sealed record Account(string owner, long balance);
 
 static class _Cce {
     static readonly int[] _toUni = {
@@ -71,7 +71,7 @@ public static class Codex_prose_banking
 
     public static string main()
     {
-        return "?\u0014\u0017'\u0016\u0017\"\u0004\u001F\u0015\u001B\u001E\u001C\u0012\u0004\u001C\u0015\u0014\u001B\u0012\u001B";
+        return ":\u000F\u0012\"\u0011\u0012\u001D\u0002\u001A\u0010\u0016\u0019\u0017\u000D\u0002\u0017\u0010\u000F\u0016\u000D\u0016";
     }
 
 }
