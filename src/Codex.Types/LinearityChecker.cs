@@ -93,6 +93,26 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
                 }
                 break;
 
+            case ApplyExpr app when app.Argument is LambdaExpr argLam:
+                // Lambda passed as argument — check if the function's parameter is linear.
+                // If so, the callee guarantees exactly-once consumption (like direct application).
+                {
+                    CheckExpr(app.Function);
+                    CodexType? funcType = TryResolveExprType(app.Function);
+                    if (funcType is FunctionType ft && ft.Parameter is LinearType)
+                    {
+                        HashSet<string> captured = CheckLambdaExpr(argLam);
+                        foreach (string name in captured)
+                            RecordUsage(name, app.Span);
+                    }
+                    else
+                    {
+                        // Can't verify linearity — fall through to normal lambda check
+                        CheckExpr(app.Argument);
+                    }
+                }
+                break;
+
             case ApplyExpr app:
                 CheckExpr(app.Function);
                 CheckExpr(app.Argument);
@@ -379,5 +399,24 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
                     span);
             }
         }
+    }
+
+    /// <summary>
+    /// Try to resolve the type of an expression from the type map.
+    /// Handles names and curried applications (peeling FunctionType layers).
+    /// Returns null if the type cannot be determined statically.
+    /// </summary>
+    CodexType? TryResolveExprType(Expr expr)
+    {
+        return expr switch
+        {
+            NameExpr name => m_typeMap[name.Name.Value],
+            ApplyExpr app => TryResolveExprType(app.Function) switch
+            {
+                FunctionType ft => ft.Return,
+                _ => null
+            },
+            _ => null
+        };
     }
 }
