@@ -638,7 +638,7 @@ public static class Codex_Codex_Codex
 
     public static List<T226> map_list<T216, T226>(Func<T216, T226> f, List<T216> xs) => map_list_loop(f, xs, 0, ((long)xs.Count), new List<T226>());
 
-    public static List<T239> map_list_loop<T238, T239>(Func<T238, T239> f, List<T238> xs, long i, long len, List<T239> acc)
+    public static List<T241> map_list_loop<T240, T241>(Func<T240, T241> f, List<T240> xs, long i, long len, List<T241> acc)
     {
         while (true)
         {
@@ -652,7 +652,7 @@ public static class Codex_Codex_Codex
             var _tco_1 = xs;
             var _tco_2 = (i + 1);
             var _tco_3 = len;
-            var _tco_4 = Enumerable.Concat(acc, new List<T239> { f(xs[(int)i]) }).ToList();
+            var _tco_4 = ((Func<List<T241>>)(() => { var _l = acc; _l.Add(f(xs[(int)i])); return _l; }))();
             f = _tco_0;
             xs = _tco_1;
             i = _tco_2;
@@ -663,9 +663,9 @@ public static class Codex_Codex_Codex
         }
     }
 
-    public static T251 fold_list<T251, T242>(Func<T251, Func<T242, T251>> f, T251 z, List<T242> xs) => fold_list_loop(f, z, xs, 0, ((long)xs.Count));
+    public static T254 fold_list<T254, T245>(Func<T254, Func<T245, T254>> f, T254 z, List<T245> xs) => fold_list_loop(f, z, xs, 0, ((long)xs.Count));
 
-    public static T265 fold_list_loop<T265, T260>(Func<T265, Func<T260, T265>> f, T265 z, List<T260> xs, long i, long len)
+    public static T268 fold_list_loop<T268, T263>(Func<T268, Func<T263, T268>> f, T268 z, List<T263> xs, long i, long len)
     {
         while (true)
         {
@@ -686,6 +686,124 @@ public static class Codex_Codex_Codex
             i = _tco_3;
             len = _tco_4;
             continue;
+            }
+        }
+    }
+
+    public static long bsearch_text_pos(List<TypeBinding> bindings, string name, long lo, long hi)
+    {
+        while (true)
+        {
+            if ((lo >= hi))
+            {
+            return lo;
+            }
+            else
+            {
+            var mid = (lo + ((hi - lo) / 2));
+            var mid_name = bindings[(int)mid].name;
+            if (((long)string.CompareOrdinal(name, mid_name) <= 0))
+            {
+            var _tco_0 = bindings;
+            var _tco_1 = name;
+            var _tco_2 = lo;
+            var _tco_3 = mid;
+            bindings = _tco_0;
+            name = _tco_1;
+            lo = _tco_2;
+            hi = _tco_3;
+            continue;
+            }
+            else
+            {
+            var _tco_0 = bindings;
+            var _tco_1 = name;
+            var _tco_2 = (mid + 1);
+            var _tco_3 = hi;
+            bindings = _tco_0;
+            name = _tco_1;
+            lo = _tco_2;
+            hi = _tco_3;
+            continue;
+            }
+            }
+        }
+    }
+
+    public static long bsearch_int_pos(List<SubstEntry> entries, long key, long lo, long hi)
+    {
+        while (true)
+        {
+            if ((lo >= hi))
+            {
+            return lo;
+            }
+            else
+            {
+            var mid = (lo + ((hi - lo) / 2));
+            if ((key <= entries[(int)mid].var_id))
+            {
+            var _tco_0 = entries;
+            var _tco_1 = key;
+            var _tco_2 = lo;
+            var _tco_3 = mid;
+            entries = _tco_0;
+            key = _tco_1;
+            lo = _tco_2;
+            hi = _tco_3;
+            continue;
+            }
+            else
+            {
+            var _tco_0 = entries;
+            var _tco_1 = key;
+            var _tco_2 = (mid + 1);
+            var _tco_3 = hi;
+            entries = _tco_0;
+            key = _tco_1;
+            lo = _tco_2;
+            hi = _tco_3;
+            continue;
+            }
+            }
+        }
+    }
+
+    public static long bsearch_text_set(List<string> names, string name, long lo, long hi)
+    {
+        while (true)
+        {
+            if ((lo >= hi))
+            {
+            return lo;
+            }
+            else
+            {
+            var mid = (lo + ((hi - lo) / 2));
+            if (((long)string.CompareOrdinal(name, names[(int)mid]) <= 0))
+            {
+            var _tco_0 = names;
+            var _tco_1 = name;
+            var _tco_2 = lo;
+            var _tco_3 = mid;
+            names = _tco_0;
+            name = _tco_1;
+            lo = _tco_2;
+            hi = _tco_3;
+            continue;
+            }
+            else
+            {
+            var _tco_0 = names;
+            var _tco_1 = name;
+            var _tco_2 = (mid + 1);
+            var _tco_3 = hi;
+            names = _tco_0;
+            name = _tco_1;
+            lo = _tco_2;
+            hi = _tco_3;
+            continue;
+            }
             }
         }
     }
@@ -1220,9 +1338,9 @@ public static class Codex_Codex_Codex
 
     public static string emit_partial_wrappers(long i, long count) => ((i == count) ? "" : ("(_p" + ((i).ToString() + ("_) => " + emit_partial_wrappers((i + 1), count)))));
 
-    public static bool is_builtin_name(string n) => ((n == "show") ? true : ((n == "negate") ? true : ((n == "print-line") ? true : ((n == "text-length") ? true : ((n == "is-letter") ? true : ((n == "is-digit") ? true : ((n == "is-whitespace") ? true : ((n == "text-to-integer") ? true : ((n == "integer-to-text") ? true : ((n == "char-code") ? true : ((n == "char-code-at") ? true : ((n == "code-to-char") ? true : ((n == "char-to-text") ? true : ((n == "list-length") ? true : ((n == "char-at") ? true : ((n == "substring") ? true : ((n == "list-at") ? true : ((n == "text-replace") ? true : ((n == "open-file") ? true : ((n == "read-all") ? true : ((n == "close-file") ? true : ((n == "read-line") ? true : ((n == "read-file") ? true : ((n == "write-file") ? true : ((n == "file-exists") ? true : ((n == "list-files") ? true : ((n == "text-split") ? true : ((n == "text-contains") ? true : ((n == "text-starts-with") ? true : ((n == "get-args") ? true : ((n == "get-env") ? true : ((n == "current-dir") ? true : ((n == "run-process") ? true : ((n == "fork") ? true : ((n == "await") ? true : ((n == "par") ? true : ((n == "race") ? true : false)))))))))))))))))))))))))))))))))))));
+    public static bool is_builtin_name(string n) => ((n == "show") ? true : ((n == "negate") ? true : ((n == "print-line") ? true : ((n == "text-length") ? true : ((n == "is-letter") ? true : ((n == "is-digit") ? true : ((n == "is-whitespace") ? true : ((n == "text-to-integer") ? true : ((n == "integer-to-text") ? true : ((n == "char-code") ? true : ((n == "char-code-at") ? true : ((n == "code-to-char") ? true : ((n == "char-to-text") ? true : ((n == "list-length") ? true : ((n == "char-at") ? true : ((n == "substring") ? true : ((n == "list-at") ? true : ((n == "list-insert-at") ? true : ((n == "list-snoc") ? true : ((n == "text-compare") ? true : ((n == "text-replace") ? true : ((n == "open-file") ? true : ((n == "read-all") ? true : ((n == "close-file") ? true : ((n == "read-line") ? true : ((n == "read-file") ? true : ((n == "write-file") ? true : ((n == "file-exists") ? true : ((n == "list-files") ? true : ((n == "text-split") ? true : ((n == "text-contains") ? true : ((n == "text-starts-with") ? true : ((n == "get-args") ? true : ((n == "get-env") ? true : ((n == "current-dir") ? true : ((n == "run-process") ? true : ((n == "fork") ? true : ((n == "await") ? true : ((n == "par") ? true : ((n == "race") ? true : false))))))))))))))))))))))))))))))))))))))));
 
-    public static string emit_builtin(string n, List<IRExpr> args, List<ArityEntry> arities) => ((n == "show") ? ("Convert.ToString(" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "negate") ? ("(-" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "print-line") ? ("Console.WriteLine(" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "text-length") ? ("((long)" + (emit_expr(args[(int)0], arities) + ".Length)")) : ((n == "is-letter") ? ("char.IsLetter((char)" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "is-digit") ? ("char.IsDigit((char)" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "is-whitespace") ? ("char.IsWhiteSpace((char)" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "text-to-integer") ? ("long.Parse(" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "integer-to-text") ? ("(" + (emit_expr(args[(int)0], arities) + ").ToString()")) : ((n == "char-code") ? emit_expr(args[(int)0], arities) : ((n == "char-code-at") ? ("((long)" + (emit_expr(args[(int)0], arities) + ("[(int)" + (emit_expr(args[(int)1], arities) + "])")))) : ((n == "code-to-char") ? emit_expr(args[(int)0], arities) : ((n == "char-to-text") ? ("((char)" + (emit_expr(args[(int)0], arities) + ").ToString()")) : ((n == "list-length") ? ("((long)" + (emit_expr(args[(int)0], arities) + ".Count)")) : ((n == "char-at") ? ("((long)" + (emit_expr(args[(int)0], arities) + ("[(int)" + (emit_expr(args[(int)1], arities) + "])")))) : ((n == "substring") ? (emit_expr(args[(int)0], arities) + (".Substring((int)" + (emit_expr(args[(int)1], arities) + (", (int)" + (emit_expr(args[(int)2], arities) + ")"))))) : ((n == "list-at") ? (emit_expr(args[(int)0], arities) + ("[(int)" + (emit_expr(args[(int)1], arities) + "]"))) : ((n == "text-replace") ? (emit_expr(args[(int)0], arities) + (".Replace(" + (emit_expr(args[(int)1], arities) + (", " + (emit_expr(args[(int)2], arities) + ")"))))) : ((n == "open-file") ? ("File.OpenRead(" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "read-all") ? ("new System.IO.StreamReader(" + (emit_expr(args[(int)0], arities) + ").ReadToEnd()")) : ((n == "close-file") ? (emit_expr(args[(int)0], arities) + ".Dispose()") : ((n == "read-line") ? "Console.ReadLine()" : ((n == "read-file") ? ("File.ReadAllText(" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "write-file") ? ("File.WriteAllText(" + (emit_expr(args[(int)0], arities) + (", " + (emit_expr(args[(int)1], arities) + ")")))) : ((n == "file-exists") ? ("File.Exists(" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "list-files") ? ("new List<string>(Directory.GetFiles(" + (emit_expr(args[(int)0], arities) + (", " + (emit_expr(args[(int)1], arities) + "))")))) : ((n == "text-split") ? ("new List<string>(" + (emit_expr(args[(int)0], arities) + (".Split(" + (emit_expr(args[(int)1], arities) + "))")))) : ((n == "text-contains") ? (emit_expr(args[(int)0], arities) + (".Contains(" + (emit_expr(args[(int)1], arities) + ")"))) : ((n == "text-starts-with") ? (emit_expr(args[(int)0], arities) + (".StartsWith(" + (emit_expr(args[(int)1], arities) + ")"))) : ((n == "get-args") ? "new List<string>(Environment.GetCommandLineArgs())" : ((n == "get-env") ? ("(Environment.GetEnvironmentVariable(" + (emit_expr(args[(int)0], arities) + ") ?? \"\")")) : ((n == "run-process") ? ("((Func<string>)(() => { var _psi = new System.Diagnostics.ProcessStartInfo(" + (emit_expr(args[(int)0], arities) + (", " + (emit_expr(args[(int)1], arities) + ") { RedirectStandardOutput = true, UseShellExecute = false }; var _p = System.Diagnostics.Process.Start(_psi)!; var _o = _p.StandardOutput.ReadToEnd(); _p.WaitForExit(); return _o; }))()")))) : ((n == "current-dir") ? "Directory.GetCurrentDirectory()" : ((n == "fork") ? ("Task.Run(() => (" + (emit_expr(args[(int)0], arities) + ")(null))")) : ((n == "await") ? ("(" + (emit_expr(args[(int)0], arities) + ").Result")) : ((n == "par") ? ("Task.WhenAll(" + (emit_expr(args[(int)1], arities) + (".Select(_x_ => Task.Run(() => (" + (emit_expr(args[(int)0], arities) + ")(_x_)))).Result.ToList()")))) : ((n == "race") ? ("Task.WhenAny(" + (emit_expr(args[(int)0], arities) + ".Select(_t_ => Task.Run(() => _t_(null)))).Result.Result")) : "")))))))))))))))))))))))))))))))))))));
+    public static string emit_builtin(string n, List<IRExpr> args, List<ArityEntry> arities) => ((n == "show") ? ("Convert.ToString(" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "negate") ? ("(-" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "print-line") ? ("Console.WriteLine(" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "text-length") ? ("((long)" + (emit_expr(args[(int)0], arities) + ".Length)")) : ((n == "is-letter") ? ("char.IsLetter((char)" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "is-digit") ? ("char.IsDigit((char)" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "is-whitespace") ? ("char.IsWhiteSpace((char)" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "text-to-integer") ? ("long.Parse(" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "integer-to-text") ? ("(" + (emit_expr(args[(int)0], arities) + ").ToString()")) : ((n == "char-code") ? emit_expr(args[(int)0], arities) : ((n == "char-code-at") ? ("((long)" + (emit_expr(args[(int)0], arities) + ("[(int)" + (emit_expr(args[(int)1], arities) + "])")))) : ((n == "code-to-char") ? emit_expr(args[(int)0], arities) : ((n == "char-to-text") ? ("((char)" + (emit_expr(args[(int)0], arities) + ").ToString()")) : ((n == "list-length") ? ("((long)" + (emit_expr(args[(int)0], arities) + ".Count)")) : ((n == "char-at") ? ("((long)" + (emit_expr(args[(int)0], arities) + ("[(int)" + (emit_expr(args[(int)1], arities) + "])")))) : ((n == "substring") ? (emit_expr(args[(int)0], arities) + (".Substring((int)" + (emit_expr(args[(int)1], arities) + (", (int)" + (emit_expr(args[(int)2], arities) + ")"))))) : ((n == "list-at") ? (emit_expr(args[(int)0], arities) + ("[(int)" + (emit_expr(args[(int)1], arities) + "]"))) : ((n == "list-insert-at") ? ((Func<CodexType, string>)((elem_ty) => ("((Func<List<" + (cs_type(elem_ty) + (">>)(() => { var _l = new List<" + (cs_type(elem_ty) + (">(" + (emit_expr(args[(int)0], arities) + ("); _l.Insert((int)" + (emit_expr(args[(int)1], arities) + (", " + (emit_expr(args[(int)2], arities) + "); return _l; }))()"))))))))))))(ir_expr_type(args[(int)0]) switch { ListTy(var et) => et, _ => new ErrorTy(), }) : ((n == "list-snoc") ? ((Func<CodexType, string>)((elem_ty) => ("((Func<List<" + (cs_type(elem_ty) + (">>)(() => { var _l = " + (emit_expr(args[(int)0], arities) + ("; _l.Add(" + (emit_expr(args[(int)1], arities) + "); return _l; }))()"))))))))(ir_expr_type(args[(int)0]) switch { ListTy(var et) => et, _ => new ErrorTy(), }) : ((n == "text-compare") ? ("(long)string.CompareOrdinal(" + (emit_expr(args[(int)0], arities) + (", " + (emit_expr(args[(int)1], arities) + ")")))) : ((n == "text-replace") ? (emit_expr(args[(int)0], arities) + (".Replace(" + (emit_expr(args[(int)1], arities) + (", " + (emit_expr(args[(int)2], arities) + ")"))))) : ((n == "open-file") ? ("File.OpenRead(" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "read-all") ? ("new System.IO.StreamReader(" + (emit_expr(args[(int)0], arities) + ").ReadToEnd()")) : ((n == "close-file") ? (emit_expr(args[(int)0], arities) + ".Dispose()") : ((n == "read-line") ? "Console.ReadLine()" : ((n == "read-file") ? ("File.ReadAllText(" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "write-file") ? ("File.WriteAllText(" + (emit_expr(args[(int)0], arities) + (", " + (emit_expr(args[(int)1], arities) + ")")))) : ((n == "file-exists") ? ("File.Exists(" + (emit_expr(args[(int)0], arities) + ")")) : ((n == "list-files") ? ("new List<string>(Directory.GetFiles(" + (emit_expr(args[(int)0], arities) + (", " + (emit_expr(args[(int)1], arities) + "))")))) : ((n == "text-split") ? ("new List<string>(" + (emit_expr(args[(int)0], arities) + (".Split(" + (emit_expr(args[(int)1], arities) + "))")))) : ((n == "text-contains") ? (emit_expr(args[(int)0], arities) + (".Contains(" + (emit_expr(args[(int)1], arities) + ")"))) : ((n == "text-starts-with") ? (emit_expr(args[(int)0], arities) + (".StartsWith(" + (emit_expr(args[(int)1], arities) + ")"))) : ((n == "get-args") ? "new List<string>(Environment.GetCommandLineArgs())" : ((n == "get-env") ? ("(Environment.GetEnvironmentVariable(" + (emit_expr(args[(int)0], arities) + ") ?? \"\")")) : ((n == "run-process") ? ("((Func<string>)(() => { var _psi = new System.Diagnostics.ProcessStartInfo(" + (emit_expr(args[(int)0], arities) + (", " + (emit_expr(args[(int)1], arities) + ") { RedirectStandardOutput = true, UseShellExecute = false }; var _p = System.Diagnostics.Process.Start(_psi)!; var _o = _p.StandardOutput.ReadToEnd(); _p.WaitForExit(); return _o; }))()")))) : ((n == "current-dir") ? "Directory.GetCurrentDirectory()" : ((n == "fork") ? ("Task.Run(() => (" + (emit_expr(args[(int)0], arities) + ")(null))")) : ((n == "await") ? ("(" + (emit_expr(args[(int)0], arities) + ").Result")) : ((n == "par") ? ("Task.WhenAll(" + (emit_expr(args[(int)1], arities) + (".Select(_x_ => Task.Run(() => (" + (emit_expr(args[(int)0], arities) + ")(_x_)))).Result.ToList()")))) : ((n == "race") ? ("Task.WhenAny(" + (emit_expr(args[(int)0], arities) + ".Select(_t_ => Task.Run(() => _t_(null)))).Result.Result")) : ""))))))))))))))))))))))))))))))))))))))));
 
     public static string emit_apply(IRExpr e, List<ArityEntry> arities) => ((Func<ApplyChain, string>)((chain) => ((Func<IRExpr, string>)((root) => ((Func<List<IRExpr>, string>)((args) => root switch { IrName(var n, var ty) => (is_builtin_name(n) ? emit_builtin(n, args, arities) : (((((long)n.Length) > 0) && is_upper_letter(((long)n[(int)0]))) ? ((Func<CodexType, string>)((result_ty) => ((Func<string, string>)((ctor_type_args) => ("new " + (sanitize(n) + (ctor_type_args + ("(" + (emit_apply_args(args, arities, 0) + ")")))))))(extract_ctor_type_args(result_ty))))(ir_expr_type(e)) : ((Func<long, string>)((ar) => (((ar > 1) && (((long)args.Count) == ar)) ? (sanitize(n) + ("(" + (emit_apply_args(args, arities, 0) + ")"))) : (((ar > 1) && (((long)args.Count) < ar)) ? ((Func<long, string>)((remaining) => (emit_partial_wrappers(0, remaining) + (sanitize(n) + ("(" + (emit_apply_args(args, arities, 0) + (", " + (emit_partial_params(0, remaining) + ")"))))))))((ar - ((long)args.Count))) : emit_expr_curried(e, arities)))))(lookup_arity(arities, n)))), _ => emit_expr_curried(e, arities), }))(chain.args)))(chain.root)))(collect_apply_chain(e, new List<IRExpr>()));
 
@@ -1859,7 +1977,7 @@ public static class Codex_Codex_Codex
             var _tco_1 = result_ty;
             var _tco_2 = (i + 1);
             var _tco_3 = len;
-            var _tco_4 = Enumerable.Concat(acc, new List<TypeBinding> { new TypeBinding(name: ctor.name.value, bound_type: ctor_ty) }).ToList();
+            var _tco_4 = ((Func<List<TypeBinding>>)(() => { var _l = acc; _l.Add(new TypeBinding(name: ctor.name.value, bound_type: ctor_ty)); return _l; }))();
             ctors = _tco_0;
             result_ty = _tco_1;
             i = _tco_2;
@@ -1887,7 +2005,7 @@ public static class Codex_Codex_Codex
             var _tco_0 = fields;
             var _tco_1 = (i + 1);
             var _tco_2 = len;
-            var _tco_3 = Enumerable.Concat(acc, new List<RecordField> { rfield }).ToList();
+            var _tco_3 = ((Func<List<RecordField>>)(() => { var _l = acc; _l.Add(rfield); return _l; }))();
             fields = _tco_0;
             i = _tco_1;
             len = _tco_2;
@@ -1907,41 +2025,11 @@ public static class Codex_Codex_Codex
 
     public static Scope empty_scope() => new Scope(names: new List<string>());
 
-    public static bool scope_has(Scope sc, string name) => scope_has_loop(sc.names, name, 0, ((long)sc.names.Count));
+    public static bool scope_has(Scope sc, string name) => ((Func<long, bool>)((len) => ((len == 0) ? false : ((Func<long, bool>)((pos) => ((pos >= len) ? false : (sc.names[(int)pos] == name))))(bsearch_text_set(sc.names, name, 0, len)))))(((long)sc.names.Count));
 
-    public static bool scope_has_loop(List<string> names, string name, long i, long len)
-    {
-        while (true)
-        {
-            if ((i == len))
-            {
-            return false;
-            }
-            else
-            {
-            if ((names[(int)i] == name))
-            {
-            return true;
-            }
-            else
-            {
-            var _tco_0 = names;
-            var _tco_1 = name;
-            var _tco_2 = (i + 1);
-            var _tco_3 = len;
-            names = _tco_0;
-            name = _tco_1;
-            i = _tco_2;
-            len = _tco_3;
-            continue;
-            }
-            }
-        }
-    }
+    public static Scope scope_add(Scope sc, string name) => ((Func<long, Scope>)((len) => ((Func<long, Scope>)((pos) => new Scope(names: ((Func<List<string>>)(() => { var _l = new List<string>(sc.names); _l.Insert((int)pos, name); return _l; }))())))(bsearch_text_set(sc.names, name, 0, len))))(((long)sc.names.Count));
 
-    public static Scope scope_add(Scope sc, string name) => new Scope(names: Enumerable.Concat(new List<string> { name }, sc.names).ToList());
-
-    public static List<string> builtin_names() => new List<string> { "show", "negate", "True", "False", "Nothing", "print-line", "read-line", "read-file", "write-file", "file-exists", "list-files", "open-file", "read-all", "close-file", "char-at", "char-to-text", "text-length", "substring", "is-letter", "is-digit", "is-whitespace", "text-to-integer", "integer-to-text", "text-replace", "text-split", "text-contains", "text-starts-with", "char-code", "char-code-at", "code-to-char", "list-length", "list-at", "get-args", "get-env", "current-dir", "map", "filter", "fold" };
+    public static List<string> builtin_names() => new List<string> { "show", "negate", "True", "False", "Nothing", "print-line", "read-line", "read-file", "write-file", "file-exists", "list-files", "open-file", "read-all", "close-file", "char-at", "char-to-text", "text-length", "substring", "is-letter", "is-digit", "is-whitespace", "text-to-integer", "integer-to-text", "text-replace", "text-split", "text-contains", "text-starts-with", "char-code", "char-code-at", "code-to-char", "list-length", "list-at", "list-insert-at", "list-snoc", "text-compare", "get-args", "get-env", "current-dir", "map", "filter", "fold" };
 
     public static bool is_type_name(string name) => ((((long)name.Length) == 0) ? false : (char.IsLetter((char)((long)name[(int)0])) && is_upper_char(((long)name[(int)0]))));
 
@@ -1975,10 +2063,11 @@ public static class Codex_Codex_Codex
             }
             else
             {
+            var pos = bsearch_text_set(acc, name, 0, ((long)acc.Count));
             var _tco_0 = defs;
             var _tco_1 = (i + 1);
             var _tco_2 = len;
-            var _tco_3 = Enumerable.Concat(acc, new List<string> { name }).ToList();
+            var _tco_3 = ((Func<List<string>>)(() => { var _l = new List<string>(acc); _l.Insert((int)pos, name); return _l; }))();
             var _tco_4 = errs;
             defs = _tco_0;
             i = _tco_1;
@@ -1991,37 +2080,7 @@ public static class Codex_Codex_Codex
         }
     }
 
-    public static bool list_contains(List<string> xs, string name) => list_contains_loop(xs, name, 0, ((long)xs.Count));
-
-    public static bool list_contains_loop(List<string> xs, string name, long i, long len)
-    {
-        while (true)
-        {
-            if ((i == len))
-            {
-            return false;
-            }
-            else
-            {
-            if ((xs[(int)i] == name))
-            {
-            return true;
-            }
-            else
-            {
-            var _tco_0 = xs;
-            var _tco_1 = name;
-            var _tco_2 = (i + 1);
-            var _tco_3 = len;
-            xs = _tco_0;
-            name = _tco_1;
-            i = _tco_2;
-            len = _tco_3;
-            continue;
-            }
-            }
-        }
-    }
+    public static bool list_contains(List<string> xs, string name) => ((Func<long, bool>)((len) => ((len == 0) ? false : ((Func<long, bool>)((pos) => ((pos >= len) ? false : (xs[(int)pos] == name))))(bsearch_text_set(xs, name, 0, len)))))(((long)xs.Count));
 
     public static CtorCollectResult collect_ctor_names(List<ATypeDef> type_defs, long i, long len, List<string> type_acc, List<string> ctor_acc)
     {
@@ -2040,7 +2099,7 @@ public static class Codex_Codex_Codex
                 var name = _tco_m0.Field0;
                 var @params = _tco_m0.Field1;
                 var ctors = _tco_m0.Field2;
-            var new_type_acc = Enumerable.Concat(type_acc, new List<string> { name.value }).ToList();
+            var new_type_acc = ((Func<List<string>>)(() => { var _l = type_acc; _l.Add(name.value); return _l; }))();
             var new_ctor_acc = collect_variant_ctors(ctors, 0, ((long)ctors.Count), ctor_acc);
             var _tco_0 = type_defs;
             var _tco_1 = (i + 1);
@@ -2062,7 +2121,7 @@ public static class Codex_Codex_Codex
             var _tco_0 = type_defs;
             var _tco_1 = (i + 1);
             var _tco_2 = len;
-            var _tco_3 = Enumerable.Concat(type_acc, new List<string> { name.value }).ToList();
+            var _tco_3 = ((Func<List<string>>)(() => { var _l = type_acc; _l.Add(name.value); return _l; }))();
             var _tco_4 = ctor_acc;
             type_defs = _tco_0;
             i = _tco_1;
@@ -2089,7 +2148,7 @@ public static class Codex_Codex_Codex
             var _tco_0 = ctors;
             var _tco_1 = (i + 1);
             var _tco_2 = len;
-            var _tco_3 = Enumerable.Concat(acc, new List<string> { ctor.name.value }).ToList();
+            var _tco_3 = ((Func<List<string>>)(() => { var _l = acc; _l.Add(ctor.name.value); return _l; }))();
             ctors = _tco_0;
             i = _tco_1;
             len = _tco_2;
@@ -2926,12 +2985,12 @@ public static class Codex_Codex_Codex
                 var next = _tco_m0.Field1;
             if ((tok.kind == new EndOfFile()))
             {
-            return Enumerable.Concat(acc, new List<Token> { tok }).ToList();
+            return ((Func<List<Token>>)(() => { var _l = acc; _l.Add(tok); return _l; }))();
             }
             else
             {
             var _tco_0 = next;
-            var _tco_1 = Enumerable.Concat(acc, new List<Token> { tok }).ToList();
+            var _tco_1 = ((Func<List<Token>>)(() => { var _l = acc; _l.Add(tok); return _l; }))();
             st = _tco_0;
             acc = _tco_1;
             continue;
@@ -2939,7 +2998,7 @@ public static class Codex_Codex_Codex
             }
             else if (_tco_s is LexEnd _tco_m1)
             {
-            return Enumerable.Concat(acc, new List<Token> { make_token(new EndOfFile(), "", st) }).ToList();
+            return ((Func<List<Token>>)(() => { var _l = acc; _l.Add(make_token(new EndOfFile(), "", st)); return _l; }))();
             }
         }
     }
@@ -2996,7 +3055,7 @@ public static class Codex_Codex_Codex
 
     public static ParsePatResult parse_ctor_pattern_fields(Token ctor, List<Pat> acc, ParseState st) => (is_left_paren(current_kind(st)) ? ((Func<ParseState, ParsePatResult>)((st2) => ((Func<ParsePatResult, ParsePatResult>)((sub) => unwrap_pat_ok(sub, (_p0_) => (_p1_) => continue_ctor_fields(ctor, acc, _p0_, _p1_))))(parse_pattern(st2))))(advance(st)) : new PatOk(new CtorPat(ctor, acc), st));
 
-    public static ParsePatResult continue_ctor_fields(Token ctor, List<Pat> acc, Pat p, ParseState st) => ((Func<ParseState, ParsePatResult>)((st2) => parse_ctor_pattern_fields(ctor, Enumerable.Concat(acc, new List<Pat> { p }).ToList(), st2)))(expect(new RightParen(), st));
+    public static ParsePatResult continue_ctor_fields(Token ctor, List<Pat> acc, Pat p, ParseState st) => ((Func<ParseState, ParsePatResult>)((st2) => parse_ctor_pattern_fields(ctor, ((Func<List<Pat>>)(() => { var _l = acc; _l.Add(p); return _l; }))(), st2)))(expect(new RightParen(), st));
 
     public static ParsePatResult unwrap_pat_ok(ParsePatResult r, Func<Pat, Func<ParseState, ParsePatResult>> f) => r switch { PatOk(var p, var st) => f(p)(st), _ => throw new InvalidOperationException("Non-exhaustive match"), };
 
@@ -3024,7 +3083,7 @@ public static class Codex_Codex_Codex
             var st4 = expect(new RightParen(), st3);
             var _tco_0 = ann;
             var _tco_1 = name_tok;
-            var _tco_2 = Enumerable.Concat(acc, new List<Token> { param }).ToList();
+            var _tco_2 = ((Func<List<Token>>)(() => { var _l = acc; _l.Add(param); return _l; }))();
             var _tco_3 = st4;
             ann = _tco_0;
             name_tok = _tco_1;
@@ -3059,7 +3118,7 @@ public static class Codex_Codex_Codex
             if (is_paren_type_param(st))
             {
             var _tco_0 = advance(advance(advance(st)));
-            var _tco_1 = Enumerable.Concat(acc, new List<Token> { st.tokens[(int)(st.pos + 1)] }).ToList();
+            var _tco_1 = ((Func<List<Token>>)(() => { var _l = acc; _l.Add(st.tokens[(int)(st.pos + 1)]); return _l; }))();
             st = _tco_0;
             acc = _tco_1;
             continue;
@@ -3069,7 +3128,7 @@ public static class Codex_Codex_Codex
             if (is_ident(current_kind(st)))
             {
             var _tco_0 = advance(st);
-            var _tco_1 = Enumerable.Concat(acc, new List<Token> { current(st) }).ToList();
+            var _tco_1 = ((Func<List<Token>>)(() => { var _l = acc; _l.Add(current(st)); return _l; }))();
             st = _tco_0;
             acc = _tco_1;
             continue;
@@ -3089,7 +3148,7 @@ public static class Codex_Codex_Codex
             if (is_paren_type_param(st))
             {
             var _tco_0 = advance(advance(advance(st)));
-            var _tco_1 = Enumerable.Concat(acc, new List<Token> { st.tokens[(int)(st.pos + 1)] }).ToList();
+            var _tco_1 = ((Func<List<Token>>)(() => { var _l = acc; _l.Add(st.tokens[(int)(st.pos + 1)]); return _l; }))();
             st = _tco_0;
             acc = _tco_1;
             continue;
@@ -3099,7 +3158,7 @@ public static class Codex_Codex_Codex
             if (is_ident(current_kind(st)))
             {
             var _tco_0 = advance(st);
-            var _tco_1 = Enumerable.Concat(acc, new List<Token> { current(st) }).ToList();
+            var _tco_1 = ((Func<List<Token>>)(() => { var _l = acc; _l.Add(current(st)); return _l; }))();
             st = _tco_0;
             acc = _tco_1;
             continue;
@@ -3120,13 +3179,13 @@ public static class Codex_Codex_Codex
 
     public static ParseTypeDefResult parse_one_record_field(Token name_tok, List<Token> tparams, List<RecordFieldDef> acc, ParseState st) => ((Func<Token, ParseTypeDefResult>)((field_name) => ((Func<ParseState, ParseTypeDefResult>)((st2) => ((Func<ParseState, ParseTypeDefResult>)((st3) => ((Func<ParseTypeResult, ParseTypeDefResult>)((field_type_result) => unwrap_record_field_type(name_tok, tparams, acc, field_name, field_type_result)))(parse_type(st3))))(expect(new Colon(), st2))))(advance(st))))(current(st));
 
-    public static ParseTypeDefResult unwrap_record_field_type(Token name_tok, List<Token> tparams, List<RecordFieldDef> acc, Token field_name, ParseTypeResult r) => r switch { TypeOk(var ft, var st) => ((Func<RecordFieldDef, ParseTypeDefResult>)((field) => ((Func<ParseState, ParseTypeDefResult>)((st2) => (is_comma(current_kind(st2)) ? parse_record_fields_loop(name_tok, tparams, Enumerable.Concat(acc, new List<RecordFieldDef> { field }).ToList(), skip_newlines(advance(st2))) : parse_record_fields_loop(name_tok, tparams, Enumerable.Concat(acc, new List<RecordFieldDef> { field }).ToList(), st2))))(skip_newlines(st))))(new RecordFieldDef(name: field_name, type_expr: ft)), _ => throw new InvalidOperationException("Non-exhaustive match"), };
+    public static ParseTypeDefResult unwrap_record_field_type(Token name_tok, List<Token> tparams, List<RecordFieldDef> acc, Token field_name, ParseTypeResult r) => r switch { TypeOk(var ft, var st) => ((Func<RecordFieldDef, ParseTypeDefResult>)((field) => ((Func<ParseState, ParseTypeDefResult>)((st2) => (is_comma(current_kind(st2)) ? parse_record_fields_loop(name_tok, tparams, ((Func<List<RecordFieldDef>>)(() => { var _l = acc; _l.Add(field); return _l; }))(), skip_newlines(advance(st2))) : parse_record_fields_loop(name_tok, tparams, ((Func<List<RecordFieldDef>>)(() => { var _l = acc; _l.Add(field); return _l; }))(), st2))))(skip_newlines(st))))(new RecordFieldDef(name: field_name, type_expr: ft)), _ => throw new InvalidOperationException("Non-exhaustive match"), };
 
     public static ParseTypeDefResult parse_variant_type(Token name_tok, List<Token> tparams, ParseState st) => parse_variant_ctors(name_tok, tparams, new List<VariantCtorDef>(), st);
 
     public static ParseTypeDefResult parse_variant_ctors(Token name_tok, List<Token> tparams, List<VariantCtorDef> acc, ParseState st) => (is_pipe(current_kind(st)) ? ((Func<ParseState, ParseTypeDefResult>)((st2) => ((Func<Token, ParseTypeDefResult>)((ctor_name) => ((Func<ParseState, ParseTypeDefResult>)((st3) => parse_ctor_fields(ctor_name, new List<TypeExpr>(), st3, name_tok, tparams, acc)))(advance(st2))))(current(st2))))(skip_newlines(advance(st))) : new TypeDefOk(new TypeDef(name: name_tok, type_params: tparams, body: new VariantBody(acc)), st));
 
-    public static ParseTypeDefResult parse_ctor_fields(Token ctor_name, List<TypeExpr> fields, ParseState st, Token name_tok, List<Token> tparams, List<VariantCtorDef> acc) => (is_left_paren(current_kind(st)) ? ((Func<ParseTypeResult, ParseTypeDefResult>)((field_result) => unwrap_ctor_field(field_result, ctor_name, fields, name_tok, tparams, acc)))(parse_type(advance(st))) : ((Func<ParseState, ParseTypeDefResult>)((st2) => ((Func<VariantCtorDef, ParseTypeDefResult>)((ctor) => parse_variant_ctors(name_tok, tparams, Enumerable.Concat(acc, new List<VariantCtorDef> { ctor }).ToList(), st2)))(new VariantCtorDef(name: ctor_name, fields: fields))))(skip_newlines(st)));
+    public static ParseTypeDefResult parse_ctor_fields(Token ctor_name, List<TypeExpr> fields, ParseState st, Token name_tok, List<Token> tparams, List<VariantCtorDef> acc) => (is_left_paren(current_kind(st)) ? ((Func<ParseTypeResult, ParseTypeDefResult>)((field_result) => unwrap_ctor_field(field_result, ctor_name, fields, name_tok, tparams, acc)))(parse_type(advance(st))) : ((Func<ParseState, ParseTypeDefResult>)((st2) => ((Func<VariantCtorDef, ParseTypeDefResult>)((ctor) => parse_variant_ctors(name_tok, tparams, ((Func<List<VariantCtorDef>>)(() => { var _l = acc; _l.Add(ctor); return _l; }))(), st2)))(new VariantCtorDef(name: ctor_name, fields: fields))))(skip_newlines(st)));
 
     public static ParseTypeDefResult unwrap_ctor_field(ParseTypeResult r, Token ctor_name, List<TypeExpr> fields, Token name_tok, List<Token> tparams, List<VariantCtorDef> acc) => r switch { TypeOk(var ty, var st) => ((Func<ParseState, ParseTypeDefResult>)((st2) => parse_ctor_fields(ctor_name, Enumerable.Concat(fields, new List<TypeExpr> { ty }).ToList(), st2, name_tok, tparams, acc)))(expect(new RightParen(), st)), _ => throw new InvalidOperationException("Non-exhaustive match"), };
 
@@ -3142,7 +3201,7 @@ public static class Codex_Codex_Codex
             var name_tok = current(st2);
             var st3 = skip_newlines(advance(st2));
             var _tco_0 = st3;
-            var _tco_1 = Enumerable.Concat(acc, new List<ImportDecl> { new ImportDecl(module_name: name_tok) }).ToList();
+            var _tco_1 = ((Func<List<ImportDecl>>)(() => { var _l = acc; _l.Add(new ImportDecl(module_name: name_tok)); return _l; }))();
             st = _tco_0;
             acc = _tco_1;
             continue;
@@ -3176,7 +3235,7 @@ public static class Codex_Codex_Codex
                 var st3 = _tco_m0.Field1;
             var op = new EffectOpDef(name: op_tok, type_expr: ty);
             var _tco_0 = skip_newlines(st3);
-            var _tco_1 = Enumerable.Concat(acc, new List<EffectOpDef> { op }).ToList();
+            var _tco_1 = ((Func<List<EffectOpDef>>)(() => { var _l = acc; _l.Add(op); return _l; }))();
             st = _tco_0;
             acc = _tco_1;
             continue;
@@ -3398,13 +3457,13 @@ public static class Codex_Codex_Codex
 
     public static ParseExprResult parse_record_field(Token type_name, List<RecordFieldExpr> acc, ParseState st) => ((Func<Token, ParseExprResult>)((field_name) => ((Func<ParseState, ParseExprResult>)((st2) => ((Func<ParseState, ParseExprResult>)((st3) => ((Func<ParseExprResult, ParseExprResult>)((val_result) => unwrap_expr_ok(val_result, (_p0_) => (_p1_) => finish_record_field(type_name, acc, field_name, _p0_, _p1_))))(parse_expr(st3))))(expect(new Equals_(), st2))))(advance(st))))(current(st));
 
-    public static ParseExprResult finish_record_field(Token type_name, List<RecordFieldExpr> acc, Token field_name, Expr v, ParseState st) => ((Func<RecordFieldExpr, ParseExprResult>)((field) => ((Func<ParseState, ParseExprResult>)((st2) => (is_comma(current_kind(st2)) ? parse_record_expr_fields(type_name, Enumerable.Concat(acc, new List<RecordFieldExpr> { field }).ToList(), skip_newlines(advance(st2))) : parse_record_expr_fields(type_name, Enumerable.Concat(acc, new List<RecordFieldExpr> { field }).ToList(), st2))))(skip_newlines(st))))(new RecordFieldExpr(name: field_name, value: v));
+    public static ParseExprResult finish_record_field(Token type_name, List<RecordFieldExpr> acc, Token field_name, Expr v, ParseState st) => ((Func<RecordFieldExpr, ParseExprResult>)((field) => ((Func<ParseState, ParseExprResult>)((st2) => (is_comma(current_kind(st2)) ? parse_record_expr_fields(type_name, ((Func<List<RecordFieldExpr>>)(() => { var _l = acc; _l.Add(field); return _l; }))(), skip_newlines(advance(st2))) : parse_record_expr_fields(type_name, ((Func<List<RecordFieldExpr>>)(() => { var _l = acc; _l.Add(field); return _l; }))(), st2))))(skip_newlines(st))))(new RecordFieldExpr(name: field_name, value: v));
 
     public static ParseExprResult parse_list_expr(ParseState st) => ((Func<ParseState, ParseExprResult>)((st2) => ((Func<ParseState, ParseExprResult>)((st3) => parse_list_elements(new List<Expr>(), st3)))(skip_newlines(st2))))(advance(st));
 
     public static ParseExprResult parse_list_elements(List<Expr> acc, ParseState st) => (is_right_bracket(current_kind(st)) ? new ExprOk(new ListExpr(acc), advance(st)) : ((Func<ParseExprResult, ParseExprResult>)((elem) => unwrap_expr_ok(elem, (_p0_) => (_p1_) => finish_list_element(acc, _p0_, _p1_))))(parse_expr(st)));
 
-    public static ParseExprResult finish_list_element(List<Expr> acc, Expr e, ParseState st) => ((Func<ParseState, ParseExprResult>)((st2) => (is_comma(current_kind(st2)) ? parse_list_elements(Enumerable.Concat(acc, new List<Expr> { e }).ToList(), skip_newlines(advance(st2))) : parse_list_elements(Enumerable.Concat(acc, new List<Expr> { e }).ToList(), st2))))(skip_newlines(st));
+    public static ParseExprResult finish_list_element(List<Expr> acc, Expr e, ParseState st) => ((Func<ParseState, ParseExprResult>)((st2) => (is_comma(current_kind(st2)) ? parse_list_elements(((Func<List<Expr>>)(() => { var _l = acc; _l.Add(e); return _l; }))(), skip_newlines(advance(st2))) : parse_list_elements(((Func<List<Expr>>)(() => { var _l = acc; _l.Add(e); return _l; }))(), st2))))(skip_newlines(st));
 
     public static ParseExprResult parse_if_expr(ParseState st) => ((Func<ParseState, ParseExprResult>)((st2) => ((Func<ParseExprResult, ParseExprResult>)((cond) => unwrap_expr_ok(cond, (_p0_) => (_p1_) => parse_if_then(_p0_, _p1_))))(parse_expr(st2))))(skip_newlines(advance(st)));
 
@@ -3422,7 +3481,7 @@ public static class Codex_Codex_Codex
 
     public static ParseExprResult parse_let_binding(List<LetBind> acc, ParseState st) => ((Func<Token, ParseExprResult>)((name_tok) => ((Func<ParseState, ParseExprResult>)((st2) => ((Func<ParseState, ParseExprResult>)((st3) => ((Func<ParseExprResult, ParseExprResult>)((val_result) => unwrap_expr_ok(val_result, (_p0_) => (_p1_) => finish_let_binding(acc, name_tok, _p0_, _p1_))))(parse_expr(st3))))(expect(new Equals_(), st2))))(advance(st))))(current(st));
 
-    public static ParseExprResult finish_let_binding(List<LetBind> acc, Token name_tok, Expr v, ParseState st) => ((Func<LetBind, ParseExprResult>)((binding) => ((Func<ParseState, ParseExprResult>)((st2) => (is_comma(current_kind(st2)) ? parse_let_bindings(Enumerable.Concat(acc, new List<LetBind> { binding }).ToList(), skip_newlines(advance(st2))) : parse_let_bindings(Enumerable.Concat(acc, new List<LetBind> { binding }).ToList(), st2))))(skip_newlines(st))))(new LetBind(name: name_tok, value: v));
+    public static ParseExprResult finish_let_binding(List<LetBind> acc, Token name_tok, Expr v, ParseState st) => ((Func<LetBind, ParseExprResult>)((binding) => ((Func<ParseState, ParseExprResult>)((st2) => (is_comma(current_kind(st2)) ? parse_let_bindings(((Func<List<LetBind>>)(() => { var _l = acc; _l.Add(binding); return _l; }))(), skip_newlines(advance(st2))) : parse_let_bindings(((Func<List<LetBind>>)(() => { var _l = acc; _l.Add(binding); return _l; }))(), st2))))(skip_newlines(st))))(new LetBind(name: name_tok, value: v));
 
     public static ParseExprResult parse_match_expr(ParseState st) => ((Func<ParseState, ParseExprResult>)((st2) => ((Func<ParseExprResult, ParseExprResult>)((scrut) => unwrap_expr_ok(scrut, (_p0_) => (_p1_) => start_match_branches(_p0_, _p1_))))(parse_expr(st2))))(advance(st));
 
@@ -3436,7 +3495,7 @@ public static class Codex_Codex_Codex
 
     public static ParseExprResult parse_match_branch_body(Expr scrut, List<MatchArm> acc, long col, long ln, Pat p, ParseState st) => ((Func<ParseState, ParseExprResult>)((st2) => ((Func<ParseState, ParseExprResult>)((st3) => ((Func<ParseExprResult, ParseExprResult>)((body) => unwrap_expr_ok(body, (_p0_) => (_p1_) => finish_match_branch(scrut, acc, col, ln, p, _p0_, _p1_))))(parse_expr(st3))))(skip_newlines(st2))))(expect(new Arrow(), st));
 
-    public static ParseExprResult finish_match_branch(Expr scrut, List<MatchArm> acc, long col, long ln, Pat p, Expr b, ParseState st) => ((Func<MatchArm, ParseExprResult>)((arm) => ((Func<ParseState, ParseExprResult>)((st2) => parse_match_branches(scrut, Enumerable.Concat(acc, new List<MatchArm> { arm }).ToList(), col, ln, st2)))(skip_newlines(st))))(new MatchArm(pattern: p, body: b));
+    public static ParseExprResult finish_match_branch(Expr scrut, List<MatchArm> acc, long col, long ln, Pat p, Expr b, ParseState st) => ((Func<MatchArm, ParseExprResult>)((arm) => ((Func<ParseState, ParseExprResult>)((st2) => parse_match_branches(scrut, ((Func<List<MatchArm>>)(() => { var _l = acc; _l.Add(arm); return _l; }))(), col, ln, st2)))(skip_newlines(st))))(new MatchArm(pattern: p, body: b));
 
     public static ParseExprResult parse_do_expr(ParseState st) => ((Func<ParseState, ParseExprResult>)((st2) => parse_do_stmts(new List<DoStmt>(), st2)))(skip_newlines(advance(st)));
 
@@ -3446,11 +3505,11 @@ public static class Codex_Codex_Codex
 
     public static ParseExprResult parse_do_bind_stmt(List<DoStmt> acc, ParseState st) => ((Func<Token, ParseExprResult>)((name_tok) => ((Func<ParseState, ParseExprResult>)((st2) => ((Func<ParseExprResult, ParseExprResult>)((val_result) => unwrap_expr_ok(val_result, (_p0_) => (_p1_) => finish_do_bind(acc, name_tok, _p0_, _p1_))))(parse_expr(st2))))(advance(advance(st)))))(current(st));
 
-    public static ParseExprResult finish_do_bind(List<DoStmt> acc, Token name_tok, Expr v, ParseState st) => ((Func<ParseState, ParseExprResult>)((st2) => parse_do_stmts(Enumerable.Concat(acc, new List<DoStmt> { new DoBindStmt(name_tok, v) }).ToList(), st2)))(skip_newlines(st));
+    public static ParseExprResult finish_do_bind(List<DoStmt> acc, Token name_tok, Expr v, ParseState st) => ((Func<ParseState, ParseExprResult>)((st2) => parse_do_stmts(((Func<List<DoStmt>>)(() => { var _l = acc; _l.Add(new DoBindStmt(name_tok, v)); return _l; }))(), st2)))(skip_newlines(st));
 
     public static ParseExprResult parse_do_expr_stmt(List<DoStmt> acc, ParseState st) => ((Func<ParseExprResult, ParseExprResult>)((expr_result) => unwrap_expr_ok(expr_result, (_p0_) => (_p1_) => finish_do_expr(acc, _p0_, _p1_))))(parse_expr(st));
 
-    public static ParseExprResult finish_do_expr(List<DoStmt> acc, Expr e, ParseState st) => ((Func<ParseState, ParseExprResult>)((st2) => parse_do_stmts(Enumerable.Concat(acc, new List<DoStmt> { new DoExprStmt(e) }).ToList(), st2)))(skip_newlines(st));
+    public static ParseExprResult finish_do_expr(List<DoStmt> acc, Expr e, ParseState st) => ((Func<ParseState, ParseExprResult>)((st2) => parse_do_stmts(((Func<List<DoStmt>>)(() => { var _l = acc; _l.Add(new DoExprStmt(e)); return _l; }))(), st2)))(skip_newlines(st));
 
     public static ParseExprResult parse_handle_expr(ParseState st) => ((Func<ParseState, ParseExprResult>)((st1) => ((Func<Token, ParseExprResult>)((eff_tok) => ((Func<ParseState, ParseExprResult>)((st2) => ((Func<ParseExprResult, ParseExprResult>)((body_result) => unwrap_expr_ok(body_result, (_p0_) => (_p1_) => finish_handle_body(eff_tok, _p0_, _p1_))))(parse_expr(st2))))(advance(st1))))(current(st1))))(advance(st));
 
@@ -3469,7 +3528,7 @@ public static class Codex_Codex_Codex
             var st2 = advance(st1);
             var st3 = expect(new RightParen(), st2);
             var _tco_0 = st3;
-            var _tco_1 = Enumerable.Concat(acc, new List<Token> { tok }).ToList();
+            var _tco_1 = ((Func<List<Token>>)(() => { var _l = acc; _l.Add(tok); return _l; }))();
             st = _tco_0;
             acc = _tco_1;
             continue;
@@ -3481,7 +3540,7 @@ public static class Codex_Codex_Codex
         }
     }
 
-    public static HandleParseResult unwrap_handle_clause_body(Token op_tok, Token resume_tok, ParseExprResult result, List<HandleClause> acc) => result switch { ExprOk(var body, var st) => ((Func<HandleClause, HandleParseResult>)((clause) => ((Func<ParseState, HandleParseResult>)((st2) => parse_handle_clauses(st2, Enumerable.Concat(acc, new List<HandleClause> { clause }).ToList())))(skip_newlines(st))))(new HandleClause(op_name: op_tok, resume_name: resume_tok, body: body)), _ => throw new InvalidOperationException("Non-exhaustive match"), };
+    public static HandleParseResult unwrap_handle_clause_body(Token op_tok, Token resume_tok, ParseExprResult result, List<HandleClause> acc) => result switch { ExprOk(var body, var st) => ((Func<HandleClause, HandleParseResult>)((clause) => ((Func<ParseState, HandleParseResult>)((st2) => parse_handle_clauses(st2, ((Func<List<HandleClause>>)(() => { var _l = acc; _l.Add(clause); return _l; }))())))(skip_newlines(st))))(new HandleClause(op_name: op_tok, resume_name: resume_tok, body: body)), _ => throw new InvalidOperationException("Non-exhaustive match"), };
 
     public static ParseExprResult parse_lambda_expr(ParseState st) => ((Func<ParseState, ParseExprResult>)((st2) => ((Func<LambdaParamsResult, ParseExprResult>)((params_result) => ((Func<ParseState, ParseExprResult>)((st3) => ((Func<ParseState, ParseExprResult>)((st4) => ((Func<ParseExprResult, ParseExprResult>)((body) => unwrap_expr_ok(body, (_p0_) => (_p1_) => finish_lambda(params_result.toks, _p0_, _p1_))))(parse_expr(st4))))(skip_newlines(st3))))(expect(new Arrow(), params_result.state))))(collect_lambda_params(st2, new List<Token>()))))(advance(st));
 
@@ -3493,7 +3552,7 @@ public static class Codex_Codex_Codex
             {
             var tok = current(st);
             var _tco_0 = advance(st);
-            var _tco_1 = Enumerable.Concat(acc, new List<Token> { tok }).ToList();
+            var _tco_1 = ((Func<List<Token>>)(() => { var _l = acc; _l.Add(tok); return _l; }))();
             st = _tco_0;
             acc = _tco_1;
             continue;
@@ -3527,7 +3586,7 @@ public static class Codex_Codex_Codex
             var _tco_1 = args;
             var _tco_2 = (i + 1);
             var _tco_3 = len;
-            var _tco_4 = Enumerable.Concat(acc, new List<CodexType> { resolve_type_expr(tdm, args[(int)i]) }).ToList();
+            var _tco_4 = ((Func<List<CodexType>>)(() => { var _l = acc; _l.Add(resolve_type_expr(tdm, args[(int)i])); return _l; }))();
             tdm = _tco_0;
             args = _tco_1;
             i = _tco_2;
@@ -3540,38 +3599,7 @@ public static class Codex_Codex_Codex
 
     public static CodexType resolve_type_name(List<TypeBinding> tdm, string name) => ((name == "Integer") ? new IntegerTy() : ((name == "Number") ? new NumberTy() : ((name == "Text") ? new TextTy() : ((name == "Boolean") ? new BooleanTy() : ((name == "Char") ? new CharTy() : ((name == "Nothing") ? new NothingTy() : lookup_type_def(tdm, name)))))));
 
-    public static CodexType lookup_type_def(List<TypeBinding> tdm, string name) => lookup_type_def_loop(tdm, name, 0, ((long)tdm.Count));
-
-    public static CodexType lookup_type_def_loop(List<TypeBinding> tdm, string name, long i, long len)
-    {
-        while (true)
-        {
-            if ((i == len))
-            {
-            return new ConstructedTy(new Name(value: name), new List<CodexType>());
-            }
-            else
-            {
-            var b = tdm[(int)i];
-            if ((b.name == name))
-            {
-            return b.bound_type;
-            }
-            else
-            {
-            var _tco_0 = tdm;
-            var _tco_1 = name;
-            var _tco_2 = (i + 1);
-            var _tco_3 = len;
-            tdm = _tco_0;
-            name = _tco_1;
-            i = _tco_2;
-            len = _tco_3;
-            continue;
-            }
-            }
-        }
-    }
+    public static CodexType lookup_type_def(List<TypeBinding> tdm, string name) => ((Func<long, CodexType>)((len) => ((len == 0) ? new ConstructedTy(new Name(value: name), new List<CodexType>()) : ((Func<long, CodexType>)((pos) => ((pos >= len) ? new ConstructedTy(new Name(value: name), new List<CodexType>()) : ((Func<TypeBinding, CodexType>)((b) => ((b.name == name) ? b.bound_type : new ConstructedTy(new Name(value: name), new List<CodexType>()))))(tdm[(int)pos]))))(bsearch_text_pos(tdm, name, 0, len)))))(((long)tdm.Count));
 
     public static bool is_value_name(string name) => ((((long)name.Length) == 0) ? false : ((Func<long, bool>)((code) => ((code >= 97) && (code <= 122))))(((long)name[(int)0])));
 
@@ -3628,7 +3656,7 @@ public static class Codex_Codex_Codex
             var _tco_2 = args;
             var _tco_3 = (i + 1);
             var _tco_4 = len;
-            var _tco_5 = Enumerable.Concat(acc, new List<CodexType> { r.walked }).ToList();
+            var _tco_5 = ((Func<List<CodexType>>)(() => { var _l = acc; _l.Add(r.walked); return _l; }))();
             st = _tco_0;
             entries = _tco_1;
             args = _tco_2;
@@ -3746,7 +3774,7 @@ public static class Codex_Codex_Codex
             var _tco_2 = defs;
             var _tco_3 = (i + 1);
             var _tco_4 = len;
-            var _tco_5 = Enumerable.Concat(acc, new List<TypeBinding> { entry }).ToList();
+            var _tco_5 = ((Func<List<TypeBinding>>)(() => { var _l = acc; _l.Add(entry); return _l; }))();
             st = _tco_0;
             env = _tco_1;
             defs = _tco_2;
@@ -3773,7 +3801,7 @@ public static class Codex_Codex_Codex
             var _tco_0 = tdefs;
             var _tco_1 = (i + 1);
             var _tco_2 = len;
-            var _tco_3 = Enumerable.Concat(acc, new List<TypeBinding> { entry }).ToList();
+            var _tco_3 = ((Func<List<TypeBinding>>)(() => { var _l = new List<TypeBinding>(acc); _l.Insert((int)bsearch_text_pos(acc, entry.name, 0, ((long)acc.Count)), entry); return _l; }))();
             tdefs = _tco_0;
             i = _tco_1;
             len = _tco_2;
@@ -3800,7 +3828,7 @@ public static class Codex_Codex_Codex
             var _tco_1 = ctors;
             var _tco_2 = (i + 1);
             var _tco_3 = len;
-            var _tco_4 = Enumerable.Concat(acc, new List<SumCtor> { sc }).ToList();
+            var _tco_4 = ((Func<List<SumCtor>>)(() => { var _l = acc; _l.Add(sc); return _l; }))();
             var _tco_5 = partial_tdm;
             tdefs = _tco_0;
             ctors = _tco_1;
@@ -3829,7 +3857,7 @@ public static class Codex_Codex_Codex
             var _tco_1 = fields;
             var _tco_2 = (i + 1);
             var _tco_3 = len;
-            var _tco_4 = Enumerable.Concat(acc, new List<RecordField> { rfield }).ToList();
+            var _tco_4 = ((Func<List<RecordField>>)(() => { var _l = acc; _l.Add(rfield); return _l; }))();
             var _tco_5 = partial_tdm;
             tdefs = _tco_0;
             fields = _tco_1;
@@ -3856,7 +3884,7 @@ public static class Codex_Codex_Codex
             var _tco_1 = args;
             var _tco_2 = (i + 1);
             var _tco_3 = len;
-            var _tco_4 = Enumerable.Concat(acc, new List<CodexType> { resolve_type_expr(partial_tdm, args[(int)i]) }).ToList();
+            var _tco_4 = ((Func<List<CodexType>>)(() => { var _l = acc; _l.Add(resolve_type_expr(partial_tdm, args[(int)i])); return _l; }))();
             var _tco_5 = partial_tdm;
             tdefs = _tco_0;
             args = _tco_1;
@@ -3916,7 +3944,7 @@ public static class Codex_Codex_Codex
             var _tco_1 = fields;
             var _tco_2 = (i + 1);
             var _tco_3 = len;
-            var _tco_4 = Enumerable.Concat(acc, new List<RecordField> { rfield }).ToList();
+            var _tco_4 = ((Func<List<RecordField>>)(() => { var _l = acc; _l.Add(rfield); return _l; }))();
             tdm = _tco_0;
             fields = _tco_1;
             i = _tco_2;
@@ -4040,7 +4068,7 @@ public static class Codex_Codex_Codex
             var _tco_2 = replacement;
             var _tco_3 = (i + 1);
             var _tco_4 = len;
-            var _tco_5 = Enumerable.Concat(acc, new List<CodexType> { subst_type_var(args[(int)i], var_id, replacement) }).ToList();
+            var _tco_5 = ((Func<List<CodexType>>)(() => { var _l = acc; _l.Add(subst_type_var(args[(int)i], var_id, replacement)); return _l; }))();
             args = _tco_0;
             var_id = _tco_1;
             replacement = _tco_2;
@@ -4118,7 +4146,7 @@ public static class Codex_Codex_Codex
             var _tco_2 = @params;
             var _tco_3 = (i + 1);
             var _tco_4 = len;
-            var _tco_5 = Enumerable.Concat(acc, new List<CodexType> { fr.var_type }).ToList();
+            var _tco_5 = ((Func<List<CodexType>>)(() => { var _l = acc; _l.Add(fr.var_type); return _l; }))();
             st = _tco_0;
             env = _tco_1;
             @params = _tco_2;
@@ -4382,75 +4410,13 @@ public static class Codex_Codex_Codex
 
     public static TypeEnv empty_type_env() => new TypeEnv(bindings: new List<TypeBinding>());
 
-    public static CodexType env_lookup(TypeEnv env, string name) => env_lookup_loop(env.bindings, name, 0, ((long)env.bindings.Count));
+    public static CodexType env_lookup(TypeEnv env, string name) => ((Func<long, CodexType>)((len) => ((len == 0) ? new ErrorTy() : ((Func<long, CodexType>)((pos) => ((pos >= len) ? new ErrorTy() : ((Func<TypeBinding, CodexType>)((b) => ((b.name == name) ? b.bound_type : new ErrorTy())))(env.bindings[(int)pos]))))(bsearch_text_pos(env.bindings, name, 0, len)))))(((long)env.bindings.Count));
 
-    public static CodexType env_lookup_loop(List<TypeBinding> bindings, string name, long i, long len)
-    {
-        while (true)
-        {
-            if ((i == len))
-            {
-            return new ErrorTy();
-            }
-            else
-            {
-            var b = bindings[(int)i];
-            if ((b.name == name))
-            {
-            return b.bound_type;
-            }
-            else
-            {
-            var _tco_0 = bindings;
-            var _tco_1 = name;
-            var _tco_2 = (i + 1);
-            var _tco_3 = len;
-            bindings = _tco_0;
-            name = _tco_1;
-            i = _tco_2;
-            len = _tco_3;
-            continue;
-            }
-            }
-        }
-    }
+    public static bool env_has(TypeEnv env, string name) => ((Func<long, bool>)((len) => ((len == 0) ? false : ((Func<long, bool>)((pos) => ((pos >= len) ? false : (env.bindings[(int)pos].name == name))))(bsearch_text_pos(env.bindings, name, 0, len)))))(((long)env.bindings.Count));
 
-    public static bool env_has(TypeEnv env, string name) => env_has_loop(env.bindings, name, 0, ((long)env.bindings.Count));
+    public static TypeEnv env_bind(TypeEnv env, string name, CodexType ty) => ((Func<long, TypeEnv>)((len) => ((Func<long, TypeEnv>)((pos) => new TypeEnv(bindings: ((Func<List<TypeBinding>>)(() => { var _l = new List<TypeBinding>(env.bindings); _l.Insert((int)pos, new TypeBinding(name: name, bound_type: ty)); return _l; }))())))(bsearch_text_pos(env.bindings, name, 0, len))))(((long)env.bindings.Count));
 
-    public static bool env_has_loop(List<TypeBinding> bindings, string name, long i, long len)
-    {
-        while (true)
-        {
-            if ((i == len))
-            {
-            return false;
-            }
-            else
-            {
-            var b = bindings[(int)i];
-            if ((b.name == name))
-            {
-            return true;
-            }
-            else
-            {
-            var _tco_0 = bindings;
-            var _tco_1 = name;
-            var _tco_2 = (i + 1);
-            var _tco_3 = len;
-            bindings = _tco_0;
-            name = _tco_1;
-            i = _tco_2;
-            len = _tco_3;
-            continue;
-            }
-            }
-        }
-    }
-
-    public static TypeEnv env_bind(TypeEnv env, string name, CodexType ty) => new TypeEnv(bindings: Enumerable.Concat(new List<TypeBinding> { new TypeBinding(name: name, bound_type: ty) }, env.bindings).ToList());
-
-    public static TypeEnv builtin_type_env() => ((Func<TypeEnv, TypeEnv>)((e) => ((Func<TypeEnv, TypeEnv>)((e2) => ((Func<TypeEnv, TypeEnv>)((e3) => ((Func<TypeEnv, TypeEnv>)((e4) => ((Func<TypeEnv, TypeEnv>)((e5) => ((Func<TypeEnv, TypeEnv>)((e5b) => ((Func<TypeEnv, TypeEnv>)((e6) => ((Func<TypeEnv, TypeEnv>)((e7) => ((Func<TypeEnv, TypeEnv>)((e8) => ((Func<TypeEnv, TypeEnv>)((e9) => ((Func<TypeEnv, TypeEnv>)((e10) => ((Func<TypeEnv, TypeEnv>)((e10b) => ((Func<TypeEnv, TypeEnv>)((e11) => ((Func<TypeEnv, TypeEnv>)((e12) => ((Func<TypeEnv, TypeEnv>)((e13) => ((Func<TypeEnv, TypeEnv>)((e14) => ((Func<TypeEnv, TypeEnv>)((e15) => ((Func<TypeEnv, TypeEnv>)((e16) => ((Func<TypeEnv, TypeEnv>)((e17) => ((Func<TypeEnv, TypeEnv>)((e18) => ((Func<TypeEnv, TypeEnv>)((e19) => ((Func<TypeEnv, TypeEnv>)((e20) => ((Func<TypeEnv, TypeEnv>)((e21) => ((Func<TypeEnv, TypeEnv>)((e22) => ((Func<TypeEnv, TypeEnv>)((e23) => ((Func<TypeEnv, TypeEnv>)((e24) => ((Func<TypeEnv, TypeEnv>)((e25) => ((Func<TypeEnv, TypeEnv>)((e26) => ((Func<TypeEnv, TypeEnv>)((e27) => ((Func<TypeEnv, TypeEnv>)((e28) => ((Func<TypeEnv, TypeEnv>)((e29) => ((Func<TypeEnv, TypeEnv>)((e30) => ((Func<TypeEnv, TypeEnv>)((e31) => ((Func<TypeEnv, TypeEnv>)((e32) => ((Func<TypeEnv, TypeEnv>)((e33) => ((Func<TypeEnv, TypeEnv>)((e34) => ((Func<TypeEnv, TypeEnv>)((e35) => e35))(env_bind(e34, "race", new ForAllTy(0, new FunTy(new ListTy(new FunTy(new NothingTy(), new TypeVar(0))), new TypeVar(0)))))))(env_bind(e33, "par", new ForAllTy(0, new ForAllTy(1, new FunTy(new FunTy(new TypeVar(0), new TypeVar(1)), new FunTy(new ListTy(new TypeVar(0)), new ListTy(new TypeVar(1))))))))))(env_bind(e32, "await", new ForAllTy(0, new FunTy(new ConstructedTy(new Name(value: "Task"), new List<CodexType> { new TypeVar(0) }), new TypeVar(0)))))))(env_bind(e31, "fork", new ForAllTy(0, new FunTy(new FunTy(new NothingTy(), new TypeVar(0)), new ConstructedTy(new Name(value: "Task"), new List<CodexType> { new TypeVar(0) })))))))(env_bind(e30, "current-dir", new TextTy()))))(env_bind(e29, "get-env", new FunTy(new TextTy(), new TextTy())))))(env_bind(e28, "get-args", new ListTy(new TextTy())))))(env_bind(e27, "text-starts-with", new FunTy(new TextTy(), new FunTy(new TextTy(), new BooleanTy()))))))(env_bind(e26, "text-contains", new FunTy(new TextTy(), new FunTy(new TextTy(), new BooleanTy()))))))(env_bind(e25, "text-split", new FunTy(new TextTy(), new FunTy(new TextTy(), new ListTy(new TextTy())))))))(env_bind(e24, "list-files", new FunTy(new TextTy(), new FunTy(new TextTy(), new ListTy(new TextTy())))))))(env_bind(e23, "file-exists", new FunTy(new TextTy(), new BooleanTy())))))(env_bind(e22, "write-file", new FunTy(new TextTy(), new FunTy(new TextTy(), new NothingTy()))))))(env_bind(e21, "read-file", new FunTy(new TextTy(), new TextTy())))))(env_bind(e20, "read-line", new TextTy()))))(env_bind(e19, "fold", new ForAllTy(0, new ForAllTy(1, new FunTy(new FunTy(new TypeVar(1), new FunTy(new TypeVar(0), new TypeVar(1))), new FunTy(new TypeVar(1), new FunTy(new ListTy(new TypeVar(0)), new TypeVar(1))))))))))(env_bind(e18, "filter", new ForAllTy(0, new FunTy(new FunTy(new TypeVar(0), new BooleanTy()), new FunTy(new ListTy(new TypeVar(0)), new ListTy(new TypeVar(0)))))))))(env_bind(e17, "map", new ForAllTy(0, new ForAllTy(1, new FunTy(new FunTy(new TypeVar(0), new TypeVar(1)), new FunTy(new ListTy(new TypeVar(0)), new ListTy(new TypeVar(1))))))))))(env_bind(e16, "list-at", new ForAllTy(0, new FunTy(new ListTy(new TypeVar(0)), new FunTy(new IntegerTy(), new TypeVar(0))))))))(env_bind(e15, "list-length", new ForAllTy(0, new FunTy(new ListTy(new TypeVar(0)), new IntegerTy()))))))(env_bind(e14, "print-line", new FunTy(new TextTy(), new NothingTy())))))(env_bind(e13, "show", new ForAllTy(0, new FunTy(new TypeVar(0), new TextTy()))))))(env_bind(e12, "text-to-integer", new FunTy(new TextTy(), new IntegerTy())))))(env_bind(e11, "text-replace", new FunTy(new TextTy(), new FunTy(new TextTy(), new FunTy(new TextTy(), new TextTy())))))))(env_bind(e10b, "code-to-char", new FunTy(new IntegerTy(), new CharTy())))))(env_bind(e10, "char-code-at", new FunTy(new TextTy(), new FunTy(new IntegerTy(), new IntegerTy()))))))(env_bind(e9, "char-code", new FunTy(new CharTy(), new IntegerTy())))))(env_bind(e8, "is-whitespace", new FunTy(new CharTy(), new BooleanTy())))))(env_bind(e7, "is-digit", new FunTy(new CharTy(), new BooleanTy())))))(env_bind(e6, "is-letter", new FunTy(new CharTy(), new BooleanTy())))))(env_bind(e5b, "substring", new FunTy(new TextTy(), new FunTy(new IntegerTy(), new FunTy(new IntegerTy(), new TextTy())))))))(env_bind(e5, "char-to-text", new FunTy(new CharTy(), new TextTy())))))(env_bind(e4, "char-at", new FunTy(new TextTy(), new FunTy(new IntegerTy(), new CharTy()))))))(env_bind(e3, "integer-to-text", new FunTy(new IntegerTy(), new TextTy())))))(env_bind(e2, "text-length", new FunTy(new TextTy(), new IntegerTy())))))(env_bind(e, "negate", new FunTy(new IntegerTy(), new IntegerTy())))))(empty_type_env());
+    public static TypeEnv builtin_type_env() => ((Func<TypeEnv, TypeEnv>)((e) => ((Func<TypeEnv, TypeEnv>)((e2) => ((Func<TypeEnv, TypeEnv>)((e3) => ((Func<TypeEnv, TypeEnv>)((e4) => ((Func<TypeEnv, TypeEnv>)((e5) => ((Func<TypeEnv, TypeEnv>)((e5b) => ((Func<TypeEnv, TypeEnv>)((e6) => ((Func<TypeEnv, TypeEnv>)((e7) => ((Func<TypeEnv, TypeEnv>)((e8) => ((Func<TypeEnv, TypeEnv>)((e9) => ((Func<TypeEnv, TypeEnv>)((e10) => ((Func<TypeEnv, TypeEnv>)((e10b) => ((Func<TypeEnv, TypeEnv>)((e11) => ((Func<TypeEnv, TypeEnv>)((e12) => ((Func<TypeEnv, TypeEnv>)((e13) => ((Func<TypeEnv, TypeEnv>)((e14) => ((Func<TypeEnv, TypeEnv>)((e15) => ((Func<TypeEnv, TypeEnv>)((e16) => ((Func<TypeEnv, TypeEnv>)((e16b) => ((Func<TypeEnv, TypeEnv>)((e16c) => ((Func<TypeEnv, TypeEnv>)((e16d) => ((Func<TypeEnv, TypeEnv>)((e17) => ((Func<TypeEnv, TypeEnv>)((e18) => ((Func<TypeEnv, TypeEnv>)((e19) => ((Func<TypeEnv, TypeEnv>)((e20) => ((Func<TypeEnv, TypeEnv>)((e21) => ((Func<TypeEnv, TypeEnv>)((e22) => ((Func<TypeEnv, TypeEnv>)((e23) => ((Func<TypeEnv, TypeEnv>)((e24) => ((Func<TypeEnv, TypeEnv>)((e25) => ((Func<TypeEnv, TypeEnv>)((e26) => ((Func<TypeEnv, TypeEnv>)((e27) => ((Func<TypeEnv, TypeEnv>)((e28) => ((Func<TypeEnv, TypeEnv>)((e29) => ((Func<TypeEnv, TypeEnv>)((e30) => ((Func<TypeEnv, TypeEnv>)((e31) => ((Func<TypeEnv, TypeEnv>)((e32) => ((Func<TypeEnv, TypeEnv>)((e33) => ((Func<TypeEnv, TypeEnv>)((e34) => ((Func<TypeEnv, TypeEnv>)((e35) => e35))(env_bind(e34, "race", new ForAllTy(0, new FunTy(new ListTy(new FunTy(new NothingTy(), new TypeVar(0))), new TypeVar(0)))))))(env_bind(e33, "par", new ForAllTy(0, new ForAllTy(1, new FunTy(new FunTy(new TypeVar(0), new TypeVar(1)), new FunTy(new ListTy(new TypeVar(0)), new ListTy(new TypeVar(1))))))))))(env_bind(e32, "await", new ForAllTy(0, new FunTy(new ConstructedTy(new Name(value: "Task"), new List<CodexType> { new TypeVar(0) }), new TypeVar(0)))))))(env_bind(e31, "fork", new ForAllTy(0, new FunTy(new FunTy(new NothingTy(), new TypeVar(0)), new ConstructedTy(new Name(value: "Task"), new List<CodexType> { new TypeVar(0) })))))))(env_bind(e30, "current-dir", new TextTy()))))(env_bind(e29, "get-env", new FunTy(new TextTy(), new TextTy())))))(env_bind(e28, "get-args", new ListTy(new TextTy())))))(env_bind(e27, "text-starts-with", new FunTy(new TextTy(), new FunTy(new TextTy(), new BooleanTy()))))))(env_bind(e26, "text-contains", new FunTy(new TextTy(), new FunTy(new TextTy(), new BooleanTy()))))))(env_bind(e25, "text-split", new FunTy(new TextTy(), new FunTy(new TextTy(), new ListTy(new TextTy())))))))(env_bind(e24, "list-files", new FunTy(new TextTy(), new FunTy(new TextTy(), new ListTy(new TextTy())))))))(env_bind(e23, "file-exists", new FunTy(new TextTy(), new BooleanTy())))))(env_bind(e22, "write-file", new FunTy(new TextTy(), new FunTy(new TextTy(), new NothingTy()))))))(env_bind(e21, "read-file", new FunTy(new TextTy(), new TextTy())))))(env_bind(e20, "read-line", new TextTy()))))(env_bind(e19, "fold", new ForAllTy(0, new ForAllTy(1, new FunTy(new FunTy(new TypeVar(1), new FunTy(new TypeVar(0), new TypeVar(1))), new FunTy(new TypeVar(1), new FunTy(new ListTy(new TypeVar(0)), new TypeVar(1))))))))))(env_bind(e18, "filter", new ForAllTy(0, new FunTy(new FunTy(new TypeVar(0), new BooleanTy()), new FunTy(new ListTy(new TypeVar(0)), new ListTy(new TypeVar(0)))))))))(env_bind(e17, "map", new ForAllTy(0, new ForAllTy(1, new FunTy(new FunTy(new TypeVar(0), new TypeVar(1)), new FunTy(new ListTy(new TypeVar(0)), new ListTy(new TypeVar(1))))))))))(env_bind(e16d, "list-at", new ForAllTy(0, new FunTy(new ListTy(new TypeVar(0)), new FunTy(new IntegerTy(), new TypeVar(0))))))))(env_bind(e16c, "list-snoc", new ForAllTy(0, new FunTy(new ListTy(new TypeVar(0)), new FunTy(new TypeVar(0), new ListTy(new TypeVar(0)))))))))(env_bind(e16b, "text-compare", new FunTy(new TextTy(), new FunTy(new TextTy(), new IntegerTy()))))))(env_bind(e16, "list-insert-at", new ForAllTy(0, new FunTy(new ListTy(new TypeVar(0)), new FunTy(new IntegerTy(), new FunTy(new TypeVar(0), new ListTy(new TypeVar(0))))))))))(env_bind(e15, "list-length", new ForAllTy(0, new FunTy(new ListTy(new TypeVar(0)), new IntegerTy()))))))(env_bind(e14, "print-line", new FunTy(new TextTy(), new NothingTy())))))(env_bind(e13, "show", new ForAllTy(0, new FunTy(new TypeVar(0), new TextTy()))))))(env_bind(e12, "text-to-integer", new FunTy(new TextTy(), new IntegerTy())))))(env_bind(e11, "text-replace", new FunTy(new TextTy(), new FunTy(new TextTy(), new FunTy(new TextTy(), new TextTy())))))))(env_bind(e10b, "code-to-char", new FunTy(new IntegerTy(), new CharTy())))))(env_bind(e10, "char-code-at", new FunTy(new TextTy(), new FunTy(new IntegerTy(), new IntegerTy()))))))(env_bind(e9, "char-code", new FunTy(new CharTy(), new IntegerTy())))))(env_bind(e8, "is-whitespace", new FunTy(new CharTy(), new BooleanTy())))))(env_bind(e7, "is-digit", new FunTy(new CharTy(), new BooleanTy())))))(env_bind(e6, "is-letter", new FunTy(new CharTy(), new BooleanTy())))))(env_bind(e5b, "substring", new FunTy(new TextTy(), new FunTy(new IntegerTy(), new FunTy(new IntegerTy(), new TextTy())))))))(env_bind(e5, "char-to-text", new FunTy(new CharTy(), new TextTy())))))(env_bind(e4, "char-at", new FunTy(new TextTy(), new FunTy(new IntegerTy(), new CharTy()))))))(env_bind(e3, "integer-to-text", new FunTy(new IntegerTy(), new TextTy())))))(env_bind(e2, "text-length", new FunTy(new TextTy(), new IntegerTy())))))(env_bind(e, "negate", new FunTy(new IntegerTy(), new IntegerTy())))))(empty_type_env());
 
     public static UnificationState empty_unification_state() => new UnificationState(substitutions: new List<SubstEntry>(), next_id: 2, errors: new List<Diagnostic>());
 
@@ -4460,71 +4426,9 @@ public static class Codex_Codex_Codex
 
     public static FreshResult fresh_and_advance(UnificationState st) => new FreshResult(var_type: new TypeVar(st.next_id), state: advance_id(st));
 
-    public static CodexType subst_lookup(long var_id, List<SubstEntry> entries) => subst_lookup_loop(var_id, entries, 0, ((long)entries.Count));
+    public static CodexType subst_lookup(long var_id, List<SubstEntry> entries) => ((Func<long, CodexType>)((len) => ((len == 0) ? new ErrorTy() : ((Func<long, CodexType>)((pos) => ((pos >= len) ? new ErrorTy() : ((Func<SubstEntry, CodexType>)((entry) => ((entry.var_id == var_id) ? entry.resolved_type : new ErrorTy())))(entries[(int)pos]))))(bsearch_int_pos(entries, var_id, 0, len)))))(((long)entries.Count));
 
-    public static CodexType subst_lookup_loop(long var_id, List<SubstEntry> entries, long i, long len)
-    {
-        while (true)
-        {
-            if ((i == len))
-            {
-            return new ErrorTy();
-            }
-            else
-            {
-            var entry = entries[(int)i];
-            if ((entry.var_id == var_id))
-            {
-            return entry.resolved_type;
-            }
-            else
-            {
-            var _tco_0 = var_id;
-            var _tco_1 = entries;
-            var _tco_2 = (i + 1);
-            var _tco_3 = len;
-            var_id = _tco_0;
-            entries = _tco_1;
-            i = _tco_2;
-            len = _tco_3;
-            continue;
-            }
-            }
-        }
-    }
-
-    public static bool has_subst(long var_id, List<SubstEntry> entries) => has_subst_loop(var_id, entries, 0, ((long)entries.Count));
-
-    public static bool has_subst_loop(long var_id, List<SubstEntry> entries, long i, long len)
-    {
-        while (true)
-        {
-            if ((i == len))
-            {
-            return false;
-            }
-            else
-            {
-            var entry = entries[(int)i];
-            if ((entry.var_id == var_id))
-            {
-            return true;
-            }
-            else
-            {
-            var _tco_0 = var_id;
-            var _tco_1 = entries;
-            var _tco_2 = (i + 1);
-            var _tco_3 = len;
-            var_id = _tco_0;
-            entries = _tco_1;
-            i = _tco_2;
-            len = _tco_3;
-            continue;
-            }
-            }
-        }
-    }
+    public static bool has_subst(long var_id, List<SubstEntry> entries) => ((Func<long, bool>)((len) => ((len == 0) ? false : ((Func<long, bool>)((pos) => ((pos >= len) ? false : (entries[(int)pos].var_id == var_id))))(bsearch_int_pos(entries, var_id, 0, len)))))(((long)entries.Count));
 
     public static CodexType resolve(UnificationState st, CodexType ty)
     {
@@ -4553,7 +4457,7 @@ public static class Codex_Codex_Codex
         }
     }
 
-    public static UnificationState add_subst(UnificationState st, long var_id, CodexType ty) => new UnificationState(substitutions: Enumerable.Concat(st.substitutions, new List<SubstEntry> { new SubstEntry(var_id: var_id, resolved_type: ty) }).ToList(), next_id: st.next_id, errors: st.errors);
+    public static UnificationState add_subst(UnificationState st, long var_id, CodexType ty) => ((Func<SubstEntry, UnificationState>)((entry) => ((Func<long, UnificationState>)((pos) => new UnificationState(substitutions: ((Func<List<SubstEntry>>)(() => { var _l = new List<SubstEntry>(st.substitutions); _l.Insert((int)pos, entry); return _l; }))(), next_id: st.next_id, errors: st.errors)))(bsearch_int_pos(st.substitutions, var_id, 0, ((long)st.substitutions.Count)))))(new SubstEntry(var_id: var_id, resolved_type: ty));
 
     public static UnificationState add_unify_error(UnificationState st, string code, string msg) => new UnificationState(substitutions: st.substitutions, next_id: st.next_id, errors: Enumerable.Concat(st.errors, new List<Diagnostic> { make_error(code, msg) }).ToList());
 
@@ -4663,7 +4567,7 @@ public static class Codex_Codex_Codex
             var _tco_1 = args;
             var _tco_2 = (i + 1);
             var _tco_3 = len;
-            var _tco_4 = Enumerable.Concat(acc, new List<CodexType> { deep_resolve(st, args[(int)i]) }).ToList();
+            var _tco_4 = ((Func<List<CodexType>>)(() => { var _l = acc; _l.Add(deep_resolve(st, args[(int)i])); return _l; }))();
             st = _tco_0;
             args = _tco_1;
             i = _tco_2;

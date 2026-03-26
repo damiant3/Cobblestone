@@ -52,31 +52,24 @@ Section: Fresh Variables
    state : UnificationState
   }
 
-Section: Substitution Lookup
+Section: Substitution Lookup (binary search on sorted substitutions)
 
   subst-lookup : Integer -> List SubstEntry -> CodexType
   subst-lookup (var-id) (entries) =
-   subst-lookup-loop var-id entries 0 (list-length entries)
-
-  subst-lookup-loop : Integer -> List SubstEntry -> Integer -> Integer -> CodexType
-  subst-lookup-loop (var-id) (entries) (i) (len) =
-   if i == len then ErrorTy
-   else
-    let entry = list-at entries i
-    in if entry.var-id == var-id then entry.resolved-type
-     else subst-lookup-loop var-id entries (i + 1) len
+   let len = list-length entries
+   in if len == 0 then ErrorTy
+   else let pos = bsearch-int-pos entries var-id 0 len
+    in if pos >= len then ErrorTy
+    else let entry = list-at entries pos
+     in if entry.var-id == var-id then entry.resolved-type else ErrorTy
 
   has-subst : Integer -> List SubstEntry -> Boolean
   has-subst (var-id) (entries) =
-   has-subst-loop var-id entries 0 (list-length entries)
-
-  has-subst-loop : Integer -> List SubstEntry -> Integer -> Integer -> Boolean
-  has-subst-loop (var-id) (entries) (i) (len) =
-   if i == len then False
-   else
-    let entry = list-at entries i
-    in if entry.var-id == var-id then True
-     else has-subst-loop var-id entries (i + 1) len
+   let len = list-length entries
+   in if len == 0 then False
+   else let pos = bsearch-int-pos entries var-id 0 len
+    in if pos >= len then False
+    else (list-at entries pos).var-id == var-id
 
 Section: Resolve
 
@@ -93,8 +86,10 @@ Section: Add Substitution
 
   add-subst : UnificationState -> Integer -> CodexType -> UnificationState
   add-subst (st) (var-id) (ty) =
-   UnificationState {
-    substitutions = st.substitutions ++ [SubstEntry { var-id = var-id, resolved-type = ty }],
+   let entry = SubstEntry { var-id = var-id, resolved-type = ty }
+   in let pos = bsearch-int-pos st.substitutions var-id 0 (list-length st.substitutions)
+   in UnificationState {
+    substitutions = list-insert-at st.substitutions pos entry,
     next-id = st.next-id,
     errors = st.errors
    }
@@ -307,4 +302,4 @@ Section: Deep Resolve
   deep-resolve-list : UnificationState -> List CodexType -> Integer -> Integer -> List CodexType -> List CodexType
   deep-resolve-list (st) (args) (i) (len) (acc) =
    if i == len then acc
-   else deep-resolve-list st args (i + 1) len (acc ++ [deep-resolve st (list-at args i)])
+   else deep-resolve-list st args (i + 1) len (list-snoc acc (deep-resolve st (list-at args i)))

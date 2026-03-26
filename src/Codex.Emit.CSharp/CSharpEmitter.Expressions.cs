@@ -383,7 +383,8 @@ public sealed partial class CSharpEmitter
     }
 
     static readonly Set<string> s_multiArgBuiltins = Set<string>.Of(
-        "char-at", "char-code-at", "substring", "list-at", "text-replace",
+        "char-at", "char-code-at", "substring", "list-at", "list-insert-at", "list-snoc",
+        "text-replace", "text-compare",
         "write-file", "run-process", "list-files", "text-split", "text-contains", "text-starts-with",
         "fork", "await", "par", "race");
 
@@ -437,6 +438,41 @@ public sealed partial class CSharpEmitter
                 sb.Append("[(int)");
                 EmitExpr(sb, args[1], indent);
                 sb.Append(']');
+                return true;
+
+            case "list-insert-at" when args.Count == 3:
+            {
+                // list-insert-at list idx item → new list with item at idx
+                string elemType = args[0].Type is ListType lt ? EmitType(lt.Element) : "object";
+                sb.Append($"((Func<List<{elemType}>>)(() => {{ var _l = new List<{elemType}>(");
+                EmitExpr(sb, args[0], indent);
+                sb.Append("); _l.Insert((int)");
+                EmitExpr(sb, args[1], indent);
+                sb.Append(", ");
+                EmitExpr(sb, args[2], indent);
+                sb.Append("); return _l; }))()");
+                return true;
+            }
+
+            case "list-snoc" when args.Count == 2:
+            {
+                // list-snoc list item → in-place Add, O(1) amortized
+                // Safe for linear accumulator patterns (list not shared after call)
+                string snocListType = args[0].Type is ListType slt ? $"List<{EmitType(slt.Element)}>" : "List<object>";
+                sb.Append($"((Func<{snocListType}>)(() => {{ var _l = ");
+                EmitExpr(sb, args[0], indent);
+                sb.Append("; _l.Add(");
+                EmitExpr(sb, args[1], indent);
+                sb.Append("); return _l; }))()");
+                return true;
+            }
+
+            case "text-compare" when args.Count == 2:
+                sb.Append("(long)string.CompareOrdinal(");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(", ");
+                EmitExpr(sb, args[1], indent);
+                sb.Append(')');
                 return true;
 
             case "text-replace" when args.Count == 3:

@@ -205,7 +205,7 @@ class Program
             }
 
             int indent = MeasureIndent(lines[i]);
-            if (indent >= 4 && LooksLikeNotation(trimmed))
+            if (indent >= 2 && LooksLikeNotation(trimmed))
             {
                 int baseIndent = indent;
                 List<string> block = [];

@@ -80,7 +80,16 @@ public sealed class TypeEnvironment
         env = env.Bind("list-at", new ForAllType(0,
             new FunctionType(new ListType(new TypeVariable(0)),
                 new FunctionType(IntegerType.s_instance, new TypeVariable(0)))));
-        
+        env = env.Bind("list-insert-at", new ForAllType(0,
+            new FunctionType(new ListType(new TypeVariable(0)),
+                new FunctionType(IntegerType.s_instance,
+                    new FunctionType(new TypeVariable(0), new ListType(new TypeVariable(0)))))));
+        env = env.Bind("text-compare", new FunctionType(TextType.s_instance,
+            new FunctionType(TextType.s_instance, IntegerType.s_instance)));
+        env = env.Bind("list-snoc", new ForAllType(0,
+            new FunctionType(new ListType(new TypeVariable(0)),
+                new FunctionType(new TypeVariable(0), new ListType(new TypeVariable(0))))));
+
         // map : (a → [e] b) → List a → [e] List b
         // ForAll e. ForAll a. ForAll b. ...
         // e (id=100) is an EffectRowVariable, a (id=101) and b (id=102) are TypeVariables

@@ -32,7 +32,7 @@ Section: Resolve Type Expression
   resolve-type-expr-list : List TypeBinding -> List ATypeExpr -> Integer -> Integer -> List CodexType -> List CodexType
   resolve-type-expr-list (tdm) (args) (i) (len) (acc) =
    if i == len then acc
-   else resolve-type-expr-list tdm args (i + 1) len (acc ++ [resolve-type-expr tdm (list-at args i)])
+   else resolve-type-expr-list tdm args (i + 1) len (list-snoc acc (resolve-type-expr tdm (list-at args i)))
 
   resolve-type-name : List TypeBinding -> Text -> CodexType
   resolve-type-name (tdm) (name) =
@@ -46,15 +46,13 @@ Section: Resolve Type Expression
 
   lookup-type-def : List TypeBinding -> Text -> CodexType
   lookup-type-def (tdm) (name) =
-   lookup-type-def-loop tdm name 0 (list-length tdm)
-
-  lookup-type-def-loop : List TypeBinding -> Text -> Integer -> Integer -> CodexType
-  lookup-type-def-loop (tdm) (name) (i) (len) =
-   if i == len then ConstructedTy (Name { value = name }) []
-   else
-    let b = list-at tdm i
-    in if b.name == name then b.bound-type
-    else lookup-type-def-loop tdm name (i + 1) len
+   let len = list-length tdm
+   in if len == 0 then ConstructedTy (Name { value = name }) []
+   else let pos = bsearch-text-pos tdm name 0 len
+    in if pos >= len then ConstructedTy (Name { value = name }) []
+    else let b = list-at tdm pos
+     in if b.name == name then b.bound-type
+     else ConstructedTy (Name { value = name }) []
 
 Section: Parameterize Type
 
@@ -144,7 +142,7 @@ Section: Parameterize Type
    if i == len then WalkListResult { walked-list = acc, entries = entries, state = st }
    else
     let r = parameterize-walk st entries (list-at args i)
-    in parameterize-walk-list r.state r.entries args (i + 1) len (acc ++ [r.walked])
+    in parameterize-walk-list r.state r.entries args (i + 1) len (list-snoc acc r.walked)
 
 Section: Check Definition
 
@@ -230,7 +228,7 @@ Section: Check Module
     in let r = check-def st env def
     in let resolved = deep-resolve r.state r.inferred-type
     in let entry = TypeBinding { name = def.name.value, bound-type = resolved }
-    in check-all-defs r.state env defs (i + 1) len (acc ++ [entry])
+    in check-all-defs r.state env defs (i + 1) len (list-snoc acc entry)
 
 Section: Register Type Definitions
 
@@ -246,7 +244,7 @@ Section: Register Type Definitions
        if ARecordTypeDef (name) (type-params) (fields) ->
         let rec-fields = build-record-fields-for-map tdefs fields 0 (list-length fields) [] acc
         in TypeBinding { name = name.value, bound-type = RecordTy name rec-fields }
-    in build-type-def-map tdefs (i + 1) len (acc ++ [entry])
+    in build-type-def-map tdefs (i + 1) len (list-insert-at acc (bsearch-text-pos acc entry.name 0 (list-length acc)) entry)
 
   build-sum-ctors : List ATypeDef -> List AVariantCtorDef -> Integer -> Integer -> List SumCtor -> List TypeBinding -> List SumCtor
   build-sum-ctors (tdefs) (ctors) (i) (len) (acc) (partial-tdm) =
@@ -255,7 +253,7 @@ Section: Register Type Definitions
     let c = list-at ctors i
     in let field-types = resolve-type-expr-list-for-map tdefs c.fields 0 (list-length c.fields) [] partial-tdm
     in let sc = SumCtor { name = c.name, fields = field-types }
-    in build-sum-ctors tdefs ctors (i + 1) len (acc ++ [sc]) partial-tdm
+    in build-sum-ctors tdefs ctors (i + 1) len (list-snoc acc sc) partial-tdm
 
   build-record-fields-for-map : List ATypeDef -> List ARecordFieldDef -> Integer -> Integer -> List RecordField -> List TypeBinding -> List RecordField
   build-record-fields-for-map (tdefs) (fields) (i) (len) (acc) (partial-tdm) =
@@ -263,12 +261,12 @@ Section: Register Type Definitions
    else
     let f = list-at fields i
     in let rfield = RecordField { name = f.name, type-val = resolve-type-expr partial-tdm f.type-expr }
-    in build-record-fields-for-map tdefs fields (i + 1) len (acc ++ [rfield]) partial-tdm
+    in build-record-fields-for-map tdefs fields (i + 1) len (list-snoc acc rfield) partial-tdm
 
   resolve-type-expr-list-for-map : List ATypeDef -> List ATypeExpr -> Integer -> Integer -> List CodexType -> List TypeBinding -> List CodexType
   resolve-type-expr-list-for-map (tdefs) (args) (i) (len) (acc) (partial-tdm) =
    if i == len then acc
-   else resolve-type-expr-list-for-map tdefs args (i + 1) len (acc ++ [resolve-type-expr partial-tdm (list-at args i)]) partial-tdm
+   else resolve-type-expr-list-for-map tdefs args (i + 1) len (list-snoc acc (resolve-type-expr partial-tdm (list-at args i))) partial-tdm
 
   register-type-defs : UnificationState -> TypeEnv -> List TypeBinding -> List ATypeDef -> Integer -> Integer -> LetBindResult
   register-type-defs (st) (env) (tdm) (tdefs) (i) (len) =
@@ -296,7 +294,7 @@ Section: Register Type Definitions
    else
     let f = list-at fields i
     in let rfield = RecordField { name = f.name, type-val = resolve-type-expr tdm f.type-expr }
-    in build-record-fields tdm fields (i + 1) len (acc ++ [rfield])
+    in build-record-fields tdm fields (i + 1) len (list-snoc acc rfield)
 
   lookup-record-field : List RecordField -> Text -> CodexType
   lookup-record-field (fields) (name) =

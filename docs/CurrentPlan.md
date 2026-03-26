@@ -1,27 +1,27 @@
 # Current Plan
 
-**Date**: 2026-03-25 (late evening update — Cam session)
+**Date**: 2026-03-25 (night update — Cam session 2)
 
 ---
 
 ## Where We Stand
 
-Char primitive type is implemented across all 16 backends. The root cause of the
-800x lexer slowdown (per-character string allocation in `char-at`) is eliminated.
-The kernel IDT was optimized from 19KB to 7KB via a runtime loop. The self-hosted
-compiler has `CharTy` in its type union, ready for the lexer migration.
+Self-hosted compiler performance improved **9.2x** (1,907ms → 208ms) via sorted
+binary search for all lookup structures and `list-snoc` for O(1) amortized list
+accumulation. Three new builtins: `text-compare`, `list-insert-at`, `list-snoc`.
 
 ### Snapshot
 
 | Metric | Value |
 |--------|-------|
-| Self-hosted compiler | 26 files, ~4,900 lines |
+| Self-hosted compiler | 26 files, ~5,000 lines |
 | Backends | 15 (12 transpilation + IL + RISC-V + WASM + ARM64 + x86-64, including bare metal) |
 | Tests | 915 (507 compiler + 134 syntax + 110 repository + 86 toolkit + 23 semantics + 21 core + 18 LSP + 16 AST) |
-| Fixed point | Proven (Stage 1 = Stage 3 at 255,344 chars) |
-| Language features | Lambda expressions, fork/await/par/race, **Char type** |
-| **Char type** | **Zero-alloc char-at across all 16 backends. is-letter/is-digit/is-whitespace take Char. char-to-text for conversion.** |
-| Codex.OS | 7 KB kernel (was 15.4 KB), Rings 0-4, preemptive multitasking, capability-enforced syscalls |
+| **Self-compile time** | **208ms median** (was 1,907ms — 9.2x faster) |
+| Fixed point | **Proven** (Stage 2 = Stage 3 at 261,175 chars) |
+| Language features | Lambda expressions, fork/await/par/race, Char type |
+| New builtins | `text-compare` (ordinal), `list-insert-at` (O(n) sorted insert), `list-snoc` (O(1) amortized append) |
+| Codex.OS | 7 KB kernel, Rings 0-4, preemptive multitasking, capability-enforced syscalls |
 | Agents | 4 (Windows/Copilot, Linux/sandbox, Cam/CLI, Nut/garage-box) |
 
 **History**: `docs/OldStatus/CurrentPlan-2026-03-24-peak3-evening.md`
@@ -29,36 +29,50 @@ compiler has `CharTy` in its type union, ready for the lexer migration.
 
 ---
 
-## What Got Done (2026-03-25 Cam session)
+## What Got Done (2026-03-25 Cam session 2)
 
-### Char Primitive Type — all 16 backends
+### Performance P2-alt: Sorted Binary Search + list-snoc (9.2x speedup)
 
-Design doc: `docs/Designs/CHAR-TYPE.md`
+Post-mortem: `docs/reviews/P2-HAMT-REVERT.md` (previous session).
 
-| Phase | What | Status |
-|-------|------|--------|
-| Core type system | `CharType` added to `CodexType.cs`, type resolution, type environment, lowering, name resolver | On master |
-| C# + IL emitters | `char-at` returns `(long)text[(int)idx]` (zero alloc). `is-letter`/`is-digit`/`is-whitespace` take Char. Added `char-to-text`. | On master |
-| Transpiler emitters | JS, Python, Rust, Go, Java, C++ updated | On `cam/char-type-remaining` |
-| Native emitters | Wasm, x86-64, ARM64, RISC-V — `char-at` returns byte in register, no heap alloc | On `cam/char-type-remaining` |
-| Self-hosted compiler | `CharTy` in type union, updated type env, emitter, type checker, name resolver | On `cam/char-type-remaining` |
+The HAMT approach failed (82% slower). This session implemented the post-mortem's
+recommended alternative: sorted lists with binary search.
 
-**Awaiting review**: branch `cam/char-type-remaining` (3 commits). Core type system already on master.
+| Component | Change | Lookup improvement |
+|-----------|--------|-------------------|
+| TypeEnv | Sorted `List TypeBinding`, binary search via `text-compare` | O(n) → O(log n) |
+| Scope | Sorted `List Text`, binary search via `text-compare` | O(n) → O(log n) |
+| Unifier | Sorted `List SubstEntry`, binary search on `var-id` | O(n) → O(log n) |
+| TypeChecker `tdm` | Sorted type def map, binary search | O(n) → O(log n) |
+| Lexer tokenize-loop | `acc ++ [tok]` → `list-snoc acc tok` | O(n²) → O(n) |
+| All accumulator loops | `acc ++ [x]` → `list-snoc acc x` across 30+ sites | O(n²) → O(n) |
 
-### IDT Kernel Optimization
+**New builtins** (reference + self-hosted):
+- `text-compare : Text -> Text -> Integer` — ordinal string comparison via `string.CompareOrdinal`
+- `list-insert-at : List a -> Integer -> a -> List a` — O(n) insert at index via `List<T>.Insert`
+- `list-snoc : List a -> a -> List a` — O(1) amortized in-place `List<T>.Add` (safe for linear accumulators)
 
-Replaced unrolled 256-entry IDT fill (~12.8KB of code) with a tight runtime loop
-(~120 bytes). Kernel: 19KB → 7KB. Added size regression test (< 8KB guard). On master.
+**Benchmark results** (median, 10 runs, 3 warmup):
 
-### Handoff State Machine Fix
+| Stage | Before | After | Speedup |
+|-------|--------|-------|---------|
+| lex | 1,738ms | 24ms | **72x** |
+| parse | 33ms | 19ms | 1.7x |
+| desugar | — | 1ms | — |
+| resolve | — | 8ms | — |
+| typecheck | 49ms | 78ms | 0.6x |
+| lower | — | 28ms | — |
+| emit | — | 45ms | — |
+| **total** | **1,907ms** | **208ms** | **9.2x** |
 
-`abandoned` and `merged` states now allow transition to `awaiting-review`, so a new
-handoff can start after the previous one is closed. Rebuilt via Codex IL backend.
+Branch: `cam/revert-p2` (includes P2 HAMT revert + this optimization).
 
-### CLAUDE.md Slim-Down
+### Previous session work (on this branch)
 
-115 lines → 27. Removed everything discoverable via `codex-agent orient`. Added
-session-start orient rule. On master.
+- P2 HAMT revert (was 82% slower)
+- P4 string.Concat flattening (kept, pure win)
+- Lexer Char fixes (char-to-text wrapping)
+- Unifier CharTy support
 
 ---
 
@@ -72,10 +86,9 @@ session-start orient rule. On master.
 | 3 | Capability-enforced syscalls (SYS_WRITE_SERIAL, SYS_READ_KEY, SYS_GET_TICKS, SYS_EXIT) | Done |
 | 4 | Self-hosting compiler on bare metal, TCO, serial I/O | Serial REPL works for short programs |
 
-**Ring 4 blocker**: Compiler performance on heavy workloads (28x slower than reference).
-P1 (Char type) eliminates the lexer bottleneck (800x → ~5x projected). P4 (string.Concat
-flattening) eliminates O(n²) emitter string allocation. P2 (Hamt for hash lookups) is
-next — needs Maybe type and Hamt inlined into self-hosted compiler.
+**Ring 4 status**: Compiler performance now 208ms (was 1,907ms). P1 (Char type) fixed
+per-character allocation. P2 (sorted binary search + list-snoc) gave 9.2x speedup.
+P4 (string.Concat flattening) on master. Remaining gap to reference: ~2-3x.
 See `docs/Designs/PerformanceReportAndRecommendation.md`.
 
 ---
@@ -88,7 +101,7 @@ See `docs/Designs/PerformanceReportAndRecommendation.md`.
 |------|-----------|-----|
 | **Review cam/char-type-remaining** | Awaiting review (3 commits: transpilers, native, self-hosted) | Any agent |
 | **Review cam/perf-p2-p4** | Awaiting review (P4: string.Concat flattening) | Any agent |
-| Performance P2: hash-based lookups (Hamt) | Needs Maybe type + Hamt inlined into Codex.Codex/Core/ | Cam |
+| ~~Performance P2~~ | **Done** — sorted binary search + list-snoc (9.2x speedup) | ~~Cam~~ |
 | C# style cleanup (8 categories, ~90 items) | None | Windows |
 | Phone flash | Bootloader signature issue | Human |
 

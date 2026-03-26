@@ -19,17 +19,17 @@ Section: Scope
 
   scope-has : Scope -> Text -> Boolean
   scope-has (sc) (name) =
-   scope-has-loop sc.names name 0 (list-length sc.names)
-
-  scope-has-loop : List Text -> Text -> Integer -> Integer -> Boolean
-  scope-has-loop (names) (name) (i) (len) =
-   if i == len then False
-   else if list-at names i == name then True
-   else scope-has-loop names name (i + 1) len
+   let len = list-length sc.names
+   in if len == 0 then False
+   else let pos = bsearch-text-set sc.names name 0 len
+    in if pos >= len then False
+    else list-at sc.names pos == name
 
   scope-add : Scope -> Text -> Scope
   scope-add (sc) (name) =
-   Scope { names = [name] ++ sc.names }
+   let len = list-length sc.names
+   in let pos = bsearch-text-set sc.names name 0 len
+   in Scope { names = list-insert-at sc.names pos name }
 
 Section: Built-in Names
 
@@ -44,7 +44,8 @@ Section: Built-in Names
     "text-to-integer", "integer-to-text", "text-replace",
     "text-split", "text-contains", "text-starts-with",
     "char-code", "char-code-at", "code-to-char",
-    "list-length", "list-at",
+    "list-length", "list-at", "list-insert-at", "list-snoc",
+    "text-compare",
     "get-args", "get-env", "current-dir",
     "map", "filter", "fold" ]
 
@@ -79,7 +80,8 @@ Section: Collect Names
     in let name = def.name.value
     in if list-contains acc name
      then collect-top-level-names defs (i + 1) len acc (errs ++ [make-error "CDX3001" ("Duplicate definition: " ++ name)])
-     else collect-top-level-names defs (i + 1) len (acc ++ [name]) errs
+     else let pos = bsearch-text-set acc name 0 (list-length acc)
+      in collect-top-level-names defs (i + 1) len (list-insert-at acc pos name) errs
 
   CollectResult = record {
    names : List Text,
@@ -88,13 +90,11 @@ Section: Collect Names
 
   list-contains : List Text -> Text -> Boolean
   list-contains (xs) (name) =
-   list-contains-loop xs name 0 (list-length xs)
-
-  list-contains-loop : List Text -> Text -> Integer -> Integer -> Boolean
-  list-contains-loop (xs) (name) (i) (len) =
-   if i == len then False
-   else if list-at xs i == name then True
-   else list-contains-loop xs name (i + 1) len
+   let len = list-length xs
+   in if len == 0 then False
+   else let pos = bsearch-text-set xs name 0 len
+    in if pos >= len then False
+    else list-at xs pos == name
 
   collect-ctor-names : List ATypeDef -> Integer -> Integer -> List Text -> List Text -> CtorCollectResult
   collect-ctor-names (type-defs) (i) (len) (type-acc) (ctor-acc) =
@@ -103,11 +103,11 @@ Section: Collect Names
     let td = list-at type-defs i
     in when td
      if AVariantTypeDef (name) (params) (ctors) ->
-      let new-type-acc = type-acc ++ [name.value]
+      let new-type-acc = list-snoc type-acc name.value
       in let new-ctor-acc = collect-variant-ctors ctors 0 (list-length ctors) ctor-acc
       in collect-ctor-names type-defs (i + 1) len new-type-acc new-ctor-acc
      if ARecordTypeDef (name) (params) (fields) ->
-      collect-ctor-names type-defs (i + 1) len (type-acc ++ [name.value]) ctor-acc
+      collect-ctor-names type-defs (i + 1) len (list-snoc type-acc name.value) ctor-acc
 
   CtorCollectResult = record {
    type-names : List Text,
@@ -119,7 +119,7 @@ Section: Collect Names
    if i == len then acc
    else
     let ctor = list-at ctors i
-    in collect-variant-ctors ctors (i + 1) len (acc ++ [ctor.name.value])
+    in collect-variant-ctors ctors (i + 1) len (list-snoc acc ctor.name.value)
 
 Section: Build Initial Scope
 

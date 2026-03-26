@@ -108,7 +108,7 @@ Section: Pattern Parsing
   continue-ctor-fields : Token -> List Pat -> Pat -> ParseState -> ParsePatResult
   continue-ctor-fields (ctor) (acc) (p) (st) =
    let st2 = expect RightParen st
-   in parse-ctor-pattern-fields ctor (acc ++ [p]) st2
+   in parse-ctor-pattern-fields ctor (list-snoc acc p) st2
 
   unwrap-pat-ok : ParsePatResult -> (Pat -> ParseState -> ParsePatResult) -> ParsePatResult
   unwrap-pat-ok (r) (f) =
@@ -160,7 +160,7 @@ Section: Definition Parsing
       then let param = current st2
        in let st3 = advance st2
         in let st4 = expect RightParen st3
-         in parse-def-params-then ann name-tok (acc ++ [param]) st4
+         in parse-def-params-then ann name-tok (list-snoc acc param) st4
       else finish-def ann name-tok acc st
     else finish-def ann name-tok acc st
 
@@ -198,17 +198,17 @@ Section: Type Definition Parsing
   parse-type-params : ParseState -> List Token -> ParseState
   parse-type-params (st) (acc) =
    if is-paren-type-param st
-    then parse-type-params (advance (advance (advance st))) (acc ++ [list-at st.tokens (st.pos + 1)])
+    then parse-type-params (advance (advance (advance st))) (list-snoc acc (list-at st.tokens (st.pos + 1)))
    else if is-ident (current-kind st)
-    then parse-type-params (advance st) (acc ++ [current st])
+    then parse-type-params (advance st) (list-snoc acc (current st))
    else st
 
   collect-type-params : ParseState -> List Token -> List Token
   collect-type-params (st) (acc) =
    if is-paren-type-param st
-    then collect-type-params (advance (advance (advance st))) (acc ++ [list-at st.tokens (st.pos + 1)])
+    then collect-type-params (advance (advance (advance st))) (list-snoc acc (list-at st.tokens (st.pos + 1)))
    else if is-ident (current-kind st)
-    then collect-type-params (advance st) (acc ++ [current st])
+    then collect-type-params (advance st) (list-snoc acc (current st))
    else acc
 
   parse-type-def : ParseState -> ParseTypeDefResult
@@ -258,8 +258,8 @@ Section: Type Definition Parsing
      let field = RecordFieldDef { name = field-name, type-expr = ft }
      in let st2 = skip-newlines st
       in if is-comma (current-kind st2)
-       then parse-record-fields-loop name-tok tparams (acc ++ [field]) (skip-newlines (advance st2))
-       else parse-record-fields-loop name-tok tparams (acc ++ [field]) st2
+       then parse-record-fields-loop name-tok tparams (list-snoc acc field) (skip-newlines (advance st2))
+       else parse-record-fields-loop name-tok tparams (list-snoc acc field) st2
 
   parse-variant-type : Token -> List Token -> ParseState -> ParseTypeDefResult
   parse-variant-type (name-tok) (tparams) (st) =
@@ -281,7 +281,7 @@ Section: Type Definition Parsing
      in unwrap-ctor-field field-result ctor-name fields name-tok tparams acc
     else let st2 = skip-newlines st
      in let ctor = VariantCtorDef { name = ctor-name, fields = fields }
-      in parse-variant-ctors name-tok tparams (acc ++ [ctor]) st2
+      in parse-variant-ctors name-tok tparams (list-snoc acc ctor) st2
 
   unwrap-ctor-field : ParseTypeResult -> Token -> List TypeExpr -> Token -> List Token -> List VariantCtorDef -> ParseTypeDefResult
   unwrap-ctor-field (r) (ctor-name) (fields) (name-tok) (tparams) (acc) =
@@ -304,7 +304,7 @@ Section: Document Parsing
     then let st2 = advance st
      in let name-tok = current st2
       in let st3 = skip-newlines (advance st2)
-       in parse-imports st3 (acc ++ [ImportDecl { module-name = name-tok }])
+       in parse-imports st3 (list-snoc acc (ImportDecl { module-name = name-tok }))
     else ImportParseResult { imports = acc, state = st }
 
   ImportParseResult = record { imports : List ImportDecl, state : ParseState }
@@ -338,7 +338,7 @@ Section: Document Parsing
         in when type-result
          if TypeOk (ty) (st3) ->
           let op = EffectOpDef { name = op-tok, type-expr = ty }
-          in parse-effect-ops (skip-newlines st3) (acc ++ [op])
+          in parse-effect-ops (skip-newlines st3) (list-snoc acc op)
      else EffectOpsResult { ops = acc, state = st }
     else EffectOpsResult { ops = acc, state = st }
 
