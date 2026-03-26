@@ -257,7 +257,7 @@ public class PreludeTests
             import CCE
 
             main : Boolean
-            main = is-cce-digit 10
+            main = is-digit 10
             """;
         DiagnosticBag diag = CompileWithPrelude(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
