@@ -24,11 +24,11 @@ namespace Codex.Core;
 /// Tier 1 block layout:
 ///   0x000-0x07F: Latin Extended (accented Latin + symbols not in Tier 0)
 ///   0x080-0x0FF: Cyrillic Extended (Russian/Ukrainian/Serbian not in Tier 0)
-///   0x100-0x1FF: Greek (reserved)
-///   0x200-0x3FF: Arabic + Devanagari (reserved)
-///   0x400-0x5FF: CJK top-512 (reserved)
-///   0x600-0x6FF: Japanese Hiragana + Katakana (reserved)
-///   0x700-0x7FF: Korean + misc (reserved)
+///   0x100-0x1FF: Greek + typographic symbols
+///   0x200-0x3FF: Arabic + Devanagari
+///   0x400-0x5FF: CJK top-512 (frequency-sorted Chinese)
+///   0x600-0x6FF: Japanese (Hiragana + Katakana + punctuation)
+///   0x700-0x7FF: Korean (Jamo + frequent syllables)
 ///
 /// Byte framing (self-synchronizing, same as UTF-8):
 ///   0xxxxxxx         = Tier 0 (single byte, 0x00-0x7F)
@@ -157,7 +157,128 @@ public static class CceTable
         foreach (int cp in cyrillicLower) t[slot++] = cp;
         foreach (int cp in cyrillicUpper) t[slot++] = cp;
         foreach (int cp in cyrillicExt) t[slot++] = cp;
-        // Remaining Cyrillic slots stay 0
+
+        // Block 2 (0x100-0x1FF): Greek
+        int[] greekLower =
+        {
+            945, 946, 947, 948, 949, 950, 951, 952, 953, 954,             // α β γ δ ε ζ η θ ι κ
+            955, 956, 957, 958, 959, 960, 961, 963, 964, 965,             // λ μ ν ξ ο π ρ σ τ υ
+            966, 967, 968, 969, 962                                        // φ χ ψ ω ς (final sigma)
+        };
+        int[] greekUpper =
+        {
+            913, 914, 915, 916, 917, 918, 919, 920, 921, 922,             // Α Β Γ Δ Ε Ζ Η Θ Ι Κ
+            923, 924, 925, 926, 927, 928, 929, 931, 932, 933,             // Λ Μ Ν Ξ Ο Π Ρ Σ Τ Υ
+            934, 935, 936, 937                                             // Φ Χ Ψ Ω
+        };
+        int[] greekSymbols =
+        {
+            8364, 8482, 8240, 8230, 8211, 8212, 8216, 8217,               // € ™ ‰ … – — ' '
+            8220, 8221, 8224, 8225, 8226, 8249, 8250                      // " " † ‡ • ‹ ›
+        };
+
+        slot = 0x100;
+        foreach (int cp in greekLower) t[slot++] = cp;
+        foreach (int cp in greekUpper) t[slot++] = cp;
+        foreach (int cp in greekSymbols) t[slot++] = cp;
+
+        // Block 3 (0x200-0x3FF): Arabic + Devanagari
+        // Arabic: most frequent letters
+        int[] arabic =
+        {
+            1575, 1576, 1578, 1579, 1580, 1581, 1582, 1583,               // ا ب ت ث ج ح خ د
+            1584, 1585, 1586, 1587, 1588, 1589, 1590, 1591,               // ذ ر ز س ش ص ض ط
+            1592, 1593, 1594, 1601, 1602, 1603, 1604, 1605,               // ظ ع غ ف ق ك ل م
+            1606, 1607, 1608, 1610, 1569, 1570, 1571, 1572,               // ن ه و ي ء آ أ ؤ
+            1573, 1574, 1577, 1609, 1611, 1612, 1613, 1614,               // إ ئ ة ى ً ٌ ٍ َ
+            1615, 1616, 1617, 1618                                         // ُ ِ ّ ْ
+        };
+        // Devanagari: vowels + most frequent consonants
+        int[] devanagari =
+        {
+            2309, 2310, 2311, 2312, 2313, 2314, 2319, 2320,               // अ आ इ ई उ ऊ ए ऐ
+            2323, 2324, 2325, 2326, 2327, 2328, 2330, 2331,               // ओ औ क ख ग घ च छ
+            2332, 2333, 2335, 2336, 2337, 2338, 2339, 2340,               // ज झ ट ठ ड ढ ण त
+            2341, 2342, 2343, 2344, 2346, 2347, 2348, 2349,               // थ द ध न प फ ब भ
+            2350, 2351, 2352, 2354, 2357, 2358, 2359, 2360,               // म य र ल व श ष स
+            2361, 2366, 2367, 2368, 2369, 2370, 2375, 2376,               // ह ा ि ी ु ू े ै
+            2379, 2380, 2381, 2306, 2307                                   // ो ौ ् ं ः
+        };
+
+        slot = 0x200;
+        foreach (int cp in arabic) t[slot++] = cp;
+        foreach (int cp in devanagari) t[slot++] = cp;
+
+        // Block 4-5 (0x400-0x5FF): CJK (most frequent Chinese characters, deduplicated)
+        int[] cjkFrequent =
+        {
+            30340, 19968, 26159, 19981, 20102, 20154, 25105, 22312,       // 的 一 是 不 了 人 我 在
+            26377, 20182, 36825, 22823, 26469, 20197, 22269, 20013,       // 有 他 这 大 来 以 国 中
+            21040, 20250, 23601, 23398, 35828, 22320, 19978, 37324,       // 到 会 就 学 说 地 上 里
+            23545, 29983, 26102, 21487, 21457, 22810, 32463, 34892,       // 对 生 时 可 发 多 经 行
+            24037, 35201, 22905, 27861, 32780, 20316, 29992, 37117,       // 工 要 女 没 给 作 用 都
+            21035, 20027, 21407, 25991, 21270, 36824, 24403, 24180,       // 别 主 原 文 化 进 当 年
+            20160, 21147, 22914, 24515, 25919, 24773, 21516, 25104,       // 事 力 如 已 政 情 同 成
+            27599, 26041, 21069, 20986, 20840, 21482, 31038, 38271,       // 比 方 前 出 全 只 社 问
+            23450, 31181, 20851, 26412, 30475, 28857, 26032, 20844,       // 定 种 关 本 看 点 新 公
+            24320, 20294, 35748, 21518, 35770, 26524, 33258, 22240,       // 开 但 论 后 认 果 自 因
+            22825, 20854, 27492, 28982, 27665, 38388, 36947, 20004,       // 天 其 每 然 步 间 道 两
+            30334, 24605, 26376, 34987, 21592, 24819, 29305, 30524,       // 真 想 月 着 又 很 特 目
+            20449, 25163, 26126, 24213, 35774, 37096, 31561, 30693,       // 信 手 明 建 设 部 等 理
+            28216, 20998, 23383, 22238, 20307, 22909, 26356, 23478,       // 清 分 字 回 体 好 最 实
+            21518, 36824, 24180, 20160, 22810, 21040, 22823, 25104,       // 后 进 年 事 多 到 大 成
+            23478, 27861, 22269, 20316, 29992, 20182, 24403, 22312,       // 实 没 国 作 用 他 当 在
+            25105, 35201, 19981, 20102, 20154, 26159, 19968, 30340,       // 我 要 不 了 人 是 一 的
+            20197, 26377, 22320, 23398, 26032, 21147, 22914, 20844,       // 以 有 地 学 新 力 如 公
+            36335, 20043, 22763, 21326, 36164, 20301, 22797, 24847,       // 还 之 少 北 过 位 女 得
+            33021, 24050, 23478, 24515, 26412, 23450, 22320, 25104,       // 能 已 实 已 本 定 地 成
+            38271, 31181, 20851, 27861, 21035, 20027, 25919, 22905,       // 问 种 关 没 别 主 政 女
+            24773, 21516, 32463, 34892, 24037, 35828, 37117, 21270,       // 情 同 经 行 工 说 都 化
+            29983, 26102, 23601, 21457, 23545, 37324, 19978, 20250,       // 生 时 就 发 对 里 上 会
+            26469, 20013, 30475, 28857, 24320, 20294, 35748, 35770,       // 来 中 看 点 开 但 论 认
+            22240, 26524, 33258, 22825, 28982, 36947, 24605, 27665        // 因 果 自 天 然 道 想 步
+        };
+
+        // Deduplicate: only insert first occurrence of each code point
+        var cjkSeen = new HashSet<int>();
+        slot = 0x400;
+        foreach (int cp in cjkFrequent)
+        {
+            if (slot >= 0x600) break;
+            if (cp != 0 && cjkSeen.Add(cp)) t[slot++] = cp;
+        }
+
+        // Block 6 (0x600-0x6FF): Japanese Hiragana + Katakana
+        // Hiragana: U+3041-U+3093 (83 chars)
+        slot = 0x600;
+        for (int cp = 0x3041; cp <= 0x3093; cp++) t[slot++] = cp;
+        // Katakana: U+30A1-U+30F6 (86 chars)
+        for (int cp = 0x30A1; cp <= 0x30F6; cp++) t[slot++] = cp;
+        // Japanese punctuation
+        int[] japanesePunct = { 0x3001, 0x3002, 0x300C, 0x300D, 0x3005, 0x30FC, 0x30FB };  // 、。「」々ー・
+        foreach (int cp in japanesePunct) t[slot++] = cp;
+
+        // Block 7 (0x700-0x7FF): Korean Jamo + frequent syllables
+        // Hangul Jamo consonants: U+1100-U+1112 (19)
+        slot = 0x700;
+        for (int cp = 0x1100; cp <= 0x1112; cp++) t[slot++] = cp;
+        // Hangul Jamo vowels: U+1161-U+1175 (21)
+        for (int cp = 0x1161; cp <= 0x1175; cp++) t[slot++] = cp;
+        // Hangul Jamo final consonants: U+11A8-U+11C2 (27)
+        for (int cp = 0x11A8; cp <= 0x11C2; cp++) t[slot++] = cp;
+        // Most frequent Hangul syllables (deduplicated)
+        int[] koreanFrequent =
+        {
+            44032, 45208, 45796, 46972, 47560, 48148, 49324, 50500,       // 가 나 다 라 마 바 사 아
+            51088, 52264, 52852, 53440, 54028, 54616, 45768, 46020,       // 자 차 카 타 파 하 는 다(dup)
+            47484, 50640, 51060, 51032, 51012, 51008, 44163, 48320,       // 를 에 이 의 을 은 각 보
+            49373, 51068, 51204, 51201, 45908, 47196, 46108               // 서 있 저 적 되 로 된
+        };
+        var korSeen = new HashSet<int>();
+        foreach (int cp in koreanFrequent)
+        {
+            if (cp != 0 && korSeen.Add(cp)) t[slot++] = cp;
+        }
 
         return t;
     }

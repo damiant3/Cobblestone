@@ -415,6 +415,74 @@ public class CceTableTests
     }
 
     [Fact]
+    public void Tier1_greek_block_populated()
+    {
+        int count = 0;
+        for (int i = 0x100; i < 0x200; i++)
+            if (CceTable.Tier1ToUnicode[i] != 0) count++;
+        Assert.True(count >= 49, $"Greek block should have 49+ entries, got {count}");
+    }
+
+    [Fact]
+    public void Tier1_japanese_block_populated()
+    {
+        int count = 0;
+        for (int i = 0x600; i < 0x700; i++)
+            if (CceTable.Tier1ToUnicode[i] != 0) count++;
+        Assert.True(count >= 170, $"Japanese block should have 170+ entries, got {count}");
+    }
+
+    [Fact]
+    public void Tier1_cjk_block_populated()
+    {
+        int count = 0;
+        for (int i = 0x400; i < 0x600; i++)
+            if (CceTable.Tier1ToUnicode[i] != 0) count++;
+        Assert.True(count >= 100, $"CJK block should have 100+ entries, got {count}");
+    }
+
+    [Fact]
+    public void Encode_decode_roundtrip_greek()
+    {
+        string original = "\u03B1\u03B2\u03B3"; // αβγ
+        string encoded = CceTable.Encode(original);
+        Assert.True(encoded.Length > original.Length);
+        Assert.Equal(original, CceTable.Decode(encoded));
+    }
+
+    [Fact]
+    public void Encode_decode_roundtrip_japanese()
+    {
+        string original = "\u3053\u3093\u306B\u3061\u306F"; // こんにちは
+        string encoded = CceTable.Encode(original);
+        Assert.True(encoded.Length > original.Length);
+        Assert.Equal(original, CceTable.Decode(encoded));
+    }
+
+    [Fact]
+    public void Encode_decode_roundtrip_arabic()
+    {
+        string original = "\u0627\u0644\u0633\u0644\u0627\u0645"; // السلام
+        string encoded = CceTable.Encode(original);
+        Assert.Equal(original, CceTable.Decode(encoded));
+    }
+
+    [Fact]
+    public void Encode_decode_roundtrip_devanagari()
+    {
+        string original = "\u0928\u092E\u0938\u094D\u0924\u0947"; // नमस्ते
+        string encoded = CceTable.Encode(original);
+        Assert.Equal(original, CceTable.Decode(encoded));
+    }
+
+    [Fact]
+    public void Tier1_total_coverage()
+    {
+        Assert.True(CceTable.Tier1Count >= 500,
+            $"Expected 500+ total Tier 1 entries, got {CceTable.Tier1Count}");
+    }
+
+    [Fact]
     public void GenerateRuntimeSource_includes_tier1_tables()
     {
         string source = CceTable.GenerateRuntimeSource();
