@@ -3743,9 +3743,14 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     // ── Interrupt Handling (Ring 1) ──────────────────────────────
 
     const long IdtBase = 0x6000;
+    // --- Kernel data page (0x7000-0x7FFF) ---
+    // 0x7000  TickCountAddr    8 bytes  Timer interrupt counter
+    // 0x7008  KeyBufferAddr    8 bytes  Last keyboard scancode
+    // 0x7010  CurrentProcAddr  8 bytes  (defined at line ~3281 with process table)
+    // 0x7018  ArenaBaseAddr    8 bytes  Heap arena base for REPL reset
     const long TickCountAddr = 0x7000;
     const long KeyBufferAddr = 0x7008;
-    const long ArenaBaseAddr = 0x7010; // heap arena base — restored between compilations
+    const long ArenaBaseAddr = 0x7018;
 
     void EmitInterruptSetup()
     {
@@ -4102,6 +4107,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             return;
         }
 
+        CodexType returnType = ComputeReturnType(mainDef.Type, mainDef.Parameters.Length);
+
         if (m_target == X86_64Target.BareMetal)
         {
             // Arena-based REPL loop: save heap as arena base, call main,
@@ -4119,47 +4126,14 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             X86_64Encoder.Li(m_text, Reg.RDI, ArenaBaseAddr);
             X86_64Encoder.MovLoad(m_text, HeapReg, Reg.RDI, 0);
 
-            EmitCallTo("main");
-
-            CodexType returnType = ComputeReturnType(mainDef.Type, mainDef.Parameters.Length);
-            switch (returnType)
-            {
-                case IntegerType:
-                    X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
-                    EmitCallTo("__itoa");
-                    EmitPrintText(Reg.RAX);
-                    break;
-                case BooleanType:
-                    EmitPrintBool(Reg.RAX);
-                    break;
-                case TextType:
-                    EmitPrintText(Reg.RAX);
-                    break;
-            }
+            EmitCallMainAndPrint(returnType);
 
             // Loop back — arena reset happens at top of loop
             X86_64Encoder.Jmp(m_text, replLoop - (m_text.Count + 5));
         }
         else
         {
-            // Linux: single invocation
-            EmitCallTo("main");
-
-            CodexType returnType = ComputeReturnType(mainDef.Type, mainDef.Parameters.Length);
-            switch (returnType)
-            {
-                case IntegerType:
-                    X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
-                    EmitCallTo("__itoa");
-                    EmitPrintText(Reg.RAX);
-                    break;
-                case BooleanType:
-                    EmitPrintBool(Reg.RAX);
-                    break;
-                case TextType:
-                    EmitPrintText(Reg.RAX);
-                    break;
-            }
+            EmitCallMainAndPrint(returnType);
 
             X86_64Encoder.Li(m_text, Reg.RDI, 0);
             X86_64Encoder.Li(m_text, Reg.RAX, 60); // sys_exit
@@ -4173,6 +4147,25 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         m_text[frameSizePatchOffset + 4] = (byte)((frameSize >> 8) & 0xFF);
         m_text[frameSizePatchOffset + 5] = (byte)((frameSize >> 16) & 0xFF);
         m_text[frameSizePatchOffset + 6] = (byte)((frameSize >> 24) & 0xFF);
+    }
+
+    void EmitCallMainAndPrint(CodexType returnType)
+    {
+        EmitCallTo("main");
+        switch (returnType)
+        {
+            case IntegerType:
+                X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
+                EmitCallTo("__itoa");
+                EmitPrintText(Reg.RAX);
+                break;
+            case BooleanType:
+                EmitPrintBool(Reg.RAX);
+                break;
+            case TextType:
+                EmitPrintText(Reg.RAX);
+                break;
+        }
     }
 
     static CodexType ComputeReturnType(CodexType type, int paramCount)
