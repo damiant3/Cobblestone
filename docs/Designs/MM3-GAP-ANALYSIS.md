@@ -45,6 +45,32 @@ all, any) as the critical blocker requiring function pointers on bare metal.
 **Remaining gaps are all easy: multi-file serial protocol, arena sizing,
 and boot protocol. No hard design decisions needed.**
 
+### Further Revision: Multi-File Protocol Not Needed
+
+The bootstrap pipeline (`tools/Codex.Bootstrap/Program.cs`) concatenates all
+26 `.codex` files into one combined source string, then compiles it as a single
+module. This means MM3 on bare metal is the same as MM2 — send one (large)
+source string over serial. The self-hosted compiler's `main` function calls
+`read-file path`, gets one string, and compiles it.
+
+**No multi-file protocol. No file table. Just send more bytes.**
+
+### Further Revision: Arena Size Is Not a Gap
+
+The bare metal kernel maps 128 x 2MB pages = 256MB of identity-mapped memory.
+Heap starts at 0x200000 (2MB). That leaves 254MB of arena. Self-compilation
+needs ~4MB. Not even close to the limit.
+
+### Bottom Line
+
+**MM3 may already work.** The higher-order function gap doesn't exist (closures
+work). The multi-file gap doesn't exist (bootstrap concatenates). The memory
+gap doesn't exist (254MB available). The only way to know is to try: send the
+concatenated self-hosted compiler source over serial and see if it compiles.
+
+The test is: `cat all-26-files.codex | serial → bare metal kernel → compile →
+serial output`. If the output matches Stage 1, MM3 is proven.
+
 ---
 
 ## ~~Gap 1: Missing Builtins (13 of 42)~~ — REVISED
