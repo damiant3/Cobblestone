@@ -99,22 +99,30 @@ See `docs/Designs/PerformanceReportAndRecommendation.md`.
 
 | Item | Blocked on | Who |
 |------|-----------|-----|
-| **Review cam/char-type-remaining** | Awaiting review (3 commits: transpilers, native, self-hosted) | Any agent |
-| **Review cam/perf-p2-p4** | Awaiting review (P4: string.Concat flattening) | Any agent |
-| ~~Performance P2~~ | **Done** — sorted binary search + list-snoc (9.2x speedup) | ~~Cam~~ |
-| C# style cleanup (8 categories, ~90 items) | None | Windows |
+| **Review cam/perf-sorted-bsearch** | Awaiting review (9.2x speedup) | Any agent |
+| CCE prelude migration to Char type | None — Char type is on master | Any agent |
+| Char literal syntax (`'a'`) | None | Any agent |
+| Closure escape analysis | CDX2043 to error | Any agent |
 | Phone flash | Bootloader signature issue | Human |
+
+### Completed (stale branches deleted)
+
+| Item | Status |
+|------|--------|
+| Char type — all 16 backends | On master. Branches `cam/char-type*` deleted. |
+| P4 string.Concat flattening | On master. Branch `cam/perf-p2-p4` deleted. |
+| P2 sorted binary search + list-snoc | On `cam/perf-sorted-bsearch`, awaiting merge. |
+| P2 HAMT (reverted) | On master (revert). Branches deleted. |
+| C# style cleanup | Branch `windows/csharp-style-cleanup` deleted (by Linux or Windows agent). |
 
 ### Medium-term (weeks)
 
 | Item | Notes |
 |------|-------|
 | Codex.UI substrate | Design: semantic primitives, typed themes |
-| CCE prelude migration to Char type | `is-cce-letter` etc. take Char instead of Integer |
 | Capability refinement | Direction, scope, time-boxing in effect syntax |
 | Multi-language syntax | Parser per locale, shared AST |
-| Closure escape analysis | CDX2043 to error |
-| Char literal syntax (`'a'`) | Follow-up to Char type |
+| Remaining ~2-3x perf gap to reference | Profile to find next bottleneck |
 
 ### Long-term
 
@@ -123,6 +131,7 @@ See `docs/Designs/PerformanceReportAndRecommendation.md`.
 | Codex.OS on real hardware | WHPX (Nut's box), then actual boot device |
 | Ring 5+: filesystem, networking | Content-addressed FactStore as the filesystem? |
 | Self-hosted compiler compiling itself on bare metal | The ultimate fixed-point |
+| Floppy disk image | Boot → compiler → self-compile, all in 1.44 MB |
 
 ---
 
