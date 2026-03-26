@@ -174,6 +174,79 @@ No special handling needed.
 
 ---
 
+## The Unified Trust Lattice
+
+The capability system and the repository trust lattice (see
+`docs/Designs/V3-REPOSITORY-FEDERATION.md`) are the **same structure**
+operating at different layers. From `DistributedAgentOS.txt`:
+
+> "The type system is the trust model. The compiler enforces it."
+
+| Layer | Question | Lattice dimension |
+|-------|----------|-------------------|
+| Repository | "Do I trust this *code*?" | Author, vouch chain, proof coverage |
+| Capability | "Do I trust this *function* with this *resource*?" | Direction, scope, duration |
+| Runtime | "Do I trust this *process* with this *syscall*?" | Capability bits, scope data, tick expiry |
+
+Both lattices share the same properties:
+
+- **Multi-dimensional**: Trust is not a single number. A capability is not
+  a single bit. Both are profiles across multiple axes.
+- **Transitive with decay**: If I trust Alice and Alice trusts Bob's code,
+  I have indirect trust in Bob's code — but less. If `main` grants
+  `[IO "/data/"]` and calls `process-file`, that function inherits a
+  narrower scope — never wider.
+- **Threshold-gated**: The repository rejects facts below a trust threshold
+  at build time. The capability system rejects operations outside scope at
+  compile time (CDX4002) or runtime (syscall denied).
+
+### Unification: Capabilities as Trust Facts
+
+In the repository model, everything is a fact. Capabilities can be facts too:
+
+```
+-- A Trust fact in the repository
+Trust(author: alice, target: hash("json-parser"), degree: Verified)
+
+-- A Capability fact (same structure)
+Capability(grantee: process-42, target: "IO", scope: "/data/", expires: tick+5000)
+```
+
+When the repository federation protocol syncs facts between machines,
+capability grants could flow the same way. A device grants capabilities to
+code it trusts; trust is computed from the vouching lattice; the vouching
+lattice is built from repository facts.
+
+The chain: **author vouches for code → code gets trust score → trust score
+determines granted capabilities → capabilities gate runtime operations.**
+
+This means the dotted-name problem (`FileSystem.Read.CDrive.Config`) dissolves.
+Capabilities aren't names in a hierarchy — they're **positions in the trust
+lattice**. The lattice dimensions are:
+
+```
+Capability {
+  resource : URI        -- what (file, socket, device, API)
+  direction : Read | Write | ReadWrite
+  scope : URI prefix    -- where (path, host, namespace)
+  duration : Ticks      -- how long
+  trust : Float         -- minimum trust threshold of granting chain
+}
+```
+
+A `[IO]` effect annotation in the source says "this function needs I/O."
+The capability descriptor (from the process table, or the build manifest,
+or the repository trust chain) says exactly *which* I/O, *in which direction*,
+*to what scope*, *for how long*, and *with what trust backing*.
+
+The type system verifies compatibility. The compiler rejects mismatches.
+The OS enforces at the syscall boundary. The repository tracks who vouched
+for the code that's making the request.
+
+One lattice. Three layers.
+
+---
+
 ## Implementation Order
 
 | Step | What | Effort | Depends on |
