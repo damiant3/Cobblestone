@@ -6,13 +6,13 @@ using System.Threading.Tasks;
 
 Console.WriteLine(Codex_mini_bootstrap.main());
 
+public sealed record Point(long x, long y);
+
 public abstract record Color;
 
 public sealed record Red : Color;
 public sealed record Green : Color;
 public sealed record Blue(long Field0) : Color;
-
-public sealed record Point(long x, long y);
 
 static class _Cce {
     static readonly int[] _toUni = {
