@@ -457,6 +457,28 @@ public class X86_64EmitterTests
     }
 
     [Fact]
+    public void Power_runs_natively()
+    {
+        string? output = CompileAndRun("""
+            main : Integer
+            main = 2 ^ 10
+            """, "pow_x64");
+        if (output is null) return;
+        Assert.Equal("1024", output.Trim());
+    }
+
+    [Fact]
+    public void Power_zero_exponent_runs_natively()
+    {
+        string? output = CompileAndRun("""
+            main : Integer
+            main = 7 ^ 0
+            """, "pow0_x64");
+        if (output is null) return;
+        Assert.Equal("1", output.Trim());
+    }
+
+    [Fact]
     public void BareMetal_kernel_size_under_5KB_after_idt_loop_optimization()
     {
         string source = """

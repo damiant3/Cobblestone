@@ -71,13 +71,23 @@ public class CceTableTests
     }
 
     [Fact]
-    public void Unmapped_characters_encode_to_replacement()
+    public void Tier2_passthrough_roundtrips_any_bmp_character()
     {
-        // CJK character — not in Tier 0, should become '?' (CCE 68) not NUL
-        string cjk = "\u4E16"; // 世
+        // Any BMP character roundtrips via Tier 2 (3-byte direct encoding)
+        string cjk = "\u4E16"; // 世 — not in Tier 0 or 1
         string encoded = CceTable.Encode(cjk);
-        Assert.Equal(1, encoded.Length);
-        Assert.Equal(CceTable.ReplacementCce, (int)encoded[0]);
+        Assert.Equal(3, encoded.Length); // Tier 2: 3 bytes
+        Assert.Equal(cjk, CceTable.Decode(encoded));
+    }
+
+    [Fact]
+    public void Tier3_passthrough_roundtrips_emoji()
+    {
+        // Supplementary character (emoji) roundtrips via Tier 3 (4-byte encoding)
+        string emoji = "\U0001F600"; // 😀
+        string encoded = CceTable.Encode(emoji);
+        Assert.Equal(4, encoded.Length); // Tier 3: 4 bytes
+        Assert.Equal(emoji, CceTable.Decode(encoded));
     }
 
     [Fact]
@@ -240,6 +250,256 @@ public class CceTableTests
         string source = CceTable.GenerateRuntimeSource();
         Assert.Contains("Replace(\"\\t\"", source);
         Assert.Contains("Replace(\"\\r\"", source);
+    }
+
+    // ── Tier 1 production tests ──────────────────────────────────────
+
+    [Fact]
+    public void Tier1_table_has_2048_entries()
+    {
+        Assert.Equal(2048, CceTable.Tier1ToUnicode.Length);
+    }
+
+    [Fact]
+    public void Tier1_table_is_bijective()
+    {
+        var seen = new HashSet<int>();
+        for (int i = 0; i < CceTable.Tier1ToUnicode.Length; i++)
+        {
+            int u = CceTable.Tier1ToUnicode[i];
+            if (u == 0) continue; // unmapped slot
+            Assert.True(seen.Add(u), $"Duplicate Unicode {u} at Tier 1 position {i}");
+        }
+    }
+
+    [Fact]
+    public void Tier1_does_not_overlap_tier0()
+    {
+        for (int i = 0; i < CceTable.Tier1ToUnicode.Length; i++)
+        {
+            int u = CceTable.Tier1ToUnicode[i];
+            if (u == 0) continue;
+            Assert.False(CceTable.FromUnicode.ContainsKey(u),
+                $"Unicode {u} at Tier 1 position {i} also exists in Tier 0");
+        }
+    }
+
+    [Fact]
+    public void Tier1_from_unicode_is_inverse()
+    {
+        foreach (var kv in CceTable.Tier1FromUnicode)
+        {
+            Assert.Equal(kv.Key, CceTable.Tier1ToUnicode[kv.Value]);
+        }
+    }
+
+    [Fact]
+    public void Tier1_count_is_positive()
+    {
+        Assert.True(CceTable.Tier1Count > 100, $"Expected 100+ Tier 1 entries, got {CceTable.Tier1Count}");
+    }
+
+    [Fact]
+    public void Tier1_latin_extended_block_populated()
+    {
+        // Block 0 (0x000-0x07F) should have Latin Extended characters
+        int count = 0;
+        for (int i = 0; i < 0x80; i++)
+            if (CceTable.Tier1ToUnicode[i] != 0) count++;
+        Assert.True(count >= 80, $"Latin Extended block should have 80+ entries, got {count}");
+    }
+
+    [Fact]
+    public void Tier1_cyrillic_block_populated()
+    {
+        // Block 1 (0x080-0x0FF) should have Cyrillic characters
+        int count = 0;
+        for (int i = 0x80; i < 0x100; i++)
+            if (CceTable.Tier1ToUnicode[i] != 0) count++;
+        Assert.True(count >= 50, $"Cyrillic block should have 50+ entries, got {count}");
+    }
+
+    [Fact]
+    public void Encode_decode_roundtrip_tier1_latin()
+    {
+        // ß is not in Tier 0, should roundtrip via Tier 1
+        string original = "Straße";
+        string encoded = CceTable.Encode(original);
+        // ß should produce 2 CCE bytes, so encoded is longer than original
+        Assert.True(encoded.Length > original.Length,
+            $"Tier 1 encoding should be longer: input {original.Length}, encoded {encoded.Length}");
+        string decoded = CceTable.Decode(encoded);
+        Assert.Equal(original, decoded);
+    }
+
+    [Fact]
+    public void Encode_decode_roundtrip_tier1_cyrillic()
+    {
+        // Mix Tier 0 Cyrillic (а,о,е...) with Tier 1 (б,г,ж...)
+        string original = "абвгд";  // а(T0), б(T1), в(T0), г(T1), д(T0)
+        string encoded = CceTable.Encode(original);
+        string decoded = CceTable.Decode(encoded);
+        Assert.Equal(original, decoded);
+    }
+
+    [Fact]
+    public void Encode_mixed_tier0_tier1_stream()
+    {
+        // ASCII (Tier 0) + accented (Tier 0) + ß (Tier 1) + Ø (Tier 1)
+        string original = "café ß Ø";
+        string encoded = CceTable.Encode(original);
+        string decoded = CceTable.Decode(encoded);
+        Assert.Equal(original, decoded);
+    }
+
+    [Fact]
+    public void Tier1_encoded_bytes_are_valid_framing()
+    {
+        // Every Tier 1 character should encode as exactly 2 bytes:
+        // start byte (0xC0-0xDF) + continuation (0x80-0xBF)
+        foreach (var kv in CceTable.Tier1FromUnicode)
+        {
+            string s = new string((char)kv.Key, 1);
+            string encoded = CceTable.Encode(s);
+            Assert.Equal(2, encoded.Length);
+            int b1 = encoded[0];
+            int b2 = encoded[1];
+            Assert.True(b1 >= 0xC0 && b1 < 0xE0, $"Start byte {b1:X2} not in 0xC0-0xDF for U+{kv.Key:X4}");
+            Assert.True(b2 >= 0x80 && b2 < 0xC0, $"Continuation byte {b2:X2} not in 0x80-0xBF for U+{kv.Key:X4}");
+        }
+    }
+
+    [Fact]
+    public void Tier1_self_synchronization()
+    {
+        // Encode a mixed stream, verify valid byte sequence structure:
+        // Tier 0 bytes stand alone, Tier 1 start bytes are followed by exactly one continuation
+        string input = "aßbгc";  // T0 ASCII, T1 Latin, T0, T1 Cyrillic, T0
+        string encoded = CceTable.Encode(input);
+        int i = 0;
+        int charCount = 0;
+        while (i < encoded.Length)
+        {
+            int b = encoded[i];
+            int tier = CceTable.TierOf(b);
+            if (tier == 0) { i++; charCount++; }
+            else if (tier == 1)
+            {
+                Assert.True(i + 1 < encoded.Length, $"Tier 1 start at position {i} without continuation");
+                Assert.Equal(-1, CceTable.TierOf(encoded[i + 1]));
+                i += 2; charCount++;
+            }
+            else Assert.Fail($"Unexpected byte {b:X2} (tier {tier}) at position {i}");
+        }
+        Assert.Equal(5, charCount); // a, ß, b, г, c
+    }
+
+    [Fact]
+    public void TierOf_classifies_correctly()
+    {
+        Assert.Equal(0, CceTable.TierOf(0x00));    // Tier 0 min
+        Assert.Equal(0, CceTable.TierOf(0x7F));    // Tier 0 max
+        Assert.Equal(-1, CceTable.TierOf(0x80));   // Continuation min
+        Assert.Equal(-1, CceTable.TierOf(0xBF));   // Continuation max
+        Assert.Equal(1, CceTable.TierOf(0xC0));    // Tier 1 start min
+        Assert.Equal(1, CceTable.TierOf(0xDF));    // Tier 1 start max
+        Assert.Equal(2, CceTable.TierOf(0xE0));    // Future Tier 2
+    }
+
+    [Fact]
+    public void Decode_handles_orphan_continuation_bytes()
+    {
+        // A continuation byte without a start should produce replacement
+        string bad = new string(new[] { (char)0x80 });
+        string decoded = CceTable.Decode(bad);
+        Assert.Equal("\uFFFD", decoded);
+    }
+
+    [Fact]
+    public void Decode_handles_truncated_tier1()
+    {
+        // A Tier 1 start byte at end of string (no continuation) → replacement
+        string bad = new string(new[] { (char)0xC0 });
+        string decoded = CceTable.Decode(bad);
+        Assert.Equal("\uFFFD", decoded);
+    }
+
+    [Fact]
+    public void Tier1_greek_block_populated()
+    {
+        int count = 0;
+        for (int i = 0x100; i < 0x200; i++)
+            if (CceTable.Tier1ToUnicode[i] != 0) count++;
+        Assert.True(count >= 49, $"Greek block should have 49+ entries, got {count}");
+    }
+
+    [Fact]
+    public void Tier1_japanese_block_populated()
+    {
+        int count = 0;
+        for (int i = 0x600; i < 0x700; i++)
+            if (CceTable.Tier1ToUnicode[i] != 0) count++;
+        Assert.True(count >= 170, $"Japanese block should have 170+ entries, got {count}");
+    }
+
+    [Fact]
+    public void Tier1_cjk_block_populated()
+    {
+        int count = 0;
+        for (int i = 0x400; i < 0x600; i++)
+            if (CceTable.Tier1ToUnicode[i] != 0) count++;
+        Assert.True(count >= 100, $"CJK block should have 100+ entries, got {count}");
+    }
+
+    [Fact]
+    public void Encode_decode_roundtrip_greek()
+    {
+        string original = "\u03B1\u03B2\u03B3"; // αβγ
+        string encoded = CceTable.Encode(original);
+        Assert.True(encoded.Length > original.Length);
+        Assert.Equal(original, CceTable.Decode(encoded));
+    }
+
+    [Fact]
+    public void Encode_decode_roundtrip_japanese()
+    {
+        string original = "\u3053\u3093\u306B\u3061\u306F"; // こんにちは
+        string encoded = CceTable.Encode(original);
+        Assert.True(encoded.Length > original.Length);
+        Assert.Equal(original, CceTable.Decode(encoded));
+    }
+
+    [Fact]
+    public void Encode_decode_roundtrip_arabic()
+    {
+        string original = "\u0627\u0644\u0633\u0644\u0627\u0645"; // السلام
+        string encoded = CceTable.Encode(original);
+        Assert.Equal(original, CceTable.Decode(encoded));
+    }
+
+    [Fact]
+    public void Encode_decode_roundtrip_devanagari()
+    {
+        string original = "\u0928\u092E\u0938\u094D\u0924\u0947"; // नमस्ते
+        string encoded = CceTable.Encode(original);
+        Assert.Equal(original, CceTable.Decode(encoded));
+    }
+
+    [Fact]
+    public void Tier1_total_coverage()
+    {
+        Assert.True(CceTable.Tier1Count >= 500,
+            $"Expected 500+ total Tier 1 entries, got {CceTable.Tier1Count}");
+    }
+
+    [Fact]
+    public void GenerateRuntimeSource_includes_tier1_tables()
+    {
+        string source = CceTable.GenerateRuntimeSource();
+        Assert.Contains("_t1ToUni", source);
+        Assert.Contains("_t1FromUni", source);
+        Assert.Contains("0xC0", source);  // Tier 1 encoding in FromUnicode
+        Assert.Contains("0x1F", source);  // Tier 1 decoding mask in ToUnicode
     }
 
     static string FindRepoRoot()

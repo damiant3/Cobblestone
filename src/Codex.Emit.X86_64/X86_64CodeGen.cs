@@ -433,8 +433,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
                 X86_64Encoder.MovRR(m_text, rd, Reg.RAX);
                 break;
             case IRBinaryOp.PowInt:
-                // TODO: power — stub as 0
-                X86_64Encoder.Li(m_text, rd, 0);
+                X86_64Encoder.MovRR(m_text, Reg.RDI, lReg);
+                X86_64Encoder.MovRR(m_text, Reg.RSI, rReg);
+                EmitCallTo("__ipow");
+                X86_64Encoder.MovRR(m_text, rd, Reg.RAX);
                 break;
             case IRBinaryOp.Eq:
                 return EmitComparison(X86_64Encoder.CC_E, lReg, rReg, bin.Left.Type);
@@ -1909,7 +1911,6 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
     void EmitPrintBool(byte valueReg)
     {
-        // TODO: emit "True"/"False" string
         int savedVal = AllocLocal();
         StoreLocal(savedVal, valueReg);
 
@@ -2103,6 +2104,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         EmitListContainsHelper();
         EmitTextConcatListHelper();
         EmitTextSplitHelper();
+        EmitIpowHelper();
     }
 
     void EmitStrConcatHelper()
@@ -3039,6 +3041,57 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.PopR(m_text, Reg.R13);
         X86_64Encoder.PopR(m_text, Reg.R12);
         X86_64Encoder.PopR(m_text, Reg.RBX);
+        X86_64Encoder.Ret(m_text);
+    }
+
+    void EmitIpowHelper()
+    {
+        // __ipow: rdi=base, rsi=exponent → rax=base^exponent
+        // Exponentiation by squaring. Negative exponents → 0 (integer math).
+        m_functionOffsets["__ipow"] = m_text.Count;
+
+        // result = 1
+        X86_64Encoder.Li(m_text, Reg.RAX, 1);
+
+        // if exponent <= 0, skip (return 1 for exp==0, 0 for exp<0 is wrong but
+        // we handle exp<0 separately)
+        X86_64Encoder.CmpRI(m_text, Reg.RSI, 0);
+        int jmpNeg = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_L, 0);  // exp < 0 → return 0
+        int jmpZero = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);   // exp == 0 → return 1
+
+        // Loop: while exponent > 0
+        int loopTop = m_text.Count;
+
+        // if (exponent & 1) result *= base
+        X86_64Encoder.MovRR(m_text, Reg.RCX, Reg.RSI);
+        X86_64Encoder.AndRI(m_text, Reg.RCX, 1);
+        int skipMul = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
+        X86_64Encoder.ImulRR(m_text, Reg.RAX, Reg.RDI);     // result *= base
+        PatchJcc(skipMul, m_text.Count);
+
+        // base *= base
+        X86_64Encoder.ImulRR(m_text, Reg.RDI, Reg.RDI);
+        // exponent >>= 1
+        X86_64Encoder.ShrRI(m_text, Reg.RSI, 1);
+
+        // if exponent > 0, loop
+        X86_64Encoder.CmpRI(m_text, Reg.RSI, 0);
+        int jmpLoop = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_G, 0);
+        PatchJcc(jmpLoop, loopTop);
+
+        // Return result (already in RAX)
+        int done = m_text.Count;
+        PatchJcc(jmpZero, done);
+        X86_64Encoder.Ret(m_text);
+
+        // Negative exponent → return 0
+        int negPath = m_text.Count;
+        PatchJcc(jmpNeg, negPath);
+        X86_64Encoder.Li(m_text, Reg.RAX, 0);
         X86_64Encoder.Ret(m_text);
     }
 

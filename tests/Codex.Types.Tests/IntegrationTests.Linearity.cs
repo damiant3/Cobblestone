@@ -155,4 +155,85 @@ public partial class IntegrationTests
         Assert.DoesNotContain(diag.ToImmutable(), d =>
             d.Code == "CDX2040" || d.Code == "CDX2041" || d.Code == "CDX2043");
     }
+
+    // --- Step 4: Higher-order linear callbacks ---
+
+    [Fact]
+    public void Linear_callback_parameter_used_once_ok()
+    {
+        // Function declares a linear callback parameter — must call it exactly once.
+        string source =
+            "apply-once : linear (Integer -> Integer) -> Integer\n" +
+            "apply-once (f) = f 42\n";
+        DiagnosticBag diag = Helpers.CheckWithLinearity(source);
+        Assert.DoesNotContain(diag.ToImmutable(), d =>
+            d.Code == "CDX2040" || d.Code == "CDX2041");
+    }
+
+    [Fact]
+    public void Linear_callback_parameter_unused_errors()
+    {
+        // Linear callback parameter never called — CDX2040.
+        string source =
+            "ignore-callback : linear (Integer -> Integer) -> Integer\n" +
+            "ignore-callback (f) = 42\n";
+        DiagnosticBag diag = Helpers.CheckWithLinearity(source);
+        Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2040");
+    }
+
+    [Fact]
+    public void Linear_callback_parameter_used_twice_errors()
+    {
+        // Linear callback parameter called twice — CDX2041.
+        string source =
+            "double-call : linear (Integer -> Integer) -> Integer\n" +
+            "double-call (f) = let a = f 1 in f 2\n";
+        DiagnosticBag diag = Helpers.CheckWithLinearity(source);
+        Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2041");
+    }
+
+    [Fact]
+    public void Linear_closure_passed_to_linear_param_ok()
+    {
+        // The key Step 4 test: passing a lambda that captures a linear variable
+        // to a function whose parameter is declared linear.
+        // apply-once guarantees exactly-once use, so h is consumed safely.
+        string source =
+            "apply-once : linear (Integer -> [FileSystem] Nothing) -> [FileSystem] Nothing\n" +
+            "apply-once (f) = f 42\n" +
+            "use-it : linear FileHandle -> [FileSystem] Nothing\n" +
+            "use-it (h) = apply-once (\\x -> close-file h)\n";
+        DiagnosticBag diag = Helpers.CheckWithLinearity(source);
+        Assert.DoesNotContain(diag.ToImmutable(), d =>
+            d.Code == "CDX2040" || d.Code == "CDX2041" || d.Code == "CDX2043");
+    }
+
+    [Fact]
+    public void Linear_closure_passed_to_non_linear_param_errors()
+    {
+        // Passing a linear-capturing lambda to a non-linear parameter — CDX2043.
+        // The function doesn't guarantee single-use.
+        string source =
+            "maybe-call : (Integer -> [FileSystem] Nothing) -> [FileSystem] Nothing\n" +
+            "maybe-call (f) = f 42\n" +
+            "unsafe : linear FileHandle -> [FileSystem] Nothing\n" +
+            "unsafe (h) = maybe-call (\\x -> close-file h)\n";
+        DiagnosticBag diag = Helpers.CheckWithLinearity(source);
+        Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2043");
+    }
+
+    [Fact]
+    public void Linear_closure_to_curried_linear_param_ok()
+    {
+        // Curried function: second parameter is linear callback.
+        // with-resource "path" (\h -> close-file h) should be safe.
+        string source =
+            "with-resource : Text -> linear (Integer -> [FileSystem] Nothing) -> [FileSystem] Nothing\n" +
+            "with-resource (name) (f) = f 42\n" +
+            "use-resource : linear FileHandle -> [FileSystem] Nothing\n" +
+            "use-resource (h) = with-resource \"path\" (\\x -> close-file h)\n";
+        DiagnosticBag diag = Helpers.CheckWithLinearity(source);
+        Assert.DoesNotContain(diag.ToImmutable(), d =>
+            d.Code == "CDX2040" || d.Code == "CDX2041" || d.Code == "CDX2043");
+    }
 }
