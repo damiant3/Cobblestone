@@ -3745,6 +3745,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     const long IdtBase = 0x6000;
     const long TickCountAddr = 0x7000;
     const long KeyBufferAddr = 0x7008;
+    const long ArenaBaseAddr = 0x7010; // heap arena base — restored between compilations
 
     void EmitInterruptSetup()
     {
@@ -3767,11 +3768,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.LidtRdi(m_text);
         X86_64Encoder.AddRI(m_text, Reg.RSP, 16);
 
-        // 4. Initialize tick counter and key buffer to 0
+        // 4. Initialize tick counter, key buffer, and arena base to 0
         X86_64Encoder.Li(m_text, Reg.RDI, TickCountAddr);
         X86_64Encoder.Li(m_text, Reg.RAX, 0);
         X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
         X86_64Encoder.Li(m_text, Reg.RDI, KeyBufferAddr);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+        X86_64Encoder.Li(m_text, Reg.RDI, ArenaBaseAddr);
         X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
 
         // 5. Enable interrupts
@@ -4099,36 +4102,65 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             return;
         }
 
-        EmitCallTo("main");
-
-        CodexType returnType = ComputeReturnType(mainDef.Type, mainDef.Parameters.Length);
-        switch (returnType)
-        {
-            case IntegerType:
-                // Convert to text via __itoa, then print
-                X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
-                EmitCallTo("__itoa");
-                EmitPrintText(Reg.RAX);
-                break;
-            case BooleanType:
-                EmitPrintBool(Reg.RAX);
-                break;
-            case TextType:
-                EmitPrintText(Reg.RAX);
-                break;
-        }
-
-        // Exit
         if (m_target == X86_64Target.BareMetal)
         {
-            // Bare metal: halt (no loop output — let compiler output be clean)
-            X86_64Encoder.Cli(m_text);
-            int hltLoop = m_text.Count;
-            X86_64Encoder.Hlt(m_text);
-            X86_64Encoder.Jmp(m_text, hltLoop - (m_text.Count + 5));
+            // Arena-based REPL loop: save heap as arena base, call main,
+            // print result, restore heap, repeat. Each compilation gets a
+            // fresh arena. The heap below the arena base is persistent
+            // (currently empty — reserved for future REPL state).
+
+            // Save current heap pointer as the arena base
+            X86_64Encoder.Li(m_text, Reg.RDI, ArenaBaseAddr);
+            X86_64Encoder.MovStore(m_text, Reg.RDI, HeapReg, 0);
+
+            int replLoop = m_text.Count;
+
+            // Restore heap to arena base (discard previous compilation's garbage)
+            X86_64Encoder.Li(m_text, Reg.RDI, ArenaBaseAddr);
+            X86_64Encoder.MovLoad(m_text, HeapReg, Reg.RDI, 0);
+
+            EmitCallTo("main");
+
+            CodexType returnType = ComputeReturnType(mainDef.Type, mainDef.Parameters.Length);
+            switch (returnType)
+            {
+                case IntegerType:
+                    X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
+                    EmitCallTo("__itoa");
+                    EmitPrintText(Reg.RAX);
+                    break;
+                case BooleanType:
+                    EmitPrintBool(Reg.RAX);
+                    break;
+                case TextType:
+                    EmitPrintText(Reg.RAX);
+                    break;
+            }
+
+            // Loop back — arena reset happens at top of loop
+            X86_64Encoder.Jmp(m_text, replLoop - (m_text.Count + 5));
         }
         else
         {
+            // Linux: single invocation
+            EmitCallTo("main");
+
+            CodexType returnType = ComputeReturnType(mainDef.Type, mainDef.Parameters.Length);
+            switch (returnType)
+            {
+                case IntegerType:
+                    X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
+                    EmitCallTo("__itoa");
+                    EmitPrintText(Reg.RAX);
+                    break;
+                case BooleanType:
+                    EmitPrintBool(Reg.RAX);
+                    break;
+                case TextType:
+                    EmitPrintText(Reg.RAX);
+                    break;
+            }
+
             X86_64Encoder.Li(m_text, Reg.RDI, 0);
             X86_64Encoder.Li(m_text, Reg.RAX, 60); // sys_exit
             X86_64Encoder.Syscall(m_text);
