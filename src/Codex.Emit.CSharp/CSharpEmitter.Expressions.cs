@@ -403,7 +403,7 @@ public sealed partial class CSharpEmitter
 
     static readonly Set<string> s_multiArgBuiltins = Set<string>.Of(
         "char-at", "char-code-at", "substring", "list-at", "list-insert-at", "list-snoc",
-        "text-replace", "text-compare",
+        "text-replace", "text-compare", "text-concat-list",
         "write-file", "run-process", "list-files", "text-split", "text-contains", "text-starts-with",
         "fork", "await", "par", "race");
 
