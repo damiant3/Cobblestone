@@ -198,6 +198,50 @@ public class CceTableTests
         }
     }
 
+    [Fact]
+    public void Encode_normalizes_tab_to_spaces()
+    {
+        string input = "hello\tworld";
+        string encoded = CceTable.Encode(input);
+        string decoded = CceTable.Decode(encoded);
+        Assert.Equal("hello  world", decoded);
+    }
+
+    [Fact]
+    public void Encode_strips_carriage_return()
+    {
+        string input = "line1\r\nline2";
+        string encoded = CceTable.Encode(input);
+        string decoded = CceTable.Decode(encoded);
+        Assert.Equal("line1\nline2", decoded);
+    }
+
+    [Fact]
+    public void NormalizeUnicode_mixed_input()
+    {
+        // TAB→2 spaces, CR stripped, everything else unchanged
+        string input = "a\tb\r\nc\td";
+        string result = CceTable.NormalizeUnicode(input);
+        Assert.Equal("a  b\nc  d", result);
+    }
+
+    [Fact]
+    public void NormalizeUnicode_fast_path_no_alloc()
+    {
+        // No tabs or CRs — should return the same string instance
+        string input = "hello world";
+        string result = CceTable.NormalizeUnicode(input);
+        Assert.Same(input, result);
+    }
+
+    [Fact]
+    public void GenerateRuntimeSource_includes_normalization()
+    {
+        string source = CceTable.GenerateRuntimeSource();
+        Assert.Contains("Replace(\"\\t\"", source);
+        Assert.Contains("Replace(\"\\r\"", source);
+    }
+
     static string FindRepoRoot()
     {
         string dir = AppContext.BaseDirectory;

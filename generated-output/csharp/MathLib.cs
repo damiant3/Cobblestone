@@ -25,6 +25,7 @@ static class _Cce {
     static readonly Dictionary<int, int> _fromUni = new();
     static _Cce() { for (int i = 0; i < 128; i++) _fromUni[_toUni[i]] = i; }
     public static string FromUnicode(string s) {
+        s = s.Replace("\t", "  ").Replace("\r", "");
         var cs = new char[s.Length];
         for (int i = 0; i < s.Length; i++) {
             int u = s[i];

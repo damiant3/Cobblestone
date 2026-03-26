@@ -54,14 +54,33 @@ public static class CceTable
     /// <summary>CCE byte for '?' — used as the replacement character for unmapped Unicode.</summary>
     public const int ReplacementCce = 68;
 
+    /// <summary>Normalize Unicode text at an I/O boundary before CCE encoding.
+    /// TAB (0x09) becomes two spaces; CR (0x0D) is stripped entirely.</summary>
+    public static string NormalizeUnicode(string unicode)
+    {
+        // Fast path: no tabs or CRs
+        if (unicode.IndexOfAny(['\t', '\r']) < 0)
+            return unicode;
+        var sb = new System.Text.StringBuilder(unicode.Length);
+        foreach (char c in unicode)
+        {
+            if (c == '\t') sb.Append("  ");
+            else if (c == '\r') { /* stripped */ }
+            else sb.Append(c);
+        }
+        return sb.ToString();
+    }
+
     /// <summary>Convert a Unicode string to CCE-encoded string.
+    /// Applies boundary normalization (TAB→spaces, CR→strip) before encoding.
     /// Unmapped characters become '?' (CCE 68) instead of NUL to avoid silent corruption.</summary>
     public static string Encode(string unicode)
     {
-        char[] result = new char[unicode.Length];
-        for (int i = 0; i < unicode.Length; i++)
+        string normalized = NormalizeUnicode(unicode);
+        char[] result = new char[normalized.Length];
+        for (int i = 0; i < normalized.Length; i++)
         {
-            int u = unicode[i];
+            int u = normalized[i];
             result[i] = FromUnicode.TryGetValue(u, out int cce) ? (char)cce : (char)ReplacementCce;
         }
         return new string(result);
@@ -123,6 +142,7 @@ public static class CceTable
         sb.AppendLine("    static readonly Dictionary<int, int> _fromUni = new();");
         sb.AppendLine("    static _Cce() { for (int i = 0; i < 128; i++) _fromUni[_toUni[i]] = i; }");
         sb.AppendLine("    public static string FromUnicode(string s) {");
+        sb.AppendLine("        s = s.Replace(\"\\t\", \"  \").Replace(\"\\r\", \"\");");
         sb.AppendLine("        var cs = new char[s.Length];");
         sb.AppendLine("        for (int i = 0; i < s.Length; i++) {");
         sb.AppendLine("            int u = s[i];");
