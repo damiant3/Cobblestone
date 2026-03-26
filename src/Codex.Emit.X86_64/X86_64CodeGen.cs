@@ -3365,7 +3365,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // Read loop: poll COM1, read byte, check for EOT
         int readLoop = m_text.Count;
 
-        // Poll: check LSR bit 0 (data ready)
+        // Poll: check LSR bit 0 (data ready) — busy-wait for QEMU serial speed
         int pollLoop = m_text.Count;
         X86_64Encoder.Li(m_text, Reg.RDX, 0x3FD);       // line status register
         X86_64Encoder.InAlDx(m_text);                     // AL = status
@@ -3374,7 +3374,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.TestRR(m_text, Reg.RAX, Reg.RAX);
         int dataReady = m_text.Count;
         X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
-        X86_64Encoder.Hlt(m_text);                        // wait for interrupt
+        X86_64Encoder.Pause(m_text);                      // hint: spin-wait (saves power on real HW)
         X86_64Encoder.Jmp(m_text, pollLoop - (m_text.Count + 5));
         PatchJcc(dataReady, m_text.Count);
 
@@ -4781,6 +4781,15 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             m_text.Add(0x0F); m_text.Add(0x32); // rdmsr
             m_text.Add(0x48); m_text.Add(0x83); m_text.Add(0xC8); m_text.Add(0x01); // or rax, 1
             m_text.Add(0x0F); m_text.Add(0x30); // wrmsr
+
+            // Initialize COM1 UART: 115200 baud, 8N1, FIFO enabled
+            EmitOutByte(0x3F9, 0x00); // IER: disable all interrupts
+            EmitOutByte(0x3FB, 0x80); // LCR: enable DLAB (set baud rate divisor)
+            EmitOutByte(0x3F8, 0x01); // DLL: divisor low byte (115200 baud = 1)
+            EmitOutByte(0x3F9, 0x00); // DLM: divisor high byte
+            EmitOutByte(0x3FB, 0x03); // LCR: 8 bits, no parity, 1 stop bit (DLAB off)
+            EmitOutByte(0x3FA, 0xC7); // FCR: enable FIFO, clear, 14-byte trigger
+            EmitOutByte(0x3FC, 0x0B); // MCR: DTR + RTS + OUT2 (enable IRQ line)
 
             // Build IDT, load IDTR, init PIC, enable interrupts
             EmitIdtEntries();

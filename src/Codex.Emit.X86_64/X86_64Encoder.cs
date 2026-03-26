@@ -512,6 +512,13 @@ static class X86_64Encoder
         buf.Add(0xF4);
     }
 
+    /// <summary>PAUSE — spin-wait hint (F3 90). Saves power on real HW, no-op on QEMU.</summary>
+    public static void Pause(List<byte> buf)
+    {
+        buf.Add(0xF3);
+        buf.Add(0x90);
+    }
+
     // CLI — disable interrupts
     public static void Cli(List<byte> buf)
     {
