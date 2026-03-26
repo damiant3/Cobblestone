@@ -1,21 +1,19 @@
 # Current Plan
 
-**Date**: 2026-03-26 morning (Ring 4 push — all before 8:15 AM)
+**Date**: 2026-03-26 evening
 
 ---
 
 ## Where We Stand
 
-CCE is **merged to master and reflected on**. The Janus reflection
-(`docs/Designs/CCE-NATIVE-TEXT.md`, "Cam's Think" section) assessed the
-trade-offs honestly: 34% overhead in the .NET pipeline, temporary and diffuse,
-paid in a depreciating currency. Decision: stay on the forward path. No shortcut
-trail back to Unicode internals.
+All major items from today's sessions are **merged, tested, and verified**. The
+repo is clean: one branch (`master`), zero dirty files, zero stale feature
+branches.
 
-The CCE whitespace decision (`docs/Designs/CCE-WHITESPACE-DECISION.md`) is
-**open** — Options A through E on the table. Option E (dual compilation modes:
-`--encoding cce` vs `--encoding unicode`) is the leading candidate. Cam's action
-items from that doc are partially resolved (see below).
+CCE-native text is complete. The whitespace decision is closed (forward path,
+no dual mode). Closure escape analysis is shipped. The bare metal REPL loop
+is verified under QEMU. The CCE encoding tooling (`CceTable` single source
+of truth, `codex encode` CLI, 11 consistency tests) is on master.
 
 ### Snapshot
 
@@ -23,59 +21,84 @@ items from that doc are partially resolved (see below).
 |--------|-------|
 | Self-hosted compiler | 26 files, ~5,000 lines |
 | Backends | 15 (12 transpilation + IL + RISC-V + WASM + ARM64 + x86-64, including bare metal) |
-| Tests | 926 |
-| Self-compile time | 279ms median (CCE-native), 208ms pre-CCE |
-| Fixed point | **Proven** (Stage 2 = Stage 3 at 298,328 chars, CCE-native) |
-| CCE perf overhead | 34% constant-factor, diffuse across all stages |
-| Language features | Lambda, fork/await/par/race, Char, CCE-native text |
-| Codex.OS | 7 KB kernel, Rings 0-4, preemptive multitasking, capability-enforced syscalls |
+| Tests | 844 (511 compiler + 134 syntax + 110 repository + 32 core + 23 semantics + 18 LSP + 16 AST) |
+| Self-compile time | 279ms median (CCE-native) |
+| Fixed point | **Proven** (Stage 2 = Stage 3 at 298,752 chars, CCE-native) |
+| Language features | Lambda, fork/await/par/race, Char, CCE-native text, linear closures |
+| Codex.OS | 7 KB kernel, Rings 0-4, arena REPL, preemptive multitasking, capability-enforced syscalls |
 | Agents | 4 (Windows/Copilot, Linux/sandbox, Cam/CLI, Nut/garage-box) |
 
-**History**: `docs/OldStatus/CurrentPlan-2026-03-24-peak3-evening.md`
+**History**: `docs/OldStatus/CurrentPlan-2026-03-26-morning.md`
 **Route map**: `docs/THE-ASCENT.md`, `docs/THE-LAST-PEAK.md`
 
 ---
 
 ## What Got Done (2026-03-26)
 
-### CCE-Native Text — Complete, Merged, Reflected
+### Performance: P2-alt Sorted Binary Search (9.2x speedup)
 
-- All 6 phases complete. Branch `cam/cce-native-text` merged to master.
-- Tier 0 revision: 128 chars, frequency-sorted, 3 whitespace + 10 digits +
-  26 lower + 26 upper + 29 punct + 19 accented + 15 Cyrillic.
-- Self-hosted emitter fully CCE-native: `_Cce` runtime, I/O wrapping, escape
-  rewrite, char-literal-based classification.
-- Fixed point proven at 298,328 chars.
-- Perf report: `docs/reviews/CCE-PERF-IMPACT.md` — 34% overhead, no algorithmic
-  regression.
-- P1 optimization done (`text-concat-list`, commit `a46bcf1`): O(n²) escape-text
-  fixed but didn't move the needle — n too small. Confirms overhead is diffuse.
+- Replaced O(n) linear scans with sorted binary search in TypeEnv, Scope,
+  UnificationState, and type def map.
+- `list-snoc` for O(1) amortized list accumulation across 30+ sites.
+- Three new builtins: `text-compare`, `list-insert-at`, `list-snoc`.
+- Self-compile: 1,907ms → 208ms. Fixed point proven at 261,175 chars.
+- HAMT approach attempted, failed (82% slower), reverted with post-mortem.
+  See `docs/reviews/P2-HAMT-REVERT.md`.
+
+### CCE-Native Text — Complete
+
+- All 6 phases shipped. Tier 0: 128 chars, frequency-sorted.
+- Self-hosted emitter fully CCE-native: `_Cce` runtime, I/O boundaries,
+  escape rewrite, char-literal-based classification.
+- Phase 6 cleanup: dropped `is-cce-` prefixes, `CCEClass` → `CharClass`.
+- `text-concat-list` builtin: `string.Concat` for batch joins.
+- Fixed point proven at 298,752 chars.
+- Perf impact: 34% constant-factor overhead, diffuse, no algorithmic regression.
+  See `docs/reviews/CCE-PERF-IMPACT.md`.
+
+### CCE Whitespace Decision — Closed
+
+- Identified TAB/CR silent NUL corruption (TAB not in Tier 0 → `\t` produces NUL).
+- Five options analyzed (A: boundary normalization, B: evict Cyrillic, C: multi-byte
+  Tier 1, D: loud failure, E: dual compilation modes).
+- **Decision**: CCE-only, forward path. No dual mode. TAB/CR are hardware birth
+  defects from 1963 — boundary normalization on input, explicit Unicode interop
+  for programs that need literal tabs. Building for 2999, not 1999.
+- Silent NUL fixed: unmapped characters produce `?` not NUL.
+- See `docs/Designs/CCE-WHITESPACE-DECISION.md`.
+
+### CCE Encoding Tooling (Agent Linux)
+
+- `CceTable.cs` in `Codex.Core`: single source of truth for the 128-entry table.
+  Replaced duplicate tables in `CSharpEmitter.cs` and `CSharpEmitter.Utilities.cs`.
+- `codex encode` CLI command: convert between UTF-8 and CCE. Roundtrip verified.
+- 11 consistency tests: table bijectivity, roundtrip encoding, classification
+  ranges, `GenerateRuntimeSource` consistency, self-hosted emitter table sync.
+- Encoding integration design: `docs/Designs/CCE-ENCODING-INTEGRATION.md` —
+  Linux gconv modules, .NET EncodingProvider, editor plugins.
+
+### Closure Escape Analysis
+
+- CDX2043 promoted from warning to error. Linear closures enforced.
+- Architecture: `CheckLambdaExpr` returns captured set, caller decides policy.
+- Three safe patterns: let binding (linear propagation), direct application
+  (immediate consumption), naked lambda (error).
+- Design doc: `docs/Designs/CLOSURE-ESCAPE-ANALYSIS.md`. Steps 1-3 shipped,
+  Step 4 (higher-order linear callbacks) deferred.
+
+### Bare Metal: is-whitespace Fix + Arena REPL
+
+- x86-64 `is-whitespace` register aliasing bug fixed (branch-based rewrite).
+- Arena-based REPL loop: heap reset between compilations via saved arena base
+  at 0x7010. Infinite REPL — compile, discard arena, compile, repeat.
+- QEMU verified: bare metal boot tests pass (first-line extraction for REPL output).
+- Review: `docs/reviews/arena-repl-review.md`.
+
+### Docs & Design
+
 - Janus reflection: `docs/Designs/CCE-NATIVE-TEXT.md`, "Cam's Think" section.
-  Conclusion: forward path, no dual-encoding retreat.
-
-### CCE Whitespace Decision — Open
-
-- Linux + Damian identified TAB/CR silent NUL corruption.
-- Five options documented. Option E (dual compilation modes) leading.
-- **Cam's action items resolved**:
-  - `\t` and `\r` in `.codex` source: only in `Lexer.codex` escape handler
-    (lines 230-231). This is correct — the Lexer processes escape sequences in
-    string literals. No `.codex` source uses literal tabs.
-  - Go/Python emitter indentation: **spaces, not tabs.** The emitters do have
-    `Replace("\t", "\\t")` for string escaping in output, but indentation is
-    spaces throughout. No tab dependency.
-  - Emitter maintenance surface for Option E: ~30 builtin emission sites were
-    touched during CCE migration. Both code paths already exist in git history.
-    Formalizing them is bounded work, not open-ended.
-- **Still open**: silent NUL fix (Option D, orthogonal), default mode choice,
-  per-project vs per-invocation flag.
-
-### Docs
-
-- README refreshed: 15 backends, CCE, Codex.OS, 926 tests.
+- Safe mutation principle: `docs/Designs/SAFE-MUTATION.md`.
 - Milestones named: MM2 The High Camp, MM3 Summit.
-- CCE encoding integration design (Linux): gconv, EncodingProvider, editor
-  plugins — the rope from the col back to base camp.
 
 ---
 
@@ -87,57 +110,38 @@ items from that doc are partially resolved (see below).
 | 1 | IDT (256 vectors), PIC, timer interrupts, keyboard input | Done (7KB) |
 | 2 | Process table (16 slots), preemptive context switch, per-process page tables | Done |
 | 3 | Capability-enforced syscalls (SYS_WRITE_SERIAL, SYS_READ_KEY, SYS_GET_TICKS, SYS_EXIT) | Done |
-| 4 | Self-hosting compiler on bare metal, TCO, serial I/O | Serial REPL works for short programs |
+| 4 | Self-hosting compiler on bare metal, TCO, serial I/O, **arena REPL** | REPL loop verified under QEMU |
 
 ---
 
 ## What's Next
 
-### Done this session (2026-03-26)
-
-| Item | Commit | Notes |
-|------|--------|-------|
-| Janus reflection | `1640e79` | CCE trade-off analysis, forward-path decision |
-| Silent NUL fix | `cd69946` | Unmapped chars → '?' not NUL. Option D shipped. |
-| Closure escape analysis (Cam) | `54b24e7` | CDX2043 → error, linear propagation, direct-apply bypass |
-| Closure escape analysis (Linux) | `f894a3e` | Better architecture: CheckLambdaExpr returns captured set |
-| Merged closure analysis | `f74e1e3` | Linux's architecture + Cam's severity test, on `cam/closure-escape-merged` |
-| `is-whitespace` x86-64 fix | `f43018a` | Register aliasing → branch-based rewrite. Unblocks bare metal lexer. |
-| Arena-based REPL loop | `606c8b3` | Heap reset between compilations. Infinite REPL. Enables MM2/MM3. |
-| `codex encode` CLI | Already existed | Roundtrip verified working. |
-
-### Waiting on
-
-| Item | Blocked on | Who |
-|------|-----------|-----|
-| QEMU verification of Ring 4 REPL | QEMU install on Linux sandbox | Agent Linux |
-| Merge `cam/closure-escape-merged` | Linux review | Agent Linux |
-| Phone flash | Bootloader signature issue | Human |
-
 ### Near-term (days)
 
 | Item | Notes |
 |------|-------|
-| QEMU test: send .codex over serial, verify compilation output | First real MM2 validation |
-| CCE Tier 1 multi-byte | Load-bearing for repository promise |
-| Perf tracking | Track compound regression before it bites |
+| QEMU test: send .codex over serial, verify compilation | First real MM2 validation — compile a program on bare metal |
+| Boundary normalization | TAB → spaces, CR → strip in `_Cce.FromUnicode` |
+| Remove `\t`/`\r` escape sequences | Or compile-time diagnostic for Tier 0 violations |
+| Perf tracking | Automated benchmark, track compound regression |
+| CCE Tier 1 multi-byte | Load-bearing for repository's "remembers everything" promise |
 
 ### Medium-term (weeks)
 
 | Item | Notes |
 |------|-------|
-| Codex.UI substrate | Design: semantic primitives, typed themes |
+| Higher-order linear callbacks | Step 4 of closure escape analysis — `linear` function types |
+| Codex.UI substrate | Semantic primitives, typed themes |
 | Capability refinement | Direction, scope, time-boxing in effect syntax |
 | Multi-language syntax | Parser per locale, shared AST |
-| CCE Tier 1 encoding | Multi-byte for CJK, Arabic, extended Latin |
 
 ### Long-term
 
 | Item | Notes |
 |------|-------|
+| Self-hosted compiler compiling itself on bare metal (MM3) | The ultimate fixed-point |
 | Codex.OS on real hardware | WHPX (Nut's box), then actual boot device |
 | Ring 5+: filesystem, networking | Content-addressed FactStore as the filesystem? |
-| Self-hosted compiler compiling itself on bare metal (MM3) | The ultimate fixed-point |
 | Floppy disk image | Boot → compiler → self-compile, all in 1.44 MB |
 
 ---
@@ -147,8 +151,9 @@ items from that doc are partially resolved (see below).
 - **Reference compiler lock lifted** (2026-03-24): `src/` freely modifiable.
 - **Session init**: `codex-agent orient` (Cam), `bash tools/linux-session-init.sh` (Linux).
 - **Handoff**: `codex-agent handoff push/review/approve/merge`. Always update CurrentPlan.md.
+- **Feature branches**: All work goes to feature branches for review. Direct master pushes for docs and single-line fixes only.
 - **Four-agent workflow**: Git is the coordination protocol.
   - Windows (Copilot/VS): builds features, reviews code
-  - Linux (Claude/sandbox): tests on real hardware/emulators, finds bugs by tracing
+  - Linux (Claude/sandbox): tests on real hardware/emulators, finds bugs by tracing, reviews
   - Cam (Claude Code CLI, 1M Opus): fast iteration, parallel work, GDB debugging
   - Nut (Copilot/VS2026, garage box): hardware lab, OS dev, phone flash
