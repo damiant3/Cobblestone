@@ -519,11 +519,14 @@ public class LinuxNativeTests
             proc.WaitForExit(10_000);
 
             // Extract kernel output from after "Booting from ROM.."
+            // The bare metal REPL loop prints output repeatedly, so take
+            // only the first line — that's the first compilation's result.
             int marker = stdout.IndexOf("Booting from ROM..");
             if (marker >= 0)
             {
-                string afterBoot = stdout[(marker + "Booting from ROM..".Length)..];
-                return afterBoot.Trim();
+                string afterBoot = stdout[(marker + "Booting from ROM..".Length)..].Trim();
+                int newline = afterBoot.IndexOf('\n');
+                return newline >= 0 ? afterBoot[..newline].Trim() : afterBoot;
             }
 
             return stdout;
