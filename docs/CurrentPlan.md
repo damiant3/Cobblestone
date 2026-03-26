@@ -65,7 +65,7 @@ recommended alternative: sorted lists with binary search.
 | emit | — | 45ms | — |
 | **total** | **1,907ms** | **208ms** | **9.2x** |
 
-Branch: `cam/revert-p2` (includes P2 HAMT revert + this optimization).
+On master.
 
 ### Previous session work (on this branch)
 
@@ -99,7 +99,7 @@ See `docs/Designs/PerformanceReportAndRecommendation.md`.
 
 | Item | Blocked on | Who |
 |------|-----------|-----|
-| **Review cam/perf-sorted-bsearch** | Awaiting review (9.2x speedup) | Any agent |
+| ~~Review cam/perf-sorted-bsearch~~ | **Merged** to master | — |
 | CCE prelude migration to Char type | None — Char type is on master | Any agent |
 | Char literal syntax (`'a'`) | None | Any agent |
 | Closure escape analysis | CDX2043 to error | Any agent |
@@ -111,7 +111,7 @@ See `docs/Designs/PerformanceReportAndRecommendation.md`.
 |------|--------|
 | Char type — all 16 backends | On master. Branches `cam/char-type*` deleted. |
 | P4 string.Concat flattening | On master. Branch `cam/perf-p2-p4` deleted. |
-| P2 sorted binary search + list-snoc | On `cam/perf-sorted-bsearch`, awaiting merge. |
+| P2 sorted binary search + list-snoc | On master. Branch deleted. |
 | P2 HAMT (reverted) | On master (revert). Branches deleted. |
 | C# style cleanup | Branch `windows/csharp-style-cleanup` deleted (by Linux or Windows agent). |
 
