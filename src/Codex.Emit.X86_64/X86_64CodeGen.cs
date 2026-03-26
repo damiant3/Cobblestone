@@ -39,6 +39,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     readonly record struct RodataFixup(int PatchOffset, int RodataOffset);
     readonly record struct FuncAddrFixup(int PatchOffset, byte Rd, string FuncName);
     int m_cceToUnicodeTableOffset = -1; // rodata offset for 128-byte CCE→Unicode lookup
+    int m_unicodeToCceTableOffset = -1; // rodata offset for 256-byte Unicode→CCE lookup (input boundary)
 
     public void EmitModule(IRModule module)
     {
@@ -54,6 +55,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         m_cceToUnicodeTableOffset = m_rodata.Count;
         for (int i = 0; i < 128; i++)
             m_rodata.Add((byte)CceTable.ToUnicode[i]);
+        while (m_rodata.Count % 8 != 0) m_rodata.Add(0);
+
+        // Emit Unicode→CCE lookup table (256 bytes) into .rodata.
+        // Used by serial input to convert incoming Unicode bytes to CCE encoding.
+        m_unicodeToCceTableOffset = m_rodata.Count;
+        for (int i = 0; i < 256; i++)
+            m_rodata.Add((byte)(CceTable.FromUnicode.TryGetValue(i, out int cce) ? cce : CceTable.ReplacementCce));
         while (m_rodata.Count % 8 != 0) m_rodata.Add(0);
 
         EmitRuntimeHelpers();
@@ -1928,24 +1936,35 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         }
         else
         {
-            int nlOffset = AddRodataString("\n");
-            byte nlReg = AllocTemp();
-            EmitLoadRodataAddress(nlReg, nlOffset);
-            X86_64Encoder.Lea(m_text, Reg.RSI, nlReg, 8);
-            X86_64Encoder.MovLoad(m_text, Reg.RDX, nlReg, 0);
-            X86_64Encoder.Li(m_text, Reg.RAX, 1);
-            X86_64Encoder.Li(m_text, Reg.RDI, 1);
+            // Newline is an I/O boundary — emit literal Unicode 0x0A, not CCE byte.
+            X86_64Encoder.SubRI(m_text, Reg.RSP, 8);
+            X86_64Encoder.Li(m_text, Reg.RAX, 0x0A);
+            X86_64Encoder.MovStore(m_text, Reg.RSP, Reg.RAX, 0);
+            X86_64Encoder.MovRR(m_text, Reg.RSI, Reg.RSP); // buf
+            X86_64Encoder.Li(m_text, Reg.RDX, 1);          // count = 1
+            X86_64Encoder.Li(m_text, Reg.RAX, 1);          // sys_write
+            X86_64Encoder.Li(m_text, Reg.RDI, 1);          // stdout
             X86_64Encoder.Syscall(m_text);
+            X86_64Encoder.AddRI(m_text, Reg.RSP, 8);
         }
     }
 
     void EmitSerialStringFromPtr(byte ptrReg)
     {
-        // Print string at [ptrReg+0]=len, [ptrReg+8..]=data to COM1
+        // Print string at [ptrReg+0]=len, [ptrReg+8..]=data to COM1.
+        // Strings are CCE-encoded; serial output is a Unicode boundary, so convert per byte.
         int savedPtr = AllocLocal();
         StoreLocal(savedPtr, ptrReg);
+
+        int savedTable = AllocLocal();
+        byte tableReg = AllocTemp();
+        m_rodataFixups.Add(new RodataFixup(m_text.Count + 2, m_cceToUnicodeTableOffset));
+        X86_64Encoder.MovRI64(m_text, tableReg, 0); // patched to rodata+table
+        StoreLocal(savedTable, tableReg);
+
+        byte ptr = LoadLocal(savedPtr);
         byte len = AllocTemp();
-        X86_64Encoder.MovLoad(m_text, len, ptrReg, 0);
+        X86_64Encoder.MovLoad(m_text, len, ptr, 0);
         int savedLen = AllocLocal();
         StoreLocal(savedLen, len);
         int savedIdx = AllocLocal();
@@ -1959,11 +1978,18 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         int doneJump = m_text.Count;
         X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
 
+        // Load CCE byte: ptr + 8 + idx
         byte ptrL = LoadLocal(savedPtr);
         idx = LoadLocal(savedIdx);
         X86_64Encoder.Lea(m_text, Reg.RSI, ptrL, 8);
         X86_64Encoder.AddRR(m_text, Reg.RSI, idx);
-        X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RSI, 0);
+        X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RSI, 0); // RAX = CCE byte
+
+        // Convert CCE→Unicode via table lookup
+        byte tbl = LoadLocal(savedTable);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, tbl);
+        X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RAX, 0); // RAX = Unicode byte
+
         X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
         X86_64Encoder.OutDxAl(m_text);
 
@@ -2609,6 +2635,12 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         m_functionOffsets["__read_line"] = m_text.Count;
 
         X86_64Encoder.PushR(m_text, Reg.RBX);
+        X86_64Encoder.PushR(m_text, Reg.R12);
+
+        // Load Unicode→CCE table address into R12 (input boundary conversion)
+        m_rodataFixups.Add(new RodataFixup(m_text.Count + 2, m_unicodeToCceTableOffset));
+        X86_64Encoder.MovRI64(m_text, Reg.R12, 0); // patched to rodata+table
+
         // Read one byte at a time into heap buffer
         X86_64Encoder.MovRR(m_text, Reg.RBX, HeapReg);
         X86_64Encoder.Li(m_text, Reg.RCX, 0);  // length counter
@@ -2665,13 +2697,22 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         int eof = m_text.Count;
         X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_LE, 0);
 
-        // Check newline
+        // Check newline (compare against Unicode '\n' before CCE conversion)
         X86_64Encoder.MovRR(m_text, Reg.RDX, Reg.RBX);
         X86_64Encoder.AddRR(m_text, Reg.RDX, Reg.RCX);
         X86_64Encoder.MovzxByte(m_text, Reg.RDX, Reg.RDX, 8);
         X86_64Encoder.CmpRI(m_text, Reg.RDX, '\n');
         int gotNl = m_text.Count;
         X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
+
+        // Convert stored byte Unicode→CCE in-place: buf[8 + count]
+        X86_64Encoder.MovRR(m_text, Reg.RSI, Reg.RBX);
+        X86_64Encoder.AddRR(m_text, Reg.RSI, Reg.RCX);
+        X86_64Encoder.AddRI(m_text, Reg.RSI, 8);           // RSI = &buf[8+count]
+        X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RSI, 0); // RAX = Unicode byte
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.R12);
+        X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RAX, 0); // RAX = CCE byte
+        m_text.Add(0x88); m_text.Add(0x06); // mov [rsi], al — store CCE byte back
 
         X86_64Encoder.AddRI(m_text, Reg.RCX, 1);
         X86_64Encoder.Jmp(m_text, readByte - (m_text.Count + 5));
@@ -2687,6 +2728,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.AddRR(m_text, HeapReg, Reg.RAX);
         X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RBX);
 
+        X86_64Encoder.PopR(m_text, Reg.R12);
         X86_64Encoder.PopR(m_text, Reg.RBX);
         X86_64Encoder.Ret(m_text);
     }
@@ -2699,6 +2741,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
         X86_64Encoder.PushR(m_text, Reg.RBX);
         X86_64Encoder.PushR(m_text, Reg.RCX);
+        X86_64Encoder.PushR(m_text, Reg.R12);
+
+        // Load Unicode→CCE table address into R12 (input boundary conversion)
+        m_rodataFixups.Add(new RodataFixup(m_text.Count + 2, m_unicodeToCceTableOffset));
+        X86_64Encoder.MovRI64(m_text, Reg.R12, 0); // patched to rodata+table
 
         X86_64Encoder.MovRR(m_text, Reg.RBX, HeapReg); // RBX = buffer start
         X86_64Encoder.Li(m_text, Reg.RCX, 0);           // RCX = byte count
@@ -2733,7 +2780,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         int gotNull = m_text.Count;
         X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
 
-        // Store byte: buffer[8 + count]
+        // Convert Unicode→CCE: table[unicode_byte]
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.R12);
+        X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RAX, 0); // RAX = CCE byte
+
+        // Store CCE byte: buffer[8 + count]
         X86_64Encoder.MovRR(m_text, Reg.RSI, Reg.RBX);
         X86_64Encoder.AddRR(m_text, Reg.RSI, Reg.RCX);
         X86_64Encoder.AddRI(m_text, Reg.RSI, 8);
@@ -2754,6 +2805,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.AddRR(m_text, HeapReg, Reg.RAX);        // bump heap
         X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RBX);        // return buffer ptr
 
+        X86_64Encoder.PopR(m_text, Reg.R12);
         X86_64Encoder.PopR(m_text, Reg.RCX);
         X86_64Encoder.PopR(m_text, Reg.RBX);
         X86_64Encoder.Ret(m_text);
