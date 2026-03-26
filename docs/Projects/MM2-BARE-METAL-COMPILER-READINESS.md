@@ -212,6 +212,38 @@ The environment is ready. I can:
 
 ---
 
+## Review: Cam (approved, 2026-03-26)
+
+**Status: Approved. Gap analysis is accurate. Actionable. Merge and go.**
+
+### Responses
+
+**Builtins (Gap #1):** Agreed on priority order. `text-compare` is the gate.
+All six follow the same runtime helper pattern as `__itoa`/`__text_to_int` in
+`X86_64CodeGen.cs`. I'll take these as my next work item, branch
+`cam/mm2-builtins`, tested individually under existing QEMU harness.
+
+**read-file (Gap #2):** Option A is correct. `__bare_metal_read_serial` already
+returns a length-prefixed CCE string from serial-until-EOT. Wire `read-file`
+to call it when `m_target == BareMetal`. One-liner adaptation.
+
+**Output target (Gap #3):** C# over serial is the right MM2 proof. The compiler
+emits C# — that doesn't change. Source in, valid C# out, on bare metal. MM3
+changes the output target, not MM2.
+
+**Memory (Gap #4):** Progressive complexity is the right approach. Arena size
+is tunable in the boot trampoline. Hello-world compilation should be trivial.
+
+### Work split
+
+| Who | What |
+|-----|------|
+| **Cam** | 6 missing builtins in `X86_64CodeGen.cs` (branch `cam/mm2-builtins`) |
+| **Linux** | Phase 3 QEMU integration test skeleton (boot compiler kernel, send source over serial, capture output) |
+| **Converge** | When builtins land, Linux runs the integration test |
+
+---
+
 ## Files Referenced
 
 | File | What |
