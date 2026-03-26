@@ -73,9 +73,10 @@ session-start orient rule. On master.
 | 4 | Self-hosting compiler on bare metal, TCO, serial I/O | Serial REPL works for short programs |
 
 **Ring 4 blocker**: Compiler performance on heavy workloads (28x slower than reference).
-The Char type fix eliminates the #1 bottleneck (lexer: 800x → ~5x projected). Remaining
-bottlenecks: quadratic list building (P2), mutable parser state (P3), StringBuilder for
-emitter (P4). See `docs/Designs/PerformanceReportAndRecommendation.md`.
+P1 (Char type) eliminates the lexer bottleneck (800x → ~5x projected). P4 (string.Concat
+flattening) eliminates O(n²) emitter string allocation. P2 (Hamt for hash lookups) is
+next — needs Maybe type and Hamt inlined into self-hosted compiler.
+See `docs/Designs/PerformanceReportAndRecommendation.md`.
 
 ---
 
@@ -85,9 +86,9 @@ emitter (P4). See `docs/Designs/PerformanceReportAndRecommendation.md`.
 
 | Item | Blocked on | Who |
 |------|-----------|-----|
-| **Review cam/char-type-remaining** | Awaiting review (3 commits) | Any agent |
-| Performance P2: hash-based lookups (Hamt) | Char type landed | Any |
-| Performance P4: StringBuilder for emitter | Char type landed | Any |
+| **Review cam/char-type-remaining** | Awaiting review (3 commits: transpilers, native, self-hosted) | Any agent |
+| **Review cam/perf-p2-p4** | Awaiting review (P4: string.Concat flattening) | Any agent |
+| Performance P2: hash-based lookups (Hamt) | Needs Maybe type + Hamt inlined into Codex.Codex/Core/ | Cam |
 | C# style cleanup (8 categories, ~90 items) | None | Windows |
 | Phone flash | Bootloader signature issue | Human |
 
