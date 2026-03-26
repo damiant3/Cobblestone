@@ -1,6 +1,6 @@
 # MM3 Gap Analysis: Self-Compile on Bare Metal
 
-**Status**: Analysis
+**Status**: Analysis — REVISED (hard gap eliminated)
 **Date**: 2026-03-26
 
 ---
@@ -20,7 +20,34 @@ memory, I/O bandwidth, and multi-file support.
 
 ---
 
-## Gap 1: Missing Builtins (13 of 42)
+## REVISION: The Hard Gap Doesn't Exist
+
+The original analysis identified higher-order functions (map, fold, filter,
+all, any) as the critical blocker requiring function pointers on bare metal.
+
+**This was wrong.** Investigation revealed:
+
+1. The self-hosted compiler does NOT use the `map` builtin. It uses
+   `map-list` defined in `Collections.codex` — a pure Codex function
+   that loops with `list-at`/`list-snoc` (both already implemented).
+
+2. `map-list` and `fold-list` DO pass function parameters (`f`) and call
+   them (`f (list-at xs i)`). This requires indirect calls.
+
+3. **The x86-64 backend already supports indirect calls.** The
+   `EmitPartialApplication` system creates closures as `[code-ptr, captures...]`
+   and `EmitApply` calls through them via `call rax` with `R11=closure`.
+
+4. Verified experimentally: `map-it double [1,2,3]` compiles to x86-64
+   and returns correct results under WSL. Exit code 0. Higher-order
+   functions work today.
+
+**Remaining gaps are all easy: multi-file serial protocol, arena sizing,
+and boot protocol. No hard design decisions needed.**
+
+---
+
+## ~~Gap 1: Missing Builtins (13 of 42)~~ — REVISED
 
 The self-hosted compiler uses 42 builtins. The x86-64 backend implements 35.
 **13 are missing** (some are defined in .codex, some need runtime support):
