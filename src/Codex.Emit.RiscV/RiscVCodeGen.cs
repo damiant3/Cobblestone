@@ -1614,8 +1614,18 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             }
 
             case "char-at" when args.Count == 2:
-                EmitCharAt(args);
+            {
+                // char-at returns byte value as integer: lbu from [text+8+idx]
+                uint textReg = EmitExpr(args[0]);
+                uint savedText = AllocLocal();
+                StoreLocal(savedText, textReg);
+                uint indexReg = EmitExpr(args[1]);
+                Emit(RiscVEncoder.Mv(Reg.T2, indexReg)); // save index before LoadLocal
+                uint textVal = LoadLocal(savedText);
+                Emit(RiscVEncoder.Add(Reg.T0, textVal, Reg.T2));
+                Emit(RiscVEncoder.Lbu(Reg.A0, Reg.T0, 8)); // skip 8-byte length prefix
                 return true;
+            }
 
             case "substring" when args.Count == 3:
                 EmitSubstring(args);
@@ -1718,15 +1728,23 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
             case "char-code" when args.Count == 1:
             {
-                // (long)text[0] — load first byte
-                uint textReg = EmitExpr(args[0]);
-                Emit(RiscVEncoder.Lbu(Reg.A0, textReg, 8)); // skip 8-byte length prefix
+                // char-code: identity — Char is already an integer
+                uint charReg = EmitExpr(args[0]);
+                Emit(RiscVEncoder.Mv(Reg.A0, charReg));
                 return true;
             }
 
             case "code-to-char" when args.Count == 1:
             {
-                // Create a 1-character string from a code point
+                // code-to-char: identity — Char is already an integer
+                uint codeReg = EmitExpr(args[0]);
+                Emit(RiscVEncoder.Mv(Reg.A0, codeReg));
+                return true;
+            }
+
+            case "char-to-text" when args.Count == 1:
+            {
+                // Allocate 1-char string on heap: [8-byte len=1][1 byte data][7 padding]
                 uint codeReg = EmitExpr(args[0]);
                 Emit(RiscVEncoder.Mv(Reg.A0, Reg.S1));       // result = heap ptr
                 Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, 16)); // alloc 16 bytes
@@ -1738,9 +1756,9 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
             case "is-letter" when args.Count == 1:
             {
-                // Check if first char of text is a letter (a-z or A-Z)
-                uint textReg = EmitExpr(args[0]);
-                Emit(RiscVEncoder.Lbu(Reg.T0, textReg, 8)); // load first byte
+                // Char is already a byte value in register
+                uint charReg = EmitExpr(args[0]);
+                Emit(RiscVEncoder.Mv(Reg.T0, charReg));
 
                 // Check lowercase: t0 >= 'a' && t0 <= 'z'
                 foreach (uint insn in RiscVEncoder.Li(Reg.T1, 'a')) Emit(insn);
@@ -1765,8 +1783,9 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
             case "is-digit" when args.Count == 1:
             {
-                uint textReg = EmitExpr(args[0]);
-                Emit(RiscVEncoder.Lbu(Reg.T0, textReg, 8));
+                // Char is already a byte value in register
+                uint charReg = EmitExpr(args[0]);
+                Emit(RiscVEncoder.Mv(Reg.T0, charReg));
                 foreach (uint insn in RiscVEncoder.Li(Reg.T1, '0')) Emit(insn);
                 foreach (uint insn in RiscVEncoder.Li(Reg.T2, '9' + 1)) Emit(insn);
                 Emit(RiscVEncoder.Sltu(Reg.T3, Reg.T0, Reg.T1)); // unsigned
@@ -1778,8 +1797,9 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
             case "is-whitespace" when args.Count == 1:
             {
-                uint textReg = EmitExpr(args[0]);
-                Emit(RiscVEncoder.Lbu(Reg.T0, textReg, 8));
+                // Char is already a byte value in register
+                uint charReg = EmitExpr(args[0]);
+                Emit(RiscVEncoder.Mv(Reg.T0, charReg));
                 // space=32, tab=9, newline=10, cr=13
                 foreach (uint insn in RiscVEncoder.Li(Reg.T1, ' ')) Emit(insn);
                 Emit(RiscVEncoder.Sub(Reg.T2, Reg.T0, Reg.T1));
@@ -2040,27 +2060,6 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         while (m_rodata.Count % 8 != 0) m_rodata.Add(0);
         m_stringOffsets[value] = offset;
         return offset;
-    }
-
-    void EmitCharAt(List<IRExpr> args)
-    {
-        uint textReg = EmitExpr(args[0]);
-        uint savedText = AllocLocal();
-        StoreLocal(savedText, textReg);
-        uint indexReg = EmitExpr(args[1]);
-
-        // Alloc 16 bytes: [8-byte len=1][1 byte data][7 padding]
-        Emit(RiscVEncoder.Mv(Reg.A0, Reg.S1));
-        Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, 16));
-
-        foreach (uint insn in RiscVEncoder.Li(Reg.T0, 1)) Emit(insn);
-        Emit(RiscVEncoder.Sd(Reg.A0, Reg.T0, 0));
-
-        Emit(RiscVEncoder.Mv(Reg.T2, indexReg)); // save index before LoadLocal
-        uint charTextVal = LoadLocal(savedText);
-        Emit(RiscVEncoder.Add(Reg.T0, charTextVal, Reg.T2));
-        Emit(RiscVEncoder.Lbu(Reg.T0, Reg.T0, 8));
-        Emit(RiscVEncoder.Sb(Reg.A0, Reg.T0, 8));
     }
 
     void EmitSubstring(List<IRExpr> args)
