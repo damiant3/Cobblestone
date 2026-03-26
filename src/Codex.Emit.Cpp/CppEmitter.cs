@@ -548,24 +548,26 @@ public sealed class CppEmitter : ICodeEmitter
             EmitExpr(sb, app.Argument, indent);
             sb.Append(".size())");
         }
-        else if (app.Function is IRName fn7b && fn7b.Name == "char-to-text")
-        {
-            sb.Append("std::string(1, (char)"); EmitExpr(sb, app.Argument, indent); sb.Append(')');
-        }
         else if (app.Function is IRName fn8 && fn8.Name == "is-letter")
         {
-            sb.Append("(bool)std::isalpha((char)"); EmitExpr(sb, app.Argument, indent);
-            sb.Append(')');
+            sb.Append("(!"); EmitExpr(sb, app.Argument, indent);
+            sb.Append(".empty() && std::isalpha(");
+            EmitExpr(sb, app.Argument, indent);
+            sb.Append("[0]))");
         }
         else if (app.Function is IRName fn9 && fn9.Name == "is-digit")
         {
-            sb.Append("(bool)std::isdigit((char)"); EmitExpr(sb, app.Argument, indent);
-            sb.Append(')');
+            sb.Append("(!"); EmitExpr(sb, app.Argument, indent);
+            sb.Append(".empty() && std::isdigit(");
+            EmitExpr(sb, app.Argument, indent);
+            sb.Append("[0]))");
         }
         else if (app.Function is IRName fn10 && fn10.Name == "is-whitespace")
         {
-            sb.Append("(bool)std::isspace((char)"); EmitExpr(sb, app.Argument, indent);
-            sb.Append(')');
+            sb.Append("(!"); EmitExpr(sb, app.Argument, indent);
+            sb.Append(".empty() && std::isspace(");
+            EmitExpr(sb, app.Argument, indent);
+            sb.Append("[0]))");
         }
         else if (app.Function is IRName fn11 && fn11.Name == "text-to-integer")
         {
@@ -581,11 +583,15 @@ public sealed class CppEmitter : ICodeEmitter
         }
         else if (app.Function is IRName fn12 && fn12.Name == "char-code")
         {
+            sb.Append("int64_t(");
             EmitExpr(sb, app.Argument, indent);
+            sb.Append("[0])");
         }
         else if (app.Function is IRName fn13 && fn13.Name == "code-to-char")
         {
+            sb.Append("std::string(1, char(");
             EmitExpr(sb, app.Argument, indent);
+            sb.Append("))");
         }
         else if (app.Function is IRName fn14 && fn14.Name == "list-length")
         {
@@ -893,11 +899,11 @@ public sealed class CppEmitter : ICodeEmitter
         switch (name)
         {
             case "char-at" when args.Count == 2:
-                sb.Append("(int64_t)");
+                sb.Append("std::string(1, ");
                 EmitExpr(sb, args[0], indent);
-                sb.Append("[(size_t)");
+                sb.Append('[');
                 EmitExpr(sb, args[1], indent);
-                sb.Append(']');
+                sb.Append("])");
                 return true;
 
             case "substring" when args.Count == 3:

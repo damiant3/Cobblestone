@@ -42,114 +42,8 @@ sealed partial class WasmModuleBuilder
                 return true;
 
             case "char-at" when args.Count == 2:
-            {
-                // char-at text index → Integer (byte value in i64)
-                EmitExpr(body, args[0], localMap, ref nextLocal, localTypes, args[0].Type);
-                int caPtr = nextLocal++; localTypes.Add(WasmI32);
-                body.WriteByte(OpLocalSet); WriteUnsignedLeb128(body, caPtr);
-
-                EmitExpr(body, args[1], localMap, ref nextLocal, localTypes, args[1].Type);
-                body.WriteByte(OpI32WrapI64); // index i64 → i32
-                int caIdx = nextLocal++; localTypes.Add(WasmI32);
-                body.WriteByte(OpLocalSet); WriteUnsignedLeb128(body, caIdx);
-
-                // Load byte at ptr + 4 + idx, extend to i64
-                body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, caPtr);
-                body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, caIdx);
-                body.WriteByte(OpI32Add);
-                body.WriteByte(OpI32Const); WriteSignedLeb128(body, 4);
-                body.WriteByte(OpI32Add);
-                body.WriteByte(OpI32Load8U); body.WriteByte(0x00); WriteUnsignedLeb128(body, 0);
-                body.WriteByte(OpI64ExtendI32U);
+                EmitCharAt(body, args[0], args[1], localMap, ref nextLocal, localTypes);
                 return true;
-            }
-
-            case "char-code" when args.Count == 1:
-                // char-code: identity — Char is already an integer
-                EmitExpr(body, args[0], localMap, ref nextLocal, localTypes, args[0].Type);
-                return true;
-
-            case "code-to-char" when args.Count == 1:
-                // code-to-char: identity — Char is already an integer
-                EmitExpr(body, args[0], localMap, ref nextLocal, localTypes, args[0].Type);
-                return true;
-
-            case "char-to-text" when args.Count == 1:
-                EmitCharToText(body, args[0], localMap, ref nextLocal, localTypes);
-                return true;
-
-            case "is-letter" when args.Count == 1:
-            {
-                // is-letter: takes integer Char value, checks a-z or A-Z
-                EmitExpr(body, args[0], localMap, ref nextLocal, localTypes, args[0].Type);
-                body.WriteByte(OpI32WrapI64); // char value i64 → i32
-                int ilCh = nextLocal++; localTypes.Add(WasmI32);
-                body.WriteByte(OpLocalSet); WriteUnsignedLeb128(body, ilCh);
-
-                // Check lowercase: ch - 'a' < 26 (unsigned)
-                body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, ilCh);
-                body.WriteByte(OpI32Const); WriteSignedLeb128(body, 'a');
-                body.WriteByte(OpI32Sub);
-                body.WriteByte(OpI32Const); WriteSignedLeb128(body, 26);
-                body.WriteByte(OpI32LtU);
-
-                // Check uppercase: ch - 'A' < 26 (unsigned)
-                body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, ilCh);
-                body.WriteByte(OpI32Const); WriteSignedLeb128(body, 'A');
-                body.WriteByte(OpI32Sub);
-                body.WriteByte(OpI32Const); WriteSignedLeb128(body, 26);
-                body.WriteByte(OpI32LtU);
-
-                // Result = lower || upper
-                body.WriteByte(OpI32Or);
-                body.WriteByte(OpI64ExtendI32U);
-                return true;
-            }
-
-            case "is-digit" when args.Count == 1:
-            {
-                // is-digit: takes integer Char value, checks 0-9
-                EmitExpr(body, args[0], localMap, ref nextLocal, localTypes, args[0].Type);
-                body.WriteByte(OpI32WrapI64);
-                body.WriteByte(OpI32Const); WriteSignedLeb128(body, '0');
-                body.WriteByte(OpI32Sub);
-                body.WriteByte(OpI32Const); WriteSignedLeb128(body, 10);
-                body.WriteByte(OpI32LtU);
-                body.WriteByte(OpI64ExtendI32U);
-                return true;
-            }
-
-            case "is-whitespace" when args.Count == 1:
-            {
-                // is-whitespace: takes integer Char value, checks space/tab/newline/cr
-                EmitExpr(body, args[0], localMap, ref nextLocal, localTypes, args[0].Type);
-                body.WriteByte(OpI32WrapI64);
-                int iwCh = nextLocal++; localTypes.Add(WasmI32);
-                body.WriteByte(OpLocalSet); WriteUnsignedLeb128(body, iwCh);
-
-                // ch == ' '
-                body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, iwCh);
-                body.WriteByte(OpI32Const); WriteSignedLeb128(body, ' ');
-                body.WriteByte(OpI32Eq);
-                // ch == '\t'
-                body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, iwCh);
-                body.WriteByte(OpI32Const); WriteSignedLeb128(body, '\t');
-                body.WriteByte(OpI32Eq);
-                body.WriteByte(OpI32Or);
-                // ch == '\n'
-                body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, iwCh);
-                body.WriteByte(OpI32Const); WriteSignedLeb128(body, '\n');
-                body.WriteByte(OpI32Eq);
-                body.WriteByte(OpI32Or);
-                // ch == '\r'
-                body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, iwCh);
-                body.WriteByte(OpI32Const); WriteSignedLeb128(body, '\r');
-                body.WriteByte(OpI32Eq);
-                body.WriteByte(OpI32Or);
-
-                body.WriteByte(OpI64ExtendI32U);
-                return true;
-            }
 
             case "substring" when args.Count == 3:
                 EmitSubstring(body, args[0], args[1], args[2], localMap, ref nextLocal, localTypes);
@@ -331,14 +225,18 @@ sealed partial class WasmModuleBuilder
         body.WriteByte(OpEnd);
     }
 
-    void EmitCharToText(MemoryStream body, IRExpr charExpr,
+    void EmitCharAt(MemoryStream body, IRExpr textExpr, IRExpr indexExpr,
         ValueMap<string, int> localMap, ref int nextLocal, List<byte> localTypes)
     {
-        // char-to-text: allocate 1-char length-prefixed string from integer Char value
-        EmitExpr(body, charExpr, localMap, ref nextLocal, localTypes, charExpr.Type);
-        body.WriteByte(OpI32WrapI64); // char value i64 → i32
-        int byteLocal = nextLocal++; localTypes.Add(WasmI32);
-        body.WriteByte(OpLocalSet); WriteUnsignedLeb128(body, byteLocal);
+        // char-at text index → Text (single-character length-prefixed string)
+        EmitExpr(body, textExpr, localMap, ref nextLocal, localTypes, textExpr.Type);
+        int ptrLocal = nextLocal++; localTypes.Add(WasmI32);
+        body.WriteByte(OpLocalSet); WriteUnsignedLeb128(body, ptrLocal);
+
+        EmitExpr(body, indexExpr, localMap, ref nextLocal, localTypes, indexExpr.Type);
+        body.WriteByte(OpI32WrapI64); // index is i64, need i32
+        int idxLocal = nextLocal++; localTypes.Add(WasmI32);
+        body.WriteByte(OpLocalSet); WriteUnsignedLeb128(body, idxLocal);
 
         // Allocate 5 bytes: 4 (length=1) + 1 (the byte)
         int resultLocal = nextLocal++; localTypes.Add(WasmI32);
@@ -354,11 +252,16 @@ sealed partial class WasmModuleBuilder
         body.WriteByte(OpI32Const); WriteSignedLeb128(body, 1);
         body.WriteByte(OpI32Store); body.WriteByte(0x02); WriteUnsignedLeb128(body, 0);
 
-        // Store byte value: result[4] = charValue
+        // Copy byte: result[4] = src[4 + idx]
         body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, resultLocal);
         body.WriteByte(OpI32Const); WriteSignedLeb128(body, 4);
         body.WriteByte(OpI32Add);
-        body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, byteLocal);
+        body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, ptrLocal);
+        body.WriteByte(OpI32Const); WriteSignedLeb128(body, 4);
+        body.WriteByte(OpI32Add);
+        body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, idxLocal);
+        body.WriteByte(OpI32Add);
+        body.WriteByte(OpI32Load8U); body.WriteByte(0x00); WriteUnsignedLeb128(body, 0);
         body.WriteByte(OpI32Store8); body.WriteByte(0x00); WriteUnsignedLeb128(body, 0);
 
         // Return result pointer

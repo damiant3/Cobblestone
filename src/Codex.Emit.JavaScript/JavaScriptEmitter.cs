@@ -402,29 +402,23 @@ public sealed class JavaScriptEmitter : ICodeEmitter
             EmitExpr(sb, app.Argument, indent);
             sb.Append(".length)");
         }
-        else if (app.Function is IRName fnCtt && fnCtt.Name == "char-to-text")
+        else if (app.Function is IRName fn8 && fn8.Name == "is-letter")
         {
-            sb.Append("String.fromCharCode(Number(");
+            sb.Append("(/^[a-zA-Z]/.test(");
             EmitExpr(sb, app.Argument, indent);
             sb.Append("))");
         }
-        else if (app.Function is IRName fn8 && fn8.Name == "is-letter")
-        {
-            sb.Append("(/^[a-zA-Z]/.test(String.fromCharCode(Number(");
-            EmitExpr(sb, app.Argument, indent);
-            sb.Append("))))");
-        }
         else if (app.Function is IRName fn9 && fn9.Name == "is-digit")
         {
-            sb.Append("(/^[0-9]/.test(String.fromCharCode(Number(");
+            sb.Append("(/^[0-9]/.test(");
             EmitExpr(sb, app.Argument, indent);
-            sb.Append("))))");
+            sb.Append("))");
         }
         else if (app.Function is IRName fn10 && fn10.Name == "is-whitespace")
         {
-            sb.Append("(/^\\s/.test(String.fromCharCode(Number(");
+            sb.Append("(/^\\s/.test(");
             EmitExpr(sb, app.Argument, indent);
-            sb.Append("))))");
+            sb.Append("))");
         }
         else if (app.Function is IRName fn11 && fn11.Name == "text-to-integer")
         {
@@ -440,13 +434,15 @@ public sealed class JavaScriptEmitter : ICodeEmitter
         }
         else if (app.Function is IRName fn12 && fn12.Name == "char-code")
         {
-            // Char -> Integer: identity (both are BigInt)
+            sb.Append("BigInt(");
             EmitExpr(sb, app.Argument, indent);
+            sb.Append(".charCodeAt(0))");
         }
         else if (app.Function is IRName fn13 && fn13.Name == "code-to-char")
         {
-            // Integer -> Char: identity (both are BigInt)
+            sb.Append("String.fromCharCode(Number(");
             EmitExpr(sb, app.Argument, indent);
+            sb.Append("))");
         }
         else if (app.Function is IRName fn14 && fn14.Name == "list-length")
         {
@@ -766,11 +762,10 @@ public sealed class JavaScriptEmitter : ICodeEmitter
         switch (name)
         {
             case "char-at" when args.Count == 2:
-                sb.Append("BigInt(");
                 EmitExpr(sb, args[0], indent);
-                sb.Append(".charCodeAt(Number(");
+                sb.Append("[Number(");
                 EmitExpr(sb, args[1], indent);
-                sb.Append(")))");
+                sb.Append(")]");
                 return true;
 
             case "substring" when args.Count == 3:

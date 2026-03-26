@@ -434,24 +434,29 @@ public sealed class GoEmitter : ICodeEmitter
         {
             sb.Append("int64(len("); EmitExpr(sb, app.Argument, indent); sb.Append("))");
         }
-        else if (app.Function is IRName fn7b && fn7b.Name == "char-to-text")
-        {
-            sb.Append("string(rune("); EmitExpr(sb, app.Argument, indent); sb.Append("))");
-        }
         else if (app.Function is IRName fn8 && fn8.Name == "is-letter")
         {
-            sb.Append("unicode.IsLetter(rune("); EmitExpr(sb, app.Argument, indent);
-            sb.Append("))");
+            sb.Append("(len("); EmitExpr(sb, app.Argument, indent);
+            sb.Append(") > 0 && ((");
+            EmitExpr(sb, app.Argument, indent);
+            sb.Append("[0] >= 'a' && "); EmitExpr(sb, app.Argument, indent);
+            sb.Append("[0] <= 'z') || ("); EmitExpr(sb, app.Argument, indent);
+            sb.Append("[0] >= 'A' && "); EmitExpr(sb, app.Argument, indent);
+            sb.Append("[0] <= 'Z')))");
         }
         else if (app.Function is IRName fn9 && fn9.Name == "is-digit")
         {
-            sb.Append("unicode.IsDigit(rune("); EmitExpr(sb, app.Argument, indent);
-            sb.Append("))");
+            sb.Append("(len("); EmitExpr(sb, app.Argument, indent);
+            sb.Append(") > 0 && "); EmitExpr(sb, app.Argument, indent);
+            sb.Append("[0] >= '0' && "); EmitExpr(sb, app.Argument, indent);
+            sb.Append("[0] <= '9')");
         }
         else if (app.Function is IRName fn10 && fn10.Name == "is-whitespace")
         {
-            sb.Append("unicode.IsSpace(rune("); EmitExpr(sb, app.Argument, indent);
-            sb.Append("))");
+            sb.Append("(len("); EmitExpr(sb, app.Argument, indent);
+            sb.Append(") > 0 && ("); EmitExpr(sb, app.Argument, indent);
+            sb.Append("[0] == ' ' || "); EmitExpr(sb, app.Argument, indent);
+            sb.Append("[0] == '\\t'))");
         }
         else if (app.Function is IRName fn11 && fn11.Name == "text-to-integer")
         {
@@ -465,11 +470,11 @@ public sealed class GoEmitter : ICodeEmitter
         }
         else if (app.Function is IRName fn12 && fn12.Name == "char-code")
         {
-            EmitExpr(sb, app.Argument, indent);
+            sb.Append("int64("); EmitExpr(sb, app.Argument, indent); sb.Append("[0])");
         }
         else if (app.Function is IRName fn13 && fn13.Name == "code-to-char")
         {
-            EmitExpr(sb, app.Argument, indent);
+            sb.Append("string(rune("); EmitExpr(sb, app.Argument, indent); sb.Append("))");
         }
         else if (app.Function is IRName fn14 && fn14.Name == "list-length")
         {
@@ -714,7 +719,7 @@ public sealed class GoEmitter : ICodeEmitter
         switch (name)
         {
             case "char-at" when args.Count == 2:
-                sb.Append("int64(");
+                sb.Append("string(");
                 EmitExpr(sb, args[0], indent);
                 sb.Append('[');
                 EmitExpr(sb, args[1], indent);

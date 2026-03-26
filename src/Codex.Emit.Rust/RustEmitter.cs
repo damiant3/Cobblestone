@@ -436,29 +436,20 @@ public sealed class RustEmitter : ICodeEmitter
             EmitExpr(sb, app.Argument, indent);
             sb.Append(".len() as i64");
         }
-        else if (app.Function is IRName fnCtt && fnCtt.Name == "char-to-text")
-        {
-            sb.Append("String::from(char::from_u32(");
-            EmitExpr(sb, app.Argument, indent);
-            sb.Append(" as u32).unwrap())");
-        }
         else if (app.Function is IRName fn8 && fn8.Name == "is-letter")
         {
-            sb.Append("char::from_u32(");
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(" as u32).unwrap().is_alphabetic()");
+            sb.Append(".chars().next().map_or(false, |c| c.is_alphabetic())");
         }
         else if (app.Function is IRName fn9 && fn9.Name == "is-digit")
         {
-            sb.Append("char::from_u32(");
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(" as u32).unwrap().is_ascii_digit()");
+            sb.Append(".chars().next().map_or(false, |c| c.is_ascii_digit())");
         }
         else if (app.Function is IRName fn10 && fn10.Name == "is-whitespace")
         {
-            sb.Append("char::from_u32(");
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(" as u32).unwrap().is_whitespace()");
+            sb.Append(".chars().next().map_or(false, |c| c.is_whitespace())");
         }
         else if (app.Function is IRName fn11 && fn11.Name == "text-to-integer")
         {
@@ -473,10 +464,13 @@ public sealed class RustEmitter : ICodeEmitter
         else if (app.Function is IRName fn12 && fn12.Name == "char-code")
         {
             EmitExpr(sb, app.Argument, indent);
+            sb.Append(".chars().next().unwrap() as i64");
         }
         else if (app.Function is IRName fn13 && fn13.Name == "code-to-char")
         {
+            sb.Append("String::from(char::from_u32(");
             EmitExpr(sb, app.Argument, indent);
+            sb.Append(" as u32).unwrap())");
         }
         else if (app.Function is IRName fn14 && fn14.Name == "list-length")
         {
@@ -825,7 +819,7 @@ public sealed class RustEmitter : ICodeEmitter
                 EmitExpr(sb, args[0], indent);
                 sb.Append(".chars().nth(");
                 EmitExpr(sb, args[1], indent);
-                sb.Append(" as usize).unwrap() as i64");
+                sb.Append(" as usize).unwrap().to_string()");
                 return true;
 
             case "substring" when args.Count == 3:

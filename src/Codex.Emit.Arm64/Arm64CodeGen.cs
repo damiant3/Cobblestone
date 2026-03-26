@@ -940,15 +940,19 @@ sealed class Arm64CodeGen
 
             case "char-at" when args.Count == 2:
             {
-                // char-at returns byte value as integer: ldrb from [text+8+idx]
                 uint textReg = EmitExpr(args[0]);
                 uint savedText = AllocLocal();
                 StoreLocal(savedText, textReg);
                 uint indexReg = EmitExpr(args[1]);
+                Emit(Arm64Encoder.Mov(Arm64Reg.X0, HeapReg));
+                Emit(Arm64Encoder.AddImm(HeapReg, HeapReg, 16));
+                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, 1)) Emit(insn);
+                Emit(Arm64Encoder.Str(Arm64Reg.X9, Arm64Reg.X0, 0)); // length=1
                 Emit(Arm64Encoder.Mov(Arm64Reg.X11, indexReg));
                 uint textVal = LoadLocal(savedText);
                 Emit(Arm64Encoder.Add(Arm64Reg.X9, textVal, Arm64Reg.X11));
-                Emit(Arm64Encoder.Ldrb(Arm64Reg.X0, Arm64Reg.X9, 8));
+                Emit(Arm64Encoder.Ldrb(Arm64Reg.X9, Arm64Reg.X9, 8));
+                Emit(Arm64Encoder.Strb(Arm64Reg.X9, Arm64Reg.X0, 8));
                 return true;
             }
 
@@ -1092,23 +1096,13 @@ sealed class Arm64CodeGen
 
             case "char-code" when args.Count == 1:
             {
-                // char-code: identity — Char is already an integer
-                uint charReg = EmitExpr(args[0]);
-                Emit(Arm64Encoder.Mov(Arm64Reg.X0, charReg));
+                uint textReg = EmitExpr(args[0]);
+                Emit(Arm64Encoder.Ldrb(Arm64Reg.X0, textReg, 8));
                 return true;
             }
 
             case "code-to-char" when args.Count == 1:
             {
-                // code-to-char: identity — Char is already an integer
-                uint codeReg = EmitExpr(args[0]);
-                Emit(Arm64Encoder.Mov(Arm64Reg.X0, codeReg));
-                return true;
-            }
-
-            case "char-to-text" when args.Count == 1:
-            {
-                // Allocate 1-char string on heap: [len=1][byte]
                 uint codeReg = EmitExpr(args[0]);
                 Emit(Arm64Encoder.Mov(Arm64Reg.X0, HeapReg));
                 Emit(Arm64Encoder.AddImm(HeapReg, HeapReg, 16));
@@ -1120,9 +1114,8 @@ sealed class Arm64CodeGen
 
             case "is-letter" when args.Count == 1:
             {
-                // Char is already a byte value in register
-                uint charReg = EmitExpr(args[0]);
-                Emit(Arm64Encoder.Mov(Arm64Reg.X9, charReg));
+                uint textReg = EmitExpr(args[0]);
+                Emit(Arm64Encoder.Ldrb(Arm64Reg.X9, textReg, 8));
                 // Check lowercase a-z
                 foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 'a')) Emit(insn);
                 Emit(Arm64Encoder.Sub(Arm64Reg.X11, Arm64Reg.X9, Arm64Reg.X10));
@@ -1140,9 +1133,8 @@ sealed class Arm64CodeGen
 
             case "is-digit" when args.Count == 1:
             {
-                // Char is already a byte value in register
-                uint charReg = EmitExpr(args[0]);
-                Emit(Arm64Encoder.Mov(Arm64Reg.X9, charReg));
+                uint textReg = EmitExpr(args[0]);
+                Emit(Arm64Encoder.Ldrb(Arm64Reg.X9, textReg, 8));
                 foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, '0')) Emit(insn);
                 Emit(Arm64Encoder.Sub(Arm64Reg.X11, Arm64Reg.X9, Arm64Reg.X10));
                 Emit(Arm64Encoder.CmpImm(Arm64Reg.X11, 10));
@@ -1152,9 +1144,8 @@ sealed class Arm64CodeGen
 
             case "is-whitespace" when args.Count == 1:
             {
-                // Char is already a byte value in register
-                uint charReg = EmitExpr(args[0]);
-                Emit(Arm64Encoder.Mov(Arm64Reg.X9, charReg));
+                uint textReg = EmitExpr(args[0]);
+                Emit(Arm64Encoder.Ldrb(Arm64Reg.X9, textReg, 8));
                 // space=32
                 Emit(Arm64Encoder.CmpImm(Arm64Reg.X9, 32));
                 m_instructions.Add(0x9A9F17E0u | Arm64Reg.X10); // CSINC X10, XZR, XZR, NE → 1 if EQ

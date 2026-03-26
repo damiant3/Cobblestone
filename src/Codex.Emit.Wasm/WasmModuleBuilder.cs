@@ -77,13 +77,8 @@ sealed partial class WasmModuleBuilder
     const byte OpF64Div = 0xA3;
     const byte OpF64Neg = 0x9A;
     const byte OpI64ExtendI32S = 0xAC;
-    const byte OpI64ExtendI32U = 0xAD;
     const byte OpI32WrapI64 = 0xA7;
     const byte OpF64ConvertI64S = 0xB9;
-    const byte OpI32LtU = 0x49;
-    const byte OpI32GeU = 0x4F;
-    const byte OpI32Or = 0x72;
-    const byte OpI32And = 0x71;
 
     // ── WASM Block/If opcodes ────────────────────────────────────
     const byte OpBlock = 0x02;

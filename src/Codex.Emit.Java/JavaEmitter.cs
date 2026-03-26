@@ -461,24 +461,26 @@ public sealed class JavaEmitter : ICodeEmitter
         {
             sb.Append("(long)"); EmitExpr(sb, app.Argument, indent); sb.Append(".length()");
         }
-        else if (app.Function is IRName fn7b && fn7b.Name == "char-to-text")
-        {
-            sb.Append("String.valueOf((char)(long)"); EmitExpr(sb, app.Argument, indent); sb.Append(')');
-        }
         else if (app.Function is IRName fn8 && fn8.Name == "is-letter")
         {
-            sb.Append("Character.isLetter((char)(long)"); EmitExpr(sb, app.Argument, indent);
-            sb.Append(')');
+            sb.Append("(!"); EmitExpr(sb, app.Argument, indent);
+            sb.Append(".isEmpty() && Character.isLetter(");
+            EmitExpr(sb, app.Argument, indent);
+            sb.Append(".charAt(0)))");
         }
         else if (app.Function is IRName fn9 && fn9.Name == "is-digit")
         {
-            sb.Append("Character.isDigit((char)(long)"); EmitExpr(sb, app.Argument, indent);
-            sb.Append(')');
+            sb.Append("(!"); EmitExpr(sb, app.Argument, indent);
+            sb.Append(".isEmpty() && Character.isDigit(");
+            EmitExpr(sb, app.Argument, indent);
+            sb.Append(".charAt(0)))");
         }
         else if (app.Function is IRName fn10 && fn10.Name == "is-whitespace")
         {
-            sb.Append("Character.isWhitespace((char)(long)"); EmitExpr(sb, app.Argument, indent);
-            sb.Append(')');
+            sb.Append("(!"); EmitExpr(sb, app.Argument, indent);
+            sb.Append(".isEmpty() && Character.isWhitespace(");
+            EmitExpr(sb, app.Argument, indent);
+            sb.Append(".charAt(0)))");
         }
         else if (app.Function is IRName fn11 && fn11.Name == "text-to-integer")
         {
@@ -490,11 +492,11 @@ public sealed class JavaEmitter : ICodeEmitter
         }
         else if (app.Function is IRName fn12 && fn12.Name == "char-code")
         {
-            EmitExpr(sb, app.Argument, indent);
+            sb.Append("(long)"); EmitExpr(sb, app.Argument, indent); sb.Append(".charAt(0)");
         }
         else if (app.Function is IRName fn13 && fn13.Name == "code-to-char")
         {
-            EmitExpr(sb, app.Argument, indent);
+            sb.Append("String.valueOf((char)(long)"); EmitExpr(sb, app.Argument, indent); sb.Append(')');
         }
         else if (app.Function is IRName fn14 && fn14.Name == "list-length")
         {
@@ -753,11 +755,11 @@ public sealed class JavaEmitter : ICodeEmitter
         switch (name)
         {
             case "char-at" when args.Count == 2:
-                sb.Append("(long)");
+                sb.Append("String.valueOf(");
                 EmitExpr(sb, args[0], indent);
                 sb.Append(".charAt((int)(long)");
                 EmitExpr(sb, args[1], indent);
-                sb.Append(')');
+                sb.Append("))");
                 return true;
 
             case "substring" when args.Count == 3:
