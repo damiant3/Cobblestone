@@ -1,3 +1,4 @@
+using System.Text;
 using Codex.IR;
 using Codex.Types;
 
@@ -145,6 +146,67 @@ public sealed partial class CSharpEmitter
             .Replace("\n", "\\n")
             .Replace("\r", "\\r")
             .Replace("\t", "\\t");
+    }
+
+    // CCE byte → Unicode code point (Tier 0, 128 entries)
+    static readonly int[] s_cceToUnicode = {
+        0, 10, 13, 9, 32, 160, 8201, 8239,                                    // 0-7: whitespace
+        48, 49, 50, 51, 52, 53, 54, 55, 56, 57,                               // 8-17: digits
+        101, 116, 97, 111, 105, 110, 115, 104, 114, 100,                      // 18-27: lower
+        108, 99, 117, 109, 119, 102, 103, 121, 112, 98,                       // 28-37
+        118, 107, 106, 120, 113, 122,                                           // 38-43
+        69, 84, 65, 79, 73, 78, 83, 72, 82, 68,                               // 44-53: upper
+        76, 67, 85, 77, 87, 70, 71, 89, 80, 66,                               // 54-63
+        86, 75, 74, 88, 81, 90,                                                 // 64-69
+        46, 44, 33, 63, 58, 59, 39, 34, 45, 40,                               // 70-79: punct
+        41, 47, 64, 35, 43, 61, 42, 38, 95, 92,                               // 80-89
+        233, 232, 234, 235, 225, 224, 226, 228, 243, 242,                     // 90-99: accented
+        244, 246, 250, 249, 251, 252, 241, 231, 223, 237,                     // 100-109
+        236, 238,                                                               // 110-111
+        1072, 1086, 1077, 1080, 1085, 1090, 1089, 1088,                       // 112-119: cyrillic
+        1074, 1083, 1082, 1084, 1076, 1087, 1091, 1075                        // 120-127
+    };
+
+    static readonly Dictionary<int, int> s_unicodeToCce = BuildUnicodeToCce();
+
+    static Dictionary<int, int> BuildUnicodeToCce()
+    {
+        var d = new Dictionary<int, int>();
+        for (int i = 0; i < s_cceToUnicode.Length; i++)
+            d[s_cceToUnicode[i]] = i;
+        return d;
+    }
+
+    /// <summary>Convert a Unicode string to CCE-encoded string at compile time.</summary>
+    static string UnicodeToCce(string unicode)
+    {
+        char[] result = new char[unicode.Length];
+        for (int i = 0; i < unicode.Length; i++)
+        {
+            int u = unicode[i];
+            result[i] = s_unicodeToCce.TryGetValue(u, out int cce) ? (char)cce : (char)0;
+        }
+        return new string(result);
+    }
+
+    /// <summary>Convert a Unicode char to its CCE byte value at compile time.</summary>
+    static long UnicharToCce(long unicode)
+    {
+        return s_unicodeToCce.TryGetValue((int)unicode, out int cce) ? cce : 0;
+    }
+
+    /// <summary>Escape a CCE-encoded string for C# string literal emission.</summary>
+    static string EscapeCceString(string cce)
+    {
+        var sb = new StringBuilder(cce.Length * 4);
+        foreach (char c in cce)
+        {
+            if (c == '\\') sb.Append("\\\\");
+            else if (c == '"') sb.Append("\\\"");
+            else if (c >= 32 && c < 127) sb.Append(c);
+            else sb.Append($"\\u{(int)c:X4}");
+        }
+        return sb.ToString();
     }
 
     static bool HasTypeVariable(CodexType type)

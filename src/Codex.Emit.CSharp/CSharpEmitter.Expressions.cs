@@ -21,7 +21,8 @@ public sealed partial class CSharpEmitter
                 break;
 
             case IRTextLit lit:
-                sb.Append($"\"{EscapeString(lit.Value)}\"");
+                // Encode string literal as CCE at compile time
+                sb.Append($"\"{EscapeCceString(UnicodeToCce(lit.Value))}\"");
                 break;
 
             case IRBoolLit lit:
@@ -29,17 +30,17 @@ public sealed partial class CSharpEmitter
                 break;
 
             case IRCharLit lit:
-                // Char is long at runtime (same as Integer)
-                sb.Append($"{lit.Value}L");
+                // Char is a CCE byte — convert Unicode value to CCE at compile time
+                sb.Append($"{UnicharToCce(lit.Value)}L");
                 break;
 
             case IRName name:
                 if (name.Name == "read-line")
-                    sb.Append("(Console.ReadLine() ?? \"\")");
+                    sb.Append("_Cce.FromUnicode(Console.ReadLine() ?? \"\")");
                 else if (name.Name == "get-args")
-                    sb.Append("new List<string>(Environment.GetCommandLineArgs())");
+                    sb.Append("Environment.GetCommandLineArgs().Select(_Cce.FromUnicode).ToList()");
                 else if (name.Name == "current-dir")
-                    sb.Append("Directory.GetCurrentDirectory()");
+                    sb.Append("_Cce.FromUnicode(Directory.GetCurrentDirectory())");
                 else if (name.Name == "show")
                     sb.Append("new Func<object, string>(x => Convert.ToString(x))");
                 else if (name.Name == "negate")
@@ -150,12 +151,14 @@ public sealed partial class CSharpEmitter
     {
         if (app.Function is IRName fn && fn.Name == "show")
         {
-            sb.Append("Convert.ToString(");
+            // show produces CCE-encoded text
+            sb.Append("_Cce.FromUnicode(Convert.ToString(");
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(')');
+            sb.Append("))");
         }
         else if (app.Function is IRName fnCtt && fnCtt.Name == "char-to-text")
         {
+            // Char is a CCE byte — produce a 1-char CCE string
             sb.Append("((char)");
             EmitExpr(sb, app.Argument, indent);
             sb.Append(").ToString()");
@@ -168,9 +171,9 @@ public sealed partial class CSharpEmitter
         }
         else if (app.Function is IRName fn3 && fn3.Name == "print-line")
         {
-            sb.Append("Console.WriteLine(");
+            sb.Append("Console.WriteLine(_Cce.ToUnicode(");
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(')');
+            sb.Append("))");
         }
         else if (app.Function is IRName fn4 && fn4.Name == "open-file")
         {
@@ -191,21 +194,23 @@ public sealed partial class CSharpEmitter
         }
         else if (app.Function is IRName fn6b && fn6b.Name == "read-file")
         {
-            sb.Append("File.ReadAllText(");
+            // File → Unicode → CCE at boundary
+            sb.Append("_Cce.FromUnicode(File.ReadAllText(_Cce.ToUnicode(");
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(')');
+            sb.Append(")))");
         }
         else if (app.Function is IRName fn6c && fn6c.Name == "file-exists")
         {
-            sb.Append("File.Exists(");
+            // Path is CCE → convert to Unicode for filesystem
+            sb.Append("File.Exists(_Cce.ToUnicode(");
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(')');
+            sb.Append("))");
         }
         else if (app.Function is IRName fn6d && fn6d.Name == "get-env")
         {
-            sb.Append("(Environment.GetEnvironmentVariable(");
+            sb.Append("_Cce.FromUnicode(Environment.GetEnvironmentVariable(_Cce.ToUnicode(");
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(") ?? \"\")");
+            sb.Append(")) ?? \"\")");
         }
         else if (app.Function is IRName fn7 && fn7.Name == "text-length")
         {
@@ -215,33 +220,42 @@ public sealed partial class CSharpEmitter
         }
         else if (app.Function is IRName fn8 && fn8.Name == "is-letter")
         {
-            sb.Append("char.IsLetter((char)");
+            // CCE: letters are 18-69
+            sb.Append('(');
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(')');
+            sb.Append(" >= 18L && ");
+            EmitExpr(sb, app.Argument, indent);
+            sb.Append(" <= 69L)");
         }
         else if (app.Function is IRName fn9 && fn9.Name == "is-digit")
         {
-            sb.Append("char.IsDigit((char)");
+            // CCE: digits are 8-17
+            sb.Append('(');
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(')');
+            sb.Append(" >= 8L && ");
+            EmitExpr(sb, app.Argument, indent);
+            sb.Append(" <= 17L)");
         }
         else if (app.Function is IRName fn10 && fn10.Name == "is-whitespace")
         {
-            sb.Append("char.IsWhiteSpace((char)");
+            // CCE: whitespace is 0-7
+            sb.Append('(');
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(')');
+            sb.Append(" <= 7L)");
         }
         else if (app.Function is IRName fn11 && fn11.Name == "text-to-integer")
         {
-            sb.Append("long.Parse(");
+            // CCE text → Unicode for parsing
+            sb.Append("long.Parse(_Cce.ToUnicode(");
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(')');
+            sb.Append("))");
         }
         else if (app.Function is IRName fn11b && fn11b.Name == "integer-to-text")
         {
-            sb.Append('(');
+            // Number → Unicode string → CCE
+            sb.Append("_Cce.FromUnicode(");
             EmitExpr(sb, app.Argument, indent);
-            sb.Append(").ToString()");
+            sb.Append(".ToString())");
         }
         else if (app.Function is IRName fn12 && fn12.Name == "char-code")
         {
@@ -490,29 +504,30 @@ public sealed partial class CSharpEmitter
                 return true;
 
             case "write-file" when args.Count == 2:
-                sb.Append("File.WriteAllText(");
+                // CCE path and content → Unicode for filesystem
+                sb.Append("File.WriteAllText(_Cce.ToUnicode(");
                 EmitExpr(sb, args[0], indent);
-                sb.Append(", ");
+                sb.Append("), _Cce.ToUnicode(");
                 EmitExpr(sb, args[1], indent);
-                sb.Append(')');
+                sb.Append("))");
                 return true;
 
             case "run-process" when args.Count == 2:
-                sb.Append("((Func<string>)(() => { var _psi = new System.Diagnostics.ProcessStartInfo(");
+                sb.Append("_Cce.FromUnicode(((Func<string>)(() => { var _psi = new System.Diagnostics.ProcessStartInfo(_Cce.ToUnicode(");
                 EmitExpr(sb, args[0], indent);
-                sb.Append(", ");
+                sb.Append("), _Cce.ToUnicode(");
                 EmitExpr(sb, args[1], indent);
-                sb.Append(") { RedirectStandardOutput = true, UseShellExecute = false }; ");
+                sb.Append(")) { RedirectStandardOutput = true, UseShellExecute = false }; ");
                 sb.Append("var _p = System.Diagnostics.Process.Start(_psi)!; ");
-                sb.Append("var _o = _p.StandardOutput.ReadToEnd(); _p.WaitForExit(); return _o; }))()");
+                sb.Append("var _o = _p.StandardOutput.ReadToEnd(); _p.WaitForExit(); return _o; }))())");
                 return true;
 
             case "list-files" when args.Count == 2:
-                sb.Append("new List<string>(Directory.GetFiles(");
+                sb.Append("Directory.GetFiles(_Cce.ToUnicode(");
                 EmitExpr(sb, args[0], indent);
-                sb.Append(", ");
+                sb.Append("), _Cce.ToUnicode(");
                 EmitExpr(sb, args[1], indent);
-                sb.Append("))");
+                sb.Append(")).Select(_Cce.FromUnicode).ToList()");
                 return true;
 
             case "text-split" when args.Count == 2:

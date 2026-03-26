@@ -64,9 +64,12 @@ class Program
         Console.WriteLine($"Total source after prose extraction: {combined.Length} chars");
         Console.WriteLine("Compiling with Codex.Codex (Stage 1)...");
 
+        // Convert source from Unicode to CCE at the boundary
+        string cceCombined = _Cce.FromUnicode(combined);
+
         try
         {
-            var tokens = Codex_Codex_Codex.tokenize(combined);
+            var tokens = Codex_Codex_Codex.tokenize(cceCombined);
             Console.WriteLine($"  Tokens: {tokens.Count}");
 
             var st = Codex_Codex_Codex.make_parse_state(tokens);
@@ -133,7 +136,9 @@ class Program
                 Console.WriteLine($"    {d.name}({paramStr}) : {Codex_Codex_Codex.cs_type(d.type_val)}");
             }
 
-            string output = Codex_Codex_Codex.emit_full_module(ir, ast.type_defs);
+            string cceOutput = Codex_Codex_Codex.emit_full_module(ir, ast.type_defs);
+            // Convert emitted C# source from CCE back to Unicode for .NET compiler
+            string output = _Cce.ToUnicode(cceOutput);
             string outputPath = outputOverride ?? Path.Combine(codexDir, "stage1-output.cs");
             File.WriteAllText(outputPath, output);
             Console.WriteLine($"Output written to: {outputPath}");
@@ -284,7 +289,8 @@ class Program
 
         try
         {
-            List<Token> tokens = Codex_Codex_Codex.tokenize(source);
+            string cceSource = _Cce.FromUnicode(source);
+            List<Token> tokens = Codex_Codex_Codex.tokenize(cceSource);
             ParseState st = Codex_Codex_Codex.make_parse_state(tokens);
             Document doc = Codex_Codex_Codex.parse_document(st);
             AModule ast = Codex_Codex_Codex.desugar_document(doc, "MiniTest");
@@ -347,7 +353,7 @@ class Program
             string content = File.ReadAllText(f);
             codeBlocks.Add(IsProseDocument(content) ? ExtractCodeBlocks(content) : content);
         }
-        string source = string.Join("\n\n", codeBlocks);
+        string source = _Cce.FromUnicode(string.Join("\n\n", codeBlocks));
 
         Console.WriteLine($"Benchmark: {source.Length} chars, {files.Length} files");
         Console.WriteLine("Protocol: 3 warmup + 10 measured, median reported");
