@@ -9,6 +9,7 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
     readonly Map<string, CodexType> m_typeMap = typeMap;
     ValueMap<string, int> m_usageCounts = ValueMap<string, int>.s_empty;
     Map<string, CodexType> m_linearBindings = Map<string, CodexType>.s_empty;
+    bool m_lambdaIsLinear; // set by CheckLambdaExpr when a lambda captures linear vars
 
     public void CheckModule(Module module)
     {
@@ -83,8 +84,19 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
                 break;
 
             case ApplyExpr app:
-                CheckExpr(app.Function);
-                CheckExpr(app.Argument);
+                // Step 3: Direct lambda application — (\x -> body) arg — is safe.
+                // The closure is consumed immediately, so linear captures don't escape.
+                // Check the body directly without the closure-capture check.
+                if (app.Function is LambdaExpr directLam)
+                {
+                    CheckExpr(app.Argument);
+                    CheckExpr(directLam.Body);
+                }
+                else
+                {
+                    CheckExpr(app.Function);
+                    CheckExpr(app.Argument);
+                }
                 break;
 
             case IfExpr iff:
@@ -154,7 +166,18 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
                 }
             }
 
+            m_lambdaIsLinear = false;
             CheckExpr(binding.Value);
+
+            // Step 2: if the binding value is a lambda that captures linear variables,
+            // the binding itself becomes linear (must be consumed exactly once).
+            if (m_lambdaIsLinear)
+            {
+                m_linearBindings = m_linearBindings.Set(
+                    binding.Name.Value, new LinearType(ErrorType.s_instance));
+                m_usageCounts = m_usageCounts.Set(binding.Name.Value, 0);
+                m_lambdaIsLinear = false;
+            }
         }
 
         CheckExpr(let.Body);
@@ -223,21 +246,43 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
         }
 
         // Detect closure capture of outer linear variables (CDX2043)
+        bool capturesLinear = false;
+        List<string>? capturedNames = null;
         foreach (KeyValuePair<string, CodexType> kv in savedLinear)
         {
             int beforeCount = savedCounts[kv.Key] ?? 0;
             int afterCount = m_usageCounts[kv.Key] ?? 0;
             if (afterCount > beforeCount)
             {
-                m_diagnostics.Warning("CDX2043",
+                capturesLinear = true;
+                (capturedNames ??= new()).Add(kv.Key);
+                m_diagnostics.Error("CDX2043",
                     $"Linear variable '{kv.Key}' is captured by a closure. " +
-                    "The closure must be used exactly once to preserve linearity.",
+                    "Bind the closure with 'let' and use it exactly once, " +
+                    "or apply the lambda directly.",
                     lam.Span);
             }
         }
 
         m_linearBindings = savedLinear;
         m_usageCounts = savedCounts;
+
+        // The capture transfers the linear obligation from the outer variable
+        // to the closure. Record a usage of each captured variable so the outer
+        // scope doesn't report CDX2040 (unused).
+        if (capturedNames is not null)
+        {
+            foreach (string name in capturedNames)
+            {
+                int current = m_usageCounts[name] ?? 0;
+                m_usageCounts = m_usageCounts.Set(name, current + 1);
+            }
+        }
+
+        // Step 2: A lambda that captures linear variables is itself linear.
+        // Mark it so that let-bindings track it via CDX2040/CDX2041.
+        if (capturesLinear)
+            m_lambdaIsLinear = true;
     }
 
     void CheckDoExpr(DoExpr doExpr)
