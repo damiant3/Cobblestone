@@ -1,14 +1,14 @@
 # Current Plan
 
-**Date**: 2026-03-25 (night update — Cam session 2)
+**Date**: 2026-03-26 (Cam session — CCE complete)
 
 ---
 
 ## Where We Stand
 
-Self-hosted compiler performance improved **9.2x** (1,907ms → 208ms) via sorted
-binary search for all lookup structures and `list-snoc` for O(1) amortized list
-accumulation. Three new builtins: `text-compare`, `list-insert-at`, `list-snoc`.
+CCE (Codex Character Encoding) is **complete**. The compiler is fully self-hosting
+with CCE-native text: Char = CCE byte, Text = CCE string, Unicode only at I/O
+boundaries. Fixed point proven at 298,328 chars.
 
 ### Snapshot
 
@@ -17,10 +17,9 @@ accumulation. Three new builtins: `text-compare`, `list-insert-at`, `list-snoc`.
 | Self-hosted compiler | 26 files, ~5,000 lines |
 | Backends | 15 (12 transpilation + IL + RISC-V + WASM + ARM64 + x86-64, including bare metal) |
 | Tests | 915 (507 compiler + 134 syntax + 110 repository + 86 toolkit + 23 semantics + 21 core + 18 LSP + 16 AST) |
-| **Self-compile time** | **208ms median** (was 1,907ms — 9.2x faster) |
-| Fixed point | **Proven** (Stage 2 = Stage 3 at 261,175 chars) |
-| Language features | Lambda expressions, fork/await/par/race, Char type |
-| New builtins | `text-compare` (ordinal), `list-insert-at` (O(n) sorted insert), `list-snoc` (O(1) amortized append) |
+| Self-compile time | 208ms median (9.2x faster than pre-optimization) |
+| Fixed point | **Proven** (Stage 2 = Stage 3 at 298,328 chars, CCE-native) |
+| Language features | Lambda expressions, fork/await/par/race, Char type, CCE-native text |
 | Codex.OS | 7 KB kernel, Rings 0-4, preemptive multitasking, capability-enforced syscalls |
 | Agents | 4 (Windows/Copilot, Linux/sandbox, Cam/CLI, Nut/garage-box) |
 
@@ -29,50 +28,49 @@ accumulation. Three new builtins: `text-compare`, `list-insert-at`, `list-snoc`.
 
 ---
 
-## What Got Done (2026-03-25 Cam session 2)
+## What Got Done (2026-03-26 Cam session)
 
-### Performance P2-alt: Sorted Binary Search + list-snoc (9.2x speedup)
+### CCE-Native Text — All 6 Phases Complete
 
-Post-mortem: `docs/reviews/P2-HAMT-REVERT.md` (previous session).
+Branch: `cam/cce-native-text`. Design: `docs/Designs/CCE-NATIVE-TEXT.md`.
 
-The HAMT approach failed (82% slower). This session implemented the post-mortem's
-recommended alternative: sorted lists with binary search.
+**Tier 0 revision** — corpus was prose-only, missing syntax chars:
+- Whitespace trimmed 8→3 (NUL, LF, Space — no typewriter legacy)
+- 9 syntax chars added: `| [ ] { } < > ~ `` `
+- 4 chars demoted to Tier 1: ì, î, ß, г (lowest global frequency)
+- Punctuation organized: prose (11) + operators (5) + syntax (13) = 29
 
-| Component | Change | Lookup improvement |
-|-----------|--------|-------------------|
-| TypeEnv | Sorted `List TypeBinding`, binary search via `text-compare` | O(n) → O(log n) |
-| Scope | Sorted `List Text`, binary search via `text-compare` | O(n) → O(log n) |
-| Unifier | Sorted `List SubstEntry`, binary search on `var-id` | O(n) → O(log n) |
-| TypeChecker `tdm` | Sorted type def map, binary search | O(n) → O(log n) |
-| Lexer tokenize-loop | `acc ++ [tok]` → `list-snoc acc tok` | O(n²) → O(n) |
-| All accumulator loops | `acc ++ [x]` → `list-snoc acc x` across 30+ sites | O(n²) → O(n) |
+**New Tier 0 layout (128):**
 
-**New builtins** (reference + self-hosted):
-- `text-compare : Text -> Text -> Integer` — ordinal string comparison via `string.CompareOrdinal`
-- `list-insert-at : List a -> Integer -> a -> List a` — O(n) insert at index via `List<T>.Insert`
-- `list-snoc : List a -> a -> List a` — O(1) amortized in-place `List<T>.Add` (safe for linear accumulators)
+| Range | Category | Count |
+|-------|----------|-------|
+| 0-2 | Whitespace | 3 |
+| 3-12 | Digits | 10 |
+| 13-38 | Lowercase | 26 |
+| 39-64 | Uppercase | 26 |
+| 65-93 | Punctuation | 29 |
+| 94-112 | Accented | 19 |
+| 113-127 | Cyrillic | 15 |
 
-**Benchmark results** (median, 10 runs, 3 warmup):
+**Self-hosted emitter CCE-native:**
+- `_Cce` runtime class generation (FromUnicode/ToUnicode)
+- All I/O builtins wrapped with CCE↔Unicode conversion
+- `is-letter`/`is-digit`/`is-whitespace` use CCE range checks (not Unicode APIs)
+- `escape-text` rewritten as per-character `EscapeCceString` (handles `\uXXXX`)
+- `show`/`integer-to-text`/`text-to-integer` use `_Cce` conversion
 
-| Stage | Before | After | Speedup |
-|-------|--------|-------|---------|
-| lex | 1,738ms | 24ms | **72x** |
-| parse | 33ms | 19ms | 1.7x |
-| desugar | — | 1ms | — |
-| resolve | — | 8ms | — |
-| typecheck | 49ms | 78ms | 0.6x |
-| lower | — | 28ms | — |
-| emit | — | 45ms | — |
-| **total** | **1,907ms** | **208ms** | **9.2x** |
+**Phase 6 cleanup:**
+- `is-cce-*` → `is-*`, `CCEClass` → `CharClass`, etc.
+- Lexer escape processing uses char literals instead of hardcoded Unicode code points
 
-On master.
+**Design philosophy**: All dependencies shallow. Encoding carries meaning only.
+Typographic/legacy concerns (CR, Tab, NBSP, hair space) belong at the I/O boundary.
 
-### Previous session work (on this branch)
+### Previous sessions (on master)
 
-- P2 HAMT revert (was 82% slower)
-- P4 string.Concat flattening (kept, pure win)
-- Lexer Char fixes (char-to-text wrapping)
-- Unifier CharTy support
+- Performance P2-alt: sorted binary search + list-snoc (9.2x speedup)
+- P4 string.Concat flattening
+- Char type across all 16 backends
 
 ---
 
@@ -86,11 +84,6 @@ On master.
 | 3 | Capability-enforced syscalls (SYS_WRITE_SERIAL, SYS_READ_KEY, SYS_GET_TICKS, SYS_EXIT) | Done |
 | 4 | Self-hosting compiler on bare metal, TCO, serial I/O | Serial REPL works for short programs |
 
-**Ring 4 status**: Compiler performance now 208ms (was 1,907ms). P1 (Char type) fixed
-per-character allocation. P2 (sorted binary search + list-snoc) gave 9.2x speedup.
-P4 (string.Concat flattening) on master. Remaining gap to reference: ~2-3x.
-See `docs/Designs/PerformanceReportAndRecommendation.md`.
-
 ---
 
 ## What Remains
@@ -99,21 +92,18 @@ See `docs/Designs/PerformanceReportAndRecommendation.md`.
 
 | Item | Blocked on | Who |
 |------|-----------|-----|
-| ~~Review cam/perf-sorted-bsearch~~ | **Merged** to master | — |
-| CCE prelude migration to Char type | None — Char type is on master | Any agent |
-| Char literal syntax (`'a'`) | None | Any agent |
+| Merge `cam/cce-native-text` to master | Review | Any agent |
 | Closure escape analysis | CDX2043 to error | Any agent |
 | Phone flash | Bootloader signature issue | Human |
 
-### Completed (stale branches deleted)
+### Completed
 
 | Item | Status |
 |------|--------|
-| Char type — all 16 backends | On master. Branches `cam/char-type*` deleted. |
-| P4 string.Concat flattening | On master. Branch `cam/perf-p2-p4` deleted. |
-| P2 sorted binary search + list-snoc | On master. Branch deleted. |
-| P2 HAMT (reverted) | On master (revert). Branches deleted. |
-| C# style cleanup | Branch `windows/csharp-style-cleanup` deleted (by Linux or Windows agent). |
+| **CCE-native text (all 6 phases)** | Branch `cam/cce-native-text`. Fixed point at 298,328 chars. |
+| Char type — all 16 backends | On master. |
+| P4 string.Concat flattening | On master. |
+| P2 sorted binary search + list-snoc | On master. |
 
 ### Medium-term (weeks)
 
