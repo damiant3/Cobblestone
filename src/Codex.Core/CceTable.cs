@@ -51,14 +51,18 @@ public static class CceTable
         return d;
     }
 
-    /// <summary>Convert a Unicode string to CCE-encoded string.</summary>
+    /// <summary>CCE byte for '?' — used as the replacement character for unmapped Unicode.</summary>
+    public const int ReplacementCce = 68;
+
+    /// <summary>Convert a Unicode string to CCE-encoded string.
+    /// Unmapped characters become '?' (CCE 68) instead of NUL to avoid silent corruption.</summary>
     public static string Encode(string unicode)
     {
         char[] result = new char[unicode.Length];
         for (int i = 0; i < unicode.Length; i++)
         {
             int u = unicode[i];
-            result[i] = FromUnicode.TryGetValue(u, out int cce) ? (char)cce : (char)0;
+            result[i] = FromUnicode.TryGetValue(u, out int cce) ? (char)cce : (char)ReplacementCce;
         }
         return new string(result);
     }
@@ -75,10 +79,11 @@ public static class CceTable
         return new string(result);
     }
 
-    /// <summary>Convert a single Unicode code point to CCE byte.</summary>
+    /// <summary>Convert a single Unicode code point to CCE byte.
+    /// Unmapped characters return '?' (CCE 68) instead of NUL.</summary>
     public static long UnicharToCce(long unicode)
     {
-        return FromUnicode.TryGetValue((int)unicode, out int cce) ? cce : 0;
+        return FromUnicode.TryGetValue((int)unicode, out int cce) ? cce : ReplacementCce;
     }
 
     /// <summary>Convert a single CCE byte to Unicode code point.</summary>
@@ -121,7 +126,7 @@ public static class CceTable
         sb.AppendLine("        var cs = new char[s.Length];");
         sb.AppendLine("        for (int i = 0; i < s.Length; i++) {");
         sb.AppendLine("            int u = s[i];");
-        sb.AppendLine("            cs[i] = _fromUni.TryGetValue(u, out int c) ? (char)c : (char)0;");
+        sb.AppendLine("            cs[i] = _fromUni.TryGetValue(u, out int c) ? (char)c : (char)68;");
         sb.AppendLine("        }");
         sb.AppendLine("        return new string(cs);");
         sb.AppendLine("    }");
@@ -134,7 +139,7 @@ public static class CceTable
         sb.AppendLine("        return new string(cs);");
         sb.AppendLine("    }");
         sb.AppendLine("    public static long UniToCce(long u) {");
-        sb.AppendLine("        return _fromUni.TryGetValue((int)u, out int c) ? c : 0;");
+        sb.AppendLine("        return _fromUni.TryGetValue((int)u, out int c) ? c : 68;");
         sb.AppendLine("    }");
         sb.AppendLine("    public static long CceToUni(long b) {");
         sb.AppendLine("        return (b >= 0 && b < 128) ? _toUni[(int)b] : 65533;");

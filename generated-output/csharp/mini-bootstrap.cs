@@ -6,13 +6,13 @@ using System.Threading.Tasks;
 
 Console.WriteLine(Codex_mini_bootstrap.main());
 
+public sealed record Point(long x, long y);
+
 public abstract record Color;
 
 public sealed record Red : Color;
 public sealed record Green : Color;
 public sealed record Blue(long Field0) : Color;
-
-public sealed record Point(long x, long y);
 
 static class _Cce {
     static readonly int[] _toUni = {
@@ -38,7 +38,7 @@ static class _Cce {
         var cs = new char[s.Length];
         for (int i = 0; i < s.Length; i++) {
             int u = s[i];
-            cs[i] = _fromUni.TryGetValue(u, out int c) ? (char)c : (char)0;
+            cs[i] = _fromUni.TryGetValue(u, out int c) ? (char)c : (char)68;
         }
         return new string(cs);
     }
@@ -51,7 +51,7 @@ static class _Cce {
         return new string(cs);
     }
     public static long UniToCce(long u) {
-        return _fromUni.TryGetValue((int)u, out int c) ? c : 0;
+        return _fromUni.TryGetValue((int)u, out int c) ? c : 68;
     }
     public static long CceToUni(long b) {
         return (b >= 0 && b < 128) ? _toUni[(int)b] : 65533;

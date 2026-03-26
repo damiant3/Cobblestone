@@ -71,13 +71,13 @@ public class CceTableTests
     }
 
     [Fact]
-    public void Unmapped_characters_encode_to_zero()
+    public void Unmapped_characters_encode_to_replacement()
     {
-        // CJK character — not in Tier 0
+        // CJK character — not in Tier 0, should become '?' (CCE 68) not NUL
         string cjk = "\u4E16"; // 世
         string encoded = CceTable.Encode(cjk);
         Assert.Equal(1, encoded.Length);
-        Assert.Equal(0, (int)encoded[0]);
+        Assert.Equal(CceTable.ReplacementCce, (int)encoded[0]);
     }
 
     [Fact]
