@@ -1,6 +1,6 @@
 # Current Plan
 
-**Date**: 2026-03-26 afternoon (Ring 4 push)
+**Date**: 2026-03-26 morning (Ring 4 push — all before 8:15 AM)
 
 ---
 
