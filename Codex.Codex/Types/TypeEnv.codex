@@ -1,56 +1,35 @@
 Chapter: Type Environment
 
  An immutable mapping from names to types, used during type checking.
- The environment is extended when entering let bindings, lambda
- parameters, and match branches, then restored on exit.
+ Backed by a HAMT (Hash-Array Mapped Trie) for O(log32 n) lookup.
 
 Section: Environment Type
 
   TypeEnv = record {
-   bindings : List TypeBinding
-  }
-
-  TypeBinding = record {
-   name : Text,
-   bound-type : CodexType
+   bindings : HamtMap CodexType
   }
 
 Section: Construction
 
   empty-type-env : TypeEnv
-  empty-type-env = TypeEnv { bindings = [] }
+  empty-type-env = TypeEnv { bindings = hamt-empty }
 
 Section: Lookup
 
   env-lookup : TypeEnv -> Text -> CodexType
   env-lookup (env) (name) =
-   env-lookup-loop env.bindings name 0 (list-length env.bindings)
-
-  env-lookup-loop : List TypeBinding -> Text -> Integer -> Integer -> CodexType
-  env-lookup-loop (bindings) (name) (i) (len) =
-   if i == len then ErrorTy
-   else
-    let b = list-at bindings i
-    in if b.name == name then b.bound-type
-     else env-lookup-loop bindings name (i + 1) len
+   when hamt-get env.bindings name
+    if Just (ty) -> ty
+    if MaybeNone -> ErrorTy
 
   env-has : TypeEnv -> Text -> Boolean
-  env-has (env) (name) =
-   env-has-loop env.bindings name 0 (list-length env.bindings)
-
-  env-has-loop : List TypeBinding -> Text -> Integer -> Integer -> Boolean
-  env-has-loop (bindings) (name) (i) (len) =
-   if i == len then False
-   else
-    let b = list-at bindings i
-    in if b.name == name then True
-     else env-has-loop bindings name (i + 1) len
+  env-has (env) (name) = hamt-contains env.bindings name
 
 Section: Bind
 
   env-bind : TypeEnv -> Text -> CodexType -> TypeEnv
   env-bind (env) (name) (ty) =
-   TypeEnv { bindings = [TypeBinding { name = name, bound-type = ty }] ++ env.bindings }
+   TypeEnv { bindings = hamt-set env.bindings name ty }
 
 Section: Builtins
 
