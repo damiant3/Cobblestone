@@ -190,16 +190,26 @@ public sealed class Lexer
             if (Current == '\\' && m_position + 1 < m_text.Length)
             {
                 Advance();
-                sb.Append(Current switch
+                if (Current == 't')
                 {
-                    'n' => '\n',
-                    't' => '\t',
-                    'r' => '\r',
-                    '\\' => '\\',
-                    '"' => '"',
-                    '#' => '#',
-                    _ => Current
-                });
+                    m_diagnostics.Error("CDX0005", "\\t escape is not valid in CCE — use spaces directly", MakeSpan(start));
+                    sb.Append("  ");
+                }
+                else if (Current == 'r')
+                {
+                    m_diagnostics.Error("CDX0006", "\\r escape is not valid in CCE — use \\n for newlines", MakeSpan(start));
+                }
+                else
+                {
+                    sb.Append(Current switch
+                    {
+                        'n' => '\n',
+                        '\\' => '\\',
+                        '"' => '"',
+                        '#' => '#',
+                        _ => Current
+                    });
+                }
                 Advance();
             }
             else
@@ -245,16 +255,27 @@ public sealed class Lexer
                 SourceSpan errSpan = MakeSpan(start);
                 return new Token(TokenKind.Error, m_text[start.Offset..errSpan.End.Offset], errSpan);
             }
-            charValue = Current switch
+            if (Current == 't')
             {
-                'n' => '\n',
-                't' => '\t',
-                'r' => '\r',
-                '\\' => '\\',
-                '\'' => '\'',
-                '0' => '\0',
-                _ => Current
-            };
+                m_diagnostics.Error("CDX0005", "\\t escape is not valid in CCE — use a space character instead", MakeSpan(start));
+                charValue = ' ';
+            }
+            else if (Current == 'r')
+            {
+                m_diagnostics.Error("CDX0006", "\\r escape is not valid in CCE — use '\\n' for newlines", MakeSpan(start));
+                charValue = '\n';
+            }
+            else
+            {
+                charValue = Current switch
+                {
+                    'n' => '\n',
+                    '\\' => '\\',
+                    '\'' => '\'',
+                    '0' => '\0',
+                    _ => Current
+                };
+            }
             Advance();
         }
         else
@@ -356,17 +377,28 @@ public sealed class Lexer
         {
             if (Current == '\\' && m_position + 1 < m_text.Length)
             {
+                SourcePosition escStart = MakePosition();
                 Advance();
-                sb.Append(Current switch
+                if (Current == 't')
                 {
-                    'n' => '\n',
-                    't' => '\t',
-                    'r' => '\r',
-                    '\\' => '\\',
-                    '"' => '"',
-                    '#' => '#',
-                    _ => Current
-                });
+                    m_diagnostics.Error("CDX0005", "\\t escape is not valid in CCE — use spaces directly", MakeSpan(escStart));
+                    sb.Append("  ");
+                }
+                else if (Current == 'r')
+                {
+                    m_diagnostics.Error("CDX0006", "\\r escape is not valid in CCE — use \\n for newlines", MakeSpan(escStart));
+                }
+                else
+                {
+                    sb.Append(Current switch
+                    {
+                        'n' => '\n',
+                        '\\' => '\\',
+                        '"' => '"',
+                        '#' => '#',
+                        _ => Current
+                    });
+                }
                 Advance();
             }
             else
