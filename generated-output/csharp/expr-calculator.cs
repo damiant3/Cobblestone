@@ -233,12 +233,20 @@ public static class Codex_expr_calculator
 
     public static string format(Expr e)
     {
+<<<<<<< Updated upstream
         return ((Func<Expr, string>)((_scrutinee1_) => (_scrutinee1_ is Lit _mLit1_ ? ((Func<long, string>)((n) => _Cce.FromUnicode(Convert.ToString(n))))((long)_mLit1_.Field0) : (_scrutinee1_ is Add _mAdd1_ ? ((Func<Expr, string>)((b) => ((Func<Expr, string>)((a) => string.Concat("J", format(a), "\u0002L\u0002", format(b), "K")))((Expr)_mAdd1_.Field0)))((Expr)_mAdd1_.Field1) : (_scrutinee1_ is Sub _mSub1_ ? ((Func<Expr, string>)((b) => ((Func<Expr, string>)((a) => string.Concat("J", format(a), "\u0002I\u0002", format(b), "K")))((Expr)_mSub1_.Field0)))((Expr)_mSub1_.Field1) : (_scrutinee1_ is Mul _mMul1_ ? ((Func<Expr, string>)((b) => ((Func<Expr, string>)((a) => string.Concat("J", format(a), "\u0002N\u0002", format(b), "K")))((Expr)_mMul1_.Field0)))((Expr)_mMul1_.Field1) : (_scrutinee1_ is Div _mDiv1_ ? ((Func<Expr, string>)((b) => ((Func<Expr, string>)((a) => string.Concat("J", format(a), "\u0002Q\u0002", format(b), "K")))((Expr)_mDiv1_.Field0)))((Expr)_mDiv1_.Field1) : throw new InvalidOperationException("Non-exhaustive match"))))))))(e);
+=======
+        return ((Func<Expr, string>)((_scrutinee1_) => (_scrutinee1_ is Lit _mLit1_ ? ((Func<long, string>)((n) => Convert.ToString(n)))((long)_mLit1_.Field0) : (_scrutinee1_ is Add _mAdd1_ ? ((Func<Expr, string>)((b) => ((Func<Expr, string>)((a) => string.Concat("(", format(a), " + ", format(b), ")")))((Expr)_mAdd1_.Field0)))((Expr)_mAdd1_.Field1) : (_scrutinee1_ is Sub _mSub1_ ? ((Func<Expr, string>)((b) => ((Func<Expr, string>)((a) => string.Concat("(", format(a), " - ", format(b), ")")))((Expr)_mSub1_.Field0)))((Expr)_mSub1_.Field1) : (_scrutinee1_ is Mul _mMul1_ ? ((Func<Expr, string>)((b) => ((Func<Expr, string>)((a) => string.Concat("(", format(a), " * ", format(b), ")")))((Expr)_mMul1_.Field0)))((Expr)_mMul1_.Field1) : (_scrutinee1_ is Div _mDiv1_ ? ((Func<Expr, string>)((b) => ((Func<Expr, string>)((a) => string.Concat("(", format(a), " / ", format(b), ")")))((Expr)_mDiv1_.Field0)))((Expr)_mDiv1_.Field1) : throw new InvalidOperationException("Non-exhaustive match"))))))))(e);
+>>>>>>> Stashed changes
     }
 
     public static string test_expr(string input, long expected)
     {
+<<<<<<< Updated upstream
         return ((Func<Expr, string>)((tree) => ((Func<long, string>)((result) => ((Func<string, string>)((status) => string.Concat(status, "E\u0002", input, "\u0002M\u0002", _Cce.FromUnicode(Convert.ToString(result)), "\u0002J\u000D$\u001F\u000D\u0018\u000E\u000D\u0016\u0002", _Cce.FromUnicode(Convert.ToString(expected)), "K\u0002\u0002\u000E\u0015\u000D\u000DE\u0002", format(tree))))(((result == expected) ? "9)--" : "6)+1"))))(eval(tree))))(parse(input));
+=======
+        return ((Func<Expr, string>)((tree) => ((Func<long, string>)((result) => ((Func<string, string>)((status) => string.Concat(status, ": ", input, " = ", Convert.ToString(result), " (expected ", Convert.ToString(expected), ")  tree: ", format(tree))))(((result == expected) ? "PASS" : "FAIL"))))(eval(tree))))(parse(input));
+>>>>>>> Stashed changes
     }
 
     public static object main()

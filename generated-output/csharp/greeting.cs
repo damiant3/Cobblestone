@@ -54,7 +54,11 @@ public static class Codex_greeting
 {
     public static string greeting(string name)
     {
+<<<<<<< Updated upstream
         return string.Concat(".\u000D\u0017\u0017\u0010B\u0002", name, "C");
+=======
+        return string.Concat("Hello, ", name, "!");
+>>>>>>> Stashed changes
     }
 
     public static string main()

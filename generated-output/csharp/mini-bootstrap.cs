@@ -14,6 +14,7 @@ public sealed record Red : Color;
 public sealed record Green : Color;
 public sealed record Blue(long Field0) : Color;
 
+<<<<<<< Updated upstream
 static class _Cce {
     static readonly int[] _toUni = {
         0, 10, 32,
@@ -58,6 +59,8 @@ static class _Cce {
     }
 }
 
+=======
+>>>>>>> Stashed changes
 public static class Codex_mini_bootstrap
 {
     public static string show_color(Color c)

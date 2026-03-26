@@ -55,9 +55,15 @@ public static class Codex_effectful_hello
     public static object main()
     {
         ((Func<object>)(() => {
+<<<<<<< Updated upstream
                 Console.WriteLine(_Cce.ToUnicode("5\u0014\u000F\u000E\u0002\u0011\u0013\u0002\u001E\u0010\u0019\u0015\u0002\u0012\u000F\u001A\u000DD"));
                 var name = _Cce.FromUnicode(Console.ReadLine() ?? "");
                 Console.WriteLine(_Cce.ToUnicode(string.Concat(".\u000D\u0017\u0017\u0010B\u0002", name, "C")));
+=======
+                Console.WriteLine("What is your name?");
+                var name = (Console.ReadLine() ?? "");
+                Console.WriteLine(string.Concat("Hello, ", name, "!"));
+>>>>>>> Stashed changes
                 return null;
             }))();
         return null;
