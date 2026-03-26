@@ -354,13 +354,19 @@ to re-sort.
 This is a governance decision, not a compiler decision. The compiler just needs
 the tables. The tables come from the data. The data comes from the world.
 
+## Resolved Questions
+
+- **Sort order**: CCE order everywhere. Collation is a user-level concern, not a
+  compiler concern. If an agent wants alphabetical sorting, it handles that.
+- **`text-compare`**: Compares CCE bytes. Fast, consistent, done.
+- **Console**: Exists as a debugging crutch, not a design commitment. `print-line`
+  converts to Unicode because the host terminal expects it. When Codex.OS is the
+  host, there is no console — there's an agent.
+
 ## Open Questions for Damian
 
-1. **Tier 0 only for now?** Unmapped characters → CCE 0 (lossy). OK?
-2. **Sort order**: CCE order internally, Unicode order for user-facing output? Or
-   CCE everywhere and users learn the frequency ordering?
-3. **The `text-compare` builtin**: Should it compare CCE bytes (fast, current
-   implementation) or convert to Unicode for comparison (alphabetical, slower)?
-4. **Test updates**: Many existing tests compare against specific string values.
+1. **Tier 0 only for now?** Unmapped characters → CCE 0 (lossy). OK for initial
+   implementation?
+2. **Test updates**: Many existing tests compare against specific string values.
    These all change. Brute-force update, or worth writing a migration script?
-5. **Encoding version tag**: Magic byte, filesystem metadata, or self-describing?
+3. **Encoding version tag**: Magic byte, filesystem metadata, or self-describing?
