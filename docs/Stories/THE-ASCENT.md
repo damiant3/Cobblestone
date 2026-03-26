@@ -300,6 +300,61 @@ This is tracked as Camp III-A Phase 2.
 **Summit marker**: `codex build codex --target native` produces a
 self-sufficient binary. The only file you need is the source.
 
+### MM2: The High Camp — Compiler on Bare Metal ✅ (2026-03-26)
+
+The compiler compiles a program on an OS it built. No Linux. No .NET.
+No runtime. A 268 KB x86-64 kernel running under QEMU, with nothing
+between the compiler and the hardware but a UART and an arena allocator.
+
+The route from Camp II-C to MM2 crossed through Codex.OS — five rings
+of kernel built from scratch:
+
+- **Ring 0**: Multiboot entry, 32-to-64-bit trampoline, serial I/O, heap, stack
+- **Ring 1**: IDT (256 vectors), PIC, timer interrupts, keyboard input
+- **Ring 2**: Process table (16 slots), preemptive context switching, per-process page tables
+- **Ring 3**: Capability-enforced syscalls — `SYS_WRITE_SERIAL`, `SYS_READ_KEY`, `SYS_GET_TICKS`, `SYS_EXIT`
+- **Ring 4**: The self-hosted compiler running on all of the above
+
+The MM2 test: send `main : Integer` / `main = 42` over serial to the bare
+metal kernel. The compiler receives it on the UART, runs the full pipeline
+(tokenize, parse, desugar, resolve, typecheck, lower, emit), and sends
+valid C# back over serial:
+
+```
+public static class Codex_Program
+{
+    public static long main() => 42;
+}
+```
+
+Complete with CCE runtime preamble, using directives, and entry point call.
+
+The night session that reached MM2 also shipped:
+
+- **CCE Tier 0-3**: Full Unicode coverage. Tier 0 (1 byte, 128 chars),
+  Tier 1 (2 bytes, 500+ chars across 7 scripts), Tier 2 (3 bytes, all BMP),
+  Tier 3 (4 bytes, emoji/supplementary). No character is ever lost.
+- **Linear function types**: Step 4 of closure escape analysis. `linear (A -> B)`
+  parameters guarantee exactly-once consumption. All four steps shipped.
+- **`__ipow`**: Integer exponentiation on x86-64 (was stubbed as 0).
+- **6 MM2 builtins**: `text-compare`, `list-snoc`, `list-insert-at`,
+  `list-contains`, `text-concat-list`, `text-split` — the runtime helpers
+  that power the P2-alt sorted binary search in the type checker.
+- **Capability refinement design**: Direction, scope, time-boxing —
+  connected to the repository trust lattice. One lattice, three layers.
+
+Four agents worked in parallel: Cam built features and fixed the
+`list-contains` pipeline bug. Linux ran QEMU, found the bug, verified
+the compile. The human routed between them and saw the lattice.
+
+**What we carried up**: The compiler doesn't just target bare metal. It
+*runs* on bare metal. The OS exists to serve the compiler. The compiler
+exists to prove the language. The language exists to make software that
+cannot hurt you.
+
+**Summit marker**: Source code in over serial. Compiled output out over
+serial. On bare metal. MM2 is proven.
+
 ---
 
 ## Peak III — The Runtime
