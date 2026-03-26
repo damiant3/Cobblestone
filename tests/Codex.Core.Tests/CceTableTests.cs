@@ -71,13 +71,23 @@ public class CceTableTests
     }
 
     [Fact]
-    public void Unmapped_characters_encode_to_replacement()
+    public void Tier2_passthrough_roundtrips_any_bmp_character()
     {
-        // CJK character — not in Tier 0, should become '?' (CCE 68) not NUL
-        string cjk = "\u4E16"; // 世
+        // Any BMP character roundtrips via Tier 2 (3-byte direct encoding)
+        string cjk = "\u4E16"; // 世 — not in Tier 0 or 1
         string encoded = CceTable.Encode(cjk);
-        Assert.Equal(1, encoded.Length);
-        Assert.Equal(CceTable.ReplacementCce, (int)encoded[0]);
+        Assert.Equal(3, encoded.Length); // Tier 2: 3 bytes
+        Assert.Equal(cjk, CceTable.Decode(encoded));
+    }
+
+    [Fact]
+    public void Tier3_passthrough_roundtrips_emoji()
+    {
+        // Supplementary character (emoji) roundtrips via Tier 3 (4-byte encoding)
+        string emoji = "\U0001F600"; // 😀
+        string encoded = CceTable.Encode(emoji);
+        Assert.Equal(4, encoded.Length); // Tier 3: 4 bytes
+        Assert.Equal(emoji, CceTable.Decode(encoded));
     }
 
     [Fact]

@@ -296,14 +296,14 @@ public static class CceTable
 
     // ── Tier identification ─────────────────────────────────────────────
 
-    /// <summary>Determine tier from a CCE byte: 0=Tier 0, 1=Tier 1 start, -1=continuation.</summary>
+    /// <summary>Determine tier from a CCE byte: 0=Tier 0, 1=Tier 1 start, 2=Tier 2, 3=Tier 3, -1=continuation.</summary>
     public static int TierOf(int b) => b switch
     {
-        < 0x80 => 0,     // 0xxxxxxx  — Tier 0
+        < 0x80 => 0,     // 0xxxxxxx  — Tier 0 (1 byte, table lookup)
         < 0xC0 => -1,    // 10xxxxxx  — continuation
-        < 0xE0 => 1,     // 110xxxxx  — Tier 1 start
-        < 0xF0 => 2,     // 1110xxxx  — Tier 2 (future)
-        _ => 3            // 11110xxx  — Tier 3 (future)
+        < 0xE0 => 1,     // 110xxxxx  — Tier 1 start (2 bytes, table lookup)
+        < 0xF0 => 2,     // 1110xxxx  — Tier 2 start (3 bytes, direct BMP)
+        _ => 3            // 11110xxx  — Tier 3 start (4 bytes, supplementary)
     };
 
     // ── Encoding (Unicode → CCE) ────────────────────────────────────────
@@ -325,33 +325,52 @@ public static class CceTable
     }
 
     /// <summary>Convert a Unicode string to CCE-encoded string.
-    /// Tier 0 characters encode as single bytes; Tier 1 as two bytes (110xxxxx 10xxxxxx).
-    /// Unmapped characters become '?' (CCE 68) instead of NUL.</summary>
+    /// Tier 0: single byte (table lookup). Tier 1: 2 bytes (table lookup).
+    /// Tier 2: 3 bytes (direct BMP code point). Tier 3: 4 bytes (supplementary).
+    /// No character is ever lost — full Unicode coverage.</summary>
     public static string Encode(string unicode)
     {
         string normalized = NormalizeUnicode(unicode);
         var sb = new System.Text.StringBuilder(normalized.Length);
-        foreach (char c in normalized)
+        for (int idx = 0; idx < normalized.Length; idx++)
         {
-            int u = c;
+            int u = normalized[idx];
+
+            // Handle surrogate pairs for supplementary characters (U+10000+)
+            if (char.IsHighSurrogate((char)u) && idx + 1 < normalized.Length
+                && char.IsLowSurrogate(normalized[idx + 1]))
+            {
+                int full = char.ConvertToUtf32((char)u, normalized[idx + 1]);
+                idx++; // consume low surrogate
+                // Tier 3: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+                sb.Append((char)(0xF0 | (full >> 18)));
+                sb.Append((char)(0x80 | ((full >> 12) & 0x3F)));
+                sb.Append((char)(0x80 | ((full >> 6) & 0x3F)));
+                sb.Append((char)(0x80 | (full & 0x3F)));
+                continue;
+            }
+
             if (FromUnicode.TryGetValue(u, out int cce))
             {
-                sb.Append((char)cce);
+                sb.Append((char)cce);                              // Tier 0: 1 byte
             }
             else if (Tier1FromUnicode.TryGetValue(u, out int t1cp))
             {
-                sb.Append((char)(0xC0 | (t1cp >> 6)));
+                sb.Append((char)(0xC0 | (t1cp >> 6)));             // Tier 1: 2 bytes
                 sb.Append((char)(0x80 | (t1cp & 0x3F)));
             }
             else
             {
-                sb.Append((char)ReplacementCce);
+                // Tier 2: 1110xxxx 10xxxxxx 10xxxxxx (direct Unicode code point)
+                sb.Append((char)(0xE0 | (u >> 12)));
+                sb.Append((char)(0x80 | ((u >> 6) & 0x3F)));
+                sb.Append((char)(0x80 | (u & 0x3F)));
             }
         }
         return sb.ToString();
     }
 
-    /// <summary>Convert a CCE-encoded string to Unicode. Handles Tier 0 + Tier 1.</summary>
+    /// <summary>Convert a CCE-encoded string to Unicode. Full coverage: Tier 0-3.</summary>
     public static string Decode(string cce)
     {
         var sb = new System.Text.StringBuilder(cce.Length);
@@ -361,31 +380,42 @@ public static class CceTable
             int b = cce[i];
             if (b < 0x80)
             {
-                // Tier 0: single byte
+                // Tier 0: single byte → table lookup
                 sb.Append((char)ToUnicode[b]);
                 i++;
             }
-            else if (b >= 0xC0 && b < 0xE0 && i + 1 < cce.Length)
+            else if (b >= 0xC0 && b < 0xE0 && i + 1 < cce.Length && (cce[i + 1] & 0xC0) == 0x80)
             {
-                // Tier 1: two bytes
-                int b2 = cce[i + 1];
-                if ((b2 & 0xC0) == 0x80)
-                {
-                    int cp = ((b & 0x1F) << 6) | (b2 & 0x3F);
-                    int uni = (cp < Tier1ToUnicode.Length && Tier1ToUnicode[cp] != 0)
-                        ? Tier1ToUnicode[cp] : 0xFFFD;
-                    sb.Append((char)uni);
-                    i += 2;
-                }
+                // Tier 1: 2 bytes → table lookup
+                int cp = ((b & 0x1F) << 6) | (cce[i + 1] & 0x3F);
+                int uni = (cp < Tier1ToUnicode.Length && Tier1ToUnicode[cp] != 0)
+                    ? Tier1ToUnicode[cp] : 0xFFFD;
+                sb.Append((char)uni);
+                i += 2;
+            }
+            else if (b >= 0xE0 && b < 0xF0 && i + 2 < cce.Length
+                     && (cce[i + 1] & 0xC0) == 0x80 && (cce[i + 2] & 0xC0) == 0x80)
+            {
+                // Tier 2: 3 bytes → direct Unicode code point (BMP)
+                int uni = ((b & 0x0F) << 12) | ((cce[i + 1] & 0x3F) << 6) | (cce[i + 2] & 0x3F);
+                sb.Append((char)uni);
+                i += 3;
+            }
+            else if (b >= 0xF0 && b < 0xF8 && i + 3 < cce.Length
+                     && (cce[i + 1] & 0xC0) == 0x80 && (cce[i + 2] & 0xC0) == 0x80
+                     && (cce[i + 3] & 0xC0) == 0x80)
+            {
+                // Tier 3: 4 bytes → supplementary Unicode (surrogate pair in C#)
+                int full = ((b & 0x07) << 18) | ((cce[i + 1] & 0x3F) << 12)
+                         | ((cce[i + 2] & 0x3F) << 6) | (cce[i + 3] & 0x3F);
+                if (full >= 0x10000 && full <= 0x10FFFF)
+                    sb.Append(char.ConvertFromUtf32(full));
                 else
-                {
                     sb.Append('\uFFFD');
-                    i++;
-                }
+                i += 4;
             }
             else
             {
-                // Continuation without start, or future tier — replacement
                 sb.Append('\uFFFD');
                 i++;
             }
@@ -453,23 +483,28 @@ public static class CceTable
         sb.AppendLine("    static readonly Dictionary<int, int> _fromUni = new();");
         sb.AppendLine("    static _Cce() { for (int i = 0; i < 128; i++) _fromUni[_toUni[i]] = i; }");
 
-        // FromUnicode — multi-byte aware
+        // FromUnicode — full Tier 0-3
         sb.AppendLine("    public static string FromUnicode(string s) {");
         sb.AppendLine("        s = s.Replace(\"\\t\", \"  \").Replace(\"\\r\", \"\");");
         sb.AppendLine("        var sb = new System.Text.StringBuilder(s.Length);");
-        sb.AppendLine("        foreach (char c in s) {");
-        sb.AppendLine("            int u = c;");
-        sb.AppendLine("            if (_fromUni.TryGetValue(u, out int b)) sb.Append((char)b);");
+        sb.AppendLine("        for (int i = 0; i < s.Length; i++) {");
+        sb.AppendLine("            int u = s[i];");
+        sb.AppendLine("            if (char.IsHighSurrogate((char)u) && i+1 < s.Length && char.IsLowSurrogate(s[i+1])) {");
+        sb.AppendLine("                int full = char.ConvertToUtf32((char)u, s[++i]);");
+        sb.AppendLine("                sb.Append((char)(0xF0|(full>>18))); sb.Append((char)(0x80|((full>>12)&0x3F)));");
+        sb.AppendLine("                sb.Append((char)(0x80|((full>>6)&0x3F))); sb.Append((char)(0x80|(full&0x3F)));");
+        sb.AppendLine("            }");
+        sb.AppendLine("            else if (_fromUni.TryGetValue(u, out int b)) sb.Append((char)b);");
         sb.AppendLine("            else if (_t1FromUni.TryGetValue(u, out int cp)) {");
         sb.AppendLine("                sb.Append((char)(0xC0 | (cp >> 6)));");
         sb.AppendLine("                sb.Append((char)(0x80 | (cp & 0x3F)));");
         sb.AppendLine("            }");
-        sb.AppendLine("            else sb.Append((char)68);");
+        sb.AppendLine("            else { sb.Append((char)(0xE0|(u>>12))); sb.Append((char)(0x80|((u>>6)&0x3F))); sb.Append((char)(0x80|(u&0x3F))); }");
         sb.AppendLine("        }");
         sb.AppendLine("        return sb.ToString();");
         sb.AppendLine("    }");
 
-        // ToUnicode — multi-byte aware
+        // ToUnicode — full Tier 0-3
         sb.AppendLine("    public static string ToUnicode(string s) {");
         sb.AppendLine("        var sb = new System.Text.StringBuilder(s.Length);");
         sb.AppendLine("        int i = 0;");
@@ -480,6 +515,13 @@ public static class CceTable
         sb.AppendLine("                int cp = ((b & 0x1F) << 6) | (s[i+1] & 0x3F);");
         sb.AppendLine("                sb.Append(_t1ToUni.TryGetValue(cp, out int u) ? (char)u : '\\uFFFD');");
         sb.AppendLine("                i += 2;");
+        sb.AppendLine("            }");
+        sb.AppendLine("            else if (b >= 0xE0 && b < 0xF0 && i+2 < s.Length) {");
+        sb.AppendLine("                sb.Append((char)(((b&0x0F)<<12)|((s[i+1]&0x3F)<<6)|(s[i+2]&0x3F))); i += 3;");
+        sb.AppendLine("            }");
+        sb.AppendLine("            else if (b >= 0xF0 && i+3 < s.Length) {");
+        sb.AppendLine("                int full = ((b&0x07)<<18)|((s[i+1]&0x3F)<<12)|((s[i+2]&0x3F)<<6)|(s[i+3]&0x3F);");
+        sb.AppendLine("                sb.Append(full >= 0x10000 ? char.ConvertFromUtf32(full) : \"\\uFFFD\"); i += 4;");
         sb.AppendLine("            }");
         sb.AppendLine("            else { sb.Append('\\uFFFD'); i++; }");
         sb.AppendLine("        }");
