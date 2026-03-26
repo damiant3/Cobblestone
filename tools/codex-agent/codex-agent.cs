@@ -205,7 +205,7 @@ public static class Codex_codex_agent
 
     public static long valid_transition(string from_state, string to_state)
     {
-        return ((from_state == "draft") ? ((to_state == "awaiting-review") ? 1L : 0L) : ((from_state == "awaiting-review") ? ((to_state == "under-review") ? 1L : ((to_state == "abandoned") ? 1L : 0L)) : ((from_state == "under-review") ? ((to_state == "approved") ? 1L : ((to_state == "changes-requested") ? 1L : ((to_state == "abandoned") ? 1L : 0L))) : ((from_state == "changes-requested") ? ((to_state == "awaiting-review") ? 1L : ((to_state == "abandoned") ? 1L : 0L)) : ((from_state == "approved") ? ((to_state == "merged") ? 1L : ((to_state == "abandoned") ? 1L : 0L)) : 0L)))));
+        return ((from_state == "draft") ? ((to_state == "awaiting-review") ? 1L : 0L) : ((from_state == "awaiting-review") ? ((to_state == "under-review") ? 1L : ((to_state == "abandoned") ? 1L : 0L)) : ((from_state == "under-review") ? ((to_state == "approved") ? 1L : ((to_state == "changes-requested") ? 1L : ((to_state == "abandoned") ? 1L : 0L))) : ((from_state == "changes-requested") ? ((to_state == "awaiting-review") ? 1L : ((to_state == "abandoned") ? 1L : 0L)) : ((from_state == "approved") ? ((to_state == "merged") ? 1L : ((to_state == "abandoned") ? 1L : 0L)) : ((from_state == "abandoned") ? ((to_state == "awaiting-review") ? 1L : 0L) : ((from_state == "merged") ? ((to_state == "awaiting-review") ? 1L : 0L) : 0L)))))));
     }
 
     public static string next_action_hint(string state)
