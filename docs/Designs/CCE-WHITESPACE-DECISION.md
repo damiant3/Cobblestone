@@ -188,37 +188,41 @@ Open questions:
 
 ## What We Think (But Want Cam's Input On)
 
-**Option E (two compilation modes) is the new leading candidate.** The reasoning:
+## Decision (2026-03-26)
 
-1. It reframes the question. Instead of "how do we fit legacy characters into
-   the encoding," it asks "does this program live in the Codex world or the
-   Unicode world?" That's the right question.
+**CCE-only. Forward path. No dual mode.**
 
-2. TAB and CR aren't characters we need to accommodate — they're artifacts of a
-   hardware birth defect from 1963 that every system since has carried forward
-   because the last one did. CCE mode is free of that. Unicode mode isn't, and
-   that's fine — it exists specifically for interop with the world as it is.
+After reviewing all five options and Cam's Janus reflection, the decision is:
 
-3. No evictions. The Cyrillic letters stay. The encoding stays principled.
+1. **Option A (boundary normalization) for the immediate fix.** TAB → spaces,
+   CR → stripped at the `read-file` / `read-line` boundary. The Lexer's `\t`
+   and `\r` escape sequences produce spaces / nothing respectively, or are
+   removed from the language.
 
-4. The maintenance cost is real but bounded — the emitter already has both code
-   paths from the migration. This formalizes them.
+2. **Option D (loud failure) as an independent fix.** Silent NUL for unmapped
+   characters is a bug. Fix it with a visible sentinel and/or compile-time
+   diagnostic for string literals containing characters outside Tier 0.
 
-5. Loud failure (Option D) should still happen in CCE mode regardless. Silent
-   NUL is a bug.
+3. **Option E is rejected.** Dual encoding mode is structural debt that compounds
+   forever. The 34% CCE overhead is temporary — it disappears when native backends
+   become primary. Two encoding paths in the compiler would split the fixed point,
+   double the emitter surface area, and carry forward indefinitely. The cost of
+   the transition is paid once; the cost of dual encoding is paid every day.
 
-**But we haven't fully enumerated the tradeoffs.** Specifically:
+4. **Option B is rejected.** Evicting Cyrillic letters for teletype commands is
+   the ASCII mistake repeated. People's letters matter more than machines' habits.
 
-- What other file formats break under lossy tab conversion? (CSV? TSV is
-  obvious. What else?)
-- Are there Codex programs today that use `"\t"` in string literals? (Search
-  the samples and prelude.)
-- Does the `show` builtin or any debug output use tabs for alignment?
-- What does the Go emitter use for indentation? The Python emitter?
-- If a Codex program is a code generator that emits Go/Python/YAML, how
-  does it produce a tab when it needs one?
-- Is `code-to-char 9` actually ergonomic enough for the "intentional tab"
-  case, or does it need a named constant like `unicode-tab`?
+5. **Option C (multi-byte Tier 1) remains on the roadmap** for CJK, extended
+   Latin, and everything else outside Tier 0. Not blocking anything today.
+
+6. **Backward compatibility with Unicode is someone else's rope.** A barbarian
+   intelligence layer that bridges Unicode-native programs to Codex is legitimate
+   future work — but it's not our work. We're building the AI intelligence layer,
+   not the 1999 compatibility layer. The bridge gets built when someone needs it,
+   by the person who needs it.
+
+**The principle**: We are building for 2999, not 1999. The compiler thinks in
+its own encoding. The transition costs are weather. The mountain doesn't move.
 
 ---
 
@@ -234,12 +238,14 @@ be fixed regardless of the TAB/CR decision:
 
 ---
 
-## Action Items
+## Remaining Work
 
-- [ ] Cam: Read this, think about it, enumerate any tradeoffs we're missing
-- [ ] Cam: Search codebase for `"\t"` and `"\r"` usage in .codex source
-- [ ] Cam: Check Go and Python emitter indentation strategy
-- [ ] Cam: Estimate emitter maintenance surface for dual-mode (Option E) —
-      how many emission sites need both paths? How much is already there?
-- [ ] All: Decide on Option A/B/C/D/E or a hybrid
-- [ ] All: Fix silent NUL regardless of decision (Option D is orthogonal)
+- [ ] Fix silent NUL: change `_Cce.FromUnicode` to produce a visible sentinel
+      for unmapped characters, not `(char)0`
+- [ ] Add compile-time diagnostic for string literals containing chars outside
+      Tier 0 (catches `"\t"` and `"\r"` at compile time instead of silently
+      producing garbage)
+- [ ] Boundary normalization: TAB → spaces, CR → strip in `_Cce.FromUnicode`
+- [ ] Remove or deprecate `\t` and `\r` escape sequences from the Lexer
+- [ ] Track perf trend: median self-compile time per session, alarm if
+      monotonically increasing
