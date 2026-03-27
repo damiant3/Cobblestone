@@ -3365,15 +3365,23 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Ld(Reg.T0, Reg.A0, 0));          // t0 = path length
         Emit(RiscVEncoder.Addi(Reg.T1, Reg.A0, 8));         // t1 = path data
 
-        // Null-terminate: copy to heap temporarily
+        // Null-terminate: copy to heap with CCE→Unicode conversion (output boundary to OS).
         Emit(RiscVEncoder.Mv(Reg.T4, Reg.S1));              // save heap ptr
-        // Copy path bytes to heap
+        // Load CCE→Unicode table address into a saved register
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S2, 32));          // save s2
+        m_rodataFixups.Add(new RodataFixup(m_instructions.Count, Reg.S2, m_cceToUnicodeTableOffset));
+        Emit(RiscVEncoder.Nop());                            // 2 slots for rodata fixup
+        Emit(RiscVEncoder.Nop());
+        // Copy path bytes to heap with CCE→Unicode conversion
         foreach (uint insn in RiscVEncoder.Li(Reg.T2, 0)) Emit(insn);
         int cpLoop = m_instructions.Count;
         int cpExit = m_instructions.Count;
         Emit(RiscVEncoder.Nop());
         Emit(RiscVEncoder.Add(Reg.T3, Reg.T1, Reg.T2));
-        Emit(RiscVEncoder.Lbu(Reg.T3, Reg.T3, 0));
+        Emit(RiscVEncoder.Lbu(Reg.T3, Reg.T3, 0));          // t3 = CCE byte
+        // CCE→Unicode: t3 = table[t3]
+        Emit(RiscVEncoder.Add(Reg.T5, Reg.S2, Reg.T3));
+        Emit(RiscVEncoder.Lbu(Reg.T3, Reg.T5, 0));          // t3 = Unicode byte
         Emit(RiscVEncoder.Add(Reg.T5, Reg.T4, Reg.T2));
         Emit(RiscVEncoder.Sb(Reg.T5, Reg.T3, 0));
         Emit(RiscVEncoder.Addi(Reg.T2, Reg.T2, 1));
@@ -3422,8 +3430,27 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         foreach (uint insn in RiscVEncoder.Li(Reg.A7, 57)) Emit(insn); // SYS_close
         Emit(RiscVEncoder.Ecall());
 
-        // Build result: store length at t5, bump heap past data
+        // Convert file content from Unicode→CCE in place (input boundary).
+        m_rodataFixups.Add(new RodataFixup(m_instructions.Count, Reg.S2, m_unicodeToCceTableOffset));
+        Emit(RiscVEncoder.Nop());                            // 2 slots for rodata fixup
+        Emit(RiscVEncoder.Nop());
         Emit(RiscVEncoder.Ld(Reg.T5, Reg.Sp, 8));           // result base
+        foreach (uint insn in RiscVEncoder.Li(Reg.T2, 0)) Emit(insn);
+        int convLoop = m_instructions.Count;
+        int convExit = m_instructions.Count;
+        Emit(RiscVEncoder.Nop());
+        Emit(RiscVEncoder.Add(Reg.T3, Reg.T5, Reg.T2));
+        Emit(RiscVEncoder.Lbu(Reg.T3, Reg.T3, 8));          // Unicode byte at data[i]
+        Emit(RiscVEncoder.Add(Reg.T0, Reg.S2, Reg.T3));
+        Emit(RiscVEncoder.Lbu(Reg.T3, Reg.T0, 0));          // CCE byte = table[unicode]
+        Emit(RiscVEncoder.Add(Reg.T0, Reg.T5, Reg.T2));
+        Emit(RiscVEncoder.Sb(Reg.T0, Reg.T3, 8));           // store CCE byte back
+        Emit(RiscVEncoder.Addi(Reg.T2, Reg.T2, 1));
+        Emit(RiscVEncoder.J((convLoop - m_instructions.Count) * 4));
+        int convTarget = m_instructions.Count;
+        m_instructions[convExit] = RiscVEncoder.Bge(Reg.T2, Reg.T6, (convTarget - convExit) * 4);
+
+        // Build result: store length at t5, bump heap past data
         Emit(RiscVEncoder.Sd(Reg.T5, Reg.T6, 0));           // store length
 
         // Bump heap past the result string
@@ -3433,6 +3460,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Add(Reg.S1, Reg.T5, Reg.A0));
 
         Emit(RiscVEncoder.Mv(Reg.A0, Reg.T5));              // return result ptr
+        Emit(RiscVEncoder.Ld(Reg.S2, Reg.Sp, 32));          // restore s2
         Emit(RiscVEncoder.Ld(Reg.Ra, Reg.Sp, 40));
         Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, 48));
         Emit(RiscVEncoder.Ret());
@@ -3459,7 +3487,8 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
         // Load Unicode→CCE table address into T6 (survives across syscall)
         m_rodataFixups.Add(new RodataFixup(m_instructions.Count, Reg.T6, m_unicodeToCceTableOffset));
-        foreach (uint insn in RiscVEncoder.Li(Reg.T6, 0)) Emit(insn); // patched
+        Emit(RiscVEncoder.Nop());                            // 2 slots for rodata fixup
+        Emit(RiscVEncoder.Nop());
 
         int rdLoop = m_instructions.Count;
         // read(0, &byte_on_stack, 1)
