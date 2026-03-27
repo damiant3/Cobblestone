@@ -125,9 +125,16 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     // ── Function emission ────────────────────────────────────────
 
+    static readonly string s_blacklistPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "tools", "_tco_blacklist.txt");
+    static HashSet<string> s_tcoBlacklist = new(
+        File.Exists(s_blacklistPath)
+            ? File.ReadAllLines(s_blacklistPath).Where(l => l.Trim().Length > 0)
+            : Array.Empty<string>()
+    );
     static bool ShouldTCO(IRDefinition def)
     {
-        return false; // TEMPORARILY DISABLED — TCO bug under investigation
+        if (s_tcoBlacklist.Contains(def.Name)) return false;
+        return def.Parameters.Length > 0 && HasTailCall(def.Body, def.Name);
     }
 
     static bool HasTailCall(IRExpr expr, string funcName) => expr switch
@@ -159,6 +166,8 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         m_nextLocal = Reg.S2;
         m_spillCount = 0;
         m_inTCOFunction = ShouldTCO(def);
+        if (m_inTCOFunction)
+            Console.Error.WriteLine($"RISCV TCO: {def.Name}");
 
         // Prologue: base frame = 96 bytes (ra + s0 + s2-s11).
         // If spills are needed, frame grows — patched after body emission.
@@ -179,10 +188,21 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Nop());                        // slot C: patched or nop
 
         m_tcoParamLocals = new uint[def.Parameters.Length];
-        for (int i = 0; i < def.Parameters.Length && i < 8; i++)
+        for (int i = 0; i < def.Parameters.Length; i++)
         {
             uint savedReg = AllocLocal();
-            StoreLocal(savedReg, Reg.A0 + (uint)i);
+            if (i < 8)
+            {
+                StoreLocal(savedReg, Reg.A0 + (uint)i);
+            }
+            else
+            {
+                // Stack params: caller pushed at [old_sp + (i-8)*8].
+                // S0 = old SP (frame pointer), so param is at S0 + (i-8)*8.
+                int stackOffset = (i - 8) * 8;
+                Emit(RiscVEncoder.Ld(Reg.T0, Reg.S0, stackOffset));
+                StoreLocal(savedReg, Reg.T0);
+            }
             m_locals[def.Parameters[i].Name] = savedReg;
             m_tcoParamLocals[i] = savedReg;
         }
@@ -392,8 +412,9 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             case IRBinaryOp.Eq:
                 if (bin.Left.Type is TextType)
                 {
-                    Emit(RiscVEncoder.Mv(Reg.A0, leftReg));
+                    // Set A1 first — right may be A0, and Mv(A0,...) would clobber it
                     Emit(RiscVEncoder.Mv(Reg.A1, right));
+                    Emit(RiscVEncoder.Mv(Reg.A0, leftReg));
                     EmitCallTo("__str_eq");
                     Emit(RiscVEncoder.Mv(rd, Reg.A0));
                 }
@@ -407,8 +428,8 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             case IRBinaryOp.NotEq:
                 if (bin.Left.Type is TextType)
                 {
-                    Emit(RiscVEncoder.Mv(Reg.A0, leftReg));
                     Emit(RiscVEncoder.Mv(Reg.A1, right));
+                    Emit(RiscVEncoder.Mv(Reg.A0, leftReg));
                     EmitCallTo("__str_eq");
                     Emit(RiscVEncoder.Xori(Reg.A0, Reg.A0, 1));
                     Emit(RiscVEncoder.Mv(rd, Reg.A0));
@@ -420,8 +441,8 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 }
                 break;
             case IRBinaryOp.AppendText:
-                Emit(RiscVEncoder.Mv(Reg.A0, leftReg));
                 Emit(RiscVEncoder.Mv(Reg.A1, right));
+                Emit(RiscVEncoder.Mv(Reg.A0, leftReg));
                 EmitCallTo("__str_concat");
                 Emit(RiscVEncoder.Mv(rd, Reg.A0));
                 break;
@@ -439,14 +460,14 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             case IRBinaryOp.Or:  Emit(RiscVEncoder.Or(rd, leftReg, right)); break;
             case IRBinaryOp.ConsList:
                 // Cons head tail: alloc [len+1][head][tail elements...]
-                Emit(RiscVEncoder.Mv(Reg.A0, leftReg));
                 Emit(RiscVEncoder.Mv(Reg.A1, right));
+                Emit(RiscVEncoder.Mv(Reg.A0, leftReg));
                 EmitCallTo("__list_cons");
                 Emit(RiscVEncoder.Mv(rd, Reg.A0));
                 break;
             case IRBinaryOp.AppendList:
-                Emit(RiscVEncoder.Mv(Reg.A0, leftReg));
                 Emit(RiscVEncoder.Mv(Reg.A1, right));
+                Emit(RiscVEncoder.Mv(Reg.A0, leftReg));
                 EmitCallTo("__list_append");
                 Emit(RiscVEncoder.Mv(rd, Reg.A0));
                 break;
@@ -579,7 +600,23 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 argRegs.Add(saved);
             }
 
-            for (int i = 0; i < argRegs.Count && i < 8; i++)
+            // Push stack args (9th+) onto the stack before setting register args.
+            // Push in forward order so callee sees them at [old_sp + 0], [old_sp + 8], ...
+            int stackArgCount = Math.Max(0, argRegs.Count - 8);
+            if (stackArgCount > 0)
+            {
+                // Reserve stack space for overflow args
+                Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -stackArgCount * 8));
+                for (int i = 0; i < stackArgCount; i++)
+                {
+                    uint argVal = LoadLocal(argRegs[8 + i]);
+                    Emit(RiscVEncoder.Sd(Reg.Sp, argVal, i * 8));
+                }
+            }
+
+            // Load register args (1st-8th) into A0-A7
+            int regArgCount = Math.Min(argRegs.Count, 8);
+            for (int i = 0; i < regArgCount; i++)
             {
                 uint argVal = LoadLocal(argRegs[i]);
                 if (argVal != Reg.A0 + (uint)i)
@@ -599,6 +636,11 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             {
                 EmitCallTo(funcName.Name);
             }
+
+            // Clean up stack args after call
+            if (stackArgCount > 0)
+                Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, stackArgCount * 8));
+
             m_inTailPosition = savedTailPos;
             uint rd = AllocTemp();
             Emit(RiscVEncoder.Mv(rd, Reg.A0));
@@ -1706,11 +1748,12 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             {
                 // Allocate 1-char string on heap: [8-byte len=1][1 byte data][7 padding]
                 uint codeReg = EmitExpr(args[0]);
+                Emit(RiscVEncoder.Mv(Reg.T2, codeReg));      // save char before clobbering A0
                 Emit(RiscVEncoder.Mv(Reg.A0, Reg.S1));       // result = heap ptr
                 Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, 16)); // alloc 16 bytes
                 foreach (uint insn in RiscVEncoder.Li(Reg.T0, 1)) Emit(insn);
                 Emit(RiscVEncoder.Sd(Reg.A0, Reg.T0, 0));    // length = 1
-                Emit(RiscVEncoder.Sb(Reg.A0, codeReg, 8));   // store byte
+                Emit(RiscVEncoder.Sb(Reg.A0, Reg.T2, 8));    // store char byte
                 return true;
             }
 
