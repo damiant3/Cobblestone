@@ -553,9 +553,12 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 return Reg.A0;
 
             // Sum type constructor: allocate [tag][field0][field1]... on heap
-            if (apply.Type is SumType sumType)
+            SumType? sumType = apply.Type as SumType;
+            if (sumType is null && apply.Type is ConstructedType ctApply)
+                sumType = m_typeDefs[ctApply.Constructor.Value] as SumType;
+            if (sumType is SumType st)
             {
-                uint ctorResult = EmitConstructor(funcName.Name, args, sumType);
+                uint ctorResult = EmitConstructor(funcName.Name, args, st);
                 if (ctorResult != Reg.Zero)
                     return ctorResult;
             }
@@ -744,7 +747,10 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
         // Store fields in RecordType field order (matches EmitFieldAccess lookup).
         // If source order differs from type definition order, this reorders.
-        if (rec.Type is RecordType rt)
+        RecordType? rt = rec.Type as RecordType;
+        if (rt is null && rec.Type is ConstructedType ctRec)
+            rt = m_typeDefs[ctRec.Constructor.Value] as RecordType;
+        if (rt is RecordType)
         {
             if (rt.Fields.Length != rec.Fields.Length)
                 Console.Error.WriteLine($"RISCV WARNING: record field count mismatch — IR has {rec.Fields.Length} fields, RecordType has {rt.Fields.Length} for {rec.TypeName}");
@@ -781,7 +787,10 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         uint baseReg = EmitExpr(fa.Record);
 
         int fieldIndex = 0;
-        if (fa.Record.Type is RecordType rt)
+        RecordType? rt = fa.Record.Type as RecordType;
+        if (rt is null && fa.Record.Type is ConstructedType ctFa)
+            rt = m_typeDefs[ctFa.Constructor.Value] as RecordType;
+        if (rt is RecordType)
         {
             for (int i = 0; i < rt.Fields.Length; i++)
             {
@@ -908,7 +917,10 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 Emit(RiscVEncoder.Ld(tagReg, LoadLocal(scrutReg), 0));
 
                 int expectedTag = 0;
-                if (ctorPat.Type is SumType sumType)
+                SumType? matchSumType = ctorPat.Type as SumType;
+                if (matchSumType is null && ctorPat.Type is ConstructedType ctMatch)
+                    matchSumType = m_typeDefs[ctMatch.Constructor.Value] as SumType;
+                if (matchSumType is SumType sumType)
                 {
                     for (int i = 0; i < sumType.Constructors.Length; i++)
                     {
