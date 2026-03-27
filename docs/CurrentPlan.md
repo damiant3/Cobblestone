@@ -142,21 +142,48 @@ The 256MB working space only needs to hold one stage's intermediates at a time.
 - 1,003 reference compiler tests pass (0 failures)
 - Build clean (expected CS5001 only)
 
-#### Current status: TextType reclamation only
+#### DONE: Type resolution in escape-copy helpers (f2f4008)
 
-Tested under QEMU user-mode (WSL). Two-space reclamation works for TextType.
-ListType/SumType/RecordType crash because list escape helpers try to deep-copy
-elements whose `ConstructedType` doesn't resolve through `m_typeDefs` — the
-element type info is erased in the IR. The unresolved type gets no escape
-helper emitted, leaving an unpatched CALL that jumps to garbage.
+Fixed `ResolveType` to recurse into `ListType.Element`, so
+`ListType(ConstructedType("Token"))` resolves to `ListType(RecordType(...))`.
+Added `ConstructedType` case to `EscapeCopyKey` for unique keys. Resolve
+types in `GetOrQueueEscapeHelper`/`GetOrQueueRelocateHelper` before keying.
+Changed EmitRegion guard from TextType-only to ConstructedType-fallback,
+enabling two-space reclamation for all heap types (List, Record, Sum, Text).
 
-**Next step**: Fix the escape helper type resolution. Options:
-1. Carry fully-resolved element types from Lowering into ListType/SumType
-2. Add a "shallow copy" fallback: if type can't resolve, memcpy the raw bytes
-3. Emit a generic escape helper that reads the heap object header for size
+#### DONE: DoBind region wrapping (142f517)
 
-TextType reclamation alone won't solve the heap exhaustion — text is small
-compared to the token lists and AST trees. The big win requires List/Sum/Record.
+`LowerDoExpr` was not wrapping `DoBind` values in `IRRegion`. Do-block
+bindings like `source <- read-file path` never got escape-copy or
+working-space reclamation. Now wraps with `boundType` (unwrapped from
+`EffectfulType`) for the needs-escape check, matching `LowerLetExpr`.
+
+#### Current status: result-space-aware escape-copy needed
+
+Both fixes verified: 541 compiler tests pass, escape helpers now generated
+for all types (`__escape_list_record_Token`, `__escape_sum_DoStmt`, etc.),
+do-block bindings wrapped in regions. Simple programs (factorial) self-compile
+correctly on both x86-64 and RISC-V user mode.
+
+Self-compile of full 180KB source crashes in `__escape_record_LexState`.
+Root cause: escape-copy blindly deep-copies ALL pointers, including pointers
+that already point to result space. The `LexState.source` field (180KB full
+source text) is deep-copied every time ANY LexState is escape-copied in
+a let-binding region. The lexer creates ~30,000 LexStates during tokenization.
+30,000 × 180KB = 5.4GB — no heap size is sufficient.
+
+**#1 blocker: result-space-aware escape-copy**. Escape helpers must check:
+"is this pointer already in result space? If so, return it unchanged."
+
+Implementation plan:
+1. At startup, store `result_space_base` (= brk_base + working_space_size)
+   in a known location (first 8 bytes of heap, or a reserved register)
+2. In each escape helper, before following a pointer: compare against
+   `result_space_base`. If ptr >= base, it's already in result space → skip copy
+3. Apply to both x86-64 and RISC-V backends
+
+This is a small change in `EmitEscapeHelperPrologue` / each field-copy
+helper. The check is: `cmp rdi, [result_base_addr]; jge .skip_copy`.
 
 ### Previous: TCO/match register clobbering (fixed last session)
 
@@ -183,8 +210,9 @@ it built the OS for.
 | Item | Notes |
 |------|-------|
 | ~~Fix native self-hosted crash~~ | **DONE** — TCO/match register clobbering in both backends |
-| Native heap reclamation | **IN PROGRESS** — two-space infrastructure in both backends, TextType works, List/Sum/Record blocked on escape-copy type resolution |
-| Fix escape-copy type resolution | **#1 blocker** — ConstructedType elements in lists don't resolve, need resolved types in IR |
+| ~~Escape-copy type resolution~~ | **DONE** — ResolveType recurses into ListType, ConstructedType keyed, all heap types enabled |
+| ~~DoBind region wrapping~~ | **DONE** — do-block bindings now wrapped in IRRegion for reclamation |
+| Result-space-aware escape-copy | **#1 blocker** — escape helpers must skip pointers already in result space |
 | Add EffectTypeExpr to desugar-type-expr | Missing case (assigned to Agent Windows) |
 | Perf automation | Wire `--bench-check` into CI or pre-commit hook |
 
