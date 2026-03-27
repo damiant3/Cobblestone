@@ -3160,11 +3160,16 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.PushR(m_text, Reg.R13);
         X86_64Encoder.PushR(m_text, Reg.R14);
 
-        // Null-terminate path on heap temporarily
+        // Null-terminate path on heap, converting CCE→Unicode for the OS.
         X86_64Encoder.MovLoad(m_text, Reg.RBX, Reg.RDI, 0);  // rbx = path length
-        X86_64Encoder.Lea(m_text, Reg.R12, Reg.RDI, 8);       // r12 = path data
+        X86_64Encoder.Lea(m_text, Reg.R12, Reg.RDI, 8);       // r12 = path data (CCE bytes)
 
-        // Copy path bytes to heap, add \0
+        // Load CCE→Unicode table address
+        X86_64Encoder.PushR(m_text, Reg.R15);
+        m_rodataFixups.Add(new RodataFixup(m_text.Count + 2, m_cceToUnicodeTableOffset));
+        X86_64Encoder.MovRI64(m_text, Reg.R15, 0); // patched to rodata+table
+
+        // Copy path bytes to heap with CCE→Unicode conversion, add \0
         X86_64Encoder.MovRR(m_text, Reg.R13, HeapReg);        // r13 = temp path on heap
         X86_64Encoder.Li(m_text, Reg.R11, 0);
         int cpLoop = m_text.Count;
@@ -3173,7 +3178,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
         X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.R12);
         X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.R11);
-        X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RAX, 0);
+        X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RAX, 0); // RAX = CCE byte
+        // CCE→Unicode: RAX = table[RAX]
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.R15);
+        X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RAX, 0); // RAX = Unicode byte
         X86_64Encoder.MovRR(m_text, Reg.RDX, Reg.R13);
         X86_64Encoder.AddRR(m_text, Reg.RDX, Reg.R11);
         X86_64Encoder.MovStoreByte(m_text, Reg.RDX, Reg.RAX, 0);
@@ -3222,6 +3230,26 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.Li(m_text, Reg.RAX, 3);                 // SYS_close
         X86_64Encoder.Syscall(m_text);
 
+        // Convert file content from Unicode→CCE in place (input boundary).
+        // R15 still holds CCE→Unicode table; load Unicode→CCE table.
+        m_rodataFixups.Add(new RodataFixup(m_text.Count + 2, m_unicodeToCceTableOffset));
+        X86_64Encoder.MovRI64(m_text, Reg.R15, 0); // patched to rodata+unicodeToCce
+        X86_64Encoder.Li(m_text, Reg.R11, 0);
+        int convLoop = m_text.Count;
+        X86_64Encoder.CmpRR(m_text, Reg.R11, Reg.RBX);
+        int convExit = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+        X86_64Encoder.Lea(m_text, Reg.RAX, Reg.R13, 8);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.R11);
+        X86_64Encoder.MovzxByte(m_text, Reg.RDX, Reg.RAX, 0); // RDX = Unicode byte
+        X86_64Encoder.MovRR(m_text, Reg.RCX, Reg.R15);
+        X86_64Encoder.AddRR(m_text, Reg.RCX, Reg.RDX);
+        X86_64Encoder.MovzxByte(m_text, Reg.RCX, Reg.RCX, 0); // RCX = CCE byte
+        X86_64Encoder.MovStoreByte(m_text, Reg.RAX, Reg.RCX, 0); // store CCE byte back
+        X86_64Encoder.AddRI(m_text, Reg.R11, 1);
+        X86_64Encoder.Jmp(m_text, convLoop - (m_text.Count + 5));
+        PatchJcc(convExit, m_text.Count);
+
         // Store length, bump heap past BOTH filename scratch AND text content
         // R13 = text header (already past filename copy + padding)
         // HeapReg = R13 + 8 (length prefix) + align8(content_len)
@@ -3234,6 +3262,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.AddRR(m_text, HeapReg, Reg.RAX);         // + text allocation
         X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.R13);         // return result ptr
 
+        X86_64Encoder.PopR(m_text, Reg.R15);
         X86_64Encoder.PopR(m_text, Reg.R14);
         X86_64Encoder.PopR(m_text, Reg.R13);
         X86_64Encoder.PopR(m_text, Reg.R12);
@@ -4538,6 +4567,22 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.OutDxAl(m_text);
     }
 
+    void EmitSerialWaitAndSend(int byteVal)
+    {
+        // Wait for COM1 THR empty (LSR bit 5), then send byte
+        int waitLoop = m_text.Count;
+        X86_64Encoder.Li(m_text, Reg.RDX, 0x3FD); // LSR
+        m_text.Add(0xEC); // in al, dx
+        m_text.Add(0xA8); m_text.Add(0x20); // test al, 0x20
+        int ready = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+        X86_64Encoder.Jmp(m_text, waitLoop - (m_text.Count + 5));
+        PatchJcc(ready, m_text.Count);
+        X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8); // THR
+        X86_64Encoder.Li(m_text, Reg.RAX, byteVal);
+        X86_64Encoder.OutDxAl(m_text);
+    }
+
     void EmitIsrStubsAndIdt()
     {
         // For each of the 256 interrupt vectors, emit a tiny ISR stub
@@ -4814,6 +4859,17 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             X86_64Encoder.Li(m_text, Reg.RSP, 0x80000);
             X86_64Encoder.MovRR(m_text, Reg.RBP, Reg.RSP);
 
+            // Paint stack with 0xDEADBEEF for high-water-mark measurement
+            // Fill 0x10000..0x7FFF8 with the pattern (rdi=addr, rcx=count, rax=pattern)
+            X86_64Encoder.Li(m_text, Reg.RDI, 0x10000);
+            X86_64Encoder.Li(m_text, Reg.RCX, (0x80000 - 0x10000) / 8); // qword count
+            X86_64Encoder.Li(m_text, Reg.RAX, unchecked((long)0xDEADBEEFDEADBEEF));
+            m_text.Add(0x48); m_text.Add(0xF3); m_text.Add(0xAB); // rep stosq
+
+            // Restore RSP (rep stosq clobbers rdi/rcx)
+            X86_64Encoder.Li(m_text, Reg.RSP, 0x80000);
+            X86_64Encoder.MovRR(m_text, Reg.RBP, Reg.RSP);
+
             // Set up heap at 0x200000 (2MB — above identity-mapped pages)
             X86_64Encoder.Li(m_text, HeapReg, 0x200000);
 
@@ -4907,6 +4963,38 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             X86_64Encoder.MovLoad(m_text, HeapReg, Reg.RDI, 0);
 
             EmitCallMainAndPrint(returnType);
+
+            // ── Stack high-water-mark measurement ──
+            // Scan from 0x10000 upward for first 0xDEADBEEFDEADBEEF qword
+            // RDI = scan pointer, RAX = pattern to match
+            X86_64Encoder.Li(m_text, Reg.RDI, 0x10000);
+            X86_64Encoder.Li(m_text, Reg.RAX, unchecked((long)0xDEADBEEFDEADBEEF));
+            int scanLoop = m_text.Count;
+            X86_64Encoder.MovLoad(m_text, Reg.RSI, Reg.RDI, 0);
+            X86_64Encoder.CmpRR(m_text, Reg.RSI, Reg.RAX);
+            int foundPaint = m_text.Count;
+            X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0); // jump if found
+            X86_64Encoder.AddRI(m_text, Reg.RDI, 8);
+            X86_64Encoder.Jmp(m_text, scanLoop - (m_text.Count + 5));
+            PatchJcc(foundPaint, m_text.Count);
+
+            // RDI = first untouched address. Stack used = 0x80000 - RDI
+            X86_64Encoder.Li(m_text, Reg.RSI, 0x80000);
+            X86_64Encoder.SubRR(m_text, Reg.RSI, Reg.RDI);
+            // RSI = bytes of stack used. Print as "STACK:nnnnn\n"
+            // Save RSI across print calls
+            X86_64Encoder.PushR(m_text, Reg.RSI);
+            // Print "S" prefix via direct serial write (wait for THR empty, then out)
+            foreach (byte ch in "STACK:"u8)
+            {
+                EmitSerialWaitAndSend(ch);
+            }
+            // Print number via __itoa
+            X86_64Encoder.PopR(m_text, Reg.RDI);
+            EmitCallTo("__itoa"); // RAX = decimal string ptr
+            EmitPrintText(Reg.RAX);
+            // Newline
+            EmitSerialWaitAndSend(0x0A);
 
             // Loop back — arena reset happens at top of loop
             X86_64Encoder.Jmp(m_text, replLoop - (m_text.Count + 5));
