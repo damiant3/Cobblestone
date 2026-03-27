@@ -54,9 +54,9 @@ sealed class ElfWriterX86_64
         w.Write((ushort)0);
         w.Write((ushort)0);
 
-        // ── Program Header 0: .text (r-x) ─────────────────────
+        // ── Program Header 0: .text (rwx) — writable for result_space_base global
         w.Write(PT_LOAD);
-        w.Write(PF_R | PF_X);
+        w.Write(PF_R | PF_W | PF_X);
         w.Write((ulong)textFileOffset);
         w.Write(textVaddr);
         w.Write(textVaddr);

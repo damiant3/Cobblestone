@@ -137,21 +137,72 @@ The 256MB working space only needs to hold one stage's intermediates at a time.
 - 1,003 reference compiler tests pass (0 failures)
 - Build clean (expected CS5001 only)
 
-#### Current status: TextType reclamation only
+#### DONE: Type resolution in escape-copy helpers (f2f4008)
 
-Tested under QEMU user-mode (WSL). Two-space reclamation works for TextType.
-ListType/SumType/RecordType crash because list escape helpers try to deep-copy
-elements whose `ConstructedType` doesn't resolve through `m_typeDefs` — the
-element type info is erased in the IR. The unresolved type gets no escape
-helper emitted, leaving an unpatched CALL that jumps to garbage.
+Fixed `ResolveType` to recurse into `ListType.Element`, so
+`ListType(ConstructedType("Token"))` resolves to `ListType(RecordType(...))`.
+Added `ConstructedType` case to `EscapeCopyKey` for unique keys. Resolve
+types in `GetOrQueueEscapeHelper`/`GetOrQueueRelocateHelper` before keying.
+Changed EmitRegion guard from TextType-only to ConstructedType-fallback,
+enabling two-space reclamation for all heap types (List, Record, Sum, Text).
 
-**Next step**: Fix the escape helper type resolution. Options:
-1. Carry fully-resolved element types from Lowering into ListType/SumType
-2. Add a "shallow copy" fallback: if type can't resolve, memcpy the raw bytes
-3. Emit a generic escape helper that reads the heap object header for size
+#### DONE: DoBind region wrapping (142f517)
 
-TextType reclamation alone won't solve the heap exhaustion — text is small
-compared to the token lists and AST trees. The big win requires List/Sum/Record.
+`LowerDoExpr` was not wrapping `DoBind` values in `IRRegion`. Do-block
+bindings like `source <- read-file path` never got escape-copy or
+working-space reclamation. Now wraps with `boundType` (unwrapped from
+`EffectfulType`) for the needs-escape check, matching `LowerLetExpr`.
+
+#### Current status: result-space-aware escape-copy needed
+
+Both fixes verified: 541 compiler tests pass, escape helpers now generated
+for all types (`__escape_list_record_Token`, `__escape_sum_DoStmt`, etc.),
+do-block bindings wrapped in regions. Simple programs (factorial) self-compile
+correctly on both x86-64 and RISC-V user mode.
+
+Self-compile of full 180KB source crashes in `__escape_record_LexState`.
+Root cause: escape-copy blindly deep-copies ALL pointers, including pointers
+that already point to result space. The `LexState.source` field (180KB full
+source text) is deep-copied every time ANY LexState is escape-copied in
+a let-binding region. The lexer creates ~30,000 LexStates during tokenization.
+30,000 × 180KB = 5.4GB — no heap size is sufficient.
+
+#### DONE: Result-space-aware escape-copy (x86-64, dad9769)
+
+Stores `result_space_base` at text[0] via RIP-relative store at startup.
+Text segment changed to RWX. In `EmitEscapeFieldCopy`, list element loop,
+and `EmitRegion` top-level escape: loads global, compares pointer against
+base, skips copy if `ptr >= base`. Reduces result-space usage from ~5.4GB
+to ~2MB for self-compile. RISC-V port pending.
+
+#### Current status: list-snoc is O(N) — causes O(N²) working-space blowup
+
+With result-space check working, the remaining blocker is `__list_snoc`.
+It's copy-on-write: allocates `(oldLen+2)*8` bytes and copies all old
+elements every time. The tokenizer builds a 15,000-element list via TCO
+loop, one `list-snoc` per iteration → `sum(i=1..15000) of 8i ≈ 900MB`
+working-space allocations within a SINGLE region body (the tokenize call).
+No let-boundary reclamation can help because it's all within one TCO loop.
+
+**#1 blocker: in-place list-snoc for native backends.**
+
+The fix: `__list_snoc` should extend the list in-place when the list's
+allocation is at the top of the heap (i.e., `list_end == HeapReg`). This
+is always true in a linear ownership model — the list is the most recently
+allocated object. Just bump HeapReg by 8 and store the new element.
+
+```
+if (list_ptr + 8 + old_len*8 == HeapReg):
+    [list_ptr] = old_len + 1       // update length
+    [HeapReg] = element             // store new element
+    HeapReg += 8                    // bump
+    return list_ptr                 // same pointer, extended in-place
+else:
+    // fallback: copy (current behavior)
+```
+
+This turns O(N) per snoc into O(1), and O(N²) total into O(N). Apply to
+both x86-64 and RISC-V backends.
 
 ### Previous: TCO/match register clobbering (fixed last session)
 
@@ -193,10 +244,13 @@ either architecture.
 | Item | Notes |
 |------|-------|
 | ~~Fix native self-hosted crash~~ | **DONE** — TCO/match register clobbering in both backends |
-| Native heap reclamation | **IN PROGRESS** — two-space infrastructure in both backends, TextType works, List/Sum/Record blocked on escape-copy type resolution |
-| Fix escape-copy type resolution | **#1 blocker** — ConstructedType elements in lists don't resolve, need resolved types in IR |
-| Fix Boolean type in self-hosted emitter | #2 blocker for usermode self-compile |
-| Fix CCE string escaping in self-hosted emitter | #3 blocker — uses ASCII rules instead of CCE |
+| ~~Escape-copy type resolution~~ | **DONE** — ResolveType recurses into ListType, ConstructedType keyed, all heap types enabled |
+| ~~DoBind region wrapping~~ | **DONE** — do-block bindings now wrapped in IRRegion for reclamation |
+| ~~Result-space-aware escape~~ | **DONE** (x86-64) — skip copy for pointers already in result space |
+| In-place list-snoc | **#1 blocker** — O(N) copy-on-write causes O(N²) in TCO loops |
+| Result-space-aware escape (RISC-V) | Port from x86-64 |
+| Fix Boolean type in self-hosted emitter | Blocker for usermode self-compile |
+| Fix CCE string escaping in self-hosted emitter | Blocker — uses ASCII rules instead of CCE |
 | Add EffectTypeExpr to desugar-type-expr | Missing case (assigned to Agent Windows) |
 | Perf automation | Wire `--bench-check` into CI or pre-commit hook |
 

@@ -51,6 +51,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         m_typeDefs = module.TypeDefinitions;
         m_escapeHelperNames["text"] = "__escape_text";
 
+        // Reserve 8 bytes at text[0] for the result_space_base global.
+        // Written at startup, read by escape helpers to skip pointers
+        // that are already in result space (avoids redundant deep-copies).
+        for (int i = 0; i < 8; i++) m_text.Add(0);
+
         // Emit CCE→Unicode lookup table (128 bytes) into .rodata.
         // Used by print helpers to convert CCE bytes back to Unicode for output.
         m_cceToUnicodeTableOffset = m_rodata.Count;
@@ -1071,16 +1076,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             return bodyResult;
         }
 
-        // Two-space reclamation: enabled for TextType only.
-        // ListType/SumType/RecordType crash because the list escape helper
-        // tries to deep-copy elements whose ConstructedType doesn't resolve
-        // (element type info is erased to ConstructedType in the IR, and
-        // ResolveType can't find it in m_typeDefs). Fixing this requires
-        // either carrying resolved types through to the emitter or adding
-        // a shallow-copy fallback for unresolvable types.
+        // Two-space reclamation: escape-copy result to result space,
+        // then reset working-space pointer to reclaim all intermediates.
+        // ResolveType now recurses into ListType elements, so all types
+        // with definitions in m_typeDefs resolve correctly.
         CodexType resolved = ResolveType(region.Type);
-        if (resolved is not TextType)
-            return bodyResult;
+        if (resolved is ConstructedType)
+            return bodyResult; // unresolvable type — skip reclamation (safe fallback)
 
         // ── Two-space reclamation ─────────────────────────────────
         // Escape-copy the heap result to result space, then reset
@@ -1093,12 +1095,23 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // Switch HeapReg to result space so escape helper allocates there
         X86_64Encoder.MovRR(m_text, HeapReg, ResultReg);
 
-        // Escape-copy body result → allocates in result space via HeapReg
+        // Escape-copy body result → allocates in result space via HeapReg.
+        // Skip if body result is already in result space (e.g., passed through from
+        // a previous stage). This avoids redundant deep-copies of shared data.
         string helperName = GetOrQueueEscapeHelper(resolved);
         byte src = LoadLocal(bodyLocal);
         X86_64Encoder.MovRR(m_text, Reg.RDI, src);
+        X86_64Encoder.MovLoadRipRel(m_text, Reg.RCX, -(m_text.Count + 7));
+        X86_64Encoder.CmpRR(m_text, Reg.RDI, Reg.RCX);
+        int regionSkipIdx = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0);
         EmitCallTo(helperName);
-        // RAX = pointer to escape-copied result in result space
+        int regionDoneIdx = m_text.Count;
+        X86_64Encoder.Jmp(m_text, 0);
+        PatchJcc(regionSkipIdx, m_text.Count);
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RDI); // already in result space
+        PatchJmp(regionDoneIdx, m_text.Count);
+        // RAX = pointer to escape-copied (or existing) result in result space
 
         // Save escaped result before restoring working space
         int resultLocal = AllocLocal();
@@ -3624,6 +3637,12 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     {
         if (type is ConstructedType ct && m_typeDefs[ct.Constructor.Value] is CodexType resolved)
             return resolved;
+        if (type is ListType lt)
+        {
+            CodexType resolvedElem = ResolveType(lt.Element);
+            if (!ReferenceEquals(resolvedElem, lt.Element))
+                return new ListType(resolvedElem);
+        }
         return type;
     }
 
@@ -3633,11 +3652,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         RecordType rt => $"record_{rt.TypeName.Value}",
         SumType st => $"sum_{st.TypeName.Value}",
         ListType lt => $"list_{EscapeCopyKey(lt.Element)}",
+        ConstructedType ct => $"ctor_{ct.Constructor.Value}",
         _ => $"type_{type.GetType().Name}"
     };
 
     string GetOrQueueEscapeHelper(CodexType type)
     {
+        type = ResolveType(type);
         string key = EscapeCopyKey(type);
         if (m_escapeHelperNames.TryGetValue(key, out string? name))
             return name;
@@ -3709,7 +3730,17 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         {
             string helper = GetOrQueueEscapeHelper(resolved);
             X86_64Encoder.MovLoad(m_text, Reg.RDI, Reg.RBX, srcOffset);
+            // Skip copy if pointer is already in result space
+            X86_64Encoder.MovLoadRipRel(m_text, Reg.RCX, -(m_text.Count + 7));
+            X86_64Encoder.CmpRR(m_text, Reg.RDI, Reg.RCX);
+            int skipIdx = m_text.Count;
+            X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0);
             EmitCallTo(helper);
+            int doneIdx = m_text.Count;
+            X86_64Encoder.Jmp(m_text, 0);
+            PatchJcc(skipIdx, m_text.Count);
+            X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RDI); // already in result space
+            PatchJmp(doneIdx, m_text.Count);
             X86_64Encoder.MovStore(m_text, Reg.R12, Reg.RAX, dstOffset);
         }
         else
@@ -3767,8 +3798,18 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
         if (deepCopy)
         {
+            // Skip copy if element pointer is already in result space
+            X86_64Encoder.MovLoadRipRel(m_text, Reg.RCX, -(m_text.Count + 7));
+            X86_64Encoder.CmpRR(m_text, Reg.RDI, Reg.RCX);
+            int elemSkipIdx = m_text.Count;
+            X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0);
             EmitCallTo(elemHelper!);
-            // rax = copied element
+            int elemDoneIdx = m_text.Count;
+            X86_64Encoder.Jmp(m_text, 0);
+            PatchJcc(elemSkipIdx, m_text.Count);
+            X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RDI); // already in result space
+            PatchJmp(elemDoneIdx, m_text.Count);
+            // rax = copied (or existing) element
         }
         else
         {
@@ -4926,6 +4967,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             X86_64Encoder.Li(m_text, HeapReg, 0x200000);
             X86_64Encoder.Li(m_text, ResultReg, 0x200000 + 0x200000); // result space at +2MB
 
+            // Store result_space_base to global at text[0]
+            X86_64Encoder.MovStoreRipRel(m_text, ResultReg,
+                -(m_text.Count + 7));
+
             // Initialize process table (process 1 disabled for compiler test)
             EmitProcessSetup();
             // EmitProcess1Setup(); // disabled — let compiler run alone
@@ -4987,6 +5032,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             X86_64Encoder.MovRR(m_text, ResultReg, HeapReg);
             X86_64Encoder.Li(m_text, growReg, 256L * 1024 * 1024);
             X86_64Encoder.AddRR(m_text, ResultReg, growReg);
+
+            // Store result_space_base to global at text[0] for escape helpers.
+            // RIP-relative: disp = target(0) - (rip_after = m_text.Count + 7)
+            X86_64Encoder.MovStoreRipRel(m_text, ResultReg,
+                -(m_text.Count + 7));
         }
 
         IRDefinition? mainDef = null;
