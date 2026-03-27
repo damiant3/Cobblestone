@@ -2712,16 +2712,39 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     void EmitListSnocHelper()
     {
         // __list_snoc: rdi=list_ptr, rsi=element → rax=new list with element appended
+        // Fast path: if list ends at HeapReg (most recent allocation), extend in-place O(1).
+        // Slow path: allocate new list and copy all elements O(N).
         m_functionOffsets["__list_snoc"] = m_text.Count;
 
+        // Fast path: check if list_ptr + 8 + old_len*8 == HeapReg
+        X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RDI, 0); // RCX = old length
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RCX);
+        X86_64Encoder.AddRI(m_text, Reg.RAX, 1);   // oldLen + 1 (header word)
+        X86_64Encoder.ShlRI(m_text, Reg.RAX, 3);    // (oldLen + 1) * 8
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.RDI); // list_ptr + (oldLen+1)*8 = list end
+        X86_64Encoder.CmpRR(m_text, Reg.RAX, HeapReg);
+        int slowPath = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0); // if end != HeapReg → slow path
+
+        // Fast path: extend in-place
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RCX);
+        X86_64Encoder.AddRI(m_text, Reg.RAX, 1);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0); // [list_ptr] = newLen
+        X86_64Encoder.MovStore(m_text, HeapReg, Reg.RSI, 0);  // [HeapReg] = element
+        X86_64Encoder.AddRI(m_text, HeapReg, 8);              // HeapReg += 8
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RDI);        // return original list_ptr
+        X86_64Encoder.Ret(m_text);
+
+        // Slow path: allocate new list and copy
+        PatchJcc(slowPath, m_text.Count);
         X86_64Encoder.PushR(m_text, Reg.RBX);
         X86_64Encoder.PushR(m_text, Reg.R12);
 
         X86_64Encoder.MovRR(m_text, Reg.RBX, Reg.RDI);  // RBX = old list
         X86_64Encoder.MovRR(m_text, Reg.R12, Reg.RSI);   // R12 = new element
-        X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RBX, 0); // RCX = old length
+        // RCX still holds old length
 
-        // Allocate (oldLen + 1 + 1) * 8 = (len+2)*8 bytes
+        // Allocate (oldLen + 2) * 8 bytes
         X86_64Encoder.MovRR(m_text, Reg.RAX, HeapReg);   // result ptr
         X86_64Encoder.MovRR(m_text, Reg.RDX, Reg.RCX);
         X86_64Encoder.AddRI(m_text, Reg.RDX, 2);
@@ -2739,13 +2762,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.CmpRR(m_text, Reg.R11, Reg.RCX);
         int copyDone = m_text.Count;
         X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
-        // Load old[8 + i*8]
         X86_64Encoder.MovRR(m_text, Reg.RDX, Reg.R11);
         X86_64Encoder.ShlRI(m_text, Reg.RDX, 3);
         X86_64Encoder.MovRR(m_text, Reg.RSI, Reg.RBX);
         X86_64Encoder.AddRR(m_text, Reg.RSI, Reg.RDX);
         X86_64Encoder.MovLoad(m_text, Reg.RSI, Reg.RSI, 8);
-        // Store to new[8 + i*8]
         X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
         X86_64Encoder.AddRR(m_text, Reg.RDI, Reg.RDX);
         X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RSI, 8);
@@ -5018,9 +5039,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             X86_64Encoder.Syscall(m_text);
             X86_64Encoder.MovRR(m_text, HeapReg, Reg.RAX); // working space starts at brk base
 
-            // Grow by 512MB: 256MB working space + 256MB result space.
-            // Region reclamation resets working space after each let-binding,
-            // so only one stage's intermediates need to fit at a time.
+            // Grow by 512MB: 256MB working + 256MB result.
+            // NOTE: self-compile needs ~11GB working due to O(N²) list-snoc.
+            // Fix: TCO heap compaction or cons+reverse in tokenizer.
             byte growReg = Reg.R11;
             X86_64Encoder.Li(m_text, growReg, 512L * 1024 * 1024);
             X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
