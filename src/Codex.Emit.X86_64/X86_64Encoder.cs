@@ -98,6 +98,24 @@ static class X86_64Encoder
         EmitMemOperand(buf, rs, rd, offset);
     }
 
+    // mov rd, [rip + disp32] (RIP-relative load, 7 bytes)
+    public static void MovLoadRipRel(List<byte> buf, byte rd, int disp32)
+    {
+        buf.Add(Rex(true, rd >= 8, false, false));
+        buf.Add(0x8B); // MOV r64, r/m64
+        buf.Add(ModRM(0b00, rd, 5)); // rm=101 → RIP-relative
+        WriteI32(buf, disp32);
+    }
+
+    // mov [rip + disp32], rs (RIP-relative store, 7 bytes)
+    public static void MovStoreRipRel(List<byte> buf, byte rs, int disp32)
+    {
+        buf.Add(Rex(true, rs >= 8, false, false));
+        buf.Add(0x89); // MOV r/m64, r64
+        buf.Add(ModRM(0b00, rs, 5)); // rm=101 → RIP-relative
+        WriteI32(buf, disp32);
+    }
+
     // movzx rd, byte [rs + offset] (zero-extend byte load)
     public static void MovzxByte(List<byte> buf, byte rd, byte rs, int offset)
     {
@@ -316,6 +334,7 @@ static class X86_64Encoder
     }
 
     // Condition codes for Jcc and Setcc
+    public const byte CC_AE = 0x3;  // above or equal (CF=0), unsigned
     public const byte CC_E  = 0x4;  // equal (ZF=1)
     public const byte CC_NE = 0x5;  // not equal (ZF=0)
     public const byte CC_L  = 0xC;  // less (SF≠OF)
