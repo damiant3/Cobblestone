@@ -24,6 +24,8 @@ class Program
             return RunBench(args.Length > 1 ? args[1] : null);
         if (args.Length > 0 && args[0] == "--bench-check")
             return RunBenchCheck(args.Length > 1 ? args[1] : null);
+        if (args.Length > 0 && args[0] == "--dump-source")
+            return RunDumpSource(args.Length > 1 ? args[1] : null);
 
         string codexDir = args.Length > 0 ? args[0] : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Codex.Codex"));
         string? outputOverride = args.Length > 1 ? args[1] : null;
@@ -573,5 +575,31 @@ class Program
         int end = start;
         while (end < json.Length && (char.IsDigit(json[end]) || json[end] == '.' || json[end] == '-')) end++;
         return double.TryParse(json[start..end], System.Globalization.CultureInfo.InvariantCulture, out double v) ? v : 0;
+    }
+
+    static int RunDumpSource(string? outputPath)
+    {
+        string codexDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Codex.Codex"));
+        string[] files = Directory.GetFiles(codexDir, "*.codex", SearchOption.AllDirectories)
+            .OrderBy(f => f, StringComparer.Ordinal).ToArray();
+        List<string> codeBlocks = [];
+        foreach (string f in files)
+        {
+            string content = File.ReadAllText(f);
+            if (IsProseDocument(content))
+            {
+                string code = ExtractCodeBlocks(content);
+                if (code.Length > 0) codeBlocks.Add(code);
+            }
+            else
+            {
+                codeBlocks.Add(content);
+            }
+        }
+        string combined = string.Join("\n\n", codeBlocks);
+        string dest = outputPath ?? Path.Combine(Path.GetTempPath(), "codex-all-source.codex");
+        File.WriteAllText(dest, combined);
+        Console.WriteLine($"Wrote {combined.Length} chars ({files.Length} files) to {dest}");
+        return 0;
     }
 }

@@ -3347,7 +3347,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
     void EmitBareMetalReadSerialHelper()
     {
-        // __bare_metal_read_serial: → rax=string ptr (reads COM1 until \x04 EOT)
+        // __bare_metal_read_serial: → rax=string ptr (reads from ring buffer until \x04 EOT)
+        // The IRQ4 interrupt handler fills the ring buffer from COM1.
+        // This function reads from the ring buffer at the compiler's pace.
         // Returns a length-prefixed string on heap: [len:8][data...]
         m_functionOffsets["__bare_metal_read_serial"] = m_text.Count;
 
@@ -3359,28 +3361,35 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         m_rodataFixups.Add(new RodataFixup(m_text.Count + 2, m_unicodeToCceTableOffset));
         X86_64Encoder.MovRI64(m_text, Reg.R12, 0); // patched to rodata+table
 
-        X86_64Encoder.MovRR(m_text, Reg.RBX, HeapReg); // RBX = buffer start
-        X86_64Encoder.Li(m_text, Reg.RCX, 0);           // RCX = byte count
+        X86_64Encoder.MovRR(m_text, Reg.RBX, HeapReg); // RBX = output buffer start
+        X86_64Encoder.Li(m_text, Reg.RCX, 0);           // RCX = output byte count
 
-        // Read loop: poll COM1, read byte, check for EOT
+        // Read loop: wait for data in ring buffer, read byte, check for EOT
         int readLoop = m_text.Count;
 
-        // Poll: check LSR bit 0 (data ready) — busy-wait for QEMU serial speed
-        int pollLoop = m_text.Count;
-        X86_64Encoder.Li(m_text, Reg.RDX, 0x3FD);       // line status register
-        X86_64Encoder.InAlDx(m_text);                     // AL = status
-        X86_64Encoder.Li(m_text, Reg.R11, 1);
-        X86_64Encoder.AndRR(m_text, Reg.RAX, Reg.R11);
-        X86_64Encoder.TestRR(m_text, Reg.RAX, Reg.RAX);
-        int dataReady = m_text.Count;
-        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
-        X86_64Encoder.Pause(m_text);                      // hint: spin-wait (saves power on real HW)
-        X86_64Encoder.Jmp(m_text, pollLoop - (m_text.Count + 5));
-        PatchJcc(dataReady, m_text.Count);
+        // Wait for ring buffer to have data: spin until write_pos != read_pos
+        int waitLoop = m_text.Count;
+        X86_64Encoder.Li(m_text, Reg.RDI, SerialWritePosAddr);
+        X86_64Encoder.MovLoad(m_text, Reg.RSI, Reg.RDI, 0);     // RSI = write_pos
+        X86_64Encoder.Li(m_text, Reg.RDI, SerialReadPosAddr);
+        X86_64Encoder.MovLoad(m_text, Reg.R11, Reg.RDI, 0);     // R11 = read_pos
+        X86_64Encoder.CmpRR(m_text, Reg.RSI, Reg.R11);
+        int hasData = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);       // data available
+        X86_64Encoder.Hlt(m_text);                                // sleep until next IRQ
+        X86_64Encoder.Jmp(m_text, waitLoop - (m_text.Count + 5));
+        PatchJcc(hasData, m_text.Count);
 
-        // Read byte from COM1
-        X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
-        X86_64Encoder.InAlDx(m_text);                     // AL = byte
+        // Read byte from ring buffer: buf[read_pos % size]
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.R11);
+        X86_64Encoder.AndRI(m_text, Reg.RAX, (int)(SerialRingBufSize - 1));
+        X86_64Encoder.AddRI(m_text, Reg.RAX, (int)SerialRingBufAddr);
+        X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RAX, 0);   // RAX = byte
+
+        // Advance read_pos
+        X86_64Encoder.AddRI(m_text, Reg.R11, 1);
+        X86_64Encoder.Li(m_text, Reg.RDI, SerialReadPosAddr);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.R11, 0);
 
         // Check for EOT (\x04) — end of source
         X86_64Encoder.CmpRI(m_text, Reg.RAX, 0x04);
@@ -3394,9 +3403,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
         // Convert Unicode→CCE: table[unicode_byte]
         X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.R12);
-        X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RAX, 0); // RAX = CCE byte
+        X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RAX, 0);   // RAX = CCE byte
 
-        // Store CCE byte: buffer[8 + count]
+        // Store CCE byte: output_buffer[8 + count]
         X86_64Encoder.MovRR(m_text, Reg.RSI, Reg.RBX);
         X86_64Encoder.AddRR(m_text, Reg.RSI, Reg.RCX);
         X86_64Encoder.AddRI(m_text, Reg.RSI, 8);
@@ -3409,13 +3418,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         PatchJcc(gotEot, m_text.Count);
         PatchJcc(gotNull, m_text.Count);
 
-        X86_64Encoder.MovStore(m_text, Reg.RBX, Reg.RCX, 0); // [buf+0] = length
+        X86_64Encoder.MovStore(m_text, Reg.RBX, Reg.RCX, 0);    // [buf+0] = length
         X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RCX);
         X86_64Encoder.AddRI(m_text, Reg.RAX, 15);
         X86_64Encoder.AndRI(m_text, Reg.RAX, -8);
-        X86_64Encoder.AddRI(m_text, Reg.RAX, 8);             // total = 8 + align8(len)
-        X86_64Encoder.AddRR(m_text, HeapReg, Reg.RAX);        // bump heap
-        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RBX);        // return buffer ptr
+        X86_64Encoder.AddRI(m_text, Reg.RAX, 8);                 // total = 8 + align8(len)
+        X86_64Encoder.AddRR(m_text, HeapReg, Reg.RAX);            // bump heap
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RBX);            // return buffer ptr
 
         X86_64Encoder.PopR(m_text, Reg.R12);
         X86_64Encoder.PopR(m_text, Reg.RCX);
@@ -4458,9 +4467,16 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     // 0x7008  KeyBufferAddr    8 bytes  Last keyboard scancode
     // 0x7010  CurrentProcAddr  8 bytes  (defined at line ~3281 with process table)
     // 0x7018  ArenaBaseAddr    8 bytes  Heap arena base for REPL reset
+    // 0x7020  SerialWritePos   8 bytes  Ring buffer write position (interrupt handler)
+    // 0x7028  SerialReadPos    8 bytes  Ring buffer read position (consumer)
+    // 0x180000-0x1BFFFF       256KB    Serial ring buffer data (below heap at 0x200000)
     const long TickCountAddr = 0x7000;
     const long KeyBufferAddr = 0x7008;
     const long ArenaBaseAddr = 0x7018;
+    const long SerialWritePosAddr = 0x7020;
+    const long SerialReadPosAddr = 0x7028;
+    const long SerialRingBufAddr = 0x180000;
+    const long SerialRingBufSize = 0x40000; // 256KB — must be power of 2
 
     void EmitInterruptSetup()
     {
@@ -4510,8 +4526,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // ICW4: 8086 mode
         EmitOutByte(0x21, 1);
         EmitOutByte(0xA1, 1);
-        // Mask all except timer (IRQ0) and keyboard (IRQ1)
-        EmitOutByte(0x21, 0xFC); // PIC1: unmask IRQ0 + IRQ1 (bits 0,1 = 0)
+        // Mask all except timer (IRQ0), keyboard (IRQ1), and COM1 (IRQ4)
+        EmitOutByte(0x21, 0xEC); // PIC1: unmask IRQ0 + IRQ1 + IRQ4 (bits 0,1,4 = 0)
         EmitOutByte(0xA1, 0xFF); // PIC2: mask all
     }
 
@@ -4694,8 +4710,46 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         m_text.Add(0x48); m_text.Add(0x0F); m_text.Add(0xB6); m_text.Add(0xC0);
         X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
 
-        // ── Not keyboard (fall through to EOI) ──
+        // ── Not keyboard — check for COM1 serial (vector 36 = IRQ4) ──
         PatchJcc(notKeyboard, m_text.Count);
+        X86_64Encoder.CmpRI(m_text, Reg.RAX, 36);
+        int notSerial = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+
+        // ── COM1 serial handler: drain FIFO into ring buffer ──
+        // Read all available bytes (FIFO may have multiple)
+        int serialDrainLoop = m_text.Count;
+        X86_64Encoder.Li(m_text, Reg.RDX, 0x3FD);       // LSR
+        X86_64Encoder.InAlDx(m_text);
+        X86_64Encoder.Li(m_text, Reg.RCX, 1);
+        X86_64Encoder.AndRR(m_text, Reg.RAX, Reg.RCX);   // bit 0 = data ready
+        X86_64Encoder.TestRR(m_text, Reg.RAX, Reg.RAX);
+        int serialDrainDone = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0); // no more data
+
+        // Read byte from COM1
+        X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+        X86_64Encoder.InAlDx(m_text);                     // AL = byte
+        // movzx rax, al
+        m_text.Add(0x48); m_text.Add(0x0F); m_text.Add(0xB6); m_text.Add(0xC0);
+
+        // Store in ring buffer: buf[write_pos % size] = byte
+        X86_64Encoder.Li(m_text, Reg.RDI, SerialWritePosAddr);
+        X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RDI, 0);  // RCX = write_pos
+        X86_64Encoder.MovRR(m_text, Reg.RSI, Reg.RCX);
+        X86_64Encoder.AndRI(m_text, Reg.RSI, (int)(SerialRingBufSize - 1)); // RSI = write_pos % size
+        X86_64Encoder.AddRI(m_text, Reg.RSI, (int)SerialRingBufAddr);       // RSI = &buf[pos]
+        // mov [rsi], al
+        m_text.Add(0x88); m_text.Add(0x06);
+        // Increment write_pos
+        X86_64Encoder.AddRI(m_text, Reg.RCX, 1);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RCX, 0);
+
+        // Loop to drain any remaining FIFO bytes
+        X86_64Encoder.Jmp(m_text, serialDrainLoop - (m_text.Count + 5));
+        PatchJcc(serialDrainDone, m_text.Count);
+
+        PatchJcc(notSerial, m_text.Count);
 
         // ── Send EOI to PIC (for non-timer interrupts) ──
         EmitOutByte(0x20, 0x20); // EOI to PIC1
@@ -4782,14 +4836,21 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             m_text.Add(0x48); m_text.Add(0x83); m_text.Add(0xC8); m_text.Add(0x01); // or rax, 1
             m_text.Add(0x0F); m_text.Add(0x30); // wrmsr
 
-            // Initialize COM1 UART: 115200 baud, 8N1, FIFO enabled
-            EmitOutByte(0x3F9, 0x00); // IER: disable all interrupts
+            // Initialize COM1 UART: 115200 baud, 8N1, FIFO enabled, receive interrupt
             EmitOutByte(0x3FB, 0x80); // LCR: enable DLAB (set baud rate divisor)
             EmitOutByte(0x3F8, 0x01); // DLL: divisor low byte (115200 baud = 1)
             EmitOutByte(0x3F9, 0x00); // DLM: divisor high byte
             EmitOutByte(0x3FB, 0x03); // LCR: 8 bits, no parity, 1 stop bit (DLAB off)
             EmitOutByte(0x3FA, 0xC7); // FCR: enable FIFO, clear, 14-byte trigger
             EmitOutByte(0x3FC, 0x0B); // MCR: DTR + RTS + OUT2 (enable IRQ line)
+            EmitOutByte(0x3F9, 0x01); // IER: enable receive data available interrupt
+
+            // Initialize serial ring buffer pointers to zero
+            X86_64Encoder.Li(m_text, Reg.RDI, SerialWritePosAddr);
+            X86_64Encoder.Li(m_text, Reg.RAX, 0);
+            X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+            X86_64Encoder.Li(m_text, Reg.RDI, SerialReadPosAddr);
+            X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
 
             // Build IDT, load IDTR, init PIC, enable interrupts
             EmitIdtEntries();

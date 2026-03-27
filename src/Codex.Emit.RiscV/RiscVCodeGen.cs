@@ -20,6 +20,9 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     // QEMU virt machine UART0 address (NS16550A compatible)
     const long UartBase = 0x10000000;
 
+    int m_cceToUnicodeTableOffset = -1; // rodata offset for 128-byte CCE→Unicode lookup
+    int m_unicodeToCceTableOffset = -1; // rodata offset for 256-byte Unicode→CCE lookup
+
     uint m_nextTemp = Reg.T0;
     uint m_nextLocal = Reg.S2;
 
@@ -31,7 +34,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     int m_tcoLoopTop;
     uint[] m_tcoParamLocals = [];
     uint[] m_tcoTempLocals = [];
-    int m_tcoSavedNextLocal;
+    uint m_tcoSavedNextLocal;
     uint m_tcoSavedNextTemp;
     int m_spillCount;           // number of spilled locals beyond S-registers
     int m_prologueIndex = -1;   // instruction index of the frame size addi (patched)
@@ -61,6 +64,17 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
         m_typeDefs = module.TypeDefinitions;
         m_escapeHelperNames["text"] = "__escape_text"; // pre-registered
+
+        // Emit CCE↔Unicode lookup tables into .rodata
+        m_cceToUnicodeTableOffset = m_rodata.Count;
+        for (int i = 0; i < 128; i++)
+            m_rodata.Add((byte)CceTable.ToUnicode[i]);
+        while (m_rodata.Count % 8 != 0) m_rodata.Add(0);
+
+        m_unicodeToCceTableOffset = m_rodata.Count;
+        for (int i = 0; i < 256; i++)
+            m_rodata.Add((byte)(CceTable.FromUnicode.TryGetValue(i, out int cce) ? cce : CceTable.ReplacementCce));
+        while (m_rodata.Count % 8 != 0) m_rodata.Add(0);
 
         EmitRuntimeHelpers();
 
@@ -111,8 +125,15 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     // ── Function emission ────────────────────────────────────────
 
+    static readonly string s_blacklistPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "tools", "_tco_blacklist.txt");
+    static HashSet<string> s_tcoBlacklist = new(
+        File.Exists(s_blacklistPath)
+            ? File.ReadAllLines(s_blacklistPath).Where(l => l.Trim().Length > 0)
+            : Array.Empty<string>()
+    );
     static bool ShouldTCO(IRDefinition def)
     {
+        if (s_tcoBlacklist.Contains(def.Name)) return false;
         return def.Parameters.Length > 0 && HasTailCall(def.Body, def.Name);
     }
 
@@ -145,6 +166,8 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         m_nextLocal = Reg.S2;
         m_spillCount = 0;
         m_inTCOFunction = ShouldTCO(def);
+        if (m_inTCOFunction)
+            Console.Error.WriteLine($"RISCV TCO: {def.Name}");
 
         // Prologue: base frame = 96 bytes (ra + s0 + s2-s11).
         // If spills are needed, frame grows — patched after body emission.
@@ -165,10 +188,21 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Nop());                        // slot C: patched or nop
 
         m_tcoParamLocals = new uint[def.Parameters.Length];
-        for (int i = 0; i < def.Parameters.Length && i < 8; i++)
+        for (int i = 0; i < def.Parameters.Length; i++)
         {
             uint savedReg = AllocLocal();
-            StoreLocal(savedReg, Reg.A0 + (uint)i);
+            if (i < 8)
+            {
+                StoreLocal(savedReg, Reg.A0 + (uint)i);
+            }
+            else
+            {
+                // Stack params: caller pushed at [old_sp + (i-8)*8].
+                // S0 = old SP (frame pointer), so param is at S0 + (i-8)*8.
+                int stackOffset = (i - 8) * 8;
+                Emit(RiscVEncoder.Ld(Reg.T0, Reg.S0, stackOffset));
+                StoreLocal(savedReg, Reg.T0);
+            }
             m_locals[def.Parameters[i].Name] = savedReg;
             m_tcoParamLocals[i] = savedReg;
         }
@@ -180,7 +214,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 m_tcoTempLocals[i] = AllocLocal();
         }
         m_tcoLoopTop = m_instructions.Count;
-        m_tcoSavedNextLocal = (int)m_nextLocal;
+        m_tcoSavedNextLocal = m_nextLocal;
         m_tcoSavedNextTemp = m_nextTemp;
         m_inTailPosition = m_inTCOFunction;
 
@@ -251,6 +285,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     {
         IRIntegerLit intLit => EmitIntegerLit(intLit.Value),
         IRBoolLit boolLit => EmitIntegerLit(boolLit.Value ? 1 : 0),
+        IRCharLit charLit => EmitIntegerLit(CceTable.UnicharToCce(charLit.Value)),
         IRTextLit textLit => EmitTextLit(textLit.Value),
         IRName name => EmitName(name),
         IRBinary bin => EmitBinary(bin),
@@ -287,10 +322,13 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         if (!m_stringOffsets.TryGetValue(value, out int rodataOffset))
         {
             rodataOffset = m_rodata.Count;
-            byte[] utf8 = Encoding.UTF8.GetBytes(value);
-            // Length-prefixed: 8-byte i64 length + UTF-8 data, 8-byte aligned
-            m_rodata.AddRange(BitConverter.GetBytes((long)utf8.Length));
-            m_rodata.AddRange(utf8);
+            // CCE-encode, matching x86-64 and AddRodataString
+            string cceEncoded = CceTable.Encode(value);
+            byte[] cceBytes = new byte[cceEncoded.Length];
+            for (int i = 0; i < cceEncoded.Length; i++)
+                cceBytes[i] = (byte)cceEncoded[i];
+            m_rodata.AddRange(BitConverter.GetBytes((long)cceBytes.Length));
+            m_rodata.AddRange(cceBytes);
             while (m_rodata.Count % 8 != 0) m_rodata.Add(0);
             m_stringOffsets[value] = rodataOffset;
         }
@@ -313,6 +351,14 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         if (m_locals.TryGetValue(name.Name, out uint reg))
             return LoadLocal(reg);
 
+        // Try zero-arg builtins first (matches x86-64 order)
+        if (TryEmitBuiltin(name.Name, new List<IRExpr>()))
+        {
+            uint brd = AllocTemp();
+            Emit(RiscVEncoder.Mv(brd, Reg.A0));
+            return brd;
+        }
+
         // Function used as a value (e.g., passed to map-list) — wrap as 0-capture closure
         if (name.Type is FunctionType)
             return EmitPartialApplication(name.Name, new List<IRExpr>());
@@ -329,7 +375,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                     break;
                 }
             }
-            if (tag >= 0)
+            if (tag >= 0 && sumType.Constructors[tag].Fields.IsEmpty)
             {
                 uint ptrReg = AllocTemp();
                 Emit(RiscVEncoder.Mv(ptrReg, Reg.S1));
@@ -341,14 +387,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             }
         }
 
-        // Zero-arg builtin (e.g., read-line in do-blocks) or zero-arg function
-        // (forward reference — call is patched after all functions are emitted)
-        if (TryEmitBuiltin(name.Name, new List<IRExpr>()))
-        {
-            uint rd = AllocTemp();
-            Emit(RiscVEncoder.Mv(rd, Reg.A0));
-            return rd;
-        }
+        // Top-level constant or zero-arg function — call it
         {
             uint rd = AllocTemp();
             EmitCallTo(name.Name);
@@ -376,8 +415,9 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             case IRBinaryOp.Eq:
                 if (bin.Left.Type is TextType)
                 {
-                    Emit(RiscVEncoder.Mv(Reg.A0, leftReg));
+                    // Set A1 first — right may be A0, and Mv(A0,...) would clobber it
                     Emit(RiscVEncoder.Mv(Reg.A1, right));
+                    Emit(RiscVEncoder.Mv(Reg.A0, leftReg));
                     EmitCallTo("__str_eq");
                     Emit(RiscVEncoder.Mv(rd, Reg.A0));
                 }
@@ -391,8 +431,8 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             case IRBinaryOp.NotEq:
                 if (bin.Left.Type is TextType)
                 {
-                    Emit(RiscVEncoder.Mv(Reg.A0, leftReg));
                     Emit(RiscVEncoder.Mv(Reg.A1, right));
+                    Emit(RiscVEncoder.Mv(Reg.A0, leftReg));
                     EmitCallTo("__str_eq");
                     Emit(RiscVEncoder.Xori(Reg.A0, Reg.A0, 1));
                     Emit(RiscVEncoder.Mv(rd, Reg.A0));
@@ -404,8 +444,8 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 }
                 break;
             case IRBinaryOp.AppendText:
-                Emit(RiscVEncoder.Mv(Reg.A0, leftReg));
                 Emit(RiscVEncoder.Mv(Reg.A1, right));
+                Emit(RiscVEncoder.Mv(Reg.A0, leftReg));
                 EmitCallTo("__str_concat");
                 Emit(RiscVEncoder.Mv(rd, Reg.A0));
                 break;
@@ -423,14 +463,14 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             case IRBinaryOp.Or:  Emit(RiscVEncoder.Or(rd, leftReg, right)); break;
             case IRBinaryOp.ConsList:
                 // Cons head tail: alloc [len+1][head][tail elements...]
-                Emit(RiscVEncoder.Mv(Reg.A0, leftReg));
                 Emit(RiscVEncoder.Mv(Reg.A1, right));
+                Emit(RiscVEncoder.Mv(Reg.A0, leftReg));
                 EmitCallTo("__list_cons");
                 Emit(RiscVEncoder.Mv(rd, Reg.A0));
                 break;
             case IRBinaryOp.AppendList:
-                Emit(RiscVEncoder.Mv(Reg.A0, leftReg));
                 Emit(RiscVEncoder.Mv(Reg.A1, right));
+                Emit(RiscVEncoder.Mv(Reg.A0, leftReg));
                 EmitCallTo("__list_append");
                 Emit(RiscVEncoder.Mv(rd, Reg.A0));
                 break;
@@ -490,7 +530,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         IRExpr cur = app;
         while (cur is IRApply a) { args.Insert(0, a.Argument); cur = a.Function; }
 
-        m_nextLocal = (uint)m_tcoSavedNextLocal;
+        m_nextLocal = m_tcoSavedNextLocal;
         m_nextTemp = m_tcoSavedNextTemp;
 
         for (int i = 0; i < args.Count && i < m_tcoTempLocals.Length; i++)
@@ -538,9 +578,12 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 return Reg.A0;
 
             // Sum type constructor: allocate [tag][field0][field1]... on heap
-            if (apply.Type is SumType sumType)
+            SumType? sumType = apply.Type as SumType;
+            if (sumType is null && apply.Type is ConstructedType ctApply)
+                sumType = m_typeDefs[ctApply.Constructor.Value] as SumType;
+            if (sumType is SumType st)
             {
-                uint ctorResult = EmitConstructor(funcName.Name, args, sumType);
+                uint ctorResult = EmitConstructor(funcName.Name, args, st);
                 if (ctorResult != Reg.Zero)
                     return ctorResult;
             }
@@ -560,7 +603,23 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 argRegs.Add(saved);
             }
 
-            for (int i = 0; i < argRegs.Count && i < 8; i++)
+            // Push stack args (9th+) onto the stack before setting register args.
+            // Push in forward order so callee sees them at [old_sp + 0], [old_sp + 8], ...
+            int stackArgCount = Math.Max(0, argRegs.Count - 8);
+            if (stackArgCount > 0)
+            {
+                // Reserve stack space for overflow args
+                Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -stackArgCount * 8));
+                for (int i = 0; i < stackArgCount; i++)
+                {
+                    uint argVal = LoadLocal(argRegs[8 + i]);
+                    Emit(RiscVEncoder.Sd(Reg.Sp, argVal, i * 8));
+                }
+            }
+
+            // Load register args (1st-8th) into A0-A7
+            int regArgCount = Math.Min(argRegs.Count, 8);
+            for (int i = 0; i < regArgCount; i++)
             {
                 uint argVal = LoadLocal(argRegs[i]);
                 if (argVal != Reg.A0 + (uint)i)
@@ -580,6 +639,11 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             {
                 EmitCallTo(funcName.Name);
             }
+
+            // Clean up stack args after call
+            if (stackArgCount > 0)
+                Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, stackArgCount * 8));
+
             m_inTailPosition = savedTailPos;
             uint rd = AllocTemp();
             Emit(RiscVEncoder.Mv(rd, Reg.A0));
@@ -729,7 +793,10 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
         // Store fields in RecordType field order (matches EmitFieldAccess lookup).
         // If source order differs from type definition order, this reorders.
-        if (rec.Type is RecordType rt)
+        RecordType? rt = rec.Type as RecordType;
+        if (rt is null && rec.Type is ConstructedType ctRec)
+            rt = m_typeDefs[ctRec.Constructor.Value] as RecordType;
+        if (rt is RecordType)
         {
             if (rt.Fields.Length != rec.Fields.Length)
                 Console.Error.WriteLine($"RISCV WARNING: record field count mismatch — IR has {rec.Fields.Length} fields, RecordType has {rt.Fields.Length} for {rec.TypeName}");
@@ -766,7 +833,10 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         uint baseReg = EmitExpr(fa.Record);
 
         int fieldIndex = 0;
-        if (fa.Record.Type is RecordType rt)
+        RecordType? rt = fa.Record.Type as RecordType;
+        if (rt is null && fa.Record.Type is ConstructedType ctFa)
+            rt = m_typeDefs[ctFa.Constructor.Value] as RecordType;
+        if (rt is RecordType)
         {
             for (int i = 0; i < rt.Fields.Length; i++)
             {
@@ -777,7 +847,6 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 }
             }
         }
-
         uint rd = AllocTemp();
         Emit(RiscVEncoder.Ld(rd, baseReg, fieldIndex * 8));
         return rd;
@@ -893,7 +962,10 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 Emit(RiscVEncoder.Ld(tagReg, LoadLocal(scrutReg), 0));
 
                 int expectedTag = 0;
-                if (ctorPat.Type is SumType sumType)
+                SumType? matchSumType = ctorPat.Type as SumType;
+                if (matchSumType is null && ctorPat.Type is ConstructedType ctMatch)
+                    matchSumType = m_typeDefs[ctMatch.Constructor.Value] as SumType;
+                if (matchSumType is SumType sumType)
                 {
                     for (int i = 0; i < sumType.Constructors.Length; i++)
                     {
@@ -948,6 +1020,13 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         if (region.Type is FunctionType)
             return EmitExpr(region.Body);
 
+        // Heap-returning functions: skip region reclamation.
+        // Pattern matching extracts pointers to intermediate heap allocations
+        // that are still live in locals — reclaiming corrupts them.
+        // Only scalar-returning regions are safe to reclaim.
+        if (region.NeedsEscapeCopy)
+            return EmitExpr(region.Body);
+
         // Save heap pointer (region entry)
         uint savedHeap = AllocLocal();
         uint hpTmp = AllocTemp();
@@ -956,92 +1035,9 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
         uint bodyResult = EmitExpr(region.Body);
 
-        if (!region.NeedsEscapeCopy)
-        {
-            // Scalar return — restore S1, value survives in register
-            Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(savedHeap)));
-            return bodyResult;
-        }
-
-        // ── Copy-Above-Then-Compact ────────────────────────────────
-        // When the return value was allocated IN this region, deep copy it
-        // above the body data, then memmove down to saved_hp and relocate
-        // pointers. This reclaims all body intermediates.
-        //
-        // When the return value is OUTSIDE this region (parent scope),
-        // we do NOT reclaim — the return value may reference body
-        // intermediates through its transitive closure.
-
-        // Save body_end = current S1
-        uint bodyEnd = AllocLocal();
-        uint t1 = AllocTemp();
-        Emit(RiscVEncoder.Mv(t1, Reg.S1));
-        StoreLocal(bodyEnd, t1);
-
-        uint resultLocal = AllocLocal();
-        StoreLocal(resultLocal, bodyResult);
-
-        // Range check: if result < saved_hp OR result >= body_end → skip
-        uint rPtr = LoadLocal(resultLocal);
-        uint rSaved = LoadLocal(savedHeap);
-        int skipBelow = m_instructions.Count;
-        Emit(RiscVEncoder.Nop()); // patched: blt → skip
-        uint rEnd = LoadLocal(bodyEnd);
-        int skipAbove = m_instructions.Count;
-        Emit(RiscVEncoder.Nop()); // patched: bge → skip
-
-        // ── Escape path: result is IN the region ──
-        uint escapedResult = EmitEscapeCopy(resultLocal, region.Type);
-
-        uint escapedLocal = AllocLocal();
-        StoreLocal(escapedLocal, escapedResult);
-        uint copyEndLocal = AllocLocal();
-        uint t2 = AllocTemp();
-        Emit(RiscVEncoder.Mv(t2, Reg.S1));
-        StoreLocal(copyEndLocal, t2);
-
-        uint copySizeLocal = AllocLocal();
-        uint t3 = AllocTemp();
-        Emit(RiscVEncoder.Sub(t3, LoadLocal(copyEndLocal), LoadLocal(bodyEnd)));
-        StoreLocal(copySizeLocal, t3);
-
-        uint deltaLocal = AllocLocal();
-        uint t4 = AllocTemp();
-        Emit(RiscVEncoder.Sub(t4, LoadLocal(bodyEnd), LoadLocal(savedHeap)));
-        StoreLocal(deltaLocal, t4);
-
-        Emit(RiscVEncoder.Mv(Reg.A0, LoadLocal(savedHeap)));
-        Emit(RiscVEncoder.Mv(Reg.A1, LoadLocal(bodyEnd)));
-        Emit(RiscVEncoder.Mv(Reg.A2, LoadLocal(copySizeLocal)));
-        EmitCallTo("__memmove");
-
-        uint adjLocal = AllocLocal();
-        uint t5 = AllocTemp();
-        Emit(RiscVEncoder.Sub(t5, LoadLocal(escapedLocal), LoadLocal(deltaLocal)));
-        StoreLocal(adjLocal, t5);
-
-        EmitRelocateCall(adjLocal, deltaLocal, region.Type);
-
-        Emit(RiscVEncoder.Add(Reg.S1, LoadLocal(savedHeap), LoadLocal(copySizeLocal)));
-
-        StoreLocal(resultLocal, LoadLocal(adjLocal));
-        int skipToEnd = m_instructions.Count;
-        Emit(RiscVEncoder.Nop()); // patched: j → end
-
-        // ── Skip path: result is OUTSIDE the region ──
-        // Do NOT restore S1 — the return value may reference body
-        // intermediates. This wastes memory but is correct.
-        int skipLabel = m_instructions.Count;
-        m_instructions[skipBelow] = RiscVEncoder.Blt(rPtr, rSaved,
-            (skipLabel - skipBelow) * 4);
-        m_instructions[skipAbove] = RiscVEncoder.Bge(rPtr, rEnd,
-            (skipLabel - skipAbove) * 4);
-        // S1 stays at body_end — no reclamation for external results
-
-        int endLabel = m_instructions.Count;
-        m_instructions[skipToEnd] = RiscVEncoder.J((endLabel - skipToEnd) * 4);
-
-        return LoadLocal(resultLocal);
+        // Scalar return — restore S1, value survives in register
+        Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(savedHeap)));
+        return bodyResult;
     }
 
     void EmitRelocateCall(uint ptrLocal, uint deltaLocal, CodexType type)
@@ -1676,10 +1672,19 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 uint savedPath = AllocLocal();
                 StoreLocal(savedPath, pathReg);
                 uint contentReg = EmitExpr(args[1]);
-                // For now: write content to stdout (simplified)
-                Emit(RiscVEncoder.Ld(Reg.A2, contentReg, 0));
-                Emit(RiscVEncoder.Addi(Reg.A1, contentReg, 8));
-                EmitSyscallWrite();
+                if (m_target == RiscVTarget.BareMetal)
+                {
+                    // Bare metal: write content to UART
+                    Emit(RiscVEncoder.Ld(Reg.A2, contentReg, 0));
+                    Emit(RiscVEncoder.Addi(Reg.A1, contentReg, 8));
+                    EmitUartWriteBuffer();
+                }
+                else
+                {
+                    Emit(RiscVEncoder.Ld(Reg.A2, contentReg, 0));
+                    Emit(RiscVEncoder.Addi(Reg.A1, contentReg, 8));
+                    EmitSyscallWrite();
+                }
                 Emit(RiscVEncoder.Mv(Reg.A0, Reg.Zero));
                 return true;
             }
@@ -1746,76 +1751,40 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             {
                 // Allocate 1-char string on heap: [8-byte len=1][1 byte data][7 padding]
                 uint codeReg = EmitExpr(args[0]);
+                Emit(RiscVEncoder.Mv(Reg.T2, codeReg));      // save char before clobbering A0
                 Emit(RiscVEncoder.Mv(Reg.A0, Reg.S1));       // result = heap ptr
                 Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, 16)); // alloc 16 bytes
                 foreach (uint insn in RiscVEncoder.Li(Reg.T0, 1)) Emit(insn);
                 Emit(RiscVEncoder.Sd(Reg.A0, Reg.T0, 0));    // length = 1
-                Emit(RiscVEncoder.Sb(Reg.A0, codeReg, 8));   // store byte
+                Emit(RiscVEncoder.Sb(Reg.A0, Reg.T2, 8));    // store char byte
                 return true;
             }
 
             case "is-letter" when args.Count == 1:
             {
-                // Char is already a byte value in register
+                // CCE: letters are 13-64 (lowercase 13-38, uppercase 39-64)
+                // Single range check: (val - 13) < (64 - 13 + 1) unsigned
                 uint charReg = EmitExpr(args[0]);
-                Emit(RiscVEncoder.Mv(Reg.T0, charReg));
-
-                // Check lowercase: t0 >= 'a' && t0 <= 'z'
-                foreach (uint insn in RiscVEncoder.Li(Reg.T1, 'a')) Emit(insn);
-                foreach (uint insn in RiscVEncoder.Li(Reg.T2, 'z' + 1)) Emit(insn);
-                Emit(RiscVEncoder.Sltu(Reg.T3, Reg.T0, Reg.T1));  // unsigned: t3 = (t0 < 'a')
-                Emit(RiscVEncoder.Sltu(Reg.T4, Reg.T0, Reg.T2));  // unsigned: t4 = (t0 < 'z'+1)
-                // lowercase = !t3 && t4 = t4 & ~t3
-                Emit(RiscVEncoder.Xori(Reg.T3, Reg.T3, 1));
-                Emit(RiscVEncoder.And(Reg.T3, Reg.T3, Reg.T4));  // t3 = is_lower
-
-                // Check uppercase: t0 >= 'A' && t0 <= 'Z'
-                foreach (uint insn in RiscVEncoder.Li(Reg.T1, 'A')) Emit(insn);
-                foreach (uint insn in RiscVEncoder.Li(Reg.T2, 'Z' + 1)) Emit(insn);
-                Emit(RiscVEncoder.Sltu(Reg.T4, Reg.T0, Reg.T1)); // unsigned
-                Emit(RiscVEncoder.Sltu(Reg.T5, Reg.T0, Reg.T2)); // unsigned
-                Emit(RiscVEncoder.Xori(Reg.T4, Reg.T4, 1));
-                Emit(RiscVEncoder.And(Reg.T4, Reg.T4, Reg.T5));  // t4 = is_upper
-
-                Emit(RiscVEncoder.Or(Reg.A0, Reg.T3, Reg.T4));   // result = lower || upper
+                Emit(RiscVEncoder.Addi(Reg.T0, charReg, -13));          // t0 = val - 13
+                Emit(RiscVEncoder.Sltiu(Reg.A0, Reg.T0, 64 - 13 + 1)); // a0 = (t0 < 52) unsigned
                 return true;
             }
 
             case "is-digit" when args.Count == 1:
             {
-                // Char is already a byte value in register
+                // CCE: digits are 3-12
+                // (val - 3) < 10 unsigned
                 uint charReg = EmitExpr(args[0]);
-                Emit(RiscVEncoder.Mv(Reg.T0, charReg));
-                foreach (uint insn in RiscVEncoder.Li(Reg.T1, '0')) Emit(insn);
-                foreach (uint insn in RiscVEncoder.Li(Reg.T2, '9' + 1)) Emit(insn);
-                Emit(RiscVEncoder.Sltu(Reg.T3, Reg.T0, Reg.T1)); // unsigned
-                Emit(RiscVEncoder.Sltu(Reg.T4, Reg.T0, Reg.T2)); // unsigned
-                Emit(RiscVEncoder.Xori(Reg.T3, Reg.T3, 1));
-                Emit(RiscVEncoder.And(Reg.A0, Reg.T3, Reg.T4));
+                Emit(RiscVEncoder.Addi(Reg.T0, charReg, -3));     // t0 = val - 3
+                Emit(RiscVEncoder.Sltiu(Reg.A0, Reg.T0, 10));     // a0 = (t0 < 10) unsigned
                 return true;
             }
 
             case "is-whitespace" when args.Count == 1:
             {
-                // Char is already a byte value in register
+                // CCE: whitespace is 0-2 (NUL=0, LF=1, Space=2)
                 uint charReg = EmitExpr(args[0]);
-                Emit(RiscVEncoder.Mv(Reg.T0, charReg));
-                // space=32, tab=9, newline=10, cr=13
-                foreach (uint insn in RiscVEncoder.Li(Reg.T1, ' ')) Emit(insn);
-                Emit(RiscVEncoder.Sub(Reg.T2, Reg.T0, Reg.T1));
-                Emit(RiscVEncoder.Sltiu(Reg.T2, Reg.T2, 1)); // t2 = (t0 == ' ')
-                foreach (uint insn in RiscVEncoder.Li(Reg.T1, '\t')) Emit(insn);
-                Emit(RiscVEncoder.Sub(Reg.T3, Reg.T0, Reg.T1));
-                Emit(RiscVEncoder.Sltiu(Reg.T3, Reg.T3, 1)); // t3 = (t0 == '\t')
-                Emit(RiscVEncoder.Or(Reg.T2, Reg.T2, Reg.T3));
-                foreach (uint insn in RiscVEncoder.Li(Reg.T1, '\n')) Emit(insn);
-                Emit(RiscVEncoder.Sub(Reg.T3, Reg.T0, Reg.T1));
-                Emit(RiscVEncoder.Sltiu(Reg.T3, Reg.T3, 1));
-                Emit(RiscVEncoder.Or(Reg.T2, Reg.T2, Reg.T3));
-                foreach (uint insn in RiscVEncoder.Li(Reg.T1, '\r')) Emit(insn);
-                Emit(RiscVEncoder.Sub(Reg.T3, Reg.T0, Reg.T1));
-                Emit(RiscVEncoder.Sltiu(Reg.T3, Reg.T3, 1));
-                Emit(RiscVEncoder.Or(Reg.A0, Reg.T2, Reg.T3));
+                Emit(RiscVEncoder.Sltiu(Reg.A0, charReg, 3));     // a0 = (val < 3) unsigned
                 return true;
             }
 
@@ -1906,6 +1875,102 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 // Sequential: just load result from task[8]
                 uint taskPtr = EmitExpr(args[0]);
                 Emit(RiscVEncoder.Ld(Reg.A0, taskPtr, 8));
+                return true;
+            }
+
+            case "text-compare" when args.Count == 2:
+            {
+                uint aReg = EmitExpr(args[0]);
+                uint savedA = AllocLocal();
+                StoreLocal(savedA, aReg);
+                uint bReg = EmitExpr(args[1]);
+                Emit(RiscVEncoder.Mv(Reg.A1, bReg));
+                Emit(RiscVEncoder.Mv(Reg.A0, LoadLocal(savedA)));
+                EmitCallTo("__text_compare");
+                return true;
+            }
+
+            case "list-cons" when args.Count == 2:
+            {
+                uint headReg = EmitExpr(args[0]);
+                uint savedHead = AllocLocal();
+                StoreLocal(savedHead, headReg);
+                uint tailReg = EmitExpr(args[1]);
+                Emit(RiscVEncoder.Mv(Reg.A1, tailReg));
+                Emit(RiscVEncoder.Mv(Reg.A0, LoadLocal(savedHead)));
+                EmitCallTo("__list_cons");
+                return true;
+            }
+
+            case "list-append" when args.Count == 2:
+            {
+                uint l1 = EmitExpr(args[0]);
+                uint savedL1 = AllocLocal();
+                StoreLocal(savedL1, l1);
+                uint l2 = EmitExpr(args[1]);
+                Emit(RiscVEncoder.Mv(Reg.A1, l2));
+                Emit(RiscVEncoder.Mv(Reg.A0, LoadLocal(savedL1)));
+                EmitCallTo("__list_append");
+                return true;
+            }
+
+            case "list-snoc" when args.Count == 2:
+            {
+                uint listReg = EmitExpr(args[0]);
+                uint savedList = AllocLocal();
+                StoreLocal(savedList, listReg);
+                uint elemReg = EmitExpr(args[1]);
+                Emit(RiscVEncoder.Mv(Reg.A1, elemReg));
+                Emit(RiscVEncoder.Mv(Reg.A0, LoadLocal(savedList)));
+                EmitCallTo("__list_snoc");
+                return true;
+            }
+
+            case "list-insert-at" when args.Count == 3:
+            {
+                uint listReg = EmitExpr(args[0]);
+                uint savedList = AllocLocal();
+                StoreLocal(savedList, listReg);
+                uint idxReg = EmitExpr(args[1]);
+                uint savedIdx = AllocLocal();
+                StoreLocal(savedIdx, idxReg);
+                uint elemReg = EmitExpr(args[2]);
+                Emit(RiscVEncoder.Mv(Reg.A2, elemReg));
+                Emit(RiscVEncoder.Mv(Reg.A1, LoadLocal(savedIdx)));
+                Emit(RiscVEncoder.Mv(Reg.A0, LoadLocal(savedList)));
+                EmitCallTo("__list_insert_at");
+                return true;
+            }
+
+            case "list-contains" when args.Count == 2:
+            {
+                uint listReg = EmitExpr(args[0]);
+                uint savedList = AllocLocal();
+                StoreLocal(savedList, listReg);
+                uint elemReg = EmitExpr(args[1]);
+                Emit(RiscVEncoder.Mv(Reg.A1, elemReg));
+                Emit(RiscVEncoder.Mv(Reg.A0, LoadLocal(savedList)));
+                EmitCallTo("__list_contains");
+                return true;
+            }
+
+            case "text-concat-list" when args.Count == 1:
+            {
+                uint listReg = EmitExpr(args[0]);
+                Emit(RiscVEncoder.Mv(Reg.A0, listReg));
+                EmitCallTo("__text_concat_list");
+                return true;
+            }
+
+            case "text-split" when args.Count == 2:
+            {
+                uint textReg = EmitExpr(args[0]);
+                uint savedText = AllocLocal();
+                StoreLocal(savedText, textReg);
+                uint delimReg = EmitExpr(args[1]);
+                Emit(RiscVEncoder.Mv(Reg.A1, delimReg));
+                Emit(RiscVEncoder.Mv(Reg.A0, LoadLocal(savedText)));
+                EmitCallTo("__text_split");
                 return true;
             }
 
@@ -2037,16 +2102,95 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     void EmitPrintText(uint ptrReg)
     {
-        Emit(RiscVEncoder.Ld(Reg.A2, ptrReg, 0));
-        Emit(RiscVEncoder.Addi(Reg.A1, ptrReg, 8));
-        EmitSyscallWrite();
+        // Strings are CCE-encoded. Output requires CCE→Unicode conversion per byte.
+        // The CceToUnicode table (128 bytes) lives in .rodata at m_cceToUnicodeTableOffset.
 
-        int nlOffset = AddRodataString("\n");
-        uint nlReg = AllocTemp();
-        EmitLoadRodataAddress(nlReg, nlOffset);
-        Emit(RiscVEncoder.Ld(Reg.A2, nlReg, 0));
-        Emit(RiscVEncoder.Addi(Reg.A1, nlReg, 8));
-        EmitSyscallWrite();
+        // Save ptrReg and load table address into callee-saved regs for the loop.
+        // Use T-regs as scratch within the loop body.
+        uint savedPtr = AllocLocal();
+        StoreLocal(savedPtr, ptrReg);
+        uint savedTable = AllocLocal();
+        uint tableReg = AllocTemp();
+        EmitLoadRodataAddress(tableReg, m_cceToUnicodeTableOffset);
+        StoreLocal(savedTable, tableReg);
+
+        // Load length
+        uint ptr = LoadLocal(savedPtr);
+        Emit(RiscVEncoder.Ld(Reg.T4, ptr, 0));  // t4 = length
+        uint savedLen = AllocLocal();
+        StoreLocal(savedLen, Reg.T4);
+
+        // idx = 0
+        uint savedIdx = AllocLocal();
+        foreach (uint insn in RiscVEncoder.Li(Reg.T5, 0)) Emit(insn);
+        StoreLocal(savedIdx, Reg.T5);
+
+        // Loop: for each CCE byte, convert to Unicode and write
+        int loopTop = m_instructions.Count;
+        uint idx = LoadLocal(savedIdx);
+        uint len = LoadLocal(savedLen);
+        int doneJump = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge idx, len → done
+
+        // Load CCE byte: ptr[8 + idx]
+        uint ptrL = LoadLocal(savedPtr);
+        idx = LoadLocal(savedIdx);
+        Emit(RiscVEncoder.Add(Reg.T0, ptrL, idx));
+        Emit(RiscVEncoder.Lbu(Reg.T0, Reg.T0, 8)); // t0 = CCE byte
+
+        // Convert CCE→Unicode: table[CCE byte]
+        uint tbl = LoadLocal(savedTable);
+        Emit(RiscVEncoder.Add(Reg.T0, tbl, Reg.T0));
+        Emit(RiscVEncoder.Lbu(Reg.T0, Reg.T0, 0)); // t0 = Unicode byte
+
+        if (m_target == RiscVTarget.BareMetal)
+        {
+            // Write single byte to UART
+            foreach (uint insn in RiscVEncoder.Li(Reg.T1, UartBase)) Emit(insn);
+            Emit(RiscVEncoder.Sb(Reg.T1, Reg.T0, 0));
+        }
+        else
+        {
+            // Write single byte via sys_write: put byte on stack
+            Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -8));
+            Emit(RiscVEncoder.Sb(Reg.Sp, Reg.T0, 0));
+            foreach (uint insn in RiscVEncoder.Li(Reg.A0, 1)) Emit(insn); // stdout
+            Emit(RiscVEncoder.Mv(Reg.A1, Reg.Sp));                         // buf
+            foreach (uint insn in RiscVEncoder.Li(Reg.A2, 1)) Emit(insn); // count=1
+            foreach (uint insn in RiscVEncoder.Li(Reg.A7, 64)) Emit(insn); // SYS_write
+            Emit(RiscVEncoder.Ecall());
+            Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, 8));
+        }
+
+        // idx++
+        idx = LoadLocal(savedIdx);
+        Emit(RiscVEncoder.Addi(idx, idx, 1));
+        StoreLocal(savedIdx, idx);
+        Emit(RiscVEncoder.J((loopTop - m_instructions.Count) * 4));
+
+        int doneTarget = m_instructions.Count;
+        m_instructions[doneJump] = RiscVEncoder.Bge(LoadLocal(savedIdx), LoadLocal(savedLen),
+            (doneTarget - doneJump) * 4);
+
+        // Newline: output literal Unicode 0x0A (not via CCE)
+        if (m_target == RiscVTarget.BareMetal)
+        {
+            foreach (uint insn in RiscVEncoder.Li(Reg.T0, UartBase)) Emit(insn);
+            foreach (uint insn in RiscVEncoder.Li(Reg.T1, '\n')) Emit(insn);
+            Emit(RiscVEncoder.Sb(Reg.T0, Reg.T1, 0));
+        }
+        else
+        {
+            Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -8));
+            foreach (uint insn in RiscVEncoder.Li(Reg.T0, '\n')) Emit(insn);
+            Emit(RiscVEncoder.Sb(Reg.Sp, Reg.T0, 0));
+            foreach (uint insn in RiscVEncoder.Li(Reg.A0, 1)) Emit(insn);
+            Emit(RiscVEncoder.Mv(Reg.A1, Reg.Sp));
+            foreach (uint insn in RiscVEncoder.Li(Reg.A2, 1)) Emit(insn);
+            foreach (uint insn in RiscVEncoder.Li(Reg.A7, 64)) Emit(insn);
+            Emit(RiscVEncoder.Ecall());
+            Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, 8));
+        }
     }
 
     int AddRodataString(string value)
@@ -2054,9 +2198,13 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         if (m_stringOffsets.TryGetValue(value, out int offset))
             return offset;
         offset = m_rodata.Count;
-        byte[] utf8 = Encoding.UTF8.GetBytes(value);
-        m_rodata.AddRange(BitConverter.GetBytes((long)utf8.Length));
-        m_rodata.AddRange(utf8);
+        // CCE-encode, matching EmitTextLit
+        string cceEncoded = CceTable.Encode(value);
+        byte[] cceBytes = new byte[cceEncoded.Length];
+        for (int i = 0; i < cceEncoded.Length; i++)
+            cceBytes[i] = (byte)cceEncoded[i];
+        m_rodata.AddRange(BitConverter.GetBytes((long)cceBytes.Length));
+        m_rodata.AddRange(cceBytes);
         while (m_rodata.Count % 8 != 0) m_rodata.Add(0);
         m_stringOffsets[value] = offset;
         return offset;
@@ -2156,8 +2304,16 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         EmitStrReplaceHelper();
         EmitTextContainsHelper();
         EmitTextStartsWithHelper();
+        EmitTextCompareHelper();
+        EmitListSnocHelper();
+        EmitListInsertAtHelper();
+        EmitListContainsHelper();
+        EmitTextConcatListHelper();
+        EmitTextSplitHelper();
         EmitEscapeTextHelper();
         EmitMemmoveHelper();
+        if (m_target == RiscVTarget.BareMetal)
+            EmitBareMetalReadSerialHelper();
     }
 
     void EmitTextContainsHelper()
@@ -2270,6 +2426,498 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         m_instructions[tooLong] = RiscVEncoder.Blt(Reg.T0, Reg.T1, (falseLabel - tooLong) * 4);
         m_instructions[mismatch] = RiscVEncoder.Bne(Reg.T3, Reg.T4, (falseLabel - mismatch) * 4);
         foreach (uint insn in RiscVEncoder.Li(Reg.A0, 0)) Emit(insn);
+        Emit(RiscVEncoder.Ret());
+    }
+
+    void EmitTextCompareHelper()
+    {
+        // __text_compare: a0=text1, a1=text2 → a0=-1/0/+1
+        m_functionOffsets["__text_compare"] = m_instructions.Count;
+
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -32));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.Ra, 24));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S2, 16));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S3, 8));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S4, 0));
+
+        // s2=text1, s3=text2
+        Emit(RiscVEncoder.Mv(Reg.S2, Reg.A0));
+        Emit(RiscVEncoder.Mv(Reg.S3, Reg.A1));
+        // t0=len1, t1=len2
+        Emit(RiscVEncoder.Ld(Reg.T0, Reg.S2, 0));
+        Emit(RiscVEncoder.Ld(Reg.T1, Reg.S3, 0));
+        // s4=min(len1,len2)
+        Emit(RiscVEncoder.Mv(Reg.S4, Reg.T0));
+        int len1Smaller = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge t0, t1 → skip
+        Emit(RiscVEncoder.Mv(Reg.S4, Reg.T0)); // redundant but harmless
+        int skipMin = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: j past
+        int setLen2 = m_instructions.Count;
+        m_instructions[len1Smaller] = RiscVEncoder.Blt(Reg.T0, Reg.T1, (setLen2 - len1Smaller) * 4);
+        Emit(RiscVEncoder.Mv(Reg.S4, Reg.T1));
+        int pastMin = m_instructions.Count;
+        m_instructions[skipMin] = RiscVEncoder.J((pastMin - skipMin) * 4);
+        // Wait — simpler: use Slt to pick min
+        // Actually let me just redo this cleanly:
+        // s4 = min(t0, t1): if t0 <= t1 then s4=t0, else s4=t1
+        // The above code is already emitted so let me just fix the logic.
+        // Actually the emitted code works: if t0 < t1, branch to setLen2 which sets s4=t1.
+        // If t0 >= t1, s4 stays as t0, then jumps past. But wait, if t0 >= t1, we want min=t1.
+        // Bug! Let me re-think. I need min. If t0 < t1, min=t0 (already set). If t0 >= t1, min=t1.
+        // So the branch should be: if t0 >= t1, go to setLen2.
+        // Fix: use Bge instead of Blt.
+        m_instructions[len1Smaller] = RiscVEncoder.Bge(Reg.T0, Reg.T1, (setLen2 - len1Smaller) * 4);
+        // Now: if t0 >= t1, jump to setLen2 which sets s4=t1. Otherwise s4 stays t0. Correct.
+
+        // Loop: compare bytes i=0..min-1
+        foreach (uint insn in RiscVEncoder.Li(Reg.T2, 0)) Emit(insn); // i
+        int cmpLoop = m_instructions.Count;
+        int cmpDone = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge t2, s4 → lengths
+        // Load byte from each string: str[8+i]
+        Emit(RiscVEncoder.Add(Reg.T3, Reg.S2, Reg.T2));
+        Emit(RiscVEncoder.Lbu(Reg.T3, Reg.T3, 8));
+        Emit(RiscVEncoder.Add(Reg.T4, Reg.S3, Reg.T2));
+        Emit(RiscVEncoder.Lbu(Reg.T4, Reg.T4, 8));
+        int bytesEqual = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: beq t3, t4 → next
+        // Bytes differ: a < b → -1, a > b → +1
+        int aGreater = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bgt t3, t4 → +1
+        foreach (uint insn in RiscVEncoder.Li(Reg.A0, -1)) Emit(insn);
+        int retEarly1 = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: j → epilogue
+        int setPlus1 = m_instructions.Count;
+        m_instructions[aGreater] = RiscVEncoder.Blt(Reg.T4, Reg.T3, (setPlus1 - aGreater) * 4);
+        foreach (uint insn in RiscVEncoder.Li(Reg.A0, 1)) Emit(insn);
+        int retEarly2 = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: j → epilogue
+        // Bytes equal: next iteration
+        int nextIter = m_instructions.Count;
+        m_instructions[bytesEqual] = RiscVEncoder.Beq(Reg.T3, Reg.T4, (nextIter - bytesEqual) * 4);
+        Emit(RiscVEncoder.Addi(Reg.T2, Reg.T2, 1));
+        Emit(RiscVEncoder.J((cmpLoop - m_instructions.Count) * 4));
+
+        // All min bytes equal — compare lengths
+        int cmpLengths = m_instructions.Count;
+        m_instructions[cmpDone] = RiscVEncoder.Bge(Reg.T2, Reg.S4, (cmpLengths - cmpDone) * 4);
+        // Reload lengths
+        Emit(RiscVEncoder.Ld(Reg.T0, Reg.S2, 0));
+        Emit(RiscVEncoder.Ld(Reg.T1, Reg.S3, 0));
+        int lenEqual = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: beq t0, t1 → 0
+        int lenGreater = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: blt t1, t0 → +1
+        foreach (uint insn in RiscVEncoder.Li(Reg.A0, -1)) Emit(insn);
+        int retLen1 = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // j → epilogue
+        int setLenPlus1 = m_instructions.Count;
+        m_instructions[lenGreater] = RiscVEncoder.Blt(Reg.T1, Reg.T0, (setLenPlus1 - lenGreater) * 4);
+        foreach (uint insn in RiscVEncoder.Li(Reg.A0, 1)) Emit(insn);
+        int retLen2 = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // j → epilogue
+        int setZero = m_instructions.Count;
+        m_instructions[lenEqual] = RiscVEncoder.Beq(Reg.T0, Reg.T1, (setZero - lenEqual) * 4);
+        foreach (uint insn in RiscVEncoder.Li(Reg.A0, 0)) Emit(insn);
+
+        // Epilogue
+        int epilogue = m_instructions.Count;
+        m_instructions[retEarly1] = RiscVEncoder.J((epilogue - retEarly1) * 4);
+        m_instructions[retEarly2] = RiscVEncoder.J((epilogue - retEarly2) * 4);
+        m_instructions[retLen1] = RiscVEncoder.J((epilogue - retLen1) * 4);
+        m_instructions[retLen2] = RiscVEncoder.J((epilogue - retLen2) * 4);
+
+        Emit(RiscVEncoder.Ld(Reg.S4, Reg.Sp, 0));
+        Emit(RiscVEncoder.Ld(Reg.S3, Reg.Sp, 8));
+        Emit(RiscVEncoder.Ld(Reg.S2, Reg.Sp, 16));
+        Emit(RiscVEncoder.Ld(Reg.Ra, Reg.Sp, 24));
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, 32));
+        Emit(RiscVEncoder.Ret());
+    }
+
+    void EmitListSnocHelper()
+    {
+        // __list_snoc: a0=list_ptr, a1=element → a0=new list with element appended
+        m_functionOffsets["__list_snoc"] = m_instructions.Count;
+
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -32));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.Ra, 24));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S2, 16));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S3, 8));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S4, 0));
+
+        Emit(RiscVEncoder.Mv(Reg.S2, Reg.A0));  // old list
+        Emit(RiscVEncoder.Mv(Reg.S3, Reg.A1));  // new element
+        Emit(RiscVEncoder.Ld(Reg.S4, Reg.S2, 0)); // old length
+
+        // Allocate (oldLen + 2) * 8 bytes
+        Emit(RiscVEncoder.Mv(Reg.A0, Reg.S1));   // result ptr
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.S4, 2));
+        Emit(RiscVEncoder.Slli(Reg.T0, Reg.T0, 3));
+        Emit(RiscVEncoder.Add(Reg.S1, Reg.S1, Reg.T0));
+
+        // Store new length = oldLen + 1
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.S4, 1));
+        Emit(RiscVEncoder.Sd(Reg.A0, Reg.T0, 0));
+
+        // Copy old elements: for i in 0..oldLen-1
+        foreach (uint insn in RiscVEncoder.Li(Reg.T0, 0)) Emit(insn); // i
+        int copyLoop = m_instructions.Count;
+        int copyDone = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge t0, s4 → done
+        // Load old[8 + i*8]
+        Emit(RiscVEncoder.Slli(Reg.T1, Reg.T0, 3));
+        Emit(RiscVEncoder.Add(Reg.T2, Reg.S2, Reg.T1));
+        Emit(RiscVEncoder.Ld(Reg.T2, Reg.T2, 8));
+        // Store new[8 + i*8]
+        Emit(RiscVEncoder.Add(Reg.T3, Reg.A0, Reg.T1));
+        Emit(RiscVEncoder.Sd(Reg.T3, Reg.T2, 8));
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.T0, 1));
+        Emit(RiscVEncoder.J((copyLoop - m_instructions.Count) * 4));
+        int copyEnd = m_instructions.Count;
+        m_instructions[copyDone] = RiscVEncoder.Bge(Reg.T0, Reg.S4, (copyEnd - copyDone) * 4);
+
+        // Store new element at new[8 + oldLen*8]
+        Emit(RiscVEncoder.Slli(Reg.T0, Reg.S4, 3));
+        Emit(RiscVEncoder.Add(Reg.T1, Reg.A0, Reg.T0));
+        Emit(RiscVEncoder.Sd(Reg.T1, Reg.S3, 8));
+
+        Emit(RiscVEncoder.Ld(Reg.S4, Reg.Sp, 0));
+        Emit(RiscVEncoder.Ld(Reg.S3, Reg.Sp, 8));
+        Emit(RiscVEncoder.Ld(Reg.S2, Reg.Sp, 16));
+        Emit(RiscVEncoder.Ld(Reg.Ra, Reg.Sp, 24));
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, 32));
+        Emit(RiscVEncoder.Ret());
+    }
+
+    void EmitListInsertAtHelper()
+    {
+        // __list_insert_at: a0=list, a1=index, a2=element → a0=new list
+        m_functionOffsets["__list_insert_at"] = m_instructions.Count;
+
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -48));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.Ra, 40));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S2, 32));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S3, 24));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S4, 16));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S5, 8));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S6, 0));
+
+        Emit(RiscVEncoder.Mv(Reg.S2, Reg.A0));  // old list
+        Emit(RiscVEncoder.Mv(Reg.S3, Reg.A1));  // index
+        Emit(RiscVEncoder.Mv(Reg.S4, Reg.A2));  // element
+        Emit(RiscVEncoder.Ld(Reg.S5, Reg.S2, 0)); // old length
+
+        // Allocate (oldLen + 2) * 8
+        Emit(RiscVEncoder.Mv(Reg.S6, Reg.S1));   // result ptr (saved in s6)
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.S5, 2));
+        Emit(RiscVEncoder.Slli(Reg.T0, Reg.T0, 3));
+        Emit(RiscVEncoder.Add(Reg.S1, Reg.S1, Reg.T0));
+
+        // Store new length = oldLen + 1
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.S5, 1));
+        Emit(RiscVEncoder.Sd(Reg.S6, Reg.T0, 0));
+
+        // Copy elements before index: 0..index-1
+        foreach (uint insn in RiscVEncoder.Li(Reg.T0, 0)) Emit(insn); // i
+        int preCopy = m_instructions.Count;
+        int preDone = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge t0, s3 → done
+        Emit(RiscVEncoder.Slli(Reg.T1, Reg.T0, 3));
+        Emit(RiscVEncoder.Add(Reg.T2, Reg.S2, Reg.T1));
+        Emit(RiscVEncoder.Ld(Reg.T2, Reg.T2, 8));
+        Emit(RiscVEncoder.Add(Reg.T3, Reg.S6, Reg.T1));
+        Emit(RiscVEncoder.Sd(Reg.T3, Reg.T2, 8));
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.T0, 1));
+        Emit(RiscVEncoder.J((preCopy - m_instructions.Count) * 4));
+        int preEnd = m_instructions.Count;
+        m_instructions[preDone] = RiscVEncoder.Bge(Reg.T0, Reg.S3, (preEnd - preDone) * 4);
+
+        // Store inserted element at new[8 + index*8]
+        Emit(RiscVEncoder.Slli(Reg.T0, Reg.S3, 3));
+        Emit(RiscVEncoder.Add(Reg.T1, Reg.S6, Reg.T0));
+        Emit(RiscVEncoder.Sd(Reg.T1, Reg.S4, 8));
+
+        // Copy elements after index: index..oldLen-1 → positions index+1..
+        Emit(RiscVEncoder.Mv(Reg.T0, Reg.S3)); // i = index
+        int postCopy = m_instructions.Count;
+        int postDone = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge t0, s5 → done
+        Emit(RiscVEncoder.Slli(Reg.T1, Reg.T0, 3));
+        // old[8 + i*8]
+        Emit(RiscVEncoder.Add(Reg.T2, Reg.S2, Reg.T1));
+        Emit(RiscVEncoder.Ld(Reg.T2, Reg.T2, 8));
+        // new[8 + (i+1)*8]
+        Emit(RiscVEncoder.Addi(Reg.T3, Reg.T1, 8));
+        Emit(RiscVEncoder.Add(Reg.T3, Reg.S6, Reg.T3));
+        Emit(RiscVEncoder.Sd(Reg.T3, Reg.T2, 8));
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.T0, 1));
+        Emit(RiscVEncoder.J((postCopy - m_instructions.Count) * 4));
+        int postEnd = m_instructions.Count;
+        m_instructions[postDone] = RiscVEncoder.Bge(Reg.T0, Reg.S5, (postEnd - postDone) * 4);
+
+        Emit(RiscVEncoder.Mv(Reg.A0, Reg.S6));  // return result ptr
+
+        Emit(RiscVEncoder.Ld(Reg.S6, Reg.Sp, 0));
+        Emit(RiscVEncoder.Ld(Reg.S5, Reg.Sp, 8));
+        Emit(RiscVEncoder.Ld(Reg.S4, Reg.Sp, 16));
+        Emit(RiscVEncoder.Ld(Reg.S3, Reg.Sp, 24));
+        Emit(RiscVEncoder.Ld(Reg.S2, Reg.Sp, 32));
+        Emit(RiscVEncoder.Ld(Reg.Ra, Reg.Sp, 40));
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, 48));
+        Emit(RiscVEncoder.Ret());
+    }
+
+    void EmitListContainsHelper()
+    {
+        // __list_contains: a0=list, a1=element → a0=1 if found, 0 if not
+        m_functionOffsets["__list_contains"] = m_instructions.Count;
+
+        Emit(RiscVEncoder.Ld(Reg.T0, Reg.A0, 0)); // length
+        foreach (uint insn in RiscVEncoder.Li(Reg.T1, 0)) Emit(insn); // index
+
+        int loop = m_instructions.Count;
+        int notFound = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge t1, t0 → not found
+
+        // Load element at [list + 8 + i*8]
+        Emit(RiscVEncoder.Slli(Reg.T2, Reg.T1, 3));
+        Emit(RiscVEncoder.Add(Reg.T2, Reg.A0, Reg.T2));
+        Emit(RiscVEncoder.Ld(Reg.T2, Reg.T2, 8));
+
+        // Compare with target
+        int found = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: beq t2, a1 → found
+
+        Emit(RiscVEncoder.Addi(Reg.T1, Reg.T1, 1));
+        Emit(RiscVEncoder.J((loop - m_instructions.Count) * 4));
+
+        int foundLabel = m_instructions.Count;
+        m_instructions[found] = RiscVEncoder.Beq(Reg.T2, Reg.A1, (foundLabel - found) * 4);
+        foreach (uint insn in RiscVEncoder.Li(Reg.A0, 1)) Emit(insn);
+        Emit(RiscVEncoder.Ret());
+
+        int notFoundLabel = m_instructions.Count;
+        m_instructions[notFound] = RiscVEncoder.Bge(Reg.T1, Reg.T0, (notFoundLabel - notFound) * 4);
+        foreach (uint insn in RiscVEncoder.Li(Reg.A0, 0)) Emit(insn);
+        Emit(RiscVEncoder.Ret());
+    }
+
+    void EmitTextConcatListHelper()
+    {
+        // __text_concat_list: a0=list of text ptrs → a0=concatenated text
+        m_functionOffsets["__text_concat_list"] = m_instructions.Count;
+
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -48));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.Ra, 40));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S2, 32));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S3, 24));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S4, 16));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S5, 8));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S6, 0));
+
+        Emit(RiscVEncoder.Mv(Reg.S2, Reg.A0));        // list ptr
+        Emit(RiscVEncoder.Ld(Reg.S3, Reg.S2, 0));     // list length
+
+        // Pass 1: compute total byte length
+        foreach (uint insn in RiscVEncoder.Li(Reg.S4, 0)) Emit(insn); // total bytes
+        foreach (uint insn in RiscVEncoder.Li(Reg.T0, 0)) Emit(insn); // index
+        int lenLoop = m_instructions.Count;
+        int lenDone = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge t0, s3 → done
+        Emit(RiscVEncoder.Slli(Reg.T1, Reg.T0, 3));
+        Emit(RiscVEncoder.Add(Reg.T1, Reg.S2, Reg.T1));
+        Emit(RiscVEncoder.Ld(Reg.T1, Reg.T1, 8));     // str ptr
+        Emit(RiscVEncoder.Ld(Reg.T1, Reg.T1, 0));     // str length
+        Emit(RiscVEncoder.Add(Reg.S4, Reg.S4, Reg.T1));
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.T0, 1));
+        Emit(RiscVEncoder.J((lenLoop - m_instructions.Count) * 4));
+        int lenEnd = m_instructions.Count;
+        m_instructions[lenDone] = RiscVEncoder.Bge(Reg.T0, Reg.S3, (lenEnd - lenDone) * 4);
+
+        // Allocate result: 8 + align8(total)
+        Emit(RiscVEncoder.Mv(Reg.S5, Reg.S1));         // result ptr
+        Emit(RiscVEncoder.Sd(Reg.S5, Reg.S4, 0));      // store total length
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.S4, 15));
+        Emit(RiscVEncoder.Andi(Reg.T0, Reg.T0, -8));
+        Emit(RiscVEncoder.Add(Reg.S1, Reg.S1, Reg.T0));
+
+        // Pass 2: copy bytes from each string
+        foreach (uint insn in RiscVEncoder.Li(Reg.T0, 0)) Emit(insn); // list index
+        foreach (uint insn in RiscVEncoder.Li(Reg.S6, 0)) Emit(insn); // dest offset
+        int copyLoop = m_instructions.Count;
+        int copyDone = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge t0, s3 → done
+
+        // Load string ptr from list
+        Emit(RiscVEncoder.Slli(Reg.T1, Reg.T0, 3));
+        Emit(RiscVEncoder.Add(Reg.T1, Reg.S2, Reg.T1));
+        Emit(RiscVEncoder.Ld(Reg.T1, Reg.T1, 8));     // str ptr
+        Emit(RiscVEncoder.Ld(Reg.T2, Reg.T1, 0));     // str len
+
+        // Copy bytes: for j=0..strLen-1
+        foreach (uint insn in RiscVEncoder.Li(Reg.T3, 0)) Emit(insn); // j
+        int byteLoop = m_instructions.Count;
+        int byteDone = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge t3, t2 → done
+        // Load src byte: src[8+j]
+        Emit(RiscVEncoder.Add(Reg.T4, Reg.T1, Reg.T3));
+        Emit(RiscVEncoder.Lbu(Reg.T4, Reg.T4, 8));
+        // Store at dst[8 + destOff + j]
+        Emit(RiscVEncoder.Add(Reg.T5, Reg.S5, Reg.S6));
+        Emit(RiscVEncoder.Add(Reg.T5, Reg.T5, Reg.T3));
+        Emit(RiscVEncoder.Sb(Reg.T5, Reg.T4, 8));
+        Emit(RiscVEncoder.Addi(Reg.T3, Reg.T3, 1));
+        Emit(RiscVEncoder.J((byteLoop - m_instructions.Count) * 4));
+        int byteEnd = m_instructions.Count;
+        m_instructions[byteDone] = RiscVEncoder.Bge(Reg.T3, Reg.T2, (byteEnd - byteDone) * 4);
+
+        Emit(RiscVEncoder.Add(Reg.S6, Reg.S6, Reg.T2)); // destOff += strLen
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.T0, 1));
+        Emit(RiscVEncoder.J((copyLoop - m_instructions.Count) * 4));
+        int copyEnd = m_instructions.Count;
+        m_instructions[copyDone] = RiscVEncoder.Bge(Reg.T0, Reg.S3, (copyEnd - copyDone) * 4);
+
+        Emit(RiscVEncoder.Mv(Reg.A0, Reg.S5));
+
+        Emit(RiscVEncoder.Ld(Reg.S6, Reg.Sp, 0));
+        Emit(RiscVEncoder.Ld(Reg.S5, Reg.Sp, 8));
+        Emit(RiscVEncoder.Ld(Reg.S4, Reg.Sp, 16));
+        Emit(RiscVEncoder.Ld(Reg.S3, Reg.Sp, 24));
+        Emit(RiscVEncoder.Ld(Reg.S2, Reg.Sp, 32));
+        Emit(RiscVEncoder.Ld(Reg.Ra, Reg.Sp, 40));
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, 48));
+        Emit(RiscVEncoder.Ret());
+    }
+
+    void EmitTextSplitHelper()
+    {
+        // __text_split: a0=text, a1=delimiter → a0=list of text ptrs
+        // Simple single-char delimiter split
+        m_functionOffsets["__text_split"] = m_instructions.Count;
+
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -48));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.Ra, 40));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S2, 32));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S3, 24));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S4, 16));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S5, 8));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S6, 0));
+
+        Emit(RiscVEncoder.Mv(Reg.S2, Reg.A0));        // text ptr
+        Emit(RiscVEncoder.Ld(Reg.S3, Reg.S2, 0));     // text length
+        // Load delimiter byte (first byte of delimiter string)
+        Emit(RiscVEncoder.Lbu(Reg.S4, Reg.A1, 8));    // delim byte
+
+        // s5 = result list start on heap
+        Emit(RiscVEncoder.Mv(Reg.S5, Reg.S1));
+        // Reserve space for max possible segments (textLen+2 elements + length slot)
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.S3, 2));
+        Emit(RiscVEncoder.Slli(Reg.T0, Reg.T0, 3));
+        Emit(RiscVEncoder.Add(Reg.S1, Reg.S1, Reg.T0));
+
+        foreach (uint insn in RiscVEncoder.Li(Reg.S6, 0)) Emit(insn); // segment count
+        foreach (uint insn in RiscVEncoder.Li(Reg.T0, 0)) Emit(insn); // scan position i
+        Emit(RiscVEncoder.Mv(Reg.T5, Reg.T0)); // segment start
+
+        int scanLoop = m_instructions.Count;
+        int scanDone = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge t0, s3 → done
+
+        // Load byte at text[8+i]
+        Emit(RiscVEncoder.Add(Reg.T1, Reg.S2, Reg.T0));
+        Emit(RiscVEncoder.Lbu(Reg.T1, Reg.T1, 8));
+        int notDelim = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bne t1, s4 → notDelim
+
+        // Found delimiter at i — emit segment [start..i)
+        // segLen = i - start
+        Emit(RiscVEncoder.Sub(Reg.T1, Reg.T0, Reg.T5)); // segLen
+        // Allocate segment string on heap
+        Emit(RiscVEncoder.Mv(Reg.T2, Reg.S1));       // segment ptr
+        Emit(RiscVEncoder.Sd(Reg.T2, Reg.T1, 0));    // store length
+        Emit(RiscVEncoder.Addi(Reg.T3, Reg.T1, 15));
+        Emit(RiscVEncoder.Andi(Reg.T3, Reg.T3, -8));
+        Emit(RiscVEncoder.Add(Reg.S1, Reg.S1, Reg.T3));
+
+        // Copy bytes: text[8+start..8+i) → seg[8..]
+        foreach (uint insn in RiscVEncoder.Li(Reg.T3, 0)) Emit(insn); // j
+        int segCopy = m_instructions.Count;
+        int segCopyDone = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge t3, t1 → done
+        Emit(RiscVEncoder.Add(Reg.T4, Reg.S2, Reg.T5));
+        Emit(RiscVEncoder.Add(Reg.T4, Reg.T4, Reg.T3));
+        Emit(RiscVEncoder.Lbu(Reg.T4, Reg.T4, 8));
+        Emit(RiscVEncoder.Add(Reg.T6, Reg.T2, Reg.T3));
+        Emit(RiscVEncoder.Sb(Reg.T6, Reg.T4, 8));
+        Emit(RiscVEncoder.Addi(Reg.T3, Reg.T3, 1));
+        Emit(RiscVEncoder.J((segCopy - m_instructions.Count) * 4));
+        int segCopyEnd = m_instructions.Count;
+        m_instructions[segCopyDone] = RiscVEncoder.Bge(Reg.T3, Reg.T1, (segCopyEnd - segCopyDone) * 4);
+
+        // Store segment ptr in result list[8 + segCount*8]
+        Emit(RiscVEncoder.Slli(Reg.T3, Reg.S6, 3));
+        Emit(RiscVEncoder.Add(Reg.T3, Reg.S5, Reg.T3));
+        Emit(RiscVEncoder.Sd(Reg.T3, Reg.T2, 8));
+        Emit(RiscVEncoder.Addi(Reg.S6, Reg.S6, 1));
+
+        // Next segment starts at i+1
+        Emit(RiscVEncoder.Addi(Reg.T5, Reg.T0, 1));
+        int skipNotDelim = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: j → advance
+
+        int notDelimLabel = m_instructions.Count;
+        m_instructions[notDelim] = RiscVEncoder.Bne(Reg.T1, Reg.S4, (notDelimLabel - notDelim) * 4);
+
+        int advanceLabel = m_instructions.Count;
+        m_instructions[skipNotDelim] = RiscVEncoder.J((advanceLabel - skipNotDelim) * 4);
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.T0, 1));
+        Emit(RiscVEncoder.J((scanLoop - m_instructions.Count) * 4));
+
+        // Scan done — emit final segment [start..textLen)
+        int scanEndLabel = m_instructions.Count;
+        m_instructions[scanDone] = RiscVEncoder.Bge(Reg.T0, Reg.S3, (scanEndLabel - scanDone) * 4);
+
+        Emit(RiscVEncoder.Sub(Reg.T1, Reg.S3, Reg.T5)); // segLen = textLen - start
+        Emit(RiscVEncoder.Mv(Reg.T2, Reg.S1));
+        Emit(RiscVEncoder.Sd(Reg.T2, Reg.T1, 0));
+        Emit(RiscVEncoder.Addi(Reg.T3, Reg.T1, 15));
+        Emit(RiscVEncoder.Andi(Reg.T3, Reg.T3, -8));
+        Emit(RiscVEncoder.Add(Reg.S1, Reg.S1, Reg.T3));
+
+        // Copy final segment bytes
+        foreach (uint insn in RiscVEncoder.Li(Reg.T3, 0)) Emit(insn);
+        int finalCopy = m_instructions.Count;
+        int finalCopyDone = m_instructions.Count;
+        Emit(RiscVEncoder.Nop());
+        Emit(RiscVEncoder.Add(Reg.T4, Reg.S2, Reg.T5));
+        Emit(RiscVEncoder.Add(Reg.T4, Reg.T4, Reg.T3));
+        Emit(RiscVEncoder.Lbu(Reg.T4, Reg.T4, 8));
+        Emit(RiscVEncoder.Add(Reg.T6, Reg.T2, Reg.T3));
+        Emit(RiscVEncoder.Sb(Reg.T6, Reg.T4, 8));
+        Emit(RiscVEncoder.Addi(Reg.T3, Reg.T3, 1));
+        Emit(RiscVEncoder.J((finalCopy - m_instructions.Count) * 4));
+        int finalCopyEnd = m_instructions.Count;
+        m_instructions[finalCopyDone] = RiscVEncoder.Bge(Reg.T3, Reg.T1, (finalCopyEnd - finalCopyDone) * 4);
+
+        // Store final segment in list
+        Emit(RiscVEncoder.Slli(Reg.T3, Reg.S6, 3));
+        Emit(RiscVEncoder.Add(Reg.T3, Reg.S5, Reg.T3));
+        Emit(RiscVEncoder.Sd(Reg.T3, Reg.T2, 8));
+        Emit(RiscVEncoder.Addi(Reg.S6, Reg.S6, 1));
+
+        // Store segment count as list length
+        Emit(RiscVEncoder.Sd(Reg.S5, Reg.S6, 0));
+        Emit(RiscVEncoder.Mv(Reg.A0, Reg.S5));
+
+        Emit(RiscVEncoder.Ld(Reg.S6, Reg.Sp, 0));
+        Emit(RiscVEncoder.Ld(Reg.S5, Reg.Sp, 8));
+        Emit(RiscVEncoder.Ld(Reg.S4, Reg.Sp, 16));
+        Emit(RiscVEncoder.Ld(Reg.S3, Reg.Sp, 24));
+        Emit(RiscVEncoder.Ld(Reg.S2, Reg.Sp, 32));
+        Emit(RiscVEncoder.Ld(Reg.Ra, Reg.Sp, 40));
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, 48));
         Emit(RiscVEncoder.Ret());
     }
 
@@ -2477,7 +3125,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         // Zero check
         int skipZero = m_instructions.Count;
         Emit(RiscVEncoder.Nop());
-        foreach (uint insn in RiscVEncoder.Li(Reg.T2, '0')) Emit(insn);
+        foreach (uint insn in RiscVEncoder.Li(Reg.T2, 3)) Emit(insn); // CCE '0' = 3
         Emit(RiscVEncoder.Sb(Reg.T0, Reg.T2, 0));
         Emit(RiscVEncoder.Addi(Reg.T0, Reg.T0, -1));
         Emit(RiscVEncoder.Addi(Reg.T1, Reg.T1, 1));
@@ -2491,7 +3139,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Nop());
         foreach (uint insn in RiscVEncoder.Li(Reg.T3, 10)) Emit(insn);
         Emit(RiscVEncoder.Rem(Reg.T2, Reg.T4, Reg.T3));
-        Emit(RiscVEncoder.Addi(Reg.T2, Reg.T2, '0'));
+        Emit(RiscVEncoder.Addi(Reg.T2, Reg.T2, 3)); // CCE digit offset: '0' = 3
         Emit(RiscVEncoder.Sb(Reg.T0, Reg.T2, 0));
         Emit(RiscVEncoder.Addi(Reg.T0, Reg.T0, -1));
         Emit(RiscVEncoder.Addi(Reg.T1, Reg.T1, 1));
@@ -2504,7 +3152,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
         int skipMinus = m_instructions.Count;
         Emit(RiscVEncoder.Nop());
-        foreach (uint insn in RiscVEncoder.Li(Reg.T2, '-')) Emit(insn);
+        foreach (uint insn in RiscVEncoder.Li(Reg.T2, 73)) Emit(insn); // CCE '-' = 73
         Emit(RiscVEncoder.Sb(Reg.T0, Reg.T2, 0));
         Emit(RiscVEncoder.Addi(Reg.T0, Reg.T0, -1));
         Emit(RiscVEncoder.Addi(Reg.T1, Reg.T1, 1));
@@ -2553,7 +3201,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         int skipNegCheck = m_instructions.Count;
         Emit(RiscVEncoder.Nop()); // beqz t0 → done (empty string)
         Emit(RiscVEncoder.Lbu(Reg.T4, Reg.A0, 0));
-        foreach (uint insn in RiscVEncoder.Li(Reg.T5, 45)) Emit(insn); // '-'
+        foreach (uint insn in RiscVEncoder.Li(Reg.T5, 73)) Emit(insn); // CCE '-' = 73
         int skipMinus = m_instructions.Count;
         Emit(RiscVEncoder.Nop()); // bne t4, t5 → parse
         foreach (uint insn in RiscVEncoder.Li(Reg.T3, 1)) Emit(insn);
@@ -2566,7 +3214,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Nop()); // bge t2, t0 → negate
         Emit(RiscVEncoder.Add(Reg.T4, Reg.A0, Reg.T2));
         Emit(RiscVEncoder.Lbu(Reg.T4, Reg.T4, 0));
-        Emit(RiscVEncoder.Addi(Reg.T4, Reg.T4, -48));
+        Emit(RiscVEncoder.Addi(Reg.T4, Reg.T4, -3)); // CCE '0' = 3
         foreach (uint insn in RiscVEncoder.Li(Reg.T5, 10)) Emit(insn);
         Emit(RiscVEncoder.Mul(Reg.T1, Reg.T1, Reg.T5));
         Emit(RiscVEncoder.Add(Reg.T1, Reg.T1, Reg.T4));
@@ -2698,10 +3346,8 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
         if (m_target == RiscVTarget.BareMetal)
         {
-            // Bare metal: return empty string
-            Emit(RiscVEncoder.Mv(Reg.A0, Reg.S1));
-            Emit(RiscVEncoder.Sd(Reg.S1, Reg.Zero, 0));
-            Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, 8));
+            // Bare metal: read source from UART until EOT (0x04)
+            EmitCallTo("__bare_metal_read_serial");
             Emit(RiscVEncoder.Ret());
             return;
         }
@@ -2796,16 +3442,21 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
         if (m_target == RiscVTarget.BareMetal)
         {
-            Emit(RiscVEncoder.Mv(Reg.A0, Reg.S1));
-            Emit(RiscVEncoder.Sd(Reg.S1, Reg.Zero, 0));
-            Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, 8));
+            // Return hardcoded "test.codex" path (ignored by read-file on bare metal)
+            int pathOffset = AddRodataString("test.codex");
+            EmitLoadRodataAddress(Reg.A0, pathOffset);
             Emit(RiscVEncoder.Ret());
             return;
         }
 
-        // Read byte-by-byte into heap, stop at \n or EOF
+        // Read byte-by-byte into heap, stop at \n or EOF.
+        // Convert Unicode→CCE before storing (input boundary).
         Emit(RiscVEncoder.Mv(Reg.T4, Reg.S1));              // result base
         foreach (uint insn in RiscVEncoder.Li(Reg.T5, 0)) Emit(insn); // byte count
+
+        // Load Unicode→CCE table address into T6 (survives across syscall)
+        m_rodataFixups.Add(new RodataFixup(m_instructions.Count, Reg.T6, m_unicodeToCceTableOffset));
+        foreach (uint insn in RiscVEncoder.Li(Reg.T6, 0)) Emit(insn); // patched
 
         int rdLoop = m_instructions.Count;
         // read(0, &byte_on_stack, 1)
@@ -2818,14 +3469,18 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Lbu(Reg.T0, Reg.Sp, 0));
         Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, 8));
 
-        // Check EOF (a0 <= 0) or newline (t0 == '\n')
+        // Check EOF (a0 <= 0) or newline (t0 == '\n') — check Unicode newline BEFORE CCE conversion
         int eofCheck = m_instructions.Count;
         Emit(RiscVEncoder.Nop()); // patched: beqz a0 → done
         foreach (uint insn in RiscVEncoder.Li(Reg.T1, '\n')) Emit(insn);
         int nlCheck = m_instructions.Count;
         Emit(RiscVEncoder.Nop()); // patched: beq t0, t1 → done
 
-        // Store byte at result + 8 + count
+        // Convert Unicode→CCE: t0 = table[t0]
+        Emit(RiscVEncoder.Add(Reg.T1, Reg.T6, Reg.T0));
+        Emit(RiscVEncoder.Lbu(Reg.T0, Reg.T1, 0));
+
+        // Store CCE byte at result + 8 + count
         Emit(RiscVEncoder.Add(Reg.T1, Reg.T4, Reg.T5));
         Emit(RiscVEncoder.Sb(Reg.T1, Reg.T0, 8));
         Emit(RiscVEncoder.Addi(Reg.T5, Reg.T5, 1));
@@ -2835,10 +3490,11 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         m_instructions[eofCheck] = RiscVEncoder.Beq(Reg.A0, Reg.Zero, (doneLabel - eofCheck) * 4);
         m_instructions[nlCheck] = RiscVEncoder.Beq(Reg.T0, Reg.T1, (doneLabel - nlCheck) * 4);
 
-        // Store length and bump heap
+        // Store length and bump heap past length prefix + data
         Emit(RiscVEncoder.Sd(Reg.T4, Reg.T5, 0));
         Emit(RiscVEncoder.Addi(Reg.A0, Reg.T5, 15));
         Emit(RiscVEncoder.Andi(Reg.A0, Reg.A0, -8));
+        Emit(RiscVEncoder.Addi(Reg.A0, Reg.A0, 8));         // + length prefix
         Emit(RiscVEncoder.Add(Reg.S1, Reg.T4, Reg.A0));
         Emit(RiscVEncoder.Mv(Reg.A0, Reg.T4));
         Emit(RiscVEncoder.Ret());
@@ -3005,6 +3661,86 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Ecall());
     }
 
+    // ── UART input (bare metal) ──────────────────────────────────
+
+    void EmitBareMetalReadSerialHelper()
+    {
+        // __bare_metal_read_serial: → a0=length-prefixed string on heap
+        // Polls UART for bytes until EOT (0x04) or null (0x00).
+        // Converts Unicode→CCE via lookup table in rodata.
+        m_functionOffsets["__bare_metal_read_serial"] = m_instructions.Count;
+
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -32));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.Ra, 24));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S2, 16));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S3, 8));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S4, 0));
+
+        // s2 = output buffer start (current heap ptr)
+        Emit(RiscVEncoder.Mv(Reg.S2, Reg.S1));
+        // s3 = byte count
+        foreach (uint insn in RiscVEncoder.Li(Reg.S3, 0)) Emit(insn);
+        // s4 = Unicode→CCE table address
+        m_rodataFixups.Add(new RodataFixup(m_instructions.Count, Reg.S4, m_unicodeToCceTableOffset));
+        foreach (uint insn in RiscVEncoder.Li(Reg.S4, 0)) Emit(insn); // patched
+
+        // t0 = UART base
+        foreach (uint insn in RiscVEncoder.Li(Reg.T0, UartBase)) Emit(insn);
+
+        // Poll loop: wait for LSR bit 0 (data ready)
+        int pollLoop = m_instructions.Count;
+        Emit(RiscVEncoder.Lbu(Reg.T1, Reg.T0, 5));  // LSR at UART+5
+        Emit(RiscVEncoder.Andi(Reg.T1, Reg.T1, 1));  // bit 0 = data ready
+        int dataReady = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bnez t1 → read byte
+        Emit(RiscVEncoder.J((pollLoop - m_instructions.Count) * 4)); // spin
+        int readByte = m_instructions.Count;
+        m_instructions[dataReady] = RiscVEncoder.Bne(Reg.T1, Reg.Zero, (readByte - dataReady) * 4);
+
+        // Read byte from UART RBR (offset 0)
+        Emit(RiscVEncoder.Lbu(Reg.T1, Reg.T0, 0));   // t1 = received byte
+
+        // Check for EOT (0x04)
+        foreach (uint insn in RiscVEncoder.Li(Reg.T2, 0x04)) Emit(insn);
+        int gotEot = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: beq t1, t2 → done
+
+        // Check for null (0x00)
+        int gotNull = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: beqz t1 → done
+
+        // Convert Unicode→CCE: table[byte]
+        Emit(RiscVEncoder.Add(Reg.T2, Reg.S4, Reg.T1));
+        Emit(RiscVEncoder.Lbu(Reg.T1, Reg.T2, 0));    // t1 = CCE byte
+
+        // Store to output buffer: buf[8 + count]
+        Emit(RiscVEncoder.Add(Reg.T2, Reg.S2, Reg.S3));
+        Emit(RiscVEncoder.Sb(Reg.T2, Reg.T1, 8));      // buf[8+count] = CCE byte
+
+        // count++
+        Emit(RiscVEncoder.Addi(Reg.S3, Reg.S3, 1));
+        Emit(RiscVEncoder.J((pollLoop - m_instructions.Count) * 4)); // loop
+
+        // Done: store length, bump heap, return
+        int doneLabel = m_instructions.Count;
+        m_instructions[gotEot] = RiscVEncoder.Beq(Reg.T1, Reg.T2, (doneLabel - gotEot) * 4);
+        m_instructions[gotNull] = RiscVEncoder.Beq(Reg.T1, Reg.Zero, (doneLabel - gotNull) * 4);
+
+        Emit(RiscVEncoder.Sd(Reg.S2, Reg.S3, 0));      // [buf+0] = length
+        // Bump heap: s1 = s2 + align8(8 + count)
+        Emit(RiscVEncoder.Addi(Reg.T1, Reg.S3, 15));
+        Emit(RiscVEncoder.Andi(Reg.T1, Reg.T1, -8));
+        Emit(RiscVEncoder.Add(Reg.S1, Reg.S2, Reg.T1));
+        Emit(RiscVEncoder.Mv(Reg.A0, Reg.S2));          // return buffer ptr
+
+        Emit(RiscVEncoder.Ld(Reg.S4, Reg.Sp, 0));
+        Emit(RiscVEncoder.Ld(Reg.S3, Reg.Sp, 8));
+        Emit(RiscVEncoder.Ld(Reg.S2, Reg.Sp, 16));
+        Emit(RiscVEncoder.Ld(Reg.Ra, Reg.Sp, 24));
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, 32));
+        Emit(RiscVEncoder.Ret());
+    }
+
     // ── UART output (bare metal) ─────────────────────────────────
 
     void EmitUartWriteBuffer()
@@ -3038,8 +3774,10 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
         if (m_target == RiscVTarget.BareMetal)
         {
-            foreach (uint insn in RiscVEncoder.Li(Reg.Sp, 0x80100000L)) Emit(insn);
-            foreach (uint insn in RiscVEncoder.Li(Reg.S1, 0x80200000L)) Emit(insn);
+            // Stack at 16MB above code base (plenty for deep recursion)
+            foreach (uint insn in RiscVEncoder.Li(Reg.Sp, 0x81000000L)) Emit(insn);
+            // Heap at 32MB above code base
+            foreach (uint insn in RiscVEncoder.Li(Reg.S1, 0x82000000L)) Emit(insn);
         }
         else
         {
@@ -3100,10 +3838,16 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         int textSizeBytes = m_instructions.Count * 4;
         ulong rodataVaddr = ElfWriter.ComputeRodataVaddr(textSizeBytes, m_target);
 
+        Console.Error.WriteLine($"RISCV: rodata vaddr=0x{rodataVaddr:X}, {m_rodataFixups.Count} fixup(s), text={textSizeBytes}B");
         foreach (RodataFixup fixup in m_rodataFixups)
         {
             long addr = (long)(rodataVaddr + (ulong)fixup.RodataOffset);
+            // Bare metal addresses like 0x80000xxx are 32-bit but look >int.MaxValue as long.
+            // Cast to int (sign-extending) so Li uses the efficient lui+addi encoding.
+            if (addr > int.MaxValue && addr <= uint.MaxValue)
+                addr = (int)(uint)addr;
             uint[] insns = RiscVEncoder.Li(fixup.Register, addr);
+            Console.Error.WriteLine($"  fixup: insn[{fixup.InstructionIndex}] reg=x{fixup.Register} rodata+{fixup.RodataOffset} → 0x{(rodataVaddr + (ulong)fixup.RodataOffset):X} ({insns.Length} insns)");
             for (int i = 0; i < 2 && i < insns.Length; i++)
                 m_instructions[fixup.InstructionIndex + i] = insns[i];
         }
@@ -3117,6 +3861,8 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             if (m_functionOffsets.TryGetValue(fixup.FunctionName, out int funcIndex))
             {
                 long funcAddr = (long)(textVaddr + (ulong)(funcIndex * 4));
+                if (funcAddr > int.MaxValue && funcAddr <= uint.MaxValue)
+                    funcAddr = (int)(uint)funcAddr;
                 uint[] insns = RiscVEncoder.Li(fixup.Register, funcAddr);
                 for (int i = 0; i < 2 && i < insns.Length; i++)
                     m_instructions[fixup.InstructionIndex + i] = insns[i];
