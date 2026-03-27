@@ -172,18 +172,42 @@ source text) is deep-copied every time ANY LexState is escape-copied in
 a let-binding region. The lexer creates ~30,000 LexStates during tokenization.
 30,000 × 180KB = 5.4GB — no heap size is sufficient.
 
-**#1 blocker: result-space-aware escape-copy**. Escape helpers must check:
-"is this pointer already in result space? If so, return it unchanged."
+#### DONE: Result-space-aware escape-copy (x86-64, dad9769)
 
-Implementation plan:
-1. At startup, store `result_space_base` (= brk_base + working_space_size)
-   in a known location (first 8 bytes of heap, or a reserved register)
-2. In each escape helper, before following a pointer: compare against
-   `result_space_base`. If ptr >= base, it's already in result space → skip copy
-3. Apply to both x86-64 and RISC-V backends
+Stores `result_space_base` at text[0] via RIP-relative store at startup.
+Text segment changed to RWX. In `EmitEscapeFieldCopy`, list element loop,
+and `EmitRegion` top-level escape: loads global, compares pointer against
+base, skips copy if `ptr >= base`. Reduces result-space usage from ~5.4GB
+to ~2MB for self-compile. RISC-V port pending.
 
-This is a small change in `EmitEscapeHelperPrologue` / each field-copy
-helper. The check is: `cmp rdi, [result_base_addr]; jge .skip_copy`.
+#### Current status: list-snoc is O(N) — causes O(N²) working-space blowup
+
+With result-space check working, the remaining blocker is `__list_snoc`.
+It's copy-on-write: allocates `(oldLen+2)*8` bytes and copies all old
+elements every time. The tokenizer builds a 15,000-element list via TCO
+loop, one `list-snoc` per iteration → `sum(i=1..15000) of 8i ≈ 900MB`
+working-space allocations within a SINGLE region body (the tokenize call).
+No let-boundary reclamation can help because it's all within one TCO loop.
+
+**#1 blocker: in-place list-snoc for native backends.**
+
+The fix: `__list_snoc` should extend the list in-place when the list's
+allocation is at the top of the heap (i.e., `list_end == HeapReg`). This
+is always true in a linear ownership model — the list is the most recently
+allocated object. Just bump HeapReg by 8 and store the new element.
+
+```
+if (list_ptr + 8 + old_len*8 == HeapReg):
+    [list_ptr] = old_len + 1       // update length
+    [HeapReg] = element             // store new element
+    HeapReg += 8                    // bump
+    return list_ptr                 // same pointer, extended in-place
+else:
+    // fallback: copy (current behavior)
+```
+
+This turns O(N) per snoc into O(1), and O(N²) total into O(N). Apply to
+both x86-64 and RISC-V backends.
 
 ### Previous: TCO/match register clobbering (fixed last session)
 
@@ -212,7 +236,9 @@ it built the OS for.
 | ~~Fix native self-hosted crash~~ | **DONE** — TCO/match register clobbering in both backends |
 | ~~Escape-copy type resolution~~ | **DONE** — ResolveType recurses into ListType, ConstructedType keyed, all heap types enabled |
 | ~~DoBind region wrapping~~ | **DONE** — do-block bindings now wrapped in IRRegion for reclamation |
-| Result-space-aware escape-copy | **#1 blocker** — escape helpers must skip pointers already in result space |
+| ~~Result-space-aware escape~~ | **DONE** (x86-64) — skip copy for pointers already in result space |
+| In-place list-snoc | **#1 blocker** — O(N) copy-on-write causes O(N²) in TCO loops |
+| Result-space-aware escape (RISC-V) | Port from x86-64 |
 | Add EffectTypeExpr to desugar-type-expr | Missing case (assigned to Agent Windows) |
 | Perf automation | Wire `--bench-check` into CI or pre-commit hook |
 
