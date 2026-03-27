@@ -111,28 +111,29 @@ Full chain:
 
 #### Fix (both backends)
 
-Added allocation floor guards in `EmitMatch` (x86-64) and `EmitMatchBranches`
-(RISC-V): after each branch body emission, clamp `m_nextLocal` and `m_spillCount`
-back up to the pre-branch baseline so that no subsequent branch can reuse
-register-locals that hold the match scrutinee or result.
+Save/restore `m_nextLocal` and `m_nextTemp` in `EmitTailCall` so the
+reset doesn't leak into code emitted after the tail call. `m_spillCount`
+is intentionally NOT restored — spill slots must grow monotonically for
+correct frame sizing.
 
 Files changed:
-- `src/Codex.Emit.X86_64/X86_64CodeGen.cs` — `EmitMatch`
-- `src/Codex.Emit.RiscV/RiscVCodeGen.cs` — `EmitMatchBranches`
+- `src/Codex.Emit.X86_64/X86_64CodeGen.cs` — `EmitTailCall`, heap bump 64→256MB
+- `src/Codex.Emit.RiscV/RiscVCodeGen.cs` — `EmitRiscVTailCall`
 
 #### Verification
 
 - `test-2param.codex` (was SIGSEGV) → now emits correct C# with `add(1, 2)`
-- `test-source.codex` (simple case) → still works
-- All 1,003 tests pass (0 failures)
+- `test-source.codex`, `test-multi-apply`, `test-match`, `test-let-chain`,
+  `test-list-ops`, `test-text-ops` — all pass
+- All 1,003 reference compiler tests pass (0 failures)
 
-#### What was ruled out (previous sessions)
+### New blocker found: heap exhaustion on self-compile
 
-1. TCO + list-append patterns (all pass in isolation)
-2. Region heap reclamation
-3. String/CCE conversion
-4. __list_append helper logic
-5. Spill slot overlap, argument ordering
+The self-hosted compiler processing its own 180KB source exceeds any fixed
+heap size (tested 64MB, 256MB, 1GB — all hit the exact brk ceiling). The
+bump allocator creates millions of intermediate objects with zero reclamation.
+Small-to-medium programs compile fine. Self-compile needs region reclamation
+or GC in the native backend.
 
 ### Also found (assigned to Agent Windows)
 
@@ -169,8 +170,9 @@ either architecture.
 | Item | Notes |
 |------|-------|
 | ~~Fix native self-hosted crash~~ | **DONE** — TCO/match register clobbering in both backends |
-| Fix Boolean type in self-hosted emitter | #1 blocker for usermode self-compile |
-| Fix CCE string escaping in self-hosted emitter | #2 blocker — uses ASCII rules instead of CCE |
+| Native heap reclamation | **#1 blocker for MM3** — bump allocator exhausts any fixed heap on self-compile |
+| Fix Boolean type in self-hosted emitter | #2 blocker for usermode self-compile |
+| Fix CCE string escaping in self-hosted emitter | #3 blocker — uses ASCII rules instead of CCE |
 | Add EffectTypeExpr to desugar-type-expr | Missing case (assigned to Agent Windows) |
 | Perf automation | Wire `--bench-check` into CI or pre-commit hook |
 

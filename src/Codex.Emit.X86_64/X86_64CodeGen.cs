@@ -4932,9 +4932,12 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             X86_64Encoder.Syscall(m_text);
             X86_64Encoder.MovRR(m_text, HeapReg, Reg.RAX); // heap start
 
-            // Grow by 64MB (bump allocator needs headroom for large programs / deep TCO)
+            // Grow by 256MB (bump allocator, no GC).  Self-hosted compiler
+            // processes small-to-medium programs within this.  Self-compile
+            // of the full 180KB source exceeds any fixed heap — needs
+            // region reclamation or GC (see CurrentPlan near-term items).
             byte growReg = Reg.R11;
-            X86_64Encoder.Li(m_text, growReg, 64 * 1024 * 1024);
+            X86_64Encoder.Li(m_text, growReg, 256 * 1024 * 1024);
             X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
             X86_64Encoder.AddRR(m_text, Reg.RDI, growReg);
             X86_64Encoder.Li(m_text, Reg.RAX, 12); // sys_brk
