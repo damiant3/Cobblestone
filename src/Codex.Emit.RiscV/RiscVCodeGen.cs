@@ -265,6 +265,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     {
         IRIntegerLit intLit => EmitIntegerLit(intLit.Value),
         IRBoolLit boolLit => EmitIntegerLit(boolLit.Value ? 1 : 0),
+        IRCharLit charLit => EmitIntegerLit(CceTable.UnicharToCce(charLit.Value)),
         IRTextLit textLit => EmitTextLit(textLit.Value),
         IRName name => EmitName(name),
         IRBinary bin => EmitBinary(bin),
@@ -962,6 +963,13 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         if (region.Type is FunctionType)
             return EmitExpr(region.Body);
 
+        // Heap-returning functions: skip region reclamation.
+        // Pattern matching extracts pointers to intermediate heap allocations
+        // that are still live in locals — reclaiming corrupts them.
+        // Only scalar-returning regions are safe to reclaim.
+        if (region.NeedsEscapeCopy)
+            return EmitExpr(region.Body);
+
         // Save heap pointer (region entry)
         uint savedHeap = AllocLocal();
         uint hpTmp = AllocTemp();
@@ -970,92 +978,9 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
         uint bodyResult = EmitExpr(region.Body);
 
-        if (!region.NeedsEscapeCopy)
-        {
-            // Scalar return — restore S1, value survives in register
-            Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(savedHeap)));
-            return bodyResult;
-        }
-
-        // ── Copy-Above-Then-Compact ────────────────────────────────
-        // When the return value was allocated IN this region, deep copy it
-        // above the body data, then memmove down to saved_hp and relocate
-        // pointers. This reclaims all body intermediates.
-        //
-        // When the return value is OUTSIDE this region (parent scope),
-        // we do NOT reclaim — the return value may reference body
-        // intermediates through its transitive closure.
-
-        // Save body_end = current S1
-        uint bodyEnd = AllocLocal();
-        uint t1 = AllocTemp();
-        Emit(RiscVEncoder.Mv(t1, Reg.S1));
-        StoreLocal(bodyEnd, t1);
-
-        uint resultLocal = AllocLocal();
-        StoreLocal(resultLocal, bodyResult);
-
-        // Range check: if result < saved_hp OR result >= body_end → skip
-        uint rPtr = LoadLocal(resultLocal);
-        uint rSaved = LoadLocal(savedHeap);
-        int skipBelow = m_instructions.Count;
-        Emit(RiscVEncoder.Nop()); // patched: blt → skip
-        uint rEnd = LoadLocal(bodyEnd);
-        int skipAbove = m_instructions.Count;
-        Emit(RiscVEncoder.Nop()); // patched: bge → skip
-
-        // ── Escape path: result is IN the region ──
-        uint escapedResult = EmitEscapeCopy(resultLocal, region.Type);
-
-        uint escapedLocal = AllocLocal();
-        StoreLocal(escapedLocal, escapedResult);
-        uint copyEndLocal = AllocLocal();
-        uint t2 = AllocTemp();
-        Emit(RiscVEncoder.Mv(t2, Reg.S1));
-        StoreLocal(copyEndLocal, t2);
-
-        uint copySizeLocal = AllocLocal();
-        uint t3 = AllocTemp();
-        Emit(RiscVEncoder.Sub(t3, LoadLocal(copyEndLocal), LoadLocal(bodyEnd)));
-        StoreLocal(copySizeLocal, t3);
-
-        uint deltaLocal = AllocLocal();
-        uint t4 = AllocTemp();
-        Emit(RiscVEncoder.Sub(t4, LoadLocal(bodyEnd), LoadLocal(savedHeap)));
-        StoreLocal(deltaLocal, t4);
-
-        Emit(RiscVEncoder.Mv(Reg.A0, LoadLocal(savedHeap)));
-        Emit(RiscVEncoder.Mv(Reg.A1, LoadLocal(bodyEnd)));
-        Emit(RiscVEncoder.Mv(Reg.A2, LoadLocal(copySizeLocal)));
-        EmitCallTo("__memmove");
-
-        uint adjLocal = AllocLocal();
-        uint t5 = AllocTemp();
-        Emit(RiscVEncoder.Sub(t5, LoadLocal(escapedLocal), LoadLocal(deltaLocal)));
-        StoreLocal(adjLocal, t5);
-
-        EmitRelocateCall(adjLocal, deltaLocal, region.Type);
-
-        Emit(RiscVEncoder.Add(Reg.S1, LoadLocal(savedHeap), LoadLocal(copySizeLocal)));
-
-        StoreLocal(resultLocal, LoadLocal(adjLocal));
-        int skipToEnd = m_instructions.Count;
-        Emit(RiscVEncoder.Nop()); // patched: j → end
-
-        // ── Skip path: result is OUTSIDE the region ──
-        // Do NOT restore S1 — the return value may reference body
-        // intermediates. This wastes memory but is correct.
-        int skipLabel = m_instructions.Count;
-        m_instructions[skipBelow] = RiscVEncoder.Blt(rPtr, rSaved,
-            (skipLabel - skipBelow) * 4);
-        m_instructions[skipAbove] = RiscVEncoder.Bge(rPtr, rEnd,
-            (skipLabel - skipAbove) * 4);
-        // S1 stays at body_end — no reclamation for external results
-
-        int endLabel = m_instructions.Count;
-        m_instructions[skipToEnd] = RiscVEncoder.J((endLabel - skipToEnd) * 4);
-
-        return LoadLocal(resultLocal);
+        // Scalar return — restore S1, value survives in register
+        Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(savedHeap)));
+        return bodyResult;
     }
 
     void EmitRelocateCall(uint ptrLocal, uint deltaLocal, CodexType type)
@@ -1690,10 +1615,19 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 uint savedPath = AllocLocal();
                 StoreLocal(savedPath, pathReg);
                 uint contentReg = EmitExpr(args[1]);
-                // For now: write content to stdout (simplified)
-                Emit(RiscVEncoder.Ld(Reg.A2, contentReg, 0));
-                Emit(RiscVEncoder.Addi(Reg.A1, contentReg, 8));
-                EmitSyscallWrite();
+                if (m_target == RiscVTarget.BareMetal)
+                {
+                    // Bare metal: write content to UART
+                    Emit(RiscVEncoder.Ld(Reg.A2, contentReg, 0));
+                    Emit(RiscVEncoder.Addi(Reg.A1, contentReg, 8));
+                    EmitUartWriteBuffer();
+                }
+                else
+                {
+                    Emit(RiscVEncoder.Ld(Reg.A2, contentReg, 0));
+                    Emit(RiscVEncoder.Addi(Reg.A1, contentReg, 8));
+                    EmitSyscallWrite();
+                }
                 Emit(RiscVEncoder.Mv(Reg.A0, Reg.Zero));
                 return true;
             }
@@ -3456,10 +3390,11 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         m_instructions[eofCheck] = RiscVEncoder.Beq(Reg.A0, Reg.Zero, (doneLabel - eofCheck) * 4);
         m_instructions[nlCheck] = RiscVEncoder.Beq(Reg.T0, Reg.T1, (doneLabel - nlCheck) * 4);
 
-        // Store length and bump heap
+        // Store length and bump heap past length prefix + data
         Emit(RiscVEncoder.Sd(Reg.T4, Reg.T5, 0));
         Emit(RiscVEncoder.Addi(Reg.A0, Reg.T5, 15));
         Emit(RiscVEncoder.Andi(Reg.A0, Reg.A0, -8));
+        Emit(RiscVEncoder.Addi(Reg.A0, Reg.A0, 8));         // + length prefix
         Emit(RiscVEncoder.Add(Reg.S1, Reg.T4, Reg.A0));
         Emit(RiscVEncoder.Mv(Reg.A0, Reg.T4));
         Emit(RiscVEncoder.Ret());
