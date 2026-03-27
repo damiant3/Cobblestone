@@ -45,10 +45,12 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     readonly Dictionary<string, string> m_relocateHelperNames = [];
     readonly Queue<(string Key, string Name, CodexType Type)> m_relocateHelperQueue = new();
 
-    // S1 is reserved as the global heap pointer — NOT saved/restored by functions.
+    // S1 = working-space heap pointer.  S11 = result-space heap pointer.
+    // Neither is saved/restored by functions — they are global state.
+    const uint ResultReg = Reg.S11;
     static readonly uint[] CalleeSaved = {
         Reg.S2, Reg.S3, Reg.S4, Reg.S5, Reg.S6,
-        Reg.S7, Reg.S8, Reg.S9, Reg.S10, Reg.S11
+        Reg.S7, Reg.S8, Reg.S9, Reg.S10
     };
 
     public void EmitModule(IRModule module)
@@ -169,21 +171,21 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         if (m_inTCOFunction)
             Console.Error.WriteLine($"RISCV TCO: {def.Name}");
 
-        // Prologue: base frame = 96 bytes (ra + s0 + s2-s11).
+        // Prologue: base frame = 88 bytes (ra + s0 + s2-s10; S11 reserved for result-space).
         // If spills are needed, frame grows — patched after body emission.
         // For large frames (>2047 bytes), addi immediate overflows.
         // Reserve space for a multi-instruction prologue using T0 as scratch.
         m_prologueIndex = m_instructions.Count;
         // Reserve 3 slots: up to 2 for Li(T0, frameSize) + 1 for sub(sp, sp, t0)
-        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -96)); // slot 0: patched
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -88)); // slot 0: patched
         Emit(RiscVEncoder.Nop());                       // slot 1: patched or nop
         Emit(RiscVEncoder.Nop());                       // slot 2: patched or nop
-        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.Ra, 88));
-        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S0, 80));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.Ra, 80));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S0, 72));
         for (int i = 0; i < CalleeSaved.Length; i++)
-            Emit(RiscVEncoder.Sd(Reg.Sp, CalleeSaved[i], 72 - i * 8));
+            Emit(RiscVEncoder.Sd(Reg.Sp, CalleeSaved[i], 64 - i * 8));
         // S0 = frame pointer: reserve 3 slots for large frame
-        Emit(RiscVEncoder.Addi(Reg.S0, Reg.Sp, 96));   // slot A: patched
+        Emit(RiscVEncoder.Addi(Reg.S0, Reg.Sp, 88));   // slot A: patched
         Emit(RiscVEncoder.Nop());                        // slot B: patched or nop
         Emit(RiscVEncoder.Nop());                        // slot C: patched or nop
 
@@ -227,7 +229,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         m_spillCounts[def.Name] = m_spillCount;
 
         // Patch frame size if spills were needed
-        int frameSize = 96 + m_spillCount * 8;
+        int frameSize = 88 + m_spillCount * 8;
         // Align to 16 bytes
         if (frameSize % 16 != 0) frameSize += 8;
 
@@ -239,9 +241,9 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
         // Epilogue
         for (int i = 0; i < CalleeSaved.Length; i++)
-            Emit(RiscVEncoder.Ld(CalleeSaved[i], Reg.Sp, 72 - i * 8));
-        Emit(RiscVEncoder.Ld(Reg.Ra, Reg.Sp, 88));
-        Emit(RiscVEncoder.Ld(Reg.S0, Reg.Sp, 80));
+            Emit(RiscVEncoder.Ld(CalleeSaved[i], Reg.Sp, 64 - i * 8));
+        Emit(RiscVEncoder.Ld(Reg.Ra, Reg.Sp, 80));
+        Emit(RiscVEncoder.Ld(Reg.S0, Reg.Sp, 72));
         EmitAddSp(frameSize);
         Emit(RiscVEncoder.Ret());
     }
@@ -1043,24 +1045,54 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         if (region.Type is FunctionType)
             return EmitExpr(region.Body);
 
-        // Heap-returning functions: skip region reclamation.
-        // Pattern matching extracts pointers to intermediate heap allocations
-        // that are still live in locals — reclaiming corrupts them.
-        // Only scalar-returning regions are safe to reclaim.
-        if (region.NeedsEscapeCopy)
-            return EmitExpr(region.Body);
-
-        // Save heap pointer (region entry)
-        uint savedHeap = AllocLocal();
+        // Save working-space mark (region entry)
+        uint mark = AllocLocal();
         uint hpTmp = AllocTemp();
         Emit(RiscVEncoder.Mv(hpTmp, Reg.S1));
-        StoreLocal(savedHeap, hpTmp);
+        StoreLocal(mark, hpTmp);
 
         uint bodyResult = EmitExpr(region.Body);
 
-        // Scalar return — restore S1, value survives in register
-        Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(savedHeap)));
-        return bodyResult;
+        if (!region.NeedsEscapeCopy)
+        {
+            // Scalar return — restore S1, value survives in register
+            Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(mark)));
+            return bodyResult;
+        }
+
+        // Two-space reclamation: enabled for TextType only.
+        // See x86-64 EmitRegion for explanation of the ListType crash.
+        CodexType resolved = ResolveType(region.Type);
+        if (resolved is not TextType)
+            return bodyResult;
+
+        // ── Two-space reclamation ─────────────────────────────────
+        // Escape-copy the heap result to result space, then reset
+        // the working-space bump pointer to reclaim all intermediates.
+
+        // Save body result (lives in working space)
+        uint bodyLocal = AllocLocal();
+        StoreLocal(bodyLocal, bodyResult);
+
+        // Switch S1 to result space so escape helper allocates there
+        Emit(RiscVEncoder.Mv(Reg.S1, ResultReg));
+
+        // Escape-copy body result → allocates in result space via S1
+        string helperName = GetOrQueueEscapeHelper(resolved);
+        uint src = LoadLocal(bodyLocal);
+        Emit(RiscVEncoder.Mv(Reg.A0, src));
+        EmitCallTo(helperName);
+        // A0 = pointer to escape-copied result in result space
+
+        // Save escaped result before restoring working space
+        uint resultLocal = AllocLocal();
+        StoreLocal(resultLocal, Reg.A0);
+
+        // Update result-space pointer, restore working space to mark
+        Emit(RiscVEncoder.Mv(ResultReg, Reg.S1));       // S11 ← advanced result-space pointer
+        Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(mark))); // S1 ← mark (reclaim working space!)
+
+        return LoadLocal(resultLocal);
     }
 
     void EmitRelocateCall(uint ptrLocal, uint deltaLocal, CodexType type)
@@ -3878,20 +3910,28 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         {
             // Stack at 16MB above code base (plenty for deep recursion)
             foreach (uint insn in RiscVEncoder.Li(Reg.Sp, 0x81000000L)) Emit(insn);
-            // Heap at 32MB above code base
+            // Two-space heap at 32MB above code base (2MB working + 2MB result)
             foreach (uint insn in RiscVEncoder.Li(Reg.S1, 0x82000000L)) Emit(insn);
+            foreach (uint insn in RiscVEncoder.Li(ResultReg, 0x82000000L + 0x200000L)) Emit(insn);
         }
         else
         {
-            // Linux: allocate heap via brk syscall (214)
+            // Linux: two-space heap via brk syscall (214)
             foreach (uint insn in RiscVEncoder.Li(Reg.A0, 0)) Emit(insn);
             foreach (uint insn in RiscVEncoder.Li(Reg.A7, 214)) Emit(insn);
             Emit(RiscVEncoder.Ecall());
-            Emit(RiscVEncoder.Mv(Reg.S1, Reg.A0));
-            foreach (uint insn in RiscVEncoder.Li(Reg.T0, 64 * 1024 * 1024)) Emit(insn); // 64MB heap
+            Emit(RiscVEncoder.Mv(Reg.S1, Reg.A0)); // working space starts at brk base
+
+            // Grow by 128MB: 64MB working + 64MB result
+            foreach (uint insn in RiscVEncoder.Li(Reg.T0, 128L * 1024 * 1024)) Emit(insn);
             Emit(RiscVEncoder.Add(Reg.A0, Reg.S1, Reg.T0));
             foreach (uint insn in RiscVEncoder.Li(Reg.A7, 214)) Emit(insn);
             Emit(RiscVEncoder.Ecall());
+
+            // Result space starts at brk_base + 64MB
+            Emit(RiscVEncoder.Mv(ResultReg, Reg.S1));
+            foreach (uint insn in RiscVEncoder.Li(Reg.T0, 64L * 1024 * 1024)) Emit(insn);
+            Emit(RiscVEncoder.Add(ResultReg, ResultReg, Reg.T0));
         }
 
         IRDefinition? mainDef = null;
@@ -3988,7 +4028,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     uint AllocLocal()
     {
-        if (m_nextLocal <= Reg.S11)
+        if (m_nextLocal <= Reg.S10)
         {
             uint reg = m_nextLocal;
             m_nextLocal++;
@@ -4000,7 +4040,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         return slot;
     }
 
-    int SpillOffset(uint virtualReg) => 96 + ((int)(virtualReg - SpillBase)) * 8;
+    int SpillOffset(uint virtualReg) => 88 + ((int)(virtualReg - SpillBase)) * 8;
 
     // Store a value into a local (register or stack slot)
     void StoreLocal(uint local, uint valueReg)

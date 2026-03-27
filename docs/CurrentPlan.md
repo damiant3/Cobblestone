@@ -88,57 +88,80 @@ metal. MM2: The High Camp is reached.**
 
 ---
 
-## Cam Session Handoff (2026-03-27 night)
+## Cam Session Handoff (2026-03-27)
 
-### FIXED: Native self-hosted compiler crash — TCO/match register clobbering
+### DONE: Two-space region reclamation (both backends)
 
 **Branch**: `cam/mm3-shared-fixes`
 
-#### Root cause
+The #1 MM3 blocker — heap exhaustion on self-compile — is addressed by
+splitting the heap into **working space** and **result space** with a
+dedicated register for each:
 
-**EmitTailCall resets `m_nextLocal` to `m_tcoSavedNextLocal` inside a match
-branch body. Subsequent match branches then reallocate the same callee-saved
-register (R13 on x86-64) that holds the match scrutinee, clobbering it.**
+| | x86-64 | RISC-V |
+|---|--------|--------|
+| Working space | R10 (HeapReg) | S1 |
+| Result space | R15 (ResultReg) | S11 (ResultReg) |
+| Working size | 256 MB | 64 MB |
+| Result size | 256 MB | 64 MB |
 
-Full chain:
-1. `ir-expr-type` is TCO (because of `IrLet ... -> ir-expr-type b`)
-2. `EmitMatch` allocates `savedScrut = R13`, `resultLocal = R14`. m_nextLocal = 4.
-3. The IrLet branch (tag 9) emits a tail call → `EmitTailCall` resets m_nextLocal to 2.
-4. The IrApply branch (tag 10) starts: `AllocLocal()` returns R13 (local #2) — the
-   same register as savedScrut!
-5. `StoreLocal(R13, fieldVal)` overwrites the scrutinee with field 0 (the func ptr).
-6. `LoadLocal(savedScrut)` returns R13 (just the register, no reload — it's a
-   register-local, not a stack spill). But R13 now points to the func sub-node.
-7. Subsequent field extractions read from [func + 16] and [func + 24] instead of
-   [node + 16] and [node + 24]. The value at [func + 24] = 0x8 (the FunTy tag of
-   an adjacent heap object), which gets returned as the "type" of the IrApply node.
-8. `deep-resolve(ctx.ust, 0x8)` → `resolve` dereferences 0x8 → SIGSEGV.
+#### How it works
 
-#### Fix (both backends)
+Every `let` binding is wrapped in an `IRRegion` by the Lowering pass.
+- **Scalar-returning regions** (integers, booleans): save HeapReg, run body,
+  restore HeapReg → all intermediates reclaimed, value survives in register.
+- **Heap-returning regions** (lists, records, text, sum types): save HeapReg
+  as mark, run body, switch HeapReg to result space, escape-copy the result
+  (deep copy into result space), switch back and restore HeapReg to mark →
+  all working-space intermediates reclaimed, live result in result space.
 
-Save/restore `m_nextLocal` and `m_nextTemp` in `EmitTailCall` so the
-reset doesn't leak into code emitted after the tail call. `m_spillCount`
-is intentionally NOT restored — spill slots must grow monotonically for
-correct frame sizing.
+The escape-copy helpers already existed (for closures and fork/await). The
+new code reuses them, just switching which heap space receives the copies.
 
-Files changed:
-- `src/Codex.Emit.X86_64/X86_64CodeGen.cs` — `EmitTailCall`, heap bump 64→256MB
-- `src/Codex.Emit.RiscV/RiscVCodeGen.cs` — `EmitRiscVTailCall`
+#### Why this helps MM3
+
+Without reclamation: all 7 pipeline stages' garbage accumulates (~1GB+).
+With reclamation: each stage's working memory is reset after every `let`.
+Only live data (stage outputs) persists in result space.
+
+Estimated memory: ~50MB live data across all stages vs ~1GB+ garbage before.
+The 256MB working space only needs to hold one stage's intermediates at a time.
+
+#### Files changed
+
+- `src/Codex.Emit.X86_64/X86_64CodeGen.cs` — R15 reserved as ResultReg,
+  removed from LocalRegs (4 callee-saved instead of 5), EmitRegion rewritten,
+  startup: 512MB brk (256+256), bare metal: 4MB heap, REPL arena reset
+- `src/Codex.Emit.X86_64/ElfWriterX86_64.cs` — bare metal ELF memsz 2MB→4MB
+- `src/Codex.Emit.RiscV/RiscVCodeGen.cs` — S11 reserved as ResultReg,
+  removed from CalleeSaved (9 instead of 10), base frame 96→88 bytes,
+  EmitRegion rewritten, startup: 128MB brk (64+64), bare metal: +2MB result
 
 #### Verification
 
-- `test-2param.codex` (was SIGSEGV) → now emits correct C# with `add(1, 2)`
-- `test-source.codex`, `test-multi-apply`, `test-match`, `test-let-chain`,
-  `test-list-ops`, `test-text-ops` — all pass
-- All 1,003 reference compiler tests pass (0 failures)
+- 1,003 reference compiler tests pass (0 failures)
+- Build clean (expected CS5001 only)
 
-### New blocker found: heap exhaustion on self-compile
+#### Current status: TextType reclamation only
 
-The self-hosted compiler processing its own 180KB source exceeds any fixed
-heap size (tested 64MB, 256MB, 1GB — all hit the exact brk ceiling). The
-bump allocator creates millions of intermediate objects with zero reclamation.
-Small-to-medium programs compile fine. Self-compile needs region reclamation
-or GC in the native backend.
+Tested under QEMU user-mode (WSL). Two-space reclamation works for TextType.
+ListType/SumType/RecordType crash because list escape helpers try to deep-copy
+elements whose `ConstructedType` doesn't resolve through `m_typeDefs` — the
+element type info is erased in the IR. The unresolved type gets no escape
+helper emitted, leaving an unpatched CALL that jumps to garbage.
+
+**Next step**: Fix the escape helper type resolution. Options:
+1. Carry fully-resolved element types from Lowering into ListType/SumType
+2. Add a "shallow copy" fallback: if type can't resolve, memcpy the raw bytes
+3. Emit a generic escape helper that reads the heap object header for size
+
+TextType reclamation alone won't solve the heap exhaustion — text is small
+compared to the token lists and AST trees. The big win requires List/Sum/Record.
+
+### Previous: TCO/match register clobbering (fixed last session)
+
+See `docs/OldStatus/CurrentPlan-2026-03-26-evening.md` for the full
+root-cause analysis (commits `ea35113`, `42c2fd0`).
 
 ### Also found (assigned to Agent Windows)
 
@@ -160,7 +183,8 @@ it built the OS for.
 | Item | Notes |
 |------|-------|
 | ~~Fix native self-hosted crash~~ | **DONE** — TCO/match register clobbering in both backends |
-| Native heap reclamation | **#1 blocker for MM3** — bump allocator exhausts any fixed heap on self-compile |
+| Native heap reclamation | **IN PROGRESS** — two-space infrastructure in both backends, TextType works, List/Sum/Record blocked on escape-copy type resolution |
+| Fix escape-copy type resolution | **#1 blocker** — ConstructedType elements in lists don't resolve, need resolved types in IR |
 | Add EffectTypeExpr to desugar-type-expr | Missing case (assigned to Agent Windows) |
 | Perf automation | Wire `--bench-check` into CI or pre-commit hook |
 

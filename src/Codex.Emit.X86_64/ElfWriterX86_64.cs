@@ -154,7 +154,7 @@ sealed class ElfWriterX86_64
         w.Write(textVaddr);
         w.Write(textVaddr);
         w.Write((ulong)textSection.Length);
-        w.Write((ulong)textSection.Length + 0x200000); // extra for heap
+        w.Write((ulong)textSection.Length + 0x400000); // 4MB heap (2MB working + 2MB result)
         w.Write((ulong)0x1000);
 
         // ── PHDR 1: .rodata LOAD (r) ──

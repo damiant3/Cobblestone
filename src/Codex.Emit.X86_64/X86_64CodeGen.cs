@@ -21,12 +21,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
     // Register allocator state (per-function)
     // Temps: RAX, RCX, RDX, RSI, RDI, R11 (caller-saved, recycled)
-    // Locals: RBX, R12-R15 (callee-saved, monotonic)
+    // Locals: RBX, R12-R14 (callee-saved, monotonic)
     // Spill scratch: R8, R9 (used by LoadLocal for spilled values — NOT in TempRegs)
-    // Reserved: RSP (stack), RBP (frame), R10 (heap pointer)
-    const byte HeapReg = Reg.R10; // global heap pointer — NOT callee-saved
+    // Reserved: RSP (stack), RBP (frame), R10 (heap pointer), R15 (result-space pointer)
+    const byte HeapReg = Reg.R10;    // working-space heap pointer
+    const byte ResultReg = Reg.R15;  // result-space heap pointer (region reclamation)
     static readonly byte[] TempRegs = [Reg.RAX, Reg.RCX, Reg.RDX, Reg.RSI, Reg.RDI, Reg.R11];
-    static readonly byte[] LocalRegs = [Reg.RBX, Reg.R12, Reg.R13, Reg.R14, Reg.R15];
+    static readonly byte[] LocalRegs = [Reg.RBX, Reg.R12, Reg.R13, Reg.R14];
     const int SpillBase = 32; // virtual register numbers for spilled locals
 
     int m_nextTemp;
@@ -285,7 +286,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             X86_64Encoder.MovRR(m_text, Reg.RAX, result);
 
         // Epilogue: skip spill space, restore callee-saved, pop rbp, ret
-        // lea rsp, [rbp - 40] points rsp at saved r15 (5 callee-saved × 8 bytes)
+        // lea rsp, [rbp - 32] points rsp at saved r14 (4 callee-saved × 8 bytes)
         X86_64Encoder.Lea(m_text, Reg.RSP, Reg.RBP, -LocalRegs.Length * 8);
         for (int i = LocalRegs.Length - 1; i >= 0; i--)
             X86_64Encoder.PopR(m_text, LocalRegs[i]);
@@ -1055,24 +1056,59 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         if (region.Type is FunctionType)
             return EmitExpr(region.Body);
 
-        // Heap-returning functions: skip region reclamation.
-        // Pattern matching extracts pointers to intermediate heap allocations
-        // that are still live in locals — reclaiming corrupts them.
-        // Only scalar-returning regions are safe to reclaim.
-        if (region.NeedsEscapeCopy)
-            return EmitExpr(region.Body);
-
-        // Save heap pointer (region entry)
-        int savedHeap = AllocLocal();
+        // Save working-space mark (region entry)
+        int mark = AllocLocal();
         byte hpTmp = AllocTemp();
         X86_64Encoder.MovRR(m_text, hpTmp, HeapReg);
-        StoreLocal(savedHeap, hpTmp);
+        StoreLocal(mark, hpTmp);
 
         byte bodyResult = EmitExpr(region.Body);
 
-        // Scalar return — restore HeapReg, value survives in register
-        X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(savedHeap));
-        return bodyResult;
+        if (!region.NeedsEscapeCopy)
+        {
+            // Scalar return — restore HeapReg, value survives in register
+            X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(mark));
+            return bodyResult;
+        }
+
+        // Two-space reclamation: enabled for TextType only.
+        // ListType/SumType/RecordType crash because the list escape helper
+        // tries to deep-copy elements whose ConstructedType doesn't resolve
+        // (element type info is erased to ConstructedType in the IR, and
+        // ResolveType can't find it in m_typeDefs). Fixing this requires
+        // either carrying resolved types through to the emitter or adding
+        // a shallow-copy fallback for unresolvable types.
+        CodexType resolved = ResolveType(region.Type);
+        if (resolved is not TextType)
+            return bodyResult;
+
+        // ── Two-space reclamation ─────────────────────────────────
+        // Escape-copy the heap result to result space, then reset
+        // the working-space bump pointer to reclaim all intermediates.
+
+        // Save body result (lives in working space, will be source for copy)
+        int bodyLocal = AllocLocal();
+        StoreLocal(bodyLocal, bodyResult);
+
+        // Switch HeapReg to result space so escape helper allocates there
+        X86_64Encoder.MovRR(m_text, HeapReg, ResultReg);
+
+        // Escape-copy body result → allocates in result space via HeapReg
+        string helperName = GetOrQueueEscapeHelper(resolved);
+        byte src = LoadLocal(bodyLocal);
+        X86_64Encoder.MovRR(m_text, Reg.RDI, src);
+        EmitCallTo(helperName);
+        // RAX = pointer to escape-copied result in result space
+
+        // Save escaped result before restoring working space
+        int resultLocal = AllocLocal();
+        StoreLocal(resultLocal, Reg.RAX);
+
+        // Update result-space pointer, restore working space to mark
+        X86_64Encoder.MovRR(m_text, ResultReg, HeapReg);       // R15 ← advanced result-space pointer
+        X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(mark)); // R10 ← mark (reclaim working space!)
+
+        return LoadLocal(resultLocal);
     }
 
     byte EmitEscapeCopy(int srcLocal, CodexType type)
@@ -4504,18 +4540,20 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
     const long IdtBase = 0x6000;
     // --- Kernel data page (0x7000-0x7FFF) ---
-    // 0x7000  TickCountAddr    8 bytes  Timer interrupt counter
-    // 0x7008  KeyBufferAddr    8 bytes  Last keyboard scancode
-    // 0x7010  CurrentProcAddr  8 bytes  (defined at line ~3281 with process table)
-    // 0x7018  ArenaBaseAddr    8 bytes  Heap arena base for REPL reset
-    // 0x7020  SerialWritePos   8 bytes  Ring buffer write position (interrupt handler)
-    // 0x7028  SerialReadPos    8 bytes  Ring buffer read position (consumer)
-    // 0x180000-0x1BFFFF       256KB    Serial ring buffer data (below heap at 0x200000)
+    // 0x7000  TickCountAddr         8 bytes  Timer interrupt counter
+    // 0x7008  KeyBufferAddr         8 bytes  Last keyboard scancode
+    // 0x7010  CurrentProcAddr       8 bytes  (defined at line ~3281 with process table)
+    // 0x7018  ArenaBaseAddr         8 bytes  Heap arena base for REPL reset
+    // 0x7020  SerialWritePos        8 bytes  Ring buffer write position (interrupt handler)
+    // 0x7028  SerialReadPos         8 bytes  Ring buffer read position (consumer)
+    // 0x7030  ResultArenaBaseAddr   8 bytes  Result-space arena base for REPL reset
+    // 0x180000-0x1BFFFF            256KB    Serial ring buffer data (below heap at 0x200000)
     const long TickCountAddr = 0x7000;
     const long KeyBufferAddr = 0x7008;
     const long ArenaBaseAddr = 0x7018;
     const long SerialWritePosAddr = 0x7020;
     const long SerialReadPosAddr = 0x7028;
+    const long ResultArenaBaseAddr = 0x7030;
     const long SerialRingBufAddr = 0x180000;
     const long SerialRingBufSize = 0x40000; // 256KB — must be power of 2
 
@@ -4540,13 +4578,15 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.LidtRdi(m_text);
         X86_64Encoder.AddRI(m_text, Reg.RSP, 16);
 
-        // 4. Initialize tick counter, key buffer, and arena base to 0
+        // 4. Initialize tick counter, key buffer, arena bases to 0
         X86_64Encoder.Li(m_text, Reg.RDI, TickCountAddr);
         X86_64Encoder.Li(m_text, Reg.RAX, 0);
         X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
         X86_64Encoder.Li(m_text, Reg.RDI, KeyBufferAddr);
         X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
         X86_64Encoder.Li(m_text, Reg.RDI, ArenaBaseAddr);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+        X86_64Encoder.Li(m_text, Reg.RDI, ResultArenaBaseAddr);
         X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
 
         // 5. Enable interrupts
@@ -4882,8 +4922,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             X86_64Encoder.Li(m_text, Reg.RSP, 0x80000);
             X86_64Encoder.MovRR(m_text, Reg.RBP, Reg.RSP);
 
-            // Set up heap at 0x200000 (2MB — above identity-mapped pages)
+            // Set up two-space heap at 0x200000 (4MB total: 2MB working + 2MB result)
             X86_64Encoder.Li(m_text, HeapReg, 0x200000);
+            X86_64Encoder.Li(m_text, ResultReg, 0x200000 + 0x200000); // result space at +2MB
 
             // Initialize process table (process 1 disabled for compiler test)
             EmitProcessSetup();
@@ -4926,22 +4967,26 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         }
         else
         {
-            // Linux user mode: set up heap via brk(0) then brk(brk_result + 1MB)
-            X86_64Encoder.Li(m_text, Reg.RAX, 12); // sys_brk
+            // Linux user mode: two-space heap via brk
+            X86_64Encoder.Li(m_text, Reg.RAX, 12); // sys_brk(0) → current break
             X86_64Encoder.Li(m_text, Reg.RDI, 0);
             X86_64Encoder.Syscall(m_text);
-            X86_64Encoder.MovRR(m_text, HeapReg, Reg.RAX); // heap start
+            X86_64Encoder.MovRR(m_text, HeapReg, Reg.RAX); // working space starts at brk base
 
-            // Grow by 256MB (bump allocator, no GC).  Self-hosted compiler
-            // processes small-to-medium programs within this.  Self-compile
-            // of the full 180KB source exceeds any fixed heap — needs
-            // region reclamation or GC (see CurrentPlan near-term items).
+            // Grow by 512MB: 256MB working space + 256MB result space.
+            // Region reclamation resets working space after each let-binding,
+            // so only one stage's intermediates need to fit at a time.
             byte growReg = Reg.R11;
-            X86_64Encoder.Li(m_text, growReg, 256 * 1024 * 1024);
+            X86_64Encoder.Li(m_text, growReg, 512L * 1024 * 1024);
             X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
             X86_64Encoder.AddRR(m_text, Reg.RDI, growReg);
             X86_64Encoder.Li(m_text, Reg.RAX, 12); // sys_brk
             X86_64Encoder.Syscall(m_text);
+
+            // Result space starts at brk_base + 256MB
+            X86_64Encoder.MovRR(m_text, ResultReg, HeapReg);
+            X86_64Encoder.Li(m_text, growReg, 256L * 1024 * 1024);
+            X86_64Encoder.AddRR(m_text, ResultReg, growReg);
         }
 
         IRDefinition? mainDef = null;
@@ -4967,15 +5012,19 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             // fresh arena. The heap below the arena base is persistent
             // (currently empty — reserved for future REPL state).
 
-            // Save current heap pointer as the arena base
+            // Save current heap pointers as arena bases (working + result)
             X86_64Encoder.Li(m_text, Reg.RDI, ArenaBaseAddr);
             X86_64Encoder.MovStore(m_text, Reg.RDI, HeapReg, 0);
+            X86_64Encoder.Li(m_text, Reg.RDI, ResultArenaBaseAddr);
+            X86_64Encoder.MovStore(m_text, Reg.RDI, ResultReg, 0);
 
             int replLoop = m_text.Count;
 
-            // Restore heap to arena base (discard previous compilation's garbage)
+            // Restore both heap pointers to arena bases (discard previous garbage)
             X86_64Encoder.Li(m_text, Reg.RDI, ArenaBaseAddr);
             X86_64Encoder.MovLoad(m_text, HeapReg, Reg.RDI, 0);
+            X86_64Encoder.Li(m_text, Reg.RDI, ResultArenaBaseAddr);
+            X86_64Encoder.MovLoad(m_text, ResultReg, Reg.RDI, 0);
 
             EmitCallMainAndPrint(returnType);
 
