@@ -34,7 +34,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     int m_tcoLoopTop;
     uint[] m_tcoParamLocals = [];
     uint[] m_tcoTempLocals = [];
-    int m_tcoSavedNextLocal;
+    uint m_tcoSavedNextLocal;
     uint m_tcoSavedNextTemp;
     int m_spillCount;           // number of spilled locals beyond S-registers
     int m_prologueIndex = -1;   // instruction index of the frame size addi (patched)
@@ -127,7 +127,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     static bool ShouldTCO(IRDefinition def)
     {
-        return def.Parameters.Length > 0 && HasTailCall(def.Body, def.Name);
+        return false; // TEMPORARILY DISABLED — TCO bug under investigation
     }
 
     static bool HasTailCall(IRExpr expr, string funcName) => expr switch
@@ -194,7 +194,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 m_tcoTempLocals[i] = AllocLocal();
         }
         m_tcoLoopTop = m_instructions.Count;
-        m_tcoSavedNextLocal = (int)m_nextLocal;
+        m_tcoSavedNextLocal = m_nextLocal;
         m_tcoSavedNextTemp = m_nextTemp;
         m_inTailPosition = m_inTCOFunction;
 
@@ -506,7 +506,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         IRExpr cur = app;
         while (cur is IRApply a) { args.Insert(0, a.Argument); cur = a.Function; }
 
-        m_nextLocal = (uint)m_tcoSavedNextLocal;
+        m_nextLocal = m_tcoSavedNextLocal;
         m_nextTemp = m_tcoSavedNextTemp;
 
         for (int i = 0; i < args.Count && i < m_tcoTempLocals.Length; i++)
@@ -802,7 +802,6 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 }
             }
         }
-
         uint rd = AllocTemp();
         Emit(RiscVEncoder.Ld(rd, baseReg, fieldIndex * 8));
         return rd;
