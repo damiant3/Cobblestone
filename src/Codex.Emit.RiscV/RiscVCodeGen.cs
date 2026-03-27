@@ -328,6 +328,14 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         if (m_locals.TryGetValue(name.Name, out uint reg))
             return LoadLocal(reg);
 
+        // Try zero-arg builtins first (matches x86-64 order)
+        if (TryEmitBuiltin(name.Name, new List<IRExpr>()))
+        {
+            uint brd = AllocTemp();
+            Emit(RiscVEncoder.Mv(brd, Reg.A0));
+            return brd;
+        }
+
         // Function used as a value (e.g., passed to map-list) — wrap as 0-capture closure
         if (name.Type is FunctionType)
             return EmitPartialApplication(name.Name, new List<IRExpr>());
@@ -344,7 +352,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                     break;
                 }
             }
-            if (tag >= 0)
+            if (tag >= 0 && sumType.Constructors[tag].Fields.IsEmpty)
             {
                 uint ptrReg = AllocTemp();
                 Emit(RiscVEncoder.Mv(ptrReg, Reg.S1));
@@ -356,14 +364,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             }
         }
 
-        // Zero-arg builtin (e.g., read-line in do-blocks) or zero-arg function
-        // (forward reference — call is patched after all functions are emitted)
-        if (TryEmitBuiltin(name.Name, new List<IRExpr>()))
-        {
-            uint rd = AllocTemp();
-            Emit(RiscVEncoder.Mv(rd, Reg.A0));
-            return rd;
-        }
+        // Top-level constant or zero-arg function — call it
         {
             uint rd = AllocTemp();
             EmitCallTo(name.Name);
