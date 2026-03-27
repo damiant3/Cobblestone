@@ -1071,16 +1071,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             return bodyResult;
         }
 
-        // Two-space reclamation: enabled for TextType only.
-        // ListType/SumType/RecordType crash because the list escape helper
-        // tries to deep-copy elements whose ConstructedType doesn't resolve
-        // (element type info is erased to ConstructedType in the IR, and
-        // ResolveType can't find it in m_typeDefs). Fixing this requires
-        // either carrying resolved types through to the emitter or adding
-        // a shallow-copy fallback for unresolvable types.
+        // Two-space reclamation: escape-copy result to result space,
+        // then reset working-space pointer to reclaim all intermediates.
+        // ResolveType now recurses into ListType elements, so all types
+        // with definitions in m_typeDefs resolve correctly.
         CodexType resolved = ResolveType(region.Type);
-        if (resolved is not TextType)
-            return bodyResult;
+        if (resolved is ConstructedType)
+            return bodyResult; // unresolvable type — skip reclamation (safe fallback)
 
         // ── Two-space reclamation ─────────────────────────────────
         // Escape-copy the heap result to result space, then reset
@@ -3624,6 +3621,12 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     {
         if (type is ConstructedType ct && m_typeDefs[ct.Constructor.Value] is CodexType resolved)
             return resolved;
+        if (type is ListType lt)
+        {
+            CodexType resolvedElem = ResolveType(lt.Element);
+            if (!ReferenceEquals(resolvedElem, lt.Element))
+                return new ListType(resolvedElem);
+        }
         return type;
     }
 
@@ -3633,11 +3636,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         RecordType rt => $"record_{rt.TypeName.Value}",
         SumType st => $"sum_{st.TypeName.Value}",
         ListType lt => $"list_{EscapeCopyKey(lt.Element)}",
+        ConstructedType ct => $"ctor_{ct.Constructor.Value}",
         _ => $"type_{type.GetType().Name}"
     };
 
     string GetOrQueueEscapeHelper(CodexType type)
     {
+        type = ResolveType(type);
         string key = EscapeCopyKey(type);
         if (m_escapeHelperNames.TryGetValue(key, out string? name))
             return name;

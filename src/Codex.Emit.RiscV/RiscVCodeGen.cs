@@ -1060,11 +1060,11 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             return bodyResult;
         }
 
-        // Two-space reclamation: enabled for TextType only.
-        // See x86-64 EmitRegion for explanation of the ListType crash.
+        // Two-space reclamation: escape-copy result to result space,
+        // then reset working-space pointer to reclaim all intermediates.
         CodexType resolved = ResolveType(region.Type);
-        if (resolved is not TextType)
-            return bodyResult;
+        if (resolved is ConstructedType)
+            return bodyResult; // unresolvable type — skip reclamation (safe fallback)
 
         // ── Two-space reclamation ─────────────────────────────────
         // Escape-copy the heap result to result space, then reset
@@ -1131,6 +1131,12 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     {
         if (type is ConstructedType ct && m_typeDefs[ct.Constructor.Value] is CodexType resolved)
             return resolved;
+        if (type is ListType lt)
+        {
+            CodexType resolvedElem = ResolveType(lt.Element);
+            if (!ReferenceEquals(resolvedElem, lt.Element))
+                return new ListType(resolvedElem);
+        }
         return type;
     }
 
@@ -1140,11 +1146,13 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         RecordType rt => $"record_{rt.TypeName.Value}",
         SumType st => $"sum_{st.TypeName.Value}",
         ListType lt => $"list_{EscapeCopyKey(lt.Element)}",
+        ConstructedType ct => $"ctor_{ct.Constructor.Value}",
         _ => $"type_{type.GetType().Name}"
     };
 
     string GetOrQueueEscapeHelper(CodexType type)
     {
+        type = ResolveType(type);
         string key = EscapeCopyKey(type);
         if (m_escapeHelperNames.TryGetValue(key, out string? name))
             return name;
@@ -1364,6 +1372,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     string GetOrQueueRelocateHelper(CodexType type)
     {
+        type = ResolveType(type);
         string key = EscapeCopyKey(type);
         if (m_relocateHelperNames.TryGetValue(key, out string? name))
             return name;
