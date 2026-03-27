@@ -604,17 +604,20 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             }
 
             // Push stack args (9th+) onto the stack before setting register args.
-            // Push in forward order so callee sees them at [old_sp + 0], [old_sp + 8], ...
+            // Store at negative offsets from current SP BEFORE adjusting SP,
+            // so that spill-slot LoadLocal offsets remain valid.
             int stackArgCount = Math.Max(0, argRegs.Count - 8);
             if (stackArgCount > 0)
             {
-                // Reserve stack space for overflow args
-                Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -stackArgCount * 8));
+                int totalStackSize = stackArgCount * 8;
                 for (int i = 0; i < stackArgCount; i++)
                 {
                     uint argVal = LoadLocal(argRegs[8 + i]);
-                    Emit(RiscVEncoder.Sd(Reg.Sp, argVal, i * 8));
+                    // Store below current SP: at offset -(totalSize) + i*8
+                    Emit(RiscVEncoder.Sd(Reg.Sp, argVal, -totalStackSize + i * 8));
                 }
+                // Now adjust SP past the stored args
+                Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -totalStackSize));
             }
 
             // Load register args (1st-8th) into A0-A7
