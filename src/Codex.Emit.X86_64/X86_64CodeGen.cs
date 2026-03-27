@@ -1170,6 +1170,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             }
             case "write-file" when args.Count == 2:
             {
+                // Stub: writes content to stdout with CCE→Unicode conversion.
+                // Path is evaluated but ignored. Proper file I/O is future work.
                 byte pathReg = EmitExpr(args[0]);
                 int savedPath = AllocLocal();
                 StoreLocal(savedPath, pathReg);
@@ -1180,11 +1182,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
                 }
                 else
                 {
-                    X86_64Encoder.MovLoad(m_text, Reg.RDX, contentReg, 0);
-                    X86_64Encoder.Lea(m_text, Reg.RSI, contentReg, 8);
-                    X86_64Encoder.Li(m_text, Reg.RAX, 1);
-                    X86_64Encoder.Li(m_text, Reg.RDI, 1);
-                    X86_64Encoder.Syscall(m_text);
+                    EmitPrintTextNoNewline(contentReg);
                 }
                 byte wrRd = AllocTemp();
                 X86_64Encoder.Li(m_text, wrRd, 0);
