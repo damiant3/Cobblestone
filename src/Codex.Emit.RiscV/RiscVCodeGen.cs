@@ -474,6 +474,12 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 EmitCallTo("__list_append");
                 Emit(RiscVEncoder.Mv(rd, Reg.A0));
                 break;
+            case IRBinaryOp.PowInt:
+                Emit(RiscVEncoder.Mv(Reg.A1, right));
+                Emit(RiscVEncoder.Mv(Reg.A0, leftReg));
+                EmitCallTo("__ipow");
+                Emit(RiscVEncoder.Mv(rd, Reg.A0));
+                break;
             default:
                 Console.Error.WriteLine($"RISCV WARNING: unhandled binary op {bin.Op} in EmitBinary");
                 Emit(RiscVEncoder.Mv(rd, Reg.Zero)); break;
@@ -1671,23 +1677,15 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
             case "write-file" when args.Count == 2:
             {
+                // Stub: writes content to stdout with CCE→Unicode conversion.
+                // Path is evaluated but ignored. Proper file I/O is future work.
                 uint pathReg = EmitExpr(args[0]);
                 uint savedPath = AllocLocal();
                 StoreLocal(savedPath, pathReg);
                 uint contentReg = EmitExpr(args[1]);
-                if (m_target == RiscVTarget.BareMetal)
-                {
-                    // Bare metal: write content to UART
-                    Emit(RiscVEncoder.Ld(Reg.A2, contentReg, 0));
-                    Emit(RiscVEncoder.Addi(Reg.A1, contentReg, 8));
-                    EmitUartWriteBuffer();
-                }
-                else
-                {
-                    Emit(RiscVEncoder.Ld(Reg.A2, contentReg, 0));
-                    Emit(RiscVEncoder.Addi(Reg.A1, contentReg, 8));
-                    EmitSyscallWrite();
-                }
+                // Reuse EmitPrintText for CCE→Unicode output (without trailing newline)
+                // For now, call the same per-byte path but skip the newline:
+                EmitPrintTextNoNewline(contentReg);
                 Emit(RiscVEncoder.Mv(Reg.A0, Reg.Zero));
                 return true;
             }
@@ -2103,13 +2101,12 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         m_instructions[jEndIndex] = RiscVEncoder.J((endIndex - jEndIndex) * 4);
     }
 
-    void EmitPrintText(uint ptrReg)
+    void EmitPrintTextNoNewline(uint ptrReg)
     {
         // Strings are CCE-encoded. Output requires CCE→Unicode conversion per byte.
         // The CceToUnicode table (128 bytes) lives in .rodata at m_cceToUnicodeTableOffset.
 
         // Save ptrReg and load table address into callee-saved regs for the loop.
-        // Use T-regs as scratch within the loop body.
         uint savedPtr = AllocLocal();
         StoreLocal(savedPtr, ptrReg);
         uint savedTable = AllocLocal();
@@ -2148,19 +2145,17 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
         if (m_target == RiscVTarget.BareMetal)
         {
-            // Write single byte to UART
             foreach (uint insn in RiscVEncoder.Li(Reg.T1, UartBase)) Emit(insn);
             Emit(RiscVEncoder.Sb(Reg.T1, Reg.T0, 0));
         }
         else
         {
-            // Write single byte via sys_write: put byte on stack
             Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -8));
             Emit(RiscVEncoder.Sb(Reg.Sp, Reg.T0, 0));
-            foreach (uint insn in RiscVEncoder.Li(Reg.A0, 1)) Emit(insn); // stdout
-            Emit(RiscVEncoder.Mv(Reg.A1, Reg.Sp));                         // buf
-            foreach (uint insn in RiscVEncoder.Li(Reg.A2, 1)) Emit(insn); // count=1
-            foreach (uint insn in RiscVEncoder.Li(Reg.A7, 64)) Emit(insn); // SYS_write
+            foreach (uint insn in RiscVEncoder.Li(Reg.A0, 1)) Emit(insn);
+            Emit(RiscVEncoder.Mv(Reg.A1, Reg.Sp));
+            foreach (uint insn in RiscVEncoder.Li(Reg.A2, 1)) Emit(insn);
+            foreach (uint insn in RiscVEncoder.Li(Reg.A7, 64)) Emit(insn);
             Emit(RiscVEncoder.Ecall());
             Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, 8));
         }
@@ -2174,6 +2169,11 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         int doneTarget = m_instructions.Count;
         m_instructions[doneJump] = RiscVEncoder.Bge(LoadLocal(savedIdx), LoadLocal(savedLen),
             (doneTarget - doneJump) * 4);
+    }
+
+    void EmitPrintText(uint ptrReg)
+    {
+        EmitPrintTextNoNewline(ptrReg);
 
         // Newline: output literal Unicode 0x0A (not via CCE)
         if (m_target == RiscVTarget.BareMetal)
@@ -2302,6 +2302,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         EmitTextToIntHelper();
         EmitListConsHelper();
         EmitListAppendHelper();
+        EmitIpowHelper();
         EmitReadFileHelper();
         EmitReadLineHelper();
         EmitStrReplaceHelper();
@@ -3003,6 +3004,61 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         m_instructions[loopExit] = RiscVEncoder.Bge(Reg.T0, Reg.A2,
             (doneLabel - loopExit) * 4);
 
+        Emit(RiscVEncoder.Ret());
+    }
+
+    void EmitIpowHelper()
+    {
+        // __ipow: a0=base, a1=exponent → a0=base^exponent
+        // Exponentiation by squaring. Leaf function.
+        m_functionOffsets["__ipow"] = m_instructions.Count;
+
+        // result (t0) = 1
+        foreach (uint insn in RiscVEncoder.Li(Reg.T0, 1)) Emit(insn);
+
+        // if exponent < 0 → return 0
+        int jmpNeg = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: blt a1, zero → negPath
+
+        // if exponent == 0 → return 1
+        int jmpZero = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: beq a1, zero → done
+
+        // Loop: while exponent > 0
+        int loopTop = m_instructions.Count;
+
+        // if (exponent & 1) result *= base
+        Emit(RiscVEncoder.Andi(Reg.T1, Reg.A1, 1));
+        int skipMul = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: beqz t1 → skipMulTarget
+        Emit(RiscVEncoder.Mul(Reg.T0, Reg.T0, Reg.A0)); // result *= base
+        int skipMulTarget = m_instructions.Count;
+        m_instructions[skipMul] = RiscVEncoder.Beq(Reg.T1, Reg.Zero,
+            (skipMulTarget - skipMul) * 4);
+
+        // base *= base
+        Emit(RiscVEncoder.Mul(Reg.A0, Reg.A0, Reg.A0));
+        // exponent >>= 1
+        Emit(RiscVEncoder.Srli(Reg.A1, Reg.A1, 1));
+
+        // if exponent > 0, loop
+        int jmpLoop = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bne a1, zero → loopTop
+        m_instructions[jmpLoop] = RiscVEncoder.Bne(Reg.A1, Reg.Zero,
+            (loopTop - jmpLoop) * 4);
+
+        // done: return result
+        int done = m_instructions.Count;
+        m_instructions[jmpZero] = RiscVEncoder.Beq(Reg.A1, Reg.Zero,
+            (done - jmpZero) * 4);
+        Emit(RiscVEncoder.Mv(Reg.A0, Reg.T0));
+        Emit(RiscVEncoder.Ret());
+
+        // negPath: return 0
+        int negPath = m_instructions.Count;
+        m_instructions[jmpNeg] = RiscVEncoder.Blt(Reg.A1, Reg.Zero,
+            (negPath - jmpNeg) * 4);
+        Emit(RiscVEncoder.Mv(Reg.A0, Reg.Zero));
         Emit(RiscVEncoder.Ret());
     }
 
