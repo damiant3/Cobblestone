@@ -2598,7 +2598,29 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     void EmitListSnocHelper()
     {
         // __list_snoc: a0=list_ptr, a1=element → a0=new list with element appended
+        // Fast path: if list ends at S1 (HeapReg), extend in-place O(1).
+        // Slow path: allocate new list and copy all elements O(N).
         m_functionOffsets["__list_snoc"] = m_instructions.Count;
+
+        // Fast path: check if list_ptr + (oldLen+1)*8 == S1 (HeapReg)
+        Emit(RiscVEncoder.Ld(Reg.T0, Reg.A0, 0));        // t0 = old length
+        Emit(RiscVEncoder.Addi(Reg.T1, Reg.T0, 1));      // t1 = oldLen + 1
+        Emit(RiscVEncoder.Slli(Reg.T1, Reg.T1, 3));       // t1 = (oldLen+1)*8
+        Emit(RiscVEncoder.Add(Reg.T1, Reg.A0, Reg.T1));   // t1 = list_ptr + (oldLen+1)*8 = list end
+        int slowPath = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bne t1, s1 → slow
+
+        // Fast path: extend in-place
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.T0, 1));       // t0 = newLen
+        Emit(RiscVEncoder.Sd(Reg.A0, Reg.T0, 0));         // [list_ptr] = newLen
+        Emit(RiscVEncoder.Sd(Reg.S1, Reg.A1, 0));         // [S1] = element
+        Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, 8));       // S1 += 8
+        Emit(RiscVEncoder.Ret());                           // return a0 (unchanged)
+
+        // Slow path
+        int slowTarget = m_instructions.Count;
+        m_instructions[slowPath] = RiscVEncoder.Bne(Reg.T1, Reg.S1,
+            (slowTarget - slowPath) * 4);
 
         Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -32));
         Emit(RiscVEncoder.Sd(Reg.Sp, Reg.Ra, 24));
@@ -2621,15 +2643,13 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Sd(Reg.A0, Reg.T0, 0));
 
         // Copy old elements: for i in 0..oldLen-1
-        foreach (uint insn in RiscVEncoder.Li(Reg.T0, 0)) Emit(insn); // i
+        foreach (uint insn in RiscVEncoder.Li(Reg.T0, 0)) Emit(insn);
         int copyLoop = m_instructions.Count;
         int copyDone = m_instructions.Count;
         Emit(RiscVEncoder.Nop()); // patched: bge t0, s4 → done
-        // Load old[8 + i*8]
         Emit(RiscVEncoder.Slli(Reg.T1, Reg.T0, 3));
         Emit(RiscVEncoder.Add(Reg.T2, Reg.S2, Reg.T1));
         Emit(RiscVEncoder.Ld(Reg.T2, Reg.T2, 8));
-        // Store new[8 + i*8]
         Emit(RiscVEncoder.Add(Reg.T3, Reg.A0, Reg.T1));
         Emit(RiscVEncoder.Sd(Reg.T3, Reg.T2, 8));
         Emit(RiscVEncoder.Addi(Reg.T0, Reg.T0, 1));

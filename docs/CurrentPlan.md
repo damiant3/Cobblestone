@@ -247,7 +247,8 @@ either architecture.
 | ~~Escape-copy type resolution~~ | **DONE** — ResolveType recurses into ListType, ConstructedType keyed, all heap types enabled |
 | ~~DoBind region wrapping~~ | **DONE** — do-block bindings now wrapped in IRRegion for reclamation |
 | ~~Result-space-aware escape~~ | **DONE** (x86-64) — skip copy for pointers already in result space |
-| In-place list-snoc | **#1 blocker** — O(N) copy-on-write causes O(N²) in TCO loops |
+| ~~In-place list-snoc~~ | **DONE** — fast path O(1) when at heap top, but rarely fires in TCO loops |
+| TCO heap compaction OR cons+reverse | **#1 blocker** — 52K tokens × O(N²) snoc = 11GB; need structural fix |
 | Result-space-aware escape (RISC-V) | Port from x86-64 |
 | Fix Boolean type in self-hosted emitter | Blocker for usermode self-compile |
 | Fix CCE string escaping in self-hosted emitter | Blocker — uses ASCII rules instead of CCE |
