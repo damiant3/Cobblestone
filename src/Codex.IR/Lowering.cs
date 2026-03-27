@@ -502,7 +502,10 @@ public sealed class Lowering(
                 {
                     IRExpr value = LowerExpr(bind.Value, ErrorType.s_instance);
                     CodexType boundType = value.Type is EffectfulType eft ? eft.Return : value.Type;
-                    statements.Add(new IRDoBind(bind.Name.Value, boundType, value));
+                    // Wrap in IRRegion for two-space reclamation, same as let-bindings.
+                    bool needsEscape = IRRegion.TypeNeedsHeapEscape(boundType);
+                    IRExpr regionValue = new IRRegion(value, boundType, needsEscape);
+                    statements.Add(new IRDoBind(bind.Name.Value, boundType, regionValue));
                     m_localEnv = m_localEnv.Set(bind.Name.Value, boundType);
                     break;
                 }
