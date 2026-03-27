@@ -918,6 +918,13 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         if (index >= match.Branches.Length)
             return;
 
+        // Guard: a TCO tail-call inside a branch body resets m_nextLocal
+        // to m_tcoSavedNextLocal, which may be below the register-local
+        // holding scrutReg.  Save the floor so subsequent branches (via
+        // recursive EmitMatchBranches) cannot reuse that register.
+        uint matchBaseLocal = m_nextLocal;
+        int matchBaseSpill = m_spillCount;
+
         IRMatchBranch branch = match.Branches[index];
 
         switch (branch.Pattern)
@@ -951,6 +958,11 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
                 uint bodyReg = EmitExpr(branch.Body);
                 StoreLocal(resultReg, bodyReg);
+
+                // Clamp allocation floor after body (tail call may have reset)
+                if (m_nextLocal < matchBaseLocal) m_nextLocal = matchBaseLocal;
+                if (m_spillCount < matchBaseSpill) m_spillCount = matchBaseSpill;
+
                 int jumpEndIdx = m_instructions.Count;
                 Emit(RiscVEncoder.Nop());
 
@@ -1007,6 +1019,11 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
                 uint bodyReg = EmitExpr(branch.Body);
                 StoreLocal(resultReg, bodyReg);
+
+                // Clamp allocation floor after body (tail call may have reset)
+                if (m_nextLocal < matchBaseLocal) m_nextLocal = matchBaseLocal;
+                if (m_spillCount < matchBaseSpill) m_spillCount = matchBaseSpill;
+
                 int jumpEndIdx = m_instructions.Count;
                 Emit(RiscVEncoder.Nop());
 
