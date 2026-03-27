@@ -898,6 +898,14 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
         int resultLocal = AllocLocal();
 
+        // Guard against TCO tail-call resetting m_nextLocal below our
+        // savedScrut/resultLocal allocations (see EmitTailCall).
+        // Each branch may contain a tail call that resets m_nextLocal
+        // to m_tcoSavedNextLocal; subsequent branches must not reuse
+        // the register-locals that hold savedScrut or resultLocal.
+        int matchBaseLocal = m_nextLocal;
+        int matchBaseSpill = m_spillCount;
+
         List<int> jumpToEndOffsets = [];
 
         for (int i = 0; i < match.Branches.Length; i++)
@@ -988,6 +996,16 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
             if (nextBranchPatch >= 0)
                 PatchJcc(nextBranchPatch, m_text.Count);
+
+            // Restore allocation floor: a tail-call inside a branch body
+            // resets m_nextLocal to m_tcoSavedNextLocal, which may be
+            // below the locals we allocated for this match (savedScrut,
+            // resultLocal).  Clamp back up so the next branch cannot
+            // reuse those register-locals.
+            if (m_nextLocal < matchBaseLocal)
+                m_nextLocal = matchBaseLocal;
+            if (m_spillCount < matchBaseSpill)
+                m_spillCount = matchBaseSpill;
         }
 
         int endOffset = m_text.Count;

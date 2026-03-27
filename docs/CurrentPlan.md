@@ -88,6 +88,64 @@ metal. MM2: The High Camp is reached.**
 
 ---
 
+## Cam Session Handoff (2026-03-27 night)
+
+### FIXED: Native self-hosted compiler crash — TCO/match register clobbering
+
+**Branch**: `cam/mm3-shared-fixes`
+
+#### Root cause
+
+**EmitTailCall resets `m_nextLocal` to `m_tcoSavedNextLocal` inside a match
+branch body. Subsequent match branches then reallocate the same callee-saved
+register (R13 on x86-64) that holds the match scrutinee, clobbering it.**
+
+Full chain:
+1. `ir-expr-type` is TCO (because of `IrLet ... -> ir-expr-type b`)
+2. `EmitMatch` allocates `savedScrut = R13`, `resultLocal = R14`. m_nextLocal = 4.
+3. The IrLet branch (tag 9) emits a tail call → `EmitTailCall` resets m_nextLocal to 2.
+4. The IrApply branch (tag 10) starts: `AllocLocal()` returns R13 (local #2) — the
+   same register as savedScrut!
+5. `StoreLocal(R13, fieldVal)` overwrites the scrutinee with field 0 (the func ptr).
+6. `LoadLocal(savedScrut)` returns R13 (just the register, no reload — it's a
+   register-local, not a stack spill). But R13 now points to the func sub-node.
+7. Subsequent field extractions read from [func + 16] and [func + 24] instead of
+   [node + 16] and [node + 24]. The value at [func + 24] = 0x8 (the FunTy tag of
+   an adjacent heap object), which gets returned as the "type" of the IrApply node.
+8. `deep-resolve(ctx.ust, 0x8)` → `resolve` dereferences 0x8 → SIGSEGV.
+
+#### Fix (both backends)
+
+Added allocation floor guards in `EmitMatch` (x86-64) and `EmitMatchBranches`
+(RISC-V): after each branch body emission, clamp `m_nextLocal` and `m_spillCount`
+back up to the pre-branch baseline so that no subsequent branch can reuse
+register-locals that hold the match scrutinee or result.
+
+Files changed:
+- `src/Codex.Emit.X86_64/X86_64CodeGen.cs` — `EmitMatch`
+- `src/Codex.Emit.RiscV/RiscVCodeGen.cs` — `EmitMatchBranches`
+
+#### Verification
+
+- `test-2param.codex` (was SIGSEGV) → now emits correct C# with `add(1, 2)`
+- `test-source.codex` (simple case) → still works
+- All 1,003 tests pass (0 failures)
+
+#### What was ruled out (previous sessions)
+
+1. TCO + list-append patterns (all pass in isolation)
+2. Region heap reclamation
+3. String/CCE conversion
+4. __list_append helper logic
+5. Spill slot overlap, argument ordering
+
+### Also found (assigned to Agent Windows)
+
+`Codex.Codex/Ast/Desugarer.codex` — `desugar-type-expr` missing `EffectTypeExpr` case.
+`Codex.Codex/Ast/Desugarer_.codex` — duplicate file, renamed to `.bak`.
+
+---
+
 ## What's Next
 
 ### The path to MM3: Summit
@@ -100,9 +158,9 @@ it built the OS for.
 
 | Item | Notes |
 |------|-------|
-| MM2 celebration & documentation | Write up the achievement, update THE-ASCENT |
+| ~~Fix native self-hosted crash~~ | **DONE** — TCO/match register clobbering in both backends |
+| Add EffectTypeExpr to desugar-type-expr | Missing case (assigned to Agent Windows) |
 | Perf automation | Wire `--bench-check` into CI or pre-commit hook |
-| Capability refinement Step 1 | Direction markers in effect syntax (design doc ready) |
 
 ### Medium-term (weeks)
 
