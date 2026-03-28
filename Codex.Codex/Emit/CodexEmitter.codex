@@ -441,13 +441,71 @@ Section: Module Emission
 
   codex-emit-all-defs : List IRDef -> List Text -> Integer -> Text
   codex-emit-all-defs (defs) (ctor-names) (i) =
-   codex-emit-all-defs-dedup defs ctor-names i []
+   let real-defs = codex-filter-defs defs ctor-names 0 (list-length defs) []
+   in codex-emit-def-list real-defs ctor-names 0
 
-  codex-emit-all-defs-dedup : List IRDef -> List Text -> Integer -> List Text -> Text
-  codex-emit-all-defs-dedup (defs) (ctor-names) (i) (emitted) =
+  codex-emit-def-list : List IRDef -> List Text -> Integer -> Text
+  codex-emit-def-list (defs) (ctor-names) (i) =
    if i == list-length defs then ""
+   else codex-emit-def (list-at defs i) ctor-names ++ "\n" ++ codex-emit-def-list defs ctor-names (i + 1)
+
+  codex-filter-defs : List IRDef -> List Text -> Integer -> Integer -> List IRDef -> List IRDef
+  codex-filter-defs (defs) (ctor-names) (i) (len) (acc) =
+   if i == len then acc
    else let d = list-at defs i
-    in if list-contains emitted d.name then codex-emit-all-defs-dedup defs ctor-names (i + 1) emitted
-    else let text = codex-emit-def d ctor-names
-     in if text == "" then codex-emit-all-defs-dedup defs ctor-names (i + 1) emitted
-     else text ++ "\n" ++ codex-emit-all-defs-dedup defs ctor-names (i + 1) (list-snoc emitted d.name)
+    in if codex-skip-def d ctor-names then codex-filter-defs defs ctor-names (i + 1) len acc
+    else if codex-has-def-named acc d.name 0 (list-length acc)
+     then if codex-def-score d > codex-def-score-named acc d.name 0 (list-length acc)
+      then codex-filter-defs defs ctor-names (i + 1) len (codex-replace-def acc d.name d 0 (list-length acc))
+      else codex-filter-defs defs ctor-names (i + 1) len acc
+    else codex-filter-defs defs ctor-names (i + 1) len (list-snoc acc d)
+
+  codex-def-score : IRDef -> Integer
+  codex-def-score (d) =
+   list-length d.params * 100 + codex-body-depth d.body
+
+  codex-def-score-named : List IRDef -> Text -> Integer -> Integer -> Integer
+  codex-def-score-named (defs) (name) (i) (len) =
+   if i == len then 0
+   else if (list-at defs i).name == name then codex-def-score (list-at defs i)
+   else codex-def-score-named defs name (i + 1) len
+
+  codex-body-depth : IRExpr -> Integer
+  codex-body-depth (e) =
+   when e
+    if IrName (n) (ty) -> 1
+    if IrIntLit (n) -> 1
+    if IrTextLit (s) -> 1
+    if IrBoolLit (b) -> 1
+    if IrFieldAccess (r) (f) (ty) -> 2
+    if IrApply (f) (a) (ty) -> 3 + codex-body-depth f
+    if IrLet (name) (ty) (val) (body) -> 5 + codex-body-depth body
+    if IrIf (c) (t) (el) (ty) -> 5 + codex-body-depth t
+    if IrMatch (s) (bs) (ty) -> 10
+    if IrLambda (ps) (b) (ty) -> 5
+    if IrDo (stmts) (ty) -> 5
+    if IrRecord (n) (fs) (ty) -> 3
+    if _ -> 1
+
+  codex-has-def-named : List IRDef -> Text -> Integer -> Integer -> Boolean
+  codex-has-def-named (defs) (name) (i) (len) =
+   if i == len then False
+   else if (list-at defs i).name == name then True
+   else codex-has-def-named defs name (i + 1) len
+
+  codex-replace-def : List IRDef -> Text -> IRDef -> Integer -> Integer -> List IRDef
+  codex-replace-def (defs) (name) (new-def) (i) (len) =
+   if i == len then defs
+   else if (list-at defs i).name == name
+    then codex-list-set defs i new-def
+   else codex-replace-def defs name new-def (i + 1) len
+
+  codex-list-set : List IRDef -> Integer -> IRDef -> List IRDef
+  codex-list-set (xs) (idx) (val) =
+   codex-list-set-loop xs idx val 0 (list-length xs) []
+
+  codex-list-set-loop : List IRDef -> Integer -> IRDef -> Integer -> Integer -> List IRDef -> List IRDef
+  codex-list-set-loop (xs) (idx) (val) (i) (len) (acc) =
+   if i == len then acc
+   else if i == idx then codex-list-set-loop xs idx val (i + 1) len (list-snoc acc val)
+   else codex-list-set-loop xs idx val (i + 1) len (list-snoc acc (list-at xs i))
