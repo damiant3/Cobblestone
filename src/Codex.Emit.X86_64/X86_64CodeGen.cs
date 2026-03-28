@@ -2787,10 +2787,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // At heap top: grow capacity = max(capacity * 2, 16)
         X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RDX);         // old capacity
         X86_64Encoder.ShlRI(m_text, Reg.RAX, 1);                // capacity * 2
-        X86_64Encoder.CmpRI(m_text, Reg.RAX, 16);
+        X86_64Encoder.CmpRI(m_text, Reg.RAX, 4);
         int capOk = m_text.Count;
         X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
-        X86_64Encoder.Li(m_text, Reg.RAX, 16);
+        X86_64Encoder.Li(m_text, Reg.RAX, 4);
         PatchJcc(capOk, m_text.Count);
         // RAX = new capacity. Bump HeapReg by (newCap - oldCap) * 8
         X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, -8);  // update capacity
@@ -2820,10 +2820,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // R13 = new capacity = max(count * 2, 16)
         X86_64Encoder.MovRR(m_text, Reg.R13, Reg.RCX);
         X86_64Encoder.ShlRI(m_text, Reg.R13, 1);
-        X86_64Encoder.CmpRI(m_text, Reg.R13, 16);
+        X86_64Encoder.CmpRI(m_text, Reg.R13, 4);
         int capOk2 = m_text.Count;
         X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
-        X86_64Encoder.Li(m_text, Reg.R13, 16);
+        X86_64Encoder.Li(m_text, Reg.R13, 4);
         PatchJcc(capOk2, m_text.Count);
 
         // Allocate (newCap + 2) * 8: [capacity | count | slots...]
@@ -2876,6 +2876,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     void EmitListInsertAtHelper()
     {
         // __list_insert_at: rdi=list, rsi=index, rdx=element → rax=new list
+        // List layout: [capacity @ -8 | count @ 0 | elem0 @ 8 | ...]
+        // Path 1: count < capacity → in-place shift O(N), zero alloc
+        // Path 2: count == capacity, at heap top → grow capacity, then shift
+        // Path 3: count == capacity, not at top → copy-with-gap + doubling
         m_functionOffsets["__list_insert_at"] = m_text.Count;
 
         X86_64Encoder.PushR(m_text, Reg.RBX);
@@ -2883,28 +2887,96 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.PushR(m_text, Reg.R13);
         X86_64Encoder.PushR(m_text, Reg.R14);
 
-        X86_64Encoder.MovRR(m_text, Reg.RBX, Reg.RDI);  // old list
-        X86_64Encoder.MovRR(m_text, Reg.R12, Reg.RSI);   // index
-        X86_64Encoder.MovRR(m_text, Reg.R13, Reg.RDX);   // element
-        X86_64Encoder.MovLoad(m_text, Reg.R14, Reg.RBX, 0); // old length
+        X86_64Encoder.MovRR(m_text, Reg.RBX, Reg.RDI);        // RBX = list
+        X86_64Encoder.MovRR(m_text, Reg.R12, Reg.RSI);         // R12 = index
+        X86_64Encoder.MovRR(m_text, Reg.R13, Reg.RDX);         // R13 = element
+        X86_64Encoder.MovLoad(m_text, Reg.R14, Reg.RBX, 0);   // R14 = count
+        X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RBX, -8);  // RCX = capacity
 
-        // Allocate [capacity | count | elements]: (oldLen+1 + 2) * 8
-        // capacity = newLen (tight)
-        X86_64Encoder.MovRR(m_text, Reg.RDX, Reg.R14);
-        X86_64Encoder.AddRI(m_text, Reg.RDX, 1);                // newLen
-        X86_64Encoder.MovStore(m_text, HeapReg, Reg.RDX, 0);    // capacity = newLen
-        X86_64Encoder.AddRI(m_text, HeapReg, 8);                // past capacity
-        X86_64Encoder.MovRR(m_text, Reg.RAX, HeapReg);          // RAX = new list ptr
-        X86_64Encoder.MovRR(m_text, Reg.RDX, Reg.R14);
-        X86_64Encoder.AddRI(m_text, Reg.RDX, 2);                // newLen + 1 (count word + elements)
+        // Path 1: count < capacity → jump to in-place shift
+        X86_64Encoder.CmpRR(m_text, Reg.R14, Reg.RCX);
+        int inPlaceJmp = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_L, 0);     // count < capacity
+
+        // Path 2: count == capacity, check heap top
+        // End of alloc = list + (capacity + 1) * 8
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RCX);        // capacity
+        X86_64Encoder.AddRI(m_text, Reg.RAX, 1);
+        X86_64Encoder.ShlRI(m_text, Reg.RAX, 3);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.RBX);
+        X86_64Encoder.CmpRR(m_text, Reg.RAX, HeapReg);
+        int path3Jmp = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);    // not at top → path 3
+
+        // At heap top: newCap = max(capacity * 2, 4)
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RCX);
+        X86_64Encoder.ShlRI(m_text, Reg.RAX, 1);
+        X86_64Encoder.CmpRI(m_text, Reg.RAX, 4);
+        int capOk2 = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+        X86_64Encoder.Li(m_text, Reg.RAX, 4);
+        PatchJcc(capOk2, m_text.Count);
+        X86_64Encoder.MovStore(m_text, Reg.RBX, Reg.RAX, -8); // update capacity
+        X86_64Encoder.SubRR(m_text, Reg.RAX, Reg.RCX);        // newCap - oldCap
+        X86_64Encoder.ShlRI(m_text, Reg.RAX, 3);
+        X86_64Encoder.AddRR(m_text, HeapReg, Reg.RAX);        // bump heap
+        // Fall through to in-place shift
+
+        // ── In-place shift (shared by Path 1 and Path 2) ──
+        PatchJcc(inPlaceJmp, m_text.Count);
+        // Shift elements [index..count-1] right by 1 (backward: i = count-1 down to index)
+        X86_64Encoder.MovRR(m_text, Reg.R11, Reg.R14);        // i = count
+        X86_64Encoder.SubRI(m_text, Reg.R11, 1);               // i = count - 1
+        int shiftLoop = m_text.Count;
+        X86_64Encoder.CmpRR(m_text, Reg.R11, Reg.R12);        // i vs index
+        int shiftDone = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_L, 0);     // done if i < index
+        X86_64Encoder.MovRR(m_text, Reg.RDX, Reg.R11);
+        X86_64Encoder.ShlRI(m_text, Reg.RDX, 3);
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RBX);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.RDX);
+        X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RAX, 8);   // list[8 + i*8]
+        X86_64Encoder.MovStore(m_text, Reg.RAX, Reg.RCX, 16);  // list[8 + (i+1)*8]
+        X86_64Encoder.SubRI(m_text, Reg.R11, 1);
+        X86_64Encoder.Jmp(m_text, shiftLoop - (m_text.Count + 5));
+        PatchJcc(shiftDone, m_text.Count);
+        // Store element at [list + 8 + index*8]
+        X86_64Encoder.MovRR(m_text, Reg.RDX, Reg.R12);
+        X86_64Encoder.ShlRI(m_text, Reg.RDX, 3);
+        X86_64Encoder.AddRR(m_text, Reg.RDX, Reg.RBX);
+        X86_64Encoder.MovStore(m_text, Reg.RDX, Reg.R13, 8);
+        // Increment count, return same ptr
+        X86_64Encoder.AddRI(m_text, Reg.R14, 1);
+        X86_64Encoder.MovStore(m_text, Reg.RBX, Reg.R14, 0);
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RBX);
+        X86_64Encoder.PopR(m_text, Reg.R14);
+        X86_64Encoder.PopR(m_text, Reg.R13);
+        X86_64Encoder.PopR(m_text, Reg.R12);
+        X86_64Encoder.PopR(m_text, Reg.RBX);
+        X86_64Encoder.Ret(m_text);
+
+        // ── Path 3: not at heap top — copy-with-gap + doubled capacity ──
+        PatchJcc(path3Jmp, m_text.Count);
+        // newCap = max(count * 2, 4)
+        X86_64Encoder.MovRR(m_text, Reg.RCX, Reg.R14);
+        X86_64Encoder.ShlRI(m_text, Reg.RCX, 1);
+        X86_64Encoder.CmpRI(m_text, Reg.RCX, 4);
+        int capOk3 = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+        X86_64Encoder.Li(m_text, Reg.RCX, 4);
+        PatchJcc(capOk3, m_text.Count);
+        // Allocate [capacity | count | slots...]
+        X86_64Encoder.MovStore(m_text, HeapReg, Reg.RCX, 0);   // capacity word
+        X86_64Encoder.AddRI(m_text, HeapReg, 8);
+        X86_64Encoder.MovRR(m_text, Reg.RAX, HeapReg);         // RAX = new list ptr
+        X86_64Encoder.MovRR(m_text, Reg.RDX, Reg.RCX);
+        X86_64Encoder.AddRI(m_text, Reg.RDX, 1);               // newCap + 1
         X86_64Encoder.ShlRI(m_text, Reg.RDX, 3);
         X86_64Encoder.AddRR(m_text, HeapReg, Reg.RDX);
-
-        // Store new length = oldLen + 1
+        // Store new count = oldCount + 1
         X86_64Encoder.MovRR(m_text, Reg.RDX, Reg.R14);
         X86_64Encoder.AddRI(m_text, Reg.RDX, 1);
         X86_64Encoder.MovStore(m_text, Reg.RAX, Reg.RDX, 0);
-
         // Copy elements before index: 0..index-1
         X86_64Encoder.Li(m_text, Reg.R11, 0);
         int preCopy = m_text.Count;
@@ -2922,27 +2994,23 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.AddRI(m_text, Reg.R11, 1);
         X86_64Encoder.Jmp(m_text, preCopy - (m_text.Count + 5));
         PatchJcc(preDone, m_text.Count);
-
         // Store inserted element at new[8 + index*8]
         X86_64Encoder.MovRR(m_text, Reg.RDX, Reg.R12);
         X86_64Encoder.ShlRI(m_text, Reg.RDX, 3);
         X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
         X86_64Encoder.AddRR(m_text, Reg.RDI, Reg.RDX);
         X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.R13, 8);
-
-        // Copy elements after index: index..oldLen-1 → positions index+1..
-        X86_64Encoder.MovRR(m_text, Reg.R11, Reg.R12); // i = index
+        // Copy elements after index: old[index..count-1] → new[index+1..]
+        X86_64Encoder.MovRR(m_text, Reg.R11, Reg.R12);
         int postCopy = m_text.Count;
         X86_64Encoder.CmpRR(m_text, Reg.R11, Reg.R14);
         int postDone = m_text.Count;
         X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
-        // old[8 + i*8]
         X86_64Encoder.MovRR(m_text, Reg.RDX, Reg.R11);
         X86_64Encoder.ShlRI(m_text, Reg.RDX, 3);
         X86_64Encoder.MovRR(m_text, Reg.RSI, Reg.RBX);
         X86_64Encoder.AddRR(m_text, Reg.RSI, Reg.RDX);
         X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RSI, 8);
-        // new[8 + (i+1)*8]
         X86_64Encoder.AddRI(m_text, Reg.RDX, 8);
         X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
         X86_64Encoder.AddRR(m_text, Reg.RDI, Reg.RDX);
