@@ -1070,83 +1070,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
     byte EmitRegion(IRRegion region)
     {
-        // Closures: skip region (capture types unknown at region exit)
-        if (region.Type is FunctionType)
-            return EmitExpr(region.Body);
-
-        // Save working-space mark (region entry)
-        int mark = AllocLocal();
-        byte hpTmp = AllocTemp();
-        X86_64Encoder.MovRR(m_text, hpTmp, HeapReg);
-        StoreLocal(mark, hpTmp);
-
-        byte bodyResult = EmitExpr(region.Body);
-
-        if (!region.NeedsEscapeCopy)
-        {
-            // Scalar return — value survives in register.
-            // Do NOT restore HeapReg to mark: intermediate heap objects
-            // allocated during body evaluation may still be referenced by
-            // live pointers (e.g., a ParseState allocated by `advance`
-            // that's captured as a TCO parameter). Reclaiming them would
-            // create dangling pointers (use-after-free).
-            return bodyResult;
-        }
-
-        // Two-space reclamation: escape-copy result to result space,
-        // then reset working-space pointer to reclaim all intermediates.
-        // ResolveType now recurses into ListType elements, so all types
-        // with definitions in m_typeDefs resolve correctly.
-        CodexType resolved = ResolveType(region.Type);
-        if (resolved is ConstructedType)
-            return bodyResult; // unresolvable type — skip reclamation (safe fallback)
-
-        // ── Two-space reclamation ─────────────────────────────────
-        // Escape-copy the heap result to result space, then reset
-        // the working-space bump pointer to reclaim all intermediates.
-
-        // Save body result (lives in working space, will be source for copy)
-        int bodyLocal = AllocLocal();
-        StoreLocal(bodyLocal, bodyResult);
-
-        // Save post-body HeapReg before switching to result space.
-        // We restore to this position (not the pre-body mark) to avoid
-        // reclaiming heap objects that may still be referenced.
-        int postBodyHP = AllocLocal();
-        byte hpTmp2 = AllocTemp();
-        X86_64Encoder.MovRR(m_text, hpTmp2, HeapReg);
-        StoreLocal(postBodyHP, hpTmp2);
-
-        // Switch HeapReg to result space so escape helper allocates there
-        X86_64Encoder.MovRR(m_text, HeapReg, ResultReg);
-
-        // Escape-copy body result → allocates in result space via HeapReg.
-        // Skip if body result is already in result space (e.g., passed through from
-        // a previous stage). This avoids redundant deep-copies of shared data.
-        string helperName = GetOrQueueEscapeHelper(resolved);
-        byte src = LoadLocal(bodyLocal);
-        X86_64Encoder.MovRR(m_text, Reg.RDI, src);
-        X86_64Encoder.MovLoadRipRel(m_text, Reg.RCX, -(m_text.Count + 7));
-        X86_64Encoder.CmpRR(m_text, Reg.RDI, Reg.RCX);
-        int regionSkipIdx = m_text.Count;
-        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0);
-        EmitCallTo(helperName);
-        int regionDoneIdx = m_text.Count;
-        X86_64Encoder.Jmp(m_text, 0);
-        PatchJcc(regionSkipIdx, m_text.Count);
-        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RDI); // already in result space
-        PatchJmp(regionDoneIdx, m_text.Count);
-        // RAX = pointer to escape-copied (or existing) result in result space
-
-        // Save escaped result before restoring working space
-        int resultLocal = AllocLocal();
-        StoreLocal(resultLocal, Reg.RAX);
-
-        // Update result-space pointer, restore working space to post-body position
-        X86_64Encoder.MovRR(m_text, ResultReg, HeapReg);       // R15 ← advanced result-space pointer
-        X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(postBodyHP)); // R10 ← post-body HP (no reclamation)
-
-        return LoadLocal(resultLocal);
+        // Regions are currently pass-through: no reclamation, no escape-copy.
+        // Intermediate heap objects may still be live via TCO parameters or
+        // closures. The two-space escape-copy was corrupting ParseState
+        // pointers (GDB: skip-newlines → current → SIGSEGV, RBX=0).
+        // Trade-off: working space grows monotonically until MM3 adds
+        // liveness-guided selective reclamation.
+        return EmitExpr(region.Body);
     }
 
     byte EmitEscapeCopy(int srcLocal, CodexType type)

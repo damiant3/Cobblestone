@@ -1043,69 +1043,9 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     uint EmitRegion(IRRegion region)
     {
-        // Closures: skip region (capture types unknown at region exit)
-        if (region.Type is FunctionType)
-            return EmitExpr(region.Body);
-
-        // Save working-space mark (region entry)
-        uint mark = AllocLocal();
-        uint hpTmp = AllocTemp();
-        Emit(RiscVEncoder.Mv(hpTmp, Reg.S1));
-        StoreLocal(mark, hpTmp);
-
-        uint bodyResult = EmitExpr(region.Body);
-
-        if (!region.NeedsEscapeCopy)
-        {
-            // Scalar return — restore S1, value survives in register
-            Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(mark)));
-            return bodyResult;
-        }
-
-        // Two-space reclamation: escape-copy result to result space,
-        // then reset working-space pointer to reclaim all intermediates.
-        CodexType resolved = ResolveType(region.Type);
-        if (resolved is ConstructedType)
-            return bodyResult; // unresolvable type — skip reclamation (safe fallback)
-
-        // ── Two-space reclamation ─────────────────────────────────
-        // Escape-copy the heap result to result space, then reset
-        // the working-space bump pointer to reclaim all intermediates.
-
-        // Save body result (lives in working space)
-        uint bodyLocal = AllocLocal();
-        StoreLocal(bodyLocal, bodyResult);
-
-        // Switch S1 to result space so escape helper allocates there
-        Emit(RiscVEncoder.Mv(Reg.S1, ResultReg));
-
-        // Escape-copy body result → allocates in result space via S1.
-        // Skip if pointer is already in result space (ptr >= ResultBaseReg).
-        string helperName = GetOrQueueEscapeHelper(resolved);
-        uint src = LoadLocal(bodyLocal);
-        Emit(RiscVEncoder.Mv(Reg.A0, src));
-        int skipEscape = m_instructions.Count;
-        Emit(RiscVEncoder.Nop()); // patched: bge a0, s10 → skip
-        EmitCallTo(helperName);
-        int escDone = m_instructions.Count;
-        Emit(RiscVEncoder.Nop()); // patched: j → done
-        int skipTarget = m_instructions.Count;
-        m_instructions[skipEscape] = RiscVEncoder.Bge(Reg.A0, ResultBaseReg,
-            (skipTarget - skipEscape) * 4);
-        // Already in result space — A0 is unchanged
-        int doneTarget = m_instructions.Count;
-        m_instructions[escDone] = RiscVEncoder.J((doneTarget - escDone) * 4);
-        // A0 = pointer to escape-copied (or existing) result in result space
-
-        // Save escaped result before restoring working space
-        uint resultLocal = AllocLocal();
-        StoreLocal(resultLocal, Reg.A0);
-
-        // Update result-space pointer, restore working space to mark
-        Emit(RiscVEncoder.Mv(ResultReg, Reg.S1));       // S11 ← advanced result-space pointer
-        Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(mark))); // S1 ← mark (reclaim working space!)
-
-        return LoadLocal(resultLocal);
+        // Regions are currently pass-through: no reclamation, no escape-copy.
+        // Same rationale as x86-64 — see X86_64CodeGen.EmitRegion.
+        return EmitExpr(region.Body);
     }
 
     void EmitRelocateCall(uint ptrLocal, uint deltaLocal, CodexType type)
