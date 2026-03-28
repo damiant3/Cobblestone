@@ -29,50 +29,44 @@ its own 26-file source (205 KB) to valid C# — and that C# output, when used as
 the compiler for the same source, produces byte-identical output. The compiler
 is a correct fixed point of itself.
 
-### x86-64 Usermode Self-Compile Status
+### x86-64 Usermode Self-Compile: ListTy Erasure Bug
 
-**Runs to completion (exit 0), output does NOT compile (1550 C# errors).**
+**Status**: Runs to completion (exit 0), output has type errors.
+Errors dropped 1550 → 404 with ConstructedTy workaround.
 
-Two bugs identified, one fixed:
+**Bug 1 (FIXED)**: CCE char range — old binary excluded E/T from uppercase.
+Rebuilding from fixed source resolves. `cs_type` now has all 14 arms.
 
-**Bug 1 (FIXED)**: CCE char range in old native binary. The `tools/_all-source`
-binary was compiled from pre-fix source where `is-upper-char >= char-code 'A'`
-(CCE 41) excluded 'E' (39) and 'T' (40). This caused the self-hosted emitter
-to treat constructors starting with E/T as variable patterns (`object TextTy`
-instead of `TextTy { }`). The emitter's `is-catch-all` check then stopped
-emitting remaining match arms. Rebuilding from the fixed source (which uses
-`char-code 'E'`) resolves this — `cs_type` now has all 14 arms.
+**Bug 2 (OPEN — ListTy erasure)**: `ListTy(IntegerTy)` becomes `IntegerTy`
+at runtime on native x86-64. Affects ONLY the built-in `List` type.
+`MyList Integer` → `MyList<long>` works; `List Integer` → `long` broken.
 
-**Bug 2 (OPEN — ListTy erasure in x86-64 codegen)**: The self-hosted type
-checker's `resolve-applied-type` correctly identifies `List Integer` and
-constructs `ListTy(IntegerTy)` — the generated code is correct. But at
-RUNTIME on native x86-64, `ListTy(IntegerTy)` becomes just `IntegerTy`.
-This affects ONLY the built-in `List` type (`MyList Integer` → `MyList<long>`
-correctly, `List Integer` → `long` incorrectly). 195 functions lose `List<>`
-wrappers.
+**Extensive investigation ruled out**:
+- Parser annotation merging (all 519 pairs correctly merged)
+- Desugarer type handling (all 7 TypeExpr arms present)
+- String comparison ("List" == "List" works on native)
+- cs-type / desugar-type-expr (all arms survive on native)
+- TCO heap reset (ALL tail-recursive functions have List params → reset blocked)
+- Tag assignment (verified: ListTy tag = 9, correct)
+- Standalone test (ListTy constructs/matches correctly in small programs)
 
-**Investigation ruled out**: Parser annotation merging (verified: all 519
-annotations are correctly paired), desugarer (all 7 TypeExpr arms present
-including ListType), string comparison (`"List" == "List"` works on native),
-`cs-type` (all 14 CodexType arms present), `desugar-type-expr` (all arms
-survive). The bug is in how the x86-64 binary constructs or propagates the
-`ListTy` variant value at runtime — likely a codegen issue in the reference
-compiler's `EmitConstructor` or variant tag assignment for `CodexType`.
+**Confirmed workaround**: ConstructedTy("List", [elem]) instead of ListTy(elem)
+in `resolve-applied-type`. Errors 1550 → 404. Remaining 404 from unifier not
+treating ConstructedTy("List") like ListTy.
 
-**Confirmed workaround**: Replacing `ListTy(elem)` with `ConstructedTy("List",
-[elem])` in `resolve-applied-type` makes all function signatures correct
-(`List<Token>` instead of `Token`). Errors drop from 1550 → 404.
-Remaining 404 are from unifier not handling `ConstructedTy("List")` the same
-as `ListTy` — a different issue. This proves: `ListTy` variant values (tag 9)
-are specifically corrupted at runtime on x86-64, while `ConstructedTy` (tag 14)
-is not. A standalone test program correctly constructs and matches `ListTy`,
-so the corruption occurs only in the context of the full self-hosted compiler
-(500+ functions, 200K+ source chars).
+**Key clue (unverified)**: ListTy is tag 9 — the FIRST constructor with fields
+after eight zero-field constructors (IntegerTy..ErrorTy = tags 0-7, FunTy = 8).
+The project has a known history of >8 parameter/index bugs in the x86-64
+backend (stack spill off-by-one). The fix for function parameter spills may
+not have been applied to constructor field extraction in pattern matching.
+Check `EmitMatch` in `X86_64CodeGen.cs` for off-by-one in field offset
+calculation when the constructor index exceeds the register arg count.
 
-**Next**: Investigate tag 9 corruption in large programs. Possible heap
-corruption from TCO reset, or tag collision in the x86-64 backend's variant
-encoding. The workaround (ConstructedTy) is a path to unblocking usermode
-self-compile if the unifier is also updated.
+**Two paths forward**:
+1. GDB debug: step through `resolve-applied-type` in the native binary to
+   watch ListTy allocation, then through `cs-type` to see what tag is read
+2. ConstructedTy workaround: change resolve-applied-type + update unifier to
+   treat ConstructedTy("List",[X]) like ListTy(X). Pragmatic but papering over.
 
 ---
 
