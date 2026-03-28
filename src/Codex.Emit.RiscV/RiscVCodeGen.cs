@@ -1043,8 +1043,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     uint EmitRegion(IRRegion region)
     {
-        // Regions are currently pass-through: no reclamation, no escape-copy.
-        // Same rationale as x86-64 — see X86_64CodeGen.EmitRegion.
+        // Pass-through: same as x86-64, see X86_64CodeGen.EmitRegion.
         return EmitExpr(region.Body);
     }
 
