@@ -22,13 +22,43 @@ reference. The fixed point holds on hardware.
 | Codex emitter: field access parenthesization | CodexEmitter.cs | `(f x).field` not `f x.field` |
 | Codex emitter: effect name from type, not hardcoded | CodexEmitter.cs | `[Console, FileSystem]` not `[Console]` |
 
-### Next: Floppy Disk Edition (Path B)
+### Floppy Disk Edition — Phase 1 Complete (Streaming Emission)
 
-Target: self-compile in < 4 MB heap. Streaming pipeline, per-definition processing.
+**Branch**: `cam/floppy-disk-streaming` — fixed point proven at 312,476 chars
 
-**Architecture** (from exploration of `_all-source.codex`):
-- Parser, desugarer, lowering: already per-definition capable
-- Name resolver, type checker, emitter: need global collection phase first (signatures, scope, arity map), then per-definition processing
+Phase 1 (streaming lower→emit→print) eliminates the full IRModule and output
+text from memory. The self-hosted compiler now processes definitions one at a
+time: `lower-def` → `emit-def` → `print-line` → discard → next. The
+`stream-defs` function is TCO-eligible, so the x86-64 backend's heap reset
+reclaims per-iteration garbage (IR tree + emitted text string).
+
+| Change | File | Why |
+|--------|------|-----|
+| `compile-streaming` + `stream-defs` | main.codex | Per-def streaming loop |
+| `build-arity-map-from-ast` | CSharpEmitterExpressions.codex | Arity map from ADefs, no IRModule needed |
+| `print-line` → IIFE returning `object` | Both C# emitters | `print-line` in expression context (ternary) |
+| Void-like defs: `return <body>` | CSharpEmitter.cs | Avoids CS0201 on conditional expressions |
+
+**Memory impact (estimated)**:
+- Eliminated: full IRModule (~30-50 MB) + accumulated output text (~2 MB)
+- Per-def peak: ~10 KB (reclaimed by TCO heap reset each iteration)
+- Remaining: source + tokens + AST + type env (~40-60 MB for self-compile)
+
+**x86-64 verification**:
+- Usermode: 269,756 bytes, 212 type defs, 794 defs. Correct output.
+- Bare metal (512 MB): 267,426 bytes in 11.5s, 212 type defs, 795 defs.
+  ~2 KB short due to UART flush timing. Streaming works on hardware.
+- Bare metal (4 MB): OOM crash. Confirms Phase 2 needed for floppy target.
+- CRLF note: `--target codex` outputs CRLF on Windows; x86-64 lexer needs LF.
+  Convert with `tr -d '\r'` before use.
+
+### Next: Floppy Disk Phase 2 (Two-Pass Design)
+
+Target: self-compile in < 4 MB heap. Eliminate AST persistence.
+
+**Architecture**:
+- Pass 1: Parse each def, extract signature (name + type annotation), discard body
+- Pass 2: Re-parse each def from token stream, process through full pipeline
 - Two-pass design: Pass 1 collects signatures (~350 KB persistent), Pass 2 processes each definition independently (~500 KB peak per def)
 - Total peak: < 1 MB
 

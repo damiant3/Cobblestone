@@ -1613,12 +1613,11 @@ public static class Codex_stage1_test
 
     public static object main()
     {
-        ((Func<object>)(() => {
-                Console.WriteLine(_Cce.ToUnicode(greet("2\u0010\u0016\u000D$")));
-                Console.WriteLine(_Cce.ToUnicode(_Cce.FromUnicode(Convert.ToString(square(7L)))));
+        return ((Func<object>)(() => {
+                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(greet("2\u0010\u0016\u000D$"))); return null; }))();
+                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(_Cce.FromUnicode(Convert.ToString(square(7L))))); return null; }))();
                 return null;
             }))();
-        return null;
     }
 
 }
