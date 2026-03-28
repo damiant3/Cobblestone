@@ -108,35 +108,38 @@ list-snoc, records, etc.).
 5. Sum type DEFINITION works (constructor, field access). Only MATCHING crashes.
 6. QEMU strace: file fully read, then `SIGSEGV {si_addr=NULL}`.
 
-**Root cause found**: Crash is in `peek-kind` (ParserCore.codex:32), specifically
-`(list-at st.tokens idx).kind`. The token at position `idx` is NULL (0), not
-a valid Token record pointer. This means a token stored in the token list during
-tokenization became 0 — a **memory corruption** or **escape-copy** bug.
+**Root cause found and FIXED** (2026-03-27 Cam):
 
-The token list is built by `tokenize-loop` via `list-snoc tokens token`. If
-the region reclamation escape-copy incorrectly handles a token's pointer
-(e.g., copies a working-space pointer that gets zeroed when working space
-is reclaimed), the token list would contain nulls for affected tokens.
+The crash was a **use-after-free** caused by region reclamation in `EmitRegion`.
+Both scalar and heap region paths restored HeapReg to the pre-body mark,
+reclaiming ALL working-space allocations made during the body. But some of
+those allocations were still referenced by live pointers — specifically,
+ParseState records created by `advance` in TCO loops that became TCO
+parameters for the next iteration.
+
+**Fix** (x86-64): Two changes to `EmitRegion`:
+1. **Scalar regions**: removed the `HeapReg = mark` restoration entirely.
+   Intermediate heap objects may still be live via TCO parameters or closures.
+2. **Heap regions**: restore HeapReg to the POST-BODY position (not the
+   pre-body mark). This switches back from result space to working space
+   without reclaiming any allocations.
 
 **Investigation trail (condensed)**:
-- QEMU strace: `si_addr=NULL` after full file read
-- Traced pipeline: tokenizer OK, parser crashes in `parse-document`
-- Wildcard-only `when _ -> 42` also crashes (not constructor-pattern specific)
-- Function offset mapping: crash in `peek-kind` (0x34E4C)
-- `peek-kind` accesses `(list-at st.tokens idx).kind` → token is NULL
-- Input with `when` triggers `peek-kind st 1` lookahead, hitting a null token
+- GDB: crash at `current` function (0x434ca4), `mov (%rbx), %rcx` with RBX=0
+- Function offset map: `current` → `current-kind` → `is-done` → `skip-newlines`
+- `skip-newlines` TCO loop calls `advance st` → new ParseState in working space
+- Region reclamation reclaimed the ParseState → dangling pointer → null deref
+- 100/100 crashes with pipe input, 0/100 with fix applied
+- 536 tests pass, 0 failures
 
-**Key insight**: The null token is evidence that the two-space escape-copy
-incorrectly handles the token list during region reclamation. When the
-tokenize result is escape-copied to result space, some token pointers that
-should point to Token records in result space end up as 0.
+**Trade-off**: Without reclamation, working space grows monotonically per
+function call. This is safe for small-to-medium programs. For MM3 self-compile,
+we may need selective reclamation (only reclaim when provably safe — e.g.,
+after liveness analysis or in leaf regions with no live captures).
 
-**Next step**: Add diagnostic in `EmitRegion`/escape helpers to verify all
-list elements are non-null after escape-copy. Or trace with GDB to find
-which specific escape-copy step zeroes the token pointer.
-
-**Not related to**: capacity-aware list layout (both old and new binaries
-crash identically — the capacity word is irrelevant to the null token bug).
+**Remaining**: The self-hosted compiler no longer crashes but produces empty
+output for sum-type-matching programs. This is a separate parser/emitter issue,
+not a memory corruption bug.
 
 ---
 
@@ -345,7 +348,8 @@ it built the OS for.
 | ~~In-place list-snoc~~ | **DONE** — fast path O(1) when at heap top, but rarely fires in TCO loops |
 | ~~Capacity-aware lists~~ | **DONE** (both backends) — hidden capacity word at [-8], geometric doubling, O(1) amortized snoc; estimated 22,000x heap reduction |
 | ~~Result-space-aware escape (RISC-V)~~ | **DONE** — S10 = ResultBaseReg, single-instruction pointer check (bge) |
-| Retry self-compile | **BLOCKED** — pre-existing null deref when self-hosted compiler matches sum types (see below) |
+| ~~Fix region reclamation crash~~ | **DONE** — disabled unsafe reclamation; self-hosted compiler no longer crashes on sum type input |
+| Retry self-compile | Parser produces empty output for sum types — needs investigation |
 | Add EffectTypeExpr to desugar-type-expr | Missing case (assigned to Agent Windows) |
 | Perf automation | Wire `--bench-check` into CI or pre-commit hook |
 

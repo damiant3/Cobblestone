@@ -108,6 +108,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         return ElfWriterX86_64.WriteExecutable(text, rodata, 0);
     }
 
+    public Dictionary<string, int> GetFunctionOffsets() => new(m_functionOffsets);
+
     public byte[] BuildFlatBinary()
     {
         // Bare metal flat binary: text + rodata concatenated.
@@ -1082,8 +1084,12 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
         if (!region.NeedsEscapeCopy)
         {
-            // Scalar return — restore HeapReg, value survives in register
-            X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(mark));
+            // Scalar return — value survives in register.
+            // Do NOT restore HeapReg to mark: intermediate heap objects
+            // allocated during body evaluation may still be referenced by
+            // live pointers (e.g., a ParseState allocated by `advance`
+            // that's captured as a TCO parameter). Reclaiming them would
+            // create dangling pointers (use-after-free).
             return bodyResult;
         }
 
@@ -1102,6 +1108,14 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // Save body result (lives in working space, will be source for copy)
         int bodyLocal = AllocLocal();
         StoreLocal(bodyLocal, bodyResult);
+
+        // Save post-body HeapReg before switching to result space.
+        // We restore to this position (not the pre-body mark) to avoid
+        // reclaiming heap objects that may still be referenced.
+        int postBodyHP = AllocLocal();
+        byte hpTmp2 = AllocTemp();
+        X86_64Encoder.MovRR(m_text, hpTmp2, HeapReg);
+        StoreLocal(postBodyHP, hpTmp2);
 
         // Switch HeapReg to result space so escape helper allocates there
         X86_64Encoder.MovRR(m_text, HeapReg, ResultReg);
@@ -1128,9 +1142,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         int resultLocal = AllocLocal();
         StoreLocal(resultLocal, Reg.RAX);
 
-        // Update result-space pointer, restore working space to mark
+        // Update result-space pointer, restore working space to post-body position
         X86_64Encoder.MovRR(m_text, ResultReg, HeapReg);       // R15 ← advanced result-space pointer
-        X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(mark)); // R10 ← mark (reclaim working space!)
+        X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(postBodyHP)); // R10 ← post-body HP (no reclamation)
 
         return LoadLocal(resultLocal);
     }
