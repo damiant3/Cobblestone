@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Linq;
 using System.Text;
 using Codex.Core;
 using Codex.IR;
@@ -151,7 +152,7 @@ public sealed class CodexEmitter : ICodeEmitter
 
     static string EffectName(EffectfulType eft)
     {
-        return "Console";
+        return string.Join(", ", eft.Effects.Select(e => e.EffectName.Value));
     }
 
     // ── Expressions ──────────────────────────────────────────────
@@ -230,7 +231,16 @@ public sealed class CodexEmitter : ICodeEmitter
                 break;
 
             case IRFieldAccess fa:
-                EmitExpr(sb, fa.Record, indent);
+                if (fa.Record is IRName or IRFieldAccess)
+                {
+                    EmitExpr(sb, fa.Record, indent);
+                }
+                else
+                {
+                    sb.Append('(');
+                    EmitExpr(sb, fa.Record, indent);
+                    sb.Append(')');
+                }
                 sb.Append('.');
                 sb.Append(fa.FieldName);
                 break;
