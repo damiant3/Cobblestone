@@ -29,6 +29,32 @@ its own 26-file source (205 KB) to valid C# — and that C# output, when used as
 the compiler for the same source, produces byte-identical output. The compiler
 is a correct fixed point of itself.
 
+### x86-64 Usermode Self-Compile Status
+
+**Runs to completion (exit 0), output does NOT compile (1550 C# errors).**
+
+Two bugs identified, one fixed:
+
+**Bug 1 (FIXED)**: CCE char range in old native binary. The `tools/_all-source`
+binary was compiled from pre-fix source where `is-upper-char >= char-code 'A'`
+(CCE 41) excluded 'E' (39) and 'T' (40). This caused the self-hosted emitter
+to treat constructors starting with E/T as variable patterns (`object TextTy`
+instead of `TextTy { }`). The emitter's `is-catch-all` check then stopped
+emitting remaining match arms. Rebuilding from the fixed source (which uses
+`char-code 'E'`) resolves this — `cs_type` now has all 14 arms.
+
+**Bug 2 (OPEN — annotation merging)**: The self-hosted desugarer doesn't merge
+type annotations (`f : A -> B`) with body definitions (`f (x) = ...`). The
+parser produces them as separate defs. Without annotation types, the type
+checker infers from bodies alone. This loses `List<>` wrappers: `List<Token>`
+→ `Token`, `List<IRExpr>` → `IRExpr`, etc. 195 functions have wrong types.
+
+The managed bootstrap is unaffected because the Bootstrap harness's `Program.cs`
+provides type information through a different path. Native has no such harness.
+
+**Next**: Fix `Ast/Desugarer.codex`'s `desugar-defs` to merge sequential
+annotation + body pairs with the same name.
+
 ---
 
 ## MM3 IS PROVEN
