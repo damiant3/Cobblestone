@@ -35,6 +35,69 @@ metal. MM2: The High Camp is reached.**
 
 ---
 
+## What Got Done (2026-03-28 Cam)
+
+### Memory reduction for native self-compile
+
+**Branch**: `cam/mm3-shared-fixes`
+
+Three changes to reduce heap usage in the native x86-64 and RISC-V backends:
+
+#### 1. Re-enabled scalar region reclamation (both backends)
+
+EmitRegion was previously a full pass-through (disabled after escape-copy
+crashes). Scalar regions (NeedsEscapeCopy=false) are safe to reclaim because
+the result lives in a register, not the heap. No live heap pointers survive.
+
+- x86-64: save/restore R10 (HeapReg) around scalar region bodies
+- RISC-V: save/restore S1 (heap ptr) around scalar region bodies
+- Heap regions remain pass-through (escape-copy still crashes)
+
+#### 2. Reduced Linux brk allocation (x86-64)
+
+Working space: 4GB -> 256MB. Result space: 256MB -> 64MB. Total: 4.25GB -> 320MB.
+With capacity-aware lists and in-place string concat, actual usage is ~10-15MB
+for 180KB source. The old 4GB allocation was from before those optimizations.
+
+#### 3. Bulk offset scanning in self-hosted lexer
+
+Replaced per-character `advance-char` loops in `skip-spaces`, `scan-ident-rest`,
+and `scan-digits` with offset-only helper functions (`skip-spaces-end`,
+`scan-ident-end`, `scan-digits-end`) that return Integer. Integer results
+are scalar-typed, so scalar region reclamation automatically frees them.
+Only ONE LexState is created at the end of each scan.
+
+**Impact**: For 180KB source, the lexer was creating ~150K dead LexState
+records (32 bytes each = ~4.8MB). Now creates ~15K (one per token scan).
+Saves ~4.3MB of dead heap allocations.
+
+**Correctness**: Identifiers, spaces, and digits never cross line boundaries,
+so `line` stays constant and `column += end - start`. Hyphen-in-identifier
+lookahead matches the original `scan-ident-rest` behavior exactly.
+
+#### Also found: Bootstrap pre-existing bug
+
+`Codex.Bootstrap` Stage 1 self-compile crashes with `ArgumentOutOfRangeException`
+(negative substring length in `scan_token`). This fails with or without our
+changes. Root cause: likely `out/Codex.Codex` (ELF binary) being picked up
+as a source file, or a stale `CodexLib.g.cs`.
+
+#### Verification
+
+- 1,003 reference compiler tests pass (0 failures, 2 known skips)
+- Build clean (expected CS5001 only)
+
+#### What's unsafe (investigated and rejected)
+
+**In-place record update**: Checked whether records at heap top could be
+updated in place (like list-snoc's fast path). UNSAFE without linear type
+analysis. Counter-example: `scan-ident-rest` keeps both `st` and
+`advance-char st` live simultaneously (line 185-190). If advance-char
+mutated `st` in-place, returning `st` as a fallback would return the
+modified state.
+
+---
+
 ## What Got Done (2026-03-27 Cam, session 2)
 
 ### Fixed self-hosted variant type parser
@@ -441,7 +504,11 @@ it built the OS for.
 | ~~Fix region reclamation crash~~ | **DONE** — disabled unsafe reclamation; self-hosted compiler no longer crashes on sum type input |
 | ~~Fix self-hosted variant parser~~ | **DONE** — `parse-type-def` only checked `Pipe`, missing `TypeIdentifier + lookahead`; `Color = Red | Green | Blue` was misparsed as function def |
 | ~~Fix EmitRegion crash~~ | **DONE** — EmitRegion pass-through for all regions; removed mark save, escape-copy, HeapReg restore. Binary 272KB (was 395KB). Pattern matching verified native userspace. |
-| Retry full self-compile with native backend | EmitRegion fix unblocks; next: feed self-hosted source to native compiler |
+| ~~Scalar region reclamation~~ | **DONE** (both backends) — save/restore HeapReg for scalar regions; heap regions still pass-through |
+| ~~Bulk offset scanning in lexer~~ | **DONE** — skip-spaces-end, scan-ident-end, scan-digits-end return Integer offset; ~4.3MB dead LexState reduction |
+| ~~Reduce Linux brk allocation~~ | **DONE** — 4.25GB → 320MB; actual usage ~10-15MB for 180KB source |
+| Retry full self-compile with native backend | Memory optimizations unblock; next: feed self-hosted source to native compiler (needs Linux) |
+| Fix Bootstrap Stage 1 crash | Pre-existing `ArgumentOutOfRangeException` in scan_token; likely stale CodexLib.g.cs |
 | Add EffectTypeExpr to desugar-type-expr | Missing case (assigned to Agent Windows) |
 | Perf automation | Wire `--bench-check` into CI or pre-commit hook |
 

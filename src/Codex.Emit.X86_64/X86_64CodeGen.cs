@@ -1086,11 +1086,27 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
     byte EmitRegion(IRRegion region)
     {
-        // Pass-through: no reclamation, no escape-copy.
-        // Escape-copy at any depth crashes due to live cross-references
-        // between working-space objects during the copy. Safe reclamation
-        // requires compile-time liveness analysis (future work).
-        // Memory: working space grows monotonically (~1.5MB per 1KB source).
+        // Closures: skip region (capture types unknown at region exit)
+        if (region.Type is FunctionType)
+            return EmitExpr(region.Body);
+
+        if (!region.NeedsEscapeCopy)
+        {
+            // Scalar return — save/restore HeapReg to reclaim intermediates.
+            // Safe: the result lives in a register, not on the heap, so no
+            // live heap pointers survive the restore.
+            int mark = AllocLocal();
+            byte hpTmp = AllocTemp();
+            X86_64Encoder.MovRR(m_text, hpTmp, HeapReg);
+            StoreLocal(mark, hpTmp);
+
+            byte bodyResult = EmitExpr(region.Body);
+
+            X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(mark));
+            return bodyResult;
+        }
+
+        // Heap return — pass-through (escape-copy crashes on cross-references).
         return EmitExpr(region.Body);
     }
 
@@ -5121,20 +5137,20 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             X86_64Encoder.Syscall(m_text);
             X86_64Encoder.MovRR(m_text, HeapReg, Reg.RAX); // working space starts at brk base
 
-            // Grow heap: 2GB working + 256MB result.
-            // Without region reclamation, working space grows monotonically.
-            // In-place string concat keeps the emitter's output at O(n), but
-            // tokenizer/parser/checker intermediates accumulate (~1MB/KB source).
+            // Grow heap: 256MB working + 64MB result.
+            // Scalar regions reclaim intermediates. Capacity-aware lists and
+            // in-place string concat keep tokenizer/emitter at O(n). Dead
+            // LexState/ParseState records accumulate (~10MB for 180KB source).
             byte growReg = Reg.R11;
-            X86_64Encoder.Li(m_text, growReg, (4096L + 256) * 1024 * 1024);
+            X86_64Encoder.Li(m_text, growReg, (256L + 64) * 1024 * 1024);
             X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
             X86_64Encoder.AddRR(m_text, Reg.RDI, growReg);
             X86_64Encoder.Li(m_text, Reg.RAX, 12); // sys_brk
             X86_64Encoder.Syscall(m_text);
 
-            // Result space starts at brk_base + 2GB
+            // Result space starts at brk_base + 256MB
             X86_64Encoder.MovRR(m_text, ResultReg, HeapReg);
-            X86_64Encoder.Li(m_text, growReg, 4096L * 1024 * 1024);
+            X86_64Encoder.Li(m_text, growReg, 256L * 1024 * 1024);
             X86_64Encoder.AddRR(m_text, ResultReg, growReg);
 
             // Store result_space_base to global at text[0] for escape helpers.

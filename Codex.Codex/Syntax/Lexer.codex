@@ -159,47 +159,79 @@ Section: Lexer State
 
 Section: Whitespace
 
+ Offset-only scanning returns Integer -- scalar, reclaimed automatically --
+ avoiding per-character LexState allocation.
+
+  skip-spaces-end : Text -> Integer -> Integer -> Integer
+  skip-spaces-end (source) (offset) (len) =
+   if offset >= len then offset
+   else if char-code-at source offset == cc-space
+    then skip-spaces-end source (offset + 1) len
+    else offset
+
   skip-spaces : LexState -> LexState
   skip-spaces (st) =
-   if is-at-end st
-    then st
-    else let c = peek-code st
-     in if c == cc-space
-      then skip-spaces (advance-char st)
-      else st
+   let len = text-length st.source
+   in let end = skip-spaces-end st.source st.offset len
+    in if end == st.offset then st
+     else LexState {
+      source = st.source,
+      offset = end,
+      line = st.line,
+      column = st.column + (end - st.offset)
+     }
 
 Section: Character Scanning
 
+ Bulk offset scanning: scan-ident-end and scan-digits-end return an
+ Integer offset without creating intermediate LexState records.
+ For a 10-char identifier this saves 9 dead LexState records, 32 bytes each.
+
+  scan-ident-end : Text -> Integer -> Integer -> Integer
+  scan-ident-end (source) (offset) (len) =
+   if offset >= len then offset
+   else let c = char-code-at source offset
+    in if is-letter-code c then scan-ident-end source (offset + 1) len
+     else if is-digit-code c then scan-ident-end source (offset + 1) len
+      else if c == cc-underscore then scan-ident-end source (offset + 1) len
+       else if c == cc-minus
+        then if offset + 1 >= len then offset
+         else if is-letter-code (char-code-at source (offset + 1))
+          then scan-ident-end source (offset + 1) len
+          else offset
+        else offset
+
   scan-ident-rest : LexState -> LexState
   scan-ident-rest (st) =
-   if is-at-end st
-    then st
-    else let c = peek-code st
-     in if is-letter-code c
-      then scan-ident-rest (advance-char st)
-      else if is-digit-code c
-       then scan-ident-rest (advance-char st)
-       else if c == cc-underscore
-        then scan-ident-rest (advance-char st)
-        else if c == cc-minus
-         then let next = advance-char st
-          in if is-at-end next
-           then st
-           else if is-letter-code (peek-code next)
-            then scan-ident-rest next
-            else st
-         else st
+   let len = text-length st.source
+   in let end = scan-ident-end st.source st.offset len
+    in if end == st.offset then st
+     else LexState {
+      source = st.source,
+      offset = end,
+      line = st.line,
+      column = st.column + (end - st.offset)
+     }
+
+  scan-digits-end : Text -> Integer -> Integer -> Integer
+  scan-digits-end (source) (offset) (len) =
+   if offset >= len then offset
+   else let c = char-code-at source offset
+    in if is-digit-code c then scan-digits-end source (offset + 1) len
+     else if c == cc-underscore then scan-digits-end source (offset + 1) len
+      else offset
 
   scan-digits : LexState -> LexState
   scan-digits (st) =
-   if is-at-end st
-    then st
-    else let c = peek-code st
-     in if is-digit-code c
-      then scan-digits (advance-char st)
-      else if c == cc-underscore
-       then scan-digits (advance-char st)
-       else st
+   let len = text-length st.source
+   in let end = scan-digits-end st.source st.offset len
+    in if end == st.offset then st
+     else LexState {
+      source = st.source,
+      offset = end,
+      line = st.line,
+      column = st.column + (end - st.offset)
+     }
 
   scan-string-body : LexState -> LexState
   scan-string-body (st) =

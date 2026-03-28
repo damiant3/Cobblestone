@@ -1043,7 +1043,24 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     uint EmitRegion(IRRegion region)
     {
-        // Pass-through: same as x86-64, see X86_64CodeGen.EmitRegion.
+        if (region.Type is FunctionType)
+            return EmitExpr(region.Body);
+
+        if (!region.NeedsEscapeCopy)
+        {
+            // Scalar return — save/restore S1 (heap ptr) to reclaim intermediates.
+            uint mark = AllocLocal();
+            uint hpTmp = AllocTemp();
+            Emit(RiscVEncoder.Mv(hpTmp, Reg.S1));
+            StoreLocal(mark, hpTmp);
+
+            uint bodyResult = EmitExpr(region.Body);
+
+            Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(mark)));
+            return bodyResult;
+        }
+
+        // Heap return — pass-through (escape-copy crashes on cross-references).
         return EmitExpr(region.Body);
     }
 
