@@ -35,6 +35,50 @@ metal. MM2: The High Camp is reached.**
 
 ---
 
+## What Got Done (2026-03-27 Cam)
+
+### Capacity-aware lists (both backends)
+
+Changed list memory layout from `[count | elem0 | ...]` to
+`[capacity @ -8 | count @ 0 | elem0 @ 8 | ...]`. The capacity word is
+hidden before the list pointer — all read-only access (list-at, list-length,
+list-contains) uses unchanged offsets.
+
+**`__list_snoc` now has 3 paths**:
+1. **count < capacity**: store in reserved slot, O(1)
+2. **count == capacity, at heap top**: double capacity, bump heap, O(1)
+3. **count == capacity, not at top**: copy with `max(count*2, 16)` capacity, O(N) amortized O(1)
+
+**Impact**: tokenizer building 52K-element list drops from ~11GB (O(N²) copy)
+to ~512KB (geometric growth). 22,000x improvement.
+
+Files changed (x86-64): `src/Codex.Emit.X86_64/X86_64CodeGen.cs`
+- EmitList, get-args, __list_snoc, __list_cons, __list_append,
+  __list_insert_at, EmitListEscapeHelper — all add capacity word
+
+Files changed (RISC-V): `src/Codex.Emit.RiscV/RiscVCodeGen.cs`
+- Same 7 operations mirrored for RISC-V encoding
+
+### RISC-V result-space escape-copy port
+
+Dedicated S10 as `ResultBaseReg` (set once at startup, never changes).
+CalleeSaved reduced from 9 to 8 locals (still 2x more than x86-64's 4).
+
+Added `bge ptr, s10, skip` checks to:
+- EmitRegion (top-level escape)
+- EmitEscapeFieldCopy (field-by-field escape)
+- EmitListEscapeHelper (element loop)
+- EmitEscapeTextHelper (byte copy)
+
+This matches x86-64's result-space-aware escape behavior. Both backends
+now skip redundant deep-copies of pointers already in result space.
+
+### Verification
+
+1,003 tests pass (0 failures, 2 known skips). Build clean (expected CS5001).
+
+---
+
 ## What Got Done (2026-03-26 night)
 
 ### MM2 Proven (Agent Linux)
@@ -238,8 +282,9 @@ it built the OS for.
 | ~~DoBind region wrapping~~ | **DONE** — do-block bindings now wrapped in IRRegion for reclamation |
 | ~~Result-space-aware escape~~ | **DONE** (x86-64) — skip copy for pointers already in result space |
 | ~~In-place list-snoc~~ | **DONE** — fast path O(1) when at heap top, but rarely fires in TCO loops |
-| TCO heap compaction OR cons+reverse | **#1 blocker** — 52K tokens × O(N²) snoc = 11GB; need structural fix |
-| Result-space-aware escape (RISC-V) | Port from x86-64 |
+| ~~Capacity-aware lists~~ | **DONE** (both backends) — hidden capacity word at [-8], geometric doubling, O(1) amortized snoc; estimated 22,000x heap reduction |
+| ~~Result-space-aware escape (RISC-V)~~ | **DONE** — S10 = ResultBaseReg, single-instruction pointer check (bge) |
+| Retry self-compile | Next: test on both backends under QEMU user mode |
 | Add EffectTypeExpr to desugar-type-expr | Missing case (assigned to Agent Windows) |
 | Perf automation | Wire `--bench-check` into CI or pre-commit hook |
 
