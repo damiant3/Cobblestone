@@ -233,18 +233,27 @@ Section: Character Scanning
       column = st.column + (end - st.offset)
      }
 
+  scan-string-end : Text -> Integer -> Integer -> Integer
+  scan-string-end (source) (offset) (len) =
+   if offset >= len then offset
+   else let c = char-code-at source offset
+    in if c == cc-double-quote then offset + 1
+     else if c == cc-newline then offset
+      else if c == cc-backslash
+       then scan-string-end source (offset + 2) len
+       else scan-string-end source (offset + 1) len
+
   scan-string-body : LexState -> LexState
   scan-string-body (st) =
-   if is-at-end st
-    then st
-    else let c = peek-code st
-     in if c == cc-double-quote
-      then advance-char st
-      else if c == cc-newline
-       then st
-       else if c == cc-backslash
-        then scan-string-body (advance-char (advance-char st))
-        else scan-string-body (advance-char st)
+   let len = text-length st.source
+   in let end = scan-string-end st.source st.offset len
+    in if end == st.offset then st
+     else LexState {
+      source = st.source,
+      offset = end,
+      line = st.line,
+      column = st.column + (end - st.offset)
+     }
 
   process-escapes : Text -> Integer -> Integer -> Text -> Text
   process-escapes (s) (i) (len) (acc) =
