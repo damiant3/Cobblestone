@@ -230,11 +230,20 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             // Phase 1: decompose record-typed heap args into field locals
             List<int> decompIndices = [];   // param indices with decomposition
             List<int> plainHeapIndices = []; // heap args without decomposition
+            bool hasListArg = false; // lists are mutable (in-place snoc) — unsafe to reset
             for (int i = 0; i < args.Count && i < m_tcoParamTypes.Length; i++)
             {
                 CodexType resolved = ResolveType(m_tcoParamTypes[i]);
                 if (!IRRegion.TypeNeedsHeapEscape(resolved))
                     continue; // scalar — no check needed
+                if (resolved is ListType)
+                {
+                    // List contents may reference above-mark allocations
+                    // even when the list pointer is below the mark (in-place
+                    // list-snoc adds elements pointing to new heap objects).
+                    hasListArg = true;
+                    break;
+                }
                 if (resolved is RecordType rt && i < m_tcoDecompLocals.Length
                     && m_tcoDecompLocals[i] is int[] fieldLocals)
                 {
@@ -253,9 +262,23 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
                     plainHeapIndices.Add(i);
                 }
             }
+            // Also check record fields for ListType
+            if (!hasListArg)
+            {
+                foreach (int idx in decompIndices)
+                {
+                    RecordType rt = (RecordType)ResolveType(m_tcoParamTypes[idx]);
+                    if (rt.Fields.Any(f => ResolveType(f.Type) is ListType))
+                    { hasListArg = true; break; }
+                }
+            }
 
             // Phase 2: collect pointer values that need checking
             // (plain heap arg pointers + decomposed record pointer fields)
+            // Skip reset entirely if any param is a list — in-place list-snoc
+            // stores element pointers above the mark inside a below-mark list.
+            if (hasListArg) goto skipReset;
+
             bool anyChecks = plainHeapIndices.Count > 0;
             if (!anyChecks)
             {
@@ -348,6 +371,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
                 foreach (int offset in skipResetOffsets)
                     PatchJcc(offset, noResetTarget);
             }
+            skipReset:;
         }
 
         // Reassign params from temps
