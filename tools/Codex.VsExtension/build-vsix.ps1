@@ -1,5 +1,8 @@
-# Build the Codex VS extension (syntax highlighting VSIX)
+# Build and install the Codex VS extension (syntax highlighting VSIX)
 # Usage: pwsh -File build-vsix.ps1
+#
+# Automatically uninstalls any previous version before installing.
+# Close Visual Studio before running.
 #
 # For full project template + Build menu support, also run:
 #   pwsh -File install-vs.ps1
@@ -40,7 +43,61 @@ if (Test-Path $vsixPath) { Remove-Item $vsixPath }
 Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $vsixPath
 
 Write-Output "VSIX built: $vsixPath"
-Write-Output "Install: double-click the .vsix file or use vsixinstaller.exe"
+
+# --- Auto-install: uninstall old version, install new ---
+$extensionId = "CodexLanguage.a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+# Find VSIXInstaller.exe (VS 2022)
+$vsixInstaller = $null
+$vsEditions = @("Community", "Professional", "Enterprise")
+foreach ($edition in $vsEditions) {
+    $candidate = "C:\Program Files\Microsoft Visual Studio\2022\$edition\Common7\IDE\VSIXInstaller.exe"
+    if (Test-Path $candidate) { $vsixInstaller = $candidate; break }
+}
+# Fallback: vswhere
+if (-not $vsixInstaller) {
+    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vswhere) {
+        $vsPath = & $vswhere -latest -property installationPath 2>$null
+        if ($vsPath) {
+            $candidate = Join-Path $vsPath "Common7\IDE\VSIXInstaller.exe"
+            if (Test-Path $candidate) { $vsixInstaller = $candidate }
+        }
+    }
+}
+
+if ($vsixInstaller) {
+    Write-Output ""
+    Write-Output "Found VSIXInstaller: $vsixInstaller"
+
+    # Uninstall old version (ignore errors if not installed)
+    Write-Output "Uninstalling previous version..."
+    $uninstall = Start-Process -FilePath $vsixInstaller `
+        -ArgumentList "/u:$extensionId", "/quiet" `
+        -Wait -PassThru -NoNewWindow 2>$null
+    if ($uninstall.ExitCode -eq 0) {
+        Write-Output "  Previous version uninstalled."
+    } else {
+        Write-Output "  No previous version found (or already uninstalled)."
+    }
+
+    # Install new version
+    Write-Output "Installing new version..."
+    $install = Start-Process -FilePath $vsixInstaller `
+        -ArgumentList "`"$vsixPath`"", "/quiet" `
+        -Wait -PassThru -NoNewWindow
+    if ($install.ExitCode -eq 0) {
+        Write-Output "  Installed successfully!"
+    } else {
+        Write-Output "  Install returned exit code $($install.ExitCode)."
+        Write-Output "  Try closing Visual Studio first, then re-run."
+    }
+} else {
+    Write-Output ""
+    Write-Output "VSIXInstaller.exe not found — install manually:"
+    Write-Output "  Double-click $vsixPath"
+}
+
 Write-Output ""
 Write-Output "This VSIX provides syntax highlighting only."
 Write-Output "For project templates + Build menu, also run:"
