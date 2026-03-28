@@ -72,25 +72,67 @@ reclaims per-iteration garbage (IR tree + emitted text string).
 - **Verified**: Self-hosted parser now produces 1202 parsed defs (correct count
   including type annotations + function bodies for ~584 unique defs). Mini test with
   3-arm `when` expression parses all branches correctly.
-- **Remaining**: Self-hosted bootstrap stage 1 progresses past parsing but crashes in
-  `emit_builtin` (`ArgumentOutOfRangeException`) with 1047 unification errors. This
-  is a separate type-checker issue, not the parser bug.
 - **Do NOT add new record types** to CodexEmitter.codex — the self-hosted type checker
   crashes on them (`bsearch_text_pos` ArgumentOutOfRange). Reuse existing types.
 
-### Next: Floppy Disk Phase 2 (Two-Pass Design)
+### Next Bug: Self-Hosted Type Checker — 1047 Unification Errors
+
+**Branch**: `cam/fix-crlf-lexer` (includes the CRLF parser fix)
+**Status**: Parser is now correct (1202 parsed defs). Type checker produces 1047
+errors, crashing the emitter at `emit_builtin` (`ArgumentOutOfRangeException`).
+
+**Error breakdown** (decoded from CCE):
+
+| Category | Count | Pattern |
+|----------|-------|---------|
+| Unknown name (scope bug) | ~200+ | `arities`, `ctors`, `indent`, `ctx`, `len`, `func-name` |
+| Type mismatch (cascade) | ~800+ | `Text vs Func`, `TypeAnn vs IRExpr`, `Integer vs Func` |
+
+The "Unknown name" errors are the root cause. Common variable names from function
+parameters and let bindings are unresolved, producing `ErrorTy`, which cascades
+into hundreds of type mismatches downstream.
+
+**Key observations**:
+- The reference compiler's C# type checker handles the same source with 0 errors
+- The self-hosted compiler concatenates all 26 files into one string and compiles
+  as a single unit (vs reference compiler which compiles per-file then merges)
+- The unknown names (`arities`, `ctors`, `indent`) are all parameters in emitter/
+  lowering functions — whatever scoping pattern they share is where the bug lives
+- Diagnostics are in `Codex.Codex/type-diag.txt` and `Codex.Codex/unify-errors.txt`
+  (CCE-encoded; decode with `_Cce.ToUnicode` or the _toUni table in CodexLib.g.cs)
+
+**Where to investigate**:
+1. `Codex.Codex/Semantics/NameResolver.codex` — how names enter scope from function
+   params, let bindings, and match patterns
+2. `Codex.Codex/Types/TypeChecker.codex` — how `check-module` resolves and infers types
+3. Compare `check_module` in `CodexLib.g.cs` (the compiled self-hosted checker) against
+   the reference checker in `src/Codex.Semantics/` and `src/Codex.Types/`
+4. Try `--mini` on a small file with the failing pattern to isolate:
+   `dotnet run --project tools/Codex.Bootstrap/Codex.Bootstrap.csproj --no-build -- --mini <file>`
+
+**How to reproduce**:
+```bash
+dotnet run --project tools/Codex.Bootstrap/Codex.Bootstrap.csproj --no-build \
+  -- "Codex.Codex" "Codex.Codex/stage1-test.cs" 2>stderr.txt
+# stdout: pipeline progress + token dump + def counts
+# stderr: crash trace if emitter fails
+# Codex.Codex/unify-errors.txt: all type errors (CCE-encoded)
+# Codex.Codex/type-diag.txt: all type bindings (CCE-encoded)
+```
+
+**Bootstrap timeout note**: `Program.Bootstrap.cs:RunBootstrapStage` has a 60-second
+timeout. The self-hosted compiler takes longer. Run stage 1 directly (above) to avoid.
+
+### Floppy Disk Phase 2 (Two-Pass Design)
 
 Target: self-compile in < 4 MB heap. Eliminate AST persistence.
 
 **Architecture**:
 - Pass 1: Parse each def, extract signature (name + type annotation), discard body
 - Pass 2: Re-parse each def from token stream, process through full pipeline
-- Two-pass design: Pass 1 collects signatures (~350 KB persistent), Pass 2 processes each definition independently (~500 KB peak per def)
+- Two-pass design: Pass 1 collects signatures (~350 KB persistent), Pass 2 processes
+  each definition independently (~500 KB peak per def)
 - Total peak: < 1 MB
-
-**Codex emitter status**: Simple programs round-trip correctly. Self-hosted compiler
-round-trip compiles but segfaults at runtime — likely definition ordering or expression
-precedence issue in the emitter. Needs investigation.
 
 ---
 
