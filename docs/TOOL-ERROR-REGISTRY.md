@@ -265,3 +265,15 @@ It's turtles all the way down.
 **Mitigation shipped**: `codex-agent build` now runs `codex-agent-verify.ps1` on all
 key docs automatically. The sweep is in the path agents can't skip. The verify script
 has a 100% catch rate on TEF-008. Automation works. Discipline doesn't.
+
+### TEF-010: git push succeeds but branch disappears from remote
+
+**Severity**: MEDIUM - silent push loss, delays collaboration
+**Tool**: `git push` via CLI (Claude Code / Cam agent)
+**Symptom**: `git push origin cam/mm3-shared-fixes` reports success (`* [new branch]`),
+but the branch does not appear on GitHub. `git ls-remote origin` confirms the branch
+is absent. A second push to the same remote and branch succeeds and persists.
+**Frequency**: Observed once (2026-03-28, Cam session). May be GitHub propagation lag,
+a repo-level branch auto-delete rule, or a credential/session issue.
+**Workaround**: After pushing a new branch, verify with `git ls-remote origin | grep <branch>`.
+If absent, push again.
