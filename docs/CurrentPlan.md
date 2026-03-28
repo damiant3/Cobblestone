@@ -37,6 +37,27 @@ metal. MM2: The High Camp is reached.**
 
 ## What Got Done (2026-03-28 Cam, session 3)
 
+### x86-64 USERMODE SELF-COMPILE: WORKING
+
+The self-hosted Codex compiler, compiled to x86-64 native by the reference
+compiler, successfully compiles its own source (180KB, 4738 lines) in
+usermode under `qemu-x86_64`. Output: 261,654 chars of valid C#.
+
+```
+echo "_all-source.codex" | qemu-x86_64 ./all-source  →  261,654 chars, exit=0
+```
+
+RISC-V self-compile crashes — pre-existing bug, not from this session.
+
+### ListType safety fix for heap reset
+
+Found and fixed a use-after-free in the TCO heap reset. In-place `list-snoc`
+stores element pointers above the mark inside a below-mark list allocation.
+The pointer check on the list container passed (ptr < mark) but the list's
+new elements pointed to reclaimed memory. Fix: ListType params unconditionally
+block the reset. TCO heap reset still fires for non-list functions (scanner
+loops, record-only state threading).
+
 ### Phase 2: TCO heap reset (both backends)
 
 Added conditional heap reset at each tail call in TCO functions. At the loop
