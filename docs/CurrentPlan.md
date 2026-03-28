@@ -440,8 +440,8 @@ it built the OS for.
 | ~~Result-space-aware escape (RISC-V)~~ | **DONE** — S10 = ResultBaseReg, single-instruction pointer check (bge) |
 | ~~Fix region reclamation crash~~ | **DONE** — disabled unsafe reclamation; self-hosted compiler no longer crashes on sum type input |
 | ~~Fix self-hosted variant parser~~ | **DONE** — `parse-type-def` only checked `Pipe`, missing `TypeIdentifier + lookahead`; `Color = Red | Green | Blue` was misparsed as function def |
-| Fix EmitRegion heap-path crash | Heap-region escape-copy still crashes on `skip-newlines → current` chain; disable escape-copy entirely or add liveness guard |
-| Retry self-compile with native backend | After EmitRegion fix, rebuild kernel, re-run test suite |
+| ~~Fix EmitRegion crash~~ | **DONE** — EmitRegion pass-through for all regions; removed mark save, escape-copy, HeapReg restore. Binary 272KB (was 395KB). Pattern matching verified native userspace. |
+| Retry full self-compile with native backend | EmitRegion fix unblocks; next: feed self-hosted source to native compiler |
 | Add EffectTypeExpr to desugar-type-expr | Missing case (assigned to Agent Windows) |
 | Perf automation | Wire `--bench-check` into CI or pre-commit hook |
 
