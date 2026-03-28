@@ -61,45 +61,81 @@ reclaims per-iteration garbage (IR tree + emitted text string).
 **Self-hosted** (`Codex.Codex/Emit/CodexEmitter.codex`): Parser bug FIXED.
 
 **CRLF bug (FIXED)** — Branch `cam/fix-crlf-lexer`, commit `72790dc`:
-- **Root cause**: The self-hosted lexer (`Lexer.codex`) only recognized `\n` as a
-  newline. On Windows, source files have CRLF (`\r\n`) line endings. The `\r`
-  character was tokenized as an `ErrorToken`, which blocked `skip-newlines` from
-  reaching the next match arm's `if` keyword. This caused ALL multi-arm `when`
-  expressions to be truncated to 1 branch. Orphaned arms were re-parsed by the
-  top-level definition parser as bogus defs (885 defs vs 583 expected).
-- **Fix**: Added `cc-cr = 13` constant and a `\r` skip in `scan-token` that recurses
-  via TCO (compiles to `continue` in the `while(true)` loop).
-- **Verified**: Self-hosted parser now produces 1202 parsed defs (correct count
-  including type annotations + function bodies for ~584 unique defs). Mini test with
-  3-arm `when` expression parses all branches correctly.
+- **Original root cause**: The self-hosted lexer only recognized `\n` as a newline.
+  On Windows, CRLF line endings caused `\r` to become ErrorTokens.
+- **Original fix** (`cc-cr = 13`): Skipped byte 13 in `scan-token`. BUT this was
+  wrong: `_Cce.FromUnicode` already strips `\r` (line 1996: `.Replace("\r", "")`),
+  so the CCE source never contains CR. Byte 13 in CCE is the letter **'e'**, so the
+  "fix" was silently stripping the leading 'e' from every token.
+- **Real fix** (this session): `cc-cr = 0 - 1` — sentinel value that never matches
+  any CCE byte. This eliminated the e-stripping: errors dropped from 1047 → 369.
 - **Do NOT add new record types** to CodexEmitter.codex — the self-hosted type checker
   crashes on them (`bsearch_text_pos` ArgumentOutOfRange). Reuse existing types.
 
-### Next Bug: Self-Hosted Type Checker — 1047 Unification Errors
+### CCE Byte 13 Bug — FOUND AND FIXED
 
-**Branch**: `cam/fix-crlf-lexer` (includes the CRLF parser fix)
-**Status**: Parser is now correct (1202 parsed defs). Type checker produces 1047
-errors, crashing the emitter at `emit_builtin` (`ArgumentOutOfRangeException`).
+**Root cause**: In CCE encoding, byte 13 = letter 'e'. The CRLF fix checked
+`cc-cr = 13` thinking this was carriage return, but `_Cce.FromUnicode` already
+strips CRs before encoding. So the check matched CCE 'e' instead, stripping the
+leading 'e' from 1803 tokens per compile. This mangled identifiers:
+- `emit-variant-ctors` → `mit-variant-ctors` (function not found)
+- `effects` → `ffects` (variable not found)
+- `end` → `nd` (keyword not recognized)
 
-**Error breakdown** (decoded from CCE):
+**Fix**: `Lexer.codex` line 17: `cc-cr = 0 - 1` (sentinel, never matches).
+Also patched `Codex.Codex/out/Codex.Codex.cs` consistently.
 
-| Category | Count | Pattern |
-|----------|-------|---------|
-| Unknown name (scope bug) | ~200+ | `arities`, `ctors`, `indent`, `ctx`, `len`, `func-name` |
-| Type mismatch (cascade) | ~800+ | `Text vs Func`, `TypeAnn vs IRExpr`, `Integer vs Func` |
+**Result**: 1047 errors → 369 errors. The emitter now produces 338,358 chars of C#
+output (previously crashed). The remaining 369 errors are from a parser
+fragmentation bug (next section).
 
-The "Unknown name" errors are the root cause. Common variable names from function
-parameters and let bindings are unresolved, producing `ErrorTy`, which cascades
-into hundreds of type mismatches downstream.
+### CCE Character Range Bugs — FOUND AND FIXED
 
-**Key observations**:
-- The reference compiler's C# type checker handles the same source with 0 errors
-- The self-hosted compiler concatenates all 26 files into one string and compiles
-  as a single unit (vs reference compiler which compiles per-file then merges)
-- The unknown names (`arities`, `ctors`, `indent`) are all parameters in emitter/
-  lowering functions — whatever scoping pattern they share is where the bug lives
-- Diagnostics are in `Codex.Codex/type-diag.txt` and `Codex.Codex/unify-errors.txt`
-  (CCE-encoded; decode with `_Cce.ToUnicode` or the _toUni table in CodexLib.g.cs)
+**Root cause**: Three places in the self-hosted compiler assumed Unicode alphabetical
+ordering for character ranges. In CCE, characters are frequency-ordered:
+lowercase `e,t,a,o,...,z` (bytes 13-38), uppercase `E,T,A,O,...,Z` (bytes 39-64).
+
+**Bug 1**: Lexer `cc-upper-a = char-code 'A'` = CCE 41. But CCE uppercase starts at
+'E' = CCE 39. Type names starting with 'E' or 'T' were classified as `Identifier`
+instead of `TypeIdentifier`. This caused 16 type definitions to be missed (Expr,
+Token, TokenKind, TypeExpr, TypeBinding, TypeEnv, etc.) and all their constructors.
+
+**Fix**: `cc-upper-a = char-code 'E'` (Lexer.codex line 74)
+
+**Bug 2**: NameResolver `is-upper-char` used `char-code 'A'` — same issue.
+**Fix**: `is-upper-char` uses `char-code 'E'` (NameResolver.codex line 62)
+
+**Bug 3**: TypeChecker `is-value-name` used hardcoded Unicode values `code >= 97 &
+code <= 122`. In CCE, lowercase 'e' = 13, not 97. Type variable parameterization
+was completely broken — no lowercase names were recognized as type variables.
+**Fix**: `code >= char-code 'e' & code <= char-code 'z'` (TypeChecker.codex line 63)
+
+**Combined result** (all three + cc_cr fix):
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Unification errors | 1047 | 34 |
+| ErrorTy bindings | 81 | 0 |
+| Type-defs parsed | 79 | 95 (correct) |
+| Output | crash | 337,562 chars C# |
+| Tests | all pass | all pass |
+
+### Remaining: 34 Unification Errors (annotation merging)
+
+**Status**: The self-hosted desugarer doesn't merge type annotations with their
+body definitions for the concatenated source. Parser produces 582 defs vs expected
+519. The 63 extra defs are annotation-only entries. Their parameters aren't bound,
+causing 34 "Unknown name" errors for references within annotation-only def bodies.
+
+**Names**: `stream-defs`(4), `i`(4), `ust`(3), `types`(3), `len`(3), `defs`(3),
+`List`(3), `main`(2), `Nothing`(2), `Integer`(2), `Console`(2), `text-concat-list`(1)
+
+**Where to investigate**: `Ast/Desugarer.codex` — the `desugar-defs` function needs
+to merge sequential annotation + body pairs with the same name.
+
+**Principle discovered**: In CCE, character ranges must use CCE ordering, not Unicode
+alphabetical ordering. Use `char-code '<char>'` for range bounds — this automatically
+produces the correct CCE byte value since the source is CCE-encoded.
 
 **Where to investigate**:
 1. `Codex.Codex/Semantics/NameResolver.codex` — how names enter scope from function
