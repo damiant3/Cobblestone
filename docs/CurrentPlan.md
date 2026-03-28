@@ -29,6 +29,40 @@ its own 26-file source (205 KB) to valid C# — and that C# output, when used as
 the compiler for the same source, produces byte-identical output. The compiler
 is a correct fixed point of itself.
 
+### x86-64 Usermode Self-Compile Status
+
+**Runs to completion (exit 0), output does NOT compile (1550 C# errors).**
+
+Two bugs identified, one fixed:
+
+**Bug 1 (FIXED)**: CCE char range in old native binary. The `tools/_all-source`
+binary was compiled from pre-fix source where `is-upper-char >= char-code 'A'`
+(CCE 41) excluded 'E' (39) and 'T' (40). This caused the self-hosted emitter
+to treat constructors starting with E/T as variable patterns (`object TextTy`
+instead of `TextTy { }`). The emitter's `is-catch-all` check then stopped
+emitting remaining match arms. Rebuilding from the fixed source (which uses
+`char-code 'E'`) resolves this — `cs_type` now has all 14 arms.
+
+**Bug 2 (OPEN — ListTy erasure in x86-64 codegen)**: The self-hosted type
+checker's `resolve-applied-type` correctly identifies `List Integer` and
+constructs `ListTy(IntegerTy)` — the generated code is correct. But at
+RUNTIME on native x86-64, `ListTy(IntegerTy)` becomes just `IntegerTy`.
+This affects ONLY the built-in `List` type (`MyList Integer` → `MyList<long>`
+correctly, `List Integer` → `long` incorrectly). 195 functions lose `List<>`
+wrappers.
+
+**Investigation ruled out**: Parser annotation merging (verified: all 519
+annotations are correctly paired), desugarer (all 7 TypeExpr arms present
+including ListType), string comparison (`"List" == "List"` works on native),
+`cs-type` (all 14 CodexType arms present), `desugar-type-expr` (all arms
+survive). The bug is in how the x86-64 binary constructs or propagates the
+`ListTy` variant value at runtime — likely a codegen issue in the reference
+compiler's `EmitConstructor` or variant tag assignment for `CodexType`.
+
+**Next**: Debug with GDB on native to trace `ListTy` construction in
+`resolve-applied-type`. Or add instrumented print statements to the
+self-hosted source to dump type values at checkpoints.
+
 ---
 
 ## MM3 IS PROVEN
