@@ -35,6 +35,36 @@ metal. MM2: The High Camp is reached.**
 
 ---
 
+## What Got Done (2026-03-27 Cam, session 2)
+
+### Fixed self-hosted variant type parser
+
+**Bug**: The self-hosted parser's `parse-type-def` only checked for `Pipe` (`|`)
+after `=` to detect variant types. The reference parser (Parser.cs:146-147)
+also checks `TypeIdentifier && LooksLikeVariantBody()`. So the pipe-free form
+`Color = Red | Green | Blue` was misparsed as a zero-param function `Color`
+with body `Red | Green | Blue` (an OR expression). This produced 0 type defs
+and caused empty/broken output for any program using this variant syntax.
+
+**Fix** (3 changes in `Codex.Codex/Syntax/Parser.codex`):
+
+1. `parse-type-def`: added `is-type-ident & looks-like-variant` check after
+   the existing `is-pipe` check
+2. `looks-like-variant` + `looks-like-variant-scan`: new lookahead that scans
+   forward on the same line for a `|` token, stopping at Newline/EndOfFile
+   (mirrors reference parser's `LooksLikeVariantBody()`)
+3. `parse-variant-type`: when first token is TypeIdentifier (no leading `|`),
+   parse first constructor directly before entering the `|`-delimited loop
+   (mirrors reference parser's `firstCtor` flag)
+
+**Verification**:
+- `Color = Red | Green | Blue` test: TypeDefs=1, Defs=2, 0 errors, 2222 chars output
+- `MyType = | A (Integer) | B` test: TypeDefs=1, Defs=2, 0 errors, 2168 chars output
+- Self-compile (Stage 1): 299,909 chars output (unchanged)
+- 1,003 reference compiler tests pass (0 failures, 2 known skips)
+
+---
+
 ## What Got Done (2026-03-27 Cam)
 
 ### Capacity-aware lists (both backends)
@@ -349,7 +379,8 @@ it built the OS for.
 | ~~Capacity-aware lists~~ | **DONE** (both backends) — hidden capacity word at [-8], geometric doubling, O(1) amortized snoc; estimated 22,000x heap reduction |
 | ~~Result-space-aware escape (RISC-V)~~ | **DONE** — S10 = ResultBaseReg, single-instruction pointer check (bge) |
 | ~~Fix region reclamation crash~~ | **DONE** — disabled unsafe reclamation; self-hosted compiler no longer crashes on sum type input |
-| Retry self-compile | Parser produces empty output for sum types — needs investigation |
+| ~~Fix self-hosted variant parser~~ | **DONE** — `parse-type-def` only checked `Pipe`, missing `TypeIdentifier + lookahead`; `Color = Red | Green | Blue` was misparsed as function def |
+| Retry self-compile with native backend | Rebuild kernel with parser fix, re-run test suite |
 | Add EffectTypeExpr to desugar-type-expr | Missing case (assigned to Agent Windows) |
 | Perf automation | Wire `--bench-check` into CI or pre-commit hook |
 

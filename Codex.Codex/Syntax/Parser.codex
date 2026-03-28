@@ -224,7 +224,9 @@ Section: Type Definition Parsing
            then parse-record-type name-tok tparams st4
            else if is-pipe (current-kind st4)
             then parse-variant-type name-tok tparams st4
-            else TypeDefNone st
+            else if is-type-ident (current-kind st4) & looks-like-variant st4
+             then parse-variant-type name-tok tparams st4
+             else TypeDefNone st
          else TypeDefNone st
     else TypeDefNone st
 
@@ -261,9 +263,27 @@ Section: Type Definition Parsing
        then parse-record-fields-loop name-tok tparams (list-snoc acc field) (skip-newlines (advance st2))
        else parse-record-fields-loop name-tok tparams (list-snoc acc field) st2
 
+  looks-like-variant : ParseState -> Boolean
+  looks-like-variant (st) =
+   looks-like-variant-scan st.tokens (st.pos + 1) (list-length st.tokens)
+
+  looks-like-variant-scan : List Token -> Integer -> Integer -> Boolean
+  looks-like-variant-scan (tokens) (i) (len) =
+   if i >= len then False
+   else let k = (list-at tokens i).kind
+    in if is-pipe k then True
+     else when k
+      if Newline -> False
+      if EndOfFile -> False
+      if _ -> looks-like-variant-scan tokens (i + 1) len
+
   parse-variant-type : Token -> List Token -> ParseState -> ParseTypeDefResult
   parse-variant-type (name-tok) (tparams) (st) =
-   parse-variant-ctors name-tok tparams [] st
+   if is-type-ident (current-kind st)
+    then let ctor-name = current st
+     in let st2 = advance st
+      in parse-ctor-fields ctor-name [] st2 name-tok tparams []
+    else parse-variant-ctors name-tok tparams [] st
 
   parse-variant-ctors : Token -> List Token -> List VariantCtorDef -> ParseState -> ParseTypeDefResult
   parse-variant-ctors (name-tok) (tparams) (acc) (st) =
