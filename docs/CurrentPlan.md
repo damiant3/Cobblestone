@@ -1,6 +1,6 @@
 # Current Plan
 
-**Date**: 2026-03-26 late night
+**Date**: 2026-03-28
 
 ---
 
@@ -32,6 +32,112 @@ metal. MM2: The High Camp is reached.**
 
 **History**: `docs/OldStatus/CurrentPlan-2026-03-26-evening.md`
 **Route map**: `docs/THE-ASCENT.md`, `docs/THE-LAST-PEAK.md`
+
+---
+
+## What Got Done (2026-03-28 Cam, session 3)
+
+### Phase 2: TCO heap reset (both backends)
+
+Added conditional heap reset at each tail call in TCO functions. At the loop
+top, HeapReg is saved as a mark. At each tail call, after evaluating args to
+stack slots, every heap-typed arg is compared against the mark (unsigned >=).
+If ALL heap args point below the mark (pre-existing data), HeapReg is reset
+to the mark, reclaiming all per-iteration garbage. If any arg was allocated
+during this iteration, the reset is skipped and the next iteration saves a
+fresh (higher) mark.
+
+**Implementation** (both x86-64 and RISC-V):
+
+1. `EmitFunction` TCO setup: allocate `m_tcoHeapMarkLocal` stack slot, store
+   parameter types in `m_tcoParamTypes[]`. At loop top (re-executed each
+   iteration): `tcoHeapMark = HeapReg`.
+
+2. `EmitTailCall` / `EmitRiscVTailCall`: after arg evaluation, classify each
+   param via `IRRegion.TypeNeedsHeapEscape(ResolveType(paramType))`.
+   - All scalar: unconditional `HeapReg = mark` (always reset).
+   - Any heap-typed: emit `cmp arg, mark; jae skip_reset` per heap arg.
+     If all pass: `HeapReg = mark`. All skip-branches patch to after the
+     reset instruction.
+
+**Which TCO functions benefit:**
+
+| Category | Example functions | Resets? |
+|----------|------------------|---------|
+| Scalar-only params | `skip-spaces-end`, `scan-ident-end`, `scan-digits-end` | Always |
+| Accumulator pattern (index + list) | `lower-defs-acc`, `emit-defs`, `check-all-defs`, `resolve-all-defs` | Most iterations (list-snoc usually returns same ptr) |
+| Fresh record per iteration | `tokenize-loop` (new LexState each iter) | Rarely (needs Phase 2b record decomposition) |
+
+**Estimated impact**: For accumulator-pattern functions processing 200+ items,
+per-iteration garbage (intermediate IR nodes, type records, emitter strings)
+is reclaimed on ~95%+ of iterations. For `lower-defs-acc` with 200 definitions,
+estimated ~4-8MB garbage reclaimed that would otherwise persist until function exit.
+
+**Files changed**:
+- `src/Codex.Emit.X86_64/X86_64CodeGen.cs` — `EmitFunction`, `EmitTailCall`
+- `src/Codex.Emit.RiscV/RiscVCodeGen.cs` — `EmitFunction`, `EmitRiscVTailCall`
+
+**Verification**: 1,003 tests pass (0 failures, 2 known skips). Build clean
+(expected CS5001 only).
+
+### What's next: Phase 2b — TCO record decomposition
+
+For `tokenize-loop(st: LexState, acc: List Token)`, the LexState arg is a
+fresh record each iteration, so the conditional reset never fires. To reclaim
+garbage in this hot loop:
+
+1. At tail call, decompose LexState into its fields: `source` (Text ptr,
+   pre-existing) and `pos` (Integer, scalar). Store to stack slots.
+2. All decomposed values are now below the mark or scalar → reset fires.
+3. After reset, reconstruct LexState at the (now-reset) heap top.
+
+Same approach works for ParseState `{tokens: List Token, pos: Integer}`.
+Requires knowing record field layout at codegen time — check if `RecordType`
+has field info available in the IR.
+
+---
+
+## What Got Done (2026-03-28 Cam, session 2)
+
+### Lowering O(N²) → O(N) list building
+
+Converted 8 list-building functions in `Codex.Codex/IR/Lowering.codex` from
+`[x] ++ recursive` (prepend, O(N²) total copies) to `list-snoc` accumulator
+pattern (O(N) amortized with capacity-aware lists). Biggest win: `lower-defs`
+with 200+ definitions dropped from ~20,000 element copies to ~400.
+
+### Phase 0 complete: scan-string-body + skip-newlines
+
+Bulk offset scanning for remaining lexer/parser functions. All scanning
+functions now use Integer-returning offset helpers. Total Phase 0 estimated
+dead record reduction: ~5MB for 180KB source.
+
+### In-place list-insert-at + min capacity 4 (Phase 3 + 6.1)
+
+`list-insert-at` now has 3 paths matching `list-snoc`: in-place shift when
+spare capacity, grow-and-shift at heap top, copy-with-gap as fallback. Both
+backends. Minimum list capacity reduced from 16 to 4 (saves 96 bytes per
+small list). Type environment builds drop from O(N²) to O(N).
+
+### What's next: Phase 2 — TCO heap reset
+
+The biggest remaining optimization. At each TCO iteration, after evaluating
+args into stack slots, reset HeapReg to reclaim per-iteration garbage.
+
+**The challenge**: heap-typed TCO args (ParseState records, LexResult sum
+types) live above the mark and would be reclaimed. Need to either:
+1. Decompose records into scalar stack slots, reconstruct after reset
+2. Escape-copy to result space (but escape-copy crashes on cross-refs)
+3. Only reset for scalar-only TCO functions (limited impact since Phase 0
+   already converted hot scalar loops)
+
+**Approach to investigate**: Record decomposition. For `tokenize-loop`,
+the LexState arg has 2 scalar-ish fields (source ptr + pos integer). Save
+those to stack, reset heap, reconstruct LexState at loop top. The source
+ptr points below the mark (allocated at program start), pos is scalar.
+Similar for ParseState (tokens ptr + pos).
+
+**Files**: `X86_64CodeGen.cs` (EmitTailCall), `RiscVCodeGen.cs` (EmitTailCall).
 
 ---
 
@@ -507,6 +613,8 @@ it built the OS for.
 | ~~Scalar region reclamation~~ | **DONE** (both backends) — save/restore HeapReg for scalar regions; heap regions still pass-through |
 | ~~Bulk offset scanning in lexer~~ | **DONE** — skip-spaces-end, scan-ident-end, scan-digits-end return Integer offset; ~4.3MB dead LexState reduction |
 | ~~Reduce Linux brk allocation~~ | **DONE** — 4.25GB → 320MB; actual usage ~10-15MB for 180KB source |
+| ~~TCO heap reset (Phase 2)~~ | **DONE** (both backends) — conditional HeapReg reset at tail calls; accumulator-pattern loops reclaim per-iteration garbage |
+| TCO record decomposition (Phase 2b) | Decompose LexState/ParseState into scalars + stable ptrs at tail call → enables reset for tokenize-loop |
 | Retry full self-compile with native backend | Memory optimizations unblock; next: feed self-hosted source to native compiler (needs Linux) |
 | Fix Bootstrap Stage 1 crash | Pre-existing `ArgumentOutOfRangeException` in scan_token; likely stale CodexLib.g.cs |
 | Add EffectTypeExpr to desugar-type-expr | Missing case (assigned to Agent Windows) |

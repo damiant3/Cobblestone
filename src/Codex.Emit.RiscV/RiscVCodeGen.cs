@@ -36,6 +36,8 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     uint[] m_tcoTempLocals = [];
     uint m_tcoSavedNextLocal;
     uint m_tcoSavedNextTemp;
+    uint m_tcoHeapMarkLocal;              // stack local: S1 value at TCO loop top
+    CodexType[] m_tcoParamTypes = [];     // parameter types for TCO heap-reset check
     int m_spillCount;           // number of spilled locals beyond S-registers
     int m_prologueIndex = -1;   // instruction index of the frame size addi (patched)
     Dictionary<string, uint> m_locals = [];
@@ -216,8 +218,25 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             m_tcoTempLocals = new uint[def.Parameters.Length];
             for (int i = 0; i < def.Parameters.Length; i++)
                 m_tcoTempLocals[i] = AllocLocal();
+
+            // Store parameter types for heap-reset check in EmitRiscVTailCall
+            m_tcoParamTypes = new CodexType[def.Parameters.Length];
+            for (int i = 0; i < def.Parameters.Length; i++)
+                m_tcoParamTypes[i] = def.Parameters[i].Type;
+
+            // Allocate local for heap mark (persists across iterations)
+            m_tcoHeapMarkLocal = AllocLocal();
         }
         m_tcoLoopTop = m_instructions.Count;
+
+        // TCO heap reset: save S1 (heap ptr) at each iteration start.
+        if (m_inTCOFunction)
+        {
+            uint hp = AllocTemp();
+            Emit(RiscVEncoder.Mv(hp, Reg.S1));
+            StoreLocal(m_tcoHeapMarkLocal, hp);
+        }
+
         m_tcoSavedNextLocal = m_nextLocal;
         m_tcoSavedNextTemp = m_nextTemp;
         m_inTailPosition = m_inTCOFunction;
@@ -555,6 +574,52 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             m_inTailPosition = saved;
             StoreLocal(m_tcoTempLocals[i], r);
         }
+
+        // ── TCO heap reset ──────────────────────────────────────
+        // Check if all heap-typed args point below the iteration mark.
+        // If yes: reset S1 (heap ptr) to reclaim per-iteration garbage.
+        // If no: skip reset (next iteration saves a fresh mark).
+        {
+            List<int> heapArgIndices = [];
+            for (int i = 0; i < args.Count && i < m_tcoParamTypes.Length; i++)
+            {
+                CodexType resolved = ResolveType(m_tcoParamTypes[i]);
+                if (IRRegion.TypeNeedsHeapEscape(resolved))
+                    heapArgIndices.Add(i);
+            }
+
+            if (heapArgIndices.Count == 0)
+            {
+                // All scalar — always reset
+                Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(m_tcoHeapMarkLocal)));
+            }
+            else
+            {
+                // Load mark into a temp register (survives across arg loads)
+                uint markReg = AllocTemp();
+                Emit(RiscVEncoder.Mv(markReg, LoadLocal(m_tcoHeapMarkLocal)));
+
+                // For each heap-typed arg: if arg >= mark, skip reset
+                List<(int Index, uint Rs1, uint Rs2)> skipBranches = [];
+                foreach (int idx in heapArgIndices)
+                {
+                    uint argVal = LoadLocal(m_tcoTempLocals[idx]);
+                    int branchIdx = m_instructions.Count;
+                    Emit(RiscVEncoder.Bge(argVal, markReg, 0)); // placeholder
+                    skipBranches.Add((branchIdx, argVal, markReg));
+                }
+
+                // All checks passed — reset heap to mark
+                Emit(RiscVEncoder.Mv(Reg.S1, markReg));
+
+                // Patch all skip-reset branches to land here
+                int noResetTarget = m_instructions.Count;
+                foreach (var (brIdx, rs1, rs2) in skipBranches)
+                    m_instructions[brIdx] = RiscVEncoder.Bge(rs1, rs2,
+                        (noResetTarget - brIdx) * 4);
+            }
+        }
+
         for (int i = 0; i < args.Count && i < m_tcoParamLocals.Length; i++)
         {
             uint val = LoadLocal(m_tcoTempLocals[i]);
