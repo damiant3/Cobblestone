@@ -74,6 +74,46 @@ now skip redundant deep-copies of pointers already in result space.
 
 1,003 tests pass (0 failures, 2 known skips). Build clean (expected CS5001).
 
+### BLOCKER: Self-hosted sum type match crashes on native backend
+
+**Minimal repro** (14-line .codex file):
+```
+MyType =
+ | A (Integer)
+ | B
+
+f : MyType -> Integer
+f (x) =
+ when x
+  if A (n) -> n
+  if B -> 0
+
+main : Integer
+main = f (A 42)
+```
+
+**Behavior**: Reference-compiled native binary runs this → `si_addr=NULL` segfault.
+The same program works when compiled to C#. The native binary successfully
+compiles programs WITHOUT sum type matching (`main = 42`, if-else chains,
+list-snoc, records, etc.).
+
+**Investigation trail**:
+1. Self-compile of 26 files (201KB): segfault. Both old and new binaries.
+2. Bisected to file 8 (CSharpEmitterExpressions.codex), line 226.
+3. Line 226 uses `when ... if ListTy (et) -> ...` pattern matching.
+4. Reproduced with 14-line minimal test: ANY `when/if` on sum types crashes.
+5. Sum type DEFINITION works (constructor, field access). Only MATCHING crashes.
+6. QEMU strace: file fully read, then `SIGSEGV {si_addr=NULL}`.
+
+**Root cause hypothesis**: The x86-64 backend's match emission for sum types
+(in `EmitMatch` or `EmitApply` for `when`) produces code that dereferences
+a null pointer. Likely a missing case in the match codegen for sum type
+destructuring — possibly the scrutinee register is clobbered before the
+match arms read it, or the tag dispatch jumps to an uninitialized label.
+
+**Not related to**: capacity-aware lists, escape-copy, region reclamation,
+or any changes in this session. Pre-existing in both old and new binaries.
+
 ---
 
 ## What Got Done (2026-03-26 night)
@@ -294,7 +334,7 @@ either architecture.
 | ~~In-place list-snoc~~ | **DONE** — fast path O(1) when at heap top, but rarely fires in TCO loops |
 | ~~Capacity-aware lists~~ | **DONE** (both backends) — hidden capacity word at [-8], geometric doubling, O(1) amortized snoc; estimated 22,000x heap reduction |
 | ~~Result-space-aware escape (RISC-V)~~ | **DONE** — S10 = ResultBaseReg, single-instruction pointer check (bge) |
-| Retry self-compile | Next: test on both backends under QEMU user mode |
+| Retry self-compile | **BLOCKED** — pre-existing null deref when self-hosted compiler matches sum types (see below) |
 | Fix Boolean type in self-hosted emitter | Blocker for usermode self-compile |
 | Fix CCE string escaping in self-hosted emitter | Blocker — uses ASCII rules instead of CCE |
 | Add EffectTypeExpr to desugar-type-expr | Missing case (assigned to Agent Windows) |

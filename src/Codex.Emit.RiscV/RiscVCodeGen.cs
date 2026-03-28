@@ -173,21 +173,21 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         if (m_inTCOFunction)
             Console.Error.WriteLine($"RISCV TCO: {def.Name}");
 
-        // Prologue: base frame = 88 bytes (ra + s0 + s2-s10; S11 reserved for result-space).
+        // Prologue: base frame = 80 bytes (ra + s0 + s2-s9; S10=ResultBaseReg, S11=ResultReg).
         // If spills are needed, frame grows — patched after body emission.
         // For large frames (>2047 bytes), addi immediate overflows.
         // Reserve space for a multi-instruction prologue using T0 as scratch.
         m_prologueIndex = m_instructions.Count;
         // Reserve 3 slots: up to 2 for Li(T0, frameSize) + 1 for sub(sp, sp, t0)
-        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -88)); // slot 0: patched
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -80)); // slot 0: patched
         Emit(RiscVEncoder.Nop());                       // slot 1: patched or nop
         Emit(RiscVEncoder.Nop());                       // slot 2: patched or nop
-        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.Ra, 80));
-        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S0, 72));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.Ra, 72));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S0, 64));
         for (int i = 0; i < CalleeSaved.Length; i++)
-            Emit(RiscVEncoder.Sd(Reg.Sp, CalleeSaved[i], 64 - i * 8));
+            Emit(RiscVEncoder.Sd(Reg.Sp, CalleeSaved[i], 56 - i * 8));
         // S0 = frame pointer: reserve 3 slots for large frame
-        Emit(RiscVEncoder.Addi(Reg.S0, Reg.Sp, 88));   // slot A: patched
+        Emit(RiscVEncoder.Addi(Reg.S0, Reg.Sp, 80));   // slot A: patched
         Emit(RiscVEncoder.Nop());                        // slot B: patched or nop
         Emit(RiscVEncoder.Nop());                        // slot C: patched or nop
 
@@ -231,7 +231,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         m_spillCounts[def.Name] = m_spillCount;
 
         // Patch frame size if spills were needed
-        int frameSize = 88 + m_spillCount * 8;
+        int frameSize = 80 + m_spillCount * 8;
         // Align to 16 bytes
         if (frameSize % 16 != 0) frameSize += 8;
 
@@ -243,9 +243,9 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
         // Epilogue
         for (int i = 0; i < CalleeSaved.Length; i++)
-            Emit(RiscVEncoder.Ld(CalleeSaved[i], Reg.Sp, 64 - i * 8));
-        Emit(RiscVEncoder.Ld(Reg.Ra, Reg.Sp, 80));
-        Emit(RiscVEncoder.Ld(Reg.S0, Reg.Sp, 72));
+            Emit(RiscVEncoder.Ld(CalleeSaved[i], Reg.Sp, 56 - i * 8));
+        Emit(RiscVEncoder.Ld(Reg.Ra, Reg.Sp, 72));
+        Emit(RiscVEncoder.Ld(Reg.S0, Reg.Sp, 64));
         EmitAddSp(frameSize);
         Emit(RiscVEncoder.Ret());
     }
@@ -4183,7 +4183,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         return slot;
     }
 
-    int SpillOffset(uint virtualReg) => 88 + ((int)(virtualReg - SpillBase)) * 8;
+    int SpillOffset(uint virtualReg) => 80 + ((int)(virtualReg - SpillBase)) * 8;
 
     // Store a value into a local (register or stack slot)
     void StoreLocal(uint local, uint valueReg)
