@@ -46,11 +46,13 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     readonly Queue<(string Key, string Name, CodexType Type)> m_relocateHelperQueue = new();
 
     // S1 = working-space heap pointer.  S11 = result-space heap pointer.
-    // Neither is saved/restored by functions — they are global state.
+    // S10 = result-space BASE (set once at startup, never changes) for escape-copy skipping.
+    // None of these are saved/restored by functions — they are global state.
     const uint ResultReg = Reg.S11;
+    const uint ResultBaseReg = Reg.S10;
     static readonly uint[] CalleeSaved = {
         Reg.S2, Reg.S3, Reg.S4, Reg.S5, Reg.S6,
-        Reg.S7, Reg.S8, Reg.S9, Reg.S10
+        Reg.S7, Reg.S8, Reg.S9
     };
 
     public void EmitModule(IRModule module)
@@ -1077,12 +1079,23 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         // Switch S1 to result space so escape helper allocates there
         Emit(RiscVEncoder.Mv(Reg.S1, ResultReg));
 
-        // Escape-copy body result → allocates in result space via S1
+        // Escape-copy body result → allocates in result space via S1.
+        // Skip if pointer is already in result space (ptr >= ResultBaseReg).
         string helperName = GetOrQueueEscapeHelper(resolved);
         uint src = LoadLocal(bodyLocal);
         Emit(RiscVEncoder.Mv(Reg.A0, src));
+        int skipEscape = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge a0, s10 → skip
         EmitCallTo(helperName);
-        // A0 = pointer to escape-copied result in result space
+        int escDone = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: j → done
+        int skipTarget = m_instructions.Count;
+        m_instructions[skipEscape] = RiscVEncoder.Bge(Reg.A0, ResultBaseReg,
+            (skipTarget - skipEscape) * 4);
+        // Already in result space — A0 is unchanged
+        int doneTarget = m_instructions.Count;
+        m_instructions[escDone] = RiscVEncoder.J((doneTarget - escDone) * 4);
+        // A0 = pointer to escape-copied (or existing) result in result space
 
         // Save escaped result before restoring working space
         uint resultLocal = AllocLocal();
@@ -1233,7 +1246,18 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         {
             string helper = GetOrQueueEscapeHelper(resolved);
             Emit(RiscVEncoder.Ld(Reg.A0, Reg.S2, srcOffset));
+            // Skip copy if pointer is already in result space
+            int skipIdx = m_instructions.Count;
+            Emit(RiscVEncoder.Nop()); // patched: bge a0, s10 → skip
             EmitCallTo(helper);
+            int doneIdx = m_instructions.Count;
+            Emit(RiscVEncoder.Nop()); // patched: j → done
+            int skipTarget = m_instructions.Count;
+            m_instructions[skipIdx] = RiscVEncoder.Bge(Reg.A0, ResultBaseReg,
+                (skipTarget - skipIdx) * 4);
+            // Already in result space — A0 unchanged
+            int doneTarget = m_instructions.Count;
+            m_instructions[doneIdx] = RiscVEncoder.J((doneTarget - doneIdx) * 4);
             Emit(RiscVEncoder.Sd(Reg.S3, Reg.A0, dstOffset));
         }
         else
@@ -1261,16 +1285,18 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     {
         EmitEscapeHelperPrologue(name);
 
-        // s4 = length
+        // s4 = count
         Emit(RiscVEncoder.Ld(Reg.S4, Reg.S2, 0));
 
-        // totalSize = (1 + len) * 8; allocate
+        // Allocate [capacity | count | elements]: (count + 2) * 8, capacity = count (tight)
+        Emit(RiscVEncoder.Sd(Reg.S1, Reg.S4, 0));         // capacity = count
+        Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, 8));       // past capacity
+        Emit(RiscVEncoder.Mv(Reg.S3, Reg.S1));            // S3 = new list ptr
         Emit(RiscVEncoder.Addi(Reg.T0, Reg.S4, 1));
         Emit(RiscVEncoder.Slli(Reg.T0, Reg.T0, 3));
-        Emit(RiscVEncoder.Mv(Reg.S3, Reg.S1));
-        Emit(RiscVEncoder.Add(Reg.S1, Reg.S1, Reg.T0));
+        Emit(RiscVEncoder.Add(Reg.S1, Reg.S1, Reg.T0));   // advance past count+elements
 
-        // Store length
+        // Store count
         Emit(RiscVEncoder.Sd(Reg.S3, Reg.S4, 0));
 
         // s5 = loop index = 0
@@ -1286,13 +1312,23 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Add(Reg.T0, Reg.S2, Reg.T0));
         Emit(RiscVEncoder.Ld(Reg.A0, Reg.T0, 8));
 
-        // Deep copy element if needed
+        // Deep copy element if needed (skip if already in result space)
         CodexType elemType = ResolveType(lt.Element);
         if (IRRegion.TypeNeedsHeapEscape(elemType))
         {
             string elemHelper = GetOrQueueEscapeHelper(elemType);
+            int elemSkip = m_instructions.Count;
+            Emit(RiscVEncoder.Nop()); // patched: bge a0, s10 → skip
             EmitCallTo(elemHelper);
-            // a0 now holds copied element
+            int elemDone = m_instructions.Count;
+            Emit(RiscVEncoder.Nop()); // patched: j → done
+            int elemSkipTarget = m_instructions.Count;
+            m_instructions[elemSkip] = RiscVEncoder.Bge(Reg.A0, ResultBaseReg,
+                (elemSkipTarget - elemSkip) * 4);
+            // a0 unchanged (already in result space)
+            int elemDoneTarget = m_instructions.Count;
+            m_instructions[elemDone] = RiscVEncoder.J((elemDoneTarget - elemDone) * 4);
+            // a0 = copied (or existing) element
         }
 
         // Store: new[8 + s5*8] = a0
@@ -1580,7 +1616,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     uint EmitList(IRList list)
     {
-        // Array-on-heap: [length : 8][elem0 : 8][elem1 : 8]...
+        // Layout: [capacity @ -8 | count @ 0 | elem0 @ 8 | ...]
         List<uint> elemRegs = new();
         foreach (IRExpr elem in list.Elements)
         {
@@ -1590,17 +1626,25 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             elemRegs.Add(saved);
         }
 
-        int totalSize = (1 + list.Elements.Length) * 8;
+        int count = list.Elements.Length;
+
+        // Store capacity = count at [S1] (tight allocation)
+        uint capReg = AllocTemp();
+        foreach (uint insn in RiscVEncoder.Li(capReg, count)) Emit(insn);
+        Emit(RiscVEncoder.Sd(Reg.S1, capReg, 0));
+        Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, 8)); // past capacity word
+
+        // List pointer = S1 (now pointing at count word)
         uint ptrReg = AllocTemp();
         Emit(RiscVEncoder.Mv(ptrReg, Reg.S1));
-        Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, totalSize));
+        Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, (count + 1) * 8)); // count word + elements
 
-        // Store length
+        // Store count
         uint lenReg = AllocTemp();
-        foreach (uint insn in RiscVEncoder.Li(lenReg, list.Elements.Length)) Emit(insn);
+        foreach (uint insn in RiscVEncoder.Li(lenReg, count)) Emit(insn);
         Emit(RiscVEncoder.Sd(ptrReg, lenReg, 0));
 
-        // Store elements
+        // Store elements (offsets unchanged: 8 + i*8)
         for (int i = 0; i < elemRegs.Count; i++)
             Emit(RiscVEncoder.Sd(ptrReg, LoadLocal(elemRegs[i]), 8 + i * 8));
 
@@ -1758,9 +1802,11 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
             case "get-args" when args.Count == 0:
             {
-                // Return empty list (args not available in bare RISC-V)
-                Emit(RiscVEncoder.Mv(Reg.A0, Reg.S1));
-                Emit(RiscVEncoder.Sd(Reg.S1, Reg.Zero, 0));
+                // Return empty list: [capacity=0 | count=0]
+                Emit(RiscVEncoder.Sd(Reg.S1, Reg.Zero, 0));       // capacity = 0
+                Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, 8));       // past capacity
+                Emit(RiscVEncoder.Mv(Reg.A0, Reg.S1));            // list ptr = count word
+                Emit(RiscVEncoder.Sd(Reg.S1, Reg.Zero, 0));       // count = 0
                 Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, 8));
                 return true;
             }
@@ -2598,51 +2644,98 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     void EmitListSnocHelper()
     {
         // __list_snoc: a0=list_ptr, a1=element → a0=new list with element appended
-        // Fast path: if list ends at S1 (HeapReg), extend in-place O(1).
-        // Slow path: allocate new list and copy all elements O(N).
+        // Layout: [capacity @ -8 | count @ 0 | elem0 @ 8 | ...]
+        // Path 1: count < capacity → in-place O(1)
+        // Path 2: count == capacity, at heap top → grow capacity O(1)
+        // Path 3: count == capacity, not at top → copy with doubling O(N) amortized O(1)
         m_functionOffsets["__list_snoc"] = m_instructions.Count;
 
-        // Fast path: check if list_ptr + (oldLen+1)*8 == S1 (HeapReg)
-        Emit(RiscVEncoder.Ld(Reg.T0, Reg.A0, 0));        // t0 = old length
-        Emit(RiscVEncoder.Addi(Reg.T1, Reg.T0, 1));      // t1 = oldLen + 1
-        Emit(RiscVEncoder.Slli(Reg.T1, Reg.T1, 3));       // t1 = (oldLen+1)*8
-        Emit(RiscVEncoder.Add(Reg.T1, Reg.A0, Reg.T1));   // t1 = list_ptr + (oldLen+1)*8 = list end
-        int slowPath = m_instructions.Count;
-        Emit(RiscVEncoder.Nop()); // patched: bne t1, s1 → slow
+        // t0 = count, t1 = capacity
+        Emit(RiscVEncoder.Ld(Reg.T0, Reg.A0, 0));         // count
+        Emit(RiscVEncoder.Ld(Reg.T1, Reg.A0, -8));        // capacity
 
-        // Fast path: extend in-place
-        Emit(RiscVEncoder.Addi(Reg.T0, Reg.T0, 1));       // t0 = newLen
-        Emit(RiscVEncoder.Sd(Reg.A0, Reg.T0, 0));         // [list_ptr] = newLen
-        Emit(RiscVEncoder.Sd(Reg.S1, Reg.A1, 0));         // [S1] = element
-        Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, 8));       // S1 += 8
+        // Path 1: count < capacity → in-place append
+        int path2 = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge t0, t1 → path2
+
+        // Store element at [list + 8 + count*8]
+        Emit(RiscVEncoder.Slli(Reg.T2, Reg.T0, 3));       // count * 8
+        Emit(RiscVEncoder.Add(Reg.T2, Reg.A0, Reg.T2));   // list + count*8
+        Emit(RiscVEncoder.Sd(Reg.T2, Reg.A1, 8));         // [list + 8 + count*8] = element
+        // Increment count
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.T0, 1));
+        Emit(RiscVEncoder.Sd(Reg.A0, Reg.T0, 0));         // [list] = count+1
         Emit(RiscVEncoder.Ret());                           // return a0 (unchanged)
 
-        // Slow path
-        int slowTarget = m_instructions.Count;
-        m_instructions[slowPath] = RiscVEncoder.Bne(Reg.T1, Reg.S1,
-            (slowTarget - slowPath) * 4);
+        // Path 2: count == capacity, check heap top
+        int path2Target = m_instructions.Count;
+        m_instructions[path2] = RiscVEncoder.Bge(Reg.T0, Reg.T1, (path2Target - path2) * 4);
 
-        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -32));
-        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.Ra, 24));
-        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S2, 16));
-        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S3, 8));
-        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S4, 0));
+        // End of allocation = list_ptr + (capacity + 1) * 8
+        Emit(RiscVEncoder.Addi(Reg.T2, Reg.T1, 1));       // capacity + 1
+        Emit(RiscVEncoder.Slli(Reg.T2, Reg.T2, 3));
+        Emit(RiscVEncoder.Add(Reg.T2, Reg.A0, Reg.T2));   // list + (cap+1)*8
+        int path3 = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bne t2, s1 → path3
 
-        Emit(RiscVEncoder.Mv(Reg.S2, Reg.A0));  // old list
-        Emit(RiscVEncoder.Mv(Reg.S3, Reg.A1));  // new element
-        Emit(RiscVEncoder.Ld(Reg.S4, Reg.S2, 0)); // old length
+        // At heap top: grow capacity = max(capacity * 2, 16)
+        Emit(RiscVEncoder.Slli(Reg.T2, Reg.T1, 1));       // capacity * 2
+        foreach (uint insn in RiscVEncoder.Li(Reg.T3, 16)) Emit(insn);
+        int capOk = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge t2, t3 → capOk
+        Emit(RiscVEncoder.Mv(Reg.T2, Reg.T3));            // use 16
+        int capOkTarget = m_instructions.Count;
+        m_instructions[capOk] = RiscVEncoder.Bge(Reg.T2, Reg.T3, (capOkTarget - capOk) * 4);
+        // t2 = new capacity. Update capacity word and bump heap
+        Emit(RiscVEncoder.Sd(Reg.A0, Reg.T2, -8));        // [list-8] = new capacity
+        Emit(RiscVEncoder.Sub(Reg.T3, Reg.T2, Reg.T1));   // newCap - oldCap
+        Emit(RiscVEncoder.Slli(Reg.T3, Reg.T3, 3));
+        Emit(RiscVEncoder.Add(Reg.S1, Reg.S1, Reg.T3));   // bump heap
+        // Store element and increment count (same as path 1)
+        Emit(RiscVEncoder.Slli(Reg.T2, Reg.T0, 3));
+        Emit(RiscVEncoder.Add(Reg.T2, Reg.A0, Reg.T2));
+        Emit(RiscVEncoder.Sd(Reg.T2, Reg.A1, 8));
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.T0, 1));
+        Emit(RiscVEncoder.Sd(Reg.A0, Reg.T0, 0));
+        Emit(RiscVEncoder.Ret());
 
-        // Allocate (oldLen + 2) * 8 bytes
-        Emit(RiscVEncoder.Mv(Reg.A0, Reg.S1));   // result ptr
-        Emit(RiscVEncoder.Addi(Reg.T0, Reg.S4, 2));
+        // Path 3: not at heap top — allocate with doubled capacity, copy
+        int path3Target = m_instructions.Count;
+        m_instructions[path3] = RiscVEncoder.Bne(Reg.T2, Reg.S1, (path3Target - path3) * 4);
+
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -40));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.Ra, 32));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S2, 24));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S3, 16));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S4, 8));
+        Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S5, 0));
+
+        Emit(RiscVEncoder.Mv(Reg.S2, Reg.A0));            // old list
+        Emit(RiscVEncoder.Mv(Reg.S3, Reg.A1));            // element
+        Emit(RiscVEncoder.Ld(Reg.S4, Reg.S2, 0));         // count
+
+        // S5 = new capacity = max(count * 2, 16)
+        Emit(RiscVEncoder.Slli(Reg.S5, Reg.S4, 1));       // count * 2
+        foreach (uint insn in RiscVEncoder.Li(Reg.T0, 16)) Emit(insn);
+        int capOk2 = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge s5, t0 → capOk2
+        Emit(RiscVEncoder.Mv(Reg.S5, Reg.T0));
+        int capOk2Target = m_instructions.Count;
+        m_instructions[capOk2] = RiscVEncoder.Bge(Reg.S5, Reg.T0, (capOk2Target - capOk2) * 4);
+
+        // Allocate [capacity | count | slots]: capacity at [S1], list ptr at S1+8
+        Emit(RiscVEncoder.Sd(Reg.S1, Reg.S5, 0));         // capacity word
+        Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, 8));
+        Emit(RiscVEncoder.Mv(Reg.A0, Reg.S1));            // A0 = new list ptr
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.S5, 1));       // newCap + 1
         Emit(RiscVEncoder.Slli(Reg.T0, Reg.T0, 3));
-        Emit(RiscVEncoder.Add(Reg.S1, Reg.S1, Reg.T0));
+        Emit(RiscVEncoder.Add(Reg.S1, Reg.S1, Reg.T0));   // advance past count+slots
 
-        // Store new length = oldLen + 1
+        // Store new count = oldCount + 1
         Emit(RiscVEncoder.Addi(Reg.T0, Reg.S4, 1));
         Emit(RiscVEncoder.Sd(Reg.A0, Reg.T0, 0));
 
-        // Copy old elements: for i in 0..oldLen-1
+        // Copy old elements: for i in 0..count-1
         foreach (uint insn in RiscVEncoder.Li(Reg.T0, 0)) Emit(insn);
         int copyLoop = m_instructions.Count;
         int copyDone = m_instructions.Count;
@@ -2657,16 +2750,17 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         int copyEnd = m_instructions.Count;
         m_instructions[copyDone] = RiscVEncoder.Bge(Reg.T0, Reg.S4, (copyEnd - copyDone) * 4);
 
-        // Store new element at new[8 + oldLen*8]
+        // Store new element at new[8 + count*8]
         Emit(RiscVEncoder.Slli(Reg.T0, Reg.S4, 3));
         Emit(RiscVEncoder.Add(Reg.T1, Reg.A0, Reg.T0));
         Emit(RiscVEncoder.Sd(Reg.T1, Reg.S3, 8));
 
-        Emit(RiscVEncoder.Ld(Reg.S4, Reg.Sp, 0));
-        Emit(RiscVEncoder.Ld(Reg.S3, Reg.Sp, 8));
-        Emit(RiscVEncoder.Ld(Reg.S2, Reg.Sp, 16));
-        Emit(RiscVEncoder.Ld(Reg.Ra, Reg.Sp, 24));
-        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, 32));
+        Emit(RiscVEncoder.Ld(Reg.S5, Reg.Sp, 0));
+        Emit(RiscVEncoder.Ld(Reg.S4, Reg.Sp, 8));
+        Emit(RiscVEncoder.Ld(Reg.S3, Reg.Sp, 16));
+        Emit(RiscVEncoder.Ld(Reg.S2, Reg.Sp, 24));
+        Emit(RiscVEncoder.Ld(Reg.Ra, Reg.Sp, 32));
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, 40));
         Emit(RiscVEncoder.Ret());
     }
 
@@ -2688,9 +2782,12 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Mv(Reg.S4, Reg.A2));  // element
         Emit(RiscVEncoder.Ld(Reg.S5, Reg.S2, 0)); // old length
 
-        // Allocate (oldLen + 2) * 8
-        Emit(RiscVEncoder.Mv(Reg.S6, Reg.S1));   // result ptr (saved in s6)
-        Emit(RiscVEncoder.Addi(Reg.T0, Reg.S5, 2));
+        // Allocate [capacity | count | elements]: (newLen + 2) * 8, capacity = newLen
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.S5, 1));       // newLen
+        Emit(RiscVEncoder.Sd(Reg.S1, Reg.T0, 0));         // capacity = newLen
+        Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, 8));       // past capacity
+        Emit(RiscVEncoder.Mv(Reg.S6, Reg.S1));            // result ptr (saved in s6)
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.S5, 2));       // newLen + 1 (count word + elements)
         Emit(RiscVEncoder.Slli(Reg.T0, Reg.T0, 3));
         Emit(RiscVEncoder.Add(Reg.S1, Reg.S1, Reg.T0));
 
@@ -3004,8 +3101,13 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     {
         // __escape_text: a0 = old text ptr → a0 = new text ptr (allocated at S1)
         // Copies length-prefixed string [8-byte len][data] to parent region.
+        // Skip if already in result space (ptr >= ResultBaseReg).
         // Leaf function — no stack frame needed.
         m_functionOffsets["__escape_text"] = m_instructions.Count;
+
+        // Skip copy if already in result space
+        int skipAll = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge a0, s10 → ret (skip entire copy)
 
         // t0 = length
         Emit(RiscVEncoder.Ld(Reg.T0, Reg.A0, 0));
@@ -3041,6 +3143,12 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
         // Return new pointer
         Emit(RiscVEncoder.Mv(Reg.A0, Reg.A1));
+        Emit(RiscVEncoder.Ret());
+
+        // Skip target: already in result space, return a0 unchanged
+        int skipTarget = m_instructions.Count;
+        m_instructions[skipAll] = RiscVEncoder.Bge(Reg.A0, ResultBaseReg,
+            (skipTarget - skipAll) * 4);
         Emit(RiscVEncoder.Ret());
     }
 
@@ -3373,7 +3481,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     void EmitListConsHelper()
     {
         // __list_cons: a0=head, a1=tail_list_ptr → a0=new list with head prepended
-        // List layout: [length:8][elem0:8][elem1:8]...
+        // Layout: [capacity @ -8 | count @ 0 | elem0 @ 8 | ...]
         m_functionOffsets["__list_cons"] = m_instructions.Count;
 
         Emit(RiscVEncoder.Ld(Reg.T0, Reg.A1, 0));         // t0 = old length
@@ -3381,8 +3489,10 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Mv(Reg.T3, Reg.A0));            // t3 = head value
         Emit(RiscVEncoder.Mv(Reg.T4, Reg.A1));            // t4 = tail list ptr
 
-        // Alloc: (newLen + 1) * 8
-        Emit(RiscVEncoder.Mv(Reg.A0, Reg.S1));            // result = heap ptr
+        // Alloc: [capacity | count | elements] = (newLen + 2) * 8
+        Emit(RiscVEncoder.Sd(Reg.S1, Reg.T1, 0));         // capacity = newLen
+        Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, 8));       // past capacity
+        Emit(RiscVEncoder.Mv(Reg.A0, Reg.S1));            // result = list ptr
         Emit(RiscVEncoder.Addi(Reg.T2, Reg.T1, 1));       // t2 = newLen + 1
         foreach (uint insn in RiscVEncoder.Li(Reg.T5, 8)) Emit(insn);
         Emit(RiscVEncoder.Mul(Reg.T2, Reg.T2, Reg.T5));   // t2 = (newLen+1)*8
@@ -3423,9 +3533,11 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Mv(Reg.T4, Reg.A0));            // save list1
         Emit(RiscVEncoder.Mv(Reg.T5, Reg.A1));            // save list2
 
-        // Alloc: (totalLen + 1) * 8
-        Emit(RiscVEncoder.Mv(Reg.A0, Reg.S1));
-        Emit(RiscVEncoder.Addi(Reg.A1, Reg.T6, 1));
+        // Alloc: [capacity | count | elements] = (totalLen + 2) * 8
+        Emit(RiscVEncoder.Sd(Reg.S1, Reg.T6, 0));         // capacity = total
+        Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, 8));       // past capacity
+        Emit(RiscVEncoder.Mv(Reg.A0, Reg.S1));            // list ptr
+        Emit(RiscVEncoder.Addi(Reg.A1, Reg.T6, 1));       // total + 1
         foreach (uint insn in RiscVEncoder.Li(Reg.A2, 8)) Emit(insn);
         Emit(RiscVEncoder.Mul(Reg.A1, Reg.A1, Reg.A2));
         Emit(RiscVEncoder.Add(Reg.S1, Reg.S1, Reg.A1));
@@ -3942,6 +4054,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             // Two-space heap at 32MB above code base (2MB working + 2MB result)
             foreach (uint insn in RiscVEncoder.Li(Reg.S1, 0x82000000L)) Emit(insn);
             foreach (uint insn in RiscVEncoder.Li(ResultReg, 0x82000000L + 0x200000L)) Emit(insn);
+            Emit(RiscVEncoder.Mv(ResultBaseReg, ResultReg)); // save result-space base
         }
         else
         {
@@ -3961,6 +4074,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             Emit(RiscVEncoder.Mv(ResultReg, Reg.S1));
             foreach (uint insn in RiscVEncoder.Li(Reg.T0, 64L * 1024 * 1024)) Emit(insn);
             Emit(RiscVEncoder.Add(ResultReg, ResultReg, Reg.T0));
+            Emit(RiscVEncoder.Mv(ResultBaseReg, ResultReg)); // save result-space base
         }
 
         IRDefinition? mainDef = null;
