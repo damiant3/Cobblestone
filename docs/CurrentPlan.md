@@ -59,9 +59,20 @@ survive). The bug is in how the x86-64 binary constructs or propagates the
 `ListTy` variant value at runtime — likely a codegen issue in the reference
 compiler's `EmitConstructor` or variant tag assignment for `CodexType`.
 
-**Next**: Debug with GDB on native to trace `ListTy` construction in
-`resolve-applied-type`. Or add instrumented print statements to the
-self-hosted source to dump type values at checkpoints.
+**Confirmed workaround**: Replacing `ListTy(elem)` with `ConstructedTy("List",
+[elem])` in `resolve-applied-type` makes all function signatures correct
+(`List<Token>` instead of `Token`). Errors drop from 1550 → 404.
+Remaining 404 are from unifier not handling `ConstructedTy("List")` the same
+as `ListTy` — a different issue. This proves: `ListTy` variant values (tag 9)
+are specifically corrupted at runtime on x86-64, while `ConstructedTy` (tag 14)
+is not. A standalone test program correctly constructs and matches `ListTy`,
+so the corruption occurs only in the context of the full self-hosted compiler
+(500+ functions, 200K+ source chars).
+
+**Next**: Investigate tag 9 corruption in large programs. Possible heap
+corruption from TCO reset, or tag collision in the x86-64 backend's variant
+encoding. The workaround (ConstructedTy) is a path to unblocking usermode
+self-compile if the unifier is also updated.
 
 ---
 
