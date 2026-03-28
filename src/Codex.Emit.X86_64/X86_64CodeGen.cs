@@ -183,6 +183,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     int m_tcoSavedNextTemp;
     int m_tcoHeapMarkLocal;              // stack local: HeapReg value at TCO loop top
     CodexType[] m_tcoParamTypes = [];    // parameter types for TCO heap-reset check
+    int[]?[] m_tcoDecompLocals = [];     // [paramIdx] = field locals, or null if not decomposed
 
     void EmitTailCall(IRApply app)
     {
@@ -218,23 +219,77 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             StoreLocal(m_tcoTempLocals[i], r);
         }
 
-        // ── TCO heap reset ──────────────────────────────────────
+        // ── TCO heap reset (Phase 2a + 2b) ─────────────────────
         // Check if all heap-typed args point below the iteration mark.
-        // If yes: reset HeapReg to reclaim per-iteration garbage.
-        // If no: skip reset (next iteration saves a fresh mark).
+        // Record-typed args are decomposed into fields so the check
+        // inspects field pointers (which are often pre-existing) rather
+        // than the record pointer (which is always freshly allocated).
+        // If all checks pass: reset HeapReg, reconstruct decomposed records.
+        // If any fail: skip reset (next iteration saves a fresh mark).
         {
-            List<int> heapArgIndices = [];
+            // Phase 1: decompose record-typed heap args into field locals
+            List<int> decompIndices = [];   // param indices with decomposition
+            List<int> plainHeapIndices = []; // heap args without decomposition
             for (int i = 0; i < args.Count && i < m_tcoParamTypes.Length; i++)
             {
                 CodexType resolved = ResolveType(m_tcoParamTypes[i]);
-                if (IRRegion.TypeNeedsHeapEscape(resolved))
-                    heapArgIndices.Add(i);
+                if (!IRRegion.TypeNeedsHeapEscape(resolved))
+                    continue; // scalar — no check needed
+                if (resolved is RecordType rt && i < m_tcoDecompLocals.Length
+                    && m_tcoDecompLocals[i] is int[] fieldLocals)
+                {
+                    // Decompose: load each field into its pre-allocated local
+                    byte ptr = LoadLocal(m_tcoTempLocals[i]);
+                    for (int f = 0; f < rt.Fields.Length; f++)
+                    {
+                        byte fv = AllocTemp();
+                        X86_64Encoder.MovLoad(m_text, fv, ptr, f * 8);
+                        StoreLocal(fieldLocals[f], fv);
+                    }
+                    decompIndices.Add(i);
+                }
+                else
+                {
+                    plainHeapIndices.Add(i);
+                }
             }
 
-            if (heapArgIndices.Count == 0)
+            // Phase 2: collect pointer values that need checking
+            // (plain heap arg pointers + decomposed record pointer fields)
+            bool anyChecks = plainHeapIndices.Count > 0;
+            if (!anyChecks)
             {
-                // All scalar — always reset
+                foreach (int idx in decompIndices)
+                {
+                    RecordType rt = (RecordType)ResolveType(m_tcoParamTypes[idx]);
+                    for (int f = 0; f < rt.Fields.Length; f++)
+                    {
+                        if (IRRegion.TypeNeedsHeapEscape(ResolveType(rt.Fields[f].Type)))
+                        { anyChecks = true; break; }
+                    }
+                    if (anyChecks) break;
+                }
+            }
+
+            if (!anyChecks)
+            {
+                // All scalar (or decomposed records with only scalar fields)
                 X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(m_tcoHeapMarkLocal));
+
+                // Reconstruct decomposed records at the reset heap position
+                foreach (int idx in decompIndices)
+                {
+                    RecordType rt = (RecordType)ResolveType(m_tcoParamTypes[idx]);
+                    byte newPtr = AllocTemp();
+                    X86_64Encoder.MovRR(m_text, newPtr, HeapReg);
+                    X86_64Encoder.AddRI(m_text, HeapReg, rt.Fields.Length * 8);
+                    for (int f = 0; f < rt.Fields.Length; f++)
+                    {
+                        byte fv = LoadLocal(m_tcoDecompLocals[idx]![f]);
+                        X86_64Encoder.MovStore(m_text, newPtr, fv, f * 8);
+                    }
+                    StoreLocal(m_tcoTempLocals[idx], newPtr);
+                }
             }
             else
             {
@@ -242,20 +297,53 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
                 byte markReg = AllocTemp();
                 X86_64Encoder.MovRR(m_text, markReg, LoadLocal(m_tcoHeapMarkLocal));
 
-                // For each heap-typed arg: if arg >= mark, skip reset
                 List<int> skipResetOffsets = [];
-                foreach (int idx in heapArgIndices)
+
+                // Check plain heap args
+                foreach (int idx in plainHeapIndices)
                 {
                     byte argVal = LoadLocal(m_tcoTempLocals[idx]);
                     X86_64Encoder.CmpRR(m_text, argVal, markReg);
                     skipResetOffsets.Add(m_text.Count);
-                    X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0); // jae skip_reset
+                    X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0);
+                }
+
+                // Check decomposed record pointer fields
+                foreach (int idx in decompIndices)
+                {
+                    RecordType rt = (RecordType)ResolveType(m_tcoParamTypes[idx]);
+                    for (int f = 0; f < rt.Fields.Length; f++)
+                    {
+                        CodexType ft = ResolveType(rt.Fields[f].Type);
+                        if (IRRegion.TypeNeedsHeapEscape(ft))
+                        {
+                            byte fv = LoadLocal(m_tcoDecompLocals[idx]![f]);
+                            X86_64Encoder.CmpRR(m_text, fv, markReg);
+                            skipResetOffsets.Add(m_text.Count);
+                            X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0);
+                        }
+                    }
                 }
 
                 // All checks passed — reset heap to mark
                 X86_64Encoder.MovRR(m_text, HeapReg, markReg);
 
-                // Patch all skip-reset jumps to land here
+                // Reconstruct decomposed records at the reset heap position
+                foreach (int idx in decompIndices)
+                {
+                    RecordType rt = (RecordType)ResolveType(m_tcoParamTypes[idx]);
+                    byte newPtr = AllocTemp();
+                    X86_64Encoder.MovRR(m_text, newPtr, HeapReg);
+                    X86_64Encoder.AddRI(m_text, HeapReg, rt.Fields.Length * 8);
+                    for (int f = 0; f < rt.Fields.Length; f++)
+                    {
+                        byte fv = LoadLocal(m_tcoDecompLocals[idx]![f]);
+                        X86_64Encoder.MovStore(m_text, newPtr, fv, f * 8);
+                    }
+                    StoreLocal(m_tcoTempLocals[idx], newPtr);
+                }
+
+                // Patch all skip-reset jumps to land here (after reset + reconstruction)
                 int noResetTarget = m_text.Count;
                 foreach (int offset in skipResetOffsets)
                     PatchJcc(offset, noResetTarget);
@@ -330,6 +418,22 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             m_tcoParamTypes = new CodexType[def.Parameters.Length];
             for (int i = 0; i < def.Parameters.Length; i++)
                 m_tcoParamTypes[i] = def.Parameters[i].Type;
+
+            // Pre-allocate field locals for record decomposition (Phase 2b).
+            // Record-typed TCO args are decomposed into individual fields
+            // so the heap-reset check inspects field pointers, not the
+            // record pointer itself (which is always freshly allocated).
+            m_tcoDecompLocals = new int[]?[def.Parameters.Length];
+            for (int i = 0; i < def.Parameters.Length; i++)
+            {
+                CodexType resolved = ResolveType(def.Parameters[i].Type);
+                if (resolved is RecordType rt)
+                {
+                    m_tcoDecompLocals[i] = new int[rt.Fields.Length];
+                    for (int f = 0; f < rt.Fields.Length; f++)
+                        m_tcoDecompLocals[i]![f] = AllocLocal();
+                }
+            }
 
             // Allocate local for heap mark (persists across iterations)
             m_tcoHeapMarkLocal = AllocLocal();
