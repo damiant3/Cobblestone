@@ -137,27 +137,24 @@ to merge sequential annotation + body pairs with the same name.
 alphabetical ordering. Use `char-code '<char>'` for range bounds — this automatically
 produces the correct CCE byte value since the source is CCE-encoded.
 
-**Where to investigate**:
-1. `Codex.Codex/Semantics/NameResolver.codex` — how names enter scope from function
-   params, let bindings, and match patterns
-2. `Codex.Codex/Types/TypeChecker.codex` — how `check-module` resolves and infers types
-3. Compare `check_module` in `CodexLib.g.cs` (the compiled self-hosted checker) against
-   the reference checker in `src/Codex.Semantics/` and `src/Codex.Types/`
-4. Try `--mini` on a small file with the failing pattern to isolate:
-   `dotnet run --project tools/Codex.Bootstrap/Codex.Bootstrap.csproj --no-build -- --mini <file>`
+### Self-Hosted Type Checker: CLEAN (0 errors)
+
+The self-hosted compiler now type-checks its own source with **0 errors**.
+585 defs, 95 type-defs, 338,391 chars of C# output. All 554 compiler tests pass.
+
+### Next: Self-Hosted C# Emitter — 904 C# Compile Errors
+
+The stage 1 C# output doesn't compile: 904 errors, mostly CS0106 "modifier
+'public' not valid for this item" — methods emitted outside of class scope.
+The emitter needs structural fixes (class wrapping, entry point handling).
 
 **How to reproduce**:
 ```bash
 dotnet run --project tools/Codex.Bootstrap/Codex.Bootstrap.csproj --no-build \
-  -- "Codex.Codex" "Codex.Codex/stage1-test.cs" 2>stderr.txt
-# stdout: pipeline progress + token dump + def counts
-# stderr: crash trace if emitter fails
-# Codex.Codex/unify-errors.txt: all type errors (CCE-encoded)
-# Codex.Codex/type-diag.txt: all type bindings (CCE-encoded)
+  -- "Codex.Codex" "Codex.Codex/stage1-test.cs"
+# Stage 1 output: Codex.Codex/stage1-test.cs (338K chars)
+# Diagnostics: Codex.Codex/unify-errors.txt (0 errors), type-diag.txt
 ```
-
-**Bootstrap timeout note**: `Program.Bootstrap.cs:RunBootstrapStage` has a 60-second
-timeout. The self-hosted compiler takes longer. Run stage 1 directly (above) to avoid.
 
 ### Floppy Disk Phase 2 (Two-Pass Design)
 
