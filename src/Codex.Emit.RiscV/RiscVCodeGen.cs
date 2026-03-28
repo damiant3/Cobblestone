@@ -38,6 +38,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     uint m_tcoSavedNextTemp;
     uint m_tcoHeapMarkLocal;              // stack local: S1 value at TCO loop top
     CodexType[] m_tcoParamTypes = [];     // parameter types for TCO heap-reset check
+    uint[]?[] m_tcoDecompLocals = [];     // [paramIdx] = field locals, or null if not decomposed
     int m_spillCount;           // number of spilled locals beyond S-registers
     int m_prologueIndex = -1;   // instruction index of the frame size addi (patched)
     Dictionary<string, uint> m_locals = [];
@@ -223,6 +224,19 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             m_tcoParamTypes = new CodexType[def.Parameters.Length];
             for (int i = 0; i < def.Parameters.Length; i++)
                 m_tcoParamTypes[i] = def.Parameters[i].Type;
+
+            // Pre-allocate field locals for record decomposition (Phase 2b).
+            m_tcoDecompLocals = new uint[]?[def.Parameters.Length];
+            for (int i = 0; i < def.Parameters.Length; i++)
+            {
+                CodexType resolved = ResolveType(def.Parameters[i].Type);
+                if (resolved is RecordType rt)
+                {
+                    m_tcoDecompLocals[i] = new uint[rt.Fields.Length];
+                    for (int f = 0; f < rt.Fields.Length; f++)
+                        m_tcoDecompLocals[i]![f] = AllocLocal();
+                }
+            }
 
             // Allocate local for heap mark (persists across iterations)
             m_tcoHeapMarkLocal = AllocLocal();
@@ -575,42 +589,124 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             StoreLocal(m_tcoTempLocals[i], r);
         }
 
-        // ── TCO heap reset ──────────────────────────────────────
-        // Check if all heap-typed args point below the iteration mark.
-        // If yes: reset S1 (heap ptr) to reclaim per-iteration garbage.
-        // If no: skip reset (next iteration saves a fresh mark).
+        // ── TCO heap reset (Phase 2a + 2b) ─────────────────────
+        // Record-typed args are decomposed into fields so the check
+        // inspects field pointers (often pre-existing) rather than
+        // the record pointer (always freshly allocated).
         {
-            List<int> heapArgIndices = [];
+            // Phase 1: decompose record-typed heap args into field locals
+            List<int> decompIndices = [];
+            List<int> plainHeapIndices = [];
             for (int i = 0; i < args.Count && i < m_tcoParamTypes.Length; i++)
             {
                 CodexType resolved = ResolveType(m_tcoParamTypes[i]);
-                if (IRRegion.TypeNeedsHeapEscape(resolved))
-                    heapArgIndices.Add(i);
+                if (!IRRegion.TypeNeedsHeapEscape(resolved))
+                    continue;
+                if (resolved is RecordType rt && i < m_tcoDecompLocals.Length
+                    && m_tcoDecompLocals[i] is uint[] fieldLocals)
+                {
+                    uint ptr = LoadLocal(m_tcoTempLocals[i]);
+                    for (int f = 0; f < rt.Fields.Length; f++)
+                    {
+                        uint fv = AllocTemp();
+                        Emit(RiscVEncoder.Ld(fv, ptr, f * 8));
+                        StoreLocal(fieldLocals[f], fv);
+                    }
+                    decompIndices.Add(i);
+                }
+                else
+                {
+                    plainHeapIndices.Add(i);
+                }
             }
 
-            if (heapArgIndices.Count == 0)
+            // Phase 2: determine if any runtime pointer checks are needed
+            bool anyChecks = plainHeapIndices.Count > 0;
+            if (!anyChecks)
             {
-                // All scalar — always reset
+                foreach (int idx in decompIndices)
+                {
+                    RecordType rt = (RecordType)ResolveType(m_tcoParamTypes[idx]);
+                    for (int f = 0; f < rt.Fields.Length; f++)
+                    {
+                        if (IRRegion.TypeNeedsHeapEscape(ResolveType(rt.Fields[f].Type)))
+                        { anyChecks = true; break; }
+                    }
+                    if (anyChecks) break;
+                }
+            }
+
+            if (!anyChecks)
+            {
+                // All scalar (or decomposed records with only scalar fields)
                 Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(m_tcoHeapMarkLocal)));
+
+                // Reconstruct decomposed records at the reset heap position
+                foreach (int idx in decompIndices)
+                {
+                    RecordType rt = (RecordType)ResolveType(m_tcoParamTypes[idx]);
+                    uint newPtr = AllocTemp();
+                    Emit(RiscVEncoder.Mv(newPtr, Reg.S1));
+                    Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, rt.Fields.Length * 8));
+                    for (int f = 0; f < rt.Fields.Length; f++)
+                    {
+                        uint fv = LoadLocal(m_tcoDecompLocals[idx]![f]);
+                        Emit(RiscVEncoder.Sd(newPtr, fv, f * 8));
+                    }
+                    StoreLocal(m_tcoTempLocals[idx], newPtr);
+                }
             }
             else
             {
-                // Load mark into a temp register (survives across arg loads)
+                // Load mark into a temp register
                 uint markReg = AllocTemp();
                 Emit(RiscVEncoder.Mv(markReg, LoadLocal(m_tcoHeapMarkLocal)));
 
-                // For each heap-typed arg: if arg >= mark, skip reset
                 List<(int Index, uint Rs1, uint Rs2)> skipBranches = [];
-                foreach (int idx in heapArgIndices)
+
+                // Check plain heap args
+                foreach (int idx in plainHeapIndices)
                 {
                     uint argVal = LoadLocal(m_tcoTempLocals[idx]);
                     int branchIdx = m_instructions.Count;
-                    Emit(RiscVEncoder.Bge(argVal, markReg, 0)); // placeholder
+                    Emit(RiscVEncoder.Bge(argVal, markReg, 0));
                     skipBranches.Add((branchIdx, argVal, markReg));
+                }
+
+                // Check decomposed record pointer fields
+                foreach (int idx in decompIndices)
+                {
+                    RecordType rt = (RecordType)ResolveType(m_tcoParamTypes[idx]);
+                    for (int f = 0; f < rt.Fields.Length; f++)
+                    {
+                        CodexType ft = ResolveType(rt.Fields[f].Type);
+                        if (IRRegion.TypeNeedsHeapEscape(ft))
+                        {
+                            uint fv = LoadLocal(m_tcoDecompLocals[idx]![f]);
+                            int branchIdx = m_instructions.Count;
+                            Emit(RiscVEncoder.Bge(fv, markReg, 0));
+                            skipBranches.Add((branchIdx, fv, markReg));
+                        }
+                    }
                 }
 
                 // All checks passed — reset heap to mark
                 Emit(RiscVEncoder.Mv(Reg.S1, markReg));
+
+                // Reconstruct decomposed records at the reset heap position
+                foreach (int idx in decompIndices)
+                {
+                    RecordType rt = (RecordType)ResolveType(m_tcoParamTypes[idx]);
+                    uint newPtr = AllocTemp();
+                    Emit(RiscVEncoder.Mv(newPtr, Reg.S1));
+                    Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, rt.Fields.Length * 8));
+                    for (int f = 0; f < rt.Fields.Length; f++)
+                    {
+                        uint fv = LoadLocal(m_tcoDecompLocals[idx]![f]);
+                        Emit(RiscVEncoder.Sd(newPtr, fv, f * 8));
+                    }
+                    StoreLocal(m_tcoTempLocals[idx], newPtr);
+                }
 
                 // Patch all skip-reset branches to land here
                 int noResetTarget = m_instructions.Count;
