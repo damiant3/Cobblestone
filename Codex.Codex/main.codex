@@ -39,10 +39,42 @@ Section: Pipeline with Name Resolution
    | CompileOk (Text) (ModuleResult)
    | CompileError (List Diagnostic)
 
+Section: Streaming Pipeline
+
+  compile-streaming : Text -> Text -> [Console] Nothing
+  compile-streaming (source) (module-name) =
+   let tokens = tokenize source
+   in let st = make-parse-state tokens
+    in let doc = parse-document st
+     in let ast = desugar-document doc module-name
+      in let check-result = check-module ast
+       in let ctor-types = collect-ctor-bindings ast.type-defs 0 (list-length ast.type-defs) []
+        in let all-types = ctor-types ++ check-result.types ++ builtin-type-env.bindings
+         in let arities = build-arity-map-from-ast ast.defs 0
+          in do
+           print-line "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n"
+           print-line ("Codex_" ++ sanitize module-name ++ ".main();\n")
+           print-line emit-cce-runtime
+           print-line (emit-type-defs ast.type-defs 0)
+           print-line (emit-class-header module-name)
+           stream-defs ast.defs all-types check-result.state arities 0 (list-length ast.defs)
+           print-line "}"
+
+  stream-defs : List ADef -> List TypeBinding -> UnificationState -> List ArityEntry -> Integer -> Integer -> [Console] Nothing
+  stream-defs (defs) (types) (ust) (arities) (i) (len) =
+   if i == len then print-line ""
+   else
+    let def = list-at defs i
+    in let ir-def = lower-def def types ust
+    in let text = emit-def ir-def arities
+    in do
+     print-line text
+     stream-defs defs types ust arities (i + 1) len
+
 Section: Entry Point
 
   main : [Console, FileSystem] Nothing
   main = do
    path <- read-line
    source <- read-file path
-   print-line (compile source "Program")
+   compile-streaming source "Program"

@@ -1792,25 +1792,24 @@ public static class Codex_expr_calculator
 
     public static object main()
     {
-        ((Func<object>)(() => {
-                Console.WriteLine(_Cce.ToUnicode("MMM\u0002'$\u001F\u0015\u000D\u0013\u0013\u0011\u0010\u0012\u00022\u000F\u0017\u0018\u0019\u0017\u000F\u000E\u0010\u0015\u0002MMM"));
-                Console.WriteLine(_Cce.ToUnicode(""));
-                Console.WriteLine(_Cce.ToUnicode(test_expr("\u0007\u0005", 42L)));
-                Console.WriteLine(_Cce.ToUnicode(test_expr("\u0005\u0002L\u0002\u0006", 5L)));
-                Console.WriteLine(_Cce.ToUnicode(test_expr("\u0004\u0003\u0002I\u0002\u0007", 6L)));
-                Console.WriteLine(_Cce.ToUnicode(test_expr("\u0006\u0002N\u0002\u000A", 21L)));
-                Console.WriteLine(_Cce.ToUnicode(test_expr("\u0004\u0003\u0003\u0002Q\u0002\u0008", 20L)));
-                Console.WriteLine(_Cce.ToUnicode(test_expr("\u0005\u0002L\u0002\u0006\u0002N\u0002\u0007", 14L)));
-                Console.WriteLine(_Cce.ToUnicode(test_expr("\u0004\u0003\u0002I\u0002\u0005\u0002N\u0002\u0006", 4L)));
-                Console.WriteLine(_Cce.ToUnicode(test_expr("J\u0005\u0002L\u0002\u0006K\u0002N\u0002\u0007", 20L)));
-                Console.WriteLine(_Cce.ToUnicode(test_expr("\u0004\u0002L\u0002\u0005\u0002L\u0002\u0006\u0002L\u0002\u0007", 10L)));
-                Console.WriteLine(_Cce.ToUnicode(test_expr("\u0005\u0002N\u0002\u0006\u0002L\u0002\u0007\u0002N\u0002\u0008", 26L)));
-                Console.WriteLine(_Cce.ToUnicode(""));
-                Console.WriteLine(_Cce.ToUnicode(")\u0017\u0017\u00029)--\u0002M\u0002\u0018\u0010\u001A\u001F\u0011\u0017\u000D\u0015\u0002\u0018\u0010\u0015\u0015\u000D\u0018\u000E\u0017\u001E\u0002\u0018\u0010\u001A\u001F\u0011\u0017\u000D\u0013\u0002\u000F\u0002\u0015\u000D\u0018\u0019\u0015\u0013\u0011!\u000D\u0002\u0016\u000D\u0013\u0018\u000D\u0012\u000E\u0002\u001F\u000F\u0015\u0013\u000D\u0015A"));
-                Console.WriteLine(_Cce.ToUnicode("?'0E\u0002\u0012\u0010\u000E\u0002\u000F\u0002%\u0019\u0011\u0012\u000DA"));
+        return ((Func<object>)(() => {
+                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("MMM\u0002'$\u001F\u0015\u000D\u0013\u0013\u0011\u0010\u0012\u00022\u000F\u0017\u0018\u0019\u0017\u000F\u000E\u0010\u0015\u0002MMM")); return null; }))();
+                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("")); return null; }))();
+                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(test_expr("\u0007\u0005", 42L))); return null; }))();
+                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(test_expr("\u0005\u0002L\u0002\u0006", 5L))); return null; }))();
+                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(test_expr("\u0004\u0003\u0002I\u0002\u0007", 6L))); return null; }))();
+                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(test_expr("\u0006\u0002N\u0002\u000A", 21L))); return null; }))();
+                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(test_expr("\u0004\u0003\u0003\u0002Q\u0002\u0008", 20L))); return null; }))();
+                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(test_expr("\u0005\u0002L\u0002\u0006\u0002N\u0002\u0007", 14L))); return null; }))();
+                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(test_expr("\u0004\u0003\u0002I\u0002\u0005\u0002N\u0002\u0006", 4L))); return null; }))();
+                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(test_expr("J\u0005\u0002L\u0002\u0006K\u0002N\u0002\u0007", 20L))); return null; }))();
+                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(test_expr("\u0004\u0002L\u0002\u0005\u0002L\u0002\u0006\u0002L\u0002\u0007", 10L))); return null; }))();
+                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(test_expr("\u0005\u0002N\u0002\u0006\u0002L\u0002\u0007\u0002N\u0002\u0008", 26L))); return null; }))();
+                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("")); return null; }))();
+                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(")\u0017\u0017\u00029)--\u0002M\u0002\u0018\u0010\u001A\u001F\u0011\u0017\u000D\u0015\u0002\u0018\u0010\u0015\u0015\u000D\u0018\u000E\u0017\u001E\u0002\u0018\u0010\u001A\u001F\u0011\u0017\u000D\u0013\u0002\u000F\u0002\u0015\u000D\u0018\u0019\u0015\u0013\u0011!\u000D\u0002\u0016\u000D\u0013\u0018\u000D\u0012\u000E\u0002\u001F\u000F\u0015\u0013\u000D\u0015A")); return null; }))();
+                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("?'0E\u0002\u0012\u0010\u000E\u0002\u000F\u0002%\u0019\u0011\u0012\u000DA")); return null; }))();
                 return null;
             }))();
-        return null;
     }
 
 }

@@ -1603,19 +1603,17 @@ public static class Codex_effects_demo
 {
     public static object greet(string name)
     {
-        Console.WriteLine(_Cce.ToUnicode(string.Concat(".\u000D\u0017\u0017\u0010B\u0002", name, "C")));
-        return null;
+        return ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(string.Concat(".\u000D\u0017\u0017\u0010B\u0002", name, "C"))); return null; }))();
     }
 
     public static object main()
     {
-        ((Func<object>)(() => {
+        return ((Func<object>)(() => {
                 greet(")\u0017\u0011\u0018\u000D");
                 greet(":\u0010 ");
-                Console.WriteLine(_Cce.ToUnicode("0\u0010\u0012\u000DC"));
+                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("0\u0010\u0012\u000DC")); return null; }))();
                 return null;
             }))();
-        return null;
     }
 
 }
