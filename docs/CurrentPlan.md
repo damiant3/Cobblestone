@@ -44,10 +44,11 @@ reclaims per-iteration garbage (IR tree + emitted text string).
 - Per-def peak: ~10 KB (reclaimed by TCO heap reset each iteration)
 - Remaining: source + tokens + AST + type env (~40-60 MB for self-compile)
 
-**Known x86-64 issue**: Self-compile on x86-64 native produces garbled type
-definitions (empty record fields). Small programs work correctly. This appears
-to be a pre-existing issue with the x86-64 backend for large compilations —
-needs separate investigation.
+**x86-64 self-compile verified**: 269,756 bytes, 212 type defs, 794 definitions.
+Streaming output matches .NET semantics. Root cause of earlier garbled output:
+CRLF line endings from `--target codex` on Windows. The x86-64 lexer requires
+LF. Convert with `tr -d '\r'` before use. Consider adding `*.codex eol=lf` to
+`.gitattributes`.
 
 ### Next: Floppy Disk Phase 2 (Two-Pass Design)
 
