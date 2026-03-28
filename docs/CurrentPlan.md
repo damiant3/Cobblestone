@@ -63,6 +63,66 @@ and caused empty/broken output for any program using this variant syntax.
 - Self-compile (Stage 1): 299,909 chars output (unchanged)
 - 1,003 reference compiler tests pass (0 failures, 2 known skips)
 
+### Native self-compile userspace test (x86-64)
+
+**Working**: `main = 42` ✓, sum type definitions ✓, constructor calls (`A 42`) ✓
+**Crashing**: ANY `when/if` pattern matching in user INPUT → SIGSEGV
+
+Crash address: `0x436a00`, instruction `mov 0x8(%rsi),%rdi`, RSI = garbage.
+Even literal patterns (`when x if 1 -> 10 ...`) crash — not specific to sum
+types. The self-hosted compiler's OWN `when/if` expressions work (they process
+`main = 42` fine), but compiling user input that contains `when/if` crashes.
+
+Root cause hypothesis: the crash occurs when the self-hosted compiler's type
+checker or lowering processes user-defined `MatchExpr` nodes. The internal
+parser uses `when/if` extensively BUT those branches are already compiled by
+the reference compiler. When the LOWERING stage encounters a MatchExpr from
+user input, it calls functions like `lower-match`, `bind-pattern-to-ctx`,
+`lower-pattern` etc. — these allocate heap objects (IRBranch, IRPat records)
+whose pointers may be invalidated by the two-space escape-copy system.
+
+**GDB trace** (x86-64 user-mode, WSL Ubuntu-24.04):
+```
+skip-newlines (0x37D5B+0x26)
+  → is-done (0x36B30+0x26)
+    → current-kind (0x369A3+0x26)
+      → current (0x36921+0x2F)  ← CRASH: mov 0x8(%rsi),%rdi, RSI=0x82313ec1
+```
+
+Same call chain as bare-metal crash. Function offset map generated via
+`X86_64Emitter.GetFunctionOffsets()` (see `Codex.Codex/out/Codex.Codex.map`,
+718 entries). User-mode ELF base: `0x4000B0` (LinuxBaseAddress + text offset).
+
+**Root cause**: The EmitRegion fix disabled reclamation for SCALAR regions
+(line 1085-1093 of X86_64CodeGen.cs) but HEAP regions still run the full
+escape-copy path (line 1096+). `ParseState` is a RecordType, so
+`NeedsEscapeCopy=true`. The heap-region path:
+
+1. Saves HeapReg mark
+2. Executes body (skip-newlines TCO loop → many `advance` calls → new ParseState
+   records in working space)
+3. Saves post-body HeapReg
+4. Switches HeapReg to ResultReg (result space)
+5. Escape-copies ParseState to result space
+6. Restores HeapReg to post-body working-space position
+
+Step 5 deep-copies the ParseState record. The `.tokens` field should be
+skipped if it's already in result space (result-space check: `bge ptr,
+ResultBaseReg`). But the ParseState pointer returned to the CALLER now
+points to result space, while TCO iteration parameters may still reference
+working-space ParseState records from `advance`. If a subsequent region's
+escape-copy (for a DIFFERENT let-binding) clobbers result space or working
+space, the old pointers become stale.
+
+**Hypothesis**: the escape-copy for one let-binding's region is being called
+while another let-binding's region body is still live, causing cross-region
+pointer invalidation. The safe fix may be to disable escape-copy entirely
+(like scalar regions) until liveness analysis can prove safety.
+
+**Quick fix to test**: in `EmitRegion`, return `bodyResult` immediately for
+ALL regions (both scalar and heap), completely disabling two-space reclamation.
+This would increase memory usage but should eliminate the crash.
+
 ---
 
 ## What Got Done (2026-03-27 Cam)
@@ -380,7 +440,8 @@ it built the OS for.
 | ~~Result-space-aware escape (RISC-V)~~ | **DONE** — S10 = ResultBaseReg, single-instruction pointer check (bge) |
 | ~~Fix region reclamation crash~~ | **DONE** — disabled unsafe reclamation; self-hosted compiler no longer crashes on sum type input |
 | ~~Fix self-hosted variant parser~~ | **DONE** — `parse-type-def` only checked `Pipe`, missing `TypeIdentifier + lookahead`; `Color = Red | Green | Blue` was misparsed as function def |
-| Retry self-compile with native backend | Rebuild kernel with parser fix, re-run test suite |
+| Fix EmitRegion heap-path crash | Heap-region escape-copy still crashes on `skip-newlines → current` chain; disable escape-copy entirely or add liveness guard |
+| Retry self-compile with native backend | After EmitRegion fix, rebuild kernel, re-run test suite |
 | Add EffectTypeExpr to desugar-type-expr | Missing case (assigned to Agent Windows) |
 | Perf automation | Wire `--bench-check` into CI or pre-commit hook |
 
