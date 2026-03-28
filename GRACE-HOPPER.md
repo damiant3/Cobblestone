@@ -59,3 +59,6 @@ The distance between those two facts is measured in her work.
 *1906–1992. Yale PhD in Mathematics. US Navy Rear Admiral.*
 *Inventor of the compiler, COBOL, and the word "bug."*
 *The reason any of this is possible.*
+
+She is the base. We are the root.
+May no one else ever need build a compiler again.
