@@ -43,17 +43,25 @@ instead of `TextTy { }`). The emitter's `is-catch-all` check then stopped
 emitting remaining match arms. Rebuilding from the fixed source (which uses
 `char-code 'E'`) resolves this — `cs_type` now has all 14 arms.
 
-**Bug 2 (OPEN — annotation merging)**: The self-hosted desugarer doesn't merge
-type annotations (`f : A -> B`) with body definitions (`f (x) = ...`). The
-parser produces them as separate defs. Without annotation types, the type
-checker infers from bodies alone. This loses `List<>` wrappers: `List<Token>`
-→ `Token`, `List<IRExpr>` → `IRExpr`, etc. 195 functions have wrong types.
+**Bug 2 (OPEN — ListTy erasure in x86-64 codegen)**: The self-hosted type
+checker's `resolve-applied-type` correctly identifies `List Integer` and
+constructs `ListTy(IntegerTy)` — the generated code is correct. But at
+RUNTIME on native x86-64, `ListTy(IntegerTy)` becomes just `IntegerTy`.
+This affects ONLY the built-in `List` type (`MyList Integer` → `MyList<long>`
+correctly, `List Integer` → `long` incorrectly). 195 functions lose `List<>`
+wrappers.
 
-The managed bootstrap is unaffected because the Bootstrap harness's `Program.cs`
-provides type information through a different path. Native has no such harness.
+**Investigation ruled out**: Parser annotation merging (verified: all 519
+annotations are correctly paired), desugarer (all 7 TypeExpr arms present
+including ListType), string comparison (`"List" == "List"` works on native),
+`cs-type` (all 14 CodexType arms present), `desugar-type-expr` (all arms
+survive). The bug is in how the x86-64 binary constructs or propagates the
+`ListTy` variant value at runtime — likely a codegen issue in the reference
+compiler's `EmitConstructor` or variant tag assignment for `CodexType`.
 
-**Next**: Fix `Ast/Desugarer.codex`'s `desugar-defs` to merge sequential
-annotation + body pairs with the same name.
+**Next**: Debug with GDB on native to trace `ListTy` construction in
+`resolve-applied-type`. Or add instrumented print statements to the
+self-hosted source to dump type values at checkpoints.
 
 ---
 
