@@ -2114,6 +2114,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
         if (m_target == X86_64Target.BareMetal)
         {
+            EmitSerialWaitThr();
             X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
             X86_64Encoder.OutDxAl(m_text);
         }
@@ -2141,6 +2142,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // Newline
         if (m_target == X86_64Target.BareMetal)
         {
+            EmitSerialWaitThr();
             X86_64Encoder.Li(m_text, Reg.RAX, '\n');
             X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
             X86_64Encoder.OutDxAl(m_text);
@@ -2224,6 +2226,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
         if (m_target == X86_64Target.BareMetal)
         {
+            EmitSerialWaitThr();
             X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
             X86_64Encoder.OutDxAl(m_text);
         }
@@ -2251,6 +2254,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     {
         if (m_target == X86_64Target.BareMetal)
         {
+            EmitSerialWaitThr();
             X86_64Encoder.Li(m_text, Reg.RAX, '\n');
             X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
             X86_64Encoder.OutDxAl(m_text);
@@ -4448,10 +4452,26 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         m_text.Add((byte)((value >> 24) & 0xFF));
     }
 
+    void EmitSerialWaitThr()
+    {
+        // Busy-wait for COM1 THR empty (LSR bit 5) before writing.
+        // Clobbers RDX, RAX temporarily but restores RAX via push/pop.
+        X86_64Encoder.PushR(m_text, Reg.RAX);
+        int waitLoop = m_text.Count;
+        X86_64Encoder.Li(m_text, Reg.RDX, 0x3FD); // LSR
+        m_text.Add(0xEC); // in al, dx
+        m_text.Add(0xA8); m_text.Add(0x20); // test al, 0x20 (THR empty?)
+        int ready = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+        X86_64Encoder.Jmp(m_text, waitLoop - (m_text.Count + 5));
+        PatchJcc(ready, m_text.Count);
+        X86_64Encoder.PopR(m_text, Reg.RAX);
+    }
+
     void EmitSerialChar(byte reg)
     {
-        // Write byte in `reg` to COM1 (port 0x3F8) via OUT
-        X86_64Encoder.MovRR(m_text, Reg.RDX, 0); // clear RDX
+        // Write byte in `reg` to COM1 (port 0x3F8) via OUT, with THR wait
+        EmitSerialWaitThr();
         X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
         if (reg != Reg.RAX)
             X86_64Encoder.MovRR(m_text, Reg.RAX, reg);
@@ -4474,11 +4494,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     // 0xB000-0xBFFF  Process 1 PML4
     // 0xC000-0xCFFF  Process 1 PDPT
     // 0xD000-0xDFFF  Process 1 PD
-    // 0x10000-0x7FFFF  Kernel stack (grows down from 0x80000)
-    // 0x100000+       Kernel code (.text + .rodata)
-    // 0x200000+       Kernel heap
-    // 0x400000+       Process 0 user-space (code + heap)
-    // 0x600000+       Process 1 user-space (code + heap)
+    // 0x100000+         Kernel code (.text + .rodata)
+    // 0x180000-0x1BFFFF Serial ring buffer (256KB)
+    // 0x400000+         Working-space heap (grows up, ~244 MB)
+    // 0xF800000+        Result-space heap (6 MB, escape-copy target)
+    // 0xFE00000-0xFFFFFFF Kernel stack (2 MB, grows down from 0x10000000)
 
     // ── Process Management (Ring 2) ──────────────────────────────
 
@@ -5328,24 +5348,26 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             // Disable interrupts until IDT is ready
             X86_64Encoder.Cli(m_text);
 
-            // Set up stack at 0x80000 (512KB, grows down)
-            X86_64Encoder.Li(m_text, Reg.RSP, 0x80000);
+            // Set up stack at top of 256MB identity-mapped region (2MB, grows down)
+            X86_64Encoder.Li(m_text, Reg.RSP, 0x10000000);
             X86_64Encoder.MovRR(m_text, Reg.RBP, Reg.RSP);
 
             // Paint stack with 0xDEADBEEF for high-water-mark measurement
-            // Fill 0x10000..0x7FFF8 with the pattern (rdi=addr, rcx=count, rax=pattern)
-            X86_64Encoder.Li(m_text, Reg.RDI, 0x10000);
-            X86_64Encoder.Li(m_text, Reg.RCX, (0x80000 - 0x10000) / 8); // qword count
+            // Fill 0xFE00000..0xFFFFFFF with the pattern (2MB stack region)
+            X86_64Encoder.Li(m_text, Reg.RDI, 0xFE00000);
+            X86_64Encoder.Li(m_text, Reg.RCX, (0x10000000 - 0xFE00000) / 8); // qword count
             X86_64Encoder.Li(m_text, Reg.RAX, unchecked((long)0xDEADBEEFDEADBEEF));
             m_text.Add(0x48); m_text.Add(0xF3); m_text.Add(0xAB); // rep stosq
 
             // Restore RSP (rep stosq clobbers rdi/rcx)
-            X86_64Encoder.Li(m_text, Reg.RSP, 0x80000);
+            X86_64Encoder.Li(m_text, Reg.RSP, 0x10000000);
             X86_64Encoder.MovRR(m_text, Reg.RBP, Reg.RSP);
 
-            // Set up two-space heap at 0x200000 (4MB total: 2MB working + 2MB result)
-            X86_64Encoder.Li(m_text, HeapReg, 0x200000);
-            X86_64Encoder.Li(m_text, ResultReg, 0x200000 + 0x200000); // result space at +2MB
+            // Set up two-space heap for MM3 self-compile
+            // Working: 0x400000..0xF800000 (244 MB) — confirmed by EmitProcessSetup
+            // Result:  0xF800000..0xFE00000 (6 MB) — escape-copy target
+            X86_64Encoder.Li(m_text, HeapReg, 0x400000);
+            X86_64Encoder.Li(m_text, ResultReg, 0xF800000);
 
             // Store result_space_base to global at text[0]
             X86_64Encoder.MovStoreRipRel(m_text, ResultReg,
@@ -5460,9 +5482,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             EmitCallMainAndPrint(returnType);
 
             // ── Stack high-water-mark measurement ──
-            // Scan from 0x10000 upward for first 0xDEADBEEFDEADBEEF qword
+            // Scan from 0xFE00000 upward for first 0xDEADBEEFDEADBEEF qword
             // RDI = scan pointer, RAX = pattern to match
-            X86_64Encoder.Li(m_text, Reg.RDI, 0x10000);
+            X86_64Encoder.Li(m_text, Reg.RDI, 0xFE00000);
             X86_64Encoder.Li(m_text, Reg.RAX, unchecked((long)0xDEADBEEFDEADBEEF));
             int scanLoop = m_text.Count;
             X86_64Encoder.MovLoad(m_text, Reg.RSI, Reg.RDI, 0);
@@ -5473,8 +5495,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             X86_64Encoder.Jmp(m_text, scanLoop - (m_text.Count + 5));
             PatchJcc(foundPaint, m_text.Count);
 
-            // RDI = first untouched address. Stack used = 0x80000 - RDI
-            X86_64Encoder.Li(m_text, Reg.RSI, 0x80000);
+            // RDI = first untouched address. Stack used = 0x10000000 - RDI
+            X86_64Encoder.Li(m_text, Reg.RSI, 0x10000000);
             X86_64Encoder.SubRR(m_text, Reg.RSI, Reg.RDI);
             // RSI = bytes of stack used. Print as "STACK:nnnnn\n"
             // Save RSI across print calls

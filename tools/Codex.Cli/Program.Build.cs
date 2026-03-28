@@ -443,6 +443,7 @@ public static partial class Program
         "fortran" or "f90" => new Emit.Fortran.FortranEmitter(),
         "cobol" or "cob" => new Emit.Cobol.CobolEmitter(),
 #endif
+        "codex" => new Emit.Codex.CodexEmitter(),
         _ => new CSharpEmitter()
     };
 }

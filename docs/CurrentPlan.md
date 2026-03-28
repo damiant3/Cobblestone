@@ -4,6 +4,40 @@
 
 ---
 
+## MM3 IS PROVEN
+
+The self-hosted Codex compiler compiled **itself** on bare metal x86-64 under
+QEMU. 180 KB source (493 definitions, ~5,000 lines) in over serial, 261,654
+bytes of valid C# out over serial — byte-for-byte match with the usermode
+reference. The fixed point holds on hardware.
+
+### What Changed for MM3
+
+| Change | File | Why |
+|--------|------|-----|
+| Stack: 0x80000 → 0x10000000 (2 MB at top of 256 MB) | X86_64CodeGen.cs | Stack overflow at ~700 functions with 448 KB |
+| Heap: working 0x400000, result 0xF800000 | X86_64CodeGen.cs | Proper two-space layout, eliminates overlap |
+| Serial THR busy-wait on all print paths | X86_64CodeGen.cs | UART FIFO overflow dropped 100K+ bytes |
+| Codex emitter wired into CLI | Program.Build.cs, Codex.Cli.csproj | `--target codex` identity backend |
+| Codex emitter: field access parenthesization | CodexEmitter.cs | `(f x).field` not `f x.field` |
+| Codex emitter: effect name from type, not hardcoded | CodexEmitter.cs | `[Console, FileSystem]` not `[Console]` |
+
+### Next: Floppy Disk Edition (Path B)
+
+Target: self-compile in < 4 MB heap. Streaming pipeline, per-definition processing.
+
+**Architecture** (from exploration of `_all-source.codex`):
+- Parser, desugarer, lowering: already per-definition capable
+- Name resolver, type checker, emitter: need global collection phase first (signatures, scope, arity map), then per-definition processing
+- Two-pass design: Pass 1 collects signatures (~350 KB persistent), Pass 2 processes each definition independently (~500 KB peak per def)
+- Total peak: < 1 MB
+
+**Codex emitter status**: Simple programs round-trip correctly. Self-hosted compiler
+round-trip compiles but segfaults at runtime — likely definition ordering or expression
+precedence issue in the emitter. Needs investigation.
+
+---
+
 ## MM2 IS PROVEN
 
 The self-hosted Codex compiler — running on bare metal x86-64 under QEMU,
