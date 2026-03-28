@@ -24,7 +24,7 @@ reference. The fixed point holds on hardware.
 
 ### Floppy Disk Edition — Phase 1 Complete (Streaming Emission)
 
-**Branch**: `cam/floppy-disk-streaming` — fixed point proven at 312,476 chars
+**Branch**: `cam/floppy-disk-streaming` — fixed point proven at 337,251 chars
 
 Phase 1 (streaming lower→emit→print) eliminates the full IRModule and output
 text from memory. The self-hosted compiler now processes definitions one at a
@@ -38,6 +38,7 @@ reclaims per-iteration garbage (IR tree + emitted text string).
 | `build-arity-map-from-ast` | CSharpEmitterExpressions.codex | Arity map from ADefs, no IRModule needed |
 | `print-line` → IIFE returning `object` | Both C# emitters | `print-line` in expression context (ternary) |
 | Void-like defs: `return <body>` | CSharpEmitter.cs | Avoids CS0201 on conditional expressions |
+| `CodexEmitter.codex` | Emit/CodexEmitter.codex | Self-hosted identity emitter (Codex → Codex) |
 
 **Memory impact (estimated)**:
 - Eliminated: full IRModule (~30-50 MB) + accumulated output text (~2 MB)
@@ -51,6 +52,33 @@ reclaims per-iteration garbage (IR tree + emitted text string).
 - Bare metal (4 MB): OOM crash. Confirms Phase 2 needed for floppy target.
 - CRLF note: `--target codex` outputs CRLF on Windows; x86-64 lexer needs LF.
   Convert with `tr -d '\r'` before use.
+
+### Codex Emitter Status
+
+**Reference compiler** (`src/Codex.Emit.Codex/CodexEmitter.cs`): Clean round-trip.
+`--target codex` → compiles back with 0 errors.
+
+**Self-hosted** (`Codex.Codex/Emit/CodexEmitter.codex`): ~96% correct. 20 undefined
+name errors from a **self-hosted lowering bug**: multi-arm `when` expressions lose
+branches. The first arm is kept; subsequent arms are split into separate top-level
+defs (with wrong scope). The reference compiler's lowering preserves all branches.
+
+**Root cause investigation** (2026-03-28 Cam session):
+- Added `{-#N-}` diagnostic markers to `codex-emit-match` → confirmed branch count = 1
+  for matches that should have 6+ arms
+- The self-hosted `lower-match-arms-loop` calls `list-length arms` — if it returns 1,
+  only 1 arm is lowered. The AST has 885 defs (vs 583 from reference), suggesting
+  match arms are being promoted to separate top-level definitions
+- The bootstrap project's self-hosted pipeline (`CodexLib.g.cs`) is the place to debug.
+  The reference compiler's pipeline (`--target codex`) works perfectly
+- **Do NOT add new record types** to CodexEmitter.codex — the self-hosted type checker
+  crashes on them (`bsearch_text_pos` ArgumentOutOfRange). Reuse existing types
+
+**Next step for Codex emitter**: Debug why the self-hosted lowering produces 1-branch
+matches. Start by checking if the self-hosted PARSER creates fewer match arms (compare
+`doc.defs` match arm counts between reference and self-hosted parsers). The bug is
+likely in the parser or desugarer, not the lowering — the lowering code correctly
+iterates over `list-length arms`.
 
 ### Next: Floppy Disk Phase 2 (Two-Pass Design)
 
