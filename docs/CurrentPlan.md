@@ -24,7 +24,7 @@ reference. The fixed point holds on hardware.
 
 ### Floppy Disk Edition — Phase 1 Complete (Streaming Emission)
 
-**Branch**: `cam/floppy-disk-streaming` — fixed point proven at 312,476 chars
+**Branch**: `cam/floppy-disk-streaming` — fixed point proven at 337,251 chars
 
 Phase 1 (streaming lower→emit→print) eliminates the full IRModule and output
 text from memory. The self-hosted compiler now processes definitions one at a
@@ -38,6 +38,7 @@ reclaims per-iteration garbage (IR tree + emitted text string).
 | `build-arity-map-from-ast` | CSharpEmitterExpressions.codex | Arity map from ADefs, no IRModule needed |
 | `print-line` → IIFE returning `object` | Both C# emitters | `print-line` in expression context (ternary) |
 | Void-like defs: `return <body>` | CSharpEmitter.cs | Avoids CS0201 on conditional expressions |
+| `CodexEmitter.codex` | Emit/CodexEmitter.codex | Self-hosted identity emitter (Codex → Codex) |
 
 **Memory impact (estimated)**:
 - Eliminated: full IRModule (~30-50 MB) + accumulated output text (~2 MB)
@@ -51,6 +52,31 @@ reclaims per-iteration garbage (IR tree + emitted text string).
 - Bare metal (4 MB): OOM crash. Confirms Phase 2 needed for floppy target.
 - CRLF note: `--target codex` outputs CRLF on Windows; x86-64 lexer needs LF.
   Convert with `tr -d '\r'` before use.
+
+### Codex Emitter Status
+
+**Reference compiler** (`src/Codex.Emit.Codex/CodexEmitter.cs`): Clean round-trip.
+`--target codex` → compiles back with 0 errors.
+
+**Self-hosted** (`Codex.Codex/Emit/CodexEmitter.codex`): Parser bug FIXED.
+
+**CRLF bug (FIXED)** — Branch `cam/fix-crlf-lexer`, commit `72790dc`:
+- **Root cause**: The self-hosted lexer (`Lexer.codex`) only recognized `\n` as a
+  newline. On Windows, source files have CRLF (`\r\n`) line endings. The `\r`
+  character was tokenized as an `ErrorToken`, which blocked `skip-newlines` from
+  reaching the next match arm's `if` keyword. This caused ALL multi-arm `when`
+  expressions to be truncated to 1 branch. Orphaned arms were re-parsed by the
+  top-level definition parser as bogus defs (885 defs vs 583 expected).
+- **Fix**: Added `cc-cr = 13` constant and a `\r` skip in `scan-token` that recurses
+  via TCO (compiles to `continue` in the `while(true)` loop).
+- **Verified**: Self-hosted parser now produces 1202 parsed defs (correct count
+  including type annotations + function bodies for ~584 unique defs). Mini test with
+  3-arm `when` expression parses all branches correctly.
+- **Remaining**: Self-hosted bootstrap stage 1 progresses past parsing but crashes in
+  `emit_builtin` (`ArgumentOutOfRangeException`) with 1047 unification errors. This
+  is a separate type-checker issue, not the parser bug.
+- **Do NOT add new record types** to CodexEmitter.codex — the self-hosted type checker
+  crashes on them (`bsearch_text_pos` ArgumentOutOfRange). Reuse existing types.
 
 ### Next: Floppy Disk Phase 2 (Two-Pass Design)
 
