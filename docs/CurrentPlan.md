@@ -44,11 +44,13 @@ reclaims per-iteration garbage (IR tree + emitted text string).
 - Per-def peak: ~10 KB (reclaimed by TCO heap reset each iteration)
 - Remaining: source + tokens + AST + type env (~40-60 MB for self-compile)
 
-**x86-64 self-compile verified**: 269,756 bytes, 212 type defs, 794 definitions.
-Streaming output matches .NET semantics. Root cause of earlier garbled output:
-CRLF line endings from `--target codex` on Windows. The x86-64 lexer requires
-LF. Convert with `tr -d '\r'` before use. Consider adding `*.codex eol=lf` to
-`.gitattributes`.
+**x86-64 verification**:
+- Usermode: 269,756 bytes, 212 type defs, 794 defs. Correct output.
+- Bare metal (512 MB): 267,426 bytes in 11.5s, 212 type defs, 795 defs.
+  ~2 KB short due to UART flush timing. Streaming works on hardware.
+- Bare metal (4 MB): OOM crash. Confirms Phase 2 needed for floppy target.
+- CRLF note: `--target codex` outputs CRLF on Windows; x86-64 lexer needs LF.
+  Convert with `tr -d '\r'` before use.
 
 ### Next: Floppy Disk Phase 2 (Two-Pass Design)
 
