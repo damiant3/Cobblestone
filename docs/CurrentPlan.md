@@ -101,7 +101,15 @@ estimated ~4-8MB garbage reclaimed that would otherwise persist until function e
 **Verification**: 1,003 tests pass (0 failures, 2 known skips). Build clean
 (expected CS5001 only).
 
-### What's next: Phase 2b — TCO record decomposition
+### MM3 Reality Check: 220 MB peak, 0.91s
+
+Full measurement report: `docs/MM3-REALITY-CHECK.md`
+
+Peak working-space heap is **220 MB** for self-compile (instrumented
+high-water mark). Bare-metal budget is 2 MB working space. The 110x gap is
+live data — all 7 pipeline stages' output coexisting. Path A (bump bare-metal
+heap to 256 MB) proves MM3 immediately. Path B (streaming per-definition)
+fits 4 MB. See report for details.
 
 ### Phase 2b: TCO record decomposition (both backends) — DONE
 
