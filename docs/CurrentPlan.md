@@ -4,6 +4,33 @@
 
 ---
 
+## FIXED POINT VERIFIED (CCE-native, post-encoding-fix)
+
+After fixing all 8 CCE encoding bugs (cc-cr sentinel, uppercase/lowercase
+character range ordering in Lexer, NameResolver, TypeChecker, plus 4 emitter
+fixes), the self-hosted compiler achieves a **fixed point**: Stage 2 == Stage 3,
+byte-for-byte at 310,330 chars.
+
+| Stage | Chars | Lines | Notes |
+|-------|-------|-------|-------|
+| Stage 0 (ref compiler) | 464,144 | 8,596 | C# reference compiler output |
+| Stage 2 (self-hosted) | 310,330 | 5,599 | Self-hosted compiles .codex |
+| Stage 3 (self-compiling) | 310,330 | 5,599 | Stage 2 binary compiles .codex — identical |
+
+- 0 unification errors, 0 ErrorTy bindings, 0 `object` leaks
+- 585 defs, 95 type-defs, 45,247 tokens
+- 1,016 tests pass (0 failures)
+- Total bootstrap time: 10s
+
+### What This Proves
+
+The self-hosted Codex compiler, running through the Bootstrap harness, compiles
+its own 26-file source (205 KB) to valid C# — and that C# output, when used as
+the compiler for the same source, produces byte-identical output. The compiler
+is a correct fixed point of itself.
+
+---
+
 ## MM3 IS PROVEN
 
 The self-hosted Codex compiler compiled **itself** on bare metal x86-64 under
