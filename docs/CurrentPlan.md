@@ -58,27 +58,25 @@ reclaims per-iteration garbage (IR tree + emitted text string).
 **Reference compiler** (`src/Codex.Emit.Codex/CodexEmitter.cs`): Clean round-trip.
 `--target codex` → compiles back with 0 errors.
 
-**Self-hosted** (`Codex.Codex/Emit/CodexEmitter.codex`): ~96% correct. 20 undefined
-name errors from a **self-hosted lowering bug**: multi-arm `when` expressions lose
-branches. The first arm is kept; subsequent arms are split into separate top-level
-defs (with wrong scope). The reference compiler's lowering preserves all branches.
+**Self-hosted** (`Codex.Codex/Emit/CodexEmitter.codex`): Parser bug FIXED.
 
-**Root cause investigation** (2026-03-28 Cam session):
-- Added `{-#N-}` diagnostic markers to `codex-emit-match` → confirmed branch count = 1
-  for matches that should have 6+ arms
-- The self-hosted `lower-match-arms-loop` calls `list-length arms` — if it returns 1,
-  only 1 arm is lowered. The AST has 885 defs (vs 583 from reference), suggesting
-  match arms are being promoted to separate top-level definitions
-- The bootstrap project's self-hosted pipeline (`CodexLib.g.cs`) is the place to debug.
-  The reference compiler's pipeline (`--target codex`) works perfectly
+**CRLF bug (FIXED)** — Branch `cam/fix-crlf-lexer`, commit `72790dc`:
+- **Root cause**: The self-hosted lexer (`Lexer.codex`) only recognized `\n` as a
+  newline. On Windows, source files have CRLF (`\r\n`) line endings. The `\r`
+  character was tokenized as an `ErrorToken`, which blocked `skip-newlines` from
+  reaching the next match arm's `if` keyword. This caused ALL multi-arm `when`
+  expressions to be truncated to 1 branch. Orphaned arms were re-parsed by the
+  top-level definition parser as bogus defs (885 defs vs 583 expected).
+- **Fix**: Added `cc-cr = 13` constant and a `\r` skip in `scan-token` that recurses
+  via TCO (compiles to `continue` in the `while(true)` loop).
+- **Verified**: Self-hosted parser now produces 1202 parsed defs (correct count
+  including type annotations + function bodies for ~584 unique defs). Mini test with
+  3-arm `when` expression parses all branches correctly.
+- **Remaining**: Self-hosted bootstrap stage 1 progresses past parsing but crashes in
+  `emit_builtin` (`ArgumentOutOfRangeException`) with 1047 unification errors. This
+  is a separate type-checker issue, not the parser bug.
 - **Do NOT add new record types** to CodexEmitter.codex — the self-hosted type checker
-  crashes on them (`bsearch_text_pos` ArgumentOutOfRange). Reuse existing types
-
-**Next step for Codex emitter**: Debug why the self-hosted lowering produces 1-branch
-matches. Start by checking if the self-hosted PARSER creates fewer match arms (compare
-`doc.defs` match arm counts between reference and self-hosted parsers). The bug is
-likely in the parser or desugarer, not the lowering — the lowering code correctly
-iterates over `list-length arms`.
+  crashes on them (`bsearch_text_pos` ArgumentOutOfRange). Reuse existing types.
 
 ### Next: Floppy Disk Phase 2 (Two-Pass Design)
 
