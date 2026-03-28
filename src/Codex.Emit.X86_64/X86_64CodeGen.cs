@@ -421,13 +421,29 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
     byte EmitBinary(IRBinary bin)
     {
-        byte left = EmitExpr(bin.Left);
-        int savedLeft = AllocLocal();
-        StoreLocal(savedLeft, left);
-
-        byte right = EmitExpr(bin.Right);
-        int savedRight = AllocLocal();
-        StoreLocal(savedRight, right);
+        // For text concat (++), evaluate right FIRST so that the left string
+        // (typically the accumulator) is the most recent heap allocation when
+        // __str_concat is called. This enables the in-place fast path.
+        byte left, right;
+        int savedLeft, savedRight;
+        if (bin.Op is IRBinaryOp.AppendText)
+        {
+            right = EmitExpr(bin.Right);
+            savedRight = AllocLocal();
+            StoreLocal(savedRight, right);
+            left = EmitExpr(bin.Left);
+            savedLeft = AllocLocal();
+            StoreLocal(savedLeft, left);
+        }
+        else
+        {
+            left = EmitExpr(bin.Left);
+            savedLeft = AllocLocal();
+            StoreLocal(savedLeft, left);
+            right = EmitExpr(bin.Right);
+            savedRight = AllocLocal();
+            StoreLocal(savedRight, right);
+        }
 
         byte lReg = LoadLocal(savedLeft);
         byte rReg = LoadLocal(savedRight);
@@ -1070,12 +1086,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
     byte EmitRegion(IRRegion region)
     {
-        // Regions are currently pass-through: no reclamation, no escape-copy.
-        // Intermediate heap objects may still be live via TCO parameters or
-        // closures. The two-space escape-copy was corrupting ParseState
-        // pointers (GDB: skip-newlines → current → SIGSEGV, RBX=0).
-        // Trade-off: working space grows monotonically until MM3 adds
-        // liveness-guided selective reclamation.
+        // Pass-through: no reclamation, no escape-copy.
+        // Escape-copy at any depth crashes due to live cross-references
+        // between working-space objects during the copy. Safe reclamation
+        // requires compile-time liveness analysis (future work).
+        // Memory: working space grows monotonically (~1.5MB per 1KB source).
         return EmitExpr(region.Body);
     }
 
@@ -2127,7 +2142,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
     void EmitStrConcatHelper()
     {
-        // __str_concat: rdi=ptr1, rsi=ptr2 → rax=new string on heap
+        // __str_concat: rdi=ptr1, rsi=ptr2 → rax=concatenated string
+        // Fast path: if ptr1 is at heap top, extend in place (O(len2)).
+        // Slow path: full copy (O(len1+len2)).
         m_functionOffsets["__str_concat"] = m_text.Count;
 
         X86_64Encoder.PushR(m_text, Reg.RBX);
@@ -2138,6 +2155,50 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.MovRR(m_text, Reg.R12, Reg.RSI);    // r12 = ptr2
         X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RBX, 0); // rcx = len1
         X86_64Encoder.MovLoad(m_text, Reg.RDX, Reg.R12, 0); // rdx = len2
+
+        // Fast path check: ptr1 + 8 + align8(len1) == HeapReg?
+        X86_64Encoder.MovRR(m_text, Reg.R11, Reg.RCX);    // r11 = len1
+        X86_64Encoder.AddRI(m_text, Reg.R11, 15);
+        X86_64Encoder.AndRI(m_text, Reg.R11, -8);         // r11 = align8(len1+8)
+        X86_64Encoder.MovRR(m_text, Reg.R13, Reg.RBX);
+        X86_64Encoder.AddRR(m_text, Reg.R13, Reg.R11);    // r13 = ptr1 + alloc_size
+        X86_64Encoder.CmpRR(m_text, Reg.R13, HeapReg);
+        int slowPath = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+
+        // ── Fast path: extend ptr1 in place ──
+        // Update length: [ptr1] = len1 + len2
+        X86_64Encoder.MovRR(m_text, Reg.R13, Reg.RCX);
+        X86_64Encoder.AddRR(m_text, Reg.R13, Reg.RDX);
+        X86_64Encoder.MovStore(m_text, Reg.RBX, Reg.R13, 0);
+        // Copy src2 bytes after existing data: ptr1[8+len1+i] = src2[8+i]
+        X86_64Encoder.Li(m_text, Reg.R11, 0);
+        int fastLoop = m_text.Count;
+        X86_64Encoder.CmpRR(m_text, Reg.R11, Reg.RDX);
+        int fastExit = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+        X86_64Encoder.MovRR(m_text, Reg.RSI, Reg.R12);
+        X86_64Encoder.AddRR(m_text, Reg.RSI, Reg.R11);
+        X86_64Encoder.MovzxByte(m_text, Reg.RSI, Reg.RSI, 8);
+        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RBX);
+        X86_64Encoder.AddRR(m_text, Reg.RDI, Reg.RCX);
+        X86_64Encoder.AddRR(m_text, Reg.RDI, Reg.R11);
+        X86_64Encoder.MovStoreByte(m_text, Reg.RDI, Reg.RSI, 8);
+        X86_64Encoder.AddRI(m_text, Reg.R11, 1);
+        X86_64Encoder.Jmp(m_text, fastLoop - (m_text.Count + 5));
+        PatchJcc(fastExit, m_text.Count);
+        // Bump HeapReg past new data
+        X86_64Encoder.MovRR(m_text, Reg.R11, Reg.R13); // total_len
+        X86_64Encoder.AddRI(m_text, Reg.R11, 15);
+        X86_64Encoder.AndRI(m_text, Reg.R11, -8);
+        X86_64Encoder.Lea(m_text, HeapReg, Reg.RBX, 0);
+        X86_64Encoder.AddRR(m_text, HeapReg, Reg.R11);
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RBX); // return ptr1 (same pointer)
+        int fastDone = m_text.Count;
+        X86_64Encoder.Jmp(m_text, 0);
+
+        // ── Slow path: full copy ──
+        PatchJcc(slowPath, m_text.Count);
         X86_64Encoder.MovRR(m_text, Reg.R13, Reg.RCX);
         X86_64Encoder.AddRR(m_text, Reg.R13, Reg.RDX);    // r13 = total_len
 
@@ -2147,9 +2208,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.AddRI(m_text, Reg.R11, 15);
         X86_64Encoder.AndRI(m_text, Reg.R11, -8);
         X86_64Encoder.AddRR(m_text, HeapReg, Reg.R11);
-        X86_64Encoder.MovStore(m_text, Reg.RAX, Reg.R13, 0); // store total length
+        X86_64Encoder.MovStore(m_text, Reg.RAX, Reg.R13, 0);
 
-        // Copy first string: i=0; while i<len1: dst[8+i]=src1[8+i]; i++
+        // Copy first string
         X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RBX, 0);
         X86_64Encoder.Li(m_text, Reg.R11, 0);
         int loop1 = m_text.Count;
@@ -2166,9 +2227,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.Jmp(m_text, loop1 - (m_text.Count + 5));
         PatchJcc(exit1, m_text.Count);
 
-        // Copy second string: i=0; while i<len2: dst[8+len1+i]=src2[8+i]; i++
-        X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RBX, 0); // len1
-        X86_64Encoder.MovLoad(m_text, Reg.RDX, Reg.R12, 0); // len2
+        // Copy second string
+        X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RBX, 0);
+        X86_64Encoder.MovLoad(m_text, Reg.RDX, Reg.R12, 0);
         X86_64Encoder.Li(m_text, Reg.R11, 0);
         int loop2 = m_text.Count;
         X86_64Encoder.CmpRR(m_text, Reg.R11, Reg.RDX);
@@ -2184,6 +2245,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.AddRI(m_text, Reg.R11, 1);
         X86_64Encoder.Jmp(m_text, loop2 - (m_text.Count + 5));
         PatchJcc(exit2, m_text.Count);
+        PatchJmp(fastDone, m_text.Count);
 
         X86_64Encoder.PopR(m_text, Reg.R13);
         X86_64Encoder.PopR(m_text, Reg.R12);
@@ -5059,19 +5121,20 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             X86_64Encoder.Syscall(m_text);
             X86_64Encoder.MovRR(m_text, HeapReg, Reg.RAX); // working space starts at brk base
 
-            // Grow by 512MB: 256MB working + 256MB result.
-            // NOTE: self-compile needs ~11GB working due to O(N²) list-snoc.
-            // Fix: TCO heap compaction or cons+reverse in tokenizer.
+            // Grow heap: 2GB working + 256MB result.
+            // Without region reclamation, working space grows monotonically.
+            // In-place string concat keeps the emitter's output at O(n), but
+            // tokenizer/parser/checker intermediates accumulate (~1MB/KB source).
             byte growReg = Reg.R11;
-            X86_64Encoder.Li(m_text, growReg, 512L * 1024 * 1024);
+            X86_64Encoder.Li(m_text, growReg, (4096L + 256) * 1024 * 1024);
             X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
             X86_64Encoder.AddRR(m_text, Reg.RDI, growReg);
             X86_64Encoder.Li(m_text, Reg.RAX, 12); // sys_brk
             X86_64Encoder.Syscall(m_text);
 
-            // Result space starts at brk_base + 256MB
+            // Result space starts at brk_base + 2GB
             X86_64Encoder.MovRR(m_text, ResultReg, HeapReg);
-            X86_64Encoder.Li(m_text, growReg, 256L * 1024 * 1024);
+            X86_64Encoder.Li(m_text, growReg, 4096L * 1024 * 1024);
             X86_64Encoder.AddRR(m_text, ResultReg, growReg);
 
             // Store result_space_base to global at text[0] for escape helpers.
