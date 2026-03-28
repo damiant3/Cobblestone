@@ -150,8 +150,8 @@ class Program
                 Console.WriteLine($"    {d.name}({paramStr}) : {Codex_Codex_Codex.cs_type(d.type_val)}");
             }
 
-            string cceOutput = Codex_Codex_Codex.emit_full_module(ir, ast.type_defs);
-            // Convert emitted C# source from CCE back to Unicode for .NET compiler
+            string cceOutput = Codex_Codex_Codex.codex_emit_full_module(ir, ast.type_defs);
+            // Convert emitted Codex source from CCE back to Unicode
             string output = _Cce.ToUnicode(cceOutput);
             string outputPath = outputOverride ?? Path.Combine(codexDir, "stage1-output.cs");
             File.WriteAllText(outputPath, output);
