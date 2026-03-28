@@ -35,6 +35,50 @@ metal. MM2: The High Camp is reached.**
 
 ---
 
+## What Got Done (2026-03-28 Cam, session 2)
+
+### Lowering O(N²) → O(N) list building
+
+Converted 8 list-building functions in `Codex.Codex/IR/Lowering.codex` from
+`[x] ++ recursive` (prepend, O(N²) total copies) to `list-snoc` accumulator
+pattern (O(N) amortized with capacity-aware lists). Biggest win: `lower-defs`
+with 200+ definitions dropped from ~20,000 element copies to ~400.
+
+### Phase 0 complete: scan-string-body + skip-newlines
+
+Bulk offset scanning for remaining lexer/parser functions. All scanning
+functions now use Integer-returning offset helpers. Total Phase 0 estimated
+dead record reduction: ~5MB for 180KB source.
+
+### In-place list-insert-at + min capacity 4 (Phase 3 + 6.1)
+
+`list-insert-at` now has 3 paths matching `list-snoc`: in-place shift when
+spare capacity, grow-and-shift at heap top, copy-with-gap as fallback. Both
+backends. Minimum list capacity reduced from 16 to 4 (saves 96 bytes per
+small list). Type environment builds drop from O(N²) to O(N).
+
+### What's next: Phase 2 — TCO heap reset
+
+The biggest remaining optimization. At each TCO iteration, after evaluating
+args into stack slots, reset HeapReg to reclaim per-iteration garbage.
+
+**The challenge**: heap-typed TCO args (ParseState records, LexResult sum
+types) live above the mark and would be reclaimed. Need to either:
+1. Decompose records into scalar stack slots, reconstruct after reset
+2. Escape-copy to result space (but escape-copy crashes on cross-refs)
+3. Only reset for scalar-only TCO functions (limited impact since Phase 0
+   already converted hot scalar loops)
+
+**Approach to investigate**: Record decomposition. For `tokenize-loop`,
+the LexState arg has 2 scalar-ish fields (source ptr + pos integer). Save
+those to stack, reset heap, reconstruct LexState at loop top. The source
+ptr points below the mark (allocated at program start), pos is scalar.
+Similar for ParseState (tokens ptr + pos).
+
+**Files**: `X86_64CodeGen.cs` (EmitTailCall), `RiscVCodeGen.cs` (EmitTailCall).
+
+---
+
 ## What Got Done (2026-03-28 Cam)
 
 ### Memory reduction for native self-compile
