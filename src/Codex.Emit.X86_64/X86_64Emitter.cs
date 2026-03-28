@@ -14,13 +14,15 @@ public sealed class X86_64Emitter(X86_64Target target = X86_64Target.LinuxUser) 
 
     public string TargetName => m_target == X86_64Target.BareMetal ? "X86_64-BareMetal" : "X86_64";
 
+    X86_64CodeGen? m_lastCodeGen;
+
     public byte[] EmitAssembly(IRModule module, string assemblyName)
     {
         X86_64CodeGen codeGen = new(m_target);
         codeGen.EmitModule(module);
-        // Bare metal: use ELF with multiboot header (QEMU needs ELF format)
-        // The multiboot header is embedded in .text, entry point is byte 12
-        // (right after the 12-byte multiboot header)
+        m_lastCodeGen = codeGen;
         return codeGen.BuildElf();
     }
+
+    public Dictionary<string, int>? GetFunctionOffsets() => m_lastCodeGen?.GetFunctionOffsets();
 }

@@ -105,14 +105,38 @@ list-snoc, records, etc.).
 5. Sum type DEFINITION works (constructor, field access). Only MATCHING crashes.
 6. QEMU strace: file fully read, then `SIGSEGV {si_addr=NULL}`.
 
-**Root cause hypothesis**: The x86-64 backend's match emission for sum types
-(in `EmitMatch` or `EmitApply` for `when`) produces code that dereferences
-a null pointer. Likely a missing case in the match codegen for sum type
-destructuring — possibly the scrutinee register is clobbered before the
-match arms read it, or the tag dispatch jumps to an uninitialized label.
+**Root cause found and FIXED** (2026-03-27 Cam):
 
-**Not related to**: capacity-aware lists, escape-copy, region reclamation,
-or any changes in this session. Pre-existing in both old and new binaries.
+The crash was a **use-after-free** caused by region reclamation in `EmitRegion`.
+Both scalar and heap region paths restored HeapReg to the pre-body mark,
+reclaiming ALL working-space allocations made during the body. But some of
+those allocations were still referenced by live pointers — specifically,
+ParseState records created by `advance` in TCO loops that became TCO
+parameters for the next iteration.
+
+**Fix** (x86-64): Two changes to `EmitRegion`:
+1. **Scalar regions**: removed the `HeapReg = mark` restoration entirely.
+   Intermediate heap objects may still be live via TCO parameters or closures.
+2. **Heap regions**: restore HeapReg to the POST-BODY position (not the
+   pre-body mark). This switches back from result space to working space
+   without reclaiming any allocations.
+
+**Investigation trail (condensed)**:
+- GDB: crash at `current` function (0x434ca4), `mov (%rbx), %rcx` with RBX=0
+- Function offset map: `current` → `current-kind` → `is-done` → `skip-newlines`
+- `skip-newlines` TCO loop calls `advance st` → new ParseState in working space
+- Region reclamation reclaimed the ParseState → dangling pointer → null deref
+- 100/100 crashes with pipe input, 0/100 with fix applied
+- 536 tests pass, 0 failures
+
+**Trade-off**: Without reclamation, working space grows monotonically per
+function call. This is safe for small-to-medium programs. For MM3 self-compile,
+we may need selective reclamation (only reclaim when provably safe — e.g.,
+after liveness analysis or in leaf regions with no live captures).
+
+**Remaining**: The self-hosted compiler no longer crashes but produces empty
+output for sum-type-matching programs. This is a separate parser/emitter issue,
+not a memory corruption bug.
 
 ---
 
@@ -334,7 +358,8 @@ either architecture.
 | ~~In-place list-snoc~~ | **DONE** — fast path O(1) when at heap top, but rarely fires in TCO loops |
 | ~~Capacity-aware lists~~ | **DONE** (both backends) — hidden capacity word at [-8], geometric doubling, O(1) amortized snoc; estimated 22,000x heap reduction |
 | ~~Result-space-aware escape (RISC-V)~~ | **DONE** — S10 = ResultBaseReg, single-instruction pointer check (bge) |
-| Retry self-compile | **BLOCKED** — pre-existing null deref when self-hosted compiler matches sum types (see below) |
+| ~~Fix region reclamation crash~~ | **DONE** — disabled unsafe reclamation; self-hosted compiler no longer crashes on sum type input |
+| Retry self-compile | Parser produces empty output for sum types — needs investigation |
 | Fix Boolean type in self-hosted emitter | Blocker for usermode self-compile |
 | Fix CCE string escaping in self-hosted emitter | Blocker — uses ASCII rules instead of CCE |
 | Add EffectTypeExpr to desugar-type-expr | Missing case (assigned to Agent Windows) |
