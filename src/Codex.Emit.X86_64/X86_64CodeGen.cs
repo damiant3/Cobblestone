@@ -181,6 +181,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     int[] m_tcoTempLocals = []; // pre-allocated locals for tail call arg temps
     int m_tcoSavedNextLocal;
     int m_tcoSavedNextTemp;
+    int m_tcoHeapMarkLocal;              // stack local: HeapReg value at TCO loop top
+    CodexType[] m_tcoParamTypes = [];    // parameter types for TCO heap-reset check
 
     void EmitTailCall(IRApply app)
     {
@@ -214,6 +216,50 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             byte r = EmitExpr(args[i]);
             m_inTailPosition = savedTail;
             StoreLocal(m_tcoTempLocals[i], r);
+        }
+
+        // ── TCO heap reset ──────────────────────────────────────
+        // Check if all heap-typed args point below the iteration mark.
+        // If yes: reset HeapReg to reclaim per-iteration garbage.
+        // If no: skip reset (next iteration saves a fresh mark).
+        {
+            List<int> heapArgIndices = [];
+            for (int i = 0; i < args.Count && i < m_tcoParamTypes.Length; i++)
+            {
+                CodexType resolved = ResolveType(m_tcoParamTypes[i]);
+                if (IRRegion.TypeNeedsHeapEscape(resolved))
+                    heapArgIndices.Add(i);
+            }
+
+            if (heapArgIndices.Count == 0)
+            {
+                // All scalar — always reset
+                X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(m_tcoHeapMarkLocal));
+            }
+            else
+            {
+                // Load mark into a temp register (survives across arg loads)
+                byte markReg = AllocTemp();
+                X86_64Encoder.MovRR(m_text, markReg, LoadLocal(m_tcoHeapMarkLocal));
+
+                // For each heap-typed arg: if arg >= mark, skip reset
+                List<int> skipResetOffsets = [];
+                foreach (int idx in heapArgIndices)
+                {
+                    byte argVal = LoadLocal(m_tcoTempLocals[idx]);
+                    X86_64Encoder.CmpRR(m_text, argVal, markReg);
+                    skipResetOffsets.Add(m_text.Count);
+                    X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0); // jae skip_reset
+                }
+
+                // All checks passed — reset heap to mark
+                X86_64Encoder.MovRR(m_text, HeapReg, markReg);
+
+                // Patch all skip-reset jumps to land here
+                int noResetTarget = m_text.Count;
+                foreach (int offset in skipResetOffsets)
+                    PatchJcc(offset, noResetTarget);
+            }
         }
 
         // Reassign params from temps
@@ -279,8 +325,27 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             m_tcoTempLocals = new int[def.Parameters.Length];
             for (int i = 0; i < def.Parameters.Length; i++)
                 m_tcoTempLocals[i] = AllocLocal();
+
+            // Store parameter types for heap-reset check in EmitTailCall
+            m_tcoParamTypes = new CodexType[def.Parameters.Length];
+            for (int i = 0; i < def.Parameters.Length; i++)
+                m_tcoParamTypes[i] = def.Parameters[i].Type;
+
+            // Allocate local for heap mark (persists across iterations)
+            m_tcoHeapMarkLocal = AllocLocal();
         }
         m_tcoLoopTop = m_text.Count;
+
+        // TCO heap reset: save HeapReg at each iteration start.
+        // Tail calls conditionally reset HeapReg to this mark to reclaim
+        // per-iteration garbage when all heap-typed args are pre-existing.
+        if (m_inTCOFunction)
+        {
+            byte hp = AllocTemp();
+            X86_64Encoder.MovRR(m_text, hp, HeapReg);
+            StoreLocal(m_tcoHeapMarkLocal, hp);
+        }
+
         m_tcoSavedNextLocal = m_nextLocal;   // save for reset on each iteration
         m_tcoSavedNextTemp = m_nextTemp;
         m_inTailPosition = m_inTCOFunction;
