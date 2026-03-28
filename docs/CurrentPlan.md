@@ -82,18 +82,42 @@ estimated ~4-8MB garbage reclaimed that would otherwise persist until function e
 
 ### What's next: Phase 2b — TCO record decomposition
 
-For `tokenize-loop(st: LexState, acc: List Token)`, the LexState arg is a
-fresh record each iteration, so the conditional reset never fires. To reclaim
-garbage in this hot loop:
+### Phase 2b: TCO record decomposition (both backends) — DONE
 
-1. At tail call, decompose LexState into its fields: `source` (Text ptr,
-   pre-existing) and `pos` (Integer, scalar). Store to stack slots.
-2. All decomposed values are now below the mark or scalar → reset fires.
-3. After reset, reconstruct LexState at the (now-reset) heap top.
+Record-typed TCO parameters are now decomposed into individual field values
+at each tail call. Instead of checking the record pointer (always freshly
+allocated → always above mark → never resets), the check inspects field
+pointers. Pre-existing pointers (like `LexState.source` allocated at
+program start, or `ParseState.tokens` built by the tokenizer) pass the
+check. After reset, the record is reconstructed at the new heap top.
 
-Same approach works for ParseState `{tokens: List Token, pos: Integer}`.
-Requires knowing record field layout at codegen time — check if `RecordType`
-has field info available in the IR.
+**Implementation**:
+1. `EmitFunction` TCO setup: for each RecordType parameter, pre-allocate
+   field decomposition locals via `m_tcoDecompLocals[paramIdx][fieldIdx]`.
+2. `EmitTailCall`: after arg evaluation, load `[recordPtr + f*8]` into
+   field locals. During check, compare pointer-typed field values against
+   mark. After reset, reconstruct: `newPtr = HeapReg; HeapReg += N*8;
+   store fields; update temp`.
+
+**Which TCO functions now benefit (previously blocked):**
+
+| Function | Record param | Fields | Reset? |
+|----------|-------------|--------|--------|
+| `tokenize-loop` | LexState | source (Text, pre-existing), offset/line/column (scalar) | Yes |
+| `parse-binary-loop` | ParseState | tokens (List, pre-existing), pos (scalar) | Yes |
+| `parse-app-loop` | ParseState | tokens (List, pre-existing), pos (scalar) | Yes |
+| `parse-match-branches` | ParseState | tokens (List, pre-existing), pos (scalar) | Yes |
+| `skip-newlines` | ParseState | tokens (List, pre-existing), pos (scalar) | Yes |
+
+**Estimated impact**: `tokenize-loop` for 180KB source creates ~15K LexState
+records per compilation (32 bytes each = ~480KB), plus intermediate strings
+and Token records. With Phase 2b, all per-iteration garbage is reclaimed.
+Parser loops similarly reclaim ParseState intermediates.
+
+**Review branch**: `cam/tco-heap-reset` (2 commits, both backends)
+
+**Verification**: 1,003 tests pass (0 failures, 2 known skips). TCO test
+programs compile on both x86-64 and RISC-V.
 
 ---
 
@@ -614,7 +638,7 @@ it built the OS for.
 | ~~Bulk offset scanning in lexer~~ | **DONE** — skip-spaces-end, scan-ident-end, scan-digits-end return Integer offset; ~4.3MB dead LexState reduction |
 | ~~Reduce Linux brk allocation~~ | **DONE** — 4.25GB → 320MB; actual usage ~10-15MB for 180KB source |
 | ~~TCO heap reset (Phase 2)~~ | **DONE** (both backends) — conditional HeapReg reset at tail calls; accumulator-pattern loops reclaim per-iteration garbage |
-| TCO record decomposition (Phase 2b) | Decompose LexState/ParseState into scalars + stable ptrs at tail call → enables reset for tokenize-loop |
+| ~~TCO record decomposition (Phase 2b)~~ | **DONE** (both backends) — decompose record args into fields, check field ptrs, reconstruct after reset; enables tokenize-loop + parser loops |
 | Retry full self-compile with native backend | Memory optimizations unblock; next: feed self-hosted source to native compiler (needs Linux) |
 | Fix Bootstrap Stage 1 crash | Pre-existing `ArgumentOutOfRangeException` in scan_token; likely stale CodexLib.g.cs |
 | Add EffectTypeExpr to desugar-type-expr | Missing case (assigned to Agent Windows) |
