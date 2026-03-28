@@ -108,14 +108,35 @@ list-snoc, records, etc.).
 5. Sum type DEFINITION works (constructor, field access). Only MATCHING crashes.
 6. QEMU strace: file fully read, then `SIGSEGV {si_addr=NULL}`.
 
-**Root cause hypothesis**: The x86-64 backend's match emission for sum types
-(in `EmitMatch` or `EmitApply` for `when`) produces code that dereferences
-a null pointer. Likely a missing case in the match codegen for sum type
-destructuring — possibly the scrutinee register is clobbered before the
-match arms read it, or the tag dispatch jumps to an uninitialized label.
+**Root cause found**: Crash is in `peek-kind` (ParserCore.codex:32), specifically
+`(list-at st.tokens idx).kind`. The token at position `idx` is NULL (0), not
+a valid Token record pointer. This means a token stored in the token list during
+tokenization became 0 — a **memory corruption** or **escape-copy** bug.
 
-**Not related to**: capacity-aware lists, escape-copy, region reclamation,
-or any changes in this session. Pre-existing in both old and new binaries.
+The token list is built by `tokenize-loop` via `list-snoc tokens token`. If
+the region reclamation escape-copy incorrectly handles a token's pointer
+(e.g., copies a working-space pointer that gets zeroed when working space
+is reclaimed), the token list would contain nulls for affected tokens.
+
+**Investigation trail (condensed)**:
+- QEMU strace: `si_addr=NULL` after full file read
+- Traced pipeline: tokenizer OK, parser crashes in `parse-document`
+- Wildcard-only `when _ -> 42` also crashes (not constructor-pattern specific)
+- Function offset mapping: crash in `peek-kind` (0x34E4C)
+- `peek-kind` accesses `(list-at st.tokens idx).kind` → token is NULL
+- Input with `when` triggers `peek-kind st 1` lookahead, hitting a null token
+
+**Key insight**: The null token is evidence that the two-space escape-copy
+incorrectly handles the token list during region reclamation. When the
+tokenize result is escape-copied to result space, some token pointers that
+should point to Token records in result space end up as 0.
+
+**Next step**: Add diagnostic in `EmitRegion`/escape helpers to verify all
+list elements are non-null after escape-copy. Or trace with GDB to find
+which specific escape-copy step zeroes the token pointer.
+
+**Not related to**: capacity-aware list layout (both old and new binaries
+crash identically — the capacity word is irrelevant to the null token bug).
 
 ---
 
