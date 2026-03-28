@@ -1,6 +1,6 @@
 # MM3 Memory Optimization Plan — Self-Compile in < 512 MB
 
-**Date**: 2026-03-28
+**Date**: 2026-03-28 (updated 2026-03-28)
 **Author**: Agent Windows
 **Status**: Design — ready for implementation
 **Assignee**: Cam (implementation), Agent Windows (review)
@@ -55,7 +55,87 @@ With the optimizations below we should hit ~5–10x.
 
 ---
 
-## The Kill Chain — Six Phases
+## The Kill Chain — Seven Phases
+
+### Phase 0: Source-Level Scalar Rewrites (Cam, in progress)
+
+**The insight**: Many hot loops in the self-hosted `.codex` source allocate
+heap records on every iteration when only the *final* record matters. Rewriting
+these loops to work with scalar values (Integer — lives in a register, zero
+heap allocation) and constructing the record once at the end eliminates the
+allocations entirely. No runtime or backend changes needed.
+
+**Primary target: Lexer scanning functions.**
+
+Every character-scanning function creates a new `LexState` record per character
+via `advance-char`:
+
+```
+advance-char (st) =
+ if peek-code st == cc-newline
+  then LexState { source = st.source, offset = st.offset + 1,
+                  line = st.line + 1, column = 1 }
+  else LexState { source = st.source, offset = st.offset + 1,
+                  line = st.line, column = st.column + 1 }
+```
+
+For a 193 KB source, `scan-ident-rest`, `scan-digits`, `scan-string-body`,
+`skip-spaces` call `advance-char` per character in TCO loops. That's ~193,000
+`LexState` records (each 4 fields × 8 bytes = 32 bytes) of which only the
+last one survives.
+
+**The fix**: Rewrite scanning functions to compute the final offset as a scalar
+Integer, then construct one `LexState` at the end:
+
+```
+scan-ident-rest-offset (source) (offset) (len) =
+ if offset >= len then offset
+ else let c = char-code-at source offset
+  in if is-letter-code c then scan-ident-rest-offset source (offset + 1) len
+  ...else offset
+
+scan-ident-rest (st) =
+ let final-offset = scan-ident-rest-offset st.source st.offset (text-length st.source)
+ in LexState { source = st.source, offset = final-offset,
+               line = st.line, column = st.column + (final-offset - st.offset) }
+```
+
+**Applicable scanning functions**:
+
+| Function | Lines | Est. records eliminated |
+|----------|-------|----------------------|
+| `skip-spaces` | 272–279 | ~30,000 |
+| `scan-ident-rest` | 282–300 | ~50,000 |
+| `scan-digits` | 302–311 | ~5,000 |
+| `scan-string-body` | 313–324 | ~10,000 |
+| `skip-newlines` (parser) | 1169–1176 | ~5,000 |
+
+**Total: ~100,000 dead `LexState` records eliminated = ~3.2 MB of heap
+allocations that never happen.**
+
+**Secondary targets (same pattern)**:
+
+- **`process-escapes`** (line 326): builds text with `++` per character. Could
+  accumulate into a list of char codes (scalars) and convert once at end.
+- **`escape-text-loop`** (line 4733): same pattern — `list-snoc` per character
+  building a `List Text` of single-char strings.
+- **Parser `expect`/`skip-newlines` chains**: multiple `advance` calls creating
+  intermediate `ParseState` records. Could batch-skip with offset arithmetic.
+
+**Why this is safe**: Pure refactor of `.codex` source. No semantic change. No
+runtime modification. Scalar TCO loop params live in registers — zero heap
+pressure. The line/column tracking becomes approximate (computed from offset
+delta instead of per-character), which is acceptable since the self-hosted
+compiler doesn't emit source positions in its output.
+
+**Impact**: ~3–6 MB direct savings. More importantly, reduces the *number of
+heap allocations per TCO iteration* which compounds with Phase 2 (TCO heap
+reset) — fewer objects to worry about surviving across iterations.
+
+**Files**: `Codex.Codex/Syntax/Lexer.codex`, `Codex.Codex/Syntax/Parser.codex`,
+and their concatenated form in `_all-source.codex`.
+
+---
 
 ### Phase 1: Re-enable Region Reclamation
 
@@ -292,6 +372,7 @@ Quick wins, no algorithmic changes:
 
 | Phase | What | Heap reduction | Cumulative estimate |
 |-------|------|---------------|-------------------|
+| 0 | Source-level scalar rewrites (lexer, parser) | ~3–6 MB direct; reduces per-iteration alloc count | ~14–15 GB |
 | 0 | Current (pass-through regions, capacity-aware snoc) | Baseline | ~16 GB |
 | 1 | Re-enable region reclamation | 4–8x | ~2–4 GB |
 | 2 | TCO-loop heap reset per arg | 5–10x | ~200–500 MB |
@@ -300,11 +381,13 @@ Quick wins, no algorithmic changes:
 | 5 | Dead-stage reclamation (ping-pong) | 2x | ~30–50 MB |
 | 6 | Capacity tuning | ~1.3x | ~25–40 MB |
 
-**Phases 1–3 are critical path.** They take 16 GB down to < 200 MB — well
-within a 512 MB heap. Phases 4–6 are polish to get comfortably under 64 MB
+**Phase 0 is safe to land immediately** — pure source refactor, no backend
+risk, compounds with every subsequent phase. **Phases 1–3 are critical path.**
+Phases 4–6 are polish to get comfortably under 64 MB
 for bare-metal QEMU with `-m 128`.
 
-**Implementation order**: Phase 1 (prereq: Cam's fix) → Phase 3 (independent,
+**Implementation order**: Phase 0 (Cam, in progress — safe to land immediately) →
+Phase 1 (prereq: Cam's region reclamation fix) → Phase 3 (independent,
 pure runtime change) → Phase 2 (depends on understanding TCO arg liveness) →
 Phase 4 → Phase 6 → Phase 5 (only if needed).
 
