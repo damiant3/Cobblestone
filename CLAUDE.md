@@ -11,11 +11,22 @@ tools/codex-agent/codex-agent.exe orient
 This provides project structure, style, syntax, pipeline, agents, git workflow,
 and known conditions. Use `orient <topic>` for detail on any area.
 
+**Clean stale intermediates before doing anything else:**
+
+```powershell
+git clean -fd samples/
+Remove-Item -Force Codex.Codex/out/*.cs, Codex.Codex/out/*.elf, Codex.Codex/out/*.dll -ErrorAction SilentlyContinue
+```
+
+Stale `.elf`, `.dll`, `.cs` outputs from previous sessions cause false test
+results — you test yesterday's codegen against today's type system. Same class
+as QEMU tests silently skipping. Always rebuild from current source.
+
 ## Session Rules
 
 1. **Read before you write.** Always read a file before editing it.
 2. **Build before you commit.** `dotnet build Codex.sln` + `dotnet test Codex.sln`.
-3. **Clean up temp files.** Delete `.bak`, `.new`, `.tmp`, `.snap`, scratch scripts before ending.
+3. **Clean intermediates.** Clean stale build outputs at session start (see above). Delete `.bak`, `.new`, `.tmp`, `.snap`, scratch scripts before ending.
 4. **One logical change per commit.** Don't bundle unrelated fixes.
 5. **Leave a handoff.** After meaningful work, update `docs/CurrentPlan.md`.
 6. **Ask the user** when unsure. A 10-second question beats a 10-minute wrong turn.
