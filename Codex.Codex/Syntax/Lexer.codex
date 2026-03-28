@@ -13,6 +13,9 @@ Section: Character Code Constants
   cc-newline : Integer
   cc-newline = char-code '\n'
 
+  cc-cr : Integer
+  cc-cr = 13
+
   cc-space : Integer
   cc-space = char-code ' '
 
@@ -328,38 +331,40 @@ Section: Single Token Scanning
    in if is-at-end s
     then LexEnd
     else let c = peek-code s
-     in if c == cc-newline
-      then LexToken (make-token Newline "\n" s) (advance-char s)
-      else if c == cc-double-quote
-       then let start = s.offset + 1
-        in let after = scan-string-body (advance-char s)
-         in let text-len = after.offset - start - 1
-          in let raw = substring s.source start text-len
-           in LexToken (make-token TextLiteral (process-escapes raw 0 (text-length raw) "") s) after
-       else if c == cc-single-quote
-        then scan-char-literal s
-       else if is-letter-code c
-        then let start = s.offset
-         in let after = scan-ident-rest (advance-char s)
-          in let word = extract-text s start after
-           in LexToken (make-token (classify-word word) word s) after
-        else if c == cc-underscore
-         then let start = s.offset
-          in let after = scan-ident-rest (advance-char s)
-           in let word = extract-text s start after
-            in if text-length word == 1
-             then LexToken (make-token Underscore "_" s) after
-             else LexToken (make-token (classify-word word) word s) after
-         else if is-digit-code c
+     in if c == cc-cr
+      then scan-token (advance-char s)
+      else if c == cc-newline
+       then LexToken (make-token Newline "\n" s) (advance-char s)
+       else if c == cc-double-quote
+        then let start = s.offset + 1
+         in let after = scan-string-body (advance-char s)
+          in let text-len = after.offset - start - 1
+           in let raw = substring s.source start text-len
+            in LexToken (make-token TextLiteral (process-escapes raw 0 (text-length raw) "") s) after
+        else if c == cc-single-quote
+         then scan-char-literal s
+         else if is-letter-code c
           then let start = s.offset
-           in let after = scan-digits (advance-char s)
-            in if is-at-end after
-             then LexToken (make-token IntegerLiteral (extract-text s start after) s) after
-             else if peek-code after == cc-dot
-              then let after2 = scan-digits (advance-char after)
-               in LexToken (make-token NumberLiteral (extract-text s start after2) s) after2
-              else LexToken (make-token IntegerLiteral (extract-text s start after) s) after
-          else scan-operator s
+           in let after = scan-ident-rest (advance-char s)
+            in let word = extract-text s start after
+             in LexToken (make-token (classify-word word) word s) after
+          else if c == cc-underscore
+           then let start = s.offset
+            in let after = scan-ident-rest (advance-char s)
+             in let word = extract-text s start after
+              in if text-length word == 1
+               then LexToken (make-token Underscore "_" s) after
+               else LexToken (make-token (classify-word word) word s) after
+           else if is-digit-code c
+            then let start = s.offset
+             in let after = scan-digits (advance-char s)
+              in if is-at-end after
+               then LexToken (make-token IntegerLiteral (extract-text s start after) s) after
+               else if peek-code after == cc-dot
+                then let after2 = scan-digits (advance-char after)
+                 in LexToken (make-token NumberLiteral (extract-text s start after2) s) after2
+                else LexToken (make-token IntegerLiteral (extract-text s start after) s) after
+            else scan-operator s
 
   scan-operator : LexState -> LexResult
   scan-operator (s) =
