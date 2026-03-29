@@ -2288,6 +2288,30 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         }
     }
 
+    void EmitWriteCharStderr()
+    {
+        // Write single byte in RDI to stderr. Clobbers RAX, RSI, RDX.
+        X86_64Encoder.SubRI(m_text, Reg.RSP, 8);
+        X86_64Encoder.MovStore(m_text, Reg.RSP, Reg.RDI, 0);
+        X86_64Encoder.MovRR(m_text, Reg.RSI, Reg.RSP);
+        X86_64Encoder.Li(m_text, Reg.RDX, 1);
+        X86_64Encoder.Li(m_text, Reg.RAX, 1);  // sys_write
+        X86_64Encoder.Li(m_text, Reg.RDI, 2);  // stderr
+        X86_64Encoder.Syscall(m_text);
+        X86_64Encoder.AddRI(m_text, Reg.RSP, 8);
+    }
+
+    void EmitWriteTextStderr(byte ptrReg)
+    {
+        // Write length-prefixed string at ptrReg to stderr (raw bytes, no CCE conversion).
+        // __itoa output is ASCII-range so no conversion needed for numbers.
+        X86_64Encoder.MovLoad(m_text, Reg.RDX, ptrReg, 0);   // len
+        X86_64Encoder.Lea(m_text, Reg.RSI, ptrReg, 8);       // data
+        X86_64Encoder.Li(m_text, Reg.RDI, 2);                // stderr
+        X86_64Encoder.Li(m_text, Reg.RAX, 1);                // sys_write (last — clobbers ptrReg if RAX)
+        X86_64Encoder.Syscall(m_text);
+    }
+
     void EmitSerialStringFromPtr(byte ptrReg)
     {
         // Print string at [ptrReg+0]=len, [ptrReg+8..]=data to COM1.
