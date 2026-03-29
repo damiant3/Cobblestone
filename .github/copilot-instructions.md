@@ -47,7 +47,7 @@ No agent merges its own work to `master` without review (by another agent or use
 2. **Build before you commit.** Use `codex-agent build` + `codex-agent test`.
 3. **Clean up temp files.** Delete `.bak`, `.new`, `.tmp`, `.snap`, scratch scripts before ending.
 4. **One logical change per commit.** Don't bundle unrelated fixes.
-5. **Leave a handoff.** After meaningful work, update `docs/OldStatus/` handoff docs.
+5. **Leave a handoff.** After meaningful work, update `docs/History/` handoff docs.
 6. **Ask the user** when unsure. A 10-second question beats a 10-minute wrong turn.
 7. **Two-failures rule.** If the same approach fails twice, stop and switch strategies.
 
@@ -304,6 +304,6 @@ When reviewing other agents' branches:
 
 ## Handoffs
 
-After meaningful sessions, create/update `docs/OldStatus/ITERATION-N-HANDOFF.md`.
-Log architecture decisions in `docs/OldStatus/DECISIONS.md` (append-only).
+After meaningful sessions, create/update `docs/History/ITERATION-N-HANDOFF.md`.
+Log architecture decisions in `docs/History/DECISIONS.md` (append-only).
 Use `checkdate()` for all dates. See existing handoffs for format.

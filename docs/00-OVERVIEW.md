@@ -14,7 +14,7 @@ project stands and where it is going.
 ## Major Milestone 1 — Self-Hosting (Achieved 2026-03-19)
 
 The Codex compiler crossed the self-hosting threshold. The original design documents
-(01–09, Glossary) that guided the bootstrap phase are archived in `docs/MM1/`.
+(01–09, Glossary) that guided the bootstrap phase are archived in `docs/Milestones/MM1/`.
 
 ### What Was Proven
 
@@ -38,7 +38,7 @@ The Codex compiler crossed the self-hosting threshold. The original design docum
 The reference C# compiler in `src/` is frozen at commit `6d8bb2c`. It served its
 purpose: bootstrapping a language that can now sustain itself. It is not deleted —
 it remains as the foundation the self-hosted compiler stands on — but it receives
-no new features. See `docs/REFERENCE-COMPILER-LOCK.md`.
+no new features. See `docs/Compiler/REFERENCE-COMPILER-LOCK.md`.
 
 ## The Three Pillars
 
@@ -67,9 +67,10 @@ The compiler is free of its C# cradle. The road forward is written in Codex:
 | `00-OVERVIEW.md` | This file — project overview and status |
 | `10-PRINCIPLES.md` | Engineering principles that govern all decisions |
 | `CurrentPlan.md` | Active plan and near-term direction |
-| `REFERENCE-COMPILER-LOCK.md` | Policy for the frozen C# compiler |
-| `MM1/` | Archive of bootstrap-era design documents (01–09, Glossary) |
+| `Compiler/REFERENCE-COMPILER-LOCK.md` | Policy for the frozen C# compiler |
+| `Milestones/MM1/` | Archive of bootstrap-era design documents (01–09, Glossary) |
 | `Vision/NewRepository.txt` | The original vision document |
 | `Vision/IntelligenceLayer.txt` | The intelligence layer manifesto |
-| `Designs/` | Feature design documents |
-| `OldStatus/` | Iteration handoffs and decision log |
+| `Designs/` | Feature design documents (Language, Features, Backends, Memory, Tools) |
+| `History/` | Iteration handoffs and decision log |
+| `Codex.OS/` | Codex operating system vision |

@@ -310,8 +310,8 @@ metal. MM2: The High Camp is reached.**
 | CCE encoding | Full Unicode coverage — Tier 0 (1B, 128 chars), Tier 1 (2B, 500+ chars, 7 scripts), Tier 2 (3B, all BMP), Tier 3 (4B, emoji/supplementary) |
 | Agents | 4 (Windows/Copilot, Linux/sandbox, Cam/CLI, Nut/garage-box) |
 
-**History**: `docs/OldStatus/CurrentPlan-2026-03-26-evening.md`
-**Route map**: `docs/THE-ASCENT.md`, `docs/THE-LAST-PEAK.md`
+**History**: `docs/History/CurrentPlan-2026-03-26-evening.md`
+**Route map**: `docs/Stories/THE-ASCENT.md`, `docs/Milestones/THE-LAST-PEAK.md`
 
 ---
 
@@ -485,7 +485,7 @@ Three changes to reduce heap usage in the native x86-64 and RISC-V backends:
 #### 1. Re-enabled scalar region reclamation (both backends)
 
 EmitRegion was previously a full pass-through (disabled after escape-copy
-crashes). Scalar regions (NeedsEscapeCopy=false) are safe to reclaim because
+crashes). Scalar regions (NeedsEscape=false) are safe to reclaim because
 the result lives in a register, not the heap. No live heap pointers survive.
 
 - x86-64: save/restore R10 (HeapReg) around scalar region bodies
@@ -595,35 +595,38 @@ Same call chain as bare-metal crash. Function offset map generated via
 `X86_64Emitter.GetFunctionOffsets()` (see `Codex.Codex/out/Codex.Codex.map`,
 718 entries). User-mode ELF base: `0x4000B0` (LinuxBaseAddress + text offset).
 
-**Root cause**: The EmitRegion fix disabled reclamation for SCALAR regions
-(line 1085-1093 of X86_64CodeGen.cs) but HEAP regions still run the full
-escape-copy path (line 1096+). `ParseState` is a RecordType, so
-`NeedsEscapeCopy=true`. The heap-region path:
+**Root cause found and FIXED** (2026-03-27 Cam):
 
-1. Saves HeapReg mark
-2. Executes body (skip-newlines TCO loop → many `advance` calls → new ParseState
-   records in working space)
-3. Saves post-body HeapReg
-4. Switches HeapReg to ResultReg (result space)
-5. Escape-copies ParseState to result space
-6. Restores HeapReg to post-body working-space position
+The crash was a **use-after-free** caused by region reclamation in `EmitRegion`.
+Both scalar and heap region paths restored HeapReg to the pre-body mark,
+reclaiming ALL working-space allocations made during the body. But some of
+those allocations were still referenced by live pointers — specifically,
+ParseState records created by `advance` in TCO loops that became TCO
+parameters for the next iteration.
 
-Step 5 deep-copies the ParseState record. The `.tokens` field should be
-skipped if it's already in result space (result-space check: `bge ptr,
-ResultBaseReg`). But the ParseState pointer returned to the CALLER now
-points to result space, while TCO iteration parameters may still reference
-working-space ParseState records from `advance`. If a subsequent region's
-escape-copy (for a DIFFERENT let-binding) clobbers result space or working
-space, the old pointers become stale.
+**Fix** (x86-64): Two changes to `EmitRegion`:
+1. **Scalar regions**: removed the `HeapReg = mark` restoration entirely.
+   Intermediate heap objects may still be live via TCO parameters or closures.
+2. **Heap regions**: restore HeapReg to the POST-BODY position (not the
+   pre-body mark). This switches back from result space to working space
+   without reclaiming any allocations.
 
-**Hypothesis**: the escape-copy for one let-binding's region is being called
-while another let-binding's region body is still live, causing cross-region
-pointer invalidation. The safe fix may be to disable escape-copy entirely
-(like scalar regions) until liveness analysis can prove safety.
+**Investigation trail (condensed)**:
+- GDB: crash at `current` function (0x434ca4), `mov (%rbx), %rcx` with RBX=0
+- Function offset map: `current` → `current-kind` → `is-done` → `skip-newlines`
+- `skip-newlines` TCO loop calls `advance st` → new ParseState in working space
+- Region reclamation reclaimed the ParseState → dangling pointer → null deref
+- 100/100 crashes with pipe input, 0/100 with fix applied
+- 536 tests pass, 0 failures
 
-**Quick fix to test**: in `EmitRegion`, return `bodyResult` immediately for
-ALL regions (both scalar and heap), completely disabling two-space reclamation.
-This would increase memory usage but should eliminate the crash.
+**Trade-off**: Without reclamation, working space grows monotonically per
+function call. This is safe for small-to-medium programs. For MM3 self-compile,
+we may need selective reclamation (only reclaim when provably safe — e.g.,
+after liveness analysis or in leaf regions with no live captures).
+
+**Remaining**: The self-hosted compiler no longer crashes but produces empty
+output for sum-type-matching programs. This is a separate parser/emitter issue,
+not a memory corruption bug.
 
 ---
 
@@ -735,7 +738,7 @@ not a memory corruption bug.
 
 ---
 
-## What Got Done (2026-03-26 night)
+## What Got Done (2026-03-27 Cam)
 
 ### MM2 Proven (Agent Linux)
 - QEMU bare metal test: `.codex` source → serial → compile → C# output → serial
@@ -842,7 +845,7 @@ The 256MB working space only needs to hold one stage's intermediates at a time.
 - 1,003 reference compiler tests pass (0 failures)
 - Build clean (expected CS5001 only)
 
-#### DONE: Type resolution in escape-copy helpers (f2f4008)
+#### DONE: Escape-copy type resolution (f2f4008)
 
 Fixed `ResolveType` to recurse into `ListType.Element`, so
 `ListType(ConstructedType("Token"))` resolves to `ListType(RecordType(...))`.
@@ -911,7 +914,7 @@ both x86-64 and RISC-V backends.
 
 ### Previous: TCO/match register clobbering (fixed last session)
 
-See `docs/OldStatus/CurrentPlan-2026-03-26-evening.md` for the full
+See `docs/History/CurrentPlan-2026-03-26-evening.md` for the full
 root-cause analysis (commits `ea35113`, `42c2fd0`).
 
 ### Also found (assigned to Agent Windows)
@@ -1030,17 +1033,3 @@ it built the OS for.
 | Ring 5+: filesystem, networking | Content-addressed FactStore as filesystem |
 | Floppy disk image | Boot → compiler → self-compile, all in 1.44 MB |
 | Repository federation | Trust lattice, cross-repo sync, capability-gated imports |
-
----
-
-## Process
-
-- **Reference compiler lock lifted** (2026-03-24): `src/` freely modifiable.
-- **Session init**: `codex-agent orient` (Cam), `bash tools/linux-session-init.sh` (Linux).
-- **Handoff**: Always update this file. `codex-agent handoff` for agent-to-agent.
-- **Feature branches**: All work goes to feature branches for review. Direct master pushes for docs only.
-- **Four-agent workflow**: Git is the coordination protocol.
-  - Windows (Copilot/VS): builds features, reviews code
-  - Linux (Claude/sandbox): tests on real hardware/emulators, finds bugs by tracing, reviews
-  - Cam (Claude Code CLI, 1M Opus): fast iteration, parallel work
-  - Nut (Copilot/VS2026, garage box): hardware lab, OS dev, phone flash
