@@ -25,4 +25,5 @@ public sealed class X86_64Emitter(X86_64Target target = X86_64Target.LinuxUser) 
     }
 
     public Dictionary<string, int>? GetFunctionOffsets() => m_lastCodeGen?.GetFunctionOffsets();
+    public Dictionary<string, int>? GetFunctionFrameSizes() => m_lastCodeGen?.GetFunctionFrameSizes();
 }

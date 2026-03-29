@@ -67,10 +67,71 @@ Section: Streaming Pipeline
      print-line text
      stream-defs defs types ust ctor-names (i + 1) len
 
+Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
+
+ Tokenizes once, scans headers without parsing bodies, builds type
+ context from signatures, then processes each def one at a time:
+ re-parse body from token position, desugar, check, lower, emit, discard.
+ Only tokens (~1.4 MB) and type context (~350 KB) persist across defs.
+
+  compile-streaming-v2 : Text -> Text -> [Console] Nothing
+  compile-streaming-v2 (source) (module-name) =
+   let tokens = tokenize source
+   in let st = make-parse-state tokens
+    in let scan = scan-document st
+     in let type-defs = map-list desugar-type-def scan.type-defs
+      in let headers = scan.def-headers
+       in let tdm = build-type-def-map type-defs 0 (list-length type-defs) []
+        in let tenv = register-type-defs empty-unification-state builtin-type-env tdm type-defs 0 (list-length type-defs)
+         in let env = register-def-headers tenv.state tenv.env tdm headers 0 (list-length headers)
+          in let ctor-types = collect-ctor-bindings type-defs 0 (list-length type-defs) []
+           in let all-types = ctor-types ++ env.env.bindings
+            in let ctor-names = codex-collect-ctor-names type-defs 0
+             in do
+              print-line (codex-emit-type-defs type-defs 0)
+              process-defs tokens headers env.state env.env all-types ctor-names 0 (list-length headers)
+              print-line ""
+
+  register-def-headers : UnificationState -> TypeEnv -> List TypeBinding -> List DefHeader -> Integer -> Integer -> LetBindResult
+  register-def-headers (st) (env) (tdm) (headers) (i) (len) =
+   if i == len then LetBindResult { state = st, env = env }
+   else
+    let hdr = list-at headers i
+    in let declared = desugar-annotations hdr.ann
+    in let ty = if list-length declared == 0
+      then let fr = fresh-and-advance st
+         in let env2 = env-bind env hdr.name.text fr.var-type
+         in LetBindResult { state = fr.state, env = env2 }
+      else let resolved = resolve-type-expr tdm (list-at declared 0)
+         in let pr = parameterize-type st resolved
+         in LetBindResult { state = pr.state, env = env-bind env hdr.name.text pr.parameterized }
+    in register-def-headers ty.state ty.env tdm headers (i + 1) len
+
+  process-defs : List Token -> List DefHeader -> UnificationState -> TypeEnv -> List TypeBinding -> List Text -> Integer -> Integer -> [Console] Nothing
+  process-defs (tokens) (headers) (ust) (env) (all-types) (ctor-names) (i) (len) =
+   if i == len then print-line ""
+   else
+    let hdr = list-at headers i
+    in let body-st = ParseState { tokens = tokens, pos = hdr.body-pos }
+    in let body-result = parse-expr body-st
+    in let def = Def { name = hdr.name, params = hdr.params, ann = hdr.ann, body = unwrap-body body-result }
+    in let adef = desugar-def def
+    in let r = check-def ust env adef
+    in let ir-def = lower-def adef all-types r.state
+    in let text = codex-emit-def ir-def ctor-names
+    in do
+     print-line text
+     process-defs tokens headers r.state env all-types ctor-names (i + 1) len
+
+  unwrap-body : ParseExprResult -> Expr
+  unwrap-body (r) =
+   when r
+    if ExprOk (e) (st) -> e
+
 Section: Entry Point
 
   main : [Console, FileSystem] Nothing
   main = do
    path <- read-line
    source <- read-file path
-   compile-streaming source "Program"
+   compile-streaming-v2 source "Program"

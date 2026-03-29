@@ -11,6 +11,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     readonly List<byte> m_text = [];
     readonly List<byte> m_rodata = [];
     readonly Dictionary<string, int> m_functionOffsets = [];
+    readonly Dictionary<string, int> m_functionFrameSizes = [];
     readonly List<(int PatchOffset, string Target)> m_callPatches = [];
     readonly List<RodataFixup> m_rodataFixups = [];
     readonly List<FuncAddrFixup> m_funcAddrFixups = [];
@@ -109,6 +110,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     }
 
     public Dictionary<string, int> GetFunctionOffsets() => new(m_functionOffsets);
+    public Dictionary<string, int> GetFunctionFrameSizes() => new(m_functionFrameSizes);
 
     public byte[] BuildFlatBinary()
     {
@@ -503,6 +505,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         m_text[frameSizePatchOffset + 4] = (byte)((frameSize >> 8) & 0xFF);
         m_text[frameSizePatchOffset + 5] = (byte)((frameSize >> 16) & 0xFF);
         m_text[frameSizePatchOffset + 6] = (byte)((frameSize >> 24) & 0xFF);
+
+        // Total stack frame: spill slots + 4 callee-saved regs (32B) + saved RBP (8B) + return addr (8B)
+        m_functionFrameSizes[def.Name] = frameSize + LocalRegs.Length * 8 + 16;
     }
 
     byte EmitExpr(IRExpr expr) => expr switch
@@ -3679,10 +3684,12 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.Syscall(m_text);
 
         // Convert file content from Unicode→CCE in place (input boundary).
+        // CR (0x0D) is stripped — matches NormalizeUnicode in the C# path.
         // R15 still holds CCE→Unicode table; load Unicode→CCE table.
         m_rodataFixups.Add(new RodataFixup(m_text.Count + 2, m_unicodeToCceTableOffset));
         X86_64Encoder.MovRI64(m_text, Reg.R15, 0); // patched to rodata+unicodeToCce
-        X86_64Encoder.Li(m_text, Reg.R11, 0);
+        X86_64Encoder.Li(m_text, Reg.R11, 0);      // R11 = read index
+        X86_64Encoder.Li(m_text, Reg.RSI, 0);      // RSI = write index (may diverge if CRs stripped)
         int convLoop = m_text.Count;
         X86_64Encoder.CmpRR(m_text, Reg.R11, Reg.RBX);
         int convExit = m_text.Count;
@@ -3690,13 +3697,23 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.Lea(m_text, Reg.RAX, Reg.R13, 8);
         X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.R11);
         X86_64Encoder.MovzxByte(m_text, Reg.RDX, Reg.RAX, 0); // RDX = Unicode byte
+        // Skip CR (0x0D)
+        X86_64Encoder.CmpRI(m_text, Reg.RDX, 0x0D);
+        int skipCr = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
+        // Convert Unicode→CCE and store at write index
         X86_64Encoder.MovRR(m_text, Reg.RCX, Reg.R15);
         X86_64Encoder.AddRR(m_text, Reg.RCX, Reg.RDX);
         X86_64Encoder.MovzxByte(m_text, Reg.RCX, Reg.RCX, 0); // RCX = CCE byte
-        X86_64Encoder.MovStoreByte(m_text, Reg.RAX, Reg.RCX, 0); // store CCE byte back
-        X86_64Encoder.AddRI(m_text, Reg.R11, 1);
+        X86_64Encoder.Lea(m_text, Reg.RAX, Reg.R13, 8);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.RSI);
+        X86_64Encoder.MovStoreByte(m_text, Reg.RAX, Reg.RCX, 0); // store CCE byte
+        X86_64Encoder.AddRI(m_text, Reg.RSI, 1);               // advance write index
+        PatchJcc(skipCr, m_text.Count);                          // CR skips to here
+        X86_64Encoder.AddRI(m_text, Reg.R11, 1);               // advance read index
         X86_64Encoder.Jmp(m_text, convLoop - (m_text.Count + 5));
         PatchJcc(convExit, m_text.Count);
+        X86_64Encoder.MovRR(m_text, Reg.RBX, Reg.RSI);         // final length = write index
 
         // Store length, bump heap past BOTH filename scratch AND text content
         // R13 = text header (already past filename copy + padding)

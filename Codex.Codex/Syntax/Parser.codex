@@ -379,3 +379,110 @@ Section: Document Parsing
      parse-top-level (defs ++ [d]) type-defs effect-defs imports (skip-newlines st2)
     if DefNone (st2) ->
      parse-top-level defs type-defs effect-defs imports (skip-newlines (advance st2))
+
+Section: Header Scanning (Phase 2 streaming)
+
+ Scans the token stream collecting definition headers (name, params,
+ type annotation, body token position) without parsing def bodies.
+ Type defs and effect defs are fully parsed (they are small).
+
+  scan-document : ParseState -> ScanResult
+  scan-document (st) =
+   let st2 = skip-newlines st
+   in let imp-result = parse-imports st2 []
+    in scan-top-level [] [] [] imp-result.imports imp-result.state
+
+  scan-top-level : List DefHeader -> List TypeDef -> List EffectDef -> List ImportDecl -> ParseState -> ScanResult
+  scan-top-level (headers) (type-defs) (effect-defs) (imports) (st) =
+   if is-done st then ScanResult { type-defs = type-defs, effect-defs = effect-defs, def-headers = headers, imports = imports }
+   else if is-effect-keyword (current-kind st)
+    then scan-top-level-effect headers type-defs effect-defs imports st
+    else try-scan-type-def headers type-defs effect-defs imports st
+
+  scan-top-level-effect : List DefHeader -> List TypeDef -> List EffectDef -> List ImportDecl -> ParseState -> ScanResult
+  scan-top-level-effect (headers) (type-defs) (effect-defs) (imports) (st) =
+   let st1 = advance st
+   in let name-tok = current st1
+    in let st2 = advance st1
+     in let st3 = if is-where-keyword (current-kind st2) then skip-newlines (advance st2) else st2
+      in let ops = parse-effect-ops st3 []
+       in let ed = EffectDef { name = name-tok, ops = ops.ops }
+        in scan-top-level headers type-defs (effect-defs ++ [ed]) imports (skip-newlines ops.state)
+
+  try-scan-type-def : List DefHeader -> List TypeDef -> List EffectDef -> List ImportDecl -> ParseState -> ScanResult
+  try-scan-type-def (headers) (type-defs) (effect-defs) (imports) (st) =
+   let td-result = parse-type-def st
+   in when td-result
+    if TypeDefOk (td) (st2) ->
+     scan-top-level headers (type-defs ++ [td]) effect-defs imports (skip-newlines st2)
+    if TypeDefNone (st2) ->
+     try-scan-def-header headers type-defs effect-defs imports st
+
+  try-scan-def-header : List DefHeader -> List TypeDef -> List EffectDef -> List ImportDecl -> ParseState -> ScanResult
+  try-scan-def-header (headers) (type-defs) (effect-defs) (imports) (st) =
+   let hdr-result = scan-definition st
+   in when hdr-result
+    if DefHeaderOk (hdr) (st2) ->
+     scan-top-level (headers ++ [hdr]) type-defs effect-defs imports (skip-newlines st2)
+    if DefHeaderNone (st2) ->
+     scan-top-level headers type-defs effect-defs imports (skip-newlines (advance st2))
+
+  scan-definition : ParseState -> ScanDefResult
+  scan-definition (st) =
+   if is-done st then DefHeaderNone st
+   else if is-ident (current-kind st) then try-scan-def st
+    else if is-type-ident (current-kind st) then try-scan-def st
+     else DefHeaderNone st
+
+  try-scan-def : ParseState -> ScanDefResult
+  try-scan-def (st) =
+   if is-colon (peek-kind st 1)
+    then let ann-result = parse-type-annotation st
+     in unwrap-type-for-scan ann-result
+    else scan-def-body-with-ann [] st
+
+  unwrap-type-for-scan : ParseTypeResult -> ScanDefResult
+  unwrap-type-for-scan (r) =
+   when r
+    if TypeOk (ann-type) (st) ->
+     let name-tok = Token { kind = Identifier, text = "", offset = 0, line = 0, column = 0 }
+     in let ann = [TypeAnn { name = name-tok, type-expr = ann-type }]
+      in let st2 = skip-newlines st
+       in scan-def-body-with-ann ann st2
+
+  scan-def-body-with-ann : List TypeAnn -> ParseState -> ScanDefResult
+  scan-def-body-with-ann (ann) (st) =
+   let name-tok = current st
+   in let st2 = advance st
+    in scan-def-params-then ann name-tok [] st2
+
+  scan-def-params-then : List TypeAnn -> Token -> List Token -> ParseState -> ScanDefResult
+  scan-def-params-then (ann) (name-tok) (acc) (st) =
+   if is-left-paren (current-kind st)
+    then let st2 = advance st
+     in if is-ident (current-kind st2)
+      then let param = current st2
+       in let st3 = advance st2
+        in let st4 = expect RightParen st3
+         in scan-def-params-then ann name-tok (list-snoc acc param) st4
+      else finish-def-scan ann name-tok acc st
+    else finish-def-scan ann name-tok acc st
+
+  finish-def-scan : List TypeAnn -> Token -> List Token -> ParseState -> ScanDefResult
+  finish-def-scan (ann) (name-tok) (params) (st) =
+   let st2 = expect Equals st
+   in let st3 = skip-newlines st2
+    in let body-pos = st3.pos
+     in let st4 = skip-body-tokens st3 name-tok.column
+      in DefHeaderOk (DefHeader { name = name-tok, params = params, ann = ann, body-pos = body-pos }) st4
+
+  skip-body-tokens : ParseState -> Integer -> ParseState
+  skip-body-tokens (st) (name-col) =
+   if is-done st then st
+   else let tok = current st
+    in when tok.kind
+     if Newline -> skip-body-tokens (advance st) name-col
+     if Indent -> skip-body-tokens (advance st) name-col
+     if Dedent -> skip-body-tokens (advance st) name-col
+     if _ -> if tok.column <= name-col then st
+      else skip-body-tokens (advance st) name-col
