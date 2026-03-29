@@ -5483,7 +5483,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
             // Grow heap: 57MB working + 1MB result (matches bare metal layout).
             byte growReg = Reg.R11;
-            X86_64Encoder.Li(m_text, growReg, (46L + 1) * 1024 * 1024);
+            X86_64Encoder.Li(m_text, growReg, (57L + 1) * 1024 * 1024);
             X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
             X86_64Encoder.AddRR(m_text, Reg.RDI, growReg);
             X86_64Encoder.Li(m_text, Reg.RAX, 12); // sys_brk
