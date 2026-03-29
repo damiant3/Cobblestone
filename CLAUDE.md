@@ -38,6 +38,11 @@ as QEMU tests silently skipping. Always rebuild from current source.
    ```bash
    tools/codex-agent/codex-status.exe create <bug-id> --title "Brief description" --status active --summary "what you observed" --agent cam
    ```
+   **Cross-agent bug workflow:**
+   1. Discover bug → `codex-status create <bug-id> ...`
+   2. Commit as `docs:` → push to master (no branch needed — it's a coordination artifact)
+   3. Other agents pull master → see it via `codex-status list` or `git log`
+   4. Assignee picks it up → updates status to `investigating`, works on a feature branch, updates to `fixed` when done
 6. **Ask the user** when unsure. A 10-second question beats a 10-minute wrong turn.
 7. **Two-failures rule.** If the same approach fails twice, stop and switch strategies.
 
