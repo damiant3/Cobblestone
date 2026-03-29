@@ -21,11 +21,12 @@ Section: Functions
     main = greet "World"
 ```
 
-> **March 26, 2026 — CCE-Native Text Complete.**
-> The Codex compiler uses its own character encoding (CCE) natively — Char is
-> a CCE byte, Text is a CCE string, Unicode only at I/O boundaries. Fixed point
-> proven at 298,752 chars. 926 tests pass. 15 backends. Self-compile in 208ms.
-> Four agents shipped 111 commits in a single day.
+> **March 28, 2026 — Native Self-Compile Verified.**
+> The self-hosted compiler, running as a native x86-64 binary (no OS, no runtime),
+> compiles its own 26-file source and reaches a semantic fixed point — Stage 1 output
+> fed back through produces identical output. All 1,126 function type arrows survive
+> the round trip. Verified on usermode Linux, bare metal QEMU, and all three native
+> backends (x86-64, RISC-V, ARM64). 642 tests pass. 15 backends.
 
 ---
 
@@ -37,7 +38,8 @@ Codex is the language, the compiler, and the document — all the same thing.
 - **Literate by design.** Chapters and Sections aren't comments. They're structure.
   The compiler parses prose alongside code.
 - **Self-hosting.** The compiler compiles itself. The bootstrap is proven:
-  Stage 1 = Stage 3 = fixed point at 298,752 chars.
+  Stage 1 = Stage 3 = fixed point at 310,330 chars. On native x86-64, the
+  identity emitter also reaches a fixed point (187K chars, 1,126 arrow types).
 - **Own character encoding.** CCE (Codex Character Encoding) is frequency-sorted:
   `is-letter` is a single comparison, not a table lookup. Unicode only at I/O
   boundaries. The typewriter is dead.
@@ -61,7 +63,7 @@ Codex is the language, the compiler, and the document — all the same thing.
 # Build everything
 dotnet build Codex.sln
 
-# Run all 926 tests
+# Run all tests
 dotnet test Codex.sln
 
 # Compile and run a program
@@ -164,6 +166,7 @@ version is the one that matters now.
 
 Native backends include: region-based memory, escape analysis, tail-call
 optimization, and deep escape copy for heap values crossing region boundaries.
+The self-hosted compiler self-compiles on all three native backends.
 
 ---
 
@@ -222,7 +225,7 @@ Stage 1 binary ──→ [compiles .codex source]          ──→ stage1-outp
 Stage 1 binary ──→ [rebuild from stage1-output.cs]   ──→ Stage 2 binary
 Stage 2 binary ──→ [compiles .codex source]          ──→ stage3-output.cs
 
-stage1-output.cs == stage3-output.cs → Fixed point. 298,752 chars.
+stage1-output.cs == stage3-output.cs → Fixed point. 310,330 chars.
 ```
 
 Self-compile time: **208ms median** (26 files, ~180K chars, full pipeline).
@@ -247,9 +250,11 @@ A bare-metal operating system written for the Codex compiler.
 | 1 | IDT (256 vectors), PIC, timer interrupts, keyboard input | Done |
 | 2 | Process table (16 slots), preemptive context switch, page tables | Done |
 | 3 | Capability-enforced syscalls | Done |
-| 4 | Self-hosting compiler on bare metal | In progress |
+| 4 | Self-hosting compiler on bare metal | **Done** |
 
-7KB kernel. Boots from floppy. Compiles Codex programs over a serial REPL.
+7KB kernel. Boots from floppy. The self-hosted compiler runs on bare metal x86-64
+(QEMU, 512 MB) and compiles its own source — 205 KB in, 187 KB out, semantic fixed
+point verified. No OS, no runtime, just the UART.
 
 ---
 
@@ -271,7 +276,7 @@ Codex.sln
 │   └── Codex.Proofs             Proof terms and verification
 ├── Codex.Codex/                 Self-hosted compiler (26 .codex files)
 ├── prelude/                     Standard library (11 modules)
-├── tests/                       926 tests across 8 projects
+├── tests/                       642 tests across 8 projects
 ├── tools/
 │   ├── Codex.Cli                Command-line interface
 │   ├── Codex.Bootstrap          Bootstrap harness + benchmark
@@ -357,7 +362,7 @@ Syntax highlighting, bracket matching, auto-indentation, and LSP integration
 | **MM1** | **Freedom** | Reference compiler locked. All development in Codex. |
 | Peak II | Native backends | RISC-V, ARM64, x86-64, WASM. Bare metal code generation. |
 | Peak III | Codex.OS | 7KB kernel. Preemptive multitasking. Capability-enforced syscalls. |
-| CCE | Own encoding | Frequency-sorted character encoding. Fixed point at 298,752 chars. |
+| CCE | Own encoding | Frequency-sorted character encoding. Fixed point at 310,330 chars. |
 | **MM2** | **The High Camp** | Compiler runs on bare hardware. Compiles programs over serial. No OS beneath but ours. |
 | **MM3** | **Summit** | The compiler compiles itself on bare metal. The ultimate fixed point. |
 

@@ -4,6 +4,35 @@
 
 ---
 
+## NATIVE SELF-COMPILE VERIFIED — ALL THREE BACKENDS
+
+The self-hosted Codex compiler, compiled to native x86-64 by the reference
+compiler, successfully compiles its own 26-file source (205 KB) on both
+usermode (Linux/WSL) and bare metal (QEMU 512 MB). The identity emitter
+output reaches a **semantic fixed point**: Stage 1 == Stage 2 after
+blank-line normalization. All function types preserved.
+
+| Target | Lines | Chars | Arrow types | Status |
+|--------|-------|-------|-------------|--------|
+| x86-64 usermode | 5,063 | 187,131 | 1,126 | Fixed point ✓ |
+| x86-64 bare metal | 5,065 | 187,146 | 1,126 | Matches usermode ✓ |
+| C# emitter (native) | 5,600 | 310,424 | 252 Func<> | Within 31 chars of .NET ref ✓ |
+
+TCO verified on all three native backends (x86-64, RISC-V, ARM64):
+- Pure tail recursion: 10M iterations, no stack overflow
+- Recursive `++` concat: correct results (not short-circuited)
+- Dual-role functions (tail call in one branch, `++` in another): both paths correct
+- List `++` in TCO loops: `[n] ++ acc` builds correct lists
+
+**Root cause of FunTy/ListTy erasure** (commit 3f1eef4): `EmitBinary` did not
+clear `m_inTailPosition` — self-recursive calls inside binary operators were
+promoted to tail calls. Seven-line fix across three backends. Also resolved
+known issues #3 (TCO list-concat crash) and #5 (list `++` returns empty).
+
+**Branch**: `cam/fix-tco-binary-tail-position` — ready for review and merge.
+
+---
+
 ## FIXED POINT VERIFIED (CCE-native, post-encoding-fix)
 
 After fixing all 8 CCE encoding bugs (cc-cr sentinel, uppercase/lowercase
@@ -29,44 +58,30 @@ its own 26-file source (205 KB) to valid C# — and that C# output, when used as
 the compiler for the same source, produces byte-identical output. The compiler
 is a correct fixed point of itself.
 
-### x86-64 Usermode Self-Compile: ListTy Erasure Bug
+### x86-64 Usermode Self-Compile: FunTy/ListTy Erasure — FIXED
 
-**Status**: Runs to completion (exit 0), output has type errors.
-Errors dropped 1550 → 404 with ConstructedTy workaround.
+**Status**: Runs to completion, 0 type errors. Identity output verified on
+both usermode and bare metal (QEMU). 5,063 lines, 187K chars, 1,126 arrow
+types preserved. Bare metal output matches usermode byte-for-byte.
 
-**Bug 1 (FIXED)**: CCE char range — old binary excluded E/T from uppercase.
-Rebuilding from fixed source resolves. `cs_type` now has all 14 arms.
+**Root cause (FIXED in commit 3f1eef4, branch cam/fix-tco-binary-tail-position)**:
+`EmitBinary` in all three native backends (x86-64, RISC-V, ARM64) did not
+save/restore `m_inTailPosition` before evaluating operands. When a function
+was TCO-eligible (e.g. `codex-emit-codex-type` has ForAllTy/EffectfulTy tail
+calls), self-recursive calls inside binary operators (`++`) were incorrectly
+promoted to tail calls — jumping back to the function start instead of
+returning a value for concatenation. This caused:
+- `FunTy(IntegerTy, TextTy)` → "Text" instead of "Integer -> Text"
+- `ListTy(IntegerTy)` → "Integer" instead of "List Integer"
+- All function type arrows lost in the self-compiled output
 
-**Bug 2 (OPEN — ListTy erasure)**: `ListTy(IntegerTy)` becomes `IntegerTy`
-at runtime on native x86-64. Affects ONLY the built-in `List` type.
-`MyList Integer` → `MyList<long>` works; `List Integer` → `long` broken.
+The fix: save `m_inTailPosition`, set to false, evaluate both operands,
+then restore — matching how `EmitApply` already guards its arguments.
 
-**Extensive investigation ruled out**:
-- Parser annotation merging (all 519 pairs correctly merged)
-- Desugarer type handling (all 7 TypeExpr arms present)
-- String comparison ("List" == "List" works on native)
-- cs-type / desugar-type-expr (all arms survive on native)
-- TCO heap reset (ALL tail-recursive functions have List params → reset blocked)
-- Tag assignment (verified: ListTy tag = 9, correct)
-- Standalone test (ListTy constructs/matches correctly in small programs)
-
-**Confirmed workaround**: ConstructedTy("List", [elem]) instead of ListTy(elem)
-in `resolve-applied-type`. Errors 1550 → 404. Remaining 404 from unifier not
-treating ConstructedTy("List") like ListTy.
-
-**Key clue (unverified)**: ListTy is tag 9 — the FIRST constructor with fields
-after eight zero-field constructors (IntegerTy..ErrorTy = tags 0-7, FunTy = 8).
-The project has a known history of >8 parameter/index bugs in the x86-64
-backend (stack spill off-by-one). The fix for function parameter spills may
-not have been applied to constructor field extraction in pattern matching.
-Check `EmitMatch` in `X86_64CodeGen.cs` for off-by-one in field offset
-calculation when the constructor index exceeds the register arg count.
-
-**Two paths forward**:
-1. GDB debug: step through `resolve-applied-type` in the native binary to
-   watch ListTy allocation, then through `cs-type` to see what tag is read
-2. ConstructedTy workaround: change resolve-applied-type + update unifier to
-   treat ConstructedTy("List",[X]) like ListTy(X). Pragmatic but papering over.
+**Previous investigation ruled out** (correctly — these were never the bug):
+- Parser/desugarer, string comparison, tag assignment, spill off-by-one
+- EmitMatch field offsets, constructor creation, record field access
+- The "tag 9 spill" hypothesis was a red herring; the real issue was TCO scope
 
 ---
 
