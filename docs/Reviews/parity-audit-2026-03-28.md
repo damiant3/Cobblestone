@@ -84,18 +84,18 @@ remain in stage1-output.cs. Tracked in docs/BUGS.md.
 
 ## Summary: What needs fixing
 
-| Priority | Item | Effort |
-|----------|------|--------|
-| **P0** | ARM64 CCE ranges (is-letter/is-digit/is-whitespace) | ~30 min |
-| **P0** | WASM CCE ranges (same) | ~30 min |
-| **P1** | Add AEffectType to emit-type-expr-tp | ~5 min |
-| **P1** | Add AEffectType to resolve-type-expr-for-lower | ~5 min |
-| **P1** | Add AHandleExpr to resolve-expr | ~10 min |
-| **P1** | Add AHandleExpr to infer-expr | ~10 min |
-| **P1** | Add EffectfulTy to type-tag | ~5 min |
-| **P2** | Regenerate _all-source.codex | ~5 min |
-| **P2** | Verify IL backend CCE assumptions | ~15 min |
-| **P2** | BUG-001: return null in string functions | ~1 hr |
+| Priority | Item | Effort | Status |
+|----------|------|--------|--------|
+| **P0** | ARM64 CCE ranges (is-letter/is-digit/is-whitespace) | ~30 min | ✅ Fixed (cb2106d, 2026-03-29) |
+| **P0** | WASM CCE ranges (same) | ~30 min | ✅ Fixed (cb2106d, 2026-03-29) |
+| **P1** | Add AEffectType to emit-type-expr-tp | ~5 min | ✅ Fixed (f77d98a) |
+| **P1** | Add AEffectType to resolve-type-expr-for-lower | ~5 min | ✅ Fixed (f77d98a) |
+| **P1** | Add AHandleExpr to resolve-expr | ~10 min | ✅ Fixed (f77d98a) |
+| **P1** | Add AHandleExpr to infer-expr | ~10 min | ✅ Fixed (f77d98a) |
+| **P1** | Add EffectfulTy to type-tag | ~5 min | ✅ Fixed (c6bb1ab) |
+| **P2** | Regenerate _all-source.codex | ~5 min | Open — see `docs/BACKLOG.md` |
+| **P2** | Verify IL backend CCE assumptions | ~15 min | Open — see `docs/BACKLOG.md` |
+| **P2** | BUG-001: return null in string functions | ~1 hr | ✅ Fixed (see docs/BUGS.md) |
 
 ---
 

@@ -265,7 +265,7 @@ The emitter needs structural fixes (class wrapping, entry point handling).
 
 **How to reproduce**:
 ```bash
-dotnet run --project tools/Codex.Bootstrap/Codex.Bootstrap.csproj --no-build \
+dotenv run --project tools/Codex.Bootstrap/Codex.Bootstrap.csproj --no-build \
   -- "Codex.Codex" "Codex.Codex/stage1-test.cs"
 # Stage 1 output: Codex.Codex/stage1-test.cs (338K chars)
 # Diagnostics: Codex.Codex/unify-errors.txt (0 errors), type-diag.txt
@@ -985,11 +985,13 @@ types are handled. Compare with the reference emitter in `src/Codex.Emit.CSharp/
 
 ## What's Next
 
-### The path to MM3: Summit
+### MM3: Summit — ACHIEVED 🏔️
 
 MM3 is the self-hosted compiler compiling *itself* on bare metal — the
-ultimate fixed point. The compiler that compiled the compiler, on hardware
-it built the OS for.
+ultimate fixed point. **Proven on x86-64** with 64MB heap, ping-pong
+semantic identity (only vertical whitespace diffs between stages).
+
+For remaining work, see `docs/BACKLOG.md`.
 
 ### Near-term (days)
 
@@ -1003,23 +1005,27 @@ it built the OS for.
 | ~~Capacity-aware lists~~ | **DONE** (both backends) — hidden capacity word at [-8], geometric doubling, O(1) amortized snoc; estimated 22,000x heap reduction |
 | ~~Result-space-aware escape (RISC-V)~~ | **DONE** — S10 = ResultBaseReg, single-instruction pointer check (bge) |
 | ~~Fix region reclamation crash~~ | **DONE** — disabled unsafe reclamation; self-hosted compiler no longer crashes on sum type input |
-| ~~Fix self-hosted variant parser~~ | **DONE** — `parse-type-def` only checked `Pipe`, missing `TypeIdentifier + lookahead`; `Color = Red | Green | Blue` was misparsed as function def |
-| ~~Fix EmitRegion crash~~ | **DONE** — EmitRegion pass-through for all regions; removed mark save, escape-copy, HeapReg restore. Binary 272KB (was 395KB). Pattern matching verified native userspace. |
-| ~~Scalar region reclamation~~ | **DONE** (both backends) — save/restore HeapReg for scalar regions; heap regions still pass-through |
-| ~~Bulk offset scanning in lexer~~ | **DONE** — skip-spaces-end, scan-ident-end, scan-digits-end return Integer offset; ~4.3MB dead LexState reduction |
+| ~~Fix self-hosted variant parser~~ | **DONE** — `parse-type-def` only checked `Pipe`, missing `TypeIdentifier + lookahead` |
+| ~~Fix EmitRegion crash~~ | **DONE** — EmitRegion pass-through for all regions |
+| ~~Scalar region reclamation~~ | **DONE** (both backends) — save/restore HeapReg for scalar regions |
+| ~~Bulk offset scanning in lexer~~ | **DONE** — skip-spaces-end, scan-ident-end, scan-digits-end return Integer offset |
 | ~~Reduce Linux brk allocation~~ | **DONE** — 4.25GB → 320MB; actual usage ~10-15MB for 180KB source |
-| ~~TCO heap reset (Phase 2)~~ | **DONE** (both backends) — conditional HeapReg reset at tail calls; accumulator-pattern loops reclaim per-iteration garbage |
-| ~~TCO record decomposition (Phase 2b)~~ | **DONE** (both backends) — decompose record args into fields, check field ptrs, reconstruct after reset; enables tokenize-loop + parser loops |
-| Retry full self-compile with native backend | Memory optimizations unblock; next: feed self-hosted source to native compiler (needs Linux) |
-| Fix Bootstrap Stage 1 crash | Pre-existing `ArgumentOutOfRangeException` in scan_token; likely stale CodexLib.g.cs |
-| Add EffectTypeExpr to desugar-type-expr | Missing case (assigned to Agent Windows) |
+| ~~TCO heap reset (Phase 2)~~ | **DONE** (both backends) — conditional HeapReg reset at tail calls |
+| ~~TCO record decomposition (Phase 2b)~~ | **DONE** (both backends) — decompose record args into fields |
+| ~~Retry full self-compile with native backend~~ | **DONE** — MM3 proven on x86-64 bare metal |
+| ~~Add EffectTypeExpr to desugar-type-expr~~ | **DONE** (e8a2c25) |
+| ~~Char primitive type~~ | **DONE** — shipped, merged from `cam/char-type` |
+| ~~Two-phase streaming pipeline~~ | **DONE** — 220MB → 64MB bare-metal heap |
+| ~~ARM64/WASM CCE character ranges~~ | **DONE** (cb2106d, 2026-03-29) |
+| Fix Bootstrap Stage 1 crash | Pre-existing `ArgumentOutOfRangeException` in scan_token — may be resolved, needs verification |
 | Perf automation | Wire `--bench-check` into CI or pre-commit hook |
 
 ### Medium-term (weeks)
 
 | Item | Notes |
 |------|-------|
-| MM3 gap analysis | What's missing to self-compile on bare metal? |
+| ~~MM3 gap analysis~~ | **DONE** — MM3 proven, gap analysis is historical |
+| ARM64 builtins parity | 8 compiler-critical builtins missing for self-hosting |
 | Codex.UI substrate | Semantic primitives, typed themes |
 | Capability refinement Steps 2-8 | Scope, time-boxing, unified trust lattice |
 | Multi-language syntax | Parser per locale, shared AST |
@@ -1028,8 +1034,8 @@ it built the OS for.
 
 | Item | Notes |
 |------|-------|
-| Self-hosted compiler compiling itself on bare metal (MM3) | The summit |
+| ~~Self-hosted compiler compiling itself on bare metal (MM3)~~ | **PROVEN** — x86-64, 64MB, ping-pong fixed point |
 | Codex.OS on real hardware | WHPX (Nut's box), then actual boot device |
 | Ring 5+: filesystem, networking | Content-addressed FactStore as filesystem |
-| Floppy disk image | Boot → compiler → self-compile, all in 1.44 MB |
+| Floppy disk image | Boot → compiler → self-compile, all in 1.44 MB (currently 64MB) |
 | Repository federation | Trust lattice, cross-repo sync, capability-gated imports |

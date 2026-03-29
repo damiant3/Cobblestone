@@ -168,16 +168,20 @@ careful separation of live data from garbage.
 ## What Works Today
 
 - x86-64 usermode self-compile: **verified working** (0.91s, 261K chars output)
+- x86-64 bare-metal self-compile: **MM3 PROVEN** (64MB heap, ping-pong fixed point)
+- Two-phase streaming pipeline: heap reduced from 220MB to 64MB
 - TCO heap reset with record decomposition: **both backends**
 - ListType safety invariant: **identified and fixed**
-- 1,003 reference compiler tests pass
-- 20/20 QEMU tests pass on both backends
+- 1,002 reference compiler tests (994 passing, 6 environment-dependent)
+- RISC-V builtins at parity with x86-64
 
 ## What Doesn't Work Yet
 
-- RISC-V usermode self-compile: pre-existing crash (not from this session)
-- Bare-metal self-compile: heap too small (4 MB vs 220 MB needed)
+- RISC-V bare-metal self-compile: pre-existing crash (under investigation)
 - Result-space escape-copy: disabled (crashes on cross-references)
+- ARM64: missing 8 compiler-critical builtins for self-hosting
+
+See `docs/BACKLOG.md` for the full outstanding work list.
 
 ---
 

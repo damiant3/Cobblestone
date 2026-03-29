@@ -1,29 +1,24 @@
-  Compiler-critical builtins (for self-hosting):
+# Binary Emitter Gaps
 
-  ┌──────────────────┬─────────┬─────────┬─────────┬─────────────────────────┐
-  │     Builtin      │ x86-64  │ RISC-V  │  ARM64  │          Notes          │
-  ├──────────────────┼─────────┼─────────┼─────────┼─────────────────────────┤
-  │ TCO              │ Done    │ Missing │ Missing │ Crash without it        │
-  ├──────────────────┼─────────┼─────────┼─────────┼─────────────────────────┤
-  │ is-digit         │ Done    │ Missing │ Missing │ Lexer needs it          │
-  ├──────────────────┼─────────┼─────────┼─────────┼─────────────────────────┤
-  │ is-whitespace    │ Done    │ Missing │ Missing │ Lexer needs it          │
-  ├──────────────────┼─────────┼─────────┼─────────┼─────────────────────────┤
-  │ negate           │ Done    │ Missing │ Missing │ Arithmetic              │
-  ├──────────────────┼─────────┼─────────┼─────────┼─────────────────────────┤
-  │ text-contains    │ Done    │ Missing │ Missing │ Name resolver           │
-  ├──────────────────┼─────────┼─────────┼─────────┼─────────────────────────┤
-  │ text-starts-with │ Done    │ Missing │ Missing │ Parser                  │
-  ├──────────────────┼─────────┼─────────┼─────────┼─────────────────────────┤
-  │ list-cons        │ Done    │ Missing │ Missing │ List building           │
-  ├──────────────────┼─────────┼─────────┼─────────┼─────────────────────────┤
-  │ list-append      │ Done    │ Missing │ Missing │ Everywhere              │
-  ├──────────────────┼─────────┼─────────┼─────────┼─────────────────────────┤
-  │ Effect handlers  │ Missing │ Missing │ Missing │ Not needed for compiler │
-  └──────────────────┴─────────┴─────────┴─────────┴─────────────────────────┘
+**Last updated**: 2026-03-29 (verified against commit history)
 
-  x86-64 is now at 29/44 builtins — the compiler-critical ones are covered. ARM64 and RISC-V need the same treatment
-  when we want to self-host on those ISAs.
+Compiler-critical builtins for self-hosting on each native backend:
 
-  The bare metal compiler still hangs — might be QEMU TCG speed, or there are more missing builtins that the type
-  checker or emitter needs. Agent Linux tracing with -d in_asm will pinpoint the exact instruction it spins on.
+| Builtin | x86-64 | RISC-V | ARM64 | Notes |
+|---------|--------|--------|-------|-------|
+| TCO | Done | Done | Missing | Crash without it |
+| is-digit | Done | Done | Missing | Lexer needs it (CCE ranges fixed 2026-03-29) |
+| is-whitespace | Done | Done | Missing | Lexer needs it (CCE ranges fixed 2026-03-29) |
+| is-letter | Done | Done | Missing | (CCE ranges fixed 2026-03-29) |
+| negate | Done | Done | Missing | Arithmetic |
+| text-contains | Done | Done | Missing | Name resolver |
+| text-starts-with | Done | Done | Missing | Parser |
+| list-cons | Done | Done | Missing | List building |
+| list-append | Done | Done | Missing | Everywhere |
+| Effect handlers | Missing | Missing | Missing | Not needed for compiler |
+
+x86-64 self-hosting: **proven** (MM3 fixed point, 64MB bare metal).
+RISC-V: at parity for builtins, bare-metal self-compile has a pre-existing crash under investigation.
+ARM64: needs the same 8 compiler-critical builtins before self-hosting is possible.
+
+See `docs/BACKLOG.md` for the full outstanding work list.

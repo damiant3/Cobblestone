@@ -1,7 +1,7 @@
 # Char Primitive Type
 
 **Date**: 2026-03-25
-**Status**: Approved, implementing on `cam/char-type`
+**Status**: ✅ Shipped (merged to master, `cam/char-type` branch deleted)
 **Agent**: Cam (Claude Code CLI)
 
 ---
