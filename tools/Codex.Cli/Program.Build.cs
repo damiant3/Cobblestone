@@ -20,6 +20,7 @@ public static partial class Program
             Console.WriteLine("                    --incremental, -i   Skip unchanged files (uses .codex-build/manifest.json)");
             Console.WriteLine("                    --view <name>       Compile from a repository view");
             Console.WriteLine("                    --verbose, -v       Show resolved type signatures");
+            Console.WriteLine("                    --dump-frames       Dump per-function stack frame sizes (x86-64 only)");
             return 1;
         }
 
@@ -30,6 +31,7 @@ public static partial class Program
         string[]? capNames = null;
         bool incremental = false;
         bool verbose = false;
+        bool dumpFrames = false;
         for (int i = 1; i < args.Length; i++)
         {
             if (args[i] == "--target" && i + 1 < args.Length)
@@ -44,8 +46,11 @@ public static partial class Program
                 incremental = true;
             else if (args[i] == "--verbose" || args[i] == "-v")
                 verbose = true;
+            else if (args[i] == "--dump-frames")
+                dumpFrames = true;
         }
         s_verbose = verbose;
+        s_dumpFrames = dumpFrames;
 
         Set<string>? grantedCapabilities = null;
         if (capNames is not null)
@@ -258,6 +263,7 @@ public static partial class Program
     }
 
     static bool s_verbose;
+    static bool s_dumpFrames;
 
     static void PrintTypes(IRCompilationResult irResult)
     {
@@ -317,6 +323,24 @@ public static partial class Program
             File.WriteAllBytes(outputPath, elf);
             Console.WriteLine($"✓ Compiled to {outputPath} ({target}, {elf.Length:N0} bytes)");
             PrintTypes(irResult);
+
+            if (s_dumpFrames)
+            {
+                Dictionary<string, int>? frames = x64Emitter.GetFunctionFrameSizes();
+                if (frames is { Count: > 0 })
+                {
+                    Console.Error.WriteLine($"\n--- Stack Frame Sizes ({frames.Count} functions) ---");
+                    int totalStack = 0;
+                    foreach (KeyValuePair<string, int> kv in frames.OrderByDescending(kv => kv.Value))
+                    {
+                        Console.Error.WriteLine($"  {kv.Value,6} B  {kv.Key}");
+                        totalStack += kv.Value;
+                    }
+                    Console.Error.WriteLine($"\n  Total (non-recursive sum): {totalStack:N0} B");
+                    Console.Error.WriteLine($"  STACK:{frames.Values.Max()} (largest single frame)");
+                }
+            }
+
             return 0;
         }
 
