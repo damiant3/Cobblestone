@@ -100,8 +100,12 @@ tools/codex-agent/codex-agent.exe <command> [args]
 tools/codex-agent/codex-agent.exe init
 ```
 
-Runs: doctor  check  status  handoff  TEF-008 sweep  git log  git branches.
+Runs: doctor → check → status → handoff → TEF-008 sweep → git log → git branches.
 All in one call. No steps to forget.
+
+**Branch policy reminder:** All work goes on a feature branch (`windows/<topic>`).
+Never commit directly to `master`. Push the branch, request review, merge only after
+approval. This is the #1 rule that gets skipped under time pressure — don't skip it.
 
 Key doc locations (memorize, don't search):
 - `docs/TOOL-ERROR-REGISTRY.md` - tool failure log
