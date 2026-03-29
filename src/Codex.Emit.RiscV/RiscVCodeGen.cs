@@ -2350,22 +2350,26 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         foreach (uint insn in RiscVEncoder.Li(Reg.T5, 0)) Emit(insn);
         StoreLocal(savedIdx, Reg.T5);
 
-        // Loop: for each CCE byte, convert to Unicode and write
+        // Loop: for each CCE byte, convert to Unicode and write.
+        // Use explicit T-register assignments to avoid m_loadLocalToggle parity issues.
+        // The loop body uses LoadLocal which advances the toggle; if the total number
+        // of spill loads per iteration is odd, subsequent iterations (or subsequent
+        // inlined copies of this loop) would swap T0/T1 assignments, causing clobbers.
         int loopTop = m_instructions.Count;
-        uint idx = LoadLocal(savedIdx);
-        uint len = LoadLocal(savedLen);
+        uint idxTop = LoadLocal(savedIdx);
+        uint lenTop = LoadLocal(savedLen);
         int doneJump = m_instructions.Count;
-        Emit(RiscVEncoder.Nop()); // patched: bge idx, len → done
+        Emit(RiscVEncoder.Nop()); // patched: bge idxTop, lenTop → done
 
         // Load CCE byte: ptr[8 + idx]
         uint ptrL = LoadLocal(savedPtr);
-        idx = LoadLocal(savedIdx);
-        Emit(RiscVEncoder.Add(Reg.T0, ptrL, idx));
-        Emit(RiscVEncoder.Lbu(Reg.T0, Reg.T0, 8)); // t0 = CCE byte
+        uint idx = LoadLocal(savedIdx);
+        Emit(RiscVEncoder.Add(Reg.T2, ptrL, idx));
+        Emit(RiscVEncoder.Lbu(Reg.T2, Reg.T2, 8)); // t2 = CCE byte
 
         // Convert CCE→Unicode: table[CCE byte]
         uint tbl = LoadLocal(savedTable);
-        Emit(RiscVEncoder.Add(Reg.T0, tbl, Reg.T0));
+        Emit(RiscVEncoder.Add(Reg.T0, tbl, Reg.T2));
         Emit(RiscVEncoder.Lbu(Reg.T0, Reg.T0, 0)); // t0 = Unicode byte
 
         if (m_target == RiscVTarget.BareMetal)
@@ -2392,7 +2396,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.J((loopTop - m_instructions.Count) * 4));
 
         int doneTarget = m_instructions.Count;
-        m_instructions[doneJump] = RiscVEncoder.Bge(LoadLocal(savedIdx), LoadLocal(savedLen),
+        m_instructions[doneJump] = RiscVEncoder.Bge(idxTop, lenTop,
             (doneTarget - doneJump) * 4);
     }
 
@@ -4358,7 +4362,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     uint AllocLocal()
     {
-        if (m_nextLocal <= Reg.S10)
+        if (m_nextLocal <= Reg.S9)
         {
             uint reg = m_nextLocal;
             m_nextLocal++;
