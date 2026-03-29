@@ -1127,56 +1127,38 @@ sealed class Arm64CodeGen
 
             case "is-letter" when args.Count == 1:
             {
-                // Char is already a byte value in register
+                // CCE: letters are 13-64 (lowercase 13-38, uppercase 39-64)
+                // Single range check: (val - 13) <= 51
                 uint charReg = EmitExpr(args[0]);
                 Emit(Arm64Encoder.Mov(Arm64Reg.X9, charReg));
-                // Check lowercase a-z
-                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 'a')) Emit(insn);
+                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 13)) Emit(insn);
                 Emit(Arm64Encoder.Sub(Arm64Reg.X11, Arm64Reg.X9, Arm64Reg.X10));
-                Emit(Arm64Encoder.CmpImm(Arm64Reg.X11, 26));
-                // X12 = 1 if < 26 (unsigned), else 0
-                m_instructions.Add(0x9A9F27E0u | Arm64Reg.X12); // CSINC X12, XZR, XZR, CS (carry set = unsigned <)
-                // Check uppercase A-Z
-                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 'A')) Emit(insn);
-                Emit(Arm64Encoder.Sub(Arm64Reg.X11, Arm64Reg.X9, Arm64Reg.X10));
-                Emit(Arm64Encoder.CmpImm(Arm64Reg.X11, 26));
-                m_instructions.Add(0x9A9F27E0u | Arm64Reg.X13); // CSINC X13, XZR, XZR, CS
-                Emit(Arm64Encoder.Or(Arm64Reg.X0, Arm64Reg.X12, Arm64Reg.X13));
+                Emit(Arm64Encoder.CmpImm(Arm64Reg.X11, 51));
+                m_instructions.Add(0x9A9F87E0u | Arm64Reg.X0); // CSINC X0, XZR, XZR, HI (1 if LS)
                 return true;
             }
 
             case "is-digit" when args.Count == 1:
             {
-                // Char is already a byte value in register
+                // CCE: digits are 3-12
+                // (val - 3) <= 9
                 uint charReg = EmitExpr(args[0]);
                 Emit(Arm64Encoder.Mov(Arm64Reg.X9, charReg));
-                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, '0')) Emit(insn);
+                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 3)) Emit(insn);
                 Emit(Arm64Encoder.Sub(Arm64Reg.X11, Arm64Reg.X9, Arm64Reg.X10));
-                Emit(Arm64Encoder.CmpImm(Arm64Reg.X11, 10));
-                m_instructions.Add(0x9A9F27E0u | Arm64Reg.X0); // CSINC X0, XZR, XZR, CS (carry set = unsigned <)
+                Emit(Arm64Encoder.CmpImm(Arm64Reg.X11, 9));
+                m_instructions.Add(0x9A9F87E0u | Arm64Reg.X0); // CSINC X0, XZR, XZR, HI (1 if LS)
                 return true;
             }
 
             case "is-whitespace" when args.Count == 1:
             {
-                // Char is already a byte value in register
+                // CCE: whitespace is 0-2 (NUL, LF, Space)
+                // val <= 2
                 uint charReg = EmitExpr(args[0]);
                 Emit(Arm64Encoder.Mov(Arm64Reg.X9, charReg));
-                // space=32
-                Emit(Arm64Encoder.CmpImm(Arm64Reg.X9, 32));
-                m_instructions.Add(0x9A9F17E0u | Arm64Reg.X10); // CSINC X10, XZR, XZR, NE → 1 if EQ
-                // tab=9
-                Emit(Arm64Encoder.CmpImm(Arm64Reg.X9, 9));
-                m_instructions.Add(0x9A9F17E0u | Arm64Reg.X11); // CSINC X11, XZR, XZR, NE
-                Emit(Arm64Encoder.Or(Arm64Reg.X10, Arm64Reg.X10, Arm64Reg.X11));
-                // newline=10
-                Emit(Arm64Encoder.CmpImm(Arm64Reg.X9, 10));
-                m_instructions.Add(0x9A9F17E0u | Arm64Reg.X11);
-                Emit(Arm64Encoder.Or(Arm64Reg.X10, Arm64Reg.X10, Arm64Reg.X11));
-                // cr=13
-                Emit(Arm64Encoder.CmpImm(Arm64Reg.X9, 13));
-                m_instructions.Add(0x9A9F17E0u | Arm64Reg.X11);
-                Emit(Arm64Encoder.Or(Arm64Reg.X0, Arm64Reg.X10, Arm64Reg.X11));
+                Emit(Arm64Encoder.CmpImm(Arm64Reg.X9, 2));
+                m_instructions.Add(0x9A9F87E0u | Arm64Reg.X0); // CSINC X0, XZR, XZR, HI (1 if LS)
                 return true;
             }
 

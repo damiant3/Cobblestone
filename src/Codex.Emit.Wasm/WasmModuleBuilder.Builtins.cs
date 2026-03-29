@@ -80,38 +80,25 @@ sealed partial class WasmModuleBuilder
 
             case "is-letter" when args.Count == 1:
             {
-                // is-letter: takes integer Char value, checks a-z or A-Z
+                // CCE: letters are 13-64 (lowercase 13-38, uppercase 39-64)
+                // Single range check: (val - 13) <= 51 (unsigned)
                 EmitExpr(body, args[0], localMap, ref nextLocal, localTypes, args[0].Type);
-                body.WriteByte(OpI32WrapI64); // char value i64 → i32
-                int ilCh = nextLocal++; localTypes.Add(WasmI32);
-                body.WriteByte(OpLocalSet); WriteUnsignedLeb128(body, ilCh);
-
-                // Check lowercase: ch - 'a' < 26 (unsigned)
-                body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, ilCh);
-                body.WriteByte(OpI32Const); WriteSignedLeb128(body, 'a');
+                body.WriteByte(OpI32WrapI64);
+                body.WriteByte(OpI32Const); WriteSignedLeb128(body, 13);
                 body.WriteByte(OpI32Sub);
-                body.WriteByte(OpI32Const); WriteSignedLeb128(body, 26);
+                body.WriteByte(OpI32Const); WriteSignedLeb128(body, 52); // 64 - 13 + 1
                 body.WriteByte(OpI32LtU);
-
-                // Check uppercase: ch - 'A' < 26 (unsigned)
-                body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, ilCh);
-                body.WriteByte(OpI32Const); WriteSignedLeb128(body, 'A');
-                body.WriteByte(OpI32Sub);
-                body.WriteByte(OpI32Const); WriteSignedLeb128(body, 26);
-                body.WriteByte(OpI32LtU);
-
-                // Result = lower || upper
-                body.WriteByte(OpI32Or);
                 body.WriteByte(OpI64ExtendI32U);
                 return true;
             }
 
             case "is-digit" when args.Count == 1:
             {
-                // is-digit: takes integer Char value, checks 0-9
+                // CCE: digits are 3-12
+                // (val - 3) <= 9 (unsigned)
                 EmitExpr(body, args[0], localMap, ref nextLocal, localTypes, args[0].Type);
                 body.WriteByte(OpI32WrapI64);
-                body.WriteByte(OpI32Const); WriteSignedLeb128(body, '0');
+                body.WriteByte(OpI32Const); WriteSignedLeb128(body, 3);
                 body.WriteByte(OpI32Sub);
                 body.WriteByte(OpI32Const); WriteSignedLeb128(body, 10);
                 body.WriteByte(OpI32LtU);
@@ -121,32 +108,12 @@ sealed partial class WasmModuleBuilder
 
             case "is-whitespace" when args.Count == 1:
             {
-                // is-whitespace: takes integer Char value, checks space/tab/newline/cr
+                // CCE: whitespace is 0-2 (NUL, LF, Space)
+                // val <= 2 (unsigned), same as val < 3
                 EmitExpr(body, args[0], localMap, ref nextLocal, localTypes, args[0].Type);
                 body.WriteByte(OpI32WrapI64);
-                int iwCh = nextLocal++; localTypes.Add(WasmI32);
-                body.WriteByte(OpLocalSet); WriteUnsignedLeb128(body, iwCh);
-
-                // ch == ' '
-                body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, iwCh);
-                body.WriteByte(OpI32Const); WriteSignedLeb128(body, ' ');
-                body.WriteByte(OpI32Eq);
-                // ch == '\t'
-                body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, iwCh);
-                body.WriteByte(OpI32Const); WriteSignedLeb128(body, '\t');
-                body.WriteByte(OpI32Eq);
-                body.WriteByte(OpI32Or);
-                // ch == '\n'
-                body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, iwCh);
-                body.WriteByte(OpI32Const); WriteSignedLeb128(body, '\n');
-                body.WriteByte(OpI32Eq);
-                body.WriteByte(OpI32Or);
-                // ch == '\r'
-                body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, iwCh);
-                body.WriteByte(OpI32Const); WriteSignedLeb128(body, '\r');
-                body.WriteByte(OpI32Eq);
-                body.WriteByte(OpI32Or);
-
+                body.WriteByte(OpI32Const); WriteSignedLeb128(body, 3);
+                body.WriteByte(OpI32LtU);
                 body.WriteByte(OpI64ExtendI32U);
                 return true;
             }
