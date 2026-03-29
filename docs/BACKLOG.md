@@ -24,7 +24,7 @@ excluded. Everything here is confirmed still open.
 |---|------|-----------|-------|--------|
 | 1 | RISC-V bare-metal self-compile crash | Codex.Emit.RiscV | Pre-existing, undiagnosed. Needs Linux agent tracing with `-d in_asm`. x86-64 works fine. | ~2 hrs |
 | 2 | Result-space escape-copy disabled | Codex.Emit.RiscV, X86_64 | Crashes on cross-references. Disabled in `da67c9a`. Not blocking MM3 but leaves memory on the table. | ~4 hrs |
-| 3 | Bootstrap Stage 1 crash | Codex.Bootstrap | Pre-existing `ArgumentOutOfRangeException` in `scan_token`. May be stale `CodexLib.g.cs`. Bootstrap passes via CLI (`codex bootstrap`) so this may be resolved — needs verification. | ~30 min |
+| 3 | ~~Bootstrap Stage 1 crash~~ | Codex.Bootstrap | **Verified resolved** (2026-03-29). Full self-compile + mini-compile both succeed. Likely fixed by parser/scan_token improvements. | Done |
 | 4 | Regenerate `_all-source.codex` | Codex.Codex | Concatenated compiler source predates CCE fixes, CRLF fix, AEffectType handling. Should be regenerated from current 26 source files. Consider a script. | ~15 min |
 | 5 | Verify IL backend CCE assumptions | Codex.Emit.IL | Uses .NET `Char.IsLetter`/`Char.IsDigit`/`Char.IsWhiteSpace` (Unicode). Correct for .NET targets. If IL binaries ever process CCE-encoded data, these need CCE ranges. Document the decision. | ~15 min |
 | 6 | ARM64 builtins parity | Codex.Emit.Arm64 | 8 compiler-critical builtins missing: TCO, is-digit, is-whitespace, negate, text-contains, text-starts-with, list-cons, list-append. Blocks self-hosting on ARM64. | ~1 day |

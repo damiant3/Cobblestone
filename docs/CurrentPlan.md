@@ -1017,7 +1017,7 @@ For remaining work, see `docs/BACKLOG.md`.
 | ~~Char primitive type~~ | **DONE** — shipped, merged from `cam/char-type` |
 | ~~Two-phase streaming pipeline~~ | **DONE** — 220MB → 64MB bare-metal heap |
 | ~~ARM64/WASM CCE character ranges~~ | **DONE** (cb2106d, 2026-03-29) |
-| Fix Bootstrap Stage 1 crash | Pre-existing `ArgumentOutOfRangeException` in scan_token — may be resolved, needs verification |
+| ~~Fix Bootstrap Stage 1 crash~~ | **DONE** - verified 2026-03-29, no longer reproduces (fixed by parser/scan_token improvements) |
 | Perf automation | Wire `--bench-check` into CI or pre-commit hook |
 
 ### Medium-term (weeks)
