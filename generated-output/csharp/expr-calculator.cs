@@ -6,6 +6,8 @@ using System.Threading.Tasks;
 
 Codex_expr_calculator.main();
 
+public sealed record ParseResult(Expr expr, long pos);
+
 public abstract record Expr;
 
 public sealed record Lit(long Field0) : Expr;
@@ -13,8 +15,6 @@ public sealed record Add(Expr Field0, Expr Field1) : Expr;
 public sealed record Sub(Expr Field0, Expr Field1) : Expr;
 public sealed record Mul(Expr Field0, Expr Field1) : Expr;
 public sealed record Div(Expr Field0, Expr Field1) : Expr;
-
-public sealed record ParseResult(Expr expr, long pos);
 
 static class _Cce {
     static readonly int[] _toUni = {
