@@ -4358,7 +4358,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     uint AllocLocal()
     {
-        if (m_nextLocal <= Reg.S10)
+        if (m_nextLocal <= Reg.S9)
         {
             uint reg = m_nextLocal;
             m_nextLocal++;
