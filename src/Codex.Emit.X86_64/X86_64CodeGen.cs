@@ -42,6 +42,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     readonly record struct FuncAddrFixup(int PatchOffset, byte Rd, string FuncName);
     int m_cceToUnicodeTableOffset = -1; // rodata offset for 128-byte CCE→Unicode lookup
     int m_unicodeToCceTableOffset = -1; // rodata offset for 256-byte Unicode→CCE lookup (input boundary)
+    int m_resultBaseGlobalOffset = -1;  // rodata offset for 8-byte result_space_base global
 
     public void EmitModule(IRModule module)
     {
@@ -52,10 +53,12 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         m_typeDefs = module.TypeDefinitions;
         m_escapeHelperNames["text"] = "__escape_text";
 
-        // Reserve 8 bytes at text[0] for the result_space_base global.
+        // Reserve 8 bytes in .rodata for the result_space_base global.
         // Written at startup, read by escape helpers to skip pointers
         // that are already in result space (avoids redundant deep-copies).
-        for (int i = 0; i < 8; i++) m_text.Add(0);
+        // Lives in rodata (not text) so QEMU usermode W^X enforcement allows the write.
+        m_resultBaseGlobalOffset = m_rodata.Count;
+        for (int i = 0; i < 8; i++) m_rodata.Add(0);
 
         // Emit CCE→Unicode lookup table (128 bytes) into .rodata.
         // Used by print helpers to convert CCE bytes back to Unicode for output.
@@ -4169,7 +4172,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             string helper = GetOrQueueEscapeHelper(resolved);
             X86_64Encoder.MovLoad(m_text, Reg.RDI, Reg.RBX, srcOffset);
             // Skip copy if pointer is already in result space
-            X86_64Encoder.MovLoadRipRel(m_text, Reg.RCX, -(m_text.Count + 7));
+            m_rodataFixups.Add(new RodataFixup(m_text.Count + 2, m_resultBaseGlobalOffset));
+            X86_64Encoder.MovRI64(m_text, Reg.RCX, 0); // patched to rodata global addr
+            X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RCX, 0);
             X86_64Encoder.CmpRR(m_text, Reg.RDI, Reg.RCX);
             int skipIdx = m_text.Count;
             X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0);
@@ -4239,7 +4244,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         if (deepCopy)
         {
             // Skip copy if element pointer is already in result space
-            X86_64Encoder.MovLoadRipRel(m_text, Reg.RCX, -(m_text.Count + 7));
+            m_rodataFixups.Add(new RodataFixup(m_text.Count + 2, m_resultBaseGlobalOffset));
+            X86_64Encoder.MovRI64(m_text, Reg.RCX, 0); // patched to rodata global addr
+            X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RCX, 0);
             X86_64Encoder.CmpRR(m_text, Reg.RDI, Reg.RCX);
             int elemSkipIdx = m_text.Count;
             X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0);
@@ -5430,9 +5437,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             X86_64Encoder.Li(m_text, HeapReg, BareMetalHeapBase);
             X86_64Encoder.Li(m_text, ResultReg, BareMetalResultBase);
 
-            // Store result_space_base to global at text[0]
-            X86_64Encoder.MovStoreRipRel(m_text, ResultReg,
-                -(m_text.Count + 7));
+            // Store result_space_base to global in rodata
+            m_rodataFixups.Add(new RodataFixup(m_text.Count + 2, m_resultBaseGlobalOffset));
+            X86_64Encoder.MovRI64(m_text, Reg.R11, 0); // patched to rodata global addr
+            X86_64Encoder.MovStore(m_text, Reg.R11, ResultReg, 0);
 
             // Initialize process table (process 1 disabled for compiler test)
             EmitProcessSetup();
@@ -5494,10 +5502,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             X86_64Encoder.Li(m_text, growReg, 57L * 1024 * 1024);
             X86_64Encoder.AddRR(m_text, ResultReg, growReg);
 
-            // Store result_space_base to global at text[0] for escape helpers.
-            // RIP-relative: disp = target(0) - (rip_after = m_text.Count + 7)
-            X86_64Encoder.MovStoreRipRel(m_text, ResultReg,
-                -(m_text.Count + 7));
+            // Store result_space_base to global in rodata for escape helpers.
+            m_rodataFixups.Add(new RodataFixup(m_text.Count + 2, m_resultBaseGlobalOffset));
+            X86_64Encoder.MovRI64(m_text, Reg.R11, 0); // patched to rodata global addr
+            X86_64Encoder.MovStore(m_text, Reg.R11, ResultReg, 0);
         }
 
         IRDefinition? mainDef = null;
