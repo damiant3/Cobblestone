@@ -511,12 +511,12 @@ public sealed partial class CSharpEmitter
                 return true;
 
             case "write-file" when args.Count == 2:
-                // CCE path and content → Unicode for filesystem
-                sb.Append("File.WriteAllText(_Cce.ToUnicode(");
+                // File.WriteAllText returns void — wrap to return null for expression context
+                sb.Append("((Func<object>)(() => { File.WriteAllText(_Cce.ToUnicode(");
                 EmitExpr(sb, args[0], indent);
                 sb.Append("), _Cce.ToUnicode(");
                 EmitExpr(sb, args[1], indent);
-                sb.Append("))");
+                sb.Append(")); return null; }))()");
                 return true;
 
             case "run-process" when args.Count == 2:
