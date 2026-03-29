@@ -604,11 +604,20 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             // Phase 1: decompose record-typed heap args into field locals
             List<int> decompIndices = [];
             List<int> plainHeapIndices = [];
+            bool hasListArg = false; // lists are mutable (in-place snoc) — unsafe to reset
             for (int i = 0; i < args.Count && i < m_tcoParamTypes.Length; i++)
             {
                 CodexType resolved = ResolveType(m_tcoParamTypes[i]);
                 if (!IRRegion.TypeNeedsHeapEscape(resolved))
                     continue;
+                if (resolved is ListType)
+                {
+                    // List contents may reference above-mark allocations
+                    // even when the list pointer is below the mark (in-place
+                    // list-snoc adds elements pointing to new heap objects).
+                    hasListArg = true;
+                    break;
+                }
                 if (resolved is RecordType rt && i < m_tcoDecompLocals.Length
                     && m_tcoDecompLocals[i] is uint[] fieldLocals)
                 {
@@ -626,6 +635,20 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                     plainHeapIndices.Add(i);
                 }
             }
+            // Also check record fields for ListType
+            if (!hasListArg)
+            {
+                foreach (int idx in decompIndices)
+                {
+                    RecordType rt = (RecordType)ResolveType(m_tcoParamTypes[idx]);
+                    if (rt.Fields.Any(f => ResolveType(f.Type) is ListType))
+                    { hasListArg = true; break; }
+                }
+            }
+
+            // Skip reset entirely if any param is a list — in-place list-snoc
+            // stores element pointers above the mark inside a below-mark list.
+            if (hasListArg) goto skipReset;
 
             // Phase 2: determine if any runtime pointer checks are needed
             bool anyChecks = plainHeapIndices.Count > 0;
@@ -721,6 +744,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                     m_instructions[brIdx] = RiscVEncoder.Bge(rs1, rs2,
                         (noResetTarget - brIdx) * 4);
             }
+        skipReset:;
         }
 
         for (int i = 0; i < args.Count && i < m_tcoParamLocals.Length; i++)
@@ -3835,12 +3859,10 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Ecall());
 
         Emit(RiscVEncoder.Sd(Reg.Sp, Reg.A0, 0));          // save fd
-        // Result buffer starts after path temp on heap, 8-byte aligned.
-        // T4 = heap base of path copy, T0 = path length.
-        // Skip past path data + null terminator, then align to 8.
+        // Result buffer starts after path temp on heap, 8-byte aligned
         Emit(RiscVEncoder.Add(Reg.T4, Reg.T4, Reg.T0));
-        Emit(RiscVEncoder.Addi(Reg.T4, Reg.T4, 8 + 7));     // +1 null term + 7 align padding
-        Emit(RiscVEncoder.Andi(Reg.T4, Reg.T4, -8));         // align down to 8-byte boundary
+        Emit(RiscVEncoder.Addi(Reg.T4, Reg.T4, 8));         // skip null term + round
+        Emit(RiscVEncoder.Andi(Reg.T4, Reg.T4, -8));        // align to 8 bytes
         Emit(RiscVEncoder.Sd(Reg.Sp, Reg.T4, 8));           // save result base
 
         // Read loop: read(fd, buf, 4096) until 0
