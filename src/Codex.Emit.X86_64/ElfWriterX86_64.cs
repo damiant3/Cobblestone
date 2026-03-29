@@ -54,19 +54,21 @@ sealed class ElfWriterX86_64
         w.Write((ushort)0);
         w.Write((ushort)0);
 
-        // ── Program Header 0: .text (rwx) — writable for result_space_base global
+        // ── Program Header 0: .text (rwx) — includes ELF headers for page-aligned p_offset.
+        // QEMU usermode requires p_offset to be page-aligned; native Linux is lenient.
+        // Text code starts at file offset textFileOffset (= vaddr LinuxBaseAddress + textFileOffset).
         w.Write(PT_LOAD);
         w.Write(PF_R | PF_W | PF_X);
-        w.Write((ulong)textFileOffset);
-        w.Write(textVaddr);
-        w.Write(textVaddr);
-        w.Write((ulong)textSection.Length);
-        w.Write((ulong)textSection.Length);
+        w.Write((ulong)0);                // p_offset: page-aligned (includes ELF + PHDR headers)
+        w.Write(LinuxBaseAddress);         // p_vaddr
+        w.Write(LinuxBaseAddress);         // p_paddr
+        w.Write((ulong)(textFileOffset + textSection.Length)); // p_filesz
+        w.Write((ulong)(textFileOffset + textSection.Length)); // p_memsz
         w.Write((ulong)0x1000);
 
-        // ── Program Header 1: .rodata (r--) ───────────────────
+        // ── Program Header 1: .rodata (rw-) — writable for result_space_base global
         w.Write(PT_LOAD);
-        w.Write(PF_R);
+        w.Write(PF_R | PF_W);
         w.Write((ulong)rodataFileOffset);
         w.Write(rodataVaddr);
         w.Write(rodataVaddr);
