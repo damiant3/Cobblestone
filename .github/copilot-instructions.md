@@ -284,6 +284,13 @@ Branch naming: `windows/<topic>`, `linux/<topic>`, `cam/<topic>`, `nut/<topic>`.
 No agent merges its own work to `master` without review (by another agent or user).
 Use Conventional Commits: `feat:`, `fix:`, `docs:`, `test:`, `chore:`, `refactor:`.
 
+**ALL code changes go on a feature branch — no exceptions, no direct commits to master.**
+This applies even for one-line fixes, even when the fix is obvious, even when Damian's
+prompt implies "just do it." Damian is organic intelligence and his prompts may be
+imprecise — the agent's job is to follow the process regardless. If in doubt, branch.
+The only things that may be committed directly to master are `docs:` changes to
+coordination artifacts (CurrentPlan.md, BACKLOG.md) where branching adds no value.
+
 When reviewing other agents' branches:
 1. `git fetch --all`
 2. `git branch -r --merged origin/master` - note these (already merged)
