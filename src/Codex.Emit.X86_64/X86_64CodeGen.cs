@@ -5054,11 +5054,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     const long SerialRingBufAddr = 0x180000;
     const long SerialRingBufSize = 0x40000; // 256KB — must be power of 2
 
-    // Bare metal memory layout — 64 MB identity map (32 x 2MB huge pages)
-    const int BareMetalPages = 32;                          // 32 x 2MB = 64 MB
+    // Bare metal memory layout — 32 x 2MB huge pages = 64 MB
+    const int BareMetalPages = 32;
     const long BareMetalHeapBase = 0x400000;                // 4 MB
-    const long BareMetalResultBase = 0x3800000;             // 56 MB
-    const long BareMetalStackBottom = 0x3E00000;            // 62 MB
+    const long BareMetalResultBase = 0x3D00000;             // 61 MB (1 MB result)
+    const long BareMetalStackBottom = 0x3E00000;            // 62 MB (2 MB stack)
     const long BareMetalStackTop = 0x4000000;               // 64 MB
 
     void EmitInterruptSetup()
@@ -5481,17 +5481,17 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             X86_64Encoder.Syscall(m_text);
             X86_64Encoder.MovRR(m_text, HeapReg, Reg.RAX); // working space starts at brk base
 
-            // Grow heap: 52MB working + 6MB result (matches bare metal layout).
+            // Grow heap: 57MB working + 1MB result (matches bare metal layout).
             byte growReg = Reg.R11;
-            X86_64Encoder.Li(m_text, growReg, (52L + 6) * 1024 * 1024);
+            X86_64Encoder.Li(m_text, growReg, (46L + 1) * 1024 * 1024);
             X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
             X86_64Encoder.AddRR(m_text, Reg.RDI, growReg);
             X86_64Encoder.Li(m_text, Reg.RAX, 12); // sys_brk
             X86_64Encoder.Syscall(m_text);
 
-            // Result space starts at brk_base + 52MB
+            // Result space starts at brk_base + 57MB
             X86_64Encoder.MovRR(m_text, ResultReg, HeapReg);
-            X86_64Encoder.Li(m_text, growReg, 52L * 1024 * 1024);
+            X86_64Encoder.Li(m_text, growReg, 57L * 1024 * 1024);
             X86_64Encoder.AddRR(m_text, ResultReg, growReg);
 
             // Store result_space_base to global at text[0] for escape helpers.
