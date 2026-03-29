@@ -265,7 +265,7 @@ The emitter needs structural fixes (class wrapping, entry point handling).
 
 **How to reproduce**:
 ```bash
-dotenv run --project tools/Codex.Bootstrap/Codex.Bootstrap.csproj --no-build \
+dotnet run --project tools/Codex.Bootstrap/Codex.Bootstrap.csproj --no-build \
   -- "Codex.Codex" "Codex.Codex/stage1-test.cs"
 # Stage 1 output: Codex.Codex/stage1-test.cs (338K chars)
 # Diagnostics: Codex.Codex/unify-errors.txt (0 errors), type-diag.txt
