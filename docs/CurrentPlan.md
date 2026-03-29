@@ -29,7 +29,41 @@ clear `m_inTailPosition` — self-recursive calls inside binary operators were
 promoted to tail calls. Seven-line fix across three backends. Also resolved
 known issues #3 (TCO list-concat crash) and #5 (list `++` returns empty).
 
-**Branch**: `cam/fix-tco-binary-tail-position` — ready for review and merge.
+**Branch**: `cam/fix-tco-binary-tail-position` — merged to master.
+
+### Benchmarks (2026-03-28)
+
+| | .NET (CLR) | x86-64 usermode | x86-64 bare metal |
+|---|---|---|---|
+| Time | 405ms median | 80ms | ~125s (serial bound) |
+| Peak memory | managed GC | 55 MB RSS | 244 MB heap + 2 MB stack |
+| Stack | CLR-managed | OS-managed | **2 MB — fully consumed** |
+| Binary | — | 318 KB | 321 KB |
+
+Native is 5x faster than .NET for the same self-compile. But `STACK:2097152`
+means the entire 2 MB bare metal stack was consumed — zero margin.
+
+### Next: Stack Pressure
+
+The bare metal stack watermark shows 2 MB fully consumed during self-compile.
+This is the immediate blocker for smaller memory targets (Floppy Disk Phase 2).
+
+**Investigation path**:
+1. Identify which functions consume the most stack. The compiler has 585 defs;
+   deep recursion in type checking (`check-all-defs` has 6 params + 6 TCO temps
+   + decomp locals = 20+ locals per frame) and lowering are likely culprits.
+2. TCO already helps (recursive functions reuse their frame), but functions
+   called FROM TCO bodies (like `check-def`, `infer-expr`, `lower-def`) each
+   push their own frame. With 585 defs × nested calls, frames stack up.
+3. Floppy Disk Phase 2 (two-pass design) would process one def at a time,
+   keeping only signatures (~350 KB) persistent. This dramatically reduces
+   both heap AND stack pressure. Design is in `docs/CurrentPlan.md` below.
+
+**Quick wins to try first**:
+- Increase bare metal stack from 2 MB to 4 MB (move stack top, shrink result space)
+- Profile: add per-function frame size reporting to x86-64 codegen
+- Check if any functions have unnecessary locals (field decomposition for
+  non-record params in TCO, unused pattern bindings)
 
 ---
 
