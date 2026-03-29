@@ -355,6 +355,15 @@ public sealed record ImportDecl(Token module_name);
 
 public sealed record Document(List<Def> defs, List<TypeDef> type_defs, List<EffectDef> effect_defs, List<ImportDecl> imports);
 
+public sealed record DefHeader(Token name, List<Token> @params, List<TypeAnn> ann, long body_pos);
+
+public abstract record ScanDefResult;
+public sealed record DefHeaderOk(DefHeader Field0, ParseState Field1) : ScanDefResult;
+public sealed record DefHeaderNone(ParseState Field0) : ScanDefResult;
+
+
+public sealed record ScanResult(List<TypeDef> type_defs, List<EffectDef> effect_defs, List<DefHeader> def_headers, List<ImportDecl> imports);
+
 public sealed record Token(TokenKind kind, string text, long offset, long line, long column);
 
 public abstract record TokenKind;
@@ -4213,6 +4222,114 @@ public static class Codex_Codex_Codex
 
     public static Document try_top_level_def(List<Def> defs, List<TypeDef> type_defs, List<EffectDef> effect_defs, List<ImportDecl> imports, ParseState st) => ((Func<ParseDefResult, Document>)((def_result) => def_result switch { DefOk(var d, var st2) => parse_top_level(Enumerable.Concat(defs, new List<Def> { d }).ToList(), type_defs, effect_defs, imports, skip_newlines(st2)), DefNone(var st2) => parse_top_level(defs, type_defs, effect_defs, imports, skip_newlines(advance(st2))), _ => throw new InvalidOperationException("Non-exhaustive match"), }))(parse_definition(st));
 
+    public static ScanResult scan_document(ParseState st) => ((Func<ParseState, ScanResult>)((st2) => ((Func<ImportParseResult, ScanResult>)((imp_result) => scan_top_level(new List<DefHeader>(), new List<TypeDef>(), new List<EffectDef>(), imp_result.imports, imp_result.state)))(parse_imports(st2, new List<ImportDecl>()))))(skip_newlines(st));
+
+    public static ScanResult scan_top_level(List<DefHeader> headers, List<TypeDef> type_defs, List<EffectDef> effect_defs, List<ImportDecl> imports, ParseState st) => (is_done(st) ? new ScanResult(type_defs: type_defs, effect_defs: effect_defs, def_headers: headers, imports: imports) : (is_effect_keyword(current_kind(st)) ? scan_top_level_effect(headers, type_defs, effect_defs, imports, st) : try_scan_type_def(headers, type_defs, effect_defs, imports, st)));
+
+    public static ScanResult scan_top_level_effect(List<DefHeader> headers, List<TypeDef> type_defs, List<EffectDef> effect_defs, List<ImportDecl> imports, ParseState st) => ((Func<ParseState, ScanResult>)((st1) => ((Func<Token, ScanResult>)((name_tok) => ((Func<ParseState, ScanResult>)((st2) => ((Func<ParseState, ScanResult>)((st3) => ((Func<EffectOpsResult, ScanResult>)((ops) => ((Func<EffectDef, ScanResult>)((ed) => scan_top_level(headers, type_defs, Enumerable.Concat(effect_defs, new List<EffectDef> { ed }).ToList(), imports, skip_newlines(ops.state))))(new EffectDef(name: name_tok, ops: ops.ops))))(parse_effect_ops(st3, new List<EffectOpDef>()))))((is_where_keyword(current_kind(st2)) ? skip_newlines(advance(st2)) : st2))))(advance(st1))))(current(st1))))(advance(st));
+
+    public static ScanResult try_scan_type_def(List<DefHeader> headers, List<TypeDef> type_defs, List<EffectDef> effect_defs, List<ImportDecl> imports, ParseState st) => ((Func<ParseTypeDefResult, ScanResult>)((td_result) => td_result switch { TypeDefOk(var td, var st2) => scan_top_level(headers, Enumerable.Concat(type_defs, new List<TypeDef> { td }).ToList(), effect_defs, imports, skip_newlines(st2)), TypeDefNone(var st2) => try_scan_def_header(headers, type_defs, effect_defs, imports, st), _ => throw new InvalidOperationException("Non-exhaustive match"), }))(parse_type_def(st));
+
+    public static ScanResult try_scan_def_header(List<DefHeader> headers, List<TypeDef> type_defs, List<EffectDef> effect_defs, List<ImportDecl> imports, ParseState st) => ((Func<ScanDefResult, ScanResult>)((hdr_result) => hdr_result switch { DefHeaderOk(var hdr, var st2) => scan_top_level(Enumerable.Concat(headers, new List<DefHeader> { hdr }).ToList(), type_defs, effect_defs, imports, skip_newlines(st2)), DefHeaderNone(var st2) => scan_top_level(headers, type_defs, effect_defs, imports, skip_newlines(advance(st2))), _ => throw new InvalidOperationException("Non-exhaustive match"), }))(scan_definition(st));
+
+    public static ScanDefResult scan_definition(ParseState st) => (is_done(st) ? new DefHeaderNone(st) : (is_ident(current_kind(st)) ? try_scan_def(st) : (is_type_ident(current_kind(st)) ? try_scan_def(st) : new DefHeaderNone(st))));
+
+    public static ScanDefResult try_scan_def(ParseState st) => (is_colon(peek_kind(st, 1)) ? ((Func<ParseTypeResult, ScanDefResult>)((ann_result) => unwrap_type_for_scan(ann_result)))(parse_type_annotation(st)) : scan_def_body_with_ann(new List<TypeAnn>(), st));
+
+    public static ScanDefResult unwrap_type_for_scan(ParseTypeResult r) => r switch { TypeOk(var ann_type, var st) => ((Func<Token, ScanDefResult>)((name_tok) => ((Func<List<TypeAnn>, ScanDefResult>)((ann) => ((Func<ParseState, ScanDefResult>)((st2) => scan_def_body_with_ann(ann, st2)))(skip_newlines(st))))(new List<TypeAnn> { new TypeAnn(name: name_tok, type_expr: ann_type) })))(new Token(kind: new Identifier(), text: "", offset: 0, line: 0, column: 0)), _ => throw new InvalidOperationException("Non-exhaustive match"), };
+
+    public static ScanDefResult scan_def_body_with_ann(List<TypeAnn> ann, ParseState st) => ((Func<Token, ScanDefResult>)((name_tok) => ((Func<ParseState, ScanDefResult>)((st2) => scan_def_params_then(ann, name_tok, new List<Token>(), st2)))(advance(st))))(current(st));
+
+    public static ScanDefResult scan_def_params_then(List<TypeAnn> ann, Token name_tok, List<Token> acc, ParseState st)
+    {
+        while (true)
+        {
+            if (is_left_paren(current_kind(st)))
+            {
+            var st2 = advance(st);
+            if (is_ident(current_kind(st2)))
+            {
+            var param = current(st2);
+            var st3 = advance(st2);
+            var st4 = expect(new RightParen(), st3);
+            var _tco_0 = ann;
+            var _tco_1 = name_tok;
+            var _tco_2 = ((Func<List<Token>>)(() => { var _l = acc; _l.Add(param); return _l; }))();
+            var _tco_3 = st4;
+            ann = _tco_0;
+            name_tok = _tco_1;
+            acc = _tco_2;
+            st = _tco_3;
+            continue;
+            }
+            else
+            {
+            return finish_def_scan(ann, name_tok, acc, st);
+            }
+            }
+            else
+            {
+            return finish_def_scan(ann, name_tok, acc, st);
+            }
+        }
+    }
+
+    public static ScanDefResult finish_def_scan(List<TypeAnn> ann, Token name_tok, List<Token> @params, ParseState st) => ((Func<ParseState, ScanDefResult>)((st2) => ((Func<ParseState, ScanDefResult>)((st3) => ((Func<long, ScanDefResult>)((body_pos) => ((Func<ParseState, ScanDefResult>)((st4) => new DefHeaderOk(new DefHeader(name: name_tok, @params: @params, ann: ann, body_pos: body_pos), st4)))(skip_body_tokens(st3, name_tok.column))))(st3.pos)))(skip_newlines(st2))))(expect(new Equals_(), st));
+
+    public static ParseState skip_body_tokens(ParseState st, long name_col)
+    {
+        while (true)
+        {
+            if (is_done(st))
+            {
+            return st;
+            }
+            else
+            {
+            var tok = current(st);
+            var _tco_s = tok.kind;
+            if (_tco_s is Newline _tco_m0)
+            {
+            var _tco_0 = advance(st);
+            var _tco_1 = name_col;
+            st = _tco_0;
+            name_col = _tco_1;
+            continue;
+            }
+            else if (_tco_s is Indent _tco_m1)
+            {
+            var _tco_0 = advance(st);
+            var _tco_1 = name_col;
+            st = _tco_0;
+            name_col = _tco_1;
+            continue;
+            }
+            else if (_tco_s is Dedent _tco_m2)
+            {
+            var _tco_0 = advance(st);
+            var _tco_1 = name_col;
+            st = _tco_0;
+            name_col = _tco_1;
+            continue;
+            }
+            {
+            if ((tok.column <= name_col))
+            {
+            return st;
+            }
+            else
+            {
+            var _tco_0 = advance(st);
+            var _tco_1 = name_col;
+            st = _tco_0;
+            name_col = _tco_1;
+            continue;
+            }
+            }
+            }
+        }
+    }
+
     public static ParseState make_parse_state(List<Token> toks) => new ParseState(tokens: toks, pos: 0);
 
     public static Token current(ParseState st) => st.tokens[(int)st.pos];
@@ -5594,6 +5711,42 @@ public static class Codex_Codex_Codex
 
     public static object stream_defs(List<ADef> defs, List<TypeBinding> types, UnificationState ust, List<string> ctor_names, long i, long len) => ((i == len) ? ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("")); return null; }))() : ((Func<ADef, object>)((def) => ((Func<IRDef, object>)((ir_def) => ((Func<string, object>)((text) => ((Func<object>)(() => { ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(text)); return null; }))(); stream_defs(defs, types, ust, ctor_names, (i + 1), len);  return null; }))()))(codex_emit_def(ir_def, ctor_names))))(lower_def(def, types, ust))))(defs[(int)i]));
 
-    public static object main() => ((Func<object>)(() => { var path = _Cce.FromUnicode(Console.ReadLine() ?? ""); var source = _Cce.FromUnicode(File.ReadAllText(_Cce.ToUnicode(path))); compile_streaming(source, "Program");  return null; }))();
+    public static object compile_streaming_v2(string source, string module_name) => ((Func<List<Token>, object>)((tokens) => ((Func<ParseState, object>)((st) => ((Func<ScanResult, object>)((scan) => ((Func<List<ATypeDef>, object>)((type_defs) => ((Func<List<DefHeader>, object>)((headers) => ((Func<List<TypeBinding>, object>)((tdm) => ((Func<LetBindResult, object>)((tenv) => ((Func<LetBindResult, object>)((env) => ((Func<List<TypeBinding>, object>)((ctor_types) => ((Func<List<TypeBinding>, object>)((all_types) => ((Func<List<string>, object>)((ctor_names) => ((Func<object>)(() => { ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(codex_emit_type_defs(type_defs, 0))); return null; }))(); process_defs(tokens, headers, env.state, env.env, all_types, ctor_names, 0, ((long)headers.Count)); ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("")); return null; }))();  return null; }))()))(codex_collect_ctor_names(type_defs, 0))))(Enumerable.Concat(ctor_types, env.env.bindings).ToList())))(collect_ctor_bindings(type_defs, 0, ((long)type_defs.Count), new List<TypeBinding>()))))(register_def_headers(tenv.state, tenv.env, tdm, headers, 0, ((long)headers.Count)))))(register_type_defs(empty_unification_state(), builtin_type_env(), tdm, type_defs, 0, ((long)type_defs.Count)))))(build_type_def_map(type_defs, 0, ((long)type_defs.Count), new List<TypeBinding>()))))(scan.def_headers)))(map_list(desugar_type_def, scan.type_defs))))(scan_document(st))))(make_parse_state(tokens))))(tokenize(source));
+
+    public static LetBindResult register_def_headers(UnificationState st, TypeEnv env, List<TypeBinding> tdm, List<DefHeader> headers, long i, long len)
+    {
+        while (true)
+        {
+            if ((i == len))
+            {
+            return new LetBindResult(state: st, env: env);
+            }
+            else
+            {
+            var hdr = headers[(int)i];
+            var declared = desugar_annotations(hdr.ann);
+            var ty = ((((long)declared.Count) == 0) ? ((Func<FreshResult, LetBindResult>)((fr) => ((Func<TypeEnv, LetBindResult>)((env2) => new LetBindResult(state: fr.state, env: env2)))(env_bind(env, hdr.name.text, fr.var_type))))(fresh_and_advance(st)) : ((Func<CodexType, LetBindResult>)((resolved) => ((Func<ParamResult, LetBindResult>)((pr) => new LetBindResult(state: pr.state, env: env_bind(env, hdr.name.text, pr.parameterized))))(parameterize_type(st, resolved))))(resolve_type_expr(tdm, declared[(int)0])));
+            var _tco_0 = ty.state;
+            var _tco_1 = ty.env;
+            var _tco_2 = tdm;
+            var _tco_3 = headers;
+            var _tco_4 = (i + 1);
+            var _tco_5 = len;
+            st = _tco_0;
+            env = _tco_1;
+            tdm = _tco_2;
+            headers = _tco_3;
+            i = _tco_4;
+            len = _tco_5;
+            continue;
+            }
+        }
+    }
+
+    public static object process_defs(List<Token> tokens, List<DefHeader> headers, UnificationState ust, TypeEnv env, List<TypeBinding> all_types, List<string> ctor_names, long i, long len) => ((i == len) ? ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("")); return null; }))() : ((Func<DefHeader, object>)((hdr) => ((Func<ParseState, object>)((body_st) => ((Func<ParseExprResult, object>)((body_result) => ((Func<Def, object>)((def) => ((Func<ADef, object>)((adef) => ((Func<CheckResult, object>)((r) => ((Func<IRDef, object>)((ir_def) => ((Func<string, object>)((text) => ((Func<object>)(() => { ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(text)); return null; }))(); process_defs(tokens, headers, r.state, env, all_types, ctor_names, (i + 1), len);  return null; }))()))(codex_emit_def(ir_def, ctor_names))))(lower_def(adef, all_types, r.state))))(check_def(ust, env, adef))))(desugar_def(def))))(new Def(name: hdr.name, @params: hdr.@params, ann: hdr.ann, body: unwrap_body(body_result)))))(parse_expr(body_st))))(new ParseState(tokens: tokens, pos: hdr.body_pos))))(headers[(int)i]));
+
+    public static Expr unwrap_body(ParseExprResult r) => r switch { ExprOk(var e, var st) => e, _ => throw new InvalidOperationException("Non-exhaustive match"), };
+
+    public static object main() => ((Func<object>)(() => { var path = _Cce.FromUnicode(Console.ReadLine() ?? ""); var source = _Cce.FromUnicode(File.ReadAllText(_Cce.ToUnicode(path))); compile_streaming_v2(source, "Program");  return null; }))();
 
 }
