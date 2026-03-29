@@ -127,7 +127,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // (in ELF mode, rodata is at a separate vaddr; in flat mode, it's inline)
         foreach (RodataFixup fixup in m_rodataFixups)
         {
-            long addr = rodataOffset + fixup.RodataOffset;
+            long addr = 0x100000 + rodataOffset + fixup.RodataOffset;
             // MovRI64 is 10 bytes: REX.W + B8+rd + imm64. The imm64 starts at PatchOffset.
             binary[fixup.PatchOffset] = (byte)(addr & 0xFF);
             binary[fixup.PatchOffset + 1] = (byte)((addr >> 8) & 0xFF);
