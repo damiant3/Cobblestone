@@ -3835,9 +3835,12 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Ecall());
 
         Emit(RiscVEncoder.Sd(Reg.Sp, Reg.A0, 0));          // save fd
-        // Result buffer starts after path temp on heap
+        // Result buffer starts after path temp on heap, 8-byte aligned.
+        // T4 = heap base of path copy, T0 = path length.
+        // Skip past path data + null terminator, then align to 8.
         Emit(RiscVEncoder.Add(Reg.T4, Reg.T4, Reg.T0));
-        Emit(RiscVEncoder.Addi(Reg.T4, Reg.T4, 8));         // skip null term + align
+        Emit(RiscVEncoder.Addi(Reg.T4, Reg.T4, 8 + 7));     // +1 null term + 7 align padding
+        Emit(RiscVEncoder.Andi(Reg.T4, Reg.T4, -8));         // align down to 8-byte boundary
         Emit(RiscVEncoder.Sd(Reg.Sp, Reg.T4, 8));           // save result base
 
         // Read loop: read(fd, buf, 4096) until 0
