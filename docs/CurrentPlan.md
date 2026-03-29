@@ -327,7 +327,7 @@ usermode under `qemu-x86_64`. Output: 261,654 chars of valid C#.
 echo "_all-source.codex" | qemu-x86_64 ./all-source  →  261,654 chars, exit=0
 ```
 
-RISC-V self-compile crashes — pre-existing bug, not from this session.
+~~RISC-V self-compile crashes~~ FIXED 2026-03-29 — TCO heap reset clobbered in-place list-snoc elements.
 
 ### ListType safety fix for heap reset
 
@@ -944,22 +944,21 @@ in `X86_64CodeGen.cs`.
 **Impact**: ARM64 native self-compile is blocked until this is resolved.
 Small programs that don't use sorted insertion work fine.
 
-### RISC-V self-compile crashes at scale
+### ~~RISC-V self-compile crashes at scale~~ FIXED (2026-03-29)
 
-**Status**: Likely environmental (stack size), needs verification.
+**Root cause**: TCO heap reset in `EmitRiscVTailCall` reset S1 backwards even
+when `list-snoc` had appended elements above the heap mark via in-place
+mutation (Path 1: count < capacity). The list pointer stayed unchanged (below
+mark), passing the safety check, but stored elements pointed above the mark.
+After reset, next iteration's allocations overwrote the token data, causing
+null/garbage TokenKind pointers → SIGSEGV in pattern matching.
 
-Small programs pass on RISC-V usermode (factorial, hello, read-file, print-line
-— all verified). The full 205KB / 585-def self-compile segfaults under
-`qemu-riscv64`. The x86-64 bare-metal self-compile needed a 2MB stack.
+**Fix**: Ported the x86-64 `hasListArg` / `skipReset` guard to RISC-V's
+`EmitRiscVTailCall`. Also fixed `__read_file` heap alignment (ANDI -8 after
+path copy).
 
-**Hypothesis**: `qemu-riscv64` default stack is insufficient for the deep
-recursion in `unify-structural`, `emit-expr`, `lower-expr`, `infer-expr`
-(largest frames per `--dump-frames`: 1.2–1.9 KB each, called recursively).
-
-**Next step**: Try `qemu-riscv64 -s 67108864` (64MB stack). If that fixes it,
-the issue is purely environmental. If not, investigate RISC-V callee-saved
-register pressure (8 regs vs x86-64's 4) — fewer spills but more push/pop
-per frame could still blow the stack at different depth.
+**Verified**: `qemu-riscv64 -s 67108864` + self-compile → 2,786 lines,
+43 KB output, EXIT=0. All 642 tests pass.
 
 ### `codex run` void-to-object regression
 
