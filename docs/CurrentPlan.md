@@ -921,6 +921,65 @@ root-cause analysis (commits `ea35113`, `42c2fd0`).
 
 ---
 
+## Open Issues (2026-03-28 Agent Linux)
+
+### ARM64 self-compile segfault — missing builtins
+
+**Status**: Code gap, not environmental.
+
+The ARM64 backend is missing `list-insert-at` and `list-snoc` builtins.
+The compiler warns during compilation (`ARM64 WARNING: unresolved call`).
+These are used heavily by the self-hosted compiler — every sorted insertion
+in the type checker (`env-bind`, `add-subst`, `scope-add`) and every
+accumulator append in lowering/emission hits `list-snoc`.
+
+**Fix**: Port `list-insert-at` and `list-snoc` from x86-64's `TryEmitBuiltin`
+to `Arm64CodeGen.cs`. Pattern: allocate new list, copy elements, insert/append
+at position, return pointer. The x86-64 implementation is at lines ~1725-1750
+in `X86_64CodeGen.cs`.
+
+**Impact**: ARM64 native self-compile is blocked until this is resolved.
+Small programs that don't use sorted insertion work fine.
+
+### RISC-V self-compile crashes at scale
+
+**Status**: Likely environmental (stack size), needs verification.
+
+Small programs pass on RISC-V usermode (factorial, hello, read-file, print-line
+— all verified). The full 205KB / 585-def self-compile segfaults under
+`qemu-riscv64`. The x86-64 bare-metal self-compile needed a 2MB stack.
+
+**Hypothesis**: `qemu-riscv64` default stack is insufficient for the deep
+recursion in `unify-structural`, `emit-expr`, `lower-expr`, `infer-expr`
+(largest frames per `--dump-frames`: 1.2–1.9 KB each, called recursively).
+
+**Next step**: Try `qemu-riscv64 -s 67108864` (64MB stack). If that fixes it,
+the issue is purely environmental. If not, investigate RISC-V callee-saved
+register pressure (8 regs vs x86-64's 4) — fewer spills but more push/pop
+per frame could still blow the stack at different depth.
+
+### `codex run` void-to-object regression
+
+**Status**: Code regression in C# emitter, prebuilt DLLs unaffected.
+
+The agent tools (`codex-agent.codex`, `sdiff.codex`) fail to compile fresh
+via `codex run` with `CS1503: cannot convert from 'void' to 'object'`.
+The prebuilt `.dll` files in `tools/codex-agent/` still work because they
+were compiled before the regression.
+
+**Hypothesis**: The `IsVoidLikeDefinition` logic in `CSharpEmitter.cs` (or
+the equivalent in the self-hosted emitter) has a regression where effectful
+functions like `main : [Console] Nothing` generate `public static void main()`
+instead of `public static object main()`. The `do` block IIFE wrapper needs
+the return type to be `object` (or `Func<object>`) for the void-returning
+statements to compile as expressions.
+
+**Next step**: Check `emit-def` / `emit-do` in `CSharpEmitter.codex` and
+`CSharpEmitterExpressions.codex` for how `NothingTy` / `VoidTy` return
+types are handled. Compare with the reference emitter in `src/Codex.Emit.CSharp/`.
+
+---
+
 ## What's Next
 
 ### The path to MM3: Summit
