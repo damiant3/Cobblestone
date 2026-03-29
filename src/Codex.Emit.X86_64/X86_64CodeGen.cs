@@ -3919,6 +3919,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         int gotNull = m_text.Count;
         X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
 
+        // Skip CR (0x0D) — strip at I/O boundary, same as usermode __read_file
+        X86_64Encoder.CmpRI(m_text, Reg.RAX, 0x0D);
+        int skipCrBm = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
+
         // Convert Unicode→CCE: table[unicode_byte]
         X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.R12);
         X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RAX, 0);   // RAX = CCE byte
@@ -3930,6 +3935,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         m_text.Add(0x88); m_text.Add(0x06); // mov [rsi], al
 
         X86_64Encoder.AddRI(m_text, Reg.RCX, 1);
+        PatchJcc(skipCrBm, m_text.Count);   // CR skip lands here (after store, before loop)
         X86_64Encoder.Jmp(m_text, readLoop - (m_text.Count + 5));
 
         // Done: store length, bump heap, return

@@ -1,0 +1,165 @@
+Chapter: Desugarer
+
+ Transforms the concrete syntax tree into the abstract syntax tree.
+ Tokens become Names, literal token text becomes literal values,
+ parenthesized nodes are removed, and binary operators are resolved.
+
+Section: Expression Desugaring
+
+  desugar-expr : Expr -> AExpr
+  desugar-expr (node) =
+   when node
+    if LitExpr (tok) -> desugar-literal tok
+    if NameExpr (tok) -> ANameExpr (make-name tok.text)
+    if AppExpr (f) (a) -> AApplyExpr (desugar-expr f) (desugar-expr a)
+    if BinExpr (l) (op) (r) -> ABinaryExpr (desugar-expr l) (desugar-bin-op op.kind) (desugar-expr r)
+    if UnaryExpr (op) (operand) -> AUnaryExpr (desugar-expr operand)
+    if IfExpr (c) (t) (e) -> AIfExpr (desugar-expr c) (desugar-expr t) (desugar-expr e)
+    if LetExpr (bindings) (body) -> ALetExpr (map-list desugar-let-bind bindings) (desugar-expr body)
+    if MatchExpr (scrut) (arms) -> AMatchExpr (desugar-expr scrut) (map-list desugar-match-arm arms)
+    if ListExpr (elems) -> AListExpr (map-list desugar-expr elems)
+    if RecordExpr (type-tok) (fields) -> ARecordExpr (make-name type-tok.text) (map-list desugar-field-expr fields)
+    if FieldExpr (rec) (field-tok) -> AFieldAccess (desugar-expr rec) (make-name field-tok.text)
+    if ParenExpr (inner) -> desugar-expr inner
+    if DoExpr (stmts) -> ADoExpr (map-list desugar-do-stmt stmts)
+    if HandleExpr (eff-tok) (body) (clauses) -> AHandleExpr (make-name eff-tok.text) (desugar-expr body) (map-list desugar-handle-clause clauses)
+    if LambdaExpr (params) (body) -> ALambdaExpr (map-list desugar-lambda-param params) (desugar-expr body)
+    if ErrExpr (tok) -> AErrorExpr tok.text
+
+  desugar-literal : Token -> AExpr
+  desugar-literal (tok) =
+   if is-literal (tok.kind)
+    then ALitExpr tok.text (classify-literal tok.kind)
+    else AErrorExpr tok.text
+
+  classify-literal : TokenKind -> LiteralKind
+  classify-literal (k) = when k
+   if IntegerLiteral -> IntLit
+   if NumberLiteral -> NumLit
+   if TextLiteral -> TextLit
+   if CharLiteral -> CharLit
+   if TrueKeyword -> BoolLit
+   if FalseKeyword -> BoolLit
+   if _ -> TextLit
+
+  desugar-let-bind : LetBind -> ALetBind
+  desugar-let-bind (b) =
+   ALetBind { name = make-name b.name.text, value = desugar-expr b.value }
+
+  desugar-match-arm : MatchArm -> AMatchArm
+  desugar-match-arm (arm) =
+   AMatchArm { pattern = desugar-pattern arm.pattern, body = desugar-expr arm.body }
+
+  desugar-field-expr : RecordFieldExpr -> AFieldExpr
+  desugar-field-expr (f) =
+   AFieldExpr { name = make-name f.name.text, value = desugar-expr f.value }
+
+  desugar-do-stmt : DoStmt -> ADoStmt
+  desugar-do-stmt (s) =
+   when s
+    if DoBindStmt (tok) (val) -> ADoBindStmt (make-name tok.text) (desugar-expr val)
+    if DoExprStmt (e) -> ADoExprStmt (desugar-expr e)
+
+  desugar-handle-clause : HandleClause -> AHandleClause
+  desugar-handle-clause (c) =
+   AHandleClause { op-name = make-name c.op-name.text, resume-name = make-name c.resume-name.text, body = desugar-expr c.body }
+
+  desugar-lambda-param : Token -> Name
+  desugar-lambda-param (tok) = make-name tok.text
+
+Section: Binary Operator Desugaring
+
+  desugar-bin-op : TokenKind -> BinaryOp
+  desugar-bin-op (k) = when k
+   if Plus -> OpAdd
+   if Minus -> OpSub
+   if Star -> OpMul
+   if Slash -> OpDiv
+   if Caret -> OpPow
+   if DoubleEquals -> OpEq
+   if NotEquals -> OpNotEq
+   if LessThan -> OpLt
+   if GreaterThan -> OpGt
+   if LessOrEqual -> OpLtEq
+   if GreaterOrEqual -> OpGtEq
+   if TripleEquals -> OpDefEq
+   if PlusPlus -> OpAppend
+   if ColonColon -> OpCons
+   if Ampersand -> OpAnd
+   if Pipe -> OpOr
+   if _ -> OpAdd
+
+Section: Pattern Desugaring
+
+  desugar-pattern : Pat -> APat
+  desugar-pattern (p) =
+   when p
+    if VarPat (tok) -> AVarPat (make-name tok.text)
+    if LitPat (tok) -> ALitPat tok.text (classify-literal tok.kind)
+    if CtorPat (tok) (subs) -> ACtorPat (make-name tok.text) (map-list desugar-pattern subs)
+    if WildPat (tok) -> AWildPat
+
+Section: Type Desugaring
+
+  desugar-type-expr : TypeExpr -> ATypeExpr
+  desugar-type-expr (t) =
+   when t
+    if NamedType (tok) -> ANamedType (make-name tok.text)
+    if FunType (param) (ret) -> AFunType (desugar-type-expr param) (desugar-type-expr ret)
+    if AppType (ctor) (args) -> AAppType (desugar-type-expr ctor) (map-list desugar-type-expr args)
+    if ParenType (inner) -> desugar-type-expr inner
+    if ListType (elem) -> AAppType (ANamedType (make-name "List")) [desugar-type-expr elem]
+    if LinearTypeExpr (inner) -> desugar-type-expr inner
+    if EffectTypeExpr (effs) (ret) -> AEffectType (map-list make-type-param-name effs) (desugar-type-expr ret)
+
+Section: Definition Desugaring
+
+  desugar-def : Def -> ADef
+  desugar-def (d) =
+   let ann-types = desugar-annotations d.ann
+   in ADef { name = make-name d.name.text, params = map-list desugar-param d.params, declared-type = ann-types, body = desugar-expr d.body }
+
+  desugar-annotations : List TypeAnn -> List ATypeExpr
+  desugar-annotations (anns) =
+   if list-length anns == 0 then []
+   else
+    let a = list-at anns 0
+    in [desugar-type-expr a.type-expr]
+
+  desugar-param : Token -> AParam
+  desugar-param (tok) = AParam { name = make-name tok.text }
+
+  desugar-type-def : TypeDef -> ATypeDef
+  desugar-type-def (td) =
+   when td.body
+    if RecordBody (fields) -> ARecordTypeDef (make-name td.name.text) (map-list make-type-param-name td.type-params) (map-list desugar-record-field-def fields)
+    if VariantBody (ctors) -> AVariantTypeDef (make-name td.name.text) (map-list make-type-param-name td.type-params) (map-list desugar-variant-ctor-def ctors)
+
+  make-type-param-name : Token -> Name
+  make-type-param-name (tok) = make-name tok.text
+
+  desugar-record-field-def : RecordFieldDef -> ARecordFieldDef
+  desugar-record-field-def (f) =
+   ARecordFieldDef { name = make-name f.name.text, type-expr = desugar-type-expr f.type-expr }
+
+  desugar-variant-ctor-def : VariantCtorDef -> AVariantCtorDef
+  desugar-variant-ctor-def (c) =
+   AVariantCtorDef { name = make-name c.name.text, fields = map-list desugar-type-expr c.fields }
+
+Section: Document Desugaring
+
+  desugar-document : Document -> Text -> AModule
+  desugar-document (doc) (module-name) =
+   AModule { name = make-name module-name, defs = map-list desugar-def doc.defs, type-defs = map-list desugar-type-def doc.type-defs, effect-defs = map-list desugar-effect-def doc.effect-defs, imports = map-list desugar-import doc.imports }
+
+  desugar-import : ImportDecl -> AImportDecl
+  desugar-import (imp) =
+   AImportDecl { module-name = make-name imp.module-name.text }
+
+  desugar-effect-def : EffectDef -> AEffectDef
+  desugar-effect-def (ed) =
+   AEffectDef { name = make-name ed.name.text, ops = map-list desugar-effect-op ed.ops }
+
+  desugar-effect-op : EffectOpDef -> AEffectOpDef
+  desugar-effect-op (op) =
+   AEffectOpDef { name = make-name op.name.text, type-expr = desugar-type-expr op.type-expr }
