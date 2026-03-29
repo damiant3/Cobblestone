@@ -787,7 +787,7 @@ public class RiscVEmitterTests
             }
 
             ProcessStartInfo psi = new("bash",
-                $"-c \"timeout 5 qemu-system-riscv64 -machine virt -bios none -nographic -serial mon:stdio -kernel '{qemuPath}' 2>/dev/null || true\"")
+                $"-c \"timeout 5 qemu-system-riscv64 -machine virt -bios none -nographic -serial mon:stdio -kernel '{qemuPath}' </dev/null 2>/dev/null || true\"")
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
