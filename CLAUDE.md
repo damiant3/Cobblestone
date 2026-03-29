@@ -28,12 +28,16 @@ as QEMU tests silently skipping. Always rebuild from current source.
 2. **Build before you commit.** `dotnet build Codex.sln` + `dotnet test Codex.sln`.
 3. **Clean intermediates.** Clean stale build outputs at session start (see above). Delete `.bak`, `.new`, `.tmp`, `.snap`, scratch scripts before ending.
 4. **One logical change per commit.** Don't bundle unrelated fixes.
-5. **Track workstream status.** When starting or completing a workstream, update its status:
+5. **Track workstream status.** When starting or completing a workstream, update it:
    ```bash
    tools/codex-agent/codex-status.exe update <id> --status <active|done|fixed|blocked> --summary "what changed" --agent cam
    ```
    Check current status with `tools/codex-agent/codex-status.exe list`.
    Create new workstreams with `tools/codex-agent/codex-status.exe create <id> --title "..." --status active`.
+   **File bugs immediately.** If you discover an unreported bug — even if you aren't fixing it now — create a status entry so it doesn't get lost:
+   ```bash
+   tools/codex-agent/codex-status.exe create <bug-id> --title "Brief description" --status active --summary "what you observed" --agent cam
+   ```
 6. **Ask the user** when unsure. A 10-second question beats a 10-minute wrong turn.
 7. **Two-failures rule.** If the same approach fails twice, stop and switch strategies.
 
