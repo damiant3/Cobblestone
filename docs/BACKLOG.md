@@ -1,22 +1,8 @@
 # Backlog — Outstanding Work
 
-**Assessed**: 2026-03-29 (Agent Windows session)
 **Method**: Cross-referenced all planning docs, commit history, and codebase state.
 Items marked ~~strikethrough~~ in older docs have been verified as complete and are
 excluded. Everything here is confirmed still open.
-
----
-
-## P0 — Critical / Blocking
-
-| Item | Component | Notes |
-|------|-----------|-------|
-| ~~ARM64 CCE character ranges~~ | Codex.Emit.Arm64 | **FIXED this session** (cb2106d) |
-| ~~WASM CCE character ranges~~ | Codex.Emit.Wasm | **FIXED this session** (cb2106d) |
-
-**No remaining P0 items.** 🎉
-
----
 
 ## P1 — Compiler Correctness
 
@@ -30,26 +16,6 @@ excluded. Everything here is confirmed still open.
 | 6 | ARM64 builtins parity | Codex.Emit.Arm64 | 8 compiler-critical builtins missing: TCO, is-digit, is-whitespace, negate, text-contains, text-starts-with, list-cons, list-append. Blocks self-hosting on ARM64. | ~1 day |
 | 7 | NetworkSync test failures | Codex.Repository | 4 tests fail (need a listening peer). Either fix the tests to be self-contained or mark as integration-only. | ~1 hr |
 
----
-
-## P2 — Code Quality / C# Cleanup
-
-From `docs/ToDo/CSharpCleanup.md` — ~90 items, all mechanical:
-
-| Category | Count | Key Files |
-|----------|-------|-----------|
-| Public statics `s_` → PascalCase | ~20 symbols | Codex.Core, Codex.IR, emitter factories |
-| `var` → explicit types | ~10 instances | Codex.Bootstrap/Program.cs |
-| Remove `///` XML doc comments | ~15 instances | 7 files |
-| Remove redundant `private` modifiers | ~15 instances | Test files |
-| Remove redundant `using` directives | 5 usings | Codex.Bootstrap/Program.cs |
-| Block → file-scoped namespaces | 2 files | Helpers.cs, IntegrationTests3.cs |
-| Fully-qualified types → `using` + short name | ~20 instances | 13 files |
-
-**Suggested approach**: One commit per category, mechanical find-and-replace. Good
-first task for a new agent session.
-
----
 
 ## P3 — Features Designed But Not Built
 
@@ -65,8 +31,6 @@ These all have design docs in `docs/Designs/`. No code exists yet.
 | Codex.UI substrate | `CurrentPlan.md` | Semantic primitives, typed themes. No design doc yet | Large |
 | Perf automation | `CurrentPlan.md` | Wire `--bench-check` into CI or pre-commit hook | ~2 hrs |
 
----
-
 ## Long-Term Vision
 
 These are summit goals, not tasks. They guide direction.
@@ -79,25 +43,7 @@ These are summit goals, not tasks. They guide direction.
 | Floppy disk image (boot → compile → self-compile in 1.44MB) | 64MB achieved. Need streaming Path B optimizations to shrink further |
 | Repository federation | See P3 above |
 
----
-
 ## Stale Docs To Update
 
 These docs list items as open that are actually complete. They create confusion
 and should be updated to reflect reality:
-
-| Doc | What's Stale |
-|-----|-------------|
-| `docs/CurrentPlan.md` | Near-term table has ~15 ~~DONE~~ items but also lists Char type, MM3, streaming as future work — all done |
-| `docs/ToDo/BinaryEmitterGaps.md` | RISC-V column says "Missing" for 8 builtins — RISC-V is at parity |
-| `docs/Compiler/MM3-REALITY-CHECK.md` | "What Doesn't Work Yet" section — RISC-V crash may be fixed, bare-metal heap is 64MB now |
-| `docs/Compiler/MM3-GAP-ANALYSIS.md` | Lists hard gaps that were eliminated |
-| `docs/Reviews/parity-audit-2026-03-28.md` | P1 items (AEffectType, AHandleExpr, EffectfulTy) all fixed |
-| `docs/Designs/Language/CHAR-TYPE.md` | Status says "Approved, implementing" — it's shipped |
-| `docs/Designs/Features/P1-BUILTIN-EXPANSION.md` | Status says "Near-complete" — it's complete |
-
----
-
-*This file is the single source of truth for what's left to do. When you finish
-something, update it here. When you find new work, add it here. Don't scatter
-TODO items across design docs — point them here instead.*
