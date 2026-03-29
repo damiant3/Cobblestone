@@ -286,10 +286,11 @@ Use Conventional Commits: `feat:`, `fix:`, `docs:`, `test:`, `chore:`, `refactor
 
 When reviewing other agents' branches:
 1. `git fetch --all`
-2. `git branch -r --merged origin/master` - delete these (cleanup)
+2. `git branch -r --merged origin/master` - note these (already merged)
 3. `git branch -r --no-merged origin/master` - review these
 4. `git diff --stat origin/master..origin/<branch>` - scope the change
 5. Build + test on master after merge
+6. Do NOT delete remote feature branches — branch owner decides when to clean up
 
 ---
 
