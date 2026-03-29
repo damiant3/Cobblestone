@@ -47,7 +47,17 @@ No agent merges its own work to `master` without review (by another agent or use
 2. **Build before you commit.** Use `codex-agent build` + `codex-agent test`.
 3. **Clean up temp files.** Delete `.bak`, `.new`, `.tmp`, `.snap`, scratch scripts before ending.
 4. **One logical change per commit.** Don't bundle unrelated fixes.
-5. **Leave a handoff.** After meaningful work, update `docs/History/` handoff docs.
+5. **Track workstream status.** When starting or completing a workstream, update it:
+   ```powershell
+   tools/codex-agent/codex-status.exe update <id> --status <active|done|fixed|blocked> --summary "what changed" --agent <your-agent-name>
+   ```
+   Check current status: `tools/codex-agent/codex-status.exe list`
+   Create new: `tools/codex-agent/codex-status.exe create <id> --title "..." --status active`
+   **File bugs immediately.** If you discover an unreported bug — even if you aren't fixing it now — create a status entry so it doesn't get lost:
+   ```powershell
+   tools/codex-agent/codex-status.exe create <bug-id> --title "Brief description" --status active --summary "what you observed" --agent <your-agent-name>
+   ```
+   Data lives in `.codex-agent/status/` — one file per workstream, merge-safe across branches.
 6. **Ask the user** when unsure. A 10-second question beats a 10-minute wrong turn.
 7. **Two-failures rule.** If the same approach fails twice, stop and switch strategies.
 
@@ -76,7 +86,24 @@ tools/codex-agent/codex-agent.exe <command> [args]
 | `snap save <file>` | Snapshot before editing. **Required for files >100 lines.** |
 | `snap diff <file>` | Compare current file to snapshot |
 | `snap restore <file>` | Restore from snapshot if edit goes wrong |
-| `status` | Project health check |
+| `status` | Project health check (legacy) |
+
+**Workstream status** (separate tool — merge-safe, one file per entry):
+```
+tools/codex-agent/codex-status.exe <command> [args]
+```
+
+| Command | What it does |
+|---------|-------------|
+| `list` | Show all workstreams with status |
+| `get <id>` | Detail for one workstream |
+| `update <id> --status <s> --summary <text>` | Update a workstream (upsert) |
+| `create <id> --title <t>` | Create a new workstream |
+| `dashboard` | Compact format (for embedding in orient) |
+
+**codex-agent commands (continued):**
+
+
 | `plan add <task>` | Stash a task (survives context loss) |
 | `plan` / `plan show` | Show current task list |
 | `plan clear` | Clear task list |

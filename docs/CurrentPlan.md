@@ -1,6 +1,6 @@
 # Current Plan
 
-**Date**: 2026-03-28
+**Date**: 2026-03-29
 
 ---
 
@@ -17,6 +17,7 @@ blank-line normalization. All function types preserved.
 | x86-64 usermode | 5,063 | 187,131 | 1,126 | Fixed point ✓ |
 | x86-64 bare metal | 5,065 | 187,146 | 1,126 | Matches usermode ✓ |
 | C# emitter (native) | 5,600 | 310,424 | 252 Func<> | Within 31 chars of .NET ref ✓ |
+| RISC-V usermode | 2,786 | 43,933 | — | Self-compile ✓ (2026-03-29) |
 
 TCO verified on all three native backends (x86-64, RISC-V, ARM64):
 - Pure tail recursion: 10M iterations, no stack overflow
@@ -43,27 +44,11 @@ known issues #3 (TCO list-concat crash) and #5 (list `++` returns empty).
 Native is 5x faster than .NET for the same self-compile. But `STACK:2097152`
 means the entire 2 MB bare metal stack was consumed — zero margin.
 
-### Next: Stack Pressure
+### ~~Next: Stack Pressure~~ RESOLVED
 
-The bare metal stack watermark shows 2 MB fully consumed during self-compile.
-This is the immediate blocker for smaller memory targets (Floppy Disk Phase 2).
-
-**Investigation path**:
-1. Identify which functions consume the most stack. The compiler has 585 defs;
-   deep recursion in type checking (`check-all-defs` has 6 params + 6 TCO temps
-   + decomp locals = 20+ locals per frame) and lowering are likely culprits.
-2. TCO already helps (recursive functions reuse their frame), but functions
-   called FROM TCO bodies (like `check-def`, `infer-expr`, `lower-def`) each
-   push their own frame. With 585 defs × nested calls, frames stack up.
-3. Floppy Disk Phase 2 (two-pass design) would process one def at a time,
-   keeping only signatures (~350 KB) persistent. This dramatically reduces
-   both heap AND stack pressure. Design is in `docs/CurrentPlan.md` below.
-
-**Quick wins to try first**:
-- Increase bare metal stack from 2 MB to 4 MB (move stack top, shrink result space)
-- Profile: add per-function frame size reporting to x86-64 codegen
-- Check if any functions have unnecessary locals (field decomposition for
-  non-record params in TCO, unused pattern bindings)
+Stack pressure was resolved by the two-phase streaming pipeline (Floppy Disk
+Phase 2, merged `d90c7b3`). Per-def processing keeps only tokens + type
+context persistent. Bare-metal heap reduced from 220MB to 64MB.
 
 ---
 
@@ -235,52 +220,24 @@ was completely broken — no lowercase names were recognized as type variables.
 | Output | crash | 337,562 chars C# |
 | Tests | all pass | all pass |
 
-### Remaining: 34 Unification Errors (annotation merging)
+### ~~Remaining: 34 Unification Errors~~ RESOLVED
 
-**Status**: The self-hosted desugarer doesn't merge type annotations with their
-body definitions for the concatenated source. Parser produces 582 defs vs expected
-519. The 63 extra defs are annotation-only entries. Their parameters aren't bound,
-causing 34 "Unknown name" errors for references within annotation-only def bodies.
-
-**Names**: `stream-defs`(4), `i`(4), `ust`(3), `types`(3), `len`(3), `defs`(3),
-`List`(3), `main`(2), `Nothing`(2), `Integer`(2), `Console`(2), `text-concat-list`(1)
-
-**Where to investigate**: `Ast/Desugarer.codex` — the `desugar-defs` function needs
-to merge sequential annotation + body pairs with the same name.
+Fixed by CCE character range corrections and annotation merging improvements.
+Self-hosted type checker is clean: 0 errors, 585 defs, 95 type-defs.
 
 **Principle discovered**: In CCE, character ranges must use CCE ordering, not Unicode
-alphabetical ordering. Use `char-code '<char>'` for range bounds — this automatically
-produces the correct CCE byte value since the source is CCE-encoded.
+alphabetical ordering. Use `char-code '<char>'` for range bounds.
 
-### Self-Hosted Type Checker: CLEAN (0 errors)
+### ~~Self-Hosted C# Emitter — 904 C# Compile Errors~~ RESOLVED
 
-The self-hosted compiler now type-checks its own source with **0 errors**.
-585 defs, 95 type-defs, 338,391 chars of C# output. All 554 compiler tests pass.
+All C# compile errors fixed. Fixed point proven: Stage 2 == Stage 3 at
+310,330 chars. The self-hosted compiler is a correct fixed point of itself.
 
-### Next: Self-Hosted C# Emitter — 904 C# Compile Errors
+### ~~Floppy Disk Phase 2 (Two-Pass Design)~~ DONE (merged `d90c7b3`)
 
-The stage 1 C# output doesn't compile: 904 errors, mostly CS0106 "modifier
-'public' not valid for this item" — methods emitted outside of class scope.
-The emitter needs structural fixes (class wrapping, entry point handling).
-
-**How to reproduce**:
-```bash
-dotnet run --project tools/Codex.Bootstrap/Codex.Bootstrap.csproj --no-build \
-  -- "Codex.Codex" "Codex.Codex/stage1-test.cs"
-# Stage 1 output: Codex.Codex/stage1-test.cs (338K chars)
-# Diagnostics: Codex.Codex/unify-errors.txt (0 errors), type-diag.txt
-```
-
-### Floppy Disk Phase 2 (Two-Pass Design)
-
-Target: self-compile in < 4 MB heap. Eliminate AST persistence.
-
-**Architecture**:
-- Pass 1: Parse each def, extract signature (name + type annotation), discard body
-- Pass 2: Re-parse each def from token stream, process through full pipeline
-- Two-pass design: Pass 1 collects signatures (~350 KB persistent), Pass 2 processes
-  each definition independently (~500 KB peak per def)
-- Total peak: < 1 MB
+Two-phase streaming pipeline implemented: tokenize once, scan def headers
+(Pass 1), then process each def independently (Pass 2). Bare-metal heap
+reduced from 220MB to 64MB. Self-compile verified on x86-64 bare metal.
 
 ---
 
@@ -452,25 +409,12 @@ spare capacity, grow-and-shift at heap top, copy-with-gap as fallback. Both
 backends. Minimum list capacity reduced from 16 to 4 (saves 96 bytes per
 small list). Type environment builds drop from O(N²) to O(N).
 
-### What's next: Phase 2 — TCO heap reset
+### ~~What's next: Phase 2 — TCO heap reset~~ DONE
 
-The biggest remaining optimization. At each TCO iteration, after evaluating
-args into stack slots, reset HeapReg to reclaim per-iteration garbage.
-
-**The challenge**: heap-typed TCO args (ParseState records, LexResult sum
-types) live above the mark and would be reclaimed. Need to either:
-1. Decompose records into scalar stack slots, reconstruct after reset
-2. Escape-copy to result space (but escape-copy crashes on cross-refs)
-3. Only reset for scalar-only TCO functions (limited impact since Phase 0
-   already converted hot scalar loops)
-
-**Approach to investigate**: Record decomposition. For `tokenize-loop`,
-the LexState arg has 2 scalar-ish fields (source ptr + pos integer). Save
-those to stack, reset heap, reconstruct LexState at loop top. The source
-ptr points below the mark (allocated at program start), pos is scalar.
-Similar for ParseState (tokens ptr + pos).
-
-**Files**: `X86_64CodeGen.cs` (EmitTailCall), `RiscVCodeGen.cs` (EmitTailCall).
+Implemented conditional HeapReg reset at each tail call in TCO functions
+(both x86-64 and RISC-V). Record decomposition (Phase 2b) also done.
+ListType safety guard added to both backends to prevent in-place list-snoc
+corruption.
 
 ---
 
@@ -672,7 +616,7 @@ now skip redundant deep-copies of pointers already in result space.
 
 1,003 tests pass (0 failures, 2 known skips). Build clean (expected CS5001).
 
-### BLOCKER: Self-hosted sum type match crashes on native backend
+### ~~BLOCKER: Self-hosted sum type match crashes on native backend~~ FIXED
 
 **Minimal repro** (14-line .codex file):
 ```
@@ -861,19 +805,12 @@ bindings like `source <- read-file path` never got escape-copy or
 working-space reclamation. Now wraps with `boundType` (unwrapped from
 `EffectfulType`) for the needs-escape check, matching `LowerLetExpr`.
 
-#### Current status: result-space-aware escape-copy needed
+#### ~~Result-space-aware escape-copy needed~~ DONE (dad9769)
 
-Both fixes verified: 541 compiler tests pass, escape helpers now generated
-for all types (`__escape_list_record_Token`, `__escape_sum_DoStmt`, etc.),
-do-block bindings wrapped in regions. Simple programs (factorial) self-compile
-correctly on both x86-64 and RISC-V user mode.
-
-Self-compile of full 180KB source crashes in `__escape_record_LexState`.
-Root cause: escape-copy blindly deep-copies ALL pointers, including pointers
-that already point to result space. The `LexState.source` field (180KB full
-source text) is deep-copied every time ANY LexState is escape-copied in
-a let-binding region. The lexer creates ~30,000 LexStates during tokenization.
-30,000 × 180KB = 5.4GB — no heap size is sufficient.
+Fixed by adding result-space pointer check to escape-copy. Pointers already
+in result space are skipped. Reduced result-space usage from ~5.4GB to ~2MB.
+Subsequently superseded by capacity-aware lists + TCO heap reset, which
+eliminated the need for most escape-copy calls.
 
 #### DONE: Result-space-aware escape-copy (x86-64, dad9769)
 
@@ -883,34 +820,11 @@ and `EmitRegion` top-level escape: loads global, compares pointer against
 base, skips copy if `ptr >= base`. Reduces result-space usage from ~5.4GB
 to ~2MB for self-compile. RISC-V port pending.
 
-#### Current status: list-snoc is O(N) — causes O(N²) working-space blowup
+#### ~~list-snoc is O(N) — causes O(N²) working-space blowup~~ FIXED
 
-With result-space check working, the remaining blocker is `__list_snoc`.
-It's copy-on-write: allocates `(oldLen+2)*8` bytes and copies all old
-elements every time. The tokenizer builds a 15,000-element list via TCO
-loop, one `list-snoc` per iteration → `sum(i=1..15000) of 8i ≈ 900MB`
-working-space allocations within a SINGLE region body (the tokenize call).
-No let-boundary reclamation can help because it's all within one TCO loop.
-
-**#1 blocker: in-place list-snoc for native backends.**
-
-The fix: `__list_snoc` should extend the list in-place when the list's
-allocation is at the top of the heap (i.e., `list_end == HeapReg`). This
-is always true in a linear ownership model — the list is the most recently
-allocated object. Just bump HeapReg by 8 and store the new element.
-
-```
-if (list_ptr + 8 + old_len*8 == HeapReg):
-    [list_ptr] = old_len + 1       // update length
-    [HeapReg] = element             // store new element
-    HeapReg += 8                    // bump
-    return list_ptr                 // same pointer, extended in-place
-else:
-    // fallback: copy (current behavior)
-```
-
-This turns O(N) per snoc into O(1), and O(N²) total into O(N). Apply to
-both x86-64 and RISC-V backends.
+Fixed by capacity-aware lists (both backends). Hidden capacity word at
+[-8], geometric doubling, 3-path `__list_snoc` (in-place / grow / copy).
+Tokenizer list building dropped from ~11GB to ~512KB (22,000x improvement).
 
 ### Previous: TCO/match register clobbering (fixed last session)
 
@@ -1017,6 +931,7 @@ For remaining work, see `docs/BACKLOG.md`.
 | ~~Two-phase streaming pipeline~~ | **DONE** — 220MB → 64MB bare-metal heap |
 | ~~ARM64/WASM CCE character ranges~~ | **DONE** (cb2106d, 2026-03-29) |
 | ~~Fix Bootstrap Stage 1 crash~~ | **DONE** - verified 2026-03-29, no longer reproduces (fixed by parser/scan_token improvements) |
+| ~~RISC-V self-compile~~ | **DONE** (bff79ff, 2026-03-29) — TCO heap reset ListType guard ported from x86-64; 2,786 lines output |
 | Perf automation | Wire `--bench-check` into CI or pre-commit hook |
 
 ### Medium-term (weeks)
