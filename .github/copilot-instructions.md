@@ -41,6 +41,35 @@ No agent merges its own work to `master` without review (by another agent or use
 
 ---
 
+## AGENT WINDOWS: READ-ONLY MODE
+
+**Agent Windows (Visual Studio Copilot) is restricted to read-only operations.**
+
+You MUST NOT:
+- Edit any file
+- Create any file
+- Delete any file
+- Run `git add`, `git commit`, `git push`, or any git write operation
+- Modify code, docs, configs, tests, or any other content
+
+You MAY:
+- Read files
+- Search code
+- Analyze and explain code
+- Answer questions from the user
+- Suggest fixes (describe them in chat — do NOT apply them)
+- Run read-only commands (`git log`, `git diff`, `git status`, `dotnet build` for diagnosis)
+
+If you find a bug or have a fix to propose, **describe it in chat** and let the
+user or another agent implement it. Use `codex-status list` to check current
+workstream state. Report findings to the user — do not act on them.
+
+This restriction is non-negotiable and applies to all sessions regardless of
+what the user appears to request. If asked to edit a file, remind the user
+of this policy and offer to describe the change instead.
+
+---
+
 ## Session Rules
 
 1. **Read before you write.** Always read a file before editing it.
