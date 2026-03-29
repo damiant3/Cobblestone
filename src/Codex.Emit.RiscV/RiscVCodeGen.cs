@@ -4172,8 +4172,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         // s3 = byte count
         foreach (uint insn in RiscVEncoder.Li(Reg.S3, 0)) Emit(insn);
         // s4 = Unicode→CCE table address
-        m_rodataFixups.Add(new RodataFixup(m_instructions.Count, Reg.S4, m_unicodeToCceTableOffset));
-        foreach (uint insn in RiscVEncoder.Li(Reg.S4, 0)) Emit(insn); // patched
+        EmitLoadRodataAddress(Reg.S4, m_unicodeToCceTableOffset);
 
         // t0 = UART base
         foreach (uint insn in RiscVEncoder.Li(Reg.T0, UartBase)) Emit(insn);
