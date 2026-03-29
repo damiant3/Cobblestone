@@ -113,6 +113,12 @@ Section: Arity Map
    else let d = list-at defs i
     in [ArityEntry { name = d.name, arity = list-length d.params }] ++ build-arity-map defs (i + 1)
 
+  build-arity-map-from-ast : List ADef -> Integer -> List ArityEntry
+  build-arity-map-from-ast (defs) (i) =
+   if i == list-length defs then []
+   else let d = list-at defs i
+    in [ArityEntry { name = d.name.value, arity = list-length d.params }] ++ build-arity-map-from-ast defs (i + 1)
+
   lookup-arity : List ArityEntry -> Text -> Integer
   lookup-arity (entries) (name) =
    lookup-arity-loop entries name 0 (list-length entries)
@@ -140,7 +146,7 @@ Section: Apply Chain
   is-upper-letter : Char -> Boolean
   is-upper-letter (c) =
    let code = char-code c
-   in code >= char-code 'A' & code <= char-code 'Z'
+   in code >= char-code 'E' & code <= char-code 'Z'
 
   emit-apply-args : List IRExpr -> List ArityEntry -> Integer -> Text
   emit-apply-args (args) (arities) (i) =
@@ -208,7 +214,7 @@ Section: Apply Chain
   emit-builtin (n) (args) (arities) =
    if n == "show" then "_Cce.FromUnicode(Convert.ToString(" ++ emit-expr (list-at args 0) arities ++ "))"
    else if n == "negate" then "(-" ++ emit-expr (list-at args 0) arities ++ ")"
-   else if n == "print-line" then "Console.WriteLine(_Cce.ToUnicode(" ++ emit-expr (list-at args 0) arities ++ "))"
+   else if n == "print-line" then "((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(" ++ emit-expr (list-at args 0) arities ++ ")); return null; }))()"
    else if n == "text-length" then "((long)" ++ emit-expr (list-at args 0) arities ++ ".Length)"
    else if n == "is-letter" then "(" ++ emit-expr (list-at args 0) arities ++ " >= 13L && " ++ emit-expr (list-at args 0) arities ++ " <= 64L)"
    else if n == "is-digit" then "(" ++ emit-expr (list-at args 0) arities ++ " >= 3L && " ++ emit-expr (list-at args 0) arities ++ " <= 12L)"
@@ -316,9 +322,9 @@ Section: Expression Emission
 
   escape-cce-char : Integer -> Text
   escape-cce-char (c) =
-   if c == 92 then "\\\\"
-   else if c == 34 then "\\\""
-   else if c >= 32 then
+   if c == char-code '\\' then "\\\\"
+   else if c == char-code '"' then "\\\""
+   else if c >= char-code ' ' then
     if c < 127 then char-to-text (code-to-char c)
     else "\\u" ++ hex4 c
    else "\\u" ++ hex4 c

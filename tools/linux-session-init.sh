@@ -141,6 +141,31 @@ git config user.email "agent-linux@codex.dev"
 git config user.name "Agent Linux"
 
 # ═══════════════════════════════════════════════════════════════
+# STEP 3b: Clean stale test intermediates
+# ═══════════════════════════════════════════════════════════════
+
+step "Step 3b: Cleaning stale intermediates"
+
+# Stale .elf, .dll, .cs outputs cause false test results — you test
+# yesterday's codegen against today's type system. Same class as QEMU
+# tests silently skipping. Nuke everything so builds are always fresh.
+CLEANED=0
+for pattern in "samples/*.elf" "samples/*.o" "Codex.Codex/out/*.cs" \
+               "Codex.Codex/out/*.elf" "Codex.Codex/out/*.dll"; do
+    COUNT=$(find . -path "./$pattern" 2>/dev/null | wc -l)
+    if [ "$COUNT" -gt 0 ]; then
+        find . -path "./$pattern" -delete 2>/dev/null
+        CLEANED=$((CLEANED + COUNT))
+    fi
+done
+git clean -fd samples/ 2>/dev/null
+if [ "$CLEANED" -gt 0 ]; then
+    ok "Removed $CLEANED stale intermediate(s)"
+else
+    ok "No stale intermediates found"
+fi
+
+# ═══════════════════════════════════════════════════════════════
 # STEP 4: Build
 # ═══════════════════════════════════════════════════════════════
 

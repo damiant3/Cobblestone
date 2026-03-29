@@ -36,6 +36,9 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     uint[] m_tcoTempLocals = [];
     uint m_tcoSavedNextLocal;
     uint m_tcoSavedNextTemp;
+    uint m_tcoHeapMarkLocal;              // stack local: S1 value at TCO loop top
+    CodexType[] m_tcoParamTypes = [];     // parameter types for TCO heap-reset check
+    uint[]?[] m_tcoDecompLocals = [];     // [paramIdx] = field locals, or null if not decomposed
     int m_spillCount;           // number of spilled locals beyond S-registers
     int m_prologueIndex = -1;   // instruction index of the frame size addi (patched)
     Dictionary<string, uint> m_locals = [];
@@ -216,8 +219,38 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             m_tcoTempLocals = new uint[def.Parameters.Length];
             for (int i = 0; i < def.Parameters.Length; i++)
                 m_tcoTempLocals[i] = AllocLocal();
+
+            // Store parameter types for heap-reset check in EmitRiscVTailCall
+            m_tcoParamTypes = new CodexType[def.Parameters.Length];
+            for (int i = 0; i < def.Parameters.Length; i++)
+                m_tcoParamTypes[i] = def.Parameters[i].Type;
+
+            // Pre-allocate field locals for record decomposition (Phase 2b).
+            m_tcoDecompLocals = new uint[]?[def.Parameters.Length];
+            for (int i = 0; i < def.Parameters.Length; i++)
+            {
+                CodexType resolved = ResolveType(def.Parameters[i].Type);
+                if (resolved is RecordType rt)
+                {
+                    m_tcoDecompLocals[i] = new uint[rt.Fields.Length];
+                    for (int f = 0; f < rt.Fields.Length; f++)
+                        m_tcoDecompLocals[i]![f] = AllocLocal();
+                }
+            }
+
+            // Allocate local for heap mark (persists across iterations)
+            m_tcoHeapMarkLocal = AllocLocal();
         }
         m_tcoLoopTop = m_instructions.Count;
+
+        // TCO heap reset: save S1 (heap ptr) at each iteration start.
+        if (m_inTCOFunction)
+        {
+            uint hp = AllocTemp();
+            Emit(RiscVEncoder.Mv(hp, Reg.S1));
+            StoreLocal(m_tcoHeapMarkLocal, hp);
+        }
+
         m_tcoSavedNextLocal = m_nextLocal;
         m_tcoSavedNextTemp = m_nextTemp;
         m_inTailPosition = m_inTCOFunction;
@@ -402,11 +435,18 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     uint EmitBinary(IRBinary bin)
     {
+        // Binary operands are NEVER in tail position — the result is consumed
+        // by the operator.  Without this, a self-recursive call inside `++`
+        // would be mis-identified as a tail call and jump instead of returning.
+        bool savedTail = m_inTailPosition;
+        m_inTailPosition = false;
+
         uint left = EmitExpr(bin.Left);
         uint savedLeft = AllocLocal();
         StoreLocal(savedLeft, left);
 
         uint right = EmitExpr(bin.Right);
+        m_inTailPosition = savedTail;
         uint leftReg = LoadLocal(savedLeft);
         uint rd = AllocTemp();
 
@@ -555,6 +595,134 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             m_inTailPosition = saved;
             StoreLocal(m_tcoTempLocals[i], r);
         }
+
+        // ── TCO heap reset (Phase 2a + 2b) ─────────────────────
+        // Record-typed args are decomposed into fields so the check
+        // inspects field pointers (often pre-existing) rather than
+        // the record pointer (always freshly allocated).
+        {
+            // Phase 1: decompose record-typed heap args into field locals
+            List<int> decompIndices = [];
+            List<int> plainHeapIndices = [];
+            for (int i = 0; i < args.Count && i < m_tcoParamTypes.Length; i++)
+            {
+                CodexType resolved = ResolveType(m_tcoParamTypes[i]);
+                if (!IRRegion.TypeNeedsHeapEscape(resolved))
+                    continue;
+                if (resolved is RecordType rt && i < m_tcoDecompLocals.Length
+                    && m_tcoDecompLocals[i] is uint[] fieldLocals)
+                {
+                    uint ptr = LoadLocal(m_tcoTempLocals[i]);
+                    for (int f = 0; f < rt.Fields.Length; f++)
+                    {
+                        uint fv = AllocTemp();
+                        Emit(RiscVEncoder.Ld(fv, ptr, f * 8));
+                        StoreLocal(fieldLocals[f], fv);
+                    }
+                    decompIndices.Add(i);
+                }
+                else
+                {
+                    plainHeapIndices.Add(i);
+                }
+            }
+
+            // Phase 2: determine if any runtime pointer checks are needed
+            bool anyChecks = plainHeapIndices.Count > 0;
+            if (!anyChecks)
+            {
+                foreach (int idx in decompIndices)
+                {
+                    RecordType rt = (RecordType)ResolveType(m_tcoParamTypes[idx]);
+                    for (int f = 0; f < rt.Fields.Length; f++)
+                    {
+                        if (IRRegion.TypeNeedsHeapEscape(ResolveType(rt.Fields[f].Type)))
+                        { anyChecks = true; break; }
+                    }
+                    if (anyChecks) break;
+                }
+            }
+
+            if (!anyChecks)
+            {
+                // All scalar (or decomposed records with only scalar fields)
+                Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(m_tcoHeapMarkLocal)));
+
+                // Reconstruct decomposed records at the reset heap position
+                foreach (int idx in decompIndices)
+                {
+                    RecordType rt = (RecordType)ResolveType(m_tcoParamTypes[idx]);
+                    uint newPtr = AllocTemp();
+                    Emit(RiscVEncoder.Mv(newPtr, Reg.S1));
+                    Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, rt.Fields.Length * 8));
+                    for (int f = 0; f < rt.Fields.Length; f++)
+                    {
+                        uint fv = LoadLocal(m_tcoDecompLocals[idx]![f]);
+                        Emit(RiscVEncoder.Sd(newPtr, fv, f * 8));
+                    }
+                    StoreLocal(m_tcoTempLocals[idx], newPtr);
+                }
+            }
+            else
+            {
+                // Load mark into a temp register
+                uint markReg = AllocTemp();
+                Emit(RiscVEncoder.Mv(markReg, LoadLocal(m_tcoHeapMarkLocal)));
+
+                List<(int Index, uint Rs1, uint Rs2)> skipBranches = [];
+
+                // Check plain heap args
+                foreach (int idx in plainHeapIndices)
+                {
+                    uint argVal = LoadLocal(m_tcoTempLocals[idx]);
+                    int branchIdx = m_instructions.Count;
+                    Emit(RiscVEncoder.Bge(argVal, markReg, 0));
+                    skipBranches.Add((branchIdx, argVal, markReg));
+                }
+
+                // Check decomposed record pointer fields
+                foreach (int idx in decompIndices)
+                {
+                    RecordType rt = (RecordType)ResolveType(m_tcoParamTypes[idx]);
+                    for (int f = 0; f < rt.Fields.Length; f++)
+                    {
+                        CodexType ft = ResolveType(rt.Fields[f].Type);
+                        if (IRRegion.TypeNeedsHeapEscape(ft))
+                        {
+                            uint fv = LoadLocal(m_tcoDecompLocals[idx]![f]);
+                            int branchIdx = m_instructions.Count;
+                            Emit(RiscVEncoder.Bge(fv, markReg, 0));
+                            skipBranches.Add((branchIdx, fv, markReg));
+                        }
+                    }
+                }
+
+                // All checks passed — reset heap to mark
+                Emit(RiscVEncoder.Mv(Reg.S1, markReg));
+
+                // Reconstruct decomposed records at the reset heap position
+                foreach (int idx in decompIndices)
+                {
+                    RecordType rt = (RecordType)ResolveType(m_tcoParamTypes[idx]);
+                    uint newPtr = AllocTemp();
+                    Emit(RiscVEncoder.Mv(newPtr, Reg.S1));
+                    Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, rt.Fields.Length * 8));
+                    for (int f = 0; f < rt.Fields.Length; f++)
+                    {
+                        uint fv = LoadLocal(m_tcoDecompLocals[idx]![f]);
+                        Emit(RiscVEncoder.Sd(newPtr, fv, f * 8));
+                    }
+                    StoreLocal(m_tcoTempLocals[idx], newPtr);
+                }
+
+                // Patch all skip-reset branches to land here
+                int noResetTarget = m_instructions.Count;
+                foreach (var (brIdx, rs1, rs2) in skipBranches)
+                    m_instructions[brIdx] = RiscVEncoder.Bge(rs1, rs2,
+                        (noResetTarget - brIdx) * 4);
+            }
+        }
+
         for (int i = 0; i < args.Count && i < m_tcoParamLocals.Length; i++)
         {
             uint val = LoadLocal(m_tcoTempLocals[i]);
@@ -1043,8 +1211,24 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     uint EmitRegion(IRRegion region)
     {
-        // Regions are currently pass-through: no reclamation, no escape-copy.
-        // Same rationale as x86-64 — see X86_64CodeGen.EmitRegion.
+        if (region.Type is FunctionType)
+            return EmitExpr(region.Body);
+
+        if (!region.NeedsEscapeCopy)
+        {
+            // Scalar return — save/restore S1 (heap ptr) to reclaim intermediates.
+            uint mark = AllocLocal();
+            uint hpTmp = AllocTemp();
+            Emit(RiscVEncoder.Mv(hpTmp, Reg.S1));
+            StoreLocal(mark, hpTmp);
+
+            uint bodyResult = EmitExpr(region.Body);
+
+            Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(mark)));
+            return bodyResult;
+        }
+
+        // Heap return — pass-through (escape-copy crashes on cross-references).
         return EmitExpr(region.Body);
     }
 
@@ -2618,9 +2802,9 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         int path3 = m_instructions.Count;
         Emit(RiscVEncoder.Nop()); // patched: bne t2, s1 → path3
 
-        // At heap top: grow capacity = max(capacity * 2, 16)
+        // At heap top: grow capacity = max(capacity * 2, 4)
         Emit(RiscVEncoder.Slli(Reg.T2, Reg.T1, 1));       // capacity * 2
-        foreach (uint insn in RiscVEncoder.Li(Reg.T3, 16)) Emit(insn);
+        foreach (uint insn in RiscVEncoder.Li(Reg.T3, 4)) Emit(insn);
         int capOk = m_instructions.Count;
         Emit(RiscVEncoder.Nop()); // patched: bge t2, t3 → capOk
         Emit(RiscVEncoder.Mv(Reg.T2, Reg.T3));            // use 16
@@ -2654,9 +2838,9 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Mv(Reg.S3, Reg.A1));            // element
         Emit(RiscVEncoder.Ld(Reg.S4, Reg.S2, 0));         // count
 
-        // S5 = new capacity = max(count * 2, 16)
+        // S5 = new capacity = max(count * 2, 4)
         Emit(RiscVEncoder.Slli(Reg.S5, Reg.S4, 1));       // count * 2
-        foreach (uint insn in RiscVEncoder.Li(Reg.T0, 16)) Emit(insn);
+        foreach (uint insn in RiscVEncoder.Li(Reg.T0, 4)) Emit(insn);
         int capOk2 = m_instructions.Count;
         Emit(RiscVEncoder.Nop()); // patched: bge s5, t0 → capOk2
         Emit(RiscVEncoder.Mv(Reg.S5, Reg.T0));
@@ -2707,6 +2891,10 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     void EmitListInsertAtHelper()
     {
         // __list_insert_at: a0=list, a1=index, a2=element → a0=new list
+        // List layout: [capacity @ -8 | count @ 0 | elem0 @ 8 | ...]
+        // Path 1: count < capacity → in-place shift O(N), zero alloc
+        // Path 2: count == capacity, at heap top → grow capacity, then shift
+        // Path 3: count == capacity, not at top → copy-with-gap + doubling
         m_functionOffsets["__list_insert_at"] = m_instructions.Count;
 
         Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -48));
@@ -2717,26 +2905,97 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S5, 8));
         Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S6, 0));
 
-        Emit(RiscVEncoder.Mv(Reg.S2, Reg.A0));  // old list
-        Emit(RiscVEncoder.Mv(Reg.S3, Reg.A1));  // index
-        Emit(RiscVEncoder.Mv(Reg.S4, Reg.A2));  // element
-        Emit(RiscVEncoder.Ld(Reg.S5, Reg.S2, 0)); // old length
+        Emit(RiscVEncoder.Mv(Reg.S2, Reg.A0));            // S2 = list
+        Emit(RiscVEncoder.Mv(Reg.S3, Reg.A1));            // S3 = index
+        Emit(RiscVEncoder.Mv(Reg.S4, Reg.A2));            // S4 = element
+        Emit(RiscVEncoder.Ld(Reg.S5, Reg.S2, 0));         // S5 = count
+        Emit(RiscVEncoder.Ld(Reg.S6, Reg.S2, -8));        // S6 = capacity
 
-        // Allocate [capacity | count | elements]: (newLen + 2) * 8, capacity = newLen
-        Emit(RiscVEncoder.Addi(Reg.T0, Reg.S5, 1));       // newLen
-        Emit(RiscVEncoder.Sd(Reg.S1, Reg.T0, 0));         // capacity = newLen
-        Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, 8));       // past capacity
-        Emit(RiscVEncoder.Mv(Reg.S6, Reg.S1));            // result ptr (saved in s6)
-        Emit(RiscVEncoder.Addi(Reg.T0, Reg.S5, 2));       // newLen + 1 (count word + elements)
+        // Path 1: count < capacity → jump to in-place shift
+        int inPlaceJmp = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: blt s5, s6 → inPlace
+
+        // Path 2: count == capacity, check heap top
+        // End of alloc = list + (capacity + 1) * 8
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.S6, 1));
         Emit(RiscVEncoder.Slli(Reg.T0, Reg.T0, 3));
-        Emit(RiscVEncoder.Add(Reg.S1, Reg.S1, Reg.T0));
+        Emit(RiscVEncoder.Add(Reg.T0, Reg.S2, Reg.T0));
+        int path3Jmp = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bne t0, s1 → path3
 
-        // Store new length = oldLen + 1
+        // At heap top: newCap = max(capacity * 2, 4)
+        Emit(RiscVEncoder.Slli(Reg.T0, Reg.S6, 1));       // capacity * 2
+        foreach (uint insn in RiscVEncoder.Li(Reg.T1, 4)) Emit(insn);
+        int capOk2 = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge t0, t1 → capOk
+        Emit(RiscVEncoder.Mv(Reg.T0, Reg.T1));
+        int capOk2Target = m_instructions.Count;
+        m_instructions[capOk2] = RiscVEncoder.Bge(Reg.T0, Reg.T1, (capOk2Target - capOk2) * 4);
+        // Update capacity, bump heap
+        Emit(RiscVEncoder.Sd(Reg.S2, Reg.T0, -8));        // [list-8] = new capacity
+        Emit(RiscVEncoder.Sub(Reg.T1, Reg.T0, Reg.S6));   // newCap - oldCap
+        Emit(RiscVEncoder.Slli(Reg.T1, Reg.T1, 3));
+        Emit(RiscVEncoder.Add(Reg.S1, Reg.S1, Reg.T1));   // bump heap
+        // Fall through to in-place shift
+
+        // ── In-place shift (shared by Path 1 and Path 2) ──
+        int inPlaceTarget = m_instructions.Count;
+        m_instructions[inPlaceJmp] = RiscVEncoder.Blt(Reg.S5, Reg.S6, (inPlaceTarget - inPlaceJmp) * 4);
+        // Shift elements [index..count-1] right by 1 (backward: i = count-1 down to index)
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.S5, -1));      // i = count - 1
+        int shiftLoop = m_instructions.Count;
+        int shiftDone = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: blt t0, s3 → done
+        Emit(RiscVEncoder.Slli(Reg.T1, Reg.T0, 3));
+        Emit(RiscVEncoder.Add(Reg.T2, Reg.S2, Reg.T1));
+        Emit(RiscVEncoder.Ld(Reg.T3, Reg.T2, 8));         // list[8 + i*8]
+        Emit(RiscVEncoder.Sd(Reg.T2, Reg.T3, 16));        // list[8 + (i+1)*8]
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.T0, -1));      // i--
+        Emit(RiscVEncoder.J((shiftLoop - m_instructions.Count) * 4));
+        int shiftEnd = m_instructions.Count;
+        m_instructions[shiftDone] = RiscVEncoder.Blt(Reg.T0, Reg.S3, (shiftEnd - shiftDone) * 4);
+        // Store element at [list + 8 + index*8]
+        Emit(RiscVEncoder.Slli(Reg.T0, Reg.S3, 3));
+        Emit(RiscVEncoder.Add(Reg.T0, Reg.S2, Reg.T0));
+        Emit(RiscVEncoder.Sd(Reg.T0, Reg.S4, 8));
+        // Increment count, return same ptr
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.S5, 1));
+        Emit(RiscVEncoder.Sd(Reg.S2, Reg.T0, 0));
+        Emit(RiscVEncoder.Mv(Reg.A0, Reg.S2));
+        // Epilog (shared)
+        int epilog = m_instructions.Count;
+        Emit(RiscVEncoder.Ld(Reg.S6, Reg.Sp, 0));
+        Emit(RiscVEncoder.Ld(Reg.S5, Reg.Sp, 8));
+        Emit(RiscVEncoder.Ld(Reg.S4, Reg.Sp, 16));
+        Emit(RiscVEncoder.Ld(Reg.S3, Reg.Sp, 24));
+        Emit(RiscVEncoder.Ld(Reg.S2, Reg.Sp, 32));
+        Emit(RiscVEncoder.Ld(Reg.Ra, Reg.Sp, 40));
+        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, 48));
+        Emit(RiscVEncoder.Ret());
+
+        // ── Path 3: not at heap top — copy-with-gap + doubled capacity ──
+        int path3Target = m_instructions.Count;
+        m_instructions[path3Jmp] = RiscVEncoder.Bne(Reg.T0, Reg.S1, (path3Target - path3Jmp) * 4);
+        // newCap = max(count * 2, 4)
+        Emit(RiscVEncoder.Slli(Reg.T0, Reg.S5, 1));       // count * 2
+        foreach (uint insn in RiscVEncoder.Li(Reg.T1, 4)) Emit(insn);
+        int capOk3 = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge t0, t1 → capOk3
+        Emit(RiscVEncoder.Mv(Reg.T0, Reg.T1));
+        int capOk3Target = m_instructions.Count;
+        m_instructions[capOk3] = RiscVEncoder.Bge(Reg.T0, Reg.T1, (capOk3Target - capOk3) * 4);
+        // Allocate [capacity | count | slots...]
+        Emit(RiscVEncoder.Sd(Reg.S1, Reg.T0, 0));         // capacity word
+        Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, 8));
+        Emit(RiscVEncoder.Mv(Reg.S6, Reg.S1));            // S6 = new list ptr
+        Emit(RiscVEncoder.Addi(Reg.T0, Reg.T0, 1));       // newCap + 1
+        Emit(RiscVEncoder.Slli(Reg.T0, Reg.T0, 3));
+        Emit(RiscVEncoder.Add(Reg.S1, Reg.S1, Reg.T0));   // bump heap
+        // Store new count = oldCount + 1
         Emit(RiscVEncoder.Addi(Reg.T0, Reg.S5, 1));
         Emit(RiscVEncoder.Sd(Reg.S6, Reg.T0, 0));
-
         // Copy elements before index: 0..index-1
-        foreach (uint insn in RiscVEncoder.Li(Reg.T0, 0)) Emit(insn); // i
+        foreach (uint insn in RiscVEncoder.Li(Reg.T0, 0)) Emit(insn);
         int preCopy = m_instructions.Count;
         int preDone = m_instructions.Count;
         Emit(RiscVEncoder.Nop()); // patched: bge t0, s3 → done
@@ -2749,22 +3008,18 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.J((preCopy - m_instructions.Count) * 4));
         int preEnd = m_instructions.Count;
         m_instructions[preDone] = RiscVEncoder.Bge(Reg.T0, Reg.S3, (preEnd - preDone) * 4);
-
         // Store inserted element at new[8 + index*8]
         Emit(RiscVEncoder.Slli(Reg.T0, Reg.S3, 3));
         Emit(RiscVEncoder.Add(Reg.T1, Reg.S6, Reg.T0));
         Emit(RiscVEncoder.Sd(Reg.T1, Reg.S4, 8));
-
-        // Copy elements after index: index..oldLen-1 → positions index+1..
-        Emit(RiscVEncoder.Mv(Reg.T0, Reg.S3)); // i = index
+        // Copy elements after index: old[index..count-1] → new[index+1..]
+        Emit(RiscVEncoder.Mv(Reg.T0, Reg.S3));
         int postCopy = m_instructions.Count;
         int postDone = m_instructions.Count;
         Emit(RiscVEncoder.Nop()); // patched: bge t0, s5 → done
         Emit(RiscVEncoder.Slli(Reg.T1, Reg.T0, 3));
-        // old[8 + i*8]
         Emit(RiscVEncoder.Add(Reg.T2, Reg.S2, Reg.T1));
         Emit(RiscVEncoder.Ld(Reg.T2, Reg.T2, 8));
-        // new[8 + (i+1)*8]
         Emit(RiscVEncoder.Addi(Reg.T3, Reg.T1, 8));
         Emit(RiscVEncoder.Add(Reg.T3, Reg.S6, Reg.T3));
         Emit(RiscVEncoder.Sd(Reg.T3, Reg.T2, 8));
@@ -2772,17 +3027,9 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.J((postCopy - m_instructions.Count) * 4));
         int postEnd = m_instructions.Count;
         m_instructions[postDone] = RiscVEncoder.Bge(Reg.T0, Reg.S5, (postEnd - postDone) * 4);
-
-        Emit(RiscVEncoder.Mv(Reg.A0, Reg.S6));  // return result ptr
-
-        Emit(RiscVEncoder.Ld(Reg.S6, Reg.Sp, 0));
-        Emit(RiscVEncoder.Ld(Reg.S5, Reg.Sp, 8));
-        Emit(RiscVEncoder.Ld(Reg.S4, Reg.Sp, 16));
-        Emit(RiscVEncoder.Ld(Reg.S3, Reg.Sp, 24));
-        Emit(RiscVEncoder.Ld(Reg.S2, Reg.Sp, 32));
-        Emit(RiscVEncoder.Ld(Reg.Ra, Reg.Sp, 40));
-        Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, 48));
-        Emit(RiscVEncoder.Ret());
+        // Return new list ptr
+        Emit(RiscVEncoder.Mv(Reg.A0, Reg.S6));
+        Emit(RiscVEncoder.J((epilog - m_instructions.Count) * 4)); // jump to shared epilog
     }
 
     void EmitListContainsHelper()

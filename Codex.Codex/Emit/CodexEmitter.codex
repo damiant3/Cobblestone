@@ -1,0 +1,500 @@
+Chapter: Codex Emitter
+
+ Emits Codex source code from the IR. This is the identity backend:
+ Codex in, Codex out. No arity map needed — Codex has native currying.
+
+Section: Type Definition Emission
+
+  codex-emit-type-defs : List ATypeDef -> Integer -> Text
+  codex-emit-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else codex-emit-type-def (list-at tds i) ++ "\n" ++ codex-emit-type-defs tds (i + 1)
+
+  codex-emit-type-def : ATypeDef -> Text
+  codex-emit-type-def (td) =
+   when td
+    if ARecordTypeDef (name) (tparams) (fields) ->
+     name.value ++ " = record {" ++ codex-emit-record-field-defs fields 0 ++ "\n}\n"
+    if AVariantTypeDef (name) (tparams) (ctors) ->
+     name.value ++ " =\n" ++ codex-emit-variant-ctors ctors 0
+
+  codex-emit-record-field-defs : List ARecordFieldDef -> Integer -> Text
+  codex-emit-record-field-defs (fields) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+    in let comma = if i > 0 then "," else ""
+    in comma ++ "\n  " ++ f.name.value ++ " : " ++ codex-emit-type-expr f.type-expr ++ codex-emit-record-field-defs fields (i + 1)
+
+  codex-emit-variant-ctors : List AVariantCtorDef -> Integer -> Text
+  codex-emit-variant-ctors (ctors) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+    in "  | " ++ c.name.value ++ codex-emit-ctor-fields c.fields 0 ++ "\n" ++ codex-emit-variant-ctors ctors (i + 1)
+
+  codex-emit-ctor-fields : List ATypeExpr -> Integer -> Text
+  codex-emit-ctor-fields (fields) (i) =
+   if i == list-length fields then ""
+   else " (" ++ codex-emit-type-expr (list-at fields i) ++ ")" ++ codex-emit-ctor-fields fields (i + 1)
+
+  codex-emit-type-expr : ATypeExpr -> Text
+  codex-emit-type-expr (te) =
+   when te
+    if ANamedType (name) -> name.value
+    if AFunType (p) (r) -> "(" ++ codex-emit-type-expr p ++ " -> " ++ codex-emit-type-expr r ++ ")"
+    if AAppType (base) (args) -> codex-emit-type-expr base ++ " " ++ codex-emit-type-expr-args args 0
+    if AEffectType (effs) (ret) -> "[" ++ codex-emit-effect-names effs 0 ++ "] " ++ codex-emit-type-expr ret
+
+  codex-emit-type-expr-args : List ATypeExpr -> Integer -> Text
+  codex-emit-type-expr-args (args) (i) =
+   if i == list-length args then ""
+   else let sep = if i > 0 then " " else ""
+    in sep ++ codex-emit-type-expr-wrapped (list-at args i) ++ codex-emit-type-expr-args args (i + 1)
+
+  codex-emit-type-expr-wrapped : ATypeExpr -> Text
+  codex-emit-type-expr-wrapped (te) =
+   when te
+    if AFunType (p) (r) -> "(" ++ codex-emit-type-expr te ++ ")"
+    if AAppType (base) (args) -> "(" ++ codex-emit-type-expr te ++ ")"
+    if _ -> codex-emit-type-expr te
+
+  codex-emit-effect-names : List Name -> Integer -> Text
+  codex-emit-effect-names (effs) (i) =
+   if i == list-length effs then ""
+   else let sep = if i > 0 then ", " else ""
+    in sep ++ (list-at effs i).value ++ codex-emit-effect-names effs (i + 1)
+
+Section: CodexType Emission
+
+  codex-emit-codex-type : CodexType -> Text
+  codex-emit-codex-type (ty) =
+   when ty
+    if IntegerTy -> "Integer"
+    if NumberTy -> "Number"
+    if TextTy -> "Text"
+    if BooleanTy -> "Boolean"
+    if CharTy -> "Char"
+    if VoidTy -> "Nothing"
+    if NothingTy -> "Nothing"
+    if ErrorTy -> "Unknown"
+    if FunTy (p) (r) -> codex-wrap-fun-param p ++ " -> " ++ codex-emit-codex-type r
+    if ListTy (elem) -> "List " ++ codex-wrap-complex elem
+    if TypeVar (id) -> "a" ++ integer-to-text id
+    if ForAllTy (id) (body) -> codex-emit-codex-type body
+    if SumTy (name) (ctors) -> name.value
+    if RecordTy (name) (fields) -> name.value
+    if ConstructedTy (name) (args) -> name.value
+    if EffectfulTy (effs) (ret) -> "[" ++ codex-emit-codex-type-effect-names effs 0 ++ "] " ++ codex-emit-codex-type ret
+
+  codex-wrap-fun-param : CodexType -> Text
+  codex-wrap-fun-param (ty) =
+   when ty
+    if FunTy (p) (r) -> "(" ++ codex-emit-codex-type ty ++ ")"
+    if _ -> codex-emit-codex-type ty
+
+  codex-wrap-complex : CodexType -> Text
+  codex-wrap-complex (ty) =
+   when ty
+    if FunTy (p) (r) -> "(" ++ codex-emit-codex-type ty ++ ")"
+    if ListTy (elem) -> "(" ++ codex-emit-codex-type ty ++ ")"
+    if _ -> codex-emit-codex-type ty
+
+  codex-emit-codex-type-effect-names : List Name -> Integer -> Text
+  codex-emit-codex-type-effect-names (effs) (i) =
+   if i == list-length effs then ""
+   else let sep = if i > 0 then ", " else ""
+    in sep ++ (list-at effs i).value ++ codex-emit-codex-type-effect-names effs (i + 1)
+
+Section: Definition Emission
+
+  codex-emit-def : IRDef -> List Text -> Text
+  codex-emit-def (d) (ctor-names) =
+   if codex-skip-def d ctor-names then ""
+   else d.name ++ " : " ++ codex-emit-codex-type d.type-val ++ "\n" ++ d.name ++ codex-emit-def-params d.params 0 ++ " =\n  " ++ codex-emit-expr d.body ctor-names 1 ++ "\n"
+
+  codex-skip-def : IRDef -> List Text -> Boolean
+  codex-skip-def (d) (ctor-names) =
+   if list-contains ctor-names d.name then True
+   else if text-length d.name == 0 then True
+   else let first = char-code-at d.name 0
+    in let code-a = char-code-at "a" 0
+    in let code-z = char-code-at "z" 0
+    in if first < code-a | first > code-z then True
+    else if codex-is-error-body d.body then True
+    else False
+
+  codex-is-upper : Integer -> Boolean
+  codex-is-upper (c) =
+   let code = char-code-at "A" 0
+   in let code-z = char-code-at "Z" 0
+   in c >= code & c <= code-z
+
+  codex-is-error-body : IRExpr -> Boolean
+  codex-is-error-body (e) =
+   when e
+    if IrError (msg) (ty) -> True
+    if _ -> False
+
+  codex-is-lower-start : Text -> Boolean
+  codex-is-lower-start (s) =
+   if text-length s == 0 then False
+   else let c = char-code-at s 0
+    in let code-a = char-code-at "a" 0
+    in let code-z = char-code-at "z" 0
+    in c >= code-a & c <= code-z
+
+  codex-emit-def-params : List IRParam -> Integer -> Text
+  codex-emit-def-params (params) (i) =
+   if i == list-length params then ""
+   else let p = list-at params i
+    in " (" ++ p.name ++ ")" ++ codex-emit-def-params params (i + 1)
+
+Section: Expression Emission
+
+  codex-emit-expr : IRExpr -> List Text -> Integer -> Text
+  codex-emit-expr (e) (ctors) (indent) =
+   when e
+    if IrIntLit (n) -> integer-to-text n
+    if IrNumLit (n) -> integer-to-text n
+    if IrTextLit (s) -> "\"" ++ codex-escape-text s ++ "\""
+    if IrBoolLit (b) -> if b then "True" else "False"
+    if IrCharLit (n) -> "'" ++ codex-escape-char n ++ "'"
+    if IrName (n) (ty) -> n
+    if IrBinary (op) (l) (r) (ty) -> codex-emit-binary op l r ctors indent
+    if IrNegate (operand) -> "0 - " ++ codex-emit-expr operand ctors indent
+    if IrIf (c) (t) (el) (ty) -> codex-emit-if c t el ctors indent
+    if IrLet (name) (ty) (val) (body) -> codex-emit-let name val body ctors indent
+    if IrApply (f) (a) (ty) -> codex-emit-apply e ctors indent
+    if IrLambda (params) (body) (ty) -> codex-emit-lambda params body ctors indent
+    if IrList (elems) (ty) -> codex-emit-list elems ctors indent
+    if IrMatch (scrut) (branches) (ty) -> codex-emit-match scrut branches ctors indent
+    if IrDo (stmts) (ty) -> codex-emit-do stmts ctors indent
+    if IrRecord (name) (fields) (ty) -> codex-emit-record name fields ctors indent
+    if IrFieldAccess (rec) (field) (ty) -> codex-emit-field-access rec field ctors indent
+    if IrFork (body) (ty) -> "fork (" ++ codex-emit-expr body ctors indent ++ ")"
+    if IrAwait (task) (ty) -> "await (" ++ codex-emit-expr task ctors indent ++ ")"
+    if IrHandle (eff) (body) (clauses) (ty) -> codex-emit-handle eff body clauses ctors indent
+    if IrError (msg) (ty) -> "0"
+
+Section: Binary Operators
+
+  codex-emit-binary : IRBinaryOp -> IRExpr -> IRExpr -> List Text -> Integer -> Text
+  codex-emit-binary (op) (l) (r) (ctors) (indent) =
+   codex-emit-expr l ctors indent ++ " " ++ codex-bin-op-text op ++ " " ++ codex-emit-expr r ctors indent
+
+  codex-bin-op-text : IRBinaryOp -> Text
+  codex-bin-op-text (op) =
+   when op
+    if IrAddInt -> "+"
+    if IrSubInt -> "-"
+    if IrMulInt -> "*"
+    if IrDivInt -> "/"
+    if IrPowInt -> "^"
+    if IrAddNum -> "+"
+    if IrSubNum -> "-"
+    if IrMulNum -> "*"
+    if IrDivNum -> "/"
+    if IrEq -> "=="
+    if IrNotEq -> "/="
+    if IrLt -> "<"
+    if IrGt -> ">"
+    if IrLtEq -> "<="
+    if IrGtEq -> ">="
+    if IrAnd -> "&"
+    if IrOr -> "|"
+    if IrAppendText -> "++"
+    if IrAppendList -> "++"
+    if IrConsList -> "::"
+
+Section: If/Then/Else
+
+  codex-emit-if : IRExpr -> IRExpr -> IRExpr -> List Text -> Integer -> Text
+  codex-emit-if (c) (t) (el) (ctors) (indent) =
+   if codex-is-simple t & codex-is-simple el
+    then "if " ++ codex-emit-expr c ctors indent ++ " then " ++ codex-emit-expr t ctors indent ++ " else " ++ codex-emit-expr el ctors indent
+    else "if " ++ codex-emit-expr c ctors indent ++ "\n" ++ codex-indent (indent + 1) ++ "then " ++ codex-emit-expr t ctors (indent + 1) ++ "\n" ++ codex-indent (indent + 1) ++ "else " ++ codex-emit-expr el ctors (indent + 1)
+
+Section: Let
+
+  codex-emit-let : Text -> IRExpr -> IRExpr -> List Text -> Integer -> Text
+  codex-emit-let (name) (val) (body) (ctors) (indent) =
+   "let " ++ name ++ " = " ++ codex-emit-expr val ctors (indent + 1) ++ "\n" ++ codex-indent indent ++ "in " ++ codex-emit-expr body ctors indent
+
+Section: Apply
+
+  codex-emit-apply : IRExpr -> List Text -> Integer -> Text
+  codex-emit-apply (e) (ctors) (indent) =
+   let chain = collect-apply-chain e []
+   in let func = chain.root
+    in let args = chain.args
+     in codex-emit-expr func ctors indent ++ codex-emit-apply-args args ctors indent 0 (list-length args) (codex-is-ctor-name func ctors)
+
+  codex-emit-apply-args : List IRExpr -> List Text -> Integer -> Integer -> Integer -> Boolean -> Text
+  codex-emit-apply-args (args) (ctors) (indent) (i) (len) (is-ctor) =
+   if i == len then ""
+   else let arg = list-at args i
+    in " " ++ codex-wrap-arg arg ctors indent is-ctor ++ codex-emit-apply-args args ctors indent (i + 1) len is-ctor
+
+  codex-wrap-arg : IRExpr -> List Text -> Integer -> Boolean -> Text
+  codex-wrap-arg (e) (ctors) (indent) (is-ctor) =
+   if codex-needs-parens e is-ctor
+    then "(" ++ codex-emit-expr e ctors indent ++ ")"
+    else codex-emit-expr e ctors indent
+
+  codex-is-ctor-name : IRExpr -> List Text -> Boolean
+  codex-is-ctor-name (e) (ctors) =
+   when e
+    if IrName (n) (ty) -> list-contains ctors n
+    if _ -> False
+
+  codex-needs-parens : IRExpr -> Boolean -> Boolean
+  codex-needs-parens (e) (is-ctor) =
+   when e
+    if IrApply (f) (a) (ty) -> True
+    if IrBinary (op) (l) (r) (ty) -> True
+    if IrIf (c) (t) (el) (ty) -> True
+    if IrLet (name) (ty) (val) (body) -> True
+    if IrMatch (scrut) (branches) (ty) -> True
+    if IrNegate (operand) -> True
+    if IrLambda (params) (body) (ty) -> True
+    if _ -> False
+
+Section: Lambda
+
+  codex-emit-lambda : List IRParam -> IRExpr -> List Text -> Integer -> Text
+  codex-emit-lambda (params) (body) (ctors) (indent) =
+   "\\" ++ codex-emit-lambda-params params 0 ++ " -> " ++ codex-emit-expr body ctors indent
+
+  codex-emit-lambda-params : List IRParam -> Integer -> Text
+  codex-emit-lambda-params (params) (i) =
+   if i == list-length params then ""
+   else let p = list-at params i
+    in let sep = if i > 0 then " " else ""
+    in sep ++ p.name ++ codex-emit-lambda-params params (i + 1)
+
+Section: List
+
+  codex-emit-list : List IRExpr -> List Text -> Integer -> Text
+  codex-emit-list (elems) (ctors) (indent) =
+   "[" ++ codex-emit-list-elems elems ctors indent 0 ++ "]"
+
+  codex-emit-list-elems : List IRExpr -> List Text -> Integer -> Integer -> Text
+  codex-emit-list-elems (elems) (ctors) (indent) (i) =
+   if i == list-length elems then ""
+   else let sep = if i > 0 then ", " else ""
+    in sep ++ codex-emit-expr (list-at elems i) ctors indent ++ codex-emit-list-elems elems ctors indent (i + 1)
+
+Section: Match
+
+  codex-emit-match : IRExpr -> List IRBranch -> List Text -> Integer -> Text
+  codex-emit-match (scrut) (branches) (ctors) (indent) =
+   "when " ++ codex-emit-expr scrut ctors indent ++ codex-emit-branches branches ctors indent 0
+
+  codex-emit-branches : List IRBranch -> List Text -> Integer -> Integer -> Text
+  codex-emit-branches (branches) (ctors) (indent) (i) =
+   if i == list-length branches then ""
+   else let b = list-at branches i
+    in "\n" ++ codex-indent (indent + 1) ++ "if " ++ codex-emit-pattern b.pattern ++ " -> " ++ codex-emit-expr b.body ctors (indent + 1) ++ codex-emit-branches branches ctors indent (i + 1)
+
+  codex-emit-pattern : IRPat -> Text
+  codex-emit-pattern (p) =
+   when p
+    if IrVarPat (name) (ty) -> name
+    if IrLitPat (text) (ty) -> text
+    if IrCtorPat (name) (subs) (ty) -> name ++ codex-emit-sub-patterns subs 0
+    if IrWildPat -> "_"
+
+  codex-emit-sub-patterns : List IRPat -> Integer -> Text
+  codex-emit-sub-patterns (subs) (i) =
+   if i == list-length subs then ""
+   else " (" ++ codex-emit-pattern (list-at subs i) ++ ")" ++ codex-emit-sub-patterns subs (i + 1)
+
+Section: Do Blocks
+
+  codex-emit-do : List IRDoStmt -> List Text -> Integer -> Text
+  codex-emit-do (stmts) (ctors) (indent) =
+   "do" ++ codex-emit-do-stmts stmts ctors indent 0
+
+  codex-emit-do-stmts : List IRDoStmt -> List Text -> Integer -> Integer -> Text
+  codex-emit-do-stmts (stmts) (ctors) (indent) (i) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+    in "\n" ++ codex-indent (indent + 1) ++ codex-emit-do-stmt s ctors (indent + 1) ++ codex-emit-do-stmts stmts ctors indent (i + 1)
+
+  codex-emit-do-stmt : IRDoStmt -> List Text -> Integer -> Text
+  codex-emit-do-stmt (s) (ctors) (indent) =
+   when s
+    if IrDoBind (name) (ty) (val) -> name ++ " <- " ++ codex-emit-expr val ctors indent
+    if IrDoExec (e) -> codex-emit-expr e ctors indent
+
+Section: Records
+
+  codex-emit-record : Text -> List IRFieldVal -> List Text -> Integer -> Text
+  codex-emit-record (name) (fields) (ctors) (indent) =
+   name ++ " {" ++ codex-emit-record-fields fields ctors indent 0 ++ " }"
+
+  codex-emit-record-fields : List IRFieldVal -> List Text -> Integer -> Integer -> Text
+  codex-emit-record-fields (fields) (ctors) (indent) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+    in let sep = if i > 0 then "," else ""
+    in sep ++ " " ++ f.name ++ " = " ++ codex-emit-expr f.value ctors indent ++ codex-emit-record-fields fields ctors indent (i + 1)
+
+Section: Field Access
+
+  codex-emit-field-access : IRExpr -> Text -> List Text -> Integer -> Text
+  codex-emit-field-access (rec) (field) (ctors) (indent) =
+   when rec
+    if IrName (n) (ty) -> n ++ "." ++ field
+    if IrFieldAccess (r) (f) (ty) -> codex-emit-field-access r f ctors indent ++ "." ++ field
+    if _ -> "(" ++ codex-emit-expr rec ctors indent ++ ")." ++ field
+
+Section: Handle
+
+  codex-emit-handle : Text -> IRExpr -> List IRHandleClause -> List Text -> Integer -> Text
+  codex-emit-handle (eff) (body) (clauses) (ctors) (indent) =
+   "handle " ++ codex-emit-expr body ctors indent ++ " with" ++ codex-emit-handle-clauses clauses ctors indent 0
+
+  codex-emit-handle-clauses : List IRHandleClause -> List Text -> Integer -> Integer -> Text
+  codex-emit-handle-clauses (clauses) (ctors) (indent) (i) =
+   if i == list-length clauses then ""
+   else let c = list-at clauses i
+    in "\n" ++ codex-indent (indent + 1) ++ c.op-name ++ " (" ++ c.resume-name ++ ") -> " ++ codex-emit-expr c.body ctors (indent + 1) ++ codex-emit-handle-clauses clauses ctors indent (i + 1)
+
+Section: Constructor Name Collection
+
+  codex-collect-ctor-names : List ATypeDef -> Integer -> List Text
+  codex-collect-ctor-names (type-defs) (i) =
+   if i == list-length type-defs then []
+   else let td = list-at type-defs i
+    in let names = when td
+       if AVariantTypeDef (name) (tparams) (ctors) ->
+        codex-collect-variant-ctor-names ctors 0
+       if ARecordTypeDef (name) (tparams) (fields) -> [name.value]
+    in names ++ codex-collect-ctor-names type-defs (i + 1)
+
+  codex-collect-variant-ctor-names : List AVariantCtorDef -> Integer -> List Text
+  codex-collect-variant-ctor-names (ctors) (i) =
+   if i == list-length ctors then []
+   else let c = list-at ctors i
+    in [c.name.value] ++ codex-collect-variant-ctor-names ctors (i + 1)
+
+Section: Utilities
+
+  codex-is-simple : IRExpr -> Boolean
+  codex-is-simple (e) =
+   when e
+    if IrIntLit (n) -> True
+    if IrNumLit (n) -> True
+    if IrTextLit (s) -> True
+    if IrBoolLit (b) -> True
+    if IrCharLit (n) -> True
+    if IrName (n) (ty) -> True
+    if IrFieldAccess (r) (f) (ty) -> True
+    if _ -> False
+
+  codex-indent : Integer -> Text
+  codex-indent (n) =
+   if n == 0 then ""
+   else "  " ++ codex-indent (n - 1)
+
+  codex-escape-text : Text -> Text
+  codex-escape-text (s) =
+   codex-escape-text-loop s 0 (text-length s) ""
+
+  codex-escape-text-loop : Text -> Integer -> Integer -> Text -> Text
+  codex-escape-text-loop (s) (i) (len) (acc) =
+   if i == len then acc
+   else let c = char-code-at s i
+    in codex-escape-text-loop s (i + 1) len (acc ++ codex-escape-one-char c)
+
+  codex-escape-one-char : Integer -> Text
+  codex-escape-one-char (c) =
+   if c == char-code-at "\\" 0 then "\\\\"
+   else if c == char-code-at "\"" 0 then "\\\""
+   else if c == char-code-at "\n" 0 then "\\n"
+   else char-to-text (code-to-char c)
+
+  codex-escape-char : Integer -> Text
+  codex-escape-char (c) =
+   if c == char-code-at "\n" 0 then "\\n"
+   else if c == char-code-at "\\" 0 then "\\\\"
+   else if c == char-code-at "'" 0 then "\\'"
+   else char-to-text (code-to-char c)
+
+Section: Module Emission
+
+  codex-emit-full-module : IRModule -> List ATypeDef -> Text
+  codex-emit-full-module (m) (type-defs) =
+   let ctor-names = codex-collect-ctor-names type-defs 0
+   in codex-emit-type-defs type-defs 0 ++ codex-emit-all-defs m.defs ctor-names 0
+
+  codex-emit-all-defs : List IRDef -> List Text -> Integer -> Text
+  codex-emit-all-defs (defs) (ctor-names) (i) =
+   if i == list-length defs then ""
+   else codex-emit-def (list-at defs i) ctor-names ++ "\n" ++ codex-emit-all-defs defs ctor-names (i + 1)
+
+  codex-emit-def-list : List IRDef -> List Text -> Integer -> Text
+  codex-emit-def-list (defs) (ctor-names) (i) =
+   if i == list-length defs then ""
+   else codex-emit-def (list-at defs i) ctor-names ++ "\n" ++ codex-emit-def-list defs ctor-names (i + 1)
+
+  codex-filter-defs : List IRDef -> List Text -> Integer -> Integer -> List IRDef -> List IRDef
+  codex-filter-defs (defs) (ctor-names) (i) (len) (acc) =
+   if i == len then acc
+   else let d = list-at defs i
+    in if codex-skip-def d ctor-names then codex-filter-defs defs ctor-names (i + 1) len acc
+    else if codex-has-def-named acc d.name 0 (list-length acc)
+     then if codex-def-score d > codex-def-score-named acc d.name 0 (list-length acc)
+      then codex-filter-defs defs ctor-names (i + 1) len (codex-replace-def acc d.name d 0 (list-length acc))
+      else codex-filter-defs defs ctor-names (i + 1) len acc
+    else codex-filter-defs defs ctor-names (i + 1) len (list-snoc acc d)
+
+  codex-def-score : IRDef -> Integer
+  codex-def-score (d) =
+   list-length d.params * 100 + codex-body-depth d.body
+
+  codex-def-score-named : List IRDef -> Text -> Integer -> Integer -> Integer
+  codex-def-score-named (defs) (name) (i) (len) =
+   if i == len then 0
+   else if (list-at defs i).name == name then codex-def-score (list-at defs i)
+   else codex-def-score-named defs name (i + 1) len
+
+  codex-body-depth : IRExpr -> Integer
+  codex-body-depth (e) =
+   when e
+    if IrName (n) (ty) -> 1
+    if IrIntLit (n) -> 1
+    if IrTextLit (s) -> 1
+    if IrBoolLit (b) -> 1
+    if IrFieldAccess (r) (f) (ty) -> 2
+    if IrApply (f) (a) (ty) -> 3 + codex-body-depth f
+    if IrLet (name) (ty) (val) (body) -> 5 + codex-body-depth body
+    if IrIf (c) (t) (el) (ty) -> 5 + codex-body-depth t
+    if IrMatch (s) (bs) (ty) -> 10
+    if IrLambda (ps) (b) (ty) -> 5
+    if IrDo (stmts) (ty) -> 5
+    if IrRecord (n) (fs) (ty) -> 3
+    if _ -> 1
+
+  codex-has-def-named : List IRDef -> Text -> Integer -> Integer -> Boolean
+  codex-has-def-named (defs) (name) (i) (len) =
+   if i == len then False
+   else if (list-at defs i).name == name then True
+   else codex-has-def-named defs name (i + 1) len
+
+  codex-replace-def : List IRDef -> Text -> IRDef -> Integer -> Integer -> List IRDef
+  codex-replace-def (defs) (name) (new-def) (i) (len) =
+   if i == len then defs
+   else if (list-at defs i).name == name
+    then codex-list-set defs i new-def
+   else codex-replace-def defs name new-def (i + 1) len
+
+  codex-list-set : List IRDef -> Integer -> IRDef -> List IRDef
+  codex-list-set (xs) (idx) (val) =
+   codex-list-set-loop xs idx val 0 (list-length xs) []
+
+  codex-list-set-loop : List IRDef -> Integer -> IRDef -> Integer -> Integer -> List IRDef -> List IRDef
+  codex-list-set-loop (xs) (idx) (val) (i) (len) (acc) =
+   if i == len then acc
+   else if i == idx then codex-list-set-loop xs idx val (i + 1) len (list-snoc acc val)
+   else codex-list-set-loop xs idx val (i + 1) len (list-snoc acc (list-at xs i))

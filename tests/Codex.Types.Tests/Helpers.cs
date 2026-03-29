@@ -1,6 +1,7 @@
 using Codex.Ast;
 using Codex.Core;
 using Codex.Emit.CSharp;
+using Codex.Emit.Codex;
 using Codex.Emit.IL;
 using Codex.Emit.Wasm;
 using Codex.IR;
@@ -84,6 +85,11 @@ namespace Codex.Types.Tests
             return diagnostics;
         }
 
+
+        public static string? CompileToCodex(string source, string moduleName = "test")
+        {
+            return CompileToTarget(source, moduleName, new CodexEmitter());
+        }
 
         public static string? CompileToCS(string source, string moduleName = "test")
         {

@@ -142,11 +142,15 @@ Section: Let and Lambda
 
   lower-lambda-params : List Name -> CodexType -> Integer -> List IRParam
   lower-lambda-params (params) (ty) (i) =
-   if i == list-length params then []
+   lower-lambda-params-acc params ty i []
+
+  lower-lambda-params-acc : List Name -> CodexType -> Integer -> List IRParam -> List IRParam
+  lower-lambda-params-acc (params) (ty) (i) (acc) =
+   if i == list-length params then acc
    else let p = list-at params i
     in let param-ty = peel-fun-param ty
     in let rest-ty = peel-fun-return ty
-    in [IRParam { name = p.value, type-val = param-ty }] ++ lower-lambda-params params rest-ty (i + 1)
+    in lower-lambda-params-acc params rest-ty (i + 1) (list-snoc acc (IRParam { name = p.value, type-val = param-ty }))
 
   get-lambda-return : CodexType -> Integer -> CodexType
   get-lambda-return (ty) (n) =
@@ -179,11 +183,15 @@ Section: Match Lowering
 
   lower-match-arms-loop : List AMatchArm -> CodexType -> CodexType -> LowerCtx -> Integer -> Integer -> List IRBranch
   lower-match-arms-loop (arms) (ty) (scrut-ty) (ctx) (i) (len) =
-   if i == len then []
+   lower-match-arms-acc arms ty scrut-ty ctx i len []
+
+  lower-match-arms-acc : List AMatchArm -> CodexType -> CodexType -> LowerCtx -> Integer -> Integer -> List IRBranch -> List IRBranch
+  lower-match-arms-acc (arms) (ty) (scrut-ty) (ctx) (i) (len) (acc) =
+   if i == len then acc
    else
     let arm = list-at arms i
     in let arm-ctx = bind-pattern-to-ctx ctx arm.pattern scrut-ty
-    in [IRBranch { pattern = lower-pattern arm.pattern, body = lower-expr arm.body ty arm-ctx }] ++ lower-match-arms-loop arms ty scrut-ty ctx (i + 1) len
+    in lower-match-arms-acc arms ty scrut-ty ctx (i + 1) len (list-snoc acc (IRBranch { pattern = lower-pattern arm.pattern, body = lower-expr arm.body ty arm-ctx }))
 
   bind-pattern-to-ctx : LowerCtx -> APat -> CodexType -> LowerCtx
   bind-pattern-to-ctx (ctx) (pat) (ty) =
@@ -231,8 +239,12 @@ Section: Collections and Do
 
   lower-list-elems-loop : List AExpr -> CodexType -> LowerCtx -> Integer -> Integer -> List IRExpr
   lower-list-elems-loop (elems) (elem-ty) (ctx) (i) (len) =
-   if i == len then []
-   else [lower-expr (list-at elems i) elem-ty ctx] ++ lower-list-elems-loop elems elem-ty ctx (i + 1) len
+   lower-list-elems-acc elems elem-ty ctx i len []
+
+  lower-list-elems-acc : List AExpr -> CodexType -> LowerCtx -> Integer -> Integer -> List IRExpr -> List IRExpr
+  lower-list-elems-acc (elems) (elem-ty) (ctx) (i) (len) (acc) =
+   if i == len then acc
+   else lower-list-elems-acc elems elem-ty ctx (i + 1) len (list-snoc acc (lower-expr (list-at elems i) elem-ty ctx))
 
   lower-record : Name -> List AFieldExpr -> CodexType -> LowerCtx -> IRExpr
   lower-record (name) (fields) (ty) (ctx) =
@@ -247,13 +259,17 @@ Section: Collections and Do
 
   lower-record-fields-typed : List AFieldExpr -> CodexType -> LowerCtx -> Integer -> Integer -> List IRFieldVal
   lower-record-fields-typed (fields) (record-ty) (ctx) (i) (len) =
-   if i == len then []
+   lower-record-fields-acc fields record-ty ctx i len []
+
+  lower-record-fields-acc : List AFieldExpr -> CodexType -> LowerCtx -> Integer -> Integer -> List IRFieldVal -> List IRFieldVal
+  lower-record-fields-acc (fields) (record-ty) (ctx) (i) (len) (acc) =
+   if i == len then acc
    else
     let f = list-at fields i
     in let field-expected = when record-ty
        if RecordTy (rname) (rfields) -> lookup-record-field rfields f.name.value
        if _ -> ErrorTy
-    in [IRFieldVal { name = f.name.value, value = lower-expr f.value field-expected ctx }] ++ lower-record-fields-typed fields record-ty ctx (i + 1) len
+    in lower-record-fields-acc fields record-ty ctx (i + 1) len (list-snoc acc (IRFieldVal { name = f.name.value, value = lower-expr f.value field-expected ctx }))
 
   lower-do : List ADoStmt -> CodexType -> LowerCtx -> IRExpr
   lower-do (stmts) (ty) (ctx) =
@@ -261,7 +277,11 @@ Section: Collections and Do
 
   lower-do-stmts-loop : List ADoStmt -> CodexType -> LowerCtx -> Integer -> Integer -> List IRDoStmt
   lower-do-stmts-loop (stmts) (ty) (ctx) (i) (len) =
-   if i == len then []
+   lower-do-stmts-acc stmts ty ctx i len []
+
+  lower-do-stmts-acc : List ADoStmt -> CodexType -> LowerCtx -> Integer -> Integer -> List IRDoStmt -> List IRDoStmt
+  lower-do-stmts-acc (stmts) (ty) (ctx) (i) (len) (acc) =
+   if i == len then acc
    else
     let s = list-at stmts i
     in when s
@@ -269,9 +289,9 @@ Section: Collections and Do
       let val-ir = lower-expr val ty ctx
       in let val-ty = ir-expr-type val-ir
       in let ctx2 = LowerCtx { types = [TypeBinding { name = name.value, bound-type = val-ty }] ++ ctx.types, ust = ctx.ust }
-      in [IrDoBind name.value val-ty val-ir] ++ lower-do-stmts-loop stmts ty ctx2 (i + 1) len
+      in lower-do-stmts-acc stmts ty ctx2 (i + 1) len (list-snoc acc (IrDoBind name.value val-ty val-ir))
      if ADoExprStmt (e) ->
-      [IrDoExec (lower-expr e ty ctx)] ++ lower-do-stmts-loop stmts ty ctx (i + 1) len
+      lower-do-stmts-acc stmts ty ctx (i + 1) len (list-snoc acc (IrDoExec (lower-expr e ty ctx)))
 
   lower-handle : Name -> AExpr -> List AHandleClause -> CodexType -> LowerCtx -> IRExpr
   lower-handle (eff) (body) (clauses) (ty) (ctx) =
@@ -284,10 +304,14 @@ Section: Collections and Do
 
   lower-handle-clauses-loop : List AHandleClause -> CodexType -> LowerCtx -> Integer -> List IRHandleClause
   lower-handle-clauses-loop (clauses) (ty) (ctx) (i) =
-   if i == list-length clauses then []
+   lower-handle-clauses-acc clauses ty ctx i []
+
+  lower-handle-clauses-acc : List AHandleClause -> CodexType -> LowerCtx -> Integer -> List IRHandleClause -> List IRHandleClause
+  lower-handle-clauses-acc (clauses) (ty) (ctx) (i) (acc) =
+   if i == list-length clauses then acc
    else let c = list-at clauses i
     in let body-ir = lower-expr c.body ty ctx
-    in [IRHandleClause { op-name = c.op-name.value, resume-name = c.resume-name.value, body = body-ir }] ++ lower-handle-clauses-loop clauses ty ctx (i + 1)
+    in lower-handle-clauses-acc clauses ty ctx (i + 1) (list-snoc acc (IRHandleClause { op-name = c.op-name.value, resume-name = c.resume-name.value, body = body-ir }))
 
 Section: Definition Lowering
 
@@ -318,11 +342,15 @@ Section: Definition Lowering
 
   lower-def-params : List AParam -> CodexType -> Integer -> List IRParam
   lower-def-params (params) (ty) (i) =
-   if i == list-length params then []
+   lower-def-params-acc params ty i []
+
+  lower-def-params-acc : List AParam -> CodexType -> Integer -> List IRParam -> List IRParam
+  lower-def-params-acc (params) (ty) (i) (acc) =
+   if i == list-length params then acc
    else let p = list-at params i
     in let param-ty = peel-fun-param ty
     in let rest-ty = peel-fun-return ty
-    in [IRParam { name = p.name.value, type-val = param-ty }] ++ lower-def-params params rest-ty (i + 1)
+    in lower-def-params-acc params rest-ty (i + 1) (list-snoc acc (IRParam { name = p.name.value, type-val = param-ty }))
 
   get-return-type-n : CodexType -> Integer -> CodexType
   get-return-type-n (ty) (n) =
@@ -339,5 +367,9 @@ Section: Definition Lowering
 
   lower-defs : List ADef -> List TypeBinding -> UnificationState -> Integer -> List IRDef
   lower-defs (defs) (types) (ust) (i) =
-   if i == list-length defs then []
-   else [lower-def (list-at defs i) types ust] ++ lower-defs defs types ust (i + 1)
+   lower-defs-acc defs types ust i []
+
+  lower-defs-acc : List ADef -> List TypeBinding -> UnificationState -> Integer -> List IRDef -> List IRDef
+  lower-defs-acc (defs) (types) (ust) (i) (acc) =
+   if i == list-length defs then acc
+   else lower-defs-acc defs types ust (i + 1) (list-snoc acc (lower-def (list-at defs i) types ust))

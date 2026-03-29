@@ -171,9 +171,9 @@ public sealed partial class CSharpEmitter
         }
         else if (app.Function is IRName fn3 && fn3.Name == "print-line")
         {
-            sb.Append("Console.WriteLine(_Cce.ToUnicode(");
+            sb.Append("((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(");
             EmitExpr(sb, app.Argument, indent);
-            sb.Append("))");
+            sb.Append(")); return null; }))()");
         }
         else if (app.Function is IRName fn4 && fn4.Name == "open-file")
         {

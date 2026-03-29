@@ -71,6 +71,7 @@ class Program
         // Convert source from Unicode to CCE at the boundary
         string cceCombined = _Cce.FromUnicode(combined);
 
+
         try
         {
             var tokens = Codex_Codex_Codex.tokenize(cceCombined);
@@ -90,6 +91,7 @@ class Program
             var doc = Codex_Codex_Codex.parse_document(st);
             Console.WriteLine($"  Parsed defs: {doc.defs.Count}");
             Console.WriteLine($"  Parsed type-defs: {doc.type_defs.Count}");
+
 
             var ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("Codex_Codex"));
             Console.WriteLine($"  AST defs: {ast.defs.Count}");
@@ -113,7 +115,7 @@ class Program
                 if (isErrorTy) errorTyCount++;
                 if (hasObject) funcObjectCount++;
                 string marker = isErrorTy ? " [ERRORTY]" : (hasObject ? " [HAS-OBJECT]" : "");
-                diagLines.Add($"{i}: {tb.name} : {csType}{marker}");
+                diagLines.Add($"{i}: {_Cce.ToUnicode(tb.name)} : {_Cce.ToUnicode(csType)}{marker}");
             }
             string diagPath = Path.Combine(codexDir, "type-diag.txt");
             File.WriteAllLines(diagPath, diagLines);
@@ -126,7 +128,7 @@ class Program
             for (int ei = 0; ei < checkResult.state.errors.Count; ei++)
             {
                 Diagnostic diag = checkResult.state.errors[ei];
-                errLines.Add($"{ei}: [{diag.code}] {diag.message}");
+                errLines.Add($"{ei}: [{_Cce.ToUnicode(diag.code)}] {_Cce.ToUnicode(diag.message)}");
             }
             File.WriteAllLines(errPath, errLines);
             Console.WriteLine($"  Unification error log: {errPath}");
