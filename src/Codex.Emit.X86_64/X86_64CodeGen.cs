@@ -2288,6 +2288,30 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         }
     }
 
+    void EmitWriteCharStderr()
+    {
+        // Write single byte in RDI to stderr. Clobbers RAX, RSI, RDX.
+        X86_64Encoder.SubRI(m_text, Reg.RSP, 8);
+        X86_64Encoder.MovStore(m_text, Reg.RSP, Reg.RDI, 0);
+        X86_64Encoder.MovRR(m_text, Reg.RSI, Reg.RSP);
+        X86_64Encoder.Li(m_text, Reg.RDX, 1);
+        X86_64Encoder.Li(m_text, Reg.RAX, 1);  // sys_write
+        X86_64Encoder.Li(m_text, Reg.RDI, 2);  // stderr
+        X86_64Encoder.Syscall(m_text);
+        X86_64Encoder.AddRI(m_text, Reg.RSP, 8);
+    }
+
+    void EmitWriteTextStderr(byte ptrReg)
+    {
+        // Write length-prefixed string at ptrReg to stderr (raw bytes, no CCE conversion).
+        // __itoa output is ASCII-range so no conversion needed for numbers.
+        X86_64Encoder.MovLoad(m_text, Reg.RDX, ptrReg, 0);   // len
+        X86_64Encoder.Lea(m_text, Reg.RSI, ptrReg, 8);       // data
+        X86_64Encoder.Li(m_text, Reg.RDI, 2);                // stderr
+        X86_64Encoder.Li(m_text, Reg.RAX, 1);                // sys_write (last — clobbers ptrReg if RAX)
+        X86_64Encoder.Syscall(m_text);
+    }
+
     void EmitSerialStringFromPtr(byte ptrReg)
     {
         // Print string at [ptrReg+0]=len, [ptrReg+8..]=data to COM1.
@@ -3895,6 +3919,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         int gotNull = m_text.Count;
         X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
 
+        // Skip CR (0x0D) — strip at I/O boundary, same as usermode __read_file
+        X86_64Encoder.CmpRI(m_text, Reg.RAX, 0x0D);
+        int skipCrBm = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
+
         // Convert Unicode→CCE: table[unicode_byte]
         X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.R12);
         X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RAX, 0);   // RAX = CCE byte
@@ -3906,6 +3935,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         m_text.Add(0x88); m_text.Add(0x06); // mov [rsi], al
 
         X86_64Encoder.AddRI(m_text, Reg.RCX, 1);
+        PatchJcc(skipCrBm, m_text.Count);   // CR skip lands here (after store, before loop)
         X86_64Encoder.Jmp(m_text, readLoop - (m_text.Count + 5));
 
         // Done: store length, bump heap, return
@@ -4355,12 +4385,12 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // mov dword [0x2000], 0x3003
         m_text.AddRange([0xC7, 0x05, 0x00, 0x20, 0x00, 0x00, 0x03, 0x30, 0x00, 0x00]);
 
-        // ── Set up PD entries: 128 x 2MB huge pages (0-256MB identity mapped) ──
+        // ── Set up PD entries: N x 2MB huge pages identity mapped ──
         // Use a 32-bit loop: edi=PD base, ecx=count, eax=phys|flags
         // mov edi, 0x3000
         m_text.AddRange([0xBF, 0x00, 0x30, 0x00, 0x00]);
-        // mov ecx, 128
-        m_text.AddRange([0xB9, 0x80, 0x00, 0x00, 0x00]);
+        // mov ecx, BareMetalPages
+        m_text.AddRange([0xB9, (byte)(BareMetalPages & 0xFF), (byte)((BareMetalPages >> 8) & 0xFF), 0x00, 0x00]);
         // mov eax, 0x83 (present + writable + huge, phys=0)
         m_text.AddRange([0xB8, 0x83, 0x00, 0x00, 0x00]);
         // loop: mov [edi], eax; mov [edi+4], 0; add edi, 8; add eax, 0x200000; dec ecx; jnz loop
@@ -4522,9 +4552,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     // 0xD000-0xDFFF  Process 1 PD
     // 0x100000+         Kernel code (.text + .rodata)
     // 0x180000-0x1BFFFF Serial ring buffer (256KB)
-    // 0x400000+         Working-space heap (grows up, ~244 MB)
-    // 0xF800000+        Result-space heap (6 MB, escape-copy target)
-    // 0xFE00000-0xFFFFFFF Kernel stack (2 MB, grows down from 0x10000000)
+    // BareMetalHeapBase+ Working-space heap (grows up)
+    // BareMetalResultBase+ Result-space heap (escape-copy target)
+    // Stack: BareMetalStackBottom..BareMetalStackTop (2 MB, grows down)
 
     // ── Process Management (Ring 2) ──────────────────────────────
 
@@ -4705,8 +4735,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.Li(m_text, Reg.RAX, pdAddr | 0x03);
         X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
 
-        // Map 128 x 2MB pages (0-256MB) — full identity map per process
-        for (int i = 0; i < 128; i++)
+        // Map N x 2MB pages — identity map per process
+        for (int i = 0; i < BareMetalPages; i++)
         {
             long physAddr = i * 0x200000L;
             X86_64Encoder.Li(m_text, Reg.RAX, physAddr | 0x83);
@@ -5023,6 +5053,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     const long ResultArenaBaseAddr = 0x7030;
     const long SerialRingBufAddr = 0x180000;
     const long SerialRingBufSize = 0x40000; // 256KB — must be power of 2
+
+    // Bare metal memory layout — 32 x 2MB huge pages = 64 MB
+    const int BareMetalPages = 32;
+    const long BareMetalHeapBase = 0x400000;                // 4 MB
+    const long BareMetalResultBase = 0x3D00000;             // 61 MB (1 MB result)
+    const long BareMetalStackBottom = 0x3E00000;            // 62 MB (2 MB stack)
+    const long BareMetalStackTop = 0x4000000;               // 64 MB
 
     void EmitInterruptSetup()
     {
@@ -5374,26 +5411,24 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             // Disable interrupts until IDT is ready
             X86_64Encoder.Cli(m_text);
 
-            // Set up stack at top of 256MB identity-mapped region (2MB, grows down)
-            X86_64Encoder.Li(m_text, Reg.RSP, 0x10000000);
+            // Set up stack at top of identity-mapped region (2MB, grows down)
+            X86_64Encoder.Li(m_text, Reg.RSP, BareMetalStackTop);
             X86_64Encoder.MovRR(m_text, Reg.RBP, Reg.RSP);
 
             // Paint stack with 0xDEADBEEF for high-water-mark measurement
-            // Fill 0xFE00000..0xFFFFFFF with the pattern (2MB stack region)
-            X86_64Encoder.Li(m_text, Reg.RDI, 0xFE00000);
-            X86_64Encoder.Li(m_text, Reg.RCX, (0x10000000 - 0xFE00000) / 8); // qword count
+            // Paint stack region with 0xDEADBEEF for high-water-mark measurement
+            X86_64Encoder.Li(m_text, Reg.RDI, BareMetalStackBottom);
+            X86_64Encoder.Li(m_text, Reg.RCX, (BareMetalStackTop - BareMetalStackBottom) / 8);
             X86_64Encoder.Li(m_text, Reg.RAX, unchecked((long)0xDEADBEEFDEADBEEF));
             m_text.Add(0x48); m_text.Add(0xF3); m_text.Add(0xAB); // rep stosq
 
             // Restore RSP (rep stosq clobbers rdi/rcx)
-            X86_64Encoder.Li(m_text, Reg.RSP, 0x10000000);
+            X86_64Encoder.Li(m_text, Reg.RSP, BareMetalStackTop);
             X86_64Encoder.MovRR(m_text, Reg.RBP, Reg.RSP);
 
-            // Set up two-space heap for MM3 self-compile
-            // Working: 0x400000..0xF800000 (244 MB) — confirmed by EmitProcessSetup
-            // Result:  0xF800000..0xFE00000 (6 MB) — escape-copy target
-            X86_64Encoder.Li(m_text, HeapReg, 0x400000);
-            X86_64Encoder.Li(m_text, ResultReg, 0xF800000);
+            // Set up two-space heap
+            X86_64Encoder.Li(m_text, HeapReg, BareMetalHeapBase);
+            X86_64Encoder.Li(m_text, ResultReg, BareMetalResultBase);
 
             // Store result_space_base to global at text[0]
             X86_64Encoder.MovStoreRipRel(m_text, ResultReg,
@@ -5446,20 +5481,17 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             X86_64Encoder.Syscall(m_text);
             X86_64Encoder.MovRR(m_text, HeapReg, Reg.RAX); // working space starts at brk base
 
-            // Grow heap: 256MB working + 64MB result.
-            // Scalar regions reclaim intermediates. Capacity-aware lists and
-            // in-place string concat keep tokenizer/emitter at O(n). Dead
-            // LexState/ParseState records accumulate (~10MB for 180KB source).
+            // Grow heap: 57MB working + 1MB result (matches bare metal layout).
             byte growReg = Reg.R11;
-            X86_64Encoder.Li(m_text, growReg, (256L + 64) * 1024 * 1024);
+            X86_64Encoder.Li(m_text, growReg, (46L + 1) * 1024 * 1024);
             X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
             X86_64Encoder.AddRR(m_text, Reg.RDI, growReg);
             X86_64Encoder.Li(m_text, Reg.RAX, 12); // sys_brk
             X86_64Encoder.Syscall(m_text);
 
-            // Result space starts at brk_base + 256MB
+            // Result space starts at brk_base + 57MB
             X86_64Encoder.MovRR(m_text, ResultReg, HeapReg);
-            X86_64Encoder.Li(m_text, growReg, 256L * 1024 * 1024);
+            X86_64Encoder.Li(m_text, growReg, 57L * 1024 * 1024);
             X86_64Encoder.AddRR(m_text, ResultReg, growReg);
 
             // Store result_space_base to global at text[0] for escape helpers.
@@ -5508,9 +5540,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             EmitCallMainAndPrint(returnType);
 
             // ── Stack high-water-mark measurement ──
-            // Scan from 0xFE00000 upward for first 0xDEADBEEFDEADBEEF qword
+            // Scan from stack bottom upward for first 0xDEADBEEFDEADBEEF qword
             // RDI = scan pointer, RAX = pattern to match
-            X86_64Encoder.Li(m_text, Reg.RDI, 0xFE00000);
+            X86_64Encoder.Li(m_text, Reg.RDI, BareMetalStackBottom);
             X86_64Encoder.Li(m_text, Reg.RAX, unchecked((long)0xDEADBEEFDEADBEEF));
             int scanLoop = m_text.Count;
             X86_64Encoder.MovLoad(m_text, Reg.RSI, Reg.RDI, 0);
@@ -5521,8 +5553,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             X86_64Encoder.Jmp(m_text, scanLoop - (m_text.Count + 5));
             PatchJcc(foundPaint, m_text.Count);
 
-            // RDI = first untouched address. Stack used = 0x10000000 - RDI
-            X86_64Encoder.Li(m_text, Reg.RSI, 0x10000000);
+            // RDI = first untouched address. Stack used = StackTop - RDI
+            X86_64Encoder.Li(m_text, Reg.RSI, BareMetalStackTop);
             X86_64Encoder.SubRR(m_text, Reg.RSI, Reg.RDI);
             // RSI = bytes of stack used. Print as "STACK:nnnnn\n"
             // Save RSI across print calls

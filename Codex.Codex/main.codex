@@ -89,7 +89,7 @@ Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
             in let ctor-names = codex-collect-ctor-names type-defs 0
              in do
               print-line (codex-emit-type-defs type-defs 0)
-              process-defs tokens headers env.state env.env all-types ctor-names 0 (list-length headers)
+              emit-defs-streaming tokens headers all-types env.state ctor-names 0 (list-length headers)
               print-line ""
 
   register-def-headers : UnificationState -> TypeEnv -> List TypeBinding -> List DefHeader -> Integer -> Integer -> LetBindResult
@@ -107,9 +107,9 @@ Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
          in LetBindResult { state = pr.state, env = env-bind env hdr.name.text pr.parameterized }
     in register-def-headers ty.state ty.env tdm headers (i + 1) len
 
-  process-defs : List Token -> List DefHeader -> UnificationState -> TypeEnv -> List TypeBinding -> List Text -> Integer -> Integer -> [Console] Nothing
-  process-defs (tokens) (headers) (ust) (env) (all-types) (ctor-names) (i) (len) =
-   if i == len then print-line ""
+  check-defs-streaming : List Token -> List DefHeader -> UnificationState -> TypeEnv -> Integer -> Integer -> List TypeBinding -> ModuleResult
+  check-defs-streaming (tokens) (headers) (ust) (env) (i) (len) (acc) =
+   if i == len then ModuleResult { types = acc, state = ust }
    else
     let hdr = list-at headers i
     in let body-st = ParseState { tokens = tokens, pos = hdr.body-pos }
@@ -117,11 +117,24 @@ Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
     in let def = Def { name = hdr.name, params = hdr.params, ann = hdr.ann, body = unwrap-body body-result }
     in let adef = desugar-def def
     in let r = check-def ust env adef
-    in let ir-def = lower-def adef all-types r.state
+    in let resolved = deep-resolve r.state r.inferred-type
+    in let entry = TypeBinding { name = adef.name.value, bound-type = resolved }
+    in check-defs-streaming tokens headers r.state env (i + 1) len (list-snoc acc entry)
+
+  emit-defs-streaming : List Token -> List DefHeader -> List TypeBinding -> UnificationState -> List Text -> Integer -> Integer -> [Console] Nothing
+  emit-defs-streaming (tokens) (headers) (all-types) (ust) (ctor-names) (i) (len) =
+   if i == len then print-line ""
+   else
+    let hdr = list-at headers i
+    in let body-st = ParseState { tokens = tokens, pos = hdr.body-pos }
+    in let body-result = parse-expr body-st
+    in let def = Def { name = hdr.name, params = hdr.params, ann = hdr.ann, body = unwrap-body body-result }
+    in let adef = desugar-def def
+    in let ir-def = lower-def adef all-types ust
     in let text = codex-emit-def ir-def ctor-names
     in do
      print-line text
-     process-defs tokens headers r.state env all-types ctor-names (i + 1) len
+     emit-defs-streaming tokens headers all-types ust ctor-names (i + 1) len
 
   unwrap-body : ParseExprResult -> Expr
   unwrap-body (r) =
