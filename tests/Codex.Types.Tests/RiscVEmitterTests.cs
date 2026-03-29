@@ -758,6 +758,49 @@ public class RiscVEmitterTests
         Assert.Contains("120", output);
     }
 
+    [Fact]
+    public void BareMetal_text_return_runs_under_qemu_system()
+    {
+        string source = """
+            main : Text
+            main = "hello"
+            """;
+        string? output = CompileAndRunBareMetal(source, "bm_text_ret");
+        if (output is null) return;
+        Assert.Contains("hello", output);
+    }
+
+    [Fact]
+    public void BareMetal_print_line_runs_under_qemu_system()
+    {
+        string source = """
+            main : [Console] Nothing
+            main = do
+              print-line "hello bare metal"
+            """;
+        string? output = CompileAndRunBareMetal(source, "bm_println");
+        if (output is null) return;
+        Assert.Contains("hello bare metal", output);
+    }
+
+    [Fact]
+    public void BareMetal_print_line_concat_runs_under_qemu_system()
+    {
+        string source = """
+            greet : Text -> Text
+            greet (name) = "hello " ++ name ++ "!"
+
+            main : [Console] Nothing
+            main = do
+              print-line (greet "world")
+              print-line "done"
+            """;
+        string? output = CompileAndRunBareMetal(source, "bm_concat");
+        if (output is null) return;
+        Assert.Contains("hello world!", output);
+        Assert.Contains("done", output);
+    }
+
     static string? CompileAndRunBareMetal(string source, string moduleName)
     {
         byte[]? bytes = Helpers.CompileToRiscVBareMetal(source, moduleName);

@@ -377,10 +377,12 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     void EmitLoadRodataAddress(uint rd, int rodataOffset)
     {
-        // Reserve 2 nop slots, patched in PatchCalls once text size is known
+        // Reserve NOP slots, patched in PatchCalls once text size is known.
+        // Bare metal addresses (0x80000000+) need 5 slots for full 64-bit Li.
+        // Linux user-space addresses (0x10000+) fit in 2 slots.
+        int slots = m_target == RiscVTarget.BareMetal ? 5 : 2;
         m_rodataFixups.Add(new RodataFixup(m_instructions.Count, rd, rodataOffset));
-        Emit(RiscVEncoder.Nop());
-        Emit(RiscVEncoder.Nop());
+        for (int i = 0; i < slots; i++) Emit(RiscVEncoder.Nop());
     }
 
     uint EmitName(IRName name)
@@ -4342,13 +4344,13 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         foreach (RodataFixup fixup in m_rodataFixups)
         {
             long addr = (long)(rodataVaddr + (ulong)fixup.RodataOffset);
-            // Bare metal addresses like 0x80000xxx are 32-bit but look >int.MaxValue as long.
-            // Cast to int (sign-extending) so Li uses the efficient lui+addi encoding.
-            if (addr > int.MaxValue && addr <= uint.MaxValue)
-                addr = (int)(uint)addr;
+            // For Linux user-space (low addresses), addr fits in 32-bit signed → 2 insns.
+            // For bare metal (0x80000000+), use full 64-bit Li → up to 5 insns.
+            // Do NOT cast to (int) for bare metal — sign extension produces wrong 64-bit address.
+            int maxSlots = m_target == RiscVTarget.BareMetal ? 5 : 2;
             uint[] insns = RiscVEncoder.Li(fixup.Register, addr);
             Console.Error.WriteLine($"  fixup: insn[{fixup.InstructionIndex}] reg=x{fixup.Register} rodata+{fixup.RodataOffset} → 0x{(rodataVaddr + (ulong)fixup.RodataOffset):X} ({insns.Length} insns)");
-            for (int i = 0; i < 2 && i < insns.Length; i++)
+            for (int i = 0; i < maxSlots && i < insns.Length; i++)
                 m_instructions[fixup.InstructionIndex + i] = insns[i];
         }
 
@@ -4361,10 +4363,9 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
             if (m_functionOffsets.TryGetValue(fixup.FunctionName, out int funcIndex))
             {
                 long funcAddr = (long)(textVaddr + (ulong)(funcIndex * 4));
-                if (funcAddr > int.MaxValue && funcAddr <= uint.MaxValue)
-                    funcAddr = (int)(uint)funcAddr;
+                int maxFuncSlots = m_target == RiscVTarget.BareMetal ? 5 : 2;
                 uint[] insns = RiscVEncoder.Li(fixup.Register, funcAddr);
-                for (int i = 0; i < 2 && i < insns.Length; i++)
+                for (int i = 0; i < maxFuncSlots && i < insns.Length; i++)
                     m_instructions[fixup.InstructionIndex + i] = insns[i];
             }
         }
