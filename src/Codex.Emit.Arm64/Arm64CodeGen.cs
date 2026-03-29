@@ -309,11 +309,18 @@ sealed class Arm64CodeGen
 
     uint EmitBinary(IRBinary bin)
     {
+        // Binary operands are NEVER in tail position — the result is consumed
+        // by the operator.  Without this, a self-recursive call inside `++`
+        // would be mis-identified as a tail call and jump instead of returning.
+        bool savedTail = m_inTailPosition;
+        m_inTailPosition = false;
+
         uint left = EmitExpr(bin.Left);
         uint savedLeft = AllocLocal();
         StoreLocal(savedLeft, left);
 
         uint right = EmitExpr(bin.Right);
+        m_inTailPosition = savedTail;
         uint leftReg = LoadLocal(savedLeft);
         uint rd = AllocTemp();
 

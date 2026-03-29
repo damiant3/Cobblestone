@@ -614,6 +614,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
     byte EmitBinary(IRBinary bin)
     {
+        // Binary operands are NEVER in tail position — the result is consumed
+        // by the operator.  Without this, a self-recursive call inside `++`
+        // (e.g. `emit p ++ " -> " ++ emit r`) would be mis-identified as a
+        // tail call and jump back to the function start, skipping the concat.
+        bool savedTail = m_inTailPosition;
+        m_inTailPosition = false;
+
         // For text concat (++), evaluate right FIRST so that the left string
         // (typically the accumulator) is the most recent heap allocation when
         // __str_concat is called. This enables the in-place fast path.
@@ -637,6 +644,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             savedRight = AllocLocal();
             StoreLocal(savedRight, right);
         }
+
+        m_inTailPosition = savedTail;
 
         byte lReg = LoadLocal(savedLeft);
         byte rReg = LoadLocal(savedRight);
