@@ -1237,25 +1237,70 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     uint EmitRegion(IRRegion region)
     {
+        // Closures: skip region (capture types unknown at region exit)
         if (region.Type is FunctionType)
             return EmitExpr(region.Body);
 
+        // Save working-space mark (region entry)
+        uint mark = AllocLocal();
+        uint hpTmp = AllocTemp();
+        Emit(RiscVEncoder.Mv(hpTmp, Reg.S1));
+        StoreLocal(mark, hpTmp);
+
+        uint bodyResult = EmitExpr(region.Body);
+
         if (!region.NeedsEscapeCopy)
         {
-            // Scalar return — save/restore S1 (heap ptr) to reclaim intermediates.
-            uint mark = AllocLocal();
-            uint hpTmp = AllocTemp();
-            Emit(RiscVEncoder.Mv(hpTmp, Reg.S1));
-            StoreLocal(mark, hpTmp);
-
-            uint bodyResult = EmitExpr(region.Body);
-
+            // Scalar return — restore S1, value survives in register
             Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(mark)));
             return bodyResult;
         }
 
-        // Heap return — pass-through (escape-copy crashes on cross-references).
-        return EmitExpr(region.Body);
+        // ── Two-space reclamation with forwarding hash table ──────
+        // Escape-copy the heap result to result space, then reset
+        // the working-space bump pointer to reclaim all intermediates.
+        CodexType resolved = ResolveType(region.Type);
+        if (resolved is ConstructedType)
+            return bodyResult; // unresolvable type — skip reclamation (safe fallback)
+
+        // Save body result (lives in working space)
+        uint bodyLocal = AllocLocal();
+        StoreLocal(bodyLocal, bodyResult);
+
+        // Allocate and zero the forwarding hash table in working space.
+        // Sets S6 = table base, advances S1 past the table.
+        EmitFwdTableZero();
+
+        // Switch S1 to result space so escape helper allocates there
+        Emit(RiscVEncoder.Mv(Reg.S1, ResultReg));
+
+        // Escape-copy body result → allocates in result space via S1.
+        // Skip if pointer is already in result space (ptr >= ResultBaseReg).
+        string helperName = GetOrQueueEscapeHelper(resolved);
+        uint src = LoadLocal(bodyLocal);
+        Emit(RiscVEncoder.Mv(Reg.A0, src));
+        int skipEscape = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge a0, s10 → skip
+        EmitCallTo(helperName);
+        int escDone = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: j → done
+        int skipTarget = m_instructions.Count;
+        m_instructions[skipEscape] = RiscVEncoder.Bge(Reg.A0, ResultBaseReg,
+            (skipTarget - skipEscape) * 4);
+        // Already in result space — A0 is unchanged
+        int doneTarget = m_instructions.Count;
+        m_instructions[escDone] = RiscVEncoder.J((doneTarget - escDone) * 4);
+        // A0 = pointer to escape-copied (or existing) result in result space
+
+        // Save escaped result before restoring working space
+        uint resultLocal = AllocLocal();
+        StoreLocal(resultLocal, Reg.A0);
+
+        // Update result-space pointer, restore working space to mark
+        Emit(RiscVEncoder.Mv(ResultReg, Reg.S1));       // S11 ← advanced result-space pointer
+        Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(mark))); // S1 ← mark (reclaim working space!)
+
+        return LoadLocal(resultLocal);
     }
 
     void EmitRelocateCall(uint ptrLocal, uint deltaLocal, CodexType type)
@@ -1356,6 +1401,121 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     //   Frame: 48 bytes (ra, s2, s3, s4, s5, pad)
     const int EscapeFrameSize = 48;
 
+    // Forwarding hash table: 32768 entries * 16 bytes = 512 KB.
+    // Each slot: [old_ptr:8 | new_ptr:8]. Empty = old_ptr == 0.
+    // S6 = table base (set by EmitRegion, untouched by escape helpers).
+    const int FwdTableEntries = 32768;
+    const int FwdTableMask = FwdTableEntries - 1; // 0x7FFF
+    const int FwdTableBytes = FwdTableEntries * 16;
+
+    // Emit a loop that zeros FwdTableBytes starting at S1,
+    // then advances S1 past the table. Sets S6 = table base.
+    void EmitFwdTableZero()
+    {
+        // S6 = table base = current S1
+        Emit(RiscVEncoder.Mv(Reg.S6, Reg.S1));
+        // Advance S1 past the table
+        foreach (uint insn in RiscVEncoder.Li(Reg.T0, FwdTableBytes)) Emit(insn);
+        Emit(RiscVEncoder.Add(Reg.S1, Reg.S1, Reg.T0));
+        // Zero loop: T1 = S6; T2 = S6 + FwdTableBytes; while (T1 < T2) { *T1 = 0; T1 += 8 }
+        Emit(RiscVEncoder.Mv(Reg.T1, Reg.S6));
+        Emit(RiscVEncoder.Add(Reg.T2, Reg.S6, Reg.T0)); // T2 = end
+        int loopStart = m_instructions.Count;
+        int exitIdx = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: bge t1, t2 → done
+        Emit(RiscVEncoder.Sd(Reg.T1, Reg.Zero, 0));
+        Emit(RiscVEncoder.Addi(Reg.T1, Reg.T1, 8));
+        Emit(RiscVEncoder.J((loopStart - m_instructions.Count) * 4));
+        int exitTarget = m_instructions.Count;
+        m_instructions[exitIdx] = RiscVEncoder.Bge(Reg.T1, Reg.T2,
+            (exitTarget - exitIdx) * 4);
+    }
+
+    // Emit forwarding table lookup. A0 = old ptr, S6 = table base.
+    // If found: sets A0 = new ptr and returns (ret). Falls through on miss.
+    // Must be emitted BEFORE the escape helper's stack frame setup.
+    void EmitFwdTableLookup()
+    {
+        // hash = (a0 >> 3) & mask
+        Emit(RiscVEncoder.Srli(Reg.T0, Reg.A0, 3));
+        foreach (uint insn in RiscVEncoder.Li(Reg.T3, FwdTableMask)) Emit(insn);
+        Emit(RiscVEncoder.And(Reg.T0, Reg.T0, Reg.T3));
+        Emit(RiscVEncoder.Slli(Reg.T0, Reg.T0, 4)); // * 16
+        Emit(RiscVEncoder.Add(Reg.T1, Reg.S6, Reg.T0)); // T1 = &table[hash]
+
+        // Compute table end for wrap
+        foreach (uint insn in RiscVEncoder.Li(Reg.T3, FwdTableBytes)) Emit(insn);
+        Emit(RiscVEncoder.Add(Reg.T3, Reg.S6, Reg.T3)); // T3 = table end
+
+        // Probe loop
+        int probeStart = m_instructions.Count;
+        Emit(RiscVEncoder.Ld(Reg.T2, Reg.T1, 0)); // T2 = slot.old_ptr
+        // Hit: T2 == A0
+        int hitIdx = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: beq t2, a0 → hit
+        // Miss: T2 == 0 (empty slot)
+        int missIdx = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: beqz t2 → miss (fall through)
+        // Linear probe: next slot
+        Emit(RiscVEncoder.Addi(Reg.T1, Reg.T1, 16));
+        // Wrap check: if T1 >= end, T1 = S6
+        int noWrapIdx = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: blt t1, t3 → probeStart
+        Emit(RiscVEncoder.Mv(Reg.T1, Reg.S6)); // wrap
+        Emit(RiscVEncoder.J((probeStart - m_instructions.Count) * 4));
+        m_instructions[noWrapIdx] = RiscVEncoder.Blt(Reg.T1, Reg.T3,
+            (probeStart - noWrapIdx) * 4);
+
+        // Hit path: load new_ptr, return
+        int hitTarget = m_instructions.Count;
+        m_instructions[hitIdx] = RiscVEncoder.Beq(Reg.T2, Reg.A0,
+            (hitTarget - hitIdx) * 4);
+        Emit(RiscVEncoder.Ld(Reg.A0, Reg.T1, 8)); // A0 = slot.new_ptr
+        Emit(RiscVEncoder.Ret()); // no frame to tear down
+
+        // Miss path: fall through to normal copy
+        int missTarget = m_instructions.Count;
+        m_instructions[missIdx] = RiscVEncoder.Beq(Reg.T2, Reg.Zero,
+            (missTarget - missIdx) * 4);
+    }
+
+    // Emit forwarding table insert. S2 = old ptr, S3 = new ptr, S6 = table base.
+    // Finds an empty slot and stores the mapping. Uses T0-T3.
+    void EmitFwdTableInsert()
+    {
+        // hash = (s2 >> 3) & mask
+        Emit(RiscVEncoder.Srli(Reg.T0, Reg.S2, 3));
+        foreach (uint insn in RiscVEncoder.Li(Reg.T3, FwdTableMask)) Emit(insn);
+        Emit(RiscVEncoder.And(Reg.T0, Reg.T0, Reg.T3));
+        Emit(RiscVEncoder.Slli(Reg.T0, Reg.T0, 4)); // * 16
+        Emit(RiscVEncoder.Add(Reg.T1, Reg.S6, Reg.T0)); // T1 = &table[hash]
+
+        // Compute table end for wrap
+        foreach (uint insn in RiscVEncoder.Li(Reg.T3, FwdTableBytes)) Emit(insn);
+        Emit(RiscVEncoder.Add(Reg.T3, Reg.S6, Reg.T3)); // T3 = table end
+
+        // Probe for empty slot
+        int probeStart = m_instructions.Count;
+        Emit(RiscVEncoder.Ld(Reg.T2, Reg.T1, 0)); // T2 = slot.old_ptr
+        int emptyIdx = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: beqz t2 → store
+        // Not empty: linear probe
+        Emit(RiscVEncoder.Addi(Reg.T1, Reg.T1, 16));
+        int noWrapIdx = m_instructions.Count;
+        Emit(RiscVEncoder.Nop()); // patched: blt t1, t3 → probeStart
+        Emit(RiscVEncoder.Mv(Reg.T1, Reg.S6)); // wrap
+        Emit(RiscVEncoder.J((probeStart - m_instructions.Count) * 4));
+        m_instructions[noWrapIdx] = RiscVEncoder.Blt(Reg.T1, Reg.T3,
+            (probeStart - noWrapIdx) * 4);
+
+        // Store: slot = [S2, S3]
+        int storeTarget = m_instructions.Count;
+        m_instructions[emptyIdx] = RiscVEncoder.Beq(Reg.T2, Reg.Zero,
+            (storeTarget - emptyIdx) * 4);
+        Emit(RiscVEncoder.Sd(Reg.T1, Reg.S2, 0)); // slot.old_ptr = S2
+        Emit(RiscVEncoder.Sd(Reg.T1, Reg.S3, 8)); // slot.new_ptr = S3
+    }
+
     void EmitEscapeHelperPrologue(string name)
     {
         m_functionOffsets[name] = m_instructions.Count;
@@ -1367,6 +1527,9 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         int continueLabel = m_instructions.Count;
         m_instructions[notNull] = RiscVEncoder.Bne(Reg.A0, Reg.Zero,
             (continueLabel - notNull) * 4);
+
+        // Forwarding table lookup: if already copied, return cached copy
+        EmitFwdTableLookup();
 
         Emit(RiscVEncoder.Addi(Reg.Sp, Reg.Sp, -EscapeFrameSize));
         Emit(RiscVEncoder.Sd(Reg.Sp, Reg.Ra, 40));
@@ -1425,6 +1588,9 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Mv(Reg.S3, Reg.S1));
         Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, totalSize));
 
+        // Insert forwarding entry before copying fields
+        EmitFwdTableInsert();
+
         for (int i = 0; i < rt.Fields.Length; i++)
             EmitEscapeFieldCopy(i * 8, i * 8, rt.Fields[i].Type);
 
@@ -1448,6 +1614,9 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
         // Store count
         Emit(RiscVEncoder.Sd(Reg.S3, Reg.S4, 0));
+
+        // Insert forwarding entry before copying elements
+        EmitFwdTableInsert();
 
         // s5 = loop index = 0
         foreach (uint insn in RiscVEncoder.Li(Reg.S5, 0)) Emit(insn);
@@ -1545,6 +1714,9 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         // Allocate in parent region
         Emit(RiscVEncoder.Mv(Reg.S3, Reg.S1));
         Emit(RiscVEncoder.Addi(Reg.S1, Reg.S1, totalSize));
+
+        // Insert forwarding entry before copying fields
+        EmitFwdTableInsert();
 
         // Copy tag
         Emit(RiscVEncoder.Sd(Reg.S3, Reg.S4, 0));
