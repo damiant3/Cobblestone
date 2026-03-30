@@ -8,7 +8,9 @@
 # The bare-metal ELF IS the Codex compiler. It boots on QEMU with KVM
 # (hardware virtualization — near-native speed), reads source via serial,
 # compiles using the Codex emitter, writes Codex code back via serial.
-# "STACK:nnnnn" after each compilation is the completion marker.
+# "STACK:nnnnn" after each compilation is the stack high-water mark.
+# "HEAP:nnnnn" (emitted by allocator) is the heap high-water mark.
+# Both are parsed and reported in the summary table.
 #
 # Prerequisites (built on Windows before calling this script):
 #   dotnet run --project tools/Codex.Cli -- build Codex.Codex --target x86-64-bare
@@ -25,6 +27,9 @@ ELF="$OUTDIR/Codex.Codex.elf"
 SOURCE="$OUTDIR/source.codex"
 QEMU="/usr/bin/qemu-system-x86_64"
 TIMEOUT=60
+
+# ── Per-stage stats (indexed 1, 2) ───────────────────────────
+declare -a STAGE_ELAPSED STAGE_BYTES STAGE_STACK STAGE_HEAP STAGE_RSS
 
 echo "=== Ping-Pong: Bare-Metal Self-Compile ==="
 date
@@ -67,6 +72,7 @@ run_stage() {
     local output_file=$3
 
     local start_time=$SECONDS
+    local time_log="/tmp/pingpong-time-${stage}-$$"
 
     # Handshake: kernel prints "READY\n" after COM1 init. We hold the pipe
     # open with a background sleep, wait for READY, then send source.
@@ -76,7 +82,9 @@ run_stage() {
     sleep 999 > "$pipe" &
     local holder=$!
 
-    timeout "$TIMEOUT" "$QEMU" \
+    # Wrap QEMU in /usr/bin/time -v to capture peak RSS of the guest process.
+    timeout "$TIMEOUT" /usr/bin/time -v -o "$time_log" \
+        "$QEMU" \
         -enable-kvm \
         -kernel "$ELF" \
         -serial stdio \
@@ -93,6 +101,10 @@ run_stage() {
             echo "$line"
             break
         fi
+        if [[ "$line" == HEAP:* ]]; then
+            echo "$line"
+            continue
+        fi
         echo "$line"
     done > "$output_file" || true
 
@@ -104,7 +116,28 @@ run_stage() {
 
     local size
     size=$(wc -c < "$output_file" 2>/dev/null || echo 0)
+
+    # Parse guest-emitted diagnostics from output
+    local stack_hwm heap_hwm
+    stack_hwm=$(grep -oP '^STACK:\K[0-9]+' "$output_file" | tail -1)
+    heap_hwm=$(grep -oP '^HEAP:\K[0-9]+' "$output_file" | tail -1)
+
+    # Parse QEMU process peak RSS from /usr/bin/time output (kB)
+    local rss_kb
+    rss_kb=$(grep -oP 'Maximum resident set size.*:\s*\K[0-9]+' "$time_log" 2>/dev/null || true)
+    rm -f "$time_log"
+
+    # Store stats
+    STAGE_ELAPSED[$stage]=$elapsed
+    STAGE_BYTES[$stage]=$size
+    STAGE_STACK[$stage]=${stack_hwm:-"—"}
+    STAGE_HEAP[$stage]=${heap_hwm:-"—"}
+    STAGE_RSS[$stage]=${rss_kb:-"—"}
+
     echo "  Stage $stage: $size bytes (${elapsed}s)"
+    [ -n "${stack_hwm:-}" ] && echo "    stack hwm: ${stack_hwm} bytes"
+    [ -n "${heap_hwm:-}" ]  && echo "    heap hwm:  ${heap_hwm} bytes"
+    [ -n "${rss_kb:-}" ]    && echo "    QEMU RSS:  ${rss_kb} kB"
 
     if [ "$size" -lt 100 ]; then
         echo "FAIL: Stage $stage output too small ($size bytes)"
@@ -121,33 +154,60 @@ run_stage 1 "$STAGE0" "$OUTDIR/stage1.codex"
 
 # ── Stage 2: feed Stage 1 output back in ──
 
-# Strip STACK: diagnostic (not compiler output)
-grep -v '^STACK:' "$OUTDIR/stage1.codex" > "$OUTDIR/stage1.clean.codex"
+# Strip STACK:/HEAP: diagnostics (not compiler output)
+grep -v '^STACK:\|^HEAP:' "$OUTDIR/stage1.codex" > "$OUTDIR/stage1.clean.codex"
 
 echo "[2/2] Stage 2: compile(stage1)..."
 run_stage 2 "$OUTDIR/stage1.clean.codex" "$OUTDIR/stage2.codex"
 
 # ── Compare (byte-identical, no normalization) ───────────────
 
-grep -v '^STACK:' "$OUTDIR/stage2.codex" > "$OUTDIR/stage2.clean.codex"
+grep -v '^STACK:\|^HEAP:' "$OUTDIR/stage2.codex" > "$OUTDIR/stage2.clean.codex"
 
 STAGE1_SIZE=$(wc -c < "$OUTDIR/stage1.clean.codex")
 STAGE2_SIZE=$(wc -c < "$OUTDIR/stage2.clean.codex")
 
 echo ""
 if diff -q "$OUTDIR/stage1.clean.codex" "$OUTDIR/stage2.clean.codex" > /dev/null 2>&1; then
+    RESULT="PASS"
     echo "PASS: Fixed point verified."
-    echo "  Stage 1: $STAGE1_SIZE bytes"
-    echo "  Stage 2: $STAGE2_SIZE bytes"
-    rm -f "$OUTDIR/stage1.clean.codex" "$OUTDIR/stage2.clean.codex"
-    date
+else
+    RESULT="FAIL"
+    echo "FAIL: Stage 1 != Stage 2"
+    diff "$OUTDIR/stage1.clean.codex" "$OUTDIR/stage2.clean.codex" | head -30
+fi
+
+# ── Summary table ─────────────────────────────────────────────
+#
+# Columns: stage, output bytes, wall-clock, stack HWM, heap HWM, QEMU RSS.
+# Heap HWM requires allocator emission (HEAP:nnnnn on serial).
+# QEMU RSS is the host-side peak resident size of the qemu-system process.
+
+echo ""
+echo "═══ Performance Summary ═══"
+printf "%-8s  %10s  %6s  %12s  %12s  %10s\n" \
+       "Stage" "Output" "Time" "Stack HWM" "Heap HWM" "QEMU RSS"
+printf "%-8s  %10s  %6s  %12s  %12s  %10s\n" \
+       "──────" "──────────" "──────" "────────────" "────────────" "──────────"
+for s in 1 2; do
+    local_bytes=${STAGE_BYTES[$s]:-"—"}
+    local_time="${STAGE_ELAPSED[$s]:-"—"}s"
+    local_stack=${STAGE_STACK[$s]:-"—"}
+    local_heap=${STAGE_HEAP[$s]:-"—"}
+    local_rss=${STAGE_RSS[$s]:-"—"}
+    [ "$local_stack" != "—" ] && local_stack="${local_stack} B"
+    [ "$local_heap"  != "—" ] && local_heap="${local_heap} B"
+    [ "$local_rss"   != "—" ] && local_rss="${local_rss} kB"
+    printf "%-8s  %10s  %6s  %12s  %12s  %10s\n" \
+           "Stage $s" "$local_bytes" "$local_time" "$local_stack" "$local_heap" "$local_rss"
+done
+echo ""
+
+rm -f "$OUTDIR/stage1.clean.codex" "$OUTDIR/stage2.clean.codex"
+date
+
+if [ "$RESULT" = "PASS" ]; then
     exit 0
 else
-    echo "FAIL: Stage 1 != Stage 2"
-    echo "  Stage 1: $STAGE1_SIZE bytes"
-    echo "  Stage 2: $STAGE2_SIZE bytes"
-    diff "$OUTDIR/stage1.clean.codex" "$OUTDIR/stage2.clean.codex" | head -30
-    rm -f "$OUTDIR/stage1.clean.codex" "$OUTDIR/stage2.clean.codex"
-    date
     exit 1
 fi
