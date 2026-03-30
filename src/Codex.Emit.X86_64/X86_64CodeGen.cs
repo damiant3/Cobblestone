@@ -1306,31 +1306,43 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         if (region.Type is FunctionType)
             return EmitExpr(region.Body);
 
-        // Save working-space mark (region entry)
-        int mark = AllocLocal();
-        byte hpTmp = AllocTemp();
-        X86_64Encoder.MovRR(m_text, hpTmp, HeapReg);
-        StoreLocal(mark, hpTmp);
-
-        byte bodyResult = EmitExpr(region.Body);
-
         if (!region.NeedsEscapeCopy)
         {
-            // Scalar return — restore HeapReg, value survives in register
+            // Scalar return — save/restore HeapReg to reclaim intermediates.
+            int mark = AllocLocal();
+            byte hpTmp = AllocTemp();
+            X86_64Encoder.MovRR(m_text, hpTmp, HeapReg);
+            StoreLocal(mark, hpTmp);
+
+            byte bodyResult = EmitExpr(region.Body);
+
             X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(mark));
             return bodyResult;
         }
+
+        // Bare metal: 2 MB heap too small for 512 KB forwarding table.
+        // Fall back to pass-through (no reclamation).
+        if (m_target == X86_64Target.BareMetal)
+            return EmitExpr(region.Body);
 
         // ── Two-space reclamation with forwarding hash table ──────
         // Escape-copy the heap result to result space, then reset
         // the working-space bump pointer to reclaim all intermediates.
         CodexType resolved = ResolveType(region.Type);
         if (resolved is ConstructedType)
-            return bodyResult; // unresolvable type — skip reclamation (safe fallback)
+            return EmitExpr(region.Body);
+
+        // Save working-space mark (region entry)
+        int mark2 = AllocLocal();
+        byte hpTmp2 = AllocTemp();
+        X86_64Encoder.MovRR(m_text, hpTmp2, HeapReg);
+        StoreLocal(mark2, hpTmp2);
+
+        byte bodyResult2 = EmitExpr(region.Body);
 
         // Save body result (lives in working space)
         int bodyLocal = AllocLocal();
-        StoreLocal(bodyLocal, bodyResult);
+        StoreLocal(bodyLocal, bodyResult2);
 
         // Allocate and zero the forwarding hash table in working space.
         // Writes table base to rodata global, advances HeapReg past the table.
@@ -1364,7 +1376,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
         // Update result-space pointer, restore working space to mark
         X86_64Encoder.MovRR(m_text, ResultReg, HeapReg);       // R15 ← advanced result-space pointer
-        X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(mark)); // R10 ← mark (reclaim working space!)
+        X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(mark2)); // R10 ← mark (reclaim working space!)
 
         return LoadLocal(resultLocal);
     }

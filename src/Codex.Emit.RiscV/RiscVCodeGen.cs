@@ -1241,31 +1241,40 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         if (region.Type is FunctionType)
             return EmitExpr(region.Body);
 
-        // Save working-space mark (region entry)
-        uint mark = AllocLocal();
-        uint hpTmp = AllocTemp();
-        Emit(RiscVEncoder.Mv(hpTmp, Reg.S1));
-        StoreLocal(mark, hpTmp);
-
-        uint bodyResult = EmitExpr(region.Body);
-
         if (!region.NeedsEscapeCopy)
         {
-            // Scalar return — restore S1, value survives in register
+            // Scalar return — save/restore S1 to reclaim intermediates.
+            uint mark = AllocLocal();
+            uint hpTmp = AllocTemp();
+            Emit(RiscVEncoder.Mv(hpTmp, Reg.S1));
+            StoreLocal(mark, hpTmp);
+
+            uint bodyResult = EmitExpr(region.Body);
+
             Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(mark)));
             return bodyResult;
         }
 
+        // Bare metal: 2 MB heap too small for 512 KB forwarding table.
+        if (m_target == RiscVTarget.BareMetal)
+            return EmitExpr(region.Body);
+
         // ── Two-space reclamation with forwarding hash table ──────
-        // Escape-copy the heap result to result space, then reset
-        // the working-space bump pointer to reclaim all intermediates.
         CodexType resolved = ResolveType(region.Type);
         if (resolved is ConstructedType)
-            return bodyResult; // unresolvable type — skip reclamation (safe fallback)
+            return EmitExpr(region.Body);
+
+        // Save working-space mark (region entry)
+        uint mark2 = AllocLocal();
+        uint hpTmp2 = AllocTemp();
+        Emit(RiscVEncoder.Mv(hpTmp2, Reg.S1));
+        StoreLocal(mark2, hpTmp2);
+
+        uint bodyResult2 = EmitExpr(region.Body);
 
         // Save body result (lives in working space)
         uint bodyLocal = AllocLocal();
-        StoreLocal(bodyLocal, bodyResult);
+        StoreLocal(bodyLocal, bodyResult2);
 
         // Allocate and zero the forwarding hash table in working space.
         // Sets S6 = table base, advances S1 past the table.
@@ -1298,7 +1307,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
         // Update result-space pointer, restore working space to mark
         Emit(RiscVEncoder.Mv(ResultReg, Reg.S1));       // S11 ← advanced result-space pointer
-        Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(mark))); // S1 ← mark (reclaim working space!)
+        Emit(RiscVEncoder.Mv(Reg.S1, LoadLocal(mark2))); // S1 ← mark (reclaim working space!)
 
         return LoadLocal(resultLocal);
     }
