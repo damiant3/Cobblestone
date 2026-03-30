@@ -10,32 +10,25 @@ QEMU. 180 KB source (493 definitions, ~5,000 lines) in over serial, 261,654
 bytes of valid C# out over serial — byte-for-byte match with the usermode
 reference. The fixed point holds on hardware.
 
-## Open Issues (2026-03-28 Agent Linux)
+## ⛔ ARM64 & RISC-V — ABANDONED (2026-03-29)
 
-### ARM64 self-compile segfault — missing builtins
+**All work on ARM64 and RISC-V backends is forbidden.**
 
-**Status**: Code gap, not environmental.
+No new features, bug fixes, builtin ports, or bare-metal work on these
+targets. Existing ARM64/RISC-V code remains in the tree for reference
+but must not receive active development. Agent time is x86-64 only.
 
-The ARM64 backend is missing `list-insert-at` and `list-snoc` builtins.
-The compiler warns during compilation (`ARM64 WARNING: unresolved call`).
-These are used heavily by the self-hosted compiler — every sorted insertion
-in the type checker (`env-bind`, `add-subst`, `scope-add`) and every
-accumulator append in lowering/emission hits `list-snoc`.
+Previously open ARM64/RISC-V issues (missing builtins, self-compile segfault,
+bare-metal UART, RISC-V stack pressure) are all **closed — will not fix**.
 
-**Fix**: Port `list-insert-at` and `list-snoc` from x86-64's `TryEmitBuiltin`
-to `Arm64CodeGen.cs`. Pattern: allocate new list, copy elements, insert/append
-at position, return pointer. The x86-64 implementation is at lines ~1725-1750
-in `X86_64CodeGen.cs`.
+The `origin/linux/fix-riscv-bare-uart-full-init` branch has been deleted.
 
-**Impact**: ARM64 native self-compile is blocked until this is resolved.
-Small programs that don't use sorted insertion work fine.
-
+---
 
 ### Medium-term
 
 | Item | Notes |
 |------|-------|
-| ARM64 builtins parity | 8 compiler-critical builtins missing for self-hosting |
 | Codex.UI substrate | Semantic primitives, typed themes |
 | Capability refinement Steps 2-8 | Scope, time-boxing, unified trust lattice |
 | Perf automation | Wire `--bench-check` into CI or pre-commit hook |
