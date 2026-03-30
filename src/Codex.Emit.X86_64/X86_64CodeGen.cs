@@ -5256,7 +5256,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     // 0x7028  SerialReadPos         8 bytes  Ring buffer read position (consumer)
     // 0x7030  ResultArenaBaseAddr   8 bytes  Result-space arena base for REPL reset
     // 0x7038  HeapHwmAddr           8 bytes  Heap high-water mark (peak HeapReg during compilation)
-    // 0x180000-0x1BFFFF            256KB    Serial ring buffer data (below heap at 0x200000)
+    // 0x3C0000-0x3FFFFF            256KB    Serial ring buffer data (below heap at 0x400000)
     const long TickCountAddr = 0x7000;
     const long KeyBufferAddr = 0x7008;
     const long ArenaBaseAddr = 0x7018;
@@ -5264,7 +5264,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     const long SerialReadPosAddr = 0x7028;
     const long ResultArenaBaseAddr = 0x7030;
     const long HeapHwmAddr = 0x7038;
-    const long SerialRingBufAddr = 0x180000;
+    const long SerialRingBufAddr = 0x3C0000;
     const long SerialRingBufSize = 0x40000; // 256KB — must be power of 2
 
     // Bare metal memory layout — 32 x 2MB huge pages = 64 MB
