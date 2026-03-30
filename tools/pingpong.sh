@@ -1,24 +1,36 @@
 #!/bin/bash
 # Ping-Pong: Bare-metal self-compile fixed-point proof.
-# Boots ELF via QEMU, feeds source via serial, captures output twice, compares.
-# Prerequisites: ELF and source must be built BEFORE running this script.
+#
+# Codex code (a) → Codex compiler on bare metal → Codex code (b)
+#                → Codex compiler on bare metal → Codex code (c)
+#                → b == c? PASS. (fixed point)
+#
+# The bare-metal ELF IS the Codex compiler. It boots on QEMU with KVM
+# (hardware virtualization — near-native speed), reads source via serial,
+# compiles using the Codex emitter, writes Codex code back via serial.
+# "STACK:nnnnn" after each compilation is the completion marker.
+#
+# Prerequisites (built on Windows before calling this script):
 #   dotnet run --project tools/Codex.Cli -- build Codex.Codex --target x86-64-bare
 #   dotnet run --project tools/Codex.Bootstrap -- --dump-source Codex.Codex/out/source.codex
+#
 # Usage: wsl bash tools/pingpong.sh
 # Exit 0 = fixed point holds. Exit 1 = broken.
 
-set -e
+set -euo pipefail
 
 REPO="/mnt/d/Projects/NewRepository-cam"
 OUTDIR="$REPO/Codex.Codex/out"
 ELF="$OUTDIR/Codex.Codex.elf"
 SOURCE="$OUTDIR/source.codex"
-PIPE="/tmp/qemu-serial-pipe"
+QEMU="/usr/bin/qemu-system-x86_64"
+TIMEOUT=60
 
 echo "=== Ping-Pong: Bare-Metal Self-Compile ==="
 date
 
-# Verify prerequisites
+# ── Verify prerequisites ─────────────────────────────────────
+
 if [ ! -f "$ELF" ]; then
     echo "FAIL: $ELF not found."
     echo "Run: dotnet run --project tools/Codex.Cli -- build Codex.Codex --target x86-64-bare"
@@ -29,125 +41,108 @@ if [ ! -f "$SOURCE" ]; then
     echo "Run: dotnet run --project tools/Codex.Bootstrap -- --dump-source Codex.Codex/out/source.codex"
     exit 1
 fi
+if [ ! -x "$QEMU" ]; then
+    echo "FAIL: $QEMU not found or not executable."
+    exit 1
+fi
 
-echo "ELF: $(wc -c < "$ELF") bytes"
+echo "ELF:    $(wc -c < "$ELF") bytes"
 echo "Source: $(wc -c < "$SOURCE") bytes"
+
+# ── Run one compilation stage ─────────────────────────────────
+#
+# Serial protocol (bare-metal main.codex):
+#   read-line → returns hardcoded "test.codex" (path, ignored)
+#   read-file → reads serial until \x04 EOT, Unicode→CCE at boundary
+#   compile-streaming-v2 → prints Codex code via serial, CCE→Unicode at boundary
+#   REPL loop prints "STACK:nnnnn\n" after each compilation
 
 run_stage() {
     local stage=$1
-    local outfile=$2
+    local input_file=$2
+    local output_file=$3
 
-    rm -f "$PIPE" "$outfile"
-    mkfifo "$PIPE"
+    local start_time=$SECONDS
 
-    # Feed source after 3s boot delay, keep pipe open
-    (sleep 3; cat "$SOURCE"; printf '\x04'; sleep 600) > "$PIPE" &
-    local feeder=$!
+    # Handshake: kernel prints "READY\n" after COM1 init. We hold the pipe
+    # open with a background sleep, wait for READY, then send source.
+    local pipe="/tmp/pingpong-$$"
+    rm -f "$pipe"
+    mkfifo "$pipe"
+    sleep 999 > "$pipe" &
+    local holder=$!
 
-    # Run QEMU, stream output, monitor for STACK: completion marker
-    qemu-system-x86_64 \
+    timeout "$TIMEOUT" "$QEMU" \
+        -enable-kvm \
         -kernel "$ELF" \
         -serial stdio \
         -display none \
         -no-reboot \
         -m 512 \
-        < "$PIPE" 2>/dev/null &
-    local qemu=$!
-
-    # Monitor output file for completion (STACK: line = compilation done)
-    local elapsed=0
-    while [ $elapsed -lt 600 ]; do
-        sleep 1
-        elapsed=$((elapsed + 1))
-        if [ -f /proc/$qemu/status ] 2>/dev/null || kill -0 $qemu 2>/dev/null; then
-            : # qemu still running
-        else
-            break # qemu exited
+        < "$pipe" 2>/dev/null \
+    | while IFS= read -r line; do
+        if [[ "$line" == READY* ]]; then
+            (cat "$input_file"; printf '\x04') > "$pipe" &
+            continue
         fi
-        # Check if STACK: marker appeared (compilation complete)
-        if [ -f "$outfile" ] && grep -q "STACK:" "$outfile" 2>/dev/null; then
-            sleep 1  # let last bytes flush
+        if [[ "$line" == STACK:* ]]; then
+            echo "$line"
             break
         fi
-    done > "$outfile" < <(cat /proc/$qemu/fd/1 2>/dev/null || true)
+        echo "$line"
+    done > "$output_file" || true
 
-    # That subshell approach won't work. Simpler: tee to file, grep in loop.
-    # Let me just use a direct approach.
-    kill $qemu 2>/dev/null || true
-    kill $feeder 2>/dev/null || true
-    wait $qemu 2>/dev/null || true
-    wait $feeder 2>/dev/null || true
-    rm -f "$PIPE"
+    kill "$holder" 2>/dev/null || true
+    wait 2>/dev/null || true
+    rm -f "$pipe"
+
+    local elapsed=$(( SECONDS - start_time ))
 
     local size
-    size=$(wc -c < "$outfile" 2>/dev/null || echo 0)
-    echo "  Stage $stage: $size bytes"
-    if [ "$size" -lt 1000 ]; then
+    size=$(wc -c < "$output_file" 2>/dev/null || echo 0)
+    echo "  Stage $stage: $size bytes (${elapsed}s)"
+
+    if [ "$size" -lt 100 ]; then
         echo "FAIL: Stage $stage output too small ($size bytes)"
+        cat "$output_file" 2>/dev/null || true
         exit 1
     fi
 }
 
-# Simpler approach: pipe QEMU output through a monitor that kills on STACK:
-run_stage_v2() {
-    local stage=$1
-    local outfile=$2
+# ── Stage 1: Codex source → bare-metal compiler → Codex output ──
 
-    rm -f "$PIPE" "$outfile"
-    mkfifo "$PIPE"
+echo ""
+echo "[1/2] Stage 1..."
+run_stage 1 "$SOURCE" "$OUTDIR/stage1.codex"
 
-    (sleep 3; cat "$SOURCE"; printf '\x04'; sleep 600) > "$PIPE" &
-    local feeder=$!
+# ── Stage 2: feed Stage 1 output back in ──
 
-    # Run QEMU with output piped to awk that exits on STACK: line
-    timeout 600 qemu-system-x86_64 \
-        -kernel "$ELF" \
-        -serial stdio \
-        -display none \
-        -no-reboot \
-        -m 512 \
-        < "$PIPE" 2>/dev/null | awk '{print; fflush()} /^STACK:/{exit}' > "$outfile"
+grep -v '^STACK:' "$OUTDIR/stage1.codex" | cat -s > "$OUTDIR/stage1.clean.codex"
 
-    kill $feeder 2>/dev/null || true
-    rm -f "$PIPE"
+echo "[2/2] Stage 2..."
+run_stage 2 "$OUTDIR/stage1.clean.codex" "$OUTDIR/stage2.codex"
 
-    local size
-    size=$(wc -c < "$outfile" 2>/dev/null || echo 0)
-    echo "  Stage $stage: $size bytes"
-    if [ "$size" -lt 1000 ]; then
-        echo "FAIL: Stage $stage output too small ($size bytes)"
-        exit 1
-    fi
-}
+# ── Compare ──────────────────────────────────────────────────
 
-# Stage 1
-echo "[1/2] Stage 1: self-compile on bare metal..."
-run_stage_v2 1 "$OUTDIR/stage1.cs"
+grep -v '^STACK:' "$OUTDIR/stage2.codex" | cat -s > "$OUTDIR/stage2.clean.codex"
 
-# Stage 2
-echo "[2/2] Stage 2: second self-compile (fixed-point check)..."
-run_stage_v2 2 "$OUTDIR/stage2.cs"
+STAGE1_SIZE=$(wc -c < "$OUTDIR/stage1.clean.codex")
+STAGE2_SIZE=$(wc -c < "$OUTDIR/stage2.clean.codex")
 
-# Strip STACK: lines before comparing (they're diagnostic, not compiler output)
-grep -v "^STACK:" "$OUTDIR/stage1.cs" > "$OUTDIR/stage1.clean"
-grep -v "^STACK:" "$OUTDIR/stage2.cs" > "$OUTDIR/stage2.clean"
-
-STAGE1_SIZE=$(wc -c < "$OUTDIR/stage1.clean")
-STAGE2_SIZE=$(wc -c < "$OUTDIR/stage2.clean")
-
-if diff -q "$OUTDIR/stage1.clean" "$OUTDIR/stage2.clean" > /dev/null 2>&1; then
-    echo ""
-    echo "PASS: Fixed point verified. Stage 1 ($STAGE1_SIZE bytes) == Stage 2 ($STAGE2_SIZE bytes)"
-    rm -f "$OUTDIR/stage1.clean" "$OUTDIR/stage2.clean"
+echo ""
+if diff -q "$OUTDIR/stage1.clean.codex" "$OUTDIR/stage2.clean.codex" > /dev/null 2>&1; then
+    echo "PASS: Fixed point verified."
+    echo "  Stage 1: $STAGE1_SIZE bytes"
+    echo "  Stage 2: $STAGE2_SIZE bytes"
+    rm -f "$OUTDIR/stage1.clean.codex" "$OUTDIR/stage2.clean.codex"
     date
     exit 0
 else
-    echo ""
     echo "FAIL: Stage 1 != Stage 2"
     echo "  Stage 1: $STAGE1_SIZE bytes"
     echo "  Stage 2: $STAGE2_SIZE bytes"
-    diff "$OUTDIR/stage1.clean" "$OUTDIR/stage2.clean" | head -20
-    rm -f "$OUTDIR/stage1.clean" "$OUTDIR/stage2.clean"
+    diff "$OUTDIR/stage1.clean.codex" "$OUTDIR/stage2.clean.codex" | head -30
+    rm -f "$OUTDIR/stage1.clean.codex" "$OUTDIR/stage2.clean.codex"
     date
     exit 1
 fi

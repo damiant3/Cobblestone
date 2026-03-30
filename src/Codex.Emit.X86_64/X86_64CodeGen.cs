@@ -5680,6 +5680,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             // Build IDT, load IDTR, init PIC, enable interrupts
             EmitIdtEntries();
             EmitInterruptSetup();
+
+            // Handshake: signal that COM1 is ready to receive data.
+            // The host script waits for this before sending source.
+            EmitSerialString("READY\n");
         }
         else
         {
