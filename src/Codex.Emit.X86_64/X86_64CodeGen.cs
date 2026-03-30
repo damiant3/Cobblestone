@@ -43,6 +43,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     int m_cceToUnicodeTableOffset = -1; // rodata offset for 128-byte CCE→Unicode lookup
     int m_unicodeToCceTableOffset = -1; // rodata offset for 256-byte Unicode→CCE lookup (input boundary)
     int m_resultBaseGlobalOffset = -1;  // rodata offset for 8-byte result_space_base global
+    int m_fwdTableGlobalOffset = -1;   // rodata offset for 8-byte forwarding table base global
 
     public void EmitModule(IRModule module)
     {
@@ -58,6 +59,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // that are already in result space (avoids redundant deep-copies).
         // Lives in rodata (not text) so QEMU usermode W^X enforcement allows the write.
         m_resultBaseGlobalOffset = m_rodata.Count;
+        for (int i = 0; i < 8; i++) m_rodata.Add(0);
+
+        // Reserve 8 bytes in .rodata for the forwarding table base pointer.
+        // Written by EmitRegion before escape-copy, read by escape helpers.
+        m_fwdTableGlobalOffset = m_rodata.Count;
         for (int i = 0; i < 8; i++) m_rodata.Add(0);
 
         // Emit CCE→Unicode lookup table (128 bytes) into .rodata.
@@ -1300,24 +1306,67 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         if (region.Type is FunctionType)
             return EmitExpr(region.Body);
 
+        // Save working-space mark (region entry)
+        int mark = AllocLocal();
+        byte hpTmp = AllocTemp();
+        X86_64Encoder.MovRR(m_text, hpTmp, HeapReg);
+        StoreLocal(mark, hpTmp);
+
+        byte bodyResult = EmitExpr(region.Body);
+
         if (!region.NeedsEscapeCopy)
         {
-            // Scalar return — save/restore HeapReg to reclaim intermediates.
-            // Safe: the result lives in a register, not on the heap, so no
-            // live heap pointers survive the restore.
-            int mark = AllocLocal();
-            byte hpTmp = AllocTemp();
-            X86_64Encoder.MovRR(m_text, hpTmp, HeapReg);
-            StoreLocal(mark, hpTmp);
-
-            byte bodyResult = EmitExpr(region.Body);
-
+            // Scalar return — restore HeapReg, value survives in register
             X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(mark));
             return bodyResult;
         }
 
-        // Heap return — pass-through (escape-copy crashes on cross-references).
-        return EmitExpr(region.Body);
+        // ── Two-space reclamation with forwarding hash table ──────
+        // Escape-copy the heap result to result space, then reset
+        // the working-space bump pointer to reclaim all intermediates.
+        CodexType resolved = ResolveType(region.Type);
+        if (resolved is ConstructedType)
+            return bodyResult; // unresolvable type — skip reclamation (safe fallback)
+
+        // Save body result (lives in working space)
+        int bodyLocal = AllocLocal();
+        StoreLocal(bodyLocal, bodyResult);
+
+        // Allocate and zero the forwarding hash table in working space.
+        // Writes table base to rodata global, advances HeapReg past the table.
+        EmitFwdTableZero();
+
+        // Switch HeapReg to result space so escape helper allocates there
+        X86_64Encoder.MovRR(m_text, HeapReg, ResultReg);
+
+        // Escape-copy body result → allocates in result space via HeapReg.
+        // Skip if body result is already in result space.
+        string helperName = GetOrQueueEscapeHelper(resolved);
+        byte src = LoadLocal(bodyLocal);
+        X86_64Encoder.MovRR(m_text, Reg.RDI, src);
+        m_rodataFixups.Add(new RodataFixup(m_text.Count + 2, m_resultBaseGlobalOffset));
+        X86_64Encoder.MovRI64(m_text, Reg.RCX, 0); // patched to result_space_base addr
+        X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RCX, 0);
+        X86_64Encoder.CmpRR(m_text, Reg.RDI, Reg.RCX);
+        int regionSkipIdx = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0);
+        EmitCallTo(helperName);
+        int regionDoneIdx = m_text.Count;
+        X86_64Encoder.Jmp(m_text, 0);
+        PatchJcc(regionSkipIdx, m_text.Count);
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RDI); // already in result space
+        PatchJmp(regionDoneIdx, m_text.Count);
+        // RAX = pointer to escape-copied (or existing) result in result space
+
+        // Save escaped result before restoring working space
+        int resultLocal = AllocLocal();
+        StoreLocal(resultLocal, Reg.RAX);
+
+        // Update result-space pointer, restore working space to mark
+        X86_64Encoder.MovRR(m_text, ResultReg, HeapReg);       // R15 ← advanced result-space pointer
+        X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(mark)); // R10 ← mark (reclaim working space!)
+
+        return LoadLocal(resultLocal);
     }
 
     byte EmitEscapeCopy(int srcLocal, CodexType type)
@@ -4136,6 +4185,132 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     // Working regs: RBX=old, R12=new, R13=extra1, R14=extra2
     // Frame: push rbx, r12, r13, r14 (32 bytes + alignment)
 
+    // Forwarding hash table: 32768 entries * 16 bytes = 512 KB.
+    // Each slot: [old_ptr:8 | new_ptr:8]. Empty = old_ptr == 0.
+    // Table base stored in rodata global m_fwdTableGlobalOffset.
+    const int FwdTableEntries = 32768;
+    const int FwdTableMask = FwdTableEntries - 1; // 0x7FFF
+    const int FwdTableBytes = FwdTableEntries * 16;
+
+    // Emit code to allocate and zero a forwarding table at HeapReg,
+    // write its address to the rodata global, and advance HeapReg.
+    void EmitFwdTableZero()
+    {
+        // RCX = table base = HeapReg
+        X86_64Encoder.MovRR(m_text, Reg.RCX, HeapReg);
+        // Write table base to rodata global
+        m_rodataFixups.Add(new RodataFixup(m_text.Count + 2, m_fwdTableGlobalOffset));
+        X86_64Encoder.MovRI64(m_text, Reg.RAX, 0); // patched to global addr
+        X86_64Encoder.MovStore(m_text, Reg.RAX, Reg.RCX, 0); // global = table base
+        // Advance HeapReg past table
+        X86_64Encoder.AddRI(m_text, HeapReg, FwdTableBytes);
+        // Zero loop: RSI = 0; RDX = end; while (RCX < RDX) { [RCX] = 0; RCX += 8 }
+        X86_64Encoder.Li(m_text, Reg.RSI, 0);
+        X86_64Encoder.MovRR(m_text, Reg.RDX, HeapReg); // RDX = end (HeapReg already advanced)
+        // Reload RCX (clobbered? no — still table base)
+        int loopStart = m_text.Count;
+        X86_64Encoder.CmpRR(m_text, Reg.RCX, Reg.RDX);
+        int exitIdx = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+        X86_64Encoder.MovStore(m_text, Reg.RCX, Reg.RSI, 0);
+        X86_64Encoder.AddRI(m_text, Reg.RCX, 8);
+        X86_64Encoder.Jmp(m_text, loopStart - (m_text.Count + 5));
+        PatchJcc(exitIdx, m_text.Count);
+    }
+
+    // Emit forwarding table lookup. RDI = old ptr.
+    // If found: sets RAX = new ptr and returns (ret). Falls through on miss.
+    // Uses RAX, RCX, RDX, RSI as temps. Must be before frame setup.
+    void EmitFwdTableLookup()
+    {
+        // Load table base from rodata global → RCX
+        m_rodataFixups.Add(new RodataFixup(m_text.Count + 2, m_fwdTableGlobalOffset));
+        X86_64Encoder.MovRI64(m_text, Reg.RCX, 0); // patched to global addr
+        X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RCX, 0); // RCX = table base
+
+        // Hash: RAX = (RDI >> 3) & mask * 16 + RCX
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RDI);
+        X86_64Encoder.ShrRI(m_text, Reg.RAX, 3);
+        X86_64Encoder.AndRI(m_text, Reg.RAX, FwdTableMask);
+        X86_64Encoder.ShlRI(m_text, Reg.RAX, 4);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.RCX); // RAX = &table[hash]
+
+        // Table end: RDX = RCX + FwdTableBytes
+        X86_64Encoder.MovRR(m_text, Reg.RDX, Reg.RCX);
+        X86_64Encoder.AddRI(m_text, Reg.RDX, FwdTableBytes);
+
+        // Probe loop
+        int probeStart = m_text.Count;
+        X86_64Encoder.MovLoad(m_text, Reg.RSI, Reg.RAX, 0); // RSI = slot.old_ptr
+        // Hit: RSI == RDI
+        X86_64Encoder.CmpRR(m_text, Reg.RSI, Reg.RDI);
+        int hitIdx = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
+        // Miss: RSI == 0 (empty)
+        X86_64Encoder.TestRR(m_text, Reg.RSI, Reg.RSI);
+        int missIdx = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
+        // Linear probe
+        X86_64Encoder.AddRI(m_text, Reg.RAX, 16);
+        X86_64Encoder.CmpRR(m_text, Reg.RAX, Reg.RDX);
+        int wrapIdx = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0); // RAX >= end → wrap
+        X86_64Encoder.Jmp(m_text, probeStart - (m_text.Count + 5)); // no wrap → probe
+        PatchJcc(wrapIdx, m_text.Count);
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RCX); // wrap to start
+        X86_64Encoder.Jmp(m_text, probeStart - (m_text.Count + 5));
+
+        // Hit: return cached new_ptr
+        PatchJcc(hitIdx, m_text.Count);
+        X86_64Encoder.MovLoad(m_text, Reg.RAX, Reg.RAX, 8); // RAX = slot.new_ptr
+        X86_64Encoder.Ret(m_text);
+
+        // Miss: fall through to normal copy
+        PatchJcc(missIdx, m_text.Count);
+    }
+
+    // Emit forwarding table insert. RBX = old ptr, R12 = new ptr.
+    // Finds an empty slot and stores the mapping. Uses RAX, RCX, RDX, RSI.
+    void EmitFwdTableInsert()
+    {
+        // Load table base from rodata global → RCX
+        m_rodataFixups.Add(new RodataFixup(m_text.Count + 2, m_fwdTableGlobalOffset));
+        X86_64Encoder.MovRI64(m_text, Reg.RCX, 0); // patched to global addr
+        X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RCX, 0); // RCX = table base
+
+        // Hash: RAX = (RBX >> 3) & mask * 16 + RCX
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RBX);
+        X86_64Encoder.ShrRI(m_text, Reg.RAX, 3);
+        X86_64Encoder.AndRI(m_text, Reg.RAX, FwdTableMask);
+        X86_64Encoder.ShlRI(m_text, Reg.RAX, 4);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.RCX);
+
+        // Table end
+        X86_64Encoder.MovRR(m_text, Reg.RDX, Reg.RCX);
+        X86_64Encoder.AddRI(m_text, Reg.RDX, FwdTableBytes);
+
+        // Probe for empty slot
+        int probeStart = m_text.Count;
+        X86_64Encoder.MovLoad(m_text, Reg.RSI, Reg.RAX, 0);
+        X86_64Encoder.TestRR(m_text, Reg.RSI, Reg.RSI);
+        int emptyIdx = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
+        // Not empty: linear probe
+        X86_64Encoder.AddRI(m_text, Reg.RAX, 16);
+        X86_64Encoder.CmpRR(m_text, Reg.RAX, Reg.RDX);
+        int wrapIdx = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0); // RAX >= end → wrap
+        X86_64Encoder.Jmp(m_text, probeStart - (m_text.Count + 5)); // no wrap → probe
+        PatchJcc(wrapIdx, m_text.Count);
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RCX); // wrap to start
+        X86_64Encoder.Jmp(m_text, probeStart - (m_text.Count + 5));
+
+        // Store: [RAX] = RBX (old_ptr), [RAX+8] = R12 (new_ptr)
+        PatchJcc(emptyIdx, m_text.Count);
+        X86_64Encoder.MovStore(m_text, Reg.RAX, Reg.RBX, 0);
+        X86_64Encoder.MovStore(m_text, Reg.RAX, Reg.R12, 8);
+    }
+
     void EmitEscapeHelperPrologue(string name)
     {
         m_functionOffsets[name] = m_text.Count;
@@ -4146,6 +4321,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.Li(m_text, Reg.RAX, 0);
         X86_64Encoder.Ret(m_text);
         PatchJcc(notNull, m_text.Count);
+
+        // Forwarding table lookup: if already copied, return cached copy
+        EmitFwdTableLookup();
 
         X86_64Encoder.PushR(m_text, Reg.RBX);
         X86_64Encoder.PushR(m_text, Reg.R12);
@@ -4201,6 +4379,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.MovRR(m_text, Reg.R12, HeapReg);
         X86_64Encoder.AddRI(m_text, HeapReg, totalSize);
 
+        // Insert forwarding entry before copying fields
+        EmitFwdTableInsert();
+
         for (int i = 0; i < rt.Fields.Length; i++)
             EmitEscapeFieldCopy(i * 8, i * 8, rt.Fields[i].Type);
 
@@ -4223,6 +4404,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.AddRR(m_text, HeapReg, Reg.RAX);          // advance past count+elements
         // Store count
         X86_64Encoder.MovStore(m_text, Reg.R12, Reg.R13, 0);
+
+        // Insert forwarding entry before copying elements
+        EmitFwdTableInsert();
 
         CodexType elemType = ResolveType(lt.Element);
         bool deepCopy = IRRegion.TypeNeedsHeapEscape(elemType);
@@ -4320,6 +4504,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     {
         X86_64Encoder.MovRR(m_text, Reg.R12, HeapReg);
         X86_64Encoder.AddRI(m_text, HeapReg, totalSize);
+
+        // Insert forwarding entry before copying fields
+        EmitFwdTableInsert();
+
         // Copy tag
         X86_64Encoder.MovStore(m_text, Reg.R12, Reg.R13, 0);
         // Copy fields
