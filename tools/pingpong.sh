@@ -49,6 +49,10 @@ fi
 echo "ELF:    $(wc -c < "$ELF") bytes"
 echo "Source: $(wc -c < "$SOURCE") bytes"
 
+# Stage0 = source as-is. The compiler must handle any whitespace internally.
+# No external normalization — if the compiler needs it, it should do it itself.
+STAGE0="$SOURCE"
+
 # ── Run one compilation stage ─────────────────────────────────
 #
 # Serial protocol (bare-metal main.codex):
@@ -112,19 +116,20 @@ run_stage() {
 # ── Stage 1: Codex source → bare-metal compiler → Codex output ──
 
 echo ""
-echo "[1/2] Stage 1..."
-run_stage 1 "$SOURCE" "$OUTDIR/stage1.codex"
+echo "[1/2] Stage 1: compile(stage0)..."
+run_stage 1 "$STAGE0" "$OUTDIR/stage1.codex"
 
 # ── Stage 2: feed Stage 1 output back in ──
 
-grep -v '^STACK:' "$OUTDIR/stage1.codex" | cat -s > "$OUTDIR/stage1.clean.codex"
+# Strip STACK: diagnostic (not compiler output)
+grep -v '^STACK:' "$OUTDIR/stage1.codex" > "$OUTDIR/stage1.clean.codex"
 
-echo "[2/2] Stage 2..."
+echo "[2/2] Stage 2: compile(stage1)..."
 run_stage 2 "$OUTDIR/stage1.clean.codex" "$OUTDIR/stage2.codex"
 
-# ── Compare ──────────────────────────────────────────────────
+# ── Compare (byte-identical, no normalization) ───────────────
 
-grep -v '^STACK:' "$OUTDIR/stage2.codex" | cat -s > "$OUTDIR/stage2.clean.codex"
+grep -v '^STACK:' "$OUTDIR/stage2.codex" > "$OUTDIR/stage2.clean.codex"
 
 STAGE1_SIZE=$(wc -c < "$OUTDIR/stage1.clean.codex")
 STAGE2_SIZE=$(wc -c < "$OUTDIR/stage2.clean.codex")
