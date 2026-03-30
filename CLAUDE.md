@@ -13,14 +13,22 @@ and known conditions. Use `orient <topic>` for detail on any area.
 
 **Clean stale intermediates before doing anything else:**
 
-```powershell
+```bash
 git clean -fd samples/
-Remove-Item -Force Codex.Codex/out/*.cs, Codex.Codex/out/*.elf, Codex.Codex/out/*.dll -ErrorAction SilentlyContinue
+rm -f Codex.Codex/out/*.cs Codex.Codex/out/*.elf Codex.Codex/out/*.dll
+rm -rf generated-output/* .vs
+find . -type d \( -name bin -o -name obj \) -not -path './.git/*' -exec rm -rf {} + 2>/dev/null
 ```
 
 Stale `.elf`, `.dll`, `.cs` outputs from previous sessions cause false test
 results — you test yesterday's codegen against today's type system. Same class
 as QEMU tests silently skipping. Always rebuild from current source.
+
+**Run a directory listing to confirm the workspace is clean:**
+
+```bash
+find . -type f -not -path './.git/*' -not -path '*/node_modules/*' -not -path './.codex-agent/snapshots/*' -not -path './.codex-agent/history/*' -not -path './.handoff/*' -not -path './phone/flash/*' | sort
+```
 
 ## Session Rules
 
@@ -55,11 +63,11 @@ as QEMU tests silently skipping. Always rebuild from current source.
 
 ## Ping-Pong (Bare-Metal Self-Compile Smoke Test)
 
-This is the proof that the compiler works. It compiles itself on bare metal,
-then compiles itself again with that output, and the two must match.
+This is the proof that the compiler works. Codex code is compiled by the Codex
+compiler, producing new Codex code. That output is compiled again by the Codex
+compiler, producing a third copy. All three must match.
 
-**What it is:** codex source → ELF kernel → C# output (stage 1) → compile
-stage 1 back to ELF → feed source again → C# output (stage 2) → stage 1 == stage 2.
+**What it is:** codex code (a) → codex compiler → codex code (b) → codex compiler → codex code (c) → a == b == c.
 
 **How to run it:** `wsl bash tools/pingpong.sh`
 
