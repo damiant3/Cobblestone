@@ -308,6 +308,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             if (!anyChecks)
             {
                 // All scalar (or decomposed records with only scalar fields)
+                EmitUpdateHeapHwm(); // capture peak before TCO reclaim
                 X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(m_tcoHeapMarkLocal));
 
                 // Reconstruct decomposed records at the reset heap position
@@ -360,6 +361,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
                 }
 
                 // All checks passed — reset heap to mark
+                EmitUpdateHeapHwm(); // capture peak before TCO reclaim
                 X86_64Encoder.MovRR(m_text, HeapReg, markReg);
 
                 // Reconstruct decomposed records at the reset heap position
@@ -1316,6 +1318,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
             byte bodyResult = EmitExpr(region.Body);
 
+            EmitUpdateHeapHwm(); // capture peak before reclaiming
             X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(mark));
             return bodyResult;
         }
@@ -1375,6 +1378,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         StoreLocal(resultLocal, Reg.RAX);
 
         // Update result-space pointer, restore working space to mark
+        EmitUpdateHeapHwm(); // capture peak before reclaiming
         X86_64Encoder.MovRR(m_text, ResultReg, HeapReg);       // R15 ← advanced result-space pointer
         X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(mark2)); // R10 ← mark (reclaim working space!)
 
@@ -5251,6 +5255,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     // 0x7020  SerialWritePos        8 bytes  Ring buffer write position (interrupt handler)
     // 0x7028  SerialReadPos         8 bytes  Ring buffer read position (consumer)
     // 0x7030  ResultArenaBaseAddr   8 bytes  Result-space arena base for REPL reset
+    // 0x7038  HeapHwmAddr           8 bytes  Heap high-water mark (peak HeapReg during compilation)
     // 0x180000-0x1BFFFF            256KB    Serial ring buffer data (below heap at 0x200000)
     const long TickCountAddr = 0x7000;
     const long KeyBufferAddr = 0x7008;
@@ -5258,6 +5263,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     const long SerialWritePosAddr = 0x7020;
     const long SerialReadPosAddr = 0x7028;
     const long ResultArenaBaseAddr = 0x7030;
+    const long HeapHwmAddr = 0x7038;
     const long SerialRingBufAddr = 0x180000;
     const long SerialRingBufSize = 0x40000; // 256KB — must be power of 2
 
@@ -5328,6 +5334,24 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         X86_64Encoder.Li(m_text, Reg.RDX, port);
         X86_64Encoder.Li(m_text, Reg.RAX, value);
         X86_64Encoder.OutDxAl(m_text);
+    }
+
+    // Update heap HWM global: if HeapReg > [HeapHwmAddr], store HeapReg.
+    // Uses push/pop to avoid clobbering live registers.
+    void EmitUpdateHeapHwm()
+    {
+        if (m_target != X86_64Target.BareMetal) return;
+        X86_64Encoder.PushR(m_text, Reg.R11);
+        X86_64Encoder.Li(m_text, Reg.R11, HeapHwmAddr);
+        X86_64Encoder.PushR(m_text, Reg.RAX);
+        X86_64Encoder.MovLoad(m_text, Reg.RAX, Reg.R11, 0); // RAX = current HWM
+        X86_64Encoder.CmpRR(m_text, HeapReg, Reg.RAX);
+        int skipUpdate = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_LE, 0);
+        X86_64Encoder.MovStore(m_text, Reg.R11, HeapReg, 0);
+        PatchJcc(skipUpdate, m_text.Count);
+        X86_64Encoder.PopR(m_text, Reg.RAX);
+        X86_64Encoder.PopR(m_text, Reg.R11);
     }
 
     void EmitSerialWaitAndSend(int byteVal)
@@ -5749,9 +5773,16 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             X86_64Encoder.Li(m_text, Reg.RDI, ResultArenaBaseAddr);
             X86_64Encoder.MovLoad(m_text, ResultReg, Reg.RDI, 0);
 
+            // Reset heap HWM to arena base for this iteration
+            X86_64Encoder.Li(m_text, Reg.RDI, HeapHwmAddr);
+            X86_64Encoder.MovStore(m_text, Reg.RDI, HeapReg, 0);
+
             EmitCallMainAndPrint(returnType);
 
-            // ── Stack high-water-mark measurement ──
+            // Final HWM update (in case peak wasn't captured by a region restore)
+            EmitUpdateHeapHwm();
+
+            // ── Stack high-water-mark scan ──
             // Scan from stack bottom upward for first 0xDEADBEEFDEADBEEF qword
             // RDI = scan pointer, RAX = pattern to match
             X86_64Encoder.Li(m_text, Reg.RDI, BareMetalStackBottom);
@@ -5768,19 +5799,38 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             // RDI = first untouched address. Stack used = StackTop - RDI
             X86_64Encoder.Li(m_text, Reg.RSI, BareMetalStackTop);
             X86_64Encoder.SubRR(m_text, Reg.RSI, Reg.RDI);
-            // RSI = bytes of stack used. Print as "STACK:nnnnn\n"
-            // Save RSI across print calls
+            // Save stack HWM for later (HEAP: must be emitted before STACK:)
             X86_64Encoder.PushR(m_text, Reg.RSI);
-            // Print "S" prefix via direct serial write (wait for THR empty, then out)
+
+            // ── Heap high-water-mark emission (HEAP: before STACK:) ──
+            // Read peak HeapReg from global HWM tracker
+            X86_64Encoder.Li(m_text, Reg.RSI, HeapHwmAddr);
+            X86_64Encoder.MovLoad(m_text, Reg.RSI, Reg.RSI, 0);
+            // Subtract arena base to get bytes used
+            X86_64Encoder.Li(m_text, Reg.RDI, ArenaBaseAddr);
+            X86_64Encoder.MovLoad(m_text, Reg.RDI, Reg.RDI, 0);
+            X86_64Encoder.SubRR(m_text, Reg.RSI, Reg.RDI);
+            // RSI = bytes of heap used. Print as "HEAP:nnnnn\n"
+            X86_64Encoder.PushR(m_text, Reg.RSI);
+            foreach (byte ch in "HEAP:"u8)
+            {
+                EmitSerialWaitAndSend(ch);
+            }
+            X86_64Encoder.PopR(m_text, Reg.RDI);
+            EmitCallTo("__itoa"); // RAX = decimal string ptr
+            EmitPrintText(Reg.RAX);
+            EmitSerialWaitAndSend(0x0A);
+
+            // ── Stack high-water-mark emission ──
+            X86_64Encoder.PopR(m_text, Reg.RDI); // recover saved stack HWM
+            X86_64Encoder.PushR(m_text, Reg.RDI); // re-save for __itoa
             foreach (byte ch in "STACK:"u8)
             {
                 EmitSerialWaitAndSend(ch);
             }
-            // Print number via __itoa
             X86_64Encoder.PopR(m_text, Reg.RDI);
             EmitCallTo("__itoa"); // RAX = decimal string ptr
             EmitPrintText(Reg.RAX);
-            // Newline
             EmitSerialWaitAndSend(0x0A);
 
             // Loop back — arena reset happens at top of loop
