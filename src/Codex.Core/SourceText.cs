@@ -35,7 +35,25 @@ public sealed class SourceText(string fileName, string content)
     int[]? m_lineStarts;
 
     public string FileName { get; } = fileName;
-    public string Content { get; } = content;
+    public string Content { get; } = NormalizeLineEndings(content);
+
+    /// <summary>Boundary normalization: strip \r, convert \t to two spaces.
+    /// Same convention as CceTable.NormalizeUnicode — legacy line-ending and
+    /// tab concerns are pushed to the input boundary so the lexer only ever
+    /// sees clean LF-terminated, space-indented text.</summary>
+    static string NormalizeLineEndings(string raw)
+    {
+        if (raw.IndexOfAny(['\t', '\r']) < 0)
+            return raw;
+        var sb = new System.Text.StringBuilder(raw.Length);
+        foreach (char c in raw)
+        {
+            if (c == '\t') sb.Append("  ");
+            else if (c == '\r') { /* stripped */ }
+            else sb.Append(c);
+        }
+        return sb.ToString();
+    }
 
     public string GetText(SourceSpan span)
     {
@@ -79,19 +97,12 @@ public sealed class SourceText(string fileName, string content)
 
     int[] ComputeLineStarts()
     {
+        // Content is already normalized (no \r), so only \n marks line breaks.
         List<int> starts = [0];
         for (int i = 0; i < Content.Length; i++)
         {
             if (Content[i] == '\n')
             {
-                starts.Add(i + 1);
-            }
-            else if (Content[i] == '\r')
-            {
-                if (i + 1 < Content.Length && Content[i + 1] == '\n')
-                {
-                    i++;
-                }
                 starts.Add(i + 1);
             }
         }
