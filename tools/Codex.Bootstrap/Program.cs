@@ -24,6 +24,8 @@ class Program
             return RunBench(args.Length > 1 ? args[1] : null);
         if (args.Length > 0 && args[0] == "--bench-check")
             return RunBenchCheck(args.Length > 1 ? args[1] : null);
+        if (args.Length > 0 && args[0] == "--bench-save")
+            return RunBenchSave(args.Length > 1 ? args[1] : null);
         if (args.Length > 0 && args[0] == "--dump-source")
             return RunDumpSource(args.Length > 1 ? args[1] : null);
 
@@ -562,6 +564,93 @@ class Program
             return 1;
         }
         Console.WriteLine($"OK: within {threshold}% threshold ({totalSign}{totalPct:F1}%)");
+        return 0;
+    }
+
+    static int RunBenchSave(string? codexDirOverride)
+    {
+        // Run the same benchmark protocol, then overwrite bench-baseline.json
+        string codexDir = codexDirOverride ?? Path.GetFullPath(
+            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Codex.Codex"));
+        if (!Directory.Exists(codexDir)) { Console.Error.WriteLine($"Not found: {codexDir}"); return 1; }
+
+        string[] files = Directory.GetFiles(codexDir, "*.codex", SearchOption.AllDirectories)
+            .OrderBy(f => f, StringComparer.Ordinal).ToArray();
+        List<string> codeBlocks = [];
+        foreach (string f in files)
+        {
+            string content = File.ReadAllText(f);
+            codeBlocks.Add(IsProseDocument(content) ? ExtractCodeBlocks(content) : content);
+        }
+        string source = _Cce.FromUnicode(string.Join("\n\n", codeBlocks));
+
+        Console.WriteLine($"Benchmark: {source.Length} chars, {files.Length} files");
+        Console.WriteLine("Protocol: 3 warmup + 10 measured, saving median as new baseline");
+        Console.WriteLine();
+
+        int warmup = 3, measured = 10;
+        for (int w = 0; w < warmup; w++)
+        {
+            RunPipeline(source, out _, out _, out _, out _, out _, out _, out _, out _);
+            Console.Write($"  warmup {w + 1}/{warmup}\r");
+        }
+        Console.WriteLine($"  warmup done          ");
+
+        double[] lexT = new double[measured], parseT = new double[measured], desugarT = new double[measured];
+        double[] resolveT = new double[measured], checkT = new double[measured];
+        double[] lowerT = new double[measured], emitT = new double[measured], totalT = new double[measured];
+
+        for (int r = 0; r < measured; r++)
+        {
+            RunPipeline(source, out lexT[r], out parseT[r], out desugarT[r],
+                out resolveT[r], out checkT[r], out lowerT[r], out emitT[r], out totalT[r]);
+            Console.Write($"  run {r + 1}/{measured}\r");
+        }
+        Console.WriteLine($"  measured done         ");
+        Console.WriteLine();
+
+        Array.Sort(lexT); Array.Sort(parseT); Array.Sort(desugarT);
+        Array.Sort(resolveT); Array.Sort(checkT); Array.Sort(lowerT);
+        Array.Sort(emitT); Array.Sort(totalT);
+        int mid = measured / 2;
+
+        // Get current git commit hash
+        string commit = "unknown";
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("git", "rev-parse --short HEAD")
+            { RedirectStandardOutput = true, UseShellExecute = false };
+            var proc = System.Diagnostics.Process.Start(psi);
+            if (proc is not null) { commit = proc.StandardOutput.ReadToEnd().Trim(); proc.WaitForExit(); }
+        }
+        catch { /* git not available */ }
+
+        string date = DateTime.UtcNow.ToString("yyyy-MM-dd");
+        string json = $$"""
+            {
+              "date": "{{date}}",
+              "commit": "{{commit}}",
+              "medianMs": {{totalT[mid].ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}},
+              "stages": {
+                "lex": {{lexT[mid].ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}},
+                "parse": {{parseT[mid].ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}},
+                "desugar": {{desugarT[mid].ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}},
+                "resolve": {{resolveT[mid].ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}},
+                "typecheck": {{checkT[mid].ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}},
+                "lower": {{lowerT[mid].ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}},
+                "emit": {{emitT[mid].ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}}
+              },
+              "thresholdPercent": 10
+            }
+            """;
+
+        // Write baseline file next to the project source
+        string baselinePath = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory, "..", "..", "..", "bench-baseline.json"));
+        File.WriteAllText(baselinePath, json + "\n");
+
+        Console.WriteLine($"Saved baseline to: {baselinePath}");
+        Console.WriteLine($"  total: {totalT[mid]:F2}ms  commit: {commit}  date: {date}");
         return 0;
     }
 
