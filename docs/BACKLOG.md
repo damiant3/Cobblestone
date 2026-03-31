@@ -1,37 +1,55 @@
 # Backlog — Outstanding Work
 
-## Compiler Correctness
+## Active
 
-| # | Item | Component | Notes | Effort |
-|---|------|-----------|-------|--------|
-| 1 | RISC-V self-compile (bare metal PASS, but no output in usermode| Codex.Emit.RiscV | **Partially fixed** Troubles remain with the test harness and wsl hosted QEMU.  Testing on linux | ~4 hrs |
-| 2 | Result-space escape-copy disabled | Codex.Emit.RiscV, X86_64 | Crashes on cross-references. Disabled in `da67c9a`. Not blocking MM3 but leaves memory on the table. | ~4 hrs |
-| 3 | Verify IL backend CCE assumptions | Codex.Emit.IL | Uses .NET `Char.IsLetter`/`Char.IsDigit`/`Char.IsWhiteSpace` (Unicode). Correct for .NET targets. If IL binaries ever process CCE-encoded data, these need CCE ranges. Document the decision. | ~15 min |
-| 4 | ARM64 builtins parity | Codex.Emit.Arm64 | 8 compiler-critical builtins missing: TCO, is-digit, is-whitespace, negate, text-contains, text-starts-with, list-cons, list-append. Blocks self-hosting on ARM64. | ~1 day |
-| 5 | NetworkSync test failures | Codex.Repository | 4 tests fail (need a listening peer). Either fix the tests to be self-contained or mark as integration-only. | ~1 hr |
+| # | Item | Design Doc | Notes |
+|---|------|-----------|-------|
+| 1 | **Second Bootstrap (MM4)** | `docs/Compiler/SECOND-BOOTSTRAP.md` | Port x86-64 backend to Codex. 8 phases. The critical path. |
+| 2 | Escape copy bare-metal | `docs/Designs/Memory/CAMP-IIIA-ESCAPE-ANALYSIS.md` | Skip removed, tests passing. Rearchitect deferred till after MM4. |
 
-## Features
+## Needs Design Doc
 
-These all have design docs in `docs/Designs/`.
+| Item | Why | Notes |
+|------|-----|-------|
+| Crypto primitives | Ed25519 + SHA-256 on bare metal, constant-time | Unblocks trust lattice, identity, agent protocol, CDX verification |
+| Identity & authentication | Key pairs, first-boot ceremony, trust bootstrap | Unblocks agent protocol, policy enforcement |
+| The Verifier | Type-check untrusted code at install time | The hardest sub-problem. Unblocks Codex.OS security model |
+| The Shell | Prose-as-command interface | Unblocks Codex.OS user interaction |
+| Boot sequence / init | First-boot, capability root, fact store loading | Unblocks Codex.OS on real hardware |
+| Process IPC | Inter-process communication, typed channels | Unblocks multi-process OS |
+| Scheduler & quotas | RT scheduling, CPU/memory quotas, watchdog | Unblocks resource enforcement |
 
-| Feature | Design Doc | Depends On | Effort |
-|---------|-----------|------------|--------|
-| Capability refinement (Steps 2-8) | `Features/CAPABILITY-REFINEMENT.md` | Step 1 done (direction, scope, time-boxing, trust lattice) | Weeks |
-| Repository federation | `Features/V3-REPOSITORY-FEDERATION.md` | V1 views done, V2 narration done. Missing: cross-repo refs, trust lattice, proposal workflow, sync protocol | Weeks |
-| Structured concurrency runtime | `Features/CAMP-IIIC-STRUCTURED-CONCURRENCY.md` | `[Concurrent]` effect tracking done. Runtime (fork, await, par, race) not implemented | ~1 week |
-| Standard library | `Features/STDLIB-AND-CONCURRENCY.md` | Design exists. Small core: Text, List, Map, Maybe, Either, Result, IO | ~2 weeks |
-| Multi-language syntax | `CurrentPlan.md` | Parser per locale, shared AST. No design doc yet | Large |
-| Codex.UI substrate | `CurrentPlan.md` | Semantic primitives, typed themes. No design doc yet | Large |
-| Perf automation | `CurrentPlan.md` | Wire `--bench-check` into CI or pre-commit hook | ~2 hrs |
+## Designed, Awaiting Implementation (after MM4)
 
-## Long-Term
+| Feature | Design Doc | Effort |
+|---------|-----------|--------|
+| CDX binary format + loader | `docs/Codex.OS/CodexBinary.md` | Phase 2 of Second Bootstrap covers writer; loader is separate |
+| Trust network | `docs/Codex.OS/TrustNetwork.md` | Medium-Large |
+| Agent protocol (7 messages) | `docs/Codex.OS/RuntimeTrust.txt` §1 | Medium |
+| Policy contract | `docs/Codex.OS/RuntimeTrust.txt` §2 | Medium |
+| Forensics layer | `docs/Codex.OS/RuntimeTrust.txt` §3 | Medium |
+| Capability refinement Steps 2-8 | `docs/Designs/Features/CAPABILITY-REFINEMENT.md` | Weeks |
+| Structured concurrency runtime | `docs/Designs/Features/CAMP-IIIC-STRUCTURED-CONCURRENCY.md` | ~1 week |
+| Stdlib expansion (Set, Queue, StringBuilder, TextSearch) | `docs/Designs/Features/STDLIB-AND-CONCURRENCY.md` | ~2 weeks |
+| V2 Narration Phases 4-6 | `docs/Designs/Features/V2-NARRATION-LAYER.md` | Medium |
+| V3 Repository federation | `docs/Designs/Features/V3-REPOSITORY-FEDERATION.md` | Large |
 
-These are summit goals, not tasks. They guide direction.
+## Deferred Indefinitely
 
-| Goal | Status |
+| Item | Reason |
 |------|--------|
-| Codex.OS on real hardware | Garage box provisioned, QEMU working. Next: WHPX, then real boot |
-| Ring 5+: filesystem, networking | Content-addressed FactStore as filesystem — design exists |
-| Floppy disk image (boot → compile → self-compile in 1.44MB) | 64MB achieved. Need streaming Path B optimizations to shrink further |
-| Repository federation | See P3 above |
+| ARM64 backend | Abandoned 2026-03-29 |
+| RISC-V backend | Abandoned 2026-03-29 |
+| Codex.UI substrate | No design doc, medium-term |
+| Codex.OS on real hardware (WHPX) | After MM4 + basic OS stack |
+| Floppy disk 1.44 MB target | 64 MB achieved, streaming optimizations later |
+| Multi-language syntax | Large effort, no design doc |
+| IL emitter enhancements | Low priority, .NET dependency being retired |
+| Legacy transpilation backends | Staying in C#, not being ported |
 
+## Compiler Correctness (low priority, non-blocking)
+
+| # | Item | Notes |
+|---|------|-------|
+| 1 | Verify IL backend CCE assumptions | Document decision: .NET Char.Is* vs CCE ranges |
+| 2 | NetworkSync test failures | 4 tests need self-contained peer or integration-only marking |
