@@ -985,3 +985,37 @@ Steps 1-4 can be built and tested with synthetic percepts in-process.
 No sensors, no hardware, no networking. The forensic chain works the
 same whether the percept comes from a camera or a unit test.
 ```
+
+Design Review:
+  Questions and concerns
+
+  1. Clock trust. Leases tick against the local clock. What happens when the local clock is wrong — maliciously or
+  through drift? A device that sets its clock back gets indefinite leases. The doc doesn't address clock attestation.
+  This might need a ClockSource in the trust lattice, or at minimum a monotonic tick counter that can't be rolled back
+  (which you already have on bare metal with the kernel tick, but not necessarily on hosted platforms).
+
+  2. Confidence propagation feels underspecified. "Product, unless the inference method provides a better estimate" is
+  doing a lot of work. In practice, naive confidence products collapse to near-zero fast (0.9^10 ≈ 0.35). The doc might
+  want to name the actual propagation rules or at least say "this is a policy-configurable function, default is
+  product." Otherwise every implementer will make different choices and forensic replay across agents won't agree.
+
+  3. Interrupt authority vs. latency. An Interrupt requires a capability chain verification ([Supervise target]). In an
+  emergency, that verification has a cost. If Captain Agent needs to interrupt a subordinate agent right now because a
+  collision is imminent, walking a vouch chain is the wrong thing to be doing. Might need a "pre-authorized interrupt" —
+   a compiled-in fast-path where the authority was verified at lease-grant time, not at interrupt time.
+
+  4. Narrate is the most expensive message. Generating a prose reasoning chain from a forensic record is non-trivial
+  computation. On bare metal with bounded memory, this could blow your resource envelope. The doc says safe-mode uses
+  [HardRealtime] paths with TCO + regions — but Narrate is explicitly not a safe-mode operation. Might want to say that
+  Narrate is deferred until the agent is out of safe mode, or delegated to a supervising agent with more resources.
+
+  5. Policy template recognition is fragile. "Jake may use X" vs "Jake is allowed to use X" vs "X is available to Jake"
+  — natural language has a lot of ways to say the same thing. The doc says unrecognized prose is preserved as
+  documentation (not an error), which is the right default, but it means a parent could think they wrote a policy that
+  the compiler silently treated as commentary. Needs a feedback loop: "I recognized 3 grants and 2 denials from your
+  policy. Here they are. Is this complete?"
+
+  6. No versioned policy migration. Policies are facts (immutable, hashed), and the effective policy is a view
+  composition. But what happens when the template language changes? A policy written against V2 templates might not
+  parse the same way under V3 templates. The doc might want a policy_version field in PolicyFact so the compiler knows
+  which template set to apply.
