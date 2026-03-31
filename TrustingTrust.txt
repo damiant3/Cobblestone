@@ -1,0 +1,260 @@
+  1. Trusting Trust (Ken Thompson, 1984)
+
+  This is the one that should keep you up at night because it's directly about
+  self-hosting compilers.
+
+  Ken Thompson gave a Turing Award lecture where he demonstrated: you can insert a
+  backdoor into a compiler such that the compiler inserts the backdoor into anything it
+  compiles — including itself. The backdoor perpetuates through the fixed point. The
+  source code is clean. The binary is compromised. And because the binary compiles the
+  source into a compromised binary, you can never escape by reading the source.
+
+  Your pingpong test proves: Stage 1 output == Stage 2 output. That proves the compiler is
+   a fixed point. It does NOT prove the fixed point is correct. A compromised compiler
+  that faithfully reproduces its own compromise also passes the fixed-point test.
+
+  The classic defense is Diverse Double-Compiling (David A. Wheeler, 2005): compile your
+  compiler with a completely independent compiler and check that the result matches. If
+  two unrelated compilers produce the same binary from the same source, it's extremely
+  unlikely both are compromised in the same way.
+
+  You're in an interesting position here: you have the C# reference compiler AND the
+  self-hosted Codex compiler. They're written in different languages by different
+  processes. If both produce the same output from the same .codex source, that's a strong
+  (not absolute) argument that neither is compromised. This is worth documenting as a
+  verification step before you retire the C# compiler. Once the C# compiler is archived,
+  you lose the diverse compilation path.
+
+  2. Type System Soundness
+
+  The entire security model rests on one claim: if the type system accepts a program, the
+  program does only what its type says. This is soundness. If the type system is unsound —
+   if there's a way to write a program that type-checks but violates its declared
+  capabilities — then the verifier is useless and every security guarantee collapses.
+
+  Proving a type system sound is a serious formal methods problem. Languages like Coq and
+  Lean have machine-checked soundness proofs. Haskell's type system has known
+  unsoundnesses (unsafePerformIO, unsafeCoerce) that are accepted as escape hatches. Rust
+  has unsafe. Java's type system was proven unsound in 2016 (Amin & Tate) due to
+  interactions between wildcards and null.
+
+  Codex has dependent types, linear types, algebraic effects, and effect handlers — each
+  is individually well-studied, but their interaction is where soundness bugs hide. The
+  question you need to answer eventually: is the Codex type system sound, and how do you
+  know? The options are:
+
+  - Formal proof (machine-checked in Coq/Lean/Agda). Gold standard. Enormous effort.
+  CompCert (verified C compiler) took a decade.
+  - Metatheory on paper (human-written proof). Standard academic approach. Cheaper, but
+  can have errors.
+  - Extensive testing + fuzzing of the type checker. Not a proof, but finds bugs fast.
+  Tools like QuickCheck or property-based testing can generate random programs and check
+  that well-typed programs don't crash.
+  - Minimizing the trusted core. Make the verifier as small as possible. A 500-line
+  verifier can be audited by humans. A 50,000-line verifier cannot.
+
+  You don't need a full soundness proof to ship. But you need a plan for getting there,
+  because "the software cannot hurt you" is a claim that demands proof, not just testing.
+
+  3. Side Channels
+
+  The capability system controls what effects a program can perform. But it doesn't
+  control what information a program leaks through side channels:
+
+  - Timing: A program with [Console] can encode stolen data in the timing of its output.
+  Read a byte from memory, wait proportionally long, write to console. The console output
+  looks innocent. The timing carries the secret.
+  - Cache: On shared hardware, one process can evict cache lines and measure another
+  process's cache access patterns. This is how Spectre and Meltdown work. Even if the type
+   system prevents direct memory access, the CPU's cache doesn't know about type systems.
+  - Power: On embedded devices, power consumption varies with computation. A program that
+  "does nothing wrong" according to the capability system can still leak a cryptographic
+  key through power analysis.
+  - Electromagnetic: Same principle, different medium. Van Eck phreaking (reading a
+  monitor from its EM emissions) dates to 1985.
+
+  The forensics layer's Percept→Belief→Action chain captures what the agent decided to do.
+   It doesn't capture what the hardware leaked while doing it.
+
+  Side channels are genuinely hard. The state of the art is:
+  - Constant-time programming for crypto (no branches or memory accesses that depend on
+  secret data)
+  - Cache partitioning (Intel CAT, ARM MPAM) to isolate cache lines per process
+  - Speculative execution barriers (lfence, speculation barriers) — hardware patches for
+  Spectre
+  - Physical shielding for EM and power
+
+  None of these are type-system solutions. They're hardware and discipline solutions. The
+  honest thing to do is acknowledge them as outside the Codex security boundary, document
+  which classes of side channel Codex.OS mitigates (process isolation via page tables
+  helps with some cache attacks) and which it doesn't (timing, power, EM).
+
+  4. Crypto Implementation
+
+  The trust lattice, the agent protocol, the binary format, the network protocol —
+  everything depends on Ed25519 signatures and SHA-256 hashes. These algorithms are
+  well-studied and believed secure. The algorithms aren't the risk. The implementation is.
+
+  Cryptographic code is uniquely hard to write correctly:
+  - It must be constant-time (no timing side channels based on key material)
+  - It must handle edge cases in the math (point validation, group cofactor, scalar
+  clamping for Ed25519)
+  - It must resist fault injection (an attacker glitching the hardware during a signature
+  operation can leak key bits)
+  - A single bug can be catastrophic and undetectable by testing
+
+  You'll be implementing crypto on bare metal in Codex, with no OpenSSL, no libsodium,
+  nothing to lean on. This is one of the few places where I'd say: don't write it from
+  scratch unless you have to. Consider:
+
+  - Porting a well-audited implementation (e.g., TweetNaCl — 100 tweets of C, formally
+  verified) to Codex
+  - Using a verified implementation (HACL* has machine-checked proofs of correctness AND
+  side-channel resistance)
+  - At minimum, testing against known test vectors (RFC 8032 for Ed25519, NIST vectors for
+   SHA-256)
+
+  5. The Semantic Gap in Policy
+
+  The policy contract compiles English prose into capability constraints. "Jake may use
+  the flight simulator on weekends between 10 and 5." The compiler extracts: TimeWindow {
+  days: [Saturday, Sunday], hours: [10:00, 17:00] }.
+
+  But what if the parent meant "10 AM to 5 PM" and the compiler interpreted it as "10:00
+  to 05:00" (military time, so 10 AM to 5 AM)? Or what if "weekends" means Friday-Saturday
+   in the parent's culture, not Saturday-Sunday?
+
+  The prose-as-policy design is powerful because it's human-readable. It's dangerous for
+  the same reason — natural language is ambiguous, and the compiler must resolve that
+  ambiguity. The RuntimeTrust.txt feedback I gave earlier mentions this: "a parent could
+  think they wrote a policy that the compiler silently treated as commentary." But it goes
+   deeper than template recognition. Even when the template matches, the semantics can be
+  wrong.
+
+  Mitigations:
+  - Confirmation feedback: "I understood 3 grants and 2 denials. Here they are in precise
+  notation. Is this correct?" This is the Clarifier concept from docs/ForFun/Clarifier.txt
+   applied to policy.
+  - Simulation: "Under this policy, here's what Jake can do at 3 PM Saturday: [list].
+  Here's what he can't do: [list]. Is this right?"
+  - Conservative parsing: When ambiguous, choose the more restrictive interpretation.
+  "Between 10 and 5" → "10:00 to 17:00" because it's shorter than "10:00 to 05:00 next
+  day."
+  - Policy testing: Unit tests for policies. "Assert: under this policy, Jake can access
+  the simulator at Saturday 14:00. Assert: Jake cannot access the simulator at Monday
+  14:00."
+
+  6. Availability and Resource Exhaustion
+
+  The CIA triad is Confidentiality, Integrity, Availability. The Codex design is strong on
+   integrity (content-addressed facts, signed messages, capability enforcement) and
+  confidentiality (capability-gated access, no ambient authority). Availability is the
+  weak leg.
+
+  A program that type-checks correctly and uses only its declared capabilities can still:
+  - Allocate its entire heap budget and never free it (denial of service against itself)
+  - Spin in a CPU loop consuming its time quota
+  - Flood the serial port / network with valid-but-useless output
+
+  The policy system has quotas, and the capability system has time-boxing. But the kernel
+  needs to enforce these, and the enforcement mechanisms aren't designed:
+  - CPU scheduling: What scheduling algorithm? How are priorities assigned? Can a
+  high-priority process starve a low-priority one?
+  - Memory quotas: The region allocator reclaims per-region, but total process heap usage
+  needs a cap. What happens when a process hits its cap — kill it? Suspend it? Notify the
+  agent?
+  - I/O quotas: How many bytes per second can a process write to serial? The capability
+  says "may write to console" but not "at what rate."
+  - Watchdog: A process that hangs (infinite loop in a pure computation — the type system
+  doesn't prevent non-termination for all programs, only those with termination proofs)
+  needs to be detected and killed. The fuel limit in the verifier bounds verified
+  programs, but not all programs will be fully verified.
+
+  7. Trust Lattice Bootstrap
+
+  The trust lattice assumes a web of vouches. But on first boot, the lattice is empty. Who
+   is the first trusted entity?
+
+  This is the "root of trust" problem. Options:
+  - The device manufacturer pre-loads a root key (like how phones ship with CA
+  certificates). But then you trust the manufacturer.
+  - The first user generates a key pair and becomes the root. But then there's no recovery
+   if that key is lost.
+  - A hardware security module (TPM) provides a hardware-backed root of trust. But then
+  you depend on non-Codex hardware.
+
+  The pragmatic answer is probably: the device ships with the Codex.OS kernel (which is a
+  known binary, verified by hash), and the first user establishes identity through a setup
+   ceremony that generates keys, optionally backed by hardware (TPM, secure enclave). The
+  kernel itself is trusted by construction — it was compiled by a known-good compiler from
+   auditable source. The boot chain is: hardware → kernel (trusted by hash) → user
+  identity (established at first boot) → trust lattice grows from there.
+
+  But this needs to be designed. "How does the first device get its first trust" is the
+  creation story of the entire system.
+
+  8. Post-Quantum Cryptography
+
+  Ed25519 is broken by a sufficiently large quantum computer (Shor's algorithm). SHA-256
+  is weakened but not broken (Grover's algorithm halves the security level — 256-bit
+  becomes 128-bit equivalent, still safe).
+
+  Timeline: nobody knows. Estimates range from "never" to "2030s." NIST has already
+  standardized post-quantum algorithms (ML-KEM, ML-DSA, SLH-DSA). The NSA has mandated
+  their adoption for classified systems by 2035.
+
+  You don't need to implement post-quantum crypto now. But the binary format and the trust
+   lattice should be algorithm-agile — the author_key field in the CDX header should carry
+   an algorithm identifier, not assume Ed25519. When post-quantum signatures are ready,
+  the format should accept them without a breaking change.
+
+  This is a two-line addition to the CDX spec: a signature_algorithm field in the header.
+  Worth doing now to avoid a format version bump later.
+
+  9. Composition of Verified Components
+
+  You verify program A is safe. You verify program B is safe. You run both on the same
+  kernel. Are you safe?
+
+  Not necessarily. Verified components can interfere through:
+  - Shared resources: Both compete for CPU, memory, I/O. Verification of A doesn't account
+   for B's resource usage.
+  - Emergent timing: A's behavior depends on when it's scheduled relative to B. The
+  verifier checked A in isolation.
+  - Capability delegation chains: A delegates a capability to B, B delegates to C. The
+  chain may create a capability path that no single policy intended.
+
+  This is the composition problem in formal verification. It's unsolved in general. The
+  Codex design helps (capabilities are typed, delegation has depth limits, the forensic
+  chain tracks delegation) but doesn't eliminate it. The honest answer is: individual
+  verification is necessary but not sufficient. System-level testing (running multiple
+  verified programs together and checking invariants) is also needed.
+
+  10. The Human in the Loop
+
+  Every technical defense terminates at a human decision. The parent writes a policy. The
+  user grants a capability. The administrator vouches for an agent.
+
+  If the human makes a bad decision — writes a policy that's too permissive, vouches for
+  an untrustworthy agent, grants capabilities they shouldn't — the system faithfully
+  enforces the bad decision. The forensic chain records it. The narration layer explains
+  it. But the damage is done.
+
+  The design can mitigate this:
+  - Defaults are restrictive (already in the policy contract — denial wins)
+  - Confirmation feedback ("You are about to grant [FlightControl] to an agent with trust
+  score 0.3. Are you sure?")
+  - Anomaly detection on human decisions ("This grant is unusual — no similar grant has
+  been made before")
+  - Cooling-off periods ("This capability will activate in 24 hours unless revoked")
+
+  But ultimately, a system where software cannot hurt you is still a system where people
+  can hurt you. That's the honest boundary. The design docs should say so explicitly
+  rather than let the "software cannot hurt you" tagline imply more than it delivers.
+
+  ---
+  That's what I see. The biggest ones that need design work before they bite you are:
+  trusting trust (#1, addressable now while the C# compiler still exists), crypto
+  implementation (#4, addressable when you start the Second Bootstrap), and trust lattice
+  bootstrap (#7, needed before Codex.OS boots on real hardware). The rest are real but
+  longer-horizon.
