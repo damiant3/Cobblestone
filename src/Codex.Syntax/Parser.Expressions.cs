@@ -15,6 +15,7 @@ public sealed partial class Parser
 
         while (true)
         {
+            SkipNewlines();
             (int prec, Associativity assoc) = GetPrecedence(Current.Kind);
             if (prec < 0 || prec < minPrecedence)
             {

@@ -5,12 +5,11 @@ Chapter: X86-64 Instruction Encoder
  numbering follows AMD64: RAX=0 RCX=1 RDX=2 RBX=3 RSP=4 RBP=5 RSI=6
  RDI=7 R8=8 R9=9 R10=10 R11=11 R12=12 R13=13 R14=14 R15=15.
 
- Codex has no bitwise operators. All bit manipulation uses arithmetic:
-   reg & 7       ->  int-mod reg 8
-   mod << 6      ->  m * 64
-   (reg & 7) << 3 -> (int-mod reg 8) * 8
-   a | b (disjoint) -> a + b
-   value >> 8    ->  floor-div value 256
+ Codex has no bitwise operators. All bit manipulation uses arithmetic.
+ reg-and-7 becomes int-mod reg 8. Shift left by 6 becomes m * 64.
+ Disjoint bit-or becomes addition. Shift right by 8 becomes floor-div
+ value 256. See docs/Codex.OS/LanguageUpdates.md for the plan to add
+ proper bitwise builtins post-MM4.
 
 Section: Arithmetic Helpers
 
@@ -163,33 +162,27 @@ Section: MOV Instructions
   mov-rr : Integer -> Integer -> List Integer
   mov-rr (rd) (rs) =
    [rex-w rs rd, 137, modrm 3 rs rd]
-   -- 137 = 0x89 MOV r/m64, r64
 
   mov-ri64 : Integer -> Integer -> List Integer
   mov-ri64 (rd) (imm) =
    [rex True False False (rd >= 8), 184 + int-mod rd 8]
    ++ write-i64 imm
-   -- 184 = 0xB8; movabs rd, imm64 (10 bytes)
 
   mov-ri32 : Integer -> Integer -> List Integer
   mov-ri32 (rd) (imm) =
    [rex-w 0 rd, 199, modrm 3 0 rd] ++ write-i32 imm
-   -- 199 = 0xC7; mov r/m64, imm32 (sign-extended)
 
   mov-load : Integer -> Integer -> Integer -> List Integer
   mov-load (rd) (rs) (offset) =
    [rex-w rd rs, 139] ++ emit-mem-operand rd rs offset
-   -- 139 = 0x8B MOV r64, r/m64
 
   mov-store : Integer -> Integer -> Integer -> List Integer
   mov-store (rd) (rs) (offset) =
    [rex-w rs rd, 137] ++ emit-mem-operand rs rd offset
-   -- 137 = 0x89 MOV r/m64, r64
 
   mov-load-rip-rel : Integer -> Integer -> List Integer
   mov-load-rip-rel (rd) (disp32) =
    [rex True (rd >= 8) False False, 139, modrm 0 rd 5] ++ write-i32 disp32
-   -- rm=5 with mod=00 encodes RIP-relative (7 bytes)
 
   mov-store-rip-rel : Integer -> Integer -> List Integer
   mov-store-rip-rel (rs) (disp32) =
@@ -198,14 +191,12 @@ Section: MOV Instructions
   movzx-byte : Integer -> Integer -> Integer -> List Integer
   movzx-byte (rd) (rs) (offset) =
    [rex-w rd rs, 15, 182] ++ emit-mem-operand rd rs offset
-   -- 15 182 = 0x0F 0xB6 MOVZX r64, r/m8
 
   mov-store-byte : Integer -> Integer -> Integer -> List Integer
   mov-store-byte (rd) (rs) (offset) =
    let rex-byte = rex False (rs >= 8) False (rd >= 8)
    in let pfx = if rex-byte /= 64 | rs >= 4 then [rex-byte] else []
    in pfx ++ [136] ++ emit-mem-operand rs rd offset
-   -- 136 = 0x88 MOV r/m8, r8; REX needed for SPL/BPL/SIL/DIL
 
 Section: Arithmetic Instructions
 
@@ -214,13 +205,10 @@ Section: Arithmetic Instructions
    if imm >= 0 - 128 & imm <= 127
     then [rex-w 0 rd, 131, modrm 3 ext rd] ++ write-i8 imm
     else [rex-w 0 rd, 129, modrm 3 ext rd] ++ write-i32 imm
-   -- 131 = 0x83 (ALU r/m64, imm8); 129 = 0x81 (ALU r/m64, imm32)
-   -- ext: 0=ADD, 4=AND, 5=SUB, 7=CMP
 
   add-rr : Integer -> Integer -> List Integer
   add-rr (rd) (rs) =
    [rex-w rs rd, 1, modrm 3 rs rd]
-   -- 1 = 0x01 ADD r/m64, r64
 
   add-ri : Integer -> Integer -> List Integer
   add-ri (rd) (imm) = alu-ri 0 rd imm
@@ -228,7 +216,6 @@ Section: Arithmetic Instructions
   sub-rr : Integer -> Integer -> List Integer
   sub-rr (rd) (rs) =
    [rex-w rs rd, 41, modrm 3 rs rd]
-   -- 41 = 0x29 SUB r/m64, r64
 
   sub-ri : Integer -> Integer -> List Integer
   sub-ri (rd) (imm) = alu-ri 5 rd imm
@@ -236,26 +223,21 @@ Section: Arithmetic Instructions
   imul-rr : Integer -> Integer -> List Integer
   imul-rr (rd) (rs) =
    [rex-w rd rs, 15, 175, modrm 3 rd rs]
-   -- 15 175 = 0x0F 0xAF IMUL r64, r/m64
 
   neg-r : Integer -> List Integer
   neg-r (rd) =
    [rex-w 0 rd, 247, modrm 3 3 rd]
-   -- 247 = 0xF7 /3 NEG r/m64
 
   cqo : List Integer
   cqo = [rex True False False False, 153]
-  -- 153 = 0x99 CQO (sign-extend RAX into RDX:RAX)
 
   idiv-r : Integer -> List Integer
   idiv-r (rs) =
    [rex-w 0 rs, 247, modrm 3 7 rs]
-   -- 247 = 0xF7 /7 IDIV r/m64
 
   and-rr : Integer -> Integer -> List Integer
   and-rr (rd) (rs) =
    [rex-w rs rd, 33, modrm 3 rs rd]
-   -- 33 = 0x21 AND r/m64, r64
 
   and-ri : Integer -> Integer -> List Integer
   and-ri (rd) (imm) = alu-ri 4 rd imm
@@ -263,24 +245,20 @@ Section: Arithmetic Instructions
   shl-ri : Integer -> Integer -> List Integer
   shl-ri (rd) (imm) =
    [rex-w 0 rd, 193, modrm 3 4 rd, imm]
-   -- 193 = 0xC1 /4 SHL r/m64, imm8
 
   shr-ri : Integer -> Integer -> List Integer
   shr-ri (rd) (imm) =
    [rex-w 0 rd, 193, modrm 3 5 rd, imm]
-   -- 193 = 0xC1 /5 SHR r/m64, imm8
 
   sar-ri : Integer -> Integer -> List Integer
   sar-ri (rd) (imm) =
    [rex-w 0 rd, 193, modrm 3 7 rd, imm]
-   -- 193 = 0xC1 /7 SAR r/m64, imm8
 
 Section: Compare and Test
 
   cmp-rr : Integer -> Integer -> List Integer
   cmp-rr (rd) (rs) =
    [rex-w rs rd, 57, modrm 3 rs rd]
-   -- 57 = 0x39 CMP r/m64, r64
 
   cmp-ri : Integer -> Integer -> List Integer
   cmp-ri (rd) (imm) = alu-ri 7 rd imm
@@ -288,7 +266,6 @@ Section: Compare and Test
   test-rr : Integer -> Integer -> List Integer
   test-rr (rd) (rs) =
    [rex-w rs rd, 133, modrm 3 rs rd]
-   -- 133 = 0x85 TEST r/m64, r64
 
 Section: Setcc
 
@@ -296,35 +273,28 @@ Section: Setcc
   setcc (cc) (rd) =
    let pfx = if rd >= 4 then [rex False False False (rd >= 8)] else []
    in pfx ++ [15, 144 + cc, modrm 3 0 rd]
-   -- 15 (144+cc) = 0x0F (0x90+cc) SETcc r/m8
 
   movzx-byte-self : Integer -> List Integer
   movzx-byte-self (rd) =
    [rex-w rd rd, 15, 182, modrm 3 rd rd]
-   -- 15 182 = 0x0F 0xB6 MOVZX r64, r/m8 (self: zero-extend low byte)
 
 Section: Branches and Jumps
 
   jcc : Integer -> Integer -> List Integer
   jcc (cc) (rel32) =
    [15, 128 + cc] ++ write-i32 rel32
-   -- 15 (128+cc) = 0x0F (0x80+cc) Jcc rel32 (6 bytes)
 
   jmp : Integer -> List Integer
   jmp (rel32) = [233] ++ write-i32 rel32
-  -- 233 = 0xE9 JMP rel32 (5 bytes)
 
   x86-call : Integer -> List Integer
   x86-call (rel32) = [232] ++ write-i32 rel32
-  -- 232 = 0xE8 CALL rel32 (5 bytes)
 
   x86-ret : List Integer
   x86-ret = [195]
-  -- 195 = 0xC3 RET
 
   x86-nop : List Integer
   x86-nop = [144]
-  -- 144 = 0x90 NOP
 
 Section: Stack
 
@@ -332,20 +302,17 @@ Section: Stack
   push-r (rd) =
    let pfx = if rd >= 8 then [rex False False False True] else []
    in pfx ++ [80 + int-mod rd 8]
-   -- 80 = 0x50 PUSH r64
 
   pop-r : Integer -> List Integer
   pop-r (rd) =
    let pfx = if rd >= 8 then [rex False False False True] else []
    in pfx ++ [88 + int-mod rd 8]
-   -- 88 = 0x58 POP r64
 
 Section: LEA
 
   lea : Integer -> Integer -> Integer -> List Integer
   lea (rd) (rs) (offset) =
    [rex-w rd rs, 141] ++ emit-mem-operand rd rs offset
-   -- 141 = 0x8D LEA r64, [rs + offset]
 
 Section: Load Immediate
 
@@ -361,48 +328,37 @@ Section: Load Immediate
    let rex-byte = rex False (rs >= 8) False (rd >= 8)
    in let pfx = if rex-byte /= 64 then [rex-byte] else []
    in pfx ++ [49, modrm 3 rs rd]
-   -- 49 = 0x31 XOR r/m32, r32 (no REX.W: 32-bit, zero-extends)
 
 Section: System
 
   x86-syscall : List Integer
   x86-syscall = [15, 5]
-  -- 15 5 = 0x0F 0x05 SYSCALL
 
   out-dx-al : List Integer
   out-dx-al = [238]
-  -- 238 = 0xEE OUT DX, AL
 
   in-al-dx : List Integer
   in-al-dx = [236]
-  -- 236 = 0xEC IN AL, DX
 
 Section: Privileged Instructions
 
   hlt : List Integer
   hlt = [244]
-  -- 244 = 0xF4 HLT
 
   x86-pause : List Integer
   x86-pause = [243, 144]
-  -- 243 144 = 0xF3 0x90 PAUSE
 
   cli : List Integer
   cli = [250]
-  -- 250 = 0xFA CLI (disable interrupts)
 
   sti : List Integer
   sti = [251]
-  -- 251 = 0xFB STI (enable interrupts)
 
   iretq : List Integer
   iretq = [72, 207]
-  -- 72 207 = 0x48 0xCF IRETQ (REX.W + IRET)
 
   lidt-rdi : List Integer
   lidt-rdi = [15, 1, 31]
-  -- 15 1 31 = 0x0F 0x01 0x1F LIDT [RDI]
 
   swapgs : List Integer
   swapgs = [15, 1, 248]
-  -- 15 1 248 = 0x0F 0x01 0xF8 SWAPGS

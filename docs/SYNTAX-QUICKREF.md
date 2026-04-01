@@ -86,9 +86,15 @@ main = let x = 10 in let y = 20 in x + y
 
 `True` / `False` — capital T/F.
 
+## Identifiers
+
+Names may contain hyphens: `my-function`, `elf-ident-32`, `patch-4-loop`.
+A hyphen followed by a letter or digit continues the name. Subtraction
+requires spaces: `x - 1` (expression), not `x-1` (identifier).
+
 ## Operators
 
-Arithmetic: `+` `-` `*` `/`
+Arithmetic: `+` `-` `*` `/` (spaces required around `-` for subtraction)
 Comparison: `==` `!=` `<` `>` `<=` `>=`
 Boolean: `&&` `||`
 Text concat: `++`
