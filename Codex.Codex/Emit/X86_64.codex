@@ -1,0 +1,517 @@
+Chapter: X86-64 Code Generator
+
+ Bare-metal x86-64 code generator for the Second Bootstrap Phase 3.
+ Takes an IRModule and produces a bootable ELF binary as List Integer.
+ Uses the instruction encoder from X86_64Encoder.codex and the ELF
+ builder from ElfWriter.codex. All codegen state is threaded through
+ functions as an immutable record.
+
+ M3.1 scope: a program whose main returns an integer literal compiles
+ to a bare-metal ELF that boots in QEMU and prints the value to serial.
+
+Section: Record Types
+
+  FuncOffset = record {
+   name : Text,
+   offset : Integer
+  }
+
+  CallPatch = record {
+   patch-offset : Integer,
+   target : Text
+  }
+
+  CodegenState = record {
+   text : List Integer,
+   rodata : List Integer,
+   func-offsets : List FuncOffset,
+   call-patches : List CallPatch,
+   next-temp : Integer,
+   next-local : Integer,
+   spill-count : Integer,
+   load-local-toggle : Integer
+  }
+
+  EmitResult = record {
+   state : CodegenState,
+   reg : Integer
+  }
+
+  TrampolineResult = record {
+   bytes : List Integer,
+   far-jump-patch-pos : Integer
+  }
+
+Section: Constants
+
+  temp-regs : List Integer
+  temp-regs = [0, 1, 2, 6, 7, 11]
+
+  local-regs : List Integer
+  local-regs = [3, 12, 13, 14]
+
+  spill-base : Integer
+  spill-base = 32
+
+  bare-metal-load-addr : Integer
+  bare-metal-load-addr = 1048576
+
+  bare-metal-stack-top : Integer
+  bare-metal-stack-top = 67108864
+
+Section: State Helpers
+
+  empty-codegen-state : CodegenState
+  empty-codegen-state =
+   CodegenState {
+    text = [],
+    rodata = [],
+    func-offsets = [],
+    call-patches = [],
+    next-temp = 0,
+    next-local = 0,
+    spill-count = 0,
+    load-local-toggle = 0
+   }
+
+  st-append-text : CodegenState -> List Integer -> CodegenState
+  st-append-text (st) (bytes) =
+   CodegenState {
+    text = st.text ++ bytes,
+    rodata = st.rodata,
+    func-offsets = st.func-offsets,
+    call-patches = st.call-patches,
+    next-temp = st.next-temp,
+    next-local = st.next-local,
+    spill-count = st.spill-count,
+    load-local-toggle = st.load-local-toggle
+   }
+
+  st-with-text : CodegenState -> List Integer -> CodegenState
+  st-with-text (st) (new-text) =
+   CodegenState {
+    text = new-text,
+    rodata = st.rodata,
+    func-offsets = st.func-offsets,
+    call-patches = st.call-patches,
+    next-temp = st.next-temp,
+    next-local = st.next-local,
+    spill-count = st.spill-count,
+    load-local-toggle = st.load-local-toggle
+   }
+
+  record-func-offset : CodegenState -> Text -> CodegenState
+  record-func-offset (st) (name) =
+   CodegenState {
+    text = st.text,
+    rodata = st.rodata,
+    func-offsets = list-snoc st.func-offsets (FuncOffset { name = name, offset = list-length st.text }),
+    call-patches = st.call-patches,
+    next-temp = st.next-temp,
+    next-local = st.next-local,
+    spill-count = st.spill-count,
+    load-local-toggle = st.load-local-toggle
+   }
+
+  lookup-func-offset : List FuncOffset -> Text -> Integer
+  lookup-func-offset (entries) (name) =
+   lookup-func-offset-loop entries name 0 (list-length entries)
+
+  lookup-func-offset-loop : List FuncOffset -> Text -> Integer -> Integer -> Integer
+  lookup-func-offset-loop (entries) (name) (i) (len) =
+   if i == len then 0
+   else let e = list-at entries i
+    in if e.name == name then e.offset
+    else lookup-func-offset-loop entries name (i + 1) len
+
+  reset-func-state : CodegenState -> Text -> CodegenState
+  reset-func-state (st) (name) =
+   CodegenState {
+    text = st.text,
+    rodata = st.rodata,
+    func-offsets = list-snoc st.func-offsets (FuncOffset { name = name, offset = list-length st.text }),
+    call-patches = st.call-patches,
+    next-temp = 0,
+    next-local = 0,
+    spill-count = 0,
+    load-local-toggle = 0
+   }
+
+Section: Register Allocation
+
+ The temp pool recycles RAX, RCX, RDX, RSI, RDI, R11 in round-robin
+ order. The local pool assigns RBX, R12, R13, R14 monotonically, then
+ spills to the stack at offsets below RBP. R8 and R9 alternate as
+ scratch registers for loading spilled locals. RSP, RBP, R10, and R15
+ are reserved for the frame pointer, heap, and result space.
+
+  alloc-temp : CodegenState -> EmitResult
+  alloc-temp (st) =
+   let idx = int-mod st.next-temp 6
+   in let reg = list-at temp-regs idx
+   in EmitResult {
+    state = CodegenState {
+     text = st.text,
+     rodata = st.rodata,
+     func-offsets = st.func-offsets,
+     call-patches = st.call-patches,
+     next-temp = st.next-temp + 1,
+     next-local = st.next-local,
+     spill-count = st.spill-count,
+     load-local-toggle = st.load-local-toggle
+    },
+    reg = reg
+   }
+
+  alloc-local : CodegenState -> EmitResult
+  alloc-local (st) =
+   if st.next-local < 4
+   then let reg = list-at local-regs st.next-local
+    in EmitResult {
+     state = CodegenState {
+      text = st.text,
+      rodata = st.rodata,
+      func-offsets = st.func-offsets,
+      call-patches = st.call-patches,
+      next-temp = st.next-temp,
+      next-local = st.next-local + 1,
+      spill-count = st.spill-count,
+      load-local-toggle = st.load-local-toggle
+     },
+     reg = reg
+    }
+   else let slot = spill-base + st.spill-count
+    in EmitResult {
+     state = CodegenState {
+      text = st.text,
+      rodata = st.rodata,
+      func-offsets = st.func-offsets,
+      call-patches = st.call-patches,
+      next-temp = st.next-temp,
+      next-local = st.next-local + 1,
+      spill-count = st.spill-count + 1,
+      load-local-toggle = st.load-local-toggle
+     },
+     reg = slot
+    }
+
+  store-local : CodegenState -> Integer -> Integer -> CodegenState
+  store-local (st) (local) (value-reg) =
+   if local < spill-base
+   then if local == value-reg then st
+    else st-append-text st (mov-rr local value-reg)
+   else let offset = 0 - ((local - spill-base + 1) * 8 + 32)
+    in st-append-text st (mov-store reg-rbp value-reg offset)
+
+  load-local : CodegenState -> Integer -> EmitResult
+  load-local (st) (local) =
+   if local < spill-base
+   then EmitResult { state = st, reg = local }
+   else let scratch = if int-mod st.load-local-toggle 2 == 0 then reg-r8 else reg-r9
+    in let offset = 0 - ((local - spill-base + 1) * 8 + 32)
+    in EmitResult {
+     state = CodegenState {
+      text = st.text ++ mov-load scratch reg-rbp offset,
+      rodata = st.rodata,
+      func-offsets = st.func-offsets,
+      call-patches = st.call-patches,
+      next-temp = st.next-temp,
+      next-local = st.next-local,
+      spill-count = st.spill-count,
+      load-local-toggle = st.load-local-toggle + 1
+     },
+     reg = scratch
+    }
+
+Section: Byte Patching
+
+ Replaces four bytes at a given offset in a list with the little-endian
+ encoding of an integer value. This is O(n) per patch but only called
+ once per function for frame size and once per call site.
+
+  patch-i32-at : List Integer -> Integer -> Integer -> List Integer
+  patch-i32-at (bytes) (pos) (value) =
+   let new-bytes = write-i32 value
+   in patch-4-loop bytes pos new-bytes 0 (list-length bytes) []
+
+  patch-4-loop : List Integer -> Integer -> List Integer -> Integer -> Integer -> List Integer -> List Integer
+  patch-4-loop (bytes) (pos) (new-bytes) (i) (len) (acc) =
+   if i == len then acc
+   else if i >= pos & i < pos + 4
+    then patch-4-loop bytes pos new-bytes (i + 1) len (list-snoc acc (list-at new-bytes (i - pos)))
+    else patch-4-loop bytes pos new-bytes (i + 1) len (list-snoc acc (list-at bytes i))
+
+  patch-jcc-at : CodegenState -> Integer -> Integer -> CodegenState
+  patch-jcc-at (st) (jcc-pos) (target-pos) =
+   let rel32 = target-pos - (jcc-pos + 6)
+   in st-with-text st (patch-i32-at st.text (jcc-pos + 2) rel32)
+
+  patch-jmp-at : CodegenState -> Integer -> Integer -> CodegenState
+  patch-jmp-at (st) (jmp-pos) (target-pos) =
+   let rel32 = target-pos - (jmp-pos + 5)
+   in st-with-text st (patch-i32-at st.text (jmp-pos + 1) rel32)
+
+  patch-call-at : CodegenState -> Integer -> Integer -> CodegenState
+  patch-call-at (st) (call-pos) (target-pos) =
+   let rel32 = target-pos - (call-pos + 5)
+   in st-with-text st (patch-i32-at st.text (call-pos + 1) rel32)
+
+  patch-calls : CodegenState -> CodegenState
+  patch-calls (st) = patch-calls-loop st st.call-patches 0
+
+  patch-calls-loop : CodegenState -> List CallPatch -> Integer -> CodegenState
+  patch-calls-loop (st) (patches) (i) =
+   if i == list-length patches then st
+   else let p = list-at patches i
+    in let target-offset = lookup-func-offset st.func-offsets p.target
+    in let patched = patch-call-at st p.patch-offset target-offset
+    in patch-calls-loop patched patches (i + 1)
+
+  align-16 : Integer -> Integer
+  align-16 (n) =
+   let r = int-mod n 16
+   in if r == 0 then n else n + 16 - r
+
+Section: Function Emission
+
+  cg-emit-sub-rsp-imm32 : Integer -> List Integer
+  cg-emit-sub-rsp-imm32 (imm) =
+   [72, 129, 236] ++ write-i32 imm
+
+  emit-prologue : CodegenState -> CodegenState
+  emit-prologue (st) =
+   st-append-text st (push-r reg-rbp ++ mov-rr reg-rbp reg-rsp ++ push-r reg-rbx ++ push-r reg-r12 ++ push-r reg-r13 ++ push-r reg-r14)
+
+  emit-epilogue : CodegenState -> CodegenState
+  emit-epilogue (st) =
+   st-append-text st (lea reg-rsp reg-rbp (0 - 32) ++ pop-r reg-r14 ++ pop-r reg-r13 ++ pop-r reg-r12 ++ pop-r reg-rbx ++ pop-r reg-rbp ++ x86-ret)
+
+  emit-function : CodegenState -> IRDef -> CodegenState
+  emit-function (st) (def) =
+   let st1 = reset-func-state st def.name
+   in let st2 = emit-prologue st1
+   in let frame-patch-pos = list-length st2.text
+   in let st3 = st-append-text st2 (cg-emit-sub-rsp-imm32 0)
+   in let result = cg-emit-expr st3 def.body
+   in let st4 = if result.reg == reg-rax then result.state
+    else st-append-text result.state (mov-rr reg-rax result.reg)
+   in let st5 = emit-epilogue st4
+   in let frame-size = align-16 (st5.spill-count * 8)
+   in st-with-text st5 (patch-i32-at st5.text (frame-patch-pos + 3) frame-size)
+
+  emit-all-defs : CodegenState -> List IRDef -> Integer -> CodegenState
+  emit-all-defs (st) (defs) (i) =
+   if i == list-length defs then st
+   else emit-all-defs (emit-function st (list-at defs i)) defs (i + 1)
+
+Section: Expression Emission
+
+  cg-emit-expr : CodegenState -> IRExpr -> EmitResult
+  cg-emit-expr (st) (expr) =
+   when expr
+    if IrIntLit (value) -> emit-int-lit st value
+    if IrBoolLit (value) -> emit-int-lit st (if value then 1 else 0)
+    if _ -> EmitResult { state = st, reg = reg-rax }
+
+  emit-int-lit : CodegenState -> Integer -> EmitResult
+  emit-int-lit (st) (value) =
+   let tmp = alloc-temp st
+   in EmitResult {
+    state = st-append-text tmp.state (li tmp.reg value),
+    reg = tmp.reg
+   }
+
+Section: 32-bit Bare-Metal Trampoline
+
+ The PVH entry enters in 32-bit protected mode with paging disabled.
+ This byte sequence sets up identity-mapped page tables covering 64 MB
+ as 32 huge pages of 2 MB each, enables PAE and long mode, turns on
+ paging, loads a 64-bit GDT, and far-jumps to the 64-bit __start
+ entry point. The far-jump target address is patched after all code
+ is emitted. Total size is 170 bytes.
+
+ All bytes are 32-bit x86 machine code because the encoder only
+ handles 64-bit instructions. The multiboot header occupies the first
+ 12 bytes, and the PVH ELF entry offset is 12 to skip past the header.
+
+  multiboot-header : List Integer
+  multiboot-header =
+   write-i32 464367618 ++ write-i32 0 ++ write-i32 3830599678
+
+  trampoline-code : List Integer
+  trampoline-code =
+   [250] ++ [191, 0, 16, 0, 0, 185, 0, 12, 0, 0, 49, 192, 243, 171] ++ [199, 5, 0, 16, 0, 0, 3, 32, 0, 0] ++ [199, 5, 0, 32, 0, 0, 3, 48, 0, 0] ++ [191, 0, 48, 0, 0, 185, 32, 0, 0, 0, 184, 131, 0, 0, 0] ++ [137, 7, 199, 71, 4, 0, 0, 0, 0, 131, 199, 8, 5, 0, 0, 32, 0, 73, 117, 236] ++ [184, 0, 16, 0, 0, 15, 34, 216] ++ [15, 32, 224, 131, 200, 32, 15, 34, 224] ++ [185, 128, 0, 0, 192, 15, 50, 13, 0, 1, 0, 0, 15, 48] ++ [15, 32, 192, 13, 0, 0, 0, 128, 15, 34, 192]
+
+  trampoline-gdt-section : List Integer
+  trampoline-gdt-section =
+   [235, 30] ++ [0, 0, 0, 0, 0, 0, 0, 0] ++ [255, 255, 0, 0, 0, 154, 175, 0] ++ [255, 255, 0, 0, 0, 146, 207, 0] ++ write-i16 23 ++ write-i32 (bare-metal-load-addr + 126) ++ [15, 1, 21] ++ write-i32 (bare-metal-load-addr + 150) ++ [234, 0, 0, 0, 0, 8, 0]
+
+  bare-metal-trampoline : TrampolineResult
+  bare-metal-trampoline =
+   let bytes = multiboot-header ++ trampoline-code ++ trampoline-gdt-section
+   in TrampolineResult { bytes = bytes, far-jump-patch-pos = 163 }
+
+Section: Serial I/O
+
+ COM1 data port is 1016 (0x3F8) and the line status register is at
+ 1021 (0x3FD). Bit 5 of the LSR indicates the transmit holding
+ register is empty and ready to accept a byte. The wait loop reads
+ the LSR with IN AL, DX (byte 236) and tests bit 5 with TEST AL, 32
+ (bytes 168, 32). These two-byte encodings are not in the instruction
+ encoder because they use implicit register forms.
+
+  emit-out-byte : CodegenState -> Integer -> Integer -> CodegenState
+  emit-out-byte (st) (port) (value) =
+   let st1 = st-append-text st (li reg-rdx port)
+   in let st2 = st-append-text st1 (li reg-rax value)
+   in st-append-text st2 out-dx-al
+
+  emit-com1-init : CodegenState -> CodegenState
+  emit-com1-init (st) =
+   let st1 = emit-out-byte st 1019 128
+   in let st2 = emit-out-byte st1 1016 1
+   in let st3 = emit-out-byte st2 1017 0
+   in let st4 = emit-out-byte st3 1019 3
+   in let st5 = emit-out-byte st4 1018 199
+   in emit-out-byte st5 1020 11
+
+  emit-serial-wait-and-send : CodegenState -> Integer -> CodegenState
+  emit-serial-wait-and-send (st) (byte-val) =
+   let wait-top = list-length st.text
+   in let st1 = st-append-text st (li reg-rdx 1021)
+   in let st2 = st-append-text st1 [236]
+   in let st3 = st-append-text st2 [168, 32]
+   in let jne-pos = list-length st3.text
+   in let st4 = st-append-text st3 (jcc cc-ne 0)
+   in let st5 = st-append-text st4 (jmp (wait-top - (list-length st4.text + 5)))
+   in let st6 = patch-jcc-at st5 jne-pos (list-length st5.text)
+   in let st7 = st-append-text st6 (li reg-rdx 1016)
+   in let st8 = st-append-text st7 (li reg-rax byte-val)
+   in st-append-text st8 out-dx-al
+
+  emit-serial-send-rdi : CodegenState -> CodegenState
+  emit-serial-send-rdi (st) =
+   let wait-top = list-length st.text
+   in let st1 = st-append-text st (li reg-rdx 1021)
+   in let st2 = st-append-text st1 [236]
+   in let st3 = st-append-text st2 [168, 32]
+   in let jne-pos = list-length st3.text
+   in let st4 = st-append-text st3 (jcc cc-ne 0)
+   in let st5 = st-append-text st4 (jmp (wait-top - (list-length st4.text + 5)))
+   in let st6 = patch-jcc-at st5 jne-pos (list-length st5.text)
+   in let st7 = st-append-text st6 (li reg-rdx 1016)
+   in let st8 = st-append-text st7 (mov-rr reg-rax reg-rdi)
+   in st-append-text st8 out-dx-al
+
+Section: Inline Integer Print
+
+ Converts the integer in RAX to decimal ASCII digits and sends each
+ to the COM1 serial port. Handles zero and negative values. Extracts
+ digits by repeated division by 10, pushes them to the stack in
+ reverse order, then pops and prints each one. Clobbers RAX, RBX,
+ RCX, RDX, RDI, and R11.
+
+  emit-inline-itoa-and-print : CodegenState -> CodegenState
+  emit-inline-itoa-and-print (st) =
+   let st1 = st-append-text st (mov-rr reg-rbx reg-rax)
+   in let st2 = st-append-text st1 (test-rr reg-rbx reg-rbx)
+   in let jne-nonzero-pos = list-length st2.text
+   in let st3 = st-append-text st2 (jcc cc-ne 0)
+   in let st4 = emit-serial-wait-and-send st3 48
+   in let jmp-done-zero-pos = list-length st4.text
+   in let st5 = st-append-text st4 (jmp 0)
+   in let st6 = patch-jcc-at st5 jne-nonzero-pos (list-length st5.text)
+   in let st7 = st-append-text st6 (test-rr reg-rbx reg-rbx)
+   in let jns-pos-pos = list-length st7.text
+   in let st8 = st-append-text st7 (jcc cc-ge 0)
+   in let st9 = emit-serial-wait-and-send st8 45
+   in let st10 = st-append-text st9 (neg-r reg-rbx)
+   in let st11 = patch-jcc-at st10 jns-pos-pos (list-length st10.text)
+   in let st12 = st-append-text st11 (li reg-rcx 0)
+   in let st13 = st-append-text st12 (li reg-r11 10)
+   in let digit-loop-top = list-length st13.text
+   in let st14 = st-append-text st13 (mov-rr reg-rax reg-rbx)
+   in let st15 = st-append-text st14 cqo
+   in let st16 = st-append-text st15 (idiv-r reg-r11)
+   in let st17 = st-append-text st16 (mov-rr reg-rbx reg-rax)
+   in let st18 = st-append-text st17 (add-ri reg-rdx 48)
+   in let st19 = st-append-text st18 (push-r reg-rdx)
+   in let st20 = st-append-text st19 (add-ri reg-rcx 1)
+   in let st21 = st-append-text st20 (test-rr reg-rbx reg-rbx)
+   in let st22 = st-append-text st21 (jcc cc-ne (digit-loop-top - (list-length st21.text + 6)))
+   in let print-loop-top = list-length st22.text
+   in let st23 = st-append-text st22 (test-rr reg-rcx reg-rcx)
+   in let je-done-pos = list-length st23.text
+   in let st24 = st-append-text st23 (jcc cc-e 0)
+   in let st25 = st-append-text st24 (pop-r reg-rdi)
+   in let st26 = st-append-text st25 (push-r reg-rcx)
+   in let st27 = emit-serial-send-rdi st26
+   in let st28 = st-append-text st27 (pop-r reg-rcx)
+   in let st29 = st-append-text st28 (sub-ri reg-rcx 1)
+   in let st30 = st-append-text st29 (jmp (print-loop-top - (list-length st29.text + 5)))
+   in let done-pos = list-length st30.text
+   in let st31 = patch-jmp-at st30 jmp-done-zero-pos done-pos
+   in patch-jcc-at st31 je-done-pos done-pos
+
+Section: Call Emission
+
+  emit-call-to : CodegenState -> Text -> CodegenState
+  emit-call-to (st) (target) =
+   let patch-pos = list-length st.text
+   in let st1 = st-append-text st (x86-call 0)
+   in CodegenState {
+    text = st1.text,
+    rodata = st1.rodata,
+    func-offsets = st1.func-offsets,
+    call-patches = list-snoc st1.call-patches (CallPatch { patch-offset = patch-pos, target = target }),
+    next-temp = st1.next-temp,
+    next-local = st1.next-local,
+    spill-count = st1.spill-count,
+    load-local-toggle = st1.load-local-toggle
+   }
+
+Section: Bare-Metal Start
+
+ The __start function is the 64-bit entry point reached after the
+ trampoline switches to long mode. It sets up the stack pointer,
+ initializes the COM1 UART for serial output, calls main, converts
+ the integer return value to decimal, prints it to serial, and halts.
+
+  emit-start : CodegenState -> CodegenState
+  emit-start (st) =
+   let st1 = record-func-offset st "__start"
+   in let st2 = st-append-text st1 (li reg-rsp bare-metal-stack-top)
+   in let st3 = st-append-text st2 (mov-rr reg-rbp reg-rsp)
+   in let st4 = emit-com1-init st3
+   in let st5 = emit-call-to st4 "main"
+   in let st6 = emit-inline-itoa-and-print st5
+   in let st7 = emit-serial-wait-and-send st6 10
+   in st-append-text st7 hlt
+
+Section: Module Entry Point
+
+ Orchestrates the full compilation pipeline. Builds the 32-bit
+ trampoline, emits all function definitions, emits __start, patches
+ the trampoline far-jump to point at __start, patches all call sites,
+ and wraps everything in a bare-metal ELF with entry offset 12.
+
+  x86-64-emit-module : IRModule -> List Integer
+  x86-64-emit-module (m) =
+   let tramp = bare-metal-trampoline
+   in let st0 = CodegenState {
+    text = tramp.bytes,
+    rodata = [],
+    func-offsets = [],
+    call-patches = [],
+    next-temp = 0,
+    next-local = 0,
+    spill-count = 0,
+    load-local-toggle = 0
+   }
+   in let st1 = emit-all-defs st0 m.defs 0
+   in let st2 = emit-start st1
+   in let start-offset = lookup-func-offset st2.func-offsets "__start"
+   in let start-addr = bare-metal-load-addr + start-offset
+   in let st3 = st-with-text st2 (patch-i32-at st2.text (tramp.far-jump-patch-pos + 1) start-addr)
+   in let st4 = patch-calls st3
+   in build-elf-32-bare st4.text st4.rodata 12
