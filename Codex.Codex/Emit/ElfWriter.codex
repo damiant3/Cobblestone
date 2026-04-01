@@ -1,23 +1,91 @@
 Chapter: ELF Writer
 
- Pure-functional ELF binary writer. Produces byte lists (List Integer)
- representing complete ELF executables. Two variants:
-   - 32-bit bare-metal ELF with PVH note for QEMU direct boot
-   - 64-bit Linux user-mode ELF for native execution
- Ported from ElfWriter32.cs and ElfWriterX86_64.cs (C# reference).
+ Produces ELF executables as byte lists. Two variants serve different
+ targets: a 32-bit ELF with PVH note boots bare metal under QEMU, and
+ a 64-bit ELF runs natively on Linux. Both are pure functions — byte
+ lists in, complete ELF byte list out.
 
- Uses write-i32, write-i64, write-bytes, to-byte, int-mod, floor-div
- from X86_64Encoder.codex. All new helpers are defined here.
+ The 32-bit bare-metal variant is the primary output for the Second
+ Bootstrap. QEMU reads the PVH note and enters in 32-bit protected
+ mode. The codegen's trampoline then transitions to long mode. A single
+ PT_LOAD segment maps text and rodata at the 1 MB physical address,
+ with extra memsz for the two-space heap.
 
-Section: Constants
+ The 64-bit Linux variant maps text and rodata as separate PT_LOAD
+ segments at the standard 0x400000 base. Text is mapped from file
+ offset zero so the ELF and program headers share the page. Rodata
+ is page-aligned and writable because the escape-copy subsystem stores
+ the result-space base pointer there.
+
+ Ported from ElfWriter32.cs and ElfWriterX86_64.cs. Uses write-i32,
+ write-i64, write-bytes, and friends from X86_64Encoder.codex.
+
+Section: ELF Format Constants
+
+  elf-magic : List Integer
+  elf-magic = [127, 69, 76, 70]
+
+  elf-class-32 : Integer
+  elf-class-32 = 1
+
+  elf-class-64 : Integer
+  elf-class-64 = 2
+
+  elf-data-lsb : Integer
+  elf-data-lsb = 1
+
+  elf-version-current : Integer
+  elf-version-current = 1
+
+  elf-type-exec : Integer
+  elf-type-exec = 2
+
+  elf-machine-386 : Integer
+  elf-machine-386 = 3
+
+  elf-machine-x86-64 : Integer
+  elf-machine-x86-64 = 62
+
+  pt-load : Integer
+  pt-load = 1
+
+  pt-note : Integer
+  pt-note = 4
+
+  pf-r : Integer
+  pf-r = 4
+
+  pf-w : Integer
+  pf-w = 2
+
+  pf-x : Integer
+  pf-x = 1
+
+  pf-rwx : Integer
+  pf-rwx = 7
+
+  pf-rw : Integer
+  pf-rw = 6
+
+  xen-elfnote-phys32-entry : Integer
+  xen-elfnote-phys32-entry = 18
+
+  xen-name : List Integer
+  xen-name = [88, 101, 110, 0]
+
+Section: Layout Constants
 
   elf-bare-metal-load-addr : Integer
   elf-bare-metal-load-addr = 1048576
-  -- 0x100000 (1 MB)
+
+  elf-bare-metal-heap-size : Integer
+  elf-bare-metal-heap-size = 2097152
 
   elf-linux-base-addr : Integer
   elf-linux-base-addr = 4194304
-  -- 0x400000
+
+  elf-page-size : Integer
+  elf-page-size = 4096
 
   elf32-header-size : Integer
   elf32-header-size = 52
@@ -42,45 +110,45 @@ Section: Helpers
   write-i16 (v) = write-bytes v 2
 
   pad-zeros : Integer -> List Integer
-  pad-zeros (n) = pad-zeros-loop n []
+  pad-zeros (n) = pad-zeros-acc n []
 
-  pad-zeros-loop : Integer -> List Integer -> List Integer
-  pad-zeros-loop (n) (acc) =
+  pad-zeros-acc : Integer -> List Integer -> List Integer
+  pad-zeros-acc (n) (acc) =
    if n <= 0 then acc
-   else pad-zeros-loop (n - 1) (list-snoc acc 0)
+   else pad-zeros-acc (n - 1) (list-snoc acc 0)
 
-Section: ELF Identification (16 bytes)
+Section: ELF Identification
 
   elf-ident-32 : List Integer
   elf-ident-32 =
-   [127, 69, 76, 70, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-   -- 0x7F 'E' 'L' 'F' ELFCLASS32 ELFDATA2LSB EV_CURRENT + 9 pad
+   elf-magic ++ [elf-class-32, elf-data-lsb, elf-version-current]
+   ++ pad-zeros 9
 
   elf-ident-64 : List Integer
   elf-ident-64 =
-   [127, 69, 76, 70, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-   -- 0x7F 'E' 'L' 'F' ELFCLASS64 ELFDATA2LSB EV_CURRENT + 9 pad
+   elf-magic ++ [elf-class-64, elf-data-lsb, elf-version-current]
+   ++ pad-zeros 9
 
-Section: 32-bit ELF Header (52 bytes)
+Section: 32-bit ELF Header
 
   elf32-header-bytes : Integer -> Integer -> Integer -> List Integer
   elf32-header-bytes (entry) (phoff) (phnum) =
    elf-ident-32
-   ++ write-i16 2           -- e_type = ET_EXEC
-   ++ write-i16 3           -- e_machine = EM_386
-   ++ write-i32 1           -- e_version = EV_CURRENT
-   ++ write-i32 entry       -- e_entry
-   ++ write-i32 phoff       -- e_phoff
-   ++ write-i32 0           -- e_shoff (no section headers)
-   ++ write-i32 0           -- e_flags
-   ++ write-i16 52          -- e_ehsize
-   ++ write-i16 32          -- e_phentsize
-   ++ write-i16 phnum       -- e_phnum
-   ++ write-i16 0           -- e_shentsize
-   ++ write-i16 0           -- e_shnum
-   ++ write-i16 0           -- e_shstrndx
+   ++ write-i16 elf-type-exec
+   ++ write-i16 elf-machine-386
+   ++ write-i32 elf-version-current
+   ++ write-i32 entry
+   ++ write-i32 phoff
+   ++ write-i32 0
+   ++ write-i32 0
+   ++ write-i16 elf32-header-size
+   ++ write-i16 elf32-phdr-size
+   ++ write-i16 phnum
+   ++ write-i16 0
+   ++ write-i16 0
+   ++ write-i16 0
 
-Section: 32-bit Program Header (32 bytes)
+Section: 32-bit Program Header
 
   phdr-32 : Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> List Integer
   phdr-32 (ptype) (offset) (vaddr) (paddr) (filesz) (memsz) (flags) (palign) =
@@ -93,29 +161,17 @@ Section: 32-bit Program Header (32 bytes)
    ++ write-i32 flags
    ++ write-i32 palign
 
-Section: PVH Note (20 bytes)
-
- Xen PVH entry note for QEMU direct boot. QEMU reads this note and
- enters in 32-bit protected mode at the given address.
- Format: namesz(4) descsz(4) type(4) name("Xen\0") desc(entry32 LE)
+Section: PVH Note
 
   pvh-note : Integer -> List Integer
   pvh-note (entry-addr) =
-   write-i32 4              -- namesz (including null terminator)
-   ++ write-i32 4           -- descsz
-   ++ write-i32 18          -- type = XEN_ELFNOTE_PHYS32_ENTRY
-   ++ [88, 101, 110, 0]    -- "Xen\0"
-   ++ write-i32 entry-addr  -- 32-bit entry address
+   write-i32 4
+   ++ write-i32 4
+   ++ write-i32 xen-elfnote-phys32-entry
+   ++ xen-name
+   ++ write-i32 entry-addr
 
-Section: 32-bit Bare-Metal ELF Builder
-
- Produces a 32-bit ELF with PVH note for QEMU direct boot.
- Layout: [ELF hdr 52B][PHDR 32B x 2][pad][PVH note 20B][pad][.text][pad][.rodata]
- QEMU enters in 32-bit protected mode at entry-offset into .text.
- The 32-bit trampoline (emitted by codegen) sets up long mode.
-
- PT_LOAD maps from text-start to end of file at vaddr 0x100000.
- p_memsz adds 2 MB (0x200000) for heap beyond file contents.
+Section: 32-bit Bare-Metal ELF
 
   build-elf-32-bare : List Integer -> List Integer -> Integer -> List Integer
   build-elf-32-bare (text) (rodata) (entry-offset) =
@@ -127,12 +183,11 @@ Section: 32-bit Bare-Metal ELF Builder
    in let rodata-start = elf-align text-end 8
    in let file-size = rodata-start + list-length rodata
    in let entry = load-addr + entry-offset
+   in let seg-filesz = file-size - text-start
+   in let seg-memsz = seg-filesz + elf-bare-metal-heap-size
    in elf32-header-bytes entry elf32-header-size 2
-   ++ phdr-32 1 text-start load-addr load-addr
-        (file-size - text-start)
-        ((file-size - text-start) + 2097152)
-        7 4096
-   ++ phdr-32 4 note-offset 0 0 20 20 4 4
+   ++ phdr-32 pt-load text-start load-addr load-addr seg-filesz seg-memsz pf-rwx elf-page-size
+   ++ phdr-32 pt-note note-offset 0 0 20 20 pf-r 4
    ++ pad-zeros (note-offset - headers-end)
    ++ pvh-note entry
    ++ pad-zeros (text-start - note-offset - 20)
@@ -140,26 +195,26 @@ Section: 32-bit Bare-Metal ELF Builder
    ++ pad-zeros (rodata-start - text-end)
    ++ rodata
 
-Section: 64-bit ELF Header (64 bytes)
+Section: 64-bit ELF Header
 
   elf64-header-bytes : Integer -> Integer -> Integer -> List Integer
   elf64-header-bytes (entry) (phoff) (phnum) =
    elf-ident-64
-   ++ write-i16 2           -- e_type = ET_EXEC
-   ++ write-i16 62          -- e_machine = EM_X86_64
-   ++ write-i32 1           -- e_version = EV_CURRENT
-   ++ write-i64 entry       -- e_entry
-   ++ write-i64 phoff       -- e_phoff
-   ++ write-i64 0           -- e_shoff (no section headers)
-   ++ write-i32 0           -- e_flags
-   ++ write-i16 64          -- e_ehsize
-   ++ write-i16 56          -- e_phentsize
-   ++ write-i16 phnum       -- e_phnum
-   ++ write-i16 0           -- e_shentsize
-   ++ write-i16 0           -- e_shnum
-   ++ write-i16 0           -- e_shstrndx
+   ++ write-i16 elf-type-exec
+   ++ write-i16 elf-machine-x86-64
+   ++ write-i32 elf-version-current
+   ++ write-i64 entry
+   ++ write-i64 phoff
+   ++ write-i64 0
+   ++ write-i32 0
+   ++ write-i16 elf64-header-size
+   ++ write-i16 elf64-phdr-size
+   ++ write-i16 phnum
+   ++ write-i16 0
+   ++ write-i16 0
+   ++ write-i16 0
 
-Section: 64-bit Program Header (56 bytes)
+Section: 64-bit Program Header
 
   phdr-64 : Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> List Integer
   phdr-64 (ptype) (flags) (offset) (vaddr) (paddr) (filesz) (memsz) (palign) =
@@ -172,16 +227,7 @@ Section: 64-bit Program Header (56 bytes)
    ++ write-i64 memsz
    ++ write-i64 palign
 
-Section: 64-bit Linux User-Mode ELF Builder
-
- Produces a 64-bit ELF for Linux user-mode execution.
- Layout: [ELF hdr 64B][PHDR 56B x 2][pad][.text][pad to 4096][.rodata]
-
- PHDR 0 (PT_LOAD): maps file offset 0 through end of .text at 0x400000.
-   Flags RWX. Includes ELF+PHDR headers in the mapping (QEMU user-mode
-   requires p_offset to be page-aligned).
- PHDR 1 (PT_LOAD): maps .rodata at page-aligned offset. Flags RW
-   (writable for result_space_base global used by escape copy).
+Section: 64-bit Linux User-Mode ELF
 
   build-elf-64-linux : List Integer -> List Integer -> Integer -> List Integer
   build-elf-64-linux (text) (rodata) (entry-offset) =
@@ -192,12 +238,12 @@ Section: 64-bit Linux User-Mode ELF Builder
    in let entry-point = text-vaddr + entry-offset
    in let text-size = list-length text
    in let text-region-end = text-file-offset + text-size
-   in let rodata-file-offset = elf-align text-region-end 4096
+   in let rodata-file-offset = elf-align text-region-end elf-page-size
    in let rodata-vaddr = base-addr + rodata-file-offset
    in let rodata-size = list-length rodata
    in elf64-header-bytes entry-point elf64-header-size 2
-   ++ phdr-64 1 7 0 base-addr base-addr text-region-end text-region-end 4096
-   ++ phdr-64 1 6 rodata-file-offset rodata-vaddr rodata-vaddr rodata-size rodata-size 4096
+   ++ phdr-64 pt-load pf-rwx 0 base-addr base-addr text-region-end text-region-end elf-page-size
+   ++ phdr-64 pt-load pf-rw rodata-file-offset rodata-vaddr rodata-vaddr rodata-size rodata-size elf-page-size
    ++ pad-zeros (text-file-offset - headers-size)
    ++ text
    ++ pad-zeros (rodata-file-offset - text-region-end)
@@ -205,19 +251,14 @@ Section: 64-bit Linux User-Mode ELF Builder
 
 Section: Codegen Helpers
 
- These helpers compute virtual addresses for the ELF layouts. Phase 3
- codegen needs these to patch RIP-relative references and function
- address fixups before the final ELF is assembled.
-
   compute-text-file-offset-64 : Integer
   compute-text-file-offset-64 =
    elf-align (elf64-header-size + elf64-phdr-size * 2) 16
-   -- 64 + 56*2 = 176, aligned to 16 = 176
 
   compute-rodata-vaddr-64 : Integer -> Integer
   compute-rodata-vaddr-64 (text-size) =
    let text-file-offset = compute-text-file-offset-64
-   in let rodata-file-offset = elf-align (text-file-offset + text-size) 4096
+   in let rodata-file-offset = elf-align (text-file-offset + text-size) elf-page-size
    in elf-linux-base-addr + rodata-file-offset
 
   compute-text-vaddr-64 : Integer
@@ -226,7 +267,6 @@ Section: Codegen Helpers
   compute-rodata-vaddr-bare : Integer -> Integer
   compute-rodata-vaddr-bare (text-size) =
    elf-bare-metal-load-addr + elf-align text-size 8
-   -- bare metal: text at 0x100000, rodata at 0x100000 + align(textSize, 8)
 
   compute-text-start-32 : Integer
   compute-text-start-32 =

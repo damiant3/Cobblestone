@@ -433,11 +433,25 @@ public sealed class Lowering(
 
     IRExpr LowerList(ListExpr list, CodexType expectedType)
     {
-        CodexType elementType = expectedType is ListType lt
-            ? lt.Element
-            : (list.Elements.Count > 0
-                ? InferElementType(list) is ErrorType ? InferExprType(list.Elements[0]) : InferElementType(list)
-                : ErrorType.s_instance);
+        CodexType elementType;
+        if (expectedType is ListType lt)
+        {
+            elementType = lt.Element;
+        }
+        else if (list.Elements.Count > 0)
+        {
+            // Lower the first element to discover its actual type.
+            // InferElementType only handles literals; this covers
+            // function calls and other expressions.
+            IRExpr first = LowerExpr(list.Elements[0], ErrorType.s_instance);
+            elementType = first.Type is ErrorType
+                ? InferElementType(list) // last resort: literal heuristic
+                : first.Type;
+        }
+        else
+        {
+            elementType = ErrorType.s_instance;
+        }
 
         ImmutableArray<IRExpr>.Builder elements = ImmutableArray.CreateBuilder<IRExpr>();
         foreach (Expr elem in list.Elements)
