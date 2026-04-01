@@ -2,7 +2,7 @@
 
 **Date**: 2026-03-31
 **Status**: Design
-**Depends on**: Second Bootstrap (Phase 1+), bare-metal x86-64 backend
+**Depends on**: MM4 (self-compilation fixed point), LanguageUpdates.md (bitwise builtins), EncoderUpdates.md (OR/NOT/XOR64/MUL/ROR/RDTSC)
 **Unblocks**: CDX binary verification, Trust Network, Agent Protocol, Trust Lattice identity
 
 ---
@@ -693,13 +693,15 @@ streaming interface avoids buffering the entire binary in memory.
    Ed25519 suite as part of Phase E hardening. Any Wycheproof failure is
    a blocking bug.
 
-5. **128-bit multiply.** Field multiplication in 5x51 representation
-   produces intermediate products that exceed 64 bits (51+51 = 102 bits).
-   The x86-64 `MUL` instruction produces a 128-bit result in RDX:RAX.
-   Does the Codex backend expose this? If not, we need to decompose into
-   32-bit half-multiplies, which is slower. This should be resolved during
-   Second Bootstrap Phase 1 (instruction encoder) — ensure `MUL r/m64` is
-   in the encoder's instruction set.
+5. **128-bit multiply — DECIDED: add MUL r/m64 to encoder.** Field
+   multiplication in the 5x51 representation produces 102-bit intermediate
+   products. The x86-64 `MUL r/m64` (unsigned, 128-bit result in RDX:RAX)
+   is required. It is NOT in the encoder today (only 2-operand `IMUL r64,
+   r/m64` exists, which truncates to 64 bits). `EncoderUpdates.md` specifies
+   the encoding: `[rex-w 0 rs, 0xF7, modrm 3 4 rs]` — same opcode group
+   as NEG and IDIV, trivial to add. Without this, field multiply degrades
+   to 32-bit half-multiplies at roughly 4x the cost, making the Ed25519
+   performance estimates invalid.
 
 ---
 
