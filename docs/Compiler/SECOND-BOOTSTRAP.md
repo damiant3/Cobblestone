@@ -209,22 +209,26 @@ Split across files for sanity:
 and prints `42` to serial. This proves the full chain: Codex IR → Codex
 encoder → Codex ELF writer → working binary.
 
-### Phase 4: Runtime Helpers (~800 lines)
+### Phase 4: Runtime Helpers (~1,300 lines) — DONE (16 of 22)
 
-Port the 22 runtime helper functions:
+16 runtime helpers ported to `Emit/X86_64Helpers.codex`:
 
-| Category | Helpers |
-|----------|---------|
-| String | `__str_concat`, `__str_eq`, `__itoa`, `__str_replace`, `__text_contains`, `__text_starts_with`, `__text_compare` |
-| List | `__list_snoc`, `__list_insert_at`, `__list_contains`, `__list_cons`, `__list_append` |
-| Text/List | `__text_concat_list`, `__text_split` |
-| I/O | `__read_file`, `__read_line`, `__bare_metal_read_serial` |
-| Math | `__ipow`, `__text_to_int` |
-| CCE | `__cce_to_unicode`, `__unicode_to_cce` (table lookups) |
+| Category | Helpers | Status |
+|----------|---------|--------|
+| String | `__str_concat`, `__str_eq`, `__itoa`, `__str_replace`, `__text_contains`, `__text_starts_with`, `__text_compare` | Done |
+| List | `__list_snoc`, `__list_insert_at`, `__list_contains`, `__list_cons`, `__list_append` | Done |
+| Text/List | `__text_concat_list`, `__text_split` | Done |
+| Math | `__ipow`, `__text_to_int` | Done |
+| I/O | `__read_file`, `__read_line`, `__bare_metal_read_serial` | **Deferred** — need rodata fixups, syscalls, CCE tables |
+| CCE | `__cce_to_unicode`, `__unicode_to_cce` | **Deferred** — need rodata table support |
 
-These are assembly routines emitted as byte sequences. In C# they're
-inline `Emit` calls. In Codex they're functions that return byte lists,
-appended to the text section.
+The 5 deferred helpers require rodata fixup infrastructure (patching
+absolute addresses into `mov r64, imm64` instructions at link time)
+and CCE/Unicode conversion tables in the rodata section. These will
+land as part of Phase 5 (builtins) or Phase 7 (boot), which already
+need rodata support for string literals and the boot trampoline.
+
+Pingpong green: 548KB ELF, 109MB Stage 1 HWM, fixed point at 213K.
 
 ### Phase 5: Builtins (~800 lines)
 
@@ -289,8 +293,9 @@ successors). The C# reference compiler is truly frozen.
 | ~~**M2**~~ | ~~ELF writer in Codex~~ | ~~Minimal ELF boots in QEMU, prints to serial~~ |
 | ~~**M3**~~ | ~~`main = 42`~~ | ~~Codex compiler (on .NET) emits bare-metal ELF, boots, prints `42`~~ |
 | ~~**M4**~~ | ~~`factorial 5`~~ | ~~Non-trivial program: recursion, arithmetic, print. Also: records, match, lists, TCO, closures~~ |
-| **M5** | Runtime helpers | String concat, list ops, itoa all working on bare metal |
-| **M6** | Escape copy | Region-based heap reclamation working |
+| ~~**M5**~~ | ~~Runtime helpers~~ | ~~16 of 22 helpers ported. Pingpong green at 213K output, 548KB ELF, 109MB HWM~~ |
+| **M5b** | Builtins + remaining helpers | 36 builtins wired; I/O helpers + CCE tables need rodata fixup support |
+| **M6** | Escape copy | Region-based heap reclamation working — will shrink HWM from 109MB |
 | **M7** | Self-compilation | The compiler compiles itself to a bare-metal ELF |
 | **M8** | Fixed point | Stage 1 ELF == Stage 2 ELF. **This is MM4.** |
 
