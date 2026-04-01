@@ -20,11 +20,17 @@ public sealed record Definition(
     IReadOnlyList<Parameter> Parameters,
     TypeExpr? DeclaredType,
     Expr Body,
-    SourceSpan Span);
+    SourceSpan Span)
+{
+    public string? SourceModule { get; init; }
+}
 
 public sealed record Parameter(Name Name, TypeExpr? TypeAnnotation, SourceSpan Span);
 
-public sealed record ImportDecl(Name ModuleName, SourceSpan Span);
+public sealed record ImportDecl(Name ModuleName, SourceSpan Span)
+{
+    public IReadOnlyList<Name> SelectedNames { get; init; } = [];
+}
 
 public sealed record ExportDecl(IReadOnlyList<Name> Names, SourceSpan Span);
 
@@ -139,7 +145,10 @@ public sealed record BinaryTypeExpr(TypeExpr Left, BinaryOp Op, TypeExpr Right, 
 
 public sealed record ProofConstraintExpr(TypeExpr Left, BinaryOp Op, TypeExpr Right, SourceSpan Span) : TypeExpr(Span);
 
-public abstract record TypeDef(Name Name, IReadOnlyList<Name> TypeParameters, SourceSpan Span);
+public abstract record TypeDef(Name Name, IReadOnlyList<Name> TypeParameters, SourceSpan Span)
+{
+    public string? SourceModule { get; init; }
+}
 
 public sealed record RecordTypeDef(
     Name Name,

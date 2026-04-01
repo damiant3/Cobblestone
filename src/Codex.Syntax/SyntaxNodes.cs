@@ -222,6 +222,9 @@ public sealed record NotationBlockNode(
 {
     public IReadOnlyList<ClaimNode> Claims { get; init; } = [];
     public IReadOnlyList<ProofNode> Proofs { get; init; } = [];
+    public IReadOnlyList<ImportNode> Imports { get; init; } = [];
+    public IReadOnlyList<ExportNode> Exports { get; init; } = [];
+    public IReadOnlyList<EffectDefinitionNode> EffectDefinitions { get; init; } = [];
 
     public NotationBlockNode(IReadOnlyList<DefinitionNode> Definitions, SourceSpan Span)
         : this(Definitions, Array.Empty<TypeDefinitionNode>(), Span) { }
@@ -232,6 +235,7 @@ public sealed record NotationBlockNode(
 public sealed record ImportNode(Token Name, SourceSpan Span)
     : SyntaxNode(SyntaxKind.Import, Span)
 {
+    public IReadOnlyList<Token> SelectedNames { get; init; } = [];
     public override IEnumerable<SyntaxNode> Children => [];
 }
 

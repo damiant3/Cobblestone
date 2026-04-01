@@ -180,7 +180,35 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         Token importKw = Current;
         Advance();
         Token name = Expect(TokenKind.TypeIdentifier);
-        return new ImportNode(name, importKw.Span.Through(name.Span));
+
+        List<Token> selectedNames = [];
+        if (Current.Kind == TokenKind.LeftParen)
+        {
+            Advance();
+            SkipNewlines();
+            if (Current.Kind is TokenKind.Identifier or TokenKind.TypeIdentifier)
+            {
+                selectedNames.Add(Current);
+                Advance();
+                while (Current.Kind == TokenKind.Comma)
+                {
+                    Advance();
+                    SkipNewlines();
+                    if (Current.Kind is TokenKind.Identifier or TokenKind.TypeIdentifier)
+                    {
+                        selectedNames.Add(Current);
+                        Advance();
+                    }
+                }
+            }
+            SkipNewlines();
+            Expect(TokenKind.RightParen);
+        }
+
+        SourceSpan span = selectedNames.Count > 0
+            ? importKw.Span.Through(selectedNames[^1].Span)
+            : importKw.Span.Through(name.Span);
+        return new ImportNode(name, span) { SelectedNames = selectedNames };
     }
 
     ExportNode? TryParseExport()

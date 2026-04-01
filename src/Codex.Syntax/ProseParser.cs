@@ -54,13 +54,22 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
         List<TypeDefinitionNode> allTypeDefs = [];
         List<ClaimNode> allClaims = [];
         List<ProofNode> allProofs = [];
+        List<ImportNode> allImports = [];
+        List<ExportNode> allExports = [];
+        List<EffectDefinitionNode> allEffectDefs = [];
         foreach (ChapterNode chapter in chapters)
         {
-            CollectDefinitions(chapter.Members, allDefs, allTypeDefs, allClaims, allProofs);
+            CollectDefinitions(chapter.Members, allDefs, allTypeDefs, allClaims, allProofs,
+                allImports, allExports, allEffectDefs);
         }
 
         return new DocumentNode(allDefs, allTypeDefs, allClaims,
-            allProofs, chapters, docSpan);
+            allProofs, chapters, docSpan)
+        {
+            Imports = allImports,
+            Exports = allExports,
+            EffectDefinitions = allEffectDefs
+        };
     }
 
     ChapterNode ParseChapter()
@@ -244,7 +253,10 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
         return new NotationBlockNode(notationDoc.Definitions, notationDoc.TypeDefinitions, span)
         {
             Claims = notationDoc.Claims,
-            Proofs = notationDoc.Proofs
+            Proofs = notationDoc.Proofs,
+            Imports = notationDoc.Imports,
+            Exports = notationDoc.Exports,
+            EffectDefinitions = notationDoc.EffectDefinitions
         };
     }
 
@@ -268,7 +280,9 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
 
     static void CollectDefinitions(IReadOnlyList<DocumentMember> members,
         List<DefinitionNode> defs, List<TypeDefinitionNode> typeDefs,
-        List<ClaimNode> claims, List<ProofNode> proofs)
+        List<ClaimNode> claims, List<ProofNode> proofs,
+        List<ImportNode> imports, List<ExportNode> exports,
+        List<EffectDefinitionNode> effectDefs)
     {
         foreach (DocumentMember member in members)
         {
@@ -278,10 +292,14 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
                 typeDefs.AddRange(notation.TypeDefinitions);
                 claims.AddRange(notation.Claims);
                 proofs.AddRange(notation.Proofs);
+                imports.AddRange(notation.Imports);
+                exports.AddRange(notation.Exports);
+                effectDefs.AddRange(notation.EffectDefinitions);
             }
             else if (member is SectionNode section)
             {
-                CollectDefinitions(section.Members, defs, typeDefs, claims, proofs);
+                CollectDefinitions(section.Members, defs, typeDefs, claims, proofs,
+                    imports, exports, effectDefs);
             }
         }
     }

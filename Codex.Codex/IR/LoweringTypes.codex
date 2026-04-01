@@ -102,9 +102,9 @@ Section: Constructor Bindings
      let result-ty = ConstructedTy name []
      in collect-variant-ctor-bindings ctors result-ty 0 (list-length ctors) []
     if ARecordTypeDef (name) (type-params) (fields) ->
-     let resolved-fields = build-record-fields-for-lower fields 0 (list-length fields) []
+     let resolved-fields = build-record-fields fields 0 (list-length fields) []
      in let result-ty = RecordTy name resolved-fields
-     in let ctor-ty = build-record-ctor-type-for-lower fields result-ty 0 (list-length fields)
+     in let ctor-ty = build-record-ctor-type fields result-ty 0 (list-length fields)
      in [TypeBinding { name = name.value, bound-type = ctor-ty }]
 
   collect-variant-ctor-bindings : List AVariantCtorDef -> CodexType -> Integer -> Integer -> List TypeBinding -> List TypeBinding
@@ -112,34 +112,34 @@ Section: Constructor Bindings
    if i == len then acc
    else
     let ctor = list-at ctors i
-    in let ctor-ty = build-ctor-type-for-lower ctor.fields result-ty 0 (list-length ctor.fields)
+    in let ctor-ty = build-ctor-type ctor.fields result-ty 0 (list-length ctor.fields)
     in collect-variant-ctor-bindings ctors result-ty (i + 1) len (list-snoc acc (TypeBinding { name = ctor.name.value, bound-type = ctor-ty }))
 
-  build-ctor-type-for-lower : List ATypeExpr -> CodexType -> Integer -> Integer -> CodexType
-  build-ctor-type-for-lower (fields) (result) (i) (len) =
+  build-ctor-type : List ATypeExpr -> CodexType -> Integer -> Integer -> CodexType
+  build-ctor-type (fields) (result) (i) (len) =
    if i == len then result
    else
-    let rest = build-ctor-type-for-lower fields result (i + 1) len
-    in FunTy (resolve-type-expr-for-lower (list-at fields i)) rest
+    let rest = build-ctor-type fields result (i + 1) len
+    in FunTy (resolve-type-expr (list-at fields i)) rest
 
-  build-record-fields-for-lower : List ARecordFieldDef -> Integer -> Integer -> List RecordField -> List RecordField
-  build-record-fields-for-lower (fields) (i) (len) (acc) =
+  build-record-fields : List ARecordFieldDef -> Integer -> Integer -> List RecordField -> List RecordField
+  build-record-fields (fields) (i) (len) (acc) =
    if i == len then acc
    else
     let f = list-at fields i
-    in let rfield = RecordField { name = f.name, type-val = resolve-type-expr-for-lower f.type-expr }
-    in build-record-fields-for-lower fields (i + 1) len (list-snoc acc rfield)
+    in let rfield = RecordField { name = f.name, type-val = resolve-type-expr f.type-expr }
+    in build-record-fields fields (i + 1) len (list-snoc acc rfield)
 
-  build-record-ctor-type-for-lower : List ARecordFieldDef -> CodexType -> Integer -> Integer -> CodexType
-  build-record-ctor-type-for-lower (fields) (result) (i) (len) =
+  build-record-ctor-type : List ARecordFieldDef -> CodexType -> Integer -> Integer -> CodexType
+  build-record-ctor-type (fields) (result) (i) (len) =
    if i == len then result
    else
     let f = list-at fields i
-    in let rest = build-record-ctor-type-for-lower fields result (i + 1) len
-    in FunTy (resolve-type-expr-for-lower f.type-expr) rest
+    in let rest = build-record-ctor-type fields result (i + 1) len
+    in FunTy (resolve-type-expr f.type-expr) rest
 
-  resolve-type-expr-for-lower : ATypeExpr -> CodexType
-  resolve-type-expr-for-lower (texpr) =
+  resolve-type-expr : ATypeExpr -> CodexType
+  resolve-type-expr (texpr) =
    when texpr
     if ANamedType (name) ->
      if name.value == "Integer" then IntegerTy
@@ -148,13 +148,13 @@ Section: Constructor Bindings
      else if name.value == "Boolean" then BooleanTy
      else if name.value == "Nothing" then NothingTy
      else ConstructedTy name []
-    if AFunType (param) (ret) -> FunTy (resolve-type-expr-for-lower param) (resolve-type-expr-for-lower ret)
+    if AFunType (param) (ret) -> FunTy (resolve-type-expr param) (resolve-type-expr ret)
     if AAppType (ctor) (args) ->
      when ctor
       if ANamedType (cname) ->
        if cname.value == "List"
         then if list-length args == 1
-         then ListTy (resolve-type-expr-for-lower (list-at args 0))
+         then ListTy (resolve-type-expr (list-at args 0))
          else ListTy ErrorTy
         else ConstructedTy cname []
       if _ -> ErrorTy
