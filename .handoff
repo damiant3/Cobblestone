@@ -3,40 +3,67 @@ Agent: Cam
 
 ## What was done
 
-Phase 3 M3.1 of the Second Bootstrap: `main = 42` compiles to bare-metal
-ELF, boots in QEMU, prints "42" to serial. Pingpong green.
+Phase 3 milestones M3.1, M3.2, M3.3 of the Second Bootstrap.
 
-Commits on master:
+M3.1: main = 42 boots in QEMU, prints "42". Pingpong green at 128MB.
+M3.2: let x = 10 in let y = 20 in x + y prints "30".
+M3.3: if 5 > 3 then 99 else 0 prints "99".
+
+Branches (both pushed, ready for review):
+- feature/second-bootstrap-phase3-m31 (merged to master)
+- feature/phase3-m32-m33
+
+Key commits:
 1. feat: Phase 3 M3.1 — X86_64.codex codegen, QEMU boot test
 2. bootstrap: 128MB heap, batch patching, rex let-binding fix
-3. docs: pitfalls section in SYNTAX-QUICKREF.md
+3. docs: pitfalls section in SYNTAX-QUICKREF.md, CurrentPlan update
+4. feat: Phase 3 M3.2 + M3.3 — let/arithmetic and if/else/comparisons
 
-## What's next
+## Two threads of next work
 
-Phase 3 M3.2: `let` + arithmetic. See docs/Compiler/PHASE3-CORE-CODEGEN.md.
+### Thread 1: Module-scoped namespaces (language feature)
+
+Status entry: module-namespaces (codex-status)
+
+The self-hosted compiler has a flat namespace across all .codex files.
+Functions in X86_64.codex collide with CSharpEmitterExpressions.codex
+(emit-expr, emit-let, emit-binary, emit-name, emit-if, emit-comparison).
+Currently worked around with cg- prefix.
+
+Scope of work:
+- Design module scoping rules (how Chapter/file maps to namespace)
+- Update the reference compiler parser + name resolver
+- Update the self-hosted compiler parser + name resolver
+- Rename cg-emit-expr back to emit-expr etc. in X86_64.codex
+- Rename cg-emit-sub-rsp-imm32 back to emit-sub-rsp-imm32
+- Also fixes: emit-int-lit, emit-function, emit-prologue, emit-epilogue,
+  emit-start, emit-all-defs (these happen to not collide today but will
+  as more emitters are added)
+- Full list of cg- prefixed names in X86_64.codex:
+  cg-emit-expr, cg-emit-name, cg-emit-let, cg-emit-binary,
+  cg-emit-binary-op, cg-emit-comparison, cg-emit-if, cg-emit-sub-rsp-imm32
+
+### Thread 2: Phase 3 M3.4+ (continue codegen milestones)
+
+Next milestone: M3.4 — function calls + recursion.
+Design doc: docs/Compiler/PHASE3-CORE-CODEGEN.md
+
 Add to X86_64.codex:
-- cg-emit-expr cases for IrLet, IrBinary, IrName
-- EmitLet: alloc-local, emit value, store-local, emit body
-- EmitBinary: emit left, emit right, dispatch on IrAddInt/IrSubInt/IrMulInt/IrDivInt
-- EmitName: lookup in locals list, load-local
-Test: `main = let x = 10 in let y = 20 in x + y` prints "30"
+- Parameter binding in emit-function (args in RDI/RSI/RDX/RCX/R8/R9)
+- cg-emit-expr case for IrApply (direct calls with args in registers)
+- Multiple function emission (emit-all-defs already loops)
+- Test: factorial 5 prints "120"
 
-Then M3.3 (if/else), M3.4 (function calls), M3.5 (records), M3.6 (match),
-M3.7 (lists), M3.8 (TCO), M3.9 (closures). Each adds cases to cg-emit-expr.
+Then M3.5 (records), M3.6 (match), M3.7 (lists), M3.8 (TCO), M3.9 (closures).
 
-## Key learnings
+## Key learnings (carry forward)
 
-- The .codex files are compiled to C# by the reference compiler. The codex
-  build step runs `Codex.Cli build .` which reads codex.project.json.
-- The generated C# class is Codex_Codex_Codex with all functions as static
-  methods. Hyphens become underscores.
-- CCE encoding: C# test code constructing IR must use CCE-encoded strings.
-  "main" = "\u001a\u000f\u0011\u0012". The _Cce class is internal.
+- CCE encoding: C# test code constructing IR must use CCE-encoded strings
+  for function names that the codegen compares against hardcoded literals
+  (e.g. "main" = "\u001a\u000f\u0011\u0012"). Local variable names can
+  be plain Unicode since they're only compared against themselves.
 - No comments in Codex. Ever. Prose is the explanation layer.
-- Avoid inline if/then/else in arithmetic — the emitter drops parens and
-  breaks the fixed point. Use let bindings instead.
-- Break large ++ chains and deeply nested lets into smaller named functions
-  to reduce self-compilation time and type-checker pressure.
-- The out/ directory must not contain .codex files when running codex build,
-  or they get picked up by the **/*.codex glob and cause duplicate defs.
-- Bare-metal memory is now 128MB (64 pages). HWM is 73MB.
+- Avoid inline if/then/else in arithmetic (emitter drops parens).
+- Break large ++ chains and deeply nested lets into named helpers.
+- Clean out/ of .codex files before running codex build.
+- Bare-metal memory is 128MB (64 pages). HWM is 73MB at 248K source.
