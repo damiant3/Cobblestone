@@ -207,26 +207,14 @@ public sealed class ModuleScoper(DiagnosticBag diagnostics)
                 Else = RenameExpr(iff.Else, renameMap)
             },
 
-            LetExpr let => let with
-            {
-                Bindings = let.Bindings.Select(b =>
-                    new LetBinding(b.Name, RenameExpr(b.Value, renameMap))).ToList(),
-                Body = RenameExpr(let.Body, renameMap)
-            },
+            LetExpr let => RenameLetExpr(let, renameMap),
 
-            LambdaExpr lam => lam with
-            {
-                Body = RenameExpr(lam.Body, renameMap)
-            },
+            LambdaExpr lam => RenameLambdaExpr(lam, renameMap),
 
             MatchExpr match => match with
             {
                 Scrutinee = RenameExpr(match.Scrutinee, renameMap),
-                Branches = match.Branches.Select(b =>
-                    new MatchBranch(
-                        RenamePattern(b.Pattern, renameMap),
-                        RenameExpr(b.Body, renameMap),
-                        b.Span)).ToList()
+                Branches = match.Branches.Select(b => RenameMatchBranch(b, renameMap)).ToList()
             },
 
             ListExpr list => list with
@@ -245,24 +233,116 @@ public sealed class ModuleScoper(DiagnosticBag diagnostics)
                 Record = RenameExpr(fa.Record, renameMap)
             },
 
-            DoExpr doExpr => doExpr with
-            {
-                Statements = doExpr.Statements.Select(s => RenameDoStatement(s, renameMap)).ToList()
-            },
+            DoExpr doExpr => RenameDoExpr(doExpr, renameMap),
 
-            HandleExpr handle => handle with
-            {
-                Computation = RenameExpr(handle.Computation, renameMap),
-                Clauses = handle.Clauses.Select(c =>
-                    new HandleClause(
-                        c.OperationName,
-                        c.Parameters,
-                        c.ResumeName,
-                        RenameExpr(c.Body, renameMap),
-                        c.Span)).ToList()
-            },
+            HandleExpr handle => RenameHandleExpr(handle, renameMap),
 
             _ => expr
+        };
+    }
+
+    // Remove locally-bound names from the rename map so shadows aren't touched
+    static Dictionary<string, string> WithoutKeys(
+        Dictionary<string, string> map, IEnumerable<string> keys)
+    {
+        Dictionary<string, string>? reduced = null;
+        foreach (string key in keys)
+        {
+            if (map.ContainsKey(key))
+            {
+                reduced ??= new Dictionary<string, string>(map);
+                reduced.Remove(key);
+            }
+        }
+        return reduced ?? map;
+    }
+
+    Expr RenameLetExpr(LetExpr let, Dictionary<string, string> renameMap)
+    {
+        // Each binding's value is renamed with the map BEFORE that binding's name
+        // is in scope. After all bindings, the body uses a map with bound names removed.
+        List<LetBinding> bindings = [];
+        var bodyMap = renameMap;
+        foreach (LetBinding b in let.Bindings)
+        {
+            bindings.Add(new LetBinding(b.Name, RenameExpr(b.Value, bodyMap)));
+            if (renameMap.ContainsKey(b.Name.Value))
+            {
+                bodyMap = WithoutKeys(bodyMap, [b.Name.Value]);
+            }
+        }
+        return let with
+        {
+            Bindings = bindings,
+            Body = RenameExpr(let.Body, bodyMap)
+        };
+    }
+
+    Expr RenameLambdaExpr(LambdaExpr lam, Dictionary<string, string> renameMap)
+    {
+        var bodyMap = WithoutKeys(renameMap,
+            lam.Parameters.Select(p => p.Name.Value));
+        return lam with { Body = RenameExpr(lam.Body, bodyMap) };
+    }
+
+    MatchBranch RenameMatchBranch(MatchBranch branch, Dictionary<string, string> renameMap)
+    {
+        // Collect all variable names bound by the pattern
+        List<string> patternVars = [];
+        CollectPatternVars(branch.Pattern, patternVars);
+        var bodyMap = WithoutKeys(renameMap, patternVars);
+        return new MatchBranch(
+            RenamePattern(branch.Pattern, renameMap),
+            RenameExpr(branch.Body, bodyMap),
+            branch.Span);
+    }
+
+    static void CollectPatternVars(Pattern pattern, List<string> vars)
+    {
+        switch (pattern)
+        {
+            case VarPattern v:
+                vars.Add(v.Name.Value);
+                break;
+            case CtorPattern ctor:
+                foreach (Pattern sub in ctor.SubPatterns)
+                    CollectPatternVars(sub, vars);
+                break;
+        }
+    }
+
+    Expr RenameDoExpr(DoExpr doExpr, Dictionary<string, string> renameMap)
+    {
+        // Each bind statement introduces a name that shadows in subsequent statements
+        List<DoStatement> stmts = [];
+        var currentMap = renameMap;
+        foreach (DoStatement stmt in doExpr.Statements)
+        {
+            stmts.Add(RenameDoStatement(stmt, currentMap));
+            if (stmt is DoBindStatement bind && renameMap.ContainsKey(bind.Name.Value))
+            {
+                currentMap = WithoutKeys(currentMap, [bind.Name.Value]);
+            }
+        }
+        return doExpr with { Statements = stmts };
+    }
+
+    Expr RenameHandleExpr(HandleExpr handle, Dictionary<string, string> renameMap)
+    {
+        return handle with
+        {
+            Computation = RenameExpr(handle.Computation, renameMap),
+            Clauses = handle.Clauses.Select(c =>
+            {
+                var clauseMap = WithoutKeys(renameMap,
+                    c.Parameters.Select(p => p.Value).Append(c.ResumeName.Value));
+                return new HandleClause(
+                    c.OperationName,
+                    c.Parameters,
+                    c.ResumeName,
+                    RenameExpr(c.Body, clauseMap),
+                    c.Span);
+            }).ToList()
         };
     }
 
