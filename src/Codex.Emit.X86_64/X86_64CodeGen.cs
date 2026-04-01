@@ -5267,12 +5267,12 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     const long SerialRingBufAddr = 0x3C0000;
     const long SerialRingBufSize = 0x40000; // 256KB — must be power of 2
 
-    // Bare metal memory layout — 32 x 2MB huge pages = 64 MB
-    const int BareMetalPages = 32;
+    // Bare metal memory layout — 64 x 2MB huge pages = 128 MB
+    const int BareMetalPages = 64;
     const long BareMetalHeapBase = 0x400000;                // 4 MB
-    const long BareMetalResultBase = 0x3D00000;             // 61 MB (1 MB result)
-    const long BareMetalStackBottom = 0x3E00000;            // 62 MB (2 MB stack)
-    const long BareMetalStackTop = 0x4000000;               // 64 MB
+    const long BareMetalResultBase = 0x7D00000;             // 125 MB (1 MB result)
+    const long BareMetalStackBottom = 0x7E00000;            // 126 MB (2 MB stack)
+    const long BareMetalStackTop = 0x8000000;               // 128 MB
 
     void EmitInterruptSetup()
     {
