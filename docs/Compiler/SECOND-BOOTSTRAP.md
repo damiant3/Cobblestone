@@ -285,9 +285,9 @@ successors). The C# reference compiler is truly frozen.
 
 | Milestone | What | How you know it works |
 |-----------|------|----------------------|
-| **M1** | Encoder in Codex | Byte-identical output vs C# encoder for all instruction types |
-| **M2** | ELF writer in Codex | Minimal ELF boots in QEMU, prints to serial |
-| **M3** | `main = 42` | Codex compiler (on .NET) emits bare-metal ELF, boots, prints `42` |
+| ~~**M1**~~ | ~~Encoder in Codex~~ | ~~Byte-identical output vs C# encoder for all instruction types~~ |
+| ~~**M2**~~ | ~~ELF writer in Codex~~ | ~~Minimal ELF boots in QEMU, prints to serial~~ |
+| ~~**M3**~~ | ~~`main = 42`~~ | ~~Codex compiler (on .NET) emits bare-metal ELF, boots, prints `42`~~ |
 | **M4** | `factorial 5` | Non-trivial program: recursion, arithmetic, print |
 | **M5** | Runtime helpers | String concat, list ops, itoa all working on bare metal |
 | **M6** | Escape copy | Region-based heap reclamation working |
