@@ -32,7 +32,7 @@ x86-64 binaries, achieving fixed-point self-compilation. No C# in the chain.
 |-------|------|--------|
 | ~~1~~ | ~~x86-64 instruction encoder in Codex~~ | ~~Done~~ |
 | ~~2~~ | ~~ELF writer + CDX binary format writer in Codex~~ | ~~Done~~ |
-| 3 | Core codegen (expressions, records, lists, match, calls, TCO) | **M3.1 done** (main=42 boots). M3.2–M3.9 remain. |
+| 3 | Core codegen (expressions, records, lists, match, calls, TCO) | **M3.1–M3.3 done** (let/arithmetic, if/else/comparisons). M3.4–M3.9 remain. |
 | 4 | Runtime helpers (string, list, math, I/O) | Waiting on Phase 3 |
 | 5 | Builtins (50+ operations) | Waiting on Phase 3 |
 | 6 | Escape copy & regions | Waiting on Phase 3 |
@@ -101,8 +101,8 @@ Ordered by dependency, not priority.
 
 | Design | Doc | Status |
 |--------|-----|--------|
-| Second Bootstrap | `docs/Compiler/SECOND-BOOTSTRAP.md` | **Active — Phase 3 M3.2 next** |
-| Phase 3 Core Codegen | `docs/Compiler/PHASE3-CORE-CODEGEN.md` | **Active — M3.1 proven, M3.2–M3.9 remain** |
+| Second Bootstrap | `docs/Compiler/SECOND-BOOTSTRAP.md` | **Active — Phase 3 M3.4 next** |
+| Phase 3 Core Codegen | `docs/Compiler/PHASE3-CORE-CODEGEN.md` | **Active — M3.1–M3.3 done, M3.4–M3.9 remain** |
 | CDX binary format | `docs/Codex.OS/CodexBinary.md` | ~~Complete, implemented in Phase 2~~ |
 | Trust network | `docs/Codex.OS/TrustNetwork.md` | Complete, implements after MM4 |
 | Agent protocol | `docs/Codex.OS/RuntimeTrust.txt` §1 | Complete |
@@ -122,4 +122,4 @@ Ordered by dependency, not priority.
 
 Every estimate has been wrong by orders of magnitude, in both directions.
 We don't put dates on mountains. The critical path is ordered. The next
-hold is Phase 3, milestone M3.2. That's all we need to know.
+hold is Phase 3, milestone M3.4 (function calls + recursion). That's all we need to know.
