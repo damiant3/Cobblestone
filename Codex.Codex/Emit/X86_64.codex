@@ -708,6 +708,268 @@ Section: Expression Emission
    in let st7 = patch-jmp-at st6 jmp-end-pos (list-length st6.text)
    in load-local st7 result-loc.reg
 
+Section: Builtin Detection
+
+  is-string-builtin : Text -> Boolean
+  is-string-builtin (name) =
+    if name == "text-length" then True
+    else if name == "integer-to-text" then True
+    else if name == "show" then True
+    else if name == "text-to-integer" then True
+    else if name == "text-replace" then True
+    else if name == "text-contains" then True
+    else if name == "text-starts-with" then True
+    else if name == "text-compare" then True
+    else if name == "text-concat-list" then True
+    else if name == "text-split" then True
+    else if name == "substring" then True
+    else False
+
+  is-list-builtin : Text -> Boolean
+  is-list-builtin (name) =
+    if name == "list-length" then True
+    else if name == "list-at" then True
+    else if name == "list-cons" then True
+    else if name == "list-append" then True
+    else if name == "list-snoc" then True
+    else if name == "list-insert-at" then True
+    else if name == "list-contains" then True
+    else False
+
+  is-char-builtin : Text -> Boolean
+  is-char-builtin (name) =
+    if name == "char-at" then True
+    else if name == "char-code-at" then True
+    else if name == "char-code" then True
+    else if name == "code-to-char" then True
+    else if name == "char-to-text" then True
+    else if name == "is-letter" then True
+    else if name == "is-digit" then True
+    else if name == "is-whitespace" then True
+    else False
+
+  is-misc-builtin : Text -> Boolean
+  is-misc-builtin (name) =
+    if name == "negate" then True
+    else if name == "get-args" then True
+    else if name == "current-dir" then True
+    else if name == "file-exists" then True
+    else False
+
+  is-builtin : Text -> Boolean
+  is-builtin (name) =
+    if is-string-builtin name then True
+    else if is-list-builtin name then True
+    else if is-char-builtin name then True
+    else is-misc-builtin name
+
+Section: Builtin Emission
+
+ Wires Codex operations to inline sequences or runtime helper calls.
+ All builtins here operate on CCE natively. I/O boundary builtins
+ (print-line, read-file, write-file) are deferred to Phase 7.
+
+  emit-helper-call-1 : CodegenState -> List IRExpr -> Text -> EmitResult
+  emit-helper-call-1 (st) (args) (helper) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+    in let st1 = st-append-text r.state (mov-rr reg-rdi r.reg)
+    in let st2 = emit-call-to st1 helper
+    in let tmp = alloc-temp st2
+    in EmitResult { state = st-append-text tmp.state (mov-rr tmp.reg reg-rax), reg = tmp.reg }
+
+  emit-helper-call-2 : CodegenState -> List IRExpr -> Text -> EmitResult
+  emit-helper-call-2 (st) (args) (helper) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+    in let loc = alloc-local r0.state
+    in let st1 = store-local loc.state loc.reg r0.reg
+    in let r1 = emit-expr st1 (list-at args 1)
+    in let loaded = load-local r1.state loc.reg
+    in let st2 = st-append-text loaded.state (mov-rr reg-rsi r1.reg)
+    in let st3 = st-append-text st2 (mov-rr reg-rdi loaded.reg)
+    in let st4 = emit-call-to st3 helper
+    in let tmp = alloc-temp st4
+    in EmitResult { state = st-append-text tmp.state (mov-rr tmp.reg reg-rax), reg = tmp.reg }
+
+  emit-helper-call-3 : CodegenState -> List IRExpr -> Text -> EmitResult
+  emit-helper-call-3 (st) (args) (helper) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+    in let loc0 = alloc-local r0.state
+    in let st1 = store-local loc0.state loc0.reg r0.reg
+    in let r1 = emit-expr st1 (list-at args 1)
+    in let loc1 = alloc-local r1.state
+    in let st2 = store-local loc1.state loc1.reg r1.reg
+    in let r2 = emit-expr st2 (list-at args 2)
+    in let st3 = st-append-text r2.state (mov-rr reg-rdx r2.reg)
+    in let ld1 = load-local st3 loc1.reg
+    in let st4 = st-append-text ld1.state (mov-rr reg-rsi ld1.reg)
+    in let ld0 = load-local st4 loc0.reg
+    in let st5 = st-append-text ld0.state (mov-rr reg-rdi ld0.reg)
+    in let st6 = emit-call-to st5 helper
+    in let tmp = alloc-temp st6
+    in EmitResult { state = st-append-text tmp.state (mov-rr tmp.reg reg-rax), reg = tmp.reg }
+
+  emit-text-length-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-text-length-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+    in let tmp = alloc-temp r.state
+    in EmitResult { state = st-append-text tmp.state (mov-load tmp.reg r.reg 0), reg = tmp.reg }
+
+  emit-list-length-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-list-length-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+    in let tmp = alloc-temp r.state
+    in EmitResult { state = st-append-text tmp.state (mov-load tmp.reg r.reg 0), reg = tmp.reg }
+
+  emit-list-at-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-list-at-builtin (st) (args) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+    in let loc = alloc-local r0.state
+    in let st1 = store-local loc.state loc.reg r0.reg
+    in let r1 = emit-expr st1 (list-at args 1)
+    in let list-loaded = load-local r1.state loc.reg
+    in let addr = alloc-temp list-loaded.state
+    in let st2 = st-append-text addr.state (mov-rr addr.reg r1.reg)
+    in let st3 = st-append-text st2 (shl-ri addr.reg 3)
+    in let st4 = st-append-text st3 (add-rr addr.reg list-loaded.reg)
+    in let rd = alloc-temp st4
+    in EmitResult { state = st-append-text rd.state (mov-load rd.reg addr.reg 8), reg = rd.reg }
+
+  emit-char-at-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-char-at-builtin (st) (args) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+    in let loc = alloc-local r0.state
+    in let st1 = store-local loc.state loc.reg r0.reg
+    in let r1 = emit-expr st1 (list-at args 1)
+    in let str-loaded = load-local r1.state loc.reg
+    in let st2 = st-append-text str-loaded.state (add-rr r1.reg str-loaded.reg)
+    in let st3 = st-append-text st2 (movzx-byte r1.reg r1.reg 8)
+    in EmitResult { state = st3, reg = r1.reg }
+
+  emit-char-code-at-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-char-code-at-builtin (st) (args) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+    in let loc = alloc-local r0.state
+    in let st1 = store-local loc.state loc.reg r0.reg
+    in let r1 = emit-expr st1 (list-at args 1)
+    in let text-loaded = load-local r1.state loc.reg
+    in let rd = alloc-temp text-loaded.state
+    in let st2 = st-append-text rd.state (mov-rr rd.reg text-loaded.reg)
+    in let st3 = st-append-text st2 (add-rr rd.reg r1.reg)
+    in let st4 = st-append-text st3 (movzx-byte rd.reg rd.reg 8)
+    in EmitResult { state = st4, reg = rd.reg }
+
+  emit-char-to-text-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-char-to-text-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+    in let loc = alloc-local r.state
+    in let st1 = store-local loc.state loc.reg r.reg
+    in let ptr-loc = alloc-local st1
+    in let ptr-tmp = alloc-temp ptr-loc.state
+    in let st2 = st-append-text ptr-tmp.state (mov-rr ptr-tmp.reg reg-r10)
+    in let st3 = store-local st2 ptr-loc.reg ptr-tmp.reg
+    in let st4 = st-append-text st3 (add-ri reg-r10 16)
+    in let st5 = st-append-text st4 (li reg-r11 1)
+    in let ptr-loaded = load-local st5 ptr-loc.reg
+    in let st6 = st-append-text ptr-loaded.state (mov-store ptr-loaded.reg reg-r11 0)
+    in let code-loaded = load-local st6 loc.reg
+    in let ptr-loaded2 = load-local code-loaded.state ptr-loc.reg
+    in let st7 = st-append-text ptr-loaded2.state (mov-store-byte ptr-loaded2.reg code-loaded.reg 8)
+    in let result = load-local st7 ptr-loc.reg
+    in EmitResult { state = result.state, reg = result.reg }
+
+  emit-is-letter-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-is-letter-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+    in let st1 = st-append-text r.state (sub-ri r.reg 13)
+    in let st2 = st-append-text st1 (cmp-ri r.reg 51)
+    in let st3 = st-append-text st2 (setcc cc-be r.reg)
+    in let st4 = st-append-text st3 (movzx-byte-self r.reg)
+    in EmitResult { state = st4, reg = r.reg }
+
+  emit-is-digit-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-is-digit-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+    in let st1 = st-append-text r.state (sub-ri r.reg 3)
+    in let st2 = st-append-text st1 (cmp-ri r.reg 9)
+    in let st3 = st-append-text st2 (setcc cc-be r.reg)
+    in let st4 = st-append-text st3 (movzx-byte-self r.reg)
+    in EmitResult { state = st4, reg = r.reg }
+
+  emit-is-whitespace-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-is-whitespace-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+    in let st1 = st-append-text r.state (cmp-ri r.reg 2)
+    in let st2 = st-append-text st1 (setcc cc-be r.reg)
+    in let st3 = st-append-text st2 (movzx-byte-self r.reg)
+    in EmitResult { state = st3, reg = r.reg }
+
+  emit-negate-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-negate-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+    in let rd = alloc-temp r.state
+    in let st1 = st-append-text rd.state (mov-rr rd.reg r.reg)
+    in let st2 = st-append-text st1 (neg-r rd.reg)
+    in EmitResult { state = st2, reg = rd.reg }
+
+  emit-get-args-builtin : CodegenState -> EmitResult
+  emit-get-args-builtin (st) =
+    let rd = alloc-temp st
+    in let st1 = st-append-text rd.state (li reg-r11 0)
+    in let st2 = st-append-text st1 (mov-store reg-r10 reg-r11 0)
+    in let st3 = st-append-text st2 (add-ri reg-r10 8)
+    in let st4 = st-append-text st3 (mov-rr rd.reg reg-r10)
+    in let st5 = st-append-text st4 (mov-store reg-r10 reg-r11 0)
+    in let st6 = st-append-text st5 (add-ri reg-r10 8)
+    in EmitResult { state = st6, reg = rd.reg }
+
+  emit-current-dir-builtin : CodegenState -> EmitResult
+  emit-current-dir-builtin (st) =
+    let rd = alloc-temp st
+    in let st1 = st-append-text rd.state (mov-rr rd.reg reg-r10)
+    in let st2 = st-append-text st1 (li reg-r11 0)
+    in let st3 = st-append-text st2 (mov-store reg-r10 reg-r11 0)
+    in let st4 = st-append-text st3 (add-ri reg-r10 8)
+    in EmitResult { state = st4, reg = rd.reg }
+
+  emit-file-exists-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-file-exists-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+    in let rd = alloc-temp r.state
+    in let st1 = st-append-text rd.state (li rd.reg 1)
+    in EmitResult { state = st1, reg = rd.reg }
+
+  emit-builtin : CodegenState -> Text -> List IRExpr -> EmitResult
+  emit-builtin (st) (name) (args) =
+    if name == "text-length" then emit-text-length-builtin st args
+    else if name == "integer-to-text" then emit-helper-call-1 st args "__itoa"
+    else if name == "show" then emit-helper-call-1 st args "__itoa"
+    else if name == "text-to-integer" then emit-helper-call-1 st args "__text_to_int"
+    else if name == "text-replace" then emit-helper-call-3 st args "__str_replace"
+    else if name == "text-contains" then emit-helper-call-2 st args "__text_contains"
+    else if name == "text-starts-with" then emit-helper-call-2 st args "__text_starts_with"
+    else if name == "text-compare" then emit-helper-call-2 st args "__text_compare"
+    else if name == "text-concat-list" then emit-helper-call-1 st args "__text_concat_list"
+    else if name == "text-split" then emit-helper-call-2 st args "__text_split"
+    else if name == "list-length" then emit-list-length-builtin st args
+    else if name == "list-at" then emit-list-at-builtin st args
+    else if name == "list-cons" then emit-helper-call-2 st args "__list_cons"
+    else if name == "list-append" then emit-helper-call-2 st args "__list_append"
+    else if name == "list-snoc" then emit-helper-call-2 st args "__list_snoc"
+    else if name == "list-insert-at" then emit-helper-call-3 st args "__list_insert_at"
+    else if name == "list-contains" then emit-helper-call-2 st args "__list_contains"
+    else if name == "char-at" then emit-char-at-builtin st args
+    else if name == "char-code-at" then emit-char-code-at-builtin st args
+    else if name == "char-code" then emit-expr (st-set-tail-pos st False) (list-at args 0)
+    else if name == "code-to-char" then emit-expr (st-set-tail-pos st False) (list-at args 0)
+    else if name == "char-to-text" then emit-char-to-text-builtin st args
+    else if name == "is-letter" then emit-is-letter-builtin st args
+    else if name == "is-digit" then emit-is-digit-builtin st args
+    else if name == "is-whitespace" then emit-is-whitespace-builtin st args
+    else if name == "negate" then emit-negate-builtin st args
+    else if name == "get-args" then emit-get-args-builtin st
+    else if name == "current-dir" then emit-current-dir-builtin st
+    else emit-file-exists-builtin st args
+
 Section: Function Application
 
  Flattens curried IrApply chains into a function name and argument list,
@@ -753,7 +1015,8 @@ Section: Function Application
    in if st.tco.active & st.tco.in-tail-pos & is-self-call full-expr st.tco.current-func
     then emit-tail-call st func-expr arg-expr
     else let flat = flatten-apply func-expr [arg-expr]
-     in when result-ty
+     in if is-builtin flat.func-name then emit-builtin st flat.func-name flat.args
+     else when result-ty
       if SumTy (sname) (ctors) ->
        let tag = find-ctor-tag ctors flat.func-name 0
        in if tag >= 0 then emit-sum-ctor st flat.args tag
