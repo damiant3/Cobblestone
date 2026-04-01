@@ -256,16 +256,53 @@ Section: Byte Patching
    let rel32 = target-pos - (call-pos + 5)
    in st-with-text st (patch-i32-at st.text (call-pos + 1) rel32)
 
-  patch-calls : CodegenState -> CodegenState
-  patch-calls (st) = patch-calls-loop st st.call-patches 0
+  PatchEntry = record {
+   pos : Integer,
+   b0 : Integer,
+   b1 : Integer,
+   b2 : Integer,
+   b3 : Integer
+  }
 
-  patch-calls-loop : CodegenState -> List CallPatch -> Integer -> CodegenState
-  patch-calls-loop (st) (patches) (i) =
-   if i == list-length patches then st
+  make-i32-patch : Integer -> Integer -> PatchEntry
+  make-i32-patch (pos) (value) =
+   let bs = write-i32 value
+   in PatchEntry { pos = pos, b0 = list-at bs 0, b1 = list-at bs 1, b2 = list-at bs 2, b3 = list-at bs 3 }
+
+  apply-all-patches : List Integer -> List PatchEntry -> List Integer
+  apply-all-patches (bytes) (patches) =
+   apply-patch-walk bytes patches 0 (list-length bytes) []
+
+  apply-patch-walk : List Integer -> List PatchEntry -> Integer -> Integer -> List Integer -> List Integer
+  apply-patch-walk (bytes) (patches) (i) (len) (acc) =
+   if i == len then acc
+   else let b = find-patch-byte patches i 0 (list-length patches)
+    in if b >= 0
+     then apply-patch-walk bytes patches (i + 1) len (list-snoc acc b)
+     else apply-patch-walk bytes patches (i + 1) len (list-snoc acc (list-at bytes i))
+
+  find-patch-byte : List PatchEntry -> Integer -> Integer -> Integer -> Integer
+  find-patch-byte (patches) (i) (j) (len) =
+   if j == len then 0 - 1
+   else let p = list-at patches j
+    in if i == p.pos then p.b0
+    else if i == p.pos + 1 then p.b1
+    else if i == p.pos + 2 then p.b2
+    else if i == p.pos + 3 then p.b3
+    else find-patch-byte patches i (j + 1) len
+
+  collect-call-patches : List CallPatch -> List FuncOffset -> Integer -> List PatchEntry -> List PatchEntry
+  collect-call-patches (patches) (offsets) (i) (acc) =
+   if i == list-length patches then acc
    else let p = list-at patches i
-    in let target-offset = lookup-func-offset st.func-offsets p.target
-    in let patched = patch-call-at st p.patch-offset target-offset
-    in patch-calls-loop patched patches (i + 1)
+    in let target-offset = lookup-func-offset offsets p.target
+    in let rel32 = target-offset - (p.patch-offset + 5)
+    in collect-call-patches patches offsets (i + 1) (list-snoc acc (make-i32-patch (p.patch-offset + 1) rel32))
+
+  patch-calls : CodegenState -> CodegenState
+  patch-calls (st) =
+   let entries = collect-call-patches st.call-patches st.func-offsets 0 []
+   in st-with-text st (apply-all-patches st.text entries)
 
   align-16 : Integer -> Integer
   align-16 (n) =
@@ -338,13 +375,29 @@ Section: 32-bit Bare-Metal Trampoline
   multiboot-header =
    write-i32 464367618 ++ write-i32 0 ++ write-i32 3830599678
 
+  tramp-clear-pages : List Integer
+  tramp-clear-pages =
+   [250, 191, 0, 16, 0, 0, 185, 0, 12, 0, 0, 49, 192, 243, 171]
+
+  tramp-page-tables : List Integer
+  tramp-page-tables =
+   [199, 5, 0, 16, 0, 0, 3, 32, 0, 0, 199, 5, 0, 32, 0, 0, 3, 48, 0, 0, 191, 0, 48, 0, 0, 185, 32, 0, 0, 0, 184, 131, 0, 0, 0, 137, 7, 199, 71, 4, 0, 0, 0, 0, 131, 199, 8, 5, 0, 0, 32, 0, 73, 117, 236]
+
+  tramp-enable-long-mode : List Integer
+  tramp-enable-long-mode =
+   [184, 0, 16, 0, 0, 15, 34, 216, 15, 32, 224, 131, 200, 32, 15, 34, 224, 185, 128, 0, 0, 192, 15, 50, 13, 0, 1, 0, 0, 15, 48, 15, 32, 192, 13, 0, 0, 0, 128, 15, 34, 192]
+
   trampoline-code : List Integer
   trampoline-code =
-   [250] ++ [191, 0, 16, 0, 0, 185, 0, 12, 0, 0, 49, 192, 243, 171] ++ [199, 5, 0, 16, 0, 0, 3, 32, 0, 0] ++ [199, 5, 0, 32, 0, 0, 3, 48, 0, 0] ++ [191, 0, 48, 0, 0, 185, 32, 0, 0, 0, 184, 131, 0, 0, 0] ++ [137, 7, 199, 71, 4, 0, 0, 0, 0, 131, 199, 8, 5, 0, 0, 32, 0, 73, 117, 236] ++ [184, 0, 16, 0, 0, 15, 34, 216] ++ [15, 32, 224, 131, 200, 32, 15, 34, 224] ++ [185, 128, 0, 0, 192, 15, 50, 13, 0, 1, 0, 0, 15, 48] ++ [15, 32, 192, 13, 0, 0, 0, 128, 15, 34, 192]
+   tramp-clear-pages ++ tramp-page-tables ++ tramp-enable-long-mode
+
+  tramp-gdt-data : List Integer
+  tramp-gdt-data =
+   [235, 30, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 0, 0, 0, 154, 175, 0, 255, 255, 0, 0, 0, 146, 207, 0]
 
   trampoline-gdt-section : List Integer
   trampoline-gdt-section =
-   [235, 30] ++ [0, 0, 0, 0, 0, 0, 0, 0] ++ [255, 255, 0, 0, 0, 154, 175, 0] ++ [255, 255, 0, 0, 0, 146, 207, 0] ++ write-i16 23 ++ write-i32 (bare-metal-load-addr + 126) ++ [15, 1, 21] ++ write-i32 (bare-metal-load-addr + 150) ++ [234, 0, 0, 0, 0, 8, 0]
+   tramp-gdt-data ++ write-i16 23 ++ write-i32 (bare-metal-load-addr + 126) ++ [15, 1, 21] ++ write-i32 (bare-metal-load-addr + 150) ++ [234, 0, 0, 0, 0, 8, 0]
 
   bare-metal-trampoline : TrampolineResult
   bare-metal-trampoline =
@@ -411,47 +464,64 @@ Section: Inline Integer Print
  reverse order, then pops and prints each one. Clobbers RAX, RBX,
  RCX, RDX, RDI, and R11.
 
-  emit-inline-itoa-and-print : CodegenState -> CodegenState
-  emit-inline-itoa-and-print (st) =
+  ItoaState = record {
+   cg : CodegenState,
+   jmp-done-zero-pos : Integer
+  }
+
+  emit-itoa-zero-check : CodegenState -> ItoaState
+  emit-itoa-zero-check (st) =
    let st1 = st-append-text st (mov-rr reg-rbx reg-rax)
    in let st2 = st-append-text st1 (test-rr reg-rbx reg-rbx)
-   in let jne-nonzero-pos = list-length st2.text
+   in let jne-pos = list-length st2.text
    in let st3 = st-append-text st2 (jcc cc-ne 0)
    in let st4 = emit-serial-wait-and-send st3 48
-   in let jmp-done-zero-pos = list-length st4.text
+   in let jmp-pos = list-length st4.text
    in let st5 = st-append-text st4 (jmp 0)
-   in let st6 = patch-jcc-at st5 jne-nonzero-pos (list-length st5.text)
-   in let st7 = st-append-text st6 (test-rr reg-rbx reg-rbx)
-   in let jns-pos-pos = list-length st7.text
-   in let st8 = st-append-text st7 (jcc cc-ge 0)
-   in let st9 = emit-serial-wait-and-send st8 45
-   in let st10 = st-append-text st9 (neg-r reg-rbx)
-   in let st11 = patch-jcc-at st10 jns-pos-pos (list-length st10.text)
-   in let st12 = st-append-text st11 (li reg-rcx 0)
-   in let st13 = st-append-text st12 (li reg-r11 10)
-   in let digit-loop-top = list-length st13.text
-   in let st14 = st-append-text st13 (mov-rr reg-rax reg-rbx)
-   in let st15 = st-append-text st14 cqo
-   in let st16 = st-append-text st15 (idiv-r reg-r11)
-   in let st17 = st-append-text st16 (mov-rr reg-rbx reg-rax)
-   in let st18 = st-append-text st17 (add-ri reg-rdx 48)
-   in let st19 = st-append-text st18 (push-r reg-rdx)
-   in let st20 = st-append-text st19 (add-ri reg-rcx 1)
-   in let st21 = st-append-text st20 (test-rr reg-rbx reg-rbx)
-   in let st22 = st-append-text st21 (jcc cc-ne (digit-loop-top - (list-length st21.text + 6)))
-   in let print-loop-top = list-length st22.text
-   in let st23 = st-append-text st22 (test-rr reg-rcx reg-rcx)
-   in let je-done-pos = list-length st23.text
-   in let st24 = st-append-text st23 (jcc cc-e 0)
-   in let st25 = st-append-text st24 (pop-r reg-rdi)
-   in let st26 = st-append-text st25 (push-r reg-rcx)
-   in let st27 = emit-serial-send-rdi st26
-   in let st28 = st-append-text st27 (pop-r reg-rcx)
-   in let st29 = st-append-text st28 (sub-ri reg-rcx 1)
-   in let st30 = st-append-text st29 (jmp (print-loop-top - (list-length st29.text + 5)))
-   in let done-pos = list-length st30.text
-   in let st31 = patch-jmp-at st30 jmp-done-zero-pos done-pos
-   in patch-jcc-at st31 je-done-pos done-pos
+   in let st6 = patch-jcc-at st5 jne-pos (list-length st5.text)
+   in ItoaState { cg = st6, jmp-done-zero-pos = jmp-pos }
+
+  emit-itoa-sign-and-digits : CodegenState -> CodegenState
+  emit-itoa-sign-and-digits (st) =
+   let st1 = st-append-text st (test-rr reg-rbx reg-rbx)
+   in let jns-pos = list-length st1.text
+   in let st2 = st-append-text st1 (jcc cc-ge 0)
+   in let st3 = emit-serial-wait-and-send st2 45
+   in let st4 = st-append-text st3 (neg-r reg-rbx)
+   in let st5 = patch-jcc-at st4 jns-pos (list-length st4.text)
+   in let st6 = st-append-text st5 (li reg-rcx 0)
+   in let st7 = st-append-text st6 (li reg-r11 10)
+   in let loop-top = list-length st7.text
+   in let st8 = st-append-text st7 (mov-rr reg-rax reg-rbx)
+   in let st9 = st-append-text st8 cqo
+   in let st10 = st-append-text st9 (idiv-r reg-r11)
+   in let st11 = st-append-text st10 (mov-rr reg-rbx reg-rax)
+   in let st12 = st-append-text st11 (add-ri reg-rdx 48)
+   in let st13 = st-append-text st12 (push-r reg-rdx)
+   in let st14 = st-append-text st13 (add-ri reg-rcx 1)
+   in let st15 = st-append-text st14 (test-rr reg-rbx reg-rbx)
+   in st-append-text st15 (jcc cc-ne (loop-top - (list-length st15.text + 6)))
+
+  emit-itoa-print-loop : CodegenState -> CodegenState
+  emit-itoa-print-loop (st) =
+   let loop-top = list-length st.text
+   in let st1 = st-append-text st (test-rr reg-rcx reg-rcx)
+   in let je-pos = list-length st1.text
+   in let st2 = st-append-text st1 (jcc cc-e 0)
+   in let st3 = st-append-text st2 (pop-r reg-rdi)
+   in let st4 = st-append-text st3 (push-r reg-rcx)
+   in let st5 = emit-serial-send-rdi st4
+   in let st6 = st-append-text st5 (pop-r reg-rcx)
+   in let st7 = st-append-text st6 (sub-ri reg-rcx 1)
+   in let st8 = st-append-text st7 (jmp (loop-top - (list-length st7.text + 5)))
+   in patch-jcc-at st8 je-pos (list-length st8.text)
+
+  emit-inline-itoa-and-print : CodegenState -> CodegenState
+  emit-inline-itoa-and-print (st) =
+   let zero = emit-itoa-zero-check st
+   in let st1 = emit-itoa-sign-and-digits zero.cg
+   in let st2 = emit-itoa-print-loop st1
+   in patch-jmp-at st2 zero.jmp-done-zero-pos (list-length st2.text)
 
 Section: Call Emission
 
@@ -512,6 +582,8 @@ Section: Module Entry Point
    in let st2 = emit-start st1
    in let start-offset = lookup-func-offset st2.func-offsets "__start"
    in let start-addr = bare-metal-load-addr + start-offset
-   in let st3 = st-with-text st2 (patch-i32-at st2.text (tramp.far-jump-patch-pos + 1) start-addr)
-   in let st4 = patch-calls st3
-   in build-elf-32-bare st4.text st4.rodata 12
+   in let far-jump-entry = make-i32-patch (tramp.far-jump-patch-pos + 1) start-addr
+   in let call-entries = collect-call-patches st2.call-patches st2.func-offsets 0 []
+   in let all-patches = [far-jump-entry] ++ call-entries
+   in let st3 = st-with-text st2 (apply-all-patches st2.text all-patches)
+   in build-elf-32-bare st3.text st3.rodata 12
