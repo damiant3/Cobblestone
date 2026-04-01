@@ -1,13 +1,19 @@
 #!/bin/bash
 # linux-session-init.sh — One-shot environment setup for Linux agent sessions.
 #
-# Run this at the start of every fresh Claude session to get a working
-# Codex development environment. Handles: Dependency installs, branch quick ref
+# Usage:
+#   bash tools/linux-session-init.sh            # Run ALL steps (may timeout in Claude sandbox)
+#   bash tools/linux-session-init.sh deps        # Step 1-4: Install deps, pull repo, clean intermediates
+#   bash tools/linux-session-init.sh build       # Step 5:   Build CLI + test projects
+#   bash tools/linux-session-init.sh test        # Step 6:   Run test suites
+#   bash tools/linux-session-init.sh report      # Step 7-8: Branch check + plan summary
 #
-# Usage (from a fresh session):
-#   bash tools/linux-session-init.sh
+# In Claude sandbox, run steps individually to stay within execution timeout:
+#   bash tools/linux-session-init.sh deps
+#   bash tools/linux-session-init.sh build
+#   bash tools/linux-session-init.sh test
+#   bash tools/linux-session-init.sh report
 #
-# Get the repo from the public url set in the REPO_URL variable below.
 # Github PAT will be provided when necessary, it is not necessary for this script.
 # When you have something to push, stop and ask Damian for the credentials.
 #
@@ -30,219 +36,246 @@ fail() { echo -e "  ${RED}✗ $1${RESET}"; exit 1; }
 
 REPO_DIR="/home/claude/NewRepository"
 REPO_URL="https://github.com/damiant3/NewRepository.git"
-OVERALL_START=$SECONDS
-
-echo ""
-echo -e "${BOLD}${CYAN}═══ CODEX SESSION INIT ═══${RESET}  ${DIM}$(date '+%Y-%m-%d %H:%M:%S')${RESET}"
-
-# ═══════════════════════════════════════════════════════════════
-# STEP 1: Install .NET 8 SDK
-# ═══════════════════════════════════════════════════════════════
-
-step "Step 1: Checking .NET SDK"
 
 export PATH="$PATH:/root/.dotnet"
 export DOTNET_ROOT="/root/.dotnet"
 
-if command -v dotnet &>/dev/null && dotnet --version 2>/dev/null | grep -q "^8\."; then
-    ok ".NET $(dotnet --version) already installed"
-else
-    echo "  Installing .NET 8 SDK..."
-    wget -q https://dot.net/v1/dotnet-install.sh -O /tmp/dotnet-install.sh
-    chmod +x /tmp/dotnet-install.sh
-    /tmp/dotnet-install.sh --channel 8.0 2>&1 | grep "installed\|finished" || true
-    rm -f /tmp/dotnet-install.sh
+# ═══════════════════════════════════════════════════════════════
+# deps — .NET SDK, QEMU, pull repo, clean intermediates
+# ═══════════════════════════════════════════════════════════════
 
-    if command -v dotnet &>/dev/null; then
-        ok ".NET $(dotnet --version) installed"
+do_deps() {
+    echo -e "${BOLD}${CYAN}═══ CODEX SESSION INIT — deps ═══${RESET}  ${DIM}$(date '+%Y-%m-%d %H:%M:%S')${RESET}"
+
+    step "Checking .NET SDK"
+    if command -v dotnet &>/dev/null && dotnet --version 2>/dev/null | grep -q "^8\."; then
+        ok ".NET $(dotnet --version) already installed"
     else
-        fail ".NET SDK installation failed"
+        echo "  Installing .NET 8 SDK..."
+        wget -q https://dot.net/v1/dotnet-install.sh -O /tmp/dotnet-install.sh
+        chmod +x /tmp/dotnet-install.sh
+        /tmp/dotnet-install.sh --channel 8.0 2>&1 | grep "installed\|finished" || true
+        rm -f /tmp/dotnet-install.sh
+        if command -v dotnet &>/dev/null; then
+            ok ".NET $(dotnet --version) installed"
+        else
+            fail ".NET SDK installation failed"
+        fi
     fi
-fi
 
-# ═══════════════════════════════════════════════════════════════
-# STEP 2: Install QEMU and cross-compilers
-# ═══════════════════════════════════════════════════════════════
-
-step "Step 2: Checking QEMU & cross-compilers"
-
-NEED_INSTALL=false
-for tool in qemu-system-x86_64 qemu-aarch64 qemu-riscv64 aarch64-linux-gnu-gcc riscv64-linux-gnu-gcc; do
-    command -v "$tool" &>/dev/null || NEED_INSTALL=true
-done
-
-if [ "$NEED_INSTALL" = true ]; then
-    echo "  Installing QEMU + cross-compilers..."
-    apt-get update -qq 2>/dev/null
-    apt-get install -y -qq qemu-user qemu-system-x86 qemu-system-arm \
-        qemu-system-misc binutils gcc gcc-aarch64-linux-gnu \
-        gcc-riscv64-linux-gnu 2>&1 | tail -2
-    ok "QEMU $(qemu-system-x86_64 --version 2>/dev/null | head -1 | grep -oP '[\d.]+' | head -1) + cross-compilers installed"
-else
-    ok "QEMU + cross-compilers already present"
-fi
-
-# ═══════════════════════════════════════════════════════════════
-# STEP 3: Clone or pull repo
-# ═══════════════════════════════════════════════════════════════
-
-step "Step 3: Getting latest code"
-
-if [ -d "$REPO_DIR/.git" ]; then
-    cd "$REPO_DIR"
-    # Ensure remote URL is correct
-    git remote set-url origin "$REPO_URL" 2>/dev/null || true
-    BEFORE=$(git rev-parse HEAD)
-    git pull --rebase origin master 2>&1 | tail -3
-    AFTER=$(git rev-parse HEAD)
-    if [ "$BEFORE" = "$AFTER" ]; then
-        ok "Already up to date @ $(git log -1 --format='%h %s')"
+    step "Checking QEMU & cross-compilers"
+    NEED_INSTALL=false
+    for tool in qemu-system-x86_64 qemu-aarch64 qemu-riscv64 aarch64-linux-gnu-gcc riscv64-linux-gnu-gcc; do
+        command -v "$tool" &>/dev/null || NEED_INSTALL=true
+    done
+    if [ "$NEED_INSTALL" = true ]; then
+        echo "  Installing QEMU + cross-compilers..."
+        apt-get update -qq 2>/dev/null
+        apt-get install -y -qq qemu-user qemu-system-x86 qemu-system-arm \
+            qemu-system-misc binutils gcc gcc-aarch64-linux-gnu \
+            gcc-riscv64-linux-gnu 2>&1 | tail -2
+        ok "QEMU $(qemu-system-x86_64 --version 2>/dev/null | head -1 | grep -oP '[\d.]+' | head -1) + cross-compilers installed"
     else
-        NEW_COMMITS=$(git rev-list --count "$BEFORE..$AFTER")
-        ok "Pulled $NEW_COMMITS new commit(s), now @ $(git log -1 --format='%h %s')"
+        ok "QEMU + cross-compilers already present"
     fi
-else
-    echo "  Cloning repository..."
-    git clone "$REPO_URL" "$REPO_DIR" 2>&1 | tail -2
+
+    step "Getting latest code"
+    if [ -d "$REPO_DIR/.git" ]; then
+        cd "$REPO_DIR"
+        git remote set-url origin "$REPO_URL" 2>/dev/null || true
+        BEFORE=$(git rev-parse HEAD)
+        git pull --rebase origin master 2>&1 | tail -3
+        AFTER=$(git rev-parse HEAD)
+        if [ "$BEFORE" = "$AFTER" ]; then
+            ok "Already up to date @ $(git log -1 --format='%h %s')"
+        else
+            NEW_COMMITS=$(git rev-list --count "$BEFORE..$AFTER")
+            ok "Pulled $NEW_COMMITS new commit(s), now @ $(git log -1 --format='%h %s')"
+        fi
+    else
+        echo "  Cloning repository..."
+        git clone "$REPO_URL" "$REPO_DIR" 2>&1 | tail -2
+        cd "$REPO_DIR"
+        ok "Cloned @ $(git log -1 --format='%h %s')"
+    fi
+    git config user.email "agent-linux@codex.dev"
+    git config user.name "Agent Linux"
+
+    step "Cleaning stale intermediates"
+    CLEANED=0
+    for pattern in "samples/*.elf" "samples/*.o" "Codex.Codex/out/*.cs" \
+                   "Codex.Codex/out/*.elf" "Codex.Codex/out/*.dll"; do
+        COUNT=$(find . -path "./$pattern" 2>/dev/null | wc -l)
+        if [ "$COUNT" -gt 0 ]; then
+            find . -path "./$pattern" -delete 2>/dev/null
+            CLEANED=$((CLEANED + COUNT))
+        fi
+    done
+    git clean -fd samples/ 2>/dev/null
+    if [ "$CLEANED" -gt 0 ]; then
+        ok "Removed $CLEANED stale intermediate(s)"
+    else
+        ok "No stale intermediates found"
+    fi
+
+    echo -e "\n${GREEN}deps complete${RESET}"
+}
+
+# ═══════════════════════════════════════════════════════════════
+# build — Build CLI + test projects
+# ═══════════════════════════════════════════════════════════════
+
+do_build() {
+    echo -e "${BOLD}${CYAN}═══ CODEX SESSION INIT — build ═══${RESET}"
     cd "$REPO_DIR"
-    ok "Cloned @ $(git log -1 --format='%h %s')"
-fi
 
-# Set git identity for this session
-git config user.email "agent-linux@codex.dev"
-git config user.name "Agent Linux"
+    step "Building"
+    START=$SECONDS
 
-# ═══════════════════════════════════════════════════════════════
-# STEP 4: Clean stale test intermediates
-# ═══════════════════════════════════════════════════════════════
+    BUILD_OUTPUT=$(dotnet build tools/Codex.Cli/Codex.Cli.csproj -v q 2>&1)
+    BUILD_EXIT=$?
 
-step "Step 4: Cleaning stale intermediates"
-
-# Stale .elf, .dll, .cs outputs cause false test results — you test
-# yesterday's codegen against today's type system. Same class as QEMU
-# tests silently skipping. Nuke everything so builds are always fresh.
-CLEANED=0
-for pattern in "samples/*.elf" "samples/*.o" "Codex.Codex/out/*.cs" \
-               "Codex.Codex/out/*.elf" "Codex.Codex/out/*.dll"; do
-    COUNT=$(find . -path "./$pattern" 2>/dev/null | wc -l)
-    if [ "$COUNT" -gt 0 ]; then
-        find . -path "./$pattern" -delete 2>/dev/null
-        CLEANED=$((CLEANED + COUNT))
+    if [ "$BUILD_EXIT" -eq 0 ]; then
+        for tp in tests/Codex.Types.Tests tests/Codex.Repository.Tests tests/Codex.Syntax.Tests \
+                  tests/Codex.Ast.Tests tests/Codex.Core.Tests tests/Codex.Semantics.Tests \
+                  tests/Codex.Lsp.Tests; do
+            if [ -d "$tp" ]; then
+                dotnet build "$tp" -v q 2>&1 | tail -1
+            fi
+        done
     fi
-done
-git clean -fd samples/ 2>/dev/null
-if [ "$CLEANED" -gt 0 ]; then
-    ok "Removed $CLEANED stale intermediate(s)"
-else
-    ok "No stale intermediates found"
-fi
+
+    ELAPSED=$((SECONDS - START))
+
+    if [ "$BUILD_EXIT" -eq 0 ]; then
+        ok "Build succeeded (${ELAPSED}s)"
+    else
+        echo "$BUILD_OUTPUT"
+        fail "Build failed (${ELAPSED}s)"
+    fi
+
+    echo -e "\n${GREEN}build complete${RESET}"
+}
 
 # ═══════════════════════════════════════════════════════════════
-# STEP 5: Build
+# test — Run test suites
 # ═══════════════════════════════════════════════════════════════
 
-step "Step 5: Building"
-START=$SECONDS
+do_test() {
+    echo -e "${BOLD}${CYAN}═══ CODEX SESSION INIT — test ═══${RESET}"
+    cd "$REPO_DIR"
 
-# Build CLI (all backends) and test projects separately.
-# Codex.sln includes Bootstrap which requires pre-generated output from self-hosting.
-BUILD_OUTPUT=$(dotnet build tools/Codex.Cli/Codex.Cli.csproj -v q 2>&1)
-BUILD_EXIT=$?
+    step "Running tests"
+    START=$SECONDS
 
-if [ "$BUILD_EXIT" -eq 0 ]; then
-    # Build test projects
+    TOTAL_PASSED=0
+    TOTAL_FAILED=0
+    FAILED_DETAILS=""
     for tp in tests/Codex.Types.Tests tests/Codex.Repository.Tests tests/Codex.Syntax.Tests \
               tests/Codex.Ast.Tests tests/Codex.Core.Tests tests/Codex.Semantics.Tests \
               tests/Codex.Lsp.Tests; do
         if [ -d "$tp" ]; then
-            dotnet build "$tp" -v q 2>&1 | tail -1
+            TEST_OUTPUT=$(dotnet test "$tp" --no-build -v q 2>&1 || true)
+            P=$(echo "$TEST_OUTPUT" | grep -oP 'Passed:\s+\K\d+' | tail -1 || true)
+            F=$(echo "$TEST_OUTPUT" | grep -oP 'Failed:\s+\K\d+' | tail -1 || true)
+            SUITE=$(basename "$tp")
+            if [ "${F:-0}" -gt 0 ]; then
+                echo -e "  ${YELLOW}$SUITE: ${P:-0} passed, ${F} FAILED${RESET}"
+                FAILED_DETAILS+=$(echo "$TEST_OUTPUT" | grep -E "^\s+Failed " | head -5 || true)
+                FAILED_DETAILS+=$'\n'
+            else
+                echo -e "  ${DIM}$SUITE: ${P:-0} passed${RESET}"
+            fi
+            TOTAL_PASSED=$((TOTAL_PASSED + ${P:-0}))
+            TOTAL_FAILED=$((TOTAL_FAILED + ${F:-0}))
         fi
     done
-fi
+    ELAPSED=$((SECONDS - START))
 
-ELAPSED=$((SECONDS - START))
-
-if [ "$BUILD_EXIT" -eq 0 ]; then
-    ok "Build succeeded (${ELAPSED}s)"
-else
-    fail "Build failed (${ELAPSED}s) — check output above"
-fi
-
-# ═══════════════════════════════════════════════════════════════
-# STEP 6: Run tests (summary only)
-# ═══════════════════════════════════════════════════════════════
-
-step "Step 6: Running tests"
-START=$SECONDS
-
-TOTAL_PASSED=0
-TOTAL_FAILED=0
-for tp in tests/Codex.Types.Tests tests/Codex.Repository.Tests tests/Codex.Syntax.Tests \
-          tests/Codex.Ast.Tests tests/Codex.Core.Tests tests/Codex.Semantics.Tests \
-          tests/Codex.Lsp.Tests; do
-    if [ -d "$tp" ]; then
-        TEST_OUTPUT=$(dotnet test "$tp" --no-build -v q 2>&1)
-        P=$(echo "$TEST_OUTPUT" | grep -oP 'Passed:\s+\K\d+' | tail -1)
-        F=$(echo "$TEST_OUTPUT" | grep -oP 'Failed:\s+\K\d+' | tail -1)
-        TOTAL_PASSED=$((TOTAL_PASSED + ${P:-0}))
-        TOTAL_FAILED=$((TOTAL_FAILED + ${F:-0}))
+    echo ""
+    if [ "${TOTAL_FAILED}" -eq 0 ]; then
+        ok "All $TOTAL_PASSED tests passed (${ELAPSED}s)"
+    else
+        warn "$TOTAL_PASSED passed, $TOTAL_FAILED FAILED (${ELAPSED}s)"
+        if [ -n "$FAILED_DETAILS" ]; then
+            echo -e "  ${DIM}Failed tests:${RESET}"
+            echo "$FAILED_DETAILS" | head -10 | sed 's/^/    /'
+        fi
     fi
-done
-ELAPSED=$((SECONDS - START))
 
-if [ "${TOTAL_FAILED}" -eq 0 ]; then
-    ok "All $TOTAL_PASSED tests passed (${ELAPSED}s)"
-else
-    warn "$TOTAL_PASSED passed, $TOTAL_FAILED FAILED (${ELAPSED}s)"
-fi
+    echo -e "\n${GREEN}test complete${RESET}"
+}
 
 # ═══════════════════════════════════════════════════════════════
-# STEP 7: Show unmerged feature branches
+# report — Branch check + plan summary
 # ═══════════════════════════════════════════════════════════════
 
-step "Step 7: Unmerged branches"
+do_report() {
+    echo -e "${BOLD}${CYAN}═══ CODEX SESSION INIT — report ═══${RESET}"
+    cd "$REPO_DIR"
 
-UNMERGED=0
-for b in $(git branch -r | grep -v HEAD | grep -v master); do
-    count=$(git log origin/master..$b --oneline 2>/dev/null | wc -l)
-    if [ "$count" -gt 0 ]; then
-        echo -e "  ${YELLOW}$b${RESET}: $count commit(s)"
-        git log origin/master..$b --oneline 2>/dev/null | sed 's/^/    /'
-        UNMERGED=$((UNMERGED + 1))
+    step "Unmerged branches"
+    UNMERGED=0
+    for b in $(git branch -r | grep -v HEAD | grep -v master); do
+        count=$(git log origin/master..$b --oneline 2>/dev/null | wc -l)
+        if [ "$count" -gt 0 ]; then
+            echo -e "  ${YELLOW}$b${RESET}: $count commit(s)"
+            git log origin/master..$b --oneline 2>/dev/null | sed 's/^/    /'
+            UNMERGED=$((UNMERGED + 1))
+        fi
+    done
+    if [ "$UNMERGED" -eq 0 ]; then
+        ok "All branches merged to master"
     fi
-done
 
-if [ "$UNMERGED" -eq 0 ]; then
-    ok "All branches merged to master"
-fi
+    PLAN="$REPO_DIR/docs/CurrentPlan.md"
+    if [ -f "$PLAN" ]; then
+        step "Current Plan"
+        echo ""
+        sed -n '/^### Snapshot/,/^---$/p' "$PLAN" | head -20
+        echo ""
+        echo -e "${DIM}── Horizon 1 (Language Freedom) ──${RESET}"
+        grep "^| L[0-9]" "$PLAN" | head -10
+        echo ""
+        echo -e "${DIM}── Horizon 2 (Library & Runtime) ──${RESET}"
+        grep "^| R[0-9]" "$PLAN" | head -10
+        echo ""
+        echo -e "${DIM}Full plan: docs/CurrentPlan.md${RESET}"
+    fi
+
+    echo ""
+    echo -e "${BOLD}${GREEN}═══ SESSION READY ═══${RESET}"
+    echo -e "${DIM}Working directory: $REPO_DIR${RESET}"
+    echo -e "${DIM}Date: $(date '+%Y-%m-%d')  Branch: $(git rev-parse --abbrev-ref HEAD)  Head: $(git log -1 --format='%h')${RESET}"
+    echo ""
+}
 
 # ═══════════════════════════════════════════════════════════════
-# STEP 8: Show CurrentPlan summary
+# Dispatch
 # ═══════════════════════════════════════════════════════════════
 
-PLAN="$REPO_DIR/docs/CurrentPlan.md"
-if [ -f "$PLAN" ]; then
-    step "Step 8: Current Plan"
-    # Show the snapshot table and horizons summary
-    echo ""
-    sed -n '/^### Snapshot/,/^---$/p' "$PLAN" | head -20
-    echo ""
-    echo -e "${DIM}── Horizon 1 (Language Freedom) ──${RESET}"
-    grep "^| L[0-9]" "$PLAN" | head -10
-    echo ""
-    echo -e "${DIM}── Horizon 2 (Library & Runtime) ──${RESET}"
-    grep "^| R[0-9]" "$PLAN" | head -10
-    echo ""
-    echo -e "${DIM}Full plan: docs/CurrentPlan.md${RESET}"
-fi
-
-# ═══════════════════════════════════════════════════════════════
-# DONE
-# ═══════════════════════════════════════════════════════════════
-
-TOTAL=$((SECONDS - OVERALL_START))
-echo ""
-echo -e "${BOLD}${GREEN}═══ SESSION READY ═══${RESET}  ${DIM}Total: ${TOTAL}s${RESET}"
-echo -e "${DIM}Working directory: $REPO_DIR${RESET}"
-echo -e "${DIM}Date: $(date '+%Y-%m-%d')  Branch: $(git rev-parse --abbrev-ref HEAD)  Head: $(git log -1 --format='%h')${RESET}"
-echo ""
+case "${1:-all}" in
+    deps)   do_deps ;;
+    build)  do_build ;;
+    test)   do_test ;;
+    report) do_report ;;
+    all)
+        OVERALL_START=$SECONDS
+        do_deps
+        do_build
+        do_test
+        do_report
+        TOTAL=$((SECONDS - OVERALL_START))
+        echo -e "${DIM}Total: ${TOTAL}s${RESET}"
+        ;;
+    help|-h|--help|*)
+        echo "Usage: bash tools/linux-session-init.sh [deps|build|test|report]"
+        echo ""
+        echo "  deps    Install .NET/QEMU, pull repo, clean intermediates"
+        echo "  build   Build CLI + test projects"
+        echo "  test    Run test suites"
+        echo "  report  Branch check + plan summary"
+        echo "  (none)  Run all steps sequentially"
+        exit 0
+        ;;
+esac

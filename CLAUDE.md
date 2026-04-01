@@ -110,3 +110,37 @@ The `STACK:` and `HEAP:` lines are stripped from stage output before the fixed-p
 **Freely modifiable**: `src/`, `tests/`, `tools/`, `samples/`, `editors/`, `generated-output/`, `Codex.Codex/`
 **With care**: `README.md`, `CLAUDE.md`, `.github/copilot-instructions.md`, `.gitignore`, `Codex.sln`
 **Do not modify without permission**: `Directory.Build.props`, `docs/Vision/*`
+
+---
+
+# Agent Linux (Claude sandbox)
+
+## Session Start
+
+The Claude sandbox has a per-command execution timeout. Run the init script in
+steps — each step completes within the limit:
+
+```bash
+cd /home/claude/NewRepository
+bash tools/linux-session-init.sh deps
+bash tools/linux-session-init.sh build
+bash tools/linux-session-init.sh test
+bash tools/linux-session-init.sh report
+```
+
+Then orient:
+
+```bash
+dotnet tools/codex-agent/codex-agent.dll orient
+```
+
+Note: use `codex-agent.dll` (via `dotnet`), not `.exe` — this is Linux.
+
+## Constraints
+
+- **No KVM.** The sandbox lacks KVM so QEMU bare-metal is TCG-only and far too
+  slow for the 214K self-compile. Pingpong cannot run here. Build + test only.
+- **No persistent filesystem.** Everything resets between sessions. Always pull
+  fresh from GitHub at session start.
+- **PAT handling.** Damian uploads the PAT via `_claude.json` when pushes are
+  needed. Scrub it from the remote URL immediately after each push.
