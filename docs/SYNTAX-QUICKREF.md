@@ -113,3 +113,35 @@ effect Console where
 open-file : Text -> [FileSystem] linear FileHandle
 close-file : linear FileHandle -> [FileSystem] Nothing
 ```
+
+## Pitfalls
+
+**Inline if/then/else in arithmetic.** The Codex emitter does not
+preserve parentheses around if expressions. An expression like
+`64 + (if w then 8 else 0) + (if r then 4 else 0)` will be
+re-emitted without parens, changing the parse. Use let bindings:
+
+```
+let wv = if w then 8 else 0
+in let rv = if r then 4 else 0
+in 64 + wv + rv
+```
+
+**Long ++ chains.** A single expression with many ++ concatenations
+creates a deep IR tree that increases type-checker time during
+self-compilation. Break long chains into named helpers:
+
+```
+part-a : List Integer
+part-a = [1, 2, 3, 4, 5]
+
+part-b : List Integer
+part-b = [6, 7, 8, 9, 10]
+
+whole : List Integer
+whole = part-a ++ part-b
+```
+
+**Deeply nested lets.** A function with 20+ chained let bindings
+creates deep scope nesting for the type checker. Split into smaller
+functions that each handle a coherent piece of work.
