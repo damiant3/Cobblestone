@@ -125,6 +125,74 @@ public class Phase3M1BootTest
         catch { return null; }
     }
 
+    [Fact]
+    public void M32_LetAndArithmetic_Prints30()
+    {
+        if (!HasWslQemu()) return;
+
+        // main = let x = 10 in let y = 20 in x + y
+        var body = new IrLet("x", new IntegerTy(), new IrIntLit(10),
+            new IrLet("y", new IntegerTy(), new IrIntLit(20),
+                new IrBinary(new IrAddInt(), new IrName("x", new IntegerTy()), new IrName("y", new IntegerTy()), new IntegerTy())));
+
+        var module = new IRModule(
+            new Name("\u000e\u000d\u0013\u000e"),
+            new List<IRDef> { new IRDef("\u001a\u000f\u0011\u0012", new List<IRParam>(), new IntegerTy(), body) });
+
+        List<long> elfBytes = Codex_Codex_Codex.x86_64_emit_module(module);
+        byte[] elf = elfBytes.Select(b => (byte)b).ToArray();
+        m_output.WriteLine($"ELF size: {elf.Length} bytes");
+
+        string tempDir = Path.Combine(Path.GetTempPath(), $"codex_m32_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            string elfPath = Path.Combine(tempDir, "test.elf");
+            File.WriteAllBytes(elfPath, elf);
+            string wslPath = WindowsToWslPath(elfPath);
+            string? output = RunWsl($"timeout 10 /usr/bin/qemu-system-x86_64 -kernel {wslPath} -nographic -no-reboot 2>/dev/null");
+            m_output.WriteLine($"QEMU output: [{output}]");
+            Assert.NotNull(output);
+            Assert.Contains("30", output);
+        }
+        finally { try { Directory.Delete(tempDir, true); } catch { } }
+    }
+
+    [Fact]
+    public void M33_IfElseComparison_Prints1()
+    {
+        if (!HasWslQemu()) return;
+
+        // main = if 5 > 3 then 99 else 0
+        var body = new IrIf(
+            new IrBinary(new IrGt(), new IrIntLit(5), new IrIntLit(3), new BooleanTy()),
+            new IrIntLit(99),
+            new IrIntLit(0),
+            new IntegerTy());
+
+        var module = new IRModule(
+            new Name("\u000e\u000d\u0013\u000e"),
+            new List<IRDef> { new IRDef("\u001a\u000f\u0011\u0012", new List<IRParam>(), new IntegerTy(), body) });
+
+        List<long> elfBytes = Codex_Codex_Codex.x86_64_emit_module(module);
+        byte[] elf = elfBytes.Select(b => (byte)b).ToArray();
+        m_output.WriteLine($"ELF size: {elf.Length} bytes");
+
+        string tempDir = Path.Combine(Path.GetTempPath(), $"codex_m33_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            string elfPath = Path.Combine(tempDir, "test.elf");
+            File.WriteAllBytes(elfPath, elf);
+            string wslPath = WindowsToWslPath(elfPath);
+            string? output = RunWsl($"timeout 10 /usr/bin/qemu-system-x86_64 -kernel {wslPath} -nographic -no-reboot 2>/dev/null");
+            m_output.WriteLine($"QEMU output: [{output}]");
+            Assert.NotNull(output);
+            Assert.Contains("99", output);
+        }
+        finally { try { Directory.Delete(tempDir, true); } catch { } }
+    }
+
     static bool HasWslQemu()
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return false;
