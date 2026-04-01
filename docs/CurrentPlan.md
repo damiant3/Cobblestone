@@ -1,13 +1,14 @@
 # Current Plan
 
-**Date**: 2026-03-31
+**Date**: 2026-04-01
 
 ---
 
 ## MM3 IS PROVEN
 
 The self-hosted Codex compiler compiled **itself** on bare metal x86-64 under
-QEMU. Pingpong is green — Codex in, Codex out, fixed point holds at 55 MB HWM.
+QEMU. Pingpong is green — Codex in, Codex out, fixed point holds at 73 MB HWM
+(128 MB budget after Phase 3 memory increase).
 
 ## ARM64 & RISC-V — ABANDONED
 
@@ -27,15 +28,15 @@ x86-64 binaries, achieving fixed-point self-compilation. No C# in the chain.
 
 **Design doc**: `docs/Compiler/SECOND-BOOTSTRAP.md`
 
-| Phase | What | Unblocks |
-|-------|------|----------|
-| 1 | x86-64 instruction encoder in Codex | Everything below |
-| 2 | ELF writer + CDX binary format writer in Codex | Phase 3 |
-| 3 | Core codegen (expressions, records, lists, match, calls, TCO) | M3 milestone: `main = 42` boots |
-| 4 | Runtime helpers (string, list, math, I/O) | Parallel with 5, 6 |
-| 5 | Builtins (50+ operations) | Parallel with 4, 6 |
-| 6 | Escape copy & regions | Parallel with 4, 5 |
-| 7 | Bare-metal boot sequence | Phase 8 |
+| Phase | What | Status |
+|-------|------|--------|
+| ~~1~~ | ~~x86-64 instruction encoder in Codex~~ | ~~Done~~ |
+| ~~2~~ | ~~ELF writer + CDX binary format writer in Codex~~ | ~~Done~~ |
+| 3 | Core codegen (expressions, records, lists, match, calls, TCO) | **M3.1 done** (main=42 boots). M3.2–M3.9 remain. |
+| 4 | Runtime helpers (string, list, math, I/O) | Waiting on Phase 3 |
+| 5 | Builtins (50+ operations) | Waiting on Phase 3 |
+| 6 | Escape copy & regions | Waiting on Phase 3 |
+| 7 | Bare-metal boot sequence | Waiting on Phase 3 |
 | 8 | Self-compilation fixed point | **MM4: cord is cut** |
 
 **Work style**: Single agent (Cam), one phase at a time. Other agents review
@@ -100,8 +101,9 @@ Ordered by dependency, not priority.
 
 | Design | Doc | Status |
 |--------|-----|--------|
-| Second Bootstrap | `docs/Compiler/SECOND-BOOTSTRAP.md` | **Active — Phase 1 tonight** |
-| CDX binary format | `docs/Codex.OS/CodexBinary.md` | Complete, implements in Phase 2 |
+| Second Bootstrap | `docs/Compiler/SECOND-BOOTSTRAP.md` | **Active — Phase 3 M3.2 next** |
+| Phase 3 Core Codegen | `docs/Compiler/PHASE3-CORE-CODEGEN.md` | **Active — M3.1 proven, M3.2–M3.9 remain** |
+| CDX binary format | `docs/Codex.OS/CodexBinary.md` | ~~Complete, implemented in Phase 2~~ |
 | Trust network | `docs/Codex.OS/TrustNetwork.md` | Complete, implements after MM4 |
 | Agent protocol | `docs/Codex.OS/RuntimeTrust.txt` §1 | Complete |
 | Policy contract | `docs/Codex.OS/RuntimeTrust.txt` §2 | Complete |
@@ -120,4 +122,4 @@ Ordered by dependency, not priority.
 
 Every estimate has been wrong by orders of magnitude, in both directions.
 We don't put dates on mountains. The critical path is ordered. The next
-hold is Phase 1. That's all we need to know.
+hold is Phase 3, milestone M3.2. That's all we need to know.

@@ -1,7 +1,42 @@
-state=awaiting-review
-branch=cam/fix-crlf-lexer
-author=windows-agent
-reviewer=
-summary=--branch cam/fix-crlf-lexer --summary CCE encoding bugs: all 8 fixed. Self-hosted type checker 0 errors (was 1047). Stage 1 C# output compiles cleanly (was 904 errors). 310K chars, 585 defs, 95 type-defs, 1001 tests pass. --notes Commits: 244e339, 13c6680, 4cc46b5. Root cause: CCE frequency ordering breaks alphabetical range checks. --next Verify fixed point: Stage 2 = Stage 1.
-updated=see-git-log
-notes=
+Session: x86emitter (2026-04-01)
+Agent: Cam
+
+## What was done
+
+Phase 3 M3.1 of the Second Bootstrap: `main = 42` compiles to bare-metal
+ELF, boots in QEMU, prints "42" to serial. Pingpong green.
+
+Commits on master:
+1. feat: Phase 3 M3.1 — X86_64.codex codegen, QEMU boot test
+2. bootstrap: 128MB heap, batch patching, rex let-binding fix
+3. docs: pitfalls section in SYNTAX-QUICKREF.md
+
+## What's next
+
+Phase 3 M3.2: `let` + arithmetic. See docs/Compiler/PHASE3-CORE-CODEGEN.md.
+Add to X86_64.codex:
+- cg-emit-expr cases for IrLet, IrBinary, IrName
+- EmitLet: alloc-local, emit value, store-local, emit body
+- EmitBinary: emit left, emit right, dispatch on IrAddInt/IrSubInt/IrMulInt/IrDivInt
+- EmitName: lookup in locals list, load-local
+Test: `main = let x = 10 in let y = 20 in x + y` prints "30"
+
+Then M3.3 (if/else), M3.4 (function calls), M3.5 (records), M3.6 (match),
+M3.7 (lists), M3.8 (TCO), M3.9 (closures). Each adds cases to cg-emit-expr.
+
+## Key learnings
+
+- The .codex files are compiled to C# by the reference compiler. The codex
+  build step runs `Codex.Cli build .` which reads codex.project.json.
+- The generated C# class is Codex_Codex_Codex with all functions as static
+  methods. Hyphens become underscores.
+- CCE encoding: C# test code constructing IR must use CCE-encoded strings.
+  "main" = "\u001a\u000f\u0011\u0012". The _Cce class is internal.
+- No comments in Codex. Ever. Prose is the explanation layer.
+- Avoid inline if/then/else in arithmetic — the emitter drops parens and
+  breaks the fixed point. Use let bindings instead.
+- Break large ++ chains and deeply nested lets into smaller named functions
+  to reduce self-compilation time and type-checker pressure.
+- The out/ directory must not contain .codex files when running codex build,
+  or they get picked up by the **/*.codex glob and cause duplicate defs.
+- Bare-metal memory is now 128MB (64 pages). HWM is 73MB.
