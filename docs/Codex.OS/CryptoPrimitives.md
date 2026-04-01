@@ -61,6 +61,89 @@ no external dependencies to call — this is the bottom of the stack.
 
 ---
 
+## Data Representation — What `Bytes` Means
+
+**Status: Decided.**
+
+The API surface in this document uses `Bytes` as a shorthand. This section
+defines what it means at the language level.
+
+### The backing type is `List Integer`
+
+Codex has no dedicated byte-array primitive. The available types are:
+
+| Type | Backing | Access | Element size | Byte overhead |
+|------|---------|--------|-------------|---------------|
+| `List Integer` | Heap array (ptr + length) | O(1) via `list-at` | 64-bit per element | 8x (8 bytes per logical byte) |
+| `Text` | CCE-encoded byte stream | O(1) via `char-at` | Variable-width | ~1x but semantically character data |
+| `ConsList a` (prelude) | Linked list (cons cells) | O(n) traversal | 64-bit + pointer per cell | ~16x, no random access |
+
+**`List Integer` is the right choice.** The built-in `List a` type is array-
+backed on all native backends — heap-allocated with a pointer and length
+header, O(1) indexed access via `list-at`, O(1) length via `list-length`.
+This is NOT the prelude's `ConsList` (which is a linked cons list and would
+be catastrophic for crypto). Each element is a 64-bit machine word holding
+a byte value (0-255).
+
+### Why not Text?
+
+`Text` is CCE-encoded and semantically represents character data. Byte-level
+operations (XOR, AND, shift, index-as-integer) are not part of its API.
+Using `Text` for binary data would conflate two concerns and require
+unsafe reinterpretation of the encoding.
+
+### Why not a new Bytes primitive?
+
+This is a post-MM4 feature. At implementation time, the self-hosted compiler
+is the only compiler — no C# reference compiler updates are needed. Adding
+a packed `Bytes` primitive (1 byte per element, contiguous) is a language
+feature that can be added then if performance requires it. The implementation
+plan does not depend on it.
+
+If `List Integer` proves too slow for production crypto (see performance
+note below), a `Bytes` type would be:
+- A new primitive: heap pointer + length, 1 byte per element
+- O(1) indexed access, O(1) length
+- Bitwise operations (`byte-xor`, `byte-and`, `byte-or`) as builtins
+- Added to the self-hosted compiler only (post-MM4, no C# needed)
+
+This is an optimization path, not a prerequisite.
+
+### Performance impact of 8x memory overhead
+
+The 64-bit-per-byte representation affects cache utilization:
+
+- **SHA-256 block (64 bytes)**: 512 bytes in `List Integer` vs. 64 packed.
+  Fits in L1 cache either way (typical L1 = 32KB). The compression function
+  operates on 32-bit words extracted from the block — `list-at` is O(1),
+  so the algorithmic cost is unchanged. Cache line efficiency is ~8x worse
+  per block read, but SHA-256 is compute-bound (64 rounds of arithmetic),
+  not memory-bound.
+
+- **Ed25519 field elements**: Already represented as 5 × 64-bit limbs
+  (the `FieldElement` record). No `List Integer` involved — field arithmetic
+  operates on records of `Int64` values. The 8x overhead applies only to
+  key/message/signature byte sequences, not to the inner loop.
+
+- **Estimated impact on cycle counts**: SHA-256 estimates increase ~20-30%
+  (more cache misses during block loading, but compute dominates). Ed25519
+  estimates are largely unaffected (field arithmetic dominates; byte I/O
+  is only at the API boundary for key/message encoding).
+
+The performance estimates in this document account for this overhead.
+
+### In the API, `Bytes` means `List Integer`
+
+Everywhere this document writes `Bytes`, read `List Integer` where each
+`Integer` holds a value in 0-255. This is a type alias for readability,
+not a new type:
+
+```
+type Bytes = List Integer
+```
+
+---
+
 ## SHA-256
 
 ### What It Is
@@ -523,6 +606,16 @@ No key formats, no ASN.1, no PEM, no X.509. Raw 32-byte keys and 64-byte
 signatures. The CDX binary header (CodexBinary.md) stores them at fixed
 offsets — no parsing needed.
 
+**Note on sign API vs. TweetNaCl convention**: TweetNaCl concatenates the
+seed and public key into a single 64-byte "secret key" parameter. We pass
+them separately (`secret_key -> public_key -> message`) because:
+(a) the CDX binary header stores them at separate fixed offsets (0x28 for
+public key, secret key is never in the binary), so they arrive separately;
+(b) separating them makes the API self-documenting — a caller cannot
+accidentally pass only a seed where a full 64-byte NaCl-style key is
+expected; (c) internally, sign concatenates them the same way TweetNaCl
+does, so there is no algorithmic difference.
+
 The streaming SHA interface exists because CDX content hashing must hash
 everything from `capabilities_offset` to EOF, which may be large. The
 streaming interface avoids buffering the entire binary in memory.
@@ -572,11 +665,14 @@ streaming interface avoids buffering the entire binary in memory.
 
 ## Open Questions
 
-1. **Limb representation.** 5x51-bit (natural for 64-bit multiply) vs.
-   TweetNaCl's 16x16-bit (simpler carry propagation, more portable)?
-   Recommendation: 5x51 for x86-64 bare metal — we have 64-bit registers
-   and that's the only target. If Codex targets other architectures later,
-   the 16x16 representation can be a separate backend.
+1. **Limb representation — DECIDED: 5x51-bit.** x86-64 is the only bare-
+   metal target. We have 64-bit registers and efficient 64-bit multiply.
+   The 5x51 representation (5 limbs, each ≤51 bits in a 64-bit word,
+   ~13 bits of carry headroom) is the natural fit. TweetNaCl's 16x16-bit
+   representation is more portable but wastes half the register width on
+   x86-64. If other architectures are added post-Codex.OS, a 16x16
+   backend can be written then — it's a different module, not a change
+   to the algorithm.
 
 2. **Batch verification.** Ed25519 supports batch verification (verify
    N signatures faster than N individual verifications via a random linear
@@ -589,11 +685,13 @@ streaming interface avoids buffering the entire binary in memory.
    code. Appealing but complex — defer until the optimizer is sophisticated
    enough to actually break constant-time patterns.
 
-4. **Wycheproof vectors.** Google's Project Wycheproof provides thousands
-   of edge-case test vectors for Ed25519 (small-order points, non-canonical
-   encodings, etc.). Should we test against the full Wycheproof suite?
-   Recommendation: yes, after RFC 8032 vectors pass. Wycheproof catches
-   implementation bugs that spec vectors don't.
+4. **Wycheproof vectors — DECIDED: yes.** RFC 8032 vectors are necessary
+   but not sufficient. Wycheproof's small-order point tests and non-
+   canonical encoding tests catch exactly the class of bugs that produce
+   "works in testing, broken in production" crypto. Implementation order:
+   pass RFC 8032 Section 7.1 first (Phase D), then run the full Wycheproof
+   Ed25519 suite as part of Phase E hardening. Any Wycheproof failure is
+   a blocking bug.
 
 5. **128-bit multiply.** Field multiplication in 5x51 representation
    produces intermediate products that exceed 64 bits (51+51 = 102 bits).
