@@ -938,6 +938,59 @@ Section: Builtin Emission
     in let st1 = st-append-text rd.state (li rd.reg 1)
     in EmitResult { state = st1, reg = rd.reg }
 
+  emit-substring-alloc : CodegenState -> Integer -> Integer -> Integer -> CodegenState
+  emit-substring-alloc (st) (str-loc) (start-loc) (len-loc) =
+    let len-loaded = load-local st len-loc
+    in let st0 = st-append-text len-loaded.state (mov-rr reg-r11 len-loaded.reg)
+    in let st1 = st-append-text st0 (add-ri reg-r11 15)
+    in let st2 = st-append-text st1 (and-ri reg-r11 (0 - 8))
+    in st-append-text st2 (add-rr reg-r10 reg-r11)
+
+  emit-substring-copy : CodegenState -> Integer -> Integer -> Integer -> Integer -> CodegenState
+  emit-substring-copy (st) (str-loc) (start-loc) (len-loc) (ptr-loc) =
+    let st0 = st-append-text st (li reg-r11 0)
+    in let sub-loop = list-length st0.text
+    in let len-ld = load-local st0 len-loc
+    in let st1 = st-append-text len-ld.state (cmp-rr reg-r11 len-ld.reg)
+    in let sub-exit-pos = list-length st1.text
+    in let st2 = st-append-text st1 (jcc cc-ge 0)
+    in let src-ld = load-local st2 str-loc
+    in let start-ld = load-local src-ld.state start-loc
+    in let st3 = st-append-text start-ld.state (mov-rr reg-rsi src-ld.reg)
+    in let st4 = st-append-text st3 (add-rr reg-rsi start-ld.reg)
+    in let st5 = st-append-text st4 (add-rr reg-rsi reg-r11)
+    in let st6 = st-append-text st5 (movzx-byte reg-rsi reg-rsi 8)
+    in let ptr-ld = load-local st6 ptr-loc
+    in let st7 = st-append-text ptr-ld.state (mov-rr reg-rdx ptr-ld.reg)
+    in let st8 = st-append-text st7 (add-rr reg-rdx reg-r11)
+    in let st9 = st-append-text st8 (mov-store-byte reg-rdx reg-rsi 8)
+    in let st10 = st-append-text st9 (add-ri reg-r11 1)
+    in let st11 = st-append-text st10 (jmp (sub-loop - (list-length st10.text + 5)))
+    in patch-jcc-at st11 sub-exit-pos (list-length st11.text)
+
+  emit-substring-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-substring-builtin (st) (args) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+    in let loc0 = alloc-local r0.state
+    in let st1 = store-local loc0.state loc0.reg r0.reg
+    in let r1 = emit-expr st1 (list-at args 1)
+    in let loc1 = alloc-local r1.state
+    in let st2 = store-local loc1.state loc1.reg r1.reg
+    in let r2 = emit-expr st2 (list-at args 2)
+    in let loc2 = alloc-local r2.state
+    in let st3 = store-local loc2.state loc2.reg r2.reg
+    in let ptr-loc = alloc-local st3
+    in let ptr-tmp = alloc-temp ptr-loc.state
+    in let st4 = st-append-text ptr-tmp.state (mov-rr ptr-tmp.reg reg-r10)
+    in let st5 = store-local st4 ptr-loc.reg ptr-tmp.reg
+    in let len-ld = load-local st5 loc2.reg
+    in let ptr-ld = load-local len-ld.state ptr-loc.reg
+    in let st6 = st-append-text ptr-ld.state (mov-store ptr-ld.reg len-ld.reg 0)
+    in let st7 = emit-substring-alloc st6 loc0.reg loc1.reg loc2.reg
+    in let st8 = emit-substring-copy st7 loc0.reg loc1.reg loc2.reg ptr-loc.reg
+    in let result = load-local st8 ptr-loc.reg
+    in EmitResult { state = result.state, reg = result.reg }
+
   emit-builtin : CodegenState -> Text -> List IRExpr -> EmitResult
   emit-builtin (st) (name) (args) =
     if name == "text-length" then emit-text-length-builtin st args
@@ -950,6 +1003,7 @@ Section: Builtin Emission
     else if name == "text-compare" then emit-helper-call-2 st args "__text_compare"
     else if name == "text-concat-list" then emit-helper-call-1 st args "__text_concat_list"
     else if name == "text-split" then emit-helper-call-2 st args "__text_split"
+    else if name == "substring" then emit-substring-builtin st args
     else if name == "list-length" then emit-list-length-builtin st args
     else if name == "list-at" then emit-list-at-builtin st args
     else if name == "list-cons" then emit-helper-call-2 st args "__list_cons"
