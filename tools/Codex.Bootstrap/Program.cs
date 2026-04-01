@@ -154,7 +154,7 @@ class Program
                 Console.WriteLine($"    {d.name}({paramStr}) : {Codex_Codex_Codex.cs_type(d.type_val)}");
             }
 
-            string cceOutput = Codex_Codex_Codex.emit_full_module(ir, ast.type_defs);
+            string cceOutput = Codex_Codex_Codex.csharp_emitter_emit_full_module(ir, ast.type_defs);
             // Convert emitted C# source from CCE back to Unicode for .NET compiler
             string output = _Cce.ToUnicode(cceOutput);
             string outputPath = outputOverride ?? Path.Combine(codexDir, "stage1-output.cs");
@@ -335,7 +335,7 @@ class Program
             }
 
             IRModule ir = Codex_Codex_Codex.lower_module(ast, checkResult.types, checkResult.state);
-            string output = Codex_Codex_Codex.emit_full_module(ir, ast.type_defs);
+            string output = Codex_Codex_Codex.csharp_emitter_emit_full_module(ir, ast.type_defs);
 
             string outPath = Path.ChangeExtension(filePath, ".g.cs");
             File.WriteAllText(outPath, output);
@@ -462,7 +462,7 @@ class Program
         sw.Stop(); lowerMs = sw.Elapsed.TotalMilliseconds;
 
         sw.Restart();
-        var output = Codex_Codex_Codex.emit_full_module(ir, ast.type_defs);
+        var output = Codex_Codex_Codex.csharp_emitter_emit_full_module(ir, ast.type_defs);
         sw.Stop(); emitMs = sw.Elapsed.TotalMilliseconds;
 
         total.Stop(); totalMs = total.Elapsed.TotalMilliseconds;
