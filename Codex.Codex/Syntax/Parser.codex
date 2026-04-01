@@ -323,9 +323,28 @@ Section: Document Parsing
    if is-import-keyword (current-kind st)
     then let st2 = advance st
      in let name-tok = current st2
-      in let st3 = skip-newlines (advance st2)
-       in parse-imports st3 (list-snoc acc (ImportDecl { module-name = name-tok }))
+      in let st3 = advance st2
+       in if is-left-paren (current-kind st3)
+        then let sel = parse-selected-names (advance st3) []
+         in let st4 = skip-newlines sel.state
+          in parse-imports st4 (list-snoc acc (ImportDecl { module-name = name-tok, selected-names = sel.names }))
+        else let st4 = skip-newlines st3
+         in parse-imports st4 (list-snoc acc (ImportDecl { module-name = name-tok, selected-names = [] }))
     else ImportParseResult { imports = acc, state = st }
+
+  SelectedNamesResult = record { names : List Token, state : ParseState }
+
+  parse-selected-names : ParseState -> List Token -> SelectedNamesResult
+  parse-selected-names (st) (acc) =
+   if is-ident (current-kind st)
+    then let tok = current st
+     in let st2 = advance st
+      in if is-comma (current-kind st2)
+       then parse-selected-names (skip-newlines (advance st2)) (list-snoc acc tok)
+       else SelectedNamesResult { names = list-snoc acc tok, state = st2 }
+    else if is-right-paren (current-kind st)
+     then SelectedNamesResult { names = acc, state = advance st }
+     else SelectedNamesResult { names = acc, state = st }
 
   ImportParseResult = record { imports : List ImportDecl, state : ParseState }
 

@@ -92,13 +92,7 @@ public static partial class Program
     {
         DiagnosticBag diagnostics = new();
         Desugarer desugarer = new(diagnostics);
-        List<Definition> allDefinitions = [];
-        List<TypeDef> allTypeDefinitions = [];
-        List<ClaimDef> allClaims = [];
-        List<ProofDef> allProofs = [];
-        List<ImportDecl> allImports = [];
-        List<ExportDecl> allExports = [];
-        List<EffectDef> allEffectDefs = [];
+        List<Module> perFileModules = [];
 
         foreach (string filePath in filePaths)
         {
@@ -113,33 +107,13 @@ public static partial class Program
             DocumentNode document = ParseSourceFile(source, content, diagnostics);
             string fileModule = Path.GetFileNameWithoutExtension(filePath);
             Module module = desugarer.Desugar(document, fileModule);
-
-            allDefinitions.AddRange(module.Definitions);
-            allTypeDefinitions.AddRange(module.TypeDefinitions);
-            allClaims.AddRange(module.Claims);
-            allProofs.AddRange(module.Proofs);
-            allImports.AddRange(module.Imports);
-            allExports.AddRange(module.Exports);
-            allEffectDefs.AddRange(module.EffectDefs);
+            perFileModules.Add(module);
         }
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
-        SourceSpan combinedSpan = allDefinitions.Count > 0
-            ? allDefinitions[0].Span
-            : SourceSpan.Single(0, 1, 1, "<combined>");
-        Module combined = new(
-            QualifiedName.Simple(moduleName),
-            allDefinitions,
-            allTypeDefinitions,
-            allClaims,
-            allProofs,
-            combinedSpan)
-        {
-            Imports = allImports,
-            Exports = allExports,
-            EffectDefs = allEffectDefs
-        };
+        ModuleScoper scoper = new(diagnostics);
+        Module combined = scoper.Scope(perFileModules, moduleName);
 
         string? baseDir = filePaths.Length > 0
             ? Path.GetDirectoryName(Path.GetFullPath(filePaths[0]))

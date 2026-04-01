@@ -6,16 +6,20 @@ namespace Codex.Ast;
 public sealed class Desugarer(DiagnosticBag diagnostics)
 {
     readonly DiagnosticBag m_diagnostics = diagnostics;
+    string? m_currentModuleName;
 
     public Module Desugar(DocumentNode document, string moduleName)
     {
+        m_currentModuleName = moduleName;
         QualifiedName name = QualifiedName.Simple(moduleName);
         List<Definition> definitions = document.Definitions.Select(DesugarDefinition).ToList();
         List<TypeDef> typeDefinitions = document.TypeDefinitions.Select(DesugarTypeDefinition).ToList();
         List<ClaimDef> claims = document.Claims.Select(DesugarClaim).ToList();
         List<ProofDef> proofs = document.Proofs.Select(DesugarProof).ToList();
         List<ImportDecl> imports = document.Imports
-            .Select(i => new ImportDecl(new Name(i.Name.Text), i.Span)).ToList();
+            .Select(i => new ImportDecl(new Name(i.Name.Text), i.Span)
+                { SelectedNames = i.SelectedNames.Select(n => new Name(n.Text)).ToList() })
+            .ToList();
         List<ExportDecl> exports = document.Exports
             .Select(e => new ExportDecl(
                 e.Names.Select(n => new Name(n.Text)).ToList(), e.Span)).ToList();
@@ -44,7 +48,8 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
             : null;
         Expr body = DesugarExpr(node.Body);
 
-        return new Definition(name, parameters, declaredType, body, node.Span);
+        return new Definition(name, parameters, declaredType, body, node.Span)
+            { SourceModule = m_currentModuleName };
     }
 
     Expr DesugarExpr(ExpressionNode node) => node switch
@@ -262,7 +267,7 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
         Name typeName = new Name(node.Name.Text);
         List<Name> typeParams = node.TypeParameters.Select(t => new Name(t.Text)).ToList();
 
-        return node.Body switch
+        TypeDef td = node.Body switch
         {
             RecordTypeBody rec => new RecordTypeDef(
                 typeName,
@@ -293,6 +298,7 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
 
             _ => throw new InvalidOperationException($"Unknown type definition body: {node.Body.GetType().Name}")
         };
+        return td with { SourceModule = m_currentModuleName };
     }
 
     static BinaryOp DesugarBinaryOp(TokenKind kind) => kind switch
