@@ -1,0 +1,235 @@
+Chapter: ELF Writer
+
+ Pure-functional ELF binary writer. Produces byte lists (List Integer)
+ representing complete ELF executables. Two variants:
+   - 32-bit bare-metal ELF with PVH note for QEMU direct boot
+   - 64-bit Linux user-mode ELF for native execution
+ Ported from ElfWriter32.cs and ElfWriterX86_64.cs (C# reference).
+
+ Uses write-i32, write-i64, write-bytes, to-byte, int-mod, floor-div
+ from X86_64Encoder.codex. All new helpers are defined here.
+
+Section: Constants
+
+  elf-bare-metal-load-addr : Integer
+  elf-bare-metal-load-addr = 1048576
+  -- 0x100000 (1 MB)
+
+  elf-linux-base-addr : Integer
+  elf-linux-base-addr = 4194304
+  -- 0x400000
+
+  elf32-header-size : Integer
+  elf32-header-size = 52
+
+  elf32-phdr-size : Integer
+  elf32-phdr-size = 32
+
+  elf64-header-size : Integer
+  elf64-header-size = 64
+
+  elf64-phdr-size : Integer
+  elf64-phdr-size = 56
+
+Section: Helpers
+
+  elf-align : Integer -> Integer -> Integer
+  elf-align (v) (a) =
+   let r = int-mod v a
+   in if r == 0 then v else v + a - r
+
+  write-i16 : Integer -> List Integer
+  write-i16 (v) = write-bytes v 2
+
+  pad-zeros : Integer -> List Integer
+  pad-zeros (n) = pad-zeros-loop n []
+
+  pad-zeros-loop : Integer -> List Integer -> List Integer
+  pad-zeros-loop (n) (acc) =
+   if n <= 0 then acc
+   else pad-zeros-loop (n - 1) (list-snoc acc 0)
+
+Section: ELF Identification (16 bytes)
+
+  elf-ident-32 : List Integer
+  elf-ident-32 =
+   [127, 69, 76, 70, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+   -- 0x7F 'E' 'L' 'F' ELFCLASS32 ELFDATA2LSB EV_CURRENT + 9 pad
+
+  elf-ident-64 : List Integer
+  elf-ident-64 =
+   [127, 69, 76, 70, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+   -- 0x7F 'E' 'L' 'F' ELFCLASS64 ELFDATA2LSB EV_CURRENT + 9 pad
+
+Section: 32-bit ELF Header (52 bytes)
+
+  elf32-header-bytes : Integer -> Integer -> Integer -> List Integer
+  elf32-header-bytes (entry) (phoff) (phnum) =
+   elf-ident-32
+   ++ write-i16 2           -- e_type = ET_EXEC
+   ++ write-i16 3           -- e_machine = EM_386
+   ++ write-i32 1           -- e_version = EV_CURRENT
+   ++ write-i32 entry       -- e_entry
+   ++ write-i32 phoff       -- e_phoff
+   ++ write-i32 0           -- e_shoff (no section headers)
+   ++ write-i32 0           -- e_flags
+   ++ write-i16 52          -- e_ehsize
+   ++ write-i16 32          -- e_phentsize
+   ++ write-i16 phnum       -- e_phnum
+   ++ write-i16 0           -- e_shentsize
+   ++ write-i16 0           -- e_shnum
+   ++ write-i16 0           -- e_shstrndx
+
+Section: 32-bit Program Header (32 bytes)
+
+  phdr-32 : Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> List Integer
+  phdr-32 (ptype) (offset) (vaddr) (paddr) (filesz) (memsz) (flags) (palign) =
+   write-i32 ptype
+   ++ write-i32 offset
+   ++ write-i32 vaddr
+   ++ write-i32 paddr
+   ++ write-i32 filesz
+   ++ write-i32 memsz
+   ++ write-i32 flags
+   ++ write-i32 palign
+
+Section: PVH Note (20 bytes)
+
+ Xen PVH entry note for QEMU direct boot. QEMU reads this note and
+ enters in 32-bit protected mode at the given address.
+ Format: namesz(4) descsz(4) type(4) name("Xen\0") desc(entry32 LE)
+
+  pvh-note : Integer -> List Integer
+  pvh-note (entry-addr) =
+   write-i32 4              -- namesz (including null terminator)
+   ++ write-i32 4           -- descsz
+   ++ write-i32 18          -- type = XEN_ELFNOTE_PHYS32_ENTRY
+   ++ [88, 101, 110, 0]    -- "Xen\0"
+   ++ write-i32 entry-addr  -- 32-bit entry address
+
+Section: 32-bit Bare-Metal ELF Builder
+
+ Produces a 32-bit ELF with PVH note for QEMU direct boot.
+ Layout: [ELF hdr 52B][PHDR 32B x 2][pad][PVH note 20B][pad][.text][pad][.rodata]
+ QEMU enters in 32-bit protected mode at entry-offset into .text.
+ The 32-bit trampoline (emitted by codegen) sets up long mode.
+
+ PT_LOAD maps from text-start to end of file at vaddr 0x100000.
+ p_memsz adds 2 MB (0x200000) for heap beyond file contents.
+
+  build-elf-32-bare : List Integer -> List Integer -> Integer -> List Integer
+  build-elf-32-bare (text) (rodata) (entry-offset) =
+   let load-addr = elf-bare-metal-load-addr
+   in let headers-end = elf32-header-size + elf32-phdr-size * 2
+   in let note-offset = elf-align headers-end 4
+   in let text-start = elf-align (note-offset + 20) 16
+   in let text-end = text-start + list-length text
+   in let rodata-start = elf-align text-end 8
+   in let file-size = rodata-start + list-length rodata
+   in let entry = load-addr + entry-offset
+   in elf32-header-bytes entry elf32-header-size 2
+   ++ phdr-32 1 text-start load-addr load-addr
+        (file-size - text-start)
+        ((file-size - text-start) + 2097152)
+        7 4096
+   ++ phdr-32 4 note-offset 0 0 20 20 4 4
+   ++ pad-zeros (note-offset - headers-end)
+   ++ pvh-note entry
+   ++ pad-zeros (text-start - note-offset - 20)
+   ++ text
+   ++ pad-zeros (rodata-start - text-end)
+   ++ rodata
+
+Section: 64-bit ELF Header (64 bytes)
+
+  elf64-header-bytes : Integer -> Integer -> Integer -> List Integer
+  elf64-header-bytes (entry) (phoff) (phnum) =
+   elf-ident-64
+   ++ write-i16 2           -- e_type = ET_EXEC
+   ++ write-i16 62          -- e_machine = EM_X86_64
+   ++ write-i32 1           -- e_version = EV_CURRENT
+   ++ write-i64 entry       -- e_entry
+   ++ write-i64 phoff       -- e_phoff
+   ++ write-i64 0           -- e_shoff (no section headers)
+   ++ write-i32 0           -- e_flags
+   ++ write-i16 64          -- e_ehsize
+   ++ write-i16 56          -- e_phentsize
+   ++ write-i16 phnum       -- e_phnum
+   ++ write-i16 0           -- e_shentsize
+   ++ write-i16 0           -- e_shnum
+   ++ write-i16 0           -- e_shstrndx
+
+Section: 64-bit Program Header (56 bytes)
+
+  phdr-64 : Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> List Integer
+  phdr-64 (ptype) (flags) (offset) (vaddr) (paddr) (filesz) (memsz) (palign) =
+   write-i32 ptype
+   ++ write-i32 flags
+   ++ write-i64 offset
+   ++ write-i64 vaddr
+   ++ write-i64 paddr
+   ++ write-i64 filesz
+   ++ write-i64 memsz
+   ++ write-i64 palign
+
+Section: 64-bit Linux User-Mode ELF Builder
+
+ Produces a 64-bit ELF for Linux user-mode execution.
+ Layout: [ELF hdr 64B][PHDR 56B x 2][pad][.text][pad to 4096][.rodata]
+
+ PHDR 0 (PT_LOAD): maps file offset 0 through end of .text at 0x400000.
+   Flags RWX. Includes ELF+PHDR headers in the mapping (QEMU user-mode
+   requires p_offset to be page-aligned).
+ PHDR 1 (PT_LOAD): maps .rodata at page-aligned offset. Flags RW
+   (writable for result_space_base global used by escape copy).
+
+  build-elf-64-linux : List Integer -> List Integer -> Integer -> List Integer
+  build-elf-64-linux (text) (rodata) (entry-offset) =
+   let base-addr = elf-linux-base-addr
+   in let headers-size = elf64-header-size + elf64-phdr-size * 2
+   in let text-file-offset = elf-align headers-size 16
+   in let text-vaddr = base-addr + text-file-offset
+   in let entry-point = text-vaddr + entry-offset
+   in let text-size = list-length text
+   in let text-region-end = text-file-offset + text-size
+   in let rodata-file-offset = elf-align text-region-end 4096
+   in let rodata-vaddr = base-addr + rodata-file-offset
+   in let rodata-size = list-length rodata
+   in elf64-header-bytes entry-point elf64-header-size 2
+   ++ phdr-64 1 7 0 base-addr base-addr text-region-end text-region-end 4096
+   ++ phdr-64 1 6 rodata-file-offset rodata-vaddr rodata-vaddr rodata-size rodata-size 4096
+   ++ pad-zeros (text-file-offset - headers-size)
+   ++ text
+   ++ pad-zeros (rodata-file-offset - text-region-end)
+   ++ rodata
+
+Section: Codegen Helpers
+
+ These helpers compute virtual addresses for the ELF layouts. Phase 3
+ codegen needs these to patch RIP-relative references and function
+ address fixups before the final ELF is assembled.
+
+  compute-text-file-offset-64 : Integer
+  compute-text-file-offset-64 =
+   elf-align (elf64-header-size + elf64-phdr-size * 2) 16
+   -- 64 + 56*2 = 176, aligned to 16 = 176
+
+  compute-rodata-vaddr-64 : Integer -> Integer
+  compute-rodata-vaddr-64 (text-size) =
+   let text-file-offset = compute-text-file-offset-64
+   in let rodata-file-offset = elf-align (text-file-offset + text-size) 4096
+   in elf-linux-base-addr + rodata-file-offset
+
+  compute-text-vaddr-64 : Integer
+  compute-text-vaddr-64 = elf-linux-base-addr + compute-text-file-offset-64
+
+  compute-rodata-vaddr-bare : Integer -> Integer
+  compute-rodata-vaddr-bare (text-size) =
+   elf-bare-metal-load-addr + elf-align text-size 8
+   -- bare metal: text at 0x100000, rodata at 0x100000 + align(textSize, 8)
+
+  compute-text-start-32 : Integer
+  compute-text-start-32 =
+   let headers-end = elf32-header-size + elf32-phdr-size * 2
+   in let note-offset = elf-align headers-end 4
+   in elf-align (note-offset + 20) 16
