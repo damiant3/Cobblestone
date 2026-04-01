@@ -1,69 +1,54 @@
-Session: x86emitter (2026-04-01)
+Session: phase4-5-builtins (2026-04-01)
 Agent: Cam
 
 ## What was done
 
-Phase 3 milestones M3.1, M3.2, M3.3 of the Second Bootstrap.
+Phase 4 (runtime helpers) and Phase 5 (builtins) of the Second Bootstrap.
 
-M3.1: main = 42 boots in QEMU, prints "42". Pingpong green at 128MB.
-M3.2: let x = 10 in let y = 20 in x + y prints "30".
-M3.3: if 5 > 3 then 99 else 0 prints "99".
+Phase 4: Ported 16 of 22 runtime helpers to Codex.Codex/Emit/X86_64Helpers.codex
+(~1,300 lines). String, list, math helpers all working. 5 I/O helpers deferred to
+Phase 7 (need rodata fixups + CCE tables).
 
-Branches (both pushed, ready for review):
-- feature/second-bootstrap-phase3-m31 (merged to master)
-- feature/phase3-m32-m33
+Phase 5: Wired 30 pure-CCE builtins into emit-apply in X86_64.codex (~264 lines).
+Inline builtins (text-length, list-at, negate, etc.) and helper-calling builtins
+(text-replace, list-cons, etc.). I/O boundary builtins (print-line, read-file)
+deferred to Phase 7.
 
-Key commits:
-1. feat: Phase 3 M3.1 — X86_64.codex codegen, QEMU boot test
-2. bootstrap: 128MB heap, batch patching, rex let-binding fix
-3. docs: pitfalls section in SYNTAX-QUICKREF.md, CurrentPlan update
-4. feat: Phase 3 M3.2 + M3.3 — let/arithmetic and if/else/comparisons
+Pingpong green throughout. Final state: 566KB ELF, 113MB Stage 1 HWM, 59s/59s.
 
-## Two threads of next work
+## Next: Phase 6 — Escape Copy & Regions
 
-### Thread 1: Module-scoped namespaces (language feature)
+This is the most intricate port in the backend. It's type-driven code generation,
+not fixed assembly routines. The C# reference is in X86_64CodeGen.cs:
+  - EmitRegion (lines 1305-1386): region entry/body/exit/escape
+  - EmitEscapeCopy (lines 1388-1401): type dispatch wrapper
+  - EmitEscapeCopyHelpers (lines 4177-4198): queue-draining generator
+  - EmitFwdTableZero/Lookup/Insert (lines 4204-4328): hash table ops
+  - EmitRecordEscapeHelper (lines 4390-4405): per-record-type helper
+  - EmitListEscapeHelper (lines 4407-4477): per-list-type helper
+  - EmitSumTypeEscapeHelper (lines 4479-4517): per-sum-type helper
 
-Status entry: module-namespaces (codex-status)
+Architecture:
+  - Two-space heap: R10 = working space (temporaries), R15 = result space (escapes)
+  - Forwarding hash table: 32K entries * 16 bytes = 512KB, linear probing
+  - Table base stored in rodata global (m_fwdTableGlobalOffset)
+  - Result space base stored in rodata global (m_resultBaseGlobalOffset)
+  - IRRegion node triggers EmitRegion from emit-expr dispatch
+  - Type-specific helpers queued lazily via GetOrQueueEscapeHelper
+  - Helpers emitted at module end after all user functions
 
-The self-hosted compiler has a flat namespace across all .codex files.
-Functions in X86_64.codex collide with CSharpEmitterExpressions.codex
-(emit-expr, emit-let, emit-binary, emit-name, emit-if, emit-comparison).
-Currently worked around with cg- prefix.
-
-Scope of work:
-- Design module scoping rules (how Chapter/file maps to namespace)
-- Update the reference compiler parser + name resolver
-- Update the self-hosted compiler parser + name resolver
-- Rename cg-emit-expr back to emit-expr etc. in X86_64.codex
-- Rename cg-emit-sub-rsp-imm32 back to emit-sub-rsp-imm32
-- Also fixes: emit-int-lit, emit-function, emit-prologue, emit-epilogue,
-  emit-start, emit-all-defs (these happen to not collide today but will
-  as more emitters are added)
-- Full list of cg- prefixed names in X86_64.codex:
-  cg-emit-expr, cg-emit-name, cg-emit-let, cg-emit-binary,
-  cg-emit-binary-op, cg-emit-comparison, cg-emit-if, cg-emit-sub-rsp-imm32
-
-### Thread 2: Phase 3 M3.4+ (continue codegen milestones)
-
-Next milestone: M3.4 — function calls + recursion.
-Design doc: docs/Compiler/PHASE3-CORE-CODEGEN.md
-
-Add to X86_64.codex:
-- Parameter binding in emit-function (args in RDI/RSI/RDX/RCX/R8/R9)
-- cg-emit-expr case for IrApply (direct calls with args in registers)
-- Multiple function emission (emit-all-defs already loops)
-- Test: factorial 5 prints "120"
-
-Then M3.5 (records), M3.6 (match), M3.7 (lists), M3.8 (TCO), M3.9 (closures).
+Rodata fixup blocker: Escape copy REQUIRES rodata fixups. The forwarding table
+base and result-space base are stored in 8-byte rodata globals loaded via
+MovRI64 + patch. This is the first feature forcing rodata fixup support into
+the Codex codegen. CodegenState needs a rodata-fixups field.
 
 ## Key learnings (carry forward)
 
-- CCE encoding: C# test code constructing IR must use CCE-encoded strings
-  for function names that the codegen compares against hardcoded literals
-  (e.g. "main" = "\u001a\u000f\u0011\u0012"). Local variable names can
-  be plain Unicode since they're only compared against themselves.
-- No comments in Codex. Ever. Prose is the explanation layer.
-- Avoid inline if/then/else in arithmetic (emitter drops parens).
-- Break large ++ chains and deeply nested lets into named helpers.
-- Clean out/ of .codex files before running codex build.
-- Bare-metal memory is 128MB (64 pages). HWM is 73MB at 248K source.
+- CCE boundary principle: CCE is internal, Unicode is external. Conversion only
+  at I/O boundaries (Phase 7).
+- Circular dependency: builtins must live in same file as emit-expr.
+- No comments in Codex. Prose is the explanation layer.
+- Break deeply nested lets: max ~18 per function.
+- Codex has no || operator. Use if/then True/else chains for boolean OR.
+- Clean out/ of stale .codex/.elf/.cs files before building.
+- Bare-metal memory: 128MB default, breakable to 512MB for linear growth.

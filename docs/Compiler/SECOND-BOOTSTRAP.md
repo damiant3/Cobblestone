@@ -313,7 +313,7 @@ successors). The C# reference compiler is truly frozen.
 | ~~**M3**~~ | ~~`main = 42`~~ | ~~Codex compiler (on .NET) emits bare-metal ELF, boots, prints `42`~~ |
 | ~~**M4**~~ | ~~`factorial 5`~~ | ~~Non-trivial program: recursion, arithmetic, print. Also: records, match, lists, TCO, closures~~ |
 | ~~**M5**~~ | ~~Runtime helpers~~ | ~~16 of 22 helpers ported. Pingpong green at 213K output, 548KB ELF, 109MB HWM~~ |
-| **M5b** | Builtins (~30 pure-CCE ops) | Wires user code to helpers; no I/O boundary, no CCE tables needed |
+| ~~**M5b**~~ | ~~Builtins (30 pure-CCE ops)~~ | ~~Done — 30 builtins wired, pingpong green at 566KB ELF, 113MB HWM~~ |
 | **M6** | Escape copy | Region-based heap reclamation working — will shrink HWM from 109MB |
 | **M7** | Self-compilation | The compiler compiles itself to a bare-metal ELF |
 | **M8** | Fixed point | Stage 1 ELF == Stage 2 ELF. **This is MM4.** |

@@ -34,8 +34,8 @@ x86-64 binaries, achieving fixed-point self-compilation. No C# in the chain.
 | ~~2~~ | ~~ELF writer + CDX binary format writer in Codex~~ | ~~Done~~ |
 | ~~3~~ | ~~Core codegen (M3.1–M3.9: int, let, if, calls, records, match, lists, TCO, closures)~~ | ~~Done — 1,400 lines, all 9 milestones QEMU-proven~~ |
 | ~~4~~ | ~~Runtime helpers (16 of 22: string, list, math)~~ | ~~Done — 1,300 lines, pingpong green at 548KB ELF~~ |
-| 5 | Builtins (~30 pure-CCE operations, no I/O boundary) | **Next** |
-| 6 | Escape copy & regions | Unblocked — will shrink 109MB HWM |
+| ~~5~~ | ~~Builtins (30 pure-CCE operations)~~ | ~~Done — 264 lines in X86_64.codex, pingpong green~~ |
+| 6 | Escape copy & regions | **Next** — will shrink 113MB HWM; requires rodata fixup infra |
 | 7 | Boot + I/O boundary (CCE tables, print-line, read/write, 5 deferred helpers) | Waiting on 5-6 |
 | 8 | Self-compilation fixed point | **MM4: cord is cut** |
 
@@ -100,7 +100,7 @@ Ordered by dependency, not priority.
 
 | Design | Doc | Status |
 |--------|-----|--------|
-| Second Bootstrap | `docs/Compiler/SECOND-BOOTSTRAP.md` | **Active — Phase 5 (builtins) next** |
+| Second Bootstrap | `docs/Compiler/SECOND-BOOTSTRAP.md` | **Active — Phase 6 (escape copy) next** |
 | Phase 3 Core Codegen | `docs/Compiler/PHASE3-CORE-CODEGEN.md` | ~~Complete — all 9 milestones proven~~ |
 | CDX binary format | `docs/Codex.OS/CodexBinary.md` | ~~Complete, implemented in Phase 2~~ |
 | Crypto primitives | `docs/Codex.OS/CryptoPrimitives.md` | Design complete, implements after MM4 |
