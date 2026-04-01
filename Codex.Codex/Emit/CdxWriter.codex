@@ -1,0 +1,158 @@
+Chapter: CDX Binary Format Writer
+
+ Produces CDX1 (Codex Binary) files per docs/Codex.OS/CodexBinary.md.
+ Pure functions: configuration + text + rodata byte lists in, CDX byte
+ list out. The CDX format embeds trust metadata (author key, signature,
+ capability table, proof hashes) in the binary header.
+
+ Development mode: SHA-256 content_hash, Ed25519 author_key, and
+ signature fields are zero-filled. Crypto primitives are post-MM4.
+ The format is structurally complete so the loader can be developed
+ against it; verification is skipped until crypto is available.
+
+ Uses write-i16, write-i32, write-i64, write-bytes, to-byte, int-mod,
+ floor-div from X86_64Encoder.codex and pad-zeros from ElfWriter.codex.
+
+Section: CDX Constants
+
+  cdx-magic : List Integer
+  cdx-magic = [67, 68, 88, 49]
+  -- "CDX1" = 0x43 0x44 0x58 0x31
+
+  cdx-format-version : Integer
+  cdx-format-version = 1
+
+  cdx-fixed-header-size : Integer
+  cdx-fixed-header-size = 224
+  -- 0xE0 bytes (without fact_hashes)
+
+Section: CDX Flag Constants
+
+ Bit 0: BARE_METAL   — binary targets bare metal (no OS syscalls)
+ Bit 1: NEEDS_HEAP   — binary requires heap allocation
+ Bit 2: NEEDS_STACK_GUARD — binary requires stack overflow detection
+ Bit 3: HAS_PROOFS   — proof hash table is present and non-empty
+
+  cdx-flag-bare-metal : Integer
+  cdx-flag-bare-metal = 1
+
+  cdx-flag-needs-heap : Integer
+  cdx-flag-needs-heap = 2
+
+  cdx-flag-needs-stack-guard : Integer
+  cdx-flag-needs-stack-guard = 4
+
+  cdx-flag-has-proofs : Integer
+  cdx-flag-has-proofs = 8
+
+Section: CDX Header Builder
+
+ Builds the 224-byte fixed header. All offsets and sizes are passed in
+ because the caller computes them from the actual section contents.
+
+ Layout (all little-endian):
+   0x00  4B   magic "CDX1"
+   0x04  2B   format_version
+   0x06  2B   flags
+   0x08  32B  content_hash (SHA-256, zeros in dev mode)
+   0x28  32B  author_key (Ed25519 pubkey, zeros in dev mode)
+   0x48  64B  signature (Ed25519 sig, zeros in dev mode)
+   0x88  8B   capabilities_offset
+   0x90  8B   capabilities_size
+   0x98  8B   proofs_offset
+   0xA0  8B   proofs_size
+   0xA8  8B   text_offset
+   0xB0  8B   text_size
+   0xB8  8B   rodata_offset
+   0xC0  8B   rodata_size
+   0xC8  8B   entry_point (offset into text section)
+   0xD0  4B   stack_size
+   0xD4  4B   heap_size
+   0xD8  2B   trust_threshold (fixed-point 0-10000)
+   0xDA  2B   reserved (zero)
+   0xDC  4B   fact_hash_count
+   0xE0  var  fact_hashes (empty when count=0)
+
+  cdx-header : Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> List Integer
+  cdx-header (flags) (cap-offset) (cap-size) (proof-offset) (proof-size) (text-offset) (text-size) (rodata-offset) (rodata-size) (entry-offset) (stack-size) =
+   cdx-header-2 flags cap-offset cap-size proof-offset proof-size text-offset text-size rodata-offset rodata-size entry-offset stack-size
+
+  cdx-header-2 : Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> List Integer
+  cdx-header-2 (flags) (cap-offset) (cap-size) (proof-offset) (proof-size) (text-offset) (text-size) (rodata-offset) (rodata-size) (entry-offset) (stack-size) =
+   cdx-magic
+   ++ write-i16 cdx-format-version
+   ++ write-i16 flags
+   ++ pad-zeros 32           -- content_hash (SHA-256, dev mode: zeros)
+   ++ pad-zeros 32           -- author_key (Ed25519, dev mode: zeros)
+   ++ pad-zeros 64           -- signature (Ed25519, dev mode: zeros)
+   ++ write-i64 cap-offset
+   ++ write-i64 cap-size
+   ++ write-i64 proof-offset
+   ++ write-i64 proof-size
+   ++ write-i64 text-offset
+   ++ write-i64 text-size
+   ++ write-i64 rodata-offset
+   ++ write-i64 rodata-size
+   ++ write-i64 entry-offset
+   ++ write-i32 stack-size
+   ++ write-i32 0            -- heap_size (passed via build-cdx)
+   ++ write-i16 0            -- trust_threshold (dev mode: 0)
+   ++ write-i16 0            -- reserved
+   ++ write-i32 0            -- fact_hash_count (no dependencies yet)
+
+Section: CDX Binary Builder
+
+ Main entry point. Takes flags, entry offset, stack/heap sizes, and
+ the text + rodata byte lists. Produces a complete CDX1 binary.
+
+ Current layout (no capabilities, no proofs, no fact hashes):
+   [header 224B][text][rodata]
+
+ When capabilities or proofs are added, they go between the header
+ and text section. The offsets in the header adjust accordingly.
+
+  build-cdx : Integer -> Integer -> Integer -> Integer -> List Integer -> List Integer -> List Integer
+  build-cdx (flags) (entry-offset) (stack-size) (heap-size) (text) (rodata) =
+   let text-size = list-length text
+   in let rodata-size = list-length rodata
+   in let text-offset = cdx-fixed-header-size
+   in let rodata-offset = text-offset + text-size
+   in let cap-offset = cdx-fixed-header-size
+   in let cap-size = 0
+   in let proof-offset = cdx-fixed-header-size
+   in let proof-size = 0
+   in cdx-header-with-heap flags cap-offset cap-size proof-offset proof-size text-offset text-size rodata-offset rodata-size entry-offset stack-size heap-size
+   ++ text
+   ++ rodata
+
+  cdx-header-with-heap : Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> Integer -> List Integer
+  cdx-header-with-heap (flags) (cap-offset) (cap-size) (proof-offset) (proof-size) (text-offset) (text-size) (rodata-offset) (rodata-size) (entry-offset) (stack-size) (heap-size) =
+   cdx-magic
+   ++ write-i16 cdx-format-version
+   ++ write-i16 flags
+   ++ pad-zeros 32           -- content_hash (dev mode)
+   ++ pad-zeros 32           -- author_key (dev mode)
+   ++ pad-zeros 64           -- signature (dev mode)
+   ++ write-i64 cap-offset
+   ++ write-i64 cap-size
+   ++ write-i64 proof-offset
+   ++ write-i64 proof-size
+   ++ write-i64 text-offset
+   ++ write-i64 text-size
+   ++ write-i64 rodata-offset
+   ++ write-i64 rodata-size
+   ++ write-i64 entry-offset
+   ++ write-i32 stack-size
+   ++ write-i32 heap-size
+   ++ write-i16 0            -- trust_threshold (dev mode)
+   ++ write-i16 0            -- reserved
+   ++ write-i32 0            -- fact_hash_count
+
+Section: CDX Bare-Metal Convenience
+
+ Builds a CDX binary with BARE_METAL + NEEDS_HEAP flags set.
+ Typical for the self-hosted compiler targeting bare metal.
+
+  build-cdx-bare-metal : Integer -> Integer -> Integer -> List Integer -> List Integer -> List Integer
+  build-cdx-bare-metal (entry-offset) (stack-size) (heap-size) (text) (rodata) =
+   build-cdx (cdx-flag-bare-metal + cdx-flag-needs-heap) entry-offset stack-size heap-size text rodata
