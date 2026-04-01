@@ -2,19 +2,15 @@
 # linux-session-init.sh — One-shot environment setup for Linux agent sessions.
 #
 # Run this at the start of every fresh Claude session to get a working
-# Codex development environment. Handles: .NET SDK, repo clone/pull,
-# build, test summary, dashboard, and CurrentPlan display.
+# Codex development environment. Handles: Dependency installs, branch quick ref
 #
 # Usage (from a fresh session):
 #   bash tools/linux-session-init.sh
 #
-# Or if the repo isn't cloned yet, fetch and run directly:
-#   curl -sH "Authorization: token $GITHUB_PAT" \
-#     https://raw.githubusercontent.com/damiant3/NewRepository/master/tools/linux-session-init.sh | bash
+# Get the repo from the public url set in the REPO_URL variable below.
+# Github PAT will be provided when necessary, it is not necessary for this script.
+# When you have something to push, stop and ask Damian for the credentials.
 #
-# The script reads the GitHub PAT from:
-#   1. $GITHUB_PAT environment variable
-#   2. /mnt/user-data/uploads/_claude.json (uploaded by user)
 
 set -e
 
@@ -40,34 +36,10 @@ echo ""
 echo -e "${BOLD}${CYAN}═══ CODEX SESSION INIT ═══${RESET}  ${DIM}$(date '+%Y-%m-%d %H:%M:%S')${RESET}"
 
 # ═══════════════════════════════════════════════════════════════
-# STEP 1: Resolve GitHub PAT
+# STEP 1: Install .NET 8 SDK
 # ═══════════════════════════════════════════════════════════════
 
-step "Step 1: Resolving GitHub credentials"
-
-if [ -z "$GITHUB_PAT" ]; then
-    CLAUDE_JSON="/mnt/user-data/uploads/_claude.json"
-    if [ -f "$CLAUDE_JSON" ]; then
-        GITHUB_PAT=$(grep -oP '"Authorization":\s*"Bearer \K[^"]+' "$CLAUDE_JSON" 2>/dev/null || true)
-        if [ -z "$GITHUB_PAT" ]; then
-            GITHUB_PAT=$(grep -oP 'github_pat_[A-Za-z0-9_]+' "$CLAUDE_JSON" 2>/dev/null || true)
-        fi
-    fi
-fi
-
-if [ -n "$GITHUB_PAT" ]; then
-    AUTH_URL="https://${GITHUB_PAT}@github.com/damiant3/NewRepository.git"
-    ok "PAT found"
-else
-    AUTH_URL="$REPO_URL"
-    warn "No PAT found — will try unauthenticated clone (may fail for private repos)"
-fi
-
-# ═══════════════════════════════════════════════════════════════
-# STEP 2: Install .NET 8 SDK
-# ═══════════════════════════════════════════════════════════════
-
-step "Step 2: Checking .NET SDK"
+step "Step 1: Checking .NET SDK"
 
 export PATH="$PATH:/root/.dotnet"
 export DOTNET_ROOT="/root/.dotnet"
@@ -89,10 +61,10 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════
-# STEP 2b: Install QEMU and cross-compilers
+# STEP 2: Install QEMU and cross-compilers
 # ═══════════════════════════════════════════════════════════════
 
-step "Step 2b: Checking QEMU & cross-compilers"
+step "Step 2: Checking QEMU & cross-compilers"
 
 NEED_INSTALL=false
 for tool in qemu-system-x86_64 qemu-aarch64 qemu-riscv64 aarch64-linux-gnu-gcc riscv64-linux-gnu-gcc; do
@@ -118,8 +90,8 @@ step "Step 3: Getting latest code"
 
 if [ -d "$REPO_DIR/.git" ]; then
     cd "$REPO_DIR"
-    # Update remote URL in case PAT changed
-    git remote set-url origin "$AUTH_URL" 2>/dev/null || true
+    # Ensure remote URL is correct
+    git remote set-url origin "$REPO_URL" 2>/dev/null || true
     BEFORE=$(git rev-parse HEAD)
     git pull --rebase origin master 2>&1 | tail -3
     AFTER=$(git rev-parse HEAD)
@@ -131,7 +103,7 @@ if [ -d "$REPO_DIR/.git" ]; then
     fi
 else
     echo "  Cloning repository..."
-    git clone "$AUTH_URL" "$REPO_DIR" 2>&1 | tail -2
+    git clone "$REPO_URL" "$REPO_DIR" 2>&1 | tail -2
     cd "$REPO_DIR"
     ok "Cloned @ $(git log -1 --format='%h %s')"
 fi
@@ -141,10 +113,10 @@ git config user.email "agent-linux@codex.dev"
 git config user.name "Agent Linux"
 
 # ═══════════════════════════════════════════════════════════════
-# STEP 3b: Clean stale test intermediates
+# STEP 4: Clean stale test intermediates
 # ═══════════════════════════════════════════════════════════════
 
-step "Step 3b: Cleaning stale intermediates"
+step "Step 4: Cleaning stale intermediates"
 
 # Stale .elf, .dll, .cs outputs cause false test results — you test
 # yesterday's codegen against today's type system. Same class as QEMU
@@ -166,10 +138,10 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════
-# STEP 4: Build
+# STEP 5: Build
 # ═══════════════════════════════════════════════════════════════
 
-step "Step 4: Building"
+step "Step 5: Building"
 START=$SECONDS
 
 # Build CLI (all backends) and test projects separately.
@@ -197,10 +169,10 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════
-# STEP 5: Run tests (summary only)
+# STEP 6: Run tests (summary only)
 # ═══════════════════════════════════════════════════════════════
 
-step "Step 5: Running tests"
+step "Step 6: Running tests"
 START=$SECONDS
 
 TOTAL_PASSED=0
@@ -225,10 +197,10 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════
-# STEP 6: Show unmerged feature branches
+# STEP 7: Show unmerged feature branches
 # ═══════════════════════════════════════════════════════════════
 
-step "Step 6: Unmerged branches"
+step "Step 7: Unmerged branches"
 
 UNMERGED=0
 for b in $(git branch -r | grep -v HEAD | grep -v master); do
@@ -245,12 +217,12 @@ if [ "$UNMERGED" -eq 0 ]; then
 fi
 
 # ═══════════════════════════════════════════════════════════════
-# STEP 7: Show CurrentPlan summary
+# STEP 8: Show CurrentPlan summary
 # ═══════════════════════════════════════════════════════════════
 
 PLAN="$REPO_DIR/docs/CurrentPlan.md"
 if [ -f "$PLAN" ]; then
-    step "Step 7: Current Plan"
+    step "Step 8: Current Plan"
     # Show the snapshot table and horizons summary
     echo ""
     sed -n '/^### Snapshot/,/^---$/p' "$PLAN" | head -20
