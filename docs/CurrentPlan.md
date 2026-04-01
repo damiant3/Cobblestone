@@ -34,9 +34,9 @@ x86-64 binaries, achieving fixed-point self-compilation. No C# in the chain.
 | ~~2~~ | ~~ELF writer + CDX binary format writer in Codex~~ | ~~Done~~ |
 | ~~3~~ | ~~Core codegen (M3.1–M3.9: int, let, if, calls, records, match, lists, TCO, closures)~~ | ~~Done — 1,400 lines, all 9 milestones QEMU-proven~~ |
 | ~~4~~ | ~~Runtime helpers (16 of 22: string, list, math)~~ | ~~Done — 1,300 lines, pingpong green at 548KB ELF~~ |
-| 5 | Builtins (36 operations) + remaining 5 I/O/CCE helpers | **Next** |
+| 5 | Builtins (~30 pure-CCE operations, no I/O boundary) | **Next** |
 | 6 | Escape copy & regions | Unblocked — will shrink 109MB HWM |
-| 7 | Bare-metal boot sequence | Waiting on 5-6 |
+| 7 | Boot + I/O boundary (CCE tables, print-line, read/write, 5 deferred helpers) | Waiting on 5-6 |
 | 8 | Self-compilation fixed point | **MM4: cord is cut** |
 
 **Work style**: Single agent (Cam), one phase at a time. Other agents review
