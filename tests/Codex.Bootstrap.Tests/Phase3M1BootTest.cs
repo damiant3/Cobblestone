@@ -412,6 +412,154 @@ public class Phase3M1BootTest
         finally { try { Directory.Delete(tempDir, true); } catch { } }
     }
 
+    [Fact]
+    public void M38_TcoSum_Prints100000()
+    {
+        if (!HasWslQemu()) return;
+
+        // tco-count n acc = if n == 0 then acc else tco-count (n - 1) (acc + 1)
+        // main = tco-count 100000 0
+        // Without TCO this would stack overflow at 100K recursions.
+        var tcoBody = new IrIf(
+            new IrBinary(new IrEq(),
+                new IrName("n", new IntegerTy()),
+                new IrIntLit(0),
+                new BooleanTy()),
+            new IrName("acc", new IntegerTy()),
+            new IrApply(
+                new IrApply(
+                    new IrName("tco-count", new FunTy(new IntegerTy(), new FunTy(new IntegerTy(), new IntegerTy()))),
+                    new IrBinary(new IrSubInt(),
+                        new IrName("n", new IntegerTy()),
+                        new IrIntLit(1),
+                        new IntegerTy()),
+                    new FunTy(new IntegerTy(), new IntegerTy())),
+                new IrBinary(new IrAddInt(),
+                    new IrName("acc", new IntegerTy()),
+                    new IrIntLit(1),
+                    new IntegerTy()),
+                new IntegerTy()),
+            new IntegerTy());
+
+        var tcoDef = new IRDef(
+            "tco-count",
+            new List<IRParam> {
+                new IRParam("n", new IntegerTy()),
+                new IRParam("acc", new IntegerTy())
+            },
+            new IntegerTy(),
+            tcoBody);
+
+        var mainBody = new IrApply(
+            new IrApply(
+                new IrName("tco-count", new FunTy(new IntegerTy(), new FunTy(new IntegerTy(), new IntegerTy()))),
+                new IrIntLit(100000),
+                new FunTy(new IntegerTy(), new IntegerTy())),
+            new IrIntLit(0),
+            new IntegerTy());
+
+        var mainDef = new IRDef(
+            "\u001a\u000f\u0011\u0012",
+            new List<IRParam>(),
+            new IntegerTy(),
+            mainBody);
+
+        var module = new IRModule(
+            new Name("\u000e\u000d\u0013\u000e"),
+            new List<IRDef> { tcoDef, mainDef });
+
+        List<long> elfBytes = Codex_Codex_Codex.x86_64_emit_module(module);
+        byte[] elf = elfBytes.Select(b => (byte)b).ToArray();
+        m_output.WriteLine($"ELF size: {elf.Length} bytes");
+
+        string tempDir = Path.Combine(Path.GetTempPath(), $"codex_m38_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            string elfPath = Path.Combine(tempDir, "test.elf");
+            File.WriteAllBytes(elfPath, elf);
+            string wslPath = WindowsToWslPath(elfPath);
+            string? output = RunWsl($"timeout 30 /usr/bin/qemu-system-x86_64 -kernel {wslPath} -nographic -no-reboot 2>/dev/null");
+            m_output.WriteLine($"QEMU output: [{output}]");
+            Assert.NotNull(output);
+            Assert.Contains("100000", output);
+        }
+        finally { try { Directory.Delete(tempDir, true); } catch { } }
+    }
+
+    [Fact]
+    public void M39_HigherOrderFunction_Prints42()
+    {
+        if (!HasWslQemu()) return;
+
+        // double x = x + x
+        // apply-fn f x = f x
+        // main = apply-fn double 21
+        var intTy = new IntegerTy();
+        var fnTy = new FunTy(intTy, intTy);
+
+        var doubleDef = new IRDef(
+            "double",
+            new List<IRParam> { new IRParam("x", intTy) },
+            intTy,
+            new IrBinary(new IrAddInt(),
+                new IrName("x", intTy),
+                new IrName("x", intTy),
+                intTy));
+
+        // apply-fn f x = f x
+        var applyBody = new IrApply(
+            new IrName("f", fnTy),
+            new IrName("x", intTy),
+            intTy);
+
+        var applyDef = new IRDef(
+            "apply-fn",
+            new List<IRParam> {
+                new IRParam("f", fnTy),
+                new IRParam("x", intTy)
+            },
+            intTy,
+            applyBody);
+
+        // main = apply-fn double 21
+        var mainBody = new IrApply(
+            new IrApply(
+                new IrName("apply-fn", new FunTy(fnTy, new FunTy(intTy, intTy))),
+                new IrName("double", fnTy),
+                new FunTy(intTy, intTy)),
+            new IrIntLit(21),
+            intTy);
+
+        var mainDef = new IRDef(
+            "\u001a\u000f\u0011\u0012",
+            new List<IRParam>(),
+            intTy,
+            mainBody);
+
+        var module = new IRModule(
+            new Name("\u000e\u000d\u0013\u000e"),
+            new List<IRDef> { doubleDef, applyDef, mainDef });
+
+        List<long> elfBytes = Codex_Codex_Codex.x86_64_emit_module(module);
+        byte[] elf = elfBytes.Select(b => (byte)b).ToArray();
+        m_output.WriteLine($"ELF size: {elf.Length} bytes");
+
+        string tempDir = Path.Combine(Path.GetTempPath(), $"codex_m39_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            string elfPath = Path.Combine(tempDir, "test.elf");
+            File.WriteAllBytes(elfPath, elf);
+            string wslPath = WindowsToWslPath(elfPath);
+            string? output = RunWsl($"timeout 10 /usr/bin/qemu-system-x86_64 -kernel {wslPath} -nographic -no-reboot 2>/dev/null");
+            m_output.WriteLine($"QEMU output: [{output}]");
+            Assert.NotNull(output);
+            Assert.Contains("42", output);
+        }
+        finally { try { Directory.Delete(tempDir, true); } catch { } }
+    }
+
     static bool HasWslQemu()
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return false;
