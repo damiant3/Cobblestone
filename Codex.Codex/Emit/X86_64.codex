@@ -26,16 +26,34 @@ Section: Record Types
    slot : Integer
   }
 
+  FuncAddrFixup = record {
+   patch-offset : Integer,
+   target : Text
+  }
+
+  TcoState = record {
+   active : Boolean,
+   in-tail-pos : Boolean,
+   loop-top : Integer,
+   param-locals : List Integer,
+   temp-locals : List Integer,
+   current-func : Text,
+   saved-next-local : Integer,
+   saved-next-temp : Integer
+  }
+
   CodegenState = record {
    text : List Integer,
    rodata : List Integer,
    func-offsets : List FuncOffset,
    call-patches : List CallPatch,
+   func-addr-fixups : List FuncAddrFixup,
    locals : List LocalBinding,
    next-temp : Integer,
    next-local : Integer,
    spill-count : Integer,
-   load-local-toggle : Integer
+   load-local-toggle : Integer,
+   tco : TcoState
   }
 
   EmitResult = record {
@@ -75,6 +93,19 @@ Section: Record Types
 
 Section: Constants
 
+  default-tco-state : TcoState
+  default-tco-state =
+   TcoState {
+    active = False,
+    in-tail-pos = False,
+    loop-top = 0,
+    param-locals = [],
+    temp-locals = [],
+    current-func = "",
+    saved-next-local = 0,
+    saved-next-temp = 0
+   }
+
   temp-regs : List Integer
   temp-regs = [0, 1, 2, 6, 7, 11]
 
@@ -99,11 +130,13 @@ Section: State Helpers
     rodata = [],
     func-offsets = [],
     call-patches = [],
+    func-addr-fixups = [],
     locals = [],
     next-temp = 0,
     next-local = 0,
     spill-count = 0,
-    load-local-toggle = 0
+    load-local-toggle = 0,
+    tco = default-tco-state
    }
 
   st-append-text : CodegenState -> List Integer -> CodegenState
@@ -113,11 +146,13 @@ Section: State Helpers
     rodata = st.rodata,
     func-offsets = st.func-offsets,
     call-patches = st.call-patches,
+    func-addr-fixups = st.func-addr-fixups,
     locals = st.locals,
     next-temp = st.next-temp,
     next-local = st.next-local,
     spill-count = st.spill-count,
-    load-local-toggle = st.load-local-toggle
+    load-local-toggle = st.load-local-toggle,
+    tco = st.tco
    }
 
   st-with-text : CodegenState -> List Integer -> CodegenState
@@ -127,11 +162,13 @@ Section: State Helpers
     rodata = st.rodata,
     func-offsets = st.func-offsets,
     call-patches = st.call-patches,
+    func-addr-fixups = st.func-addr-fixups,
     locals = st.locals,
     next-temp = st.next-temp,
     next-local = st.next-local,
     spill-count = st.spill-count,
-    load-local-toggle = st.load-local-toggle
+    load-local-toggle = st.load-local-toggle,
+    tco = st.tco
    }
 
   record-func-offset : CodegenState -> Text -> CodegenState
@@ -141,11 +178,13 @@ Section: State Helpers
     rodata = st.rodata,
     func-offsets = list-snoc st.func-offsets (FuncOffset { name = name, offset = list-length st.text }),
     call-patches = st.call-patches,
+    func-addr-fixups = st.func-addr-fixups,
     locals = st.locals,
     next-temp = st.next-temp,
     next-local = st.next-local,
     spill-count = st.spill-count,
-    load-local-toggle = st.load-local-toggle
+    load-local-toggle = st.load-local-toggle,
+    tco = st.tco
    }
 
   lookup-func-offset : List FuncOffset -> Text -> Integer
@@ -166,11 +205,13 @@ Section: State Helpers
     rodata = st.rodata,
     func-offsets = list-snoc st.func-offsets (FuncOffset { name = name, offset = list-length st.text }),
     call-patches = st.call-patches,
+    func-addr-fixups = st.func-addr-fixups,
     locals = [],
     next-temp = 0,
     next-local = 0,
     spill-count = 0,
-    load-local-toggle = 0
+    load-local-toggle = 0,
+    tco = default-tco-state
    }
 
 Section: Register Allocation
@@ -191,11 +232,13 @@ Section: Register Allocation
      rodata = st.rodata,
      func-offsets = st.func-offsets,
      call-patches = st.call-patches,
+     func-addr-fixups = st.func-addr-fixups,
      locals = st.locals,
      next-temp = st.next-temp + 1,
      next-local = st.next-local,
      spill-count = st.spill-count,
-     load-local-toggle = st.load-local-toggle
+     load-local-toggle = st.load-local-toggle,
+     tco = st.tco
     },
     reg = reg
    }
@@ -210,11 +253,13 @@ Section: Register Allocation
       rodata = st.rodata,
       func-offsets = st.func-offsets,
       call-patches = st.call-patches,
+      func-addr-fixups = st.func-addr-fixups,
       locals = st.locals,
       next-temp = st.next-temp,
       next-local = st.next-local + 1,
       spill-count = st.spill-count,
-      load-local-toggle = st.load-local-toggle
+      load-local-toggle = st.load-local-toggle,
+      tco = st.tco
      },
      reg = reg
     }
@@ -225,11 +270,13 @@ Section: Register Allocation
       rodata = st.rodata,
       func-offsets = st.func-offsets,
       call-patches = st.call-patches,
+      func-addr-fixups = st.func-addr-fixups,
       locals = st.locals,
       next-temp = st.next-temp,
       next-local = st.next-local + 1,
       spill-count = st.spill-count + 1,
-      load-local-toggle = st.load-local-toggle
+      load-local-toggle = st.load-local-toggle,
+      tco = st.tco
      },
      reg = slot
     }
@@ -254,11 +301,13 @@ Section: Register Allocation
       rodata = st.rodata,
       func-offsets = st.func-offsets,
       call-patches = st.call-patches,
+      func-addr-fixups = st.func-addr-fixups,
       locals = st.locals,
       next-temp = st.next-temp,
       next-local = st.next-local,
       spill-count = st.spill-count,
-      load-local-toggle = st.load-local-toggle + 1
+      load-local-toggle = st.load-local-toggle + 1,
+      tco = st.tco
      },
      reg = scratch
     }
@@ -375,6 +424,77 @@ Section: Function Emission
       in store-local (st-append-text tmp.state (mov-load tmp.reg reg-rbp stack-offset)) loc.reg tmp.reg
     in bind-params (add-local st1 p.name loc.reg) params (i + 1)
 
+  is-self-call : IRExpr -> Text -> Boolean
+  is-self-call (expr) (func-name) =
+   when expr
+    if IrApply (f) (a) (t) -> is-self-call f func-name
+    if IrName (n) (t) -> n == func-name
+    if _ -> False
+
+  has-tail-call : IRExpr -> Text -> Boolean
+  has-tail-call (expr) (func-name) =
+   when expr
+    if IrIf (c) (th) (el) (t) -> has-tail-call th func-name | has-tail-call el func-name
+    if IrLet (n) (t) (v) (b) -> has-tail-call b func-name
+    if IrMatch (s) (bs) (t) -> has-tail-call-branches bs func-name 0
+    if IrApply (f) (a) (t) -> is-self-call expr func-name
+    if _ -> False
+
+  has-tail-call-branches : List IRBranch -> Text -> Integer -> Boolean
+  has-tail-call-branches (branches) (func-name) (i) =
+   if i == list-length branches then False
+   else let b = list-at branches i
+    in if has-tail-call b.body func-name then True
+    else has-tail-call-branches branches func-name (i + 1)
+
+  should-tco : IRDef -> Boolean
+  should-tco (def) =
+   if list-length def.params > 0 then has-tail-call def.body def.name
+   else False
+
+  st-set-tail-pos : CodegenState -> Boolean -> CodegenState
+  st-set-tail-pos (st) (v) =
+   CodegenState {
+    text = st.text,
+    rodata = st.rodata,
+    func-offsets = st.func-offsets,
+    call-patches = st.call-patches,
+    func-addr-fixups = st.func-addr-fixups,
+    locals = st.locals,
+    next-temp = st.next-temp,
+    next-local = st.next-local,
+    spill-count = st.spill-count,
+    load-local-toggle = st.load-local-toggle,
+    tco = TcoState {
+     active = st.tco.active,
+     in-tail-pos = v,
+     loop-top = st.tco.loop-top,
+     param-locals = st.tco.param-locals,
+     temp-locals = st.tco.temp-locals,
+     current-func = st.tco.current-func,
+     saved-next-local = st.tco.saved-next-local,
+     saved-next-temp = st.tco.saved-next-temp
+    }
+   }
+
+  TcoAllocResult = record {
+   alloc-state : CodegenState,
+   alloc-locals : List Integer
+  }
+
+  pre-alloc-tco-temps : CodegenState -> Integer -> Integer -> List Integer -> TcoAllocResult
+  pre-alloc-tco-temps (st) (i) (count) (acc) =
+   if i == count then TcoAllocResult { alloc-state = st, alloc-locals = acc }
+   else let loc = alloc-local st
+    in pre-alloc-tco-temps loc.state (i + 1) count (list-snoc acc loc.reg)
+
+  collect-param-locals : List LocalBinding -> List IRParam -> Integer -> List Integer -> List Integer
+  collect-param-locals (bindings) (params) (i) (acc) =
+   if i == list-length params then acc
+   else let p = list-at params i
+    in let slot = lookup-local bindings p.name
+    in collect-param-locals bindings params (i + 1) (list-snoc acc slot)
+
   emit-function : CodegenState -> IRDef -> CodegenState
   emit-function (st) (def) =
    let st1 = reset-func-state st def.name
@@ -382,12 +502,40 @@ Section: Function Emission
    in let frame-patch-pos = list-length st2.text
    in let st3 = st-append-text st2 (emit-sub-rsp-imm32 0)
    in let st4 = bind-params st3 def.params 0
-   in let result = emit-expr st4 def.body
-   in let st4 = if result.reg == reg-rax then result.state
+   in let is-tco = should-tco def
+   in let st5 = if is-tco
+    then let tco-alloc = pre-alloc-tco-temps st4 0 (list-length def.params) []
+     in let st-a = tco-alloc.alloc-state
+     in let p-locals = collect-param-locals st-a.locals def.params 0 []
+     in CodegenState {
+      text = st-a.text,
+      rodata = st-a.rodata,
+      func-offsets = st-a.func-offsets,
+      call-patches = st-a.call-patches,
+      func-addr-fixups = st-a.func-addr-fixups,
+      locals = st-a.locals,
+      next-temp = st-a.next-temp,
+      next-local = st-a.next-local,
+      spill-count = st-a.spill-count,
+      load-local-toggle = st-a.load-local-toggle,
+      tco = TcoState {
+       active = True,
+       in-tail-pos = True,
+       loop-top = list-length st-a.text,
+       param-locals = p-locals,
+       temp-locals = tco-alloc.alloc-locals,
+       current-func = def.name,
+       saved-next-local = st-a.next-local,
+       saved-next-temp = st-a.next-temp
+      }
+     }
+    else st4
+   in let result = emit-expr st5 def.body
+   in let st6 = if result.reg == reg-rax then result.state
     else st-append-text result.state (mov-rr reg-rax result.reg)
-   in let st5 = emit-epilogue st4
-   in let frame-size = align-16 (st5.spill-count * 8)
-   in st-with-text st5 (patch-i32-at st5.text (frame-patch-pos + 3) frame-size)
+   in let st7 = emit-epilogue st6
+   in let frame-size = align-16 (st7.spill-count * 8)
+   in st-with-text st7 (patch-i32-at st7.text (frame-patch-pos + 3) frame-size)
 
   emit-all-defs : CodegenState -> List IRDef -> Integer -> CodegenState
   emit-all-defs (st) (defs) (i) =
@@ -414,11 +562,13 @@ Section: Local Variable Management
     rodata = st.rodata,
     func-offsets = st.func-offsets,
     call-patches = st.call-patches,
+    func-addr-fixups = st.func-addr-fixups,
     locals = list-snoc st.locals (LocalBinding { name = name, slot = slot }),
     next-temp = st.next-temp,
     next-local = st.next-local,
     spill-count = st.spill-count,
-    load-local-toggle = st.load-local-toggle
+    load-local-toggle = st.load-local-toggle,
+    tco = st.tco
    }
 
 Section: Expression Emission
@@ -468,6 +618,7 @@ Section: Expression Emission
      in if tag >= 0
       then emit-nullary-ctor st tag
       else emit-name-as-call st name
+    if FunTy (pt) (rt) -> emit-partial-application st name []
     if _ -> emit-name-as-call st name
 
   emit-nullary-ctor : CodegenState -> Integer -> EmitResult
@@ -494,11 +645,12 @@ Section: Expression Emission
 
   emit-let : CodegenState -> Text -> IRExpr -> IRExpr -> EmitResult
   emit-let (st) (name) (value) (body) =
-   let val-result = emit-expr st value
+   let saved-tail = st.tco.in-tail-pos
+   in let val-result = emit-expr (st-set-tail-pos st False) value
    in let loc = alloc-local val-result.state
    in let st1 = store-local loc.state loc.reg val-result.reg
    in let st2 = add-local st1 name loc.reg
-   in emit-expr st2 body
+   in emit-expr (st-set-tail-pos st2 saved-tail) body
 
   emit-binary : CodegenState -> IRBinaryOp -> IRExpr -> IRExpr -> EmitResult
   emit-binary (st) (op) (left) (right) =
@@ -540,17 +692,18 @@ Section: Expression Emission
 
   emit-if : CodegenState -> IRExpr -> IRExpr -> IRExpr -> EmitResult
   emit-if (st) (cond) (then-e) (else-e) =
-   let cond-result = emit-expr st cond
+   let saved-tail = st.tco.in-tail-pos
+   in let cond-result = emit-expr (st-set-tail-pos st False) cond
    in let st1 = st-append-text cond-result.state (test-rr cond-result.reg cond-result.reg)
    in let je-false-pos = list-length st1.text
    in let st2 = st-append-text st1 (jcc cc-e 0)
-   in let then-result = emit-expr st2 then-e
+   in let then-result = emit-expr (st-set-tail-pos st2 saved-tail) then-e
    in let result-loc = alloc-local then-result.state
    in let st3 = store-local result-loc.state result-loc.reg then-result.reg
    in let jmp-end-pos = list-length st3.text
    in let st4 = st-append-text st3 (jmp 0)
    in let st5 = patch-jcc-at st4 je-false-pos (list-length st4.text)
-   in let else-result = emit-expr st5 else-e
+   in let else-result = emit-expr (st-set-tail-pos st5 saved-tail) else-e
    in let st6 = store-local else-result.state result-loc.reg else-result.reg
    in let st7 = patch-jmp-at st6 jmp-end-pos (list-length st6.text)
    in load-local st7 result-loc.reg
@@ -596,17 +749,27 @@ Section: Function Application
 
   emit-apply : CodegenState -> IRExpr -> IRExpr -> CodexType -> EmitResult
   emit-apply (st) (func-expr) (arg-expr) (result-ty) =
-   let flat = flatten-apply func-expr [arg-expr]
-   in when result-ty
-    if SumTy (sname) (ctors) ->
-     let tag = find-ctor-tag ctors flat.func-name 0
-     in if tag >= 0 then emit-sum-ctor st flat.args tag
-     else emit-direct-call st flat
-    if _ -> emit-direct-call st flat
+   let full-expr = IrApply func-expr arg-expr result-ty
+   in if st.tco.active & st.tco.in-tail-pos & is-self-call full-expr st.tco.current-func
+    then emit-tail-call st func-expr arg-expr
+    else let flat = flatten-apply func-expr [arg-expr]
+     in when result-ty
+      if SumTy (sname) (ctors) ->
+       let tag = find-ctor-tag ctors flat.func-name 0
+       in if tag >= 0 then emit-sum-ctor st flat.args tag
+       else emit-direct-call st flat
+      if FunTy (pt) (rt) ->
+       let is-local = lookup-local st.locals flat.func-name >= 0
+       in if is-local then emit-indirect-call st flat
+       else emit-partial-application st flat.func-name flat.args
+      if _ ->
+       let is-local = lookup-local st.locals flat.func-name >= 0
+       in if is-local then emit-indirect-call st flat
+       else emit-direct-call st flat
 
   emit-direct-call : CodegenState -> FlatApply -> EmitResult
   emit-direct-call (st) (flat) =
-   let saved = save-args-loop st flat.args 0 []
+   let saved = save-args-loop (st-set-tail-pos st False) flat.args 0 []
    in let arg-count = list-length flat.args
    in let st1 = push-stack-args saved.state saved.locals (arg-count - 1)
    in let reg-count = if arg-count < 6 then arg-count else 6
@@ -621,6 +784,57 @@ Section: Function Application
    in EmitResult {
     state = st-append-text tmp.state (mov-rr tmp.reg reg-rax),
     reg = tmp.reg
+   }
+
+  emit-indirect-call : CodegenState -> FlatApply -> EmitResult
+  emit-indirect-call (st) (flat) =
+   let saved = save-args-loop (st-set-tail-pos st False) flat.args 0 []
+   in let arg-count = list-length flat.args
+   in let reg-count = if arg-count < 6 then arg-count else 6
+   in let st1 = push-reg-args saved.state saved.locals 0 reg-count
+   in let st2 = pop-to-arg-regs st1 (reg-count - 1)
+   in let closure-load = load-local st2 (lookup-local st2.locals flat.func-name)
+   in let st3 = st-append-text closure-load.state (mov-rr reg-r11 closure-load.reg)
+   in let st4 = st-append-text st3 (mov-load reg-rax reg-r11 0)
+   in let st5 = st-append-text st4 [255, 208]
+   in let tmp = alloc-temp st5
+   in EmitResult {
+    state = st-append-text tmp.state (mov-rr tmp.reg reg-rax),
+    reg = tmp.reg
+   }
+
+  flatten-tail-args : IRExpr -> List IRExpr -> List IRExpr
+  flatten-tail-args (expr) (acc) =
+   when expr
+    if IrApply (f) (a) (t) -> flatten-tail-args f ([a] ++ acc)
+    if _ -> acc
+
+  eval-tail-args : CodegenState -> List IRExpr -> List Integer -> Integer -> CodegenState
+  eval-tail-args (st) (args) (temp-locals) (i) =
+   if i == list-length args then st
+   else let st-notail = st-set-tail-pos st False
+    in let r = emit-expr st-notail (list-at args i)
+    in let st1 = store-local r.state (list-at temp-locals i) r.reg
+    in eval-tail-args st1 args temp-locals (i + 1)
+
+  copy-temps-to-params : CodegenState -> List Integer -> List Integer -> Integer -> CodegenState
+  copy-temps-to-params (st) (temp-locals) (param-locals) (i) =
+   if i == list-length temp-locals then st
+   else let loaded = load-local st (list-at temp-locals i)
+    in let st1 = store-local loaded.state (list-at param-locals i) loaded.reg
+    in copy-temps-to-params st1 temp-locals param-locals (i + 1)
+
+  emit-tail-call : CodegenState -> IRExpr -> IRExpr -> EmitResult
+  emit-tail-call (st) (func-expr) (arg-expr) =
+   let args = flatten-tail-args func-expr [arg-expr]
+   in let st1 = eval-tail-args st args st.tco.temp-locals 0
+   in let st2 = copy-temps-to-params st1 st.tco.temp-locals st.tco.param-locals 0
+   in let rel32 = st.tco.loop-top - (list-length st2.text + 5)
+   in let st3 = st-append-text st2 (jmp rel32)
+   in let dummy = alloc-temp st3
+   in EmitResult {
+    state = st-append-text dummy.state (li dummy.reg 0),
+    reg = dummy.reg
    }
 
   emit-sum-ctor : CodegenState -> List IRExpr -> Integer -> EmitResult
@@ -647,6 +861,84 @@ Section: Function Application
     in let ptr = load-local val.state ptr-loc
     in let st1 = st-append-text ptr.state (mov-store ptr.reg val.reg (8 + i * 8))
     in emit-store-ctor-fields st1 field-locals ptr-loc (i + 1)
+
+Section: Closures and Partial Application
+
+  emit-load-func-addr : CodegenState -> Integer -> Text -> CodegenState
+  emit-load-func-addr (st) (reg) (func-name) =
+   let fixup = FuncAddrFixup { patch-offset = list-length st.text + 2, target = func-name }
+   in let st1 = st-append-text st (mov-ri64 reg 0)
+   in CodegenState {
+    text = st1.text,
+    rodata = st1.rodata,
+    func-offsets = st1.func-offsets,
+    call-patches = st1.call-patches,
+    func-addr-fixups = list-snoc st1.func-addr-fixups fixup,
+    locals = st1.locals,
+    next-temp = st1.next-temp,
+    next-local = st1.next-local,
+    spill-count = st1.spill-count,
+    load-local-toggle = st1.load-local-toggle,
+    tco = st1.tco
+   }
+
+  emit-trampoline-shift-args : CodegenState -> Integer -> Integer -> CodegenState
+  emit-trampoline-shift-args (st) (i) (num-captures) =
+   if i < 0 then st
+   else if i + num-captures < 6
+    then emit-trampoline-shift-args (st-append-text st (mov-rr (list-at arg-regs (i + num-captures)) (list-at arg-regs i))) (i - 1) num-captures
+    else emit-trampoline-shift-args st (i - 1) num-captures
+
+  emit-trampoline-load-captures : CodegenState -> Integer -> Integer -> CodegenState
+  emit-trampoline-load-captures (st) (i) (num-captures) =
+   if i == num-captures then st
+   else if i < 6
+    then emit-trampoline-load-captures (st-append-text st (mov-load (list-at arg-regs i) reg-r11 (8 + i * 8))) (i + 1) num-captures
+    else st
+
+  emit-partial-application : CodegenState -> Text -> List IRExpr -> EmitResult
+  emit-partial-application (st) (func-name) (captured-args) =
+   let saved = save-args-loop (st-set-tail-pos st False) captured-args 0 []
+   in let num-captures = list-length captured-args
+   in let tramp-name = func-name ++ "__tramp__" ++ integer-to-text num-captures ++ "__" ++ integer-to-text (list-length saved.state.text)
+   in let jmp-over-pos = list-length saved.state.text
+   in let st1 = st-append-text saved.state (jmp 0)
+   in let st2 = record-func-offset st1 tramp-name
+   in let st3 = emit-trampoline-shift-args st2 5 num-captures
+   in let st4 = emit-trampoline-load-captures st3 0 num-captures
+   in let st5 = emit-load-func-addr st4 reg-rax func-name
+   in let st6 = st-append-text st5 [255, 224]
+   in let st7 = patch-jmp-at st6 jmp-over-pos (list-length st6.text)
+   in let closure-size = (1 + num-captures) * 8
+   in let ptr-loc = alloc-local st7
+   in let ptr-tmp = alloc-temp ptr-loc.state
+   in let st8 = st-append-text ptr-tmp.state (mov-rr ptr-tmp.reg reg-r10)
+   in let st9 = store-local st8 ptr-loc.reg ptr-tmp.reg
+   in let st10 = st-append-text st9 (add-ri reg-r10 closure-size)
+   in let st11 = emit-load-func-addr st10 reg-rax tramp-name
+   in let ptr-load1 = load-local st11 ptr-loc.reg
+   in let st12 = st-append-text ptr-load1.state (mov-store ptr-load1.reg reg-rax 0)
+   in let st13 = emit-store-closure-captures st12 saved.locals ptr-loc.reg 0
+   in load-local st13 ptr-loc.reg
+
+  emit-store-closure-captures : CodegenState -> List Integer -> Integer -> Integer -> CodegenState
+  emit-store-closure-captures (st) (cap-locals) (ptr-loc) (i) =
+   if i == list-length cap-locals then st
+   else let val = load-local st (list-at cap-locals i)
+    in let ptr = load-local val.state ptr-loc
+    in let st1 = st-append-text ptr.state (mov-store ptr.reg val.reg (8 + i * 8))
+    in emit-store-closure-captures st1 cap-locals ptr-loc (i + 1)
+
+  collect-func-addr-patches : List FuncAddrFixup -> List FuncOffset -> Integer -> Integer -> List PatchEntry -> List PatchEntry
+  collect-func-addr-patches (fixups) (offsets) (text-base) (i) (acc) =
+   if i == list-length fixups then acc
+   else let f = list-at fixups i
+    in let func-offset = lookup-func-offset offsets f.target
+    in let addr = text-base + func-offset
+    in let addr-bytes = write-i64 addr
+    in let p0 = PatchEntry { pos = f.patch-offset, b0 = list-at addr-bytes 0, b1 = list-at addr-bytes 1, b2 = list-at addr-bytes 2, b3 = list-at addr-bytes 3 }
+    in let p1 = PatchEntry { pos = f.patch-offset + 4, b0 = list-at addr-bytes 4, b1 = list-at addr-bytes 5, b2 = list-at addr-bytes 6, b3 = list-at addr-bytes 7 }
+    in collect-func-addr-patches fixups offsets text-base (i + 1) (acc ++ [p0, p1])
 
 Section: Record Emission
 
@@ -726,11 +1018,13 @@ Section: Pattern Matching
 
   emit-match : CodegenState -> IRExpr -> List IRBranch -> EmitResult
   emit-match (st) (scrut-expr) (branches) =
-   let scrut-result = emit-expr st scrut-expr
+   let saved-tail = st.tco.in-tail-pos
+   in let scrut-result = emit-expr (st-set-tail-pos st False) scrut-expr
    in let scrut-loc = alloc-local scrut-result.state
    in let st1 = store-local scrut-loc.state scrut-loc.reg scrut-result.reg
-   in let result-loc = alloc-local st1
-   in let mbs = MatchBranchState { cg-state = st1, end-patches = [] }
+   in let st1a = st-set-tail-pos st1 saved-tail
+   in let result-loc = alloc-local st1a
+   in let mbs = MatchBranchState { cg-state = st1a, end-patches = [] }
    in let mbs-final = emit-match-branch-loop mbs scrut-loc.reg result-loc.reg branches 0 (list-length branches)
    in let st-end = patch-match-end-jumps mbs-final.cg-state mbs-final.end-patches 0
    in load-local st-end result-loc.reg
@@ -1024,11 +1318,13 @@ Section: Call Emission
     rodata = st1.rodata,
     func-offsets = st1.func-offsets,
     call-patches = list-snoc st1.call-patches (CallPatch { patch-offset = patch-pos, target = target }),
+    func-addr-fixups = st1.func-addr-fixups,
     locals = st1.locals,
     next-temp = st1.next-temp,
     next-local = st1.next-local,
     spill-count = st1.spill-count,
-    load-local-toggle = st1.load-local-toggle
+    load-local-toggle = st1.load-local-toggle,
+    tco = st1.tco
    }
 
 Section: Bare-Metal Start
@@ -1068,11 +1364,13 @@ Section: Module Entry Point
     rodata = [],
     func-offsets = [],
     call-patches = [],
+    func-addr-fixups = [],
     locals = [],
     next-temp = 0,
     next-local = 0,
     spill-count = 0,
-    load-local-toggle = 0
+    load-local-toggle = 0,
+    tco = default-tco-state
    }
    in let st1 = emit-all-defs st0 m.defs 0
    in let st2 = emit-start st1
@@ -1080,6 +1378,7 @@ Section: Module Entry Point
    in let start-addr = bare-metal-load-addr + start-offset
    in let far-jump-entry = make-i32-patch (tramp.far-jump-patch-pos + 1) start-addr
    in let call-entries = collect-call-patches st2.call-patches st2.func-offsets 0 []
-   in let all-patches = [far-jump-entry] ++ call-entries
+   in let addr-entries = collect-func-addr-patches st2.func-addr-fixups st2.func-offsets bare-metal-load-addr 0 []
+   in let all-patches = [far-jump-entry] ++ call-entries ++ addr-entries
    in let st3 = st-with-text st2 (apply-all-patches st2.text all-patches)
    in build-elf-32-bare st3.text st3.rodata 12
