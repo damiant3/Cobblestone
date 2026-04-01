@@ -209,31 +209,44 @@ Split across files for sanity:
 and prints `42` to serial. This proves the full chain: Codex IR → Codex
 encoder → Codex ELF writer → working binary.
 
-### Phase 4: Runtime Helpers (~800 lines)
+### Phase 4: Runtime Helpers (~1,300 lines) — DONE (16 of 22)
 
-Port the 22 runtime helper functions:
+16 runtime helpers ported to `Emit/X86_64Helpers.codex`:
 
-| Category | Helpers |
-|----------|---------|
-| String | `__str_concat`, `__str_eq`, `__itoa`, `__str_replace`, `__text_contains`, `__text_starts_with`, `__text_compare` |
-| List | `__list_snoc`, `__list_insert_at`, `__list_contains`, `__list_cons`, `__list_append` |
-| Text/List | `__text_concat_list`, `__text_split` |
-| I/O | `__read_file`, `__read_line`, `__bare_metal_read_serial` |
-| Math | `__ipow`, `__text_to_int` |
-| CCE | `__cce_to_unicode`, `__unicode_to_cce` (table lookups) |
+| Category | Helpers | Status |
+|----------|---------|--------|
+| String | `__str_concat`, `__str_eq`, `__itoa`, `__str_replace`, `__text_contains`, `__text_starts_with`, `__text_compare` | Done |
+| List | `__list_snoc`, `__list_insert_at`, `__list_contains`, `__list_cons`, `__list_append` | Done |
+| Text/List | `__text_concat_list`, `__text_split` | Done |
+| Math | `__ipow`, `__text_to_int` | Done |
+| I/O | `__read_file`, `__read_line`, `__bare_metal_read_serial` | **Deferred** — need rodata fixups, syscalls, CCE tables |
+| CCE | `__cce_to_unicode`, `__unicode_to_cce` | **Deferred** — need rodata table support |
 
-These are assembly routines emitted as byte sequences. In C# they're
-inline `Emit` calls. In Codex they're functions that return byte lists,
-appended to the text section.
+The 5 deferred helpers require rodata fixup infrastructure (patching
+absolute addresses into `mov r64, imm64` instructions at link time)
+and CCE/Unicode conversion tables in the rodata section. These will
+land as part of Phase 5 (builtins) or Phase 7 (boot), which already
+need rodata support for string literals and the boot trampoline.
+
+Pingpong green: 548KB ELF, 109MB Stage 1 HWM, fixed point at 213K.
 
 ### Phase 5: Builtins (~800 lines)
 
-Port the 50+ builtin operation emissions. Each builtin maps a Codex
+Port ~30 pure-CCE builtin operations. Each builtin maps a Codex
 operation to an inline instruction sequence or a call to a runtime helper.
 
-Many builtins are thin wrappers: `text-length` → load string header,
-return length field. `list-at` → bounds check + indexed load. These
-translate straightforwardly.
+CCE boundary principle: everything inside the compiler operates on CCE
+natively. Unicode conversion happens only at I/O boundaries (Phase 7).
+No builtin in this phase needs CCE↔Unicode tables or rodata fixups.
+
+Two categories:
+- **Inline** (1-5 instructions): `text-length`, `list-length`, `list-at`,
+  `negate`, `char-at`, `char-code-at`, `is-digit`, `is-letter`, etc.
+- **Helper-calling** (move args + call): `text-replace` → `__str_replace`,
+  `list-cons` → `__list_cons`, `integer-to-text` → `__itoa`, etc.
+
+I/O builtins (`print-line`, `read-file`, `write-file`) are deferred to
+Phase 7 where the CCE↔Unicode tables and serial/file I/O live.
 
 ### Phase 6: Escape Copy & Regions (~600 lines)
 
@@ -247,10 +260,11 @@ Port the two-space GC and forwarding hash table:
 This is the most intricate code in the backend — pointer arithmetic,
 hash table operations, type-dispatched deep copy. Needs careful testing.
 
-### Phase 7: Bare-Metal Boot (~500 lines)
+### Phase 7: Boot + I/O Boundary (~700 lines)
 
-Port the boot sequence:
+Port the boot sequence and the I/O boundary (CCE↔Unicode gates):
 
+Boot sequence:
 - Multiboot header
 - 32→64 bit trampoline (page tables, GDT, mode switch)
 - Stack/heap setup
@@ -259,8 +273,17 @@ Port the boot sequence:
 - Syscall setup (MSRs, handler)
 - Process table, capability bits
 
-Much of this is constant byte sequences (the trampoline is essentially a
-data blob). The IDT/PIC/serial init is a sequence of port I/O instructions.
+I/O boundary (barbarians at the gates):
+- CCE→Unicode and Unicode→CCE lookup tables in rodata (384 bytes)
+- Rodata fixup infrastructure (patch absolute addresses at link time)
+- 5 deferred runtime helpers: `__read_file`, `__read_line`,
+  `__bare_metal_read_serial`, `__cce_to_unicode`, `__unicode_to_cce`
+- I/O builtins: `print-line`, `read-file`, `read-line`, `write-file`,
+  `file-exists`
+
+Much of the boot sequence is constant byte sequences (the trampoline is
+essentially a data blob). The I/O boundary is where CCE meets the outside
+world — every byte crosses the encoding gate exactly once.
 
 ### Phase 8: Self-Compilation — The Second Fixed Point
 
@@ -289,8 +312,9 @@ successors). The C# reference compiler is truly frozen.
 | ~~**M2**~~ | ~~ELF writer in Codex~~ | ~~Minimal ELF boots in QEMU, prints to serial~~ |
 | ~~**M3**~~ | ~~`main = 42`~~ | ~~Codex compiler (on .NET) emits bare-metal ELF, boots, prints `42`~~ |
 | ~~**M4**~~ | ~~`factorial 5`~~ | ~~Non-trivial program: recursion, arithmetic, print. Also: records, match, lists, TCO, closures~~ |
-| **M5** | Runtime helpers | String concat, list ops, itoa all working on bare metal |
-| **M6** | Escape copy | Region-based heap reclamation working |
+| ~~**M5**~~ | ~~Runtime helpers~~ | ~~16 of 22 helpers ported. Pingpong green at 213K output, 548KB ELF, 109MB HWM~~ |
+| **M5b** | Builtins (~30 pure-CCE ops) | Wires user code to helpers; no I/O boundary, no CCE tables needed |
+| **M6** | Escape copy | Region-based heap reclamation working — will shrink HWM from 109MB |
 | **M7** | Self-compilation | The compiler compiles itself to a bare-metal ELF |
 | **M8** | Fixed point | Stage 1 ELF == Stage 2 ELF. **This is MM4.** |
 
