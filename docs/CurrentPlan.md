@@ -32,11 +32,11 @@ x86-64 binaries, achieving fixed-point self-compilation. No C# in the chain.
 |-------|------|--------|
 | ~~1~~ | ~~x86-64 instruction encoder in Codex~~ | ~~Done~~ |
 | ~~2~~ | ~~ELF writer + CDX binary format writer in Codex~~ | ~~Done~~ |
-| 3 | Core codegen (expressions, records, lists, match, calls, TCO) | **M3.1–M3.3 done** (let/arithmetic, if/else/comparisons). M3.4–M3.9 remain. |
-| 4 | Runtime helpers (string, list, math, I/O) | Waiting on Phase 3 |
-| 5 | Builtins (50+ operations) | Waiting on Phase 3 |
-| 6 | Escape copy & regions | Waiting on Phase 3 |
-| 7 | Bare-metal boot sequence | Waiting on Phase 3 |
+| ~~3~~ | ~~Core codegen (M3.1–M3.9: int, let, if, calls, records, match, lists, TCO, closures)~~ | ~~Done — 1,400 lines, all 9 milestones QEMU-proven~~ |
+| 4 | Runtime helpers (string, list, math, I/O) | **Next** |
+| 5 | Builtins (50+ operations) | Unblocked |
+| 6 | Escape copy & regions | Unblocked |
+| 7 | Bare-metal boot sequence | Waiting on 4-6 |
 | 8 | Self-compilation fixed point | **MM4: cord is cut** |
 
 **Work style**: Single agent (Cam), one phase at a time. Other agents review
@@ -52,7 +52,7 @@ Ordered by dependency, not priority.
 
 | # | Item | Design doc | Depends on |
 |---|------|-----------|------------|
-| 1 | Crypto primitives (Ed25519, SHA-256) | None yet — write during or after MM4 | MM4 (must run on bare metal) |
+| 1 | Crypto primitives (Ed25519, SHA-256) | `docs/Codex.OS/CryptoPrimitives.md` | MM4 (must run on bare metal) + bitwise builtins |
 | 2 | CDX binary loader + verification | `docs/Codex.OS/CodexBinary.md` | Crypto (#1) |
 | 3 | Identity & authentication | None yet | Crypto (#1) |
 | 4 | Trust lattice (runtime) | `docs/Designs/Features/CAPABILITY-REFINEMENT.md` | Identity (#3) |
@@ -71,7 +71,6 @@ Ordered by dependency, not priority.
 
 | Topic | Why | Blocking |
 |-------|-----|----------|
-| Crypto primitives | Ed25519 + SHA-256 on bare metal, constant-time, in Codex | OS stack #1 |
 | Identity & authentication | Key generation, biometrics, trust bootstrap, first-boot ceremony | OS stack #3 |
 | The Verifier | Decidable subset, fuel limits, soundness argument, minimal trusted core | OS stack #10 |
 | The Shell | Prose-as-command, capability integration, tab completion | OS stack #13 |
@@ -101,9 +100,13 @@ Ordered by dependency, not priority.
 
 | Design | Doc | Status |
 |--------|-----|--------|
-| Second Bootstrap | `docs/Compiler/SECOND-BOOTSTRAP.md` | **Active — Phase 3 M3.4 next** |
-| Phase 3 Core Codegen | `docs/Compiler/PHASE3-CORE-CODEGEN.md` | **Active — M3.1–M3.3 done, M3.4–M3.9 remain** |
+| Second Bootstrap | `docs/Compiler/SECOND-BOOTSTRAP.md` | **Active — Phase 4 next** |
+| Phase 3 Core Codegen | `docs/Compiler/PHASE3-CORE-CODEGEN.md` | ~~Complete — all 9 milestones proven~~ |
 | CDX binary format | `docs/Codex.OS/CodexBinary.md` | ~~Complete, implemented in Phase 2~~ |
+| Crypto primitives | `docs/Codex.OS/CryptoPrimitives.md` | Design complete, implements after MM4 |
+| Language bitwise builtins | `docs/Codex.OS/LanguageUpdates.md` | Design complete, implements after MM4 |
+| Encoder updates (crypto) | `docs/Codex.OS/EncoderUpdates.md` | Design complete, implements after MM4 |
+| Module namespaces | `src/Codex.Semantics/ModuleScoper.cs` | ~~Implemented and merged~~ |
 | Trust network | `docs/Codex.OS/TrustNetwork.md` | Complete, implements after MM4 |
 | Agent protocol | `docs/Codex.OS/RuntimeTrust.txt` §1 | Complete |
 | Policy contract | `docs/Codex.OS/RuntimeTrust.txt` §2 | Complete |
@@ -122,4 +125,4 @@ Ordered by dependency, not priority.
 
 Every estimate has been wrong by orders of magnitude, in both directions.
 We don't put dates on mountains. The critical path is ordered. The next
-hold is Phase 3, milestone M3.4 (function calls + recursion). That's all we need to know.
+hold is Phase 4 (runtime helpers). That's all we need to know.
