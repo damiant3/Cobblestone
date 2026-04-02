@@ -5,9 +5,10 @@ using Codex.Types;
 
 namespace Codex.Emit.X86_64;
 
-sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
+sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool diagnostic = false)
 {
     readonly X86_64Target m_target = target;
+    readonly bool m_diagnostic = diagnostic;
     readonly List<byte> m_text = [];
     readonly List<byte> m_rodata = [];
     readonly Dictionary<string, int> m_functionOffsets = [];
@@ -86,6 +87,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             EmitFunction(def);
 
         EmitEscapeCopyHelpers();
+        EmitDiagHexHelper();
 
         // Bare metal: emit ISR stubs, syscall handler, process 1 entry
         if (m_target == X86_64Target.BareMetal)
@@ -195,6 +197,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
     int m_tcoHeapMarkLocal;              // stack local: HeapReg value at TCO loop top
     CodexType[] m_tcoParamTypes = [];    // parameter types for TCO heap-reset check
     int[]?[] m_tcoDecompLocals = [];     // [paramIdx] = field locals, or null if not decomposed
+    int[] m_tcoOldListCountLocals = [];         // [paramIdx] = local for pre-eval list count, or -1
+    int[]?[] m_tcoOldListFieldCountLocals = []; // [paramIdx][fieldIdx] = local for pre-eval list field count
 
     void EmitTailCall(IRApply app)
     {
@@ -220,6 +224,37 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         m_nextLocal = m_tcoSavedNextLocal;
         m_nextTemp = m_tcoSavedNextTemp;
 
+        // Snapshot list counts before arg evaluation — in-place list-snoc
+        // modifies the count at the same pointer, so we must capture the
+        // old count before any args are evaluated.
+        for (int i = 0; i < args.Count && i < m_tcoParamTypes.Length; i++)
+        {
+            if (i < m_tcoOldListCountLocals.Length && m_tcoOldListCountLocals[i] >= 0)
+            {
+                byte listPtr = LoadLocal(m_tcoParamLocals[i]);
+                byte countReg = AllocTemp();
+                X86_64Encoder.MovLoad(m_text, countReg, listPtr, 0);
+                StoreLocal(m_tcoOldListCountLocals[i], countReg);
+            }
+            if (i < m_tcoOldListFieldCountLocals.Length
+                && m_tcoOldListFieldCountLocals[i] is int[] fieldCountLocals)
+            {
+                byte recordPtr = LoadLocal(m_tcoParamLocals[i]);
+                RecordType rt = (RecordType)ResolveType(m_tcoParamTypes[i]);
+                for (int f = 0; f < rt.Fields.Length; f++)
+                {
+                    if (fieldCountLocals[f] >= 0)
+                    {
+                        byte fieldPtr = AllocTemp();
+                        X86_64Encoder.MovLoad(m_text, fieldPtr, recordPtr, f * 8);
+                        byte countReg = AllocTemp();
+                        X86_64Encoder.MovLoad(m_text, countReg, fieldPtr, 0);
+                        StoreLocal(fieldCountLocals[f], countReg);
+                    }
+                }
+            }
+        }
+
         // Evaluate all args into PRE-ALLOCATED temps (avoid growing stack)
         for (int i = 0; i < args.Count && i < m_tcoTempLocals.Length; i++)
         {
@@ -241,7 +276,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             // Phase 1: decompose record-typed heap args into field locals
             List<int> decompIndices = [];   // param indices with decomposition
             List<int> plainHeapIndices = []; // heap args without decomposition
-            bool hasListArg = false; // lists are mutable (in-place snoc) — unsafe to reset
+            List<int> listIndices = [];     // direct list-typed param indices
+            List<(int paramIdx, int fieldIdx)> listFieldIndices = []; // list fields in decomposed records
             for (int i = 0; i < args.Count && i < m_tcoParamTypes.Length; i++)
             {
                 CodexType resolved = ResolveType(m_tcoParamTypes[i]);
@@ -249,11 +285,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
                     continue; // scalar — no check needed
                 if (resolved is ListType)
                 {
-                    // List contents may reference above-mark allocations
-                    // even when the list pointer is below the mark (in-place
-                    // list-snoc adds elements pointing to new heap objects).
-                    hasListArg = true;
-                    break;
+                    listIndices.Add(i);
+                    continue;
                 }
                 if (resolved is RecordType rt && i < m_tcoDecompLocals.Length
                     && m_tcoDecompLocals[i] is int[] fieldLocals)
@@ -273,24 +306,22 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
                     plainHeapIndices.Add(i);
                 }
             }
-            // Also check record fields for ListType
-            if (!hasListArg)
+            // Identify list fields in decomposed records
+            foreach (int idx in decompIndices)
             {
-                foreach (int idx in decompIndices)
+                RecordType rt = (RecordType)ResolveType(m_tcoParamTypes[idx]);
+                for (int f = 0; f < rt.Fields.Length; f++)
                 {
-                    RecordType rt = (RecordType)ResolveType(m_tcoParamTypes[idx]);
-                    if (rt.Fields.Any(f => ResolveType(f.Type) is ListType))
-                    { hasListArg = true; break; }
+                    if (ResolveType(rt.Fields[f].Type) is ListType)
+                        listFieldIndices.Add((idx, f));
                 }
             }
 
             // Phase 2: collect pointer values that need checking
-            // (plain heap arg pointers + decomposed record pointer fields)
-            // Skip reset entirely if any param is a list — in-place list-snoc
-            // stores element pointers above the mark inside a below-mark list.
-            if (hasListArg) goto skipReset;
 
-            bool anyChecks = plainHeapIndices.Count > 0;
+            bool anyChecks = plainHeapIndices.Count > 0
+                || listIndices.Count > 0
+                || listFieldIndices.Count > 0;
             if (!anyChecks)
             {
                 foreach (int idx in decompIndices)
@@ -298,7 +329,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
                     RecordType rt = (RecordType)ResolveType(m_tcoParamTypes[idx]);
                     for (int f = 0; f < rt.Fields.Length; f++)
                     {
-                        if (IRRegion.TypeNeedsHeapEscape(ResolveType(rt.Fields[f].Type)))
+                        CodexType ft = ResolveType(rt.Fields[f].Type);
+                        if (ft is not ListType && IRRegion.TypeNeedsHeapEscape(ft))
                         { anyChecks = true; break; }
                     }
                     if (anyChecks) break;
@@ -334,6 +366,115 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
                 List<int> skipResetOffsets = [];
 
+                // ── Selective list param checks ──────────────────
+                // For each direct list param, four runtime checks replace
+                // the old blanket hasListArg bail-out. Pass-through lists
+                // (emit-defs-streaming) pass all checks and allow reset.
+                // Mutated lists (tokenize-loop) fail check 3 or 4.
+                foreach (int idx in listIndices)
+                {
+                    // Check 1: pointer identity (new == old?)
+                    byte newVal = LoadLocal(m_tcoTempLocals[idx]);
+                    byte oldVal = LoadLocal(m_tcoParamLocals[idx]);
+                    X86_64Encoder.CmpRR(m_text, newVal, oldVal);
+                    skipResetOffsets.Add(m_text.Count);
+                    X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+
+                    // Check 2: pointer below mark
+                    newVal = LoadLocal(m_tcoTempLocals[idx]);
+                    X86_64Encoder.CmpRR(m_text, newVal, markReg);
+                    skipResetOffsets.Add(m_text.Count);
+                    X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0);
+
+                    // Check 3: count identity (detects in-place mutation)
+                    byte listPtr = LoadLocal(m_tcoTempLocals[idx]);
+                    byte curCount = AllocTemp();
+                    X86_64Encoder.MovLoad(m_text, curCount, listPtr, 0);
+                    byte oldCount = LoadLocal(m_tcoOldListCountLocals[idx]);
+                    X86_64Encoder.CmpRR(m_text, curCount, oldCount);
+                    skipResetOffsets.Add(m_text.Count);
+                    X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+
+                    // Check 4: last element below mark (heap-typed elements only)
+                    ListType lt = (ListType)ResolveType(m_tcoParamTypes[idx]);
+                    CodexType elemType = ResolveType(lt.Element);
+                    if (IRRegion.TypeNeedsHeapEscape(elemType))
+                    {
+                        listPtr = LoadLocal(m_tcoTempLocals[idx]);
+                        byte countReg = AllocTemp();
+                        X86_64Encoder.MovLoad(m_text, countReg, listPtr, 0);
+                        X86_64Encoder.CmpRI(m_text, countReg, 0);
+                        int skipElemCheck = m_text.Count;
+                        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
+
+                        // last element at [listPtr + count*8]
+                        X86_64Encoder.ShlRI(m_text, countReg, 3);
+                        X86_64Encoder.AddRR(m_text, countReg, listPtr);
+                        byte elemVal = AllocTemp();
+                        X86_64Encoder.MovLoad(m_text, elemVal, countReg, 0);
+                        X86_64Encoder.CmpRR(m_text, elemVal, markReg);
+                        skipResetOffsets.Add(m_text.Count);
+                        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0);
+
+                        PatchJcc(skipElemCheck, m_text.Count);
+                    }
+                }
+
+                // ── Selective list field checks in decomposed records ──
+                // Same four checks, but for list-typed fields within records
+                // (e.g. UnificationState.substitutions, UnificationState.errors).
+                foreach ((int paramIdx, int fieldIdx) in listFieldIndices)
+                {
+                    // Check 1: pointer identity
+                    byte newFieldVal = LoadLocal(m_tcoDecompLocals[paramIdx]![fieldIdx]);
+                    byte oldRecordPtr = LoadLocal(m_tcoParamLocals[paramIdx]);
+                    byte oldFieldVal = AllocTemp();
+                    X86_64Encoder.MovLoad(m_text, oldFieldVal, oldRecordPtr, fieldIdx * 8);
+                    X86_64Encoder.CmpRR(m_text, newFieldVal, oldFieldVal);
+                    skipResetOffsets.Add(m_text.Count);
+                    X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+
+                    // Check 2: pointer below mark
+                    newFieldVal = LoadLocal(m_tcoDecompLocals[paramIdx]![fieldIdx]);
+                    X86_64Encoder.CmpRR(m_text, newFieldVal, markReg);
+                    skipResetOffsets.Add(m_text.Count);
+                    X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0);
+
+                    // Check 3: count identity
+                    byte listFieldPtr = LoadLocal(m_tcoDecompLocals[paramIdx]![fieldIdx]);
+                    byte curFieldCount = AllocTemp();
+                    X86_64Encoder.MovLoad(m_text, curFieldCount, listFieldPtr, 0);
+                    byte oldFieldCount = LoadLocal(m_tcoOldListFieldCountLocals[paramIdx]![fieldIdx]);
+                    X86_64Encoder.CmpRR(m_text, curFieldCount, oldFieldCount);
+                    skipResetOffsets.Add(m_text.Count);
+                    X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+
+                    // Check 4: last element below mark (heap-typed elements only)
+                    RecordType rt = (RecordType)ResolveType(m_tcoParamTypes[paramIdx]);
+                    ListType lt = (ListType)ResolveType(rt.Fields[fieldIdx].Type);
+                    CodexType elemType = ResolveType(lt.Element);
+                    if (IRRegion.TypeNeedsHeapEscape(elemType))
+                    {
+                        listFieldPtr = LoadLocal(m_tcoDecompLocals[paramIdx]![fieldIdx]);
+                        byte countReg = AllocTemp();
+                        X86_64Encoder.MovLoad(m_text, countReg, listFieldPtr, 0);
+                        X86_64Encoder.CmpRI(m_text, countReg, 0);
+                        int skipFieldElemCheck = m_text.Count;
+                        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
+
+                        X86_64Encoder.ShlRI(m_text, countReg, 3);
+                        listFieldPtr = LoadLocal(m_tcoDecompLocals[paramIdx]![fieldIdx]);
+                        X86_64Encoder.AddRR(m_text, countReg, listFieldPtr);
+                        byte elemVal = AllocTemp();
+                        X86_64Encoder.MovLoad(m_text, elemVal, countReg, 0);
+                        X86_64Encoder.CmpRR(m_text, elemVal, markReg);
+                        skipResetOffsets.Add(m_text.Count);
+                        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0);
+
+                        PatchJcc(skipFieldElemCheck, m_text.Count);
+                    }
+                }
+
                 // Check plain heap args
                 foreach (int idx in plainHeapIndices)
                 {
@@ -343,13 +484,14 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
                     X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0);
                 }
 
-                // Check decomposed record pointer fields
+                // Check decomposed record non-list pointer fields
                 foreach (int idx in decompIndices)
                 {
                     RecordType rt = (RecordType)ResolveType(m_tcoParamTypes[idx]);
                     for (int f = 0; f < rt.Fields.Length; f++)
                     {
                         CodexType ft = ResolveType(rt.Fields[f].Type);
+                        if (ft is ListType) continue; // handled by listFieldIndices checks above
                         if (IRRegion.TypeNeedsHeapEscape(ft))
                         {
                             byte fv = LoadLocal(m_tcoDecompLocals[idx]![f]);
@@ -384,7 +526,6 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
                 foreach (int offset in skipResetOffsets)
                     PatchJcc(offset, noResetTarget);
             }
-            skipReset:;
         }
 
         // Reassign params from temps
@@ -472,6 +613,39 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
                 }
             }
 
+            // Pre-allocate locals for list param old-count capture.
+            // EmitTailCall snapshots list counts before arg evaluation
+            // so in-place list-snoc/insert-at mutations can be detected.
+            m_tcoOldListCountLocals = new int[def.Parameters.Length];
+            for (int i = 0; i < def.Parameters.Length; i++)
+            {
+                CodexType resolved = ResolveType(def.Parameters[i].Type);
+                m_tcoOldListCountLocals[i] = resolved is ListType ? AllocLocal() : -1;
+            }
+
+            // Pre-allocate locals for list field old-count capture in decomposed records.
+            m_tcoOldListFieldCountLocals = new int[]?[def.Parameters.Length];
+            for (int i = 0; i < def.Parameters.Length; i++)
+            {
+                CodexType resolved = ResolveType(def.Parameters[i].Type);
+                if (resolved is RecordType rt)
+                {
+                    bool hasListField = false;
+                    int[] fieldCounts = new int[rt.Fields.Length];
+                    for (int f = 0; f < rt.Fields.Length; f++)
+                    {
+                        if (ResolveType(rt.Fields[f].Type) is ListType)
+                        {
+                            fieldCounts[f] = AllocLocal();
+                            hasListField = true;
+                        }
+                        else
+                            fieldCounts[f] = -1;
+                    }
+                    m_tcoOldListFieldCountLocals[i] = hasListField ? fieldCounts : null;
+                }
+            }
+
             // Allocate local for heap mark (persists across iterations)
             m_tcoHeapMarkLocal = AllocLocal();
         }
@@ -485,6 +659,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             byte hp = AllocTemp();
             X86_64Encoder.MovRR(m_text, hp, HeapReg);
             StoreLocal(m_tcoHeapMarkLocal, hp);
+            EmitDiagTcoMark(def.Name);
         }
 
         m_tcoSavedNextLocal = m_nextLocal;   // save for reset on each iteration
@@ -492,11 +667,14 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         m_inTailPosition = m_inTCOFunction;
 
         // Emit body
+        EmitDiagFuncEntry(def.Name);
         byte result = EmitExpr(def.Body);
 
         // Move result to RAX
         if (result != Reg.RAX)
             X86_64Encoder.MovRR(m_text, Reg.RAX, result);
+
+        EmitDiagFuncExit(def.Name);
 
         // Epilogue: skip spill space, restore callee-saved, pop rbp, ret
         // lea rsp, [rbp - 32] points rsp at saved r14 (4 callee-saved × 8 bytes)
@@ -1090,6 +1268,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
         int fieldCount = rt?.Fields.Length ?? rec.Fields.Length;
         int totalSize = fieldCount * 8;
+        EmitDiagAlloc();
         int ptrLocal = AllocLocal();
         byte tmpPtr = AllocTemp();
         X86_64Encoder.MovRR(m_text, tmpPtr, HeapReg);
@@ -1270,6 +1449,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // Layout: [capacity | count | elem0 | ... ] — capacity at [-8] from list ptr
         // Total allocation: (count + 2) * 8  (capacity word + count word + elements)
         int totalSize = (count + 2) * 8;
+        EmitDiagAlloc();
 
         // Store capacity = count at [HeapReg] (tight allocation)
         byte capReg = AllocTemp();
@@ -6071,5 +6251,115 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         m_text[patchOffset + 2] = (byte)((rel32 >> 8) & 0xFF);
         m_text[patchOffset + 3] = (byte)((rel32 >> 16) & 0xFF);
         m_text[patchOffset + 4] = (byte)((rel32 >> 24) & 0xFF);
+    }
+
+    // ── Diagnostic instrumentation ──────────────────────────────
+
+    void EmitDiagHexHelper()
+    {
+        if (!m_diagnostic) return;
+        m_functionOffsets["__diag_hex"] = m_text.Count;
+
+        // Print 16 hex digits of RDI to serial. Clobbers RAX, RCX, RDX.
+        X86_64Encoder.Li(m_text, Reg.RCX, 60);
+
+        int loopTop = m_text.Count;
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RDI);
+        // shr rax, cl — REX.W D3 E8
+        m_text.Add(0x48); m_text.Add(0xD3); m_text.Add(0xE8);
+        X86_64Encoder.AndRI(m_text, Reg.RAX, 0xF);
+        X86_64Encoder.AddRI(m_text, Reg.RAX, '0');
+        X86_64Encoder.CmpRI(m_text, Reg.RAX, '9');
+        int digitOk = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_LE, 0);
+        X86_64Encoder.AddRI(m_text, Reg.RAX, 7);
+        PatchJcc(digitOk, m_text.Count);
+
+        EmitSerialWaitThr();
+        X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+        X86_64Encoder.OutDxAl(m_text);
+
+        X86_64Encoder.SubRI(m_text, Reg.RCX, 4);
+        X86_64Encoder.CmpRI(m_text, Reg.RCX, 0);
+        int loopBack = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+        PatchJcc(loopBack, loopTop);
+
+        X86_64Encoder.Ret(m_text);
+    }
+
+    void EmitDiagLiteral(string s)
+    {
+        if (!m_diagnostic) return;
+        foreach (char c in s)
+        {
+            X86_64Encoder.Li(m_text, Reg.RAX, c);
+            EmitSerialWaitThr();
+            X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+            X86_64Encoder.OutDxAl(m_text);
+        }
+    }
+
+    void EmitDiagHexReg(byte reg)
+    {
+        if (!m_diagnostic) return;
+        if (reg != Reg.RDI)
+            X86_64Encoder.MovRR(m_text, Reg.RDI, reg);
+        EmitCallTo("__diag_hex");
+    }
+
+    void EmitDiagTag(string tag)
+    {
+        if (!m_diagnostic) return;
+        X86_64Encoder.PushR(m_text, Reg.RAX);
+        X86_64Encoder.PushR(m_text, Reg.RCX);
+        X86_64Encoder.PushR(m_text, Reg.RDX);
+        X86_64Encoder.PushR(m_text, Reg.RDI);
+        EmitDiagLiteral("@" + tag + ":");
+    }
+
+    void EmitDiagEnd()
+    {
+        if (!m_diagnostic) return;
+        EmitDiagLiteral("\n");
+        X86_64Encoder.PopR(m_text, Reg.RDI);
+        X86_64Encoder.PopR(m_text, Reg.RDX);
+        X86_64Encoder.PopR(m_text, Reg.RCX);
+        X86_64Encoder.PopR(m_text, Reg.RAX);
+    }
+
+    void EmitDiagAlloc()
+    {
+        if (!m_diagnostic) return;
+        EmitDiagTag("A");
+        EmitDiagHexReg(HeapReg);
+        EmitDiagEnd();
+    }
+
+    void EmitDiagFuncEntry(string name)
+    {
+        if (!m_diagnostic) return;
+        EmitDiagTag("FE");
+        EmitDiagLiteral(name);
+        EmitDiagEnd();
+    }
+
+    void EmitDiagFuncExit(string name)
+    {
+        if (!m_diagnostic) return;
+        EmitDiagTag("FX");
+        EmitDiagLiteral(name);
+        EmitDiagEnd();
+    }
+
+    void EmitDiagTcoMark(string name)
+    {
+        if (!m_diagnostic) return;
+        EmitDiagTag("TM");
+        byte mark = LoadLocal(m_tcoHeapMarkLocal);
+        EmitDiagHexReg(mark);
+        EmitDiagLiteral(":");
+        EmitDiagLiteral(name);
+        EmitDiagEnd();
     }
 }
