@@ -36,8 +36,8 @@ Section: Infer Name
    when ty
     if ForAllTy (var-id) (body) ->
      let fr = fresh-and-advance st
-     in let substituted = subst-type-var body var-id fr.var-type
-     in instantiate-type fr.state substituted
+     in let substituted = subst-type-var body var-id (fr.var-type)
+     in instantiate-type (fr.state) substituted
     if _ -> FreshResult { var-type = ty, state = st }
 
   subst-type-var : CodexType -> Integer -> CodexType -> CodexType
@@ -148,8 +148,8 @@ Section: Infer Let
    if i == len then LetBindResult { state = st, env = env }
    else
     let b = list-at bindings i
-    in let vr = infer-expr st env b.value
-    in let env2 = env-bind env b.name.value vr.inferred-type
+    in let vr = infer-expr st env (b.value)
+    in let env2 = env-bind env (b.name.value) vr.inferred-type
     in infer-let-bindings (vr.state) env2 bindings (i + 1) len
 
 Section: Infer Lambda
@@ -173,7 +173,7 @@ Section: Infer Lambda
    else
     let p = list-at params i
     in let fr = fresh-and-advance st
-    in let env2 = env-bind env p.value fr.var-type
+    in let env2 = env-bind env (p.value) fr.var-type
     in bind-lambda-params (fr.state) env2 params (i + 1) len (list-snoc acc fr.var-type)
 
   wrap-fun-type : List CodexType -> CodexType -> CodexType
@@ -202,11 +202,11 @@ Section: Infer List
    if list-length elems == 0
     then
      let fr = fresh-and-advance st
-     in CheckResult { inferred-type = ListTy fr.var-type, state = fr.state }
+     in CheckResult { inferred-type = ListTy (fr.var-type), state = fr.state }
     else
      let first = infer-expr st env (list-at elems 0)
      in let st2 = unify-list-elems (first.state) env elems first.inferred-type 1 (list-length elems)
-     in CheckResult { inferred-type = ListTy first.inferred-type, state = st2 }
+     in CheckResult { inferred-type = ListTy (first.inferred-type), state = st2 }
 
   unify-list-elems : UnificationState -> TypeEnv -> List AExpr -> CodexType -> Integer -> Integer -> UnificationState
   unify-list-elems (st) (env) (elems) (elem-ty) (i) (len) =
@@ -230,7 +230,7 @@ Section: Infer Match
    if i == len then st
    else
     let arm = list-at arms i
-    in let pr = bind-pattern st env arm.pattern scrut-ty
+    in let pr = bind-pattern st env (arm.pattern) scrut-ty
     in let br = infer-expr (pr.state) pr.env arm.body
     in let r = unify (br.state) br.inferred-type result-ty
     in infer-match-arms (r.state) env scrut-ty result-ty arms (i + 1) len
@@ -243,7 +243,7 @@ Section: Infer Match
   bind-pattern : UnificationState -> TypeEnv -> APat -> CodexType -> PatBindResult
   bind-pattern (st) (env) (pat) (ty) =
    when pat
-    if AVarPat (name) -> PatBindResult { state = st, env = env-bind env name.value ty }
+    if AVarPat (name) -> PatBindResult { state = st, env = env-bind env (name.value) ty }
     if AWildPat -> PatBindResult { state = st, env = env }
     if ALitPat (val) (kind) -> PatBindResult { state = st, env = env }
     if ACtorPat (ctor-name) (sub-pats) ->
@@ -280,7 +280,7 @@ Section: Infer Do
       in infer-do-loop (er.state) env stmts (i + 1) len er.inferred-type
      if ADoBindStmt (name) (e) ->
       let er = infer-expr st env e
-      in let env2 = env-bind env name.value er.inferred-type
+      in let env2 = env-bind env (name.value) er.inferred-type
       in infer-do-loop (er.state) env2 stmts (i + 1) len er.inferred-type
 
 Section: Infer Expression (dispatch)
@@ -289,7 +289,7 @@ Section: Infer Expression (dispatch)
   infer-expr (st) (env) (expr) =
    when expr
     if ALitExpr (val) (kind) -> infer-literal st kind
-    if ANameExpr (name) -> infer-name st env name.value
+    if ANameExpr (name) -> infer-name st env (name.value)
     if ABinaryExpr (left) (op) (right) -> infer-binary st env left op right
     if AUnaryExpr (operand) ->
      let r = infer-expr st env operand
@@ -307,13 +307,13 @@ Section: Infer Expression (dispatch)
      in let resolved = deep-resolve (r.state) r.inferred-type
      in when resolved
       if RecordTy (rname) (rfields) ->
-       let ftype = lookup-record-field rfields field.value
+       let ftype = lookup-record-field rfields (field.value)
        in CheckResult { inferred-type = ftype, state = r.state }
       if ConstructedTy (cname) (cargs) ->
-       let record-type = resolve-constructed-to-record env cname.value
+       let record-type = resolve-constructed-to-record env (cname.value)
        in when record-type
         if RecordTy (rname) (rfields) ->
-         let ftype = lookup-record-field rfields field.value
+         let ftype = lookup-record-field rfields (field.value)
          in CheckResult { inferred-type = ftype, state = r.state }
         if _ ->
          let fr = fresh-and-advance (r.state)
@@ -324,7 +324,7 @@ Section: Infer Expression (dispatch)
 
     if ARecordExpr (name) (fields) ->
      let st2 = infer-record-fields st env fields 0 (list-length fields)
-     in let ctor-type = if env-has env name.value then env-lookup env name.value else ErrorTy
+     in let ctor-type = if env-has env (name.value) then env-lookup env (name.value) else ErrorTy
      in let result-type = strip-fun-args ctor-type
      in CheckResult { inferred-type = result-type, state = st2 }
     if AErrorExpr (msg) -> CheckResult { inferred-type = ErrorTy, state = st }
@@ -340,7 +340,7 @@ Section: Infer Expression (dispatch)
    if i == len then st
    else
     let f = list-at fields i
-    in let r = infer-expr st env f.value
+    in let r = infer-expr st env (f.value)
     in infer-record-fields (r.state) env fields (i + 1) len
 
   strip-fun-args : CodexType -> CodexType
