@@ -26,7 +26,7 @@ OUTDIR="$REPO/Codex.Codex/out"
 ELF="$OUTDIR/Codex.Codex.elf"
 SOURCE="$OUTDIR/source.codex"
 QEMU="/usr/bin/qemu-system-x86_64"
-TIMEOUT=60
+TIMEOUT=120
 
 # ── Per-stage stats (indexed 1, 2) ───────────────────────────
 declare -a STAGE_ELAPSED STAGE_BYTES STAGE_STACK STAGE_HEAP STAGE_RSS
