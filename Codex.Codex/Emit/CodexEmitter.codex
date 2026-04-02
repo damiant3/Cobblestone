@@ -29,7 +29,7 @@ Section: Type Definition Emission
   emit-variant-ctors (ctors) (i) =
    if i == list-length ctors then ""
    else let c = list-at ctors i
-    in "  | " ++ c.name.value ++ emit-ctor-fields c.fields 0 ++ "\n" ++ emit-variant-ctors ctors (i + 1)
+    in " | " ++ c.name.value ++ emit-ctor-fields c.fields 0 ++ "\n" ++ emit-variant-ctors ctors (i + 1)
 
   emit-ctor-fields : List ATypeExpr -> Integer -> Text
   emit-ctor-fields (fields) (i) =
@@ -109,7 +109,15 @@ Section: Definition Emission
   emit-def : IRDef -> List Text -> Text
   emit-def (d) (ctor-names) =
    if skip-def d ctor-names then ""
-   else d.name ++ " : " ++ emit-type d.type-val ++ "\n" ++ d.name ++ emit-def-params d.params 0 ++ " =\n  " ++ emit-expr d.body ctor-names 1 ++ "\n"
+   else let sig = d.name ++ " : " ++ emit-type d.type-val ++ "\n" ++ d.name ++ emit-def-params d.params 0
+    in if is-match-body d.body then sig ++ " = " ++ emit-expr d.body ctor-names 0 ++ "\n"
+    else sig ++ " =\n " ++ emit-expr d.body ctor-names 1 ++ "\n"
+
+  is-match-body : IRExpr -> Boolean
+  is-match-body (e) =
+   when e
+    if IrMatch (scrut) (branches) (ty) -> True
+    if _ -> False
 
   skip-def : IRDef -> List Text -> Boolean
   skip-def (d) (ctor-names) =
@@ -119,7 +127,6 @@ Section: Definition Emission
     in let code-a = char-code-at "a" 0
     in let code-z = char-code-at "z" 0
     in if first < code-a | first > code-z then True
-    else if is-error-body d.body then True
     else False
 
   is-upper : Integer -> Boolean
@@ -133,6 +140,12 @@ Section: Definition Emission
    when e
     if IrError (msg) (ty) -> True
     if _ -> False
+
+  error-message : IRExpr -> Text
+  error-message (e) =
+   when e
+    if IrError (msg) (ty) -> msg
+    if _ -> ""
 
   is-lower-start : Text -> Boolean
   is-lower-start (s) =
@@ -256,6 +269,7 @@ Section: Apply
     if IrMatch (scrut) (branches) (ty) -> True
     if IrNegate (operand) -> True
     if IrLambda (params) (body) (ty) -> True
+    if IrFieldAccess (rec) (field) (ty) -> True
     if _ -> False
 
 Section: Lambda
@@ -395,7 +409,7 @@ Section: Utilities
   make-indent : Integer -> Text
   make-indent (n) =
    if n == 0 then ""
-   else "  " ++ make-indent (n - 1)
+   else " " ++ make-indent (n - 1)
 
   escape-text : Text -> Text
   escape-text (s) =
