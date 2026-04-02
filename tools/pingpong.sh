@@ -1,19 +1,16 @@
 #!/bin/bash
-# Ping-Pong: Bare-metal self-compile fixed-point proof.
+# Ping-Pong: Full clean-room self-hosting verification.
 #
-# Codex code (a) → Codex compiler on bare metal → Codex code (b)
-#                → Codex compiler on bare metal → Codex code (c)
-#                → b == c? PASS. (fixed point)
+# This script is the single entry point for proving the compiler works.
+# It starts from scratch every time — no cached state, no stale outputs.
 #
-# The bare-metal ELF IS the Codex compiler. It boots on QEMU with KVM
-# (hardware virtualization — near-native speed), reads source via serial,
-# compiles using the Codex emitter, writes Codex code back via serial.
-# "STACK:nnnnn" after each compilation is the stack high-water mark.
-# "HEAP:nnnnn" (emitted by allocator) is the heap high-water mark.
-# Both are parsed and reported in the summary table.
+# Phase 1 — Clean: nuke all intermediates, stage outputs, build artifacts
+# Phase 2 — Build: dotnet build the entire solution from source
+# Phase 3 — Bootstrap: C# fixed-point proof (stage 0→1→2, not-quine)
+# Phase 4 — Bare-metal pingpong: QEMU self-compile fixed-point proof
 #
 # Usage: wsl bash tools/pingpong.sh
-# Exit 0 = fixed point holds. Exit 1 = broken.
+# Exit 0 = all proofs pass. Exit 1 = broken.
 
 set -euo pipefail
 
@@ -24,26 +21,86 @@ SOURCE="$OUTDIR/source.codex"
 QEMU="/usr/bin/qemu-system-x86_64"
 TIMEOUT=120
 
-# ── Per-stage stats (indexed 1, 2) ───────────────────────────
-declare -a STAGE_ELAPSED STAGE_BYTES STAGE_STACK STAGE_HEAP STAGE_RSS
-
-echo "=== Ping-Pong: Bare-Metal Self-Compile ==="
+echo "╔═══════════════════════════════════════════════════╗"
+echo "║  Ping-Pong: Full Clean-Room Verification          ║"
+echo "╚═══════════════════════════════════════════════════╝"
 date
+echo ""
 
-# ── Build prerequisites (always rebuild from current source) ──
+# ══════════════════════════════════════════════════════════
+# Phase 1 — Clean everything
+# ══════════════════════════════════════════════════════════
+
+echo "Phase 1: Cleaning all intermediates..."
+
+# Stage outputs
+rm -rf "$OUTDIR"
+mkdir -p "$OUTDIR"
+
+# Build artifacts
+find "$REPO" -type d \( -name bin -o -name obj \) -not -path '*/.git/*' -exec rm -rf {} + 2>/dev/null || true
+
+# Generated output
+find "$REPO/generated-output" -type f -delete 2>/dev/null || true
+
+# Incremental build cache
+rm -rf "$REPO/.codex-build"
+
+# Stale temps
+find "$REPO" -maxdepth 3 -type f \( -name '*.bak' -o -name '*.tmp' -o -name '*.snap' \) -not -path '*/.git/*' -delete 2>/dev/null || true
+
+echo "  done"
+echo ""
+
+# ══════════════════════════════════════════════════════════
+# Phase 2 — Build solution from scratch
+# ══════════════════════════════════════════════════════════
+
+echo "Phase 2: Building from source..."
+
+# Build Codex.Cli first (the reference compiler), then Bootstrap.
+# Bootstrap's RegenerateCodexLib target automatically invokes the CLI
+# to compile .codex → C# → CodexLib.g.cs before building itself.
+# We do NOT build the full solution — Codex.Codex.csproj always fails
+# (it's the generated output, not a buildable project on its own).
+dotnet build "$REPO/tools/Codex.Cli/Codex.Cli.csproj" 2>&1 | tail -3
+dotnet build "$REPO/tools/Codex.Bootstrap/Codex.Bootstrap.csproj" 2>&1 | tail -3
+echo ""
+
+# ══════════════════════════════════════════════════════════
+# Phase 3 — C# Bootstrap (not-quine fixed-point proof)
+# ══════════════════════════════════════════════════════════
+
+echo "Phase 3: C# bootstrap (fixed-point proof)..."
+dotnet run --project "$REPO/tools/Codex.Cli" -- bootstrap "$REPO/Codex.Codex"
+BOOTSTRAP_EXIT=$?
+
+if [ "$BOOTSTRAP_EXIT" -ne 0 ]; then
+    echo ""
+    echo "FAIL: C# bootstrap failed (exit $BOOTSTRAP_EXIT). Aborting."
+    date
+    exit 1
+fi
 
 echo ""
+
+# ══════════════════════════════════════════════════════════
+# Phase 4 — Bare-metal pingpong
+# ══════════════════════════════════════════════════════════
+
+echo "Phase 4: Bare-metal pingpong..."
+echo ""
+
+# Build the bare-metal ELF
 echo "Building ELF (reference compiler → x86-64-bare)..."
 dotnet run --project "$REPO/tools/Codex.Cli" -- build "$REPO/Codex.Codex" --target x86-64-bare
-echo ""
-echo "Regenerating CodexLib.g.cs (reference compiler → cs → strip)..."
-dotnet build "$REPO/tools/Codex.Bootstrap/Codex.Bootstrap.csproj"
+
+# Dump source for serial feed
 echo ""
 echo "Dumping source..."
 dotnet run --project "$REPO/tools/Codex.Bootstrap" -- --dump-source "$SOURCE"
 
-# ── Verify prerequisites ─────────────────────────────────────
-
+# Verify prerequisites
 if [ ! -f "$ELF" ]; then
     echo "FAIL: $ELF not found after build."
     exit 1
@@ -57,14 +114,16 @@ if [ ! -x "$QEMU" ]; then
     exit 1
 fi
 
+echo ""
 echo "ELF:    $(wc -c < "$ELF") bytes"
 echo "Source: $(wc -c < "$SOURCE") bytes"
 
-# Stage0 = source as-is. The compiler must handle any whitespace internally.
-# No external normalization — if the compiler needs it, it should do it itself.
 STAGE0="$SOURCE"
 
-# ── Run one compilation stage ─────────────────────────────────
+# ── Per-stage stats (indexed 1, 2) ───────────────────────
+declare -a STAGE_ELAPSED STAGE_BYTES STAGE_STACK STAGE_HEAP STAGE_RSS
+
+# ── Run one compilation stage ─────────────────────────────
 #
 # Serial protocol (bare-metal main.codex):
 #   read-line → returns hardcoded "test.codex" (path, ignored)
@@ -80,15 +139,12 @@ run_stage() {
     local start_time=$SECONDS
     local time_log="/tmp/pingpong-time-${stage}-$$"
 
-    # Handshake: kernel prints "READY\n" after COM1 init. We hold the pipe
-    # open with a background sleep, wait for READY, then send source.
     local pipe="/tmp/pingpong-$$"
     rm -f "$pipe"
     mkfifo "$pipe"
     sleep 999 > "$pipe" &
     local holder=$!
 
-    # Wrap QEMU in /usr/bin/time -v to capture peak RSS of the guest process.
     local elapsed_file="/tmp/pingpong-elapsed-${stage}-$$"
 
     timeout "$TIMEOUT" /usr/bin/time -v -o "$time_log" \
@@ -133,17 +189,14 @@ run_stage() {
     local size
     size=$(wc -c < "$output_file" 2>/dev/null || echo 0)
 
-    # Parse guest-emitted diagnostics from output
     local stack_hwm heap_hwm
     stack_hwm=$(grep -oP '^STACK:\K[0-9]+' "$output_file" | tail -1)
     heap_hwm=$(grep -oP '^HEAP:\K[0-9]+' "$output_file" | tail -1)
 
-    # Parse QEMU process peak RSS from /usr/bin/time output (kB)
     local rss_kb
     rss_kb=$(grep -oP 'Maximum resident set size.*:\s*\K[0-9]+' "$time_log" 2>/dev/null || true)
     rm -f "$time_log"
 
-    # Store stats
     STAGE_ELAPSED[$stage]=$elapsed
     STAGE_BYTES[$stage]=$size
     STAGE_STACK[$stage]=${stack_hwm:-"—"}
@@ -239,11 +292,7 @@ else
     diff "$OUTDIR/stage1.clean.codex" "$OUTDIR/stage2.clean.codex" | head -30
 fi
 
-# ── Summary table ─────────────────────────────────────────────
-#
-# Columns: stage, output bytes, wall-clock, stack HWM, heap HWM, QEMU RSS.
-# Heap HWM requires allocator emission (HEAP:nnnnn on serial).
-# QEMU RSS is the host-side peak resident size of the qemu-system process.
+# ── Summary table ─────────────────────────────────────────
 
 echo ""
 echo "═══ Performance Summary ═══"

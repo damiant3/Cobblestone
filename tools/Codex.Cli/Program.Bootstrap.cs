@@ -172,7 +172,7 @@ public static partial class Program
 
     static int RunDotnetBuild(string csproj)
     {
-        ProcessStartInfo psi = new("dotnet", $"build \"{csproj}\" --no-restore")
+        ProcessStartInfo psi = new("dotnet", $"build \"{csproj}\" --no-restore -p:SkipCodexRegenerate=true")
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
