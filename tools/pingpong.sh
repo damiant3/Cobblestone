@@ -14,6 +14,8 @@
 
 set -euo pipefail
 
+export PATH="/mnt/c/Program Files/dotnet:$PATH"
+
 REPO="/mnt/d/Projects/NewRepository-cam"
 OUTDIR="$REPO/build-output"
 ELF="$OUTDIR/Codex.Codex.elf"
