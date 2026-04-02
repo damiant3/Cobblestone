@@ -19,17 +19,17 @@ Section: Scope
 
   scope-has : Scope -> Text -> Boolean
   scope-has (sc) (name) =
-   let len = list-length sc.names
+   let len = list-length (sc.names)
    in if len == 0 then False
-   else let pos = bsearch-text-set sc.names name 0 len
+   else let pos = bsearch-text-set (sc.names) name 0 len
     in if pos >= len then False
-    else list-at sc.names pos == name
+    else list-at (sc.names) pos == name
 
   scope-add : Scope -> Text -> Scope
   scope-add (sc) (name) =
-   let len = list-length sc.names
-   in let pos = bsearch-text-set sc.names name 0 len
-   in Scope { names = list-insert-at sc.names pos name }
+   let len = list-length (sc.names)
+   in let pos = bsearch-text-set (sc.names) name 0 len
+   in Scope { names = list-insert-at (sc.names) pos name }
 
 Section: Built-in Names
 
@@ -104,11 +104,11 @@ Section: Collect Names
     let td = list-at type-defs i
     in when td
      if AVariantTypeDef (name) (params) (ctors) ->
-      let new-type-acc = list-snoc type-acc name.value
+      let new-type-acc = list-snoc type-acc (name.value)
       in let new-ctor-acc = collect-variant-ctors ctors 0 (list-length ctors) ctor-acc
       in collect-ctor-names type-defs (i + 1) len new-type-acc new-ctor-acc
      if ARecordTypeDef (name) (params) (fields) ->
-      collect-ctor-names type-defs (i + 1) len (list-snoc type-acc name.value) ctor-acc
+      collect-ctor-names type-defs (i + 1) len (list-snoc type-acc (name.value)) ctor-acc
 
   CtorCollectResult = record {
    type-names : List Text,
@@ -120,7 +120,7 @@ Section: Collect Names
    if i == len then acc
    else
     let ctor = list-at ctors i
-    in collect-variant-ctors ctors (i + 1) len (list-snoc acc ctor.name.value)
+    in collect-variant-ctors ctors (i + 1) len (list-snoc acc (ctor.name.value))
 
 Section: Build Initial Scope
 
@@ -142,7 +142,7 @@ Section: Resolve Expressions
    when expr
     if ALitExpr (val) (kind) -> []
     if ANameExpr (name) ->
-     if scope-has sc name.value | is-type-name name.value then []
+     if scope-has sc (name.value) | is-type-name (name.value) then []
      else [make-error "CDX3002" ("Undefined name: " ++ name.value)]
     if ABinaryExpr (left) (op) (right) ->
      resolve-expr sc left ++ resolve-expr sc right
@@ -173,8 +173,8 @@ Section: Resolve Let
    if i == len then errs ++ resolve-expr sc body
    else
     let b = list-at bindings i
-    in let bind-errs = resolve-expr sc b.value
-    in let sc2 = scope-add sc b.name.value
+    in let bind-errs = resolve-expr sc (b.value)
+    in let sc2 = scope-add sc (b.name.value)
     in resolve-let sc2 bindings body (i + 1) len (errs ++ bind-errs)
 
 Section: Resolve Lambda Parameters
@@ -184,7 +184,7 @@ Section: Resolve Lambda Parameters
    if i == len then sc
    else
     let p = list-at params i
-    in add-lambda-params (scope-add sc p.value) params (i + 1) len
+    in add-lambda-params (scope-add sc (p.value)) params (i + 1) len
 
 Section: Resolve Match Arms
 
@@ -193,14 +193,14 @@ Section: Resolve Match Arms
    if i == len then errs
    else
     let arm = list-at arms i
-    in let sc2 = collect-pattern-names sc arm.pattern
-    in let arm-errs = resolve-expr sc2 arm.body
+    in let sc2 = collect-pattern-names sc (arm.pattern)
+    in let arm-errs = resolve-expr sc2 (arm.body)
     in resolve-match-arms sc arms (i + 1) len (errs ++ arm-errs)
 
   collect-pattern-names : Scope -> APat -> Scope
   collect-pattern-names (sc) (pat) =
    when pat
-    if AVarPat (name) -> scope-add sc name.value
+    if AVarPat (name) -> scope-add sc (name.value)
     if ACtorPat (name) (subs) -> collect-ctor-pat-names sc subs 0 (list-length subs)
     if ALitPat (val) (kind) -> sc
     if AWildPat -> sc
@@ -228,7 +228,7 @@ Section: Resolve Record Fields
    if i == len then errs
    else
     let f = list-at fields i
-    in let errs2 = resolve-expr sc f.value
+    in let errs2 = resolve-expr sc (f.value)
     in resolve-record-fields sc fields (i + 1) len (errs ++ errs2)
 
 Section: Resolve Do Statements
@@ -244,7 +244,7 @@ Section: Resolve Do Statements
       in resolve-do-stmts sc stmts (i + 1) len (errs ++ errs2)
      if ADoBindStmt (name) (e) ->
       let errs2 = resolve-expr sc e
-      in let sc2 = scope-add sc name.value
+      in let sc2 = scope-add sc (name.value)
       in resolve-do-stmts sc2 stmts (i + 1) len (errs ++ errs2)
 
 Section: Resolve All Definitions
@@ -254,8 +254,8 @@ Section: Resolve All Definitions
    if i == len then errs
    else
     let def = list-at defs i
-    in let def-scope = add-def-params sc def.params 0 (list-length def.params)
-    in let errs2 = resolve-expr def-scope def.body
+    in let def-scope = add-def-params sc (def.params) 0 (list-length (def.params))
+    in let errs2 = resolve-expr def-scope (def.body)
     in resolve-all-defs sc defs (i + 1) len (errs ++ errs2)
 
   add-def-params : Scope -> List AParam -> Integer -> Integer -> Scope
@@ -263,7 +263,7 @@ Section: Resolve All Definitions
    if i == len then sc
    else
     let p = list-at params i
-    in add-def-params (scope-add sc p.name.value) params (i + 1) len
+    in add-def-params (scope-add sc (p.name.value)) params (i + 1) len
 
 Section: Resolve Module
 
@@ -273,12 +273,12 @@ Section: Resolve Module
 
   resolve-module-with-imports : AModule -> List ResolveResult -> ResolveResult
   resolve-module-with-imports (mod) (imported) =
-   let top = collect-top-level-names mod.defs 0 (list-length mod.defs) [] []
-   in let ctors = collect-ctor-names mod.type-defs 0 (list-length mod.type-defs) [] []
+   let top = collect-top-level-names (mod.defs) 0 (list-length (mod.defs)) [] []
+   in let ctors = collect-ctor-names (mod.type-defs) 0 (list-length (mod.type-defs)) [] []
    in let imported-names = collect-imported-names imported 0 (list-length imported) []
    in let all-top = top.names ++ imported-names
-   in let sc = build-all-names-scope all-top ctors.ctor-names builtin-names
-   in let expr-errs = resolve-all-defs sc mod.defs 0 (list-length mod.defs) []
+   in let sc = build-all-names-scope all-top (ctors.ctor-names) builtin-names
+   in let expr-errs = resolve-all-defs sc (mod.defs) 0 (list-length (mod.defs)) []
    in ResolveResult {
      errors = top.errors ++ expr-errs,
      top-level-names = top.names,
