@@ -28,6 +28,8 @@ class Program
             return RunBenchSave(args.Length > 1 ? args[1] : null);
         if (args.Length > 0 && args[0] == "--dump-source")
             return RunDumpSource(args.Length > 1 ? args[1] : null);
+        if (args.Length > 0 && args[0] == "--codex-emit")
+            return RunCodexEmit(args.Length > 1 ? args[1] : null, args.Length > 2 ? args[2] : null);
 
         string codexDir = args.Length > 0 ? args[0] : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Codex.Codex"));
         string? outputOverride = args.Length > 1 ? args[1] : null;
@@ -154,7 +156,7 @@ class Program
                 Console.WriteLine($"    {d.name}({paramStr}) : {Codex_Codex_Codex.cs_type(d.type_val)}");
             }
 
-            string cceOutput = Codex_Codex_Codex.csharp_emitter_emit_full_module(ir, ast.type_defs);
+            string cceOutput = Codex_Codex_Codex.emit_full_module(ir, ast.type_defs);
             // Convert emitted C# source from CCE back to Unicode for .NET compiler
             string output = _Cce.ToUnicode(cceOutput);
             string outputPath = outputOverride ?? Path.Combine(codexDir, "stage1-output.cs");
@@ -335,7 +337,7 @@ class Program
             }
 
             IRModule ir = Codex_Codex_Codex.lower_module(ast, checkResult.types, checkResult.state);
-            string output = Codex_Codex_Codex.csharp_emitter_emit_full_module(ir, ast.type_defs);
+            string output = Codex_Codex_Codex.emit_full_module(ir, ast.type_defs);
 
             string outPath = Path.ChangeExtension(filePath, ".g.cs");
             File.WriteAllText(outPath, output);
@@ -462,7 +464,7 @@ class Program
         sw.Stop(); lowerMs = sw.Elapsed.TotalMilliseconds;
 
         sw.Restart();
-        var output = Codex_Codex_Codex.csharp_emitter_emit_full_module(ir, ast.type_defs);
+        var output = Codex_Codex_Codex.emit_full_module(ir, ast.type_defs);
         sw.Stop(); emitMs = sw.Elapsed.TotalMilliseconds;
 
         total.Stop(); totalMs = total.Elapsed.TotalMilliseconds;
@@ -691,6 +693,52 @@ class Program
         string dest = outputPath ?? Path.Combine(Path.GetTempPath(), "codex-all-source.codex");
         File.WriteAllText(dest, combined);
         Console.WriteLine($"Wrote {combined.Length} chars ({files.Length} files) to {dest}");
+        return 0;
+    }
+
+    static int RunCodexEmit(string? codexDirOverride, string? outputPath)
+    {
+        string codexDir = codexDirOverride ?? Path.GetFullPath(
+            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Codex.Codex"));
+        if (!Directory.Exists(codexDir)) { Console.Error.WriteLine($"Not found: {codexDir}"); return 1; }
+
+        string[] files = Directory.GetFiles(codexDir, "*.codex", SearchOption.AllDirectories)
+            .OrderBy(f => f, StringComparer.Ordinal).ToArray();
+        List<string> codeBlocks = [];
+        foreach (string f in files)
+        {
+            string content = File.ReadAllText(f);
+            if (IsProseDocument(content))
+            {
+                string code = ExtractCodeBlocks(content);
+                if (code.Length > 0) codeBlocks.Add(code);
+            }
+            else
+                codeBlocks.Add(content);
+        }
+        string combined = string.Join("\n\n", codeBlocks);
+        string source = _Cce.FromUnicode(combined);
+        Console.Error.WriteLine($"Source: {combined.Length} chars ({files.Length} files)");
+
+        var tokens = Codex_Codex_Codex.tokenize(source);
+        var st = Codex_Codex_Codex.make_parse_state(tokens);
+        var doc = Codex_Codex_Codex.parse_document(st);
+        var ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("Codex_Codex"));
+        Console.Error.WriteLine($"  Defs: {ast.defs.Count}, TypeDefs: {ast.type_defs.Count}");
+
+        var checkResult = Codex_Codex_Codex.check_module(ast);
+        Console.Error.WriteLine($"  Type bindings: {checkResult.types.Count}");
+        Console.Error.WriteLine($"  Unification errors: {checkResult.state.errors.Count}");
+
+        var ir = Codex_Codex_Codex.lower_module(ast, checkResult.types, checkResult.state);
+        Console.Error.WriteLine($"  IR defs: {ir.defs.Count}");
+
+        string cceOutput = Codex_Codex_Codex.codex_emit_full_module(ir, ast.type_defs);
+        string output = _Cce.ToUnicode(cceOutput);
+
+        string dest = outputPath ?? Path.Combine(codexDir, "out", "stage1-codex.codex");
+        File.WriteAllText(dest, output);
+        Console.Error.WriteLine($"  Output: {dest} ({output.Length} chars, {output.Split('\n').Length} lines)");
         return 0;
     }
 }
