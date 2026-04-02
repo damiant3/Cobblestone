@@ -36,16 +36,6 @@ public static partial class Program
         CleanIntermediates(codexDir, repoRoot);
         Console.WriteLine(" done");
 
-        Console.Write("Prep: building Bootstrap...");
-        int prepBuild = RunDotnetBuildFull(Path.Combine(bootstrapDir, "Codex.Bootstrap.csproj"));
-        if (prepBuild != 0)
-        {
-            Console.WriteLine(" FAILED");
-            return 1;
-        }
-        Console.WriteLine(" done");
-        Console.WriteLine();
-
         Console.Write("Stage 0: Compiling .codex source (bootstrap compiler)...");
         Stopwatch sw = Stopwatch.StartNew();
 
@@ -73,6 +63,15 @@ public static partial class Program
         sw.Stop();
         Console.WriteLine($" {stage0Output.Length:N0} chars ({sw.ElapsedMilliseconds}ms)");
         Console.WriteLine($"  {files.Length} files, {irResult.Module.Definitions.Length} defs → {stage0Path}");
+
+        Console.Write("Prep: building Bootstrap...");
+        int prepBuild = RunDotnetBuildFull(Path.Combine(bootstrapDir, "Codex.Bootstrap.csproj"));
+        if (prepBuild != 0)
+        {
+            Console.WriteLine(" FAILED");
+            return 1;
+        }
+        Console.WriteLine(" done");
 
         // ── Stage 1: Self-hosted compiler compiles itself ──
         Console.Write("Stage 1: Self-compile (self-hosted compiler compiles .codex)...");
