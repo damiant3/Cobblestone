@@ -159,7 +159,7 @@ class Program
             string cceOutput = Codex_Codex_Codex.csharp_emitter_emit_full_module(ir, ast.type_defs);
             // Convert emitted C# source from CCE back to Unicode for .NET compiler
             string output = _Cce.ToUnicode(cceOutput);
-            string outputPath = outputOverride ?? Path.Combine(codexDir, "stage1-output.cs");
+            string outputPath = outputOverride ?? Path.Combine(Path.GetFullPath(Path.Combine(codexDir, "..")), "build-output", "stage1-output.cs");
             File.WriteAllText(outputPath, output);
             Console.WriteLine($"Output written to: {outputPath}");
             Console.WriteLine($"Output size: {output.Length} chars");
@@ -736,7 +736,7 @@ class Program
         string cceOutput = Codex_Codex_Codex.codex_emitter_emit_full_module(ir, ast.type_defs);
         string output = _Cce.ToUnicode(cceOutput);
 
-        string dest = outputPath ?? Path.Combine(codexDir, "out", "stage1-codex.codex");
+        string dest = outputPath ?? Path.Combine(Path.GetFullPath(Path.Combine(codexDir, "..")), "build-output", "stage1-codex.codex");
         File.WriteAllText(dest, output);
         Console.Error.WriteLine($"  Output: {dest} ({output.Length} chars, {output.Split('\n').Length} lines)");
         return 0;

@@ -43,7 +43,7 @@ public static partial class Program
             .OrderBy(f => f, StringComparer.Ordinal)
             .ToArray();
 
-        string outputDir = Path.Combine(codexDir, "out");
+        string outputDir = Path.Combine(repoRoot, "build-output");
         if (!Directory.Exists(outputDir))
             Directory.CreateDirectory(outputDir);
 
@@ -77,7 +77,7 @@ public static partial class Program
         Console.Write("Stage 1: Self-compile (self-hosted compiler compiles .codex)...");
         sw.Restart();
 
-        string stage1Path = Path.Combine(codexDir, "stage1-output.cs");
+        string stage1Path = Path.Combine(repoRoot, "build-output", "stage1-output.cs");
         int stage1Exit = RunBootstrapStage(bootstrapDir, codexDir, stage1Path);
         if (stage1Exit != 0)
         {
@@ -108,7 +108,7 @@ public static partial class Program
                 return 1;
             }
 
-            string stage3Path = Path.Combine(codexDir, "stage3-output.cs");
+            string stage3Path = Path.Combine(repoRoot, "build-output", "stage3-output.cs");
             int stage3Exit = RunBootstrapStage(bootstrapDir, codexDir, stage3Path);
             if (stage3Exit != 0)
             {
@@ -214,7 +214,7 @@ public static partial class Program
 
     static void CleanIntermediates(string codexDir, string repoRoot)
     {
-        string outDir = Path.Combine(codexDir, "out");
+        string outDir = Path.Combine(repoRoot, "build-output");
         if (Directory.Exists(outDir))
         {
             foreach (string file in Directory.GetFiles(outDir))

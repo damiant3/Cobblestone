@@ -15,7 +15,7 @@
 set -euo pipefail
 
 REPO="/mnt/d/Projects/NewRepository-cam"
-OUTDIR="$REPO/Codex.Codex/out"
+OUTDIR="$REPO/build-output"
 ELF="$OUTDIR/Codex.Codex.elf"
 SOURCE="$OUTDIR/source.codex"
 QEMU="/usr/bin/qemu-system-x86_64"
@@ -36,6 +36,7 @@ echo "Phase 1: Cleaning all intermediates..."
 # Stage outputs
 rm -rf "$OUTDIR"
 mkdir -p "$OUTDIR"
+rm -rf "$REPO/Codex.Codex/out"
 
 # Build artifacts
 find "$REPO" -type d \( -name bin -o -name obj \) -not -path '*/.git/*' -exec rm -rf {} + 2>/dev/null || true
