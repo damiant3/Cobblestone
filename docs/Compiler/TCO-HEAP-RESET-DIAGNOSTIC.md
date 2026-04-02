@@ -6,6 +6,34 @@
 parameters are present, so the `hasListArg` bandaid can be replaced with
 a proper fix.
 
+## Finding (2026-04-01)
+
+**The bandaid fires first in `tokenize-loop`.** Diagnostic instrumentation
+(print function name + continue on bandaid) shows `@BANDAID:tokenize-loop`
+on every iteration — thousands of times for a 362 KB source file. The
+tokenizer is a TCO loop that accumulates tokens into a `List Token` via
+`list-snoc`. This is THE function that makes the bandaid necessary: removing
+the `hasListArg` check lets the TCO reset reclaim the just-snoced tokens,
+corrupting the token list.
+
+This means the fix is NOT about escape copy at all — it's about making
+`tokenize-loop` (and similar accumulator patterns) safe for TCO heap reset.
+Options:
+1. **Copy-on-write list-snoc**: never mutate in-place, always allocate new.
+   Reset becomes safe because the new list pointer is above the mark (caught
+   by pointer check). Costs O(N) per snoc instead of amortized O(1).
+2. **Accumulator-aware reset**: skip reset only for the specific param that
+   is being snoced, not all params. Requires detecting which param changes.
+3. **Return the list from result space**: after snoc, escape-copy the list
+   to result space so the pointer is above the mark. Heavy but correct.
+4. **Accept the bandaid**: `tokenize-loop` NEEDS the bandaid. The fix is
+   to make OTHER functions (that don't snoc) benefit from reset despite
+   having list params they only READ.
+
+Option 4 is the original "last-element check" approach but applied
+selectively. The crash wasn't from `tokenize-loop` (the bandaid protected
+it) — it was from removing the bandaid for ALL functions simultaneously.
+
 ## The Problem
 
 The TCO heap reset (X86_64CodeGen.cs lines 233-398) reclaims per-iteration
@@ -106,6 +134,24 @@ Codegen: bool m_diagnostic  (passed through from X86_64Emitter)
 When `m_diagnostic` is true, the codegen emits serial print instrumentation
 at key points. When false (default), zero overhead — identical ELF to
 today.
+
+### Halt-on-Bandaid (Priority Zero)
+
+Before implementing full instrumentation, add a single trap: in
+diagnostic mode, when the `hasListArg` bail-out would fire, print the
+function name to serial and HLT. This tells us exactly which TCO
+function first triggers the bail-out during the self-compile. Everything
+before that point worked — the bug happened before the halt.
+
+```
+@BANDAID:<function-name>\n
+HLT
+```
+
+This alone cuts the search space dramatically. If the halt fires in
+`emit-defs-streaming`, the bug is in the setup phase. If it fires in
+`register-def-headers`, the bug is in header registration. The function
+name is the clue.
 
 ### Instrumentation Points
 
