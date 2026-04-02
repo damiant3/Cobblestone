@@ -28,7 +28,7 @@ Section: Infer Name
     then
      let raw = env-lookup env name
      in let inst = instantiate-type st raw
-     in CheckResult { inferred-type = inst.var-type, state = inst.state }
+     in CheckResult { inferred-type = (inst.var-type), state = (inst.state) }
     else CheckResult { inferred-type = ErrorTy, state = add-unify-error st "CDX2002" ("Unknown name: " ++ name) }
 
   instantiate-type : UnificationState -> CodexType -> FreshResult
@@ -65,7 +65,7 @@ Section: Infer Binary
   infer-binary (st) (env) (left) (op) (right) =
    let lr = infer-expr st env left
    in let rr = infer-expr (lr.state) env right
-   in infer-binary-op (rr.state) lr.inferred-type rr.inferred-type op
+   in infer-binary-op (rr.state) (lr.inferred-type) (rr.inferred-type) op
 
   infer-binary-op : UnificationState -> CodexType -> CodexType -> BinaryOp -> CheckResult
   infer-binary-op (st) (lt) (rt) (op) =
@@ -90,18 +90,18 @@ Section: Infer Binary
   infer-arithmetic : UnificationState -> CodexType -> CodexType -> CheckResult
   infer-arithmetic (st) (lt) (rt) =
    let r = unify st lt rt
-   in CheckResult { inferred-type = lt, state = r.state }
+   in CheckResult { inferred-type = lt, state = (r.state) }
 
   infer-comparison : UnificationState -> CodexType -> CodexType -> CheckResult
   infer-comparison (st) (lt) (rt) =
    let r = unify st lt rt
-   in CheckResult { inferred-type = BooleanTy, state = r.state }
+   in CheckResult { inferred-type = BooleanTy, state = (r.state) }
 
   infer-logical : UnificationState -> CodexType -> CodexType -> CheckResult
   infer-logical (st) (lt) (rt) =
    let r1 = unify st lt BooleanTy
    in let r2 = unify (r1.state) rt BooleanTy
-   in CheckResult { inferred-type = BooleanTy, state = r2.state }
+   in CheckResult { inferred-type = BooleanTy, state = (r2.state) }
 
   infer-append : UnificationState -> CodexType -> CodexType -> CheckResult
   infer-append (st) (lt) (rt) =
@@ -109,16 +109,16 @@ Section: Infer Binary
    in when resolved
     if TextTy ->
      let r = unify st rt TextTy
-     in CheckResult { inferred-type = TextTy, state = r.state }
+     in CheckResult { inferred-type = TextTy, state = (r.state) }
     if _ ->
      let r = unify st lt rt
-     in CheckResult { inferred-type = lt, state = r.state }
+     in CheckResult { inferred-type = lt, state = (r.state) }
 
   infer-cons : UnificationState -> CodexType -> CodexType -> CheckResult
   infer-cons (st) (lt) (rt) =
    let list-ty = ListTy lt
    in let r = unify st rt list-ty
-   in CheckResult { inferred-type = list-ty, state = r.state }
+   in CheckResult { inferred-type = list-ty, state = (r.state) }
 
 Section: Infer If
 
@@ -129,7 +129,7 @@ Section: Infer If
    in let tr = infer-expr (r1.state) env then-e
    in let er = infer-expr (tr.state) env else-e
    in let r2 = unify (er.state) tr.inferred-type er.inferred-type
-   in CheckResult { inferred-type = tr.inferred-type, state = r2.state }
+   in CheckResult { inferred-type = (tr.inferred-type), state = (r2.state) }
 
 Section: Infer Let
 
@@ -159,7 +159,7 @@ Section: Infer Lambda
    let pr = bind-lambda-params st env params 0 (list-length params) []
    in let br = infer-expr (pr.state) pr.env body
    in let fun-ty = wrap-fun-type (pr.param-types) br.inferred-type
-   in CheckResult { inferred-type = fun-ty, state = br.state }
+   in CheckResult { inferred-type = fun-ty, state = (br.state) }
 
   LambdaBindResult = record {
    state : UnificationState,
@@ -193,7 +193,7 @@ Section: Infer Application
    in let ar = infer-expr (fr.state) env arg
    in let ret = fresh-and-advance (ar.state)
    in let r = unify (ret.state) fr.inferred-type (FunTy ar.inferred-type ret.var-type)
-   in CheckResult { inferred-type = ret.var-type, state = r.state }
+   in CheckResult { inferred-type = (ret.var-type), state = (r.state) }
 
 Section: Infer List
 
@@ -202,7 +202,7 @@ Section: Infer List
    if list-length elems == 0
     then
      let fr = fresh-and-advance st
-     in CheckResult { inferred-type = ListTy (fr.var-type), state = fr.state }
+     in CheckResult { inferred-type = ListTy (fr.var-type), state = (fr.state) }
     else
      let first = infer-expr st env (list-at elems 0)
      in let st2 = unify-list-elems (first.state) env elems first.inferred-type 1 (list-length elems)
@@ -223,7 +223,7 @@ Section: Infer Match
    let sr = infer-expr st env scrutinee
    in let fr = fresh-and-advance (sr.state)
    in let st2 = infer-match-arms (fr.state) env sr.inferred-type fr.var-type arms 0 (list-length arms)
-   in CheckResult { inferred-type = fr.var-type, state = st2 }
+   in CheckResult { inferred-type = (fr.var-type), state = st2 }
 
   infer-match-arms : UnificationState -> TypeEnv -> CodexType -> CodexType -> List AMatchArm -> Integer -> Integer -> UnificationState
   infer-match-arms (st) (env) (scrut-ty) (result-ty) (arms) (i) (len) =
@@ -294,7 +294,7 @@ Section: Infer Expression (dispatch)
     if AUnaryExpr (operand) ->
      let r = infer-expr st env operand
      in let u = unify (r.state) r.inferred-type IntegerTy
-     in CheckResult { inferred-type = IntegerTy, state = u.state }
+     in CheckResult { inferred-type = IntegerTy, state = (u.state) }
     if AApplyExpr (func) (arg) -> infer-application st env func arg
     if AIfExpr (cond) (then-e) (else-e) -> infer-if st env cond then-e else-e
     if ALetExpr (bindings) (body) -> infer-let st env bindings body
@@ -308,19 +308,19 @@ Section: Infer Expression (dispatch)
      in when resolved
       if RecordTy (rname) (rfields) ->
        let ftype = lookup-record-field rfields (field.value)
-       in CheckResult { inferred-type = ftype, state = r.state }
+       in CheckResult { inferred-type = ftype, state = (r.state) }
       if ConstructedTy (cname) (cargs) ->
        let record-type = resolve-constructed-to-record env (cname.value)
        in when record-type
         if RecordTy (rname) (rfields) ->
          let ftype = lookup-record-field rfields (field.value)
-         in CheckResult { inferred-type = ftype, state = r.state }
+         in CheckResult { inferred-type = ftype, state = (r.state) }
         if _ ->
          let fr = fresh-and-advance (r.state)
-         in CheckResult { inferred-type = fr.var-type, state = fr.state }
+         in CheckResult { inferred-type = (fr.var-type), state = (fr.state) }
       if _ ->
        let fr = fresh-and-advance (r.state)
-       in CheckResult { inferred-type = fr.var-type, state = fr.state }
+       in CheckResult { inferred-type = (fr.var-type), state = (fr.state) }
 
     if ARecordExpr (name) (fields) ->
      let st2 = infer-record-fields st env fields 0 (list-length fields)
