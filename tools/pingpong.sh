@@ -160,20 +160,46 @@ grep -v '^STACK:\|^HEAP:' "$OUTDIR/stage1.codex" > "$OUTDIR/stage1.clean.codex"
 echo "[2/2] Stage 2: compile(stage1)..."
 run_stage 2 "$OUTDIR/stage1.clean.codex" "$OUTDIR/stage2.codex"
 
-# ── Compare (byte-identical, no normalization) ───────────────
+# ── Compare ──────────────────────────────────────────────────
 
 grep -v '^STACK:\|^HEAP:' "$OUTDIR/stage2.codex" > "$OUTDIR/stage2.clean.codex"
 
 STAGE1_SIZE=$(wc -c < "$OUTDIR/stage1.clean.codex")
 STAGE2_SIZE=$(wc -c < "$OUTDIR/stage2.clean.codex")
 
+RESULT="PASS"
 echo ""
+
+# a == b: source and stage1 must have the same definitions
+SOURCE_DEFS=$(grep -cP '^[a-zA-Z_][a-zA-Z0-9_-]* :' "$SOURCE" || echo 0)
+STAGE1_DEFS=$(grep -cP '^[a-zA-Z_][a-zA-Z0-9_-]* :' "$OUTDIR/stage1.clean.codex" || echo 0)
+
+echo "Definitions: source=$SOURCE_DEFS  stage1=$STAGE1_DEFS"
+
+if [ "$SOURCE_DEFS" != "$STAGE1_DEFS" ]; then
+    RESULT="FAIL"
+    echo "FAIL: Definition count mismatch (source=$SOURCE_DEFS, stage1=$STAGE1_DEFS)"
+    diff <(grep -P '^[a-zA-Z_][a-zA-Z0-9_-]* :' "$SOURCE" | sed 's/ :.*//') \
+         <(grep -P '^[a-zA-Z_][a-zA-Z0-9_-]* :' "$OUTDIR/stage1.clean.codex" | sed 's/ :.*//') | head -30
+else
+    # Verify definition names match (ignoring type signatures since type vars differ)
+    SOURCE_NAMES=$(grep -P '^[a-zA-Z_][a-zA-Z0-9_-]* :' "$SOURCE" | sed 's/ :.*//')
+    STAGE1_NAMES=$(grep -P '^[a-zA-Z_][a-zA-Z0-9_-]* :' "$OUTDIR/stage1.clean.codex" | sed 's/ :.*//')
+    if [ "$SOURCE_NAMES" != "$STAGE1_NAMES" ]; then
+        RESULT="FAIL"
+        echo "FAIL: Definition names differ between source and stage1"
+        diff <(echo "$SOURCE_NAMES") <(echo "$STAGE1_NAMES") | head -30
+    else
+        echo "PASS: source == stage1 (same definitions, same order)"
+    fi
+fi
+
+# b === c: stage1 and stage2 must be byte-identical
 if diff -q "$OUTDIR/stage1.clean.codex" "$OUTDIR/stage2.clean.codex" > /dev/null 2>&1; then
-    RESULT="PASS"
-    echo "PASS: Fixed point verified."
+    echo "PASS: stage1 === stage2 (byte-identical)"
 else
     RESULT="FAIL"
-    echo "FAIL: Stage 1 != Stage 2"
+    echo "FAIL: stage1 !== stage2"
     diff "$OUTDIR/stage1.clean.codex" "$OUTDIR/stage2.clean.codex" | head -30
 fi
 
