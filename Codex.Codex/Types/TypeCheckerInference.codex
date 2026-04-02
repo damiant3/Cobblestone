@@ -192,7 +192,7 @@ Section: Infer Application
    let fr = infer-expr st env func
    in let ar = infer-expr (fr.state) env arg
    in let ret = fresh-and-advance (ar.state)
-   in let r = unify (ret.state) fr.inferred-type (FunTy ar.inferred-type ret.var-type)
+   in let r = unify (ret.state) (fr.inferred-type) (FunTy (ar.inferred-type) (ret.var-type))
    in CheckResult { inferred-type = (ret.var-type), state = (r.state) }
 
 Section: Infer List
@@ -205,7 +205,7 @@ Section: Infer List
      in CheckResult { inferred-type = ListTy (fr.var-type), state = (fr.state) }
     else
      let first = infer-expr st env (list-at elems 0)
-     in let st2 = unify-list-elems (first.state) env elems first.inferred-type 1 (list-length elems)
+     in let st2 = unify-list-elems (first.state) env elems (first.inferred-type) 1 (list-length elems)
      in CheckResult { inferred-type = ListTy (first.inferred-type), state = st2 }
 
   unify-list-elems : UnificationState -> TypeEnv -> List AExpr -> CodexType -> Integer -> Integer -> UnificationState
@@ -213,7 +213,7 @@ Section: Infer List
    if i == len then st
    else
     let er = infer-expr st env (list-at elems i)
-    in let r = unify (er.state) er.inferred-type elem-ty
+    in let r = unify (er.state) (er.inferred-type) elem-ty
     in unify-list-elems (r.state) env elems elem-ty (i + 1) len
 
 Section: Infer Match
@@ -222,7 +222,7 @@ Section: Infer Match
   infer-match (st) (env) (scrutinee) (arms) =
    let sr = infer-expr st env scrutinee
    in let fr = fresh-and-advance (sr.state)
-   in let st2 = infer-match-arms (fr.state) env sr.inferred-type fr.var-type arms 0 (list-length arms)
+   in let st2 = infer-match-arms (fr.state) env (sr.inferred-type) (fr.var-type) arms 0 (list-length arms)
    in CheckResult { inferred-type = (fr.var-type), state = st2 }
 
   infer-match-arms : UnificationState -> TypeEnv -> CodexType -> CodexType -> List AMatchArm -> Integer -> Integer -> UnificationState
@@ -231,8 +231,8 @@ Section: Infer Match
    else
     let arm = list-at arms i
     in let pr = bind-pattern st env (arm.pattern) scrut-ty
-    in let br = infer-expr (pr.state) pr.env arm.body
-    in let r = unify (br.state) br.inferred-type result-ty
+    in let br = infer-expr (pr.state) (pr.env) (arm.body)
+    in let r = unify (br.state) (br.inferred-type) result-ty
     in infer-match-arms (r.state) env scrut-ty result-ty arms (i + 1) len
 
   PatBindResult = record {
@@ -257,11 +257,11 @@ Section: Infer Match
     when ctor-ty
      if FunTy (param-ty) (ret-ty) ->
       let pr = bind-pattern st env (list-at sub-pats i) param-ty
-      in bind-ctor-sub-patterns (pr.state) pr.env sub-pats ret-ty (i + 1) len
+      in bind-ctor-sub-patterns (pr.state) (pr.env) sub-pats ret-ty (i + 1) len
      if _ ->
       let fr = fresh-and-advance st
-      in let pr = bind-pattern (fr.state) env (list-at sub-pats i) fr.var-type
-      in bind-ctor-sub-patterns (pr.state) pr.env sub-pats ctor-ty (i + 1) len
+      in let pr = bind-pattern (fr.state) env (list-at sub-pats i) (fr.var-type)
+      in bind-ctor-sub-patterns (pr.state) (pr.env) sub-pats ctor-ty (i + 1) len
 
 Section: Infer Do
 
@@ -277,11 +277,11 @@ Section: Infer Do
     in when stmt
      if ADoExprStmt (e) ->
       let er = infer-expr st env e
-      in infer-do-loop (er.state) env stmts (i + 1) len er.inferred-type
+      in infer-do-loop (er.state) env stmts (i + 1) len (er.inferred-type)
      if ADoBindStmt (name) (e) ->
       let er = infer-expr st env e
-      in let env2 = env-bind env (name.value) er.inferred-type
-      in infer-do-loop (er.state) env2 stmts (i + 1) len er.inferred-type
+      in let env2 = env-bind env (name.value) (er.inferred-type)
+      in infer-do-loop (er.state) env2 stmts (i + 1) len (er.inferred-type)
 
 Section: Infer Expression (dispatch)
 
@@ -293,7 +293,7 @@ Section: Infer Expression (dispatch)
     if ABinaryExpr (left) (op) (right) -> infer-binary st env left op right
     if AUnaryExpr (operand) ->
      let r = infer-expr st env operand
-     in let u = unify (r.state) r.inferred-type IntegerTy
+     in let u = unify (r.state) (r.inferred-type) IntegerTy
      in CheckResult { inferred-type = IntegerTy, state = (u.state) }
     if AApplyExpr (func) (arg) -> infer-application st env func arg
     if AIfExpr (cond) (then-e) (else-e) -> infer-if st env cond then-e else-e
@@ -304,7 +304,7 @@ Section: Infer Expression (dispatch)
     if ADoExpr (stmts) -> infer-do st env stmts
     if AFieldAccess (obj) (field) ->
      let r = infer-expr st env obj
-     in let resolved = deep-resolve (r.state) r.inferred-type
+     in let resolved = deep-resolve (r.state) (r.inferred-type)
      in when resolved
       if RecordTy (rname) (rfields) ->
        let ftype = lookup-record-field rfields (field.value)

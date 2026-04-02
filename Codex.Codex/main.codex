@@ -32,7 +32,7 @@ Section: Pipeline with Name Resolution
     in let doc = parse-document st
      in let ast = desugar-document doc module-name
       in let resolve-result = resolve-module-with-imports ast imported
-       in if list-length resolve-result.errors > 0
+       in if list-length (resolve-result.errors) > 0
         then CompileError (resolve-result.errors)
         else
          let check-result = check-module ast
@@ -52,12 +52,12 @@ Section: Streaming Pipeline
     in let doc = parse-document st
      in let ast = desugar-document doc module-name
       in let check-result = check-module ast
-       in let ctor-types = collect-ctor-bindings (ast.type-defs) 0 (list-length ast.type-defs) []
-        in let all-types = ctor-types ++ check-result.types ++ builtin-type-env.bindings
+       in let ctor-types = collect-ctor-bindings (ast.type-defs) 0 (list-length (ast.type-defs)) []
+        in let all-types = ctor-types ++ (check-result.types) ++ (builtin-type-env.bindings)
          in let ctor-names = collect-ctor-names (ast.type-defs) 0
           in do
-           print-line (emit-type-defs ast.type-defs 0)
-           stream-defs (ast.defs) all-types check-result.state ctor-names 0 (list-length ast.defs)
+           print-line (emit-type-defs (ast.type-defs) 0)
+           stream-defs (ast.defs) all-types (check-result.state) ctor-names 0 (list-length (ast.defs))
            print-line ""
 
   stream-defs : List ADef -> List TypeBinding -> UnificationState -> List Text -> Integer -> Integer -> [Console] Nothing
@@ -66,7 +66,7 @@ Section: Streaming Pipeline
    else
     let def = list-at defs i
     in let ir-def = lower-def def types ust
-    in if is-error-body ir-def.body then print-line ("COMPILE-ERROR: def '" ++ ir-def.name ++ "' has error body: " ++ error-message ir-def.body)
+    in if is-error-body (ir-def.body) then print-line ("COMPILE-ERROR: def '" ++ (ir-def.name) ++ "' has error body: " ++ error-message (ir-def.body))
     else let text = emit-def ir-def ctor-names
      in do
       print-line text
@@ -85,12 +85,12 @@ Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
    in let st = make-parse-state tokens
     in let scan = scan-document st
      in let type-defs = map-list desugar-type-def (scan.type-defs)
-      in let headers = scan.def-headers
+      in let headers = (scan.def-headers)
        in let tdm = build-type-def-map type-defs 0 (list-length type-defs) []
         in let tenv = register-type-defs empty-unification-state builtin-type-env tdm type-defs 0 (list-length type-defs)
          in let env = register-def-headers (tenv.state) (tenv.env) tdm headers 0 (list-length headers)
           in let ctor-types = collect-ctor-bindings type-defs 0 (list-length type-defs) []
-           in let all-types = ctor-types ++ env.env.bindings
+           in let all-types = ctor-types ++ (env.env.bindings)
             in let ctor-names = collect-ctor-names type-defs 0
              in do
               print-line (emit-type-defs type-defs 0)
@@ -109,7 +109,7 @@ Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
          in LetBindResult { state = (fr.state), env = env2 }
       else let resolved = resolve-type-expr tdm (list-at declared 0)
          in let pr = parameterize-type st resolved
-         in LetBindResult { state = pr.state, env = env-bind env (hdr.name.text) pr.parameterized }
+         in LetBindResult { state = (pr.state), env = env-bind env (hdr.name.text) (pr.parameterized) }
     in register-def-headers (ty.state) (ty.env) tdm headers (i + 1) len
 
   check-defs-streaming : List Token -> List DefHeader -> UnificationState -> TypeEnv -> Integer -> Integer -> List TypeBinding -> ModuleResult
@@ -117,13 +117,13 @@ Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
    if i == len then ModuleResult { types = acc, state = ust }
    else
     let hdr = list-at headers i
-    in let body-st = ParseState { tokens = tokens, pos = hdr.body-pos }
+    in let body-st = ParseState { tokens = tokens, pos = (hdr.body-pos) }
     in let body-result = parse-expr body-st
     in let def = Def { name = (hdr.name), params = (hdr.params), ann = (hdr.ann), body = unwrap-body body-result }
     in let adef = desugar-def def
     in let r = check-def ust env adef
     in let resolved = deep-resolve (r.state) (r.inferred-type)
-    in let entry = TypeBinding { name = adef.name.value, bound-type = resolved }
+    in let entry = TypeBinding { name = (adef.name.value), bound-type = resolved }
     in check-defs-streaming tokens headers (r.state) env (i + 1) len (list-snoc acc entry)
 
   emit-defs-streaming : List Token -> List DefHeader -> List TypeBinding -> UnificationState -> List Text -> Integer -> Integer -> [Console] Nothing
@@ -131,12 +131,12 @@ Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
    if i == len then print-line ""
    else
     let hdr = list-at headers i
-    in let body-st = ParseState { tokens = tokens, pos = hdr.body-pos }
+    in let body-st = ParseState { tokens = tokens, pos = (hdr.body-pos) }
     in let body-result = parse-expr body-st
     in let def = Def { name = (hdr.name), params = (hdr.params), ann = (hdr.ann), body = unwrap-body body-result }
     in let adef = desugar-def def
     in let ir-def = lower-def adef all-types ust
-    in if is-error-body ir-def.body then print-line ("COMPILE-ERROR: def '" ++ ir-def.name ++ "' has error body: " ++ error-message ir-def.body)
+    in if is-error-body (ir-def.body) then print-line ("COMPILE-ERROR: def '" ++ (ir-def.name) ++ "' has error body: " ++ error-message (ir-def.body))
     else let text = emit-def ir-def ctor-names
      in if text == "" then emit-defs-streaming tokens headers all-types ust ctor-names (i + 1) len
      else do
