@@ -14,8 +14,10 @@
 
 set -euo pipefail
 
-export PATH="/mnt/c/Program Files/dotnet:$PATH"
-
+# dotnet.exe needs Windows paths; QEMU needs Linux paths.
+# WINREPO is for dotnet, REPO is for QEMU/file operations.
+DOTNET="/mnt/c/Program Files/dotnet/dotnet.exe"
+WINREPO="D:/Projects/NewRepository-cam"
 REPO="/mnt/d/Projects/NewRepository-cam"
 OUTDIR="$REPO/build-output"
 ELF="$OUTDIR/Codex.Codex.elf"
@@ -66,8 +68,8 @@ echo "Phase 2: Building from source..."
 # to compile .codex → C# → CodexLib.g.cs before building itself.
 # We do NOT build the full solution — Codex.Codex.csproj always fails
 # (it's the generated output, not a buildable project on its own).
-dotnet build "$REPO/tools/Codex.Cli/Codex.Cli.csproj" 2>&1 | tail -3
-dotnet build "$REPO/tools/Codex.Bootstrap/Codex.Bootstrap.csproj" 2>&1 | tail -3
+"$DOTNET" build "$WINREPO/tools/Codex.Cli/Codex.Cli.csproj" 2>&1 | tail -3
+"$DOTNET" build "$WINREPO/tools/Codex.Bootstrap/Codex.Bootstrap.csproj" 2>&1 | tail -3
 echo ""
 
 # ══════════════════════════════════════════════════════════
@@ -75,7 +77,7 @@ echo ""
 # ══════════════════════════════════════════════════════════
 
 echo "Phase 3: C# bootstrap (fixed-point proof)..."
-dotnet run --project "$REPO/tools/Codex.Cli" -- bootstrap "$REPO/Codex.Codex"
+"$DOTNET" run --project "$WINREPO/tools/Codex.Cli" -- bootstrap "$WINREPO/Codex.Codex"
 BOOTSTRAP_EXIT=$?
 
 if [ "$BOOTSTRAP_EXIT" -ne 0 ]; then
@@ -96,12 +98,13 @@ echo ""
 
 # Build the bare-metal ELF
 echo "Building ELF (reference compiler → x86-64-bare)..."
-dotnet run --project "$REPO/tools/Codex.Cli" -- build "$REPO/Codex.Codex" --target x86-64-bare
+"$DOTNET" run --project "$WINREPO/tools/Codex.Cli" -- build "$WINREPO/Codex.Codex" --target x86-64-bare
 
 # Dump source for serial feed
 echo ""
 echo "Dumping source..."
-dotnet run --project "$REPO/tools/Codex.Bootstrap" -- --dump-source "$SOURCE"
+WINSOURCE="$WINREPO/build-output/source.codex"
+"$DOTNET" run --project "$WINREPO/tools/Codex.Bootstrap" -- --dump-source "$WINSOURCE"
 
 # Verify prerequisites
 if [ ! -f "$ELF" ]; then
