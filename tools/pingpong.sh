@@ -83,6 +83,8 @@ run_stage() {
     local holder=$!
 
     # Wrap QEMU in /usr/bin/time -v to capture peak RSS of the guest process.
+    local elapsed_file="/tmp/pingpong-elapsed-${stage}-$$"
+
     timeout "$TIMEOUT" /usr/bin/time -v -o "$time_log" \
         "$QEMU" \
         -enable-kvm \
@@ -98,6 +100,7 @@ run_stage() {
             continue
         fi
         if [[ "$line" == STACK:* ]]; then
+            echo "$(( SECONDS - start_time ))" > "$elapsed_file"
             echo "$line"
             break
         fi
@@ -108,13 +111,18 @@ run_stage() {
         echo "$line"
     done > "$output_file" || true
 
-    local elapsed=$(( SECONDS - start_time ))
-
     kill "$holder" 2>/dev/null || true
-    # Kill any lingering QEMU/timeout processes from this stage
     pkill -f "qemu-system-x86_64.*$ELF" 2>/dev/null || true
     wait 2>/dev/null || true
     rm -f "$pipe"
+
+    local elapsed
+    if [ -f "$elapsed_file" ]; then
+        elapsed=$(cat "$elapsed_file")
+        rm -f "$elapsed_file"
+    else
+        elapsed=$(( SECONDS - start_time ))
+    fi
 
     local size
     size=$(wc -c < "$output_file" 2>/dev/null || echo 0)
