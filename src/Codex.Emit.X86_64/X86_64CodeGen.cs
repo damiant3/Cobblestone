@@ -5,9 +5,10 @@ using Codex.Types;
 
 namespace Codex.Emit.X86_64;
 
-sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
+sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool diagnostic = false)
 {
     readonly X86_64Target m_target = target;
+    readonly bool m_diagnostic = diagnostic;
     readonly List<byte> m_text = [];
     readonly List<byte> m_rodata = [];
     readonly Dictionary<string, int> m_functionOffsets = [];
@@ -86,6 +87,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             EmitFunction(def);
 
         EmitEscapeCopyHelpers();
+        EmitDiagHexHelper();
 
         // Bare metal: emit ISR stubs, syscall handler, process 1 entry
         if (m_target == X86_64Target.BareMetal)
@@ -657,6 +659,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
             byte hp = AllocTemp();
             X86_64Encoder.MovRR(m_text, hp, HeapReg);
             StoreLocal(m_tcoHeapMarkLocal, hp);
+            EmitDiagTcoMark(def.Name);
         }
 
         m_tcoSavedNextLocal = m_nextLocal;   // save for reset on each iteration
@@ -664,11 +667,14 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         m_inTailPosition = m_inTCOFunction;
 
         // Emit body
+        EmitDiagFuncEntry(def.Name);
         byte result = EmitExpr(def.Body);
 
         // Move result to RAX
         if (result != Reg.RAX)
             X86_64Encoder.MovRR(m_text, Reg.RAX, result);
+
+        EmitDiagFuncExit(def.Name);
 
         // Epilogue: skip spill space, restore callee-saved, pop rbp, ret
         // lea rsp, [rbp - 32] points rsp at saved r14 (4 callee-saved × 8 bytes)
@@ -1262,6 +1268,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
 
         int fieldCount = rt?.Fields.Length ?? rec.Fields.Length;
         int totalSize = fieldCount * 8;
+        EmitDiagAlloc();
         int ptrLocal = AllocLocal();
         byte tmpPtr = AllocTemp();
         X86_64Encoder.MovRR(m_text, tmpPtr, HeapReg);
@@ -1442,6 +1449,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         // Layout: [capacity | count | elem0 | ... ] — capacity at [-8] from list ptr
         // Total allocation: (count + 2) * 8  (capacity word + count word + elements)
         int totalSize = (count + 2) * 8;
+        EmitDiagAlloc();
 
         // Store capacity = count at [HeapReg] (tight allocation)
         byte capReg = AllocTemp();
@@ -6243,5 +6251,115 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser)
         m_text[patchOffset + 2] = (byte)((rel32 >> 8) & 0xFF);
         m_text[patchOffset + 3] = (byte)((rel32 >> 16) & 0xFF);
         m_text[patchOffset + 4] = (byte)((rel32 >> 24) & 0xFF);
+    }
+
+    // ── Diagnostic instrumentation ──────────────────────────────
+
+    void EmitDiagHexHelper()
+    {
+        if (!m_diagnostic) return;
+        m_functionOffsets["__diag_hex"] = m_text.Count;
+
+        // Print 16 hex digits of RDI to serial. Clobbers RAX, RCX, RDX.
+        X86_64Encoder.Li(m_text, Reg.RCX, 60);
+
+        int loopTop = m_text.Count;
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RDI);
+        // shr rax, cl — REX.W D3 E8
+        m_text.Add(0x48); m_text.Add(0xD3); m_text.Add(0xE8);
+        X86_64Encoder.AndRI(m_text, Reg.RAX, 0xF);
+        X86_64Encoder.AddRI(m_text, Reg.RAX, '0');
+        X86_64Encoder.CmpRI(m_text, Reg.RAX, '9');
+        int digitOk = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_LE, 0);
+        X86_64Encoder.AddRI(m_text, Reg.RAX, 7);
+        PatchJcc(digitOk, m_text.Count);
+
+        EmitSerialWaitThr();
+        X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+        X86_64Encoder.OutDxAl(m_text);
+
+        X86_64Encoder.SubRI(m_text, Reg.RCX, 4);
+        X86_64Encoder.CmpRI(m_text, Reg.RCX, 0);
+        int loopBack = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+        PatchJcc(loopBack, loopTop);
+
+        X86_64Encoder.Ret(m_text);
+    }
+
+    void EmitDiagLiteral(string s)
+    {
+        if (!m_diagnostic) return;
+        foreach (char c in s)
+        {
+            X86_64Encoder.Li(m_text, Reg.RAX, c);
+            EmitSerialWaitThr();
+            X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+            X86_64Encoder.OutDxAl(m_text);
+        }
+    }
+
+    void EmitDiagHexReg(byte reg)
+    {
+        if (!m_diagnostic) return;
+        if (reg != Reg.RDI)
+            X86_64Encoder.MovRR(m_text, Reg.RDI, reg);
+        EmitCallTo("__diag_hex");
+    }
+
+    void EmitDiagTag(string tag)
+    {
+        if (!m_diagnostic) return;
+        X86_64Encoder.PushR(m_text, Reg.RAX);
+        X86_64Encoder.PushR(m_text, Reg.RCX);
+        X86_64Encoder.PushR(m_text, Reg.RDX);
+        X86_64Encoder.PushR(m_text, Reg.RDI);
+        EmitDiagLiteral("@" + tag + ":");
+    }
+
+    void EmitDiagEnd()
+    {
+        if (!m_diagnostic) return;
+        EmitDiagLiteral("\n");
+        X86_64Encoder.PopR(m_text, Reg.RDI);
+        X86_64Encoder.PopR(m_text, Reg.RDX);
+        X86_64Encoder.PopR(m_text, Reg.RCX);
+        X86_64Encoder.PopR(m_text, Reg.RAX);
+    }
+
+    void EmitDiagAlloc()
+    {
+        if (!m_diagnostic) return;
+        EmitDiagTag("A");
+        EmitDiagHexReg(HeapReg);
+        EmitDiagEnd();
+    }
+
+    void EmitDiagFuncEntry(string name)
+    {
+        if (!m_diagnostic) return;
+        EmitDiagTag("FE");
+        EmitDiagLiteral(name);
+        EmitDiagEnd();
+    }
+
+    void EmitDiagFuncExit(string name)
+    {
+        if (!m_diagnostic) return;
+        EmitDiagTag("FX");
+        EmitDiagLiteral(name);
+        EmitDiagEnd();
+    }
+
+    void EmitDiagTcoMark(string name)
+    {
+        if (!m_diagnostic) return;
+        EmitDiagTag("TM");
+        byte mark = LoadLocal(m_tcoHeapMarkLocal);
+        EmitDiagHexReg(mark);
+        EmitDiagLiteral(":");
+        EmitDiagLiteral(name);
+        EmitDiagEnd();
     }
 }

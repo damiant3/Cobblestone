@@ -8,9 +8,10 @@ public enum X86_64Target
     BareMetal
 }
 
-public sealed class X86_64Emitter(X86_64Target target = X86_64Target.LinuxUser) : IAssemblyEmitter
+public sealed class X86_64Emitter(X86_64Target target = X86_64Target.LinuxUser, bool diagnostic = false) : IAssemblyEmitter
 {
     readonly X86_64Target m_target = target;
+    readonly bool m_diagnostic = diagnostic;
 
     public string TargetName => m_target == X86_64Target.BareMetal ? "X86_64-BareMetal" : "X86_64";
 
@@ -18,7 +19,7 @@ public sealed class X86_64Emitter(X86_64Target target = X86_64Target.LinuxUser) 
 
     public byte[] EmitAssembly(IRModule module, string assemblyName)
     {
-        X86_64CodeGen codeGen = new(m_target);
+        X86_64CodeGen codeGen = new(m_target, m_diagnostic);
         codeGen.EmitModule(module);
         m_lastCodeGen = codeGen;
         return codeGen.BuildElf();

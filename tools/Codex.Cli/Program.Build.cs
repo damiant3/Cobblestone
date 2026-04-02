@@ -21,6 +21,7 @@ public static partial class Program
             Console.WriteLine("                    --view <name>       Compile from a repository view");
             Console.WriteLine("                    --verbose, -v       Show resolved type signatures");
             Console.WriteLine("                    --dump-frames       Dump per-function stack frame sizes (x86-64 only)");
+            Console.WriteLine("                    --diagnostic        Emit serial diagnostics (allocation, TCO, function trace)");
             return 1;
         }
 
@@ -32,6 +33,7 @@ public static partial class Program
         bool incremental = false;
         bool verbose = false;
         bool dumpFrames = false;
+        bool diagnostic = false;
         for (int i = 1; i < args.Length; i++)
         {
             if (args[i] == "--target" && i + 1 < args.Length)
@@ -48,9 +50,12 @@ public static partial class Program
                 verbose = true;
             else if (args[i] == "--dump-frames")
                 dumpFrames = true;
+            else if (args[i] == "--diagnostic")
+                diagnostic = true;
         }
         s_verbose = verbose;
         s_dumpFrames = dumpFrames;
+        s_diagnostic = diagnostic;
 
         Set<string>? grantedCapabilities = null;
         if (capNames is not null)
@@ -264,6 +269,7 @@ public static partial class Program
 
     static bool s_verbose;
     static bool s_dumpFrames;
+    static bool s_diagnostic;
 
     static void PrintTypes(IRCompilationResult irResult)
     {
@@ -316,7 +322,7 @@ public static partial class Program
         {
             Emit.X86_64.X86_64Target x64Target = target == "x86-64-bare"
                 ? Emit.X86_64.X86_64Target.BareMetal : Emit.X86_64.X86_64Target.LinuxUser;
-            Emit.X86_64.X86_64Emitter x64Emitter = new(x64Target);
+            Emit.X86_64.X86_64Emitter x64Emitter = new(x64Target, s_diagnostic);
             byte[] elf = x64Emitter.EmitAssembly(irResult.Module, moduleName);
             string ext = target == "x86-64-bare" ? ".elf" : "";
             string outputPath = Path.Combine(outputDir, moduleName + ext);
