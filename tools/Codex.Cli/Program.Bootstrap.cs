@@ -17,7 +17,8 @@ public static partial class Program
             return 1;
         }
 
-        string bootstrapDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "tools", "Codex.Bootstrap"));
+        string repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        string bootstrapDir = Path.Combine(repoRoot, "tools", "Codex.Bootstrap");
         string codexLibPath = Path.Combine(bootstrapDir, "CodexLib.g.cs");
         if (!File.Exists(codexLibPath))
         {
@@ -31,7 +32,20 @@ public static partial class Program
         Console.WriteLine("╚══════════════════════════════════════════════╝");
         Console.WriteLine();
 
-        // ── Stage 0: Compile .codex source with the C# bootstrap compiler ──
+        Console.Write("Prep: cleaning intermediates...");
+        CleanIntermediates(codexDir, repoRoot);
+        Console.WriteLine(" done");
+
+        Console.Write("Prep: building Bootstrap...");
+        int prepBuild = RunDotnetBuildFull(Path.Combine(bootstrapDir, "Codex.Bootstrap.csproj"));
+        if (prepBuild != 0)
+        {
+            Console.WriteLine(" FAILED");
+            return 1;
+        }
+        Console.WriteLine(" done");
+        Console.WriteLine();
+
         Console.Write("Stage 0: Compiling .codex source (bootstrap compiler)...");
         Stopwatch sw = Stopwatch.StartNew();
 
@@ -176,5 +190,47 @@ public static partial class Program
         if (proc.ExitCode != 0 && stderr.Length > 0)
             Console.Error.WriteLine(stderr);
         return proc.ExitCode;
+    }
+
+    static int RunDotnetBuildFull(string csproj)
+    {
+        ProcessStartInfo psi = new("dotnet", $"build \"{csproj}\"")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = Path.GetDirectoryName(csproj) ?? "."
+        };
+
+        using Process? proc = Process.Start(psi);
+        if (proc is null) return 1;
+        proc.StandardOutput.ReadToEnd();
+        string stderr = proc.StandardError.ReadToEnd();
+        proc.WaitForExit(60_000);
+        if (proc.ExitCode != 0 && stderr.Length > 0)
+            Console.Error.WriteLine(stderr);
+        return proc.ExitCode;
+    }
+
+    static void CleanIntermediates(string codexDir, string repoRoot)
+    {
+        string outDir = Path.Combine(codexDir, "out");
+        if (Directory.Exists(outDir))
+        {
+            foreach (string file in Directory.GetFiles(outDir))
+                File.Delete(file);
+        }
+        else
+        {
+            Directory.CreateDirectory(outDir);
+        }
+
+        string genDir = Path.Combine(repoRoot, "generated-output");
+        if (Directory.Exists(genDir))
+        {
+            foreach (string file in Directory.GetFiles(genDir, "*", SearchOption.AllDirectories))
+                File.Delete(file);
+        }
     }
 }
