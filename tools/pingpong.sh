@@ -108,11 +108,13 @@ run_stage() {
         echo "$line"
     done > "$output_file" || true
 
+    local elapsed=$(( SECONDS - start_time ))
+
     kill "$holder" 2>/dev/null || true
+    # Kill any lingering QEMU/timeout processes from this stage
+    pkill -f "qemu-system-x86_64.*$ELF" 2>/dev/null || true
     wait 2>/dev/null || true
     rm -f "$pipe"
-
-    local elapsed=$(( SECONDS - start_time ))
 
     local size
     size=$(wc -c < "$output_file" 2>/dev/null || echo 0)
@@ -152,25 +154,13 @@ echo ""
 echo "[1/2] Stage 1: compile(stage0)..."
 run_stage 1 "$STAGE0" "$OUTDIR/stage1.codex"
 
-# ── Stage 2: feed Stage 1 output back in ──
+# ── Check a == b: source and stage1 must have same definitions ──
 
-# Strip STACK:/HEAP: diagnostics (not compiler output)
 grep -v '^STACK:\|^HEAP:' "$OUTDIR/stage1.codex" > "$OUTDIR/stage1.clean.codex"
-
-echo "[2/2] Stage 2: compile(stage1)..."
-run_stage 2 "$OUTDIR/stage1.clean.codex" "$OUTDIR/stage2.codex"
-
-# ── Compare ──────────────────────────────────────────────────
-
-grep -v '^STACK:\|^HEAP:' "$OUTDIR/stage2.codex" > "$OUTDIR/stage2.clean.codex"
-
-STAGE1_SIZE=$(wc -c < "$OUTDIR/stage1.clean.codex")
-STAGE2_SIZE=$(wc -c < "$OUTDIR/stage2.clean.codex")
 
 RESULT="PASS"
 echo ""
 
-# a == b: source and stage1 must have the same definitions
 SOURCE_DEFS=$(grep -cP '^[a-zA-Z_][a-zA-Z0-9_-]* :' "$SOURCE" || echo 0)
 STAGE1_DEFS=$(grep -cP '^[a-zA-Z_][a-zA-Z0-9_-]* :' "$OUTDIR/stage1.clean.codex" || echo 0)
 
@@ -182,7 +172,6 @@ if [ "$SOURCE_DEFS" != "$STAGE1_DEFS" ]; then
     diff <(grep -P '^[a-zA-Z_][a-zA-Z0-9_-]* :' "$SOURCE" | sed 's/ :.*//') \
          <(grep -P '^[a-zA-Z_][a-zA-Z0-9_-]* :' "$OUTDIR/stage1.clean.codex" | sed 's/ :.*//') | head -30
 else
-    # Verify definition names match (ignoring type signatures since type vars differ)
     SOURCE_NAMES=$(grep -P '^[a-zA-Z_][a-zA-Z0-9_-]* :' "$SOURCE" | sed 's/ :.*//')
     STAGE1_NAMES=$(grep -P '^[a-zA-Z_][a-zA-Z0-9_-]* :' "$OUTDIR/stage1.clean.codex" | sed 's/ :.*//')
     if [ "$SOURCE_NAMES" != "$STAGE1_NAMES" ]; then
@@ -194,7 +183,40 @@ else
     fi
 fi
 
-# b === c: stage1 and stage2 must be byte-identical
+if [ "$RESULT" != "PASS" ]; then
+    echo ""
+    echo "Skipping stage 2 — semantic equivalence failed."
+    echo ""
+    echo "═══ Performance Summary ═══"
+    printf "%-8s  %10s  %6s  %12s  %12s  %10s\n" \
+           "Stage" "Output" "Time" "Stack HWM" "Heap HWM" "QEMU RSS"
+    printf "%-8s  %10s  %6s  %12s  %12s  %10s\n" \
+           "──────" "──────────" "──────" "────────────" "────────────" "──────────"
+    local_bytes=${STAGE_BYTES[1]:-"—"}
+    local_time="${STAGE_ELAPSED[1]:-"—"}s"
+    local_stack=${STAGE_STACK[1]:-"—"}
+    local_heap=${STAGE_HEAP[1]:-"—"}
+    local_rss=${STAGE_RSS[1]:-"—"}
+    [ "$local_stack" != "—" ] && local_stack="${local_stack} B"
+    [ "$local_heap"  != "—" ] && local_heap="${local_heap} B"
+    [ "$local_rss"   != "—" ] && local_rss="${local_rss} kB"
+    printf "%-8s  %10s  %6s  %12s  %12s  %10s\n" \
+           "Stage 1" "$local_bytes" "$local_time" "$local_stack" "$local_heap" "$local_rss"
+    echo ""
+    rm -f "$OUTDIR/stage1.clean.codex"
+    date
+    exit 1
+fi
+
+# ── Stage 2: feed Stage 1 output back in ──
+
+echo "[2/2] Stage 2: compile(stage1)..."
+run_stage 2 "$OUTDIR/stage1.clean.codex" "$OUTDIR/stage2.codex"
+
+# ── Check b === c: byte-identical ──
+
+grep -v '^STACK:\|^HEAP:' "$OUTDIR/stage2.codex" > "$OUTDIR/stage2.clean.codex"
+
 if diff -q "$OUTDIR/stage1.clean.codex" "$OUTDIR/stage2.clean.codex" > /dev/null 2>&1; then
     echo "PASS: stage1 === stage2 (byte-identical)"
 else
