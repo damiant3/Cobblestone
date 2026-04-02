@@ -176,7 +176,7 @@ Section: State Helpers
    CodegenState {
     text = st.text,
     rodata = st.rodata,
-    func-offsets = list-snoc st.func-offsets (FuncOffset { name = name, offset = list-length st.text }),
+    func-offsets = list-snoc (st.func-offsets) (FuncOffset { name = name, offset = list-length (st.text) }),
     call-patches = st.call-patches,
     func-addr-fixups = st.func-addr-fixups,
     locals = st.locals,
@@ -203,7 +203,7 @@ Section: State Helpers
    CodegenState {
     text = st.text,
     rodata = st.rodata,
-    func-offsets = list-snoc st.func-offsets (FuncOffset { name = name, offset = list-length st.text }),
+    func-offsets = list-snoc (st.func-offsets) (FuncOffset { name = name, offset = list-length (st.text) }),
     call-patches = st.call-patches,
     func-addr-fixups = st.func-addr-fixups,
     locals = [],
@@ -418,10 +418,10 @@ Section: Function Emission
    else let p = list-at params i
     in let loc = alloc-local st
     in let st1 = if i < 6
-     then store-local loc.state loc.reg (list-at arg-regs i)
+     then store-local (loc.state) (loc.reg) (list-at arg-regs i)
      else let stack-offset = 16 + (i - 6) * 8
-      in let tmp = alloc-temp loc.state
-      in store-local (st-append-text tmp.state (mov-load tmp.reg reg-rbp stack-offset)) loc.reg tmp.reg
+      in let tmp = alloc-temp (loc.state)
+      in store-local (st-append-text (tmp.state) (mov-load (tmp.reg) reg-rbp stack-offset)) (loc.reg) (tmp.reg)
     in bind-params (add-local st1 p.name loc.reg) params (i + 1)
 
   is-self-call : IRExpr -> Text -> Boolean
@@ -563,7 +563,7 @@ Section: Local Variable Management
     func-offsets = st.func-offsets,
     call-patches = st.call-patches,
     func-addr-fixups = st.func-addr-fixups,
-    locals = list-snoc st.locals (LocalBinding { name = name, slot = slot }),
+    locals = list-snoc (st.locals) (LocalBinding { name = name, slot = slot }),
     next-temp = st.next-temp,
     next-local = st.next-local,
     spill-count = st.spill-count,
@@ -593,8 +593,8 @@ Section: Expression Emission
   emit-int-lit (st) (value) =
    let tmp = alloc-temp st
    in EmitResult {
-    state = st-append-text tmp.state (li tmp.reg value),
-    reg = tmp.reg
+    state = st-append-text (tmp.state) (li (tmp.reg) value),
+    reg = (tmp.reg)
    }
 
   find-ctor-tag : List SumCtor -> Text -> Integer -> Integer
@@ -606,7 +606,7 @@ Section: Expression Emission
 
   emit-name : CodegenState -> Text -> CodexType -> EmitResult
   emit-name (st) (name) (ty) =
-   let slot = lookup-local st.locals name
+   let slot = lookup-local (st.locals) name
    in if slot >= 0 then load-local st slot
    else emit-name-nonlocal st name ty
 
@@ -1183,14 +1183,14 @@ Section: Closures and Partial Application
 
   emit-load-func-addr : CodegenState -> Integer -> Text -> CodegenState
   emit-load-func-addr (st) (reg) (func-name) =
-   let fixup = FuncAddrFixup { patch-offset = list-length st.text + 2, target = func-name }
+   let fixup = FuncAddrFixup { patch-offset = list-length (st.text) + 2, target = func-name }
    in let st1 = st-append-text st (mov-ri64 reg 0)
    in CodegenState {
     text = st1.text,
     rodata = st1.rodata,
     func-offsets = st1.func-offsets,
     call-patches = st1.call-patches,
-    func-addr-fixups = list-snoc st1.func-addr-fixups fixup,
+    func-addr-fixups = list-snoc (st1.func-addr-fixups) fixup,
     locals = st1.locals,
     next-temp = st1.next-temp,
     next-local = st1.next-local,
@@ -1217,26 +1217,26 @@ Section: Closures and Partial Application
   emit-partial-application (st) (func-name) (captured-args) =
    let saved = save-args-loop (st-set-tail-pos st False) captured-args 0 []
    in let num-captures = list-length captured-args
-   in let tramp-name = func-name ++ "__tramp__" ++ integer-to-text num-captures ++ "__" ++ integer-to-text (list-length saved.state.text)
-   in let jmp-over-pos = list-length saved.state.text
-   in let st1 = st-append-text saved.state (jmp 0)
+   in let tramp-name = func-name ++ "__tramp__" ++ integer-to-text num-captures ++ "__" ++ integer-to-text (list-length (saved.state.text))
+   in let jmp-over-pos = list-length (saved.state.text)
+   in let st1 = st-append-text (saved.state) (jmp 0)
    in let st2 = record-func-offset st1 tramp-name
    in let st3 = emit-trampoline-shift-args st2 5 num-captures
    in let st4 = emit-trampoline-load-captures st3 0 num-captures
    in let st5 = emit-load-func-addr st4 reg-rax func-name
    in let st6 = st-append-text st5 [255, 224]
-   in let st7 = patch-jmp-at st6 jmp-over-pos (list-length st6.text)
+   in let st7 = patch-jmp-at st6 jmp-over-pos (list-length (st6.text))
    in let closure-size = (1 + num-captures) * 8
    in let ptr-loc = alloc-local st7
-   in let ptr-tmp = alloc-temp ptr-loc.state
-   in let st8 = st-append-text ptr-tmp.state (mov-rr ptr-tmp.reg reg-r10)
-   in let st9 = store-local st8 ptr-loc.reg ptr-tmp.reg
+   in let ptr-tmp = alloc-temp (ptr-loc.state)
+   in let st8 = st-append-text (ptr-tmp.state) (mov-rr (ptr-tmp.reg) reg-r10)
+   in let st9 = store-local st8 (ptr-loc.reg) (ptr-tmp.reg)
    in let st10 = st-append-text st9 (add-ri reg-r10 closure-size)
    in let st11 = emit-load-func-addr st10 reg-rax tramp-name
-   in let ptr-load1 = load-local st11 ptr-loc.reg
-   in let st12 = st-append-text ptr-load1.state (mov-store ptr-load1.reg reg-rax 0)
-   in let st13 = emit-store-closure-captures st12 saved.locals ptr-loc.reg 0
-   in load-local st13 ptr-loc.reg
+   in let ptr-load1 = load-local st11 (ptr-loc.reg)
+   in let st12 = st-append-text (ptr-load1.state) (mov-store (ptr-load1.reg) reg-rax 0)
+   in let st13 = emit-store-closure-captures st12 (saved.locals) (ptr-loc.reg) 0
+   in load-local st13 (ptr-loc.reg)
 
   emit-store-closure-captures : CodegenState -> List Integer -> Integer -> Integer -> CodegenState
   emit-store-closure-captures (st) (cap-locals) (ptr-loc) (i) =
@@ -1250,7 +1250,7 @@ Section: Closures and Partial Application
   collect-func-addr-patches (fixups) (offsets) (text-base) (i) (acc) =
    if i == list-length fixups then acc
    else let f = list-at fixups i
-    in let func-offset = lookup-func-offset offsets f.target
+    in let func-offset = lookup-func-offset offsets (f.target)
     in let addr = text-base + func-offset
     in let addr-bytes = write-i64 addr
     in let p0 = PatchEntry { pos = f.patch-offset, b0 = list-at addr-bytes 0, b1 = list-at addr-bytes 1, b2 = list-at addr-bytes 2, b3 = list-at addr-bytes 3 }
@@ -1270,9 +1270,9 @@ Section: Record Emission
   emit-eval-record-fields (st) (fields) (i) (acc) =
    if i == list-length fields then EvalFieldsResult { state = st, field-locals = acc }
    else let fv = list-at fields i
-    in let r = emit-expr st fv.value
-    in let loc = alloc-local r.state
-    in let st1 = store-local loc.state loc.reg r.reg
+    in let r = emit-expr st (fv.value)
+    in let loc = alloc-local (r.state)
+    in let st1 = store-local (loc.state) (loc.reg) (r.reg)
     in emit-eval-record-fields st1 fields (i + 1) (list-snoc acc (FieldLocal { name = fv.name, slot = loc.reg }))
 
   find-field-local-slot : List FieldLocal -> Text -> Integer -> Integer
@@ -1286,11 +1286,11 @@ Section: Record Emission
   emit-store-record-fields-by-type (st) (type-fields) (field-locals) (ptr-loc) (i) =
    if i == list-length type-fields then st
    else let tf = list-at type-fields i
-    in let slot = find-field-local-slot field-locals tf.name.value 0
+    in let slot = find-field-local-slot field-locals (tf.name.value) 0
     in if slot >= 0
      then let val = load-local st slot
-      in let ptr = load-local val.state ptr-loc
-      in let st1 = st-append-text ptr.state (mov-store ptr.reg val.reg (i * 8))
+      in let ptr = load-local (val.state) ptr-loc
+      in let st1 = st-append-text (ptr.state) (mov-store (ptr.reg) (val.reg) (i * 8))
       in emit-store-record-fields-by-type st1 type-fields field-locals ptr-loc (i + 1)
      else emit-store-record-fields-by-type st type-fields field-locals ptr-loc (i + 1)
 
@@ -1298,9 +1298,9 @@ Section: Record Emission
   emit-store-record-fields-by-list (st) (field-locals) (ptr-loc) (i) =
    if i == list-length field-locals then st
    else let fl = list-at field-locals i
-    in let val = load-local st fl.slot
-    in let ptr = load-local val.state ptr-loc
-    in let st1 = st-append-text ptr.state (mov-store ptr.reg val.reg (i * 8))
+    in let val = load-local st (fl.slot)
+    in let ptr = load-local (val.state) ptr-loc
+    in let st1 = st-append-text (ptr.state) (mov-store (ptr.reg) (val.reg) (i * 8))
     in emit-store-record-fields-by-list st1 field-locals ptr-loc (i + 1)
 
   emit-record : CodegenState -> List IRFieldVal -> CodexType -> EmitResult
@@ -1308,15 +1308,15 @@ Section: Record Emission
    let evaled = emit-eval-record-fields st fields 0 []
    in let field-count = list-length fields
    in let total-size = field-count * 8
-   in let ptr-loc = alloc-local evaled.state
-   in let ptr-tmp = alloc-temp ptr-loc.state
-   in let st1 = st-append-text ptr-tmp.state (mov-rr ptr-tmp.reg reg-r10)
-   in let st2 = store-local st1 ptr-loc.reg ptr-tmp.reg
+   in let ptr-loc = alloc-local (evaled.state)
+   in let ptr-tmp = alloc-temp (ptr-loc.state)
+   in let st1 = st-append-text (ptr-tmp.state) (mov-rr (ptr-tmp.reg) reg-r10)
+   in let st2 = store-local st1 (ptr-loc.reg) (ptr-tmp.reg)
    in let st3 = st-append-text st2 (add-ri reg-r10 total-size)
    in let st4 = when ty
-    if RecordTy (rname) (type-fields) -> emit-store-record-fields-by-type st3 type-fields evaled.field-locals ptr-loc.reg 0
-    if _ -> emit-store-record-fields-by-list st3 evaled.field-locals ptr-loc.reg 0
-   in load-local st4 ptr-loc.reg
+    if RecordTy (rname) (type-fields) -> emit-store-record-fields-by-type st3 type-fields (evaled.field-locals) (ptr-loc.reg) 0
+    if _ -> emit-store-record-fields-by-list st3 (evaled.field-locals) (ptr-loc.reg) 0
+   in load-local st4 (ptr-loc.reg)
 
   emit-field-access : CodegenState -> IRExpr -> Text -> EmitResult
   emit-field-access (st) (rec-expr) (field-name) =
@@ -1325,10 +1325,10 @@ Section: Record Emission
     if RecordTy (rname) (rfields) -> find-record-field-index rfields field-name 0
     if _ -> 0
    in let rec-result = emit-expr st rec-expr
-   in let rd = alloc-temp rec-result.state
+   in let rd = alloc-temp (rec-result.state)
    in EmitResult {
-    state = st-append-text rd.state (mov-load rd.reg rec-result.reg (field-idx * 8)),
-    reg = rd.reg
+    state = st-append-text (rd.state) (mov-load (rd.reg) (rec-result.reg) (field-idx * 8)),
+    reg = (rd.reg)
    }
 
 Section: Pattern Matching
@@ -1337,14 +1337,14 @@ Section: Pattern Matching
   emit-match (st) (scrut-expr) (branches) =
    let saved-tail = st.tco.in-tail-pos
    in let scrut-result = emit-expr (st-set-tail-pos st False) scrut-expr
-   in let scrut-loc = alloc-local scrut-result.state
-   in let st1 = store-local scrut-loc.state scrut-loc.reg scrut-result.reg
+   in let scrut-loc = alloc-local (scrut-result.state)
+   in let st1 = store-local (scrut-loc.state) (scrut-loc.reg) (scrut-result.reg)
    in let st1a = st-set-tail-pos st1 saved-tail
    in let result-loc = alloc-local st1a
    in let mbs = MatchBranchState { cg-state = st1a, end-patches = [] }
-   in let mbs-final = emit-match-branch-loop mbs scrut-loc.reg result-loc.reg branches 0 (list-length branches)
-   in let st-end = patch-match-end-jumps mbs-final.cg-state mbs-final.end-patches 0
-   in load-local st-end result-loc.reg
+   in let mbs-final = emit-match-branch-loop mbs (scrut-loc.reg) (result-loc.reg) branches 0 (list-length branches)
+   in let st-end = patch-match-end-jumps (mbs-final.cg-state) (mbs-final.end-patches) 0
+   in load-local st-end (result-loc.reg)
 
   emit-match-branch-loop : MatchBranchState -> Integer -> Integer -> List IRBranch -> Integer -> Integer -> MatchBranchState
   emit-match-branch-loop (mbs) (scrut-loc) (result-loc) (branches) (i) (total) =
@@ -1355,20 +1355,20 @@ Section: Pattern Matching
 
   emit-one-match-branch : MatchBranchState -> Integer -> Integer -> IRBranch -> Boolean -> MatchBranchState
   emit-one-match-branch (mbs) (scrut-loc) (result-loc) (branch) (needs-jmp-end) =
-   let pat-result = emit-pattern mbs.cg-state scrut-loc branch.pattern
-   in let body-result = emit-expr pat-result.state branch.body
-   in let st1 = store-local body-result.state result-loc body-result.reg
+   let pat-result = emit-pattern (mbs.cg-state) scrut-loc (branch.pattern)
+   in let body-result = emit-expr (pat-result.state) (branch.body)
+   in let st1 = store-local (body-result.state) result-loc (body-result.reg)
    in let st2 = if needs-jmp-end
-    then let jmp-pos = list-length st1.text
+    then let jmp-pos = list-length (st1.text)
      in MatchBranchState {
       cg-state = st-append-text st1 (jmp 0),
-      end-patches = list-snoc mbs.end-patches jmp-pos
+      end-patches = list-snoc (mbs.end-patches) jmp-pos
      }
     else MatchBranchState { cg-state = st1, end-patches = mbs.end-patches }
    in let st3 = if pat-result.next-branch-patch >= 0
     then MatchBranchState {
-     cg-state = patch-jcc-at st2.cg-state pat-result.next-branch-patch (list-length st2.cg-state.text),
-     end-patches = st2.end-patches
+     cg-state = patch-jcc-at (st2.cg-state) (pat-result.next-branch-patch) (list-length (st2.cg-state.text)),
+     end-patches = (st2.end-patches)
     }
     else st2
    in st3
@@ -1384,18 +1384,18 @@ Section: Pattern Matching
     if IrWildPat -> EmitPatternResult { state = st, next-branch-patch = 0 - 1 }
     if IrVarPat (name) (ty) ->
      let var-loc = alloc-local st
-     in let loaded = load-local var-loc.state scrut-loc
-     in let st1 = store-local loaded.state var-loc.reg loaded.reg
-     in EmitPatternResult { state = add-local st1 name var-loc.reg, next-branch-patch = 0 - 1 }
+     in let loaded = load-local (var-loc.state) scrut-loc
+     in let st1 = store-local (loaded.state) (var-loc.reg) (loaded.reg)
+     in EmitPatternResult { state = add-local st1 name (var-loc.reg), next-branch-patch = 0 - 1 }
     if IrCtorPat (name) (sub-pats) (ty) ->
      let scrut-load = load-local st scrut-loc
-     in let tag-reg = alloc-temp scrut-load.state
-     in let st1 = st-append-text tag-reg.state (mov-load tag-reg.reg scrut-load.reg 0)
+     in let tag-reg = alloc-temp (scrut-load.state)
+     in let st1 = st-append-text (tag-reg.state) (mov-load (tag-reg.reg) (scrut-load.reg) 0)
      in let expected-tag = when ty
       if SumTy (sname) (ctors) -> find-ctor-tag ctors name 0
       if _ -> 0
-     in let st2 = st-append-text st1 (cmp-ri tag-reg.reg expected-tag)
-     in let jcc-pos = list-length st2.text
+     in let st2 = st-append-text st1 (cmp-ri (tag-reg.reg) expected-tag)
+     in let jcc-pos = list-length (st2.text)
      in let st3 = st-append-text st2 (jcc cc-ne 0)
      in let st4 = bind-ctor-fields st3 scrut-loc sub-pats 0
      in EmitPatternResult { state = st4, next-branch-patch = jcc-pos }
@@ -1409,17 +1409,17 @@ Section: Pattern Matching
     in when sub
      if IrVarPat (name) (ty) ->
       let field-loc = alloc-local st
-      in let scrut-load = load-local field-loc.state scrut-loc
-      in let field-val = alloc-temp scrut-load.state
-      in let st1 = st-append-text field-val.state (mov-load field-val.reg scrut-load.reg ((1 + i) * 8))
-      in let st2 = store-local st1 field-loc.reg field-val.reg
-      in bind-ctor-fields (add-local st2 name field-loc.reg) scrut-loc sub-pats (i + 1)
+      in let scrut-load = load-local (field-loc.state) scrut-loc
+      in let field-val = alloc-temp (scrut-load.state)
+      in let st1 = st-append-text (field-val.state) (mov-load (field-val.reg) (scrut-load.reg) ((1 + i) * 8))
+      in let st2 = store-local st1 (field-loc.reg) (field-val.reg)
+      in bind-ctor-fields (add-local st2 name (field-loc.reg)) scrut-loc sub-pats (i + 1)
      if _ -> bind-ctor-fields st scrut-loc sub-pats (i + 1)
 
   patch-match-end-jumps : CodegenState -> List Integer -> Integer -> CodegenState
   patch-match-end-jumps (st) (patches) (i) =
    if i == list-length patches then st
-   else patch-match-end-jumps (patch-jmp-at st (list-at patches i) (list-length st.text)) patches (i + 1)
+   else patch-match-end-jumps (patch-jmp-at st (list-at patches i) (list-length (st.text))) patches (i + 1)
 
 Section: List Emission
 
@@ -1427,9 +1427,9 @@ Section: List Emission
   emit-eval-list-elems (st) (elems) (i) (acc) =
    if i == list-length elems then SavedArgs { state = st, locals = acc }
    else let r = emit-expr st (list-at elems i)
-    in let loc = alloc-local r.state
-    in let st1 = store-local loc.state loc.reg r.reg
-    in emit-eval-list-elems st1 elems (i + 1) (list-snoc acc loc.reg)
+    in let loc = alloc-local (r.state)
+    in let st1 = store-local (loc.state) (loc.reg) (r.reg)
+    in emit-eval-list-elems st1 elems (i + 1) (list-snoc acc (loc.reg))
 
   emit-store-list-elems : CodegenState -> List Integer -> Integer -> Integer -> CodegenState
   emit-store-list-elems (st) (elem-locals) (ptr-loc) (i) =
@@ -1443,21 +1443,21 @@ Section: List Emission
   emit-list (st) (elems) =
    let saved = emit-eval-list-elems st elems 0 []
    in let count = list-length elems
-   in let cap-tmp = alloc-temp saved.state
-   in let st1 = st-append-text cap-tmp.state (li cap-tmp.reg count)
-   in let st2 = st-append-text st1 (mov-store reg-r10 cap-tmp.reg 0)
+   in let cap-tmp = alloc-temp (saved.state)
+   in let st1 = st-append-text (cap-tmp.state) (li (cap-tmp.reg) count)
+   in let st2 = st-append-text st1 (mov-store reg-r10 (cap-tmp.reg) 0)
    in let st3 = st-append-text st2 (add-ri reg-r10 8)
    in let ptr-loc = alloc-local st3
-   in let ptr-tmp = alloc-temp ptr-loc.state
-   in let st4 = st-append-text ptr-tmp.state (mov-rr ptr-tmp.reg reg-r10)
-   in let st5 = store-local st4 ptr-loc.reg ptr-tmp.reg
+   in let ptr-tmp = alloc-temp (ptr-loc.state)
+   in let st4 = st-append-text (ptr-tmp.state) (mov-rr (ptr-tmp.reg) reg-r10)
+   in let st5 = store-local st4 (ptr-loc.reg) (ptr-tmp.reg)
    in let st6 = st-append-text st5 (add-ri reg-r10 ((count + 1) * 8))
    in let len-tmp = alloc-temp st6
-   in let st7 = st-append-text len-tmp.state (li len-tmp.reg count)
-   in let ptr-load = load-local st7 ptr-loc.reg
-   in let st8 = st-append-text ptr-load.state (mov-store ptr-load.reg len-tmp.reg 0)
-   in let st9 = emit-store-list-elems st8 saved.locals ptr-loc.reg 0
-   in load-local st9 ptr-loc.reg
+   in let st7 = st-append-text (len-tmp.state) (li (len-tmp.reg) count)
+   in let ptr-load = load-local st7 (ptr-loc.reg)
+   in let st8 = st-append-text (ptr-load.state) (mov-store (ptr-load.reg) (len-tmp.reg) 0)
+   in let st9 = emit-store-list-elems st8 (saved.locals) (ptr-loc.reg) 0
+   in load-local st9 (ptr-loc.reg)
 
 Section: 32-bit Bare-Metal Trampoline
 
@@ -1531,28 +1531,28 @@ Section: Serial I/O
 
   emit-serial-wait-and-send : CodegenState -> Integer -> CodegenState
   emit-serial-wait-and-send (st) (byte-val) =
-   let wait-top = list-length st.text
+   let wait-top = list-length (st.text)
    in let st1 = st-append-text st (li reg-rdx 1021)
    in let st2 = st-append-text st1 [236]
    in let st3 = st-append-text st2 [168, 32]
-   in let jne-pos = list-length st3.text
+   in let jne-pos = list-length (st3.text)
    in let st4 = st-append-text st3 (jcc cc-ne 0)
-   in let st5 = st-append-text st4 (jmp (wait-top - (list-length st4.text + 5)))
-   in let st6 = patch-jcc-at st5 jne-pos (list-length st5.text)
+   in let st5 = st-append-text st4 (jmp (wait-top - (list-length (st4.text) + 5)))
+   in let st6 = patch-jcc-at st5 jne-pos (list-length (st5.text))
    in let st7 = st-append-text st6 (li reg-rdx 1016)
    in let st8 = st-append-text st7 (li reg-rax byte-val)
    in st-append-text st8 out-dx-al
 
   emit-serial-send-rdi : CodegenState -> CodegenState
   emit-serial-send-rdi (st) =
-   let wait-top = list-length st.text
+   let wait-top = list-length (st.text)
    in let st1 = st-append-text st (li reg-rdx 1021)
    in let st2 = st-append-text st1 [236]
    in let st3 = st-append-text st2 [168, 32]
-   in let jne-pos = list-length st3.text
+   in let jne-pos = list-length (st3.text)
    in let st4 = st-append-text st3 (jcc cc-ne 0)
-   in let st5 = st-append-text st4 (jmp (wait-top - (list-length st4.text + 5)))
-   in let st6 = patch-jcc-at st5 jne-pos (list-length st5.text)
+   in let st5 = st-append-text st4 (jmp (wait-top - (list-length (st4.text) + 5)))
+   in let st6 = patch-jcc-at st5 jne-pos (list-length (st5.text))
    in let st7 = st-append-text st6 (li reg-rdx 1016)
    in let st8 = st-append-text st7 (mov-rr reg-rax reg-rdi)
    in st-append-text st8 out-dx-al
@@ -1574,25 +1574,25 @@ Section: Inline Integer Print
   emit-itoa-zero-check (st) =
    let st1 = st-append-text st (mov-rr reg-rbx reg-rax)
    in let st2 = st-append-text st1 (test-rr reg-rbx reg-rbx)
-   in let jne-pos = list-length st2.text
+   in let jne-pos = list-length (st2.text)
    in let st3 = st-append-text st2 (jcc cc-ne 0)
    in let st4 = emit-serial-wait-and-send st3 48
-   in let jmp-pos = list-length st4.text
+   in let jmp-pos = list-length (st4.text)
    in let st5 = st-append-text st4 (jmp 0)
-   in let st6 = patch-jcc-at st5 jne-pos (list-length st5.text)
+   in let st6 = patch-jcc-at st5 jne-pos (list-length (st5.text))
    in ItoaState { cg = st6, jmp-done-zero-pos = jmp-pos }
 
   emit-itoa-sign-and-digits : CodegenState -> CodegenState
   emit-itoa-sign-and-digits (st) =
    let st1 = st-append-text st (test-rr reg-rbx reg-rbx)
-   in let jns-pos = list-length st1.text
+   in let jns-pos = list-length (st1.text)
    in let st2 = st-append-text st1 (jcc cc-ge 0)
    in let st3 = emit-serial-wait-and-send st2 45
    in let st4 = st-append-text st3 (neg-r reg-rbx)
-   in let st5 = patch-jcc-at st4 jns-pos (list-length st4.text)
+   in let st5 = patch-jcc-at st4 jns-pos (list-length (st4.text))
    in let st6 = st-append-text st5 (li reg-rcx 0)
    in let st7 = st-append-text st6 (li reg-r11 10)
-   in let loop-top = list-length st7.text
+   in let loop-top = list-length (st7.text)
    in let st8 = st-append-text st7 (mov-rr reg-rax reg-rbx)
    in let st9 = st-append-text st8 cqo
    in let st10 = st-append-text st9 (idiv-r reg-r11)
@@ -1601,40 +1601,40 @@ Section: Inline Integer Print
    in let st13 = st-append-text st12 (push-r reg-rdx)
    in let st14 = st-append-text st13 (add-ri reg-rcx 1)
    in let st15 = st-append-text st14 (test-rr reg-rbx reg-rbx)
-   in st-append-text st15 (jcc cc-ne (loop-top - (list-length st15.text + 6)))
+   in st-append-text st15 (jcc cc-ne (loop-top - (list-length (st15.text) + 6)))
 
   emit-itoa-print-loop : CodegenState -> CodegenState
   emit-itoa-print-loop (st) =
-   let loop-top = list-length st.text
+   let loop-top = list-length (st.text)
    in let st1 = st-append-text st (test-rr reg-rcx reg-rcx)
-   in let je-pos = list-length st1.text
+   in let je-pos = list-length (st1.text)
    in let st2 = st-append-text st1 (jcc cc-e 0)
    in let st3 = st-append-text st2 (pop-r reg-rdi)
    in let st4 = st-append-text st3 (push-r reg-rcx)
    in let st5 = emit-serial-send-rdi st4
    in let st6 = st-append-text st5 (pop-r reg-rcx)
    in let st7 = st-append-text st6 (sub-ri reg-rcx 1)
-   in let st8 = st-append-text st7 (jmp (loop-top - (list-length st7.text + 5)))
-   in patch-jcc-at st8 je-pos (list-length st8.text)
+   in let st8 = st-append-text st7 (jmp (loop-top - (list-length (st7.text) + 5)))
+   in patch-jcc-at st8 je-pos (list-length (st8.text))
 
   emit-inline-itoa-and-print : CodegenState -> CodegenState
   emit-inline-itoa-and-print (st) =
    let zero = emit-itoa-zero-check st
-   in let st1 = emit-itoa-sign-and-digits zero.cg
+   in let st1 = emit-itoa-sign-and-digits (zero.cg)
    in let st2 = emit-itoa-print-loop st1
-   in patch-jmp-at st2 zero.jmp-done-zero-pos (list-length st2.text)
+   in patch-jmp-at st2 (zero.jmp-done-zero-pos) (list-length (st2.text))
 
 Section: Call Emission
 
   emit-call-to : CodegenState -> Text -> CodegenState
   emit-call-to (st) (target) =
-   let patch-pos = list-length st.text
+   let patch-pos = list-length (st.text)
    in let st1 = st-append-text st (x86-call 0)
    in CodegenState {
     text = st1.text,
     rodata = st1.rodata,
     func-offsets = st1.func-offsets,
-    call-patches = list-snoc st1.call-patches (CallPatch { patch-offset = patch-pos, target = target }),
+    call-patches = list-snoc (st1.call-patches) (CallPatch { patch-offset = patch-pos, target = target }),
     func-addr-fixups = st1.func-addr-fixups,
     locals = st1.locals,
     next-temp = st1.next-temp,
@@ -1690,13 +1690,13 @@ Section: Module Entry Point
     tco = default-tco-state
    }
    in let st0a = emit-runtime-helpers st0
-   in let st1 = emit-all-defs st0a m.defs 0
+   in let st1 = emit-all-defs st0a (m.defs) 0
    in let st2 = emit-start st1
-   in let start-offset = lookup-func-offset st2.func-offsets "__start"
+   in let start-offset = lookup-func-offset (st2.func-offsets) "__start"
    in let start-addr = bare-metal-load-addr + start-offset
-   in let far-jump-entry = make-i32-patch (tramp.far-jump-patch-pos + 1) start-addr
-   in let call-entries = collect-call-patches st2.call-patches st2.func-offsets 0 []
-   in let addr-entries = collect-func-addr-patches st2.func-addr-fixups st2.func-offsets bare-metal-load-addr 0 []
+   in let far-jump-entry = make-i32-patch ((tramp.far-jump-patch-pos) + 1) start-addr
+   in let call-entries = collect-call-patches (st2.call-patches) (st2.func-offsets) 0 []
+   in let addr-entries = collect-func-addr-patches (st2.func-addr-fixups) (st2.func-offsets) bare-metal-load-addr 0 []
    in let all-patches = [far-jump-entry] ++ call-entries ++ addr-entries
-   in let st3 = st-with-text st2 (apply-all-patches st2.text all-patches)
-   in build-elf-32-bare st3.text st3.rodata 12
+   in let st3 = st-with-text st2 (apply-all-patches (st2.text) all-patches)
+   in build-elf-32-bare (st3.text) (st3.rodata) 12
