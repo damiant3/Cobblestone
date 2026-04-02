@@ -88,9 +88,9 @@ Section: Identifier Helpers
     if ListTy (elem) -> "List<" ++ cs-type elem ++ ">"
     if TypeVar (id) -> "T" ++ integer-to-text id
     if ForAllTy (id) (body) -> cs-type body
-    if SumTy (name) (ctors) -> sanitize name.value
-    if RecordTy (name) (fields) -> sanitize name.value
-    if ConstructedTy (name) (args) -> if list-length args == 0 then sanitize name.value else sanitize name.value ++ "<" ++ emit-cs-type-args args 0 ++ ">"
+    if SumTy (name) (ctors) -> sanitize (name.value)
+    if RecordTy (name) (fields) -> sanitize (name.value)
+    if ConstructedTy (name) (args) -> if list-length args == 0 then sanitize (name.value) else sanitize (name.value) ++ "<" ++ emit-cs-type-args args 0 ++ ">"
     if EffectfulTy (effects) (ret) -> cs-type ret
 
   emit-cs-type-args : List CodexType -> Integer -> Text
@@ -111,13 +111,13 @@ Section: Arity Map
   build-arity-map (defs) (i) =
    if i == list-length defs then []
    else let d = list-at defs i
-    in [ArityEntry { name = d.name, arity = list-length d.params }] ++ build-arity-map defs (i + 1)
+    in [ArityEntry { name = d.name, arity = list-length (d.params) }] ++ build-arity-map defs (i + 1)
 
   build-arity-map-from-ast : List ADef -> Integer -> List ArityEntry
   build-arity-map-from-ast (defs) (i) =
    if i == list-length defs then []
    else let d = list-at defs i
-    in [ArityEntry { name = d.name.value, arity = list-length d.params }] ++ build-arity-map-from-ast defs (i + 1)
+    in [ArityEntry { name = d.name.value, arity = list-length (d.params) }] ++ build-arity-map-from-ast defs (i + 1)
 
   lookup-arity : List ArityEntry -> Text -> Integer
   lookup-arity (entries) (name) =
@@ -382,7 +382,7 @@ Section: Expression Emission
    if list-length params == 0 then "(() => " ++ emit-expr body arities ++ ")"
    else if list-length params == 1
     then let p = list-at params 0
-     in "((" ++ cs-type p.type-val ++ " " ++ sanitize p.name ++ ") => " ++ emit-expr body arities ++ ")"
+     in "((" ++ cs-type (p.type-val) ++ " " ++ sanitize (p.name) ++ ") => " ++ emit-expr body arities ++ ")"
     else "(() => " ++ emit-expr body arities ++ ")"
 
   emit-list : List IRExpr -> CodexType -> List ArityEntry -> Text
@@ -406,8 +406,8 @@ Section: Expression Emission
   emit-match-arms (branches) (i) (arities) =
    if i == list-length branches then ""
    else let arm = list-at branches i
-    in let this-arm = emit-pattern arm.pattern ++ " => " ++ emit-expr arm.body arities ++ ", "
-     in if is-catch-all arm.pattern then this-arm
+    in let this-arm = emit-pattern (arm.pattern) ++ " => " ++ emit-expr (arm.body) arities ++ ", "
+     in if is-catch-all (arm.pattern) then this-arm
       else this-arm ++ emit-match-arms branches (i + 1) arities
 
   is-catch-all : IRPat -> Boolean
@@ -421,7 +421,7 @@ Section: Expression Emission
   has-any-catch-all (branches) (i) =
    if i == list-length branches then False
    else let b = list-at branches i
-    in if is-catch-all b.pattern then True
+    in if is-catch-all (b.pattern) then True
      else has-any-catch-all branches (i + 1)
   emit-pattern : IRPat -> Text
   emit-pattern (p) =
@@ -483,7 +483,7 @@ Section: Expression Emission
   emit-record-fields (fields) (i) (arities) =
    if i == list-length fields then ""
    else let f = list-at fields i
-    in sanitize f.name ++ ": " ++ emit-expr f.value arities ++ (if i < list-length fields - 1 then ", " else "") ++ emit-record-fields fields (i + 1) arities
+    in sanitize (f.name) ++ ": " ++ emit-expr (f.value) arities ++ (if i < list-length fields - 1 then ", " else "") ++ emit-record-fields fields (i + 1) arities
 
   emit-handle : Text -> IRExpr -> List IRHandleClause -> CodexType -> List ArityEntry -> Text
   emit-handle (eff) (body) (clauses) (ty) (arities) =
@@ -498,5 +498,5 @@ Section: Expression Emission
   emit-handle-clauses-loop (clauses) (i) (ret-type) (arities) =
    if i == list-length clauses then ""
    else let c = list-at clauses i
-    in "Func<Func<" ++ ret-type ++ ", " ++ ret-type ++ ">, " ++ ret-type ++ "> _handle_" ++ sanitize c.op-name ++ "_ = (" ++ sanitize c.resume-name ++ ") => { return " ++ emit-expr c.body arities ++ "; }; " ++ emit-handle-clauses-loop clauses (i + 1) ret-type arities
+    in "Func<Func<" ++ ret-type ++ ", " ++ ret-type ++ ">, " ++ ret-type ++ "> _handle_" ++ sanitize (c.op-name) ++ "_ = (" ++ sanitize (c.resume-name) ++ ") => { return " ++ emit-expr (c.body) arities ++ "; }; " ++ emit-handle-clauses-loop clauses (i + 1) ret-type arities
 

@@ -17,10 +17,10 @@ Section: Type Definition Emission
    when td
     if ARecordTypeDef (name) (tparams) (fields) ->
      let gen = emit-tparameter-suffix tparams
-     in "public sealed record " ++ sanitize name.value ++ gen ++ "(" ++ emit-record-field-defs fields tparams 0 ++ ");\n"
+     in "public sealed record " ++ sanitize (name.value) ++ gen ++ "(" ++ emit-record-field-defs fields tparams 0 ++ ");\n"
     if AVariantTypeDef (name) (tparams) (ctors) ->
      let gen = emit-tparameter-suffix tparams
-     in "public abstract record " ++ sanitize name.value ++ gen ++ ";\n" ++ emit-variant-ctors ctors name tparams 0 ++ "\n"
+     in "public abstract record " ++ sanitize (name.value) ++ gen ++ ";\n" ++ emit-variant-ctors ctors name tparams 0 ++ "\n"
 
   emit-tparameter-suffix : List Name -> Text
   emit-tparameter-suffix (tparams) =
@@ -37,7 +37,7 @@ Section: Type Definition Emission
   emit-record-field-defs (fields) (tparams) (i) =
    if i == list-length fields then ""
    else let f = list-at fields i
-    in emit-type-expr-tp f.type-expr tparams ++ " " ++ sanitize f.name.value ++ (if i < list-length fields - 1 then ", " else "") ++ emit-record-field-defs fields tparams (i + 1)
+    in emit-type-expr-tp (f.type-expr) tparams ++ " " ++ sanitize (f.name.value) ++ (if i < list-length fields - 1 then ", " else "") ++ emit-record-field-defs fields tparams (i + 1)
 
   emit-variant-ctors : List AVariantCtorDef -> Name -> List Name -> Integer -> Text
   emit-variant-ctors (ctors) (base-name) (tparams) (i) =
@@ -48,9 +48,9 @@ Section: Type Definition Emission
   emit-variant-ctor : AVariantCtorDef -> Name -> List Name -> Text
   emit-variant-ctor (c) (base-name) (tparams) =
    let gen = emit-tparameter-suffix tparams
-   in if list-length c.fields == 0
-    then "public sealed record " ++ sanitize c.name.value ++ gen ++ " : " ++ sanitize base-name.value ++ gen ++ ";\n"
-    else "public sealed record " ++ sanitize c.name.value ++ gen ++ "(" ++ emit-ctor-fields c.fields tparams 0 ++ ") : " ++ sanitize base-name.value ++ gen ++ ";\n"
+   in if list-length (c.fields) == 0
+    then "public sealed record " ++ sanitize (c.name.value) ++ gen ++ " : " ++ sanitize (base-name.value) ++ gen ++ ";\n"
+    else "public sealed record " ++ sanitize (c.name.value) ++ gen ++ "(" ++ emit-ctor-fields (c.fields) tparams 0 ++ ") : " ++ sanitize (base-name.value) ++ gen ++ ";\n"
 
   emit-ctor-fields : List ATypeExpr -> List Name -> Integer -> Text
   emit-ctor-fields (fields) (tparams) (i) =
@@ -65,9 +65,9 @@ Section: Type Definition Emission
    when te
     if ANamedType (name) ->
 
-     let idx = find-tparam-index tparams name.value 0
+     let idx = find-tparam-index tparams (name.value) 0
      in if idx >= 0 then "T" ++ integer-to-text idx
-      else when-type-name name.value
+      else when-type-name (name.value)
     if AFunType (p) (r) -> "Func<" ++ emit-type-expr-tp p tparams ++ ", " ++ emit-type-expr-tp r tparams ++ ">"
     if AAppType (base) (args) -> emit-type-expr-tp base tparams ++ "<" ++ emit-type-expr-list-tp args tparams 0 ++ ">"
 
@@ -155,7 +155,7 @@ Section: Tail Call Optimization
   is-self-call : IRExpr -> Text -> Boolean
   is-self-call (e) (func-name) =
    let chain = collect-apply-chain e []
-   in is-self-call-root chain.root func-name
+   in is-self-call-root (chain.root) func-name
 
   is-self-call-root : IRExpr -> Text -> Boolean
   is-self-call-root (e) (func-name) =
@@ -176,18 +176,18 @@ Section: Tail Call Optimization
   has-tail-call-branches (branches) (func-name) (i) =
    if i == list-length branches then False
    else let b = list-at branches i
-    in if has-tail-call b.body func-name then True
+    in if has-tail-call (b.body) func-name then True
      else has-tail-call-branches branches func-name (i + 1)
   should-tco : IRDef -> Boolean
   should-tco (d) =
-   if list-length d.params == 0 then False
-   else has-tail-call d.body d.name
+   if list-length (d.params) == 0 then False
+   else has-tail-call (d.body) (d.name)
 
   emit-tco-def : IRDef -> List ArityEntry -> Text
   emit-tco-def (d) (arities) =
-   let ret = get-return-type d.type-val (list-length d.params)
-   in let gen = generic-suffix d.type-val
-    in "    public static " ++ cs-type ret ++ " " ++ sanitize d.name ++ gen ++ "(" ++ emit-def-params d.params 0 ++ ")\n    \{\n        while (true)\n        \{\n" ++ emit-tco-body d.body d.name d.params arities ++ "        }\n    }\n"
+   let ret = get-return-type (d.type-val) (list-length (d.params))
+   in let gen = generic-suffix (d.type-val)
+    in "    public static " ++ cs-type ret ++ " " ++ sanitize (d.name) ++ gen ++ "(" ++ emit-def-params (d.params) 0 ++ ")\n    \{\n        while (true)\n        \{\n" ++ emit-tco-body (d.body) (d.name) (d.params) arities ++ "        }\n    }\n"
 
   emit-tco-body : IRExpr -> Text -> List IRParam -> List ArityEntry -> Text
   emit-tco-body (e) (func-name) (params) (arities) =
@@ -225,15 +225,15 @@ Section: Tail Call Optimization
   emit-tco-match-branch : IRBranch -> Text -> List IRParam -> List ArityEntry -> Integer -> Boolean -> Text
   emit-tco-match-branch (b) (func-name) (params) (arities) (idx) (is-first) =
    when b.pattern
-    if IrWildPat -> "            {\n" ++ emit-tco-body b.body func-name params arities ++ "            }\n"
-    if IrVarPat (name) (ty) -> "            {\n                var " ++ sanitize name ++ " = _tco_s;\n" ++ emit-tco-body b.body func-name params arities ++ "            }\n"
+    if IrWildPat -> "            {\n" ++ emit-tco-body (b.body) func-name params arities ++ "            }\n"
+    if IrVarPat (name) (ty) -> "            {\n                var " ++ sanitize name ++ " = _tco_s;\n" ++ emit-tco-body (b.body) func-name params arities ++ "            }\n"
     if IrCtorPat (name) (subs) (ty) ->
      let keyword = if is-first then "if" else "else if"
      in let match-var = "_tco_m" ++ integer-to-text idx
-      in "            " ++ keyword ++ " (_tco_s is " ++ sanitize name ++ " " ++ match-var ++ ")\n            {\n" ++ emit-tco-ctor-bindings subs match-var 0 ++ emit-tco-body b.body func-name params arities ++ "            }\n"
+      in "            " ++ keyword ++ " (_tco_s is " ++ sanitize name ++ " " ++ match-var ++ ")\n            {\n" ++ emit-tco-ctor-bindings subs match-var 0 ++ emit-tco-body (b.body) func-name params arities ++ "            }\n"
     if IrLitPat (text) (ty) ->
      let keyword = if is-first then "if" else "else if"
-     in "            " ++ keyword ++ " (object.Equals(_tco_s, " ++ text ++ "))\n            {\n" ++ emit-tco-body b.body func-name params arities ++ "            }\n"
+     in "            " ++ keyword ++ " (object.Equals(_tco_s, " ++ text ++ "))\n            {\n" ++ emit-tco-body (b.body) func-name params arities ++ "            }\n"
 
   emit-tco-ctor-bindings : List IRPat -> Text -> Integer -> Text
   emit-tco-ctor-bindings (subs) (match-var) (i) =
@@ -250,7 +250,7 @@ Section: Tail Call Optimization
   emit-tco-jump : IRExpr -> List IRParam -> List ArityEntry -> Text
   emit-tco-jump (e) (params) (arities) =
    let chain = collect-apply-chain e []
-   in emit-tco-temps chain.args arities 0 ++ emit-tco-assigns params 0 ++ "            continue;\n"
+   in emit-tco-temps (chain.args) arities 0 ++ emit-tco-assigns params 0 ++ "            continue;\n"
 
   emit-tco-temps : List IRExpr -> List ArityEntry -> Integer -> Text
   emit-tco-temps (args) (arities) (i) =
@@ -261,7 +261,7 @@ Section: Tail Call Optimization
   emit-tco-assigns (params) (i) =
    if i == list-length params then ""
    else let p = list-at params i
-    in "            " ++ sanitize p.name ++ " = _tco_" ++ integer-to-text i ++ ";\n" ++ emit-tco-assigns params (i + 1)
+    in "            " ++ sanitize (p.name) ++ " = _tco_" ++ integer-to-text i ++ ";\n" ++ emit-tco-assigns params (i + 1)
 
 Section: Definition Emission
 
@@ -269,9 +269,9 @@ Section: Definition Emission
   emit-def (d) (arities) =
    if should-tco d
     then emit-tco-def d arities
-    else let ret = get-return-type d.type-val (list-length d.params)
-     in let gen = generic-suffix d.type-val
-      in "    public static " ++ cs-type ret ++ " " ++ sanitize d.name ++ gen ++ "(" ++ emit-def-params d.params 0 ++ ") => " ++ emit-expr d.body arities ++ ";\n"
+    else let ret = get-return-type (d.type-val) (list-length (d.params))
+     in let gen = generic-suffix (d.type-val)
+      in "    public static " ++ cs-type ret ++ " " ++ sanitize (d.name) ++ gen ++ "(" ++ emit-def-params (d.params) 0 ++ ") => " ++ emit-expr (d.body) arities ++ ";\n"
 
   get-return-type : CodexType -> Integer -> CodexType
   get-return-type (ty) (n) =
@@ -290,7 +290,7 @@ Section: Definition Emission
   emit-def-params (params) (i) =
    if i == list-length params then ""
    else let p = list-at params i
-    in cs-type p.type-val ++ " " ++ sanitize p.name ++ (if i < list-length params - 1 then ", " else "") ++ emit-def-params params (i + 1)
+    in cs-type (p.type-val) ++ " " ++ sanitize (p.name) ++ (if i < list-length params - 1 then ", " else "") ++ emit-def-params params (i + 1)
 
 Section: Module Emission
 
@@ -342,13 +342,13 @@ Section: Module Emission
 
   emit-full-module : IRModule -> List ATypeDef -> Text
   emit-full-module (m) (type-defs) =
-   let arities = build-arity-map m.defs 0
-   in "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n" ++ "Codex_" ++ sanitize m.name.value ++ ".main();\n\n" ++ emit-cce-runtime ++ emit-type-defs type-defs 0 ++ emit-class-header m.name.value ++ emit-defs m.defs 0 arities ++ "}\n"
+   let arities = build-arity-map (m.defs) 0
+   in "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n" ++ "Codex_" ++ sanitize (m.name.value) ++ ".main();\n\n" ++ emit-cce-runtime ++ emit-type-defs type-defs 0 ++ emit-class-header (m.name.value) ++ emit-defs (m.defs) 0 arities ++ "}\n"
 
   emit-module : IRModule -> Text
   emit-module (m) =
-   let arities = build-arity-map m.defs 0
-   in "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n" ++ "Codex_" ++ sanitize m.name.value ++ ".main();\n\n" ++ emit-cce-runtime ++ emit-class-header m.name.value ++ emit-defs m.defs 0 arities ++ "}\n"
+   let arities = build-arity-map (m.defs) 0
+   in "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n" ++ "Codex_" ++ sanitize (m.name.value) ++ ".main();\n\n" ++ emit-cce-runtime ++ emit-class-header (m.name.value) ++ emit-defs (m.defs) 0 arities ++ "}\n"
 
   emit-class-header : Text -> Text
   emit-class-header (name) =

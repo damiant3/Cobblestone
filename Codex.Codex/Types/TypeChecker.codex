@@ -14,7 +14,7 @@ Section: Resolve Type Expression
   resolve-type-expr : List TypeBinding -> ATypeExpr -> CodexType
   resolve-type-expr (tdm) (texpr) =
    when texpr
-    if ANamedType (name) -> resolve-type-name tdm name.value
+    if ANamedType (name) -> resolve-type-name tdm (name.value)
     if AFunType (param) (ret) -> FunTy (resolve-type-expr tdm param) (resolve-type-expr tdm ret)
     if AAppType (ctor) (args) -> resolve-applied-type tdm ctor args
     if AEffectType (effs) (ret) -> resolve-type-expr tdm ret
@@ -77,7 +77,7 @@ Section: Parameterize Type
   parameterize-type : UnificationState -> CodexType -> ParamResult
   parameterize-type (st) (ty) =
    let r = parameterize-walk st [] ty
-   in let wrapped = wrap-forall-from-entries r.walked r.entries 0 (list-length r.entries)
+   in let wrapped = wrap-forall-from-entries (r.walked) (r.entries) 0 (list-length (r.entries))
    in ParamResult { parameterized = wrapped, entries = r.entries, state = r.state }
 
   wrap-forall-from-entries : CodexType -> List ParamEntry -> Integer -> Integer -> CodexType
@@ -85,7 +85,7 @@ Section: Parameterize Type
    if i == len then ty
    else
     let e = list-at entries i
-    in ForAllTy e.var-id (wrap-forall-from-entries ty entries (i + 1) len)
+    in ForAllTy (e.var-id) (wrap-forall-from-entries ty entries (i + 1) len)
 
   WalkResult = record {
    walked : CodexType,
@@ -97,9 +97,9 @@ Section: Parameterize Type
   parameterize-walk (st) (entries) (ty) =
    when ty
     if ConstructedTy (name) (args) ->
-     if list-length args == 0 & is-value-name name.value
+     if list-length args == 0 & is-value-name (name.value)
       then
-       let looked = find-param-entry entries name.value 0 (list-length entries)
+       let looked = find-param-entry entries (name.value) 0 (list-length entries)
        in if looked >= 0
         then WalkResult { walked = TypeVar looked, entries = entries, state = st }
         else
@@ -111,17 +111,17 @@ Section: Parameterize Type
           if _ -> WalkResult { walked = ty, entries = entries, state = fr.state }
       else
        let args-r = parameterize-walk-list st entries args 0 (list-length args) []
-       in WalkResult { walked = ConstructedTy name args-r.walked-list, entries = args-r.entries, state = args-r.state }
+       in WalkResult { walked = ConstructedTy name (args-r.walked-list), entries = args-r.entries, state = args-r.state }
     if FunTy (param) (ret) ->
      let pr = parameterize-walk st entries param
-     in let rr = parameterize-walk pr.state pr.entries ret
-     in WalkResult { walked = FunTy pr.walked rr.walked, entries = rr.entries, state = rr.state }
+     in let rr = parameterize-walk (pr.state) (pr.entries) ret
+     in WalkResult { walked = FunTy (pr.walked) (rr.walked), entries = rr.entries, state = rr.state }
     if ListTy (elem) ->
      let er = parameterize-walk st entries elem
-     in WalkResult { walked = ListTy er.walked, entries = er.entries, state = er.state }
+     in WalkResult { walked = ListTy (er.walked), entries = er.entries, state = er.state }
     if ForAllTy (id) (body) ->
      let br = parameterize-walk st entries body
-     in WalkResult { walked = ForAllTy id br.walked, entries = br.entries, state = br.state }
+     in WalkResult { walked = ForAllTy id (br.walked), entries = br.entries, state = br.state }
     if _ -> WalkResult { walked = ty, entries = entries, state = st }
 
   find-param-entry : List ParamEntry -> Text -> Integer -> Integer -> Integer
@@ -143,16 +143,16 @@ Section: Parameterize Type
    if i == len then WalkListResult { walked-list = acc, entries = entries, state = st }
    else
     let r = parameterize-walk st entries (list-at args i)
-    in parameterize-walk-list r.state r.entries args (i + 1) len (list-snoc acc r.walked)
+    in parameterize-walk-list (r.state) (r.entries) args (i + 1) len (list-snoc acc (r.walked))
 
 Section: Check Definition
 
   check-def : UnificationState -> TypeEnv -> ADef -> CheckResult
   check-def (st) (env) (def) =
    let declared = resolve-declared-type st env def
-   in let env2 = bind-def-params declared.state declared.env def.params declared.expected-type 0 (list-length def.params)
-   in let body-r = infer-expr env2.state env2.env def.body
-   in let u = unify body-r.state env2.remaining-type body-r.inferred-type
+   in let env2 = bind-def-params (declared.state) (declared.env) (def.params) (declared.expected-type) 0 (list-length (def.params))
+   in let body-r = infer-expr (env2.state) (env2.env) (def.body)
+   in let u = unify (body-r.state) (env2.remaining-type) (body-r.inferred-type)
    in CheckResult { inferred-type = declared.expected-type, state = u.state }
 
   DefSetup = record {
@@ -164,12 +164,12 @@ Section: Check Definition
 
   resolve-declared-type : UnificationState -> TypeEnv -> ADef -> DefSetup
   resolve-declared-type (st) (env) (def) =
-   if list-length def.declared-type == 0
+   if list-length (def.declared-type) == 0
     then
      let fr = fresh-and-advance st
      in DefSetup { expected-type = fr.var-type, remaining-type = fr.var-type, state = fr.state, env = env }
     else
-     let env-type = env-lookup env def.name.value
+     let env-type = env-lookup env (def.name.value)
      in let inst = instantiate-type st env-type
      in DefSetup { expected-type = inst.var-type, remaining-type = inst.var-type, state = inst.state, env = env }
 
@@ -186,12 +186,12 @@ Section: Check Definition
     let p = list-at params i
     in when remaining
      if FunTy (param-ty) (ret-ty) ->
-      let env2 = env-bind env p.name.value param-ty
+      let env2 = env-bind env (p.name.value) param-ty
       in bind-def-params st env2 params ret-ty (i + 1) len
      if _ ->
       let fr = fresh-and-advance st
-      in let env2 = env-bind env p.name.value fr.var-type
-      in bind-def-params fr.state env2 params remaining (i + 1) len
+      in let env2 = env-bind env (p.name.value) (fr.var-type)
+      in bind-def-params (fr.state) env2 params remaining (i + 1) len
 
 Section: Check Module
 
@@ -202,24 +202,24 @@ Section: Check Module
 
   check-module : AModule -> ModuleResult
   check-module (mod) =
-   let tdm = build-type-def-map mod.type-defs 0 (list-length mod.type-defs) []
-   in let tenv = register-type-defs empty-unification-state builtin-type-env tdm mod.type-defs 0 (list-length mod.type-defs)
-   in let env = register-all-defs tenv.state tenv.env tdm mod.defs 0 (list-length mod.defs)
-   in check-all-defs env.state env.env mod.defs 0 (list-length mod.defs) []
+   let tdm = build-type-def-map (mod.type-defs) 0 (list-length (mod.type-defs)) []
+   in let tenv = register-type-defs empty-unification-state builtin-type-env tdm (mod.type-defs) 0 (list-length (mod.type-defs))
+   in let env = register-all-defs (tenv.state) (tenv.env) tdm (mod.defs) 0 (list-length (mod.defs))
+   in check-all-defs (env.state) (env.env) (mod.defs) 0 (list-length (mod.defs)) []
 
   register-all-defs : UnificationState -> TypeEnv -> List TypeBinding -> List ADef -> Integer -> Integer -> LetBindResult
   register-all-defs (st) (env) (tdm) (defs) (i) (len) =
    if i == len then LetBindResult { state = st, env = env }
    else
     let def = list-at defs i
-    in let ty = if list-length def.declared-type == 0
+    in let ty = if list-length (def.declared-type) == 0
       then let fr = fresh-and-advance st
-         in let env2 = env-bind env def.name.value fr.var-type
+         in let env2 = env-bind env (def.name.value) (fr.var-type)
          in LetBindResult { state = fr.state, env = env2 }
-      else let resolved = resolve-type-expr tdm (list-at def.declared-type 0)
+      else let resolved = resolve-type-expr tdm (list-at (def.declared-type) 0)
          in let pr = parameterize-type st resolved
-         in LetBindResult { state = pr.state, env = env-bind env def.name.value pr.parameterized }
-    in register-all-defs ty.state ty.env tdm defs (i + 1) len
+         in LetBindResult { state = pr.state, env = env-bind env (def.name.value) (pr.parameterized) }
+    in register-all-defs (ty.state) (ty.env) tdm defs (i + 1) len
 
   check-all-defs : UnificationState -> TypeEnv -> List ADef -> Integer -> Integer -> List TypeBinding -> ModuleResult
   check-all-defs (st) (env) (defs) (i) (len) (acc) =
@@ -227,9 +227,9 @@ Section: Check Module
    else
     let def = list-at defs i
     in let r = check-def st env def
-    in let resolved = deep-resolve r.state r.inferred-type
+    in let resolved = deep-resolve (r.state) (r.inferred-type)
     in let entry = TypeBinding { name = def.name.value, bound-type = resolved }
-    in check-all-defs r.state env defs (i + 1) len (list-snoc acc entry)
+    in check-all-defs (r.state) env defs (i + 1) len (list-snoc acc entry)
 
 Section: Register Type Definitions
 
@@ -245,14 +245,14 @@ Section: Register Type Definitions
        if ARecordTypeDef (name) (type-params) (fields) ->
         let rec-fields = build-record-fields-for-map tdefs fields 0 (list-length fields) [] acc
         in TypeBinding { name = name.value, bound-type = RecordTy name rec-fields }
-    in build-type-def-map tdefs (i + 1) len (list-insert-at acc (bsearch-text-pos acc entry.name 0 (list-length acc)) entry)
+    in build-type-def-map tdefs (i + 1) len (list-insert-at acc (bsearch-text-pos acc (entry.name) 0 (list-length acc)) entry)
 
   build-sum-ctors : List ATypeDef -> List AVariantCtorDef -> Integer -> Integer -> List SumCtor -> List TypeBinding -> List SumCtor
   build-sum-ctors (tdefs) (ctors) (i) (len) (acc) (partial-tdm) =
    if i == len then acc
    else
     let c = list-at ctors i
-    in let field-types = resolve-type-expr-list-for-map tdefs c.fields 0 (list-length c.fields) [] partial-tdm
+    in let field-types = resolve-type-expr-list-for-map tdefs (c.fields) 0 (list-length (c.fields)) [] partial-tdm
     in let sc = SumCtor { name = c.name, fields = field-types }
     in build-sum-ctors tdefs ctors (i + 1) len (list-snoc acc sc) partial-tdm
 
@@ -261,7 +261,7 @@ Section: Register Type Definitions
    if i == len then acc
    else
     let f = list-at fields i
-    in let rfield = RecordField { name = f.name, type-val = resolve-type-expr partial-tdm f.type-expr }
+    in let rfield = RecordField { name = f.name, type-val = resolve-type-expr partial-tdm (f.type-expr) }
     in build-record-fields-for-map tdefs fields (i + 1) len (list-snoc acc rfield) partial-tdm
 
   resolve-type-expr-list-for-map : List ATypeDef -> List ATypeExpr -> Integer -> Integer -> List CodexType -> List TypeBinding -> List CodexType
@@ -275,26 +275,26 @@ Section: Register Type Definitions
    else
     let td = list-at tdefs i
     in let r = register-one-type-def st env tdm td
-    in register-type-defs r.state r.env tdm tdefs (i + 1) len
+    in register-type-defs (r.state) (r.env) tdm tdefs (i + 1) len
 
   register-one-type-def : UnificationState -> TypeEnv -> List TypeBinding -> ATypeDef -> LetBindResult
   register-one-type-def (st) (env) (tdm) (td) =
    when td
     if AVariantTypeDef (name) (type-params) (ctors) ->
-     let result-ty = lookup-type-def tdm name.value
+     let result-ty = lookup-type-def tdm (name.value)
      in register-variant-ctors st env tdm ctors result-ty 0 (list-length ctors)
     if ARecordTypeDef (name) (type-params) (fields) ->
      let resolved-fields = build-record-fields tdm fields 0 (list-length fields) []
      in let result-ty = RecordTy name resolved-fields
      in let ctor-ty = build-record-ctor-type tdm fields result-ty 0 (list-length fields)
-     in LetBindResult { state = st, env = env-bind env name.value ctor-ty }
+     in LetBindResult { state = st, env = env-bind env (name.value) ctor-ty }
 
   build-record-fields : List TypeBinding -> List ARecordFieldDef -> Integer -> Integer -> List RecordField -> List RecordField
   build-record-fields (tdm) (fields) (i) (len) (acc) =
    if i == len then acc
    else
     let f = list-at fields i
-    in let rfield = RecordField { name = f.name, type-val = resolve-type-expr tdm f.type-expr }
+    in let rfield = RecordField { name = f.name, type-val = resolve-type-expr tdm (f.type-expr) }
     in build-record-fields tdm fields (i + 1) len (list-snoc acc rfield)
 
   lookup-record-field : List RecordField -> Text -> CodexType
@@ -318,8 +318,8 @@ Section: Register Type Definitions
    if i == len then LetBindResult { state = st, env = env }
    else
     let ctor = list-at ctors i
-    in let ctor-ty = build-ctor-type tdm ctor.fields result-ty 0 (list-length ctor.fields)
-    in let env2 = env-bind env ctor.name.value ctor-ty
+    in let ctor-ty = build-ctor-type tdm (ctor.fields) result-ty 0 (list-length (ctor.fields))
+    in let env2 = env-bind env (ctor.name.value) ctor-ty
     in register-variant-ctors st env2 tdm ctors result-ty (i + 1) len
 
   build-ctor-type : List TypeBinding -> List ATypeExpr -> CodexType -> Integer -> Integer -> CodexType
@@ -335,4 +335,4 @@ Section: Register Type Definitions
    else
     let f = list-at fields i
     in let rest = build-record-ctor-type tdm fields result (i + 1) len
-    in FunTy (resolve-type-expr tdm f.type-expr) rest
+    in FunTy (resolve-type-expr tdm (f.type-expr)) rest
