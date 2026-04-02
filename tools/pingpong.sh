@@ -12,10 +12,6 @@
 # "HEAP:nnnnn" (emitted by allocator) is the heap high-water mark.
 # Both are parsed and reported in the summary table.
 #
-# Prerequisites (built on Windows before calling this script):
-#   dotnet run --project tools/Codex.Cli -- build Codex.Codex --target x86-64-bare
-#   dotnet run --project tools/Codex.Bootstrap -- --dump-source Codex.Codex/out/source.codex
-#
 # Usage: wsl bash tools/pingpong.sh
 # Exit 0 = fixed point holds. Exit 1 = broken.
 
@@ -34,16 +30,26 @@ declare -a STAGE_ELAPSED STAGE_BYTES STAGE_STACK STAGE_HEAP STAGE_RSS
 echo "=== Ping-Pong: Bare-Metal Self-Compile ==="
 date
 
+# ── Build prerequisites (always rebuild from current source) ──
+
+echo ""
+echo "Building ELF (reference compiler → x86-64-bare)..."
+dotnet run --project "$REPO/tools/Codex.Cli" -- build "$REPO/Codex.Codex" --target x86-64-bare
+echo ""
+echo "Regenerating CodexLib.g.cs (reference compiler → cs → strip)..."
+dotnet build "$REPO/tools/Codex.Bootstrap/Codex.Bootstrap.csproj"
+echo ""
+echo "Dumping source..."
+dotnet run --project "$REPO/tools/Codex.Bootstrap" -- --dump-source "$SOURCE"
+
 # ── Verify prerequisites ─────────────────────────────────────
 
 if [ ! -f "$ELF" ]; then
-    echo "FAIL: $ELF not found."
-    echo "Run: dotnet run --project tools/Codex.Cli -- build Codex.Codex --target x86-64-bare"
+    echo "FAIL: $ELF not found after build."
     exit 1
 fi
 if [ ! -f "$SOURCE" ]; then
-    echo "FAIL: $SOURCE not found."
-    echo "Run: dotnet run --project tools/Codex.Bootstrap -- --dump-source Codex.Codex/out/source.codex"
+    echo "FAIL: $SOURCE not found after dump."
     exit 1
 fi
 if [ ! -x "$QEMU" ]; then
