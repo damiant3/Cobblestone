@@ -1042,15 +1042,15 @@ Section: Function Application
   save-args-loop (st) (args) (i) (acc) =
    if i == list-length args then SavedArgs { state = st, locals = acc }
    else let r = emit-expr st (list-at args i)
-    in let loc = alloc-local r.state
-    in let st1 = store-local loc.state loc.reg r.reg
-    in save-args-loop st1 args (i + 1) (list-snoc acc loc.reg)
+    in let loc = alloc-local (r.state)
+    in let st1 = store-local (loc.state) (loc.reg) (r.reg)
+    in save-args-loop st1 args (i + 1) (list-snoc acc (loc.reg))
 
   push-reg-args : CodegenState -> List Integer -> Integer -> Integer -> CodegenState
   push-reg-args (st) (arg-locals) (i) (count) =
    if i == count then st
    else let loaded = load-local st (list-at arg-locals i)
-    in push-reg-args (st-append-text loaded.state (push-r loaded.reg)) arg-locals (i + 1) count
+    in push-reg-args (st-append-text (loaded.state) (push-r (loaded.reg))) arg-locals (i + 1) count
 
   pop-to-arg-regs : CodegenState -> Integer -> CodegenState
   pop-to-arg-regs (st) (i) =
@@ -1061,38 +1061,38 @@ Section: Function Application
   push-stack-args (st) (arg-locals) (i) =
    if i < 6 then st
    else let loaded = load-local st (list-at arg-locals i)
-    in push-stack-args (st-append-text loaded.state (push-r loaded.reg)) arg-locals (i - 1)
+    in push-stack-args (st-append-text (loaded.state) (push-r (loaded.reg))) arg-locals (i - 1)
 
   emit-apply : CodegenState -> IRExpr -> IRExpr -> CodexType -> EmitResult
   emit-apply (st) (func-expr) (arg-expr) (result-ty) =
    let full-expr = IrApply func-expr arg-expr result-ty
-   in if st.tco.active & st.tco.in-tail-pos & is-self-call full-expr st.tco.current-func
+   in if (st.tco.active) & (st.tco.in-tail-pos) & is-self-call full-expr (st.tco.current-func)
     then emit-tail-call st func-expr arg-expr
     else let flat = flatten-apply func-expr [arg-expr]
-     in if is-builtin flat.func-name then emit-builtin st flat.func-name flat.args
+     in if is-builtin (flat.func-name) then emit-builtin st (flat.func-name) (flat.args)
      else when result-ty
       if SumTy (sname) (ctors) ->
-       let tag = find-ctor-tag ctors flat.func-name 0
-       in if tag >= 0 then emit-sum-ctor st flat.args tag
+       let tag = find-ctor-tag ctors (flat.func-name) 0
+       in if tag >= 0 then emit-sum-ctor st (flat.args) tag
        else emit-direct-call st flat
       if FunTy (pt) (rt) ->
-       let is-local = lookup-local st.locals flat.func-name >= 0
+       let is-local = lookup-local (st.locals) (flat.func-name) >= 0
        in if is-local then emit-indirect-call st flat
-       else emit-partial-application st flat.func-name flat.args
+       else emit-partial-application st (flat.func-name) (flat.args)
       if _ ->
-       let is-local = lookup-local st.locals flat.func-name >= 0
+       let is-local = lookup-local (st.locals) (flat.func-name) >= 0
        in if is-local then emit-indirect-call st flat
        else emit-direct-call st flat
 
   emit-direct-call : CodegenState -> FlatApply -> EmitResult
   emit-direct-call (st) (flat) =
-   let saved = save-args-loop (st-set-tail-pos st False) flat.args 0 []
-   in let arg-count = list-length flat.args
-   in let st1 = push-stack-args saved.state saved.locals (arg-count - 1)
+   let saved = save-args-loop (st-set-tail-pos st False) (flat.args) 0 []
+   in let arg-count = list-length (flat.args)
+   in let st1 = push-stack-args (saved.state) (saved.locals) (arg-count - 1)
    in let reg-count = if arg-count < 6 then arg-count else 6
-   in let st2 = push-reg-args st1 saved.locals 0 reg-count
+   in let st2 = push-reg-args st1 (saved.locals) 0 reg-count
    in let st3 = pop-to-arg-regs st2 (reg-count - 1)
-   in let st4 = emit-call-to st3 flat.func-name
+   in let st4 = emit-call-to st3 (flat.func-name)
    in let stack-arg-count = arg-count - 6
    in let st5 = if stack-arg-count > 0
     then st-append-text st4 (add-ri reg-rsp (stack-arg-count * 8))
@@ -1105,13 +1105,13 @@ Section: Function Application
 
   emit-indirect-call : CodegenState -> FlatApply -> EmitResult
   emit-indirect-call (st) (flat) =
-   let saved = save-args-loop (st-set-tail-pos st False) flat.args 0 []
-   in let arg-count = list-length flat.args
+   let saved = save-args-loop (st-set-tail-pos st False) (flat.args) 0 []
+   in let arg-count = list-length (flat.args)
    in let reg-count = if arg-count < 6 then arg-count else 6
-   in let st1 = push-reg-args saved.state saved.locals 0 reg-count
+   in let st1 = push-reg-args (saved.state) (saved.locals) 0 reg-count
    in let st2 = pop-to-arg-regs st1 (reg-count - 1)
-   in let closure-load = load-local st2 (lookup-local st2.locals flat.func-name)
-   in let st3 = st-append-text closure-load.state (mov-rr reg-r11 closure-load.reg)
+   in let closure-load = load-local st2 (lookup-local (st2.locals) (flat.func-name))
+   in let st3 = st-append-text (closure-load.state) (mov-rr reg-r11 (closure-load.reg))
    in let st4 = st-append-text st3 (mov-load reg-rax reg-r11 0)
    in let st5 = st-append-text st4 [255, 208]
    in let tmp = alloc-temp st5
@@ -1131,27 +1131,27 @@ Section: Function Application
    if i == list-length args then st
    else let st-notail = st-set-tail-pos st False
     in let r = emit-expr st-notail (list-at args i)
-    in let st1 = store-local r.state (list-at temp-locals i) r.reg
+    in let st1 = store-local (r.state) (list-at temp-locals i) (r.reg)
     in eval-tail-args st1 args temp-locals (i + 1)
 
   copy-temps-to-params : CodegenState -> List Integer -> List Integer -> Integer -> CodegenState
   copy-temps-to-params (st) (temp-locals) (param-locals) (i) =
    if i == list-length temp-locals then st
    else let loaded = load-local st (list-at temp-locals i)
-    in let st1 = store-local loaded.state (list-at param-locals i) loaded.reg
+    in let st1 = store-local (loaded.state) (list-at param-locals i) (loaded.reg)
     in copy-temps-to-params st1 temp-locals param-locals (i + 1)
 
   emit-tail-call : CodegenState -> IRExpr -> IRExpr -> EmitResult
   emit-tail-call (st) (func-expr) (arg-expr) =
    let args = flatten-tail-args func-expr [arg-expr]
-   in let st1 = eval-tail-args st args st.tco.temp-locals 0
-   in let st2 = copy-temps-to-params st1 st.tco.temp-locals st.tco.param-locals 0
-   in let rel32 = st.tco.loop-top - (list-length st2.text + 5)
+   in let st1 = eval-tail-args st args (st.tco.temp-locals) 0
+   in let st2 = copy-temps-to-params st1 (st.tco.temp-locals) (st.tco.param-locals) 0
+   in let rel32 = (st.tco.loop-top) - (list-length (st2.text) + 5)
    in let st3 = st-append-text st2 (jmp rel32)
    in let dummy = alloc-temp st3
    in EmitResult {
-    state = st-append-text dummy.state (li dummy.reg 0),
-    reg = dummy.reg
+    state = st-append-text (dummy.state) (li (dummy.reg) 0),
+    reg = (dummy.reg)
    }
 
   emit-sum-ctor : CodegenState -> List IRExpr -> Integer -> EmitResult
@@ -1159,24 +1159,24 @@ Section: Function Application
    let saved = save-args-loop st args 0 []
    in let field-count = list-length args
    in let total-size = (1 + field-count) * 8
-   in let ptr-loc = alloc-local saved.state
-   in let ptr-tmp = alloc-temp ptr-loc.state
-   in let st1 = st-append-text ptr-tmp.state (mov-rr ptr-tmp.reg reg-r10)
-   in let st2 = store-local st1 ptr-loc.reg ptr-tmp.reg
+   in let ptr-loc = alloc-local (saved.state)
+   in let ptr-tmp = alloc-temp (ptr-loc.state)
+   in let st1 = st-append-text (ptr-tmp.state) (mov-rr (ptr-tmp.reg) reg-r10)
+   in let st2 = store-local st1 (ptr-loc.reg) (ptr-tmp.reg)
    in let st3 = st-append-text st2 (add-ri reg-r10 total-size)
    in let tag-tmp = alloc-temp st3
-   in let st4 = st-append-text tag-tmp.state (li tag-tmp.reg tag)
-   in let ptr-load1 = load-local st4 ptr-loc.reg
-   in let st5 = st-append-text ptr-load1.state (mov-store ptr-load1.reg tag-tmp.reg 0)
-   in let st6 = emit-store-ctor-fields st5 saved.locals ptr-loc.reg 0
-   in load-local st6 ptr-loc.reg
+   in let st4 = st-append-text (tag-tmp.state) (li (tag-tmp.reg) tag)
+   in let ptr-load1 = load-local st4 (ptr-loc.reg)
+   in let st5 = st-append-text (ptr-load1.state) (mov-store (ptr-load1.reg) (tag-tmp.reg) 0)
+   in let st6 = emit-store-ctor-fields st5 (saved.locals) (ptr-loc.reg) 0
+   in load-local st6 (ptr-loc.reg)
 
   emit-store-ctor-fields : CodegenState -> List Integer -> Integer -> Integer -> CodegenState
   emit-store-ctor-fields (st) (field-locals) (ptr-loc) (i) =
    if i == list-length field-locals then st
    else let val = load-local st (list-at field-locals i)
-    in let ptr = load-local val.state ptr-loc
-    in let st1 = st-append-text ptr.state (mov-store ptr.reg val.reg (8 + i * 8))
+    in let ptr = load-local (val.state) ptr-loc
+    in let st1 = st-append-text (ptr.state) (mov-store (ptr.reg) (val.reg) (8 + i * 8))
     in emit-store-ctor-fields st1 field-locals ptr-loc (i + 1)
 
 Section: Closures and Partial Application
@@ -1242,8 +1242,8 @@ Section: Closures and Partial Application
   emit-store-closure-captures (st) (cap-locals) (ptr-loc) (i) =
    if i == list-length cap-locals then st
    else let val = load-local st (list-at cap-locals i)
-    in let ptr = load-local val.state ptr-loc
-    in let st1 = st-append-text ptr.state (mov-store ptr.reg val.reg (8 + i * 8))
+    in let ptr = load-local (val.state) ptr-loc
+    in let st1 = st-append-text (ptr.state) (mov-store (ptr.reg) (val.reg) (8 + i * 8))
     in emit-store-closure-captures st1 cap-locals ptr-loc (i + 1)
 
   collect-func-addr-patches : List FuncAddrFixup -> List FuncOffset -> Integer -> Integer -> List PatchEntry -> List PatchEntry
@@ -1435,8 +1435,8 @@ Section: List Emission
   emit-store-list-elems (st) (elem-locals) (ptr-loc) (i) =
    if i == list-length elem-locals then st
    else let val = load-local st (list-at elem-locals i)
-    in let ptr = load-local val.state ptr-loc
-    in let st1 = st-append-text ptr.state (mov-store ptr.reg val.reg (8 + i * 8))
+    in let ptr = load-local (val.state) ptr-loc
+    in let st1 = st-append-text (ptr.state) (mov-store (ptr.reg) (val.reg) (8 + i * 8))
     in emit-store-list-elems st1 elem-locals ptr-loc (i + 1)
 
   emit-list : CodegenState -> List IRExpr -> EmitResult
