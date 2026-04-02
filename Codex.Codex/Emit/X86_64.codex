@@ -444,12 +444,12 @@ Section: Function Emission
   has-tail-call-branches (branches) (func-name) (i) =
    if i == list-length branches then False
    else let b = list-at branches i
-    in if has-tail-call b.body func-name then True
+    in if has-tail-call (b.body) func-name then True
     else has-tail-call-branches branches func-name (i + 1)
 
   should-tco : IRDef -> Boolean
   should-tco (def) =
-   if list-length def.params > 0 then has-tail-call def.body def.name
+   if list-length (def.params) > 0 then has-tail-call (def.body) (def.name)
    else False
 
   st-set-tail-pos : CodegenState -> Boolean -> CodegenState
@@ -497,16 +497,16 @@ Section: Function Emission
 
   emit-function : CodegenState -> IRDef -> CodegenState
   emit-function (st) (def) =
-   let st1 = reset-func-state st def.name
+   let st1 = reset-func-state st (def.name)
    in let st2 = emit-prologue st1
-   in let frame-patch-pos = list-length st2.text
+   in let frame-patch-pos = list-length (st2.text)
    in let st3 = st-append-text st2 (emit-sub-rsp-imm32 0)
-   in let st4 = bind-params st3 def.params 0
+   in let st4 = bind-params st3 (def.params) 0
    in let is-tco = should-tco def
    in let st5 = if is-tco
-    then let tco-alloc = pre-alloc-tco-temps st4 0 (list-length def.params) []
+    then let tco-alloc = pre-alloc-tco-temps st4 0 (list-length (def.params)) []
      in let st-a = tco-alloc.alloc-state
-     in let p-locals = collect-param-locals st-a.locals def.params 0 []
+     in let p-locals = collect-param-locals (st-a.locals) (def.params) 0 []
      in CodegenState {
       text = st-a.text,
       rodata = st-a.rodata,
@@ -521,7 +521,7 @@ Section: Function Emission
       tco = TcoState {
        active = True,
        in-tail-pos = True,
-       loop-top = list-length st-a.text,
+       loop-top = list-length (st-a.text),
        param-locals = p-locals,
        temp-locals = tco-alloc.alloc-locals,
        current-func = def.name,
@@ -530,12 +530,12 @@ Section: Function Emission
       }
      }
     else st4
-   in let result = emit-expr st5 def.body
-   in let st6 = if result.reg == reg-rax then result.state
-    else st-append-text result.state (mov-rr reg-rax result.reg)
+   in let result = emit-expr st5 (def.body)
+   in let st6 = if (result.reg) == reg-rax then result.state
+    else st-append-text (result.state) (mov-rr reg-rax (result.reg))
    in let st7 = emit-epilogue st6
-   in let frame-size = align-16 (st7.spill-count * 8)
-   in st-with-text st7 (patch-i32-at st7.text (frame-patch-pos + 3) frame-size)
+   in let frame-size = align-16 ((st7.spill-count) * 8)
+   in st-with-text st7 (patch-i32-at (st7.text) (frame-patch-pos + 3) frame-size)
 
   emit-all-defs : CodegenState -> List IRDef -> Integer -> CodegenState
   emit-all-defs (st) (defs) (i) =
@@ -624,89 +624,89 @@ Section: Expression Emission
   emit-nullary-ctor : CodegenState -> Integer -> EmitResult
   emit-nullary-ctor (st) (tag) =
    let ptr-loc = alloc-local st
-   in let ptr-tmp = alloc-temp ptr-loc.state
-   in let st1 = st-append-text ptr-tmp.state (mov-rr ptr-tmp.reg reg-r10)
-   in let st2 = store-local st1 ptr-loc.reg ptr-tmp.reg
+   in let ptr-tmp = alloc-temp (ptr-loc.state)
+   in let st1 = st-append-text (ptr-tmp.state) (mov-rr (ptr-tmp.reg) reg-r10)
+   in let st2 = store-local st1 (ptr-loc.reg) (ptr-tmp.reg)
    in let st3 = st-append-text st2 (add-ri reg-r10 8)
    in let tag-tmp = alloc-temp st3
-   in let st4 = st-append-text tag-tmp.state (li tag-tmp.reg tag)
-   in let ptr-load = load-local st4 ptr-loc.reg
-   in let st5 = st-append-text ptr-load.state (mov-store ptr-load.reg tag-tmp.reg 0)
-   in load-local st5 ptr-loc.reg
+   in let st4 = st-append-text (tag-tmp.state) (li (tag-tmp.reg) tag)
+   in let ptr-load = load-local st4 (ptr-loc.reg)
+   in let st5 = st-append-text (ptr-load.state) (mov-store (ptr-load.reg) (tag-tmp.reg) 0)
+   in load-local st5 (ptr-loc.reg)
 
   emit-name-as-call : CodegenState -> Text -> EmitResult
   emit-name-as-call (st) (name) =
    let st1 = emit-call-to st name
    in let tmp = alloc-temp st1
    in EmitResult {
-    state = st-append-text tmp.state (mov-rr tmp.reg reg-rax),
-    reg = tmp.reg
+    state = st-append-text (tmp.state) (mov-rr (tmp.reg) reg-rax),
+    reg = (tmp.reg)
    }
 
   emit-let : CodegenState -> Text -> IRExpr -> IRExpr -> EmitResult
   emit-let (st) (name) (value) (body) =
    let saved-tail = st.tco.in-tail-pos
    in let val-result = emit-expr (st-set-tail-pos st False) value
-   in let loc = alloc-local val-result.state
-   in let st1 = store-local loc.state loc.reg val-result.reg
-   in let st2 = add-local st1 name loc.reg
+   in let loc = alloc-local (val-result.state)
+   in let st1 = store-local (loc.state) (loc.reg) (val-result.reg)
+   in let st2 = add-local st1 name (loc.reg)
    in emit-expr (st-set-tail-pos st2 saved-tail) body
 
   emit-binary : CodegenState -> IRBinaryOp -> IRExpr -> IRExpr -> EmitResult
   emit-binary (st) (op) (left) (right) =
    let l = emit-expr st left
-   in let l-loc = alloc-local l.state
-   in let st1 = store-local l-loc.state l-loc.reg l.reg
+   in let l-loc = alloc-local (l.state)
+   in let st1 = store-local (l-loc.state) (l-loc.reg) (l.reg)
    in let r = emit-expr st1 right
-   in let r-loc = alloc-local r.state
-   in let st2 = store-local r-loc.state r-loc.reg r.reg
-   in let l-load = load-local st2 l-loc.reg
-   in let r-load = load-local l-load.state r-loc.reg
-   in emit-binary-op r-load.state op l-load.reg r-load.reg
+   in let r-loc = alloc-local (r.state)
+   in let st2 = store-local (r-loc.state) (r-loc.reg) (r.reg)
+   in let l-load = load-local st2 (l-loc.reg)
+   in let r-load = load-local (l-load.state) (r-loc.reg)
+   in emit-binary-op (r-load.state) op (l-load.reg) (r-load.reg)
 
   emit-binary-op : CodegenState -> IRBinaryOp -> Integer -> Integer -> EmitResult
   emit-binary-op (st) (op) (l-reg) (r-reg) =
    let rd = alloc-temp st
    in when op
-    if IrAddInt -> EmitResult { state = st-append-text rd.state (mov-rr rd.reg l-reg ++ add-rr rd.reg r-reg), reg = rd.reg }
-    if IrSubInt -> EmitResult { state = st-append-text rd.state (mov-rr rd.reg l-reg ++ sub-rr rd.reg r-reg), reg = rd.reg }
-    if IrMulInt -> EmitResult { state = st-append-text rd.state (mov-rr rd.reg l-reg ++ imul-rr rd.reg r-reg), reg = rd.reg }
-    if IrDivInt -> EmitResult { state = st-append-text rd.state (mov-rr reg-rax l-reg ++ cqo ++ idiv-r r-reg ++ mov-rr rd.reg reg-rax), reg = rd.reg }
+    if IrAddInt -> EmitResult { state = st-append-text (rd.state) (mov-rr (rd.reg) l-reg ++ add-rr (rd.reg) r-reg), reg = (rd.reg) }
+    if IrSubInt -> EmitResult { state = st-append-text (rd.state) (mov-rr (rd.reg) l-reg ++ sub-rr (rd.reg) r-reg), reg = (rd.reg) }
+    if IrMulInt -> EmitResult { state = st-append-text (rd.state) (mov-rr (rd.reg) l-reg ++ imul-rr (rd.reg) r-reg), reg = (rd.reg) }
+    if IrDivInt -> EmitResult { state = st-append-text (rd.state) (mov-rr reg-rax l-reg ++ cqo ++ idiv-r r-reg ++ mov-rr (rd.reg) reg-rax), reg = (rd.reg) }
     if IrEq -> emit-comparison st cc-e l-reg r-reg
     if IrNotEq -> emit-comparison st cc-ne l-reg r-reg
     if IrLt -> emit-comparison st cc-l l-reg r-reg
     if IrGt -> emit-comparison st cc-g l-reg r-reg
     if IrLtEq -> emit-comparison st cc-le l-reg r-reg
     if IrGtEq -> emit-comparison st cc-ge l-reg r-reg
-    if IrAnd -> EmitResult { state = st-append-text rd.state (mov-rr rd.reg l-reg ++ and-rr rd.reg r-reg), reg = rd.reg }
-    if IrOr -> EmitResult { state = st-append-text rd.state (mov-rr rd.reg l-reg ++ add-rr rd.reg r-reg), reg = rd.reg }
+    if IrAnd -> EmitResult { state = st-append-text (rd.state) (mov-rr (rd.reg) l-reg ++ and-rr (rd.reg) r-reg), reg = (rd.reg) }
+    if IrOr -> EmitResult { state = st-append-text (rd.state) (mov-rr (rd.reg) l-reg ++ add-rr (rd.reg) r-reg), reg = (rd.reg) }
     if _ -> EmitResult { state = st, reg = reg-rax }
 
   emit-comparison : CodegenState -> Integer -> Integer -> Integer -> EmitResult
   emit-comparison (st) (cc) (l-reg) (r-reg) =
    let rd = alloc-temp st
    in EmitResult {
-    state = st-append-text rd.state (cmp-rr l-reg r-reg ++ setcc cc rd.reg ++ movzx-byte-self rd.reg),
-    reg = rd.reg
+    state = st-append-text (rd.state) (cmp-rr l-reg r-reg ++ setcc cc (rd.reg) ++ movzx-byte-self (rd.reg)),
+    reg = (rd.reg)
    }
 
   emit-if : CodegenState -> IRExpr -> IRExpr -> IRExpr -> EmitResult
   emit-if (st) (cond) (then-e) (else-e) =
    let saved-tail = st.tco.in-tail-pos
    in let cond-result = emit-expr (st-set-tail-pos st False) cond
-   in let st1 = st-append-text cond-result.state (test-rr cond-result.reg cond-result.reg)
-   in let je-false-pos = list-length st1.text
+   in let st1 = st-append-text (cond-result.state) (test-rr (cond-result.reg) (cond-result.reg))
+   in let je-false-pos = list-length (st1.text)
    in let st2 = st-append-text st1 (jcc cc-e 0)
    in let then-result = emit-expr (st-set-tail-pos st2 saved-tail) then-e
-   in let result-loc = alloc-local then-result.state
-   in let st3 = store-local result-loc.state result-loc.reg then-result.reg
-   in let jmp-end-pos = list-length st3.text
+   in let result-loc = alloc-local (then-result.state)
+   in let st3 = store-local (result-loc.state) (result-loc.reg) (then-result.reg)
+   in let jmp-end-pos = list-length (st3.text)
    in let st4 = st-append-text st3 (jmp 0)
-   in let st5 = patch-jcc-at st4 je-false-pos (list-length st4.text)
+   in let st5 = patch-jcc-at st4 je-false-pos (list-length (st4.text))
    in let else-result = emit-expr (st-set-tail-pos st5 saved-tail) else-e
-   in let st6 = store-local else-result.state result-loc.reg else-result.reg
-   in let st7 = patch-jmp-at st6 jmp-end-pos (list-length st6.text)
-   in load-local st7 result-loc.reg
+   in let st6 = store-local (else-result.state) (result-loc.reg) (else-result.reg)
+   in let st7 = patch-jmp-at st6 jmp-end-pos (list-length (st6.text))
+   in load-local st7 (result-loc.reg)
 
 Section: Builtin Detection
 
@@ -1099,8 +1099,8 @@ Section: Function Application
     else st4
    in let tmp = alloc-temp st5
    in EmitResult {
-    state = st-append-text tmp.state (mov-rr tmp.reg reg-rax),
-    reg = tmp.reg
+    state = st-append-text (tmp.state) (mov-rr (tmp.reg) reg-rax),
+    reg = (tmp.reg)
    }
 
   emit-indirect-call : CodegenState -> FlatApply -> EmitResult
@@ -1116,8 +1116,8 @@ Section: Function Application
    in let st5 = st-append-text st4 [255, 208]
    in let tmp = alloc-temp st5
    in EmitResult {
-    state = st-append-text tmp.state (mov-rr tmp.reg reg-rax),
-    reg = tmp.reg
+    state = st-append-text (tmp.state) (mov-rr (tmp.reg) reg-rax),
+    reg = (tmp.reg)
    }
 
   flatten-tail-args : IRExpr -> List IRExpr -> List IRExpr
