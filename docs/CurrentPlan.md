@@ -45,6 +45,29 @@ completed phases, not concurrent feature work. Minimize coordination overhead.
 **Pingpong remains the acceptance test.** Every phase that touches codegen
 must pass pingpong before moving on.
 
+### BLOCKING: Bootstrap2 Stage0 != Stage1
+
+The bare-metal self-hosted compiler does not faithfully reproduce its own
+source. Two categories of divergence remain:
+
+1. **Definition dropping** (~309 defs missing from stage1). The self-hosted
+   Codex emitter's `skip-def` filters out definitions that the reference
+   compiler includes. Root cause under investigation.
+
+2. **Long ++ chain truncation**. The body of `cdx-header-bytes` (a 20-term
+   `++` chain) emits only the first term (`cdx-magic`); all continuations
+   are silently dropped. This is a real codegen/emitter bug — not a style
+   issue. The source compiles correctly under the C# reference compiler.
+
+3. **Style reconciliation** (in progress). Many style differences between
+   source and emitter output have been resolved (if/then/else placement,
+   let/in indent, body-on-next-line, precedence parens, field access parens).
+   Remaining: inline if-then-else splitting, missing blank lines between
+   defs, and additional cascading indent fixes.
+
+Until these are resolved, bootstrap2 (bare-metal self-compile fixed point)
+cannot achieve stage0 == stage1.
+
 ### After MM4: The OS Stack
 
 Once the compiler is self-sustaining, these items become buildable.
