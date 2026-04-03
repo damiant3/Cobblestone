@@ -1,54 +1,73 @@
-Session: phase4-5-builtins (2026-04-01)
+Session: bootstrap2-scoping-fixes (2026-04-03)
 Agent: Cam
 
 ## What was done
 
-Phase 4 (runtime helpers) and Phase 5 (builtins) of the Second Bootstrap.
+Massive progress on bootstrap2 stage0 == stage1. Gap went from 33% (3348
+lines) to 1.3% (132 lines). Five bugs fixed:
 
-Phase 4: Ported 16 of 22 runtime helpers to Codex.Codex/Emit/X86_64Helpers.codex
-(~1,300 lines). String, list, math helpers all working. 5 I/O helpers deferred to
-Phase 7 (need rodata fixups + CCE tables).
+1. Parser ++ chain truncation — skip-newlines in parse-binary-loop
+2. CCE caret (^) missing from Tier 0 — inserted at position 94, ò to Tier 1
+3. Module scoping infrastructure — scanner detects module markers, ModuleScoper.codex
+   has rename-ir-expr with shadowing, pipeline splits compile-with-scope + emit-defs-scoped
+4. skip-def CCE range bug — used char-code-at "a"/"z" (CCE 15/38) instead of 13/38,
+   silently dropped all defs starting with 'e' or 't' (243 defs!)
+5. Char literal escape values — scan-char-literal used Unicode 10 for '\n' instead of
+   CCE 1, so escape-char comparison failed and code-to-char(10) emitted '7'
 
-Phase 5: Wired 30 pure-CCE builtins into emit-apply in X86_64.codex (~264 lines).
-Inline builtins (text-length, list-at, negate, etc.) and helper-calling builtins
-(text-replace, list-cons, etc.). I/O boundary builtins (print-line, read-file)
-deferred to Phase 7.
+Also: memory increased 64→512 MB, end module markers in dump-source, pingpong
+timeout configurable, csproj fixed for build-output path.
 
-Pingpong green throughout. Final state: 566KB ELF, 113MB Stage 1 HWM, 59s/59s.
+## Remaining: Namespace Collision (the 1.3% gap)
 
-## Next: Phase 6 — Escape Copy & Regions
+Stage1 has 1092 defs vs stage0's 1013. The extra 79 are scoped duplicates
+(e.g. both `emit-type-defs` and `csharp-emitter_emit-type-defs` appear).
 
-This is the most intricate port in the backend. It's type-driven code generation,
-not fixed assembly routines. The C# reference is in X86_64CodeGen.cs:
-  - EmitRegion (lines 1305-1386): region entry/body/exit/escape
-  - EmitEscapeCopy (lines 1388-1401): type dispatch wrapper
-  - EmitEscapeCopyHelpers (lines 4177-4198): queue-draining generator
-  - EmitFwdTableZero/Lookup/Insert (lines 4204-4328): hash table ops
-  - EmitRecordEscapeHelper (lines 4390-4405): per-record-type helper
-  - EmitListEscapeHelper (lines 4407-4477): per-list-type helper
-  - EmitSumTypeEscapeHelper (lines 4479-4517): per-sum-type helper
+Root cause: build-mod-renames only creates rename entries for names defined
+in cur-mod. When module A references a colliding name, the reference stays
+unmangled because the rename map doesn't include it. So stage1 has BOTH
+the unmangled original AND the scoped version.
 
-Architecture:
-  - Two-space heap: R10 = working space (temporaries), R15 = result space (escapes)
-  - Forwarding hash table: 32K entries * 16 bytes = 512KB, linear probing
-  - Table base stored in rodata global (m_fwdTableGlobalOffset)
-  - Result space base stored in rodata global (m_resultBaseGlobalOffset)
-  - IRRegion node triggers EmitRegion from emit-expr dispatch
-  - Type-specific helpers queued lazily via GetOrQueueEscapeHelper
-  - Helpers emitted at module end after all user functions
+The C# ModuleScoper (src/Codex.Semantics/ModuleScoper.cs:75-92) builds a
+COMPLETE rename map per module: every colliding name maps to its defining
+module's mangled version. Within module X, `emit-expr` -> `x_emit-expr`
+(X's own), and `collect-ctor-names` -> `name-resolver_collect-ctor-names`
+(wherever it's defined). Non-colliding names stay unmangled.
 
-Rodata fixup blocker: Escape copy REQUIRES rodata fixups. The forwarding table
-base and result-space base are stored in 8-byte rodata globals loaded via
-MovRI64 + patch. This is the first feature forcing rodata fixup support into
-the Codex codegen. CodegenState needs a rodata-fixups field.
+## Plan for next session
 
-## Key learnings (carry forward)
+1. Fix build-mod-renames to include ALL colliding names, not just cur-mod's:
+   - For each colliding name, find which module defines it
+   - If cur-mod defines it, map to cur-mod's mangled version
+   - If another module defines it, map to that module's mangled version
+   - This requires a lookup: "given name X in context of module M, which
+     module's version does M use?" In the flat model (no imports), M uses
+     its own version if it defines X, otherwise there's ambiguity.
 
-- CCE boundary principle: CCE is internal, Unicode is external. Conversion only
-  at I/O boundaries (Phase 7).
-- Circular dependency: builtins must live in same file as emit-expr.
-- No comments in Codex. Prose is the explanation layer.
-- Break deeply nested lets: max ~18 per function.
-- Codex has no || operator. Use if/then True/else chains for boolean OR.
-- Clean out/ of stale .codex/.elf/.cs files before building.
-- Bare-metal memory: 128MB default, breakable to 512MB for linear growth.
+2. The ambiguity problem: if module A references `emit-expr` but doesn't
+   define it, and 3 modules define it, which one does A mean? In the C#
+   ModuleScoper, this is resolved by imports. In the flat model, modules
+   only call their own functions — cross-module references to colliding
+   names shouldn't exist. Verify this assumption.
+
+3. If the assumption holds, filter-defs in the streaming pipeline should
+   suppress duplicate emissions. Currently both scoped and unscoped versions
+   are emitted for colliding names.
+
+4. Style reconciliation is the other category of remaining differences.
+   AL can handle this in parallel.
+
+## Key files
+- Codex.Codex/Semantics/ModuleScoper.codex — build-mod-renames needs fixing
+- Codex.Codex/main.codex — emit-defs-scoped / emit-one-scoped-def
+- Codex.Codex/Emit/CodexEmitter.codex — skip-def / emit-def
+- src/Codex.Semantics/ModuleScoper.cs — C# reference for correct algorithm
+- docs/TestResults/stage0.codex, stage1.codex — current diff artifacts
+
+## Key learnings
+- CCE range checks MUST use numeric positions, never char-code-at on boundary chars
+- CCE encodes lowercase by frequency (e=13, t=14, a=15), not alphabetically
+- Char literal escape values must be CCE codes, not Unicode codepoints
+- Record fields in Codex literals must be in DEFINITION order (compiler bug: source order used for positional constructor)
+- Bootstrap1 batch pipeline doesn't use module markers (uses C# ModuleScoper)
+- Bare-metal pipeline uses dump-source which has markers
