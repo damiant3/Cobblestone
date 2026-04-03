@@ -48,25 +48,28 @@ must pass pingpong before moving on.
 ### BLOCKING: Bootstrap2 Stage0 != Stage1
 
 The bare-metal self-hosted compiler does not faithfully reproduce its own
-source. Two categories of divergence remain:
+source. Progress as of 2026-04-03:
 
-1. **Definition dropping / duplicate name collision** (~309 defs missing from
-   stage1). The self-hosted compiler has a flat namespace — when multiple
-   modules define the same name (e.g. `collect-ctor-names` in CodexEmitter
-   and NameResolver), only one survives and it may have the wrong type
-   signature. The C# reference compiler uses `ModuleScoper` to prefix names;
-   the self-hosted compiler does not. This is the root cause of most
-   def-dropping — the `filter-defs` deduplication picks one and discards
-   the rest.
+1. ~~**Long ++ chain truncation**~~ — **FIXED**. Self-hosted parser's
+   `parse-binary-loop` now skips newlines before checking operator
+   precedence, matching the C# reference parser. Multi-line `++` chains
+   like `cdx-header-bytes` now emit correctly.
 
-2. **Long ++ chain truncation**. The body of `cdx-header-bytes` (a 20-term
-   `++` chain) emits only the first term (`cdx-magic`); all continuations
-   are silently dropped. This is a real codegen/emitter bug — not a style
-   issue. The source compiles correctly under the C# reference compiler.
+2. ~~**Caret character mis-emission**~~ — **FIXED**. Added `^` (Unicode 94)
+   to CCE Tier 0 at position 94 (extending syntax block to 81-94). Dropped
+   ò (least-used accented char) to Tier 1. `char-code '^'` now returns the
+   correct CCE code.
 
-3. **Caret character mis-emission**. `bin-op-text IrPowInt` returns `"^"`
-   in the source but bare-metal stage1 emits `"?"`. CCE encoding issue
-   or char-code mismatch in the bare-metal runtime.
+3. **Definition dropping / duplicate name collision** (~269 defs missing
+   from stage1). Module scoping infrastructure is in place:
+   - Scanner detects `module: slug-name` markers in token stream
+   - `ModuleScoper.codex` has collision detection, rename maps, and full
+     `rename-ir-expr` with let/lambda/match shadowing
+   - Pipeline splits into `compile-with-scope` + `emit-defs-scoped`
+   - **Scoping activates when module markers are present** in the source
+   - **Next**: Bootstrap program must pass module markers when feeding
+     source to the self-hosted compiler (currently concatenates without
+     markers). Then bare-metal pingpong must verify scoped output.
 
 4. **Style reconciliation** (in progress). Many style differences between
    source and emitter output have been resolved (if/then/else placement,
@@ -74,8 +77,16 @@ source. Two categories of divergence remain:
    Remaining: inline if-then-else splitting, missing blank lines between
    defs, and additional cascading indent fixes.
 
-Until these are resolved, bootstrap2 (bare-metal self-compile fixed point)
-cannot achieve stage0 == stage1.
+5. **Stack overflow running Codex.Codex.exe on full source** (NEW, 2026-04-03).
+   Running the compiled self-hosted compiler directly on the full 381K
+   dump-source output causes a .NET stack overflow in `parse_type_atom`.
+   The bootstrap avoids this by calling compiled functions directly (larger
+   stack). Bare-metal runtime is unaffected. Root cause: deep recursion in
+   the type parser when processing 33 concatenated modules. Workaround:
+   use the bootstrap tool or increase .NET thread stack size.
+
+Until items 3-4 are resolved, bootstrap2 (bare-metal self-compile fixed
+point) cannot achieve stage0 == stage1.
 
 ### After MM4: The OS Stack
 
