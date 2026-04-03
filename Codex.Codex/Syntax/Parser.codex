@@ -437,21 +437,40 @@ Section: Header Scanning (Phase 2 streaming)
   scan-document (st) =
    let st2 = skip-newlines st
    in let imp-result = parse-imports st2 []
-   in scan-top-level [] [] [] (imp-result.imports) (imp-result.state)
+   in scan-top-level [] [] [] (imp-result.imports) "" (imp-result.state)
 
-  scan-top-level : List DefHeader -> List TypeDef -> List EffectDef -> List ImportDecl -> ParseState -> ScanResult
-  scan-top-level (headers) (type-defs) (effect-defs) (imports) (st) =
+  is-module-marker : ParseState -> Boolean
+  is-module-marker (st) =
+   if is-ident (current-kind st) then if (current st).text == "module" then is-colon (peek-kind st 1)
+      else False
+    else False
+
+  skip-module-marker : ParseState -> ParseState
+  skip-module-marker (st) =
+   let st2 = advance (advance st)
+   in if is-ident (current-kind st2) then skip-newlines (advance st2)
+      else skip-newlines st2
+
+  extract-module-slug : ParseState -> Text
+  extract-module-slug (st) =
+   let st2 = advance (advance st)
+   in if is-ident (current-kind st2) then (current st2).text
+      else ""
+
+  scan-top-level : List DefHeader -> List TypeDef -> List EffectDef -> List ImportDecl -> Text -> ParseState -> ScanResult
+  scan-top-level (headers) (type-defs) (effect-defs) (imports) (cur-mod) (st) =
    if is-done st then ScanResult {
     type-defs = type-defs,
     effect-defs = effect-defs,
     def-headers = headers,
     imports = imports
    }
-   else if is-effect-keyword (current-kind st) then scan-top-level-effect headers type-defs effect-defs imports st
-   else try-scan-type-def headers type-defs effect-defs imports st
+   else if is-module-marker st then scan-top-level headers type-defs effect-defs imports (extract-module-slug st) (skip-module-marker st)
+   else if is-effect-keyword (current-kind st) then scan-top-level-effect headers type-defs effect-defs imports cur-mod st
+   else try-scan-type-def headers type-defs effect-defs imports cur-mod st
 
-  scan-top-level-effect : List DefHeader -> List TypeDef -> List EffectDef -> List ImportDecl -> ParseState -> ScanResult
-  scan-top-level-effect (headers) (type-defs) (effect-defs) (imports) (st) =
+  scan-top-level-effect : List DefHeader -> List TypeDef -> List EffectDef -> List ImportDecl -> Text -> ParseState -> ScanResult
+  scan-top-level-effect (headers) (type-defs) (effect-defs) (imports) (cur-mod) (st) =
    let st1 = advance st
    in let name-tok = current st1
    in let st2 = advance st1
@@ -461,41 +480,41 @@ Section: Header Scanning (Phase 2 streaming)
         name = name-tok,
         ops = ops.ops
        }
-        in scan-top-level headers type-defs (effect-defs ++ [ed]) imports (skip-newlines (ops.state))
+        in scan-top-level headers type-defs (effect-defs ++ [ed]) imports cur-mod (skip-newlines (ops.state))
 
-  try-scan-type-def : List DefHeader -> List TypeDef -> List EffectDef -> List ImportDecl -> ParseState -> ScanResult
-  try-scan-type-def (headers) (type-defs) (effect-defs) (imports) (st) =
+  try-scan-type-def : List DefHeader -> List TypeDef -> List EffectDef -> List ImportDecl -> Text -> ParseState -> ScanResult
+  try-scan-type-def (headers) (type-defs) (effect-defs) (imports) (cur-mod) (st) =
    let td-result = parse-type-def st
    in when td-result
     if TypeDefOk (td) (st2) ->
-     scan-top-level headers (type-defs ++ [td]) effect-defs imports (skip-newlines st2)
+     scan-top-level headers (type-defs ++ [td]) effect-defs imports cur-mod (skip-newlines st2)
     if TypeDefNone (st2) ->
-     try-scan-def-header headers type-defs effect-defs imports st
+     try-scan-def-header headers type-defs effect-defs imports cur-mod st
 
-  try-scan-def-header : List DefHeader -> List TypeDef -> List EffectDef -> List ImportDecl -> ParseState -> ScanResult
-  try-scan-def-header (headers) (type-defs) (effect-defs) (imports) (st) =
-   let hdr-result = scan-definition st
+  try-scan-def-header : List DefHeader -> List TypeDef -> List EffectDef -> List ImportDecl -> Text -> ParseState -> ScanResult
+  try-scan-def-header (headers) (type-defs) (effect-defs) (imports) (cur-mod) (st) =
+   let hdr-result = scan-definition cur-mod st
    in when hdr-result
     if DefHeaderOk (hdr) (st2) ->
-     scan-top-level (headers ++ [hdr]) type-defs effect-defs imports (skip-newlines st2)
+     scan-top-level (headers ++ [hdr]) type-defs effect-defs imports cur-mod (skip-newlines st2)
     if DefHeaderNone (st2) ->
-     scan-top-level headers type-defs effect-defs imports (skip-newlines (advance st2))
+     scan-top-level headers type-defs effect-defs imports cur-mod (skip-newlines (advance st2))
 
-  scan-definition : ParseState -> ScanDefResult
-  scan-definition (st) =
+  scan-definition : Text -> ParseState -> ScanDefResult
+  scan-definition (cur-mod) (st) =
    if is-done st then DefHeaderNone st
-   else if is-ident (current-kind st) then try-scan-def st
-   else if is-type-ident (current-kind st) then try-scan-def st
+   else if is-ident (current-kind st) then try-scan-def cur-mod st
+   else if is-type-ident (current-kind st) then try-scan-def cur-mod st
      else DefHeaderNone st
 
-  try-scan-def : ParseState -> ScanDefResult
-  try-scan-def (st) =
+  try-scan-def : Text -> ParseState -> ScanDefResult
+  try-scan-def (cur-mod) (st) =
    if is-colon (peek-kind st 1) then let ann-result = parse-type-annotation st
-     in unwrap-type-for-scan ann-result
-    else scan-def-body-with-ann [] st
+     in unwrap-type-for-scan cur-mod ann-result
+    else scan-def-body-with-ann cur-mod [] st
 
-  unwrap-type-for-scan : ParseTypeResult -> ScanDefResult
-  unwrap-type-for-scan (r) =
+  unwrap-type-for-scan : Text -> ParseTypeResult -> ScanDefResult
+  unwrap-type-for-scan (cur-mod) (r) =
    when r
     if TypeOk (ann-type) (st) ->
      let name-tok = Token {
@@ -510,26 +529,26 @@ Section: Header Scanning (Phase 2 streaming)
       type-expr = ann-type
      }]
       in let st2 = skip-newlines st
-       in scan-def-body-with-ann ann st2
+       in scan-def-body-with-ann cur-mod ann st2
 
-  scan-def-body-with-ann : List TypeAnn -> ParseState -> ScanDefResult
-  scan-def-body-with-ann (ann) (st) =
+  scan-def-body-with-ann : Text -> List TypeAnn -> ParseState -> ScanDefResult
+  scan-def-body-with-ann (cur-mod) (ann) (st) =
    let name-tok = current st
    in let st2 = advance st
-   in scan-def-params-then ann name-tok [] st2
+   in scan-def-params-then cur-mod ann name-tok [] st2
 
-  scan-def-params-then : List TypeAnn -> Token -> List Token -> ParseState -> ScanDefResult
-  scan-def-params-then (ann) (name-tok) (acc) (st) =
+  scan-def-params-then : Text -> List TypeAnn -> Token -> List Token -> ParseState -> ScanDefResult
+  scan-def-params-then (cur-mod) (ann) (name-tok) (acc) (st) =
    if is-left-paren (current-kind st) then let st2 = advance st
    in if is-ident (current-kind st2) then let param = current st2
        in let st3 = advance st2
         in let st4 = expect RightParen st3
-         in scan-def-params-then ann name-tok (list-snoc acc param) st4
-      else finish-def-scan ann name-tok acc st
-    else finish-def-scan ann name-tok acc st
+         in scan-def-params-then cur-mod ann name-tok (list-snoc acc param) st4
+      else finish-def-scan cur-mod ann name-tok acc st
+    else finish-def-scan cur-mod ann name-tok acc st
 
-  finish-def-scan : List TypeAnn -> Token -> List Token -> ParseState -> ScanDefResult
-  finish-def-scan (ann) (name-tok) (params) (st) =
+  finish-def-scan : Text -> List TypeAnn -> Token -> List Token -> ParseState -> ScanDefResult
+  finish-def-scan (cur-mod) (ann) (name-tok) (params) (st) =
    let st2 = expect Equals st
    in let st3 = skip-newlines st2
    in let body-pos = st3.pos
@@ -538,7 +557,8 @@ Section: Header Scanning (Phase 2 streaming)
        name = name-tok,
        params = params,
        ann = ann,
-       body-pos = body-pos
+       body-pos = body-pos,
+       module-slug = cur-mod
       }) st4
 
   skip-body-tokens : ParseState -> Integer -> ParseState

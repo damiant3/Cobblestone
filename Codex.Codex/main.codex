@@ -81,18 +81,24 @@ Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
    let tokens = tokenize source
    in let st = make-parse-state tokens
    in let scan = scan-document st
-     in let type-defs = map-list desugar-type-def (scan.type-defs)
-      in let headers = (scan.def-headers)
-       in let tdm = build-type-def-map type-defs 0 (list-length type-defs) []
-        in let tenv = register-type-defs empty-unification-state builtin-type-env tdm type-defs 0 (list-length type-defs)
-         in let env = register-def-headers (tenv.state) (tenv.env) tdm headers 0 (list-length headers)
-          in let ctor-types = collect-ctor-bindings type-defs 0 (list-length type-defs) []
-           in let all-types = ctor-types ++ env.env.bindings
-            in let ctor-names = collect-ctor-names type-defs 0
-             in do
-              print-line (emit-type-defs type-defs 0)
-              emit-defs-streaming tokens headers all-types (env.state) ctor-names 0 (list-length headers)
-              print-line ""
+   in let type-defs = map-list desugar-type-def (scan.type-defs)
+   in let headers = (scan.def-headers)
+   in let assignments = build-all-assignments headers 0
+   in let colliding = find-colliding-names assignments
+   in compile-with-scope tokens type-defs headers assignments colliding
+
+  compile-with-scope : List Token -> List ATypeDef -> List DefHeader -> List ModuleAssignment -> List Text -> [Console] Nothing
+  compile-with-scope (tokens) (type-defs) (headers) (assignments) (colliding) =
+   let tdm = build-type-def-map type-defs 0 (list-length type-defs) []
+   in let tenv = register-type-defs empty-unification-state builtin-type-env tdm type-defs 0 (list-length type-defs)
+   in let env = register-def-headers (tenv.state) (tenv.env) tdm headers 0 (list-length headers)
+   in let ctor-types = collect-ctor-bindings type-defs 0 (list-length type-defs) []
+   in let all-types = ctor-types ++ env.env.bindings
+   in let ctor-names = collect-ctor-names type-defs 0
+   in do
+    print-line (emit-type-defs type-defs 0)
+    emit-defs-scoped tokens headers all-types (env.state) ctor-names colliding assignments 0 (list-length headers)
+    print-line ""
 
   register-def-headers : UnificationState -> TypeEnv -> List TypeBinding -> List DefHeader -> Integer -> Integer -> LetBindResult
   register-def-headers (st) (env) (tdm) (headers) (i) (len) =
@@ -166,6 +172,43 @@ Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
          else do
       print-line text
       emit-defs-streaming tokens headers all-types ust ctor-names (i + 1) len
+
+  emit-defs-scoped : List Token -> List DefHeader -> List TypeBinding -> UnificationState -> List Text -> List Text -> List ModuleAssignment -> Integer -> Integer -> [Console] Nothing
+  emit-defs-scoped (tokens) (headers) (all-types) (ust) (ctor-names) (colliding) (assignments) (i) (len) =
+   if i == len then print-line ""
+   else let hdr = list-at headers i
+   in let rn = build-module-rename-map colliding assignments (hdr.module-slug)
+   in emit-one-scoped-def tokens hdr all-types ust ctor-names colliding assignments rn headers i len
+
+  emit-one-scoped-def : List Token -> DefHeader -> List TypeBinding -> UnificationState -> List Text -> List Text -> List ModuleAssignment -> List RenameEntry -> List DefHeader -> Integer -> Integer -> [Console] Nothing
+  emit-one-scoped-def (tokens) (hdr) (all-types) (ust) (ctor-names) (colliding) (assignments) (rn) (headers) (i) (len) =
+   let body-st = ParseState {
+    tokens = tokens,
+    pos = (hdr.body-pos)
+   }
+   in let body-result = parse-expr body-st
+   in let def = Def {
+    name = (hdr.name),
+    params = (hdr.params),
+    ann = (hdr.ann),
+    body = unwrap-body body-result
+   }
+   in let adef = desugar-def def
+   in let ir-def = lower-def adef all-types ust
+   in let scoped-name = scope-def-name colliding assignments (ir-def.name) (hdr.module-slug)
+   in let scoped-body = rename-ir-expr rn (ir-def.body)
+   in let scoped-def = IRDef {
+    name = scoped-name,
+    params = (ir-def.params),
+    type-val = (ir-def.type-val),
+    body = scoped-body
+   }
+   in if is-error-body (scoped-def.body) then print-line ("COMPILE-ERROR: def '" ++ scoped-def.name ++ "' has error body: " ++ error-message (scoped-def.body))
+      else let text = emit-def scoped-def ctor-names
+      in if text == "" then emit-defs-scoped tokens headers all-types ust ctor-names colliding assignments (i + 1) len
+         else do
+      print-line text
+      emit-defs-scoped tokens headers all-types ust ctor-names colliding assignments (i + 1) len
 
   unwrap-body : ParseExprResult -> Expr
   unwrap-body (r) =

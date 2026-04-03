@@ -102,3 +102,168 @@ Section: Apply Rename
   is-colliding : List Text -> Text -> Boolean
   is-colliding (names) (name) =
    list-contains names name
+
+Section: IR Expression Renaming
+
+ Recursively walks IR expressions and renames IrName references
+ that appear in the rename map. Respects shadowing from let bindings,
+ lambda parameters, and match pattern variables.
+
+  remove-rename : List RenameEntry -> Text -> List RenameEntry
+  remove-rename (entries) (name) =
+   remove-rename-loop entries name 0 (list-length entries) []
+
+  remove-rename-loop : List RenameEntry -> Text -> Integer -> Integer -> List RenameEntry -> List RenameEntry
+  remove-rename-loop (entries) (name) (i) (len) (acc) =
+   if i == len then acc
+   else let e = list-at entries i
+   in if (e.original) == name then remove-rename-loop entries name (i + 1) len acc
+      else remove-rename-loop entries name (i + 1) len (list-snoc acc e)
+
+  remove-renames-for-params : List RenameEntry -> List IRParam -> Integer -> List RenameEntry
+  remove-renames-for-params (entries) (params) (i) =
+   if i == list-length params then entries
+   else let p = list-at params i
+   in remove-renames-for-params (remove-rename entries (p.name)) params (i + 1)
+
+  rename-ir-expr : List RenameEntry -> IRExpr -> IRExpr
+  rename-ir-expr (rn) (e) =
+   when e
+    if IrIntLit (v) -> e
+    if IrNumLit (v) -> e
+    if IrTextLit (v) -> e
+    if IrBoolLit (v) -> e
+    if IrCharLit (v) -> e
+    if IrError (msg) (ty) -> e
+    if IrFork (x) (ty) -> IrFork (rename-ir-expr rn x) ty
+    if IrAwait (x) (ty) -> IrAwait (rename-ir-expr rn x) ty
+    if IrNegate (x) -> IrNegate (rename-ir-expr rn x)
+    if IrName (n) (ty) -> IrName (rename-lookup rn n) ty
+    if IrBinary (op) (l) (r) (ty) -> IrBinary op (rename-ir-expr rn l) (rename-ir-expr rn r) ty
+    if IrApply (f) (a) (ty) -> IrApply (rename-ir-expr rn f) (rename-ir-expr rn a) ty
+    if IrIf (c) (t) (el) (ty) -> IrIf (rename-ir-expr rn c) (rename-ir-expr rn t) (rename-ir-expr rn el) ty
+    if IrFieldAccess (rec) (field) (ty) -> IrFieldAccess (rename-ir-expr rn rec) field ty
+    if IrLet (nm) (ty) (val) (body) -> rename-ir-let rn nm ty val body
+    if IrLambda (params) (body) (ty) -> rename-ir-lambda rn params body ty
+    if IrMatch (scrut) (branches) (ty) -> IrMatch (rename-ir-expr rn scrut) (rename-ir-branches rn branches 0) ty
+    if IrList (elems) (ty) -> IrList (rename-ir-exprs rn elems 0) ty
+    if IrRecord (nm) (fields) (ty) -> IrRecord nm (rename-ir-fields rn fields 0) ty
+    if IrDo (stmts) (ty) -> IrDo (rename-ir-do-stmts rn stmts 0) ty
+    if IrHandle (eff) (body) (clauses) (ty) -> IrHandle eff (rename-ir-expr rn body) (rename-ir-handle-clauses rn clauses 0) ty
+
+  rename-ir-let : List RenameEntry -> Text -> CodexType -> IRExpr -> IRExpr -> IRExpr
+  rename-ir-let (rn) (nm) (ty) (val) (body) =
+   let rn2 = remove-rename rn nm
+   in IrLet nm ty (rename-ir-expr rn val) (rename-ir-expr rn2 body)
+
+  rename-ir-lambda : List RenameEntry -> List IRParam -> IRExpr -> CodexType -> IRExpr
+  rename-ir-lambda (rn) (params) (body) (ty) =
+   let rn2 = remove-renames-for-params rn params 0
+   in IrLambda params (rename-ir-expr rn2 body) ty
+
+Section: IR Collection Renaming
+
+  rename-ir-exprs : List RenameEntry -> List IRExpr -> Integer -> List IRExpr
+  rename-ir-exprs (rn) (elems) (i) =
+   if i == list-length elems then []
+   else [rename-ir-expr rn (list-at elems i)] ++ rename-ir-exprs rn elems (i + 1)
+
+  rename-ir-fields : List RenameEntry -> List IRFieldVal -> Integer -> List IRFieldVal
+  rename-ir-fields (rn) (fields) (i) =
+   if i == list-length fields then []
+   else let f = list-at fields i
+   in [IRFieldVal {
+    name = (f.name),
+    value = rename-ir-expr rn (f.value)
+   }] ++ rename-ir-fields rn fields (i + 1)
+
+  rename-ir-branches : List RenameEntry -> List IRBranch -> Integer -> List IRBranch
+  rename-ir-branches (rn) (branches) (i) =
+   if i == list-length branches then []
+   else let b = list-at branches i
+   in let rn2 = remove-renames-for-pat rn (b.pattern)
+   in [IRBranch {
+    pattern = (b.pattern),
+    body = rename-ir-expr rn2 (b.body)
+   }] ++ rename-ir-branches rn branches (i + 1)
+
+  remove-renames-for-pat : List RenameEntry -> IRPat -> List RenameEntry
+  remove-renames-for-pat (rn) (p) =
+   when p
+    if IrVarPat (nm) (ty) -> remove-rename rn nm
+    if IrCtorPat (nm) (subs) (ty) -> remove-renames-for-pats rn subs 0
+    if IrLitPat (v) (ty) -> rn
+    if IrWildPat -> rn
+
+  remove-renames-for-pats : List RenameEntry -> List IRPat -> Integer -> List RenameEntry
+  remove-renames-for-pats (rn) (pats) (i) =
+   if i == list-length pats then rn
+   else remove-renames-for-pats (remove-renames-for-pat rn (list-at pats i)) pats (i + 1)
+
+  rename-ir-do-stmts : List RenameEntry -> List IRDoStmt -> Integer -> List IRDoStmt
+  rename-ir-do-stmts (rn) (stmts) (i) =
+   if i == list-length stmts then []
+   else let s = list-at stmts i
+   in when s
+    if IrDoBind (nm) (ty) (expr) ->
+     let rn2 = remove-rename rn nm
+     in [IrDoBind nm ty (rename-ir-expr rn expr)] ++ rename-ir-do-stmts rn2 stmts (i + 1)
+    if IrDoExec (expr) ->
+     [IrDoExec (rename-ir-expr rn expr)] ++ rename-ir-do-stmts rn stmts (i + 1)
+
+  rename-ir-handle-clauses : List RenameEntry -> List IRHandleClause -> Integer -> List IRHandleClause
+  rename-ir-handle-clauses (rn) (clauses) (i) =
+   if i == list-length clauses then []
+   else let c = list-at clauses i
+   in let rn2 = remove-rename rn (c.resume-name)
+   in [IRHandleClause {
+    op-name = (c.op-name),
+    resume-name = (c.resume-name),
+    body = rename-ir-expr rn2 (c.body)
+   }] ++ rename-ir-handle-clauses rn clauses (i + 1)
+
+Section: Module Scoping Pipeline
+
+ Takes headers with module-slug fields, detects collisions, builds
+ rename maps, and provides functions for the streaming pipeline to
+ rename def names and body expressions.
+
+  build-all-assignments : List DefHeader -> Integer -> List ModuleAssignment
+  build-all-assignments (headers) (i) =
+   if i == list-length headers then []
+   else let hdr = list-at headers i
+   in [ModuleAssignment {
+    def-name = (hdr.name.text),
+    module-slug = (hdr.module-slug)
+   }] ++ build-all-assignments headers (i + 1)
+
+  scope-def-name : List Text -> List ModuleAssignment -> Text -> Text -> Text
+  scope-def-name (colliding) (assignments) (name) (cur-mod) =
+   if is-colliding colliding name then mangle-name cur-mod name
+    else name
+
+  build-module-rename-map : List Text -> List ModuleAssignment -> Text -> List RenameEntry
+  build-module-rename-map (colliding) (assignments) (cur-mod) =
+   build-mod-renames colliding assignments cur-mod 0 (list-length assignments) []
+
+  build-mod-renames : List Text -> List ModuleAssignment -> Text -> Integer -> Integer -> List RenameEntry -> List RenameEntry
+  build-mod-renames (colliding) (assignments) (cur-mod) (i) (len) (acc) =
+   if i == len then acc
+   else let a = list-at assignments i
+   in if is-colliding colliding (a.def-name) then let mangled = mangle-name (a.module-slug) (a.def-name)
+      in if has-rename acc (a.def-name) then build-mod-renames colliding assignments cur-mod (i + 1) len acc
+         else build-mod-renames colliding assignments cur-mod (i + 1) len (list-snoc acc (RenameEntry {
+          original = (a.def-name),
+          mangled = mangled
+         }))
+      else build-mod-renames colliding assignments cur-mod (i + 1) len acc
+
+  has-rename : List RenameEntry -> Text -> Boolean
+  has-rename (entries) (name) =
+   has-rename-loop entries name 0 (list-length entries)
+
+  has-rename-loop : List RenameEntry -> Text -> Integer -> Integer -> Boolean
+  has-rename-loop (entries) (name) (i) (len) =
+   if i == len then False
+   else if (list-at entries i).original == name then True
+        else has-rename-loop entries name (i + 1) len
