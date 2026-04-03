@@ -59,7 +59,11 @@ source. Two categories of divergence remain:
    are silently dropped. This is a real codegen/emitter bug — not a style
    issue. The source compiles correctly under the C# reference compiler.
 
-3. **Style reconciliation** (in progress). Many style differences between
+3. **Caret character mis-emission**. `bin-op-text IrPowInt` returns `"^"`
+   in the source but bare-metal stage1 emits `"?"`. CCE encoding issue
+   or char-code mismatch in the bare-metal runtime.
+
+4. **Style reconciliation** (in progress). Many style differences between
    source and emitter output have been resolved (if/then/else placement,
    let/in indent, body-on-next-line, precedence parens, field access parens).
    Remaining: inline if-then-else splitting, missing blank lines between
