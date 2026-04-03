@@ -1493,9 +1493,15 @@ emit-binary (op) (l) (r) (ctors) (indent) =
 wrap-binary-child : IRBinaryOp -> IRExpr -> List Text -> Integer -> Text
 wrap-binary-child (parent-op) (e) (ctors) (indent) =
  when e
-  if IrBinary (child-op) (l2) (r2) (ty) -> if bin-op-prec child-op < bin-op-prec parent-op then "(" ++ emit-expr e ctors indent ++ ")"
+  if IrBinary (child-op) (l2) (r2) (ty) -> if needs-binary-wrap parent-op child-op then "(" ++ emit-expr e ctors indent ++ ")"
   else emit-expr e ctors indent
   if _ -> emit-expr e ctors indent
+
+needs-binary-wrap : IRBinaryOp -> IRBinaryOp -> Boolean
+needs-binary-wrap (parent) (child) =
+ if bin-op-prec child < bin-op-prec parent then True
+ else if bin-op-prec child == bin-op-prec parent then bin-op-text parent /= bin-op-text child
+ else False
 
 bin-op-prec : IRBinaryOp -> Integer
 bin-op-prec (op) =
@@ -1670,14 +1676,22 @@ emit-do-stmt (s) (ctors) (indent) =
 
 emit-record : Text -> List IRFieldVal -> List Text -> Integer -> Text
 emit-record (name) (fields) (ctors) (indent) =
- name ++ " {" ++ emit-record-fields fields ctors indent 0 ++ " }"
+ if list-length fields <= 1 then name ++ " {" ++ emit-record-fields-inline fields ctors indent 0 ++ " }"
+ else name ++ " {\n" ++ emit-record-fields-multi fields ctors indent 0 ++ make-indent indent ++ "}"
 
-emit-record-fields : List IRFieldVal -> List Text -> Integer -> Integer -> Text
-emit-record-fields (fields) (ctors) (indent) (i) =
+emit-record-fields-inline : List IRFieldVal -> List Text -> Integer -> Integer -> Text
+emit-record-fields-inline (fields) (ctors) (indent) (i) =
  if i == list-length fields then ""
  else let f = list-at fields i
  in let sep = if i > 0 then "," else ""
- in sep ++ " " ++ f.name ++ " = " ++ emit-expr (f.value) ctors indent ++ emit-record-fields fields ctors indent (i + 1)
+ in sep ++ " " ++ f.name ++ " = " ++ emit-expr (f.value) ctors indent ++ emit-record-fields-inline fields ctors indent (i + 1)
+
+emit-record-fields-multi : List IRFieldVal -> List Text -> Integer -> Integer -> Text
+emit-record-fields-multi (fields) (ctors) (indent) (i) =
+ if i == list-length fields then ""
+ else let f = list-at fields i
+ in let comma = if i < list-length fields - 1 then "," else ""
+ in make-indent (indent + 1) ++ f.name ++ " = " ++ emit-expr (f.value) ctors (indent + 1) ++ comma ++ "\n" ++ emit-record-fields-multi fields ctors indent (i + 1)
 
 emit-field-access : IRExpr -> Text -> List Text -> Integer -> Text
 emit-field-access (rec) (field) (ctors) (indent) =
@@ -1775,7 +1789,7 @@ filter-defs (defs) (ctor-names) (i) (len) (acc) =
  in if skip-def d ctor-names then filter-defs defs ctor-names (i + 1) len acc
     else if has-def-named acc (d.name) 0 (list-length acc) then if def-score d > def-score-named acc (d.name) 0 (list-length acc) then filter-defs defs ctor-names (i + 1) len (replace-def acc (d.name) d 0 (list-length acc))
     else filter-defs defs ctor-names (i + 1) len acc
-  else filter-defs defs ctor-names (i + 1) len (list-snoc acc d)
+    else filter-defs defs ctor-names (i + 1) len (list-snoc acc d)
 
 def-score : IRDef -> Integer
 def-score (d) =
@@ -2071,7 +2085,8 @@ compute-rodata-vaddr-64 (text-size) =
  in elf-linux-base-addr + rodata-file-offset
 
 compute-text-vaddr-64 : Integer
-compute-text-vaddr-64 = elf-linux-base-addr + compute-text-file-offset-64
+compute-text-vaddr-64 =
+ elf-linux-base-addr + compute-text-file-offset-64
 
 compute-rodata-vaddr-bare : Integer -> Integer
 compute-rodata-vaddr-bare (text-size) =
@@ -2216,48 +2231,48 @@ st-append-text : CodegenState -> List Integer -> CodegenState
 st-append-text (st) (bytes) =
  CodegenState {
   text = st.text ++ bytes,
-  rodata = (st.rodata),
-  func-offsets = (st.func-offsets),
-  call-patches = (st.call-patches),
-  func-addr-fixups = (st.func-addr-fixups),
-  locals = (st.locals),
-  next-temp = (st.next-temp),
-  next-local = (st.next-local),
-  spill-count = (st.spill-count),
-  load-local-toggle = (st.load-local-toggle),
-  tco = (st.tco)
+  rodata = st.rodata,
+  func-offsets = st.func-offsets,
+  call-patches = st.call-patches,
+  func-addr-fixups = st.func-addr-fixups,
+  locals = st.locals,
+  next-temp = st.next-temp,
+  next-local = st.next-local,
+  spill-count = st.spill-count,
+  load-local-toggle = st.load-local-toggle,
+  tco = st.tco
  }
 
 st-with-text : CodegenState -> List Integer -> CodegenState
 st-with-text (st) (new-text) =
  CodegenState {
   text = new-text,
-  rodata = (st.rodata),
-  func-offsets = (st.func-offsets),
-  call-patches = (st.call-patches),
-  func-addr-fixups = (st.func-addr-fixups),
-  locals = (st.locals),
-  next-temp = (st.next-temp),
-  next-local = (st.next-local),
-  spill-count = (st.spill-count),
-  load-local-toggle = (st.load-local-toggle),
-  tco = (st.tco)
+  rodata = st.rodata,
+  func-offsets = st.func-offsets,
+  call-patches = st.call-patches,
+  func-addr-fixups = st.func-addr-fixups,
+  locals = st.locals,
+  next-temp = st.next-temp,
+  next-local = st.next-local,
+  spill-count = st.spill-count,
+  load-local-toggle = st.load-local-toggle,
+  tco = st.tco
  }
 
 record-func-offset : CodegenState -> Text -> CodegenState
 record-func-offset (st) (name) =
  CodegenState {
-  text = (st.text),
-  rodata = (st.rodata),
+  text = st.text,
+  rodata = st.rodata,
   func-offsets = list-snoc (st.func-offsets) (FuncOffset { name = name, offset = list-length (st.text) }),
-  call-patches = (st.call-patches),
-  func-addr-fixups = (st.func-addr-fixups),
-  locals = (st.locals),
-  next-temp = (st.next-temp),
-  next-local = (st.next-local),
-  spill-count = (st.spill-count),
-  load-local-toggle = (st.load-local-toggle),
-  tco = (st.tco)
+  call-patches = st.call-patches,
+  func-addr-fixups = st.func-addr-fixups,
+  locals = st.locals,
+  next-temp = st.next-temp,
+  next-local = st.next-local,
+  spill-count = st.spill-count,
+  load-local-toggle = st.load-local-toggle,
+  tco = st.tco
  }
 
 lookup-func-offset : List FuncOffset -> Text -> Integer
@@ -2274,11 +2289,11 @@ lookup-func-offset-loop (entries) (name) (i) (len) =
 reset-func-state : CodegenState -> Text -> CodegenState
 reset-func-state (st) (name) =
  CodegenState {
-  text = (st.text),
-  rodata = (st.rodata),
+  text = st.text,
+  rodata = st.rodata,
   func-offsets = list-snoc (st.func-offsets) (FuncOffset { name = name, offset = list-length (st.text) }),
-  call-patches = (st.call-patches),
-  func-addr-fixups = (st.func-addr-fixups),
+  call-patches = st.call-patches,
+  func-addr-fixups = st.func-addr-fixups,
   locals = [],
   next-temp = 0,
   next-local = 0,
@@ -2293,17 +2308,17 @@ alloc-temp (st) =
  in let reg = list-at temp-regs idx
  in EmitResult {
   state = CodegenState {
-   text = (st.text),
-   rodata = (st.rodata),
-   func-offsets = (st.func-offsets),
-   call-patches = (st.call-patches),
-   func-addr-fixups = (st.func-addr-fixups),
-   locals = (st.locals),
+   text = st.text,
+   rodata = st.rodata,
+   func-offsets = st.func-offsets,
+   call-patches = st.call-patches,
+   func-addr-fixups = st.func-addr-fixups,
+   locals = st.locals,
    next-temp = st.next-temp + 1,
-   next-local = (st.next-local),
-   spill-count = (st.spill-count),
-   load-local-toggle = (st.load-local-toggle),
-   tco = (st.tco)
+   next-local = st.next-local,
+   spill-count = st.spill-count,
+   load-local-toggle = st.load-local-toggle,
+   tco = st.tco
   },
   reg = reg
  }
@@ -2313,34 +2328,34 @@ alloc-local (st) =
  if st.next-local < 4 then let reg = list-at local-regs (st.next-local)
  in EmitResult {
    state = CodegenState {
-    text = (st.text),
-    rodata = (st.rodata),
-    func-offsets = (st.func-offsets),
-    call-patches = (st.call-patches),
-    func-addr-fixups = (st.func-addr-fixups),
-    locals = (st.locals),
-    next-temp = (st.next-temp),
+    text = st.text,
+    rodata = st.rodata,
+    func-offsets = st.func-offsets,
+    call-patches = st.call-patches,
+    func-addr-fixups = st.func-addr-fixups,
+    locals = st.locals,
+    next-temp = st.next-temp,
     next-local = st.next-local + 1,
-    spill-count = (st.spill-count),
-    load-local-toggle = (st.load-local-toggle),
-    tco = (st.tco)
+    spill-count = st.spill-count,
+    load-local-toggle = st.load-local-toggle,
+    tco = st.tco
    },
    reg = reg
   }
  else let slot = spill-base + st.spill-count
  in EmitResult {
    state = CodegenState {
-    text = (st.text),
-    rodata = (st.rodata),
-    func-offsets = (st.func-offsets),
-    call-patches = (st.call-patches),
-    func-addr-fixups = (st.func-addr-fixups),
-    locals = (st.locals),
-    next-temp = (st.next-temp),
+    text = st.text,
+    rodata = st.rodata,
+    func-offsets = st.func-offsets,
+    call-patches = st.call-patches,
+    func-addr-fixups = st.func-addr-fixups,
+    locals = st.locals,
+    next-temp = st.next-temp,
     next-local = st.next-local + 1,
     spill-count = st.spill-count + 1,
-    load-local-toggle = (st.load-local-toggle),
-    tco = (st.tco)
+    load-local-toggle = st.load-local-toggle,
+    tco = st.tco
    },
    reg = slot
   }
@@ -2360,16 +2375,16 @@ load-local (st) (local) =
  in EmitResult {
    state = CodegenState {
     text = st.text ++ mov-load scratch reg-rbp offset,
-    rodata = (st.rodata),
-    func-offsets = (st.func-offsets),
-    call-patches = (st.call-patches),
-    func-addr-fixups = (st.func-addr-fixups),
-    locals = (st.locals),
-    next-temp = (st.next-temp),
-    next-local = (st.next-local),
-    spill-count = (st.spill-count),
+    rodata = st.rodata,
+    func-offsets = st.func-offsets,
+    call-patches = st.call-patches,
+    func-addr-fixups = st.func-addr-fixups,
+    locals = st.locals,
+    next-temp = st.next-temp,
+    next-local = st.next-local,
+    spill-count = st.spill-count,
     load-local-toggle = st.load-local-toggle + 1,
-    tco = (st.tco)
+    tco = st.tco
    },
    reg = scratch
   }
@@ -2506,16 +2521,16 @@ should-tco (def) =
 st-set-tail-pos : CodegenState -> Boolean -> CodegenState
 st-set-tail-pos (st) (v) =
  CodegenState {
-  text = (st.text),
-  rodata = (st.rodata),
-  func-offsets = (st.func-offsets),
-  call-patches = (st.call-patches),
-  func-addr-fixups = (st.func-addr-fixups),
-  locals = (st.locals),
-  next-temp = (st.next-temp),
-  next-local = (st.next-local),
-  spill-count = (st.spill-count),
-  load-local-toggle = (st.load-local-toggle),
+  text = st.text,
+  rodata = st.rodata,
+  func-offsets = st.func-offsets,
+  call-patches = st.call-patches,
+  func-addr-fixups = st.func-addr-fixups,
+  locals = st.locals,
+  next-temp = st.next-temp,
+  next-local = st.next-local,
+  spill-count = st.spill-count,
+  load-local-toggle = st.load-local-toggle,
   tco = TcoState {
    active = st.tco.active,
    in-tail-pos = v,
@@ -2558,16 +2573,16 @@ emit-function (st) (def) =
    in let st-a = tco-alloc.alloc-state
    in let p-locals = collect-param-locals (st-a.locals) (def.params) 0 []
    in CodegenState {
-    text = (st-a.text),
-    rodata = (st-a.rodata),
-    func-offsets = (st-a.func-offsets),
-    call-patches = (st-a.call-patches),
-    func-addr-fixups = (st-a.func-addr-fixups),
-    locals = (st-a.locals),
-    next-temp = (st-a.next-temp),
-    next-local = (st-a.next-local),
-    spill-count = (st-a.spill-count),
-    load-local-toggle = (st-a.load-local-toggle),
+    text = st-a.text,
+    rodata = st-a.rodata,
+    func-offsets = st-a.func-offsets,
+    call-patches = st-a.call-patches,
+    func-addr-fixups = st-a.func-addr-fixups,
+    locals = st-a.locals,
+    next-temp = st-a.next-temp,
+    next-local = st-a.next-local,
+    spill-count = st-a.spill-count,
+    load-local-toggle = st-a.load-local-toggle,
     tco = TcoState {
      active = True,
      in-tail-pos = True,
@@ -2575,8 +2590,8 @@ emit-function (st) (def) =
      param-locals = p-locals,
      temp-locals = (tco-alloc.alloc-locals),
      current-func = (def.name),
-     saved-next-local = (st-a.next-local),
-     saved-next-temp = (st-a.next-temp)
+     saved-next-local = st-a.next-local,
+     saved-next-temp = st-a.next-temp
     }
    }
   else st4
@@ -2606,17 +2621,17 @@ lookup-local-loop (bindings) (name) (i) (len) =
 add-local : CodegenState -> Text -> Integer -> CodegenState
 add-local (st) (name) (slot) =
  CodegenState {
-  text = (st.text),
-  rodata = (st.rodata),
-  func-offsets = (st.func-offsets),
-  call-patches = (st.call-patches),
-  func-addr-fixups = (st.func-addr-fixups),
+  text = st.text,
+  rodata = st.rodata,
+  func-offsets = st.func-offsets,
+  call-patches = st.call-patches,
+  func-addr-fixups = st.func-addr-fixups,
   locals = list-snoc (st.locals) (LocalBinding { name = name, slot = slot }),
-  next-temp = (st.next-temp),
-  next-local = (st.next-local),
-  spill-count = (st.spill-count),
-  load-local-toggle = (st.load-local-toggle),
-  tco = (st.tco)
+  next-temp = st.next-temp,
+  next-local = st.next-local,
+  spill-count = st.spill-count,
+  load-local-toggle = st.load-local-toggle,
+  tco = st.tco
  }
 
 emit-expr : CodegenState -> IRExpr -> EmitResult
@@ -3174,7 +3189,7 @@ emit-tail-call (st) (func-expr) (arg-expr) =
  let args = flatten-tail-args func-expr [arg-expr]
  in let st1 = eval-tail-args st args (st.tco.temp-locals) 0
  in let st2 = copy-temps-to-params st1 (st.tco.temp-locals) (st.tco.param-locals) 0
- in let rel32 = (st.tco.loop-top) - (list-length (st2.text) + 5)
+ in let rel32 = st.tco.loop-top - (list-length (st2.text) + 5)
  in let st3 = st-append-text st2 (jmp rel32)
  in let dummy = alloc-temp st3
  in EmitResult {
@@ -3212,17 +3227,17 @@ emit-load-func-addr (st) (reg) (func-name) =
  let fixup = FuncAddrFixup { patch-offset = list-length (st.text) + 2, target = func-name }
  in let st1 = st-append-text st (mov-ri64 reg 0)
  in CodegenState {
-  text = (st1.text),
-  rodata = (st1.rodata),
-  func-offsets = (st1.func-offsets),
-  call-patches = (st1.call-patches),
+  text = st1.text,
+  rodata = st1.rodata,
+  func-offsets = st1.func-offsets,
+  call-patches = st1.call-patches,
   func-addr-fixups = list-snoc (st1.func-addr-fixups) fixup,
-  locals = (st1.locals),
-  next-temp = (st1.next-temp),
-  next-local = (st1.next-local),
-  spill-count = (st1.spill-count),
-  load-local-toggle = (st1.load-local-toggle),
-  tco = (st1.tco)
+  locals = st1.locals,
+  next-temp = st1.next-temp,
+  next-local = st1.next-local,
+  spill-count = st1.spill-count,
+  load-local-toggle = st1.load-local-toggle,
+  tco = st1.tco
  }
 
 emit-trampoline-shift-args : CodegenState -> Integer -> Integer -> CodegenState
@@ -3614,17 +3629,17 @@ emit-call-to (st) (target) =
  let patch-pos = list-length (st.text)
  in let st1 = st-append-text st (x86-call 0)
  in CodegenState {
-  text = (st1.text),
-  rodata = (st1.rodata),
-  func-offsets = (st1.func-offsets),
+  text = st1.text,
+  rodata = st1.rodata,
+  func-offsets = st1.func-offsets,
   call-patches = list-snoc (st1.call-patches) (CallPatch { patch-offset = patch-pos, target = target }),
-  func-addr-fixups = (st1.func-addr-fixups),
-  locals = (st1.locals),
-  next-temp = (st1.next-temp),
-  next-local = (st1.next-local),
-  spill-count = (st1.spill-count),
-  load-local-toggle = (st1.load-local-toggle),
-  tco = (st1.tco)
+  func-addr-fixups = st1.func-addr-fixups,
+  locals = st1.locals,
+  next-temp = st1.next-temp,
+  next-local = st1.next-local,
+  spill-count = st1.spill-count,
+  load-local-toggle = st1.load-local-toggle,
+  tco = st1.tco
  }
 
 bare-metal-heap-base : Integer
@@ -6273,110 +6288,144 @@ collect-imported-names (results) (i) (len) (acc) =
  in collect-imported-names results (i + 1) len (acc ++ names)
 
 cc-newline : Integer
-cc-newline = char-code '\n'
+cc-newline =
+ char-code '\n'
 
 cc-cr : Integer
 cc-cr =
  0 - 1
 
 cc-space : Integer
-cc-space = char-code ' '
+cc-space =
+ char-code ' '
 
 cc-double-quote : Integer
-cc-double-quote = char-code '"'
+cc-double-quote =
+ char-code '"'
 
 cc-single-quote : Integer
-cc-single-quote = char-code '\''
+cc-single-quote =
+ char-code '\''
 
 cc-ampersand : Integer
-cc-ampersand = char-code '&'
+cc-ampersand =
+ char-code '&'
 
 cc-left-paren : Integer
-cc-left-paren = char-code '('
+cc-left-paren =
+ char-code '('
 
 cc-right-paren : Integer
-cc-right-paren = char-code ')'
+cc-right-paren =
+ char-code ')'
 
 cc-star : Integer
-cc-star = char-code '*'
+cc-star =
+ char-code '*'
 
 cc-plus : Integer
-cc-plus = char-code '+'
+cc-plus =
+ char-code '+'
 
 cc-comma : Integer
-cc-comma = char-code ','
+cc-comma =
+ char-code ','
 
 cc-minus : Integer
-cc-minus = char-code '-'
+cc-minus =
+ char-code '-'
 
 cc-dot : Integer
-cc-dot = char-code '.'
+cc-dot =
+ char-code '.'
 
 cc-slash : Integer
-cc-slash = char-code '/'
+cc-slash =
+ char-code '/'
 
 cc-zero : Integer
-cc-zero = char-code '0'
+cc-zero =
+ char-code '0'
 
 cc-nine : Integer
-cc-nine = char-code '9'
+cc-nine =
+ char-code '9'
 
 cc-colon : Integer
-cc-colon = char-code ':'
+cc-colon =
+ char-code ':'
 
 cc-less : Integer
-cc-less = char-code '<'
+cc-less =
+ char-code '<'
 
 cc-equals : Integer
-cc-equals = char-code '='
+cc-equals =
+ char-code '='
 
 cc-greater : Integer
-cc-greater = char-code '>'
+cc-greater =
+ char-code '>'
 
 cc-upper-a : Integer
-cc-upper-a = char-code 'E'
+cc-upper-a =
+ char-code 'E'
 
 cc-upper-z : Integer
-cc-upper-z = char-code 'Z'
+cc-upper-z =
+ char-code 'Z'
 
 cc-left-bracket : Integer
-cc-left-bracket = char-code '['
+cc-left-bracket =
+ char-code '['
 
 cc-backslash : Integer
-cc-backslash = char-code '\\'
+cc-backslash =
+ char-code '\\'
 
 cc-right-bracket : Integer
-cc-right-bracket = char-code ']'
+cc-right-bracket =
+ char-code ']'
 
 cc-caret : Integer
-cc-caret = char-code '^'
+cc-caret =
+ char-code '^'
 
 cc-underscore : Integer
-cc-underscore = char-code '_'
+cc-underscore =
+ char-code '_'
 
 cc-lower-a : Integer
-cc-lower-a = char-code 'a'
+cc-lower-a =
+ char-code 'a'
 
 cc-lower-n : Integer
-cc-lower-n = char-code 'n'
+cc-lower-n =
+ char-code 'n'
 
 cc-lower-r : Integer
-cc-lower-r = char-code 'r'
+cc-lower-r =
+ char-code 'r'
 
 cc-lower-t : Integer
-cc-lower-t = char-code 't'
+cc-lower-t =
+ char-code 't'
 
 cc-lower-z : Integer
-cc-lower-z = char-code 'z'
+cc-lower-z =
+ char-code 'z'
 
 cc-left-brace : Integer
-cc-left-brace = char-code '{'
+cc-left-brace =
+ char-code '{'
 
 cc-pipe : Integer
-cc-pipe = char-code '|'
+cc-pipe =
+ char-code '|'
 
 cc-right-brace : Integer
-cc-right-brace = char-code '}'
+cc-right-brace =
+ char-code '}'
 
 is-letter-code : Integer -> Boolean
 is-letter-code (c) =
