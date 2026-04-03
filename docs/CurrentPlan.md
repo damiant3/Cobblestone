@@ -60,16 +60,26 @@ source. Progress as of 2026-04-03:
    ò (least-used accented char) to Tier 1. `char-code '^'` now returns the
    correct CCE code.
 
-3. **Definition dropping / duplicate name collision** (~269 defs missing
-   from stage1). Module scoping infrastructure is in place:
+3. **Definition dropping / duplicate name collision** — **PARTIALLY FIXED**.
+   Down from 269 dropped to 176 dropped (837 of 1013 defs now emitted).
+   Module scoping is working on bare metal:
    - Scanner detects `module: slug-name` markers in token stream
    - `ModuleScoper.codex` has collision detection, rename maps, and full
      `rename-ir-expr` with let/lambda/match shadowing
    - Pipeline splits into `compile-with-scope` + `emit-defs-scoped`
-   - **Scoping activates when module markers are present** in the source
-   - **Next**: Bootstrap program must pass module markers when feeding
-     source to the self-hosted compiler (currently concatenates without
-     markers). Then bare-metal pingpong must verify scoped output.
+   - `dump-source` emits markers; bare-metal compiler scopes correctly
+   - Scoped names visible in stage1 (e.g. `csharp-emitter_emit-type-defs`)
+   - Rename map cached per module (not rebuilt per def) for performance
+   - Bare-metal memory increased from 64MB to 512MB (134 MB HWM at
+     current source size with scoping active)
+   - **Remaining 176 defs**: `build-mod-renames` only maps names defined
+     in the CURRENT module. When module A references a colliding name
+     defined in module B (cross-module reference), the rename map for A
+     doesn't include it, so the reference stays unmangled and doesn't
+     match the scoped definition. Fix: extend rename map to include ALL
+     colliding names, mapping each to its DEFINING module's mangled
+     version (not just cur-mod's). The C# `ModuleScoper.cs` does this
+     via per-module import resolution at `src/Codex.Semantics/ModuleScoper.cs:75-92`.
 
 4. **Style reconciliation** (in progress). Many style differences between
    source and emitter output have been resolved (if/then/else placement,
@@ -77,13 +87,13 @@ source. Progress as of 2026-04-03:
    Remaining: inline if-then-else splitting, missing blank lines between
    defs, and additional cascading indent fixes.
 
-5. **Stack overflow running Codex.Codex.exe on full source** (NEW, 2026-04-03).
-   Running the compiled self-hosted compiler directly on the full 381K
+5. **Stack overflow running Codex.Codex.exe on full source** (2026-04-03).
+   Running the compiled self-hosted compiler directly on the full 382K
    dump-source output causes a .NET stack overflow in `parse_type_atom`.
-   The bootstrap avoids this by calling compiled functions directly (larger
-   stack). Bare-metal runtime is unaffected. Root cause: deep recursion in
-   the type parser when processing 33 concatenated modules. Workaround:
-   use the bootstrap tool or increase .NET thread stack size.
+   The bootstrap avoids this by calling compiled functions directly (256 MB
+   stack). Bare-metal runtime is unaffected (512 MB address space).
+   Root cause: deep recursion in the type parser when processing 33
+   concatenated modules. Workaround: use the bootstrap tool.
 
 Until items 3-4 are resolved, bootstrap2 (bare-metal self-compile fixed
 point) cannot achieve stage0 == stage1.
