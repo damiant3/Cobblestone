@@ -6,7 +6,104 @@ using System.Threading.Tasks;
 
 
 
-public sealed record AImportDecl(Name module_name, List<Name> selected_names);
+public abstract record LiteralKind;
+
+public sealed record IntLit : LiteralKind;
+public sealed record NumLit : LiteralKind;
+public sealed record TextLit : LiteralKind;
+public sealed record CharLit : LiteralKind;
+public sealed record BoolLit : LiteralKind;
+
+public abstract record ADoStmt;
+
+public sealed record ADoBindStmt(Name Field0, AExpr Field1) : ADoStmt;
+public sealed record ADoExprStmt(AExpr Field0) : ADoStmt;
+
+public sealed record EffectOpsResult(List<EffectOpDef> ops, ParseState state);
+
+public sealed record Scope(List<string> names);
+
+public sealed record IRModule(Name name, List<IRDef> defs);
+
+public sealed record ItoaState(CodegenState cg, long jmp_done_zero_pos);
+
+public sealed record PatchEntry(long pos, long b0, long b1, long b2, long b3);
+
+public sealed record ParamEntry(string param_name, long var_id);
+
+public sealed record StrConcatCheckResult(CodegenState cg, long slow_path_pos);
+
+public sealed record SubstEntry(long var_id, CodexType resolved_type);
+
+public sealed record AMatchArm(APat pattern, AExpr body);
+
+public abstract record ParseDefResult;
+
+public sealed record DefOk(Def Field0, ParseState Field1) : ParseDefResult;
+public sealed record DefNone(ParseState Field0) : ParseDefResult;
+
+public sealed record Diagnostic(string code, string message, DiagnosticSeverity severity);
+
+public sealed record ALetBind(Name name, AExpr value);
+
+public sealed record EffectDef(Token name, List<EffectOpDef> ops);
+
+public sealed record ARecordFieldDef(Name name, ATypeExpr type_expr);
+
+public abstract record TypeBody;
+
+public sealed record RecordBody(List<RecordFieldDef> Field0) : TypeBody;
+public sealed record VariantBody(List<VariantCtorDef> Field0) : TypeBody;
+
+public sealed record HelpResult2(CodegenState cg, long p1, long p2);
+
+public sealed record StrConcatFastResult(CodegenState cg, long fast_done_pos);
+
+public sealed record RecordFieldDef(Token name, TypeExpr type_expr);
+
+public sealed record RenameEntry(string original, string mangled);
+
+public sealed record HandleClause(Token op_name, Token resume_name, Expr body);
+
+public sealed record TypeBinding(string name, CodexType bound_type);
+
+public sealed record TypeEnv(List<TypeBinding> bindings);
+
+public sealed record TypeAnn(Token name, TypeExpr type_expr);
+
+public abstract record ParsePatResult;
+
+public sealed record PatOk(Pat Field0, ParseState Field1) : ParsePatResult;
+
+public sealed record DefParamResult(UnificationState state, TypeEnv env, CodexType remaining_type);
+
+public sealed record IRDef(string name, List<IRParam> @params, CodexType type_val, IRExpr body);
+
+public sealed record EvalFieldsResult(CodegenState state, List<FieldLocal> field_locals);
+
+public sealed record FreshResult(CodexType var_type, UnificationState state);
+
+public sealed record FuncAddrFixup(long patch_offset, string target);
+
+public abstract record ATypeDef;
+
+public sealed record ARecordTypeDef(Name Field0, List<Name> Field1, List<ARecordFieldDef> Field2) : ATypeDef;
+public sealed record AVariantTypeDef(Name Field0, List<Name> Field1, List<AVariantCtorDef> Field2) : ATypeDef;
+
+public sealed record UnifyResult(bool success, UnificationState state);
+
+public sealed record WalkListResult(List<CodexType> walked_list, List<ParamEntry> entries, UnificationState state);
+
+public sealed record DefHeader(Token name, List<Token> @params, List<TypeAnn> ann, long body_pos, string module_slug);
+
+public abstract record IRDoStmt;
+
+public sealed record IrDoBind(string Field0, CodexType Field1, IRExpr Field2) : IRDoStmt;
+public sealed record IrDoExec(IRExpr Field0) : IRDoStmt;
+
+public sealed record AVariantCtorDef(Name name, List<ATypeExpr> fields);
+
+public sealed record LetBindResult(UnificationState state, TypeEnv env);
 
 public abstract record IRBinaryOp;
 
@@ -31,49 +128,78 @@ public sealed record IrAppendText : IRBinaryOp;
 public sealed record IrAppendList : IRBinaryOp;
 public sealed record IrConsList : IRBinaryOp;
 
-public sealed record DefParamResult(UnificationState state, TypeEnv env, CodexType remaining_type);
+public abstract record CodexType;
 
-public abstract record IRDoStmt;
+public sealed record IntegerTy : CodexType;
+public sealed record NumberTy : CodexType;
+public sealed record TextTy : CodexType;
+public sealed record BooleanTy : CodexType;
+public sealed record CharTy : CodexType;
+public sealed record VoidTy : CodexType;
+public sealed record NothingTy : CodexType;
+public sealed record ErrorTy : CodexType;
+public sealed record FunTy(CodexType Field0, CodexType Field1) : CodexType;
+public sealed record ListTy(CodexType Field0) : CodexType;
+public sealed record TypeVar(long Field0) : CodexType;
+public sealed record ForAllTy(long Field0, CodexType Field1) : CodexType;
+public sealed record SumTy(Name Field0, List<SumCtor> Field1) : CodexType;
+public sealed record RecordTy(Name Field0, List<RecordField> Field1) : CodexType;
+public sealed record ConstructedTy(Name Field0, List<CodexType> Field1) : CodexType;
+public sealed record EffectfulTy(List<Name> Field0, CodexType Field1) : CodexType;
 
-public sealed record IrDoBind(string Field0, CodexType Field1, IRExpr Field2) : IRDoStmt;
-public sealed record IrDoExec(IRExpr Field0) : IRDoStmt;
+public sealed record Def(Token name, List<Token> @params, List<TypeAnn> ann, Expr body);
 
-public sealed record DefSetup(CodexType expected_type, CodexType remaining_type, UnificationState state, TypeEnv env);
+public abstract record Pat;
 
-public sealed record ModuleResult(List<TypeBinding> types, UnificationState state);
+public sealed record VarPat(Token Field0) : Pat;
+public sealed record LitPat(Token Field0) : Pat;
+public sealed record CtorPat(Token Field0, List<Pat> Field1) : Pat;
+public sealed record WildPat(Token Field0) : Pat;
+
+public sealed record LocalBinding(string name, long slot);
 
 public sealed record ImportParseResult(List<ImportDecl> imports, ParseState state);
 
+public sealed record FlatApply(string func_name, List<IRExpr> args);
+
+public sealed record ADef(Name name, List<AParam> @params, List<ATypeExpr> declared_type, AExpr body);
+
 public sealed record Token(TokenKind kind, string text, long offset, long line, long column);
 
-public sealed record TcoAllocResult(CodegenState alloc_state, List<long> alloc_locals);
+public sealed record AImportDecl(Name module_name, List<Name> selected_names);
 
-public sealed record SubstEntry(long var_id, CodexType resolved_type);
+public sealed record ModuleResult(List<TypeBinding> types, UnificationState state);
 
-public sealed record IRModule(Name name, List<IRDef> defs);
+public sealed record UnificationState(List<SubstEntry> substitutions, long next_id, List<Diagnostic> errors);
 
-public abstract record TypeBody;
+public sealed record HelpResult3(CodegenState cg, long p1, long p2, long p3);
 
-public sealed record RecordBody(List<RecordFieldDef> Field0) : TypeBody;
-public sealed record VariantBody(List<VariantCtorDef> Field0) : TypeBody;
+public sealed record HandleParseResult(List<HandleClause> clauses, ParseState state);
 
-public sealed record CallPatch(long patch_offset, string target);
+public sealed record LambdaBindResult(UnificationState state, TypeEnv env, List<CodexType> param_types);
 
-public sealed record IRBranch(IRPat pattern, IRExpr body);
+public sealed record HelpResult4(CodegenState cg, long p1, long p2, long p3, long p4);
 
-public sealed record SelectedNamesResult(List<Token> names, ParseState state);
+public sealed record SourcePosition(long line, long column, long offset);
 
-public sealed record EffectDef(Token name, List<EffectOpDef> ops);
+public abstract record LexResult;
 
-public sealed record FreshResult(CodexType var_type, UnificationState state);
+public sealed record LexToken(Token Field0, LexState Field1) : LexResult;
+public sealed record LexEnd : LexResult;
 
-public sealed record RecordFieldExpr(Token name, Expr value);
+public sealed record LexState(string source, long offset, long line, long column);
 
-public sealed record DefHeader(Token name, List<Token> @params, List<TypeAnn> ann, long body_pos, string module_slug);
+public sealed record TrampolineResult(List<long> bytes, long far_jump_patch_pos);
 
-public sealed record AMatchArm(APat pattern, AExpr body);
+public sealed record IRFieldVal(string name, IRExpr value);
 
-public sealed record FlatApply(string func_name, List<IRExpr> args);
+public sealed record HandleParamsResult(List<Token> toks, ParseState state);
+
+public abstract record ParseExprResult;
+
+public sealed record ExprOk(Expr Field0, ParseState Field1) : ParseExprResult;
+
+public sealed record MatchBranchState(CodegenState cg_state, List<long> end_patches);
 
 public abstract record IRExpr;
 
@@ -99,180 +225,7 @@ public sealed record IrFork(IRExpr Field0, CodexType Field1) : IRExpr;
 public sealed record IrAwait(IRExpr Field0, CodexType Field1) : IRExpr;
 public sealed record IrError(string Field0, CodexType Field1) : IRExpr;
 
-public sealed record EffectOpsResult(List<EffectOpDef> ops, ParseState state);
-
-public sealed record LambdaParamsResult(List<Token> toks, ParseState state);
-
-public sealed record FuncAddrFixup(long patch_offset, string target);
-
-public sealed record RecordFieldDef(Token name, TypeExpr type_expr);
-
-public abstract record BinaryOp;
-
-public sealed record OpAdd : BinaryOp;
-public sealed record OpSub : BinaryOp;
-public sealed record OpMul : BinaryOp;
-public sealed record OpDiv : BinaryOp;
-public sealed record OpPow : BinaryOp;
-public sealed record OpEq : BinaryOp;
-public sealed record OpNotEq : BinaryOp;
-public sealed record OpLt : BinaryOp;
-public sealed record OpGt : BinaryOp;
-public sealed record OpLtEq : BinaryOp;
-public sealed record OpGtEq : BinaryOp;
-public sealed record OpDefEq : BinaryOp;
-public sealed record OpAppend : BinaryOp;
-public sealed record OpCons : BinaryOp;
-public sealed record OpAnd : BinaryOp;
-public sealed record OpOr : BinaryOp;
-
-public sealed record ResolveResult(List<Diagnostic> errors, List<string> top_level_names, List<string> type_names, List<string> ctor_names);
-
-public sealed record HelpResult2(CodegenState cg, long p1, long p2);
-
-public sealed record UnifyResult(bool success, UnificationState state);
-
-public sealed record SumCtor(Name name, List<CodexType> fields);
-
-public sealed record HandleParseResult(List<HandleClause> clauses, ParseState state);
-
-public sealed record LetBindResult(UnificationState state, TypeEnv env);
-
-public sealed record CtorCollectResult(List<string> type_names, List<string> ctor_names);
-
-public sealed record TypeAnn(Token name, TypeExpr type_expr);
-
-public sealed record HandleParamsResult(List<Token> toks, ParseState state);
-
-public sealed record IRDef(string name, List<IRParam> @params, CodexType type_val, IRExpr body);
-
-public sealed record Scope(List<string> names);
-
-public sealed record StrEqHeadResult(CodegenState cg, long len_ne_pos);
-
-public sealed record AFieldExpr(Name name, AExpr value);
-
-public abstract record IRPat;
-
-public sealed record IrVarPat(string Field0, CodexType Field1) : IRPat;
-public sealed record IrLitPat(string Field0, CodexType Field1) : IRPat;
-public sealed record IrCtorPat(string Field0, List<IRPat> Field1, CodexType Field2) : IRPat;
-public sealed record IrWildPat : IRPat;
-
-public abstract record APat;
-
-public sealed record AVarPat(Name Field0) : APat;
-public sealed record ALitPat(string Field0, LiteralKind Field1) : APat;
-public sealed record ACtorPat(Name Field0, List<APat> Field1) : APat;
-public sealed record AWildPat : APat;
-
-public sealed record ModuleAssignment(string def_name, string module_slug);
-
-public sealed record StrConcatCheckResult(CodegenState cg, long slow_path_pos);
-
-public abstract record Pat;
-
-public sealed record VarPat(Token Field0) : Pat;
-public sealed record LitPat(Token Field0) : Pat;
-public sealed record CtorPat(Token Field0, List<Pat> Field1) : Pat;
-public sealed record WildPat(Token Field0) : Pat;
-
-public sealed record FuncOffset(string name, long offset);
-
-public abstract record CompileResult;
-
-public sealed record CompileOk(string Field0, ModuleResult Field1) : CompileResult;
-public sealed record CompileError(List<Diagnostic> Field0) : CompileResult;
-
-public sealed record RenameEntry(string original, string mangled);
-
-public sealed record LowerCtx(List<TypeBinding> types, UnificationState ust);
-
-public sealed record Diagnostic(string code, string message, DiagnosticSeverity severity);
-
-public sealed record LambdaBindResult(UnificationState state, TypeEnv env, List<CodexType> param_types);
-
-public sealed record AEffectOpDef(Name name, ATypeExpr type_expr);
-
-public sealed record HelpResult1(CodegenState cg, long p1);
-
-public abstract record ATypeDef;
-
-public sealed record ARecordTypeDef(Name Field0, List<Name> Field1, List<ARecordFieldDef> Field2) : ATypeDef;
-public sealed record AVariantTypeDef(Name Field0, List<Name> Field1, List<AVariantCtorDef> Field2) : ATypeDef;
-
-public sealed record ItoaState(CodegenState cg, long jmp_done_zero_pos);
-
-public sealed record ArityEntry(string name, long arity);
-
-public sealed record WalkResult(CodexType walked, List<ParamEntry> entries, UnificationState state);
-
-public abstract record Expr;
-
-public sealed record LitExpr(Token Field0) : Expr;
-public sealed record NameExpr(Token Field0) : Expr;
-public sealed record AppExpr(Expr Field0, Expr Field1) : Expr;
-public sealed record BinExpr(Expr Field0, Token Field1, Expr Field2) : Expr;
-public sealed record UnaryExpr(Token Field0, Expr Field1) : Expr;
-public sealed record IfExpr(Expr Field0, Expr Field1, Expr Field2) : Expr;
-public sealed record LetExpr(List<LetBind> Field0, Expr Field1) : Expr;
-public sealed record MatchExpr(Expr Field0, List<MatchArm> Field1) : Expr;
-public sealed record ListExpr(List<Expr> Field0) : Expr;
-public sealed record RecordExpr(Token Field0, List<RecordFieldExpr> Field1) : Expr;
-public sealed record FieldExpr(Expr Field0, Token Field1) : Expr;
-public sealed record ParenExpr(Expr Field0) : Expr;
-public sealed record DoExpr(List<DoStmt> Field0) : Expr;
-public sealed record HandleExpr(Token Field0, Expr Field1, List<HandleClause> Field2) : Expr;
-public sealed record LambdaExpr(List<Token> Field0, Expr Field1) : Expr;
-public sealed record ErrExpr(Token Field0) : Expr;
-
-public sealed record LetBind(Token name, Expr value);
-
-public sealed record AVariantCtorDef(Name name, List<ATypeExpr> fields);
-
-public sealed record AHandleClause(Name op_name, Name resume_name, AExpr body);
-
-public sealed record IRParam(string name, CodexType type_val);
-
-public sealed record EmitPatternResult(CodegenState state, long next_branch_patch);
-
-public sealed record VariantCtorDef(Token name, List<TypeExpr> fields);
-
-public abstract record CodexType;
-
-public sealed record IntegerTy : CodexType;
-public sealed record NumberTy : CodexType;
-public sealed record TextTy : CodexType;
-public sealed record BooleanTy : CodexType;
-public sealed record CharTy : CodexType;
-public sealed record VoidTy : CodexType;
-public sealed record NothingTy : CodexType;
-public sealed record ErrorTy : CodexType;
-public sealed record FunTy(CodexType Field0, CodexType Field1) : CodexType;
-public sealed record ListTy(CodexType Field0) : CodexType;
-public sealed record TypeVar(long Field0) : CodexType;
-public sealed record ForAllTy(long Field0, CodexType Field1) : CodexType;
-public sealed record SumTy(Name Field0, List<SumCtor> Field1) : CodexType;
-public sealed record RecordTy(Name Field0, List<RecordField> Field1) : CodexType;
-public sealed record ConstructedTy(Name Field0, List<CodexType> Field1) : CodexType;
-public sealed record EffectfulTy(List<Name> Field0, CodexType Field1) : CodexType;
-
-public sealed record AModule(Name name, List<ADef> defs, List<ATypeDef> type_defs, List<AEffectDef> effect_defs, List<AImportDecl> imports);
-
-public sealed record Document(List<Def> defs, List<TypeDef> type_defs, List<EffectDef> effect_defs, List<ImportDecl> imports);
-
-public sealed record ScanResult(List<TypeDef> type_defs, List<EffectDef> effect_defs, List<DefHeader> def_headers, List<ImportDecl> imports);
-
-public sealed record TrampolineResult(List<long> bytes, long far_jump_patch_pos);
-
-public sealed record PatchEntry(long pos, long b0, long b1, long b2, long b3);
-
-public sealed record ADef(Name name, List<AParam> @params, List<ATypeExpr> declared_type, AExpr body);
-
-public abstract record ScanDefResult;
-
-public sealed record DefHeaderOk(DefHeader Field0, ParseState Field1) : ScanDefResult;
-public sealed record DefHeaderNone(ParseState Field0) : ScanDefResult;
+public sealed record StrEqLoopResult(CodegenState cg, long loop_done_pos, long byte_ne_pos);
 
 public abstract record TokenKind;
 
@@ -347,41 +300,7 @@ public sealed record Underscore : TokenKind;
 public sealed record Backslash : TokenKind;
 public sealed record ErrorToken : TokenKind;
 
-public sealed record SavedArgs(CodegenState state, List<long> locals);
-
-public sealed record EvalFieldsResult(CodegenState state, List<FieldLocal> field_locals);
-
-public abstract record ParseExprResult;
-
-public sealed record ExprOk(Expr Field0, ParseState Field1) : ParseExprResult;
-
-public abstract record ADoStmt;
-
-public sealed record ADoBindStmt(Name Field0, AExpr Field1) : ADoStmt;
-public sealed record ADoExprStmt(AExpr Field0) : ADoStmt;
-
-public sealed record RecordField(Name name, CodexType type_val);
-
-public abstract record LexResult;
-
-public sealed record LexToken(Token Field0, LexState Field1) : LexResult;
-public sealed record LexEnd : LexResult;
-
-public sealed record StrEqLoopResult(CodegenState cg, long loop_done_pos, long byte_ne_pos);
-
-public sealed record MatchBranchState(CodegenState cg_state, List<long> end_patches);
-
-public sealed record ImportDecl(Token module_name, List<Token> selected_names);
-
-public sealed record CheckResult(CodexType inferred_type, UnificationState state);
-
-public abstract record ParseTypeResult;
-
-public sealed record TypeOk(TypeExpr Field0, ParseState Field1) : ParseTypeResult;
-
-public sealed record TypeDef(Token name, List<Token> type_params, TypeBody body);
-
-public sealed record HandleClause(Token op_name, Token resume_name, Expr body);
+public sealed record Document(List<Def> defs, List<TypeDef> type_defs, List<EffectDef> effect_defs, List<ImportDecl> imports);
 
 public abstract record DiagnosticSeverity;
 
@@ -389,63 +308,44 @@ public sealed record Error : DiagnosticSeverity;
 public sealed record Warning : DiagnosticSeverity;
 public sealed record Info : DiagnosticSeverity;
 
-public sealed record ApplyChain(IRExpr root, List<IRExpr> args);
+public sealed record IRBranch(IRPat pattern, IRExpr body);
 
-public sealed record SourceSpan(SourcePosition start, SourcePosition end, string file);
-
-public sealed record Name(string value);
-
-public sealed record UnificationState(List<SubstEntry> substitutions, long next_id, List<Diagnostic> errors);
-
-public sealed record TypeEnv(List<TypeBinding> bindings);
-
-public sealed record HelpResult3(CodegenState cg, long p1, long p2, long p3);
-
-public sealed record TcoState(bool active, bool in_tail_pos, long loop_top, List<long> param_locals, List<long> temp_locals, string current_func, long saved_next_local, long saved_next_temp);
-
-public sealed record SourcePosition(long line, long column, long offset);
-
-public sealed record Def(Token name, List<Token> @params, List<TypeAnn> ann, Expr body);
-
-public sealed record AEffectDef(Name name, List<AEffectOpDef> ops);
-
-public sealed record ARecordFieldDef(Name name, ATypeExpr type_expr);
+public sealed record ModuleAssignment(string def_name, string module_slug);
 
 public sealed record ItoaZeroResult(CodegenState cg, long skip_digits_pos);
 
-public sealed record IRFieldVal(string name, IRExpr value);
+public sealed record TypeDef(Token name, List<Token> type_params, TypeBody body);
 
-public abstract record ParseDefResult;
+public sealed record CtorCollectResult(List<string> type_names, List<string> ctor_names);
 
-public sealed record DefOk(Def Field0, ParseState Field1) : ParseDefResult;
-public sealed record DefNone(ParseState Field0) : ParseDefResult;
+public abstract record ParseTypeResult;
 
-public sealed record EffectOpDef(Token name, TypeExpr type_expr);
+public sealed record TypeOk(TypeExpr Field0, ParseState Field1) : ParseTypeResult;
+
+public sealed record ParseState(List<Token> tokens, long pos);
 
 public sealed record AParam(Name name);
 
-public abstract record LiteralKind;
+public abstract record Expr;
 
-public sealed record IntLit : LiteralKind;
-public sealed record NumLit : LiteralKind;
-public sealed record TextLit : LiteralKind;
-public sealed record CharLit : LiteralKind;
-public sealed record BoolLit : LiteralKind;
+public sealed record LitExpr(Token Field0) : Expr;
+public sealed record NameExpr(Token Field0) : Expr;
+public sealed record AppExpr(Expr Field0, Expr Field1) : Expr;
+public sealed record BinExpr(Expr Field0, Token Field1, Expr Field2) : Expr;
+public sealed record UnaryExpr(Token Field0, Expr Field1) : Expr;
+public sealed record IfExpr(Expr Field0, Expr Field1, Expr Field2) : Expr;
+public sealed record LetExpr(List<LetBind> Field0, Expr Field1) : Expr;
+public sealed record MatchExpr(Expr Field0, List<MatchArm> Field1) : Expr;
+public sealed record ListExpr(List<Expr> Field0) : Expr;
+public sealed record RecordExpr(Token Field0, List<RecordFieldExpr> Field1) : Expr;
+public sealed record FieldExpr(Expr Field0, Token Field1) : Expr;
+public sealed record ParenExpr(Expr Field0) : Expr;
+public sealed record DoExpr(List<DoStmt> Field0) : Expr;
+public sealed record HandleExpr(Token Field0, Expr Field1, List<HandleClause> Field2) : Expr;
+public sealed record LambdaExpr(List<Token> Field0, Expr Field1) : Expr;
+public sealed record ErrExpr(Token Field0) : Expr;
 
-public sealed record CollectResult(List<string> names, List<Diagnostic> errors);
-
-public sealed record MatchArm(Pat pattern, Expr body);
-
-public abstract record ParsePatResult;
-
-public sealed record PatOk(Pat Field0, ParseState Field1) : ParsePatResult;
-
-public abstract record ATypeExpr;
-
-public sealed record ANamedType(Name Field0) : ATypeExpr;
-public sealed record AFunType(ATypeExpr Field0, ATypeExpr Field1) : ATypeExpr;
-public sealed record AAppType(ATypeExpr Field0, List<ATypeExpr> Field1) : ATypeExpr;
-public sealed record AEffectType(List<Name> Field0, ATypeExpr Field1) : ATypeExpr;
+public sealed record AModule(Name name, List<ADef> defs, List<ATypeDef> type_defs, List<AEffectDef> effect_defs, List<AImportDecl> imports);
 
 public abstract record TypeExpr;
 
@@ -457,22 +357,81 @@ public sealed record ListType(TypeExpr Field0) : TypeExpr;
 public sealed record LinearTypeExpr(TypeExpr Field0) : TypeExpr;
 public sealed record EffectTypeExpr(List<Token> Field0, TypeExpr Field1) : TypeExpr;
 
-public sealed record EmitResult(CodegenState state, long reg);
+public sealed record CollectResult(List<string> names, List<Diagnostic> errors);
 
-public sealed record ALetBind(Name name, AExpr value);
+public sealed record SumCtor(Name name, List<CodexType> fields);
+
+public sealed record ImportDecl(Token module_name, List<Token> selected_names);
+
+public sealed record WalkResult(CodexType walked, List<ParamEntry> entries, UnificationState state);
+
+public sealed record RecordFieldExpr(Token name, Expr value);
+
+public sealed record FuncOffset(string name, long offset);
+
+public abstract record CompileResult;
+
+public sealed record CompileOk(string Field0, ModuleResult Field1) : CompileResult;
+public sealed record CompileError(List<Diagnostic> Field0) : CompileResult;
+
+public sealed record DefSetup(CodexType expected_type, CodexType remaining_type, UnificationState state, TypeEnv env);
+
+public sealed record FieldLocal(string name, long slot);
+
+public sealed record ResolveResult(List<Diagnostic> errors, List<string> top_level_names, List<string> type_names, List<string> ctor_names);
+
+public sealed record CallPatch(long patch_offset, string target);
+
+public sealed record EffectOpDef(Token name, TypeExpr type_expr);
+
+public sealed record ParamResult(CodexType parameterized, List<ParamEntry> entries, UnificationState state);
+
+public sealed record AHandleClause(Name op_name, Name resume_name, AExpr body);
+
+public sealed record CheckResult(CodexType inferred_type, UnificationState state);
+
+public sealed record MatchArm(Pat pattern, Expr body);
 
 public abstract record DoStmt;
 
 public sealed record DoBindStmt(Token Field0, Expr Field1) : DoStmt;
 public sealed record DoExprStmt(Expr Field0) : DoStmt;
 
-public sealed record TypeBinding(string name, CodexType bound_type);
+public sealed record SelectedNamesResult(List<Token> names, ParseState state);
 
-public sealed record LocalBinding(string name, long slot);
+public abstract record APat;
 
-public sealed record HelpResult4(CodegenState cg, long p1, long p2, long p3, long p4);
+public sealed record AVarPat(Name Field0) : APat;
+public sealed record ALitPat(string Field0, LiteralKind Field1) : APat;
+public sealed record ACtorPat(Name Field0, List<APat> Field1) : APat;
+public sealed record AWildPat : APat;
 
-public sealed record LexState(string source, long offset, long line, long column);
+public abstract record ATypeExpr;
+
+public sealed record ANamedType(Name Field0) : ATypeExpr;
+public sealed record AFunType(ATypeExpr Field0, ATypeExpr Field1) : ATypeExpr;
+public sealed record AAppType(ATypeExpr Field0, List<ATypeExpr> Field1) : ATypeExpr;
+public sealed record AEffectType(List<Name> Field0, ATypeExpr Field1) : ATypeExpr;
+
+public sealed record RecordField(Name name, CodexType type_val);
+
+public sealed record AFieldExpr(Name name, AExpr value);
+
+public sealed record Name(string value);
+
+public sealed record CodegenState(List<long> text, List<long> rodata, List<FuncOffset> func_offsets, List<CallPatch> call_patches, List<FuncAddrFixup> func_addr_fixups, List<LocalBinding> locals, long next_temp, long next_local, long spill_count, long load_local_toggle, TcoState tco);
+
+public sealed record LambdaParamsResult(List<Token> toks, ParseState state);
+
+public sealed record ScanResult(List<TypeDef> type_defs, List<EffectDef> effect_defs, List<DefHeader> def_headers, List<ImportDecl> imports);
+
+public sealed record IRHandleClause(string op_name, string resume_name, IRExpr body);
+
+public sealed record HelpResult1(CodegenState cg, long p1);
+
+public sealed record ArityEntry(string name, long arity);
+
+public sealed record VariantCtorDef(Token name, List<TypeExpr> fields);
 
 public abstract record AExpr;
 
@@ -492,28 +451,69 @@ public sealed record ADoExpr(List<ADoStmt> Field0) : AExpr;
 public sealed record AHandleExpr(Name Field0, AExpr Field1, List<AHandleClause> Field2) : AExpr;
 public sealed record AErrorExpr(string Field0) : AExpr;
 
-public sealed record ParamResult(CodexType parameterized, List<ParamEntry> entries, UnificationState state);
+public sealed record LetBind(Token name, Expr value);
 
-public sealed record PatBindResult(UnificationState state, TypeEnv env);
+public sealed record ApplyChain(IRExpr root, List<IRExpr> args);
 
-public sealed record ParamEntry(string param_name, long var_id);
+public sealed record TcoState(bool active, bool in_tail_pos, long loop_top, List<long> param_locals, List<long> temp_locals, string current_func, long saved_next_local, long saved_next_temp);
 
-public sealed record StrConcatFastResult(CodegenState cg, long fast_done_pos);
-
-public sealed record IRHandleClause(string op_name, string resume_name, IRExpr body);
+public sealed record EmitResult(CodegenState state, long reg);
 
 public abstract record ParseTypeDefResult;
 
 public sealed record TypeDefOk(TypeDef Field0, ParseState Field1) : ParseTypeDefResult;
 public sealed record TypeDefNone(ParseState Field0) : ParseTypeDefResult;
 
-public sealed record WalkListResult(List<CodexType> walked_list, List<ParamEntry> entries, UnificationState state);
+public sealed record SourceSpan(SourcePosition start, SourcePosition end, string file);
 
-public sealed record FieldLocal(string name, long slot);
+public sealed record PatBindResult(UnificationState state, TypeEnv env);
 
-public sealed record ParseState(List<Token> tokens, long pos);
+public abstract record ScanDefResult;
 
-public sealed record CodegenState(List<long> text, List<long> rodata, List<FuncOffset> func_offsets, List<CallPatch> call_patches, List<FuncAddrFixup> func_addr_fixups, List<LocalBinding> locals, long next_temp, long next_local, long spill_count, long load_local_toggle, TcoState tco);
+public sealed record DefHeaderOk(DefHeader Field0, ParseState Field1) : ScanDefResult;
+public sealed record DefHeaderNone(ParseState Field0) : ScanDefResult;
+
+public sealed record AEffectOpDef(Name name, ATypeExpr type_expr);
+
+public sealed record EmitPatternResult(CodegenState state, long next_branch_patch);
+
+public sealed record LowerCtx(List<TypeBinding> types, UnificationState ust);
+
+public sealed record AEffectDef(Name name, List<AEffectOpDef> ops);
+
+public sealed record StrEqHeadResult(CodegenState cg, long len_ne_pos);
+
+public sealed record TcoAllocResult(CodegenState alloc_state, List<long> alloc_locals);
+
+public abstract record IRPat;
+
+public sealed record IrVarPat(string Field0, CodexType Field1) : IRPat;
+public sealed record IrLitPat(string Field0, CodexType Field1) : IRPat;
+public sealed record IrCtorPat(string Field0, List<IRPat> Field1, CodexType Field2) : IRPat;
+public sealed record IrWildPat : IRPat;
+
+public abstract record BinaryOp;
+
+public sealed record OpAdd : BinaryOp;
+public sealed record OpSub : BinaryOp;
+public sealed record OpMul : BinaryOp;
+public sealed record OpDiv : BinaryOp;
+public sealed record OpPow : BinaryOp;
+public sealed record OpEq : BinaryOp;
+public sealed record OpNotEq : BinaryOp;
+public sealed record OpLt : BinaryOp;
+public sealed record OpGt : BinaryOp;
+public sealed record OpLtEq : BinaryOp;
+public sealed record OpGtEq : BinaryOp;
+public sealed record OpDefEq : BinaryOp;
+public sealed record OpAppend : BinaryOp;
+public sealed record OpCons : BinaryOp;
+public sealed record OpAnd : BinaryOp;
+public sealed record OpOr : BinaryOp;
+
+public sealed record SavedArgs(CodegenState state, List<long> locals);
+
+public sealed record IRParam(string name, CodexType type_val);
 
 static class _Cce {
     static readonly int[] _toUni = {
@@ -4379,7 +4379,7 @@ public static class Codex_Codex_Codex
 
     public static long bare_metal_stack_top()
     {
-        return 67108864L;
+        return 536870912L;
     }
 
     public static CodegenState empty_codegen_state()
@@ -5872,7 +5872,7 @@ public static class Codex_Codex_Codex
 
     public static List<long> tramp_page_tables()
     {
-        return new List<long>() { 199L, 5L, 0L, 16L, 0L, 0L, 3L, 32L, 0L, 0L, 199L, 5L, 0L, 32L, 0L, 0L, 3L, 48L, 0L, 0L, 191L, 0L, 48L, 0L, 0L, 185L, 32L, 0L, 0L, 0L, 184L, 131L, 0L, 0L, 0L, 137L, 7L, 199L, 71L, 4L, 0L, 0L, 0L, 0L, 131L, 199L, 8L, 5L, 0L, 0L, 32L, 0L, 73L, 117L, 236L };
+        return new List<long>() { 199L, 5L, 0L, 16L, 0L, 0L, 3L, 32L, 0L, 0L, 199L, 5L, 0L, 32L, 0L, 0L, 3L, 48L, 0L, 0L, 191L, 0L, 48L, 0L, 0L, 185L, 0L, 1L, 0L, 0L, 184L, 131L, 0L, 0L, 0L, 137L, 7L, 199L, 71L, 4L, 0L, 0L, 0L, 0L, 131L, 199L, 8L, 5L, 0L, 0L, 32L, 0L, 73L, 117L, 236L };
     }
 
     public static List<long> tramp_enable_long_mode()

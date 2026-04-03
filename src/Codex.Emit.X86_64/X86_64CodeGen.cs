@@ -5447,12 +5447,12 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     const long SerialRingBufAddr = 0x3C0000;
     const long SerialRingBufSize = 0x40000; // 256KB — must be power of 2
 
-    // Bare metal memory layout — 64 x 2MB huge pages = 128 MB
-    const int BareMetalPages = 64;
+    // Bare metal memory layout — 256 x 2MB huge pages = 512 MB
+    const int BareMetalPages = 256;
     const long BareMetalHeapBase = 0x400000;                // 4 MB
-    const long BareMetalResultBase = 0x7D00000;             // 125 MB (1 MB result)
-    const long BareMetalStackBottom = 0x7E00000;            // 126 MB (2 MB stack)
-    const long BareMetalStackTop = 0x8000000;               // 128 MB
+    const long BareMetalResultBase = 0x1FD00000;            // 509 MB (1 MB result)
+    const long BareMetalStackBottom = 0x1FE00000;           // 510 MB (2 MB stack)
+    const long BareMetalStackTop = 0x20000000;              // 512 MB
 
     void EmitInterruptSetup()
     {
