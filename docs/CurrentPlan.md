@@ -50,9 +50,14 @@ must pass pingpong before moving on.
 The bare-metal self-hosted compiler does not faithfully reproduce its own
 source. Two categories of divergence remain:
 
-1. **Definition dropping** (~309 defs missing from stage1). The self-hosted
-   Codex emitter's `skip-def` filters out definitions that the reference
-   compiler includes. Root cause under investigation.
+1. **Definition dropping / duplicate name collision** (~309 defs missing from
+   stage1). The self-hosted compiler has a flat namespace — when multiple
+   modules define the same name (e.g. `collect-ctor-names` in CodexEmitter
+   and NameResolver), only one survives and it may have the wrong type
+   signature. The C# reference compiler uses `ModuleScoper` to prefix names;
+   the self-hosted compiler does not. This is the root cause of most
+   def-dropping — the `filter-defs` deduplication picks one and discards
+   the rest.
 
 2. **Long ++ chain truncation**. The body of `cdx-header-bytes` (a 20-term
    `++` chain) emits only the first term (`cdx-magic`); all continuations
