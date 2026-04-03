@@ -6663,12 +6663,15 @@ build-mod-renames : List Text -> List ModuleAssignment -> Text -> Integer -> Int
 build-mod-renames (colliding) (assignments) (cur-mod) (i) (len) (acc) =
  if i == len then acc
  else let a = list-at assignments i
- in if is-colliding colliding (a.def-name) then let mangled = mangle-name (a.module-slug) (a.def-name)
-    in if has-rename acc (a.def-name) then build-mod-renames colliding assignments cur-mod (i + 1) len acc
-       else build-mod-renames colliding assignments cur-mod (i + 1) len (list-snoc acc (RenameEntry {
-        original = (a.def-name),
-        mangled = mangled
-       }))
+ in if is-colliding colliding (a.def-name)
+    then if (a.module-slug) == cur-mod
+         then if has-rename acc (a.def-name)
+              then build-mod-renames colliding assignments cur-mod (i + 1) len acc
+              else build-mod-renames colliding assignments cur-mod (i + 1) len (list-snoc acc (RenameEntry {
+               original = (a.def-name),
+               mangled = mangle-name cur-mod (a.def-name)
+              }))
+         else build-mod-renames colliding assignments cur-mod (i + 1) len acc
     else build-mod-renames colliding assignments cur-mod (i + 1) len acc
 
 has-rename : List RenameEntry -> Text -> Boolean
@@ -10351,7 +10354,15 @@ emit-defs-scoped (tokens) (headers) (all-types) (ust) (ctor-names) (colliding) (
  if i == len then print-line ""
  else let hdr = list-at headers i
  in let rn = build-module-rename-map colliding assignments (hdr.module-slug)
- in emit-one-scoped-def tokens hdr all-types ust ctor-names colliding assignments rn headers i len
+ in emit-defs-same-module tokens headers all-types ust ctor-names colliding assignments rn (hdr.module-slug) i len
+
+emit-defs-same-module : List Token -> List DefHeader -> List TypeBinding -> UnificationState -> List Text -> List Text -> List ModuleAssignment -> List RenameEntry -> Text -> Integer -> Integer -> [Console] Nothing
+emit-defs-same-module (tokens) (headers) (all-types) (ust) (ctor-names) (colliding) (assignments) (rn) (cur-slug) (i) (len) =
+ if i == len then print-line ""
+ else let hdr = list-at headers i
+ in if (hdr.module-slug) /= cur-slug
+    then emit-defs-scoped tokens headers all-types ust ctor-names colliding assignments i len
+    else emit-one-scoped-def tokens hdr all-types ust ctor-names colliding assignments rn headers i len
 
 emit-one-scoped-def : List Token -> DefHeader -> List TypeBinding -> UnificationState -> List Text -> List Text -> List ModuleAssignment -> List RenameEntry -> List DefHeader -> Integer -> Integer -> [Console] Nothing
 emit-one-scoped-def (tokens) (hdr) (all-types) (ust) (ctor-names) (colliding) (assignments) (rn) (headers) (i) (len) =
@@ -10378,10 +10389,10 @@ emit-one-scoped-def (tokens) (hdr) (all-types) (ust) (ctor-names) (colliding) (a
  }
  in if is-error-body (scoped-def.body) then print-line ("COMPILE-ERROR: def '" ++ scoped-def.name ++ "' has error body: " ++ error-message (scoped-def.body))
     else let text = emit-def scoped-def ctor-names
-    in if text == "" then emit-defs-scoped tokens headers all-types ust ctor-names colliding assignments (i + 1) len
+    in if text == "" then emit-defs-same-module tokens headers all-types ust ctor-names colliding assignments rn (hdr.module-slug) (i + 1) len
        else do
     print-line text
-    emit-defs-scoped tokens headers all-types ust ctor-names colliding assignments (i + 1) len
+    emit-defs-same-module tokens headers all-types ust ctor-names colliding assignments rn (hdr.module-slug) (i + 1) len
 
 unwrap-body : ParseExprResult -> Expr
 unwrap-body (r) =

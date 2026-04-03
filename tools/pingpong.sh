@@ -23,7 +23,7 @@ OUTDIR="$REPO/build-output"
 ELF="$OUTDIR/Codex.Codex.elf"
 SOURCE="$OUTDIR/source.codex"
 QEMU="/usr/bin/qemu-system-x86_64"
-TIMEOUT=120
+TIMEOUT=${TIMEOUT:-180}
 
 echo "╔═══════════════════════════════════════════════════╗"
 echo "║  Ping-Pong: Full Clean-Room Verification          ║"

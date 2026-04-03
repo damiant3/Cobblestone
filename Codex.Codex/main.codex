@@ -178,7 +178,15 @@ Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
    if i == len then print-line ""
    else let hdr = list-at headers i
    in let rn = build-module-rename-map colliding assignments (hdr.module-slug)
-   in emit-one-scoped-def tokens hdr all-types ust ctor-names colliding assignments rn headers i len
+   in emit-defs-same-module tokens headers all-types ust ctor-names colliding assignments rn (hdr.module-slug) i len
+
+  emit-defs-same-module : List Token -> List DefHeader -> List TypeBinding -> UnificationState -> List Text -> List Text -> List ModuleAssignment -> List RenameEntry -> Text -> Integer -> Integer -> [Console] Nothing
+  emit-defs-same-module (tokens) (headers) (all-types) (ust) (ctor-names) (colliding) (assignments) (rn) (cur-slug) (i) (len) =
+   if i == len then print-line ""
+   else let hdr = list-at headers i
+   in if (hdr.module-slug) /= cur-slug
+      then emit-defs-scoped tokens headers all-types ust ctor-names colliding assignments i len
+      else emit-one-scoped-def tokens hdr all-types ust ctor-names colliding assignments rn headers i len
 
   emit-one-scoped-def : List Token -> DefHeader -> List TypeBinding -> UnificationState -> List Text -> List Text -> List ModuleAssignment -> List RenameEntry -> List DefHeader -> Integer -> Integer -> [Console] Nothing
   emit-one-scoped-def (tokens) (hdr) (all-types) (ust) (ctor-names) (colliding) (assignments) (rn) (headers) (i) (len) =
@@ -205,10 +213,10 @@ Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
    }
    in if is-error-body (scoped-def.body) then print-line ("COMPILE-ERROR: def '" ++ scoped-def.name ++ "' has error body: " ++ error-message (scoped-def.body))
       else let text = emit-def scoped-def ctor-names
-      in if text == "" then emit-defs-scoped tokens headers all-types ust ctor-names colliding assignments (i + 1) len
+      in if text == "" then emit-defs-same-module tokens headers all-types ust ctor-names colliding assignments rn (hdr.module-slug) (i + 1) len
          else do
       print-line text
-      emit-defs-scoped tokens headers all-types ust ctor-names colliding assignments (i + 1) len
+      emit-defs-same-module tokens headers all-types ust ctor-names colliding assignments rn (hdr.module-slug) (i + 1) len
 
   unwrap-body : ParseExprResult -> Expr
   unwrap-body (r) =
