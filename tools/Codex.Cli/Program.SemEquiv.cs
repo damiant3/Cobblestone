@@ -428,6 +428,9 @@ public static partial class Program
 
         text = Regex.Replace(text, @"\s+", " ").Trim();
 
+        // Normalize brace escapes: \{ and { are equivalent (parser treats \{ as passthrough)
+        text = text.Replace("\\{", "{").Replace("\\}", "}");
+
         // Normalize redundant parens: strip parens around field access `(expr.field)` → `expr.field`
         text = Regex.Replace(text, @"\(([a-zA-Z][a-zA-Z0-9-]*\.[a-zA-Z][a-zA-Z0-9.-]*)\)", "$1");
 
@@ -622,10 +625,8 @@ public static partial class Program
         {
             Console.WriteLine();
             Console.WriteLine($"Body Mismatches ({bodyMismatchList.Count}):");
-            foreach (var (s0, s1, diff) in bodyMismatchList.Take(20))
+            foreach (var (s0, s1, diff) in bodyMismatchList)
                 Console.WriteLine($"  {s0.Module}: {s0.Name} — {diff}");
-            if (bodyMismatchList.Count > 20)
-                Console.WriteLine($"  ... and {bodyMismatchList.Count - 20} more");
         }
     }
 }

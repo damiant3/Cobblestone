@@ -2184,18 +2184,43 @@ codex-emitter_emit-expr (e) (ctors) (indent) =
 
 codex-emitter_emit-binary : CodegenState -> IRBinaryOp -> IRExpr -> IRExpr -> EmitResult
 codex-emitter_emit-binary (op) (l) (r) (ctors) (indent) =
- wrap-binary-child op l ctors indent ++ " " ++ bin-op-text op ++ " " ++ wrap-binary-child op r ctors indent
+ wrap-binary-left op l ctors indent ++ " " ++ bin-op-text op ++ " " ++ wrap-binary-right op r ctors indent
 
-wrap-binary-child : IRBinaryOp -> IRExpr -> List Text -> Integer -> Text
-wrap-binary-child (parent-op) (e) (ctors) (indent) =
+wrap-binary-left : IRBinaryOp -> IRExpr -> List Text -> Integer -> Text
+wrap-binary-left (parent-op) (e) (ctors) (indent) =
  when e
-  if IrBinary (child-op) (l2) (r2) (ty) -> if needs-binary-wrap parent-op child-op then "(" ++ csharp-emitter-expressions_emit-expr e ctors indent ++ ")"
+  if IrBinary (child-op) (l2) (r2) (ty) -> if bin-op-prec child-op < bin-op-prec parent-op then "(" ++ csharp-emitter-expressions_emit-expr e ctors indent ++ ")"
   else csharp-emitter-expressions_emit-expr e ctors indent
   if _ -> csharp-emitter-expressions_emit-expr e ctors indent
 
-needs-binary-wrap : IRBinaryOp -> IRBinaryOp -> Boolean
-needs-binary-wrap (parent) (child) =
- bin-op-prec child < bin-op-prec parent
+wrap-binary-right : IRBinaryOp -> IRExpr -> List Text -> Integer -> Text
+wrap-binary-right (parent-op) (e) (ctors) (indent) =
+ when e
+  if IrBinary (child-op) (l2) (r2) (ty) -> if needs-right-wrap parent-op child-op then "(" ++ csharp-emitter-expressions_emit-expr e ctors indent ++ ")"
+  else csharp-emitter-expressions_emit-expr e ctors indent
+  if _ -> csharp-emitter-expressions_emit-expr e ctors indent
+
+needs-right-wrap : IRBinaryOp -> IRBinaryOp -> Boolean
+needs-right-wrap (parent) (child) =
+ if bin-op-prec child < bin-op-prec parent then True
+ else if bin-op-prec child > bin-op-prec parent then False
+ else if bin-op-text parent == bin-op-text child then if is-associative-op parent then False
+ else True
+ else True
+
+is-associative-op : IRBinaryOp -> Boolean
+is-associative-op (op) =
+ when op
+  if IrAddInt -> True
+  if IrAddNum -> True
+  if IrMulInt -> True
+  if IrMulNum -> True
+  if IrAppendText -> True
+  if IrAppendList -> True
+  if IrConsList -> True
+  if IrAnd -> True
+  if IrOr -> True
+  if _ -> False
 
 bin-op-prec : IRBinaryOp -> Integer
 bin-op-prec (op) =
@@ -2999,7 +3024,7 @@ store-local : CodegenState -> Integer -> Integer -> CodegenState
 store-local (st) (local) (value-reg) =
  if local < spill-base then if local == value-reg then st
  else st-append-text st (mov-rr local value-reg)
- else let offset = 0 - (local - spill-base + 1) * 8 + 32
+ else let offset = 0 - ((local - spill-base + 1) * 8 + 32)
  in st-append-text st (mov-store reg-rbp value-reg offset)
 
 load-local : a77
@@ -3010,7 +3035,7 @@ load-local (st) (local) =
  }
  else let scratch = if int-mod (st.load-local-toggle) 2 == 0 then reg-r8
   else reg-r9
- in let offset = 0 - (local - spill-base + 1) * 8 + 32
+ in let offset = 0 - ((local - spill-base + 1) * 8 + 32)
  in EmitResult {
   state = CodegenState {
    text = st.text ++ mov-load scratch reg-rbp offset,
@@ -3035,7 +3060,7 @@ scratch =
 
 offset : a27
 offset =
- 0 - (local - spill-base + 1) * 8 + 32
+ 0 - ((local - spill-base + 1) * 8 + 32)
 
 state : a29
 state =
@@ -3114,17 +3139,17 @@ patch-4-loop (bytes) (pos) (new-bytes) (i) (len) (acc) =
 
 patch-jcc-at : CodegenState -> Integer -> Integer -> CodegenState
 patch-jcc-at (st) (jcc-pos) (target-pos) =
- let rel32 = target-pos - jcc-pos + 6
+ let rel32 = target-pos - (jcc-pos + 6)
  in st-with-text st (patch-i32-at (st.text) (jcc-pos + 2) rel32)
 
 patch-jmp-at : CodegenState -> Integer -> Integer -> CodegenState
 patch-jmp-at (st) (jmp-pos) (target-pos) =
- let rel32 = target-pos - jmp-pos + 5
+ let rel32 = target-pos - (jmp-pos + 5)
  in st-with-text st (patch-i32-at (st.text) (jmp-pos + 1) rel32)
 
 patch-call-at : CodegenState -> Integer -> Integer -> CodegenState
 patch-call-at (st) (call-pos) (target-pos) =
- let rel32 = target-pos - call-pos + 5
+ let rel32 = target-pos - (call-pos + 5)
  in st-with-text st (patch-i32-at (st.text) (call-pos + 1) rel32)
 
 make-i32-patch : Integer -> Integer -> PatchEntry
@@ -3164,7 +3189,7 @@ collect-call-patches (patches) (offsets) (i) (acc) =
  if i == list-length patches then acc
  else let p = list-at patches i
  in let target-offset = lookup-func-offset offsets (p.target)
- in let rel32 = target-offset - p.patch-offset + 5
+ in let rel32 = target-offset - (p.patch-offset + 5)
  in collect-call-patches patches offsets (i + 1) (list-snoc acc (make-i32-patch (p.patch-offset + 1) rel32))
 
 patch-calls : CodegenState -> CodegenState
@@ -3809,7 +3834,7 @@ emit-substring-copy (st) (str-loc) (start-loc) (len-loc) (ptr-loc) =
  in let st8 = st-append-text st7 (add-rr reg-rdx reg-r11)
  in let st9 = st-append-text st8 (mov-store-byte reg-rdx reg-rsi 8)
  in let st10 = st-append-text st9 (add-ri reg-r11 1)
- in let st11 = st-append-text st10 (jmp (sub-loop - list-length (st10.text) + 5))
+ in let st11 = st-append-text st10 (jmp (sub-loop - (list-length (st10.text) + 5)))
  in patch-jcc-at st11 sub-exit-pos (list-length (st11.text))
 
 emit-substring-builtin : CodegenState -> List IRExpr -> EmitResult
@@ -4008,7 +4033,7 @@ emit-tail-call (st) (func-expr) (arg-expr) =
  let args = flatten-tail-args func-expr [arg-expr]
  in let st1 = eval-tail-args st args (st.tco.temp-locals) 0
  in let st2 = copy-temps-to-params st1 (st.tco.temp-locals) (st.tco.param-locals) 0
- in let rel32 = st.tco.loop-top - list-length (st2.text) + 5
+ in let rel32 = st.tco.loop-top - (list-length (st2.text) + 5)
  in let st3 = st-append-text st2 (jmp rel32)
  in let dummy = alloc-temp st3
  in EmitResult {
@@ -4541,7 +4566,7 @@ emit-serial-wait-and-send (st) (byte-val) =
  in let st3 = st-append-text st2 [168, 32]
  in let jne-pos = list-length (st3.text)
  in let st4 = st-append-text st3 (jcc cc-ne 0)
- in let st5 = st-append-text st4 (jmp (wait-top - list-length (st4.text) + 5))
+ in let st5 = st-append-text st4 (jmp (wait-top - (list-length (st4.text) + 5)))
  in let st6 = patch-jcc-at st5 jne-pos (list-length (st5.text))
  in let st7 = st-append-text st6 (li reg-rdx 1016)
  in let st8 = st-append-text st7 (li reg-rax byte-val)
@@ -4555,7 +4580,7 @@ emit-serial-send-rdi (st) =
  in let st3 = st-append-text st2 [168, 32]
  in let jne-pos = list-length (st3.text)
  in let st4 = st-append-text st3 (jcc cc-ne 0)
- in let st5 = st-append-text st4 (jmp (wait-top - list-length (st4.text) + 5))
+ in let st5 = st-append-text st4 (jmp (wait-top - (list-length (st4.text) + 5)))
  in let st6 = patch-jcc-at st5 jne-pos (list-length (st5.text))
  in let st7 = st-append-text st6 (li reg-rdx 1016)
  in let st8 = st-append-text st7 (mov-rr reg-rax reg-rdi)
@@ -4595,7 +4620,7 @@ emit-itoa-sign-and-digits (st) =
  in let st13 = st-append-text st12 (push-r reg-rdx)
  in let st14 = st-append-text st13 (add-ri reg-rcx 1)
  in let st15 = st-append-text st14 (test-rr reg-rbx reg-rbx)
- in st-append-text st15 (jcc cc-ne (loop-top - list-length (st15.text) + 6))
+ in st-append-text st15 (jcc cc-ne (loop-top - (list-length (st15.text) + 6)))
 
 emit-itoa-print-loop : CodegenState -> CodegenState
 emit-itoa-print-loop (st) =
@@ -4608,7 +4633,7 @@ emit-itoa-print-loop (st) =
  in let st5 = emit-serial-send-rdi st4
  in let st6 = st-append-text st5 (pop-r reg-rcx)
  in let st7 = st-append-text st6 (sub-ri reg-rcx 1)
- in let st8 = st-append-text st7 (jmp (loop-top - list-length (st7.text) + 5))
+ in let st8 = st-append-text st7 (jmp (loop-top - (list-length (st7.text) + 5)))
  in patch-jcc-at st8 je-pos (list-length (st8.text))
 
 emit-inline-itoa-and-print : CodegenState -> CodegenState
@@ -5145,7 +5170,7 @@ emit-str-eq-byte-loop (st) =
  in let byte-ne-pos = list-length (st9.text)
  in let st10 = st-append-text st9 (jcc cc-ne 0)
  in let st11 = st-append-text st10 (add-ri reg-r11 1)
- in let st12 = st-append-text st11 (jmp (loop-pos - list-length (st11.text) + 5))
+ in let st12 = st-append-text st11 (jmp (loop-pos - (list-length (st11.text) + 5)))
  in StrEqLoopResult {
   cg = st12,
   loop-done-pos = loop-done-pos,
@@ -5212,7 +5237,7 @@ emit-itoa-digit-loop (st) =
  in let st8 = st-append-text st7 (add-rr reg-rsi reg-rcx)
  in let st9 = st-append-text st8 (mov-store-byte reg-rsi reg-rdx 0)
  in let st10 = st-append-text st9 (add-ri reg-rcx 1)
- in let st11 = st-append-text st10 (jmp (digit-loop - list-length (st10.text) + 5))
+ in let st11 = st-append-text st10 (jmp (digit-loop - (list-length (st10.text) + 5)))
  in patch-jcc-at st11 digit-done-pos (list-length (st11.text))
 
 emit-itoa-heap-alloc : CodegenState -> CodegenState
@@ -5248,7 +5273,7 @@ emit-itoa-copy-and-epilogue (st) =
  in let st7 = st-append-text st6 (add-rr reg-rdx reg-r11)
  in let st8 = st-append-text st7 (mov-store-byte reg-rdx reg-rsi 8)
  in let st9 = st-append-text st8 (add-ri reg-r11 1)
- in let st10 = st-append-text st9 (jmp (copy-loop - list-length (st9.text) + 5))
+ in let st10 = st-append-text st9 (jmp (copy-loop - (list-length (st9.text) + 5)))
  in let st11 = patch-jcc-at st10 copy-done-pos (list-length (st10.text))
  in let st12 = st-append-text st11 (add-ri reg-rsp 32)
  in let st13 = st-append-text st12 (pop-r reg-r12)
@@ -5305,7 +5330,7 @@ emit-str-concat-fast-copy (st) =
  in let st11 = st-append-text st10 (add-rr reg-rdi reg-r11)
  in let st12 = st-append-text st11 (mov-store-byte reg-rdi reg-rsi 8)
  in let st13 = st-append-text st12 (add-ri reg-r11 1)
- in let st14 = st-append-text st13 (jmp (fast-loop - list-length (st13.text) + 5))
+ in let st14 = st-append-text st13 (jmp (fast-loop - (list-length (st13.text) + 5)))
  in patch-jcc-at st14 fast-exit-pos (list-length (st14.text))
 
 emit-str-concat-fast-bump : CodegenState -> StrConcatFastResult
@@ -5350,7 +5375,7 @@ emit-str-concat-slow-copy1 (st) =
  in let st8 = st-append-text st7 (add-rr reg-rsi reg-r11)
  in let st9 = st-append-text st8 (mov-store-byte reg-rsi reg-rdx 8)
  in let st10 = st-append-text st9 (add-ri reg-r11 1)
- in let st11 = st-append-text st10 (jmp (loop1 - list-length (st10.text) + 5))
+ in let st11 = st-append-text st10 (jmp (loop1 - (list-length (st10.text) + 5)))
  in patch-jcc-at st11 exit1-pos (list-length (st11.text))
 
 emit-str-concat-slow-copy2 : CodegenState -> Integer -> CodegenState
@@ -5370,7 +5395,7 @@ emit-str-concat-slow-copy2 (st) (fast-done-pos) =
  in let st10 = st-append-text st9 (add-rr reg-rdi reg-r11)
  in let st11 = st-append-text st10 (mov-store-byte reg-rdi reg-rsi 8)
  in let st12 = st-append-text st11 (add-ri reg-r11 1)
- in let st13 = st-append-text st12 (jmp (loop2 - list-length (st12.text) + 5))
+ in let st13 = st-append-text st12 (jmp (loop2 - (list-length (st12.text) + 5)))
  in let st14 = patch-jcc-at st13 exit2-pos (list-length (st13.text))
  in patch-jmp-at st14 fast-done-pos (list-length (st14.text))
 
@@ -5469,7 +5494,7 @@ emit-text-to-int-parse (st) =
  in let st11 = st-append-text st10 (pop-r reg-rdx)
  in let st12 = st-append-text st11 (add-rr reg-rax reg-rdx)
  in let st13 = st-append-text st12 (add-ri reg-r11 1)
- in let st14 = st-append-text st13 (jmp (parse-loop - list-length (st13.text) + 5))
+ in let st14 = st-append-text st13 (jmp (parse-loop - (list-length (st13.text) + 5)))
  in patch-jcc-at st14 parse-done-pos (list-length (st14.text))
 
 emit-text-to-int : CodegenState -> CodegenState
@@ -5514,7 +5539,7 @@ emit-text-starts-with-loop (st) =
  in let mismatch-pos = list-length (st9.text)
  in let st10 = st-append-text st9 (jcc cc-ne 0)
  in let st11 = st-append-text st10 (add-ri reg-r11 1)
- in let st12 = st-append-text st11 (jmp (loop-top - list-length (st11.text) + 5))
+ in let st12 = st-append-text st11 (jmp (loop-top - (list-length (st11.text) + 5)))
  in let st13 = patch-jcc-at st12 matched-pos (list-length (st12.text))
  in let st14 = st-append-text st13 (li reg-rax 1)
  in let st15 = st-append-text st14 x86-ret
@@ -5570,7 +5595,7 @@ emit-text-contains-cmp (st) (not-found-pos) (search-loop) =
  in let mismatch-pos = list-length (st9.text)
  in let st10 = st-append-text st9 (jcc cc-ne 0)
  in let st11 = st-append-text st10 (add-ri reg-rax 1)
- in let st12 = st-append-text st11 (jmp (cmp-loop - list-length (st11.text) + 5))
+ in let st12 = st-append-text st11 (jmp (cmp-loop - (list-length (st11.text) + 5)))
  in let st13 = patch-jcc-at st12 found-pos (list-length (st12.text))
  in let st14 = st-append-text st13 (pop-r reg-r11)
  in let st15 = st-append-text st14 (li reg-rax 1)
@@ -5578,7 +5603,7 @@ emit-text-contains-cmp (st) (not-found-pos) (search-loop) =
  in let st17 = patch-jcc-at st16 mismatch-pos (list-length (st16.text))
  in let st18 = st-append-text st17 (pop-r reg-r11)
  in let st19 = st-append-text st18 (add-ri reg-r11 1)
- in let st20 = st-append-text st19 (jmp (search-loop - list-length (st19.text) + 5))
+ in let st20 = st-append-text st19 (jmp (search-loop - (list-length (st19.text) + 5)))
  in let st21 = patch-jcc-at st20 not-found-pos (list-length (st20.text))
  in let st22 = st-append-text st21 (li reg-rax 0)
  in st-append-text st22 x86-ret
@@ -5638,7 +5663,7 @@ emit-text-compare-diff (st) (bytes-equal-pos) (cmp-loop) =
  in let st5 = st-append-text st4 (jmp 0)
  in let st6 = patch-jcc-at st5 bytes-equal-pos (list-length (st5.text))
  in let st7 = st-append-text st6 (add-ri reg-r11 1)
- in let st8 = st-append-text st7 (jmp (cmp-loop - list-length (st7.text) + 5))
+ in let st8 = st-append-text st7 (jmp (cmp-loop - (list-length (st7.text) + 5)))
  in HelpResult2 {
   cg = st8,
   p1 = ret-early1,
@@ -5700,7 +5725,7 @@ emit-list-contains (st) =
  in let found-pos = list-length (st9.text)
  in let st10 = st-append-text st9 (jcc cc-e 0)
  in let st11 = st-append-text st10 (add-ri reg-r11 1)
- in let st12 = st-append-text st11 (jmp (loop-top - list-length (st11.text) + 5))
+ in let st12 = st-append-text st11 (jmp (loop-top - (list-length (st11.text) + 5)))
  in let st13 = patch-jcc-at st12 found-pos (list-length (st12.text))
  in let st14 = st-append-text st13 (li reg-rax 1)
  in let st15 = st-append-text st14 x86-ret
@@ -5739,7 +5764,7 @@ emit-list-cons-copy (st) =
  in let st8 = st-append-text st7 (add-rr reg-rdi reg-r11)
  in let st9 = st-append-text st8 (mov-store reg-rdi reg-rdx 16)
  in let st10 = st-append-text st9 (add-ri reg-r11 8)
- in let st11 = st-append-text st10 (jmp (loop-top - list-length (st10.text) + 5))
+ in let st11 = st-append-text st10 (jmp (loop-top - (list-length (st10.text) + 5)))
  in let st12 = patch-jcc-at st11 exit-pos (list-length (st11.text))
  in st-append-text st12 x86-ret
 
@@ -5785,7 +5810,7 @@ emit-list-append-copy1 (st) =
  in let st9 = st-append-text st8 (add-rr reg-rsi reg-r11)
  in let st10 = st-append-text st9 (mov-store reg-rsi reg-rdx 8)
  in let st11 = st-append-text st10 (add-ri reg-r11 8)
- in let st12 = st-append-text st11 (jmp (loop1 - list-length (st11.text) + 5))
+ in let st12 = st-append-text st11 (jmp (loop1 - (list-length (st11.text) + 5)))
  in patch-jcc-at st12 exit1-pos (list-length (st12.text))
 
 emit-list-append-copy2 : CodegenState -> CodegenState
@@ -5807,7 +5832,7 @@ emit-list-append-copy2 (st) =
  in let st12 = st-append-text st11 (add-rr reg-rdi reg-r11)
  in let st13 = st-append-text st12 (mov-store reg-rdi reg-rsi 8)
  in let st14 = st-append-text st13 (add-ri reg-r11 8)
- in let st15 = st-append-text st14 (jmp (loop2 - list-length (st14.text) + 5))
+ in let st15 = st-append-text st14 (jmp (loop2 - (list-length (st14.text) + 5)))
  in patch-jcc-at st15 exit2-pos (list-length (st15.text))
 
 emit-list-append : CodegenState -> CodegenState
@@ -5921,7 +5946,7 @@ emit-list-snoc-path3-copy (st) =
  in let st13 = st-append-text st12 (add-rr reg-rdi reg-rdx)
  in let st14 = st-append-text st13 (mov-store reg-rdi reg-rsi 8)
  in let st15 = st-append-text st14 (add-ri reg-r11 1)
- in let st16 = st-append-text st15 (jmp (copy-loop - list-length (st15.text) + 5))
+ in let st16 = st-append-text st15 (jmp (copy-loop - (list-length (st15.text) + 5)))
  in patch-jcc-at st16 copy-done-pos (list-length (st16.text))
 
 emit-list-snoc-path3-finish : CodegenState -> CodegenState
@@ -6003,7 +6028,7 @@ emit-list-insert-at-shift (st) (in-place-pos) =
  in let st9 = st-append-text st8 (mov-load reg-rcx reg-rax 8)
  in let st10 = st-append-text st9 (mov-store reg-rax reg-rcx 16)
  in let st11 = st-append-text st10 (sub-ri reg-r11 1)
- in let st12 = st-append-text st11 (jmp (shift-loop - list-length (st11.text) + 5))
+ in let st12 = st-append-text st11 (jmp (shift-loop - (list-length (st11.text) + 5)))
  in patch-jcc-at st12 shift-done-pos (list-length (st12.text))
 
 emit-list-insert-at-store : CodegenState -> CodegenState
@@ -6058,7 +6083,7 @@ emit-list-insert-at-path3-pre (st) =
  in let st9 = st-append-text st8 (add-rr reg-rdi reg-rdx)
  in let st10 = st-append-text st9 (mov-store reg-rdi reg-rcx 8)
  in let st11 = st-append-text st10 (add-ri reg-r11 1)
- in let st12 = st-append-text st11 (jmp (pre-loop - list-length (st11.text) + 5))
+ in let st12 = st-append-text st11 (jmp (pre-loop - (list-length (st11.text) + 5)))
  in patch-jcc-at st12 pre-done-pos (list-length (st12.text))
 
 emit-list-insert-at-path3-insert : CodegenState -> CodegenState
@@ -6086,7 +6111,7 @@ emit-list-insert-at-path3-post (st) =
  in let st10 = st-append-text st9 (add-rr reg-rdi reg-rdx)
  in let st11 = st-append-text st10 (mov-store reg-rdi reg-rcx 8)
  in let st12 = st-append-text st11 (add-ri reg-r11 1)
- in let st13 = st-append-text st12 (jmp (post-loop - list-length (st12.text) + 5))
+ in let st13 = st-append-text st12 (jmp (post-loop - (list-length (st12.text) + 5)))
  in patch-jcc-at st13 post-done-pos (list-length (st13.text))
 
 emit-list-insert-at-path3-epilogue : CodegenState -> CodegenState
@@ -6131,7 +6156,7 @@ emit-text-concat-list-len-pass (st) =
  in let st15 = st-append-text st14 (mov-load reg-rax reg-rax 0)
  in let st16 = st-append-text st15 (add-rr reg-r13 reg-rax)
  in let st17 = st-append-text st16 (add-ri reg-r11 1)
- in let st18 = st-append-text st17 (jmp (len-loop - list-length (st17.text) + 5))
+ in let st18 = st-append-text st17 (jmp (len-loop - (list-length (st17.text) + 5)))
  in patch-jcc-at st18 len-done-pos (list-length (st18.text))
 
 emit-text-concat-list-alloc : CodegenState -> CodegenState
@@ -6177,11 +6202,11 @@ emit-text-concat-list-copy-inner (st) (copy-loop) (copy-done-pos) =
  in let st8 = st-append-text st7 (add-rr reg-rdx reg-rsi)
  in let st9 = st-append-text st8 (mov-store-byte reg-rdx reg-rax 8)
  in let st10 = st-append-text st9 (add-ri reg-rsi 1)
- in let st11 = st-append-text st10 (jmp (byte-loop - list-length (st10.text) + 5))
+ in let st11 = st-append-text st10 (jmp (byte-loop - (list-length (st10.text) + 5)))
  in let st12 = patch-jcc-at st11 byte-done-pos (list-length (st11.text))
  in let st13 = st-append-text st12 (add-rr reg-r13 reg-rcx)
  in let st14 = st-append-text st13 (add-ri reg-r11 1)
- in let st15 = st-append-text st14 (jmp (copy-loop - list-length (st14.text) + 5))
+ in let st15 = st-append-text st14 (jmp (copy-loop - (list-length (st14.text) + 5)))
  in patch-jcc-at st15 copy-done-pos (list-length (st15.text))
 
 emit-text-concat-list : CodegenState -> CodegenState
@@ -6255,7 +6280,7 @@ emit-str-replace-cmp (st) =
  in let mismatch-pos = list-length (st10.text)
  in let st11 = st-append-text st10 (jcc cc-ne 0)
  in let st12 = st-append-text st11 (add-ri reg-rsi 1)
- in let st13 = st-append-text st12 (jmp (cmp-loop - list-length (st12.text) + 5))
+ in let st13 = st-append-text st12 (jmp (cmp-loop - (list-length (st12.text) + 5)))
  in HelpResult2 {
   cg = st13,
   p1 = match-pos,
@@ -6278,11 +6303,11 @@ emit-str-replace-copy-new (st) (main-loop) =
  in let st9 = st-append-text st8 (mov-store-byte reg-rdi reg-rax 8)
  in let st10 = st-append-text st9 (add-ri reg-r15 1)
  in let st11 = st-append-text st10 (add-ri reg-rsi 1)
- in let st12 = st-append-text st11 (jmp (copy-loop - list-length (st11.text) + 5))
+ in let st12 = st-append-text st11 (jmp (copy-loop - (list-length (st11.text) + 5)))
  in let st13 = patch-jcc-at st12 copy-done-pos (list-length (st12.text))
  in let st14 = st-append-text st13 (mov-load reg-rdx reg-r12 0)
  in let st15 = st-append-text st14 (add-rr reg-rcx reg-rdx)
- in st-append-text st15 (jmp (main-loop - list-length (st15.text) + 5))
+ in st-append-text st15 (jmp (main-loop - (list-length (st15.text) + 5)))
 
 emit-str-replace-no-match : CodegenState -> Integer -> Integer -> Integer -> Integer -> CodegenState
 emit-str-replace-no-match (st) (mismatch-pos) (no-match-empty-pos) (cant-match-pos) (main-loop) =
@@ -6297,7 +6322,7 @@ emit-str-replace-no-match (st) (mismatch-pos) (no-match-empty-pos) (cant-match-p
  in let st8 = st-append-text st7 (mov-store-byte reg-rdi reg-rax 8)
  in let st9 = st-append-text st8 (add-ri reg-r15 1)
  in let st10 = st-append-text st9 (add-ri reg-rcx 1)
- in st-append-text st10 (jmp (main-loop - list-length (st10.text) + 5))
+ in st-append-text st10 (jmp (main-loop - (list-length (st10.text) + 5)))
 
 emit-str-replace-done : CodegenState -> Integer -> CodegenState
 emit-str-replace-done (st) (done-pos) =
@@ -6391,7 +6416,7 @@ emit-text-split-seg-copy (st) (scan-loop) =
  in let st7 = st-append-text st6 (add-rr reg-r11 reg-rsi)
  in let st8 = st-append-text st7 (mov-store-byte reg-r11 reg-rdx 8)
  in let st9 = st-append-text st8 (add-ri reg-rsi 1)
- in let st10 = st-append-text st9 (jmp (seg-copy - list-length (st9.text) + 5))
+ in let st10 = st-append-text st9 (jmp (seg-copy - (list-length (st9.text) + 5)))
  in let st11 = patch-jcc-at st10 seg-done-pos (list-length (st10.text))
  in let st12 = st-append-text st11 (pop-r reg-r11)
  in let st13 = st-append-text st12 (mov-rr reg-rax reg-r15)
@@ -6404,10 +6429,10 @@ emit-text-split-seg-copy (st) (scan-loop) =
 
 emit-text-split-not-delim : CodegenState -> Integer -> Integer -> CodegenState
 emit-text-split-not-delim (st) (not-delim-pos) (scan-loop) =
- let st0 = st-append-text st (jmp (scan-loop - list-length (st.text) + 5))
+ let st0 = st-append-text st (jmp (scan-loop - (list-length (st.text) + 5)))
  in let st1 = patch-jcc-at st0 not-delim-pos (list-length (st0.text))
  in let st2 = st-append-text st1 (add-ri reg-r11 1)
- in st-append-text st2 (jmp (scan-loop - list-length (st2.text) + 5))
+ in st-append-text st2 (jmp (scan-loop - (list-length (st2.text) + 5)))
 
 emit-text-split-final-seg : CodegenState -> Integer -> CodegenState
 emit-text-split-final-seg (st) (scan-done-pos) =
@@ -6437,7 +6462,7 @@ emit-text-split-final-copy (st) =
  in let st8 = st-append-text st7 (add-rr reg-r11 reg-rsi)
  in let st9 = st-append-text st8 (mov-store-byte reg-r11 reg-rdx 8)
  in let st10 = st-append-text st9 (add-ri reg-rsi 1)
- in let st11 = st-append-text st10 (jmp (last-copy - list-length (st10.text) + 5))
+ in let st11 = st-append-text st10 (jmp (last-copy - (list-length (st10.text) + 5)))
  in patch-jcc-at st11 last-done-pos (list-length (st11.text))
 
 emit-text-split-epilogue : CodegenState -> CodegenState
@@ -7715,7 +7740,7 @@ skip-spaces (st) =
   source = st.source,
   offset = end,
   line = st.line,
-  column = st.column + end - st.offset
+  column = st.column + (end - st.offset)
  }
 
 scan-ident-end : Text -> Integer -> Integer -> Integer
@@ -7740,7 +7765,7 @@ scan-ident-rest (st) =
   source = st.source,
   offset = end,
   line = st.line,
-  column = st.column + end - st.offset
+  column = st.column + (end - st.offset)
  }
 
 scan-digits-end : Text -> Integer -> Integer -> Integer
@@ -7760,7 +7785,7 @@ scan-digits (st) =
   source = st.source,
   offset = end,
   line = st.line,
-  column = st.column + end - st.offset
+  column = st.column + (end - st.offset)
  }
 
 scan-string-end : Text -> Integer -> Integer -> Integer
@@ -7781,7 +7806,7 @@ scan-string-body (st) =
   source = st.source,
   offset = end,
   line = st.line,
-  column = st.column + end - st.offset
+  column = st.column + (end - st.offset)
  }
 
 process-escapes : Text -> Integer -> Integer -> Text -> Text
@@ -10557,6 +10582,6 @@ main =
 
 
 
-HEAP:142826064
+HEAP:143174760
 
 STACK:2097152
