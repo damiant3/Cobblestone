@@ -36,26 +36,36 @@ module's mangled version. Within module X, `emit-expr` -> `x_emit-expr`
 
 ## Plan for next session
 
-1. Fix build-mod-renames to include ALL colliding names, not just cur-mod's:
-   - For each colliding name, find which module defines it
-   - If cur-mod defines it, map to cur-mod's mangled version
-   - If another module defines it, map to that module's mangled version
-   - This requires a lookup: "given name X in context of module M, which
-     module's version does M use?" In the flat model (no imports), M uses
-     its own version if it defines X, otherwise there's ambiguity.
+build-mod-renames is DONE — all colliding names now map across modules.
+Stage1 has 94 scoped defs, 922 common with source, 43 unscoped replaced.
 
-2. The ambiguity problem: if module A references `emit-expr` but doesn't
-   define it, and 3 modules define it, which one does A mean? In the C#
-   ModuleScoper, this is resolved by imports. In the flat model, modules
-   only call their own functions — cross-module references to colliding
-   names shouldn't exist. Verify this assumption.
+Next: build a SEMANTIC EQUIVALENCE CHECKER for stage0 vs stage1.
 
-3. If the assumption holds, filter-defs in the streaming pipeline should
-   suppress duplicate emissions. Currently both scoped and unscoped versions
-   are emitted for colliding names.
+1. **De-mangle test**: take stage1 scoped names (e.g. `codex-emitter_emit-expr`),
+   reverse the module prefix, verify the original name (`emit-expr`) exists
+   in the correct module (`codex-emitter`) in stage0.
 
-4. Style reconciliation is the other category of remaining differences.
-   AL can handle this in parallel.
+2. **Body comparison**: compare def bodies ignoring whitespace (normalize
+   both sides, strip insignificant whitespace, compare tokens or normalized text).
+
+3. **Ordering**: definition order differs (stage0 has defs near their module,
+   stage1 groups type defs first then all function defs). Ordering is NOT
+   significant for correctness — compare as sets, not sequences.
+
+4. **Per-module def count**: verify no defs dropped or added per module.
+   Every source def should have a stage1 counterpart (possibly scoped).
+
+5. **Field accessor leak**: 38 record field accessors appear as top-level
+   defs in stage1 (e.g. `rodata`, `locals`, `offset`). These come from
+   CodegenState and other large records. Separate issue — skip-def should
+   filter these. They have types like `a51` (unresolved type vars).
+
+6. **HEAP/STACK lines**: pingpong instrumentation lines leak into stage1.
+   Strip before comparison.
+
+This checker could be a Python script in tools/ or a C# test. Damian wants
+correctness verification, not string identity for stage0==stage1. Byte-identical
+stage1===stage2 is the other essential test (scoped fixed point).
 
 ## Key files
 - Codex.Codex/Semantics/ModuleScoper.codex — build-mod-renames needs fixing
