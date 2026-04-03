@@ -678,22 +678,54 @@ class Program
         List<string> codeBlocks = [];
         foreach (string f in files)
         {
+            string rel = Path.GetRelativePath(codexDir, f);
+            string moduleName = Path.GetFileNameWithoutExtension(f);
+            string slug = ToModuleSlug(moduleName);
+
             string content = File.ReadAllText(f);
+            string code;
             if (IsProseDocument(content))
             {
-                string code = ExtractCodeBlocks(content);
-                if (code.Length > 0) codeBlocks.Add(code);
+                code = ExtractCodeBlocks(content);
             }
             else
             {
-                codeBlocks.Add(content);
+                code = content;
             }
+            if (code.Length > 0)
+                codeBlocks.Add($"module: {slug}\n\n{code}");
         }
         string combined = string.Join("\n\n", codeBlocks);
         string dest = outputPath ?? Path.Combine(Path.GetTempPath(), "codex-all-source.codex");
         File.WriteAllText(dest, combined);
         Console.WriteLine($"Wrote {combined.Length} chars ({files.Length} files) to {dest}");
         return 0;
+    }
+
+    static string ToModuleSlug(string fileName)
+    {
+        // "CSharpEmitter" -> "csharp-emitter", "X86_64" -> "x86-64"
+        var sb = new System.Text.StringBuilder(fileName.Length + 4);
+        for (int i = 0; i < fileName.Length; i++)
+        {
+            char c = fileName[i];
+            if (c == '_')
+            {
+                if (sb.Length > 0 && sb[^1] != '-') sb.Append('-');
+            }
+            else if (char.IsUpper(c))
+            {
+                if (i > 0 && char.IsLower(fileName[i - 1]) && sb.Length > 0 && sb[^1] != '-')
+                    sb.Append('-');
+                sb.Append(char.ToLowerInvariant(c));
+            }
+            else if (char.IsLetterOrDigit(c) || c == '-')
+            {
+                sb.Append(c);
+            }
+        }
+        while (sb.Length > 0 && sb[^1] == '-') sb.Length--;
+        return sb.ToString();
     }
 
     static int RunCodexEmit(string? codexDirOverride, string? outputPath)
