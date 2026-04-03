@@ -693,7 +693,7 @@ class Program
                 code = content;
             }
             if (code.Length > 0)
-                codeBlocks.Add($"module: {slug}\n\n{code}");
+                codeBlocks.Add($"module: {slug}\n\n{code}\n\nend module {slug}");
         }
         string combined = string.Join("\n\n", codeBlocks);
         string dest = outputPath ?? Path.Combine(Path.GetTempPath(), "codex-all-source.codex");
