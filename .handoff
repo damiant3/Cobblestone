@@ -1,83 +1,98 @@
-Session: bootstrap2-scoping-fixes (2026-04-03)
+Session: sem-equiv-checker (2026-04-03)
 Agent: Cam
 
 ## What was done
 
-Massive progress on bootstrap2 stage0 == stage1. Gap went from 33% (3348
-lines) to 1.3% (132 lines). Five bugs fixed:
+Built the semantic equivalence checker as `codex sem-equiv` in the reference
+compiler CLI (`tools/Codex.Cli/Program.SemEquiv.cs`). Pure text processing,
+no compiler library dependencies.
 
-1. Parser ++ chain truncation — skip-newlines in parse-binary-loop
-2. CCE caret (^) missing from Tier 0 — inserted at position 94, ò to Tier 1
-3. Module scoping infrastructure — scanner detects module markers, ModuleScoper.codex
-   has rename-ir-expr with shadowing, pipeline splits compile-with-scope + emit-defs-scoped
-4. skip-def CCE range bug — used char-code-at "a"/"z" (CCE 15/38) instead of 13/38,
-   silently dropped all defs starting with 'e' or 't' (243 defs!)
-5. Char literal escape values — scan-char-literal used Unicode 10 for '\n' instead of
-   CCE 1, so escape-char comparison failed and code-to-char(10) emitted '7'
+Usage:
+```
+dotnet run --project tools/Codex.Cli -- sem-equiv <stage0> <stage1> [--show <name>]
+```
 
-Also: memory increased 64→512 MB, end module markers in dump-source, pingpong
-timeout configurable, csproj fixed for build-output path.
+Features:
+- Parses stage0 with module markers, stage1 flat
+- De-mangles scoped names (42 collisions, longest-prefix-first matching)
+- Assigns stage1 defs to modules (by demangling or stage0 lookup)
+- Matches defs per module, reports drops/extras
+- Compares signatures with type-variable alpha-normalization
+- Compares bodies after whitespace collapse, demangling, paren normalization
+- Per-module summary table with Body% column
+- `--show <name>` drills into individual defs (shows normalized S0/S1 side by side)
+- Exit 0 = PASS, 1 = FAIL
 
-## Remaining: Namespace Collision (the 1.3% gap)
+## Results on current test data (docs/TestResults/stage0.codex, stage1.codex)
 
-Stage1 has 1092 defs vs stage0's 1013. The extra 79 are scoped duplicates
-(e.g. both `emit-type-defs` and `csharp-emitter_emit-type-defs` appear).
+```
+Stage0: 1142 defs (32 modules)
+Stage1: 1221 defs
+Sigs: 1087 match, 55 differ
+Bodies: 1079 match, 63 differ (94%)
+Drops: 0    Extras: 73 (all leaked field accessors)
+```
 
-Root cause: build-mod-renames only creates rename entries for names defined
-in cur-mod. When module A references a colliding name, the reference stays
-unmangled because the rename map doesn't include it. So stage1 has BOTH
-the unmangled original AND the scoped version.
+21 of 32 modules at 100% body match. Remaining diffs in: csharp-emitter,
+csharp-emitter-expressions, x86-64, x86-64encoder, x86-64helpers, lexer,
+parser-core, name-resolver, main.
 
-The C# ModuleScoper (src/Codex.Semantics/ModuleScoper.cs:75-92) builds a
-COMPLETE rename map per module: every colliding name maps to its defining
-module's mangled version. Within module X, `emit-expr` -> `x_emit-expr`
-(X's own), and `collect-ctor-names` -> `name-resolver_collect-ctor-names`
-(wherever it's defined). Non-colliding names stay unmangled.
+## Remaining issues found by the checker
+
+### 1. Precedence paren dropping (SEMANTIC BUG, ~30 defs)
+The self-hosted CodexEmitter drops necessary parens around binary
+sub-expressions:
+- `target-pos - (jcc-pos + 6)` → `target-pos - jcc-pos + 6` (WRONG)
+- `(n / 16) * 16` → `n / 16 * 16` (same result but fragile)
+- Concentrated in x86-64, x86-64helpers, x86-64encoder
+
+Root cause: `emit-expr` in CodexEmitter.codex doesn't track parent operator
+precedence, so it never wraps sub-expressions in parens.
+
+### 2. CCE brace escaping (~8 defs in csharp-emitter*)
+Stage0 uses `\{` for literal C# braces in string constants.
+Stage1 emits `{` without the backslash.
+Affects: emit-tco-def, emit-binary, emit-list, emit-match, emit-pattern, etc.
+
+### 3. String literal content diffs (~5 defs)
+Multi-line string constants split differently between stages.
+`\"\"` vs `\I\n` — CCE escape code mismatch for quote character.
+Affects: emit-full-module, emit-module, emit-cce-runtime, emit-builtin.
+
+### 4. Sig mismatches (55 defs, mostly csharp-emitter*)
+Many C# emitter functions have different type signatures between stages.
+Example: `emit-def : IRDef -> List ArityEntry -> Text` (S0) vs
+`emit-def : IRDef -> List Text -> Text` (S1). These are real type system
+differences — the self-hosted type checker infers different types.
 
 ## Plan for next session
 
-build-mod-renames is DONE — all colliding names now map across modules.
-Stage1 has 94 scoped defs, 922 common with source, 43 unscoped replaced.
+Fix the three body-mismatch categories in order of impact:
 
-Next: build a SEMANTIC EQUIVALENCE CHECKER for stage0 vs stage1.
+1. **Precedence parens** — biggest win, ~30 defs. Add precedence tracking to
+   `emit-binary-expr` in `Codex.Codex/Emit/CodexEmitter.codex`. When the
+   parent op has higher precedence than the child, wrap in parens.
 
-1. **De-mangle test**: take stage1 scoped names (e.g. `codex-emitter_emit-expr`),
-   reverse the module prefix, verify the original name (`emit-expr`) exists
-   in the correct module (`codex-emitter`) in stage0.
+2. **CCE brace escapes** — ~8 defs. The bare-metal emitter's `escape-text`
+   function doesn't handle `{` → `\{` conversion. Fix in
+   `Codex.Codex/Emit/CSharpEmitter.codex` (escape-text-loop).
 
-2. **Body comparison**: compare def bodies ignoring whitespace (normalize
-   both sides, strip insignificant whitespace, compare tokens or normalized text).
+3. **String literal CCE codes** — ~5 defs. The quote-in-string escape uses
+   wrong CCE code. Fix in the string literal emitter.
 
-3. **Ordering**: definition order differs (stage0 has defs near their module,
-   stage1 groups type defs first then all function defs). Ordering is NOT
-   significant for correctness — compare as sets, not sequences.
-
-4. **Per-module def count**: verify no defs dropped or added per module.
-   Every source def should have a stage1 counterpart (possibly scoped).
-
-5. **Field accessor leak**: 38 record field accessors appear as top-level
-   defs in stage1 (e.g. `rodata`, `locals`, `offset`). These come from
-   CodegenState and other large records. Separate issue — skip-def should
-   filter these. They have types like `a51` (unresolved type vars).
-
-6. **HEAP/STACK lines**: pingpong instrumentation lines leak into stage1.
-   Strip before comparison.
-
-This checker could be a Python script in tools/ or a C# test. Damian wants
-correctness verification, not string identity for stage0==stage1. Byte-identical
-stage1===stage2 is the other essential test (scoped fixed point).
+After these fixes, re-run `codex sem-equiv` to measure progress. Target: 100%
+body match. Then stage1===stage2 (byte-identical fixed point) becomes testable.
 
 ## Key files
-- Codex.Codex/Semantics/ModuleScoper.codex — build-mod-renames needs fixing
-- Codex.Codex/main.codex — emit-defs-scoped / emit-one-scoped-def
-- Codex.Codex/Emit/CodexEmitter.codex — skip-def / emit-def
-- src/Codex.Semantics/ModuleScoper.cs — C# reference for correct algorithm
-- docs/TestResults/stage0.codex, stage1.codex — current diff artifacts
+- tools/Codex.Cli/Program.SemEquiv.cs — the checker (new)
+- tools/Codex.Cli/Program.cs — wired up "sem-equiv" command
+- Codex.Codex/Emit/CodexEmitter.codex — emit-expr needs precedence parens
+- Codex.Codex/Emit/CSharpEmitter.codex — escape-text needs brace handling
+- docs/TestResults/stage0.codex, stage1.codex — current test artifacts
 
 ## Key learnings
-- CCE range checks MUST use numeric positions, never char-code-at on boundary chars
-- CCE encodes lowercase by frequency (e=13, t=14, a=15), not alphabetically
-- Char literal escape values must be CCE codes, not Unicode codepoints
-- Record fields in Codex literals must be in DEFINITION order (compiler bug: source order used for positional constructor)
-- Bootstrap1 batch pipeline doesn't use module markers (uses C# ModuleScoper)
-- Bare-metal pipeline uses dump-source which has markers
+- `}` at column 0 in record literals needs special handling in def parsers
+- Type variable names differ between stages (alpha-normalize for comparison)
+- `(if ...)` parens are cosmetic (stripped in normalizer)
+- `(a + b)` parens around binary sub-expressions are NOT cosmetic when the
+  parent op has higher precedence — dropping them changes semantics

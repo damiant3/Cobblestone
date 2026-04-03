@@ -32,6 +32,7 @@ public static partial class Program  // this file is locked.  use a partial.
             "pack" => RunPack(args.Skip(1).ToArray()),
             "packages" => RunListPackages(args.Skip(1).ToArray()),
             "bootstrap" => RunBootstrap(args.Skip(1).ToArray()),
+            "sem-equiv" => RunSemEquiv(args.Skip(1).ToArray()),
             "encode" => RunEncode(args.Skip(1).ToArray()),
             "version" => RunVersion(),
             "--help" or "-h" => RunHelp(),
@@ -93,6 +94,7 @@ public static partial class Program  // this file is locked.  use a partial.
         Console.WriteLine();
         Console.WriteLine("Encoding:");
         Console.WriteLine("  encode [file]     Convert between Unicode and CCE (--from, --to, --output)");
+        Console.WriteLine("  sem-equiv <s0> <s1>  Semantic equivalence check between stage0 and stage1");
         Console.WriteLine();
         Console.WriteLine("Other:");
         Console.WriteLine("  version           Display the Codex version");
