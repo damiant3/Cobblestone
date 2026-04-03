@@ -28,10 +28,10 @@ public static partial class Program
         var (stage0Modules, moduleSlugs) = ParseStage0(stage0Text);
         List<SemDef> stage1Defs = ParseStage1(stage1Text);
 
-        HashSet<string> collisionSet = BuildCollisionSet(stage0Modules);
+        HashSet<string> collidingModules = BuildCollisionSet(stage0Modules);
         string[] slugsSorted = moduleSlugs.OrderByDescending(s => s.Length).ToArray();
 
-        AssignModules(stage1Defs, stage0Modules, collisionSet, slugsSorted);
+        AssignModules(stage1Defs, stage0Modules, collidingModules, slugsSorted);
 
         var (matched, dropped, extra) = MatchDefs(stage0Modules, stage1Defs);
 
@@ -56,8 +56,8 @@ public static partial class Program
             }
 
             // Body comparison
-            string norm0 = NormalizeBody(s0.Body, collisionSet, slugsSorted, demangle: false);
-            string norm1 = NormalizeBody(s1.Body, collisionSet, slugsSorted, demangle: true);
+            string norm0 = NormalizeBody(s0.Body, collidingModules, slugsSorted, demangle: false);
+            string norm1 = NormalizeBody(s1.Body, collidingModules, slugsSorted, demangle: true);
             if (norm0 == norm1)
                 bodyMatches++;
             else
@@ -69,13 +69,13 @@ public static partial class Program
 
         if (showDef != null)
         {
-            ShowDefDetail(showDef, matched, collisionSet, slugsSorted);
+            ShowDefDetail(showDef, matched, collidingModules, slugsSorted);
             return 0;
         }
 
         PrintReport(stage0Modules, stage1Defs, moduleSlugs, matched, dropped, extra,
                      bodyMatches, bodyMismatches, bodyMismatchList,
-                     sigMatches, sigMismatches, sigMismatchList, collisionSet);
+                     sigMatches, sigMismatches, sigMismatchList, collidingModules);
 
         bool pass = dropped.Count == 0 && bodyMismatches == 0;
         Console.WriteLine();
@@ -286,8 +286,11 @@ public static partial class Program
 
     static HashSet<string> BuildCollisionSet(Dictionary<string, List<SemDef>> modules)
     {
+        // Find names defined in 2+ modules (per-name collision detection).
+        // This matches the bare-metal compiler's current mangling behavior.
+        // When the bare-metal compiler switches to whole-module mangling,
+        // this should switch to returning colliding module slugs instead.
         var nameToModules = new Dictionary<string, HashSet<string>>();
-
         foreach (var (mod, defs) in modules)
         {
             foreach (SemDef d in defs)
@@ -316,14 +319,16 @@ public static partial class Program
     }
 
     static void AssignModules(List<SemDef> stage1Defs, Dictionary<string, List<SemDef>> stage0Modules,
-                              HashSet<string> collisionSet, string[] slugsSorted)
+                              HashSet<string> collidingModules, string[] slugsSorted)
     {
+        // Non-mangled names: look up in stage0 modules by name.
+        // Only non-colliding names appear unmangled in stage1.
         var nameToModule = new Dictionary<string, string>();
         foreach (var (mod, defs) in stage0Modules)
         {
             foreach (SemDef d in defs)
             {
-                if (!collisionSet.Contains(d.Name))
+                if (!collidingModules.Contains(d.Name))
                     nameToModule.TryAdd(d.Name, mod);
             }
         }
@@ -407,7 +412,7 @@ public static partial class Program
         return name is "in" or "if" or "of" or "do" or "is";
     }
 
-    static string NormalizeBody(string body, HashSet<string> collisionSet, string[] slugsSorted,
+    static string NormalizeBody(string body, HashSet<string> collidingModules, string[] slugsSorted,
                                 bool demangle)
     {
         string text = body;
@@ -472,7 +477,7 @@ public static partial class Program
     }
 
     static void ShowDefDetail(string name, List<(SemDef s0, SemDef s1)> matched,
-                              HashSet<string> collisionSet, string[] slugsSorted)
+                              HashSet<string> collidingModules, string[] slugsSorted)
     {
         var hits = matched.Where(m => m.s0.Name == name).ToList();
         if (hits.Count == 0)
@@ -490,8 +495,8 @@ public static partial class Program
             Console.WriteLine(s1.Sig);
             Console.WriteLine();
 
-            string norm0 = NormalizeBody(s0.Body, collisionSet, slugsSorted, demangle: false);
-            string norm1 = NormalizeBody(s1.Body, collisionSet, slugsSorted, demangle: true);
+            string norm0 = NormalizeBody(s0.Body, collidingModules, slugsSorted, demangle: false);
+            string norm1 = NormalizeBody(s1.Body, collidingModules, slugsSorted, demangle: true);
 
             Console.WriteLine("--- Stage0 Body (normalized) ---");
             Console.WriteLine(norm0);
@@ -536,7 +541,7 @@ public static partial class Program
                             List<(SemDef s0, SemDef s1, string diff)> bodyMismatchList,
                             int sigMatches, int sigMismatches,
                             List<(SemDef s0, SemDef s1)> sigMismatchList,
-                            HashSet<string> collisionSet)
+                            HashSet<string> collidingModules)
     {
         int totalS0 = stage0Modules.Values.Sum(d => d.Count);
 
@@ -544,7 +549,7 @@ public static partial class Program
         Console.WriteLine();
         Console.WriteLine($"Stage0: {totalS0} defs ({moduleSlugs.Count} modules)");
         Console.WriteLine($"Stage1: {stage1Defs.Count} defs");
-        Console.WriteLine($"Collisions: {collisionSet.Count} names defined in 2+ modules");
+        Console.WriteLine($"Collisions: {collidingModules.Count} names defined in 2+ modules");
         Console.WriteLine($"Sigs: {sigMatches} match, {sigMismatches} differ");
         Console.WriteLine($"Bodies: {bodyMatches} match, {bodyMismatches} differ");
         Console.WriteLine();
