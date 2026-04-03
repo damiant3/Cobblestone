@@ -1419,7 +1419,7 @@ hex-digit (n) =
 
 hex4 : Integer -> Text
 hex4 (n) =
- "00" ++ hex-digit (n / 16) ++ hex-digit (n - (n / 16) * 16)
+ "00" ++ hex-digit (n / 16) ++ hex-digit (n - n / 16 * 16)
 
 is-catch-all : IRPat -> Boolean
 is-catch-all (p) =
@@ -1548,9 +1548,7 @@ wrap-binary-child (parent-op) (e) (ctors) (indent) =
 
 needs-binary-wrap : IRBinaryOp -> IRBinaryOp -> Boolean
 needs-binary-wrap (parent) (child) =
- if bin-op-prec child < bin-op-prec parent then True
- else if bin-op-prec child == bin-op-prec parent then bin-op-text parent /= bin-op-text child
- else False
+ bin-op-prec child < bin-op-prec parent
 
 bin-op-prec : IRBinaryOp -> Integer
 bin-op-prec (op) =
@@ -1628,6 +1626,7 @@ needs-parens (e) (is-ctor) =
   if IrNegate (operand) -> True
   if IrLambda (params) (body) (ty) -> True
   if IrFieldAccess (rec) (field) (ty) -> True
+  if IrRecord (name) (fields) (ty) -> True
   if _ -> False
 
 collect-ctor-names : List ATypeDef -> Integer -> Integer -> List Text -> List Text -> CtorCollectResult
@@ -1668,8 +1667,9 @@ filter-defs (defs) (ctor-names) (i) (len) (acc) =
  else let d = list-at defs i
  in let next = filter-defs defs ctor-names (i + 1) len
  in if skip-def d ctor-names then next acc
-    else if has-def-named acc (d.name) 0 (list-length acc) then if def-score d > def-score-named acc (d.name) 0 (list-length acc) then next (replace-def acc (d.name) d 0 (list-length acc))
- else next acc
+    else if has-def-named acc (d.name) 0 (list-length acc) then let dominated = def-score d > def-score-named acc (d.name) 0 (list-length acc)
+ in if dominated then next (replace-def acc (d.name) d 0 (list-length acc))
+    else next acc
     else next (list-snoc acc d)
 
 def-score : IRDef -> Integer
@@ -1778,7 +1778,7 @@ pvh-note : Integer -> List Integer
 pvh-note (entry-addr) =
  write-i32 4
 
-build-elf-32-bare : List Integer -> List Integer -> Integer -> List Integer
+build-elf-32-bare : a92
 build-elf-32-bare (text) (rodata) (entry-offset) =
  let load-addr = elf-bare-metal-load-addr
  in let headers-end = elf32-header-size + elf32-phdr-size * 2
@@ -1900,10 +1900,10 @@ record-func-offset (st) (name) =
  CodegenState {
   text = st.text,
   rodata = st.rodata,
-  func-offsets = list-snoc (st.func-offsets) FuncOffset {
+  func-offsets = list-snoc (st.func-offsets) (FuncOffset {
    name = name,
    offset = list-length (st.text)
-  },
+  }),
   call-patches = st.call-patches,
   func-addr-fixups = st.func-addr-fixups,
   locals = st.locals,
@@ -1930,10 +1930,10 @@ reset-func-state (st) (name) =
  CodegenState {
   text = st.text,
   rodata = st.rodata,
-  func-offsets = list-snoc (st.func-offsets) FuncOffset {
+  func-offsets = list-snoc (st.func-offsets) (FuncOffset {
    name = name,
    offset = list-length (st.text)
-  },
+  }),
   call-patches = st.call-patches,
   func-addr-fixups = st.func-addr-fixups,
   locals = [],
@@ -2002,14 +2002,74 @@ alloc-local (st) =
   reg = slot
  }
 
+slot : a74
+slot =
+ spill-base + st.spill-count
+
+state : a29
+state =
+ CodegenState {
+  text = st.text,
+  rodata = st.rodata,
+  func-offsets = st.func-offsets,
+  call-patches = st.call-patches,
+  func-addr-fixups = st.func-addr-fixups,
+  locals = st.locals,
+  next-temp = st.next-temp,
+  next-local = st.next-local + 1,
+  spill-count = st.spill-count + 1,
+  load-local-toggle = st.load-local-toggle,
+  tco = st.tco
+ }
+
+rodata : a51
+rodata =
+ st.rodata
+
+func-offsets : a52
+func-offsets =
+ st.func-offsets
+
+call-patches : a53
+call-patches =
+ st.call-patches
+
+func-addr-fixups : a54
+func-addr-fixups =
+ st.func-addr-fixups
+
+locals : a55
+locals =
+ st.locals
+
+next-temp : a56
+next-temp =
+ st.next-temp
+
+next-local : a57
+next-local =
+ st.next-local + 1
+
+spill-count : a58
+spill-count =
+ st.spill-count + 1
+
+load-local-toggle : a59
+load-local-toggle =
+ st.load-local-toggle
+
+reg : a41
+reg =
+ slot
+
 store-local : CodegenState -> Integer -> Integer -> CodegenState
 store-local (st) (local) (value-reg) =
  if local < spill-base then if local == value-reg then st
  else st-append-text st (mov-rr local value-reg)
- else let offset = 0 - (((local - spill-base) + 1) * 8 + 32)
+ else let offset = 0 - (local - spill-base + 1) * 8 + 32
  in st-append-text st (mov-store reg-rbp value-reg offset)
 
-load-local : CodegenState -> Integer -> EmitResult
+load-local : a77
 load-local (st) (local) =
  if local < spill-base then EmitResult {
   state = st,
@@ -2017,7 +2077,7 @@ load-local (st) (local) =
  }
  else let scratch = if int-mod (st.load-local-toggle) 2 == 0 then reg-r8
   else reg-r9
- in let offset = 0 - (((local - spill-base) + 1) * 8 + 32)
+ in let offset = 0 - (local - spill-base + 1) * 8 + 32
  in EmitResult {
   state = CodegenState {
    text = st.text ++ mov-load scratch reg-rbp offset,
@@ -2035,6 +2095,71 @@ load-local (st) (local) =
   reg = scratch
  }
 
+scratch : a26
+scratch =
+ if int-mod (st.load-local-toggle) 2 == 0 then reg-r8
+ else reg-r9
+
+offset : a27
+offset =
+ 0 - (local - spill-base + 1) * 8 + 32
+
+state : a29
+state =
+ CodegenState {
+  text = st.text ++ mov-load scratch reg-rbp offset,
+  rodata = st.rodata,
+  func-offsets = st.func-offsets,
+  call-patches = st.call-patches,
+  func-addr-fixups = st.func-addr-fixups,
+  locals = st.locals,
+  next-temp = st.next-temp,
+  next-local = st.next-local,
+  spill-count = st.spill-count,
+  load-local-toggle = st.load-local-toggle + 1,
+  tco = st.tco
+ }
+
+rodata : a51
+rodata =
+ st.rodata
+
+func-offsets : a52
+func-offsets =
+ st.func-offsets
+
+call-patches : a53
+call-patches =
+ st.call-patches
+
+func-addr-fixups : a54
+func-addr-fixups =
+ st.func-addr-fixups
+
+locals : a55
+locals =
+ st.locals
+
+next-temp : a56
+next-temp =
+ st.next-temp
+
+next-local : a57
+next-local =
+ st.next-local
+
+spill-count : a58
+spill-count =
+ st.spill-count
+
+load-local-toggle : a59
+load-local-toggle =
+ st.load-local-toggle + 1
+
+reg : a41
+reg =
+ scratch
+
 patch-i32-at : List Integer -> Integer -> Integer -> List Integer
 patch-i32-at (bytes) (pos) (value) =
  let new-bytes = write-i32 value
@@ -2048,17 +2173,17 @@ patch-4-loop (bytes) (pos) (new-bytes) (i) (len) (acc) =
 
 patch-jcc-at : CodegenState -> Integer -> Integer -> CodegenState
 patch-jcc-at (st) (jcc-pos) (target-pos) =
- let rel32 = target-pos - (jcc-pos + 6)
+ let rel32 = target-pos - jcc-pos + 6
  in st-with-text st (patch-i32-at (st.text) (jcc-pos + 2) rel32)
 
 patch-jmp-at : CodegenState -> Integer -> Integer -> CodegenState
 patch-jmp-at (st) (jmp-pos) (target-pos) =
- let rel32 = target-pos - (jmp-pos + 5)
+ let rel32 = target-pos - jmp-pos + 5
  in st-with-text st (patch-i32-at (st.text) (jmp-pos + 1) rel32)
 
 patch-call-at : CodegenState -> Integer -> Integer -> CodegenState
 patch-call-at (st) (call-pos) (target-pos) =
- let rel32 = target-pos - (call-pos + 5)
+ let rel32 = target-pos - call-pos + 5
  in st-with-text st (patch-i32-at (st.text) (call-pos + 1) rel32)
 
 make-i32-patch : Integer -> Integer -> PatchEntry
@@ -2098,7 +2223,7 @@ collect-call-patches (patches) (offsets) (i) (acc) =
  if i == list-length patches then acc
  else let p = list-at patches i
  in let target-offset = lookup-func-offset offsets (p.target)
- in let rel32 = target-offset - (p.patch-offset + 5)
+ in let rel32 = target-offset - p.patch-offset + 5
  in collect-call-patches patches offsets (i + 1) (list-snoc acc (make-i32-patch (p.patch-offset + 1) rel32))
 
 patch-calls : CodegenState -> CodegenState
@@ -2110,7 +2235,7 @@ align-16 : Integer -> Integer
 align-16 (n) =
  let r = int-mod n 16
  in if r == 0 then n
-    else (n + 16) - r
+    else n + 16 - r
 
 bind-params : CodegenState -> List IRParam -> Integer -> CodegenState
 bind-params (st) (params) (i) =
@@ -2176,7 +2301,7 @@ st-set-tail-pos (st) (v) =
   }
  }
 
-pre-alloc-tco-temps : CodegenState -> Integer -> Integer -> List Integer -> TcoAllocResult
+pre-alloc-tco-temps : a43
 pre-alloc-tco-temps (st) (i) (count) (acc) =
  if i == count then TcoAllocResult {
   alloc-state = st,
@@ -2184,6 +2309,14 @@ pre-alloc-tco-temps (st) (i) (count) (acc) =
  }
  else let loc = alloc-local st
  in pre-alloc-tco-temps (loc.state) (i + 1) count (list-snoc acc (loc.reg))
+
+loc : a79
+loc =
+ alloc-local st
+
+pre-alloc-tco-temps : a43
+pre-alloc-tco-temps (loc) =
+ 0 (i + 1) count (list-snoc acc (loc.reg))
 
 collect-param-locals : List LocalBinding -> List IRParam -> Integer -> List Integer -> List Integer
 collect-param-locals (bindings) (params) (i) (acc) =
@@ -2211,10 +2344,10 @@ add-local (st) (name) (slot) =
   func-offsets = st.func-offsets,
   call-patches = st.call-patches,
   func-addr-fixups = st.func-addr-fixups,
-  locals = list-snoc (st.locals) LocalBinding {
+  locals = list-snoc (st.locals) (LocalBinding {
    name = name,
    slot = slot
-  },
+  }),
   next-temp = st.next-temp,
   next-local = st.next-local,
   spill-count = st.spill-count,
@@ -2295,7 +2428,7 @@ flatten-apply (expr) (acc) =
    args = acc
   }
 
-save-args-loop : CodegenState -> List IRExpr -> Integer -> List Integer -> SavedArgs
+save-args-loop : a47
 save-args-loop (st) (args) (i) (acc) =
  if i == list-length args then SavedArgs {
   state = st,
@@ -2305,6 +2438,22 @@ save-args-loop (st) (args) (i) (acc) =
  in let loc = alloc-local (r.state)
  in let st1 = store-local (loc.state) (loc.reg) (r.reg)
  in save-args-loop st1 args (i + 1) (list-snoc acc (loc.reg))
+
+r : a78
+r =
+ emit-expr st (list-at args i)
+
+loc : a79
+loc =
+ alloc-local (r.state)
+
+st1 : a83
+st1 =
+ store-local (loc.state) (loc.reg) (r.reg)
+
+save-args-loop : a47
+save-args-loop =
+ args (i + 1) (list-snoc acc (loc.reg))
 
 push-reg-args : CodegenState -> List Integer -> Integer -> Integer -> CodegenState
 push-reg-args (st) (arg-locals) (i) (count) =
@@ -2336,7 +2485,47 @@ copy-temps-to-params (st) (temp-locals) (param-locals) (i) =
  in let st1 = store-local (loaded.state) (list-at param-locals i) (loaded.reg)
  in copy-temps-to-params st1 temp-locals param-locals (i + 1)
 
-collect-func-addr-patches : List FuncAddrFixup -> List FuncOffset -> Integer -> Integer -> List PatchEntry -> List PatchEntry
+st1 : a83
+st1 =
+ st-append-text st (mov-ri64 reg 0)
+
+rodata : a51
+rodata =
+ st1.rodata
+
+func-offsets : a52
+func-offsets =
+ st1.func-offsets
+
+call-patches : a53
+call-patches =
+ st1.call-patches
+
+func-addr-fixups : a54
+func-addr-fixups =
+ list-snoc (st1.func-addr-fixups) fixup
+
+locals : a55
+locals =
+ st1.locals
+
+next-temp : a56
+next-temp =
+ st1.next-temp
+
+next-local : a57
+next-local =
+ st1.next-local
+
+spill-count : a58
+spill-count =
+ st1.spill-count
+
+load-local-toggle : a59
+load-local-toggle =
+ st1.load-local-toggle
+
+collect-func-addr-patches : a67
 collect-func-addr-patches (fixups) (offsets) (text-base) (i) (acc) =
  if i == list-length fixups then acc
  else let f = list-at fixups i
@@ -2359,6 +2548,40 @@ collect-func-addr-patches (fixups) (offsets) (text-base) (i) (acc) =
   }
  in collect-func-addr-patches fixups offsets text-base (i + 1) (acc ++ [p0, p1])
 
+p1 : a61
+p1 =
+ PatchEntry {
+  pos = f.patch-offset + 4,
+  b0 = list-at addr-bytes 4,
+  b1 = list-at addr-bytes 5,
+  b2 = list-at addr-bytes 6,
+  b3 = list-at addr-bytes 7
+ }
+
+pos : a62
+pos =
+ f.patch-offset + 4
+
+b0 : a63
+b0 =
+ list-at addr-bytes 4
+
+b1 : a64
+b1 =
+ list-at addr-bytes 5
+
+b2 : a65
+b2 =
+ list-at addr-bytes 6
+
+b3 : a66
+b3 =
+ list-at addr-bytes 7
+
+collect-func-addr-patches : a67
+collect-func-addr-patches =
+ offsets text-base (i + 1) (acc ++ [p0, p1])
+
 find-record-field-index : List RecordField -> Text -> Integer -> Integer
 find-record-field-index (fields) (name) (i) =
  if i == list-length fields then 0
@@ -2366,12 +2589,48 @@ find-record-field-index (fields) (name) (i) =
  in if f.name.value == name then i
     else find-record-field-index fields name (i + 1)
 
+fv : a68
+fv =
+ list-at fields i
+
+r : a78
+r =
+ emit-expr st (fv.value)
+
+loc : a79
+loc =
+ alloc-local (r.state)
+
+st1 : a83
+st1 =
+ store-local (loc.state) (loc.reg) (r.reg)
+
+name : a73
+name =
+ fv.name
+
+slot : a74
+slot =
+ loc.reg
+
 find-field-local-slot : List FieldLocal -> Text -> Integer -> Integer
 find-field-local-slot (fls) (name) (i) =
  if i == list-length fls then 0 - 1
  else let fl = list-at fls i
  in if fl.name == name then fl.slot
     else find-field-local-slot fls name (i + 1)
+
+mbs-final : a75
+mbs-final =
+ emit-match-branch-loop mbs (scrut-loc.reg) (result-loc.reg) branches 0 (list-length branches)
+
+st-end : a76
+st-end =
+ patch-match-end-jumps (mbs-final.cg-state) (mbs-final.end-patches) 0
+
+load-local : a77
+load-local =
+ result-loc.reg
 
 bind-ctor-fields : CodegenState -> Integer -> List IRPat -> Integer -> CodegenState
 bind-ctor-fields (st) (scrut-loc) (sub-pats) (i) =
@@ -2390,6 +2649,18 @@ patch-match-end-jumps : CodegenState -> List Integer -> Integer -> CodegenState
 patch-match-end-jumps (st) (patches) (i) =
  if i == list-length patches then st
  else patch-match-end-jumps (patch-jmp-at st (list-at patches i) (list-length (st.text))) patches (i + 1)
+
+r : a78
+r =
+ emit-expr st (list-at elems i)
+
+loc : a79
+loc =
+ alloc-local (r.state)
+
+st1 : a83
+st1 =
+ store-local (loc.state) (loc.reg) (r.reg)
 
 multiboot-header : List Integer
 multiboot-header =
@@ -2435,16 +2706,60 @@ x86-64-emit-module (m) =
  in let st3 = st-with-text st2 (apply-all-patches (st2.text) all-patches)
  in build-elf-32-bare (st3.text) (st3.rodata) 12
 
+st0a : a82
+st0a =
+ emit-runtime-helpers st0
+
+st1 : a83
+st1 =
+ emit-all-defs st0a (m.defs) 0
+
+st2 : a84
+st2 =
+ emit-start st1
+
+start-offset : a85
+start-offset =
+ lookup-func-offset (st2.func-offsets) "__start"
+
+start-addr : a86
+start-addr =
+ bare-metal-load-addr + start-offset
+
+far-jump-entry : a87
+far-jump-entry =
+ make-i32-patch (tramp.far-jump-patch-pos + 1) start-addr
+
+call-entries : a88
+call-entries =
+ collect-call-patches (st2.call-patches) (st2.func-offsets) 0 []
+
+addr-entries : a89
+addr-entries =
+ collect-func-addr-patches (st2.func-addr-fixups) (st2.func-offsets) bare-metal-load-addr 0 []
+
+all-patches : a90
+all-patches =
+ [far-jump-entry] ++ call-entries ++ addr-entries
+
+st3 : a91
+st3 =
+ st-with-text st2 (apply-all-patches (st2.text) all-patches)
+
+build-elf-32-bare : a92
+build-elf-32-bare (st3) =
+ 0 (st3.rodata) 12
+
 int-mod : Integer -> Integer -> Integer
 int-mod (n) (d) =
- let r = n - (n / d) * d
+ let r = n - n / d * d
  in if r < 0 then r + d
     else r
 
 floor-div : Integer -> Integer -> Integer
 floor-div (n) (d) =
  if n >= 0 then n / d
- else ((n - d) + 1) / d
+ else (n - d + 1) / d
 
 rex : Boolean -> Boolean -> Boolean -> Boolean -> Integer
 rex (w) (r) (x) (b) =
@@ -2968,10 +3283,10 @@ lower-lambda-params-acc (params) (ty) (i) (acc) =
  else let p = list-at params i
  in let param-ty = peel-fun-param ty
  in let rest-ty = peel-fun-return ty
- in lower-lambda-params-acc params rest-ty (i + 1) (list-snoc acc IRParam {
+ in lower-lambda-params-acc params rest-ty (i + 1) (list-snoc acc (IRParam {
   name = p.value,
   type-val = param-ty
- })
+ }))
 
 get-lambda-return : CodexType -> Integer -> CodexType
 get-lambda-return (ty) (n) =
@@ -3008,10 +3323,10 @@ lower-match-arms-acc (arms) (ty) (scrut-ty) (ctx) (i) (len) (acc) =
  if i == len then acc
  else let arm = list-at arms i
  in let arm-ctx = bind-pattern-to-ctx ctx (arm.pattern) scrut-ty
- in lower-match-arms-acc arms ty scrut-ty ctx (i + 1) len (list-snoc acc IRBranch {
+ in lower-match-arms-acc arms ty scrut-ty ctx (i + 1) len (list-snoc acc (IRBranch {
   pattern = lower-pattern (arm.pattern),
   body = lower-expr (arm.body) ty arm-ctx
- })
+ }))
 
 bind-pattern-to-ctx : LowerCtx -> APat -> CodexType -> LowerCtx
 bind-pattern-to-ctx (ctx) (pat) (ty) =
@@ -3087,10 +3402,10 @@ lower-record-fields-acc (fields) (record-ty) (ctx) (i) (len) (acc) =
  in let field-expected = when record-ty
    if RecordTy (rname) (rfields) -> lookup-record-field rfields (f.name.value)
    if _ -> ErrorTy
- in lower-record-fields-acc fields record-ty ctx (i + 1) len (list-snoc acc IRFieldVal {
+ in lower-record-fields-acc fields record-ty ctx (i + 1) len (list-snoc acc (IRFieldVal {
   name = f.name.value,
   value = lower-expr (f.value) field-expected ctx
- })
+ }))
 
 lower-do : List ADoStmt -> CodexType -> LowerCtx -> IRExpr
 lower-do (stmts) (ty) (ctx) =
@@ -3135,11 +3450,11 @@ lower-handle-clauses-acc (clauses) (ty) (ctx) (i) (acc) =
  if i == list-length clauses then acc
  else let c = list-at clauses i
  in let body-ir = lower-expr (c.body) ty ctx
- in lower-handle-clauses-acc clauses ty ctx (i + 1) (list-snoc acc IRHandleClause {
+ in lower-handle-clauses-acc clauses ty ctx (i + 1) (list-snoc acc (IRHandleClause {
   op-name = c.op-name.value,
   resume-name = c.resume-name.value,
   body = body-ir
- })
+ }))
 
 lower-def : ADef -> List TypeBinding -> UnificationState -> IRDef
 lower-def (d) (types) (ust) =
@@ -3189,10 +3504,10 @@ lower-def-params-acc (params) (ty) (i) (acc) =
  else let p = list-at params i
  in let param-ty = peel-fun-param ty
  in let rest-ty = peel-fun-return ty
- in lower-def-params-acc params rest-ty (i + 1) (list-snoc acc IRParam {
+ in lower-def-params-acc params rest-ty (i + 1) (list-snoc acc (IRParam {
   name = p.name.value,
   type-val = param-ty
- })
+ }))
 
 get-return-type-n : CodexType -> Integer -> CodexType
 get-return-type-n (ty) (n) =
@@ -3320,10 +3635,10 @@ collect-variant-ctor-bindings (ctors) (result-ty) (i) (len) (acc) =
  if i == len then acc
  else let ctor = list-at ctors i
  in let ctor-ty = build-ctor-type (ctor.fields) result-ty 0 (list-length (ctor.fields))
- in collect-variant-ctor-bindings ctors result-ty (i + 1) len (list-snoc acc TypeBinding {
+ in collect-variant-ctor-bindings ctors result-ty (i + 1) len (list-snoc acc (TypeBinding {
   name = ctor.name.value,
   bound-type = ctor-ty
- })
+ }))
 
 build-ctor-type : List TypeBinding -> List ATypeExpr -> CodexType -> Integer -> Integer -> CodexType
 build-ctor-type (fields) (result) (i) (len) =
@@ -3796,7 +4111,7 @@ skip-spaces (st) =
   source = st.source,
   offset = end,
   line = st.line,
-  column = st.column + (end - st.offset)
+  column = st.column + end - st.offset
  }
 
 scan-ident-end : Text -> Integer -> Integer -> Integer
@@ -3821,7 +4136,7 @@ scan-ident-rest (st) =
   source = st.source,
   offset = end,
   line = st.line,
-  column = st.column + (end - st.offset)
+  column = st.column + end - st.offset
  }
 
 scan-digits-end : Text -> Integer -> Integer -> Integer
@@ -3841,7 +4156,7 @@ scan-digits (st) =
   source = st.source,
   offset = end,
   line = st.line,
-  column = st.column + (end - st.offset)
+  column = st.column + end - st.offset
  }
 
 scan-string-end : Text -> Integer -> Integer -> Integer
@@ -3862,7 +4177,7 @@ scan-string-body (st) =
   source = st.source,
   offset = end,
   line = st.line,
-  column = st.column + (end - st.offset)
+  column = st.column + end - st.offset
  }
 
 process-escapes : Text -> Integer -> Integer -> Text -> Text
@@ -4168,12 +4483,12 @@ finish-def (ann) (name-tok) (params) (st) =
 unwrap-def-body : ParseExprResult -> List TypeAnn -> Token -> List Token -> ParseDefResult
 unwrap-def-body (r) (ann) (name-tok) (params) =
  when r
-  if ExprOk (b) (st) -> DefOk Def {
+  if ExprOk (b) (st) -> DefOk (Def {
    name = name-tok,
    params = params,
    ann = ann,
    body = b
-  } st
+  }) st
 
 is-paren-type-param : ParseState -> Boolean
 is-paren-type-param (st) =
@@ -4223,17 +4538,17 @@ parse-record-type (name-tok) (tparams) (st) =
 
 parse-record-fields-loop : Token -> List Token -> List RecordFieldDef -> ParseState -> ParseTypeDefResult
 parse-record-fields-loop (name-tok) (tparams) (acc) (st) =
- if is-right-brace (current-kind st) then TypeDefOk TypeDef {
+ if is-right-brace (current-kind st) then TypeDefOk (TypeDef {
   name = name-tok,
   type-params = tparams,
   body = RecordBody acc
- } (advance st)
+ }) (advance st)
  else if is-ident (current-kind st) then parse-one-record-field name-tok tparams acc st
- else TypeDefOk TypeDef {
+ else TypeDefOk (TypeDef {
   name = name-tok,
   type-params = tparams,
   body = RecordBody acc
- } st
+ }) st
 
 parse-one-record-field : Token -> List Token -> List RecordFieldDef -> ParseState -> ParseTypeDefResult
 parse-one-record-field (name-tok) (tparams) (acc) (st) =
@@ -4281,11 +4596,11 @@ parse-variant-ctors (name-tok) (tparams) (acc) (st) =
  in let ctor-name = current st2
  in let st3 = advance st2
  in parse-ctor-fields ctor-name [] st3 name-tok tparams acc
- else TypeDefOk TypeDef {
+ else TypeDefOk (TypeDef {
   name = name-tok,
   type-params = tparams,
   body = VariantBody acc
- } st
+ }) st
 
 parse-ctor-fields : Token -> List TypeExpr -> ParseState -> Token -> List Token -> List VariantCtorDef -> ParseTypeDefResult
 parse-ctor-fields (ctor-name) (fields) (st) (name-tok) (tparams) (acc) =
@@ -4317,15 +4632,15 @@ parse-imports (st) (acc) =
  in let st3 = advance st2
  in if is-left-paren (current-kind st3) then let sel = parse-selected-names (advance st3) []
  in let st4 = skip-newlines (sel.state)
- in parse-imports st4 (list-snoc acc ImportDecl {
+ in parse-imports st4 (list-snoc acc (ImportDecl {
   module-name = name-tok,
   selected-names = sel.names
- })
+ }))
     else let st4 = skip-newlines st3
- in parse-imports st4 (list-snoc acc ImportDecl {
+ in parse-imports st4 (list-snoc acc (ImportDecl {
   module-name = name-tok,
   selected-names = []
- })
+ }))
  else ImportParseResult {
   imports = acc,
   state = st
@@ -4471,12 +4786,12 @@ finish-def-scan (ann) (name-tok) (params) (st) =
  in let st3 = skip-newlines st2
  in let body-pos = st3.pos
  in let st4 = skip-body-tokens st3 (name-tok.column)
- in DefHeaderOk DefHeader {
+ in DefHeaderOk (DefHeader {
   name = name-tok,
   params = params,
   ann = ann,
   body-pos = body-pos
- } st4
+ }) st4
 
 skip-body-tokens : ParseState -> Integer -> ParseState
 skip-body-tokens (st) (name-col) =
@@ -5216,12 +5531,12 @@ resolve-type-name (tdm) (name) =
 lookup-type-def : List TypeBinding -> Text -> CodexType
 lookup-type-def (tdm) (name) =
  let len = list-length tdm
- in if len == 0 then ConstructedTy Name { value = name } []
+ in if len == 0 then ConstructedTy (Name { value = name }) []
     else let pos = bsearch-text-pos tdm name 0 len
- in if pos >= len then ConstructedTy Name { value = name } []
+ in if pos >= len then ConstructedTy (Name { value = name }) []
     else let b = list-at tdm pos
  in if b.name == name then b.bound-type
-    else ConstructedTy Name { value = name } []
+    else ConstructedTy (Name { value = name }) []
 
 is-value-name : Text -> Boolean
 is-value-name (name) =
@@ -5933,8 +6248,8 @@ builtin-type-env =
  in let e29 = env-bind e28 "get-args" (ListTy TextTy)
  in let e30 = env-bind e29 "get-env" (FunTy TextTy TextTy)
  in let e31 = env-bind e30 "current-dir" TextTy
- in let e32 = env-bind e31 "fork" (ForAllTy 0 (FunTy (FunTy NothingTy (TypeVar 0)) (ConstructedTy Name { value = "Task" } [TypeVar 0])))
- in let e33 = env-bind e32 "await" (ForAllTy 0 (FunTy (ConstructedTy Name { value = "Task" } [TypeVar 0]) (TypeVar 0)))
+ in let e32 = env-bind e31 "fork" (ForAllTy 0 (FunTy (FunTy NothingTy (TypeVar 0)) (ConstructedTy (Name { value = "Task" }) [TypeVar 0])))
+ in let e33 = env-bind e32 "await" (ForAllTy 0 (FunTy (ConstructedTy (Name { value = "Task" }) [TypeVar 0]) (TypeVar 0)))
  in let e34 = env-bind e33 "par" (ForAllTy 0 (ForAllTy 1 (FunTy (FunTy (TypeVar 0) (TypeVar 1)) (FunTy (ListTy (TypeVar 0)) (ListTy (TypeVar 1))))))
  in let e35 = env-bind e34 "race" (ForAllTy 0 (FunTy (ListTy (FunTy NothingTy (TypeVar 0))) (TypeVar 0)))
  in let e36 = env-bind e35 "text-concat-list" (FunTy (ListTy TextTy) TextTy)
