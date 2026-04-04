@@ -278,7 +278,9 @@ public static partial class Program
         DocumentNode document = ParseSourceFile(source, content, localDiag);
 
         Desugarer desugarer = new(localDiag);
-        string fileModule = Path.GetFileNameWithoutExtension(filePath);
+        string fileModule = document.Chapters.Count > 0
+            ? document.Chapters[0].Title
+            : Path.GetFileNameWithoutExtension(filePath);
         Chapter chapter = desugarer.Desugar(document, fileModule);
 
         foreach (Diagnostic d in localDiag.ToImmutable())

@@ -192,5 +192,5 @@ Across the compiler internals:
 - [x] Rename import to cites
 - [x] Rename prelude to foreword
 - [x] Remove export declarations
-- [ ] Preserve prose in emitter output
-- [ ] Update ChapterScoper to treat same-chapter pages as shared namespace
+- [x] Preserve prose in emitter output (structure — Chapter/Section titles flow through both pipelines; prose content dropped for now)
+- [x] Update ChapterScoper to treat same-chapter pages as shared namespace
