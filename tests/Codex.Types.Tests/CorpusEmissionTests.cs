@@ -82,7 +82,7 @@ public class CorpusEmissionTests
     }
 
     static bool RequiresModuleLoader(string source) =>
-        source.Contains("import ", StringComparison.Ordinal);
+        source.Contains("cites ", StringComparison.Ordinal);
 
     [Theory]
     [MemberData(nameof(AllSamplesAndBackends))]

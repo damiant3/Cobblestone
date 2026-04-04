@@ -192,7 +192,7 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
 
     public Map<string, string> OperationToEffect => m_operationToEffect;
 
-    public void ImportChapter(Chapter chapter, Set<string> exportedNames)
+    public void CiteChapter(Chapter chapter, Set<string> exportedNames)
     {
         EnsureBuiltinEffects();
         RegisterTypeDefinitions(chapter.TypeDefinitions);

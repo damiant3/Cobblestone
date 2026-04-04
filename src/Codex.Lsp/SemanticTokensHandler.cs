@@ -88,7 +88,7 @@ internal sealed class SemanticTokensHandler(DocumentStore store) : SemanticToken
                 or TokenKind.WhenKeyword or TokenKind.DoKeyword
                 or TokenKind.LinearKeyword or TokenKind.RecordKeyword
                 or TokenKind.WhereKeyword or TokenKind.SuchThatKeyword
-                or TokenKind.ImportKeyword or TokenKind.ExportKeyword
+                or TokenKind.CitesKeyword or TokenKind.ExportKeyword
                 or TokenKind.ClaimKeyword or TokenKind.ProofKeyword
                 or TokenKind.ForAllKeyword or TokenKind.ThereExistsKeyword
                 or TokenKind.TrueKeyword or TokenKind.FalseKeyword

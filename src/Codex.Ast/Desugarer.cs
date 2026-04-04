@@ -16,8 +16,8 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
         List<TypeDef> typeDefinitions = document.TypeDefinitions.Select(DesugarTypeDefinition).ToList();
         List<ClaimDef> claims = document.Claims.Select(DesugarClaim).ToList();
         List<ProofDef> proofs = document.Proofs.Select(DesugarProof).ToList();
-        List<ImportDecl> imports = document.Imports
-            .Select(i => new ImportDecl(new Name(i.Name.Text), i.Span)
+        List<CitesDecl> citations = document.Citations
+            .Select(i => new CitesDecl(new Name(i.Name.Text), i.Span)
                 { SelectedNames = i.SelectedNames.Select(n => new Name(n.Text)).ToList() })
             .ToList();
         List<ExportDecl> exports = document.Exports
@@ -26,7 +26,7 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
         List<EffectDef> effectDefs = document.EffectDefinitions
             .Select(DesugarEffectDef).ToList();
         return new Chapter(name, definitions, typeDefinitions, claims, proofs, document.Span)
-            { Imports = imports, Exports = exports, EffectDefs = effectDefs };
+            { Citations = citations, Exports = exports, EffectDefs = effectDefs };
     }
 
     EffectDef DesugarEffectDef(EffectDefinitionNode node)

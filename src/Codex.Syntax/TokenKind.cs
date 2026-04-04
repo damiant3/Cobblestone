@@ -43,7 +43,7 @@ public enum TokenKind
     SuchThatKeyword,
     DoKeyword,
     RecordKeyword,
-    ImportKeyword,
+    CitesKeyword,
     ExportKeyword,
     ClaimKeyword,
     ProofKeyword,

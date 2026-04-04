@@ -516,7 +516,7 @@ public sealed class Lexer
         "where" => TokenKind.WhereKeyword,
         "do" => TokenKind.DoKeyword,
         "record" => TokenKind.RecordKeyword,
-        "import" => TokenKind.ImportKeyword,
+        "cites" => TokenKind.CitesKeyword,
         "export" => TokenKind.ExportKeyword,
         "claim" => TokenKind.ClaimKeyword,
         "proof" => TokenKind.ProofKeyword,

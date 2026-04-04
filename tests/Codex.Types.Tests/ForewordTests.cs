@@ -7,9 +7,9 @@ using Xunit;
 
 namespace Codex.Types.Tests;
 
-public class PreludeTests
+public class ForewordTests
 {
-    static string FindPreludeDir()
+    static string FindForewordDir()
     {
         string dir = AppContext.BaseDirectory;
         while (dir is not null)
@@ -19,12 +19,12 @@ public class PreludeTests
                 return candidate;
             dir = Path.GetDirectoryName(dir)!;
         }
-        throw new DirectoryNotFoundException("Cannot find prelude/ directory");
+        throw new DirectoryNotFoundException("Cannot find foreword/ directory");
     }
 
-    static DiagnosticBag CompilePreludeFile(string fileName)
+    static DiagnosticBag CompileForewordFile(string fileName)
     {
-        string path = Path.Combine(FindPreludeDir(), fileName);
+        string path = Path.Combine(FindForewordDir(), fileName);
         string source = File.ReadAllText(path);
         string chapterName = Path.GetFileNameWithoutExtension(fileName);
 
@@ -53,133 +53,133 @@ public class PreludeTests
     [Fact]
     public void Maybe_compiles()
     {
-        DiagnosticBag diag = CompilePreludeFile("Maybe.codex");
+        DiagnosticBag diag = CompileForewordFile("Maybe.codex");
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
     }
 
     [Fact]
     public void Result_compiles()
     {
-        DiagnosticBag diag = CompilePreludeFile("Result.codex");
+        DiagnosticBag diag = CompileForewordFile("Result.codex");
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
     }
 
     [Fact]
     public void Either_compiles()
     {
-        DiagnosticBag diag = CompilePreludeFile("Either.codex");
+        DiagnosticBag diag = CompileForewordFile("Either.codex");
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
     }
 
     [Fact]
     public void Pair_compiles()
     {
-        DiagnosticBag diag = CompilePreludeFile("Pair.codex");
+        DiagnosticBag diag = CompileForewordFile("Pair.codex");
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
     }
 
     [Fact]
     public void CCE_compiles()
     {
-        DiagnosticBag diag = CompilePreludeFile("CCE.codex");
+        DiagnosticBag diag = CompileForewordFile("CCE.codex");
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
     }
 
     [Fact(Skip = "Hamt uses self-hosted-only syntax (record, lambdas, list literals)")]
     public void Hamt_compiles()
     {
-        DiagnosticBag diag = CompilePreludeFileWithLoader("Hamt.codex");
+        DiagnosticBag diag = CompileForewordFileWithLoader("Hamt.codex");
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
     }
 
     [Fact]
     public void List_compiles()
     {
-        DiagnosticBag diag = CompilePreludeFile("List.codex");
+        DiagnosticBag diag = CompileForewordFile("List.codex");
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
     }
 
     [Fact]
     public void Console_effect_compiles()
     {
-        DiagnosticBag diag = CompilePreludeFile("Console.codex");
+        DiagnosticBag diag = CompileForewordFile("Console.codex");
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
     }
 
     [Fact]
     public void FileSystem_effect_compiles()
     {
-        DiagnosticBag diag = CompilePreludeFile("FileSystem.codex");
+        DiagnosticBag diag = CompileForewordFile("FileSystem.codex");
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
     }
 
     [Fact]
     public void Time_effect_compiles()
     {
-        DiagnosticBag diag = CompilePreludeFile("Time.codex");
+        DiagnosticBag diag = CompileForewordFile("Time.codex");
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
     }
 
     [Fact]
     public void Random_effect_compiles()
     {
-        DiagnosticBag diag = CompilePreludeFile("Random.codex");
+        DiagnosticBag diag = CompileForewordFile("Random.codex");
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
     }
 
     [Fact]
     public void State_effect_compiles()
     {
-        DiagnosticBag diag = CompilePreludeFile("State.codex");
+        DiagnosticBag diag = CompileForewordFile("State.codex");
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
     }
 
     [Fact]
     public void Network_effect_compiles()
     {
-        DiagnosticBag diag = CompilePreludeFile("Network.codex");
+        DiagnosticBag diag = CompileForewordFile("Network.codex");
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
     }
 
     [Fact]
     public void Display_effect_compiles()
     {
-        DiagnosticBag diag = CompilePreludeFile("Display.codex");
+        DiagnosticBag diag = CompileForewordFile("Display.codex");
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
     }
 
     [Fact]
     public void Camera_effect_compiles()
     {
-        DiagnosticBag diag = CompilePreludeFile("Camera.codex");
+        DiagnosticBag diag = CompileForewordFile("Camera.codex");
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
     }
 
     [Fact]
     public void Microphone_effect_compiles()
     {
-        DiagnosticBag diag = CompilePreludeFile("Microphone.codex");
+        DiagnosticBag diag = CompileForewordFile("Microphone.codex");
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
     }
 
     [Fact]
     public void Location_effect_compiles()
     {
-        DiagnosticBag diag = CompilePreludeFile("Location.codex");
+        DiagnosticBag diag = CompileForewordFile("Location.codex");
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
     }
 
     [Fact]
     public void Sensors_effect_compiles()
     {
-        DiagnosticBag diag = CompilePreludeFile("Sensors.codex");
+        DiagnosticBag diag = CompileForewordFile("Sensors.codex");
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
     }
 
     [Fact]
     public void Identity_effect_compiles()
     {
-        DiagnosticBag diag = CompilePreludeFile("Identity.codex");
+        DiagnosticBag diag = CompileForewordFile("Identity.codex");
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
     }
 
@@ -187,7 +187,7 @@ public class PreludeTests
     public void Maybe_used_in_program()
     {
         string source = """
-            import Maybe
+            cites Maybe
 
             safe-div : Integer -> Integer -> Maybe Integer
             safe-div (a) (b) = if b == 0 then None else Just (a / b)
@@ -203,7 +203,7 @@ public class PreludeTests
     public void Result_used_in_program()
     {
         string source = """
-            import Result
+            cites Result
 
             parse-nat : Text -> Result Integer Text
             parse-nat (t) = Ok (text-to-integer t)
@@ -219,7 +219,7 @@ public class PreludeTests
     public void Either_used_in_program()
     {
         string source = """
-            import Either
+            cites Either
 
             to-zero : Text -> Integer
             to-zero (s) = 0
@@ -241,7 +241,7 @@ public class PreludeTests
     public void Pair_used_in_program()
     {
         string source = """
-            import Pair
+            cites Pair
 
             main : Integer
             main = pair-fst (make-pair 1 2)
@@ -254,7 +254,7 @@ public class PreludeTests
     public void CCE_used_in_program()
     {
         string source = """
-            import CCE
+            cites CCE
 
             main : Boolean
             main = is-digit 10
@@ -267,8 +267,8 @@ public class PreludeTests
     public void Hamt_used_in_program()
     {
         string source = """
-            import Maybe
-            import Hamt
+            cites Maybe
+            cites Hamt
 
             main : Integer
             main = hamt-size (hamt-set hamt-empty "key" 42)
@@ -281,7 +281,7 @@ public class PreludeTests
     public void List_used_in_program()
     {
         string source = """
-            import List
+            cites List
 
             main : Integer
             main = list-length (cons 1 (cons 2 (cons 3 nil)))
@@ -316,7 +316,7 @@ public class PreludeTests
     }
 
     [Fact]
-    public void Builtin_effects_available_without_import()
+    public void Builtin_effects_available_without_cites()
     {
         string source = """
             greet : Text -> [Console] Nothing
@@ -329,9 +329,9 @@ public class PreludeTests
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
     }
 
-    static DiagnosticBag CompilePreludeFileWithLoader(string fileName)
+    static DiagnosticBag CompileForewordFileWithLoader(string fileName)
     {
-        string preludeDir = FindPreludeDir();
+        string preludeDir = FindForewordDir();
         string path = Path.Combine(preludeDir, fileName);
         string source = File.ReadAllText(path);
         string chapterName = Path.GetFileNameWithoutExtension(fileName);
@@ -349,14 +349,14 @@ public class PreludeTests
         Chapter chapter = desugarer.Desugar(document, chapterName);
         if (diagnostics.HasErrors) return diagnostics;
 
-        PreludeTestLoader preludeLoader = new(preludeDir, diagnostics);
-        NameResolver resolver = new(diagnostics, preludeLoader);
+        PreludeTestLoader forewordLoader = new(preludeDir, diagnostics);
+        NameResolver resolver = new(diagnostics, forewordLoader);
         ResolvedChapter resolved = resolver.Resolve(chapter);
         if (diagnostics.HasErrors) return diagnostics;
 
         TypeChecker checker = new(diagnostics);
 
-        foreach (ResolvedChapter imported in resolved.ImportedChapters)
+        foreach (ResolvedChapter imported in resolved.CitedChapters)
             checker.CheckChapter(imported.Chapter);
 
         checker.CheckChapter(resolved.Chapter);
@@ -365,7 +365,7 @@ public class PreludeTests
 
     static DiagnosticBag CompileWithPrelude(string source)
     {
-        string preludeDir = FindPreludeDir();
+        string preludeDir = FindForewordDir();
         SourceText src = new("test.codex", source);
         DiagnosticBag diagnostics = new();
 
@@ -379,14 +379,14 @@ public class PreludeTests
         Chapter chapter = desugarer.Desugar(document, "test");
         if (diagnostics.HasErrors) return diagnostics;
 
-        PreludeTestLoader preludeLoader = new(preludeDir, diagnostics);
-        NameResolver resolver = new(diagnostics, preludeLoader);
+        PreludeTestLoader forewordLoader = new(preludeDir, diagnostics);
+        NameResolver resolver = new(diagnostics, forewordLoader);
         ResolvedChapter resolved = resolver.Resolve(chapter);
         if (diagnostics.HasErrors) return diagnostics;
 
         TypeChecker checker = new(diagnostics);
 
-        foreach (ResolvedChapter imported in resolved.ImportedChapters)
+        foreach (ResolvedChapter imported in resolved.CitedChapters)
             checker.CheckChapter(imported.Chapter);
 
         checker.CheckChapter(resolved.Chapter);

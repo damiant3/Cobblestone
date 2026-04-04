@@ -17,19 +17,19 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         List<TypeDefinitionNode> typeDefinitions = [];
         List<ClaimNode> claims = [];
         List<ProofNode> proofs = [];
-        List<ImportNode> imports = [];
+        List<CitesNode> citations = [];
         List<ExportNode> exports = [];
         List<EffectDefinitionNode> effectDefs = [];
 
         SkipNewlines();
         while (!IsAtEnd)
         {
-            if (Current.Kind == TokenKind.ImportKeyword)
+            if (Current.Kind == TokenKind.CitesKeyword)
             {
-                ImportNode? imp = TryParseImport();
+                CitesNode? imp = TryParseCites();
                 if (imp is not null)
                 {
-                    imports.Add(imp);
+                    citations.Add(imp);
                     SkipNewlines();
                     continue;
                 }
@@ -103,7 +103,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         SourceSpan endSpan = Previous.Span;
         return new DocumentNode(definitions, typeDefinitions, claims, proofs,
             [], startSpan.Through(endSpan))
-            { Imports = imports, Exports = exports, EffectDefinitions = effectDefs };
+            { Citations = citations, Exports = exports, EffectDefinitions = effectDefs };
     }
 
     TypeDefinitionNode? TryParseTypeDefinition()
@@ -173,11 +173,11 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         return false;
     }
 
-    ImportNode? TryParseImport()
+    CitesNode? TryParseCites()
     {
-        if (Current.Kind != TokenKind.ImportKeyword)
+        if (Current.Kind != TokenKind.CitesKeyword)
             return null;
-        Token importKw = Current;
+        Token citesKw = Current;
         Advance();
         Token name = Expect(TokenKind.TypeIdentifier);
 
@@ -206,9 +206,9 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         }
 
         SourceSpan span = selectedNames.Count > 0
-            ? importKw.Span.Through(selectedNames[^1].Span)
-            : importKw.Span.Through(name.Span);
-        return new ImportNode(name, span) { SelectedNames = selectedNames };
+            ? citesKw.Span.Through(selectedNames[^1].Span)
+            : citesKw.Span.Through(name.Span);
+        return new CitesNode(name, span) { SelectedNames = selectedNames };
     }
 
     ExportNode? TryParseExport()

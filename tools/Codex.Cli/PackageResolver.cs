@@ -19,9 +19,9 @@ sealed class PackageResolver(string projectDirectory, DiagnosticBag diagnostics)
         // Always include prelude unless this IS the prelude
         if (!project.Prelude)
         {
-            PreludeChapterLoader? prelude = PreludeChapterLoader.TryCreate(m_diagnostics);
-            if (prelude is not null)
-                loaders.Add(prelude);
+            ForewordChapterLoader? foreword = ForewordChapterLoader.TryCreate(m_diagnostics);
+            if (foreword is not null)
+                loaders.Add(foreword);
         }
 
         // Resolve explicit path dependencies (existing behavior)

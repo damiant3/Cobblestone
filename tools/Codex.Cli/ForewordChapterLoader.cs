@@ -3,27 +3,27 @@ using Codex.Semantics;
 
 namespace Codex.Cli;
 
-sealed class PreludeChapterLoader : IChapterLoader
+sealed class ForewordChapterLoader : IChapterLoader
 {
     readonly FileChapterLoader m_inner;
 
-    PreludeChapterLoader(string preludeDir, DiagnosticBag diagnostics)
+    ForewordChapterLoader(string forewordDir, DiagnosticBag diagnostics)
     {
-        m_inner = new FileChapterLoader(preludeDir, diagnostics);
+        m_inner = new FileChapterLoader(forewordDir, diagnostics);
     }
 
     public ResolvedChapter? Load(string chapterName) => m_inner.Load(chapterName);
 
-    public static PreludeChapterLoader? TryCreate(DiagnosticBag diagnostics)
+    public static ForewordChapterLoader? TryCreate(DiagnosticBag diagnostics)
     {
-        string? preludeDir = FindPreludeDirectory();
-        if (preludeDir is null) return null;
-        return new PreludeChapterLoader(preludeDir, diagnostics);
+        string? forewordDir = FindForewordDirectory();
+        if (forewordDir is null) return null;
+        return new ForewordChapterLoader(forewordDir, diagnostics);
     }
 
-    static string? FindPreludeDirectory()
+    static string? FindForewordDirectory()
     {
-        string? dir = Path.GetDirectoryName(typeof(PreludeChapterLoader).Assembly.Location);
+        string? dir = Path.GetDirectoryName(typeof(ForewordChapterLoader).Assembly.Location);
         while (dir is not null)
         {
             string candidate = Path.Combine(dir, "prelude");

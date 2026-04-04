@@ -642,10 +642,10 @@ public class ParserTests
     [Fact]
     public void Recovery_import_after_bad_definition()
     {
-        string source = "import Math\nf = @#$\ng = 42";
+        string source = "cites Math\nf = @#$\ng = 42";
         (DocumentNode doc, DiagnosticBag diags) = ParseWithDiags(source);
         Assert.True(diags.HasErrors);
-        Assert.Single(doc.Imports);
+        Assert.Single(doc.Citations);
         Assert.Contains(doc.Definitions, d => d.Name.Text == "g");
     }
 }
