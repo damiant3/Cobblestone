@@ -30,6 +30,7 @@ public static partial class Program
         string[]? multiTargets = null;
         string? viewName = null;
         string[]? capNames = null;
+        string? outputDirOverride = null;
         bool incremental = false;
         bool verbose = false;
         bool dumpFrames = false;
@@ -44,6 +45,8 @@ public static partial class Program
                 viewName = args[++i];
             else if (args[i] == "--capabilities" && i + 1 < args.Length)
                 capNames = args[++i].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            else if (args[i] == "--output-dir" && i + 1 < args.Length)
+                outputDirOverride = args[++i];
             else if (args[i] == "--incremental" || args[i] == "-i")
                 incremental = true;
             else if (args[i] == "--verbose" || args[i] == "-v")
@@ -80,10 +83,10 @@ public static partial class Program
         if (viewName is not null)
             return RunBuildView(viewName, targetOverride ?? "cs", grantedCapabilities);
 
-        if (filePath == "." || filePath == "./" || filePath == ".\\" 
+        if (filePath == "." || filePath == "./" || filePath == ".\\"
             || (Directory.Exists(filePath) && File.Exists(Path.Combine(filePath, "codex.project.json"))))
         {
-            return RunBuildProject(filePath, targetOverride, incremental, multiTargets);
+            return RunBuildProject(filePath, targetOverride, incremental, multiTargets, outputDirOverride);
         }
 
         if (Directory.Exists(filePath))
@@ -94,7 +97,7 @@ public static partial class Program
         return RunBuildFile(filePath, targetOverride ?? "cs", grantedCapabilities);
     }
 
-    static int RunBuildProject(string directory, string? targetOverride, bool incremental, string[]? multiTargets)
+    static int RunBuildProject(string directory, string? targetOverride, bool incremental, string[]? multiTargets, string? outputDirOverride = null)
     {
         CodexProject? project = LoadProjectFile(directory);
         if (project is null)
@@ -123,7 +126,9 @@ public static partial class Program
         if (depLoaders.Count > 0)
             Console.WriteLine($"  Dependencies: {depLoaders.Count} loader(s)");
 
-        string outputDir = Path.GetFullPath(Path.Combine(directory, project.Output));
+        string outputDir = outputDirOverride is not null
+            ? Path.GetFullPath(outputDirOverride)
+            : Path.GetFullPath(Path.Combine(directory, project.Output));
         if (!Directory.Exists(outputDir))
             Directory.CreateDirectory(outputDir);
 

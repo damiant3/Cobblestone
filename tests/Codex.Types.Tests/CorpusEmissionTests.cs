@@ -104,7 +104,7 @@ public class CorpusEmissionTests
             $"Empty output for {sampleFile} to {targetName}");
     }
 
-    [Fact]
+    [Fact(Skip = "On-demand only — Sample_compiles_to_backend covers the same compilation checks")]
     public void Emit_full_corpus_to_generated_output()
     {
         string[] sampleFiles = Directory.GetFiles(s_samplesDir, "*.codex").OrderBy(f => f).ToArray();
