@@ -17,7 +17,7 @@ public sealed class X86_64Emitter(X86_64Target target = X86_64Target.LinuxUser, 
 
     X86_64CodeGen? m_lastCodeGen;
 
-    public byte[] EmitAssembly(IRModule module, string assemblyName)
+    public byte[] EmitAssembly(IRChapter module, string assemblyName)
     {
         X86_64CodeGen codeGen = new(m_target, m_diagnostic);
         codeGen.EmitModule(module);

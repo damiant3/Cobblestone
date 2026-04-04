@@ -8,5 +8,5 @@ public interface ICodeEmitter
 
     string FileExtension { get; }
 
-    string Emit(IRModule module);
+    string Emit(IRChapter module);
 }

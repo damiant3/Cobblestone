@@ -14,7 +14,7 @@ public sealed class PythonEmitter : ICodeEmitter
     public string TargetName => "Python";
     public string FileExtension => ".py";
 
-    public string Emit(IRModule module)
+    public string Emit(IRChapter module)
     {
         m_constructorNames = CollectConstructorNames(module);
         m_definitionArity = ValueMap<string, int>.s_empty;
@@ -53,7 +53,7 @@ public sealed class PythonEmitter : ICodeEmitter
         return sb.ToString();
     }
 
-    static void EmitTypeDefinitions(StringBuilder sb, IRModule module)
+    static void EmitTypeDefinitions(StringBuilder sb, IRChapter module)
     {
         foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
         {
@@ -924,7 +924,7 @@ public sealed class PythonEmitter : ICodeEmitter
         return null;
     }
 
-    static Set<string> CollectConstructorNames(IRModule module)
+    static Set<string> CollectConstructorNames(IRChapter module)
     {
         Set<string> names = Set<string>.s_empty;
         foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)

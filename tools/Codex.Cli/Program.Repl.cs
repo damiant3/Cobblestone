@@ -122,7 +122,7 @@ public static partial class Program
 
         DocumentNode document = ParseSourceFile(sourceText, source, diagnostics);
         Desugarer desugarer = new(diagnostics);
-        Module module = desugarer.Desugar(document, "repl");
+        Chapter chapter = desugarer.Desugar(document, "repl");
 
         if (diagnostics.HasErrors)
         {
@@ -131,7 +131,7 @@ public static partial class Program
         }
 
         NameResolver resolver = new(diagnostics);
-        ResolvedModule resolved = resolver.Resolve(module);
+        ResolvedChapter resolved = resolver.Resolve(chapter);
 
         if (diagnostics.HasErrors)
         {
@@ -140,7 +140,7 @@ public static partial class Program
         }
 
         TypeChecker checker = new(diagnostics);
-        Map<string, CodexType> types = checker.CheckModule(resolved.Module);
+        Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
         if (diagnostics.HasErrors)
         {
@@ -163,7 +163,7 @@ public static partial class Program
 
         // For expressions, also lower and emit to get the result
         LinearityChecker linearityChecker = new(diagnostics, types);
-        linearityChecker.CheckModule(resolved.Module);
+        linearityChecker.CheckChapter(resolved.Chapter);
 
         if (diagnostics.HasErrors)
         {
@@ -172,7 +172,7 @@ public static partial class Program
         }
 
         Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, diagnostics);
-        IRModule irModule = lowering.Lower(resolved.Module);
+        IRChapter irModule = lowering.Lower(resolved.Chapter);
 
         if (diagnostics.HasErrors)
         {
@@ -201,7 +201,7 @@ public static partial class Program
 
         DocumentNode document = ParseSourceFile(sourceText, source, diagnostics);
         Desugarer desugarer = new(diagnostics);
-        Module module = desugarer.Desugar(document, "repl");
+        Chapter chapter = desugarer.Desugar(document, "repl");
 
         if (diagnostics.HasErrors)
         {
@@ -210,7 +210,7 @@ public static partial class Program
         }
 
         NameResolver resolver = new(diagnostics);
-        ResolvedModule resolved = resolver.Resolve(module);
+        ResolvedChapter resolved = resolver.Resolve(chapter);
 
         if (diagnostics.HasErrors)
         {
@@ -219,7 +219,7 @@ public static partial class Program
         }
 
         TypeChecker checker = new(diagnostics);
-        Map<string, CodexType> types = checker.CheckModule(resolved.Module);
+        Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
         if (diagnostics.HasErrors)
         {

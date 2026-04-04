@@ -152,7 +152,7 @@ public class ProseParserTests
         DocumentNode doc = ParseProse(source);
         DiagnosticBag diagnostics = new();
         Codex.Ast.Desugarer desugarer = new(diagnostics);
-        Codex.Ast.Module module = desugarer.Desugar(doc, "greeting");
+        Codex.Ast.Chapter module = desugarer.Desugar(doc, "greeting");
 
         Assert.False(diagnostics.HasErrors);
         Assert.Equal(2, module.Definitions.Count);

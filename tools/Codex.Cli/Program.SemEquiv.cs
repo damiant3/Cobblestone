@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 
 public static partial class Program
 {
-    record SemDef(string Name, string Module, string Sig, string Body, int LineNo, bool IsType);
+    record SemDef(string Name, string Chapter, string Sig, string Body, int LineNo, bool IsType);
 
     static int RunSemEquiv(string[] args)
     {
@@ -339,15 +339,15 @@ public static partial class Program
             var demangled = DemangleName(d.Name, slugsSorted);
             if (demangled is var (slug, baseName))
             {
-                stage1Defs[i] = d with { Name = baseName, Module = slug };
+                stage1Defs[i] = d with { Name = baseName, Chapter = slug };
             }
             else if (nameToModule.TryGetValue(d.Name, out string? mod))
             {
-                stage1Defs[i] = d with { Module = mod };
+                stage1Defs[i] = d with { Chapter = mod };
             }
             else
             {
-                stage1Defs[i] = d with { Module = "?" };
+                stage1Defs[i] = d with { Chapter = "?" };
             }
         }
     }
@@ -358,7 +358,7 @@ public static partial class Program
         var s1ByKey = new Dictionary<string, SemDef>();
         foreach (SemDef d in stage1Defs)
         {
-            string key = d.Module + "|" + d.Name;
+            string key = d.Chapter + "|" + d.Name;
             s1ByKey.TryAdd(key, d);
         }
 
@@ -379,7 +379,7 @@ public static partial class Program
             }
         }
 
-        var extra = stage1Defs.Where(d => !s0Keys.Contains(d.Module + "|" + d.Name)).ToList();
+        var extra = stage1Defs.Where(d => !s0Keys.Contains(d.Chapter + "|" + d.Name)).ToList();
 
         return (matched, dropped, extra);
     }
@@ -490,7 +490,7 @@ public static partial class Program
         }
         foreach (var (s0, s1) in hits)
         {
-            Console.WriteLine($"=== {s0.Module}: {s0.Name} ===");
+            Console.WriteLine($"=== {s0.Chapter}: {s0.Name} ===");
             Console.WriteLine();
             Console.WriteLine("--- Stage0 Sig ---");
             Console.WriteLine(s0.Sig);
@@ -558,7 +558,7 @@ public static partial class Program
         Console.WriteLine();
 
         Console.WriteLine("Per-Module Summary:");
-        Console.WriteLine($"  {"Module",-32} {"S0",4} {"S1",4} {"Match",5} {"Drop",5} {"Extra",5} {"Body%",6}");
+        Console.WriteLine($"  {"Chapter",-32} {"S0",4} {"S1",4} {"Match",5} {"Drop",5} {"Extra",5} {"Body%",6}");
         Console.WriteLine("  " + new string('-', 67));
 
         int totalMatch = 0, totalDrop = 0, totalExtra = 0;
@@ -566,12 +566,12 @@ public static partial class Program
         foreach (string slug in moduleSlugs)
         {
             int s0Count = stage0Modules.TryGetValue(slug, out var s0Defs) ? s0Defs.Count : 0;
-            int s1Count = stage1Defs.Count(d => d.Module == slug);
-            int matchCount = matched.Count(m => m.s0.Module == slug);
-            int dropCount = dropped.Count(d => d.Module == slug);
-            int extraCount = extra.Count(d => d.Module == slug);
+            int s1Count = stage1Defs.Count(d => d.Chapter == slug);
+            int matchCount = matched.Count(m => m.s0.Chapter == slug);
+            int dropCount = dropped.Count(d => d.Chapter == slug);
+            int extraCount = extra.Count(d => d.Chapter == slug);
             int bodyOk = matchCount > 0
-                ? matchCount - bodyMismatchList.Count(m => m.s0.Module == slug)
+                ? matchCount - bodyMismatchList.Count(m => m.s0.Chapter == slug)
                 : 0;
             string bodyPct = matchCount > 0 ? $"{100.0 * bodyOk / matchCount:F0}%" : "--";
 
@@ -582,7 +582,7 @@ public static partial class Program
             totalExtra += extraCount;
         }
 
-        int unknownExtra = extra.Count(d => d.Module == "?");
+        int unknownExtra = extra.Count(d => d.Chapter == "?");
         if (unknownExtra > 0)
             Console.WriteLine($"  {"(unassigned)",-32} {"",4} {unknownExtra,4} {"",5} {"",5} {unknownExtra,5}");
 
@@ -595,7 +595,7 @@ public static partial class Program
             Console.WriteLine();
             Console.WriteLine($"Dropped ({dropped.Count}):");
             foreach (SemDef d in dropped)
-                Console.WriteLine($"  {d.Module}: {d.Name} (line {d.LineNo})");
+                Console.WriteLine($"  {d.Chapter}: {d.Name} (line {d.LineNo})");
         }
 
         if (extra.Count > 0)
@@ -605,7 +605,7 @@ public static partial class Program
             foreach (SemDef d in extra.Take(30))
             {
                 string leaked = Regex.IsMatch(d.Sig, @"^a\d+$") ? " [leaked]" : "";
-                Console.WriteLine($"  {d.Module}: {d.Name} : {d.Sig}{leaked}");
+                Console.WriteLine($"  {d.Chapter}: {d.Name} : {d.Sig}{leaked}");
             }
             if (extra.Count > 30)
                 Console.WriteLine($"  ... and {extra.Count - 30} more");
@@ -616,7 +616,7 @@ public static partial class Program
             Console.WriteLine();
             Console.WriteLine($"Sig Mismatches ({sigMismatchList.Count}):");
             foreach (var (s0, s1) in sigMismatchList.Take(20))
-                Console.WriteLine($"  {s0.Module}: {s0.Name}");
+                Console.WriteLine($"  {s0.Chapter}: {s0.Name}");
             if (sigMismatchList.Count > 20)
                 Console.WriteLine($"  ... and {sigMismatchList.Count - 20} more");
         }
@@ -626,7 +626,7 @@ public static partial class Program
             Console.WriteLine();
             Console.WriteLine($"Body Mismatches ({bodyMismatchList.Count}):");
             foreach (var (s0, s1, diff) in bodyMismatchList)
-                Console.WriteLine($"  {s0.Module}: {s0.Name} — {diff}");
+                Console.WriteLine($"  {s0.Chapter}: {s0.Name} — {diff}");
         }
     }
 }

@@ -47,8 +47,8 @@ public static partial class Program
         if (!Directory.Exists(outputDir))
             Directory.CreateDirectory(outputDir);
 
-        string moduleName = "Codex.Codex";
-        IRCompilationResult? irResult = CompileMultipleToIR(files, moduleName);
+        string chapterName = "Codex.Codex";
+        IRCompilationResult? irResult = CompileMultipleToIR(files, chapterName);
         if (irResult is null)
         {
             Console.WriteLine(" FAILED");
@@ -57,12 +57,12 @@ public static partial class Program
         }
 
         Emit.CSharp.CSharpEmitter emitter = new();
-        string stage0Output = emitter.Emit(irResult.Module);
-        string stage0Path = Path.Combine(outputDir, moduleName + ".cs");
+        string stage0Output = emitter.Emit(irResult.Chapter);
+        string stage0Path = Path.Combine(outputDir, chapterName + ".cs");
         File.WriteAllText(stage0Path, stage0Output);
         sw.Stop();
         Console.WriteLine($" {stage0Output.Length:N0} chars ({sw.ElapsedMilliseconds}ms)");
-        Console.WriteLine($"  {files.Length} files, {irResult.Module.Definitions.Length} defs → {stage0Path}");
+        Console.WriteLine($"  {files.Length} files, {irResult.Chapter.Definitions.Length} defs → {stage0Path}");
 
         Console.Write("Prep: building Bootstrap...");
         int prepBuild = RunDotnetBuildFull(Path.Combine(bootstrapDir, "Codex.Bootstrap.csproj"));

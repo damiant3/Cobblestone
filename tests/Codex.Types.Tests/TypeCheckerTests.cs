@@ -17,9 +17,9 @@ public class TypeCheckerTests
         Parser parser = new(tokens, bag);
         DocumentNode doc = parser.ParseDocument();
         Desugarer desugarer = new(bag);
-        Module module = desugarer.Desugar(doc, "Test");
+        Chapter chapter = desugarer.Desugar(doc, "Test");
         TypeChecker checker = new(bag);
-        Map<string, CodexType> types = checker.CheckModule(module);
+        Map<string, CodexType> types = checker.CheckChapter(chapter);
         return (types, bag);
     }
 

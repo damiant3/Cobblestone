@@ -33,10 +33,10 @@ public static partial class Program
             document = proseParser.ParseDocument();
 
             Console.WriteLine("\n=== Chapters ===");
-            foreach (ChapterNode chapter in document.Chapters)
+            foreach (ChapterNode ch in document.Chapters)
             {
-                Console.WriteLine($"  Chapter: {chapter.Title}");
-                PrintMembers(chapter.Members, "    ");
+                Console.WriteLine($"  Chapter: {ch.Title}");
+                PrintMembers(ch.Members, "    ");
             }
         }
         else
@@ -75,11 +75,11 @@ public static partial class Program
         }
 
         Desugarer desugarer = new(diagnostics);
-        string moduleName = Path.GetFileNameWithoutExtension(filePath);
-        Module module = desugarer.Desugar(document, moduleName);
+        string chapterName = Path.GetFileNameWithoutExtension(filePath);
+        Chapter chapter = desugarer.Desugar(document, chapterName);
 
-        Console.WriteLine($"\n=== Module: {module.Name} ===");
-        foreach (Definition def in module.Definitions)
+        Console.WriteLine($"\n=== Chapter: {chapter.Name} ===");
+        foreach (Definition def in chapter.Definitions)
         {
             string declType = def.DeclaredType is not null
                 ? FormatTypeExpr(def.DeclaredType) : "?";

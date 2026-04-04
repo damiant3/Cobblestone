@@ -46,7 +46,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     int m_resultBaseGlobalOffset = -1;  // rodata offset for 8-byte result_space_base global
     int m_fwdTableGlobalOffset = -1;   // rodata offset for 8-byte forwarding table base global
 
-    public void EmitModule(IRModule module)
+    public void EmitModule(IRChapter module)
     {
         // Bare metal: emit multiboot header + 32→64 trampoline at byte 0
         if (m_target == X86_64Target.BareMetal)
@@ -5786,7 +5786,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         }
     }
 
-    void EmitStart(IRModule module)
+    void EmitStart(IRChapter module)
     {
         m_functionOffsets["__start"] = m_text.Count;
         m_currentFunction = "__start";

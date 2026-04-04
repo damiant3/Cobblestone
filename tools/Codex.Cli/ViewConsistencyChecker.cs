@@ -27,15 +27,15 @@ sealed class ViewConsistencyChecker : IViewConsistencyChecker
         {
             SourceText source = new(viewDef.Name + ".codex", viewDef.Source);
             DocumentNode document = ParseSource(source, viewDef.Source, diagnostics);
-            Module module = desugarer.Desugar(document, viewDef.Name);
+            Chapter chapter = desugarer.Desugar(document, viewDef.Name);
 
-            allDefinitions.AddRange(module.Definitions);
-            allTypeDefinitions.AddRange(module.TypeDefinitions);
-            allClaims.AddRange(module.Claims);
-            allProofs.AddRange(module.Proofs);
-            allImports.AddRange(module.Imports);
-            allExports.AddRange(module.Exports);
-            allEffectDefs.AddRange(module.EffectDefs);
+            allDefinitions.AddRange(chapter.Definitions);
+            allTypeDefinitions.AddRange(chapter.TypeDefinitions);
+            allClaims.AddRange(chapter.Claims);
+            allProofs.AddRange(chapter.Proofs);
+            allImports.AddRange(chapter.Imports);
+            allExports.AddRange(chapter.Exports);
+            allEffectDefs.AddRange(chapter.EffectDefs);
         }
 
         if (diagnostics.HasErrors)
@@ -44,7 +44,7 @@ sealed class ViewConsistencyChecker : IViewConsistencyChecker
         SourceSpan combinedSpan = allDefinitions.Count > 0
             ? allDefinitions[0].Span
             : SourceSpan.Single(0, 1, 1, "<view>");
-        Module combined = new(
+        Chapter combined = new(
             QualifiedName.Simple("view"),
             allDefinitions,
             allTypeDefinitions,
@@ -57,30 +57,30 @@ sealed class ViewConsistencyChecker : IViewConsistencyChecker
             EffectDefs = allEffectDefs
         };
 
-        NameResolver resolver = new(diagnostics, new CompositeModuleLoader([]));
-        ResolvedModule resolved = resolver.Resolve(combined);
+        NameResolver resolver = new(diagnostics, new CompositeChapterLoader([]));
+        ResolvedChapter resolved = resolver.Resolve(combined);
 
         if (diagnostics.HasErrors)
             return ToResult(diagnostics);
 
         TypeChecker checker = new(diagnostics);
 
-        foreach (ResolvedModule imported in resolved.ImportedModules)
-            checker.ImportModule(imported.Module, imported.ExportedNames);
+        foreach (ResolvedChapter imported in resolved.ImportedChapters)
+            checker.ImportChapter(imported.Chapter, imported.ExportedNames);
 
-        Map<string, CodexType> types = checker.CheckModule(resolved.Module);
+        Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
         if (diagnostics.HasErrors)
             return ToResult(diagnostics);
 
         LinearityChecker linearityChecker = new(diagnostics, types);
-        linearityChecker.CheckModule(resolved.Module);
+        linearityChecker.CheckChapter(resolved.Chapter);
 
         if (diagnostics.HasErrors)
             return ToResult(diagnostics);
 
         ProofChecker proofChecker = new(diagnostics);
-        proofChecker.CheckModule(resolved.Module, types);
+        proofChecker.CheckChapter(resolved.Chapter, types);
 
         int claimCount = allClaims.Count;
         int provenCount = allProofs.Count;

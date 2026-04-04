@@ -14,7 +14,7 @@ public sealed class GoEmitter : ICodeEmitter
     public string TargetName => "Go";
     public string FileExtension => ".go";
 
-    public string Emit(IRModule module)
+    public string Emit(IRChapter module)
     {
         m_constructorNames = CollectConstructorNames(module);
         m_definitionArity = ValueMap<string, int>.s_empty;
@@ -75,14 +75,14 @@ public sealed class GoEmitter : ICodeEmitter
             if (module.Definitions.Length == 0)
                 sb.AppendLine("\tfmt.Println(\"All proofs verified at compile time.\")");
             else
-                sb.AppendLine("\tfmt.Println(\"Module loaded.\")");
+                sb.AppendLine("\tfmt.Println(\"Chapter loaded.\")");
             sb.AppendLine("}");
         }
 
         return sb.ToString();
     }
 
-    static void EmitTypeDefinitions(StringBuilder sb, IRModule module)
+    static void EmitTypeDefinitions(StringBuilder sb, IRChapter module)
     {
         foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
         {
@@ -855,7 +855,7 @@ public sealed class GoEmitter : ICodeEmitter
         return current is IRName name && s_multiArgBuiltins.Contains(name.Name) ? name.Name : null;
     }
 
-    static Set<string> CollectConstructorNames(IRModule module)
+    static Set<string> CollectConstructorNames(IRChapter module)
     {
         Set<string> names = Set<string>.s_empty;
         foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)

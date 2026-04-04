@@ -20,44 +20,44 @@ public sealed class Lowering(
 
     static readonly Map<string, CodexType> s_builtinTypes = BuildBuiltinTypes();
 
-    public IRModule Lower(Module module)
+    public IRChapter Lower(Chapter chapter)
     {
         ImmutableArray<IRDefinition>.Builder allDefs = ImmutableArray.CreateBuilder<IRDefinition>();
-        foreach (Definition def in module.Definitions)
+        foreach (Definition def in chapter.Definitions)
             allDefs.Add(LowerDefinition(def));
 
-        // Build sections: group typedefs and definitions by SourceModule
+        // Build sections: group typedefs and definitions by SourceChapter
         ImmutableArray<IRDefinition> loweredDefs = allDefs.ToImmutable();
-        ImmutableArray<IRModuleSection>.Builder sections = ImmutableArray.CreateBuilder<IRModuleSection>();
+        ImmutableArray<IRChapterSection>.Builder sections = ImmutableArray.CreateBuilder<IRChapterSection>();
         Dictionary<string, (List<(string, CodexType)> Types, List<IRDefinition> Defs)> groups = new();
-        List<string> moduleOrder = [];
+        List<string> chapterOrder = [];
         HashSet<string> seen = [];
 
-        foreach (TypeDef td in module.TypeDefinitions)
+        foreach (TypeDef td in chapter.TypeDefinitions)
         {
-            string mod = td.SourceModule ?? "";
-            if (seen.Add(mod)) { moduleOrder.Add(mod); groups[mod] = ([], []); }
+            string mod = td.SourceChapter ?? "";
+            if (seen.Add(mod)) { chapterOrder.Add(mod); groups[mod] = ([], []); }
             if (m_typeDefMap.ContainsKey(td.Name.Value))
                 groups[mod].Types.Add((td.Name.Value, m_typeDefMap[td.Name.Value]!));
         }
 
-        for (int i = 0; i < module.Definitions.Count; i++)
+        for (int i = 0; i < chapter.Definitions.Count; i++)
         {
-            string mod = module.Definitions[i].SourceModule ?? "";
-            if (seen.Add(mod)) { moduleOrder.Add(mod); groups[mod] = ([], []); }
+            string mod = chapter.Definitions[i].SourceChapter ?? "";
+            if (seen.Add(mod)) { chapterOrder.Add(mod); groups[mod] = ([], []); }
             groups[mod].Defs.Add(loweredDefs[i]);
         }
 
-        foreach (string mod in moduleOrder)
+        foreach (string mod in chapterOrder)
         {
             var g = groups[mod];
-            sections.Add(new IRModuleSection(
+            sections.Add(new IRChapterSection(
                 mod,
                 [.. g.Types],
                 [.. g.Defs]));
         }
 
-        return new(module.Name, loweredDefs, m_typeDefMap)
+        return new(chapter.Name, loweredDefs, m_typeDefMap)
         {
             Sections = sections.ToImmutable()
         };

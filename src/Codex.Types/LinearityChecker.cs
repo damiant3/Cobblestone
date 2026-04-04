@@ -10,9 +10,9 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
     ValueMap<string, int> m_usageCounts = ValueMap<string, int>.s_empty;
     Map<string, CodexType> m_linearBindings = Map<string, CodexType>.s_empty;
 
-    public void CheckModule(Module module)
+    public void CheckChapter(Chapter chapter)
     {
-        foreach (Definition def in module.Definitions)
+        foreach (Definition def in chapter.Definitions)
         {
             CheckDefinition(def);
         }

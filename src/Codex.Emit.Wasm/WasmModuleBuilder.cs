@@ -144,7 +144,7 @@ sealed partial class WasmModuleBuilder
     int m_printBoolIndex;
     int m_strEqIndex;
 
-    public void EmitModule(IRModule module)
+    public void EmitModule(IRChapter module)
     {
         EmitImports();
         EmitRuntimeGlobals();

@@ -12,14 +12,14 @@ sealed class PackageResolver(string projectDirectory, DiagnosticBag diagnostics)
     /// Resolves all package references for a project into module loaders.
     /// Returns loaders in dependency order (prelude first, then explicit packages).
     /// </summary>
-    public List<IModuleLoader> ResolveAll(Program.CodexProject project)
+    public List<IChapterLoader> ResolveAll(Program.CodexProject project)
     {
-        List<IModuleLoader> loaders = [];
+        List<IChapterLoader> loaders = [];
 
         // Always include prelude unless this IS the prelude
         if (!project.Prelude)
         {
-            PreludeModuleLoader? prelude = PreludeModuleLoader.TryCreate(m_diagnostics);
+            PreludeChapterLoader? prelude = PreludeChapterLoader.TryCreate(m_diagnostics);
             if (prelude is not null)
                 loaders.Add(prelude);
         }
@@ -27,7 +27,7 @@ sealed class PackageResolver(string projectDirectory, DiagnosticBag diagnostics)
         // Resolve explicit path dependencies (existing behavior)
         foreach (string dep in project.Dependencies)
         {
-            ProjectModuleLoader? depLoader = ProjectModuleLoader.TryCreate(
+            ProjectChapterLoader? depLoader = ProjectChapterLoader.TryCreate(
                 dep, m_projectDirectory, m_diagnostics);
             if (depLoader is not null)
             {
@@ -42,7 +42,7 @@ sealed class PackageResolver(string projectDirectory, DiagnosticBag diagnostics)
         // Resolve named packages
         foreach (Program.PackageRef pkg in project.Packages)
         {
-            IModuleLoader? loader = ResolvePackage(pkg);
+            IChapterLoader? loader = ResolvePackage(pkg);
             if (loader is not null)
             {
                 loaders.Add(loader);
@@ -62,19 +62,19 @@ sealed class PackageResolver(string projectDirectory, DiagnosticBag diagnostics)
     /// 2. Local cache (~/.codex/packages/)
     /// 3. Sibling directory (../PackageName)
     /// </summary>
-    IModuleLoader? ResolvePackage(Program.PackageRef pkg)
+    IChapterLoader? ResolvePackage(Program.PackageRef pkg)
     {
         // Explicit path takes priority
         if (!string.IsNullOrEmpty(pkg.Path))
         {
-            return ProjectModuleLoader.TryCreate(pkg.Path, m_projectDirectory, m_diagnostics);
+            return ProjectChapterLoader.TryCreate(pkg.Path, m_projectDirectory, m_diagnostics);
         }
 
         // Check local cache
         string? cachePath = FindInCache(pkg.Name, pkg.Version);
         if (cachePath is not null)
         {
-            return ProjectModuleLoader.TryCreate(cachePath, "/", m_diagnostics);
+            return ProjectChapterLoader.TryCreate(cachePath, "/", m_diagnostics);
         }
 
         // Check sibling directories (convention: ../PackageName)
@@ -85,7 +85,7 @@ sealed class PackageResolver(string projectDirectory, DiagnosticBag diagnostics)
             Program.CodexProject? siblingProject = Program.LoadProjectFile(fullSibling);
             if (siblingProject is not null && VersionMatches(siblingProject.Version, pkg.Version))
             {
-                return ProjectModuleLoader.TryCreate(
+                return ProjectChapterLoader.TryCreate(
                     fullSibling, "/", m_diagnostics);
             }
         }

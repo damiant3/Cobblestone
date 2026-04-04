@@ -15,7 +15,7 @@ public sealed class RustEmitter : ICodeEmitter
     public string TargetName => "Rust";
     public string FileExtension => ".rs";
 
-    public string Emit(IRModule module)
+    public string Emit(IRChapter module)
     {
         m_constructorNames = CollectConstructorNames(module);
         m_constructorToEnum = BuildConstructorToEnumMap(module);
@@ -58,14 +58,14 @@ public sealed class RustEmitter : ICodeEmitter
             if (module.Definitions.Length == 0)
                 sb.AppendLine("    println!(\"All proofs verified at compile time.\");");
             else
-                sb.AppendLine("    println!(\"Module loaded.\");");
+                sb.AppendLine("    println!(\"Chapter loaded.\");");
             sb.AppendLine("}");
         }
 
         return sb.ToString();
     }
 
-    static void EmitTypeDefinitions(StringBuilder sb, IRModule module)
+    static void EmitTypeDefinitions(StringBuilder sb, IRChapter module)
     {
         foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
         {
@@ -758,7 +758,7 @@ public sealed class RustEmitter : ICodeEmitter
         return parent ?? "";
     }
 
-    static Map<string, string> BuildConstructorToEnumMap(IRModule module)
+    static Map<string, string> BuildConstructorToEnumMap(IRChapter module)
     {
         Map<string, string> map = Map<string, string>.s_empty;
         foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
@@ -859,7 +859,7 @@ public sealed class RustEmitter : ICodeEmitter
         }
     }
 
-    static Set<string> CollectConstructorNames(IRModule module)
+    static Set<string> CollectConstructorNames(IRChapter module)
     {
         Set<string> names = Set<string>.s_empty;
         foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)

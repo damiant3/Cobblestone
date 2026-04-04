@@ -151,19 +151,19 @@ public class CapabilityCheckerTests
         Codex.Syntax.DocumentNode document = parser.ParseDocument();
 
         Codex.Ast.Desugarer desugarer = new(diagnostics);
-        Codex.Ast.Module module = desugarer.Desugar(document, "test");
+        Codex.Ast.Chapter module = desugarer.Desugar(document, "test");
         if (diagnostics.HasErrors) return null;
 
         Codex.Semantics.NameResolver resolver = new(diagnostics);
-        Codex.Semantics.ResolvedModule resolved = resolver.Resolve(module);
+        Codex.Semantics.ResolvedChapter resolved = resolver.Resolve(module);
         if (diagnostics.HasErrors) return null;
 
         TypeChecker checker = new(diagnostics);
-        Map<string, CodexType> types = checker.CheckModule(resolved.Module);
+        Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
         if (diagnostics.HasErrors) return null;
 
         CapabilityChecker capChecker = new(diagnostics, types);
-        return capChecker.CheckModule(resolved.Module);
+        return capChecker.CheckChapter(resolved.Chapter);
     }
 
     static DiagnosticBag CheckWithGrants(string source, string[] grants)
@@ -177,20 +177,20 @@ public class CapabilityCheckerTests
         Codex.Syntax.DocumentNode document = parser.ParseDocument();
 
         Codex.Ast.Desugarer desugarer = new(diagnostics);
-        Codex.Ast.Module module = desugarer.Desugar(document, "test");
+        Codex.Ast.Chapter module = desugarer.Desugar(document, "test");
 
         Codex.Semantics.NameResolver resolver = new(diagnostics);
-        Codex.Semantics.ResolvedModule resolved = resolver.Resolve(module);
+        Codex.Semantics.ResolvedChapter resolved = resolver.Resolve(module);
 
         TypeChecker checker = new(diagnostics);
-        Map<string, CodexType> types = checker.CheckModule(resolved.Module);
+        Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
         Set<string> grantSet = Set<string>.s_empty;
         foreach (string g in grants)
             grantSet = grantSet.Add(g);
 
         CapabilityChecker capChecker = new(diagnostics, types);
-        capChecker.CheckModule(resolved.Module, grantSet);
+        capChecker.CheckChapter(resolved.Chapter, grantSet);
         return diagnostics;
     }
 

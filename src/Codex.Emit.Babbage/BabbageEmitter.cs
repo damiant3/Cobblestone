@@ -16,7 +16,7 @@ public sealed class BabbageEmitter : ICodeEmitter
     public string TargetName => "Babbage Analytical Engine";
     public string FileExtension => ".ae";
 
-    public string Emit(IRModule module)
+    public string Emit(IRChapter module)
     {
         m_nextStore = 10;
         m_storeMap = ValueMap<string, int>.s_empty;
@@ -64,7 +64,7 @@ public sealed class BabbageEmitter : ICodeEmitter
             if (module.Definitions.Length == 0)
                 sb.AppendLine(". All proofs verified. No computation required.");
             else
-                sb.AppendLine(". No entry point. Module loaded.");
+                sb.AppendLine(". No entry point. Chapter loaded.");
             sb.AppendLine();
             sb.AppendLine("H  . Halt the Engine");
         }

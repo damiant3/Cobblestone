@@ -58,7 +58,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Reg.S7, Reg.S8, Reg.S9
     };
 
-    public void EmitModule(IRModule module)
+    public void EmitModule(IRChapter module)
     {
         // Bare metal: reserve first instruction slot for jump-to-start trampoline.
         // CPU begins execution at byte 0, but _start is emitted after all functions.
@@ -4441,7 +4441,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
     // ── _start ───────────────────────────────────────────────────
 
-    void EmitStart(IRModule module)
+    void EmitStart(IRChapter module)
     {
         m_functionOffsets["__start"] = m_instructions.Count;
 

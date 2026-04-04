@@ -119,8 +119,8 @@ public static partial class Program
         string fullDir = Path.GetFullPath(directory);
         DiagnosticBag depDiag = new();
         PackageResolver packageResolver = new(fullDir, depDiag);
-        List<Codex.Semantics.IModuleLoader> depLoaders = packageResolver.ResolveAll(project);
-        IReadOnlyList<Codex.Semantics.IModuleLoader>? extraLoaders =
+        List<Codex.Semantics.IChapterLoader> depLoaders = packageResolver.ResolveAll(project);
+        IReadOnlyList<Codex.Semantics.IChapterLoader>? extraLoaders =
             depLoaders.Count > 0 ? depLoaders : null;
 
         if (depLoaders.Count > 0)
@@ -166,7 +166,7 @@ public static partial class Program
         }
 
         Codex.Emit.ICodeEmitter emitter = CreateEmitter(target);
-        string output = emitter.Emit(irResult.Module);
+        string output = emitter.Emit(irResult.Chapter);
         string fullOutputPath = Path.Combine(outputDir, project.Name + emitter.FileExtension);
         File.WriteAllText(fullOutputPath, output);
 
@@ -183,17 +183,17 @@ public static partial class Program
             return 1;
         }
         Array.Sort(files, StringComparer.Ordinal);
-        string moduleName = Path.GetFileName(Path.GetFullPath(directory));
-        IRCompilationResult? irResult = CompileMultipleToIR(files, moduleName);
+        string chapterName = Path.GetFileName(Path.GetFullPath(directory));
+        IRCompilationResult? irResult = CompileMultipleToIR(files, chapterName);
         if (irResult is null) return 1;
 
         if (IsAssemblyTarget(target))
         {
-            return EmitAssembly(irResult, directory, moduleName, target);
+            return EmitAssembly(irResult, directory, chapterName, target);
         }
 
         Codex.Emit.ICodeEmitter emitter = CreateEmitter(target);
-        string output = emitter.Emit(irResult.Module);
+        string output = emitter.Emit(irResult.Chapter);
         string outputPath = Path.Combine(directory, "output" + emitter.FileExtension);
         File.WriteAllText(outputPath, output);
 
@@ -212,12 +212,12 @@ public static partial class Program
             string outputDir = outputDirOverride is not null
                 ? Path.GetFullPath(outputDirOverride)
                 : Path.GetDirectoryName(Path.GetFullPath(filePath)) ?? ".";
-            string moduleName = Path.GetFileNameWithoutExtension(filePath);
-            return EmitAssembly(irResult, outputDir, moduleName, target);
+            string chapterName = Path.GetFileNameWithoutExtension(filePath);
+            return EmitAssembly(irResult, outputDir, chapterName, target);
         }
 
         Codex.Emit.ICodeEmitter emitter = CreateEmitter(target);
-        string output = emitter.Emit(irResult.Module);
+        string output = emitter.Emit(irResult.Chapter);
         string outputPath = outputDirOverride is not null
             ? Path.Combine(Path.GetFullPath(outputDirOverride), Path.GetFileNameWithoutExtension(filePath) + emitter.FileExtension)
             : Path.ChangeExtension(filePath, emitter.FileExtension);
@@ -255,7 +255,7 @@ public static partial class Program
             return EmitAssembly(irResult, outputDir, viewName, target);
 
         Codex.Emit.ICodeEmitter emitter = CreateEmitter(target);
-        string output = emitter.Emit(irResult.Module);
+        string output = emitter.Emit(irResult.Chapter);
         string outputPath = Path.Combine(outputDir, viewName + emitter.FileExtension);
         File.WriteAllText(outputPath, output);
 
@@ -289,16 +289,16 @@ public static partial class Program
 
     static bool IsAssemblyTarget(string target) => target is "il" or "exe" or "riscv" or "riscv-bare" or "wasm" or "arm64" or "x86-64" or "x86-64-bare";
 
-    static int EmitAssembly(IRCompilationResult irResult, string outputDir, string moduleName, string target)
+    static int EmitAssembly(IRCompilationResult irResult, string outputDir, string chapterName, string target)
     {
         if (target is "riscv" or "riscv-bare")
         {
             Emit.RiscV.RiscVTarget rvTarget = target == "riscv-bare"
                 ? Emit.RiscV.RiscVTarget.BareMetal : Emit.RiscV.RiscVTarget.LinuxUser;
             Emit.RiscV.RiscVEmitter rvEmitter = new(rvTarget);
-            byte[] elf = rvEmitter.EmitAssembly(irResult.Module, moduleName);
+            byte[] elf = rvEmitter.EmitAssembly(irResult.Chapter, chapterName);
             string ext = target == "riscv-bare" ? ".bin" : "";
-            string outputPath = Path.Combine(outputDir, moduleName + ext);
+            string outputPath = Path.Combine(outputDir, chapterName + ext);
             File.WriteAllBytes(outputPath, elf);
             Console.WriteLine($"✓ Compiled to {outputPath} ({target}, {elf.Length:N0} bytes)");
             PrintTypes(irResult);
@@ -308,8 +308,8 @@ public static partial class Program
         if (target == "wasm")
         {
             Emit.Wasm.WasmEmitter wasmEmitter = new();
-            byte[] wasm = wasmEmitter.EmitAssembly(irResult.Module, moduleName);
-            string outputPath = Path.Combine(outputDir, moduleName + ".wasm");
+            byte[] wasm = wasmEmitter.EmitAssembly(irResult.Chapter, chapterName);
+            string outputPath = Path.Combine(outputDir, chapterName + ".wasm");
             File.WriteAllBytes(outputPath, wasm);
             Console.WriteLine($"✓ Compiled to {outputPath} ({target}, {wasm.Length:N0} bytes)");
             PrintTypes(irResult);
@@ -319,8 +319,8 @@ public static partial class Program
         if (target == "arm64")
         {
             Emit.Arm64.Arm64Emitter arm64Emitter = new();
-            byte[] elf = arm64Emitter.EmitAssembly(irResult.Module, moduleName);
-            string outputPath = Path.Combine(outputDir, moduleName);
+            byte[] elf = arm64Emitter.EmitAssembly(irResult.Chapter, chapterName);
+            string outputPath = Path.Combine(outputDir, chapterName);
             File.WriteAllBytes(outputPath, elf);
             Console.WriteLine($"✓ Compiled to {outputPath} ({target}, {elf.Length:N0} bytes)");
             PrintTypes(irResult);
@@ -332,9 +332,9 @@ public static partial class Program
             Emit.X86_64.X86_64Target x64Target = target == "x86-64-bare"
                 ? Emit.X86_64.X86_64Target.BareMetal : Emit.X86_64.X86_64Target.LinuxUser;
             Emit.X86_64.X86_64Emitter x64Emitter = new(x64Target, s_diagnostic);
-            byte[] elf = x64Emitter.EmitAssembly(irResult.Module, moduleName);
+            byte[] elf = x64Emitter.EmitAssembly(irResult.Chapter, chapterName);
             string ext = target == "x86-64-bare" ? ".elf" : "";
-            string outputPath = Path.Combine(outputDir, moduleName + ext);
+            string outputPath = Path.Combine(outputDir, chapterName + ext);
             File.WriteAllBytes(outputPath, elf);
             Console.WriteLine($"✓ Compiled to {outputPath} ({target}, {elf.Length:N0} bytes)");
             PrintTypes(irResult);
@@ -360,13 +360,13 @@ public static partial class Program
         }
 
         Emit.IL.ILEmitter emitter = new();
-        byte[] assembly = emitter.EmitAssembly(irResult.Module, moduleName);
+        byte[] assembly = emitter.EmitAssembly(irResult.Chapter, chapterName);
 
         // Write managed assembly as .dll — the native apphost .exe will load it
-        string dllPath = Path.Combine(outputDir, moduleName + ".dll");
+        string dllPath = Path.Combine(outputDir, chapterName + ".dll");
         File.WriteAllBytes(dllPath, assembly);
 
-        string runtimeConfigPath = Path.Combine(outputDir, moduleName + ".runtimeconfig.json");
+        string runtimeConfigPath = Path.Combine(outputDir, chapterName + ".runtimeconfig.json");
         File.WriteAllText(runtimeConfigPath, """
             {
               "runtimeOptions": {
@@ -380,11 +380,11 @@ public static partial class Program
             """);
 
         // Generate native apphost .exe stub that bootstraps the .NET runtime
-        string exePath = Path.Combine(outputDir, moduleName + ".exe");
-        bool appHostCreated = TryCreateAppHost(dllPath, exePath, moduleName + ".dll");
+        string exePath = Path.Combine(outputDir, chapterName + ".exe");
+        bool appHostCreated = TryCreateAppHost(dllPath, exePath, chapterName + ".dll");
 
         if (appHostCreated)
-            Console.WriteLine($"✓ Compiled to {exePath} ({target}, apphost + {moduleName}.dll)");
+            Console.WriteLine($"✓ Compiled to {exePath} ({target}, apphost + {chapterName}.dll)");
         else
             Console.WriteLine($"✓ Compiled to {dllPath} ({target}, run with: dotnet {dllPath})");
 

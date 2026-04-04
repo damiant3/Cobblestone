@@ -14,14 +14,14 @@ public sealed class CodexEmitter : ICodeEmitter
     public string TargetName => "Codex";
     public string FileExtension => ".codex";
 
-    public string Emit(IRModule module)
+    public string Emit(IRChapter module)
     {
         m_constructorNames = CollectConstructorNames(module);
         StringBuilder sb = new();
 
         if (!module.Sections.IsDefault && module.Sections.Length > 0)
         {
-            foreach (IRModuleSection section in module.Sections)
+            foreach (IRChapterSection section in module.Sections)
             {
                 foreach ((string tdName, CodexType tdType) in section.TypeDefinitions)
                 {
@@ -591,7 +591,7 @@ public sealed class CodexEmitter : ICodeEmitter
 
     // ── Utilities ────────────────────────────────────────────────
 
-    static Set<string> CollectConstructorNames(IRModule module)
+    static Set<string> CollectConstructorNames(IRChapter module)
     {
         Set<string> names = Set<string>.s_empty;
         foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)

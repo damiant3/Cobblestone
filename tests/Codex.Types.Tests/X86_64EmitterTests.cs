@@ -384,23 +384,23 @@ public class X86_64EmitterTests
         Assert.Equal((byte)'F', bytes[3]);
     }
 
-    static string? CompileAndRun(string source, string moduleName)
+    static string? CompileAndRun(string source, string chapterName)
     {
-        byte[]? bytes = Helpers.CompileToX86_64(source, moduleName);
+        byte[]? bytes = Helpers.CompileToX86_64(source, chapterName);
         if (bytes is null) return null;
 
         if (!IsWslAvailable()) return null;
 
         string tempDir = Path.Combine(Path.GetTempPath(),
-            "codex_x64_test_" + moduleName + "_" + Guid.NewGuid().ToString("N")[..8]);
+            "codex_x64_test_" + chapterName + "_" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(tempDir);
         try
         {
-            string elfPath = Path.Combine(tempDir, moduleName);
+            string elfPath = Path.Combine(tempDir, chapterName);
             File.WriteAllBytes(elfPath, bytes);
 
             string wslPath = ToWslPath(elfPath);
-            string wslTmp = $"/tmp/codex_x64_{moduleName}_{Guid.NewGuid().ToString("N")[..8]}";
+            string wslTmp = $"/tmp/codex_x64_{chapterName}_{Guid.NewGuid().ToString("N")[..8]}";
 
             // Copy into WSL filesystem, make executable, run natively (x86-64 on x86-64 = no QEMU)
             // Use 'wsl' explicitly — 'bash' on Windows may be Git Bash, not WSL

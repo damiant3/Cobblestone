@@ -2,7 +2,7 @@ using Codex.Core;
 
 namespace Codex.Ast;
 
-public sealed record Module(
+public sealed record Chapter(
     QualifiedName Name,
     IReadOnlyList<Definition> Definitions,
     IReadOnlyList<TypeDef> TypeDefinitions,
@@ -22,12 +22,12 @@ public sealed record Definition(
     Expr Body,
     SourceSpan Span)
 {
-    public string? SourceModule { get; init; }
+    public string? SourceChapter { get; init; }
 }
 
 public sealed record Parameter(Name Name, TypeExpr? TypeAnnotation, SourceSpan Span);
 
-public sealed record ImportDecl(Name ModuleName, SourceSpan Span)
+public sealed record ImportDecl(Name ChapterName, SourceSpan Span)
 {
     public IReadOnlyList<Name> SelectedNames { get; init; } = [];
 }
@@ -147,7 +147,7 @@ public sealed record ProofConstraintExpr(TypeExpr Left, BinaryOp Op, TypeExpr Ri
 
 public abstract record TypeDef(Name Name, IReadOnlyList<Name> TypeParameters, SourceSpan Span)
 {
-    public string? SourceModule { get; init; }
+    public string? SourceChapter { get; init; }
 }
 
 public sealed record RecordTypeDef(

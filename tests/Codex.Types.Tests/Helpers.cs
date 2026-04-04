@@ -12,7 +12,7 @@ namespace Codex.Types.Tests
 {
     public static class Helpers
     {
-        public static DiagnosticBag CheckWithProofs(string source, string moduleName = "test")
+        public static DiagnosticBag CheckWithProofs(string source, string chapterName = "test")
         {
             SourceText src = new("test.codex", source);
             DiagnosticBag diagnostics = new();
@@ -23,23 +23,23 @@ namespace Codex.Types.Tests
             DocumentNode document = parser.ParseDocument();
 
             Desugarer desugarer = new(diagnostics);
-            Module module = desugarer.Desugar(document, moduleName);
+            Chapter chapter = desugarer.Desugar(document, chapterName);
             if (diagnostics.HasErrors) return diagnostics;
 
             NameResolver resolver = new(diagnostics);
-            ResolvedModule resolved = resolver.Resolve(module);
+            ResolvedChapter resolved = resolver.Resolve(chapter);
             if (diagnostics.HasErrors) return diagnostics;
 
             TypeChecker checker = new(diagnostics);
-            Map<string, CodexType> types = checker.CheckModule(resolved.Module);
+            Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
             if (diagnostics.HasErrors) return diagnostics;
 
             Codex.Proofs.ProofChecker proofChecker = new(diagnostics);
-            proofChecker.CheckModule(resolved.Module, types);
+            proofChecker.CheckChapter(resolved.Chapter, types);
             return diagnostics;
         }
 
-        public static DiagnosticBag CheckWithLinearity(string source, string moduleName = "test")
+        public static DiagnosticBag CheckWithLinearity(string source, string chapterName = "test")
         {
             SourceText src = new("test.codex", source);
             DiagnosticBag diagnostics = new();
@@ -50,21 +50,21 @@ namespace Codex.Types.Tests
             DocumentNode document = parser.ParseDocument();
 
             Desugarer desugarer = new(diagnostics);
-            Module module = desugarer.Desugar(document, moduleName);
+            Chapter chapter = desugarer.Desugar(document, chapterName);
 
             NameResolver resolver = new(diagnostics);
-            ResolvedModule resolved = resolver.Resolve(module);
+            ResolvedChapter resolved = resolver.Resolve(chapter);
 
             TypeChecker checker = new(diagnostics);
-            Map<string, CodexType> types = checker.CheckModule(resolved.Module);
+            Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
             LinearityChecker linearityChecker = new(diagnostics, types);
-            linearityChecker.CheckModule(resolved.Module);
+            linearityChecker.CheckChapter(resolved.Chapter);
 
             return diagnostics;
         }
 
-        public static DiagnosticBag TypeCheckWithDiagnostics(string source, string moduleName = "test")
+        public static DiagnosticBag TypeCheckWithDiagnostics(string source, string chapterName = "test")
         {
             SourceText src = new("test.codex", source);
             DiagnosticBag diagnostics = new();
@@ -75,91 +75,91 @@ namespace Codex.Types.Tests
             DocumentNode document = parser.ParseDocument();
 
             Desugarer desugarer = new(diagnostics);
-            Module module = desugarer.Desugar(document, moduleName);
+            Chapter chapter = desugarer.Desugar(document, chapterName);
 
             NameResolver resolver = new(diagnostics);
-            ResolvedModule resolved = resolver.Resolve(module);
+            ResolvedChapter resolved = resolver.Resolve(chapter);
 
             TypeChecker checker = new(diagnostics);
-            checker.CheckModule(resolved.Module);
+            checker.CheckChapter(resolved.Chapter);
             return diagnostics;
         }
 
 
-        public static string? CompileToCodex(string source, string moduleName = "test")
+        public static string? CompileToCodex(string source, string chapterName = "test")
         {
-            return CompileToTarget(source, moduleName, new CodexEmitter());
+            return CompileToTarget(source, chapterName, new CodexEmitter());
         }
 
-        public static string? CompileToCS(string source, string moduleName = "test")
+        public static string? CompileToCS(string source, string chapterName = "test")
         {
-            return CompileToTarget(source, moduleName, new CSharpEmitter());
+            return CompileToTarget(source, chapterName, new CSharpEmitter());
         }
 
 #if LEGACY_EMITTERS
-        public static string? CompileToJS(string source, string moduleName = "test")
+        public static string? CompileToJS(string source, string chapterName = "test")
         {
-            return CompileToTarget(source, moduleName, new Codex.Emit.JavaScript.JavaScriptEmitter());
+            return CompileToTarget(source, chapterName, new Codex.Emit.JavaScript.JavaScriptEmitter());
         }
 
-        public static string? CompileToPython(string source, string moduleName = "test")
+        public static string? CompileToPython(string source, string chapterName = "test")
         {
-            return CompileToTarget(source, moduleName, new Codex.Emit.Python.PythonEmitter());
+            return CompileToTarget(source, chapterName, new Codex.Emit.Python.PythonEmitter());
         }
 
-        public static string? CompileToRust(string source, string moduleName = "test")
+        public static string? CompileToRust(string source, string chapterName = "test")
         {
-            return CompileToTarget(source, moduleName, new Codex.Emit.Rust.RustEmitter());
+            return CompileToTarget(source, chapterName, new Codex.Emit.Rust.RustEmitter());
         }
 
-        public static string? CompileToCpp(string source, string moduleName = "test")
+        public static string? CompileToCpp(string source, string chapterName = "test")
         {
-            return CompileToTarget(source, moduleName, new Codex.Emit.Cpp.CppEmitter());
+            return CompileToTarget(source, chapterName, new Codex.Emit.Cpp.CppEmitter());
         }
 
-        public static string? CompileToGo(string source, string moduleName = "test")
+        public static string? CompileToGo(string source, string chapterName = "test")
         {
-            return CompileToTarget(source, moduleName, new Codex.Emit.Go.GoEmitter());
+            return CompileToTarget(source, chapterName, new Codex.Emit.Go.GoEmitter());
         }
 
-        public static string? CompileToJava(string source, string moduleName = "test")
+        public static string? CompileToJava(string source, string chapterName = "test")
         {
-            return CompileToTarget(source, moduleName, new Codex.Emit.Java.JavaEmitter());
+            return CompileToTarget(source, chapterName, new Codex.Emit.Java.JavaEmitter());
         }
 
-        public static string? CompileToAda(string source, string moduleName = "test")
+        public static string? CompileToAda(string source, string chapterName = "test")
         {
-            return CompileToTarget(source, moduleName, new Codex.Emit.Ada.AdaEmitter());
+            return CompileToTarget(source, chapterName, new Codex.Emit.Ada.AdaEmitter());
         }
 
-        public static string? CompileToBabbage(string source, string moduleName = "test")
+        public static string? CompileToBabbage(string source, string chapterName = "test")
         {
-            return CompileToTarget(source, moduleName, new Codex.Emit.Babbage.BabbageEmitter());
+            return CompileToTarget(source, chapterName, new Codex.Emit.Babbage.BabbageEmitter());
         }
 
-        public static string? CompileToFortran(string source, string moduleName = "test")
+        public static string? CompileToFortran(string source, string chapterName = "test")
         {
-            return CompileToTarget(source, moduleName, new Codex.Emit.Fortran.FortranEmitter());
+            return CompileToTarget(source, chapterName, new Codex.Emit.Fortran.FortranEmitter());
         }
 
-        public static string? CompileToCobol(string source, string moduleName = "test")
+        public static string? CompileToCobol(string source, string chapterName = "test")
         {
-            return CompileToTarget(source, moduleName, new Codex.Emit.Cobol.CobolEmitter());
+            return CompileToTarget(source, chapterName, new Codex.Emit.Cobol.CobolEmitter());
         }
 #else
-        public static string? CompileToJS(string source, string moduleName = "test") => null;
-        public static string? CompileToPython(string source, string moduleName = "test") => null;
-        public static string? CompileToRust(string source, string moduleName = "test") => null;
-        public static string? CompileToCpp(string source, string moduleName = "test") => null;
-        public static string? CompileToGo(string source, string moduleName = "test") => null;
-        public static string? CompileToJava(string source, string moduleName = "test") => null;
-        public static string? CompileToAda(string source, string moduleName = "test") => null;
-        public static string? CompileToBabbage(string source, string moduleName = "test") => null;
-        public static string? CompileToFortran(string source, string moduleName = "test") => null;
-        public static string? CompileToCobol(string source, string moduleName = "test") => null;
+        public static string? CompileToJS(string source, string chapterName = "test") => null;
+        public static string? CompileToPython(string source, string chapterName = "test") => null;
+        public static string? CompileToRust(string source, string chapterName = "test") => null;
+        public static string? CompileToCpp(string source, string chapterName = "test") => null;
+        public static string? CompileToGo(string source, string chapterName = "test") => null;
+        public static string? CompileToJava(string source, string chapterName = "test") => null;
+        public static string? CompileToAda(string source, string chapterName = "test") => null;
+        public static string? CompileToBabbage(string source, string chapterName = "test") => null;
+        public static string? CompileToFortran(string source, string chapterName = "test") => null;
+        public static string? CompileToCobol(string source, string chapterName = "test") => null;
 #endif
 
-        public static IRModule? CompileToIR(string source, string moduleName = "test")
+        public static IRChapter? CompileToIR(string source, string chapterName = "test")
         {
             SourceText src = new("test.codex", source);
             DiagnosticBag diagnostics = new();
@@ -179,72 +179,72 @@ namespace Codex.Types.Tests
             }
 
             Desugarer desugarer = new(diagnostics);
-            Module module = desugarer.Desugar(document, moduleName);
+            Chapter chapter = desugarer.Desugar(document, chapterName);
             if (diagnostics.HasErrors) return null;
 
             NameResolver resolver = new(diagnostics);
-            ResolvedModule resolved = resolver.Resolve(module);
+            ResolvedChapter resolved = resolver.Resolve(chapter);
             if (diagnostics.HasErrors) return null;
 
             TypeChecker checker = new(diagnostics);
-            Map<string, CodexType> types = checker.CheckModule(resolved.Module);
+            Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
             if (diagnostics.HasErrors) return null;
 
             LinearityChecker linearityChecker = new(diagnostics, types);
-            linearityChecker.CheckModule(resolved.Module);
+            linearityChecker.CheckChapter(resolved.Chapter);
             if (diagnostics.HasErrors) return null;
 
             Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, diagnostics);
-            IRModule irModule = lowering.Lower(resolved.Module);
+            IRChapter irModule = lowering.Lower(resolved.Chapter);
             if (diagnostics.HasErrors) return null;
 
             return irModule;
         }
 
-        public static byte[]? CompileToIL(string source, string moduleName = "test")
+        public static byte[]? CompileToIL(string source, string chapterName = "test")
         {
-            IRModule? irModule = CompileToIR(source, moduleName);
+            IRChapter? irModule = CompileToIR(source, chapterName);
             if (irModule is null) return null;
             ILEmitter emitter = new();
-            return emitter.EmitAssembly(irModule, moduleName);
+            return emitter.EmitAssembly(irModule, chapterName);
         }
 
-        public static byte[]? CompileToRiscV(string source, string moduleName = "test")
+        public static byte[]? CompileToRiscV(string source, string chapterName = "test")
         {
-            return CompileToRiscVTarget(source, moduleName, Codex.Emit.RiscV.RiscVTarget.LinuxUser);
+            return CompileToRiscVTarget(source, chapterName, Codex.Emit.RiscV.RiscVTarget.LinuxUser);
         }
 
-        public static byte[]? CompileToRiscVBareMetal(string source, string moduleName = "test")
+        public static byte[]? CompileToRiscVBareMetal(string source, string chapterName = "test")
         {
-            return CompileToRiscVTarget(source, moduleName, Codex.Emit.RiscV.RiscVTarget.BareMetal);
+            return CompileToRiscVTarget(source, chapterName, Codex.Emit.RiscV.RiscVTarget.BareMetal);
         }
 
-        static byte[]? CompileToRiscVTarget(string source, string moduleName, Codex.Emit.RiscV.RiscVTarget target)
+        static byte[]? CompileToRiscVTarget(string source, string chapterName, Codex.Emit.RiscV.RiscVTarget target)
         {
-            IRModule? irModule = CompileToIR(source, moduleName);
+            IRChapter? irModule = CompileToIR(source, chapterName);
             if (irModule is null) return null;
             Codex.Emit.RiscV.RiscVEmitter riscvEmitter = new(target);
-            return riscvEmitter.EmitAssembly(irModule, moduleName);
+            return riscvEmitter.EmitAssembly(irModule, chapterName);
         }
 
-        public static byte[]? CompileToWasm(string source, string moduleName = "test")
+        public static byte[]? CompileToWasm(string source, string chapterName = "test")
         {
-            IRModule? irModule = CompileToIR(source, moduleName);
+            IRChapter? irModule = CompileToIR(source, chapterName);
             if (irModule is null) return null;
             WasmEmitter emitter = new();
-            return emitter.EmitAssembly(irModule, moduleName);
+            return emitter.EmitAssembly(irModule, chapterName);
         }
 
-        public static string? CompileToTarget(string source, string moduleName, Codex.Emit.ICodeEmitter emitter)
+        public static string? CompileToTarget(string source, string chapterName, Codex.Emit.ICodeEmitter emitter)
         {
-            IRModule? irModule = CompileToIR(source, moduleName);
+            IRChapter? irModule = CompileToIR(source, chapterName);
             if (irModule is null) return null;
             return emitter.Emit(irModule);
         }
 
 
         public static Map<string, CodexType>? TypeCheck(
-            string source, string moduleName = "test")
+            string source, string chapterName = "test")
         {
             SourceText src = new("test.codex", source);
             DiagnosticBag diagnostics = new();
@@ -264,40 +264,40 @@ namespace Codex.Types.Tests
             }
 
             Desugarer desugarer = new(diagnostics);
-            Module module = desugarer.Desugar(document, moduleName);
+            Chapter chapter = desugarer.Desugar(document, chapterName);
             if (diagnostics.HasErrors) return null;
 
             NameResolver resolver = new(diagnostics);
-            ResolvedModule resolved = resolver.Resolve(module);
+            ResolvedChapter resolved = resolver.Resolve(chapter);
             if (diagnostics.HasErrors) return null;
 
             TypeChecker checker = new(diagnostics);
-            Map<string, CodexType> types = checker.CheckModule(resolved.Module);
+            Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
             return diagnostics.HasErrors ? null : types;
         }
 
-        public static byte[]? CompileToX86_64(string source, string moduleName = "test")
+        public static byte[]? CompileToX86_64(string source, string chapterName = "test")
         {
-            IRModule? irModule = CompileToIR(source, moduleName);
+            IRChapter? irModule = CompileToIR(source, chapterName);
             if (irModule is null) return null;
             Codex.Emit.X86_64.X86_64Emitter emitter = new();
-            return emitter.EmitAssembly(irModule, moduleName);
+            return emitter.EmitAssembly(irModule, chapterName);
         }
 
-        public static byte[]? CompileToX86_64BareMetal(string source, string moduleName = "test")
+        public static byte[]? CompileToX86_64BareMetal(string source, string chapterName = "test")
         {
-            IRModule? irModule = CompileToIR(source, moduleName);
+            IRChapter? irModule = CompileToIR(source, chapterName);
             if (irModule is null) return null;
             Codex.Emit.X86_64.X86_64Emitter emitter = new(Codex.Emit.X86_64.X86_64Target.BareMetal);
-            return emitter.EmitAssembly(irModule, moduleName);
+            return emitter.EmitAssembly(irModule, chapterName);
         }
 
-        public static byte[]? CompileToArm64(string source, string moduleName = "test")
+        public static byte[]? CompileToArm64(string source, string chapterName = "test")
         {
-            IRModule? irModule = CompileToIR(source, moduleName);
+            IRChapter? irModule = CompileToIR(source, chapterName);
             if (irModule is null) return null;
             Codex.Emit.Arm64.Arm64Emitter emitter = new();
-            return emitter.EmitAssembly(irModule, moduleName);
+            return emitter.EmitAssembly(irModule, chapterName);
         }
     }
 }

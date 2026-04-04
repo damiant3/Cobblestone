@@ -41,8 +41,8 @@ public static partial class Program
         DocumentNode document = ParseSourceFile(source, content, diagnostics);
 
         Desugarer desugarer = new(diagnostics);
-        string moduleName = Path.GetFileNameWithoutExtension(filePath);
-        Module module = desugarer.Desugar(document, moduleName);
+        string chapterName = Path.GetFileNameWithoutExtension(filePath);
+        Chapter chapter = desugarer.Desugar(document, chapterName);
 
         if (diagnostics.HasErrors)
         {
@@ -51,7 +51,7 @@ public static partial class Program
         }
 
         NameResolver resolver = new(diagnostics);
-        ResolvedModule resolved = resolver.Resolve(module);
+        ResolvedChapter resolved = resolver.Resolve(chapter);
 
         if (diagnostics.HasErrors)
         {
@@ -60,31 +60,31 @@ public static partial class Program
         }
 
         TypeChecker checker = new(diagnostics);
-        Map<string, CodexType> types = checker.CheckModule(resolved.Module);
+        Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return 1; }
 
         LinearityChecker linearityChecker = new(diagnostics, types);
-        linearityChecker.CheckModule(resolved.Module);
+        linearityChecker.CheckChapter(resolved.Chapter);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return 1; }
 
         CapabilityChecker capChecker = new(diagnostics, types);
-        CapabilityReport capReport = capChecker.CheckModule(resolved.Module, grantedCapabilities);
+        CapabilityReport capReport = capChecker.CheckChapter(resolved.Chapter, grantedCapabilities);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return 1; }
 
         Codex.Proofs.ProofChecker proofChecker = new(diagnostics);
-        proofChecker.CheckModule(resolved.Module, types);
+        proofChecker.CheckChapter(resolved.Chapter, types);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return 1; }
 
         if (!diagnostics.HasErrors)
         {
-            int claimCount = resolved.Module.Claims.Count;
-            int proofCount = resolved.Module.Proofs.Count;
+            int claimCount = resolved.Chapter.Claims.Count;
+            int proofCount = resolved.Chapter.Proofs.Count;
             string proofInfo = claimCount > 0 ? $", {claimCount} claim(s), {proofCount} proof(s)" : "";
-            Console.WriteLine($"✓ {module.Name}: {module.Definitions.Count} definition(s){proofInfo}, no errors.");
+            Console.WriteLine($"✓ {chapter.Name}: {chapter.Definitions.Count} definition(s){proofInfo}, no errors.");
             foreach (KeyValuePair<string, CodexType> kv in types)
             {
                 Console.WriteLine($"  {kv.Key} : {kv.Value}");

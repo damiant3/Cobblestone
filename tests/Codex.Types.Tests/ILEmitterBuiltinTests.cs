@@ -159,20 +159,20 @@ public class ILEmitterBuiltinTests
 
     // ── Helpers ─────────────────────────────────────────────────
 
-    static string? CompileAndRun(string source, string moduleName)
+    static string? CompileAndRun(string source, string chapterName)
     {
-        byte[]? bytes = Helpers.CompileToIL(source, moduleName);
+        byte[]? bytes = Helpers.CompileToIL(source, chapterName);
         if (bytes is null) return null;
 
         string tempDir = Path.Combine(Path.GetTempPath(),
-            "codex_il_test_" + moduleName + "_" + Guid.NewGuid().ToString("N")[..8]);
+            "codex_il_test_" + chapterName + "_" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(tempDir);
         try
         {
-            string exePath = Path.Combine(tempDir, moduleName + ".dll");
+            string exePath = Path.Combine(tempDir, chapterName + ".dll");
             File.WriteAllBytes(exePath, bytes);
 
-            string runtimeConfigPath = Path.Combine(tempDir, moduleName + ".runtimeconfig.json");
+            string runtimeConfigPath = Path.Combine(tempDir, chapterName + ".runtimeconfig.json");
             File.WriteAllText(runtimeConfigPath, """
                 {
                   "runtimeOptions": {

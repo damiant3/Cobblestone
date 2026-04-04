@@ -103,7 +103,7 @@ class Program
             Console.WriteLine($"  AST defs: {ast.defs.Count}");
             Console.WriteLine($"  AST type-defs: {ast.type_defs.Count}");
 
-            var checkResult = Codex_Codex_Codex.check_module(ast);
+            var checkResult = Codex_Codex_Codex.check_chapter(ast);
             Console.WriteLine($"  Type bindings: {checkResult.types.Count}");
             Console.WriteLine($"  Unification errors: {checkResult.state.errors.Count}");
 
@@ -148,7 +148,7 @@ class Program
                 }
             }
 
-            var ir = Codex_Codex_Codex.lower_module(ast, checkResult.types, checkResult.state);
+            var ir = Codex_Codex_Codex.lower_chapter(ast, checkResult.types, checkResult.state);
             Console.WriteLine($"  IR defs: {ir.defs.Count}");
 
             if (verbose)
@@ -161,7 +161,7 @@ class Program
                 }
             }
 
-            string cceOutput = Codex_Codex_Codex.csharp_emitter_emit_full_module(ir, ast.type_defs);
+            string cceOutput = Codex_Codex_Codex.csharp_emitter_emit_full_chapter(ir, ast.type_defs);
             // Convert emitted C# source from CCE back to Unicode for .NET compiler
             string output = _Cce.ToUnicode(cceOutput);
             string outputPath = outputOverride ?? Path.Combine(Path.GetFullPath(Path.Combine(codexDir, "..")), "build-output", "stage1-output.cs");
@@ -318,11 +318,11 @@ class Program
             List<Token> tokens = Codex_Codex_Codex.tokenize(cceSource);
             ParseState st = Codex_Codex_Codex.make_parse_state(tokens);
             Document doc = Codex_Codex_Codex.parse_document(st);
-            AModule ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("MiniTest"));
+            AChapter ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("MiniTest"));
 
             Console.WriteLine($"  Defs: {ast.defs.Count}, TypeDefs: {ast.type_defs.Count}");
 
-            ModuleResult checkResult = Codex_Codex_Codex.check_module(ast);
+            ChapterResult checkResult = Codex_Codex_Codex.check_chapter(ast);
             Console.WriteLine($"  Type bindings: {checkResult.types.Count}");
             Console.WriteLine($"  Unification errors: {checkResult.state.errors.Count}");
 
@@ -341,8 +341,8 @@ class Program
                 Console.WriteLine($"  ERR {ei}: [{diag.code}] {diag.message}");
             }
 
-            IRModule ir = Codex_Codex_Codex.lower_module(ast, checkResult.types, checkResult.state);
-            string output = Codex_Codex_Codex.csharp_emitter_emit_full_module(ir, ast.type_defs);
+            IRChapter ir = Codex_Codex_Codex.lower_chapter(ast, checkResult.types, checkResult.state);
+            string output = Codex_Codex_Codex.csharp_emitter_emit_full_chapter(ir, ast.type_defs);
 
             string outPath = Path.ChangeExtension(filePath, ".g.cs");
             File.WriteAllText(outPath, output);
@@ -457,19 +457,19 @@ class Program
         sw.Stop(); desugarMs = sw.Elapsed.TotalMilliseconds;
 
         sw.Restart();
-        var resolved = Codex_Codex_Codex.resolve_module(ast);
+        var resolved = Codex_Codex_Codex.resolve_chapter(ast);
         sw.Stop(); resolveMs = sw.Elapsed.TotalMilliseconds;
 
         sw.Restart();
-        var checkResult = Codex_Codex_Codex.check_module(ast);
+        var checkResult = Codex_Codex_Codex.check_chapter(ast);
         sw.Stop(); checkMs = sw.Elapsed.TotalMilliseconds;
 
         sw.Restart();
-        var ir = Codex_Codex_Codex.lower_module(ast, checkResult.types, checkResult.state);
+        var ir = Codex_Codex_Codex.lower_chapter(ast, checkResult.types, checkResult.state);
         sw.Stop(); lowerMs = sw.Elapsed.TotalMilliseconds;
 
         sw.Restart();
-        var output = Codex_Codex_Codex.csharp_emitter_emit_full_module(ir, ast.type_defs);
+        var output = Codex_Codex_Codex.csharp_emitter_emit_full_chapter(ir, ast.type_defs);
         sw.Stop(); emitMs = sw.Elapsed.TotalMilliseconds;
 
         total.Stop(); totalMs = total.Elapsed.TotalMilliseconds;
@@ -763,14 +763,14 @@ class Program
         var ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("Codex_Codex"));
         Console.Error.WriteLine($"  Defs: {ast.defs.Count}, TypeDefs: {ast.type_defs.Count}");
 
-        var checkResult = Codex_Codex_Codex.check_module(ast);
+        var checkResult = Codex_Codex_Codex.check_chapter(ast);
         Console.Error.WriteLine($"  Type bindings: {checkResult.types.Count}");
         Console.Error.WriteLine($"  Unification errors: {checkResult.state.errors.Count}");
 
-        var ir = Codex_Codex_Codex.lower_module(ast, checkResult.types, checkResult.state);
+        var ir = Codex_Codex_Codex.lower_chapter(ast, checkResult.types, checkResult.state);
         Console.Error.WriteLine($"  IR defs: {ir.defs.Count}");
 
-        string cceOutput = Codex_Codex_Codex.codex_emitter_emit_full_module(ir, ast.type_defs);
+        string cceOutput = Codex_Codex_Codex.codex_emitter_emit_full_chapter(ir, ast.type_defs);
         string output = _Cce.ToUnicode(cceOutput);
 
         string dest = outputPath ?? Path.Combine(Path.GetFullPath(Path.Combine(codexDir, "..")), "build-output", "stage1-codex.codex");

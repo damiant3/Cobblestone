@@ -58,13 +58,13 @@ public static partial class Program
         }
 
         string source = File.ReadAllText(filePath);
-        string moduleName = Path.GetFileNameWithoutExtension(filePath);
+        string chapterName = Path.GetFileNameWithoutExtension(filePath);
         string author = Environment.UserName;
 
         Fact definitionFact = Fact.CreateDefinition(source, author, justification);
         ContentHash defHash = store.Store(definitionFact);
 
-        ContentHash? existing = store.LookupView(moduleName);
+        ContentHash? existing = store.LookupView(chapterName);
 
         Fact proposal = Fact.CreateProposal(
             defHash, author, justification,
@@ -72,7 +72,7 @@ public static partial class Program
             existing);
         ContentHash proposalHash = store.Store(proposal);
 
-        Console.WriteLine($"✓ Proposed {moduleName}");
+        Console.WriteLine($"✓ Proposed {chapterName}");
         Console.WriteLine($"  proposal: {proposalHash.ToShortHex()}");
         Console.WriteLine($"  definition: {defHash.ToShortHex()}");
         if (stakeholders.Count > 0)

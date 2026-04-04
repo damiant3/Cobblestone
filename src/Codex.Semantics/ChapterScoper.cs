@@ -3,11 +3,11 @@ using Codex.Ast;
 
 namespace Codex.Semantics;
 
-public sealed class ModuleScoper(DiagnosticBag diagnostics)
+public sealed class ChapterScoper(DiagnosticBag diagnostics)
 {
     readonly DiagnosticBag m_diagnostics = diagnostics;
 
-    public Module Scope(IReadOnlyList<Module> perFileModules, string combinedName)
+    public Chapter Scope(IReadOnlyList<Chapter> perFileChapters, string combinedName)
     {
         List<Definition> allDefinitions = [];
         List<TypeDef> allTypeDefinitions = [];
@@ -19,7 +19,7 @@ public sealed class ModuleScoper(DiagnosticBag diagnostics)
 
         // Phase A: collect all names per module and detect collisions
         Dictionary<string, List<string>> nameToModules = [];
-        foreach (Module mod in perFileModules)
+        foreach (Chapter mod in perFileChapters)
         {
             string modName = mod.Name.Parts[^1].Value;
             foreach (Definition def in mod.Definitions)
@@ -44,7 +44,7 @@ public sealed class ModuleScoper(DiagnosticBag diagnostics)
 
         // Build selective import maps per module
         Dictionary<string, Dictionary<string, string>> moduleImportAliases = [];
-        foreach (Module mod in perFileModules)
+        foreach (Chapter mod in perFileChapters)
         {
             string modName = mod.Name.Parts[^1].Value;
             Dictionary<string, string> aliases = [];
@@ -52,7 +52,7 @@ public sealed class ModuleScoper(DiagnosticBag diagnostics)
             {
                 if (imp.SelectedNames.Count > 0)
                 {
-                    string importedModSlug = ToSlug(imp.ModuleName.Value);
+                    string importedModSlug = ToSlug(imp.ChapterName.Value);
                     foreach (Name selected in imp.SelectedNames)
                     {
                         string mangledName = $"{importedModSlug}_{selected.Value}";
@@ -64,7 +64,7 @@ public sealed class ModuleScoper(DiagnosticBag diagnostics)
         }
 
         // Process each module: mangle colliding names, rewrite expressions
-        foreach (Module mod in perFileModules)
+        foreach (Chapter mod in perFileChapters)
         {
             string modName = mod.Name.Parts[^1].Value;
             string modSlug = ToSlug(modName);
@@ -126,7 +126,7 @@ public sealed class ModuleScoper(DiagnosticBag diagnostics)
             ? allDefinitions[0].Span
             : SourceSpan.Single(0, 1, 1, "<combined>");
 
-        return new Module(
+        return new Chapter(
             QualifiedName.Simple(combinedName),
             allDefinitions,
             allTypeDefinitions,
@@ -140,13 +140,13 @@ public sealed class ModuleScoper(DiagnosticBag diagnostics)
         };
     }
 
-    static string ToSlug(string moduleName)
+    static string ToSlug(string chapterName)
     {
         // Convert "CodexEmitter" or "Codex Emitter" to "codex-emitter"
-        var sb = new System.Text.StringBuilder(moduleName.Length + 4);
-        for (int i = 0; i < moduleName.Length; i++)
+        var sb = new System.Text.StringBuilder(chapterName.Length + 4);
+        for (int i = 0; i < chapterName.Length; i++)
         {
-            char c = moduleName[i];
+            char c = chapterName[i];
             if (c == ' ' || c == '_')
             {
                 if (sb.Length > 0 && sb[^1] != '-')
@@ -155,7 +155,7 @@ public sealed class ModuleScoper(DiagnosticBag diagnostics)
             else if (char.IsUpper(c))
             {
                 // Insert hyphen before uppercase if preceded by lowercase
-                if (i > 0 && char.IsLower(moduleName[i - 1]) && sb.Length > 0 && sb[^1] != '-')
+                if (i > 0 && char.IsLower(chapterName[i - 1]) && sb.Length > 0 && sb[^1] != '-')
                     sb.Append('-');
                 sb.Append(char.ToLowerInvariant(c));
             }

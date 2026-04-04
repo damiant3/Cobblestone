@@ -26,7 +26,7 @@ public class PreludeTests
     {
         string path = Path.Combine(FindPreludeDir(), fileName);
         string source = File.ReadAllText(path);
-        string moduleName = Path.GetFileNameWithoutExtension(fileName);
+        string chapterName = Path.GetFileNameWithoutExtension(fileName);
 
         SourceText src = new(path, source);
         DiagnosticBag diagnostics = new();
@@ -38,15 +38,15 @@ public class PreludeTests
         if (diagnostics.HasErrors) return diagnostics;
 
         Desugarer desugarer = new(diagnostics);
-        Module module = desugarer.Desugar(document, moduleName);
+        Chapter chapter = desugarer.Desugar(document, chapterName);
         if (diagnostics.HasErrors) return diagnostics;
 
         NameResolver resolver = new(diagnostics);
-        ResolvedModule resolved = resolver.Resolve(module);
+        ResolvedChapter resolved = resolver.Resolve(chapter);
         if (diagnostics.HasErrors) return diagnostics;
 
         TypeChecker checker = new(diagnostics);
-        checker.CheckModule(resolved.Module);
+        checker.CheckChapter(resolved.Chapter);
         return diagnostics;
     }
 
@@ -334,7 +334,7 @@ public class PreludeTests
         string preludeDir = FindPreludeDir();
         string path = Path.Combine(preludeDir, fileName);
         string source = File.ReadAllText(path);
-        string moduleName = Path.GetFileNameWithoutExtension(fileName);
+        string chapterName = Path.GetFileNameWithoutExtension(fileName);
 
         SourceText src = new(path, source);
         DiagnosticBag diagnostics = new();
@@ -346,20 +346,20 @@ public class PreludeTests
         if (diagnostics.HasErrors) return diagnostics;
 
         Desugarer desugarer = new(diagnostics);
-        Module module = desugarer.Desugar(document, moduleName);
+        Chapter chapter = desugarer.Desugar(document, chapterName);
         if (diagnostics.HasErrors) return diagnostics;
 
         PreludeTestLoader preludeLoader = new(preludeDir, diagnostics);
         NameResolver resolver = new(diagnostics, preludeLoader);
-        ResolvedModule resolved = resolver.Resolve(module);
+        ResolvedChapter resolved = resolver.Resolve(chapter);
         if (diagnostics.HasErrors) return diagnostics;
 
         TypeChecker checker = new(diagnostics);
 
-        foreach (ResolvedModule imported in resolved.ImportedModules)
-            checker.CheckModule(imported.Module);
+        foreach (ResolvedChapter imported in resolved.ImportedChapters)
+            checker.CheckChapter(imported.Chapter);
 
-        checker.CheckModule(resolved.Module);
+        checker.CheckChapter(resolved.Chapter);
         return diagnostics;
     }
 
@@ -376,37 +376,37 @@ public class PreludeTests
         if (diagnostics.HasErrors) return diagnostics;
 
         Desugarer desugarer = new(diagnostics);
-        Module module = desugarer.Desugar(document, "test");
+        Chapter chapter = desugarer.Desugar(document, "test");
         if (diagnostics.HasErrors) return diagnostics;
 
         PreludeTestLoader preludeLoader = new(preludeDir, diagnostics);
         NameResolver resolver = new(diagnostics, preludeLoader);
-        ResolvedModule resolved = resolver.Resolve(module);
+        ResolvedChapter resolved = resolver.Resolve(chapter);
         if (diagnostics.HasErrors) return diagnostics;
 
         TypeChecker checker = new(diagnostics);
 
-        foreach (ResolvedModule imported in resolved.ImportedModules)
-            checker.CheckModule(imported.Module);
+        foreach (ResolvedChapter imported in resolved.ImportedChapters)
+            checker.CheckChapter(imported.Chapter);
 
-        checker.CheckModule(resolved.Module);
+        checker.CheckChapter(resolved.Chapter);
         return diagnostics;
     }
 }
 
-sealed class PreludeTestLoader(string preludeDir, DiagnosticBag diagnostics) : IModuleLoader
+sealed class PreludeTestLoader(string preludeDir, DiagnosticBag diagnostics) : IChapterLoader
 {
     readonly string m_preludeDir = preludeDir;
     readonly DiagnosticBag m_diagnostics = diagnostics;
-    Map<string, ResolvedModule> m_cache = Map<string, ResolvedModule>.s_empty;
+    Map<string, ResolvedChapter> m_cache = Map<string, ResolvedChapter>.s_empty;
 
-    public ResolvedModule? Load(string moduleName)
+    public ResolvedChapter? Load(string chapterName)
     {
-        ResolvedModule? cached = m_cache[moduleName];
+        ResolvedChapter? cached = m_cache[chapterName];
         if (cached is not null)
             return cached;
 
-        string filePath = Path.Combine(m_preludeDir, moduleName + ".codex");
+        string filePath = Path.Combine(m_preludeDir, chapterName + ".codex");
         if (!File.Exists(filePath))
             return null;
 
@@ -421,14 +421,14 @@ sealed class PreludeTestLoader(string preludeDir, DiagnosticBag diagnostics) : I
         if (compileDiag.HasErrors) return null;
 
         Desugarer desugarer = new(compileDiag);
-        Module module = desugarer.Desugar(document, moduleName);
+        Chapter chapter = desugarer.Desugar(document, chapterName);
         if (compileDiag.HasErrors) return null;
 
         NameResolver resolver = new(compileDiag, this);
-        ResolvedModule resolved = resolver.Resolve(module);
+        ResolvedChapter resolved = resolver.Resolve(chapter);
         if (compileDiag.HasErrors) return null;
 
-        m_cache = m_cache.Set(moduleName, resolved);
+        m_cache = m_cache.Set(chapterName, resolved);
         return resolved;
     }
 }

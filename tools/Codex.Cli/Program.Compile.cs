@@ -15,7 +15,7 @@ public static partial class Program
         Map<string, CodexType> Types);
 
     sealed record IRCompilationResult(
-        IRModule Module,
+        IRChapter Chapter,
         Map<string, CodexType> Types,
         CapabilityReport? Capabilities = null);
 
@@ -25,7 +25,7 @@ public static partial class Program
         if (irResult is null) return null;
 
         CSharpEmitter emitter = new();
-        string csharpSource = emitter.Emit(irResult.Module);
+        string csharpSource = emitter.Emit(irResult.Chapter);
         return new CompilationResult(csharpSource, irResult.Types);
     }
 
@@ -44,55 +44,55 @@ public static partial class Program
         DocumentNode document = ParseSourceFile(source, content, diagnostics);
 
         Desugarer desugarer = new(diagnostics);
-        string moduleName = Path.GetFileNameWithoutExtension(filePath);
-        Module module = desugarer.Desugar(document, moduleName);
+        string chapterName = Path.GetFileNameWithoutExtension(filePath);
+        Chapter chapter = desugarer.Desugar(document, chapterName);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         NameResolver resolver = CreateResolver(diagnostics,
             Path.GetDirectoryName(Path.GetFullPath(filePath)));
-        ResolvedModule resolved = resolver.Resolve(module);
+        ResolvedChapter resolved = resolver.Resolve(chapter);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         TypeChecker checker = new(diagnostics);
 
-        // Import types from dependency modules before checking main module
-        foreach (ResolvedModule imported in resolved.ImportedModules)
-            checker.ImportModule(imported.Module, imported.ExportedNames);
+        // Import types from dependency modules before checking main chapter
+        foreach (ResolvedChapter imported in resolved.ImportedChapters)
+            checker.ImportChapter(imported.Chapter, imported.ExportedNames);
 
-        Map<string, CodexType> types = checker.CheckModule(resolved.Module);
+        Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         LinearityChecker linearityChecker = new(diagnostics, types);
-        linearityChecker.CheckModule(resolved.Module);
+        linearityChecker.CheckChapter(resolved.Chapter);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         Codex.Proofs.ProofChecker proofChecker = new(diagnostics);
-        proofChecker.CheckModule(resolved.Module, types);
+        proofChecker.CheckChapter(resolved.Chapter, types);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, diagnostics);
-        IRModule irModule = lowering.Lower(resolved.Module);
+        IRChapter irModule = lowering.Lower(resolved.Chapter);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         CapabilityChecker capChecker = new(diagnostics, types);
-        CapabilityReport capReport = capChecker.CheckModule(resolved.Module, grantedCapabilities);
+        CapabilityReport capReport = capChecker.CheckChapter(resolved.Chapter, grantedCapabilities);
 
         return new IRCompilationResult(irModule, types, capReport);
     }
 
     static IRCompilationResult? CompileMultipleToIR(
-        string[] filePaths, string moduleName, IReadOnlyList<IModuleLoader>? extraLoaders = null,
+        string[] filePaths, string chapterName, IReadOnlyList<IChapterLoader>? extraLoaders = null,
         Set<string>? grantedCapabilities = null)
     {
         DiagnosticBag diagnostics = new();
         Desugarer desugarer = new(diagnostics);
-        List<Module> perFileModules = [];
+        List<Chapter> perFileChapters = [];
 
         foreach (string filePath in filePaths)
         {
@@ -106,55 +106,55 @@ public static partial class Program
             SourceText source = new(filePath, content);
             DocumentNode document = ParseSourceFile(source, content, diagnostics);
             string fileModule = Path.GetFileNameWithoutExtension(filePath);
-            Module module = desugarer.Desugar(document, fileModule);
-            perFileModules.Add(module);
+            Chapter chapter = desugarer.Desugar(document, fileModule);
+            perFileChapters.Add(chapter);
         }
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
-        ModuleScoper scoper = new(diagnostics);
-        Module combined = scoper.Scope(perFileModules, moduleName);
+        ChapterScoper scoper = new(diagnostics);
+        Chapter combined = scoper.Scope(perFileChapters, chapterName);
 
         string? baseDir = filePaths.Length > 0
             ? Path.GetDirectoryName(Path.GetFullPath(filePaths[0]))
             : null;
         NameResolver resolver = CreateResolver(diagnostics, baseDir, extraLoaders);
-        ResolvedModule resolved = resolver.Resolve(combined);
+        ResolvedChapter resolved = resolver.Resolve(combined);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         TypeChecker checker = new(diagnostics);
 
-        foreach (ResolvedModule imported in resolved.ImportedModules)
-            checker.ImportModule(imported.Module, imported.ExportedNames);
+        foreach (ResolvedChapter imported in resolved.ImportedChapters)
+            checker.ImportChapter(imported.Chapter, imported.ExportedNames);
 
-        Map<string, CodexType> types = checker.CheckModule(resolved.Module);
+        Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
-        foreach (ResolvedModule imported in resolved.ImportedModules)
+        foreach (ResolvedChapter imported in resolved.ImportedChapters)
         {
             TypeChecker importChecker = new(diagnostics);
-            importChecker.CheckModule(imported.Module);
+            importChecker.CheckChapter(imported.Chapter);
         }
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         LinearityChecker linearityChecker = new(diagnostics, types);
-        linearityChecker.CheckModule(resolved.Module);
+        linearityChecker.CheckChapter(resolved.Chapter);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         Codex.Proofs.ProofChecker proofChecker = new(diagnostics);
-        proofChecker.CheckModule(resolved.Module, types);
+        proofChecker.CheckChapter(resolved.Chapter, types);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, diagnostics);
-        IRModule irModule = lowering.Lower(resolved.Module);
+        IRChapter irModule = lowering.Lower(resolved.Chapter);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         CapabilityChecker capChecker = new(diagnostics, types);
-        CapabilityReport capReport = capChecker.CheckModule(resolved.Module, grantedCapabilities);
+        CapabilityReport capReport = capChecker.CheckChapter(resolved.Chapter, grantedCapabilities);
 
         return new IRCompilationResult(irModule, types, capReport);
     }
@@ -182,31 +182,31 @@ public static partial class Program
     static NameResolver CreateResolver(
         DiagnosticBag diagnostics,
         string? baseDirectory = null,
-        IReadOnlyList<IModuleLoader>? extraLoaders = null)
+        IReadOnlyList<IChapterLoader>? extraLoaders = null)
     {
         string dir = baseDirectory ?? Directory.GetCurrentDirectory();
-        List<IModuleLoader> loaders = [new FileModuleLoader(dir, diagnostics)];
+        List<IChapterLoader> loaders = [new FileChapterLoader(dir, diagnostics)];
 
         if (extraLoaders is not null)
         {
-            foreach (IModuleLoader loader in extraLoaders)
+            foreach (IChapterLoader loader in extraLoaders)
                 loaders.Add(loader);
         }
 
-        PreludeModuleLoader? prelude = PreludeModuleLoader.TryCreate(diagnostics);
+        PreludeChapterLoader? prelude = PreludeChapterLoader.TryCreate(diagnostics);
         if (prelude is not null)
             loaders.Add(prelude);
 
         Codex.Repository.FactStore? store =
             Codex.Repository.FactStore.Open(Directory.GetCurrentDirectory());
         if (store is not null)
-            loaders.Add(new RepositoryModuleLoader(store, diagnostics));
+            loaders.Add(new RepositoryChapterLoader(store, diagnostics));
 
-        return new NameResolver(diagnostics, new CompositeModuleLoader([.. loaders]));
+        return new NameResolver(diagnostics, new CompositeChapterLoader([.. loaders]));
     }
 
     static IRCompilationResult? CompileViewToIR(
-        Codex.Repository.FactStore store, string viewName, string moduleName,
+        Codex.Repository.FactStore store, string viewName, string chapterName,
         Set<string>? grantedCapabilities = null)
     {
         ValueMap<string, ContentHash> view = store.GetNamedView(viewName);
@@ -244,15 +244,15 @@ public static partial class Program
 
             SourceText source = new(kv.Key + ".codex", fact.Content);
             DocumentNode document = ParseSourceFile(source, fact.Content, diagnostics);
-            Module module = desugarer.Desugar(document, kv.Key);
+            Chapter chapter = desugarer.Desugar(document, kv.Key);
 
-            allDefinitions.AddRange(module.Definitions);
-            allTypeDefinitions.AddRange(module.TypeDefinitions);
-            allClaims.AddRange(module.Claims);
-            allProofs.AddRange(module.Proofs);
-            allImports.AddRange(module.Imports);
-            allExports.AddRange(module.Exports);
-            allEffectDefs.AddRange(module.EffectDefs);
+            allDefinitions.AddRange(chapter.Definitions);
+            allTypeDefinitions.AddRange(chapter.TypeDefinitions);
+            allClaims.AddRange(chapter.Claims);
+            allProofs.AddRange(chapter.Proofs);
+            allImports.AddRange(chapter.Imports);
+            allExports.AddRange(chapter.Exports);
+            allEffectDefs.AddRange(chapter.EffectDefs);
         }
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
@@ -260,8 +260,8 @@ public static partial class Program
         SourceSpan combinedSpan = allDefinitions.Count > 0
             ? allDefinitions[0].Span
             : SourceSpan.Single(0, 1, 1, "<view>");
-        Module combined = new(
-            QualifiedName.Simple(moduleName),
+        Chapter combined = new(
+            QualifiedName.Simple(chapterName),
             allDefinitions,
             allTypeDefinitions,
             allClaims,
@@ -274,36 +274,36 @@ public static partial class Program
         };
 
         NameResolver resolver = CreateResolver(diagnostics);
-        ResolvedModule resolved = resolver.Resolve(combined);
+        ResolvedChapter resolved = resolver.Resolve(combined);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         TypeChecker checker = new(diagnostics);
 
-        foreach (ResolvedModule imported in resolved.ImportedModules)
-            checker.ImportModule(imported.Module, imported.ExportedNames);
+        foreach (ResolvedChapter imported in resolved.ImportedChapters)
+            checker.ImportChapter(imported.Chapter, imported.ExportedNames);
 
-        Map<string, CodexType> types = checker.CheckModule(resolved.Module);
+        Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         LinearityChecker linearityChecker = new(diagnostics, types);
-        linearityChecker.CheckModule(resolved.Module);
+        linearityChecker.CheckChapter(resolved.Chapter);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         Codex.Proofs.ProofChecker proofChecker = new(diagnostics);
-        proofChecker.CheckModule(resolved.Module, types);
+        proofChecker.CheckChapter(resolved.Chapter, types);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, diagnostics);
-        IRModule irModule = lowering.Lower(resolved.Module);
+        IRChapter irModule = lowering.Lower(resolved.Chapter);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         CapabilityChecker capChecker = new(diagnostics, types);
-        CapabilityReport capReport = capChecker.CheckModule(resolved.Module, grantedCapabilities);
+        CapabilityReport capReport = capChecker.CheckChapter(resolved.Chapter, grantedCapabilities);
 
         return new IRCompilationResult(irModule, types, capReport);
     }
