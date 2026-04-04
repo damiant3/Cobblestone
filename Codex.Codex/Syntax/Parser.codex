@@ -175,7 +175,8 @@ Section: Definition Parsing
       name = name-tok,
       params = params,
       ann = ann,
-      body = b
+      body = b,
+      chapter-slug = ""
      }) st
 
 Section: Type Definition Parsing
@@ -382,14 +383,24 @@ Section: Document Parsing
   extract-header-title : ParseState -> Text
   extract-header-title (st) =
    let st2 = advance (advance st)
-   in if is-done st2 then ""
-      else (current st2).text
+   in collect-title-tokens st2 ""
+
+  collect-title-tokens : ParseState -> Text -> Text
+  collect-title-tokens (st) (acc) =
+   if is-done st then acc
+   else when (current-kind st)
+    if Newline -> acc
+    if _ -> let sep = if acc == "" then "" else " "
+     in collect-title-tokens (advance st) (acc ++ sep ++ (current st).text)
+
+  is-prose-line : ParseState -> Boolean
+  is-prose-line (st) = (current st).column == 2
 
   skip-prose-lines : ParseState -> ParseState
   skip-prose-lines (st) =
    let st2 = skip-newlines st
    in if is-done st2 then st2
-      else if (current st2).column > 0 then skip-prose-lines (skip-to-next-line st2)
+      else if is-prose-line st2 then skip-prose-lines (skip-to-next-line st2)
       else st2
 
   skip-to-next-line : ParseState -> ParseState
@@ -417,6 +428,7 @@ Section: Document Parsing
    else if is-cites-keyword (current-kind st) then let cite-result = parse-citations st []
      in parse-top-level defs type-defs effect-defs (imports ++ cite-result.imports) ch-title sec-titles (cite-result.state)
    else if is-effect-keyword (current-kind st) then parse-top-level-effect defs type-defs effect-defs imports ch-title sec-titles st
+   else if is-prose-line st then parse-top-level defs type-defs effect-defs imports ch-title sec-titles (skip-prose-lines st)
    else try-top-level-type-def defs type-defs effect-defs imports ch-title sec-titles st
 
   parse-top-level-effect : List Def -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> List Text -> ParseState -> Document
@@ -469,7 +481,14 @@ Section: Document Parsing
    let def-result = parse-definition st
    in when def-result
     if DefOk (d) (st2) ->
-     parse-top-level (defs ++ [d]) type-defs effect-defs imports ch-title sec-titles (skip-newlines st2)
+     let tagged = Def {
+      name = d.name,
+      params = d.params,
+      ann = d.ann,
+      body = d.body,
+      chapter-slug = ch-title
+     }
+     in parse-top-level (defs ++ [tagged]) type-defs effect-defs imports ch-title sec-titles (skip-newlines st2)
     if DefNone (st2) ->
      parse-top-level defs type-defs effect-defs imports ch-title sec-titles (skip-newlines (advance st2))
 
@@ -496,13 +515,14 @@ Section: Header Scanning (Phase 2 streaming)
     section-titles = sec-titles
    }
    else if is-chapter-header st then let title = extract-header-title st
-     in scan-top-level headers type-defs effect-defs imports cur-chap title sec-titles (skip-prose-lines (skip-to-next-line st))
+     in scan-top-level headers type-defs effect-defs imports title title sec-titles (skip-prose-lines (skip-to-next-line st))
    else if is-section-header st then let title = extract-header-title st
      in scan-top-level headers type-defs effect-defs imports cur-chap ch-title (sec-titles ++ [title]) (skip-prose-lines (skip-to-next-line st))
    else if is-page-marker st then scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles (skip-to-next-line st)
    else if is-cites-keyword (current-kind st) then let cite-result = parse-citations st []
      in scan-top-level headers type-defs effect-defs (imports ++ cite-result.imports) cur-chap ch-title sec-titles (cite-result.state)
    else if is-effect-keyword (current-kind st) then scan-top-level-effect headers type-defs effect-defs imports cur-chap ch-title sec-titles st
+   else if is-prose-line st then scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles (skip-prose-lines st)
    else try-scan-type-def headers type-defs effect-defs imports cur-chap ch-title sec-titles st
 
   scan-top-level-effect : List DefHeader -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> Text -> List Text -> ParseState -> ScanResult

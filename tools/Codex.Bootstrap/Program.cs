@@ -57,16 +57,8 @@ class Program
             string content = File.ReadAllText(f);
             Console.WriteLine($"  {rel}");
 
-            if (IsProseDocument(content))
-            {
-                string code = ExtractCodeBlocks(content);
-                if (code.Length > 0)
-                    codeBlocks.Add(code);
-            }
-            else
-            {
+            if (content.Length > 0)
                 codeBlocks.Add(content);
-            }
         }
 
         string combined = string.Join("\n\n", codeBlocks);
@@ -80,89 +72,8 @@ class Program
 
         try
         {
-            var tokens = Codex_Codex_Codex.tokenize(cceCombined);
-            Console.WriteLine($"  Tokens: {tokens.Count}");
-
-            // Debug: dump first 80 tokens
-            for (int ti = 0; ti < Math.Min(80, tokens.Count); ti++)
-            {
-                var tok = tokens[ti];
-                string kindName = tok.kind.GetType().Name;
-                string tokText = _Cce.ToUnicode(tok.text);
-                if (tokText == "\n") tokText = "\\n";
-                Console.WriteLine($"    [{ti}] {kindName,-20} \"{tokText}\"");
-            }
-
-            var st = Codex_Codex_Codex.make_parse_state(tokens);
-            var doc = Codex_Codex_Codex.parse_document(st);
-            Console.WriteLine($"  Parsed defs: {doc.defs.Count}");
-            Console.WriteLine($"  Parsed type-defs: {doc.type_defs.Count}");
-
-
-            var ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("Codex_Codex"));
-            Console.WriteLine($"  AST defs: {ast.defs.Count}");
-            Console.WriteLine($"  AST type-defs: {ast.type_defs.Count}");
-
-            var checkResult = Codex_Codex_Codex.check_chapter(ast);
-            Console.WriteLine($"  Type bindings: {checkResult.types.Count}");
-            Console.WriteLine($"  Unification errors: {checkResult.state.errors.Count}");
-
-            if (verbose)
-            {
-                var diagLines = new List<string>();
-                int errorTyCount = 0;
-                int funcObjectCount = 0;
-                for (int i = 0; i < checkResult.types.Count; i++)
-                {
-                    var tb = checkResult.types[i];
-                    var resolved = Codex_Codex_Codex.deep_resolve(checkResult.state, tb.bound_type);
-                    string csType = Codex_Codex_Codex.cs_type(resolved);
-                    bool isErrorTy = resolved is ErrorTy;
-                    bool hasObject = csType.Contains("object");
-                    if (isErrorTy) errorTyCount++;
-                    if (hasObject) funcObjectCount++;
-                    string marker = isErrorTy ? " [ERRORTY]" : (hasObject ? " [HAS-OBJECT]" : "");
-                    diagLines.Add($"{i}: {_Cce.ToUnicode(tb.name)} : {_Cce.ToUnicode(csType)}{marker}");
-                }
-                string diagPath = Path.Combine(codexDir, "type-diag.txt");
-                File.WriteAllLines(diagPath, diagLines);
-                Console.WriteLine($"  ErrorTy bindings: {errorTyCount}");
-                Console.WriteLine($"  Has-object bindings: {funcObjectCount}");
-                Console.WriteLine($"  Type diagnostics written to: {diagPath}");
-
-                string errPath = Path.Combine(codexDir, "unify-errors.txt");
-                var errLines = new List<string>();
-                for (int ei = 0; ei < checkResult.state.errors.Count; ei++)
-                {
-                    Diagnostic diag = checkResult.state.errors[ei];
-                    errLines.Add($"{ei}: [{_Cce.ToUnicode(diag.code)}] {_Cce.ToUnicode(diag.message)}");
-                }
-                File.WriteAllLines(errPath, errLines);
-                Console.WriteLine($"  Unification error log: {errPath}");
-
-                for (int i = 0; i < Math.Min(20, checkResult.types.Count); i++)
-                {
-                    var tb = checkResult.types[i];
-                    var resolved = Codex_Codex_Codex.deep_resolve(checkResult.state, tb.bound_type);
-                    Console.WriteLine($"    {tb.name} : {Codex_Codex_Codex.cs_type(resolved)}");
-                }
-            }
-
-            var ir = Codex_Codex_Codex.lower_chapter(ast, checkResult.types, checkResult.state);
-            Console.WriteLine($"  IR defs: {ir.defs.Count}");
-
-            if (verbose)
-            {
-                for (int j = 0; j < Math.Min(10, ir.defs.Count); j++)
-                {
-                    var d = ir.defs[j];
-                    var paramStr = string.Join(", ", d.@params.Select(p => $"{Codex_Codex_Codex.cs_type(p.type_val)} {p.name}"));
-                    Console.WriteLine($"    {d.name}({paramStr}) : {Codex_Codex_Codex.cs_type(d.type_val)}");
-                }
-            }
-
-            string cceOutput = Codex_Codex_Codex.csharp_emitter_emit_full_chapter(ir, ast.type_defs);
-            // Convert emitted C# source from CCE back to Unicode for .NET compiler
+            // Non-streaming compile path — now includes chapter scoping
+            string cceOutput = Codex_Codex_Codex.compile(cceCombined, _Cce.FromUnicode("Codex_Codex"));
             string output = _Cce.ToUnicode(cceOutput);
             string outputPath = outputOverride ?? Path.Combine(Path.GetFullPath(Path.Combine(codexDir, "..")), "build-output", "stage1-output.cs");
             File.WriteAllText(outputPath, output);
@@ -178,119 +89,6 @@ class Program
         }
     }
 
-    static bool IsProseDocument(string content)
-    {
-        foreach (string line in content.Split('\n'))
-        {
-            string trimmed = line.TrimStart();
-            if (trimmed.Length == 0)
-                continue;
-            return trimmed.StartsWith("Chapter:", StringComparison.Ordinal);
-        }
-        return false;
-    }
-
-    static string ExtractCodeBlocks(string content)
-    {
-        string[] lines = content.Split('\n');
-        List<string> result = [];
-        int i = 0;
-
-        while (i < lines.Length)
-        {
-            string trimmed = lines[i].Trim();
-
-            if (trimmed.Length == 0)
-            {
-                i++;
-                continue;
-            }
-
-            if (trimmed.StartsWith("Chapter:", StringComparison.Ordinal) ||
-                trimmed.StartsWith("Section:", StringComparison.Ordinal))
-            {
-                i++;
-                continue;
-            }
-
-            int indent = MeasureIndent(lines[i]);
-            if (indent >= 2 && LooksLikeNotation(trimmed))
-            {
-                int baseIndent = indent;
-                List<string> block = [];
-
-                while (i < lines.Length)
-                {
-                    string line = lines[i];
-                    string lt = line.Trim();
-
-                    if (lt.Length == 0)
-                    {
-                        int peekIdx = i + 1;
-                        while (peekIdx < lines.Length && lines[peekIdx].Trim().Length == 0)
-                            peekIdx++;
-
-                        if (peekIdx < lines.Length && MeasureIndent(lines[peekIdx]) >= baseIndent)
-                        {
-                            block.Add("");
-                            i++;
-                            continue;
-                        }
-                        break;
-                    }
-
-                    int lineIndent = MeasureIndent(line);
-                    if (lineIndent < baseIndent)
-                        break;
-
-                    if (lt.StartsWith("Chapter:", StringComparison.Ordinal) ||
-                        lt.StartsWith("Section:", StringComparison.Ordinal))
-                        break;
-
-                    string dedented = lineIndent >= baseIndent
-                        ? line[baseIndent..].TrimEnd('\r')
-                        : lt;
-                    block.Add(dedented);
-                    i++;
-                }
-
-                if (block.Count > 0)
-                    result.Add(string.Join("\n", block));
-            }
-            else
-            {
-                i++;
-            }
-        }
-
-        return string.Join("\n\n", result);
-    }
-
-    static bool LooksLikeNotation(string trimmed)
-    {
-        if (trimmed.Length == 0) return false;
-        if (trimmed[0] == '|') return true;
-        if (char.IsLetter(trimmed[0]) || trimmed[0] == '_')
-        {
-            if (trimmed.Contains(" : ")) return true;
-            if (trimmed.Contains(" = ")) return true;
-            if (trimmed.EndsWith(" =") || trimmed.EndsWith("=")) return true;
-            if (trimmed.Contains('(')) return true;
-        }
-        return false;
-    }
-
-    static int MeasureIndent(string line)
-    {
-        int count = 0;
-        foreach (char c in line)
-        {
-            if (c == ' ') count++;
-            else break;
-        }
-        return count;
-    }
-
     static int RunMini(string filePath)
     {
         if (!File.Exists(filePath))
@@ -299,18 +97,8 @@ class Program
             return 1;
         }
 
-        string rawContent = File.ReadAllText(filePath);
-        string source;
-        if (IsProseDocument(rawContent))
-        {
-            source = ExtractCodeBlocks(rawContent);
-            Console.WriteLine($"Mini compile (prose): {filePath} ({source.Length} chars from {rawContent.Length})");
-        }
-        else
-        {
-            source = rawContent;
-            Console.WriteLine($"Mini compile: {filePath} ({source.Length} chars)");
-        }
+        string source = File.ReadAllText(filePath);
+        Console.WriteLine($"Mini compile: {filePath} ({source.Length} chars)");
 
         try
         {
@@ -376,7 +164,7 @@ class Program
         foreach (string f in files)
         {
             string content = File.ReadAllText(f);
-            codeBlocks.Add(IsProseDocument(content) ? ExtractCodeBlocks(content) : content);
+            codeBlocks.Add(content);
         }
         string source = _Cce.FromUnicode(string.Join("\n\n", codeBlocks));
 
@@ -513,7 +301,7 @@ class Program
         foreach (string f in files)
         {
             string content = File.ReadAllText(f);
-            codeBlocks.Add(IsProseDocument(content) ? ExtractCodeBlocks(content) : content);
+            codeBlocks.Add(content);
         }
         string source = _Cce.FromUnicode(string.Join("\n\n", codeBlocks));
 
@@ -587,7 +375,7 @@ class Program
         foreach (string f in files)
         {
             string content = File.ReadAllText(f);
-            codeBlocks.Add(IsProseDocument(content) ? ExtractCodeBlocks(content) : content);
+            codeBlocks.Add(content);
         }
         string source = _Cce.FromUnicode(string.Join("\n\n", codeBlocks));
 
@@ -684,17 +472,8 @@ class Program
         foreach (string f in files)
         {
             string content = File.ReadAllText(f);
-            string code;
-            if (IsProseDocument(content))
-            {
-                code = ExtractCodeBlocks(content);
-            }
-            else
-            {
-                code = content;
-            }
-            if (code.Length > 0)
-                codeBlocks.Add(code);
+            if (content.Length > 0)
+                codeBlocks.Add(content);
         }
         string combined = string.Join("\n\n", codeBlocks);
         string dest = outputPath ?? Path.Combine(Path.GetTempPath(), "codex-all-source.codex");
@@ -715,12 +494,7 @@ class Program
         foreach (string f in files)
         {
             string content = File.ReadAllText(f);
-            if (IsProseDocument(content))
-            {
-                string code = ExtractCodeBlocks(content);
-                if (code.Length > 0) codeBlocks.Add(code);
-            }
-            else
+            if (content.Length > 0)
                 codeBlocks.Add(content);
         }
         string combined = string.Join("\n\n", codeBlocks);

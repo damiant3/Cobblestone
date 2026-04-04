@@ -13,11 +13,16 @@ Section: Pipeline
   compile (source) (chapter-name) =
    let tokens = tokenize source
    in let st = make-parse-state tokens
-   in let doc = parse-document st
+   in let scan = scan-document st
+   in let assignments = build-all-assignments (scan.def-headers) 0
+   in let colliding = find-colliding-names assignments
+   in let doc = parse-document (make-parse-state tokens)
      in let ast = desugar-document doc chapter-name
       in let check-result = check-chapter ast
        in let ir = lower-chapter ast (check-result.types) (check-result.state)
-        in emit-full-chapter ir (ast.type-defs)
+        in let scoped-ir = scope-ir-chapter ir colliding assignments
+         in emit-full-chapter scoped-ir (ast.type-defs)
+
 
 Section: Pipeline with Name Resolution
 
@@ -85,10 +90,7 @@ Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
    in let headers = scan.def-headers
    in let assignments = build-all-assignments headers 0
    in let colliding = find-colliding-names assignments
-   in let header = if scan.chapter-title == "" then ""
-      else "Chapter: " ++ scan.chapter-title ++ "\n"
    in do
-    print-line header
     compile-with-scope tokens type-defs headers assignments colliding
 
   compile-with-scope : List Token -> List ATypeDef -> List DefHeader -> List ChapterAssignment -> List Text -> [Console] Nothing
@@ -142,7 +144,8 @@ Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
     name = hdr.name,
     params = hdr.params,
     ann = hdr.ann,
-    body = unwrap-body body-result
+    body = unwrap-body body-result,
+    chapter-slug = hdr.chapter-slug
    }
    in let adef = desugar-def def
    in let r = check-def ust env adef
@@ -166,7 +169,8 @@ Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
     name = hdr.name,
     params = hdr.params,
     ann = hdr.ann,
-    body = unwrap-body body-result
+    body = unwrap-body body-result,
+    chapter-slug = hdr.chapter-slug
    }
    in let adef = desugar-def def
    in let ir-def = lower-def adef all-types ust
@@ -203,7 +207,8 @@ Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
     name = hdr.name,
     params = hdr.params,
     ann = hdr.ann,
-    body = unwrap-body body-result
+    body = unwrap-body body-result,
+    chapter-slug = hdr.chapter-slug
    }
    in let adef = desugar-def def
    in let ir-def = lower-def adef all-types ust
@@ -213,7 +218,8 @@ Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
     name = scoped-name,
     params = ir-def.params,
     type-val = ir-def.type-val,
-    body = scoped-body
+    body = scoped-body,
+    chapter-slug = hdr.chapter-slug
    }
    in if is-error-body (scoped-def.body) then print-line ("COMPILE-ERROR: def '" ++ scoped-def.name ++ "' has error body: " ++ error-message (scoped-def.body))
       else let text = emit-def scoped-def ctor-names

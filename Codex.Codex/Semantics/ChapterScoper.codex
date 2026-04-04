@@ -47,7 +47,16 @@ Section: Name Mangling
 
   mangle-name : Text -> Text -> Text
   mangle-name (chapter-slug) (def-name) =
-   chapter-slug ++ "_" ++ def-name
+   slugify chapter-slug 0 "" ++ "_" ++ def-name
+
+  slugify : Text -> Integer -> Text -> Text
+  slugify (s) (i) (acc) =
+   if i == text-length s then acc
+   else let c = char-code-at s i
+   in if c == char-code-at " " 0 then slugify s (i + 1) (acc ++ "-")
+      else if c >= cc-upper-a then if c <= cc-upper-z then slugify s (i + 1) (acc ++ char-to-text (code-to-char (c - 26)))
+      else slugify s (i + 1) (acc ++ char-to-text (code-to-char c))
+      else slugify s (i + 1) (acc ++ char-to-text (code-to-char c))
 
   lookup-chapter : List ChapterAssignment -> Text -> Text
   lookup-chapter (assignments) (name) =
@@ -247,13 +256,14 @@ Section: Chapter Scoping Pipeline
    if i == len then acc
    else let a = list-at assignments i
    in if is-colliding colliding (a.def-name)
-      then if has-rename acc (a.def-name)
-           then build-mod-renames colliding assignments cur-chap (i + 1) len acc
-           else if (a.chapter-slug) == cur-chap
-                then build-mod-renames colliding assignments cur-chap (i + 1) len (list-snoc acc (RenameEntry {
+      then if (a.chapter-slug) == cur-chap
+           then let cleaned = remove-rename acc (a.def-name)
+                in build-mod-renames colliding assignments cur-chap (i + 1) len (list-snoc cleaned (RenameEntry {
                  original = a.def-name,
                  mangled = mangle-name cur-chap (a.def-name)
                 }))
+           else if has-rename acc (a.def-name)
+                then build-mod-renames colliding assignments cur-chap (i + 1) len acc
                 else build-mod-renames colliding assignments cur-chap (i + 1) len (list-snoc acc (RenameEntry {
                  original = a.def-name,
                  mangled = mangle-name (a.chapter-slug) (a.def-name)
@@ -269,5 +279,37 @@ Section: Chapter Scoping Pipeline
    if i == len then False
    else if (list-at entries i).original == name then True
         else has-rename-loop entries name (i + 1) len
+
+Section: Global Scope (non-streaming)
+
+ Builds a rename map for all colliding names across all chapters
+ and applies it to an IRChapter, renaming both def names and body
+ references.
+
+  scope-ir-chapter : IRChapter -> List Text -> List ChapterAssignment -> IRChapter
+  scope-ir-chapter (ir) (colliding) (assignments) =
+   IRChapter {
+    name = ir.name,
+    defs = scope-ir-defs (ir.defs) colliding assignments "" [] 0,
+    chapter-title = ir.chapter-title,
+    prose = ir.prose,
+    section-titles = ir.section-titles
+   }
+
+  scope-ir-defs : List IRDef -> List Text -> List ChapterAssignment -> Text -> List RenameEntry -> Integer -> List IRDef
+  scope-ir-defs (defs) (colliding) (assignments) (cur-slug) (cur-rn) (i) =
+   if i == list-length defs then []
+   else let d = list-at defs i
+   in let rn = if d.chapter-slug == cur-slug then cur-rn
+      else build-chapter-rename-map colliding assignments (d.chapter-slug)
+   in let new-name = rename-lookup rn (d.name)
+   in let new-body = rename-ir-expr rn (d.body)
+   in [IRDef {
+    name = new-name,
+    params = d.params,
+    type-val = d.type-val,
+    body = new-body,
+    chapter-slug = d.chapter-slug
+   }] ++ scope-ir-defs defs colliding assignments (d.chapter-slug) rn (i + 1)
 
 Page 1
