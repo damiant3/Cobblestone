@@ -109,7 +109,8 @@ public sealed class Lowering(
         bool needsEscape = IRRegion.TypeNeedsHeapEscape(body.Type);
         body = new IRRegion(body, body.Type, needsEscape);
         m_localEnv = savedEnv;
-        return new(def.Name.Value, parameters.ToImmutable(), fullType, body);
+        return new(def.Name.Value, parameters.ToImmutable(), fullType, body)
+            { Section = def.Section };
     }
 
     IRExpr LowerExpr(Expr expr, CodexType expectedType)

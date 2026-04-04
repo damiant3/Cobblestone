@@ -59,7 +59,7 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
         foreach (ChapterNode chapter in chapters)
         {
             CollectDefinitions(chapter.Members, allDefs, allTypeDefs, allClaims, allProofs,
-                allCitations, allEffectDefs);
+                allCitations, allEffectDefs, null);
         }
 
         // Scan for page marker (last non-blank line starting with "Page")
@@ -285,14 +285,17 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
     static void CollectDefinitions(IReadOnlyList<DocumentMember> members,
         List<DefinitionNode> defs, List<TypeDefinitionNode> typeDefs,
         List<ClaimNode> claims, List<ProofNode> proofs,
-        List<CitesNode> citations, List<EffectDefinitionNode> effectDefs)
+        List<CitesNode> citations, List<EffectDefinitionNode> effectDefs,
+        string? currentSection)
     {
         foreach (DocumentMember member in members)
         {
             if (member is NotationBlockNode notation)
             {
-                defs.AddRange(notation.Definitions);
-                typeDefs.AddRange(notation.TypeDefinitions);
+                foreach (DefinitionNode def in notation.Definitions)
+                    defs.Add(def with { Section = currentSection });
+                foreach (TypeDefinitionNode td in notation.TypeDefinitions)
+                    typeDefs.Add(td with { Section = currentSection });
                 claims.AddRange(notation.Claims);
                 proofs.AddRange(notation.Proofs);
                 citations.AddRange(notation.Citations);
@@ -301,7 +304,7 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
             else if (member is SectionNode section)
             {
                 CollectDefinitions(section.Members, defs, typeDefs, claims, proofs,
-                    citations, effectDefs);
+                    citations, effectDefs, section.Title);
             }
         }
     }

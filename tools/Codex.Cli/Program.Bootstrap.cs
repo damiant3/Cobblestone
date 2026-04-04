@@ -225,11 +225,6 @@ public static partial class Program
             Directory.CreateDirectory(outDir);
         }
 
-        string genDir = Path.Combine(repoRoot, "generated-output");
-        if (Directory.Exists(genDir))
-        {
-            foreach (string file in Directory.GetFiles(genDir, "*", SearchOption.AllDirectories))
-                File.Delete(file);
-        }
+        // generated-output/ is no longer populated by the build pipeline
     }
 }

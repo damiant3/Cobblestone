@@ -69,7 +69,7 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
         Expr body = DesugarExpr(node.Body);
 
         return new Definition(name, parameters, declaredType, body, node.Span)
-            { SourceChapter = m_currentChapterName };
+            { SourceChapter = m_currentChapterName, Section = node.Section };
     }
 
     Expr DesugarExpr(ExpressionNode node) => node switch
@@ -318,7 +318,7 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
 
             _ => throw new InvalidOperationException($"Unknown type definition body: {node.Body.GetType().Name}")
         };
-        return td with { SourceChapter = m_currentChapterName };
+        return td with { SourceChapter = m_currentChapterName, Section = node.Section };
     }
 
     static BinaryOp DesugarBinaryOp(TokenKind kind) => kind switch
