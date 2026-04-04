@@ -7,7 +7,15 @@ namespace Codex.IR;
 public sealed record IRModule(
     QualifiedName Name,
     ImmutableArray<IRDefinition> Definitions,
-    Map<string, CodexType> TypeDefinitions);
+    Map<string, CodexType> TypeDefinitions)
+{
+    public ImmutableArray<IRModuleSection> Sections { get; init; }
+}
+
+public sealed record IRModuleSection(
+    string Name,
+    ImmutableArray<(string TypeName, CodexType Type)> TypeDefinitions,
+    ImmutableArray<IRDefinition> Definitions);
 
 public sealed record IRDefinition(
     string Name,

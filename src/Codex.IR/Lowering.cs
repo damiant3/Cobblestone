@@ -22,12 +22,45 @@ public sealed class Lowering(
 
     public IRModule Lower(Module module)
     {
-        ImmutableArray<IRDefinition>.Builder defs = ImmutableArray.CreateBuilder<IRDefinition>();
+        ImmutableArray<IRDefinition>.Builder allDefs = ImmutableArray.CreateBuilder<IRDefinition>();
         foreach (Definition def in module.Definitions)
+            allDefs.Add(LowerDefinition(def));
+
+        // Build sections: group typedefs and definitions by SourceModule
+        ImmutableArray<IRDefinition> loweredDefs = allDefs.ToImmutable();
+        ImmutableArray<IRModuleSection>.Builder sections = ImmutableArray.CreateBuilder<IRModuleSection>();
+        Dictionary<string, (List<(string, CodexType)> Types, List<IRDefinition> Defs)> groups = new();
+        List<string> moduleOrder = [];
+        HashSet<string> seen = [];
+
+        foreach (TypeDef td in module.TypeDefinitions)
         {
-            defs.Add(LowerDefinition(def));
+            string mod = td.SourceModule ?? "";
+            if (seen.Add(mod)) { moduleOrder.Add(mod); groups[mod] = ([], []); }
+            if (m_typeDefMap.ContainsKey(td.Name.Value))
+                groups[mod].Types.Add((td.Name.Value, m_typeDefMap[td.Name.Value]!));
         }
-        return new(module.Name, defs.ToImmutable(), m_typeDefMap);
+
+        for (int i = 0; i < module.Definitions.Count; i++)
+        {
+            string mod = module.Definitions[i].SourceModule ?? "";
+            if (seen.Add(mod)) { moduleOrder.Add(mod); groups[mod] = ([], []); }
+            groups[mod].Defs.Add(loweredDefs[i]);
+        }
+
+        foreach (string mod in moduleOrder)
+        {
+            var g = groups[mod];
+            sections.Add(new IRModuleSection(
+                mod,
+                [.. g.Types],
+                [.. g.Defs]));
+        }
+
+        return new(module.Name, loweredDefs, m_typeDefMap)
+        {
+            Sections = sections.ToImmutable()
+        };
     }
 
     IRDefinition LowerDefinition(Definition def)
