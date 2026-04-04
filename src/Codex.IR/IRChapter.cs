@@ -15,7 +15,12 @@ public sealed record IRChapter(
 public sealed record IRChapterSection(
     string Name,
     ImmutableArray<(string TypeName, CodexType Type)> TypeDefinitions,
-    ImmutableArray<IRDefinition> Definitions);
+    ImmutableArray<IRDefinition> Definitions)
+{
+    public string? ChapterTitle { get; init; }
+    public string? Prose { get; init; }
+    public ImmutableArray<string> SectionTitles { get; init; }
+}
 
 public sealed record IRDefinition(
     string Name,

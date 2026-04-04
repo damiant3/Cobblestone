@@ -51,10 +51,17 @@ public sealed class Lowering(
         foreach (string mod in chapterOrder)
         {
             var g = groups[mod];
+            chapter.ProseByFile.TryGetValue(mod, out ChapterProse? prose);
             sections.Add(new IRChapterSection(
                 mod,
                 [.. g.Types],
-                [.. g.Defs]));
+                [.. g.Defs])
+            {
+                ChapterTitle = prose?.ChapterTitle,
+                Prose = prose?.Prose,
+                SectionTitles = prose?.SectionTitles is not null
+                    ? [.. prose.SectionTitles] : default
+            });
         }
 
         return new(chapter.Name, loweredDefs, m_typeDefMap)

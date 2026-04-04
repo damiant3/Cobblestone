@@ -124,6 +124,12 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
             ? allDefinitions[0].Span
             : SourceSpan.Single(0, 1, 1, "<combined>");
 
+        // Merge prose maps from all per-file chapters
+        Dictionary<string, ChapterProse> mergedProse = [];
+        foreach (Chapter mod in perFileChapters)
+            foreach (var kvp in mod.ProseByFile)
+                mergedProse[kvp.Key] = kvp.Value;
+
         return new Chapter(
             QualifiedName.Simple(combinedName),
             allDefinitions,
@@ -133,7 +139,8 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
             combinedSpan)
         {
             Citations = allCitations,
-            EffectDefs = allEffectDefs
+            EffectDefs = allEffectDefs,
+            ProseByFile = mergedProse
         };
     }
 

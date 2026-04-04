@@ -21,8 +21,34 @@ public sealed class CodexEmitter : ICodeEmitter
 
         if (!module.Sections.IsDefault && module.Sections.Length > 0)
         {
+            int sectionIndex = 0;
             foreach (IRChapterSection section in module.Sections)
             {
+                // Emit Chapter header and prose
+                if (section.ChapterTitle is not null)
+                {
+                    if (sectionIndex > 0) sb.AppendLine();
+                    sb.AppendLine($"Chapter: {section.ChapterTitle}");
+                    sb.AppendLine();
+                    if (section.Prose is not null)
+                    {
+                        foreach (string line in section.Prose.Split('\n'))
+                            sb.AppendLine($" {line}");
+                        sb.AppendLine();
+                    }
+                }
+
+                int sectionTitleIndex = 0;
+                bool needsSectionHeader = !section.SectionTitles.IsDefault
+                    && section.SectionTitles.Length > 0;
+
+                if (needsSectionHeader && sectionTitleIndex < section.SectionTitles.Length)
+                {
+                    sb.AppendLine($"Section: {section.SectionTitles[sectionTitleIndex]}");
+                    sb.AppendLine();
+                    sectionTitleIndex++;
+                }
+
                 foreach ((string tdName, CodexType tdType) in section.TypeDefinitions)
                 {
                     EmitTypeDefinition(sb, tdName, tdType);
@@ -34,6 +60,8 @@ public sealed class CodexEmitter : ICodeEmitter
                     EmitDefinition(sb, def);
                     sb.AppendLine();
                 }
+
+                sectionIndex++;
             }
         }
         else
