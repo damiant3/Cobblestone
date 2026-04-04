@@ -62,11 +62,26 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
                 allCitations, allEffectDefs);
         }
 
+        // Scan for page marker (last non-blank line starting with "Page")
+        PageMarker? pageMarker = null;
+        for (int i = m_lines.Length - 1; i >= 0; i--)
+        {
+            string ln = m_lines[i].Trim();
+            if (ln.Length == 0) continue;
+            if (ln.StartsWith("Page ", StringComparison.Ordinal)
+                && ln.Length > 5 && char.IsDigit(ln[5]))
+            {
+                pageMarker = ParsePageMarkerFromLine(ln, i);
+            }
+            break;
+        }
+
         return new DocumentNode(allDefs, allTypeDefs, allClaims,
             allProofs, chapters, docSpan)
         {
             Citations = allCitations,
-            EffectDefinitions = allEffectDefs
+            EffectDefinitions = allEffectDefs,
+            Page = pageMarker
         };
     }
 
@@ -92,6 +107,14 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
             if (trimmed.StartsWith("Chapter:", StringComparison.Ordinal))
                 break;
 
+            if (trimmed.StartsWith("Page ", StringComparison.Ordinal)
+                && trimmed.Length > 5 && char.IsDigit(trimmed[5]))
+            {
+                // Page marker — skip it in the chapter body, capture in ParseDocument
+                m_lineIndex++;
+                continue;
+            }
+
             if (trimmed.StartsWith("Section:", StringComparison.Ordinal))
             {
                 members.Add(ParseSection());
@@ -100,7 +123,7 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
 
             int indent = MeasureIndent(m_lines[m_lineIndex]);
 
-            if (indent >= 2 && LooksLikeNotation(trimmed))
+            if (IsNotationIndent(indent))
             {
                 members.Add(ParseNotationBlock());
                 continue;
@@ -141,7 +164,7 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
 
             int indent = MeasureIndent(m_lines[m_lineIndex]);
 
-            if (indent >= 2 && LooksLikeNotation(trimmed))
+            if (IsNotationIndent(indent))
             {
                 members.Add(ParseNotationBlock());
                 continue;
@@ -176,7 +199,7 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
 
             int indent = MeasureIndent(line);
 
-            if (indent >= 2 && LooksLikeNotation(trimmed))
+            if (IsNotationIndent(indent))
                 break;
 
             proseLines.Add(trimmed);
@@ -257,23 +280,7 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
         };
     }
 
-    static bool LooksLikeNotation(string trimmed)
-    {
-        if (trimmed.Length == 0) return false;
-        if (trimmed[0] == '|') return true;
-        // Function template lines are prose, not notation
-        if (trimmed.StartsWith("To ", StringComparison.OrdinalIgnoreCase) && trimmed.EndsWith(':'))
-            return false;
-        if (char.IsLetter(trimmed[0]))
-        {
-            if (trimmed.Contains(" : ")) return true;
-            if (trimmed.Contains(" = ")) return true;
-            if (trimmed.EndsWith(" =") || trimmed.EndsWith('=')) return true;
-            if (trimmed.Contains('(')) return true;
-        }
-
-        return false;
-    }
+    static bool IsNotationIndent(int indent) => indent >= 2;
 
     static void CollectDefinitions(IReadOnlyList<DocumentMember> members,
         List<DefinitionNode> defs, List<TypeDefinitionNode> typeDefs,
@@ -310,6 +317,19 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
         {
             m_lineIndex++;
         }
+    }
+
+    static PageMarker? ParsePageMarkerFromLine(string line, int lineIndex)
+    {
+        // "Page 1" or "Page 1 of 3"
+        string[] parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || parts[0] != "Page") return null;
+        if (!int.TryParse(parts[1], out int pageNum)) return null;
+        int? total = null;
+        if (parts.Length >= 4 && parts[2] == "of" && int.TryParse(parts[3], out int t))
+            total = t;
+        SourceSpan span = SourceSpan.Single(0, lineIndex + 1, 1, "<page>");
+        return new PageMarker(pageNum, total, span);
     }
 
     static int MeasureIndent(string line)

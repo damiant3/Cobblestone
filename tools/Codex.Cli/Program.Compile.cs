@@ -93,7 +93,7 @@ public static partial class Program
         DiagnosticBag diagnostics = new();
         Desugarer desugarer = new(diagnostics);
         List<Chapter> perFileChapters = [];
-        List<(string FilePath, PageMarker? Page)> pageMarkers = [];
+        List<(string FilePath, string ChapterName, PageMarker? Page)> pageMarkers = [];
 
         foreach (string filePath in filePaths)
         {
@@ -106,8 +106,10 @@ public static partial class Program
             string content = File.ReadAllText(filePath);
             SourceText source = new(filePath, content);
             DocumentNode document = ParseSourceFile(source, content, diagnostics);
-            pageMarkers.Add((filePath, document.Page));
-            string fileModule = Path.GetFileNameWithoutExtension(filePath);
+            string fileModule = document.Chapters.Count > 0
+                ? document.Chapters[0].Title
+                : Path.GetFileNameWithoutExtension(filePath);
+            pageMarkers.Add((filePath, fileModule, document.Page));
             Chapter chapter = desugarer.Desugar(document, fileModule);
             perFileChapters.Add(chapter);
         }
@@ -308,10 +310,10 @@ public static partial class Program
         return new IRCompilationResult(irModule, types, capReport);
     }
 
-    static void ValidatePageMarkers(List<(string FilePath, PageMarker? Page)> markers, DiagnosticBag diagnostics)
+    static void ValidatePageMarkers(List<(string FilePath, string ChapterName, PageMarker? Page)> markers, DiagnosticBag diagnostics)
     {
         // Check: every file must have a page marker
-        foreach (var (filePath, page) in markers)
+        foreach (var (filePath, _, page) in markers)
         {
             if (page is null)
             {
@@ -321,47 +323,42 @@ public static partial class Program
             }
         }
 
-        // Collect files that declare a total (Page N of M)
-        var withTotal = markers.Where(m => m.Page?.TotalPages is not null).ToList();
-        if (withTotal.Count == 0) return;
+        // Validate per chapter
+        var byChapter = markers
+            .Where(m => m.Page?.TotalPages is not null)
+            .GroupBy(m => m.ChapterName);
 
-        // Group by total to detect count mismatches
-        var totals = withTotal.Select(m => m.Page!.TotalPages!.Value).Distinct().ToList();
-        if (totals.Count > 1)
+        foreach (var group in byChapter)
         {
-            diagnostics.Error("CDX1072",
-                $"Page count mismatch: files disagree on total pages ({string.Join(" vs ", totals)})",
-                withTotal[0].Page!.Span);
-            return;
-        }
-
-        int expectedTotal = totals[0];
-
-        // Check for gaps and duplicates
-        var pageNumbers = markers
-            .Where(m => m.Page is not null)
-            .Select(m => (m.FilePath, m.Page!.PageNumber))
-            .OrderBy(m => m.PageNumber)
-            .ToList();
-
-        HashSet<int> seen = [];
-        foreach (var (filePath, pageNum) in pageNumbers)
-        {
-            if (!seen.Add(pageNum))
+            var totals = group.Select(m => m.Page!.TotalPages!.Value).Distinct().ToList();
+            if (totals.Count > 1)
             {
-                diagnostics.Error("CDX1073",
-                    $"Duplicate page number {pageNum} in '{Path.GetFileName(filePath)}'",
-                    SourceSpan.Single(0, 1, 1, filePath));
+                diagnostics.Error("CDX1072",
+                    $"Page count mismatch in '{group.Key}': files disagree ({string.Join(" vs ", totals)})",
+                    group.First().Page!.Span);
+                continue;
             }
-        }
 
-        for (int i = 1; i <= expectedTotal; i++)
-        {
-            if (!seen.Contains(i))
+            int expectedTotal = totals[0];
+            HashSet<int> seen = [];
+            foreach (var m in group)
             {
-                diagnostics.Error("CDX1074",
-                    $"Missing page {i} of {expectedTotal}",
-                    withTotal[0].Page!.Span);
+                if (!seen.Add(m.Page!.PageNumber))
+                {
+                    diagnostics.Error("CDX1073",
+                        $"Duplicate page {m.Page.PageNumber} in '{group.Key}'",
+                        m.Page.Span);
+                }
+            }
+
+            for (int i = 1; i <= expectedTotal; i++)
+            {
+                if (!seen.Contains(i))
+                {
+                    diagnostics.Error("CDX1074",
+                        $"Missing page {i} of {expectedTotal} in '{group.Key}'",
+                        group.First().Page!.Span);
+                }
             }
         }
     }
