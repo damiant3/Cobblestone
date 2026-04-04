@@ -72,89 +72,13 @@ class Program
 
         try
         {
-            var tokens = Codex_Codex_Codex.tokenize(cceCombined);
-            Console.WriteLine($"  Tokens: {tokens.Count}");
-
-            // Debug: dump first 80 tokens
-            for (int ti = 0; ti < Math.Min(80, tokens.Count); ti++)
-            {
-                var tok = tokens[ti];
-                string kindName = tok.kind.GetType().Name;
-                string tokText = _Cce.ToUnicode(tok.text);
-                if (tokText == "\n") tokText = "\\n";
-                Console.WriteLine($"    [{ti}] {kindName,-20} \"{tokText}\"");
-            }
-
-            var st = Codex_Codex_Codex.make_parse_state(tokens);
-            var doc = Codex_Codex_Codex.parse_document(st);
-            Console.WriteLine($"  Parsed defs: {doc.defs.Count}");
-            Console.WriteLine($"  Parsed type-defs: {doc.type_defs.Count}");
-
-
-            var ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("Codex_Codex"));
-            Console.WriteLine($"  AST defs: {ast.defs.Count}");
-            Console.WriteLine($"  AST type-defs: {ast.type_defs.Count}");
-
-            var checkResult = Codex_Codex_Codex.check_chapter(ast);
-            Console.WriteLine($"  Type bindings: {checkResult.types.Count}");
-            Console.WriteLine($"  Unification errors: {checkResult.state.errors.Count}");
-
-            if (verbose)
-            {
-                var diagLines = new List<string>();
-                int errorTyCount = 0;
-                int funcObjectCount = 0;
-                for (int i = 0; i < checkResult.types.Count; i++)
-                {
-                    var tb = checkResult.types[i];
-                    var resolved = Codex_Codex_Codex.deep_resolve(checkResult.state, tb.bound_type);
-                    string csType = Codex_Codex_Codex.cs_type(resolved);
-                    bool isErrorTy = resolved is ErrorTy;
-                    bool hasObject = csType.Contains("object");
-                    if (isErrorTy) errorTyCount++;
-                    if (hasObject) funcObjectCount++;
-                    string marker = isErrorTy ? " [ERRORTY]" : (hasObject ? " [HAS-OBJECT]" : "");
-                    diagLines.Add($"{i}: {_Cce.ToUnicode(tb.name)} : {_Cce.ToUnicode(csType)}{marker}");
-                }
-                string diagPath = Path.Combine(codexDir, "type-diag.txt");
-                File.WriteAllLines(diagPath, diagLines);
-                Console.WriteLine($"  ErrorTy bindings: {errorTyCount}");
-                Console.WriteLine($"  Has-object bindings: {funcObjectCount}");
-                Console.WriteLine($"  Type diagnostics written to: {diagPath}");
-
-                string errPath = Path.Combine(codexDir, "unify-errors.txt");
-                var errLines = new List<string>();
-                for (int ei = 0; ei < checkResult.state.errors.Count; ei++)
-                {
-                    Diagnostic diag = checkResult.state.errors[ei];
-                    errLines.Add($"{ei}: [{_Cce.ToUnicode(diag.code)}] {_Cce.ToUnicode(diag.message)}");
-                }
-                File.WriteAllLines(errPath, errLines);
-                Console.WriteLine($"  Unification error log: {errPath}");
-
-                for (int i = 0; i < Math.Min(20, checkResult.types.Count); i++)
-                {
-                    var tb = checkResult.types[i];
-                    var resolved = Codex_Codex_Codex.deep_resolve(checkResult.state, tb.bound_type);
-                    Console.WriteLine($"    {tb.name} : {Codex_Codex_Codex.cs_type(resolved)}");
-                }
-            }
-
-            var ir = Codex_Codex_Codex.lower_chapter(ast, checkResult.types, checkResult.state);
-            Console.WriteLine($"  IR defs: {ir.defs.Count}");
-
-            if (verbose)
-            {
-                for (int j = 0; j < Math.Min(10, ir.defs.Count); j++)
-                {
-                    var d = ir.defs[j];
-                    var paramStr = string.Join(", ", d.@params.Select(p => $"{Codex_Codex_Codex.cs_type(p.type_val)} {p.name}"));
-                    Console.WriteLine($"    {d.name}({paramStr}) : {Codex_Codex_Codex.cs_type(d.type_val)}");
-                }
-            }
-
-            string cceOutput = Codex_Codex_Codex.csharp_emitter_emit_full_chapter(ir, ast.type_defs);
-            // Convert emitted C# source from CCE back to Unicode for .NET compiler
+            // Use streaming v2 path which includes chapter scoping
+            var origOut = Console.Out;
+            var streamWriter = new System.IO.StringWriter();
+            Console.SetOut(streamWriter);
+            Codex_Codex_Codex.compile_streaming_v2(cceCombined, _Cce.FromUnicode("Codex_Codex"));
+            Console.SetOut(origOut);
+            string cceOutput = streamWriter.ToString();
             string output = _Cce.ToUnicode(cceOutput);
             string outputPath = outputOverride ?? Path.Combine(Path.GetFullPath(Path.Combine(codexDir, "..")), "build-output", "stage1-output.cs");
             File.WriteAllText(outputPath, output);
