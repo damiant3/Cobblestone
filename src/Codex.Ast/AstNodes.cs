@@ -12,6 +12,10 @@ public sealed record Chapter(
 {
     public IReadOnlyList<CitesDecl> Citations { get; init; } = [];
     public IReadOnlyList<EffectDef> EffectDefs { get; init; } = [];
+    public string? ChapterTitle { get; init; }
+    public string? Prose { get; init; }
+    public IReadOnlyList<string> SectionTitles { get; init; } = [];
+    public Dictionary<string, ChapterProse> ProseByFile { get; init; } = [];
 }
 
 public sealed record Definition(
@@ -25,6 +29,8 @@ public sealed record Definition(
 }
 
 public sealed record Parameter(Name Name, TypeExpr? TypeAnnotation, SourceSpan Span);
+
+public sealed record ChapterProse(string? ChapterTitle, string? Prose, IReadOnlyList<string> SectionTitles);
 
 public sealed record CitesDecl(Name ChapterName, SourceSpan Span)
 {

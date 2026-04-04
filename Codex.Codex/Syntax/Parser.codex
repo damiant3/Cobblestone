@@ -317,7 +317,7 @@ Section: Document Parsing
   parse-document (st) =
    let st2 = skip-newlines st
    in let imp-result = parse-citations st2 []
-   in parse-top-level [] [] [] (imp-result.imports) (imp-result.state)
+   in parse-top-level [] [] [] (imp-result.imports) "" [] (imp-result.state)
 
   parse-citations : ParseState -> List CitesDecl -> ImportParseResult
   parse-citations (st) (acc) =
@@ -362,19 +362,62 @@ Section: Document Parsing
 
   ImportParseResult = record { imports : List CitesDecl, state : ParseState }
 
-  parse-top-level : List Def -> List TypeDef -> List EffectDef -> List CitesDecl -> ParseState -> Document
-  parse-top-level (defs) (type-defs) (effect-defs) (imports) (st) =
+  is-chapter-header : ParseState -> Boolean
+  is-chapter-header (st) =
+   if is-type-ident (current-kind st) then if (current st).text == "Chapter" then is-colon (peek-kind st 1)
+      else False
+    else False
+
+  is-section-header : ParseState -> Boolean
+  is-section-header (st) =
+   if is-type-ident (current-kind st) then if (current st).text == "Section" then is-colon (peek-kind st 1)
+      else False
+    else False
+
+  is-page-marker : ParseState -> Boolean
+  is-page-marker (st) =
+   if is-type-ident (current-kind st) then (current st).text == "Page"
+    else False
+
+  extract-header-title : ParseState -> Text
+  extract-header-title (st) =
+   let st2 = advance (advance st)
+   in if is-done st2 then ""
+      else (current st2).text
+
+  skip-prose-lines : ParseState -> ParseState
+  skip-prose-lines (st) =
+   let st2 = skip-newlines st
+   in if is-done st2 then st2
+      else if (current st2).column > 0 then skip-prose-lines (skip-to-next-line st2)
+      else st2
+
+  skip-to-next-line : ParseState -> ParseState
+  skip-to-next-line (st) =
+   if is-done st then st
+   else if is-newline (current-kind st) then advance st
+   else skip-to-next-line (advance st)
+
+  parse-top-level : List Def -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> List Text -> ParseState -> Document
+  parse-top-level (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (st) =
    if is-done st then Document {
     defs = defs,
     type-defs = type-defs,
     effect-defs = effect-defs,
-    imports = imports
+    imports = imports,
+    chapter-title = ch-title,
+    section-titles = sec-titles
    }
-   else if is-effect-keyword (current-kind st) then parse-top-level-effect defs type-defs effect-defs imports st
-   else try-top-level-type-def defs type-defs effect-defs imports st
+   else if is-chapter-header st then let title = extract-header-title st
+     in parse-top-level defs type-defs effect-defs imports title sec-titles (skip-prose-lines (skip-to-next-line st))
+   else if is-section-header st then let title = extract-header-title st
+     in parse-top-level defs type-defs effect-defs imports ch-title (sec-titles ++ [title]) (skip-prose-lines (skip-to-next-line st))
+   else if is-page-marker st then parse-top-level defs type-defs effect-defs imports ch-title sec-titles (skip-to-next-line st)
+   else if is-effect-keyword (current-kind st) then parse-top-level-effect defs type-defs effect-defs imports ch-title sec-titles st
+   else try-top-level-type-def defs type-defs effect-defs imports ch-title sec-titles st
 
-  parse-top-level-effect : List Def -> List TypeDef -> List EffectDef -> List CitesDecl -> ParseState -> Document
-  parse-top-level-effect (defs) (type-defs) (effect-defs) (imports) (st) =
+  parse-top-level-effect : List Def -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> List Text -> ParseState -> Document
+  parse-top-level-effect (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (st) =
    let st1 = advance st
    in let name-tok = current st1
    in let st2 = advance st1
@@ -384,7 +427,7 @@ Section: Document Parsing
         name = name-tok,
         ops = ops.ops
        }
-        in parse-top-level defs type-defs (effect-defs ++ [ed]) imports (skip-newlines (ops.state))
+        in parse-top-level defs type-defs (effect-defs ++ [ed]) imports ch-title sec-titles (skip-newlines (ops.state))
 
   EffectOpsResult = record { ops : List EffectOpDef, state : ParseState }
 
@@ -409,23 +452,23 @@ Section: Document Parsing
      state = st
     }
 
-  try-top-level-type-def : List Def -> List TypeDef -> List EffectDef -> List CitesDecl -> ParseState -> Document
-  try-top-level-type-def (defs) (type-defs) (effect-defs) (imports) (st) =
+  try-top-level-type-def : List Def -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> List Text -> ParseState -> Document
+  try-top-level-type-def (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (st) =
    let td-result = parse-type-def st
    in when td-result
     if TypeDefOk (td) (st2) ->
-     parse-top-level defs (type-defs ++ [td]) effect-defs imports (skip-newlines st2)
+     parse-top-level defs (type-defs ++ [td]) effect-defs imports ch-title sec-titles (skip-newlines st2)
     if TypeDefNone (st2) ->
-     try-top-level-def defs type-defs effect-defs imports st
+     try-top-level-def defs type-defs effect-defs imports ch-title sec-titles st
 
-  try-top-level-def : List Def -> List TypeDef -> List EffectDef -> List CitesDecl -> ParseState -> Document
-  try-top-level-def (defs) (type-defs) (effect-defs) (imports) (st) =
+  try-top-level-def : List Def -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> List Text -> ParseState -> Document
+  try-top-level-def (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (st) =
    let def-result = parse-definition st
    in when def-result
     if DefOk (d) (st2) ->
-     parse-top-level (defs ++ [d]) type-defs effect-defs imports (skip-newlines st2)
+     parse-top-level (defs ++ [d]) type-defs effect-defs imports ch-title sec-titles (skip-newlines st2)
     if DefNone (st2) ->
-     parse-top-level defs type-defs effect-defs imports (skip-newlines (advance st2))
+     parse-top-level defs type-defs effect-defs imports ch-title sec-titles (skip-newlines (advance st2))
 
 Section: Header Scanning (Phase 2 streaming)
 
@@ -437,21 +480,28 @@ Section: Header Scanning (Phase 2 streaming)
   scan-document (st) =
    let st2 = skip-newlines st
    in let imp-result = parse-citations st2 []
-   in scan-top-level [] [] [] (imp-result.imports) "" (imp-result.state)
+   in scan-top-level [] [] [] (imp-result.imports) "" "" [] (imp-result.state)
 
-  scan-top-level : List DefHeader -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> ParseState -> ScanResult
-  scan-top-level (headers) (type-defs) (effect-defs) (imports) (cur-chap) (st) =
+  scan-top-level : List DefHeader -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> Text -> List Text -> ParseState -> ScanResult
+  scan-top-level (headers) (type-defs) (effect-defs) (imports) (cur-chap) (ch-title) (sec-titles) (st) =
    if is-done st then ScanResult {
     type-defs = type-defs,
     effect-defs = effect-defs,
     def-headers = headers,
-    imports = imports
+    imports = imports,
+    chapter-title = ch-title,
+    section-titles = sec-titles
    }
-   else if is-effect-keyword (current-kind st) then scan-top-level-effect headers type-defs effect-defs imports cur-chap st
-   else try-scan-type-def headers type-defs effect-defs imports cur-chap st
+   else if is-chapter-header st then let title = extract-header-title st
+     in scan-top-level headers type-defs effect-defs imports cur-chap title sec-titles (skip-prose-lines (skip-to-next-line st))
+   else if is-section-header st then let title = extract-header-title st
+     in scan-top-level headers type-defs effect-defs imports cur-chap ch-title (sec-titles ++ [title]) (skip-prose-lines (skip-to-next-line st))
+   else if is-page-marker st then scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles (skip-to-next-line st)
+   else if is-effect-keyword (current-kind st) then scan-top-level-effect headers type-defs effect-defs imports cur-chap ch-title sec-titles st
+   else try-scan-type-def headers type-defs effect-defs imports cur-chap ch-title sec-titles st
 
-  scan-top-level-effect : List DefHeader -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> ParseState -> ScanResult
-  scan-top-level-effect (headers) (type-defs) (effect-defs) (imports) (cur-chap) (st) =
+  scan-top-level-effect : List DefHeader -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> Text -> List Text -> ParseState -> ScanResult
+  scan-top-level-effect (headers) (type-defs) (effect-defs) (imports) (cur-chap) (ch-title) (sec-titles) (st) =
    let st1 = advance st
    in let name-tok = current st1
    in let st2 = advance st1
@@ -461,25 +511,25 @@ Section: Header Scanning (Phase 2 streaming)
         name = name-tok,
         ops = ops.ops
        }
-        in scan-top-level headers type-defs (effect-defs ++ [ed]) imports cur-chap (skip-newlines (ops.state))
+        in scan-top-level headers type-defs (effect-defs ++ [ed]) imports cur-chap ch-title sec-titles (skip-newlines (ops.state))
 
-  try-scan-type-def : List DefHeader -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> ParseState -> ScanResult
-  try-scan-type-def (headers) (type-defs) (effect-defs) (imports) (cur-chap) (st) =
+  try-scan-type-def : List DefHeader -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> Text -> List Text -> ParseState -> ScanResult
+  try-scan-type-def (headers) (type-defs) (effect-defs) (imports) (cur-chap) (ch-title) (sec-titles) (st) =
    let td-result = parse-type-def st
    in when td-result
     if TypeDefOk (td) (st2) ->
-     scan-top-level headers (type-defs ++ [td]) effect-defs imports cur-chap (skip-newlines st2)
+     scan-top-level headers (type-defs ++ [td]) effect-defs imports cur-chap ch-title sec-titles (skip-newlines st2)
     if TypeDefNone (st2) ->
-     try-scan-def-header headers type-defs effect-defs imports cur-chap st
+     try-scan-def-header headers type-defs effect-defs imports cur-chap ch-title sec-titles st
 
-  try-scan-def-header : List DefHeader -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> ParseState -> ScanResult
-  try-scan-def-header (headers) (type-defs) (effect-defs) (imports) (cur-chap) (st) =
+  try-scan-def-header : List DefHeader -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> Text -> List Text -> ParseState -> ScanResult
+  try-scan-def-header (headers) (type-defs) (effect-defs) (imports) (cur-chap) (ch-title) (sec-titles) (st) =
    let hdr-result = scan-definition cur-chap st
    in when hdr-result
     if DefHeaderOk (hdr) (st2) ->
-     scan-top-level (headers ++ [hdr]) type-defs effect-defs imports cur-chap (skip-newlines st2)
+     scan-top-level (headers ++ [hdr]) type-defs effect-defs imports cur-chap ch-title sec-titles (skip-newlines st2)
     if DefHeaderNone (st2) ->
-     scan-top-level headers type-defs effect-defs imports cur-chap (skip-newlines (advance st2))
+     scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles (skip-newlines (advance st2))
 
   scan-definition : Text -> ParseState -> ScanDefResult
   scan-definition (cur-chap) (st) =
