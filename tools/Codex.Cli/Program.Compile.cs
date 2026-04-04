@@ -58,8 +58,8 @@ public static partial class Program
         TypeChecker checker = new(diagnostics);
 
         // Import types from dependency modules before checking main chapter
-        foreach (ResolvedChapter imported in resolved.ImportedChapters)
-            checker.ImportChapter(imported.Chapter, imported.ExportedNames);
+        foreach (ResolvedChapter imported in resolved.CitedChapters)
+            checker.CiteChapter(imported.Chapter);
 
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
@@ -125,12 +125,12 @@ public static partial class Program
 
         TypeChecker checker = new(diagnostics);
 
-        foreach (ResolvedChapter imported in resolved.ImportedChapters)
-            checker.ImportChapter(imported.Chapter, imported.ExportedNames);
+        foreach (ResolvedChapter imported in resolved.CitedChapters)
+            checker.CiteChapter(imported.Chapter);
 
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
-        foreach (ResolvedChapter imported in resolved.ImportedChapters)
+        foreach (ResolvedChapter imported in resolved.CitedChapters)
         {
             TypeChecker importChecker = new(diagnostics);
             importChecker.CheckChapter(imported.Chapter);
@@ -193,9 +193,9 @@ public static partial class Program
                 loaders.Add(loader);
         }
 
-        PreludeChapterLoader? prelude = PreludeChapterLoader.TryCreate(diagnostics);
-        if (prelude is not null)
-            loaders.Add(prelude);
+        ForewordChapterLoader? foreword = ForewordChapterLoader.TryCreate(diagnostics);
+        if (foreword is not null)
+            loaders.Add(foreword);
 
         Codex.Repository.FactStore? store =
             Codex.Repository.FactStore.Open(Directory.GetCurrentDirectory());
@@ -222,8 +222,7 @@ public static partial class Program
         List<TypeDef> allTypeDefinitions = [];
         List<ClaimDef> allClaims = [];
         List<ProofDef> allProofs = [];
-        List<ImportDecl> allImports = [];
-        List<ExportDecl> allExports = [];
+        List<CitesDecl> allCitations = [];
         List<EffectDef> allEffectDefs = [];
 
         foreach (KeyValuePair<string, ContentHash> kv in view)
@@ -250,8 +249,7 @@ public static partial class Program
             allTypeDefinitions.AddRange(chapter.TypeDefinitions);
             allClaims.AddRange(chapter.Claims);
             allProofs.AddRange(chapter.Proofs);
-            allImports.AddRange(chapter.Imports);
-            allExports.AddRange(chapter.Exports);
+            allCitations.AddRange(chapter.Citations);
             allEffectDefs.AddRange(chapter.EffectDefs);
         }
 
@@ -268,8 +266,7 @@ public static partial class Program
             allProofs,
             combinedSpan)
         {
-            Imports = allImports,
-            Exports = allExports,
+            Citations = allCitations,
             EffectDefs = allEffectDefs
         };
 
@@ -280,8 +277,8 @@ public static partial class Program
 
         TypeChecker checker = new(diagnostics);
 
-        foreach (ResolvedChapter imported in resolved.ImportedChapters)
-            checker.ImportChapter(imported.Chapter, imported.ExportedNames);
+        foreach (ResolvedChapter imported in resolved.CitedChapters)
+            checker.CiteChapter(imported.Chapter);
 
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 

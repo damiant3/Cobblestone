@@ -10,8 +10,7 @@ public sealed record Chapter(
     IReadOnlyList<ProofDef> Proofs,
     SourceSpan Span)
 {
-    public IReadOnlyList<ImportDecl> Imports { get; init; } = [];
-    public IReadOnlyList<ExportDecl> Exports { get; init; } = [];
+    public IReadOnlyList<CitesDecl> Citations { get; init; } = [];
     public IReadOnlyList<EffectDef> EffectDefs { get; init; } = [];
 }
 
@@ -27,12 +26,10 @@ public sealed record Definition(
 
 public sealed record Parameter(Name Name, TypeExpr? TypeAnnotation, SourceSpan Span);
 
-public sealed record ImportDecl(Name ChapterName, SourceSpan Span)
+public sealed record CitesDecl(Name ChapterName, SourceSpan Span)
 {
     public IReadOnlyList<Name> SelectedNames { get; init; } = [];
 }
-
-public sealed record ExportDecl(IReadOnlyList<Name> Names, SourceSpan Span);
 
 public sealed record EffectDef(
     Name EffectName,

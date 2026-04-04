@@ -192,7 +192,7 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
 
     public Map<string, string> OperationToEffect => m_operationToEffect;
 
-    public void ImportChapter(Chapter chapter, Set<string> exportedNames)
+    public void CiteChapter(Chapter chapter)
     {
         EnsureBuiltinEffects();
         RegisterTypeDefinitions(chapter.TypeDefinitions);
@@ -200,8 +200,6 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
 
         foreach (Definition def in chapter.Definitions)
         {
-            if (!exportedNames.Contains(def.Name.Value))
-                continue;
 
             Map<string, CodexType> savedTypeParams = m_typeParamEnv;
             m_typeParamEnv = Map<string, CodexType>.s_empty;

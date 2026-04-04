@@ -78,7 +78,7 @@ public class ChapterScopeTests
         // ModB imports emit-expr from ModA selectively.
         Chapter modA = ParseModule("emit-expr (x) = x", "ModA");
         Chapter modB = ParseModule(
-            "import ModA (emit-expr)\nhelper (x) = emit-expr x",
+            "cites ModA (emit-expr)\nhelper (x) = emit-expr x",
             "ModB");
         Chapter modC = ParseModule("emit-expr (x) = x", "ModC");
 

@@ -55,7 +55,7 @@ public class ImportTests
             Map<string, ResolvedChapter>.s_empty.Set("Math", mathModule);
         MockModuleLoader loader = new(modules);
 
-        string source = "import Math\nresult = double 21";
+        string source = "cites Math\nresult = double 21";
         (ResolvedChapter _, DiagnosticBag diags) = ResolveWithLoader(source, loader);
         Assert.False(diags.HasErrors, string.Join("; ", diags.ToImmutable()));
     }
@@ -66,7 +66,7 @@ public class ImportTests
         Map<string, ResolvedChapter> modules = Map<string, ResolvedChapter>.s_empty;
         MockModuleLoader loader = new(modules);
 
-        string source = "import Missing\nresult = 42";
+        string source = "cites Missing\nresult = 42";
         (ResolvedChapter _, DiagnosticBag diags) = ResolveWithLoader(source, loader);
         Assert.True(diags.HasErrors);
         Assert.Contains(diags.ToImmutable(), d => d.Code == "CDX3010");
@@ -75,7 +75,7 @@ public class ImportTests
     [Fact]
     public void Import_without_loader_reports_error()
     {
-        SourceText src = new("test.codex", "import Math\nresult = 42");
+        SourceText src = new("test.codex", "cites Math\nresult = 42");
         DiagnosticBag bag = new();
         Lexer lexer = new(src, bag);
         IReadOnlyList<Token> tokens = lexer.TokenizeAll();
@@ -92,15 +92,15 @@ public class ImportTests
     [Fact]
     public void Import_parses_correctly()
     {
-        SourceText src = new("test.codex", "import Math\nx = 1");
+        SourceText src = new("test.codex", "cites Math\nx = 1");
         DiagnosticBag bag = new();
         Lexer lexer = new(src, bag);
         IReadOnlyList<Token> tokens = lexer.TokenizeAll();
         Parser parser = new(tokens, bag);
         DocumentNode doc = parser.ParseDocument();
         Assert.False(bag.HasErrors, string.Join("; ", bag.ToImmutable()));
-        Assert.Single(doc.Imports);
-        Assert.Equal("Math", doc.Imports[0].Name.Text);
+        Assert.Single(doc.Citations);
+        Assert.Equal("Math", doc.Citations[0].Name.Text);
         Assert.Single(doc.Definitions);
     }
 
@@ -114,10 +114,10 @@ public class ImportTests
             Map<string, ResolvedChapter>.s_empty.Set("Helpers", helperModule);
         MockModuleLoader loader = new(modules);
 
-        string source = "import Helpers\nresult = helper 5";
+        string source = "cites Helpers\nresult = helper 5";
         (ResolvedChapter resolved, DiagnosticBag diags) =
             ResolveWithLoader(source, loader);
         Assert.False(diags.HasErrors, string.Join("; ", diags.ToImmutable()));
-        Assert.Single(resolved.ImportedChapters);
+        Assert.Single(resolved.CitedChapters);
     }
 }

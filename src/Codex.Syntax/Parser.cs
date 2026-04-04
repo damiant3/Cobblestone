@@ -17,30 +17,18 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         List<TypeDefinitionNode> typeDefinitions = [];
         List<ClaimNode> claims = [];
         List<ProofNode> proofs = [];
-        List<ImportNode> imports = [];
-        List<ExportNode> exports = [];
+        List<CitesNode> citations = [];
         List<EffectDefinitionNode> effectDefs = [];
 
         SkipNewlines();
         while (!IsAtEnd)
         {
-            if (Current.Kind == TokenKind.ImportKeyword)
+            if (Current.Kind == TokenKind.CitesKeyword)
             {
-                ImportNode? imp = TryParseImport();
+                CitesNode? imp = TryParseCites();
                 if (imp is not null)
                 {
-                    imports.Add(imp);
-                    SkipNewlines();
-                    continue;
-                }
-            }
-
-            if (Current.Kind == TokenKind.ExportKeyword)
-            {
-                ExportNode? exp = TryParseExport();
-                if (exp is not null)
-                {
-                    exports.Add(exp);
+                    citations.Add(imp);
                     SkipNewlines();
                     continue;
                 }
@@ -103,7 +91,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         SourceSpan endSpan = Previous.Span;
         return new DocumentNode(definitions, typeDefinitions, claims, proofs,
             [], startSpan.Through(endSpan))
-            { Imports = imports, Exports = exports, EffectDefinitions = effectDefs };
+            { Citations = citations, EffectDefinitions = effectDefs };
     }
 
     TypeDefinitionNode? TryParseTypeDefinition()
@@ -173,11 +161,11 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         return false;
     }
 
-    ImportNode? TryParseImport()
+    CitesNode? TryParseCites()
     {
-        if (Current.Kind != TokenKind.ImportKeyword)
+        if (Current.Kind != TokenKind.CitesKeyword)
             return null;
-        Token importKw = Current;
+        Token citesKw = Current;
         Advance();
         Token name = Expect(TokenKind.TypeIdentifier);
 
@@ -206,44 +194,9 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         }
 
         SourceSpan span = selectedNames.Count > 0
-            ? importKw.Span.Through(selectedNames[^1].Span)
-            : importKw.Span.Through(name.Span);
-        return new ImportNode(name, span) { SelectedNames = selectedNames };
-    }
-
-    ExportNode? TryParseExport()
-    {
-        if (Current.Kind != TokenKind.ExportKeyword)
-            return null;
-        Token exportKw = Current;
-        Advance();
-
-        List<Token> names = [];
-        Token firstName = Current;
-        if (Current.Kind is TokenKind.Identifier or TokenKind.TypeIdentifier)
-        {
-            names.Add(Current);
-            Advance();
-            while (Current.Kind == TokenKind.Comma)
-            {
-                Advance();
-                SkipNewlines();
-                if (Current.Kind is TokenKind.Identifier or TokenKind.TypeIdentifier)
-                {
-                    names.Add(Current);
-                    Advance();
-                }
-            }
-        }
-
-        if (names.Count == 0)
-        {
-            m_diagnostics.Error("CDX1060",
-                "Expected at least one name after 'export'", exportKw.Span);
-            return new ExportNode(names, exportKw.Span);
-        }
-
-        return new ExportNode(names, exportKw.Span.Through(names[^1].Span));
+            ? citesKw.Span.Through(selectedNames[^1].Span)
+            : citesKw.Span.Through(name.Span);
+        return new CitesNode(name, span) { SelectedNames = selectedNames };
     }
 
     EffectDefinitionNode? TryParseEffectDefinition()

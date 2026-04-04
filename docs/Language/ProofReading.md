@@ -117,23 +117,38 @@ Dead code to remove:
 - export keyword in Lexer
 - Export parsing in Parser
 
+## Rename: Prelude to Foreword
+
+The standard library ("prelude") contains definitions that exist before
+any user code. In books, the foreword is material at the front that the
+author didn't write — exactly what the standard library is. Definitions
+provided by the language itself, before your chapter begins.
+
+| Old                  | New                    |
+|----------------------|------------------------|
+| Prelude              | Foreword               |
+| PreludeChapterLoader | ForewordChapterLoader  |
+| prelude              | foreword               |
+
 ## Rename: Import to Cite
 
 The keyword `import` is out of theme. Books don't import — they cite.
-The replacement is `Cite`, used as a declaration at the chapter level:
+The replacement is `Cites:`, used as a declarative header:
 
-    Cite: Lexer, Collections
+    Cites: Lexer, Collections
 
-"Reference" was considered but reads as a directive to the user.
-"Cite" is a declaration of dependency — uncommon enough to invite
-discovery, familiar enough to be understood.
+All document headers are declarative — Chapter:, Section:, Cites: —
+each describes what something is, not what to do. "Cite:" would be
+the only imperative. "Cites:" reads as "[this chapter] cites..."
+
+"Reference" was also considered but reads as a directive to the user.
 
 | Old               | New              |
 |-------------------|------------------|
-| import            | cite             |
-| ImportDecl (AST)  | CiteDecl         |
+| import            | cites            |
+| ImportDecl (AST)  | CitesDecl        |
 | Imports           | Citations        |
-| ImportedModules   | CitedChapters    |
+| ImportedChapters  | CitedChapters    |
 
 ## Rename: Module to Chapter
 

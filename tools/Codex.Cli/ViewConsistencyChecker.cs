@@ -19,8 +19,7 @@ sealed class ViewConsistencyChecker : IViewConsistencyChecker
         List<TypeDef> allTypeDefinitions = [];
         List<ClaimDef> allClaims = [];
         List<ProofDef> allProofs = [];
-        List<ImportDecl> allImports = [];
-        List<ExportDecl> allExports = [];
+        List<CitesDecl> allCitations = [];
         List<EffectDef> allEffectDefs = [];
 
         foreach (ViewDefinition viewDef in definitions)
@@ -33,8 +32,7 @@ sealed class ViewConsistencyChecker : IViewConsistencyChecker
             allTypeDefinitions.AddRange(chapter.TypeDefinitions);
             allClaims.AddRange(chapter.Claims);
             allProofs.AddRange(chapter.Proofs);
-            allImports.AddRange(chapter.Imports);
-            allExports.AddRange(chapter.Exports);
+            allCitations.AddRange(chapter.Citations);
             allEffectDefs.AddRange(chapter.EffectDefs);
         }
 
@@ -52,8 +50,7 @@ sealed class ViewConsistencyChecker : IViewConsistencyChecker
             allProofs,
             combinedSpan)
         {
-            Imports = allImports,
-            Exports = allExports,
+            Citations = allCitations,
             EffectDefs = allEffectDefs
         };
 
@@ -65,8 +62,8 @@ sealed class ViewConsistencyChecker : IViewConsistencyChecker
 
         TypeChecker checker = new(diagnostics);
 
-        foreach (ResolvedChapter imported in resolved.ImportedChapters)
-            checker.ImportChapter(imported.Chapter, imported.ExportedNames);
+        foreach (ResolvedChapter imported in resolved.CitedChapters)
+            checker.CiteChapter(imported.Chapter);
 
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 

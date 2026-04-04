@@ -54,20 +54,18 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
         List<TypeDefinitionNode> allTypeDefs = [];
         List<ClaimNode> allClaims = [];
         List<ProofNode> allProofs = [];
-        List<ImportNode> allImports = [];
-        List<ExportNode> allExports = [];
+        List<CitesNode> allCitations = [];
         List<EffectDefinitionNode> allEffectDefs = [];
         foreach (ChapterNode chapter in chapters)
         {
             CollectDefinitions(chapter.Members, allDefs, allTypeDefs, allClaims, allProofs,
-                allImports, allExports, allEffectDefs);
+                allCitations, allEffectDefs);
         }
 
         return new DocumentNode(allDefs, allTypeDefs, allClaims,
             allProofs, chapters, docSpan)
         {
-            Imports = allImports,
-            Exports = allExports,
+            Citations = allCitations,
             EffectDefinitions = allEffectDefs
         };
     }
@@ -254,8 +252,7 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
         {
             Claims = notationDoc.Claims,
             Proofs = notationDoc.Proofs,
-            Imports = notationDoc.Imports,
-            Exports = notationDoc.Exports,
+            Citations = notationDoc.Citations,
             EffectDefinitions = notationDoc.EffectDefinitions
         };
     }
@@ -281,8 +278,7 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
     static void CollectDefinitions(IReadOnlyList<DocumentMember> members,
         List<DefinitionNode> defs, List<TypeDefinitionNode> typeDefs,
         List<ClaimNode> claims, List<ProofNode> proofs,
-        List<ImportNode> imports, List<ExportNode> exports,
-        List<EffectDefinitionNode> effectDefs)
+        List<CitesNode> citations, List<EffectDefinitionNode> effectDefs)
     {
         foreach (DocumentMember member in members)
         {
@@ -292,14 +288,13 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
                 typeDefs.AddRange(notation.TypeDefinitions);
                 claims.AddRange(notation.Claims);
                 proofs.AddRange(notation.Proofs);
-                imports.AddRange(notation.Imports);
-                exports.AddRange(notation.Exports);
+                citations.AddRange(notation.Citations);
                 effectDefs.AddRange(notation.EffectDefinitions);
             }
             else if (member is SectionNode section)
             {
                 CollectDefinitions(section.Members, defs, typeDefs, claims, proofs,
-                    imports, exports, effectDefs);
+                    citations, effectDefs);
             }
         }
     }

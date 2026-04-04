@@ -31,8 +31,7 @@ public static partial class Program
         public required List<TypeDef> TypeDefinitions { get; init; }
         public required List<ClaimDef> Claims { get; init; }
         public required List<ProofDef> Proofs { get; init; }
-        public required List<ImportDecl> Imports { get; init; }
-        public required List<ExportDecl> Exports { get; init; }
+        public required List<CitesDecl> Citations { get; init; }
         public required List<EffectDef> EffectDefs { get; init; }
     }
 
@@ -126,8 +125,7 @@ public static partial class Program
         List<TypeDef> allTypeDefinitions = [];
         List<ClaimDef> allClaims = [];
         List<ProofDef> allProofs = [];
-        List<ImportDecl> allImports = [];
-        List<ExportDecl> allExports = [];
+        List<CitesDecl> allCitations = [];
         List<EffectDef> allEffectDefs = [];
 
         List<PerFileFrontEndResult> orderedResults = results
@@ -140,8 +138,7 @@ public static partial class Program
             allTypeDefinitions.AddRange(r.TypeDefinitions);
             allClaims.AddRange(r.Claims);
             allProofs.AddRange(r.Proofs);
-            allImports.AddRange(r.Imports);
-            allExports.AddRange(r.Exports);
+            allCitations.AddRange(r.Citations);
             allEffectDefs.AddRange(r.EffectDefs);
         }
 
@@ -159,8 +156,7 @@ public static partial class Program
             allProofs,
             combinedSpan)
         {
-            Imports = allImports,
-            Exports = allExports,
+            Citations = allCitations,
             EffectDefs = allEffectDefs
         };
 
@@ -224,8 +220,7 @@ public static partial class Program
         List<TypeDef> allTypeDefinitions = [];
         List<ClaimDef> allClaims = [];
         List<ProofDef> allProofs = [];
-        List<ImportDecl> allImports = [];
-        List<ExportDecl> allExports = [];
+        List<CitesDecl> allCitations = [];
         List<EffectDef> allEffectDefs = [];
         foreach (PerFileFrontEndResult r in orderedResults)
         {
@@ -233,8 +228,7 @@ public static partial class Program
             allTypeDefinitions.AddRange(r.TypeDefinitions);
             allClaims.AddRange(r.Claims);
             allProofs.AddRange(r.Proofs);
-            allImports.AddRange(r.Imports);
-            allExports.AddRange(r.Exports);
+            allCitations.AddRange(r.Citations);
             allEffectDefs.AddRange(r.EffectDefs);
         }
 
@@ -299,8 +293,7 @@ public static partial class Program
             TypeDefinitions = chapter.TypeDefinitions.ToList(),
             Claims = chapter.Claims.ToList(),
             Proofs = chapter.Proofs.ToList(),
-            Imports = chapter.Imports.ToList(),
-            Exports = chapter.Exports.ToList(),
+            Citations = chapter.Citations.ToList(),
             EffectDefs = chapter.EffectDefs.ToList()
         };
     }
@@ -314,9 +307,9 @@ public static partial class Program
             foreach (Codex.Semantics.IChapterLoader loader in extraLoaders)
                 loaders.Add(loader);
         }
-        PreludeChapterLoader? prelude = PreludeChapterLoader.TryCreate(diagnostics);
-        if (prelude is not null)
-            loaders.Add(prelude);
+        ForewordChapterLoader? foreword = ForewordChapterLoader.TryCreate(diagnostics);
+        if (foreword is not null)
+            loaders.Add(foreword);
         Codex.Repository.FactStore? store =
             Codex.Repository.FactStore.Open(Directory.GetCurrentDirectory());
         if (store is not null)
@@ -333,8 +326,8 @@ public static partial class Program
 
         Codex.Types.TypeChecker checker = new(diagnostics);
 
-        foreach (Codex.Semantics.ResolvedChapter imported in resolved.ImportedChapters)
-            checker.ImportChapter(imported.Chapter, imported.ExportedNames);
+        foreach (Codex.Semantics.ResolvedChapter imported in resolved.CitedChapters)
+            checker.CiteChapter(imported.Chapter);
 
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }

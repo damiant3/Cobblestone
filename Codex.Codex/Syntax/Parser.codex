@@ -316,22 +316,22 @@ Section: Document Parsing
   parse-document : ParseState -> Document
   parse-document (st) =
    let st2 = skip-newlines st
-   in let imp-result = parse-imports st2 []
+   in let imp-result = parse-citations st2 []
    in parse-top-level [] [] [] (imp-result.imports) (imp-result.state)
 
-  parse-imports : ParseState -> List ImportDecl -> ImportParseResult
-  parse-imports (st) (acc) =
-   if is-import-keyword (current-kind st) then let st2 = advance st
+  parse-citations : ParseState -> List CitesDecl -> ImportParseResult
+  parse-citations (st) (acc) =
+   if is-cites-keyword (current-kind st) then let st2 = advance st
      in let name-tok = current st2
       in let st3 = advance st2
        in if is-left-paren (current-kind st3) then let sel = parse-selected-names (advance st3) []
          in let st4 = skip-newlines (sel.state)
-          in parse-imports st4 (list-snoc acc (ImportDecl {
+          in parse-citations st4 (list-snoc acc (CitesDecl {
            chapter-name = name-tok,
            selected-names = sel.names
           }))
         else let st4 = skip-newlines st3
-         in parse-imports st4 (list-snoc acc (ImportDecl {
+         in parse-citations st4 (list-snoc acc (CitesDecl {
           chapter-name = name-tok,
           selected-names = []
          }))
@@ -360,9 +360,9 @@ Section: Document Parsing
      state = st
     }
 
-  ImportParseResult = record { imports : List ImportDecl, state : ParseState }
+  ImportParseResult = record { imports : List CitesDecl, state : ParseState }
 
-  parse-top-level : List Def -> List TypeDef -> List EffectDef -> List ImportDecl -> ParseState -> Document
+  parse-top-level : List Def -> List TypeDef -> List EffectDef -> List CitesDecl -> ParseState -> Document
   parse-top-level (defs) (type-defs) (effect-defs) (imports) (st) =
    if is-done st then Document {
     defs = defs,
@@ -373,7 +373,7 @@ Section: Document Parsing
    else if is-effect-keyword (current-kind st) then parse-top-level-effect defs type-defs effect-defs imports st
    else try-top-level-type-def defs type-defs effect-defs imports st
 
-  parse-top-level-effect : List Def -> List TypeDef -> List EffectDef -> List ImportDecl -> ParseState -> Document
+  parse-top-level-effect : List Def -> List TypeDef -> List EffectDef -> List CitesDecl -> ParseState -> Document
   parse-top-level-effect (defs) (type-defs) (effect-defs) (imports) (st) =
    let st1 = advance st
    in let name-tok = current st1
@@ -409,7 +409,7 @@ Section: Document Parsing
      state = st
     }
 
-  try-top-level-type-def : List Def -> List TypeDef -> List EffectDef -> List ImportDecl -> ParseState -> Document
+  try-top-level-type-def : List Def -> List TypeDef -> List EffectDef -> List CitesDecl -> ParseState -> Document
   try-top-level-type-def (defs) (type-defs) (effect-defs) (imports) (st) =
    let td-result = parse-type-def st
    in when td-result
@@ -418,7 +418,7 @@ Section: Document Parsing
     if TypeDefNone (st2) ->
      try-top-level-def defs type-defs effect-defs imports st
 
-  try-top-level-def : List Def -> List TypeDef -> List EffectDef -> List ImportDecl -> ParseState -> Document
+  try-top-level-def : List Def -> List TypeDef -> List EffectDef -> List CitesDecl -> ParseState -> Document
   try-top-level-def (defs) (type-defs) (effect-defs) (imports) (st) =
    let def-result = parse-definition st
    in when def-result
@@ -436,7 +436,7 @@ Section: Header Scanning (Phase 2 streaming)
   scan-document : ParseState -> ScanResult
   scan-document (st) =
    let st2 = skip-newlines st
-   in let imp-result = parse-imports st2 []
+   in let imp-result = parse-citations st2 []
    in scan-top-level [] [] [] (imp-result.imports) "" (imp-result.state)
 
   is-module-marker : ParseState -> Boolean
@@ -472,7 +472,7 @@ Section: Header Scanning (Phase 2 streaming)
    in if is-ident (current-kind st2) then (current st2).text
       else ""
 
-  scan-top-level : List DefHeader -> List TypeDef -> List EffectDef -> List ImportDecl -> Text -> ParseState -> ScanResult
+  scan-top-level : List DefHeader -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> ParseState -> ScanResult
   scan-top-level (headers) (type-defs) (effect-defs) (imports) (cur-chap) (st) =
    if is-done st then ScanResult {
     type-defs = type-defs,
@@ -485,7 +485,7 @@ Section: Header Scanning (Phase 2 streaming)
    else if is-effect-keyword (current-kind st) then scan-top-level-effect headers type-defs effect-defs imports cur-chap st
    else try-scan-type-def headers type-defs effect-defs imports cur-chap st
 
-  scan-top-level-effect : List DefHeader -> List TypeDef -> List EffectDef -> List ImportDecl -> Text -> ParseState -> ScanResult
+  scan-top-level-effect : List DefHeader -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> ParseState -> ScanResult
   scan-top-level-effect (headers) (type-defs) (effect-defs) (imports) (cur-chap) (st) =
    let st1 = advance st
    in let name-tok = current st1
@@ -498,7 +498,7 @@ Section: Header Scanning (Phase 2 streaming)
        }
         in scan-top-level headers type-defs (effect-defs ++ [ed]) imports cur-chap (skip-newlines (ops.state))
 
-  try-scan-type-def : List DefHeader -> List TypeDef -> List EffectDef -> List ImportDecl -> Text -> ParseState -> ScanResult
+  try-scan-type-def : List DefHeader -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> ParseState -> ScanResult
   try-scan-type-def (headers) (type-defs) (effect-defs) (imports) (cur-chap) (st) =
    let td-result = parse-type-def st
    in when td-result
@@ -507,7 +507,7 @@ Section: Header Scanning (Phase 2 streaming)
     if TypeDefNone (st2) ->
      try-scan-def-header headers type-defs effect-defs imports cur-chap st
 
-  try-scan-def-header : List DefHeader -> List TypeDef -> List EffectDef -> List ImportDecl -> Text -> ParseState -> ScanResult
+  try-scan-def-header : List DefHeader -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> ParseState -> ScanResult
   try-scan-def-header (headers) (type-defs) (effect-defs) (imports) (cur-chap) (st) =
    let hdr-result = scan-definition cur-chap st
    in when hdr-result

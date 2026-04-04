@@ -13,8 +13,7 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
         List<TypeDef> allTypeDefinitions = [];
         List<ClaimDef> allClaims = [];
         List<ProofDef> allProofs = [];
-        List<ImportDecl> allImports = [];
-        List<ExportDecl> allExports = [];
+        List<CitesDecl> allCitations = [];
         List<EffectDef> allEffectDefs = [];
 
         // Phase A: collect all names per module and detect collisions
@@ -42,25 +41,25 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
                 collidingNames.Add(kvp.Key);
         }
 
-        // Build selective import maps per module
-        Dictionary<string, Dictionary<string, string>> moduleImportAliases = [];
+        // Build selective cite maps per chapter
+        Dictionary<string, Dictionary<string, string>> chapterCiteAliases = [];
         foreach (Chapter mod in perFileChapters)
         {
             string modName = mod.Name.Parts[^1].Value;
             Dictionary<string, string> aliases = [];
-            foreach (ImportDecl imp in mod.Imports)
+            foreach (CitesDecl cite in mod.Citations)
             {
-                if (imp.SelectedNames.Count > 0)
+                if (cite.SelectedNames.Count > 0)
                 {
-                    string importedModSlug = ToSlug(imp.ChapterName.Value);
-                    foreach (Name selected in imp.SelectedNames)
+                    string importedModSlug = ToSlug(cite.ChapterName.Value);
+                    foreach (Name selected in cite.SelectedNames)
                     {
                         string mangledName = $"{importedModSlug}_{selected.Value}";
                         aliases[selected.Value] = mangledName;
                     }
                 }
             }
-            moduleImportAliases[modName] = aliases;
+            chapterCiteAliases[modName] = aliases;
         }
 
         // Process each module: mangle colliding names, rewrite expressions
@@ -68,16 +67,16 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
         {
             string modName = mod.Name.Parts[^1].Value;
             string modSlug = ToSlug(modName);
-            var importAliases = moduleImportAliases.GetValueOrDefault(modName)
+            var citeAliases = chapterCiteAliases.GetValueOrDefault(modName)
                 ?? new Dictionary<string, string>();
 
             // Build the rename map for this module
             Dictionary<string, string> renameMap = [];
             foreach (string colliding in collidingNames)
             {
-                if (importAliases.TryGetValue(colliding, out string? aliased))
+                if (citeAliases.TryGetValue(colliding, out string? aliased))
                 {
-                    // Selective import: use the imported module's mangled name
+                    // Selective cite: use the cited chapter's mangled name
                     renameMap[colliding] = aliased;
                 }
                 else if (nameToModules[colliding].Contains(modName))
@@ -87,7 +86,7 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
                 }
                 else
                 {
-                    // Not defined here and not imported — leave for NameResolver to catch
+                    // Not defined here and not cited — leave for NameResolver to catch
                 }
             }
 
@@ -113,13 +112,12 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
             allProofs.AddRange(mod.Proofs);
             allEffectDefs.AddRange(mod.EffectDefs);
 
-            // Keep non-selective imports (external module imports) for NameResolver
-            foreach (ImportDecl imp in mod.Imports)
+            // Keep non-selective citations for NameResolver
+            foreach (CitesDecl cite in mod.Citations)
             {
-                if (imp.SelectedNames.Count == 0)
-                    allImports.Add(imp);
+                if (cite.SelectedNames.Count == 0)
+                    allCitations.Add(cite);
             }
-            allExports.AddRange(mod.Exports);
         }
 
         SourceSpan combinedSpan = allDefinitions.Count > 0
@@ -134,8 +132,7 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
             allProofs,
             combinedSpan)
         {
-            Imports = allImports,
-            Exports = allExports,
+            Citations = allCitations,
             EffectDefs = allEffectDefs
         };
     }
