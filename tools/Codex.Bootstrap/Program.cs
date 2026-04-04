@@ -72,13 +72,8 @@ class Program
 
         try
         {
-            // Use streaming v2 path which includes chapter scoping
-            var origOut = Console.Out;
-            var streamWriter = new System.IO.StringWriter();
-            Console.SetOut(streamWriter);
-            Codex_Codex_Codex.compile_streaming_v2(cceCombined, _Cce.FromUnicode("Codex_Codex"));
-            Console.SetOut(origOut);
-            string cceOutput = streamWriter.ToString();
+            // Non-streaming compile path — now includes chapter scoping
+            string cceOutput = Codex_Codex_Codex.compile(cceCombined, _Cce.FromUnicode("Codex_Codex"));
             string output = _Cce.ToUnicode(cceOutput);
             string outputPath = outputOverride ?? Path.Combine(Path.GetFullPath(Path.Combine(codexDir, "..")), "build-output", "stage1-output.cs");
             File.WriteAllText(outputPath, output);
