@@ -107,7 +107,11 @@ public static partial class Program
             SourceText source = new(filePath, content);
             DocumentNode document = ParseSourceFile(source, content, diagnostics);
             pageMarkers.Add((filePath, document.Page));
-            string fileModule = Path.GetFileNameWithoutExtension(filePath);
+            // Use Chapter title if available (pages of the same chapter share a name);
+            // fall back to filename for files without Chapter headers
+            string fileModule = document.Chapters.Count > 0
+                ? document.Chapters[0].Title
+                : Path.GetFileNameWithoutExtension(filePath);
             Chapter chapter = desugarer.Desugar(document, fileModule);
             perFileChapters.Add(chapter);
         }
