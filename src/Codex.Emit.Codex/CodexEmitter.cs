@@ -51,7 +51,7 @@ public sealed class CodexEmitter : ICodeEmitter
             }
         }
 
-        return sb.ToString();
+        return sb.ToString().TrimEnd('\r', '\n') + "\n";
     }
 
     // ── Type definitions ─────────────────────────────────────────
@@ -279,18 +279,7 @@ public sealed class CodexEmitter : ICodeEmitter
 
     void EmitBinary(StringBuilder sb, IRBinary bin, int indent)
     {
-        bool needsParens = (bin.Left is IRBinary l && !InnerBindsTighter(bin.Op, l.Op))
-            || (bin.Right is IRBinary r && !InnerBindsTighter(bin.Op, r.Op));
-
-        if (bin.Op == IRBinaryOp.AppendText)
-        {
-            EmitExpr(sb, bin.Left, indent);
-            sb.Append(" ++ ");
-            EmitExpr(sb, bin.Right, indent);
-            return;
-        }
-
-        if (bin.Op == IRBinaryOp.AppendList)
+        if (bin.Op == IRBinaryOp.AppendText || bin.Op == IRBinaryOp.AppendList)
         {
             EmitExpr(sb, bin.Left, indent);
             sb.Append(" ++ ");
@@ -324,11 +313,18 @@ public sealed class CodexEmitter : ICodeEmitter
             _ => "?"
         };
 
-        if (needsParens) sb.Append('(');
+        int outerPrec = BinPrecedence(bin.Op);
+        bool leftNeedsParens = bin.Left is IRBinary lb && BinPrecedence(lb.Op) < outerPrec;
+        bool rightNeedsParens = bin.Right is IRBinary rb && BinPrecedence(rb.Op) <= outerPrec
+            && BinPrecedence(rb.Op) != outerPrec; // same precedence on right is ok for left-assoc
+
+        if (leftNeedsParens) sb.Append('(');
         EmitExpr(sb, bin.Left, indent);
+        if (leftNeedsParens) sb.Append(')');
         sb.Append($" {op} ");
+        if (rightNeedsParens) sb.Append('(');
         EmitExpr(sb, bin.Right, indent);
-        if (needsParens) sb.Append(')');
+        if (rightNeedsParens) sb.Append(')');
     }
 
     static int BinPrecedence(IRBinaryOp op) => op switch
@@ -343,9 +339,6 @@ public sealed class CodexEmitter : ICodeEmitter
         IRBinaryOp.PowInt => 8,
         _ => 0
     };
-
-    static bool InnerBindsTighter(IRBinaryOp outer, IRBinaryOp inner) =>
-        BinPrecedence(inner) > BinPrecedence(outer);
 
     // ── If/then/else ─────────────────────────────────────────────
 
@@ -569,7 +562,7 @@ public sealed class CodexEmitter : ICodeEmitter
 
     void EmitRecord(StringBuilder sb, IRRecord rec, int indent)
     {
-        if (rec.Fields.Length <= 1)
+        if (rec.Fields.Length <= 1 || (rec.Fields.Length <= 2 && AllSimpleFields(rec)))
         {
             sb.Append($"{rec.TypeName} {{");
             for (int i = 0; i < rec.Fields.Length; i++)
@@ -618,6 +611,15 @@ public sealed class CodexEmitter : ICodeEmitter
 
     static bool IsCompactExpr(IRExpr expr) => expr is not
         (IRIf or IRLet or IRMatch or IRDo or IRRecord);
+
+    static bool AllSimpleFields(IRRecord rec)
+    {
+        foreach (var field in rec.Fields)
+        {
+            if (!IsSimpleExpr(field.Value)) return false;
+        }
+        return true;
+    }
 
     static bool NeedsParens(IRExpr expr, bool isCtor)
     {

@@ -94,7 +94,7 @@ public static partial class Program
             return RunBuildDirectory(filePath, targetOverride ?? "cs");
         }
 
-        return RunBuildFile(filePath, targetOverride ?? "cs", grantedCapabilities);
+        return RunBuildFile(filePath, targetOverride ?? "cs", grantedCapabilities, outputDirOverride);
     }
 
     static int RunBuildProject(string directory, string? targetOverride, bool incremental, string[]? multiTargets, string? outputDirOverride = null)
@@ -202,21 +202,25 @@ public static partial class Program
         return 0;
     }
 
-    static int RunBuildFile(string filePath, string target, Set<string>? grantedCapabilities = null)
+    static int RunBuildFile(string filePath, string target, Set<string>? grantedCapabilities = null, string? outputDirOverride = null)
     {
         IRCompilationResult? irResult = CompileToIR(filePath, grantedCapabilities);
         if (irResult is null) return 1;
 
         if (IsAssemblyTarget(target))
         {
-            string outputDir = Path.GetDirectoryName(Path.GetFullPath(filePath)) ?? ".";
+            string outputDir = outputDirOverride is not null
+                ? Path.GetFullPath(outputDirOverride)
+                : Path.GetDirectoryName(Path.GetFullPath(filePath)) ?? ".";
             string moduleName = Path.GetFileNameWithoutExtension(filePath);
             return EmitAssembly(irResult, outputDir, moduleName, target);
         }
 
         Codex.Emit.ICodeEmitter emitter = CreateEmitter(target);
         string output = emitter.Emit(irResult.Module);
-        string outputPath = Path.ChangeExtension(filePath, emitter.FileExtension);
+        string outputPath = outputDirOverride is not null
+            ? Path.Combine(Path.GetFullPath(outputDirOverride), Path.GetFileNameWithoutExtension(filePath) + emitter.FileExtension)
+            : Path.ChangeExtension(filePath, emitter.FileExtension);
         File.WriteAllText(outputPath, output);
 
         Console.WriteLine($"✓ Compiled to {outputPath} ({target})");
