@@ -95,25 +95,8 @@ public static partial class Program
         {
             string line = lines[i];
 
-            if (line.StartsWith("module: ", StringComparison.Ordinal))
-            {
-                currentModule = line["module: ".Length..].Trim();
-                if (!modules.ContainsKey(currentModule))
-                {
-                    modules[currentModule] = [];
-                    slugs.Add(currentModule);
-                }
-                i++;
-                continue;
-            }
-
-            if (line.StartsWith("end module ", StringComparison.Ordinal))
-            {
-                i++;
-                continue;
-            }
-
-            if (line.StartsWith("import ", StringComparison.Ordinal))
+            if (line.StartsWith("cites ", StringComparison.Ordinal)
+                || line.StartsWith("import ", StringComparison.Ordinal))
             {
                 i++;
                 continue;
@@ -243,12 +226,6 @@ public static partial class Program
 
             if (ln.Length > 0 && char.IsLetter(ln[0]))
             {
-                bool looksLikeModuleEnd = ln.StartsWith("end module ", StringComparison.Ordinal);
-                bool looksLikeModuleStart = ln.StartsWith("module: ", StringComparison.Ordinal);
-
-                if (looksLikeModuleEnd || looksLikeModuleStart)
-                    break;
-
                 // For function defs, the definition line comes right after the sig
                 if (!isTypeDef && j == start + 1 && ln.StartsWith(name, StringComparison.Ordinal))
                 {
