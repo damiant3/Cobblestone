@@ -25,7 +25,7 @@ public class ProseParserTests
     [Fact]
     public void IsProseDocument_detects_chapter_header()
     {
-        Assert.True(ProseParser.IsProseDocument("Chapter: Hello\n\n  Some prose.\n"));
+        Assert.True(ProseParser.IsProseDocument("Chapter: Hello\n\n Some prose.\n"));
         Assert.True(ProseParser.IsProseDocument("\nChapter: Hello\n"));
     }
 
@@ -48,7 +48,7 @@ public class ProseParserTests
     [Fact]
     public void Chapter_with_prose_block()
     {
-        string source = "Chapter: Intro\n\n  This is some prose.\n  Another line.\n";
+        string source = "Chapter: Intro\n\n This is some prose.\n Another line.\n";
         DocumentNode doc = ParseProse(source);
         Assert.Single(doc.Chapters);
 
@@ -61,7 +61,7 @@ public class ProseParserTests
     [Fact]
     public void Chapter_with_notation_block()
     {
-        string source = "Chapter: Math\n\n    square : Integer -> Integer\n    square (x) = x * x\n";
+        string source = "Chapter: Math\n\n  square : Integer -> Integer\n  square (x) = x * x\n";
         DocumentNode doc = ParseProse(source);
         Assert.Single(doc.Chapters);
 
@@ -77,17 +77,17 @@ public class ProseParserTests
         string source =
             "Chapter: Greeting\n" +
             "\n" +
-            "  This module greets people.\n" +
+            " This chapter greets people.\n" +
             "\n" +
-            "  We say:\n" +
+            " We say:\n" +
             "\n" +
-            "    greet : Text -> Text\n" +
-            "    greet (name) = \"Hello, \" ++ name ++ \"!\"\n" +
+            "  greet : Text -> Text\n" +
+            "  greet (name) = \"Hello, \" ++ name ++ \"!\"\n" +
             "\n" +
-            "  To greet the world:\n" +
+            " To greet the world:\n" +
             "\n" +
-            "    main : Text\n" +
-            "    main = greet \"World\"\n";
+            "  main : Text\n" +
+            "  main = greet \"World\"\n";
 
         DocumentNode doc = ParseProse(source);
         Assert.Single(doc.Chapters);
@@ -105,11 +105,11 @@ public class ProseParserTests
         string source =
             "Chapter: Test\n" +
             "\n" +
-            "    f : Integer -> Integer\n" +
-            "    f (x) = x + 1\n" +
+            "  f : Integer -> Integer\n" +
+            "  f (x) = x + 1\n" +
             "\n" +
-            "    g : Integer -> Integer\n" +
-            "    g (x) = x * 2\n";
+            "  g : Integer -> Integer\n" +
+            "  g (x) = x * 2\n";
 
         DocumentNode doc = ParseProse(source);
         Assert.Equal(2, doc.Definitions.Count);
@@ -123,11 +123,11 @@ public class ProseParserTests
         string source =
             "Chapter: First\n" +
             "\n" +
-            "  Hello.\n" +
+            " Hello.\n" +
             "\n" +
             "Chapter: Second\n" +
             "\n" +
-            "  World.\n";
+            " World.\n";
 
         DocumentNode doc = ParseProse(source);
         Assert.Equal(2, doc.Chapters.Count);
@@ -141,13 +141,13 @@ public class ProseParserTests
         string source =
             "Chapter: Greeting\n" +
             "\n" +
-            "  We say:\n" +
+            " We say:\n" +
             "\n" +
-            "    greet : Text -> Text\n" +
-            "    greet (name) = \"Hello, \" ++ name ++ \"!\"\n" +
+            "  greet : Text -> Text\n" +
+            "  greet (name) = \"Hello, \" ++ name ++ \"!\"\n" +
             "\n" +
-            "    main : Text\n" +
-            "    main = greet \"World\"\n";
+            "  main : Text\n" +
+            "  main = greet \"World\"\n";
 
         DocumentNode doc = ParseProse(source);
         DiagnosticBag diagnostics = new();
@@ -166,10 +166,10 @@ public class ProseParserTests
         string source =
             "Chapter: Clean\n" +
             "\n" +
-            "  A clean document.\n" +
+            " A clean document.\n" +
             "\n" +
-            "    x : Integer\n" +
-            "    x = 42\n";
+            "  x : Integer\n" +
+            "  x = 42\n";
 
         (DocumentNode doc, DiagnosticBag diags) = ParseProseWithDiags(source);
         Assert.False(diags.HasErrors);
