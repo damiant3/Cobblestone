@@ -98,7 +98,11 @@ public static partial class Program
         File.Copy(codexLibPath, codexLibBackup, true);
         try
         {
-            File.Copy(stage1Path, codexLibPath, true);
+            // Copy stage1 output and strip entry point
+            string stage1Content = File.ReadAllText(stage1Path);
+            stage1Content = stage1Content.Replace("Codex_Codex_Codex.main();\n", "")
+                                         .Replace("Codex_Codex_Codex.main();\r\n", "");
+            File.WriteAllText(codexLibPath, stage1Content);
 
             // Rebuild bootstrap with new CodexLib
             int buildExit = RunDotnetBuild(Path.Combine(bootstrapDir, "Codex.Bootstrap.csproj"));

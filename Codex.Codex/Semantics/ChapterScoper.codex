@@ -396,7 +396,7 @@ Section: AST Expression Renaming
    when p
     if AVarPat (n) -> remove-rename rn (n.value)
     if ACtorPat (n) (subs) -> remove-renames-for-apats rn subs 0
-    if ALitPat (v) -> rn
+    if ALitPat (v) (k) -> rn
     if AWildPat -> rn
 
   remove-renames-for-apats : List RenameEntry -> List APat -> Integer -> List RenameEntry
@@ -435,7 +435,7 @@ Section: AST-Level Chapter Scoping
   scope-achapter (ast) (colliding) (assignments) =
    AChapter {
     name = ast.name,
-    defs = scope-adefs (ast.defs) colliding assignments "" [] 0,
+    defs = scope-adefs (ast.defs) colliding assignments (ast.citations) "" [] 0,
     type-defs = ast.type-defs,
     effect-defs = ast.effect-defs,
     citations = ast.citations,
@@ -444,12 +444,13 @@ Section: AST-Level Chapter Scoping
     section-titles = ast.section-titles
    }
 
-  scope-adefs : List ADef -> List Text -> List ChapterAssignment -> Text -> List RenameEntry -> Integer -> List ADef
-  scope-adefs (defs) (colliding) (assignments) (cur-slug) (cur-rn) (i) =
+  scope-adefs : List ADef -> List Text -> List ChapterAssignment -> List ACitesDecl -> Text -> List RenameEntry -> Integer -> List ADef
+  scope-adefs (defs) (colliding) (assignments) (citations) (cur-slug) (cur-rn) (i) =
    if i == list-length defs then []
    else let d = list-at defs i
-   in let rn = if d.chapter-slug == cur-slug then cur-rn
+   in let base-rn = if d.chapter-slug == cur-slug then cur-rn
       else build-chapter-rename-map colliding assignments (d.chapter-slug)
+   in let rn = apply-cite-overrides base-rn citations colliding assignments (d.chapter-slug) 0
    in let new-name = make-name (rename-lookup rn (d.name.value))
    in let new-body = rename-aexpr rn (d.body)
    in [ADef {
@@ -458,6 +459,57 @@ Section: AST-Level Chapter Scoping
     declared-type = d.declared-type,
     body = new-body,
     chapter-slug = d.chapter-slug
-   }] ++ scope-adefs defs colliding assignments (d.chapter-slug) rn (i + 1)
+   }] ++ scope-adefs defs colliding assignments citations (d.chapter-slug) rn (i + 1)
+
+  apply-cite-overrides : List RenameEntry -> List ACitesDecl -> List Text -> List ChapterAssignment -> Text -> Integer -> List RenameEntry
+  apply-cite-overrides (rn) (citations) (colliding) (assignments) (cur-slug) (i) =
+   if i == list-length citations then rn
+   else let cite = list-at citations i
+   in let cite-slug = find-slug-for-cite-name (cite.chapter-name.value) assignments 0
+   in let rn2 = apply-cite-selected rn (cite.selected-names) cite-slug colliding assignments cur-slug 0
+   in apply-cite-overrides rn2 citations colliding assignments cur-slug (i + 1)
+
+  find-slug-for-cite-name : Text -> List ChapterAssignment -> Integer -> Text
+  find-slug-for-cite-name (cite-name) (assignments) (i) =
+   if i == list-length assignments then ""
+   else let a = list-at assignments i
+   in if slug-matches-cite (a.chapter-slug) cite-name then a.chapter-slug
+      else find-slug-for-cite-name cite-name assignments (i + 1)
+
+  slug-matches-cite : Text -> Text -> Boolean
+  slug-matches-cite (slug) (cite-name) =
+   strip-hyphens (slugify slug 0 "") 0 "" == strip-hyphens (slugify cite-name 0 "") 0 ""
+
+  strip-hyphens : Text -> Integer -> Text -> Text
+  strip-hyphens (s) (i) (acc) =
+   if i == text-length s then acc
+   else let c = char-code-at s i
+   in if c == char-code-at "-" 0 then strip-hyphens s (i + 1) acc
+      else strip-hyphens s (i + 1) (acc ++ char-to-text (code-to-char c))
+
+  apply-cite-selected : List RenameEntry -> List Name -> Text -> List Text -> List ChapterAssignment -> Text -> Integer -> List RenameEntry
+  apply-cite-selected (rn) (names) (cite-slug) (colliding) (assignments) (cur-slug) (i) =
+   if i == list-length names then rn
+   else let n = (list-at names i).value
+   in if is-colliding colliding n then if chapter-defines-name assignments cur-slug n
+     then apply-cite-selected rn names cite-slug colliding assignments cur-slug (i + 1)
+     else let cleaned = remove-rename rn n
+     in apply-cite-selected (list-snoc cleaned (RenameEntry {
+      original = n,
+      mangled = mangle-name cite-slug n
+     })) names cite-slug colliding assignments cur-slug (i + 1)
+     else apply-cite-selected rn names cite-slug colliding assignments cur-slug (i + 1)
+
+  chapter-defines-name : List ChapterAssignment -> Text -> Text -> Boolean
+  chapter-defines-name (assignments) (slug) (name) =
+   chapter-defines-loop assignments slug name 0 (list-length assignments)
+
+  chapter-defines-loop : List ChapterAssignment -> Text -> Text -> Integer -> Integer -> Boolean
+  chapter-defines-loop (assignments) (slug) (name) (i) (len) =
+   if i == len then False
+   else let a = list-at assignments i
+   in if (a.def-name) == name then if (a.chapter-slug) == slug then True
+      else chapter-defines-loop assignments slug name (i + 1) len
+      else chapter-defines-loop assignments slug name (i + 1) len
 
 Page 1

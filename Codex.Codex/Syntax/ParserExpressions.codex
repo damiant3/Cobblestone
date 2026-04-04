@@ -6,37 +6,42 @@ Section: Expression Parsing
 
   parse-expr : ParseState -> ParseExprResult
   parse-expr (st) =
-   parse-binary st 0
+   parse-expr-col st 0
+
+  parse-expr-col : ParseState -> Integer -> ParseExprResult
+  parse-expr-col (st) (min-col) =
+   parse-binary st 0 min-col
 
   unwrap-expr-ok : ParseExprResult -> (Expr -> ParseState -> ParseExprResult) -> ParseExprResult
   unwrap-expr-ok (r) (f) =
    when r
     if ExprOk (e) (st) -> f e st
 
-  parse-binary : ParseState -> Integer -> ParseExprResult
-  parse-binary (st) (min-prec) =
+  parse-binary : ParseState -> Integer -> Integer -> ParseExprResult
+  parse-binary (st) (min-prec) (min-col) =
    let left-result = parse-unary st
-   in unwrap-expr-ok left-result (start-binary-loop min-prec)
+   in unwrap-expr-ok left-result (start-binary-loop min-prec min-col)
 
-  start-binary-loop : Integer -> Expr -> ParseState -> ParseExprResult
-  start-binary-loop (min-prec) (left) (st) =
-   parse-binary-loop left st min-prec
+  start-binary-loop : Integer -> Integer -> Expr -> ParseState -> ParseExprResult
+  start-binary-loop (min-prec) (min-col) (left) (st) =
+   parse-binary-loop left st min-prec min-col
 
-  parse-binary-loop : Expr -> ParseState -> Integer -> ParseExprResult
-  parse-binary-loop (left) (st) (min-prec) =
+  parse-binary-loop : Expr -> ParseState -> Integer -> Integer -> ParseExprResult
+  parse-binary-loop (left) (st) (min-prec) (min-col) =
    let st1 = skip-newlines st
    in if is-done st1 then ExprOk left st1
+      else if min-col > 0 & (current st1).column > 0 & (current st1).column <= min-col then ExprOk left st1
       else let prec = operator-precedence (current-kind st1)
       in if prec < min-prec then ExprOk left st1
          else let op = current st1
          in let st2 = skip-newlines (advance st1)
           in let next-min = if is-right-assoc (op.kind) then prec else prec + 1
-           in let right-result = parse-binary st2 next-min
-            in unwrap-expr-ok right-result (continue-binary left op min-prec)
+           in let right-result = parse-binary st2 next-min min-col
+            in unwrap-expr-ok right-result (continue-binary left op min-prec min-col)
 
-  continue-binary : Expr -> Token -> Integer -> Expr -> ParseState -> ParseExprResult
-  continue-binary (left) (op) (min-prec) (right) (st) =
-   parse-binary-loop (BinExpr left op right) st min-prec
+  continue-binary : Expr -> Token -> Integer -> Integer -> Expr -> ParseState -> ParseExprResult
+  continue-binary (left) (op) (min-prec) (min-col) (right) (st) =
+   parse-binary-loop (BinExpr left op right) st min-prec min-col
 
   parse-unary : ParseState -> ParseExprResult
   parse-unary (st) =
@@ -283,6 +288,9 @@ Section: Compound Expression Parsing
    if is-done st then ExprOk (DoExpr acc) st
    else if is-dedent (current-kind st) then ExprOk (DoExpr acc) st
    else if looks-like-top-level-def st then ExprOk (DoExpr acc) st
+   else if is-chapter-header st then ExprOk (DoExpr acc) st
+   else if is-section-header st then ExprOk (DoExpr acc) st
+   else if is-page-marker st then ExprOk (DoExpr acc) st
      else if is-do-bind st then parse-do-bind-stmt acc st
       else parse-do-expr-stmt acc st
 
