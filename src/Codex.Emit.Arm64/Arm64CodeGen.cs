@@ -46,7 +46,7 @@ sealed class Arm64CodeGen
         Arm64Reg.X27
     };
 
-    public void EmitModule(IRModule module)
+    public void EmitModule(IRChapter module)
     {
         m_typeDefs = module.TypeDefinitions;
         m_escapeHelperNames["text"] = "__escape_text";
@@ -2319,7 +2319,7 @@ sealed class Arm64CodeGen
 
     // -- _start ---------------------------------------------------
 
-    void EmitStart(IRModule module)
+    void EmitStart(IRChapter module)
     {
         m_functionOffsets["__start"] = m_instructions.Count;
 

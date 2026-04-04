@@ -878,7 +878,7 @@ sanitize (name) =
  let s = text-replace name "-" "_"
  in if is-cs-keyword s then "@" ++ s
     else if is-cs-member-name s then s ++ "_"
-    else s
+            else s
 
 is-cs-member-name : Text -> Boolean
 is-cs-member-name (n) =
@@ -907,7 +907,7 @@ cs-type (ty) =
   if SumTy (name) (ctors) -> sanitize (name.value)
   if RecordTy (name) (fields) -> sanitize (name.value)
   if ConstructedTy (name) (args) -> if list-length args == 0 then sanitize (name.value)
-  else sanitize (name.value) ++ "<" ++ emit-cs-type-args args 0 ++ ">"
+                                   else sanitize (name.value) ++ "<" ++ emit-cs-type-args args 0 ++ ">"
   if EffectfulTy (effects) (ret) -> cs-type ret
 
 emit-cs-type-args : List CodexType -> Integer -> Text
@@ -974,13 +974,13 @@ emit-apply-args : List IRExpr -> List ArityEntry -> Integer -> Text
 emit-apply-args (args) (arities) (i) =
  if i == list-length args then ""
  else if i == list-length args - 1 then emit-expr (list-at args i) arities
- else emit-expr (list-at args i) arities ++ ", " ++ emit-apply-args args arities (i + 1)
+      else emit-expr (list-at args i) arities ++ ", " ++ emit-apply-args args arities (i + 1)
 
 emit-partial-params : Integer -> Integer -> Text
 emit-partial-params (i) (count) =
  if i == count then ""
  else if i == count - 1 then "_p" ++ integer-to-text i ++ "_"
- else "_p" ++ integer-to-text i ++ "_" ++ ", " ++ emit-partial-params (i + 1) count
+      else "_p" ++ integer-to-text i ++ "_" ++ ", " ++ emit-partial-params (i + 1) count
 
 emit-partial-wrappers : Integer -> Integer -> Text
 emit-partial-wrappers (i) (count) =
@@ -1034,48 +1034,210 @@ is-builtin-name (n) =
 
 emit-builtin : Text -> List IRExpr -> List ArityEntry -> Text
 emit-builtin (n) (args) (arities) =
- if n == "show" then "_Cce.FromUnicode(Convert.ToString(" ++ emit-expr (list-at args 0) arities ++ "))"
+ if n == "show" then emit-builtin-show args arities
  else if n == "negate" then "(-" ++ emit-expr (list-at args 0) arities ++ ")"
- else if n == "print-line" then "((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(" ++ emit-expr (list-at args 0) arities ++ ")); return null; }))()"
+ else if n == "print-line" then emit-builtin-print-line args arities
  else if n == "text-length" then "((long)" ++ emit-expr (list-at args 0) arities ++ ".Length)"
- else if n == "is-letter" then "(" ++ emit-expr (list-at args 0) arities ++ " >= 13L && " ++ emit-expr (list-at args 0) arities ++ " <= 64L)"
- else if n == "is-digit" then "(" ++ emit-expr (list-at args 0) arities ++ " >= 3L && " ++ emit-expr (list-at args 0) arities ++ " <= 12L)"
+ else if n == "is-letter" then emit-builtin-is-letter args arities
+ else if n == "is-digit" then emit-builtin-is-digit args arities
  else if n == "is-whitespace" then "(" ++ emit-expr (list-at args 0) arities ++ " <= 2L)"
- else if n == "text-to-integer" then "long.Parse(_Cce.ToUnicode(" ++ emit-expr (list-at args 0) arities ++ "))"
- else if n == "integer-to-text" then "_Cce.FromUnicode(" ++ emit-expr (list-at args 0) arities ++ ".ToString())"
+ else if n == "text-to-integer" then emit-builtin-text-to-integer args arities
+ else if n == "integer-to-text" then emit-builtin-integer-to-text args arities
  else if n == "char-code" then emit-expr (list-at args 0) arities
- else if n == "char-code-at" then "((long)" ++ emit-expr (list-at args 0) arities ++ "[(int)" ++ emit-expr (list-at args 1) arities ++ "])"
+ else if n == "char-code-at" then emit-builtin-char-code-at args arities
  else if n == "code-to-char" then emit-expr (list-at args 0) arities
  else if n == "char-to-text" then "((char)" ++ emit-expr (list-at args 0) arities ++ ").ToString()"
  else if n == "list-length" then "((long)" ++ emit-expr (list-at args 0) arities ++ ".Count)"
- else if n == "char-at" then "((long)" ++ emit-expr (list-at args 0) arities ++ "[(int)" ++ emit-expr (list-at args 1) arities ++ "])"
- else if n == "substring" then emit-expr (list-at args 0) arities ++ ".Substring((int)" ++ emit-expr (list-at args 1) arities ++ ", (int)" ++ emit-expr (list-at args 2) arities ++ ")"
- else if n == "list-at" then emit-expr (list-at args 0) arities ++ "[(int)" ++ emit-expr (list-at args 1) arities ++ "]"
- else if n == "list-insert-at" then let elem-ty = when ir-expr-type (list-at args 0) if ListTy (et) -> et if _ -> ErrorTy in "((Func<List<" ++ cs-type elem-ty ++ ">>)(() => { var _l = new List<" ++ cs-type elem-ty ++ ">(" ++ emit-expr (list-at args 0) arities ++ "); _l.Insert((int)" ++ emit-expr (list-at args 1) arities ++ ", " ++ emit-expr (list-at args 2) arities ++ "); return _l; }))()"
- else if n == "list-snoc" then let elem-ty = when ir-expr-type (list-at args 0) if ListTy (et) -> et if _ -> ErrorTy in "((Func<List<" ++ cs-type elem-ty ++ ">>)(() => { var _l = " ++ emit-expr (list-at args 0) arities ++ "; _l.Add(" ++ emit-expr (list-at args 1) arities ++ "); return _l; }))()"
- else if n == "text-compare" then "(long)string.CompareOrdinal(" ++ emit-expr (list-at args 0) arities ++ ", " ++ emit-expr (list-at args 1) arities ++ ")"
- else if n == "text-replace" then emit-expr (list-at args 0) arities ++ ".Replace(" ++ emit-expr (list-at args 1) arities ++ ", " ++ emit-expr (list-at args 2) arities ++ ")"
+ else if n == "char-at" then emit-builtin-char-at args arities
+ else if n == "substring" then emit-builtin-substring args arities
+ else if n == "list-at" then emit-builtin-list-at args arities
+ else if n == "list-insert-at" then emit-builtin-list-insert-at args arities
+ else if n == "list-snoc" then emit-builtin-list-snoc args arities
+ else if n == "text-compare" then emit-builtin-text-compare args arities
+ else if n == "text-replace" then emit-builtin-text-replace args arities
  else if n == "open-file" then "File.OpenRead(" ++ emit-expr (list-at args 0) arities ++ ")"
- else if n == "read-all" then "new System.IO.StreamReader(" ++ emit-expr (list-at args 0) arities ++ ").ReadToEnd()"
+ else if n == "read-all" then emit-builtin-read-all args arities
  else if n == "close-file" then emit-expr (list-at args 0) arities ++ ".Dispose()"
  else if n == "read-line" then "_Cce.FromUnicode(Console.ReadLine() ?? \"\")"
- else if n == "read-file" then "_Cce.FromUnicode(File.ReadAllText(_Cce.ToUnicode(" ++ emit-expr (list-at args 0) arities ++ ")))"
- else if n == "write-file" then "File.WriteAllText(_Cce.ToUnicode(" ++ emit-expr (list-at args 0) arities ++ "), _Cce.ToUnicode(" ++ emit-expr (list-at args 1) arities ++ "))"
- else if n == "file-exists" then "File.Exists(_Cce.ToUnicode(" ++ emit-expr (list-at args 0) arities ++ "))"
- else if n == "list-files" then "Directory.GetFiles(_Cce.ToUnicode(" ++ emit-expr (list-at args 0) arities ++ "), _Cce.ToUnicode(" ++ emit-expr (list-at args 1) arities ++ ")).Select(_Cce.FromUnicode).ToList()"
+ else if n == "read-file" then emit-builtin-read-file args arities
+ else if n == "write-file" then emit-builtin-write-file args arities
+ else if n == "file-exists" then emit-builtin-file-exists args arities
+ else if n == "list-files" then emit-builtin-list-files args arities
  else if n == "text-concat-list" then "string.Concat(" ++ emit-expr (list-at args 0) arities ++ ")"
- else if n == "text-split" then "new List<string>(" ++ emit-expr (list-at args 0) arities ++ ".Split(" ++ emit-expr (list-at args 1) arities ++ "))"
- else if n == "text-contains" then emit-expr (list-at args 0) arities ++ ".Contains(" ++ emit-expr (list-at args 1) arities ++ ")"
- else if n == "text-starts-with" then emit-expr (list-at args 0) arities ++ ".StartsWith(" ++ emit-expr (list-at args 1) arities ++ ")"
+ else if n == "text-split" then emit-builtin-text-split args arities
+ else if n == "text-contains" then emit-builtin-text-contains args arities
+ else if n == "text-starts-with" then emit-builtin-text-starts-with args arities
  else if n == "get-args" then "Environment.GetCommandLineArgs().Select(_Cce.FromUnicode).ToList()"
- else if n == "get-env" then "_Cce.FromUnicode(Environment.GetEnvironmentVariable(_Cce.ToUnicode(" ++ emit-expr (list-at args 0) arities ++ ")) ?? \"\")"
- else if n == "run-process" then "_Cce.FromUnicode(((Func<string>)(() => { var _psi = new System.Diagnostics.ProcessStartInfo(_Cce.ToUnicode(" ++ emit-expr (list-at args 0) arities ++ "), _Cce.ToUnicode(" ++ emit-expr (list-at args 1) arities ++ ")) { RedirectStandardOutput = true, UseShellExecute = false }; var _p = System.Diagnostics.Process.Start(_psi)!; var _o = _p.StandardOutput.ReadToEnd(); _p.WaitForExit(); return _o; }))()"
+ else if n == "get-env" then emit-builtin-get-env args arities
+ else if n == "run-process" then emit-builtin-run-process args arities
  else if n == "current-dir" then "_Cce.FromUnicode(Directory.GetCurrentDirectory())"
  else if n == "fork" then "Task.Run(() => (" ++ emit-expr (list-at args 0) arities ++ ")(null))"
  else if n == "await" then "(" ++ emit-expr (list-at args 0) arities ++ ").Result"
- else if n == "par" then "Task.WhenAll(" ++ emit-expr (list-at args 1) arities ++ ".Select(_x_ => Task.Run(() => (" ++ emit-expr (list-at args 0) arities ++ ")(_x_)))).Result.ToList()"
- else if n == "race" then "Task.WhenAny(" ++ emit-expr (list-at args 0) arities ++ ".Select(_t_ => Task.Run(() => _t_(null)))).Result.Result"
+ else if n == "par" then emit-builtin-par args arities
+ else if n == "race" then emit-builtin-race args arities
  else ""
+
+emit-builtin-show : List IRExpr -> List ArityEntry -> Text
+emit-builtin-show (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in "_Cce.FromUnicode(Convert.ToString(" ++ a0 ++ "))"
+
+emit-builtin-print-line : List IRExpr -> List ArityEntry -> Text
+emit-builtin-print-line (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in "((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(" ++ a0 ++ ")); return null; }))()"
+
+emit-builtin-is-letter : List IRExpr -> List ArityEntry -> Text
+emit-builtin-is-letter (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in "(" ++ a0 ++ " >= 13L && " ++ a0 ++ " <= 64L)"
+
+emit-builtin-is-digit : List IRExpr -> List ArityEntry -> Text
+emit-builtin-is-digit (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in "(" ++ a0 ++ " >= 3L && " ++ a0 ++ " <= 12L)"
+
+emit-builtin-text-to-integer : List IRExpr -> List ArityEntry -> Text
+emit-builtin-text-to-integer (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in "long.Parse(_Cce.ToUnicode(" ++ a0 ++ "))"
+
+emit-builtin-integer-to-text : List IRExpr -> List ArityEntry -> Text
+emit-builtin-integer-to-text (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in "_Cce.FromUnicode(" ++ a0 ++ ".ToString())"
+
+emit-builtin-char-code-at : List IRExpr -> List ArityEntry -> Text
+emit-builtin-char-code-at (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in let a1 = emit-expr (list-at args 1) arities
+ in "((long)" ++ a0 ++ "[(int)" ++ a1 ++ "])"
+
+emit-builtin-char-at : List IRExpr -> List ArityEntry -> Text
+emit-builtin-char-at (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in let a1 = emit-expr (list-at args 1) arities
+ in "((long)" ++ a0 ++ "[(int)" ++ a1 ++ "])"
+
+emit-builtin-substring : List IRExpr -> List ArityEntry -> Text
+emit-builtin-substring (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in let a1 = emit-expr (list-at args 1) arities
+ in let a2 = emit-expr (list-at args 2) arities
+ in a0 ++ ".Substring((int)" ++ a1 ++ ", (int)" ++ a2 ++ ")"
+
+emit-builtin-list-at : List IRExpr -> List ArityEntry -> Text
+emit-builtin-list-at (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in let a1 = emit-expr (list-at args 1) arities
+ in a0 ++ "[(int)" ++ a1 ++ "]"
+
+emit-builtin-list-insert-at : List IRExpr -> List ArityEntry -> Text
+emit-builtin-list-insert-at (args) (arities) =
+ let elem-ty = when ir-expr-type (list-at args 0)
+  if ListTy (et) -> et
+  if _ -> ErrorTy
+ in let ty = cs-type elem-ty
+ in let a0 = emit-expr (list-at args 0) arities
+ in let a1 = emit-expr (list-at args 1) arities
+ in let a2 = emit-expr (list-at args 2) arities
+ in "((Func<List<" ++ ty ++ ">>)(() => { var _l = new List<" ++ ty ++ ">(" ++ a0 ++ "); _l.Insert((int)" ++ a1 ++ ", " ++ a2 ++ "); return _l; }))()"
+
+emit-builtin-list-snoc : List IRExpr -> List ArityEntry -> Text
+emit-builtin-list-snoc (args) (arities) =
+ let elem-ty = when ir-expr-type (list-at args 0)
+  if ListTy (et) -> et
+  if _ -> ErrorTy
+ in let ty = cs-type elem-ty
+ in let a0 = emit-expr (list-at args 0) arities
+ in let a1 = emit-expr (list-at args 1) arities
+ in "((Func<List<" ++ ty ++ ">>)(() => { var _l = " ++ a0 ++ "; _l.Add(" ++ a1 ++ "); return _l; }))()"
+
+emit-builtin-text-compare : List IRExpr -> List ArityEntry -> Text
+emit-builtin-text-compare (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in let a1 = emit-expr (list-at args 1) arities
+ in "(long)string.CompareOrdinal(" ++ a0 ++ ", " ++ a1 ++ ")"
+
+emit-builtin-text-replace : List IRExpr -> List ArityEntry -> Text
+emit-builtin-text-replace (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in let a1 = emit-expr (list-at args 1) arities
+ in let a2 = emit-expr (list-at args 2) arities
+ in a0 ++ ".Replace(" ++ a1 ++ ", " ++ a2 ++ ")"
+
+emit-builtin-read-all : List IRExpr -> List ArityEntry -> Text
+emit-builtin-read-all (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in "new System.IO.StreamReader(" ++ a0 ++ ").ReadToEnd()"
+
+emit-builtin-read-file : List IRExpr -> List ArityEntry -> Text
+emit-builtin-read-file (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in "_Cce.FromUnicode(File.ReadAllText(_Cce.ToUnicode(" ++ a0 ++ ")))"
+
+emit-builtin-write-file : List IRExpr -> List ArityEntry -> Text
+emit-builtin-write-file (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in let a1 = emit-expr (list-at args 1) arities
+ in "File.WriteAllText(_Cce.ToUnicode(" ++ a0 ++ "), _Cce.ToUnicode(" ++ a1 ++ "))"
+
+emit-builtin-file-exists : List IRExpr -> List ArityEntry -> Text
+emit-builtin-file-exists (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in "File.Exists(_Cce.ToUnicode(" ++ a0 ++ "))"
+
+emit-builtin-list-files : List IRExpr -> List ArityEntry -> Text
+emit-builtin-list-files (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in let a1 = emit-expr (list-at args 1) arities
+ in "Directory.GetFiles(_Cce.ToUnicode(" ++ a0 ++ "), _Cce.ToUnicode(" ++ a1 ++ ")).Select(_Cce.FromUnicode).ToList()"
+
+emit-builtin-text-split : List IRExpr -> List ArityEntry -> Text
+emit-builtin-text-split (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in let a1 = emit-expr (list-at args 1) arities
+ in "new List<string>(" ++ a0 ++ ".Split(" ++ a1 ++ "))"
+
+emit-builtin-text-contains : List IRExpr -> List ArityEntry -> Text
+emit-builtin-text-contains (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in let a1 = emit-expr (list-at args 1) arities
+ in a0 ++ ".Contains(" ++ a1 ++ ")"
+
+emit-builtin-text-starts-with : List IRExpr -> List ArityEntry -> Text
+emit-builtin-text-starts-with (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in let a1 = emit-expr (list-at args 1) arities
+ in a0 ++ ".StartsWith(" ++ a1 ++ ")"
+
+emit-builtin-get-env : List IRExpr -> List ArityEntry -> Text
+emit-builtin-get-env (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in "_Cce.FromUnicode(Environment.GetEnvironmentVariable(_Cce.ToUnicode(" ++ a0 ++ ")) ?? \"\")"
+
+emit-builtin-run-process : List IRExpr -> List ArityEntry -> Text
+emit-builtin-run-process (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in let a1 = emit-expr (list-at args 1) arities
+ in "_Cce.FromUnicode(((Func<string>)(() => {"
+ ++ " var _psi = new System.Diagnostics.ProcessStartInfo("
+ ++ "_Cce.ToUnicode(" ++ a0 ++ "), _Cce.ToUnicode(" ++ a1 ++ "))"
+ ++ " { RedirectStandardOutput = true, UseShellExecute = false };"
+ ++ " var _p = System.Diagnostics.Process.Start(_psi)!;"
+ ++ " var _o = _p.StandardOutput.ReadToEnd();"
+ ++ " _p.WaitForExit(); return _o; }))()"
+
+emit-builtin-par : List IRExpr -> List ArityEntry -> Text
+emit-builtin-par (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in let a1 = emit-expr (list-at args 1) arities
+ in "Task.WhenAll(" ++ a1 ++ ".Select(_x_ => Task.Run(() => (" ++ a0 ++ ")(_x_)))).Result.ToList()"
+
+emit-builtin-race : List IRExpr -> List ArityEntry -> Text
+emit-builtin-race (args) (arities) =
+ let a0 = emit-expr (list-at args 0) arities
+ in "Task.WhenAny(" ++ a0 ++ ".Select(_t_ => Task.Run(() => _t_(null)))).Result.Result"
 
 emit-apply : IRExpr -> List ArityEntry -> Text
 emit-apply (e) (arities) =
@@ -2740,8 +2902,8 @@ emit-function (st) (def) =
      in-tail-pos = True,
      loop-top = list-length (st-a.text),
      param-locals = p-locals,
-     temp-locals = (tco-alloc.alloc-locals),
-     current-func = (def.name),
+     temp-locals = tco-alloc.alloc-locals,
+     current-func = def.name,
      saved-next-local = st-a.next-local,
      saved-next-temp = st-a.next-temp
     }
@@ -2813,7 +2975,7 @@ emit-int-lit (st) (value) =
  let tmp = alloc-temp st
  in EmitResult {
  state = st-append-text (tmp.state) (li (tmp.reg) value),
- reg = (tmp.reg)
+ reg = tmp.reg
 }
 
 find-ctor-tag : List SumCtor -> Text -> Integer -> Integer
@@ -2858,7 +3020,7 @@ emit-name-as-call (st) (name) =
  in let tmp = alloc-temp st1
  in EmitResult {
  state = st-append-text (tmp.state) (mov-rr (tmp.reg) reg-rax),
- reg = (tmp.reg)
+ reg = tmp.reg
 }
 
 emit-let : CodegenState -> Text -> IRExpr -> IRExpr -> EmitResult
@@ -2888,19 +3050,19 @@ emit-binary-op (st) (op) (l-reg) (r-reg) =
  in when op
   if IrAddInt -> EmitResult {
    state = st-append-text (rd.state) (mov-rr (rd.reg) l-reg ++ add-rr (rd.reg) r-reg),
-   reg = (rd.reg)
+   reg = rd.reg
   }
   if IrSubInt -> EmitResult {
    state = st-append-text (rd.state) (mov-rr (rd.reg) l-reg ++ sub-rr (rd.reg) r-reg),
-   reg = (rd.reg)
+   reg = rd.reg
   }
   if IrMulInt -> EmitResult {
    state = st-append-text (rd.state) (mov-rr (rd.reg) l-reg ++ imul-rr (rd.reg) r-reg),
-   reg = (rd.reg)
+   reg = rd.reg
   }
   if IrDivInt -> EmitResult {
    state = st-append-text (rd.state) (mov-rr reg-rax l-reg ++ cqo ++ idiv-r r-reg ++ mov-rr (rd.reg) reg-rax),
-   reg = (rd.reg)
+   reg = rd.reg
   }
   if IrEq -> emit-comparison st cc-e l-reg r-reg
   if IrNotEq -> emit-comparison st cc-ne l-reg r-reg
@@ -2910,11 +3072,11 @@ emit-binary-op (st) (op) (l-reg) (r-reg) =
   if IrGtEq -> emit-comparison st cc-ge l-reg r-reg
   if IrAnd -> EmitResult {
    state = st-append-text (rd.state) (mov-rr (rd.reg) l-reg ++ and-rr (rd.reg) r-reg),
-   reg = (rd.reg)
+   reg = rd.reg
   }
   if IrOr -> EmitResult {
    state = st-append-text (rd.state) (mov-rr (rd.reg) l-reg ++ add-rr (rd.reg) r-reg),
-   reg = (rd.reg)
+   reg = rd.reg
   }
   if _ -> EmitResult {
    state = st,
@@ -2926,7 +3088,7 @@ emit-comparison (st) (cc) (l-reg) (r-reg) =
  let rd = alloc-temp st
  in EmitResult {
  state = st-append-text (rd.state) (cmp-rr l-reg r-reg ++ setcc cc (rd.reg) ++ movzx-byte-self (rd.reg)),
- reg = (rd.reg)
+ reg = rd.reg
 }
 
 emit-if : CodegenState -> IRExpr -> IRExpr -> IRExpr -> EmitResult
@@ -3008,7 +3170,7 @@ emit-helper-call-1 (st) (args) (helper) =
  in let tmp = alloc-temp st2
  in EmitResult {
  state = st-append-text (tmp.state) (mov-rr (tmp.reg) reg-rax),
- reg = (tmp.reg)
+ reg = tmp.reg
 }
 
 emit-helper-call-2 : CodegenState -> List IRExpr -> Text -> EmitResult
@@ -3024,7 +3186,7 @@ emit-helper-call-2 (st) (args) (helper) =
  in let tmp = alloc-temp st4
  in EmitResult {
  state = st-append-text (tmp.state) (mov-rr (tmp.reg) reg-rax),
- reg = (tmp.reg)
+ reg = tmp.reg
 }
 
 emit-helper-call-3 : CodegenState -> List IRExpr -> Text -> EmitResult
@@ -3045,7 +3207,7 @@ emit-helper-call-3 (st) (args) (helper) =
  in let tmp = alloc-temp st6
  in EmitResult {
  state = st-append-text (tmp.state) (mov-rr (tmp.reg) reg-rax),
- reg = (tmp.reg)
+ reg = tmp.reg
 }
 
 emit-text-length-builtin : CodegenState -> List IRExpr -> EmitResult
@@ -3054,7 +3216,7 @@ emit-text-length-builtin (st) (args) =
  in let tmp = alloc-temp (r.state)
  in EmitResult {
  state = st-append-text (tmp.state) (mov-load (tmp.reg) (r.reg) 0),
- reg = (tmp.reg)
+ reg = tmp.reg
 }
 
 emit-list-length-builtin : CodegenState -> List IRExpr -> EmitResult
@@ -3063,7 +3225,7 @@ emit-list-length-builtin (st) (args) =
  in let tmp = alloc-temp (r.state)
  in EmitResult {
  state = st-append-text (tmp.state) (mov-load (tmp.reg) (r.reg) 0),
- reg = (tmp.reg)
+ reg = tmp.reg
 }
 
 emit-list-at-builtin : CodegenState -> List IRExpr -> EmitResult
@@ -3080,7 +3242,7 @@ emit-list-at-builtin (st) (args) =
  in let rd = alloc-temp st4
  in EmitResult {
  state = st-append-text (rd.state) (mov-load (rd.reg) (addr.reg) 8),
- reg = (rd.reg)
+ reg = rd.reg
 }
 
 emit-char-at-builtin : CodegenState -> List IRExpr -> EmitResult
@@ -3110,7 +3272,7 @@ emit-char-code-at-builtin (st) (args) =
  in let st4 = st-append-text st3 (movzx-byte (rd.reg) (rd.reg) 8)
  in EmitResult {
  state = st4,
- reg = (rd.reg)
+ reg = rd.reg
 }
 
 emit-char-to-text-builtin : CodegenState -> List IRExpr -> EmitResult
@@ -3131,8 +3293,8 @@ emit-char-to-text-builtin (st) (args) =
  in let st7 = st-append-text (ptr-loaded2.state) (mov-store-byte (ptr-loaded2.reg) (code-loaded.reg) 8)
  in let result = load-local st7 (ptr-loc.reg)
  in EmitResult {
- state = (result.state),
- reg = (result.reg)
+ state = result.state,
+ reg = result.reg
 }
 
 emit-is-letter-builtin : CodegenState -> List IRExpr -> EmitResult
@@ -3144,7 +3306,7 @@ emit-is-letter-builtin (st) (args) =
  in let st4 = st-append-text st3 (movzx-byte-self (r.reg))
  in EmitResult {
  state = st4,
- reg = (r.reg)
+ reg = r.reg
 }
 
 emit-is-digit-builtin : CodegenState -> List IRExpr -> EmitResult
@@ -3156,7 +3318,7 @@ emit-is-digit-builtin (st) (args) =
  in let st4 = st-append-text st3 (movzx-byte-self (r.reg))
  in EmitResult {
  state = st4,
- reg = (r.reg)
+ reg = r.reg
 }
 
 emit-is-whitespace-builtin : CodegenState -> List IRExpr -> EmitResult
@@ -3167,7 +3329,7 @@ emit-is-whitespace-builtin (st) (args) =
  in let st3 = st-append-text st2 (movzx-byte-self (r.reg))
  in EmitResult {
  state = st3,
- reg = (r.reg)
+ reg = r.reg
 }
 
 emit-negate-builtin : CodegenState -> List IRExpr -> EmitResult
@@ -3178,7 +3340,7 @@ emit-negate-builtin (st) (args) =
  in let st2 = st-append-text st1 (neg-r (rd.reg))
  in EmitResult {
  state = st2,
- reg = (rd.reg)
+ reg = rd.reg
 }
 
 emit-get-args-builtin : CodegenState -> EmitResult
@@ -3192,7 +3354,7 @@ emit-get-args-builtin (st) =
  in let st6 = st-append-text st5 (add-ri reg-r10 8)
  in EmitResult {
  state = st6,
- reg = (rd.reg)
+ reg = rd.reg
 }
 
 emit-current-dir-builtin : CodegenState -> EmitResult
@@ -3204,7 +3366,7 @@ emit-current-dir-builtin (st) =
  in let st4 = st-append-text st3 (add-ri reg-r10 8)
  in EmitResult {
  state = st4,
- reg = (rd.reg)
+ reg = rd.reg
 }
 
 emit-file-exists-builtin : CodegenState -> List IRExpr -> EmitResult
@@ -3214,7 +3376,7 @@ emit-file-exists-builtin (st) (args) =
  in let st1 = st-append-text (rd.state) (li (rd.reg) 1)
  in EmitResult {
  state = st1,
- reg = (rd.reg)
+ reg = rd.reg
 }
 
 emit-substring-alloc : CodegenState -> Integer -> Integer -> Integer -> CodegenState
@@ -3269,8 +3431,8 @@ emit-substring-builtin (st) (args) =
  in let st8 = emit-substring-copy st7 (loc0.reg) (loc1.reg) (loc2.reg) (ptr-loc.reg)
  in let result = load-local st8 (ptr-loc.reg)
  in EmitResult {
- state = (result.state),
- reg = (result.reg)
+ state = result.state,
+ reg = result.reg
 }
 
 emit-builtin : CodegenState -> Text -> List IRExpr -> EmitResult
@@ -3382,7 +3544,7 @@ emit-direct-call (st) (flat) =
  in let tmp = alloc-temp st5
  in EmitResult {
  state = st-append-text (tmp.state) (mov-rr (tmp.reg) reg-rax),
- reg = (tmp.reg)
+ reg = tmp.reg
 }
 
 emit-indirect-call : CodegenState -> FlatApply -> EmitResult
@@ -3399,7 +3561,7 @@ emit-indirect-call (st) (flat) =
  in let tmp = alloc-temp st5
  in EmitResult {
  state = st-append-text (tmp.state) (mov-rr (tmp.reg) reg-rax),
- reg = (tmp.reg)
+ reg = tmp.reg
 }
 
 flatten-tail-args : IRExpr -> List IRExpr -> List IRExpr
@@ -3433,7 +3595,7 @@ emit-tail-call (st) (func-expr) (arg-expr) =
  in let dummy = alloc-temp st3
  in EmitResult {
  state = st-append-text (dummy.state) (li (dummy.reg) 0),
- reg = (dummy.reg)
+ reg = dummy.reg
 }
 
 emit-sum-ctor : CodegenState -> List IRExpr -> Integer -> EmitResult
@@ -3535,14 +3697,14 @@ collect-func-addr-patches (fixups) (offsets) (text-base) (i) (acc) =
  in let addr = text-base + func-offset
  in let addr-bytes = write-i64 addr
  in let p0 = PatchEntry {
-  pos = (f.patch-offset),
+  pos = f.patch-offset,
   b0 = list-at addr-bytes 0,
   b1 = list-at addr-bytes 1,
   b2 = list-at addr-bytes 2,
   b3 = list-at addr-bytes 3
 }
  in let p1 = PatchEntry {
-  pos = (f.patch-offset) + 4,
+  pos = f.patch-offset + 4,
   b0 = list-at addr-bytes 4,
   b1 = list-at addr-bytes 5,
   b2 = list-at addr-bytes 6,
@@ -3624,7 +3786,7 @@ emit-field-access (st) (rec-expr) (field-name) =
  in let rd = alloc-temp (rec-result.state)
  in EmitResult {
  state = st-append-text (rd.state) (mov-load (rd.reg) (rec-result.reg) (field-idx * 8)),
- reg = (rd.reg)
+ reg = rd.reg
 }
 
 emit-match : CodegenState -> IRExpr -> List IRBranch -> EmitResult
@@ -3952,7 +4114,7 @@ x86-64-emit-module : IRModule -> List Integer
 x86-64-emit-module (m) =
  let tramp = bare-metal-trampoline
  in let st0 = CodegenState {
- text = (tramp.bytes),
+ text = tramp.bytes,
  rodata = [],
  func-offsets = [],
  call-patches = [],
@@ -5787,6 +5949,277 @@ emit-runtime-helpers (st) =
 
 end module x86-64helpers
 
+module: test
+
+t-nl-start : Text
+t-nl-start = "\nhello"
+
+t-nl-mid : Text
+t-nl-mid = "hel\nlo"
+
+t-nl-end : Text
+t-nl-end = "hello\n"
+
+t-nl-two-adjacent : Text
+t-nl-two-adjacent = "\n\n"
+
+t-nl-two-spaced : Text
+t-nl-two-spaced = "aaa\nbbb\nccc"
+
+t-nl-two-short : Text
+t-nl-two-short = "a\nb\n"
+
+t-nl-two-start : Text
+t-nl-two-start = "\n\nhello"
+
+t-nl-two-end : Text
+t-nl-two-end = "hello\n\n"
+
+t-nl-three : Text
+t-nl-three = "a\nb\nc\nd"
+
+t-nl-four : Text
+t-nl-four = "a\nb\nc\nd\ne"
+
+t-nl-five : Text
+t-nl-five = "\n\n\n\n\n"
+
+t-nl-after-space : Text
+t-nl-after-space = " \nok"
+
+t-nl-after-letter : Text
+t-nl-after-letter = "x\nok"
+
+t-nl-after-digit : Text
+t-nl-after-digit = "9\nok"
+
+t-nl-after-brace : Text
+t-nl-after-brace = "{\nok"
+
+t-nl-after-close-brace : Text
+t-nl-after-close-brace = "}\nok"
+
+t-nl-after-paren : Text
+t-nl-after-paren = ")\nok"
+
+t-nl-after-comma : Text
+t-nl-after-comma = ",\nok"
+
+t-nl-after-semicolon : Text
+t-nl-after-semicolon = ";\nok"
+
+t-nl-after-backslash : Text
+t-nl-after-backslash = "\\\nok"
+
+t-nl-after-quote : Text
+t-nl-after-quote = "\"\nok"
+
+t-dq-single : Text
+t-dq-single = "\""
+
+t-dq-two : Text
+t-dq-two = "\"\""
+
+t-dq-three : Text
+t-dq-three = "\"\"\""
+
+t-dq-in-text : Text
+t-dq-in-text = "say \"hello\" world"
+
+t-dq-at-start : Text
+t-dq-at-start = "\"hello"
+
+t-dq-at-end : Text
+t-dq-at-end = "hello\""
+
+t-bs-single : Text
+t-bs-single = "\\"
+
+t-bs-two : Text
+t-bs-two = "\\\\"
+
+t-bs-in-text : Text
+t-bs-in-text = "a\\b\\c"
+
+t-mix-bs-nl : Text
+t-mix-bs-nl = "\\\n"
+
+t-mix-nl-bs : Text
+t-mix-nl-bs = "\n\\"
+
+t-mix-dq-nl : Text
+t-mix-dq-nl = "\"\n"
+
+t-mix-nl-dq : Text
+t-mix-nl-dq = "\n\""
+
+t-mix-all : Text
+t-mix-all = "\\\"\n"
+
+t-mix-all-rev : Text
+t-mix-all-rev = "\n\"\\"
+
+t-mix-dq-nl-dq : Text
+t-mix-dq-nl-dq = "\"\n\""
+
+t-mix-repeat : Text
+t-mix-repeat = "\\\"\n\\\"\n"
+
+t-real-braces : Text
+t-real-braces = ")\n    {\n"
+
+t-real-while : Text
+t-real-while = ")\n    {\n        while (true)\n        {\n"
+
+t-real-closing : Text
+t-real-closing = "        }\n    }\n"
+
+t-real-using : Text
+t-real-using = "using System;\nusing System.IO;\n"
+
+t-real-multiline : Text
+t-real-multiline = "    public static\n    {\n        while (true)\n        {\n            return\n        }\n    }\n"
+
+t-fuzz-a : Text
+t-fuzz-a = "abcdef\nghijkl"
+
+t-fuzz-b : Text
+t-fuzz-b = "123456\n789012"
+
+t-fuzz-c : Text
+t-fuzz-c = "+-=*/<>\n[]{}()"
+
+t-fuzz-d : Text
+t-fuzz-d = "abc\ndef\nghi\njkl\nmno"
+
+t-fuzz-e : Text
+t-fuzz-e = "aaa\n.\n,\n!\n?\naaa"
+
+t-fuzz-f : Text
+t-fuzz-f = "ABCDEFGHIJ\nKLMNOPQRST"
+
+t-fuzz-g : Text
+t-fuzz-g = "the quick brown\nfox jumps over\nthe lazy dog"
+
+t-fuzz-h : Text
+t-fuzz-h = "0123456789\n0123456789\n0123456789"
+
+t-fuzz-i : Text
+t-fuzz-i = "({[<\n>]})"
+
+t-fuzz-j : Text
+t-fuzz-j = "++==--**\n//@@##&&"
+
+t-len1 : Text
+t-len1 = "\n"
+
+t-len3 : Text
+t-len3 = "a\nb"
+
+t-len7 : Text
+t-len7 = "abc\ndef"
+
+t-len8 : Text
+t-len8 = "abcd\nefg"
+
+t-len9 : Text
+t-len9 = "abcd\nefgh"
+
+t-len15 : Text
+t-len15 = "abcdefg\nhijklmn"
+
+t-len16 : Text
+t-len16 = "abcdefgh\nijklmno"
+
+t-len17 : Text
+t-len17 = "abcdefgh\nijklmnop"
+
+t-len31 : Text
+t-len31 = "abcdefghijklmno\npqrstuvwxyz0123"
+
+t-len32 : Text
+t-len32 = "abcdefghijklmnop\nqrstuvwxyz01234"
+
+t-align-nl-at-7 : Text
+t-align-nl-at-7 = "0123456\nrest"
+
+t-align-nl-at-8 : Text
+t-align-nl-at-8 = "01234567\nrest"
+
+t-align-nl-at-9 : Text
+t-align-nl-at-9 = "012345678\nrest"
+
+t-align-nl-at-15 : Text
+t-align-nl-at-15 = "0123456789abcde\nrest"
+
+t-align-nl-at-16 : Text
+t-align-nl-at-16 = "0123456789abcdef\nrest"
+
+t-align-nl-at-17 : Text
+t-align-nl-at-17 = "0123456789abcdefg\nrest"
+
+t-gap-0 : Text
+t-gap-0 = "\n\n"
+
+t-gap-1 : Text
+t-gap-1 = "\na\n"
+
+t-gap-2 : Text
+t-gap-2 = "\nab\n"
+
+t-gap-3 : Text
+t-gap-3 = "\nabc\n"
+
+t-gap-4 : Text
+t-gap-4 = "\nabcd\n"
+
+t-gap-5 : Text
+t-gap-5 = "\nabcde\n"
+
+t-gap-6 : Text
+t-gap-6 = "\nabcdef\n"
+
+t-gap-7 : Text
+t-gap-7 = "\nabcdefg\n"
+
+t-gap-8 : Text
+t-gap-8 = "\nabcdefgh\n"
+
+t-gap-12 : Text
+t-gap-12 = "\nabcdefghijkl\n"
+
+t-gap-16 : Text
+t-gap-16 = "\nabcdefghijklmnop\n"
+
+t-pre-0 : Text
+t-pre-0 = "\nx\n"
+
+t-pre-1 : Text
+t-pre-1 = "a\nx\n"
+
+t-pre-2 : Text
+t-pre-2 = "ab\nx\n"
+
+t-pre-3 : Text
+t-pre-3 = "abc\nx\n"
+
+t-pre-4 : Text
+t-pre-4 = "abcd\nx\n"
+
+t-pre-5 : Text
+t-pre-5 = "abcde\nx\n"
+
+t-pre-6 : Text
+t-pre-6 = "abcdef\nx\n"
+
+t-pre-7 : Text
+t-pre-7 = "abcdefg\nx\n"
+
+t-pre-8 : Text
+t-pre-8 = "abcdefgh\nx\n"
+
+end module test
+
 module: irmodule
 
 IRBinaryOp =
@@ -6294,7 +6727,7 @@ lower-module (m) (types) (ust) =
  let ctor-types = collect-ctor-bindings (m.type-defs) 0 (list-length (m.type-defs)) []
  in let all-types = ctor-types ++ types ++ builtin-type-env.bindings
  in IRModule {
-  name = (m.name),
+  name = m.name,
   defs = lower-defs (m.defs) all-types ust 0
  }
 
@@ -6406,7 +6839,7 @@ ctor-bindings-for-typedef (td) =
    in let result-ty = RecordTy name resolved-fields
    in let ctor-ty = build-record-ctor-type fields result-ty 0 (list-length fields)
    in [TypeBinding {
-    name = (name.value),
+    name = name.value,
     bound-type = ctor-ty
    }]
 
@@ -6431,7 +6864,7 @@ build-record-fields (fields) (i) (len) (acc) =
  if i == len then acc
  else let f = list-at fields i
  in let rfield = RecordField {
-  name = (f.name),
+  name = f.name,
   type-val = resolve-type-expr (f.type-expr)
  }
  in build-record-fields fields (i + 1) len (list-snoc acc rfield)
@@ -6649,7 +7082,7 @@ rename-ir-fields (rn) (fields) (i) =
  if i == list-length fields then []
  else let f = list-at fields i
  in [IRFieldVal {
-  name = (f.name),
+  name = f.name,
   value = rename-ir-expr rn (f.value)
  }] ++ rename-ir-fields rn fields (i + 1)
 
@@ -6659,7 +7092,7 @@ rename-ir-branches (rn) (branches) (i) =
  else let b = list-at branches i
  in let rn2 = remove-renames-for-pat rn (b.pattern)
  in [IRBranch {
-  pattern = (b.pattern),
+  pattern = b.pattern,
   body = rename-ir-expr rn2 (b.body)
  }] ++ rename-ir-branches rn branches (i + 1)
 
@@ -6693,8 +7126,8 @@ rename-ir-handle-clauses (rn) (clauses) (i) =
  else let c = list-at clauses i
  in let rn2 = remove-rename rn (c.resume-name)
  in [IRHandleClause {
-  op-name = (c.op-name),
-  resume-name = (c.resume-name),
+  op-name = c.op-name,
+  resume-name = c.resume-name,
   body = rename-ir-expr rn2 (c.body)
  }] ++ rename-ir-handle-clauses rn clauses (i + 1)
 
@@ -6704,7 +7137,7 @@ build-all-assignments (headers) (i) =
  else let hdr = list-at headers i
  in [ModuleAssignment {
   def-name = (hdr.name.text),
-  module-slug = (hdr.module-slug)
+  module-slug = hdr.module-slug
  }] ++ build-all-assignments headers (i + 1)
 
 scope-def-name : List Text -> List ModuleAssignment -> Text -> Text -> Text
@@ -6725,11 +7158,11 @@ build-mod-renames (colliding) (assignments) (cur-mod) (i) (len) (acc) =
          then build-mod-renames colliding assignments cur-mod (i + 1) len acc
          else if (a.module-slug) == cur-mod
               then build-mod-renames colliding assignments cur-mod (i + 1) len (list-snoc acc (RenameEntry {
-               original = (a.def-name),
+               original = a.def-name,
                mangled = mangle-name cur-mod (a.def-name)
               }))
               else build-mod-renames colliding assignments cur-mod (i + 1) len (list-snoc acc (RenameEntry {
-               original = (a.def-name),
+               original = a.def-name,
                mangled = mangle-name (a.module-slug) (a.def-name)
               }))
     else build-mod-renames colliding assignments cur-mod (i + 1) len acc
@@ -6983,10 +7416,10 @@ resolve-module-with-imports (mod) (imported) =
  in let sc = build-all-names-scope all-top (ctors.ctor-names) builtin-names
  in let expr-errs = resolve-all-defs sc (mod.defs) 0 (list-length (mod.defs)) []
  in ResolveResult {
-   errors = (top.errors) ++ expr-errs,
-   top-level-names = (top.names),
-   type-names = (ctors.type-names),
-   ctor-names = (ctors.ctor-names)
+   errors = top.errors ++ expr-errs,
+   top-level-names = top.names,
+   type-names = ctors.type-names,
+   ctor-names = ctors.ctor-names
   }
 
 collect-imported-names : List ResolveResult -> Integer -> Integer -> List Text -> List Text
@@ -7176,15 +7609,15 @@ peek-code (st) =
 advance-char : LexState -> LexState
 advance-char (st) =
  if peek-code st == cc-newline then LexState {
-   source = (st.source),
+   source = st.source,
    offset = st.offset + 1,
    line = st.line + 1,
    column = 1
   }
   else LexState {
-   source = (st.source),
+   source = st.source,
    offset = st.offset + 1,
-   line = (st.line),
+   line = st.line,
    column = st.column + 1
   }
 
@@ -7200,9 +7633,9 @@ skip-spaces (st) =
  in let end = skip-spaces-end (st.source) (st.offset) len
  in if end == st.offset then st
     else LexState {
-    source = (st.source),
+    source = st.source,
     offset = end,
-    line = (st.line),
+    line = st.line,
     column = st.column + (end - st.offset)
    }
 
@@ -7225,9 +7658,9 @@ scan-ident-rest (st) =
  in let end = scan-ident-end (st.source) (st.offset) len
  in if end == st.offset then st
     else LexState {
-    source = (st.source),
+    source = st.source,
     offset = end,
-    line = (st.line),
+    line = st.line,
     column = st.column + (end - st.offset)
    }
 
@@ -7245,9 +7678,9 @@ scan-digits (st) =
  in let end = scan-digits-end (st.source) (st.offset) len
  in if end == st.offset then st
     else LexState {
-    source = (st.source),
+    source = st.source,
     offset = end,
-    line = (st.line),
+    line = st.line,
     column = st.column + (end - st.offset)
    }
 
@@ -7266,9 +7699,9 @@ scan-string-body (st) =
  in let end = scan-string-end (st.source) (st.offset) len
  in if end == st.offset then st
     else LexState {
-    source = (st.source),
+    source = st.source,
     offset = end,
-    line = (st.line),
+    line = st.line,
     column = st.column + (end - st.offset)
    }
 
@@ -7322,8 +7755,8 @@ make-token (kind) (text) (st) =
  Token {
   kind = kind,
   text = text,
-  offset = (st.offset),
-  line = (st.line),
+  offset = st.offset,
+  line = st.line,
   column = st.column
  }
 
@@ -8036,8 +8469,8 @@ advance : ParseState -> ParseState
 advance (st) =
  if st.pos >= (list-length (st.tokens)) - 1 then st
  else ParseState {
-  tokens = (st.tokens),
-  pos = (st.pos) + 1
+  tokens = st.tokens,
+  pos = st.pos + 1
  }
 
 is-done : ParseState -> Boolean
@@ -8336,7 +8769,7 @@ skip-newlines (st) =
  let end-pos = skip-newlines-pos (st.tokens) (st.pos) (list-length (st.tokens))
  in if end-pos == st.pos then st
     else ParseState {
-     tokens = (st.tokens),
+     tokens = st.tokens,
      pos = end-pos
     }
 
@@ -9069,8 +9502,8 @@ parameterize-type (st) (ty) =
  in let wrapped = wrap-forall-from-entries (r.walked) (r.entries) 0 (list-length (r.entries))
  in ParamResult {
   parameterized = wrapped,
-  entries = (r.entries),
-  state = (r.state)
+  entries = r.entries,
+  state = r.state
  }
 
 wrap-forall-from-entries : CodexType -> List ParamEntry -> Integer -> Integer -> CodexType
@@ -9101,18 +9534,18 @@ parameterize-walk (st) (entries) (ty) =
        in when fr.var-type
         if TypeVar (new-id) ->
          let new-entry = ParamEntry {
-          param-name = (name.value),
+          param-name = name.value,
           var-id = new-id
          }
          in WalkResult {
-          walked = (fr.var-type),
+          walked = fr.var-type,
           entries = entries ++ [new-entry],
-          state = (fr.state)
+          state = fr.state
          }
         if _ -> WalkResult {
          walked = ty,
          entries = entries,
-         state = (fr.state)
+         state = fr.state
         }
     else let args-r = parameterize-walk-list st entries args 0 (list-length args) []
      in WalkResult {
@@ -9178,8 +9611,8 @@ check-def (st) (env) (def) =
  in let body-r = infer-expr (env2.state) (env2.env) (def.body)
  in let u = unify (body-r.state) (env2.remaining-type) (body-r.inferred-type)
  in CheckResult {
-  inferred-type = (declared.expected-type),
-  state = (u.state)
+  inferred-type = declared.expected-type,
+  state = u.state
  }
 
 DefSetup = record {
@@ -9195,17 +9628,17 @@ resolve-declared-type (st) (env) (def) =
   then
    let fr = fresh-and-advance st
    in DefSetup {
-    expected-type = (fr.var-type),
-    remaining-type = (fr.var-type),
-    state = (fr.state),
+    expected-type = fr.var-type,
+    remaining-type = fr.var-type,
+    state = fr.state,
     env = env
    }
   else let env-type = env-lookup env (def.name.value)
    in let inst = instantiate-type st env-type
    in DefSetup {
-    expected-type = (inst.var-type),
-    remaining-type = (inst.var-type),
-    state = (inst.state),
+    expected-type = inst.var-type,
+    remaining-type = inst.var-type,
+    state = inst.state,
     env = env
    }
 
@@ -9254,13 +9687,13 @@ register-all-defs (st) (env) (tdm) (defs) (i) (len) =
  in let ty = if list-length (def.declared-type) == 0 then let fr = fresh-and-advance st
        in let env2 = env-bind env (def.name.value) (fr.var-type)
        in LetBindResult {
-        state = (fr.state),
+        state = fr.state,
         env = env2
        }
     else let resolved = resolve-type-expr tdm (list-at (def.declared-type) 0)
        in let pr = parameterize-type st resolved
        in LetBindResult {
-        state = (pr.state),
+        state = pr.state,
         env = env-bind env (def.name.value) (pr.parameterized)
        }
  in register-all-defs (ty.state) (ty.env) tdm defs (i + 1) len
@@ -9288,13 +9721,13 @@ build-type-def-map (tdefs) (i) (len) (acc) =
      if AVariantTypeDef (name) (type-params) (ctors) ->
       let sum-ctors = build-sum-ctors tdefs ctors 0 (list-length ctors) [] acc
       in TypeBinding {
-       name = (name.value),
+       name = name.value,
        bound-type = SumTy name sum-ctors
       }
      if ARecordTypeDef (name) (type-params) (fields) ->
       let rec-fields = build-record-fields-for-map tdefs fields 0 (list-length fields) [] acc
       in TypeBinding {
-       name = (name.value),
+       name = name.value,
        bound-type = RecordTy name rec-fields
       }
  in build-type-def-map tdefs (i + 1) len (list-insert-at acc (bsearch-text-pos acc (entry.name) 0 (list-length acc)) entry)
@@ -9305,7 +9738,7 @@ build-sum-ctors (tdefs) (ctors) (i) (len) (acc) (partial-tdm) =
  else let c = list-at ctors i
  in let field-types = resolve-type-expr-list-for-map tdefs (c.fields) 0 (list-length (c.fields)) [] partial-tdm
  in let sc = SumCtor {
-  name = (c.name),
+  name = c.name,
   fields = field-types
  }
  in build-sum-ctors tdefs ctors (i + 1) len (list-snoc acc sc) partial-tdm
@@ -9315,7 +9748,7 @@ build-record-fields-for-map (tdefs) (fields) (i) (len) (acc) (partial-tdm) =
  if i == len then acc
  else let f = list-at fields i
  in let rfield = RecordField {
-  name = (f.name),
+  name = f.name,
   type-val = resolve-type-expr partial-tdm (f.type-expr)
  }
  in build-record-fields-for-map tdefs fields (i + 1) len (list-snoc acc rfield) partial-tdm
@@ -9355,7 +9788,7 @@ build-record-fields (tdm) (fields) (i) (len) (acc) =
  if i == len then acc
  else let f = list-at fields i
  in let rfield = RecordField {
-  name = (f.name),
+  name = f.name,
   type-val = resolve-type-expr tdm (f.type-expr)
  }
  in build-record-fields tdm fields (i + 1) len (list-snoc acc rfield)
@@ -9438,8 +9871,8 @@ infer-name (st) (env) (name) =
    let raw = env-lookup env name
    in let inst = instantiate-type st raw
    in CheckResult {
-    inferred-type = (inst.var-type),
-    state = (inst.state)
+    inferred-type = inst.var-type,
+    state = inst.state
    }
   else CheckResult {
    inferred-type = ErrorTy,
@@ -9508,7 +9941,7 @@ infer-arithmetic (st) (lt) (rt) =
  let r = unify st lt rt
  in CheckResult {
   inferred-type = lt,
-  state = (r.state)
+  state = r.state
  }
 
 infer-comparison : UnificationState -> CodexType -> CodexType -> CheckResult
@@ -9516,7 +9949,7 @@ infer-comparison (st) (lt) (rt) =
  let r = unify st lt rt
  in CheckResult {
   inferred-type = BooleanTy,
-  state = (r.state)
+  state = r.state
  }
 
 infer-logical : UnificationState -> CodexType -> CodexType -> CheckResult
@@ -9536,13 +9969,13 @@ infer-append (st) (lt) (rt) =
    let r = unify st rt TextTy
    in CheckResult {
     inferred-type = TextTy,
-    state = (r.state)
+    state = r.state
    }
   if _ ->
    let r = unify st lt rt
    in CheckResult {
     inferred-type = lt,
-    state = (r.state)
+    state = r.state
    }
 
 infer-cons : UnificationState -> CodexType -> CodexType -> CheckResult
@@ -9551,7 +9984,7 @@ infer-cons (st) (lt) (rt) =
  in let r = unify st rt list-ty
  in CheckResult {
   inferred-type = list-ty,
-  state = (r.state)
+  state = r.state
  }
 
 infer-if : UnificationState -> TypeEnv -> AExpr -> AExpr -> AExpr -> CheckResult
@@ -9562,7 +9995,7 @@ infer-if (st) (env) (cond) (then-e) (else-e) =
  in let er = infer-expr (tr.state) env else-e
  in let r2 = unify (er.state) (tr.inferred-type) (er.inferred-type)
  in CheckResult {
-  inferred-type = (tr.inferred-type),
+  inferred-type = tr.inferred-type,
   state = (r2.state)
  }
 
@@ -9594,7 +10027,7 @@ infer-lambda (st) (env) (params) (body) =
  in let fun-ty = wrap-fun-type (pr.param-types) (br.inferred-type)
  in CheckResult {
   inferred-type = fun-ty,
-  state = (br.state)
+  state = br.state
  }
 
 LambdaBindResult = record {
@@ -9631,8 +10064,8 @@ infer-application (st) (env) (func) (arg) =
  in let ret = fresh-and-advance (ar.state)
  in let r = unify (ret.state) (fr.inferred-type) (FunTy (ar.inferred-type) (ret.var-type))
  in CheckResult {
-  inferred-type = (ret.var-type),
-  state = (r.state)
+  inferred-type = ret.var-type,
+  state = r.state
  }
 
 infer-list : UnificationState -> TypeEnv -> List AExpr -> CheckResult
@@ -9642,7 +10075,7 @@ infer-list (st) (env) (elems) =
    let fr = fresh-and-advance st
    in CheckResult {
     inferred-type = ListTy (fr.var-type),
-    state = (fr.state)
+    state = fr.state
    }
   else let first = infer-expr st env (list-at elems 0)
    in let st2 = unify-list-elems (first.state) env elems (first.inferred-type) 1 (list-length elems)
@@ -9664,7 +10097,7 @@ infer-match (st) (env) (scrutinee) (arms) =
  in let fr = fresh-and-advance (sr.state)
  in let st2 = infer-match-arms (fr.state) env (sr.inferred-type) (fr.var-type) arms 0 (list-length arms)
  in CheckResult {
-  inferred-type = (fr.var-type),
+  inferred-type = fr.var-type,
   state = st2
  }
 
@@ -9747,7 +10180,7 @@ infer-expr (st) (env) (expr) =
    in let u = unify (r.state) (r.inferred-type) IntegerTy
    in CheckResult {
     inferred-type = IntegerTy,
-    state = (u.state)
+    state = u.state
    }
   if AApplyExpr (func) (arg) -> infer-application st env func arg
   if AIfExpr (cond) (then-e) (else-e) -> infer-if st env cond then-e else-e
@@ -9764,7 +10197,7 @@ infer-expr (st) (env) (expr) =
      let ftype = lookup-record-field rfields (field.value)
      in CheckResult {
       inferred-type = ftype,
-      state = (r.state)
+      state = r.state
      }
     if ConstructedTy (cname) (cargs) ->
      let record-type = resolve-constructed-to-record env (cname.value)
@@ -9773,19 +10206,19 @@ infer-expr (st) (env) (expr) =
        let ftype = lookup-record-field rfields (field.value)
        in CheckResult {
         inferred-type = ftype,
-        state = (r.state)
+        state = r.state
        }
       if _ ->
        let fr = fresh-and-advance (r.state)
        in CheckResult {
-        inferred-type = (fr.var-type),
-        state = (fr.state)
+        inferred-type = fr.var-type,
+        state = fr.state
        }
     if _ ->
      let fr = fresh-and-advance (r.state)
      in CheckResult {
-      inferred-type = (fr.var-type),
-      state = (fr.state)
+      inferred-type = fr.var-type,
+      state = fr.state
      }
 
   if ARecordExpr (name) (fields) ->
@@ -9941,9 +10374,9 @@ fresh-var (st) =
 advance-id : UnificationState -> UnificationState
 advance-id (st) =
  UnificationState {
-  substitutions = (st.substitutions),
-  next-id = (st.next-id) + 1,
-  errors = (st.errors)
+  substitutions = st.substitutions,
+  next-id = st.next-id + 1,
+  errors = st.errors
  }
 
 fresh-and-advance : UnificationState -> FreshResult
@@ -9992,16 +10425,16 @@ add-subst (st) (var-id) (ty) =
  in let pos = bsearch-int-pos (st.substitutions) var-id 0 (list-length (st.substitutions))
  in UnificationState {
   substitutions = list-insert-at (st.substitutions) pos entry,
-  next-id = (st.next-id),
-  errors = (st.errors)
+  next-id = st.next-id,
+  errors = st.errors
  }
 
 add-unify-error : UnificationState -> Text -> Text -> UnificationState
 add-unify-error (st) (code) (msg) =
  UnificationState {
-  substitutions = (st.substitutions),
-  next-id = (st.next-id),
-  errors = (st.errors) ++ [make-error code msg]
+  substitutions = st.substitutions,
+  next-id = st.next-id,
+  errors = st.errors ++ [make-error code msg]
  }
 
 occurs-in : UnificationState -> Integer -> CodexType -> Boolean
@@ -10362,7 +10795,7 @@ compile-streaming-v2 (source) (module-name) =
  in let st = make-parse-state tokens
  in let scan = scan-document st
  in let type-defs = map-list desugar-type-def (scan.type-defs)
- in let headers = (scan.def-headers)
+ in let headers = scan.def-headers
  in let assignments = build-all-assignments headers 0
  in let colliding = find-colliding-names assignments
  in compile-with-scope tokens type-defs headers assignments colliding
@@ -10391,13 +10824,13 @@ register-def-headers (st) (env) (tdm) (headers) (i) (len) =
  in let ty = if list-length declared == 0 then let fr = fresh-and-advance st
        in let env2 = env-bind env (hdr.name.text) (fr.var-type)
        in LetBindResult {
-        state = (fr.state),
+        state = fr.state,
         env = env2
        }
     else let resolved = resolve-type-expr tdm (list-at declared 0)
        in let pr = parameterize-type st resolved
        in LetBindResult {
-        state = (pr.state),
+        state = pr.state,
         env = env-bind env (hdr.name.text) (pr.parameterized)
        }
  in register-def-headers (ty.state) (ty.env) tdm headers (i + 1) len
@@ -10411,13 +10844,13 @@ check-defs-streaming (tokens) (headers) (ust) (env) (i) (len) (acc) =
  else let hdr = list-at headers i
  in let body-st = ParseState {
   tokens = tokens,
-  pos = (hdr.body-pos)
+  pos = hdr.body-pos
  }
  in let body-result = parse-expr body-st
  in let def = Def {
-  name = (hdr.name),
-  params = (hdr.params),
-  ann = (hdr.ann),
+  name = hdr.name,
+  params = hdr.params,
+  ann = hdr.ann,
   body = unwrap-body body-result
  }
  in let adef = desugar-def def
@@ -10435,13 +10868,13 @@ emit-defs-streaming (tokens) (headers) (all-types) (ust) (ctor-names) (i) (len) 
  else let hdr = list-at headers i
  in let body-st = ParseState {
   tokens = tokens,
-  pos = (hdr.body-pos)
+  pos = hdr.body-pos
  }
  in let body-result = parse-expr body-st
  in let def = Def {
-  name = (hdr.name),
-  params = (hdr.params),
-  ann = (hdr.ann),
+  name = hdr.name,
+  params = hdr.params,
+  ann = hdr.ann,
   body = unwrap-body body-result
  }
  in let adef = desugar-def def
@@ -10472,13 +10905,13 @@ emit-one-scoped-def : List Token -> DefHeader -> List TypeBinding -> Unification
 emit-one-scoped-def (tokens) (hdr) (all-types) (ust) (ctor-names) (colliding) (assignments) (rn) (headers) (i) (len) =
  let body-st = ParseState {
   tokens = tokens,
-  pos = (hdr.body-pos)
+  pos = hdr.body-pos
  }
  in let body-result = parse-expr body-st
  in let def = Def {
-  name = (hdr.name),
-  params = (hdr.params),
-  ann = (hdr.ann),
+  name = hdr.name,
+  params = hdr.params,
+  ann = hdr.ann,
   body = unwrap-body body-result
  }
  in let adef = desugar-def def
@@ -10487,8 +10920,8 @@ emit-one-scoped-def (tokens) (hdr) (all-types) (ust) (ctor-names) (colliding) (a
  in let scoped-body = rename-ir-expr rn (ir-def.body)
  in let scoped-def = IRDef {
   name = scoped-name,
-  params = (ir-def.params),
-  type-val = (ir-def.type-val),
+  params = ir-def.params,
+  type-val = ir-def.type-val,
   body = scoped-body
  }
  in if is-error-body (scoped-def.body) then print-line ("COMPILE-ERROR: def '" ++ scoped-def.name ++ "' has error body: " ++ error-message (scoped-def.body))

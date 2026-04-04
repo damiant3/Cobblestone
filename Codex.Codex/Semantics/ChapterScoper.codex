@@ -1,68 +1,68 @@
-Chapter: Module Scoper
+Chapter: Chapter Scoper
 
- Resolves name collisions across modules by prefixing duplicate
- definition names with their module slug. Only colliding names
- (defined in 2+ modules) are renamed. Non-colliding names pass
+ Resolves name collisions across chapters by prefixing duplicate
+ definition names with their chapter slug. Only colliding names
+ (defined in 2+ chapters) are renamed. Non-colliding names pass
  through unchanged.
 
  The source format uses "module: slug-name" markers between file
- boundaries. The scoper reads these markers, tracks module membership,
+ boundaries. The scoper reads these markers, tracks chapter membership,
  identifies collisions, and rewrites def names and body references.
 
-Section: Module Assignment
+Section: Chapter Assignment
 
-  ModuleAssignment = record {
+  ChapterAssignment = record {
    def-name : Text,
-   module-slug : Text
+   chapter-slug : Text
   }
 
-  assign-modules : List DefHeader -> Text -> Integer -> List ModuleAssignment
-  assign-modules (headers) (current-module) (i) =
+  assign-chapters : List DefHeader -> Text -> Integer -> List ChapterAssignment
+  assign-chapters (headers) (current-chapter) (i) =
    if i == list-length headers then []
    else let hdr = list-at headers i
-   in [ModuleAssignment {
+   in [ChapterAssignment {
     def-name = (hdr.name.text),
-    module-slug = current-module
-   }] ++ assign-modules headers current-module (i + 1)
+    chapter-slug = current-chapter
+   }] ++ assign-chapters headers current-chapter (i + 1)
 
 Section: Collision Detection
 
-  find-colliding-names : List ModuleAssignment -> List Text
+  find-colliding-names : List ChapterAssignment -> List Text
   find-colliding-names (assignments) =
    find-collisions-loop assignments 0 (list-length assignments) []
 
-  find-collisions-loop : List ModuleAssignment -> Integer -> Integer -> List Text -> List Text
+  find-collisions-loop : List ChapterAssignment -> Integer -> Integer -> List Text -> List Text
   find-collisions-loop (assignments) (i) (len) (acc) =
    if i == len then acc
    else let a = list-at assignments i
-   in if appears-in-different-module assignments (a.def-name) (a.module-slug) 0 len then if list-contains acc (a.def-name) then find-collisions-loop assignments (i + 1) len acc
+   in if appears-in-different-chapter assignments (a.def-name) (a.chapter-slug) 0 len then if list-contains acc (a.def-name) then find-collisions-loop assignments (i + 1) len acc
       else find-collisions-loop assignments (i + 1) len (list-snoc acc (a.def-name))
       else find-collisions-loop assignments (i + 1) len acc
 
-  appears-in-different-module : List ModuleAssignment -> Text -> Text -> Integer -> Integer -> Boolean
-  appears-in-different-module (assignments) (name) (module-slug) (i) (len) =
+  appears-in-different-chapter : List ChapterAssignment -> Text -> Text -> Integer -> Integer -> Boolean
+  appears-in-different-chapter (assignments) (name) (chapter-slug) (i) (len) =
    if i == len then False
    else let a = list-at assignments i
-   in if (a.def-name) == name then if (a.module-slug) /= module-slug then True
-      else appears-in-different-module assignments name module-slug (i + 1) len
-      else appears-in-different-module assignments name module-slug (i + 1) len
+   in if (a.def-name) == name then if (a.chapter-slug) /= chapter-slug then True
+      else appears-in-different-chapter assignments name chapter-slug (i + 1) len
+      else appears-in-different-chapter assignments name chapter-slug (i + 1) len
 
 Section: Name Mangling
 
   mangle-name : Text -> Text -> Text
-  mangle-name (module-slug) (def-name) =
-   module-slug ++ "_" ++ def-name
+  mangle-name (chapter-slug) (def-name) =
+   chapter-slug ++ "_" ++ def-name
 
-  lookup-module : List ModuleAssignment -> Text -> Text
-  lookup-module (assignments) (name) =
-   lookup-module-loop assignments name 0 (list-length assignments)
+  lookup-chapter : List ChapterAssignment -> Text -> Text
+  lookup-chapter (assignments) (name) =
+   lookup-chapter-loop assignments name 0 (list-length assignments)
 
-  lookup-module-loop : List ModuleAssignment -> Text -> Integer -> Integer -> Text
-  lookup-module-loop (assignments) (name) (i) (len) =
+  lookup-chapter-loop : List ChapterAssignment -> Text -> Integer -> Integer -> Text
+  lookup-chapter-loop (assignments) (name) (i) (len) =
    if i == len then ""
    else let a = list-at assignments i
-   in if (a.def-name) == name then a.module-slug
-      else lookup-module-loop assignments name (i + 1) len
+   in if (a.def-name) == name then a.chapter-slug
+      else lookup-chapter-loop assignments name (i + 1) len
 
 Section: Rename Map
 
@@ -71,20 +71,20 @@ Section: Rename Map
    mangled : Text
   }
 
-  build-rename-map : List Text -> List ModuleAssignment -> Text -> List RenameEntry
-  build-rename-map (colliding) (assignments) (current-module) =
-   build-rename-map-loop colliding assignments current-module 0 (list-length colliding) []
+  build-rename-map : List Text -> List ChapterAssignment -> Text -> List RenameEntry
+  build-rename-map (colliding) (assignments) (current-chapter) =
+   build-rename-map-loop colliding assignments current-chapter 0 (list-length colliding) []
 
-  build-rename-map-loop : List Text -> List ModuleAssignment -> Text -> Integer -> Integer -> List RenameEntry -> List RenameEntry
-  build-rename-map-loop (colliding) (assignments) (current-module) (i) (len) (acc) =
+  build-rename-map-loop : List Text -> List ChapterAssignment -> Text -> Integer -> Integer -> List RenameEntry -> List RenameEntry
+  build-rename-map-loop (colliding) (assignments) (current-chapter) (i) (len) (acc) =
    if i == len then acc
    else let name = list-at colliding i
-   in let slug = lookup-module assignments name
+   in let slug = lookup-chapter assignments name
    in let entry = RenameEntry {
     original = name,
     mangled = mangle-name slug name
    }
-   in build-rename-map-loop colliding assignments current-module (i + 1) len (list-snoc acc entry)
+   in build-rename-map-loop colliding assignments current-chapter (i + 1) len (list-snoc acc entry)
 
 Section: Apply Rename
 
@@ -173,7 +173,7 @@ Section: IR Collection Renaming
    if i == list-length fields then []
    else let f = list-at fields i
    in [IRFieldVal {
-    name = (f.name),
+    name = f.name,
     value = rename-ir-expr rn (f.value)
    }] ++ rename-ir-fields rn fields (i + 1)
 
@@ -183,7 +183,7 @@ Section: IR Collection Renaming
    else let b = list-at branches i
    in let rn2 = remove-renames-for-pat rn (b.pattern)
    in [IRBranch {
-    pattern = (b.pattern),
+    pattern = b.pattern,
     body = rename-ir-expr rn2 (b.body)
    }] ++ rename-ir-branches rn branches (i + 1)
 
@@ -217,52 +217,52 @@ Section: IR Collection Renaming
    else let c = list-at clauses i
    in let rn2 = remove-rename rn (c.resume-name)
    in [IRHandleClause {
-    op-name = (c.op-name),
-    resume-name = (c.resume-name),
+    op-name = c.op-name,
+    resume-name = c.resume-name,
     body = rename-ir-expr rn2 (c.body)
    }] ++ rename-ir-handle-clauses rn clauses (i + 1)
 
-Section: Module Scoping Pipeline
+Section: Chapter Scoping Pipeline
 
- Takes headers with module-slug fields, detects collisions, builds
+ Takes headers with chapter-slug fields, detects collisions, builds
  rename maps, and provides functions for the streaming pipeline to
  rename def names and body expressions.
 
-  build-all-assignments : List DefHeader -> Integer -> List ModuleAssignment
+  build-all-assignments : List DefHeader -> Integer -> List ChapterAssignment
   build-all-assignments (headers) (i) =
    if i == list-length headers then []
    else let hdr = list-at headers i
-   in [ModuleAssignment {
+   in [ChapterAssignment {
     def-name = (hdr.name.text),
-    module-slug = (hdr.module-slug)
+    chapter-slug = hdr.chapter-slug
    }] ++ build-all-assignments headers (i + 1)
 
-  scope-def-name : List Text -> List ModuleAssignment -> Text -> Text -> Text
-  scope-def-name (colliding) (assignments) (name) (cur-mod) =
-   if is-colliding colliding name then mangle-name cur-mod name
+  scope-def-name : List Text -> List ChapterAssignment -> Text -> Text -> Text
+  scope-def-name (colliding) (assignments) (name) (cur-chap) =
+   if is-colliding colliding name then mangle-name cur-chap name
     else name
 
-  build-module-rename-map : List Text -> List ModuleAssignment -> Text -> List RenameEntry
-  build-module-rename-map (colliding) (assignments) (cur-mod) =
-   build-mod-renames colliding assignments cur-mod 0 (list-length assignments) []
+  build-chapter-rename-map : List Text -> List ChapterAssignment -> Text -> List RenameEntry
+  build-chapter-rename-map (colliding) (assignments) (cur-chap) =
+   build-mod-renames colliding assignments cur-chap 0 (list-length assignments) []
 
-  build-mod-renames : List Text -> List ModuleAssignment -> Text -> Integer -> Integer -> List RenameEntry -> List RenameEntry
-  build-mod-renames (colliding) (assignments) (cur-mod) (i) (len) (acc) =
+  build-mod-renames : List Text -> List ChapterAssignment -> Text -> Integer -> Integer -> List RenameEntry -> List RenameEntry
+  build-mod-renames (colliding) (assignments) (cur-chap) (i) (len) (acc) =
    if i == len then acc
    else let a = list-at assignments i
    in if is-colliding colliding (a.def-name)
       then if has-rename acc (a.def-name)
-           then build-mod-renames colliding assignments cur-mod (i + 1) len acc
-           else if (a.module-slug) == cur-mod
-                then build-mod-renames colliding assignments cur-mod (i + 1) len (list-snoc acc (RenameEntry {
-                 original = (a.def-name),
-                 mangled = mangle-name cur-mod (a.def-name)
+           then build-mod-renames colliding assignments cur-chap (i + 1) len acc
+           else if (a.chapter-slug) == cur-chap
+                then build-mod-renames colliding assignments cur-chap (i + 1) len (list-snoc acc (RenameEntry {
+                 original = a.def-name,
+                 mangled = mangle-name cur-chap (a.def-name)
                 }))
-                else build-mod-renames colliding assignments cur-mod (i + 1) len (list-snoc acc (RenameEntry {
-                 original = (a.def-name),
-                 mangled = mangle-name (a.module-slug) (a.def-name)
+                else build-mod-renames colliding assignments cur-chap (i + 1) len (list-snoc acc (RenameEntry {
+                 original = a.def-name,
+                 mangled = mangle-name (a.chapter-slug) (a.def-name)
                 }))
-      else build-mod-renames colliding assignments cur-mod (i + 1) len acc
+      else build-mod-renames colliding assignments cur-chap (i + 1) len acc
 
   has-rename : List RenameEntry -> Text -> Boolean
   has-rename (entries) (name) =

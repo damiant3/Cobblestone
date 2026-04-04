@@ -40,8 +40,8 @@ internal static class Analyzer
         }
 
         Desugarer desugarer = new(bag);
-        string moduleName = Path.GetFileNameWithoutExtension(uri);
-        Module module = desugarer.Desugar(document, moduleName);
+        string chapterName = Path.GetFileNameWithoutExtension(uri);
+        Chapter chapter = desugarer.Desugar(document, chapterName);
 
         if (bag.HasErrors)
         {
@@ -49,14 +49,14 @@ internal static class Analyzer
             {
                 Diagnostics = bag.ToImmutable(),
                 Types = Map<string, CodexType>.s_empty,
-                Definitions = module.Definitions,
-                TypeDefinitions = module.TypeDefinitions,
+                Definitions = chapter.Definitions,
+                TypeDefinitions = chapter.TypeDefinitions,
                 Tokens = tokens,
             };
         }
 
         NameResolver resolver = new(bag);
-        ResolvedModule resolved = resolver.Resolve(module);
+        ResolvedChapter resolved = resolver.Resolve(chapter);
 
         if (bag.HasErrors)
         {
@@ -64,27 +64,27 @@ internal static class Analyzer
             {
                 Diagnostics = bag.ToImmutable(),
                 Types = Map<string, CodexType>.s_empty,
-                Definitions = module.Definitions,
-                TypeDefinitions = module.TypeDefinitions,
+                Definitions = chapter.Definitions,
+                TypeDefinitions = chapter.TypeDefinitions,
                 Tokens = tokens,
             };
         }
 
         TypeChecker checker = new(bag);
-        Map<string, CodexType> types = checker.CheckModule(resolved.Module);
+        Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
         if (!bag.HasErrors)
         {
             LinearityChecker linearityChecker = new(bag, types);
-            linearityChecker.CheckModule(resolved.Module);
+            linearityChecker.CheckChapter(resolved.Chapter);
         }
 
         return new AnalysisResult
         {
             Diagnostics = bag.ToImmutable(),
             Types = types,
-            Definitions = resolved.Module.Definitions,
-            TypeDefinitions = resolved.Module.TypeDefinitions,
+            Definitions = resolved.Chapter.Definitions,
+            TypeDefinitions = resolved.Chapter.TypeDefinitions,
             Tokens = tokens,
         };
     }

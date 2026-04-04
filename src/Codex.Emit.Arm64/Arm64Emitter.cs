@@ -6,7 +6,7 @@ public sealed class Arm64Emitter : IAssemblyEmitter
 {
     public string TargetName => "Arm64";
 
-    public byte[] EmitAssembly(IRModule module, string assemblyName)
+    public byte[] EmitAssembly(IRChapter module, string assemblyName)
     {
         Arm64CodeGen codeGen = new();
         codeGen.EmitModule(module);

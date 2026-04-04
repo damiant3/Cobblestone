@@ -1,143 +1,125 @@
-# String Escape Attempt 1 — Post-Mortem
+# String Escape Bug — Investigation Post-Mortem
 
 **Date**: 2026-04-03
 **Agent**: Cam
-**Result**: Reverted. Root cause not in escape-one-char comparison logic.
+**Status**: Root cause identified (16-byte alignment boundary in `__str_concat`
+fast path). Fix not yet landed — two attempts failed.
+
+## Summary
+
+The bare-metal CodexEmitter corrupts the last bytes of escape sequences (`\n`,
+`\"`) when the escape-text accumulator is exactly 7 or 8 output bytes long at
+the moment a 2-byte escape is appended via the `__str_concat` fast path. This
+is the 16-byte allocation boundary: `align8(7+8) = align8(8+8) = 16`, and the
+new bytes land at positions 15-16 or 16-17, straddling or exceeding the
+allocation.
+
+## Smoke Test Results
+
+Created `Codex.Codex/Emit/_test.codex` with 89 systematic test definitions.
+Run through bare-metal pingpong, then compared stage0 (source) vs stage1
+(bare-metal output) via `codex sem-equiv`.
+
+**58 passed, 31 failed.** Key findings:
+
+### What passes
+- ALL single-`\n` tests (any position, any preceding character)
+- ALL `\"` tests in isolation (1, 2, 3 quotes, embedded quotes)
+- ALL `\\` tests
+- ALL mixed escape tests (`\\\"\n`, `\n\"`, etc.)
+- Two-`\n` with short accumulators (gap-0 through gap-4, pre-0 through pre-3)
+- Two-`\n` with acc=9 (gap-7, gap-8, pre-6)
+
+### What fails
+- Two-`\n` with acc=7 before second escape: gap-5, pre-4, nl-two-end
+- Two-`\n` with acc=8 before second escape: gap-6, pre-5, nl-five
+- Single-`\n` with long strings: len15+ (acc=7 or 8 at the `\n` position)
+- Multi-`\n` strings: corruption at FIRST `\n` where acc hits 7 or 8
+
+### Corruption pattern
+
+The wrong byte is deterministic per accumulator length:
+
+| acc_len | align8(acc+8) | New bytes at | Expected | Got | CCE diff |
+|---------|---------------|--------------|----------|-----|----------|
+| 7 | 16 | pos 15,16 | CCE 86,18 | CCE 86,10 | -8 on byte 2 |
+| 8 | 16 | pos 16,17 | CCE 86,18 | CCE 11 (1 byte) | merged/shifted |
+
+For acc=7: the backslash (byte 1) is correct, but 'n' (byte 2) at position 16
+gets value CCE 10 instead of 18. Position 16 is the first byte past the
+16-byte allocation.
+
+For acc=8: the 2-byte escape collapses to 1 wrong byte. Both bytes land past
+position 16 (at 16 and 17).
 
 ## What We Tried
 
-Changed `escape-one-char` and `escape-char` in `CodexEmitter.codex` from
-`char-code-at` with string literals to `char-code` with char literals:
+### Attempt 1: `char-code` instead of `char-code-at` in escape-one-char
 
-```
--- Before
-escape-one-char (c) =
- if c == char-code-at "\\" 0 then "\\\\"
- else if c == char-code-at "\"" 0 then "\\\""
- else if c == char-code-at "\n" 0 then "\\n"
- else char-to-text (code-to-char c)
+Changed escape-one-char comparisons from `char-code-at "\n" 0` (runtime string
+access) to `char-code '\n'` (compile-time constant). **No effect** — same
+failures. Proves the bug is not in the comparison logic.
 
--- After (reverted)
-escape-one-char (c) =
- if c == char-code '\\' then "\\\\"
- else if c == char-code '"' then "\\\""
- else if c == char-code '\n' then "\\n"
- else char-to-text (code-to-char c)
-```
+### Attempt 2: Bump HeapReg before copy in fast path
 
-Also attempted fixing paren-dropping in `emit-binary` by splitting
-`wrap-binary-child` into left (`<`) and right (`<=`) variants. Both reverted.
+Moved the `HeapReg = ptr + align8(new_len+8)` update to BEFORE the byte copy
+loop (instead of after). Theory: bytes at position 16 are in unclaimed heap
+space. **No effect** — single-core x86 doesn't care about HeapReg ordering.
 
-## What We Observed
+### Attempt 3: Disable fast path entirely
 
-### Bare-metal output (stage1) still had identical bugs after the fix
+Changed `JNE slowPath` to `JMP slowPath` (unconditional). **Timed out** — the
+O(n^2) slow-path-only compilation exceeds the 180s bare-metal timeout.
 
-The `char-code` change compiled and the ELF ran, but stage1 still contained:
-- `\I\n` instead of `\"\"` (double-quote escaping)
-- Literal newlines instead of `\n` escape sequences
-- `s` instead of `\n` in some positions
+### Attempt 4: Bounded fast path (only extend when data fits in padding)
 
-This proves the bug is **not** in the comparison constants of escape-one-char.
+Added a second check: `len1 + len2 + 8 <= align8(len1 + 8)`. Only uses fast
+path when new data fits within the existing allocation's alignment padding.
+**Broke compilation** — only 317/1106 defs emitted. The additional JCC
+instruction may have introduced a subtle code generation issue (wrong jump
+target or register clobber). Needs investigation.
 
-### Detailed symptom analysis
+## What We Know
 
-**Newline bug**: In a single escape-text call, the FIRST newline is escaped
-correctly as `\n`, but the SECOND newline in the same string may fail —
-producing either a literal newline (0x0A) or the letter `s` (Unicode 115,
-CCE 19).
+1. The bug is **100% correlated with the 16-byte allocation boundary** in
+   `__str_concat`'s fast path. Accumulator lengths 7 and 8 trigger it;
+   lengths 0-6 and 9+ do not.
 
-**Double-quote bug**: The backslash prefix IS emitted (meaning the comparison
-matched), but the character after the backslash is wrong:
-- First `"` in a string → `\I` (backslash + `I`, Unicode 73, CCE 43)
-- Second `"` in same string → `\n` (backslash + `n`, Unicode 110, CCE 18)
+2. The fast path code in `X86_64CodeGen.cs` lines 2668-2697 **looks correct
+   on paper** — the byte copy loop addresses are right, the HeapReg bump
+   covers the written bytes, and nothing else touches those addresses.
 
-**Key pattern**: The SAME escape-one-char function returns DIFFERENT wrong
-results for identical input on successive calls within the same escape-text-loop.
-This rules out static .rodata corruption or wrong RodataFixup addresses (those
-would produce the same wrong result every time).
+3. The wrong byte values are **deterministic** (same wrong CCE value every
+   run for the same test), ruling out uninitialized memory or race conditions.
 
-### Hex evidence
-
-Stage0 (correct): `?? \"\")"` = bytes `3f3f 20 5c22 5c22 2922`
-Stage1 (buggy):   `?? \I\n)"` = bytes `3f3f 20 5c49 5c6e 2922`
-
-The backslash (0x5C) is present in both, confirming the if-branch matched.
-But the second byte is wrong: 0x49 (`I`) and 0x6E (`n`) instead of 0x22 (`"`).
-
-In CCE terms: the return string `"\\\""` should contain [CCE 86, CCE 72] but
-the output acts as if it contains [CCE 86, CCE 43] and [CCE 86, CCE 18] on
-successive calls.
-
-## What We Ruled Out
-
-1. **Comparison constant values**: `char-code-at "\n" 0` returns 1 correctly
-   (the comparison matches — the backslash prefix proves it). Switching to
-   `char-code '\n'` didn't help.
-
-2. **Static .rodata corruption**: The wrong results DIFFER between successive
-   calls to the same function, so the .rodata string isn't statically wrong.
-
-3. **CCE-to-Unicode table**: The `"` character (CCE 72 → Unicode 34) converts
-   correctly in other contexts (string literal delimiters show up as `"` in
-   stage1). The bug is upstream of the conversion.
-
-4. **`__str_concat` correctness**: Code review of the fast path (in-place
-   extend) and slow path (full copy) found no corruption bugs. The fast path
-   correctly checks `ptr + align8(len+8) == HeapReg` before extending.
-
-## What We Think Is Happening
-
-The varying wrong results on successive calls point to one of:
-
-1. **Heap interaction with return strings**: escape-one-char returns .rodata
-   pointers for escape cases and heap-allocated strings for pass-through.
-   The `__str_concat` fast path extends the accumulator in place when the
-   right operand is .rodata (no heap allocation happened). Something in this
-   interaction may corrupt the accumulator or the source string `s`.
-
-2. **TCO parameter corruption in escape-text-loop**: The TCO'd loop updates
-   `s`, `i`, `len`, `acc` via temporaries. If a register or spill slot is
-   clobbered by the escape-one-char call or __str_concat, subsequent
-   iterations would read wrong values from `s`.
-
-3. **x86-64 code generation bug**: A register allocation or spill/reload
-   issue in the compiled escape-text-loop that causes `char-code-at s i`
-   to read the wrong byte position after certain heap state changes.
+4. The bounded fast path (Attempt 4) proves that **changing the fast path
+   behavior changes the output**, but the specific change introduced a new
+   bug. This confirms the fast path is involved.
 
 ## Recommended Next Steps
 
-1. **Binary-level debugging**: Use GDB attached to QEMU to set a breakpoint
-   in the compiled escape-one-char and trace the register values on the
-   second newline call vs the first. Compare the `s` pointer, `i` value,
-   and the byte read by `char-code-at`.
+1. **Debug Attempt 4**: The bounded fast path is the right fix conceptually
+   but broke compilation. The issue is likely in the JCC patching or register
+   state after the additional check. A careful review of the generated
+   machine code (disassemble the ELF at the `__str_concat` offset) would
+   find the bug quickly.
 
-2. **Instrument escape-text-loop**: Add serial debug output before each
-   escape-one-char call (print `i` and `c` values) to see if the input
-   character code is wrong (string corruption) or correct (return value
-   corruption).
+2. **Alternative fix: grow-and-copy in fast path**: Instead of checking if
+   data fits in padding, always reallocate to the new aligned size when
+   extending. This avoids writing past the boundary entirely while keeping
+   O(n) performance.
 
-3. **Check TCO spill slots**: Review the x86-64 codegen for TCO parameter
-   updates in functions that call other functions with heap side effects.
-   Look for caller-saved registers being used across call boundaries.
+3. **GDB on QEMU**: Attach GDB to the QEMU instance and set a hardware
+   watchpoint on the corrupted byte address. This would catch the exact
+   instruction that writes the wrong value.
 
-4. **Simplify the reproduction**: Find the shortest text literal that
-   triggers the bug (a string with two newlines should suffice) and trace
-   the bare-metal execution for just that case.
+4. **Disassemble `__str_concat`**: Extract the function from the ELF and
+   verify the actual machine code matches what the C# codegen intends.
+   An instruction encoding bug (wrong offset, wrong register) would show
+   up immediately.
 
-## Kept Changes
+## Files
 
-The sem-equiv normalizer improvement was kept (not reverted):
-- `\{` → `{` and `\}` → `}` normalization (3 mismatches resolved, 63 → 60)
-- These are not valid Codex escapes, so both forms produce the same character
-
-## Other Findings
-
-- **`end module main` in stage1**: Filed as separate bug `end-module-in-output`.
-  The bare-metal emitter outputs `end module main` indented inside the main
-  function body. The scanner correctly skips it during header scanning, so the
-  issue is likely in how the main function's body range is determined.
-
-- **Paren-dropping bug**: `a - (b + c)` emitted as `a - b + c` due to
-  `needs-binary-wrap` using strict `<` instead of `<=` for the right operand.
-  Fix was correct but reverted with the rest. Should be re-applied separately
-  once the string escape issue is resolved.
+- `Codex.Codex/Emit/_test.codex` — 89 smoke test definitions
+- `src/Codex.Emit.X86_64/X86_64CodeGen.cs` — `__str_concat` at line ~2642
+- `tools/Codex.Cli/Program.SemEquiv.cs` — `\{`→`{` normalizer (kept)

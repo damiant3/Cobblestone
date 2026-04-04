@@ -3,20 +3,20 @@ using Codex.Ast;
 
 namespace Codex.Semantics;
 
-public sealed record ResolvedModule(
-    Module Module,
+public sealed record ResolvedChapter(
+    Chapter Chapter,
     Set<string> TopLevelNames,
     Set<string> TypeNames,
     Set<string> ConstructorNames,
     Set<string> ExportedNames)
 {
-    public IReadOnlyList<ResolvedModule> ImportedModules { get; init; } = [];
+    public IReadOnlyList<ResolvedChapter> ImportedChapters { get; init; } = [];
 }
 
 public sealed class NameResolver(DiagnosticBag diagnostics)
 {
     readonly DiagnosticBag m_diagnostics = diagnostics;
-    IModuleLoader? m_loader;
+    IChapterLoader? m_loader;
 
     static readonly Set<string> s_builtins = Set<string>.Of(
         "show", "negate", "True", "False", "Nothing",
@@ -39,16 +39,16 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
         "fork", "await", "par", "race"
     );
 
-    public NameResolver(DiagnosticBag diagnostics, IModuleLoader? loader)
+    public NameResolver(DiagnosticBag diagnostics, IChapterLoader? loader)
         : this(diagnostics)
     {
         m_loader = loader;
     }
 
-    public ResolvedModule Resolve(Module module)
+    public ResolvedChapter Resolve(Chapter chapter)
     {
         Set<string> topLevel = Set<string>.s_empty;
-        foreach (Definition def in module.Definitions)
+        foreach (Definition def in chapter.Definitions)
         {
             if (topLevel.Contains(def.Name.Value))
             {
@@ -62,7 +62,7 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
         Set<string> typeNames = Set<string>.s_empty;
         Set<string> ctorNames = Set<string>.s_empty;
 
-        foreach (TypeDef td in module.TypeDefinitions)
+        foreach (TypeDef td in chapter.TypeDefinitions)
         {
             if (typeNames.Contains(td.Name.Value))
             {
@@ -87,7 +87,7 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
 
         // Register effect operation names
         Set<string> effectNames = Set<string>.s_empty;
-        foreach (EffectDef eff in module.EffectDefs)
+        foreach (EffectDef eff in chapter.EffectDefs)
         {
             effectNames = effectNames.Add(eff.EffectName.Value);
             foreach (EffectOperationDef op in eff.Operations)
@@ -104,21 +104,21 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
 
         // Compute exported names: if no export declarations, export everything
         Set<string> exportedNames = ComputeExportedNames(
-            module, topLevel, typeNames.Union(effectNames), ctorNames);
+            chapter, topLevel, typeNames.Union(effectNames), ctorNames);
 
-        List<ResolvedModule> importedModules = [];
-        foreach (ImportDecl imp in module.Imports)
+        List<ResolvedChapter> importedChapters = [];
+        foreach (ImportDecl imp in chapter.Imports)
         {
-            ResolvedModule? imported = m_loader?.Load(imp.ModuleName.Value);
+            ResolvedChapter? imported = m_loader?.Load(imp.ChapterName.Value);
             if (imported is null)
             {
                 m_diagnostics.Error("CDX3010",
-                    $"Cannot resolve import '{imp.ModuleName.Value}'",
+                    $"Cannot resolve import '{imp.ChapterName.Value}'",
                     imp.Span);
                 continue;
             }
-            importedModules.Add(imported);
-            // Only import names that the other module exports
+            importedChapters.Add(imported);
+            // Only import names that the other chapter exports
             topLevel = topLevel.Union(imported.ExportedNames.Intersect(imported.TopLevelNames));
             typeNames = typeNames.Union(imported.ExportedNames.Intersect(imported.TypeNames));
             ctorNames = ctorNames.Union(imported.ExportedNames.Intersect(imported.ConstructorNames));
@@ -128,7 +128,7 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
             .Union(s_builtins)
             .Union(ctorNames);
 
-        foreach (Definition def in module.Definitions)
+        foreach (Definition def in chapter.Definitions)
         {
             Set<string> scope = allKnownNames;
             foreach (Parameter p in def.Parameters)
@@ -136,14 +136,14 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
             ResolveExpr(def.Body, scope);
         }
 
-        return new ResolvedModule(module, topLevel, typeNames, ctorNames, exportedNames)
-            { ImportedModules = importedModules };
+        return new ResolvedChapter(chapter, topLevel, typeNames, ctorNames, exportedNames)
+            { ImportedChapters = importedChapters };
     }
 
     Set<string> ComputeExportedNames(
-        Module module, Set<string> topLevel, Set<string> typeNames, Set<string> ctorNames)
+        Chapter chapter, Set<string> topLevel, Set<string> typeNames, Set<string> ctorNames)
     {
-        if (module.Exports.Count == 0)
+        if (chapter.Exports.Count == 0)
         {
             // No export declarations = export everything
             return topLevel.Union(typeNames).Union(ctorNames);
@@ -151,14 +151,14 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
 
         Set<string> exported = Set<string>.s_empty;
         Set<string> allDefined = topLevel.Union(typeNames).Union(ctorNames);
-        foreach (ExportDecl exp in module.Exports)
+        foreach (ExportDecl exp in chapter.Exports)
         {
             foreach (Name n in exp.Names)
             {
                 if (!allDefined.Contains(n.Value))
                 {
                     m_diagnostics.Error("CDX3020",
-                        $"Exported name '{n.Value}' is not defined in this module",
+                        $"Exported name '{n.Value}' is not defined in this chapter",
                         exp.Span);
                 }
                 exported = exported.Add(n.Value);

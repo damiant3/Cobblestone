@@ -6,12 +6,12 @@ namespace Codex.Ast;
 public sealed class Desugarer(DiagnosticBag diagnostics)
 {
     readonly DiagnosticBag m_diagnostics = diagnostics;
-    string? m_currentModuleName;
+    string? m_currentChapterName;
 
-    public Module Desugar(DocumentNode document, string moduleName)
+    public Chapter Desugar(DocumentNode document, string chapterName)
     {
-        m_currentModuleName = moduleName;
-        QualifiedName name = QualifiedName.Simple(moduleName);
+        m_currentChapterName = chapterName;
+        QualifiedName name = QualifiedName.Simple(chapterName);
         List<Definition> definitions = document.Definitions.Select(DesugarDefinition).ToList();
         List<TypeDef> typeDefinitions = document.TypeDefinitions.Select(DesugarTypeDefinition).ToList();
         List<ClaimDef> claims = document.Claims.Select(DesugarClaim).ToList();
@@ -25,7 +25,7 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
                 e.Names.Select(n => new Name(n.Text)).ToList(), e.Span)).ToList();
         List<EffectDef> effectDefs = document.EffectDefinitions
             .Select(DesugarEffectDef).ToList();
-        return new Module(name, definitions, typeDefinitions, claims, proofs, document.Span)
+        return new Chapter(name, definitions, typeDefinitions, claims, proofs, document.Span)
             { Imports = imports, Exports = exports, EffectDefs = effectDefs };
     }
 
@@ -49,7 +49,7 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
         Expr body = DesugarExpr(node.Body);
 
         return new Definition(name, parameters, declaredType, body, node.Span)
-            { SourceModule = m_currentModuleName };
+            { SourceChapter = m_currentChapterName };
     }
 
     Expr DesugarExpr(ExpressionNode node) => node switch
@@ -298,7 +298,7 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
 
             _ => throw new InvalidOperationException($"Unknown type definition body: {node.Body.GetType().Name}")
         };
-        return td with { SourceModule = m_currentModuleName };
+        return td with { SourceChapter = m_currentChapterName };
     }
 
     static BinaryOp DesugarBinaryOp(TokenKind kind) => kind switch

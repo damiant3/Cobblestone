@@ -105,8 +105,8 @@ sealed class BuiltinEffects
             IReadOnlyList<Token> tokens = lexer.TokenizeAll();
             Parser parser = new(tokens, diagnostics);
             DocumentNode document = parser.ParseDocument();
-            Module module = desugarer.Desugar(document, "builtins");
-            allEffects.AddRange(module.EffectDefs);
+            Chapter chapter = desugarer.Desugar(document, "builtins");
+            allEffects.AddRange(chapter.EffectDefs);
         }
 
         s_cached = allEffects;

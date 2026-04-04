@@ -228,25 +228,25 @@ public class RiscVEmitterTests
 
     // ── Helpers ──────────────────────────────────────────────────
 
-    static string? CompileAndRun(string source, string moduleName)
+    static string? CompileAndRun(string source, string chapterName)
     {
-        byte[]? bytes = Helpers.CompileToRiscV(source, moduleName);
+        byte[]? bytes = Helpers.CompileToRiscV(source, chapterName);
         if (bytes is null) return null;
 
         if (!IsQemuAvailable()) return null;
 
         string tempDir = Path.Combine(Path.GetTempPath(),
-            "codex_rv_test_" + moduleName + "_" + Guid.NewGuid().ToString("N")[..8]);
+            "codex_rv_test_" + chapterName + "_" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(tempDir);
         try
         {
-            string elfPath = Path.Combine(tempDir, moduleName);
+            string elfPath = Path.Combine(tempDir, chapterName);
             File.WriteAllBytes(elfPath, bytes);
 
             // Copy into WSL filesystem (NTFS doesn't support chmod),
             // make executable, then run under qemu-riscv64
             string wslPath = ToWslPath(elfPath);
-            string wslTmp = $"/tmp/codex_rv_{moduleName}_{Guid.NewGuid().ToString("N")[..8]}";
+            string wslTmp = $"/tmp/codex_rv_{chapterName}_{Guid.NewGuid().ToString("N")[..8]}";
 
             ProcessStartInfo psi = new("bash",
                 $"-c \"cp '{wslPath}' '{wslTmp}' && chmod +x '{wslTmp}' && qemu-riscv64 '{wslTmp}'; EXIT=$?; rm -f '{wslTmp}'; exit $EXIT\"")
@@ -801,18 +801,18 @@ public class RiscVEmitterTests
         Assert.Contains("done", output);
     }
 
-    static string? CompileAndRunBareMetal(string source, string moduleName)
+    static string? CompileAndRunBareMetal(string source, string chapterName)
     {
-        byte[]? bytes = Helpers.CompileToRiscVBareMetal(source, moduleName);
+        byte[]? bytes = Helpers.CompileToRiscVBareMetal(source, chapterName);
         if (bytes is null) return null;
         if (!IsQemuSystemAvailable()) return null;
 
         string tempDir = Path.Combine(Path.GetTempPath(),
-            "codex_bm_test_" + moduleName + "_" + Guid.NewGuid().ToString("N")[..8]);
+            "codex_bm_test_" + chapterName + "_" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(tempDir);
         try
         {
-            string binPath = Path.Combine(tempDir, moduleName + ".bin");
+            string binPath = Path.Combine(tempDir, chapterName + ".bin");
             File.WriteAllBytes(binPath, bytes);
 
             string qemuPath;

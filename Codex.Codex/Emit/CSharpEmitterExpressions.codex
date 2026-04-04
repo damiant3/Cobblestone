@@ -63,7 +63,7 @@ Section: Identifier Helpers
    let s = text-replace name "-" "_"
    in if is-cs-keyword s then "@" ++ s
       else if is-cs-member-name s then s ++ "_"
-      else s
+              else s
 
   is-cs-member-name : Text -> Boolean
   is-cs-member-name (n) =
@@ -92,7 +92,7 @@ Section: Identifier Helpers
     if SumTy (name) (ctors) -> sanitize (name.value)
     if RecordTy (name) (fields) -> sanitize (name.value)
     if ConstructedTy (name) (args) -> if list-length args == 0 then sanitize (name.value)
-    else sanitize (name.value) ++ "<" ++ emit-cs-type-args args 0 ++ ">"
+                                     else sanitize (name.value) ++ "<" ++ emit-cs-type-args args 0 ++ ">"
     if EffectfulTy (effects) (ret) -> cs-type ret
 
   emit-cs-type-args : List CodexType -> Integer -> Text
@@ -163,13 +163,13 @@ Section: Apply Chain
   emit-apply-args (args) (arities) (i) =
    if i == list-length args then ""
    else if i == list-length args - 1 then emit-expr (list-at args i) arities
-   else emit-expr (list-at args i) arities ++ ", " ++ emit-apply-args args arities (i + 1)
+        else emit-expr (list-at args i) arities ++ ", " ++ emit-apply-args args arities (i + 1)
 
   emit-partial-params : Integer -> Integer -> Text
   emit-partial-params (i) (count) =
    if i == count then ""
    else if i == count - 1 then "_p" ++ integer-to-text i ++ "_"
-   else "_p" ++ integer-to-text i ++ "_" ++ ", " ++ emit-partial-params (i + 1) count
+        else "_p" ++ integer-to-text i ++ "_" ++ ", " ++ emit-partial-params (i + 1) count
 
   emit-partial-wrappers : Integer -> Integer -> Text
   emit-partial-wrappers (i) (count) =
@@ -223,48 +223,210 @@ Section: Apply Chain
 
   emit-builtin : Text -> List IRExpr -> List ArityEntry -> Text
   emit-builtin (n) (args) (arities) =
-   if n == "show" then "_Cce.FromUnicode(Convert.ToString(" ++ emit-expr (list-at args 0) arities ++ "))"
+   if n == "show" then emit-builtin-show args arities
    else if n == "negate" then "(-" ++ emit-expr (list-at args 0) arities ++ ")"
-   else if n == "print-line" then "((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(" ++ emit-expr (list-at args 0) arities ++ ")); return null; }))()"
+   else if n == "print-line" then emit-builtin-print-line args arities
    else if n == "text-length" then "((long)" ++ emit-expr (list-at args 0) arities ++ ".Length)"
-   else if n == "is-letter" then "(" ++ emit-expr (list-at args 0) arities ++ " >= 13L && " ++ emit-expr (list-at args 0) arities ++ " <= 64L)"
-   else if n == "is-digit" then "(" ++ emit-expr (list-at args 0) arities ++ " >= 3L && " ++ emit-expr (list-at args 0) arities ++ " <= 12L)"
+   else if n == "is-letter" then emit-builtin-is-letter args arities
+   else if n == "is-digit" then emit-builtin-is-digit args arities
    else if n == "is-whitespace" then "(" ++ emit-expr (list-at args 0) arities ++ " <= 2L)"
-   else if n == "text-to-integer" then "long.Parse(_Cce.ToUnicode(" ++ emit-expr (list-at args 0) arities ++ "))"
-   else if n == "integer-to-text" then "_Cce.FromUnicode(" ++ emit-expr (list-at args 0) arities ++ ".ToString())"
+   else if n == "text-to-integer" then emit-builtin-text-to-integer args arities
+   else if n == "integer-to-text" then emit-builtin-integer-to-text args arities
    else if n == "char-code" then emit-expr (list-at args 0) arities
-   else if n == "char-code-at" then "((long)" ++ emit-expr (list-at args 0) arities ++ "[(int)" ++ emit-expr (list-at args 1) arities ++ "])"
+   else if n == "char-code-at" then emit-builtin-char-code-at args arities
    else if n == "code-to-char" then emit-expr (list-at args 0) arities
    else if n == "char-to-text" then "((char)" ++ emit-expr (list-at args 0) arities ++ ").ToString()"
    else if n == "list-length" then "((long)" ++ emit-expr (list-at args 0) arities ++ ".Count)"
-   else if n == "char-at" then "((long)" ++ emit-expr (list-at args 0) arities ++ "[(int)" ++ emit-expr (list-at args 1) arities ++ "])"
-   else if n == "substring" then emit-expr (list-at args 0) arities ++ ".Substring((int)" ++ emit-expr (list-at args 1) arities ++ ", (int)" ++ emit-expr (list-at args 2) arities ++ ")"
-   else if n == "list-at" then emit-expr (list-at args 0) arities ++ "[(int)" ++ emit-expr (list-at args 1) arities ++ "]"
-   else if n == "list-insert-at" then let elem-ty = when ir-expr-type (list-at args 0) if ListTy (et) -> et if _ -> ErrorTy in "((Func<List<" ++ cs-type elem-ty ++ ">>)(() => { var _l = new List<" ++ cs-type elem-ty ++ ">(" ++ emit-expr (list-at args 0) arities ++ "); _l.Insert((int)" ++ emit-expr (list-at args 1) arities ++ ", " ++ emit-expr (list-at args 2) arities ++ "); return _l; }))()"
-   else if n == "list-snoc" then let elem-ty = when ir-expr-type (list-at args 0) if ListTy (et) -> et if _ -> ErrorTy in "((Func<List<" ++ cs-type elem-ty ++ ">>)(() => { var _l = " ++ emit-expr (list-at args 0) arities ++ "; _l.Add(" ++ emit-expr (list-at args 1) arities ++ "); return _l; }))()"
-   else if n == "text-compare" then "(long)string.CompareOrdinal(" ++ emit-expr (list-at args 0) arities ++ ", " ++ emit-expr (list-at args 1) arities ++ ")"
-   else if n == "text-replace" then emit-expr (list-at args 0) arities ++ ".Replace(" ++ emit-expr (list-at args 1) arities ++ ", " ++ emit-expr (list-at args 2) arities ++ ")"
+   else if n == "char-at" then emit-builtin-char-at args arities
+   else if n == "substring" then emit-builtin-substring args arities
+   else if n == "list-at" then emit-builtin-list-at args arities
+   else if n == "list-insert-at" then emit-builtin-list-insert-at args arities
+   else if n == "list-snoc" then emit-builtin-list-snoc args arities
+   else if n == "text-compare" then emit-builtin-text-compare args arities
+   else if n == "text-replace" then emit-builtin-text-replace args arities
    else if n == "open-file" then "File.OpenRead(" ++ emit-expr (list-at args 0) arities ++ ")"
-   else if n == "read-all" then "new System.IO.StreamReader(" ++ emit-expr (list-at args 0) arities ++ ").ReadToEnd()"
+   else if n == "read-all" then emit-builtin-read-all args arities
    else if n == "close-file" then emit-expr (list-at args 0) arities ++ ".Dispose()"
    else if n == "read-line" then "_Cce.FromUnicode(Console.ReadLine() ?? \"\")"
-   else if n == "read-file" then "_Cce.FromUnicode(File.ReadAllText(_Cce.ToUnicode(" ++ emit-expr (list-at args 0) arities ++ ")))"
-   else if n == "write-file" then "File.WriteAllText(_Cce.ToUnicode(" ++ emit-expr (list-at args 0) arities ++ "), _Cce.ToUnicode(" ++ emit-expr (list-at args 1) arities ++ "))"
-   else if n == "file-exists" then "File.Exists(_Cce.ToUnicode(" ++ emit-expr (list-at args 0) arities ++ "))"
-   else if n == "list-files" then "Directory.GetFiles(_Cce.ToUnicode(" ++ emit-expr (list-at args 0) arities ++ "), _Cce.ToUnicode(" ++ emit-expr (list-at args 1) arities ++ ")).Select(_Cce.FromUnicode).ToList()"
+   else if n == "read-file" then emit-builtin-read-file args arities
+   else if n == "write-file" then emit-builtin-write-file args arities
+   else if n == "file-exists" then emit-builtin-file-exists args arities
+   else if n == "list-files" then emit-builtin-list-files args arities
    else if n == "text-concat-list" then "string.Concat(" ++ emit-expr (list-at args 0) arities ++ ")"
-   else if n == "text-split" then "new List<string>(" ++ emit-expr (list-at args 0) arities ++ ".Split(" ++ emit-expr (list-at args 1) arities ++ "))"
-   else if n == "text-contains" then emit-expr (list-at args 0) arities ++ ".Contains(" ++ emit-expr (list-at args 1) arities ++ ")"
-   else if n == "text-starts-with" then emit-expr (list-at args 0) arities ++ ".StartsWith(" ++ emit-expr (list-at args 1) arities ++ ")"
+   else if n == "text-split" then emit-builtin-text-split args arities
+   else if n == "text-contains" then emit-builtin-text-contains args arities
+   else if n == "text-starts-with" then emit-builtin-text-starts-with args arities
    else if n == "get-args" then "Environment.GetCommandLineArgs().Select(_Cce.FromUnicode).ToList()"
-   else if n == "get-env" then "_Cce.FromUnicode(Environment.GetEnvironmentVariable(_Cce.ToUnicode(" ++ emit-expr (list-at args 0) arities ++ ")) ?? \"\")"
-   else if n == "run-process" then "_Cce.FromUnicode(((Func<string>)(() => { var _psi = new System.Diagnostics.ProcessStartInfo(_Cce.ToUnicode(" ++ emit-expr (list-at args 0) arities ++ "), _Cce.ToUnicode(" ++ emit-expr (list-at args 1) arities ++ ")) { RedirectStandardOutput = true, UseShellExecute = false }; var _p = System.Diagnostics.Process.Start(_psi)!; var _o = _p.StandardOutput.ReadToEnd(); _p.WaitForExit(); return _o; }))()"
+   else if n == "get-env" then emit-builtin-get-env args arities
+   else if n == "run-process" then emit-builtin-run-process args arities
    else if n == "current-dir" then "_Cce.FromUnicode(Directory.GetCurrentDirectory())"
    else if n == "fork" then "Task.Run(() => (" ++ emit-expr (list-at args 0) arities ++ ")(null))"
    else if n == "await" then "(" ++ emit-expr (list-at args 0) arities ++ ").Result"
-   else if n == "par" then "Task.WhenAll(" ++ emit-expr (list-at args 1) arities ++ ".Select(_x_ => Task.Run(() => (" ++ emit-expr (list-at args 0) arities ++ ")(_x_)))).Result.ToList()"
-   else if n == "race" then "Task.WhenAny(" ++ emit-expr (list-at args 0) arities ++ ".Select(_t_ => Task.Run(() => _t_(null)))).Result.Result"
+   else if n == "par" then emit-builtin-par args arities
+   else if n == "race" then emit-builtin-race args arities
    else ""
+
+  emit-builtin-show : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-show (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in "_Cce.FromUnicode(Convert.ToString(" ++ a0 ++ "))"
+
+  emit-builtin-print-line : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-print-line (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in "((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(" ++ a0 ++ ")); return null; }))()"
+
+  emit-builtin-is-letter : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-is-letter (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in "(" ++ a0 ++ " >= 13L && " ++ a0 ++ " <= 64L)"
+
+  emit-builtin-is-digit : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-is-digit (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in "(" ++ a0 ++ " >= 3L && " ++ a0 ++ " <= 12L)"
+
+  emit-builtin-text-to-integer : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-text-to-integer (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in "long.Parse(_Cce.ToUnicode(" ++ a0 ++ "))"
+
+  emit-builtin-integer-to-text : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-integer-to-text (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in "_Cce.FromUnicode(" ++ a0 ++ ".ToString())"
+
+  emit-builtin-char-code-at : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-char-code-at (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in let a1 = emit-expr (list-at args 1) arities
+   in "((long)" ++ a0 ++ "[(int)" ++ a1 ++ "])"
+
+  emit-builtin-char-at : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-char-at (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in let a1 = emit-expr (list-at args 1) arities
+   in "((long)" ++ a0 ++ "[(int)" ++ a1 ++ "])"
+
+  emit-builtin-substring : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-substring (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in let a1 = emit-expr (list-at args 1) arities
+   in let a2 = emit-expr (list-at args 2) arities
+   in a0 ++ ".Substring((int)" ++ a1 ++ ", (int)" ++ a2 ++ ")"
+
+  emit-builtin-list-at : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-list-at (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in let a1 = emit-expr (list-at args 1) arities
+   in a0 ++ "[(int)" ++ a1 ++ "]"
+
+  emit-builtin-list-insert-at : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-list-insert-at (args) (arities) =
+   let elem-ty = when ir-expr-type (list-at args 0)
+    if ListTy (et) -> et
+    if _ -> ErrorTy
+   in let ty = cs-type elem-ty
+   in let a0 = emit-expr (list-at args 0) arities
+   in let a1 = emit-expr (list-at args 1) arities
+   in let a2 = emit-expr (list-at args 2) arities
+   in "((Func<List<" ++ ty ++ ">>)(() => { var _l = new List<" ++ ty ++ ">(" ++ a0 ++ "); _l.Insert((int)" ++ a1 ++ ", " ++ a2 ++ "); return _l; }))()"
+
+  emit-builtin-list-snoc : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-list-snoc (args) (arities) =
+   let elem-ty = when ir-expr-type (list-at args 0)
+    if ListTy (et) -> et
+    if _ -> ErrorTy
+   in let ty = cs-type elem-ty
+   in let a0 = emit-expr (list-at args 0) arities
+   in let a1 = emit-expr (list-at args 1) arities
+   in "((Func<List<" ++ ty ++ ">>)(() => { var _l = " ++ a0 ++ "; _l.Add(" ++ a1 ++ "); return _l; }))()"
+
+  emit-builtin-text-compare : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-text-compare (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in let a1 = emit-expr (list-at args 1) arities
+   in "(long)string.CompareOrdinal(" ++ a0 ++ ", " ++ a1 ++ ")"
+
+  emit-builtin-text-replace : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-text-replace (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in let a1 = emit-expr (list-at args 1) arities
+   in let a2 = emit-expr (list-at args 2) arities
+   in a0 ++ ".Replace(" ++ a1 ++ ", " ++ a2 ++ ")"
+
+  emit-builtin-read-all : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-read-all (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in "new System.IO.StreamReader(" ++ a0 ++ ").ReadToEnd()"
+
+  emit-builtin-read-file : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-read-file (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in "_Cce.FromUnicode(File.ReadAllText(_Cce.ToUnicode(" ++ a0 ++ ")))"
+
+  emit-builtin-write-file : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-write-file (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in let a1 = emit-expr (list-at args 1) arities
+   in "File.WriteAllText(_Cce.ToUnicode(" ++ a0 ++ "), _Cce.ToUnicode(" ++ a1 ++ "))"
+
+  emit-builtin-file-exists : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-file-exists (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in "File.Exists(_Cce.ToUnicode(" ++ a0 ++ "))"
+
+  emit-builtin-list-files : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-list-files (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in let a1 = emit-expr (list-at args 1) arities
+   in "Directory.GetFiles(_Cce.ToUnicode(" ++ a0 ++ "), _Cce.ToUnicode(" ++ a1 ++ ")).Select(_Cce.FromUnicode).ToList()"
+
+  emit-builtin-text-split : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-text-split (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in let a1 = emit-expr (list-at args 1) arities
+   in "new List<string>(" ++ a0 ++ ".Split(" ++ a1 ++ "))"
+
+  emit-builtin-text-contains : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-text-contains (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in let a1 = emit-expr (list-at args 1) arities
+   in a0 ++ ".Contains(" ++ a1 ++ ")"
+
+  emit-builtin-text-starts-with : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-text-starts-with (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in let a1 = emit-expr (list-at args 1) arities
+   in a0 ++ ".StartsWith(" ++ a1 ++ ")"
+
+  emit-builtin-get-env : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-get-env (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in "_Cce.FromUnicode(Environment.GetEnvironmentVariable(_Cce.ToUnicode(" ++ a0 ++ ")) ?? \"\")"
+
+  emit-builtin-run-process : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-run-process (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in let a1 = emit-expr (list-at args 1) arities
+   in "_Cce.FromUnicode(((Func<string>)(() => {"
+   ++ " var _psi = new System.Diagnostics.ProcessStartInfo("
+   ++ "_Cce.ToUnicode(" ++ a0 ++ "), _Cce.ToUnicode(" ++ a1 ++ "))"
+   ++ " { RedirectStandardOutput = true, UseShellExecute = false };"
+   ++ " var _p = System.Diagnostics.Process.Start(_psi)!;"
+   ++ " var _o = _p.StandardOutput.ReadToEnd();"
+   ++ " _p.WaitForExit(); return _o; }))()"
+
+  emit-builtin-par : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-par (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in let a1 = emit-expr (list-at args 1) arities
+   in "Task.WhenAll(" ++ a1 ++ ".Select(_x_ => Task.Run(() => (" ++ a0 ++ ")(_x_)))).Result.ToList()"
+
+  emit-builtin-race : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-race (args) (arities) =
+   let a0 = emit-expr (list-at args 0) arities
+   in "Task.WhenAny(" ++ a0 ++ ".Select(_t_ => Task.Run(() => _t_(null)))).Result.Result"
 
   emit-apply : IRExpr -> List ArityEntry -> Text
   emit-apply (e) (arities) =

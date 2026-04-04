@@ -26,14 +26,14 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
         RegisterEffectDefinitions(BuiltinEffects.Load());
     }
 
-    public Map<string, CodexType> CheckModule(Module module)
+    public Map<string, CodexType> CheckChapter(Chapter chapter)
     {
         EnsureBuiltinEffects();
-        RegisterTypeDefinitions(module.TypeDefinitions);
-        RegisterEffectDefinitions(module.EffectDefs);
+        RegisterTypeDefinitions(chapter.TypeDefinitions);
+        RegisterEffectDefinitions(chapter.EffectDefs);
 
         Map<string, CodexType> topLevelTypes = Map<string, CodexType>.s_empty;
-        foreach (Definition def in module.Definitions)
+        foreach (Definition def in chapter.Definitions)
         {
             Map<string, CodexType> savedTypeParams = m_typeParamEnv;
             m_typeParamEnv = Map<string, CodexType>.s_empty;
@@ -51,7 +51,7 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
             m_env = m_env.Bind(def.Name, envType);
         }
 
-        foreach (Definition def in module.Definitions)
+        foreach (Definition def in chapter.Definitions)
         {
             CodexType expectedType = topLevelTypes[def.Name.Value]!;
             CodexType envType = m_env.Lookup(def.Name)!;
@@ -192,13 +192,13 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
 
     public Map<string, string> OperationToEffect => m_operationToEffect;
 
-    public void ImportModule(Module module, Set<string> exportedNames)
+    public void ImportChapter(Chapter chapter, Set<string> exportedNames)
     {
         EnsureBuiltinEffects();
-        RegisterTypeDefinitions(module.TypeDefinitions);
-        RegisterEffectDefinitions(module.EffectDefs);
+        RegisterTypeDefinitions(chapter.TypeDefinitions);
+        RegisterEffectDefinitions(chapter.EffectDefs);
 
-        foreach (Definition def in module.Definitions)
+        foreach (Definition def in chapter.Definitions)
         {
             if (!exportedNames.Contains(def.Name.Value))
                 continue;

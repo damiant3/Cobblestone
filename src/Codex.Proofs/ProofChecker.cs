@@ -13,11 +13,11 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
     Map<string, CodexType> m_typeMap = Map<string, CodexType>.s_empty;
     string? m_currentProofName;
 
-    public void CheckModule(Module module, Map<string, CodexType> typeMap)
+    public void CheckChapter(Chapter chapter, Map<string, CodexType> typeMap)
     {
         m_typeMap = typeMap;
-        RegisterClaims(module.Claims);
-        foreach (ProofDef proof in module.Proofs)
+        RegisterClaims(chapter.Claims);
+        foreach (ProofDef proof in chapter.Proofs)
         {
             CheckProof(proof);
         }

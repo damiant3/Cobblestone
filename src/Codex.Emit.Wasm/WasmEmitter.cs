@@ -6,7 +6,7 @@ public sealed class WasmEmitter : IAssemblyEmitter
 {
     public string TargetName => "Wasm";
 
-    public byte[] EmitAssembly(IRModule module, string assemblyName)
+    public byte[] EmitAssembly(IRChapter module, string assemblyName)
     {
         WasmModuleBuilder builder = new();
         builder.EmitModule(module);

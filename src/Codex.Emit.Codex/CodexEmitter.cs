@@ -14,24 +14,44 @@ public sealed class CodexEmitter : ICodeEmitter
     public string TargetName => "Codex";
     public string FileExtension => ".codex";
 
-    public string Emit(IRModule module)
+    public string Emit(IRChapter module)
     {
         m_constructorNames = CollectConstructorNames(module);
         StringBuilder sb = new();
 
-        foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
+        if (!module.Sections.IsDefault && module.Sections.Length > 0)
         {
-            EmitTypeDefinition(sb, kv.Key, kv.Value);
-            sb.AppendLine();
+            foreach (IRChapterSection section in module.Sections)
+            {
+                foreach ((string tdName, CodexType tdType) in section.TypeDefinitions)
+                {
+                    EmitTypeDefinition(sb, tdName, tdType);
+                    sb.AppendLine();
+                }
+
+                foreach (IRDefinition def in section.Definitions)
+                {
+                    EmitDefinition(sb, def);
+                    sb.AppendLine();
+                }
+            }
+        }
+        else
+        {
+            foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
+            {
+                EmitTypeDefinition(sb, kv.Key, kv.Value);
+                sb.AppendLine();
+            }
+
+            foreach (IRDefinition def in module.Definitions)
+            {
+                EmitDefinition(sb, def);
+                sb.AppendLine();
+            }
         }
 
-        foreach (IRDefinition def in module.Definitions)
-        {
-            EmitDefinition(sb, def);
-            sb.AppendLine();
-        }
-
-        return sb.ToString();
+        return sb.ToString().TrimEnd('\r', '\n') + "\n";
     }
 
     // ── Type definitions ─────────────────────────────────────────
@@ -54,7 +74,7 @@ public sealed class CodexEmitter : ICodeEmitter
         sb.AppendLine($"{sum.TypeName.Value} =");
         foreach (SumConstructorType ctor in sum.Constructors)
         {
-            sb.Append($"  | {ctor.Name.Value}");
+            sb.Append($" | {ctor.Name.Value}");
             foreach (CodexType field in ctor.Fields)
             {
                 sb.Append($" ({EmitType(field)})");
@@ -71,7 +91,7 @@ public sealed class CodexEmitter : ICodeEmitter
             if (i > 0) sb.Append(',');
             RecordFieldType field = rec.Fields[i];
             sb.AppendLine();
-            sb.Append($"  {field.FieldName.Value} : {EmitType(field.Type)}");
+            sb.Append($" {field.FieldName.Value} : {EmitType(field.Type)}");
         }
         sb.AppendLine();
         sb.AppendLine("}");
@@ -259,17 +279,7 @@ public sealed class CodexEmitter : ICodeEmitter
 
     void EmitBinary(StringBuilder sb, IRBinary bin, int indent)
     {
-        bool needsParens = bin.Left is IRBinary || bin.Right is IRBinary;
-
-        if (bin.Op == IRBinaryOp.AppendText)
-        {
-            EmitExpr(sb, bin.Left, indent);
-            sb.Append(" ++ ");
-            EmitExpr(sb, bin.Right, indent);
-            return;
-        }
-
-        if (bin.Op == IRBinaryOp.AppendList)
+        if (bin.Op == IRBinaryOp.AppendText || bin.Op == IRBinaryOp.AppendList)
         {
             EmitExpr(sb, bin.Left, indent);
             sb.Append(" ++ ");
@@ -303,25 +313,59 @@ public sealed class CodexEmitter : ICodeEmitter
             _ => "?"
         };
 
-        if (needsParens) sb.Append('(');
+        int outerPrec = BinPrecedence(bin.Op);
+        bool leftNeedsParens = bin.Left is IRBinary lb && BinPrecedence(lb.Op) < outerPrec;
+        bool rightNeedsParens = bin.Right is IRBinary rb && BinPrecedence(rb.Op) <= outerPrec
+            && BinPrecedence(rb.Op) != outerPrec; // same precedence on right is ok for left-assoc
+
+        if (leftNeedsParens) sb.Append('(');
         EmitExpr(sb, bin.Left, indent);
+        if (leftNeedsParens) sb.Append(')');
         sb.Append($" {op} ");
+        if (rightNeedsParens) sb.Append('(');
         EmitExpr(sb, bin.Right, indent);
-        if (needsParens) sb.Append(')');
+        if (rightNeedsParens) sb.Append(')');
     }
+
+    static int BinPrecedence(IRBinaryOp op) => op switch
+    {
+        IRBinaryOp.Or => 1,
+        IRBinaryOp.And => 2,
+        IRBinaryOp.Eq or IRBinaryOp.NotEq => 3,
+        IRBinaryOp.Lt or IRBinaryOp.Gt or IRBinaryOp.LtEq or IRBinaryOp.GtEq => 4,
+        IRBinaryOp.AppendText or IRBinaryOp.AppendList or IRBinaryOp.ConsList => 5,
+        IRBinaryOp.AddInt or IRBinaryOp.AddNum or IRBinaryOp.SubInt or IRBinaryOp.SubNum => 6,
+        IRBinaryOp.MulInt or IRBinaryOp.MulNum or IRBinaryOp.DivInt or IRBinaryOp.DivNum => 7,
+        IRBinaryOp.PowInt => 8,
+        _ => 0
+    };
 
     // ── If/then/else ─────────────────────────────────────────────
 
     void EmitIf(StringBuilder sb, IRIf iff, int indent)
     {
+        // Long flat dispatch chains (>3 branches, all simple thens): emit flat
+        if (CountIfChainDepth(iff) > 3)
+        {
+            EmitIfFlat(sb, iff, indent);
+            return;
+        }
+
+        // Track column where "if" starts — else must align here
+        int ifColumn = GetCurrentColumn(sb);
         sb.Append("if ");
         EmitExpr(sb, iff.Condition, indent);
-        if (IsSimpleExpr(iff.Then) && IsSimpleExpr(iff.Else))
+        if (IsCompactExpr(iff.Then))
         {
             sb.Append(" then ");
             EmitExpr(sb, iff.Then, indent);
-            sb.Append(" else ");
-            EmitExpr(sb, iff.Else, indent);
+            sb.AppendLine();
+            EmitSpaces(sb, ifColumn);
+            sb.Append("else ");
+            if (iff.Else is IRIf elseIf)
+                EmitIf(sb, elseIf, indent);
+            else
+                EmitExpr(sb, iff.Else, indent);
         }
         else
         {
@@ -330,10 +374,53 @@ public sealed class CodexEmitter : ICodeEmitter
             sb.Append("then ");
             EmitExpr(sb, iff.Then, indent + 1);
             sb.AppendLine();
-            EmitIndent(sb, indent + 1);
+            EmitSpaces(sb, ifColumn);
             sb.Append("else ");
-            EmitExpr(sb, iff.Else, indent + 1);
+            if (iff.Else is IRIf elseIf2)
+                EmitIf(sb, elseIf2, indent);
+            else
+                EmitExpr(sb, iff.Else, indent + 1);
         }
+    }
+
+    void EmitIfFlat(StringBuilder sb, IRIf iff, int indent)
+    {
+        sb.Append("if ");
+        EmitExpr(sb, iff.Condition, indent);
+        sb.Append(" then ");
+        EmitExpr(sb, iff.Then, indent);
+        sb.AppendLine();
+        EmitIndent(sb, indent);
+        sb.Append("else ");
+        if (iff.Else is IRIf elseIf)
+            EmitIfFlat(sb, elseIf, indent);
+        else
+            EmitExpr(sb, iff.Else, indent);
+    }
+
+    static int CountIfChainDepth(IRIf iff)
+    {
+        int depth = 1;
+        IRExpr e = iff.Else;
+        while (e is IRIf next) { depth++; e = next.Else; }
+        return depth;
+    }
+
+    static int GetCurrentColumn(StringBuilder sb)
+    {
+        int col = 0;
+        for (int i = sb.Length - 1; i >= 0; i--)
+        {
+            if (sb[i] == '\n') break;
+            col++;
+        }
+        return col;
+    }
+
+    static void EmitSpaces(StringBuilder sb, int count)
+    {
+        for (int i = 0; i < count; i++)
+            sb.Append(' ');
     }
 
     // ── Let ──────────────────────────────────────────────────────
@@ -475,19 +562,36 @@ public sealed class CodexEmitter : ICodeEmitter
 
     void EmitRecord(StringBuilder sb, IRRecord rec, int indent)
     {
-        sb.Append($"{rec.TypeName} {{");
-        for (int i = 0; i < rec.Fields.Length; i++)
+        if (rec.Fields.Length <= 1 || (rec.Fields.Length <= 2 && AllSimpleFields(rec)))
         {
-            if (i > 0) sb.Append(',');
-            sb.Append($" {rec.Fields[i].FieldName} = ");
-            EmitExpr(sb, rec.Fields[i].Value, indent);
+            sb.Append($"{rec.TypeName} {{");
+            for (int i = 0; i < rec.Fields.Length; i++)
+            {
+                if (i > 0) sb.Append(',');
+                sb.Append($" {rec.Fields[i].FieldName} = ");
+                EmitExpr(sb, rec.Fields[i].Value, indent);
+            }
+            sb.Append(" }");
         }
-        sb.Append(" }");
+        else
+        {
+            sb.AppendLine($"{rec.TypeName} {{");
+            for (int i = 0; i < rec.Fields.Length; i++)
+            {
+                EmitIndent(sb, indent + 1);
+                sb.Append($"{rec.Fields[i].FieldName} = ");
+                EmitExpr(sb, rec.Fields[i].Value, indent + 1);
+                if (i < rec.Fields.Length - 1) sb.Append(',');
+                sb.AppendLine();
+            }
+            EmitIndent(sb, indent);
+            sb.Append("}");
+        }
     }
 
     // ── Utilities ────────────────────────────────────────────────
 
-    static Set<string> CollectConstructorNames(IRModule module)
+    static Set<string> CollectConstructorNames(IRChapter module)
     {
         Set<string> names = Set<string>.s_empty;
         foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
@@ -505,10 +609,22 @@ public sealed class CodexEmitter : ICodeEmitter
         IRIntegerLit or IRNumberLit or IRTextLit or IRBoolLit
         or IRCharLit or IRName or IRFieldAccess;
 
+    static bool IsCompactExpr(IRExpr expr) => expr is not
+        (IRIf or IRLet or IRMatch or IRDo or IRRecord);
+
+    static bool AllSimpleFields(IRRecord rec)
+    {
+        foreach (var field in rec.Fields)
+        {
+            if (!IsSimpleExpr(field.Value)) return false;
+        }
+        return true;
+    }
+
     static bool NeedsParens(IRExpr expr, bool isCtor)
     {
         if (expr is IRApply or IRBinary or IRIf or IRLet
-            or IRMatch or IRNegate or IRLambda)
+            or IRMatch or IRNegate or IRLambda or IRFieldAccess)
             return true;
         if (isCtor && expr is IRName { Type: FunctionType })
             return true;
@@ -518,7 +634,7 @@ public sealed class CodexEmitter : ICodeEmitter
     static void EmitIndent(StringBuilder sb, int indent)
     {
         for (int i = 0; i < indent; i++)
-            sb.Append("  ");
+            sb.Append(' ');
     }
 
     static string EscapeString(string value)

@@ -4,10 +4,18 @@ using Codex.Types;
 
 namespace Codex.IR;
 
-public sealed record IRModule(
+public sealed record IRChapter(
     QualifiedName Name,
     ImmutableArray<IRDefinition> Definitions,
-    Map<string, CodexType> TypeDefinitions);
+    Map<string, CodexType> TypeDefinitions)
+{
+    public ImmutableArray<IRChapterSection> Sections { get; init; }
+}
+
+public sealed record IRChapterSection(
+    string Name,
+    ImmutableArray<(string TypeName, CodexType Type)> TypeDefinitions,
+    ImmutableArray<IRDefinition> Definitions);
 
 public sealed record IRDefinition(
     string Name,

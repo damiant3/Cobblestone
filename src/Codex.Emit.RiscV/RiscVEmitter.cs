@@ -14,7 +14,7 @@ public sealed class RiscVEmitter(RiscVTarget target = RiscVTarget.LinuxUser) : I
 
     public string TargetName => m_target == RiscVTarget.BareMetal ? "RiscV-BareMetal" : "RiscV";
 
-    public byte[] EmitAssembly(IRModule module, string assemblyName)
+    public byte[] EmitAssembly(IRChapter module, string assemblyName)
     {
         RiscVCodeGen codeGen = new(m_target);
         codeGen.EmitModule(module);

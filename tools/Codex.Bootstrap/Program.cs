@@ -31,8 +31,10 @@ class Program
         if (args.Length > 0 && args[0] == "--codex-emit")
             return RunCodexEmit(args.Length > 1 ? args[1] : null, args.Length > 2 ? args[2] : null);
 
-        string codexDir = args.Length > 0 ? args[0] : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Codex.Codex"));
-        string? outputOverride = args.Length > 1 ? args[1] : null;
+        bool verbose = args.Contains("--verbose");
+        string[] posArgs = args.Where(a => !a.StartsWith("--")).ToArray();
+        string codexDir = posArgs.Length > 0 ? posArgs[0] : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Codex.Codex"));
+        string? outputOverride = posArgs.Length > 1 ? posArgs[1] : null;
 
         if (!Directory.Exists(codexDir))
         {
@@ -101,62 +103,65 @@ class Program
             Console.WriteLine($"  AST defs: {ast.defs.Count}");
             Console.WriteLine($"  AST type-defs: {ast.type_defs.Count}");
 
-            var checkResult = Codex_Codex_Codex.check_module(ast);
+            var checkResult = Codex_Codex_Codex.check_chapter(ast);
             Console.WriteLine($"  Type bindings: {checkResult.types.Count}");
             Console.WriteLine($"  Unification errors: {checkResult.state.errors.Count}");
 
-            // Dump ALL type bindings to a diagnostics file
-            var diagLines = new List<string>();
-            int errorTyCount = 0;
-            int funcObjectCount = 0;
-            for (int i = 0; i < checkResult.types.Count; i++)
+            if (verbose)
             {
-                var tb = checkResult.types[i];
-                var resolved = Codex_Codex_Codex.deep_resolve(checkResult.state, tb.bound_type);
-                string csType = Codex_Codex_Codex.cs_type(resolved);
-                bool isErrorTy = resolved is ErrorTy;
-                bool hasObject = csType.Contains("object");
-                if (isErrorTy) errorTyCount++;
-                if (hasObject) funcObjectCount++;
-                string marker = isErrorTy ? " [ERRORTY]" : (hasObject ? " [HAS-OBJECT]" : "");
-                diagLines.Add($"{i}: {_Cce.ToUnicode(tb.name)} : {_Cce.ToUnicode(csType)}{marker}");
-            }
-            string diagPath = Path.Combine(codexDir, "type-diag.txt");
-            File.WriteAllLines(diagPath, diagLines);
-            Console.WriteLine($"  ErrorTy bindings: {errorTyCount}");
-            Console.WriteLine($"  Has-object bindings: {funcObjectCount}");
-            Console.WriteLine($"  Type diagnostics written to: {diagPath}");
+                var diagLines = new List<string>();
+                int errorTyCount = 0;
+                int funcObjectCount = 0;
+                for (int i = 0; i < checkResult.types.Count; i++)
+                {
+                    var tb = checkResult.types[i];
+                    var resolved = Codex_Codex_Codex.deep_resolve(checkResult.state, tb.bound_type);
+                    string csType = Codex_Codex_Codex.cs_type(resolved);
+                    bool isErrorTy = resolved is ErrorTy;
+                    bool hasObject = csType.Contains("object");
+                    if (isErrorTy) errorTyCount++;
+                    if (hasObject) funcObjectCount++;
+                    string marker = isErrorTy ? " [ERRORTY]" : (hasObject ? " [HAS-OBJECT]" : "");
+                    diagLines.Add($"{i}: {_Cce.ToUnicode(tb.name)} : {_Cce.ToUnicode(csType)}{marker}");
+                }
+                string diagPath = Path.Combine(codexDir, "type-diag.txt");
+                File.WriteAllLines(diagPath, diagLines);
+                Console.WriteLine($"  ErrorTy bindings: {errorTyCount}");
+                Console.WriteLine($"  Has-object bindings: {funcObjectCount}");
+                Console.WriteLine($"  Type diagnostics written to: {diagPath}");
 
-            string errPath = Path.Combine(codexDir, "unify-errors.txt");
-            var errLines = new List<string>();
-            for (int ei = 0; ei < checkResult.state.errors.Count; ei++)
-            {
-                Diagnostic diag = checkResult.state.errors[ei];
-                errLines.Add($"{ei}: [{_Cce.ToUnicode(diag.code)}] {_Cce.ToUnicode(diag.message)}");
-            }
-            File.WriteAllLines(errPath, errLines);
-            Console.WriteLine($"  Unification error log: {errPath}");
+                string errPath = Path.Combine(codexDir, "unify-errors.txt");
+                var errLines = new List<string>();
+                for (int ei = 0; ei < checkResult.state.errors.Count; ei++)
+                {
+                    Diagnostic diag = checkResult.state.errors[ei];
+                    errLines.Add($"{ei}: [{_Cce.ToUnicode(diag.code)}] {_Cce.ToUnicode(diag.message)}");
+                }
+                File.WriteAllLines(errPath, errLines);
+                Console.WriteLine($"  Unification error log: {errPath}");
 
-            // Show first 20 type bindings
-            for (int i = 0; i < Math.Min(20, checkResult.types.Count); i++)
-            {
-                var tb = checkResult.types[i];
-                var resolved = Codex_Codex_Codex.deep_resolve(checkResult.state, tb.bound_type);
-                Console.WriteLine($"    {tb.name} : {Codex_Codex_Codex.cs_type(resolved)}");
+                for (int i = 0; i < Math.Min(20, checkResult.types.Count); i++)
+                {
+                    var tb = checkResult.types[i];
+                    var resolved = Codex_Codex_Codex.deep_resolve(checkResult.state, tb.bound_type);
+                    Console.WriteLine($"    {tb.name} : {Codex_Codex_Codex.cs_type(resolved)}");
+                }
             }
 
-            var ir = Codex_Codex_Codex.lower_module(ast, checkResult.types, checkResult.state);
+            var ir = Codex_Codex_Codex.lower_chapter(ast, checkResult.types, checkResult.state);
             Console.WriteLine($"  IR defs: {ir.defs.Count}");
 
-            // Show first 10 IR def signatures
-            for (int j = 0; j < Math.Min(10, ir.defs.Count); j++)
+            if (verbose)
             {
-                var d = ir.defs[j];
-                var paramStr = string.Join(", ", d.@params.Select(p => $"{Codex_Codex_Codex.cs_type(p.type_val)} {p.name}"));
-                Console.WriteLine($"    {d.name}({paramStr}) : {Codex_Codex_Codex.cs_type(d.type_val)}");
+                for (int j = 0; j < Math.Min(10, ir.defs.Count); j++)
+                {
+                    var d = ir.defs[j];
+                    var paramStr = string.Join(", ", d.@params.Select(p => $"{Codex_Codex_Codex.cs_type(p.type_val)} {p.name}"));
+                    Console.WriteLine($"    {d.name}({paramStr}) : {Codex_Codex_Codex.cs_type(d.type_val)}");
+                }
             }
 
-            string cceOutput = Codex_Codex_Codex.csharp_emitter_emit_full_module(ir, ast.type_defs);
+            string cceOutput = Codex_Codex_Codex.csharp_emitter_emit_full_chapter(ir, ast.type_defs);
             // Convert emitted C# source from CCE back to Unicode for .NET compiler
             string output = _Cce.ToUnicode(cceOutput);
             string outputPath = outputOverride ?? Path.Combine(Path.GetFullPath(Path.Combine(codexDir, "..")), "build-output", "stage1-output.cs");
@@ -313,11 +318,11 @@ class Program
             List<Token> tokens = Codex_Codex_Codex.tokenize(cceSource);
             ParseState st = Codex_Codex_Codex.make_parse_state(tokens);
             Document doc = Codex_Codex_Codex.parse_document(st);
-            AModule ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("MiniTest"));
+            AChapter ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("MiniTest"));
 
             Console.WriteLine($"  Defs: {ast.defs.Count}, TypeDefs: {ast.type_defs.Count}");
 
-            ModuleResult checkResult = Codex_Codex_Codex.check_module(ast);
+            ChapterResult checkResult = Codex_Codex_Codex.check_chapter(ast);
             Console.WriteLine($"  Type bindings: {checkResult.types.Count}");
             Console.WriteLine($"  Unification errors: {checkResult.state.errors.Count}");
 
@@ -336,8 +341,8 @@ class Program
                 Console.WriteLine($"  ERR {ei}: [{diag.code}] {diag.message}");
             }
 
-            IRModule ir = Codex_Codex_Codex.lower_module(ast, checkResult.types, checkResult.state);
-            string output = Codex_Codex_Codex.csharp_emitter_emit_full_module(ir, ast.type_defs);
+            IRChapter ir = Codex_Codex_Codex.lower_chapter(ast, checkResult.types, checkResult.state);
+            string output = Codex_Codex_Codex.csharp_emitter_emit_full_chapter(ir, ast.type_defs);
 
             string outPath = Path.ChangeExtension(filePath, ".g.cs");
             File.WriteAllText(outPath, output);
@@ -452,19 +457,19 @@ class Program
         sw.Stop(); desugarMs = sw.Elapsed.TotalMilliseconds;
 
         sw.Restart();
-        var resolved = Codex_Codex_Codex.resolve_module(ast);
+        var resolved = Codex_Codex_Codex.resolve_chapter(ast);
         sw.Stop(); resolveMs = sw.Elapsed.TotalMilliseconds;
 
         sw.Restart();
-        var checkResult = Codex_Codex_Codex.check_module(ast);
+        var checkResult = Codex_Codex_Codex.check_chapter(ast);
         sw.Stop(); checkMs = sw.Elapsed.TotalMilliseconds;
 
         sw.Restart();
-        var ir = Codex_Codex_Codex.lower_module(ast, checkResult.types, checkResult.state);
+        var ir = Codex_Codex_Codex.lower_chapter(ast, checkResult.types, checkResult.state);
         sw.Stop(); lowerMs = sw.Elapsed.TotalMilliseconds;
 
         sw.Restart();
-        var output = Codex_Codex_Codex.csharp_emitter_emit_full_module(ir, ast.type_defs);
+        var output = Codex_Codex_Codex.csharp_emitter_emit_full_chapter(ir, ast.type_defs);
         sw.Stop(); emitMs = sw.Elapsed.TotalMilliseconds;
 
         total.Stop(); totalMs = total.Elapsed.TotalMilliseconds;
@@ -758,14 +763,14 @@ class Program
         var ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("Codex_Codex"));
         Console.Error.WriteLine($"  Defs: {ast.defs.Count}, TypeDefs: {ast.type_defs.Count}");
 
-        var checkResult = Codex_Codex_Codex.check_module(ast);
+        var checkResult = Codex_Codex_Codex.check_chapter(ast);
         Console.Error.WriteLine($"  Type bindings: {checkResult.types.Count}");
         Console.Error.WriteLine($"  Unification errors: {checkResult.state.errors.Count}");
 
-        var ir = Codex_Codex_Codex.lower_module(ast, checkResult.types, checkResult.state);
+        var ir = Codex_Codex_Codex.lower_chapter(ast, checkResult.types, checkResult.state);
         Console.Error.WriteLine($"  IR defs: {ir.defs.Count}");
 
-        string cceOutput = Codex_Codex_Codex.codex_emitter_emit_full_module(ir, ast.type_defs);
+        string cceOutput = Codex_Codex_Codex.codex_emitter_emit_full_chapter(ir, ast.type_defs);
         string output = _Cce.ToUnicode(cceOutput);
 
         string dest = outputPath ?? Path.Combine(Path.GetFullPath(Path.Combine(codexDir, "..")), "build-output", "stage1-codex.codex");

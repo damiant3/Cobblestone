@@ -10,7 +10,7 @@ namespace Codex.Emit.IL;
 
 sealed partial class ILAssemblyBuilder
 {
-    void EmitTypeDefinitions(IRModule module)
+    void EmitTypeDefinitions(IRChapter module)
     {
         foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
         {

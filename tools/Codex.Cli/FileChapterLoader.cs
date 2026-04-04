@@ -5,24 +5,24 @@ using Codex.Syntax;
 
 namespace Codex.Cli;
 
-sealed class FileModuleLoader(string baseDirectory, DiagnosticBag diagnostics) : IModuleLoader
+sealed class FileChapterLoader(string baseDirectory, DiagnosticBag diagnostics) : IChapterLoader
 {
     readonly string m_baseDirectory = baseDirectory;
     readonly DiagnosticBag m_diagnostics = diagnostics;
-    Map<string, ResolvedModule> m_cache = Map<string, ResolvedModule>.s_empty;
+    Map<string, ResolvedChapter> m_cache = Map<string, ResolvedChapter>.s_empty;
 
-    public ResolvedModule? Load(string moduleName)
+    public ResolvedChapter? Load(string chapterName)
     {
-        ResolvedModule? cached = m_cache[moduleName];
+        ResolvedChapter? cached = m_cache[chapterName];
         if (cached is not null)
             return cached;
 
-        string filePath = Path.Combine(m_baseDirectory, moduleName + ".codex");
+        string filePath = Path.Combine(m_baseDirectory, chapterName + ".codex");
         if (!File.Exists(filePath))
         {
             // Try lowercase
             filePath = Path.Combine(m_baseDirectory,
-                moduleName.ToLowerInvariant() + ".codex");
+                chapterName.ToLowerInvariant() + ".codex");
             if (!File.Exists(filePath))
                 return null;
         }
@@ -49,19 +49,19 @@ sealed class FileModuleLoader(string baseDirectory, DiagnosticBag diagnostics) :
             return null;
 
         Desugarer desugarer = new(compileDiag);
-        Module module = desugarer.Desugar(document, moduleName);
+        Chapter chapter = desugarer.Desugar(document, chapterName);
         if (compileDiag.HasErrors)
             return null;
 
-        // Use a fresh FileModuleLoader for transitive imports from the same directory
-        FileModuleLoader transitiveLoader = new(
+        // Use a fresh FileChapterLoader for transitive imports from the same directory
+        FileChapterLoader transitiveLoader = new(
             Path.GetDirectoryName(filePath) ?? m_baseDirectory, compileDiag);
         NameResolver resolver = new(compileDiag, transitiveLoader);
-        ResolvedModule resolved = resolver.Resolve(module);
+        ResolvedChapter resolved = resolver.Resolve(chapter);
         if (compileDiag.HasErrors)
             return null;
 
-        m_cache = m_cache.Set(moduleName, resolved);
+        m_cache = m_cache.Set(chapterName, resolved);
         return resolved;
     }
 }

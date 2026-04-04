@@ -80,7 +80,7 @@ public static partial class Program
 
     static int RunIncrementalBuild(
         string directory, string target, string[] allFiles, string outputPath,
-        IReadOnlyList<Codex.Semantics.IModuleLoader>? extraLoaders = null)
+        IReadOnlyList<Codex.Semantics.IChapterLoader>? extraLoaders = null)
     {
         Stopwatch sw = Stopwatch.StartNew();
         BuildManifest manifest = LoadManifest(directory);
@@ -145,14 +145,14 @@ public static partial class Program
             allEffectDefs.AddRange(r.EffectDefs);
         }
 
-        string moduleName = Path.GetFileNameWithoutExtension(
+        string chapterName = Path.GetFileNameWithoutExtension(
             Path.GetFileName(outputPath).Replace(Path.GetExtension(outputPath), ""));
 
         SourceSpan combinedSpan = allDefinitions.Count > 0
             ? allDefinitions[0].Span
             : SourceSpan.Single(0, 1, 1, "<combined>");
-        Module combined = new(
-            QualifiedName.Simple(moduleName),
+        Chapter combined = new(
+            QualifiedName.Simple(chapterName),
             allDefinitions,
             allTypeDefinitions,
             allClaims,
@@ -168,7 +168,7 @@ public static partial class Program
         if (irResult is null) return 1;
 
         Codex.Emit.ICodeEmitter emitter = CreateEmitter(target);
-        string output = emitter.Emit(irResult.Module);
+        string output = emitter.Emit(irResult.Chapter);
         File.WriteAllText(outputPath, output);
 
         BuildManifest newManifest = new()
@@ -195,8 +195,8 @@ public static partial class Program
     }
 
     static int RunParallelMultiTargetBuild(
-        string directory, string[] targets, string[] allFiles, string outputDir, string moduleName,
-        IReadOnlyList<Codex.Semantics.IModuleLoader>? extraLoaders = null)
+        string directory, string[] targets, string[] allFiles, string outputDir, string chapterName,
+        IReadOnlyList<Codex.Semantics.IChapterLoader>? extraLoaders = null)
     {
         Stopwatch sw = Stopwatch.StartNew();
 
@@ -241,8 +241,8 @@ public static partial class Program
         SourceSpan combinedSpan = allDefinitions.Count > 0
             ? allDefinitions[0].Span
             : SourceSpan.Single(0, 1, 1, "<combined>");
-        Module combined = new(
-            QualifiedName.Simple(moduleName),
+        Chapter combined = new(
+            QualifiedName.Simple(chapterName),
             allDefinitions,
             allTypeDefinitions,
             allClaims,
@@ -260,8 +260,8 @@ public static partial class Program
         Parallel.ForEach(targets, target =>
         {
             Codex.Emit.ICodeEmitter emitter = CreateEmitter(target);
-            string output = emitter.Emit(irResult.Module);
-            string outputPath = Path.Combine(outputDir, moduleName + emitter.FileExtension);
+            string output = emitter.Emit(irResult.Chapter);
+            string outputPath = Path.Combine(outputDir, chapterName + emitter.FileExtension);
             File.WriteAllText(outputPath, output);
             emitResults.Add($"  ✓ {outputPath} ({target})");
         });
@@ -285,7 +285,7 @@ public static partial class Program
 
         Desugarer desugarer = new(localDiag);
         string fileModule = Path.GetFileNameWithoutExtension(filePath);
-        Module module = desugarer.Desugar(document, fileModule);
+        Chapter chapter = desugarer.Desugar(document, fileModule);
 
         foreach (Diagnostic d in localDiag.ToImmutable())
             diagnostics.Add(d);
@@ -295,60 +295,60 @@ public static partial class Program
         return new PerFileFrontEndResult
         {
             FilePath = filePath,
-            Definitions = module.Definitions.ToList(),
-            TypeDefinitions = module.TypeDefinitions.ToList(),
-            Claims = module.Claims.ToList(),
-            Proofs = module.Proofs.ToList(),
-            Imports = module.Imports.ToList(),
-            Exports = module.Exports.ToList(),
-            EffectDefs = module.EffectDefs.ToList()
+            Definitions = chapter.Definitions.ToList(),
+            TypeDefinitions = chapter.TypeDefinitions.ToList(),
+            Claims = chapter.Claims.ToList(),
+            Proofs = chapter.Proofs.ToList(),
+            Imports = chapter.Imports.ToList(),
+            Exports = chapter.Exports.ToList(),
+            EffectDefs = chapter.EffectDefs.ToList()
         };
     }
 
     static IRCompilationResult? RunBackEnd(
-        Module combined, DiagnosticBag diagnostics, IReadOnlyList<Codex.Semantics.IModuleLoader>? extraLoaders = null)
+        Chapter combined, DiagnosticBag diagnostics, IReadOnlyList<Codex.Semantics.IChapterLoader>? extraLoaders = null)
     {
-        List<Codex.Semantics.IModuleLoader> loaders = [];
+        List<Codex.Semantics.IChapterLoader> loaders = [];
         if (extraLoaders is not null)
         {
-            foreach (Codex.Semantics.IModuleLoader loader in extraLoaders)
+            foreach (Codex.Semantics.IChapterLoader loader in extraLoaders)
                 loaders.Add(loader);
         }
-        PreludeModuleLoader? prelude = PreludeModuleLoader.TryCreate(diagnostics);
+        PreludeChapterLoader? prelude = PreludeChapterLoader.TryCreate(diagnostics);
         if (prelude is not null)
             loaders.Add(prelude);
         Codex.Repository.FactStore? store =
             Codex.Repository.FactStore.Open(Directory.GetCurrentDirectory());
         if (store is not null)
-            loaders.Add(new RepositoryModuleLoader(store, diagnostics));
+            loaders.Add(new RepositoryChapterLoader(store, diagnostics));
 
-        Codex.Semantics.IModuleLoader? compositeLoader = loaders.Count > 0
-            ? new CompositeModuleLoader([.. loaders])
+        Codex.Semantics.IChapterLoader? compositeLoader = loaders.Count > 0
+            ? new CompositeChapterLoader([.. loaders])
             : null;
         Codex.Semantics.NameResolver resolver = compositeLoader is not null
             ? new(diagnostics, compositeLoader)
             : new(diagnostics);
-        Codex.Semantics.ResolvedModule resolved = resolver.Resolve(combined);
+        Codex.Semantics.ResolvedChapter resolved = resolver.Resolve(combined);
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         Codex.Types.TypeChecker checker = new(diagnostics);
 
-        foreach (Codex.Semantics.ResolvedModule imported in resolved.ImportedModules)
-            checker.ImportModule(imported.Module, imported.ExportedNames);
+        foreach (Codex.Semantics.ResolvedChapter imported in resolved.ImportedChapters)
+            checker.ImportChapter(imported.Chapter, imported.ExportedNames);
 
-        Map<string, CodexType> types = checker.CheckModule(resolved.Module);
+        Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         Codex.Types.LinearityChecker linearityChecker = new(diagnostics, types);
-        linearityChecker.CheckModule(resolved.Module);
+        linearityChecker.CheckChapter(resolved.Chapter);
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         Codex.Proofs.ProofChecker proofChecker = new(diagnostics);
-        proofChecker.CheckModule(resolved.Module, types);
+        proofChecker.CheckChapter(resolved.Chapter, types);
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         Codex.IR.Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, diagnostics);
-        Codex.IR.IRModule irModule = lowering.Lower(resolved.Module);
+        Codex.IR.IRChapter irModule = lowering.Lower(resolved.Chapter);
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         return new IRCompilationResult(irModule, types);

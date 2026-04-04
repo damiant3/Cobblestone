@@ -93,10 +93,10 @@ public class CorpusEmissionTests
         if (RequiresModuleLoader(source))
             return; // Multi-file samples need a module loader; skip in single-file tests
 
-        string moduleName = Path.GetFileNameWithoutExtension(sampleFile).Replace("-", "_");
+        string chapterName = Path.GetFileNameWithoutExtension(sampleFile).Replace("-", "_");
 
         ICodeEmitter emitter = s_emitters.First(e => e.TargetName == targetName);
-        string? output = Helpers.CompileToTarget(source, moduleName, emitter);
+        string? output = Helpers.CompileToTarget(source, chapterName, emitter);
 
         Assert.True(output is not null,
             $"Failed to compile {sampleFile} to {targetName}");
@@ -104,7 +104,7 @@ public class CorpusEmissionTests
             $"Empty output for {sampleFile} to {targetName}");
     }
 
-    [Fact]
+    [Fact(Skip = "On-demand only — Sample_compiles_to_backend covers the same compilation checks")]
     public void Emit_full_corpus_to_generated_output()
     {
         string[] sampleFiles = Directory.GetFiles(s_samplesDir, "*.codex").OrderBy(f => f).ToArray();
@@ -118,13 +118,13 @@ public class CorpusEmissionTests
             foreach (string filePath in sampleFiles)
             {
                 string sampleName = Path.GetFileNameWithoutExtension(filePath);
-                string moduleName = sampleName.Replace("-", "_");
+                string chapterName = sampleName.Replace("-", "_");
                 string source = File.ReadAllText(filePath);
 
                 if (RequiresModuleLoader(source))
                     continue; // Multi-file samples need a module loader; skip in single-file tests
 
-                string? output = Helpers.CompileToTarget(source, moduleName, emitter);
+                string? output = Helpers.CompileToTarget(source, chapterName, emitter);
                 if (output is null)
                 {
                     failures.Add($"{sampleName} → {emitter.TargetName}");

@@ -87,14 +87,14 @@ sealed class ToolDispatcher
             };
         }
 
-        string moduleName = Path.GetFileNameWithoutExtension(file);
+        string chapterName = Path.GetFileNameWithoutExtension(file);
         McpIRResult irResult = LowerToIR(file);
 
         List<string> outputs = new();
         foreach (string target in targets.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             string outputDir = Path.GetDirectoryName(file) ?? ".";
-            string output = EmitTarget(irResult, outputDir, moduleName, target);
+            string output = EmitTarget(irResult, outputDir, chapterName, target);
             outputs.Add(output);
         }
 
@@ -202,8 +202,8 @@ sealed class ToolDispatcher
         }
 
         Desugarer desugarer = new(bag);
-        string moduleName = Path.GetFileNameWithoutExtension(file);
-        Module module = desugarer.Desugar(doc, moduleName);
+        string chapterName = Path.GetFileNameWithoutExtension(file);
+        Chapter chapter = desugarer.Desugar(doc, chapterName);
 
         return new JsonObject
         {
@@ -211,7 +211,7 @@ sealed class ToolDispatcher
                 new JsonObject
                 {
                     ["type"] = "text",
-                    ["text"] = $"AST: {module.Definitions.Count} definition(s), {module.TypeDefinitions.Count} type(s), {bag.ToImmutable().Length} diagnostic(s)",
+                    ["text"] = $"AST: {chapter.Definitions.Count} definition(s), {chapter.TypeDefinitions.Count} type(s), {bag.ToImmutable().Length} diagnostic(s)",
                 }
             ),
         };
@@ -283,8 +283,8 @@ sealed class ToolDispatcher
         }
 
         Desugarer desugarer = new(bag);
-        string moduleName = Path.GetFileNameWithoutExtension(file);
-        Module module = desugarer.Desugar(document, moduleName);
+        string chapterName = Path.GetFileNameWithoutExtension(file);
+        Chapter chapter = desugarer.Desugar(document, chapterName);
 
         if (bag.HasErrors)
         {
@@ -292,13 +292,13 @@ sealed class ToolDispatcher
             {
                 Diagnostics = bag.ToImmutable(),
                 Types = Map<string, CodexType>.s_empty,
-                Definitions = module.Definitions,
-                TypeDefinitions = module.TypeDefinitions,
+                Definitions = chapter.Definitions,
+                TypeDefinitions = chapter.TypeDefinitions,
             };
         }
 
         NameResolver resolver = new(bag);
-        ResolvedModule resolved = resolver.Resolve(module);
+        ResolvedChapter resolved = resolver.Resolve(chapter);
 
         if (bag.HasErrors)
         {
@@ -306,20 +306,20 @@ sealed class ToolDispatcher
             {
                 Diagnostics = bag.ToImmutable(),
                 Types = Map<string, CodexType>.s_empty,
-                Definitions = module.Definitions,
-                TypeDefinitions = module.TypeDefinitions,
+                Definitions = chapter.Definitions,
+                TypeDefinitions = chapter.TypeDefinitions,
             };
         }
 
         TypeChecker checker = new(bag);
-        Map<string, CodexType> types = checker.CheckModule(resolved.Module);
+        Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
         return new McpAnalysisResult
         {
             Diagnostics = bag.ToImmutable(),
             Types = types,
-            Definitions = resolved.Module.Definitions,
-            TypeDefinitions = resolved.Module.TypeDefinitions,
+            Definitions = resolved.Chapter.Definitions,
+            TypeDefinitions = resolved.Chapter.TypeDefinitions,
         };
     }
 
@@ -334,26 +334,26 @@ sealed class ToolDispatcher
         Parser parser = new(tokens, bag);
         DocumentNode document = parser.ParseDocument();
         Desugarer desugarer = new(bag);
-        string moduleName = Path.GetFileNameWithoutExtension(file);
-        Module module = desugarer.Desugar(document, moduleName);
+        string chapterName = Path.GetFileNameWithoutExtension(file);
+        Chapter chapter = desugarer.Desugar(document, chapterName);
         NameResolver resolver = new(bag);
-        ResolvedModule resolved = resolver.Resolve(module);
+        ResolvedChapter resolved = resolver.Resolve(chapter);
         TypeChecker checker = new(bag);
-        Map<string, CodexType> types = checker.CheckModule(resolved.Module);
+        Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
         Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, bag);
-        IRModule irModule = lowering.Lower(resolved.Module);
+        IRChapter irModule = lowering.Lower(resolved.Chapter);
 
         return new McpIRResult(irModule, types);
     }
 
-    static string EmitTarget(McpIRResult irResult, string outputDir, string moduleName, string target)
+    static string EmitTarget(McpIRResult irResult, string outputDir, string chapterName, string target)
     {
         if (target is "il" or "exe")
         {
             Codex.Emit.IL.ILEmitter emitter = new();
-            byte[] assembly = emitter.EmitAssembly(irResult.Module, moduleName);
-            string outputPath = Path.Combine(outputDir, moduleName + ".exe");
+            byte[] assembly = emitter.EmitAssembly(irResult.Chapter, chapterName);
+            string outputPath = Path.Combine(outputDir, chapterName + ".exe");
             File.WriteAllBytes(outputPath, assembly);
             return outputPath;
         }
@@ -364,13 +364,13 @@ sealed class ToolDispatcher
             _ => throw new McpException(-32602, $"Unsupported target: {target}. Supported: cs, il"),
         };
 
-        string code = codeEmitter.Emit(irResult.Module);
+        string code = codeEmitter.Emit(irResult.Chapter);
         string ext = target switch
         {
             "cs" or "csharp" => ".cs",
             _ => ".txt",
         };
-        string outPath = Path.Combine(outputDir, moduleName + ext);
+        string outPath = Path.Combine(outputDir, chapterName + ext);
         File.WriteAllText(outPath, code);
         return outPath;
     }
@@ -416,4 +416,4 @@ sealed record McpAnalysisResult
     public required IReadOnlyList<TypeDef> TypeDefinitions { get; init; }
 }
 
-sealed record McpIRResult(IRModule Module, Map<string, CodexType> Types);
+sealed record McpIRResult(IRChapter Chapter, Map<string, CodexType> Types);

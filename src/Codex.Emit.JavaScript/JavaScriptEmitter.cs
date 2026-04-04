@@ -14,7 +14,7 @@ public sealed class JavaScriptEmitter : ICodeEmitter
     public string TargetName => "JavaScript";
     public string FileExtension => ".js";
 
-    public string Emit(IRModule module)
+    public string Emit(IRChapter module)
     {
         m_constructorNames = CollectConstructorNames(module);
         m_definitionArity = ValueMap<string, int>.s_empty;
@@ -56,7 +56,7 @@ public sealed class JavaScriptEmitter : ICodeEmitter
         return sb.ToString();
     }
 
-    static void EmitTypeDefinitions(StringBuilder sb, IRModule module)
+    static void EmitTypeDefinitions(StringBuilder sb, IRChapter module)
     {
         foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
         {
@@ -831,7 +831,7 @@ public sealed class JavaScriptEmitter : ICodeEmitter
         }
     }
 
-    static Set<string> CollectConstructorNames(IRModule module)
+    static Set<string> CollectConstructorNames(IRChapter module)
     {
         Set<string> names = Set<string>.s_empty;
         foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)

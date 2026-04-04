@@ -6,5 +6,5 @@ public interface IAssemblyEmitter
 {
     string TargetName { get; }
 
-    byte[] EmitAssembly(IRModule module, string assemblyName);
+    byte[] EmitAssembly(IRChapter module, string assemblyName);
 }

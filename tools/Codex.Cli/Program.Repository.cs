@@ -90,11 +90,11 @@ public static partial class Program
         }
 
         string source = File.ReadAllText(filePath);
-        string moduleName = Path.GetFileNameWithoutExtension(filePath);
+        string chapterName = Path.GetFileNameWithoutExtension(filePath);
         string author = Environment.UserName;
         string justification = args.Length > 1 ? args[1] : "Published from CLI";
 
-        ContentHash? existing = store.LookupView(moduleName);
+        ContentHash? existing = store.LookupView(chapterName);
 
         Fact fact = Fact.CreateDefinition(source, author, justification);
         ContentHash hash = store.Store(fact);
@@ -102,13 +102,13 @@ public static partial class Program
         if (existing is not null && !existing.Value.Equals(hash))
         {
             Fact supersession = Fact.CreateSupersession(hash, existing.Value, author,
-                $"Updated {moduleName}");
+                $"Updated {chapterName}");
             store.Store(supersession);
         }
 
-        store.UpdateView(moduleName, hash);
+        store.UpdateView(chapterName, hash);
 
-        Console.WriteLine($"✓ Published {moduleName} ({hash})");
+        Console.WriteLine($"✓ Published {chapterName} ({hash})");
         foreach (KeyValuePair<string, CodexType> kv in result.Types)
         {
             Console.WriteLine($"  {kv.Key} : {kv.Value}");

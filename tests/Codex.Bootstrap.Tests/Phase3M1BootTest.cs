@@ -25,7 +25,7 @@ public class Phase3M1BootTest
             new List<IRParam>(),
             new IntegerTy(),
             new IrIntLit(42));
-        var module = new IRModule(
+        var module = new IRChapter(
             new Name("\u000e\u000d\u0013\u000e"),
             new List<IRDef> { mainDef });
 
@@ -65,7 +65,7 @@ public class Phase3M1BootTest
             new List<IRParam>(),
             new IntegerTy(),
             new IrIntLit(42));
-        var module = new IRModule(
+        var module = new IRChapter(
             new Name("\u000e\u000d\u0013\u000e"),
             new List<IRDef> { mainDef });
 
@@ -135,7 +135,7 @@ public class Phase3M1BootTest
             new IrLet("y", new IntegerTy(), new IrIntLit(20),
                 new IrBinary(new IrAddInt(), new IrName("x", new IntegerTy()), new IrName("y", new IntegerTy()), new IntegerTy())));
 
-        var module = new IRModule(
+        var module = new IRChapter(
             new Name("\u000e\u000d\u0013\u000e"),
             new List<IRDef> { new IRDef("\u001a\u000f\u0011\u0012", new List<IRParam>(), new IntegerTy(), body) });
 
@@ -170,7 +170,7 @@ public class Phase3M1BootTest
             new IrIntLit(0),
             new IntegerTy());
 
-        var module = new IRModule(
+        var module = new IRChapter(
             new Name("\u000e\u000d\u0013\u000e"),
             new List<IRDef> { new IRDef("\u001a\u000f\u0011\u0012", new List<IRParam>(), new IntegerTy(), body) });
 
@@ -235,7 +235,7 @@ public class Phase3M1BootTest
             new IntegerTy(),
             mainBody);
 
-        var module = new IRModule(
+        var module = new IRChapter(
             new Name("\u000e\u000d\u0013\u000e"),
             new List<IRDef> { factDef, mainDef });
 
@@ -282,7 +282,7 @@ public class Phase3M1BootTest
                 new IrFieldAccess(new IrName("p", pointType), "y", new IntegerTy()),
                 new IntegerTy()));
 
-        var module = new IRModule(
+        var module = new IRChapter(
             new Name("\u000e\u000d\u0013\u000e"),
             new List<IRDef> { new IRDef("\u001a\u000f\u0011\u0012", new List<IRParam>(), new IntegerTy(), body) });
 
@@ -351,7 +351,7 @@ public class Phase3M1BootTest
             new IntegerTy(),
             mainBody);
 
-        var module = new IRModule(
+        var module = new IRChapter(
             new Name("\u000e\u000d\u0013\u000e"),
             new List<IRDef> { unwrapDef, mainDef });
 
@@ -389,7 +389,7 @@ public class Phase3M1BootTest
             new IrList(new List<IRExpr> { new IrIntLit(10), new IrIntLit(20), new IrIntLit(30) }, new IntegerTy()),
             new IrFieldAccess(new IrName("l", listTy), "count", new IntegerTy()));
 
-        var module = new IRModule(
+        var module = new IRChapter(
             new Name("\u000e\u000d\u0013\u000e"),
             new List<IRDef> { new IRDef("\u001a\u000f\u0011\u0012", new List<IRParam>(), new IntegerTy(), body) });
 
@@ -464,7 +464,7 @@ public class Phase3M1BootTest
             new IntegerTy(),
             mainBody);
 
-        var module = new IRModule(
+        var module = new IRChapter(
             new Name("\u000e\u000d\u0013\u000e"),
             new List<IRDef> { tcoDef, mainDef });
 
@@ -537,7 +537,7 @@ public class Phase3M1BootTest
             intTy,
             mainBody);
 
-        var module = new IRModule(
+        var module = new IRChapter(
             new Name("\u000e\u000d\u0013\u000e"),
             new List<IRDef> { doubleDef, applyDef, mainDef });
 

@@ -647,7 +647,7 @@ sealed partial class ILAssemblyBuilder
         }
     }
 
-    public void EmitModule(IRModule module)
+    public void EmitModule(IRChapter module)
     {
         m_metadata.AddModule(
             0,
@@ -805,7 +805,7 @@ sealed partial class ILAssemblyBuilder
         m_currentTypeVarIds = ImmutableArray<int>.Empty;
     }
 
-    void EmitEntryPoint(IRModule module)
+    void EmitEntryPoint(IRChapter module)
     {
         IRDefinition? mainDef = null;
         foreach (IRDefinition d in module.Definitions)

@@ -6,19 +6,19 @@ using Codex.Syntax;
 
 namespace Codex.Cli;
 
-sealed class RepositoryModuleLoader(FactStore store, DiagnosticBag diagnostics) : IModuleLoader
+sealed class RepositoryChapterLoader(FactStore store, DiagnosticBag diagnostics) : IChapterLoader
 {
     readonly FactStore m_store = store;
     readonly DiagnosticBag m_diagnostics = diagnostics;
-    Map<string, ResolvedModule> m_cache = Map<string, ResolvedModule>.s_empty;
+    Map<string, ResolvedChapter> m_cache = Map<string, ResolvedChapter>.s_empty;
 
-    public ResolvedModule? Load(string moduleName)
+    public ResolvedChapter? Load(string chapterName)
     {
-        ResolvedModule? cached = m_cache[moduleName];
+        ResolvedChapter? cached = m_cache[chapterName];
         if (cached is not null)
             return cached;
 
-        ContentHash? hash = m_store.LookupView(moduleName);
+        ContentHash? hash = m_store.LookupView(chapterName);
         if (hash is null)
             return null;
 
@@ -27,7 +27,7 @@ sealed class RepositoryModuleLoader(FactStore store, DiagnosticBag diagnostics) 
             return null;
 
         string source = fact.Content;
-        SourceText src = new($"{moduleName}.codex", source);
+        SourceText src = new($"{chapterName}.codex", source);
         DiagnosticBag compileDiag = new();
 
         DocumentNode document;
@@ -48,16 +48,16 @@ sealed class RepositoryModuleLoader(FactStore store, DiagnosticBag diagnostics) 
             return null;
 
         Desugarer desugarer = new(compileDiag);
-        Module module = desugarer.Desugar(document, moduleName);
+        Chapter chapter = desugarer.Desugar(document, chapterName);
         if (compileDiag.HasErrors)
             return null;
 
         NameResolver resolver = new(compileDiag);
-        ResolvedModule resolved = resolver.Resolve(module);
+        ResolvedChapter resolved = resolver.Resolve(chapter);
         if (compileDiag.HasErrors)
             return null;
 
-        m_cache = m_cache.Set(moduleName, resolved);
+        m_cache = m_cache.Set(chapterName, resolved);
         return resolved;
     }
 }

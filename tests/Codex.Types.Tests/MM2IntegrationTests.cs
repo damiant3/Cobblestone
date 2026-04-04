@@ -184,17 +184,17 @@ public class MM2IntegrationTests
 
         // TypeCheck
         var checker = new Codex.Types.TypeChecker(diag);
-        var types = checker.CheckModule(resolved.Module);
+        var types = checker.CheckChapter(resolved.Chapter);
         int typeErrors = CountErrors(diag);
         m_output.WriteLine($"TypeCheck: {typeErrors} total errors");
         if (diag.HasErrors) { DumpErrors(diag, 10); Assert.Fail("Type checking failed"); return; }
 
         // Linearity
-        new Codex.Types.LinearityChecker(diag, types).CheckModule(resolved.Module);
+        new Codex.Types.LinearityChecker(diag, types).CheckChapter(resolved.Chapter);
         if (diag.HasErrors) { DumpErrors(diag, 10); Assert.Fail("Linearity check failed"); return; }
 
         // Lower
-        var irModule = new Lowering(types, checker.ConstructorMap, checker.TypeDefMap, diag).Lower(resolved.Module);
+        var irModule = new Lowering(types, checker.ConstructorMap, checker.TypeDefMap, diag).Lower(resolved.Chapter);
         m_output.WriteLine($"Lower: {irModule.Definitions.Length} IR defs, {CountErrors(diag)} total errors");
         if (diag.HasErrors) { DumpErrors(diag, 10); Assert.Fail("Lowering failed"); return; }
 
@@ -216,28 +216,28 @@ public class MM2IntegrationTests
 
     // ── Helpers ──────────────────────────────────────────────────
 
-    static string? CompileAndBootBareMetal(string source, string moduleName)
+    static string? CompileAndBootBareMetal(string source, string chapterName)
     {
-        byte[]? bytes = Helpers.CompileToX86_64BareMetal(source, moduleName);
+        byte[]? bytes = Helpers.CompileToX86_64BareMetal(source, chapterName);
         if (bytes is null) return null;
-        return BootAndCapture(bytes, moduleName, null);
+        return BootAndCapture(bytes, chapterName, null);
     }
 
-    static string? CompileAndBootWithSerialInput(string source, string moduleName, string serialInput)
+    static string? CompileAndBootWithSerialInput(string source, string chapterName, string serialInput)
     {
-        byte[]? bytes = Helpers.CompileToX86_64BareMetal(source, moduleName);
+        byte[]? bytes = Helpers.CompileToX86_64BareMetal(source, chapterName);
         if (bytes is null) return null;
-        return BootAndCapture(bytes, moduleName, serialInput);
+        return BootAndCapture(bytes, chapterName, serialInput);
     }
 
-    static string? BootAndCapture(byte[] elfBytes, string moduleName, string? serialInput)
+    static string? BootAndCapture(byte[] elfBytes, string chapterName, string? serialInput)
     {
         string tempDir = Path.Combine(Path.GetTempPath(),
-            $"codex_mm2_{moduleName}_{Guid.NewGuid().ToString("N")[..8]}");
+            $"codex_mm2_{chapterName}_{Guid.NewGuid().ToString("N")[..8]}");
         Directory.CreateDirectory(tempDir);
         try
         {
-            string elfPath = Path.Combine(tempDir, moduleName + ".elf");
+            string elfPath = Path.Combine(tempDir, chapterName + ".elf");
             File.WriteAllBytes(elfPath, elfBytes);
 
             // Boot under qemu-system-x86_64 with serial on stdio.

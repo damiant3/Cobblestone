@@ -9,11 +9,11 @@ public sealed class CapabilityChecker(DiagnosticBag diagnostics, Map<string, Cod
     readonly DiagnosticBag m_diagnostics = diagnostics;
     readonly Map<string, CodexType> m_typeMap = typeMap;
 
-    public CapabilityReport CheckModule(Module module, Set<string>? grantedCapabilities = null)
+    public CapabilityReport CheckChapter(Chapter chapter, Set<string>? grantedCapabilities = null)
     {
         Dictionary<string, ImmutableArray<string>> effectSummary = [];
 
-        foreach (Definition def in module.Definitions)
+        foreach (Definition def in chapter.Definitions)
         {
             CodexType? defType = m_typeMap[def.Name.Value];
             if (defType is null)
@@ -34,7 +34,7 @@ public sealed class CapabilityChecker(DiagnosticBag diagnostics, Map<string, Cod
             {
                 if (!grantedCapabilities.Contains(effect))
                 {
-                    SourceSpan span = FindMainSpan(module);
+                    SourceSpan span = FindMainSpan(chapter);
                     m_diagnostics.Error("CDX4001",
                         $"Capability '{effect}' is required by main but was not granted. "
                         + $"Granted capabilities: [{string.Join(", ", grantedCapabilities)}]",
@@ -63,12 +63,12 @@ public sealed class CapabilityChecker(DiagnosticBag diagnostics, Map<string, Cod
         return names.ToImmutable();
     }
 
-    static SourceSpan FindMainSpan(Module module)
+    static SourceSpan FindMainSpan(Chapter chapter)
     {
-        foreach (Definition def in module.Definitions)
+        foreach (Definition def in chapter.Definitions)
             if (def.Name.Value == "main")
                 return def.Span;
-        return module.Span;
+        return chapter.Span;
     }
 }
 

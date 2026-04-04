@@ -26,7 +26,7 @@ sealed partial class WasmModuleBuilder
         m_globals.Add(new WasmGlobal(WasmI32, GlobalMut, 0));
     }
 
-    void PreRegisterFunctions(IRModule module)
+    void PreRegisterFunctions(IRChapter module)
     {
         m_printI64Index = m_nextFuncIndex++;
         m_functionTypeIndices.Add(-1);
@@ -78,7 +78,7 @@ sealed partial class WasmModuleBuilder
         m_functionBodies.Add(EncodeFunctionBody(body.ToArray(), localTypes));
     }
 
-    void EmitStartFunction(IRModule module)
+    void EmitStartFunction(IRChapter module)
     {
         // _start calls main and prints the result
         IRDefinition? mainDef = null;

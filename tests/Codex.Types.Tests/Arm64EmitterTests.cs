@@ -533,24 +533,24 @@ public class Arm64EmitterTests
         Assert.Equal(183, machine);
     }
 
-    string? CompileAndRun(string source, string moduleName)
+    string? CompileAndRun(string source, string chapterName)
     {
         if (!IsQemuAvailable()) return null;
 
-        byte[]? bytes = Helpers.CompileToArm64(source, moduleName);
+        byte[]? bytes = Helpers.CompileToArm64(source, chapterName);
         Assert.NotNull(bytes);
         Assert.True(bytes.Length > 0);
 
-        string tempDir = Path.Combine(Path.GetTempPath(), $"codex_a64_{moduleName}_{Guid.NewGuid().ToString("N")[..8]}");
+        string tempDir = Path.Combine(Path.GetTempPath(), $"codex_a64_{chapterName}_{Guid.NewGuid().ToString("N")[..8]}");
         Directory.CreateDirectory(tempDir);
 
         try
         {
-            string elfPath = Path.Combine(tempDir, moduleName);
+            string elfPath = Path.Combine(tempDir, chapterName);
             File.WriteAllBytes(elfPath, bytes);
 
             string wslPath = ToWslPath(elfPath);
-            string wslTmp = $"/tmp/codex_a64_{moduleName}_{Guid.NewGuid().ToString("N")[..8]}";
+            string wslTmp = $"/tmp/codex_a64_{chapterName}_{Guid.NewGuid().ToString("N")[..8]}";
 
             // Copy into WSL filesystem, make executable, run under qemu-aarch64
             // Use 'wsl' explicitly â€” 'bash' on Windows may be Git Bash, not WSL

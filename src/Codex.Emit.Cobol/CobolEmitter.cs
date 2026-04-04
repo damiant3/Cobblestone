@@ -19,7 +19,7 @@ public sealed class CobolEmitter : ICodeEmitter
     public string TargetName => "COBOL";
     public string FileExtension => ".cob";
 
-    public string Emit(IRModule module)
+    public string Emit(IRChapter module)
     {
         m_constructorNames = CollectConstructorNames(module);
         m_ctorToTag = BuildCtorTagMap(module);
@@ -97,7 +97,7 @@ public sealed class CobolEmitter : ICodeEmitter
         return sb.ToString();
     }
 
-    void EmitTypeDefinitions(StringBuilder sb, IRModule module)
+    void EmitTypeDefinitions(StringBuilder sb, IRChapter module)
     {
         foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
         {
@@ -546,7 +546,7 @@ public sealed class CobolEmitter : ICodeEmitter
         args.Add(app.Argument);
     }
 
-    static Set<string> CollectConstructorNames(IRModule module)
+    static Set<string> CollectConstructorNames(IRChapter module)
     {
         Set<string> names = Set<string>.s_empty;
         foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
@@ -593,7 +593,7 @@ public sealed class CobolEmitter : ICodeEmitter
 
     static string EscapeString(string value) => value.Replace("\"", "\"\"");
 
-    static Map<string, string> BuildCtorTagMap(IRModule module)
+    static Map<string, string> BuildCtorTagMap(IRChapter module)
     {
         Map<string, string> map = Map<string, string>.s_empty;
         int tagCounter = 0;

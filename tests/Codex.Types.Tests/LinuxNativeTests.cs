@@ -464,40 +464,40 @@ public class LinuxNativeTests
 
     // ── User-mode compile-and-run helpers ─────────────────────────
 
-    static string? CompileAndRunX86_64(string source, string moduleName)
+    static string? CompileAndRunX86_64(string source, string chapterName)
     {
-        byte[]? bytes = Helpers.CompileToX86_64(source, moduleName);
+        byte[]? bytes = Helpers.CompileToX86_64(source, chapterName);
         if (bytes is null) return null;
-        return RunElf(bytes, moduleName, null);
+        return RunElf(bytes, chapterName, null);
     }
 
-    static string? CompileAndRunArm64(string source, string moduleName)
+    static string? CompileAndRunArm64(string source, string chapterName)
     {
-        byte[]? bytes = Helpers.CompileToArm64(source, moduleName);
+        byte[]? bytes = Helpers.CompileToArm64(source, chapterName);
         if (bytes is null) return null;
-        return RunElf(bytes, moduleName, "qemu-aarch64");
+        return RunElf(bytes, chapterName, "qemu-aarch64");
     }
 
-    static string? CompileAndRunRiscV(string source, string moduleName)
+    static string? CompileAndRunRiscV(string source, string chapterName)
     {
-        byte[]? bytes = Helpers.CompileToRiscV(source, moduleName);
+        byte[]? bytes = Helpers.CompileToRiscV(source, chapterName);
         if (bytes is null) return null;
-        return RunElf(bytes, moduleName, "qemu-riscv64");
+        return RunElf(bytes, chapterName, "qemu-riscv64");
     }
 
     // ── Bare metal boot helper ───────────────────────────────────
 
-    static string? CompileAndBootBareMetal(string source, string moduleName)
+    static string? CompileAndBootBareMetal(string source, string chapterName)
     {
-        byte[]? bytes = Helpers.CompileToX86_64BareMetal(source, moduleName);
+        byte[]? bytes = Helpers.CompileToX86_64BareMetal(source, chapterName);
         if (bytes is null) return null;
 
         string tempDir = Path.Combine(Path.GetTempPath(),
-            $"codex_bm_{moduleName}_{Guid.NewGuid().ToString("N")[..8]}");
+            $"codex_bm_{chapterName}_{Guid.NewGuid().ToString("N")[..8]}");
         Directory.CreateDirectory(tempDir);
         try
         {
-            string elfPath = Path.Combine(tempDir, moduleName + ".elf");
+            string elfPath = Path.Combine(tempDir, chapterName + ".elf");
             File.WriteAllBytes(elfPath, bytes);
 
             // Boot under qemu-system-x86_64, capture serial output.
@@ -540,14 +540,14 @@ public class LinuxNativeTests
     /// <summary>
     /// Write ELF to /tmp, chmod +x, run (directly or via qemu-user), return stdout.
     /// </summary>
-    static string? RunElf(byte[] elfBytes, string moduleName, string? qemuBinary)
+    static string? RunElf(byte[] elfBytes, string chapterName, string? qemuBinary)
     {
         string tempDir = Path.Combine(Path.GetTempPath(),
-            $"codex_linux_{moduleName}_{Guid.NewGuid().ToString("N")[..8]}");
+            $"codex_linux_{chapterName}_{Guid.NewGuid().ToString("N")[..8]}");
         Directory.CreateDirectory(tempDir);
         try
         {
-            string elfPath = Path.Combine(tempDir, moduleName);
+            string elfPath = Path.Combine(tempDir, chapterName);
             File.WriteAllBytes(elfPath, elfBytes);
 
             // Use chmod via process to avoid CA1416 (platform compat analyzer)

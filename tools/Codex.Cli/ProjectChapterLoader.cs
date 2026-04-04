@@ -5,14 +5,14 @@ using Codex.Syntax;
 
 namespace Codex.Cli;
 
-sealed class ProjectModuleLoader : IModuleLoader
+sealed class ProjectChapterLoader : IChapterLoader
 {
     readonly string m_projectDirectory;
     readonly DiagnosticBag m_diagnostics;
     readonly string[] m_sourceFiles;
-    Map<string, ResolvedModule> m_cache = Map<string, ResolvedModule>.s_empty;
+    Map<string, ResolvedChapter> m_cache = Map<string, ResolvedChapter>.s_empty;
 
-    ProjectModuleLoader(
+    ProjectChapterLoader(
         string projectDirectory,
         string[] sourceFiles,
         DiagnosticBag diagnostics)
@@ -22,13 +22,13 @@ sealed class ProjectModuleLoader : IModuleLoader
         m_diagnostics = diagnostics;
     }
 
-    public ResolvedModule? Load(string moduleName)
+    public ResolvedChapter? Load(string chapterName)
     {
-        ResolvedModule? cached = m_cache[moduleName];
+        ResolvedChapter? cached = m_cache[chapterName];
         if (cached is not null)
             return cached;
 
-        string? filePath = FindSourceFile(moduleName);
+        string? filePath = FindSourceFile(chapterName);
         if (filePath is null)
             return null;
 
@@ -54,25 +54,25 @@ sealed class ProjectModuleLoader : IModuleLoader
             return null;
 
         Desugarer desugarer = new(compileDiag);
-        Module module = desugarer.Desugar(document, moduleName);
+        Chapter chapter = desugarer.Desugar(document, chapterName);
         if (compileDiag.HasErrors)
             return null;
 
-        FileModuleLoader transitiveLoader = new(
+        FileChapterLoader transitiveLoader = new(
             Path.GetDirectoryName(filePath) ?? m_projectDirectory, compileDiag);
         NameResolver resolver = new(compileDiag, transitiveLoader);
-        ResolvedModule resolved = resolver.Resolve(module);
+        ResolvedChapter resolved = resolver.Resolve(chapter);
         if (compileDiag.HasErrors)
             return null;
 
-        m_cache = m_cache.Set(moduleName, resolved);
+        m_cache = m_cache.Set(chapterName, resolved);
         return resolved;
     }
 
-    string? FindSourceFile(string moduleName)
+    string? FindSourceFile(string chapterName)
     {
-        string target = moduleName + ".codex";
-        string targetLower = moduleName.ToLowerInvariant() + ".codex";
+        string target = chapterName + ".codex";
+        string targetLower = chapterName.ToLowerInvariant() + ".codex";
 
         foreach (string file in m_sourceFiles)
         {
@@ -87,7 +87,7 @@ sealed class ProjectModuleLoader : IModuleLoader
         return null;
     }
 
-    public static ProjectModuleLoader? TryCreate(
+    public static ProjectChapterLoader? TryCreate(
         string dependencyPath,
         string relativeTo,
         DiagnosticBag diagnostics)
@@ -108,6 +108,6 @@ sealed class ProjectModuleLoader : IModuleLoader
         if (sources.Length == 0)
             return null;
 
-        return new ProjectModuleLoader(fullPath, sources, diagnostics);
+        return new ProjectChapterLoader(fullPath, sources, diagnostics);
     }
 }

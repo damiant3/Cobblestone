@@ -137,7 +137,7 @@ public class ProseTemplateTests
         (DocumentNode doc, _) = ParseProse(source);
         DiagnosticBag diagnostics = new();
         Codex.Ast.Desugarer desugarer = new(diagnostics);
-        Codex.Ast.Module module = desugarer.Desugar(doc, "data");
+        Codex.Ast.Chapter module = desugarer.Desugar(doc, "data");
 
         Assert.False(diagnostics.HasErrors,
             string.Join("; ", diagnostics.ToImmutable()));

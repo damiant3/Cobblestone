@@ -15,7 +15,7 @@ public sealed class CppEmitter : ICodeEmitter
     public string TargetName => "C++";
     public string FileExtension => ".cpp";
 
-    public string Emit(IRModule module)
+    public string Emit(IRChapter module)
     {
         m_constructorNames = CollectConstructorNames(module);
         m_ctorToVariant = BuildCtorToVariantMap(module);
@@ -80,7 +80,7 @@ public sealed class CppEmitter : ICodeEmitter
             if (module.Definitions.Length == 0)
                 sb.AppendLine("    std::cout << \"All proofs verified at compile time.\" << std::endl;");
             else
-                sb.AppendLine("    std::cout << \"Module loaded.\" << std::endl;");
+                sb.AppendLine("    std::cout << \"Chapter loaded.\" << std::endl;");
             sb.AppendLine("    return 0;");
             sb.AppendLine("}");
         }
@@ -88,7 +88,7 @@ public sealed class CppEmitter : ICodeEmitter
         return sb.ToString();
     }
 
-    static void EmitForwardDeclarations(StringBuilder sb, IRModule module)
+    static void EmitForwardDeclarations(StringBuilder sb, IRChapter module)
     {
         foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
         {
@@ -106,7 +106,7 @@ public sealed class CppEmitter : ICodeEmitter
         sb.AppendLine();
     }
 
-    void EmitTypeDefinitions(StringBuilder sb, IRModule module)
+    void EmitTypeDefinitions(StringBuilder sb, IRChapter module)
     {
         foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
         {
@@ -1041,7 +1041,7 @@ public sealed class CppEmitter : ICodeEmitter
         return null;
     }
 
-    Set<string> CollectConstructorNames(IRModule module)
+    Set<string> CollectConstructorNames(IRChapter module)
     {
         Set<string> names = Set<string>.s_empty;
         foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
@@ -1055,7 +1055,7 @@ public sealed class CppEmitter : ICodeEmitter
         return names;
     }
 
-    static Map<string, string> BuildCtorToVariantMap(IRModule module)
+    static Map<string, string> BuildCtorToVariantMap(IRChapter module)
     {
         Map<string, string> map = Map<string, string>.s_empty;
         foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)

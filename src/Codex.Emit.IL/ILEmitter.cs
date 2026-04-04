@@ -12,7 +12,7 @@ public sealed class ILEmitter : IAssemblyEmitter
 {
     public string TargetName => "IL";
 
-    public byte[] EmitAssembly(IRModule module, string assemblyName)
+    public byte[] EmitAssembly(IRChapter module, string assemblyName)
     {
         ILAssemblyBuilder builder = new(assemblyName);
         builder.EmitModule(module);
