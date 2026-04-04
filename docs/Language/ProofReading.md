@@ -182,12 +182,15 @@ Across the compiler internals:
 
 ## Status
 
-- [ ] Document decisions (this file)
-- [ ] Implement page marker parsing in lexer/parser
-- [ ] Implement compiler validation for page completeness
-- [ ] Add page markers to all 33 .codex files
-- [ ] Rename module to chapter in C# compiler internals
-- [ ] Rename module to chapter in self-hosted .codex code
-- [ ] Remove module marker streaming machinery
+- [x] Document decisions (this file)
+- [x] Implement page marker parsing in lexer/parser
+- [x] Implement compiler validation for page completeness
+- [x] Add page markers to all 33 .codex files
+- [x] Rename module to chapter in C# compiler internals
+- [x] Rename module to chapter in self-hosted .codex code
+- [x] Remove module marker streaming machinery
+- [x] Rename import to cites
+- [x] Rename prelude to foreword
+- [x] Remove export declarations
 - [ ] Preserve prose in emitter output
 - [ ] Update ChapterScoper to treat same-chapter pages as shared namespace
