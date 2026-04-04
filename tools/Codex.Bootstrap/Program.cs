@@ -57,16 +57,8 @@ class Program
             string content = File.ReadAllText(f);
             Console.WriteLine($"  {rel}");
 
-            if (IsProseDocument(content))
-            {
-                string code = ExtractCodeBlocks(content);
-                if (code.Length > 0)
-                    codeBlocks.Add(code);
-            }
-            else
-            {
+            if (content.Length > 0)
                 codeBlocks.Add(content);
-            }
         }
 
         string combined = string.Join("\n\n", codeBlocks);
@@ -178,119 +170,6 @@ class Program
         }
     }
 
-    static bool IsProseDocument(string content)
-    {
-        foreach (string line in content.Split('\n'))
-        {
-            string trimmed = line.TrimStart();
-            if (trimmed.Length == 0)
-                continue;
-            return trimmed.StartsWith("Chapter:", StringComparison.Ordinal);
-        }
-        return false;
-    }
-
-    static string ExtractCodeBlocks(string content)
-    {
-        string[] lines = content.Split('\n');
-        List<string> result = [];
-        int i = 0;
-
-        while (i < lines.Length)
-        {
-            string trimmed = lines[i].Trim();
-
-            if (trimmed.Length == 0)
-            {
-                i++;
-                continue;
-            }
-
-            if (trimmed.StartsWith("Chapter:", StringComparison.Ordinal) ||
-                trimmed.StartsWith("Section:", StringComparison.Ordinal))
-            {
-                i++;
-                continue;
-            }
-
-            int indent = MeasureIndent(lines[i]);
-            if (indent >= 2 && LooksLikeNotation(trimmed))
-            {
-                int baseIndent = indent;
-                List<string> block = [];
-
-                while (i < lines.Length)
-                {
-                    string line = lines[i];
-                    string lt = line.Trim();
-
-                    if (lt.Length == 0)
-                    {
-                        int peekIdx = i + 1;
-                        while (peekIdx < lines.Length && lines[peekIdx].Trim().Length == 0)
-                            peekIdx++;
-
-                        if (peekIdx < lines.Length && MeasureIndent(lines[peekIdx]) >= baseIndent)
-                        {
-                            block.Add("");
-                            i++;
-                            continue;
-                        }
-                        break;
-                    }
-
-                    int lineIndent = MeasureIndent(line);
-                    if (lineIndent < baseIndent)
-                        break;
-
-                    if (lt.StartsWith("Chapter:", StringComparison.Ordinal) ||
-                        lt.StartsWith("Section:", StringComparison.Ordinal))
-                        break;
-
-                    string dedented = lineIndent >= baseIndent
-                        ? line[baseIndent..].TrimEnd('\r')
-                        : lt;
-                    block.Add(dedented);
-                    i++;
-                }
-
-                if (block.Count > 0)
-                    result.Add(string.Join("\n", block));
-            }
-            else
-            {
-                i++;
-            }
-        }
-
-        return string.Join("\n\n", result);
-    }
-
-    static bool LooksLikeNotation(string trimmed)
-    {
-        if (trimmed.Length == 0) return false;
-        if (trimmed[0] == '|') return true;
-        if (char.IsLetter(trimmed[0]) || trimmed[0] == '_')
-        {
-            if (trimmed.Contains(" : ")) return true;
-            if (trimmed.Contains(" = ")) return true;
-            if (trimmed.EndsWith(" =") || trimmed.EndsWith("=")) return true;
-            if (trimmed.Contains('(')) return true;
-        }
-        return false;
-    }
-
-    static int MeasureIndent(string line)
-    {
-        int count = 0;
-        foreach (char c in line)
-        {
-            if (c == ' ') count++;
-            else break;
-        }
-        return count;
-    }
-
     static int RunMini(string filePath)
     {
         if (!File.Exists(filePath))
@@ -299,18 +178,8 @@ class Program
             return 1;
         }
 
-        string rawContent = File.ReadAllText(filePath);
-        string source;
-        if (IsProseDocument(rawContent))
-        {
-            source = ExtractCodeBlocks(rawContent);
-            Console.WriteLine($"Mini compile (prose): {filePath} ({source.Length} chars from {rawContent.Length})");
-        }
-        else
-        {
-            source = rawContent;
-            Console.WriteLine($"Mini compile: {filePath} ({source.Length} chars)");
-        }
+        string source = File.ReadAllText(filePath);
+        Console.WriteLine($"Mini compile: {filePath} ({source.Length} chars)");
 
         try
         {
@@ -376,7 +245,7 @@ class Program
         foreach (string f in files)
         {
             string content = File.ReadAllText(f);
-            codeBlocks.Add(IsProseDocument(content) ? ExtractCodeBlocks(content) : content);
+            codeBlocks.Add(content);
         }
         string source = _Cce.FromUnicode(string.Join("\n\n", codeBlocks));
 
@@ -513,7 +382,7 @@ class Program
         foreach (string f in files)
         {
             string content = File.ReadAllText(f);
-            codeBlocks.Add(IsProseDocument(content) ? ExtractCodeBlocks(content) : content);
+            codeBlocks.Add(content);
         }
         string source = _Cce.FromUnicode(string.Join("\n\n", codeBlocks));
 
@@ -587,7 +456,7 @@ class Program
         foreach (string f in files)
         {
             string content = File.ReadAllText(f);
-            codeBlocks.Add(IsProseDocument(content) ? ExtractCodeBlocks(content) : content);
+            codeBlocks.Add(content);
         }
         string source = _Cce.FromUnicode(string.Join("\n\n", codeBlocks));
 
@@ -684,17 +553,8 @@ class Program
         foreach (string f in files)
         {
             string content = File.ReadAllText(f);
-            string code;
-            if (IsProseDocument(content))
-            {
-                code = ExtractCodeBlocks(content);
-            }
-            else
-            {
-                code = content;
-            }
-            if (code.Length > 0)
-                codeBlocks.Add(code);
+            if (content.Length > 0)
+                codeBlocks.Add(content);
         }
         string combined = string.Join("\n\n", codeBlocks);
         string dest = outputPath ?? Path.Combine(Path.GetTempPath(), "codex-all-source.codex");
@@ -715,12 +575,7 @@ class Program
         foreach (string f in files)
         {
             string content = File.ReadAllText(f);
-            if (IsProseDocument(content))
-            {
-                string code = ExtractCodeBlocks(content);
-                if (code.Length > 0) codeBlocks.Add(code);
-            }
-            else
+            if (content.Length > 0)
                 codeBlocks.Add(content);
         }
         string combined = string.Join("\n\n", codeBlocks);
