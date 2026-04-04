@@ -26,6 +26,7 @@ public sealed record Definition(
     SourceSpan Span)
 {
     public string? SourceChapter { get; init; }
+    public string? Section { get; init; }
 }
 
 public sealed record Parameter(Name Name, TypeExpr? TypeAnnotation, SourceSpan Span);
@@ -151,6 +152,7 @@ public sealed record ProofConstraintExpr(TypeExpr Left, BinaryOp Op, TypeExpr Ri
 public abstract record TypeDef(Name Name, IReadOnlyList<Name> TypeParameters, SourceSpan Span)
 {
     public string? SourceChapter { get; init; }
+    public string? Section { get; init; }
 }
 
 public sealed record RecordTypeDef(

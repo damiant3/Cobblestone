@@ -246,6 +246,7 @@ public sealed record DefinitionNode(
     SourceSpan Span)
     : SyntaxNode(SyntaxKind.Definition, Span)
 {
+    public string? Section { get; init; }
     public override IEnumerable<SyntaxNode> Children
     {
         get
@@ -511,6 +512,7 @@ public sealed record TypeDefinitionNode(
     SourceSpan Span)
     : SyntaxNode(SyntaxKind.TypeDefinition, Span)
 {
+    public string? Section { get; init; }
     public override IEnumerable<SyntaxNode> Children => [Body];
 }
 

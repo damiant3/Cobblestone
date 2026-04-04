@@ -38,16 +38,7 @@ public sealed class CodexEmitter : ICodeEmitter
                     }
                 }
 
-                int sectionTitleIndex = 0;
-                bool needsSectionHeader = !section.SectionTitles.IsDefault
-                    && section.SectionTitles.Length > 0;
-
-                if (needsSectionHeader && sectionTitleIndex < section.SectionTitles.Length)
-                {
-                    sb.AppendLine($"Section: {section.SectionTitles[sectionTitleIndex]}");
-                    sb.AppendLine();
-                    sectionTitleIndex++;
-                }
+                string? currentSection = null;
 
                 foreach ((string tdName, CodexType tdType) in section.TypeDefinitions)
                 {
@@ -57,6 +48,12 @@ public sealed class CodexEmitter : ICodeEmitter
 
                 foreach (IRDefinition def in section.Definitions)
                 {
+                    if (def.Section is not null && def.Section != currentSection)
+                    {
+                        currentSection = def.Section;
+                        sb.AppendLine($"Section: {currentSection}");
+                        sb.AppendLine();
+                    }
                     EmitDefinition(sb, def);
                     sb.AppendLine();
                 }

@@ -26,7 +26,10 @@ public sealed record IRDefinition(
     string Name,
     ImmutableArray<IRParameter> Parameters,
     CodexType Type,
-    IRExpr Body);
+    IRExpr Body)
+{
+    public string? Section { get; init; }
+}
 
 public sealed record IRParameter(string Name, CodexType Type);
 
