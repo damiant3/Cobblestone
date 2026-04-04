@@ -77,12 +77,12 @@ public class CoreIntegrationTests  // see IntegrationTests2.cs for adding more t
     {
         string source =
             "Chapter: Greeting\n\n" +
-            "  This module greets people.\n\n" +
-            "  We say:\n\n" +
-            "    greet : Text -> Text\n" +
-            "    greet (name) = \"Hello, \" ++ name ++ \"!\"\n\n" +
-            "    main : Text\n" +
-            "    main = greet \"World\"\n";
+            " This chapter greets people.\n\n" +
+            " We say:\n\n" +
+            "  greet : Text -> Text\n" +
+            "  greet (name) = \"Hello, \" ++ name ++ \"!\"\n\n" +
+            "  main : Text\n" +
+            "  main = greet \"World\"\n";
         string? cs = Helpers.CompileToCS(source, "greeting");
         Assert.NotNull(cs);
         Assert.Contains("greet", cs);

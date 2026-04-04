@@ -243,7 +243,7 @@ public sealed partial class ProseParser
                 break;
 
             int indent = MeasureIndent(line);
-            if (indent >= 2 && LooksLikeNotation(trimmed))
+            if (IsNotationIndent(indent))
                 break;
 
             if (trimmed.StartsWith('-')
