@@ -19,6 +19,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         List<ProofNode> proofs = [];
         List<CitesNode> citations = [];
         List<EffectDefinitionNode> effectDefs = [];
+        PageMarker? pageMarker = null;
 
         SkipNewlines();
         while (!IsAtEnd)
@@ -81,6 +82,13 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
                 }
                 else
                 {
+                    PageMarker? pm = TryParsePageMarker();
+                    if (pm is not null)
+                    {
+                        pageMarker = pm;
+                        SkipNewlines();
+                        break;
+                    }
                     m_diagnostics.Error("CDX1001", $"Expected a definition, found {Current.Kind}", Current.Span);
                     SkipToNextDefinition();
                 }
@@ -91,7 +99,48 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         SourceSpan endSpan = Previous.Span;
         return new DocumentNode(definitions, typeDefinitions, claims, proofs,
             [], startSpan.Through(endSpan))
-            { Citations = citations, EffectDefinitions = effectDefs };
+            { Citations = citations, EffectDefinitions = effectDefs, Page = pageMarker };
+    }
+
+    PageMarker? TryParsePageMarker()
+    {
+        if (Current.Kind != TokenKind.TypeIdentifier || Current.Text != "Page")
+            return null;
+
+        int saved = m_position;
+        Token pageKw = Current;
+        Advance();
+
+        if (Current.Kind != TokenKind.IntegerLiteral)
+        {
+            m_position = saved;
+            return null;
+        }
+
+        int pageNumber = (int)long.Parse(Current.Text);
+        SourceSpan span = pageKw.Span.Through(Current.Span);
+        Advance();
+
+        SkipNewlines();
+        if (Current.Kind == TokenKind.Identifier && Current.Text == "of")
+        {
+            Advance();
+            if (Current.Kind == TokenKind.IntegerLiteral)
+            {
+                int totalPages = (int)long.Parse(Current.Text);
+                span = pageKw.Span.Through(Current.Span);
+                Advance();
+                return new PageMarker(pageNumber, totalPages, span);
+            }
+            else
+            {
+                m_diagnostics.Error("CDX1070",
+                    "Expected page count after 'of'", Current.Span);
+                return new PageMarker(pageNumber, null, span);
+            }
+        }
+
+        return new PageMarker(pageNumber, null, span);
     }
 
     TypeDefinitionNode? TryParseTypeDefinition()

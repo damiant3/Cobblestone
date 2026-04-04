@@ -109,6 +109,7 @@ public sealed record DocumentNode(
 {
     public IReadOnlyList<CitesNode> Citations { get; init; } = [];
     public IReadOnlyList<EffectDefinitionNode> EffectDefinitions { get; init; } = [];
+    public PageMarker? Page { get; init; }
 
     public DocumentNode(IReadOnlyList<DefinitionNode> Definitions, SourceSpan Span)
         : this(Definitions, Array.Empty<TypeDefinitionNode>(), Array.Empty<ClaimNode>(),
@@ -234,6 +235,8 @@ public sealed record CitesNode(Token Name, SourceSpan Span)
     public IReadOnlyList<Token> SelectedNames { get; init; } = [];
     public override IEnumerable<SyntaxNode> Children => [];
 }
+
+public sealed record PageMarker(int PageNumber, int? TotalPages, SourceSpan Span);
 
 public sealed record DefinitionNode(
     Token Name,
