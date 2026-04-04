@@ -20,13 +20,10 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
             .Select(i => new CitesDecl(new Name(i.Name.Text), i.Span)
                 { SelectedNames = i.SelectedNames.Select(n => new Name(n.Text)).ToList() })
             .ToList();
-        List<ExportDecl> exports = document.Exports
-            .Select(e => new ExportDecl(
-                e.Names.Select(n => new Name(n.Text)).ToList(), e.Span)).ToList();
         List<EffectDef> effectDefs = document.EffectDefinitions
             .Select(DesugarEffectDef).ToList();
         return new Chapter(name, definitions, typeDefinitions, claims, proofs, document.Span)
-            { Citations = citations, Exports = exports, EffectDefs = effectDefs };
+            { Citations = citations, EffectDefs = effectDefs };
     }
 
     EffectDef DesugarEffectDef(EffectDefinitionNode node)

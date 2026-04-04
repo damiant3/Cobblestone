@@ -59,7 +59,7 @@ public static partial class Program
 
         // Import types from dependency modules before checking main chapter
         foreach (ResolvedChapter imported in resolved.CitedChapters)
-            checker.CiteChapter(imported.Chapter, imported.ExportedNames);
+            checker.CiteChapter(imported.Chapter);
 
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
@@ -126,7 +126,7 @@ public static partial class Program
         TypeChecker checker = new(diagnostics);
 
         foreach (ResolvedChapter imported in resolved.CitedChapters)
-            checker.CiteChapter(imported.Chapter, imported.ExportedNames);
+            checker.CiteChapter(imported.Chapter);
 
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
@@ -223,7 +223,6 @@ public static partial class Program
         List<ClaimDef> allClaims = [];
         List<ProofDef> allProofs = [];
         List<CitesDecl> allCitations = [];
-        List<ExportDecl> allExports = [];
         List<EffectDef> allEffectDefs = [];
 
         foreach (KeyValuePair<string, ContentHash> kv in view)
@@ -251,7 +250,6 @@ public static partial class Program
             allClaims.AddRange(chapter.Claims);
             allProofs.AddRange(chapter.Proofs);
             allCitations.AddRange(chapter.Citations);
-            allExports.AddRange(chapter.Exports);
             allEffectDefs.AddRange(chapter.EffectDefs);
         }
 
@@ -269,7 +267,6 @@ public static partial class Program
             combinedSpan)
         {
             Citations = allCitations,
-            Exports = allExports,
             EffectDefs = allEffectDefs
         };
 
@@ -281,7 +278,7 @@ public static partial class Program
         TypeChecker checker = new(diagnostics);
 
         foreach (ResolvedChapter imported in resolved.CitedChapters)
-            checker.CiteChapter(imported.Chapter, imported.ExportedNames);
+            checker.CiteChapter(imported.Chapter);
 
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 

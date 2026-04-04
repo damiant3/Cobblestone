@@ -7,8 +7,7 @@ public sealed record ResolvedChapter(
     Chapter Chapter,
     Set<string> TopLevelNames,
     Set<string> TypeNames,
-    Set<string> ConstructorNames,
-    Set<string> ExportedNames)
+    Set<string> ConstructorNames)
 {
     public IReadOnlyList<ResolvedChapter> CitedChapters { get; init; } = [];
 }
@@ -102,10 +101,6 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
             }
         }
 
-        // Compute exported names: if no export declarations, export everything
-        Set<string> exportedNames = ComputeExportedNames(
-            chapter, topLevel, typeNames.Union(effectNames), ctorNames);
-
         List<ResolvedChapter> citedChapters = [];
         foreach (CitesDecl cite in chapter.Citations)
         {
@@ -118,10 +113,9 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
                 continue;
             }
             citedChapters.Add(cited);
-            // Only cite names that the other chapter exports
-            topLevel = topLevel.Union(cited.ExportedNames.Intersect(cited.TopLevelNames));
-            typeNames = typeNames.Union(cited.ExportedNames.Intersect(cited.TypeNames));
-            ctorNames = ctorNames.Union(cited.ExportedNames.Intersect(cited.ConstructorNames));
+            topLevel = topLevel.Union(cited.TopLevelNames);
+            typeNames = typeNames.Union(cited.TypeNames);
+            ctorNames = ctorNames.Union(cited.ConstructorNames);
         }
 
         Set<string> allKnownNames = topLevel
@@ -136,35 +130,8 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
             ResolveExpr(def.Body, scope);
         }
 
-        return new ResolvedChapter(chapter, topLevel, typeNames, ctorNames, exportedNames)
+        return new ResolvedChapter(chapter, topLevel, typeNames, ctorNames)
             { CitedChapters = citedChapters };
-    }
-
-    Set<string> ComputeExportedNames(
-        Chapter chapter, Set<string> topLevel, Set<string> typeNames, Set<string> ctorNames)
-    {
-        if (chapter.Exports.Count == 0)
-        {
-            // No export declarations = export everything
-            return topLevel.Union(typeNames).Union(ctorNames);
-        }
-
-        Set<string> exported = Set<string>.s_empty;
-        Set<string> allDefined = topLevel.Union(typeNames).Union(ctorNames);
-        foreach (ExportDecl exp in chapter.Exports)
-        {
-            foreach (Name n in exp.Names)
-            {
-                if (!allDefined.Contains(n.Value))
-                {
-                    m_diagnostics.Error("CDX3020",
-                        $"Exported name '{n.Value}' is not defined in this chapter",
-                        exp.Span);
-                }
-                exported = exported.Add(n.Value);
-            }
-        }
-        return exported;
     }
 
     void ResolveExpr(Expr expr, Set<string> scope)

@@ -55,19 +55,17 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
         List<ClaimNode> allClaims = [];
         List<ProofNode> allProofs = [];
         List<CitesNode> allCitations = [];
-        List<ExportNode> allExports = [];
         List<EffectDefinitionNode> allEffectDefs = [];
         foreach (ChapterNode chapter in chapters)
         {
             CollectDefinitions(chapter.Members, allDefs, allTypeDefs, allClaims, allProofs,
-                allCitations, allExports, allEffectDefs);
+                allCitations, allEffectDefs);
         }
 
         return new DocumentNode(allDefs, allTypeDefs, allClaims,
             allProofs, chapters, docSpan)
         {
             Citations = allCitations,
-            Exports = allExports,
             EffectDefinitions = allEffectDefs
         };
     }
@@ -255,7 +253,6 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
             Claims = notationDoc.Claims,
             Proofs = notationDoc.Proofs,
             Citations = notationDoc.Citations,
-            Exports = notationDoc.Exports,
             EffectDefinitions = notationDoc.EffectDefinitions
         };
     }
@@ -281,8 +278,7 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
     static void CollectDefinitions(IReadOnlyList<DocumentMember> members,
         List<DefinitionNode> defs, List<TypeDefinitionNode> typeDefs,
         List<ClaimNode> claims, List<ProofNode> proofs,
-        List<CitesNode> citations, List<ExportNode> exports,
-        List<EffectDefinitionNode> effectDefs)
+        List<CitesNode> citations, List<EffectDefinitionNode> effectDefs)
     {
         foreach (DocumentMember member in members)
         {
@@ -293,13 +289,12 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
                 claims.AddRange(notation.Claims);
                 proofs.AddRange(notation.Proofs);
                 citations.AddRange(notation.Citations);
-                exports.AddRange(notation.Exports);
                 effectDefs.AddRange(notation.EffectDefinitions);
             }
             else if (member is SectionNode section)
             {
                 CollectDefinitions(section.Members, defs, typeDefs, claims, proofs,
-                    citations, exports, effectDefs);
+                    citations, effectDefs);
             }
         }
     }

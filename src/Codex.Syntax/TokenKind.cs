@@ -44,7 +44,6 @@ public enum TokenKind
     DoKeyword,
     RecordKeyword,
     CitesKeyword,
-    ExportKeyword,
     ClaimKeyword,
     ProofKeyword,
     ForAllKeyword,

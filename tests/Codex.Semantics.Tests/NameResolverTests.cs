@@ -101,56 +101,6 @@ public class NameResolverTests
     }
 
     [Fact]
-    public void Module_without_exports_exports_everything()
-    {
-        (ResolvedChapter resolved, DiagnosticBag diags) = ResolveSource("x = 1\ny = 2");
-        Assert.False(diags.HasErrors);
-        Assert.Contains("x", resolved.ExportedNames);
-        Assert.Contains("y", resolved.ExportedNames);
-    }
-
-    [Fact]
-    public void Module_with_exports_restricts_visibility()
-    {
-        string source = "export square\n\nsquare (x) = x * x\nhelper (x) = x + 1";
-        (ResolvedChapter resolved, DiagnosticBag diags) = ResolveSource(source);
-        Assert.False(diags.HasErrors);
-        Assert.Contains("square", resolved.ExportedNames);
-        Assert.DoesNotContain("helper", resolved.ExportedNames);
-    }
-
-    [Fact]
-    public void Export_of_undefined_name_reports_error()
-    {
-        string source = "export missing\n\nx = 1";
-        (ResolvedChapter _, DiagnosticBag diags) = ResolveSource(source);
-        Assert.True(diags.HasErrors);
-        Assert.Contains(diags.ToImmutable(), d => d.Code == "CDX3020");
-    }
-
-    [Fact]
-    public void Multiple_export_declarations_accumulate()
-    {
-        string source = "export a\nexport b\n\na = 1\nb = 2\nc = 3";
-        (ResolvedChapter resolved, DiagnosticBag diags) = ResolveSource(source);
-        Assert.False(diags.HasErrors);
-        Assert.Contains("a", resolved.ExportedNames);
-        Assert.Contains("b", resolved.ExportedNames);
-        Assert.DoesNotContain("c", resolved.ExportedNames);
-    }
-
-    [Fact]
-    public void Comma_separated_exports()
-    {
-        string source = "export a, b\n\na = 1\nb = 2\nc = 3";
-        (ResolvedChapter resolved, DiagnosticBag diags) = ResolveSource(source);
-        Assert.False(diags.HasErrors);
-        Assert.Contains("a", resolved.ExportedNames);
-        Assert.Contains("b", resolved.ExportedNames);
-        Assert.DoesNotContain("c", resolved.ExportedNames);
-    }
-
-    [Fact]
     public void Undefined_name_suggests_close_match()
     {
         string source = "square (x) = x * x\nmain = squre 5";

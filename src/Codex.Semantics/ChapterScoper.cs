@@ -14,7 +14,6 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
         List<ClaimDef> allClaims = [];
         List<ProofDef> allProofs = [];
         List<CitesDecl> allCitations = [];
-        List<ExportDecl> allExports = [];
         List<EffectDef> allEffectDefs = [];
 
         // Phase A: collect all names per module and detect collisions
@@ -119,7 +118,6 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
                 if (cite.SelectedNames.Count == 0)
                     allCitations.Add(cite);
             }
-            allExports.AddRange(mod.Exports);
         }
 
         SourceSpan combinedSpan = allDefinitions.Count > 0
@@ -135,7 +133,6 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
             combinedSpan)
         {
             Citations = allCitations,
-            Exports = allExports,
             EffectDefs = allEffectDefs
         };
     }

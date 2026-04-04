@@ -32,7 +32,6 @@ public static partial class Program
         public required List<ClaimDef> Claims { get; init; }
         public required List<ProofDef> Proofs { get; init; }
         public required List<CitesDecl> Citations { get; init; }
-        public required List<ExportDecl> Exports { get; init; }
         public required List<EffectDef> EffectDefs { get; init; }
     }
 
@@ -127,7 +126,6 @@ public static partial class Program
         List<ClaimDef> allClaims = [];
         List<ProofDef> allProofs = [];
         List<CitesDecl> allCitations = [];
-        List<ExportDecl> allExports = [];
         List<EffectDef> allEffectDefs = [];
 
         List<PerFileFrontEndResult> orderedResults = results
@@ -141,7 +139,6 @@ public static partial class Program
             allClaims.AddRange(r.Claims);
             allProofs.AddRange(r.Proofs);
             allCitations.AddRange(r.Citations);
-            allExports.AddRange(r.Exports);
             allEffectDefs.AddRange(r.EffectDefs);
         }
 
@@ -160,7 +157,6 @@ public static partial class Program
             combinedSpan)
         {
             Citations = allCitations,
-            Exports = allExports,
             EffectDefs = allEffectDefs
         };
 
@@ -225,7 +221,6 @@ public static partial class Program
         List<ClaimDef> allClaims = [];
         List<ProofDef> allProofs = [];
         List<CitesDecl> allCitations = [];
-        List<ExportDecl> allExports = [];
         List<EffectDef> allEffectDefs = [];
         foreach (PerFileFrontEndResult r in orderedResults)
         {
@@ -234,7 +229,6 @@ public static partial class Program
             allClaims.AddRange(r.Claims);
             allProofs.AddRange(r.Proofs);
             allCitations.AddRange(r.Citations);
-            allExports.AddRange(r.Exports);
             allEffectDefs.AddRange(r.EffectDefs);
         }
 
@@ -300,7 +294,6 @@ public static partial class Program
             Claims = chapter.Claims.ToList(),
             Proofs = chapter.Proofs.ToList(),
             Citations = chapter.Citations.ToList(),
-            Exports = chapter.Exports.ToList(),
             EffectDefs = chapter.EffectDefs.ToList()
         };
     }
@@ -334,7 +327,7 @@ public static partial class Program
         Codex.Types.TypeChecker checker = new(diagnostics);
 
         foreach (Codex.Semantics.ResolvedChapter imported in resolved.CitedChapters)
-            checker.CiteChapter(imported.Chapter, imported.ExportedNames);
+            checker.CiteChapter(imported.Chapter);
 
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }

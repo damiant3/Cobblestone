@@ -18,7 +18,6 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         List<ClaimNode> claims = [];
         List<ProofNode> proofs = [];
         List<CitesNode> citations = [];
-        List<ExportNode> exports = [];
         List<EffectDefinitionNode> effectDefs = [];
 
         SkipNewlines();
@@ -30,17 +29,6 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
                 if (imp is not null)
                 {
                     citations.Add(imp);
-                    SkipNewlines();
-                    continue;
-                }
-            }
-
-            if (Current.Kind == TokenKind.ExportKeyword)
-            {
-                ExportNode? exp = TryParseExport();
-                if (exp is not null)
-                {
-                    exports.Add(exp);
                     SkipNewlines();
                     continue;
                 }
@@ -103,7 +91,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         SourceSpan endSpan = Previous.Span;
         return new DocumentNode(definitions, typeDefinitions, claims, proofs,
             [], startSpan.Through(endSpan))
-            { Citations = citations, Exports = exports, EffectDefinitions = effectDefs };
+            { Citations = citations, EffectDefinitions = effectDefs };
     }
 
     TypeDefinitionNode? TryParseTypeDefinition()
@@ -209,41 +197,6 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
             ? citesKw.Span.Through(selectedNames[^1].Span)
             : citesKw.Span.Through(name.Span);
         return new CitesNode(name, span) { SelectedNames = selectedNames };
-    }
-
-    ExportNode? TryParseExport()
-    {
-        if (Current.Kind != TokenKind.ExportKeyword)
-            return null;
-        Token exportKw = Current;
-        Advance();
-
-        List<Token> names = [];
-        Token firstName = Current;
-        if (Current.Kind is TokenKind.Identifier or TokenKind.TypeIdentifier)
-        {
-            names.Add(Current);
-            Advance();
-            while (Current.Kind == TokenKind.Comma)
-            {
-                Advance();
-                SkipNewlines();
-                if (Current.Kind is TokenKind.Identifier or TokenKind.TypeIdentifier)
-                {
-                    names.Add(Current);
-                    Advance();
-                }
-            }
-        }
-
-        if (names.Count == 0)
-        {
-            m_diagnostics.Error("CDX1060",
-                "Expected at least one name after 'export'", exportKw.Span);
-            return new ExportNode(names, exportKw.Span);
-        }
-
-        return new ExportNode(names, exportKw.Span.Through(names[^1].Span));
     }
 
     EffectDefinitionNode? TryParseEffectDefinition()
