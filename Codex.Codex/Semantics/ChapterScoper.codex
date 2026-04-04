@@ -312,4 +312,152 @@ Section: Global Scope (non-streaming)
     chapter-slug = d.chapter-slug
    }] ++ scope-ir-defs defs colliding assignments (d.chapter-slug) rn (i + 1)
 
+Section: AST Expression Renaming
+
+ Walks AExpr trees and renames ANameExpr references that appear in
+ the rename map. Respects shadowing from let bindings, lambda
+ parameters, and match pattern variables.
+
+  rename-aexpr : List RenameEntry -> AExpr -> AExpr
+  rename-aexpr (rn) (e) =
+   when e
+    if ALitExpr (v) (k) -> e
+    if AErrorExpr (msg) -> e
+    if ANameExpr (n) -> ANameExpr (make-name (rename-lookup rn (n.value)))
+    if ABinaryExpr (l) (op) (r) -> ABinaryExpr (rename-aexpr rn l) op (rename-aexpr rn r)
+    if AUnaryExpr (x) -> AUnaryExpr (rename-aexpr rn x)
+    if AApplyExpr (f) (a) -> AApplyExpr (rename-aexpr rn f) (rename-aexpr rn a)
+    if AIfExpr (c) (t) (el) -> AIfExpr (rename-aexpr rn c) (rename-aexpr rn t) (rename-aexpr rn el)
+    if ALetExpr (binds) (body) -> rename-alet rn binds body
+    if ALambdaExpr (params) (body) -> rename-alambda rn params body
+    if AMatchExpr (scrut) (arms) -> AMatchExpr (rename-aexpr rn scrut) (rename-amatch-arms rn arms 0)
+    if AListExpr (elems) -> AListExpr (rename-aexprs rn elems 0)
+    if ARecordExpr (name) (fields) -> ARecordExpr name (rename-afields rn fields 0)
+    if AFieldAccess (rec) (field) -> AFieldAccess (rename-aexpr rn rec) field
+    if ADoExpr (stmts) -> ADoExpr (rename-ado-stmts rn stmts 0)
+    if AHandleExpr (eff) (body) (clauses) -> AHandleExpr eff (rename-aexpr rn body) (rename-ahandle-clauses rn clauses 0)
+
+  rename-alet : List RenameEntry -> List ALetBind -> AExpr -> AExpr
+  rename-alet (rn) (binds) (body) =
+   let new-binds = rename-alet-binds rn binds 0
+   in let rn2 = remove-renames-for-let-binds rn binds 0
+   in ALetExpr new-binds (rename-aexpr rn2 body)
+
+  rename-alet-binds : List RenameEntry -> List ALetBind -> Integer -> List ALetBind
+  rename-alet-binds (rn) (binds) (i) =
+   if i == list-length binds then []
+   else let b = list-at binds i
+   in [ALetBind {
+    name = b.name,
+    value = rename-aexpr rn (b.value)
+   }] ++ rename-alet-binds rn binds (i + 1)
+
+  remove-renames-for-let-binds : List RenameEntry -> List ALetBind -> Integer -> List RenameEntry
+  remove-renames-for-let-binds (rn) (binds) (i) =
+   if i == list-length binds then rn
+   else remove-renames-for-let-binds (remove-rename rn ((list-at binds i).name.value)) binds (i + 1)
+
+  rename-alambda : List RenameEntry -> List Name -> AExpr -> AExpr
+  rename-alambda (rn) (params) (body) =
+   let rn2 = remove-renames-for-names rn params 0
+   in ALambdaExpr params (rename-aexpr rn2 body)
+
+  remove-renames-for-names : List RenameEntry -> List Name -> Integer -> List RenameEntry
+  remove-renames-for-names (rn) (names) (i) =
+   if i == list-length names then rn
+   else remove-renames-for-names (remove-rename rn ((list-at names i).value)) names (i + 1)
+
+  rename-aexprs : List RenameEntry -> List AExpr -> Integer -> List AExpr
+  rename-aexprs (rn) (elems) (i) =
+   if i == list-length elems then []
+   else [rename-aexpr rn (list-at elems i)] ++ rename-aexprs rn elems (i + 1)
+
+  rename-afields : List RenameEntry -> List AFieldExpr -> Integer -> List AFieldExpr
+  rename-afields (rn) (fields) (i) =
+   if i == list-length fields then []
+   else let f = list-at fields i
+   in [AFieldExpr {
+    name = f.name,
+    value = rename-aexpr rn (f.value)
+   }] ++ rename-afields rn fields (i + 1)
+
+  rename-amatch-arms : List RenameEntry -> List AMatchArm -> Integer -> List AMatchArm
+  rename-amatch-arms (rn) (arms) (i) =
+   if i == list-length arms then []
+   else let a = list-at arms i
+   in let rn2 = remove-renames-for-apat rn (a.pattern)
+   in [AMatchArm {
+    pattern = a.pattern,
+    body = rename-aexpr rn2 (a.body)
+   }] ++ rename-amatch-arms rn arms (i + 1)
+
+  remove-renames-for-apat : List RenameEntry -> APat -> List RenameEntry
+  remove-renames-for-apat (rn) (p) =
+   when p
+    if AVarPat (n) -> remove-rename rn (n.value)
+    if ACtorPat (n) (subs) -> remove-renames-for-apats rn subs 0
+    if ALitPat (v) -> rn
+    if AWildPat -> rn
+
+  remove-renames-for-apats : List RenameEntry -> List APat -> Integer -> List RenameEntry
+  remove-renames-for-apats (rn) (pats) (i) =
+   if i == list-length pats then rn
+   else remove-renames-for-apats (remove-renames-for-apat rn (list-at pats i)) pats (i + 1)
+
+  rename-ado-stmts : List RenameEntry -> List ADoStmt -> Integer -> List ADoStmt
+  rename-ado-stmts (rn) (stmts) (i) =
+   if i == list-length stmts then []
+   else let s = list-at stmts i
+   in when s
+    if ADoBindStmt (nm) (expr) ->
+     let rn2 = remove-rename rn (nm.value)
+     in [ADoBindStmt nm (rename-aexpr rn expr)] ++ rename-ado-stmts rn2 stmts (i + 1)
+    if ADoExprStmt (expr) ->
+     [ADoExprStmt (rename-aexpr rn expr)] ++ rename-ado-stmts rn stmts (i + 1)
+
+  rename-ahandle-clauses : List RenameEntry -> List AHandleClause -> Integer -> List AHandleClause
+  rename-ahandle-clauses (rn) (clauses) (i) =
+   if i == list-length clauses then []
+   else let c = list-at clauses i
+   in let rn2 = remove-rename rn (c.resume-name.value)
+   in [AHandleClause {
+    op-name = c.op-name,
+    resume-name = c.resume-name,
+    body = rename-aexpr rn2 (c.body)
+   }] ++ rename-ahandle-clauses rn clauses (i + 1)
+
+Section: AST-Level Chapter Scoping
+
+ Scopes an AChapter by renaming def names and body references
+ using per-chapter rename maps. Must be called BEFORE type checking.
+
+  scope-achapter : AChapter -> List Text -> List ChapterAssignment -> AChapter
+  scope-achapter (ast) (colliding) (assignments) =
+   AChapter {
+    name = ast.name,
+    defs = scope-adefs (ast.defs) colliding assignments "" [] 0,
+    type-defs = ast.type-defs,
+    effect-defs = ast.effect-defs,
+    citations = ast.citations,
+    chapter-title = ast.chapter-title,
+    prose = ast.prose,
+    section-titles = ast.section-titles
+   }
+
+  scope-adefs : List ADef -> List Text -> List ChapterAssignment -> Text -> List RenameEntry -> Integer -> List ADef
+  scope-adefs (defs) (colliding) (assignments) (cur-slug) (cur-rn) (i) =
+   if i == list-length defs then []
+   else let d = list-at defs i
+   in let rn = if d.chapter-slug == cur-slug then cur-rn
+      else build-chapter-rename-map colliding assignments (d.chapter-slug)
+   in let new-name = make-name (rename-lookup rn (d.name.value))
+   in let new-body = rename-aexpr rn (d.body)
+   in [ADef {
+    name = new-name,
+    params = d.params,
+    declared-type = d.declared-type,
+    body = new-body,
+    chapter-slug = d.chapter-slug
+   }] ++ scope-adefs defs colliding assignments (d.chapter-slug) rn (i + 1)
+
 Page 1
