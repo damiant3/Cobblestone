@@ -45,9 +45,6 @@ rm -rf "$REPO/Codex.Codex/out"
 # Build artifacts
 find "$REPO" -type d \( -name bin -o -name obj \) -not -path '*/.git/*' -exec rm -rf {} + 2>/dev/null || true
 
-# Generated output
-find "$REPO/generated-output" -type f -delete 2>/dev/null || true
-
 # Incremental build cache
 rm -rf "$REPO/.codex-build"
 

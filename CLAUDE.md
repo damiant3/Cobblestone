@@ -16,7 +16,7 @@ and known conditions. Use `orient <topic>` for detail on any area.
 ```bash
 git clean -fd samples/
 rm -f Codex.Codex/out/*.cs Codex.Codex/out/*.elf Codex.Codex/out/*.dll
-rm -rf generated-output/* .vs
+rm -rf .vs
 find . -type d \( -name bin -o -name obj \) -not -path './.git/*' -exec rm -rf {} + 2>/dev/null
 ```
 
