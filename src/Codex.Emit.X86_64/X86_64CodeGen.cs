@@ -90,6 +90,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         EmitEscapeCopyHelpers();
         EmitDiagHexHelper();
 
+        // Patch stack overflow checks — must happen AFTER all EmitFunction calls
+        // so m_stackOverflowChecks is fully populated.
+        if (m_target == X86_64Target.BareMetal)
+            PatchStackOverflowChecks();
+
         // Bare metal: emit ISR stubs, syscall handler, process 1 entry
         if (m_target == X86_64Target.BareMetal)
         {
@@ -566,24 +571,25 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         int frameSizePatchOffset = m_text.Count;
         EmitSubRspImm32(0);
 
-        // Stack overflow guard + min-RSP tracker
+        // Dynamic memory guard + min-RSP tracker
+        // Stack (RSP, grows down) and heap (R10, grows up) share one region.
+        // cmp rsp, r10 — if they meet, out of memory. No fixed boundary.
         if (m_target == X86_64Target.BareMetal)
         {
-            // Update min-RSP: if RSP < [StackMinRspAddr], store RSP
+            // Update min-RSP tracker
             X86_64Encoder.Li(m_text, Reg.R11, StackMinRspAddr);
-            X86_64Encoder.MovLoad(m_text, Reg.R11, Reg.R11, 0); // R11 = current min
+            X86_64Encoder.MovLoad(m_text, Reg.R11, Reg.R11, 0);
             X86_64Encoder.CmpRR(m_text, Reg.RSP, Reg.R11);
             int skipUpdate = m_text.Count;
-            X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0); // skip if RSP >= min
+            X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0);
             X86_64Encoder.Li(m_text, Reg.R11, StackMinRspAddr);
-            X86_64Encoder.MovStore(m_text, Reg.R11, Reg.RSP, 0); // store new min
+            X86_64Encoder.MovStore(m_text, Reg.R11, Reg.RSP, 0);
             PatchJcc(skipUpdate, m_text.Count);
 
-            // Overflow check: jb __stack_overflow if RSP < StackBottom
-            X86_64Encoder.Li(m_text, Reg.R11, BareMetalStackBottom);
-            X86_64Encoder.CmpRR(m_text, Reg.RSP, Reg.R11);
+            // Dynamic guard: RSP < R10 means stack crossed into heap
+            X86_64Encoder.CmpRR(m_text, Reg.RSP, HeapReg);
             m_stackOverflowChecks.Add((m_text.Count, def.Name));
-            X86_64Encoder.Jcc(m_text, 0x2, 0); // CC_B (below, CF=1) — patched later
+            X86_64Encoder.Jcc(m_text, 0x2, 0); // CC_B — patched to __out_of_memory
         }
 
         // Bind parameters
@@ -2659,29 +2665,45 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         EmitTextSplitHelper();
         EmitIpowHelper();
         if (m_target == X86_64Target.BareMetal)
-            EmitStackOverflowHandler();
+            EmitOutOfMemoryHandler();
     }
 
-    void EmitStackOverflowHandler()
+    void EmitOutOfMemoryHandler()
     {
-        // __stack_overflow: prints "STACK OVERFLOW RSP=nnn\n" on serial, then halts.
+        // __out_of_memory: stack and heap have converged — no memory left.
+        // RSP crossed R10 (heap). Save RSP, reset to safe stack, print diagnostics.
         int handlerOffset = m_text.Count;
-        m_functionOffsets["__stack_overflow"] = handlerOffset;
+        m_functionOffsets["__out_of_memory"] = handlerOffset;
 
-        // Print "STACK OVERFLOW RSP=" on serial (literal bytes, no registers needed)
-        foreach (byte ch in "STACK OVERFLOW RSP="u8)
+        // Save collision RSP and heap pointer, then reset stack for printing
+        X86_64Encoder.MovRR(m_text, Reg.RBX, Reg.RSP);
+        X86_64Encoder.MovRR(m_text, Reg.R12, HeapReg);
+        X86_64Encoder.Li(m_text, Reg.RSP, BareMetalStackTop);
+        X86_64Encoder.MovRR(m_text, Reg.RBP, Reg.RSP);
+
+        // Print "OUT OF MEMORY RSP="
+        foreach (byte ch in "OUT OF MEMORY RSP="u8)
             EmitSerialWaitAndSend(ch);
-
-        // Print RSP as decimal via __itoa (RSP is still valid, just past the limit)
-        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RSP);
+        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RBX);
         EmitCallTo("__itoa");
         EmitPrintText(Reg.RAX);
 
-        // HLT loop — hard stop
+        // Print " HEAP="
+        foreach (byte ch in " HEAP="u8)
+            EmitSerialWaitAndSend(ch);
+        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.R12);
+        EmitCallTo("__itoa");
+        EmitPrintText(Reg.RAX);
+
+        // HLT loop — hard stop, no recovery
         m_text.Add(0xF4); // hlt
         X86_64Encoder.Jmp(m_text, m_text.Count - 1 - (m_text.Count + 5));
 
-        // Patch all prologue check sites to jump to the handler
+    }
+
+    void PatchStackOverflowChecks()
+    {
+        int handlerOffset = m_functionOffsets["__out_of_memory"];
         foreach (var (patchOffset, _) in m_stackOverflowChecks)
             PatchJcc(patchOffset, handlerOffset);
     }
