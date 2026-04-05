@@ -234,11 +234,11 @@ grep -v '^STACK:\|^HEAP:' "$OUTDIR/stage1.codex" > "$OUTDIR/stage1.clean.codex"
 RESULT="PASS"
 echo ""
 
-# Source has prose-format defs (2-space indent), stage1 has code-only (no indent).
+# Both source and stage1 use 2-space indented defs (prose format).
 # Stage1 includes extra type annotations from constructors, so count may differ.
 # Check that all source def names appear in stage1 (subset check).
-SOURCE_NAMES=$(grep -P '^  [a-zA-Z_][a-zA-Z0-9_-]* :' "$SOURCE" | sed 's/ :.*//; s/^\s*//' | sort -u)
-STAGE1_NAMES=$(grep -P '^[a-zA-Z_][a-zA-Z0-9_-]* :' "$OUTDIR/stage1.clean.codex" | sed 's/ :.*//' | sort -u)
+SOURCE_NAMES=$(grep -P '^\s*[a-zA-Z_][a-zA-Z0-9_-]* :' "$SOURCE" | sed 's/ :.*//; s/^\s*//' | sort -u)
+STAGE1_NAMES=$(grep -P '^\s*[a-zA-Z_][a-zA-Z0-9_-]* :' "$OUTDIR/stage1.clean.codex" | sed 's/ :.*//; s/^\s*//' | sort -u)
 SOURCE_UNIQUE=$(echo "$SOURCE_NAMES" | wc -l)
 STAGE1_UNIQUE=$(echo "$STAGE1_NAMES" | wc -l)
 

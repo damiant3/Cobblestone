@@ -20,6 +20,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     Map<string, CodexType> m_typeDefs = Map<string, CodexType>.s_empty;
     readonly Dictionary<string, string> m_escapeHelperNames = [];
     readonly Queue<(string Key, string Name, CodexType Type)> m_escapeHelperQueue = new();
+    readonly List<(int PatchOffset, string FuncName)> m_stackOverflowChecks = [];
 
     // Register allocator state (per-function)
     // Temps: RAX, RCX, RDX, RSI, RDI, R11 (caller-saved, recycled)
@@ -564,6 +565,15 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
         int frameSizePatchOffset = m_text.Count;
         EmitSubRspImm32(0);
+
+        // Stack overflow guard: cmp rsp, BareMetalStackBottom; jb __stack_overflow
+        if (m_target == X86_64Target.BareMetal)
+        {
+            X86_64Encoder.Li(m_text, Reg.R11, BareMetalStackBottom);
+            X86_64Encoder.CmpRR(m_text, Reg.RSP, Reg.R11);
+            m_stackOverflowChecks.Add((m_text.Count, def.Name));
+            X86_64Encoder.Jcc(m_text, 0x2, 0); // CC_B (below, CF=1) — patched later
+        }
 
         // Bind parameters
         m_tcoParamLocals = new int[def.Parameters.Length];
@@ -2637,6 +2647,32 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         EmitTextConcatListHelper();
         EmitTextSplitHelper();
         EmitIpowHelper();
+        if (m_target == X86_64Target.BareMetal)
+            EmitStackOverflowHandler();
+    }
+
+    void EmitStackOverflowHandler()
+    {
+        // __stack_overflow: prints "STACK OVERFLOW RSP=nnn\n" on serial, then halts.
+        int handlerOffset = m_text.Count;
+        m_functionOffsets["__stack_overflow"] = handlerOffset;
+
+        // Print "STACK OVERFLOW RSP=" on serial (literal bytes, no registers needed)
+        foreach (byte ch in "STACK OVERFLOW RSP="u8)
+            EmitSerialWaitAndSend(ch);
+
+        // Print RSP as decimal via __itoa (RSP is still valid, just past the limit)
+        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RSP);
+        EmitCallTo("__itoa");
+        EmitPrintText(Reg.RAX);
+
+        // HLT loop — hard stop
+        m_text.Add(0xF4); // hlt
+        X86_64Encoder.Jmp(m_text, m_text.Count - 1 - (m_text.Count + 5));
+
+        // Patch all prologue check sites to jump to the handler
+        foreach (var (patchOffset, _) in m_stackOverflowChecks)
+            PatchJcc(patchOffset, handlerOffset);
     }
 
     void EmitStrConcatHelper()
@@ -4945,7 +4981,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     // 0x180000-0x1BFFFF Serial ring buffer (256KB)
     // BareMetalHeapBase+ Working-space heap (grows up)
     // BareMetalResultBase+ Result-space heap (escape-copy target)
-    // Stack: BareMetalStackBottom..BareMetalStackTop (2 MB, grows down)
+    // Stack: BareMetalStackBottom..BareMetalStackTop (4 MB, grows down)
 
     // ── Process Management (Ring 2) ──────────────────────────────
 
@@ -5450,8 +5486,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     // Bare metal memory layout — 256 x 2MB huge pages = 512 MB
     const int BareMetalPages = 256;
     const long BareMetalHeapBase = 0x400000;                // 4 MB
-    const long BareMetalResultBase = 0x1FD00000;            // 509 MB (1 MB result)
-    const long BareMetalStackBottom = 0x1FE00000;           // 510 MB (2 MB stack)
+    const long BareMetalResultBase = 0x1FB00000;            // 507 MB (1 MB result)
+    const long BareMetalStackBottom = 0x1FC00000;           // 508 MB (4 MB stack)
     const long BareMetalStackTop = 0x20000000;              // 512 MB
 
     void EmitInterruptSetup()
@@ -5486,7 +5522,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         X86_64Encoder.Li(m_text, Reg.RDI, ResultArenaBaseAddr);
         X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
 
-        // 5. Enable interrupts
+        // 5. Enable interrupts (needed for serial ring buffer IRQ4 handler)
         X86_64Encoder.Sti(m_text);
     }
 
@@ -5963,11 +5999,15 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             EmitUpdateHeapHwm();
 
             // ── Stack high-water-mark scan ──
-            // Scan from stack bottom upward for first 0xDEADBEEFDEADBEEF qword
-            // RDI = scan pointer, RAX = pattern to match
+            // Scan from stack bottom upward for first 0xDEADBEEFDEADBEEF qword.
+            // RDI = scan pointer, RAX = pattern, RCX = upper bound (StackTop).
             X86_64Encoder.Li(m_text, Reg.RDI, BareMetalStackBottom);
             X86_64Encoder.Li(m_text, Reg.RAX, unchecked((long)0xDEADBEEFDEADBEEF));
+            X86_64Encoder.Li(m_text, Reg.RCX, BareMetalStackTop);
             int scanLoop = m_text.Count;
+            X86_64Encoder.CmpRR(m_text, Reg.RDI, Reg.RCX);
+            int scanDone = m_text.Count;
+            X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0); // past top → 100% used
             X86_64Encoder.MovLoad(m_text, Reg.RSI, Reg.RDI, 0);
             X86_64Encoder.CmpRR(m_text, Reg.RSI, Reg.RAX);
             int foundPaint = m_text.Count;
@@ -5975,6 +6015,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             X86_64Encoder.AddRI(m_text, Reg.RDI, 8);
             X86_64Encoder.Jmp(m_text, scanLoop - (m_text.Count + 5));
             PatchJcc(foundPaint, m_text.Count);
+            PatchJcc(scanDone, m_text.Count);
 
             // RDI = first untouched address. Stack used = StackTop - RDI
             X86_64Encoder.Li(m_text, Reg.RSI, BareMetalStackTop);

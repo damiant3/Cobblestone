@@ -12,14 +12,14 @@ Section: Chapter Assignment
    chapter-slug : Text
   }
 
-  assign-chapters : List DefHeader -> Text -> Integer -> List ChapterAssignment
-  assign-chapters (headers) (current-chapter) (i) =
-   if i == list-length headers then []
+  assign-chapters : List DefHeader -> Text -> Integer -> List ChapterAssignment -> List ChapterAssignment
+  assign-chapters (headers) (current-chapter) (i) (acc) =
+   if i == list-length headers then acc
    else let hdr = list-at headers i
-   in [ChapterAssignment {
+   in assign-chapters headers current-chapter (i + 1) (list-snoc acc (ChapterAssignment {
     def-name = (hdr.name.text),
     chapter-slug = current-chapter
-   }] ++ assign-chapters headers current-chapter (i + 1)
+   }))
 
 Section: Collision Detection
 
@@ -150,11 +150,11 @@ Section: IR Expression Renaming
     if IrFieldAccess (rec) (field) (ty) -> IrFieldAccess (rename-ir-expr rn rec) field ty
     if IrLet (nm) (ty) (val) (body) -> rename-ir-let rn nm ty val body
     if IrLambda (params) (body) (ty) -> rename-ir-lambda rn params body ty
-    if IrMatch (scrut) (branches) (ty) -> IrMatch (rename-ir-expr rn scrut) (rename-ir-branches rn branches 0) ty
-    if IrList (elems) (ty) -> IrList (rename-ir-exprs rn elems 0) ty
-    if IrRecord (nm) (fields) (ty) -> IrRecord nm (rename-ir-fields rn fields 0) ty
-    if IrDo (stmts) (ty) -> IrDo (rename-ir-do-stmts rn stmts 0) ty
-    if IrHandle (eff) (body) (clauses) (ty) -> IrHandle eff (rename-ir-expr rn body) (rename-ir-handle-clauses rn clauses 0) ty
+    if IrMatch (scrut) (branches) (ty) -> IrMatch (rename-ir-expr rn scrut) (rename-ir-branches rn branches 0 []) ty
+    if IrList (elems) (ty) -> IrList (rename-ir-exprs rn elems 0 []) ty
+    if IrRecord (nm) (fields) (ty) -> IrRecord nm (rename-ir-fields rn fields 0 []) ty
+    if IrDo (stmts) (ty) -> IrDo (rename-ir-do-stmts rn stmts 0 []) ty
+    if IrHandle (eff) (body) (clauses) (ty) -> IrHandle eff (rename-ir-expr rn body) (rename-ir-handle-clauses rn clauses 0 []) ty
 
   rename-ir-let : List RenameEntry -> Text -> CodexType -> IRExpr -> IRExpr -> IRExpr
   rename-ir-let (rn) (nm) (ty) (val) (body) =
@@ -168,29 +168,29 @@ Section: IR Expression Renaming
 
 Section: IR Collection Renaming
 
-  rename-ir-exprs : List RenameEntry -> List IRExpr -> Integer -> List IRExpr
-  rename-ir-exprs (rn) (elems) (i) =
-   if i == list-length elems then []
-   else [rename-ir-expr rn (list-at elems i)] ++ rename-ir-exprs rn elems (i + 1)
+  rename-ir-exprs : List RenameEntry -> List IRExpr -> Integer -> List IRExpr -> List IRExpr
+  rename-ir-exprs (rn) (elems) (i) (acc) =
+   if i == list-length elems then acc
+   else rename-ir-exprs rn elems (i + 1) (list-snoc acc (rename-ir-expr rn (list-at elems i)))
 
-  rename-ir-fields : List RenameEntry -> List IRFieldVal -> Integer -> List IRFieldVal
-  rename-ir-fields (rn) (fields) (i) =
-   if i == list-length fields then []
+  rename-ir-fields : List RenameEntry -> List IRFieldVal -> Integer -> List IRFieldVal -> List IRFieldVal
+  rename-ir-fields (rn) (fields) (i) (acc) =
+   if i == list-length fields then acc
    else let f = list-at fields i
-   in [IRFieldVal {
+   in rename-ir-fields rn fields (i + 1) (list-snoc acc (IRFieldVal {
     name = f.name,
     value = rename-ir-expr rn (f.value)
-   }] ++ rename-ir-fields rn fields (i + 1)
+   }))
 
-  rename-ir-branches : List RenameEntry -> List IRBranch -> Integer -> List IRBranch
-  rename-ir-branches (rn) (branches) (i) =
-   if i == list-length branches then []
+  rename-ir-branches : List RenameEntry -> List IRBranch -> Integer -> List IRBranch -> List IRBranch
+  rename-ir-branches (rn) (branches) (i) (acc) =
+   if i == list-length branches then acc
    else let b = list-at branches i
    in let rn2 = remove-renames-for-pat rn (b.pattern)
-   in [IRBranch {
+   in rename-ir-branches rn branches (i + 1) (list-snoc acc (IRBranch {
     pattern = b.pattern,
     body = rename-ir-expr rn2 (b.body)
-   }] ++ rename-ir-branches rn branches (i + 1)
+   }))
 
   remove-renames-for-pat : List RenameEntry -> IRPat -> List RenameEntry
   remove-renames-for-pat (rn) (p) =
@@ -205,27 +205,27 @@ Section: IR Collection Renaming
    if i == list-length pats then rn
    else remove-renames-for-pats (remove-renames-for-pat rn (list-at pats i)) pats (i + 1)
 
-  rename-ir-do-stmts : List RenameEntry -> List IRDoStmt -> Integer -> List IRDoStmt
-  rename-ir-do-stmts (rn) (stmts) (i) =
-   if i == list-length stmts then []
+  rename-ir-do-stmts : List RenameEntry -> List IRDoStmt -> Integer -> List IRDoStmt -> List IRDoStmt
+  rename-ir-do-stmts (rn) (stmts) (i) (acc) =
+   if i == list-length stmts then acc
    else let s = list-at stmts i
    in when s
     if IrDoBind (nm) (ty) (expr) ->
      let rn2 = remove-rename rn nm
-   in [IrDoBind nm ty (rename-ir-expr rn expr)] ++ rename-ir-do-stmts rn2 stmts (i + 1)
+   in rename-ir-do-stmts rn2 stmts (i + 1) (list-snoc acc (IrDoBind nm ty (rename-ir-expr rn expr)))
     if IrDoExec (expr) ->
-     [IrDoExec (rename-ir-expr rn expr)] ++ rename-ir-do-stmts rn stmts (i + 1)
+     rename-ir-do-stmts rn stmts (i + 1) (list-snoc acc (IrDoExec (rename-ir-expr rn expr)))
 
-  rename-ir-handle-clauses : List RenameEntry -> List IRHandleClause -> Integer -> List IRHandleClause
-  rename-ir-handle-clauses (rn) (clauses) (i) =
-   if i == list-length clauses then []
+  rename-ir-handle-clauses : List RenameEntry -> List IRHandleClause -> Integer -> List IRHandleClause -> List IRHandleClause
+  rename-ir-handle-clauses (rn) (clauses) (i) (acc) =
+   if i == list-length clauses then acc
    else let c = list-at clauses i
    in let rn2 = remove-rename rn (c.resume-name)
-   in [IRHandleClause {
+   in rename-ir-handle-clauses rn clauses (i + 1) (list-snoc acc (IRHandleClause {
     op-name = c.op-name,
     resume-name = c.resume-name,
     body = rename-ir-expr rn2 (c.body)
-   }] ++ rename-ir-handle-clauses rn clauses (i + 1)
+   }))
 
 Section: Chapter Scoping Pipeline
 
@@ -233,14 +233,14 @@ Section: Chapter Scoping Pipeline
  rename maps, and provides functions for the streaming pipeline to
  rename def names and body expressions.
 
-  build-all-assignments : List DefHeader -> Integer -> List ChapterAssignment
-  build-all-assignments (headers) (i) =
-   if i == list-length headers then []
+  build-all-assignments : List DefHeader -> Integer -> List ChapterAssignment -> List ChapterAssignment
+  build-all-assignments (headers) (i) (acc) =
+   if i == list-length headers then acc
    else let hdr = list-at headers i
-   in [ChapterAssignment {
+   in build-all-assignments headers (i + 1) (list-snoc acc (ChapterAssignment {
     def-name = (hdr.name.text),
     chapter-slug = hdr.chapter-slug
-   }] ++ build-all-assignments headers (i + 1)
+   }))
 
   scope-def-name : List Text -> List ChapterAssignment -> Text -> Text -> Text
   scope-def-name (colliding) (assignments) (name) (cur-chap) =
@@ -290,27 +290,27 @@ Section: Global Scope (non-streaming)
   scope-ir-chapter (ir) (colliding) (assignments) =
    IRChapter {
     name = ir.name,
-    defs = scope-ir-defs (ir.defs) colliding assignments "" [] 0,
+    defs = scope-ir-defs (ir.defs) colliding assignments "" [] 0 [],
     chapter-title = ir.chapter-title,
     prose = ir.prose,
     section-titles = ir.section-titles
    }
 
-  scope-ir-defs : List IRDef -> List Text -> List ChapterAssignment -> Text -> List RenameEntry -> Integer -> List IRDef
-  scope-ir-defs (defs) (colliding) (assignments) (cur-slug) (cur-rn) (i) =
-   if i == list-length defs then []
+  scope-ir-defs : List IRDef -> List Text -> List ChapterAssignment -> Text -> List RenameEntry -> Integer -> List IRDef -> List IRDef
+  scope-ir-defs (defs) (colliding) (assignments) (cur-slug) (cur-rn) (i) (acc) =
+   if i == list-length defs then acc
    else let d = list-at defs i
    in let rn = if d.chapter-slug == cur-slug then cur-rn
       else build-chapter-rename-map colliding assignments (d.chapter-slug)
    in let new-name = rename-lookup rn (d.name)
    in let new-body = rename-ir-expr rn (d.body)
-   in [IRDef {
+   in scope-ir-defs defs colliding assignments (d.chapter-slug) rn (i + 1) (list-snoc acc (IRDef {
     name = new-name,
     params = d.params,
     type-val = d.type-val,
     body = new-body,
     chapter-slug = d.chapter-slug
-   }] ++ scope-ir-defs defs colliding assignments (d.chapter-slug) rn (i + 1)
+   }))
 
 Section: AST Expression Renaming
 
@@ -330,27 +330,27 @@ Section: AST Expression Renaming
     if AIfExpr (c) (t) (el) -> AIfExpr (rename-aexpr rn c) (rename-aexpr rn t) (rename-aexpr rn el)
     if ALetExpr (binds) (body) -> rename-alet rn binds body
     if ALambdaExpr (params) (body) -> rename-alambda rn params body
-    if AMatchExpr (scrut) (arms) -> AMatchExpr (rename-aexpr rn scrut) (rename-amatch-arms rn arms 0)
-    if AListExpr (elems) -> AListExpr (rename-aexprs rn elems 0)
-    if ARecordExpr (name) (fields) -> ARecordExpr name (rename-afields rn fields 0)
+    if AMatchExpr (scrut) (arms) -> AMatchExpr (rename-aexpr rn scrut) (rename-amatch-arms rn arms 0 [])
+    if AListExpr (elems) -> AListExpr (rename-aexprs rn elems 0 [])
+    if ARecordExpr (name) (fields) -> ARecordExpr name (rename-afields rn fields 0 [])
     if AFieldAccess (rec) (field) -> AFieldAccess (rename-aexpr rn rec) field
-    if ADoExpr (stmts) -> ADoExpr (rename-ado-stmts rn stmts 0)
-    if AHandleExpr (eff) (body) (clauses) -> AHandleExpr eff (rename-aexpr rn body) (rename-ahandle-clauses rn clauses 0)
+    if ADoExpr (stmts) -> ADoExpr (rename-ado-stmts rn stmts 0 [])
+    if AHandleExpr (eff) (body) (clauses) -> AHandleExpr eff (rename-aexpr rn body) (rename-ahandle-clauses rn clauses 0 [])
 
   rename-alet : List RenameEntry -> List ALetBind -> AExpr -> AExpr
   rename-alet (rn) (binds) (body) =
-   let new-binds = rename-alet-binds rn binds 0
+   let new-binds = rename-alet-binds rn binds 0 []
    in let rn2 = remove-renames-for-let-binds rn binds 0
    in ALetExpr new-binds (rename-aexpr rn2 body)
 
-  rename-alet-binds : List RenameEntry -> List ALetBind -> Integer -> List ALetBind
-  rename-alet-binds (rn) (binds) (i) =
-   if i == list-length binds then []
+  rename-alet-binds : List RenameEntry -> List ALetBind -> Integer -> List ALetBind -> List ALetBind
+  rename-alet-binds (rn) (binds) (i) (acc) =
+   if i == list-length binds then acc
    else let b = list-at binds i
-   in [ALetBind {
+   in rename-alet-binds rn binds (i + 1) (list-snoc acc (ALetBind {
     name = b.name,
     value = rename-aexpr rn (b.value)
-   }] ++ rename-alet-binds rn binds (i + 1)
+   }))
 
   remove-renames-for-let-binds : List RenameEntry -> List ALetBind -> Integer -> List RenameEntry
   remove-renames-for-let-binds (rn) (binds) (i) =
@@ -367,29 +367,29 @@ Section: AST Expression Renaming
    if i == list-length names then rn
    else remove-renames-for-names (remove-rename rn ((list-at names i).value)) names (i + 1)
 
-  rename-aexprs : List RenameEntry -> List AExpr -> Integer -> List AExpr
-  rename-aexprs (rn) (elems) (i) =
-   if i == list-length elems then []
-   else [rename-aexpr rn (list-at elems i)] ++ rename-aexprs rn elems (i + 1)
+  rename-aexprs : List RenameEntry -> List AExpr -> Integer -> List AExpr -> List AExpr
+  rename-aexprs (rn) (elems) (i) (acc) =
+   if i == list-length elems then acc
+   else rename-aexprs rn elems (i + 1) (list-snoc acc (rename-aexpr rn (list-at elems i)))
 
-  rename-afields : List RenameEntry -> List AFieldExpr -> Integer -> List AFieldExpr
-  rename-afields (rn) (fields) (i) =
-   if i == list-length fields then []
+  rename-afields : List RenameEntry -> List AFieldExpr -> Integer -> List AFieldExpr -> List AFieldExpr
+  rename-afields (rn) (fields) (i) (acc) =
+   if i == list-length fields then acc
    else let f = list-at fields i
-   in [AFieldExpr {
+   in rename-afields rn fields (i + 1) (list-snoc acc (AFieldExpr {
     name = f.name,
     value = rename-aexpr rn (f.value)
-   }] ++ rename-afields rn fields (i + 1)
+   }))
 
-  rename-amatch-arms : List RenameEntry -> List AMatchArm -> Integer -> List AMatchArm
-  rename-amatch-arms (rn) (arms) (i) =
-   if i == list-length arms then []
+  rename-amatch-arms : List RenameEntry -> List AMatchArm -> Integer -> List AMatchArm -> List AMatchArm
+  rename-amatch-arms (rn) (arms) (i) (acc) =
+   if i == list-length arms then acc
    else let a = list-at arms i
    in let rn2 = remove-renames-for-apat rn (a.pattern)
-   in [AMatchArm {
+   in rename-amatch-arms rn arms (i + 1) (list-snoc acc (AMatchArm {
     pattern = a.pattern,
     body = rename-aexpr rn2 (a.body)
-   }] ++ rename-amatch-arms rn arms (i + 1)
+   }))
 
   remove-renames-for-apat : List RenameEntry -> APat -> List RenameEntry
   remove-renames-for-apat (rn) (p) =
@@ -404,27 +404,27 @@ Section: AST Expression Renaming
    if i == list-length pats then rn
    else remove-renames-for-apats (remove-renames-for-apat rn (list-at pats i)) pats (i + 1)
 
-  rename-ado-stmts : List RenameEntry -> List ADoStmt -> Integer -> List ADoStmt
-  rename-ado-stmts (rn) (stmts) (i) =
-   if i == list-length stmts then []
+  rename-ado-stmts : List RenameEntry -> List ADoStmt -> Integer -> List ADoStmt -> List ADoStmt
+  rename-ado-stmts (rn) (stmts) (i) (acc) =
+   if i == list-length stmts then acc
    else let s = list-at stmts i
    in when s
     if ADoBindStmt (nm) (expr) ->
      let rn2 = remove-rename rn (nm.value)
-   in [ADoBindStmt nm (rename-aexpr rn expr)] ++ rename-ado-stmts rn2 stmts (i + 1)
+   in rename-ado-stmts rn2 stmts (i + 1) (list-snoc acc (ADoBindStmt nm (rename-aexpr rn expr)))
     if ADoExprStmt (expr) ->
-     [ADoExprStmt (rename-aexpr rn expr)] ++ rename-ado-stmts rn stmts (i + 1)
+     rename-ado-stmts rn stmts (i + 1) (list-snoc acc (ADoExprStmt (rename-aexpr rn expr)))
 
-  rename-ahandle-clauses : List RenameEntry -> List AHandleClause -> Integer -> List AHandleClause
-  rename-ahandle-clauses (rn) (clauses) (i) =
-   if i == list-length clauses then []
+  rename-ahandle-clauses : List RenameEntry -> List AHandleClause -> Integer -> List AHandleClause -> List AHandleClause
+  rename-ahandle-clauses (rn) (clauses) (i) (acc) =
+   if i == list-length clauses then acc
    else let c = list-at clauses i
    in let rn2 = remove-rename rn (c.resume-name.value)
-   in [AHandleClause {
+   in rename-ahandle-clauses rn clauses (i + 1) (list-snoc acc (AHandleClause {
     op-name = c.op-name,
     resume-name = c.resume-name,
     body = rename-aexpr rn2 (c.body)
-   }] ++ rename-ahandle-clauses rn clauses (i + 1)
+   }))
 
 Section: AST-Level Chapter Scoping
 
@@ -435,7 +435,7 @@ Section: AST-Level Chapter Scoping
   scope-achapter (ast) (colliding) (assignments) =
    AChapter {
     name = ast.name,
-    defs = scope-adefs (ast.defs) colliding assignments (ast.citations) "" [] 0,
+    defs = scope-adefs (ast.defs) colliding assignments (ast.citations) "" [] 0 [],
     type-defs = ast.type-defs,
     effect-defs = ast.effect-defs,
     citations = ast.citations,
@@ -444,21 +444,21 @@ Section: AST-Level Chapter Scoping
     section-titles = ast.section-titles
    }
 
-  scope-adefs : List ADef -> List Text -> List ChapterAssignment -> List ACitesDecl -> Text -> List RenameEntry -> Integer -> List ADef
-  scope-adefs (defs) (colliding) (assignments) (citations) (cur-slug) (cur-rn) (i) =
-   if i == list-length defs then []
+  scope-adefs : List ADef -> List Text -> List ChapterAssignment -> List ACitesDecl -> Text -> List RenameEntry -> Integer -> List ADef -> List ADef
+  scope-adefs (defs) (colliding) (assignments) (citations) (cur-slug) (cur-rn) (i) (acc) =
+   if i == list-length defs then acc
    else let d = list-at defs i
    in let rn = if d.chapter-slug == cur-slug then cur-rn
       else apply-cite-overrides (build-chapter-rename-map colliding assignments (d.chapter-slug)) citations colliding assignments (d.chapter-slug) 0
    in let new-name = make-name (rename-lookup rn (d.name.value))
    in let new-body = rename-aexpr rn (d.body)
-   in [ADef {
+   in scope-adefs defs colliding assignments citations (d.chapter-slug) rn (i + 1) (list-snoc acc (ADef {
     name = new-name,
     params = d.params,
     declared-type = d.declared-type,
     body = new-body,
     chapter-slug = d.chapter-slug
-   }] ++ scope-adefs defs colliding assignments citations (d.chapter-slug) rn (i + 1)
+   }))
 
   apply-cite-overrides : List RenameEntry -> List ACitesDecl -> List Text -> List ChapterAssignment -> Text -> Integer -> List RenameEntry
   apply-cite-overrides (rn) (citations) (colliding) (assignments) (cur-slug) (i) =
