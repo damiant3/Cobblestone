@@ -57,7 +57,6 @@ public static partial class Program
                 if (!lastWasBlank)
                     output.Append('\n');
                 lastWasBlank = true;
-                inCode = false;
                 continue;
             }
 
@@ -82,8 +81,8 @@ public static partial class Program
                 continue;
             }
 
-            // Page marker: "Page N"
-            if (trimmed.StartsWith("Page ") && trimmed.Length < 10)
+            // Page marker: "Page N" or "Page N of M"
+            if (trimmed.StartsWith("Page ") && trimmed.Length >= 6 && char.IsDigit(trimmed[5]))
             {
                 output.Append(trimmed);
                 output.Append('\n');
@@ -107,9 +106,11 @@ public static partial class Program
 
             bool isCodeStart = IsCodeStartLine(trimmed);
 
-            if (isCodeStart && !inCode)
+            if (isCodeStart && !inCode && currentIndent >= 2)
             {
-                // Entering code from prose
+                // Entering code from prose — only when already at code-level indent.
+                // Lines at prose indent (0-1 spaces) that pattern-match code
+                // (e.g. "R10 = heap bump pointer.") stay as prose.
                 inCode = true;
                 output.Append("  ");
                 output.Append(trimmed);
@@ -171,22 +172,19 @@ public static partial class Program
         // Must start with letter or underscore
         if (!char.IsLetter(first) && first != '_') return false;
 
-        // Look for : (type annotation), = (definition/type def), or ( (params)
-        for (int i = 1; i < trimmed.Length; i++)
-        {
-            char c = trimmed[i];
-            if (c == ':' && i > 1 && trimmed[i - 1] == ' ')
-                return true; // "name : Type"
-            if (c == '=' && i > 1 && (trimmed[i - 1] == ' ' || trimmed[i - 1] == ')'))
-                return true; // "name =" or "name (x) ="
-            if (c == '(' && i > 1)
-                return true; // "name (params)"
-            if (c == ' ' && i + 1 < trimmed.Length && trimmed[i + 1] == '=')
-                return true; // "Name ="
-            // Stop at first space if no special char found yet
-            if (c == ' ') break;
-        }
+        // Scan past the first word (letters, digits, hyphens, underscores)
+        int i = 1;
+        while (i < trimmed.Length && trimmed[i] != ' ')
+            i++;
 
-        return false;
+        // Skip whitespace after the word
+        while (i < trimmed.Length && trimmed[i] == ' ')
+            i++;
+
+        if (i >= trimmed.Length) return false;
+
+        // The character after "name " determines the line type
+        char afterName = trimmed[i];
+        return afterName == ':' || afterName == '=' || afterName == '(';
     }
 }
