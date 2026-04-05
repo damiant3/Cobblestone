@@ -45,6 +45,7 @@ public static partial class Program
         var output = new System.Text.StringBuilder(content.Length);
         bool inCode = false;
         bool lastWasBlank = false;
+        int chainIndent = -1; // tracks base indent of current in-let chain
 
         for (int i = 0; i < lines.Length; i++)
         {
@@ -57,6 +58,7 @@ public static partial class Program
                 if (!lastWasBlank)
                     output.Append('\n');
                 lastWasBlank = true;
+                chainIndent = -1;
                 continue;
             }
 
@@ -69,6 +71,7 @@ public static partial class Program
                 output.Append(trimmed);
                 output.Append('\n');
                 inCode = false;
+                chainIndent = -1;
                 continue;
             }
 
@@ -78,6 +81,7 @@ public static partial class Program
                 output.Append(trimmed);
                 output.Append('\n');
                 inCode = false;
+                chainIndent = -1;
                 continue;
             }
 
@@ -96,6 +100,7 @@ public static partial class Program
                 output.Append(trimmed);
                 output.Append('\n');
                 inCode = true;
+                chainIndent = -1;
                 continue;
             }
 
@@ -112,6 +117,7 @@ public static partial class Program
                 // Lines at prose indent (0-1 spaces) that pattern-match code
                 // (e.g. "R10 = heap bump pointer.") stay as prose.
                 inCode = true;
+                chainIndent = -1;
                 output.Append("  ");
                 output.Append(trimmed);
                 output.Append('\n');
@@ -124,6 +130,7 @@ public static partial class Program
                 if (isCodeStart && currentIndent <= 2)
                 {
                     // New top-level def/type annotation
+                    chainIndent = -1;
                     output.Append("  ");
                     output.Append(trimmed);
                     output.Append('\n');
@@ -132,14 +139,34 @@ public static partial class Program
                 {
                     // Back to prose
                     inCode = false;
+                    chainIndent = -1;
                         output.Append(' ');
                     output.Append(trimmed);
                     output.Append('\n');
                 }
                 else
                 {
-                    // Continuation/body line — preserve original indentation
-                    output.Append(new string(' ', currentIndent > 0 ? currentIndent : 3));
+                    // Continuation/body line
+                    int indent = currentIndent > 0 ? currentIndent : 3;
+
+                    // Flatten in-let chains: "in ..." and "else let/do" lines at
+                    // increasing indentation are normalized to the chain base.
+                    // Plain "else <expr>" keeps its alignment with the if.
+                    bool isChainLine = trimmed.StartsWith("in ")
+                        || trimmed.StartsWith("else let ")
+                        || trimmed.StartsWith("else do")
+                        || trimmed == "else";
+                    if (isChainLine)
+                    {
+                        if (chainIndent < 0)
+                            chainIndent = indent;
+                        else if (indent > chainIndent)
+                            indent = chainIndent;
+                        else
+                            chainIndent = indent;
+                    }
+
+                    output.Append(new string(' ', indent));
                     output.Append(trimmed);
                     output.Append('\n');
                 }
