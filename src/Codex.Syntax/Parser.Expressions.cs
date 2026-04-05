@@ -127,6 +127,12 @@ public sealed partial class Parser
                 }
 
                 ExpressionNode node = new NameExpressionNode(token);
+                while (Current.Kind == TokenKind.Dot)
+                {
+                    Advance();
+                    Token field = Expect(TokenKind.Identifier);
+                    node = new FieldAccessExpressionNode(node, field, node.Span.Through(field.Span));
+                }
                 return node;
             }
 

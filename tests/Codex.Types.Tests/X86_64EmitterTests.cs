@@ -489,8 +489,9 @@ public class X86_64EmitterTests
         Assert.NotNull(bytes);
         // Before IDT loop optimization: ~19KB+ (IDT unroll alone was ~12.8KB).
         // After: ~7KB for a trivial program. Guard against regression.
-        Assert.True(bytes.Length < 10240,
-            $"Bare metal kernel too large: {bytes.Length} bytes (expected < 10240)");
+        // Grew to ~12.5KB with runtime helpers (string ops, list ops, CCE table).
+        Assert.True(bytes.Length < 16384,
+            $"Bare metal kernel too large: {bytes.Length} bytes (expected < 16384)");
     }
 
     static string ToWslPath(string windowsPath)
