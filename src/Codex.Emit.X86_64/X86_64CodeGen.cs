@@ -566,9 +566,20 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         int frameSizePatchOffset = m_text.Count;
         EmitSubRspImm32(0);
 
-        // Stack overflow guard: cmp rsp, BareMetalStackBottom; jb __stack_overflow
+        // Stack overflow guard + min-RSP tracker
         if (m_target == X86_64Target.BareMetal)
         {
+            // Update min-RSP: if RSP < [StackMinRspAddr], store RSP
+            X86_64Encoder.Li(m_text, Reg.R11, StackMinRspAddr);
+            X86_64Encoder.MovLoad(m_text, Reg.R11, Reg.R11, 0); // R11 = current min
+            X86_64Encoder.CmpRR(m_text, Reg.RSP, Reg.R11);
+            int skipUpdate = m_text.Count;
+            X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0); // skip if RSP >= min
+            X86_64Encoder.Li(m_text, Reg.R11, StackMinRspAddr);
+            X86_64Encoder.MovStore(m_text, Reg.R11, Reg.RSP, 0); // store new min
+            PatchJcc(skipUpdate, m_text.Count);
+
+            // Overflow check: jb __stack_overflow if RSP < StackBottom
             X86_64Encoder.Li(m_text, Reg.R11, BareMetalStackBottom);
             X86_64Encoder.CmpRR(m_text, Reg.RSP, Reg.R11);
             m_stackOverflowChecks.Add((m_text.Count, def.Name));
@@ -5472,6 +5483,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     // 0x7028  SerialReadPos         8 bytes  Ring buffer read position (consumer)
     // 0x7030  ResultArenaBaseAddr   8 bytes  Result-space arena base for REPL reset
     // 0x7038  HeapHwmAddr           8 bytes  Heap high-water mark (peak HeapReg during compilation)
+    // 0x7040  StackMinRspAddr       8 bytes  Stack high-water mark (lowest RSP seen in prologues)
     // 0x3C0000-0x3FFFFF            256KB    Serial ring buffer data (below heap at 0x400000)
     const long TickCountAddr = 0x7000;
     const long KeyBufferAddr = 0x7008;
@@ -5480,6 +5492,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     const long SerialReadPosAddr = 0x7028;
     const long ResultArenaBaseAddr = 0x7030;
     const long HeapHwmAddr = 0x7038;
+    const long StackMinRspAddr = 0x7040;
     const long SerialRingBufAddr = 0x3C0000;
     const long SerialRingBufSize = 0x40000; // 256KB — must be power of 2
 
@@ -5858,20 +5871,14 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             // Disable interrupts until IDT is ready
             X86_64Encoder.Cli(m_text);
 
-            // Set up stack at top of identity-mapped region (2MB, grows down)
+            // Set up stack at top of identity-mapped region (4MB, grows down)
             X86_64Encoder.Li(m_text, Reg.RSP, BareMetalStackTop);
             X86_64Encoder.MovRR(m_text, Reg.RBP, Reg.RSP);
 
-            // Paint stack with 0xDEADBEEF for high-water-mark measurement
-            // Paint stack region with 0xDEADBEEF for high-water-mark measurement
-            X86_64Encoder.Li(m_text, Reg.RDI, BareMetalStackBottom);
-            X86_64Encoder.Li(m_text, Reg.RCX, (BareMetalStackTop - BareMetalStackBottom) / 8);
-            X86_64Encoder.Li(m_text, Reg.RAX, unchecked((long)0xDEADBEEFDEADBEEF));
-            m_text.Add(0x48); m_text.Add(0xF3); m_text.Add(0xAB); // rep stosq
-
-            // Restore RSP (rep stosq clobbers rdi/rcx)
-            X86_64Encoder.Li(m_text, Reg.RSP, BareMetalStackTop);
-            X86_64Encoder.MovRR(m_text, Reg.RBP, Reg.RSP);
+            // Initialize stack min-RSP tracker to StackTop (no usage yet)
+            X86_64Encoder.Li(m_text, Reg.R11, StackMinRspAddr);
+            X86_64Encoder.Li(m_text, Reg.RAX, BareMetalStackTop);
+            X86_64Encoder.MovStore(m_text, Reg.R11, Reg.RAX, 0);
 
             // Set up two-space heap
             X86_64Encoder.Li(m_text, HeapReg, BareMetalHeapBase);
@@ -5998,30 +6005,20 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             // Final HWM update (in case peak wasn't captured by a region restore)
             EmitUpdateHeapHwm();
 
-            // ── Stack high-water-mark scan ──
-            // Scan from stack bottom upward for first 0xDEADBEEFDEADBEEF qword.
-            // RDI = scan pointer, RAX = pattern, RCX = upper bound (StackTop).
-            X86_64Encoder.Li(m_text, Reg.RDI, BareMetalStackBottom);
-            X86_64Encoder.Li(m_text, Reg.RAX, unchecked((long)0xDEADBEEFDEADBEEF));
-            X86_64Encoder.Li(m_text, Reg.RCX, BareMetalStackTop);
-            int scanLoop = m_text.Count;
-            X86_64Encoder.CmpRR(m_text, Reg.RDI, Reg.RCX);
-            int scanDone = m_text.Count;
-            X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0); // past top → 100% used
-            X86_64Encoder.MovLoad(m_text, Reg.RSI, Reg.RDI, 0);
-            X86_64Encoder.CmpRR(m_text, Reg.RSI, Reg.RAX);
-            int foundPaint = m_text.Count;
-            X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0); // jump if found
-            X86_64Encoder.AddRI(m_text, Reg.RDI, 8);
-            X86_64Encoder.Jmp(m_text, scanLoop - (m_text.Count + 5));
-            PatchJcc(foundPaint, m_text.Count);
-            PatchJcc(scanDone, m_text.Count);
-
-            // RDI = first untouched address. Stack used = StackTop - RDI
+            // ── Stack high-water-mark from min-RSP tracker ──
+            // Each function prologue updates StackMinRspAddr if RSP is lower.
+            // Stack used = StackTop - min_RSP.
             X86_64Encoder.Li(m_text, Reg.RSI, BareMetalStackTop);
-            X86_64Encoder.SubRR(m_text, Reg.RSI, Reg.RDI);
+            X86_64Encoder.Li(m_text, Reg.RDI, StackMinRspAddr);
+            X86_64Encoder.MovLoad(m_text, Reg.RDI, Reg.RDI, 0); // RDI = min RSP
+            X86_64Encoder.SubRR(m_text, Reg.RSI, Reg.RDI);      // RSI = bytes used
             // Save stack HWM for later (HEAP: must be emitted before STACK:)
             X86_64Encoder.PushR(m_text, Reg.RSI);
+
+            // Reset min-RSP tracker for next iteration
+            X86_64Encoder.Li(m_text, Reg.R11, StackMinRspAddr);
+            X86_64Encoder.Li(m_text, Reg.RAX, BareMetalStackTop);
+            X86_64Encoder.MovStore(m_text, Reg.R11, Reg.RAX, 0);
 
             // ── Heap high-water-mark emission (HEAP: before STACK:) ──
             // Read peak HeapReg from global HWM tracker
