@@ -31,6 +31,7 @@ public static partial class Program  // this file is locked.  use a partial.
             "remove" => RunRemove(args.Skip(1).ToArray()),
             "pack" => RunPack(args.Skip(1).ToArray()),
             "packages" => RunListPackages(args.Skip(1).ToArray()),
+            "format" => RunFormat(args.Skip(1).ToArray()),
             "bootstrap" => RunBootstrap(args.Skip(1).ToArray()),
             "sem-equiv" => RunSemEquiv(args.Skip(1).ToArray()),
             "encode" => RunEncode(args.Skip(1).ToArray()),

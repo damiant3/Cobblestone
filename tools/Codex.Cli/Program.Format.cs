@@ -1,0 +1,192 @@
+using Codex.Core;
+using Codex.Syntax;
+
+namespace Codex.Cli;
+
+public static partial class Program
+{
+    static int RunFormat(string[] args)
+    {
+        if (args.Length == 0)
+        {
+            Console.Error.WriteLine("Usage: codex format <file.codex> [--write]");
+            Console.Error.WriteLine("  Without --write, prints formatted output to stdout.");
+            Console.Error.WriteLine("  With --write, overwrites the file in place.");
+            return 1;
+        }
+
+        string filePath = args[0];
+        bool writeInPlace = args.Contains("--write");
+
+        if (!File.Exists(filePath))
+        {
+            Console.Error.WriteLine($"File not found: {filePath}");
+            return 1;
+        }
+
+        string content = File.ReadAllText(filePath);
+        string formatted = FormatCodexSource(content);
+
+        if (writeInPlace)
+        {
+            File.WriteAllText(filePath, formatted);
+            Console.Error.WriteLine($"Formatted: {filePath}");
+        }
+        else
+        {
+            Console.Write(formatted);
+        }
+        return 0;
+    }
+
+    static string FormatCodexSource(string content)
+    {
+        string[] lines = content.Split('\n');
+        var output = new System.Text.StringBuilder(content.Length);
+        bool inCode = false;
+        bool lastWasBlank = false;
+
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string line = lines[i].TrimEnd('\r');
+            string trimmed = line.TrimStart();
+
+            // Blank line
+            if (trimmed.Length == 0)
+            {
+                if (!lastWasBlank)
+                    output.Append('\n');
+                lastWasBlank = true;
+                inCode = false;
+                continue;
+            }
+
+            lastWasBlank = false;
+            int currentIndent = line.Length - trimmed.Length;
+
+            // Chapter header: "Chapter: ..."
+            if (trimmed.StartsWith("Chapter:"))
+            {
+                output.Append(trimmed);
+                output.Append('\n');
+                inCode = false;
+                continue;
+            }
+
+            // Section header: "Section: ..."
+            if (trimmed.StartsWith("Section:"))
+            {
+                output.Append(trimmed);
+                output.Append('\n');
+                inCode = false;
+                continue;
+            }
+
+            // Page marker: "Page N"
+            if (trimmed.StartsWith("Page ") && trimmed.Length < 10)
+            {
+                output.Append(trimmed);
+                output.Append('\n');
+                continue;
+            }
+
+            // Cites declaration: "  cites ..."
+            if (trimmed.StartsWith("cites "))
+            {
+                output.Append("  ");
+                output.Append(trimmed);
+                output.Append('\n');
+                inCode = true;
+                continue;
+            }
+
+            // Detect if this is a code line or prose line.
+            // Code lines: type annotations (name : Type), definitions (name (params) =),
+            //   type defs (Name = record/variant), continuation lines
+            // Prose lines: everything else at column 1-2
+
+            bool isCodeStart = IsCodeStartLine(trimmed);
+
+            if (isCodeStart && !inCode)
+            {
+                // Entering code from prose
+                inCode = true;
+                output.Append("  ");
+                output.Append(trimmed);
+                output.Append('\n');
+                continue;
+            }
+
+            if (inCode)
+            {
+                // Inside a code block — normalize indentation
+                if (isCodeStart && currentIndent <= 2)
+                {
+                    // New top-level def/type annotation
+                    output.Append("  ");
+                    output.Append(trimmed);
+                    output.Append('\n');
+                }
+                else if (currentIndent == 0 && !isCodeStart)
+                {
+                    // Back to prose
+                    inCode = false;
+                        output.Append(' ');
+                    output.Append(trimmed);
+                    output.Append('\n');
+                }
+                else
+                {
+                    // Continuation/body line — preserve original indentation
+                    output.Append(new string(' ', currentIndent > 0 ? currentIndent : 3));
+                    output.Append(trimmed);
+                    output.Append('\n');
+                }
+                continue;
+            }
+
+            // Prose line — 1-space indent
+            output.Append(' ');
+            output.Append(trimmed);
+            output.Append('\n');
+        }
+
+        return output.ToString();
+    }
+
+    static bool IsCodeStartLine(string trimmed)
+    {
+        if (trimmed.Length == 0) return false;
+
+        // Type definition: starts with uppercase Name followed by = or type params
+        // Function annotation: starts with lowercase name followed by :
+        // Function definition: starts with lowercase name followed by (
+        // Variant constructor: starts with |
+
+        char first = trimmed[0];
+
+        // Variant constructor line
+        if (first == '|') return true;
+
+        // Must start with letter or underscore
+        if (!char.IsLetter(first) && first != '_') return false;
+
+        // Look for : (type annotation), = (definition/type def), or ( (params)
+        for (int i = 1; i < trimmed.Length; i++)
+        {
+            char c = trimmed[i];
+            if (c == ':' && i > 1 && trimmed[i - 1] == ' ')
+                return true; // "name : Type"
+            if (c == '=' && i > 1 && (trimmed[i - 1] == ' ' || trimmed[i - 1] == ')'))
+                return true; // "name =" or "name (x) ="
+            if (c == '(' && i > 1)
+                return true; // "name (params)"
+            if (c == ' ' && i + 1 < trimmed.Length && trimmed[i + 1] == '=')
+                return true; // "Name ="
+            // Stop at first space if no special char found yet
+            if (c == ' ') break;
+        }
+
+        return false;
+    }
+}
