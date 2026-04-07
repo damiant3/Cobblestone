@@ -70,9 +70,11 @@ public class ElfWriterBootTest
             m_output.WriteLine($"WSL path: {wslPath}");
 
             // Boot in QEMU: -nographic sends serial to stdio, -no-reboot stops on halt
-            string cmd = $"timeout 5 /usr/bin/qemu-system-x86_64 -kernel {wslPath} -nographic -no-reboot 2>/dev/null";
-            string? output = RunWsl(cmd);
+            string cmd = $"timeout 5 /usr/bin/qemu-system-x86_64 -kernel {wslPath} -nographic -no-reboot";
+            (string? output, string? qemuStderr) = RunWsl(cmd);
             m_output.WriteLine($"QEMU output: [{output}]");
+            if (!string.IsNullOrEmpty(qemuStderr))
+                m_output.WriteLine($"QEMU stderr: [{qemuStderr}]");
 
             Assert.NotNull(output);
 
@@ -116,7 +118,7 @@ public class ElfWriterBootTest
         return normalized;
     }
 
-    static string? RunWsl(string command)
+    static (string?, string?) RunWsl(string command)
     {
         try
         {
@@ -127,12 +129,13 @@ public class ElfWriterBootTest
                 UseShellExecute = false,
                 CreateNoWindow = true,
             });
-            if (proc is null) return null;
+            if (proc is null) return (null, null);
             string stdout = proc.StandardOutput.ReadToEnd();
+            string stderr = proc.StandardError.ReadToEnd();
             proc.WaitForExit(10_000);
-            return stdout;
+            return (stdout, stderr);
         }
-        catch { return null; }
+        catch { return (null, null); }
     }
 
     static bool HasWslQemu()
@@ -140,7 +143,7 @@ public class ElfWriterBootTest
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return false;
         try
         {
-            string? result = RunWsl("which qemu-system-x86_64 2>/dev/null && echo FOUND");
+            (string? result, _) = RunWsl("which qemu-system-x86_64 2>/dev/null && echo FOUND");
             return result?.Contains("FOUND") == true;
         }
         catch { return false; }
