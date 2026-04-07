@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using Codex.Ast;
 using Codex.Core;
 using Codex.IR;
 using Codex.Semantics;
@@ -148,36 +149,53 @@ public class MM2IntegrationTests
         string? codexDir = FindCodexDir();
         if (codexDir is null) { m_output.WriteLine("SKIP: Codex.Codex dir not found"); return; }
 
-        string combined = LoadCompilerSource(codexDir);
-        m_output.WriteLine($"Compiler source: {combined.Length} chars");
+        string[] files = Directory.GetFiles(codexDir, "*.codex", SearchOption.AllDirectories)
+            .OrderBy(f => f, StringComparer.Ordinal)
+            .ToArray();
+        m_output.WriteLine($"Compiler source: {files.Length} files");
 
-        // Run compilation pipeline with diagnostic capture at each stage.
-        var src = new SourceText("CompilerKernel.codex", combined);
         var diag = new DiagnosticBag();
+        var desugarer = new Codex.Ast.Desugarer(diag);
+        List<Chapter> chapters = [];
 
-        // Parse
-        DocumentNode document;
-        if (ProseParser.IsProseDocument(combined))
+        // Parse and desugar each file as its own chapter
+        foreach (string filePath in files)
         {
-            document = new ProseParser(src, diag).ParseDocument();
+            string content = File.ReadAllText(filePath);
+            string chapterName = Path.GetFileNameWithoutExtension(filePath);
+            SourceText src;
+            DocumentNode document;
+
+            if (ProseParser.IsProseDocument(content))
+            {
+                src = new SourceText(filePath, content);
+                document = new ProseParser(src, diag).ParseDocument();
+            }
+            else
+            {
+                src = new SourceText(filePath, content);
+                var tokens = new Lexer(src, diag).TokenizeAll();
+                document = new Parser(tokens, diag).ParseDocument();
+            }
+
+            if (document.Chapters.Count > 0)
+                chapterName = document.Chapters[0].Title;
+
+            chapters.Add(desugarer.Desugar(document, chapterName));
         }
-        else
-        {
-            var tokens = new Lexer(src, diag).TokenizeAll();
-            document = new Parser(tokens, diag).ParseDocument();
-        }
+
         int parseErrors = CountErrors(diag);
-        m_output.WriteLine($"Parse: {document.Definitions.Count} defs, {document.TypeDefinitions.Count} types, {parseErrors} errors");
-        if (parseErrors > 0) { DumpErrors(diag, 10); Assert.Fail("Parse failed"); return; }
+        m_output.WriteLine($"Parse+Desugar: {chapters.Count} chapters, {parseErrors} errors");
+        if (diag.HasErrors) { DumpErrors(diag, 10); Assert.Fail("Parse/Desugar failed"); return; }
 
-        // Desugar
-        var module = new Codex.Ast.Desugarer(diag).Desugar(document, "CompilerKernel");
-        int desugarErrors = CountErrors(diag) - parseErrors;
-        m_output.WriteLine($"Desugar: {desugarErrors} new errors");
-        if (diag.HasErrors) { DumpErrors(diag, 10); Assert.Fail("Desugar failed"); return; }
+        // Scope chapters (handles duplicate names across files)
+        var scoper = new ChapterScoper(diag);
+        Chapter combined = scoper.Scope(chapters, "CompilerKernel");
+        m_output.WriteLine($"Scope: {combined.Definitions.Count} defs, {CountErrors(diag)} errors");
+        if (diag.HasErrors) { DumpErrors(diag, 10); Assert.Fail("Chapter scoping failed"); return; }
 
         // Resolve
-        var resolved = new Codex.Semantics.NameResolver(diag).Resolve(module);
+        var resolved = new Codex.Semantics.NameResolver(diag).Resolve(combined);
         int resolveErrors = CountErrors(diag);
         m_output.WriteLine($"Resolve: {resolveErrors} total errors");
         if (diag.HasErrors) { DumpErrors(diag, 10); Assert.Fail("Name resolution failed"); return; }

@@ -1603,9 +1603,50 @@ static class _Cce {
 
 public static class Codex_codex_agent
 {
+    public static bool is_digit_char(string s, long i, long len)
+    {
+        while (true)
+        {
+            if ((i >= len))
+            {
+                return true;
+            }
+            else
+            {
+                var c = ((long)s[(int)i]);
+                if ((c >= 48L))
+                {
+                    if ((c <= 57L))
+                    {
+                        var _tco_0 = s;
+                        var _tco_1 = (i + 1L);
+                        var _tco_2 = len;
+                        s = _tco_0;
+                        i = _tco_1;
+                        len = _tco_2;
+                        continue;
+                    }
+                    else
+                    {
+                        return false;
+                    }
+                }
+                else
+                {
+                    return false;
+                }
+            }
+        }
+    }
+
+    public static bool is_integer_text(string s)
+    {
+        return ((Func<long, bool>)((len) => ((len == 0L) ? false : ((((long)s[(int)0L]) == 45L) ? ((len > 1L) ? is_digit_char(s, 1L, len) : false) : is_digit_char(s, 0L, len)))))(((long)s.Length));
+    }
+
     public static long parse_int_or(string s, long default_val)
     {
-        return ((((long)s.Length) == 0L) ? default_val : long.Parse(_Cce.ToUnicode(s)));
+        return (is_integer_text(s) ? long.Parse(_Cce.ToUnicode(s)) : default_val);
     }
 
     public static string pad_right(string s, long width)
