@@ -48,6 +48,10 @@ find "$REPO" -type d \( -name bin -o -name obj \) -not -path '*/.git/*' -exec rm
 # Incremental build cache
 rm -rf "$REPO/.codex-build"
 
+# Generated Bootstrap intermediates (must regenerate from .codex source)
+rm -rf "$REPO/tools/Codex.Bootstrap/bootstrap-output"
+rm -f "$REPO/tools/Codex.Bootstrap/CodexLib.g.cs"
+
 # Stale temps
 find "$REPO" -maxdepth 3 -type f \( -name '*.bak' -o -name '*.tmp' -o -name '*.snap' \) -not -path '*/.git/*' -delete 2>/dev/null || true
 

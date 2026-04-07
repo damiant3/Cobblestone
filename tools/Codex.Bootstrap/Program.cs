@@ -30,6 +30,8 @@ class Program
             return RunDumpSource(args.Length > 1 ? args[1] : null);
         if (args.Length > 0 && args[0] == "--codex-emit")
             return RunCodexEmit(args.Length > 1 ? args[1] : null, args.Length > 2 ? args[2] : null);
+        if (args.Length > 0 && args[0] == "--scan-test" && args.Length > 1)
+            return RunScanTest(args[1]);
 
         bool verbose = args.Contains("--verbose");
         string[] posArgs = args.Where(a => !a.StartsWith("--")).ToArray();
@@ -520,6 +522,33 @@ class Program
         string dest = outputPath ?? Path.Combine(Path.GetFullPath(Path.Combine(codexDir, "..")), "build-output", "stage1-codex.codex");
         File.WriteAllText(dest, output);
         Console.Error.WriteLine($"  Output: {dest} ({output.Length} chars, {output.Split('\n').Length} lines)");
+        return 0;
+    }
+
+    static int RunScanTest(string filePath)
+    {
+        string source = File.ReadAllText(filePath);
+        string cceSrc = _Cce.FromUnicode(source);
+        var tokens = Codex_Codex_Codex.tokenize(cceSrc);
+
+        // Test scan_document
+        var st = Codex_Codex_Codex.make_parse_state(tokens);
+        var scan = Codex_Codex_Codex.scan_document(st);
+        Console.WriteLine($"scan_document: type_defs={scan.type_defs.Count}, def_headers={scan.def_headers.Count}");
+
+        // Test parse_document for comparison
+        var st2 = Codex_Codex_Codex.make_parse_state(tokens);
+        var doc = Codex_Codex_Codex.parse_document(st2);
+        var ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("Test"));
+        Console.WriteLine($"parse_document: type_defs={ast.type_defs.Count}, defs={ast.defs.Count}");
+
+        // Show first few type def names from scan
+        for (int i = 0; i < Math.Min(scan.type_defs.Count, 10); i++)
+        {
+            var td = scan.type_defs[i];
+            Console.WriteLine($"  scan td[{i}]: {_Cce.ToUnicode(td.name.text)}");
+        }
+
         return 0;
     }
 }

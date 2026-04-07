@@ -20,11 +20,6 @@ public static partial class Program
         string repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
         string bootstrapDir = Path.Combine(repoRoot, "tools", "Codex.Bootstrap");
         string codexLibPath = Path.Combine(bootstrapDir, "CodexLib.g.cs");
-        if (!File.Exists(codexLibPath))
-        {
-            Console.Error.WriteLine($"CodexLib.g.cs not found at: {codexLibPath}");
-            return 1;
-        }
 
         Stopwatch total = Stopwatch.StartNew();
         Console.WriteLine("╔══════════════════════════════════════════════╗");

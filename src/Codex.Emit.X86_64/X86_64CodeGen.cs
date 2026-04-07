@@ -90,11 +90,6 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         EmitEscapeCopyHelpers();
         EmitDiagHexHelper();
 
-        // Patch stack overflow checks — must happen AFTER all EmitFunction calls
-        // so m_stackOverflowChecks is fully populated.
-        if (m_target == X86_64Target.BareMetal)
-            PatchStackOverflowChecks();
-
         // Bare metal: emit ISR stubs, syscall handler, process 1 entry
         if (m_target == X86_64Target.BareMetal)
         {
@@ -1558,6 +1553,12 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         // Writes table base to rodata global, advances HeapReg past the table.
         EmitFwdTableZero();
 
+        // Ensure result space starts at or above current heap top
+        X86_64Encoder.CmpRR(m_text, ResultReg, HeapReg);
+        int skipAdvance = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0);
+        X86_64Encoder.MovRR(m_text, ResultReg, HeapReg);
+        PatchJcc(skipAdvance, m_text.Count);
         // Switch HeapReg to result space so escape helper allocates there
         X86_64Encoder.MovRR(m_text, HeapReg, ResultReg);
 
@@ -2664,41 +2665,41 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         EmitTextConcatListHelper();
         EmitTextSplitHelper();
         EmitIpowHelper();
+        EmitStackOverflowHandler();
+
+        // Patch stack overflow checks — must happen AFTER all EmitFunction calls
+        // so m_stackOverflowChecks is fully populated.
         if (m_target == X86_64Target.BareMetal)
-            EmitOutOfMemoryHandler();
+            PatchStackOverflowChecks();
     }
 
-    void EmitOutOfMemoryHandler()
+    void EmitStackOverflowHandler()
     {
-        // __out_of_memory: stack and heap have converged — no memory left.
-        // RSP crossed R10 (heap). Save RSP, reset to safe stack, print diagnostics.
+        // __out_of_memory: stack and heap have collided — no memory left.
         int handlerOffset = m_text.Count;
         m_functionOffsets["__out_of_memory"] = handlerOffset;
 
-        // Save collision RSP and heap pointer, then reset stack for printing
+        // Save collision RSP and heap, then reset stack for printing
         X86_64Encoder.MovRR(m_text, Reg.RBX, Reg.RSP);
         X86_64Encoder.MovRR(m_text, Reg.R12, HeapReg);
         X86_64Encoder.Li(m_text, Reg.RSP, BareMetalStackTop);
         X86_64Encoder.MovRR(m_text, Reg.RBP, Reg.RSP);
 
-        // Print "OUT OF MEMORY RSP="
         foreach (byte ch in "OUT OF MEMORY RSP="u8)
             EmitSerialWaitAndSend(ch);
         X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RBX);
         EmitCallTo("__itoa");
         EmitPrintText(Reg.RAX);
 
-        // Print " HEAP="
         foreach (byte ch in " HEAP="u8)
             EmitSerialWaitAndSend(ch);
         X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.R12);
         EmitCallTo("__itoa");
         EmitPrintText(Reg.RAX);
 
-        // HLT loop — hard stop, no recovery
+        // HLT loop — hard stop
         m_text.Add(0xF4); // hlt
         X86_64Encoder.Jmp(m_text, m_text.Count - 1 - (m_text.Count + 5));
-
     }
 
     void PatchStackOverflowChecks()
@@ -5013,8 +5014,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     // 0x100000+         Kernel code (.text + .rodata)
     // 0x180000-0x1BFFFF Serial ring buffer (256KB)
     // BareMetalHeapBase+ Working-space heap (grows up)
-    // BareMetalResultBase+ Result-space heap (escape-copy target)
-    // Stack: BareMetalStackBottom..BareMetalStackTop (4 MB, grows down)
+    // Result space starts at heap top when escape-copy begins (grows up)
+    // Stack grows down from BareMetalStackTop — dynamic guard: RSP vs R10
 
     // ── Process Management (Ring 2) ──────────────────────────────
 
@@ -5520,10 +5521,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
     // Bare metal memory layout — 256 x 2MB huge pages = 512 MB
     const int BareMetalPages = 256;
-    const long BareMetalHeapBase = 0x400000;                // 4 MB
-    const long BareMetalResultBase = 0x1FB00000;            // 507 MB (1 MB result)
-    const long BareMetalStackBottom = 0x1FC00000;           // 508 MB (4 MB stack)
-    const long BareMetalStackTop = 0x20000000;              // 512 MB
+    const long BareMetalHeapBase = 0x400000;                // 4 MB — heap+result grow up from here
+    const long BareMetalStackTop = 0x20000000;              // 512 MB — stack grows down from here
 
     void EmitInterruptSetup()
     {
@@ -5893,18 +5892,18 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             // Disable interrupts until IDT is ready
             X86_64Encoder.Cli(m_text);
 
-            // Set up stack at top of identity-mapped region (4MB, grows down)
+            // Set up stack at top of identity-mapped region (2MB, grows down)
             X86_64Encoder.Li(m_text, Reg.RSP, BareMetalStackTop);
             X86_64Encoder.MovRR(m_text, Reg.RBP, Reg.RSP);
 
-            // Initialize stack min-RSP tracker to StackTop (no usage yet)
+            // Set up heap — result space starts at same point, advances on first escape-copy
+            X86_64Encoder.Li(m_text, HeapReg, BareMetalHeapBase);
+            X86_64Encoder.MovRR(m_text, ResultReg, HeapReg);
+
+            // Initialize min-RSP tracker to StackTop (no usage yet)
             X86_64Encoder.Li(m_text, Reg.R11, StackMinRspAddr);
             X86_64Encoder.Li(m_text, Reg.RAX, BareMetalStackTop);
             X86_64Encoder.MovStore(m_text, Reg.R11, Reg.RAX, 0);
-
-            // Set up two-space heap
-            X86_64Encoder.Li(m_text, HeapReg, BareMetalHeapBase);
-            X86_64Encoder.Li(m_text, ResultReg, BareMetalResultBase);
 
             // Store result_space_base to global in rodata
             m_rodataFixups.Add(new RodataFixup(m_text.Count + 2, m_resultBaseGlobalOffset));
@@ -5962,18 +5961,16 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             X86_64Encoder.Syscall(m_text);
             X86_64Encoder.MovRR(m_text, HeapReg, Reg.RAX); // working space starts at brk base
 
-            // Grow heap: 57MB working + 1MB result (matches bare metal layout).
+            // Grow heap: 58MB (result space starts dynamically at heap top)
             byte growReg = Reg.R11;
-            X86_64Encoder.Li(m_text, growReg, (57L + 1) * 1024 * 1024);
+            X86_64Encoder.Li(m_text, growReg, 58L * 1024 * 1024);
             X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
             X86_64Encoder.AddRR(m_text, Reg.RDI, growReg);
             X86_64Encoder.Li(m_text, Reg.RAX, 12); // sys_brk
             X86_64Encoder.Syscall(m_text);
 
-            // Result space starts at brk_base + 57MB
+            // Result space starts at same point as heap — advances on first escape-copy
             X86_64Encoder.MovRR(m_text, ResultReg, HeapReg);
-            X86_64Encoder.Li(m_text, growReg, 57L * 1024 * 1024);
-            X86_64Encoder.AddRR(m_text, ResultReg, growReg);
 
             // Store result_space_base to global in rodata for escape helpers.
             m_rodataFixups.Add(new RodataFixup(m_text.Count + 2, m_resultBaseGlobalOffset));
@@ -6028,13 +6025,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             EmitUpdateHeapHwm();
 
             // ── Stack high-water-mark from min-RSP tracker ──
-            // Each function prologue updates StackMinRspAddr if RSP is lower.
-            // Stack used = StackTop - min_RSP.
             X86_64Encoder.Li(m_text, Reg.RSI, BareMetalStackTop);
             X86_64Encoder.Li(m_text, Reg.RDI, StackMinRspAddr);
             X86_64Encoder.MovLoad(m_text, Reg.RDI, Reg.RDI, 0); // RDI = min RSP
-            X86_64Encoder.SubRR(m_text, Reg.RSI, Reg.RDI);      // RSI = bytes used
-            // Save stack HWM for later (HEAP: must be emitted before STACK:)
+            X86_64Encoder.SubRR(m_text, Reg.RSI, Reg.RDI);      // RSI = StackTop - minRSP = bytes used
+            // Save for later (HEAP: must be emitted before STACK:)
             X86_64Encoder.PushR(m_text, Reg.RSI);
 
             // Reset min-RSP tracker for next iteration
@@ -6061,8 +6056,24 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             EmitPrintText(Reg.RAX);
             EmitSerialWaitAndSend(0x0A);
 
-            // ── Stack high-water-mark emission ──
-            X86_64Encoder.PopR(m_text, Reg.RDI); // recover saved stack HWM
+            // ── Result-space size emission ──
+            // ResultReg = current result pointer, ResultArenaBaseAddr = start
+            X86_64Encoder.MovRR(m_text, Reg.RSI, ResultReg);
+            X86_64Encoder.Li(m_text, Reg.RDI, ResultArenaBaseAddr);
+            X86_64Encoder.MovLoad(m_text, Reg.RDI, Reg.RDI, 0);
+            X86_64Encoder.SubRR(m_text, Reg.RSI, Reg.RDI);
+            X86_64Encoder.PushR(m_text, Reg.RSI);
+            foreach (byte ch in "RESULT:"u8)
+            {
+                EmitSerialWaitAndSend(ch);
+            }
+            X86_64Encoder.PopR(m_text, Reg.RDI);
+            EmitCallTo("__itoa");
+            EmitPrintText(Reg.RAX);
+            EmitSerialWaitAndSend(0x0A);
+
+            // ── Stack usage emission ──
+            X86_64Encoder.PopR(m_text, Reg.RDI); // recover saved stack value
             X86_64Encoder.PushR(m_text, Reg.RDI); // re-save for __itoa
             foreach (byte ch in "STACK:"u8)
             {

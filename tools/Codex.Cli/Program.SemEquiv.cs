@@ -89,6 +89,7 @@ public static partial class Program
         var slugs = new List<string>();
         string[] lines = text.Split('\n');
         string currentModule = "";
+        modules[currentModule] = new List<SemDef>();
         int i = 0;
 
         while (i < lines.Length)
