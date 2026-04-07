@@ -26,13 +26,13 @@ sealed class ForewordChapterLoader : IChapterLoader
         string? dir = Path.GetDirectoryName(typeof(ForewordChapterLoader).Assembly.Location);
         while (dir is not null)
         {
-            string candidate = Path.Combine(dir, "prelude");
+            string candidate = Path.Combine(dir, "foreword");
             if (Directory.Exists(candidate))
                 return candidate;
             dir = Path.GetDirectoryName(dir);
         }
 
-        string cwdCandidate = Path.Combine(Directory.GetCurrentDirectory(), "prelude");
+        string cwdCandidate = Path.Combine(Directory.GetCurrentDirectory(), "foreword");
         if (Directory.Exists(cwdCandidate))
             return cwdCandidate;
 

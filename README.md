@@ -275,7 +275,7 @@ Codex.sln
 │   ├── Codex.Narration          Prose rendering
 │   └── Codex.Proofs             Proof terms and verification
 ├── Codex.Codex/                 Self-hosted compiler (26 .codex files)
-├── prelude/                     Standard library (11 modules)
+├── foreword/                     Standard library (23 modules)
 ├── tests/                       642 tests across 8 projects
 ├── tools/
 │   ├── Codex.Cli                Command-line interface

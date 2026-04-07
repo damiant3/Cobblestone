@@ -10,14 +10,14 @@ sealed class PackageResolver(string projectDirectory, DiagnosticBag diagnostics)
 
     /// <summary>
     /// Resolves all package references for a project into module loaders.
-    /// Returns loaders in dependency order (prelude first, then explicit packages).
+    /// Returns loaders in dependency order (foreword first, then explicit packages).
     /// </summary>
     public List<IChapterLoader> ResolveAll(Program.CodexProject project)
     {
         List<IChapterLoader> loaders = [];
 
-        // Always include prelude unless this IS the prelude
-        if (!project.Prelude)
+        // Always include prelude unless this IS the foreword
+        if (!project.Foreword)
         {
             ForewordChapterLoader? foreword = ForewordChapterLoader.TryCreate(m_diagnostics);
             if (foreword is not null)

@@ -19,7 +19,7 @@ public static partial class Program
         public string Target { get; set; } = "cs";
         public string[] Targets { get; set; } = [];
         public string Output { get; set; } = "out/";
-        public bool Prelude { get; set; }
+        public bool Foreword { get; set; }
     }
 
     internal sealed class PackageRef

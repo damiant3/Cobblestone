@@ -14,7 +14,7 @@ public class ForewordTests
         string dir = AppContext.BaseDirectory;
         while (dir is not null)
         {
-            string candidate = Path.Combine(dir, "prelude");
+            string candidate = Path.Combine(dir, "foreword");
             if (Directory.Exists(candidate))
                 return candidate;
             dir = Path.GetDirectoryName(dir)!;
@@ -331,8 +331,8 @@ public class ForewordTests
 
     static DiagnosticBag CompileForewordFileWithLoader(string fileName)
     {
-        string preludeDir = FindForewordDir();
-        string path = Path.Combine(preludeDir, fileName);
+        string forewordDir = FindForewordDir();
+        string path = Path.Combine(forewordDir, fileName);
         string source = File.ReadAllText(path);
         string chapterName = Path.GetFileNameWithoutExtension(fileName);
 
@@ -349,7 +349,7 @@ public class ForewordTests
         Chapter chapter = desugarer.Desugar(document, chapterName);
         if (diagnostics.HasErrors) return diagnostics;
 
-        PreludeTestLoader forewordLoader = new(preludeDir, diagnostics);
+        ForewordTestLoader forewordLoader = new(forewordDir, diagnostics);
         NameResolver resolver = new(diagnostics, forewordLoader);
         ResolvedChapter resolved = resolver.Resolve(chapter);
         if (diagnostics.HasErrors) return diagnostics;
@@ -365,7 +365,7 @@ public class ForewordTests
 
     static DiagnosticBag CompileWithPrelude(string source)
     {
-        string preludeDir = FindForewordDir();
+        string forewordDir = FindForewordDir();
         SourceText src = new("test.codex", source);
         DiagnosticBag diagnostics = new();
 
@@ -379,7 +379,7 @@ public class ForewordTests
         Chapter chapter = desugarer.Desugar(document, "test");
         if (diagnostics.HasErrors) return diagnostics;
 
-        PreludeTestLoader forewordLoader = new(preludeDir, diagnostics);
+        ForewordTestLoader forewordLoader = new(forewordDir, diagnostics);
         NameResolver resolver = new(diagnostics, forewordLoader);
         ResolvedChapter resolved = resolver.Resolve(chapter);
         if (diagnostics.HasErrors) return diagnostics;
@@ -394,9 +394,9 @@ public class ForewordTests
     }
 }
 
-sealed class PreludeTestLoader(string preludeDir, DiagnosticBag diagnostics) : IChapterLoader
+sealed class ForewordTestLoader(string forewordDir, DiagnosticBag diagnostics) : IChapterLoader
 {
-    readonly string m_preludeDir = preludeDir;
+    readonly string m_forewordDir = forewordDir;
     readonly DiagnosticBag m_diagnostics = diagnostics;
     Map<string, ResolvedChapter> m_cache = Map<string, ResolvedChapter>.s_empty;
 
@@ -406,7 +406,7 @@ sealed class PreludeTestLoader(string preludeDir, DiagnosticBag diagnostics) : I
         if (cached is not null)
             return cached;
 
-        string filePath = Path.Combine(m_preludeDir, chapterName + ".codex");
+        string filePath = Path.Combine(m_forewordDir, chapterName + ".codex");
         if (!File.Exists(filePath))
             return null;
 
