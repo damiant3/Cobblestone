@@ -55,13 +55,14 @@ $allCsproj = Get-ChildItem -Path $RepoRoot -Filter '*.csproj' -Recurse -File |
     ForEach-Object {
         $rel = $_.FullName.Substring($RepoRoot.Length + 1)
         # Skip anything under bin, obj, hidden dirs, or VS extension templates
-        if ($rel -match '(^|\\)(bin|obj|\.vs|\.git|node_modules|ProjectTemplate)(\\|$)') { return }
+        if ($rel -match '(^|[/\\])(bin|obj|\.vs|\.git|node_modules|ProjectTemplate)([/\\]|$)') { return }
         # Convention: Project.csproj must live in a folder named after the project.
-        # e.g. src\Codex.Core\Codex.Core.csproj  —  folder = file stem
+        # e.g. src/Codex.Core/Codex.Core.csproj  —  folder = file stem
         $stem   = [System.IO.Path]::GetFileNameWithoutExtension($rel)
         $parent = Split-Path $rel -Parent | Split-Path -Leaf
         if ($stem -ne $parent) { return }
-        $rel
+        # Normalize to backslash for .sln output and stable GUID keys
+        $rel.Replace('/', '\')
     } | Where-Object { $_ } | Sort-Object
 
 # Categorise each project
@@ -99,7 +100,7 @@ function Get-SolutionItemFiles([string]$dir, [string]$filter) {
         $items = $items | Where-Object { $_.Extension -eq $filter }
     }
     ($items | Sort-Object Name | ForEach-Object {
-        $_.FullName.Substring($RepoRoot.Length + 1)
+        $_.FullName.Substring($RepoRoot.Length + 1).Replace('/', '\')
     })
 }
 
@@ -127,13 +128,13 @@ $rootFiles = @()
 $rootPatterns = @('*.md','*.txt','.editorconfig','.gitattributes','.gitignore','*.props')
 foreach ($pat in $rootPatterns) {
     $rootFiles += Get-ChildItem -Path $RepoRoot -Filter $pat -File |
-        ForEach-Object { $_.FullName.Substring($RepoRoot.Length + 1) }
+        ForEach-Object { $_.FullName.Substring($RepoRoot.Length + 1).Replace('/', '\') }
 }
 # Also include .github files (but not workflow yaml, etc.)
 if (Test-Path (Join-Path $RepoRoot '.github')) {
     $rootFiles += Get-ChildItem -Path (Join-Path $RepoRoot '.github') -File -Recurse |
         Where-Object { $_.Extension -in @('.md','.txt','.json') } |
-        ForEach-Object { $_.FullName.Substring($RepoRoot.Length + 1) }
+        ForEach-Object { $_.FullName.Substring($RepoRoot.Length + 1).Replace('/', '\') }
 }
 $solutionItems[$solutionItemsGuid] = @($rootFiles | Sort-Object -Unique)
 
@@ -152,7 +153,7 @@ if (Test-Path $docsRoot) {
     # Recursively discover sub-directories and create nested solution folders
     $allDocDirs = Get-ChildItem -Path $docsRoot -Directory -Recurse | Sort-Object FullName
     foreach ($d in $allDocDirs) {
-        $relDir    = $d.FullName.Substring($RepoRoot.Length + 1)   # e.g. docs\Designs\Backends
+        $relDir    = $d.FullName.Substring($RepoRoot.Length + 1).Replace('/', '\')   # e.g. docs\Designs\Backends
         $folderKey = $relDir
         $myGuid    = Get-FolderGuid $folderKey
 
@@ -224,7 +225,7 @@ foreach ($f in $solutionFolders) {
 foreach ($p in $csharpProjects) {
     [string]$path = $p[0]
     [string]$guid = $p[1]
-    [string]$name = [System.IO.Path]::GetFileNameWithoutExtension($path)
+    [string]$name = [System.IO.Path]::GetFileNameWithoutExtension((Split-Path $path -Leaf))
 
     [void]$sb.Append("Project(`"$(G $CSharpProjectType)`") = `"$name`", `"$path`", `"$(G $guid)`"$NL")
     [void]$sb.Append("EndProject$NL")
