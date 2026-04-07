@@ -1,11 +1,14 @@
 # Codex
 
-**A programming language that compiles itself, reads like a book, and targets fifteen backends — including bare metal.**
+**A programming language that compiles itself, reads like a book, and trusts nothing it didn't build.**
 
 Codex is a statically typed, purely functional language where source files are
 literate documents — prose explains intent, indented notation is executable.
-The compiler is written in Codex. It compiles itself. It has its own character
-encoding. It runs on bare metal with no OS, no libc, no runtime.
+The compiler is written in Codex. It compiles itself on bare metal x86-64.
+It has its own character encoding. It runs with no OS, no libc, no runtime.
+
+The long-term goal is Codex.OS — a complete software stack on owned hardware
+with trust at the binary boundary. No borrowed substrate. No borrowed trust.
 
 ```codex
 Chapter: Greeting
@@ -21,37 +24,36 @@ Section: Functions
     main = greet "World"
 ```
 
-> **March 28, 2026 — Native Self-Compile Verified.**
-> The self-hosted compiler, running as a native x86-64 binary (no OS, no runtime),
-> compiles its own 26-file source and reaches a semantic fixed point — Stage 1 output
-> fed back through produces identical output. All 1,126 function type arrows survive
-> the round trip. Verified on usermode Linux, bare metal QEMU, and all three native
-> backends (x86-64, RISC-V, ARM64). 642 tests pass. 15 backends.
+> **Self-Hosting Proven.** The compiler, running as a native x86-64 binary
+> (no OS, no runtime), compiles its own 33-file source and reaches a semantic
+> fixed point. 1,149 tests pass. 15 backends. Zero failures.
 
 ---
 
 ## Why
 
-Most compilers are written in languages that look nothing like what they compile.
-Codex is the language, the compiler, and the document — all the same thing.
+Most software is built on borrowed trust — someone else's OS, someone else's
+runtime, someone else's certificate authority. Every dependency is an
+assumption you can't verify. Codex is the project that stops assuming.
 
 - **Literate by design.** Chapters and Sections aren't comments. They're structure.
   The compiler parses prose alongside code.
 - **Self-hosting.** The compiler compiles itself. The bootstrap is proven:
-  Stage 1 = Stage 3 = fixed point at 310,330 chars. On native x86-64, the
-  identity emitter also reaches a fixed point (187K chars, 1,126 arrow types).
+  Stage 1 = Stage 2 = fixed point. On bare-metal x86-64, the identity emitter
+  reaches a semantic fixed point (12K lines, 1,144 definitions).
 - **Own character encoding.** CCE (Codex Character Encoding) is frequency-sorted:
   `is-letter` is a single comparison, not a table lookup. Unicode only at I/O
-  boundaries. The typewriter is dead.
+  boundaries.
 - **Fifteen backends.** C#, JavaScript, Python, Rust, C++, Go, Java, Ada, Fortran,
-  COBOL, .NET IL, RISC-V, ARM64, x86-64, and WebAssembly. Four of those generate
-  native machine code — no toolchain, no runtime, no libc.
-- **Bare metal.** Codex.OS boots from a floppy image, runs a preemptive multitasking
-  kernel in 7KB, and compiles Codex programs on bare hardware.
+  COBOL, .NET IL, RISC-V, ARM64, x86-64, and WebAssembly.
+- **Bare metal.** The compiler runs on x86-64 hardware with no OS beneath it.
+  Codex.OS boots from a floppy image, runs a preemptive multitasking kernel
+  in 7KB, and compiles Codex programs on bare hardware.
 - **Algebraic effects.** Side effects are declared in types and handled explicitly.
   No monads. No surprise mutations.
-- **Content-addressed repository.** Code is facts. Facts are immutable, hashed,
-  and append-only. No more "merge conflict."
+- **Trust architecture.** CDX1 binary format with lattice signatures, capability
+  refinement, and an agent trust protocol. Designed for environments where you
+  can't patch your way out of a compromised dependency.
 
 ---
 
@@ -63,7 +65,7 @@ Codex is the language, the compiler, and the document — all the same thing.
 # Build everything
 dotnet build Codex.sln
 
-# Run all tests
+# Run all tests (1,149 tests)
 dotnet test Codex.sln
 
 # Compile and run a program
@@ -78,8 +80,8 @@ dotnet run --project tools/Codex.Cli -- build samples/word-freq/
 # Bootstrap: compile the compiler with itself
 dotnet run --project tools/Codex.Bootstrap
 
-# Convert between Unicode and CCE
-dotnet run --project tools/Codex.Cli -- encode -f cce -t utf8 file.cce
+# Agent toolkit
+dotnet tools/codex-agent/codex-agent.dll orient
 ```
 
 ---
@@ -132,15 +134,16 @@ Source (.codex)
     → Lexer         token stream
     → Parser        concrete syntax tree
     → Desugarer     abstract syntax tree
-    → NameResolver  resolved names
+    → ChapterScoper namespace scoping across chapters
+    → NameResolver  resolved names + citations
     → TypeChecker   bidirectional type inference
     → Lowering      typed intermediate representation
     → Emitter       target source code / machine code
 ```
 
-The entire pipeline exists twice: once in C# (the locked reference implementation)
-and once in Codex (the self-hosted compiler, 26 files, ~5,000 lines). The Codex
-version is the one that matters now.
+The pipeline exists twice: in C# (the locked reference implementation)
+and in Codex (the self-hosted compiler, 33 files, ~12,000 lines). The
+Codex version is the one that matters.
 
 ---
 
@@ -159,14 +162,13 @@ version is the one that matters now.
 | Fortran | `--targets fortran` | Full |
 | COBOL | `--targets cobol` | Full |
 | .NET IL | `--targets il` | Records, sums, pattern matching, builtins |
-| **RISC-V** | `--targets riscv` | **Native machine code. Bare metal.** |
-| **ARM64** | `--targets arm64` | **Native machine code. Bare metal.** |
-| **x86-64** | `--targets x86-64` | **Native machine code. Bare metal. Codex.OS.** |
+| **x86-64** | `--targets x86-64` | **Native machine code. Bare metal. Self-hosting.** |
+| RISC-V | `--targets riscv` | Native machine code. Deferred. |
+| ARM64 | `--targets arm64` | Native machine code. Deferred. |
 | **WebAssembly** | `--targets wasm` | **Binary .wasm modules** |
 
 Native backends include: region-based memory, escape analysis, tail-call
 optimization, and deep escape copy for heap values crossing region boundaries.
-The self-hosted compiler self-compiles on all three native backends.
 
 ---
 
@@ -193,9 +195,9 @@ Unicode exists only at I/O boundaries. Internally, everything is CCE.
 
 ---
 
-## Standard Library (Prelude)
+## Standard Library (Foreword)
 
-11 modules, ~1,200 lines of Codex:
+23 modules, ~1,250 lines of Codex:
 
 | Module | What it does |
 |--------|-------------|
@@ -208,27 +210,28 @@ Unicode exists only at I/O boundaries. Internally, everything is CCE.
 | `Set` | Persistent set |
 | `Queue` | Functional queue |
 | `StringBuilder` | Efficient string building |
-| `CCE` | Character encoding — classification, conversion, roundtrip |
+| `CCE` | Character encoding — classification, conversion |
 | `TextSearch` | Text search utilities |
+| `Identity` | Identity functor |
+| `State` | Stateful computations |
+| `Console` | Terminal I/O effects |
+| `FileSystem` | File I/O effects |
+| `Network` | Network effects |
+| `Time` | Time effects |
+| `Random` | Random number effects |
+| `Camera`, `Display`, `Location`, `Microphone`, `Sensors` | Hardware effects for Codex.OS |
 
 ---
 
 ## Self-Hosting Bootstrap
 
-The compiler compiles itself. Here's how:
+The compiler compiles itself. Two notations for convergence:
 
-```
-.codex source ──→ [Stage 0: C# reference compiler] ──→ Codex.Codex.cs
-Codex.Codex.cs ──→ [dotnet build]                   ──→ Stage 1 binary
-Stage 1 binary ──→ [compiles .codex source]          ──→ stage1-output.cs
+- `==` — semantic fixed point (stage0 and stage1 produce equivalent output)
+- `===` — byte-perfect identity (stage1 and stage2 are identical binaries)
 
-Stage 1 binary ──→ [rebuild from stage1-output.cs]   ──→ Stage 2 binary
-Stage 2 binary ──→ [compiles .codex source]          ──→ stage3-output.cs
-
-stage1-output.cs == stage3-output.cs → Fixed point. 310,330 chars.
-```
-
-Self-compile time: **208ms median** (26 files, ~180K chars, full pipeline).
+`stage1 === stage2` proves convergence. Diverse double-compile against the
+C# reference compiler proves correctness (Thompson attack resistance).
 
 ```sh
 # Run the bootstrap
@@ -242,7 +245,7 @@ dotnet run --project tools/Codex.Bootstrap -- --bench
 
 ## Codex.OS
 
-A bare-metal operating system written for the Codex compiler.
+A bare-metal operating system for the Codex compiler.
 
 | Ring | What | Status |
 |------|------|--------|
@@ -252,43 +255,45 @@ A bare-metal operating system written for the Codex compiler.
 | 3 | Capability-enforced syscalls | Done |
 | 4 | Self-hosting compiler on bare metal | **Done** |
 
-7KB kernel. Boots from floppy. The self-hosted compiler runs on bare metal x86-64
-(QEMU, 512 MB) and compiles its own source — 205 KB in, 187 KB out, semantic fixed
-point verified. No OS, no runtime, just the UART.
+7KB kernel. Boots from floppy. The self-hosted compiler runs on bare metal
+x86-64 (QEMU, 512 MB) and compiles its own source. No OS, no runtime,
+just the UART.
+
+The OS stack beyond the compiler — trust network, agent protocol, policy
+contracts, filesystem, shell — is designed but awaits MM4 (the second
+bootstrap: compiler compiled entirely by Codex with no C# in the chain).
 
 ---
 
 ## Project Structure
 
 ```
-Codex.sln
+Codex.sln                        40 projects, builds clean, 1,149 tests
 ├── src/                         Reference compiler (C#, locked)
 │   ├── Codex.Core               Diagnostics, SourceText, CceTable, Map<K,V>
-│   ├── Codex.Syntax             Lexer, Parser, ProseParser, CST
+│   ├── Codex.Syntax             Lexer, Parser, ProseParser
 │   ├── Codex.Ast                Desugarer, AST nodes
-│   ├── Codex.Semantics          Name resolution, scope analysis
-│   ├── Codex.Types              Type checker, unifier, linearity checker
-│   ├── Codex.IR                 IR nodes, lowering, regions
+│   ├── Codex.Semantics          ChapterScoper, NameResolver
+│   ├── Codex.Types              TypeChecker, Unifier, LinearityChecker
+│   ├── Codex.IR                 IR nodes, Lowering
 │   ├── Codex.Emit.*             15 backend emitters
-│   ├── Codex.Lsp                Language Server Protocol
-│   ├── Codex.Repository         Content-addressed fact store
-│   ├── Codex.Narration          Prose rendering
-│   └── Codex.Proofs             Proof terms and verification
-├── Codex.Codex/                 Self-hosted compiler (26 .codex files)
-├── foreword/                     Standard library (23 modules)
-├── tests/                       642 tests across 8 projects
+│   └── ...                      LSP, Repository, Narration, Proofs
+├── Codex.Codex/                 Self-hosted compiler (33 .codex files, ~12K lines)
+├── foreword/                    Standard library (23 modules, ~1,250 lines)
+├── tests/                       1,149 tests across 9 projects
 ├── tools/
 │   ├── Codex.Cli                Command-line interface
 │   ├── Codex.Bootstrap          Bootstrap harness + benchmark
+│   ├── codex-agent/             AI agent toolkit (orient, doctor, build, test, handoff)
 │   └── Codex.VsExtension        Visual Studio extension
-├── editors/vscode/              VS Code extension (syntax + LSP)
-├── samples/                     24 example programs + 2 multi-file projects
-├── generated-output/            Backend output corpus
+├── samples/                     41 example programs
 └── docs/
-    ├── 00-OVERVIEW.md           Project overview
-    ├── 10-PRINCIPLES.md         Engineering principles
-    ├── CurrentPlan.md           Active plan
-    ├── Designs/                 Feature design documents
+    ├── FOUNDING-VISION.md       Read this first
+    ├── CurrentPlan.md           What we're doing now
+    ├── Active/                  Work in progress
+    ├── Designs/                 Future work (Codex.OS, language, backends, tools)
+    ├── Done/                    Completed milestones and postmortems
+    ├── Stories/                 The Ascent, The Last Peak, and other narratives
     └── Vision/                  Original vision documents
 ```
 
@@ -306,6 +311,7 @@ codex add       <package> [--version v]   Add a dependency
 codex remove    <package>                 Remove a dependency
 codex pack      <dir>                     Package a library
 codex packages                            List installed packages
+codex bootstrap [dir]                     Full self-hosting verification
 codex version                             Print version
 ```
 
@@ -328,89 +334,44 @@ Syntax highlighting, bracket matching, auto-indentation, and LSP integration
 
 ---
 
-## Samples
+## The Road
 
-| File | What it demonstrates |
-|------|---------------------|
-| `hello.codex` | `square 5` → `25` |
-| `factorial.codex` | Recursion: `factorial 10` → `3628800` |
-| `fibonacci.codex` | TCO: `fib 20` → `6765` |
-| `shapes.codex` | Sum types + pattern matching |
-| `person.codex` | Records + field access |
-| `effects-demo.codex` | Algebraic effects |
-| `expr-calculator.codex` | Quine disproof — the program that proved self-hosting |
-| `hamt-test.codex` | Persistent hash maps |
-| `is-prime-fancy.codex` | Higher-order functions |
-| `state-demo.codex` | Stateful effects |
-| `word-freq/` | Multi-file project: word frequency counter |
-| `mini-bootstrap.codex` | All-features smoke test |
+| Milestone | What | Status |
+|-----------|------|--------|
+| M0–M12 | Foundation through self-hosting | Done |
+| **MM1** | Reference compiler locked. All development in Codex. | **Done** |
+| Peak II | Native backends (x86-64, RISC-V, ARM64, WASM) | Done |
+| Peak III | Codex.OS — 7KB kernel, bare metal | Done |
+| CCE | Own character encoding, frequency-sorted | Done |
+| **MM2** | Compiler runs on bare hardware | **Done** |
+| **MM3** | Compiler compiles itself on bare metal | **Done** |
+| **MM4** | Second bootstrap — no C# in the chain | **Active** |
+| Codex.OS | Trust network, agent protocol, shell | Designed, after MM4 |
 
----
-
-## Milestone History
-
-| # | Milestone | What happened |
-|---|-----------|--------------|
-| M0 | Foundation | Solution structure, diagnostics, SourceText |
-| M1 | Notation | Lexer + parser for literate syntax |
-| M2 | Types | Bidirectional type checker with unification |
-| M3 | Execution | C# backend — programs run |
-| M4–M7 | Type system | Polymorphism, effects, dependent types, proofs |
-| M8–M10 | Infrastructure | LSP, repository, 11 more backends |
-| M11–M12 | Self-hosting | Compiler written in Codex, bootstrap harness |
-| M13 | Fixed point | Stage 2 = Stage 1. Self-hosting proven. |
-| **MM1** | **Freedom** | Reference compiler locked. All development in Codex. |
-| Peak II | Native backends | RISC-V, ARM64, x86-64, WASM. Bare metal code generation. |
-| Peak III | Codex.OS | 7KB kernel. Preemptive multitasking. Capability-enforced syscalls. |
-| CCE | Own encoding | Frequency-sorted character encoding. Fixed point at 310,330 chars. |
-| **MM2** | **The High Camp** | Compiler runs on bare hardware. Compiles programs over serial. No OS beneath but ours. |
-| **MM3** | **Summit** | The compiler compiles itself on bare metal. The ultimate fixed point. |
-
----
-
-## The Team
-
-Four AI agents and a human, coordinating through git:
-
-| Agent | Environment | Role |
-|-------|-------------|------|
-| Windows | VS 2022 + Copilot | Features, reviews |
-| Linux | Ubuntu container + Claude | Testing on real hardware, tracing, bare metal |
-| Cam | Claude Code CLI (1M Opus) | Fast iteration, parallel work, CCE migration |
-| Nut | VS 2026 + Copilot (garage box) | Hardware lab, OS dev, phone flash |
-| **Human** | Routes between agents | Architecture, design decisions, the why |
-
-Nobody merges their own code to master without review. Git is the coordination
-protocol. The agents review each other's work.
-
----
-
-## What's Ahead
-
-- **Closure escape analysis** — linear closures, CDX2043 to error
-- **Codex.OS Ring 4** — self-hosting compiler on bare metal
-- **Codex.UI** — semantic primitives, typed themes
-- **The floppy disk** — boot → compiler → self-compile, all in 1.44 MB
-
-See [docs/CurrentPlan.md](docs/CurrentPlan.md) for the active plan.
+See [docs/CurrentPlan.md](docs/CurrentPlan.md) for the active plan and
+[docs/Stories/THE-LAST-PEAK.md](docs/Stories/THE-LAST-PEAK.md) for where
+this is going.
 
 ---
 
 ## Documentation
 
-- [00-OVERVIEW.md](docs/00-OVERVIEW.md) — Project overview and status
-- [10-PRINCIPLES.md](docs/10-PRINCIPLES.md) — Engineering principles
+- [FOUNDING-VISION.md](docs/FOUNDING-VISION.md) — **Read this first**
 - [CurrentPlan.md](docs/CurrentPlan.md) — Active plan and direction
-- [Designs/](docs/Designs/) — Feature design documents
-- [Vision/NewRepository.txt](docs/Vision/NewRepository.txt) — The original vision
-- [Vision/IntelligenceLayer.txt](docs/Vision/IntelligenceLayer.txt) — The manifesto
+- [Active/](docs/Active/) — Work in progress
+- [Designs/](docs/Designs/) — Feature and OS design documents
+- [Done/](docs/Done/) — Completed milestones and postmortems
+- [Stories/THE-ASCENT.md](docs/Stories/THE-ASCENT.md) — The story so far
+- [SYNTAX-QUICKREF.md](docs/SYNTAX-QUICKREF.md) — Language syntax reference
+- [KNOWN-CONDITIONS.md](docs/KNOWN-CONDITIONS.md) — Build and test notes
 
 ---
 
-## Contributing
+## No Dates
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for coding standards, project conventions,
-and agent collaboration rules.
+Every estimate has been wrong by orders of magnitude, in both directions.
+We don't put dates on mountains. The critical path is ordered. That's all
+we need to know.
 
 ---
 
