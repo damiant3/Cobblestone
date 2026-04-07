@@ -4,7 +4,7 @@
 **Status**: Design
 **Depends on**: MM4 (self-compilation fixed point)
 **Unblocks**: CryptoPrimitives.md (SHA-256, Ed25519)
-**Prior art**: `docs/Codex.OS/CryptoPrimitives.md`, `Codex.Codex/Emit/X86_64Encoder.codex`
+**Prior art**: `docs/Designs/Codex.OS/CryptoPrimitives.md`, `Codex.Codex/Emit/X86_64Encoder.codex`
 
 ---
 

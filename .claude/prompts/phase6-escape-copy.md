@@ -7,7 +7,7 @@ runtime helpers are in Codex.Codex/Emit/X86_64Helpers.codex (~1,300 lines). Curr
 state: 566KB ELF, 113MB Stage 1 HWM on 128MB budget. Escape copy will reclaim heap
 within function scopes and bring HWM down significantly.
 
-Read docs/Compiler/SECOND-BOOTSTRAP.md Phase 6 section, the .handoff file, and
+Read docs/Active/Compiler/SECOND-BOOTSTRAP.md Phase 6 section, the .handoff file, and
 docs/SYNTAX-QUICKREF.md Pitfalls section.
 
 This is the most intricate port in the backend. It is TYPE-DRIVEN CODE GENERATION:

@@ -7,7 +7,7 @@ codegen is in Codex.Codex/Emit/X86_64.codex (~1,400 lines) and the runtime helpe
 are in Codex.Codex/Emit/X86_64Helpers.codex (~1,300 lines). Phase 4 ported 16 of 22
 runtime helpers; 5 I/O helpers are deferred to Phase 7 (the I/O boundary).
 
-Read docs/Compiler/SECOND-BOOTSTRAP.md Phase 5 section, the .handoff file, and
+Read docs/Active/Compiler/SECOND-BOOTSTRAP.md Phase 5 section, the .handoff file, and
 docs/SYNTAX-QUICKREF.md Pitfalls section.
 
 CCE boundary principle: CCE is the internal encoding. Unicode is the outside world.

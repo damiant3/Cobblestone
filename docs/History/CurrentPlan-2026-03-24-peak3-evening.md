@@ -36,9 +36,9 @@ backend fork/await with GDB-verified x86-64 execution.
 
 Bootloader signature verification blocking all custom recovery images.
 9 flash attempts documented. Official TWRP downloaded. USB state diagnosis
-in progress. See `docs/Projects/PHONE-WIPE.md` for full attempt log.
+in progress. See `docs/Active/Projects/PHONE-WIPE.md` for full attempt log.
 
-**Design**: `docs/Projects/CODEX-PHONE.md`
+**Design**: `docs/Active/Projects/CODEX-PHONE.md`
 
 ---
 

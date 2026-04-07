@@ -7,7 +7,7 @@ The `codex format` command was just merged to master. It normalizes indentation 
 .codex prose-format files. Your job: run it on every file, verify bootstrap still
 passes, and push.
 
-See docs/Compiler/FORMAT-WORKFLOW.md for the full process.
+See docs/Done/Compiler/FORMAT-WORKFLOW.md for the full process.
 
 ### Steps
 

@@ -4,7 +4,7 @@
 
 | # | Item | Design Doc | Notes |
 |---|------|-----------|-------|
-| 1 | **Second Bootstrap (MM4)** | `docs/Compiler/SECOND-BOOTSTRAP.md` | Port x86-64 backend to Codex. 8 phases. The critical path. |
+| 1 | **Second Bootstrap (MM4)** | `docs/Active/Compiler/SECOND-BOOTSTRAP.md` | Port x86-64 backend to Codex. 8 phases. The critical path. |
 | 2 | Escape copy bare-metal | `docs/Designs/Memory/CAMP-IIIA-ESCAPE-ANALYSIS.md` | Skip removed, tests passing. Rearchitect deferred till after MM4. |
 
 ## Needs Design Doc
@@ -23,11 +23,11 @@
 
 | Feature | Design Doc | Effort |
 |---------|-----------|--------|
-| CDX binary format + loader | `docs/Codex.OS/CodexBinary.md` | Phase 2 of Second Bootstrap covers writer; loader is separate |
-| Trust network | `docs/Codex.OS/TrustNetwork.md` | Medium-Large |
-| Agent protocol (7 messages) | `docs/Codex.OS/RuntimeTrust.txt` §1 | Medium |
-| Policy contract | `docs/Codex.OS/RuntimeTrust.txt` §2 | Medium |
-| Forensics layer | `docs/Codex.OS/RuntimeTrust.txt` §3 | Medium |
+| CDX binary format + loader | `docs/Designs/Codex.OS/CodexBinary.md` | Phase 2 of Second Bootstrap covers writer; loader is separate |
+| Trust network | `docs/Designs/Codex.OS/TrustAndRuntime.md` | Medium-Large |
+| Agent protocol (7 messages) | `docs/Designs/Codex.OS/TrustAndRuntime.md` §1 | Medium |
+| Policy contract | `docs/Designs/Codex.OS/TrustAndRuntime.md` §2 | Medium |
+| Forensics layer | `docs/Designs/Codex.OS/TrustAndRuntime.md` §3 | Medium |
 | Capability refinement Steps 2-8 | `docs/Designs/Features/CAPABILITY-REFINEMENT.md` | Weeks |
 | Structured concurrency runtime | `docs/Designs/Features/CAMP-IIIC-STRUCTURED-CONCURRENCY.md` | ~1 week |
 | Stdlib expansion (Set, Queue, StringBuilder, TextSearch) | `docs/Designs/Features/STDLIB-AND-CONCURRENCY.md` | ~2 weeks |

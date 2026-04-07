@@ -6,7 +6,7 @@ Stage 1 Heap HWM is 126 MB. The dominant cause is copy-on-update: every state
 transition allocates a NEW record, copies unchanged fields, and the old record
 is dead garbage on the bump-allocated heap (never reclaimed on bare metal).
 
-READ FIRST: docs/Compiler/HatTip.md — full analysis, inventory of all 23
+READ FIRST: docs/Active/Compiler/HatTip.md — full analysis, inventory of all 23
 instances, waste estimates, and the chosen approach (Option A).
 
 THE FIX: Add a linearity-based optimization to the C# x86-64 codegen that

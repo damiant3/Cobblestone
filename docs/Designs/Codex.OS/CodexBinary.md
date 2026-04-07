@@ -3,7 +3,7 @@
 **Date**: 2026-03-31
 **Status**: Design
 **Depends on**: Second Bootstrap, Capability System, Crypto Primitives (TBD)
-**Prior art**: ELF (System V, 1988), `docs/Compiler/SECOND-BOOTSTRAP.md`
+**Prior art**: ELF (System V, 1988), `docs/Active/Compiler/SECOND-BOOTSTRAP.md`
 
 ---
 
@@ -317,7 +317,7 @@ metadata. The CDX format is the primary; ELF is the compatibility shim.
 
 ## Connection to the Second Bootstrap
 
-The Second Bootstrap (`docs/Compiler/SECOND-BOOTSTRAP.md`) Phase 2 calls
+The Second Bootstrap (`docs/Active/Compiler/SECOND-BOOTSTRAP.md`) Phase 2 calls
 for porting the ELF writer to Codex. This should produce TWO writers:
 
 1. **CDX writer**: The native Codex binary format. This is what the

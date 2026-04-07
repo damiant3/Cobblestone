@@ -32,8 +32,8 @@ functions simultaneously. The check logic itself may be correct; the bug was app
 to tokenize-loop which genuinely snocs.
 
 WHAT TO DO:
-  1. Read docs/Compiler/TCO-HEAP-RESET-DIAGNOSTIC.md for full analysis and test suite.
-  2. Read docs/Compiler/ESCAPE-COPY-ATTEMPT2-POSTMORTEM.md for the earlier escape-copy
+  1. Read docs/Active/Compiler/TCO-HEAP-RESET-DIAGNOSTIC.md for full analysis and test suite.
+  2. Read docs/Done/Compiler/ESCAPE-COPY-ATTEMPT2-POSTMORTEM.md for the earlier escape-copy
      attempt that also failed (different approach, same session).
   3. Keep the hasListArg bail-out for functions that snoc (tokenize-loop pattern).
   4. Add the last-element check for functions that DON'T snoc (emit-defs-streaming pattern).
@@ -52,8 +52,8 @@ REFERENCE FILES:
     m_tcoTempLocals:     ~line 192
   Lexer:          Codex.Codex/Syntax/Lexer.codex (tokenize-loop is here)
   Main pipeline:  Codex.Codex/main.codex (compile-streaming-v2, emit-defs-streaming)
-  Diagnostic doc: docs/Compiler/TCO-HEAP-RESET-DIAGNOSTIC.md
-  Post-mortem:    docs/Compiler/ESCAPE-COPY-ATTEMPT2-POSTMORTEM.md
+  Diagnostic doc: docs/Active/Compiler/TCO-HEAP-RESET-DIAGNOSTIC.md
+  Post-mortem:    docs/Done/Compiler/ESCAPE-COPY-ATTEMPT2-POSTMORTEM.md
 
 CONSTRAINTS:
   - Baseline: 570KB ELF, ~60s Stage 1, pingpong green

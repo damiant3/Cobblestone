@@ -203,7 +203,7 @@ To avoid stomping on the main box's branches:
 3. ~~Install wasmtime~~ ✅
 4. Run native backend tests from WSL to verify the full matrix
 5. Install QEMU for Windows + verify WHPX acceleration works
-6. Flash phone with TWRP (see `docs/Projects/PHONE-WIPE.md`)
+6. Flash phone with TWRP (see `docs/Active/Projects/PHONE-WIPE.md`)
 7. `adb push` an ARM64 Codex binary to the phone
 8. Build a minimal x86-64 bootable kernel image from Codex
 9. Boot it in QEMU (Rung 0), then QEMU+WHPX (Rung 1a)

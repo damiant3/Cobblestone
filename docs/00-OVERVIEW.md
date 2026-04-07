@@ -14,7 +14,7 @@ project stands and where it is going.
 ## Major Milestone 1 — Self-Hosting (Achieved 2026-03-19)
 
 The Codex compiler crossed the self-hosting threshold. The original design documents
-(01–09, Glossary) that guided the bootstrap phase are archived in `docs/Milestones/MM1/`.
+(01–09, Glossary) that guided the bootstrap phase are archived in `docs/Done/MM1/`.
 
 ### What Was Proven
 
@@ -38,7 +38,7 @@ The Codex compiler crossed the self-hosting threshold. The original design docum
 The reference C# compiler in `src/` is frozen at commit `6d8bb2c`. It served its
 purpose: bootstrapping a language that can now sustain itself. It is not deleted —
 it remains as the foundation the self-hosted compiler stands on — but it receives
-no new features. See `docs/Compiler/REFERENCE-COMPILER-LOCK.md`.
+no new features. See `docs/Active/Compiler/REFERENCE-COMPILER-LOCK.md`.
 
 ## The Three Pillars
 

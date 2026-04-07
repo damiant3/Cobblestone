@@ -10,7 +10,7 @@
 
 The CDX1 format (specified in `CodexBinary.md`) requires SHA-256 and Ed25519
 for integrity and signing. These crypto primitives are post-MM4 dependencies
-(`docs/Codex.OS/CryptoPrimitives.md`). During MM4 development, the CDX writer
+(`docs/Designs/Codex.OS/CryptoPrimitives.md`). During MM4 development, the CDX writer
 zero-fills the crypto fields:
 
 | Field | Offset | Size | Development value | Production value |

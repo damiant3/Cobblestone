@@ -1,7 +1,7 @@
 namespace Codex.Emit.X86_64;
 
 /// <summary>
-/// CDX1 binary format writer per docs/Codex.OS/CodexBinary.md.
+/// CDX1 binary format writer per docs/Designs/Codex.OS/CodexBinary.md.
 /// Produces the native Codex binary format with trust metadata.
 /// Development mode: crypto fields (content_hash, author_key, signature)
 /// are zero-filled until crypto primitives are available (post-MM4).

@@ -4,7 +4,7 @@ CLAUDE.md. Sync with origin master.
 ## Context
 
 Both bootstraps are green (C# fixed point + bare-metal pingpong). All 1151
-tests pass. See docs/Language/DESIGN-PROPOSALS.md for the full design doc.
+tests pass. See docs/Designs/Language/DESIGN-PROPOSALS.md for the full design doc.
 
 ## P10 — Self-Hosted TCO: DONE
 

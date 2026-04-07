@@ -6,7 +6,7 @@ Bootstrap. Phases 1 (encoder) and 2 (ELF/CDX writers) are complete. Phase 3 mile
 M3.1 (main=42), M3.2 (let+arithmetic), and M3.3 (if/else+comparisons) are proven and
 on master. The codegen is in Codex.Codex/Emit/X86_64.codex (~700 lines).
 
-Read docs/Compiler/PHASE3-CORE-CODEGEN.md for the milestone progression. Read the
+Read docs/Active/Compiler/PHASE3-CORE-CODEGEN.md for the milestone progression. Read the
 .handoff file for key learnings from the previous session (CCE encoding gotcha, no
 comments, emitter parens pitfall, ++ chain / nested let performance).
 

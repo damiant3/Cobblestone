@@ -6,7 +6,7 @@ namespace Codex.Emit.Tests;
 /// <summary>
 /// Golden reference tests for the C# CDX writer. These establish the byte-exact
 /// reference that the Codex port (Codex.Codex/Emit/CdxWriter.codex) must match.
-/// Validates the CDX1 format per docs/Codex.OS/CodexBinary.md.
+/// Validates the CDX1 format per docs/Designs/Codex.OS/CodexBinary.md.
 /// </summary>
 public class CdxWriterGoldenTests
 {

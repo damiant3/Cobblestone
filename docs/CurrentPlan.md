@@ -26,7 +26,7 @@ One thing at a time. Linear. Each item unblocks the next.
 **Goal**: A Codex compiler compiled entirely by Codex, producing bare-metal
 x86-64 binaries, achieving fixed-point self-compilation. No C# in the chain.
 
-**Design doc**: `docs/Compiler/SECOND-BOOTSTRAP.md`
+**Design doc**: `docs/Active/Compiler/SECOND-BOOTSTRAP.md`
 
 | Phase | What | Status |
 |-------|------|--------|
@@ -79,19 +79,19 @@ Ordered by dependency, not priority.
 
 | # | Item | Design doc | Depends on |
 |---|------|-----------|------------|
-| 1 | Crypto primitives (Ed25519, SHA-256) | `docs/Codex.OS/CryptoPrimitives.md` | MM4 (must run on bare metal) + bitwise builtins |
-| 2 | CDX binary loader + verification | `docs/Codex.OS/CodexBinary.md` | Crypto (#1) |
+| 1 | Crypto primitives (Ed25519, SHA-256) | `docs/Designs/Codex.OS/CryptoPrimitives.md` | MM4 (must run on bare metal) + bitwise builtins |
+| 2 | CDX binary loader + verification | `docs/Designs/Codex.OS/CodexBinary.md` | Crypto (#1) |
 | 3 | Identity & authentication | None yet | Crypto (#1) |
 | 4 | Trust lattice (runtime) | `docs/Designs/Features/CAPABILITY-REFINEMENT.md` | Identity (#3) |
 | 5 | Capability refinement Steps 2-8 | `docs/Designs/Features/CAPABILITY-REFINEMENT.md` | MM4 |
-| 6 | Agent protocol (7 message types) | `docs/Codex.OS/RuntimeTrust.txt` | Trust lattice (#4), Crypto (#1) |
-| 7 | Trust network layer | `docs/Codex.OS/TrustNetwork.md` | Agent protocol (#6) |
-| 8 | Policy contract (prose→capabilities) | `docs/Codex.OS/RuntimeTrust.txt` | Capability refinement (#5) |
-| 9 | Forensics layer | `docs/Codex.OS/RuntimeTrust.txt` | Agent protocol (#6) |
-| 10 | Verifier | `docs/Milestones/THE-LAST-PEAK.md` (Face 2) — needs design doc | Capability refinement (#5) |
+| 6 | Agent protocol (7 message types) | `docs/Designs/Codex.OS/TrustAndRuntime.md` | Trust lattice (#4), Crypto (#1) |
+| 7 | Trust network layer | `docs/Designs/Codex.OS/TrustAndRuntime.md` | Agent protocol (#6) |
+| 8 | Policy contract (prose→capabilities) | `docs/Designs/Codex.OS/TrustAndRuntime.md` | Capability refinement (#5) |
+| 9 | Forensics layer | `docs/Designs/Codex.OS/TrustAndRuntime.md` | Agent protocol (#6) |
+| 10 | Verifier | `docs/Stories/THE-LAST-PEAK.md` (Face 2) — needs design doc | Capability refinement (#5) |
 | 11 | Filesystem (facts on disk) | None yet | MM4 |
-| 12 | Networking stack (TCP transport) | `docs/Codex.OS/TrustNetwork.md` | MM4 |
-| 13 | Shell (prose command interface) | `docs/Milestones/THE-LAST-PEAK.md` (Face 3) — needs design doc | Policy (#8), Verifier (#10) |
+| 12 | Networking stack (TCP transport) | `docs/Designs/Codex.OS/TrustAndRuntime.md` | MM4 |
+| 13 | Shell (prose command interface) | `docs/Stories/THE-LAST-PEAK.md` (Face 3) — needs design doc | Policy (#8), Verifier (#10) |
 | 14 | Clarifier (policy feedback loop) | `docs/ForFun/Clarifier.txt` — promote to Designs/ | Policy (#8) |
 
 ### Design Docs Needed (no code, can be written anytime)
@@ -127,17 +127,17 @@ Ordered by dependency, not priority.
 
 | Design | Doc | Status |
 |--------|-----|--------|
-| Second Bootstrap | `docs/Compiler/SECOND-BOOTSTRAP.md` | **Active — Phase 6 (escape copy) next** |
-| Phase 3 Core Codegen | `docs/Compiler/PHASE3-CORE-CODEGEN.md` | ~~Complete — all 9 milestones proven~~ |
-| CDX binary format | `docs/Codex.OS/CodexBinary.md` | ~~Complete, implemented in Phase 2~~ |
-| Crypto primitives | `docs/Codex.OS/CryptoPrimitives.md` | Design complete, implements after MM4 |
-| Language bitwise builtins | `docs/Codex.OS/LanguageUpdates.md` | Design complete, implements after MM4 |
-| Encoder updates (crypto) | `docs/Codex.OS/EncoderUpdates.md` | Design complete, implements after MM4 |
+| Second Bootstrap | `docs/Active/Compiler/SECOND-BOOTSTRAP.md` | **Active — Phase 6 (escape copy) next** |
+| Phase 3 Core Codegen | `docs/Active/Compiler/PHASE3-CORE-CODEGEN.md` | ~~Complete — all 9 milestones proven~~ |
+| CDX binary format | `docs/Designs/Codex.OS/CodexBinary.md` | ~~Complete, implemented in Phase 2~~ |
+| Crypto primitives | `docs/Designs/Codex.OS/CryptoPrimitives.md` | Design complete, implements after MM4 |
+| Language bitwise builtins | `docs/Done/Compiler/LanguageUpdates.md` | Design complete, implements after MM4 |
+| Encoder updates (crypto) | `docs/Done/Compiler/EncoderUpdates.md` | Design complete, implements after MM4 |
 | Module namespaces | `src/Codex.Semantics/ModuleScoper.cs` | ~~Implemented and merged~~ |
-| Trust network | `docs/Codex.OS/TrustNetwork.md` | Complete, implements after MM4 |
-| Agent protocol | `docs/Codex.OS/RuntimeTrust.txt` §1 | Complete |
-| Policy contract | `docs/Codex.OS/RuntimeTrust.txt` §2 | Complete |
-| Forensics layer | `docs/Codex.OS/RuntimeTrust.txt` §3 | Complete |
+| Trust network | `docs/Designs/Codex.OS/TrustAndRuntime.md` | Complete, implements after MM4 |
+| Agent protocol | `docs/Designs/Codex.OS/TrustAndRuntime.md` §1 | Complete |
+| Policy contract | `docs/Designs/Codex.OS/TrustAndRuntime.md` §2 | Complete |
+| Forensics layer | `docs/Designs/Codex.OS/TrustAndRuntime.md` §3 | Complete |
 | Capability refinement | `docs/Designs/Features/CAPABILITY-REFINEMENT.md` | Complete |
 | Structured concurrency | `docs/Designs/Features/CAMP-IIIC-STRUCTURED-CONCURRENCY.md` | Complete |
 | Stdlib & concurrency | `docs/Designs/Features/STDLIB-AND-CONCURRENCY.md` | Complete |

@@ -6,7 +6,7 @@ of the Second Bootstrap. Phases 1 (encoder), 2 (ELF/CDX), and 3 (core codegen, a
 milestones) are complete. The codegen is in Codex.Codex/Emit/X86_64.codex (~1,400 lines).
 Phase 3 covers: int, let, if, calls, records, match, lists, TCO, closures.
 
-Read docs/Compiler/SECOND-BOOTSTRAP.md Phase 4 section for the 22 runtime helpers needed.
+Read docs/Active/Compiler/SECOND-BOOTSTRAP.md Phase 4 section for the 22 runtime helpers needed.
 Read the .handoff file for key learnings. Read docs/SYNTAX-QUICKREF.md Pitfalls section.
 
 The C# reference is src/Codex.Emit.X86_64/X86_64CodeGen.cs. Runtime helpers are in

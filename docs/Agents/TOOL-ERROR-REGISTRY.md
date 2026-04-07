@@ -167,12 +167,12 @@ Format: `DATE | ERROR-CLASS | FILE | DESCRIPTION | OUTCOME`
 2026-03-25 | TEF-009 | (46 files) | Agent read all workflow rules then bypassed snap/verify/peek on bulk rename; edit_file deleted ~100 lines from ILAssemblyBuilder.cs unnoticed; PowerShell script wrote files via terminal | user intervention required, git undo
 2026-03-25 | TEF-008 | tools/codex-agent/codex-agent.codex | edit_file injected "File:" header while wiring verify into build | cleaned via codex-agent-verify.ps1
 2026-03-25 | TEF-008 | .github/copilot-instructions.md | edit_file injected "File:" header while adding sweep to session start | cleaned via codex-agent-verify.ps1
-2026-03-25 | TEF-008 | docs/ToDo/CSharpCleanup.md | edit_file injected "File:" header while updating Section 9 exemption | shipped to origin, caught by user, cleaned post-push
+2026-03-25 | TEF-008 | docs/Active/ToDo/CSharpCleanup.md | edit_file injected "File:" header while updating Section 9 exemption | shipped to origin, caught by user, cleaned post-push
 2026-03-25 | TEF-008 | docs/CurrentPlan.md | edit_file injected "File:" header and code fence on markdown edit | cleaned via codex-agent-verify.ps1
-2026-03-25 | TEF-008 | docs/TOOL-ERROR-REGISTRY.md | edit_file injected "File:" header again while updating TEF-001 description | cleaned via codex-agent-verify.ps1
+2026-03-25 | TEF-008 | docs/Agents/TOOL-ERROR-REGISTRY.md | edit_file injected "File:" header again while updating TEF-001 description | cleaned via codex-agent-verify.ps1
 2026-03-25 | TEF-001 | docs/CurrentPlan.md | edit_file dropped # Current Plan heading from line 1 during section insertion | recovered via snap restore + create_file rewrite
 2026-03-25 | TEF-001 | docs/CurrentPlan.md | edit_file duplicated "What Remains" and "Process" sections instead of inserting before them | recovered via snap restore + create_file rewrite
-2026-03-25 | TEF-008 | docs/TOOL-ERROR-REGISTRY.md | edit_file injected "File:" header and code fence as lines 1-2 | rewrote via create_file
+2026-03-25 | TEF-008 | docs/Agents/TOOL-ERROR-REGISTRY.md | edit_file injected "File:" header and code fence as lines 1-2 | rewrote via create_file
 2026-03-25 | TEF-001 | .github/copilot-instructions.md | edit_file dropped # heading on line 1 | recovered via snap restore
 2026-03-25 | TEF-002 | .github/copilot-instructions.md | 3 consecutive "no edits produced" on trivial line-1 insert | switched to create_file
 2026-03-25 | TEF-004 | .github/copilot-instructions.md | terminal WriteAllText mangled em dashes to garbage | recovered via snap restore
@@ -180,8 +180,8 @@ Format: `DATE | ERROR-CLASS | FILE | DESCRIPTION | OUTCOME`
 2026-03-25 | TEF-007 | (terminal) | multi-line Remove-Item fused into garbage, partial execution | re-ran as individual commands
 2026-03-25 | TEF-008 | docs/OldStatus/DECISIONS.md | latent pollution from prior session, discovered by full docs sweep | cleaned via codex-agent-verify.ps1
 2026-03-25 | TEF-008 | docs/OldStatus/X86-64-REVIEW-HANDOFF.md | latent pollution from prior session | cleaned via codex-agent-verify.ps1
-2026-03-25 | TEF-008 | docs/Projects/PHONE-WIPE.md | latent pollution from prior session | cleaned via codex-agent-verify.ps1
-2026-03-25 | TEF-008 | docs/Projects/TWRP-BUILD-HANDOFF.md | latent pollution from prior session | cleaned via codex-agent-verify.ps1
+2026-03-25 | TEF-008 | docs/Active/Projects/PHONE-WIPE.md | latent pollution from prior session | cleaned via codex-agent-verify.ps1
+2026-03-25 | TEF-008 | docs/Active/Projects/TWRP-BUILD-HANDOFF.md | latent pollution from prior session | cleaned via codex-agent-verify.ps1
 2026-03-21 | TEF-005 | tools/codex-agent/codex-agent.codex | else->then swap on line 53 | caught by snap diff
 2026-03-21 | TEF-005 | tools/codex-agent/peek.codex | else->then swap in if/then/else chain | caught by snap diff
 ```

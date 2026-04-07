@@ -4,7 +4,7 @@
 **Status**: Design
 **Depends on**: MM4 (self-compilation fixed point)
 **Unblocks**: CryptoPrimitives.md (SHA-256, Ed25519)
-**Companion**: `docs/Codex.OS/LanguageUpdates.md` (language-level bitwise builtins)
+**Companion**: `docs/Done/Compiler/LanguageUpdates.md` (language-level bitwise builtins)
 
 ---
 
