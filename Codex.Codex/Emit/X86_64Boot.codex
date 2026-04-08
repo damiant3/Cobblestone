@@ -1,0 +1,438 @@
+Chapter: X86-64 Boot Infrastructure
+
+ Bare-metal boot sequence, interrupt handling, process management,
+ syscall dispatch, and capability model. All functions take and
+ return CodegenState, emitting x86-64 machine code into the text
+ section via the instruction encoder.
+
+Section: Memory Layout Constants
+
+  idt-base : Integer
+  idt-base = 24576
+
+  tick-count-addr : Integer
+  tick-count-addr = 28672
+
+  key-buffer-addr : Integer
+  key-buffer-addr = 28680
+
+  current-proc-addr : Integer
+  current-proc-addr = 28688
+
+  arena-base-addr : Integer
+  arena-base-addr = 28696
+
+  serial-write-pos-addr : Integer
+  serial-write-pos-addr = 28704
+
+  serial-read-pos-addr : Integer
+  serial-read-pos-addr = 28712
+
+  result-arena-base-addr : Integer
+  result-arena-base-addr = 28720
+
+  heap-hwm-addr : Integer
+  heap-hwm-addr = 28728
+
+  stack-min-rsp-addr : Integer
+  stack-min-rsp-addr = 28736
+
+  serial-ring-buf-addr : Integer
+  serial-ring-buf-addr = 3932160
+
+  serial-ring-buf-size : Integer
+  serial-ring-buf-size = 262144
+
+  serial-ring-buf-mask : Integer
+  serial-ring-buf-mask = 262143
+
+  proc-table-base : Integer
+  proc-table-base = 20480
+
+  proc-entry-size : Integer
+  proc-entry-size = 256
+
+  proc-cap-offset : Integer
+  proc-cap-offset = 56
+
+  cap-console : Integer
+  cap-console = 0
+
+  cap-concurrent : Integer
+  cap-concurrent = 3
+
+Section: PIC Initialization
+
+ Remaps the 8259 PIC so hardware IRQs do not collide with CPU
+ exceptions. IRQ 0-7 map to vectors 32-39, IRQ 8-15 to 40-47.
+ Unmasks timer (IRQ0), keyboard (IRQ1), and COM1 (IRQ4).
+
+  emit-pic-init : CodegenState -> CodegenState
+  emit-pic-init (st) =
+   let st1 = emit-out-byte st 32 17
+   in let st2 = emit-out-byte st1 160 17
+   in let st3 = emit-out-byte st2 33 32
+   in let st4 = emit-out-byte st3 161 40
+   in let st5 = emit-out-byte st4 33 4
+   in let st6 = emit-out-byte st5 161 2
+   in let st7 = emit-out-byte st6 33 1
+   in let st8 = emit-out-byte st7 161 1
+   in let st9 = emit-out-byte st8 33 236
+   in emit-out-byte st9 161 255
+
+Section: Common Interrupt Handler
+
+ Dispatches on the vector number in AL. Handles timer (vector 32),
+ keyboard (vector 33), and COM1 serial receive (vector 36). All
+ other vectors get a generic EOI and return.
+
+  emit-common-interrupt-handler : CodegenState -> CodegenState
+  emit-common-interrupt-handler (st) =
+   let st1 = st-append-text st (push-r reg-rcx)
+   in let st2 = st-append-text st1 (push-r reg-rdx)
+   in let st3 = st-append-text st2 (push-r reg-rsi)
+   in let st4 = st-append-text st3 (push-r reg-rdi)
+   in let st5 = st-append-text st4 [15, 182, 192]
+   in let st6 = st-append-text st5 (cmp-ri reg-rax 32)
+   in let not-timer = list-length (st6.text)
+   in let st7 = st-append-text st6 (jcc cc-ne 0)
+   in let st8 = st-append-text st7 (li reg-rdi tick-count-addr)
+   in let st9 = st-append-text st8 (mov-load reg-rsi reg-rdi 0)
+   in let st10 = st-append-text st9 (add-ri reg-rsi 1)
+   in let st11 = st-append-text st10 (mov-store reg-rdi reg-rsi 0)
+   in let st12 = emit-out-byte st11 32 32
+   in let st13 = st-append-text st12 (pop-r reg-rdi)
+   in let st14 = st-append-text st13 (pop-r reg-rsi)
+   in let st15 = st-append-text st14 (pop-r reg-rdx)
+   in let st16 = st-append-text st15 (pop-r reg-rcx)
+   in let st17 = st-append-text st16 (pop-r reg-rax)
+   in let st18 = st-append-text st17 iretq
+   in let st19 = patch-jcc-at st18 not-timer (list-length (st18.text))
+   in let st20 = st-append-text st19 (cmp-ri reg-rax 33)
+   in let not-keyboard = list-length (st20.text)
+   in let st21 = st-append-text st20 (jcc cc-ne 0)
+   in let st22 = st-append-text st21 (li reg-rdx 96)
+   in let st23 = st-append-text st22 in-al-dx
+   in let st24 = st-append-text st23 (li reg-rdi key-buffer-addr)
+   in let st25 = st-append-text st24 [72, 15, 182, 192]
+   in let st26 = st-append-text st25 (mov-store reg-rdi reg-rax 0)
+   in let st27 = patch-jcc-at st26 not-keyboard (list-length (st26.text))
+   in let st28 = st-append-text st27 (cmp-ri reg-rax 36)
+   in let not-serial = list-length (st28.text)
+   in let st29 = st-append-text st28 (jcc cc-ne 0)
+   in let serial-drain-loop = list-length (st29.text)
+   in let st30 = st-append-text st29 (li reg-rdx 1021)
+   in let st31 = st-append-text st30 in-al-dx
+   in let st32 = st-append-text st31 (li reg-rcx 1)
+   in let st33 = st-append-text st32 (and-rr reg-rax reg-rcx)
+   in let st34 = st-append-text st33 (test-rr reg-rax reg-rax)
+   in let serial-drain-done = list-length (st34.text)
+   in let st35 = st-append-text st34 (jcc cc-e 0)
+   in let st36 = st-append-text st35 (li reg-rdx 1016)
+   in let st37 = st-append-text st36 in-al-dx
+   in let st38 = st-append-text st37 [72, 15, 182, 192]
+   in let st39 = st-append-text st38 (li reg-rdi serial-write-pos-addr)
+   in let st40 = st-append-text st39 (mov-load reg-rcx reg-rdi 0)
+   in let st41 = st-append-text st40 (mov-rr reg-rsi reg-rcx)
+   in let st42 = st-append-text st41 (and-ri reg-rsi serial-ring-buf-mask)
+   in let st43 = st-append-text st42 (add-ri reg-rsi serial-ring-buf-addr)
+   in let st44 = st-append-text st43 [136, 6]
+   in let st45 = st-append-text st44 (add-ri reg-rcx 1)
+   in let st46 = st-append-text st45 (mov-store reg-rdi reg-rcx 0)
+   in let st47 = st-append-text st46 (jmp (serial-drain-loop - (list-length (st46.text) + 5)))
+   in let st48 = patch-jcc-at st47 serial-drain-done (list-length (st47.text))
+   in let st49 = patch-jcc-at st48 not-serial (list-length (st48.text))
+   in let st50 = emit-out-byte st49 32 32
+   in let st51 = st-append-text st50 (pop-r reg-rdi)
+   in let st52 = st-append-text st51 (pop-r reg-rsi)
+   in let st53 = st-append-text st52 (pop-r reg-rdx)
+   in let st54 = st-append-text st53 (pop-r reg-rcx)
+   in let st55 = st-append-text st54 (pop-r reg-rax)
+   in st-append-text st55 iretq
+
+Section: ISR Stubs
+
+ Emits 256 interrupt service routine stubs. Each stub is 8 bytes:
+ push rax (1 byte), mov al immediate (2 bytes), jmp rel32 to
+ common handler (5 bytes). Returns the state and the virtual
+ address of the first stub for IDT construction.
+
+  IsrStubResult = record {
+   state : CodegenState,
+   first-stub-vaddr : Integer
+  }
+
+  emit-isr-stub : CodegenState -> Integer -> Integer -> CodegenState
+  emit-isr-stub (st) (vec) (common-handler-offset) =
+   let st1 = st-append-text st (push-r reg-rax)
+   in let st2 = st-append-text st1 [176, vec]
+   in let rel = common-handler-offset - (list-length (st2.text) + 5)
+   in st-append-text st2 (jmp rel)
+
+  emit-isr-stubs-loop : CodegenState -> Integer -> Integer -> CodegenState
+  emit-isr-stubs-loop (st) (vec) (common-handler-offset) =
+   if vec == 256 then st
+   else emit-isr-stubs-loop (emit-isr-stub st vec common-handler-offset) (vec + 1) common-handler-offset
+
+  emit-isr-stubs : CodegenState -> IsrStubResult
+  emit-isr-stubs (st) =
+   let common-handler-offset = list-length (st.text)
+   in let st1 = emit-common-interrupt-handler st
+   in let first-stub-offset = list-length (st1.text)
+   in let st2 = emit-isr-stubs-loop st1 0 common-handler-offset
+   in IsrStubResult {
+    state = st2,
+    first-stub-vaddr = bare-metal-load-addr + first-stub-offset
+  }
+
+Section: IDT Construction
+
+ Emits a runtime loop that writes 256 IDT entries at idt-base.
+ Each entry is 16 bytes: offset_low | selector | IST | type_attr |
+ offset_mid | offset_high | reserved. All stubs are below 4 GB
+ so offset_high is always zero.
+
+  emit-idt-entries : CodegenState -> Integer -> CodegenState
+  emit-idt-entries (st) (first-stub-vaddr) =
+   let st1 = st-append-text st (li reg-rcx 256)
+   in let st2 = st-append-text st1 (li reg-rdi idt-base)
+   in let st3 = st-append-text st2 (li reg-rsi first-stub-vaddr)
+   in let loop-top = list-length (st3.text)
+   in let st4 = st-append-text st3 (mov-rr reg-rax reg-rsi)
+   in let st5 = st-append-text st4 (and-ri reg-rax 65535)
+   in let st6 = st-append-text st5 (add-ri reg-rax 524288)
+   in let st7 = st-append-text st6 (mov-store reg-rdi reg-rax 0)
+   in let st8 = st-append-text st7 (mov-rr reg-rax reg-rsi)
+   in let st9 = st-append-text st8 (shr-ri reg-rax 16)
+   in let st10 = st-append-text st9 (shl-ri reg-rax 16)
+   in let st11 = st-append-text st10 (add-ri reg-rax 36352)
+   in let st12 = st-append-text st11 (mov-store reg-rdi reg-rax 4)
+   in let st13 = st-append-text st12 (li reg-rax 0)
+   in let st14 = st-append-text st13 (mov-store reg-rdi reg-rax 8)
+   in let st15 = st-append-text st14 (add-ri reg-rdi 16)
+   in let st16 = st-append-text st15 (add-ri reg-rsi 8)
+   in let st17 = st-append-text st16 (sub-ri reg-rcx 1)
+   in let jcc-pos = list-length (st17.text)
+   in let st18 = st-append-text st17 (jcc cc-ne 0)
+   in patch-jcc-at st18 jcc-pos loop-top
+
+Section: Interrupt Setup
+
+ Loads the IDT register, initializes kernel data addresses, and
+ enables interrupts. Called after IDT entries are built.
+
+  emit-interrupt-setup : CodegenState -> CodegenState
+  emit-interrupt-setup (st) =
+   let st1 = emit-pic-init st
+   in let st2 = st-append-text st1 (sub-ri reg-rsp 16)
+   in let idtr-low = int-mod (256 * 16 - 1) 65536 + idt-base * 65536
+   in let st3 = st-append-text st2 (li reg-rax idtr-low)
+   in let st4 = st-append-text st3 (mov-store reg-rsp reg-rax 0)
+   in let st5 = st-append-text st4 (li reg-rax 0)
+   in let st6 = st-append-text st5 (mov-store reg-rsp reg-rax 8)
+   in let st7 = st-append-text st6 (mov-rr reg-rdi reg-rsp)
+   in let st8 = st-append-text st7 lidt-rdi
+   in let st9 = st-append-text st8 (add-ri reg-rsp 16)
+   in let st10 = st-append-text st9 (li reg-rdi tick-count-addr)
+   in let st11 = st-append-text st10 (li reg-rax 0)
+   in let st12 = st-append-text st11 (mov-store reg-rdi reg-rax 0)
+   in let st13 = st-append-text st12 (li reg-rdi key-buffer-addr)
+   in let st14 = st-append-text st13 (mov-store reg-rdi reg-rax 0)
+   in let st15 = st-append-text st14 (li reg-rdi arena-base-addr)
+   in let st16 = st-append-text st15 (mov-store reg-rdi reg-rax 0)
+   in let st17 = st-append-text st16 (li reg-rdi result-arena-base-addr)
+   in let st18 = st-append-text st17 (mov-store reg-rdi reg-rax 0)
+   in st-append-text st18 sti
+
+Section: Process Management
+
+ Minimal process table for single-process compilation. Process 0
+ uses kernel page tables at 0x8000. Context switching and process 1
+ are present in the infrastructure but disabled during compilation.
+
+  emit-zero-region : CodegenState -> Integer -> Integer -> CodegenState
+  emit-zero-region (st) (addr) (qwords) =
+   let st1 = st-append-text st (li reg-rdi addr)
+   in let st2 = st-append-text st1 (li reg-rcx qwords)
+   in let st3 = st-append-text st2 (li reg-rax 0)
+   in st-append-text st3 [72, 243, 171]
+
+  emit-build-process-page-tables : CodegenState -> Integer -> Integer -> CodegenState
+  emit-build-process-page-tables (st) (pml4-addr) (heap-phys) =
+   let st1 = emit-zero-region st pml4-addr 1536
+   in let st2 = st-append-text st1 (li reg-rdi pml4-addr)
+   in let st3 = st-append-text st2 (li reg-rax (pml4-addr + 4096 + 3))
+   in let st4 = st-append-text st3 (mov-store reg-rdi reg-rax 0)
+   in let st5 = st-append-text st4 (li reg-rdi (pml4-addr + 4096))
+   in let st6 = st-append-text st5 (li reg-rax (pml4-addr + 8192 + 3))
+   in let st7 = st-append-text st6 (mov-store reg-rdi reg-rax 0)
+   in let pd-addr = pml4-addr + 8192
+   in let st8 = st-append-text st7 (li reg-rdi pd-addr)
+   in let st9 = st-append-text st8 (li reg-rax 131)
+   in let st10 = st-append-text st9 (mov-store reg-rdi reg-rax 0)
+   in let st11 = st-append-text st10 (li reg-rdi (pd-addr + 8))
+   in let st12 = st-append-text st11 (li reg-rax (2097152 + 131))
+   in let st13 = st-append-text st12 (mov-store reg-rdi reg-rax 0)
+   in let heap-pd-index = heap-phys / 2097152
+   in let st14 = st-append-text st13 (li reg-rdi (pd-addr + heap-pd-index * 8))
+   in let st15 = st-append-text st14 (li reg-rax (heap-phys + 131))
+   in st-append-text st15 (mov-store reg-rdi reg-rax 0)
+
+  emit-create-process : CodegenState -> Integer -> Integer -> Integer -> Integer -> CodegenState
+  emit-create-process (st) (proc-index) (state-val) (cr3-val) (heap-base) =
+   let entry-addr = proc-table-base + proc-index * proc-entry-size
+   in let st1 = st-append-text st (li reg-rdi entry-addr)
+   in let st2 = st-append-text st1 (li reg-rax state-val)
+   in let st3 = st-append-text st2 (mov-store reg-rdi reg-rax 0)
+   in let st4 = st-append-text st3 (li reg-rdi (entry-addr + 16))
+   in let st5 = st-append-text st4 (li reg-rax cr3-val)
+   in let st6 = st-append-text st5 (mov-store reg-rdi reg-rax 0)
+   in let st7 = st-append-text st6 (li reg-rdi (entry-addr + 40))
+   in let st8 = st-append-text st7 (li reg-rax heap-base)
+   in let st9 = st-append-text st8 (mov-store reg-rdi reg-rax 0)
+   in let st10 = st-append-text st9 (li reg-rdi (entry-addr + 48))
+   in st-append-text st10 (mov-store reg-rdi reg-rax 0)
+
+  emit-process-setup : CodegenState -> CodegenState
+  emit-process-setup (st) =
+   let st1 = emit-zero-region st proc-table-base (16 * proc-entry-size / 8)
+   in let st2 = st-append-text st1 (li reg-rdi current-proc-addr)
+   in let st3 = st-append-text st2 (li reg-rax 0)
+   in let st4 = st-append-text st3 (mov-store reg-rdi reg-rax 0)
+   in let st5 = emit-build-process-page-tables st4 32768 4194304
+   in let st6 = emit-create-process st5 0 1 32768 4194304
+   in let st7 = st-append-text st6 (li reg-rax 32768)
+   in let st8 = st-append-text st7 [15, 34, 216]
+   in st-append-text st8 (li reg-r10 4194304)
+
+Section: Capabilities
+
+  emit-grant-capability : CodegenState -> Integer -> Integer -> CodegenState
+  emit-grant-capability (st) (proc-index) (cap-bit) =
+   let cap-addr = proc-table-base + proc-index * proc-entry-size + proc-cap-offset
+   in let st1 = st-append-text st (li reg-rdi cap-addr)
+   in let st2 = st-append-text st1 (mov-load reg-rax reg-rdi 0)
+   in let bit-mask = shl-1 cap-bit
+   in let st3 = st-append-text st2 (add-ri reg-rax bit-mask)
+   in st-append-text st3 (mov-store reg-rdi reg-rax 0)
+
+  shl-1 : Integer -> Integer
+  shl-1 (n) =
+   if n == 0 then 1
+   else 2 * shl-1 (n - 1)
+
+Section: MSR and Syscall
+
+  emit-write-msr : CodegenState -> Integer -> Integer -> CodegenState
+  emit-write-msr (st) (msr-addr) (value) =
+   let low32 = int-mod value 4294967296
+   in let high32 = value / 4294967296
+   in let st1 = st-append-text st (li reg-rcx msr-addr)
+   in let st2 = st-append-text st1 (li reg-rax low32)
+   in let st3 = st-append-text st2 (li reg-rdx high32)
+   in st-append-text st3 [15, 48]
+
+  SyscallResult = record {
+   state : CodegenState,
+   handler-offset : Integer
+  }
+
+  emit-check-capability : CodegenState -> CodegenState
+  emit-check-capability (st) =
+   let st1 = st-append-text st (push-r reg-rcx)
+   in let st2 = st-append-text st1 (li reg-rcx proc-table-base)
+   in let st3 = st-append-text st2 (push-r reg-r11)
+   in let st4 = st-append-text st3 (li reg-r11 current-proc-addr)
+   in let st5 = st-append-text st4 (mov-load reg-r11 reg-r11 0)
+   in let st6 = st-append-text st5 (li reg-rcx proc-entry-size)
+   in let st7 = st-append-text st6 [72, 15, 175, 203]
+   in let st8 = st-append-text st7 (add-ri reg-rcx proc-table-base)
+   in let st9 = st-append-text st8 (add-ri reg-rcx proc-cap-offset)
+   in let st10 = st-append-text st9 (mov-load reg-rcx reg-rcx 0)
+   in let st11 = st-append-text st10 [72, 15, 163, 209]
+   in let st12 = st-append-text st11 (pop-r reg-r11)
+   in st-append-text st12 (pop-r reg-rcx)
+
+  emit-syscall-handler : CodegenState -> SyscallResult
+  emit-syscall-handler (st) =
+   let handler-offset = list-length (st.text)
+   in let st1 = st-append-text st (push-r reg-rcx)
+   in let st2 = st-append-text st1 (push-r reg-r11)
+   in let st3 = st-append-text st2 (cmp-ri reg-rax 1)
+   in let not-write = list-length (st3.text)
+   in let st4 = st-append-text st3 (jcc cc-ne 0)
+   in let st5 = st-append-text st4 (mov-rr reg-rdx reg-rdi)
+   in let st6 = emit-check-capability st5
+   in let no-write-cap = list-length (st6.text)
+   in let st7 = st-append-text st6 (jcc cc-e 0)
+   in let st8 = st-append-text st7 (mov-rr reg-rax reg-rdx)
+   in let st9 = st-append-text st8 (li reg-rdx 1016)
+   in let st10 = st-append-text st9 out-dx-al
+   in let st11 = patch-jcc-at st10 no-write-cap (list-length (st10.text))
+   in let st12 = st-append-text st11 (li reg-rax 0)
+   in let write-done = list-length (st12.text)
+   in let st13 = st-append-text st12 (jmp 0)
+   in let st14 = patch-jcc-at st13 not-write (list-length (st13.text))
+   in let st15 = st-append-text st14 (cmp-ri reg-rax 2)
+   in let not-read-key = list-length (st15.text)
+   in let st16 = st-append-text st15 (jcc cc-ne 0)
+   in let st17 = st-append-text st16 (li reg-rdi key-buffer-addr)
+   in let st18 = st-append-text st17 (mov-load reg-rax reg-rdi 0)
+   in let read-done = list-length (st18.text)
+   in let st19 = st-append-text st18 (jmp 0)
+   in let st20 = patch-jcc-at st19 not-read-key (list-length (st19.text))
+   in let st21 = st-append-text st20 (cmp-ri reg-rax 3)
+   in let not-get-ticks = list-length (st21.text)
+   in let st22 = st-append-text st21 (jcc cc-ne 0)
+   in let st23 = st-append-text st22 (li reg-rdi tick-count-addr)
+   in let st24 = st-append-text st23 (mov-load reg-rax reg-rdi 0)
+   in let ticks-done = list-length (st24.text)
+   in let st25 = st-append-text st24 (jmp 0)
+   in let st26 = patch-jcc-at st25 not-get-ticks (list-length (st25.text))
+   in let st27 = st-append-text st26 (li reg-rax (0 - 1))
+   in let common-exit = list-length (st27.text)
+   in let st28 = patch-jmp-at st27 write-done common-exit
+   in let st29 = patch-jmp-at st28 read-done common-exit
+   in let st30 = patch-jmp-at st29 ticks-done common-exit
+   in let st31 = st-append-text st30 (pop-r reg-r11)
+   in let st32 = st-append-text st31 (pop-r reg-rcx)
+   in let st33 = st-append-text st32 (push-r reg-r11)
+   in let st34 = st-append-text st33 [157]
+   in let st35 = st-append-text st34 [255, 225]
+   in SyscallResult {
+    state = st35,
+    handler-offset = handler-offset
+  }
+
+Section: Serial String
+
+ Emits each byte of a Unicode string directly to COM1 serial.
+ Used for the READY handshake and diagnostic labels.
+
+  emit-serial-string-loop : CodegenState -> List Integer -> Integer -> CodegenState
+  emit-serial-string-loop (st) (chars) (i) =
+   if i == list-length chars then st
+   else let st1 = emit-serial-wait-and-send st (list-at chars i)
+   in emit-serial-string-loop st1 chars (i + 1)
+
+  emit-serial-string : CodegenState -> List Integer -> CodegenState
+  emit-serial-string (st) (chars) =
+   emit-serial-string-loop st chars 0
+
+Section: Heap High-Water Mark
+
+  emit-update-heap-hwm : CodegenState -> CodegenState
+  emit-update-heap-hwm (st) =
+   let st1 = st-append-text st (push-r reg-r11)
+   in let st2 = st-append-text st1 (li reg-r11 heap-hwm-addr)
+   in let st3 = st-append-text st2 (push-r reg-rax)
+   in let st4 = st-append-text st3 (mov-load reg-rax reg-r11 0)
+   in let st5 = st-append-text st4 (cmp-rr reg-r10 reg-rax)
+   in let skip-update = list-length (st5.text)
+   in let st6 = st-append-text st5 (jcc cc-le 0)
+   in let st7 = st-append-text st6 (mov-store reg-r11 reg-r10 0)
+   in let st8 = patch-jcc-at st7 skip-update (list-length (st7.text))
+   in let st9 = st-append-text st8 (pop-r reg-rax)
+   in st-append-text st9 (pop-r reg-r11)
+
+Page 1

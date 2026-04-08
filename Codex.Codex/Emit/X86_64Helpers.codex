@@ -1523,6 +1523,154 @@ Section: __text_split
 
 Section: Helpers Entry Point
 
+Section: I/O Boundary Helpers
+
+ The five deferred helpers that require rodata tables for CCE
+ conversion. These operate at the I/O boundary where CCE-encoded
+ internal data meets Unicode-encoded external data.
+
+  emit-cce-to-unicode-helper : CodegenState -> CodegenState
+  emit-cce-to-unicode-helper (st) =
+   let st1 = record-func-offset st "__cce_to_unicode"
+   in let st2 = emit-load-rodata-addr st1 reg-rax cce-to-unicode-rodata-offset
+   in let st3 = st-append-text st2 (add-rr reg-rax reg-rdi)
+   in let st4 = st-append-text st3 (movzx-byte reg-rax reg-rax 0)
+   in st-append-text st4 x86-ret
+
+  emit-unicode-to-cce-helper : CodegenState -> CodegenState
+  emit-unicode-to-cce-helper (st) =
+   let st1 = record-func-offset st "__unicode_to_cce"
+   in let st2 = emit-load-rodata-addr st1 reg-rax unicode-to-cce-rodata-offset
+   in let st3 = st-append-text st2 (add-rr reg-rax reg-rdi)
+   in let st4 = st-append-text st3 (movzx-byte reg-rax reg-rax 0)
+   in st-append-text st4 x86-ret
+
+  emit-read-line-helper : CodegenState -> CodegenState
+  emit-read-line-helper (st) =
+   let st1 = record-func-offset st "__read_line"
+   in let st2 = st-append-text st1 (push-r reg-rbx)
+   in let st3 = st-append-text st2 (push-r reg-r12)
+   in let st4 = emit-load-rodata-addr st3 reg-r12 unicode-to-cce-rodata-offset
+   in let st5 = st-append-text st4 (mov-rr reg-rbx reg-r10)
+   in let st6 = st-append-text st5 (li reg-rcx 0)
+   in let read-byte = list-length (st6.text)
+   in let st7 = st-append-text st6 (push-r reg-rcx)
+   in let poll-loop = list-length (st7.text)
+   in let st8 = st-append-text st7 (li reg-rdx 1021)
+   in let st9 = st-append-text st8 in-al-dx
+   in let st10 = st-append-text st9 (li reg-r11 1)
+   in let st11 = st-append-text st10 (and-rr reg-rax reg-r11)
+   in let st12 = st-append-text st11 (test-rr reg-rax reg-rax)
+   in let data-ready = list-length (st12.text)
+   in let st13 = st-append-text st12 (jcc cc-ne 0)
+   in let st14 = st-append-text st13 hlt
+   in let st15 = st-append-text st14 (jmp (poll-loop - (list-length (st14.text) + 5)))
+   in let st16 = patch-jcc-at st15 data-ready (list-length (st15.text))
+   in let st17 = st-append-text st16 (li reg-rdx 1016)
+   in let st18 = st-append-text st17 in-al-dx
+   in let st19 = st-append-text st18 (pop-r reg-rcx)
+   in let st20 = st-append-text st19 (push-r reg-rcx)
+   in let st21 = st-append-text st20 (mov-rr reg-rsi reg-rbx)
+   in let st22 = st-append-text st21 (add-rr reg-rsi reg-rcx)
+   in let st23 = st-append-text st22 (add-ri reg-rsi 8)
+   in let st24 = st-append-text st23 [136, 6]
+   in let st25 = st-append-text st24 (li reg-rax 1)
+   in let st26 = st-append-text st25 (pop-r reg-rcx)
+   in let st27 = st-append-text st26 (test-rr reg-rax reg-rax)
+   in let eof = list-length (st27.text)
+   in let st28 = st-append-text st27 (jcc cc-le 0)
+   in let st29 = st-append-text st28 (mov-rr reg-rdx reg-rbx)
+   in let st30 = st-append-text st29 (add-rr reg-rdx reg-rcx)
+   in let st31 = st-append-text st30 (movzx-byte reg-rdx reg-rdx 8)
+   in let st32 = st-append-text st31 (cmp-ri reg-rdx 10)
+   in let got-nl = list-length (st32.text)
+   in let st33 = st-append-text st32 (jcc cc-e 0)
+   in let st34 = st-append-text st33 (mov-rr reg-rsi reg-rbx)
+   in let st35 = st-append-text st34 (add-rr reg-rsi reg-rcx)
+   in let st36 = st-append-text st35 (add-ri reg-rsi 8)
+   in let st37 = st-append-text st36 (movzx-byte reg-rax reg-rsi 0)
+   in let st38 = st-append-text st37 (add-rr reg-rax reg-r12)
+   in let st39 = st-append-text st38 (movzx-byte reg-rax reg-rax 0)
+   in let st40 = st-append-text st39 [136, 6]
+   in let st41 = st-append-text st40 (add-ri reg-rcx 1)
+   in let st42 = st-append-text st41 (jmp (read-byte - (list-length (st41.text) + 5)))
+   in let st43 = patch-jcc-at st42 eof (list-length (st42.text))
+   in let st44 = patch-jcc-at st43 got-nl (list-length (st43.text))
+   in let st45 = st-append-text st44 (mov-store reg-rbx reg-rcx 0)
+   in let st46 = st-append-text st45 (mov-rr reg-rax reg-rcx)
+   in let st47 = st-append-text st46 (add-ri reg-rax 15)
+   in let st48 = st-append-text st47 (and-ri reg-rax (0 - 8))
+   in let st49 = st-append-text st48 (add-rr reg-r10 reg-rax)
+   in let st50 = st-append-text st49 (mov-rr reg-rax reg-rbx)
+   in let st51 = st-append-text st50 (pop-r reg-r12)
+   in let st52 = st-append-text st51 (pop-r reg-rbx)
+   in st-append-text st52 x86-ret
+
+  emit-read-file-helper : CodegenState -> CodegenState
+  emit-read-file-helper (st) =
+   let st1 = record-func-offset st "__read_file"
+   in let st2 = emit-call-to st1 "__bare_metal_read_serial"
+   in st-append-text st2 x86-ret
+
+  emit-bare-metal-read-serial : CodegenState -> CodegenState
+  emit-bare-metal-read-serial (st) =
+   let st1 = record-func-offset st "__bare_metal_read_serial"
+   in let st2 = st-append-text st1 (push-r reg-rbx)
+   in let st3 = st-append-text st2 (push-r reg-r12)
+   in let st4 = emit-load-rodata-addr st3 reg-r12 unicode-to-cce-rodata-offset
+   in let st5 = st-append-text st4 (mov-rr reg-rbx reg-r10)
+   in let st6 = st-append-text st5 (li reg-rcx 0)
+   in let read-loop = list-length (st6.text)
+   in let wait-loop = list-length (st6.text)
+   in let st7 = st-append-text st6 (li reg-rdi serial-write-pos-addr)
+   in let st8 = st-append-text st7 (mov-load reg-rsi reg-rdi 0)
+   in let st9 = st-append-text st8 (li reg-rdi serial-read-pos-addr)
+   in let st10 = st-append-text st9 (mov-load reg-r11 reg-rdi 0)
+   in let st11 = st-append-text st10 (cmp-rr reg-rsi reg-r11)
+   in let has-data = list-length (st11.text)
+   in let st12 = st-append-text st11 (jcc cc-ne 0)
+   in let st13 = st-append-text st12 hlt
+   in let st14 = st-append-text st13 (jmp (wait-loop - (list-length (st13.text) + 5)))
+   in let st15 = patch-jcc-at st14 has-data (list-length (st14.text))
+   in let st16 = st-append-text st15 (mov-rr reg-rax reg-r11)
+   in let st17 = st-append-text st16 (and-ri reg-rax serial-ring-buf-mask)
+   in let st18 = st-append-text st17 (add-ri reg-rax serial-ring-buf-addr)
+   in let st19 = st-append-text st18 (movzx-byte reg-rax reg-rax 0)
+   in let st20 = st-append-text st19 (add-ri reg-r11 1)
+   in let st21 = st-append-text st20 (li reg-rdi serial-read-pos-addr)
+   in let st22 = st-append-text st21 (mov-store reg-rdi reg-r11 0)
+   in let st23 = st-append-text st22 (cmp-ri reg-rax 4)
+   in let got-eot = list-length (st23.text)
+   in let st24 = st-append-text st23 (jcc cc-e 0)
+   in let st25 = st-append-text st24 (test-rr reg-rax reg-rax)
+   in let got-null = list-length (st25.text)
+   in let st26 = st-append-text st25 (jcc cc-e 0)
+   in let st27 = st-append-text st26 (cmp-ri reg-rax 13)
+   in let skip-cr = list-length (st27.text)
+   in let st28 = st-append-text st27 (jcc cc-e 0)
+   in let st29 = st-append-text st28 (add-rr reg-rax reg-r12)
+   in let st30 = st-append-text st29 (movzx-byte reg-rax reg-rax 0)
+   in let st31 = st-append-text st30 (mov-rr reg-rsi reg-rbx)
+   in let st32 = st-append-text st31 (add-rr reg-rsi reg-rcx)
+   in let st33 = st-append-text st32 (add-ri reg-rsi 8)
+   in let st34 = st-append-text st33 [136, 6]
+   in let st35 = st-append-text st34 (add-ri reg-rcx 1)
+   in let st36 = patch-jcc-at st35 skip-cr (list-length (st35.text))
+   in let st37 = st-append-text st36 (jmp (read-loop - (list-length (st36.text) + 5)))
+   in let st38 = patch-jcc-at st37 got-eot (list-length (st37.text))
+   in let st39 = patch-jcc-at st38 got-null (list-length (st38.text))
+   in let st40 = st-append-text st39 (mov-store reg-rbx reg-rcx 0)
+   in let st41 = st-append-text st40 (mov-rr reg-rax reg-rcx)
+   in let st42 = st-append-text st41 (add-ri reg-rax 15)
+   in let st43 = st-append-text st42 (and-ri reg-rax (0 - 8))
+   in let st44 = st-append-text st43 (add-ri reg-rax 8)
+   in let st45 = st-append-text st44 (add-rr reg-r10 reg-rax)
+   in let st46 = st-append-text st45 (mov-rr reg-rax reg-rbx)
+   in let st47 = st-append-text st46 (pop-r reg-r12)
+   in let st48 = st-append-text st47 (pop-r reg-rcx)
+   in let st49 = st-append-text st48 (pop-r reg-rbx)
+   in st-append-text st49 x86-ret
+
   emit-runtime-helpers : CodegenState -> CodegenState
   emit-runtime-helpers (st) =
     let st0 = emit-str-concat st
@@ -1540,7 +1688,12 @@ Section: Helpers Entry Point
    in let st12 = emit-list-insert-at st11
    in let st13 = emit-list-contains st12
    in let st14 = emit-text-concat-list st13
-   in emit-text-split st14
+   in let st15 = emit-text-split st14
+   in let st16 = emit-cce-to-unicode-helper st15
+   in let st17 = emit-unicode-to-cce-helper st16
+   in let st18 = emit-read-line-helper st17
+   in let st19 = emit-read-file-helper st18
+   in emit-bare-metal-read-serial st19
 
 Page 3 of 3
 

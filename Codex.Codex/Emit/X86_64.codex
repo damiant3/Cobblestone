@@ -31,6 +31,11 @@ Section: Record Types
    target : Text
   }
 
+  RodataFixup = record {
+   patch-offset : Integer,
+   rodata-offset : Integer
+  }
+
   TcoState = record {
    active : Boolean,
    in-tail-pos : Boolean,
@@ -48,6 +53,7 @@ Section: Record Types
    func-offsets : List FuncOffset,
    call-patches : List CallPatch,
    func-addr-fixups : List FuncAddrFixup,
+   rodata-fixups : List RodataFixup,
    locals : List LocalBinding,
    next-temp : Integer,
    next-local : Integer,
@@ -126,6 +132,46 @@ Section: Constants
   bare-metal-stack-top =
    536870912
 
+Section: Rodata Tables
+
+ CCE-to-Unicode lookup table (128 bytes) for output boundary.
+ Each entry is the Unicode byte value for the corresponding CCE byte.
+ Values above 127 (accented, Cyrillic) are truncated to low byte
+ since COM1 serial is 8-bit. Accented characters map correctly
+ because they are in the 0xE0-0xFD range of Latin-1.
+
+  cce-to-unicode-table : List Integer
+  cce-to-unicode-table =
+   [0, 10, 32, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 101, 116, 97, 111, 105, 110, 115, 104, 114, 100, 108, 99, 117, 109, 119, 102, 103, 121, 112, 98, 118, 107, 106, 120, 113, 122, 69, 84, 65, 79, 73, 78, 83, 72, 82, 68, 76, 67, 85, 77, 87, 70, 71, 89, 80, 66, 86, 75, 74, 88, 81, 90, 46, 44, 33, 63, 58, 59, 39, 34, 45, 40, 41, 43, 61, 42, 60, 62, 47, 64, 35, 38, 95, 92, 124, 91, 93, 123, 125, 126, 96, 94, 233, 232, 234, 235, 225, 224, 226, 228, 243, 244, 246, 250, 249, 251, 252, 241, 231, 237, 48, 62, 53, 56, 61, 66, 65, 64, 50, 59, 58, 60, 52, 63, 67]
+
+ Unicode-to-CCE lookup table (256 bytes) for input boundary.
+ Maps Unicode byte values 0-255 to CCE byte values.
+ Unmapped entries use 68 (CCE for question mark) as replacement.
+
+  unicode-to-cce-table : List Integer
+  unicode-to-cce-table =
+   [0, 68, 68, 68, 68, 68, 68, 68, 68, 68, 1, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 2, 67, 72, 83, 68, 68, 84, 71, 74, 75, 78, 76, 66, 73, 65, 81, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 69, 70, 79, 77, 80, 68, 82, 41, 58, 50, 48, 39, 54, 55, 46, 43, 61, 60, 49, 52, 44, 42, 57, 63, 47, 45, 40, 51, 59, 53, 62, 56, 64, 88, 86, 89, 94, 85, 93, 15, 32, 24, 22, 13, 28, 29, 20, 17, 35, 34, 23, 26, 18, 16, 31, 37, 21, 19, 14, 25, 33, 27, 36, 30, 38, 90, 87, 91, 92, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 100, 99, 101, 68, 102, 68, 68, 111, 96, 95, 97, 98, 68, 112, 68, 68, 68, 110, 68, 103, 104, 68, 105, 68, 68, 107, 106, 108, 109, 68, 68, 68]
+
+ Rodata layout offsets. The result-space-base and fwd-table globals
+ occupy the first 16 bytes; CCE tables follow immediately.
+
+  result-base-rodata-offset : Integer
+  result-base-rodata-offset = 0
+
+  fwd-table-rodata-offset : Integer
+  fwd-table-rodata-offset = 8
+
+  cce-to-unicode-rodata-offset : Integer
+  cce-to-unicode-rodata-offset = 16
+
+  unicode-to-cce-rodata-offset : Integer
+  unicode-to-cce-rodata-offset = 144
+
+  init-rodata : List Integer
+  init-rodata =
+   let zeros-8 = [0, 0, 0, 0, 0, 0, 0, 0]
+   in zeros-8 ++ zeros-8 ++ cce-to-unicode-table ++ unicode-to-cce-table
+
 Section: State Helpers
 
   empty-codegen-state : CodegenState
@@ -136,6 +182,7 @@ Section: State Helpers
    func-offsets = [],
    call-patches = [],
    func-addr-fixups = [],
+   rodata-fixups = [],
    locals = [],
    next-temp = 0,
    next-local = 0,
@@ -152,6 +199,7 @@ Section: State Helpers
    func-offsets = st.func-offsets,
    call-patches = st.call-patches,
    func-addr-fixups = st.func-addr-fixups,
+   rodata-fixups = st.rodata-fixups,
    locals = st.locals,
    next-temp = st.next-temp,
    next-local = st.next-local,
@@ -168,6 +216,7 @@ Section: State Helpers
    func-offsets = st.func-offsets,
    call-patches = st.call-patches,
    func-addr-fixups = st.func-addr-fixups,
+   rodata-fixups = st.rodata-fixups,
    locals = st.locals,
    next-temp = st.next-temp,
    next-local = st.next-local,
@@ -187,6 +236,7 @@ Section: State Helpers
     }),
    call-patches = st.call-patches,
    func-addr-fixups = st.func-addr-fixups,
+   rodata-fixups = st.rodata-fixups,
    locals = st.locals,
    next-temp = st.next-temp,
    next-local = st.next-local,
@@ -217,6 +267,7 @@ Section: State Helpers
     }),
    call-patches = st.call-patches,
    func-addr-fixups = st.func-addr-fixups,
+   rodata-fixups = st.rodata-fixups,
    locals = [],
    next-temp = 0,
    next-local = 0,
@@ -244,6 +295,7 @@ Section: Register Allocation
    func-offsets = st.func-offsets,
    call-patches = st.call-patches,
    func-addr-fixups = st.func-addr-fixups,
+   rodata-fixups = st.rodata-fixups,
    locals = st.locals,
    next-temp = st.next-temp + 1,
    next-local = st.next-local,
@@ -264,6 +316,7 @@ Section: Register Allocation
    func-offsets = st.func-offsets,
    call-patches = st.call-patches,
    func-addr-fixups = st.func-addr-fixups,
+   rodata-fixups = st.rodata-fixups,
    locals = st.locals,
    next-temp = st.next-temp,
    next-local = st.next-local + 1,
@@ -281,6 +334,7 @@ Section: Register Allocation
    func-offsets = st.func-offsets,
    call-patches = st.call-patches,
    func-addr-fixups = st.func-addr-fixups,
+   rodata-fixups = st.rodata-fixups,
    locals = st.locals,
    next-temp = st.next-temp,
    next-local = st.next-local + 1,
@@ -313,6 +367,7 @@ Section: Register Allocation
    func-offsets = st.func-offsets,
    call-patches = st.call-patches,
    func-addr-fixups = st.func-addr-fixups,
+   rodata-fixups = st.rodata-fixups,
    locals = st.locals,
    next-temp = st.next-temp,
    next-local = st.next-local,
@@ -474,6 +529,7 @@ Section: Function Emission
    func-offsets = st.func-offsets,
    call-patches = st.call-patches,
    func-addr-fixups = st.func-addr-fixups,
+   rodata-fixups = st.rodata-fixups,
    locals = st.locals,
    next-temp = st.next-temp,
    next-local = st.next-local,
@@ -529,6 +585,7 @@ Section: Function Emission
       func-offsets = st-a.func-offsets,
       call-patches = st-a.call-patches,
       func-addr-fixups = st-a.func-addr-fixups,
+      rodata-fixups = st-a.rodata-fixups,
       locals = st-a.locals,
       next-temp = st-a.next-temp,
       next-local = st-a.next-local,
@@ -579,6 +636,7 @@ Section: Local Variable Management
    func-offsets = st.func-offsets,
    call-patches = st.call-patches,
    func-addr-fixups = st.func-addr-fixups,
+   rodata-fixups = st.rodata-fixups,
    locals = list-snoc (st.locals) (LocalBinding {
      name = name,
      slot = slot
@@ -790,6 +848,14 @@ Section: Builtin Detection
     else if name == "is-whitespace" then True
     else False
 
+  is-io-builtin : Text -> Boolean
+  is-io-builtin (name) =
+    if name == "print-line" then True
+    else if name == "read-file" then True
+    else if name == "write-file" then True
+    else if name == "read-line" then True
+    else False
+
   is-misc-builtin : Text -> Boolean
   is-misc-builtin (name) =
     if name == "negate" then True
@@ -803,6 +869,7 @@ Section: Builtin Detection
     if is-string-builtin name then True
     else if is-list-builtin name then True
     else if is-char-builtin name then True
+    else if is-io-builtin name then True
     else is-misc-builtin name
 
 Section: Builtin Emission
@@ -1084,9 +1151,54 @@ Section: Builtin Emission
    reg = result.reg
   }
 
+  emit-print-line-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-print-line-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let st1 = emit-print-text (r.state) (r.reg)
+   in let rd = alloc-temp st1
+   in EmitResult {
+   state = st-append-text (rd.state) (li (rd.reg) 0),
+   reg = rd.reg
+  }
+
+  emit-read-file-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-read-file-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let st1 = st-append-text (r.state) (mov-rr reg-rdi (r.reg))
+   in let st2 = emit-call-to st1 "__bare_metal_read_serial"
+   in let rd = alloc-temp st2
+   in EmitResult {
+   state = st-append-text (rd.state) (mov-rr (rd.reg) reg-rax),
+   reg = rd.reg
+  }
+
+  emit-write-file-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-write-file-builtin (st) (args) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let r1 = emit-expr (r0.state) (list-at args 1)
+   in let st1 = emit-print-text-no-newline (r1.state) (r1.reg)
+   in let rd = alloc-temp st1
+   in EmitResult {
+   state = st-append-text (rd.state) (li (rd.reg) 0),
+   reg = rd.reg
+  }
+
+  emit-read-line-builtin : CodegenState -> EmitResult
+  emit-read-line-builtin (st) =
+    let st1 = emit-call-to st "__read_line"
+   in let rd = alloc-temp st1
+   in EmitResult {
+   state = st-append-text (rd.state) (mov-rr (rd.reg) reg-rax),
+   reg = rd.reg
+  }
+
   emit-builtin : CodegenState -> Text -> List IRExpr -> EmitResult
   emit-builtin (st) (name) (args) =
-    if name == "text-length" then emit-text-length-builtin st args
+    if name == "print-line" then emit-print-line-builtin st args
+    else if name == "read-file" then emit-read-file-builtin st args
+    else if name == "write-file" then emit-write-file-builtin st args
+    else if name == "read-line" then emit-read-line-builtin st
+    else if name == "text-length" then emit-text-length-builtin st args
     else if name == "integer-to-text" then emit-helper-call-1 st args "__itoa"
     else if name == "show" then emit-helper-call-1 st args "__itoa"
     else if name == "text-to-integer" then emit-helper-call-1 st args "__text_to_int"
@@ -1281,6 +1393,28 @@ Section: Function Application
 
 Section: Closures and Partial Application
 
+  emit-load-rodata-addr : CodegenState -> Integer -> Integer -> CodegenState
+  emit-load-rodata-addr (st) (reg) (rodata-off) =
+   let fixup = RodataFixup {
+    patch-offset = list-length (st.text) + 2,
+    rodata-offset = rodata-off
+  }
+   in let st1 = st-append-text st (mov-ri64 reg 0)
+   in CodegenState {
+   text = st1.text,
+   rodata = st1.rodata,
+   func-offsets = st1.func-offsets,
+   call-patches = st1.call-patches,
+   func-addr-fixups = st1.func-addr-fixups,
+   rodata-fixups = list-snoc (st1.rodata-fixups) fixup,
+   locals = st1.locals,
+   next-temp = st1.next-temp,
+   next-local = st1.next-local,
+   spill-count = st1.spill-count,
+   load-local-toggle = st1.load-local-toggle,
+   tco = st1.tco
+  }
+
   emit-load-func-addr : CodegenState -> Integer -> Text -> CodegenState
   emit-load-func-addr (st) (reg) (func-name) =
    let fixup = FuncAddrFixup {
@@ -1294,6 +1428,7 @@ Section: Closures and Partial Application
    func-offsets = st1.func-offsets,
    call-patches = st1.call-patches,
    func-addr-fixups = list-snoc (st1.func-addr-fixups) fixup,
+   rodata-fixups = st1.rodata-fixups,
    locals = st1.locals,
    next-temp = st1.next-temp,
    next-local = st1.next-local,
@@ -1369,6 +1504,28 @@ Section: Closures and Partial Application
     b3 = list-at addr-bytes 7
   }
    in collect-func-addr-patches fixups offsets text-base (i + 1) (acc ++ [p0, p1])
+
+  collect-rodata-patches : List RodataFixup -> Integer -> Integer -> List PatchEntry -> List PatchEntry
+  collect-rodata-patches (fixups) (rodata-vaddr) (i) (acc) =
+   if i == list-length fixups then acc
+   else let f = list-at fixups i
+   in let addr = rodata-vaddr + f.rodata-offset
+   in let addr-bytes = write-i64 addr
+   in let p0 = PatchEntry {
+    pos = f.patch-offset,
+    b0 = list-at addr-bytes 0,
+    b1 = list-at addr-bytes 1,
+    b2 = list-at addr-bytes 2,
+    b3 = list-at addr-bytes 3
+  }
+   in let p1 = PatchEntry {
+    pos = f.patch-offset + 4,
+    b0 = list-at addr-bytes 4,
+    b1 = list-at addr-bytes 5,
+    b2 = list-at addr-bytes 6,
+    b3 = list-at addr-bytes 7
+  }
+   in collect-rodata-patches fixups rodata-vaddr (i + 1) (acc ++ [p0, p1])
 
 Section: Record Emission
 
@@ -1767,6 +1924,93 @@ Section: Inline Integer Print
    in let st2 = emit-itoa-print-loop st1
    in patch-jmp-at st2 (zero.jmp-done-zero-pos) (list-length (st2.text))
 
+Section: Print Text
+
+ Loops over the CCE bytes of a length-prefixed string, converts each
+ byte to Unicode via the CCE-to-Unicode table in rodata, and sends
+ the Unicode byte to COM1 serial. Uses locals to preserve the string
+ pointer, table address, length, and loop index across iterations.
+
+  emit-serial-wait-thr : CodegenState -> CodegenState
+  emit-serial-wait-thr (st) =
+   let st1 = st-append-text st (push-r reg-rax)
+   in let wait-top = list-length (st1.text)
+   in let st2 = st-append-text st1 (li reg-rdx 1021)
+   in let st3 = st-append-text st2 [236]
+   in let st4 = st-append-text st3 [168, 32]
+   in let jne-pos = list-length (st4.text)
+   in let st5 = st-append-text st4 (jcc cc-ne 0)
+   in let st6 = st-append-text st5 (jmp (wait-top - (list-length (st5.text) + 5)))
+   in let st7 = patch-jcc-at st6 jne-pos (list-length (st6.text))
+   in st-append-text st7 (pop-r reg-rax)
+
+  emit-print-newline : CodegenState -> CodegenState
+  emit-print-newline (st) =
+   let st1 = emit-serial-wait-thr st
+   in let st2 = st-append-text st1 (li reg-rax 10)
+   in let st3 = st-append-text st2 (li reg-rdx 1016)
+   in st-append-text st3 out-dx-al
+
+  emit-print-text-loop : CodegenState -> Integer -> Integer -> Integer -> Integer -> CodegenState
+  emit-print-text-loop (st) (saved-ptr) (saved-table) (saved-len) (saved-idx) =
+   let loop-top = list-length (st.text)
+   in let idx = load-local st saved-idx
+   in let len-check = load-local (idx.state) saved-len
+   in let st1 = st-append-text (len-check.state) (cmp-rr (idx.reg) (len-check.reg))
+   in let done-jump = list-length (st1.text)
+   in let st2 = st-append-text st1 (jcc cc-ge 0)
+   in let ptr-l = load-local st2 saved-ptr
+   in let idx2 = load-local (ptr-l.state) saved-idx
+   in let st3 = st-append-text (idx2.state) (lea reg-rsi (ptr-l.reg) 8)
+   in let st4 = st-append-text st3 (add-rr reg-rsi (idx2.reg))
+   in let st5 = st-append-text st4 (movzx-byte reg-rax reg-rsi 0)
+   in let tbl = load-local st5 saved-table
+   in let st6 = st-append-text (tbl.state) (add-rr reg-rax (tbl.reg))
+   in let st7 = st-append-text st6 (movzx-byte reg-rax reg-rax 0)
+   in let st8 = emit-serial-wait-thr st7
+   in let st9 = st-append-text st8 (li reg-rdx 1016)
+   in let st10 = st-append-text st9 out-dx-al
+   in let idx3 = load-local st10 saved-idx
+   in let st11 = st-append-text (idx3.state) (add-ri (idx3.reg) 1)
+   in let st12 = store-local st11 saved-idx (idx3.reg)
+   in let st13 = st-append-text st12 (jmp (loop-top - (list-length (st12.text) + 5)))
+   in patch-jcc-at st13 done-jump (list-length (st13.text))
+
+  emit-print-text : CodegenState -> Integer -> CodegenState
+  emit-print-text (st) (ptr-reg) =
+   let saved-ptr = alloc-local st
+   in let st1 = store-local (saved-ptr.state) (saved-ptr.reg) ptr-reg
+   in let saved-table = alloc-local st1
+   in let st2 = emit-load-rodata-addr (saved-table.state) reg-r11 cce-to-unicode-rodata-offset
+   in let st2a = store-local st2 (saved-table.reg) reg-r11
+   in let ptr-ld = load-local st2a (saved-ptr.reg)
+   in let tmp-len = alloc-temp (ptr-ld.state)
+   in let st3 = st-append-text (tmp-len.state) (mov-load (tmp-len.reg) (ptr-ld.reg) 0)
+   in let saved-len = alloc-local st3
+   in let st4 = store-local (saved-len.state) (saved-len.reg) (tmp-len.reg)
+   in let saved-idx = alloc-local st4
+   in let st5 = st-append-text (saved-idx.state) (li reg-r11 0)
+   in let st6 = store-local st5 (saved-idx.reg) reg-r11
+   in let st7 = emit-print-text-loop st6 (saved-ptr.reg) (saved-table.reg) (saved-len.reg) (saved-idx.reg)
+   in emit-print-newline st7
+
+  emit-print-text-no-newline : CodegenState -> Integer -> CodegenState
+  emit-print-text-no-newline (st) (ptr-reg) =
+   let saved-ptr = alloc-local st
+   in let st1 = store-local (saved-ptr.state) (saved-ptr.reg) ptr-reg
+   in let saved-table = alloc-local st1
+   in let st2 = emit-load-rodata-addr (saved-table.state) reg-r11 cce-to-unicode-rodata-offset
+   in let st2a = store-local st2 (saved-table.reg) reg-r11
+   in let ptr-ld = load-local st2a (saved-ptr.reg)
+   in let tmp-len = alloc-temp (ptr-ld.state)
+   in let st3 = st-append-text (tmp-len.state) (mov-load (tmp-len.reg) (ptr-ld.reg) 0)
+   in let saved-len = alloc-local st3
+   in let st4 = store-local (saved-len.state) (saved-len.reg) (tmp-len.reg)
+   in let saved-idx = alloc-local st4
+   in let st5 = st-append-text (saved-idx.state) (li reg-r11 0)
+   in let st6 = store-local st5 (saved-idx.reg) reg-r11
+   in emit-print-text-loop st6 (saved-ptr.reg) (saved-table.reg) (saved-len.reg) (saved-idx.reg)
+
 Section: Call Emission
 
   emit-call-to : CodegenState -> Text -> CodegenState
@@ -1782,6 +2026,7 @@ Section: Call Emission
      target = target
     }),
    func-addr-fixups = st1.func-addr-fixups,
+   rodata-fixups = st1.rodata-fixups,
    locals = st1.locals,
    next-temp = st1.next-temp,
    next-local = st1.next-local,
@@ -1801,17 +2046,76 @@ Section: Bare-Metal Start
   bare-metal-heap-base =
    4194304
 
-  emit-start : CodegenState -> CodegenState
-  emit-start (st) =
+  emit-start : CodegenState -> Integer -> Integer -> CodegenState
+  emit-start (st) (first-stub-vaddr) (syscall-handler-offset) =
    let st1 = record-func-offset st "__start"
-   in let st2 = st-append-text st1 (li reg-rsp bare-metal-stack-top)
-   in let st3 = st-append-text st2 (mov-rr reg-rbp reg-rsp)
-   in let st3a = st-append-text st3 (li reg-r10 bare-metal-heap-base)
-   in let st4 = emit-com1-init st3a
-   in let st5 = emit-call-to st4 "main"
-   in let st6 = emit-inline-itoa-and-print st5
-   in let st7 = emit-serial-wait-and-send st6 10
-   in st-append-text st7 hlt
+   in let st2 = st-append-text st1 cli
+   in let st3 = st-append-text st2 (li reg-rsp bare-metal-stack-top)
+   in let st4 = st-append-text st3 (mov-rr reg-rbp reg-rsp)
+   in let st5 = st-append-text st4 (li reg-r10 bare-metal-heap-base)
+   in let st6 = st-append-text st5 (mov-rr reg-r15 reg-r10)
+   in let st7 = st-append-text st6 (li reg-r11 stack-min-rsp-addr)
+   in let st8 = st-append-text st7 (li reg-rax bare-metal-stack-top)
+   in let st9 = st-append-text st8 (mov-store reg-r11 reg-rax 0)
+   in let st10 = emit-load-rodata-addr st9 reg-r11 result-base-rodata-offset
+   in let st11 = st-append-text st10 (mov-store reg-r11 reg-r15 0)
+   in let st12 = emit-process-setup st11
+   in let st13 = emit-grant-capability st12 0 cap-console
+   in let st14 = emit-grant-capability st13 0 cap-concurrent
+   in let st15 = emit-grant-capability st14 1 cap-console
+   in let syscall-vaddr = bare-metal-load-addr + syscall-handler-offset
+   in let st16 = emit-write-msr st15 3221225473 (8 * 4294967296)
+   in let st17 = emit-write-msr st16 3221225474 syscall-vaddr
+   in let st18 = emit-write-msr st17 3221225476 512
+   in let st19 = st-append-text st18 (li reg-rcx 3221225472)
+   in let st20 = st-append-text st19 [15, 50]
+   in let st21 = st-append-text st20 [72, 131, 200, 1]
+   in let st22 = st-append-text st21 [15, 48]
+   in let st23 = emit-out-byte st22 1019 128
+   in let st24 = emit-out-byte st23 1016 1
+   in let st25 = emit-out-byte st24 1017 0
+   in let st26 = emit-out-byte st25 1019 3
+   in let st27 = emit-out-byte st26 1018 199
+   in let st28 = emit-out-byte st27 1020 11
+   in let st29 = emit-out-byte st28 1017 1
+   in let st30 = st-append-text st29 (li reg-rdi serial-write-pos-addr)
+   in let st31 = st-append-text st30 (li reg-rax 0)
+   in let st32 = st-append-text st31 (mov-store reg-rdi reg-rax 0)
+   in let st33 = st-append-text st32 (li reg-rdi serial-read-pos-addr)
+   in let st34 = st-append-text st33 (mov-store reg-rdi reg-rax 0)
+   in let st35 = emit-idt-entries st34 first-stub-vaddr
+   in let st36 = emit-interrupt-setup st35
+   in let st37 = emit-serial-string st36 [82, 69, 65, 68, 89, 10]
+   in let st38 = st-append-text st37 (li reg-rdi arena-base-addr)
+   in let st39 = st-append-text st38 (mov-store reg-rdi reg-r10 0)
+   in let st40 = st-append-text st39 (li reg-rdi result-arena-base-addr)
+   in let st41 = st-append-text st40 (mov-store reg-rdi reg-r15 0)
+   in let repl-loop = list-length (st41.text)
+   in let st42 = st-append-text st41 (li reg-rdi arena-base-addr)
+   in let st43 = st-append-text st42 (mov-load reg-r10 reg-rdi 0)
+   in let st44 = st-append-text st43 (li reg-rdi result-arena-base-addr)
+   in let st45 = st-append-text st44 (mov-load reg-r15 reg-rdi 0)
+   in let st46 = st-append-text st45 (li reg-rdi heap-hwm-addr)
+   in let st47 = st-append-text st46 (mov-store reg-rdi reg-r10 0)
+   in let st48 = emit-call-to st47 "main"
+   in let st49 = emit-update-heap-hwm st48
+   in let st50 = emit-serial-string st49 [72, 69, 65, 80, 58]
+   in let st51 = st-append-text st50 (li reg-rdi heap-hwm-addr)
+   in let st52 = st-append-text st51 (mov-load reg-rax reg-rdi 0)
+   in let st53 = emit-inline-itoa-and-print st52
+   in let st54 = emit-serial-wait-and-send st53 10
+   in let st55 = emit-serial-string st54 [83, 84, 65, 67, 75, 58]
+   in let st56 = st-append-text st55 (li reg-rsi bare-metal-stack-top)
+   in let st57 = st-append-text st56 (li reg-rdi stack-min-rsp-addr)
+   in let st58 = st-append-text st57 (mov-load reg-rdi reg-rdi 0)
+   in let st59 = st-append-text st58 (sub-rr reg-rsi reg-rdi)
+   in let st60 = st-append-text st59 (mov-rr reg-rax reg-rsi)
+   in let st61 = emit-inline-itoa-and-print st60
+   in let st62 = emit-serial-wait-and-send st61 10
+   in let st63 = st-append-text st62 (li reg-r11 stack-min-rsp-addr)
+   in let st64 = st-append-text st63 (li reg-rax bare-metal-stack-top)
+   in let st65 = st-append-text st64 (mov-store reg-r11 reg-rax 0)
+   in st-append-text st65 (jmp (repl-loop - (list-length (st65.text) + 5)))
 
 Section: Chapter Entry Point
 
@@ -1825,10 +2129,11 @@ Section: Chapter Entry Point
    let tramp = bare-metal-trampoline
    in let st0 = CodegenState {
    text = tramp.bytes,
-   rodata = [],
+   rodata = init-rodata,
    func-offsets = [],
    call-patches = [],
    func-addr-fixups = [],
+   rodata-fixups = [],
    locals = [],
    next-temp = 0,
    next-local = 0,
@@ -1838,13 +2143,17 @@ Section: Chapter Entry Point
   }
    in let st0a = emit-runtime-helpers st0
    in let st1 = emit-all-defs st0a (m.defs) 0
-   in let st2 = emit-start st1
+   in let isr-result = emit-isr-stubs st1
+   in let syscall-result = emit-syscall-handler (isr-result.state)
+   in let st2 = emit-start (syscall-result.state) (isr-result.first-stub-vaddr) (syscall-result.handler-offset)
    in let start-offset = lookup-func-offset (st2.func-offsets) "__start"
    in let start-addr = bare-metal-load-addr + start-offset
    in let far-jump-entry = make-i32-patch (tramp.far-jump-patch-pos + 1) start-addr
    in let call-entries = collect-call-patches (st2.call-patches) (st2.func-offsets) 0 []
    in let addr-entries = collect-func-addr-patches (st2.func-addr-fixups) (st2.func-offsets) bare-metal-load-addr 0 []
-   in let all-patches = [far-jump-entry] ++ call-entries ++ addr-entries
+   in let rodata-vaddr = compute-rodata-vaddr-bare (list-length (st2.text))
+   in let rodata-entries = collect-rodata-patches (st2.rodata-fixups) rodata-vaddr 0 []
+   in let all-patches = [far-jump-entry] ++ call-entries ++ addr-entries ++ rodata-entries
    in let st3 = st-with-text st2 (apply-all-patches (st2.text) all-patches)
    in build-elf-32-bare (st3.text) (st3.rodata) 12
 
