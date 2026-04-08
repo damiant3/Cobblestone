@@ -87,7 +87,41 @@ public static partial class Program
     {
         var modules = new Dictionary<string, List<SemDef>>();
         var slugs = new List<string>();
-        string[] lines = text.Split('\n');
+
+        // Pre-process prose format: extract chapters, strip prose/sections, dedent defs by 2 spaces
+        string[] rawLines = text.Split('\n');
+        var flatLines = new List<string>();
+        string currentSlug = "";
+
+        foreach (string raw in rawLines)
+        {
+            if (raw.StartsWith("Chapter: ", StringComparison.Ordinal))
+            {
+                string chapterName = raw[9..].Trim();
+                currentSlug = chapterName.ToLowerInvariant().Replace(' ', '-');
+                flatLines.Add($"===CHAPTER:{currentSlug}===");
+                continue;
+            }
+
+            if (raw.StartsWith("Section: ", StringComparison.Ordinal))
+                continue;
+
+            // Prose: exactly 1-space indent (not 2+ spaces which are defs/bodies)
+            if (raw.Length >= 1 && raw[0] == ' ' && (raw.Length < 2 || raw[1] != ' '))
+                continue;
+
+            // Indented defs/bodies: strip 2-space indent
+            if (raw.Length >= 2 && raw[0] == ' ' && raw[1] == ' ')
+            {
+                flatLines.Add(raw[2..]);
+                continue;
+            }
+
+            // Blank lines and anything else
+            flatLines.Add(raw);
+        }
+
+        string[] lines = flatLines.ToArray();
         string currentModule = "";
         modules[currentModule] = new List<SemDef>();
         int i = 0;
@@ -95,6 +129,17 @@ public static partial class Program
         while (i < lines.Length)
         {
             string line = lines[i];
+
+            if (line.StartsWith("===CHAPTER:", StringComparison.Ordinal) && line.EndsWith("==="))
+            {
+                currentModule = line[11..^3];
+                if (!slugs.Contains(currentModule))
+                    slugs.Add(currentModule);
+                if (!modules.ContainsKey(currentModule))
+                    modules[currentModule] = new List<SemDef>();
+                i++;
+                continue;
+            }
 
             if (line.StartsWith("cites ", StringComparison.Ordinal)
                 || line.StartsWith("import ", StringComparison.Ordinal))

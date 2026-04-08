@@ -341,8 +341,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             if (!anyChecks)
             {
                 // All scalar (or decomposed records with only scalar fields)
-                EmitUpdateHeapHwm(); // capture peak before TCO reclaim
-                X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(m_tcoHeapMarkLocal));
+                EmitUpdateHeapHwm();
 
                 // Reconstruct decomposed records at the reset heap position
                 foreach (int idx in decompIndices)
@@ -503,9 +502,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
                     }
                 }
 
-                // All checks passed — reset heap to mark
-                EmitUpdateHeapHwm(); // capture peak before TCO reclaim
-                X86_64Encoder.MovRR(m_text, HeapReg, markReg);
+                // All checks passed
+                EmitUpdateHeapHwm();
 
                 // Reconstruct decomposed records at the reset heap position
                 foreach (int idx in decompIndices)
