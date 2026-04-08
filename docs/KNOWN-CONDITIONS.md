@@ -9,12 +9,12 @@ Tool failures are tracked separately in `docs/Agents/TOOL-ERROR-REGISTRY.md`.
 
 ### CS2001 in Codex.Codex — PRE-EXISTING, IGNORE
 
-`Codex.Codex.csproj` references `../build-output/Codex.Codex.cs`, which is generated
+`Codex.Codex.csproj` references `../build-output/bootstrap/Codex.Codex.cs`, which is generated
 by the self-hosting pipeline. On a fresh clone (or any environment that hasn't run the
 Codex compiler), this file does not exist and the build emits:
 
 ```
-CSC : error CS2001: Source file '…/build-output/Codex.Codex.cs' could not be found.
+CSC : error CS2001: Source file '…/build-output/bootstrap/Codex.Codex.cs' could not be found.
 ```
 
 This is **expected**. The project is a self-hosted Codex compiler compiled by the Codex

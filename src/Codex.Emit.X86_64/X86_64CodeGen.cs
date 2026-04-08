@@ -1685,14 +1685,6 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
                 return byte.MaxValue;
             case "read-line" when args.Count == 0:
             {
-                if (m_target == X86_64Target.BareMetal)
-                {
-                    // Bare metal: return embedded path string
-                    int pathOffset = AddRodataString("test.codex");
-                    byte rd = AllocTemp();
-                    EmitLoadRodataAddress(rd, pathOffset);
-                    return rd;
-                }
                 EmitCallTo("__read_line");
                 byte rd2 = AllocTemp();
                 X86_64Encoder.MovRR(m_text, rd2, Reg.RAX);
@@ -4108,32 +4100,45 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
         if (m_target == X86_64Target.BareMetal)
         {
-            // Bare metal: poll COM1 (0x3FD bit 0) until data ready, read from 0x3F8
-            int pollLoop = m_text.Count;
-            X86_64Encoder.Li(m_text, Reg.RDX, 0x3FD); // line status register
-            X86_64Encoder.InAlDx(m_text);               // AL = status
-            X86_64Encoder.Li(m_text, Reg.R11, 1);
-            X86_64Encoder.AndRR(m_text, Reg.RAX, Reg.R11); // test bit 0 (data ready)
-            X86_64Encoder.TestRR(m_text, Reg.RAX, Reg.RAX);
-            int dataReady = m_text.Count;
-            X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0); // got data
-            X86_64Encoder.Hlt(m_text); // wait for interrupt (saves power)
-            X86_64Encoder.Jmp(m_text, pollLoop - (m_text.Count + 5));
-            PatchJcc(dataReady, m_text.Count);
+            // Bare metal: read from ring buffer filled by IRQ4 handler
+            int waitLoop = m_text.Count;
+            X86_64Encoder.Li(m_text, Reg.RDI, SerialWritePosAddr);
+            X86_64Encoder.MovLoad(m_text, Reg.RSI, Reg.RDI, 0);     // RSI = write_pos
+            X86_64Encoder.Li(m_text, Reg.RDI, SerialReadPosAddr);
+            X86_64Encoder.MovLoad(m_text, Reg.R11, Reg.RDI, 0);     // R11 = read_pos
+            X86_64Encoder.CmpRR(m_text, Reg.RSI, Reg.R11);
+            int hasData = m_text.Count;
+            X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+            X86_64Encoder.Hlt(m_text);
+            X86_64Encoder.Jmp(m_text, waitLoop - (m_text.Count + 5));
+            PatchJcc(hasData, m_text.Count);
 
-            // Read the byte
-            X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
-            X86_64Encoder.InAlDx(m_text); // AL = received byte
+            // Read byte from ring buffer: buf[read_pos % size]
+            X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.R11);
+            X86_64Encoder.AndRI(m_text, Reg.RAX, (int)(SerialRingBufSize - 1));
+            X86_64Encoder.AddRI(m_text, Reg.RAX, (int)SerialRingBufAddr);
+            X86_64Encoder.MovzxByte(m_text, Reg.RAX, Reg.RAX, 0);   // RAX = byte
 
-            // Store it: heap[8 + counter]
+            // Advance read_pos
+            X86_64Encoder.AddRI(m_text, Reg.R11, 1);
+            X86_64Encoder.Li(m_text, Reg.RDI, SerialReadPosAddr);
+            X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.R11, 0);
+
+            // Skip CR (0x0D) at I/O boundary
+            X86_64Encoder.CmpRI(m_text, Reg.RAX, 0x0D);
+            int skipCr = m_text.Count;
+            X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
+
+            // Store byte at heap[8 + counter]
             X86_64Encoder.PopR(m_text, Reg.RCX);
             X86_64Encoder.PushR(m_text, Reg.RCX);
             X86_64Encoder.MovRR(m_text, Reg.RSI, Reg.RBX);
             X86_64Encoder.AddRR(m_text, Reg.RSI, Reg.RCX);
             X86_64Encoder.AddRI(m_text, Reg.RSI, 8);
-            // mov byte [rsi], al
             m_text.Add(0x88); m_text.Add(0x06); // mov [rsi], al
-            X86_64Encoder.Li(m_text, Reg.RAX, 1); // return 1 (bytes read)
+            X86_64Encoder.Li(m_text, Reg.RAX, 1); // 1 = bytes read
+
+            PatchJcc(skipCr, waitLoop); // CR: loop back without storing
         }
         else
         {
@@ -5556,7 +5561,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     // 0x7030  ResultArenaBaseAddr   8 bytes  Result-space arena base for REPL reset
     // 0x7038  HeapHwmAddr           8 bytes  Heap high-water mark (peak HeapReg during compilation)
     // 0x7040  StackMinRspAddr       8 bytes  Stack high-water mark (lowest RSP seen in prologues)
-    // 0x3C0000-0x3FFFFF            256KB    Serial ring buffer data (below heap at 0x400000)
+    // 0x300000-0x3FFFFF            1MB      Serial ring buffer data (below heap at 0x400000)
     const long TickCountAddr = 0x7000;
     const long KeyBufferAddr = 0x7008;
     const long ArenaBaseAddr = 0x7018;
@@ -5565,8 +5570,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     const long ResultArenaBaseAddr = 0x7030;
     const long HeapHwmAddr = 0x7038;
     const long StackMinRspAddr = 0x7040;
-    const long SerialRingBufAddr = 0x3C0000;
-    const long SerialRingBufSize = 0x40000; // 256KB — must be power of 2
+    const long SerialRingBufAddr = 0x300000;
+    const long SerialRingBufSize = 0x100000; // 1MB — must be power of 2
 
     // Bare metal memory layout — 256 x 2MB huge pages = 512 MB
     const int BareMetalPages = 256;

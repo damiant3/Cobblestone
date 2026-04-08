@@ -54,8 +54,8 @@ This should be fast but verify.
 ## How to test
 
 1. Build: dotnet build tools/Codex.Cli/Codex.Cli.csproj
-2. Compile project: dotnet run --project tools/Codex.Cli -- build Codex.Codex --target cs --output-dir build-output
-3. Copy to Bootstrap: cp build-output/Codex.Codex.cs tools/Codex.Bootstrap/CodexLib.g.cs && sed -i '/^Codex_Codex_Codex\.main();$/d' tools/Codex.Bootstrap/CodexLib.g.cs
+2. Compile project: dotnet run --project tools/Codex.Cli -- build Codex.Codex --target cs --output-dir build-output/bootstrap
+3. Copy to Bootstrap: cp build-output/bootstrap/Codex.Codex.cs tools/Codex.Bootstrap/CodexLib.g.cs && sed -i '/^Codex_Codex_Codex\.main();$/d' tools/Codex.Bootstrap/CodexLib.g.cs
 4. Run bootstrap: dotnet run --project tools/Codex.Cli -- bootstrap Codex.Codex
    - Stage 1 should complete in <5 seconds (currently hangs)
 5. Stage 2 should build with 0 errors

@@ -77,7 +77,7 @@ class Program
             // Non-streaming compile path — now includes chapter scoping
             string cceOutput = Codex_Codex_Codex.compile(cceCombined, _Cce.FromUnicode("Codex_Codex"));
             string output = _Cce.ToUnicode(cceOutput);
-            string outputPath = outputOverride ?? Path.Combine(Path.GetFullPath(Path.Combine(codexDir, "..")), "build-output", "stage1-output.cs");
+            string outputPath = outputOverride ?? Path.Combine(Path.GetFullPath(Path.Combine(codexDir, "..")), "build-output", "bootstrap", "stage1-output.cs");
             File.WriteAllText(outputPath, output);
             Console.WriteLine($"Output written to: {outputPath}");
             Console.WriteLine($"Output size: {output.Length} chars");
@@ -519,7 +519,7 @@ class Program
         string cceOutput = Codex_Codex_Codex.codex_emitter_emit_full_chapter(ir, ast.type_defs);
         string output = _Cce.ToUnicode(cceOutput);
 
-        string dest = outputPath ?? Path.Combine(Path.GetFullPath(Path.Combine(codexDir, "..")), "build-output", "stage1-codex.codex");
+        string dest = outputPath ?? Path.Combine(Path.GetFullPath(Path.Combine(codexDir, "..")), "build-output", "bootstrap", "stage1-codex.codex");
         File.WriteAllText(dest, output);
         Console.Error.WriteLine($"  Output: {dest} ({output.Length} chars, {output.Split('\n').Length} lines)");
         return 0;
