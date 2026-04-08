@@ -21,7 +21,7 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
         "show", "negate", "True", "False", "Nothing",
         "print-line", "read-line",
         "open-file", "read-all", "close-file", "read-file",
-        "write-file", "file-exists", "list-files",
+        "write-file", "write-binary", "file-exists", "list-files",
         "char-at", "char-to-text", "text-length", "substring",
         "is-letter", "is-digit", "is-whitespace",
         "text-to-integer", "integer-to-text", "text-replace",

@@ -21,6 +21,7 @@ sealed class BuiltinEffects
           close-file : linear FileHandle -> [FileSystem] Nothing
           read-file  : Text -> [FileSystem] Text
           write-file : Text -> Text -> [FileSystem] Nothing
+          write-binary : List Integer -> [FileSystem] Nothing
         """,
 
         """

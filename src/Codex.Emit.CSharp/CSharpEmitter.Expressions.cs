@@ -404,7 +404,7 @@ public sealed partial class CSharpEmitter
     static readonly Set<string> s_multiArgBuiltins = Set<string>.Of(
         "char-at", "char-code-at", "substring", "list-at", "list-insert-at", "list-snoc", "list-contains",
         "text-replace", "text-compare", "text-concat-list",
-        "write-file", "run-process", "list-files", "text-split", "text-contains", "text-starts-with",
+        "write-file", "write-binary", "run-process", "list-files", "text-split", "text-contains", "text-starts-with",
         "fork", "await", "par", "race");
 
     static string? FindBuiltinRoot(IRApply app)
@@ -517,6 +517,13 @@ public sealed partial class CSharpEmitter
                 sb.Append("), _Cce.ToUnicode(");
                 EmitExpr(sb, args[1], indent);
                 sb.Append(")); return null; }))()");
+                return true;
+
+            case "write-binary" when args.Count == 1:
+                // Write List<long> as raw bytes to stdout
+                sb.Append("((Func<object>)(() => { var _bl = (List<long>)");
+                EmitExpr(sb, args[0], indent);
+                sb.Append("; using var _s = Console.OpenStandardOutput(); foreach (var _b in _bl) _s.WriteByte((byte)_b); _s.Flush(); return null; }))()");
                 return true;
 
             case "run-process" when args.Count == 2:

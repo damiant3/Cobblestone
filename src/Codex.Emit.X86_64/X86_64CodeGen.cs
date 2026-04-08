@@ -1718,6 +1718,15 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
                 X86_64Encoder.Li(m_text, wrRd, 0);
                 return wrRd;
             }
+            case "write-binary" when args.Count == 1:
+            {
+                byte listReg = EmitExpr(args[0]);
+                X86_64Encoder.MovRR(m_text, Reg.RDI, listReg);
+                EmitCallTo("__write_binary");
+                byte wbRd = AllocTemp();
+                X86_64Encoder.Li(m_text, wbRd, 0);
+                return wbRd;
+            }
             case "file-exists" when args.Count == 1:
             {
                 EmitExpr(args[0]); // evaluate for side effects
@@ -2649,7 +2658,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         EmitReadFileHelper();
         EmitReadLineHelper();
         if (m_target == X86_64Target.BareMetal)
+        {
             EmitBareMetalReadSerialHelper();
+            EmitWriteBinaryHelper();
+        }
         EmitListConsHelper();
         EmitListAppendHelper();
         EmitStrReplaceHelper();
@@ -4267,6 +4279,46 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RBX);            // return buffer ptr
 
         X86_64Encoder.PopR(m_text, Reg.R12);
+        X86_64Encoder.PopR(m_text, Reg.RCX);
+        X86_64Encoder.PopR(m_text, Reg.RBX);
+        X86_64Encoder.Ret(m_text);
+    }
+
+    void EmitWriteBinaryHelper()
+    {
+        // __write_binary: rdi=List<Integer> pointer → writes raw bytes to COM1
+        m_functionOffsets["__write_binary"] = m_text.Count;
+
+        X86_64Encoder.PushR(m_text, Reg.RBX);
+        X86_64Encoder.PushR(m_text, Reg.RCX);
+        X86_64Encoder.PushR(m_text, Reg.R11);
+
+        X86_64Encoder.MovRR(m_text, Reg.RBX, Reg.RDI);       // RBX = list ptr
+        X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RBX, 0);  // RCX = length
+        X86_64Encoder.Li(m_text, Reg.R11, 0);                  // R11 = index
+
+        int loopTop = m_text.Count;
+        X86_64Encoder.CmpRR(m_text, Reg.R11, Reg.RCX);
+        int done = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+
+        // Load element: list[8 + index*8]
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.R11);
+        X86_64Encoder.ShlRI(m_text, Reg.RAX, 3);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.RBX);
+        X86_64Encoder.MovLoad(m_text, Reg.RAX, Reg.RAX, 8);  // element value
+
+        // Serial wait + send (AL = low byte)
+        EmitSerialWaitThr();
+        X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+        X86_64Encoder.OutDxAl(m_text);
+
+        X86_64Encoder.AddRI(m_text, Reg.R11, 1);
+        X86_64Encoder.Jmp(m_text, loopTop - (m_text.Count + 5));
+
+        PatchJcc(done, m_text.Count);
+
+        X86_64Encoder.PopR(m_text, Reg.R11);
         X86_64Encoder.PopR(m_text, Reg.RCX);
         X86_64Encoder.PopR(m_text, Reg.RBX);
         X86_64Encoder.Ret(m_text);

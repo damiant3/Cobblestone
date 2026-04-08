@@ -1693,7 +1693,52 @@ Section: I/O Boundary Helpers
    in let st17 = emit-unicode-to-cce-helper st16
    in let st18 = emit-read-line-helper st17
    in let st19 = emit-read-file-helper st18
-   in emit-bare-metal-read-serial st19
+   in let st20 = emit-bare-metal-read-serial st19
+   in emit-write-binary-helper st20
+
+Section: Binary Output
+
+ Writes a List Integer to COM1 serial as raw bytes. Each list
+ element is an 8-byte integer on the heap but only the low byte
+ is sent. No CCE conversion. Used by the x86-64 self-compile
+ path to output the ELF binary.
+
+  emit-write-binary-helper : CodegenState -> CodegenState
+  emit-write-binary-helper (st) =
+   let st1 = record-func-offset st "__write_binary"
+   in let st2 = st-append-text st1 (push-r reg-rbx)
+   in let st3 = st-append-text st2 (push-r reg-rcx)
+   in let st4 = st-append-text st3 (push-r reg-r11)
+   in let st5 = st-append-text st4 (mov-rr reg-rbx reg-rdi)
+   in let st6 = st-append-text st5 (mov-load reg-rcx reg-rbx 0)
+   in let st7 = st-append-text st6 (li reg-r11 0)
+   in let loop-top = list-length (st7.text)
+   in let st8 = st-append-text st7 (cmp-rr reg-r11 reg-rcx)
+   in let done-pos = list-length (st8.text)
+   in let st9 = st-append-text st8 (jcc cc-ge 0)
+   in let st10 = st-append-text st9 (mov-rr reg-rax reg-r11)
+   in let st11 = st-append-text st10 (shl-ri reg-rax 3)
+   in let st12 = st-append-text st11 (add-rr reg-rax reg-rbx)
+   in let st13 = st-append-text st12 (mov-load reg-rax reg-rax 8)
+   in let wait-top = list-length (st13.text)
+   in let st14 = st-append-text st13 (push-r reg-rax)
+   in let st15 = st-append-text st14 (li reg-rdx 1021)
+   in let st16 = st-append-text st15 [236]
+   in let st17 = st-append-text st16 [168, 32]
+   in let thr-ready = list-length (st17.text)
+   in let st18 = st-append-text st17 (jcc cc-ne 0)
+   in let st19 = st-append-text st18 (jmp (wait-top - (list-length (st18.text) + 5)))
+   in let st20 = patch-jcc-at st19 thr-ready (list-length (st19.text))
+   in let st21 = st-append-text st20 (pop-r reg-rax)
+   in let st22 = st-append-text st21 (li reg-rdx 1016)
+   in let st23 = st-append-text st22 out-dx-al
+   in let st24 = st-append-text st23 (add-ri reg-r11 1)
+   in let st25 = st-append-text st24 (jmp (loop-top - (list-length (st24.text) + 5)))
+   in let st26 = patch-jcc-at st25 done-pos (list-length (st25.text))
+   in let st27 = st-append-text st26 (pop-r reg-r11)
+   in let st28 = st-append-text st27 (pop-r reg-rcx)
+   in let st29 = st-append-text st28 (pop-r reg-rbx)
+   in st-append-text st29 x86-ret
 
 Page 3 of 3
 

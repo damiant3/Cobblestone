@@ -6,6 +6,7 @@ Chapter: Main
   cites CSharpEmitter (emit-full-chapter)
   cites CodexEmitter (emit-type-defs, emit-def, collect-ctor-names)
   cites TypeChecker (resolve-type-expr)
+  cites X86-64 (x86-64-emit-chapter)
 
 Section: Pipeline
 
@@ -240,14 +241,38 @@ Section: Whitespace Normalization
    in if text-length r == text-length s then s
       else normalize-whitespace r
 
+Section: Binary Compilation
+
+  compile-to-binary : Text -> Text -> List Integer
+  compile-to-binary (source) (chapter-name) =
+   let tokens = tokenize source
+   in let st = make-parse-state tokens
+   in let scan = scan-document st
+   in let assignments = build-all-assignments (scan.def-headers) 0 []
+   in let colliding = find-colliding-names assignments
+   in let doc = parse-document (make-parse-state tokens)
+   in let ast = desugar-document doc chapter-name
+   in let scoped = scope-achapter ast colliding assignments
+   in let check-result = check-chapter scoped
+   in let ir = lower-chapter scoped (check-result.types) (check-result.state)
+   in x86-64-emit-chapter ir
+
 Section: Entry Point
+
+  emit-binary : Text -> [Console, FileSystem] Nothing
+  emit-binary (source) =
+   let bytes = compile-to-binary source "Codex_Codex"
+   in do
+    print-line ("SIZE:" ++ integer-to-text (list-length bytes))
+    write-binary bytes
 
   main : [Console, FileSystem] Nothing
   main = do
-   path <- read-line
-   source <- read-file path
+   mode <- read-line
+   source <- read-file mode
    let clean = normalize-whitespace source
-   in compile-streaming-v2 clean "Program"
+   in if mode == "BINARY" then emit-binary clean
+   else compile-streaming-v2 clean "Program"
 
 Page 1
 
