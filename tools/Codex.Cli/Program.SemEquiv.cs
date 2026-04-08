@@ -7,6 +7,8 @@ public static partial class Program
 {
     record SemDef(string Name, string Chapter, string Sig, string Body, int LineNo, bool IsType);
 
+    record Stage0Stats(int Chapters, int Sections, int ProseLines, int Cites);
+
     static int RunSemEquiv(string[] args)
     {
         if (args.Length < 2)
@@ -25,15 +27,15 @@ public static partial class Program
         string stage0Text = File.ReadAllText(args[0]).Replace("\r\n", "\n");
         string stage1Text = File.ReadAllText(args[1]).Replace("\r\n", "\n");
 
-        var (stage0Modules, moduleSlugs) = ParseStage0(stage0Text);
+        var (stage0Chapters, chapterSlugs, stats) = ParseStage0(stage0Text);
         List<SemDef> stage1Defs = ParseStage1(stage1Text);
 
-        HashSet<string> collidingModules = BuildCollisionSet(stage0Modules);
-        string[] slugsSorted = moduleSlugs.OrderByDescending(s => s.Length).ToArray();
+        HashSet<string> collidingNames = BuildCollisionSet(stage0Chapters);
+        string[] slugsSorted = chapterSlugs.OrderByDescending(s => s.Length).ToArray();
 
-        AssignModules(stage1Defs, stage0Modules, collidingModules, slugsSorted);
+        AssignChapters(stage1Defs, stage0Chapters, collidingNames, slugsSorted);
 
-        var (matched, dropped, extra) = MatchDefs(stage0Modules, stage1Defs);
+        var (matched, dropped, extra) = MatchDefs(stage0Chapters, stage1Defs);
 
         int bodyMatches = 0;
         int bodyMismatches = 0;
@@ -44,7 +46,6 @@ public static partial class Program
 
         foreach (var (s0, s1) in matched)
         {
-            // Sig comparison (with type-var alpha-normalization)
             string normSig0 = AlphaNormalizeTypeVars(s0.Sig);
             string normSig1 = AlphaNormalizeTypeVars(s1.Sig);
             if (normSig0 == normSig1)
@@ -55,27 +56,26 @@ public static partial class Program
                 sigMismatchList.Add((s0, s1));
             }
 
-            // Body comparison
-            string norm0 = NormalizeBody(s0.Body, collidingModules, slugsSorted, demangle: false);
-            string norm1 = NormalizeBody(s1.Body, collidingModules, slugsSorted, demangle: true);
-            if (norm0 == norm1)
+            string body0 = CollapseWhitespace(s0.Body);
+            string body1 = CollapseWhitespace(DemangleNames(s1.Body, slugsSorted));
+            if (body0 == body1)
                 bodyMatches++;
             else
             {
                 bodyMismatches++;
-                bodyMismatchList.Add((s0, s1, FirstDiff(norm0, norm1)));
+                bodyMismatchList.Add((s0, s1, FirstDiff(body0, body1)));
             }
         }
 
         if (showDef != null)
         {
-            ShowDefDetail(showDef, matched, collidingModules, slugsSorted);
+            ShowDefDetail(showDef, matched, slugsSorted);
             return 0;
         }
 
-        PrintReport(stage0Modules, stage1Defs, moduleSlugs, matched, dropped, extra,
+        PrintReport(stage0Chapters, stage1Defs, chapterSlugs, stats, matched, dropped, extra,
                      bodyMatches, bodyMismatches, bodyMismatchList,
-                     sigMatches, sigMismatches, sigMismatchList, collidingModules);
+                     sigMatches, sigMismatches, sigMismatchList, collidingNames);
 
         bool pass = dropped.Count == 0 && bodyMismatches == 0;
         Console.WriteLine();
@@ -83,86 +83,146 @@ public static partial class Program
         return pass ? 0 : 1;
     }
 
-    static (Dictionary<string, List<SemDef>> modules, List<string> slugs) ParseStage0(string text)
+    // ── Stage0: extract defs from prose structure, don't mutate ──────
+
+    static (Dictionary<string, List<SemDef>> chapters, List<string> slugs, Stage0Stats stats)
+        ParseStage0(string text)
     {
-        var modules = new Dictionary<string, List<SemDef>>();
+        var chapters = new Dictionary<string, List<SemDef>>();
         var slugs = new List<string>();
-
-        // Pre-process prose format: extract chapters, strip prose/sections, dedent defs by 2 spaces
         string[] rawLines = text.Split('\n');
-        var flatLines = new List<string>();
         string currentSlug = "";
+        int statChapters = 0, statSections = 0, statProse = 0, statCites = 0;
 
-        foreach (string raw in rawLines)
+        int i = 0;
+        while (i < rawLines.Length)
         {
+            string raw = rawLines[i];
+
+            // Chapter header → set current chapter, track slug
             if (raw.StartsWith("Chapter: ", StringComparison.Ordinal))
             {
                 string chapterName = raw[9..].Trim();
                 currentSlug = chapterName.ToLowerInvariant().Replace(' ', '-');
-                flatLines.Add($"===CHAPTER:{currentSlug}===");
+                if (!slugs.Contains(currentSlug))
+                    slugs.Add(currentSlug);
+                if (!chapters.ContainsKey(currentSlug))
+                    chapters[currentSlug] = new List<SemDef>();
+                statChapters++;
+                i++;
                 continue;
             }
 
+            // Section header → skip, count
             if (raw.StartsWith("Section: ", StringComparison.Ordinal))
+            {
+                statSections++;
+                i++;
                 continue;
+            }
 
-            // Prose: exactly 1-space indent (not 2+ spaces which are defs/bodies)
+            // Page marker → skip
+            if (raw.StartsWith("Page ", StringComparison.Ordinal))
+            {
+                i++;
+                continue;
+            }
+
+            // Prose: exactly 1-space indent (not 2+)
             if (raw.Length >= 1 && raw[0] == ' ' && (raw.Length < 2 || raw[1] != ' '))
+            {
+                statProse++;
+                i++;
                 continue;
+            }
 
-            // Indented defs/bodies: strip 2-space indent
+            // 2-space indented content → extract def or skip cites/import
             if (raw.Length >= 2 && raw[0] == ' ' && raw[1] == ' ')
             {
-                flatLines.Add(raw[2..]);
-                continue;
+                string dedented = raw[2..];
+
+                if (dedented.StartsWith("cites ", StringComparison.Ordinal)
+                    || dedented.StartsWith("import ", StringComparison.Ordinal))
+                {
+                    statCites++;
+                    i++;
+                    continue;
+                }
+
+                if (dedented.Length > 0 && char.IsLetter(dedented[0]))
+                {
+                    // Extract a def from the indented block
+                    var (def, nextI) = ExtractStage0Def(rawLines, i, currentSlug);
+                    if (def != null && chapters.ContainsKey(currentSlug))
+                        chapters[currentSlug].Add(def);
+                    i = nextI;
+                    continue;
+                }
             }
 
-            // Blank lines and anything else
-            flatLines.Add(raw);
+            // Blank lines, anything else → skip
+            i++;
         }
 
-        string[] lines = flatLines.ToArray();
-        string currentModule = "";
-        modules[currentModule] = new List<SemDef>();
-        int i = 0;
-
-        while (i < lines.Length)
-        {
-            string line = lines[i];
-
-            if (line.StartsWith("===CHAPTER:", StringComparison.Ordinal) && line.EndsWith("==="))
-            {
-                currentModule = line[11..^3];
-                if (!slugs.Contains(currentModule))
-                    slugs.Add(currentModule);
-                if (!modules.ContainsKey(currentModule))
-                    modules[currentModule] = new List<SemDef>();
-                i++;
-                continue;
-            }
-
-            if (line.StartsWith("cites ", StringComparison.Ordinal)
-                || line.StartsWith("import ", StringComparison.Ordinal))
-            {
-                i++;
-                continue;
-            }
-
-            if (line.Length > 0 && char.IsLetter(line[0]))
-            {
-                var (def, nextI) = ParseOneDef(lines, i, currentModule);
-                if (def != null)
-                    modules[currentModule].Add(def);
-                i = nextI;
-            }
-            else
-            {
-                i++;
-            }
-        }
-
-        return (modules, slugs);
+        return (chapters, slugs, new Stage0Stats(statChapters, statSections, statProse, statCites));
     }
+
+    static (SemDef? def, int nextI) ExtractStage0Def(string[] rawLines, int start, string chapter)
+    {
+        // Collect the indented block belonging to this def, strip 2-space prefix,
+        // then parse with ParseOneDef. This is extraction from prose structure.
+        var defLines = new List<string>();
+        int i = start;
+
+        while (i < rawLines.Length)
+        {
+            string raw = rawLines[i];
+
+            // 2-space indented content → part of this def (strip prefix)
+            if (raw.Length >= 2 && raw[0] == ' ' && raw[1] == ' ')
+            {
+                defLines.Add(raw[2..]);
+                i++;
+                continue;
+            }
+
+            // Blank line → might continue the def (check what follows)
+            if (raw.Length == 0)
+            {
+                int peek = i + 1;
+                while (peek < rawLines.Length && rawLines[peek].Length == 0)
+                    peek++;
+
+                if (peek >= rawLines.Length)
+                    break;
+
+                string next = rawLines[peek];
+                // If next non-blank line is 2-space indented and looks like a continuation
+                // (starts with space after dedent), it's still part of this def
+                if (next.Length >= 3 && next[0] == ' ' && next[1] == ' ' && next[2] == ' ')
+                {
+                    defLines.Add("");
+                    i++;
+                    continue;
+                }
+
+                // Otherwise the blank line is a def boundary
+                break;
+            }
+
+            // Anything else (chapter, section, prose, another def at same indent) → boundary
+            break;
+        }
+
+        if (defLines.Count == 0)
+            return (null, i);
+
+        string[] lines = defLines.ToArray();
+        var (def, _) = ParseOneDef(lines, 0, chapter);
+        return (def, i);
+    }
+
+    // ── Stage1: parse flat format ───────────────────────────────────
 
     static List<SemDef> ParseStage1(string text)
     {
@@ -196,7 +256,9 @@ public static partial class Program
         return defs;
     }
 
-    static (SemDef? def, int nextI) ParseOneDef(string[] lines, int start, string module)
+    // ── Shared def parser (expects column-0 defs) ───────────────────
+
+    static (SemDef? def, int nextI) ParseOneDef(string[] lines, int start, string chapter)
     {
         string firstLine = lines[start];
 
@@ -204,7 +266,6 @@ public static partial class Program
 
         string name;
         string sig;
-        int bodyStart;
 
         if (isTypeDef)
         {
@@ -214,7 +275,6 @@ public static partial class Program
 
             name = firstLine[..eqPos].Trim();
             sig = "";
-            bodyStart = start;
         }
         else
         {
@@ -224,11 +284,8 @@ public static partial class Program
 
             name = firstLine[..colonPos];
             sig = firstLine[(colonPos + 3)..];
-            bodyStart = start + 1;
         }
 
-        // For function defs, body starts at the definition line (skip sig line).
-        // For type defs, body starts at the first line (includes "TypeName =").
         var bodyLines = new StringBuilder();
         int j;
         if (isTypeDef)
@@ -238,8 +295,6 @@ public static partial class Program
         }
         else
         {
-            // Skip the sig line — it's already stored in `sig`.
-            // The next line should be the def line: `name (params) =`
             j = start + 1;
         }
 
@@ -272,7 +327,6 @@ public static partial class Program
 
             if (ln.Length > 0 && char.IsLetter(ln[0]))
             {
-                // For function defs, the definition line comes right after the sig
                 if (!isTypeDef && j == start + 1 && ln.StartsWith(name, StringComparison.Ordinal))
                 {
                     bodyLines.AppendLine(ln);
@@ -280,7 +334,6 @@ public static partial class Program
                     continue;
                 }
 
-                // A new sig or type def line → boundary
                 bool looksLikeSig = ln.Contains(" : ");
                 bool looksLikeTypeDef = char.IsUpper(ln[0]) && ln.Contains(" =");
 
@@ -304,30 +357,28 @@ public static partial class Program
             break;
         }
 
-        return (new SemDef(name, module, sig, bodyLines.ToString().TrimEnd(), start + 1, isTypeDef), j);
+        return (new SemDef(name, chapter, sig, bodyLines.ToString().TrimEnd(), start + 1, isTypeDef), j);
     }
 
-    static HashSet<string> BuildCollisionSet(Dictionary<string, List<SemDef>> modules)
+    // ── Chapter resolution ──────────────────────────────────────────
+
+    static HashSet<string> BuildCollisionSet(Dictionary<string, List<SemDef>> chapters)
     {
-        // Find names defined in 2+ modules (per-name collision detection).
-        // This matches the bare-metal compiler's current mangling behavior.
-        // When the bare-metal compiler switches to whole-module mangling,
-        // this should switch to returning colliding module slugs instead.
-        var nameToModules = new Dictionary<string, HashSet<string>>();
-        foreach (var (mod, defs) in modules)
+        var nameToChapters = new Dictionary<string, HashSet<string>>();
+        foreach (var (ch, defs) in chapters)
         {
             foreach (SemDef d in defs)
             {
-                if (!nameToModules.TryGetValue(d.Name, out var mods))
+                if (!nameToChapters.TryGetValue(d.Name, out var chs))
                 {
-                    mods = [];
-                    nameToModules[d.Name] = mods;
+                    chs = [];
+                    nameToChapters[d.Name] = chs;
                 }
-                mods.Add(mod);
+                chs.Add(ch);
             }
         }
 
-        return nameToModules.Where(kv => kv.Value.Count > 1).Select(kv => kv.Key).ToHashSet();
+        return nameToChapters.Where(kv => kv.Value.Count > 1).Select(kv => kv.Key).ToHashSet();
     }
 
     static (string slug, string baseName)? DemangleName(string name, string[] slugsSorted)
@@ -341,18 +392,16 @@ public static partial class Program
         return null;
     }
 
-    static void AssignModules(List<SemDef> stage1Defs, Dictionary<string, List<SemDef>> stage0Modules,
-                              HashSet<string> collidingModules, string[] slugsSorted)
+    static void AssignChapters(List<SemDef> stage1Defs, Dictionary<string, List<SemDef>> stage0Chapters,
+                               HashSet<string> collidingNames, string[] slugsSorted)
     {
-        // Non-mangled names: look up in stage0 modules by name.
-        // Only non-colliding names appear unmangled in stage1.
-        var nameToModule = new Dictionary<string, string>();
-        foreach (var (mod, defs) in stage0Modules)
+        var nameToChapter = new Dictionary<string, string>();
+        foreach (var (ch, defs) in stage0Chapters)
         {
             foreach (SemDef d in defs)
             {
-                if (!collidingModules.Contains(d.Name))
-                    nameToModule.TryAdd(d.Name, mod);
+                if (!collidingNames.Contains(d.Name))
+                    nameToChapter.TryAdd(d.Name, ch);
             }
         }
 
@@ -364,9 +413,9 @@ public static partial class Program
             {
                 stage1Defs[i] = d with { Name = baseName, Chapter = slug };
             }
-            else if (nameToModule.TryGetValue(d.Name, out string? mod))
+            else if (nameToChapter.TryGetValue(d.Name, out string? ch))
             {
-                stage1Defs[i] = d with { Chapter = mod };
+                stage1Defs[i] = d with { Chapter = ch };
             }
             else
             {
@@ -376,7 +425,7 @@ public static partial class Program
     }
 
     static (List<(SemDef s0, SemDef s1)> matched, List<SemDef> dropped, List<SemDef> extra)
-        MatchDefs(Dictionary<string, List<SemDef>> stage0Modules, List<SemDef> stage1Defs)
+        MatchDefs(Dictionary<string, List<SemDef>> stage0Chapters, List<SemDef> stage1Defs)
     {
         var s1ByKey = new Dictionary<string, SemDef>();
         foreach (SemDef d in stage1Defs)
@@ -389,11 +438,11 @@ public static partial class Program
         var dropped = new List<SemDef>();
         var s0Keys = new HashSet<string>();
 
-        foreach (var (mod, defs) in stage0Modules)
+        foreach (var (ch, defs) in stage0Chapters)
         {
             foreach (SemDef s0 in defs)
             {
-                string key = mod + "|" + s0.Name;
+                string key = ch + "|" + s0.Name;
                 s0Keys.Add(key);
                 if (s1ByKey.TryGetValue(key, out SemDef? s1))
                     matched.Add((s0, s1));
@@ -407,17 +456,32 @@ public static partial class Program
         return (matched, dropped, extra);
     }
 
+    // ── Comparison-time transforms (applied during compare, not stored) ──
+
+    static string DemangleNames(string body, string[] slugsSorted)
+    {
+        string text = body;
+        foreach (string slug in slugsSorted)
+        {
+            string prefix = slug + "_";
+            text = Regex.Replace(text, @"(?<![a-zA-Z0-9_-])" + Regex.Escape(prefix) + @"([a-z])", "$1");
+        }
+        return text;
+    }
+
+    static string CollapseWhitespace(string text)
+    {
+        return Regex.Replace(text, @"\s+", " ").Trim();
+    }
+
     static string AlphaNormalizeTypeVars(string sig)
     {
-        // Normalize type variables: a, b, c, a2, a3, b4 → t0, t1, t2, ...
-        // Type vars in Codex are single lowercase letters or letter+digits
         var varMap = new Dictionary<string, string>();
         int nextVar = 0;
 
         return Regex.Replace(sig, @"\b([a-z])(\d*)\b", m =>
         {
             string full = m.Value;
-            // Skip known type names and keywords
             if (IsKnownTypeName(full))
                 return full;
             if (!varMap.TryGetValue(full, out string? canonical))
@@ -431,79 +495,13 @@ public static partial class Program
 
     static bool IsKnownTypeName(string name)
     {
-        // Known Codex types and keywords that look like type vars
         return name is "in" or "if" or "of" or "do" or "is";
     }
 
-    static string NormalizeBody(string body, HashSet<string> collidingModules, string[] slugsSorted,
-                                bool demangle)
-    {
-        string text = body;
-
-        if (demangle)
-        {
-            foreach (string slug in slugsSorted)
-            {
-                string prefix = slug + "_";
-                text = Regex.Replace(text, @"(?<![a-zA-Z0-9_-])" + Regex.Escape(prefix) + @"([a-z])", "$1");
-            }
-        }
-
-        text = Regex.Replace(text, @"\s+", " ").Trim();
-
-        // Normalize brace escapes: \{ and { are equivalent (parser treats \{ as passthrough)
-        text = text.Replace("\\{", "{").Replace("\\}", "}");
-
-        // Normalize redundant parens: strip parens around field access `(expr.field)` → `expr.field`
-        text = Regex.Replace(text, @"\(([a-zA-Z][a-zA-Z0-9-]*\.[a-zA-Z][a-zA-Z0-9.-]*)\)", "$1");
-
-        // Strip redundant outer parens around `(if ... then ... else ...)` expressions
-        text = StripRedundantIfParens(text);
-
-        return text;
-    }
-
-    static string StripRedundantIfParens(string text)
-    {
-        // Find `(if ` and strip the balanced outer parens
-        var sb = new StringBuilder(text.Length);
-        int i = 0;
-        while (i < text.Length)
-        {
-            if (i + 4 < text.Length && text[i] == '(' && text.Substring(i + 1, 3) == "if ")
-            {
-                // Track paren depth to find the matching close
-                int depth = 1;
-                int j = i + 1;
-                while (j < text.Length && depth > 0)
-                {
-                    if (text[j] == '(') depth++;
-                    else if (text[j] == ')') depth--;
-                    if (depth > 0) j++;
-                }
-                if (depth == 0)
-                {
-                    // Strip outer parens: append content between ( and )
-                    sb.Append(text, i + 1, j - i - 1);
-                    i = j + 1;
-                }
-                else
-                {
-                    sb.Append(text[i]);
-                    i++;
-                }
-            }
-            else
-            {
-                sb.Append(text[i]);
-                i++;
-            }
-        }
-        return sb.ToString();
-    }
+    // ── Output ──────────────────────────────────────────────────────
 
     static void ShowDefDetail(string name, List<(SemDef s0, SemDef s1)> matched,
-                              HashSet<string> collidingModules, string[] slugsSorted)
+                              string[] slugsSorted)
     {
         var hits = matched.Where(m => m.s0.Name == name).ToList();
         if (hits.Count == 0)
@@ -521,20 +519,20 @@ public static partial class Program
             Console.WriteLine(s1.Sig);
             Console.WriteLine();
 
-            string norm0 = NormalizeBody(s0.Body, collidingModules, slugsSorted, demangle: false);
-            string norm1 = NormalizeBody(s1.Body, collidingModules, slugsSorted, demangle: true);
+            string body0 = CollapseWhitespace(s0.Body);
+            string body1 = CollapseWhitespace(DemangleNames(s1.Body, slugsSorted));
 
-            Console.WriteLine("--- Stage0 Body (normalized) ---");
-            Console.WriteLine(norm0);
+            Console.WriteLine("--- Stage0 Body (whitespace-collapsed) ---");
+            Console.WriteLine(body0);
             Console.WriteLine();
-            Console.WriteLine("--- Stage1 Body (normalized) ---");
-            Console.WriteLine(norm1);
+            Console.WriteLine("--- Stage1 Body (demangled, whitespace-collapsed) ---");
+            Console.WriteLine(body1);
             Console.WriteLine();
 
-            if (norm0 == norm1)
+            if (body0 == body1)
                 Console.WriteLine("MATCH");
             else
-                Console.WriteLine($"DIFF: {FirstDiff(norm0, norm1)}");
+                Console.WriteLine($"DIFF: {FirstDiff(body0, body1)}");
             Console.WriteLine();
         }
     }
@@ -556,39 +554,47 @@ public static partial class Program
         }
         if (tokA.Length != tokB.Length)
             return $"length differs: S0 has {tokA.Length} tokens, S1 has {tokB.Length}";
-        return "identical after normalization (unexpected)";
+        return "identical (unexpected)";
     }
 
-    static void PrintReport(Dictionary<string, List<SemDef>> stage0Modules,
-                            List<SemDef> stage1Defs, List<string> moduleSlugs,
+    static void PrintReport(Dictionary<string, List<SemDef>> stage0Chapters,
+                            List<SemDef> stage1Defs, List<string> chapterSlugs,
+                            Stage0Stats stats,
                             List<(SemDef s0, SemDef s1)> matched,
                             List<SemDef> dropped, List<SemDef> extra,
                             int bodyMatches, int bodyMismatches,
                             List<(SemDef s0, SemDef s1, string diff)> bodyMismatchList,
                             int sigMatches, int sigMismatches,
                             List<(SemDef s0, SemDef s1)> sigMismatchList,
-                            HashSet<string> collidingModules)
+                            HashSet<string> collidingNames)
     {
-        int totalS0 = stage0Modules.Values.Sum(d => d.Count);
+        int totalS0 = stage0Chapters.Values.Sum(d => d.Count);
 
         Console.WriteLine("=== Bootstrap2 Semantic Equivalence ===");
         Console.WriteLine();
-        Console.WriteLine($"Stage0: {totalS0} defs ({moduleSlugs.Count} modules)");
+        Console.WriteLine("Stage0 structure (recognized, not compared):");
+        Console.WriteLine($"  {stats.Chapters} chapters, {stats.Sections} sections, {stats.ProseLines} prose lines, {stats.Cites} cites");
+        Console.WriteLine();
+        Console.WriteLine("Comparison method:");
+        Console.WriteLine("  Applied: name demangling (stage1), whitespace collapse (both), type-var alpha-norm (sigs)");
+        Console.WriteLine("  Not applied: brace escapes, parenthesization — reported as-is");
+        Console.WriteLine();
+        Console.WriteLine($"Stage0: {totalS0} defs ({chapterSlugs.Count} chapters)");
         Console.WriteLine($"Stage1: {stage1Defs.Count} defs");
-        Console.WriteLine($"Collisions: {collidingModules.Count} names defined in 2+ modules");
+        Console.WriteLine($"Collisions: {collidingNames.Count} names defined in 2+ chapters");
         Console.WriteLine($"Sigs: {sigMatches} match, {sigMismatches} differ");
         Console.WriteLine($"Bodies: {bodyMatches} match, {bodyMismatches} differ");
         Console.WriteLine();
 
-        Console.WriteLine("Per-Module Summary:");
+        Console.WriteLine("Per-Chapter Summary:");
         Console.WriteLine($"  {"Chapter",-32} {"S0",4} {"S1",4} {"Match",5} {"Drop",5} {"Extra",5} {"Body%",6}");
         Console.WriteLine("  " + new string('-', 67));
 
         int totalMatch = 0, totalDrop = 0, totalExtra = 0;
 
-        foreach (string slug in moduleSlugs)
+        foreach (string slug in chapterSlugs)
         {
-            int s0Count = stage0Modules.TryGetValue(slug, out var s0Defs) ? s0Defs.Count : 0;
+            int s0Count = stage0Chapters.TryGetValue(slug, out var s0Defs) ? s0Defs.Count : 0;
             int s1Count = stage1Defs.Count(d => d.Chapter == slug);
             int matchCount = matched.Count(m => m.s0.Chapter == slug);
             int dropCount = dropped.Count(d => d.Chapter == slug);
