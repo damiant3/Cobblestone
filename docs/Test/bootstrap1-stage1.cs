@@ -938,6 +938,12 @@ public static class Codex_Codex_Codex
         }
     }
 
+    public static bool text_set_has(List<string> names, string name) => ((Func<long, bool>)((len) => ((Func<long, bool>)((pos) => ((pos >= len) ? false : (names[(int)pos] == name))))(bsearch_text_set(names, name, 0L, len))))(((long)names.Count));
+
+    public static List<string> sorted_insert(List<string> xs, string name) => ((Func<long, List<string>>)((len) => ((Func<long, List<string>>)((pos) => ((Func<List<string>>)(() => { var _l = new List<string>(xs); _l.Insert((int)pos, name); return _l; }))()))(bsearch_text_set(xs, name, 0L, len))))(((long)xs.Count));
+
+    public static List<string> sort_text_list(List<string> xs) => fold_list((_p0_) => (_p1_) => sorted_insert(_p0_, _p1_), new List<string>(), xs);
+
     public static Diagnostic make_error(string code, string msg) => new Diagnostic(code: code, message: msg, severity: new Error());
 
     public static Diagnostic make_warning(string code, string msg) => new Diagnostic(code: code, message: msg, severity: new Warning());
@@ -1292,19 +1298,23 @@ public static class Codex_Codex_Codex
 
     public static string emit_cce_runtime() => ("\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0018\u0017\u000F\u0013\u0013\u0002\u0055\u0032\u0018\u000D\u0002\u005A\u0001" + ("\u0002\u0002\u0002\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0015\u000D\u000F\u0016\u0010\u0012\u0017\u001E\u0002\u0011\u0012\u000E\u0058\u0059\u0002\u0055\u000E\u0010\u0033\u0012\u0011\u0002\u004D\u0002\u005A\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0003\u0042\u0002\u0004\u0003\u0042\u0002\u0006\u0005\u0042\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0007\u000B\u0042\u0002\u0007\u000C\u0042\u0002\u0008\u0003\u0042\u0002\u0008\u0004\u0042\u0002\u0008\u0005\u0042\u0002\u0008\u0006\u0042\u0002\u0008\u0007\u0042\u0002\u0008\u0008\u0042\u0002\u0008\u0009\u0042\u0002\u0008\u000A\u0042\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0004\u0003\u0004\u0042\u0002\u0004\u0004\u0009\u0042\u0002\u000C\u000A\u0042\u0002\u0004\u0004\u0004\u0042\u0002\u0004\u0003\u0008\u0042\u0002\u0004\u0004\u0003\u0042\u0002\u0004\u0004\u0008\u0042\u0002\u0004\u0003\u0007\u0042\u0002\u0004\u0004\u0007\u0042\u0002\u0004\u0003\u0003\u0042\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0004\u0003\u000B\u0042\u0002\u000C\u000C\u0042\u0002\u0004\u0004\u000A\u0042\u0002\u0004\u0003\u000C\u0042\u0002\u0004\u0004\u000C\u0042\u0002\u0004\u0003\u0005\u0042\u0002\u0004\u0003\u0006\u0042\u0002\u0004\u0005\u0004\u0042\u0002\u0004\u0004\u0005\u0042\u0002\u000C\u000B\u0042\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0004\u0004\u000B\u0042\u0002\u0004\u0003\u000A\u0042\u0002\u0004\u0003\u0009\u0042\u0002\u0004\u0005\u0003\u0042\u0002\u0004\u0004\u0006\u0042\u0002\u0004\u0005\u0005\u0042\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0009\u000C\u0042\u0002\u000B\u0007\u0042\u0002\u0009\u0008\u0042\u0002\u000A\u000C\u0042\u0002\u000A\u0006\u0042\u0002\u000A\u000B\u0042\u0002\u000B\u0006\u0042\u0002\u000A\u0005\u0042\u0002\u000B\u0005\u0042\u0002\u0009\u000B\u0042\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u000A\u0009\u0042\u0002\u0009\u000A\u0042\u0002\u000B\u0008\u0042\u0002\u000A\u000A\u0042\u0002\u000B\u000A\u0042\u0002\u000A\u0003\u0042\u0002\u000A\u0004\u0042\u0002\u000B\u000C\u0042\u0002\u000B\u0003\u0042\u0002\u0009\u0009\u0042\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u000B\u0009\u0042\u0002\u000A\u0008\u0042\u0002\u000A\u0007\u0042\u0002\u000B\u000B\u0042\u0002\u000B\u0004\u0042\u0002\u000C\u0003\u0042\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0007\u0009\u0042\u0002\u0007\u0007\u0042\u0002\u0006\u0006\u0042\u0002\u0009\u0006\u0042\u0002\u0008\u000B\u0042\u0002\u0008\u000C\u0042\u0002\u0006\u000C\u0042\u0002\u0006\u0007\u0042\u0002\u0007\u0008\u0042\u0002\u0007\u0003\u0042\u0002\u0007\u0004\u0042\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0007\u0006\u0042\u0002\u0009\u0004\u0042\u0002\u0007\u0005\u0042\u0002\u0009\u0003\u0042\u0002\u0009\u0005\u0042\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0007\u000A\u0042\u0002\u0009\u0007\u0042\u0002\u0006\u0008\u0042\u0002\u0006\u000B\u0042\u0002\u000C\u0008\u0042\u0002\u000C\u0005\u0042\u0002\u0004\u0005\u0007\u0042\u0002\u000C\u0004\u0042\u0002\u000C\u0006\u0042\u0002\u0004\u0005\u0006\u0042\u0002\u0004\u0005\u0008\u0042\u0002\u0004\u0005\u0009\u0042\u0002\u000C\u0009\u0042\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u000C\u0007\u0042\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0005\u0006\u0006\u0042\u0002\u0005\u0006\u0005\u0042\u0002\u0005\u0006\u0007\u0042\u0002\u0005\u0006\u0008\u0042\u0002\u0005\u0005\u0008\u0042\u0002\u0005\u0005\u0007\u0042\u0002\u0005\u0005\u0009\u0042\u0002\u0005\u0005\u000B\u0042\u0002\u0005\u0007\u0006\u0042\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0005\u0007\u0007\u0042\u0002\u0005\u0007\u0009\u0042\u0002\u0005\u0008\u0003\u0042\u0002\u0005\u0007\u000C\u0042\u0002\u0005\u0008\u0004\u0042\u0002\u0005\u0008\u0005\u0042\u0002\u0005\u0007\u0004\u0042\u0002\u0005\u0006\u0004\u0042\u0002\u0005\u0006\u000A\u0042\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0004\u0003\u000A\u0005\u0042\u0002\u0004\u0003\u000B\u0009\u0042\u0002\u0004\u0003\u000A\u000A\u0042\u0002\u0004\u0003\u000B\u0003\u0042\u0002\u0004\u0003\u000B\u0008\u0042\u0002\u0004\u0003\u000C\u0003\u0042\u0002\u0004\u0003\u000B\u000C\u0042\u0002\u0004\u0003\u000B\u000B\u0042\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0004\u0003\u000A\u0007\u0042\u0002\u0004\u0003\u000B\u0006\u0042\u0002\u0004\u0003\u000B\u0005\u0042\u0002\u0004\u0003\u000B\u0007\u0042\u0002\u0004\u0003\u000A\u0009\u0042\u0002\u0004\u0003\u000B\u000A\u0042\u0002\u0004\u0003\u000C\u0004\u0001" + ("\u0002\u0002\u0002\u0002\u005B\u0046\u0001" + ("\u0002\u0002\u0002\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0015\u000D\u000F\u0016\u0010\u0012\u0017\u001E\u0002\u0030\u0011\u0018\u000E\u0011\u0010\u0012\u000F\u0015\u001E\u004F\u0011\u0012\u000E\u0042\u0002\u0011\u0012\u000E\u0050\u0002\u0055\u001C\u0015\u0010\u001A\u0033\u0012\u0011\u0002\u004D\u0002\u0012\u000D\u001B\u004A\u004B\u0046\u0001" + ("\u0002\u0002\u0002\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0055\u0032\u0018\u000D\u004A\u004B\u0002\u005A\u0002\u001C\u0010\u0015\u0002\u004A\u0011\u0012\u000E\u0002\u0011\u0002\u004D\u0002\u0003\u0046\u0002\u0011\u0002\u004F\u0002\u0004\u0005\u000B\u0046\u0002\u0011\u004C\u004C\u004B\u0002\u0055\u001C\u0015\u0010\u001A\u0033\u0012\u0011\u0058\u0055\u000E\u0010\u0033\u0012\u0011\u0058\u0011\u0059\u0059\u0002\u004D\u0002\u0011\u0046\u0002\u005B\u0001" + ("\u0002\u0002\u0002\u0002\u001F\u0019\u0020\u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0013\u000E\u0015\u0011\u0012\u001D\u0002\u0036\u0015\u0010\u001A\u0033\u0012\u0011\u0018\u0010\u0016\u000D\u004A\u0013\u000E\u0015\u0011\u0012\u001D\u0002\u0013\u004B\u0002\u005A\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0013\u0002\u004D\u0002\u0013\u0041\u002F\u000D\u001F\u0017\u000F\u0018\u000D\u004A\u0048\u0056\u000E\u0048\u0042\u0002\u0048\u0002\u0002\u0048\u004B\u0041\u002F\u000D\u001F\u0017\u000F\u0018\u000D\u004A\u0048\u0056\u0015\u0048\u0042\u0002\u0048\u0048\u004B\u0046\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0021\u000F\u0015\u0002\u0013\u0020\u0002\u004D\u0002\u0012\u000D\u001B\u0002\u002D\u001E\u0013\u000E\u000D\u001A\u0041\u0028\u000D\u0024\u000E\u0041\u002D\u000E\u0015\u0011\u0012\u001D\u003A\u0019\u0011\u0017\u0016\u000D\u0015\u004A\u0013\u0041\u0031\u000D\u0012\u001D\u000E\u0014\u004B\u0046\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u001C\u0010\u0015\u0002\u004A\u0011\u0012\u000E\u0002\u0011\u0002\u004D\u0002\u0003\u0046\u0002\u0011\u0002\u004F\u0002\u0013\u0041\u0031\u000D\u0012\u001D\u000E\u0014\u0046\u0002\u0011\u004C\u004C\u004B\u0002\u005A\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0011\u0012\u000E\u0002\u0019\u0002\u004D\u0002\u0013\u0058\u0011\u0059\u0046\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0011\u001C\u0002\u004A\u0055\u001C\u0015\u0010\u001A\u0033\u0012\u0011\u0041\u0028\u0015\u001E\u0037\u000D\u000E\u003B\u000F\u0017\u0019\u000D\u004A\u0019\u0042\u0002\u0010\u0019\u000E\u0002\u0011\u0012\u000E\u0002\u0020\u004B\u004B\u0002\u0013\u0020\u0041\u0029\u001F\u001F\u000D\u0012\u0016\u004A\u004A\u0018\u0014\u000F\u0015\u004B\u0020\u004B\u0046\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u000D\u0017\u0013\u000D\u0002\u0011\u001C\u0002\u004A\u0019\u0002\u0050\u0002\u0004\u0005\u000A\u004B\u0002\u005A\u0002\u0013\u0020\u0041\u0029\u001F\u001F\u000D\u0012\u0016\u004A\u004A\u0018\u0014\u000F\u0015\u004B\u004A\u0003\u0024\u0027\u0003\u0057\u004A\u0019\u0050\u0050\u0004\u0005\u004B\u004B\u004B\u0046\u0002\u0013\u0020\u0041\u0029\u001F\u001F\u000D\u0012\u0016\u004A\u004A\u0018\u0014\u000F\u0015\u004B\u004A\u0003\u0024\u000B\u0003\u0057\u004A\u004A\u0019\u0050\u0050\u0009\u004B\u0054\u0003\u0024\u0006\u0036\u004B\u004B\u004B\u0046\u0002\u0013\u0020\u0041\u0029\u001F\u001F\u000D\u0012\u0016\u004A\u004A\u0018\u0014\u000F\u0015\u004B\u004A\u0003\u0024\u000B\u0003\u0057\u004A\u0019\u0054\u0003\u0024\u0006\u0036\u004B\u004B\u004B\u0046\u0002\u005B\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u000D\u0017\u0013\u000D\u0002\u0013\u0020\u0041\u0029\u001F\u001F\u000D\u0012\u0016\u004A\u004A\u0018\u0014\u000F\u0015\u004B\u0009\u000B\u004B\u0046\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u005B\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002\u0013\u0020\u0041\u0028\u0010\u002D\u000E\u0015\u0011\u0012\u001D\u004A\u004B\u0046\u0001" + ("\u0002\u0002\u0002\u0002\u005B\u0001" + ("\u0002\u0002\u0002\u0002\u001F\u0019\u0020\u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0013\u000E\u0015\u0011\u0012\u001D\u0002\u0028\u0010\u0033\u0012\u0011\u0018\u0010\u0016\u000D\u004A\u0013\u000E\u0015\u0011\u0012\u001D\u0002\u0013\u004B\u0002\u005A\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0021\u000F\u0015\u0002\u0013\u0020\u0002\u004D\u0002\u0012\u000D\u001B\u0002\u002D\u001E\u0013\u000E\u000D\u001A\u0041\u0028\u000D\u0024\u000E\u0041\u002D\u000E\u0015\u0011\u0012\u001D\u003A\u0019\u0011\u0017\u0016\u000D\u0015\u004A\u0013\u0041\u0031\u000D\u0012\u001D\u000E\u0014\u004B\u0046\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u001C\u0010\u0015\u0002\u004A\u0011\u0012\u000E\u0002\u0011\u0002\u004D\u0002\u0003\u0046\u0002\u0011\u0002\u004F\u0002\u0013\u0041\u0031\u000D\u0012\u001D\u000E\u0014\u0046\u0002\u0011\u004C\u004C\u004B\u0002\u005A\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0011\u0012\u000E\u0002\u0020\u0002\u004D\u0002\u0013\u0058\u0011\u0059\u0046\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0011\u001C\u0002\u004A\u0020\u0002\u004F\u0002\u0004\u0005\u000B\u004B\u0002\u0013\u0020\u0041\u0029\u001F\u001F\u000D\u0012\u0016\u004A\u004A\u0018\u0014\u000F\u0015\u004B\u0055\u000E\u0010\u0033\u0012\u0011\u0058\u0020\u0059\u004B\u0046\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u000D\u0017\u0013\u000D\u0002\u0011\u001C\u0002\u004A\u004A\u0020\u0002\u0054\u0002\u0003\u0024\u0027\u0003\u004B\u0002\u004D\u004D\u0002\u0003\u0024\u0027\u0003\u0002\u0054\u0054\u0002\u0011\u004C\u0005\u0002\u004F\u0002\u0013\u0041\u0031\u000D\u0012\u001D\u000E\u0014\u004B\u0002\u005A\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0011\u0012\u000E\u0002\u0019\u0002\u004D\u0002\u004A\u004A\u0020\u0002\u0054\u0002\u0003\u0024\u0003\u0036\u004B\u0002\u004F\u004F\u0002\u0004\u0005\u004B\u0002\u0057\u0002\u004A\u004A\u0013\u0058\u0011\u004C\u0004\u0059\u0002\u0054\u0002\u0003\u0024\u0006\u0036\u004B\u0002\u004F\u004F\u0002\u0009\u004B\u0002\u0057\u0002\u004A\u0013\u0058\u0011\u004C\u0005\u0059\u0002\u0054\u0002\u0003\u0024\u0006\u0036\u004B\u0046\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0013\u0020\u0041\u0029\u001F\u001F\u000D\u0012\u0016\u004A\u004A\u0018\u0014\u000F\u0015\u004B\u0019\u004B\u0046\u0002\u0011\u0002\u004C\u004D\u0002\u0005\u0046\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u005B\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u000D\u0017\u0013\u000D\u0002\u0013\u0020\u0041\u0029\u001F\u001F\u000D\u0012\u0016\u004A\u0047\u0056\u0019\u0036\u0036\u0036\u0030\u0047\u004B\u0046\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u005B\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002\u0013\u0020\u0041\u0028\u0010\u002D\u000E\u0015\u0011\u0012\u001D\u004A\u004B\u0046\u0001" + ("\u0002\u0002\u0002\u0002\u005B\u0001" + ("\u0002\u0002\u0002\u0002\u001F\u0019\u0020\u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0017\u0010\u0012\u001D\u0002\u0033\u0012\u0011\u0028\u0010\u0032\u0018\u000D\u004A\u0017\u0010\u0012\u001D\u0002\u0019\u004B\u0002\u005A\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002\u0055\u001C\u0015\u0010\u001A\u0033\u0012\u0011\u0041\u0028\u0015\u001E\u0037\u000D\u000E\u003B\u000F\u0017\u0019\u000D\u004A\u004A\u0011\u0012\u000E\u004B\u0019\u0042\u0002\u0010\u0019\u000E\u0002\u0011\u0012\u000E\u0002\u0018\u004B\u0002\u0044\u0002\u0018\u0002\u0045\u0002\u0009\u000B\u0046\u0001" + ("\u0002\u0002\u0002\u0002\u005B\u0001" + ("\u0002\u0002\u0002\u0002\u001F\u0019\u0020\u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0017\u0010\u0012\u001D\u0002\u0032\u0018\u000D\u0028\u0010\u0033\u0012\u0011\u004A\u0017\u0010\u0012\u001D\u0002\u0020\u004B\u0002\u005A\u0001" + ("\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002\u004A\u0020\u0002\u0050\u004D\u0002\u0003\u0002\u0054\u0054\u0002\u0020\u0002\u004F\u0002\u0004\u0005\u000B\u004B\u0002\u0044\u0002\u0055\u000E\u0010\u0033\u0012\u0011\u0058\u004A\u0011\u0012\u000E\u004B\u0020\u0059\u0002\u0045\u0002\u0009\u0008\u0008\u0006\u0006\u0046\u0001" + ("\u0002\u0002\u0002\u0002\u005B\u0001" + "\u005B\u0001\u0001")))))))))))))))))))))))))))))))))))))))))))))))))));
 
-    public static string csharp_emitter_emit_full_chapter(IRChapter m, List<ATypeDef> type_defs) => ((Func<List<ArityEntry>, string>)((arities) => ("\u0019\u0013\u0011\u0012\u001D\u0002\u002D\u001E\u0013\u000E\u000D\u001A\u0046\u0001\u0019\u0013\u0011\u0012\u001D\u0002\u002D\u001E\u0013\u000E\u000D\u001A\u0041\u0032\u0010\u0017\u0017\u000D\u0018\u000E\u0011\u0010\u0012\u0013\u0041\u0037\u000D\u0012\u000D\u0015\u0011\u0018\u0046\u0001\u0019\u0013\u0011\u0012\u001D\u0002\u002D\u001E\u0013\u000E\u000D\u001A\u0041\u002B\u002A\u0046\u0001\u0019\u0013\u0011\u0012\u001D\u0002\u002D\u001E\u0013\u000E\u000D\u001A\u0041\u0031\u0011\u0012\u0025\u0046\u0001\u0019\u0013\u0011\u0012\u001D\u0002\u002D\u001E\u0013\u000E\u000D\u001A\u0041\u0028\u0014\u0015\u000D\u000F\u0016\u0011\u0012\u001D\u0041\u0028\u000F\u0013\u0022\u0013\u0046\u0001\u0001" + ("\u0032\u0010\u0016\u000D\u0024\u0055" + (sanitize(m.name.value) + ("\u0041\u001A\u000F\u0011\u0012\u004A\u004B\u0046\u0001\u0001" + (emit_cce_runtime() + (csharp_emitter_emit_type_defs(type_defs, 0L) + (emit_class_header(m.name.value) + (emit_defs(m.defs, 0L, arities) + "\u005B\u0001"))))))))))(build_arity_map(m.defs, 0L));
+    public static string csharp_emitter_emit_full_chapter(IRChapter m, List<ATypeDef> type_defs) => ((Func<List<ArityEntry>, string>)((arities) => ("\u0019\u0013\u0011\u0012\u001D\u0002\u002D\u001E\u0013\u000E\u000D\u001A\u0046\u0001\u0019\u0013\u0011\u0012\u001D\u0002\u002D\u001E\u0013\u000E\u000D\u001A\u0041\u0032\u0010\u0017\u0017\u000D\u0018\u000E\u0011\u0010\u0012\u0013\u0041\u0037\u000D\u0012\u000D\u0015\u0011\u0018\u0046\u0001\u0019\u0013\u0011\u0012\u001D\u0002\u002D\u001E\u0013\u000E\u000D\u001A\u0041\u002B\u002A\u0046\u0001\u0019\u0013\u0011\u0012\u001D\u0002\u002D\u001E\u0013\u000E\u000D\u001A\u0041\u0031\u0011\u0012\u0025\u0046\u0001\u0019\u0013\u0011\u0012\u001D\u0002\u002D\u001E\u0013\u000E\u000D\u001A\u0041\u0028\u0014\u0015\u000D\u000F\u0016\u0011\u0012\u001D\u0041\u0028\u000F\u0013\u0022\u0013\u0046\u0001\u0001" + ("\u0032\u0010\u0016\u000D\u0024\u0055" + (sanitize(m.name.value) + ("\u0041\u001A\u000F\u0011\u0012\u004A\u004B\u0046\u0001\u0001" + (emit_cce_runtime() + (csharp_emitter_emit_type_defs(type_defs, 0L) + (emit_class_header(m.name.value) + (emit_defs(m.defs, 0L, arities) + "\u005B\u0001"))))))))))(build_arity_map(m.defs, 0L, new List<ArityEntry>()));
 
-    public static string emit_chapter(IRChapter m) => ((Func<List<ArityEntry>, string>)((arities) => ("\u0019\u0013\u0011\u0012\u001D\u0002\u002D\u001E\u0013\u000E\u000D\u001A\u0046\u0001\u0019\u0013\u0011\u0012\u001D\u0002\u002D\u001E\u0013\u000E\u000D\u001A\u0041\u0032\u0010\u0017\u0017\u000D\u0018\u000E\u0011\u0010\u0012\u0013\u0041\u0037\u000D\u0012\u000D\u0015\u0011\u0018\u0046\u0001\u0019\u0013\u0011\u0012\u001D\u0002\u002D\u001E\u0013\u000E\u000D\u001A\u0041\u002B\u002A\u0046\u0001\u0019\u0013\u0011\u0012\u001D\u0002\u002D\u001E\u0013\u000E\u000D\u001A\u0041\u0031\u0011\u0012\u0025\u0046\u0001\u0019\u0013\u0011\u0012\u001D\u0002\u002D\u001E\u0013\u000E\u000D\u001A\u0041\u0028\u0014\u0015\u000D\u000F\u0016\u0011\u0012\u001D\u0041\u0028\u000F\u0013\u0022\u0013\u0046\u0001\u0001" + ("\u0032\u0010\u0016\u000D\u0024\u0055" + (sanitize(m.name.value) + ("\u0041\u001A\u000F\u0011\u0012\u004A\u004B\u0046\u0001\u0001" + (emit_cce_runtime() + (emit_class_header(m.name.value) + (emit_defs(m.defs, 0L, arities) + "\u005B\u0001")))))))))(build_arity_map(m.defs, 0L));
+    public static string emit_chapter(IRChapter m) => ((Func<List<ArityEntry>, string>)((arities) => ("\u0019\u0013\u0011\u0012\u001D\u0002\u002D\u001E\u0013\u000E\u000D\u001A\u0046\u0001\u0019\u0013\u0011\u0012\u001D\u0002\u002D\u001E\u0013\u000E\u000D\u001A\u0041\u0032\u0010\u0017\u0017\u000D\u0018\u000E\u0011\u0010\u0012\u0013\u0041\u0037\u000D\u0012\u000D\u0015\u0011\u0018\u0046\u0001\u0019\u0013\u0011\u0012\u001D\u0002\u002D\u001E\u0013\u000E\u000D\u001A\u0041\u002B\u002A\u0046\u0001\u0019\u0013\u0011\u0012\u001D\u0002\u002D\u001E\u0013\u000E\u000D\u001A\u0041\u0031\u0011\u0012\u0025\u0046\u0001\u0019\u0013\u0011\u0012\u001D\u0002\u002D\u001E\u0013\u000E\u000D\u001A\u0041\u0028\u0014\u0015\u000D\u000F\u0016\u0011\u0012\u001D\u0041\u0028\u000F\u0013\u0022\u0013\u0046\u0001\u0001" + ("\u0032\u0010\u0016\u000D\u0024\u0055" + (sanitize(m.name.value) + ("\u0041\u001A\u000F\u0011\u0012\u004A\u004B\u0046\u0001\u0001" + (emit_cce_runtime() + (emit_class_header(m.name.value) + (emit_defs(m.defs, 0L, arities) + "\u005B\u0001")))))))))(build_arity_map(m.defs, 0L, new List<ArityEntry>()));
 
     public static string emit_class_header(string name) => ("\u001F\u0019\u0020\u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0018\u0017\u000F\u0013\u0013\u0002\u0032\u0010\u0016\u000D\u0024\u0055" + (sanitize(name) + "\u0001\u005A\u0001"));
 
     public static string emit_defs(List<IRDef> defs, long i, List<ArityEntry> arities) => ((i == ((long)defs.Count)) ? "" : (csharp_emitter_emit_def(defs[(int)i], arities) + ("\u0001" + emit_defs(defs, (i + 1L), arities))));
 
-    public static bool is_cs_keyword(string n) => ((n == "\u0018\u0017\u000F\u0013\u0013") ? true : ((n == "\u0013\u000E\u000F\u000E\u0011\u0018") ? true : ((n == "\u0021\u0010\u0011\u0016") ? true : ((n == "\u0015\u000D\u000E\u0019\u0015\u0012") ? true : ((n == "\u0011\u001C") ? true : ((n == "\u000D\u0017\u0013\u000D") ? true : ((n == "\u001C\u0010\u0015") ? true : ((n == "\u001B\u0014\u0011\u0017\u000D") ? true : ((n == "\u0016\u0010") ? true : ((n == "\u0013\u001B\u0011\u000E\u0018\u0014") ? true : ((n == "\u0018\u000F\u0013\u000D") ? true : ((n == "\u0020\u0015\u000D\u000F\u0022") ? true : ((n == "\u0018\u0010\u0012\u000E\u0011\u0012\u0019\u000D") ? true : ((n == "\u0012\u000D\u001B") ? true : ((n == "\u000E\u0014\u0011\u0013") ? true : ((n == "\u0020\u000F\u0013\u000D") ? true : ((n == "\u0012\u0019\u0017\u0017") ? true : ((n == "\u000E\u0015\u0019\u000D") ? true : ((n == "\u001C\u000F\u0017\u0013\u000D") ? true : ((n == "\u0011\u0012\u000E") ? true : ((n == "\u0017\u0010\u0012\u001D") ? true : ((n == "\u0013\u000E\u0015\u0011\u0012\u001D") ? true : ((n == "\u0020\u0010\u0010\u0017") ? true : ((n == "\u0016\u0010\u0019\u0020\u0017\u000D") ? true : ((n == "\u0016\u000D\u0018\u0011\u001A\u000F\u0017") ? true : ((n == "\u0010\u0020\u0023\u000D\u0018\u000E") ? true : ((n == "\u0011\u0012") ? true : ((n == "\u0011\u0013") ? true : ((n == "\u000F\u0013") ? true : ((n == "\u000E\u001E\u001F\u000D\u0010\u001C") ? true : ((n == "\u0016\u000D\u001C\u000F\u0019\u0017\u000E") ? true : ((n == "\u000E\u0014\u0015\u0010\u001B") ? true : ((n == "\u000E\u0015\u001E") ? true : ((n == "\u0018\u000F\u000E\u0018\u0014") ? true : ((n == "\u001C\u0011\u0012\u000F\u0017\u0017\u001E") ? true : ((n == "\u0019\u0013\u0011\u0012\u001D") ? true : ((n == "\u0012\u000F\u001A\u000D\u0013\u001F\u000F\u0018\u000D") ? true : ((n == "\u001F\u0019\u0020\u0017\u0011\u0018") ? true : ((n == "\u001F\u0015\u0011\u0021\u000F\u000E\u000D") ? true : ((n == "\u001F\u0015\u0010\u000E\u000D\u0018\u000E\u000D\u0016") ? true : ((n == "\u0011\u0012\u000E\u000D\u0015\u0012\u000F\u0017") ? true : ((n == "\u000F\u0020\u0013\u000E\u0015\u000F\u0018\u000E") ? true : ((n == "\u0013\u000D\u000F\u0017\u000D\u0016") ? true : ((n == "\u0010\u0021\u000D\u0015\u0015\u0011\u0016\u000D") ? true : ((n == "\u0021\u0011\u0015\u000E\u0019\u000F\u0017") ? true : ((n == "\u000D\u0021\u000D\u0012\u000E") ? true : ((n == "\u0016\u000D\u0017\u000D\u001D\u000F\u000E\u000D") ? true : ((n == "\u0010\u0019\u000E") ? true : ((n == "\u0015\u000D\u001C") ? true : ((n == "\u001F\u000F\u0015\u000F\u001A\u0013") ? true : false))))))))))))))))))))))))))))))))))))))))))))))))));
+    public static List<string> cs_keywords() => ((Func<List<string>, List<string>>)((unsorted) => sort_text_list(unsorted)))(new List<string> { "\u000F\u0020\u0013\u000E\u0015\u000F\u0018\u000E", "\u000F\u0013", "\u0020\u000F\u0013\u000D", "\u0020\u0010\u0010\u0017", "\u0020\u0015\u000D\u000F\u0022", "\u0018\u000F\u0013\u000D", "\u0018\u000F\u000E\u0018\u0014", "\u0018\u0017\u000F\u0013\u0013", "\u0018\u0010\u0012\u000E\u0011\u0012\u0019\u000D", "\u0016\u000D\u0018\u0011\u001A\u000F\u0017", "\u0016\u000D\u001C\u000F\u0019\u0017\u000E", "\u0016\u000D\u0017\u000D\u001D\u000F\u000E\u000D", "\u0016\u0010", "\u0016\u0010\u0019\u0020\u0017\u000D", "\u000D\u0017\u0013\u000D", "\u000D\u0021\u000D\u0012\u000E", "\u001C\u000F\u0017\u0013\u000D", "\u001C\u0011\u0012\u000F\u0017\u0017\u001E", "\u001C\u0010\u0015", "\u0011\u001C", "\u0011\u0012", "\u0011\u0012\u000E", "\u0011\u0012\u000E\u000D\u0015\u0012\u000F\u0017", "\u0011\u0013", "\u0017\u0010\u0012\u001D", "\u0012\u000F\u001A\u000D\u0013\u001F\u000F\u0018\u000D", "\u0012\u000D\u001B", "\u0012\u0019\u0017\u0017", "\u0010\u0020\u0023\u000D\u0018\u000E", "\u0010\u0019\u000E", "\u0010\u0021\u000D\u0015\u0015\u0011\u0016\u000D", "\u001F\u000F\u0015\u000F\u001A\u0013", "\u001F\u0015\u0011\u0021\u000F\u000E\u000D", "\u001F\u0015\u0010\u000E\u000D\u0018\u000E\u000D\u0016", "\u001F\u0019\u0020\u0017\u0011\u0018", "\u0015\u000D\u001C", "\u0015\u000D\u000E\u0019\u0015\u0012", "\u0013\u000D\u000F\u0017\u000D\u0016", "\u0013\u000E\u000F\u000E\u0011\u0018", "\u0013\u000E\u0015\u0011\u0012\u001D", "\u0013\u001B\u0011\u000E\u0018\u0014", "\u000E\u0014\u0011\u0013", "\u000E\u0014\u0015\u0010\u001B", "\u000E\u0015\u0019\u000D", "\u000E\u0015\u001E", "\u000E\u001E\u001F\u000D\u0010\u001C", "\u0019\u0013\u0011\u0012\u001D", "\u0021\u0011\u0015\u000E\u0019\u000F\u0017", "\u0021\u0010\u0011\u0016", "\u001B\u0014\u0011\u0017\u000D" });
+
+    public static bool is_cs_keyword(string n) => text_set_has(cs_keywords(), n);
 
     public static string sanitize(string name) => ((Func<string, string>)((s) => (is_cs_keyword(s) ? ("\u0052" + s) : (is_cs_member_name(s) ? (s + "\u0055") : s))))(name.Replace("\u0049", "\u0055"));
 
-    public static bool is_cs_member_name(string n) => ((n == "\u0027\u0025\u0019\u000F\u0017\u0013") ? true : ((n == "\u0037\u000D\u000E\u002E\u000F\u0013\u0014\u0032\u0010\u0016\u000D") ? true : ((n == "\u0028\u0010\u002D\u000E\u0015\u0011\u0012\u001D") ? true : ((n == "\u0037\u000D\u000E\u0028\u001E\u001F\u000D") ? true : ((n == "\u0034\u000D\u001A\u0020\u000D\u0015\u001B\u0011\u0013\u000D\u0032\u0017\u0010\u0012\u000D") ? true : false)))));
+    public static List<string> cs_member_names() => ((Func<List<string>, List<string>>)((unsorted) => sort_text_list(unsorted)))(new List<string> { "\u0027\u0025\u0019\u000F\u0017\u0013", "\u0037\u000D\u000E\u002E\u000F\u0013\u0014\u0032\u0010\u0016\u000D", "\u0037\u000D\u000E\u0028\u001E\u001F\u000D", "\u0034\u000D\u001A\u0020\u000D\u0015\u001B\u0011\u0013\u000D\u0032\u0017\u0010\u0012\u000D", "\u0028\u0010\u002D\u000E\u0015\u0011\u0012\u001D" });
+
+    public static bool is_cs_member_name(string n) => text_set_has(cs_member_names(), n);
 
     public static string cs_type(CodexType ty)
     {
@@ -1405,9 +1415,49 @@ public static class Codex_Codex_Codex
 
     public static string emit_cs_type_args(List<CodexType> args, long i) => ((i == ((long)args.Count)) ? "" : ((Func<string, string>)((t) => ((i == (((long)args.Count) - 1L)) ? t : (t + ("\u0042\u0002" + emit_cs_type_args(args, (i + 1L)))))))(cs_type(args[(int)i])));
 
-    public static List<ArityEntry> build_arity_map(List<IRDef> defs, long i) => ((i == ((long)defs.Count)) ? new List<ArityEntry>() : ((Func<IRDef, List<ArityEntry>>)((d) => Enumerable.Concat(new List<ArityEntry> { new ArityEntry(name: d.name, arity: ((long)d.@params.Count)) }, build_arity_map(defs, (i + 1L))).ToList()))(defs[(int)i]));
+    public static List<ArityEntry> build_arity_map(List<IRDef> defs, long i, List<ArityEntry> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)defs.Count)))
+            {
+            return acc;
+            }
+            else
+            {
+            var d = defs[(int)i];
+            var _tco_0 = defs;
+            var _tco_1 = (i + 1L);
+            var _tco_2 = ((Func<List<ArityEntry>>)(() => { var _l = acc; _l.Add(new ArityEntry(name: d.name, arity: ((long)d.@params.Count))); return _l; }))();
+            defs = _tco_0;
+            i = _tco_1;
+            acc = _tco_2;
+            continue;
+            }
+        }
+    }
 
-    public static List<ArityEntry> build_arity_map_from_ast(List<ADef> defs, long i) => ((i == ((long)defs.Count)) ? new List<ArityEntry>() : ((Func<ADef, List<ArityEntry>>)((d) => Enumerable.Concat(new List<ArityEntry> { new ArityEntry(name: d.name.value, arity: ((long)d.@params.Count)) }, build_arity_map_from_ast(defs, (i + 1L))).ToList()))(defs[(int)i]));
+    public static List<ArityEntry> build_arity_map_from_ast(List<ADef> defs, long i, List<ArityEntry> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)defs.Count)))
+            {
+            return acc;
+            }
+            else
+            {
+            var d = defs[(int)i];
+            var _tco_0 = defs;
+            var _tco_1 = (i + 1L);
+            var _tco_2 = ((Func<List<ArityEntry>>)(() => { var _l = acc; _l.Add(new ArityEntry(name: d.name.value, arity: ((long)d.@params.Count))); return _l; }))();
+            defs = _tco_0;
+            i = _tco_1;
+            acc = _tco_2;
+            continue;
+            }
+        }
+    }
 
     public static long lookup_arity(List<ArityEntry> entries, string name) => lookup_arity_loop(entries, name, 0L, ((long)entries.Count));
 
@@ -1790,7 +1840,7 @@ public static class Codex_Codex_Codex
 
     public static string codex_emitter_emit_binary(IRBinaryOp op, IRExpr l, IRExpr r, List<string> ctors, long indent) => (wrap_binary_left(op, l, ctors, indent) + ("\u0002" + (bin_op_text(op) + ("\u0002" + wrap_binary_right(op, r, ctors, indent)))));
 
-    public static string wrap_binary_left(IRBinaryOp parent_op, IRExpr e, List<string> ctors, long indent) => e switch { IrBinary(var child_op, var l2, var r2, var ty) => ((bin_op_prec(child_op) < bin_op_prec(parent_op)) ? ("\u004A" + (codex_emitter_emit_expr(e, ctors, indent) + "\u004B")) : codex_emitter_emit_expr(e, ctors, indent)), _ => codex_emitter_emit_expr(e, ctors, indent), };
+    public static string wrap_binary_left(IRBinaryOp parent_op, IRExpr e, List<string> ctors, long indent) => e switch { IrBinary(var child_op, var l2, var r2, var ty) => ((bin_op_prec(child_op) < bin_op_prec(parent_op)) ? ("\u004A" + (codex_emitter_emit_expr(e, ctors, indent) + "\u004B")) : codex_emitter_emit_expr(e, ctors, indent)), IrIf(var c, var t, var el, var ty) => ("\u004A" + (codex_emitter_emit_expr(e, ctors, indent) + "\u004B")), _ => codex_emitter_emit_expr(e, ctors, indent), };
 
     public static string wrap_binary_right(IRBinaryOp parent_op, IRExpr e, List<string> ctors, long indent) => e switch { IrBinary(var child_op, var l2, var r2, var ty) => (needs_right_wrap(parent_op, child_op) ? ("\u004A" + (codex_emitter_emit_expr(e, ctors, indent) + "\u004B")) : codex_emitter_emit_expr(e, ctors, indent)), _ => codex_emitter_emit_expr(e, ctors, indent), };
 
@@ -1856,9 +1906,29 @@ public static class Codex_Codex_Codex
 
     public static string codex_emitter_emit_handle_clauses(List<IRHandleClause> clauses, List<string> ctors, long indent, long i) => ((i == ((long)clauses.Count)) ? "" : ((Func<IRHandleClause, string>)((c) => ("\u0001" + (make_indent((indent + 1L)) + (c.op_name + ("\u0002\u004A" + (c.resume_name + ("\u004B\u0002\u0049\u0050\u0002" + (codex_emitter_emit_expr(c.body, ctors, (indent + 1L)) + codex_emitter_emit_handle_clauses(clauses, ctors, indent, (i + 1L)))))))))))(clauses[(int)i]));
 
-    public static List<string> codex_emitter_collect_ctor_names(List<ATypeDef> type_defs, long i) => ((i == ((long)type_defs.Count)) ? new List<string>() : ((Func<ATypeDef, List<string>>)((td) => ((Func<List<string>, List<string>>)((names) => Enumerable.Concat(names, codex_emitter_collect_ctor_names(type_defs, (i + 1L))).ToList()))(td switch { AVariantTypeDef(var name, var tparams, var ctors) => collect_variant_ctor_names(ctors, 0L), ARecordTypeDef(var name, var tparams, var fields) => new List<string> { name.value }, _ => throw new InvalidOperationException("Non-exhaustive match"), })))(type_defs[(int)i]));
+    public static List<string> codex_emitter_collect_ctor_names(List<ATypeDef> type_defs, long i) => ((i == ((long)type_defs.Count)) ? new List<string>() : ((Func<ATypeDef, List<string>>)((td) => ((Func<List<string>, List<string>>)((names) => Enumerable.Concat(names, codex_emitter_collect_ctor_names(type_defs, (i + 1L))).ToList()))(td switch { AVariantTypeDef(var name, var tparams, var ctors) => collect_variant_ctor_names(ctors, 0L, new List<string>()), ARecordTypeDef(var name, var tparams, var fields) => new List<string> { name.value }, _ => throw new InvalidOperationException("Non-exhaustive match"), })))(type_defs[(int)i]));
 
-    public static List<string> collect_variant_ctor_names(List<AVariantCtorDef> ctors, long i) => ((i == ((long)ctors.Count)) ? new List<string>() : ((Func<AVariantCtorDef, List<string>>)((c) => Enumerable.Concat(new List<string> { c.name.value }, collect_variant_ctor_names(ctors, (i + 1L))).ToList()))(ctors[(int)i]));
+    public static List<string> collect_variant_ctor_names(List<AVariantCtorDef> ctors, long i, List<string> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)ctors.Count)))
+            {
+            return acc;
+            }
+            else
+            {
+            var c = ctors[(int)i];
+            var _tco_0 = ctors;
+            var _tco_1 = (i + 1L);
+            var _tco_2 = ((Func<List<string>>)(() => { var _l = acc; _l.Add(c.name.value); return _l; }))();
+            ctors = _tco_0;
+            i = _tco_1;
+            acc = _tco_2;
+            continue;
+            }
+        }
+    }
 
     public static bool is_simple(IRExpr e) => e switch { IrIntLit(var n) => true, IrNumLit(var n) => true, IrTextLit(var s) => true, IrBoolLit(var b) => true, IrCharLit(var n) => true, IrName(var n, var ty) => true, IrFieldAccess(var r, var f, var ty) => true, _ => false, };
 
@@ -4817,7 +4887,29 @@ public static class Codex_Codex_Codex
 
     public static CodexType binary_result_type(BinaryOp op, CodexType left_ty, CodexType expected_ty) => op switch { OpEq { } => new BooleanTy(), OpNotEq { } => new BooleanTy(), OpLt { } => new BooleanTy(), OpGt { } => new BooleanTy(), OpLtEq { } => new BooleanTy(), OpGtEq { } => new BooleanTy(), OpDefEq { } => new BooleanTy(), OpAnd { } => new BooleanTy(), OpOr { } => new BooleanTy(), OpAppend { } => (is_text_type(left_ty) ? new TextTy() : (is_text_type(expected_ty) ? new TextTy() : left_ty)), _ => left_ty, };
 
-    public static List<ChapterAssignment> assign_chapters(List<DefHeader> headers, string current_chapter, long i) => ((i == ((long)headers.Count)) ? new List<ChapterAssignment>() : ((Func<DefHeader, List<ChapterAssignment>>)((hdr) => Enumerable.Concat(new List<ChapterAssignment> { new ChapterAssignment(def_name: hdr.name.text, chapter_slug: current_chapter) }, assign_chapters(headers, current_chapter, (i + 1L))).ToList()))(headers[(int)i]));
+    public static List<ChapterAssignment> assign_chapters(List<DefHeader> headers, string current_chapter, long i, List<ChapterAssignment> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)headers.Count)))
+            {
+            return acc;
+            }
+            else
+            {
+            var hdr = headers[(int)i];
+            var _tco_0 = headers;
+            var _tco_1 = current_chapter;
+            var _tco_2 = (i + 1L);
+            var _tco_3 = ((Func<List<ChapterAssignment>>)(() => { var _l = acc; _l.Add(new ChapterAssignment(def_name: hdr.name.text, chapter_slug: current_chapter)); return _l; }))();
+            headers = _tco_0;
+            current_chapter = _tco_1;
+            i = _tco_2;
+            acc = _tco_3;
+            continue;
+            }
+        }
+    }
 
     public static List<string> find_colliding_names(List<ChapterAssignment> assignments) => find_collisions_loop(assignments, 0L, ((long)assignments.Count), new List<string>());
 
@@ -5155,17 +5247,83 @@ public static class Codex_Codex_Codex
         }
     }
 
-    public static IRExpr rename_ir_expr(List<RenameEntry> rn, IRExpr e) => e switch { IrIntLit(var v) => e, IrNumLit(var v) => e, IrTextLit(var v) => e, IrBoolLit(var v) => e, IrCharLit(var v) => e, IrError(var msg, var ty) => e, IrFork(var x, var ty) => new IrFork(rename_ir_expr(rn, x), ty), IrAwait(var x, var ty) => new IrAwait(rename_ir_expr(rn, x), ty), IrNegate(var x) => new IrNegate(rename_ir_expr(rn, x)), IrName(var n, var ty) => new IrName(rename_lookup(rn, n), ty), IrBinary(var op, var l, var r, var ty) => new IrBinary(op, rename_ir_expr(rn, l), rename_ir_expr(rn, r), ty), IrApply(var f, var a, var ty) => new IrApply(rename_ir_expr(rn, f), rename_ir_expr(rn, a), ty), IrIf(var c, var t, var el, var ty) => new IrIf(rename_ir_expr(rn, c), rename_ir_expr(rn, t), rename_ir_expr(rn, el), ty), IrFieldAccess(var rec, var field, var ty) => new IrFieldAccess(rename_ir_expr(rn, rec), field, ty), IrLet(var nm, var ty, var val, var body) => rename_ir_let(rn, nm, ty, val, body), IrLambda(var @params, var body, var ty) => rename_ir_lambda(rn, @params, body, ty), IrMatch(var scrut, var branches, var ty) => new IrMatch(rename_ir_expr(rn, scrut), rename_ir_branches(rn, branches, 0L), ty), IrList(var elems, var ty) => new IrList(rename_ir_exprs(rn, elems, 0L), ty), IrRecord(var nm, var fields, var ty) => new IrRecord(nm, rename_ir_fields(rn, fields, 0L), ty), IrDo(var stmts, var ty) => new IrDo(rename_ir_do_stmts(rn, stmts, 0L), ty), IrHandle(var eff, var body, var clauses, var ty) => new IrHandle(eff, rename_ir_expr(rn, body), rename_ir_handle_clauses(rn, clauses, 0L), ty), _ => throw new InvalidOperationException("Non-exhaustive match"), };
+    public static IRExpr rename_ir_expr(List<RenameEntry> rn, IRExpr e) => e switch { IrIntLit(var v) => e, IrNumLit(var v) => e, IrTextLit(var v) => e, IrBoolLit(var v) => e, IrCharLit(var v) => e, IrError(var msg, var ty) => e, IrFork(var x, var ty) => new IrFork(rename_ir_expr(rn, x), ty), IrAwait(var x, var ty) => new IrAwait(rename_ir_expr(rn, x), ty), IrNegate(var x) => new IrNegate(rename_ir_expr(rn, x)), IrName(var n, var ty) => new IrName(rename_lookup(rn, n), ty), IrBinary(var op, var l, var r, var ty) => new IrBinary(op, rename_ir_expr(rn, l), rename_ir_expr(rn, r), ty), IrApply(var f, var a, var ty) => new IrApply(rename_ir_expr(rn, f), rename_ir_expr(rn, a), ty), IrIf(var c, var t, var el, var ty) => new IrIf(rename_ir_expr(rn, c), rename_ir_expr(rn, t), rename_ir_expr(rn, el), ty), IrFieldAccess(var rec, var field, var ty) => new IrFieldAccess(rename_ir_expr(rn, rec), field, ty), IrLet(var nm, var ty, var val, var body) => rename_ir_let(rn, nm, ty, val, body), IrLambda(var @params, var body, var ty) => rename_ir_lambda(rn, @params, body, ty), IrMatch(var scrut, var branches, var ty) => new IrMatch(rename_ir_expr(rn, scrut), rename_ir_branches(rn, branches, 0L, new List<IRBranch>()), ty), IrList(var elems, var ty) => new IrList(rename_ir_exprs(rn, elems, 0L, new List<IRExpr>()), ty), IrRecord(var nm, var fields, var ty) => new IrRecord(nm, rename_ir_fields(rn, fields, 0L, new List<IRFieldVal>()), ty), IrDo(var stmts, var ty) => new IrDo(rename_ir_do_stmts(rn, stmts, 0L, new List<IRDoStmt>()), ty), IrHandle(var eff, var body, var clauses, var ty) => new IrHandle(eff, rename_ir_expr(rn, body), rename_ir_handle_clauses(rn, clauses, 0L, new List<IRHandleClause>()), ty), _ => throw new InvalidOperationException("Non-exhaustive match"), };
 
     public static IRExpr rename_ir_let(List<RenameEntry> rn, string nm, CodexType ty, IRExpr val, IRExpr body) => ((Func<List<RenameEntry>, IRExpr>)((rn2) => new IrLet(nm, ty, rename_ir_expr(rn, val), rename_ir_expr(rn2, body))))(remove_rename(rn, nm));
 
     public static IRExpr rename_ir_lambda(List<RenameEntry> rn, List<IRParam> @params, IRExpr body, CodexType ty) => ((Func<List<RenameEntry>, IRExpr>)((rn2) => new IrLambda(@params, rename_ir_expr(rn2, body), ty)))(remove_renames_for_params(rn, @params, 0L));
 
-    public static List<IRExpr> rename_ir_exprs(List<RenameEntry> rn, List<IRExpr> elems, long i) => ((i == ((long)elems.Count)) ? new List<IRExpr>() : Enumerable.Concat(new List<IRExpr> { rename_ir_expr(rn, elems[(int)i]) }, rename_ir_exprs(rn, elems, (i + 1L))).ToList());
+    public static List<IRExpr> rename_ir_exprs(List<RenameEntry> rn, List<IRExpr> elems, long i, List<IRExpr> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)elems.Count)))
+            {
+            return acc;
+            }
+            else
+            {
+            var _tco_0 = rn;
+            var _tco_1 = elems;
+            var _tco_2 = (i + 1L);
+            var _tco_3 = ((Func<List<IRExpr>>)(() => { var _l = acc; _l.Add(rename_ir_expr(rn, elems[(int)i])); return _l; }))();
+            rn = _tco_0;
+            elems = _tco_1;
+            i = _tco_2;
+            acc = _tco_3;
+            continue;
+            }
+        }
+    }
 
-    public static List<IRFieldVal> rename_ir_fields(List<RenameEntry> rn, List<IRFieldVal> fields, long i) => ((i == ((long)fields.Count)) ? new List<IRFieldVal>() : ((Func<IRFieldVal, List<IRFieldVal>>)((f) => Enumerable.Concat(new List<IRFieldVal> { new IRFieldVal(name: f.name, value: rename_ir_expr(rn, f.value)) }, rename_ir_fields(rn, fields, (i + 1L))).ToList()))(fields[(int)i]));
+    public static List<IRFieldVal> rename_ir_fields(List<RenameEntry> rn, List<IRFieldVal> fields, long i, List<IRFieldVal> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)fields.Count)))
+            {
+            return acc;
+            }
+            else
+            {
+            var f = fields[(int)i];
+            var _tco_0 = rn;
+            var _tco_1 = fields;
+            var _tco_2 = (i + 1L);
+            var _tco_3 = ((Func<List<IRFieldVal>>)(() => { var _l = acc; _l.Add(new IRFieldVal(name: f.name, value: rename_ir_expr(rn, f.value))); return _l; }))();
+            rn = _tco_0;
+            fields = _tco_1;
+            i = _tco_2;
+            acc = _tco_3;
+            continue;
+            }
+        }
+    }
 
-    public static List<IRBranch> rename_ir_branches(List<RenameEntry> rn, List<IRBranch> branches, long i) => ((i == ((long)branches.Count)) ? new List<IRBranch>() : ((Func<IRBranch, List<IRBranch>>)((b) => ((Func<List<RenameEntry>, List<IRBranch>>)((rn2) => Enumerable.Concat(new List<IRBranch> { new IRBranch(pattern: b.pattern, body: rename_ir_expr(rn2, b.body)) }, rename_ir_branches(rn, branches, (i + 1L))).ToList()))(remove_renames_for_pat(rn, b.pattern))))(branches[(int)i]));
+    public static List<IRBranch> rename_ir_branches(List<RenameEntry> rn, List<IRBranch> branches, long i, List<IRBranch> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)branches.Count)))
+            {
+            return acc;
+            }
+            else
+            {
+            var b = branches[(int)i];
+            var rn2 = remove_renames_for_pat(rn, b.pattern);
+            var _tco_0 = rn;
+            var _tco_1 = branches;
+            var _tco_2 = (i + 1L);
+            var _tco_3 = ((Func<List<IRBranch>>)(() => { var _l = acc; _l.Add(new IRBranch(pattern: b.pattern, body: rename_ir_expr(rn2, b.body))); return _l; }))();
+            rn = _tco_0;
+            branches = _tco_1;
+            i = _tco_2;
+            acc = _tco_3;
+            continue;
+            }
+        }
+    }
 
     public static List<RenameEntry> remove_renames_for_pat(List<RenameEntry> rn, IRPat p) => p switch { IrVarPat(var nm, var ty) => remove_rename(rn, nm), IrCtorPat(var nm, var subs, var ty) => remove_renames_for_pats(rn, subs, 0L), IrLitPat(var v, var ty) => rn, IrWildPat { } => rn, _ => throw new InvalidOperationException("Non-exhaustive match"), };
 
@@ -5190,11 +5348,97 @@ public static class Codex_Codex_Codex
         }
     }
 
-    public static List<IRDoStmt> rename_ir_do_stmts(List<RenameEntry> rn, List<IRDoStmt> stmts, long i) => ((i == ((long)stmts.Count)) ? new List<IRDoStmt>() : ((Func<IRDoStmt, List<IRDoStmt>>)((s) => s switch { IrDoBind(var nm, var ty, var expr) => ((Func<List<RenameEntry>, List<IRDoStmt>>)((rn2) => Enumerable.Concat(new List<IRDoStmt> { new IrDoBind(nm, ty, rename_ir_expr(rn, expr)) }, rename_ir_do_stmts(rn2, stmts, (i + 1L))).ToList()))(remove_rename(rn, nm)), IrDoExec(var expr) => Enumerable.Concat(new List<IRDoStmt> { new IrDoExec(rename_ir_expr(rn, expr)) }, rename_ir_do_stmts(rn, stmts, (i + 1L))).ToList(), _ => throw new InvalidOperationException("Non-exhaustive match"), }))(stmts[(int)i]));
+    public static List<IRDoStmt> rename_ir_do_stmts(List<RenameEntry> rn, List<IRDoStmt> stmts, long i, List<IRDoStmt> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)stmts.Count)))
+            {
+            return acc;
+            }
+            else
+            {
+            var s = stmts[(int)i];
+            var _tco_s = s;
+            if (_tco_s is IrDoBind _tco_m0)
+            {
+                var nm = _tco_m0.Field0;
+                var ty = _tco_m0.Field1;
+                var expr = _tco_m0.Field2;
+            var rn2 = remove_rename(rn, nm);
+            var _tco_0 = rn2;
+            var _tco_1 = stmts;
+            var _tco_2 = (i + 1L);
+            var _tco_3 = ((Func<List<IRDoStmt>>)(() => { var _l = acc; _l.Add(new IrDoBind(nm, ty, rename_ir_expr(rn, expr))); return _l; }))();
+            rn = _tco_0;
+            stmts = _tco_1;
+            i = _tco_2;
+            acc = _tco_3;
+            continue;
+            }
+            else if (_tco_s is IrDoExec _tco_m1)
+            {
+                var expr = _tco_m1.Field0;
+            var _tco_0 = rn;
+            var _tco_1 = stmts;
+            var _tco_2 = (i + 1L);
+            var _tco_3 = ((Func<List<IRDoStmt>>)(() => { var _l = acc; _l.Add(new IrDoExec(rename_ir_expr(rn, expr))); return _l; }))();
+            rn = _tco_0;
+            stmts = _tco_1;
+            i = _tco_2;
+            acc = _tco_3;
+            continue;
+            }
+            }
+        }
+    }
 
-    public static List<IRHandleClause> rename_ir_handle_clauses(List<RenameEntry> rn, List<IRHandleClause> clauses, long i) => ((i == ((long)clauses.Count)) ? new List<IRHandleClause>() : ((Func<IRHandleClause, List<IRHandleClause>>)((c) => ((Func<List<RenameEntry>, List<IRHandleClause>>)((rn2) => Enumerable.Concat(new List<IRHandleClause> { new IRHandleClause(op_name: c.op_name, resume_name: c.resume_name, body: rename_ir_expr(rn2, c.body)) }, rename_ir_handle_clauses(rn, clauses, (i + 1L))).ToList()))(remove_rename(rn, c.resume_name))))(clauses[(int)i]));
+    public static List<IRHandleClause> rename_ir_handle_clauses(List<RenameEntry> rn, List<IRHandleClause> clauses, long i, List<IRHandleClause> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)clauses.Count)))
+            {
+            return acc;
+            }
+            else
+            {
+            var c = clauses[(int)i];
+            var rn2 = remove_rename(rn, c.resume_name);
+            var _tco_0 = rn;
+            var _tco_1 = clauses;
+            var _tco_2 = (i + 1L);
+            var _tco_3 = ((Func<List<IRHandleClause>>)(() => { var _l = acc; _l.Add(new IRHandleClause(op_name: c.op_name, resume_name: c.resume_name, body: rename_ir_expr(rn2, c.body))); return _l; }))();
+            rn = _tco_0;
+            clauses = _tco_1;
+            i = _tco_2;
+            acc = _tco_3;
+            continue;
+            }
+        }
+    }
 
-    public static List<ChapterAssignment> build_all_assignments(List<DefHeader> headers, long i) => ((i == ((long)headers.Count)) ? new List<ChapterAssignment>() : ((Func<DefHeader, List<ChapterAssignment>>)((hdr) => Enumerable.Concat(new List<ChapterAssignment> { new ChapterAssignment(def_name: hdr.name.text, chapter_slug: hdr.chapter_slug) }, build_all_assignments(headers, (i + 1L))).ToList()))(headers[(int)i]));
+    public static List<ChapterAssignment> build_all_assignments(List<DefHeader> headers, long i, List<ChapterAssignment> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)headers.Count)))
+            {
+            return acc;
+            }
+            else
+            {
+            var hdr = headers[(int)i];
+            var _tco_0 = headers;
+            var _tco_1 = (i + 1L);
+            var _tco_2 = ((Func<List<ChapterAssignment>>)(() => { var _l = acc; _l.Add(new ChapterAssignment(def_name: hdr.name.text, chapter_slug: hdr.chapter_slug)); return _l; }))();
+            headers = _tco_0;
+            i = _tco_1;
+            acc = _tco_2;
+            continue;
+            }
+        }
+    }
 
     public static string scope_def_name(List<string> colliding, List<ChapterAssignment> assignments, string name, string cur_chap) => (is_colliding(colliding, name) ? mangle_name(cur_chap, name) : name);
 
@@ -5318,15 +5562,68 @@ public static class Codex_Codex_Codex
         }
     }
 
-    public static IRChapter scope_ir_chapter(IRChapter ir, List<string> colliding, List<ChapterAssignment> assignments) => new IRChapter(name: ir.name, defs: scope_ir_defs(ir.defs, colliding, assignments, "", new List<RenameEntry>(), 0L), chapter_title: ir.chapter_title, prose: ir.prose, section_titles: ir.section_titles);
+    public static IRChapter scope_ir_chapter(IRChapter ir, List<string> colliding, List<ChapterAssignment> assignments) => new IRChapter(name: ir.name, defs: scope_ir_defs(ir.defs, colliding, assignments, "", new List<RenameEntry>(), 0L, new List<IRDef>()), chapter_title: ir.chapter_title, prose: ir.prose, section_titles: ir.section_titles);
 
-    public static List<IRDef> scope_ir_defs(List<IRDef> defs, List<string> colliding, List<ChapterAssignment> assignments, string cur_slug, List<RenameEntry> cur_rn, long i) => ((i == ((long)defs.Count)) ? new List<IRDef>() : ((Func<IRDef, List<IRDef>>)((d) => ((Func<List<RenameEntry>, List<IRDef>>)((rn) => ((Func<string, List<IRDef>>)((new_name) => ((Func<IRExpr, List<IRDef>>)((new_body) => Enumerable.Concat(new List<IRDef> { new IRDef(name: new_name, @params: d.@params, type_val: d.type_val, body: new_body, chapter_slug: d.chapter_slug) }, scope_ir_defs(defs, colliding, assignments, d.chapter_slug, rn, (i + 1L))).ToList()))(rename_ir_expr(rn, d.body))))(rename_lookup(rn, d.name))))(((d.chapter_slug == cur_slug) ? cur_rn : build_chapter_rename_map(colliding, assignments, d.chapter_slug)))))(defs[(int)i]));
+    public static List<IRDef> scope_ir_defs(List<IRDef> defs, List<string> colliding, List<ChapterAssignment> assignments, string cur_slug, List<RenameEntry> cur_rn, long i, List<IRDef> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)defs.Count)))
+            {
+            return acc;
+            }
+            else
+            {
+            var d = defs[(int)i];
+            var rn = ((d.chapter_slug == cur_slug) ? cur_rn : build_chapter_rename_map(colliding, assignments, d.chapter_slug));
+            var new_name = rename_lookup(rn, d.name);
+            var new_body = rename_ir_expr(rn, d.body);
+            var _tco_0 = defs;
+            var _tco_1 = colliding;
+            var _tco_2 = assignments;
+            var _tco_3 = d.chapter_slug;
+            var _tco_4 = rn;
+            var _tco_5 = (i + 1L);
+            var _tco_6 = ((Func<List<IRDef>>)(() => { var _l = acc; _l.Add(new IRDef(name: new_name, @params: d.@params, type_val: d.type_val, body: new_body, chapter_slug: d.chapter_slug)); return _l; }))();
+            defs = _tco_0;
+            colliding = _tco_1;
+            assignments = _tco_2;
+            cur_slug = _tco_3;
+            cur_rn = _tco_4;
+            i = _tco_5;
+            acc = _tco_6;
+            continue;
+            }
+        }
+    }
 
-    public static AExpr rename_aexpr(List<RenameEntry> rn, AExpr e) => e switch { ALitExpr(var v, var k) => e, AErrorExpr(var msg) => e, ANameExpr(var n) => new ANameExpr(make_name(rename_lookup(rn, n.value))), ABinaryExpr(var l, var op, var r) => new ABinaryExpr(rename_aexpr(rn, l), op, rename_aexpr(rn, r)), AUnaryExpr(var x) => new AUnaryExpr(rename_aexpr(rn, x)), AApplyExpr(var f, var a) => new AApplyExpr(rename_aexpr(rn, f), rename_aexpr(rn, a)), AIfExpr(var c, var t, var el) => new AIfExpr(rename_aexpr(rn, c), rename_aexpr(rn, t), rename_aexpr(rn, el)), ALetExpr(var binds, var body) => rename_alet(rn, binds, body), ALambdaExpr(var @params, var body) => rename_alambda(rn, @params, body), AMatchExpr(var scrut, var arms) => new AMatchExpr(rename_aexpr(rn, scrut), rename_amatch_arms(rn, arms, 0L)), AListExpr(var elems) => new AListExpr(rename_aexprs(rn, elems, 0L)), ARecordExpr(var name, var fields) => new ARecordExpr(name, rename_afields(rn, fields, 0L)), AFieldAccess(var rec, var field) => new AFieldAccess(rename_aexpr(rn, rec), field), ADoExpr(var stmts) => new ADoExpr(rename_ado_stmts(rn, stmts, 0L)), AHandleExpr(var eff, var body, var clauses) => new AHandleExpr(eff, rename_aexpr(rn, body), rename_ahandle_clauses(rn, clauses, 0L)), _ => throw new InvalidOperationException("Non-exhaustive match"), };
+    public static AExpr rename_aexpr(List<RenameEntry> rn, AExpr e) => e switch { ALitExpr(var v, var k) => e, AErrorExpr(var msg) => e, ANameExpr(var n) => new ANameExpr(make_name(rename_lookup(rn, n.value))), ABinaryExpr(var l, var op, var r) => new ABinaryExpr(rename_aexpr(rn, l), op, rename_aexpr(rn, r)), AUnaryExpr(var x) => new AUnaryExpr(rename_aexpr(rn, x)), AApplyExpr(var f, var a) => new AApplyExpr(rename_aexpr(rn, f), rename_aexpr(rn, a)), AIfExpr(var c, var t, var el) => new AIfExpr(rename_aexpr(rn, c), rename_aexpr(rn, t), rename_aexpr(rn, el)), ALetExpr(var binds, var body) => rename_alet(rn, binds, body), ALambdaExpr(var @params, var body) => rename_alambda(rn, @params, body), AMatchExpr(var scrut, var arms) => new AMatchExpr(rename_aexpr(rn, scrut), rename_amatch_arms(rn, arms, 0L, new List<AMatchArm>())), AListExpr(var elems) => new AListExpr(rename_aexprs(rn, elems, 0L, new List<AExpr>())), ARecordExpr(var name, var fields) => new ARecordExpr(name, rename_afields(rn, fields, 0L, new List<AFieldExpr>())), AFieldAccess(var rec, var field) => new AFieldAccess(rename_aexpr(rn, rec), field), ADoExpr(var stmts) => new ADoExpr(rename_ado_stmts(rn, stmts, 0L, new List<ADoStmt>())), AHandleExpr(var eff, var body, var clauses) => new AHandleExpr(eff, rename_aexpr(rn, body), rename_ahandle_clauses(rn, clauses, 0L, new List<AHandleClause>())), _ => throw new InvalidOperationException("Non-exhaustive match"), };
 
-    public static AExpr rename_alet(List<RenameEntry> rn, List<ALetBind> binds, AExpr body) => ((Func<List<ALetBind>, AExpr>)((new_binds) => ((Func<List<RenameEntry>, AExpr>)((rn2) => new ALetExpr(new_binds, rename_aexpr(rn2, body))))(remove_renames_for_let_binds(rn, binds, 0L))))(rename_alet_binds(rn, binds, 0L));
+    public static AExpr rename_alet(List<RenameEntry> rn, List<ALetBind> binds, AExpr body) => ((Func<List<ALetBind>, AExpr>)((new_binds) => ((Func<List<RenameEntry>, AExpr>)((rn2) => new ALetExpr(new_binds, rename_aexpr(rn2, body))))(remove_renames_for_let_binds(rn, binds, 0L))))(rename_alet_binds(rn, binds, 0L, new List<ALetBind>()));
 
-    public static List<ALetBind> rename_alet_binds(List<RenameEntry> rn, List<ALetBind> binds, long i) => ((i == ((long)binds.Count)) ? new List<ALetBind>() : ((Func<ALetBind, List<ALetBind>>)((b) => Enumerable.Concat(new List<ALetBind> { new ALetBind(name: b.name, value: rename_aexpr(rn, b.value)) }, rename_alet_binds(rn, binds, (i + 1L))).ToList()))(binds[(int)i]));
+    public static List<ALetBind> rename_alet_binds(List<RenameEntry> rn, List<ALetBind> binds, long i, List<ALetBind> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)binds.Count)))
+            {
+            return acc;
+            }
+            else
+            {
+            var b = binds[(int)i];
+            var _tco_0 = rn;
+            var _tco_1 = binds;
+            var _tco_2 = (i + 1L);
+            var _tco_3 = ((Func<List<ALetBind>>)(() => { var _l = acc; _l.Add(new ALetBind(name: b.name, value: rename_aexpr(rn, b.value))); return _l; }))();
+            rn = _tco_0;
+            binds = _tco_1;
+            i = _tco_2;
+            acc = _tco_3;
+            continue;
+            }
+        }
+    }
 
     public static List<RenameEntry> remove_renames_for_let_binds(List<RenameEntry> rn, List<ALetBind> binds, long i)
     {
@@ -5372,11 +5669,77 @@ public static class Codex_Codex_Codex
         }
     }
 
-    public static List<AExpr> rename_aexprs(List<RenameEntry> rn, List<AExpr> elems, long i) => ((i == ((long)elems.Count)) ? new List<AExpr>() : Enumerable.Concat(new List<AExpr> { rename_aexpr(rn, elems[(int)i]) }, rename_aexprs(rn, elems, (i + 1L))).ToList());
+    public static List<AExpr> rename_aexprs(List<RenameEntry> rn, List<AExpr> elems, long i, List<AExpr> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)elems.Count)))
+            {
+            return acc;
+            }
+            else
+            {
+            var _tco_0 = rn;
+            var _tco_1 = elems;
+            var _tco_2 = (i + 1L);
+            var _tco_3 = ((Func<List<AExpr>>)(() => { var _l = acc; _l.Add(rename_aexpr(rn, elems[(int)i])); return _l; }))();
+            rn = _tco_0;
+            elems = _tco_1;
+            i = _tco_2;
+            acc = _tco_3;
+            continue;
+            }
+        }
+    }
 
-    public static List<AFieldExpr> rename_afields(List<RenameEntry> rn, List<AFieldExpr> fields, long i) => ((i == ((long)fields.Count)) ? new List<AFieldExpr>() : ((Func<AFieldExpr, List<AFieldExpr>>)((f) => Enumerable.Concat(new List<AFieldExpr> { new AFieldExpr(name: f.name, value: rename_aexpr(rn, f.value)) }, rename_afields(rn, fields, (i + 1L))).ToList()))(fields[(int)i]));
+    public static List<AFieldExpr> rename_afields(List<RenameEntry> rn, List<AFieldExpr> fields, long i, List<AFieldExpr> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)fields.Count)))
+            {
+            return acc;
+            }
+            else
+            {
+            var f = fields[(int)i];
+            var _tco_0 = rn;
+            var _tco_1 = fields;
+            var _tco_2 = (i + 1L);
+            var _tco_3 = ((Func<List<AFieldExpr>>)(() => { var _l = acc; _l.Add(new AFieldExpr(name: f.name, value: rename_aexpr(rn, f.value))); return _l; }))();
+            rn = _tco_0;
+            fields = _tco_1;
+            i = _tco_2;
+            acc = _tco_3;
+            continue;
+            }
+        }
+    }
 
-    public static List<AMatchArm> rename_amatch_arms(List<RenameEntry> rn, List<AMatchArm> arms, long i) => ((i == ((long)arms.Count)) ? new List<AMatchArm>() : ((Func<AMatchArm, List<AMatchArm>>)((a) => ((Func<List<RenameEntry>, List<AMatchArm>>)((rn2) => Enumerable.Concat(new List<AMatchArm> { new AMatchArm(pattern: a.pattern, body: rename_aexpr(rn2, a.body)) }, rename_amatch_arms(rn, arms, (i + 1L))).ToList()))(remove_renames_for_apat(rn, a.pattern))))(arms[(int)i]));
+    public static List<AMatchArm> rename_amatch_arms(List<RenameEntry> rn, List<AMatchArm> arms, long i, List<AMatchArm> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)arms.Count)))
+            {
+            return acc;
+            }
+            else
+            {
+            var a = arms[(int)i];
+            var rn2 = remove_renames_for_apat(rn, a.pattern);
+            var _tco_0 = rn;
+            var _tco_1 = arms;
+            var _tco_2 = (i + 1L);
+            var _tco_3 = ((Func<List<AMatchArm>>)(() => { var _l = acc; _l.Add(new AMatchArm(pattern: a.pattern, body: rename_aexpr(rn2, a.body))); return _l; }))();
+            rn = _tco_0;
+            arms = _tco_1;
+            i = _tco_2;
+            acc = _tco_3;
+            continue;
+            }
+        }
+    }
 
     public static List<RenameEntry> remove_renames_for_apat(List<RenameEntry> rn, APat p) => p switch { AVarPat(var n) => remove_rename(rn, n.value), ACtorPat(var n, var subs) => remove_renames_for_apats(rn, subs, 0L), ALitPat(var v, var k) => rn, AWildPat { } => rn, _ => throw new InvalidOperationException("Non-exhaustive match"), };
 
@@ -5401,13 +5764,111 @@ public static class Codex_Codex_Codex
         }
     }
 
-    public static List<ADoStmt> rename_ado_stmts(List<RenameEntry> rn, List<ADoStmt> stmts, long i) => ((i == ((long)stmts.Count)) ? new List<ADoStmt>() : ((Func<ADoStmt, List<ADoStmt>>)((s) => s switch { ADoBindStmt(var nm, var expr) => ((Func<List<RenameEntry>, List<ADoStmt>>)((rn2) => Enumerable.Concat(new List<ADoStmt> { new ADoBindStmt(nm, rename_aexpr(rn, expr)) }, rename_ado_stmts(rn2, stmts, (i + 1L))).ToList()))(remove_rename(rn, nm.value)), ADoExprStmt(var expr) => Enumerable.Concat(new List<ADoStmt> { new ADoExprStmt(rename_aexpr(rn, expr)) }, rename_ado_stmts(rn, stmts, (i + 1L))).ToList(), _ => throw new InvalidOperationException("Non-exhaustive match"), }))(stmts[(int)i]));
+    public static List<ADoStmt> rename_ado_stmts(List<RenameEntry> rn, List<ADoStmt> stmts, long i, List<ADoStmt> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)stmts.Count)))
+            {
+            return acc;
+            }
+            else
+            {
+            var s = stmts[(int)i];
+            var _tco_s = s;
+            if (_tco_s is ADoBindStmt _tco_m0)
+            {
+                var nm = _tco_m0.Field0;
+                var expr = _tco_m0.Field1;
+            var rn2 = remove_rename(rn, nm.value);
+            var _tco_0 = rn2;
+            var _tco_1 = stmts;
+            var _tco_2 = (i + 1L);
+            var _tco_3 = ((Func<List<ADoStmt>>)(() => { var _l = acc; _l.Add(new ADoBindStmt(nm, rename_aexpr(rn, expr))); return _l; }))();
+            rn = _tco_0;
+            stmts = _tco_1;
+            i = _tco_2;
+            acc = _tco_3;
+            continue;
+            }
+            else if (_tco_s is ADoExprStmt _tco_m1)
+            {
+                var expr = _tco_m1.Field0;
+            var _tco_0 = rn;
+            var _tco_1 = stmts;
+            var _tco_2 = (i + 1L);
+            var _tco_3 = ((Func<List<ADoStmt>>)(() => { var _l = acc; _l.Add(new ADoExprStmt(rename_aexpr(rn, expr))); return _l; }))();
+            rn = _tco_0;
+            stmts = _tco_1;
+            i = _tco_2;
+            acc = _tco_3;
+            continue;
+            }
+            }
+        }
+    }
 
-    public static List<AHandleClause> rename_ahandle_clauses(List<RenameEntry> rn, List<AHandleClause> clauses, long i) => ((i == ((long)clauses.Count)) ? new List<AHandleClause>() : ((Func<AHandleClause, List<AHandleClause>>)((c) => ((Func<List<RenameEntry>, List<AHandleClause>>)((rn2) => Enumerable.Concat(new List<AHandleClause> { new AHandleClause(op_name: c.op_name, resume_name: c.resume_name, body: rename_aexpr(rn2, c.body)) }, rename_ahandle_clauses(rn, clauses, (i + 1L))).ToList()))(remove_rename(rn, c.resume_name.value))))(clauses[(int)i]));
+    public static List<AHandleClause> rename_ahandle_clauses(List<RenameEntry> rn, List<AHandleClause> clauses, long i, List<AHandleClause> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)clauses.Count)))
+            {
+            return acc;
+            }
+            else
+            {
+            var c = clauses[(int)i];
+            var rn2 = remove_rename(rn, c.resume_name.value);
+            var _tco_0 = rn;
+            var _tco_1 = clauses;
+            var _tco_2 = (i + 1L);
+            var _tco_3 = ((Func<List<AHandleClause>>)(() => { var _l = acc; _l.Add(new AHandleClause(op_name: c.op_name, resume_name: c.resume_name, body: rename_aexpr(rn2, c.body))); return _l; }))();
+            rn = _tco_0;
+            clauses = _tco_1;
+            i = _tco_2;
+            acc = _tco_3;
+            continue;
+            }
+        }
+    }
 
-    public static AChapter scope_achapter(AChapter ast, List<string> colliding, List<ChapterAssignment> assignments) => new AChapter(name: ast.name, defs: scope_adefs(ast.defs, colliding, assignments, ast.citations, "", new List<RenameEntry>(), 0L), type_defs: ast.type_defs, effect_defs: ast.effect_defs, citations: ast.citations, chapter_title: ast.chapter_title, prose: ast.prose, section_titles: ast.section_titles);
+    public static AChapter scope_achapter(AChapter ast, List<string> colliding, List<ChapterAssignment> assignments) => new AChapter(name: ast.name, defs: scope_adefs(ast.defs, colliding, assignments, ast.citations, "", new List<RenameEntry>(), 0L, new List<ADef>()), type_defs: ast.type_defs, effect_defs: ast.effect_defs, citations: ast.citations, chapter_title: ast.chapter_title, prose: ast.prose, section_titles: ast.section_titles);
 
-    public static List<ADef> scope_adefs(List<ADef> defs, List<string> colliding, List<ChapterAssignment> assignments, List<ACitesDecl> citations, string cur_slug, List<RenameEntry> cur_rn, long i) => ((i == ((long)defs.Count)) ? new List<ADef>() : ((Func<ADef, List<ADef>>)((d) => ((Func<List<RenameEntry>, List<ADef>>)((rn) => ((Func<Name, List<ADef>>)((new_name) => ((Func<AExpr, List<ADef>>)((new_body) => Enumerable.Concat(new List<ADef> { new ADef(name: new_name, @params: d.@params, declared_type: d.declared_type, body: new_body, chapter_slug: d.chapter_slug) }, scope_adefs(defs, colliding, assignments, citations, d.chapter_slug, rn, (i + 1L))).ToList()))(rename_aexpr(rn, d.body))))(make_name(rename_lookup(rn, d.name.value)))))(((d.chapter_slug == cur_slug) ? cur_rn : apply_cite_overrides(build_chapter_rename_map(colliding, assignments, d.chapter_slug), citations, colliding, assignments, d.chapter_slug, 0L)))))(defs[(int)i]));
+    public static List<ADef> scope_adefs(List<ADef> defs, List<string> colliding, List<ChapterAssignment> assignments, List<ACitesDecl> citations, string cur_slug, List<RenameEntry> cur_rn, long i, List<ADef> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)defs.Count)))
+            {
+            return acc;
+            }
+            else
+            {
+            var d = defs[(int)i];
+            var rn = ((d.chapter_slug == cur_slug) ? cur_rn : apply_cite_overrides(build_chapter_rename_map(colliding, assignments, d.chapter_slug), citations, colliding, assignments, d.chapter_slug, 0L));
+            var new_name = make_name(rename_lookup(rn, d.name.value));
+            var new_body = rename_aexpr(rn, d.body);
+            var _tco_0 = defs;
+            var _tco_1 = colliding;
+            var _tco_2 = assignments;
+            var _tco_3 = citations;
+            var _tco_4 = d.chapter_slug;
+            var _tco_5 = rn;
+            var _tco_6 = (i + 1L);
+            var _tco_7 = ((Func<List<ADef>>)(() => { var _l = acc; _l.Add(new ADef(name: new_name, @params: d.@params, declared_type: d.declared_type, body: new_body, chapter_slug: d.chapter_slug)); return _l; }))();
+            defs = _tco_0;
+            colliding = _tco_1;
+            assignments = _tco_2;
+            citations = _tco_3;
+            cur_slug = _tco_4;
+            cur_rn = _tco_5;
+            i = _tco_6;
+            acc = _tco_7;
+            continue;
+            }
+        }
+    }
 
     public static List<RenameEntry> apply_cite_overrides(List<RenameEntry> rn, List<ACitesDecl> citations, List<string> colliding, List<ChapterAssignment> assignments, string cur_slug, long i)
     {
@@ -8928,7 +9389,7 @@ public static class Codex_Codex_Codex
         }
     }
 
-    public static string compile(string source, string chapter_name) => ((Func<List<Token>, string>)((tokens) => ((Func<ParseState, string>)((st) => ((Func<ScanResult, string>)((scan) => ((Func<List<ChapterAssignment>, string>)((assignments) => ((Func<List<string>, string>)((colliding) => ((Func<Document, string>)((doc) => ((Func<AChapter, string>)((ast) => ((Func<AChapter, string>)((scoped) => ((Func<ChapterResult, string>)((check_result) => ((Func<IRChapter, string>)((ir) => csharp_emitter_emit_full_chapter(ir, scoped.type_defs)))(lower_chapter(scoped, check_result.types, check_result.state))))(check_chapter(scoped))))(scope_achapter(ast, colliding, assignments))))(desugar_document(doc, chapter_name))))(parse_document(make_parse_state(tokens)))))(find_colliding_names(assignments))))(build_all_assignments(scan.def_headers, 0L))))(scan_document(st))))(make_parse_state(tokens))))(tokenize(source));
+    public static string compile(string source, string chapter_name) => ((Func<List<Token>, string>)((tokens) => ((Func<ParseState, string>)((st) => ((Func<ScanResult, string>)((scan) => ((Func<List<ChapterAssignment>, string>)((assignments) => ((Func<List<string>, string>)((colliding) => ((Func<Document, string>)((doc) => ((Func<AChapter, string>)((ast) => ((Func<AChapter, string>)((scoped) => ((Func<ChapterResult, string>)((check_result) => ((Func<IRChapter, string>)((ir) => csharp_emitter_emit_full_chapter(ir, scoped.type_defs)))(lower_chapter(scoped, check_result.types, check_result.state))))(check_chapter(scoped))))(scope_achapter(ast, colliding, assignments))))(desugar_document(doc, chapter_name))))(parse_document(make_parse_state(tokens)))))(find_colliding_names(assignments))))(build_all_assignments(scan.def_headers, 0L, new List<ChapterAssignment>()))))(scan_document(st))))(make_parse_state(tokens))))(tokenize(source));
 
     public static CompileResult compile_checked(string source, string chapter_name) => compile_with_citations(source, chapter_name, new List<ResolveResult>());
 
@@ -8938,7 +9399,7 @@ public static class Codex_Codex_Codex
 
     public static object stream_defs(List<ADef> defs, List<TypeBinding> types, UnificationState ust, List<string> ctor_names, long i, long len) => ((i == len) ? ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("")); return null; }))() : ((Func<ADef, object>)((def) => ((Func<IRDef, object>)((ir_def) => (is_error_body(ir_def.body) ? ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(("\u0032\u002A\u0034\u0039\u002B\u0031\u0027\u0049\u0027\u002F\u002F\u002A\u002F\u0045\u0002\u0016\u000D\u001C\u0002\u0047" + (ir_def.name + ("\u0047\u0002\u0014\u000F\u0013\u0002\u000D\u0015\u0015\u0010\u0015\u0002\u0020\u0010\u0016\u001E\u0045\u0002" + error_message(ir_def.body)))))); return null; }))() : ((Func<string, object>)((text) => ((Func<object>)(() => { ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(text)); return null; }))(); stream_defs(defs, types, ust, ctor_names, (i + 1L), len);  return null; }))()))(codex_emitter_emit_def(ir_def, ctor_names)))))(lower_def(def, types, ust))))(defs[(int)i]));
 
-    public static object compile_streaming_v2(string source, string chapter_name) => ((Func<List<Token>, object>)((tokens) => ((Func<ParseState, object>)((st) => ((Func<ScanResult, object>)((scan) => ((Func<List<ATypeDef>, object>)((type_defs) => ((Func<List<DefHeader>, object>)((headers) => ((Func<List<ChapterAssignment>, object>)((assignments) => ((Func<List<string>, object>)((colliding) => ((Func<object>)(() => { compile_with_scope(tokens, type_defs, headers, assignments, colliding);  return null; }))()))(find_colliding_names(assignments))))(build_all_assignments(headers, 0L))))(scan.def_headers)))(map_list(desugar_type_def, scan.type_defs))))(scan_document(st))))(make_parse_state(tokens))))(tokenize(source));
+    public static object compile_streaming_v2(string source, string chapter_name) => ((Func<List<Token>, object>)((tokens) => ((Func<ParseState, object>)((st) => ((Func<ScanResult, object>)((scan) => ((Func<List<ATypeDef>, object>)((type_defs) => ((Func<List<DefHeader>, object>)((headers) => ((Func<List<ChapterAssignment>, object>)((assignments) => ((Func<List<string>, object>)((colliding) => ((Func<object>)(() => { compile_with_scope(tokens, type_defs, headers, assignments, colliding);  return null; }))()))(find_colliding_names(assignments))))(build_all_assignments(headers, 0L, new List<ChapterAssignment>()))))(scan.def_headers)))(map_list(desugar_type_def, scan.type_defs))))(scan_document(st))))(make_parse_state(tokens))))(tokenize(source));
 
     public static object compile_with_scope(List<Token> tokens, List<ATypeDef> type_defs, List<DefHeader> headers, List<ChapterAssignment> assignments, List<string> colliding) => ((Func<List<TypeBinding>, object>)((tdm) => ((Func<LetBindResult, object>)((tenv) => ((Func<LetBindResult, object>)((env) => ((Func<List<TypeBinding>, object>)((ctor_types) => ((Func<List<TypeBinding>, object>)((all_types) => ((Func<List<string>, object>)((ctor_names) => ((Func<object>)(() => { ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(codex_emitter_emit_type_defs(type_defs, 0L))); return null; }))(); emit_defs_scoped(tokens, headers, all_types, env.state, ctor_names, colliding, assignments, 0L, ((long)headers.Count)); ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("")); return null; }))();  return null; }))()))(codex_emitter_collect_ctor_names(type_defs, 0L))))(Enumerable.Concat(ctor_types, env.env.bindings).ToList())))(collect_ctor_bindings(type_defs, 0L, ((long)type_defs.Count), new List<TypeBinding>()))))(register_def_headers(tenv.state, tenv.env, tdm, headers, 0L, ((long)headers.Count)))))(register_type_defs(empty_unification_state(), builtin_type_env(), tdm, type_defs, 0L, ((long)type_defs.Count)))))(build_type_def_map(type_defs, 0L, ((long)type_defs.Count), new List<TypeBinding>()));
 

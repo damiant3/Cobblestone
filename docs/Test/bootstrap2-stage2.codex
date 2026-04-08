@@ -1090,6 +1090,23 @@ bsearch-text-set (names) (name) (lo) (hi) =
  in if text-compare name (list-at names mid) <= 0 then bsearch-text-set names name lo mid
     else bsearch-text-set names name (mid + 1) hi
 
+text-set-has : List Text -> Text -> Boolean
+text-set-has (names) (name) =
+ let len = list-length names
+ in let pos = bsearch-text-set names name 0 len
+ in if pos >= len then False
+    else list-at names pos == name
+
+sorted-insert : List Text -> Text -> List Text
+sorted-insert (xs) (name) =
+ let len = list-length xs
+ in let pos = bsearch-text-set xs name 0 len
+ in list-insert-at xs pos name
+
+sort-text-list : List Text -> List Text
+sort-text-list (xs) =
+ fold-list sorted-insert [] xs
+
 make-error : Text -> Text -> Diagnostic
 make-error (code) (msg) =
  Diagnostic {
@@ -1173,8 +1190,8 @@ csharp-emitter_emit-record-field-defs : List ARecordFieldDef -> Integer -> Text
 csharp-emitter_emit-record-field-defs (fields) (tparams) (i) =
  if i == list-length fields then ""
  else let f = list-at fields i
- in emit-type-expr-tp (f.type-expr) tparams ++ " " ++ sanitize (f.name.value) ++ if i < list-length fields - 1 then ", "
- else "" ++ csharp-emitter_emit-record-field-defs fields tparams (i + 1)
+ in emit-type-expr-tp (f.type-expr) tparams ++ " " ++ sanitize (f.name.value) ++ (if i < list-length fields - 1 then ", "
+ else "") ++ csharp-emitter_emit-record-field-defs fields tparams (i + 1)
 
 csharp-emitter_emit-variant-ctors : List AVariantCtorDef -> Integer -> Text
 csharp-emitter_emit-variant-ctors (ctors) (base-name) (tparams) (i) =
@@ -1191,8 +1208,8 @@ emit-variant-ctor (c) (base-name) (tparams) =
 csharp-emitter_emit-ctor-fields : List ATypeExpr -> Integer -> Text
 csharp-emitter_emit-ctor-fields (fields) (tparams) (i) =
  if i == list-length fields then ""
- else emit-type-expr-tp (list-at fields i) tparams ++ " Field" ++ integer-to-text i ++ if i < list-length fields - 1 then ", "
- else "" ++ csharp-emitter_emit-ctor-fields fields tparams (i + 1)
+ else emit-type-expr-tp (list-at fields i) tparams ++ " Field" ++ integer-to-text i ++ (if i < list-length fields - 1 then ", "
+ else "") ++ csharp-emitter_emit-ctor-fields fields tparams (i + 1)
 
 csharp-emitter_emit-type-expr : ATypeExpr -> Text
 csharp-emitter_emit-type-expr (te) =
@@ -1225,14 +1242,14 @@ when-type-name (n) =
 emit-type-expr-list : List ATypeExpr -> Integer -> Text
 emit-type-expr-list (args) (i) =
  if i == list-length args then ""
- else csharp-emitter_emit-type-expr (list-at args i) ++ if i < list-length args - 1 then ", "
- else "" ++ emit-type-expr-list args (i + 1)
+ else csharp-emitter_emit-type-expr (list-at args i) ++ (if i < list-length args - 1 then ", "
+ else "") ++ emit-type-expr-list args (i + 1)
 
 emit-type-expr-list-tp : List ATypeExpr -> List Name -> Integer -> Text
 emit-type-expr-list-tp (args) (tparams) (i) =
  if i == list-length args then ""
- else emit-type-expr-tp (list-at args i) tparams ++ if i < list-length args - 1 then ", "
- else "" ++ emit-type-expr-list-tp args tparams (i + 1)
+ else emit-type-expr-tp (list-at args i) tparams ++ (if i < list-length args - 1 then ", "
+ else "") ++ emit-type-expr-list-tp args tparams (i + 1)
 
 collect-type-var-ids : CodexType -> List Integer -> List Integer
 collect-type-var-ids (ty) (acc) =
@@ -1422,21 +1439,21 @@ csharp-emitter_emit-def-params : List IRParam -> Integer -> Text
 csharp-emitter_emit-def-params (params) (i) =
  if i == list-length params then ""
  else let p = list-at params i
- in cs-type (p.type-val) ++ " " ++ sanitize (p.name) ++ if i < list-length params - 1 then ", "
- else "" ++ csharp-emitter_emit-def-params params (i + 1)
+ in cs-type (p.type-val) ++ " " ++ sanitize (p.name) ++ (if i < list-length params - 1 then ", "
+ else "") ++ csharp-emitter_emit-def-params params (i + 1)
 
 emit-cce-runtime : Text
 emit-cce-runtime =
- "static class _Cce {\n" ++ "    static readonly int[] _toUni = {\n" ++ "        0, 10, 32,\n" ++ "        48, 49, 50, 51, 52, 53, 54, 55, 56, 57,\n" ++ "        101, 116, 97, 111, 105, 110, 115, 104, 114, 100,\n" ++ "        108, 99, 117, 109, 119, 102, 103, 121, 112, 98,\n" ++ "        118, 107, 106, 120, 113, 122,\n" ++ "        69, 84, 65, 79, 73, 78, 83, 72, 82, 68,\n" ++ "        76, 67, 85, 77, 87, 70, 71, 89, 80, 66,\n" ++ "        86, 75, 74, 88, 81, 90,\n" ++ "        46, 44, 33, 63, 58, 59, 39, 34, 45, 40, 41,\n" ++ "        43, 61, 42, 60, 62,\n" ++ "        47, 64, 35, 38, 95, 92, 124, 91, 93, 123, 125, 126, 96,\n" ++ "        94,\n" ++ "        233, 232, 234, 235, 225, 224, 226, 228, 243,\n" ++ "        244, 246, 250, 249, 251, 252, 241, 231, 237,\n" ++ "        1072, 1086, 1077, 1080, 1085, 1090, 1089, 1088,\n" ++ "        1074, 1083, 1082, 1084, 1076, 1087, 1091\n" ++ "    };\n" ++ "    static readonly Dictionary<int, int> _fromUni = new();\n" ++ "    static _Cce() { for (int i = 0; i < 128; i++) _fromUni[_toUni[i]] = i; }\n" ++ "    public static string FromUnicode(string s) {\n" ++ "        s = s.Replace(\"\\t\", \"  \").Replace(\"\\r\", C\");\n" ++ "        var sb = new System.Text.StringBuilder(s.Length);\n" ++ "        for (int i = 0; i < s.Length; i++) {\n" ++ "            int u = s[i];\n" ++ "            if (_fromUni.TryGetValue(u, out int b)) sb.Append((char)b);\n" ++ "            else if (u > 127) { sb.Append((char)(0xE0|(u>>12))); sb.Append((char)(0x80|((u>>6)&0x3F))); sb.Append((char)(0x80|(u&0x3F))); }\n" ++ "            else sb.Append((char)68);\n" ++ "        }\n" ++ "        return sb.ToString();\n" ++ "    }\n" ++ "    public static string ToUnicode(string s) {\n" ++ "        var sb = new System.Text.StringBuilder(s.Length);\n" ++ "        for (int i = 0; i < s.Length; i++) {\n" ++ "            int b = s[i];\n" ++ "            if (b < 128) sb.Append((char)_toUni[b]);\n" ++ "            else if ((b & 0xE0) == 0xE0 && i+2 < s.Length) {\n" ++ "                int u = ((b & 0x0F) << 12) | ((s[i+1] & 0x3F) << 6) | (s[i+2] & 0x3F);\n" ++ "                sb.Append((char)u); i += 2;\n" ++ "            }\n" ++ "            else sb.Append('\\uFFFD');\n" ++ "        }\n" ++ "        return sb.ToString();\n" ++ "    }\n" ++ "    public static long UniToCce(long u) {\n" ++ "        return _fromUni.TryGetValue((int)u, out int c) ? c : 68;\n" ++ "    }\n" ++ "    public static long CceToUni(long b) {\n" ++ "        return (b >= 0 && b < 128) ? _toUni[(int)b] : 65533;\n" ++ "    }\n" ++ "}\n\n"
+ "static class _Cce {\n" ++ "    static readonly int[] _toUni = {\n" ++ "        0, 10, 32,\n" ++ "        48, 49, 50, 51, 52, 53, 54, 55, 56, 57,\n" ++ "        101, 116, 97, 111, 105, 110, 115, 104, 114, 100,\n" ++ "        108, 99, 117, 109, 119, 102, 103, 121, 112, 98,\n" ++ "        118, 107, 106, 120, 113, 122,\n" ++ "        69, 84, 65, 79, 73, 78, 83, 72, 82, 68,\n" ++ "        76, 67, 85, 77, 87, 70, 71, 89, 80, 66,\n" ++ "        86, 75, 74, 88, 81, 90,\n" ++ "        46, 44, 33, 63, 58, 59, 39, 34, 45, 40, 41,\n" ++ "        43, 61, 42, 60, 62,\n" ++ "        47, 64, 35, 38, 95, 92, 124, 91, 93, 123, 125, 126, 96,\n" ++ "        94,\n" ++ "        233, 232, 234, 235, 225, 224, 226, 228, 243,\n" ++ "        244, 246, 250, 249, 251, 252, 241, 231, 237,\n" ++ "        1072, 1086, 1077, 1080, 1085, 1090, 1089, 1088,\n" ++ "        1074, 1083, 1082, 1084, 1076, 1087, 1091\n" ++ "    };\n" ++ "    static readonly Dictionary<int, int> _fromUni = new();\n" ++ "    static _Cce() { for (int i = 0; i < 128; i++) _fromUni[_toUni[i]] = i; }\n" ++ "    public static string FromUnicode(string s) {\n" ++ "        s = s.Replace(\"\\t\", \"  \").Replace(\"\\r\", \"\");\n" ++ "        var sb = new System.Text.StringBuilder(s.Length);\n" ++ "        for (int i = 0; i < s.Length; i++) {\n" ++ "            int u = s[i];\n" ++ "            if (_fromUni.TryGetValue(u, out int b)) sb.Append((char)b);\n" ++ "            else if (u > 127) { sb.Append((char)(0xE0|(u>>12))); sb.Append((char)(0x80|((u>>6)&0x3F))); sb.Append((char)(0x80|(u&0x3F))); }\n" ++ "            else sb.Append((char)68);\n" ++ "        }\n" ++ "        return sb.ToString();\n" ++ "    }\n" ++ "    public static string ToUnicode(string s) {\n" ++ "        var sb = new System.Text.StringBuilder(s.Length);\n" ++ "        for (int i = 0; i < s.Length; i++) {\n" ++ "            int b = s[i];\n" ++ "            if (b < 128) sb.Append((char)_toUni[b]);\n" ++ "            else if ((b & 0xE0) == 0xE0 && i+2 < s.Length) {\n" ++ "                int u = ((b & 0x0F) << 12) | ((s[i+1] & 0x3F) << 6) | (s[i+2] & 0x3F);\n" ++ "                sb.Append((char)u); i += 2;\n" ++ "            }\n" ++ "            else sb.Append('\\uFFFD');\n" ++ "        }\n" ++ "        return sb.ToString();\n" ++ "    }\n" ++ "    public static long UniToCce(long u) {\n" ++ "        return _fromUni.TryGetValue((int)u, out int c) ? c : 68;\n" ++ "    }\n" ++ "    public static long CceToUni(long b) {\n" ++ "        return (b >= 0 && b < 128) ? _toUni[(int)b] : 65533;\n" ++ "    }\n" ++ "}\n\n"
 
 csharp-emitter_emit-full-chapter : IRChapter -> List ATypeDef -> Text
 csharp-emitter_emit-full-chapter (m) (type-defs) =
- let arities = build-arity-map (m.defs) 0
+ let arities = build-arity-map (m.defs) 0 []
  in "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n" ++ "Codex_" ++ sanitize (m.name.value) ++ ".main();\n\n" ++ emit-cce-runtime ++ csharp-emitter_emit-type-defs type-defs 0 ++ emit-class-header (m.name.value) ++ emit-defs (m.defs) 0 arities ++ "}\n"
 
 emit-chapter : IRChapter -> Text
 emit-chapter (m) =
- let arities = build-arity-map (m.defs) 0
+ let arities = build-arity-map (m.defs) 0 []
  in "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n" ++ "Codex_" ++ sanitize (m.name.value) ++ ".main();\n\n" ++ emit-cce-runtime ++ emit-class-header (m.name.value) ++ emit-defs (m.defs) 0 arities ++ "}\n"
 
 emit-class-header : Text -> Text
@@ -1448,59 +1465,14 @@ emit-defs (defs) (i) (arities) =
  if i == list-length defs then ""
  else csharp-emitter_emit-def (list-at defs i) arities ++ "\n" ++ emit-defs defs (i + 1) arities
 
+cs-keywords : List Text
+cs-keywords =
+ let unsorted = ["abstract", "as", "base", "bool", "break", "case", "catch", "class", "continue", "decimal", "default", "delegate", "do", "double", "else", "event", "false", "finally", "for", "if", "in", "int", "internal", "is", "long", "namespace", "new", "null", "object", "out", "override", "params", "private", "protected", "public", "ref", "return", "sealed", "static", "string", "switch", "this", "throw", "true", "try", "typeof", "using", "virtual", "void", "while"]
+ in sort-text-list unsorted
+
 is-cs-keyword : Text -> Boolean
 is-cs-keyword (n) =
- if n == "class" then True
- else if n == "static" then True
- else if n == "void" then True
- else if n == "return" then True
- else if n == "if" then True
- else if n == "else" then True
- else if n == "for" then True
- else if n == "while" then True
- else if n == "do" then True
- else if n == "switch" then True
- else if n == "case" then True
- else if n == "break" then True
- else if n == "continue" then True
- else if n == "new" then True
- else if n == "this" then True
- else if n == "base" then True
- else if n == "null" then True
- else if n == "true" then True
- else if n == "false" then True
- else if n == "int" then True
- else if n == "long" then True
- else if n == "string" then True
- else if n == "bool" then True
- else if n == "double" then True
- else if n == "decimal" then True
- else if n == "object" then True
- else if n == "in" then True
- else if n == "is" then True
- else if n == "as" then True
- else if n == "typeof" then True
- else if n == "default" then True
- else if n == "throw" then True
- else if n == "try" then True
- else if n == "catch" then True
- else if n == "finally" then True
- else if n == "using" then True
- else if n == "namespace" then True
- else if n == "public" then True
- else if n == "private" then True
- else if n == "protected" then True
- else if n == "internal" then True
- else if n == "abstract" then True
- else if n == "sealed" then True
- else if n == "override" then True
- else if n == "virtual" then True
- else if n == "event" then True
- else if n == "delegate" then True
- else if n == "out" then True
- else if n == "ref" then True
- else if n == "params" then True
- else False
+ text-set-has cs-keywords n
 
 sanitize : Text -> Text
 sanitize (name) =
@@ -1509,14 +1481,14 @@ sanitize (name) =
     else if is-cs-member-name s then s ++ "_"
     else s
 
+cs-member-names : List Text
+cs-member-names =
+ let unsorted = ["Equals", "GetHashCode", "GetType", "MemberwiseClone", "ToString"]
+ in sort-text-list unsorted
+
 is-cs-member-name : Text -> Boolean
 is-cs-member-name (n) =
- if n == "Equals" then True
- else if n == "GetHashCode" then True
- else if n == "ToString" then True
- else if n == "GetType" then True
- else if n == "MemberwiseClone" then True
- else False
+ text-set-has cs-member-names n
 
 cs-type : CodexType -> Text
 cs-type (ty) =
@@ -1546,23 +1518,23 @@ emit-cs-type-args (args) (i) =
  in if i == list-length args - 1 then t
     else t ++ ", " ++ emit-cs-type-args args (i + 1)
 
-build-arity-map : List IRDef -> Integer -> List ArityEntry
-build-arity-map (defs) (i) =
- if i == list-length defs then []
+build-arity-map : List IRDef -> Integer -> List ArityEntry -> List ArityEntry
+build-arity-map (defs) (i) (acc) =
+ if i == list-length defs then acc
  else let d = list-at defs i
- in [ArityEntry {
+ in build-arity-map defs (i + 1) (list-snoc acc (ArityEntry {
   name = d.name,
   arity = list-length (d.params)
- }] ++ build-arity-map defs (i + 1)
+ }))
 
-build-arity-map-from-ast : List ADef -> Integer -> List ArityEntry
-build-arity-map-from-ast (defs) (i) =
- if i == list-length defs then []
+build-arity-map-from-ast : List ADef -> Integer -> List ArityEntry -> List ArityEntry
+build-arity-map-from-ast (defs) (i) (acc) =
+ if i == list-length defs then acc
  else let d = list-at defs i
- in [ArityEntry {
+ in build-arity-map-from-ast defs (i + 1) (list-snoc acc (ArityEntry {
   name = d.name.value,
   arity = list-length (d.params)
- }] ++ build-arity-map-from-ast defs (i + 1)
+ }))
 
 lookup-arity : List ArityEntry -> Text -> Integer
 lookup-arity (entries) (name) =
@@ -1679,7 +1651,7 @@ csharp-emitter_emit-builtin (n) (args) (arities) =
  else if n == "open-file" then "File.OpenRead(" ++ csharp-emitter_emit-expr (list-at args 0) arities ++ ")"
  else if n == "read-all" then emit-builtin-read-all args arities
  else if n == "close-file" then csharp-emitter_emit-expr (list-at args 0) arities ++ ".Dispose()"
- else if n == "read-line" then "_Cce.FromUnicode(Console.ReadLine() ?? \"\n)"
+ else if n == "read-line" then "_Cce.FromUnicode(Console.ReadLine() ?? \"\")"
  else if n == "read-file" then emit-builtin-read-file args arities
  else if n == "write-file" then emit-builtin-write-file args arities
  else if n == "file-exists" then emit-builtin-file-exists args arities
@@ -1886,7 +1858,7 @@ csharp-emitter_emit-expr (e) (arities) =
   if IrBoolLit (b) -> if b then "true"
   else "false"
   if IrCharLit (n) -> integer-to-text n
-  if IrName (n) (ty) -> if n == "read-line" then "_Cce.FromUnicode(Console.ReadLine() ?? \"\n)"
+  if IrName (n) (ty) -> if n == "read-line" then "_Cce.FromUnicode(Console.ReadLine() ?? \"\")"
   else if n == "get-args" then "Environment.GetCommandLineArgs().Select(_Cce.FromUnicode).ToList()"
   else if n == "current-dir" then "_Cce.FromUnicode(Directory.GetCurrentDirectory())"
   else if text-length n > 0 & is-upper-letter (char-at n 0) then "new " ++ sanitize n ++ "()"
@@ -2005,8 +1977,8 @@ csharp-emitter_emit-match (scrut) (branches) (ty) (arities) =
  let arms = emit-match-arms branches 0 arities
  in let needs-wild = if has-any-catch-all branches 0 then False
   else True
- in csharp-emitter_emit-expr scrut arities ++ " switch { " ++ arms ++ if needs-wild then "_ => throw new InvalidOperationException(\"Non-exhaustive match\"), "
- else "" ++ "}"
+ in csharp-emitter_emit-expr scrut arities ++ " switch { " ++ arms ++ (if needs-wild then "_ => throw new InvalidOperationException(\"Non-exhaustive match\"), "
+ else "") ++ "}"
 
 emit-match-arms : List IRBranch -> Integer -> List ArityEntry -> Text
 emit-match-arms (branches) (i) (arities) =
@@ -2043,8 +2015,8 @@ csharp-emitter_emit-sub-patterns : List IRPat -> Integer -> Text
 csharp-emitter_emit-sub-patterns (subs) (i) =
  if i == list-length subs then ""
  else let sub = list-at subs i
- in emit-sub-pattern sub ++ if i < list-length subs - 1 then ", "
- else "" ++ csharp-emitter_emit-sub-patterns subs (i + 1)
+ in emit-sub-pattern sub ++ (if i < list-length subs - 1 then ", "
+ else "") ++ csharp-emitter_emit-sub-patterns subs (i + 1)
 
 emit-sub-pattern : IRPat -> Text
 emit-sub-pattern (p) =
@@ -2089,8 +2061,8 @@ emit-record-fields : List IRFieldVal -> Integer -> List ArityEntry -> Text
 emit-record-fields (fields) (i) (arities) =
  if i == list-length fields then ""
  else let f = list-at fields i
- in sanitize (f.name) ++ ": " ++ csharp-emitter_emit-expr (f.value) arities ++ if i < list-length fields - 1 then ", "
- else "" ++ emit-record-fields fields (i + 1) arities
+ in sanitize (f.name) ++ ": " ++ csharp-emitter_emit-expr (f.value) arities ++ (if i < list-length fields - 1 then ", "
+ else "") ++ emit-record-fields fields (i + 1) arities
 
 csharp-emitter_emit-handle : Text -> IRExpr -> List IRHandleClause -> List Text -> Integer -> Text
 csharp-emitter_emit-handle (eff) (body) (clauses) (ty) (arities) =
@@ -2349,6 +2321,7 @@ wrap-binary-left (parent-op) (e) (ctors) (indent) =
  when e
   if IrBinary (child-op) (l2) (r2) (ty) -> if bin-op-prec child-op < bin-op-prec parent-op then "(" ++ codex-emitter_emit-expr e ctors indent ++ ")"
   else codex-emitter_emit-expr e ctors indent
+  if IrIf (c) (t) (el) (ty) -> "(" ++ codex-emitter_emit-expr e ctors indent ++ ")"
   if _ -> codex-emitter_emit-expr e ctors indent
 
 wrap-binary-right : IRBinaryOp -> IRExpr -> List Text -> Integer -> Text
@@ -2597,15 +2570,15 @@ codex-emitter_collect-ctor-names (type-defs) (i) =
  if i == list-length type-defs then []
  else let td = list-at type-defs i
  in let names = when td
-   if AVariantTypeDef (name) (tparams) (ctors) -> collect-variant-ctor-names ctors 0
+   if AVariantTypeDef (name) (tparams) (ctors) -> collect-variant-ctor-names ctors 0 []
    if ARecordTypeDef (name) (tparams) (fields) -> [name.value]
  in names ++ codex-emitter_collect-ctor-names type-defs (i + 1)
 
-collect-variant-ctor-names : List AVariantCtorDef -> Integer -> List Text
-collect-variant-ctor-names (ctors) (i) =
- if i == list-length ctors then []
+collect-variant-ctor-names : List AVariantCtorDef -> Integer -> List Text -> List Text
+collect-variant-ctor-names (ctors) (i) (acc) =
+ if i == list-length ctors then acc
  else let c = list-at ctors i
- in [c.name.value] ++ collect-variant-ctor-names ctors (i + 1)
+ in collect-variant-ctor-names ctors (i + 1) (list-snoc acc (c.name.value))
 
 is-simple : IRExpr -> Boolean
 is-simple (e) =
@@ -7606,14 +7579,14 @@ binary-result-type (op) (left-ty) (expected-ty) =
   else left-ty
   if _ -> left-ty
 
-assign-chapters : List DefHeader -> Text -> Integer -> List ChapterAssignment
-assign-chapters (headers) (current-chapter) (i) =
- if i == list-length headers then []
+assign-chapters : List DefHeader -> Text -> Integer -> List ChapterAssignment -> List ChapterAssignment
+assign-chapters (headers) (current-chapter) (i) (acc) =
+ if i == list-length headers then acc
  else let hdr = list-at headers i
- in [ChapterAssignment {
+ in assign-chapters headers current-chapter (i + 1) (list-snoc acc (ChapterAssignment {
   def-name = hdr.name.text,
   chapter-slug = current-chapter
- }] ++ assign-chapters headers current-chapter (i + 1)
+ }))
 
 find-colliding-names : List ChapterAssignment -> List Text
 find-colliding-names (assignments) =
@@ -7725,11 +7698,11 @@ rename-ir-expr (rn) (e) =
   if IrFieldAccess (rec) (field) (ty) -> IrFieldAccess (rename-ir-expr rn rec) field ty
   if IrLet (nm) (ty) (val) (body) -> rename-ir-let rn nm ty val body
   if IrLambda (params) (body) (ty) -> rename-ir-lambda rn params body ty
-  if IrMatch (scrut) (branches) (ty) -> IrMatch (rename-ir-expr rn scrut) (rename-ir-branches rn branches 0) ty
-  if IrList (elems) (ty) -> IrList (rename-ir-exprs rn elems 0) ty
-  if IrRecord (nm) (fields) (ty) -> IrRecord nm (rename-ir-fields rn fields 0) ty
-  if IrDo (stmts) (ty) -> IrDo (rename-ir-do-stmts rn stmts 0) ty
-  if IrHandle (eff) (body) (clauses) (ty) -> IrHandle eff (rename-ir-expr rn body) (rename-ir-handle-clauses rn clauses 0) ty
+  if IrMatch (scrut) (branches) (ty) -> IrMatch (rename-ir-expr rn scrut) (rename-ir-branches rn branches 0 []) ty
+  if IrList (elems) (ty) -> IrList (rename-ir-exprs rn elems 0 []) ty
+  if IrRecord (nm) (fields) (ty) -> IrRecord nm (rename-ir-fields rn fields 0 []) ty
+  if IrDo (stmts) (ty) -> IrDo (rename-ir-do-stmts rn stmts 0 []) ty
+  if IrHandle (eff) (body) (clauses) (ty) -> IrHandle eff (rename-ir-expr rn body) (rename-ir-handle-clauses rn clauses 0 []) ty
 
 rename-ir-let : List RenameEntry -> Text -> CodexType -> IRExpr -> IRExpr -> IRExpr
 rename-ir-let (rn) (nm) (ty) (val) (body) =
@@ -7741,29 +7714,29 @@ rename-ir-lambda (rn) (params) (body) (ty) =
  let rn2 = remove-renames-for-params rn params 0
  in IrLambda params (rename-ir-expr rn2 body) ty
 
-rename-ir-exprs : List RenameEntry -> List IRExpr -> Integer -> List IRExpr
-rename-ir-exprs (rn) (elems) (i) =
- if i == list-length elems then []
- else [rename-ir-expr rn (list-at elems i)] ++ rename-ir-exprs rn elems (i + 1)
+rename-ir-exprs : List RenameEntry -> List IRExpr -> Integer -> List IRExpr -> List IRExpr
+rename-ir-exprs (rn) (elems) (i) (acc) =
+ if i == list-length elems then acc
+ else rename-ir-exprs rn elems (i + 1) (list-snoc acc (rename-ir-expr rn (list-at elems i)))
 
-rename-ir-fields : List RenameEntry -> List IRFieldVal -> Integer -> List IRFieldVal
-rename-ir-fields (rn) (fields) (i) =
- if i == list-length fields then []
+rename-ir-fields : List RenameEntry -> List IRFieldVal -> Integer -> List IRFieldVal -> List IRFieldVal
+rename-ir-fields (rn) (fields) (i) (acc) =
+ if i == list-length fields then acc
  else let f = list-at fields i
- in [IRFieldVal {
+ in rename-ir-fields rn fields (i + 1) (list-snoc acc (IRFieldVal {
   name = f.name,
   value = rename-ir-expr rn (f.value)
- }] ++ rename-ir-fields rn fields (i + 1)
+ }))
 
-rename-ir-branches : List RenameEntry -> List IRBranch -> Integer -> List IRBranch
-rename-ir-branches (rn) (branches) (i) =
- if i == list-length branches then []
+rename-ir-branches : List RenameEntry -> List IRBranch -> Integer -> List IRBranch -> List IRBranch
+rename-ir-branches (rn) (branches) (i) (acc) =
+ if i == list-length branches then acc
  else let b = list-at branches i
  in let rn2 = remove-renames-for-pat rn (b.pattern)
- in [IRBranch {
+ in rename-ir-branches rn branches (i + 1) (list-snoc acc (IRBranch {
   pattern = b.pattern,
   body = rename-ir-expr rn2 (b.body)
- }] ++ rename-ir-branches rn branches (i + 1)
+ }))
 
 remove-renames-for-pat : List RenameEntry -> IRPat -> List RenameEntry
 remove-renames-for-pat (rn) (p) =
@@ -7778,34 +7751,34 @@ remove-renames-for-pats (rn) (pats) (i) =
  if i == list-length pats then rn
  else remove-renames-for-pats (remove-renames-for-pat rn (list-at pats i)) pats (i + 1)
 
-rename-ir-do-stmts : List RenameEntry -> List IRDoStmt -> Integer -> List IRDoStmt
-rename-ir-do-stmts (rn) (stmts) (i) =
- if i == list-length stmts then []
+rename-ir-do-stmts : List RenameEntry -> List IRDoStmt -> Integer -> List IRDoStmt -> List IRDoStmt
+rename-ir-do-stmts (rn) (stmts) (i) (acc) =
+ if i == list-length stmts then acc
  else let s = list-at stmts i
  in when s
   if IrDoBind (nm) (ty) (expr) -> let rn2 = remove-rename rn nm
-  in [IrDoBind nm ty (rename-ir-expr rn expr)] ++ rename-ir-do-stmts rn2 stmts (i + 1)
-  if IrDoExec (expr) -> [IrDoExec (rename-ir-expr rn expr)] ++ rename-ir-do-stmts rn stmts (i + 1)
+  in rename-ir-do-stmts rn2 stmts (i + 1) (list-snoc acc (IrDoBind nm ty (rename-ir-expr rn expr)))
+  if IrDoExec (expr) -> rename-ir-do-stmts rn stmts (i + 1) (list-snoc acc (IrDoExec (rename-ir-expr rn expr)))
 
-rename-ir-handle-clauses : List RenameEntry -> List IRHandleClause -> Integer -> List IRHandleClause
-rename-ir-handle-clauses (rn) (clauses) (i) =
- if i == list-length clauses then []
+rename-ir-handle-clauses : List RenameEntry -> List IRHandleClause -> Integer -> List IRHandleClause -> List IRHandleClause
+rename-ir-handle-clauses (rn) (clauses) (i) (acc) =
+ if i == list-length clauses then acc
  else let c = list-at clauses i
  in let rn2 = remove-rename rn (c.resume-name)
- in [IRHandleClause {
+ in rename-ir-handle-clauses rn clauses (i + 1) (list-snoc acc (IRHandleClause {
   op-name = c.op-name,
   resume-name = c.resume-name,
   body = rename-ir-expr rn2 (c.body)
- }] ++ rename-ir-handle-clauses rn clauses (i + 1)
+ }))
 
-build-all-assignments : List DefHeader -> Integer -> List ChapterAssignment
-build-all-assignments (headers) (i) =
- if i == list-length headers then []
+build-all-assignments : List DefHeader -> Integer -> List ChapterAssignment -> List ChapterAssignment
+build-all-assignments (headers) (i) (acc) =
+ if i == list-length headers then acc
  else let hdr = list-at headers i
- in [ChapterAssignment {
+ in build-all-assignments headers (i + 1) (list-snoc acc (ChapterAssignment {
   def-name = hdr.name.text,
   chapter-slug = hdr.chapter-slug
- }] ++ build-all-assignments headers (i + 1)
+ }))
 
 scope-def-name : List Text -> List ChapterAssignment -> Text -> Text -> Text
 scope-def-name (colliding) (assignments) (name) (cur-chap) =
@@ -7846,27 +7819,27 @@ scope-ir-chapter : IRChapter -> List Text -> List ChapterAssignment -> IRChapter
 scope-ir-chapter (ir) (colliding) (assignments) =
  IRChapter {
   name = ir.name,
-  defs = scope-ir-defs (ir.defs) colliding assignments "" [] 0,
+  defs = scope-ir-defs (ir.defs) colliding assignments "" [] 0 [],
   chapter-title = ir.chapter-title,
   prose = ir.prose,
   section-titles = ir.section-titles
  }
 
-scope-ir-defs : List IRDef -> List Text -> List ChapterAssignment -> Text -> List RenameEntry -> Integer -> List IRDef
-scope-ir-defs (defs) (colliding) (assignments) (cur-slug) (cur-rn) (i) =
- if i == list-length defs then []
+scope-ir-defs : List IRDef -> List Text -> List ChapterAssignment -> Text -> List RenameEntry -> Integer -> List IRDef -> List IRDef
+scope-ir-defs (defs) (colliding) (assignments) (cur-slug) (cur-rn) (i) (acc) =
+ if i == list-length defs then acc
  else let d = list-at defs i
  in let rn = if d.chapter-slug == cur-slug then cur-rn
   else build-chapter-rename-map colliding assignments (d.chapter-slug)
  in let new-name = rename-lookup rn (d.name)
  in let new-body = rename-ir-expr rn (d.body)
- in [IRDef {
+ in scope-ir-defs defs colliding assignments (d.chapter-slug) rn (i + 1) (list-snoc acc (IRDef {
   name = new-name,
   params = d.params,
   type-val = d.type-val,
   body = new-body,
   chapter-slug = d.chapter-slug
- }] ++ scope-ir-defs defs colliding assignments (d.chapter-slug) rn (i + 1)
+ }))
 
 rename-aexpr : List RenameEntry -> AExpr -> AExpr
 rename-aexpr (rn) (e) =
@@ -7880,27 +7853,27 @@ rename-aexpr (rn) (e) =
   if AIfExpr (c) (t) (el) -> AIfExpr (rename-aexpr rn c) (rename-aexpr rn t) (rename-aexpr rn el)
   if ALetExpr (binds) (body) -> rename-alet rn binds body
   if ALambdaExpr (params) (body) -> rename-alambda rn params body
-  if AMatchExpr (scrut) (arms) -> AMatchExpr (rename-aexpr rn scrut) (rename-amatch-arms rn arms 0)
-  if AListExpr (elems) -> AListExpr (rename-aexprs rn elems 0)
-  if ARecordExpr (name) (fields) -> ARecordExpr name (rename-afields rn fields 0)
+  if AMatchExpr (scrut) (arms) -> AMatchExpr (rename-aexpr rn scrut) (rename-amatch-arms rn arms 0 [])
+  if AListExpr (elems) -> AListExpr (rename-aexprs rn elems 0 [])
+  if ARecordExpr (name) (fields) -> ARecordExpr name (rename-afields rn fields 0 [])
   if AFieldAccess (rec) (field) -> AFieldAccess (rename-aexpr rn rec) field
-  if ADoExpr (stmts) -> ADoExpr (rename-ado-stmts rn stmts 0)
-  if AHandleExpr (eff) (body) (clauses) -> AHandleExpr eff (rename-aexpr rn body) (rename-ahandle-clauses rn clauses 0)
+  if ADoExpr (stmts) -> ADoExpr (rename-ado-stmts rn stmts 0 [])
+  if AHandleExpr (eff) (body) (clauses) -> AHandleExpr eff (rename-aexpr rn body) (rename-ahandle-clauses rn clauses 0 [])
 
 rename-alet : List RenameEntry -> List ALetBind -> AExpr -> AExpr
 rename-alet (rn) (binds) (body) =
- let new-binds = rename-alet-binds rn binds 0
+ let new-binds = rename-alet-binds rn binds 0 []
  in let rn2 = remove-renames-for-let-binds rn binds 0
  in ALetExpr new-binds (rename-aexpr rn2 body)
 
-rename-alet-binds : List RenameEntry -> List ALetBind -> Integer -> List ALetBind
-rename-alet-binds (rn) (binds) (i) =
- if i == list-length binds then []
+rename-alet-binds : List RenameEntry -> List ALetBind -> Integer -> List ALetBind -> List ALetBind
+rename-alet-binds (rn) (binds) (i) (acc) =
+ if i == list-length binds then acc
  else let b = list-at binds i
- in [ALetBind {
+ in rename-alet-binds rn binds (i + 1) (list-snoc acc (ALetBind {
   name = b.name,
   value = rename-aexpr rn (b.value)
- }] ++ rename-alet-binds rn binds (i + 1)
+ }))
 
 remove-renames-for-let-binds : List RenameEntry -> List ALetBind -> Integer -> List RenameEntry
 remove-renames-for-let-binds (rn) (binds) (i) =
@@ -7917,29 +7890,29 @@ remove-renames-for-names (rn) (names) (i) =
  if i == list-length names then rn
  else remove-renames-for-names (remove-rename rn ((list-at names i).value)) names (i + 1)
 
-rename-aexprs : List RenameEntry -> List AExpr -> Integer -> List AExpr
-rename-aexprs (rn) (elems) (i) =
- if i == list-length elems then []
- else [rename-aexpr rn (list-at elems i)] ++ rename-aexprs rn elems (i + 1)
+rename-aexprs : List RenameEntry -> List AExpr -> Integer -> List AExpr -> List AExpr
+rename-aexprs (rn) (elems) (i) (acc) =
+ if i == list-length elems then acc
+ else rename-aexprs rn elems (i + 1) (list-snoc acc (rename-aexpr rn (list-at elems i)))
 
-rename-afields : List RenameEntry -> List AFieldExpr -> Integer -> List AFieldExpr
-rename-afields (rn) (fields) (i) =
- if i == list-length fields then []
+rename-afields : List RenameEntry -> List AFieldExpr -> Integer -> List AFieldExpr -> List AFieldExpr
+rename-afields (rn) (fields) (i) (acc) =
+ if i == list-length fields then acc
  else let f = list-at fields i
- in [AFieldExpr {
+ in rename-afields rn fields (i + 1) (list-snoc acc (AFieldExpr {
   name = f.name,
   value = rename-aexpr rn (f.value)
- }] ++ rename-afields rn fields (i + 1)
+ }))
 
-rename-amatch-arms : List RenameEntry -> List AMatchArm -> Integer -> List AMatchArm
-rename-amatch-arms (rn) (arms) (i) =
- if i == list-length arms then []
+rename-amatch-arms : List RenameEntry -> List AMatchArm -> Integer -> List AMatchArm -> List AMatchArm
+rename-amatch-arms (rn) (arms) (i) (acc) =
+ if i == list-length arms then acc
  else let a = list-at arms i
  in let rn2 = remove-renames-for-apat rn (a.pattern)
- in [AMatchArm {
+ in rename-amatch-arms rn arms (i + 1) (list-snoc acc (AMatchArm {
   pattern = a.pattern,
   body = rename-aexpr rn2 (a.body)
- }] ++ rename-amatch-arms rn arms (i + 1)
+ }))
 
 remove-renames-for-apat : List RenameEntry -> APat -> List RenameEntry
 remove-renames-for-apat (rn) (p) =
@@ -7954,31 +7927,31 @@ remove-renames-for-apats (rn) (pats) (i) =
  if i == list-length pats then rn
  else remove-renames-for-apats (remove-renames-for-apat rn (list-at pats i)) pats (i + 1)
 
-rename-ado-stmts : List RenameEntry -> List ADoStmt -> Integer -> List ADoStmt
-rename-ado-stmts (rn) (stmts) (i) =
- if i == list-length stmts then []
+rename-ado-stmts : List RenameEntry -> List ADoStmt -> Integer -> List ADoStmt -> List ADoStmt
+rename-ado-stmts (rn) (stmts) (i) (acc) =
+ if i == list-length stmts then acc
  else let s = list-at stmts i
  in when s
   if ADoBindStmt (nm) (expr) -> let rn2 = remove-rename rn (nm.value)
-  in [ADoBindStmt nm (rename-aexpr rn expr)] ++ rename-ado-stmts rn2 stmts (i + 1)
-  if ADoExprStmt (expr) -> [ADoExprStmt (rename-aexpr rn expr)] ++ rename-ado-stmts rn stmts (i + 1)
+  in rename-ado-stmts rn2 stmts (i + 1) (list-snoc acc (ADoBindStmt nm (rename-aexpr rn expr)))
+  if ADoExprStmt (expr) -> rename-ado-stmts rn stmts (i + 1) (list-snoc acc (ADoExprStmt (rename-aexpr rn expr)))
 
-rename-ahandle-clauses : List RenameEntry -> List AHandleClause -> Integer -> List AHandleClause
-rename-ahandle-clauses (rn) (clauses) (i) =
- if i == list-length clauses then []
+rename-ahandle-clauses : List RenameEntry -> List AHandleClause -> Integer -> List AHandleClause -> List AHandleClause
+rename-ahandle-clauses (rn) (clauses) (i) (acc) =
+ if i == list-length clauses then acc
  else let c = list-at clauses i
  in let rn2 = remove-rename rn (c.resume-name.value)
- in [AHandleClause {
+ in rename-ahandle-clauses rn clauses (i + 1) (list-snoc acc (AHandleClause {
   op-name = c.op-name,
   resume-name = c.resume-name,
   body = rename-aexpr rn2 (c.body)
- }] ++ rename-ahandle-clauses rn clauses (i + 1)
+ }))
 
 scope-achapter : AChapter -> List Text -> List ChapterAssignment -> AChapter
 scope-achapter (ast) (colliding) (assignments) =
  AChapter {
   name = ast.name,
-  defs = scope-adefs (ast.defs) colliding assignments (ast.citations) "" [] 0,
+  defs = scope-adefs (ast.defs) colliding assignments (ast.citations) "" [] 0 [],
   type-defs = ast.type-defs,
   effect-defs = ast.effect-defs,
   citations = ast.citations,
@@ -7987,21 +7960,21 @@ scope-achapter (ast) (colliding) (assignments) =
   section-titles = ast.section-titles
  }
 
-scope-adefs : List ADef -> List Text -> List ChapterAssignment -> List ACitesDecl -> Text -> List RenameEntry -> Integer -> List ADef
-scope-adefs (defs) (colliding) (assignments) (citations) (cur-slug) (cur-rn) (i) =
- if i == list-length defs then []
+scope-adefs : List ADef -> List Text -> List ChapterAssignment -> List ACitesDecl -> Text -> List RenameEntry -> Integer -> List ADef -> List ADef
+scope-adefs (defs) (colliding) (assignments) (citations) (cur-slug) (cur-rn) (i) (acc) =
+ if i == list-length defs then acc
  else let d = list-at defs i
  in let rn = if d.chapter-slug == cur-slug then cur-rn
   else apply-cite-overrides (build-chapter-rename-map colliding assignments (d.chapter-slug)) citations colliding assignments (d.chapter-slug) 0
  in let new-name = make-name (rename-lookup rn (d.name.value))
  in let new-body = rename-aexpr rn (d.body)
- in [ADef {
+ in scope-adefs defs colliding assignments citations (d.chapter-slug) rn (i + 1) (list-snoc acc (ADef {
   name = new-name,
   params = d.params,
   declared-type = d.declared-type,
   body = new-body,
   chapter-slug = d.chapter-slug
- }] ++ scope-adefs defs colliding assignments citations (d.chapter-slug) rn (i + 1)
+ }))
 
 apply-cite-overrides : List RenameEntry -> List ACitesDecl -> List Text -> List ChapterAssignment -> Text -> Integer -> List RenameEntry
 apply-cite-overrides (rn) (citations) (colliding) (assignments) (cur-slug) (i) =
@@ -11134,7 +11107,7 @@ compile (source) (chapter-name) =
  let tokens = tokenize source
  in let st = make-parse-state tokens
  in let scan = scan-document st
- in let assignments = build-all-assignments (scan.def-headers) 0
+ in let assignments = build-all-assignments (scan.def-headers) 0 []
  in let colliding = find-colliding-names assignments
  in let doc = parse-document (make-parse-state tokens)
  in let ast = desugar-document doc chapter-name
@@ -11192,7 +11165,7 @@ compile-streaming-v2 (source) (chapter-name) =
  in let scan = scan-document st
  in let type-defs = map-list desugar-type-def (scan.type-defs)
  in let headers = scan.def-headers
- in let assignments = build-all-assignments headers 0
+ in let assignments = build-all-assignments headers 0 []
  in let colliding = find-colliding-names assignments
  in do
   compile-with-scope tokens type-defs headers assignments colliding
@@ -11352,6 +11325,6 @@ main =
 
 
 
-HEAP:156720672
 
-STACK:2097152
+RESULT:0
+

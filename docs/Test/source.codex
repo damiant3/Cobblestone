@@ -150,6 +150,7 @@ Section: Chapter
 Page 1
 
 
+
 Chapter: Desugarer
 
  Transforms the concrete syntax tree into the abstract syntax tree.
@@ -369,6 +370,7 @@ Section: Document Desugaring
 Page 1
 
 
+
 Chapter: Collections
 
  Functional list operations used throughout the compiler.
@@ -427,7 +429,24 @@ Section: Binary Search — Text Set (lower bound)
    in if text-compare name (list-at names mid) <= 0 then bsearch-text-set names name lo mid
       else bsearch-text-set names name (mid + 1) hi
 
+  text-set-has : List Text -> Text -> Boolean
+  text-set-has (names) (name) =
+   let len = list-length names
+   in let pos = bsearch-text-set names name 0 len
+   in if pos >= len then False
+      else list-at names pos == name
+
+  sorted-insert : List Text -> Text -> List Text
+  sorted-insert (xs) (name) =
+   let len = list-length xs
+   in let pos = bsearch-text-set xs name 0 len
+   in list-insert-at xs pos name
+
+  sort-text-list : List Text -> List Text
+  sort-text-list (xs) = fold-list sorted-insert [] xs
+
 Page 1
+
 
 
 Chapter: Diagnostics
@@ -481,6 +500,7 @@ Section: Display
 Page 1
 
 
+
 Chapter: Name
 
  A wrapper for identifier names.
@@ -502,6 +522,7 @@ Section: Functions
    n.value
 
 Page 1
+
 
 
 Chapter: Source Text
@@ -545,6 +566,7 @@ Section: Functions
    span.end.offset - span.start.offset
 
 Page 1
+
 
 
 Chapter: CSharp Emitter
@@ -739,7 +761,7 @@ Section: Tail Call Optimization
   emit-tco-def (d) (arities) =
    let ret = get-return-type (d.type-val) (list-length (d.params))
    in let gen = generic-suffix (d.type-val)
-   in "    public static " ++ cs-type ret ++ " " ++ sanitize (d.name) ++ gen ++ "(" ++ emit-def-params (d.params) 0 ++ ")\n    \{\n        while (true)\n        \{\n" ++ emit-tco-body (d.body) (d.name) (d.params) arities ++ "        }\n    }\n"
+   in "    public static " ++ cs-type ret ++ " " ++ sanitize (d.name) ++ gen ++ "(" ++ emit-def-params (d.params) 0 ++ ")\n    {\n        while (true)\n        {\n" ++ emit-tco-body (d.body) (d.name) (d.params) arities ++ "        }\n    }\n"
 
   emit-tco-body : IRExpr -> Text -> List IRParam -> List ArityEntry -> Text
   emit-tco-body (e) (func-name) (params) (arities) =
@@ -757,7 +779,7 @@ Section: Tail Call Optimization
 
   emit-tco-if : IRExpr -> IRExpr -> IRExpr -> Text -> List IRParam -> List ArityEntry -> Text
   emit-tco-if (cond) (t) (el) (func-name) (params) (arities) =
-   "            if (" ++ emit-expr cond arities ++ ")\n            \{\n" ++ emit-tco-body t func-name params arities ++ "            }\n            else\n            \{\n" ++ emit-tco-body el func-name params arities ++ "            }\n"
+   "            if (" ++ emit-expr cond arities ++ ")\n            {\n" ++ emit-tco-body t func-name params arities ++ "            }\n            else\n            {\n" ++ emit-tco-body el func-name params arities ++ "            }\n"
 
   emit-tco-let : Text -> CodexType -> IRExpr -> IRExpr -> Text -> List IRParam -> List ArityEntry -> Text
   emit-tco-let (name) (ty) (val) (body) (func-name) (params) (arities) =
@@ -781,7 +803,7 @@ Section: Tail Call Optimization
     if IrCtorPat (name) (subs) (ty) ->
      let keyword = if is-first then "if" else "else if"
      in let match-var = "_tco_m" ++ integer-to-text idx
-      in "            " ++ keyword ++ " (_tco_s is " ++ sanitize name ++ " " ++ match-var ++ ")\n            {\n" ++ emit-tco-ctor-bindings subs match-var 0 ++ emit-tco-body (b.body) func-name params arities ++ "            }\n"
+     in "            " ++ keyword ++ " (_tco_s is " ++ sanitize name ++ " " ++ match-var ++ ")\n            {\n" ++ emit-tco-ctor-bindings subs match-var 0 ++ emit-tco-body (b.body) func-name params arities ++ "            }\n"
     if IrLitPat (text) (ty) ->
      let keyword = if is-first then "if" else "else if"
      in "            " ++ keyword ++ " (object.Equals(_tco_s, " ++ text ++ "))\n            {\n" ++ emit-tco-body (b.body) func-name params arities ++ "            }\n"
@@ -820,8 +842,8 @@ Section: Definition Emission
   emit-def (d) (arities) =
    if should-tco d then emit-tco-def d arities
    else let ret = get-return-type (d.type-val) (list-length (d.params))
-     in let gen = generic-suffix (d.type-val)
-      in "    public static " ++ cs-type ret ++ " " ++ sanitize (d.name) ++ gen ++ "(" ++ emit-def-params (d.params) 0 ++ ") => " ++ emit-expr (d.body) arities ++ ";\n"
+   in let gen = generic-suffix (d.type-val)
+   in "    public static " ++ cs-type ret ++ " " ++ sanitize (d.name) ++ gen ++ "(" ++ emit-def-params (d.params) 0 ++ ") => " ++ emit-expr (d.body) arities ++ ";\n"
 
   get-return-type : CodexType -> Integer -> CodexType
   get-return-type (ty) (n) =
@@ -901,12 +923,12 @@ Section: Chapter Emission
 
   emit-full-chapter : IRChapter -> List ATypeDef -> Text
   emit-full-chapter (m) (type-defs) =
-   let arities = build-arity-map (m.defs) 0
+   let arities = build-arity-map (m.defs) 0 []
    in "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n" ++ "Codex_" ++ sanitize (m.name.value) ++ ".main();\n\n" ++ emit-cce-runtime ++ emit-type-defs type-defs 0 ++ emit-class-header (m.name.value) ++ emit-defs (m.defs) 0 arities ++ "}\n"
 
   emit-chapter : IRChapter -> Text
   emit-chapter (m) =
-   let arities = build-arity-map (m.defs) 0
+   let arities = build-arity-map (m.defs) 0 []
    in "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n" ++ "Codex_" ++ sanitize (m.name.value) ++ ".main();\n\n" ++ emit-cce-runtime ++ emit-class-header (m.name.value) ++ emit-defs (m.defs) 0 arities ++ "}\n"
 
   emit-class-header : Text -> Text
@@ -921,65 +943,29 @@ Section: Chapter Emission
 Page 1 of 2
 
 
+
 Chapter: CSharp Emitter
 
  Expression emission: identifiers, arity, apply chains, dispatch.
 
 Section: Identifier Helpers
 
+  cs-keywords : List Text
+  cs-keywords =
+   let unsorted = ["abstract", "as", "base", "bool", "break",
+    "case", "catch", "class", "continue", "decimal",
+    "default", "delegate", "do", "double", "else",
+    "event", "false", "finally", "for", "if",
+    "in", "int", "internal", "is", "long",
+    "namespace", "new", "null", "object", "out",
+    "override", "params", "private", "protected", "public",
+    "ref", "return", "sealed", "static", "string",
+    "switch", "this", "throw", "true", "try",
+    "typeof", "using", "virtual", "void", "while"]
+   in sort-text-list unsorted
+
   is-cs-keyword : Text -> Boolean
-  is-cs-keyword (n) =
-   if n == "class" then True
-   else if n == "static" then True
-   else if n == "void" then True
-   else if n == "return" then True
-   else if n == "if" then True
-   else if n == "else" then True
-   else if n == "for" then True
-   else if n == "while" then True
-   else if n == "do" then True
-   else if n == "switch" then True
-   else if n == "case" then True
-   else if n == "break" then True
-   else if n == "continue" then True
-   else if n == "new" then True
-   else if n == "this" then True
-   else if n == "base" then True
-   else if n == "null" then True
-   else if n == "true" then True
-   else if n == "false" then True
-   else if n == "int" then True
-   else if n == "long" then True
-   else if n == "string" then True
-   else if n == "bool" then True
-   else if n == "double" then True
-   else if n == "decimal" then True
-   else if n == "object" then True
-   else if n == "in" then True
-   else if n == "is" then True
-   else if n == "as" then True
-   else if n == "typeof" then True
-   else if n == "default" then True
-   else if n == "throw" then True
-   else if n == "try" then True
-   else if n == "catch" then True
-   else if n == "finally" then True
-   else if n == "using" then True
-   else if n == "namespace" then True
-   else if n == "public" then True
-   else if n == "private" then True
-   else if n == "protected" then True
-   else if n == "internal" then True
-   else if n == "abstract" then True
-   else if n == "sealed" then True
-   else if n == "override" then True
-   else if n == "virtual" then True
-   else if n == "event" then True
-   else if n == "delegate" then True
-   else if n == "out" then True
-   else if n == "ref" then True
-   else if n == "params" then True
-   else False
+  is-cs-keyword (n) = text-set-has cs-keywords n
 
   sanitize : Text -> Text
   sanitize (name) =
@@ -988,14 +974,13 @@ Section: Identifier Helpers
       else if is-cs-member-name s then s ++ "_"
               else s
 
+  cs-member-names : List Text
+  cs-member-names =
+   let unsorted = ["Equals", "GetHashCode", "GetType", "MemberwiseClone", "ToString"]
+   in sort-text-list unsorted
+
   is-cs-member-name : Text -> Boolean
-  is-cs-member-name (n) =
-   if n == "Equals" then True
-   else if n == "GetHashCode" then True
-   else if n == "ToString" then True
-   else if n == "GetType" then True
-   else if n == "MemberwiseClone" then True
-   else False
+  is-cs-member-name (n) = text-set-has cs-member-names n
 
   cs-type : CodexType -> Text
   cs-type (ty) =
@@ -1032,23 +1017,23 @@ Section: Arity Map
    arity : Integer
   }
 
-  build-arity-map : List IRDef -> Integer -> List ArityEntry
-  build-arity-map (defs) (i) =
-   if i == list-length defs then []
+  build-arity-map : List IRDef -> Integer -> List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
    else let d = list-at defs i
-   in [ArityEntry {
+   in build-arity-map defs (i + 1) (list-snoc acc (ArityEntry {
     name = d.name,
     arity = list-length (d.params)
-   }] ++ build-arity-map defs (i + 1)
+   }))
 
-  build-arity-map-from-ast : List ADef -> Integer -> List ArityEntry
-  build-arity-map-from-ast (defs) (i) =
-   if i == list-length defs then []
+  build-arity-map-from-ast : List ADef -> Integer -> List ArityEntry -> List ArityEntry
+  build-arity-map-from-ast (defs) (i) (acc) =
+   if i == list-length defs then acc
    else let d = list-at defs i
-   in [ArityEntry {
+   in build-arity-map-from-ast defs (i + 1) (list-snoc acc (ArityEntry {
     name = d.name.value,
     arity = list-length (d.params)
-   }] ++ build-arity-map-from-ast defs (i + 1)
+   }))
 
   lookup-arity : List ArityEntry -> Text -> Integer
   lookup-arity (entries) (name) =
@@ -1358,16 +1343,16 @@ Section: Apply Chain
    let chain = collect-apply-chain e []
    in let root = chain.root
    in let args = chain.args
-     in when root
+   in when root
       if IrName (n) (ty) ->
        if is-builtin-name n then emit-builtin n args arities
        else if text-length n > 0 & is-upper-letter (char-at n 0) then let result-ty = ir-expr-type e
-         in let ctor-type-args = extract-ctor-type-args result-ty
-          in "new " ++ sanitize n ++ ctor-type-args ++ "(" ++ emit-apply-args args arities 0 ++ ")"
-        else let ar = lookup-arity arities n
-         in if ar > 1 & list-length args == ar then sanitize n ++ "(" ++ emit-apply-args args arities 0 ++ ")"
+   in let ctor-type-args = extract-ctor-type-args result-ty
+   in "new " ++ sanitize n ++ ctor-type-args ++ "(" ++ emit-apply-args args arities 0 ++ ")"
+   else let ar = lookup-arity arities n
+   in if ar > 1 & list-length args == ar then sanitize n ++ "(" ++ emit-apply-args args arities 0 ++ ")"
             else if ar > 1 & list-length args < ar then let remaining = ar - list-length args
-            in emit-partial-wrappers 0 remaining ++ sanitize n ++ "(" ++ emit-apply-args args arities 0 ++ ", " ++ emit-partial-params 0 remaining ++ ")"
+   in emit-partial-wrappers 0 remaining ++ sanitize n ++ "(" ++ emit-apply-args args arities 0 ++ ", " ++ emit-partial-params 0 remaining ++ ")"
            else emit-expr-curried e arities
       if _ -> emit-expr-curried e arities
 
@@ -1426,7 +1411,7 @@ Section: Expression Emission
 
   hex4 : Integer -> Text
   hex4 (n) =
-   "00" ++ hex-digit (n / 16) ++ hex-digit (n - (n / 16) * 16)
+   "00" ++ hex-digit (n / 16) ++ hex-digit (n - n / 16 * 16)
 
   escape-cce-char : Integer -> Text
   escape-cce-char (c) =
@@ -1452,7 +1437,6 @@ Section: Expression Emission
     if IrPowInt -> "^"
     if IrAddNum -> "+"
 
-
     if IrSubNum -> "-"
     if IrMulNum -> "*"
     if IrDivNum -> "/"
@@ -1474,7 +1458,7 @@ Section: Expression Emission
   emit-binary (op) (l) (r) (ty) (arities) =
    when op
     if IrAppendList -> "Enumerable.Concat(" ++ emit-expr l arities ++ ", " ++ emit-expr r arities ++ ").ToList()"
-    if IrConsList -> "new List<" ++ cs-type (ir-expr-type l) ++ "> \{ " ++ emit-expr l arities ++ " }.Concat(" ++ emit-expr r arities ++ ").ToList()"
+    if IrConsList -> "new List<" ++ cs-type (ir-expr-type l) ++ "> { " ++ emit-expr l arities ++ " }.Concat(" ++ emit-expr r arities ++ ").ToList()"
     if _ -> "(" ++ emit-expr l arities ++ " " ++ emit-bin-op op ++ " " ++ emit-expr r arities ++ ")"
 
   emit-let : Text -> CodexType -> IRExpr -> IRExpr -> List ArityEntry -> Text
@@ -1491,7 +1475,7 @@ Section: Expression Emission
   emit-list : List IRExpr -> CodexType -> List ArityEntry -> Text
   emit-list (elems) (ty) (arities) =
    if list-length elems == 0 then "new List<" ++ cs-type ty ++ ">()"
-   else "new List<" ++ cs-type ty ++ "> \{ " ++ emit-list-elems elems 0 arities ++ " }"
+   else "new List<" ++ cs-type ty ++ "> { " ++ emit-list-elems elems 0 arities ++ " }"
 
   emit-list-elems : List IRExpr -> Integer -> List ArityEntry -> Text
   emit-list-elems (elems) (i) (arities) =
@@ -1503,14 +1487,14 @@ Section: Expression Emission
   emit-match (scrut) (branches) (ty) (arities) =
    let arms = emit-match-arms branches 0 arities
    in let needs-wild = if has-any-catch-all branches 0 then False else True
-   in emit-expr scrut arities ++ " switch \{ " ++ arms ++ (if needs-wild then "_ => throw new InvalidOperationException(\"Non-exhaustive match\"), " else "") ++ "}"
+   in emit-expr scrut arities ++ " switch { " ++ arms ++ (if needs-wild then "_ => throw new InvalidOperationException(\"Non-exhaustive match\"), " else "") ++ "}"
 
   emit-match-arms : List IRBranch -> Integer -> List ArityEntry -> Text
   emit-match-arms (branches) (i) (arities) =
    if i == list-length branches then ""
    else let arm = list-at branches i
    in let this-arm = emit-pattern (arm.pattern) ++ " => " ++ emit-expr (arm.body) arities ++ ", "
-     in if is-catch-all (arm.pattern) then this-arm
+   in if is-catch-all (arm.pattern) then this-arm
         else this-arm ++ emit-match-arms branches (i + 1) arities
 
   is-catch-all : IRPat -> Boolean
@@ -1532,7 +1516,7 @@ Section: Expression Emission
     if IrVarPat (name) (ty) -> cs-type ty ++ " " ++ sanitize name
     if IrLitPat (text) (ty) -> text
     if IrCtorPat (name) (subs) (ty) ->
-     if list-length subs == 0 then sanitize name ++ " \{ }"
+     if list-length subs == 0 then sanitize name ++ " { }"
       else sanitize name ++ "(" ++ emit-sub-patterns subs 0 ++ ")"
     if IrWildPat -> "_"
 
@@ -1605,6 +1589,7 @@ Section: Expression Emission
 Page 2 of 2
 
 
+
 Chapter: CDX Binary Format Writer
 
  Produces CDX1 binaries per the Codex Binary specification. CDX is the
@@ -1614,7 +1599,7 @@ Chapter: CDX Binary Format Writer
  mapping a single byte of code.
 
  During development the crypto fields are zero-filled because the
- SHA-256 and Ed25519 primitives are post-MM4 dependencies. The structural
+ SHA-256 and Ed25519 primitives are not yet implemented. The structural
  layout is production-final; only the zero bytes change when crypto
  arrives. See docs/Designs/Codex.OS/CodexBinary.md for the full format spec
  and docs/Done/Bootstrap/CdxPhase2Notes.md for development-mode rationale.
@@ -1707,6 +1692,7 @@ Section: CDX Binary Builder
    build-cdx (cdx-flag-bare-metal + cdx-flag-needs-heap) entry-offset stack-size heap-size text rodata
 
 Page 1
+
 
 
 Chapter: Codex Emitter
@@ -1908,6 +1894,7 @@ Section: Binary Operators
    when e
     if IrBinary (child-op) (l2) (r2) (ty) -> if bin-op-prec child-op < bin-op-prec parent-op then "(" ++ emit-expr e ctors indent ++ ")"
     else emit-expr e ctors indent
+    if IrIf (c) (t) (el) (ty) -> "(" ++ emit-expr e ctors indent ++ ")"
     if _ -> emit-expr e ctors indent
 
   wrap-binary-right : IRBinaryOp -> IRExpr -> List Text -> Integer -> Text
@@ -2173,15 +2160,15 @@ Section: Constructor Name Collection
    if i == list-length type-defs then []
    else let td = list-at type-defs i
    in let names = when td
-     if AVariantTypeDef (name) (tparams) (ctors) -> collect-variant-ctor-names ctors 0
+     if AVariantTypeDef (name) (tparams) (ctors) -> collect-variant-ctor-names ctors 0 []
      if ARecordTypeDef (name) (tparams) (fields) -> [name.value]
    in names ++ collect-ctor-names type-defs (i + 1)
 
-  collect-variant-ctor-names : List AVariantCtorDef -> Integer -> List Text
-  collect-variant-ctor-names (ctors) (i) =
-   if i == list-length ctors then []
+  collect-variant-ctor-names : List AVariantCtorDef -> Integer -> List Text -> List Text
+  collect-variant-ctor-names (ctors) (i) (acc) =
+   if i == list-length ctors then acc
    else let c = list-at ctors i
-   in [c.name.value] ++ collect-variant-ctor-names ctors (i + 1)
+   in collect-variant-ctor-names ctors (i + 1) (list-snoc acc (c.name.value))
 
 Section: Utilities
 
@@ -2253,7 +2240,7 @@ Section: Chapter Emission
    in let next = filter-defs defs ctor-names (i + 1) len
    in if skip-def d ctor-names then next acc
       else if has-def-named acc (d.name) 0 (list-length acc) then let dominated = def-score d > def-score-named acc (d.name) 0 (list-length acc)
-           in if dominated then next (replace-def acc (d.name) d 0 (list-length acc))
+   in if dominated then next (replace-def acc (d.name) d 0 (list-length acc))
               else next acc
       else next (list-snoc acc d)
 
@@ -2307,6 +2294,7 @@ Section: Chapter Emission
    else list-set-loop xs idx val (i + 1) len (list-snoc acc (list-at xs i))
 
 Page 1
+
 
 
 Chapter: ELF Writer
@@ -2616,16 +2604,17 @@ Section: Codegen Helpers
 Page 1
 
 
+
 Chapter: X86-64 Code Generator
 
- Bare-metal x86-64 code generator for the Second Bootstrap Phase 3.
+ Bare-metal x86-64 code generator for the Second Bootstrap.
  Takes an IRChapter and produces a bootable ELF binary as List Integer.
  Uses the instruction encoder from X86_64Encoder.codex and the ELF
  builder from ElfWriter.codex. All codegen state is threaded through
  functions as an immutable record.
 
- M3.1 scope: a program whose main returns an integer literal compiles
- to a bare-metal ELF that boots in QEMU and prints the value to serial.
+ Covers expressions, functions, closures, pattern matching, records,
+ lists, strings, and tail call optimization.
 
 Section: Record Types
 
@@ -3051,9 +3040,9 @@ Section: Function Emission
    else let p = list-at params i
    in let loc = alloc-local st
    in let st1 = if i < 6 then store-local (loc.state) (loc.reg) (list-at arg-regs i)
-     else let stack-offset = 16 + (i - 6) * 8
-      in let tmp = alloc-temp (loc.state)
-      in store-local (st-append-text (tmp.state) (mov-load (tmp.reg) reg-rbp stack-offset)) (loc.reg) (tmp.reg)
+   else let stack-offset = 16 + (i - 6) * 8
+   in let tmp = alloc-temp (loc.state)
+   in store-local (st-append-text (tmp.state) (mov-load (tmp.reg) reg-rbp stack-offset)) (loc.reg) (tmp.reg)
    in bind-params (add-local st1 (p.name) (loc.reg)) params (i + 1)
 
   is-self-call : IRExpr -> Text -> Boolean
@@ -3139,9 +3128,9 @@ Section: Function Emission
    in let st4 = bind-params st3 (def.params) 0
    in let is-tco = should-tco def
    in let st5 = if is-tco then let tco-alloc = pre-alloc-tco-temps st4 0 (list-length (def.params)) []
-     in let st-a = tco-alloc.alloc-state
-     in let p-locals = collect-param-locals (st-a.locals) (def.params) 0 []
-     in CodegenState {
+   in let st-a = tco-alloc.alloc-state
+   in let p-locals = collect-param-locals (st-a.locals) (def.params) 0 []
+   in CodegenState {
       text = st-a.text,
       rodata = st-a.rodata,
       func-offsets = st-a.func-offsets,
@@ -3165,10 +3154,10 @@ Section: Function Emission
      }
     else st4
    in let result = emit-expr st5 (def.body)
-   in let st6 = if (result.reg) == reg-rax then result.state
+   in let st6 = if result.reg == reg-rax then result.state
     else st-append-text (result.state) (mov-rr reg-rax (result.reg))
    in let st7 = emit-epilogue st6
-   in let frame-size = align-16 ((st7.spill-count) * 8)
+   in let frame-size = align-16 (st7.spill-count * 8)
    in st-with-text st7 (patch-i32-at (st7.text) (frame-patch-pos + 3) frame-size)
 
   emit-all-defs : CodegenState -> List IRDef -> Integer -> CodegenState
@@ -3427,7 +3416,7 @@ Section: Builtin Emission
 
  Wires Codex operations to inline sequences or runtime helper calls.
  All builtins here operate on CCE natively. I/O boundary builtins
- (print-line, read-file, write-file) are deferred to Phase 7.
+ (print-line, read-file, write-file) are not yet implemented.
 
   emit-helper-call-1 : CodegenState -> List IRExpr -> Text -> EmitResult
   emit-helper-call-1 (st) (args) (helper) =
@@ -3523,7 +3512,7 @@ Section: Builtin Emission
    in let st3 = st-append-text st2 (movzx-byte (r1.reg) (r1.reg) 8)
    in EmitResult {
    state = st3,
-   reg = (r1.reg)
+   reg = r1.reg
   }
 
   emit-char-code-at-builtin : CodegenState -> List IRExpr -> EmitResult
@@ -3786,21 +3775,21 @@ Section: Function Application
   emit-apply : CodegenState -> IRExpr -> IRExpr -> CodexType -> EmitResult
   emit-apply (st) (func-expr) (arg-expr) (result-ty) =
    let full-expr = IrApply func-expr arg-expr result-ty
-   in if (st.tco.active) & (st.tco.in-tail-pos) & is-self-call full-expr (st.tco.current-func) then emit-tail-call st func-expr arg-expr
-      else let flat = flatten-apply func-expr [arg-expr]
-      in if is-builtin (flat.func-name) then emit-builtin st (flat.func-name) (flat.args)
+   in if st.tco.active & st.tco.in-tail-pos & is-self-call full-expr (st.tco.current-func) then emit-tail-call st func-expr arg-expr
+   else let flat = flatten-apply func-expr [arg-expr]
+   in if is-builtin (flat.func-name) then emit-builtin st (flat.func-name) (flat.args)
          else when result-ty
           if SumTy (sname) (ctors) ->
            let tag = find-ctor-tag ctors (flat.func-name) 0
-           in if tag >= 0 then emit-sum-ctor st (flat.args) tag
+   in if tag >= 0 then emit-sum-ctor st (flat.args) tag
               else emit-direct-call st flat
           if FunTy (pt) (rt) ->
            let is-local = lookup-local (st.locals) (flat.func-name) >= 0
-           in if is-local then emit-indirect-call st flat
+   in if is-local then emit-indirect-call st flat
               else emit-partial-application st (flat.func-name) (flat.args)
           if _ ->
            let is-local = lookup-local (st.locals) (flat.func-name) >= 0
-           in if is-local then emit-indirect-call st flat
+   in if is-local then emit-indirect-call st flat
               else emit-direct-call st flat
 
   emit-direct-call : CodegenState -> FlatApply -> EmitResult
@@ -4025,9 +4014,9 @@ Section: Record Emission
    else let tf = list-at type-fields i
    in let slot = find-field-local-slot field-locals (tf.name.value) 0
    in if slot >= 0 then let val = load-local st slot
-      in let ptr = load-local (val.state) ptr-loc
-      in let st1 = st-append-text (ptr.state) (mov-store (ptr.reg) (val.reg) (i * 8))
-      in emit-store-record-fields-by-type st1 type-fields field-locals ptr-loc (i + 1)
+   in let ptr = load-local (val.state) ptr-loc
+   in let st1 = st-append-text (ptr.state) (mov-store (ptr.reg) (val.reg) (i * 8))
+   in emit-store-record-fields-by-type st1 type-fields field-locals ptr-loc (i + 1)
      else emit-store-record-fields-by-type st type-fields field-locals ptr-loc (i + 1)
 
   emit-store-record-fields-by-list : CodegenState -> List FieldLocal -> Integer -> Integer -> CodegenState
@@ -4098,7 +4087,7 @@ Section: Pattern Matching
    in let body-result = emit-expr (pat-result.state) (branch.body)
    in let st1 = store-local (body-result.state) result-loc (body-result.reg)
    in let st2 = if needs-jmp-end then let jmp-pos = list-length (st1.text)
-     in MatchBranchState {
+   in MatchBranchState {
       cg-state = st-append-text st1 (jmp 0),
       end-patches = list-snoc (mbs.end-patches) jmp-pos
      }
@@ -4108,7 +4097,7 @@ Section: Pattern Matching
     }
    in let st3 = if pat-result.next-branch-patch >= 0 then MatchBranchState {
      cg-state = patch-jcc-at (st2.cg-state) (pat-result.next-branch-patch) (list-length (st2.cg-state.text)),
-     end-patches = (st2.end-patches)
+     end-patches = st2.end-patches
     }
     else st2
    in st3
@@ -4161,11 +4150,11 @@ Section: Pattern Matching
    in when sub
      if IrVarPat (name) (ty) ->
       let field-loc = alloc-local st
-      in let scrut-load = load-local (field-loc.state) scrut-loc
-      in let field-val = alloc-temp (scrut-load.state)
-      in let st1 = st-append-text (field-val.state) (mov-load (field-val.reg) (scrut-load.reg) ((1 + i) * 8))
-      in let st2 = store-local st1 (field-loc.reg) (field-val.reg)
-      in bind-ctor-fields (add-local st2 name (field-loc.reg)) scrut-loc sub-pats (i + 1)
+   in let scrut-load = load-local (field-loc.state) scrut-loc
+   in let field-val = alloc-temp (scrut-load.state)
+   in let st1 = st-append-text (field-val.state) (mov-load (field-val.reg) (scrut-load.reg) ((1 + i) * 8))
+   in let st2 = store-local st1 (field-loc.reg) (field-val.reg)
+   in bind-ctor-fields (add-local st2 name (field-loc.reg)) scrut-loc sub-pats (i + 1)
      if _ -> bind-ctor-fields st scrut-loc sub-pats (i + 1)
 
   patch-match-end-jumps : CodegenState -> List Integer -> Integer -> CodegenState
@@ -4459,7 +4448,7 @@ Section: Chapter Entry Point
    in let st2 = emit-start st1
    in let start-offset = lookup-func-offset (st2.func-offsets) "__start"
    in let start-addr = bare-metal-load-addr + start-offset
-   in let far-jump-entry = make-i32-patch ((tramp.far-jump-patch-pos) + 1) start-addr
+   in let far-jump-entry = make-i32-patch (tramp.far-jump-patch-pos + 1) start-addr
    in let call-entries = collect-call-patches (st2.call-patches) (st2.func-offsets) 0 []
    in let addr-entries = collect-func-addr-patches (st2.func-addr-fixups) (st2.func-offsets) bare-metal-load-addr 0 []
    in let all-patches = [far-jump-entry] ++ call-entries ++ addr-entries
@@ -4467,6 +4456,7 @@ Section: Chapter Entry Point
    in build-elf-32-bare (st3.text) (st3.rodata) 12
 
 Page 1 of 3
+
 
 
 Chapter: X86-64 Code Generator
@@ -4480,13 +4470,13 @@ Chapter: X86-64 Code Generator
  reg-and-7 becomes int-mod reg 8. Shift left by 6 becomes m * 64.
  Disjoint bit-or becomes addition. Shift right by 8 becomes floor-div
  value 256. See docs/Done/Compiler/LanguageUpdates.md for the plan to add
- proper bitwise builtins post-MM4.
+ proper bitwise builtins.
 
 Section: Arithmetic Helpers
 
   int-mod : Integer -> Integer -> Integer
   int-mod (n) (d) =
-   let r = n - (n / d) * d
+   let r = n - n / d * d
    in if r < 0 then r + d else r
 
   floor-div : Integer -> Integer -> Integer
@@ -4513,11 +4503,11 @@ Section: Encoding Primitives
 
   modrm : Integer -> Integer -> Integer -> Integer
   modrm (m) (reg) (rm) =
-   m * 64 + (int-mod reg 8) * 8 + int-mod rm 8
+   m * 64 + int-mod reg 8 * 8 + int-mod rm 8
 
   sib : Integer -> Integer -> Integer -> Integer
   sib (scale) (index) (base-reg) =
-   scale * 64 + (int-mod index 8) * 8 + int-mod base-reg 8
+   scale * 64 + int-mod index 8 * 8 + int-mod base-reg 8
 
 Section: Immediate Encoding
 
@@ -4546,7 +4536,7 @@ Section: Memory Operand Encoding
    in let needs-sib = rm-low == 4
    in let rbp-base = rm-low == 5
    in let sib-byte = if needs-sib then [sib 0 4 rm-low] else []
-   in if offset == 0 & (rbp-base == False) then [modrm 0 reg rm] ++ sib-byte
+   in if offset == 0 & rbp-base == False then [modrm 0 reg rm] ++ sib-byte
       else if offset >= 0 - 128 & offset <= 127 then [modrm 1 reg rm] ++ sib-byte ++ write-i8 offset
       else [modrm 2 reg rm] ++ sib-byte ++ write-i32 offset
 
@@ -4888,9 +4878,10 @@ Section: Privileged Instructions
 Page 2 of 3
 
 
+
 Chapter: X86-64 Code Generator
 
- Runtime helper functions for the Second Bootstrap Phase 4. Each
+ Runtime helper functions for the Second Bootstrap. Each
  helper is a hand-assembled x86-64 function emitted as byte sequences
  into the text section. Helpers are registered in func-offsets so the
  call patcher resolves calls to them. Emitted before user code in the
@@ -6435,6 +6426,7 @@ Section: Helpers Entry Point
 Page 3 of 3
 
 
+
 Chapter: String Escape Smoke Tests
 
  Systematic tests for bare-metal string escape behavior.
@@ -6737,6 +6729,7 @@ Section: Prefix Before Two Newlines
 Page 1
 
 
+
 Chapter: IR Chapter
 
  The intermediate representation sits between the typed AST and code
@@ -6854,6 +6847,7 @@ Section: IR Expression Type
 Page 1
 
 
+
 Chapter: Lowering
 
  Transforms the typed AST into the intermediate representation.
@@ -6904,10 +6898,10 @@ Section: Expression Lowering
         if RecordTy (rname) (rfields) -> lookup-record-field rfields (field.value)
         if ConstructedTy (cname) (cargs) ->
          let ctor-raw = lookup-type (ctx.types) (cname.value)
-         in let resolved-record = when ctor-raw
+     in let resolved-record = when ctor-raw
             if ErrorTy -> ErrorTy
             if _ -> strip-fun-args-lower (deep-resolve (ctx.ust) ctor-raw)
-         in when resolved-record
+     in when resolved-record
           if RecordTy (rn) (rf) -> lookup-record-field rf (field.value)
           if _ -> ty
         if _ -> ty
@@ -6926,8 +6920,8 @@ Section: Expression Lowering
     if ErrorTy -> IrName name ty
     if _ ->
      let resolved = deep-resolve (ctx.ust) raw
-     in let stripped = strip-forall-ty resolved
-     in IrName name stripped
+   in let stripped = strip-forall-ty resolved
+   in IrName name stripped
 
   lower-literal : Text -> LiteralKind -> IRExpr
   lower-literal (text) (kind) =
@@ -7141,7 +7135,6 @@ Section: Collections and Do
       if _ -> record-ty
    in IrRecord (name.value) (lower-record-fields-typed fields actual-ty ctx 0 (list-length fields)) actual-ty
 
-
   lower-record-fields-typed : List AFieldExpr -> CodexType -> LowerCtx -> Integer -> Integer -> List IRFieldVal
   lower-record-fields-typed (fields) (record-ty) (ctx) (i) (len) =
    lower-record-fields-acc fields record-ty ctx i len []
@@ -7154,7 +7147,7 @@ Section: Collections and Do
        if RecordTy (rname) (rfields) -> lookup-record-field rfields (f.name.value)
        if _ -> ErrorTy
    in lower-record-fields-acc fields record-ty ctx (i + 1) len (list-snoc acc (IRFieldVal {
-    name = (f.name.value),
+    name = f.name.value,
     value = lower-expr (f.value) field-expected ctx
    }))
 
@@ -7173,15 +7166,15 @@ Section: Collections and Do
    in when s
      if ADoBindStmt (name) (val) ->
       let val-ir = lower-expr val ty ctx
-      in let val-ty = ir-expr-type val-ir
-      in let ctx2 = LowerCtx {
+   in let val-ty = ir-expr-type val-ir
+   in let ctx2 = LowerCtx {
        types = [TypeBinding {
         name = name.value,
         bound-type = val-ty
        }] ++ ctx.types,
        ust = ctx.ust
       }
-      in lower-do-stmts-acc stmts ty ctx2 (i + 1) len (list-snoc acc (IrDoBind (name.value) val-ty val-ir))
+   in lower-do-stmts-acc stmts ty ctx2 (i + 1) len (list-snoc acc (IrDoBind (name.value) val-ty val-ir))
      if ADoExprStmt (e) ->
       lower-do-stmts-acc stmts ty ctx (i + 1) len (list-snoc acc (IrDoExec (lower-expr e ty ctx)))
 
@@ -7220,7 +7213,7 @@ Section: Definition Lowering
    in let ret-type = get-return-type-n stripped (list-length (d.params))
    in let ctx = build-def-ctx types ust (d.params) stripped
    in IRDef {
-    name = (d.name.value),
+    name = d.name.value,
     params = params,
     type-val = full-type,
     body = lower-expr (d.body) ret-type ctx,
@@ -7243,7 +7236,7 @@ Section: Definition Lowering
    in let rest-ty = peel-fun-return ty
    in let ctx2 = LowerCtx {
     types = [TypeBinding {
-     name = (p.name.value),
+     name = p.name.value,
      bound-type = param-ty
     }] ++ ctx.types,
     ust = ctx.ust
@@ -7261,7 +7254,7 @@ Section: Definition Lowering
    in let param-ty = peel-fun-param ty
    in let rest-ty = peel-fun-return ty
    in lower-def-params-acc params rest-ty (i + 1) (list-snoc acc (IRParam {
-    name = (p.name.value),
+    name = p.name.value,
     type-val = param-ty
    }))
 
@@ -7294,6 +7287,7 @@ Section: Definition Lowering
    else lower-defs-acc defs types ust (i + 1) (list-snoc acc (lower-def (list-at defs i) types ust))
 
 Page 1 of 2
+
 
 
 Chapter: Lowering
@@ -7500,6 +7494,7 @@ Section: Binary Op Lowering
 Page 2 of 2
 
 
+
 Chapter: Chapter Scoper
 
  Resolves name collisions across chapters by prefixing duplicate
@@ -7514,14 +7509,14 @@ Section: Chapter Assignment
    chapter-slug : Text
   }
 
-  assign-chapters : List DefHeader -> Text -> Integer -> List ChapterAssignment
-  assign-chapters (headers) (current-chapter) (i) =
-   if i == list-length headers then []
+  assign-chapters : List DefHeader -> Text -> Integer -> List ChapterAssignment -> List ChapterAssignment
+  assign-chapters (headers) (current-chapter) (i) (acc) =
+   if i == list-length headers then acc
    else let hdr = list-at headers i
-   in [ChapterAssignment {
-    def-name = (hdr.name.text),
+   in assign-chapters headers current-chapter (i + 1) (list-snoc acc (ChapterAssignment {
+    def-name = hdr.name.text,
     chapter-slug = current-chapter
-   }] ++ assign-chapters headers current-chapter (i + 1)
+   }))
 
 Section: Collision Detection
 
@@ -7541,7 +7536,7 @@ Section: Collision Detection
   appears-in-different-chapter (assignments) (name) (chapter-slug) (i) (len) =
    if i == len then False
    else let a = list-at assignments i
-   in if (a.def-name) == name then if (a.chapter-slug) /= chapter-slug then True
+   in if a.def-name == name then if a.chapter-slug /= chapter-slug then True
       else appears-in-different-chapter assignments name chapter-slug (i + 1) len
       else appears-in-different-chapter assignments name chapter-slug (i + 1) len
 
@@ -7568,7 +7563,7 @@ Section: Name Mangling
   lookup-chapter-loop (assignments) (name) (i) (len) =
    if i == len then ""
    else let a = list-at assignments i
-   in if (a.def-name) == name then a.chapter-slug
+   in if a.def-name == name then a.chapter-slug
       else lookup-chapter-loop assignments name (i + 1) len
 
 Section: Rename Map
@@ -7603,7 +7598,7 @@ Section: Apply Rename
   rename-lookup-loop (entries) (name) (i) (len) =
    if i == len then name
    else let e = list-at entries i
-   in if (e.original) == name then e.mangled
+   in if e.original == name then e.mangled
       else rename-lookup-loop entries name (i + 1) len
 
   is-colliding : List Text -> Text -> Boolean
@@ -7624,7 +7619,7 @@ Section: IR Expression Renaming
   remove-rename-loop (entries) (name) (i) (len) (acc) =
    if i == len then acc
    else let e = list-at entries i
-   in if (e.original) == name then remove-rename-loop entries name (i + 1) len acc
+   in if e.original == name then remove-rename-loop entries name (i + 1) len acc
       else remove-rename-loop entries name (i + 1) len (list-snoc acc e)
 
   remove-renames-for-params : List RenameEntry -> List IRParam -> Integer -> List RenameEntry
@@ -7652,11 +7647,11 @@ Section: IR Expression Renaming
     if IrFieldAccess (rec) (field) (ty) -> IrFieldAccess (rename-ir-expr rn rec) field ty
     if IrLet (nm) (ty) (val) (body) -> rename-ir-let rn nm ty val body
     if IrLambda (params) (body) (ty) -> rename-ir-lambda rn params body ty
-    if IrMatch (scrut) (branches) (ty) -> IrMatch (rename-ir-expr rn scrut) (rename-ir-branches rn branches 0) ty
-    if IrList (elems) (ty) -> IrList (rename-ir-exprs rn elems 0) ty
-    if IrRecord (nm) (fields) (ty) -> IrRecord nm (rename-ir-fields rn fields 0) ty
-    if IrDo (stmts) (ty) -> IrDo (rename-ir-do-stmts rn stmts 0) ty
-    if IrHandle (eff) (body) (clauses) (ty) -> IrHandle eff (rename-ir-expr rn body) (rename-ir-handle-clauses rn clauses 0) ty
+    if IrMatch (scrut) (branches) (ty) -> IrMatch (rename-ir-expr rn scrut) (rename-ir-branches rn branches 0 []) ty
+    if IrList (elems) (ty) -> IrList (rename-ir-exprs rn elems 0 []) ty
+    if IrRecord (nm) (fields) (ty) -> IrRecord nm (rename-ir-fields rn fields 0 []) ty
+    if IrDo (stmts) (ty) -> IrDo (rename-ir-do-stmts rn stmts 0 []) ty
+    if IrHandle (eff) (body) (clauses) (ty) -> IrHandle eff (rename-ir-expr rn body) (rename-ir-handle-clauses rn clauses 0 []) ty
 
   rename-ir-let : List RenameEntry -> Text -> CodexType -> IRExpr -> IRExpr -> IRExpr
   rename-ir-let (rn) (nm) (ty) (val) (body) =
@@ -7670,29 +7665,29 @@ Section: IR Expression Renaming
 
 Section: IR Collection Renaming
 
-  rename-ir-exprs : List RenameEntry -> List IRExpr -> Integer -> List IRExpr
-  rename-ir-exprs (rn) (elems) (i) =
-   if i == list-length elems then []
-   else [rename-ir-expr rn (list-at elems i)] ++ rename-ir-exprs rn elems (i + 1)
+  rename-ir-exprs : List RenameEntry -> List IRExpr -> Integer -> List IRExpr -> List IRExpr
+  rename-ir-exprs (rn) (elems) (i) (acc) =
+   if i == list-length elems then acc
+   else rename-ir-exprs rn elems (i + 1) (list-snoc acc (rename-ir-expr rn (list-at elems i)))
 
-  rename-ir-fields : List RenameEntry -> List IRFieldVal -> Integer -> List IRFieldVal
-  rename-ir-fields (rn) (fields) (i) =
-   if i == list-length fields then []
+  rename-ir-fields : List RenameEntry -> List IRFieldVal -> Integer -> List IRFieldVal -> List IRFieldVal
+  rename-ir-fields (rn) (fields) (i) (acc) =
+   if i == list-length fields then acc
    else let f = list-at fields i
-   in [IRFieldVal {
+   in rename-ir-fields rn fields (i + 1) (list-snoc acc (IRFieldVal {
     name = f.name,
     value = rename-ir-expr rn (f.value)
-   }] ++ rename-ir-fields rn fields (i + 1)
+   }))
 
-  rename-ir-branches : List RenameEntry -> List IRBranch -> Integer -> List IRBranch
-  rename-ir-branches (rn) (branches) (i) =
-   if i == list-length branches then []
+  rename-ir-branches : List RenameEntry -> List IRBranch -> Integer -> List IRBranch -> List IRBranch
+  rename-ir-branches (rn) (branches) (i) (acc) =
+   if i == list-length branches then acc
    else let b = list-at branches i
    in let rn2 = remove-renames-for-pat rn (b.pattern)
-   in [IRBranch {
+   in rename-ir-branches rn branches (i + 1) (list-snoc acc (IRBranch {
     pattern = b.pattern,
     body = rename-ir-expr rn2 (b.body)
-   }] ++ rename-ir-branches rn branches (i + 1)
+   }))
 
   remove-renames-for-pat : List RenameEntry -> IRPat -> List RenameEntry
   remove-renames-for-pat (rn) (p) =
@@ -7707,27 +7702,27 @@ Section: IR Collection Renaming
    if i == list-length pats then rn
    else remove-renames-for-pats (remove-renames-for-pat rn (list-at pats i)) pats (i + 1)
 
-  rename-ir-do-stmts : List RenameEntry -> List IRDoStmt -> Integer -> List IRDoStmt
-  rename-ir-do-stmts (rn) (stmts) (i) =
-   if i == list-length stmts then []
+  rename-ir-do-stmts : List RenameEntry -> List IRDoStmt -> Integer -> List IRDoStmt -> List IRDoStmt
+  rename-ir-do-stmts (rn) (stmts) (i) (acc) =
+   if i == list-length stmts then acc
    else let s = list-at stmts i
    in when s
     if IrDoBind (nm) (ty) (expr) ->
      let rn2 = remove-rename rn nm
-     in [IrDoBind nm ty (rename-ir-expr rn expr)] ++ rename-ir-do-stmts rn2 stmts (i + 1)
+   in rename-ir-do-stmts rn2 stmts (i + 1) (list-snoc acc (IrDoBind nm ty (rename-ir-expr rn expr)))
     if IrDoExec (expr) ->
-     [IrDoExec (rename-ir-expr rn expr)] ++ rename-ir-do-stmts rn stmts (i + 1)
+     rename-ir-do-stmts rn stmts (i + 1) (list-snoc acc (IrDoExec (rename-ir-expr rn expr)))
 
-  rename-ir-handle-clauses : List RenameEntry -> List IRHandleClause -> Integer -> List IRHandleClause
-  rename-ir-handle-clauses (rn) (clauses) (i) =
-   if i == list-length clauses then []
+  rename-ir-handle-clauses : List RenameEntry -> List IRHandleClause -> Integer -> List IRHandleClause -> List IRHandleClause
+  rename-ir-handle-clauses (rn) (clauses) (i) (acc) =
+   if i == list-length clauses then acc
    else let c = list-at clauses i
    in let rn2 = remove-rename rn (c.resume-name)
-   in [IRHandleClause {
+   in rename-ir-handle-clauses rn clauses (i + 1) (list-snoc acc (IRHandleClause {
     op-name = c.op-name,
     resume-name = c.resume-name,
     body = rename-ir-expr rn2 (c.body)
-   }] ++ rename-ir-handle-clauses rn clauses (i + 1)
+   }))
 
 Section: Chapter Scoping Pipeline
 
@@ -7735,14 +7730,14 @@ Section: Chapter Scoping Pipeline
  rename maps, and provides functions for the streaming pipeline to
  rename def names and body expressions.
 
-  build-all-assignments : List DefHeader -> Integer -> List ChapterAssignment
-  build-all-assignments (headers) (i) =
-   if i == list-length headers then []
+  build-all-assignments : List DefHeader -> Integer -> List ChapterAssignment -> List ChapterAssignment
+  build-all-assignments (headers) (i) (acc) =
+   if i == list-length headers then acc
    else let hdr = list-at headers i
-   in [ChapterAssignment {
-    def-name = (hdr.name.text),
+   in build-all-assignments headers (i + 1) (list-snoc acc (ChapterAssignment {
+    def-name = hdr.name.text,
     chapter-slug = hdr.chapter-slug
-   }] ++ build-all-assignments headers (i + 1)
+   }))
 
   scope-def-name : List Text -> List ChapterAssignment -> Text -> Text -> Text
   scope-def-name (colliding) (assignments) (name) (cur-chap) =
@@ -7758,9 +7753,9 @@ Section: Chapter Scoping Pipeline
    if i == len then acc
    else let a = list-at assignments i
    in if is-colliding colliding (a.def-name)
-      then if (a.chapter-slug) == cur-chap
+      then if a.chapter-slug == cur-chap
            then let cleaned = remove-rename acc (a.def-name)
-                in build-mod-renames colliding assignments cur-chap (i + 1) len (list-snoc cleaned (RenameEntry {
+   in build-mod-renames colliding assignments cur-chap (i + 1) len (list-snoc cleaned (RenameEntry {
                  original = a.def-name,
                  mangled = mangle-name cur-chap (a.def-name)
                 }))
@@ -7792,27 +7787,27 @@ Section: Global Scope (non-streaming)
   scope-ir-chapter (ir) (colliding) (assignments) =
    IRChapter {
     name = ir.name,
-    defs = scope-ir-defs (ir.defs) colliding assignments "" [] 0,
+    defs = scope-ir-defs (ir.defs) colliding assignments "" [] 0 [],
     chapter-title = ir.chapter-title,
     prose = ir.prose,
     section-titles = ir.section-titles
    }
 
-  scope-ir-defs : List IRDef -> List Text -> List ChapterAssignment -> Text -> List RenameEntry -> Integer -> List IRDef
-  scope-ir-defs (defs) (colliding) (assignments) (cur-slug) (cur-rn) (i) =
-   if i == list-length defs then []
+  scope-ir-defs : List IRDef -> List Text -> List ChapterAssignment -> Text -> List RenameEntry -> Integer -> List IRDef -> List IRDef
+  scope-ir-defs (defs) (colliding) (assignments) (cur-slug) (cur-rn) (i) (acc) =
+   if i == list-length defs then acc
    else let d = list-at defs i
    in let rn = if d.chapter-slug == cur-slug then cur-rn
       else build-chapter-rename-map colliding assignments (d.chapter-slug)
    in let new-name = rename-lookup rn (d.name)
    in let new-body = rename-ir-expr rn (d.body)
-   in [IRDef {
+   in scope-ir-defs defs colliding assignments (d.chapter-slug) rn (i + 1) (list-snoc acc (IRDef {
     name = new-name,
     params = d.params,
     type-val = d.type-val,
     body = new-body,
     chapter-slug = d.chapter-slug
-   }] ++ scope-ir-defs defs colliding assignments (d.chapter-slug) rn (i + 1)
+   }))
 
 Section: AST Expression Renaming
 
@@ -7832,27 +7827,27 @@ Section: AST Expression Renaming
     if AIfExpr (c) (t) (el) -> AIfExpr (rename-aexpr rn c) (rename-aexpr rn t) (rename-aexpr rn el)
     if ALetExpr (binds) (body) -> rename-alet rn binds body
     if ALambdaExpr (params) (body) -> rename-alambda rn params body
-    if AMatchExpr (scrut) (arms) -> AMatchExpr (rename-aexpr rn scrut) (rename-amatch-arms rn arms 0)
-    if AListExpr (elems) -> AListExpr (rename-aexprs rn elems 0)
-    if ARecordExpr (name) (fields) -> ARecordExpr name (rename-afields rn fields 0)
+    if AMatchExpr (scrut) (arms) -> AMatchExpr (rename-aexpr rn scrut) (rename-amatch-arms rn arms 0 [])
+    if AListExpr (elems) -> AListExpr (rename-aexprs rn elems 0 [])
+    if ARecordExpr (name) (fields) -> ARecordExpr name (rename-afields rn fields 0 [])
     if AFieldAccess (rec) (field) -> AFieldAccess (rename-aexpr rn rec) field
-    if ADoExpr (stmts) -> ADoExpr (rename-ado-stmts rn stmts 0)
-    if AHandleExpr (eff) (body) (clauses) -> AHandleExpr eff (rename-aexpr rn body) (rename-ahandle-clauses rn clauses 0)
+    if ADoExpr (stmts) -> ADoExpr (rename-ado-stmts rn stmts 0 [])
+    if AHandleExpr (eff) (body) (clauses) -> AHandleExpr eff (rename-aexpr rn body) (rename-ahandle-clauses rn clauses 0 [])
 
   rename-alet : List RenameEntry -> List ALetBind -> AExpr -> AExpr
   rename-alet (rn) (binds) (body) =
-   let new-binds = rename-alet-binds rn binds 0
+   let new-binds = rename-alet-binds rn binds 0 []
    in let rn2 = remove-renames-for-let-binds rn binds 0
    in ALetExpr new-binds (rename-aexpr rn2 body)
 
-  rename-alet-binds : List RenameEntry -> List ALetBind -> Integer -> List ALetBind
-  rename-alet-binds (rn) (binds) (i) =
-   if i == list-length binds then []
+  rename-alet-binds : List RenameEntry -> List ALetBind -> Integer -> List ALetBind -> List ALetBind
+  rename-alet-binds (rn) (binds) (i) (acc) =
+   if i == list-length binds then acc
    else let b = list-at binds i
-   in [ALetBind {
+   in rename-alet-binds rn binds (i + 1) (list-snoc acc (ALetBind {
     name = b.name,
     value = rename-aexpr rn (b.value)
-   }] ++ rename-alet-binds rn binds (i + 1)
+   }))
 
   remove-renames-for-let-binds : List RenameEntry -> List ALetBind -> Integer -> List RenameEntry
   remove-renames-for-let-binds (rn) (binds) (i) =
@@ -7869,29 +7864,29 @@ Section: AST Expression Renaming
    if i == list-length names then rn
    else remove-renames-for-names (remove-rename rn ((list-at names i).value)) names (i + 1)
 
-  rename-aexprs : List RenameEntry -> List AExpr -> Integer -> List AExpr
-  rename-aexprs (rn) (elems) (i) =
-   if i == list-length elems then []
-   else [rename-aexpr rn (list-at elems i)] ++ rename-aexprs rn elems (i + 1)
+  rename-aexprs : List RenameEntry -> List AExpr -> Integer -> List AExpr -> List AExpr
+  rename-aexprs (rn) (elems) (i) (acc) =
+   if i == list-length elems then acc
+   else rename-aexprs rn elems (i + 1) (list-snoc acc (rename-aexpr rn (list-at elems i)))
 
-  rename-afields : List RenameEntry -> List AFieldExpr -> Integer -> List AFieldExpr
-  rename-afields (rn) (fields) (i) =
-   if i == list-length fields then []
+  rename-afields : List RenameEntry -> List AFieldExpr -> Integer -> List AFieldExpr -> List AFieldExpr
+  rename-afields (rn) (fields) (i) (acc) =
+   if i == list-length fields then acc
    else let f = list-at fields i
-   in [AFieldExpr {
+   in rename-afields rn fields (i + 1) (list-snoc acc (AFieldExpr {
     name = f.name,
     value = rename-aexpr rn (f.value)
-   }] ++ rename-afields rn fields (i + 1)
+   }))
 
-  rename-amatch-arms : List RenameEntry -> List AMatchArm -> Integer -> List AMatchArm
-  rename-amatch-arms (rn) (arms) (i) =
-   if i == list-length arms then []
+  rename-amatch-arms : List RenameEntry -> List AMatchArm -> Integer -> List AMatchArm -> List AMatchArm
+  rename-amatch-arms (rn) (arms) (i) (acc) =
+   if i == list-length arms then acc
    else let a = list-at arms i
    in let rn2 = remove-renames-for-apat rn (a.pattern)
-   in [AMatchArm {
+   in rename-amatch-arms rn arms (i + 1) (list-snoc acc (AMatchArm {
     pattern = a.pattern,
     body = rename-aexpr rn2 (a.body)
-   }] ++ rename-amatch-arms rn arms (i + 1)
+   }))
 
   remove-renames-for-apat : List RenameEntry -> APat -> List RenameEntry
   remove-renames-for-apat (rn) (p) =
@@ -7906,27 +7901,27 @@ Section: AST Expression Renaming
    if i == list-length pats then rn
    else remove-renames-for-apats (remove-renames-for-apat rn (list-at pats i)) pats (i + 1)
 
-  rename-ado-stmts : List RenameEntry -> List ADoStmt -> Integer -> List ADoStmt
-  rename-ado-stmts (rn) (stmts) (i) =
-   if i == list-length stmts then []
+  rename-ado-stmts : List RenameEntry -> List ADoStmt -> Integer -> List ADoStmt -> List ADoStmt
+  rename-ado-stmts (rn) (stmts) (i) (acc) =
+   if i == list-length stmts then acc
    else let s = list-at stmts i
    in when s
     if ADoBindStmt (nm) (expr) ->
      let rn2 = remove-rename rn (nm.value)
-     in [ADoBindStmt nm (rename-aexpr rn expr)] ++ rename-ado-stmts rn2 stmts (i + 1)
+   in rename-ado-stmts rn2 stmts (i + 1) (list-snoc acc (ADoBindStmt nm (rename-aexpr rn expr)))
     if ADoExprStmt (expr) ->
-     [ADoExprStmt (rename-aexpr rn expr)] ++ rename-ado-stmts rn stmts (i + 1)
+     rename-ado-stmts rn stmts (i + 1) (list-snoc acc (ADoExprStmt (rename-aexpr rn expr)))
 
-  rename-ahandle-clauses : List RenameEntry -> List AHandleClause -> Integer -> List AHandleClause
-  rename-ahandle-clauses (rn) (clauses) (i) =
-   if i == list-length clauses then []
+  rename-ahandle-clauses : List RenameEntry -> List AHandleClause -> Integer -> List AHandleClause -> List AHandleClause
+  rename-ahandle-clauses (rn) (clauses) (i) (acc) =
+   if i == list-length clauses then acc
    else let c = list-at clauses i
    in let rn2 = remove-rename rn (c.resume-name.value)
-   in [AHandleClause {
+   in rename-ahandle-clauses rn clauses (i + 1) (list-snoc acc (AHandleClause {
     op-name = c.op-name,
     resume-name = c.resume-name,
     body = rename-aexpr rn2 (c.body)
-   }] ++ rename-ahandle-clauses rn clauses (i + 1)
+   }))
 
 Section: AST-Level Chapter Scoping
 
@@ -7937,7 +7932,7 @@ Section: AST-Level Chapter Scoping
   scope-achapter (ast) (colliding) (assignments) =
    AChapter {
     name = ast.name,
-    defs = scope-adefs (ast.defs) colliding assignments (ast.citations) "" [] 0,
+    defs = scope-adefs (ast.defs) colliding assignments (ast.citations) "" [] 0 [],
     type-defs = ast.type-defs,
     effect-defs = ast.effect-defs,
     citations = ast.citations,
@@ -7946,21 +7941,21 @@ Section: AST-Level Chapter Scoping
     section-titles = ast.section-titles
    }
 
-  scope-adefs : List ADef -> List Text -> List ChapterAssignment -> List ACitesDecl -> Text -> List RenameEntry -> Integer -> List ADef
-  scope-adefs (defs) (colliding) (assignments) (citations) (cur-slug) (cur-rn) (i) =
-   if i == list-length defs then []
+  scope-adefs : List ADef -> List Text -> List ChapterAssignment -> List ACitesDecl -> Text -> List RenameEntry -> Integer -> List ADef -> List ADef
+  scope-adefs (defs) (colliding) (assignments) (citations) (cur-slug) (cur-rn) (i) (acc) =
+   if i == list-length defs then acc
    else let d = list-at defs i
    in let rn = if d.chapter-slug == cur-slug then cur-rn
       else apply-cite-overrides (build-chapter-rename-map colliding assignments (d.chapter-slug)) citations colliding assignments (d.chapter-slug) 0
    in let new-name = make-name (rename-lookup rn (d.name.value))
    in let new-body = rename-aexpr rn (d.body)
-   in [ADef {
+   in scope-adefs defs colliding assignments citations (d.chapter-slug) rn (i + 1) (list-snoc acc (ADef {
     name = new-name,
     params = d.params,
     declared-type = d.declared-type,
     body = new-body,
     chapter-slug = d.chapter-slug
-   }] ++ scope-adefs defs colliding assignments citations (d.chapter-slug) rn (i + 1)
+   }))
 
   apply-cite-overrides : List RenameEntry -> List ACitesDecl -> List Text -> List ChapterAssignment -> Text -> Integer -> List RenameEntry
   apply-cite-overrides (rn) (citations) (colliding) (assignments) (cur-slug) (i) =
@@ -7994,8 +7989,8 @@ Section: AST-Level Chapter Scoping
    else let n = (list-at names i).value
    in if is-colliding colliding n then if chapter-defines-name assignments cur-slug n
      then apply-cite-selected rn names cite-slug colliding assignments cur-slug (i + 1)
-     else let cleaned = remove-rename rn n
-     in apply-cite-selected (list-snoc cleaned (RenameEntry {
+   else let cleaned = remove-rename rn n
+   in apply-cite-selected (list-snoc cleaned (RenameEntry {
       original = n,
       mangled = mangle-name cite-slug n
      })) names cite-slug colliding assignments cur-slug (i + 1)
@@ -8009,11 +8004,12 @@ Section: AST-Level Chapter Scoping
   chapter-defines-loop (assignments) (slug) (name) (i) (len) =
    if i == len then False
    else let a = list-at assignments i
-   in if (a.def-name) == name then if (a.chapter-slug) == slug then True
+   in if a.def-name == name then if a.chapter-slug == slug then True
       else chapter-defines-loop assignments slug name (i + 1) len
       else chapter-defines-loop assignments slug name (i + 1) len
 
 Page 1
+
 
 
 Chapter: Name Resolution
@@ -8039,7 +8035,7 @@ Section: Scope
   scope-has (sc) (name) =
    let len = list-length (sc.names)
    in if len == 0 then False
-      else let pos = bsearch-text-set (sc.names) name 0 len
+   else let pos = bsearch-text-set (sc.names) name 0 len
    in if pos >= len then False
       else list-at (sc.names) pos == name
 
@@ -8053,7 +8049,7 @@ Section: Built-in Names
 
   builtin-names : List Text
   builtin-names =
-   [ "show", "negate", "True", "False", "Nothing",
+   ["show", "negate", "True", "False", "Nothing",
     "print-line", "read-line", "read-file",
     "write-file", "file-exists", "list-files",
     "open-file", "read-all", "close-file",
@@ -8066,7 +8062,7 @@ Section: Built-in Names
     "text-compare",
     "get-args", "get-env", "current-dir",
     "map", "filter", "fold",
-    "text-concat-list" ]
+    "text-concat-list"]
 
 Section: Name Classification
 
@@ -8100,8 +8096,8 @@ Section: Collect Names
    else let def = list-at defs i
    in let name = def.name.value
    in if list-contains acc name then collect-top-level-names defs (i + 1) len acc (errs ++ [make-error "CDX3001" ("Duplicate definition: " ++ name)])
-      else let pos = bsearch-text-set acc name 0 (list-length acc)
-      in collect-top-level-names defs (i + 1) len (list-insert-at acc pos name) errs
+   else let pos = bsearch-text-set acc name 0 (list-length acc)
+   in collect-top-level-names defs (i + 1) len (list-insert-at acc pos name) errs
 
   CollectResult = record {
    names : List Text,
@@ -8112,7 +8108,7 @@ Section: Collect Names
   list-contains (xs) (name) =
    let len = list-length xs
    in if len == 0 then False
-      else let pos = bsearch-text-set xs name 0 len
+   else let pos = bsearch-text-set xs name 0 len
    in if pos >= len then False
       else list-at xs pos == name
 
@@ -8126,8 +8122,8 @@ Section: Collect Names
    in when td
      if AVariantTypeDef (name) (params) (ctors) ->
       let new-type-acc = list-snoc type-acc (name.value)
-      in let new-ctor-acc = collect-variant-ctors ctors 0 (list-length ctors) ctor-acc
-      in collect-ctor-names type-defs (i + 1) len new-type-acc new-ctor-acc
+   in let new-ctor-acc = collect-variant-ctors ctors 0 (list-length ctors) ctor-acc
+   in collect-ctor-names type-defs (i + 1) len new-type-acc new-ctor-acc
      if ARecordTypeDef (name) (params) (fields) ->
       collect-ctor-names type-defs (i + 1) len (list-snoc type-acc (name.value)) ctor-acc
 
@@ -8254,11 +8250,11 @@ Section: Resolve Do Statements
    in when stmt
      if ADoExprStmt (e) ->
       let errs2 = resolve-expr sc e
-      in resolve-do-stmts sc stmts (i + 1) len (errs ++ errs2)
+   in resolve-do-stmts sc stmts (i + 1) len (errs ++ errs2)
      if ADoBindStmt (name) (e) ->
       let errs2 = resolve-expr sc e
-      in let sc2 = scope-add sc (name.value)
-      in resolve-do-stmts sc2 stmts (i + 1) len (errs ++ errs2)
+   in let sc2 = scope-add sc (name.value)
+   in resolve-do-stmts sc2 stmts (i + 1) len (errs ++ errs2)
 
 Section: Resolve All Definitions
 
@@ -8305,6 +8301,7 @@ Section: Resolve Chapter
    in collect-cited-names results (i + 1) len (acc ++ names)
 
 Page 1
+
 
 
 Chapter: Lexer
@@ -8490,7 +8487,7 @@ Section: Lexer State
 
   is-at-end : LexState -> Boolean
   is-at-end (st) =
-   (st.offset) >= text-length (st.source)
+   st.offset >= text-length (st.source)
 
   peek-code : LexState -> Integer
   peek-code (st) =
@@ -8549,8 +8546,8 @@ Section: Character Scanning
       else if is-digit-code c then scan-ident-end source (offset + 1) len
       else if c == cc-underscore then scan-ident-end source (offset + 1) len
       else if c == cc-minus then if offset + 1 >= len then offset
-       else let nc = char-code-at source (offset + 1)
-       in if is-letter-code nc | is-digit-code nc then scan-ident-end source (offset + 1) len
+   else let nc = char-code-at source (offset + 1)
+   in if is-letter-code nc | is-digit-code nc then scan-ident-end source (offset + 1) len
           else offset
        else offset
 
@@ -8612,7 +8609,7 @@ Section: Character Scanning
    if i >= len then acc
    else let c = char-code-at s i
    in if c == cc-backslash then if i + 1 < len then let nc = char-code-at s (i + 1)
-       in if nc == cc-lower-n then process-escapes s (i + 2) len (acc ++ char-to-text '\n')
+   in if nc == cc-lower-n then process-escapes s (i + 2) len (acc ++ char-to-text '\n')
           else if nc == cc-lower-t then process-escapes s (i + 2) len (acc ++ "  ")
           else if nc == cc-lower-r then process-escapes s (i + 2) len acc
           else if nc == cc-backslash then process-escapes s (i + 2) len (acc ++ "\\")
@@ -8673,29 +8670,29 @@ Section: Single Token Scanning
   scan-token (st) =
    let s = skip-spaces st
    in if is-at-end s then LexEnd
-      else let c = peek-code s
-      in if c == cc-cr then scan-token (advance-char s)
+   else let c = peek-code s
+   in if c == cc-cr then scan-token (advance-char s)
          else if c == cc-newline then LexToken (make-token Newline "\n" s) (advance-char s)
          else if c == cc-double-quote then let start = s.offset + 1
-         in let after = scan-string-body (advance-char s)
-          in let text-len = after.offset - start - 1
-           in let raw = substring (s.source) start text-len
-            in LexToken (make-token TextLiteral (process-escapes raw 0 (text-length raw) "") s) after
+   in let after = scan-string-body (advance-char s)
+   in let text-len = after.offset - start - 1
+   in let raw = substring (s.source) start text-len
+   in LexToken (make-token TextLiteral (process-escapes raw 0 (text-length raw) "") s) after
          else if c == cc-single-quote then scan-char-literal s
          else if is-letter-code c then let start = s.offset
-           in let after = scan-ident-rest (advance-char s)
-            in let word = extract-text s start after
-             in LexToken (make-token (classify-word word) word s) after
+   in let after = scan-ident-rest (advance-char s)
+   in let word = extract-text s start after
+   in LexToken (make-token (classify-word word) word s) after
          else if c == cc-underscore then let start = s.offset
-            in let after = scan-ident-rest (advance-char s)
-             in let word = extract-text s start after
-              in if text-length word == 1 then LexToken (make-token Underscore "_" s) after
+   in let after = scan-ident-rest (advance-char s)
+   in let word = extract-text s start after
+   in if text-length word == 1 then LexToken (make-token Underscore "_" s) after
                  else LexToken (make-token (classify-word word) word s) after
          else if is-digit-code c then let start = s.offset
-             in let after = scan-digits (advance-char s)
-              in if is-at-end after then LexToken (make-token IntegerLiteral (extract-text s start after) s) after
+   in let after = scan-digits (advance-char s)
+   in if is-at-end after then LexToken (make-token IntegerLiteral (extract-text s start after) s) after
                  else if peek-code after == cc-dot then let after2 = scan-digits (advance-char after)
-                 in LexToken (make-token NumberLiteral (extract-text s start after2) s) after2
+   in LexToken (make-token NumberLiteral (extract-text s start after2) s) after2
                 else LexToken (make-token IntegerLiteral (extract-text s start after) s) after
          else scan-operator s
 
@@ -8721,7 +8718,7 @@ Section: Single Token Scanning
    let c = peek-code s
    in let next = advance-char s
    in let nc = if is-at-end next then 0 else peek-code next
-     in if c == cc-plus then if nc == cc-plus then LexToken (make-token PlusPlus "++" s) (advance-char next)
+   in if c == cc-plus then if nc == cc-plus then LexToken (make-token PlusPlus "++" s) (advance-char next)
         else LexToken (make-token Plus "+" s) next
         else if c == cc-minus then if nc == cc-greater then LexToken (make-token Arrow "->" s) (advance-char next)
         else LexToken (make-token Minus "-" s) next
@@ -8729,8 +8726,8 @@ Section: Single Token Scanning
         else if c == cc-slash then if nc == cc-equals then LexToken (make-token NotEquals "/=" s) (advance-char next)
         else LexToken (make-token Slash "/" s) next
         else if c == cc-equals then if nc == cc-equals then let next2 = advance-char next
-            in let nc2 = if is-at-end next2 then 0 else peek-code next2
-             in if nc2 == cc-equals then LexToken (make-token TripleEquals "===" s) (advance-char next2)
+   in let nc2 = if is-at-end next2 then 0 else peek-code next2
+   in if nc2 == cc-equals then LexToken (make-token TripleEquals "===" s) (advance-char next2)
                 else LexToken (make-token DoubleEquals "==" s) next2
            else LexToken (make-token Equals "=" s) next
         else if c == cc-colon then if nc == cc-colon then LexToken (make-token ColonColon "::" s) (advance-char next)
@@ -8751,21 +8748,21 @@ Section: Char Literal
    let s1 = advance-char s
    in if is-at-end s1 then LexToken (make-token ErrorToken "'" s) s1
       else if peek-code s1 == cc-backslash then let s2 = advance-char s1
-      in if is-at-end s2 then LexToken (make-token ErrorToken "'\\" s) s2
-         else let esc-code = peek-code s2
-        in let char-val = if esc-code == cc-lower-n then cc-newline
+   in if is-at-end s2 then LexToken (make-token ErrorToken "'\\" s) s2
+   else let esc-code = peek-code s2
+   in let char-val = if esc-code == cc-lower-n then cc-newline
          else if esc-code == cc-lower-t then cc-space
          else if esc-code == cc-lower-r then cc-newline
          else if esc-code == cc-backslash then cc-backslash
          else if esc-code == cc-single-quote then cc-single-quote
          else esc-code
-        in let s3 = advance-char s2
-         in let s4 = if is-at-end s3 then s3 else if peek-code s3 == cc-single-quote then advance-char s3 else s3
-          in LexToken (make-token CharLiteral (integer-to-text char-val) s) s4
-     else let char-val = peek-code s1
-      in let s2 = advance-char s1
-       in let s3 = if is-at-end s2 then s2 else if peek-code s2 == cc-single-quote then advance-char s2 else s2
-        in LexToken (make-token CharLiteral (integer-to-text char-val) s) s3
+   in let s3 = advance-char s2
+   in let s4 = if is-at-end s3 then s3 else if peek-code s3 == cc-single-quote then advance-char s3 else s3
+   in LexToken (make-token CharLiteral (integer-to-text char-val) s) s4
+   else let char-val = peek-code s1
+   in let s2 = advance-char s1
+   in let s3 = if is-at-end s2 then s2 else if peek-code s2 == cc-single-quote then advance-char s2 else s2
+   in LexToken (make-token CharLiteral (integer-to-text char-val) s) s3
 
 Section: Tokenize All
 
@@ -8775,7 +8772,7 @@ Section: Tokenize All
   tokenize-loop (st) (acc) =
    when scan-token st
     if LexToken (tok) (next) ->
-     if (tok.kind) == EndOfFile then list-snoc acc tok
+     if tok.kind == EndOfFile then list-snoc acc tok
       else tokenize-loop next (list-snoc acc tok)
     if LexEnd ->
      list-snoc acc (make-token EndOfFile "" st)
@@ -8785,6 +8782,7 @@ Section: Tokenize All
    tokenize-loop (make-lex-state src) []
 
 Page 1
+
 
 
 Chapter: Parser
@@ -8807,7 +8805,7 @@ Section: Type Parsing
   parse-type-continue (left) (st) =
    if is-arrow (current-kind st) then let st2 = advance st
      in let right-result = parse-type st2
-      in unwrap-type-ok right-result (make-fun-type left)
+     in unwrap-type-ok right-result (make-fun-type left)
     else TypeOk left st
 
   make-fun-type : TypeExpr -> TypeExpr -> ParseState -> ParseTypeResult
@@ -8827,8 +8825,8 @@ Section: Type Parsing
    in parse-type-args (NamedType tok) (advance st)
    else if is-left-paren (current-kind st) then parse-paren-type (advance st)
    else if is-left-bracket (current-kind st) then parse-effect-type (advance st)
-       else let tok = current st
-        in TypeOk (NamedType tok) (advance st)
+   else let tok = current st
+   in TypeOk (NamedType tok) (advance st)
 
   parse-paren-type : ParseState -> ParseTypeResult
   parse-paren-type (st) =
@@ -8881,7 +8879,7 @@ Section: Pattern Parsing
   parse-ctor-pattern-fields (ctor) (acc) (st) =
    if is-left-paren (current-kind st) then let st2 = advance st
      in let sub = parse-pattern st2
-      in unwrap-pat-ok sub (continue-ctor-fields ctor acc)
+     in unwrap-pat-ok sub (continue-ctor-fields ctor acc)
     else PatOk (CtorPat ctor acc) st
 
   continue-ctor-fields : Token -> List Pat -> Pat -> ParseState -> ParsePatResult
@@ -8930,8 +8928,8 @@ Section: Definition Parsing
       name = name-tok,
       type-expr = ann-type
      }]
-      in let st2 = skip-newlines st
-       in parse-def-body-with-ann ann st2
+     in let st2 = skip-newlines st
+     in parse-def-body-with-ann ann st2
 
   parse-def-body-with-ann : List TypeAnn -> ParseState -> ParseDefResult
   parse-def-body-with-ann (ann) (st) =
@@ -8943,9 +8941,9 @@ Section: Definition Parsing
   parse-def-params-then (ann) (name-tok) (acc) (st) =
    if is-left-paren (current-kind st) then let st2 = advance st
    in if is-ident (current-kind st2) then let param = current st2
-       in let st3 = advance st2
-        in let st4 = expect RightParen st3
-         in parse-def-params-then ann name-tok (list-snoc acc param) st4
+   in let st3 = advance st2
+   in let st4 = expect RightParen st3
+   in parse-def-params-then ann name-tok (list-snoc acc param) st4
       else finish-def ann name-tok acc st
     else finish-def ann name-tok acc st
 
@@ -8954,7 +8952,7 @@ Section: Definition Parsing
    let st2 = expect Equals st
    in let st3 = skip-newlines st2
    in let body-result = parse-expr-col st3 (name-tok.column)
-     in unwrap-def-body body-result ann name-tok params
+   in unwrap-def-body body-result ann name-tok params
 
   unwrap-def-body : ParseExprResult -> List TypeAnn -> Token -> List Token -> ParseDefResult
   unwrap-def-body (r) (ann) (name-tok) (params) =
@@ -8999,10 +8997,10 @@ Section: Type Definition Parsing
   parse-type-def (st) =
    if is-type-ident (current-kind st) then let name-tok = current st
      in let st2 = advance st
-      in let tparams = collect-type-params st2 []
-       in let st3 = parse-type-params st2 []
-        in if is-equals (current-kind st3) then let st4 = skip-newlines (advance st3)
-         in if is-record-keyword (current-kind st4) then parse-record-type name-tok tparams st4
+     in let tparams = collect-type-params st2 []
+     in let st3 = parse-type-params st2 []
+     in if is-equals (current-kind st3) then let st4 = skip-newlines (advance st3)
+     in if is-record-keyword (current-kind st4) then parse-record-type name-tok tparams st4
             else if is-pipe (current-kind st4) then parse-variant-type name-tok tparams st4
             else if is-type-ident (current-kind st4) & looks-like-variant st4 then parse-variant-type name-tok tparams st4
             else TypeDefNone st
@@ -9014,7 +9012,7 @@ Section: Type Definition Parsing
    let st2 = advance st
    in let st3 = expect LeftBrace st2
    in let st4 = skip-newlines st3
-     in parse-record-fields-loop name-tok tparams [] st4
+   in parse-record-fields-loop name-tok tparams [] st4
 
   parse-record-fields-loop : Token -> List Token -> List RecordFieldDef -> ParseState -> ParseTypeDefResult
   parse-record-fields-loop (name-tok) (tparams) (acc) (st) =
@@ -9035,8 +9033,8 @@ Section: Type Definition Parsing
    let field-name = current st
    in let st2 = advance st
    in let st3 = expect Colon st2
-     in let field-type-result = parse-type st3
-      in unwrap-record-field-type name-tok tparams acc field-name field-type-result
+   in let field-type-result = parse-type st3
+   in unwrap-record-field-type name-tok tparams acc field-name field-type-result
 
   unwrap-record-field-type : Token -> List Token -> List RecordFieldDef -> Token -> ParseTypeResult -> ParseTypeDefResult
   unwrap-record-field-type (name-tok) (tparams) (acc) (field-name) (r) =
@@ -9047,7 +9045,7 @@ Section: Type Definition Parsing
       type-expr = ft
      }
      in let st2 = skip-newlines st
-      in if is-comma (current-kind st2) then parse-record-fields-loop name-tok tparams (list-snoc acc field) (skip-newlines (advance st2))
+     in if is-comma (current-kind st2) then parse-record-fields-loop name-tok tparams (list-snoc acc field) (skip-newlines (advance st2))
          else parse-record-fields-loop name-tok tparams (list-snoc acc field) st2
 
   looks-like-variant : ParseState -> Boolean
@@ -9068,15 +9066,15 @@ Section: Type Definition Parsing
   parse-variant-type (name-tok) (tparams) (st) =
    if is-type-ident (current-kind st) then let ctor-name = current st
      in let st2 = advance st
-      in parse-ctor-fields ctor-name [] st2 name-tok tparams []
+     in parse-ctor-fields ctor-name [] st2 name-tok tparams []
     else parse-variant-ctors name-tok tparams [] st
 
   parse-variant-ctors : Token -> List Token -> List VariantCtorDef -> ParseState -> ParseTypeDefResult
   parse-variant-ctors (name-tok) (tparams) (acc) (st) =
    if is-pipe (current-kind st) then let st2 = skip-newlines (advance st)
      in let ctor-name = current st2
-      in let st3 = advance st2
-       in parse-ctor-fields ctor-name [] st3 name-tok tparams acc
+     in let st3 = advance st2
+     in parse-ctor-fields ctor-name [] st3 name-tok tparams acc
     else TypeDefOk (TypeDef {
      name = name-tok,
      type-params = tparams,
@@ -9088,11 +9086,11 @@ Section: Type Definition Parsing
    if is-left-paren (current-kind st) then let field-result = parse-type (advance st)
      in unwrap-ctor-field field-result ctor-name fields name-tok tparams acc
     else let st2 = skip-newlines st
-     in let ctor = VariantCtorDef {
+    in let ctor = VariantCtorDef {
       name = ctor-name,
       fields = fields
      }
-      in parse-variant-ctors name-tok tparams (list-snoc acc ctor) st2
+    in parse-variant-ctors name-tok tparams (list-snoc acc ctor) st2
 
   unwrap-ctor-field : ParseTypeResult -> Token -> List TypeExpr -> Token -> List Token -> List VariantCtorDef -> ParseTypeDefResult
   unwrap-ctor-field (r) (ctor-name) (fields) (name-tok) (tparams) (acc) =
@@ -9113,15 +9111,15 @@ Section: Document Parsing
   parse-citations (st) (acc) =
    if is-cites-keyword (current-kind st) then let st2 = advance st
      in let name-tok = current st2
-      in let st3 = advance st2
-       in if is-left-paren (current-kind st3) then let sel = parse-selected-names (advance st3) []
-         in let st4 = skip-newlines (sel.state)
-          in parse-citations st4 (list-snoc acc (CitesDecl {
+     in let st3 = advance st2
+     in if is-left-paren (current-kind st3) then let sel = parse-selected-names (advance st3) []
+     in let st4 = skip-newlines (sel.state)
+     in parse-citations st4 (list-snoc acc (CitesDecl {
            chapter-name = name-tok,
            selected-names = sel.names
           }))
-        else let st4 = skip-newlines st3
-         in parse-citations st4 (list-snoc acc (CitesDecl {
+     else let st4 = skip-newlines st3
+     in parse-citations st4 (list-snoc acc (CitesDecl {
           chapter-name = name-tok,
           selected-names = []
          }))
@@ -9136,7 +9134,7 @@ Section: Document Parsing
   parse-selected-names (st) (acc) =
    if is-ident (current-kind st) then let tok = current st
      in let st2 = advance st
-      in if is-comma (current-kind st2) then parse-selected-names (skip-newlines (advance st2)) (list-snoc acc tok)
+     in if is-comma (current-kind st2) then parse-selected-names (skip-newlines (advance st2)) (list-snoc acc tok)
          else SelectedNamesResult {
           names = list-snoc acc tok,
           state = st2
@@ -9177,7 +9175,7 @@ Section: Document Parsing
   collect-title-tokens : ParseState -> Text -> Text
   collect-title-tokens (st) (acc) =
    if is-done st then acc
-   else when (current-kind st)
+   else when current-kind st
     if Newline -> acc
     if _ -> let sep = if acc == "" then "" else " "
      in collect-title-tokens (advance st) (acc ++ sep ++ (current st).text)
@@ -9195,7 +9193,7 @@ Section: Document Parsing
   skip-to-next-line : ParseState -> ParseState
   skip-to-next-line (st) =
    if is-done st then st
-   else when (current-kind st)
+   else when current-kind st
     if Newline -> advance st
     if _ -> skip-to-next-line (advance st)
 
@@ -9225,13 +9223,13 @@ Section: Document Parsing
    let st1 = advance st
    in let name-tok = current st1
    in let st2 = advance st1
-     in let st3 = if is-where-keyword (current-kind st2) then skip-newlines (advance st2) else st2
-      in let ops = parse-effect-ops st3 []
-       in let ed = EffectDef {
+   in let st3 = if is-where-keyword (current-kind st2) then skip-newlines (advance st2) else st2
+   in let ops = parse-effect-ops st3 []
+   in let ed = EffectDef {
         name = name-tok,
         ops = ops.ops
        }
-        in parse-top-level defs type-defs (effect-defs ++ [ed]) imports ch-title sec-titles (skip-newlines (ops.state))
+   in parse-top-level defs type-defs (effect-defs ++ [ed]) imports ch-title sec-titles (skip-newlines (ops.state))
 
   EffectOpsResult = record { ops : List EffectOpDef, state : ParseState }
 
@@ -9239,14 +9237,14 @@ Section: Document Parsing
   parse-effect-ops (st) (acc) =
    if is-ident (current-kind st) then if is-colon (peek-kind st 1) then let op-tok = current st
       in let st2 = advance (advance st)
-       in let type-result = parse-type st2
-        in when type-result
+      in let type-result = parse-type st2
+      in when type-result
          if TypeOk (ty) (st3) ->
           let op = EffectOpDef {
            name = op-tok,
            type-expr = ty
           }
-          in parse-effect-ops (skip-newlines st3) (list-snoc acc op)
+      in parse-effect-ops (skip-newlines st3) (list-snoc acc op)
      else EffectOpsResult {
       ops = acc,
       state = st
@@ -9277,11 +9275,11 @@ Section: Document Parsing
       body = d.body,
       chapter-slug = ch-title
      }
-     in parse-top-level (defs ++ [tagged]) type-defs effect-defs imports ch-title sec-titles (skip-newlines st2)
+   in parse-top-level (defs ++ [tagged]) type-defs effect-defs imports ch-title sec-titles (skip-newlines st2)
     if DefNone (st2) ->
      parse-top-level defs type-defs effect-defs imports ch-title sec-titles (skip-newlines (advance st2))
 
-Section: Header Scanning (Phase 2 streaming)
+Section: Header Scanning (streaming)
 
  Scans the token stream collecting definition headers (name, params,
  type annotation, body token position) without parsing def bodies.
@@ -9319,13 +9317,13 @@ Section: Header Scanning (Phase 2 streaming)
    let st1 = advance st
    in let name-tok = current st1
    in let st2 = advance st1
-     in let st3 = if is-where-keyword (current-kind st2) then skip-newlines (advance st2) else st2
-      in let ops = parse-effect-ops st3 []
-       in let ed = EffectDef {
+   in let st3 = if is-where-keyword (current-kind st2) then skip-newlines (advance st2) else st2
+   in let ops = parse-effect-ops st3 []
+   in let ed = EffectDef {
         name = name-tok,
         ops = ops.ops
        }
-        in scan-top-level headers type-defs (effect-defs ++ [ed]) imports cur-chap ch-title sec-titles (skip-newlines (ops.state))
+   in scan-top-level headers type-defs (effect-defs ++ [ed]) imports cur-chap ch-title sec-titles (skip-newlines (ops.state))
 
   try-scan-type-def : List DefHeader -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> Text -> List Text -> ParseState -> ScanResult
   try-scan-type-def (headers) (type-defs) (effect-defs) (imports) (cur-chap) (ch-title) (sec-titles) (st) =
@@ -9373,8 +9371,8 @@ Section: Header Scanning (Phase 2 streaming)
       name = name-tok,
       type-expr = ann-type
      }]
-      in let st2 = skip-newlines st
-       in scan-def-body-with-ann cur-chap ann st2
+     in let st2 = skip-newlines st
+     in scan-def-body-with-ann cur-chap ann st2
 
   scan-def-body-with-ann : Text -> List TypeAnn -> ParseState -> ScanDefResult
   scan-def-body-with-ann (cur-chap) (ann) (st) =
@@ -9386,9 +9384,9 @@ Section: Header Scanning (Phase 2 streaming)
   scan-def-params-then (cur-chap) (ann) (name-tok) (acc) (st) =
    if is-left-paren (current-kind st) then let st2 = advance st
    in if is-ident (current-kind st2) then let param = current st2
-       in let st3 = advance st2
-        in let st4 = expect RightParen st3
-         in scan-def-params-then cur-chap ann name-tok (list-snoc acc param) st4
+   in let st3 = advance st2
+   in let st4 = expect RightParen st3
+   in scan-def-params-then cur-chap ann name-tok (list-snoc acc param) st4
       else finish-def-scan cur-chap ann name-tok acc st
     else finish-def-scan cur-chap ann name-tok acc st
 
@@ -9398,8 +9396,8 @@ Section: Header Scanning (Phase 2 streaming)
    else let st2 = advance st
    in let st3 = skip-newlines st2
    in let body-pos = st3.pos
-     in let st4 = skip-body-tokens st3 (name-tok.column)
-      in DefHeaderOk (DefHeader {
+   in let st4 = skip-body-tokens st3 (name-tok.column)
+   in DefHeaderOk (DefHeader {
        name = name-tok,
        params = params,
        ann = ann,
@@ -9419,6 +9417,7 @@ Section: Header Scanning (Phase 2 streaming)
       else skip-body-tokens (advance st) name-col
 
 Page 1 of 3
+
 
 
 Chapter: Parser
@@ -9448,7 +9447,7 @@ Section: Parser State
 
   advance : ParseState -> ParseState
   advance (st) =
-   if st.pos >= (list-length (st.tokens)) - 1 then st
+   if st.pos >= list-length (st.tokens) - 1 then st
    else ParseState {
     tokens = st.tokens,
     pos = st.pos + 1
@@ -9765,6 +9764,7 @@ Section: Token Helpers
 Page 2 of 3
 
 
+
 Chapter: Parser
 
  Expression and compound expression parsing.
@@ -9798,13 +9798,13 @@ Section: Expression Parsing
    let st1 = skip-newlines st
    in if is-done st1 then ExprOk left st1
       else if min-col > 0 & (current st1).column > 0 & (current st1).column <= min-col then ExprOk left st1
-      else let prec = operator-precedence (current-kind st1)
-      in if prec < min-prec then ExprOk left st1
-         else let op = current st1
-         in let st2 = skip-newlines (advance st1)
-          in let next-min = if is-right-assoc (op.kind) then prec else prec + 1
-           in let right-result = parse-binary st2 next-min min-col
-            in unwrap-expr-ok right-result (continue-binary left op min-prec min-col)
+   else let prec = operator-precedence (current-kind st1)
+   in if prec < min-prec then ExprOk left st1
+   else let op = current st1
+   in let st2 = skip-newlines (advance st1)
+   in let next-min = if is-right-assoc (op.kind) then prec else prec + 1
+   in let right-result = parse-binary st2 next-min min-col
+   in unwrap-expr-ok right-result (continue-binary left op min-prec min-col)
 
   continue-binary : Expr -> Token -> Integer -> Integer -> Expr -> ParseState -> ParseExprResult
   continue-binary (left) (op) (min-prec) (min-col) (right) (st) =
@@ -9814,7 +9814,7 @@ Section: Expression Parsing
   parse-unary (st) =
    if is-minus (current-kind st) then let op = current st
      in let result = parse-unary (advance st)
-      in unwrap-expr-ok result (finish-unary op)
+     in unwrap-expr-ok result (finish-unary op)
     else parse-application st
 
   finish-unary : Token -> Expr -> ParseState -> ParseExprResult
@@ -9857,16 +9857,16 @@ Section: Expression Parsing
   parse-field-access (node) (st) =
    if is-dot (current-kind st) then let st2 = advance st
      in let field = current st2
-      in let st3 = advance st2
-       in parse-field-access (FieldExpr node field) st3
+     in let st3 = advance st2
+     in parse-field-access (FieldExpr node field) st3
     else ExprOk node st
 
   parse-dot-only : Expr -> ParseState -> ParseExprResult
   parse-dot-only (node) (st) =
    if is-dot (current-kind st) then let st2 = advance st
      in let field = current st2
-      in let st3 = advance st2
-       in parse-dot-only (FieldExpr node field) st3
+     in let st3 = advance st2
+     in parse-dot-only (FieldExpr node field) st3
     else ExprOk node st
 
   parse-atom-type-ident : ParseState -> ParseExprResult
@@ -9907,8 +9907,8 @@ Section: Compound Expression Parsing
    let field-name = current st
    in let st2 = advance st
    in let st3 = expect Equals st2
-     in let val-result = parse-expr st3
-      in unwrap-expr-ok val-result (finish-record-field type-name acc field-name)
+   in let val-result = parse-expr st3
+   in unwrap-expr-ok val-result (finish-record-field type-name acc field-name)
 
   finish-record-field : Token -> List RecordFieldExpr -> Token -> Expr -> ParseState -> ParseExprResult
   finish-record-field (type-name) (acc) (field-name) (v) (st) =
@@ -9930,7 +9930,7 @@ Section: Compound Expression Parsing
   parse-list-elements (acc) (st) =
    if is-right-bracket (current-kind st) then ExprOk (ListExpr acc) (advance st)
    else let elem = parse-expr st
-     in unwrap-expr-ok elem (finish-list-element acc)
+   in unwrap-expr-ok elem (finish-list-element acc)
 
   finish-list-element : List Expr -> Expr -> ParseState -> ParseExprResult
   finish-list-element (acc) (e) (st) =
@@ -9949,16 +9949,16 @@ Section: Compound Expression Parsing
    let st2 = skip-newlines st
    in let st3 = expect ThenKeyword st2
    in let st4 = skip-newlines st3
-     in let then-result = parse-expr st4
-      in unwrap-expr-ok then-result (parse-if-else c)
+   in let then-result = parse-expr st4
+   in unwrap-expr-ok then-result (parse-if-else c)
 
   parse-if-else : Expr -> Expr -> ParseState -> ParseExprResult
   parse-if-else (c) (t) (st) =
    let st2 = skip-newlines st
    in let st3 = expect ElseKeyword st2
    in let st4 = skip-newlines st3
-     in let else-result = parse-expr st4
-      in unwrap-expr-ok else-result (finish-if c t)
+   in let else-result = parse-expr st4
+   in unwrap-expr-ok else-result (finish-if c t)
 
   finish-if : Expr -> Expr -> Expr -> ParseState -> ParseExprResult
   finish-if (c) (t) (e) (st) = ExprOk (IfExpr c t e) st
@@ -9973,9 +9973,9 @@ Section: Compound Expression Parsing
    if is-ident (current-kind st) then parse-let-binding acc st
    else if is-in-keyword (current-kind st) then let st2 = skip-newlines (advance st)
       in let body = parse-expr st2
-       in unwrap-expr-ok body (finish-let acc)
-     else let body = parse-expr st
       in unwrap-expr-ok body (finish-let acc)
+     else let body = parse-expr st
+     in unwrap-expr-ok body (finish-let acc)
 
   finish-let : List LetBind -> Expr -> ParseState -> ParseExprResult
   finish-let (acc) (b) (st) = ExprOk (LetExpr acc b) st
@@ -9985,8 +9985,8 @@ Section: Compound Expression Parsing
    let name-tok = current st
    in let st2 = advance st
    in let st3 = expect Equals st2
-     in let val-result = parse-expr st3
-      in unwrap-expr-ok val-result (finish-let-binding acc name-tok)
+   in let val-result = parse-expr st3
+   in unwrap-expr-ok val-result (finish-let-binding acc name-tok)
 
   finish-let-binding : List LetBind -> Token -> Expr -> ParseState -> ParseExprResult
   finish-let-binding (acc) (name-tok) (v) (st) =
@@ -10013,8 +10013,8 @@ Section: Compound Expression Parsing
   parse-match-branches : Expr -> List MatchArm -> Integer -> Integer -> ParseState -> ParseExprResult
   parse-match-branches (scrut) (acc) (col) (ln) (st) =
    if is-if-keyword (current-kind st) then let tok = current st
-   in if (tok.line) == ln then parse-one-match-branch scrut acc col ln st
-      else if (tok.column) == col then parse-one-match-branch scrut acc col ln st
+   in if tok.line == ln then parse-one-match-branch scrut acc col ln st
+      else if tok.column == col then parse-one-match-branch scrut acc col ln st
       else ExprOk (MatchExpr scrut acc) st
     else ExprOk (MatchExpr scrut acc) st
 
@@ -10034,7 +10034,7 @@ Section: Compound Expression Parsing
    let st2 = expect Arrow st
    in let st3 = skip-newlines st2
    in let body = parse-expr st3
-     in unwrap-expr-ok body (finish-match-branch scrut acc col ln p)
+   in unwrap-expr-ok body (finish-match-branch scrut acc col ln p)
 
   finish-match-branch : Expr -> List MatchArm -> Integer -> Integer -> Pat -> Expr -> ParseState -> ParseExprResult
   finish-match-branch (scrut) (acc) (col) (ln) (p) (b) (st) =
@@ -10076,7 +10076,7 @@ Section: Compound Expression Parsing
    let name-tok = current st
    in let st2 = advance (advance st)
    in let val-result = parse-expr st2
-     in unwrap-expr-ok val-result (finish-do-bind acc name-tok)
+   in unwrap-expr-ok val-result (finish-do-bind acc name-tok)
 
   finish-do-bind : List DoStmt -> Token -> Expr -> ParseState -> ParseExprResult
   finish-do-bind (acc) (name-tok) (v) (st) =
@@ -10098,8 +10098,8 @@ Section: Compound Expression Parsing
    let st1 = advance st
    in let eff-tok = current st1
    in let st2 = advance st1
-     in let body-result = parse-expr st2
-      in unwrap-expr-ok body-result (finish-handle-body eff-tok)
+   in let body-result = parse-expr st2
+   in unwrap-expr-ok body-result (finish-handle-body eff-tok)
 
   finish-handle-body : Token -> Expr -> ParseState -> ParseExprResult
   finish-handle-body (eff-tok) (body) (st) =
@@ -10113,12 +10113,12 @@ Section: Compound Expression Parsing
   parse-handle-clauses (st) (acc) =
    if is-ident (current-kind st) then let op-tok = current st
      in let st1 = advance st
-      in let params = parse-handle-params st1 []
-       in if list-length (params.toks) > 0 then let resume-tok = list-at (params.toks) (list-length (params.toks) - 1)
-         in let st5 = expect Equals (params.state)
-          in let st6 = skip-newlines st5
-           in let body-result = parse-expr st6
-            in unwrap-handle-clause-body op-tok resume-tok body-result acc
+     in let params = parse-handle-params st1 []
+     in if list-length (params.toks) > 0 then let resume-tok = list-at (params.toks) (list-length (params.toks) - 1)
+     in let st5 = expect Equals (params.state)
+     in let st6 = skip-newlines st5
+     in let body-result = parse-expr st6
+     in unwrap-handle-clause-body op-tok resume-tok body-result acc
         else HandleParseResult {
          clauses = acc,
          state = st
@@ -10134,9 +10134,9 @@ Section: Compound Expression Parsing
   parse-handle-params (st) (acc) =
    if is-left-paren (current-kind st) then let st1 = advance st
      in let tok = current st1
-      in let st2 = advance st1
-       in let st3 = expect RightParen st2
-        in parse-handle-params st3 (list-snoc acc tok)
+     in let st2 = advance st1
+     in let st3 = expect RightParen st2
+     in parse-handle-params st3 (list-snoc acc tok)
     else HandleParamsResult {
      toks = acc,
      state = st
@@ -10152,16 +10152,16 @@ Section: Compound Expression Parsing
       body = body
      }
      in let st2 = skip-newlines st
-      in parse-handle-clauses st2 (list-snoc acc clause)
+     in parse-handle-clauses st2 (list-snoc acc clause)
 
   parse-lambda-expr : ParseState -> ParseExprResult
   parse-lambda-expr (st) =
    let st2 = advance st
    in let params-result = collect-lambda-params st2 []
    in let st3 = expect Arrow (params-result.state)
-     in let st4 = skip-newlines st3
-      in let body = parse-expr st4
-       in unwrap-expr-ok body (finish-lambda (params-result.toks))
+   in let st4 = skip-newlines st3
+   in let body = parse-expr st4
+   in unwrap-expr-ok body (finish-lambda (params-result.toks))
 
   LambdaParamsResult = record { toks : List Token, state : ParseState }
 
@@ -10179,6 +10179,7 @@ Section: Compound Expression Parsing
    ExprOk (LambdaExpr params body) st
 
 Page 3 of 3
+
 
 
 Chapter: Syntax Nodes
@@ -10311,7 +10312,7 @@ Section: Document
    section-titles : List Text
   }
 
-Section: Definition Headers (for streaming Phase 2)
+Section: Definition Headers (for streaming)
 
   DefHeader = record {
    name : Token,
@@ -10337,6 +10338,7 @@ Section: Definition Headers (for streaming Phase 2)
 Page 1
 
 
+
 Chapter: Tokens
 
  A token is a lexical element produced by the lexer. It carries a kind,
@@ -10357,6 +10359,7 @@ Chapter: Tokens
    text-length (t.text)
 
 Page 1
+
 
 
 Chapter: Token Kinds
@@ -10441,6 +10444,7 @@ Chapter: Token Kinds
 Page 1
 
 
+
 Chapter: Codex Types
 
  Type representations used by the type checker and later stages.
@@ -10476,6 +10480,7 @@ Section: Primitive Types
   }
 
 Page 1
+
 
 
 Chapter: Type Checker
@@ -10527,10 +10532,10 @@ Section: Resolve Type Expression
   lookup-type-def (tdm) (name) =
    let len = list-length tdm
    in if len == 0 then ConstructedTy (Name { value = name }) []
-      else let pos = bsearch-text-pos tdm name 0 len
+   else let pos = bsearch-text-pos tdm name 0 len
    in if pos >= len then ConstructedTy (Name { value = name }) []
-      else let b = list-at tdm pos
-      in if b.name == name then b.bound-type
+   else let b = list-at tdm pos
+   in if b.name == name then b.bound-type
          else ConstructedTy (Name { value = name }) []
 
 Section: Parameterize Type
@@ -10539,7 +10544,7 @@ Section: Parameterize Type
   is-value-name (name) =
    if text-length name == 0 then False
    else let code = char-code (char-at name 0)
-     in code >= char-code 'e' & code <= char-code 'z'
+   in code >= char-code 'e' & code <= char-code 'z'
 
   ParamEntry = record {
    param-name : Text,
@@ -10586,14 +10591,14 @@ Section: Parameterize Type
         entries = entries,
         state = st
        }
-          else let fr = fresh-and-advance st
-         in when fr.var-type
+       else let fr = fresh-and-advance st
+       in when fr.var-type
           if TypeVar (new-id) ->
            let new-entry = ParamEntry {
             param-name = name.value,
             var-id = new-id
            }
-           in WalkResult {
+       in WalkResult {
             walked = fr.var-type,
             entries = entries ++ [new-entry],
             state = fr.state
@@ -10604,7 +10609,7 @@ Section: Parameterize Type
            state = fr.state
           }
       else let args-r = parameterize-walk-list st entries args 0 (list-length args) []
-       in WalkResult {
+      in WalkResult {
         walked = ConstructedTy name (args-r.walked-list),
         entries = args-r.entries,
         state = args-r.state
@@ -10692,8 +10697,8 @@ Section: Check Definition
       env = env
      }
     else let env-type = env-lookup env (def.name.value)
-     in let inst = instantiate-type st env-type
-     in DefSetup {
+    in let inst = instantiate-type st env-type
+    in DefSetup {
       expected-type = inst.var-type,
       remaining-type = inst.var-type,
       state = inst.state,
@@ -10717,11 +10722,11 @@ Section: Check Definition
    in when remaining
      if FunTy (param-ty) (ret-ty) ->
       let env2 = env-bind env (p.name.value) param-ty
-      in bind-def-params st env2 params ret-ty (i + 1) len
+   in bind-def-params st env2 params ret-ty (i + 1) len
      if _ ->
       let fr = fresh-and-advance st
-      in let env2 = env-bind env (p.name.value) (fr.var-type)
-      in bind-def-params (fr.state) env2 params remaining (i + 1) len
+   in let env2 = env-bind env (p.name.value) (fr.var-type)
+   in bind-def-params (fr.state) env2 params remaining (i + 1) len
 
 Section: Check Chapter
 
@@ -10745,14 +10750,14 @@ Section: Check Chapter
    }
    else let def = list-at defs i
    in let ty = if list-length (def.declared-type) == 0 then let fr = fresh-and-advance st
-         in let env2 = env-bind env (def.name.value) (fr.var-type)
-         in LetBindResult {
+   in let env2 = env-bind env (def.name.value) (fr.var-type)
+   in LetBindResult {
           state = fr.state,
           env = env2
          }
-      else let resolved = resolve-type-expr tdm (list-at (def.declared-type) 0)
-         in let pr = parameterize-type st resolved
-         in LetBindResult {
+   else let resolved = resolve-type-expr tdm (list-at (def.declared-type) 0)
+   in let pr = parameterize-type st resolved
+   in LetBindResult {
           state = pr.state,
           env = env-bind env (def.name.value) (pr.parameterized)
          }
@@ -10782,13 +10787,13 @@ Section: Register Type Definitions
    in let entry = when td
        if AVariantTypeDef (name) (type-params) (ctors) ->
         let sum-ctors = build-sum-ctors tdefs ctors 0 (list-length ctors) [] acc
-        in TypeBinding {
+   in TypeBinding {
          name = name.value,
          bound-type = SumTy name sum-ctors
         }
        if ARecordTypeDef (name) (type-params) (fields) ->
         let rec-fields = build-record-fields-for-map tdefs fields 0 (list-length fields) [] acc
-        in TypeBinding {
+   in TypeBinding {
          name = name.value,
          bound-type = RecordTy name rec-fields
         }
@@ -10894,6 +10899,7 @@ Section: Register Type Definitions
    in FunTy (resolve-type-expr tdm (f.type-expr)) rest
 
 Page 1 of 2
+
 
 
 Chapter: Type Checker
@@ -11031,7 +11037,7 @@ Section: Infer Binary
    in let r2 = unify (r1.state) rt BooleanTy
    in CheckResult {
     inferred-type = BooleanTy,
-    state = (r2.state)
+    state = r2.state
    }
 
   infer-append : UnificationState -> CodexType -> CodexType -> CheckResult
@@ -11040,13 +11046,13 @@ Section: Infer Binary
    in when resolved
     if TextTy ->
      let r = unify st rt TextTy
-     in CheckResult {
+   in CheckResult {
       inferred-type = TextTy,
       state = r.state
      }
     if _ ->
      let r = unify st lt rt
-     in CheckResult {
+   in CheckResult {
       inferred-type = lt,
       state = r.state
      }
@@ -11071,7 +11077,7 @@ Section: Infer If
    in let r2 = unify (er.state) (tr.inferred-type) (er.inferred-type)
    in CheckResult {
     inferred-type = tr.inferred-type,
-    state = (r2.state)
+    state = r2.state
    }
 
 Section: Infer Let
@@ -11161,8 +11167,8 @@ Section: Infer List
       state = fr.state
      }
     else let first = infer-expr st env (list-at elems 0)
-     in let st2 = unify-list-elems (first.state) env elems (first.inferred-type) 1 (list-length elems)
-     in CheckResult {
+    in let st2 = unify-list-elems (first.state) env elems (first.inferred-type) 1 (list-length elems)
+    in CheckResult {
       inferred-type = ListTy (first.inferred-type),
       state = st2
      }
@@ -11250,11 +11256,11 @@ Section: Infer Do
    in when stmt
      if ADoExprStmt (e) ->
       let er = infer-expr st env e
-      in infer-do-loop (er.state) env stmts (i + 1) len (er.inferred-type)
+   in infer-do-loop (er.state) env stmts (i + 1) len (er.inferred-type)
      if ADoBindStmt (name) (e) ->
       let er = infer-expr st env e
-      in let env2 = env-bind env (name.value) (er.inferred-type)
-      in infer-do-loop (er.state) env2 stmts (i + 1) len (er.inferred-type)
+   in let env2 = env-bind env (name.value) (er.inferred-type)
+   in infer-do-loop (er.state) env2 stmts (i + 1) len (er.inferred-type)
 
 Section: Infer Expression (dispatch)
 
@@ -11284,28 +11290,28 @@ Section: Infer Expression (dispatch)
      in when resolved
       if RecordTy (rname) (rfields) ->
        let ftype = lookup-record-field rfields (field.value)
-       in CheckResult {
+     in CheckResult {
         inferred-type = ftype,
         state = r.state
        }
       if ConstructedTy (cname) (cargs) ->
        let record-type = resolve-constructed-to-record env (cname.value)
-       in when record-type
+     in when record-type
         if RecordTy (rname) (rfields) ->
          let ftype = lookup-record-field rfields (field.value)
-         in CheckResult {
+     in CheckResult {
           inferred-type = ftype,
           state = r.state
          }
         if _ ->
          let fr = fresh-and-advance (r.state)
-         in CheckResult {
+     in CheckResult {
           inferred-type = fr.var-type,
           state = fr.state
          }
       if _ ->
        let fr = fresh-and-advance (r.state)
-       in CheckResult {
+     in CheckResult {
         inferred-type = fr.var-type,
         state = fr.state
        }
@@ -11344,6 +11350,7 @@ Section: Infer Expression (dispatch)
 Page 2 of 2
 
 
+
 Chapter: Type Environment
 
  An immutable mapping from names to types, used during type checking.
@@ -11372,16 +11379,16 @@ Section: Lookup (binary search on sorted bindings)
   env-lookup (env) (name) =
    let len = list-length (env.bindings)
    in if len == 0 then ErrorTy
-      else let pos = bsearch-text-pos (env.bindings) name 0 len
+   else let pos = bsearch-text-pos (env.bindings) name 0 len
    in if pos >= len then ErrorTy
-      else let b = list-at (env.bindings) pos
-      in if b.name == name then b.bound-type else ErrorTy
+   else let b = list-at (env.bindings) pos
+   in if b.name == name then b.bound-type else ErrorTy
 
   env-has : TypeEnv -> Text -> Boolean
   env-has (env) (name) =
    let len = list-length (env.bindings)
    in if len == 0 then False
-      else let pos = bsearch-text-pos (env.bindings) name 0 len
+   else let pos = bsearch-text-pos (env.bindings) name 0 len
    in if pos >= len then False
       else (list-at (env.bindings) pos).name == name
 
@@ -11444,6 +11451,7 @@ Section: Builtins
    in e36
 
 Page 1
+
 
 
 Chapter: Unification
@@ -11518,16 +11526,16 @@ Section: Substitution Lookup (binary search on sorted substitutions)
   subst-lookup (var-id) (entries) =
    let len = list-length entries
    in if len == 0 then ErrorTy
-      else let pos = bsearch-int-pos entries var-id 0 len
+   else let pos = bsearch-int-pos entries var-id 0 len
    in if pos >= len then ErrorTy
-      else let entry = list-at entries pos
-      in if entry.var-id == var-id then entry.resolved-type else ErrorTy
+   else let entry = list-at entries pos
+   in if entry.var-id == var-id then entry.resolved-type else ErrorTy
 
   has-subst : Integer -> List SubstEntry -> Boolean
   has-subst (var-id) (entries) =
    let len = list-length entries
    in if len == 0 then False
-      else let pos = bsearch-int-pos entries var-id 0 len
+   else let pos = bsearch-int-pos entries var-id 0 len
    in if pos >= len then False
       else (list-at entries pos).var-id == var-id
 
@@ -11806,7 +11814,7 @@ Section: Unify
     state = st
    }
    else let r = unify st (list-at args-a i) (list-at args-b i)
-     in if r.success then unify-constructed-args (r.state) args-a args-b (i + 1) len
+   in if r.success then unify-constructed-args (r.state) args-a args-b (i + 1) len
         else r
 
   unify-fun : UnificationState -> CodexType -> CodexType -> CodexType -> CodexType -> UnifyResult
@@ -11863,6 +11871,7 @@ Section: Deep Resolve
 Page 1
 
 
+
 Chapter: Main
 
  Entry point for the Codex compiler. Reads a source file path from stdin,
@@ -11879,15 +11888,14 @@ Section: Pipeline
    let tokens = tokenize source
    in let st = make-parse-state tokens
    in let scan = scan-document st
-   in let assignments = build-all-assignments (scan.def-headers) 0
+   in let assignments = build-all-assignments (scan.def-headers) 0 []
    in let colliding = find-colliding-names assignments
    in let doc = parse-document (make-parse-state tokens)
-     in let ast = desugar-document doc chapter-name
-      in let scoped = scope-achapter ast colliding assignments
-       in let check-result = check-chapter scoped
-        in let ir = lower-chapter scoped (check-result.types) (check-result.state)
-         in emit-full-chapter ir (scoped.type-defs)
-
+   in let ast = desugar-document doc chapter-name
+   in let scoped = scope-achapter ast colliding assignments
+   in let check-result = check-chapter scoped
+   in let ir = lower-chapter scoped (check-result.types) (check-result.state)
+   in emit-full-chapter ir (scoped.type-defs)
 
 Section: Pipeline with Name Resolution
 
@@ -11900,12 +11908,12 @@ Section: Pipeline with Name Resolution
    let tokens = tokenize source
    in let st = make-parse-state tokens
    in let doc = parse-document st
-     in let ast = desugar-document doc chapter-name
-      in let resolve-result = resolve-chapter-with-citations ast imported
-       in if list-length (resolve-result.errors) > 0 then CompileError (resolve-result.errors)
-          else let check-result = check-chapter ast
-         in let ir = lower-chapter ast (check-result.types) (check-result.state)
-          in CompileOk (emit-full-chapter ir (ast.type-defs)) check-result
+   in let ast = desugar-document doc chapter-name
+   in let resolve-result = resolve-chapter-with-citations ast imported
+   in if list-length (resolve-result.errors) > 0 then CompileError (resolve-result.errors)
+   else let check-result = check-chapter ast
+   in let ir = lower-chapter ast (check-result.types) (check-result.state)
+   in CompileOk (emit-full-chapter ir (ast.type-defs)) check-result
 
   CompileResult =
    | CompileOk (Text) (ChapterResult)
@@ -11918,12 +11926,12 @@ Section: Streaming Pipeline
    let tokens = tokenize source
    in let st = make-parse-state tokens
    in let doc = parse-document st
-     in let ast = desugar-document doc chapter-name
-      in let check-result = check-chapter ast
-       in let ctor-types = collect-ctor-bindings (ast.type-defs) 0 (list-length (ast.type-defs)) []
-        in let all-types = ctor-types ++ check-result.types ++ builtin-type-env.bindings
-         in let ctor-names = collect-ctor-names (ast.type-defs) 0
-          in do
+   in let ast = desugar-document doc chapter-name
+   in let check-result = check-chapter ast
+   in let ctor-types = collect-ctor-bindings (ast.type-defs) 0 (list-length (ast.type-defs)) []
+   in let all-types = ctor-types ++ check-result.types ++ builtin-type-env.bindings
+   in let ctor-names = collect-ctor-names (ast.type-defs) 0
+   in do
            print-line (emit-type-defs (ast.type-defs) 0)
            stream-defs (ast.defs) all-types (check-result.state) ctor-names 0 (list-length (ast.defs))
            print-line ""
@@ -11934,12 +11942,12 @@ Section: Streaming Pipeline
    else let def = list-at defs i
    in let ir-def = lower-def def types ust
    in if is-error-body (ir-def.body) then print-line ("COMPILE-ERROR: def '" ++ ir-def.name ++ "' has error body: " ++ error-message (ir-def.body))
-      else let text = emit-def ir-def ctor-names
-      in do
+   else let text = emit-def ir-def ctor-names
+   in do
        print-line text
        stream-defs defs types ust ctor-names (i + 1) len
 
-Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
+Section: Streaming Pipeline v2 (token-retaining)
 
  Tokenizes once, scans headers without parsing bodies, builds type
  context from signatures, then processes each def one at a time:
@@ -11953,7 +11961,7 @@ Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
    in let scan = scan-document st
    in let type-defs = map-list desugar-type-def (scan.type-defs)
    in let headers = scan.def-headers
-   in let assignments = build-all-assignments headers 0
+   in let assignments = build-all-assignments headers 0 []
    in let colliding = find-colliding-names assignments
    in do
     compile-with-scope tokens type-defs headers assignments colliding
@@ -11980,14 +11988,14 @@ Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
    else let hdr = list-at headers i
    in let declared = desugar-annotations (hdr.ann)
    in let ty = if list-length declared == 0 then let fr = fresh-and-advance st
-         in let env2 = env-bind env (hdr.name.text) (fr.var-type)
-         in LetBindResult {
+   in let env2 = env-bind env (hdr.name.text) (fr.var-type)
+   in LetBindResult {
           state = fr.state,
           env = env2
          }
-      else let resolved = resolve-type-expr tdm (list-at declared 0)
-         in let pr = parameterize-type st resolved
-         in LetBindResult {
+   else let resolved = resolve-type-expr tdm (list-at declared 0)
+   in let pr = parameterize-type st resolved
+   in LetBindResult {
           state = pr.state,
           env = env-bind env (hdr.name.text) (pr.parameterized)
          }
@@ -12016,7 +12024,7 @@ Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
    in let r = check-def ust env adef
    in let resolved = deep-resolve (r.state) (r.inferred-type)
    in let entry = TypeBinding {
-    name = (adef.name.value),
+    name = adef.name.value,
     bound-type = resolved
    }
    in check-defs-streaming tokens headers (r.state) env (i + 1) len (list-snoc acc entry)
@@ -12040,9 +12048,9 @@ Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
    in let adef = desugar-def def
    in let ir-def = lower-def adef all-types ust
    in if is-error-body (ir-def.body) then print-line ("COMPILE-ERROR: def '" ++ ir-def.name ++ "' has error body: " ++ error-message (ir-def.body))
-      else let text = emit-def ir-def ctor-names
-      in if text == "" then emit-defs-streaming tokens headers all-types ust ctor-names (i + 1) len
-         else do
+   else let text = emit-def ir-def ctor-names
+   in if text == "" then emit-defs-streaming tokens headers all-types ust ctor-names (i + 1) len
+   else do
       print-line text
       emit-defs-streaming tokens headers all-types ust ctor-names (i + 1) len
 
@@ -12057,7 +12065,7 @@ Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
   emit-defs-same-chapter (tokens) (headers) (all-types) (ust) (ctor-names) (colliding) (assignments) (rn) (cur-slug) (i) (len) =
    if i == len then print-line ""
    else let hdr = list-at headers i
-   in if (hdr.chapter-slug) /= cur-slug
+   in if hdr.chapter-slug /= cur-slug
       then emit-defs-scoped tokens headers all-types ust ctor-names colliding assignments i len
       else emit-one-scoped-def tokens hdr all-types ust ctor-names colliding assignments rn headers i len
 
@@ -12087,9 +12095,9 @@ Section: Streaming Pipeline v2 (Phase 2 — token-retaining)
     chapter-slug = hdr.chapter-slug
    }
    in if is-error-body (scoped-def.body) then print-line ("COMPILE-ERROR: def '" ++ scoped-def.name ++ "' has error body: " ++ error-message (scoped-def.body))
-      else let text = emit-def scoped-def ctor-names
-      in if text == "" then emit-defs-same-chapter tokens headers all-types ust ctor-names colliding assignments rn (hdr.chapter-slug) (i + 1) len
-         else do
+   else let text = emit-def scoped-def ctor-names
+   in if text == "" then emit-defs-same-chapter tokens headers all-types ust ctor-names colliding assignments rn (hdr.chapter-slug) (i + 1) len
+   else do
       print-line text
       emit-defs-same-chapter tokens headers all-types ust ctor-names colliding assignments rn (hdr.chapter-slug) (i + 1) len
 
@@ -12116,3 +12124,4 @@ Section: Entry Point
    in compile-streaming-v2 clean "Program"
 
 Page 1
+
