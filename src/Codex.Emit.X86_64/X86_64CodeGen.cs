@@ -4308,8 +4308,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.RBX);
         X86_64Encoder.MovLoad(m_text, Reg.RAX, Reg.RAX, 8);  // element value
 
-        // Serial wait + send (AL = low byte)
-        EmitSerialWaitThr();
+        // Direct send — no THR wait. QEMU UART accepts immediately.
         X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
         X86_64Encoder.OutDxAl(m_text);
 
