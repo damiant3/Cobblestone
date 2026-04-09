@@ -593,11 +593,9 @@ Section: Expression Emission
    let len = text-length value
    in let rodata-off = list-length (st.rodata)
    in let len-bytes = write-i64 len
-   in let str-bytes = text-to-cce-bytes value 0 len []
-   in let pad-count = int-mod (8 - int-mod (len + 8) 8) 8
-   in let pad = replicate-zeros pad-count
-   in let new-rodata = (st.rodata) ++ len-bytes ++ str-bytes ++ pad
-   in let st1 = record-set st "rodata" new-rodata
+   in let new-rodata = append-text-bytes ((st.rodata) ++ len-bytes) value 0 len
+   in let aligned = pad-to-8 new-rodata
+   in let st1 = record-set st "rodata" aligned
    in let fixup = RodataFixup {
     patch-offset = st1.text-len + 2,
     rodata-offset = rodata-off
@@ -610,16 +608,16 @@ Section: Expression Emission
    reg = rd.reg
   }
 
-  text-to-cce-bytes : Text -> Integer -> Integer -> List Integer -> List Integer
-  text-to-cce-bytes (s) (i) (len) (acc) =
+  append-text-bytes : List Integer -> Text -> Integer -> Integer -> List Integer
+  append-text-bytes (acc) (s) (i) (len) =
    if i == len then acc
-   else let ch = char-code (char-at s i)
-    in text-to-cce-bytes s (i + 1) len (list-snoc acc ch)
+   else append-text-bytes (list-snoc acc (char-code-at s i)) s (i + 1) len
 
-  replicate-zeros : Integer -> List Integer
-  replicate-zeros (n) =
-   if n <= 0 then []
-   else list-snoc (replicate-zeros (n - 1)) 0
+  pad-to-8 : List Integer -> List Integer
+  pad-to-8 (xs) =
+   let rem = int-mod (list-length xs) 8
+   in if rem == 0 then xs
+    else pad-to-8 (list-snoc xs 0)
 
   emit-negate : CodegenState -> IRExpr -> EmitResult
   emit-negate (st) (operand) =
