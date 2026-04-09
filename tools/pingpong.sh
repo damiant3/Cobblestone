@@ -296,42 +296,33 @@ run_binary_stage() {
     kill $holder 2>/dev/null || true
     wait 2>/dev/null || true
     rm -f "$pipe"
-    # Extract ELF binary from raw serial output (pure bash)
-    # SIZE:N\n is followed by N bytes of ELF, then HEAP:/STACK: lines
-    {
-        if ! grep -qa 'SIZE:' "$raw_output"; then
-            echo "FAIL: SIZE: marker not found"
-            false; } 2>&1 > "$parse_out"
-
-    if [ $? -ne 0 ]; then
-        cat "$parse_out"
-        rm -f "$parse_out"
-        exit 1
-    fi
-
-    {
-        # Get SIZE value and byte offset of "SIZE:" in the file
-        local size_line elf_size size_byte_off size_line_len binary_start
-        size_line=$(grep -a 'SIZE:' "$raw_output" | head -1)
-        elf_size=${size_line#*SIZE:}
-        elf_size=$(echo "$elf_size" | tr -dc '0-9')
-        size_byte_off=$(grep -boa 'SIZE:' "$raw_output" | head -1 | cut -d: -f1)
-        # SIZE:N\n — line length = 5 (SIZE:) + digits + 1 (newline)
-        size_line_len=$((5 + ${#elf_size} + 1))
-        binary_start=$((size_byte_off + size_line_len))
-
-        dd if="$raw_output" bs=1 skip="$binary_start" count="$elf_size" of="$elf_output" 2>/dev/null
-        local got_size
-        got_size=$(wc -c < "$elf_output")
-        if [ "$got_size" -ne "$elf_size" ]; then
-            echo "FAIL: expected $elf_size bytes, got $got_size"
-        else
-            echo "ELF_SIZE:$elf_size"
-            # Extract HEAP:/STACK: from remainder
-            dd if="$raw_output" bs=1 skip=$((binary_start + elf_size)) 2>/dev/null | \
-                grep -a '^HEAP:\|^STACK:' | head -2
-        fi
-    } > "$parse_out" 2>&1
+    python3 -c "
+import sys
+data = open('$raw_output', 'rb').read()
+idx = data.find(b'SIZE:')
+if idx < 0:
+    print('FAIL: SIZE: marker not found')
+    sys.exit(1)
+nl = data.index(b'\x0a', idx)
+size = int(data[idx+5:nl])
+binary_start = nl + 1
+binary = data[binary_start:binary_start+size]
+if len(binary) != size:
+    print(f'FAIL: expected {size} bytes, got {len(binary)}')
+    sys.exit(1)
+open('$elf_output', 'wb').write(binary)
+rest = data[binary_start+size:]
+heap = stack = ''
+for line in rest.split(b'\x0a'):
+    line = line.strip()
+    if line.startswith(b'HEAP:'):
+        heap = line.decode('ascii', errors='replace')
+    elif line.startswith(b'STACK:'):
+        stack = line.decode('ascii', errors='replace')
+print(f'ELF_SIZE:{len(binary)}')
+if heap: print(heap)
+if stack: print(stack)
+" > "$parse_out" 2>&1
 
     local parse_exit=$?
     rm -f "$raw_output"
