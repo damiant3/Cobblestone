@@ -23,32 +23,39 @@ Backlog: `docs/BACKLOG.md`
 
 ## The Rules
 
-### 1. Pingpong is the acceptance test
+### 1. Push to a feature branch, not master
+
+**Do not push directly to master.** Push to a feature branch (`hex/description`),
+then Agent Linux reviews, builds, tests, and merges. Three commits to fix LinkedList
+emission happened on master because this rule wasn't followed — each one could have
+been a broken bisect point. Feature branches are cheap. Broken master is not.
+
+### 2. Pingpong is the acceptance test
 
 Every change that touches codegen must pass pingpong before it is considered done.
 `wsl bash tools/pingpong.sh` — if it's not green, back it out.
 
-### 2. Read before you write
+### 3. Read before you write
 
 Do not modify code you have not read. Do not guess at file contents. Do not assume
 structure from names. The self-hosted compiler has subtle invariants — a wrong
 assumption will cost hours.
 
-### 3. One thing at a time
+### 4. One thing at a time
 
 This is in the principles doc and it is the most violated rule. Do one thing. Test it.
 Commit it. Then do the next thing. Do not batch. Do not "while I'm here." The compiler
 is 12,000 lines of Codex and 7,000 lines of C# codegen. A wrong change in one place
 surfaces as a silent corruption three pipeline stages later.
 
-### 4. The reference compiler is frozen
+### 5. The reference compiler is frozen
 
 `src/` is locked. Do not add features. Do not refactor. Do not clean up style.
 Bug fixes are permitted ONLY when they are necessary to compile the self-hosted
 compiler's `.codex` source. Every override requires justification documented in
 `docs/Active/Compiler/REFERENCE-COMPILER-LOCK.md`.
 
-### 5. Trust the bootstrap chain
+### 6. Trust the bootstrap chain
 
 ```
 Stage 0:  C# ref compiler → compiles .codex → Codex.Codex.cs
@@ -59,24 +66,24 @@ Stage 2+: stage1-output.cs → compiles .codex → stage2-output.cs (= stage1)
 Fixed point: Stage 1 = Stage 2. If they diverge, something is wrong in the
 self-hosted compiler. Do not paper over divergence.
 
-### 6. Sem-equiv is the progress meter
+### 7. Sem-equiv is the progress meter
 
 `codex sem-equiv` measures how close bootstrap2 stage0 and stage1 outputs are.
 100% body match is the target. Any regression in match count is a red flag.
 
-### 7. Do not touch what works
+### 8. Do not touch what works
 
 The front end (lexer, parser, desugarer, name resolver, type checker, lowering)
 is proven and stable. Do not refactor it. Do not improve it. Do not add comments
 to it. It works. Leave it alone unless a bug is found.
 
-### 8. CCE is the internal encoding
+### 9. CCE is the internal encoding
 
 Everything inside the compiler operates on Codex Character Encoding (CCE).
 Unicode conversion happens ONLY at I/O boundaries. Do not introduce Unicode
 assumptions in internal code.
 
-### 9. No dates, no estimates
+### 10. No dates, no estimates
 
 Every estimate has been wrong by orders of magnitude. The critical path is ordered.
 That is all we need to know.
