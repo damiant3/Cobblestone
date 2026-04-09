@@ -443,7 +443,17 @@ Section: Function Emission
     if IrLet (n) (t) (v) (b) -> has-tail-call b func-name
     if IrMatch (s) (bs) (t) -> has-tail-call-branches bs func-name 0
     if IrApply (f) (a) (t) -> is-self-call expr func-name
+    if IrDo (stmts) (t) -> has-tail-call-do stmts func-name
     if _ -> False
+
+  has-tail-call-do : List IRDoStmt -> Text -> Boolean
+  has-tail-call-do (stmts) (func-name) =
+   let len = list-length stmts
+   in if len == 0 then False
+    else let last = list-at stmts (len - 1)
+     in when last
+      if IrDoExec (e) -> has-tail-call e func-name
+      if _ -> False
 
   has-tail-call-branches : List IRBranch -> Text -> Integer -> Boolean
   has-tail-call-branches (branches) (func-name) (i) =
@@ -543,6 +553,10 @@ Section: Expression Emission
    when expr
     if IrIntLit (value) -> emit-int-lit st value
     if IrBoolLit (value) -> emit-int-lit st (if value then 1 else 0)
+    if IrCharLit (value) -> emit-int-lit st (list-at unicode-to-cce-table value)
+    if IrTextLit (value) -> emit-text-lit st value
+    if IrNegate (operand) -> emit-negate st operand
+    if IrError (msg) (ty) -> emit-int-lit st 0
     if IrName (name) (ty) -> emit-name st name ty
     if IrLet (name) (ty) (value) (body) -> emit-let st name value body
     if IrBinary (op) (left) (right) (ty) -> emit-binary st op left right
@@ -573,6 +587,49 @@ Section: Expression Emission
       if i == len - 1 then emit-expr st e
       else let r = emit-expr st e
        in emit-do-stmts (r.state) stmts (i + 1) len
+
+  emit-text-lit : CodegenState -> Text -> EmitResult
+  emit-text-lit (st) (value) =
+   let len = text-length value
+   in let rodata-off = list-length (st.rodata)
+   in let len-bytes = write-i64 len
+   in let str-bytes = text-to-cce-bytes value 0 len []
+   in let pad-count = int-mod (8 - int-mod (len + 8) 8) 8
+   in let pad = replicate-zeros pad-count
+   in let new-rodata = (st.rodata) ++ len-bytes ++ str-bytes ++ pad
+   in let st1 = record-set st "rodata" new-rodata
+   in let fixup = RodataFixup {
+    patch-offset = st1.text-len + 2,
+    rodata-offset = rodata-off
+   }
+   in let st2 = st-append-text st1 (mov-ri64 reg-rax 0)
+   in let st3 = record-set st2 "rodata-fixups" (list-snoc (st2.rodata-fixups) fixup)
+   in let rd = alloc-temp st3
+   in EmitResult {
+   state = st-append-text (rd.state) (mov-rr (rd.reg) reg-rax),
+   reg = rd.reg
+  }
+
+  text-to-cce-bytes : Text -> Integer -> Integer -> List Integer -> List Integer
+  text-to-cce-bytes (s) (i) (len) (acc) =
+   if i == len then acc
+   else let ch = char-code (char-at s i)
+    in text-to-cce-bytes s (i + 1) len (list-snoc acc ch)
+
+  replicate-zeros : Integer -> List Integer
+  replicate-zeros (n) =
+   if n <= 0 then []
+   else list-snoc (replicate-zeros (n - 1)) 0
+
+  emit-negate : CodegenState -> IRExpr -> EmitResult
+  emit-negate (st) (operand) =
+   let r = emit-expr st operand
+   in let rd = alloc-temp (r.state)
+   in let st1 = st-append-text (rd.state) (mov-rr (rd.reg) (r.reg))
+   in EmitResult {
+   state = st-append-text st1 (neg-r (rd.reg)),
+   reg = rd.reg
+  }
 
   emit-int-lit : CodegenState -> Integer -> EmitResult
   emit-int-lit (st) (value) =
