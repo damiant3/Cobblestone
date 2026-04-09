@@ -552,10 +552,27 @@ Section: Expression Emission
     if IrFieldAccess (rec) (field) (ty) -> emit-field-access st rec field
     if IrMatch (scrut) (branches) (ty) -> emit-match st scrut branches
     if IrList (elems) (ty) -> emit-list st elems
+    if IrDo (stmts) (ty) -> emit-do-stmts st stmts 0 (list-length stmts)
     if _ -> EmitResult {
      state = st,
      reg = reg-rax
     }
+
+  emit-do-stmts : CodegenState -> List IRDoStmt -> Integer -> Integer -> EmitResult
+  emit-do-stmts (st) (stmts) (i) (len) =
+   if i == len then EmitResult { state = st, reg = reg-rax }
+   else let s = list-at stmts i
+    in when s
+     if IrDoBind (name) (ty) (val) ->
+      let val-result = emit-expr st val
+      in let loc = alloc-local (val-result.state)
+       in let st1 = store-local (loc.state) (loc.reg) (val-result.reg)
+        in let st2 = add-local st1 name (loc.reg)
+         in emit-do-stmts st2 stmts (i + 1) len
+     if IrDoExec (e) ->
+      if i == len - 1 then emit-expr st e
+      else let r = emit-expr st e
+       in emit-do-stmts (r.state) stmts (i + 1) len
 
   emit-int-lit : CodegenState -> Integer -> EmitResult
   emit-int-lit (st) (value) =
