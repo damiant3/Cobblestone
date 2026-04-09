@@ -248,13 +248,8 @@ run_binary_stage() {
     local holder=$!
     local start_time=$SECONDS
 
-    # Stage 2+ uses self-hosted ELFs that require TCG (KVM compat TBD)
-    local kvm_flag="-enable-kvm"
-    if [ "$stage" -ge 2 ]; then
-        kvm_flag=""
-    fi
     timeout "$BINARY_TIMEOUT" "$QEMU" \
-        $kvm_flag \
+        -enable-kvm \
         -kernel "$kernel_elf" \
         -serial stdio \
         -display none \
