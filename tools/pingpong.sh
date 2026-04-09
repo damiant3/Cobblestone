@@ -296,33 +296,43 @@ run_binary_stage() {
     kill $holder 2>/dev/null || true
     wait 2>/dev/null || true
     rm -f "$pipe"
-    python3 -c "
-import sys
-data = open('$raw_output', 'rb').read()
-idx = data.find(b'SIZE:')
-if idx < 0:
-    print('FAIL: SIZE: marker not found')
-    sys.exit(1)
-nl = data.index(b'\x0a', idx)
-size = int(data[idx+5:nl])
-binary_start = nl + 1
-binary = data[binary_start:binary_start+size]
-if len(binary) != size:
-    print(f'FAIL: expected {size} bytes, got {len(binary)}')
-    sys.exit(1)
-open('$elf_output', 'wb').write(binary)
-rest = data[binary_start+size:]
-heap = stack = ''
-for line in rest.split(b'\x0a'):
-    line = line.strip()
-    if line.startswith(b'HEAP:'):
-        heap = line.decode('ascii', errors='replace')
-    elif line.startswith(b'STACK:'):
-        stack = line.decode('ascii', errors='replace')
-print(f'ELF_SIZE:{len(binary)}')
-if heap: print(heap)
-if stack: print(stack)
-" > "$parse_out" 2>&1
+    # Extract ELF binary from raw serial output (pure bash — no python)
+    {
+        local size_line
+        size_line=$(grep -a 'SIZE:' "$raw_output" | head -1)
+        if [ -z "$size_line" ]; then
+            echo "FAIL: SIZE: marker not found"
+            exit 1
+        fi
+        local elf_size=${size_line#*SIZE:}
+        elf_size=$(echo "$elf_size" | tr -dc '0-9')
+
+        # Find byte offset of SIZE: line end (newline after SIZE:N)
+        local size_offset
+        size_offset=$(grep -boa 'SIZE:' "$raw_output" | head -1 | cut -d: -f1)
+        local nl_offset=$((size_offset))
+        # Scan for newline after SIZE:
+        while [ "$(dd if="$raw_output" bs=1 skip=$nl_offset count=1 2>/dev/null | od -An -tu1 | tr -d ' ')" != "10" ]; do
+            nl_offset=$((nl_offset + 1))
+        done
+        local binary_start=$((nl_offset + 1))
+
+        dd if="$raw_output" bs=1 skip=$binary_start count="$elf_size" of="$elf_output" 2>/dev/null
+        local got_size
+        got_size=$(wc -c < "$elf_output")
+        if [ "$got_size" -ne "$elf_size" ]; then
+            echo "FAIL: expected $elf_size bytes, got $got_size"
+            exit 1
+        fi
+
+        # Extract HEAP:/STACK: from data after the ELF
+        local rest_offset=$((binary_start + elf_size))
+        local rest
+        rest=$(dd if="$raw_output" bs=1 skip=$rest_offset 2>/dev/null | tr '\0' '\n')
+        echo "ELF_SIZE:$elf_size"
+        echo "$rest" | grep -a '^HEAP:' | head -1
+        echo "$rest" | grep -a '^STACK:' | head -1
+    } > "$parse_out" 2>&1
 
     local parse_exit=$?
     rm -f "$raw_output"
