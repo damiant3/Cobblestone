@@ -257,6 +257,14 @@ Section: Process Management
    in let st3 = st-append-text st2 (li reg-rax 0)
    in st-append-text st3 [72, 243, 171]
 
+  emit-pd-entries : CodegenState -> Integer -> Integer -> CodegenState
+  emit-pd-entries (st) (i) (n) =
+   if i >= n then st
+   else let phys-addr = i * 2097152
+    in let st1 = st-append-text st (li reg-rax (phys-addr + 131))
+     in let st2 = st-append-text st1 (mov-store reg-rdi reg-rax (i * 8))
+      in emit-pd-entries st2 (i + 1) n
+
   emit-build-process-page-tables : CodegenState -> Integer -> Integer -> CodegenState
   emit-build-process-page-tables (st) (pml4-addr) (heap-phys) =
    let st1 = emit-zero-region st pml4-addr 1536
@@ -268,15 +276,7 @@ Section: Process Management
    in let st7 = st-append-text st6 (mov-store reg-rdi reg-rax 0)
    in let pd-addr = pml4-addr + 8192
    in let st8 = st-append-text st7 (li reg-rdi pd-addr)
-   in let st9 = st-append-text st8 (li reg-rax 131)
-   in let st10 = st-append-text st9 (mov-store reg-rdi reg-rax 0)
-   in let st11 = st-append-text st10 (li reg-rdi (pd-addr + 8))
-   in let st12 = st-append-text st11 (li reg-rax (2097152 + 131))
-   in let st13 = st-append-text st12 (mov-store reg-rdi reg-rax 0)
-   in let heap-pd-index = heap-phys / 2097152
-   in let st14 = st-append-text st13 (li reg-rdi (pd-addr + heap-pd-index * 8))
-   in let st15 = st-append-text st14 (li reg-rax (heap-phys + 131))
-   in st-append-text st15 (mov-store reg-rdi reg-rax 0)
+   in emit-pd-entries st8 0 256
 
   emit-create-process : CodegenState -> Integer -> Integer -> Integer -> Integer -> CodegenState
   emit-create-process (st) (proc-index) (state-val) (cr3-val) (heap-base) =
