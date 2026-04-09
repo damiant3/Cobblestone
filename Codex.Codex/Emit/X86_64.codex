@@ -673,10 +673,11 @@ Section: Expression Emission
    in let st2 = store-local (r-loc.state) (r-loc.reg) (r.reg)
    in let l-load = load-local st2 (l-loc.reg)
    in let r-load = load-local (l-load.state) (r-loc.reg)
-   in emit-binary-op (r-load.state) op (l-load.reg) (r-load.reg)
+   in let operand-ty = ir-expr-type left
+   in emit-binary-op (r-load.state) op (l-load.reg) (r-load.reg) operand-ty
 
-  emit-binary-op : CodegenState -> IRBinaryOp -> Integer -> Integer -> EmitResult
-  emit-binary-op (st) (op) (l-reg) (r-reg) =
+  emit-binary-op : CodegenState -> IRBinaryOp -> Integer -> Integer -> CodexType -> EmitResult
+  emit-binary-op (st) (op) (l-reg) (r-reg) (operand-ty) =
    let rd = alloc-temp st
    in when op
     if IrAddInt -> EmitResult {
@@ -695,8 +696,8 @@ Section: Expression Emission
      state = st-append-text (rd.state) (mov-rr reg-rax l-reg ++ cqo ++ idiv-r r-reg ++ mov-rr (rd.reg) reg-rax),
      reg = rd.reg
     }
-    if IrEq -> emit-comparison st cc-e l-reg r-reg
-    if IrNotEq -> emit-comparison st cc-ne l-reg r-reg
+    if IrEq -> emit-eq-op st l-reg r-reg operand-ty
+    if IrNotEq -> emit-neq-op st l-reg r-reg operand-ty
     if IrLt -> emit-comparison st cc-l l-reg r-reg
     if IrGt -> emit-comparison st cc-g l-reg r-reg
     if IrLtEq -> emit-comparison st cc-le l-reg r-reg
@@ -709,10 +710,41 @@ Section: Expression Emission
      state = st-append-text (rd.state) (mov-rr (rd.reg) l-reg ++ add-rr (rd.reg) r-reg),
      reg = rd.reg
     }
+    if IrAppendText -> emit-helper-call-2-regs st l-reg r-reg "__str_concat"
+    if IrAppendList -> emit-helper-call-2-regs st l-reg r-reg "__list_append"
+    if IrConsList -> emit-helper-call-2-regs st l-reg r-reg "__list_cons"
     if _ -> EmitResult {
      state = st,
      reg = reg-rax
     }
+
+  emit-helper-call-2-regs : CodegenState -> Integer -> Integer -> Text -> EmitResult
+  emit-helper-call-2-regs (st) (l-reg) (r-reg) (name) =
+   let st1 = st-append-text st (mov-rr reg-rdi l-reg ++ mov-rr reg-rsi r-reg)
+   in let st2 = emit-call-to st1 name
+   in let rd = alloc-temp st2
+   in EmitResult {
+   state = st-append-text (rd.state) (mov-rr (rd.reg) reg-rax),
+   reg = rd.reg
+  }
+
+  emit-eq-op : CodegenState -> Integer -> Integer -> CodexType -> EmitResult
+  emit-eq-op (st) (l-reg) (r-reg) (ty) =
+   when ty
+    if TextTy -> emit-helper-call-2-regs st l-reg r-reg "__str_eq"
+    if _ -> emit-comparison st cc-e l-reg r-reg
+
+  emit-neq-op : CodegenState -> Integer -> Integer -> CodexType -> EmitResult
+  emit-neq-op (st) (l-reg) (r-reg) (ty) =
+   when ty
+    if TextTy ->
+     let eq-result = emit-helper-call-2-regs st l-reg r-reg "__str_eq"
+     in let rd = alloc-temp (eq-result.state)
+     in EmitResult {
+      state = st-append-text (rd.state) (cmp-ri (eq-result.reg) 0 ++ setcc cc-e (rd.reg) ++ movzx-byte-self (rd.reg)),
+      reg = rd.reg
+     }
+    if _ -> emit-comparison st cc-ne l-reg r-reg
 
   emit-comparison : CodegenState -> Integer -> Integer -> Integer -> EmitResult
   emit-comparison (st) (cc) (l-reg) (r-reg) =
