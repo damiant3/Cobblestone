@@ -48,7 +48,7 @@ Section: Record Types
   }
 
   CodegenState = record {
-   text-chunks : List (List Integer),
+   text-chunks : LinkedList (List Integer),
    text-len : Integer,
    rodata : List Integer,
    func-offsets : List FuncOffset,
@@ -179,7 +179,7 @@ Section: State Helpers
   empty-codegen-state : CodegenState
   empty-codegen-state =
    CodegenState {
-   text-chunks = [],
+   text-chunks = linked-list-empty 0,
    text-len = 0,
    rodata = [],
    func-offsets = [],
@@ -192,68 +192,34 @@ Section: State Helpers
    next-local = 0,
    spill-count = 0,
    load-local-toggle = 0,
-   tco = default-tco-state
+   tco = TcoState {
+    active = False,
+    in-tail-pos = False,
+    loop-top = 0,
+    param-locals = [],
+    temp-locals = [],
+    current-func = "",
+    saved-next-local = 0,
+    saved-next-temp = 0
+   }
   }
 
   st-append-text : CodegenState -> List Integer -> CodegenState
   st-append-text (st) (bytes) =
-   CodegenState {
-   text-chunks = [bytes] ++ st.text-chunks,
-   text-len = st.text-len + list-length bytes,
-   rodata = st.rodata,
-   func-offsets = st.func-offsets,
-   call-patches = st.call-patches,
-   func-addr-fixups = st.func-addr-fixups,
-   rodata-fixups = st.rodata-fixups,
-   deferred-patches = st.deferred-patches,
-   locals = st.locals,
-   next-temp = st.next-temp,
-   next-local = st.next-local,
-   spill-count = st.spill-count,
-   load-local-toggle = st.load-local-toggle,
-   tco = st.tco
-  }
+   let st1 = record-set st "text-chunks" (linked-list-push (st.text-chunks) bytes)
+   in record-set st1 "text-len" (st.text-len + list-length bytes)
 
   st-with-text : CodegenState -> List Integer -> CodegenState
   st-with-text (st) (new-text) =
-   CodegenState {
-   text-chunks = [new-text],
-   text-len = list-length new-text,
-   rodata = st.rodata,
-   func-offsets = st.func-offsets,
-   call-patches = st.call-patches,
-   func-addr-fixups = st.func-addr-fixups,
-   rodata-fixups = st.rodata-fixups,
-   deferred-patches = st.deferred-patches,
-   locals = st.locals,
-   next-temp = st.next-temp,
-   next-local = st.next-local,
-   spill-count = st.spill-count,
-   load-local-toggle = st.load-local-toggle,
-   tco = st.tco
-  }
+   let st1 = record-set st "text-chunks" (linked-list-push (linked-list-empty 0) new-text)
+   in record-set st1 "text-len" (list-length new-text)
 
   record-func-offset : CodegenState -> Text -> CodegenState
   record-func-offset (st) (name) =
-   CodegenState {
-   text-chunks = st.text-chunks,
-   text-len = st.text-len,
-   rodata = st.rodata,
-   func-offsets = list-snoc (st.func-offsets) (FuncOffset {
+   record-set st "func-offsets" (list-snoc (st.func-offsets) (FuncOffset {
      name = name,
      offset = st.text-len
-    }),
-   call-patches = st.call-patches,
-   func-addr-fixups = st.func-addr-fixups,
-   rodata-fixups = st.rodata-fixups,
-   deferred-patches = st.deferred-patches,
-   locals = st.locals,
-   next-temp = st.next-temp,
-   next-local = st.next-local,
-   spill-count = st.spill-count,
-   load-local-toggle = st.load-local-toggle,
-   tco = st.tco
-  }
+    }))
 
   lookup-func-offset : List FuncOffset -> Text -> Integer
   lookup-func-offset (entries) (name) =
@@ -266,27 +232,30 @@ Section: State Helpers
    in if e.name == name then e.offset
       else lookup-func-offset-loop entries name (i + 1) len
 
+  fresh-empty-locals : Integer -> List LocalBinding
+  fresh-empty-locals (x) = []
+
   reset-func-state : CodegenState -> Text -> CodegenState
   reset-func-state (st) (name) =
-   CodegenState {
-   text-chunks = st.text-chunks,
-   text-len = st.text-len,
-   rodata = st.rodata,
-   func-offsets = list-snoc (st.func-offsets) (FuncOffset {
+   let st1 = record-set st "func-offsets" (list-snoc (st.func-offsets) (FuncOffset {
      name = name,
      offset = st.text-len
-    }),
-   call-patches = st.call-patches,
-   func-addr-fixups = st.func-addr-fixups,
-   rodata-fixups = st.rodata-fixups,
-   deferred-patches = st.deferred-patches,
-   locals = [],
-   next-temp = 0,
-   next-local = 0,
-   spill-count = 0,
-   load-local-toggle = 0,
-   tco = default-tco-state
-  }
+    }))
+   in let st2 = record-set st1 "locals" (fresh-empty-locals 0)
+   in let st3 = record-set st2 "next-temp" 0
+   in let st4 = record-set st3 "next-local" 0
+   in let st5 = record-set st4 "spill-count" 0
+   in let st6 = record-set st5 "load-local-toggle" 0
+   in record-set st6 "tco" (TcoState {
+    active = False,
+    in-tail-pos = False,
+    loop-top = 0,
+    param-locals = [],
+    temp-locals = [],
+    current-func = "",
+    saved-next-local = 0,
+    saved-next-temp = 0
+   })
 
 Section: Register Allocation
 
@@ -301,22 +270,7 @@ Section: Register Allocation
    let idx = int-mod (st.next-temp) 6
    in let reg = list-at temp-regs idx
    in EmitResult {
-   state = CodegenState {
-   text-chunks = st.text-chunks,
-   text-len = st.text-len,
-   rodata = st.rodata,
-   func-offsets = st.func-offsets,
-   call-patches = st.call-patches,
-   func-addr-fixups = st.func-addr-fixups,
-   rodata-fixups = st.rodata-fixups,
-   deferred-patches = st.deferred-patches,
-   locals = st.locals,
-   next-temp = st.next-temp + 1,
-   next-local = st.next-local,
-   spill-count = st.spill-count,
-   load-local-toggle = st.load-local-toggle,
-   tco = st.tco
-   },
+   state = record-set st "next-temp" (st.next-temp + 1),
    reg = reg
   }
 
@@ -324,42 +278,13 @@ Section: Register Allocation
   alloc-local (st) =
    if st.next-local < 4 then let reg = list-at local-regs (st.next-local)
    in EmitResult {
-   state = CodegenState {
-   text-chunks = st.text-chunks,
-   text-len = st.text-len,
-   rodata = st.rodata,
-   func-offsets = st.func-offsets,
-   call-patches = st.call-patches,
-   func-addr-fixups = st.func-addr-fixups,
-   rodata-fixups = st.rodata-fixups,
-   deferred-patches = st.deferred-patches,
-   locals = st.locals,
-   next-temp = st.next-temp,
-   next-local = st.next-local + 1,
-   spill-count = st.spill-count,
-   load-local-toggle = st.load-local-toggle,
-   tco = st.tco
-   },
+   state = record-set st "next-local" (st.next-local + 1),
    reg = reg
   }
    else let slot = spill-base + st.spill-count
+   in let st1 = record-set st "next-local" (st.next-local + 1)
    in EmitResult {
-   state = CodegenState {
-   text-chunks = st.text-chunks,
-   text-len = st.text-len,
-   rodata = st.rodata,
-   func-offsets = st.func-offsets,
-   call-patches = st.call-patches,
-   func-addr-fixups = st.func-addr-fixups,
-   rodata-fixups = st.rodata-fixups,
-   deferred-patches = st.deferred-patches,
-   locals = st.locals,
-   next-temp = st.next-temp,
-   next-local = st.next-local + 1,
-   spill-count = st.spill-count + 1,
-   load-local-toggle = st.load-local-toggle,
-   tco = st.tco
-   },
+   state = record-set st1 "spill-count" (st.spill-count + 1),
    reg = slot
   }
 
@@ -378,23 +303,9 @@ Section: Register Allocation
   }
    else let scratch = if int-mod (st.load-local-toggle) 2 == 0 then reg-r8 else reg-r9
    in let offset = 0 - ((local - spill-base + 1) * 8 + 32)
+   in let st1 = st-append-text st (mov-load scratch reg-rbp offset)
    in EmitResult {
-   state = CodegenState {
-   text-chunks = [mov-load scratch reg-rbp offset] ++ st.text-chunks,
-   text-len = st.text-len + list-length (mov-load scratch reg-rbp offset),
-   rodata = st.rodata,
-   func-offsets = st.func-offsets,
-   call-patches = st.call-patches,
-   func-addr-fixups = st.func-addr-fixups,
-   rodata-fixups = st.rodata-fixups,
-   deferred-patches = st.deferred-patches,
-   locals = st.locals,
-   next-temp = st.next-temp,
-   next-local = st.next-local,
-   spill-count = st.spill-count,
-   load-local-toggle = st.load-local-toggle + 1,
-   tco = st.tco
-   },
+   state = record-set st1 "load-local-toggle" (st.load-local-toggle + 1),
    reg = scratch
   }
 
@@ -417,22 +328,7 @@ Section: Byte Patching
 
   st-add-deferred-patch : CodegenState -> PatchEntry -> CodegenState
   st-add-deferred-patch (st) (entry) =
-   CodegenState {
-   text-chunks = st.text-chunks,
-   text-len = st.text-len,
-   rodata = st.rodata,
-   func-offsets = st.func-offsets,
-   call-patches = st.call-patches,
-   func-addr-fixups = st.func-addr-fixups,
-   rodata-fixups = st.rodata-fixups,
-   deferred-patches = [entry] ++ st.deferred-patches,
-   locals = st.locals,
-   next-temp = st.next-temp,
-   next-local = st.next-local,
-   spill-count = st.spill-count,
-   load-local-toggle = st.load-local-toggle,
-   tco = st.tco
-  }
+   record-set st "deferred-patches" ([entry] ++ st.deferred-patches)
 
   patch-jcc-at : CodegenState -> Integer -> Integer -> CodegenState
   patch-jcc-at (st) (jcc-pos) (target-pos) =
@@ -563,31 +459,7 @@ Section: Function Emission
 
   st-set-tail-pos : CodegenState -> Boolean -> CodegenState
   st-set-tail-pos (st) (v) =
-   CodegenState {
-   text-chunks = st.text-chunks,
-   text-len = st.text-len,
-   rodata = st.rodata,
-   func-offsets = st.func-offsets,
-   call-patches = st.call-patches,
-   func-addr-fixups = st.func-addr-fixups,
-   rodata-fixups = st.rodata-fixups,
-   deferred-patches = st.deferred-patches,
-   locals = st.locals,
-   next-temp = st.next-temp,
-   next-local = st.next-local,
-   spill-count = st.spill-count,
-   load-local-toggle = st.load-local-toggle,
-   tco = TcoState {
-     active = st.tco.active,
-     in-tail-pos = v,
-     loop-top = st.tco.loop-top,
-     param-locals = st.tco.param-locals,
-     temp-locals = st.tco.temp-locals,
-     current-func = st.tco.current-func,
-     saved-next-local = st.tco.saved-next-local,
-     saved-next-temp = st.tco.saved-next-temp
-    }
-  }
+   record-set st "tco" (record-set (st.tco) "in-tail-pos" v)
 
   TcoAllocResult = record {
    alloc-state : CodegenState,
@@ -621,21 +493,7 @@ Section: Function Emission
    in let st5 = if is-tco then let tco-alloc = pre-alloc-tco-temps st4 0 (list-length (def.params)) []
    in let st-a = tco-alloc.alloc-state
    in let p-locals = collect-param-locals (st-a.locals) (def.params) 0 []
-   in CodegenState {
-      text-chunks = st-a.text-chunks,
-      text-len = st-a.text-len,
-      rodata = st-a.rodata,
-      func-offsets = st-a.func-offsets,
-      call-patches = st-a.call-patches,
-      func-addr-fixups = st-a.func-addr-fixups,
-      rodata-fixups = st-a.rodata-fixups,
-      deferred-patches = st-a.deferred-patches,
-      locals = st-a.locals,
-      next-temp = st-a.next-temp,
-      next-local = st-a.next-local,
-      spill-count = st-a.spill-count,
-      load-local-toggle = st-a.load-local-toggle,
-      tco = TcoState {
+   in record-set st-a "tco" (TcoState {
        active = True,
        in-tail-pos = True,
        loop-top = st-a.text-len,
@@ -644,8 +502,7 @@ Section: Function Emission
        current-func = def.name,
        saved-next-local = st-a.next-local,
        saved-next-temp = st-a.next-temp
-      }
-     }
+      })
     else st4
    in let result = emit-expr st5 (def.body)
    in let st6 = if result.reg == reg-rax then result.state
@@ -674,25 +531,10 @@ Section: Local Variable Management
 
   add-local : CodegenState -> Text -> Integer -> CodegenState
   add-local (st) (name) (slot) =
-   CodegenState {
-   text-chunks = st.text-chunks,
-   text-len = st.text-len,
-   rodata = st.rodata,
-   func-offsets = st.func-offsets,
-   call-patches = st.call-patches,
-   func-addr-fixups = st.func-addr-fixups,
-   rodata-fixups = st.rodata-fixups,
-   deferred-patches = st.deferred-patches,
-   locals = list-snoc (st.locals) (LocalBinding {
+   record-set st "locals" (list-snoc (st.locals) (LocalBinding {
      name = name,
      slot = slot
-    }),
-   next-temp = st.next-temp,
-   next-local = st.next-local,
-   spill-count = st.spill-count,
-   load-local-toggle = st.load-local-toggle,
-   tco = st.tco
-  }
+    }))
 
 Section: Expression Emission
 
@@ -909,6 +751,10 @@ Section: Builtin Detection
     else if name == "get-args" then True
     else if name == "current-dir" then True
     else if name == "file-exists" then True
+    else if name == "record-set" then True
+    else if name == "linked-list-empty" then True
+    else if name == "linked-list-push" then True
+    else if name == "linked-list-to-list" then True
     else False
 
   is-builtin : Text -> Boolean
@@ -1250,6 +1096,64 @@ Section: Builtin Emission
    reg = rd.reg
   }
 
+  emit-linked-list-empty-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-linked-list-empty-builtin (st) (args) =
+   let rd = alloc-temp st
+   in EmitResult {
+   state = st-append-text (rd.state) (li (rd.reg) 0),
+   reg = rd.reg
+  }
+
+  emit-linked-list-push-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-linked-list-push-builtin (st) (args) =
+   let list-result = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let list-loc = alloc-local (list-result.state)
+   in let st1 = store-local (list-loc.state) (list-loc.reg) (list-result.reg)
+   in let val-result = emit-expr st1 (list-at args 1)
+   in let val-loc = alloc-local (val-result.state)
+   in let st2 = store-local (val-loc.state) (val-loc.reg) (val-result.reg)
+   in let ptr = alloc-temp st2
+   in let st3 = st-append-text (ptr.state) (mov-rr (ptr.reg) reg-r10)
+   in let vr = load-local st3 (val-loc.reg)
+   in let st4 = st-append-text (vr.state) (mov-store (ptr.reg) (vr.reg) 0)
+   in let lr = load-local st4 (list-loc.reg)
+   in let st5 = st-append-text (lr.state) (mov-store (ptr.reg) (lr.reg) 8)
+   in let st6 = st-append-text st5 (add-ri reg-r10 16)
+   in EmitResult {
+   state = st6,
+   reg = ptr.reg
+  }
+
+  emit-linked-list-to-list-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-linked-list-to-list-builtin (st) (args) =
+   let head-result = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let st1 = st-append-text (head-result.state) (mov-rr reg-rdi (head-result.reg))
+   in let st2 = emit-call-to st1 "__linked_list_to_list"
+   in let rd = alloc-temp st2
+   in EmitResult {
+   state = st-append-text (rd.state) (mov-rr (rd.reg) reg-rax),
+   reg = rd.reg
+  }
+
+  emit-record-set-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-record-set-builtin (st) (args) =
+    let rec-result = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rec-loc = alloc-local (rec-result.state)
+   in let st1 = store-local (rec-loc.state) (rec-loc.reg) (rec-result.reg)
+   in let field-name = when (list-at args 1)
+    if IrTextLit (s) -> s
+    if _ -> ""
+   in let rec-ty = ir-expr-type (list-at args 0)
+   in let field-idx = when rec-ty
+    if RecordTy (rname) (rfields) -> find-record-field-index rfields field-name 0
+    if _ -> 0
+   in let val-result = emit-expr st1 (list-at args 2)
+   in let loaded = load-local (val-result.state) (rec-loc.reg)
+   in EmitResult {
+   state = st-append-text (loaded.state) (mov-store (loaded.reg) (val-result.reg) (field-idx * 8)),
+   reg = loaded.reg
+  }
+
   emit-builtin : CodegenState -> Text -> List IRExpr -> EmitResult
   emit-builtin (st) (name) (args) =
     if name == "print-line" then emit-print-line-builtin st args
@@ -1286,6 +1190,10 @@ Section: Builtin Emission
     else if name == "negate" then emit-negate-builtin st args
     else if name == "get-args" then emit-get-args-builtin st
     else if name == "current-dir" then emit-current-dir-builtin st
+    else if name == "record-set" then emit-record-set-builtin st args
+    else if name == "linked-list-empty" then emit-linked-list-empty-builtin st args
+    else if name == "linked-list-push" then emit-linked-list-push-builtin st args
+    else if name == "linked-list-to-list" then emit-linked-list-to-list-builtin st args
     else emit-file-exists-builtin st args
 
 Section: Function Application
@@ -1459,22 +1367,7 @@ Section: Closures and Partial Application
     rodata-offset = rodata-off
   }
    in let st1 = st-append-text st (mov-ri64 reg 0)
-   in CodegenState {
-   text-chunks = st1.text-chunks,
-   text-len = st1.text-len,
-   rodata = st1.rodata,
-   func-offsets = st1.func-offsets,
-   call-patches = st1.call-patches,
-   func-addr-fixups = st1.func-addr-fixups,
-   rodata-fixups = list-snoc (st1.rodata-fixups) fixup,
-   deferred-patches = st1.deferred-patches,
-   locals = st1.locals,
-   next-temp = st1.next-temp,
-   next-local = st1.next-local,
-   spill-count = st1.spill-count,
-   load-local-toggle = st1.load-local-toggle,
-   tco = st1.tco
-  }
+   in record-set st1 "rodata-fixups" (list-snoc (st1.rodata-fixups) fixup)
 
   emit-load-func-addr : CodegenState -> Integer -> Text -> CodegenState
   emit-load-func-addr (st) (reg) (func-name) =
@@ -1483,22 +1376,7 @@ Section: Closures and Partial Application
     target = func-name
   }
    in let st1 = st-append-text st (mov-ri64 reg 0)
-   in CodegenState {
-   text-chunks = st1.text-chunks,
-   text-len = st1.text-len,
-   rodata = st1.rodata,
-   func-offsets = st1.func-offsets,
-   call-patches = st1.call-patches,
-   func-addr-fixups = list-snoc (st1.func-addr-fixups) fixup,
-   rodata-fixups = st1.rodata-fixups,
-   deferred-patches = st1.deferred-patches,
-   locals = st1.locals,
-   next-temp = st1.next-temp,
-   next-local = st1.next-local,
-   spill-count = st1.spill-count,
-   load-local-toggle = st1.load-local-toggle,
-   tco = st1.tco
-  }
+   in record-set st1 "func-addr-fixups" (list-snoc (st1.func-addr-fixups) fixup)
 
   emit-trampoline-shift-args : CodegenState -> Integer -> Integer -> CodegenState
   emit-trampoline-shift-args (st) (i) (num-captures) =
@@ -2080,25 +1958,10 @@ Section: Call Emission
   emit-call-to (st) (target) =
    let patch-pos = st.text-len
    in let st1 = st-append-text st (x86-call 0)
-   in CodegenState {
-   text-chunks = st1.text-chunks,
-   text-len = st1.text-len,
-   rodata = st1.rodata,
-   func-offsets = st1.func-offsets,
-   call-patches = list-snoc (st1.call-patches) (CallPatch {
+   in record-set st1 "call-patches" (list-snoc (st1.call-patches) (CallPatch {
      patch-offset = patch-pos,
      target = target
-    }),
-   func-addr-fixups = st1.func-addr-fixups,
-   rodata-fixups = st1.rodata-fixups,
-   deferred-patches = st1.deferred-patches,
-   locals = st1.locals,
-   next-temp = st1.next-temp,
-   next-local = st1.next-local,
-   spill-count = st1.spill-count,
-   load-local-toggle = st1.load-local-toggle,
-   tco = st1.tco
-  }
+    }))
 
 Section: Bare-Metal Start
 
@@ -2189,20 +2052,21 @@ Section: Chapter Entry Point
  the trampoline far-jump to point at __start, patches all call sites,
  and wraps everything in a bare-metal ELF with entry offset 12.
 
-  flatten-chunks : List (List Integer) -> List Integer
+  flatten-chunks : LinkedList (List Integer) -> List Integer
   flatten-chunks (chunks) =
-   flatten-chunks-loop chunks (list-length chunks - 1) []
+   let chunk-list = linked-list-to-list chunks
+   in flatten-chunks-loop chunk-list 0 (list-length chunk-list) []
 
-  flatten-chunks-loop : List (List Integer) -> Integer -> List Integer -> List Integer
-  flatten-chunks-loop (chunks) (i) (acc) =
-   if i < 0 then acc
-   else flatten-chunks-loop chunks (i - 1) (acc ++ list-at chunks i)
+  flatten-chunks-loop : List (List Integer) -> Integer -> Integer -> List Integer -> List Integer
+  flatten-chunks-loop (chunks) (i) (len) (acc) =
+   if i == len then acc
+   else flatten-chunks-loop chunks (i + 1) len (acc ++ list-at chunks i)
 
   x86-64-emit-chapter : IRChapter -> List Integer
   x86-64-emit-chapter (m) =
    let tramp = bare-metal-trampoline
    in let st0 = CodegenState {
-   text-chunks = [tramp.bytes],
+   text-chunks = linked-list-push (linked-list-empty 0) (tramp.bytes),
    text-len = list-length (tramp.bytes),
    rodata = init-rodata,
    func-offsets = [],
@@ -2215,7 +2079,16 @@ Section: Chapter Entry Point
    next-local = 0,
    spill-count = 0,
    load-local-toggle = 0,
-   tco = default-tco-state
+   tco = TcoState {
+    active = False,
+    in-tail-pos = False,
+    loop-top = 0,
+    param-locals = [],
+    temp-locals = [],
+    current-func = "",
+    saved-next-local = 0,
+    saved-next-temp = 0
+   }
   }
    in let st0a = emit-runtime-helpers st0
    in let st1 = emit-all-defs st0a (m.defs) 0

@@ -35,7 +35,9 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
         "get-state", "set-state", "run-state",
         "now",
         "random-integer",
-        "fork", "await", "par", "race"
+        "fork", "await", "par", "race",
+        "record-set",
+        "linked-list-empty", "linked-list-push", "linked-list-to-list"
     );
 
     public NameResolver(DiagnosticBag diagnostics, IChapterLoader? loader)

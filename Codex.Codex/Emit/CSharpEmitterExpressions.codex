@@ -49,6 +49,7 @@ Section: Identifier Helpers
     if ErrorTy -> "object"
     if FunTy (p) (r) -> "Func<" ++ cs-type p ++ ", " ++ cs-type r ++ ">"
     if ListTy (elem) -> "List<" ++ cs-type elem ++ ">"
+    if LinkedListTy (elem) -> "List<" ++ cs-type elem ++ ">"
     if TypeVar (id) -> "T" ++ integer-to-text id
     if ForAllTy (id) (body) -> cs-type body
     if SumTy (name) (ctors) -> sanitize (name.value)
@@ -183,6 +184,10 @@ Section: Apply Chain
    else if n == "await" then True
    else if n == "par" then True
    else if n == "race" then True
+   else if n == "record-set" then True
+   else if n == "linked-list-empty" then True
+   else if n == "linked-list-push" then True
+   else if n == "linked-list-to-list" then True
    else False
 
   emit-builtin : Text -> List IRExpr -> List ArityEntry -> Text
@@ -230,7 +235,18 @@ Section: Apply Chain
    else if n == "await" then "(" ++ emit-expr (list-at args 0) arities ++ ").Result"
    else if n == "par" then emit-builtin-par args arities
    else if n == "race" then emit-builtin-race args arities
+   else if n == "record-set" then emit-builtin-record-set args arities
+   else if n == "linked-list-empty" then "new List<object>()"
+   else if n == "linked-list-push" then "((Func<List<object>, object, List<object>>)((_ll, _v) => { _ll.Add(_v); return _ll; }))(" ++ emit-expr (list-at args 0) arities ++ ", " ++ emit-expr (list-at args 1) arities ++ ")"
+   else if n == "linked-list-to-list" then emit-expr (list-at args 0) arities
    else ""
+
+  emit-builtin-record-set : List IRExpr -> List ArityEntry -> Text
+  emit-builtin-record-set (args) (arities) =
+   let field-name = when (list-at args 1)
+    if IrTextLit (s) -> s
+    if _ -> ""
+   in "(" ++ emit-expr (list-at args 0) arities ++ " with { " ++ sanitize field-name ++ " = " ++ emit-expr (list-at args 2) arities ++ " })"
 
   emit-builtin-show : List IRExpr -> List ArityEntry -> Text
   emit-builtin-show (args) (arities) =

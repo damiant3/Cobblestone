@@ -74,13 +74,59 @@ class Program
 
         try
         {
-            // Non-streaming compile path — now includes chapter scoping
-            string cceOutput = Codex_Codex_Codex.compile(cceCombined, _Cce.FromUnicode("Codex_Codex"));
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            string chapterCce = _Cce.FromUnicode("Codex_Codex");
+
+            Console.WriteLine("  [1/11] tokenize...");
+            var tokens = Codex_Codex_Codex.tokenize(cceCombined);
+            Console.WriteLine($"         {sw.ElapsedMilliseconds}ms — {tokens.Count} tokens");
+
+            Console.WriteLine("  [2/11] make_parse_state...");
+            var ps = Codex_Codex_Codex.make_parse_state(tokens);
+            Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
+
+            Console.WriteLine("  [3/11] scan_document...");
+            var scan = Codex_Codex_Codex.scan_document(ps);
+            Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
+
+            Console.WriteLine("  [4/11] build_all_assignments...");
+            var assignments = Codex_Codex_Codex.build_all_assignments(scan.def_headers, 0L, new List<ChapterAssignment>());
+            Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
+
+            Console.WriteLine("  [5/11] find_colliding_names...");
+            var colliding = Codex_Codex_Codex.find_colliding_names(assignments);
+            Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
+
+            Console.WriteLine("  [6/11] parse_document...");
+            var doc = Codex_Codex_Codex.parse_document(Codex_Codex_Codex.make_parse_state(tokens));
+            Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
+
+            Console.WriteLine("  [7/11] desugar_document...");
+            var ast = Codex_Codex_Codex.desugar_document(doc, chapterCce);
+            Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
+
+            Console.WriteLine("  [8/11] scope_achapter...");
+            var scoped = Codex_Codex_Codex.scope_achapter(ast, colliding, assignments);
+            Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
+
+            Console.WriteLine("  [9/11] check_chapter...");
+            var checkResult = Codex_Codex_Codex.check_chapter(scoped);
+            Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
+
+            Console.WriteLine("  [10/11] lower_chapter...");
+            var ir = Codex_Codex_Codex.lower_chapter(scoped, checkResult.types, checkResult.state);
+            Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
+
+            Console.WriteLine("  [11/11] csharp_emitter_emit_full_chapter...");
+            string cceOutput = Codex_Codex_Codex.csharp_emitter_emit_full_chapter(ir, scoped.type_defs);
+            Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
+
             string output = _Cce.ToUnicode(cceOutput);
             string outputPath = outputOverride ?? Path.Combine(Path.GetFullPath(Path.Combine(codexDir, "..")), "build-output", "bootstrap", "stage1-output.cs");
             File.WriteAllText(outputPath, output);
             Console.WriteLine($"Output written to: {outputPath}");
             Console.WriteLine($"Output size: {output.Length} chars");
+            Console.WriteLine($"Total: {sw.ElapsedMilliseconds}ms");
             return 0;
         }
         catch (Exception ex)

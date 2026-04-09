@@ -52,6 +52,7 @@ public sealed partial class TypeChecker
             FunctionType f => ContainsEffectRowVar(f.Parameter, varId)
                 || ContainsEffectRowVar(f.Return, varId),
             ListType l => ContainsEffectRowVar(l.Element, varId),
+            LinkedListType l => ContainsEffectRowVar(l.Element, varId),
             ForAllType fa => ContainsEffectRowVar(fa.Body, varId),
             DependentFunctionType dep => ContainsEffectRowVar(dep.ParamType, varId)
                 || ContainsEffectRowVar(dep.Body, varId),
@@ -82,6 +83,9 @@ public sealed partial class TypeChecker
                 break;
             case ListType lt:
                 CollectFreeTypeVars(lt.Element, vars);
+                break;
+            case LinkedListType llt:
+                CollectFreeTypeVars(llt.Element, vars);
                 break;
             case ForAllType fa:
                 CollectFreeTypeVars(fa.Body, vars);
@@ -198,6 +202,7 @@ public sealed partial class TypeChecker
                 SubstituteVar(f.Parameter, varId, replacement),
                 SubstituteVar(f.Return, varId, replacement)),
             ListType l => new ListType(SubstituteVar(l.Element, varId, replacement)),
+            LinkedListType l => new LinkedListType(SubstituteVar(l.Element, varId, replacement)),
             ConstructedType c => c with
             {
                 Arguments = [.. c.Arguments.Select(
@@ -273,6 +278,8 @@ public sealed partial class TypeChecker
             },
             ListType l => new ListType(
                 SubstituteTypeLevelVar(l.Element, varName, replacement)),
+            LinkedListType l => new LinkedListType(
+                SubstituteTypeLevelVar(l.Element, varName, replacement)),
             TypeLevelBinary bin => NormalizeTypeLevelExpr(new TypeLevelBinary(
                 bin.Op,
                 SubstituteTypeLevelVar(bin.Left, varName, replacement),
@@ -307,6 +314,8 @@ public sealed partial class TypeChecker
                 SubstituteEffectRowVar(f.Parameter, varId, replacement),
                 SubstituteEffectRowVar(f.Return, varId, replacement)),
             ListType l => new ListType(
+                SubstituteEffectRowVar(l.Element, varId, replacement)),
+            LinkedListType l => new LinkedListType(
                 SubstituteEffectRowVar(l.Element, varId, replacement)),
             ForAllType fa when fa.VariableId != varId =>
                 fa with { Body = SubstituteEffectRowVar(fa.Body, varId, replacement) },

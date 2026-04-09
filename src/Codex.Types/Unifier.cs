@@ -56,6 +56,9 @@ public sealed class Unifier(DiagnosticBag diagnostics)
         if (a is ListType la && b is ListType lb)
             return Unify(la.Element, lb.Element, span);
 
+        if (a is LinkedListType lla && b is LinkedListType llb)
+            return Unify(lla.Element, llb.Element, span);
+
         if (a is SumType sa && b is SumType sb && sa.TypeName == sb.TypeName)
         {
             if (sa.Constructors.Length != sb.Constructors.Length) return true;
@@ -216,6 +219,7 @@ public sealed class Unifier(DiagnosticBag diagnostics)
         {
             FunctionType f => new FunctionType(DeepResolve(f.Parameter), DeepResolve(f.Return)),
             ListType l => new ListType(DeepResolve(l.Element)),
+            LinkedListType l => new LinkedListType(DeepResolve(l.Element)),
             ConstructedType c => c with
             {
                 Arguments = [.. c.Arguments.Select(DeepResolve)]
@@ -294,6 +298,7 @@ public sealed class Unifier(DiagnosticBag diagnostics)
             TypeVariable tv => tv.Id == varId,
             FunctionType f => OccursIn(varId, f.Parameter) || OccursIn(varId, f.Return),
             ListType l => OccursIn(varId, l.Element),
+            LinkedListType l => OccursIn(varId, l.Element),
             ConstructedType c => c.Arguments.Any(a => OccursIn(varId, a)),
             ForAllType fa => OccursIn(varId, fa.Body),
             SumType s => s.Constructors.Any(c => c.Fields.Any(f => OccursIn(varId, f))),

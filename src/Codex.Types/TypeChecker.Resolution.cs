@@ -69,6 +69,10 @@ public sealed partial class TypeChecker
             && app.Arguments.Count == 1)
             return new ListType(ResolveTypeExpr(app.Arguments[0]));
 
+        if (app.Constructor is NamedTypeExpr namedCtor2 && namedCtor2.Name.Value == "LinkedList"
+            && app.Arguments.Count == 1)
+            return new LinkedListType(ResolveTypeExpr(app.Arguments[0]));
+
         if (app.Constructor is NamedTypeExpr named)
         {
             CodexType? userDef = m_typeDefMap[named.Name.Value];

@@ -12,6 +12,7 @@ public sealed partial class CSharpEmitter : ICodeEmitter
     ValueMap<string, int> m_definitionArity = ValueMap<string, int>.s_empty;
     ValueMap<string, ImmutableArray<string>> m_definitionParamNames =
         ValueMap<string, ImmutableArray<string>>.s_empty;
+    Dictionary<string, CodexType> m_typeDefsForRecordSet = [];
     int m_matchCounter;
 
     public string TargetName => "C#";
@@ -22,6 +23,9 @@ public sealed partial class CSharpEmitter : ICodeEmitter
         m_constructorNames = CollectConstructorNames(module);
         m_definitionArity = ValueMap<string, int>.s_empty;
         m_definitionParamNames = ValueMap<string, ImmutableArray<string>>.s_empty;
+        m_typeDefsForRecordSet = [];
+        foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
+            m_typeDefsForRecordSet[kv.Key] = kv.Value;
         m_matchCounter = 0;
         foreach (IRDefinition d in module.Definitions)
         {

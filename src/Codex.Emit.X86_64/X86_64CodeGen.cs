@@ -1719,6 +1719,71 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
                 X86_64Encoder.Li(m_text, wbRd, 0);
                 return wbRd;
             }
+            case "record-set" when args.Count == 3:
+            {
+                byte recReg = EmitExpr(args[0]);
+                int recLocal = AllocLocal();
+                StoreLocal(recLocal, recReg);
+
+                string fieldName = args[1] is IRTextLit lit ? lit.Value : "";
+                RecordType? rt = args[0].Type as RecordType;
+                if (rt is null && args[0].Type is ConstructedType ctRs)
+                    rt = m_typeDefs[ctRs.Constructor.Value] as RecordType;
+
+                int fieldIndex = 0;
+                if (rt is not null)
+                {
+                    for (int i = 0; i < rt.Fields.Length; i++)
+                    {
+                        if (rt.Fields[i].FieldName.Value == fieldName)
+                        {
+                            fieldIndex = i;
+                            break;
+                        }
+                    }
+                }
+
+                byte valReg = EmitExpr(args[2]);
+                byte ptrReg = LoadLocal(recLocal);
+                X86_64Encoder.MovStore(m_text, ptrReg, valReg, fieldIndex * 8);
+                return ptrReg;
+            }
+            case "linked-list-empty" when args.Count == 1:
+            {
+                // Allocate a node-pointer (initially 0 = null = empty list)
+                byte rd = AllocTemp();
+                X86_64Encoder.Li(m_text, rd, 0);
+                return rd;
+            }
+            case "linked-list-push" when args.Count == 2:
+            {
+                // Evaluate the list head pointer and the value
+                byte listReg = EmitExpr(args[0]);
+                int listLocal = AllocLocal();
+                StoreLocal(listLocal, listReg);
+                byte valReg = EmitExpr(args[1]);
+                int valLocal = AllocLocal();
+                StoreLocal(valLocal, valReg);
+                // Allocate node: [value][next] = 16 bytes at heap top
+                byte ptrReg = AllocTemp();
+                X86_64Encoder.MovRR(m_text, ptrReg, Reg.R10); // R10 = HeapReg
+                byte vr = LoadLocal(valLocal);
+                X86_64Encoder.MovStore(m_text, ptrReg, vr, 0); // node.value = val
+                byte lr = LoadLocal(listLocal);
+                X86_64Encoder.MovStore(m_text, ptrReg, lr, 8); // node.next = old head
+                X86_64Encoder.AddRI(m_text, Reg.R10, 16); // bump heap
+                return ptrReg;
+            }
+            case "linked-list-to-list" when args.Count == 1:
+            {
+                // Walk linked list, count nodes, allocate array, fill it
+                byte headReg = EmitExpr(args[0]);
+                X86_64Encoder.MovRR(m_text, Reg.RDI, headReg);
+                EmitCallTo("__linked_list_to_list");
+                byte rd2 = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd2, Reg.RAX);
+                return rd2;
+            }
             case "file-exists" when args.Count == 1:
             {
                 EmitExpr(args[0]); // evaluate for side effects
@@ -2654,6 +2719,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             EmitBareMetalReadSerialHelper();
             EmitWriteBinaryHelper();
         }
+        EmitLinkedListToListHelper();
         EmitListConsHelper();
         EmitListAppendHelper();
         EmitStrReplaceHelper();
@@ -4325,6 +4391,75 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         X86_64Encoder.PopR(m_text, Reg.R11);
         X86_64Encoder.PopR(m_text, Reg.RCX);
         X86_64Encoder.PopR(m_text, Reg.RBX);
+        X86_64Encoder.Ret(m_text);
+    }
+
+    void EmitLinkedListToListHelper()
+    {
+        // __linked_list_to_list: RDI = head node pointer (0 = empty)
+        // Returns RAX = List (array) pointer
+        // Node layout: [value (8 bytes)][next (8 bytes)]
+        // List layout: [count (8 bytes)][elem0][elem1]...
+        m_functionOffsets["__linked_list_to_list"] = m_text.Count;
+
+        // Prologue
+        X86_64Encoder.PushR(m_text, Reg.RBP);
+        X86_64Encoder.MovRR(m_text, Reg.RBP, Reg.RSP);
+        X86_64Encoder.PushR(m_text, Reg.RBX);
+        X86_64Encoder.PushR(m_text, Reg.R12);
+        X86_64Encoder.PushR(m_text, Reg.R13);
+
+        // Save head in RBX
+        X86_64Encoder.MovRR(m_text, Reg.RBX, Reg.RDI);
+
+        // Count nodes: R12 = count
+        X86_64Encoder.Li(m_text, Reg.R12, 0);
+        X86_64Encoder.MovRR(m_text, Reg.RCX, Reg.RBX); // RCX = cursor
+        int countLoop = m_text.Count;
+        X86_64Encoder.TestRR(m_text, Reg.RCX, Reg.RCX);
+        int countDone = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0); // if null, done
+        X86_64Encoder.AddRI(m_text, Reg.R12, 1);
+        X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RCX, 8); // cursor = cursor.next
+        X86_64Encoder.Jmp(m_text, countLoop - (m_text.Count + 5));
+        PatchJcc(countDone, m_text.Count);
+
+        // Allocate list: R13 = list ptr, size = (count + 1) * 8
+        X86_64Encoder.MovRR(m_text, Reg.R13, Reg.R10); // list ptr = HeapReg
+        X86_64Encoder.MovStore(m_text, Reg.R13, Reg.R12, 0); // list[0] = count
+        // Bump heap by (count + 1) * 8
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.R12);
+        X86_64Encoder.AddRI(m_text, Reg.RAX, 1);
+        X86_64Encoder.ShlRI(m_text, Reg.RAX, 3); // * 8
+        X86_64Encoder.AddRR(m_text, Reg.R10, Reg.RAX);
+
+        // Fill list from linked list (walk forward, but nodes are in reverse order)
+        // Actually nodes are pushed as a stack — most recent first.
+        // So walk and fill from index count-1 down to 0.
+        X86_64Encoder.MovRR(m_text, Reg.RCX, Reg.RBX); // cursor = head
+        X86_64Encoder.MovRR(m_text, Reg.RDX, Reg.R12);  // idx = count
+        int fillLoop = m_text.Count;
+        X86_64Encoder.TestRR(m_text, Reg.RCX, Reg.RCX);
+        int fillDone = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
+        X86_64Encoder.SubRI(m_text, Reg.RDX, 1); // idx--
+        X86_64Encoder.MovLoad(m_text, Reg.RAX, Reg.RCX, 0); // RAX = node.value
+        // list[idx + 1] = value (offset = (idx+1)*8)
+        X86_64Encoder.MovRR(m_text, Reg.RSI, Reg.RDX);
+        X86_64Encoder.AddRI(m_text, Reg.RSI, 1);
+        X86_64Encoder.ShlRI(m_text, Reg.RSI, 3);
+        X86_64Encoder.AddRR(m_text, Reg.RSI, Reg.R13);
+        X86_64Encoder.MovStore(m_text, Reg.RSI, Reg.RAX, 0);
+        X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RCX, 8); // cursor = cursor.next
+        X86_64Encoder.Jmp(m_text, fillLoop - (m_text.Count + 5));
+        PatchJcc(fillDone, m_text.Count);
+
+        // Return list pointer
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.R13);
+        X86_64Encoder.PopR(m_text, Reg.R13);
+        X86_64Encoder.PopR(m_text, Reg.R12);
+        X86_64Encoder.PopR(m_text, Reg.RBX);
+        X86_64Encoder.PopR(m_text, Reg.RBP);
         X86_64Encoder.Ret(m_text);
     }
 

@@ -80,6 +80,11 @@ public sealed record ListType(CodexType Element) : CodexType
     public override string ToString() => $"List {Element}";
 }
 
+public sealed record LinkedListType(CodexType Element) : CodexType
+{
+    public override string ToString() => $"LinkedList {Element}";
+}
+
 public sealed record RecordType(
     Name TypeName,
     ImmutableArray<int> TypeParamIds,

@@ -91,6 +91,20 @@ public sealed class TypeEnvironment
         env = env.Bind("list-snoc", new ForAllType(0,
             new FunctionType(new ListType(new TypeVariable(0)),
                 new FunctionType(new TypeVariable(0), new ListType(new TypeVariable(0))))));
+        env = env.Bind("linked-list-empty", new FunctionType(IntegerType.s_instance,
+            new LinkedListType(new ListType(IntegerType.s_instance))));
+        env = env.Bind("linked-list-push",
+            new FunctionType(new LinkedListType(new ListType(IntegerType.s_instance)),
+                new FunctionType(new ListType(IntegerType.s_instance),
+                    new LinkedListType(new ListType(IntegerType.s_instance)))));
+        env = env.Bind("linked-list-to-list",
+            new FunctionType(new LinkedListType(new ListType(IntegerType.s_instance)),
+                new ListType(new ListType(IntegerType.s_instance))));
+        env = env.Bind("record-set", new ForAllType(0,
+            new ForAllType(1,
+                new FunctionType(new TypeVariable(0),
+                    new FunctionType(TextType.s_instance,
+                        new FunctionType(new TypeVariable(1), new TypeVariable(0)))))));
         env = env.Bind("list-contains", new ForAllType(0,
             new FunctionType(new ListType(new TypeVariable(0)),
                 new FunctionType(new TypeVariable(0), BooleanType.s_instance))));

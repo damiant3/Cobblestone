@@ -40,7 +40,8 @@ public sealed partial class CSharpEmitter
                 else if (name.Name == "get-args")
                     sb.Append("Environment.GetCommandLineArgs().Select(_Cce.FromUnicode).ToList()");
                 else if (name.Name == "current-dir")
-                    sb.Append("_Cce.FromUnicode(Directory.GetCurrentDirectory())");
+                    sb.Append("_Cce.FromUnicode(Directory.GetCurrentDirectory())")
+                ;
                 else if (name.Name == "show")
                     sb.Append("new Func<object, string>(x => Convert.ToString(x))");
                 else if (name.Name == "negate")
@@ -405,7 +406,9 @@ public sealed partial class CSharpEmitter
         "char-at", "char-code-at", "substring", "list-at", "list-insert-at", "list-snoc", "list-contains",
         "text-replace", "text-compare", "text-concat-list",
         "write-file", "write-binary", "run-process", "list-files", "text-split", "text-contains", "text-starts-with",
-        "fork", "await", "par", "race");
+        "fork", "await", "par", "race",
+        "record-set",
+        "linked-list-empty", "linked-list-push", "linked-list-to-list");
 
     static string? FindBuiltinRoot(IRApply app)
     {
@@ -597,6 +600,86 @@ public sealed partial class CSharpEmitter
                 EmitExpr(sb, args[0], indent);
                 sb.Append(".Select(_t_ => Task.Run(() => _t_(null)))).Result.Result");
                 return true;
+
+            case "linked-list-empty" when args.Count == 1:
+            {
+                string elemType = app.Type is LinkedListType llt2 ? EmitType(llt2.Element) : "object";
+                sb.Append($"new List<{elemType}>()");
+                return true;
+            }
+            case "linked-list-push" when args.Count == 2:
+            {
+                string elemType = app.Type is LinkedListType llt3 ? EmitType(llt3.Element) : "object";
+                sb.Append($"((Func<List<{elemType}>, {elemType}, List<{elemType}>>)((_ll, _v) => {{ _ll.Add(_v); return _ll; }}))(");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(", ");
+                EmitExpr(sb, args[1], indent);
+                sb.Append(')');
+                return true;
+            }
+            case "linked-list-to-list" when args.Count == 1:
+                EmitExpr(sb, args[0], indent);
+                return true;
+
+            case "record-set" when args.Count == 3:
+            {
+                if (args[1] is IRTextLit fieldLit)
+                {
+                    RecordType? rt = args[0].Type as RecordType;
+                    if (rt is null && args[0].Type is ConstructedType ctRs
+                        && m_typeDefsForRecordSet.TryGetValue(ctRs.Constructor.Value, out CodexType? td))
+                        rt = td as RecordType;
+
+                    if (rt is not null)
+                    {
+                        CodexType? fieldType = null;
+                        for (int fi = 0; fi < rt.Fields.Length; fi++)
+                        {
+                            if (rt.Fields[fi].FieldName.Value == fieldLit.Value)
+                            {
+                                fieldType = rt.Fields[fi].Type;
+                                break;
+                            }
+                        }
+
+                        sb.Append($"((Func<{SanitizeIdentifier(rt.TypeName.Value)}, {SanitizeIdentifier(rt.TypeName.Value)}>)((_rs) => new {SanitizeIdentifier(rt.TypeName.Value)}(");
+                        for (int i = 0; i < rt.Fields.Length; i++)
+                        {
+                            if (i > 0) sb.Append(", ");
+                            string fn = rt.Fields[i].FieldName.Value;
+                            if (fn == fieldLit.Value)
+                            {
+                                if (args[2] is IRList emptyList && emptyList.Elements.Length == 0
+                                    && fieldType is ListType flt)
+                                {
+                                    sb.Append($"new List<{EmitType(flt.Element)}>()");
+                                }
+                                else
+                                    EmitExpr(sb, args[2], indent);
+                            }
+                            else
+                            {
+                                sb.Append("_rs.");
+                                sb.Append(SanitizeIdentifier(fn));
+                            }
+                        }
+                        sb.Append(")))(");
+                        EmitExpr(sb, args[0], indent);
+                        sb.Append(')');
+                    }
+                    else
+                    {
+                        sb.Append('(');
+                        EmitExpr(sb, args[0], indent);
+                        sb.Append(" with { ");
+                        sb.Append(SanitizeIdentifier(fieldLit.Value));
+                        sb.Append(" = ");
+                        EmitExpr(sb, args[2], indent);
+                        sb.Append(" })");
+                    }
+                }
+                return true;
+            }
 
             default:
                 return false;

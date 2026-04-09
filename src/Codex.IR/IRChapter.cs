@@ -105,7 +105,7 @@ public sealed record IRFieldAccess(IRExpr Record, string FieldName, CodexType Ty
 public sealed record IRRegion(IRExpr Body, CodexType Type, bool NeedsEscapeCopy) : IRExpr(Type)
 {
     public static bool TypeNeedsHeapEscape(CodexType type) => type is
-        TextType or RecordType or SumType or ListType or ConstructedType
+        TextType or RecordType or SumType or ListType or LinkedListType or ConstructedType
         or FunctionType { Return: not null };
 }
 

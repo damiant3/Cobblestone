@@ -358,6 +358,7 @@ public sealed class Lowering(
                 SubstituteTypeVar(ft.Parameter, varId, replacement),
                 SubstituteTypeVar(ft.Return, varId, replacement)),
             ListType lt => new ListType(SubstituteTypeVar(lt.Element, varId, replacement)),
+            LinkedListType lt => new LinkedListType(SubstituteTypeVar(lt.Element, varId, replacement)),
             _ => type
         };
     }
@@ -748,6 +749,20 @@ public sealed class Lowering(
         map = map.Set("list-snoc", new ForAllType(0,
             new FunctionType(new ListType(new TypeVariable(0)),
                 new FunctionType(new TypeVariable(0), new ListType(new TypeVariable(0))))));
+        map = map.Set("linked-list-empty", new FunctionType(IntegerType.s_instance,
+            new LinkedListType(new ListType(IntegerType.s_instance))));
+        map = map.Set("linked-list-push",
+            new FunctionType(new LinkedListType(new ListType(IntegerType.s_instance)),
+                new FunctionType(new ListType(IntegerType.s_instance),
+                    new LinkedListType(new ListType(IntegerType.s_instance)))));
+        map = map.Set("linked-list-to-list",
+            new FunctionType(new LinkedListType(new ListType(IntegerType.s_instance)),
+                new ListType(new ListType(IntegerType.s_instance))));
+        map = map.Set("record-set", new ForAllType(0,
+            new ForAllType(1,
+                new FunctionType(new TypeVariable(0),
+                    new FunctionType(TextType.s_instance,
+                        new FunctionType(new TypeVariable(1), new TypeVariable(0)))))));
         map = map.Set("list-contains", new ForAllType(0,
             new FunctionType(new ListType(new TypeVariable(0)),
                 new FunctionType(new TypeVariable(0), BooleanType.s_instance))));

@@ -21,6 +21,7 @@ public sealed partial class CSharpEmitter
             EffectfulType eft => EmitType(eft.Return),
             LinearType lin => EmitType(lin.Inner),
             ListType lt => $"List<{EmitType(lt.Element)}>",
+            LinkedListType llt => $"List<{EmitType(llt.Element)}>",
             SumType st => SanitizeIdentifier(st.TypeName.Value),
             RecordType rt => SanitizeIdentifier(rt.TypeName.Value),
             ConstructedType ct => SanitizeIdentifier(ct.Constructor.Value),
