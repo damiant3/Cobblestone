@@ -10,7 +10,6 @@ Chapter: X86-64 Code Generator
  lists, strings, and tail call optimization.
 
 Section: Record Types
-
   FuncOffset = record {
    name : Text,
    offset : Integer
@@ -51,6 +50,8 @@ Section: Record Types
    text-chunks : LinkedList (List Integer),
    text-len : Integer,
    rodata : List Integer,
+   rodata-chunks : LinkedList (List Integer),
+   rodata-len : Integer,
    func-offsets : List FuncOffset,
    call-patches : List CallPatch,
    func-addr-fixups : List FuncAddrFixup,
@@ -100,7 +101,6 @@ Section: Record Types
   }
 
 Section: Constants
-
   default-tco-state : TcoState
   default-tco-state =
    TcoState {
@@ -135,27 +135,13 @@ Section: Constants
    536870912
 
 Section: Rodata Tables
-
- CCE-to-Unicode lookup table (128 bytes) for output boundary.
- Each entry is the Unicode byte value for the corresponding CCE byte.
- Values above 127 (accented, Cyrillic) are truncated to low byte
- since COM1 serial is 8-bit. Accented characters map correctly
- because they are in the 0xE0-0xFD range of Latin-1.
-
   cce-to-unicode-table : List Integer
   cce-to-unicode-table =
    [0, 10, 32, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 101, 116, 97, 111, 105, 110, 115, 104, 114, 100, 108, 99, 117, 109, 119, 102, 103, 121, 112, 98, 118, 107, 106, 120, 113, 122, 69, 84, 65, 79, 73, 78, 83, 72, 82, 68, 76, 67, 85, 77, 87, 70, 71, 89, 80, 66, 86, 75, 74, 88, 81, 90, 46, 44, 33, 63, 58, 59, 39, 34, 45, 40, 41, 43, 61, 42, 60, 62, 47, 64, 35, 38, 95, 92, 124, 91, 93, 123, 125, 126, 96, 94, 233, 232, 234, 235, 225, 224, 226, 228, 243, 244, 246, 250, 249, 251, 252, 241, 231, 237, 48, 62, 53, 56, 61, 66, 65, 64, 50, 59, 58, 60, 52, 63, 67]
 
- Unicode-to-CCE lookup table (256 bytes) for input boundary.
- Maps Unicode byte values 0-255 to CCE byte values.
- Unmapped entries use 68 (CCE for question mark) as replacement.
-
   unicode-to-cce-table : List Integer
   unicode-to-cce-table =
    [0, 68, 68, 68, 68, 68, 68, 68, 68, 68, 1, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 2, 67, 72, 83, 68, 68, 84, 71, 74, 75, 78, 76, 66, 73, 65, 81, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 69, 70, 79, 77, 80, 68, 82, 41, 58, 50, 48, 39, 54, 55, 46, 43, 61, 60, 49, 52, 44, 42, 57, 63, 47, 45, 40, 51, 59, 53, 62, 56, 64, 88, 86, 89, 94, 85, 93, 15, 32, 24, 22, 13, 28, 29, 20, 17, 35, 34, 23, 26, 18, 16, 31, 37, 21, 19, 14, 25, 33, 27, 36, 30, 38, 90, 87, 91, 92, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 100, 99, 101, 68, 102, 68, 68, 111, 96, 95, 97, 98, 68, 112, 68, 68, 68, 110, 68, 103, 104, 68, 105, 68, 68, 107, 106, 108, 109, 68, 68, 68]
-
- Rodata layout offsets. The result-space-base and fwd-table globals
- occupy the first 16 bytes; CCE tables follow immediately.
 
   result-base-rodata-offset : Integer
   result-base-rodata-offset = 0
@@ -175,13 +161,14 @@ Section: Rodata Tables
    in zeros-8 ++ zeros-8 ++ cce-to-unicode-table ++ unicode-to-cce-table
 
 Section: State Helpers
-
   empty-codegen-state : CodegenState
   empty-codegen-state =
    CodegenState {
    text-chunks = linked-list-empty 0,
    text-len = 0,
    rodata = [],
+   rodata-chunks = linked-list-empty 0,
+   rodata-len = 0,
    func-offsets = [],
    call-patches = [],
    func-addr-fixups = [],
@@ -258,13 +245,6 @@ Section: State Helpers
    })
 
 Section: Register Allocation
-
- The temp pool recycles RAX, RCX, RDX, RSI, RDI, R11 in round-robin
- order. The local pool assigns RBX, R12, R13, R14 monotonically, then
- spills to the stack at offsets below RBP. R8 and R9 alternate as
- scratch registers for loading spilled locals. RSP, RBP, R10, and R15
- are reserved for the frame pointer, heap, and result space.
-
   alloc-temp : CodegenState -> EmitResult
   alloc-temp (st) =
    let idx = int-mod (st.next-temp) 6
@@ -310,11 +290,6 @@ Section: Register Allocation
   }
 
 Section: Byte Patching
-
- Replaces four bytes at a given offset in a list with the little-endian
- encoding of an integer value. This is O(n) per patch but only called
- once per function for frame size and once per call site.
-
   patch-i32-at : List Integer -> Integer -> Integer -> List Integer
   patch-i32-at (bytes) (pos) (value) =
    let new-bytes = write-i32 value
@@ -405,7 +380,6 @@ Section: Byte Patching
    in if r == 0 then n else n + 16 - r
 
 Section: Function Emission
-
   emit-sub-rsp-imm32 : Integer -> List Integer
   emit-sub-rsp-imm32 (imm) =
    [72, 129, 236] ++ write-i32 imm
@@ -527,7 +501,6 @@ Section: Function Emission
    else emit-all-defs (emit-function st (list-at defs i)) defs (i + 1)
 
 Section: Local Variable Management
-
   lookup-local : List LocalBinding -> Text -> Integer
   lookup-local (bindings) (name) =
    lookup-local-loop bindings name 0 (list-length bindings)
@@ -547,7 +520,6 @@ Section: Local Variable Management
     }))
 
 Section: Expression Emission
-
   emit-expr : CodegenState -> IRExpr -> EmitResult
   emit-expr (st) (expr) =
    when expr
@@ -591,11 +563,10 @@ Section: Expression Emission
   emit-text-lit : CodegenState -> Text -> EmitResult
   emit-text-lit (st) (value) =
    let len = text-length value
-   in let rodata-off = list-length (st.rodata)
-   in let len-bytes = write-i64 len
-   in let new-rodata = append-text-bytes ((st.rodata) ++ len-bytes) value 0 len
-   in let aligned = pad-to-8 new-rodata
-   in let st1 = record-set st "rodata" aligned
+   in let rodata-off = list-length (st.rodata) + st.rodata-len
+   in let str-bytes = append-text-bytes (write-i64 len) value 0 len
+   in let padded = pad-to-8 str-bytes
+   in let st1 = record-set (record-set st "rodata-chunks" (linked-list-push (st.rodata-chunks) padded)) "rodata-len" (rodata-off + list-length padded)
    in let fixup = RodataFixup {
     patch-offset = st1.text-len + 2,
     rodata-offset = rodata-off
@@ -770,7 +741,6 @@ Section: Expression Emission
    in load-local st7 (result-loc.reg)
 
 Section: Builtin Detection
-
   is-string-builtin : Text -> Boolean
   is-string-builtin (name) =
     if name == "text-length" then True
@@ -839,11 +809,6 @@ Section: Builtin Detection
     else is-misc-builtin name
 
 Section: Builtin Emission
-
- Wires Codex operations to inline sequences or runtime helper calls.
- All builtins here operate on CCE natively. I/O boundary builtins
- (print-line, read-file, write-file) are not yet implemented.
-
   emit-helper-call-1 : CodegenState -> List IRExpr -> Text -> EmitResult
   emit-helper-call-1 (st) (args) (helper) =
     let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
@@ -1270,12 +1235,6 @@ Section: Builtin Emission
     else emit-file-exists-builtin st args
 
 Section: Function Application
-
- Flattens curried IrApply chains into a function name and argument list,
- evaluates arguments, loads them into argument registers via a two-phase
- push/pop sequence (to avoid R8/R9 spill conflicts), emits the call,
- and moves the result from RAX to a temp register.
-
   flatten-apply : IRExpr -> List IRExpr -> FlatApply
   flatten-apply (expr) (acc) =
    when expr
@@ -1432,7 +1391,6 @@ Section: Function Application
    in emit-store-ctor-fields st1 field-locals ptr-loc (i + 1)
 
 Section: Closures and Partial Application
-
   emit-load-rodata-addr : CodegenState -> Integer -> Integer -> CodegenState
   emit-load-rodata-addr (st) (reg) (rodata-off) =
    let fixup = RodataFixup {
@@ -1542,7 +1500,6 @@ Section: Closures and Partial Application
    in collect-rodata-patches fixups rodata-vaddr (i + 1) (acc ++ [p0, p1])
 
 Section: Record Emission
-
   find-record-field-index : List RecordField -> Text -> Integer -> Integer
   find-record-field-index (fields) (name) (i) =
    if i == list-length fields then 0
@@ -1621,7 +1578,6 @@ Section: Record Emission
   }
 
 Section: Pattern Matching
-
   emit-match : CodegenState -> IRExpr -> List IRBranch -> EmitResult
   emit-match (st) (scrut-expr) (branches) =
    let saved-tail = st.tco.in-tail-pos
@@ -1727,7 +1683,6 @@ Section: Pattern Matching
    else patch-match-end-jumps (patch-jmp-at st (list-at patches i) (st.text-len)) patches (i + 1)
 
 Section: List Emission
-
   emit-eval-list-elems : CodegenState -> List IRExpr -> Integer -> List Integer -> SavedArgs
   emit-eval-list-elems (st) (elems) (i) (acc) =
    if i == list-length elems then SavedArgs {
@@ -1768,18 +1723,6 @@ Section: List Emission
    in load-local st9 (ptr-loc.reg)
 
 Section: 32-bit Bare-Metal Trampoline
-
- The PVH entry enters in 32-bit protected mode with paging disabled.
- This byte sequence sets up identity-mapped page tables covering 64 MB
- as 32 huge pages of 2 MB each, enables PAE and long mode, turns on
- paging, loads a 64-bit GDT, and far-jumps to the 64-bit __start
- entry point. The far-jump target address is patched after all code
- is emitted. Total size is 170 bytes.
-
- All bytes are 32-bit x86 machine code because the encoder only
- handles 64-bit instructions. The multiboot header occupies the first
- 12 bytes, and the PVH ELF entry offset is 12 to skip past the header.
-
   multiboot-header : List Integer
   multiboot-header =
    write-i32 464367618 ++ write-i32 0 ++ write-i32 3830599678
@@ -1817,14 +1760,6 @@ Section: 32-bit Bare-Metal Trampoline
   }
 
 Section: Serial I/O
-
- COM1 data port is 1016 (0x3F8) and the line status register is at
- 1021 (0x3FD). Bit 5 of the LSR indicates the transmit holding
- register is empty and ready to accept a byte. The wait loop reads
- the LSR with IN AL, DX (byte 236) and tests bit 5 with TEST AL, 32
- (bytes 168, 32). These two-byte encodings are not in the instruction
- encoder because they use implicit register forms.
-
   emit-out-byte : CodegenState -> Integer -> Integer -> CodegenState
   emit-out-byte (st) (port) (value) =
    let st1 = st-append-text st (li reg-rdx port)
@@ -1869,13 +1804,6 @@ Section: Serial I/O
    in st-append-text st8 out-dx-al
 
 Section: Inline Integer Print
-
- Converts the integer in RAX to decimal ASCII digits and sends each
- to the COM1 serial port. Handles zero and negative values. Extracts
- digits by repeated division by 10, pushes them to the stack in
- reverse order, then pops and prints each one. Clobbers RAX, RBX,
- RCX, RDX, RDI, and R11.
-
   ItoaState = record {
    cg : CodegenState,
    jmp-done-zero-pos : Integer
@@ -1939,12 +1867,6 @@ Section: Inline Integer Print
    in patch-jmp-at st2 (zero.jmp-done-zero-pos) (st2.text-len)
 
 Section: Print Text
-
- Loops over the CCE bytes of a length-prefixed string, converts each
- byte to Unicode via the CCE-to-Unicode table in rodata, and sends
- the Unicode byte to COM1 serial. Uses locals to preserve the string
- pointer, table address, length, and loop index across iterations.
-
   emit-serial-wait-thr : CodegenState -> CodegenState
   emit-serial-wait-thr (st) =
    let st1 = st-append-text st (push-r reg-rax)
@@ -2026,7 +1948,6 @@ Section: Print Text
    in emit-print-text-loop st6 (saved-ptr.reg) (saved-table.reg) (saved-len.reg) (saved-idx.reg)
 
 Section: Call Emission
-
   emit-call-to : CodegenState -> Text -> CodegenState
   emit-call-to (st) (target) =
    let patch-pos = st.text-len
@@ -2037,12 +1958,6 @@ Section: Call Emission
     }))
 
 Section: Bare-Metal Start
-
- The __start function is the 64-bit entry point reached after the
- trampoline switches to long mode. It sets up the stack pointer,
- initializes the COM1 UART for serial output, calls main, converts
- the integer return value to decimal, prints it to serial, and halts.
-
   bare-metal-heap-base : Integer
   bare-metal-heap-base =
    4194304
@@ -2121,12 +2036,6 @@ Section: Bare-Metal Start
    in st-append-text st65 (jmp (repl-loop - (st65.text-len + 5)))
 
 Section: Chapter Entry Point
-
- Orchestrates the full compilation pipeline. Builds the 32-bit
- trampoline, emits all function definitions, emits __start, patches
- the trampoline far-jump to point at __start, patches all call sites,
- and wraps everything in a bare-metal ELF with entry offset 12.
-
   flatten-chunks : LinkedList (List Integer) -> List Integer
   flatten-chunks (chunks) =
    let chunk-list = linked-list-to-list chunks
@@ -2149,6 +2058,8 @@ Section: Chapter Entry Point
    text-chunks = linked-list-push (linked-list-empty 0) (tramp.bytes),
    text-len = list-length (tramp.bytes),
    rodata = init-rodata,
+   rodata-chunks = linked-list-empty 0,
+   rodata-len = 0,
    func-offsets = [],
    call-patches = [],
    func-addr-fixups = [],
@@ -2185,7 +2096,8 @@ Section: Chapter Entry Point
    in let flat-text = flatten-chunks (st2.text-chunks)
    in let all-patches = [far-jump-entry] ++ call-entries ++ addr-entries ++ rodata-entries ++ (st2.deferred-patches)
    in let patched-text = apply-all-patches flat-text all-patches
-   in build-elf-32-bare patched-text (st2.rodata) 12
+   in let flat-rodata = (st2.rodata) ++ flatten-chunks (st2.rodata-chunks)
+   in build-elf-32-bare patched-text flat-rodata 12
 
 Page 1 of 3
 

@@ -15,7 +15,6 @@ Chapter: X86-64 Code Generator
  fixups and are deferred to a later batch.
 
 Section: State Records
-
   StrEqHeadResult = record {
     cg : CodegenState,
     len-ne-pos : Integer
@@ -69,11 +68,6 @@ Section: State Records
   }
 
 Section: __str_eq
-
- Compares two length-prefixed CCE strings for equality.
- RDI = ptr1, RSI = ptr2, returns RAX = 1 if equal, 0 if not.
- Fast path: pointer equality. Then length check. Then byte-by-byte.
-
   emit-str-eq-head : CodegenState -> StrEqHeadResult
   emit-str-eq-head (st) =
     let st0 = record-func-offset st "__str_eq"
@@ -130,12 +124,6 @@ Section: __str_eq
    in st-append-text st6 x86-ret
 
 Section: __itoa
-
- Converts a signed 64-bit integer to a length-prefixed CCE string
- allocated on the heap. RDI = integer, returns RAX = string pointer.
- CCE digit encoding: 0=3, 1=4, ..., 9=12. Minus sign: 73.
- Uses a 32-byte stack buffer to extract digits in reverse order.
-
   emit-itoa-setup : CodegenState -> CodegenState
   emit-itoa-setup (st) =
     let st0 = record-func-offset st "__itoa"
@@ -237,12 +225,6 @@ Section: __itoa
    in emit-itoa-copy-and-epilogue st3
 
 Section: __str_concat
-
- Concatenates two length-prefixed CCE strings. RDI = ptr1, RSI = ptr2,
- returns RAX = concatenated string pointer. Fast path: if ptr1 is at
- the heap top, extends it in place. Slow path: allocates a new string
- and copies both inputs.
-
   emit-str-concat-prologue : CodegenState -> StrConcatCheckResult
   emit-str-concat-prologue (st) =
     let st0 = record-func-offset st "__str_concat"
@@ -367,11 +349,6 @@ Section: __str_concat
    in st-append-text st6 x86-ret
 
 Section: __ipow
-
- Integer exponentiation by squaring.
- RDI = base, RSI = exponent, returns RAX = base^exponent.
- Negative exponent returns 0.
-
   emit-ipow-setup : CodegenState -> HelpResult2
   emit-ipow-setup (st) =
     let st0 = record-func-offset st "__ipow"
@@ -414,11 +391,6 @@ Section: __ipow
    in st-append-text st4 x86-ret
 
 Section: __text_to_int
-
- Parses a length-prefixed CCE string as a signed integer.
- RDI = text pointer, returns RAX = integer value.
- CCE digit encoding: 0=3, 1=4, ..., 9=12. Minus sign: 73.
-
   emit-text-to-int-setup : CodegenState -> HelpResult1
   emit-text-to-int-setup (st) =
     let st0 = record-func-offset st "__text_to_int"
@@ -476,10 +448,6 @@ Section: __text_to_int
    in st-append-text st5 x86-ret
 
 Section: __text_starts_with
-
- Tests whether a string begins with a given prefix.
- RDI = text, RSI = prefix, returns RAX = 1 if starts with, 0 if not.
-
   emit-text-starts-with-head : CodegenState -> HelpResult1
   emit-text-starts-with-head (st) =
     let st0 = record-func-offset st "__text_starts_with"
@@ -529,10 +497,6 @@ Section: __text_starts_with
    in st-append-text st2 x86-ret
 
 Section: __text_contains
-
- Tests whether a string contains a given substring.
- RDI = text, RSI = needle, returns RAX = 1 if found, 0 if not.
-
   emit-text-contains-search : CodegenState -> HelpResult2
   emit-text-contains-search (st) =
     let st0 = record-func-offset st "__text_contains"
@@ -590,10 +554,6 @@ Section: __text_contains
    in emit-text-contains-cmp (search.cg) (search.p1) (search.p2)
 
 Section: __text_compare
-
- Lexicographic comparison of two CCE strings.
- RDI = str1, RSI = str2, returns RAX = -1/0/1.
-
   emit-text-compare-prologue : CodegenState -> CodegenState
   emit-text-compare-prologue (st) =
     let st0 = record-func-offset st "__text_compare"
@@ -690,10 +650,6 @@ Section: __text_compare
    in st-append-text st6 x86-ret
 
 Section: __list_contains
-
- Linear search for an element in a list (pointer/value equality).
- RDI = list, RSI = element, returns RAX = 1 if found, 0 if not.
-
   emit-list-contains : CodegenState -> CodegenState
   emit-list-contains (st) =
     let st0 = record-func-offset st "__list_contains"
@@ -720,10 +676,6 @@ Section: __list_contains
    in st-append-text st17 x86-ret
 
 Section: __list_cons
-
- Prepends an element to a list, allocating a new list.
- RDI = head element, RSI = tail list pointer, returns RAX = new list.
-
   emit-list-cons-alloc : CodegenState -> CodegenState
   emit-list-cons-alloc (st) =
     let st0 = record-func-offset st "__list_cons"
@@ -765,10 +717,6 @@ Section: __list_cons
    in emit-list-cons-copy st0
 
 Section: __list_append
-
- Concatenates two lists into a new list.
- RDI = list1, RSI = list2, returns RAX = concatenated list.
-
   emit-list-append-alloc : CodegenState -> CodegenState
   emit-list-append-alloc (st) =
     let st0 = record-func-offset st "__list_append"
@@ -842,13 +790,6 @@ Section: __list_append
    in st-append-text st5 x86-ret
 
 Section: __list_snoc
-
- Appends an element to a list.
- RDI = list, RSI = element, returns RAX = updated list.
- Path 1: count < capacity, in-place O(1).
- Path 2: at heap top, grow capacity O(1).
- Path 3: not at top, copy with doubling O(N).
-
   emit-list-snoc-path1 : CodegenState -> HelpResult1
   emit-list-snoc-path1 (st) =
     let st0 = record-func-offset st "__list_snoc"
@@ -975,13 +916,6 @@ Section: __list_snoc
    in emit-list-snoc-path3-finish st2
 
 Section: __list_insert_at
-
- Inserts an element at a given index in a list.
- RDI = list, RSI = index, RDX = element, returns RAX = new list.
- Path 1: count < capacity, in-place shift.
- Path 2: at heap top, grow + shift.
- Path 3: not at top, copy-with-gap + doubling.
-
   emit-list-insert-at-prologue : CodegenState -> HelpResult2
   emit-list-insert-at-prologue (st) =
     let st0 = record-func-offset st "__list_insert_at"
@@ -1147,10 +1081,6 @@ Section: __list_insert_at
    in emit-list-insert-at-path3-epilogue st6
 
 Section: __text_concat_list
-
- Concatenates all strings in a list into one string.
- RDI = list of text pointers, returns RAX = concatenated text.
-
   emit-text-concat-list-len-pass : CodegenState -> CodegenState
   emit-text-concat-list-len-pass (st) =
     let st0 = record-func-offset st "__text_concat_list"
@@ -1240,11 +1170,6 @@ Section: __text_concat_list
    in st-append-text st7 x86-ret
 
 Section: __str_replace
-
- Replaces all occurrences of a substring with another.
- RDI = text, RSI = old, RDX = new, returns RAX = result text.
- Scans linearly, copies to a new heap buffer.
-
   emit-str-replace-prologue : CodegenState -> CodegenState
   emit-str-replace-prologue (st) =
     let st0 = record-func-offset st "__str_replace"
@@ -1374,10 +1299,6 @@ Section: __str_replace
    in emit-str-replace-done st2 (head.p1)
 
 Section: __text_split
-
- Splits a string by a single-character delimiter.
- RDI = text, RSI = delimiter string, returns RAX = list of text pointers.
-
   emit-text-split-prologue : CodegenState -> CodegenState
   emit-text-split-prologue (st) =
     let st0 = record-func-offset st "__text_split"
@@ -1522,13 +1443,7 @@ Section: __text_split
    in emit-text-split-epilogue st5
 
 Section: Helpers Entry Point
-
 Section: I/O Boundary Helpers
-
- The five deferred helpers that require rodata tables for CCE
- conversion. These operate at the I/O boundary where CCE-encoded
- internal data meets Unicode-encoded external data.
-
   emit-cce-to-unicode-helper : CodegenState -> CodegenState
   emit-cce-to-unicode-helper (st) =
    let st1 = record-func-offset st "__cce_to_unicode"
@@ -1708,12 +1623,6 @@ Section: I/O Boundary Helpers
    in emit-linked-list-to-list-helper st21
 
 Section: Binary Output
-
- Writes a List Integer to COM1 serial as raw bytes. Each list
- element is an 8-byte integer on the heap but only the low byte
- is sent. No CCE conversion. Used by the x86-64 self-compile
- path to output the ELF binary.
-
   emit-write-binary-helper : CodegenState -> CodegenState
   emit-write-binary-helper (st) =
    let st1 = record-func-offset st "__write_binary"

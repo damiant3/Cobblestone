@@ -6,7 +6,6 @@ Chapter: X86-64 Boot Infrastructure
  section via the instruction encoder.
 
 Section: Memory Layout Constants
-
   idt-base : Integer
   idt-base = 24576
 
@@ -62,11 +61,6 @@ Section: Memory Layout Constants
   cap-concurrent = 3
 
 Section: PIC Initialization
-
- Remaps the 8259 PIC so hardware IRQs do not collide with CPU
- exceptions. IRQ 0-7 map to vectors 32-39, IRQ 8-15 to 40-47.
- Unmasks timer (IRQ0), keyboard (IRQ1), and COM1 (IRQ4).
-
   emit-pic-init : CodegenState -> CodegenState
   emit-pic-init (st) =
    let st1 = emit-out-byte st 32 17
@@ -81,11 +75,6 @@ Section: PIC Initialization
    in emit-out-byte st9 161 255
 
 Section: Common Interrupt Handler
-
- Dispatches on the vector number in AL. Handles timer (vector 32),
- keyboard (vector 33), and COM1 serial receive (vector 36). All
- other vectors get a generic EOI and return.
-
   emit-common-interrupt-handler : CodegenState -> CodegenState
   emit-common-interrupt-handler (st) =
    let st1 = st-append-text st (push-r reg-rcx)
@@ -151,12 +140,6 @@ Section: Common Interrupt Handler
    in st-append-text st55 iretq
 
 Section: ISR Stubs
-
- Emits 256 interrupt service routine stubs. Each stub is 8 bytes:
- push rax (1 byte), mov al immediate (2 bytes), jmp rel32 to
- common handler (5 bytes). Returns the state and the virtual
- address of the first stub for IDT construction.
-
   IsrStubResult = record {
    state : CodegenState,
    first-stub-vaddr : Integer
@@ -186,12 +169,6 @@ Section: ISR Stubs
   }
 
 Section: IDT Construction
-
- Emits a runtime loop that writes 256 IDT entries at idt-base.
- Each entry is 16 bytes: offset_low | selector | IST | type_attr |
- offset_mid | offset_high | reserved. All stubs are below 4 GB
- so offset_high is always zero.
-
   emit-idt-entries : CodegenState -> Integer -> CodegenState
   emit-idt-entries (st) (first-stub-vaddr) =
    let st1 = st-append-text st (li reg-rcx 256)
@@ -217,10 +194,6 @@ Section: IDT Construction
    in patch-jcc-at st18 jcc-pos loop-top
 
 Section: Interrupt Setup
-
- Loads the IDT register, initializes kernel data addresses, and
- enables interrupts. Called after IDT entries are built.
-
   emit-interrupt-setup : CodegenState -> CodegenState
   emit-interrupt-setup (st) =
    let st1 = emit-pic-init st
@@ -245,11 +218,6 @@ Section: Interrupt Setup
    in st-append-text st18 sti
 
 Section: Process Management
-
- Minimal process table for single-process compilation. Process 0
- uses kernel page tables at 0x8000. Context switching and process 1
- are present in the infrastructure but disabled during compilation.
-
   emit-zero-region : CodegenState -> Integer -> Integer -> CodegenState
   emit-zero-region (st) (addr) (qwords) =
    let st1 = st-append-text st (li reg-rdi addr)
@@ -306,7 +274,6 @@ Section: Process Management
    in st-append-text st8 (li reg-r10 4194304)
 
 Section: Capabilities
-
   emit-grant-capability : CodegenState -> Integer -> Integer -> CodegenState
   emit-grant-capability (st) (proc-index) (cap-bit) =
    let cap-addr = proc-table-base + proc-index * proc-entry-size + proc-cap-offset
@@ -322,7 +289,6 @@ Section: Capabilities
    else 2 * shl-1 (n - 1)
 
 Section: MSR and Syscall
-
   emit-write-msr : CodegenState -> Integer -> Integer -> CodegenState
   emit-write-msr (st) (msr-addr) (value) =
    let low32 = int-mod value 4294967296
@@ -405,10 +371,6 @@ Section: MSR and Syscall
   }
 
 Section: Serial String
-
- Emits each byte of a Unicode string directly to COM1 serial.
- Used for the READY handshake and diagnostic labels.
-
   emit-serial-string-loop : CodegenState -> List Integer -> Integer -> CodegenState
   emit-serial-string-loop (st) (chars) (i) =
    if i == list-length chars then st
@@ -420,7 +382,6 @@ Section: Serial String
    emit-serial-string-loop st chars 0
 
 Section: Heap High-Water Mark
-
   emit-update-heap-hwm : CodegenState -> CodegenState
   emit-update-heap-hwm (st) =
    let st1 = st-append-text st (push-r reg-r11)
