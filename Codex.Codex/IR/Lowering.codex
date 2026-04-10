@@ -252,13 +252,27 @@ Section: Match Lowering
    when p
     if AVarPat (name) -> IrVarPat (name.value) scrut-ty
     if ALitPat (text) (kind) -> IrLitPat text scrut-ty
-    if ACtorPat (name) (subs) -> IrCtorPat (name.value) (lower-sub-patterns subs scrut-ty 0) scrut-ty
+    if ACtorPat (name) (subs) -> IrCtorPat (name.value) (lower-ctor-sub-patterns subs scrut-ty (name.value) 0) scrut-ty
     if AWildPat -> IrWildPat
 
-  lower-sub-patterns : List APat -> CodexType -> Integer -> List IRPat
-  lower-sub-patterns (subs) (scrut-ty) (i) =
+  lower-ctor-sub-patterns : List APat -> CodexType -> Text -> Integer -> List IRPat
+  lower-ctor-sub-patterns (subs) (scrut-ty) (ctor-name) (i) =
    if i == list-length subs then []
-   else [lower-pattern (list-at subs i) ErrorTy] ++ lower-sub-patterns subs scrut-ty (i + 1)
+   else let field-ty = lookup-ctor-field-type scrut-ty ctor-name i
+   in [lower-pattern (list-at subs i) field-ty] ++ lower-ctor-sub-patterns subs scrut-ty ctor-name (i + 1)
+
+  lookup-ctor-field-type : CodexType -> Text -> Integer -> CodexType
+  lookup-ctor-field-type (ty) (ctor-name) (field-idx) =
+   when ty
+    if SumTy (sname) (ctors) -> find-ctor-field-type ctors ctor-name field-idx 0
+    if _ -> ErrorTy
+
+  find-ctor-field-type : List SumCtor -> Text -> Integer -> Integer -> CodexType
+  find-ctor-field-type (ctors) (ctor-name) (field-idx) (i) =
+   if i == list-length ctors then ErrorTy
+   else let c = list-at ctors i
+   in if c.name.value == ctor-name then if field-idx < list-length (c.fields) then list-at (c.fields) field-idx else ErrorTy
+      else find-ctor-field-type ctors ctor-name field-idx (i + 1)
 
 Section: Collections and Do
   lower-list : List AExpr -> CodexType -> LowerCtx -> IRExpr

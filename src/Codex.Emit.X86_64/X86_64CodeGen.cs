@@ -1390,11 +1390,17 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
                 }
                 case IRCtorPattern ctorPat:
                 {
-                    // Resolve tag from SumType
+                    // Resolve tag from SumType — try pattern type first, fall back to scrutinee type
                     int expectedTag = 0;
                     SumType? matchSumType = ctorPat.Type as SumType;
                     if (matchSumType is null && ctorPat.Type is ConstructedType ctMatch)
                         matchSumType = m_typeDefs[ctMatch.Constructor.Value] as SumType;
+                    if (matchSumType is null)
+                        matchSumType = match.Scrutinee.Type as SumType;
+                    if (matchSumType is null && match.Scrutinee.Type is ConstructedType ctScrut)
+                        matchSumType = m_typeDefs[ctScrut.Constructor.Value] as SumType;
+
+
                     if (matchSumType is SumType sumType)
                     {
                         for (int t = 0; t < sumType.Constructors.Length; t++)
