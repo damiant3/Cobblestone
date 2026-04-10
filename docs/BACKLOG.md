@@ -51,5 +51,6 @@
 
 | # | Item | Notes |
 |---|------|-------|
-| 1 | Verify IL backend CCE assumptions | Document decision: .NET Char.Is* vs CCE ranges |
-| 2 | NetworkSync test failures | 4 tests need self-contained peer or integration-only marking |
+| 1 | Support negative number literals | The bare-metal backend does not handle negative integer literals (`-42`) as a single token. Currently requires `0 - 42`. The lexer, parser, and x86-64 emitter all need updates. |
+| 2 | Verify IL backend CCE assumptions | Document decision: .NET Char.Is* vs CCE ranges |
+| 3 | NetworkSync test failures | 4 tests need self-contained peer or integration-only marking |
