@@ -120,19 +120,62 @@ public static partial class Program
             sw.Stop();
             Console.WriteLine($" {stage3Output.Length:N0} chars ({sw.ElapsedMilliseconds}ms)");
 
-            // ── Verify fixed point ──
+            // ── Verify C# fixed point ──
             Console.WriteLine();
-            if (stage1Output == stage3Output)
+            if (stage1Output != stage3Output)
             {
                 total.Stop();
-                Console.WriteLine($"✅ FIXED POINT PROVEN: Stage 1 = Stage 3 ({stage1Output.Length:N0} chars identical)");
+                Console.WriteLine($"❌ C# DIVERGENCE: Stage 1 ({stage1Output.Length:N0} chars) ≠ Stage 3 ({stage3Output.Length:N0} chars)");
+                Console.WriteLine($"   Total time: {total.ElapsedMilliseconds:N0}ms");
+                return 1;
+            }
+            Console.WriteLine($"✅ C# FIXED POINT: Stage 1 = Stage 3 ({stage1Output.Length:N0} chars identical)");
+
+            // ── Codex text emission check ──
+            // Uses stage 0 CodexLib to emit Codex text, then stage 1 CodexLib to emit again.
+            // Fixed point: both outputs must be identical.
+            Console.WriteLine();
+            Console.Write("Codex text stage 1: emit Codex text (stage 0 compiler)...");
+            sw.Restart();
+            string codexText1Path = Path.Combine(outputDir, "stage1-codex.codex");
+            int ct1Exit = RunBootstrapCodexEmit(bootstrapDir, codexDir, codexText1Path);
+            if (ct1Exit != 0)
+            {
+                Console.WriteLine(" FAILED");
+                Console.Error.WriteLine("Codex text stage 1 failed.");
+                return 1;
+            }
+            string codexText1 = File.ReadAllText(codexText1Path);
+            sw.Stop();
+            Console.WriteLine($" {codexText1.Length:N0} chars ({sw.ElapsedMilliseconds}ms)");
+
+            Console.Write("Codex text stage 2: emit Codex text (stage 1 compiler)...");
+            sw.Restart();
+            // Stage 1 CodexLib is already in place from the C# fixed-point test above
+            string codexText2Path = Path.Combine(outputDir, "stage2-codex.codex");
+            int ct2Exit = RunBootstrapCodexEmit(bootstrapDir, codexDir, codexText2Path);
+            if (ct2Exit != 0)
+            {
+                Console.WriteLine(" FAILED");
+                Console.Error.WriteLine("Codex text stage 2 failed.");
+                return 1;
+            }
+            string codexText2 = File.ReadAllText(codexText2Path);
+            sw.Stop();
+            Console.WriteLine($" {codexText2.Length:N0} chars ({sw.ElapsedMilliseconds}ms)");
+
+            Console.WriteLine();
+            if (codexText1 == codexText2)
+            {
+                total.Stop();
+                Console.WriteLine($"✅ CODEX TEXT FIXED POINT: Stage 1 = Stage 2 ({codexText1.Length:N0} chars identical)");
                 Console.WriteLine($"   Total time: {total.ElapsedMilliseconds:N0}ms");
                 return 0;
             }
             else
             {
                 total.Stop();
-                Console.WriteLine($"❌ DIVERGENCE: Stage 1 ({stage1Output.Length:N0} chars) ≠ Stage 3 ({stage3Output.Length:N0} chars)");
+                Console.WriteLine($"❌ CODEX TEXT DIVERGENCE: Stage 1 ({codexText1.Length:N0} chars) ≠ Stage 2 ({codexText2.Length:N0} chars)");
                 Console.WriteLine($"   Total time: {total.ElapsedMilliseconds:N0}ms");
                 return 1;
             }
@@ -148,6 +191,25 @@ public static partial class Program
             // Rebuild with original
             RunDotnetBuild(Path.Combine(bootstrapDir, "Codex.Bootstrap.csproj"));
         }
+    }
+
+    static int RunBootstrapCodexEmit(string bootstrapDir, string codexDir, string outputPath)
+    {
+        string csproj = Path.Combine(bootstrapDir, "Codex.Bootstrap.csproj");
+        ProcessStartInfo psi = new("dotnet", $"run --project \"{csproj}\" --no-build -- --codex-emit \"{codexDir}\" \"{outputPath}\"")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        using Process? proc = Process.Start(psi);
+        if (proc is null) return 1;
+        proc.StandardOutput.ReadToEnd();
+        proc.StandardError.ReadToEnd();
+        proc.WaitForExit(120_000);
+        return proc.ExitCode;
     }
 
     static int RunBootstrapStage(string bootstrapDir, string codexDir, string outputPath)
