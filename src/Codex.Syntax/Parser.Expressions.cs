@@ -69,6 +69,8 @@ public sealed partial class Parser
             {
                 Advance();
                 Token field = Expect(TokenKind.Identifier);
+                if (field.Kind != TokenKind.Identifier)
+                    break;
                 func = new FieldAccessExpressionNode(func, field, func.Span.Through(field.Span));
             }
             else
@@ -131,6 +133,8 @@ public sealed partial class Parser
                 {
                     Advance();
                     Token field = Expect(TokenKind.Identifier);
+                    if (field.Kind != TokenKind.Identifier)
+                        break;
                     node = new FieldAccessExpressionNode(node, field, node.Span.Through(field.Span));
                 }
                 return node;
@@ -149,6 +153,8 @@ public sealed partial class Parser
                 {
                     Advance();
                     Token field = Expect(TokenKind.Identifier);
+                    if (field.Kind != TokenKind.Identifier)
+                        break;
                     node = new FieldAccessExpressionNode(node, field, node.Span.Through(field.Span));
                 }
                 return node;
@@ -227,7 +233,15 @@ public sealed partial class Parser
 
             Token fieldName = Current;
             Advance();
-            Expect(TokenKind.Equals);
+            Token eqToken = Expect(TokenKind.Equals);
+            if (eqToken.Kind != TokenKind.Equals)
+            {
+                Synchronize();
+                if (Current.Kind == TokenKind.RightBrace)
+                    break;
+                SkipNewlines();
+                continue;
+            }
             ExpressionNode fieldValue = ParseExpression();
             fields.Add(new RecordFieldNode(fieldName, fieldValue,
                 fieldName.Span.Through(fieldValue.Span)));
