@@ -5,7 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 
-class Program
+partial class Program
 {
     static int Main(string[] args)
     {

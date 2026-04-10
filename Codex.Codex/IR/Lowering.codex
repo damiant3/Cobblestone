@@ -42,21 +42,27 @@ Section: Expression Lowering
     if AFieldAccess (rec) (field) ->
      let rec-ir = lower-expr rec ErrorTy ctx
      in let rec-ty = deep-resolve (ctx.ust) (ir-expr-type rec-ir)
-     in let field-ty = when rec-ty
-        if RecordTy (rname) (rfields) -> lookup-record-field rfields (field.value)
+     in let resolved-rec-ty = when rec-ty
+        if RecordTy (rn) (rf) -> rec-ty
         if ConstructedTy (cname) (cargs) ->
          let ctor-raw = lookup-type (ctx.types) (cname.value)
      in let resolved-record = when ctor-raw
-            if ErrorTy -> ErrorTy
+            if ErrorTy -> rec-ty
             if _ -> strip-fun-args-lower (deep-resolve (ctx.ust) ctor-raw)
      in when resolved-record
-          if RecordTy (rn) (rf) -> lookup-record-field rf (field.value)
-          if _ -> ty
+          if RecordTy (rn) (rf) -> resolved-record
+          if _ -> rec-ty
+        if _ -> rec-ty
+     in let field-ty = when resolved-rec-ty
+        if RecordTy (rname) (rfields) -> lookup-record-field rfields (field.value)
         if _ -> ty
      in let actual-field-ty = when field-ty
         if ErrorTy -> ty
         if _ -> field-ty
-     in IrFieldAccess rec-ir (field.value) actual-field-ty
+     in let fixed-rec = when rec-ty
+        if RecordTy (rn) (rf) -> rec-ir
+        if _ -> set-ir-expr-type rec-ir resolved-rec-ty
+     in IrFieldAccess fixed-rec (field.value) actual-field-ty
     if ADoExpr (stmts) -> lower-do stmts ty ctx
     if AHandleExpr (eff) (body) (clauses) -> lower-handle eff body clauses ty ctx
     if AErrorExpr (msg) -> IrError msg ty
