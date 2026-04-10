@@ -82,6 +82,12 @@ public sealed partial class Parser
             if (IsDependentTypeLookahead())
             {
                 Advance();
+                if (Current.Kind is not (TokenKind.Identifier or TokenKind.TypeIdentifier))
+                {
+                    TypeNode fallbackType = ParseType();
+                    Expect(TokenKind.RightParen);
+                    return new ParenthesizedTypeNode(fallbackType, start.Span.Through(Previous.Span));
+                }
                 Token paramName = Current;
                 Advance();
                 Expect(TokenKind.Colon);
