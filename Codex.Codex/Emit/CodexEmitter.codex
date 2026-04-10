@@ -62,6 +62,54 @@ Section: Type Definition Emission
    else let sep = if i > 0 then ", " else ""
    in sep ++ (list-at effs i).value ++ emit-effect-names effs (i + 1)
 
+Section: TypeVar Normalization
+  TypeVarMap = record {
+   entries : List Integer,
+   next-id : Integer
+  }
+
+  empty-tvar-map : TypeVarMap
+  empty-tvar-map = TypeVarMap { entries = [], next-id = 0 }
+
+  tvar-map-lookup : List Integer -> Integer -> Integer -> Integer
+  tvar-map-lookup (entries) (id) (i) =
+   if i >= list-length entries then 0 - 1
+   else if list-at entries i == id then i
+   else tvar-map-lookup entries id (i + 1)
+
+  tvar-map-insert : TypeVarMap -> Integer -> TypeVarMap
+  tvar-map-insert (m) (id) =
+   if tvar-map-lookup (m.entries) id 0 >= 0 then m
+   else TypeVarMap { entries = list-snoc (m.entries) id, next-id = m.next-id + 1 }
+
+  collect-tvars : CodexType -> TypeVarMap -> TypeVarMap
+  collect-tvars (ty) (m) =
+   when ty
+    if TypeVar (id) -> tvar-map-insert m id
+    if ForAllTy (id) (body) -> collect-tvars body (tvar-map-insert m id)
+    if FunTy (p) (r) -> collect-tvars r (collect-tvars p m)
+    if ListTy (elem) -> collect-tvars elem m
+    if LinkedListTy (elem) -> collect-tvars elem m
+    if EffectfulTy (effs) (ret) -> collect-tvars ret m
+    if _ -> m
+
+  normalize-type : CodexType -> TypeVarMap -> CodexType
+  normalize-type (ty) (m) =
+   when ty
+    if TypeVar (id) -> TypeVar (tvar-map-lookup (m.entries) id 0)
+    if ForAllTy (id) (body) -> ForAllTy (tvar-map-lookup (m.entries) id 0) (normalize-type body m)
+    if FunTy (p) (r) -> FunTy (normalize-type p m) (normalize-type r m)
+    if ListTy (elem) -> ListTy (normalize-type elem m)
+    if LinkedListTy (elem) -> LinkedListTy (normalize-type elem m)
+    if EffectfulTy (effs) (ret) -> EffectfulTy effs (normalize-type ret m)
+    if _ -> ty
+
+  normalize-type-vars : CodexType -> CodexType
+  normalize-type-vars (ty) =
+   let m = collect-tvars ty empty-tvar-map
+   in if m.next-id == 0 then ty
+      else normalize-type ty m
+
 Section: CodexType Emission
   emit-type : CodexType -> Text
   emit-type (ty) =
@@ -108,7 +156,8 @@ Section: Definition Emission
   emit-def : IRDef -> List Text -> Text
   emit-def (d) (ctor-names) =
    if skip-def d ctor-names then ""
-   else let sig = d.name ++ " : " ++ emit-type (d.type-val) ++ "\n" ++ d.name ++ emit-def-params (d.params) 0
+   else let norm-ty = normalize-type-vars (d.type-val)
+   in let sig = d.name ++ " : " ++ emit-type norm-ty ++ "\n" ++ d.name ++ emit-def-params (d.params) 0
    in sig ++ " =\n " ++ emit-expr (d.body) ctor-names 1 ++ "\n"
 
   is-match-body : IRExpr -> Boolean
