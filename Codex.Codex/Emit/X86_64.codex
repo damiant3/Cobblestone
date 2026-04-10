@@ -62,7 +62,8 @@ Section: Record Types
    next-local : Integer,
    spill-count : Integer,
    load-local-toggle : Integer,
-   tco : TcoState
+   tco : TcoState,
+   type-defs : List TypeBinding
   }
 
   EmitResult = record {
@@ -179,6 +180,7 @@ Section: State Helpers
    next-local = 0,
    spill-count = 0,
    load-local-toggle = 0,
+   type-defs = [],
    tco = TcoState {
     active = False,
     in-tail-pos = False,
@@ -1233,7 +1235,7 @@ Section: Builtin Emission
    in let field-name = when (list-at args 1)
     if IrTextLit (s) -> s
     if _ -> ""
-   in let rec-ty = ir-expr-type (list-at args 0)
+   in let rec-ty = resolve-record-ty st (ir-expr-type (list-at args 0))
    in let field-idx = when rec-ty
     if RecordTy (rname) (rfields) -> find-record-field-index rfields field-name 0
     if _ -> 0
@@ -1552,6 +1554,35 @@ Section: Closures and Partial Application
    in collect-rodata-patches fixups rodata-vaddr (i + 1) (acc ++ [p0, p1])
 
 Section: Record Emission
+  resolve-record-ty : CodegenState -> CodexType -> CodexType
+  resolve-record-ty (st) (ty) =
+   when ty
+    if RecordTy (rn) (rf) -> ty
+    if ConstructedTy (cname) (cargs) ->
+     let raw = lookup-type-binding (st.type-defs) (cname.value)
+     in when raw
+      if RecordTy (rn) (rf) -> raw
+      if FunTy (p) (r) -> strip-fun-args-emitter r
+      if _ -> ty
+    if _ -> ty
+
+  strip-fun-args-emitter : CodexType -> CodexType
+  strip-fun-args-emitter (ty) =
+   when ty
+    if FunTy (p) (r) -> strip-fun-args-emitter r
+    if _ -> ty
+
+  lookup-type-binding : List TypeBinding -> Text -> CodexType
+  lookup-type-binding (bindings) (name) =
+   lookup-type-binding-loop bindings name 0 (list-length bindings)
+
+  lookup-type-binding-loop : List TypeBinding -> Text -> Integer -> Integer -> CodexType
+  lookup-type-binding-loop (bindings) (name) (i) (len) =
+   if i == len then ErrorTy
+   else let b = list-at bindings i
+   in if b.name == name then b.bound-type
+      else lookup-type-binding-loop bindings name (i + 1) len
+
   find-record-field-index : List RecordField -> Text -> Integer -> Integer
   find-record-field-index (fields) (name) (i) =
    if i == list-length fields then 0
@@ -1611,14 +1642,15 @@ Section: Record Emission
    in let st1 = st-append-text (ptr-tmp.state) (mov-rr (ptr-tmp.reg) reg-r10)
    in let st2 = store-local st1 (ptr-loc.reg) (ptr-tmp.reg)
    in let st3 = st-append-text st2 (add-ri reg-r10 total-size)
-   in let st4 = when ty
+   in let resolved-ty = resolve-record-ty st ty
+   in let st4 = when resolved-ty
     if RecordTy (rname) (type-fields) -> emit-store-record-fields-by-type st3 type-fields (evaled.field-locals) (ptr-loc.reg) 0
     if _ -> emit-store-record-fields-by-list st3 (evaled.field-locals) (ptr-loc.reg) 0
    in load-local st4 (ptr-loc.reg)
 
   emit-field-access : CodegenState -> IRExpr -> Text -> EmitResult
   emit-field-access (st) (rec-expr) (field-name) =
-   let rec-ty = ir-expr-type rec-expr
+   let rec-ty = resolve-record-ty st (ir-expr-type rec-expr)
    in let field-idx = when rec-ty
     if RecordTy (rname) (rfields) -> find-record-field-index rfields field-name 0
     if _ -> 0
@@ -2107,8 +2139,8 @@ Section: Chapter Entry Point
    if j == clen then flatten-chunks-loop chunks next-i len acc
    else flatten-one-chunk chunk (j + 1) clen (list-snoc acc (list-at chunk j)) chunks next-i len
 
-  x86-64-emit-chapter : IRChapter -> List Integer
-  x86-64-emit-chapter (m) =
+  x86-64-emit-chapter : IRChapter -> List TypeBinding -> List Integer
+  x86-64-emit-chapter (m) (tdefs) =
    let tramp = bare-metal-trampoline
    in let st0 = CodegenState {
    text-chunks = linked-list-push (linked-list-empty 0) (tramp.bytes),
@@ -2126,6 +2158,7 @@ Section: Chapter Entry Point
    next-local = 0,
    spill-count = 0,
    load-local-toggle = 0,
+   type-defs = tdefs,
    tco = TcoState {
     active = False,
     in-tail-pos = False,
