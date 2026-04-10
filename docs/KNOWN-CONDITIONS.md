@@ -101,6 +101,34 @@ in output. Agents cannot confirm whether line 1 of a markdown file exists using
 
 **Action**: Use `codex-agent peek` for all verification, not `get_file`.
 
+## Codegen
+
+### Sum type `==` is tag-only — KNOWN LIMITATION
+
+The x86-64 bare-metal backend compares sum type values by loading and
+comparing their tags (offset 0). This is correct for nullary constructors
+(`EndOfFile == EndOfFile`, `True == False`, etc.) but NOT for constructors
+with fields — `Circle 5 == Circle 5` would compare tags (both 0) and
+return true even if the field values differed.
+
+Current code only uses `==` on nullary sum types (TokenKind comparisons,
+Boolean comparisons). If sum type `==` is ever used on constructors with
+fields, it needs recursive structural comparison.
+
+**Action**: Do not use `==` on sum type values with fields. Use pattern
+matching instead. When linear types land, revisit with proper structural
+equality.
+
+### `record-set` is in-place mutation — CONTROLLED CONCESSION
+
+The `record-set` builtin mutates records in place on bare metal (`MovStore`
+at field offset). Safe only because CodegenState is linearly threaded —
+single owner, no aliasing. If this invariant breaks (concurrent compilation,
+shared state), `record-set` becomes a bug factory.
+
+**Action**: Only use `record-set` on linearly-owned state. When linear types
+land, replace with type-system-enforced ownership.
+
 ### Terminal writes corrupt encoding — PERMANENT
 
 PowerShell file writes (`Set-Content`, `WriteAllText`, `>`) mangle non-ASCII
