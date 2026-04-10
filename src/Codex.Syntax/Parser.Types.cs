@@ -125,15 +125,7 @@ public sealed partial class Parser
             TypeNode baseType = new NamedTypeNode(nameToken);
 
             List<TypeNode> args = [];
-            while (Current.Kind is TokenKind.TypeIdentifier or TokenKind.Identifier
-                       or TokenKind.LeftParen or TokenKind.IntegerLiteral
-                   && !IsAtEnd
-                   && Current.Kind != TokenKind.Arrow
-                   && Current.Kind != TokenKind.Newline
-                   && Current.Kind != TokenKind.Equals
-                   && Current.Kind != TokenKind.RightParen
-                   && Current.Kind != TokenKind.Comma
-                   && Current.Kind != TokenKind.TripleEquals)
+            while (IsTypeArgStart() && !IsAtEnd)
             {
                 args.Add(ParseTypeAtomSimple());
             }

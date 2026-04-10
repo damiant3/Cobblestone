@@ -568,6 +568,12 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
             && t2.Kind == TokenKind.Colon;
     }
 
+    bool IsTypeArgStart() =>
+        Current.Kind is TokenKind.TypeIdentifier
+            or TokenKind.Identifier
+            or TokenKind.LeftParen
+            or TokenKind.IntegerLiteral;
+
     void SkipToNextDefinition()
     {
         while (!IsAtEnd)
