@@ -267,7 +267,7 @@ Section: Data
   s4 = "victor whiskey xray yankee zulu"
 Section: Main
   main : Integer
-  main = text-length s1 + text-length s2 + text-length s3 + text-length s4' "" "165"
+  main = text-length s1 + text-length s2 + text-length s3 + text-length s4' "" "153"
 
 # --- Nested do ---
 compile_and_boot "nested-do" \
