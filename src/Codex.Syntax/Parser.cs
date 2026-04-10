@@ -159,6 +159,12 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
             && Peek(2)?.Kind == TokenKind.RightParen)
         {
             Advance();
+            if (Current.Kind is not (TokenKind.Identifier or TokenKind.TypeIdentifier))
+            {
+                m_diagnostics.Error("CDX1002",
+                    $"Expected type parameter name, found {Current.Kind}", Current.Span);
+                break;
+            }
             typeParams.Add(Current);
             Advance();
             Expect(TokenKind.RightParen);
@@ -561,6 +567,12 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
             && t1.Kind is TokenKind.Identifier or TokenKind.TypeIdentifier
             && t2.Kind == TokenKind.Colon;
     }
+
+    bool IsTypeArgStart() =>
+        Current.Kind is TokenKind.TypeIdentifier
+            or TokenKind.Identifier
+            or TokenKind.LeftParen
+            or TokenKind.IntegerLiteral;
 
     void SkipToNextDefinition()
     {

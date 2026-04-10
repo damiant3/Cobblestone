@@ -167,7 +167,9 @@ public sealed partial class Parser
                 {
                     Advance();
                     args.Add(ParseExpression());
-                    Expect(TokenKind.RightParen);
+                    Token rp = Expect(TokenKind.RightParen);
+                    if (rp.Kind != TokenKind.RightParen)
+                        break;
                 }
                 else
                 {
