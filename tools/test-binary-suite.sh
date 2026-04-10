@@ -300,6 +300,77 @@ Section: Main
    c <- step b
    print-line (integer-to-text c)' "" "1"
 
+# --- Large sum type (10+ constructors, tag numbering) ---
+compile_and_boot "large-sum-tags" \
+    'Chapter: T
+Section: Types
+  Big = | A | B | C | D | E | F | G | H | I | J
+Section: Funcs
+  pick : Big -> Integer
+  pick (x) = when x
+    if A -> 0
+    if B -> 1
+    if C -> 2
+    if D -> 3
+    if E -> 4
+    if F -> 5
+    if G -> 6
+    if H -> 7
+    if I -> 8
+    if J -> 9
+Section: Main
+  main : Integer
+  main = pick F' "" "5"
+
+# --- String equality dispatch (classify-word pattern) ---
+compile_and_boot "string-classify" \
+    'Chapter: T
+Section: Types
+  Kind = | Kw | Id | Other
+Section: Funcs
+  classify : Text -> Kind
+  classify (s) =
+    if s == "let" then Kw
+    else if s == "in" then Kw
+    else if s == "if" then Kw
+    else Id
+  check : Kind -> Integer
+  check (k) = when k
+    if Kw -> 1
+    if Id -> 2
+    if Other -> 3
+Section: Main
+  main : Integer
+  main = check (classify "let") + check (classify "hello") * 10' "" "21"
+
+# --- Char-code constants (definition-time evaluation) ---
+compile_and_boot "char-constants" \
+    "Chapter: T
+Section: Data
+  cc-a : Integer
+  cc-a = char-code 'a'
+  cc-z : Integer
+  cc-z = char-code 'z'
+  cc-zero : Integer
+  cc-zero = char-code '0'
+Section: Funcs
+  is-lower : Integer -> Integer
+  is-lower (c) = if c >= cc-a then if c <= cc-z then 1 else 0 else 0
+Section: Main
+  main : Integer
+  main = is-lower cc-a + is-lower cc-z + is-lower cc-zero" "" "2"
+
+# --- Substring with computed offset ---
+compile_and_boot "substring-offset" \
+    'Chapter: T
+Section: Types
+  Span = record { start : Integer, len : Integer }
+Section: Main
+  main : Integer
+  main = let s = "hello world"
+    in let sp = Span { start = 6, len = 5 }
+    in text-length (substring s (sp.start) (sp.len))' "" "5"
+
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [ "$FAIL" -gt 0 ]; then
