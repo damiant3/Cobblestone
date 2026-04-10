@@ -625,7 +625,7 @@ Section: Expression Emission
 
   emit-name-nonlocal : CodegenState -> Text -> CodexType -> EmitResult
   emit-name-nonlocal (st) (name) (ty) =
-   let resolved = resolve-to-sum ty
+   let resolved = resolve-to-sum-with-defs st ty
    in when resolved
     if SumTy (sname) (ctors) ->
      let tag = find-ctor-tag ctors name 0
@@ -640,6 +640,14 @@ Section: Expression Emission
     if SumTy (sn) (cs) -> ty
     if EffectfulTy (effs) (ret) -> resolve-to-sum ret
     if _ -> ty
+
+  resolve-to-sum-with-defs : CodegenState -> CodexType -> CodexType
+  resolve-to-sum-with-defs (st) (ty) =
+   let resolved = resolve-constructed-ty st ty
+   in when resolved
+    if SumTy (sn) (cs) -> resolved
+    if EffectfulTy (effs) (ret) -> resolve-to-sum-with-defs st ret
+    if _ -> resolved
 
   emit-nullary-ctor : CodegenState -> Integer -> EmitResult
   emit-nullary-ctor (st) (tag) =
@@ -740,7 +748,7 @@ Section: Expression Emission
 
   emit-eq-op : CodegenState -> Integer -> Integer -> CodexType -> EmitResult
   emit-eq-op (st) (l-reg) (r-reg) (ty) =
-   let resolved = resolve-to-sum ty
+   let resolved = resolve-to-sum-with-defs st ty
    in when resolved
     if TextTy -> emit-helper-call-2-regs st l-reg r-reg "__str_eq"
     if SumTy (sn) (cs) -> emit-sum-tag-comparison st cc-e l-reg r-reg
@@ -748,7 +756,7 @@ Section: Expression Emission
 
   emit-neq-op : CodegenState -> Integer -> Integer -> CodexType -> EmitResult
   emit-neq-op (st) (l-reg) (r-reg) (ty) =
-   let resolved = resolve-to-sum ty
+   let resolved = resolve-to-sum-with-defs st ty
    in when resolved
     if TextTy ->
      let eq-result = emit-helper-call-2-regs st l-reg r-reg "__str_eq"
@@ -1235,7 +1243,7 @@ Section: Builtin Emission
    in let field-name = when (list-at args 1)
     if IrTextLit (s) -> s
     if _ -> ""
-   in let rec-ty = resolve-record-ty st (ir-expr-type (list-at args 0))
+   in let rec-ty = resolve-constructed-ty st (ir-expr-type (list-at args 0))
    in let field-idx = when rec-ty
     if RecordTy (rname) (rfields) -> find-record-field-index rfields field-name 0
     if _ -> 0
@@ -1336,10 +1344,13 @@ Section: Function Application
    in if st.tco.active & st.tco.in-tail-pos & is-self-call full-expr (st.tco.current-func) then emit-tail-call st func-expr arg-expr
    else let flat = flatten-apply func-expr [arg-expr]
    in if is-builtin (flat.func-name) then emit-builtin st (flat.func-name) (flat.args)
-         else when result-ty
+         else let resolved-result-ty = resolve-constructed-ty st result-ty
+         in when resolved-result-ty
           if SumTy (sname) (ctors) ->
            let tag = find-ctor-tag ctors (flat.func-name) 0
    in if tag >= 0 then emit-sum-ctor st (flat.args) tag
+              else let is-local-sum = lookup-local (st.locals) (flat.func-name) >= 0
+              in if is-local-sum then emit-indirect-call st flat
               else emit-direct-call st flat
           if FunTy (pt) (rt) ->
            let is-local = lookup-local (st.locals) (flat.func-name) >= 0
@@ -1554,16 +1565,19 @@ Section: Closures and Partial Application
    in collect-rodata-patches fixups rodata-vaddr (i + 1) (acc ++ [p0, p1])
 
 Section: Record Emission
-  resolve-record-ty : CodegenState -> CodexType -> CodexType
-  resolve-record-ty (st) (ty) =
+  resolve-constructed-ty : CodegenState -> CodexType -> CodexType
+  resolve-constructed-ty (st) (ty) =
    when ty
     if RecordTy (rn) (rf) -> ty
+    if SumTy (sn) (sc) -> ty
     if ConstructedTy (cname) (cargs) ->
      let raw = lookup-type-binding (st.type-defs) (cname.value)
      in when raw
       if RecordTy (rn) (rf) -> raw
+      if SumTy (sn) (sc) -> raw
       if FunTy (p) (r) -> strip-fun-args-emitter r
       if _ -> ty
+    if EffectfulTy (effs) (ret) -> resolve-constructed-ty st ret
     if _ -> ty
 
   strip-fun-args-emitter : CodexType -> CodexType
@@ -1642,7 +1656,7 @@ Section: Record Emission
    in let st1 = st-append-text (ptr-tmp.state) (mov-rr (ptr-tmp.reg) reg-r10)
    in let st2 = store-local st1 (ptr-loc.reg) (ptr-tmp.reg)
    in let st3 = st-append-text st2 (add-ri reg-r10 total-size)
-   in let resolved-ty = resolve-record-ty st ty
+   in let resolved-ty = resolve-constructed-ty st ty
    in let st4 = when resolved-ty
     if RecordTy (rname) (type-fields) -> emit-store-record-fields-by-type st3 type-fields (evaled.field-locals) (ptr-loc.reg) 0
     if _ -> emit-store-record-fields-by-list st3 (evaled.field-locals) (ptr-loc.reg) 0
@@ -1650,7 +1664,7 @@ Section: Record Emission
 
   emit-field-access : CodegenState -> IRExpr -> Text -> EmitResult
   emit-field-access (st) (rec-expr) (field-name) =
-   let rec-ty = resolve-record-ty st (ir-expr-type rec-expr)
+   let rec-ty = resolve-constructed-ty st (ir-expr-type rec-expr)
    in let field-idx = when rec-ty
     if RecordTy (rname) (rfields) -> find-record-field-index rfields field-name 0
     if _ -> 0
@@ -1665,7 +1679,7 @@ Section: Pattern Matching
   emit-match : CodegenState -> IRExpr -> List IRBranch -> EmitResult
   emit-match (st) (scrut-expr) (branches) =
    let saved-tail = st.tco.in-tail-pos
-   in let scrut-ty = ir-expr-type scrut-expr
+   in let scrut-ty = resolve-constructed-ty st (ir-expr-type scrut-expr)
    in let scrut-result = emit-expr (st-set-tail-pos st False) scrut-expr
    in let scrut-loc = alloc-local (scrut-result.state)
    in let st1 = store-local (scrut-loc.state) (scrut-loc.reg) (scrut-result.reg)
@@ -1733,7 +1747,7 @@ Section: Pattern Matching
      in let st1 = st-append-text (tag-reg.state) (mov-load (tag-reg.reg) (scrut-load.reg) 0)
      in let resolve-ty = when scrut-ty
       if SumTy (sn) (cs) -> scrut-ty
-      if _ -> ty
+      if _ -> resolve-constructed-ty st ty
      in let expected-tag = when resolve-ty
       if SumTy (sname) (ctors) -> find-ctor-tag ctors name 0
       if _ -> 0
