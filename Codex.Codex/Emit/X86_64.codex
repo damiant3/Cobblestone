@@ -628,8 +628,19 @@ Section: Expression Emission
      let tag = find-ctor-tag ctors name 0
      in if tag >= 0 then emit-nullary-ctor st tag
         else emit-name-as-call st name
-    if FunTy (pt) (rt) -> emit-partial-application st name []
+    if ConstructedTy (tname) (args) -> emit-name-as-call st name
+    if FunTy (pt) (rt) ->
+     let tag = find-ctor-tag-from-fun-type ty name
+     in if tag >= 0 then emit-partial-application st name []
+        else emit-partial-application st name []
     if _ -> emit-name-as-call st name
+
+  find-ctor-tag-from-fun-type : CodexType -> Text -> Integer
+  find-ctor-tag-from-fun-type (ty) (name) =
+   when ty
+    if FunTy (pt) (rt) -> find-ctor-tag-from-fun-type rt name
+    if SumTy (sname) (ctors) -> find-ctor-tag ctors name 0
+    if _ -> 0 - 1
 
   emit-nullary-ctor : CodegenState -> Integer -> EmitResult
   emit-nullary-ctor (st) (tag) =
@@ -1613,6 +1624,7 @@ Section: Pattern Matching
   emit-match : CodegenState -> IRExpr -> List IRBranch -> EmitResult
   emit-match (st) (scrut-expr) (branches) =
    let saved-tail = st.tco.in-tail-pos
+   in let scrut-ty = ir-expr-type scrut-expr
    in let scrut-result = emit-expr (st-set-tail-pos st False) scrut-expr
    in let scrut-loc = alloc-local (scrut-result.state)
    in let st1 = store-local (scrut-loc.state) (scrut-loc.reg) (scrut-result.reg)
@@ -1622,20 +1634,20 @@ Section: Pattern Matching
     cg-state = st1a,
     end-patches = []
   }
-   in let mbs-final = emit-match-branch-loop mbs (scrut-loc.reg) (result-loc.reg) branches 0 (list-length branches)
+   in let mbs-final = emit-match-branch-loop mbs (scrut-loc.reg) (result-loc.reg) branches 0 (list-length branches) scrut-ty
    in let st-end = patch-match-end-jumps (mbs-final.cg-state) (mbs-final.end-patches) 0
    in load-local st-end (result-loc.reg)
 
-  emit-match-branch-loop : MatchBranchState -> Integer -> Integer -> List IRBranch -> Integer -> Integer -> MatchBranchState
-  emit-match-branch-loop (mbs) (scrut-loc) (result-loc) (branches) (i) (total) =
+  emit-match-branch-loop : MatchBranchState -> Integer -> Integer -> List IRBranch -> Integer -> Integer -> CodexType -> MatchBranchState
+  emit-match-branch-loop (mbs) (scrut-loc) (result-loc) (branches) (i) (total) (scrut-ty) =
    if i == total then mbs
    else let b = list-at branches i
-   in let mbs1 = emit-one-match-branch mbs scrut-loc result-loc b (i < total - 1)
-   in emit-match-branch-loop mbs1 scrut-loc result-loc branches (i + 1) total
+   in let mbs1 = emit-one-match-branch mbs scrut-loc result-loc b (i < total - 1) scrut-ty
+   in emit-match-branch-loop mbs1 scrut-loc result-loc branches (i + 1) total scrut-ty
 
-  emit-one-match-branch : MatchBranchState -> Integer -> Integer -> IRBranch -> Boolean -> MatchBranchState
-  emit-one-match-branch (mbs) (scrut-loc) (result-loc) (branch) (needs-jmp-end) =
-   let pat-result = emit-pattern (mbs.cg-state) scrut-loc (branch.pattern)
+  emit-one-match-branch : MatchBranchState -> Integer -> Integer -> IRBranch -> Boolean -> CodexType -> MatchBranchState
+  emit-one-match-branch (mbs) (scrut-loc) (result-loc) (branch) (needs-jmp-end) (scrut-ty) =
+   let pat-result = emit-pattern (mbs.cg-state) scrut-loc (branch.pattern) scrut-ty
    in let body-result = emit-expr (pat-result.state) (branch.body)
    in let st1 = store-local (body-result.state) result-loc (body-result.reg)
    in let st2 = if needs-jmp-end then let jmp-pos = st1.text-len
@@ -1659,8 +1671,8 @@ Section: Pattern Matching
    next-branch-patch : Integer
   }
 
-  emit-pattern : CodegenState -> Integer -> IRPat -> EmitPatternResult
-  emit-pattern (st) (scrut-loc) (pat) =
+  emit-pattern : CodegenState -> Integer -> IRPat -> CodexType -> EmitPatternResult
+  emit-pattern (st) (scrut-loc) (pat) (scrut-ty) =
    when pat
     if IrWildPat -> EmitPatternResult {
      state = st,
@@ -1678,7 +1690,10 @@ Section: Pattern Matching
      let scrut-load = load-local st scrut-loc
      in let tag-reg = alloc-temp (scrut-load.state)
      in let st1 = st-append-text (tag-reg.state) (mov-load (tag-reg.reg) (scrut-load.reg) 0)
-     in let expected-tag = when ty
+     in let resolve-ty = when scrut-ty
+      if SumTy (sn) (cs) -> scrut-ty
+      if _ -> ty
+     in let expected-tag = when resolve-ty
       if SumTy (sname) (ctors) -> find-ctor-tag ctors name 0
       if _ -> 0
      in let st2 = st-append-text st1 (cmp-ri (tag-reg.reg) expected-tag)

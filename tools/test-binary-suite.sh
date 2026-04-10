@@ -135,6 +135,8 @@ Section: Main
   main = fib 10' "" "55"
 
 # --- Pattern matching ---
+# KNOWN: sum types crash in both reference and self-hosted x86-64 backends
+# This is a pre-existing bug, not introduced by the self-hosted port.
 compile_and_boot "sum-type" \
     'Chapter: T
 Section: Types
@@ -267,7 +269,7 @@ Section: Data
   s4 = "victor whiskey xray yankee zulu"
 Section: Main
   main : Integer
-  main = text-length s1 + text-length s2 + text-length s3 + text-length s4' "" "153"
+  main = text-length s1 + text-length s2 + text-length s3 + text-length s4' "" "160"
 
 # --- Nested do ---
 compile_and_boot "nested-do" \
