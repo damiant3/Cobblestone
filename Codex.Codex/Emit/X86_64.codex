@@ -738,13 +738,16 @@ Section: Expression Emission
 
   emit-eq-op : CodegenState -> Integer -> Integer -> CodexType -> EmitResult
   emit-eq-op (st) (l-reg) (r-reg) (ty) =
-   when ty
+   let resolved = resolve-to-sum ty
+   in when resolved
     if TextTy -> emit-helper-call-2-regs st l-reg r-reg "__str_eq"
+    if SumTy (sn) (cs) -> emit-sum-tag-comparison st cc-e l-reg r-reg
     if _ -> emit-comparison st cc-e l-reg r-reg
 
   emit-neq-op : CodegenState -> Integer -> Integer -> CodexType -> EmitResult
   emit-neq-op (st) (l-reg) (r-reg) (ty) =
-   when ty
+   let resolved = resolve-to-sum ty
+   in when resolved
     if TextTy ->
      let eq-result = emit-helper-call-2-regs st l-reg r-reg "__str_eq"
      in let rd = alloc-temp (eq-result.state)
@@ -752,7 +755,16 @@ Section: Expression Emission
       state = st-append-text (rd.state) (cmp-ri (eq-result.reg) 0 ++ setcc cc-e (rd.reg) ++ movzx-byte-self (rd.reg)),
       reg = rd.reg
      }
+    if SumTy (sn) (cs) -> emit-sum-tag-comparison st cc-ne l-reg r-reg
     if _ -> emit-comparison st cc-ne l-reg r-reg
+
+  emit-sum-tag-comparison : CodegenState -> Integer -> Integer -> Integer -> EmitResult
+  emit-sum-tag-comparison (st) (cc) (l-reg) (r-reg) =
+   let l-tag = alloc-temp st
+   in let st1 = st-append-text (l-tag.state) (mov-load (l-tag.reg) l-reg 0)
+   in let r-tag = alloc-temp st1
+   in let st2 = st-append-text (r-tag.state) (mov-load (r-tag.reg) r-reg 0)
+   in emit-comparison st2 cc (l-tag.reg) (r-tag.reg)
 
   emit-comparison : CodegenState -> Integer -> Integer -> Integer -> EmitResult
   emit-comparison (st) (cc) (l-reg) (r-reg) =
