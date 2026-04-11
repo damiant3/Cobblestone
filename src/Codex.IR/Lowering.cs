@@ -792,6 +792,22 @@ public sealed class Lowering(
             new FunctionType(IntegerType.s_instance, IntegerType.s_instance)));
         map = map.Set("code-to-char", new FunctionType(IntegerType.s_instance, CharType.s_instance));
 
+        // Arithmetic builtins
+        FunctionType intIntInt = new(IntegerType.s_instance,
+            new FunctionType(IntegerType.s_instance, IntegerType.s_instance));
+        map = map.Set("int-mod", intIntInt);
+        map = map.Set("abs", new FunctionType(IntegerType.s_instance, IntegerType.s_instance));
+        map = map.Set("min", intIntInt);
+        map = map.Set("max", intIntInt);
+
+        // Bitwise builtins
+        map = map.Set("bit-and", intIntInt);
+        map = map.Set("bit-or", intIntInt);
+        map = map.Set("bit-xor", intIntInt);
+        map = map.Set("bit-shl", intIntInt);
+        map = map.Set("bit-shr", intIntInt);
+        map = map.Set("bit-not", new FunctionType(IntegerType.s_instance, IntegerType.s_instance));
+
         map = map.Set("list-length", new ForAllType(0,
             new FunctionType(new ListType(new TypeVariable(0)), IntegerType.s_instance)));
         map = map.Set("list-at", new ForAllType(0,

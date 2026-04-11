@@ -2143,6 +2143,140 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             case "await" when args.Count == 1:
                 return EmitAwait(args[0]);
 
+            // ── Arithmetic builtins ──────────────────────────────────
+            case "int-mod" when args.Count >= 2:
+            {
+                // Euclidean modulo: remainder = RDX after idiv, then fix sign
+                byte left = EmitExpr(args[0]);
+                int savedLeft = AllocLocal();
+                StoreLocal(savedLeft, left);
+                byte right = EmitExpr(args[1]);
+                int savedRight = AllocLocal();
+                StoreLocal(savedRight, right);
+                // RAX = left, sign-extend to RDX:RAX, idiv right → remainder in RDX
+                X86_64Encoder.MovRR(m_text, Reg.RAX, LoadLocal(savedLeft));
+                X86_64Encoder.Cqo(m_text);
+                X86_64Encoder.IdivR(m_text, LoadLocal(savedRight));
+                // RDX = remainder. Fix sign: if RDX < 0, add divisor
+                byte rd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd, Reg.RDX);
+                X86_64Encoder.TestRR(m_text, rd, rd);
+                int jnsOffset = m_text.Count;
+                X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0); // skip if non-negative
+                X86_64Encoder.AddRR(m_text, rd, LoadLocal(savedRight));
+                PatchJcc(jnsOffset, m_text.Count);
+                return rd;
+            }
+            case "abs" when args.Count >= 1:
+            {
+                byte val = EmitExpr(args[0]);
+                byte rd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd, val);
+                X86_64Encoder.TestRR(m_text, rd, rd);
+                int jnsOffset = m_text.Count;
+                X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0); // skip if non-negative
+                X86_64Encoder.NegR(m_text, rd);
+                PatchJcc(jnsOffset, m_text.Count);
+                return rd;
+            }
+            case "min" when args.Count >= 2:
+            {
+                byte left = EmitExpr(args[0]);
+                int savedLeft = AllocLocal();
+                StoreLocal(savedLeft, left);
+                byte right = EmitExpr(args[1]);
+                byte rd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd, LoadLocal(savedLeft));
+                X86_64Encoder.CmpRR(m_text, rd, right);
+                int jleOffset = m_text.Count;
+                X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_LE, 0); // skip if left <= right
+                X86_64Encoder.MovRR(m_text, rd, right);
+                PatchJcc(jleOffset, m_text.Count);
+                return rd;
+            }
+            case "max" when args.Count >= 2:
+            {
+                byte left = EmitExpr(args[0]);
+                int savedLeft = AllocLocal();
+                StoreLocal(savedLeft, left);
+                byte right = EmitExpr(args[1]);
+                byte rd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd, LoadLocal(savedLeft));
+                X86_64Encoder.CmpRR(m_text, rd, right);
+                int jgeOffset = m_text.Count;
+                X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0); // skip if left >= right
+                X86_64Encoder.MovRR(m_text, rd, right);
+                PatchJcc(jgeOffset, m_text.Count);
+                return rd;
+            }
+
+            // ── Bitwise builtins ─────────────────────────────────────
+            case "bit-and" when args.Count >= 2:
+            {
+                byte left = EmitExpr(args[0]);
+                int savedLeft = AllocLocal();
+                StoreLocal(savedLeft, left);
+                byte right = EmitExpr(args[1]);
+                byte rd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd, LoadLocal(savedLeft));
+                X86_64Encoder.AndRR(m_text, rd, right);
+                return rd;
+            }
+            case "bit-or" when args.Count >= 2:
+            {
+                byte left = EmitExpr(args[0]);
+                int savedLeft = AllocLocal();
+                StoreLocal(savedLeft, left);
+                byte right = EmitExpr(args[1]);
+                byte rd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd, LoadLocal(savedLeft));
+                X86_64Encoder.OrRR(m_text, rd, right);
+                return rd;
+            }
+            case "bit-xor" when args.Count >= 2:
+            {
+                byte left = EmitExpr(args[0]);
+                int savedLeft = AllocLocal();
+                StoreLocal(savedLeft, left);
+                byte right = EmitExpr(args[1]);
+                byte rd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd, LoadLocal(savedLeft));
+                X86_64Encoder.Xor64RR(m_text, rd, right);
+                return rd;
+            }
+            case "bit-shl" when args.Count >= 2:
+            {
+                byte left = EmitExpr(args[0]);
+                int savedLeft = AllocLocal();
+                StoreLocal(savedLeft, left);
+                byte right = EmitExpr(args[1]);
+                X86_64Encoder.MovRR(m_text, Reg.RCX, right); // shift amount must be in CL
+                byte rd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd, LoadLocal(savedLeft));
+                X86_64Encoder.ShlCL(m_text, rd);
+                return rd;
+            }
+            case "bit-shr" when args.Count >= 2:
+            {
+                byte left = EmitExpr(args[0]);
+                int savedLeft = AllocLocal();
+                StoreLocal(savedLeft, left);
+                byte right = EmitExpr(args[1]);
+                X86_64Encoder.MovRR(m_text, Reg.RCX, right); // shift amount must be in CL
+                byte rd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd, LoadLocal(savedLeft));
+                X86_64Encoder.SarCL(m_text, rd); // arithmetic shift preserves sign
+                return rd;
+            }
+            case "bit-not" when args.Count >= 1:
+            {
+                byte val = EmitExpr(args[0]);
+                byte rd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd, val);
+                X86_64Encoder.NotR(m_text, rd);
+                return rd;
+            }
+
             default:
                 return byte.MaxValue;
         }
