@@ -2375,8 +2375,8 @@ Section: Chapter Entry Point
    else let r = apply-one-patch-buf base-addr (list-at patches i)
    in apply-all-patches-buf base-addr patches (i + 1)
 
-  x86-64-emit-chapter : IRChapter -> List TypeBinding -> EmitChapterResult
-  x86-64-emit-chapter (m) (tdefs) =
+  x86-64-init-codegen-streaming : List TypeBinding -> Integer -> CodegenState
+  x86-64-init-codegen-streaming (tdefs) (n-defs) =
    let tramp = bare-metal-trampoline
    in let text-addr = heap-save
    in let ha1 = heap-advance text-buf-size
@@ -2384,7 +2384,46 @@ Section: Chapter Entry Point
    in let ha2 = heap-advance rodata-buf-size
    in let bw1 = buf-write-bytes text-addr 0 (tramp.bytes)
    in let bw2 = buf-write-bytes rodata-addr 0 init-rodata
-   in let st0 = CodegenState {
+   in CodegenState {
+   text-buf-addr = text-addr,
+   text-len = list-length (tramp.bytes),
+   rodata-buf-addr = rodata-addr,
+   rodata-len = list-length init-rodata,
+   func-offsets = list-with-capacity (n-defs + 64),
+   call-patches = list-with-capacity (n-defs * 12),
+   func-addr-fixups = list-with-capacity (n-defs * 4),
+   rodata-fixups = list-with-capacity (n-defs * 8),
+   deferred-patches = list-with-capacity (n-defs * 4),
+   locals = [],
+   next-temp = 0,
+   next-local = 0,
+   spill-count = 0,
+   load-local-toggle = 0,
+   tco = TcoState {
+    active = False,
+    in-tail-pos = False,
+    loop-top = 0,
+    param-locals = [],
+    temp-locals = [],
+    current-func = "",
+    saved-next-local = 0,
+    saved-next-temp = 0
+   },
+   type-defs = tdefs,
+   stack-overflow-checks = list-with-capacity (n-defs + 16),
+   errors = list-with-capacity 64
+  }
+
+  x86-64-init-codegen : List TypeBinding -> CodegenState
+  x86-64-init-codegen (tdefs) =
+   let tramp = bare-metal-trampoline
+   in let text-addr = heap-save
+   in let ha1 = heap-advance text-buf-size
+   in let rodata-addr = heap-save
+   in let ha2 = heap-advance rodata-buf-size
+   in let bw1 = buf-write-bytes text-addr 0 (tramp.bytes)
+   in let bw2 = buf-write-bytes rodata-addr 0 init-rodata
+   in CodegenState {
    text-buf-addr = text-addr,
    text-len = list-length (tramp.bytes),
    rodata-buf-addr = rodata-addr,
@@ -2413,15 +2452,16 @@ Section: Chapter Entry Point
    stack-overflow-checks = [],
    errors = []
   }
-   in let st0a = emit-runtime-helpers st0
-   in let st1 = emit-all-defs st0a (m.defs) 0
-   in let st1a = emit-out-of-memory-handler st1
+
+  x86-64-finalize : CodegenState -> Integer -> EmitChapterResult
+  x86-64-finalize (st1) (far-jump-patch-pos) =
+   let st1a = emit-out-of-memory-handler st1
    in let isr-result = emit-isr-stubs st1a
    in let syscall-result = emit-syscall-handler (isr-result.state)
    in let st2 = emit-start (syscall-result.state) (isr-result.first-stub-vaddr) (syscall-result.handler-offset)
    in let start-offset = lookup-func-offset (st2.func-offsets) "__start"
    in let start-addr = bare-metal-load-addr + start-offset
-   in let far-jump-entry = make-i32-patch (tramp.far-jump-patch-pos + 1) start-addr
+   in let far-jump-entry = make-i32-patch (far-jump-patch-pos + 1) start-addr
    in let call-entries = collect-call-patches (st2.call-patches) (st2.func-offsets) 0 []
    in let addr-entries = collect-func-addr-patches (st2.func-addr-fixups) (st2.func-offsets) bare-metal-load-addr 0 []
    in let rodata-vaddr = compute-rodata-vaddr-bare (st2.text-len)
@@ -2429,13 +2469,21 @@ Section: Chapter Entry Point
    in let oom-offset = lookup-func-offset (st2.func-offsets) "__out_of_memory"
    in let overflow-entries = collect-overflow-patches (st2.stack-overflow-checks) oom-offset 0 []
    in let all-patches = [far-jump-entry] ++ call-entries ++ addr-entries ++ rodata-entries ++ overflow-entries ++ (st2.deferred-patches)
-   in let patched = apply-all-patches-buf text-addr all-patches 0
-   in let flat-text = buf-read-bytes text-addr 0 (st2.text-len)
-   in let flat-rodata = buf-read-bytes rodata-addr 0 (st2.rodata-len)
+   in let patched = apply-all-patches-buf (st2.text-buf-addr) all-patches 0
+   in let flat-text = buf-read-bytes (st2.text-buf-addr) 0 (st2.text-len)
+   in let flat-rodata = buf-read-bytes (st2.rodata-buf-addr) 0 (st2.rodata-len)
    in EmitChapterResult {
     bytes = build-elf-32-bare flat-text flat-rodata 12,
     errors = st2.errors
    }
+
+  x86-64-emit-chapter : IRChapter -> List TypeBinding -> EmitChapterResult
+  x86-64-emit-chapter (m) (tdefs) =
+   let tramp = bare-metal-trampoline
+   in let st0 = x86-64-init-codegen tdefs
+   in let st0a = emit-runtime-helpers st0
+   in let st1 = emit-all-defs st0a (m.defs) 0
+   in x86-64-finalize st1 (tramp.far-jump-patch-pos)
 
 Page 1 of 3
 
