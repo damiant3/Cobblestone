@@ -37,13 +37,13 @@ Section: Memory Layout Constants
   stack-min-rsp-addr = 28736
 
   serial-ring-buf-addr : Integer
-  serial-ring-buf-addr = 3932160
+  serial-ring-buf-addr = 3145728
 
   serial-ring-buf-size : Integer
   serial-ring-buf-size = 262144
 
   serial-ring-buf-mask : Integer
-  serial-ring-buf-mask = 262143
+  serial-ring-buf-mask = 1048575
 
   proc-table-base : Integer
   proc-table-base = 20480
@@ -145,12 +145,28 @@ Section: ISR Stubs
    first-stub-vaddr : Integer
   }
 
+  has-error-code : Integer -> Boolean
+  has-error-code (vec) =
+   if vec == 8 then True
+   else if vec == 10 then True
+   else if vec == 11 then True
+   else if vec == 12 then True
+   else if vec == 13 then True
+   else if vec == 14 then True
+   else if vec == 17 then True
+   else if vec == 21 then True
+   else if vec == 29 then True
+   else if vec == 30 then True
+   else False
+
   emit-isr-stub : CodegenState -> Integer -> Integer -> CodegenState
   emit-isr-stub (st) (vec) (common-handler-offset) =
-   let st1 = st-append-text st (push-r reg-rax)
-   in let st2 = st-append-text st1 [176, vec]
-   in let rel = common-handler-offset - (st2.text-len + 5)
-   in st-append-text st2 (jmp rel)
+   let st1 = if has-error-code vec then st-append-text st (add-ri reg-rsp 8)
+             else st-append-text st [15, 31, 64, 0]
+   in let st2 = st-append-text st1 (push-r reg-rax)
+   in let st3 = st-append-text st2 [176, vec]
+   in let rel = common-handler-offset - (st3.text-len + 5)
+   in st-append-text st3 (jmp rel)
 
   emit-isr-stubs-loop : CodegenState -> Integer -> Integer -> CodegenState
   emit-isr-stubs-loop (st) (vec) (common-handler-offset) =
@@ -187,7 +203,7 @@ Section: IDT Construction
    in let st13 = st-append-text st12 (li reg-rax 0)
    in let st14 = st-append-text st13 (mov-store reg-rdi reg-rax 8)
    in let st15 = st-append-text st14 (add-ri reg-rdi 16)
-   in let st16 = st-append-text st15 (add-ri reg-rsi 8)
+   in let st16 = st-append-text st15 (add-ri reg-rsi 12)
    in let st17 = st-append-text st16 (sub-ri reg-rcx 1)
    in let jcc-pos = st17.text-len
    in let st18 = st-append-text st17 (jcc cc-ne 0)
@@ -244,7 +260,7 @@ Section: Process Management
    in let st7 = st-append-text st6 (mov-store reg-rdi reg-rax 0)
    in let pd-addr = pml4-addr + 8192
    in let st8 = st-append-text st7 (li reg-rdi pd-addr)
-   in emit-pd-entries st8 0 256
+   in emit-pd-entries st8 0 512
 
   emit-create-process : CodegenState -> Integer -> Integer -> Integer -> Integer -> CodegenState
   emit-create-process (st) (proc-index) (state-val) (cr3-val) (heap-base) =

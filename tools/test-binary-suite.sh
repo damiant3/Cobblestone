@@ -12,7 +12,7 @@ compile_and_boot() {
     rm -f "$PIPE" "$RAW" "$ELF"; mkfifo "$PIPE"
     sleep 999 > "$PIPE" & local H=$!
     timeout 30 qemu-system-x86_64 -enable-kvm -kernel "$STAGE0" \
-        -serial stdio -display none -no-reboot -m 512 \
+        -serial stdio -display none -no-reboot -m 1024 \
         < "$PIPE" > "$RAW" 2>/dev/null & local Q=$!
     for i in $(seq 1 20); do grep -qa 'READY' "$RAW" 2>/dev/null && break; sleep 0.5; done
     printf "BINARY\n%s\x04" "$SRC" > "$PIPE" &
@@ -37,7 +37,7 @@ compile_and_boot() {
     rm -f "$PIPE2" "$RAW2"; mkfifo "$PIPE2"
     sleep 999 > "$PIPE2" & local H2=$!
     timeout 10 qemu-system-x86_64 -enable-kvm -kernel "$ELF" \
-        -serial stdio -display none -no-reboot -m 512 \
+        -serial stdio -display none -no-reboot -m 1024 \
         < "$PIPE2" > "$RAW2" 2>/dev/null & local Q2=$!
     for i in $(seq 1 20); do grep -qa 'READY' "$RAW2" 2>/dev/null && break; sleep 0.5; done
     if [ -n "$INPUT" ]; then

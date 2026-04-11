@@ -5895,10 +5895,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     const long SerialRingBufAddr = 0x300000;
     const long SerialRingBufSize = 0x100000; // 1MB — must be power of 2
 
-    // Bare metal memory layout — 256 x 2MB huge pages = 512 MB
-    const int BareMetalPages = 256;
+    // Bare metal memory layout — 512 x 2MB huge pages = 1 GB
+    const int BareMetalPages = 512;
     const long BareMetalHeapBase = 0x400000;                // 4 MB — heap+result grow up from here
-    const long BareMetalStackTop = 0x20000000;              // 512 MB — stack grows down from here
+    const long BareMetalStackTop = 0x40000000;              // 1 GB — stack grows down from here
 
     void EmitInterruptSetup()
     {
@@ -6024,6 +6024,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         {
             int stubOffset = m_text.Count;
 
+            // Exceptions 8,10-14,17,21,29,30 push an error code — pop it.
+            // Non-error-code stubs get a 4-byte NOP to keep all stubs the same size.
+            if (vec is 8 or (>= 10 and <= 14) or 17 or 21 or 29 or 30)
+                X86_64Encoder.AddRI(m_text, Reg.RSP, 8);
+            else
+                m_text.AddRange([0x0F, 0x1F, 0x40, 0x00]); // 4-byte NOP
+
             // push rax
             X86_64Encoder.PushR(m_text, Reg.RAX);
             // mov al, <vec>
@@ -6062,7 +6069,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         //   RSI = stub virtual address (firstStubAddr, += 8 each iteration)
         //   RAX, RDX = scratch
 
-        const int StubSize = 8; // push rax(1) + mov al,vec(2) + jmp rel32(5)
+        const int StubSize = 12; // nop/add(4) + push rax(1) + mov al,vec(2) + jmp rel32(5)
 
         long firstStubAddr = m_isrStubAddrs[0];
 

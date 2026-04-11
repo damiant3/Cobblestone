@@ -95,7 +95,7 @@ run_stage() {
         -serial stdio \
         -display none \
         -no-reboot \
-        -m 512 \
+        -m 1024 \
         < "$pipe" 2>/dev/null \
     | while IFS= read -r line; do
         if [[ "$line" == READY* ]]; then
@@ -254,7 +254,7 @@ run_binary_stage() {
         -serial stdio \
         -display none \
         -no-reboot \
-        -m 512 \
+        -m 1024 \
         < "$pipe" > "$raw_output" 2>/dev/null &
     local qemu_pid=$!
     local ready_wait=0
