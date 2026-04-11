@@ -64,6 +64,7 @@ Section: Record Types
    load-local-toggle : Integer,
    tco : TcoState,
    type-defs : List TypeBinding,
+   stack-overflow-checks : List Integer,
    errors : List Diagnostic
   }
 
@@ -197,6 +198,7 @@ Section: State Helpers
     saved-next-temp = 0
    },
    type-defs = [],
+   stack-overflow-checks = [],
    errors = []
   }
 
@@ -399,7 +401,19 @@ Section: Function Emission
 
   emit-prologue : CodegenState -> CodegenState
   emit-prologue (st) =
-   st-append-text st (push-r reg-rbp ++ mov-rr reg-rbp reg-rsp ++ push-r reg-rbx ++ push-r reg-r12 ++ push-r reg-r13 ++ push-r reg-r14)
+   let st1 = st-append-text st (push-r reg-rbp ++ mov-rr reg-rbp reg-rsp ++ push-r reg-rbx ++ push-r reg-r12 ++ push-r reg-r13 ++ push-r reg-r14)
+   in let st2 = st-append-text st1 (li reg-r11 stack-min-rsp-addr)
+   in let st3 = st-append-text st2 (mov-load reg-r11 reg-r11 0)
+   in let st4 = st-append-text st3 (cmp-rr reg-rsp reg-r11)
+   in let skip-pos = st4.text-len
+   in let st5 = st-append-text st4 (jcc cc-ae 0)
+   in let st6 = st-append-text st5 (li reg-r11 stack-min-rsp-addr)
+   in let st7 = st-append-text st6 (mov-store reg-r11 reg-rsp 0)
+   in let st8 = patch-jcc-at st7 skip-pos (st7.text-len)
+   in let st9 = st-append-text st8 (cmp-rr reg-rsp reg-r10)
+   in let check-pos = st9.text-len
+   in let st10 = st-append-text st9 (jcc cc-b 0)
+   in record-set st10 "stack-overflow-checks" (list-snoc (st10.stack-overflow-checks) check-pos)
 
   emit-epilogue : CodegenState -> CodegenState
   emit-epilogue (st) =
@@ -2113,6 +2127,29 @@ Section: Bare-Metal Start
   bare-metal-heap-base =
    4194304
 
+  emit-oom-string : CodegenState -> List Integer -> Integer -> CodegenState
+  emit-oom-string (st) (chars) (i) =
+   if i >= list-length chars then st
+   else emit-oom-string (emit-serial-wait-and-send st (list-at chars i)) chars (i + 1)
+
+  emit-out-of-memory-handler : CodegenState -> CodegenState
+  emit-out-of-memory-handler (st) =
+   let st1 = record-func-offset st "__out_of_memory"
+   in let st2 = st-append-text st1 (mov-rr reg-rbx reg-rsp)
+   in let st3 = st-append-text st2 (mov-rr reg-r12 reg-r10)
+   in let st4 = st-append-text st3 (li reg-rsp bare-metal-stack-top)
+   in let st5 = st-append-text st4 (mov-rr reg-rbp reg-rsp)
+   in let st6 = emit-oom-string st5 [79, 85, 84, 32, 79, 70, 32, 77, 69, 77, 79, 82, 89, 10] 0
+   in let st7 = st-append-text st6 [244]
+   in st-append-text st7 (jmp (0 - 6))
+
+  collect-overflow-patches : List Integer -> Integer -> Integer -> List PatchEntry -> List PatchEntry
+  collect-overflow-patches (checks) (oom-offset) (i) (acc) =
+   if i >= list-length checks then acc
+   else let pos = list-at checks i
+    in let rel32 = oom-offset - (pos + 6)
+    in collect-overflow-patches checks oom-offset (i + 1) (list-snoc acc (make-i32-patch (pos + 2) rel32))
+
   emit-start : CodegenState -> Integer -> Integer -> CodegenState
   emit-start (st) (first-stub-vaddr) (syscall-handler-offset) =
    let st1 = record-func-offset st "__start"
@@ -2232,11 +2269,13 @@ Section: Chapter Entry Point
     saved-next-temp = 0
    },
    type-defs = tdefs,
+   stack-overflow-checks = [],
    errors = []
   }
    in let st0a = emit-runtime-helpers st0
    in let st1 = emit-all-defs st0a (m.defs) 0
-   in let isr-result = emit-isr-stubs st1
+   in let st1a = emit-out-of-memory-handler st1
+   in let isr-result = emit-isr-stubs st1a
    in let syscall-result = emit-syscall-handler (isr-result.state)
    in let st2 = emit-start (syscall-result.state) (isr-result.first-stub-vaddr) (syscall-result.handler-offset)
    in let start-offset = lookup-func-offset (st2.func-offsets) "__start"
@@ -2247,7 +2286,9 @@ Section: Chapter Entry Point
    in let rodata-vaddr = compute-rodata-vaddr-bare (st2.text-len)
    in let rodata-entries = collect-rodata-patches (st2.rodata-fixups) rodata-vaddr 0 []
    in let flat-text = flatten-chunks (st2.text-chunks)
-   in let all-patches = [far-jump-entry] ++ call-entries ++ addr-entries ++ rodata-entries ++ (st2.deferred-patches)
+   in let oom-offset = lookup-func-offset (st2.func-offsets) "__out_of_memory"
+   in let overflow-entries = collect-overflow-patches (st2.stack-overflow-checks) oom-offset 0 []
+   in let all-patches = [far-jump-entry] ++ call-entries ++ addr-entries ++ rodata-entries ++ overflow-entries ++ (st2.deferred-patches)
    in let patched-text = apply-all-patches flat-text all-patches
    in let flat-rodata = (st2.rodata) ++ flatten-chunks (st2.rodata-chunks)
    in EmitChapterResult {
