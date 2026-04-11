@@ -470,6 +470,46 @@ static class X86_64Encoder
         buf.Add(ModRM(0b11, rs, rd));
     }
 
+    // or rd, rs (64-bit)
+    public static void OrRR(List<byte> buf, byte rd, byte rs)
+    {
+        buf.Add(RexW(rs, rd));
+        buf.Add(0x09);
+        buf.Add(ModRM(0b11, rs, rd));
+    }
+
+    // xor rd, rs (64-bit)
+    public static void Xor64RR(List<byte> buf, byte rd, byte rs)
+    {
+        buf.Add(RexW(rs, rd));
+        buf.Add(0x31);
+        buf.Add(ModRM(0b11, rs, rd));
+    }
+
+    // not rd (64-bit bitwise complement)
+    public static void NotR(List<byte> buf, byte rd)
+    {
+        buf.Add(RexW(0, rd));
+        buf.Add(0xF7);
+        buf.Add(ModRM(0b11, 2, rd));
+    }
+
+    // shl rd, cl (64-bit variable shift left)
+    public static void ShlCL(List<byte> buf, byte rd)
+    {
+        buf.Add(RexW(0, rd));
+        buf.Add(0xD3);
+        buf.Add(ModRM(0b11, 4, rd));
+    }
+
+    // sar rd, cl (64-bit variable arithmetic shift right)
+    public static void SarCL(List<byte> buf, byte rd)
+    {
+        buf.Add(RexW(0, rd));
+        buf.Add(0xD3);
+        buf.Add(ModRM(0b11, 7, rd));
+    }
+
     // ═════════════════════════════════════════════════════════════
     // Internal helpers
     // ═════════════════════════════════════════════════════════════

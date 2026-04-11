@@ -170,6 +170,18 @@ public sealed partial class CSharpEmitter
             EmitExpr(sb, app.Argument, indent);
             sb.Append(')');
         }
+        else if (app.Function is IRName fnAbs && fnAbs.Name == "abs")
+        {
+            sb.Append("Math.Abs(");
+            EmitExpr(sb, app.Argument, indent);
+            sb.Append(')');
+        }
+        else if (app.Function is IRName fnBitNot && fnBitNot.Name == "bit-not")
+        {
+            sb.Append("(~");
+            EmitExpr(sb, app.Argument, indent);
+            sb.Append(')');
+        }
         else if (app.Function is IRName fn3 && fn3.Name == "print-line")
         {
             sb.Append("((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(");
@@ -408,7 +420,9 @@ public sealed partial class CSharpEmitter
         "write-file", "write-binary", "run-process", "list-files", "text-split", "text-contains", "text-starts-with",
         "fork", "await", "par", "race",
         "record-set",
-        "linked-list-empty", "linked-list-push", "linked-list-to-list");
+        "linked-list-empty", "linked-list-push", "linked-list-to-list",
+        "int-mod", "min", "max",
+        "bit-and", "bit-or", "bit-xor", "bit-shl", "bit-shr");
 
     static string? FindBuiltinRoot(IRApply app)
     {
@@ -680,6 +694,77 @@ public sealed partial class CSharpEmitter
                 }
                 return true;
             }
+
+            case "int-mod" when args.Count == 2:
+            {
+                // Euclidean modulo: ((a % b) + b) % b — always non-negative
+                sb.Append("((");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(" % ");
+                EmitExpr(sb, args[1], indent);
+                sb.Append(" + ");
+                EmitExpr(sb, args[1], indent);
+                sb.Append(") % ");
+                EmitExpr(sb, args[1], indent);
+                sb.Append(')');
+                return true;
+            }
+
+            case "min" when args.Count == 2:
+                sb.Append("Math.Min(");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(", ");
+                EmitExpr(sb, args[1], indent);
+                sb.Append(')');
+                return true;
+
+            case "max" when args.Count == 2:
+                sb.Append("Math.Max(");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(", ");
+                EmitExpr(sb, args[1], indent);
+                sb.Append(')');
+                return true;
+
+            case "bit-and" when args.Count == 2:
+                sb.Append('(');
+                EmitExpr(sb, args[0], indent);
+                sb.Append(" & ");
+                EmitExpr(sb, args[1], indent);
+                sb.Append(')');
+                return true;
+
+            case "bit-or" when args.Count == 2:
+                sb.Append('(');
+                EmitExpr(sb, args[0], indent);
+                sb.Append(" | ");
+                EmitExpr(sb, args[1], indent);
+                sb.Append(')');
+                return true;
+
+            case "bit-xor" when args.Count == 2:
+                sb.Append('(');
+                EmitExpr(sb, args[0], indent);
+                sb.Append(" ^ ");
+                EmitExpr(sb, args[1], indent);
+                sb.Append(')');
+                return true;
+
+            case "bit-shl" when args.Count == 2:
+                sb.Append('(');
+                EmitExpr(sb, args[0], indent);
+                sb.Append(" << (int)");
+                EmitExpr(sb, args[1], indent);
+                sb.Append(')');
+                return true;
+
+            case "bit-shr" when args.Count == 2:
+                sb.Append('(');
+                EmitExpr(sb, args[0], indent);
+                sb.Append(" >> (int)");
+                EmitExpr(sb, args[1], indent);
+                sb.Append(')');
+                return true;
 
             default:
                 return false;
