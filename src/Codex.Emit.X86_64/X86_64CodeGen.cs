@@ -87,6 +87,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         foreach (IRDefinition def in module.Definitions)
             EmitFunction(def);
 
+        // Patch stack overflow checks — must happen AFTER all EmitFunction calls
+        if (m_target == X86_64Target.BareMetal)
+            PatchStackOverflowChecks();
+
         EmitEscapeCopyHelpers();
         EmitDiagHexHelper();
 
@@ -2921,11 +2925,6 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         EmitTextSplitHelper();
         EmitIpowHelper();
         EmitStackOverflowHandler();
-
-        // Patch stack overflow checks — must happen AFTER all EmitFunction calls
-        // so m_stackOverflowChecks is fully populated.
-        if (m_target == X86_64Target.BareMetal)
-            PatchStackOverflowChecks();
     }
 
     void EmitStackOverflowHandler()
