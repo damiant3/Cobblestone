@@ -668,7 +668,8 @@ Section: Expression Emission
 
   emit-name-nonlocal : CodegenState -> Text -> CodexType -> EmitResult
   emit-name-nonlocal (st) (name) (ty) =
-   let resolved = resolve-to-sum-with-defs st ty
+   if name == "heap-save" then emit-heap-save-builtin st
+   else let resolved = resolve-to-sum-with-defs st ty
    in when resolved
     if SumTy (sname) (ctors) ->
      let tag = find-ctor-tag ctors name 0
@@ -2470,10 +2471,33 @@ Section: Chapter Entry Point
    in let overflow-entries = collect-overflow-patches (st2.stack-overflow-checks) oom-offset 0 []
    in let all-patches = [far-jump-entry] ++ call-entries ++ addr-entries ++ rodata-entries ++ overflow-entries ++ (st2.deferred-patches)
    in let patched = apply-all-patches-buf (st2.text-buf-addr) all-patches 0
-   in let flat-text = buf-read-bytes (st2.text-buf-addr) 0 (st2.text-len)
-   in let flat-rodata = buf-read-bytes (st2.rodata-buf-addr) 0 (st2.rodata-len)
+   in let text-len = st2.text-len
+   in let rodata-len = st2.rodata-len
+   in let load-addr = bare-metal-load-addr
+   in let headers-end = elf32-header-size + elf32-phdr-size * 2
+   in let note-offset = elf-align headers-end 4
+   in let text-start = elf-align (note-offset + 20) 16
+   in let text-end = text-start + text-len
+   in let rodata-start = elf-align text-end 8
+   in let file-size = rodata-start + rodata-len
+   in let entry = load-addr + 12
+   in let seg-filesz = file-size - text-start
+   in let seg-memsz = seg-filesz + elf-bare-metal-heap-size
+   in let elf-buf = heap-save
+   in let ha = heap-advance file-size
+   in let hdr = elf32-header-bytes entry elf32-header-size 2
+   in let bw0 = buf-write-bytes elf-buf 0 hdr
+   in let ph1 = phdr-32 pt-load text-start load-addr load-addr seg-filesz seg-memsz pf-rwx elf-page-size
+   in let bw1 = buf-write-bytes elf-buf elf32-header-size ph1
+   in let ph2 = phdr-32 pt-note note-offset 0 0 20 20 pf-r 4
+   in let bw2 = buf-write-bytes elf-buf (elf32-header-size + elf32-phdr-size) ph2
+   in let note = pvh-note entry
+   in let bw3 = buf-write-bytes elf-buf note-offset note
+   in let bw4 = buf-write-bytes elf-buf text-start (buf-read-bytes (st2.text-buf-addr) 0 text-len)
+   in let bw5 = buf-write-bytes elf-buf rodata-start (buf-read-bytes (st2.rodata-buf-addr) 0 rodata-len)
+   in let elf-bytes = buf-read-bytes elf-buf 0 file-size
    in EmitChapterResult {
-    bytes = build-elf-32-bare flat-text flat-rodata 12,
+    bytes = elf-bytes,
     errors = st2.errors
    }
 
