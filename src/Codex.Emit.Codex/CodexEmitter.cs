@@ -171,6 +171,7 @@ public sealed class CodexEmitter : ICodeEmitter
             EffectfulType eft => $"[{EffectName(eft)}] {EmitType(eft.Return)}",
             LinearType lin => $"linear {EmitType(lin.Inner)}",
             ListType lt => $"List {WrapComplex(lt.Element)}",
+            LinkedListType llt => $"LinkedList {WrapComplex(llt.Element)}",
             SumType st => st.TypeName.Value,
             RecordType rt => rt.TypeName.Value,
             ConstructedType ct => ct.Constructor.Value,
@@ -183,7 +184,7 @@ public sealed class CodexEmitter : ICodeEmitter
 
     static string WrapComplex(CodexType type)
     {
-        if (type is FunctionType or ListType)
+        if (type is FunctionType or ListType or LinkedListType)
             return $"({EmitType(type)})";
         return EmitType(type);
     }
@@ -306,9 +307,16 @@ public sealed class CodexEmitter : ICodeEmitter
     {
         if (bin.Op == IRBinaryOp.AppendText || bin.Op == IRBinaryOp.AppendList)
         {
+            // Left side of ++ may also need wrapping (e.g., if-expressions)
+            bool wrapLeft = bin.Left is IRIf or IRLet or IRMatch or IRLambda;
+            if (wrapLeft) sb.Append('(');
             EmitExpr(sb, bin.Left, indent);
+            if (wrapLeft) sb.Append(')');
             sb.Append(" ++ ");
+            bool wrapRight = bin.Right is IRIf or IRLet or IRMatch or IRLambda;
+            if (wrapRight) sb.Append('(');
             EmitExpr(sb, bin.Right, indent);
+            if (wrapRight) sb.Append(')');
             return;
         }
 
@@ -340,8 +348,9 @@ public sealed class CodexEmitter : ICodeEmitter
 
         int outerPrec = BinPrecedence(bin.Op);
         bool leftNeedsParens = bin.Left is IRBinary lb && BinPrecedence(lb.Op) < outerPrec;
-        bool rightNeedsParens = bin.Right is IRBinary rb && BinPrecedence(rb.Op) <= outerPrec
-            && BinPrecedence(rb.Op) != outerPrec; // same precedence on right is ok for left-assoc
+        bool rightNeedsParens = bin.Right is IRIf
+            || (bin.Right is IRBinary rb && BinPrecedence(rb.Op) <= outerPrec
+                && !(rb.Op == bin.Op && IsAssociative(bin.Op))); // only skip parens for same associative op
 
         if (leftNeedsParens) sb.Append('(');
         EmitExpr(sb, bin.Left, indent);
@@ -364,6 +373,12 @@ public sealed class CodexEmitter : ICodeEmitter
         IRBinaryOp.PowInt => 8,
         _ => 0
     };
+
+    static bool IsAssociative(IRBinaryOp op) => op is
+        IRBinaryOp.AddInt or IRBinaryOp.AddNum or
+        IRBinaryOp.MulInt or IRBinaryOp.MulNum or
+        IRBinaryOp.AppendText or IRBinaryOp.AppendList or IRBinaryOp.ConsList or
+        IRBinaryOp.And or IRBinaryOp.Or;
 
     // ── If/then/else ─────────────────────────────────────────────
 
@@ -649,7 +664,7 @@ public sealed class CodexEmitter : ICodeEmitter
     static bool NeedsParens(IRExpr expr, bool isCtor)
     {
         if (expr is IRApply or IRBinary or IRIf or IRLet
-            or IRMatch or IRNegate or IRLambda or IRFieldAccess)
+            or IRMatch or IRNegate or IRLambda or IRFieldAccess or IRRecord)
             return true;
         if (isCtor && expr is IRName { Type: FunctionType })
             return true;

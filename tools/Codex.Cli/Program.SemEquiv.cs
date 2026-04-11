@@ -56,7 +56,7 @@ public static partial class Program
                 sigMismatchList.Add((s0, s1));
             }
 
-            string body0 = CollapseWhitespace(s0.Body);
+            string body0 = CollapseWhitespace(DemangleNames(s0.Body, slugsSorted));
             string body1 = CollapseWhitespace(DemangleNames(s1.Body, slugsSorted));
             if (body0 == body1)
                 bodyMatches++;
@@ -160,8 +160,31 @@ public static partial class Program
                 }
             }
 
+            // Column-0 def (flat codex emitter output, not prose-indented)
+            if (raw.Length > 0 && char.IsLetter(raw[0]))
+            {
+                var (def, nextI) = ParseOneDef(rawLines, i, currentSlug);
+                if (def != null && chapters.ContainsKey(currentSlug))
+                    chapters[currentSlug].Add(def);
+                i = nextI;
+                continue;
+            }
+
             // Blank lines, anything else → skip
             i++;
+        }
+
+        // Demangle chapter-prefixed names in stage0 defs (codex emitter output
+        // uses prefixed names like csharp-emitter_emit-type-defs)
+        string[] s0Slugs = slugs.OrderByDescending(s => s.Length).ToArray();
+        foreach (var (ch, defs) in chapters)
+        {
+            for (int di = 0; di < defs.Count; di++)
+            {
+                var dm = DemangleName(defs[di].Name, s0Slugs);
+                if (dm is var (slug, baseName) && slug == ch)
+                    defs[di] = defs[di] with { Name = baseName };
+            }
         }
 
         return (chapters, slugs, new Stage0Stats(statChapters, statSections, statProse, statCites));
@@ -519,7 +542,7 @@ public static partial class Program
             Console.WriteLine(s1.Sig);
             Console.WriteLine();
 
-            string body0 = CollapseWhitespace(s0.Body);
+            string body0 = CollapseWhitespace(DemangleNames(s0.Body, slugsSorted));
             string body1 = CollapseWhitespace(DemangleNames(s1.Body, slugsSorted));
 
             Console.WriteLine("--- Stage0 Body (whitespace-collapsed) ---");
