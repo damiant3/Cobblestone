@@ -252,7 +252,7 @@ Section: Whitespace Normalization
 
 Section: Binary Compilation
 
-  compile-to-binary : Text -> Text -> List Integer
+  compile-to-binary : Text -> Text -> EmitChapterResult
   compile-to-binary (source) (chapter-name) =
    let tokens = tokenize source
    in let st = make-parse-state tokens
@@ -267,14 +267,30 @@ Section: Binary Compilation
    in let tdefs = collect-ctor-bindings (scoped.type-defs) 0 (list-length (scoped.type-defs)) []
    in x86-64-emit-chapter ir tdefs
 
+  print-codegen-errors : List Diagnostic -> Integer -> Integer -> [Console] Nothing
+  print-codegen-errors (errs) (i) (len) =
+   if i == len then print-line ""
+   else do
+    print-line (diagnostic-display (list-at errs i))
+    print-codegen-errors errs (i + 1) len
+
+  print-codegen-error-header : List Diagnostic -> [Console] Nothing
+  print-codegen-error-header (errs) =
+   let n = list-length errs
+   in if n == 0 then print-line ""
+   else do
+    print-line ("CODEGEN-ERRORS:" ++ integer-to-text n)
+    print-codegen-errors errs 0 n
+
 Section: Entry Point
 
   emit-binary : Text -> [Console, FileSystem] Nothing
   emit-binary (source) =
-   let bytes = compile-to-binary source "Codex_Codex"
+   let result = compile-to-binary source "Codex_Codex"
    in do
-    print-line ("SIZE:" ++ integer-to-text (list-length bytes))
-    write-binary bytes
+    print-codegen-error-header (result.errors)
+    print-line ("SIZE:" ++ integer-to-text (list-length (result.bytes)))
+    write-binary (result.bytes)
 
   main : [Console, FileSystem] Nothing
   main = do

@@ -63,7 +63,8 @@ Section: Record Types
    spill-count : Integer,
    load-local-toggle : Integer,
    tco : TcoState,
-   type-defs : List TypeBinding
+   type-defs : List TypeBinding,
+   errors : List Diagnostic
   }
 
   EmitResult = record {
@@ -74,6 +75,11 @@ Section: Record Types
   TrampolineResult = record {
    bytes : List Integer,
    far-jump-patch-pos : Integer
+  }
+
+  EmitChapterResult = record {
+   bytes : List Integer,
+   errors : List Diagnostic
   }
 
   FlatApply = record {
@@ -190,8 +196,13 @@ Section: State Helpers
     saved-next-local = 0,
     saved-next-temp = 0
    },
-   type-defs = []
+   type-defs = [],
+   errors = []
   }
+
+  st-add-error : CodegenState -> Text -> Text -> CodegenState
+  st-add-error (st) (code) (msg) =
+   record-set st "errors" (list-snoc (st.errors) (make-error code msg))
 
   st-append-text : CodegenState -> List Integer -> CodegenState
   st-append-text (st) (bytes) =
@@ -216,7 +227,7 @@ Section: State Helpers
 
   lookup-func-offset-loop : List FuncOffset -> Text -> Integer -> Integer -> Integer
   lookup-func-offset-loop (entries) (name) (i) (len) =
-   if i == len then 0 - 1
+   if i == len then -1
    else let e = list-at entries i
    in if e.name == name then e.offset
       else lookup-func-offset-loop entries name (i + 1) len
@@ -354,7 +365,7 @@ Section: Byte Patching
 
   find-patch-byte : List PatchEntry -> Integer -> Integer -> Integer -> Integer
   find-patch-byte (patches) (i) (j) (len) =
-   if j == len then 0 - 1
+   if j == len then -1
    else let p = list-at patches j
    in if i == p.pos then p.b0
       else if i == p.pos + 1 then p.b1
@@ -509,7 +520,7 @@ Section: Local Variable Management
 
   lookup-local-loop : List LocalBinding -> Text -> Integer -> Integer -> Integer
   lookup-local-loop (bindings) (name) (i) (len) =
-   if i == len then 0 - 1
+   if i == len then -1
    else let b = list-at bindings i
    in if b.name == name then b.slot
       else lookup-local-loop bindings name (i + 1) len
@@ -530,7 +541,7 @@ Section: Expression Emission
     if IrCharLit (value) -> emit-int-lit st value
     if IrTextLit (value) -> emit-text-lit st value
     if IrNegate (operand) -> emit-negate st operand
-    if IrError (msg) (ty) -> emit-int-lit st 0
+    if IrError (msg) (ty) -> emit-int-lit (st-add-error st "CDX2000" msg) 0
     if IrName (name) (ty) -> emit-name st name ty
     if IrLet (name) (ty) (value) (body) -> emit-let st name value body
     if IrBinary (op) (left) (right) (ty) -> emit-binary st op left right
@@ -612,7 +623,7 @@ Section: Expression Emission
 
   find-ctor-tag : List SumCtor -> Text -> Integer -> Integer
   find-ctor-tag (ctors) (name) (i) =
-   if i == list-length ctors then 0 - 1
+   if i == list-length ctors then -1
    else let c = list-at ctors i
    in if c.name.value == name then i
       else find-ctor-tag ctors name (i + 1)
@@ -1625,7 +1636,7 @@ Section: Record Emission
 
   find-field-local-slot : List FieldLocal -> Text -> Integer -> Integer
   find-field-local-slot (fls) (name) (i) =
-   if i == list-length fls then 0 - 1
+   if i == list-length fls then -1
    else let fl = list-at fls i
    in if fl.name == name then fl.slot
       else find-field-local-slot fls name (i + 1)
@@ -1735,7 +1746,7 @@ Section: Pattern Matching
    when pat
     if IrWildPat -> EmitPatternResult {
      state = st,
-     next-branch-patch = 0 - 1
+     next-branch-patch = -1
     }
     if IrVarPat (name) (ty) ->
      let var-loc = alloc-local st
@@ -1743,7 +1754,7 @@ Section: Pattern Matching
      in let st1 = store-local (loaded.state) (var-loc.reg) (loaded.reg)
      in EmitPatternResult {
       state = add-local st1 name (var-loc.reg),
-      next-branch-patch = 0 - 1
+      next-branch-patch = -1
      }
     if IrCtorPat (name) (sub-pats) (ty) ->
      let scrut-load = load-local st scrut-loc
@@ -1766,7 +1777,7 @@ Section: Pattern Matching
     if IrLitPat (value) (ty) ->
      EmitPatternResult {
       state = st,
-      next-branch-patch = 0 - 1
+      next-branch-patch = -1
      }
 
   bind-ctor-fields : CodegenState -> Integer -> List IRPat -> Integer -> CodegenState
@@ -2157,7 +2168,7 @@ Section: Chapter Entry Point
    if j == clen then flatten-chunks-loop chunks next-i len acc
    else flatten-one-chunk chunk (j + 1) clen (list-snoc acc (list-at chunk j)) chunks next-i len
 
-  x86-64-emit-chapter : IRChapter -> List TypeBinding -> List Integer
+  x86-64-emit-chapter : IRChapter -> List TypeBinding -> EmitChapterResult
   x86-64-emit-chapter (m) (tdefs) =
    let tramp = bare-metal-trampoline
    in let st0 = CodegenState {
@@ -2186,7 +2197,8 @@ Section: Chapter Entry Point
     saved-next-local = 0,
     saved-next-temp = 0
    },
-   type-defs = tdefs
+   type-defs = tdefs,
+   errors = []
   }
    in let st0a = emit-runtime-helpers st0
    in let st1 = emit-all-defs st0a (m.defs) 0
@@ -2204,7 +2216,10 @@ Section: Chapter Entry Point
    in let all-patches = [far-jump-entry] ++ call-entries ++ addr-entries ++ rodata-entries ++ (st2.deferred-patches)
    in let patched-text = apply-all-patches flat-text all-patches
    in let flat-rodata = (st2.rodata) ++ flatten-chunks (st2.rodata-chunks)
-   in build-elf-32-bare patched-text flat-rodata 12
+   in EmitChapterResult {
+    bytes = build-elf-32-bare patched-text flat-rodata 12,
+    errors = st2.errors
+   }
 
 Page 1 of 3
 
