@@ -254,7 +254,7 @@ public sealed partial class CSharpEmitter : ICodeEmitter
         sb.AppendLine("        for (int i = 0; i < cnt; i++) r.Add(_mem[ba + o + i]);");
         sb.AppendLine("        return r;");
         sb.AppendLine("    }");
-        sb.AppendLine("    public static List<long> list_with_capacity(object cap) => new List<long>((int)(long)cap);");
+        sb.AppendLine("    public static dynamic list_with_capacity(object cap) => new List<object>((int)(long)cap);");
         sb.AppendLine("}");
         sb.AppendLine();
     }
