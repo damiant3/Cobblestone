@@ -725,8 +725,70 @@ Section: Expression Emission
    in let st2 = add-local st1 name (loc.reg)
    in emit-expr (st-set-tail-pos st2 saved-tail) body
 
+  is-append-list-op : IRBinaryOp -> Boolean
+  is-append-list-op (op) =
+   when op
+    if IrAppendList -> True
+    if _ -> False
+
+  flatten-append-chain : IRExpr -> List IRExpr -> List IRExpr
+  flatten-append-chain (e) (acc) =
+   when e
+    if IrBinary (op) (l) (r) (ty) ->
+     if is-append-list-op op then flatten-append-chain l (flatten-append-chain r acc)
+     else [e] ++ acc
+    if _ -> [e] ++ acc
+
+  emit-concat-many-eval : CodegenState -> List IRExpr -> Integer -> Integer -> List Integer -> ConcatManyEval
+  emit-concat-many-eval (st) (exprs) (i) (n) (locals) =
+   if i >= n then ConcatManyEval { state = st, locals = locals }
+   else let r = emit-expr (st-set-tail-pos st False) (list-at exprs i)
+   in let loc = alloc-local (r.state)
+   in let st1 = store-local (loc.state) (loc.reg) (r.reg)
+   in emit-concat-many-eval st1 exprs (i + 1) n (list-snoc locals (loc.reg))
+
+  ConcatManyEval = record {
+   state : CodegenState,
+   locals : List Integer
+  }
+
+  emit-concat-many-store-ptrs : CodegenState -> List Integer -> Integer -> Integer -> Integer -> CodegenState
+  emit-concat-many-store-ptrs (st) (locals) (i) (n) (arr-reg) =
+   if i >= n then st
+   else let loaded = load-local st (list-at locals i)
+   in let st1 = st-append-text (loaded.state) (mov-store arr-reg (loaded.reg) (i * 8))
+   in emit-concat-many-store-ptrs st1 locals (i + 1) n arr-reg
+
+  emit-concat-many : CodegenState -> List IRExpr -> EmitResult
+  emit-concat-many (st) (exprs) =
+   let n = list-length exprs
+   in let eval = emit-concat-many-eval st exprs 0 n []
+   in let st1 = eval.state
+   in let arr = alloc-temp st1
+   in let st2 = st-append-text (arr.state) (mov-rr (arr.reg) reg-r10)
+   in let st3 = st-append-text st2 (add-ri reg-r10 (n * 8))
+   in let st4 = emit-concat-many-store-ptrs st3 (eval.locals) 0 n (arr.reg)
+   in let st5 = st-append-text st4 (mov-rr reg-rdi (arr.reg))
+   in let st6 = st-append-text st5 (li reg-rsi n)
+   in let st7 = emit-call-to st6 "__list_concat_many"
+   in let rd = alloc-temp st7
+   in EmitResult {
+   state = st-append-text (rd.state) (mov-rr (rd.reg) reg-rax),
+   reg = rd.reg
+  }
+
   emit-binary : CodegenState -> IRBinaryOp -> IRExpr -> IRExpr -> EmitResult
   emit-binary (st) (op) (left) (right) =
+   if is-append-list-op op then emit-append-list st left right
+   else emit-binary-standard st op left right
+
+  emit-append-list : CodegenState -> IRExpr -> IRExpr -> EmitResult
+  emit-append-list (st) (left) (right) =
+   let chain = flatten-append-chain left [right]
+   in emit-concat-many st chain
+
+  emit-binary-standard : CodegenState -> IRBinaryOp -> IRExpr -> IRExpr -> EmitResult
+  emit-binary-standard (st) (op) (left) (right) =
    let l = emit-expr st left
    in let l-loc = alloc-local (l.state)
    in let st1 = store-local (l-loc.state) (l-loc.reg) (l.reg)

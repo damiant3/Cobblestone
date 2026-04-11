@@ -831,8 +831,67 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
     // ── Binary operations ────────────────────────────────────────
 
+    // Flatten a left-leaning chain of AppendList into a flat list of operands.
+    static List<IRExpr> FlattenAppendListChain(IRBinary bin)
+    {
+        List<IRExpr> result = [];
+        IRExpr current = bin;
+        while (current is IRBinary b && b.Op == IRBinaryOp.AppendList)
+        {
+            result.Add(b.Right);
+            current = b.Left;
+        }
+        result.Add(current);
+        result.Reverse();
+        return result;
+    }
+
+    byte EmitConcatMany(List<IRExpr> lists)
+    {
+        bool savedTail = m_inTailPosition;
+        m_inTailPosition = false;
+
+        // Evaluate all sub-lists and save to locals
+        int[] locals = new int[lists.Count];
+        for (int i = 0; i < lists.Count; i++)
+        {
+            byte reg = EmitExpr(lists[i]);
+            locals[i] = AllocLocal();
+            StoreLocal(locals[i], reg);
+        }
+
+        // Allocate scratch array for list pointers on heap (temporary)
+        byte arrReg = AllocTemp();
+        X86_64Encoder.MovRR(m_text, arrReg, HeapReg);
+        X86_64Encoder.AddRI(m_text, HeapReg, lists.Count * 8);
+
+        // Store list pointers into scratch array
+        for (int i = 0; i < lists.Count; i++)
+        {
+            byte lr = LoadLocal(locals[i]);
+            X86_64Encoder.MovStore(m_text, arrReg, lr, i * 8);
+        }
+
+        // Call __list_concat_many(array, count)
+        X86_64Encoder.MovRR(m_text, Reg.RDI, arrReg);
+        X86_64Encoder.Li(m_text, Reg.RSI, lists.Count);
+        EmitCallTo("__list_concat_many");
+
+        byte rd = AllocTemp();
+        X86_64Encoder.MovRR(m_text, rd, Reg.RAX);
+        m_inTailPosition = savedTail;
+        return rd;
+    }
+
     byte EmitBinary(IRBinary bin)
     {
+        // Optimize list ++: single allocation + copy (eliminates O(n²) chains)
+        if (bin.Op == IRBinaryOp.AppendList)
+        {
+            List<IRExpr> chain = FlattenAppendListChain(bin);
+            return EmitConcatMany(chain);
+        }
+
         // Binary operands are NEVER in tail position — the result is consumed
         // by the operator.  Without this, a self-recursive call inside `++`
         // (e.g. `emit p ++ " -> " ++ emit r`) would be mis-identified as a
@@ -3030,6 +3089,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         EmitIpowHelper();
         EmitBufWriteBytesHelper();
         EmitBufReadBytesHelper();
+        EmitListConcatManyHelper();
         EmitStackOverflowHandler();
     }
 
@@ -4359,6 +4419,110 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         // Return list ptr
         X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RBX);
 
+        X86_64Encoder.PopR(m_text, Reg.R14);
+        X86_64Encoder.PopR(m_text, Reg.R13);
+        X86_64Encoder.PopR(m_text, Reg.R12);
+        X86_64Encoder.PopR(m_text, Reg.RBX);
+        X86_64Encoder.Ret(m_text);
+    }
+
+    void EmitListConcatManyHelper()
+    {
+        // __list_concat_many: rdi=array of list ptrs, rsi=count → rax=new combined list
+        // Phase 1: sum all counts. Phase 2: allocate. Phase 3: copy all elements.
+        m_functionOffsets["__list_concat_many"] = m_text.Count;
+
+        X86_64Encoder.PushR(m_text, Reg.RBX);
+        X86_64Encoder.PushR(m_text, Reg.R12);
+        X86_64Encoder.PushR(m_text, Reg.R13);
+        X86_64Encoder.PushR(m_text, Reg.R14);
+        X86_64Encoder.PushR(m_text, Reg.R15);
+
+        // R12 = array base, R13 = count
+        X86_64Encoder.MovRR(m_text, Reg.R12, Reg.RDI);
+        X86_64Encoder.MovRR(m_text, Reg.R13, Reg.RSI);
+
+        // Phase 1: sum counts → R14
+        X86_64Encoder.Li(m_text, Reg.R14, 0);
+        X86_64Encoder.Li(m_text, Reg.RCX, 0);
+        X86_64Encoder.CmpRR(m_text, Reg.RCX, Reg.R13);
+        int skipSum = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+
+        int sumTop = m_text.Count;
+        // Load list ptr from array[rcx], then load its count
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RCX);
+        X86_64Encoder.ShlRI(m_text, Reg.RAX, 3);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.R12);
+        X86_64Encoder.MovLoad(m_text, Reg.RAX, Reg.RAX, 0); // list ptr
+        X86_64Encoder.MovLoad(m_text, Reg.RAX, Reg.RAX, 0); // count
+        X86_64Encoder.AddRR(m_text, Reg.R14, Reg.RAX);
+        X86_64Encoder.AddRI(m_text, Reg.RCX, 1);
+        X86_64Encoder.CmpRR(m_text, Reg.RCX, Reg.R13);
+        int sumBack = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_L, 0);
+        PatchJcc(sumBack, sumTop);
+        PatchJcc(skipSum, m_text.Count);
+
+        // Phase 2: allocate result list [cap=R14 | count=R14 | elements...]
+        X86_64Encoder.MovStore(m_text, HeapReg, Reg.R14, 0); // capacity
+        X86_64Encoder.AddRI(m_text, HeapReg, 8);
+        X86_64Encoder.MovRR(m_text, Reg.RBX, HeapReg); // result ptr (count word)
+        X86_64Encoder.MovStore(m_text, HeapReg, Reg.R14, 0); // count
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.R14);
+        X86_64Encoder.AddRI(m_text, Reg.RAX, 1);
+        X86_64Encoder.ShlRI(m_text, Reg.RAX, 3);
+        X86_64Encoder.AddRR(m_text, HeapReg, Reg.RAX);
+
+        // Phase 3: copy elements from each sub-list
+        // R15 = dest index (running total)
+        X86_64Encoder.Li(m_text, Reg.R15, 0);
+        X86_64Encoder.Li(m_text, Reg.RCX, 0); // outer loop: list index
+        X86_64Encoder.CmpRR(m_text, Reg.RCX, Reg.R13);
+        int skipCopy = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+
+        int outerTop = m_text.Count;
+        // RDI = list ptr, RSI = its count
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RCX);
+        X86_64Encoder.ShlRI(m_text, Reg.RAX, 3);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.R12);
+        X86_64Encoder.MovLoad(m_text, Reg.RDI, Reg.RAX, 0); // list ptr
+        X86_64Encoder.MovLoad(m_text, Reg.RSI, Reg.RDI, 0); // count
+        // Inner loop: copy elements
+        X86_64Encoder.Li(m_text, Reg.RDX, 0); // j = 0
+        X86_64Encoder.CmpRR(m_text, Reg.RDX, Reg.RSI);
+        int skipInner = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+
+        int innerTop = m_text.Count;
+        // RAX = src[j] (at RDI + 8 + j*8)
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RDX);
+        X86_64Encoder.ShlRI(m_text, Reg.RAX, 3);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.RDI);
+        X86_64Encoder.MovLoad(m_text, Reg.RAX, Reg.RAX, 8);
+        // Store to result[R15] (at RBX + 8 + R15*8)
+        X86_64Encoder.MovRR(m_text, Reg.R14, Reg.R15);
+        X86_64Encoder.ShlRI(m_text, Reg.R14, 3);
+        X86_64Encoder.AddRR(m_text, Reg.R14, Reg.RBX);
+        X86_64Encoder.MovStore(m_text, Reg.R14, Reg.RAX, 8);
+        X86_64Encoder.AddRI(m_text, Reg.R15, 1);
+        X86_64Encoder.AddRI(m_text, Reg.RDX, 1);
+        X86_64Encoder.CmpRR(m_text, Reg.RDX, Reg.RSI);
+        int innerBack = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_L, 0);
+        PatchJcc(innerBack, innerTop);
+        PatchJcc(skipInner, m_text.Count);
+
+        X86_64Encoder.AddRI(m_text, Reg.RCX, 1);
+        X86_64Encoder.CmpRR(m_text, Reg.RCX, Reg.R13);
+        int outerBack = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_L, 0);
+        PatchJcc(outerBack, outerTop);
+        PatchJcc(skipCopy, m_text.Count);
+
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RBX);
+        X86_64Encoder.PopR(m_text, Reg.R15);
         X86_64Encoder.PopR(m_text, Reg.R14);
         X86_64Encoder.PopR(m_text, Reg.R13);
         X86_64Encoder.PopR(m_text, Reg.R12);
