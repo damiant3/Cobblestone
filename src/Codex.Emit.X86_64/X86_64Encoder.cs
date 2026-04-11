@@ -621,4 +621,52 @@ static class X86_64Encoder
         for (int i = 0; i < 8; i++)
             buf.Add((byte)((value >> (i * 8)) & 0xFF));
     }
+
+    // ── SSE2 Instructions ───────────────────────────────────────
+
+    public static void MovqToXmm(List<byte> buf, byte xmm, byte gpr)
+    {
+        buf.Add(0x66);
+        buf.Add(RexW(xmm, gpr));
+        buf.Add(0x0F); buf.Add(0x6E);
+        buf.Add(ModRM(3, xmm, gpr));
+    }
+
+    public static void MovqFromXmm(List<byte> buf, byte gpr, byte xmm)
+    {
+        buf.Add(0x66);
+        buf.Add(RexW(xmm, gpr));
+        buf.Add(0x0F); buf.Add(0x7E);
+        buf.Add(ModRM(3, xmm, gpr));
+    }
+
+    public static void Addsd(List<byte> buf, byte dst, byte src)
+    {
+        buf.Add(0xF2); buf.Add(0x0F); buf.Add(0x58);
+        buf.Add(ModRM(3, dst, src));
+    }
+
+    public static void Subsd(List<byte> buf, byte dst, byte src)
+    {
+        buf.Add(0xF2); buf.Add(0x0F); buf.Add(0x5C);
+        buf.Add(ModRM(3, dst, src));
+    }
+
+    public static void Mulsd(List<byte> buf, byte dst, byte src)
+    {
+        buf.Add(0xF2); buf.Add(0x0F); buf.Add(0x59);
+        buf.Add(ModRM(3, dst, src));
+    }
+
+    public static void Divsd(List<byte> buf, byte dst, byte src)
+    {
+        buf.Add(0xF2); buf.Add(0x0F); buf.Add(0x5E);
+        buf.Add(ModRM(3, dst, src));
+    }
+
+    public static void Ucomisd(List<byte> buf, byte a, byte b)
+    {
+        buf.Add(0x66); buf.Add(0x0F); buf.Add(0x2E);
+        buf.Add(ModRM(3, a, b));
+    }
 }
