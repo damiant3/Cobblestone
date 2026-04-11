@@ -37,6 +37,11 @@ public static partial class Program
 
         var (matched, dropped, extra) = MatchDefs(stage0Chapters, stage1Defs);
 
+        // Second pass: match colliding names by body comparison.
+        // Stage1 emits colliding defs unmangled (no chapter prefix), so they land in "?".
+        // Match each dropped stage0 def to an extra stage1 def with the same base name.
+        ResolveCollidingDefs(matched, dropped, extra, slugsSorted);
+
         int bodyMatches = 0;
         int bodyMismatches = 0;
         int sigMatches = 0;
@@ -477,6 +482,77 @@ public static partial class Program
         var extra = stage1Defs.Where(d => !s0Keys.Contains(d.Chapter + "|" + d.Name)).ToList();
 
         return (matched, dropped, extra);
+    }
+
+    static void ResolveCollidingDefs(
+        List<(SemDef s0, SemDef s1)> matched,
+        List<SemDef> dropped, List<SemDef> extra,
+        string[] slugsSorted)
+    {
+        // Build lookup: base name → list of unassigned stage1 defs
+        var extraByName = new Dictionary<string, List<SemDef>>();
+        foreach (SemDef d in extra)
+        {
+            if (d.Chapter != "?") continue;
+            if (!extraByName.TryGetValue(d.Name, out var list))
+            {
+                list = [];
+                extraByName[d.Name] = list;
+            }
+            list.Add(d);
+        }
+
+        var resolvedDropped = new List<SemDef>();
+        var resolvedExtra = new HashSet<SemDef>();
+
+        foreach (SemDef s0 in dropped)
+        {
+            if (!extraByName.TryGetValue(s0.Name, out var candidates))
+                continue;
+
+            // Normalize stage0 body for comparison
+            string body0 = CollapseWhitespace(DemangleNames(s0.Body, slugsSorted));
+
+            SemDef? bestMatch = null;
+            foreach (SemDef s1 in candidates)
+            {
+                if (resolvedExtra.Contains(s1)) continue;
+                string body1 = CollapseWhitespace(DemangleNames(s1.Body, slugsSorted));
+                if (body0 == body1)
+                {
+                    bestMatch = s1;
+                    break;
+                }
+            }
+
+            // If no exact body match, try signature match
+            if (bestMatch is null)
+            {
+                string sig0 = AlphaNormalizeTypeVars(s0.Sig);
+                foreach (SemDef s1 in candidates)
+                {
+                    if (resolvedExtra.Contains(s1)) continue;
+                    string sig1 = AlphaNormalizeTypeVars(s1.Sig);
+                    if (sig0 == sig1)
+                    {
+                        bestMatch = s1;
+                        break;
+                    }
+                }
+            }
+
+            if (bestMatch is not null)
+            {
+                matched.Add((s0, bestMatch with { Chapter = s0.Chapter }));
+                resolvedDropped.Add(s0);
+                resolvedExtra.Add(bestMatch);
+            }
+        }
+
+        foreach (SemDef d in resolvedDropped)
+            dropped.Remove(d);
+        foreach (SemDef d in resolvedExtra)
+            extra.Remove(d);
     }
 
     // ── Comparison-time transforms (applied during compare, not stored) ──
