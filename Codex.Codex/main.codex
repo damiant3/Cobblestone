@@ -146,7 +146,8 @@ Section: Streaming Pipeline v2 (token-retaining)
    else let hdr = list-at headers i
    in let body-st = ParseState {
     tokens = tokens,
-    pos = hdr.body-pos
+    pos = hdr.body-pos,
+    errors = []
    }
    in let body-result = parse-expr body-st
    in let def = Def {
@@ -171,9 +172,11 @@ Section: Streaming Pipeline v2 (token-retaining)
    else let hdr = list-at headers i
    in let body-st = ParseState {
     tokens = tokens,
-    pos = hdr.body-pos
+    pos = hdr.body-pos,
+    errors = []
    }
    in let body-result = parse-expr body-st
+   in let parse-errs = unwrap-parse-errors body-result
    in let def = Def {
     name = hdr.name,
     params = hdr.params,
@@ -181,14 +184,16 @@ Section: Streaming Pipeline v2 (token-retaining)
     body = unwrap-body body-result,
     chapter-slug = hdr.chapter-slug
    }
-   in let adef = desugar-def def
-   in let ir-def = lower-def adef all-types ust
-   in if is-error-body (ir-def.body) then print-line ("COMPILE-ERROR: def '" ++ ir-def.name ++ "' has error body: " ++ error-message (ir-def.body))
-   else let text = emit-def ir-def ctor-names
-   in if text == "" then emit-defs-streaming tokens headers all-types ust ctor-names (i + 1) len
-   else do
-      print-line text
-      emit-defs-streaming tokens headers all-types ust ctor-names (i + 1) len
+   in do
+      print-def-parse-errors (hdr.name.text) parse-errs
+      let adef = desugar-def def
+      in let ir-def = lower-def adef all-types ust
+      in if is-error-body (ir-def.body) then print-line ("COMPILE-ERROR: def '" ++ ir-def.name ++ "' has error body: " ++ error-message (ir-def.body))
+      else let text = emit-def ir-def ctor-names
+      in if text == "" then emit-defs-streaming tokens headers all-types ust ctor-names (i + 1) len
+      else do
+         print-line text
+         emit-defs-streaming tokens headers all-types ust ctor-names (i + 1) len
 
   emit-defs-scoped : List Token -> List DefHeader -> List TypeBinding -> UnificationState -> List Text -> List Text -> List ChapterAssignment -> Integer -> Integer -> [Console] Nothing
   emit-defs-scoped (tokens) (headers) (all-types) (ust) (ctor-names) (colliding) (assignments) (i) (len) =
@@ -209,9 +214,11 @@ Section: Streaming Pipeline v2 (token-retaining)
   emit-one-scoped-def (tokens) (hdr) (all-types) (ust) (ctor-names) (colliding) (assignments) (rn) (headers) (i) (len) =
    let body-st = ParseState {
     tokens = tokens,
-    pos = hdr.body-pos
+    pos = hdr.body-pos,
+    errors = []
    }
    in let body-result = parse-expr body-st
+   in let parse-errs = unwrap-parse-errors body-result
    in let def = Def {
     name = hdr.name,
     params = hdr.params,
@@ -230,17 +237,31 @@ Section: Streaming Pipeline v2 (token-retaining)
     body = scoped-body,
     chapter-slug = hdr.chapter-slug
    }
-   in if is-error-body (scoped-def.body) then print-line ("COMPILE-ERROR: def '" ++ scoped-def.name ++ "' has error body: " ++ error-message (scoped-def.body))
-   else let text = emit-def scoped-def ctor-names
-   in if text == "" then emit-defs-same-chapter tokens headers all-types ust ctor-names colliding assignments rn (hdr.chapter-slug) (i + 1) len
-   else do
-      print-line text
-      emit-defs-same-chapter tokens headers all-types ust ctor-names colliding assignments rn (hdr.chapter-slug) (i + 1) len
+   in do
+      print-def-parse-errors (hdr.name.text) parse-errs
+      if is-error-body (scoped-def.body) then print-line ("COMPILE-ERROR: def '" ++ scoped-def.name ++ "' has error body: " ++ error-message (scoped-def.body))
+      else let text = emit-def scoped-def ctor-names
+      in if text == "" then emit-defs-same-chapter tokens headers all-types ust ctor-names colliding assignments rn (hdr.chapter-slug) (i + 1) len
+      else do
+         print-line text
+         emit-defs-same-chapter tokens headers all-types ust ctor-names colliding assignments rn (hdr.chapter-slug) (i + 1) len
 
   unwrap-body : ParseExprResult -> Expr
   unwrap-body (r) =
    when r
     if ExprOk (e) (st) -> e
+
+  unwrap-parse-errors : ParseExprResult -> List Diagnostic
+  unwrap-parse-errors (r) =
+   when r
+    if ExprOk (e) (st) -> st.errors
+
+  print-def-parse-errors : Text -> List Diagnostic -> [Console] Nothing
+  print-def-parse-errors (def-name) (errs) =
+   if list-length errs == 0 then print-line ""
+   else do
+    print-line ("PARSE-ERRORS in '" ++ def-name ++ "':")
+    print-parse-errors errs 0
 
 Section: Whitespace Normalization
 
