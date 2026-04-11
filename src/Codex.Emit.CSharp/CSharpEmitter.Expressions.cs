@@ -41,8 +41,21 @@ public sealed partial class CSharpEmitter
                 else if (name.Name == "get-args")
                     sb.Append("Environment.GetCommandLineArgs().Select(_Cce.FromUnicode).ToList()");
                 else if (name.Name == "current-dir")
-                    sb.Append("_Cce.FromUnicode(Directory.GetCurrentDirectory())")
-                ;
+                    sb.Append("_Cce.FromUnicode(Directory.GetCurrentDirectory())");
+                else if (name.Name == "heap-save")
+                    sb.Append("_Buf.heap_save()");
+                else if (name.Name == "heap-restore")
+                    sb.Append("new Func<object, long>(_p => _Buf.heap_restore(_p))");
+                else if (name.Name == "heap-advance")
+                    sb.Append("new Func<object, long>(_n => _Buf.heap_advance(_n))");
+                else if (name.Name == "list-with-capacity")
+                    sb.Append("new Func<object, List<long>>(_c => _Buf.list_with_capacity(_c))");
+                else if (name.Name == "buf-write-byte")
+                    sb.Append("new Func<object, Func<object, Func<object, long>>>(_b => _o => _v => _Buf.buf_write_byte(_b, _o, _v))");
+                else if (name.Name == "buf-write-bytes")
+                    sb.Append("new Func<object, Func<object, Func<object, long>>>(_b => _o => _vs => _Buf.buf_write_bytes(_b, _o, _vs))");
+                else if (name.Name == "buf-read-bytes")
+                    sb.Append("new Func<object, Func<object, Func<object, List<long>>>>(_b => _o => _n => _Buf.buf_read_bytes(_b, _o, _n))");
                 else if (name.Name == "show")
                     sb.Append("new Func<object, string>(x => Convert.ToString(x))");
                 else if (name.Name == "negate")
@@ -428,6 +441,9 @@ public sealed partial class CSharpEmitter
         "fork", "await", "par", "race",
         "record-set",
         "linked-list-empty", "linked-list-push", "linked-list-to-list",
+        "heap-save", "heap-restore", "heap-advance",
+        "list-with-capacity",
+        "buf-write-byte", "buf-write-bytes", "buf-read-bytes",
         "int-mod", "min", "max",
         "bit-and", "bit-or", "bit-xor", "bit-shl", "bit-shr");
 
@@ -640,6 +656,52 @@ public sealed partial class CSharpEmitter
             }
             case "linked-list-to-list" when args.Count == 1:
                 EmitExpr(sb, args[0], indent);
+                return true;
+
+            case "heap-save":
+                sb.Append("_Buf.heap_save()");
+                return true;
+            case "heap-restore" when args.Count >= 1:
+                sb.Append("_Buf.heap_restore(");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(')');
+                return true;
+            case "heap-advance" when args.Count >= 1:
+                sb.Append("_Buf.heap_advance(");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(')');
+                return true;
+            case "list-with-capacity" when args.Count >= 1:
+                sb.Append("_Buf.list_with_capacity(");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(')');
+                return true;
+            case "buf-write-byte" when args.Count >= 3:
+                sb.Append("_Buf.buf_write_byte(");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(", ");
+                EmitExpr(sb, args[1], indent);
+                sb.Append(", ");
+                EmitExpr(sb, args[2], indent);
+                sb.Append(')');
+                return true;
+            case "buf-write-bytes" when args.Count >= 3:
+                sb.Append("_Buf.buf_write_bytes(");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(", ");
+                EmitExpr(sb, args[1], indent);
+                sb.Append(", ");
+                EmitExpr(sb, args[2], indent);
+                sb.Append(')');
+                return true;
+            case "buf-read-bytes" when args.Count >= 3:
+                sb.Append("_Buf.buf_read_bytes(");
+                EmitExpr(sb, args[0], indent);
+                sb.Append(", ");
+                EmitExpr(sb, args[1], indent);
+                sb.Append(", ");
+                EmitExpr(sb, args[2], indent);
+                sb.Append(')');
                 return true;
 
             case "record-set" when args.Count == 3:
@@ -858,7 +920,9 @@ public sealed partial class CSharpEmitter
 
     void EmitLet(StringBuilder sb, IRLet let, int indent)
     {
-        string funcType = $"Func<{EmitType(let.NameType)}, {EmitType(let.Body.Type)}>";
+        string nameType = EmitType(let.NameType);
+        if (nameType == "object") nameType = "dynamic";
+        string funcType = $"Func<{nameType}, {EmitType(let.Body.Type)}>";
         sb.Append("((" + funcType + ")((");
         sb.Append(SanitizeIdentifier(let.Name));
         sb.Append(") => ");

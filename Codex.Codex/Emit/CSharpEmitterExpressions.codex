@@ -189,6 +189,13 @@ Section: Apply Chain
    else if n == "linked-list-empty" then True
    else if n == "linked-list-push" then True
    else if n == "linked-list-to-list" then True
+   else if n == "heap-save" then True
+   else if n == "heap-restore" then True
+   else if n == "heap-advance" then True
+   else if n == "list-with-capacity" then True
+   else if n == "buf-write-byte" then True
+   else if n == "buf-write-bytes" then True
+   else if n == "buf-read-bytes" then True
    else False
 
   emit-builtin : Text -> List IRExpr -> List ArityEntry -> CodexType -> Text
@@ -241,6 +248,13 @@ Section: Apply Chain
    else if n == "linked-list-empty" then let et = when result-ty if LinkedListTy (elem) -> cs-type elem if _ -> "object" in "new List<" ++ et ++ ">()"
    else if n == "linked-list-push" then let et = when result-ty if LinkedListTy (elem) -> cs-type elem if _ -> "object" in "((Func<List<" ++ et ++ ">, " ++ et ++ ", List<" ++ et ++ ">>)((_ll, _v) => { _ll.Add(_v); return _ll; }))(" ++ emit-expr (list-at args 0) arities ++ ", " ++ emit-expr (list-at args 1) arities ++ ")"
    else if n == "linked-list-to-list" then emit-expr (list-at args 0) arities
+   else if n == "heap-save" then "_Buf.heap_save()"
+   else if n == "heap-restore" then "_Buf.heap_restore(" ++ emit-expr (list-at args 0) arities ++ ")"
+   else if n == "heap-advance" then "_Buf.heap_advance(" ++ emit-expr (list-at args 0) arities ++ ")"
+   else if n == "list-with-capacity" then "_Buf.list_with_capacity(" ++ emit-expr (list-at args 0) arities ++ ")"
+   else if n == "buf-write-byte" then "_Buf.buf_write_byte(" ++ emit-expr (list-at args 0) arities ++ ", " ++ emit-expr (list-at args 1) arities ++ ", " ++ emit-expr (list-at args 2) arities ++ ")"
+   else if n == "buf-write-bytes" then "_Buf.buf_write_bytes(" ++ emit-expr (list-at args 0) arities ++ ", " ++ emit-expr (list-at args 1) arities ++ ", " ++ emit-expr (list-at args 2) arities ++ ")"
+   else if n == "buf-read-bytes" then "_Buf.buf_read_bytes(" ++ emit-expr (list-at args 0) arities ++ ", " ++ emit-expr (list-at args 1) arities ++ ", " ++ emit-expr (list-at args 2) arities ++ ")"
    else ""
 
   emit-builtin-record-set : List IRExpr -> List ArityEntry -> Text
@@ -451,7 +465,7 @@ Section: Expression Emission
     if IrTextLit (s) -> "\"" ++ escape-text s ++ "\""
     if IrBoolLit (b) -> if b then "true" else "false"
     if IrCharLit (n) -> integer-to-text n
-    if IrName (n) (ty) -> if n == "read-line" then "_Cce.FromUnicode(Console.ReadLine() ?? \"\")" else if n == "get-args" then "Environment.GetCommandLineArgs().Select(_Cce.FromUnicode).ToList()" else if n == "current-dir" then "_Cce.FromUnicode(Directory.GetCurrentDirectory())" else if text-length n > 0 & is-upper-letter (char-at n 0) then "new " ++ sanitize n ++ "()" else if lookup-arity arities n == 0 then sanitize n ++ "()" else let ar = lookup-arity arities n in if ar >= 2 then emit-partial-wrappers 0 ar ++ sanitize n ++ "(" ++ emit-partial-params 0 ar ++ ")" else sanitize n
+    if IrName (n) (ty) -> if n == "read-line" then "_Cce.FromUnicode(Console.ReadLine() ?? \"\")" else if n == "get-args" then "Environment.GetCommandLineArgs().Select(_Cce.FromUnicode).ToList()" else if n == "current-dir" then "_Cce.FromUnicode(Directory.GetCurrentDirectory())" else if n == "heap-save" then "_Buf.heap_save()" else if n == "heap-restore" then "new Func<object, long>(_p => _Buf.heap_restore(_p))" else if n == "heap-advance" then "new Func<object, long>(_n => _Buf.heap_advance(_n))" else if n == "list-with-capacity" then "new Func<object, List<long>>(_c => _Buf.list_with_capacity(_c))" else if n == "buf-write-byte" then "new Func<object, Func<object, Func<object, long>>>(_b => _o => _v => _Buf.buf_write_byte(_b, _o, _v))" else if n == "buf-write-bytes" then "new Func<object, Func<object, Func<object, long>>>(_b => _o => _vs => _Buf.buf_write_bytes(_b, _o, _vs))" else if n == "buf-read-bytes" then "new Func<object, Func<object, Func<object, List<long>>>>(_b => _o => _n => _Buf.buf_read_bytes(_b, _o, _n))" else if text-length n > 0 & is-upper-letter (char-at n 0) then "new " ++ sanitize n ++ "()" else if lookup-arity arities n == 0 then sanitize n ++ "()" else let ar = lookup-arity arities n in if ar >= 2 then emit-partial-wrappers 0 ar ++ sanitize n ++ "(" ++ emit-partial-params 0 ar ++ ")" else sanitize n
     if IrBinary (op) (l) (r) (ty) -> emit-binary op l r ty arities
     if IrNegate (operand) -> "(-" ++ emit-expr operand arities ++ ")"
     if IrIf (c) (t) (el) (ty) -> "(" ++ emit-expr c arities ++ " ? " ++ emit-expr t arities ++ " : " ++ emit-expr el arities ++ ")"
@@ -540,9 +554,14 @@ Section: Expression Emission
     if IrConsList -> "new List<" ++ cs-type (ir-expr-type l) ++ "> { " ++ emit-expr l arities ++ " }.Concat(" ++ emit-expr r arities ++ ").ToList()"
     if _ -> "(" ++ emit-expr l arities ++ " " ++ emit-bin-op op ++ " " ++ emit-expr r arities ++ ")"
 
+  cs-type-or-dynamic : CodexType -> Text
+  cs-type-or-dynamic (ty) =
+   let t = cs-type ty
+   in if t == "object" then "dynamic" else t
+
   emit-let : Text -> CodexType -> IRExpr -> IRExpr -> List ArityEntry -> Text
   emit-let (name) (ty) (val) (body) (arities) =
-   "((Func<" ++ cs-type ty ++ ", " ++ cs-type (ir-expr-type body) ++ ">)((" ++ sanitize name ++ ") => " ++ emit-expr body arities ++ "))(" ++ emit-expr val arities ++ ")"
+   "((Func<" ++ cs-type-or-dynamic ty ++ ", " ++ cs-type (ir-expr-type body) ++ ">)((" ++ sanitize name ++ ") => " ++ emit-expr body arities ++ "))(" ++ emit-expr val arities ++ ")"
 
   emit-lambda : List IRParam -> IRExpr -> List ArityEntry -> Text
   emit-lambda (params) (body) (arities) =

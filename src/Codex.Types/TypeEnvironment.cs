@@ -167,6 +167,29 @@ public sealed class TypeEnvironment
         env = env.Bind("race", new ForAllType(320,
             new FunctionType(new ListType(new FunctionType(NothingType.s_instance, raceA)), raceReturn)));
 
+        // Memory management builtins (bare metal)
+        env = env.Bind("heap-save", IntegerType.s_instance);
+        env = env.Bind("heap-restore", new FunctionType(IntegerType.s_instance, NothingType.s_instance));
+        env = env.Bind("heap-advance", new FunctionType(IntegerType.s_instance, NothingType.s_instance));
+
+        // list-with-capacity : Integer -> List a
+        env = env.Bind("list-with-capacity", new ForAllType(0,
+            new FunctionType(IntegerType.s_instance, new ListType(new TypeVariable(0)))));
+
+        // Buffer builtins (bare metal flat buffer I/O)
+        // buf-write-byte : Integer -> Integer -> Integer -> Integer  (base, offset, byte -> new offset)
+        env = env.Bind("buf-write-byte", new FunctionType(IntegerType.s_instance,
+            new FunctionType(IntegerType.s_instance,
+                new FunctionType(IntegerType.s_instance, IntegerType.s_instance))));
+        // buf-write-bytes : Integer -> Integer -> List Integer -> Integer  (base, offset, bytes -> new offset)
+        env = env.Bind("buf-write-bytes", new FunctionType(IntegerType.s_instance,
+            new FunctionType(IntegerType.s_instance,
+                new FunctionType(new ListType(IntegerType.s_instance), IntegerType.s_instance))));
+        // buf-read-bytes : Integer -> Integer -> Integer -> List Integer  (base, offset, count -> bytes)
+        env = env.Bind("buf-read-bytes", new FunctionType(IntegerType.s_instance,
+            new FunctionType(IntegerType.s_instance,
+                new FunctionType(IntegerType.s_instance, new ListType(IntegerType.s_instance)))));
+
         return env;
     }
 }

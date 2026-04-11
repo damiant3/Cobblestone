@@ -346,19 +346,42 @@ Section: Chapter Emission
    "    }\n" ++
    "}\n\n"
 
+  emit-buf-runtime : Text
+  emit-buf-runtime =
+   "static class _Buf {\n" ++
+   "    static byte[] _mem = new byte[16 * 1024 * 1024];\n" ++
+   "    static long _ptr = 0;\n" ++
+   "    public static long heap_save() => _ptr;\n" ++
+   "    public static long heap_restore(object p) { _ptr = (long)p; return 0; }\n" ++
+   "    public static long heap_advance(object n) { _ptr += (long)n; return 0; }\n" ++
+   "    public static long buf_write_byte(object b, object off, object v) { _mem[(long)b + (long)off] = (byte)(long)v; return (long)off + 1; }\n" ++
+   "    public static long buf_write_bytes(object b, object off, object vs) {\n" ++
+   "        var list = (List<long>)vs; long o = (long)off; long ba = (long)b;\n" ++
+   "        for (int i = 0; i < list.Count; i++) _mem[ba + o + i] = (byte)list[i];\n" ++
+   "        return o + list.Count;\n" ++
+   "    }\n" ++
+   "    public static List<long> buf_read_bytes(object b, object off, object n) {\n" ++
+   "        long ba = (long)b; long o = (long)off; int cnt = (int)(long)n;\n" ++
+   "        var r = new List<long>(cnt);\n" ++
+   "        for (int i = 0; i < cnt; i++) r.Add(_mem[ba + o + i]);\n" ++
+   "        return r;\n" ++
+   "    }\n" ++
+   "    public static List<long> list_with_capacity(object cap) => new List<long>((int)(long)cap);\n" ++
+   "}\n\n"
+
   emit-full-chapter : IRChapter -> List ATypeDef -> Text
   emit-full-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
    in let header = "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n"
    in let entry = "Codex_" ++ sanitize (m.name.value) ++ ".main();\n\n"
-   in text-concat-list ([header, entry, emit-cce-runtime, emit-type-defs type-defs 0, emit-class-header (m.name.value)] ++ emit-defs-list (m.defs) 0 arities ++ ["}\n"])
+   in text-concat-list ([header, entry, emit-cce-runtime, emit-buf-runtime, emit-type-defs type-defs 0, emit-class-header (m.name.value)] ++ emit-defs-list (m.defs) 0 arities ++ ["}\n"])
 
   emit-chapter : IRChapter -> Text
   emit-chapter (m) =
    let arities = build-arity-map (m.defs) 0 []
    in let header = "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n"
    in let entry = "Codex_" ++ sanitize (m.name.value) ++ ".main();\n\n"
-   in text-concat-list ([header, entry, emit-cce-runtime, emit-class-header (m.name.value)] ++ emit-defs-list (m.defs) 0 arities ++ ["}\n"])
+   in text-concat-list ([header, entry, emit-cce-runtime, emit-buf-runtime, emit-class-header (m.name.value)] ++ emit-defs-list (m.defs) 0 arities ++ ["}\n"])
 
   emit-class-header : Text -> Text
   emit-class-header (name) =

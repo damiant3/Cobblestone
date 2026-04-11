@@ -6,9 +6,192 @@ using System.Threading.Tasks;
 
 
 
+public sealed record PatBindResult(UnificationState state, TypeEnv env);
+
+public sealed record Name(string value);
+
+public sealed record TypeVarMap(List<long> entries, long next_id);
+
+public sealed record AEffectDef(Name name, List<AEffectOpDef> ops);
+
+public sealed record ResolveResult(List<Diagnostic> errors, List<string> top_level_names, List<string> type_names, List<string> ctor_names);
+
+public sealed record ParamEntry(string param_name, long var_id);
+
+public sealed record RecordFieldDef(Token name, TypeExpr type_expr);
+
+public abstract record IRPat;
+
+public sealed record IrVarPat(string Field0, CodexType Field1) : IRPat;
+public sealed record IrLitPat(string Field0, CodexType Field1) : IRPat;
+public sealed record IrCtorPat(string Field0, List<IRPat> Field1, CodexType Field2) : IRPat;
+public sealed record IrWildPat : IRPat;
+
+public abstract record DiagnosticSeverity;
+
+public sealed record Error : DiagnosticSeverity;
+public sealed record Warning : DiagnosticSeverity;
+public sealed record Info : DiagnosticSeverity;
+
+public abstract record CompileResult;
+
+public sealed record CompileOk(string Field0, ChapterResult Field1) : CompileResult;
+public sealed record CompileError(List<Diagnostic> Field0) : CompileResult;
+
+public sealed record CheckResult(CodexType inferred_type, UnificationState state);
+
+public sealed record ChapterResult(List<TypeBinding> types, UnificationState state);
+
+public sealed record ADef(Name name, List<AParam> @params, List<ATypeExpr> declared_type, AExpr body, string chapter_slug);
+
+public abstract record ScanDefResult;
+
+public sealed record DefHeaderOk(DefHeader Field0, ParseState Field1) : ScanDefResult;
+public sealed record DefHeaderNone(ParseState Field0) : ScanDefResult;
+
 public sealed record LexState(string source, long offset, long line, long column);
 
-public sealed record EvalFieldsResult(CodegenState state, List<FieldLocal> field_locals);
+public sealed record CollectResult(List<string> names, List<Diagnostic> errors);
+
+public sealed record ACitesDecl(Name chapter_name, List<Name> selected_names);
+
+public sealed record AFieldExpr(Name name, AExpr value);
+
+public sealed record IRChapter(Name name, List<IRDef> defs, string chapter_title, string prose, List<string> section_titles);
+
+public abstract record ATypeExpr;
+
+public sealed record ANamedType(Name Field0) : ATypeExpr;
+public sealed record AFunType(ATypeExpr Field0, ATypeExpr Field1) : ATypeExpr;
+public sealed record AAppType(ATypeExpr Field0, List<ATypeExpr> Field1) : ATypeExpr;
+public sealed record AEffectType(List<Name> Field0, ATypeExpr Field1) : ATypeExpr;
+
+public abstract record Expr;
+
+public sealed record LitExpr(Token Field0) : Expr;
+public sealed record NameExpr(Token Field0) : Expr;
+public sealed record AppExpr(Expr Field0, Expr Field1) : Expr;
+public sealed record BinExpr(Expr Field0, Token Field1, Expr Field2) : Expr;
+public sealed record UnaryExpr(Token Field0, Expr Field1) : Expr;
+public sealed record IfExpr(Expr Field0, Expr Field1, Expr Field2) : Expr;
+public sealed record LetExpr(List<LetBind> Field0, Expr Field1) : Expr;
+public sealed record MatchExpr(Expr Field0, List<MatchArm> Field1) : Expr;
+public sealed record ListExpr(List<Expr> Field0) : Expr;
+public sealed record RecordExpr(Token Field0, List<RecordFieldExpr> Field1) : Expr;
+public sealed record FieldExpr(Expr Field0, Token Field1) : Expr;
+public sealed record ParenExpr(Expr Field0) : Expr;
+public sealed record DoExpr(List<DoStmt> Field0) : Expr;
+public sealed record HandleExpr(Token Field0, Expr Field1, List<HandleClause> Field2) : Expr;
+public sealed record LambdaExpr(List<Token> Field0, Expr Field1) : Expr;
+public sealed record ErrExpr(Token Field0) : Expr;
+
+public sealed record SavedArgs(CodegenState state, List<long> locals);
+
+public sealed record IRParam(string name, CodexType type_val);
+
+public sealed record AHandleClause(Name op_name, Name resume_name, AExpr body);
+
+public abstract record ATypeDef;
+
+public sealed record ARecordTypeDef(Name Field0, List<Name> Field1, List<ARecordFieldDef> Field2) : ATypeDef;
+public sealed record AVariantTypeDef(Name Field0, List<Name> Field1, List<AVariantCtorDef> Field2) : ATypeDef;
+
+public sealed record CtorCollectResult(List<string> type_names, List<string> ctor_names);
+
+public abstract record ParseTypeDefResult;
+
+public sealed record TypeDefOk(TypeDef Field0, ParseState Field1) : ParseTypeDefResult;
+public sealed record TypeDefNone(ParseState Field0) : ParseTypeDefResult;
+
+public sealed record ARecordFieldDef(Name name, ATypeExpr type_expr);
+
+public abstract record LexResult;
+
+public sealed record LexToken(Token Field0, LexState Field1) : LexResult;
+public sealed record LexEnd : LexResult;
+
+public sealed record EffectOpDef(Token name, TypeExpr type_expr);
+
+public abstract record CodexType;
+
+public sealed record IntegerTy : CodexType;
+public sealed record NumberTy : CodexType;
+public sealed record TextTy : CodexType;
+public sealed record BooleanTy : CodexType;
+public sealed record CharTy : CodexType;
+public sealed record VoidTy : CodexType;
+public sealed record NothingTy : CodexType;
+public sealed record ErrorTy : CodexType;
+public sealed record FunTy(CodexType Field0, CodexType Field1) : CodexType;
+public sealed record ListTy(CodexType Field0) : CodexType;
+public sealed record LinkedListTy(CodexType Field0) : CodexType;
+public sealed record TypeVar(long Field0) : CodexType;
+public sealed record ForAllTy(long Field0, CodexType Field1) : CodexType;
+public sealed record SumTy(Name Field0, List<SumCtor> Field1) : CodexType;
+public sealed record RecordTy(Name Field0, List<RecordField> Field1) : CodexType;
+public sealed record ConstructedTy(Name Field0, List<CodexType> Field1) : CodexType;
+public sealed record EffectfulTy(List<Name> Field0, CodexType Field1) : CodexType;
+
+public sealed record TrampolineResult(List<long> bytes, long far_jump_patch_pos);
+
+public sealed record FieldLocal(string name, long slot);
+
+public sealed record ScanResult(List<TypeDef> type_defs, List<EffectDef> effect_defs, List<DefHeader> def_headers, List<CitesDecl> citations, string chapter_title, List<string> section_titles);
+
+public sealed record SourceSpan(SourcePosition start, SourcePosition end, string file);
+
+public sealed record AChapter(Name name, List<ADef> defs, List<ATypeDef> type_defs, List<AEffectDef> effect_defs, List<ACitesDecl> citations, string chapter_title, string prose, List<string> section_titles);
+
+public sealed record VariantCtorDef(Token name, List<TypeExpr> fields);
+
+public sealed record ItoaZeroResult(CodegenState cg, long skip_digits_pos);
+
+public sealed record FuncOffset(string name, long offset);
+
+public sealed record SelectedNamesResult(List<Token> names, ParseState state);
+
+public sealed record SyscallResult(CodegenState state, long handler_offset);
+
+public abstract record Pat;
+
+public sealed record VarPat(Token Field0) : Pat;
+public sealed record LitPat(Token Field0) : Pat;
+public sealed record CtorPat(Token Field0, List<Pat> Field1) : Pat;
+public sealed record WildPat(Token Field0) : Pat;
+
+public sealed record TypeDef(Token name, List<Token> type_params, TypeBody body);
+
+public abstract record AExpr;
+
+public sealed record ALitExpr(string Field0, LiteralKind Field1) : AExpr;
+public sealed record ANameExpr(Name Field0) : AExpr;
+public sealed record AApplyExpr(AExpr Field0, AExpr Field1) : AExpr;
+public sealed record ABinaryExpr(AExpr Field0, BinaryOp Field1, AExpr Field2) : AExpr;
+public sealed record AUnaryExpr(AExpr Field0) : AExpr;
+public sealed record AIfExpr(AExpr Field0, AExpr Field1, AExpr Field2) : AExpr;
+public sealed record ALetExpr(List<ALetBind> Field0, AExpr Field1) : AExpr;
+public sealed record ALambdaExpr(List<Name> Field0, AExpr Field1) : AExpr;
+public sealed record AMatchExpr(AExpr Field0, List<AMatchArm> Field1) : AExpr;
+public sealed record AListExpr(List<AExpr> Field0) : AExpr;
+public sealed record ARecordExpr(Name Field0, List<AFieldExpr> Field1) : AExpr;
+public sealed record AFieldAccess(AExpr Field0, Name Field1) : AExpr;
+public sealed record ADoExpr(List<ADoStmt> Field0) : AExpr;
+public sealed record AHandleExpr(Name Field0, AExpr Field1, List<AHandleClause> Field2) : AExpr;
+public sealed record AErrorExpr(string Field0) : AExpr;
+
+public sealed record RecordField(Name name, CodexType type_val);
+
+public sealed record HelpResult4(CodegenState cg, long p1, long p2, long p3, long p4);
+
+public sealed record FlatApply(string func_name, List<IRExpr> args);
+
+public sealed record RenameEntry(string original, string mangled);
+
+public sealed record ParamResult(CodexType parameterized, List<ParamEntry> entries, UnificationState state);
+
+public sealed record IsrStubResult(CodegenState state, long first_stub_vaddr);
+
+public sealed record FreshResult(CodexType var_type, UnificationState state);
 
 public abstract record IRBinaryOp;
 
@@ -33,37 +216,60 @@ public sealed record IrAppendText : IRBinaryOp;
 public sealed record IrAppendList : IRBinaryOp;
 public sealed record IrConsList : IRBinaryOp;
 
-public sealed record TcoAllocResult(CodegenState alloc_state, List<long> alloc_locals);
+public sealed record UnifyResult(bool success, UnificationState state);
+
+public sealed record EvalFieldsResult(CodegenState state, List<FieldLocal> field_locals);
+
+public sealed record FuncAddrFixup(long patch_offset, string target);
+
+public sealed record AParam(Name name);
+
+public sealed record HandleParamsResult(List<Token> toks, ParseState state);
+
+public sealed record HelpResult2(CodegenState cg, long p1, long p2);
 
 public sealed record IRDef(string name, List<IRParam> @params, CodexType type_val, IRExpr body, string chapter_slug);
 
-public sealed record SourcePosition(long line, long column, long offset);
+public sealed record EmitPatternResult(CodegenState state, long next_branch_patch);
 
-public sealed record TrampolineResult(List<long> bytes, long far_jump_patch_pos);
+public abstract record DoStmt;
 
-public sealed record StrConcatCheckResult(CodegenState cg, long slow_path_pos);
+public sealed record DoBindStmt(Token Field0, Expr Field1) : DoStmt;
+public sealed record DoExprStmt(Expr Field0) : DoStmt;
 
-public sealed record ParamEntry(string param_name, long var_id);
+public sealed record CallPatch(long patch_offset, string target);
 
-public sealed record LetBind(Token name, Expr value);
+public sealed record AVariantCtorDef(Name name, List<ATypeExpr> fields);
 
-public sealed record ChapterResult(List<TypeBinding> types, UnificationState state);
+public sealed record StrEqLoopResult(CodegenState cg, long loop_done_pos, long byte_ne_pos);
 
-public sealed record TypeBinding(string name, CodexType bound_type);
+public sealed record EffectOpsResult(List<EffectOpDef> ops, ParseState state);
 
-public sealed record CtorCollectResult(List<string> type_names, List<string> ctor_names);
+public sealed record IRHandleClause(string op_name, string resume_name, IRExpr body);
 
-public sealed record LambdaParamsResult(List<Token> toks, ParseState state);
+public sealed record MatchArm(Pat pattern, Expr body);
+
+public abstract record ADoStmt;
+
+public sealed record ADoBindStmt(Name Field0, AExpr Field1) : ADoStmt;
+public sealed record ADoExprStmt(AExpr Field0) : ADoStmt;
+
+public sealed record ChapterAssignment(string def_name, string chapter_slug);
+
+public abstract record IRDoStmt;
+
+public sealed record IrDoBind(string Field0, CodexType Field1, IRExpr Field2) : IRDoStmt;
+public sealed record IrDoExec(IRExpr Field0) : IRDoStmt;
+
+public sealed record ApplyChain(IRExpr root, List<IRExpr> args);
 
 public abstract record ParsePatResult;
 
 public sealed record PatOk(Pat Field0, ParseState Field1) : ParsePatResult;
 
-public sealed record LowerCtx(List<TypeBinding> types, UnificationState ust);
+public sealed record AMatchArm(APat pattern, AExpr body);
 
-public sealed record ParseState(List<Token> tokens, long pos, List<Diagnostic> errors);
-
-public sealed record FreshResult(CodexType var_type, UnificationState state);
+public sealed record ArityEntry(string name, long arity);
 
 public abstract record TypeExpr;
 
@@ -75,11 +281,19 @@ public sealed record ListType(TypeExpr Field0) : TypeExpr;
 public sealed record LinearTypeExpr(TypeExpr Field0) : TypeExpr;
 public sealed record EffectTypeExpr(List<Token> Field0, TypeExpr Field1) : TypeExpr;
 
-public sealed record UnifyResult(bool success, UnificationState state);
+public sealed record HandleClause(Token op_name, Token resume_name, Expr body);
 
-public sealed record ResolveResult(List<Diagnostic> errors, List<string> top_level_names, List<string> type_names, List<string> ctor_names);
+public sealed record Token(TokenKind kind, string text, long offset, long line, long column);
 
-public sealed record ALetBind(Name name, AExpr value);
+public sealed record ItoaState(CodegenState cg, long jmp_done_zero_pos);
+
+public sealed record TypeBinding(string name, CodexType bound_type);
+
+public sealed record EmitChapterResult(List<long> bytes, List<Diagnostic> errors);
+
+public sealed record UnificationState(List<SubstEntry> substitutions, long next_id, List<Diagnostic> errors);
+
+public sealed record EffectDef(Token name, List<EffectOpDef> ops);
 
 public abstract record LiteralKind;
 
@@ -89,188 +303,46 @@ public sealed record TextLit : LiteralKind;
 public sealed record CharLit : LiteralKind;
 public sealed record BoolLit : LiteralKind;
 
-public sealed record Token(TokenKind kind, string text, long offset, long line, long column);
-
-public abstract record ADoStmt;
-
-public sealed record ADoBindStmt(Name Field0, AExpr Field1) : ADoStmt;
-public sealed record ADoExprStmt(AExpr Field0) : ADoStmt;
-
-public sealed record HandleClause(Token op_name, Token resume_name, Expr body);
-
-public sealed record PatBindResult(UnificationState state, TypeEnv env);
-
-public sealed record PatchEntry(long pos, long b0, long b1, long b2, long b3);
-
-public sealed record LocalBinding(string name, long slot);
-
-public sealed record ChapterAssignment(string def_name, string chapter_slug);
-
-public sealed record EffectOpDef(Token name, TypeExpr type_expr);
-
-public sealed record ParamResult(CodexType parameterized, List<ParamEntry> entries, UnificationState state);
-
-public sealed record Document(List<Def> defs, List<TypeDef> type_defs, List<EffectDef> effect_defs, List<CitesDecl> citations, string chapter_title, List<string> section_titles, List<Diagnostic> parse_errors);
-
-public sealed record SyscallResult(CodegenState state, long handler_offset);
-
-public sealed record IsrStubResult(CodegenState state, long first_stub_vaddr);
-
-public sealed record Scope(List<string> names);
-
-public sealed record SelectedNamesResult(List<Token> names, ParseState state);
-
-public sealed record AParam(Name name);
-
-public sealed record TypeVarMap(List<long> entries, long next_id);
-
-public abstract record AExpr;
-
-public sealed record ALitExpr(string Field0, LiteralKind Field1) : AExpr;
-public sealed record ANameExpr(Name Field0) : AExpr;
-public sealed record AApplyExpr(AExpr Field0, AExpr Field1) : AExpr;
-public sealed record ABinaryExpr(AExpr Field0, BinaryOp Field1, AExpr Field2) : AExpr;
-public sealed record AUnaryExpr(AExpr Field0) : AExpr;
-public sealed record AIfExpr(AExpr Field0, AExpr Field1, AExpr Field2) : AExpr;
-public sealed record ALetExpr(List<ALetBind> Field0, AExpr Field1) : AExpr;
-public sealed record ALambdaExpr(List<Name> Field0, AExpr Field1) : AExpr;
-public sealed record AMatchExpr(AExpr Field0, List<AMatchArm> Field1) : AExpr;
-public sealed record AListExpr(List<AExpr> Field0) : AExpr;
-public sealed record ARecordExpr(Name Field0, List<AFieldExpr> Field1) : AExpr;
-public sealed record AFieldAccess(AExpr Field0, Name Field1) : AExpr;
-public sealed record ADoExpr(List<ADoStmt> Field0) : AExpr;
-public sealed record AHandleExpr(Name Field0, AExpr Field1, List<AHandleClause> Field2) : AExpr;
-public sealed record AErrorExpr(string Field0) : AExpr;
+public sealed record TcoAllocResult(CodegenState alloc_state, List<long> alloc_locals);
 
 public sealed record HelpResult3(CodegenState cg, long p1, long p2, long p3);
 
-public abstract record Expr;
+public sealed record ImportParseResult(List<CitesDecl> imports, ParseState state);
 
-public sealed record LitExpr(Token Field0) : Expr;
-public sealed record NameExpr(Token Field0) : Expr;
-public sealed record AppExpr(Expr Field0, Expr Field1) : Expr;
-public sealed record BinExpr(Expr Field0, Token Field1, Expr Field2) : Expr;
-public sealed record UnaryExpr(Token Field0, Expr Field1) : Expr;
-public sealed record IfExpr(Expr Field0, Expr Field1, Expr Field2) : Expr;
-public sealed record LetExpr(List<LetBind> Field0, Expr Field1) : Expr;
-public sealed record MatchExpr(Expr Field0, List<MatchArm> Field1) : Expr;
-public sealed record ListExpr(List<Expr> Field0) : Expr;
-public sealed record RecordExpr(Token Field0, List<RecordFieldExpr> Field1) : Expr;
-public sealed record FieldExpr(Expr Field0, Token Field1) : Expr;
-public sealed record ParenExpr(Expr Field0) : Expr;
-public sealed record DoExpr(List<DoStmt> Field0) : Expr;
-public sealed record HandleExpr(Token Field0, Expr Field1, List<HandleClause> Field2) : Expr;
-public sealed record LambdaExpr(List<Token> Field0, Expr Field1) : Expr;
-public sealed record ErrExpr(Token Field0) : Expr;
+public sealed record AEffectOpDef(Name name, ATypeExpr type_expr);
+
+public sealed record RodataFixup(long patch_offset, long rodata_offset);
+
+public sealed record Def(Token name, List<Token> @params, List<TypeAnn> ann, Expr body, string chapter_slug);
+
+public sealed record SourcePosition(long line, long column, long offset);
+
+public sealed record HandleParseResult(List<HandleClause> clauses, ParseState state);
+
+public abstract record ParseTypeResult;
+
+public sealed record TypeOk(TypeExpr Field0, ParseState Field1) : ParseTypeResult;
 
 public abstract record TypeBody;
 
 public sealed record RecordBody(List<RecordFieldDef> Field0) : TypeBody;
 public sealed record VariantBody(List<VariantCtorDef> Field0) : TypeBody;
 
-public sealed record IRChapter(Name name, List<IRDef> defs, string chapter_title, string prose, List<string> section_titles);
-
-public sealed record MatchBranchState(CodegenState cg_state, List<long> end_patches);
-
-public sealed record MatchArm(Pat pattern, Expr body);
-
-public abstract record ATypeExpr;
-
-public sealed record ANamedType(Name Field0) : ATypeExpr;
-public sealed record AFunType(ATypeExpr Field0, ATypeExpr Field1) : ATypeExpr;
-public sealed record AAppType(ATypeExpr Field0, List<ATypeExpr> Field1) : ATypeExpr;
-public sealed record AEffectType(List<Name> Field0, ATypeExpr Field1) : ATypeExpr;
-
-public abstract record ATypeDef;
-
-public sealed record ARecordTypeDef(Name Field0, List<Name> Field1, List<ARecordFieldDef> Field2) : ATypeDef;
-public sealed record AVariantTypeDef(Name Field0, List<Name> Field1, List<AVariantCtorDef> Field2) : ATypeDef;
-
-public abstract record IRDoStmt;
-
-public sealed record IrDoBind(string Field0, CodexType Field1, IRExpr Field2) : IRDoStmt;
-public sealed record IrDoExec(IRExpr Field0) : IRDoStmt;
-
-public sealed record Diagnostic(string code, string message, DiagnosticSeverity severity);
-
-public sealed record ApplyChain(IRExpr root, List<IRExpr> args);
-
-public sealed record AMatchArm(APat pattern, AExpr body);
-
-public sealed record AVariantCtorDef(Name name, List<ATypeExpr> fields);
-
-public sealed record RecordField(Name name, CodexType type_val);
-
-public sealed record DefSetup(CodexType expected_type, CodexType remaining_type, UnificationState state, TypeEnv env);
-
-public sealed record EmitPatternResult(CodegenState state, long next_branch_patch);
-
-public sealed record RodataFixup(long patch_offset, long rodata_offset);
-
-public abstract record Pat;
-
-public sealed record VarPat(Token Field0) : Pat;
-public sealed record LitPat(Token Field0) : Pat;
-public sealed record CtorPat(Token Field0, List<Pat> Field1) : Pat;
-public sealed record WildPat(Token Field0) : Pat;
-
-public abstract record DoStmt;
-
-public sealed record DoBindStmt(Token Field0, Expr Field1) : DoStmt;
-public sealed record DoExprStmt(Expr Field0) : DoStmt;
-
-public sealed record CodegenState(List<List<long>> text_chunks, long text_len, List<long> rodata, List<List<long>> rodata_chunks, long rodata_len, List<FuncOffset> func_offsets, List<CallPatch> call_patches, List<FuncAddrFixup> func_addr_fixups, List<RodataFixup> rodata_fixups, List<PatchEntry> deferred_patches, List<LocalBinding> locals, long next_temp, long next_local, long spill_count, long load_local_toggle, TcoState tco, List<TypeBinding> type_defs, List<long> stack_overflow_checks, List<Diagnostic> errors);
-
-public sealed record HelpResult2(CodegenState cg, long p1, long p2);
-
-public sealed record EffectOpsResult(List<EffectOpDef> ops, ParseState state);
-
-public sealed record EmitChapterResult(List<long> bytes, List<Diagnostic> errors);
-
-public sealed record StrConcatFastResult(CodegenState cg, long fast_done_pos);
-
-public sealed record StrEqLoopResult(CodegenState cg, long loop_done_pos, long byte_ne_pos);
-
 public sealed record SubstEntry(long var_id, CodexType resolved_type);
 
-public sealed record WalkResult(CodexType walked, List<ParamEntry> entries, UnificationState state);
+public sealed record LetBindResult(UnificationState state, TypeEnv env);
 
-public sealed record IRFieldVal(string name, IRExpr value);
-
-public sealed record SourceSpan(SourcePosition start, SourcePosition end, string file);
-
-public sealed record TypeEnv(List<TypeBinding> bindings);
-
-public sealed record EffectDef(Token name, List<EffectOpDef> ops);
-
-public abstract record BinaryOp;
-
-public sealed record OpAdd : BinaryOp;
-public sealed record OpSub : BinaryOp;
-public sealed record OpMul : BinaryOp;
-public sealed record OpDiv : BinaryOp;
-public sealed record OpPow : BinaryOp;
-public sealed record OpEq : BinaryOp;
-public sealed record OpNotEq : BinaryOp;
-public sealed record OpLt : BinaryOp;
-public sealed record OpGt : BinaryOp;
-public sealed record OpLtEq : BinaryOp;
-public sealed record OpGtEq : BinaryOp;
-public sealed record OpDefEq : BinaryOp;
-public sealed record OpAppend : BinaryOp;
-public sealed record OpCons : BinaryOp;
-public sealed record OpAnd : BinaryOp;
-public sealed record OpOr : BinaryOp;
-
-public sealed record TcoState(bool active, bool in_tail_pos, long loop_top, List<long> param_locals, List<long> temp_locals, string current_func, long saved_next_local, long saved_next_temp);
-
-public sealed record SumCtor(Name name, List<CodexType> fields);
+public sealed record RecordFieldExpr(Token name, Expr value);
 
 public sealed record WalkListResult(List<CodexType> walked_list, List<ParamEntry> entries, UnificationState state);
 
-public sealed record TypeDef(Token name, List<Token> type_params, TypeBody body);
+public sealed record TcoState(bool active, bool in_tail_pos, long loop_top, List<long> param_locals, List<long> temp_locals, string current_func, long saved_next_local, long saved_next_temp);
 
-public sealed record CitesDecl(Token chapter_name, List<Token> selected_names);
+public sealed record Document(List<Def> defs, List<TypeDef> type_defs, List<EffectDef> effect_defs, List<CitesDecl> citations, string chapter_title, List<string> section_titles, List<Diagnostic> parse_errors);
+
+public sealed record PatchEntry(long pos, long b0, long b1, long b2, long b3);
+
+public sealed record DefSetup(CodexType expected_type, CodexType remaining_type, UnificationState state, TypeEnv env);
 
 public abstract record APat;
 
@@ -279,44 +351,9 @@ public sealed record ALitPat(string Field0, LiteralKind Field1) : APat;
 public sealed record ACtorPat(Name Field0, List<APat> Field1) : APat;
 public sealed record AWildPat : APat;
 
-public sealed record VariantCtorDef(Token name, List<TypeExpr> fields);
+public sealed record ALetBind(Name name, AExpr value);
 
-public sealed record HandleParseResult(List<HandleClause> clauses, ParseState state);
-
-public abstract record CodexType;
-
-public sealed record IntegerTy : CodexType;
-public sealed record NumberTy : CodexType;
-public sealed record TextTy : CodexType;
-public sealed record BooleanTy : CodexType;
-public sealed record CharTy : CodexType;
-public sealed record VoidTy : CodexType;
-public sealed record NothingTy : CodexType;
-public sealed record ErrorTy : CodexType;
-public sealed record FunTy(CodexType Field0, CodexType Field1) : CodexType;
-public sealed record ListTy(CodexType Field0) : CodexType;
-public sealed record LinkedListTy(CodexType Field0) : CodexType;
-public sealed record TypeVar(long Field0) : CodexType;
-public sealed record ForAllTy(long Field0, CodexType Field1) : CodexType;
-public sealed record SumTy(Name Field0, List<SumCtor> Field1) : CodexType;
-public sealed record RecordTy(Name Field0, List<RecordField> Field1) : CodexType;
-public sealed record ConstructedTy(Name Field0, List<CodexType> Field1) : CodexType;
-public sealed record EffectfulTy(List<Name> Field0, CodexType Field1) : CodexType;
-
-public sealed record DefHeader(Token name, List<Token> @params, List<TypeAnn> ann, long body_pos, string chapter_slug);
-
-public sealed record AHandleClause(Name op_name, Name resume_name, AExpr body);
-
-public abstract record LexResult;
-
-public sealed record LexToken(Token Field0, LexState Field1) : LexResult;
-public sealed record LexEnd : LexResult;
-
-public sealed record ItoaZeroResult(CodegenState cg, long skip_digits_pos);
-
-public abstract record ParseExprResult;
-
-public sealed record ExprOk(Expr Field0, ParseState Field1) : ParseExprResult;
+public sealed record TypeAnn(Token name, TypeExpr type_expr);
 
 public abstract record IRExpr;
 
@@ -342,97 +379,34 @@ public sealed record IrFork(IRExpr Field0, CodexType Field1) : IRExpr;
 public sealed record IrAwait(IRExpr Field0, CodexType Field1) : IRExpr;
 public sealed record IrError(string Field0, CodexType Field1) : IRExpr;
 
-public sealed record RecordFieldExpr(Token name, Expr value);
+public abstract record ParseExprResult;
 
-public sealed record LetBindResult(UnificationState state, TypeEnv env);
+public sealed record ExprOk(Expr Field0, ParseState Field1) : ParseExprResult;
 
-public sealed record FieldLocal(string name, long slot);
-
-public abstract record DiagnosticSeverity;
-
-public sealed record Error : DiagnosticSeverity;
-public sealed record Warning : DiagnosticSeverity;
-public sealed record Info : DiagnosticSeverity;
-
-public sealed record SavedArgs(CodegenState state, List<long> locals);
-
-public sealed record IRBranch(IRPat pattern, IRExpr body);
-
-public abstract record ParseTypeDefResult;
-
-public sealed record TypeDefOk(TypeDef Field0, ParseState Field1) : ParseTypeDefResult;
-public sealed record TypeDefNone(ParseState Field0) : ParseTypeDefResult;
-
-public abstract record IRPat;
-
-public sealed record IrVarPat(string Field0, CodexType Field1) : IRPat;
-public sealed record IrLitPat(string Field0, CodexType Field1) : IRPat;
-public sealed record IrCtorPat(string Field0, List<IRPat> Field1, CodexType Field2) : IRPat;
-public sealed record IrWildPat : IRPat;
-
-public abstract record ParseTypeResult;
-
-public sealed record TypeOk(TypeExpr Field0, ParseState Field1) : ParseTypeResult;
-
-public sealed record Def(Token name, List<Token> @params, List<TypeAnn> ann, Expr body, string chapter_slug);
-
-public sealed record HelpResult1(CodegenState cg, long p1);
-
-public sealed record ADef(Name name, List<AParam> @params, List<ATypeExpr> declared_type, AExpr body, string chapter_slug);
-
-public sealed record LambdaBindResult(UnificationState state, TypeEnv env, List<CodexType> param_types);
-
-public sealed record HelpResult4(CodegenState cg, long p1, long p2, long p3, long p4);
-
-public sealed record ARecordFieldDef(Name name, ATypeExpr type_expr);
-
-public sealed record HandleParamsResult(List<Token> toks, ParseState state);
-
-public sealed record ItoaState(CodegenState cg, long jmp_done_zero_pos);
-
-public sealed record ImportParseResult(List<CitesDecl> imports, ParseState state);
-
-public sealed record RenameEntry(string original, string mangled);
-
-public sealed record RecordFieldDef(Token name, TypeExpr type_expr);
-
-public abstract record ScanDefResult;
-
-public sealed record DefHeaderOk(DefHeader Field0, ParseState Field1) : ScanDefResult;
-public sealed record DefHeaderNone(ParseState Field0) : ScanDefResult;
-
-public sealed record FuncOffset(string name, long offset);
-
-public sealed record Name(string value);
-
-public sealed record IRHandleClause(string op_name, string resume_name, IRExpr body);
-
-public sealed record IRParam(string name, CodexType type_val);
-
-public sealed record AEffectOpDef(Name name, ATypeExpr type_expr);
-
-public sealed record TypeAnn(Token name, TypeExpr type_expr);
-
-public sealed record ACitesDecl(Name chapter_name, List<Name> selected_names);
-
-public sealed record CollectResult(List<string> names, List<Diagnostic> errors);
-
-public sealed record StrEqHeadResult(CodegenState cg, long len_ne_pos);
-
-public sealed record FuncAddrFixup(long patch_offset, string target);
-
-public sealed record AChapter(Name name, List<ADef> defs, List<ATypeDef> type_defs, List<AEffectDef> effect_defs, List<ACitesDecl> citations, string chapter_title, string prose, List<string> section_titles);
-
-public sealed record AFieldExpr(Name name, AExpr value);
-
-public sealed record CheckResult(CodexType inferred_type, UnificationState state);
-
-public sealed record DefParamResult(UnificationState state, TypeEnv env, CodexType remaining_type);
+public sealed record ParseState(List<Token> tokens, long pos, List<Diagnostic> errors);
 
 public abstract record ParseDefResult;
 
 public sealed record DefOk(Def Field0, ParseState Field1) : ParseDefResult;
 public sealed record DefNone(ParseState Field0) : ParseDefResult;
+
+public sealed record StrConcatFastResult(CodegenState cg, long fast_done_pos);
+
+public sealed record LambdaBindResult(UnificationState state, TypeEnv env, List<CodexType> param_types);
+
+public sealed record DefHeader(Token name, List<Token> @params, List<TypeAnn> ann, long body_pos, string chapter_slug);
+
+public sealed record IRFieldVal(string name, IRExpr value);
+
+public sealed record WalkResult(CodexType walked, List<ParamEntry> entries, UnificationState state);
+
+public sealed record LetBind(Token name, Expr value);
+
+public sealed record EmitResult(CodegenState state, long reg);
+
+public sealed record CodegenState(long text_buf_addr, long text_len, long rodata_buf_addr, long rodata_len, List<FuncOffset> func_offsets, List<CallPatch> call_patches, List<FuncAddrFixup> func_addr_fixups, List<RodataFixup> rodata_fixups, List<PatchEntry> deferred_patches, List<LocalBinding> locals, long next_temp, long next_local, long spill_count, long load_local_toggle, TcoState tco, List<TypeBinding> type_defs, List<long> stack_overflow_checks, List<Diagnostic> errors);
+
+public sealed record LambdaParamsResult(List<Token> toks, ParseState state);
 
 public abstract record TokenKind;
 
@@ -506,24 +480,50 @@ public sealed record Underscore : TokenKind;
 public sealed record Backslash : TokenKind;
 public sealed record ErrorToken : TokenKind;
 
-public sealed record FlatApply(string func_name, List<IRExpr> args);
+public sealed record DefParamResult(UnificationState state, TypeEnv env, CodexType remaining_type);
 
-public abstract record CompileResult;
+public sealed record Scope(List<string> names);
 
-public sealed record CompileOk(string Field0, ChapterResult Field1) : CompileResult;
-public sealed record CompileError(List<Diagnostic> Field0) : CompileResult;
+public sealed record IRBranch(IRPat pattern, IRExpr body);
 
-public sealed record ScanResult(List<TypeDef> type_defs, List<EffectDef> effect_defs, List<DefHeader> def_headers, List<CitesDecl> citations, string chapter_title, List<string> section_titles);
+public sealed record StrConcatCheckResult(CodegenState cg, long slow_path_pos);
 
-public sealed record UnificationState(List<SubstEntry> substitutions, long next_id, List<Diagnostic> errors);
+public sealed record CitesDecl(Token chapter_name, List<Token> selected_names);
 
-public sealed record CallPatch(long patch_offset, string target);
+public sealed record SumCtor(Name name, List<CodexType> fields);
 
-public sealed record ArityEntry(string name, long arity);
+public abstract record BinaryOp;
 
-public sealed record AEffectDef(Name name, List<AEffectOpDef> ops);
+public sealed record OpAdd : BinaryOp;
+public sealed record OpSub : BinaryOp;
+public sealed record OpMul : BinaryOp;
+public sealed record OpDiv : BinaryOp;
+public sealed record OpPow : BinaryOp;
+public sealed record OpEq : BinaryOp;
+public sealed record OpNotEq : BinaryOp;
+public sealed record OpLt : BinaryOp;
+public sealed record OpGt : BinaryOp;
+public sealed record OpLtEq : BinaryOp;
+public sealed record OpGtEq : BinaryOp;
+public sealed record OpDefEq : BinaryOp;
+public sealed record OpAppend : BinaryOp;
+public sealed record OpCons : BinaryOp;
+public sealed record OpAnd : BinaryOp;
+public sealed record OpOr : BinaryOp;
 
-public sealed record EmitResult(CodegenState state, long reg);
+public sealed record LocalBinding(string name, long slot);
+
+public sealed record HelpResult1(CodegenState cg, long p1);
+
+public sealed record LowerCtx(List<TypeBinding> types, UnificationState ust);
+
+public sealed record Diagnostic(string code, string message, DiagnosticSeverity severity);
+
+public sealed record TypeEnv(List<TypeBinding> bindings);
+
+public sealed record StrEqHeadResult(CodegenState cg, long len_ne_pos);
+
+public sealed record MatchBranchState(CodegenState cg_state, List<long> end_patches);
 
 static class _Cce {
     static readonly int[] _toUni = {
@@ -2120,6 +2120,27 @@ static class _Cce {
     }
 }
 
+static class _Buf {
+    static byte[] _mem = new byte[16 * 1024 * 1024];
+    static long _ptr = 0;
+    public static long heap_save() => _ptr;
+    public static long heap_restore(object p) { _ptr = (long)p; return 0; }
+    public static long heap_advance(object n) { _ptr += (long)n; return 0; }
+    public static long buf_write_byte(object b, object off, object v) { _mem[(long)b + (long)off] = (byte)(long)v; return (long)off + 1; }
+    public static long buf_write_bytes(object b, object off, object vs) {
+        var list = (List<long>)vs; long o = (long)off; long ba = (long)b;
+        for (int i = 0; i < list.Count; i++) _mem[ba + o + i] = (byte)list[i];
+        return o + list.Count;
+    }
+    public static List<long> buf_read_bytes(object b, object off, object n) {
+        long ba = (long)b; long o = (long)off; int cnt = (int)(long)n;
+        var r = new List<long>(cnt);
+        for (int i = 0; i < cnt; i++) r.Add(_mem[ba + o + i]);
+        return r;
+    }
+    public static List<long> list_with_capacity(object cap) => new List<long>((int)(long)cap);
+}
+
 public static class Codex_Codex_Codex
 {
     public static AExpr desugar_expr(Expr node)
@@ -3077,14 +3098,19 @@ public static class Codex_Codex_Codex
         return string.Concat("\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0018\u0017\u000F\u0013\u0013\u0002U2\u0018\u000D\u0002Z\u0001", "\u0002\u0002\u0002\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0015\u000D\u000F\u0016\u0010\u0012\u0017\u001E\u0002\u0011\u0012\u000EXY\u0002U\u000E\u00103\u0012\u0011\u0002M\u0002Z\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0003B\u0002\u0004\u0003B\u0002\u0006\u0005B\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0007\u000BB\u0002\u0007\u000CB\u0002\u0008\u0003B\u0002\u0008\u0004B\u0002\u0008\u0005B\u0002\u0008\u0006B\u0002\u0008\u0007B\u0002\u0008\u0008B\u0002\u0008\u0009B\u0002\u0008\u000AB\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0004\u0003\u0004B\u0002\u0004\u0004\u0009B\u0002\u000C\u000AB\u0002\u0004\u0004\u0004B\u0002\u0004\u0003\u0008B\u0002\u0004\u0004\u0003B\u0002\u0004\u0004\u0008B\u0002\u0004\u0003\u0007B\u0002\u0004\u0004\u0007B\u0002\u0004\u0003\u0003B\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0004\u0003\u000BB\u0002\u000C\u000CB\u0002\u0004\u0004\u000AB\u0002\u0004\u0003\u000CB\u0002\u0004\u0004\u000CB\u0002\u0004\u0003\u0005B\u0002\u0004\u0003\u0006B\u0002\u0004\u0005\u0004B\u0002\u0004\u0004\u0005B\u0002\u000C\u000BB\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0004\u0004\u000BB\u0002\u0004\u0003\u000AB\u0002\u0004\u0003\u0009B\u0002\u0004\u0005\u0003B\u0002\u0004\u0004\u0006B\u0002\u0004\u0005\u0005B\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0009\u000CB\u0002\u000B\u0007B\u0002\u0009\u0008B\u0002\u000A\u000CB\u0002\u000A\u0006B\u0002\u000A\u000BB\u0002\u000B\u0006B\u0002\u000A\u0005B\u0002\u000B\u0005B\u0002\u0009\u000BB\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u000A\u0009B\u0002\u0009\u000AB\u0002\u000B\u0008B\u0002\u000A\u000AB\u0002\u000B\u000AB\u0002\u000A\u0003B\u0002\u000A\u0004B\u0002\u000B\u000CB\u0002\u000B\u0003B\u0002\u0009\u0009B\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u000B\u0009B\u0002\u000A\u0008B\u0002\u000A\u0007B\u0002\u000B\u000BB\u0002\u000B\u0004B\u0002\u000C\u0003B\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0007\u0009B\u0002\u0007\u0007B\u0002\u0006\u0006B\u0002\u0009\u0006B\u0002\u0008\u000BB\u0002\u0008\u000CB\u0002\u0006\u000CB\u0002\u0006\u0007B\u0002\u0007\u0008B\u0002\u0007\u0003B\u0002\u0007\u0004B\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0007\u0006B\u0002\u0009\u0004B\u0002\u0007\u0005B\u0002\u0009\u0003B\u0002\u0009\u0005B\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0007\u000AB\u0002\u0009\u0007B\u0002\u0006\u0008B\u0002\u0006\u000BB\u0002\u000C\u0008B\u0002\u000C\u0005B\u0002\u0004\u0005\u0007B\u0002\u000C\u0004B\u0002\u000C\u0006B\u0002\u0004\u0005\u0006B\u0002\u0004\u0005\u0008B\u0002\u0004\u0005\u0009B\u0002\u000C\u0009B\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u000C\u0007B\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0005\u0006\u0006B\u0002\u0005\u0006\u0005B\u0002\u0005\u0006\u0007B\u0002\u0005\u0006\u0008B\u0002\u0005\u0005\u0008B\u0002\u0005\u0005\u0007B\u0002\u0005\u0005\u0009B\u0002\u0005\u0005\u000BB\u0002\u0005\u0007\u0006B\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0005\u0007\u0007B\u0002\u0005\u0007\u0009B\u0002\u0005\u0008\u0003B\u0002\u0005\u0007\u000CB\u0002\u0005\u0008\u0004B\u0002\u0005\u0008\u0005B\u0002\u0005\u0007\u0004B\u0002\u0005\u0006\u0004B\u0002\u0005\u0006\u000AB\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0004\u0003\u000A\u0005B\u0002\u0004\u0003\u000B\u0009B\u0002\u0004\u0003\u000A\u000AB\u0002\u0004\u0003\u000B\u0003B\u0002\u0004\u0003\u000B\u0008B\u0002\u0004\u0003\u000C\u0003B\u0002\u0004\u0003\u000B\u000CB\u0002\u0004\u0003\u000B\u000BB\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0004\u0003\u000A\u0007B\u0002\u0004\u0003\u000B\u0006B\u0002\u0004\u0003\u000B\u0005B\u0002\u0004\u0003\u000B\u0007B\u0002\u0004\u0003\u000A\u0009B\u0002\u0004\u0003\u000B\u000AB\u0002\u0004\u0003\u000C\u0004\u0001", "\u0002\u0002\u0002\u0002[F\u0001", "\u0002\u0002\u0002\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0015\u000D\u000F\u0016\u0010\u0012\u0017\u001E\u00020\u0011\u0018\u000E\u0011\u0010\u0012\u000F\u0015\u001EO\u0011\u0012\u000EB\u0002\u0011\u0012\u000EP\u0002U\u001C\u0015\u0010\u001A3\u0012\u0011\u0002M\u0002\u0012\u000D\u001BJKF\u0001", "\u0002\u0002\u0002\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002U2\u0018\u000DJK\u0002Z\u0002\u001C\u0010\u0015\u0002J\u0011\u0012\u000E\u0002\u0011\u0002M\u0002\u0003F\u0002\u0011\u0002O\u0002\u0004\u0005\u000BF\u0002\u0011LLK\u0002U\u001C\u0015\u0010\u001A3\u0012\u0011XU\u000E\u00103\u0012\u0011X\u0011YY\u0002M\u0002\u0011F\u0002[\u0001", "\u0002\u0002\u0002\u0002\u001F\u0019 \u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0013\u000E\u0015\u0011\u0012\u001D\u00026\u0015\u0010\u001A3\u0012\u0011\u0018\u0010\u0016\u000DJ\u0013\u000E\u0015\u0011\u0012\u001D\u0002\u0013K\u0002Z\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0013\u0002M\u0002\u0013A/\u000D\u001F\u0017\u000F\u0018\u000DJHV\u000EHB\u0002H\u0002\u0002HKA/\u000D\u001F\u0017\u000F\u0018\u000DJHV\u0015HB\u0002HHKF\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002!\u000F\u0015\u0002\u0013 \u0002M\u0002\u0012\u000D\u001B\u0002-\u001E\u0013\u000E\u000D\u001AA(\u000D$\u000EA-\u000E\u0015\u0011\u0012\u001D:\u0019\u0011\u0017\u0016\u000D\u0015J\u0013A1\u000D\u0012\u001D\u000E\u0014KF\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u001C\u0010\u0015\u0002J\u0011\u0012\u000E\u0002\u0011\u0002M\u0002\u0003F\u0002\u0011\u0002O\u0002\u0013A1\u000D\u0012\u001D\u000E\u0014F\u0002\u0011LLK\u0002Z\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0011\u0012\u000E\u0002\u0019\u0002M\u0002\u0013X\u0011YF\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0011\u001C\u0002JU\u001C\u0015\u0010\u001A3\u0012\u0011A(\u0015\u001E7\u000D\u000E;\u000F\u0017\u0019\u000DJ\u0019B\u0002\u0010\u0019\u000E\u0002\u0011\u0012\u000E\u0002 KK\u0002\u0013 A)\u001F\u001F\u000D\u0012\u0016JJ\u0018\u0014\u000F\u0015K KF\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u000D\u0017\u0013\u000D\u0002\u0011\u001C\u0002J\u0019\u0002P\u0002\u0004\u0005\u000AK\u0002Z\u0002\u0013 A)\u001F\u001F\u000D\u0012\u0016JJ\u0018\u0014\u000F\u0015KJ\u0003$'\u0003WJ\u0019PP\u0004\u0005KKKF\u0002\u0013 A)\u001F\u001F\u000D\u0012\u0016JJ\u0018\u0014\u000F\u0015KJ\u0003$\u000B\u0003WJJ\u0019PP\u0009KT\u0003$\u00066KKKF\u0002\u0013 A)\u001F\u001F\u000D\u0012\u0016JJ\u0018\u0014\u000F\u0015KJ\u0003$\u000B\u0003WJ\u0019T\u0003$\u00066KKKF\u0002[\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u000D\u0017\u0013\u000D\u0002\u0013 A)\u001F\u001F\u000D\u0012\u0016JJ\u0018\u0014\u000F\u0015K\u0009\u000BKF\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002[\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002\u0013 A(\u0010-\u000E\u0015\u0011\u0012\u001DJKF\u0001", "\u0002\u0002\u0002\u0002[\u0001", "\u0002\u0002\u0002\u0002\u001F\u0019 \u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0013\u000E\u0015\u0011\u0012\u001D\u0002(\u00103\u0012\u0011\u0018\u0010\u0016\u000DJ\u0013\u000E\u0015\u0011\u0012\u001D\u0002\u0013K\u0002Z\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002!\u000F\u0015\u0002\u0013 \u0002M\u0002\u0012\u000D\u001B\u0002-\u001E\u0013\u000E\u000D\u001AA(\u000D$\u000EA-\u000E\u0015\u0011\u0012\u001D:\u0019\u0011\u0017\u0016\u000D\u0015J\u0013A1\u000D\u0012\u001D\u000E\u0014KF\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u001C\u0010\u0015\u0002J\u0011\u0012\u000E\u0002\u0011\u0002M\u0002\u0003F\u0002\u0011\u0002O\u0002\u0013A1\u000D\u0012\u001D\u000E\u0014F\u0002\u0011LLK\u0002Z\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0011\u0012\u000E\u0002 \u0002M\u0002\u0013X\u0011YF\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0011\u001C\u0002J \u0002O\u0002\u0004\u0005\u000BK\u0002\u0013 A)\u001F\u001F\u000D\u0012\u0016JJ\u0018\u0014\u000F\u0015KU\u000E\u00103\u0012\u0011X YKF\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u000D\u0017\u0013\u000D\u0002\u0011\u001C\u0002JJ \u0002T\u0002\u0003$'\u0003K\u0002MM\u0002\u0003$'\u0003\u0002TT\u0002\u0011L\u0005\u0002O\u0002\u0013A1\u000D\u0012\u001D\u000E\u0014K\u0002Z\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0011\u0012\u000E\u0002\u0019\u0002M\u0002JJ \u0002T\u0002\u0003$\u00036K\u0002OO\u0002\u0004\u0005K\u0002W\u0002JJ\u0013X\u0011L\u0004Y\u0002T\u0002\u0003$\u00066K\u0002OO\u0002\u0009K\u0002W\u0002J\u0013X\u0011L\u0005Y\u0002T\u0002\u0003$\u00066KF\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0013 A)\u001F\u001F\u000D\u0012\u0016JJ\u0018\u0014\u000F\u0015K\u0019KF\u0002\u0011\u0002LM\u0002\u0005F\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002[\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u000D\u0017\u0013\u000D\u0002\u0013 A)\u001F\u001F\u000D\u0012\u0016JGV\u00196660GKF\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002[\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002\u0013 A(\u0010-\u000E\u0015\u0011\u0012\u001DJKF\u0001", "\u0002\u0002\u0002\u0002[\u0001", "\u0002\u0002\u0002\u0002\u001F\u0019 \u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0017\u0010\u0012\u001D\u00023\u0012\u0011(\u00102\u0018\u000DJ\u0017\u0010\u0012\u001D\u0002\u0019K\u0002Z\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002U\u001C\u0015\u0010\u001A3\u0012\u0011A(\u0015\u001E7\u000D\u000E;\u000F\u0017\u0019\u000DJJ\u0011\u0012\u000EK\u0019B\u0002\u0010\u0019\u000E\u0002\u0011\u0012\u000E\u0002\u0018K\u0002D\u0002\u0018\u0002E\u0002\u0009\u000BF\u0001", "\u0002\u0002\u0002\u0002[\u0001", "\u0002\u0002\u0002\u0002\u001F\u0019 \u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0017\u0010\u0012\u001D\u00022\u0018\u000D(\u00103\u0012\u0011J\u0017\u0010\u0012\u001D\u0002 K\u0002Z\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002J \u0002PM\u0002\u0003\u0002TT\u0002 \u0002O\u0002\u0004\u0005\u000BK\u0002D\u0002U\u000E\u00103\u0012\u0011XJ\u0011\u0012\u000EK Y\u0002E\u0002\u0009\u0008\u0008\u0006\u0006F\u0001", "\u0002\u0002\u0002\u0002[\u0001", "[\u0001\u0001");
     }
 
+    public static string emit_buf_runtime()
+    {
+        return string.Concat("\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0018\u0017\u000F\u0013\u0013\u0002U:\u0019\u001C\u0002Z\u0001", "\u0002\u0002\u0002\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002 \u001E\u000E\u000DXY\u0002U\u001A\u000D\u001A\u0002M\u0002\u0012\u000D\u001B\u0002 \u001E\u000E\u000DX\u0004\u0009\u0002N\u0002\u0004\u0003\u0005\u0007\u0002N\u0002\u0004\u0003\u0005\u0007YF\u0001", "\u0002\u0002\u0002\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0017\u0010\u0012\u001D\u0002U\u001F\u000E\u0015\u0002M\u0002\u0003F\u0001", "\u0002\u0002\u0002\u0002\u001F\u0019 \u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0017\u0010\u0012\u001D\u0002\u0014\u000D\u000F\u001FU\u0013\u000F!\u000DJK\u0002MP\u0002U\u001F\u000E\u0015F\u0001", "\u0002\u0002\u0002\u0002\u001F\u0019 \u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0017\u0010\u0012\u001D\u0002\u0014\u000D\u000F\u001FU\u0015\u000D\u0013\u000E\u0010\u0015\u000DJ\u0010 #\u000D\u0018\u000E\u0002\u001FK\u0002Z\u0002U\u001F\u000E\u0015\u0002M\u0002J\u0017\u0010\u0012\u001DK\u001FF\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002\u0003F\u0002[\u0001", "\u0002\u0002\u0002\u0002\u001F\u0019 \u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0017\u0010\u0012\u001D\u0002\u0014\u000D\u000F\u001FU\u000F\u0016!\u000F\u0012\u0018\u000DJ\u0010 #\u000D\u0018\u000E\u0002\u0012K\u0002Z\u0002U\u001F\u000E\u0015\u0002LM\u0002J\u0017\u0010\u0012\u001DK\u0012F\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002\u0003F\u0002[\u0001", "\u0002\u0002\u0002\u0002\u001F\u0019 \u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0017\u0010\u0012\u001D\u0002 \u0019\u001CU\u001B\u0015\u0011\u000E\u000DU \u001E\u000E\u000DJ\u0010 #\u000D\u0018\u000E\u0002 B\u0002\u0010 #\u000D\u0018\u000E\u0002\u0010\u001C\u001CB\u0002\u0010 #\u000D\u0018\u000E\u0002!K\u0002Z\u0002U\u001A\u000D\u001AXJ\u0017\u0010\u0012\u001DK \u0002L\u0002J\u0017\u0010\u0012\u001DK\u0010\u001C\u001CY\u0002M\u0002J \u001E\u000E\u000DKJ\u0017\u0010\u0012\u001DK!F\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002J\u0017\u0010\u0012\u001DK\u0010\u001C\u001C\u0002L\u0002\u0004F\u0002[\u0001", "\u0002\u0002\u0002\u0002\u001F\u0019 \u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u0002\u0017\u0010\u0012\u001D\u0002 \u0019\u001CU\u001B\u0015\u0011\u000E\u000DU \u001E\u000E\u000D\u0013J\u0010 #\u000D\u0018\u000E\u0002 B\u0002\u0010 #\u000D\u0018\u000E\u0002\u0010\u001C\u001CB\u0002\u0010 #\u000D\u0018\u000E\u0002!\u0013K\u0002Z\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002!\u000F\u0015\u0002\u0017\u0011\u0013\u000E\u0002M\u0002J1\u0011\u0013\u000EO\u0017\u0010\u0012\u001DPK!\u0013F\u0002\u0017\u0010\u0012\u001D\u0002\u0010\u0002M\u0002J\u0017\u0010\u0012\u001DK\u0010\u001C\u001CF\u0002\u0017\u0010\u0012\u001D\u0002 \u000F\u0002M\u0002J\u0017\u0010\u0012\u001DK F\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u001C\u0010\u0015\u0002J\u0011\u0012\u000E\u0002\u0011\u0002M\u0002\u0003F\u0002\u0011\u0002O\u0002\u0017\u0011\u0013\u000EA2\u0010\u0019\u0012\u000EF\u0002\u0011LLK\u0002U\u001A\u000D\u001AX \u000F\u0002L\u0002\u0010\u0002L\u0002\u0011Y\u0002M\u0002J \u001E\u000E\u000DK\u0017\u0011\u0013\u000EX\u0011YF\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002\u0010\u0002L\u0002\u0017\u0011\u0013\u000EA2\u0010\u0019\u0012\u000EF\u0001", "\u0002\u0002\u0002\u0002[\u0001", "\u0002\u0002\u0002\u0002\u001F\u0019 \u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u00021\u0011\u0013\u000EO\u0017\u0010\u0012\u001DP\u0002 \u0019\u001CU\u0015\u000D\u000F\u0016U \u001E\u000E\u000D\u0013J\u0010 #\u000D\u0018\u000E\u0002 B\u0002\u0010 #\u000D\u0018\u000E\u0002\u0010\u001C\u001CB\u0002\u0010 #\u000D\u0018\u000E\u0002\u0012K\u0002Z\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0017\u0010\u0012\u001D\u0002 \u000F\u0002M\u0002J\u0017\u0010\u0012\u001DK F\u0002\u0017\u0010\u0012\u001D\u0002\u0010\u0002M\u0002J\u0017\u0010\u0012\u001DK\u0010\u001C\u001CF\u0002\u0011\u0012\u000E\u0002\u0018\u0012\u000E\u0002M\u0002J\u0011\u0012\u000EKJ\u0017\u0010\u0012\u001DK\u0012F\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002!\u000F\u0015\u0002\u0015\u0002M\u0002\u0012\u000D\u001B\u00021\u0011\u0013\u000EO\u0017\u0010\u0012\u001DPJ\u0018\u0012\u000EKF\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u001C\u0010\u0015\u0002J\u0011\u0012\u000E\u0002\u0011\u0002M\u0002\u0003F\u0002\u0011\u0002O\u0002\u0018\u0012\u000EF\u0002\u0011LLK\u0002\u0015A)\u0016\u0016JU\u001A\u000D\u001AX \u000F\u0002L\u0002\u0010\u0002L\u0002\u0011YKF\u0001", "\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002\u0015F\u0001", "\u0002\u0002\u0002\u0002[\u0001", "\u0002\u0002\u0002\u0002\u001F\u0019 \u0017\u0011\u0018\u0002\u0013\u000E\u000F\u000E\u0011\u0018\u00021\u0011\u0013\u000EO\u0017\u0010\u0012\u001DP\u0002\u0017\u0011\u0013\u000EU\u001B\u0011\u000E\u0014U\u0018\u000F\u001F\u000F\u0018\u0011\u000E\u001EJ\u0010 #\u000D\u0018\u000E\u0002\u0018\u000F\u001FK\u0002MP\u0002\u0012\u000D\u001B\u00021\u0011\u0013\u000EO\u0017\u0010\u0012\u001DPJJ\u0011\u0012\u000EKJ\u0017\u0010\u0012\u001DK\u0018\u000F\u001FKF\u0001", "[\u0001\u0001");
+    }
+
     public static string csharp_emitter_emit_full_chapter(IRChapter m, List<ATypeDef> type_defs)
     {
-        return ((Func<List<ArityEntry>, string>)((arities) => ((Func<string, string>)((header) => ((Func<string, string>)((entry) => string.Concat(Enumerable.Concat(new List<string>() { header, entry, emit_cce_runtime(), csharp_emitter_emit_type_defs(type_defs, 0L), emit_class_header(m.name.value) }, Enumerable.Concat(emit_defs_list(m.defs, 0L, arities), new List<string>() { "[\u0001" }).ToList()).ToList())))(string.Concat("2\u0010\u0016\u000D$U", sanitize(m.name.value), "A\u001A\u000F\u0011\u0012JKF\u0001\u0001"))))("\u0019\u0013\u0011\u0012\u001D\u0002-\u001E\u0013\u000E\u000D\u001AF\u0001\u0019\u0013\u0011\u0012\u001D\u0002-\u001E\u0013\u000E\u000D\u001AA2\u0010\u0017\u0017\u000D\u0018\u000E\u0011\u0010\u0012\u0013A7\u000D\u0012\u000D\u0015\u0011\u0018F\u0001\u0019\u0013\u0011\u0012\u001D\u0002-\u001E\u0013\u000E\u000D\u001AA+*F\u0001\u0019\u0013\u0011\u0012\u001D\u0002-\u001E\u0013\u000E\u000D\u001AA1\u0011\u0012%F\u0001\u0019\u0013\u0011\u0012\u001D\u0002-\u001E\u0013\u000E\u000D\u001AA(\u0014\u0015\u000D\u000F\u0016\u0011\u0012\u001DA(\u000F\u0013\"\u0013F\u0001\u0001")))(build_arity_map(m.defs, 0L, new List<ArityEntry>()));
+        return ((Func<List<ArityEntry>, string>)((arities) => ((Func<string, string>)((header) => ((Func<string, string>)((entry) => string.Concat(Enumerable.Concat(new List<string>() { header, entry, emit_cce_runtime(), emit_buf_runtime(), csharp_emitter_emit_type_defs(type_defs, 0L), emit_class_header(m.name.value) }, Enumerable.Concat(emit_defs_list(m.defs, 0L, arities), new List<string>() { "[\u0001" }).ToList()).ToList())))(string.Concat("2\u0010\u0016\u000D$U", sanitize(m.name.value), "A\u001A\u000F\u0011\u0012JKF\u0001\u0001"))))("\u0019\u0013\u0011\u0012\u001D\u0002-\u001E\u0013\u000E\u000D\u001AF\u0001\u0019\u0013\u0011\u0012\u001D\u0002-\u001E\u0013\u000E\u000D\u001AA2\u0010\u0017\u0017\u000D\u0018\u000E\u0011\u0010\u0012\u0013A7\u000D\u0012\u000D\u0015\u0011\u0018F\u0001\u0019\u0013\u0011\u0012\u001D\u0002-\u001E\u0013\u000E\u000D\u001AA+*F\u0001\u0019\u0013\u0011\u0012\u001D\u0002-\u001E\u0013\u000E\u000D\u001AA1\u0011\u0012%F\u0001\u0019\u0013\u0011\u0012\u001D\u0002-\u001E\u0013\u000E\u000D\u001AA(\u0014\u0015\u000D\u000F\u0016\u0011\u0012\u001DA(\u000F\u0013\"\u0013F\u0001\u0001")))(build_arity_map(m.defs, 0L, new List<ArityEntry>()));
     }
 
     public static string emit_chapter(IRChapter m)
     {
-        return ((Func<List<ArityEntry>, string>)((arities) => ((Func<string, string>)((header) => ((Func<string, string>)((entry) => string.Concat(Enumerable.Concat(new List<string>() { header, entry, emit_cce_runtime(), emit_class_header(m.name.value) }, Enumerable.Concat(emit_defs_list(m.defs, 0L, arities), new List<string>() { "[\u0001" }).ToList()).ToList())))(string.Concat("2\u0010\u0016\u000D$U", sanitize(m.name.value), "A\u001A\u000F\u0011\u0012JKF\u0001\u0001"))))("\u0019\u0013\u0011\u0012\u001D\u0002-\u001E\u0013\u000E\u000D\u001AF\u0001\u0019\u0013\u0011\u0012\u001D\u0002-\u001E\u0013\u000E\u000D\u001AA2\u0010\u0017\u0017\u000D\u0018\u000E\u0011\u0010\u0012\u0013A7\u000D\u0012\u000D\u0015\u0011\u0018F\u0001\u0019\u0013\u0011\u0012\u001D\u0002-\u001E\u0013\u000E\u000D\u001AA+*F\u0001\u0019\u0013\u0011\u0012\u001D\u0002-\u001E\u0013\u000E\u000D\u001AA1\u0011\u0012%F\u0001\u0019\u0013\u0011\u0012\u001D\u0002-\u001E\u0013\u000E\u000D\u001AA(\u0014\u0015\u000D\u000F\u0016\u0011\u0012\u001DA(\u000F\u0013\"\u0013F\u0001\u0001")))(build_arity_map(m.defs, 0L, new List<ArityEntry>()));
+        return ((Func<List<ArityEntry>, string>)((arities) => ((Func<string, string>)((header) => ((Func<string, string>)((entry) => string.Concat(Enumerable.Concat(new List<string>() { header, entry, emit_cce_runtime(), emit_buf_runtime(), emit_class_header(m.name.value) }, Enumerable.Concat(emit_defs_list(m.defs, 0L, arities), new List<string>() { "[\u0001" }).ToList()).ToList())))(string.Concat("2\u0010\u0016\u000D$U", sanitize(m.name.value), "A\u001A\u000F\u0011\u0012JKF\u0001\u0001"))))("\u0019\u0013\u0011\u0012\u001D\u0002-\u001E\u0013\u000E\u000D\u001AF\u0001\u0019\u0013\u0011\u0012\u001D\u0002-\u001E\u0013\u000E\u000D\u001AA2\u0010\u0017\u0017\u000D\u0018\u000E\u0011\u0010\u0012\u0013A7\u000D\u0012\u000D\u0015\u0011\u0018F\u0001\u0019\u0013\u0011\u0012\u001D\u0002-\u001E\u0013\u000E\u000D\u001AA+*F\u0001\u0019\u0013\u0011\u0012\u001D\u0002-\u001E\u0013\u000E\u000D\u001AA1\u0011\u0012%F\u0001\u0019\u0013\u0011\u0012\u001D\u0002-\u001E\u0013\u000E\u000D\u001AA(\u0014\u0015\u000D\u000F\u0016\u0011\u0012\u001DA(\u000F\u0013\"\u0013F\u0001\u0001")))(build_arity_map(m.defs, 0L, new List<ArityEntry>()));
     }
 
     public static string emit_class_header(string name)
@@ -3354,12 +3380,12 @@ public static class Codex_Codex_Codex
 
     public static bool is_builtin_name(string n)
     {
-        return ((n == "\u0013\u0014\u0010\u001B") ? true : ((n == "\u0012\u000D\u001D\u000F\u000E\u000D") ? true : ((n == "\u001F\u0015\u0011\u0012\u000EI\u0017\u0011\u0012\u000D") ? true : ((n == "\u000E\u000D$\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? true : ((n == "\u0011\u0013I\u0017\u000D\u000E\u000E\u000D\u0015") ? true : ((n == "\u0011\u0013I\u0016\u0011\u001D\u0011\u000E") ? true : ((n == "\u0011\u0013I\u001B\u0014\u0011\u000E\u000D\u0013\u001F\u000F\u0018\u000D") ? true : ((n == "\u000E\u000D$\u000EI\u000E\u0010I\u0011\u0012\u000E\u000D\u001D\u000D\u0015") ? true : ((n == "\u000E\u000D$\u000EI\u000E\u0010I\u0016\u0010\u0019 \u0017\u000DI \u0011\u000E\u0013") ? true : ((n == "\u0011\u0012\u000E\u000D\u001D\u000D\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? true : ((n == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000D") ? true : ((n == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000DI\u000F\u000E") ? true : ((n == "\u0018\u0010\u0016\u000DI\u000E\u0010I\u0018\u0014\u000F\u0015") ? true : ((n == "\u0018\u0014\u000F\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? true : ((n == "\u0017\u0011\u0013\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? true : ((n == "\u0018\u0014\u000F\u0015I\u000F\u000E") ? true : ((n == "\u0013\u0019 \u0013\u000E\u0015\u0011\u0012\u001D") ? true : ((n == "\u0017\u0011\u0013\u000EI\u000F\u000E") ? true : ((n == "\u0017\u0011\u0013\u000EI\u0011\u0012\u0013\u000D\u0015\u000EI\u000F\u000E") ? true : ((n == "\u0017\u0011\u0013\u000EI\u0013\u0012\u0010\u0018") ? true : ((n == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? true : ((n == "\u000E\u000D$\u000EI\u0018\u0010\u001A\u001F\u000F\u0015\u000D") ? true : ((n == "\u000E\u000D$\u000EI\u0015\u000D\u001F\u0017\u000F\u0018\u000D") ? true : ((n == "\u0010\u001F\u000D\u0012I\u001C\u0011\u0017\u000D") ? true : ((n == "\u0015\u000D\u000F\u0016I\u000F\u0017\u0017") ? true : ((n == "\u0018\u0017\u0010\u0013\u000DI\u001C\u0011\u0017\u000D") ? true : ((n == "\u0015\u000D\u000F\u0016I\u0017\u0011\u0012\u000D") ? true : ((n == "\u0015\u000D\u000F\u0016I\u001C\u0011\u0017\u000D") ? true : ((n == "\u001B\u0015\u0011\u000E\u000DI\u001C\u0011\u0017\u000D") ? true : ((n == "\u001B\u0015\u0011\u000E\u000DI \u0011\u0012\u000F\u0015\u001E") ? true : ((n == "\u001C\u0011\u0017\u000DI\u000D$\u0011\u0013\u000E\u0013") ? true : ((n == "\u0017\u0011\u0013\u000EI\u001C\u0011\u0017\u000D\u0013") ? true : ((n == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u0018\u000F\u000EI\u0017\u0011\u0013\u000E") ? true : ((n == "\u000E\u000D$\u000EI\u0013\u001F\u0017\u0011\u000E") ? true : ((n == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? true : ((n == "\u000E\u000D$\u000EI\u0013\u000E\u000F\u0015\u000E\u0013I\u001B\u0011\u000E\u0014") ? true : ((n == "\u001D\u000D\u000EI\u000F\u0015\u001D\u0013") ? true : ((n == "\u001D\u000D\u000EI\u000D\u0012!") ? true : ((n == "\u0018\u0019\u0015\u0015\u000D\u0012\u000EI\u0016\u0011\u0015") ? true : ((n == "\u0015\u0019\u0012I\u001F\u0015\u0010\u0018\u000D\u0013\u0013") ? true : ((n == "\u001C\u0010\u0015\"") ? true : ((n == "\u000F\u001B\u000F\u0011\u000E") ? true : ((n == "\u001F\u000F\u0015") ? true : ((n == "\u0015\u000F\u0018\u000D") ? true : ((n == "\u0015\u000D\u0018\u0010\u0015\u0016I\u0013\u000D\u000E") ? true : ((n == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000D\u001A\u001F\u000E\u001E") ? true : ((n == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u001F\u0019\u0013\u0014") ? true : ((n == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000E\u0010I\u0017\u0011\u0013\u000E") ? true : false))))))))))))))))))))))))))))))))))))))))))))))));
+        return ((n == "\u0013\u0014\u0010\u001B") ? true : ((n == "\u0012\u000D\u001D\u000F\u000E\u000D") ? true : ((n == "\u001F\u0015\u0011\u0012\u000EI\u0017\u0011\u0012\u000D") ? true : ((n == "\u000E\u000D$\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? true : ((n == "\u0011\u0013I\u0017\u000D\u000E\u000E\u000D\u0015") ? true : ((n == "\u0011\u0013I\u0016\u0011\u001D\u0011\u000E") ? true : ((n == "\u0011\u0013I\u001B\u0014\u0011\u000E\u000D\u0013\u001F\u000F\u0018\u000D") ? true : ((n == "\u000E\u000D$\u000EI\u000E\u0010I\u0011\u0012\u000E\u000D\u001D\u000D\u0015") ? true : ((n == "\u000E\u000D$\u000EI\u000E\u0010I\u0016\u0010\u0019 \u0017\u000DI \u0011\u000E\u0013") ? true : ((n == "\u0011\u0012\u000E\u000D\u001D\u000D\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? true : ((n == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000D") ? true : ((n == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000DI\u000F\u000E") ? true : ((n == "\u0018\u0010\u0016\u000DI\u000E\u0010I\u0018\u0014\u000F\u0015") ? true : ((n == "\u0018\u0014\u000F\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? true : ((n == "\u0017\u0011\u0013\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? true : ((n == "\u0018\u0014\u000F\u0015I\u000F\u000E") ? true : ((n == "\u0013\u0019 \u0013\u000E\u0015\u0011\u0012\u001D") ? true : ((n == "\u0017\u0011\u0013\u000EI\u000F\u000E") ? true : ((n == "\u0017\u0011\u0013\u000EI\u0011\u0012\u0013\u000D\u0015\u000EI\u000F\u000E") ? true : ((n == "\u0017\u0011\u0013\u000EI\u0013\u0012\u0010\u0018") ? true : ((n == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? true : ((n == "\u000E\u000D$\u000EI\u0018\u0010\u001A\u001F\u000F\u0015\u000D") ? true : ((n == "\u000E\u000D$\u000EI\u0015\u000D\u001F\u0017\u000F\u0018\u000D") ? true : ((n == "\u0010\u001F\u000D\u0012I\u001C\u0011\u0017\u000D") ? true : ((n == "\u0015\u000D\u000F\u0016I\u000F\u0017\u0017") ? true : ((n == "\u0018\u0017\u0010\u0013\u000DI\u001C\u0011\u0017\u000D") ? true : ((n == "\u0015\u000D\u000F\u0016I\u0017\u0011\u0012\u000D") ? true : ((n == "\u0015\u000D\u000F\u0016I\u001C\u0011\u0017\u000D") ? true : ((n == "\u001B\u0015\u0011\u000E\u000DI\u001C\u0011\u0017\u000D") ? true : ((n == "\u001B\u0015\u0011\u000E\u000DI \u0011\u0012\u000F\u0015\u001E") ? true : ((n == "\u001C\u0011\u0017\u000DI\u000D$\u0011\u0013\u000E\u0013") ? true : ((n == "\u0017\u0011\u0013\u000EI\u001C\u0011\u0017\u000D\u0013") ? true : ((n == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u0018\u000F\u000EI\u0017\u0011\u0013\u000E") ? true : ((n == "\u000E\u000D$\u000EI\u0013\u001F\u0017\u0011\u000E") ? true : ((n == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? true : ((n == "\u000E\u000D$\u000EI\u0013\u000E\u000F\u0015\u000E\u0013I\u001B\u0011\u000E\u0014") ? true : ((n == "\u001D\u000D\u000EI\u000F\u0015\u001D\u0013") ? true : ((n == "\u001D\u000D\u000EI\u000D\u0012!") ? true : ((n == "\u0018\u0019\u0015\u0015\u000D\u0012\u000EI\u0016\u0011\u0015") ? true : ((n == "\u0015\u0019\u0012I\u001F\u0015\u0010\u0018\u000D\u0013\u0013") ? true : ((n == "\u001C\u0010\u0015\"") ? true : ((n == "\u000F\u001B\u000F\u0011\u000E") ? true : ((n == "\u001F\u000F\u0015") ? true : ((n == "\u0015\u000F\u0018\u000D") ? true : ((n == "\u0015\u000D\u0018\u0010\u0015\u0016I\u0013\u000D\u000E") ? true : ((n == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000D\u001A\u001F\u000E\u001E") ? true : ((n == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u001F\u0019\u0013\u0014") ? true : ((n == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000E\u0010I\u0017\u0011\u0013\u000E") ? true : ((n == "\u0014\u000D\u000F\u001FI\u0013\u000F!\u000D") ? true : ((n == "\u0014\u000D\u000F\u001FI\u0015\u000D\u0013\u000E\u0010\u0015\u000D") ? true : ((n == "\u0014\u000D\u000F\u001FI\u000F\u0016!\u000F\u0012\u0018\u000D") ? true : ((n == "\u0017\u0011\u0013\u000EI\u001B\u0011\u000E\u0014I\u0018\u000F\u001F\u000F\u0018\u0011\u000E\u001E") ? true : ((n == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D") ? true : ((n == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D\u0013") ? true : ((n == " \u0019\u001CI\u0015\u000D\u000F\u0016I \u001E\u000E\u000D\u0013") ? true : false)))))))))))))))))))))))))))))))))))))))))))))))))))))));
     }
 
     public static string csharp_emitter_emit_builtin(string n, List<IRExpr> args, List<ArityEntry> arities, CodexType result_ty)
     {
-        return ((n == "\u0013\u0014\u0010\u001B") ? emit_builtin_show(args, arities) : ((n == "\u0012\u000D\u001D\u000F\u000E\u000D") ? string.Concat("JI", csharp_emitter_emit_expr(args[(int)0L], arities), "K") : ((n == "\u001F\u0015\u0011\u0012\u000EI\u0017\u0011\u0012\u000D") ? emit_builtin_print_line(args, arities) : ((n == "\u000E\u000D$\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? string.Concat("JJ\u0017\u0010\u0012\u001DK", csharp_emitter_emit_expr(args[(int)0L], arities), "A1\u000D\u0012\u001D\u000E\u0014K") : ((n == "\u0011\u0013I\u0017\u000D\u000E\u000E\u000D\u0015") ? emit_builtin_is_letter(args, arities) : ((n == "\u0011\u0013I\u0016\u0011\u001D\u0011\u000E") ? emit_builtin_is_digit(args, arities) : ((n == "\u0011\u0013I\u001B\u0014\u0011\u000E\u000D\u0013\u001F\u000F\u0018\u000D") ? string.Concat("J", csharp_emitter_emit_expr(args[(int)0L], arities), "\u0002OM\u0002\u00051K") : ((n == "\u000E\u000D$\u000EI\u000E\u0010I\u0011\u0012\u000E\u000D\u001D\u000D\u0015") ? emit_builtin_text_to_integer(args, arities) : ((n == "\u000E\u000D$\u000EI\u000E\u0010I\u0016\u0010\u0019 \u0017\u000DI \u0011\u000E\u0013") ? emit_builtin_text_to_double_bits(args, arities) : ((n == "\u0011\u0012\u000E\u000D\u001D\u000D\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? emit_builtin_integer_to_text(args, arities) : ((n == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000D") ? csharp_emitter_emit_expr(args[(int)0L], arities) : ((n == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000DI\u000F\u000E") ? emit_builtin_char_code_at(args, arities) : ((n == "\u0018\u0010\u0016\u000DI\u000E\u0010I\u0018\u0014\u000F\u0015") ? csharp_emitter_emit_expr(args[(int)0L], arities) : ((n == "\u0018\u0014\u000F\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? string.Concat("JJ\u0018\u0014\u000F\u0015K", csharp_emitter_emit_expr(args[(int)0L], arities), "KA(\u0010-\u000E\u0015\u0011\u0012\u001DJK") : ((n == "\u0017\u0011\u0013\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? string.Concat("JJ\u0017\u0010\u0012\u001DK", csharp_emitter_emit_expr(args[(int)0L], arities), "A2\u0010\u0019\u0012\u000EK") : ((n == "\u0018\u0014\u000F\u0015I\u000F\u000E") ? emit_builtin_char_at(args, arities) : ((n == "\u0013\u0019 \u0013\u000E\u0015\u0011\u0012\u001D") ? emit_builtin_substring(args, arities) : ((n == "\u0017\u0011\u0013\u000EI\u000F\u000E") ? emit_builtin_list_at(args, arities) : ((n == "\u0017\u0011\u0013\u000EI\u0011\u0012\u0013\u000D\u0015\u000EI\u000F\u000E") ? emit_builtin_list_insert_at(args, arities) : ((n == "\u0017\u0011\u0013\u000EI\u0013\u0012\u0010\u0018") ? emit_builtin_list_snoc(args, arities) : ((n == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? string.Concat(csharp_emitter_emit_expr(args[(int)0L], arities), "A2\u0010\u0012\u000E\u000F\u0011\u0012\u0013J", csharp_emitter_emit_expr(args[(int)1L], arities), "K") : ((n == "\u000E\u000D$\u000EI\u0018\u0010\u001A\u001F\u000F\u0015\u000D") ? emit_builtin_text_compare(args, arities) : ((n == "\u000E\u000D$\u000EI\u0015\u000D\u001F\u0017\u000F\u0018\u000D") ? emit_builtin_text_replace(args, arities) : ((n == "\u0010\u001F\u000D\u0012I\u001C\u0011\u0017\u000D") ? string.Concat("6\u0011\u0017\u000DA*\u001F\u000D\u0012/\u000D\u000F\u0016J", csharp_emitter_emit_expr(args[(int)0L], arities), "K") : ((n == "\u0015\u000D\u000F\u0016I\u000F\u0017\u0017") ? emit_builtin_read_all(args, arities) : ((n == "\u0018\u0017\u0010\u0013\u000DI\u001C\u0011\u0017\u000D") ? string.Concat(csharp_emitter_emit_expr(args[(int)0L], arities), "A0\u0011\u0013\u001F\u0010\u0013\u000DJK") : ((n == "\u0015\u000D\u000F\u0016I\u0017\u0011\u0012\u000D") ? "U2\u0018\u000DA6\u0015\u0010\u001A3\u0012\u0011\u0018\u0010\u0016\u000DJ2\u0010\u0012\u0013\u0010\u0017\u000DA/\u000D\u000F\u00161\u0011\u0012\u000DJK\u0002DD\u0002HHK" : ((n == "\u0015\u000D\u000F\u0016I\u001C\u0011\u0017\u000D") ? emit_builtin_read_file(args, arities) : ((n == "\u001B\u0015\u0011\u000E\u000DI\u001C\u0011\u0017\u000D") ? emit_builtin_write_file(args, arities) : ((n == "\u001B\u0015\u0011\u000E\u000DI \u0011\u0012\u000F\u0015\u001E") ? string.Concat("JJ6\u0019\u0012\u0018O\u0010 #\u000D\u0018\u000EPKJJK\u0002MP\u0002Z\u0002!\u000F\u0015\u0002U \u0017\u0002M\u0002J1\u0011\u0013\u000EO\u0017\u0010\u0012\u001DPK", csharp_emitter_emit_expr(args[(int)0L], arities), "F\u0002\u0019\u0013\u0011\u0012\u001D\u0002!\u000F\u0015\u0002U\u0013\u0002M\u00022\u0010\u0012\u0013\u0010\u0017\u000DA*\u001F\u000D\u0012-\u000E\u000F\u0012\u0016\u000F\u0015\u0016*\u0019\u000E\u001F\u0019\u000EJKF\u0002\u001C\u0010\u0015\u000D\u000F\u0018\u0014\u0002J!\u000F\u0015\u0002U \u0002\u0011\u0012\u0002U \u0017K\u0002U\u0013A5\u0015\u0011\u000E\u000D:\u001E\u000E\u000DJJ \u001E\u000E\u000DKU KF\u0002U\u0013A6\u0017\u0019\u0013\u0014JKF\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002\u0012\u0019\u0017\u0017F\u0002[KKJK") : ((n == "\u001C\u0011\u0017\u000DI\u000D$\u0011\u0013\u000E\u0013") ? emit_builtin_file_exists(args, arities) : ((n == "\u0017\u0011\u0013\u000EI\u001C\u0011\u0017\u000D\u0013") ? emit_builtin_list_files(args, arities) : ((n == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u0018\u000F\u000EI\u0017\u0011\u0013\u000E") ? string.Concat("\u0013\u000E\u0015\u0011\u0012\u001DA2\u0010\u0012\u0018\u000F\u000EJ", csharp_emitter_emit_expr(args[(int)0L], arities), "K") : ((n == "\u000E\u000D$\u000EI\u0013\u001F\u0017\u0011\u000E") ? emit_builtin_text_split(args, arities) : ((n == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? emit_builtin_text_contains(args, arities) : ((n == "\u000E\u000D$\u000EI\u0013\u000E\u000F\u0015\u000E\u0013I\u001B\u0011\u000E\u0014") ? emit_builtin_text_starts_with(args, arities) : ((n == "\u001D\u000D\u000EI\u000F\u0015\u001D\u0013") ? "'\u0012!\u0011\u0015\u0010\u0012\u001A\u000D\u0012\u000EA7\u000D\u000E2\u0010\u001A\u001A\u000F\u0012\u00161\u0011\u0012\u000D)\u0015\u001D\u0013JKA-\u000D\u0017\u000D\u0018\u000EJU2\u0018\u000DA6\u0015\u0010\u001A3\u0012\u0011\u0018\u0010\u0016\u000DKA(\u00101\u0011\u0013\u000EJK" : ((n == "\u001D\u000D\u000EI\u000D\u0012!") ? emit_builtin_get_env(args, arities) : ((n == "\u0015\u0019\u0012I\u001F\u0015\u0010\u0018\u000D\u0013\u0013") ? emit_builtin_run_process(args, arities) : ((n == "\u0018\u0019\u0015\u0015\u000D\u0012\u000EI\u0016\u0011\u0015") ? "U2\u0018\u000DA6\u0015\u0010\u001A3\u0012\u0011\u0018\u0010\u0016\u000DJ0\u0011\u0015\u000D\u0018\u000E\u0010\u0015\u001EA7\u000D\u000E2\u0019\u0015\u0015\u000D\u0012\u000E0\u0011\u0015\u000D\u0018\u000E\u0010\u0015\u001EJKK" : ((n == "\u001C\u0010\u0015\"") ? string.Concat("(\u000F\u0013\"A/\u0019\u0012JJK\u0002MP\u0002J", csharp_emitter_emit_expr(args[(int)0L], arities), "KJ\u0012\u0019\u0017\u0017KK") : ((n == "\u000F\u001B\u000F\u0011\u000E") ? string.Concat("J", csharp_emitter_emit_expr(args[(int)0L], arities), "KA/\u000D\u0013\u0019\u0017\u000E") : ((n == "\u001F\u000F\u0015") ? emit_builtin_par(args, arities) : ((n == "\u0015\u000F\u0018\u000D") ? emit_builtin_race(args, arities) : ((n == "\u0015\u000D\u0018\u0010\u0015\u0016I\u0013\u000D\u000E") ? emit_builtin_record_set(args, arities) : ((n == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000D\u001A\u001F\u000E\u001E") ? ((Func<string, string>)((et) => string.Concat("\u0012\u000D\u001B\u00021\u0011\u0013\u000EO", et, "PJK")))((result_ty is LinkedListTy _mLinkedListTy13_ ? ((Func<CodexType, string>)((elem) => cs_type(elem)))((CodexType)_mLinkedListTy13_.Field0) : ((Func<CodexType, string>)((_) => "\u0010 #\u000D\u0018\u000E"))(result_ty))) : ((n == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u001F\u0019\u0013\u0014") ? ((Func<string, string>)((et) => string.Concat("JJ6\u0019\u0012\u0018O1\u0011\u0013\u000EO", et, "PB\u0002", et, "B\u00021\u0011\u0013\u000EO", et, "PPKJJU\u0017\u0017B\u0002U!K\u0002MP\u0002Z\u0002U\u0017\u0017A)\u0016\u0016JU!KF\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002U\u0017\u0017F\u0002[KKJ", csharp_emitter_emit_expr(args[(int)0L], arities), "B\u0002", csharp_emitter_emit_expr(args[(int)1L], arities), "K")))((result_ty is LinkedListTy _mLinkedListTy14_ ? ((Func<CodexType, string>)((elem) => cs_type(elem)))((CodexType)_mLinkedListTy14_.Field0) : ((Func<CodexType, string>)((_) => "\u0010 #\u000D\u0018\u000E"))(result_ty))) : ((n == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000E\u0010I\u0017\u0011\u0013\u000E") ? csharp_emitter_emit_expr(args[(int)0L], arities) : ""))))))))))))))))))))))))))))))))))))))))))))))));
+        return ((n == "\u0013\u0014\u0010\u001B") ? emit_builtin_show(args, arities) : ((n == "\u0012\u000D\u001D\u000F\u000E\u000D") ? string.Concat("JI", csharp_emitter_emit_expr(args[(int)0L], arities), "K") : ((n == "\u001F\u0015\u0011\u0012\u000EI\u0017\u0011\u0012\u000D") ? emit_builtin_print_line(args, arities) : ((n == "\u000E\u000D$\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? string.Concat("JJ\u0017\u0010\u0012\u001DK", csharp_emitter_emit_expr(args[(int)0L], arities), "A1\u000D\u0012\u001D\u000E\u0014K") : ((n == "\u0011\u0013I\u0017\u000D\u000E\u000E\u000D\u0015") ? emit_builtin_is_letter(args, arities) : ((n == "\u0011\u0013I\u0016\u0011\u001D\u0011\u000E") ? emit_builtin_is_digit(args, arities) : ((n == "\u0011\u0013I\u001B\u0014\u0011\u000E\u000D\u0013\u001F\u000F\u0018\u000D") ? string.Concat("J", csharp_emitter_emit_expr(args[(int)0L], arities), "\u0002OM\u0002\u00051K") : ((n == "\u000E\u000D$\u000EI\u000E\u0010I\u0011\u0012\u000E\u000D\u001D\u000D\u0015") ? emit_builtin_text_to_integer(args, arities) : ((n == "\u000E\u000D$\u000EI\u000E\u0010I\u0016\u0010\u0019 \u0017\u000DI \u0011\u000E\u0013") ? emit_builtin_text_to_double_bits(args, arities) : ((n == "\u0011\u0012\u000E\u000D\u001D\u000D\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? emit_builtin_integer_to_text(args, arities) : ((n == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000D") ? csharp_emitter_emit_expr(args[(int)0L], arities) : ((n == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000DI\u000F\u000E") ? emit_builtin_char_code_at(args, arities) : ((n == "\u0018\u0010\u0016\u000DI\u000E\u0010I\u0018\u0014\u000F\u0015") ? csharp_emitter_emit_expr(args[(int)0L], arities) : ((n == "\u0018\u0014\u000F\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? string.Concat("JJ\u0018\u0014\u000F\u0015K", csharp_emitter_emit_expr(args[(int)0L], arities), "KA(\u0010-\u000E\u0015\u0011\u0012\u001DJK") : ((n == "\u0017\u0011\u0013\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? string.Concat("JJ\u0017\u0010\u0012\u001DK", csharp_emitter_emit_expr(args[(int)0L], arities), "A2\u0010\u0019\u0012\u000EK") : ((n == "\u0018\u0014\u000F\u0015I\u000F\u000E") ? emit_builtin_char_at(args, arities) : ((n == "\u0013\u0019 \u0013\u000E\u0015\u0011\u0012\u001D") ? emit_builtin_substring(args, arities) : ((n == "\u0017\u0011\u0013\u000EI\u000F\u000E") ? emit_builtin_list_at(args, arities) : ((n == "\u0017\u0011\u0013\u000EI\u0011\u0012\u0013\u000D\u0015\u000EI\u000F\u000E") ? emit_builtin_list_insert_at(args, arities) : ((n == "\u0017\u0011\u0013\u000EI\u0013\u0012\u0010\u0018") ? emit_builtin_list_snoc(args, arities) : ((n == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? string.Concat(csharp_emitter_emit_expr(args[(int)0L], arities), "A2\u0010\u0012\u000E\u000F\u0011\u0012\u0013J", csharp_emitter_emit_expr(args[(int)1L], arities), "K") : ((n == "\u000E\u000D$\u000EI\u0018\u0010\u001A\u001F\u000F\u0015\u000D") ? emit_builtin_text_compare(args, arities) : ((n == "\u000E\u000D$\u000EI\u0015\u000D\u001F\u0017\u000F\u0018\u000D") ? emit_builtin_text_replace(args, arities) : ((n == "\u0010\u001F\u000D\u0012I\u001C\u0011\u0017\u000D") ? string.Concat("6\u0011\u0017\u000DA*\u001F\u000D\u0012/\u000D\u000F\u0016J", csharp_emitter_emit_expr(args[(int)0L], arities), "K") : ((n == "\u0015\u000D\u000F\u0016I\u000F\u0017\u0017") ? emit_builtin_read_all(args, arities) : ((n == "\u0018\u0017\u0010\u0013\u000DI\u001C\u0011\u0017\u000D") ? string.Concat(csharp_emitter_emit_expr(args[(int)0L], arities), "A0\u0011\u0013\u001F\u0010\u0013\u000DJK") : ((n == "\u0015\u000D\u000F\u0016I\u0017\u0011\u0012\u000D") ? "U2\u0018\u000DA6\u0015\u0010\u001A3\u0012\u0011\u0018\u0010\u0016\u000DJ2\u0010\u0012\u0013\u0010\u0017\u000DA/\u000D\u000F\u00161\u0011\u0012\u000DJK\u0002DD\u0002HHK" : ((n == "\u0015\u000D\u000F\u0016I\u001C\u0011\u0017\u000D") ? emit_builtin_read_file(args, arities) : ((n == "\u001B\u0015\u0011\u000E\u000DI\u001C\u0011\u0017\u000D") ? emit_builtin_write_file(args, arities) : ((n == "\u001B\u0015\u0011\u000E\u000DI \u0011\u0012\u000F\u0015\u001E") ? string.Concat("JJ6\u0019\u0012\u0018O\u0010 #\u000D\u0018\u000EPKJJK\u0002MP\u0002Z\u0002!\u000F\u0015\u0002U \u0017\u0002M\u0002J1\u0011\u0013\u000EO\u0017\u0010\u0012\u001DPK", csharp_emitter_emit_expr(args[(int)0L], arities), "F\u0002\u0019\u0013\u0011\u0012\u001D\u0002!\u000F\u0015\u0002U\u0013\u0002M\u00022\u0010\u0012\u0013\u0010\u0017\u000DA*\u001F\u000D\u0012-\u000E\u000F\u0012\u0016\u000F\u0015\u0016*\u0019\u000E\u001F\u0019\u000EJKF\u0002\u001C\u0010\u0015\u000D\u000F\u0018\u0014\u0002J!\u000F\u0015\u0002U \u0002\u0011\u0012\u0002U \u0017K\u0002U\u0013A5\u0015\u0011\u000E\u000D:\u001E\u000E\u000DJJ \u001E\u000E\u000DKU KF\u0002U\u0013A6\u0017\u0019\u0013\u0014JKF\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002\u0012\u0019\u0017\u0017F\u0002[KKJK") : ((n == "\u001C\u0011\u0017\u000DI\u000D$\u0011\u0013\u000E\u0013") ? emit_builtin_file_exists(args, arities) : ((n == "\u0017\u0011\u0013\u000EI\u001C\u0011\u0017\u000D\u0013") ? emit_builtin_list_files(args, arities) : ((n == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u0018\u000F\u000EI\u0017\u0011\u0013\u000E") ? string.Concat("\u0013\u000E\u0015\u0011\u0012\u001DA2\u0010\u0012\u0018\u000F\u000EJ", csharp_emitter_emit_expr(args[(int)0L], arities), "K") : ((n == "\u000E\u000D$\u000EI\u0013\u001F\u0017\u0011\u000E") ? emit_builtin_text_split(args, arities) : ((n == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? emit_builtin_text_contains(args, arities) : ((n == "\u000E\u000D$\u000EI\u0013\u000E\u000F\u0015\u000E\u0013I\u001B\u0011\u000E\u0014") ? emit_builtin_text_starts_with(args, arities) : ((n == "\u001D\u000D\u000EI\u000F\u0015\u001D\u0013") ? "'\u0012!\u0011\u0015\u0010\u0012\u001A\u000D\u0012\u000EA7\u000D\u000E2\u0010\u001A\u001A\u000F\u0012\u00161\u0011\u0012\u000D)\u0015\u001D\u0013JKA-\u000D\u0017\u000D\u0018\u000EJU2\u0018\u000DA6\u0015\u0010\u001A3\u0012\u0011\u0018\u0010\u0016\u000DKA(\u00101\u0011\u0013\u000EJK" : ((n == "\u001D\u000D\u000EI\u000D\u0012!") ? emit_builtin_get_env(args, arities) : ((n == "\u0015\u0019\u0012I\u001F\u0015\u0010\u0018\u000D\u0013\u0013") ? emit_builtin_run_process(args, arities) : ((n == "\u0018\u0019\u0015\u0015\u000D\u0012\u000EI\u0016\u0011\u0015") ? "U2\u0018\u000DA6\u0015\u0010\u001A3\u0012\u0011\u0018\u0010\u0016\u000DJ0\u0011\u0015\u000D\u0018\u000E\u0010\u0015\u001EA7\u000D\u000E2\u0019\u0015\u0015\u000D\u0012\u000E0\u0011\u0015\u000D\u0018\u000E\u0010\u0015\u001EJKK" : ((n == "\u001C\u0010\u0015\"") ? string.Concat("(\u000F\u0013\"A/\u0019\u0012JJK\u0002MP\u0002J", csharp_emitter_emit_expr(args[(int)0L], arities), "KJ\u0012\u0019\u0017\u0017KK") : ((n == "\u000F\u001B\u000F\u0011\u000E") ? string.Concat("J", csharp_emitter_emit_expr(args[(int)0L], arities), "KA/\u000D\u0013\u0019\u0017\u000E") : ((n == "\u001F\u000F\u0015") ? emit_builtin_par(args, arities) : ((n == "\u0015\u000F\u0018\u000D") ? emit_builtin_race(args, arities) : ((n == "\u0015\u000D\u0018\u0010\u0015\u0016I\u0013\u000D\u000E") ? emit_builtin_record_set(args, arities) : ((n == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000D\u001A\u001F\u000E\u001E") ? ((Func<string, string>)((et) => string.Concat("\u0012\u000D\u001B\u00021\u0011\u0013\u000EO", et, "PJK")))((result_ty is LinkedListTy _mLinkedListTy13_ ? ((Func<CodexType, string>)((elem) => cs_type(elem)))((CodexType)_mLinkedListTy13_.Field0) : ((Func<CodexType, string>)((_) => "\u0010 #\u000D\u0018\u000E"))(result_ty))) : ((n == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u001F\u0019\u0013\u0014") ? ((Func<string, string>)((et) => string.Concat("JJ6\u0019\u0012\u0018O1\u0011\u0013\u000EO", et, "PB\u0002", et, "B\u00021\u0011\u0013\u000EO", et, "PPKJJU\u0017\u0017B\u0002U!K\u0002MP\u0002Z\u0002U\u0017\u0017A)\u0016\u0016JU!KF\u0002\u0015\u000D\u000E\u0019\u0015\u0012\u0002U\u0017\u0017F\u0002[KKJ", csharp_emitter_emit_expr(args[(int)0L], arities), "B\u0002", csharp_emitter_emit_expr(args[(int)1L], arities), "K")))((result_ty is LinkedListTy _mLinkedListTy14_ ? ((Func<CodexType, string>)((elem) => cs_type(elem)))((CodexType)_mLinkedListTy14_.Field0) : ((Func<CodexType, string>)((_) => "\u0010 #\u000D\u0018\u000E"))(result_ty))) : ((n == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000E\u0010I\u0017\u0011\u0013\u000E") ? csharp_emitter_emit_expr(args[(int)0L], arities) : ((n == "\u0014\u000D\u000F\u001FI\u0013\u000F!\u000D") ? "U:\u0019\u001CA\u0014\u000D\u000F\u001FU\u0013\u000F!\u000DJK" : ((n == "\u0014\u000D\u000F\u001FI\u0015\u000D\u0013\u000E\u0010\u0015\u000D") ? string.Concat("U:\u0019\u001CA\u0014\u000D\u000F\u001FU\u0015\u000D\u0013\u000E\u0010\u0015\u000DJ", csharp_emitter_emit_expr(args[(int)0L], arities), "K") : ((n == "\u0014\u000D\u000F\u001FI\u000F\u0016!\u000F\u0012\u0018\u000D") ? string.Concat("U:\u0019\u001CA\u0014\u000D\u000F\u001FU\u000F\u0016!\u000F\u0012\u0018\u000DJ", csharp_emitter_emit_expr(args[(int)0L], arities), "K") : ((n == "\u0017\u0011\u0013\u000EI\u001B\u0011\u000E\u0014I\u0018\u000F\u001F\u000F\u0018\u0011\u000E\u001E") ? string.Concat("U:\u0019\u001CA\u0017\u0011\u0013\u000EU\u001B\u0011\u000E\u0014U\u0018\u000F\u001F\u000F\u0018\u0011\u000E\u001EJ", csharp_emitter_emit_expr(args[(int)0L], arities), "K") : ((n == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D") ? string.Concat("U:\u0019\u001CA \u0019\u001CU\u001B\u0015\u0011\u000E\u000DU \u001E\u000E\u000DJ", csharp_emitter_emit_expr(args[(int)0L], arities), "B\u0002", csharp_emitter_emit_expr(args[(int)1L], arities), "B\u0002", csharp_emitter_emit_expr(args[(int)2L], arities), "K") : ((n == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D\u0013") ? string.Concat("U:\u0019\u001CA \u0019\u001CU\u001B\u0015\u0011\u000E\u000DU \u001E\u000E\u000D\u0013J", csharp_emitter_emit_expr(args[(int)0L], arities), "B\u0002", csharp_emitter_emit_expr(args[(int)1L], arities), "B\u0002", csharp_emitter_emit_expr(args[(int)2L], arities), "K") : ((n == " \u0019\u001CI\u0015\u000D\u000F\u0016I \u001E\u000E\u000D\u0013") ? string.Concat("U:\u0019\u001CA \u0019\u001CU\u0015\u000D\u000F\u0016U \u001E\u000E\u000D\u0013J", csharp_emitter_emit_expr(args[(int)0L], arities), "B\u0002", csharp_emitter_emit_expr(args[(int)1L], arities), "B\u0002", csharp_emitter_emit_expr(args[(int)2L], arities), "K") : "")))))))))))))))))))))))))))))))))))))))))))))))))))))));
     }
 
     public static string emit_builtin_record_set(List<IRExpr> args, List<ArityEntry> arities)
@@ -3514,7 +3540,7 @@ public static class Codex_Codex_Codex
 
     public static string csharp_emitter_emit_expr(IRExpr e, List<ArityEntry> arities)
     {
-        return ((Func<IRExpr, string>)((_scrutinee20_) => (_scrutinee20_ is IrIntLit _mIrIntLit20_ ? ((Func<long, string>)((n) => string.Concat(_Cce.FromUnicode(n.ToString()), "1")))((long)_mIrIntLit20_.Field0) : (_scrutinee20_ is IrNumLit _mIrNumLit20_ ? ((Func<long, string>)((n) => string.Concat(":\u0011\u000E2\u0010\u0012!\u000D\u0015\u000E\u000D\u0015A+\u0012\u000E\u0009\u0007:\u0011\u000E\u0013(\u00100\u0010\u0019 \u0017\u000DJ", _Cce.FromUnicode(n.ToString()), "1K")))((long)_mIrNumLit20_.Field0) : (_scrutinee20_ is IrTextLit _mIrTextLit20_ ? ((Func<string, string>)((s) => string.Concat("H", csharp_emitter_escape_text(s), "H")))((string)_mIrTextLit20_.Field0) : (_scrutinee20_ is IrBoolLit _mIrBoolLit20_ ? ((Func<bool, string>)((b) => (b ? "\u000E\u0015\u0019\u000D" : "\u001C\u000F\u0017\u0013\u000D")))((bool)_mIrBoolLit20_.Field0) : (_scrutinee20_ is IrCharLit _mIrCharLit20_ ? ((Func<long, string>)((n) => _Cce.FromUnicode(n.ToString())))((long)_mIrCharLit20_.Field0) : (_scrutinee20_ is IrName _mIrName20_ ? ((Func<CodexType, string>)((ty) => ((Func<string, string>)((n) => ((n == "\u0015\u000D\u000F\u0016I\u0017\u0011\u0012\u000D") ? "U2\u0018\u000DA6\u0015\u0010\u001A3\u0012\u0011\u0018\u0010\u0016\u000DJ2\u0010\u0012\u0013\u0010\u0017\u000DA/\u000D\u000F\u00161\u0011\u0012\u000DJK\u0002DD\u0002HHK" : ((n == "\u001D\u000D\u000EI\u000F\u0015\u001D\u0013") ? "'\u0012!\u0011\u0015\u0010\u0012\u001A\u000D\u0012\u000EA7\u000D\u000E2\u0010\u001A\u001A\u000F\u0012\u00161\u0011\u0012\u000D)\u0015\u001D\u0013JKA-\u000D\u0017\u000D\u0018\u000EJU2\u0018\u000DA6\u0015\u0010\u001A3\u0012\u0011\u0018\u0010\u0016\u000DKA(\u00101\u0011\u0013\u000EJK" : ((n == "\u0018\u0019\u0015\u0015\u000D\u0012\u000EI\u0016\u0011\u0015") ? "U2\u0018\u000DA6\u0015\u0010\u001A3\u0012\u0011\u0018\u0010\u0016\u000DJ0\u0011\u0015\u000D\u0018\u000E\u0010\u0015\u001EA7\u000D\u000E2\u0019\u0015\u0015\u000D\u0012\u000E0\u0011\u0015\u000D\u0018\u000E\u0010\u0015\u001EJKK" : (((((long)n.Length) > 0L) && is_upper_letter(((long)n[(int)0L]))) ? string.Concat("\u0012\u000D\u001B\u0002", sanitize(n), "JK") : ((lookup_arity(arities, n) == 0L) ? string.Concat(sanitize(n), "JK") : ((Func<long, string>)((ar) => ((ar >= 2L) ? string.Concat(emit_partial_wrappers(0L, ar), sanitize(n), "J", emit_partial_params(0L, ar), "K") : sanitize(n))))(lookup_arity(arities, n)))))))))((string)_mIrName20_.Field0)))((CodexType)_mIrName20_.Field1) : (_scrutinee20_ is IrBinary _mIrBinary20_ ? ((Func<CodexType, string>)((ty) => ((Func<IRExpr, string>)((r) => ((Func<IRExpr, string>)((l) => ((Func<IRBinaryOp, string>)((op) => csharp_emitter_emit_binary(op, l, r, ty, arities)))((IRBinaryOp)_mIrBinary20_.Field0)))((IRExpr)_mIrBinary20_.Field1)))((IRExpr)_mIrBinary20_.Field2)))((CodexType)_mIrBinary20_.Field3) : (_scrutinee20_ is IrNegate _mIrNegate20_ ? ((Func<IRExpr, string>)((operand) => string.Concat("JI", csharp_emitter_emit_expr(operand, arities), "K")))((IRExpr)_mIrNegate20_.Field0) : (_scrutinee20_ is IrIf _mIrIf20_ ? ((Func<CodexType, string>)((ty) => ((Func<IRExpr, string>)((el) => ((Func<IRExpr, string>)((t) => ((Func<IRExpr, string>)((c) => string.Concat("J", csharp_emitter_emit_expr(c, arities), "\u0002D\u0002", csharp_emitter_emit_expr(t, arities), "\u0002E\u0002", csharp_emitter_emit_expr(el, arities), "K")))((IRExpr)_mIrIf20_.Field0)))((IRExpr)_mIrIf20_.Field1)))((IRExpr)_mIrIf20_.Field2)))((CodexType)_mIrIf20_.Field3) : (_scrutinee20_ is IrLet _mIrLet20_ ? ((Func<IRExpr, string>)((body) => ((Func<IRExpr, string>)((val) => ((Func<CodexType, string>)((ty) => ((Func<string, string>)((name) => csharp_emitter_emit_let(name, ty, val, body, arities)))((string)_mIrLet20_.Field0)))((CodexType)_mIrLet20_.Field1)))((IRExpr)_mIrLet20_.Field2)))((IRExpr)_mIrLet20_.Field3) : (_scrutinee20_ is IrApply _mIrApply20_ ? ((Func<CodexType, string>)((ty) => ((Func<IRExpr, string>)((a) => ((Func<IRExpr, string>)((f) => csharp_emitter_emit_apply(e, arities)))((IRExpr)_mIrApply20_.Field0)))((IRExpr)_mIrApply20_.Field1)))((CodexType)_mIrApply20_.Field2) : (_scrutinee20_ is IrLambda _mIrLambda20_ ? ((Func<CodexType, string>)((ty) => ((Func<IRExpr, string>)((body) => ((Func<List<IRParam>, string>)((@params) => csharp_emitter_emit_lambda(@params, body, arities)))((List<IRParam>)_mIrLambda20_.Field0)))((IRExpr)_mIrLambda20_.Field1)))((CodexType)_mIrLambda20_.Field2) : (_scrutinee20_ is IrList _mIrList20_ ? ((Func<CodexType, string>)((ty) => ((Func<List<IRExpr>, string>)((elems) => csharp_emitter_emit_list(elems, ty, arities)))((List<IRExpr>)_mIrList20_.Field0)))((CodexType)_mIrList20_.Field1) : (_scrutinee20_ is IrMatch _mIrMatch20_ ? ((Func<CodexType, string>)((ty) => ((Func<List<IRBranch>, string>)((branches) => ((Func<IRExpr, string>)((scrut) => csharp_emitter_emit_match(scrut, branches, ty, arities)))((IRExpr)_mIrMatch20_.Field0)))((List<IRBranch>)_mIrMatch20_.Field1)))((CodexType)_mIrMatch20_.Field2) : (_scrutinee20_ is IrDo _mIrDo20_ ? ((Func<CodexType, string>)((ty) => ((Func<List<IRDoStmt>, string>)((stmts) => csharp_emitter_emit_do(stmts, ty, arities)))((List<IRDoStmt>)_mIrDo20_.Field0)))((CodexType)_mIrDo20_.Field1) : (_scrutinee20_ is IrHandle _mIrHandle20_ ? ((Func<CodexType, string>)((ty) => ((Func<List<IRHandleClause>, string>)((clauses) => ((Func<IRExpr, string>)((body) => ((Func<string, string>)((eff) => csharp_emitter_emit_handle(eff, body, clauses, ty, arities)))((string)_mIrHandle20_.Field0)))((IRExpr)_mIrHandle20_.Field1)))((List<IRHandleClause>)_mIrHandle20_.Field2)))((CodexType)_mIrHandle20_.Field3) : (_scrutinee20_ is IrRecord _mIrRecord20_ ? ((Func<CodexType, string>)((ty) => ((Func<List<IRFieldVal>, string>)((fields) => ((Func<string, string>)((name) => csharp_emitter_emit_record(name, fields, arities)))((string)_mIrRecord20_.Field0)))((List<IRFieldVal>)_mIrRecord20_.Field1)))((CodexType)_mIrRecord20_.Field2) : (_scrutinee20_ is IrFieldAccess _mIrFieldAccess20_ ? ((Func<CodexType, string>)((ty) => ((Func<string, string>)((field) => ((Func<IRExpr, string>)((rec) => string.Concat(csharp_emitter_emit_expr(rec, arities), "A", sanitize(field))))((IRExpr)_mIrFieldAccess20_.Field0)))((string)_mIrFieldAccess20_.Field1)))((CodexType)_mIrFieldAccess20_.Field2) : (_scrutinee20_ is IrFork _mIrFork20_ ? ((Func<CodexType, string>)((ty) => ((Func<IRExpr, string>)((body) => string.Concat("(\u000F\u0013\"A/\u0019\u0012JJK\u0002MP\u0002J", csharp_emitter_emit_expr(body, arities), "KJ\u0012\u0019\u0017\u0017KK")))((IRExpr)_mIrFork20_.Field0)))((CodexType)_mIrFork20_.Field1) : (_scrutinee20_ is IrAwait _mIrAwait20_ ? ((Func<CodexType, string>)((ty) => ((Func<IRExpr, string>)((task) => string.Concat("J", csharp_emitter_emit_expr(task, arities), "KA/\u000D\u0013\u0019\u0017\u000E")))((IRExpr)_mIrAwait20_.Field0)))((CodexType)_mIrAwait20_.Field1) : (_scrutinee20_ is IrError _mIrError20_ ? ((Func<CodexType, string>)((ty) => ((Func<string, string>)((msg) => string.Concat("QN\u0002\u000D\u0015\u0015\u0010\u0015E\u0002", msg, "\u0002NQ\u0002\u0016\u000D\u001C\u000F\u0019\u0017\u000E")))((string)_mIrError20_.Field0)))((CodexType)_mIrError20_.Field1) : throw new InvalidOperationException("Non-exhaustive match"))))))))))))))))))))))))(e);
+        return ((Func<IRExpr, string>)((_scrutinee20_) => (_scrutinee20_ is IrIntLit _mIrIntLit20_ ? ((Func<long, string>)((n) => string.Concat(_Cce.FromUnicode(n.ToString()), "1")))((long)_mIrIntLit20_.Field0) : (_scrutinee20_ is IrNumLit _mIrNumLit20_ ? ((Func<long, string>)((n) => string.Concat(":\u0011\u000E2\u0010\u0012!\u000D\u0015\u000E\u000D\u0015A+\u0012\u000E\u0009\u0007:\u0011\u000E\u0013(\u00100\u0010\u0019 \u0017\u000DJ", _Cce.FromUnicode(n.ToString()), "1K")))((long)_mIrNumLit20_.Field0) : (_scrutinee20_ is IrTextLit _mIrTextLit20_ ? ((Func<string, string>)((s) => string.Concat("H", csharp_emitter_escape_text(s), "H")))((string)_mIrTextLit20_.Field0) : (_scrutinee20_ is IrBoolLit _mIrBoolLit20_ ? ((Func<bool, string>)((b) => (b ? "\u000E\u0015\u0019\u000D" : "\u001C\u000F\u0017\u0013\u000D")))((bool)_mIrBoolLit20_.Field0) : (_scrutinee20_ is IrCharLit _mIrCharLit20_ ? ((Func<long, string>)((n) => _Cce.FromUnicode(n.ToString())))((long)_mIrCharLit20_.Field0) : (_scrutinee20_ is IrName _mIrName20_ ? ((Func<CodexType, string>)((ty) => ((Func<string, string>)((n) => ((n == "\u0015\u000D\u000F\u0016I\u0017\u0011\u0012\u000D") ? "U2\u0018\u000DA6\u0015\u0010\u001A3\u0012\u0011\u0018\u0010\u0016\u000DJ2\u0010\u0012\u0013\u0010\u0017\u000DA/\u000D\u000F\u00161\u0011\u0012\u000DJK\u0002DD\u0002HHK" : ((n == "\u001D\u000D\u000EI\u000F\u0015\u001D\u0013") ? "'\u0012!\u0011\u0015\u0010\u0012\u001A\u000D\u0012\u000EA7\u000D\u000E2\u0010\u001A\u001A\u000F\u0012\u00161\u0011\u0012\u000D)\u0015\u001D\u0013JKA-\u000D\u0017\u000D\u0018\u000EJU2\u0018\u000DA6\u0015\u0010\u001A3\u0012\u0011\u0018\u0010\u0016\u000DKA(\u00101\u0011\u0013\u000EJK" : ((n == "\u0018\u0019\u0015\u0015\u000D\u0012\u000EI\u0016\u0011\u0015") ? "U2\u0018\u000DA6\u0015\u0010\u001A3\u0012\u0011\u0018\u0010\u0016\u000DJ0\u0011\u0015\u000D\u0018\u000E\u0010\u0015\u001EA7\u000D\u000E2\u0019\u0015\u0015\u000D\u0012\u000E0\u0011\u0015\u000D\u0018\u000E\u0010\u0015\u001EJKK" : ((n == "\u0014\u000D\u000F\u001FI\u0013\u000F!\u000D") ? "U:\u0019\u001CA\u0014\u000D\u000F\u001FU\u0013\u000F!\u000DJK" : ((n == "\u0014\u000D\u000F\u001FI\u0015\u000D\u0013\u000E\u0010\u0015\u000D") ? "\u0012\u000D\u001B\u00026\u0019\u0012\u0018O\u0010 #\u000D\u0018\u000EB\u0002\u0017\u0010\u0012\u001DPJU\u001F\u0002MP\u0002U:\u0019\u001CA\u0014\u000D\u000F\u001FU\u0015\u000D\u0013\u000E\u0010\u0015\u000DJU\u001FKK" : ((n == "\u0014\u000D\u000F\u001FI\u000F\u0016!\u000F\u0012\u0018\u000D") ? "\u0012\u000D\u001B\u00026\u0019\u0012\u0018O\u0010 #\u000D\u0018\u000EB\u0002\u0017\u0010\u0012\u001DPJU\u0012\u0002MP\u0002U:\u0019\u001CA\u0014\u000D\u000F\u001FU\u000F\u0016!\u000F\u0012\u0018\u000DJU\u0012KK" : ((n == "\u0017\u0011\u0013\u000EI\u001B\u0011\u000E\u0014I\u0018\u000F\u001F\u000F\u0018\u0011\u000E\u001E") ? "\u0012\u000D\u001B\u00026\u0019\u0012\u0018O\u0010 #\u000D\u0018\u000EB\u00021\u0011\u0013\u000EO\u0017\u0010\u0012\u001DPPJU\u0018\u0002MP\u0002U:\u0019\u001CA\u0017\u0011\u0013\u000EU\u001B\u0011\u000E\u0014U\u0018\u000F\u001F\u000F\u0018\u0011\u000E\u001EJU\u0018KK" : ((n == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D") ? "\u0012\u000D\u001B\u00026\u0019\u0012\u0018O\u0010 #\u000D\u0018\u000EB\u00026\u0019\u0012\u0018O\u0010 #\u000D\u0018\u000EB\u00026\u0019\u0012\u0018O\u0010 #\u000D\u0018\u000EB\u0002\u0017\u0010\u0012\u001DPPPJU \u0002MP\u0002U\u0010\u0002MP\u0002U!\u0002MP\u0002U:\u0019\u001CA \u0019\u001CU\u001B\u0015\u0011\u000E\u000DU \u001E\u000E\u000DJU B\u0002U\u0010B\u0002U!KK" : ((n == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D\u0013") ? "\u0012\u000D\u001B\u00026\u0019\u0012\u0018O\u0010 #\u000D\u0018\u000EB\u00026\u0019\u0012\u0018O\u0010 #\u000D\u0018\u000EB\u00026\u0019\u0012\u0018O\u0010 #\u000D\u0018\u000EB\u0002\u0017\u0010\u0012\u001DPPPJU \u0002MP\u0002U\u0010\u0002MP\u0002U!\u0013\u0002MP\u0002U:\u0019\u001CA \u0019\u001CU\u001B\u0015\u0011\u000E\u000DU \u001E\u000E\u000D\u0013JU B\u0002U\u0010B\u0002U!\u0013KK" : ((n == " \u0019\u001CI\u0015\u000D\u000F\u0016I \u001E\u000E\u000D\u0013") ? "\u0012\u000D\u001B\u00026\u0019\u0012\u0018O\u0010 #\u000D\u0018\u000EB\u00026\u0019\u0012\u0018O\u0010 #\u000D\u0018\u000EB\u00026\u0019\u0012\u0018O\u0010 #\u000D\u0018\u000EB\u00021\u0011\u0013\u000EO\u0017\u0010\u0012\u001DPPPPJU \u0002MP\u0002U\u0010\u0002MP\u0002U\u0012\u0002MP\u0002U:\u0019\u001CA \u0019\u001CU\u0015\u000D\u000F\u0016U \u001E\u000E\u000D\u0013JU B\u0002U\u0010B\u0002U\u0012KK" : (((((long)n.Length) > 0L) && is_upper_letter(((long)n[(int)0L]))) ? string.Concat("\u0012\u000D\u001B\u0002", sanitize(n), "JK") : ((lookup_arity(arities, n) == 0L) ? string.Concat(sanitize(n), "JK") : ((Func<long, string>)((ar) => ((ar >= 2L) ? string.Concat(emit_partial_wrappers(0L, ar), sanitize(n), "J", emit_partial_params(0L, ar), "K") : sanitize(n))))(lookup_arity(arities, n))))))))))))))))((string)_mIrName20_.Field0)))((CodexType)_mIrName20_.Field1) : (_scrutinee20_ is IrBinary _mIrBinary20_ ? ((Func<CodexType, string>)((ty) => ((Func<IRExpr, string>)((r) => ((Func<IRExpr, string>)((l) => ((Func<IRBinaryOp, string>)((op) => csharp_emitter_emit_binary(op, l, r, ty, arities)))((IRBinaryOp)_mIrBinary20_.Field0)))((IRExpr)_mIrBinary20_.Field1)))((IRExpr)_mIrBinary20_.Field2)))((CodexType)_mIrBinary20_.Field3) : (_scrutinee20_ is IrNegate _mIrNegate20_ ? ((Func<IRExpr, string>)((operand) => string.Concat("JI", csharp_emitter_emit_expr(operand, arities), "K")))((IRExpr)_mIrNegate20_.Field0) : (_scrutinee20_ is IrIf _mIrIf20_ ? ((Func<CodexType, string>)((ty) => ((Func<IRExpr, string>)((el) => ((Func<IRExpr, string>)((t) => ((Func<IRExpr, string>)((c) => string.Concat("J", csharp_emitter_emit_expr(c, arities), "\u0002D\u0002", csharp_emitter_emit_expr(t, arities), "\u0002E\u0002", csharp_emitter_emit_expr(el, arities), "K")))((IRExpr)_mIrIf20_.Field0)))((IRExpr)_mIrIf20_.Field1)))((IRExpr)_mIrIf20_.Field2)))((CodexType)_mIrIf20_.Field3) : (_scrutinee20_ is IrLet _mIrLet20_ ? ((Func<IRExpr, string>)((body) => ((Func<IRExpr, string>)((val) => ((Func<CodexType, string>)((ty) => ((Func<string, string>)((name) => csharp_emitter_emit_let(name, ty, val, body, arities)))((string)_mIrLet20_.Field0)))((CodexType)_mIrLet20_.Field1)))((IRExpr)_mIrLet20_.Field2)))((IRExpr)_mIrLet20_.Field3) : (_scrutinee20_ is IrApply _mIrApply20_ ? ((Func<CodexType, string>)((ty) => ((Func<IRExpr, string>)((a) => ((Func<IRExpr, string>)((f) => csharp_emitter_emit_apply(e, arities)))((IRExpr)_mIrApply20_.Field0)))((IRExpr)_mIrApply20_.Field1)))((CodexType)_mIrApply20_.Field2) : (_scrutinee20_ is IrLambda _mIrLambda20_ ? ((Func<CodexType, string>)((ty) => ((Func<IRExpr, string>)((body) => ((Func<List<IRParam>, string>)((@params) => csharp_emitter_emit_lambda(@params, body, arities)))((List<IRParam>)_mIrLambda20_.Field0)))((IRExpr)_mIrLambda20_.Field1)))((CodexType)_mIrLambda20_.Field2) : (_scrutinee20_ is IrList _mIrList20_ ? ((Func<CodexType, string>)((ty) => ((Func<List<IRExpr>, string>)((elems) => csharp_emitter_emit_list(elems, ty, arities)))((List<IRExpr>)_mIrList20_.Field0)))((CodexType)_mIrList20_.Field1) : (_scrutinee20_ is IrMatch _mIrMatch20_ ? ((Func<CodexType, string>)((ty) => ((Func<List<IRBranch>, string>)((branches) => ((Func<IRExpr, string>)((scrut) => csharp_emitter_emit_match(scrut, branches, ty, arities)))((IRExpr)_mIrMatch20_.Field0)))((List<IRBranch>)_mIrMatch20_.Field1)))((CodexType)_mIrMatch20_.Field2) : (_scrutinee20_ is IrDo _mIrDo20_ ? ((Func<CodexType, string>)((ty) => ((Func<List<IRDoStmt>, string>)((stmts) => csharp_emitter_emit_do(stmts, ty, arities)))((List<IRDoStmt>)_mIrDo20_.Field0)))((CodexType)_mIrDo20_.Field1) : (_scrutinee20_ is IrHandle _mIrHandle20_ ? ((Func<CodexType, string>)((ty) => ((Func<List<IRHandleClause>, string>)((clauses) => ((Func<IRExpr, string>)((body) => ((Func<string, string>)((eff) => csharp_emitter_emit_handle(eff, body, clauses, ty, arities)))((string)_mIrHandle20_.Field0)))((IRExpr)_mIrHandle20_.Field1)))((List<IRHandleClause>)_mIrHandle20_.Field2)))((CodexType)_mIrHandle20_.Field3) : (_scrutinee20_ is IrRecord _mIrRecord20_ ? ((Func<CodexType, string>)((ty) => ((Func<List<IRFieldVal>, string>)((fields) => ((Func<string, string>)((name) => csharp_emitter_emit_record(name, fields, arities)))((string)_mIrRecord20_.Field0)))((List<IRFieldVal>)_mIrRecord20_.Field1)))((CodexType)_mIrRecord20_.Field2) : (_scrutinee20_ is IrFieldAccess _mIrFieldAccess20_ ? ((Func<CodexType, string>)((ty) => ((Func<string, string>)((field) => ((Func<IRExpr, string>)((rec) => string.Concat(csharp_emitter_emit_expr(rec, arities), "A", sanitize(field))))((IRExpr)_mIrFieldAccess20_.Field0)))((string)_mIrFieldAccess20_.Field1)))((CodexType)_mIrFieldAccess20_.Field2) : (_scrutinee20_ is IrFork _mIrFork20_ ? ((Func<CodexType, string>)((ty) => ((Func<IRExpr, string>)((body) => string.Concat("(\u000F\u0013\"A/\u0019\u0012JJK\u0002MP\u0002J", csharp_emitter_emit_expr(body, arities), "KJ\u0012\u0019\u0017\u0017KK")))((IRExpr)_mIrFork20_.Field0)))((CodexType)_mIrFork20_.Field1) : (_scrutinee20_ is IrAwait _mIrAwait20_ ? ((Func<CodexType, string>)((ty) => ((Func<IRExpr, string>)((task) => string.Concat("J", csharp_emitter_emit_expr(task, arities), "KA/\u000D\u0013\u0019\u0017\u000E")))((IRExpr)_mIrAwait20_.Field0)))((CodexType)_mIrAwait20_.Field1) : (_scrutinee20_ is IrError _mIrError20_ ? ((Func<CodexType, string>)((ty) => ((Func<string, string>)((msg) => string.Concat("QN\u0002\u000D\u0015\u0015\u0010\u0015E\u0002", msg, "\u0002NQ\u0002\u0016\u000D\u001C\u000F\u0019\u0017\u000E")))((string)_mIrError20_.Field0)))((CodexType)_mIrError20_.Field1) : throw new InvalidOperationException("Non-exhaustive match"))))))))))))))))))))))))(e);
     }
 
     public static string hex_digit(long n)
@@ -3570,9 +3596,14 @@ public static class Codex_Codex_Codex
         return ((Func<IRBinaryOp, string>)((_scrutinee22_) => (_scrutinee22_ is IrAppendList _mIrAppendList22_ ? string.Concat("'\u0012\u0019\u001A\u000D\u0015\u000F \u0017\u000DA2\u0010\u0012\u0018\u000F\u000EJ", csharp_emitter_emit_expr(l, arities), "B\u0002", csharp_emitter_emit_expr(r, arities), "KA(\u00101\u0011\u0013\u000EJK") : (_scrutinee22_ is IrConsList _mIrConsList22_ ? string.Concat("\u0012\u000D\u001B\u00021\u0011\u0013\u000EO", cs_type(ir_expr_type(l)), "P\u0002Z\u0002", csharp_emitter_emit_expr(l, arities), "\u0002[A2\u0010\u0012\u0018\u000F\u000EJ", csharp_emitter_emit_expr(r, arities), "KA(\u00101\u0011\u0013\u000EJK") : ((Func<IRBinaryOp, string>)((_) => string.Concat("J", csharp_emitter_emit_expr(l, arities), "\u0002", emit_bin_op(op), "\u0002", csharp_emitter_emit_expr(r, arities), "K")))(_scrutinee22_)))))(op);
     }
 
+    public static string cs_type_or_dynamic(CodexType ty)
+    {
+        return ((Func<string, string>)((t) => ((t == "\u0010 #\u000D\u0018\u000E") ? "\u0016\u001E\u0012\u000F\u001A\u0011\u0018" : t)))(cs_type(ty));
+    }
+
     public static string csharp_emitter_emit_let(string name, CodexType ty, IRExpr val, IRExpr body, List<ArityEntry> arities)
     {
-        return string.Concat("JJ6\u0019\u0012\u0018O", cs_type(ty), "B\u0002", cs_type(ir_expr_type(body)), "PKJJ", sanitize(name), "K\u0002MP\u0002", csharp_emitter_emit_expr(body, arities), "KKJ", csharp_emitter_emit_expr(val, arities), "K");
+        return string.Concat("JJ6\u0019\u0012\u0018O", cs_type_or_dynamic(ty), "B\u0002", cs_type(ir_expr_type(body)), "PKJJ", sanitize(name), "K\u0002MP\u0002", csharp_emitter_emit_expr(body, arities), "KKJ", csharp_emitter_emit_expr(val, arities), "K");
     }
 
     public static string csharp_emitter_emit_lambda(List<IRParam> @params, IRExpr body, List<ArityEntry> arities)
@@ -4778,27 +4809,22 @@ public static class Codex_Codex_Codex
 
     public static CodegenState empty_codegen_state()
     {
-        return new CodegenState(new List<List<long>>(), 0L, new List<long>(), new List<List<long>>(), 0L, new List<FuncOffset>(), new List<CallPatch>(), new List<FuncAddrFixup>(), new List<RodataFixup>(), new List<PatchEntry>(), new List<LocalBinding>(), 0L, 0L, 0L, 0L, new TcoState(false, false, 0L, new List<long>(), new List<long>(), "", 0L, 0L), new List<TypeBinding>(), new List<long>(), new List<Diagnostic>());
+        return new CodegenState(0L, 0L, 0L, 0L, new List<FuncOffset>(), new List<CallPatch>(), new List<FuncAddrFixup>(), new List<RodataFixup>(), new List<PatchEntry>(), new List<LocalBinding>(), 0L, 0L, 0L, 0L, new TcoState(false, false, 0L, new List<long>(), new List<long>(), "", 0L, 0L), new List<TypeBinding>(), new List<long>(), new List<Diagnostic>());
     }
 
     public static CodegenState st_add_error(CodegenState st, string code, string msg)
     {
-        return ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, ((Func<List<Diagnostic>>)(() => { var _l = st.errors; _l.Add(make_error(code, msg)); return _l; }))())))(st);
+        return ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, ((Func<List<Diagnostic>>)(() => { var _l = st.errors; _l.Add(make_error(code, msg)); return _l; }))())))(st);
     }
 
     public static CodegenState st_append_text(CodegenState st, List<long> bytes)
     {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, (st.text_len + ((long)bytes.Count)), _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st1)))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(((Func<List<List<long>>, List<long>, List<List<long>>>)((_ll, _v) => { _ll.Add(_v); return _ll; }))(st.text_chunks, bytes), _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st));
-    }
-
-    public static CodegenState st_with_text(CodegenState st, List<long> new_text)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, ((long)new_text.Count), _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st1)))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(((Func<List<List<long>>, List<long>, List<List<long>>>)((_ll, _v) => { _ll.Add(_v); return _ll; }))(new List<List<long>>(), new_text), _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st));
+        return ((Func<dynamic, CodegenState>)((new_len) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, new_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st)))(_Buf.buf_write_bytes(st.text_buf_addr, st.text_len, bytes));
     }
 
     public static CodegenState record_func_offset(CodegenState st, string name)
     {
-        return ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, ((Func<List<FuncOffset>>)(() => { var _l = st.func_offsets; _l.Add(new FuncOffset(name, st.text_len)); return _l; }))(), _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st);
+        return ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, ((Func<List<FuncOffset>>)(() => { var _l = st.func_offsets; _l.Add(new FuncOffset(name, st.text_len)); return _l; }))(), _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st);
     }
 
     public static long lookup_func_offset(List<FuncOffset> entries, string name)
@@ -4844,17 +4870,17 @@ public static class Codex_Codex_Codex
 
     public static CodegenState reset_func_state(CodegenState st, string name)
     {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, new TcoState(false, false, 0L, new List<long>(), new List<long>(), "", 0L, 0L), _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st6)))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, 0L, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st5))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, 0L, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st4))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, 0L, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st3))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, 0L, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st2))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, fresh_empty_locals(0L), _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st1))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, ((Func<List<FuncOffset>>)(() => { var _l = st.func_offsets; _l.Add(new FuncOffset(name, st.text_len)); return _l; }))(), _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st));
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, new TcoState(false, false, 0L, new List<long>(), new List<long>(), "", 0L, 0L), _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st6)))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, 0L, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st5))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, 0L, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st4))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, 0L, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st3))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, 0L, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st2))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, fresh_empty_locals(0L), _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st1))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, ((Func<List<FuncOffset>>)(() => { var _l = st.func_offsets; _l.Add(new FuncOffset(name, st.text_len)); return _l; }))(), _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st));
     }
 
     public static EmitResult alloc_temp(CodegenState st)
     {
-        return ((Func<long, EmitResult>)((idx) => ((Func<long, EmitResult>)((reg) => new EmitResult(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, (st.next_temp + 1L), _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st), reg)))(temp_regs()[(int)idx])))(((st.next_temp % 6L + 6L) % 6L));
+        return ((Func<long, EmitResult>)((idx) => ((Func<long, EmitResult>)((reg) => new EmitResult(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, (st.next_temp + 1L), _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st), reg)))(temp_regs()[(int)idx])))(((st.next_temp % 6L + 6L) % 6L));
     }
 
     public static EmitResult alloc_local(CodegenState st)
     {
-        return ((st.next_local < 4L) ? ((Func<long, EmitResult>)((reg) => new EmitResult(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, (st.next_local + 1L), _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st), reg)))(local_regs()[(int)st.next_local]) : ((Func<long, EmitResult>)((slot) => ((Func<CodegenState, EmitResult>)((st1) => new EmitResult(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, (st.spill_count + 1L), _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st1), slot)))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, (st.next_local + 1L), _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st))))((spill_base() + st.spill_count)));
+        return ((st.next_local < 4L) ? ((Func<long, EmitResult>)((reg) => new EmitResult(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, (st.next_local + 1L), _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st), reg)))(local_regs()[(int)st.next_local]) : ((Func<long, EmitResult>)((slot) => ((Func<CodegenState, EmitResult>)((st1) => new EmitResult(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, (st.spill_count + 1L), _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st1), slot)))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, (st.next_local + 1L), _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st))))((spill_base() + st.spill_count)));
     }
 
     public static CodegenState store_local(CodegenState st, long local, long value_reg)
@@ -4864,7 +4890,7 @@ public static class Codex_Codex_Codex
 
     public static EmitResult load_local(CodegenState st, long local)
     {
-        return ((local < spill_base()) ? new EmitResult(st, local) : ((Func<long, EmitResult>)((scratch) => ((Func<long, EmitResult>)((offset) => ((Func<CodegenState, EmitResult>)((st1) => new EmitResult(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, (st.load_local_toggle + 1L), _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st1), scratch)))(st_append_text(st, mov_load(scratch, reg_rbp(), offset)))))((0L - ((((local - spill_base()) + 1L) * 8L) + 32L)))))(((((st.load_local_toggle % 2L + 2L) % 2L) == 0L) ? reg_r8() : reg_r9())));
+        return ((local < spill_base()) ? new EmitResult(st, local) : ((Func<long, EmitResult>)((scratch) => ((Func<long, EmitResult>)((offset) => ((Func<CodegenState, EmitResult>)((st1) => new EmitResult(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, (st.load_local_toggle + 1L), _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st1), scratch)))(st_append_text(st, mov_load(scratch, reg_rbp(), offset)))))((0L - ((((local - spill_base()) + 1L) * 8L) + 32L)))))(((((st.load_local_toggle % 2L + 2L) % 2L) == 0L) ? reg_r8() : reg_r9())));
     }
 
     public static List<long> patch_i32_at(List<long> bytes, long pos, long value)
@@ -4920,7 +4946,7 @@ public static class Codex_Codex_Codex
 
     public static CodegenState st_add_deferred_patch(CodegenState st, PatchEntry entry)
     {
-        return ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, Enumerable.Concat(new List<PatchEntry>() { entry }, st.deferred_patches).ToList(), _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st);
+        return ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, ((Func<List<PatchEntry>>)(() => { var _l = st.deferred_patches; _l.Add(entry); return _l; }))(), _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st);
     }
 
     public static CodegenState patch_jcc_at(CodegenState st, long jcc_pos, long target_pos)
@@ -5069,11 +5095,6 @@ public static class Codex_Codex_Codex
         }
     }
 
-    public static CodegenState patch_calls(CodegenState st)
-    {
-        return ((Func<List<PatchEntry>, CodegenState>)((entries) => ((Func<List<long>, CodegenState>)((flat) => st_with_text(st, apply_all_patches(flat, entries))))(flatten_chunks(st.text_chunks))))(collect_call_patches(st.call_patches, st.func_offsets, 0L, new List<PatchEntry>()));
-    }
-
     public static long align_16(long n)
     {
         return ((Func<long, long>)((r) => ((r == 0L) ? n : ((n + 16L) - r))))(((n % 16L + 16L) % 16L));
@@ -5086,7 +5107,7 @@ public static class Codex_Codex_Codex
 
     public static CodegenState emit_prologue(CodegenState st)
     {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<long, CodegenState>)((skip_pos) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<long, CodegenState>)((check_pos) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, ((Func<List<long>>)(() => { var _l = st10.stack_overflow_checks; _l.Add(check_pos); return _l; }))(), _rs.errors)))(st10)))(st_append_text(st9, jcc(cc_b(), 0L)))))(st9.text_len)))(st_append_text(st8, cmp_rr(reg_rsp(), reg_r10())))))(patch_jcc_at(st7, skip_pos, st7.text_len))))(st_append_text(st6, mov_store(reg_r11(), reg_rsp(), 0L)))))(st_append_text(st5, li(reg_r11(), stack_min_rsp_addr())))))(st_append_text(st4, jcc(cc_ae(), 0L)))))(st4.text_len)))(st_append_text(st3, cmp_rr(reg_rsp(), reg_r11())))))(st_append_text(st2, mov_load(reg_r11(), reg_r11(), 0L)))))(st_append_text(st1, li(reg_r11(), stack_min_rsp_addr())))))(st_append_text(st, Enumerable.Concat(push_r(reg_rbp()), Enumerable.Concat(mov_rr(reg_rbp(), reg_rsp()), Enumerable.Concat(push_r(reg_rbx()), Enumerable.Concat(push_r(reg_r12()), Enumerable.Concat(push_r(reg_r13()), push_r(reg_r14())).ToList()).ToList()).ToList()).ToList()).ToList()));
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<long, CodegenState>)((skip_pos) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<long, CodegenState>)((check_pos) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, ((Func<List<long>>)(() => { var _l = st10.stack_overflow_checks; _l.Add(check_pos); return _l; }))(), _rs.errors)))(st10)))(st_append_text(st9, jcc(cc_b(), 0L)))))(st9.text_len)))(st_append_text(st8, cmp_rr(reg_rsp(), reg_r10())))))(patch_jcc_at(st7, skip_pos, st7.text_len))))(st_append_text(st6, mov_store(reg_r11(), reg_rsp(), 0L)))))(st_append_text(st5, li(reg_r11(), stack_min_rsp_addr())))))(st_append_text(st4, jcc(cc_ae(), 0L)))))(st4.text_len)))(st_append_text(st3, cmp_rr(reg_rsp(), reg_r11())))))(st_append_text(st2, mov_load(reg_r11(), reg_r11(), 0L)))))(st_append_text(st1, li(reg_r11(), stack_min_rsp_addr())))))(st_append_text(st, Enumerable.Concat(push_r(reg_rbp()), Enumerable.Concat(mov_rr(reg_rbp(), reg_rsp()), Enumerable.Concat(push_r(reg_rbx()), Enumerable.Concat(push_r(reg_r12()), Enumerable.Concat(push_r(reg_r13()), push_r(reg_r14())).ToList()).ToList()).ToList()).ToList()).ToList()));
     }
 
     public static CodegenState emit_epilogue(CodegenState st)
@@ -5240,7 +5261,7 @@ public static class Codex_Codex_Codex
 
     public static CodegenState st_set_tail_pos(CodegenState st, bool v)
     {
-        return ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, ((Func<TcoState, TcoState>)((_rs) => new TcoState(_rs.active, v, _rs.loop_top, _rs.param_locals, _rs.temp_locals, _rs.current_func, _rs.saved_next_local, _rs.saved_next_temp)))(st.tco), _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st);
+        return ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, ((Func<TcoState, TcoState>)((_rs) => new TcoState(_rs.active, v, _rs.loop_top, _rs.param_locals, _rs.temp_locals, _rs.current_func, _rs.saved_next_local, _rs.saved_next_temp)))(st.tco), _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st);
     }
 
     public static TcoAllocResult pre_alloc_tco_temps(CodegenState st, long i, long count, List<long> acc)
@@ -5294,7 +5315,7 @@ public static class Codex_Codex_Codex
 
     public static CodegenState emit_function(CodegenState st, IRDef def)
     {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<long, CodegenState>)((frame_patch_pos) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<bool, CodegenState>)((is_tco) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<EmitResult, CodegenState>)((result) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<long, CodegenState>)((frame_size) => st_add_deferred_patch(st7, make_i32_patch((frame_patch_pos + 3L), frame_size))))(align_16((st7.spill_count * 8L)))))(emit_epilogue(st6))))(((result.reg == reg_rax()) ? result.state : st_append_text(result.state, mov_rr(reg_rax(), result.reg))))))(x86_64_code_generator_emit_expr(st5, def.body))))((is_tco ? ((Func<TcoAllocResult, CodegenState>)((tco_alloc) => ((Func<CodegenState, CodegenState>)((st_a) => ((Func<List<long>, CodegenState>)((p_locals) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, new TcoState(true, true, st_a.text_len, p_locals, tco_alloc.alloc_locals, def.name, st_a.next_local, st_a.next_temp), _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st_a)))(collect_param_locals(st_a.locals, def.@params, 0L, new List<long>()))))(tco_alloc.alloc_state)))(pre_alloc_tco_temps(st4, 0L, ((long)def.@params.Count), new List<long>())) : st4))))(x86_64_code_generator_should_tco(def))))(bind_params(st3, def.@params, 0L))))(st_append_text(st2, emit_sub_rsp_imm32(0L)))))(st2.text_len)))(emit_prologue(st1))))(reset_func_state(st, def.name));
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<long, CodegenState>)((frame_patch_pos) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<bool, CodegenState>)((is_tco) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<EmitResult, CodegenState>)((result) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<long, CodegenState>)((frame_size) => st_add_deferred_patch(st7, make_i32_patch((frame_patch_pos + 3L), frame_size))))(align_16((st7.spill_count * 8L)))))(emit_epilogue(st6))))(((result.reg == reg_rax()) ? result.state : st_append_text(result.state, mov_rr(reg_rax(), result.reg))))))(x86_64_code_generator_emit_expr(st5, def.body))))((is_tco ? ((Func<TcoAllocResult, CodegenState>)((tco_alloc) => ((Func<CodegenState, CodegenState>)((st_a) => ((Func<List<long>, CodegenState>)((p_locals) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, new TcoState(true, true, st_a.text_len, p_locals, tco_alloc.alloc_locals, def.name, st_a.next_local, st_a.next_temp), _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st_a)))(collect_param_locals(st_a.locals, def.@params, 0L, new List<long>()))))(tco_alloc.alloc_state)))(pre_alloc_tco_temps(st4, 0L, ((long)def.@params.Count), new List<long>())) : st4))))(x86_64_code_generator_should_tco(def))))(bind_params(st3, def.@params, 0L))))(st_append_text(st2, emit_sub_rsp_imm32(0L)))))(st2.text_len)))(emit_prologue(st1))))(reset_func_state(st, def.name));
     }
 
     public static CodegenState x86_64_code_generator_emit_all_defs(CodegenState st, List<IRDef> defs, long i)
@@ -5356,7 +5377,7 @@ public static class Codex_Codex_Codex
 
     public static CodegenState add_local(CodegenState st, string name, long slot)
     {
-        return ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, Enumerable.Concat(new List<LocalBinding>() { new LocalBinding(name, slot) }, st.locals).ToList(), _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st);
+        return ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, Enumerable.Concat(new List<LocalBinding>() { new LocalBinding(name, slot) }, st.locals).ToList(), _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st);
     }
 
     public static EmitResult x86_64_code_generator_emit_expr(CodegenState st, IRExpr expr)
@@ -5422,7 +5443,7 @@ public static class Codex_Codex_Codex
 
     public static EmitResult emit_text_lit(CodegenState st, string value)
     {
-        return ((Func<long, EmitResult>)((len) => ((Func<long, EmitResult>)((rodata_off) => ((Func<List<long>, EmitResult>)((str_bytes) => ((Func<List<long>, EmitResult>)((padded) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<RodataFixup, EmitResult>)((fixup) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st3))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, ((Func<List<RodataFixup>>)(() => { var _l = st2.rodata_fixups; _l.Add(fixup); return _l; }))(), _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st2))))(st_append_text(st1, mov_ri64(reg_rax(), 0L)))))(new RodataFixup((st1.text_len + 2L), rodata_off))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, (st.rodata_len + ((long)padded.Count)), _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, ((Func<List<List<long>>, List<long>, List<List<long>>>)((_ll, _v) => { _ll.Add(_v); return _ll; }))(st.rodata_chunks, padded), _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st)))))(pad_to_8(str_bytes))))(append_text_bytes(write_i64(len), value, 0L, len))))((((long)st.rodata.Count) + st.rodata_len))))(((long)value.Length));
+        return ((Func<long, EmitResult>)((len) => ((Func<long, EmitResult>)((rodata_off) => ((Func<List<long>, EmitResult>)((str_bytes) => ((Func<List<long>, EmitResult>)((padded) => ((Func<dynamic, EmitResult>)((new_rodata_len) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<RodataFixup, EmitResult>)((fixup) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st3))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, ((Func<List<RodataFixup>>)(() => { var _l = st2.rodata_fixups; _l.Add(fixup); return _l; }))(), _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st2))))(st_append_text(st1, mov_ri64(reg_rax(), 0L)))))(new RodataFixup((st1.text_len + 2L), rodata_off))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, new_rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st))))(_Buf.buf_write_bytes(st.rodata_buf_addr, st.rodata_len, padded))))(pad_to_8(str_bytes))))(append_text_bytes(write_i64(len), value, 0L, len))))(st.rodata_len)))(((long)value.Length));
     }
 
     public static List<long> append_text_bytes(List<long> acc, string s, long i, long len)
@@ -5657,7 +5678,7 @@ public static class Codex_Codex_Codex
 
     public static bool is_misc_builtin(string name)
     {
-        return ((name == "\u0012\u000D\u001D\u000F\u000E\u000D") ? true : ((name == "\u001D\u000D\u000EI\u000F\u0015\u001D\u0013") ? true : ((name == "\u0018\u0019\u0015\u0015\u000D\u0012\u000EI\u0016\u0011\u0015") ? true : ((name == "\u001C\u0011\u0017\u000DI\u000D$\u0011\u0013\u000E\u0013") ? true : ((name == "\u0015\u000D\u0018\u0010\u0015\u0016I\u0013\u000D\u000E") ? true : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000D\u001A\u001F\u000E\u001E") ? true : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u001F\u0019\u0013\u0014") ? true : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000E\u0010I\u0017\u0011\u0013\u000E") ? true : false))))))));
+        return ((name == "\u0012\u000D\u001D\u000F\u000E\u000D") ? true : ((name == "\u001D\u000D\u000EI\u000F\u0015\u001D\u0013") ? true : ((name == "\u0018\u0019\u0015\u0015\u000D\u0012\u000EI\u0016\u0011\u0015") ? true : ((name == "\u001C\u0011\u0017\u000DI\u000D$\u0011\u0013\u000E\u0013") ? true : ((name == "\u0015\u000D\u0018\u0010\u0015\u0016I\u0013\u000D\u000E") ? true : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000D\u001A\u001F\u000E\u001E") ? true : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u001F\u0019\u0013\u0014") ? true : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000E\u0010I\u0017\u0011\u0013\u000E") ? true : ((name == "\u0014\u000D\u000F\u001FI\u0013\u000F!\u000D") ? true : ((name == "\u0014\u000D\u000F\u001FI\u0015\u000D\u0013\u000E\u0010\u0015\u000D") ? true : ((name == "\u0014\u000D\u000F\u001FI\u000F\u0016!\u000F\u0012\u0018\u000D") ? true : ((name == "\u0017\u0011\u0013\u000EI\u001B\u0011\u000E\u0014I\u0018\u000F\u001F\u000F\u0018\u0011\u000E\u001E") ? true : ((name == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D") ? true : ((name == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D\u0013") ? true : ((name == " \u0019\u001CI\u0015\u000D\u000F\u0016I \u001E\u000E\u000D\u0013") ? true : false)))))))))))))));
     }
 
     public static bool is_builtin(string name)
@@ -5805,9 +5826,44 @@ public static class Codex_Codex_Codex
         return ((Func<EmitResult, EmitResult>)((rec_result) => ((Func<EmitResult, EmitResult>)((rec_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<string, EmitResult>)((field_name) => ((Func<CodexType, EmitResult>)((rec_ty) => ((Func<long, EmitResult>)((field_idx) => ((Func<EmitResult, EmitResult>)((val_result) => ((Func<EmitResult, EmitResult>)((loaded) => new EmitResult(st_append_text(loaded.state, mov_store(loaded.reg, val_result.reg, (field_idx * 8L))), loaded.reg)))(load_local(val_result.state, rec_loc.reg))))(x86_64_code_generator_emit_expr(st1, args[(int)2L]))))((rec_ty is RecordTy _mRecordTy59_ ? ((Func<List<RecordField>, long>)((rfields) => ((Func<Name, long>)((rname) => find_record_field_index(rfields, field_name, 0L)))((Name)_mRecordTy59_.Field0)))((List<RecordField>)_mRecordTy59_.Field1) : ((Func<CodexType, long>)((_) => 0L))(rec_ty)))))(resolve_constructed_ty(st, ir_expr_type(args[(int)0L])))))((args[(int)1L] is IrTextLit _mIrTextLit60_ ? ((Func<string, string>)((s) => s))((string)_mIrTextLit60_.Field0) : ((Func<IRExpr, string>)((_) => ""))(args[(int)1L])))))(store_local(rec_loc.state, rec_loc.reg, rec_result.reg))))(alloc_local(rec_result.state))))(x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
     }
 
+    public static EmitResult emit_heap_save_builtin(CodegenState st)
+    {
+        return ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_r10())), rd.reg)))(alloc_temp(st));
+    }
+
+    public static EmitResult emit_heap_restore_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => new EmitResult(st_append_text(st1, li(rd.reg, 0L)), rd.reg)))(st_append_text(rd.state, mov_rr(reg_r10(), r.reg)))))(alloc_temp(r.state))))(x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_heap_advance_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => new EmitResult(st_append_text(st1, li(rd.reg, 0L)), rd.reg)))(st_append_text(rd.state, add_rr(reg_r10(), r.reg)))))(alloc_temp(r.state))))(x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_list_with_capacity_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((cap_result) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<CodegenState, EmitResult>)((st7) => ((Func<CodegenState, EmitResult>)((st8) => new EmitResult(st_append_text(st8, add_rr(reg_r10(), reg_r11())), rd.reg)))(st_append_text(st7, add_ri(reg_r11(), 8L)))))(st_append_text(st6, shl_ri(reg_r11(), 3L)))))(st_append_text(st5, mov_rr(reg_r11(), cap_result.reg)))))(st_append_text(st4, mov_store(reg_r10(), reg_r11(), 0L)))))(st_append_text(st3, li(reg_r11(), 0L)))))(st_append_text(st2, mov_rr(rd.reg, reg_r10())))))(st_append_text(st1, add_ri(reg_r10(), 8L)))))(st_append_text(rd.state, mov_store(reg_r10(), cap_result.reg, 0L)))))(alloc_temp(cap_result.state))))(x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_buf_write_byte_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((base_result) => ((Func<EmitResult, EmitResult>)((base_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((off_result) => ((Func<EmitResult, EmitResult>)((off_loc) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((byte_result) => ((Func<EmitResult, EmitResult>)((byte_loc) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((addr) => ((Func<EmitResult, EmitResult>)((base2) => ((Func<EmitResult, EmitResult>)((off2) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<EmitResult, EmitResult>)((byte2) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<EmitResult, EmitResult>)((off3) => ((Func<CodegenState, EmitResult>)((st7) => new EmitResult(st_append_text(st7, add_ri(rd.reg, 1L)), rd.reg)))(st_append_text(off3.state, mov_rr(rd.reg, off3.reg)))))(load_local(rd.state, off_loc.reg))))(alloc_temp(st6))))(st_append_text(byte2.state, mov_store_byte(addr.reg, byte2.reg, 0L)))))(load_local(st5, byte_loc.reg))))(st_append_text(st4, add_rr(addr.reg, off2.reg)))))(st_append_text(off2.state, mov_rr(addr.reg, base2.reg)))))(load_local(base2.state, off_loc.reg))))(load_local(addr.state, base_loc.reg))))(alloc_temp(st3))))(store_local(byte_loc.state, byte_loc.reg, byte_result.reg))))(alloc_local(byte_result.state))))(x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(off_loc.state, off_loc.reg, off_result.reg))))(alloc_local(off_result.state))))(x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(base_loc.state, base_loc.reg, base_result.reg))))(alloc_local(base_result.state))))(x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_buf_write_bytes_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((base_result) => ((Func<EmitResult, EmitResult>)((base_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((off_result) => ((Func<EmitResult, EmitResult>)((off_loc) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((list_result) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((off2) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((base2) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st6))))(emit_call_to(st5, "UU \u0019\u001CU\u001B\u0015\u0011\u000E\u000DU \u001E\u000E\u000D\u0013"))))(st_append_text(base2.state, mov_rr(reg_rdi(), base2.reg)))))(load_local(st4, base_loc.reg))))(st_append_text(off2.state, mov_rr(reg_rsi(), off2.reg)))))(load_local(st3, off_loc.reg))))(st_append_text(list_result.state, mov_rr(reg_rdx(), list_result.reg)))))(x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(off_loc.state, off_loc.reg, off_result.reg))))(alloc_local(off_result.state))))(x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(base_loc.state, base_loc.reg, base_result.reg))))(alloc_local(base_result.state))))(x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_buf_read_bytes_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((base_result) => ((Func<EmitResult, EmitResult>)((base_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((off_result) => ((Func<EmitResult, EmitResult>)((off_loc) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((count_result) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((off2) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((base2) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st6))))(emit_call_to(st5, "UU \u0019\u001CU\u0015\u000D\u000F\u0016U \u001E\u000E\u000D\u0013"))))(st_append_text(base2.state, mov_rr(reg_rdi(), base2.reg)))))(load_local(st4, base_loc.reg))))(st_append_text(off2.state, mov_rr(reg_rsi(), off2.reg)))))(load_local(st3, off_loc.reg))))(st_append_text(count_result.state, mov_rr(reg_rdx(), count_result.reg)))))(x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(off_loc.state, off_loc.reg, off_result.reg))))(alloc_local(off_result.state))))(x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(base_loc.state, base_loc.reg, base_result.reg))))(alloc_local(base_result.state))))(x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
     public static EmitResult x86_64_code_generator_emit_builtin(CodegenState st, string name, List<IRExpr> args)
     {
-        return ((name == "\u001F\u0015\u0011\u0012\u000EI\u0017\u0011\u0012\u000D") ? emit_print_line_builtin(st, args) : ((name == "\u0015\u000D\u000F\u0016I\u001C\u0011\u0017\u000D") ? emit_read_file_builtin(st, args) : ((name == "\u001B\u0015\u0011\u000E\u000DI\u001C\u0011\u0017\u000D") ? emit_write_file_builtin(st, args) : ((name == "\u0015\u000D\u000F\u0016I\u0017\u0011\u0012\u000D") ? emit_read_line_builtin(st) : ((name == "\u001B\u0015\u0011\u000E\u000DI \u0011\u0012\u000F\u0015\u001E") ? emit_write_binary_builtin(st, args) : ((name == "\u000E\u000D$\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? emit_text_length_builtin(st, args) : ((name == "\u0011\u0012\u000E\u000D\u001D\u000D\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? emit_helper_call_1(st, args, "UU\u0011\u000E\u0010\u000F") : ((name == "\u0013\u0014\u0010\u001B") ? emit_helper_call_1(st, args, "UU\u0011\u000E\u0010\u000F") : ((name == "\u000E\u000D$\u000EI\u000E\u0010I\u0011\u0012\u000E\u000D\u001D\u000D\u0015") ? emit_helper_call_1(st, args, "UU\u000E\u000D$\u000EU\u000E\u0010U\u0011\u0012\u000E") : ((name == "\u000E\u000D$\u000EI\u0015\u000D\u001F\u0017\u000F\u0018\u000D") ? emit_helper_call_3(st, args, "UU\u0013\u000E\u0015U\u0015\u000D\u001F\u0017\u000F\u0018\u000D") : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") : ((name == "\u000E\u000D$\u000EI\u0013\u000E\u000F\u0015\u000E\u0013I\u001B\u0011\u000E\u0014") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0013\u000E\u000F\u0015\u000E\u0013U\u001B\u0011\u000E\u0014") : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u001A\u001F\u000F\u0015\u000D") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0018\u0010\u001A\u001F\u000F\u0015\u000D") : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u0018\u000F\u000EI\u0017\u0011\u0013\u000E") ? emit_helper_call_1(st, args, "UU\u000E\u000D$\u000EU\u0018\u0010\u0012\u0018\u000F\u000EU\u0017\u0011\u0013\u000E") : ((name == "\u000E\u000D$\u000EI\u0013\u001F\u0017\u0011\u000E") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0013\u001F\u0017\u0011\u000E") : ((name == "\u0013\u0019 \u0013\u000E\u0015\u0011\u0012\u001D") ? emit_substring_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? emit_list_length_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u000F\u000E") ? emit_list_at_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u0013") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u0018\u0010\u0012\u0013") : ((name == "\u0017\u0011\u0013\u000EI\u000F\u001F\u001F\u000D\u0012\u0016") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u000F\u001F\u001F\u000D\u0012\u0016") : ((name == "\u0017\u0011\u0013\u000EI\u0013\u0012\u0010\u0018") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u0013\u0012\u0010\u0018") : ((name == "\u0017\u0011\u0013\u000EI\u0011\u0012\u0013\u000D\u0015\u000EI\u000F\u000E") ? emit_helper_call_3(st, args, "UU\u0017\u0011\u0013\u000EU\u0011\u0012\u0013\u000D\u0015\u000EU\u000F\u000E") : ((name == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") : ((name == "\u0018\u0014\u000F\u0015I\u000F\u000E") ? emit_char_at_builtin(st, args) : ((name == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000DI\u000F\u000E") ? emit_char_code_at_builtin(st, args) : ((name == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000D") ? x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]) : ((name == "\u0018\u0010\u0016\u000DI\u000E\u0010I\u0018\u0014\u000F\u0015") ? x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]) : ((name == "\u0018\u0014\u000F\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? emit_char_to_text_builtin(st, args) : ((name == "\u0011\u0013I\u0017\u000D\u000E\u000E\u000D\u0015") ? emit_is_letter_builtin(st, args) : ((name == "\u0011\u0013I\u0016\u0011\u001D\u0011\u000E") ? emit_is_digit_builtin(st, args) : ((name == "\u0011\u0013I\u001B\u0014\u0011\u000E\u000D\u0013\u001F\u000F\u0018\u000D") ? emit_is_whitespace_builtin(st, args) : ((name == "\u0012\u000D\u001D\u000F\u000E\u000D") ? emit_negate_builtin(st, args) : ((name == "\u001D\u000D\u000EI\u000F\u0015\u001D\u0013") ? emit_get_args_builtin(st) : ((name == "\u0018\u0019\u0015\u0015\u000D\u0012\u000EI\u0016\u0011\u0015") ? emit_current_dir_builtin(st) : ((name == "\u0015\u000D\u0018\u0010\u0015\u0016I\u0013\u000D\u000E") ? emit_record_set_builtin(st, args) : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000D\u001A\u001F\u000E\u001E") ? emit_linked_list_empty_builtin(st, args) : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u001F\u0019\u0013\u0014") ? emit_linked_list_push_builtin(st, args) : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000E\u0010I\u0017\u0011\u0013\u000E") ? emit_linked_list_to_list_builtin(st, args) : emit_file_exists_builtin(st, args)))))))))))))))))))))))))))))))))))))));
+        return ((name == "\u001F\u0015\u0011\u0012\u000EI\u0017\u0011\u0012\u000D") ? emit_print_line_builtin(st, args) : ((name == "\u0015\u000D\u000F\u0016I\u001C\u0011\u0017\u000D") ? emit_read_file_builtin(st, args) : ((name == "\u001B\u0015\u0011\u000E\u000DI\u001C\u0011\u0017\u000D") ? emit_write_file_builtin(st, args) : ((name == "\u0015\u000D\u000F\u0016I\u0017\u0011\u0012\u000D") ? emit_read_line_builtin(st) : ((name == "\u001B\u0015\u0011\u000E\u000DI \u0011\u0012\u000F\u0015\u001E") ? emit_write_binary_builtin(st, args) : ((name == "\u000E\u000D$\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? emit_text_length_builtin(st, args) : ((name == "\u0011\u0012\u000E\u000D\u001D\u000D\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? emit_helper_call_1(st, args, "UU\u0011\u000E\u0010\u000F") : ((name == "\u0013\u0014\u0010\u001B") ? emit_helper_call_1(st, args, "UU\u0011\u000E\u0010\u000F") : ((name == "\u000E\u000D$\u000EI\u000E\u0010I\u0011\u0012\u000E\u000D\u001D\u000D\u0015") ? emit_helper_call_1(st, args, "UU\u000E\u000D$\u000EU\u000E\u0010U\u0011\u0012\u000E") : ((name == "\u000E\u000D$\u000EI\u0015\u000D\u001F\u0017\u000F\u0018\u000D") ? emit_helper_call_3(st, args, "UU\u0013\u000E\u0015U\u0015\u000D\u001F\u0017\u000F\u0018\u000D") : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") : ((name == "\u000E\u000D$\u000EI\u0013\u000E\u000F\u0015\u000E\u0013I\u001B\u0011\u000E\u0014") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0013\u000E\u000F\u0015\u000E\u0013U\u001B\u0011\u000E\u0014") : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u001A\u001F\u000F\u0015\u000D") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0018\u0010\u001A\u001F\u000F\u0015\u000D") : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u0018\u000F\u000EI\u0017\u0011\u0013\u000E") ? emit_helper_call_1(st, args, "UU\u000E\u000D$\u000EU\u0018\u0010\u0012\u0018\u000F\u000EU\u0017\u0011\u0013\u000E") : ((name == "\u000E\u000D$\u000EI\u0013\u001F\u0017\u0011\u000E") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0013\u001F\u0017\u0011\u000E") : ((name == "\u0013\u0019 \u0013\u000E\u0015\u0011\u0012\u001D") ? emit_substring_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? emit_list_length_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u000F\u000E") ? emit_list_at_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u0013") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u0018\u0010\u0012\u0013") : ((name == "\u0017\u0011\u0013\u000EI\u000F\u001F\u001F\u000D\u0012\u0016") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u000F\u001F\u001F\u000D\u0012\u0016") : ((name == "\u0017\u0011\u0013\u000EI\u0013\u0012\u0010\u0018") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u0013\u0012\u0010\u0018") : ((name == "\u0017\u0011\u0013\u000EI\u0011\u0012\u0013\u000D\u0015\u000EI\u000F\u000E") ? emit_helper_call_3(st, args, "UU\u0017\u0011\u0013\u000EU\u0011\u0012\u0013\u000D\u0015\u000EU\u000F\u000E") : ((name == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") : ((name == "\u0018\u0014\u000F\u0015I\u000F\u000E") ? emit_char_at_builtin(st, args) : ((name == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000DI\u000F\u000E") ? emit_char_code_at_builtin(st, args) : ((name == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000D") ? x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]) : ((name == "\u0018\u0010\u0016\u000DI\u000E\u0010I\u0018\u0014\u000F\u0015") ? x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]) : ((name == "\u0018\u0014\u000F\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? emit_char_to_text_builtin(st, args) : ((name == "\u0011\u0013I\u0017\u000D\u000E\u000E\u000D\u0015") ? emit_is_letter_builtin(st, args) : ((name == "\u0011\u0013I\u0016\u0011\u001D\u0011\u000E") ? emit_is_digit_builtin(st, args) : ((name == "\u0011\u0013I\u001B\u0014\u0011\u000E\u000D\u0013\u001F\u000F\u0018\u000D") ? emit_is_whitespace_builtin(st, args) : ((name == "\u0012\u000D\u001D\u000F\u000E\u000D") ? emit_negate_builtin(st, args) : ((name == "\u001D\u000D\u000EI\u000F\u0015\u001D\u0013") ? emit_get_args_builtin(st) : ((name == "\u0018\u0019\u0015\u0015\u000D\u0012\u000EI\u0016\u0011\u0015") ? emit_current_dir_builtin(st) : ((name == "\u0015\u000D\u0018\u0010\u0015\u0016I\u0013\u000D\u000E") ? emit_record_set_builtin(st, args) : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000D\u001A\u001F\u000E\u001E") ? emit_linked_list_empty_builtin(st, args) : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u001F\u0019\u0013\u0014") ? emit_linked_list_push_builtin(st, args) : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000E\u0010I\u0017\u0011\u0013\u000E") ? emit_linked_list_to_list_builtin(st, args) : ((name == "\u0014\u000D\u000F\u001FI\u0013\u000F!\u000D") ? emit_heap_save_builtin(st) : ((name == "\u0014\u000D\u000F\u001FI\u0015\u000D\u0013\u000E\u0010\u0015\u000D") ? emit_heap_restore_builtin(st, args) : ((name == "\u0014\u000D\u000F\u001FI\u000F\u0016!\u000F\u0012\u0018\u000D") ? emit_heap_advance_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u001B\u0011\u000E\u0014I\u0018\u000F\u001F\u000F\u0018\u0011\u000E\u001E") ? emit_list_with_capacity_builtin(st, args) : ((name == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D") ? emit_buf_write_byte_builtin(st, args) : ((name == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D\u0013") ? emit_buf_write_bytes_builtin(st, args) : ((name == " \u0019\u001CI\u0015\u000D\u000F\u0016I \u001E\u000E\u000D\u0013") ? emit_buf_read_bytes_builtin(st, args) : emit_file_exists_builtin(st, args))))))))))))))))))))))))))))))))))))))))))))));
     }
 
     public static FlatApply flatten_apply(IRExpr expr, List<IRExpr> acc)
@@ -6057,12 +6113,12 @@ public static class Codex_Codex_Codex
 
     public static CodegenState emit_load_rodata_addr(CodegenState st, long reg, long rodata_off)
     {
-        return ((Func<RodataFixup, CodegenState>)((fixup) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, ((Func<List<RodataFixup>>)(() => { var _l = st1.rodata_fixups; _l.Add(fixup); return _l; }))(), _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st1)))(st_append_text(st, mov_ri64(reg, 0L)))))(new RodataFixup((st.text_len + 2L), rodata_off));
+        return ((Func<RodataFixup, CodegenState>)((fixup) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, ((Func<List<RodataFixup>>)(() => { var _l = st1.rodata_fixups; _l.Add(fixup); return _l; }))(), _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st1)))(st_append_text(st, mov_ri64(reg, 0L)))))(new RodataFixup((st.text_len + 2L), rodata_off));
     }
 
     public static CodegenState emit_load_func_addr(CodegenState st, long reg, string func_name)
     {
-        return ((Func<FuncAddrFixup, CodegenState>)((fixup) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, ((Func<List<FuncAddrFixup>>)(() => { var _l = st1.func_addr_fixups; _l.Add(fixup); return _l; }))(), _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st1)))(st_append_text(st, mov_ri64(reg, 0L)))))(new FuncAddrFixup((st.text_len + 2L), func_name));
+        return ((Func<FuncAddrFixup, CodegenState>)((fixup) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, ((Func<List<FuncAddrFixup>>)(() => { var _l = st1.func_addr_fixups; _l.Add(fixup); return _l; }))(), _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st1)))(st_append_text(st, mov_ri64(reg, 0L)))))(new FuncAddrFixup((st.text_len + 2L), func_name));
     }
 
     public static CodegenState emit_trampoline_shift_args(CodegenState st, long i, long num_captures)
@@ -6766,7 +6822,7 @@ public static class Codex_Codex_Codex
 
     public static CodegenState emit_call_to(CodegenState st, string target)
     {
-        return ((Func<long, CodegenState>)((patch_pos) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_chunks, _rs.text_len, _rs.rodata, _rs.rodata_chunks, _rs.rodata_len, _rs.func_offsets, ((Func<List<CallPatch>>)(() => { var _l = st1.call_patches; _l.Add(new CallPatch(patch_pos, target)); return _l; }))(), _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st1)))(st_append_text(st, x86_call(0L)))))(st.text_len);
+        return ((Func<long, CodegenState>)((patch_pos) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, ((Func<List<CallPatch>>)(() => { var _l = st1.call_patches; _l.Add(new CallPatch(patch_pos, target)); return _l; }))(), _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.errors)))(st1)))(st_append_text(st, x86_call(0L)))))(st.text_len);
     }
 
     public static long bare_metal_heap_base()
@@ -6869,9 +6925,46 @@ public static class Codex_Codex_Codex
         }
     }
 
+    public static long text_buf_size()
+    {
+        return 2097152L;
+    }
+
+    public static long rodata_buf_size()
+    {
+        return 524288L;
+    }
+
+    public static long apply_one_patch_buf(long base_addr, PatchEntry p)
+    {
+        return (((_Buf.buf_write_byte(base_addr, p.pos, p.b0) + _Buf.buf_write_byte(base_addr, (p.pos + 1L), p.b1)) + _Buf.buf_write_byte(base_addr, (p.pos + 2L), p.b2)) + _Buf.buf_write_byte(base_addr, (p.pos + 3L), p.b3));
+    }
+
+    public static long apply_all_patches_buf(long base_addr, List<PatchEntry> patches, long i)
+    {
+        while (true)
+        {
+            if ((i >= ((long)patches.Count)))
+            {
+                return 0L;
+            }
+            else
+            {
+                var r = apply_one_patch_buf(base_addr, patches[(int)i]);
+                var _tco_0 = base_addr;
+                var _tco_1 = patches;
+                var _tco_2 = (i + 1L);
+                base_addr = _tco_0;
+                patches = _tco_1;
+                i = _tco_2;
+                continue;
+            }
+        }
+    }
+
     public static EmitChapterResult x86_64_emit_chapter(IRChapter m, List<TypeBinding> tdefs)
     {
-        return ((Func<TrampolineResult, EmitChapterResult>)((tramp) => ((Func<CodegenState, EmitChapterResult>)((st0) => ((Func<CodegenState, EmitChapterResult>)((st0a) => ((Func<CodegenState, EmitChapterResult>)((st1) => ((Func<CodegenState, EmitChapterResult>)((st1a) => ((Func<IsrStubResult, EmitChapterResult>)((isr_result) => ((Func<SyscallResult, EmitChapterResult>)((syscall_result) => ((Func<CodegenState, EmitChapterResult>)((st2) => ((Func<long, EmitChapterResult>)((start_offset) => ((Func<long, EmitChapterResult>)((start_addr) => ((Func<PatchEntry, EmitChapterResult>)((far_jump_entry) => ((Func<List<PatchEntry>, EmitChapterResult>)((call_entries) => ((Func<List<PatchEntry>, EmitChapterResult>)((addr_entries) => ((Func<long, EmitChapterResult>)((rodata_vaddr) => ((Func<List<PatchEntry>, EmitChapterResult>)((rodata_entries) => ((Func<List<long>, EmitChapterResult>)((flat_text) => ((Func<long, EmitChapterResult>)((oom_offset) => ((Func<List<PatchEntry>, EmitChapterResult>)((overflow_entries) => ((Func<List<PatchEntry>, EmitChapterResult>)((all_patches) => ((Func<List<long>, EmitChapterResult>)((patched_text) => ((Func<List<long>, EmitChapterResult>)((flat_rodata) => new EmitChapterResult(build_elf_32_bare(patched_text, flat_rodata, 12L), st2.errors)))(Enumerable.Concat(st2.rodata, flatten_chunks(st2.rodata_chunks)).ToList())))(apply_all_patches(flat_text, all_patches))))(Enumerable.Concat(new List<PatchEntry>() { far_jump_entry }, Enumerable.Concat(call_entries, Enumerable.Concat(addr_entries, Enumerable.Concat(rodata_entries, Enumerable.Concat(overflow_entries, st2.deferred_patches).ToList()).ToList()).ToList()).ToList()).ToList())))(collect_overflow_patches(st2.stack_overflow_checks, oom_offset, 0L, new List<PatchEntry>()))))(lookup_func_offset(st2.func_offsets, "UU\u0010\u0019\u000EU\u0010\u001CU\u001A\u000D\u001A\u0010\u0015\u001E"))))(flatten_chunks(st2.text_chunks))))(collect_rodata_patches(st2.rodata_fixups, rodata_vaddr, 0L, new List<PatchEntry>()))))(compute_rodata_vaddr_bare(st2.text_len))))(collect_func_addr_patches(st2.func_addr_fixups, st2.func_offsets, bare_metal_load_addr(), 0L, new List<PatchEntry>()))))(collect_call_patches(st2.call_patches, st2.func_offsets, 0L, new List<PatchEntry>()))))(make_i32_patch((tramp.far_jump_patch_pos + 1L), start_addr))))((bare_metal_load_addr() + start_offset))))(lookup_func_offset(st2.func_offsets, "UU\u0013\u000E\u000F\u0015\u000E"))))(emit_start(syscall_result.state, isr_result.first_stub_vaddr, syscall_result.handler_offset))))(emit_syscall_handler(isr_result.state))))(emit_isr_stubs(st1a))))(emit_out_of_memory_handler(st1))))(x86_64_code_generator_emit_all_defs(st0a, m.defs, 0L))))(emit_runtime_helpers(st0))))(new CodegenState(((Func<List<List<long>>, List<long>, List<List<long>>>)((_ll, _v) => { _ll.Add(_v); return _ll; }))(new List<List<long>>(), tramp.bytes), ((long)tramp.bytes.Count), init_rodata(), new List<List<long>>(), 0L, new List<FuncOffset>(), new List<CallPatch>(), new List<FuncAddrFixup>(), new List<RodataFixup>(), new List<PatchEntry>(), new List<LocalBinding>(), 0L, 0L, 0L, 0L, new TcoState(false, false, 0L, new List<long>(), new List<long>(), "", 0L, 0L), tdefs, new List<long>(), new List<Diagnostic>()))))(bare_metal_trampoline());
+        return ((Func<TrampolineResult, EmitChapterResult>)((tramp) => ((Func<dynamic, EmitChapterResult>)((text_addr) => ((Func<dynamic, EmitChapterResult>)((ha1) => ((Func<dynamic, EmitChapterResult>)((rodata_addr) => ((Func<dynamic, EmitChapterResult>)((ha2) => ((Func<dynamic, EmitChapterResult>)((bw1) => ((Func<dynamic, EmitChapterResult>)((bw2) => ((Func<CodegenState, EmitChapterResult>)((st0) => ((Func<CodegenState, EmitChapterResult>)((st0a) => ((Func<CodegenState, EmitChapterResult>)((st1) => ((Func<CodegenState, EmitChapterResult>)((st1a) => ((Func<IsrStubResult, EmitChapterResult>)((isr_result) => ((Func<SyscallResult, EmitChapterResult>)((syscall_result) => ((Func<CodegenState, EmitChapterResult>)((st2) => ((Func<long, EmitChapterResult>)((start_offset) => ((Func<long, EmitChapterResult>)((start_addr) => ((Func<PatchEntry, EmitChapterResult>)((far_jump_entry) => ((Func<List<PatchEntry>, EmitChapterResult>)((call_entries) => ((Func<List<PatchEntry>, EmitChapterResult>)((addr_entries) => ((Func<long, EmitChapterResult>)((rodata_vaddr) => ((Func<List<PatchEntry>, EmitChapterResult>)((rodata_entries) => ((Func<long, EmitChapterResult>)((oom_offset) => ((Func<List<PatchEntry>, EmitChapterResult>)((overflow_entries) => ((Func<List<PatchEntry>, EmitChapterResult>)((all_patches) => ((Func<long, EmitChapterResult>)((patched) => ((Func<dynamic, EmitChapterResult>)((flat_text) => ((Func<dynamic, EmitChapterResult>)((flat_rodata) => new EmitChapterResult(build_elf_32_bare(flat_text, flat_rodata, 12L), st2.errors)))(_Buf.buf_read_bytes(rodata_addr, 0L, st2.rodata_len))))(_Buf.buf_read_bytes(text_addr, 0L, st2.text_len))))(apply_all_patches_buf(text_addr, all_patches, 0L))))(Enumerable.Concat(new List<PatchEntry>() { far_jump_entry }, Enumerable.Concat(call_entries, Enumerable.Concat(addr_entries, Enumerable.Concat(rodata_entries, Enumerable.Concat(overflow_entries, st2.deferred_patches).ToList()).ToList()).ToList()).ToList()).ToList())))(collect_overflow_patches(st2.stack_overflow_checks, oom_offset, 0L, new List<PatchEntry>()))))(lookup_func_offset(st2.func_offsets, "UU\u0010\u0019\u000EU\u0010\u001CU\u001A\u000D\u001A\u0010\u0015\u001E"))))(collect_rodata_patches(st2.rodata_fixups, rodata_vaddr, 0L, new List<PatchEntry>()))))(compute_rodata_vaddr_bare(st2.text_len))))(collect_func_addr_patches(st2.func_addr_fixups, st2.func_offsets, bare_metal_load_addr(), 0L, new List<PatchEntry>()))))(collect_call_patches(st2.call_patches, st2.func_offsets, 0L, new List<PatchEntry>()))))(make_i32_patch((tramp.far_jump_patch_pos + 1L), start_addr))))((bare_metal_load_addr() + start_offset))))(lookup_func_offset(st2.func_offsets, "UU\u0013\u000E\u000F\u0015\u000E"))))(emit_start(syscall_result.state, isr_result.first_stub_vaddr, syscall_result.handler_offset))))(emit_syscall_handler(isr_result.state))))(emit_isr_stubs(st1a))))(emit_out_of_memory_handler(st1))))(x86_64_code_generator_emit_all_defs(st0a, m.defs, 0L))))(emit_runtime_helpers(st0))))(new CodegenState(text_addr, ((long)tramp.bytes.Count), rodata_addr, ((long)init_rodata().Count), new List<FuncOffset>(), new List<CallPatch>(), new List<FuncAddrFixup>(), new List<RodataFixup>(), new List<PatchEntry>(), new List<LocalBinding>(), 0L, 0L, 0L, 0L, new TcoState(false, false, 0L, new List<long>(), new List<long>(), "", 0L, 0L), tdefs, new List<long>(), new List<Diagnostic>()))))(_Buf.buf_write_bytes(rodata_addr, 0L, init_rodata()))))(_Buf.buf_write_bytes(text_addr, 0L, tramp.bytes))))(_Buf.heap_advance(rodata_buf_size()))))(_Buf.heap_save())))(_Buf.heap_advance(text_buf_size()))))(_Buf.heap_save())))(bare_metal_trampoline());
     }
 
     public static long idt_base()
@@ -8028,7 +8121,17 @@ public static class Codex_Codex_Codex
 
     public static CodegenState emit_runtime_helpers(CodegenState st)
     {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => emit_linked_list_to_list_helper(st21)))(emit_write_binary_helper(st20))))(emit_bare_metal_read_serial(st19))))(emit_read_file_helper(st18))))(emit_read_line_helper(st17))))(emit_unicode_to_cce_helper(st16))))(emit_cce_to_unicode_helper(st15))))(emit_text_split(st14))))(emit_text_concat_list(st13))))(emit_list_contains(st12))))(emit_list_insert_at(st11))))(emit_list_append(st10))))(emit_list_cons(st9))))(emit_list_snoc(st8))))(emit_str_replace(st7))))(emit_text_compare(st6))))(emit_text_contains(st5))))(emit_text_starts_with(st4))))(emit_text_to_int(st3))))(emit_ipow(st2))))(emit_itoa(st1))))(emit_str_eq(st0))))(emit_str_concat(st));
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => emit_buf_read_bytes_helper(st22)))(emit_buf_write_bytes_helper(st21))))(emit_write_binary_helper(st20))))(emit_bare_metal_read_serial(st19))))(emit_read_file_helper(st18))))(emit_read_line_helper(st17))))(emit_unicode_to_cce_helper(st16))))(emit_cce_to_unicode_helper(st15))))(emit_text_split(st14))))(emit_text_concat_list(st13))))(emit_list_contains(st12))))(emit_list_insert_at(st11))))(emit_list_append(st10))))(emit_list_cons(st9))))(emit_list_snoc(st8))))(emit_str_replace(st7))))(emit_text_compare(st6))))(emit_text_contains(st5))))(emit_text_starts_with(st4))))(emit_text_to_int(st3))))(emit_ipow(st2))))(emit_itoa(st1))))(emit_str_eq(st0))))(emit_str_concat(st));
+    }
+
+    public static CodegenState emit_buf_write_bytes_helper(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<long, CodegenState>)((skip_pos) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<long, CodegenState>)((loop_top) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<long, CodegenState>)((back_pos) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => st_append_text(st22, Enumerable.Concat(pop_r(reg_r13()), Enumerable.Concat(pop_r(reg_r12()), Enumerable.Concat(pop_r(reg_rbx()), x86_ret()).ToList()).ToList()).ToList())))(st_append_text(st21, mov_rr(reg_rax(), reg_rsi())))))(st_append_text(st20, add_rr(reg_rsi(), reg_r13())))))(patch_jcc_at(st19, skip_pos, st19.text_len))))(patch_jcc_at(st18, back_pos, loop_top))))(st_append_text(st17, jcc(cc_l(), 0L)))))(st17.text_len)))(st_append_text(st16, cmp_rr(reg_rcx(), reg_r13())))))(st_append_text(st15, add_ri(reg_rcx(), 1L)))))(st_append_text(st14, add_ri(reg_rbx(), 1L)))))(st_append_text(st13, mov_store_byte(reg_rbx(), reg_rax(), 0L)))))(st_append_text(st12, mov_load(reg_rax(), reg_rax(), 8L)))))(st_append_text(st11, add_rr(reg_rax(), reg_r12())))))(st_append_text(st10, shl_ri(reg_rax(), 3L)))))(st_append_text(st9, mov_rr(reg_rax(), reg_rcx())))))(st9.text_len)))(st_append_text(st8, jcc(cc_ge(), 0L)))))(st8.text_len)))(st_append_text(st7, cmp_rr(reg_rcx(), reg_r13())))))(st_append_text(st6, li(reg_rcx(), 0L)))))(st_append_text(st5, mov_load(reg_r13(), reg_r12(), 0L)))))(st_append_text(st4, mov_rr(reg_r12(), reg_rdx())))))(st_append_text(st3, add_rr(reg_rbx(), reg_rsi())))))(st_append_text(st2, mov_rr(reg_rbx(), reg_rdi())))))(st_append_text(st1, Enumerable.Concat(push_r(reg_rbx()), Enumerable.Concat(push_r(reg_r12()), push_r(reg_r13())).ToList()).ToList()))))(record_func_offset(st, "UU \u0019\u001CU\u001B\u0015\u0011\u000E\u000DU \u001E\u000E\u000D\u0013"));
+    }
+
+    public static CodegenState emit_buf_read_bytes_helper(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<long, CodegenState>)((skip_pos) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<long, CodegenState>)((loop_top) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => ((Func<CodegenState, CodegenState>)((st23) => ((Func<CodegenState, CodegenState>)((st24) => ((Func<CodegenState, CodegenState>)((st25) => ((Func<long, CodegenState>)((back_pos) => ((Func<CodegenState, CodegenState>)((st26) => ((Func<CodegenState, CodegenState>)((st27) => ((Func<CodegenState, CodegenState>)((st28) => ((Func<CodegenState, CodegenState>)((st29) => st_append_text(st29, Enumerable.Concat(pop_r(reg_r14()), Enumerable.Concat(pop_r(reg_r13()), Enumerable.Concat(pop_r(reg_r12()), Enumerable.Concat(pop_r(reg_rbx()), x86_ret()).ToList()).ToList()).ToList()).ToList())))(st_append_text(st28, mov_rr(reg_rax(), reg_rbx())))))(patch_jcc_at(st27, skip_pos, st27.text_len))))(patch_jcc_at(st26, back_pos, loop_top))))(st_append_text(st25, jcc(cc_l(), 0L)))))(st25.text_len)))(st_append_text(st24, cmp_rr(reg_rcx(), reg_r13())))))(st_append_text(st23, add_ri(reg_rcx(), 1L)))))(st_append_text(st22, mov_store(reg_rax(), reg_r14(), 8L)))))(st_append_text(st21, add_rr(reg_rax(), reg_rbx())))))(st_append_text(st20, shl_ri(reg_rax(), 3L)))))(st_append_text(st19, mov_rr(reg_rax(), reg_rcx())))))(st_append_text(st18, movzx_byte(reg_r14(), reg_r14(), 0L)))))(st_append_text(st17, add_rr(reg_r14(), reg_rcx())))))(st_append_text(st16, mov_rr(reg_r14(), reg_r12())))))(st16.text_len)))(st_append_text(st15, jcc(cc_ge(), 0L)))))(st15.text_len)))(st_append_text(st14, cmp_rr(reg_rcx(), reg_r13())))))(st_append_text(st13, li(reg_rcx(), 0L)))))(st_append_text(st12, add_rr(reg_r10(), reg_rax())))))(st_append_text(st11, shl_ri(reg_rax(), 3L)))))(st_append_text(st10, add_ri(reg_rax(), 1L)))))(st_append_text(st9, mov_rr(reg_rax(), reg_r13())))))(st_append_text(st8, mov_store(reg_r10(), reg_r13(), 0L)))))(st_append_text(st7, mov_rr(reg_rbx(), reg_r10())))))(st_append_text(st6, add_ri(reg_r10(), 8L)))))(st_append_text(st5, mov_store(reg_r10(), reg_r13(), 0L)))))(st_append_text(st4, mov_rr(reg_r13(), reg_rdx())))))(st_append_text(st3, add_rr(reg_r12(), reg_rsi())))))(st_append_text(st2, mov_rr(reg_r12(), reg_rdi())))))(st_append_text(st1, Enumerable.Concat(push_r(reg_rbx()), Enumerable.Concat(push_r(reg_r12()), Enumerable.Concat(push_r(reg_r13()), push_r(reg_r14())).ToList()).ToList()).ToList()))))(record_func_offset(st, "UU \u0019\u001CU\u0015\u000D\u000F\u0016U \u001E\u000E\u000D\u0013"));
     }
 
     public static CodegenState emit_write_binary_helper(CodegenState st)
@@ -14274,7 +14377,7 @@ public static class Codex_Codex_Codex
 
     public static TypeEnv builtin_type_env()
     {
-        return ((Func<TypeEnv, TypeEnv>)((e) => ((Func<TypeEnv, TypeEnv>)((e2) => ((Func<TypeEnv, TypeEnv>)((e3) => ((Func<TypeEnv, TypeEnv>)((e4) => ((Func<TypeEnv, TypeEnv>)((e5) => ((Func<TypeEnv, TypeEnv>)((e5b) => ((Func<TypeEnv, TypeEnv>)((e6) => ((Func<TypeEnv, TypeEnv>)((e7) => ((Func<TypeEnv, TypeEnv>)((e8) => ((Func<TypeEnv, TypeEnv>)((e9) => ((Func<TypeEnv, TypeEnv>)((e10) => ((Func<TypeEnv, TypeEnv>)((e10b) => ((Func<TypeEnv, TypeEnv>)((e11) => ((Func<TypeEnv, TypeEnv>)((e12) => ((Func<TypeEnv, TypeEnv>)((e12b) => ((Func<TypeEnv, TypeEnv>)((e13) => ((Func<TypeEnv, TypeEnv>)((e14) => ((Func<TypeEnv, TypeEnv>)((e15) => ((Func<TypeEnv, TypeEnv>)((e16) => ((Func<TypeEnv, TypeEnv>)((e16b) => ((Func<TypeEnv, TypeEnv>)((e16c) => ((Func<TypeEnv, TypeEnv>)((e16d) => ((Func<TypeEnv, TypeEnv>)((e17) => ((Func<TypeEnv, TypeEnv>)((e18) => ((Func<TypeEnv, TypeEnv>)((e19) => ((Func<TypeEnv, TypeEnv>)((e20) => ((Func<TypeEnv, TypeEnv>)((e21) => ((Func<TypeEnv, TypeEnv>)((e22) => ((Func<TypeEnv, TypeEnv>)((e23) => ((Func<TypeEnv, TypeEnv>)((e23a) => ((Func<TypeEnv, TypeEnv>)((e24) => ((Func<TypeEnv, TypeEnv>)((e25) => ((Func<TypeEnv, TypeEnv>)((e26) => ((Func<TypeEnv, TypeEnv>)((e27) => ((Func<TypeEnv, TypeEnv>)((e28) => ((Func<TypeEnv, TypeEnv>)((e29) => ((Func<TypeEnv, TypeEnv>)((e30) => ((Func<TypeEnv, TypeEnv>)((e31) => ((Func<TypeEnv, TypeEnv>)((e32) => ((Func<TypeEnv, TypeEnv>)((e33) => ((Func<TypeEnv, TypeEnv>)((e34) => ((Func<TypeEnv, TypeEnv>)((e35) => ((Func<TypeEnv, TypeEnv>)((e36) => ((Func<TypeEnv, TypeEnv>)((e37) => ((Func<TypeEnv, TypeEnv>)((e38) => ((Func<TypeEnv, TypeEnv>)((e39) => ((Func<TypeEnv, TypeEnv>)((e40) => e40))(env_bind(e39, "\u0015\u000D\u0018\u0010\u0015\u0016I\u0013\u000D\u000E", new ForAllTy(0L, new ForAllTy(1L, new FunTy(new TypeVar(0L), new FunTy(new TextTy(), new FunTy(new TypeVar(1L), new TypeVar(0L))))))))))(env_bind(e38, "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000E\u0010I\u0017\u0011\u0013\u000E", new FunTy(new LinkedListTy(new ListTy(new IntegerTy())), new ListTy(new ListTy(new IntegerTy())))))))(env_bind(e37, "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u001F\u0019\u0013\u0014", new FunTy(new LinkedListTy(new ListTy(new IntegerTy())), new FunTy(new ListTy(new IntegerTy()), new LinkedListTy(new ListTy(new IntegerTy()))))))))(env_bind(e36, "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000D\u001A\u001F\u000E\u001E", new FunTy(new IntegerTy(), new LinkedListTy(new ListTy(new IntegerTy())))))))(env_bind(e35, "\u000E\u000D$\u000EI\u0018\u0010\u0012\u0018\u000F\u000EI\u0017\u0011\u0013\u000E", new FunTy(new ListTy(new TextTy()), new TextTy())))))(env_bind(e34, "\u0015\u000F\u0018\u000D", new ForAllTy(0L, new FunTy(new ListTy(new FunTy(new NothingTy(), new TypeVar(0L))), new TypeVar(0L)))))))(env_bind(e33, "\u001F\u000F\u0015", new ForAllTy(0L, new ForAllTy(1L, new FunTy(new FunTy(new TypeVar(0L), new TypeVar(1L)), new FunTy(new ListTy(new TypeVar(0L)), new ListTy(new TypeVar(1L))))))))))(env_bind(e32, "\u000F\u001B\u000F\u0011\u000E", new ForAllTy(0L, new FunTy(new ConstructedTy(new Name("(\u000F\u0013\""), new List<CodexType>() { new TypeVar(0L) }), new TypeVar(0L)))))))(env_bind(e31, "\u001C\u0010\u0015\"", new ForAllTy(0L, new FunTy(new FunTy(new NothingTy(), new TypeVar(0L)), new ConstructedTy(new Name("(\u000F\u0013\""), new List<CodexType>() { new TypeVar(0L) })))))))(env_bind(e30, "\u0018\u0019\u0015\u0015\u000D\u0012\u000EI\u0016\u0011\u0015", new TextTy()))))(env_bind(e29, "\u001D\u000D\u000EI\u000D\u0012!", new FunTy(new TextTy(), new TextTy())))))(env_bind(e28, "\u001D\u000D\u000EI\u000F\u0015\u001D\u0013", new ListTy(new TextTy())))))(env_bind(e27, "\u000E\u000D$\u000EI\u0013\u000E\u000F\u0015\u000E\u0013I\u001B\u0011\u000E\u0014", new FunTy(new TextTy(), new FunTy(new TextTy(), new BooleanTy()))))))(env_bind(e26, "\u000E\u000D$\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013", new FunTy(new TextTy(), new FunTy(new TextTy(), new BooleanTy()))))))(env_bind(e25, "\u000E\u000D$\u000EI\u0013\u001F\u0017\u0011\u000E", new FunTy(new TextTy(), new FunTy(new TextTy(), new ListTy(new TextTy())))))))(env_bind(e24, "\u0017\u0011\u0013\u000EI\u001C\u0011\u0017\u000D\u0013", new FunTy(new TextTy(), new FunTy(new TextTy(), new ListTy(new TextTy())))))))(env_bind(e23a, "\u001C\u0011\u0017\u000DI\u000D$\u0011\u0013\u000E\u0013", new FunTy(new TextTy(), new BooleanTy())))))(env_bind(e23, "\u001B\u0015\u0011\u000E\u000DI \u0011\u0012\u000F\u0015\u001E", new FunTy(new ListTy(new IntegerTy()), new NothingTy())))))(env_bind(e22, "\u001B\u0015\u0011\u000E\u000DI\u001C\u0011\u0017\u000D", new FunTy(new TextTy(), new FunTy(new TextTy(), new NothingTy()))))))(env_bind(e21, "\u0015\u000D\u000F\u0016I\u001C\u0011\u0017\u000D", new FunTy(new TextTy(), new TextTy())))))(env_bind(e20, "\u0015\u000D\u000F\u0016I\u0017\u0011\u0012\u000D", new TextTy()))))(env_bind(e19, "\u001C\u0010\u0017\u0016", new ForAllTy(0L, new ForAllTy(1L, new FunTy(new FunTy(new TypeVar(1L), new FunTy(new TypeVar(0L), new TypeVar(1L))), new FunTy(new TypeVar(1L), new FunTy(new ListTy(new TypeVar(0L)), new TypeVar(1L))))))))))(env_bind(e18, "\u001C\u0011\u0017\u000E\u000D\u0015", new ForAllTy(0L, new FunTy(new FunTy(new TypeVar(0L), new BooleanTy()), new FunTy(new ListTy(new TypeVar(0L)), new ListTy(new TypeVar(0L)))))))))(env_bind(e17, "\u001A\u000F\u001F", new ForAllTy(0L, new ForAllTy(1L, new FunTy(new FunTy(new TypeVar(0L), new TypeVar(1L)), new FunTy(new ListTy(new TypeVar(0L)), new ListTy(new TypeVar(1L))))))))))(env_bind(e16d, "\u0017\u0011\u0013\u000EI\u000F\u000E", new ForAllTy(0L, new FunTy(new ListTy(new TypeVar(0L)), new FunTy(new IntegerTy(), new TypeVar(0L))))))))(env_bind(e16c, "\u0017\u0011\u0013\u000EI\u0013\u0012\u0010\u0018", new ForAllTy(0L, new FunTy(new ListTy(new TypeVar(0L)), new FunTy(new TypeVar(0L), new ListTy(new TypeVar(0L)))))))))(env_bind(e16b, "\u000E\u000D$\u000EI\u0018\u0010\u001A\u001F\u000F\u0015\u000D", new FunTy(new TextTy(), new FunTy(new TextTy(), new IntegerTy()))))))(env_bind(e16, "\u0017\u0011\u0013\u000EI\u0011\u0012\u0013\u000D\u0015\u000EI\u000F\u000E", new ForAllTy(0L, new FunTy(new ListTy(new TypeVar(0L)), new FunTy(new IntegerTy(), new FunTy(new TypeVar(0L), new ListTy(new TypeVar(0L))))))))))(env_bind(e15, "\u0017\u0011\u0013\u000EI\u0017\u000D\u0012\u001D\u000E\u0014", new ForAllTy(0L, new FunTy(new ListTy(new TypeVar(0L)), new IntegerTy()))))))(env_bind(e14, "\u001F\u0015\u0011\u0012\u000EI\u0017\u0011\u0012\u000D", new FunTy(new TextTy(), new NothingTy())))))(env_bind(e13, "\u0013\u0014\u0010\u001B", new ForAllTy(0L, new FunTy(new TypeVar(0L), new TextTy()))))))(env_bind(e12b, "\u000E\u000D$\u000EI\u000E\u0010I\u0011\u0012\u000E\u000D\u001D\u000D\u0015", new FunTy(new TextTy(), new IntegerTy())))))(env_bind(e12, "\u000E\u000D$\u000EI\u000E\u0010I\u0016\u0010\u0019 \u0017\u000DI \u0011\u000E\u0013", new FunTy(new TextTy(), new IntegerTy())))))(env_bind(e11, "\u000E\u000D$\u000EI\u0015\u000D\u001F\u0017\u000F\u0018\u000D", new FunTy(new TextTy(), new FunTy(new TextTy(), new FunTy(new TextTy(), new TextTy())))))))(env_bind(e10b, "\u0018\u0010\u0016\u000DI\u000E\u0010I\u0018\u0014\u000F\u0015", new FunTy(new IntegerTy(), new CharTy())))))(env_bind(e10, "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000DI\u000F\u000E", new FunTy(new TextTy(), new FunTy(new IntegerTy(), new IntegerTy()))))))(env_bind(e9, "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000D", new FunTy(new CharTy(), new IntegerTy())))))(env_bind(e8, "\u0011\u0013I\u001B\u0014\u0011\u000E\u000D\u0013\u001F\u000F\u0018\u000D", new FunTy(new CharTy(), new BooleanTy())))))(env_bind(e7, "\u0011\u0013I\u0016\u0011\u001D\u0011\u000E", new FunTy(new CharTy(), new BooleanTy())))))(env_bind(e6, "\u0011\u0013I\u0017\u000D\u000E\u000E\u000D\u0015", new FunTy(new CharTy(), new BooleanTy())))))(env_bind(e5b, "\u0013\u0019 \u0013\u000E\u0015\u0011\u0012\u001D", new FunTy(new TextTy(), new FunTy(new IntegerTy(), new FunTy(new IntegerTy(), new TextTy())))))))(env_bind(e5, "\u0018\u0014\u000F\u0015I\u000E\u0010I\u000E\u000D$\u000E", new FunTy(new CharTy(), new TextTy())))))(env_bind(e4, "\u0018\u0014\u000F\u0015I\u000F\u000E", new FunTy(new TextTy(), new FunTy(new IntegerTy(), new CharTy()))))))(env_bind(e3, "\u0011\u0012\u000E\u000D\u001D\u000D\u0015I\u000E\u0010I\u000E\u000D$\u000E", new FunTy(new IntegerTy(), new TextTy())))))(env_bind(e2, "\u000E\u000D$\u000EI\u0017\u000D\u0012\u001D\u000E\u0014", new FunTy(new TextTy(), new IntegerTy())))))(env_bind(e, "\u0012\u000D\u001D\u000F\u000E\u000D", new FunTy(new IntegerTy(), new IntegerTy())))))(empty_type_env());
+        return ((Func<TypeEnv, TypeEnv>)((e) => ((Func<TypeEnv, TypeEnv>)((e2) => ((Func<TypeEnv, TypeEnv>)((e3) => ((Func<TypeEnv, TypeEnv>)((e4) => ((Func<TypeEnv, TypeEnv>)((e5) => ((Func<TypeEnv, TypeEnv>)((e5b) => ((Func<TypeEnv, TypeEnv>)((e6) => ((Func<TypeEnv, TypeEnv>)((e7) => ((Func<TypeEnv, TypeEnv>)((e8) => ((Func<TypeEnv, TypeEnv>)((e9) => ((Func<TypeEnv, TypeEnv>)((e10) => ((Func<TypeEnv, TypeEnv>)((e10b) => ((Func<TypeEnv, TypeEnv>)((e11) => ((Func<TypeEnv, TypeEnv>)((e12) => ((Func<TypeEnv, TypeEnv>)((e12b) => ((Func<TypeEnv, TypeEnv>)((e13) => ((Func<TypeEnv, TypeEnv>)((e14) => ((Func<TypeEnv, TypeEnv>)((e15) => ((Func<TypeEnv, TypeEnv>)((e16) => ((Func<TypeEnv, TypeEnv>)((e16b) => ((Func<TypeEnv, TypeEnv>)((e16c) => ((Func<TypeEnv, TypeEnv>)((e16d) => ((Func<TypeEnv, TypeEnv>)((e17) => ((Func<TypeEnv, TypeEnv>)((e18) => ((Func<TypeEnv, TypeEnv>)((e19) => ((Func<TypeEnv, TypeEnv>)((e20) => ((Func<TypeEnv, TypeEnv>)((e21) => ((Func<TypeEnv, TypeEnv>)((e22) => ((Func<TypeEnv, TypeEnv>)((e23) => ((Func<TypeEnv, TypeEnv>)((e23a) => ((Func<TypeEnv, TypeEnv>)((e24) => ((Func<TypeEnv, TypeEnv>)((e25) => ((Func<TypeEnv, TypeEnv>)((e26) => ((Func<TypeEnv, TypeEnv>)((e27) => ((Func<TypeEnv, TypeEnv>)((e28) => ((Func<TypeEnv, TypeEnv>)((e29) => ((Func<TypeEnv, TypeEnv>)((e30) => ((Func<TypeEnv, TypeEnv>)((e31) => ((Func<TypeEnv, TypeEnv>)((e32) => ((Func<TypeEnv, TypeEnv>)((e33) => ((Func<TypeEnv, TypeEnv>)((e34) => ((Func<TypeEnv, TypeEnv>)((e35) => ((Func<TypeEnv, TypeEnv>)((e36) => ((Func<TypeEnv, TypeEnv>)((e37) => ((Func<TypeEnv, TypeEnv>)((e38) => ((Func<TypeEnv, TypeEnv>)((e39) => ((Func<TypeEnv, TypeEnv>)((e40) => ((Func<TypeEnv, TypeEnv>)((e41) => ((Func<TypeEnv, TypeEnv>)((e42) => ((Func<TypeEnv, TypeEnv>)((e43) => ((Func<TypeEnv, TypeEnv>)((e44) => ((Func<TypeEnv, TypeEnv>)((e45) => ((Func<TypeEnv, TypeEnv>)((e46) => ((Func<TypeEnv, TypeEnv>)((e47) => e47))(env_bind(e46, " \u0019\u001CI\u0015\u000D\u000F\u0016I \u001E\u000E\u000D\u0013", new FunTy(new IntegerTy(), new FunTy(new IntegerTy(), new FunTy(new IntegerTy(), new ListTy(new IntegerTy()))))))))(env_bind(e45, " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D\u0013", new FunTy(new IntegerTy(), new FunTy(new IntegerTy(), new FunTy(new ListTy(new IntegerTy()), new IntegerTy())))))))(env_bind(e44, " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D", new FunTy(new IntegerTy(), new FunTy(new IntegerTy(), new FunTy(new IntegerTy(), new IntegerTy())))))))(env_bind(e43, "\u0017\u0011\u0013\u000EI\u001B\u0011\u000E\u0014I\u0018\u000F\u001F\u000F\u0018\u0011\u000E\u001E", new ForAllTy(0L, new FunTy(new IntegerTy(), new ListTy(new TypeVar(0L))))))))(env_bind(e42, "\u0014\u000D\u000F\u001FI\u000F\u0016!\u000F\u0012\u0018\u000D", new FunTy(new IntegerTy(), new NothingTy())))))(env_bind(e41, "\u0014\u000D\u000F\u001FI\u0015\u000D\u0013\u000E\u0010\u0015\u000D", new FunTy(new IntegerTy(), new NothingTy())))))(env_bind(e40, "\u0014\u000D\u000F\u001FI\u0013\u000F!\u000D", new IntegerTy()))))(env_bind(e39, "\u0015\u000D\u0018\u0010\u0015\u0016I\u0013\u000D\u000E", new ForAllTy(0L, new ForAllTy(1L, new FunTy(new TypeVar(0L), new FunTy(new TextTy(), new FunTy(new TypeVar(1L), new TypeVar(0L))))))))))(env_bind(e38, "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000E\u0010I\u0017\u0011\u0013\u000E", new FunTy(new LinkedListTy(new ListTy(new IntegerTy())), new ListTy(new ListTy(new IntegerTy())))))))(env_bind(e37, "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u001F\u0019\u0013\u0014", new FunTy(new LinkedListTy(new ListTy(new IntegerTy())), new FunTy(new ListTy(new IntegerTy()), new LinkedListTy(new ListTy(new IntegerTy()))))))))(env_bind(e36, "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000D\u001A\u001F\u000E\u001E", new FunTy(new IntegerTy(), new LinkedListTy(new ListTy(new IntegerTy())))))))(env_bind(e35, "\u000E\u000D$\u000EI\u0018\u0010\u0012\u0018\u000F\u000EI\u0017\u0011\u0013\u000E", new FunTy(new ListTy(new TextTy()), new TextTy())))))(env_bind(e34, "\u0015\u000F\u0018\u000D", new ForAllTy(0L, new FunTy(new ListTy(new FunTy(new NothingTy(), new TypeVar(0L))), new TypeVar(0L)))))))(env_bind(e33, "\u001F\u000F\u0015", new ForAllTy(0L, new ForAllTy(1L, new FunTy(new FunTy(new TypeVar(0L), new TypeVar(1L)), new FunTy(new ListTy(new TypeVar(0L)), new ListTy(new TypeVar(1L))))))))))(env_bind(e32, "\u000F\u001B\u000F\u0011\u000E", new ForAllTy(0L, new FunTy(new ConstructedTy(new Name("(\u000F\u0013\""), new List<CodexType>() { new TypeVar(0L) }), new TypeVar(0L)))))))(env_bind(e31, "\u001C\u0010\u0015\"", new ForAllTy(0L, new FunTy(new FunTy(new NothingTy(), new TypeVar(0L)), new ConstructedTy(new Name("(\u000F\u0013\""), new List<CodexType>() { new TypeVar(0L) })))))))(env_bind(e30, "\u0018\u0019\u0015\u0015\u000D\u0012\u000EI\u0016\u0011\u0015", new TextTy()))))(env_bind(e29, "\u001D\u000D\u000EI\u000D\u0012!", new FunTy(new TextTy(), new TextTy())))))(env_bind(e28, "\u001D\u000D\u000EI\u000F\u0015\u001D\u0013", new ListTy(new TextTy())))))(env_bind(e27, "\u000E\u000D$\u000EI\u0013\u000E\u000F\u0015\u000E\u0013I\u001B\u0011\u000E\u0014", new FunTy(new TextTy(), new FunTy(new TextTy(), new BooleanTy()))))))(env_bind(e26, "\u000E\u000D$\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013", new FunTy(new TextTy(), new FunTy(new TextTy(), new BooleanTy()))))))(env_bind(e25, "\u000E\u000D$\u000EI\u0013\u001F\u0017\u0011\u000E", new FunTy(new TextTy(), new FunTy(new TextTy(), new ListTy(new TextTy())))))))(env_bind(e24, "\u0017\u0011\u0013\u000EI\u001C\u0011\u0017\u000D\u0013", new FunTy(new TextTy(), new FunTy(new TextTy(), new ListTy(new TextTy())))))))(env_bind(e23a, "\u001C\u0011\u0017\u000DI\u000D$\u0011\u0013\u000E\u0013", new FunTy(new TextTy(), new BooleanTy())))))(env_bind(e23, "\u001B\u0015\u0011\u000E\u000DI \u0011\u0012\u000F\u0015\u001E", new FunTy(new ListTy(new IntegerTy()), new NothingTy())))))(env_bind(e22, "\u001B\u0015\u0011\u000E\u000DI\u001C\u0011\u0017\u000D", new FunTy(new TextTy(), new FunTy(new TextTy(), new NothingTy()))))))(env_bind(e21, "\u0015\u000D\u000F\u0016I\u001C\u0011\u0017\u000D", new FunTy(new TextTy(), new TextTy())))))(env_bind(e20, "\u0015\u000D\u000F\u0016I\u0017\u0011\u0012\u000D", new TextTy()))))(env_bind(e19, "\u001C\u0010\u0017\u0016", new ForAllTy(0L, new ForAllTy(1L, new FunTy(new FunTy(new TypeVar(1L), new FunTy(new TypeVar(0L), new TypeVar(1L))), new FunTy(new TypeVar(1L), new FunTy(new ListTy(new TypeVar(0L)), new TypeVar(1L))))))))))(env_bind(e18, "\u001C\u0011\u0017\u000E\u000D\u0015", new ForAllTy(0L, new FunTy(new FunTy(new TypeVar(0L), new BooleanTy()), new FunTy(new ListTy(new TypeVar(0L)), new ListTy(new TypeVar(0L)))))))))(env_bind(e17, "\u001A\u000F\u001F", new ForAllTy(0L, new ForAllTy(1L, new FunTy(new FunTy(new TypeVar(0L), new TypeVar(1L)), new FunTy(new ListTy(new TypeVar(0L)), new ListTy(new TypeVar(1L))))))))))(env_bind(e16d, "\u0017\u0011\u0013\u000EI\u000F\u000E", new ForAllTy(0L, new FunTy(new ListTy(new TypeVar(0L)), new FunTy(new IntegerTy(), new TypeVar(0L))))))))(env_bind(e16c, "\u0017\u0011\u0013\u000EI\u0013\u0012\u0010\u0018", new ForAllTy(0L, new FunTy(new ListTy(new TypeVar(0L)), new FunTy(new TypeVar(0L), new ListTy(new TypeVar(0L)))))))))(env_bind(e16b, "\u000E\u000D$\u000EI\u0018\u0010\u001A\u001F\u000F\u0015\u000D", new FunTy(new TextTy(), new FunTy(new TextTy(), new IntegerTy()))))))(env_bind(e16, "\u0017\u0011\u0013\u000EI\u0011\u0012\u0013\u000D\u0015\u000EI\u000F\u000E", new ForAllTy(0L, new FunTy(new ListTy(new TypeVar(0L)), new FunTy(new IntegerTy(), new FunTy(new TypeVar(0L), new ListTy(new TypeVar(0L))))))))))(env_bind(e15, "\u0017\u0011\u0013\u000EI\u0017\u000D\u0012\u001D\u000E\u0014", new ForAllTy(0L, new FunTy(new ListTy(new TypeVar(0L)), new IntegerTy()))))))(env_bind(e14, "\u001F\u0015\u0011\u0012\u000EI\u0017\u0011\u0012\u000D", new FunTy(new TextTy(), new NothingTy())))))(env_bind(e13, "\u0013\u0014\u0010\u001B", new ForAllTy(0L, new FunTy(new TypeVar(0L), new TextTy()))))))(env_bind(e12b, "\u000E\u000D$\u000EI\u000E\u0010I\u0011\u0012\u000E\u000D\u001D\u000D\u0015", new FunTy(new TextTy(), new IntegerTy())))))(env_bind(e12, "\u000E\u000D$\u000EI\u000E\u0010I\u0016\u0010\u0019 \u0017\u000DI \u0011\u000E\u0013", new FunTy(new TextTy(), new IntegerTy())))))(env_bind(e11, "\u000E\u000D$\u000EI\u0015\u000D\u001F\u0017\u000F\u0018\u000D", new FunTy(new TextTy(), new FunTy(new TextTy(), new FunTy(new TextTy(), new TextTy())))))))(env_bind(e10b, "\u0018\u0010\u0016\u000DI\u000E\u0010I\u0018\u0014\u000F\u0015", new FunTy(new IntegerTy(), new CharTy())))))(env_bind(e10, "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000DI\u000F\u000E", new FunTy(new TextTy(), new FunTy(new IntegerTy(), new IntegerTy()))))))(env_bind(e9, "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000D", new FunTy(new CharTy(), new IntegerTy())))))(env_bind(e8, "\u0011\u0013I\u001B\u0014\u0011\u000E\u000D\u0013\u001F\u000F\u0018\u000D", new FunTy(new CharTy(), new BooleanTy())))))(env_bind(e7, "\u0011\u0013I\u0016\u0011\u001D\u0011\u000E", new FunTy(new CharTy(), new BooleanTy())))))(env_bind(e6, "\u0011\u0013I\u0017\u000D\u000E\u000E\u000D\u0015", new FunTy(new CharTy(), new BooleanTy())))))(env_bind(e5b, "\u0013\u0019 \u0013\u000E\u0015\u0011\u0012\u001D", new FunTy(new TextTy(), new FunTy(new IntegerTy(), new FunTy(new IntegerTy(), new TextTy())))))))(env_bind(e5, "\u0018\u0014\u000F\u0015I\u000E\u0010I\u000E\u000D$\u000E", new FunTy(new CharTy(), new TextTy())))))(env_bind(e4, "\u0018\u0014\u000F\u0015I\u000F\u000E", new FunTy(new TextTy(), new FunTy(new IntegerTy(), new CharTy()))))))(env_bind(e3, "\u0011\u0012\u000E\u000D\u001D\u000D\u0015I\u000E\u0010I\u000E\u000D$\u000E", new FunTy(new IntegerTy(), new TextTy())))))(env_bind(e2, "\u000E\u000D$\u000EI\u0017\u000D\u0012\u001D\u000E\u0014", new FunTy(new TextTy(), new IntegerTy())))))(env_bind(e, "\u0012\u000D\u001D\u000F\u000E\u000D", new FunTy(new IntegerTy(), new IntegerTy())))))(empty_type_env());
     }
 
     public static UnificationState empty_unification_state()

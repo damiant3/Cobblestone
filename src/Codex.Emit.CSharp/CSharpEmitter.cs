@@ -67,6 +67,7 @@ public sealed partial class CSharpEmitter : ICodeEmitter
 
         EmitTypeDefinitions(sb, module);
         EmitCceRuntime(sb);
+        EmitBufRuntime(sb);
 
         sb.AppendLine($"public static class {className}");
         sb.AppendLine("{");
@@ -231,5 +232,30 @@ public sealed partial class CSharpEmitter : ICodeEmitter
     static void EmitCceRuntime(StringBuilder sb)
     {
         sb.Append(CceTable.GenerateRuntimeSource());
+    }
+
+    static void EmitBufRuntime(StringBuilder sb)
+    {
+        sb.AppendLine("static class _Buf {");
+        sb.AppendLine("    static byte[] _mem = new byte[16 * 1024 * 1024];");
+        sb.AppendLine("    static long _ptr = 0;");
+        sb.AppendLine("    public static long heap_save() => _ptr;");
+        sb.AppendLine("    public static long heap_restore(object p) { _ptr = (long)p; return 0; }");
+        sb.AppendLine("    public static long heap_advance(object n) { _ptr += (long)n; return 0; }");
+        sb.AppendLine("    public static long buf_write_byte(object b, object off, object v) { _mem[(long)b + (long)off] = (byte)(long)v; return (long)off + 1; }");
+        sb.AppendLine("    public static long buf_write_bytes(object b, object off, object vs) {");
+        sb.AppendLine("        var list = (List<long>)vs; long o = (long)off; long ba = (long)b;");
+        sb.AppendLine("        for (int i = 0; i < list.Count; i++) _mem[ba + o + i] = (byte)list[i];");
+        sb.AppendLine("        return o + list.Count;");
+        sb.AppendLine("    }");
+        sb.AppendLine("    public static List<long> buf_read_bytes(object b, object off, object n) {");
+        sb.AppendLine("        long ba = (long)b; long o = (long)off; int cnt = (int)(long)n;");
+        sb.AppendLine("        var r = new List<long>(cnt);");
+        sb.AppendLine("        for (int i = 0; i < cnt; i++) r.Add(_mem[ba + o + i]);");
+        sb.AppendLine("        return r;");
+        sb.AppendLine("    }");
+        sb.AppendLine("    public static List<long> list_with_capacity(object cap) => new List<long>((int)(long)cap);");
+        sb.AppendLine("}");
+        sb.AppendLine();
     }
 }

@@ -2328,6 +2328,110 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
                 return rd;
             }
 
+            // ── Memory management builtins ──────────────────────────
+            case "heap-save":
+            {
+                byte rd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd, HeapReg);
+                return rd;
+            }
+            case "heap-restore" when args.Count >= 1:
+            {
+                byte val = EmitExpr(args[0]);
+                X86_64Encoder.MovRR(m_text, HeapReg, val);
+                byte rd = AllocTemp();
+                X86_64Encoder.Li(m_text, rd, 0);
+                return rd;
+            }
+            case "heap-advance" when args.Count >= 1:
+            {
+                byte val = EmitExpr(args[0]);
+                X86_64Encoder.AddRR(m_text, HeapReg, val);
+                byte rd = AllocTemp();
+                X86_64Encoder.Li(m_text, rd, 0);
+                return rd;
+            }
+            case "list-with-capacity" when args.Count >= 1:
+            {
+                // List layout: [capacity @ -8 | count @ 0 | elem0 @ 8 | ...]
+                // Allocate (capacity + 1) * 8 bytes on heap
+                byte capReg = EmitExpr(args[0]);
+                byte rd = AllocTemp();
+                // Store capacity at [R10]
+                X86_64Encoder.MovStore(m_text, HeapReg, capReg, 0);
+                X86_64Encoder.AddRI(m_text, HeapReg, 8);
+                // rd = R10 (points to count word)
+                X86_64Encoder.MovRR(m_text, rd, HeapReg);
+                // Store count = 0
+                X86_64Encoder.Li(m_text, Reg.R11, 0);
+                X86_64Encoder.MovStore(m_text, HeapReg, Reg.R11, 0);
+                // Advance heap by capacity * 8 (for element slots)
+                X86_64Encoder.MovRR(m_text, Reg.R11, capReg);
+                X86_64Encoder.ShlRI(m_text, Reg.R11, 3);
+                X86_64Encoder.AddRI(m_text, Reg.R11, 8); // +8 for count word
+                X86_64Encoder.AddRR(m_text, HeapReg, Reg.R11);
+                return rd;
+            }
+            case "buf-write-byte" when args.Count >= 3:
+            {
+                // buf-write-byte base offset byte -> offset+1
+                byte baseReg = EmitExpr(args[0]);
+                int savedBase = AllocLocal();
+                StoreLocal(savedBase, baseReg);
+                byte offReg = EmitExpr(args[1]);
+                int savedOff = AllocLocal();
+                StoreLocal(savedOff, offReg);
+                byte byteReg = EmitExpr(args[2]);
+                // addr = base + offset
+                byte addr = LoadLocal(savedBase);
+                X86_64Encoder.AddRR(m_text, addr, LoadLocal(savedOff));
+                // mov [addr], byte (byte store)
+                X86_64Encoder.MovStoreByte(m_text, addr, byteReg, 0);
+                // return offset + 1
+                byte rd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd, LoadLocal(savedOff));
+                X86_64Encoder.AddRI(m_text, rd, 1);
+                return rd;
+            }
+            case "buf-write-bytes" when args.Count >= 3:
+            {
+                // buf-write-bytes base offset list -> new-offset
+                byte baseReg = EmitExpr(args[0]);
+                int savedBase = AllocLocal();
+                StoreLocal(savedBase, baseReg);
+                byte offReg = EmitExpr(args[1]);
+                int savedOff = AllocLocal();
+                StoreLocal(savedOff, offReg);
+                byte listReg = EmitExpr(args[2]);
+                // RDI = base, RSI = offset, RDX = list
+                X86_64Encoder.MovRR(m_text, Reg.RDX, listReg);
+                X86_64Encoder.MovRR(m_text, Reg.RSI, LoadLocal(savedOff));
+                X86_64Encoder.MovRR(m_text, Reg.RDI, LoadLocal(savedBase));
+                EmitCallTo("__buf_write_bytes");
+                byte rd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd, Reg.RAX);
+                return rd;
+            }
+            case "buf-read-bytes" when args.Count >= 3:
+            {
+                // buf-read-bytes base offset count -> List Integer
+                byte baseReg = EmitExpr(args[0]);
+                int savedBase = AllocLocal();
+                StoreLocal(savedBase, baseReg);
+                byte offReg = EmitExpr(args[1]);
+                int savedOff = AllocLocal();
+                StoreLocal(savedOff, offReg);
+                byte countReg = EmitExpr(args[2]);
+                // RDI = base, RSI = offset, RDX = count
+                X86_64Encoder.MovRR(m_text, Reg.RDX, countReg);
+                X86_64Encoder.MovRR(m_text, Reg.RSI, LoadLocal(savedOff));
+                X86_64Encoder.MovRR(m_text, Reg.RDI, LoadLocal(savedBase));
+                EmitCallTo("__buf_read_bytes");
+                byte rd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd, Reg.RAX);
+                return rd;
+            }
+
             default:
                 return byte.MaxValue;
         }
@@ -2924,6 +3028,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         EmitTextConcatListHelper();
         EmitTextSplitHelper();
         EmitIpowHelper();
+        EmitBufWriteBytesHelper();
+        EmitBufReadBytesHelper();
         EmitStackOverflowHandler();
     }
 
@@ -4141,6 +4247,122 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         int negPath = m_text.Count;
         PatchJcc(jmpNeg, negPath);
         X86_64Encoder.Li(m_text, Reg.RAX, 0);
+        X86_64Encoder.Ret(m_text);
+    }
+
+    void EmitBufWriteBytesHelper()
+    {
+        // __buf_write_bytes: rdi=base, rsi=offset, rdx=list → rax=new offset
+        // Copies list elements (bytes) into flat buffer at base+offset.
+        m_functionOffsets["__buf_write_bytes"] = m_text.Count;
+
+        X86_64Encoder.PushR(m_text, Reg.RBX);
+        X86_64Encoder.PushR(m_text, Reg.R12);
+        X86_64Encoder.PushR(m_text, Reg.R13);
+
+        // RBX = dest addr (base + offset)
+        X86_64Encoder.MovRR(m_text, Reg.RBX, Reg.RDI);
+        X86_64Encoder.AddRR(m_text, Reg.RBX, Reg.RSI);
+        // R12 = list ptr, R13 = count
+        X86_64Encoder.MovRR(m_text, Reg.R12, Reg.RDX);
+        X86_64Encoder.MovLoad(m_text, Reg.R13, Reg.R12, 0); // count
+        // RCX = i = 0
+        X86_64Encoder.Li(m_text, Reg.RCX, 0);
+
+        // if count == 0, skip
+        X86_64Encoder.CmpRR(m_text, Reg.RCX, Reg.R13);
+        int skipLoop = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+
+        int loopTop = m_text.Count;
+        // Load list[i] (8 bytes at list + 8 + i*8)
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RCX);
+        X86_64Encoder.ShlRI(m_text, Reg.RAX, 3);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.R12);
+        X86_64Encoder.MovLoad(m_text, Reg.RAX, Reg.RAX, 8); // list[i]
+        // Store byte at [RBX + i]
+        X86_64Encoder.MovStoreByte(m_text, Reg.RBX, Reg.RAX, 0);
+        X86_64Encoder.AddRI(m_text, Reg.RBX, 1);
+        // i++
+        X86_64Encoder.AddRI(m_text, Reg.RCX, 1);
+        X86_64Encoder.CmpRR(m_text, Reg.RCX, Reg.R13);
+        int jmpBack = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_L, 0);
+        PatchJcc(jmpBack, loopTop);
+
+        PatchJcc(skipLoop, m_text.Count);
+        // Return offset + count
+        X86_64Encoder.AddRR(m_text, Reg.RSI, Reg.R13);
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RSI);
+
+        X86_64Encoder.PopR(m_text, Reg.R13);
+        X86_64Encoder.PopR(m_text, Reg.R12);
+        X86_64Encoder.PopR(m_text, Reg.RBX);
+        X86_64Encoder.Ret(m_text);
+    }
+
+    void EmitBufReadBytesHelper()
+    {
+        // __buf_read_bytes: rdi=base, rsi=offset, rdx=count → rax=List Integer
+        // Allocates a list on heap (R10) and copies count bytes from base+offset.
+        m_functionOffsets["__buf_read_bytes"] = m_text.Count;
+
+        X86_64Encoder.PushR(m_text, Reg.RBX);
+        X86_64Encoder.PushR(m_text, Reg.R12);
+        X86_64Encoder.PushR(m_text, Reg.R13);
+        X86_64Encoder.PushR(m_text, Reg.R14);
+
+        // R12 = src addr (base + offset)
+        X86_64Encoder.MovRR(m_text, Reg.R12, Reg.RDI);
+        X86_64Encoder.AddRR(m_text, Reg.R12, Reg.RSI);
+        // R13 = count
+        X86_64Encoder.MovRR(m_text, Reg.R13, Reg.RDX);
+
+        // Allocate list: [capacity @ -8 | count @ 0 | elem0 @ 8 | ...]
+        // Store capacity at [R10]
+        X86_64Encoder.MovStore(m_text, HeapReg, Reg.R13, 0);
+        X86_64Encoder.AddRI(m_text, HeapReg, 8);
+        // RBX = list ptr (points to count word)
+        X86_64Encoder.MovRR(m_text, Reg.RBX, HeapReg);
+        // Store count
+        X86_64Encoder.MovStore(m_text, HeapReg, Reg.R13, 0);
+        // Advance heap past all element slots: heap += (count + 1) * 8
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.R13);
+        X86_64Encoder.AddRI(m_text, Reg.RAX, 1);
+        X86_64Encoder.ShlRI(m_text, Reg.RAX, 3);
+        X86_64Encoder.AddRR(m_text, HeapReg, Reg.RAX);
+
+        // Copy bytes: for i in 0..count: list[i] = *(src + i) (zero-extended byte)
+        X86_64Encoder.Li(m_text, Reg.RCX, 0);
+        X86_64Encoder.CmpRR(m_text, Reg.RCX, Reg.R13);
+        int skipCopy = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+
+        int copyTop = m_text.Count;
+        // R14 = zero-extended byte at [R12 + RCX]
+        X86_64Encoder.MovRR(m_text, Reg.R14, Reg.R12);
+        X86_64Encoder.AddRR(m_text, Reg.R14, Reg.RCX);
+        X86_64Encoder.MovzxByte(m_text, Reg.R14, Reg.R14, 0);
+        // Store at list[i]: [RBX + 8 + i*8]
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RCX);
+        X86_64Encoder.ShlRI(m_text, Reg.RAX, 3);
+        X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.RBX);
+        X86_64Encoder.MovStore(m_text, Reg.RAX, Reg.R14, 8);
+        // i++
+        X86_64Encoder.AddRI(m_text, Reg.RCX, 1);
+        X86_64Encoder.CmpRR(m_text, Reg.RCX, Reg.R13);
+        int jmpBack = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_L, 0);
+        PatchJcc(jmpBack, copyTop);
+
+        PatchJcc(skipCopy, m_text.Count);
+        // Return list ptr
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RBX);
+
+        X86_64Encoder.PopR(m_text, Reg.R14);
+        X86_64Encoder.PopR(m_text, Reg.R13);
+        X86_64Encoder.PopR(m_text, Reg.R12);
+        X86_64Encoder.PopR(m_text, Reg.RBX);
         X86_64Encoder.Ret(m_text);
     }
 

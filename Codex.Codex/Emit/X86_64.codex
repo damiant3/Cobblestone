@@ -47,10 +47,9 @@ Section: Record Types
   }
 
   CodegenState = record {
-   text-chunks : LinkedList (List Integer),
+   text-buf-addr : Integer,
    text-len : Integer,
-   rodata : List Integer,
-   rodata-chunks : LinkedList (List Integer),
+   rodata-buf-addr : Integer,
    rodata-len : Integer,
    func-offsets : List FuncOffset,
    call-patches : List CallPatch,
@@ -172,10 +171,9 @@ Section: State Helpers
   empty-codegen-state : CodegenState
   empty-codegen-state =
    CodegenState {
-   text-chunks = linked-list-empty 0,
+   text-buf-addr = 0,
    text-len = 0,
-   rodata = [],
-   rodata-chunks = linked-list-empty 0,
+   rodata-buf-addr = 0,
    rodata-len = 0,
    func-offsets = [],
    call-patches = [],
@@ -208,13 +206,9 @@ Section: State Helpers
 
   st-append-text : CodegenState -> List Integer -> CodegenState
   st-append-text (st) (bytes) =
-   let st1 = record-set st "text-chunks" (linked-list-push (st.text-chunks) bytes)
-   in record-set st1 "text-len" (st.text-len + list-length bytes)
+   let new-len = buf-write-bytes (st.text-buf-addr) (st.text-len) bytes
+   in record-set st "text-len" new-len
 
-  st-with-text : CodegenState -> List Integer -> CodegenState
-  st-with-text (st) (new-text) =
-   let st1 = record-set st "text-chunks" (linked-list-push (linked-list-empty 0) new-text)
-   in record-set st1 "text-len" (list-length new-text)
 
   record-func-offset : CodegenState -> Text -> CodegenState
   record-func-offset (st) (name) =
@@ -318,7 +312,7 @@ Section: Byte Patching
 
   st-add-deferred-patch : CodegenState -> PatchEntry -> CodegenState
   st-add-deferred-patch (st) (entry) =
-   record-set st "deferred-patches" ([entry] ++ st.deferred-patches)
+   record-set st "deferred-patches" (list-snoc (st.deferred-patches) entry)
 
   patch-jcc-at : CodegenState -> Integer -> Integer -> CodegenState
   patch-jcc-at (st) (jcc-pos) (target-pos) =
@@ -383,11 +377,6 @@ Section: Byte Patching
    in let rel32 = target-offset - (p.patch-offset + 5)
    in collect-call-patches patches offsets (i + 1) (list-snoc acc (make-i32-patch (p.patch-offset + 1) rel32))
 
-  patch-calls : CodegenState -> CodegenState
-  patch-calls (st) =
-   let entries = collect-call-patches (st.call-patches) (st.func-offsets) 0 []
-   in let flat = flatten-chunks (st.text-chunks)
-   in st-with-text st (apply-all-patches flat entries)
 
   align-16 : Integer -> Integer
   align-16 (n) =
@@ -591,10 +580,11 @@ Section: Expression Emission
   emit-text-lit : CodegenState -> Text -> EmitResult
   emit-text-lit (st) (value) =
    let len = text-length value
-   in let rodata-off = list-length (st.rodata) + st.rodata-len
+   in let rodata-off = st.rodata-len
    in let str-bytes = append-text-bytes (write-i64 len) value 0 len
    in let padded = pad-to-8 str-bytes
-   in let st1 = record-set (record-set st "rodata-chunks" (linked-list-push (st.rodata-chunks) padded)) "rodata-len" (st.rodata-len + list-length padded)
+   in let new-rodata-len = buf-write-bytes (st.rodata-buf-addr) (st.rodata-len) padded
+   in let st1 = record-set st "rodata-len" new-rodata-len
    in let fixup = RodataFixup {
     patch-offset = st1.text-len + 2,
     rodata-offset = rodata-off
@@ -919,6 +909,13 @@ Section: Builtin Detection
     else if name == "linked-list-empty" then True
     else if name == "linked-list-push" then True
     else if name == "linked-list-to-list" then True
+    else if name == "heap-save" then True
+    else if name == "heap-restore" then True
+    else if name == "heap-advance" then True
+    else if name == "list-with-capacity" then True
+    else if name == "buf-write-byte" then True
+    else if name == "buf-write-bytes" then True
+    else if name == "buf-read-bytes" then True
     else False
 
   is-builtin : Text -> Boolean
@@ -1313,6 +1310,119 @@ Section: Builtin Emission
    reg = loaded.reg
   }
 
+  emit-heap-save-builtin : CodegenState -> EmitResult
+  emit-heap-save-builtin (st) =
+   let rd = alloc-temp st
+   in EmitResult {
+   state = st-append-text (rd.state) (mov-rr (rd.reg) reg-r10),
+   reg = rd.reg
+  }
+
+  emit-heap-restore-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-heap-restore-builtin (st) (args) =
+   let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (r.state)
+   in let st1 = st-append-text (rd.state) (mov-rr reg-r10 (r.reg))
+   in EmitResult {
+   state = st-append-text st1 (li (rd.reg) 0),
+   reg = rd.reg
+  }
+
+  emit-heap-advance-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-heap-advance-builtin (st) (args) =
+   let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (r.state)
+   in let st1 = st-append-text (rd.state) (add-rr reg-r10 (r.reg))
+   in EmitResult {
+   state = st-append-text st1 (li (rd.reg) 0),
+   reg = rd.reg
+  }
+
+  emit-list-with-capacity-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-list-with-capacity-builtin (st) (args) =
+   let cap-result = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (cap-result.state)
+   in let st1 = st-append-text (rd.state) (mov-store reg-r10 (cap-result.reg) 0)
+   in let st2 = st-append-text st1 (add-ri reg-r10 8)
+   in let st3 = st-append-text st2 (mov-rr (rd.reg) reg-r10)
+   in let st4 = st-append-text st3 (li reg-r11 0)
+   in let st5 = st-append-text st4 (mov-store reg-r10 reg-r11 0)
+   in let st6 = st-append-text st5 (mov-rr reg-r11 (cap-result.reg))
+   in let st7 = st-append-text st6 (shl-ri reg-r11 3)
+   in let st8 = st-append-text st7 (add-ri reg-r11 8)
+   in EmitResult {
+   state = st-append-text st8 (add-rr reg-r10 reg-r11),
+   reg = rd.reg
+  }
+
+  emit-buf-write-byte-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-buf-write-byte-builtin (st) (args) =
+   let base-result = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let base-loc = alloc-local (base-result.state)
+   in let st1 = store-local (base-loc.state) (base-loc.reg) (base-result.reg)
+   in let off-result = emit-expr st1 (list-at args 1)
+   in let off-loc = alloc-local (off-result.state)
+   in let st2 = store-local (off-loc.state) (off-loc.reg) (off-result.reg)
+   in let byte-result = emit-expr st2 (list-at args 2)
+   in let byte-loc = alloc-local (byte-result.state)
+   in let st3 = store-local (byte-loc.state) (byte-loc.reg) (byte-result.reg)
+   in let addr = alloc-temp st3
+   in let base2 = load-local (addr.state) (base-loc.reg)
+   in let off2 = load-local (base2.state) (off-loc.reg)
+   in let st4 = st-append-text (off2.state) (mov-rr (addr.reg) (base2.reg))
+   in let st5 = st-append-text st4 (add-rr (addr.reg) (off2.reg))
+   in let byte2 = load-local st5 (byte-loc.reg)
+   in let st6 = st-append-text (byte2.state) (mov-store-byte (addr.reg) (byte2.reg) 0)
+   in let rd = alloc-temp st6
+   in let off3 = load-local (rd.state) (off-loc.reg)
+   in let st7 = st-append-text (off3.state) (mov-rr (rd.reg) (off3.reg))
+   in EmitResult {
+   state = st-append-text st7 (add-ri (rd.reg) 1),
+   reg = rd.reg
+  }
+
+  emit-buf-write-bytes-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-buf-write-bytes-builtin (st) (args) =
+   let base-result = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let base-loc = alloc-local (base-result.state)
+   in let st1 = store-local (base-loc.state) (base-loc.reg) (base-result.reg)
+   in let off-result = emit-expr st1 (list-at args 1)
+   in let off-loc = alloc-local (off-result.state)
+   in let st2 = store-local (off-loc.state) (off-loc.reg) (off-result.reg)
+   in let list-result = emit-expr st2 (list-at args 2)
+   in let st3 = st-append-text (list-result.state) (mov-rr reg-rdx (list-result.reg))
+   in let off2 = load-local st3 (off-loc.reg)
+   in let st4 = st-append-text (off2.state) (mov-rr reg-rsi (off2.reg))
+   in let base2 = load-local st4 (base-loc.reg)
+   in let st5 = st-append-text (base2.state) (mov-rr reg-rdi (base2.reg))
+   in let st6 = emit-call-to st5 "__buf_write_bytes"
+   in let rd = alloc-temp st6
+   in EmitResult {
+   state = st-append-text (rd.state) (mov-rr (rd.reg) reg-rax),
+   reg = rd.reg
+  }
+
+  emit-buf-read-bytes-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-buf-read-bytes-builtin (st) (args) =
+   let base-result = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let base-loc = alloc-local (base-result.state)
+   in let st1 = store-local (base-loc.state) (base-loc.reg) (base-result.reg)
+   in let off-result = emit-expr st1 (list-at args 1)
+   in let off-loc = alloc-local (off-result.state)
+   in let st2 = store-local (off-loc.state) (off-loc.reg) (off-result.reg)
+   in let count-result = emit-expr st2 (list-at args 2)
+   in let st3 = st-append-text (count-result.state) (mov-rr reg-rdx (count-result.reg))
+   in let off2 = load-local st3 (off-loc.reg)
+   in let st4 = st-append-text (off2.state) (mov-rr reg-rsi (off2.reg))
+   in let base2 = load-local st4 (base-loc.reg)
+   in let st5 = st-append-text (base2.state) (mov-rr reg-rdi (base2.reg))
+   in let st6 = emit-call-to st5 "__buf_read_bytes"
+   in let rd = alloc-temp st6
+   in EmitResult {
+   state = st-append-text (rd.state) (mov-rr (rd.reg) reg-rax),
+   reg = rd.reg
+  }
+
   emit-builtin : CodegenState -> Text -> List IRExpr -> EmitResult
   emit-builtin (st) (name) (args) =
     if name == "print-line" then emit-print-line-builtin st args
@@ -1353,6 +1463,13 @@ Section: Builtin Emission
     else if name == "linked-list-empty" then emit-linked-list-empty-builtin st args
     else if name == "linked-list-push" then emit-linked-list-push-builtin st args
     else if name == "linked-list-to-list" then emit-linked-list-to-list-builtin st args
+    else if name == "heap-save" then emit-heap-save-builtin st
+    else if name == "heap-restore" then emit-heap-restore-builtin st args
+    else if name == "heap-advance" then emit-heap-advance-builtin st args
+    else if name == "list-with-capacity" then emit-list-with-capacity-builtin st args
+    else if name == "buf-write-byte" then emit-buf-write-byte-builtin st args
+    else if name == "buf-write-bytes" then emit-buf-write-bytes-builtin st args
+    else if name == "buf-read-bytes" then emit-buf-read-bytes-builtin st args
     else emit-file-exists-builtin st args
 
 Section: Function Application
@@ -2239,15 +2356,39 @@ Section: Chapter Entry Point
    if j == clen then flatten-chunks-loop chunks next-i len acc
    else flatten-one-chunk chunk (j + 1) clen (list-snoc acc (list-at chunk j)) chunks next-i len
 
+  text-buf-size : Integer
+  text-buf-size = 2097152
+
+  rodata-buf-size : Integer
+  rodata-buf-size = 524288
+
+  apply-one-patch-buf : Integer -> PatchEntry -> Integer
+  apply-one-patch-buf (base-addr) (p) =
+   buf-write-byte base-addr (p.pos) (p.b0)
+   + buf-write-byte base-addr (p.pos + 1) (p.b1)
+   + buf-write-byte base-addr (p.pos + 2) (p.b2)
+   + buf-write-byte base-addr (p.pos + 3) (p.b3)
+
+  apply-all-patches-buf : Integer -> List PatchEntry -> Integer -> Integer
+  apply-all-patches-buf (base-addr) (patches) (i) =
+   if i >= list-length patches then 0
+   else let r = apply-one-patch-buf base-addr (list-at patches i)
+   in apply-all-patches-buf base-addr patches (i + 1)
+
   x86-64-emit-chapter : IRChapter -> List TypeBinding -> EmitChapterResult
   x86-64-emit-chapter (m) (tdefs) =
    let tramp = bare-metal-trampoline
+   in let text-addr = heap-save
+   in let ha1 = heap-advance text-buf-size
+   in let rodata-addr = heap-save
+   in let ha2 = heap-advance rodata-buf-size
+   in let bw1 = buf-write-bytes text-addr 0 (tramp.bytes)
+   in let bw2 = buf-write-bytes rodata-addr 0 init-rodata
    in let st0 = CodegenState {
-   text-chunks = linked-list-push (linked-list-empty 0) (tramp.bytes),
+   text-buf-addr = text-addr,
    text-len = list-length (tramp.bytes),
-   rodata = init-rodata,
-   rodata-chunks = linked-list-empty 0,
-   rodata-len = 0,
+   rodata-buf-addr = rodata-addr,
+   rodata-len = list-length init-rodata,
    func-offsets = [],
    call-patches = [],
    func-addr-fixups = [],
@@ -2285,14 +2426,14 @@ Section: Chapter Entry Point
    in let addr-entries = collect-func-addr-patches (st2.func-addr-fixups) (st2.func-offsets) bare-metal-load-addr 0 []
    in let rodata-vaddr = compute-rodata-vaddr-bare (st2.text-len)
    in let rodata-entries = collect-rodata-patches (st2.rodata-fixups) rodata-vaddr 0 []
-   in let flat-text = flatten-chunks (st2.text-chunks)
    in let oom-offset = lookup-func-offset (st2.func-offsets) "__out_of_memory"
    in let overflow-entries = collect-overflow-patches (st2.stack-overflow-checks) oom-offset 0 []
    in let all-patches = [far-jump-entry] ++ call-entries ++ addr-entries ++ rodata-entries ++ overflow-entries ++ (st2.deferred-patches)
-   in let patched-text = apply-all-patches flat-text all-patches
-   in let flat-rodata = (st2.rodata) ++ flatten-chunks (st2.rodata-chunks)
+   in let patched = apply-all-patches-buf text-addr all-patches 0
+   in let flat-text = buf-read-bytes text-addr 0 (st2.text-len)
+   in let flat-rodata = buf-read-bytes rodata-addr 0 (st2.rodata-len)
    in EmitChapterResult {
-    bytes = build-elf-32-bare patched-text flat-rodata 12,
+    bytes = build-elf-32-bare flat-text flat-rodata 12,
     errors = st2.errors
    }
 
