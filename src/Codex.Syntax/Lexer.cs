@@ -457,7 +457,7 @@ public sealed class Lexer
         {
             return new Token(TokenKind.NumberLiteral, text, span)
             {
-                LiteralValue = decimal.Parse(cleanText, System.Globalization.CultureInfo.InvariantCulture)
+                LiteralValue = double.Parse(cleanText, System.Globalization.CultureInfo.InvariantCulture)
             };
         }
         else

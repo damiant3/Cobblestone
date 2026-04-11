@@ -37,7 +37,7 @@ public abstract record IRExpr(CodexType Type);
 
 public sealed record IRIntegerLit(long Value) : IRExpr(IntegerType.s_instance);
 
-public sealed record IRNumberLit(decimal Value) : IRExpr(NumberType.s_instance);
+public sealed record IRNumberLit(double Value) : IRExpr(NumberType.s_instance);
 
 public sealed record IRTextLit(string Value) : IRExpr(TextType.s_instance);
 

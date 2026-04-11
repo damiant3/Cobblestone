@@ -12,7 +12,7 @@ public sealed partial class CSharpEmitter
         return type switch
         {
             IntegerType => "long",
-            NumberType => "decimal",
+            NumberType => "double",
             TextType => "string",
             BooleanType => "bool",
             CharType => "long",

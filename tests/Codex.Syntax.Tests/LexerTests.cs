@@ -45,7 +45,7 @@ public class LexerTests
         IReadOnlyList<Token> tokens = NonTrivialTokens("3.14");
         Assert.Single(tokens);
         Assert.Equal(TokenKind.NumberLiteral, tokens[0].Kind);
-        Assert.Equal(3.14m, tokens[0].LiteralValue);
+        Assert.Equal(3.14d, tokens[0].LiteralValue);
     }
 
     [Fact]

@@ -17,7 +17,8 @@ public sealed partial class CSharpEmitter
                 break;
 
             case IRNumberLit lit:
-                sb.Append($"{lit.Value}m");
+                sb.Append(lit.Value.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+                sb.Append('d');
                 break;
 
             case IRTextLit lit:
@@ -262,6 +263,12 @@ public sealed partial class CSharpEmitter
             sb.Append("long.Parse(_Cce.ToUnicode(");
             EmitExpr(sb, app.Argument, indent);
             sb.Append("))");
+        }
+        else if (app.Function is IRName fn11d && fn11d.Name == "text-to-double-bits")
+        {
+            sb.Append("BitConverter.DoubleToInt64Bits(double.Parse(_Cce.ToUnicode(");
+            EmitExpr(sb, app.Argument, indent);
+            sb.Append("), System.Globalization.CultureInfo.InvariantCulture))");
         }
         else if (app.Function is IRName fn11b && fn11b.Name == "integer-to-text")
         {

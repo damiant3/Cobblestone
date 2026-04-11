@@ -55,3 +55,4 @@
 | 2 | Verify IL backend CCE assumptions | Document decision: .NET Char.Is* vs CCE ranges |
 | 3 | NetworkSync test failures | 4 tests need self-contained peer or integration-only marking |
 | 4 | Reference compiler: `if ... then do ... else` parse failure | The C# reference compiler rejects `if X then do { multi-line } else Y` — reports `Expected an expression, found ElseKeyword`. The self-hosted compiler parses this correctly (verified via bootstrap). Workaround: extract multi-line `then` bodies into helper functions. Not blocking — workaround exists. |
+| 5 | `text-to-double-bits` bare metal implementation | On x86-64 bare metal, `text-to-double-bits` falls through to `__text_to_int` (integer parser). Need a proper `__text_to_double` runtime helper that parses decimal text to IEEE 754 bits. Not blocking — the builtin is only called at compile time when the compiler runs as .NET, not at runtime on bare metal. |

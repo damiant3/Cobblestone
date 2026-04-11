@@ -722,6 +722,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     byte EmitExpr(IRExpr expr) => expr switch
     {
         IRIntegerLit intLit => EmitIntegerLit(intLit.Value),
+        IRNumberLit numLit => EmitIntegerLit(BitConverter.DoubleToInt64Bits(numLit.Value)),
         IRBoolLit boolLit => EmitIntegerLit(boolLit.Value ? 1 : 0),
         IRCharLit charLit => EmitIntegerLit(CceTable.UnicharToCce(charLit.Value)),
         IRTextLit textLit => EmitTextLit(textLit.Value),
@@ -1674,6 +1675,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             case "show" when args.Count == 1:
                 return EmitShow(args[0]);
             case "text-to-integer":
+            case "text-to-double-bits":
                 if (args.Count >= 1)
                 {
                     byte ptr = EmitExpr(args[0]);

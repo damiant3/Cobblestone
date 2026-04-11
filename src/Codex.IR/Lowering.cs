@@ -188,7 +188,7 @@ public sealed class Lowering(
         return lit.Kind switch
         {
             LiteralKind.Integer => new IRIntegerLit(Convert.ToInt64(lit.Value)),
-            LiteralKind.Number => new IRNumberLit(Convert.ToDecimal(lit.Value)),
+            LiteralKind.Number => new IRNumberLit(Convert.ToDouble(lit.Value)),
             LiteralKind.Text => new IRTextLit((string)lit.Value),
             LiteralKind.Boolean => new IRBoolLit((bool)lit.Value),
             LiteralKind.Char => new IRCharLit(Convert.ToInt64(lit.Value)),
