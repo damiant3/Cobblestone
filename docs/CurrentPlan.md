@@ -1,6 +1,6 @@
 # Current Plan
 
-**Date**: 2026-04-07
+**Updated**: 2026-04-10
 
 ---
 
@@ -30,30 +30,21 @@ x86-64 binaries, achieving fixed-point self-compilation. No C# in the chain.
 
 | Phase | What | Status |
 |-------|------|--------|
-| 6 | Escape copy & regions | **Attempted twice, failed twice** — needs architectural rethink, not incremental fix |
-| 7 | Boot + I/O boundary (CCE tables, print-line, read/write, 5 deferred helpers) | Waiting on 6 |
+| 6 | Escape copy & regions | **Deferred to post-MM4** — attempted twice, needs architectural rethink |
+| 7 | Boot + I/O boundary (CCE tables, print-line, read/write, 5 deferred helpers) | **Done** |
 | 8 | Self-compilation fixed point | **MM4: cord is cut** |
 
-**Work style**: Single agent (Cam), one phase at a time. Other agents review
+**Work style**: Single agent (Hex), one phase at a time. Other agents review
 completed phases, not concurrent feature work. Minimize coordination overhead.
 
 **Pingpong remains the acceptance test.** Every phase that touches codegen
 must pass pingpong before moving on.
 
-### BLOCKING: Bootstrap2 Stage0 != Stage1
+### Sem-Equiv: PASS
 
-Semantic equivalence checker (`codex sem-equiv`) measures progress.
-Current: **98% body match** (1123/1144 matched, 18 diffs remain).
-
-Remaining issues:
-
-1. **CCE string content bugs** — **18 defs remain**. The bare-metal text
-   emitter produces wrong characters inside multi-character string literals.
-   `\n` emits as wrong CCE character, `\"` emits as `\I`. Concentrated
-   in csharp-emitter and csharp-emitter-expressions modules. Plus 5
-   redundant-paren normalizer issues and 2 cosmetic diffs.
-
-Until this is resolved, bootstrap2 cannot achieve stage0 == stage1.
+Semantic equivalence checker (`codex sem-equiv`): **1335/1335 defs matched,
+100% body equivalence across all 26 chapters.** CCE content bugs, paren
+normalization, and colliding name resolution are all fixed.
 
 ### After MM4: The OS Stack
 
@@ -96,7 +87,7 @@ Ordered by dependency, not priority.
 |------|-------------|
 | ARM64 backend | x86-64 is the critical path; revisit if hardware demands it |
 | RISC-V backend | x86-64 is the critical path; revisit if hardware demands it |
-| Escape copy rearchitect | Two attempts failed; needs coarser architectural change, not incremental fix |
+| Escape copy & regions (Phase 6) | Two attempts failed; needs coarser architectural change, not incremental fix |
 | Perf automation (--bench-check CI) | Low priority vs cutting the cord |
 | Codex.UI substrate | Medium-term — no design doc yet |
 | Codex.OS on real hardware (WHPX) | After MM4 and basic OS stack |
