@@ -537,6 +537,7 @@ Section: Expression Emission
   emit-expr (st) (expr) =
    when expr
     if IrIntLit (value) -> emit-int-lit st value
+    if IrNumLit (value) -> emit-int-lit st value
     if IrBoolLit (value) -> emit-int-lit st (if value then 1 else 0)
     if IrCharLit (value) -> emit-int-lit st value
     if IrTextLit (value) -> emit-text-lit st value
@@ -610,6 +611,33 @@ Section: Expression Emission
    in let st1 = st-append-text (rd.state) (mov-rr (rd.reg) (r.reg))
    in EmitResult {
    state = st-append-text st1 (neg-r (rd.reg)),
+   reg = rd.reg
+  }
+
+  emit-num-arith : CodegenState -> Integer -> Integer -> Integer -> EmitResult
+  emit-num-arith (st) (l-reg) (r-reg) (sse-op) =
+   let rd = alloc-temp st
+   in EmitResult {
+   state = st-append-text (rd.state) (
+    movq-to-xmm 0 l-reg
+    ++ movq-to-xmm 1 r-reg
+    ++ [242, 15, sse-op, modrm 3 0 1]
+    ++ movq-from-xmm (rd.reg) 0
+   ),
+   reg = rd.reg
+  }
+
+  emit-num-comparison : CodegenState -> Integer -> Integer -> Integer -> EmitResult
+  emit-num-comparison (st) (cc) (l-reg) (r-reg) =
+   let rd = alloc-temp st
+   in EmitResult {
+   state = st-append-text (rd.state) (
+    movq-to-xmm 0 l-reg
+    ++ movq-to-xmm 1 r-reg
+    ++ ucomisd-xmm 0 1
+    ++ setcc cc (rd.reg)
+    ++ movzx-byte-self (rd.reg)
+   ),
    reg = rd.reg
   }
 
@@ -725,6 +753,10 @@ Section: Expression Emission
      state = st-append-text (rd.state) (mov-rr reg-rax l-reg ++ cqo ++ idiv-r r-reg ++ mov-rr (rd.reg) reg-rax),
      reg = rd.reg
     }
+    if IrAddNum -> emit-num-arith st l-reg r-reg 88
+    if IrSubNum -> emit-num-arith st l-reg r-reg 92
+    if IrMulNum -> emit-num-arith st l-reg r-reg 89
+    if IrDivNum -> emit-num-arith st l-reg r-reg 94
     if IrEq -> emit-eq-op st l-reg r-reg operand-ty
     if IrNotEq -> emit-neq-op st l-reg r-reg operand-ty
     if IrLt -> emit-comparison st cc-l l-reg r-reg
@@ -762,6 +794,7 @@ Section: Expression Emission
    let resolved = resolve-to-sum-with-defs st ty
    in when resolved
     if TextTy -> emit-helper-call-2-regs st l-reg r-reg "__str_eq"
+    if NumberTy -> emit-num-comparison st cc-e l-reg r-reg
     if SumTy (sn) (cs) -> emit-sum-tag-comparison st cc-e l-reg r-reg
     if _ -> emit-comparison st cc-e l-reg r-reg
 
@@ -776,6 +809,7 @@ Section: Expression Emission
       state = st-append-text (rd.state) (cmp-ri (eq-result.reg) 0 ++ setcc cc-e (rd.reg) ++ movzx-byte-self (rd.reg)),
       reg = rd.reg
      }
+    if NumberTy -> emit-num-comparison st cc-ne l-reg r-reg
     if SumTy (sn) (cs) -> emit-sum-tag-comparison st cc-ne l-reg r-reg
     if _ -> emit-comparison st cc-ne l-reg r-reg
 

@@ -893,6 +893,14 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
                 EmitCallTo("__ipow");
                 X86_64Encoder.MovRR(m_text, rd, Reg.RAX);
                 break;
+            case IRBinaryOp.AddNum:
+                return EmitNumArith(lReg, rReg, X86_64Encoder.Addsd);
+            case IRBinaryOp.SubNum:
+                return EmitNumArith(lReg, rReg, X86_64Encoder.Subsd);
+            case IRBinaryOp.MulNum:
+                return EmitNumArith(lReg, rReg, X86_64Encoder.Mulsd);
+            case IRBinaryOp.DivNum:
+                return EmitNumArith(lReg, rReg, X86_64Encoder.Divsd);
             case IRBinaryOp.Eq:
                 return EmitComparison(X86_64Encoder.CC_E, lReg, rReg, bin.Left.Type);
             case IRBinaryOp.NotEq:
@@ -983,11 +991,33 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             return result;
         }
 
+        // Number types: compare via ucomisd (unsigned flags)
+        if (resolved is NumberType)
+        {
+            X86_64Encoder.MovqToXmm(m_text, 0, lReg);
+            X86_64Encoder.MovqToXmm(m_text, 1, rReg);
+            X86_64Encoder.Ucomisd(m_text, 0, 1);
+            byte resultNum = AllocTemp();
+            X86_64Encoder.Setcc(m_text, cc, resultNum);
+            X86_64Encoder.MovzxByteSelf(m_text, resultNum);
+            return resultNum;
+        }
+
         X86_64Encoder.CmpRR(m_text, lReg, rReg);
         byte resultDefault = AllocTemp();
         X86_64Encoder.Setcc(m_text, cc, resultDefault);
         X86_64Encoder.MovzxByteSelf(m_text, resultDefault);
         return resultDefault;
+    }
+
+    byte EmitNumArith(byte lReg, byte rReg, Action<List<byte>, byte, byte> sseOp)
+    {
+        X86_64Encoder.MovqToXmm(m_text, 0, lReg);
+        X86_64Encoder.MovqToXmm(m_text, 1, rReg);
+        sseOp(m_text, 0, 1);
+        byte rd = AllocTemp();
+        X86_64Encoder.MovqFromXmm(m_text, rd, 0);
+        return rd;
     }
 
     // ── Control flow ─────────────────────────────────────────────
