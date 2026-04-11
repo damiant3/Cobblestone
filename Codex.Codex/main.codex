@@ -184,16 +184,19 @@ Section: Streaming Pipeline v2 (token-retaining)
     body = unwrap-body body-result,
     chapter-slug = hdr.chapter-slug
    }
-   in do
-      print-def-parse-errors (hdr.name.text) parse-errs
-      let adef = desugar-def def
-      in let ir-def = lower-def adef all-types ust
-      in if is-error-body (ir-def.body) then print-line ("COMPILE-ERROR: def '" ++ ir-def.name ++ "' has error body: " ++ error-message (ir-def.body))
-      else let text = emit-def ir-def ctor-names
-      in if text == "" then emit-defs-streaming tokens headers all-types ust ctor-names (i + 1) len
-      else do
-         print-line text
-         emit-defs-streaming tokens headers all-types ust ctor-names (i + 1) len
+   in let adef = desugar-def def
+   in let ir-def = lower-def adef all-types ust
+   in emit-streaming-def-checked (hdr.name.text) parse-errs ir-def ctor-names tokens headers all-types ust (i + 1) len
+
+  emit-streaming-def-checked : Text -> List Diagnostic -> IRDef -> List Text -> List Token -> List DefHeader -> List TypeBinding -> UnificationState -> Integer -> Integer -> [Console] Nothing
+  emit-streaming-def-checked (def-name) (parse-errs) (ir-def) (ctor-names) (tokens) (headers) (all-types) (ust) (next-i) (len) =
+   if list-length parse-errs > 0 then print-def-parse-errors def-name parse-errs
+   else if is-error-body (ir-def.body) then print-line ("COMPILE-ERROR: def '" ++ ir-def.name ++ "' has error body: " ++ error-message (ir-def.body))
+   else let text = emit-def ir-def ctor-names
+   in if text == "" then emit-defs-streaming tokens headers all-types ust ctor-names next-i len
+   else do
+    print-line text
+    emit-defs-streaming tokens headers all-types ust ctor-names next-i len
 
   emit-defs-scoped : List Token -> List DefHeader -> List TypeBinding -> UnificationState -> List Text -> List Text -> List ChapterAssignment -> Integer -> Integer -> [Console] Nothing
   emit-defs-scoped (tokens) (headers) (all-types) (ust) (ctor-names) (colliding) (assignments) (i) (len) =
@@ -237,14 +240,17 @@ Section: Streaming Pipeline v2 (token-retaining)
     body = scoped-body,
     chapter-slug = hdr.chapter-slug
    }
-   in do
-      print-def-parse-errors (hdr.name.text) parse-errs
-      if is-error-body (scoped-def.body) then print-line ("COMPILE-ERROR: def '" ++ scoped-def.name ++ "' has error body: " ++ error-message (scoped-def.body))
-      else let text = emit-def scoped-def ctor-names
-      in if text == "" then emit-defs-same-chapter tokens headers all-types ust ctor-names colliding assignments rn (hdr.chapter-slug) (i + 1) len
-      else do
-         print-line text
-         emit-defs-same-chapter tokens headers all-types ust ctor-names colliding assignments rn (hdr.chapter-slug) (i + 1) len
+   in emit-scoped-def-checked (hdr.name.text) parse-errs scoped-def ctor-names tokens headers all-types ust colliding assignments rn (hdr.chapter-slug) (i + 1) len
+
+  emit-scoped-def-checked : Text -> List Diagnostic -> IRDef -> List Text -> List Token -> List DefHeader -> List TypeBinding -> UnificationState -> List Text -> List ChapterAssignment -> List RenameEntry -> Text -> Integer -> Integer -> [Console] Nothing
+  emit-scoped-def-checked (def-name) (parse-errs) (scoped-def) (ctor-names) (tokens) (headers) (all-types) (ust) (colliding) (assignments) (rn) (slug) (next-i) (len) =
+   if list-length parse-errs > 0 then print-def-parse-errors def-name parse-errs
+   else if is-error-body (scoped-def.body) then print-line ("COMPILE-ERROR: def '" ++ scoped-def.name ++ "' has error body: " ++ error-message (scoped-def.body))
+   else let text = emit-def scoped-def ctor-names
+   in if text == "" then emit-defs-same-chapter tokens headers all-types ust ctor-names colliding assignments rn slug next-i len
+   else do
+    print-line text
+    emit-defs-same-chapter tokens headers all-types ust ctor-names colliding assignments rn slug next-i len
 
   unwrap-body : ParseExprResult -> Expr
   unwrap-body (r) =

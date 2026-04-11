@@ -967,11 +967,26 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             return rd;
         }
 
+        // Sum types: compare tags at [ptr+0], not pointer identity
+        CodexType resolved = ResolveType(operandType);
+        if (resolved is SumType && (cc == X86_64Encoder.CC_E || cc == X86_64Encoder.CC_NE))
+        {
+            byte lTag = AllocTemp();
+            X86_64Encoder.MovLoad(m_text, lTag, lReg, 0);
+            byte rTag = AllocTemp();
+            X86_64Encoder.MovLoad(m_text, rTag, rReg, 0);
+            X86_64Encoder.CmpRR(m_text, lTag, rTag);
+            byte result = AllocTemp();
+            X86_64Encoder.Setcc(m_text, cc, result);
+            X86_64Encoder.MovzxByteSelf(m_text, result);
+            return result;
+        }
+
         X86_64Encoder.CmpRR(m_text, lReg, rReg);
-        byte result = AllocTemp();
-        X86_64Encoder.Setcc(m_text, cc, result);
-        X86_64Encoder.MovzxByteSelf(m_text, result);
-        return result;
+        byte resultDefault = AllocTemp();
+        X86_64Encoder.Setcc(m_text, cc, resultDefault);
+        X86_64Encoder.MovzxByteSelf(m_text, resultDefault);
+        return resultDefault;
     }
 
     // ── Control flow ─────────────────────────────────────────────
