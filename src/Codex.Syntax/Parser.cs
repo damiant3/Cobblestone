@@ -568,11 +568,27 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
             && t2.Kind == TokenKind.Colon;
     }
 
-    bool IsTypeArgStart() =>
-        Current.Kind is TokenKind.TypeIdentifier
-            or TokenKind.Identifier
-            or TokenKind.LeftParen
-            or TokenKind.IntegerLiteral;
+    bool IsTypeArgStart()
+    {
+        // A type argument can start with exactly the tokens that ParseTypeAtomSimple handles.
+        // Stop at arrows, operators, keywords, newlines, and delimiters — none of which
+        // can begin a type atom. This is not a heuristic: it matches the grammar exactly.
+        if (Current.Kind is not (TokenKind.TypeIdentifier or TokenKind.Identifier
+            or TokenKind.LeftParen or TokenKind.IntegerLiteral))
+            return false;
+
+        // Avoid consuming the next definition's name as a type argument.
+        // If the next token after this identifier is a colon, it's a definition signature,
+        // not a type argument.
+        if (Current.Kind is TokenKind.Identifier or TokenKind.TypeIdentifier)
+        {
+            Token? next = Peek(1);
+            if (next is not null && next.Kind == TokenKind.Colon)
+                return false;
+        }
+
+        return true;
+    }
 
     void SkipToNextDefinition()
     {
@@ -584,7 +600,11 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
                 if (Current.Kind is TokenKind.Identifier or TokenKind.TypeIdentifier
                     or TokenKind.ClaimKeyword or TokenKind.ProofKeyword)
                 {
-                    return;
+                    // Only stop at column 1 (top-level) or column 3 (prose-indented).
+                    // Indented tokens are continuations of the current definition.
+                    int col = Current.Span.Start.Column;
+                    if (col <= 3)
+                        return;
                 }
             }
             else
