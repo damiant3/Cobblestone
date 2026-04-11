@@ -51,6 +51,7 @@
 
 | # | Item | Notes |
 |---|------|-------|
-| 1 | Support negative number literals | The bare-metal backend does not handle negative integer literals (`-42`) as a single token. Currently requires `0 - 42`. The lexer, parser, and x86-64 emitter all need updates. |
+| 1 | ~~Support negative number literals~~ | **DONE** — negative literals work end-to-end, all `0 - 1` idioms replaced. |
 | 2 | Verify IL backend CCE assumptions | Document decision: .NET Char.Is* vs CCE ranges |
 | 3 | NetworkSync test failures | 4 tests need self-contained peer or integration-only marking |
+| 4 | Reference compiler: `if ... then do ... else` parse failure | The C# reference compiler rejects `if X then do { multi-line } else Y` — reports `Expected an expression, found ElseKeyword`. The self-hosted compiler parses this correctly (verified via bootstrap). Workaround: extract multi-line `then` bodies into helper functions. Not blocking — workaround exists. |
