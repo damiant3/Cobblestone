@@ -284,55 +284,15 @@ Section: Binary Compilation
    let tokens = tokenize source
    in let st = make-parse-state tokens
    in let scan = scan-document st
-   in let type-defs = map-list desugar-type-def (scan.type-defs)
-   in let headers = scan.def-headers
-   in let n-defs = list-length headers
-   in let assignments = build-all-assignments headers 0 []
+   in let assignments = build-all-assignments (scan.def-headers) 0 []
    in let colliding = find-colliding-names assignments
-   in let tdm = build-type-def-map type-defs 0 (list-length type-defs) []
-   in let tenv = register-type-defs empty-unification-state builtin-type-env tdm type-defs 0 (list-length type-defs)
-   in let env = register-def-headers (tenv.state) (tenv.env) tdm headers 0 (list-length headers)
-   in let ctor-types = collect-ctor-bindings type-defs 0 (list-length type-defs) []
-   in let all-types = ctor-types ++ env.env.bindings
-   in let cg0 = x86-64-init-codegen-streaming ctor-types n-defs
-   in let cg1 = emit-runtime-helpers cg0
-   in let watermark = heap-save
-   in let tramp = bare-metal-trampoline
-   in let cg2 = emit-defs-binary tokens headers all-types (env.state) colliding assignments cg1 watermark 0 n-defs
-   in x86-64-finalize cg2 (tramp.far-jump-patch-pos)
-
-  emit-defs-binary : List Token -> List DefHeader -> List TypeBinding -> UnificationState -> List Text -> List ChapterAssignment -> CodegenState -> Integer -> Integer -> Integer -> CodegenState
-  emit-defs-binary (tokens) (headers) (all-types) (ust) (colliding) (assignments) (cg) (watermark) (i) (n) =
-   if i >= n then cg
-   else let hdr = list-at headers i
-   in let rn = build-chapter-rename-map colliding assignments (hdr.chapter-slug)
-   in let body-st = ParseState {
-    tokens = tokens,
-    pos = hdr.body-pos,
-    errors = []
-   }
-   in let body-result = parse-expr body-st
-   in let def = Def {
-    name = hdr.name,
-    params = hdr.params,
-    ann = hdr.ann,
-    body = unwrap-body body-result,
-    chapter-slug = hdr.chapter-slug
-   }
-   in let adef = desugar-def def
-   in let ir-def = lower-def adef all-types ust
-   in let scoped-name = scope-def-name colliding assignments (ir-def.name) (hdr.chapter-slug)
-   in let scoped-body = rename-ir-expr rn (ir-def.body)
-   in let scoped = IRDef {
-    name = scoped-name,
-    params = ir-def.params,
-    type-val = ir-def.type-val,
-    body = scoped-body,
-    chapter-slug = hdr.chapter-slug
-   }
-   in let cg2 = emit-function cg scoped
-   in let hr = heap-restore watermark
-   in emit-defs-binary tokens headers all-types ust colliding assignments cg2 watermark (i + 1) n
+   in let doc = parse-document (make-parse-state tokens)
+   in let ast = desugar-document doc chapter-name
+   in let scoped = scope-achapter ast colliding assignments
+   in let check-result = check-chapter scoped
+   in let ir = lower-chapter scoped (check-result.types) (check-result.state)
+   in let tdefs = collect-ctor-bindings (scoped.type-defs) 0 (list-length (scoped.type-defs)) []
+   in x86-64-emit-chapter ir tdefs
 
   print-codegen-errors : List Diagnostic -> Integer -> Integer -> [Console] Nothing
   print-codegen-errors (errs) (i) (len) =
