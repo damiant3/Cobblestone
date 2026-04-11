@@ -24,7 +24,7 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
         "write-file", "write-binary", "file-exists", "list-files",
         "char-at", "char-to-text", "text-length", "substring",
         "is-letter", "is-digit", "is-whitespace",
-        "text-to-integer", "integer-to-text", "text-replace",
+        "text-to-integer", "text-to-double-bits", "integer-to-text", "text-replace",
         "text-split", "text-contains", "text-starts-with",
         "char-code", "char-code-at", "code-to-char",
         "list-length", "list-at", "list-insert-at", "list-snoc", "list-contains",
