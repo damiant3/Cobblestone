@@ -201,24 +201,37 @@ accumulator bag. The **streaming binary path** (`compile-to-binary` /
   sort it out; the streaming binary path is now at least visible for
   syntax errors, which was the largest-blind-spot class.
 
-### Phase 5 — Organized error output
+### Phase 5 — Organized error output (out of scope for the compiler)
 
-Reference currently dumps diagnostics as a flat list ordered by insertion.
-Add a single canonical presentation:
+Originally this section proposed grouping by file, sorting by source
+position, formatting related spans as indented notes, and rendering
+summary footers. That's moved out of the compiler's job.
 
-- Group by source file, then sort by source position.
-- Within a position, order: errors before warnings before info before hints.
-- Each entry: `<file>:<line>:<col>: <severity> <code>: <message>`
-- Related spans rendered as indented sub-entries: `  note: related at <file>:<line>:<col>`
-- Summary footer: total counts per severity, total compilation time.
+The compiler's responsibility ends at producing a faithful, ordered
+`List Diagnostic` with real spans and stable CDX codes. That's done
+in Phases 1–4. Grouping, sorting, pretty-printing, JSON serialization
+for editors, summary tables, and any other presentation concerns
+belong to a **post-compile tool** — `codex report` or an LSP server
+or an editor plugin — that consumes the structured diagnostic list.
 
-Also expose the structured list programmatically:
-- `List Diagnostic` for iteration
-- Map by code → list of occurrences (for "why does this code keep firing?")
-- Map by phase → list of occurrences (for "where is the pipeline breaking?")
+Why: a compiler that's also a report formatter accumulates policy
+decisions (sort order, group headers, severity emoji, color, unicode
+vs. ascii box drawing) that every consumer wants to override. Keeping
+the compiler's output as a flat well-spanned list of records means
+downstream tools can render however they need without fighting the
+compiler.
 
-Give both compilers a flag to emit diagnostics as JSON for tooling:
-`codex check file.codex --diagnostics-format=json`.
+Minimum the compiler needs to provide for external tooling:
+
+- Stable `Diagnostic { code, message, severity, span, related-spans,
+  provenance }` record — done.
+- Way to emit the bag as a machine-readable stream. JSON-over-stdout
+  when a flag is set is a reasonable shape. This is a small surface
+  and can live in the CLI driver, not the compiler proper.
+
+The richer presentation pipeline (grouping, sorting, caret rendering,
+summary stats) lives in a separate tool and is tracked outside this
+plan.
 
 ## File impact estimate
 
