@@ -166,6 +166,19 @@ if [ -n "$MISSING" ]; then
 else
     echo "PASS: all source definitions present in stage1"
 fi
+
+echo ""
+echo "Semantic equivalence: source vs stage1..."
+set +e
+"$DOTNET" "$WINREPO/tools/Codex.Cli/bin/Debug/net8.0/Codex.Cli.dll" sem-equiv "$WINREPO/build-output/bare-metal/source.codex" "$WINREPO/build-output/bare-metal/stage1.clean.codex"
+SEM_RC=$?
+set -e
+if [ $SEM_RC -eq 0 ]; then
+    echo "sem-equiv: PASS"
+else
+    echo "sem-equiv: FAIL (exit $SEM_RC)"
+    RESULT="FAIL"
+fi
 if [ "$RESULT" != "PASS" ]; then
     echo ""
     echo "Skipping stage 2 — semantic equivalence failed."
