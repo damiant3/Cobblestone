@@ -416,18 +416,18 @@ Section: Function Emission
   is-self-call : IRExpr -> Text -> Boolean
   is-self-call (expr) (func-name) =
    when expr
-    if IrApply (f) (a) (t) -> is-self-call f func-name
-    if IrName (n) (t) -> n == func-name
+    if IrApply (f) (a) (t) (sp) -> is-self-call f func-name
+    if IrName (n) (t) (sp) -> n == func-name
     if _ -> False
 
   has-tail-call : IRExpr -> Text -> Boolean
   has-tail-call (expr) (func-name) =
    when expr
-    if IrIf (c) (th) (el) (t) -> has-tail-call th func-name | has-tail-call el func-name
-    if IrLet (n) (t) (v) (b) -> has-tail-call b func-name
-    if IrMatch (s) (bs) (t) -> has-tail-call-branches bs func-name 0
-    if IrApply (f) (a) (t) -> is-self-call expr func-name
-    if IrDo (stmts) (t) -> has-tail-call-do stmts func-name
+    if IrIf (c) (th) (el) (t) (sp) -> has-tail-call th func-name | has-tail-call el func-name
+    if IrLet (n) (t) (v) (b) (sp) -> has-tail-call b func-name
+    if IrMatch (s) (bs) (t) (sp) -> has-tail-call-branches bs func-name 0
+    if IrApply (f) (a) (t) (sp) -> is-self-call expr func-name
+    if IrDo (stmts) (t) (sp) -> has-tail-call-do stmts func-name
     if _ -> False
 
   has-tail-call-do : List IRDoStmt -> Text -> Boolean
@@ -436,7 +436,7 @@ Section: Function Emission
    in if len == 0 then False
     else let last = list-at stmts (len - 1)
      in when last
-      if IrDoExec (e) -> has-tail-call e func-name
+      if IrDoExec (e) (sp) -> has-tail-call e func-name
       if _ -> False
 
   has-tail-call-branches : List IRBranch -> Text -> Integer -> Boolean
@@ -533,23 +533,23 @@ Section: Expression Emission
   emit-expr : CodegenState -> IRExpr -> EmitResult
   emit-expr (st) (expr) =
    when expr
-    if IrIntLit (value) -> emit-int-lit st value
-    if IrNumLit (value) -> emit-int-lit st value
-    if IrBoolLit (value) -> emit-int-lit st (if value then 1 else 0)
-    if IrCharLit (value) -> emit-int-lit st value
-    if IrTextLit (value) -> emit-text-lit st value
-    if IrNegate (operand) -> emit-negate st operand
-    if IrError (msg) (ty) -> emit-int-lit (st-add-error st cdx-ir-error msg) 0
-    if IrName (name) (ty) -> emit-name st name ty
-    if IrLet (name) (ty) (value) (body) -> emit-let st name value body
-    if IrBinary (op) (left) (right) (ty) -> emit-binary st op left right
-    if IrIf (cond) (then-e) (else-e) (ty) -> emit-if st cond then-e else-e
-    if IrApply (func) (arg) (ty) -> emit-apply st func arg ty
-    if IrRecord (rname) (fields) (ty) -> emit-record st fields ty
-    if IrFieldAccess (rec) (field) (ty) -> emit-field-access st rec field
-    if IrMatch (scrut) (branches) (ty) -> emit-match st scrut branches
-    if IrList (elems) (ty) -> emit-list st elems
-    if IrDo (stmts) (ty) -> emit-do-stmts st stmts 0 (list-length stmts)
+    if IrIntLit (value) (sp) -> emit-int-lit st value
+    if IrNumLit (value) (sp) -> emit-int-lit st value
+    if IrBoolLit (value) (sp) -> emit-int-lit st (if value then 1 else 0)
+    if IrCharLit (value) (sp) -> emit-int-lit st value
+    if IrTextLit (value) (sp) -> emit-text-lit st value
+    if IrNegate (operand) (sp) -> emit-negate st operand
+    if IrError (msg) (ty) (sp) -> emit-int-lit (st-add-error st cdx-ir-error msg) 0
+    if IrName (name) (ty) (sp) -> emit-name st name ty
+    if IrLet (name) (ty) (value) (body) (sp) -> emit-let st name value body
+    if IrBinary (op) (left) (right) (ty) (sp) -> emit-binary st op left right
+    if IrIf (cond) (then-e) (else-e) (ty) (sp) -> emit-if st cond then-e else-e
+    if IrApply (func) (arg) (ty) (sp) -> emit-apply st func arg ty
+    if IrRecord (rname) (fields) (ty) (sp) -> emit-record st fields ty
+    if IrFieldAccess (rec) (field) (ty) (sp) -> emit-field-access st rec field
+    if IrMatch (scrut) (branches) (ty) (sp) -> emit-match st scrut branches
+    if IrList (elems) (ty) (sp) -> emit-list st elems
+    if IrDo (stmts) (ty) (sp) -> emit-do-stmts st stmts 0 (list-length stmts)
     if _ -> EmitResult {
      state = st,
      reg = reg-rax
@@ -560,13 +560,13 @@ Section: Expression Emission
    if i == len then EmitResult { state = st, reg = reg-rax }
    else let s = list-at stmts i
     in when s
-     if IrDoBind (name) (ty) (val) ->
+     if IrDoBind (name) (ty) (val) (sp) ->
       let val-result = emit-expr st val
       in let loc = alloc-local (val-result.state)
        in let st1 = store-local (loc.state) (loc.reg) (val-result.reg)
         in let st2 = add-local st1 name (loc.reg)
          in emit-do-stmts st2 stmts (i + 1) len
-     if IrDoExec (e) ->
+     if IrDoExec (e) (sp) ->
       if i == len - 1 then emit-expr st e
       else let r = emit-expr st e
        in emit-do-stmts (r.state) stmts (i + 1) len
@@ -728,7 +728,7 @@ Section: Expression Emission
   flatten-append-chain : IRExpr -> List IRExpr -> List IRExpr
   flatten-append-chain (e) (acc) =
    when e
-    if IrBinary (op) (l) (r) (ty) ->
+    if IrBinary (op) (l) (r) (ty) (sp) ->
      if is-append-list-op op then flatten-append-chain l (flatten-append-chain r acc)
      else [e] ++ acc
     if _ -> [e] ++ acc
@@ -1360,7 +1360,7 @@ Section: Builtin Emission
    in let rec-loc = alloc-local (rec-result.state)
    in let st1 = store-local (rec-loc.state) (rec-loc.reg) (rec-result.reg)
    in let field-name = when (list-at args 1)
-    if IrTextLit (s) -> s
+    if IrTextLit (s) (sp) -> s
     if _ -> ""
    in let rec-ty = resolve-constructed-ty st (ir-expr-type (list-at args 0))
    in let field-idx = when rec-ty
@@ -1581,8 +1581,8 @@ Section: Function Application
   flatten-apply : IRExpr -> List IRExpr -> FlatApply
   flatten-apply (expr) (acc) =
    when expr
-    if IrApply (f) (a) (t) -> flatten-apply f ([a] ++ acc)
-    if IrName (n) (t) -> FlatApply {
+    if IrApply (f) (a) (t) (sp) -> flatten-apply f ([a] ++ acc)
+    if IrName (n) (t) (sp) -> FlatApply {
      func-name = n,
      args = acc
     }
@@ -1621,7 +1621,7 @@ Section: Function Application
 
   emit-apply : CodegenState -> IRExpr -> IRExpr -> CodexType -> EmitResult
   emit-apply (st) (func-expr) (arg-expr) (result-ty) =
-   let full-expr = IrApply func-expr arg-expr result-ty
+   let full-expr = IrApply func-expr arg-expr result-ty (ir-expr-span func-expr)
    in if st.tco.active & st.tco.in-tail-pos & is-self-call full-expr (st.tco.current-func) then emit-tail-call st func-expr arg-expr
    else let flat = flatten-apply func-expr [arg-expr]
    in if is-builtin (flat.func-name) then emit-builtin st (flat.func-name) (flat.args)
@@ -1680,7 +1680,7 @@ Section: Function Application
   flatten-tail-args : IRExpr -> List IRExpr -> List IRExpr
   flatten-tail-args (expr) (acc) =
    when expr
-    if IrApply (f) (a) (t) -> flatten-tail-args f ([a] ++ acc)
+    if IrApply (f) (a) (t) (sp) -> flatten-tail-args f ([a] ++ acc)
     if _ -> acc
 
   eval-tail-args : CodegenState -> List IRExpr -> List Integer -> Integer -> CodegenState
@@ -2014,11 +2014,11 @@ Section: Pattern Matching
   emit-pattern : CodegenState -> Integer -> IRPat -> CodexType -> EmitPatternResult
   emit-pattern (st) (scrut-loc) (pat) (scrut-ty) =
    when pat
-    if IrWildPat -> EmitPatternResult {
+    if IrWildPat (sp) -> EmitPatternResult {
      state = st,
      next-branch-patch = -1
     }
-    if IrVarPat (name) (ty) ->
+    if IrVarPat (name) (ty) (sp) ->
      let var-loc = alloc-local st
      in let loaded = load-local (var-loc.state) scrut-loc
      in let st1 = store-local (loaded.state) (var-loc.reg) (loaded.reg)
@@ -2026,7 +2026,7 @@ Section: Pattern Matching
       state = add-local st1 name (var-loc.reg),
       next-branch-patch = -1
      }
-    if IrCtorPat (name) (sub-pats) (ty) ->
+    if IrCtorPat (name) (sub-pats) (ty) (sp) ->
      let scrut-load = load-local st scrut-loc
      in let tag-reg = alloc-temp (scrut-load.state)
      in let st1 = st-append-text (tag-reg.state) (mov-load (tag-reg.reg) (scrut-load.reg) 0)
@@ -2044,7 +2044,7 @@ Section: Pattern Matching
       state = st4,
       next-branch-patch = jcc-pos
      }
-    if IrLitPat (value) (ty) ->
+    if IrLitPat (value) (ty) (sp) ->
      EmitPatternResult {
       state = st,
       next-branch-patch = -1
@@ -2055,7 +2055,7 @@ Section: Pattern Matching
    if i == list-length sub-pats then st
    else let sub = list-at sub-pats i
    in when sub
-     if IrVarPat (name) (ty) ->
+     if IrVarPat (name) (ty) (sp) ->
       let field-loc = alloc-local st
    in let scrut-load = load-local (field-loc.state) scrut-loc
    in let field-val = alloc-temp (scrut-load.state)

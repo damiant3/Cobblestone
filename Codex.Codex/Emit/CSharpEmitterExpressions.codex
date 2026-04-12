@@ -111,7 +111,7 @@ Section: Apply Chain
   collect-apply-chain : IRExpr -> List IRExpr -> ApplyChain
   collect-apply-chain (e) (acc) =
    when e
-    if IrApply (f) (a) (ty) -> collect-apply-chain f ([a] ++ acc)
+    if IrApply (f) (a) (ty) (sp) -> collect-apply-chain f ([a] ++ acc)
     if _ -> ApplyChain {
      root = e,
      args = acc
@@ -263,7 +263,7 @@ Section: Apply Chain
   emit-builtin-record-set : List IRExpr -> List ArityEntry -> Text
   emit-builtin-record-set (args) (arities) =
    let field-name = when (list-at args 1)
-    if IrTextLit (s) -> s
+    if IrTextLit (s) (sp) -> s
     if _ -> ""
    in "(" ++ emit-expr (list-at args 0) arities ++ " with { " ++ sanitize field-name ++ " = " ++ emit-expr (list-at args 2) arities ++ " })"
 
@@ -440,7 +440,7 @@ Section: Apply Chain
    in let root = chain.root
    in let args = chain.args
    in when root
-      if IrName (n) (ty) ->
+      if IrName (n) (ty) (sp) ->
        if is-builtin-name n then emit-builtin n args arities (ir-expr-type e)
        else if text-length n > 0 & is-upper-letter (char-at n 0) then let result-ty = ir-expr-type e
    in let ctor-type-args = extract-ctor-type-args result-ty
@@ -455,7 +455,7 @@ Section: Apply Chain
   emit-expr-curried : IRExpr -> List ArityEntry -> Text
   emit-expr-curried (e) (arities) =
    when e
-    if IrApply (f) (a) (ty) -> emit-expr f arities ++ "(" ++ emit-expr a arities ++ ")"
+    if IrApply (f) (a) (ty) (sp) -> emit-expr f arities ++ "(" ++ emit-expr a arities ++ ")"
     if _ -> emit-expr e arities
 
 Section: Expression Emission
@@ -463,27 +463,27 @@ Section: Expression Emission
   emit-expr : IRExpr -> List ArityEntry -> Text
   emit-expr (e) (arities) =
    when e
-    if IrIntLit (n) -> integer-to-text n ++ "L"
-    if IrNumLit (n) -> "BitConverter.Int64BitsToDouble(" ++ integer-to-text n ++ "L)"
-    if IrTextLit (s) -> "\"" ++ escape-text s ++ "\""
-    if IrBoolLit (b) -> if b then "true" else "false"
-    if IrCharLit (n) -> integer-to-text n
-    if IrName (n) (ty) -> if n == "read-line" then "_Cce.FromUnicode(Console.ReadLine() ?? \"\")" else if n == "get-args" then "Environment.GetCommandLineArgs().Select(_Cce.FromUnicode).ToList()" else if n == "current-dir" then "_Cce.FromUnicode(Directory.GetCurrentDirectory())" else if n == "heap-save" then "_Buf.heap_save()" else if n == "heap-restore" then "new Func<object, long>(_p => _Buf.heap_restore(_p))" else if n == "heap-advance" then "new Func<object, long>(_n => _Buf.heap_advance(_n))" else if n == "list-with-capacity" then "new Func<object, List<long>>(_c => _Buf.list_with_capacity(_c))" else if n == "buf-write-byte" then "new Func<object, Func<object, Func<object, long>>>(_b => _o => _v => _Buf.buf_write_byte(_b, _o, _v))" else if n == "buf-write-bytes" then "new Func<object, Func<object, Func<object, long>>>(_b => _o => _vs => _Buf.buf_write_bytes(_b, _o, _vs))" else if n == "buf-read-bytes" then "new Func<object, Func<object, Func<object, List<long>>>>(_b => _o => _n => _Buf.buf_read_bytes(_b, _o, _n))" else if text-length n > 0 & is-upper-letter (char-at n 0) then "new " ++ sanitize n ++ "()" else if lookup-arity arities n == 0 then sanitize n ++ "()" else let ar = lookup-arity arities n in if ar >= 2 then emit-partial-wrappers 0 ar ++ sanitize n ++ "(" ++ emit-partial-params 0 ar ++ ")" else sanitize n
-    if IrBinary (op) (l) (r) (ty) -> emit-binary op l r ty arities
-    if IrNegate (operand) -> "(-" ++ emit-expr operand arities ++ ")"
-    if IrIf (c) (t) (el) (ty) -> "(" ++ emit-expr c arities ++ " ? " ++ emit-expr t arities ++ " : " ++ emit-expr el arities ++ ")"
-    if IrLet (name) (ty) (val) (body) -> emit-let name ty val body arities
-    if IrApply (f) (a) (ty) -> emit-apply e arities
-    if IrLambda (params) (body) (ty) -> emit-lambda params body arities
-    if IrList (elems) (ty) -> emit-list elems ty arities
-    if IrMatch (scrut) (branches) (ty) -> emit-match scrut branches ty arities
-    if IrDo (stmts) (ty) -> emit-do stmts ty arities
-    if IrHandle (eff) (body) (clauses) (ty) -> emit-handle eff body clauses ty arities
-    if IrRecord (name) (fields) (ty) -> emit-record name fields arities
-    if IrFieldAccess (rec) (field) (ty) -> emit-expr rec arities ++ "." ++ sanitize field
-    if IrFork (body) (ty) -> "Task.Run(() => (" ++ emit-expr body arities ++ ")(null))"
-    if IrAwait (task) (ty) -> "(" ++ emit-expr task arities ++ ").Result"
-    if IrError (msg) (ty) -> "/* error: " ++ msg ++ " */ default"
+    if IrIntLit (n) (sp) -> integer-to-text n ++ "L"
+    if IrNumLit (n) (sp) -> "BitConverter.Int64BitsToDouble(" ++ integer-to-text n ++ "L)"
+    if IrTextLit (s) (sp) -> "\"" ++ escape-text s ++ "\""
+    if IrBoolLit (b) (sp) -> if b then "true" else "false"
+    if IrCharLit (n) (sp) -> integer-to-text n
+    if IrName (n) (ty) (sp) -> if n == "read-line" then "_Cce.FromUnicode(Console.ReadLine() ?? \"\")" else if n == "get-args" then "Environment.GetCommandLineArgs().Select(_Cce.FromUnicode).ToList()" else if n == "current-dir" then "_Cce.FromUnicode(Directory.GetCurrentDirectory())" else if n == "heap-save" then "_Buf.heap_save()" else if n == "heap-restore" then "new Func<object, long>(_p => _Buf.heap_restore(_p))" else if n == "heap-advance" then "new Func<object, long>(_n => _Buf.heap_advance(_n))" else if n == "list-with-capacity" then "new Func<object, List<long>>(_c => _Buf.list_with_capacity(_c))" else if n == "buf-write-byte" then "new Func<object, Func<object, Func<object, long>>>(_b => _o => _v => _Buf.buf_write_byte(_b, _o, _v))" else if n == "buf-write-bytes" then "new Func<object, Func<object, Func<object, long>>>(_b => _o => _vs => _Buf.buf_write_bytes(_b, _o, _vs))" else if n == "buf-read-bytes" then "new Func<object, Func<object, Func<object, List<long>>>>(_b => _o => _n => _Buf.buf_read_bytes(_b, _o, _n))" else if text-length n > 0 & is-upper-letter (char-at n 0) then "new " ++ sanitize n ++ "()" else if lookup-arity arities n == 0 then sanitize n ++ "()" else let ar = lookup-arity arities n in if ar >= 2 then emit-partial-wrappers 0 ar ++ sanitize n ++ "(" ++ emit-partial-params 0 ar ++ ")" else sanitize n
+    if IrBinary (op) (l) (r) (ty) (sp) -> emit-binary op l r ty arities
+    if IrNegate (operand) (sp) -> "(-" ++ emit-expr operand arities ++ ")"
+    if IrIf (c) (t) (el) (ty) (sp) -> "(" ++ emit-expr c arities ++ " ? " ++ emit-expr t arities ++ " : " ++ emit-expr el arities ++ ")"
+    if IrLet (name) (ty) (val) (body) (sp) -> emit-let name ty val body arities
+    if IrApply (f) (a) (ty) (sp) -> emit-apply e arities
+    if IrLambda (params) (body) (ty) (sp) -> emit-lambda params body arities
+    if IrList (elems) (ty) (sp) -> emit-list elems ty arities
+    if IrMatch (scrut) (branches) (ty) (sp) -> emit-match scrut branches ty arities
+    if IrDo (stmts) (ty) (sp) -> emit-do stmts ty arities
+    if IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-handle eff body clauses ty arities
+    if IrRecord (name) (fields) (ty) (sp) -> emit-record name fields arities
+    if IrFieldAccess (rec) (field) (ty) (sp) -> emit-expr rec arities ++ "." ++ sanitize field
+    if IrFork (body) (ty) (sp) -> "Task.Run(() => (" ++ emit-expr body arities ++ ")(null))"
+    if IrAwait (task) (ty) (sp) -> "(" ++ emit-expr task arities ++ ").Result"
+    if IrError (msg) (ty) (sp) -> "/* error: " ++ msg ++ " */ default"
 
   hex-digit : Integer -> Text
   hex-digit (n) =
@@ -601,8 +601,8 @@ Section: Expression Emission
   is-catch-all : IRPat -> Boolean
   is-catch-all (p) =
    when p
-    if IrWildPat -> True
-    if IrVarPat (name) (ty) -> True
+    if IrWildPat (sp) -> True
+    if IrVarPat (name) (ty) (sp) -> True
     if _ -> False
 
   has-any-catch-all : List IRBranch -> Integer -> Boolean
@@ -614,12 +614,12 @@ Section: Expression Emission
   emit-pattern : IRPat -> Text
   emit-pattern (p) =
    when p
-    if IrVarPat (name) (ty) -> cs-type ty ++ " " ++ sanitize name
-    if IrLitPat (text) (ty) -> text
-    if IrCtorPat (name) (subs) (ty) ->
+    if IrVarPat (name) (ty) (sp) -> cs-type ty ++ " " ++ sanitize name
+    if IrLitPat (text) (ty) (sp) -> text
+    if IrCtorPat (name) (subs) (ty) (sp) ->
      if list-length subs == 0 then sanitize name ++ " { }"
       else sanitize name ++ "(" ++ emit-sub-patterns subs 0 ++ ")"
-    if IrWildPat -> "_"
+    if IrWildPat (sp) -> "_"
 
   emit-sub-patterns : List IRPat -> Integer -> Text
   emit-sub-patterns (subs) (i) =
@@ -630,10 +630,10 @@ Section: Expression Emission
   emit-sub-pattern : IRPat -> Text
   emit-sub-pattern (p) =
    when p
-    if IrVarPat (name) (ty) -> "var " ++ sanitize name
-    if IrCtorPat (name) (subs) (ty) -> emit-pattern p
-    if IrWildPat -> "_"
-    if IrLitPat (text) (ty) -> text
+    if IrVarPat (name) (ty) (sp) -> "var " ++ sanitize name
+    if IrCtorPat (name) (subs) (ty) (sp) -> emit-pattern p
+    if IrWildPat (sp) -> "_"
+    if IrLitPat (text) (ty) (sp) -> text
 
   emit-do : List IRDoStmt -> CodexType -> List ArityEntry -> Text
   emit-do (stmts) (ty) (arities) =
@@ -657,8 +657,8 @@ Section: Expression Emission
   emit-do-stmt : IRDoStmt -> Boolean -> List ArityEntry -> Text
   emit-do-stmt (s) (use-return) (arities) =
    when s
-    if IrDoBind (name) (ty) (val) -> "var " ++ sanitize name ++ " = " ++ emit-expr val arities ++ ";"
-    if IrDoExec (e) ->
+    if IrDoBind (name) (ty) (val) (sp) -> "var " ++ sanitize name ++ " = " ++ emit-expr val arities ++ ";"
+    if IrDoExec (e) (sp) ->
      if use-return then "return " ++ emit-expr e arities ++ ";"
      else emit-expr e arities ++ ";"
 

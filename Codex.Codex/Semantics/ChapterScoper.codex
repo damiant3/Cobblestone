@@ -124,37 +124,37 @@ Section: IR Expression Renaming
   rename-ir-expr : List RenameEntry -> IRExpr -> IRExpr
   rename-ir-expr (rn) (e) =
    when e
-    if IrIntLit (v) -> e
-    if IrNumLit (v) -> e
-    if IrTextLit (v) -> e
-    if IrBoolLit (v) -> e
-    if IrCharLit (v) -> e
-    if IrError (msg) (ty) -> e
-    if IrFork (x) (ty) -> IrFork (rename-ir-expr rn x) ty
-    if IrAwait (x) (ty) -> IrAwait (rename-ir-expr rn x) ty
-    if IrNegate (x) -> IrNegate (rename-ir-expr rn x)
-    if IrName (n) (ty) -> IrName (rename-lookup rn n) ty
-    if IrBinary (op) (l) (r) (ty) -> IrBinary op (rename-ir-expr rn l) (rename-ir-expr rn r) ty
-    if IrApply (f) (a) (ty) -> IrApply (rename-ir-expr rn f) (rename-ir-expr rn a) ty
-    if IrIf (c) (t) (el) (ty) -> IrIf (rename-ir-expr rn c) (rename-ir-expr rn t) (rename-ir-expr rn el) ty
-    if IrFieldAccess (rec) (field) (ty) -> IrFieldAccess (rename-ir-expr rn rec) field ty
-    if IrLet (nm) (ty) (val) (body) -> rename-ir-let rn nm ty val body
-    if IrLambda (params) (body) (ty) -> rename-ir-lambda rn params body ty
-    if IrMatch (scrut) (branches) (ty) -> IrMatch (rename-ir-expr rn scrut) (rename-ir-branches rn branches 0 []) ty
-    if IrList (elems) (ty) -> IrList (rename-ir-exprs rn elems 0 []) ty
-    if IrRecord (nm) (fields) (ty) -> IrRecord nm (rename-ir-fields rn fields 0 []) ty
-    if IrDo (stmts) (ty) -> IrDo (rename-ir-do-stmts rn stmts 0 []) ty
-    if IrHandle (eff) (body) (clauses) (ty) -> IrHandle eff (rename-ir-expr rn body) (rename-ir-handle-clauses rn clauses 0 []) ty
+    if IrIntLit (v) (sp) -> e
+    if IrNumLit (v) (sp) -> e
+    if IrTextLit (v) (sp) -> e
+    if IrBoolLit (v) (sp) -> e
+    if IrCharLit (v) (sp) -> e
+    if IrError (msg) (ty) (sp) -> e
+    if IrFork (x) (ty) (sp) -> IrFork (rename-ir-expr rn x) ty sp
+    if IrAwait (x) (ty) (sp) -> IrAwait (rename-ir-expr rn x) ty sp
+    if IrNegate (x) (sp) -> IrNegate (rename-ir-expr rn x) sp
+    if IrName (n) (ty) (sp) -> IrName (rename-lookup rn n) ty sp
+    if IrBinary (op) (l) (r) (ty) (sp) -> IrBinary op (rename-ir-expr rn l) (rename-ir-expr rn r) ty sp
+    if IrApply (f) (a) (ty) (sp) -> IrApply (rename-ir-expr rn f) (rename-ir-expr rn a) ty sp
+    if IrIf (c) (t) (el) (ty) (sp) -> IrIf (rename-ir-expr rn c) (rename-ir-expr rn t) (rename-ir-expr rn el) ty sp
+    if IrFieldAccess (rec) (field) (ty) (sp) -> IrFieldAccess (rename-ir-expr rn rec) field ty sp
+    if IrLet (nm) (ty) (val) (body) (sp) -> rename-ir-let rn nm ty val body sp
+    if IrLambda (params) (body) (ty) (sp) -> rename-ir-lambda rn params body ty sp
+    if IrMatch (scrut) (branches) (ty) (sp) -> IrMatch (rename-ir-expr rn scrut) (rename-ir-branches rn branches 0 []) ty sp
+    if IrList (elems) (ty) (sp) -> IrList (rename-ir-exprs rn elems 0 []) ty sp
+    if IrRecord (nm) (fields) (ty) (sp) -> IrRecord nm (rename-ir-fields rn fields 0 []) ty sp
+    if IrDo (stmts) (ty) (sp) -> IrDo (rename-ir-do-stmts rn stmts 0 []) ty sp
+    if IrHandle (eff) (body) (clauses) (ty) (sp) -> IrHandle eff (rename-ir-expr rn body) (rename-ir-handle-clauses rn clauses 0 []) ty sp
 
-  rename-ir-let : List RenameEntry -> Text -> CodexType -> IRExpr -> IRExpr -> IRExpr
-  rename-ir-let (rn) (nm) (ty) (val) (body) =
+  rename-ir-let : List RenameEntry -> Text -> CodexType -> IRExpr -> IRExpr -> SourceSpan -> IRExpr
+  rename-ir-let (rn) (nm) (ty) (val) (body) (sp) =
    let rn2 = remove-rename rn nm
-   in IrLet nm ty (rename-ir-expr rn val) (rename-ir-expr rn2 body)
+   in IrLet nm ty (rename-ir-expr rn val) (rename-ir-expr rn2 body) sp
 
-  rename-ir-lambda : List RenameEntry -> List IRParam -> IRExpr -> CodexType -> IRExpr
-  rename-ir-lambda (rn) (params) (body) (ty) =
+  rename-ir-lambda : List RenameEntry -> List IRParam -> IRExpr -> CodexType -> SourceSpan -> IRExpr
+  rename-ir-lambda (rn) (params) (body) (ty) (sp) =
    let rn2 = remove-renames-for-params rn params 0
-   in IrLambda params (rename-ir-expr rn2 body) ty
+   in IrLambda params (rename-ir-expr rn2 body) ty sp
 
 Section: IR Collection Renaming
   rename-ir-exprs : List RenameEntry -> List IRExpr -> Integer -> List IRExpr -> List IRExpr
@@ -168,7 +168,8 @@ Section: IR Collection Renaming
    else let f = list-at fields i
    in rename-ir-fields rn fields (i + 1) (list-snoc acc (IRFieldVal {
     name = f.name,
-    value = rename-ir-expr rn (f.value)
+    value = rename-ir-expr rn (f.value),
+    span = f.span
    }))
 
   rename-ir-branches : List RenameEntry -> List IRBranch -> Integer -> List IRBranch -> List IRBranch
@@ -178,16 +179,17 @@ Section: IR Collection Renaming
    in let rn2 = remove-renames-for-pat rn (b.pattern)
    in rename-ir-branches rn branches (i + 1) (list-snoc acc (IRBranch {
     pattern = b.pattern,
-    body = rename-ir-expr rn2 (b.body)
+    body = rename-ir-expr rn2 (b.body),
+    span = b.span
    }))
 
   remove-renames-for-pat : List RenameEntry -> IRPat -> List RenameEntry
   remove-renames-for-pat (rn) (p) =
    when p
-    if IrVarPat (nm) (ty) -> remove-rename rn nm
-    if IrCtorPat (nm) (subs) (ty) -> remove-renames-for-pats rn subs 0
-    if IrLitPat (v) (ty) -> rn
-    if IrWildPat -> rn
+    if IrVarPat (nm) (ty) (sp) -> remove-rename rn nm
+    if IrCtorPat (nm) (subs) (ty) (sp) -> remove-renames-for-pats rn subs 0
+    if IrLitPat (v) (ty) (sp) -> rn
+    if IrWildPat (sp) -> rn
 
   remove-renames-for-pats : List RenameEntry -> List IRPat -> Integer -> List RenameEntry
   remove-renames-for-pats (rn) (pats) (i) =
@@ -197,13 +199,13 @@ Section: IR Collection Renaming
   rename-ir-do-stmts : List RenameEntry -> List IRDoStmt -> Integer -> List IRDoStmt -> List IRDoStmt
   rename-ir-do-stmts (rn) (stmts) (i) (acc) =
    if i == list-length stmts then acc
-   else let s = list-at stmts i
-   in when s
-    if IrDoBind (nm) (ty) (expr) ->
+   else let stmt = list-at stmts i
+   in when stmt
+    if IrDoBind (nm) (ty) (expr) (sp) ->
      let rn2 = remove-rename rn nm
-   in rename-ir-do-stmts rn2 stmts (i + 1) (list-snoc acc (IrDoBind nm ty (rename-ir-expr rn expr)))
-    if IrDoExec (expr) ->
-     rename-ir-do-stmts rn stmts (i + 1) (list-snoc acc (IrDoExec (rename-ir-expr rn expr)))
+   in rename-ir-do-stmts rn2 stmts (i + 1) (list-snoc acc (IrDoBind nm ty (rename-ir-expr rn expr) sp))
+    if IrDoExec (expr) (sp) ->
+     rename-ir-do-stmts rn stmts (i + 1) (list-snoc acc (IrDoExec (rename-ir-expr rn expr) sp))
 
   rename-ir-handle-clauses : List RenameEntry -> List IRHandleClause -> Integer -> List IRHandleClause -> List IRHandleClause
   rename-ir-handle-clauses (rn) (clauses) (i) (acc) =
@@ -213,7 +215,8 @@ Section: IR Collection Renaming
    in rename-ir-handle-clauses rn clauses (i + 1) (list-snoc acc (IRHandleClause {
     op-name = c.op-name,
     resume-name = c.resume-name,
-    body = rename-ir-expr rn2 (c.body)
+    body = rename-ir-expr rn2 (c.body),
+    span = c.span
    }))
 
 Section: Chapter Scoping Pipeline
@@ -272,7 +275,8 @@ Section: Global Scope (non-streaming)
     defs = scope-ir-defs (ir.defs) colliding assignments "" [] 0 [],
     chapter-title = ir.chapter-title,
     prose = ir.prose,
-    section-titles = ir.section-titles
+    section-titles = ir.section-titles,
+    span = ir.span
    }
 
   scope-ir-defs : List IRDef -> List Text -> List ChapterAssignment -> Text -> List RenameEntry -> Integer -> List IRDef -> List IRDef
@@ -288,7 +292,8 @@ Section: Global Scope (non-streaming)
     params = d.params,
     type-val = d.type-val,
     body = new-body,
-    chapter-slug = d.chapter-slug
+    chapter-slug = d.chapter-slug,
+    span = d.span
    }))
 
 Section: AST Expression Renaming

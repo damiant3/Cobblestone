@@ -1,7 +1,8 @@
 Chapter: IR Chapter
 
  The intermediate representation sits between the typed AST and code
- emission. Every node carries its resolved type.
+ emission. Every node carries its resolved type and a SourceSpan
+ inherited from the AST node it was lowered from.
 
 Section: IR Expressions
   IRBinaryOp =
@@ -13,57 +14,61 @@ Section: IR Expressions
    | IrConsList
 
   IRExpr =
-   | IrIntLit (Integer)
-   | IrNumLit (Integer)
-   | IrTextLit (Text)
-   | IrBoolLit (Boolean)
-   | IrCharLit (Integer)
-   | IrName (Text) (CodexType)
-   | IrBinary (IRBinaryOp) (IRExpr) (IRExpr) (CodexType)
-   | IrNegate (IRExpr)
-   | IrIf (IRExpr) (IRExpr) (IRExpr) (CodexType)
-   | IrLet (Text) (CodexType) (IRExpr) (IRExpr)
-   | IrApply (IRExpr) (IRExpr) (CodexType)
-   | IrLambda (List IRParam) (IRExpr) (CodexType)
-   | IrList (List IRExpr) (CodexType)
-   | IrMatch (IRExpr) (List IRBranch) (CodexType)
-   | IrDo (List IRDoStmt) (CodexType)
-   | IrHandle (Text) (IRExpr) (List IRHandleClause) (CodexType)
-   | IrRecord (Text) (List IRFieldVal) (CodexType)
-   | IrFieldAccess (IRExpr) (Text) (CodexType)
-   | IrFork (IRExpr) (CodexType)
-   | IrAwait (IRExpr) (CodexType)
-   | IrError (Text) (CodexType)
+   | IrIntLit (Integer) (SourceSpan)
+   | IrNumLit (Integer) (SourceSpan)
+   | IrTextLit (Text) (SourceSpan)
+   | IrBoolLit (Boolean) (SourceSpan)
+   | IrCharLit (Integer) (SourceSpan)
+   | IrName (Text) (CodexType) (SourceSpan)
+   | IrBinary (IRBinaryOp) (IRExpr) (IRExpr) (CodexType) (SourceSpan)
+   | IrNegate (IRExpr) (SourceSpan)
+   | IrIf (IRExpr) (IRExpr) (IRExpr) (CodexType) (SourceSpan)
+   | IrLet (Text) (CodexType) (IRExpr) (IRExpr) (SourceSpan)
+   | IrApply (IRExpr) (IRExpr) (CodexType) (SourceSpan)
+   | IrLambda (List IRParam) (IRExpr) (CodexType) (SourceSpan)
+   | IrList (List IRExpr) (CodexType) (SourceSpan)
+   | IrMatch (IRExpr) (List IRBranch) (CodexType) (SourceSpan)
+   | IrDo (List IRDoStmt) (CodexType) (SourceSpan)
+   | IrHandle (Text) (IRExpr) (List IRHandleClause) (CodexType) (SourceSpan)
+   | IrRecord (Text) (List IRFieldVal) (CodexType) (SourceSpan)
+   | IrFieldAccess (IRExpr) (Text) (CodexType) (SourceSpan)
+   | IrFork (IRExpr) (CodexType) (SourceSpan)
+   | IrAwait (IRExpr) (CodexType) (SourceSpan)
+   | IrError (Text) (CodexType) (SourceSpan)
 
   IRParam = record {
    name : Text,
-   type-val : CodexType
+   type-val : CodexType,
+   span : SourceSpan
   }
 
   IRBranch = record {
    pattern : IRPat,
-   body : IRExpr
+   body : IRExpr,
+   span : SourceSpan
   }
 
   IRPat =
-   | IrVarPat (Text) (CodexType)
-   | IrLitPat (Text) (CodexType)
-   | IrCtorPat (Text) (List IRPat) (CodexType)
-   | IrWildPat
+   | IrVarPat (Text) (CodexType) (SourceSpan)
+   | IrLitPat (Text) (CodexType) (SourceSpan)
+   | IrCtorPat (Text) (List IRPat) (CodexType) (SourceSpan)
+   | IrWildPat (SourceSpan)
 
   IRDoStmt =
-   | IrDoBind (Text) (CodexType) (IRExpr)
-   | IrDoExec (IRExpr)
+   | IrDoBind (Text) (CodexType) (IRExpr) (SourceSpan)
+   | IrDoExec (IRExpr) (SourceSpan)
 
   IRHandleClause = record {
    op-name : Text,
    resume-name : Text,
-   body : IRExpr
+   body : IRExpr,
+   span : SourceSpan
   }
 
   IRFieldVal = record {
    name : Text,
-   value : IRExpr
+   value : IRExpr,
+   span : SourceSpan
   }
 
 Section: IR Definitions
@@ -72,7 +77,8 @@ Section: IR Definitions
    params : List IRParam,
    type-val : CodexType,
    body : IRExpr,
-   chapter-slug : Text
+   chapter-slug : Text,
+   span : SourceSpan
   }
 
   IRChapter = record {
@@ -80,47 +86,72 @@ Section: IR Definitions
    defs : List IRDef,
    chapter-title : Text,
    prose : Text,
-   section-titles : List Text
+   section-titles : List Text,
+   span : SourceSpan
   }
 
 Section: IR Expression Type
   ir-expr-type : IRExpr -> CodexType
   ir-expr-type (e) =
    when e
-    if IrIntLit (v) -> IntegerTy
-    if IrNumLit (v) -> NumberTy
-    if IrTextLit (v) -> TextTy
-    if IrBoolLit (v) -> BooleanTy
-    if IrCharLit (v) -> CharTy
-    if IrName (n) (t) -> t
-    if IrBinary (op) (l) (r) (t) -> t
-    if IrNegate (x) -> IntegerTy
-    if IrIf (c) (th) (el) (t) -> t
-    if IrLet (n) (t) (v) (b) -> ir-expr-type b
-    if IrApply (f) (a) (t) -> t
-    if IrLambda (ps) (b) (t) -> t
-    if IrList (es) (t) -> ListTy t
-    if IrMatch (s) (bs) (t) -> t
-    if IrDo (ss) (t) -> t
-    if IrHandle (eff) (h) (cs) (t) -> t
-    if IrRecord (n) (fs) (t) -> t
-    if IrFieldAccess (r) (f) (t) -> t
-    if IrFork (body) (t) -> t
-    if IrAwait (task) (t) -> t
-    if IrError (m) (t) -> t
+    if IrIntLit (v) (s) -> IntegerTy
+    if IrNumLit (v) (s) -> NumberTy
+    if IrTextLit (v) (s) -> TextTy
+    if IrBoolLit (v) (s) -> BooleanTy
+    if IrCharLit (v) (s) -> CharTy
+    if IrName (n) (t) (s) -> t
+    if IrBinary (op) (l) (r) (t) (s) -> t
+    if IrNegate (x) (s) -> IntegerTy
+    if IrIf (c) (th) (el) (t) (s) -> t
+    if IrLet (n) (t) (v) (b) (s) -> ir-expr-type b
+    if IrApply (f) (a) (t) (s) -> t
+    if IrLambda (ps) (b) (t) (s) -> t
+    if IrList (es) (t) (s) -> ListTy t
+    if IrMatch (sc) (bs) (t) (s) -> t
+    if IrDo (ss) (t) (s) -> t
+    if IrHandle (eff) (h) (cs) (t) (s) -> t
+    if IrRecord (n) (fs) (t) (s) -> t
+    if IrFieldAccess (r) (f) (t) (s) -> t
+    if IrFork (body) (t) (s) -> t
+    if IrAwait (task) (t) (s) -> t
+    if IrError (m) (t) (s) -> t
 
   set-ir-expr-type : IRExpr -> CodexType -> IRExpr
   set-ir-expr-type (e) (new-ty) =
    when e
-    if IrName (n) (t) -> IrName n new-ty
-    if IrApply (f) (a) (t) -> IrApply f a new-ty
-    if IrLet (n) (t) (v) (b) -> IrLet n new-ty v b
-    if IrIf (c) (th) (el) (t) -> IrIf c th el new-ty
-    if IrMatch (s) (bs) (t) -> IrMatch s bs new-ty
-    if IrDo (ss) (t) -> IrDo ss new-ty
-    if IrRecord (n) (fs) (t) -> IrRecord n fs new-ty
-    if IrFieldAccess (r) (f) (t) -> IrFieldAccess r f new-ty
+    if IrName (n) (t) (s) -> IrName n new-ty s
+    if IrApply (f) (a) (t) (s) -> IrApply f a new-ty s
+    if IrLet (n) (t) (v) (b) (s) -> IrLet n new-ty v b s
+    if IrIf (c) (th) (el) (t) (s) -> IrIf c th el new-ty s
+    if IrMatch (sc) (bs) (t) (s) -> IrMatch sc bs new-ty s
+    if IrDo (ss) (t) (s) -> IrDo ss new-ty s
+    if IrRecord (n) (fs) (t) (s) -> IrRecord n fs new-ty s
+    if IrFieldAccess (r) (f) (t) (s) -> IrFieldAccess r f new-ty s
     if _ -> e
 
-Page 1
+  ir-expr-span : IRExpr -> SourceSpan
+  ir-expr-span (e) =
+   when e
+    if IrIntLit (v) (s) -> s
+    if IrNumLit (v) (s) -> s
+    if IrTextLit (v) (s) -> s
+    if IrBoolLit (v) (s) -> s
+    if IrCharLit (v) (s) -> s
+    if IrName (n) (t) (s) -> s
+    if IrBinary (op) (l) (r) (t) (s) -> s
+    if IrNegate (x) (s) -> s
+    if IrIf (c) (th) (el) (t) (s) -> s
+    if IrLet (n) (t) (v) (b) (s) -> s
+    if IrApply (f) (a) (t) (s) -> s
+    if IrLambda (ps) (b) (t) (s) -> s
+    if IrList (es) (t) (s) -> s
+    if IrMatch (sc) (bs) (t) (s) -> s
+    if IrDo (ss) (t) (s) -> s
+    if IrHandle (eff) (h) (cs) (t) (s) -> s
+    if IrRecord (n) (fs) (t) (s) -> s
+    if IrFieldAccess (r) (f) (t) (s) -> s
+    if IrFork (body) (t) (s) -> s
+    if IrAwait (task) (t) (s) -> s
+    if IrError (m) (t) (s) -> s
 
+Page 1

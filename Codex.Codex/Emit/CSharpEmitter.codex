@@ -157,16 +157,16 @@ Section: Tail Call Optimization
   is-self-call-root : IRExpr -> Text -> Boolean
   is-self-call-root (e) (func-name) =
    when e
-    if IrName (n) (ty) -> n == func-name
+    if IrName (n) (ty) (sp) -> n == func-name
     if _ -> False
 
   has-tail-call : IRExpr -> Text -> Boolean
   has-tail-call (e) (func-name) =
    when e
-    if IrIf (c) (t) (el) (ty) -> has-tail-call t func-name | has-tail-call el func-name
-    if IrLet (name) (ty) (val) (body) -> has-tail-call body func-name
-    if IrMatch (scrut) (branches) (ty) -> has-tail-call-branches branches func-name 0
-    if IrApply (f) (a) (ty) -> is-self-call e func-name
+    if IrIf (c) (t) (el) (ty) (sp) -> has-tail-call t func-name | has-tail-call el func-name
+    if IrLet (name) (ty) (val) (body) (sp) -> has-tail-call body func-name
+    if IrMatch (scrut) (branches) (ty) (sp) -> has-tail-call-branches branches func-name 0
+    if IrApply (f) (a) (ty) (sp) -> is-self-call e func-name
     if _ -> False
 
   has-tail-call-branches : List IRBranch -> Text -> Integer -> Boolean
@@ -190,10 +190,10 @@ Section: Tail Call Optimization
   emit-tco-body : IRExpr -> Text -> List IRParam -> List ArityEntry -> Text
   emit-tco-body (e) (func-name) (params) (arities) =
    when e
-    if IrIf (c) (t) (el) (ty) -> emit-tco-if c t el func-name params arities
-    if IrLet (name) (ty) (val) (body) -> emit-tco-let name ty val body func-name params arities
-    if IrMatch (scrut) (branches) (ty) -> emit-tco-match scrut branches func-name params arities
-    if IrApply (f) (a) (rty) -> emit-tco-apply e func-name params arities
+    if IrIf (c) (t) (el) (ty) (sp) -> emit-tco-if c t el func-name params arities
+    if IrLet (name) (ty) (val) (body) (sp) -> emit-tco-let name ty val body func-name params arities
+    if IrMatch (scrut) (branches) (ty) (sp) -> emit-tco-match scrut branches func-name params arities
+    if IrApply (f) (a) (rty) (sp) -> emit-tco-apply e func-name params arities
     if _ -> "            return " ++ emit-expr e arities ++ ";\n"
 
   emit-tco-apply : IRExpr -> Text -> List IRParam -> List ArityEntry -> Text
@@ -222,13 +222,13 @@ Section: Tail Call Optimization
   emit-tco-match-branch : IRBranch -> Text -> List IRParam -> List ArityEntry -> Integer -> Boolean -> Text
   emit-tco-match-branch (b) (func-name) (params) (arities) (idx) (is-first) =
    when b.pattern
-    if IrWildPat -> "            {\n" ++ emit-tco-body (b.body) func-name params arities ++ "            }\n"
-    if IrVarPat (name) (ty) -> "            {\n                var " ++ sanitize name ++ " = _tco_s;\n" ++ emit-tco-body (b.body) func-name params arities ++ "            }\n"
-    if IrCtorPat (name) (subs) (ty) ->
+    if IrWildPat (sp) -> "            {\n" ++ emit-tco-body (b.body) func-name params arities ++ "            }\n"
+    if IrVarPat (name) (ty) (sp) -> "            {\n                var " ++ sanitize name ++ " = _tco_s;\n" ++ emit-tco-body (b.body) func-name params arities ++ "            }\n"
+    if IrCtorPat (name) (subs) (ty) (sp) ->
      let keyword = if is-first then "if" else "else if"
      in let match-var = "_tco_m" ++ integer-to-text idx
      in "            " ++ keyword ++ " (_tco_s is " ++ sanitize name ++ " " ++ match-var ++ ")\n            {\n" ++ emit-tco-ctor-bindings subs match-var 0 ++ emit-tco-body (b.body) func-name params arities ++ "            }\n"
-    if IrLitPat (text) (ty) ->
+    if IrLitPat (text) (ty) (sp) ->
      let keyword = if is-first then "if" else "else if"
      in "            " ++ keyword ++ " (object.Equals(_tco_s, " ++ text ++ "))\n            {\n" ++ emit-tco-body (b.body) func-name params arities ++ "            }\n"
 
@@ -241,7 +241,7 @@ Section: Tail Call Optimization
   emit-tco-ctor-binding : IRPat -> Text -> Integer -> Text
   emit-tco-ctor-binding (sub) (match-var) (i) =
    when sub
-    if IrVarPat (name) (ty) -> "                var " ++ sanitize name ++ " = " ++ match-var ++ ".Field" ++ integer-to-text i ++ ";\n"
+    if IrVarPat (name) (ty) (sp) -> "                var " ++ sanitize name ++ " = " ++ match-var ++ ".Field" ++ integer-to-text i ++ ";\n"
     if _ -> ""
 
   emit-tco-jump : IRExpr -> List IRParam -> List ArityEntry -> Text
