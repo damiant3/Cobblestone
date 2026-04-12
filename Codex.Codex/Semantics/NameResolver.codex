@@ -74,7 +74,7 @@ Section: Collect Names
    }
    else let def = list-at defs i
    in let name = def.name.value
-   in if list-contains acc name then collect-top-level-names defs (i + 1) len acc (errs ++ [make-error cdx-duplicate-definition ("Duplicate definition: " ++ name) synthetic-span])
+   in if list-contains acc name then collect-top-level-names defs (i + 1) len acc (errs ++ [make-error cdx-duplicate-definition ("Duplicate definition: " ++ name) (def.span)])
    else let pos = bsearch-text-set acc name 0 (list-length acc)
    in collect-top-level-names defs (i + 1) len (list-insert-at acc pos name) errs
 
@@ -99,11 +99,11 @@ Section: Collect Names
    }
    else let td = list-at type-defs i
    in when td
-     if AVariantTypeDef (name) (params) (ctors) ->
+     if AVariantTypeDef (name) (params) (ctors) (s) ->
       let new-type-acc = list-snoc type-acc (name.value)
    in let new-ctor-acc = collect-variant-ctors ctors 0 (list-length ctors) ctor-acc
    in collect-ctor-names type-defs (i + 1) len new-type-acc new-ctor-acc
-     if ARecordTypeDef (name) (params) (fields) ->
+     if ARecordTypeDef (name) (params) (fields) (s) ->
       collect-ctor-names type-defs (i + 1) len (list-snoc type-acc (name.value)) ctor-acc
 
   CtorCollectResult = record {
@@ -133,31 +133,31 @@ Section: Resolve Expressions
   resolve-expr : Scope -> AExpr -> List Diagnostic
   resolve-expr (sc) (expr) =
    when expr
-    if ALitExpr (val) (kind) -> []
-    if ANameExpr (name) ->
+    if ALitExpr (val) (kind) (s) -> []
+    if ANameExpr (name) (s) ->
      if scope-has sc (name.value) | is-type-name (name.value) then []
-     else [make-error cdx-undefined-name ("Undefined name: " ++ name.value) synthetic-span]
-    if ABinaryExpr (left) (op) (right) ->
+     else [make-error cdx-undefined-name ("Undefined name: " ++ name.value) s]
+    if ABinaryExpr (left) (op) (right) (s) ->
      resolve-expr sc left ++ resolve-expr sc right
-    if AUnaryExpr (operand) -> resolve-expr sc operand
-    if AApplyExpr (func) (arg) ->
+    if AUnaryExpr (operand) (s) -> resolve-expr sc operand
+    if AApplyExpr (func) (arg) (s) ->
      resolve-expr sc func ++ resolve-expr sc arg
-    if AIfExpr (cond) (then-e) (else-e) ->
+    if AIfExpr (cond) (then-e) (else-e) (s) ->
      resolve-expr sc cond ++ resolve-expr sc then-e ++ resolve-expr sc else-e
-    if ALetExpr (bindings) (body) ->
+    if ALetExpr (bindings) (body) (s) ->
      resolve-let sc bindings body 0 (list-length bindings) []
-    if ALambdaExpr (params) (body) ->
+    if ALambdaExpr (params) (body) (s) ->
      let sc2 = add-lambda-params sc params 0 (list-length params)
      in resolve-expr sc2 body
-    if AMatchExpr (scrutinee) (arms) ->
+    if AMatchExpr (scrutinee) (arms) (s) ->
      resolve-expr sc scrutinee ++ resolve-match-arms sc arms 0 (list-length arms) []
-    if AListExpr (elems) ->
+    if AListExpr (elems) (s) ->
      resolve-list-elems sc elems 0 (list-length elems) []
-    if ARecordExpr (name) (fields) ->
+    if ARecordExpr (name) (fields) (s) ->
      resolve-record-fields sc fields 0 (list-length fields) []
-    if AFieldAccess (obj) (field) -> resolve-expr sc obj
-    if ADoExpr (stmts) -> resolve-do-stmts sc stmts 0 (list-length stmts) []
-    if AErrorExpr (msg) -> []
+    if AFieldAccess (obj) (field) (s) -> resolve-expr sc obj
+    if ADoExpr (stmts) (s) -> resolve-do-stmts sc stmts 0 (list-length stmts) []
+    if AErrorExpr (msg) (s) -> []
 
 Section: Resolve Let
   resolve-let : Scope -> List ALetBind -> AExpr -> Integer -> Integer -> List Diagnostic -> List Diagnostic
@@ -187,10 +187,10 @@ Section: Resolve Match Arms
   collect-pattern-names : Scope -> APat -> Scope
   collect-pattern-names (sc) (pat) =
    when pat
-    if AVarPat (name) -> scope-add sc (name.value)
-    if ACtorPat (name) (subs) -> collect-ctor-pat-names sc subs 0 (list-length subs)
-    if ALitPat (val) (kind) -> sc
-    if AWildPat -> sc
+    if AVarPat (name) (s) -> scope-add sc (name.value)
+    if ACtorPat (name) (subs) (s) -> collect-ctor-pat-names sc subs 0 (list-length subs)
+    if ALitPat (val) (kind) (s) -> sc
+    if AWildPat (s) -> sc
 
   collect-ctor-pat-names : Scope -> List APat -> Integer -> Integer -> Scope
   collect-ctor-pat-names (sc) (subs) (i) (len) =
@@ -219,10 +219,10 @@ Section: Resolve Do Statements
    if i == len then errs
    else let stmt = list-at stmts i
    in when stmt
-     if ADoExprStmt (e) ->
+     if ADoExprStmt (e) (s) ->
       let errs2 = resolve-expr sc e
    in resolve-do-stmts sc stmts (i + 1) len (errs ++ errs2)
-     if ADoBindStmt (name) (e) ->
+     if ADoBindStmt (name) (e) (s) ->
       let errs2 = resolve-expr sc e
    in let sc2 = scope-add sc (name.value)
    in resolve-do-stmts sc2 stmts (i + 1) len (errs ++ errs2)

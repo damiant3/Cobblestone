@@ -2,7 +2,8 @@ Chapter: AST Nodes
 
  The abstract syntax tree is the desugared representation used
  by the type checker and later stages. CST nodes carry tokens;
- AST nodes carry Names and resolved literal values.
+ AST nodes carry Names, resolved literal values, and a SourceSpan
+ for diagnostics.
 
 Section: Names and Literals
   LiteralKind =
@@ -32,64 +33,69 @@ Section: Names and Literals
 
 Section: Expressions
   AExpr =
-   | ALitExpr (Text) (LiteralKind)
-   | ANameExpr (Name)
-   | AApplyExpr (AExpr) (AExpr)
-   | ABinaryExpr (AExpr) (BinaryOp) (AExpr)
-   | AUnaryExpr (AExpr)
-   | AIfExpr (AExpr) (AExpr) (AExpr)
-   | ALetExpr (List ALetBind) (AExpr)
-   | ALambdaExpr (List Name) (AExpr)
-   | AMatchExpr (AExpr) (List AMatchArm)
-   | AListExpr (List AExpr)
-   | ARecordExpr (Name) (List AFieldExpr)
-   | AFieldAccess (AExpr) (Name)
-   | ADoExpr (List ADoStmt)
-   | AHandleExpr (Name) (AExpr) (List AHandleClause)
-   | AErrorExpr (Text)
+   | ALitExpr (Text) (LiteralKind) (SourceSpan)
+   | ANameExpr (Name) (SourceSpan)
+   | AApplyExpr (AExpr) (AExpr) (SourceSpan)
+   | ABinaryExpr (AExpr) (BinaryOp) (AExpr) (SourceSpan)
+   | AUnaryExpr (AExpr) (SourceSpan)
+   | AIfExpr (AExpr) (AExpr) (AExpr) (SourceSpan)
+   | ALetExpr (List ALetBind) (AExpr) (SourceSpan)
+   | ALambdaExpr (List Name) (AExpr) (SourceSpan)
+   | AMatchExpr (AExpr) (List AMatchArm) (SourceSpan)
+   | AListExpr (List AExpr) (SourceSpan)
+   | ARecordExpr (Name) (List AFieldExpr) (SourceSpan)
+   | AFieldAccess (AExpr) (Name) (SourceSpan)
+   | ADoExpr (List ADoStmt) (SourceSpan)
+   | AHandleExpr (Name) (AExpr) (List AHandleClause) (SourceSpan)
+   | AErrorExpr (Text) (SourceSpan)
 
   ALetBind = record {
    name : Name,
-   value : AExpr
+   value : AExpr,
+   span : SourceSpan
   }
 
   AMatchArm = record {
    pattern : APat,
-   body : AExpr
+   body : AExpr,
+   span : SourceSpan
   }
 
   AFieldExpr = record {
    name : Name,
-   value : AExpr
+   value : AExpr,
+   span : SourceSpan
   }
 
   ADoStmt =
-   | ADoBindStmt (Name) (AExpr)
-   | ADoExprStmt (AExpr)
+   | ADoBindStmt (Name) (AExpr) (SourceSpan)
+   | ADoExprStmt (AExpr) (SourceSpan)
 
   AHandleClause = record {
    op-name : Name,
    resume-name : Name,
-   body : AExpr
+   body : AExpr,
+   span : SourceSpan
   }
 
 Section: Patterns
   APat =
-   | AVarPat (Name)
-   | ALitPat (Text) (LiteralKind)
-   | ACtorPat (Name) (List APat)
-   | AWildPat
+   | AVarPat (Name) (SourceSpan)
+   | ALitPat (Text) (LiteralKind) (SourceSpan)
+   | ACtorPat (Name) (List APat) (SourceSpan)
+   | AWildPat (SourceSpan)
 
 Section: Type Expressions
   ATypeExpr =
-   | ANamedType (Name)
-   | AFunType (ATypeExpr) (ATypeExpr)
-   | AAppType (ATypeExpr) (List ATypeExpr)
-   | AEffectType (List Name) (ATypeExpr)
+   | ANamedType (Name) (SourceSpan)
+   | AFunType (ATypeExpr) (ATypeExpr) (SourceSpan)
+   | AAppType (ATypeExpr) (List ATypeExpr) (SourceSpan)
+   | AEffectType (List Name) (ATypeExpr) (SourceSpan)
 
 Section: Definitions
   AParam = record {
-   name : Name
+   name : Name,
+   span : SourceSpan
   }
 
   ADef = record {
@@ -97,37 +103,43 @@ Section: Definitions
    params : List AParam,
    declared-type : List ATypeExpr,
    body : AExpr,
-   chapter-slug : Text
+   chapter-slug : Text,
+   span : SourceSpan
   }
 
   ARecordFieldDef = record {
    name : Name,
-   type-expr : ATypeExpr
+   type-expr : ATypeExpr,
+   span : SourceSpan
   }
 
   AVariantCtorDef = record {
    name : Name,
-   fields : List ATypeExpr
+   fields : List ATypeExpr,
+   span : SourceSpan
   }
 
   ATypeDef =
-   | ARecordTypeDef (Name) (List Name) (List ARecordFieldDef)
-   | AVariantTypeDef (Name) (List Name) (List AVariantCtorDef)
+   | ARecordTypeDef (Name) (List Name) (List ARecordFieldDef) (SourceSpan)
+   | AVariantTypeDef (Name) (List Name) (List AVariantCtorDef) (SourceSpan)
 
   AEffectOpDef = record {
    name : Name,
-   type-expr : ATypeExpr
+   type-expr : ATypeExpr,
+   span : SourceSpan
   }
 
   AEffectDef = record {
    name : Name,
-   ops : List AEffectOpDef
+   ops : List AEffectOpDef,
+   span : SourceSpan
   }
 
 Section: Chapter
   ACitesDecl = record {
    chapter-name : Name,
-   selected-names : List Name
+   selected-names : List Name,
+   span : SourceSpan
   }
 
   AChapter = record {
@@ -138,8 +150,28 @@ Section: Chapter
    citations : List ACitesDecl,
    chapter-title : Text,
    prose : Text,
-   section-titles : List Text
+   section-titles : List Text,
+   span : SourceSpan
   }
 
-Page 1
+Section: Span Accessor
+  aexpr-span : AExpr -> SourceSpan
+  aexpr-span (e) =
+   when e
+    if ALitExpr (t) (k) (s) -> s
+    if ANameExpr (n) (s) -> s
+    if AApplyExpr (f) (a) (s) -> s
+    if ABinaryExpr (l) (op) (r) (s) -> s
+    if AUnaryExpr (x) (s) -> s
+    if AIfExpr (c) (t) (el) (s) -> s
+    if ALetExpr (bs) (b) (s) -> s
+    if ALambdaExpr (ps) (b) (s) -> s
+    if AMatchExpr (sc) (arms) (s) -> s
+    if AListExpr (es) (s) -> s
+    if ARecordExpr (n) (fs) (s) -> s
+    if AFieldAccess (r) (f) (s) -> s
+    if ADoExpr (ss) (s) -> s
+    if AHandleExpr (eff) (b) (cs) (s) -> s
+    if AErrorExpr (m) (s) -> s
 
+Page 1

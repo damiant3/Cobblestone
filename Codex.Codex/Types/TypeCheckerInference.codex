@@ -296,19 +296,19 @@ Section: Infer Match
   bind-pattern : UnificationState -> TypeEnv -> APat -> CodexType -> PatBindResult
   bind-pattern (st) (env) (pat) (ty) =
    when pat
-    if AVarPat (name) -> PatBindResult {
+    if AVarPat (name) (s) -> PatBindResult {
      state = st,
      env = env-bind env (name.value) ty
     }
-    if AWildPat -> PatBindResult {
+    if AWildPat (s) -> PatBindResult {
      state = st,
      env = env
     }
-    if ALitPat (val) (kind) -> PatBindResult {
+    if ALitPat (val) (kind) (s) -> PatBindResult {
      state = st,
      env = env
     }
-    if ACtorPat (ctor-name) (sub-pats) ->
+    if ACtorPat (ctor-name) (sub-pats) (s) ->
      let ctor-lookup = instantiate-type st (env-lookup env (ctor-name.value))
      in bind-ctor-sub-patterns (ctor-lookup.state) env sub-pats (ctor-lookup.var-type) 0 (list-length sub-pats)
 
@@ -340,10 +340,10 @@ Section: Infer Do
    }
    else let stmt = list-at stmts i
    in when stmt
-     if ADoExprStmt (e) ->
+     if ADoExprStmt (e) (s) ->
       let er = infer-expr st env e
    in infer-do-loop (er.state) env stmts (i + 1) len (er.inferred-type)
-     if ADoBindStmt (name) (e) ->
+     if ADoBindStmt (name) (e) (s) ->
       let er = infer-expr st env e
    in let env2 = env-bind env (name.value) (er.inferred-type)
    in infer-do-loop (er.state) env2 stmts (i + 1) len (er.inferred-type)
@@ -352,24 +352,24 @@ Section: Infer Expression (dispatch)
   infer-expr : UnificationState -> TypeEnv -> AExpr -> CheckResult
   infer-expr (st) (env) (expr) =
    when expr
-    if ALitExpr (val) (kind) -> infer-literal st kind
-    if ANameExpr (name) -> infer-name st env (name.value)
-    if ABinaryExpr (left) (op) (right) -> infer-binary st env left op right
-    if AUnaryExpr (operand) ->
+    if ALitExpr (val) (kind) (s) -> infer-literal st kind
+    if ANameExpr (name) (s) -> infer-name st env (name.value)
+    if ABinaryExpr (left) (op) (right) (s) -> infer-binary st env left op right
+    if AUnaryExpr (operand) (s) ->
      let r = infer-expr st env operand
      in let u = unify (r.state) (r.inferred-type) IntegerTy
      in CheckResult {
       inferred-type = IntegerTy,
       state = u.state
      }
-    if AApplyExpr (func) (arg) -> infer-application st env func arg
-    if AIfExpr (cond) (then-e) (else-e) -> infer-if st env cond then-e else-e
-    if ALetExpr (bindings) (body) -> infer-let st env bindings body
-    if ALambdaExpr (params) (body) -> infer-lambda st env params body
-    if AMatchExpr (scrutinee) (arms) -> infer-match st env scrutinee arms
-    if AListExpr (elems) -> infer-list st env elems
-    if ADoExpr (stmts) -> infer-do st env stmts
-    if AFieldAccess (obj) (field) ->
+    if AApplyExpr (func) (arg) (s) -> infer-application st env func arg
+    if AIfExpr (cond) (then-e) (else-e) (s) -> infer-if st env cond then-e else-e
+    if ALetExpr (bindings) (body) (s) -> infer-let st env bindings body
+    if ALambdaExpr (params) (body) (s) -> infer-lambda st env params body
+    if AMatchExpr (scrutinee) (arms) (s) -> infer-match st env scrutinee arms
+    if AListExpr (elems) (s) -> infer-list st env elems
+    if ADoExpr (stmts) (s) -> infer-do st env stmts
+    if AFieldAccess (obj) (field) (s) ->
      let r = infer-expr st env obj
      in let resolved = deep-resolve (r.state) (r.inferred-type)
      in when resolved
@@ -401,7 +401,7 @@ Section: Infer Expression (dispatch)
         state = fr.state
        }
 
-    if ARecordExpr (name) (fields) ->
+    if ARecordExpr (name) (fields) (s) ->
      let st2 = infer-record-fields st env fields 0 (list-length fields)
      in let ctor-type = if env-has env (name.value) then env-lookup env (name.value) else ErrorTy
      in let result-type = strip-fun-args ctor-type
@@ -409,7 +409,7 @@ Section: Infer Expression (dispatch)
       inferred-type = result-type,
       state = st2
      }
-    if AErrorExpr (msg) -> CheckResult {
+    if AErrorExpr (msg) (s) -> CheckResult {
      inferred-type = ErrorTy,
      state = st
     }
