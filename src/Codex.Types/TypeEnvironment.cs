@@ -190,6 +190,19 @@ public sealed class TypeEnvironment
             new FunctionType(IntegerType.s_instance,
                 new FunctionType(IntegerType.s_instance, new ListType(IntegerType.s_instance)))));
 
+        FunctionType intIntInt = new(IntegerType.s_instance,
+            new FunctionType(IntegerType.s_instance, IntegerType.s_instance));
+        env = env.Bind("bit-and", intIntInt);
+        env = env.Bind("bit-or", intIntInt);
+        env = env.Bind("bit-xor", intIntInt);
+        env = env.Bind("bit-shl", intIntInt);
+        env = env.Bind("bit-shr", intIntInt);
+        env = env.Bind("bit-not", new FunctionType(IntegerType.s_instance, IntegerType.s_instance));
+        env = env.Bind("int-mod", intIntInt);
+        env = env.Bind("abs", new FunctionType(IntegerType.s_instance, IntegerType.s_instance));
+        env = env.Bind("min", intIntInt);
+        env = env.Bind("max", intIntInt);
+
         return env;
     }
 }

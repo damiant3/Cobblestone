@@ -40,7 +40,9 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
         "linked-list-empty", "linked-list-push", "linked-list-to-list",
         "heap-save", "heap-restore", "heap-advance",
         "list-with-capacity",
-        "buf-write-byte", "buf-write-bytes", "buf-read-bytes"
+        "buf-write-byte", "buf-write-bytes", "buf-read-bytes",
+        "bit-and", "bit-or", "bit-xor", "bit-shl", "bit-shr", "bit-not",
+        "int-mod", "abs", "min", "max"
     );
 
     public NameResolver(DiagnosticBag diagnostics, IChapterLoader? loader)
