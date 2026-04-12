@@ -218,8 +218,267 @@ Do in this order, smallest-first, each shippable independently:
 
 - Does the self-host AST / IR already carry `SourceSpan`, or do we need
   to add it? (Needs quick audit.)
-- What's the policy on warning-as-error? Reference has info/warning
-  today but no aggregation rule.
 - Bare-metal rendering budget: how much diagnostic output can we afford
   to send over serial before the 360s binary-pingpong timeout? May need
   to summarize aggressively when errors > N.
+
+## Related compiler-infrastructure work
+
+The scope above (diagnostics, CDX registry, phase gating) is the
+immediate priority. But several adjacent pieces of internal compiler
+infrastructure belong in the same conversation. A professional compiler
+has most of these; Codex has partial or none. Each is its own body of
+work — listed here so the diagnostic plan doesn't accidentally imply
+"that's everything that's missing."
+
+The framing below is "internal concerns" — things the compiler itself
+uses to stay correct and debuggable. External policy decisions
+(warning-as-error, which warnings to surface, IDE integration format,
+etc.) are out of scope. An error is an error; it means we cannot produce
+meaningful complete output. A warning is "are you sure you meant this?"
+and what downstream tooling does with it is their choice.
+
+### A. Inspection & introspection
+
+Cheap to build if the IR is already well-structured; huge debugging
+multiplier when something goes wrong mid-pipeline.
+
+- **Per-phase dumps**: `--dump=parsed`, `--dump=resolved`, `--dump=typed`,
+  `--dump=ir`, `--dump=codegen`. Each phase knows how to pretty-print its
+  output. When something downstream breaks, you diff the dumps between a
+  working and broken input and find the exact phase where things diverged.
+  The Codex text emitter already exists for one phase; generalize the
+  pattern.
+- **DWARF (or Codex-equivalent) debug info for bare-metal**: lets GDB
+  step through a bare-metal ELF at the source level. Today a `__start`
+  crash at address 0x100384 is a 4-hour scavenger hunt; with debug info
+  it's `main.codex:42:8 in hamt-lookup-offset`. This also serves
+  production Codex.OS — users running Codex programs will want to debug
+  them.
+- **Reverse mapping**: given an IR node, find the source span it came
+  from. Given an emitted instruction, find the IR node that produced it.
+  Right now the arrows only go forward through the pipeline. Bidirectional
+  mapping is what makes step-through debugging, "why did this code get
+  emitted," and source-level profiling possible.
+- **Find-all-references / go-to-definition**: if the symbol table keeps
+  backlinks from definitions to every use, both operations are O(1). The
+  data has to be captured during name resolution; bolting it on later is
+  awkward. Cheap to design in now, expensive to add later. Important for
+  future IDE integration but also useful to the compiler itself for
+  refactoring passes and unused-def detection.
+
+### B. Invariant enforcement (verifier passes)
+
+Catches bugs at the phase where they're introduced, not three phases
+later when the symptom is far from the cause. This is the thing that
+would have saved four hours on the HAMT-crash debugging session.
+
+Every phase produces output that must satisfy invariants for the *next*
+phase to operate correctly. Write those invariants down as a pass that
+runs between phases in debug builds.
+
+- **After name resolution**: every `IrName` resolves to exactly one def
+  or parameter. No undefined references.
+- **After type checking**: no `ErrorTy` reaches later phases (if it does,
+  there's an error count mismatch — a type error got swallowed somewhere).
+  Every AST/IR node has a non-null type assignment.
+- **After lowering**: no unresolved type variables, no unbound names,
+  every record construction has the correct arity for its declared type,
+  every match is total or has an explicit catch-all.
+- **After codegen**: every call target resolves to an emitted function;
+  every fixup references a valid offset; no dangling patches; the text
+  buffer has the expected function count in func-offsets.
+
+Run these in debug builds; skip in release if too slow. The point is to
+*fail fast* in the phase that broke the invariant, with a specific
+pointer to what invariant was violated. A bug that slips past three
+phases is much harder to diagnose than one caught at the source.
+
+### C. Fuel / termination budgets
+
+Every recursive compiler operation needs a fuel counter.
+
+Concrete risks we have today:
+- Type inference can loop if the unifier hits a cycle (occurs-check
+  failure that was bypassed or handled incorrectly).
+- Lowering can loop if desugaring produces a cycle (e.g., a rewrite that
+  re-applies to its own output).
+- Name resolution can loop on recursive or circular imports.
+- Recursion can blow the stack on deeply nested or adversarial input
+  (deeply nested parens, deeply nested record literals, etc.).
+
+Rule: every recursive descent has a maximum depth or fuel count.
+Exceeding it becomes a compiler error: `CDX9001: compiler resource
+exhausted in <phase> at <source-loc>; likely a compiler bug or
+pathological input`. The compiler **never hangs** and **never crashes
+silently** on input — those are always failures of this rule.
+
+Fuel also protects against denial-of-service as Codex moves into the OS
+role. A user running another user's Codex program shouldn't be able to
+brick the system by handing it a program that makes the compiler loop.
+
+### D. Elaborated AST (typed AST as a distinct stage)
+
+Today the pipeline has: AST (pre-typecheck) → type-check → IR
+(post-lowering). The gap: "what's the inferred type of this
+subexpression in the original AST?" can only be answered by re-running
+inference, or by chasing through IR and reverse-mapping.
+
+Professional compilers produce a **typed AST**: same shape as the
+untyped AST, but every node carries its resolved type. Later phases
+consume the typed AST, not the raw one. Diagnostics, tooling, and
+lowering all benefit.
+
+Benefits:
+- The invariant checks in (B) are trivial to write: every typed-AST node
+  has a type, assert it's not ErrorTy.
+- Tooling ("hover to see type") is a direct query instead of a
+  recomputation.
+- Roundtrip tests are precise: pretty-print a typed AST, re-parse,
+  re-typecheck, compare — the type annotations should survive.
+- Separates the concern of "build AST" from "assign types" — the
+  untyped AST is simpler, the typed AST is richer; both are valuable.
+
+Cost: one more IR intermediate structure. Usually worth it.
+
+### E. Stable name mangling
+
+Mangled names today are a function of content hashes. The consequence:
+adding a small function shifts the hash of its containing chapter, which
+cascades into every mangled name that references or is referenced by
+that chapter. A one-line change can rename hundreds of symbols.
+
+Fix: mangle as a deterministic function of the **canonical signature**
+— the name, type, containing chapter (in a stable addressing scheme
+like a path or ordered-chapter-index). Only resort to disambiguation
+when there's a genuine naming conflict in source (two defs with the
+same name, collisions between imported chapters, etc.).
+
+Properties the mangling should have:
+- **Locality**: a change in chapter A shouldn't rename anything in
+  chapter B.
+- **Determinism**: the same source, built twice, produces the same
+  mangled names. Already partially true; make it fully true.
+- **Reversibility** (optional): given a mangled name, recover the
+  canonical signature. Useful for debug info, error messages,
+  reflection.
+- **Test**: add a dead function to a large chapter; the emitted binary
+  should grow by exactly that function and nothing else should move.
+
+### F. Provenance tracking
+
+Every IR node should record two things:
+1. The source span it ultimately came from.
+2. What transformation produced it (parse, desugar, lowering,
+   partial-app expansion, etc.) and optionally a chain back to the
+   original source construct.
+
+Concrete example: when desugaring turns `do { x <- e; body }` into
+`e >>= (\x -> body)`, the generated lambda has:
+- Source span = the original `do`-block's span.
+- Provenance = `desugared from do-block`, `original construct: do at
+  line N`.
+
+Why this matters: errors and crashes in lowered code should blame the
+user's original construct, not the intermediate IR. If lowering produces
+buggy IR and we crash at codegen, without provenance we only see "bad
+IR"; with provenance we see "bad IR that came from the do-block at
+line N," which is usually enough to diagnose.
+
+This also makes "why is there a call to `>>=` here?" a direct query,
+which helps with compiler bug triage.
+
+### G. Self-verification / roundtrip tests
+
+Beyond pingpong (which is semantic equivalence of compiler output),
+cheap CI tests that catch whole classes of regressions:
+
+- **Parse → pretty-print → parse**: the result should be the same AST
+  both times (idempotence). Catches: pretty-printer losing information,
+  parser accepting text the printer can't produce.
+- **Typecheck → emit → re-typecheck emitted IR**: the emitter shouldn't
+  produce IR that its own typechecker rejects. Catches: emitter bugs,
+  typechecker holes.
+- **Lowering determinism**: same input, same output, byte-for-byte. Run
+  twice in CI, diff results. Catches: accidental dependency on hash
+  ordering, pointer identity, allocation order.
+- **Codex text → binary → Codex text**: compiling to binary and back
+  (when we add disassembly) should recover the original semantics.
+
+These are quick to implement once the inspection infrastructure from
+(A) is in place.
+
+### H. Testing infrastructure
+
+Professional compilers have heavy testing harnesses; ours is thin.
+Items, rough order of value:
+
+- **Golden tests per phase**: `samples/expected/arithmetic.parsed.txt`,
+  `.resolved.txt`, `.typed.txt`, etc. CI diffs against expected.
+  Regenerate when intentional; CI failure when accidental. This is how
+  you notice "my innocuous refactor changed the parser's output in some
+  way I didn't predict."
+- **Property tests** (quickcheck-style): for any well-formed AST,
+  `parse(print(ast)) == ast`. For any program, `compile(program)` is
+  deterministic. These probe edge cases that manual tests miss.
+- **Fuzzing**: feed the parser random byte sequences; it should always
+  terminate (fuel) and never crash (invariants). Fuzz mutation of valid
+  programs ("delete this token," "insert this token," "rename this
+  identifier") to find invariant-breaking inputs.
+- **Differential testing**: reference and self-host compile the same
+  input; outputs should agree modulo known differences. Already
+  implicit in pingpong; make it a first-class test harness.
+
+### I. Concurrency story
+
+Not urgent, but worth deciding on. The reference `DiagnosticBag` has a
+lock because phases may run concurrently (per-def codegen, per-chapter
+type-checking). The self-host is single-threaded today.
+
+If we ever parallelize:
+- The diagnostic bag needs concurrency-safe access.
+- Phase invariant checks need to be safe to run on partial state or
+  have a barrier after each phase.
+- Provenance and stable mangling both become more important (different
+  threads shouldn't see different name orderings).
+
+If we stay sequential forever, we can drop the locks in the bag and
+save the overhead. Decide explicitly — don't let it drift.
+
+### J. Hash-consing / canonical forms
+
+Codex has `sem-equiv` for comparing two compiler outputs. Internally, a
+related concern: making two structurally-identical IR subtrees share
+memory ("hash-consing"). Benefits:
+- Equality checks become pointer equality.
+- Caching becomes trivial: two calls with the same argument graph hit
+  the cache regardless of how they were constructed.
+- Memory savings on repetitive IR (lots of defs reusing similar types).
+
+Cost: extra allocation-time work and a cons-table. Only worth it if
+profiling shows the overhead of equality checks or allocation is
+material. Flag it for later; don't do it now.
+
+### K. Plugin points / phase composition
+
+Longer term. Professional compilers often treat phases as first-class
+values — orderable, replaceable, instrumentable. This enables:
+- Experimental phases inserted between standard ones without forking the
+  compiler.
+- External tools that consume intermediate state (LSP, documentation
+  generators, linters).
+- Research work (alternative type systems, alternative codegen) without
+  disturbing the production pipeline.
+
+This is a big refactor and not urgent. Listed for completeness and so
+future design work doesn't treat the current fixed pipeline as
+immutable.
+
+---
+
+The concrete work above is additive to the six-phase plan. Each item
+(A) through (K) is its own body of work. As with the main plan,
+sequence smallest-first: (A) per-phase dumps and (B) invariant passes
+are small and unlock a lot; (C) fuel is small and prevents catastrophes;
+(D) typed AST is medium and unlocks the rest; (E)-(K) are larger or
+speculative.
