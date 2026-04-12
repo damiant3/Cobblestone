@@ -1,6 +1,16 @@
 Chapter: Source Text
 
- Source position and span types for error reporting.
+ Source positions, spans, provenance, and the file-id table used by
+ diagnostics. A SourceSpan carries a file-id (an integer index into a
+ FileTable) rather than a file-name string, so tokens and AST/IR nodes
+ can keep span identity cheaply.
+
+Section: Provenance
+  Provenance =
+   | ProvParsed
+   | ProvDesugared
+   | ProvLowered
+   | ProvSynthetic
 
 Section: Types
   SourcePosition = record {
@@ -12,10 +22,38 @@ Section: Types
   SourceSpan = record {
    start : SourcePosition,
    end : SourcePosition,
-   file : Text
+   file-id : Integer,
+   provenance : Provenance
   }
 
-Section: Functions
+  FileTable = record {
+   names : List Text
+  }
+
+Section: File Table
+  empty-file-table : FileTable
+  empty-file-table =
+   FileTable {
+    names = []
+   }
+
+  file-table-add : FileTable -> Text -> FileTable
+  file-table-add (table) (name) =
+   FileTable {
+    names = list-snoc (table.names) name
+   }
+
+  file-table-name : FileTable -> Integer -> Text
+  file-table-name (table) (id) =
+   if id <= 0 then ""
+   else if id > list-length (table.names) then ""
+   else list-at (table.names) (id - 1)
+
+  file-table-count : FileTable -> Integer
+  file-table-count (table) =
+   list-length (table.names)
+
+Section: Positions and Spans
   make-position : Integer -> Integer -> Integer -> SourcePosition
   make-position (line) (col) (offset) =
    SourcePosition {
@@ -24,12 +62,13 @@ Section: Functions
     offset = offset
    }
 
-  make-span : SourcePosition -> SourcePosition -> Text -> SourceSpan
-  make-span (s) (e) (f) =
+  make-span : SourcePosition -> SourcePosition -> Integer -> Provenance -> SourceSpan
+  make-span (s) (e) (fid) (prov) =
    SourceSpan {
     start = s,
     end = e,
-    file = f
+    file-id = fid,
+    provenance = prov
    }
 
   span-length : SourceSpan -> Integer
@@ -41,24 +80,35 @@ Section: Functions
    SourceSpan {
     start = make-position 0 0 0,
     end = make-position 0 0 0,
-    file = ""
+    file-id = 0,
+    provenance = ProvSynthetic
    }
 
   is-synthetic-span : SourceSpan -> Boolean
   is-synthetic-span (span) =
-   span.file == "" & span.start.line == 0 & span.start.column == 0
+   span.file-id == 0
 
-  span-at : Integer -> Integer -> Integer -> Integer -> SourceSpan
-  span-at (line) (col) (offset) (len) =
+  span-at : Integer -> Integer -> Integer -> Integer -> Integer -> SourceSpan
+  span-at (line) (col) (offset) (len) (fid) =
    let start = make-position line col offset
    in let end = make-position line (col + len) (offset + len)
-   in make-span start end ""
+   in make-span start end fid ProvParsed
 
-  span-display : SourceSpan -> Text
-  span-display (span) =
+  span-with-provenance : SourceSpan -> Provenance -> SourceSpan
+  span-with-provenance (span) (prov) =
+   SourceSpan {
+    start = span.start,
+    end = span.end,
+    file-id = span.file-id,
+    provenance = prov
+   }
+
+Section: Display
+  span-display : SourceSpan -> FileTable -> Text
+  span-display (span) (table) =
    if is-synthetic-span span then ""
-   else (if span.file == "" then "" else span.file ++ ":")
-        ++ integer-to-text (span.start.line) ++ ":" ++ integer-to-text (span.start.column)
+   else let name = file-table-name table (span.file-id)
+    in (if name == "" then "" else name ++ ":")
+       ++ integer-to-text (span.start.line) ++ ":" ++ integer-to-text (span.start.column)
 
 Page 1
-

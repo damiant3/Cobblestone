@@ -80,7 +80,7 @@ partial class Program
             string chapterCce = _Cce.FromUnicode("Codex_Codex");
 
             Console.WriteLine("  [1/11] tokenize...");
-            var tokens = Codex_Codex_Codex.tokenize(cceCombined);
+            var tokens = Codex_Codex_Codex.tokenize(cceCombined, 1L);
             Console.WriteLine($"         {sw.ElapsedMilliseconds}ms — {tokens.Count} tokens");
 
             Console.WriteLine("  [2/11] make_parse_state...");
@@ -153,7 +153,7 @@ partial class Program
         try
         {
             string cceSource = _Cce.FromUnicode(source);
-            List<Token> tokens = Codex_Codex_Codex.tokenize(cceSource);
+            List<Token> tokens = Codex_Codex_Codex.tokenize(cceSource, 1L);
             ParseState st = Codex_Codex_Codex.make_parse_state(tokens);
             Document doc = Codex_Codex_Codex.parse_document(st);
             AChapter ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("MiniTest"));
@@ -282,7 +282,7 @@ partial class Program
         var total = System.Diagnostics.Stopwatch.StartNew();
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        var tokens = Codex_Codex_Codex.tokenize(source);
+        var tokens = Codex_Codex_Codex.tokenize(source, 1L);
         sw.Stop(); lexMs = sw.Elapsed.TotalMilliseconds;
 
         sw.Restart();
@@ -551,7 +551,7 @@ partial class Program
         string source = _Cce.FromUnicode(combined);
         Console.Error.WriteLine($"Source: {combined.Length} chars ({files.Length} files)");
 
-        var tokens = Codex_Codex_Codex.tokenize(source);
+        var tokens = Codex_Codex_Codex.tokenize(source, 1L);
         var st = Codex_Codex_Codex.make_parse_state(tokens);
         var doc = Codex_Codex_Codex.parse_document(st);
         var ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("Codex_Codex"));
@@ -577,7 +577,7 @@ partial class Program
     {
         string source = File.ReadAllText(filePath);
         string cceSrc = _Cce.FromUnicode(source);
-        var tokens = Codex_Codex_Codex.tokenize(cceSrc);
+        var tokens = Codex_Codex_Codex.tokenize(cceSrc, 1L);
 
         // Test scan_document
         var st = Codex_Codex_Codex.make_parse_state(tokens);
