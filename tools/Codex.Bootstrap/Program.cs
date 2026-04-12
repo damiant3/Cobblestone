@@ -162,7 +162,7 @@ partial class Program
 
             ChapterResult checkResult = Codex_Codex_Codex.check_chapter(ast);
             Console.WriteLine($"  Type bindings: {checkResult.types.Count}");
-            Console.WriteLine($"  Unification errors: {checkResult.state.errors.Count}");
+            Console.WriteLine($"  Unification errors: {checkResult.state.bag.diagnostics.Count}");
 
             for (int i = 0; i < checkResult.types.Count; i++)
             {
@@ -173,9 +173,9 @@ partial class Program
                 Console.WriteLine($"    {tb.name} : {csType}{(isErr ? " [ERRORTY]" : "")}");
             }
 
-            for (int ei = 0; ei < checkResult.state.errors.Count; ei++)
+            for (int ei = 0; ei < checkResult.state.bag.diagnostics.Count; ei++)
             {
-                Diagnostic diag = checkResult.state.errors[ei];
+                Diagnostic diag = checkResult.state.bag.diagnostics[ei];
                 Console.WriteLine($"  ERR {ei}: [{diag.code}] {diag.message}");
             }
 
@@ -559,7 +559,7 @@ partial class Program
 
         var checkResult = Codex_Codex_Codex.check_chapter(ast);
         Console.Error.WriteLine($"  Type bindings: {checkResult.types.Count}");
-        Console.Error.WriteLine($"  Unification errors: {checkResult.state.errors.Count}");
+        Console.Error.WriteLine($"  Unification errors: {checkResult.state.bag.diagnostics.Count}");
 
         var ir = Codex_Codex_Codex.lower_chapter(ast, checkResult.types, checkResult.state);
         Console.Error.WriteLine($"  IR defs: {ir.defs.Count}");
@@ -630,7 +630,7 @@ partial class Program
             var result = Codex_Codex_Codex.compile_to_binary(source, chapterName);
             Console.WriteLine($"  done: {sw.ElapsedMilliseconds}ms");
 
-            var errors = result.errors;
+            var errors = result.bag.diagnostics;
             if (errors.Count > 0)
             {
                 Console.WriteLine($"  {errors.Count} error(s):");

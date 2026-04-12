@@ -129,8 +129,8 @@ public class DiagnosticDisplayTests
     {
         ResolveResult result = ResolveSource("x = y\n", out FileTable table);
 
-        Assert.NotEmpty(result.errors);
-        Diagnostic undef = result.errors
+        Assert.NotEmpty(result.bag.diagnostics);
+        Diagnostic undef = result.bag.diagnostics
             .Single(d => d.code == Codex_Codex_Codex.cdx_undefined_name());
 
         // 'y' sits at column 5 of line 1. file-id 1 maps to "test.codex".
@@ -150,7 +150,7 @@ public class DiagnosticDisplayTests
         // not synthetic.
         ResolveResult result = ResolveSource("x = 1\nx = 2\n", out FileTable table);
 
-        Diagnostic dup = result.errors
+        Diagnostic dup = result.bag.diagnostics
             .Single(d => d.code == Codex_Codex_Codex.cdx_duplicate_definition());
 
         Assert.Equal(2L, dup.span.start.line);
@@ -159,5 +159,42 @@ public class DiagnosticDisplayTests
         string rendered = Render(dup, table);
         Assert.StartsWith("test.codex:2:", rendered);
         Assert.Contains("error CDX3001:", rendered);
+    }
+
+    [Fact]
+    public void Bag_caps_errors_at_twenty_and_emits_overflow_sentinel()
+    {
+        // Add 25 errors; bag keeps only 20 plus a single CDX0001 sentinel.
+        DiagnosticBag bag = Codex_Codex_Codex.empty_bag();
+        SourceSpan span = SpanAt(1, 1, 0, 1, 1);
+        for (int i = 0; i < 25; i++)
+        {
+            Diagnostic d = Codex_Codex_Codex.make_error(9999L, Cce($"err {i}"), span);
+            bag = Codex_Codex_Codex.bag_add(bag, d);
+        }
+
+        Assert.True(Codex_Codex_Codex.bag_is_truncated(bag));
+        // 20 real errors + 1 sentinel = 21 total diagnostics.
+        Assert.Equal(21L, Codex_Codex_Codex.bag_count(bag));
+
+        Diagnostic last = bag.diagnostics.Last();
+        Assert.Equal(Codex_Codex_Codex.cdx_too_many_errors(), last.code);
+    }
+
+    [Fact]
+    public void Bag_counts_only_errors_toward_cap()
+    {
+        // Warnings and hints never trigger the cap.
+        DiagnosticBag bag = Codex_Codex_Codex.empty_bag();
+        SourceSpan span = SpanAt(1, 1, 0, 1, 1);
+        for (int i = 0; i < 100; i++)
+        {
+            bag = Codex_Codex_Codex.bag_add(bag,
+                Codex_Codex_Codex.make_warning(9100L, Cce("w"), span));
+        }
+
+        Assert.False(Codex_Codex_Codex.bag_is_truncated(bag));
+        Assert.False(Codex_Codex_Codex.bag_has_errors(bag));
+        Assert.Equal(100L, Codex_Codex_Codex.bag_count(bag));
     }
 }

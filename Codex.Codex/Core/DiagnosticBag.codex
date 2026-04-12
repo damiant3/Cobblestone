@@ -1,0 +1,93 @@
+Chapter: Diagnostic Bag
+
+ A DiagnosticBag accumulates diagnostics across a compilation. When
+ the error count exceeds max-errors, further errors are suppressed
+ and a single CDX0001 sentinel is appended. Warnings, info, and
+ hints are never capped. One bag is threaded through every phase
+ of the pipeline.
+
+Section: Constants
+  max-errors : Integer
+  max-errors = 20
+
+Section: Type
+  DiagnosticBag = record {
+   diagnostics : List Diagnostic,
+   error-count : Integer,
+   truncated : Boolean
+  }
+
+Section: Constructors
+  empty-bag : DiagnosticBag
+  empty-bag =
+   DiagnosticBag {
+    diagnostics = [],
+    error-count = 0,
+    truncated = False
+   }
+
+  bag-from-list : List Diagnostic -> DiagnosticBag
+  bag-from-list (ds) =
+   bag-from-list-loop empty-bag ds 0 (list-length ds)
+
+  bag-from-list-loop : DiagnosticBag -> List Diagnostic -> Integer -> Integer -> DiagnosticBag
+  bag-from-list-loop (bag) (ds) (i) (len) =
+   if i == len then bag
+   else bag-from-list-loop (bag-add bag (list-at ds i)) ds (i + 1) len
+
+Section: Add
+  bag-add : DiagnosticBag -> Diagnostic -> DiagnosticBag
+  bag-add (bag) (d) =
+   if d.severity == sev-error then bag-add-error bag d
+   else DiagnosticBag {
+    diagnostics = list-snoc (bag.diagnostics) d,
+    error-count = bag.error-count,
+    truncated = bag.truncated
+   }
+
+  bag-add-error : DiagnosticBag -> Diagnostic -> DiagnosticBag
+  bag-add-error (bag) (d) =
+   if bag.error-count >= max-errors then
+    if bag.truncated then bag
+    else DiagnosticBag {
+     diagnostics = list-snoc (bag.diagnostics) (make-error cdx-too-many-errors "Too many errors. Further errors suppressed." synthetic-span),
+     error-count = bag.error-count + 1,
+     truncated = True
+    }
+   else DiagnosticBag {
+    diagnostics = list-snoc (bag.diagnostics) d,
+    error-count = bag.error-count + 1,
+    truncated = bag.truncated
+   }
+
+  bag-concat : DiagnosticBag -> List Diagnostic -> DiagnosticBag
+  bag-concat (bag) (ds) =
+   bag-concat-loop bag ds 0 (list-length ds)
+
+  bag-concat-loop : DiagnosticBag -> List Diagnostic -> Integer -> Integer -> DiagnosticBag
+  bag-concat-loop (bag) (ds) (i) (len) =
+   if i == len then bag
+   else bag-concat-loop (bag-add bag (list-at ds i)) ds (i + 1) len
+
+  bag-merge : DiagnosticBag -> DiagnosticBag -> DiagnosticBag
+  bag-merge (bag) (other) =
+   bag-concat bag (other.diagnostics)
+
+Section: Queries
+  bag-has-errors : DiagnosticBag -> Boolean
+  bag-has-errors (bag) =
+   bag.error-count > 0
+
+  bag-count : DiagnosticBag -> Integer
+  bag-count (bag) =
+   list-length (bag.diagnostics)
+
+  bag-diagnostics : DiagnosticBag -> List Diagnostic
+  bag-diagnostics (bag) =
+   bag.diagnostics
+
+  bag-is-truncated : DiagnosticBag -> Boolean
+  bag-is-truncated (bag) =
+   bag.truncated
+
+Page 1
