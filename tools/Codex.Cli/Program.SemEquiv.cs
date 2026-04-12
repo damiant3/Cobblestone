@@ -375,7 +375,7 @@ public static partial class Program
                 break;
             }
 
-            if (ln.Length > 0 && (char.IsWhiteSpace(ln[0]) || ln[0] == '|' || ln[0] == '}'))
+            if (ln.Length > 0 && (char.IsWhiteSpace(ln[0]) || ln[0] == '|' || ln[0] == '}' || ln[0] == ']' || ln[0] == ')'))
             {
                 bodyLines.AppendLine(ln);
                 j++;
@@ -579,18 +579,54 @@ public static partial class Program
                           .Select(m => m.Value)
                           .ToList();
 
-        // Strip redundant parens wrapping a single atomic expression:
-        // "(x)" where x has no internal whitespace or parens of its own.
-        // Applied iteratively until no more matches, so ((x)) -> (x) -> x.
+        // Iteratively strip redundant parens. A balanced innermost pair of
+        // parens is dropped when its content is unambiguously equivalent to
+        // its unwrapped form:
+        //   - content starts with a scope-defining keyword (if/when/let/do/
+        //     match/lambda/\\): the keyword's scope is greedy and self-
+        //     terminating, so parens add no disambiguation.
+        //   - content has no binary operator at the top of the token stream:
+        //     a function application or atomic value, never precedence-
+        //     sensitive.
+        // Content containing binary operators keeps its parens, preserving
+        // any intentional precedence grouping.
         var joined = string.Join(" ", tokens);
         string prev;
         do
         {
             prev = joined;
-            joined = Regex.Replace(joined, @"\(\s*([^()\s]+(?:\s+\.\s+[^()\s]+)*)\s*\)", "$1");
+            joined = Regex.Replace(joined, @"\(\s([^()]+?)\s\)", m =>
+            {
+                string inner = m.Groups[1].Value.Trim();
+                if (ParenIsRedundant(inner)) return inner;
+                return m.Value;
+            });
         } while (joined != prev);
 
         return joined.Trim();
+    }
+
+    static readonly HashSet<string> s_scopeKeywords = new()
+    {
+        "if", "when", "let", "do", "match", "lambda", "\\", "handle", "fork", "await"
+    };
+
+    static readonly HashSet<string> s_binaryOps = new()
+    {
+        "+", "-", "*", "/", "^", "==", "!=", "<", ">", "<=", ">=",
+        "&&", "||", "++", "::", "=", "->", "|", "&"
+    };
+
+    static bool ParenIsRedundant(string inner)
+    {
+        var parts = inner.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return true;
+        if (s_scopeKeywords.Contains(parts[0])) return true;
+        foreach (string t in parts)
+        {
+            if (s_binaryOps.Contains(t)) return false;
+        }
+        return true;
     }
 
     static string AlphaNormalizeTypeVars(string sig)
