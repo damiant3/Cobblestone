@@ -6,6 +6,8 @@
 |---|------|-----------|-------|
 | 1 | **Second Bootstrap (MM4)** | `docs/Active/Compiler/SECOND-BOOTSTRAP.md` | Port x86-64 backend to Codex. 8 phases. The critical path. |
 | 2 | Escape copy bare-metal | `docs/Designs/Memory/CAMP-IIIA-ESCAPE-ANALYSIS.md` | Skip removed, tests passing. Rearchitect deferred till after MM4. |
+| 3 | **Self-host parity audit** | `docs/Active/Compiler/SELF-HOST-PARITY-AUDIT.md` | Systematic gap analysis: reference vs self-host, per data structure / diagnostic / runtime behavior / primitive. Recent fragility (silent binary crashes, missing Maybe/Set/xor, no parser diagnostics, no GPF handler) traces back to uncatalogued gaps. Priority: diagnostics and data structures first. |
+| 4 | **Diagnostics, error reporting, staged compilation** | `docs/Active/Compiler/DIAGNOSTICS-AND-STAGING.md` | Self-host diagnostics lack source location; CDX codes scattered as string literals across 17 files with no registry; pipeline stages don't gate on prior failures so errors cascade. Plan: (1) docs-only CDX registry, (2) SourceSpan in self-host Diagnostic, (3) DiagnosticBag in self-host, (4) CDX codes as constants, (5) phase gating with PhaseResult, (6) organized output. Sequenced smallest-first, each shippable independently. |
 
 ## Needs Design Doc
 

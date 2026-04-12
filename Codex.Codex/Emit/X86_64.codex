@@ -979,6 +979,12 @@ Section: Builtin Detection
     else if name == "buf-write-byte" then True
     else if name == "buf-write-bytes" then True
     else if name == "buf-read-bytes" then True
+    else if name == "bit-and" then True
+    else if name == "bit-or" then True
+    else if name == "bit-xor" then True
+    else if name == "bit-shl" then True
+    else if name == "bit-shr" then True
+    else if name == "bit-not" then True
     else False
 
   is-builtin : Text -> Boolean
@@ -1486,6 +1492,42 @@ Section: Builtin Emission
    reg = rd.reg
   }
 
+  emit-bit-op-2 : CodegenState -> List IRExpr -> (Integer -> Integer -> List Integer) -> EmitResult
+  emit-bit-op-2 (st) (args) (op-bytes) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let loc0 = alloc-local (r0.state)
+   in let st1 = store-local (loc0.state) (loc0.reg) (r0.reg)
+   in let r1 = emit-expr st1 (list-at args 1)
+   in let ld0 = load-local (r1.state) (loc0.reg)
+   in let rd = alloc-temp (ld0.state)
+   in EmitResult {
+    state = st-append-text (rd.state) (mov-rr (rd.reg) (ld0.reg) ++ op-bytes (rd.reg) (r1.reg)),
+    reg = rd.reg
+   }
+
+  emit-bit-shift : CodegenState -> List IRExpr -> (Integer -> List Integer) -> EmitResult
+  emit-bit-shift (st) (args) (shift-bytes) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let loc0 = alloc-local (r0.state)
+   in let st1 = store-local (loc0.state) (loc0.reg) (r0.reg)
+   in let r1 = emit-expr st1 (list-at args 1)
+   in let st2 = st-append-text (r1.state) (mov-rr reg-rcx (r1.reg))
+   in let ld0 = load-local st2 (loc0.reg)
+   in let rd = alloc-temp (ld0.state)
+   in EmitResult {
+    state = st-append-text (rd.state) (mov-rr (rd.reg) (ld0.reg) ++ shift-bytes (rd.reg)),
+    reg = rd.reg
+   }
+
+  emit-bit-not : CodegenState -> List IRExpr -> EmitResult
+  emit-bit-not (st) (args) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (r0.state)
+   in EmitResult {
+    state = st-append-text (rd.state) (mov-rr (rd.reg) (r0.reg) ++ not-r (rd.reg)),
+    reg = rd.reg
+   }
+
   emit-builtin : CodegenState -> Text -> List IRExpr -> EmitResult
   emit-builtin (st) (name) (args) =
     if name == "print-line" then emit-print-line-builtin st args
@@ -1533,6 +1575,12 @@ Section: Builtin Emission
     else if name == "buf-write-byte" then emit-buf-write-byte-builtin st args
     else if name == "buf-write-bytes" then emit-buf-write-bytes-builtin st args
     else if name == "buf-read-bytes" then emit-buf-read-bytes-builtin st args
+    else if name == "bit-and" then emit-bit-op-2 st args and-rr
+    else if name == "bit-or" then emit-bit-op-2 st args or-rr
+    else if name == "bit-xor" then emit-bit-op-2 st args xor-rr
+    else if name == "bit-shl" then emit-bit-shift st args shl-cl
+    else if name == "bit-shr" then emit-bit-shift st args shr-cl
+    else if name == "bit-not" then emit-bit-not st args
     else emit-file-exists-builtin st args
 
 Section: Function Application
