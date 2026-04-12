@@ -6,9 +6,151 @@ using System.Threading.Tasks;
 
 
 
-public sealed record HelpResult2(CodegenState cg, long p1, long p2);
+public sealed record StrEqHeadResult(CodegenState cg, long len_ne_pos);
+
+public sealed record HandleClause(Token op_name, Token resume_name, Expr body);
+
+public abstract record BinaryOp;
+
+public sealed record OpAdd : BinaryOp;
+public sealed record OpSub : BinaryOp;
+public sealed record OpMul : BinaryOp;
+public sealed record OpDiv : BinaryOp;
+public sealed record OpPow : BinaryOp;
+public sealed record OpEq : BinaryOp;
+public sealed record OpNotEq : BinaryOp;
+public sealed record OpLt : BinaryOp;
+public sealed record OpGt : BinaryOp;
+public sealed record OpLtEq : BinaryOp;
+public sealed record OpGtEq : BinaryOp;
+public sealed record OpDefEq : BinaryOp;
+public sealed record OpAppend : BinaryOp;
+public sealed record OpCons : BinaryOp;
+public sealed record OpAnd : BinaryOp;
+public sealed record OpOr : BinaryOp;
+
+public sealed record TypeEnv(List<TypeBinding> bindings);
+
+public sealed record EffectOpDef(Token name, TypeExpr type_expr);
+
+public sealed record HandleParseResult(List<HandleClause> clauses, ParseState state);
+
+public sealed record ArityEntry(string name, long arity);
+
+public sealed record VariantCtorDef(Token name, List<TypeExpr> fields);
+
+public sealed record LocalBinding(string name, long slot);
+
+public sealed record AEffectDef(Name name, List<AEffectOpDef> ops, SourceSpan span);
+
+public sealed record EmitResult(CodegenState state, long reg);
+
+public sealed record SubstEntry(long var_id, CodexType resolved_type);
+
+public sealed record SourcePosition(long line, long column, long offset);
+
+public abstract record IRPat;
+
+public sealed record IrVarPat(string Field0, CodexType Field1, SourceSpan Field2) : IRPat;
+public sealed record IrLitPat(string Field0, CodexType Field1, SourceSpan Field2) : IRPat;
+public sealed record IrCtorPat(string Field0, List<IRPat> Field1, CodexType Field2, SourceSpan Field3) : IRPat;
+public sealed record IrWildPat(SourceSpan Field0) : IRPat;
+
+public sealed record AFieldExpr(Name name, AExpr value, SourceSpan span);
+
+public abstract record TypeExpr;
+
+public sealed record NamedType(Token Field0) : TypeExpr;
+public sealed record FunType(TypeExpr Field0, TypeExpr Field1) : TypeExpr;
+public sealed record AppType(TypeExpr Field0, List<TypeExpr> Field1) : TypeExpr;
+public sealed record ParenType(TypeExpr Field0) : TypeExpr;
+public sealed record ListType(TypeExpr Field0) : TypeExpr;
+public sealed record LinearTypeExpr(TypeExpr Field0) : TypeExpr;
+public sealed record EffectTypeExpr(List<Token> Field0, TypeExpr Field1) : TypeExpr;
+
+public sealed record MatchBranchState(CodegenState cg_state, List<long> end_patches);
+
+public abstract record Provenance;
+
+public sealed record ProvParsed : Provenance;
+public sealed record ProvDesugared : Provenance;
+public sealed record ProvLowered : Provenance;
+public sealed record ProvSynthetic : Provenance;
+
+public abstract record ParsePatResult;
+
+public sealed record PatOk(Pat Field0, ParseState Field1) : ParsePatResult;
+
+public abstract record ATypeDef;
+
+public sealed record ARecordTypeDef(Name Field0, List<Name> Field1, List<ARecordFieldDef> Field2, SourceSpan Field3) : ATypeDef;
+public sealed record AVariantTypeDef(Name Field0, List<Name> Field1, List<AVariantCtorDef> Field2, SourceSpan Field3) : ATypeDef;
+
+public sealed record TypeBinding(string name, CodexType bound_type);
+
+public sealed record DefParamResult(UnificationState state, TypeEnv env, CodexType remaining_type);
+
+public sealed record ConcatManyEval(CodegenState state, List<long> locals);
+
+public sealed record Token(TokenKind kind, string text, long offset, long line, long column, long file_id);
+
+public sealed record EffectDef(Token name, List<EffectOpDef> ops);
+
+public sealed record CdxCodeInfo(long code, string name, long severity, long phase, string summary);
+
+public sealed record SourceSpan(SourcePosition start, SourcePosition end, long file_id, Provenance provenance);
+
+public sealed record LetBind(Token name, Expr value);
+
+public sealed record WalkListResult(List<CodexType> walked_list, List<ParamEntry> entries, UnificationState state);
+
+public sealed record StrEqLoopResult(CodegenState cg, long loop_done_pos, long byte_ne_pos);
+
+public sealed record ResolveResult(DiagnosticBag bag, List<string> top_level_names, List<string> type_names, List<string> ctor_names);
+
+public sealed record CodegenState(long text_buf_addr, long text_len, long rodata_buf_addr, long rodata_len, List<FuncOffset> func_offsets, List<CallPatch> call_patches, List<FuncAddrFixup> func_addr_fixups, List<RodataFixup> rodata_fixups, List<PatchEntry> deferred_patches, List<LocalBinding> locals, long next_temp, long next_local, long spill_count, long load_local_toggle, TcoState tco, List<TypeBinding> type_defs, List<long> stack_overflow_checks, DiagnosticBag bag);
+
+public sealed record ALetBind(Name name, AExpr value, SourceSpan span);
+
+public abstract record APat;
+
+public sealed record AVarPat(Name Field0, SourceSpan Field1) : APat;
+public sealed record ALitPat(string Field0, LiteralKind Field1, SourceSpan Field2) : APat;
+public sealed record ACtorPat(Name Field0, List<APat> Field1, SourceSpan Field2) : APat;
+public sealed record AWildPat(SourceSpan Field0) : APat;
+
+public sealed record TypeVarMap(List<long> entries, long next_id);
+
+public abstract record ParseTypeDefResult;
+
+public sealed record TypeDefOk(TypeDef Field0, ParseState Field1) : ParseTypeDefResult;
+public sealed record TypeDefNone(ParseState Field0) : ParseTypeDefResult;
+
+public sealed record TrampolineResult(List<long> bytes, long far_jump_patch_pos);
 
 public sealed record AVariantCtorDef(Name name, List<ATypeExpr> fields, SourceSpan span);
+
+public sealed record Name(string value);
+
+public sealed record PatchEntry(long pos, long b0, long b1, long b2, long b3);
+
+public sealed record FlatApply(string func_name, List<IRExpr> args);
+
+public sealed record CallPatch(long patch_offset, string target);
+
+public sealed record Scope(List<string> names);
+
+public sealed record HelpResult1(CodegenState cg, long p1);
+
+public sealed record ChapterBag(string slug, DiagnosticBag bag);
+
+public sealed record RodataFixup(long patch_offset, long rodata_offset);
+
+public sealed record ParamEntry(string param_name, long var_id);
+
+public sealed record AChapter(Name name, List<ADef> defs, List<ATypeDef> type_defs, List<AEffectDef> effect_defs, List<ACitesDecl> citations, string chapter_title, string prose, List<string> section_titles, SourceSpan span);
+
+public sealed record FileTable(List<string> names);
 
 public abstract record CodexType;
 
@@ -30,24 +172,41 @@ public sealed record RecordTy(Name Field0, List<RecordField> Field1) : CodexType
 public sealed record ConstructedTy(Name Field0, List<CodexType> Field1) : CodexType;
 public sealed record EffectfulTy(List<Name> Field0, CodexType Field1) : CodexType;
 
-public sealed record LocalBinding(string name, long slot);
+public sealed record DefHeader(Token name, List<Token> @params, List<TypeAnn> ann, long body_pos, string chapter_slug);
 
-public sealed record SourceSpan(SourcePosition start, SourcePosition end, long file_id, Provenance provenance);
+public sealed record DiagnosticBag(List<Diagnostic> diagnostics, long error_count, bool truncated);
 
-public abstract record ScanDefResult;
+public sealed record HandleParamsResult(List<Token> toks, ParseState state);
 
-public sealed record DefHeaderOk(DefHeader Field0, ParseState Field1) : ScanDefResult;
-public sealed record DefHeaderNone(ParseState Field0) : ScanDefResult;
+public sealed record ImportParseResult(List<CitesDecl> imports, ParseState state);
 
-public sealed record TypeDef(Token name, List<Token> type_params, TypeBody body);
+public sealed record PatBindResult(UnificationState state, TypeEnv env);
 
-public sealed record ChapterAssignment(string def_name, string chapter_slug);
+public abstract record IRExpr;
 
-public sealed record AMatchArm(APat pattern, AExpr body, SourceSpan span);
+public sealed record IrIntLit(long Field0, SourceSpan Field1) : IRExpr;
+public sealed record IrNumLit(long Field0, SourceSpan Field1) : IRExpr;
+public sealed record IrTextLit(string Field0, SourceSpan Field1) : IRExpr;
+public sealed record IrBoolLit(bool Field0, SourceSpan Field1) : IRExpr;
+public sealed record IrCharLit(long Field0, SourceSpan Field1) : IRExpr;
+public sealed record IrName(string Field0, CodexType Field1, SourceSpan Field2) : IRExpr;
+public sealed record IrBinary(IRBinaryOp Field0, IRExpr Field1, IRExpr Field2, CodexType Field3, SourceSpan Field4) : IRExpr;
+public sealed record IrNegate(IRExpr Field0, SourceSpan Field1) : IRExpr;
+public sealed record IrIf(IRExpr Field0, IRExpr Field1, IRExpr Field2, CodexType Field3, SourceSpan Field4) : IRExpr;
+public sealed record IrLet(string Field0, CodexType Field1, IRExpr Field2, IRExpr Field3, SourceSpan Field4) : IRExpr;
+public sealed record IrApply(IRExpr Field0, IRExpr Field1, CodexType Field2, SourceSpan Field3) : IRExpr;
+public sealed record IrLambda(List<IRParam> Field0, IRExpr Field1, CodexType Field2, SourceSpan Field3) : IRExpr;
+public sealed record IrList(List<IRExpr> Field0, CodexType Field1, SourceSpan Field2) : IRExpr;
+public sealed record IrMatch(IRExpr Field0, List<IRBranch> Field1, CodexType Field2, SourceSpan Field3) : IRExpr;
+public sealed record IrDo(List<IRDoStmt> Field0, CodexType Field1, SourceSpan Field2) : IRExpr;
+public sealed record IrHandle(string Field0, IRExpr Field1, List<IRHandleClause> Field2, CodexType Field3, SourceSpan Field4) : IRExpr;
+public sealed record IrRecord(string Field0, List<IRFieldVal> Field1, CodexType Field2, SourceSpan Field3) : IRExpr;
+public sealed record IrFieldAccess(IRExpr Field0, string Field1, CodexType Field2, SourceSpan Field3) : IRExpr;
+public sealed record IrFork(IRExpr Field0, CodexType Field1, SourceSpan Field2) : IRExpr;
+public sealed record IrAwait(IRExpr Field0, CodexType Field1, SourceSpan Field2) : IRExpr;
+public sealed record IrError(string Field0, CodexType Field1, SourceSpan Field2) : IRExpr;
 
-public sealed record TrampolineResult(List<long> bytes, long far_jump_patch_pos);
-
-public sealed record ACitesDecl(Name chapter_name, List<Name> selected_names, string citing_chapter, SourceSpan span);
+public sealed record DefSetup(CodexType expected_type, CodexType remaining_type, UnificationState state, TypeEnv env);
 
 public abstract record TokenKind;
 
@@ -121,101 +280,53 @@ public sealed record Underscore : TokenKind;
 public sealed record Backslash : TokenKind;
 public sealed record ErrorToken : TokenKind;
 
-public abstract record ATypeDef;
-
-public sealed record ARecordTypeDef(Name Field0, List<Name> Field1, List<ARecordFieldDef> Field2, SourceSpan Field3) : ATypeDef;
-public sealed record AVariantTypeDef(Name Field0, List<Name> Field1, List<AVariantCtorDef> Field2, SourceSpan Field3) : ATypeDef;
-
-public sealed record UnificationState(List<SubstEntry> substitutions, long next_id, DiagnosticBag bag);
-
-public sealed record AParam(Name name, SourceSpan span);
-
-public sealed record IRFieldVal(string name, IRExpr value, SourceSpan span);
-
-public sealed record UnifyResult(bool success, UnificationState state);
-
-public sealed record CheckResult(CodexType inferred_type, UnificationState state);
+public sealed record FuncOffset(string name, long offset);
 
 public sealed record Document(List<Def> defs, List<TypeDef> type_defs, List<EffectDef> effect_defs, List<CitesDecl> citations, string chapter_title, List<string> section_titles, DiagnosticBag parse_bag);
 
-public abstract record IRPat;
+public sealed record StrConcatFastResult(CodegenState cg, long fast_done_pos);
 
-public sealed record IrVarPat(string Field0, CodexType Field1, SourceSpan Field2) : IRPat;
-public sealed record IrLitPat(string Field0, CodexType Field1, SourceSpan Field2) : IRPat;
-public sealed record IrCtorPat(string Field0, List<IRPat> Field1, CodexType Field2, SourceSpan Field3) : IRPat;
-public sealed record IrWildPat(SourceSpan Field0) : IRPat;
-
-public sealed record CitesDecl(Token chapter_name, List<Token> selected_names, string citing_chapter);
-
-public sealed record IRParam(string name, CodexType type_val, SourceSpan span);
-
-public sealed record StrEqHeadResult(CodegenState cg, long len_ne_pos);
-
-public sealed record EffectOpsResult(List<EffectOpDef> ops, ParseState state);
-
-public sealed record TcoAllocResult(CodegenState alloc_state, List<long> alloc_locals);
-
-public sealed record ApplyChain(IRExpr root, List<IRExpr> args);
-
-public sealed record ImportParseResult(List<CitesDecl> imports, ParseState state);
-
-public sealed record HandleClause(Token op_name, Token resume_name, Expr body);
-
-public sealed record PatchEntry(long pos, long b0, long b1, long b2, long b3);
-
-public sealed record ItoaZeroResult(CodegenState cg, long skip_digits_pos);
-
-public abstract record ATypeExpr;
-
-public sealed record ANamedType(Name Field0, SourceSpan Field1) : ATypeExpr;
-public sealed record AFunType(ATypeExpr Field0, ATypeExpr Field1, SourceSpan Field2) : ATypeExpr;
-public sealed record AAppType(ATypeExpr Field0, List<ATypeExpr> Field1, SourceSpan Field2) : ATypeExpr;
-public sealed record AEffectType(List<Name> Field0, ATypeExpr Field1, SourceSpan Field2) : ATypeExpr;
-
-public sealed record ChapterResult(List<TypeBinding> types, UnificationState state);
-
-public sealed record ArityEntry(string name, long arity);
-
-public sealed record ParamEntry(string param_name, long var_id);
-
-public sealed record EffectOpDef(Token name, TypeExpr type_expr);
-
-public abstract record DoStmt;
-
-public sealed record DoBindStmt(Token Field0, Expr Field1) : DoStmt;
-public sealed record DoExprStmt(Expr Field0) : DoStmt;
-
-public abstract record ADoStmt;
-
-public sealed record ADoBindStmt(Name Field0, AExpr Field1, SourceSpan Field2) : ADoStmt;
-public sealed record ADoExprStmt(AExpr Field0, SourceSpan Field1) : ADoStmt;
-
-public sealed record LambdaBindResult(UnificationState state, TypeEnv env, List<CodexType> param_types);
-
-public sealed record AChapter(Name name, List<ADef> defs, List<ATypeDef> type_defs, List<AEffectDef> effect_defs, List<ACitesDecl> citations, string chapter_title, string prose, List<string> section_titles, SourceSpan span);
-
-public abstract record CompileResult;
-
-public sealed record CompileOk(string Field0, ChapterResult Field1) : CompileResult;
-public sealed record CompileError(List<Diagnostic> Field0) : CompileResult;
+public sealed record CheckResult(CodexType inferred_type, UnificationState state);
 
 public sealed record SavedArgs(CodegenState state, List<long> locals);
 
-public sealed record RecordFieldDef(Token name, TypeExpr type_expr);
+public sealed record AParam(Name name, SourceSpan span);
 
-public sealed record StrConcatCheckResult(CodegenState cg, long slow_path_pos);
+public sealed record ARecordFieldDef(Name name, ATypeExpr type_expr, SourceSpan span);
 
-public sealed record CtorCollectResult(List<string> type_names, List<string> ctor_names);
+public sealed record ACitesDecl(Name chapter_name, List<Name> selected_names, string citing_chapter, SourceSpan span);
 
-public sealed record RodataFixup(long patch_offset, long rodata_offset);
+public sealed record ChapterAssignment(string def_name, string chapter_slug);
 
-public sealed record CodegenState(long text_buf_addr, long text_len, long rodata_buf_addr, long rodata_len, List<FuncOffset> func_offsets, List<CallPatch> call_patches, List<FuncAddrFixup> func_addr_fixups, List<RodataFixup> rodata_fixups, List<PatchEntry> deferred_patches, List<LocalBinding> locals, long next_temp, long next_local, long spill_count, long load_local_toggle, TcoState tco, List<TypeBinding> type_defs, List<long> stack_overflow_checks, DiagnosticBag bag);
+public sealed record HelpResult3(CodegenState cg, long p1, long p2, long p3);
 
-public sealed record Name(string value);
+public sealed record TcoState(bool active, bool in_tail_pos, long loop_top, List<long> param_locals, List<long> temp_locals, string current_func, long saved_next_local, long saved_next_temp);
 
-public sealed record FlatApply(string func_name, List<IRExpr> args);
+public sealed record RenameEntry(string original, string mangled);
+
+public sealed record ChapterResult(List<TypeBinding> types, UnificationState state);
+
+public sealed record Def(Token name, List<Token> @params, List<TypeAnn> ann, Expr body, string chapter_slug);
+
+public sealed record CollectResult(List<string> names, List<Diagnostic> errors);
 
 public sealed record TypeAnn(Token name, TypeExpr type_expr);
+
+public abstract record TypeBody;
+
+public sealed record RecordBody(List<RecordFieldDef> Field0) : TypeBody;
+public sealed record VariantBody(List<VariantCtorDef> Field0) : TypeBody;
+
+public abstract record LexResult;
+
+public sealed record LexToken(Token Field0, LexState Field1) : LexResult;
+public sealed record LexEnd : LexResult;
+
+public sealed record Diagnostic(long code, string message, long severity, SourceSpan span, List<SourceSpan> related_spans);
+
+public sealed record IsrStubResult(CodegenState state, long first_stub_vaddr);
+
+public sealed record RecordFieldExpr(Token name, Expr value);
 
 public abstract record IRBinaryOp;
 
@@ -240,76 +351,149 @@ public sealed record IrAppendText : IRBinaryOp;
 public sealed record IrAppendList : IRBinaryOp;
 public sealed record IrConsList : IRBinaryOp;
 
-public sealed record FileTable(List<string> names);
+public sealed record AHandleClause(Name op_name, Name resume_name, AExpr body, SourceSpan span);
 
-public sealed record CollectResult(List<string> names, List<Diagnostic> errors);
+public sealed record EvalFieldsResult(CodegenState state, List<FieldLocal> field_locals);
 
-public sealed record ADef(Name name, List<AParam> @params, List<ATypeExpr> declared_type, AExpr body, string chapter_slug, SourceSpan span);
+public sealed record ScanResult(List<TypeDef> type_defs, List<EffectDef> effect_defs, List<DefHeader> def_headers, List<CitesDecl> citations, string chapter_title, List<string> section_titles);
 
-public sealed record SelectedNamesResult(List<Token> names, ParseState state);
+public sealed record MatchArm(Pat pattern, Expr body);
 
-public sealed record WalkListResult(List<CodexType> walked_list, List<ParamEntry> entries, UnificationState state);
+public sealed record LowerCtx(List<TypeBinding> types, UnificationState ust);
 
-public abstract record LexResult;
+public abstract record Pat;
 
-public sealed record LexToken(Token Field0, LexState Field1) : LexResult;
-public sealed record LexEnd : LexResult;
+public sealed record VarPat(Token Field0) : Pat;
+public sealed record LitPat(Token Field0) : Pat;
+public sealed record CtorPat(Token Field0, List<Pat> Field1) : Pat;
+public sealed record WildPat(Token Field0) : Pat;
 
-public sealed record AEffectOpDef(Name name, ATypeExpr type_expr, SourceSpan span);
+public sealed record ItoaState(CodegenState cg, long jmp_done_zero_pos);
 
-public sealed record SumCtor(Name name, List<CodexType> fields);
+public sealed record TextSet(List<string> items);
+
+public sealed record HelpResult4(CodegenState cg, long p1, long p2, long p3, long p4);
+
+public sealed record IRHandleClause(string op_name, string resume_name, IRExpr body, SourceSpan span);
+
+public sealed record RecordField(Name name, CodexType type_val);
+
+public sealed record ParamResult(CodexType parameterized, List<ParamEntry> entries, UnificationState state);
 
 public sealed record IRChapter(Name name, List<IRDef> defs, string chapter_title, string prose, List<string> section_titles, SourceSpan span);
 
-public abstract record IRExpr;
+public sealed record UnifyResult(bool success, UnificationState state);
 
-public sealed record IrIntLit(long Field0, SourceSpan Field1) : IRExpr;
-public sealed record IrNumLit(long Field0, SourceSpan Field1) : IRExpr;
-public sealed record IrTextLit(string Field0, SourceSpan Field1) : IRExpr;
-public sealed record IrBoolLit(bool Field0, SourceSpan Field1) : IRExpr;
-public sealed record IrCharLit(long Field0, SourceSpan Field1) : IRExpr;
-public sealed record IrName(string Field0, CodexType Field1, SourceSpan Field2) : IRExpr;
-public sealed record IrBinary(IRBinaryOp Field0, IRExpr Field1, IRExpr Field2, CodexType Field3, SourceSpan Field4) : IRExpr;
-public sealed record IrNegate(IRExpr Field0, SourceSpan Field1) : IRExpr;
-public sealed record IrIf(IRExpr Field0, IRExpr Field1, IRExpr Field2, CodexType Field3, SourceSpan Field4) : IRExpr;
-public sealed record IrLet(string Field0, CodexType Field1, IRExpr Field2, IRExpr Field3, SourceSpan Field4) : IRExpr;
-public sealed record IrApply(IRExpr Field0, IRExpr Field1, CodexType Field2, SourceSpan Field3) : IRExpr;
-public sealed record IrLambda(List<IRParam> Field0, IRExpr Field1, CodexType Field2, SourceSpan Field3) : IRExpr;
-public sealed record IrList(List<IRExpr> Field0, CodexType Field1, SourceSpan Field2) : IRExpr;
-public sealed record IrMatch(IRExpr Field0, List<IRBranch> Field1, CodexType Field2, SourceSpan Field3) : IRExpr;
-public sealed record IrDo(List<IRDoStmt> Field0, CodexType Field1, SourceSpan Field2) : IRExpr;
-public sealed record IrHandle(string Field0, IRExpr Field1, List<IRHandleClause> Field2, CodexType Field3, SourceSpan Field4) : IRExpr;
-public sealed record IrRecord(string Field0, List<IRFieldVal> Field1, CodexType Field2, SourceSpan Field3) : IRExpr;
-public sealed record IrFieldAccess(IRExpr Field0, string Field1, CodexType Field2, SourceSpan Field3) : IRExpr;
-public sealed record IrFork(IRExpr Field0, CodexType Field1, SourceSpan Field2) : IRExpr;
-public sealed record IrAwait(IRExpr Field0, CodexType Field1, SourceSpan Field2) : IRExpr;
-public sealed record IrError(string Field0, CodexType Field1, SourceSpan Field2) : IRExpr;
+public abstract record DoStmt;
 
-public sealed record DefSetup(CodexType expected_type, CodexType remaining_type, UnificationState state, TypeEnv env);
+public sealed record DoBindStmt(Token Field0, Expr Field1) : DoStmt;
+public sealed record DoExprStmt(Expr Field0) : DoStmt;
 
-public sealed record DiagnosticBag(List<Diagnostic> diagnostics, long error_count, bool truncated);
+public sealed record EmitPatternResult(CodegenState state, long next_branch_patch);
 
-public sealed record SyscallResult(CodegenState state, long handler_offset);
+public sealed record SelectedNamesResult(List<Token> names, ParseState state);
 
-public sealed record ALetBind(Name name, AExpr value, SourceSpan span);
+public abstract record ATypeExpr;
 
-public sealed record EmitResult(CodegenState state, long reg);
+public sealed record ANamedType(Name Field0, SourceSpan Field1) : ATypeExpr;
+public sealed record AFunType(ATypeExpr Field0, ATypeExpr Field1, SourceSpan Field2) : ATypeExpr;
+public sealed record AAppType(ATypeExpr Field0, List<ATypeExpr> Field1, SourceSpan Field2) : ATypeExpr;
+public sealed record AEffectType(List<Name> Field0, ATypeExpr Field1, SourceSpan Field2) : ATypeExpr;
 
-public abstract record ParsePatResult;
+public sealed record IRDef(string name, List<IRParam> @params, CodexType type_val, IRExpr body, string chapter_slug, SourceSpan span);
 
-public sealed record PatOk(Pat Field0, ParseState Field1) : ParsePatResult;
+public sealed record EmitChapterResult(List<long> bytes, DiagnosticBag bag);
 
-public sealed record MatchBranchState(CodegenState cg_state, List<long> end_patches);
+public sealed record FieldLocal(string name, long slot);
 
-public sealed record Def(Token name, List<Token> @params, List<TypeAnn> ann, Expr body, string chapter_slug);
+public sealed record IRBranch(IRPat pattern, IRExpr body, SourceSpan span);
 
-public abstract record ParseTypeResult;
+public sealed record IRFieldVal(string name, IRExpr value, SourceSpan span);
 
-public sealed record TypeOk(TypeExpr Field0, ParseState Field1) : ParseTypeResult;
+public sealed record FreshResult(CodexType var_type, UnificationState state);
 
-public sealed record LambdaParamsResult(List<Token> toks, ParseState state);
+public sealed record SumCtor(Name name, List<CodexType> fields);
 
-public sealed record Diagnostic(long code, string message, long severity, SourceSpan span, List<SourceSpan> related_spans);
+public sealed record HamtMap(List<string> keys, List<long> values);
+
+public sealed record HelpResult2(CodegenState cg, long p1, long p2);
+
+public sealed record ItoaZeroResult(CodegenState cg, long skip_digits_pos);
+
+public sealed record RecordFieldDef(Token name, TypeExpr type_expr);
+
+public sealed record ADef(Name name, List<AParam> @params, List<ATypeExpr> declared_type, AExpr body, string chapter_slug, SourceSpan span);
+
+public abstract record ADoStmt;
+
+public sealed record ADoBindStmt(Name Field0, AExpr Field1, SourceSpan Field2) : ADoStmt;
+public sealed record ADoExprStmt(AExpr Field0, SourceSpan Field1) : ADoStmt;
+
+public abstract record IRDoStmt;
+
+public sealed record IrDoBind(string Field0, CodexType Field1, IRExpr Field2, SourceSpan Field3) : IRDoStmt;
+public sealed record IrDoExec(IRExpr Field0, SourceSpan Field1) : IRDoStmt;
+
+public sealed record ParsedDef(DefHeader header, Expr body, DiagnosticBag parse_bag);
+
+public abstract record AExpr;
+
+public sealed record ALitExpr(string Field0, LiteralKind Field1, SourceSpan Field2) : AExpr;
+public sealed record ANameExpr(Name Field0, SourceSpan Field1) : AExpr;
+public sealed record AApplyExpr(AExpr Field0, AExpr Field1, SourceSpan Field2) : AExpr;
+public sealed record ABinaryExpr(AExpr Field0, BinaryOp Field1, AExpr Field2, SourceSpan Field3) : AExpr;
+public sealed record AUnaryExpr(AExpr Field0, SourceSpan Field1) : AExpr;
+public sealed record AIfExpr(AExpr Field0, AExpr Field1, AExpr Field2, SourceSpan Field3) : AExpr;
+public sealed record ALetExpr(List<ALetBind> Field0, AExpr Field1, SourceSpan Field2) : AExpr;
+public sealed record ALambdaExpr(List<Name> Field0, AExpr Field1, SourceSpan Field2) : AExpr;
+public sealed record AMatchExpr(AExpr Field0, List<AMatchArm> Field1, SourceSpan Field2) : AExpr;
+public sealed record AListExpr(List<AExpr> Field0, SourceSpan Field1) : AExpr;
+public sealed record ARecordExpr(Name Field0, List<AFieldExpr> Field1, SourceSpan Field2) : AExpr;
+public sealed record AFieldAccess(AExpr Field0, Name Field1, SourceSpan Field2) : AExpr;
+public sealed record ADoExpr(List<ADoStmt> Field0, SourceSpan Field1) : AExpr;
+public sealed record AHandleExpr(Name Field0, AExpr Field1, List<AHandleClause> Field2, SourceSpan Field3) : AExpr;
+public sealed record AErrorExpr(string Field0, SourceSpan Field1) : AExpr;
+
+public sealed record AMatchArm(APat pattern, AExpr body, SourceSpan span);
+
+public abstract record ParseDefResult;
+
+public sealed record DefOk(Def Field0, ParseState Field1) : ParseDefResult;
+public sealed record DefNone(ParseState Field0) : ParseDefResult;
+
+public abstract record LiteralKind;
+
+public sealed record IntLit : LiteralKind;
+public sealed record NumLit : LiteralKind;
+public sealed record TextLit : LiteralKind;
+public sealed record CharLit : LiteralKind;
+public sealed record BoolLit : LiteralKind;
+
+public abstract record ScanDefResult;
+
+public sealed record DefHeaderOk(DefHeader Field0, ParseState Field1) : ScanDefResult;
+public sealed record DefHeaderNone(ParseState Field0) : ScanDefResult;
+
+public abstract record CompileResult;
+
+public sealed record CompileOk(string Field0, ChapterResult Field1) : CompileResult;
+public sealed record CompileError(List<Diagnostic> Field0) : CompileResult;
+
+public sealed record AEffectOpDef(Name name, ATypeExpr type_expr, SourceSpan span);
+
+public sealed record LexState(string source, long offset, long line, long column, long file_id);
+
+public sealed record TcoAllocResult(CodegenState alloc_state, List<long> alloc_locals);
+
+public abstract record ParseExprResult;
+
+public sealed record ExprOk(Expr Field0, ParseState Field1) : ParseExprResult;
+
+public sealed record EffectNamesResult(List<Token> names, ParseState state);
+
+public sealed record UnificationState(List<SubstEntry> substitutions, long next_id, DiagnosticBag bag);
+
+public sealed record ParseState(List<Token> tokens, long pos, DiagnosticBag bag);
 
 public abstract record Expr;
 
@@ -330,217 +514,35 @@ public sealed record HandleExpr(Token Field0, Expr Field1, List<HandleClause> Fi
 public sealed record LambdaExpr(List<Token> Field0, Expr Field1) : Expr;
 public sealed record ErrExpr(Token Field0) : Expr;
 
-public sealed record ResolveResult(DiagnosticBag bag, List<string> top_level_names, List<string> type_names, List<string> ctor_names);
+public sealed record EffectOpsResult(List<EffectOpDef> ops, ParseState state);
 
-public abstract record Provenance;
+public sealed record IRParam(string name, CodexType type_val, SourceSpan span);
 
-public sealed record ProvParsed : Provenance;
-public sealed record ProvDesugared : Provenance;
-public sealed record ProvLowered : Provenance;
-public sealed record ProvSynthetic : Provenance;
+public sealed record CitesDecl(Token chapter_name, List<Token> selected_names, string citing_chapter);
 
-public abstract record AExpr;
-
-public sealed record ALitExpr(string Field0, LiteralKind Field1, SourceSpan Field2) : AExpr;
-public sealed record ANameExpr(Name Field0, SourceSpan Field1) : AExpr;
-public sealed record AApplyExpr(AExpr Field0, AExpr Field1, SourceSpan Field2) : AExpr;
-public sealed record ABinaryExpr(AExpr Field0, BinaryOp Field1, AExpr Field2, SourceSpan Field3) : AExpr;
-public sealed record AUnaryExpr(AExpr Field0, SourceSpan Field1) : AExpr;
-public sealed record AIfExpr(AExpr Field0, AExpr Field1, AExpr Field2, SourceSpan Field3) : AExpr;
-public sealed record ALetExpr(List<ALetBind> Field0, AExpr Field1, SourceSpan Field2) : AExpr;
-public sealed record ALambdaExpr(List<Name> Field0, AExpr Field1, SourceSpan Field2) : AExpr;
-public sealed record AMatchExpr(AExpr Field0, List<AMatchArm> Field1, SourceSpan Field2) : AExpr;
-public sealed record AListExpr(List<AExpr> Field0, SourceSpan Field1) : AExpr;
-public sealed record ARecordExpr(Name Field0, List<AFieldExpr> Field1, SourceSpan Field2) : AExpr;
-public sealed record AFieldAccess(AExpr Field0, Name Field1, SourceSpan Field2) : AExpr;
-public sealed record ADoExpr(List<ADoStmt> Field0, SourceSpan Field1) : AExpr;
-public sealed record AHandleExpr(Name Field0, AExpr Field1, List<AHandleClause> Field2, SourceSpan Field3) : AExpr;
-public sealed record AErrorExpr(string Field0, SourceSpan Field1) : AExpr;
-
-public sealed record SubstEntry(long var_id, CodexType resolved_type);
-
-public sealed record FuncOffset(string name, long offset);
-
-public sealed record TextSet(List<string> items);
-
-public sealed record IsrStubResult(CodegenState state, long first_stub_vaddr);
-
-public sealed record ScanResult(List<TypeDef> type_defs, List<EffectDef> effect_defs, List<DefHeader> def_headers, List<CitesDecl> citations, string chapter_title, List<string> section_titles);
-
-public sealed record TypeBinding(string name, CodexType bound_type);
-
-public sealed record RenameEntry(string original, string mangled);
-
-public sealed record DefParamResult(UnificationState state, TypeEnv env, CodexType remaining_type);
-
-public sealed record HelpResult1(CodegenState cg, long p1);
-
-public sealed record ParsedDef(DefHeader header, Expr body, DiagnosticBag parse_bag);
-
-public sealed record IRBranch(IRPat pattern, IRExpr body, SourceSpan span);
-
-public sealed record TypeEnv(List<TypeBinding> bindings);
-
-public sealed record CdxCodeInfo(long code, string name, long severity, long phase, string summary);
-
-public sealed record EmitChapterResult(List<long> bytes, DiagnosticBag bag);
+public sealed record CtorCollectResult(List<string> type_names, List<string> ctor_names);
 
 public sealed record WalkResult(CodexType walked, List<ParamEntry> entries, UnificationState state);
 
-public sealed record HelpResult4(CodegenState cg, long p1, long p2, long p3, long p4);
+public sealed record ApplyChain(IRExpr root, List<IRExpr> args);
 
-public abstract record TypeBody;
+public sealed record LambdaBindResult(UnificationState state, TypeEnv env, List<CodexType> param_types);
 
-public sealed record RecordBody(List<RecordFieldDef> Field0) : TypeBody;
-public sealed record VariantBody(List<VariantCtorDef> Field0) : TypeBody;
+public sealed record LambdaParamsResult(List<Token> toks, ParseState state);
 
-public abstract record IRDoStmt;
+public sealed record TypeDef(Token name, List<Token> type_params, TypeBody body);
 
-public sealed record IrDoBind(string Field0, CodexType Field1, IRExpr Field2, SourceSpan Field3) : IRDoStmt;
-public sealed record IrDoExec(IRExpr Field0, SourceSpan Field1) : IRDoStmt;
+public abstract record ParseTypeResult;
 
-public sealed record StrEqLoopResult(CodegenState cg, long loop_done_pos, long byte_ne_pos);
-
-public sealed record SourcePosition(long line, long column, long offset);
-
-public sealed record EmitPatternResult(CodegenState state, long next_branch_patch);
-
-public sealed record LexState(string source, long offset, long line, long column, long file_id);
-
-public sealed record CallPatch(long patch_offset, string target);
-
-public sealed record TcoState(bool active, bool in_tail_pos, long loop_top, List<long> param_locals, List<long> temp_locals, string current_func, long saved_next_local, long saved_next_temp);
-
-public sealed record StrConcatFastResult(CodegenState cg, long fast_done_pos);
-
-public sealed record RecordFieldExpr(Token name, Expr value);
-
-public sealed record ParamResult(CodexType parameterized, List<ParamEntry> entries, UnificationState state);
-
-public sealed record DefHeader(Token name, List<Token> @params, List<TypeAnn> ann, long body_pos, string chapter_slug);
-
-public sealed record ChapterBag(string slug, DiagnosticBag bag);
-
-public sealed record HandleParseResult(List<HandleClause> clauses, ParseState state);
-
-public abstract record Pat;
-
-public sealed record VarPat(Token Field0) : Pat;
-public sealed record LitPat(Token Field0) : Pat;
-public sealed record CtorPat(Token Field0, List<Pat> Field1) : Pat;
-public sealed record WildPat(Token Field0) : Pat;
-
-public sealed record LowerCtx(List<TypeBinding> types, UnificationState ust);
-
-public abstract record LiteralKind;
-
-public sealed record IntLit : LiteralKind;
-public sealed record NumLit : LiteralKind;
-public sealed record TextLit : LiteralKind;
-public sealed record CharLit : LiteralKind;
-public sealed record BoolLit : LiteralKind;
-
-public sealed record MatchArm(Pat pattern, Expr body);
-
-public sealed record FreshResult(CodexType var_type, UnificationState state);
-
-public sealed record ParseState(List<Token> tokens, long pos, DiagnosticBag bag);
-
-public abstract record BinaryOp;
-
-public sealed record OpAdd : BinaryOp;
-public sealed record OpSub : BinaryOp;
-public sealed record OpMul : BinaryOp;
-public sealed record OpDiv : BinaryOp;
-public sealed record OpPow : BinaryOp;
-public sealed record OpEq : BinaryOp;
-public sealed record OpNotEq : BinaryOp;
-public sealed record OpLt : BinaryOp;
-public sealed record OpGt : BinaryOp;
-public sealed record OpLtEq : BinaryOp;
-public sealed record OpGtEq : BinaryOp;
-public sealed record OpDefEq : BinaryOp;
-public sealed record OpAppend : BinaryOp;
-public sealed record OpCons : BinaryOp;
-public sealed record OpAnd : BinaryOp;
-public sealed record OpOr : BinaryOp;
-
-public sealed record ARecordFieldDef(Name name, ATypeExpr type_expr, SourceSpan span);
-
-public sealed record HamtMap(List<string> keys, List<long> values);
-
-public abstract record APat;
-
-public sealed record AVarPat(Name Field0, SourceSpan Field1) : APat;
-public sealed record ALitPat(string Field0, LiteralKind Field1, SourceSpan Field2) : APat;
-public sealed record ACtorPat(Name Field0, List<APat> Field1, SourceSpan Field2) : APat;
-public sealed record AWildPat(SourceSpan Field0) : APat;
-
-public sealed record EffectDef(Token name, List<EffectOpDef> ops);
-
-public abstract record TypeExpr;
-
-public sealed record NamedType(Token Field0) : TypeExpr;
-public sealed record FunType(TypeExpr Field0, TypeExpr Field1) : TypeExpr;
-public sealed record AppType(TypeExpr Field0, List<TypeExpr> Field1) : TypeExpr;
-public sealed record ParenType(TypeExpr Field0) : TypeExpr;
-public sealed record ListType(TypeExpr Field0) : TypeExpr;
-public sealed record LinearTypeExpr(TypeExpr Field0) : TypeExpr;
-public sealed record EffectTypeExpr(List<Token> Field0, TypeExpr Field1) : TypeExpr;
-
-public sealed record Token(TokenKind kind, string text, long offset, long line, long column, long file_id);
-
-public sealed record ItoaState(CodegenState cg, long jmp_done_zero_pos);
-
-public sealed record Scope(List<string> names);
-
-public abstract record ParseExprResult;
-
-public sealed record ExprOk(Expr Field0, ParseState Field1) : ParseExprResult;
-
-public sealed record IRDef(string name, List<IRParam> @params, CodexType type_val, IRExpr body, string chapter_slug, SourceSpan span);
-
-public sealed record PatBindResult(UnificationState state, TypeEnv env);
-
-public sealed record LetBind(Token name, Expr value);
-
-public sealed record AEffectDef(Name name, List<AEffectOpDef> ops, SourceSpan span);
-
-public sealed record HelpResult3(CodegenState cg, long p1, long p2, long p3);
-
-public sealed record AFieldExpr(Name name, AExpr value, SourceSpan span);
-
-public sealed record AHandleClause(Name op_name, Name resume_name, AExpr body, SourceSpan span);
+public sealed record TypeOk(TypeExpr Field0, ParseState Field1) : ParseTypeResult;
 
 public sealed record LetBindResult(UnificationState state, TypeEnv env);
 
-public sealed record TypeVarMap(List<long> entries, long next_id);
+public sealed record StrConcatCheckResult(CodegenState cg, long slow_path_pos);
 
-public sealed record HandleParamsResult(List<Token> toks, ParseState state);
-
-public sealed record ConcatManyEval(CodegenState state, List<long> locals);
-
-public sealed record RecordField(Name name, CodexType type_val);
-
-public sealed record EvalFieldsResult(CodegenState state, List<FieldLocal> field_locals);
-
-public sealed record FieldLocal(string name, long slot);
-
-public abstract record ParseTypeDefResult;
-
-public sealed record TypeDefOk(TypeDef Field0, ParseState Field1) : ParseTypeDefResult;
-public sealed record TypeDefNone(ParseState Field0) : ParseTypeDefResult;
+public sealed record SyscallResult(CodegenState state, long handler_offset);
 
 public sealed record FuncAddrFixup(long patch_offset, string target);
-
-public sealed record VariantCtorDef(Token name, List<TypeExpr> fields);
-
-public sealed record IRHandleClause(string op_name, string resume_name, IRExpr body, SourceSpan span);
-
-public abstract record ParseDefResult;
-
-public sealed record DefOk(Def Field0, ParseState Field1) : ParseDefResult;
-public sealed record DefNone(ParseState Field0) : ParseDefResult;
 
 static class _Cce {
     static readonly int[] _toUni = {
@@ -12871,28 +12873,58 @@ public static class Codex_Codex_Codex
 
     public static ParseTypeResult parse_effect_type(ParseState st)
     {
-        return ((Func<ParseState, ParseTypeResult>)((st2) => parse_type(st2)))(skip_effect_contents(st));
+        return ((Func<EffectNamesResult, ParseTypeResult>)((effs) => ((Func<ParseTypeResult, ParseTypeResult>)((ret) => unwrap_type_ok(ret, (ret) => (st) => finish_effect_type(effs.names, ret, st))))(parse_type(effs.state))))(parse_effect_names(st, new List<Token>()));
     }
 
-    public static ParseState skip_effect_contents(ParseState st)
+    public static ParseTypeResult finish_effect_type(List<Token> effs, TypeExpr ret, ParseState st)
+    {
+        return new TypeOk(new EffectTypeExpr(effs, ret), st);
+    }
+
+    public static EffectNamesResult parse_effect_names(ParseState st, List<Token> acc)
     {
         while (true)
         {
             if (is_done(st))
             {
-                return st;
+                return new EffectNamesResult(acc, st);
             }
             else
             {
                 if (is_right_bracket(current_kind(st)))
                 {
-                    return advance(st);
+                    return new EffectNamesResult(acc, advance(st));
                 }
                 else
                 {
-                    var _tco_0 = advance(st);
-                    st = _tco_0;
-                    continue;
+                    if (is_comma(current_kind(st)))
+                    {
+                        var _tco_0 = advance(st);
+                        var _tco_1 = acc;
+                        st = _tco_0;
+                        acc = _tco_1;
+                        continue;
+                    }
+                    else
+                    {
+                        if ((is_ident(current_kind(st)) || is_type_ident(current_kind(st))))
+                        {
+                            var tok = current(st);
+                            var _tco_0 = advance(st);
+                            var _tco_1 = ((Func<List<Token>>)(() => { var _l = acc; _l.Add(tok); return _l; }))();
+                            st = _tco_0;
+                            acc = _tco_1;
+                            continue;
+                        }
+                        else
+                        {
+                            var _tco_0 = advance(st);
+                            var _tco_1 = acc;
+                            st = _tco_0;
+                            acc = _tco_1;
+                            continue;
+                        }
+                    }
                 }
             }
         }
@@ -15540,7 +15572,7 @@ public static class Codex_Codex_Codex
 
     public static UnifyResult unify_structural(UnificationState st, CodexType a, CodexType b)
     {
-        return ((Func<CodexType, UnifyResult>)((_scrutinee185_) => (_scrutinee185_ is IntegerTy _mIntegerTy185_ ? ((Func<CodexType, UnifyResult>)((_scrutinee186_) => (_scrutinee186_ is IntegerTy _mIntegerTy186_ ? new UnifyResult(true, st) : (_scrutinee186_ is ErrorTy _mErrorTy186_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee186_)))))(b) : (_scrutinee185_ is NumberTy _mNumberTy185_ ? ((Func<CodexType, UnifyResult>)((_scrutinee187_) => (_scrutinee187_ is NumberTy _mNumberTy187_ ? new UnifyResult(true, st) : (_scrutinee187_ is ErrorTy _mErrorTy187_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee187_)))))(b) : (_scrutinee185_ is TextTy _mTextTy185_ ? ((Func<CodexType, UnifyResult>)((_scrutinee188_) => (_scrutinee188_ is TextTy _mTextTy188_ ? new UnifyResult(true, st) : (_scrutinee188_ is ErrorTy _mErrorTy188_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee188_)))))(b) : (_scrutinee185_ is BooleanTy _mBooleanTy185_ ? ((Func<CodexType, UnifyResult>)((_scrutinee189_) => (_scrutinee189_ is BooleanTy _mBooleanTy189_ ? new UnifyResult(true, st) : (_scrutinee189_ is ErrorTy _mErrorTy189_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee189_)))))(b) : (_scrutinee185_ is NothingTy _mNothingTy185_ ? ((Func<CodexType, UnifyResult>)((_scrutinee190_) => (_scrutinee190_ is NothingTy _mNothingTy190_ ? new UnifyResult(true, st) : (_scrutinee190_ is ErrorTy _mErrorTy190_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee190_)))))(b) : (_scrutinee185_ is VoidTy _mVoidTy185_ ? ((Func<CodexType, UnifyResult>)((_scrutinee191_) => (_scrutinee191_ is VoidTy _mVoidTy191_ ? new UnifyResult(true, st) : (_scrutinee191_ is ErrorTy _mErrorTy191_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee191_)))))(b) : (_scrutinee185_ is ErrorTy _mErrorTy185_ ? new UnifyResult(true, st) : (_scrutinee185_ is FunTy _mFunTy185_ ? ((Func<CodexType, UnifyResult>)((ra) => ((Func<CodexType, UnifyResult>)((pa) => ((Func<CodexType, UnifyResult>)((_scrutinee192_) => (_scrutinee192_ is FunTy _mFunTy192_ ? ((Func<CodexType, UnifyResult>)((rb) => ((Func<CodexType, UnifyResult>)((pb) => unify_fun(st, pa, ra, pb, rb)))((CodexType)_mFunTy192_.Field0)))((CodexType)_mFunTy192_.Field1) : (_scrutinee192_ is ErrorTy _mErrorTy192_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee192_)))))(b)))((CodexType)_mFunTy185_.Field0)))((CodexType)_mFunTy185_.Field1) : (_scrutinee185_ is ListTy _mListTy185_ ? ((Func<CodexType, UnifyResult>)((ea) => ((Func<CodexType, UnifyResult>)((_scrutinee193_) => (_scrutinee193_ is ListTy _mListTy193_ ? ((Func<CodexType, UnifyResult>)((eb) => unify(st, ea, eb)))((CodexType)_mListTy193_.Field0) : (_scrutinee193_ is ErrorTy _mErrorTy193_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee193_)))))(b)))((CodexType)_mListTy185_.Field0) : (_scrutinee185_ is LinkedListTy _mLinkedListTy185_ ? ((Func<CodexType, UnifyResult>)((ea) => ((Func<CodexType, UnifyResult>)((_scrutinee194_) => (_scrutinee194_ is LinkedListTy _mLinkedListTy194_ ? ((Func<CodexType, UnifyResult>)((eb) => unify(st, ea, eb)))((CodexType)_mLinkedListTy194_.Field0) : (_scrutinee194_ is ErrorTy _mErrorTy194_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee194_)))))(b)))((CodexType)_mLinkedListTy185_.Field0) : (_scrutinee185_ is ConstructedTy _mConstructedTy185_ ? ((Func<List<CodexType>, UnifyResult>)((args_a) => ((Func<Name, UnifyResult>)((na) => ((Func<CodexType, UnifyResult>)((_scrutinee195_) => (_scrutinee195_ is ConstructedTy _mConstructedTy195_ ? ((Func<List<CodexType>, UnifyResult>)((args_b) => ((Func<Name, UnifyResult>)((nb) => ((na.value == nb.value) ? unify_constructed_args(st, args_a, args_b, 0L, ((long)args_a.Count)) : unify_mismatch(st, a, b))))((Name)_mConstructedTy195_.Field0)))((List<CodexType>)_mConstructedTy195_.Field1) : (_scrutinee195_ is SumTy _mSumTy195_ ? ((Func<List<SumCtor>, UnifyResult>)((sb_ctors) => ((Func<Name, UnifyResult>)((sb_name) => ((na.value == sb_name.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b))))((Name)_mSumTy195_.Field0)))((List<SumCtor>)_mSumTy195_.Field1) : (_scrutinee195_ is RecordTy _mRecordTy195_ ? ((Func<List<RecordField>, UnifyResult>)((rb_fields) => ((Func<Name, UnifyResult>)((rb_name) => ((na.value == rb_name.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b))))((Name)_mRecordTy195_.Field0)))((List<RecordField>)_mRecordTy195_.Field1) : (_scrutinee195_ is ErrorTy _mErrorTy195_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee195_)))))))(b)))((Name)_mConstructedTy185_.Field0)))((List<CodexType>)_mConstructedTy185_.Field1) : (_scrutinee185_ is SumTy _mSumTy185_ ? ((Func<List<SumCtor>, UnifyResult>)((sa_ctors) => ((Func<Name, UnifyResult>)((sa_name) => ((Func<CodexType, UnifyResult>)((_scrutinee196_) => (_scrutinee196_ is SumTy _mSumTy196_ ? ((Func<List<SumCtor>, UnifyResult>)((sb_ctors) => ((Func<Name, UnifyResult>)((sb_name) => ((sa_name.value == sb_name.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b))))((Name)_mSumTy196_.Field0)))((List<SumCtor>)_mSumTy196_.Field1) : (_scrutinee196_ is ConstructedTy _mConstructedTy196_ ? ((Func<List<CodexType>, UnifyResult>)((args_b) => ((Func<Name, UnifyResult>)((nb) => ((sa_name.value == nb.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b))))((Name)_mConstructedTy196_.Field0)))((List<CodexType>)_mConstructedTy196_.Field1) : (_scrutinee196_ is ErrorTy _mErrorTy196_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee196_))))))(b)))((Name)_mSumTy185_.Field0)))((List<SumCtor>)_mSumTy185_.Field1) : (_scrutinee185_ is RecordTy _mRecordTy185_ ? ((Func<List<RecordField>, UnifyResult>)((ra_fields) => ((Func<Name, UnifyResult>)((ra_name) => ((Func<CodexType, UnifyResult>)((_scrutinee197_) => (_scrutinee197_ is RecordTy _mRecordTy197_ ? ((Func<List<RecordField>, UnifyResult>)((rb_fields) => ((Func<Name, UnifyResult>)((rb_name) => ((ra_name.value == rb_name.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b))))((Name)_mRecordTy197_.Field0)))((List<RecordField>)_mRecordTy197_.Field1) : (_scrutinee197_ is ConstructedTy _mConstructedTy197_ ? ((Func<List<CodexType>, UnifyResult>)((args_b) => ((Func<Name, UnifyResult>)((nb) => ((ra_name.value == nb.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b))))((Name)_mConstructedTy197_.Field0)))((List<CodexType>)_mConstructedTy197_.Field1) : (_scrutinee197_ is ErrorTy _mErrorTy197_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee197_))))))(b)))((Name)_mRecordTy185_.Field0)))((List<RecordField>)_mRecordTy185_.Field1) : (_scrutinee185_ is ForAllTy _mForAllTy185_ ? ((Func<CodexType, UnifyResult>)((body) => ((Func<long, UnifyResult>)((id) => unify(st, body, b)))((long)_mForAllTy185_.Field0)))((CodexType)_mForAllTy185_.Field1) : ((Func<CodexType, UnifyResult>)((_) => (b is ErrorTy _mErrorTy198_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(b))))(_scrutinee185_)))))))))))))))))(a);
+        return ((Func<CodexType, UnifyResult>)((_scrutinee185_) => (_scrutinee185_ is IntegerTy _mIntegerTy185_ ? ((Func<CodexType, UnifyResult>)((_scrutinee186_) => (_scrutinee186_ is IntegerTy _mIntegerTy186_ ? new UnifyResult(true, st) : (_scrutinee186_ is ErrorTy _mErrorTy186_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee186_)))))(b) : (_scrutinee185_ is NumberTy _mNumberTy185_ ? ((Func<CodexType, UnifyResult>)((_scrutinee187_) => (_scrutinee187_ is NumberTy _mNumberTy187_ ? new UnifyResult(true, st) : (_scrutinee187_ is ErrorTy _mErrorTy187_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee187_)))))(b) : (_scrutinee185_ is TextTy _mTextTy185_ ? ((Func<CodexType, UnifyResult>)((_scrutinee188_) => (_scrutinee188_ is TextTy _mTextTy188_ ? new UnifyResult(true, st) : (_scrutinee188_ is ErrorTy _mErrorTy188_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee188_)))))(b) : (_scrutinee185_ is BooleanTy _mBooleanTy185_ ? ((Func<CodexType, UnifyResult>)((_scrutinee189_) => (_scrutinee189_ is BooleanTy _mBooleanTy189_ ? new UnifyResult(true, st) : (_scrutinee189_ is ErrorTy _mErrorTy189_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee189_)))))(b) : (_scrutinee185_ is NothingTy _mNothingTy185_ ? ((Func<CodexType, UnifyResult>)((_scrutinee190_) => (_scrutinee190_ is NothingTy _mNothingTy190_ ? new UnifyResult(true, st) : (_scrutinee190_ is ErrorTy _mErrorTy190_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee190_)))))(b) : (_scrutinee185_ is VoidTy _mVoidTy185_ ? ((Func<CodexType, UnifyResult>)((_scrutinee191_) => (_scrutinee191_ is VoidTy _mVoidTy191_ ? new UnifyResult(true, st) : (_scrutinee191_ is ErrorTy _mErrorTy191_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee191_)))))(b) : (_scrutinee185_ is ErrorTy _mErrorTy185_ ? new UnifyResult(true, st) : (_scrutinee185_ is FunTy _mFunTy185_ ? ((Func<CodexType, UnifyResult>)((ra) => ((Func<CodexType, UnifyResult>)((pa) => ((Func<CodexType, UnifyResult>)((_scrutinee192_) => (_scrutinee192_ is FunTy _mFunTy192_ ? ((Func<CodexType, UnifyResult>)((rb) => ((Func<CodexType, UnifyResult>)((pb) => unify_fun(st, pa, ra, pb, rb)))((CodexType)_mFunTy192_.Field0)))((CodexType)_mFunTy192_.Field1) : (_scrutinee192_ is ErrorTy _mErrorTy192_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee192_)))))(b)))((CodexType)_mFunTy185_.Field0)))((CodexType)_mFunTy185_.Field1) : (_scrutinee185_ is ListTy _mListTy185_ ? ((Func<CodexType, UnifyResult>)((ea) => ((Func<CodexType, UnifyResult>)((_scrutinee193_) => (_scrutinee193_ is ListTy _mListTy193_ ? ((Func<CodexType, UnifyResult>)((eb) => unify(st, ea, eb)))((CodexType)_mListTy193_.Field0) : (_scrutinee193_ is ErrorTy _mErrorTy193_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee193_)))))(b)))((CodexType)_mListTy185_.Field0) : (_scrutinee185_ is LinkedListTy _mLinkedListTy185_ ? ((Func<CodexType, UnifyResult>)((ea) => ((Func<CodexType, UnifyResult>)((_scrutinee194_) => (_scrutinee194_ is LinkedListTy _mLinkedListTy194_ ? ((Func<CodexType, UnifyResult>)((eb) => unify(st, ea, eb)))((CodexType)_mLinkedListTy194_.Field0) : (_scrutinee194_ is ErrorTy _mErrorTy194_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee194_)))))(b)))((CodexType)_mLinkedListTy185_.Field0) : (_scrutinee185_ is ConstructedTy _mConstructedTy185_ ? ((Func<List<CodexType>, UnifyResult>)((args_a) => ((Func<Name, UnifyResult>)((na) => ((Func<CodexType, UnifyResult>)((_scrutinee195_) => (_scrutinee195_ is ConstructedTy _mConstructedTy195_ ? ((Func<List<CodexType>, UnifyResult>)((args_b) => ((Func<Name, UnifyResult>)((nb) => ((na.value == nb.value) ? unify_constructed_args(st, args_a, args_b, 0L, ((long)args_a.Count)) : unify_mismatch(st, a, b))))((Name)_mConstructedTy195_.Field0)))((List<CodexType>)_mConstructedTy195_.Field1) : (_scrutinee195_ is SumTy _mSumTy195_ ? ((Func<List<SumCtor>, UnifyResult>)((sb_ctors) => ((Func<Name, UnifyResult>)((sb_name) => ((na.value == sb_name.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b))))((Name)_mSumTy195_.Field0)))((List<SumCtor>)_mSumTy195_.Field1) : (_scrutinee195_ is RecordTy _mRecordTy195_ ? ((Func<List<RecordField>, UnifyResult>)((rb_fields) => ((Func<Name, UnifyResult>)((rb_name) => ((na.value == rb_name.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b))))((Name)_mRecordTy195_.Field0)))((List<RecordField>)_mRecordTy195_.Field1) : (_scrutinee195_ is ErrorTy _mErrorTy195_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee195_)))))))(b)))((Name)_mConstructedTy185_.Field0)))((List<CodexType>)_mConstructedTy185_.Field1) : (_scrutinee185_ is SumTy _mSumTy185_ ? ((Func<List<SumCtor>, UnifyResult>)((sa_ctors) => ((Func<Name, UnifyResult>)((sa_name) => ((Func<CodexType, UnifyResult>)((_scrutinee196_) => (_scrutinee196_ is SumTy _mSumTy196_ ? ((Func<List<SumCtor>, UnifyResult>)((sb_ctors) => ((Func<Name, UnifyResult>)((sb_name) => ((sa_name.value == sb_name.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b))))((Name)_mSumTy196_.Field0)))((List<SumCtor>)_mSumTy196_.Field1) : (_scrutinee196_ is ConstructedTy _mConstructedTy196_ ? ((Func<List<CodexType>, UnifyResult>)((args_b) => ((Func<Name, UnifyResult>)((nb) => ((sa_name.value == nb.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b))))((Name)_mConstructedTy196_.Field0)))((List<CodexType>)_mConstructedTy196_.Field1) : (_scrutinee196_ is ErrorTy _mErrorTy196_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee196_))))))(b)))((Name)_mSumTy185_.Field0)))((List<SumCtor>)_mSumTy185_.Field1) : (_scrutinee185_ is RecordTy _mRecordTy185_ ? ((Func<List<RecordField>, UnifyResult>)((ra_fields) => ((Func<Name, UnifyResult>)((ra_name) => ((Func<CodexType, UnifyResult>)((_scrutinee197_) => (_scrutinee197_ is RecordTy _mRecordTy197_ ? ((Func<List<RecordField>, UnifyResult>)((rb_fields) => ((Func<Name, UnifyResult>)((rb_name) => ((ra_name.value == rb_name.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b))))((Name)_mRecordTy197_.Field0)))((List<RecordField>)_mRecordTy197_.Field1) : (_scrutinee197_ is ConstructedTy _mConstructedTy197_ ? ((Func<List<CodexType>, UnifyResult>)((args_b) => ((Func<Name, UnifyResult>)((nb) => ((ra_name.value == nb.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b))))((Name)_mConstructedTy197_.Field0)))((List<CodexType>)_mConstructedTy197_.Field1) : (_scrutinee197_ is ErrorTy _mErrorTy197_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee197_))))))(b)))((Name)_mRecordTy185_.Field0)))((List<RecordField>)_mRecordTy185_.Field1) : (_scrutinee185_ is ForAllTy _mForAllTy185_ ? ((Func<CodexType, UnifyResult>)((body) => ((Func<long, UnifyResult>)((id) => unify(st, body, b)))((long)_mForAllTy185_.Field0)))((CodexType)_mForAllTy185_.Field1) : (_scrutinee185_ is EffectfulTy _mEffectfulTy185_ ? ((Func<CodexType, UnifyResult>)((ret_a) => ((Func<List<Name>, UnifyResult>)((effs_a) => ((Func<CodexType, UnifyResult>)((_scrutinee198_) => (_scrutinee198_ is EffectfulTy _mEffectfulTy198_ ? ((Func<CodexType, UnifyResult>)((ret_b) => ((Func<List<Name>, UnifyResult>)((effs_b) => unify(st, ret_a, ret_b)))((List<Name>)_mEffectfulTy198_.Field0)))((CodexType)_mEffectfulTy198_.Field1) : (_scrutinee198_ is ErrorTy _mErrorTy198_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify(st, ret_a, b)))(_scrutinee198_)))))(b)))((List<Name>)_mEffectfulTy185_.Field0)))((CodexType)_mEffectfulTy185_.Field1) : ((Func<CodexType, UnifyResult>)((_) => ((Func<CodexType, UnifyResult>)((_scrutinee199_) => (_scrutinee199_ is EffectfulTy _mEffectfulTy199_ ? ((Func<CodexType, UnifyResult>)((ret_b) => ((Func<List<Name>, UnifyResult>)((effs_b) => unify(st, a, ret_b)))((List<Name>)_mEffectfulTy199_.Field0)))((CodexType)_mEffectfulTy199_.Field1) : (_scrutinee199_ is ErrorTy _mErrorTy199_ ? new UnifyResult(true, st) : ((Func<CodexType, UnifyResult>)((_) => unify_mismatch(st, a, b)))(_scrutinee199_)))))(b)))(_scrutinee185_))))))))))))))))))(a);
     }
 
     public static UnifyResult unify_constructed_args(UnificationState st, List<CodexType> args_a, List<CodexType> args_b, long i, long len)
@@ -15595,12 +15627,12 @@ public static class Codex_Codex_Codex
 
     public static string type_tag(CodexType ty)
     {
-        return ((Func<CodexType, string>)((_scrutinee199_) => (_scrutinee199_ is IntegerTy _mIntegerTy199_ ? "+\u0012\u000E\u000D\u001D\u000D\u0015" : (_scrutinee199_ is NumberTy _mNumberTy199_ ? ",\u0019\u001A \u000D\u0015" : (_scrutinee199_ is TextTy _mTextTy199_ ? "(\u000D$\u000E" : (_scrutinee199_ is BooleanTy _mBooleanTy199_ ? ":\u0010\u0010\u0017\u000D\u000F\u0012" : (_scrutinee199_ is CharTy _mCharTy199_ ? "2\u0014\u000F\u0015" : (_scrutinee199_ is VoidTy _mVoidTy199_ ? ";\u0010\u0011\u0016" : (_scrutinee199_ is NothingTy _mNothingTy199_ ? ",\u0010\u000E\u0014\u0011\u0012\u001D" : (_scrutinee199_ is ErrorTy _mErrorTy199_ ? "'\u0015\u0015\u0010\u0015" : (_scrutinee199_ is FunTy _mFunTy199_ ? ((Func<CodexType, string>)((r) => ((Func<CodexType, string>)((p) => "6\u0019\u0012"))((CodexType)_mFunTy199_.Field0)))((CodexType)_mFunTy199_.Field1) : (_scrutinee199_ is ListTy _mListTy199_ ? ((Func<CodexType, string>)((e) => "1\u0011\u0013\u000E"))((CodexType)_mListTy199_.Field0) : (_scrutinee199_ is LinkedListTy _mLinkedListTy199_ ? ((Func<CodexType, string>)((e) => "1\u0011\u0012\"\u000D\u00161\u0011\u0013\u000E"))((CodexType)_mLinkedListTy199_.Field0) : (_scrutinee199_ is TypeVar _mTypeVar199_ ? ((Func<long, string>)((id) => string.Concat("(", _Cce.FromUnicode(id.ToString()))))((long)_mTypeVar199_.Field0) : (_scrutinee199_ is ForAllTy _mForAllTy199_ ? ((Func<CodexType, string>)((body) => ((Func<long, string>)((id) => "6\u0010\u0015)\u0017\u0017"))((long)_mForAllTy199_.Field0)))((CodexType)_mForAllTy199_.Field1) : (_scrutinee199_ is SumTy _mSumTy199_ ? ((Func<List<SumCtor>, string>)((ctors) => ((Func<Name, string>)((name) => string.Concat("-\u0019\u001AE", name.value)))((Name)_mSumTy199_.Field0)))((List<SumCtor>)_mSumTy199_.Field1) : (_scrutinee199_ is RecordTy _mRecordTy199_ ? ((Func<List<RecordField>, string>)((fields) => ((Func<Name, string>)((name) => string.Concat("/\u000D\u0018E", name.value)))((Name)_mRecordTy199_.Field0)))((List<RecordField>)_mRecordTy199_.Field1) : (_scrutinee199_ is ConstructedTy _mConstructedTy199_ ? ((Func<List<CodexType>, string>)((args) => ((Func<Name, string>)((name) => string.Concat("2\u0010\u0012E", name.value)))((Name)_mConstructedTy199_.Field0)))((List<CodexType>)_mConstructedTy199_.Field1) : throw new InvalidOperationException("Non-exhaustive match")))))))))))))))))))(ty);
+        return ((Func<CodexType, string>)((_scrutinee200_) => (_scrutinee200_ is IntegerTy _mIntegerTy200_ ? "+\u0012\u000E\u000D\u001D\u000D\u0015" : (_scrutinee200_ is NumberTy _mNumberTy200_ ? ",\u0019\u001A \u000D\u0015" : (_scrutinee200_ is TextTy _mTextTy200_ ? "(\u000D$\u000E" : (_scrutinee200_ is BooleanTy _mBooleanTy200_ ? ":\u0010\u0010\u0017\u000D\u000F\u0012" : (_scrutinee200_ is CharTy _mCharTy200_ ? "2\u0014\u000F\u0015" : (_scrutinee200_ is VoidTy _mVoidTy200_ ? ";\u0010\u0011\u0016" : (_scrutinee200_ is NothingTy _mNothingTy200_ ? ",\u0010\u000E\u0014\u0011\u0012\u001D" : (_scrutinee200_ is ErrorTy _mErrorTy200_ ? "'\u0015\u0015\u0010\u0015" : (_scrutinee200_ is FunTy _mFunTy200_ ? ((Func<CodexType, string>)((r) => ((Func<CodexType, string>)((p) => "6\u0019\u0012"))((CodexType)_mFunTy200_.Field0)))((CodexType)_mFunTy200_.Field1) : (_scrutinee200_ is ListTy _mListTy200_ ? ((Func<CodexType, string>)((e) => "1\u0011\u0013\u000E"))((CodexType)_mListTy200_.Field0) : (_scrutinee200_ is LinkedListTy _mLinkedListTy200_ ? ((Func<CodexType, string>)((e) => "1\u0011\u0012\"\u000D\u00161\u0011\u0013\u000E"))((CodexType)_mLinkedListTy200_.Field0) : (_scrutinee200_ is TypeVar _mTypeVar200_ ? ((Func<long, string>)((id) => string.Concat("(", _Cce.FromUnicode(id.ToString()))))((long)_mTypeVar200_.Field0) : (_scrutinee200_ is ForAllTy _mForAllTy200_ ? ((Func<CodexType, string>)((body) => ((Func<long, string>)((id) => "6\u0010\u0015)\u0017\u0017"))((long)_mForAllTy200_.Field0)))((CodexType)_mForAllTy200_.Field1) : (_scrutinee200_ is SumTy _mSumTy200_ ? ((Func<List<SumCtor>, string>)((ctors) => ((Func<Name, string>)((name) => string.Concat("-\u0019\u001AE", name.value)))((Name)_mSumTy200_.Field0)))((List<SumCtor>)_mSumTy200_.Field1) : (_scrutinee200_ is RecordTy _mRecordTy200_ ? ((Func<List<RecordField>, string>)((fields) => ((Func<Name, string>)((name) => string.Concat("/\u000D\u0018E", name.value)))((Name)_mRecordTy200_.Field0)))((List<RecordField>)_mRecordTy200_.Field1) : (_scrutinee200_ is ConstructedTy _mConstructedTy200_ ? ((Func<List<CodexType>, string>)((args) => ((Func<Name, string>)((name) => string.Concat("2\u0010\u0012E", name.value)))((Name)_mConstructedTy200_.Field0)))((List<CodexType>)_mConstructedTy200_.Field1) : (_scrutinee200_ is EffectfulTy _mEffectfulTy200_ ? ((Func<CodexType, string>)((ret) => ((Func<List<Name>, string>)((effs) => "'\u001C\u001C\u000D\u0018\u000E\u001C\u0019\u0017"))((List<Name>)_mEffectfulTy200_.Field0)))((CodexType)_mEffectfulTy200_.Field1) : throw new InvalidOperationException("Non-exhaustive match"))))))))))))))))))))(ty);
     }
 
     public static CodexType deep_resolve(UnificationState st, CodexType ty)
     {
-        return ((Func<CodexType, CodexType>)((resolved) => ((Func<CodexType, CodexType>)((_scrutinee200_) => (_scrutinee200_ is FunTy _mFunTy200_ ? ((Func<CodexType, CodexType>)((ret) => ((Func<CodexType, CodexType>)((param) => new FunTy(deep_resolve(st, param), deep_resolve(st, ret))))((CodexType)_mFunTy200_.Field0)))((CodexType)_mFunTy200_.Field1) : (_scrutinee200_ is ListTy _mListTy200_ ? ((Func<CodexType, CodexType>)((elem) => new ListTy(deep_resolve(st, elem))))((CodexType)_mListTy200_.Field0) : (_scrutinee200_ is LinkedListTy _mLinkedListTy200_ ? ((Func<CodexType, CodexType>)((elem) => new LinkedListTy(deep_resolve(st, elem))))((CodexType)_mLinkedListTy200_.Field0) : (_scrutinee200_ is ConstructedTy _mConstructedTy200_ ? ((Func<List<CodexType>, CodexType>)((args) => ((Func<Name, CodexType>)((name) => new ConstructedTy(name, deep_resolve_list(st, args, 0L, ((long)args.Count), new List<CodexType>()))))((Name)_mConstructedTy200_.Field0)))((List<CodexType>)_mConstructedTy200_.Field1) : (_scrutinee200_ is ForAllTy _mForAllTy200_ ? ((Func<CodexType, CodexType>)((body) => ((Func<long, CodexType>)((id) => new ForAllTy(id, deep_resolve(st, body))))((long)_mForAllTy200_.Field0)))((CodexType)_mForAllTy200_.Field1) : (_scrutinee200_ is SumTy _mSumTy200_ ? ((Func<List<SumCtor>, CodexType>)((ctors) => ((Func<Name, CodexType>)((name) => resolved))((Name)_mSumTy200_.Field0)))((List<SumCtor>)_mSumTy200_.Field1) : (_scrutinee200_ is RecordTy _mRecordTy200_ ? ((Func<List<RecordField>, CodexType>)((fields) => ((Func<Name, CodexType>)((name) => resolved))((Name)_mRecordTy200_.Field0)))((List<RecordField>)_mRecordTy200_.Field1) : ((Func<CodexType, CodexType>)((_) => resolved))(_scrutinee200_))))))))))(resolved)))(resolve(st, ty));
+        return ((Func<CodexType, CodexType>)((resolved) => ((Func<CodexType, CodexType>)((_scrutinee201_) => (_scrutinee201_ is FunTy _mFunTy201_ ? ((Func<CodexType, CodexType>)((ret) => ((Func<CodexType, CodexType>)((param) => new FunTy(deep_resolve(st, param), deep_resolve(st, ret))))((CodexType)_mFunTy201_.Field0)))((CodexType)_mFunTy201_.Field1) : (_scrutinee201_ is ListTy _mListTy201_ ? ((Func<CodexType, CodexType>)((elem) => new ListTy(deep_resolve(st, elem))))((CodexType)_mListTy201_.Field0) : (_scrutinee201_ is LinkedListTy _mLinkedListTy201_ ? ((Func<CodexType, CodexType>)((elem) => new LinkedListTy(deep_resolve(st, elem))))((CodexType)_mLinkedListTy201_.Field0) : (_scrutinee201_ is ConstructedTy _mConstructedTy201_ ? ((Func<List<CodexType>, CodexType>)((args) => ((Func<Name, CodexType>)((name) => new ConstructedTy(name, deep_resolve_list(st, args, 0L, ((long)args.Count), new List<CodexType>()))))((Name)_mConstructedTy201_.Field0)))((List<CodexType>)_mConstructedTy201_.Field1) : (_scrutinee201_ is ForAllTy _mForAllTy201_ ? ((Func<CodexType, CodexType>)((body) => ((Func<long, CodexType>)((id) => new ForAllTy(id, deep_resolve(st, body))))((long)_mForAllTy201_.Field0)))((CodexType)_mForAllTy201_.Field1) : (_scrutinee201_ is SumTy _mSumTy201_ ? ((Func<List<SumCtor>, CodexType>)((ctors) => ((Func<Name, CodexType>)((name) => resolved))((Name)_mSumTy201_.Field0)))((List<SumCtor>)_mSumTy201_.Field1) : (_scrutinee201_ is RecordTy _mRecordTy201_ ? ((Func<List<RecordField>, CodexType>)((fields) => ((Func<Name, CodexType>)((name) => resolved))((Name)_mRecordTy201_.Field0)))((List<RecordField>)_mRecordTy201_.Field1) : ((Func<CodexType, CodexType>)((_) => resolved))(_scrutinee201_))))))))))(resolved)))(resolve(st, ty));
     }
 
     public static List<CodexType> deep_resolve_list(UnificationState st, List<CodexType> args, long i, long len, List<CodexType> acc)
@@ -15799,12 +15831,12 @@ public static class Codex_Codex_Codex
 
     public static Expr unwrap_body(ParseExprResult r)
     {
-        return (r is ExprOk _mExprOk201_ ? ((Func<ParseState, Expr>)((st) => ((Func<Expr, Expr>)((e) => e))((Expr)_mExprOk201_.Field0)))((ParseState)_mExprOk201_.Field1) : throw new InvalidOperationException("Non-exhaustive match"));
+        return (r is ExprOk _mExprOk202_ ? ((Func<ParseState, Expr>)((st) => ((Func<Expr, Expr>)((e) => e))((Expr)_mExprOk202_.Field0)))((ParseState)_mExprOk202_.Field1) : throw new InvalidOperationException("Non-exhaustive match"));
     }
 
     public static List<Diagnostic> unwrap_parse_errors(ParseExprResult r)
     {
-        return (r is ExprOk _mExprOk202_ ? ((Func<ParseState, List<Diagnostic>>)((st) => ((Func<Expr, List<Diagnostic>>)((e) => bag_diagnostics(st.bag)))((Expr)_mExprOk202_.Field0)))((ParseState)_mExprOk202_.Field1) : throw new InvalidOperationException("Non-exhaustive match"));
+        return (r is ExprOk _mExprOk203_ ? ((Func<ParseState, List<Diagnostic>>)((st) => ((Func<Expr, List<Diagnostic>>)((e) => bag_diagnostics(st.bag)))((Expr)_mExprOk203_.Field0)))((ParseState)_mExprOk203_.Field1) : throw new InvalidOperationException("Non-exhaustive match"));
     }
 
     public static object print_def_parse_errors(string def_name, List<Diagnostic> errs)
@@ -15899,7 +15931,7 @@ public static class Codex_Codex_Codex
 
     public static DiagnosticBag parse_bag_of(ParseExprResult r)
     {
-        return (r is ExprOk _mExprOk203_ ? ((Func<ParseState, DiagnosticBag>)((st) => ((Func<Expr, DiagnosticBag>)((e) => st.bag))((Expr)_mExprOk203_.Field0)))((ParseState)_mExprOk203_.Field1) : throw new InvalidOperationException("Non-exhaustive match"));
+        return (r is ExprOk _mExprOk204_ ? ((Func<ParseState, DiagnosticBag>)((st) => ((Func<Expr, DiagnosticBag>)((e) => st.bag))((Expr)_mExprOk204_.Field0)))((ParseState)_mExprOk204_.Field1) : throw new InvalidOperationException("Non-exhaustive match"));
     }
 
     public static DiagnosticBag merge_all_parse_bags(List<ParsedDef> pds, long i, DiagnosticBag acc)

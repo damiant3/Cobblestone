@@ -47,14 +47,28 @@ Section: Type Parsing
 
   parse-effect-type : ParseState -> ParseTypeResult
   parse-effect-type (st) =
-   let st2 = skip-effect-contents st
-   in parse-type st2
+   let effs = parse-effect-names st []
+   in let ret = parse-type (effs.state)
+   in unwrap-type-ok ret (finish-effect-type (effs.names))
 
-  skip-effect-contents : ParseState -> ParseState
-  skip-effect-contents (st) =
-   if is-done st then st
-   else if is-right-bracket (current-kind st) then advance st
-   else skip-effect-contents (advance st)
+  finish-effect-type : List Token -> TypeExpr -> ParseState -> ParseTypeResult
+  finish-effect-type (effs) (ret) (st) =
+   TypeOk (EffectTypeExpr effs ret) st
+
+  EffectNamesResult = record {
+   names : List Token,
+   state : ParseState
+  }
+
+  parse-effect-names : ParseState -> List Token -> EffectNamesResult
+  parse-effect-names (st) (acc) =
+   if is-done st then EffectNamesResult { names = acc, state = st }
+   else if is-right-bracket (current-kind st) then EffectNamesResult { names = acc, state = advance st }
+   else if is-comma (current-kind st) then parse-effect-names (advance st) acc
+   else if is-ident (current-kind st) | is-type-ident (current-kind st) then
+    let tok = current st
+    in parse-effect-names (advance st) (list-snoc acc tok)
+   else parse-effect-names (advance st) acc
 
   parse-type-args : TypeExpr -> ParseState -> ParseTypeResult
   parse-type-args (base-type) (st) =
