@@ -50,21 +50,42 @@ In scope:
 
 ### Phase 1 — Self-host Diagnostic parity
 
-Bring `Codex.Codex/Core/Diagnostic.codex` up to the reference shape:
+Split into 1a (API shape) and 1b (AST/IR span threading).
 
-- Add `SourceSpan` type (file path, start line/col, end line/col).
-- Add `related-spans : List SourceSpan` field to `Diagnostic`.
-- Add `Hint` to `DiagnosticSeverity`.
-- Every existing call site that creates a diagnostic must now supply a
-  `SourceSpan`. This touches parser, name resolver, type checker, emitter
-  code — every file using `make-error` today. The call sites all need a
-  span available; for parser / lexer that's trivial (they have token
-  positions). For later phases the AST / IR nodes need to carry their
-  source span.
+**1a — API parity (done).** Self-host `Diagnostic` now matches reference:
 
-- Decision point: do AST and IR nodes carry `SourceSpan`? In the reference
-  they do. In the self-host, confirm and fix gaps. Each IR node should be
-  able to answer "where in the source did this come from?"
+- `Diagnostic { code, message, severity, span, related-spans }`.
+- `make-error / make-warning / make-info / make-hint` take a `SourceSpan`.
+- `make-error-related` for the multi-span variant.
+- Helpers in `SourceText.codex`: `synthetic-span`, `is-synthetic-span`,
+  `span-at line col offset len`, `span-display`.
+- 5 existing call sites updated. Parser site (`ParserCore.codex:326`)
+  passes a real span built from its token; the other four
+  (`Unifier.codex` unify errors, `NameResolver.codex` duplicate-def
+  and undefined-name, `X86_64.codex` IR-error passthrough) use
+  `synthetic-span` because the AST/IR nodes they operate on don't
+  yet carry source spans.
+- `diagnostic-display` renders `file:line:col: sev CDXnnnn: message`
+  when the span is real; prefix omitted for synthetic spans.
+
+**1b — AST/IR span threading (pending, own branch).** Retrofit
+`SourceSpan` onto every AST and IR node type so diagnostics reported
+by name resolver, type checker, lowering, and emit can cite the user's
+original source. Touches:
+
+- `Ast/AstNodes.codex` — every variant constructor and record gets a
+  `span : SourceSpan` field.
+- `Ast/Desugarer.codex` — carry span from CST `Token` into each new AST
+  node via `span-at`.
+- `IR/IRChapter.codex` — every IR node type gets a `span`.
+- `IR/Lowering.codex`, `Lowering*.codex` — carry AST span into IR node.
+- `Emit/*.codex` — any site that constructs IR or emits diagnostics
+  uses the node's span.
+
+This is a mechanical but large edit, and it will churn almost every
+constructor call in the compiler. Land on its own branch
+(`hex/ast-ir-spans` suggested) with golden-output testing per phase so
+regressions are caught at the node level rather than downstream.
 
 ### Phase 2 — `DiagnosticBag` in the self-host
 
