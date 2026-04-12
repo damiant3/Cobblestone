@@ -58,7 +58,7 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
         {
             if (topLevel.Contains(def.Name.Value))
             {
-                m_diagnostics.Error("CDX3001",
+                m_diagnostics.Error(CdxCodes.DuplicateDefinition,
                     $"Duplicate definition: '{def.Name.Value}' is already defined",
                     def.Span);
             }
@@ -72,7 +72,7 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
         {
             if (typeNames.Contains(td.Name.Value))
             {
-                m_diagnostics.Error("CDX3001",
+                m_diagnostics.Error(CdxCodes.DuplicateDefinition,
                     $"Duplicate type definition: '{td.Name.Value}' is already defined",
                     td.Span);
             }
@@ -83,7 +83,7 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
                 {
                     if (ctorNames.Contains(ctor.Name.Value))
                     {
-                        m_diagnostics.Error("CDX3001",
+                        m_diagnostics.Error(CdxCodes.DuplicateDefinition,
                             $"Duplicate constructor: '{ctor.Name.Value}' is already defined",
                             ctor.Span);
                     }
@@ -100,7 +100,7 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
             {
                 if (topLevel.Contains(op.Name.Value) || ctorNames.Contains(op.Name.Value))
                 {
-                    m_diagnostics.Error("CDX3001",
+                    m_diagnostics.Error(CdxCodes.DuplicateDefinition,
                         $"Effect operation '{op.Name.Value}' conflicts with existing name",
                         op.Span);
                 }
@@ -114,7 +114,7 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
             ResolvedChapter? cited = m_loader?.Load(cite.ChapterName.Value);
             if (cited is null)
             {
-                m_diagnostics.Error("CDX3010",
+                m_diagnostics.Error(CdxCodes.UnresolvedCitation,
                     $"Cannot resolve citation '{cite.ChapterName.Value}'",
                     cite.Span);
                 continue;
@@ -152,7 +152,7 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
                     string message = suggestion is not null
                         ? $"Undefined name: '{name.Name.Value}'. Did you mean '{suggestion}'?"
                         : $"Undefined name: '{name.Name.Value}'";
-                    m_diagnostics.Error("CDX3002", message, name.Span);
+                    m_diagnostics.Error(CdxCodes.UndefinedName, message, name.Span);
                 }
                 break;
 

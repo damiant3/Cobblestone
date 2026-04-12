@@ -71,7 +71,7 @@ public sealed partial class TypeChecker
                 CodexType? looked = m_env.Lookup(name.Name);
                 if (looked is null)
                 {
-                    m_diagnostics.Error("CDX2002",
+                    m_diagnostics.Error(CdxCodes.UnknownName,
                         $"Unknown name '{name.Name.Value}' during type checking",
                         name.Span);
                     return ErrorType.s_instance;
@@ -161,7 +161,7 @@ public sealed partial class TypeChecker
         m_unifier.Unify(left, right, bin.Span);
         CodexType resolved = m_unifier.Resolve(left);
         if (resolved is not (IntegerType or NumberType or TypeVariable or ErrorType))
-            m_diagnostics.Error("CDX2003",
+            m_diagnostics.Error(CdxCodes.ArithmeticRequiresNumeric,
                 $"Arithmetic operator requires Integer or Number, but found {resolved}",
                 bin.Span);
         return left;
@@ -341,7 +341,7 @@ public sealed partial class TypeChecker
         if (missing.Count > 0)
         {
             string missingStr = string.Join(", ", missing);
-            m_diagnostics.Warning("CDX2020",
+            m_diagnostics.Warning(CdxCodes.NonExhaustiveMatch,
                 $"Non-exhaustive match: missing constructor(s) {missingStr}",
                 match.Span);
         }
@@ -428,7 +428,7 @@ public sealed partial class TypeChecker
         if (field is not null)
             return field.Type;
 
-        m_diagnostics.Error("CDX2005",
+        m_diagnostics.Error(CdxCodes.RecordFieldNotFound,
             $"Record type '{rt.TypeName.Value}' has no field '{fa.FieldName.Value}'",
             fa.Span);
         return ErrorType.s_instance;
@@ -529,7 +529,7 @@ public sealed partial class TypeChecker
             CodexType? opType = m_env.Lookup(clause.OperationName);
             if (opType is null)
             {
-                m_diagnostics.Error("CDX2010",
+                m_diagnostics.Error(CdxCodes.InfiniteType,
                     $"Unknown effect operation '{clause.OperationName.Value}'",
                     clause.Span);
                 m_env = savedEnv;

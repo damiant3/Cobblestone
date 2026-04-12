@@ -87,7 +87,7 @@ public sealed partial class TypeChecker
                 };
                 if (expectedArity >= 0 && args.Length != expectedArity)
                 {
-                    m_diagnostics.Error("CDX2032",
+                    m_diagnostics.Error(CdxCodes.TypeArgArityMismatch,
                         $"Type '{named.Name.Value}' expects {expectedArity} type argument(s), "
                         + $"but received {args.Length}",
                         app.Span);
@@ -122,7 +122,7 @@ public sealed partial class TypeChecker
                     effects.Add(new EffectType(named.Name));
             }
             else
-                m_diagnostics.Error("CDX2030", "Effect label must be a name", e.Span);
+                m_diagnostics.Error(CdxCodes.EffectLabelMustBeName, "Effect label must be a name", e.Span);
         }
         CodexType returnType = ResolveTypeExpr(eff.Return);
         return new EffectfulType(effects.ToImmutable(), returnType, rowVar);

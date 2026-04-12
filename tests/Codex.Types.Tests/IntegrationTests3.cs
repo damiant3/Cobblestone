@@ -37,7 +37,7 @@ namespace Codex.Types.Tests
                 "claim bad : 3 === 5\n" +
                 "proof bad = Refl\n";
             DiagnosticBag diag = Helpers.CheckWithProofs(source);
-            Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX4010");
+            Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.ReflSidesNotEqual);
         }
 
         [Fact]
@@ -58,7 +58,7 @@ namespace Codex.Types.Tests
             string source =
                 "proof orphan = Refl\n";
             DiagnosticBag diag = Helpers.CheckWithProofs(source);
-            Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX4001");
+            Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.MissingClaim);
         }
 
         [Fact]
@@ -78,7 +78,7 @@ namespace Codex.Types.Tests
                 "claim bad-add : (3 + 2) === 6\n" +
                 "proof bad-add = Refl\n";
             DiagnosticBag diag = Helpers.CheckWithProofs(source);
-            Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX4010");
+            Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.ReflSidesNotEqual);
         }
 
         [Fact]
@@ -185,7 +185,7 @@ namespace Codex.Types.Tests
                 "proof bad-induction (xs) =\n" +
                 "  induction xs\n";
             DiagnosticBag diag = Helpers.CheckWithProofs(source);
-            Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX4020");
+            Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.InductionNoCases);
         }
 
         [Fact]

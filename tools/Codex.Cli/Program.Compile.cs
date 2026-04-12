@@ -319,7 +319,7 @@ public static partial class Program
         {
             if (page is null)
             {
-                diagnostics.Warning("CDX0010",
+                diagnostics.Warning(CdxCodes.MissingPageMarker,
                     $"No page marker in '{Path.GetFileName(filePath)}' — expected 'Page N' or 'Page N of M' at end of file",
                     SourceSpan.Single(0, 1, 1, filePath));
             }
@@ -335,7 +335,7 @@ public static partial class Program
             var totals = group.Select(m => m.Page!.TotalPages!.Value).Distinct().ToList();
             if (totals.Count > 1)
             {
-                diagnostics.Error("CDX1072",
+                diagnostics.Error(CdxCodes.PageCountMismatch,
                     $"Page count mismatch in '{group.Key}': files disagree ({string.Join(" vs ", totals)})",
                     group.First().Page!.Span);
                 continue;
@@ -347,7 +347,7 @@ public static partial class Program
             {
                 if (!seen.Add(m.Page!.PageNumber))
                 {
-                    diagnostics.Error("CDX1073",
+                    diagnostics.Error(CdxCodes.DuplicatePage,
                         $"Duplicate page {m.Page.PageNumber} in '{group.Key}'",
                         m.Page.Span);
                 }
@@ -357,7 +357,7 @@ public static partial class Program
             {
                 if (!seen.Contains(i))
                 {
-                    diagnostics.Error("CDX1074",
+                    diagnostics.Error(CdxCodes.MissingPage,
                         $"Missing page {i} of {expectedTotal} in '{group.Key}'",
                         group.First().Page!.Span);
                 }

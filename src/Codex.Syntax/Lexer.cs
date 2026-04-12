@@ -192,12 +192,12 @@ public sealed class Lexer
                 Advance();
                 if (Current == 't')
                 {
-                    m_diagnostics.Error("CDX0005", "\\t escape is not valid in CCE — use spaces directly", MakeSpan(start));
+                    m_diagnostics.Error(CdxCodes.InvalidTabEscape, "\\t escape is not valid in CCE — use spaces directly", MakeSpan(start));
                     sb.Append("  ");
                 }
                 else if (Current == 'r')
                 {
-                    m_diagnostics.Error("CDX0006", "\\r escape is not valid in CCE — use \\n for newlines", MakeSpan(start));
+                    m_diagnostics.Error(CdxCodes.InvalidCarriageReturnEscape, "\\r escape is not valid in CCE — use \\n for newlines", MakeSpan(start));
                 }
                 else
                 {
@@ -221,7 +221,7 @@ public sealed class Lexer
 
         if (IsAtEnd || Current == '\n')
         {
-            m_diagnostics.Error("CDX0001", "Unterminated text literal", MakeSpan(start));
+            m_diagnostics.Error(CdxCodes.UnterminatedTextLiteral, "Unterminated text literal", MakeSpan(start));
         }
         else
         {
@@ -257,12 +257,12 @@ public sealed class Lexer
             }
             if (Current == 't')
             {
-                m_diagnostics.Error("CDX0005", "\\t escape is not valid in CCE — use a space character instead", MakeSpan(start));
+                m_diagnostics.Error(CdxCodes.InvalidTabEscape, "\\t escape is not valid in CCE — use a space character instead", MakeSpan(start));
                 charValue = ' ';
             }
             else if (Current == 'r')
             {
-                m_diagnostics.Error("CDX0006", "\\r escape is not valid in CCE — use '\\n' for newlines", MakeSpan(start));
+                m_diagnostics.Error(CdxCodes.InvalidCarriageReturnEscape, "\\r escape is not valid in CCE — use '\\n' for newlines", MakeSpan(start));
                 charValue = '\n';
             }
             else
@@ -342,7 +342,7 @@ public sealed class Lexer
 
                 if (depth > 0)
                 {
-                    m_diagnostics.Error("CDX0004", "Unterminated interpolation expression", MakeSpan(start));
+                    m_diagnostics.Error(CdxCodes.UnterminatedInterpolation, "Unterminated interpolation expression", MakeSpan(start));
                 }
             }
             else
@@ -353,7 +353,7 @@ public sealed class Lexer
 
         if (IsAtEnd || Current == '\n')
         {
-            m_diagnostics.Error("CDX0001", "Unterminated text literal", MakeSpan(start));
+            m_diagnostics.Error(CdxCodes.UnterminatedTextLiteral, "Unterminated text literal", MakeSpan(start));
         }
         else
         {
@@ -381,12 +381,12 @@ public sealed class Lexer
                 Advance();
                 if (Current == 't')
                 {
-                    m_diagnostics.Error("CDX0005", "\\t escape is not valid in CCE — use spaces directly", MakeSpan(escStart));
+                    m_diagnostics.Error(CdxCodes.InvalidTabEscape, "\\t escape is not valid in CCE — use spaces directly", MakeSpan(escStart));
                     sb.Append("  ");
                 }
                 else if (Current == 'r')
                 {
-                    m_diagnostics.Error("CDX0006", "\\r escape is not valid in CCE — use \\n for newlines", MakeSpan(escStart));
+                    m_diagnostics.Error(CdxCodes.InvalidCarriageReturnEscape, "\\r escape is not valid in CCE — use \\n for newlines", MakeSpan(escStart));
                 }
                 else
                 {
@@ -603,7 +603,7 @@ public sealed class Lexer
             case '⊗' : return new Token(TokenKind.LinearProduct, "⊗", MakeSpan(start));
 
             default:
-                m_diagnostics.Error("CDX0002", $"Unexpected character '{c}'", MakeSpan(start));
+                m_diagnostics.Error(CdxCodes.UnexpectedCharacter, $"Unexpected character '{c}'", MakeSpan(start));
                 return new Token(TokenKind.Error, c.ToString(), MakeSpan(start));
         }
     }
@@ -670,7 +670,7 @@ public sealed class Lexer
 
             if (indent != m_indentStack.Peek())
             {
-                m_diagnostics.Warning("CDX0003", "Indentation does not match any outer level", span);
+                m_diagnostics.Warning(CdxCodes.IndentationMismatch, "Indentation does not match any outer level", span);
             }
         }
     }

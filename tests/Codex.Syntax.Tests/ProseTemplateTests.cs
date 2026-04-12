@@ -322,7 +322,7 @@ public class ProseTemplateTests
 
         (DocumentNode doc, DiagnosticBag diags) = ParseProse(source);
         Assert.False(diags.HasErrors);
-        Assert.Empty(diags.ToImmutable().Where(d => d.Code == "CDX1101" || d.Code == "CDX1102"));
+        Assert.Empty(diags.ToImmutable().Where(d => d.Code == CdxCodes.ProseFunctionNameMismatch || d.Code == CdxCodes.ProseParameterNameMismatch));
     }
 
     [Fact]
@@ -337,7 +337,7 @@ public class ProseTemplateTests
             "    withdraw (amount) = amount\n";
 
         (DocumentNode doc, DiagnosticBag diags) = ParseProse(source);
-        Assert.Contains(diags.ToImmutable(), d => d.Code == "CDX1101");
+        Assert.Contains(diags.ToImmutable(), d => d.Code == CdxCodes.ProseFunctionNameMismatch);
     }
 
     [Fact]
@@ -352,7 +352,7 @@ public class ProseTemplateTests
             "    deposit (qty) = qty\n";
 
         (DocumentNode doc, DiagnosticBag diags) = ParseProse(source);
-        Assert.Contains(diags.ToImmutable(), d => d.Code == "CDX1102");
+        Assert.Contains(diags.ToImmutable(), d => d.Code == CdxCodes.ProseParameterNameMismatch);
     }
 
     [Fact]
@@ -367,7 +367,7 @@ public class ProseTemplateTests
             "    greet (name) = \"Hello, \" ++ name\n";
 
         (DocumentNode doc, DiagnosticBag diags) = ParseProse(source);
-        Assert.Empty(diags.ToImmutable().Where(d => d.Code == "CDX1101" || d.Code == "CDX1102"));
+        Assert.Empty(diags.ToImmutable().Where(d => d.Code == CdxCodes.ProseFunctionNameMismatch || d.Code == CdxCodes.ProseParameterNameMismatch));
     }
 
     // --- Phase 4: Inline code references ---
@@ -545,7 +545,7 @@ public class ProseTemplateTests
             "Just some prose here.\n";
 
         (DocumentNode doc, DiagnosticBag diags) = ParseProse(source);
-        Assert.Contains(diags.ToImmutable(), d => d.Code == "CDX1105");
+        Assert.Contains(diags.ToImmutable(), d => d.Code == CdxCodes.ProseClaimWithoutNotation);
     }
 
     // --- Fail clauses on function templates ---

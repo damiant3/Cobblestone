@@ -44,7 +44,7 @@ public sealed partial class ProseParser
             {
                 if (prose.ClaimTemplate is not null)
                 {
-                    m_diagnostics.Warning("CDX1105",
+                    m_diagnostics.Warning(CdxCodes.ProseClaimWithoutNotation,
                         "Prose declares a claim but no formal claim follows in notation",
                         prose.Span);
                 }
@@ -65,7 +65,7 @@ public sealed partial class ProseParser
             else if (prose.ClaimTemplate is not null && notation.Claims.Count == 0
                      && notation.Definitions.Count == 0)
             {
-                m_diagnostics.Warning("CDX1105",
+                m_diagnostics.Warning(CdxCodes.ProseClaimWithoutNotation,
                     "Prose declares a claim but no formal claim follows in notation",
                     prose.Span);
             }
@@ -77,7 +77,7 @@ public sealed partial class ProseParser
         string defName = definition.Name.Text;
         if (!string.Equals(template.FunctionName, defName, StringComparison.OrdinalIgnoreCase))
         {
-            m_diagnostics.Warning("CDX1101",
+            m_diagnostics.Warning(CdxCodes.ProseFunctionNameMismatch,
                 $"Prose declares function '{template.FunctionName}' but notation defines '{defName}'",
                 template.Span);
         }
@@ -90,7 +90,7 @@ public sealed partial class ProseParser
             string notationName = defParams[p].Text;
             if (!string.Equals(proseName, notationName, StringComparison.OrdinalIgnoreCase))
             {
-                m_diagnostics.Warning("CDX1102",
+                m_diagnostics.Warning(CdxCodes.ProseParameterNameMismatch,
                     $"Prose parameter '{proseName}' does not match notation parameter '{notationName}'",
                     template.Span);
             }

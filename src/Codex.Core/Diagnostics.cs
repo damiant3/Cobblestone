@@ -12,20 +12,24 @@ public enum DiagnosticSeverity
 
 public sealed record Diagnostic(
     DiagnosticSeverity Severity,
-    string Code,
+    int Code,
     string Message,
     SourceSpan Span,
     ImmutableArray<SourceSpan> RelatedSpans)
 {
-    public Diagnostic(DiagnosticSeverity severity, string code, string message, SourceSpan span)
+    public Diagnostic(DiagnosticSeverity severity, int code, string message, SourceSpan span)
         : this(severity, code, message, span, ImmutableArray<SourceSpan>.Empty)
     {
     }
 
     public bool IsError => Severity == DiagnosticSeverity.Error;
 
+    // Canonical rendered form of the code, e.g. "CDX3002". Stored internally
+    // as a plain int; the "CDX" prefix is automatic at display time.
+    public string FormattedCode => CdxCodes.FormatCode(Code);
+
     public override string ToString() =>
-        $"{Severity} {Code}: {Message} at {Span}";
+        $"{Severity} {FormattedCode}: {Message} at {Span}";
 }
 
 public sealed class DiagnosticBag
@@ -48,7 +52,7 @@ public sealed class DiagnosticBag
                 if (m_errorCount == MaxErrors)
                 {
                     m_diagnostics.Add(new Diagnostic(
-                        DiagnosticSeverity.Error, "CDX0001",
+                        DiagnosticSeverity.Error, CdxCodes.TooManyErrors,
                         $"Too many errors ({MaxErrors}). Further errors suppressed.",
                         diagnostic.Span));
                     return;
@@ -58,23 +62,23 @@ public sealed class DiagnosticBag
         }
     }
 
-    public void Error(string code, string message, SourceSpan span)
+    public void Error(int code, string message, SourceSpan span)
     {
         Add(new Diagnostic(DiagnosticSeverity.Error, code, message, span));
     }
 
-    public void Error(string code, string message, SourceSpan span, params SourceSpan[] relatedSpans)
+    public void Error(int code, string message, SourceSpan span, params SourceSpan[] relatedSpans)
     {
         Add(new Diagnostic(DiagnosticSeverity.Error, code, message, span,
             System.Collections.Immutable.ImmutableArray.Create(relatedSpans)));
     }
 
-    public void Warning(string code, string message, SourceSpan span)
+    public void Warning(int code, string message, SourceSpan span)
     {
         Add(new Diagnostic(DiagnosticSeverity.Warning, code, message, span));
     }
 
-    public void Info(string code, string message, SourceSpan span)
+    public void Info(int code, string message, SourceSpan span)
     {
         Add(new Diagnostic(DiagnosticSeverity.Info, code, message, span));
     }

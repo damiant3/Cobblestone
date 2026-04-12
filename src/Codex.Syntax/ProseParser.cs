@@ -40,7 +40,7 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
                 SkipBlankLines();
                 if (m_lineIndex < m_lines.Length)
                 {
-                    m_diagnostics.Warning("CDX1100",
+                    m_diagnostics.Warning(CdxCodes.ProseMissingChapter,
                         "Expected a Chapter: header in a prose-mode document",
                         MakeLineSpan(m_lineIndex));
                     m_lineIndex++;

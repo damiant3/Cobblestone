@@ -89,7 +89,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
                         SkipNewlines();
                         break;
                     }
-                    m_diagnostics.Error("CDX1001", $"Expected a definition, found {Current.Kind}", Current.Span);
+                    m_diagnostics.Error(CdxCodes.ExpectedDefinition, $"Expected a definition, found {Current.Kind}", Current.Span);
                     SkipToNextDefinition();
                 }
             }
@@ -134,7 +134,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
             }
             else
             {
-                m_diagnostics.Error("CDX1070",
+                m_diagnostics.Error(CdxCodes.ExpectedPageOrEffectKeyword,
                     "Expected page count after 'of'", Current.Span);
                 return new PageMarker(pageNumber, null, span);
             }
@@ -161,7 +161,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
             Advance();
             if (Current.Kind is not (TokenKind.Identifier or TokenKind.TypeIdentifier))
             {
-                m_diagnostics.Error("CDX1002",
+                m_diagnostics.Error(CdxCodes.ExpectedTypeParameterName,
                     $"Expected type parameter name, found {Current.Kind}", Current.Span);
                 break;
             }
@@ -194,7 +194,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
             return new TypeDefinitionNode(nameToken, typeParams, body, span);
         }
 
-        m_diagnostics.Error("CDX1050",
+        m_diagnostics.Error(CdxCodes.ExpectedTypeDefBody,
             $"Expected 'record', a variant body, or constructors after '=', found {Current.Kind}",
             Current.Span);
         SkipToNextDefinition();
@@ -265,7 +265,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
 
         if (Current.Kind != TokenKind.WhereKeyword)
         {
-            m_diagnostics.Error("CDX1070",
+            m_diagnostics.Error(CdxCodes.ExpectedPageOrEffectKeyword,
                 $"Expected 'where' after effect name, found {Current.Kind}", Current.Span);
             return new EffectDefinitionNode(name, [], effectKw.Span.Through(name.Span));
         }
@@ -301,7 +301,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
 
         if (operations.Count == 0)
         {
-            m_diagnostics.Error("CDX1071",
+            m_diagnostics.Error(CdxCodes.EffectRequiresOperation,
                 "Effect must declare at least one operation", effectKw.Span);
         }
 
@@ -331,7 +331,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
             }
             else
             {
-                m_diagnostics.Error("CDX1051",
+                m_diagnostics.Error(CdxCodes.ExpectedRecordFieldName,
                     $"Expected field name in record body, found {Current.Kind}",
                     Current.Span);
                 Advance();
@@ -365,7 +365,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
 
             if (Current.Kind != TokenKind.TypeIdentifier)
             {
-                m_diagnostics.Error("CDX1052",
+                m_diagnostics.Error(CdxCodes.ExpectedConstructorName,
                     $"Expected constructor name after '|', found {Current.Kind}",
                     Current.Span);
                 while (!IsAtEnd
@@ -547,7 +547,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
             return token;
         }
 
-        m_diagnostics.Error("CDX1000", $"Expected {kind}, found {Current.Kind}", Current.Span);
+        m_diagnostics.Error(CdxCodes.ExpectedTokenKind, $"Expected {kind}, found {Current.Kind}", Current.Span);
         return Current;
     }
 

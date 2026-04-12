@@ -95,7 +95,7 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
         EqualityType? claim = m_claimMap[proof.Name.Value];
         if (claim is null)
         {
-            m_diagnostics.Error("CDX4001",
+            m_diagnostics.Error(CdxCodes.MissingClaim,
                 $"No claim named '{proof.Name.Value}' found",
                 proof.Span);
             return;
@@ -113,7 +113,7 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
 
         if (result is null)
         {
-            m_diagnostics.Error("CDX4002",
+            m_diagnostics.Error(CdxCodes.ProofFailedToVerify,
                 $"Proof '{proof.Name.Value}' failed to verify",
                 proof.Span);
         }
@@ -127,7 +127,7 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
             case ReflProofExpr:
                 if (TypesEqual(goal.Left, goal.Right, env))
                     return goal;
-                m_diagnostics.Error("CDX4010",
+                m_diagnostics.Error(CdxCodes.ReflSidesNotEqual,
                     $"Refl requires both sides to be equal, but got {goal.Left} and {goal.Right}",
                     expr.Span);
                 return null;
@@ -164,7 +164,7 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
                     && TypesEqual(rightResult.Right, goal.Right, env))
                     return goal;
 
-                m_diagnostics.Error("CDX4014",
+                m_diagnostics.Error(CdxCodes.TransChainMismatch,
                     $"Trans: chain {leftResult.Left} ≡ {leftResult.Right} ≡ {rightResult.Right} does not match goal {goal}",
                     expr.Span);
                 return null;
@@ -184,7 +184,7 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
                         if (checked_ is not null)
                             return goal;
                     }
-                    m_diagnostics.Error("CDX4011",
+                    m_diagnostics.Error(CdxCodes.CongProofMismatch,
                         $"Cong {cong.FunctionName.Value}: cannot infer inner proof",
                         expr.Span);
                     return null;
@@ -196,7 +196,7 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
                 if (TypesEqual(newLeft, goal.Left, env) && TypesEqual(newRight, goal.Right, env))
                     return goal;
 
-                m_diagnostics.Error("CDX4011",
+                m_diagnostics.Error(CdxCodes.CongProofMismatch,
                     $"Cong {cong.FunctionName.Value}: expected {goal}, but got {newLeft} ≡ {newRight}",
                     expr.Span);
                 return null;
@@ -210,7 +210,7 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
                 EqualityType? lemma = m_claimMap[nameRef.Name.Value];
                 if (lemma is null)
                 {
-                    m_diagnostics.Error("CDX4012",
+                    m_diagnostics.Error(CdxCodes.UnknownLemma,
                         $"Unknown lemma: '{nameRef.Name.Value}'",
                         expr.Span);
                     return null;
@@ -219,7 +219,7 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
                     && TypesEqual(lemma.Right, goal.Right, env))
                     return goal;
 
-                m_diagnostics.Error("CDX4013",
+                m_diagnostics.Error(CdxCodes.LemmaGoalMismatch,
                     $"Lemma '{nameRef.Name.Value}' proves {lemma}, but goal is {goal}",
                     expr.Span);
                 return null;
@@ -260,7 +260,7 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
     {
         if (ind.Cases.Count == 0)
         {
-            m_diagnostics.Error("CDX4020",
+            m_diagnostics.Error(CdxCodes.InductionNoCases,
                 "Induction proof has no cases", ind.Span);
             return null;
         }
@@ -312,7 +312,7 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
 
             if (result is null)
             {
-                m_diagnostics.Error("CDX4021",
+                m_diagnostics.Error(CdxCodes.InductionCaseFailed,
                     $"Induction case failed for pattern at {proofCase.Pattern.Span}",
                     proofCase.Span);
                 return null;
@@ -328,7 +328,7 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
         EqualityType? lemma = m_claimMap[apply.LemmaName.Value];
         if (lemma is null)
         {
-            m_diagnostics.Error("CDX4012",
+            m_diagnostics.Error(CdxCodes.UnknownLemma,
                 $"Unknown lemma: '{apply.LemmaName.Value}'",
                 apply.Span);
             return null;
@@ -355,7 +355,7 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
         }
         else if (paramNames is not null)
         {
-            m_diagnostics.Error("CDX4015",
+            m_diagnostics.Error(CdxCodes.LemmaArgArityMismatch,
                 $"Lemma '{apply.LemmaName.Value}' expects {paramNames.Count} arguments, got {apply.Arguments.Count}",
                 apply.Span);
             return null;
@@ -365,7 +365,7 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
             && TypesEqual(instantiated.Right, goal.Right, env))
             return goal;
 
-        m_diagnostics.Error("CDX4013",
+        m_diagnostics.Error(CdxCodes.LemmaGoalMismatch,
             $"Lemma '{apply.LemmaName.Value}' proves {instantiated.Left} ≡ {instantiated.Right}, but goal is {goal.Left} ≡ {goal.Right}",
             apply.Span);
         return null;

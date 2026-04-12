@@ -15,7 +15,7 @@ public partial class IntegrationTests
             "forward (h) = let x = h in close-file x\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
         Assert.DoesNotContain(diag.ToImmutable(), d =>
-            d.Code == "CDX2040" || d.Code == "CDX2041");
+            d.Code == CdxCodes.LinearUnused || d.Code == CdxCodes.LinearUsedTwice);
     }
 
     [Fact]
@@ -27,7 +27,7 @@ public partial class IntegrationTests
             "  close-file x\n" +
             "  close-file h\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
-        Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2041");
+        Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.LinearUsedTwice);
     }
 
     [Fact]
@@ -37,7 +37,7 @@ public partial class IntegrationTests
             "waste : linear FileHandle -> Integer\n" +
             "waste (h) = let x = h in 42\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
-        Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2040");
+        Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.LinearUnused);
     }
 
     [Fact]
@@ -47,7 +47,7 @@ public partial class IntegrationTests
             "cond-use : linear FileHandle -> Boolean -> [FileSystem] Nothing\n" +
             "cond-use (h) (b) = if b then close-file h else close-file h\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
-        Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == "CDX2042");
+        Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == CdxCodes.LinearInconsistentBranches);
     }
 
     [Fact]
@@ -57,7 +57,7 @@ public partial class IntegrationTests
             "bad-branch : linear FileHandle -> Boolean -> [FileSystem] Nothing\n" +
             "bad-branch (h) (b) = if b then close-file h else 0\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
-        Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2042");
+        Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.LinearInconsistentBranches);
     }
 
     [Fact]
@@ -71,7 +71,7 @@ public partial class IntegrationTests
             "    if False -> close-file h\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
         Assert.DoesNotContain(diag.ToImmutable(), d =>
-            d.Code == "CDX2040" || d.Code == "CDX2041");
+            d.Code == CdxCodes.LinearUnused || d.Code == CdxCodes.LinearUsedTwice);
     }
 
     // --- Closure capture (CDX2043) — promoted to error, with safe patterns ---
@@ -84,7 +84,7 @@ public partial class IntegrationTests
             "capture : linear FileHandle -> (Integer -> [FileSystem] Nothing)\n" +
             "capture (h) = \\x -> close-file h\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
-        Diagnostic cdx2043 = Assert.Single(diag.ToImmutable(), d => d.Code == "CDX2043");
+        Diagnostic cdx2043 = Assert.Single(diag.ToImmutable(), d => d.Code == CdxCodes.LinearCapturedByClosure);
         Assert.Equal(DiagnosticSeverity.Error, cdx2043.Severity);
     }
 
@@ -95,7 +95,7 @@ public partial class IntegrationTests
             "direct : linear FileHandle -> [FileSystem] Nothing\n" +
             "direct (h) = close-file h\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
-        Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == "CDX2043");
+        Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == CdxCodes.LinearCapturedByClosure);
     }
 
     [Fact]
@@ -110,7 +110,7 @@ public partial class IntegrationTests
             "  in f 42\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
         Assert.DoesNotContain(diag.ToImmutable(), d =>
-            d.Code == "CDX2040" || d.Code == "CDX2041" || d.Code == "CDX2043");
+            d.Code == CdxCodes.LinearUnused || d.Code == CdxCodes.LinearUsedTwice || d.Code == CdxCodes.LinearCapturedByClosure);
     }
 
     [Fact]
@@ -124,8 +124,8 @@ public partial class IntegrationTests
             "waste (h) = let f = \\x -> close-file h\n" +
             "  in 42\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
-        Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2040");
-        Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == "CDX2043");
+        Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.LinearUnused);
+        Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == CdxCodes.LinearCapturedByClosure);
     }
 
     [Fact]
@@ -139,8 +139,8 @@ public partial class IntegrationTests
             "  in let a = f 1\n" +
             "  in f 2\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
-        Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2041");
-        Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == "CDX2043");
+        Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.LinearUsedTwice);
+        Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == CdxCodes.LinearCapturedByClosure);
     }
 
     [Fact]
@@ -153,7 +153,7 @@ public partial class IntegrationTests
             "immediate (h) = (\\x -> close-file h) 42\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
         Assert.DoesNotContain(diag.ToImmutable(), d =>
-            d.Code == "CDX2040" || d.Code == "CDX2041" || d.Code == "CDX2043");
+            d.Code == CdxCodes.LinearUnused || d.Code == CdxCodes.LinearUsedTwice || d.Code == CdxCodes.LinearCapturedByClosure);
     }
 
     // --- Step 4: Higher-order linear callbacks ---
@@ -167,7 +167,7 @@ public partial class IntegrationTests
             "apply-once (f) = f 42\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
         Assert.DoesNotContain(diag.ToImmutable(), d =>
-            d.Code == "CDX2040" || d.Code == "CDX2041");
+            d.Code == CdxCodes.LinearUnused || d.Code == CdxCodes.LinearUsedTwice);
     }
 
     [Fact]
@@ -178,7 +178,7 @@ public partial class IntegrationTests
             "ignore-callback : linear (Integer -> Integer) -> Integer\n" +
             "ignore-callback (f) = 42\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
-        Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2040");
+        Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.LinearUnused);
     }
 
     [Fact]
@@ -189,7 +189,7 @@ public partial class IntegrationTests
             "double-call : linear (Integer -> Integer) -> Integer\n" +
             "double-call (f) = let a = f 1 in f 2\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
-        Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2041");
+        Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.LinearUsedTwice);
     }
 
     [Fact]
@@ -205,7 +205,7 @@ public partial class IntegrationTests
             "use-it (h) = apply-once (\\x -> close-file h)\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
         Assert.DoesNotContain(diag.ToImmutable(), d =>
-            d.Code == "CDX2040" || d.Code == "CDX2041" || d.Code == "CDX2043");
+            d.Code == CdxCodes.LinearUnused || d.Code == CdxCodes.LinearUsedTwice || d.Code == CdxCodes.LinearCapturedByClosure);
     }
 
     [Fact]
@@ -219,7 +219,7 @@ public partial class IntegrationTests
             "unsafe : linear FileHandle -> [FileSystem] Nothing\n" +
             "unsafe (h) = maybe-call (\\x -> close-file h)\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
-        Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2043");
+        Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.LinearCapturedByClosure);
     }
 
     [Fact]
@@ -234,6 +234,6 @@ public partial class IntegrationTests
             "use-resource (h) = with-resource \"path\" (\\x -> close-file h)\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
         Assert.DoesNotContain(diag.ToImmutable(), d =>
-            d.Code == "CDX2040" || d.Code == "CDX2041" || d.Code == "CDX2043");
+            d.Code == CdxCodes.LinearUnused || d.Code == CdxCodes.LinearUsedTwice || d.Code == CdxCodes.LinearCapturedByClosure);
     }
 }

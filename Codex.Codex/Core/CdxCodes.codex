@@ -1,0 +1,77 @@
+Chapter: CdxCodes
+
+ Central registry of diagnostic codes. Codes are plain integers; call
+ sites use the named constants below.
+
+ Ranges: 0xxx infrastructure and lexer; 1xxx parser; 2xxx type checker,
+ unifier, codegen; 3xxx name resolver; 4xxx proof and capability;
+ 9xxx reserved for compiler-internal.
+
+Section: Registry Type
+  CdxCodeInfo = record {
+    code : Integer,
+    name : Text,
+    severity : Integer,
+    phase : Integer,
+    summary : Text
+  }
+
+Section: Parser
+  cdx-expected-token-kind : Integer
+  cdx-expected-token-kind = 1000
+
+Section: Type checker and Codegen
+  cdx-ir-error : Integer
+  cdx-ir-error = 2000
+
+  cdx-type-mismatch : Integer
+  cdx-type-mismatch = 2001
+
+  cdx-unknown-name : Integer
+  cdx-unknown-name = 2002
+
+  cdx-infinite-type : Integer
+  cdx-infinite-type = 2010
+
+Section: Name resolver
+  cdx-duplicate-definition : Integer
+  cdx-duplicate-definition = 3001
+
+  cdx-undefined-name : Integer
+  cdx-undefined-name = 3002
+
+Section: Registry entry constructor
+  mk-cdx : Integer -> Text -> Integer -> Integer -> Text -> CdxCodeInfo
+  mk-cdx (code) (name) (sev) (phase) (summary) =
+   CdxCodeInfo {
+    code = code,
+    name = name,
+    severity = sev,
+    phase = phase,
+    summary = summary
+   }
+
+Section: Registry
+  cdx-registry : List CdxCodeInfo
+  cdx-registry = [
+    mk-cdx cdx-expected-token-kind "ExpectedTokenKind" sev-error phase-parser "A specific token kind was required but a different one was found.",
+    mk-cdx cdx-ir-error "IrError" sev-error phase-codegen "Codegen encountered an IrError node, indicating an earlier phase silently failed.",
+    mk-cdx cdx-type-mismatch "TypeMismatch" sev-error phase-type-checker "Two types could not be unified.",
+    mk-cdx cdx-unknown-name "UnknownName" sev-error phase-type-checker "Name was not found in the type environment during checking.",
+    mk-cdx cdx-infinite-type "InfiniteType" sev-error phase-type-checker "Occurs check failed - unification would produce an infinite type.",
+    mk-cdx cdx-duplicate-definition "DuplicateDefinition" sev-error phase-name-resolver "The same name is introduced twice at chapter scope.",
+    mk-cdx cdx-undefined-name "UndefinedName" sev-error phase-name-resolver "A name was referenced but is not in any visible scope."
+  ]
+
+Section: Lookup
+  cdx-lookup-loop : List CdxCodeInfo -> Integer -> Integer -> Integer -> CdxCodeInfo
+  cdx-lookup-loop (reg) (code) (i) (len) =
+   if i >= len then mk-cdx 0 "Unknown" sev-error phase-infrastructure "Unregistered CDX code."
+   else let entry = list-at reg i
+   in if entry.code == code then entry
+      else cdx-lookup-loop reg code (i + 1) len
+
+  cdx-lookup : Integer -> CdxCodeInfo
+  cdx-lookup (code) = cdx-lookup-loop cdx-registry code 0 (list-length cdx-registry)
+
+Page 1

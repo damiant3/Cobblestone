@@ -478,7 +478,7 @@ public class ParserTests
         string source = "x = if True 1 else 0";
         (DocumentNode doc, DiagnosticBag diags) = ParseWithDiags(source);
         Assert.True(diags.HasErrors);
-        Assert.Contains(diags.ToImmutable(), d => d.Code == "CDX1021");
+        Assert.Contains(diags.ToImmutable(), d => d.Code == CdxCodes.ExpectedThenKeyword);
     }
 
     [Fact]
@@ -487,7 +487,7 @@ public class ParserTests
         string source = "x = if True then 1";
         (DocumentNode doc, DiagnosticBag diags) = ParseWithDiags(source);
         Assert.True(diags.HasErrors);
-        Assert.Contains(diags.ToImmutable(), d => d.Code == "CDX1022");
+        Assert.Contains(diags.ToImmutable(), d => d.Code == CdxCodes.ExpectedElseKeyword);
     }
 
     [Fact]
@@ -496,7 +496,7 @@ public class ParserTests
         string source = "x = let a = 1 a + 2";
         (DocumentNode doc, DiagnosticBag diags) = ParseWithDiags(source);
         Assert.True(diags.HasErrors);
-        Assert.Contains(diags.ToImmutable(), d => d.Code == "CDX1023");
+        Assert.Contains(diags.ToImmutable(), d => d.Code == CdxCodes.ExpectedInKeyword);
     }
 
     [Fact]
@@ -505,7 +505,7 @@ public class ParserTests
         string source = "x = when y if True 1 if False 0";
         (DocumentNode doc, DiagnosticBag diags) = ParseWithDiags(source);
         Assert.True(diags.HasErrors);
-        Assert.Contains(diags.ToImmutable(), d => d.Code == "CDX1032");
+        Assert.Contains(diags.ToImmutable(), d => d.Code == CdxCodes.ExpectedArrowAfterPattern);
     }
 
     [Fact]
@@ -524,7 +524,7 @@ public class ParserTests
         string source = "a = if True 1 else 0\nb = if False 2 else 3";
         (DocumentNode doc, DiagnosticBag diags) = ParseWithDiags(source);
         Assert.True(diags.HasErrors);
-        int errorCount = diags.ToImmutable().Count(d => d.Code == "CDX1021");
+        int errorCount = diags.ToImmutable().Count(d => d.Code == CdxCodes.ExpectedThenKeyword);
         Assert.True(errorCount >= 2);
     }
 

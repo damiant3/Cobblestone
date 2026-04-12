@@ -64,7 +64,7 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
             m_unifier.Unify(checkType, bodyType, def.Span);
             m_unifier.ContextSpan = null;
             if (m_diagnostics.Count > errorsBefore)
-                m_diagnostics.Info("CDX2099",
+                m_diagnostics.Info(CdxCodes.InDefinition,
                     $"in definition '{def.Name.Value}'", def.Span);
         }
 

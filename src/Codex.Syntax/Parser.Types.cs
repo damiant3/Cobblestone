@@ -1,3 +1,5 @@
+using Codex.Core;
+
 namespace Codex.Syntax;
 
 public sealed partial class Parser
@@ -138,7 +140,7 @@ public sealed partial class Parser
             return baseType;
         }
 
-        m_diagnostics.Error("CDX1010", $"Expected a type, found {Current.Kind}", Current.Span);
+        m_diagnostics.Error(CdxCodes.ExpectedType, $"Expected a type, found {Current.Kind}", Current.Span);
         Token errToken = Current;
         Advance();
         return new NamedTypeNode(errToken);
@@ -177,7 +179,7 @@ public sealed partial class Parser
             return new NamedTypeNode(nameToken);
         }
 
-        m_diagnostics.Error("CDX1010", $"Expected a type, found {Current.Kind}", Current.Span);
+        m_diagnostics.Error(CdxCodes.ExpectedType, $"Expected a type, found {Current.Kind}", Current.Span);
         Token errToken = Current;
         Advance();
         return new NamedTypeNode(errToken);

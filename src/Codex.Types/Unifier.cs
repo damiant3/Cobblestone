@@ -29,7 +29,7 @@ public sealed class Unifier(DiagnosticBag diagnostics)
         {
             if (OccursIn(va.Id, b))
             {
-                m_diagnostics.Error("CDX2010", $"Infinite type: {va} occurs in {b}", span);
+                m_diagnostics.Error(CdxCodes.InfiniteType, $"Infinite type: {va} occurs in {b}", span);
                 return false;
             }
             m_substitutions = m_substitutions.Set(va.Id, b);
@@ -40,7 +40,7 @@ public sealed class Unifier(DiagnosticBag diagnostics)
         {
             if (OccursIn(vb.Id, a))
             {
-                m_diagnostics.Error("CDX2010", $"Infinite type: {vb} occurs in {a}", span);
+                m_diagnostics.Error(CdxCodes.InfiniteType, $"Infinite type: {vb} occurs in {a}", span);
                 return false;
             }
             m_substitutions = m_substitutions.Set(vb.Id, a);
@@ -343,12 +343,12 @@ public sealed class Unifier(DiagnosticBag diagnostics)
         string act = TypeFormatter.Format(DeepResolve(actual));
         if (ContextSpan is not null && ContextSpan != span)
         {
-            m_diagnostics.Error("CDX2001",
+            m_diagnostics.Error(CdxCodes.TypeMismatch,
                 $"Type mismatch: expected {exp}, but found {act}", span, ContextSpan.Value);
         }
         else
         {
-            m_diagnostics.Error("CDX2001",
+            m_diagnostics.Error(CdxCodes.TypeMismatch,
                 $"Type mismatch: expected {exp}, but found {act}", span);
         }
     }

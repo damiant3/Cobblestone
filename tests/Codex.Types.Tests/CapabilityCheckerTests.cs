@@ -105,7 +105,7 @@ public class CapabilityCheckerTests
         bool found = false;
         foreach (Diagnostic diag in diagnostics.ToImmutable())
         {
-            if (diag.Code == "CDX4001" && diag.Message.Contains("FileSystem"))
+            if (diag.Code == CdxCodes.CapabilityNotGranted && diag.Message.Contains("FileSystem"))
                 found = true;
         }
         Assert.True(found, "Expected CDX4001 error for missing FileSystem capability");
@@ -206,7 +206,7 @@ public class CapabilityCheckerTests
         bool found = false;
         foreach (Diagnostic diag in diagnostics.ToImmutable())
         {
-            if (diag.Code == "CDX4001" && diag.Message.Contains("Network"))
+            if (diag.Code == CdxCodes.CapabilityNotGranted && diag.Message.Contains("Network"))
                 found = true;
         }
         Assert.True(found, "Expected CDX4001 for missing Network capability");
@@ -235,7 +235,7 @@ public class CapabilityCheckerTests
         bool found = false;
         foreach (Diagnostic diag in diagnostics.ToImmutable())
         {
-            if (diag.Code == "CDX4001" && diag.Message.Contains("Camera"))
+            if (diag.Code == CdxCodes.CapabilityNotGranted && diag.Message.Contains("Camera"))
                 found = true;
         }
         Assert.True(found, "Expected CDX4001 for missing Camera capability");
@@ -253,7 +253,7 @@ public class CapabilityCheckerTests
         bool found = false;
         foreach (Diagnostic diag in diagnostics.ToImmutable())
         {
-            if (diag.Code == "CDX4001" && diag.Message.Contains("Microphone"))
+            if (diag.Code == CdxCodes.CapabilityNotGranted && diag.Message.Contains("Microphone"))
                 found = true;
         }
         Assert.True(found, "Expected CDX4001 for missing Microphone capability");
@@ -274,7 +274,7 @@ public class CapabilityCheckerTests
         bool found = false;
         foreach (Diagnostic diag in diagnostics.ToImmutable())
         {
-            if (diag.Code == "CDX4001" && diag.Message.Contains("Network"))
+            if (diag.Code == CdxCodes.CapabilityNotGranted && diag.Message.Contains("Network"))
                 found = true;
         }
         Assert.True(found, "Expected CDX4001 for missing Network — the flashlight test");

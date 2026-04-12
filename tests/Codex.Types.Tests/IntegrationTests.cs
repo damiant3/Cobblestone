@@ -241,7 +241,7 @@ public class CoreIntegrationTests  // see IntegrationTests2.cs for adding more t
             "    if Blue -> \"blue\"\n";
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors);
-        Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == "CDX2020");
+        Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == CdxCodes.NonExhaustiveMatch);
     }
 
     [Fact]
@@ -259,7 +259,7 @@ public class CoreIntegrationTests  // see IntegrationTests2.cs for adding more t
             "    if Green -> \"green\"\n";
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors);
-        Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2020" && d.Message.Contains("Blue"));
+        Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.NonExhaustiveMatch && d.Message.Contains("Blue"));
     }
 
     [Fact]
@@ -277,7 +277,7 @@ public class CoreIntegrationTests  // see IntegrationTests2.cs for adding more t
             "    if _ -> False\n";
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors);
-        Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == "CDX2020");
+        Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == CdxCodes.NonExhaustiveMatch);
     }
 
     [Fact]

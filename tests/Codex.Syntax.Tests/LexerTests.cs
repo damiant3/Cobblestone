@@ -282,7 +282,7 @@ public class LexerTests
     {
         var (tokens, bag) = TokenizeWithDiag("\"hello\\tworld\"");
         Assert.True(bag.HasErrors);
-        var diag = bag.ToImmutable().First(d => d.Code == "CDX0005");
+        var diag = bag.ToImmutable().First(d => d.Code == CdxCodes.InvalidTabEscape);
         Assert.Contains("\\t", diag.Message);
         // Recovery: \t normalizes to two spaces
         var lit = tokens.First(t => t.Kind == TokenKind.TextLiteral);
@@ -294,7 +294,7 @@ public class LexerTests
     {
         var (tokens, bag) = TokenizeWithDiag("\"hello\\rworld\"");
         Assert.True(bag.HasErrors);
-        var diag = bag.ToImmutable().First(d => d.Code == "CDX0006");
+        var diag = bag.ToImmutable().First(d => d.Code == CdxCodes.InvalidCarriageReturnEscape);
         Assert.Contains("\\r", diag.Message);
         // Recovery: \r stripped
         var lit = tokens.First(t => t.Kind == TokenKind.TextLiteral);
@@ -306,7 +306,7 @@ public class LexerTests
     {
         var (tokens, bag) = TokenizeWithDiag("'\\t'");
         Assert.True(bag.HasErrors);
-        Assert.Contains(bag.ToImmutable(), d => d.Code == "CDX0005");
+        Assert.Contains(bag.ToImmutable(), d => d.Code == CdxCodes.InvalidTabEscape);
         // Recovery: maps to space (32)
         var lit = tokens.First(t => t.Kind == TokenKind.CharLiteral);
         Assert.Equal((long)' ', lit.LiteralValue);
@@ -317,7 +317,7 @@ public class LexerTests
     {
         var (tokens, bag) = TokenizeWithDiag("'\\r'");
         Assert.True(bag.HasErrors);
-        Assert.Contains(bag.ToImmutable(), d => d.Code == "CDX0006");
+        Assert.Contains(bag.ToImmutable(), d => d.Code == CdxCodes.InvalidCarriageReturnEscape);
         // Recovery: maps to newline (10)
         var lit = tokens.First(t => t.Kind == TokenKind.CharLiteral);
         Assert.Equal((long)'\n', lit.LiteralValue);

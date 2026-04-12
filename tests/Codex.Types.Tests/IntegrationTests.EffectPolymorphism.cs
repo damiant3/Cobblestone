@@ -70,6 +70,6 @@ public partial class IntegrationTests
             "  x\n";
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.True(diag.HasErrors);
-        Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2031");
+        Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.EffectNotDeclared);
     }
 }

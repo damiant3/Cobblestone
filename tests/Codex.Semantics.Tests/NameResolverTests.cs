@@ -36,7 +36,7 @@ public class NameResolverTests
     {
         (ResolvedChapter _, DiagnosticBag diags) = ResolveSource("x = y");
         Assert.True(diags.HasErrors);
-        Assert.Contains(diags.ToImmutable(), d => d.Code == "CDX3002");
+        Assert.Contains(diags.ToImmutable(), d => d.Code == CdxCodes.UndefinedName);
     }
 
     [Fact]
@@ -75,7 +75,7 @@ public class NameResolverTests
         string source = "x = 1\nx = 2";
         (ResolvedChapter _, DiagnosticBag diags) = ResolveSource(source);
         Assert.True(diags.HasErrors);
-        Assert.Contains(diags.ToImmutable(), d => d.Code == "CDX3001");
+        Assert.Contains(diags.ToImmutable(), d => d.Code == CdxCodes.DuplicateDefinition);
     }
 
     [Fact]
@@ -106,7 +106,7 @@ public class NameResolverTests
         string source = "square (x) = x * x\nmain = squre 5";
         (ResolvedChapter _, DiagnosticBag diags) = ResolveSource(source);
         Assert.True(diags.HasErrors);
-        Diagnostic error = diags.ToImmutable().First(d => d.Code == "CDX3002");
+        Diagnostic error = diags.ToImmutable().First(d => d.Code == CdxCodes.UndefinedName);
         Assert.Contains("Did you mean 'square'?", error.Message);
     }
 
@@ -116,7 +116,7 @@ public class NameResolverTests
         string source = "square (x) = x * x\nmain = xyz 5";
         (ResolvedChapter _, DiagnosticBag diags) = ResolveSource(source);
         Assert.True(diags.HasErrors);
-        Diagnostic error = diags.ToImmutable().First(d => d.Code == "CDX3002");
+        Diagnostic error = diags.ToImmutable().First(d => d.Code == CdxCodes.UndefinedName);
         Assert.DoesNotContain("Did you mean", error.Message);
     }
 
@@ -126,7 +126,7 @@ public class NameResolverTests
         string source = "x = shw 42";
         (ResolvedChapter _, DiagnosticBag diags) = ResolveSource(source);
         Assert.True(diags.HasErrors);
-        Diagnostic error = diags.ToImmutable().First(d => d.Code == "CDX3002");
+        Diagnostic error = diags.ToImmutable().First(d => d.Code == CdxCodes.UndefinedName);
         Assert.Contains("Did you mean 'show'?", error.Message);
     }
 }

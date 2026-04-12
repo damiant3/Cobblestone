@@ -35,7 +35,7 @@ public sealed class CapabilityChecker(DiagnosticBag diagnostics, Map<string, Cod
                 if (!grantedCapabilities.Contains(effect))
                 {
                     SourceSpan span = FindMainSpan(chapter);
-                    m_diagnostics.Error("CDX4001",
+                    m_diagnostics.Error(CdxCodes.CapabilityNotGranted,
                         $"Capability '{effect}' is required by main but was not granted. "
                         + $"Granted capabilities: [{string.Join(", ", grantedCapabilities)}]",
                         span);

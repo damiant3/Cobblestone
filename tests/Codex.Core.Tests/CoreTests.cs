@@ -127,7 +127,7 @@ public class DiagnosticBagTests
     public void Adding_error_sets_has_errors()
     {
         DiagnosticBag bag = new();
-        bag.Error("CDX0001", "test error", SourceSpan.s_synthetic);
+        bag.Error(CdxCodes.TooManyErrors, "test error", SourceSpan.s_synthetic);
         Assert.True(bag.HasErrors);
         Assert.Equal(1, bag.Count);
     }
@@ -136,7 +136,7 @@ public class DiagnosticBagTests
     public void Warning_does_not_count_as_error()
     {
         DiagnosticBag bag = new();
-        bag.Warning("CDX0002", "test warning", SourceSpan.s_synthetic);
+        bag.Warning(CdxCodes.UnexpectedCharacter, "test warning", SourceSpan.s_synthetic);
         Assert.False(bag.HasErrors);
         Assert.Equal(1, bag.Count);
     }
@@ -145,9 +145,9 @@ public class DiagnosticBagTests
     public void ToImmutable_returns_all_diagnostics()
     {
         DiagnosticBag bag = new();
-        bag.Error("CDX0001", "error 1", SourceSpan.s_synthetic);
-        bag.Warning("CDX0002", "warning 1", SourceSpan.s_synthetic);
-        bag.Info("CDX0003", "info 1", SourceSpan.s_synthetic);
+        bag.Error(CdxCodes.TooManyErrors, "error 1", SourceSpan.s_synthetic);
+        bag.Warning(CdxCodes.UnexpectedCharacter, "warning 1", SourceSpan.s_synthetic);
+        bag.Info(CdxCodes.IndentationMismatch, "info 1", SourceSpan.s_synthetic);
         System.Collections.Immutable.ImmutableArray<Diagnostic> all = bag.ToImmutable();
         Assert.Equal(3, all.Length);
     }

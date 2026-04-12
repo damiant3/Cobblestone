@@ -85,7 +85,7 @@ public partial class IntegrationTests
             "bad : Nothing\n" +
             "bad = print-line \"oops\"\n";
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
-        Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2031");
+        Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.EffectNotDeclared);
     }
 
     [Fact]
@@ -95,7 +95,7 @@ public partial class IntegrationTests
             "say-hello : [Console] Nothing\n" +
             "say-hello = print-line \"hello\"\n";
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
-        Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == "CDX2031");
+        Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == CdxCodes.EffectNotDeclared);
     }
 
     [Fact]
@@ -148,7 +148,7 @@ public partial class IntegrationTests
             "bad : Maybe (Integer) (Text) -> Integer\n" +
             "bad (x) = 0\n";
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
-        Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2032");
+        Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.TypeArgArityMismatch);
     }
 
     [Fact]
@@ -161,7 +161,7 @@ public partial class IntegrationTests
             "wrap : Integer -> Maybe Integer\n" +
             "wrap (x) = Just x\n";
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
-        Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == "CDX2032");
+        Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == CdxCodes.TypeArgArityMismatch);
     }
 
     [Fact]
@@ -202,7 +202,7 @@ public partial class IntegrationTests
             "consume (h) = close-file h\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
         Assert.DoesNotContain(diag.ToImmutable(), d =>
-            d.Code == "CDX2040" || d.Code == "CDX2041");
+            d.Code == CdxCodes.LinearUnused || d.Code == CdxCodes.LinearUsedTwice);
     }
 
     [Fact]
@@ -214,7 +214,7 @@ public partial class IntegrationTests
             "  close-file h\n" +
             "  close-file h\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
-        Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2041");
+        Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.LinearUsedTwice);
     }
 
     [Fact]
@@ -224,7 +224,7 @@ public partial class IntegrationTests
             "leak : linear FileHandle -> Integer\n" +
             "leak (h) = 42\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
-        Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2040");
+        Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.LinearUnused);
     }
 
     [Fact]
@@ -369,7 +369,7 @@ public partial class IntegrationTests
             "main : Integer\n" +
             "main = safe-index 5 3\n";
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
-        Assert.Contains(diag.ToImmutable(), d => d.Code == "CDX2040");
+        Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.LinearUnused);
     }
 
 }

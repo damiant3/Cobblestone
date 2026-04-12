@@ -185,7 +185,7 @@ public sealed partial class Parser
             return new ProofNameNode(name, name.Span);
         }
 
-        m_diagnostics.Error("CDX1020", $"Expected a proof expression, found {Current.Kind}", Current.Span);
+        m_diagnostics.Error(CdxCodes.ExpectedExpression, $"Expected a proof expression, found {Current.Kind}", Current.Span);
         Token err = Current;
         Advance();
         return new ReflNode(err.Span);
@@ -222,7 +222,7 @@ public sealed partial class Parser
             return new ProofNameNode(name, name.Span);
         }
 
-        m_diagnostics.Error("CDX1020", $"Expected a proof expression, found {Current.Kind}", Current.Span);
+        m_diagnostics.Error(CdxCodes.ExpectedExpression, $"Expected a proof expression, found {Current.Kind}", Current.Span);
         Token err = Current;
         Advance();
         return new ReflNode(err.Span);

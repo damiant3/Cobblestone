@@ -140,7 +140,7 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
                     HashSet<string> captured = CheckLambdaExpr(lam);
                     foreach (string name in captured)
                     {
-                        m_diagnostics.Error("CDX2043",
+                        m_diagnostics.Error(CdxCodes.LinearCapturedByClosure,
                             $"Linear variable '{name}' is captured by a closure. " +
                             "Bind the closure with 'let' (making it linear) or apply it directly.",
                             lam.Span);
@@ -237,7 +237,7 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
             int count = m_usageCounts[kv.Key] ?? 0;
             if (count == 0)
             {
-                m_diagnostics.Error("CDX2040",
+                m_diagnostics.Error(CdxCodes.LinearUnused,
                     $"Linear variable '{kv.Key}' is never used " +
                     "(linear resources must be consumed)",
                     span);
@@ -278,7 +278,7 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
                 int count = m_usageCounts[param.Name.Value] ?? 0;
                 if (count == 0)
                 {
-                    m_diagnostics.Error("CDX2040",
+                    m_diagnostics.Error(CdxCodes.LinearUnused,
                         $"Linear variable '{param.Name.Value}' is never used " +
                         "(linear resources must be consumed)",
                         lam.Span);
@@ -363,7 +363,7 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
             int count2 = branch2[name] ?? 0;
             if (count1 != count2)
             {
-                m_diagnostics.Error("CDX2042",
+                m_diagnostics.Error(CdxCodes.LinearInconsistentBranches,
                     $"Linear variable '{name}' is used inconsistently across branches " +
                     $"({count1} time(s) in one branch, {count2} in another)",
                     span);
@@ -380,7 +380,7 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
 
         if (current + 1 > 1)
         {
-            m_diagnostics.Error("CDX2041",
+            m_diagnostics.Error(CdxCodes.LinearUsedTwice,
                 $"Linear variable '{name}' is used more than once",
                 span);
         }
@@ -393,7 +393,7 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
             int count = m_usageCounts[kv.Key] ?? 0;
             if (count == 0)
             {
-                m_diagnostics.Error("CDX2040",
+                m_diagnostics.Error(CdxCodes.LinearUnused,
                     $"Linear variable '{kv.Key}' is never used " +
                     "(linear resources must be consumed)",
                     span);

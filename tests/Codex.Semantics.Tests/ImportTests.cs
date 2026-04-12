@@ -69,7 +69,7 @@ public class ImportTests
         string source = "cites Missing\nresult = 42";
         (ResolvedChapter _, DiagnosticBag diags) = ResolveWithLoader(source, loader);
         Assert.True(diags.HasErrors);
-        Assert.Contains(diags.ToImmutable(), d => d.Code == "CDX3010");
+        Assert.Contains(diags.ToImmutable(), d => d.Code == CdxCodes.UnresolvedCitation);
     }
 
     [Fact]
@@ -86,7 +86,7 @@ public class ImportTests
         NameResolver resolver = new(bag);
         resolver.Resolve(chapter);
         Assert.True(bag.HasErrors);
-        Assert.Contains(bag.ToImmutable(), d => d.Code == "CDX3010");
+        Assert.Contains(bag.ToImmutable(), d => d.Code == CdxCodes.UnresolvedCitation);
     }
 
     [Fact]

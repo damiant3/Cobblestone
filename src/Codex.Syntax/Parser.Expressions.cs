@@ -183,7 +183,7 @@ public sealed partial class Parser
 
             default:
             {
-                m_diagnostics.Error("CDX1020", $"Expected an expression, found {Current.Kind}", Current.Span);
+                m_diagnostics.Error(CdxCodes.ExpectedExpression, $"Expected an expression, found {Current.Kind}", Current.Span);
                 Token err = Current;
                 Advance();
                 return new ErrorExpressionNode(err);
@@ -222,7 +222,7 @@ public sealed partial class Parser
         {
             if (Current.Kind != TokenKind.Identifier)
             {
-                m_diagnostics.Error("CDX1024",
+                m_diagnostics.Error(CdxCodes.ExpectedFieldName,
                     $"Expected field name, found {Current.Kind}", Current.Span);
                 Synchronize();
                 if (Current.Kind == TokenKind.RightBrace)
@@ -285,7 +285,7 @@ public sealed partial class Parser
 
         if (Current.Kind != TokenKind.RightBracket)
         {
-            m_diagnostics.Error("CDX1025",
+            m_diagnostics.Error(CdxCodes.UnterminatedListLiteral,
                 "Unterminated list literal — expected ']'", start.Span);
             return new ListExpressionNode(elements, start.Span.Through(Previous.Span));
         }
@@ -304,7 +304,7 @@ public sealed partial class Parser
 
         if (Current.Kind != TokenKind.ThenKeyword)
         {
-            m_diagnostics.Error("CDX1021",
+            m_diagnostics.Error(CdxCodes.ExpectedThenKeyword,
                 $"Expected 'then' after condition, found {Current.Kind}", Current.Span);
             Synchronize();
             if (Current.Kind == TokenKind.ThenKeyword)
@@ -323,7 +323,7 @@ public sealed partial class Parser
 
         if (Current.Kind != TokenKind.ElseKeyword)
         {
-            m_diagnostics.Error("CDX1022",
+            m_diagnostics.Error(CdxCodes.ExpectedElseKeyword,
                 $"Expected 'else' after 'then' branch, found {Current.Kind}", Current.Span);
             Synchronize();
             if (Current.Kind == TokenKind.ElseKeyword)
@@ -368,7 +368,7 @@ public sealed partial class Parser
 
         if (Current.Kind != TokenKind.InKeyword)
         {
-            m_diagnostics.Error("CDX1023",
+            m_diagnostics.Error(CdxCodes.ExpectedInKeyword,
                 $"Expected 'in' after let bindings, found {Current.Kind}", Current.Span);
             Synchronize();
             if (Current.Kind == TokenKind.InKeyword)
@@ -410,7 +410,7 @@ public sealed partial class Parser
 
             if (Current.Kind != TokenKind.Arrow)
             {
-                m_diagnostics.Error("CDX1032",
+                m_diagnostics.Error(CdxCodes.ExpectedArrowAfterPattern,
                     $"Expected '->' after pattern, found {Current.Kind}", Current.Span);
                 Synchronize();
                 if (Current.Kind == TokenKind.Arrow)
@@ -435,7 +435,7 @@ public sealed partial class Parser
 
         if (branches.Count == 0)
         {
-            m_diagnostics.Error("CDX1030",
+            m_diagnostics.Error(CdxCodes.ExpectedMatchBranch,
                 "Match expression requires at least one branch", start.Span);
         }
 
@@ -473,7 +473,7 @@ public sealed partial class Parser
 
         if (statements.Count == 0)
         {
-            m_diagnostics.Error("CDX1040", "do expression requires at least one statement", start.Span);
+            m_diagnostics.Error(CdxCodes.EmptyDoBlock, "do expression requires at least one statement", start.Span);
         }
 
         SourceSpan endSpan = statements.Count > 0 ? statements[^1].Span : start.Span;
@@ -571,7 +571,7 @@ public sealed partial class Parser
 
             default:
             {
-                m_diagnostics.Error("CDX1031", $"Expected a pattern, found {Current.Kind}", Current.Span);
+                m_diagnostics.Error(CdxCodes.ExpectedPattern, $"Expected a pattern, found {Current.Kind}", Current.Span);
                 Token err = Current;
                 Advance();
                 return new WildcardPatternNode(err);
@@ -609,7 +609,7 @@ public sealed partial class Parser
             }
             else
             {
-                m_diagnostics.Error("CDX1080",
+                m_diagnostics.Error(CdxCodes.HandleClauseMissingResume,
                     "Handle clause must have at least a resume parameter", opName.Span);
                 resumeName = opName;
             }
@@ -625,7 +625,7 @@ public sealed partial class Parser
 
         if (clauses.Count == 0)
         {
-            m_diagnostics.Error("CDX1081",
+            m_diagnostics.Error(CdxCodes.HandleMissingClauses,
                 "Expected at least one handler clause", effectName.Span);
         }
 

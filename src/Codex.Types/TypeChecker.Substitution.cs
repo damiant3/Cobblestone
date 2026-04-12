@@ -136,7 +136,7 @@ public sealed partial class TypeChecker
         ImmutableArray<EffectType> resolved = m_unifier.ResolveEffectRow(eft.RowVariable);
         foreach (EffectType effect in eft.Effects.AddRange(resolved))
             if (!m_currentEffects.Contains(effect.EffectName.Value))
-                m_diagnostics.Error("CDX2031",
+                m_diagnostics.Error(CdxCodes.EffectNotDeclared,
                     $"Effect '{effect.EffectName.Value}' is not allowed in this context. "
                     + "Declare it in the function's type signature.",
                     span);
@@ -150,7 +150,7 @@ public sealed partial class TypeChecker
                 type = ft.Return;
             else
             {
-                m_diagnostics.Error("CDX2040",
+                m_diagnostics.Error(CdxCodes.LinearUnused,
                     $"Cannot discharge proof obligation: {proof.Claim}",
                     span);
                 type = ft.Return;

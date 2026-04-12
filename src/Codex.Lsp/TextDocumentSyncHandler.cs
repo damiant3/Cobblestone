@@ -77,7 +77,7 @@ internal sealed class TextDocumentSyncHandler(ILanguageServerFacade server, Docu
             {
                 Range = SpanToRange(diag.Span),
                 Severity = MapSeverity(diag.Severity),
-                Code = diag.Code,
+                Code = diag.FormattedCode,
                 Source = "codex",
                 Message = diag.Message,
             });

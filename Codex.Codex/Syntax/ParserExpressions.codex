@@ -62,9 +62,10 @@ Section: Expression Parsing
   parse-app-loop (func) (st) =
    if is-compound func then parse-dot-only func st
    else if is-done st then ExprOk func st
-   else if is-app-start (current-kind st) then let arg-result = parse-atom st
-      in unwrap-expr-ok arg-result (continue-app func)
-     else parse-field-access func st
+   else if is-app-start (current-kind st) then
+     let arg-result = parse-atom st
+     in unwrap-expr-ok arg-result (continue-app func)
+   else parse-field-access func st
 
   continue-app : Expr -> Expr -> ParseState -> ParseExprResult
   continue-app (func) (arg) (st) =
@@ -129,9 +130,10 @@ Section: Compound Expression Parsing
 
   parse-record-expr-fields : Token -> List RecordFieldExpr -> ParseState -> ParseExprResult
   parse-record-expr-fields (type-name) (acc) (st) =
-   if is-right-brace (current-kind st) then ExprOk (RecordExpr type-name acc) (advance st)
-   else if is-ident (current-kind st) then parse-record-field type-name acc st
-     else ExprOk (RecordExpr type-name acc) st
+   let kind = current-kind st
+   in if is-right-brace kind then ExprOk (RecordExpr type-name acc) (advance st)
+      else if is-ident kind then parse-record-field type-name acc st
+      else ExprOk (RecordExpr type-name acc) st
 
   parse-record-field : Token -> List RecordFieldExpr -> ParseState -> ParseExprResult
   parse-record-field (type-name) (acc) (st) =
@@ -243,11 +245,10 @@ Section: Compound Expression Parsing
 
   parse-match-branches : Expr -> List MatchArm -> Integer -> Integer -> ParseState -> ParseExprResult
   parse-match-branches (scrut) (acc) (col) (ln) (st) =
-   if is-if-keyword (current-kind st) then let tok = current st
-   in if tok.line == ln then parse-one-match-branch scrut acc col ln st
-      else if tok.column == col then parse-one-match-branch scrut acc col ln st
+   let tok = current st
+   in if is-if-keyword (current-kind st) & (tok.line == ln | tok.column == col)
+      then parse-one-match-branch scrut acc col ln st
       else ExprOk (MatchExpr scrut acc) st
-    else ExprOk (MatchExpr scrut acc) st
 
   unwrap-pat-for-expr : ParsePatResult -> (Pat -> ParseState -> ParseExprResult) -> ParseExprResult
   unwrap-pat-for-expr (r) (f) =
@@ -346,18 +347,18 @@ Section: Compound Expression Parsing
      in let st1 = advance st
      in let params = parse-handle-params st1 []
      in if list-length (params.toks) > 0 then let resume-tok = list-at (params.toks) (list-length (params.toks) - 1)
-     in let st5 = expect Equals (params.state)
-     in let st6 = skip-newlines st5
-     in let body-result = parse-expr st6
-     in unwrap-handle-clause-body op-tok resume-tok body-result acc
+          in let st5 = expect Equals (params.state)
+          in let st6 = skip-newlines st5
+          in let body-result = parse-expr st6
+          in unwrap-handle-clause-body op-tok resume-tok body-result acc
         else HandleParseResult {
          clauses = acc,
          state = st
         }
-    else HandleParseResult {
-     clauses = acc,
-     state = st
-    }
+   else HandleParseResult {
+    clauses = acc,
+    state = st
+   }
 
   HandleParamsResult = record { toks : List Token, state : ParseState }
 
