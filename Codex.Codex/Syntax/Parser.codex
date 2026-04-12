@@ -308,24 +308,26 @@ Section: Document Parsing
   parse-document : ParseState -> Document
   parse-document (st) =
    let st2 = skip-newlines st
-   in let imp-result = parse-citations st2 []
+   in let imp-result = parse-citations st2 "" []
    in parse-top-level [] [] [] (imp-result.imports) "" [] (imp-result.state)
 
-  parse-citations : ParseState -> List CitesDecl -> ImportParseResult
-  parse-citations (st) (acc) =
+  parse-citations : ParseState -> Text -> List CitesDecl -> ImportParseResult
+  parse-citations (st) (citing) (acc) =
    if is-cites-keyword (current-kind st) then let st2 = advance st
      in let name-tok = current st2
      in let st3 = advance st2
      in if is-left-paren (current-kind st3) then let sel = parse-selected-names (advance st3) []
      in let st4 = skip-newlines (sel.state)
-     in parse-citations st4 (list-snoc acc (CitesDecl {
+     in parse-citations st4 citing (list-snoc acc (CitesDecl {
            chapter-name = name-tok,
-           selected-names = sel.names
+           selected-names = sel.names,
+           citing-chapter = citing
           }))
      else let st4 = skip-newlines st3
-     in parse-citations st4 (list-snoc acc (CitesDecl {
+     in parse-citations st4 citing (list-snoc acc (CitesDecl {
           chapter-name = name-tok,
-          selected-names = []
+          selected-names = [],
+          citing-chapter = citing
          }))
     else ImportParseResult {
      imports = acc,
@@ -417,7 +419,7 @@ Section: Document Parsing
    else if is-section-header st then let title = extract-header-title st
      in parse-top-level defs type-defs effect-defs imports ch-title (sec-titles ++ [title]) (skip-prose-lines (skip-to-next-line st))
    else if is-page-marker st then parse-top-level defs type-defs effect-defs imports ch-title sec-titles (skip-to-next-line st)
-   else if is-cites-keyword (current-kind st) then let cite-result = parse-citations st []
+   else if is-cites-keyword (current-kind st) then let cite-result = parse-citations st ch-title []
      in parse-top-level defs type-defs effect-defs (imports ++ cite-result.imports) ch-title sec-titles (cite-result.state)
    else if is-effect-keyword (current-kind st) then parse-top-level-effect defs type-defs effect-defs imports ch-title sec-titles st
    else if is-prose-line st then parse-top-level defs type-defs effect-defs imports ch-title sec-titles (skip-prose-lines st)
@@ -488,7 +490,7 @@ Section: Header Scanning (streaming)
   scan-document : ParseState -> ScanResult
   scan-document (st) =
    let st2 = skip-newlines st
-   in let imp-result = parse-citations st2 []
+   in let imp-result = parse-citations st2 "" []
    in scan-top-level [] [] [] (imp-result.imports) "" "" [] (imp-result.state)
 
   scan-top-level : List DefHeader -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> Text -> List Text -> ParseState -> ScanResult
@@ -506,7 +508,7 @@ Section: Header Scanning (streaming)
    else if is-section-header st then let title = extract-header-title st
      in scan-top-level headers type-defs effect-defs imports cur-chap ch-title (sec-titles ++ [title]) (skip-prose-lines (skip-to-next-line st))
    else if is-page-marker st then scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles (skip-to-next-line st)
-   else if is-cites-keyword (current-kind st) then let cite-result = parse-citations st []
+   else if is-cites-keyword (current-kind st) then let cite-result = parse-citations st cur-chap []
      in scan-top-level headers type-defs effect-defs (imports ++ cite-result.imports) cur-chap ch-title sec-titles (cite-result.state)
    else if is-effect-keyword (current-kind st) then scan-top-level-effect headers type-defs effect-defs imports cur-chap ch-title sec-titles st
    else if is-prose-line st then scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles (skip-prose-lines st)

@@ -165,6 +165,42 @@ Decide per phase what is fatal:
 - Lowering / emit: errors here are bugs in earlier phases and *should*
   have been prevented by gates; if they happen, fatal.
 
+#### Phase 4 follow-up: streaming binary path diagnostics
+
+The `compile-with-citations` driver now gates per-phase with a running
+accumulator bag. The **streaming binary path** (`compile-to-binary` /
+`emit-defs-binary-gated`) went through a partial port:
+
+- Tier 1 landed: per-def parse bags are captured and merged into the
+  compilation bag (previously the parser's per-def state was dropped
+  via `unwrap-body`, silently losing syntax errors on bare metal).
+- Chapter gating landed: `CitesDecl` / `ACitesDecl` now carry a
+  `citing-chapter : Text` stamped by the scanner. If any def in a
+  chapter has parse errors, the chapter is marked bad; any chapter
+  citing a bad chapter is transitively bad. Bad chapters skip codegen
+  but their errors still surface in the final bag.
+
+- **Tier 3 deferred: per-def resolve + type-check on the binary
+  path.** `compile-with-citations` already runs the resolver and type
+  checker on the whole chapter, but `compile-to-binary` does not — so
+  on bare metal we still cannot surface undefined-name / type-mismatch
+  diagnostics until codegen fails with a generic IrError. Running
+  `resolve-expr` and `check-def` per def inside
+  `emit-defs-binary-gated`, seeding bag results the same way parse
+  bags are seeded, would close this gap. Blocker hit first attempt:
+  `cites NameResolution (builtin-names, resolve-expr, ...)` from
+  `main.codex` caused unrelated type inference errors at line 18
+  (`build-all-assignments`), suggesting a chapter-scoping edge case
+  that wants investigation before threading NameResolver functions
+  into the binary path. Likely one of: (a) the specific name set in
+  the cite list collides with something in main.codex's existing
+  scope, (b) CodexEmitter's `collect-ctor-names` already overloaded
+  and adding another cite confuses disambiguation, or (c) the cite
+  ordering matters and citing NameResolution before CodexEmitter
+  changes what wins. A branch dedicated to just that threading can
+  sort it out; the streaming binary path is now at least visible for
+  syntax errors, which was the largest-blind-spot class.
+
 ### Phase 5 — Organized error output
 
 Reference currently dumps diagnostics as a flat list ordered by insertion.
