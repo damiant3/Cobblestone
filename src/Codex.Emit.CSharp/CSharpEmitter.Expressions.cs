@@ -672,10 +672,13 @@ public sealed partial class CSharpEmitter
                 sb.Append(')');
                 return true;
             case "list-with-capacity" when args.Count >= 1:
-                sb.Append("_Buf.list_with_capacity(");
-                EmitExpr(sb, args[0], indent);
-                sb.Append(')');
-                return true;
+                {
+                    string capElemType = app.Type is ListType clt ? EmitType(clt.Element) : "object";
+                    sb.Append($"new List<{capElemType}>((int)(long)");
+                    EmitExpr(sb, args[0], indent);
+                    sb.Append(')');
+                    return true;
+                }
             case "buf-write-byte" when args.Count >= 3:
                 sb.Append("_Buf.buf_write_byte(");
                 EmitExpr(sb, args[0], indent);

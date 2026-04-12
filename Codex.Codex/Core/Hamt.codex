@@ -1,0 +1,114 @@
+Chapter: Hamt
+
+ Flat open-addressing hash table — O(1) amortized text-keyed lookup.
+ Built once, read many. Linear probing on collision.
+ Table size is 8192 slots, supporting ~6000 entries at 75% load.
+
+Section: Hash Function
+  djb2-hash : Text -> Integer
+  djb2-hash (s) = djb2-loop s 0 (text-length s) 5381
+
+  djb2-loop : Text -> Integer -> Integer -> Integer -> Integer
+  djb2-loop (s) (i) (len) (h) =
+   if i == len then h
+   else djb2-loop s (i + 1) len (int-mod (h * 33 + char-code-at s i) 2147483647)
+
+Section: Table Construction
+  offset-table-size : Integer
+  offset-table-size = 8192
+
+  offset-table-mask : Integer
+  offset-table-mask = 8191
+
+  HamtMap = record {
+    keys : List Text,
+    values : List Integer
+  }
+
+  fill-empty-keys : Integer -> Integer -> List Text -> List Text
+  fill-empty-keys (n) (i) (acc) =
+   if i >= n then acc
+   else fill-empty-keys n (i + 1) (list-snoc acc "")
+
+  fill-empty-values : Integer -> Integer -> List Integer -> List Integer
+  fill-empty-values (n) (i) (acc) =
+   if i >= n then acc
+   else fill-empty-values n (i + 1) (list-snoc acc (0 - 1))
+
+  hamt-empty-map : HamtMap
+  hamt-empty-map = HamtMap {
+    keys = fill-empty-keys offset-table-size 0 (list-with-capacity offset-table-size),
+    values = fill-empty-values offset-table-size 0 (list-with-capacity offset-table-size)
+  }
+
+Section: Insert (Linear Probing)
+  hamt-insert-at : List Text -> List Integer -> Integer -> Text -> Integer -> HamtMap
+  hamt-insert-at (ks) (vs) (slot) (k) (v) =
+   let existing = list-at ks slot
+   in if existing == "" then HamtMap {
+        keys = hamt-text-replace-at ks slot k,
+        values = hamt-int-replace-at vs slot v
+      }
+      else if existing == k then HamtMap {
+        keys = ks,
+        values = hamt-int-replace-at vs slot v
+      }
+      else hamt-insert-at ks vs (int-mod (slot + 1) offset-table-size) k v
+
+  hamt-set : HamtMap -> Text -> Integer -> HamtMap
+  hamt-set (m) (k) (v) =
+   let h = djb2-hash k
+   in let slot = int-mod h offset-table-size
+   in hamt-insert-at (m.keys) (m.values) slot k v
+
+Section: Lookup
+  hamt-lookup-probe : List Text -> List Integer -> Integer -> Text -> Integer -> Integer
+  hamt-lookup-probe (ks) (vs) (slot) (k) (steps) =
+   if steps >= offset-table-size then 0 - 1
+   else let existing = list-at ks slot
+   in if existing == "" then 0 - 1
+      else if existing == k then list-at vs slot
+      else hamt-lookup-probe ks vs (int-mod (slot + 1) offset-table-size) k (steps + 1)
+
+  hamt-get : HamtMap -> Text -> Integer
+  hamt-get (m) (k) =
+   let h = djb2-hash k
+   in let slot = int-mod h offset-table-size
+   in hamt-lookup-probe (m.keys) (m.values) slot k 0
+
+Section: List Replace Helpers
+  hamt-text-replace-at : List Text -> Integer -> Text -> List Text
+  hamt-text-replace-at (xs) (idx) (x) =
+   hamt-text-replace-loop xs idx x 0 (list-length xs) []
+
+  hamt-text-replace-loop : List Text -> Integer -> Text -> Integer -> Integer -> List Text -> List Text
+  hamt-text-replace-loop (xs) (idx) (x) (j) (len) (acc) =
+   if j >= len then acc
+   else if j == idx then hamt-text-replace-loop xs idx x (j + 1) len (list-snoc acc x)
+   else hamt-text-replace-loop xs idx x (j + 1) len (list-snoc acc (list-at xs j))
+
+  hamt-int-replace-at : List Integer -> Integer -> Integer -> List Integer
+  hamt-int-replace-at (xs) (idx) (x) =
+   hamt-int-replace-loop xs idx x 0 (list-length xs) []
+
+  hamt-int-replace-loop : List Integer -> Integer -> Integer -> Integer -> Integer -> List Integer -> List Integer
+  hamt-int-replace-loop (xs) (idx) (x) (j) (len) (acc) =
+   if j >= len then acc
+   else if j == idx then hamt-int-replace-loop xs idx x (j + 1) len (list-snoc acc x)
+   else hamt-int-replace-loop xs idx x (j + 1) len (list-snoc acc (list-at xs j))
+
+Section: Build from Func Offsets
+  build-offset-map : List FuncOffset -> HamtMap
+  build-offset-map (offsets) =
+   build-offset-map-loop offsets 0 (list-length offsets) hamt-empty-map
+
+  build-offset-map-loop : List FuncOffset -> Integer -> Integer -> HamtMap -> HamtMap
+  build-offset-map-loop (offsets) (i) (len) (m) =
+   if i >= len then m
+   else let fo = list-at offsets i
+   in build-offset-map-loop offsets (i + 1) len (hamt-set m (fo.name) (fo.offset))
+
+  hamt-lookup-offset : HamtMap -> Text -> Integer
+  hamt-lookup-offset (m) (name) = hamt-get m name
+
+Page 1

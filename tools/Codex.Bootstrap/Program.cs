@@ -32,6 +32,8 @@ partial class Program
             return RunCodexEmit(args.Length > 1 ? args[1] : null, args.Length > 2 ? args[2] : null);
         if (args.Length > 0 && args[0] == "--scan-test" && args.Length > 1)
             return RunScanTest(args[1]);
+        if (args.Length > 0 && args[0] == "--binary")
+            return RunBinaryEmit(args.Length > 1 ? args[1] : null);
 
         bool verbose = args.Contains("--verbose");
         string[] posArgs = args.Where(a => !a.StartsWith("--")).ToArray();
@@ -596,5 +598,68 @@ partial class Program
         }
 
         return 0;
+    }
+
+    static int RunBinaryEmit(string? outputPath)
+    {
+        string codexDir = Path.GetFullPath(
+            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Codex.Codex"));
+        if (!Directory.Exists(codexDir)) { Console.Error.WriteLine($"Not found: {codexDir}"); return 1; }
+
+        string[] files = Directory.GetFiles(codexDir, "*.codex", SearchOption.AllDirectories)
+            .OrderBy(f => f, StringComparer.Ordinal).ToArray();
+        List<string> codeBlocks = [];
+        foreach (string f in files)
+        {
+            string content = File.ReadAllText(f);
+            if (content.Length > 0)
+                codeBlocks.Add(content);
+        }
+        string combined = string.Join("\n\n", codeBlocks);
+        string source = _Cce.FromUnicode(combined);
+        string chapterName = _Cce.FromUnicode("Codex_Codex");
+
+        Console.WriteLine($"Binary emit: {combined.Length} chars ({files.Length} files)");
+        Console.WriteLine();
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        try
+        {
+            Console.WriteLine("  compile_to_binary...");
+            var result = Codex_Codex_Codex.compile_to_binary(source, chapterName);
+            Console.WriteLine($"  done: {sw.ElapsedMilliseconds}ms");
+
+            var errors = result.errors;
+            if (errors.Count > 0)
+            {
+                Console.WriteLine($"  {errors.Count} error(s):");
+                for (int i = 0; i < Math.Min(errors.Count, 20); i++)
+                    Console.WriteLine($"    [{errors[i].code}] {_Cce.ToUnicode(errors[i].message)}");
+            }
+
+            var bytes = result.bytes;
+            Console.WriteLine($"  ELF size: {bytes.Count} bytes");
+
+            string dest = outputPath ?? Path.Combine(
+                Path.GetFullPath(Path.Combine(codexDir, "..")),
+                "build-output", "bare-metal", "selfhost.elf");
+            Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+
+            byte[] elfBytes = new byte[bytes.Count];
+            for (int i = 0; i < bytes.Count; i++)
+                elfBytes[i] = (byte)bytes[i];
+            File.WriteAllBytes(dest, elfBytes);
+
+            Console.WriteLine($"  Output: {dest}");
+            Console.WriteLine($"  Total: {sw.ElapsedMilliseconds}ms");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Binary compilation failed at {sw.ElapsedMilliseconds}ms: {ex.GetType().Name}: {ex.Message}");
+            Console.Error.WriteLine(ex.StackTrace);
+            return 1;
+        }
     }
 }
