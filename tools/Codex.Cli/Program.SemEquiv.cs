@@ -570,7 +570,27 @@ public static partial class Program
 
     static string CollapseWhitespace(string text)
     {
-        return Regex.Replace(text, @"\s+", " ").Trim();
+        // Tokenize: split into identifier-like runs and single non-identifier
+        // chars, drop whitespace between them. Leading/trailing whitespace is
+        // implicitly trimmed. Per the project's diagnostic semantics rule:
+        // leading whitespace (structural indent) is what the parser cares
+        // about; whitespace between tokens is style and ignored here.
+        var tokens = Regex.Matches(text, @"[a-zA-Z0-9_][a-zA-Z0-9_\-]*|""(?:\\.|[^""\\])*""|'(?:\\.|[^'\\])*'|\S")
+                          .Select(m => m.Value)
+                          .ToList();
+
+        // Strip redundant parens wrapping a single atomic expression:
+        // "(x)" where x has no internal whitespace or parens of its own.
+        // Applied iteratively until no more matches, so ((x)) -> (x) -> x.
+        var joined = string.Join(" ", tokens);
+        string prev;
+        do
+        {
+            prev = joined;
+            joined = Regex.Replace(joined, @"\(\s*([^()\s]+(?:\s+\.\s+[^()\s]+)*)\s*\)", "$1");
+        } while (joined != prev);
+
+        return joined.Trim();
     }
 
     static string AlphaNormalizeTypeVars(string sig)

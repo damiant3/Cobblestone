@@ -102,9 +102,10 @@ Section: Streaming Pipeline v2
 
   compile-with-scope : List Token -> List ATypeDef -> List DefHeader -> List ChapterAssignment -> List Text -> [Console] Nothing
   compile-with-scope (tokens) (type-defs) (headers) (assignments) (colliding) =
-   let tdm = build-type-def-map type-defs 0 (list-length type-defs) []
+   let scoped-headers = scope-def-headers headers colliding assignments 0 []
+   in let tdm = build-type-def-map type-defs 0 (list-length type-defs) []
    in let tenv = register-type-defs empty-unification-state builtin-type-env tdm type-defs 0 (list-length type-defs)
-   in let env = register-def-headers (tenv.state) (tenv.env) tdm headers 0 (list-length headers)
+   in let env = register-def-headers (tenv.state) (tenv.env) tdm scoped-headers 0 (list-length scoped-headers)
    in let ctor-types = collect-ctor-bindings type-defs 0 (list-length type-defs) []
    in let all-types = ctor-types ++ env.env.bindings
    in let ctor-names = collect-ctor-names type-defs 0
@@ -227,12 +228,20 @@ Section: Streaming Pipeline v2
     body = unwrap-body body-result,
     chapter-slug = hdr.chapter-slug
    }
-   in let adef = desugar-def def
+   in let adef-raw = desugar-def def
+   in let scoped-name = scope-def-name colliding assignments (adef-raw.name.value) (hdr.chapter-slug)
+   in let adef = ADef {
+    name = make-name scoped-name,
+    params = adef-raw.params,
+    declared-type = adef-raw.declared-type,
+    body = adef-raw.body,
+    chapter-slug = adef-raw.chapter-slug,
+    span = adef-raw.span
+   }
    in let ir-def = lower-def adef all-types ust
-   in let scoped-name = scope-def-name colliding assignments (ir-def.name) (hdr.chapter-slug)
    in let scoped-body = rename-ir-expr rn (ir-def.body)
    in let scoped-def = IRDef {
-    name = scoped-name,
+    name = ir-def.name,
     params = ir-def.params,
     type-val = ir-def.type-val,
     body = scoped-body,
@@ -289,9 +298,10 @@ Section: Binary Compilation
    in let n-defs = list-length headers
    in let assignments = build-all-assignments headers 0 []
    in let colliding = find-colliding-names assignments
+   in let scoped-headers = scope-def-headers headers colliding assignments 0 []
    in let tdm = build-type-def-map type-defs 0 (list-length type-defs) []
    in let tenv = register-type-defs empty-unification-state builtin-type-env tdm type-defs 0 (list-length type-defs)
-   in let env = register-def-headers (tenv.state) (tenv.env) tdm headers 0 (list-length headers)
+   in let env = register-def-headers (tenv.state) (tenv.env) tdm scoped-headers 0 (list-length scoped-headers)
    in let ctor-types = collect-ctor-bindings type-defs 0 (list-length type-defs) []
    in let all-types = ctor-types ++ env.env.bindings
    in let parse-results = parse-all-bodies tokens headers 0 n-defs []
@@ -308,6 +318,28 @@ Section: Binary Compilation
    in let tramp = bare-metal-trampoline
    in let cg2 = emit-defs-binary-gated parse-results bad-full all-types (env.state) colliding assignments cg1 watermark 0 (list-length parse-results)
    in x86-64-finalize cg2 (tramp.far-jump-patch-pos)
+
+Section: Header Scoping
+  scope-def-headers : List DefHeader -> List Text -> List ChapterAssignment -> Integer -> List DefHeader -> List DefHeader
+  scope-def-headers (headers) (colliding) (assignments) (i) (acc) =
+   if i == list-length headers then acc
+   else let h = list-at headers i
+   in let scoped-text = scope-def-name colliding assignments (h.name.text) (h.chapter-slug)
+   in let scoped-tok = Token {
+    kind = h.name.kind,
+    text = scoped-text,
+    offset = h.name.offset,
+    line = h.name.line,
+    column = h.name.column,
+    file-id = h.name.file-id
+   }
+   in scope-def-headers headers colliding assignments (i + 1) (list-snoc acc (DefHeader {
+    name = scoped-tok,
+    params = h.params,
+    ann = h.ann,
+    body-pos = h.body-pos,
+    chapter-slug = h.chapter-slug
+   }))
 
 Section: Per-def Parse Collection
 
@@ -417,12 +449,20 @@ Section: Gated Binary Emit
     body = pd.body,
     chapter-slug = slug
    }
-   in let adef = desugar-def def
+   in let adef-raw = desugar-def def
+   in let scoped-name = scope-def-name colliding assignments (adef-raw.name.value) slug
+   in let adef = ADef {
+    name = make-name scoped-name,
+    params = adef-raw.params,
+    declared-type = adef-raw.declared-type,
+    body = adef-raw.body,
+    chapter-slug = adef-raw.chapter-slug,
+    span = adef-raw.span
+   }
    in let ir-def = lower-def adef all-types ust
-   in let scoped-name = scope-def-name colliding assignments (ir-def.name) slug
    in let scoped-body = rename-ir-expr rn (ir-def.body)
    in let scoped = IRDef {
-    name = scoped-name,
+    name = ir-def.name,
     params = ir-def.params,
     type-val = ir-def.type-val,
     body = scoped-body,
