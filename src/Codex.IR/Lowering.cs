@@ -575,7 +575,22 @@ public sealed class Lowering(
         }
 
         m_localEnv = savedEnv;
-        return new IRDo(statements.ToImmutable(), expectedType);
+
+        // Compute the do-block's type from the last statement rather than
+        // relying on expectedType, which is often ErrorType when the do
+        // appears in let-binding RHS.  This matches InferDoExpr's logic.
+        ImmutableArray<IRDoStatement> stmts = statements.ToImmutable();
+        CodexType doType = expectedType;
+        if (stmts.Length > 0)
+        {
+            IRDoStatement last = stmts[^1];
+            if (last is IRDoExec exec)
+                doType = exec.Expression.Type;
+            else if (last is IRDoBind bind)
+                doType = bind.NameType;
+        }
+
+        return new IRDo(stmts, doType);
     }
 
     IRExpr LowerHandleExpr(HandleExpr handleExpr, CodexType expectedType)
