@@ -2,8 +2,9 @@
 # Ping-Pong: Full clean-room self-hosting verification.
 set -euo pipefail
 DOTNET="/mnt/c/Program Files/dotnet/dotnet.exe"
-WINREPO="D:/Projects/NewRepository-cam"
-REPO="/mnt/d/Projects/NewRepository-cam"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
+WINREPO="$(wslpath -m "$REPO" 2>/dev/null || echo "$REPO")"
 OUTDIR="$REPO/build-output/bare-metal"
 ELF="$OUTDIR/Codex.Codex.elf"
 SOURCE="$OUTDIR/source.codex"

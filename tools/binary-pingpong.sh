@@ -5,7 +5,8 @@
 # check — Stage 0 compiles source to ELF, Stage 1 ELF compiles source
 # to ELF, both ELFs must be byte-identical.
 set -euo pipefail
-REPO="/mnt/d/Projects/NewRepository-cam"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUTDIR="$REPO/build-output/bare-metal"
 ELF="$OUTDIR/Codex.Codex.elf"
 SOURCE="$OUTDIR/source.codex"
