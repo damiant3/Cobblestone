@@ -5066,20 +5066,37 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     void EmitListConsHelper()
     {
         // __list_cons: rdi=head, rsi=tail_list_ptr → rax=new list
+        // List layout: [capacity @ -8 | count @ 0 | elem0 @ 8 | ...]
+        //
+        // Geometric capacity: alloc with cap = max(2 * newLen, 4).
+        // Mirrors __list_append Path 2 / __list_snoc Path 3. The returned
+        // list has headroom so subsequent in-place snocs hit Path 1 instead
+        // of reallocating. Amortized O(1) for repeated extension.
+        //
+        // Must emit bytes identical to Codex.Codex/Emit/X86_64Helpers.codex
+        // emit-list-cons-alloc so binary-pingpong stage1 == stage2.
         m_functionOffsets["__list_cons"] = m_text.Count;
 
-        X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RSI, 0);   // old length
+        X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RSI, 0);   // RCX = old length
         X86_64Encoder.MovRR(m_text, Reg.RDX, Reg.RCX);
-        X86_64Encoder.AddRI(m_text, Reg.RDX, 1);               // new length
+        X86_64Encoder.AddRI(m_text, Reg.RDX, 1);               // RDX = newLen
 
-        // Allocate: [capacity | count | elements] = (newLen + 2) * 8
-        X86_64Encoder.MovStore(m_text, HeapReg, Reg.RDX, 0);   // capacity = newLen
+        // R11 = new_cap = max(2 * newLen, 4)
+        X86_64Encoder.MovRR(m_text, Reg.R11, Reg.RDX);
+        X86_64Encoder.ShlRI(m_text, Reg.R11, 1);
+        X86_64Encoder.CmpRI(m_text, Reg.R11, 4);
+        int capOk = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0);
+        X86_64Encoder.Li(m_text, Reg.R11, 4);
+        PatchJcc(capOk, m_text.Count);
+
+        // Allocate with new_cap: [capacity | count | slot0 | ...]
+        X86_64Encoder.MovStore(m_text, HeapReg, Reg.R11, 0);   // capacity = new_cap
         X86_64Encoder.AddRI(m_text, HeapReg, 8);                // past capacity
         X86_64Encoder.MovRR(m_text, Reg.RAX, HeapReg);          // RAX = new list ptr
-        X86_64Encoder.MovRR(m_text, Reg.R11, Reg.RDX);
-        X86_64Encoder.AddRI(m_text, Reg.R11, 1);                // newLen + 1
+        X86_64Encoder.AddRI(m_text, Reg.R11, 1);                // new_cap + 1
         X86_64Encoder.ShlRI(m_text, Reg.R11, 3);
-        X86_64Encoder.AddRR(m_text, HeapReg, Reg.R11);
+        X86_64Encoder.AddRR(m_text, HeapReg, Reg.R11);          // heap += (new_cap+1)*8
 
         // Store new length and head
         X86_64Encoder.MovStore(m_text, Reg.RAX, Reg.RDX, 0);
