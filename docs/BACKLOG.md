@@ -69,6 +69,18 @@
 | # | Item | Notes |
 |---|------|-------|
 
+## Performance — Quadratic hotspots in self-host (slowing binary mode)
+
+Hunt started 2026-04-13 after `++` runtime helper fix (commit `582562e`). Self-host still superlinear — `__list_append` was fixed but per-call-site patterns remain.
+
+| # | Location | Pattern | Impact |
+|---|----------|---------|--------|
+| P1 | `Codex.Codex/Core/Hamt.codex:78-96` `hamt-text-replace-at` / `hamt-int-replace-at` | Rebuilds the ENTIRE 8192-slot list (keys + values) by snoc-loop on every insert just to replace one element | Every `hamt-set` = 16384 copies + 16384 heap words wasted. Called by `build-offset-map` F times → O(F * 16K). For F=500 funcs: 8M ops + ~128MB heap churn. **Fix:** add `list-set` builtin that does O(1) in-place `MovStore`, replace the loop. Hex-Hex is investigating a HAMT/full-source issue — coordinate before changing. |
+| P2 | `Codex.Codex/Types/TypeEnv.codex:37-45` `env-bind` | Uses `list-insert-at` (O(n) shift per insert) for sorted binding insert | Building N-binding env is O(n²). Partially mitigated by `list-insert-at` Path 1 in-place shift, but each call still O(n) bytes. Affects type-checking at module scope. |
+| P3 | `Codex.Codex/Core/Set.codex:14-20` `set-insert` | Same `list-insert-at` pattern as P2 | O(n) per insert; O(n²) to build an n-element set. |
+| P4 | `src/Codex.Emit.X86_64/X86_64CodeGen.cs:5066` `EmitListConsHelper` | Allocates with `capacity = newLen` (no geometric growth) and copies oldLen elements | O(n) per `x :: xs`. Self-host only uses `::` in 2 places, so low impact today — but any future cons-accumulation would be quadratic. Mirror of the `++` fix (geometric cap) is straightforward. |
+| P5 | `Codex.Codex/Emit/X86_64.codex:366-372` `collect-call-patches` + `lookup-func-offset` | Linear scan over `func-offsets` (O(F)) for every call patch (P) → O(P*F) at link time | Final pass only; defined `hamt-lookup-offset` already exists but unused. Swap to HAMT lookup after P1 is fixed. |
+
 
 ## Compiler Correctness (low priority, non-blocking, continued)
 
