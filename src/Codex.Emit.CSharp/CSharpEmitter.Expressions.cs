@@ -515,11 +515,11 @@ public sealed partial class CSharpEmitter
 
             case "list-set-at" when args.Count == 3:
             {
-                // list-set-at list idx val → new list (copy with slot idx replaced)
+                // list-set-at list idx val → list (in-place slot set, returns same ref)
                 string elemType = args[0].Type is ListType lst ? EmitType(lst.Element) : "object";
-                sb.Append($"((Func<List<{elemType}>>)(() => {{ var _l = new List<{elemType}>(");
+                sb.Append($"((Func<List<{elemType}>>)(() => {{ var _l = ");
                 EmitExpr(sb, args[0], indent);
-                sb.Append("); _l[(int)");
+                sb.Append("; _l[(int)");
                 EmitExpr(sb, args[1], indent);
                 sb.Append("] = ");
                 EmitExpr(sb, args[2], indent);
