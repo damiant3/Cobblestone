@@ -577,6 +577,53 @@ Section: Entry Point
     print-line ("SIZE:" ++ integer-to-text (list-length (result.bytes)))
     write-binary (result.bytes)
 
+  emit-defs-diag-loop : List ParsedDef -> List Text -> List TypeBinding -> UnificationState -> List Text -> List ChapterAssignment -> CodegenState -> Integer -> Integer -> Integer -> [Console] CodegenState
+  emit-defs-diag-loop (pds) (bad-chapters) (all-types) (ust) (colliding) (assignments) (cg) (watermark) (i) (n) =
+   if i >= n then cg
+   else let pd = list-at pds i
+   in let hdr = pd.header
+   in let slug = hdr.chapter-slug
+   in do
+    print-line ("PH:def:" ++ integer-to-text i ++ ":" ++ hdr.name.text)
+    if has-slug bad-chapters slug then emit-defs-diag-loop pds bad-chapters all-types ust colliding assignments cg watermark (i + 1) n
+    else let rn = build-chapter-rename-map colliding assignments slug
+    in let def = Def {
+     name = hdr.name,
+     params = hdr.params,
+     ann = hdr.ann,
+     body = pd.body,
+     chapter-slug = slug
+    }
+    in let adef-raw = desugar-def def
+    in let scoped-name = scope-def-name colliding assignments (adef-raw.name.value) slug
+    in let adef = ADef {
+     name = make-name scoped-name,
+     params = adef-raw.params,
+     declared-type = adef-raw.declared-type,
+     body = adef-raw.body,
+     chapter-slug = adef-raw.chapter-slug,
+     span = adef-raw.span
+    }
+    in let ir-def = lower-def adef all-types ust
+    in do
+     print-line ("PH:lowered:" ++ integer-to-text i)
+     let scoped-body = rename-ir-expr rn (ir-def.body)
+     in let scoped = IRDef {
+      name = ir-def.name,
+      params = ir-def.params,
+      type-val = ir-def.type-val,
+      body = scoped-body,
+      chapter-slug = slug,
+      span = ir-def.span
+     }
+     in do
+      print-line ("PH:renamed:" ++ integer-to-text i)
+      let cg2 = emit-function cg scoped
+      in do
+       print-line ("PH:emitted:" ++ integer-to-text i)
+       let hr = heap-restore watermark
+       in emit-defs-diag-loop pds bad-chapters all-types ust colliding assignments cg2 watermark (i + 1) n
+
   emit-binary-diag : Text -> [Console, FileSystem] Nothing
   emit-binary-diag (source) = do
    print-line "PH:tokenize"
@@ -592,16 +639,26 @@ Section: Entry Point
       let an = bin-analyze benv
       in do
        print-line "PH:codegen"
-       let cg = bin-emit-codegen an
+       let benv = an.env
+       in let scope = benv.scope
+       in let cg0 = x86-64-init-codegen-streaming (benv.ctor-types) (scope.scan.n-defs)
+       in let cg0-seeded = record-set cg0 "bag" (an.all-parse-bag)
        in do
-        print-line "PH:finalize"
-        let result = bin-finalize cg
+        print-line "PH:codegen-rt"
+        let cg1 = emit-runtime-helpers cg0-seeded
+        in let watermark = heap-save
         in do
-         print-line "PH:compile-done"
-         print-codegen-error-header (bag-diagnostics (result.bag))
-         print-line ("SIZE:" ++ integer-to-text (list-length (result.bytes)))
-         write-binary (result.bytes)
-         print-line "PH:wrote"
+         print-line "PH:codegen-defs"
+         let cg = emit-defs-diag-loop (an.parse-results) (an.bad-full) (benv.all-types) (benv.ust) (scope.colliding) (scope.assignments) cg1 watermark 0 (list-length (an.parse-results))
+         in do
+          print-line "PH:finalize"
+          let result = bin-finalize cg
+          in do
+           print-line "PH:compile-done"
+           print-codegen-error-header (bag-diagnostics (result.bag))
+           print-line ("SIZE:" ++ integer-to-text (list-length (result.bytes)))
+           write-binary (result.bytes)
+           print-line "PH:wrote"
 
   main : [Console, FileSystem] Nothing
   main = do
