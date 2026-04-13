@@ -452,7 +452,8 @@ public sealed partial class Parser
 
         List<DoStatementNode> statements = [];
         while (!IsAtEnd
-            && Current.Kind is not (TokenKind.EndOfFile or TokenKind.Dedent)
+            && Current.Kind is not (TokenKind.EndOfFile or TokenKind.Dedent
+                                    or TokenKind.ElseKeyword or TokenKind.InKeyword)
             && !(Current.Kind == TokenKind.Identifier && Peek(1)?.Kind == TokenKind.Colon))
         {
             if (Current.Kind == TokenKind.Identifier && Peek(1)?.Kind == TokenKind.LeftArrow)

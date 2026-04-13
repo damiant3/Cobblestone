@@ -1391,8 +1391,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             fieldMap[name] = saved;
         }
 
-        RecordType? rt = rec.Type as RecordType;
-        if (rt is null && rec.Type is ConstructedType ctRec)
+        CodexType recCreateType = rec.Type;
+        if (recCreateType is EffectfulType eftRc)
+            recCreateType = eftRc.Return;
+        if (recCreateType is ForAllType fatRc)
+            recCreateType = fatRc.Body;
+        RecordType? rt = recCreateType as RecordType;
+        if (rt is null && recCreateType is ConstructedType ctRec)
             rt = m_typeDefs[ctRec.Constructor.Value] as RecordType;
 
         int fieldCount = rt?.Fields.Length ?? rec.Fields.Length;
@@ -1428,8 +1433,14 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         byte baseReg = EmitExpr(fa.Record);
         int fieldIndex = 0;
 
-        RecordType? rt = fa.Record.Type as RecordType;
-        if (rt is null && fa.Record.Type is ConstructedType ctFa)
+        CodexType recType = fa.Record.Type;
+        if (recType is EffectfulType eft)
+            recType = eft.Return;
+        if (recType is ForAllType fat)
+            recType = fat.Body;
+
+        RecordType? rt = recType as RecordType;
+        if (rt is null && recType is ConstructedType ctFa)
             rt = m_typeDefs[ctFa.Constructor.Value] as RecordType;
 
         if (rt is not null)
@@ -1842,8 +1853,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
                 StoreLocal(recLocal, recReg);
 
                 string fieldName = args[1] is IRTextLit lit ? lit.Value : "";
-                RecordType? rt = args[0].Type as RecordType;
-                if (rt is null && args[0].Type is ConstructedType ctRs)
+                CodexType rsType = args[0].Type;
+                if (rsType is EffectfulType eftRs)
+                    rsType = eftRs.Return;
+                if (rsType is ForAllType fatRs)
+                    rsType = fatRs.Body;
+                RecordType? rt = rsType as RecordType;
+                if (rt is null && rsType is ConstructedType ctRs)
                     rt = m_typeDefs[ctRs.Constructor.Value] as RecordType;
 
                 int fieldIndex = 0;
@@ -5152,6 +5168,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
     CodexType ResolveType(CodexType type)
     {
+        if (type is EffectfulType eft)
+            return ResolveType(eft.Return);
+        if (type is ForAllType fat)
+            return ResolveType(fat.Body);
         if (type is ConstructedType ct && m_typeDefs[ct.Constructor.Value] is CodexType resolved)
             return resolved;
         if (type is ListType lt)
