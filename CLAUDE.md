@@ -17,10 +17,15 @@ Backlog: `docs/BACKLOG.md`
 
 ## The Rules
 
-### 1. Push to a feature branch, not master
+### 1. Compiler changes go to a feature branch, not master
 
-**Do not push code directly to master.** Push to a feature branch (`hex/description`),
-then another agent or Damian reviews, builds, tests, and merges.
+**Do not push compiler code directly to master.** Anything that touches the
+reference compiler (`src/`), the self-hosted compiler (`Codex.Codex/`), the
+runtime, or codegen must land on a feature branch (`hex/description`). Another
+agent or Damian reviews, builds, tests, and merges.
+
+Non-compiler changes (docs, tooling under `tools/` that isn't the compiler,
+agent scripts, CI, etc.) may be pushed directly to master.
 
 ### 2. Sem-equiv with pingpong with is the acceptance test
 
