@@ -2375,6 +2375,26 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
                 return true;
             }
 
+            case "list-set-at" when args.Count == 3:
+            {
+                // Stub: RiscV backend is deferred. Dispatches to __list_set_at
+                // which is not currently emitted in this backend; building any
+                // .codex that uses list-set-at against the RiscV target will
+                // fail at link time. x86-64 + C# emitters have full support.
+                uint listReg = EmitExpr(args[0]);
+                uint savedList = AllocLocal();
+                StoreLocal(savedList, listReg);
+                uint idxReg = EmitExpr(args[1]);
+                uint savedIdx = AllocLocal();
+                StoreLocal(savedIdx, idxReg);
+                uint elemReg = EmitExpr(args[2]);
+                Emit(RiscVEncoder.Mv(Reg.A2, elemReg));
+                Emit(RiscVEncoder.Mv(Reg.A1, LoadLocal(savedIdx)));
+                Emit(RiscVEncoder.Mv(Reg.A0, LoadLocal(savedList)));
+                EmitCallTo("__list_set_at");
+                return true;
+            }
+
             case "list-contains" when args.Count == 2:
             {
                 uint listReg = EmitExpr(args[0]);

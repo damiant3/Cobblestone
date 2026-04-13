@@ -761,6 +761,10 @@ public sealed class Lowering(
             new FunctionType(new ListType(new TypeVariable(0)),
                 new FunctionType(IntegerType.s_instance,
                     new FunctionType(new TypeVariable(0), new ListType(new TypeVariable(0)))))));
+        map = map.Set("list-set-at", new ForAllType(0,
+            new FunctionType(new ListType(new TypeVariable(0)),
+                new FunctionType(IntegerType.s_instance,
+                    new FunctionType(new TypeVariable(0), new ListType(new TypeVariable(0)))))));
         map = map.Set("list-snoc", new ForAllType(0,
             new FunctionType(new ListType(new TypeVariable(0)),
                 new FunctionType(new TypeVariable(0), new ListType(new TypeVariable(0))))));
