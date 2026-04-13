@@ -1368,8 +1368,11 @@ Section: Builtin Emission
     if _ -> 0
    in let val-result = emit-expr st1 (list-at args 2)
    in let loaded = load-local (val-result.state) (rec-loc.reg)
+   in let st-checked = when rec-ty
+    if RecordTy (rn) (rf) -> loaded.state
+    if _ -> st-add-error (loaded.state) cdx-ir-error ("record-set: unresolved type for field '" ++ field-name ++ "'") (ir-expr-span (list-at args 0))
    in EmitResult {
-   state = st-append-text (loaded.state) (mov-store (loaded.reg) (val-result.reg) (field-idx * 8)),
+   state = st-append-text st-checked (mov-store (loaded.reg) (val-result.reg) (field-idx * 8)),
    reg = loaded.reg
   }
 
@@ -1863,6 +1866,7 @@ Section: Record Emission
      let raw = lookup-type-binding (st.type-defs) (cname.value)
      in resolve-constructed-raw raw ty
     if EffectfulTy (effs) (ret) -> resolve-constructed-ty st ret
+    if ForAllTy (id) (body) -> resolve-constructed-ty st body
     if _ -> ty
 
   strip-fun-args-emitter : CodexType -> CodexType
@@ -1954,7 +1958,10 @@ Section: Record Emission
     if RecordTy (rname) (rfields) -> find-record-field-index rfields field-name 0
     if _ -> 0
    in let rec-result = emit-expr st rec-expr
-   in let rd = alloc-temp (rec-result.state)
+   in let st-checked = when rec-ty
+    if RecordTy (rn) (rf) -> rec-result.state
+    if _ -> st-add-error (rec-result.state) cdx-ir-error ("emit-field-access: unresolved type for field '" ++ field-name ++ "'") (ir-expr-span rec-expr)
+   in let rd = alloc-temp st-checked
    in EmitResult {
    state = st-append-text (rd.state) (mov-load (rd.reg) (rec-result.reg) (field-idx * 8)),
    reg = rd.reg
