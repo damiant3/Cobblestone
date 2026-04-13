@@ -79,7 +79,7 @@ Legend: ✅ at parity · 🟡 partial / different · ❌ missing · ⏭️ delib
 |------|-----------|-----------|--------|-------|
 | .NET exception stack traces | ✓ | ✓ | ✅ | |
 | Bare-metal ISR plumbing (timer, keyboard, serial) | ✓ | ✓ `X86_64Boot.codex` | ✅ | `emit-common-interrupt-handler` handles vectors 32/33/36 |
-| CPU-exception ISRs (vectors 0-31: #DE, #UD, #GP, #PF, …) with register/fault dump to serial | 🟡 partial | ❌ | ❌ | Only device interrupts are wired. GPF / page fault produces silent QEMU hang. **Top open gap for bare-metal debugging.** |
+| CPU-exception ISRs (vectors 0-31: #DE, #UD, #GP, #PF, …) with register/fault dump to serial | ❌ frozen | 🟡 self-host only | 🟡 | Self-host bare-metal emitter dumps `!EXC=<vec> RIP=<hex>` and halts on any vec<32. Reference compiler unchanged (frozen). Binary-mode MM4 runs now get fault diagnostics; pingpong ELF (reference-built) still hangs silently. |
 | Source-location tracking through IR lowering | ✓ | ✓ | ✅ | IR-span surfaced to codegen errors |
 | `--diagnostic` bare-metal allocation / function tracing | ✓ | ✓ | ✅ | (`f38e2d0`) |
 
@@ -145,10 +145,10 @@ are documented as lower-order wins.
 
 ## Top open gaps (priority order)
 
-1. **CPU-exception ISRs with serial register dump** — #GP / #PF / #UD on
-   bare metal currently hang silently. Adding vectors 0-31 with a minimal
-   serial dump (vector, error code, RIP, R10/heap, RSP) would recover
-   hours per week of debugging time. Self-contained, tractable.
+1. **CPU-exception ISRs with serial register dump** — self-host bare-metal
+   emitter now dumps `!EXC=<vec> RIP=<hex>` and halts on vec<32 (`hex/cpu-exception-isrs`).
+   Remaining: (a) add error-code, R10, RSP; (b) decide whether to backport
+   to reference so pingpong's ELF also gets diagnostics.
 2. **Parser error recovery (skip-to-next-def resync)** — bag captures
    what it can, but one malformed def still cascades. Classic technique:
    on parse error, skip tokens until column-1 `name :` pattern, resume.
