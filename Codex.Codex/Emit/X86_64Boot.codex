@@ -241,11 +241,18 @@ Section: Process Management
 
   emit-pd-entries : CodegenState -> Integer -> Integer -> CodegenState
   emit-pd-entries (st) (i) (n) =
-   if i >= n then st
-   else let phys-addr = i * 2097152
-    in let st1 = st-append-text st (li reg-rax (phys-addr + 131))
-     in let st2 = st-append-text st1 (mov-store reg-rdi reg-rax (i * 8))
-      in emit-pd-entries st2 (i + 1) n
+   let count = n - i
+   in if count <= 0 then st
+   else let phys-start = i * 2097152
+   in let st1 = st-append-text st (li reg-rax (phys-start + 131))
+   in let st2 = st-append-text st1 (li reg-rcx count)
+   in let loop-start = st2.text-len
+   in let st3 = st-append-text st2 (mov-store reg-rdi reg-rax 0)
+   in let st4 = st-append-text st3 (add-ri reg-rdi 8)
+   in let st5 = st-append-text st4 (add-ri reg-rax 2097152)
+   in let st6 = st-append-text st5 (sub-ri reg-rcx 1)
+   in let cur = st6.text-len
+   in st-append-text st6 (jcc cc-ne (loop-start - (cur + 6)))
 
   emit-build-process-page-tables : CodegenState -> Integer -> Integer -> CodegenState
   emit-build-process-page-tables (st) (pml4-addr) (heap-phys) =
