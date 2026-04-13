@@ -72,6 +72,65 @@ Section: PIC Initialization
    in let st9 = emit-out-byte st8 33 236
    in emit-out-byte st9 161 255
 
+Section: CPU Exception Dump
+  emit-print-hex-nibble-rdi : CodegenState -> CodegenState
+  emit-print-hex-nibble-rdi (st) =
+   let st1 = st-append-text st (and-ri reg-rdi 15)
+   in let st2 = st-append-text st1 (cmp-ri reg-rdi 10)
+   in let jge-pos = st2.text-len
+   in let st3 = st-append-text st2 (jcc cc-ge 0)
+   in let st4 = st-append-text st3 (add-ri reg-rdi 48)
+   in let jmp-pos = st4.text-len
+   in let st5 = st-append-text st4 (jmp 0)
+   in let st6 = patch-jcc-at st5 jge-pos (st5.text-len)
+   in let st7 = st-append-text st6 (add-ri reg-rdi 87)
+   in let st8 = patch-jmp-at st7 jmp-pos (st7.text-len)
+   in emit-serial-send-rdi st8
+
+  emit-print-hex-qword-rdi-loop : CodegenState -> Integer -> CodegenState
+  emit-print-hex-qword-rdi-loop (st) (nibble-idx) =
+   if nibble-idx < 0 then st
+   else let st1 = st-append-text st (push-r reg-rdi)
+   in let shift = nibble-idx * 4
+   in let st2 = if shift == 0 then st1 else st-append-text st1 (shr-ri reg-rdi shift)
+   in let st3 = emit-print-hex-nibble-rdi st2
+   in let st4 = st-append-text st3 (pop-r reg-rdi)
+   in emit-print-hex-qword-rdi-loop st4 (nibble-idx - 1)
+
+  emit-print-hex-qword-rdi : CodegenState -> CodegenState
+  emit-print-hex-qword-rdi (st) =
+   emit-print-hex-qword-rdi-loop st 15
+
+  emit-print-hex-byte-rdi : CodegenState -> CodegenState
+  emit-print-hex-byte-rdi (st) =
+   let st1 = st-append-text st (push-r reg-rdi)
+   in let st2 = st-append-text st1 (shr-ri reg-rdi 4)
+   in let st3 = emit-print-hex-nibble-rdi st2
+   in let st4 = st-append-text st3 (pop-r reg-rdi)
+   in emit-print-hex-nibble-rdi st4
+
+  emit-cpu-exception-dump : CodegenState -> CodegenState
+  emit-cpu-exception-dump (st) =
+   let st0 = st-append-text st (mov-rr reg-rdi reg-rax)
+   in let st1 = emit-serial-wait-and-send st0 33
+   in let st2 = emit-serial-wait-and-send st1 69
+   in let st3 = emit-serial-wait-and-send st2 88
+   in let st4 = emit-serial-wait-and-send st3 67
+   in let st5 = emit-serial-wait-and-send st4 61
+   in let st6 = emit-print-hex-byte-rdi st5
+   in let st7 = emit-serial-wait-and-send st6 32
+   in let st8 = emit-serial-wait-and-send st7 82
+   in let st9 = emit-serial-wait-and-send st8 73
+   in let st10 = emit-serial-wait-and-send st9 80
+   in let st11 = emit-serial-wait-and-send st10 61
+   in let st12 = st-append-text st11 (mov-load reg-rdi reg-rsp 40)
+   in let st13 = emit-print-hex-qword-rdi st12
+   in let st14 = emit-serial-wait-and-send st13 10
+   in let st15 = st-append-text st14 cli
+   in let halt-pos = st15.text-len
+   in let st16 = st-append-text st15 hlt
+   in st-append-text st16 (jmp (halt-pos - (st16.text-len + 5)))
+
 Section: Common Interrupt Handler
   emit-common-interrupt-handler : CodegenState -> CodegenState
   emit-common-interrupt-handler (st) =
@@ -81,8 +140,10 @@ Section: Common Interrupt Handler
    in let st4 = st-append-text st3 (push-r reg-rdi)
    in let st5 = st-append-text st4 [15, 182, 192]
    in let st6 = st-append-text st5 (cmp-ri reg-rax 32)
-   in let not-timer = st6.text-len
-   in let st7 = st-append-text st6 (jcc cc-ne 0)
+   in let exc-jcc = st6.text-len
+   in let st6a = st-append-text st6 (jcc cc-b 0)
+   in let not-timer = st6a.text-len
+   in let st7 = st-append-text st6a (jcc cc-ne 0)
    in let st8 = st-append-text st7 (li reg-rdi tick-count-addr)
    in let st9 = st-append-text st8 (mov-load reg-rsi reg-rdi 0)
    in let st10 = st-append-text st9 (add-ri reg-rsi 1)
@@ -135,7 +196,10 @@ Section: Common Interrupt Handler
    in let st53 = st-append-text st52 (pop-r reg-rdx)
    in let st54 = st-append-text st53 (pop-r reg-rcx)
    in let st55 = st-append-text st54 (pop-r reg-rax)
-   in st-append-text st55 iretq
+   in let st56 = st-append-text st55 iretq
+   in let exc-handler-pos = st56.text-len
+   in let st57 = emit-cpu-exception-dump st56
+   in patch-jcc-at st57 exc-jcc exc-handler-pos
 
 Section: ISR Stubs
   IsrStubResult = record {
