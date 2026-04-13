@@ -6,8 +6,8 @@ Chapter: Lowering
 
 Section: Lower Context
   LowerCtx = record {
-   types : List TypeBinding,
-   base-idx : Integer,
+   overlay : List TypeBinding,
+   base : List TypeBinding,
    ust : UnificationState
   }
 
@@ -53,7 +53,7 @@ Section: Expression Lowering
      in let resolved-rec-ty = when stripped-rec-ty
         if RecordTy (rn) (rf) -> stripped-rec-ty
         if ConstructedTy (cname) (cargs) ->
-         let ctor-raw = lookup-type-split (ctx.types) (ctx.base-idx) (cname.value)
+         let ctor-raw = lookup-type-split (ctx.overlay) (ctx.base) (cname.value)
      in let resolved-record = when ctor-raw
             if ErrorTy -> stripped-rec-ty
             if _ -> strip-fun-args-lower (deep-resolve (ctx.ust) ctor-raw)
@@ -77,7 +77,7 @@ Section: Expression Lowering
 
   lower-name : Text -> CodexType -> LowerCtx -> SourceSpan -> IRExpr
   lower-name (name) (ty) (ctx) (sp) =
-   let raw = lookup-type-split (ctx.types) (ctx.base-idx) name
+   let raw = lookup-type-split (ctx.overlay) (ctx.base) name
    in when raw
     if ErrorTy -> IrName name ty sp
     if _ ->
@@ -124,11 +124,11 @@ Section: Let and Lambda
    in let val-ir = lower-expr (b.value) ErrorTy ctx
    in let val-ty = deep-resolve (ctx.ust) (ir-expr-type val-ir)
    in let ctx2 = LowerCtx {
-    types = [TypeBinding {
+    overlay = [TypeBinding {
      name = b.name.value,
      bound-type = val-ty
-    }] ++ ctx.types,
-    base-idx = ctx.base-idx + 1,
+    }] ++ ctx.overlay,
+    base = ctx.base,
     ust = ctx.ust
    }
    in IrLet (b.name.value) val-ty val-ir (lower-let-rest binds body ty ctx2 1 sp) sp
@@ -140,11 +140,11 @@ Section: Let and Lambda
    in let val-ir = lower-expr (b.value) ErrorTy ctx
    in let val-ty = deep-resolve (ctx.ust) (ir-expr-type val-ir)
    in let ctx2 = LowerCtx {
-    types = [TypeBinding {
+    overlay = [TypeBinding {
      name = b.name.value,
      bound-type = val-ty
-    }] ++ ctx.types,
-    base-idx = ctx.base-idx + 1,
+    }] ++ ctx.overlay,
+    base = ctx.base,
     ust = ctx.ust
    }
    in IrLet (b.name.value) val-ty val-ir (lower-let-rest binds body ty ctx2 (i + 1) sp) sp
@@ -163,11 +163,11 @@ Section: Let and Lambda
    in let param-ty = peel-fun-param ty
    in let rest-ty = peel-fun-return ty
    in let ctx2 = LowerCtx {
-    types = [TypeBinding {
+    overlay = [TypeBinding {
      name = p.value,
      bound-type = param-ty
-    }] ++ ctx.types,
-    base-idx = ctx.base-idx + 1,
+    }] ++ ctx.overlay,
+    base = ctx.base,
     ust = ctx.ust
    }
    in bind-lambda-to-ctx ctx2 params rest-ty (i + 1)
@@ -235,15 +235,15 @@ Section: Match Lowering
    when pat
     if AVarPat (name) (s) ->
      LowerCtx {
-      types = [TypeBinding {
+      overlay = [TypeBinding {
        name = name.value,
        bound-type = ty
-      }] ++ ctx.types,
-      base-idx = ctx.base-idx + 1,
+      }] ++ ctx.overlay,
+      base = ctx.base,
       ust = ctx.ust
      }
     if ACtorPat (ctor-name) (sub-pats) (s) ->
-     let ctor-raw = lookup-type-split (ctx.types) (ctx.base-idx) (ctor-name.value)
+     let ctor-raw = lookup-type-split (ctx.overlay) (ctx.base) (ctor-name.value)
      in let ctor-ty = deep-resolve (ctx.ust) ctor-raw
      in let ctor-stripped = strip-forall-ty ctor-ty
      in bind-ctor-pattern-fields ctx sub-pats ctor-stripped 0 (list-length sub-pats)
@@ -310,7 +310,7 @@ Section: Collections and Do
 
   lower-record : Name -> List AFieldExpr -> CodexType -> LowerCtx -> SourceSpan -> IRExpr
   lower-record (name) (fields) (ty) (ctx) (sp) =
-   let ctor-raw = lookup-type-split (ctx.types) (ctx.base-idx) (name.value)
+   let ctor-raw = lookup-type-split (ctx.overlay) (ctx.base) (name.value)
    in let record-ty = when ctor-raw
       if ErrorTy -> ty
       if _ -> strip-fun-args-lower (deep-resolve (ctx.ust) ctor-raw)
@@ -363,11 +363,11 @@ Section: Collections and Do
       let val-ir = lower-expr val ty ctx
    in let val-ty = ir-expr-type val-ir
    in let ctx2 = LowerCtx {
-       types = [TypeBinding {
+       overlay = [TypeBinding {
         name = name.value,
         bound-type = val-ty
-       }] ++ ctx.types,
-       base-idx = ctx.base-idx + 1,
+       }] ++ ctx.overlay,
+       base = ctx.base,
        ust = ctx.ust
       }
    in lower-do-stmts-acc stmts ty ctx2 (i + 1) len (list-snoc acc (IrDoBind (name.value) val-ty val-ir (lowered-span sp)))
@@ -420,8 +420,8 @@ Section: Definition Lowering
   build-def-ctx : List TypeBinding -> UnificationState -> List AParam -> CodexType -> LowerCtx
   build-def-ctx (types) (ust) (params) (ty) =
    let base-ctx = LowerCtx {
-    types = types,
-    base-idx = 0,
+    overlay = [],
+    base = types,
     ust = ust
    }
    in bind-params-to-ctx base-ctx params ty 0
@@ -433,11 +433,11 @@ Section: Definition Lowering
    in let param-ty = peel-fun-param ty
    in let rest-ty = peel-fun-return ty
    in let ctx2 = LowerCtx {
-    types = [TypeBinding {
+    overlay = [TypeBinding {
      name = p.name.value,
      bound-type = param-ty
-    }] ++ ctx.types,
-    base-idx = ctx.base-idx + 1,
+    }] ++ ctx.overlay,
+    base = ctx.base,
     ust = ctx.ust
    }
    in bind-params-to-ctx ctx2 params rest-ty (i + 1)
