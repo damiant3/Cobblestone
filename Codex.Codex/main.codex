@@ -287,37 +287,116 @@ Section: Whitespace Normalization
 
 Section: Binary Compilation
 
-  compile-to-binary : Text -> Text -> EmitChapterResult
-  compile-to-binary (source) (chapter-name) =
+  BinaryScan = record {
+   tokens : List Token,
+   type-defs : List ATypeDef,
+   headers : List DefHeader,
+   citations : List CitesDecl,
+   n-defs : Integer
+  }
+
+  BinaryScope = record {
+   scan : BinaryScan,
+   assignments : List ChapterAssignment,
+   colliding : List Text,
+   scoped-headers : List DefHeader
+  }
+
+  BinaryEnv = record {
+   scope : BinaryScope,
+   ust : UnificationState,
+   ctor-types : List TypeBinding,
+   all-types : List TypeBinding
+  }
+
+  BinaryAnalysis = record {
+   env : BinaryEnv,
+   parse-results : List ParsedDef,
+   bad-full : List Text,
+   all-parse-bag : DiagnosticBag
+  }
+
+  bin-tokenize : Text -> BinaryScan
+  bin-tokenize (source) =
    let tokens = tokenize source 1
    in let st = make-parse-state tokens
    in let scan = scan-document st
-   in let type-defs = map-list desugar-type-def (scan.type-defs)
-   in let headers = scan.def-headers
-   in let citations = scan.citations
-   in let n-defs = list-length headers
-   in let assignments = build-all-assignments headers 0 []
+   in BinaryScan {
+    tokens = tokens,
+    type-defs = map-list desugar-type-def (scan.type-defs),
+    headers = scan.def-headers,
+    citations = scan.citations,
+    n-defs = list-length (scan.def-headers)
+   }
+
+  bin-scope : BinaryScan -> BinaryScope
+  bin-scope (scan) =
+   let assignments = build-all-assignments (scan.headers) 0 []
    in let colliding = find-colliding-names assignments
-   in let scoped-headers = scope-def-headers headers colliding assignments 0 []
-   in let tdm = build-type-def-map type-defs 0 (list-length type-defs) []
-   in let tenv = register-type-defs empty-unification-state builtin-type-env tdm type-defs 0 (list-length type-defs)
-   in let env = register-def-headers (tenv.state) (tenv.env) tdm scoped-headers 0 (list-length scoped-headers)
-   in let ctor-types = collect-ctor-bindings type-defs 0 (list-length type-defs) []
-   in let all-types = ctor-types ++ env.env.bindings
-   in let parse-results = parse-all-bodies tokens headers 0 n-defs []
+   in let scoped-headers = scope-def-headers (scan.headers) colliding assignments 0 []
+   in BinaryScope {
+    scan = scan,
+    assignments = assignments,
+    colliding = colliding,
+    scoped-headers = scoped-headers
+   }
+
+  bin-build-env : BinaryScope -> BinaryEnv
+  bin-build-env (scope) =
+   let scan = scope.scan
+   in let tdm = build-type-def-map (scan.type-defs) 0 (list-length (scan.type-defs)) []
+   in let tenv = register-type-defs empty-unification-state builtin-type-env tdm (scan.type-defs) 0 (list-length (scan.type-defs))
+   in let env = register-def-headers (tenv.state) (tenv.env) tdm (scope.scoped-headers) 0 (list-length (scope.scoped-headers))
+   in let ctor-types = collect-ctor-bindings (scan.type-defs) 0 (list-length (scan.type-defs)) []
+   in BinaryEnv {
+    scope = scope,
+    ust = env.state,
+    ctor-types = ctor-types,
+    all-types = ctor-types ++ env.env.bindings
+   }
+
+  bin-analyze : BinaryEnv -> BinaryAnalysis
+  bin-analyze (benv) =
+   let scope = benv.scope
+   in let scan = scope.scan
+   in let parse-results = parse-all-bodies (scan.tokens) (scan.headers) 0 (scan.n-defs) []
    in let chapter-bags = group-parse-bags parse-results 0 []
    in let bad-initial = collect-bad-chapters chapter-bags 0 []
-   in let bad-full = close-bad-chapters-under-citations bad-initial citations
+   in let bad-full = close-bad-chapters-under-citations bad-initial (scan.citations)
    in let all-parse-bag = merge-all-parse-bags parse-results 0 empty-bag
-   in let cg0 = x86-64-init-codegen-streaming ctor-types n-defs
-   in let cg0-seeded = record-set cg0 "bag" all-parse-bag
+   in BinaryAnalysis {
+    env = benv,
+    parse-results = parse-results,
+    bad-full = bad-full,
+    all-parse-bag = all-parse-bag
+   }
+
+  bin-emit-codegen : BinaryAnalysis -> CodegenState
+  bin-emit-codegen (an) =
+   let benv = an.env
+   in let scope = benv.scope
+   in let cg0 = x86-64-init-codegen-streaming (benv.ctor-types) (scope.scan.n-defs)
+   in let cg0-seeded = record-set cg0 "bag" (an.all-parse-bag)
    in let pre-rt-wm = heap-save
    in let cg1 = emit-runtime-helpers cg0-seeded
    in let rt-cleanup = heap-restore pre-rt-wm
    in let watermark = heap-save
    in let tramp = bare-metal-trampoline
-   in let cg2 = emit-defs-binary-gated parse-results bad-full all-types (env.state) colliding assignments cg1 watermark 0 (list-length parse-results)
-   in x86-64-finalize cg2 (tramp.far-jump-patch-pos)
+   in emit-defs-binary-gated (an.parse-results) (an.bad-full) (benv.all-types) (benv.ust) (scope.colliding) (scope.assignments) cg1 watermark 0 (list-length (an.parse-results))
+
+  bin-finalize : CodegenState -> EmitChapterResult
+  bin-finalize (cg) =
+   let tramp = bare-metal-trampoline
+   in x86-64-finalize cg (tramp.far-jump-patch-pos)
+
+  compile-to-binary : Text -> Text -> EmitChapterResult
+  compile-to-binary (source) (chapter-name) =
+   let scan = bin-tokenize source
+   in let scope = bin-scope scan
+   in let benv = bin-build-env scope
+   in let an = bin-analyze benv
+   in let cg = bin-emit-codegen an
+   in bin-finalize cg
 
 Section: Header Scoping
   scope-def-headers : List DefHeader -> List Text -> List ChapterAssignment -> Integer -> List DefHeader -> List DefHeader
@@ -498,13 +577,40 @@ Section: Entry Point
     print-line ("SIZE:" ++ integer-to-text (list-length (result.bytes)))
     write-binary (result.bytes)
 
+  emit-binary-diag : Text -> [Console, FileSystem] Nothing
+  emit-binary-diag (source) = do
+   print-line "PH:tokenize"
+   let scan = bin-tokenize source
+   in do
+    print-line "PH:scope"
+    let scope = bin-scope scan
+    in do
+     print-line "PH:build-env"
+     let benv = bin-build-env scope
+     in do
+      print-line "PH:analyze"
+      let an = bin-analyze benv
+      in do
+       print-line "PH:codegen"
+       let cg = bin-emit-codegen an
+       in do
+        print-line "PH:finalize"
+        let result = bin-finalize cg
+        in do
+         print-line "PH:compile-done"
+         print-codegen-error-header (bag-diagnostics (result.bag))
+         print-line ("SIZE:" ++ integer-to-text (list-length (result.bytes)))
+         write-binary (result.bytes)
+         print-line "PH:wrote"
+
   main : [Console, FileSystem] Nothing
   main = do
    mode <- read-line
    source <- read-file mode
    let clean = normalize-whitespace source
    in if mode == "BINARY" then emit-binary clean
-   else compile-streaming-v2 clean "Program"
+      else if mode == "BINARY-DIAG" then emit-binary-diag clean
+      else compile-streaming-v2 clean "Program"
 
 Page 1
 
