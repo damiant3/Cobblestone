@@ -63,7 +63,7 @@ static class ElfWriter32
         Write32(elf, ph0 + 8, LoadAddress);        // p_vaddr
         Write32(elf, ph0 + 12, LoadAddress);       // p_paddr
         Write32(elf, ph0 + 16, (uint)(fileSize - textStart)); // p_filesz
-        Write32(elf, ph0 + 20, (uint)(fileSize - textStart) + 0x200000); // p_memsz
+        Write32(elf, ph0 + 20, (uint)(fileSize - textStart) + 0x3FC00000); // p_memsz (~1 GB heap, upper bound of current 1 GB identity page map)
         Write32(elf, ph0 + 24, 7);    // RWX
         Write32(elf, ph0 + 28, 0x1000);
 
