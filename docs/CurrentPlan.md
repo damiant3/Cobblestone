@@ -1,14 +1,47 @@
 # Current Plan
 
-**Updated**: 2026-04-10
+**Updated**: 2026-04-13
 
 ---
 
 ## MM3 IS PROVEN
 
 The self-hosted Codex compiler compiled **itself** on bare metal x86-64 under
-QEMU. Pingpong is green — Codex in, Codex out, fixed point holds at 73 MB HWM
-(128 MB budget after Phase 3 memory increase).
+QEMU. Pingpong is green — Codex in, Codex out, fixed point holds.
+Latest text-mode pingpong (2026-04-13): stage1 === stage2 byte-identical
+at **537,984 bytes**, sem-equiv PASS, ~35s per stage, heap HWM ~244 MB
+(after `a725ac7` bumped the bare-metal heap from 2 MB to ~1 GB).
+
+**Binary pingpong** still fails at the `SIZE:` marker on stage 1
+(`compile-to-binary` path). BINARY-DIAG mode (`02b71e9`) is now wired
+for per-stage phase markers to track this down.
+
+## Recently Landed (MM4 path)
+
+- **T1 fix (`f71d8d7` + `785ff64` ref backport)**: bare-metal nested
+  record-field access. Defensive `EffectfulTy`/`ForAllTy` unwrapping
+  across `deep-resolve`, field-access lowering, `resolve-constructed-ty`;
+  `emit-field-access`/`emit-record-set-builtin` now diagnose instead of
+  silently defaulting to field-idx 0. BACKLOG T1 closed.
+- **Parse bug #4 fixed (`785ff64` + `9cc73e6`)**: `ElseKeyword`/`InKeyword`
+  added to do-block stop-set in both ref and self-host parsers. Multi-line
+  `if X then do { ... } else Y` and `let P = do ... in Y` now parse
+  correctly through the ref compiler. BACKLOG #4 closed.
+- **Do-block type fix (`96b24db`)**: `lower-do` computes type from the
+  last statement instead of trusting `expectedType`.
+- **T2 (`8475298`)**: strip `EffectfulTy` in `emit-do` before type
+  matching; could not reproduce the original C# emitter symptom but the
+  fix is harmless and defensively correct.
+- **Diagnostics infrastructure (Phases 1-4) shipped**: CDX registry
+  (`7b00b46`), SourceSpan file-id + AST/IR span threading
+  (`dacc14c`/`7601cd8`/`d190cb6`/`8cda64d`/`792158c`), `DiagnosticBag`
+  threading (`2004592`), staged compilation with error gates
+  (`0d1239d`), streaming-binary parse-bag + chapter gating (`1484914`).
+  Phase 5 (presentation) explicitly pushed out of the compiler
+  (`8c5d693`). See `docs/Active/Compiler/DIAGNOSTICS-AND-STAGING.md`.
+- **Bare-metal heap (`a725ac7`)**: 2 MB → ~1 GB.
+- **Effect annotations (`2c8b520`)**: parser now parses `[E]` effect
+  annotations instead of discarding them.
 
 ## ARM64 & RISC-V — DEFERRED
 

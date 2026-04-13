@@ -1,5 +1,14 @@
 # Diagnostics, Error Reporting, and Staged Compilation
 
+## Status (2026-04-13)
+
+Phases 1a, 1b, 2, 3, and 4 have landed on master. Phase 5 has been
+pushed out of the compiler to downstream tooling (see that section).
+The streaming binary path has parse-bag capture and chapter gating;
+per-def resolve + type-check on the binary path (Tier 3) is still
+open. BINARY-DIAG mode (`02b71e9`) gives per-stage phase markers for
+debugging the remaining binary-pingpong failure.
+
 ## Why this exists
 
 The compiler's error handling works but is fragile and uneven. Three concrete
@@ -68,10 +77,13 @@ Split into 1a (API shape) and 1b (AST/IR span threading).
 - `diagnostic-display` renders `file:line:col: sev CDXnnnn: message`
   when the span is real; prefix omitted for synthetic spans.
 
-**1b — AST/IR span threading (pending, own branch).** Retrofit
-`SourceSpan` onto every AST and IR node type so diagnostics reported
-by name resolver, type checker, lowering, and emit can cite the user's
-original source. Touches:
+**1b — AST/IR span threading (done).** `SourceSpan` now threads through
+every AST and IR node; diagnostics cite the user's original source.
+Landed across commits `dacc14c` (SourceSpan file-id + FileTable),
+`7601cd8` (AST spans + Desugarer threading), `d190cb6` (IR spans +
+Lowering threading), `8cda64d` (X86_64 IR-error uses real spans),
+and `792158c` (diagnostic-display tests per severity + end-to-end).
+Sites updated:
 
 - `Ast/AstNodes.codex` — every variant constructor and record gets a
   `span : SourceSpan` field.
@@ -87,34 +99,19 @@ constructor call in the compiler. Land on its own branch
 (`hex/ast-ir-spans` suggested) with golden-output testing per phase so
 regressions are caught at the node level rather than downstream.
 
-### Phase 2 — `DiagnosticBag` in the self-host
+### Phase 2 — `DiagnosticBag` in the self-host (done)
 
-Reference has a `DiagnosticBag` with:
-- Max error cap (20) with overflow suppression + a `CDX0001` sentinel
-- `HasErrors`, `Count`, severity-specific add methods
-- Locking (concurrent-safe)
+Landed in `2004592`. `DiagnosticBag` is threaded through all phases,
+one bag per compilation, with `HasErrors`, `Count`, and severity-specific
+add methods. Overflow suppression with the `CDX0001` sentinel at 20
+errors. Concurrency still sequential — locks deferred until the pipeline
+actually parallelizes.
 
-Port this to the self-host. Concurrency is less pressing there (pipeline
-is sequential for now) but the rest of the API matters. One bag per
-compilation, threaded through all phases.
+### Phase 3 — CDX code registry (done)
 
-### Phase 3 — CDX code registry
-
-Create `docs/CDX-Codes.md` (or `src/Codex.Core/CdxCodes.cs` — see below)
-as the single source of truth. Columns: code, phase, severity, short
-description, when to emit, example message format.
-
-Two options:
-- (a) Pure documentation (`docs/CDX-Codes.md`). Human reference only;
-  code still uses string literals.
-- (b) Codified (`static class CdxCodes` with `public const string
-  UnknownName = "CDX3002";`). Compiler code references constants instead
-  of literals. Grep + rename actually work.
-
-Recommend (b). The reference and self-host should both consume the same
-registry — reference from a C# constants file, self-host from a
-`Codex.Codex/Core/CdxCodes.codex` with matching constants. Audit tooling
-(simple script) verifies both files agree.
+Landed in `7b00b46`. Option (b) — integer-valued constants — shipped
+alongside Severity/Phase/TextFormat chapters. Reference and self-host
+consume the same registry.
 
 Additionally:
 - Every code appears exactly once in the registry.
@@ -122,7 +119,11 @@ Additionally:
   code appears in the registry and nowhere else as a bare literal.
 - Unused-code check: find codes in the registry not referenced anywhere.
 
-### Phase 4 — Staged compilation with error gates
+### Phase 4 — Staged compilation with error gates (done)
+
+Landed in `0d1239d`. Streaming-binary Tier 1 + chapter gating landed
+in `1484914`. Remaining open: Tier 3 per-def resolve + type-check on
+the binary path (see follow-up below).
 
 Today the pipeline is:
 
@@ -256,19 +257,19 @@ Docs:
 
 ## Sequencing
 
-Do in this order, smallest-first, each shippable independently:
+Original order (all items now shipped on the hosted path; streaming
+binary path Tier 3 remains open):
 
-1. **CDX code registry (Phase 3)** as pure docs. Just enumerate what
-   exists today. Reference only. Zero code change. Immediately useful.
-2. **`SourceSpan` in self-host `Diagnostic` (Phase 1)**. One type
-   change + mechanical fix-up of every `make-error` call site.
-3. **`DiagnosticBag` in self-host (Phase 2)**. Introduce the bag, thread
-   through pipeline. Old `List Diagnostic` gradually replaced.
-4. **CDX codes as constants (Phase 3 part b)**. Replace string literals
-   with named constants, reference and self-host.
-5. **Phase gating (Phase 4)**. Wrap each phase with a `PhaseResult`
-   check. Define fatality per phase. Short-circuit the driver.
-6. **Organized output (Phase 5)**. One presentation layer. JSON flag.
+1. ✅ **CDX code registry (Phase 3)** — `7b00b46`, integer codes.
+2. ✅ **`SourceSpan` in self-host `Diagnostic` (Phase 1a/1b)** —
+   `0d1ef32`, `dacc14c`, `7601cd8`, `d190cb6`, `8cda64d`, `792158c`.
+3. ✅ **`DiagnosticBag` in self-host (Phase 2)** — `2004592`.
+4. ✅ **Phase gating (Phase 4)** — `0d1239d`; streaming binary Tier 1
+   + chapter gating `1484914`.
+5. ⏭ **Organized output (Phase 5)** — pushed out of the compiler
+   (`8c5d693`). Consumers get the structured bag.
+6. ⬜ **Streaming binary Tier 3** — per-def resolve + type-check on
+   `compile-to-binary`. See follow-up above.
 
 ## Success criteria
 

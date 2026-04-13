@@ -1,8 +1,8 @@
 # Bootstrap Verification Report
 
-**Date:** 2026-04-07
-**Compiler version:** Codex self-hosted compiler (33 source files, 1292 definitions)
-**Result:** All three proofs green — C# bootstrap, bare-metal pingpong, semantic equivalence
+**Date:** 2026-04-13 (re-verified)
+**Compiler version:** Codex self-hosted compiler at head
+**Result:** Text-mode pingpong green — C# bootstrap + bare-metal text pingpong + semantic equivalence all PASS. Binary-mode pingpong currently FAIL (stage 1 `SIZE:` marker not found; tracked, BINARY-DIAG mode available).
 
 ---
 
@@ -45,11 +45,22 @@ Codex proves this fixed point three independent ways:
 | `bootstrap2-stage1.codex` | 418 KB | Bare-metal ELF compiles source → Codex |
 | `bootstrap2-stage2.codex` | 418 KB | Same ELF compiles stage 1 output → Codex |
 
-**Fixed-point results:**
-- `bootstrap1-stage1.cs` and `bootstrap1-stage3.cs` are identical (681,004 bytes)
-- `bootstrap2-stage1.codex` and `bootstrap2-stage2.codex` are identical (418,032 bytes,
-  excluding STACK/HEAP diagnostic lines which report runtime memory usage)
-- `source.codex` and `bootstrap2-stage1.codex` match semantically (1292/1292 definitions)
+**Fixed-point results (most recent re-verification, 2026-04-13):**
+- Bare-metal text pingpong: stage1 (537,984 bytes) === stage2 (537,984 bytes),
+  byte-identical (excluding STACK/HEAP diagnostic lines)
+- Source input: 577,374 bytes
+- ELF binary: 1,017,616 bytes
+- Per-stage: ~35s, stack HWM ~2.4 MB, heap HWM ~244 MB (within the
+  ~1 GB bare-metal heap shipped in `a725ac7`)
+- Sem-equiv: PASS — source vs stage1 match semantically
+- C# bootstrap (`dotnet`-hosted): stage1 === stage3 byte-identical
+- **Binary pingpong: FAIL** — stage 1 `SIZE:` marker not found.
+  BINARY-DIAG mode wired (`02b71e9`) for diagnosis.
+
+**Committed reference artefacts in this directory** (from 2026-04-07)
+are retained for historical comparison; they predate the recent
+diagnostics-infrastructure landings and the T1 fix, so absolute sizes
+differ from today's head.
 
 ---
 
@@ -180,12 +191,17 @@ claims. After that, the math takes over. The fixed point is the proof.
 
 ---
 
-## Performance Summary (bare-metal)
+## Performance Summary (bare-metal, 2026-04-13)
 
 | Stage | Output | Time | Stack HWM | Heap HWM |
 |-------|--------|------|-----------|----------|
-| Stage 1 | 418,061 bytes | 175s | 2,137,600 B | 155,241,400 B |
-| Stage 2 | 418,061 bytes | 174s | 1,836,784 B | 152,077,272 B |
+| Stage 1 | 537,984 bytes | 35s | 2,449,040 B | 248,474,328 B |
+| Stage 2 | 537,984 bytes | 34s | 2,409,640 B | 244,442,592 B |
 
-Both stages run on QEMU x86-64 bare metal with KVM. The ELF binary is
-750,936 bytes. Source input is 461,935 bytes (33 files, 1292 definitions).
+Both stages run on QEMU x86-64 bare metal with KVM. ELF binary is
+1,017,616 bytes. Source input is 577,374 bytes.
+
+The lower wall-clock vs. the 2026-04-07 numbers reflects the larger
+heap (2 MB → ~1 GB, `a725ac7`) — `sbrk` thrashing eliminated. The
+larger output reflects added diagnostics threading (SourceSpan on
+every AST/IR node) and additional definitions at head.
