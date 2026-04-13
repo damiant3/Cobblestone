@@ -1454,6 +1454,12 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
                 }
             }
         }
+        else
+        {
+            Console.Error.WriteLine($"X86_64: EmitFieldAccess: unresolved record type for field '{fa.FieldName}' — " +
+                $"original type = {fa.Record.Type} ({fa.Record.Type.GetType().Name}), " +
+                $"unwrapped type = {recType} ({recType.GetType().Name})");
+        }
 
         byte rd = AllocTemp();
         X86_64Encoder.MovLoad(m_text, rd, baseReg, fieldIndex * 8);
@@ -1873,6 +1879,12 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
                             break;
                         }
                     }
+                }
+                else
+                {
+                    Console.Error.WriteLine($"X86_64: record-set: unresolved record type for field '{fieldName}' — " +
+                        $"original type = {args[0].Type} ({args[0].Type.GetType().Name}), " +
+                        $"unwrapped type = {rsType} ({rsType.GetType().Name})");
                 }
 
                 byte valReg = EmitExpr(args[2]);
