@@ -2241,6 +2241,23 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
                 X86_64Encoder.MovRR(m_text, rd, Reg.RAX);
                 return rd;
             }
+            case "list-set-at" when args.Count >= 3:
+            {
+                byte listReg = EmitExpr(args[0]);
+                int savedList = AllocLocal();
+                StoreLocal(savedList, listReg);
+                byte idxReg = EmitExpr(args[1]);
+                int savedIdx = AllocLocal();
+                StoreLocal(savedIdx, idxReg);
+                byte elemReg = EmitExpr(args[2]);
+                X86_64Encoder.MovRR(m_text, Reg.RDX, elemReg);
+                X86_64Encoder.MovRR(m_text, Reg.RSI, LoadLocal(savedIdx));
+                X86_64Encoder.MovRR(m_text, Reg.RDI, LoadLocal(savedList));
+                EmitCallTo("__list_set_at");
+                byte rd = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rd, Reg.RAX);
+                return rd;
+            }
             case "list-contains" when args.Count >= 2:
             {
                 byte listReg = EmitExpr(args[0]);
@@ -3111,6 +3128,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         EmitTextCompareHelper();
         EmitListSnocHelper();
         EmitListInsertAtHelper();
+        EmitListSetAtHelper();
         EmitListContainsHelper();
         EmitTextConcatListHelper();
         EmitTextSplitHelper();
@@ -4020,6 +4038,96 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         X86_64Encoder.Jmp(m_text, postCopy - (m_text.Count + 5));
         PatchJcc(postDone, m_text.Count);
 
+        X86_64Encoder.PopR(m_text, Reg.R14);
+        X86_64Encoder.PopR(m_text, Reg.R13);
+        X86_64Encoder.PopR(m_text, Reg.R12);
+        X86_64Encoder.PopR(m_text, Reg.RBX);
+        X86_64Encoder.Ret(m_text);
+    }
+
+    void EmitListSetAtHelper()
+    {
+        // __list_set_at: rdi=list, rsi=idx, rdx=val → rax=new list with slot[idx]=val
+        // List layout: [capacity @ -8 | count @ 0 | slot0 @ 8 | ...]
+        //
+        // Single path: alloc new list with same capacity, copy all slots
+        // (substituting val at position idx), return new ptr. Persistence-
+        // preserving (does not mutate input). O(count) per call.
+        //
+        // Designed to replace the 8192-snoc-call replace loops in
+        // Codex.Codex/Core/Hamt.codex (P1 hotspot): ~30x lower constant
+        // factor by inlining the loop body and eliminating per-element
+        // function call overhead.
+        //
+        // Must emit bytes identical to Codex.Codex/Emit/X86_64Helpers.codex
+        // emit-list-set-at so binary-pingpong stage1 == stage2.
+        m_functionOffsets["__list_set_at"] = m_text.Count;
+
+        // Prologue: callee-save scratch
+        X86_64Encoder.PushR(m_text, Reg.RBX);
+        X86_64Encoder.PushR(m_text, Reg.R12);
+        X86_64Encoder.PushR(m_text, Reg.R13);
+        X86_64Encoder.PushR(m_text, Reg.R14);
+
+        // RBX = src list, R12 = idx*8 (precomputed byte offset), R13 = val
+        X86_64Encoder.MovRR(m_text, Reg.RBX, Reg.RDI);
+        X86_64Encoder.MovRR(m_text, Reg.R12, Reg.RSI);
+        X86_64Encoder.ShlRI(m_text, Reg.R12, 3);
+        X86_64Encoder.MovRR(m_text, Reg.R13, Reg.RDX);
+
+        // R14 = count, RCX = capacity
+        X86_64Encoder.MovLoad(m_text, Reg.R14, Reg.RBX, 0);
+        X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RBX, -8);
+
+        // Allocate new list with same capacity
+        X86_64Encoder.MovStore(m_text, HeapReg, Reg.RCX, 0);   // [heap] = cap
+        X86_64Encoder.AddRI(m_text, HeapReg, 8);
+        X86_64Encoder.MovRR(m_text, Reg.RAX, HeapReg);          // RAX = new list ptr
+        X86_64Encoder.MovRR(m_text, Reg.R11, Reg.RCX);
+        X86_64Encoder.AddRI(m_text, Reg.R11, 1);
+        X86_64Encoder.ShlRI(m_text, Reg.R11, 3);
+        X86_64Encoder.AddRR(m_text, HeapReg, Reg.R11);          // heap += (cap+1)*8
+
+        // Store count
+        X86_64Encoder.MovStore(m_text, Reg.RAX, Reg.R14, 0);
+
+        // Compute byte limit: R14 = count*8
+        X86_64Encoder.ShlRI(m_text, Reg.R14, 3);
+
+        // Skip loop if count == 0
+        X86_64Encoder.CmpRI(m_text, Reg.R14, 0);
+        int copySkip = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
+
+        // R11 = byte offset (loop counter)
+        X86_64Encoder.Li(m_text, Reg.R11, 0);
+
+        int copyLoop = m_text.Count;
+        // Decide: is current offset == idx_bytes?
+        X86_64Encoder.CmpRR(m_text, Reg.R11, Reg.R12);
+        int useSrc = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+        // Use val
+        X86_64Encoder.MovRR(m_text, Reg.RCX, Reg.R13);
+        int afterVal = m_text.Count;
+        X86_64Encoder.Jmp(m_text, 0);
+        // Use src
+        PatchJcc(useSrc, m_text.Count);
+        X86_64Encoder.MovRR(m_text, Reg.RCX, Reg.RBX);
+        X86_64Encoder.AddRR(m_text, Reg.RCX, Reg.R11);
+        X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RCX, 8);     // RCX = src[8 + offset]
+        // Common store
+        PatchJmp(afterVal, m_text.Count);
+        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
+        X86_64Encoder.AddRR(m_text, Reg.RDI, Reg.R11);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RCX, 8);    // new[8 + offset] = RCX
+        X86_64Encoder.AddRI(m_text, Reg.R11, 8);
+        X86_64Encoder.CmpRR(m_text, Reg.R11, Reg.R14);
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, copyLoop - (m_text.Count + 6));
+
+        PatchJcc(copySkip, m_text.Count);
+
+        // Epilogue
         X86_64Encoder.PopR(m_text, Reg.R14);
         X86_64Encoder.PopR(m_text, Reg.R13);
         X86_64Encoder.PopR(m_text, Reg.R12);

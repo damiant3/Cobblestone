@@ -435,7 +435,7 @@ public sealed partial class CSharpEmitter
     }
 
     static readonly Set<string> s_multiArgBuiltins = Set<string>.Of(
-        "char-at", "char-code-at", "substring", "list-at", "list-insert-at", "list-snoc", "list-contains",
+        "char-at", "char-code-at", "substring", "list-at", "list-insert-at", "list-set-at", "list-snoc", "list-contains",
         "text-replace", "text-compare", "text-concat-list",
         "write-file", "write-binary", "run-process", "list-files", "text-split", "text-contains", "text-starts-with",
         "fork", "await", "par", "race",
@@ -510,6 +510,20 @@ public sealed partial class CSharpEmitter
                 sb.Append(", ");
                 EmitExpr(sb, args[2], indent);
                 sb.Append("); return _l; }))()");
+                return true;
+            }
+
+            case "list-set-at" when args.Count == 3:
+            {
+                // list-set-at list idx val → new list (copy with slot idx replaced)
+                string elemType = args[0].Type is ListType lst ? EmitType(lst.Element) : "object";
+                sb.Append($"((Func<List<{elemType}>>)(() => {{ var _l = new List<{elemType}>(");
+                EmitExpr(sb, args[0], indent);
+                sb.Append("); _l[(int)");
+                EmitExpr(sb, args[1], indent);
+                sb.Append("] = ");
+                EmitExpr(sb, args[2], indent);
+                sb.Append("; return _l; }))()");
                 return true;
             }
 
