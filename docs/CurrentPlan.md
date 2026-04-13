@@ -43,11 +43,6 @@ for per-stage phase markers to track this down.
 - **Effect annotations (`2c8b520`)**: parser now parses `[E]` effect
   annotations instead of discarding them.
 
-## ARM64 & RISC-V — DEFERRED
-
-Backend code remains for reference. All active work is x86-64 only.
-Revisit after MM4 and the OS stack if there is a reason to.
-
 ---
 
 ## The Critical Path
@@ -64,20 +59,10 @@ x86-64 binaries, achieving fixed-point self-compilation. No C# in the chain.
 | Phase | What | Status |
 |-------|------|--------|
 | 6 | Escape copy & regions | **Deferred to post-MM4** — attempted twice, needs architectural rethink |
-| 7 | Boot + I/O boundary (CCE tables, print-line, read/write, 5 deferred helpers) | **Done** |
 | 8 | Self-compilation fixed point | **MM4: cord is cut** |
 
 **Work style**: Single agent (Hex), one phase at a time. Other agents review
 completed phases, not concurrent feature work. Minimize coordination overhead.
-
-**Pingpong remains the acceptance test.** Every phase that touches codegen
-must pass pingpong before moving on.
-
-### Sem-Equiv: PASS
-
-Semantic equivalence checker (`codex sem-equiv`): **1335/1335 defs matched,
-100% body equivalence across all 26 chapters.** CCE content bugs, paren
-normalization, and colliding name resolution are all fixed.
 
 ### After MM4: The OS Stack
 

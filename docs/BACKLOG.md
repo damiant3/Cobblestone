@@ -7,7 +7,6 @@
 | 1 | **Second Bootstrap (MM4)** | `docs/Active/Compiler/SECOND-BOOTSTRAP.md` | Port x86-64 backend to Codex. 8 phases. The critical path. |
 | 2 | Escape copy bare-metal | `docs/Designs/Memory/CAMP-IIIA-ESCAPE-ANALYSIS.md` | Skip removed, tests passing. Rearchitect deferred till after MM4. |
 | 3 | **Self-host parity audit** | `docs/Active/Compiler/SELF-HOST-PARITY-AUDIT.md` | Systematic gap analysis: reference vs self-host, per data structure / diagnostic / runtime behavior / primitive. Recent fragility (silent binary crashes, missing Maybe/Set/xor, no parser diagnostics, no GPF handler) traces back to uncatalogued gaps. Priority: diagnostics and data structures first. |
-| 4 | **Diagnostics, error reporting, staged compilation** | `docs/Active/Compiler/DIAGNOSTICS-AND-STAGING.md` | Self-host diagnostics lack source location; CDX codes scattered as string literals across 17 files with no registry; pipeline stages don't gate on prior failures so errors cascade. Plan: (1) docs-only CDX registry, (2) SourceSpan in self-host Diagnostic, (3) DiagnosticBag in self-host, (4) CDX codes as constants, (5) phase gating with PhaseResult, (6) organized output. Sequenced smallest-first, each shippable independently. |
 
 ## Needs Design Doc
 
@@ -61,18 +60,15 @@
 
 | # | Item | Notes |
 |---|------|-------|
-| 1 | ~~Support negative number literals~~ | **DONE** — negative literals work end-to-end, all `0 - 1` idioms replaced. |
 | 2 | Verify IL backend CCE assumptions | Document decision: .NET Char.Is* vs CCE ranges |
 | 3 | NetworkSync test failures | 4 tests need self-contained peer or integration-only marking |
-| 4 | ~~Reference compiler: `if ... then do ... else` parse failure~~ | **RESOLVED (2026-04-13)** — fixed in `785ff64` (ref compiler: `ElseKeyword`/`InKeyword` added to do-block stop-set in `Parser.Expressions.cs`) and `9cc73e6` (self-host parser: same stop-set in `ParserCore.codex`/`ParserExpressions.codex`). Multi-line `if X then do { ... } else Y` and `let P = do ... in Y` both parse in the ref compiler now. |
 | 5 | `text-to-double-bits` bare metal implementation | On x86-64 bare metal, `text-to-double-bits` falls through to `__text_to_int` (integer parser). Need a proper `__text_to_double` runtime helper that parses decimal text to IEEE 754 bits. Not blocking — the builtin is only called at compile time when the compiler runs as .NET, not at runtime on bare metal. |
 
 ## Compiler Correctness — TOP PRIORITY (blocking bare-metal MM4)
 
 | # | Item | Notes |
 |---|------|-------|
-| T1 | ~~**Bare-metal x86-64: nested record-field access silently reads offset 0**~~ | **RESOLVED (2026-04-13)** — fixed in `f71d8d7` (self-host) and `785ff64` (ref compiler backport). Five coordinated fixes: (1) `deep-resolve` now recurses into `EffectfulTy` so wrapped `TypeVars` resolve; (2) Lowering field access strips `EffectfulTy`/`ForAllTy` wrappers before the `RecordTy`/`ConstructedTy` resolve match; (3) `resolve-constructed-ty` unwraps `ForAllTy` (was only unwrapping `EffectfulTy`); (4) `emit-field-access` emits a diagnostic when type resolution fails instead of silently defaulting to field-idx 0; (5) same diagnostic added to `emit-record-set-builtin`. Text pingpong green at 537,984 bytes fixed point. |
-| T2 | **do-blocks returning typed values emit `Func<object>`** — COULD NOT REPRODUCE | Original report (line 2 of this file, and echoed in the MM4 session summary as "when inner do-block produces a value, C# emitter generates Func<object> instead of Func<EmitChapterResult>") drove the `bin-finalize` / `emit-binary` pure-let refactors as workarounds. On 2026-04-12 spent ~20 min trying to reproduce on current master and **could not**: every typed-do pattern (`outer : [Console] Result = do { ...; Result {...} }`, `<-` bind with typed RHS, inner-do-as-last-statement of typed outer) emits correct `Func<TypedResult>` with or without the proposed emitter fix. Byte-identical output. The remaining candidate triggers (`let P = do ... in Y` and `if C then do-typed else do-typed`) hit the **ref-compiler parse bug (item #4 below)** before reaching `emit-do`, so they cannot be tested via the Codex.Bootstrap driver which uses the ref compiler to parse. **Proposed fix on branch `hex/t2-emit-do-effectful-strip`** (commit `59a2e9f`): strip `EffectfulTy` from `ty` before `emit-do`'s `when`-dispatch so the `VoidTy`/`NothingTy`/`ErrorTy` branches match for effect-wrapped forms. Bootstrap fixed-point, 539/5/0 tests, and pingpong all pass — but the fix does not demonstrably change emitted C# for any input I could construct. **Theory**: the original report may have misattributed a symptom — the actual trigger might be a type-inference issue (wrong `ty` on the `IrDo` node) or an earlier lowering bug, not `emit-do` itself. **Unblocker**: fix parse bug #4 (multi-line `if/then do ... else do ...` in the ref compiler) so the test cases that currently can't be parsed can actually run through the self-host emit-do. Without that, we can't distinguish "no bug in emit-do" from "bug in emit-do but I can't trigger it." Don't merge the fix branch until a concrete failing case exists. |
+
 
 ## Compiler Correctness (low priority, non-blocking, continued)
 
