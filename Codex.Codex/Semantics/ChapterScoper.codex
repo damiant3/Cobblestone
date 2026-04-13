@@ -44,16 +44,19 @@ Section: Collision Detection
 Section: Name Mangling
   mangle-name : Text -> Text -> Text
   mangle-name (chapter-slug) (def-name) =
-   slugify chapter-slug 0 "" ++ "_" ++ def-name
+   slugify chapter-slug ++ "_" ++ def-name
 
-  slugify : Text -> Integer -> Text -> Text
-  slugify (s) (i) (acc) =
-   if i == text-length s then acc
+  slugify-loop : Text -> Integer -> Integer -> List Text -> List Text
+  slugify-loop (s) (i) (len) (acc) =
+   if i == len then acc
    else let c = char-code-at s i
-   in if c == char-code-at " " 0 then slugify s (i + 1) (acc ++ "-")
-      else if c >= cc-first-upper then if c <= cc-upper-z then slugify s (i + 1) (acc ++ char-to-text (code-to-char (c - 26)))
-      else slugify s (i + 1) (acc ++ char-to-text (code-to-char c))
-      else slugify s (i + 1) (acc ++ char-to-text (code-to-char c))
+   in if c == char-code-at " " 0 then slugify-loop s (i + 1) len (list-snoc acc "-")
+      else if c >= cc-first-upper then if c <= cc-upper-z then slugify-loop s (i + 1) len (list-snoc acc (char-to-text (code-to-char (c - 26))))
+      else slugify-loop s (i + 1) len (list-snoc acc (char-to-text (code-to-char c)))
+      else slugify-loop s (i + 1) len (list-snoc acc (char-to-text (code-to-char c)))
+
+  slugify : Text -> Text
+  slugify (s) = text-concat-list (slugify-loop s 0 (text-length s) [])
 
   lookup-chapter : List ChapterAssignment -> Text -> Text
   lookup-chapter (assignments) (name) =
@@ -458,14 +461,17 @@ Section: AST-Level Chapter Scoping
 
   slug-matches-cite : Text -> Text -> Boolean
   slug-matches-cite (slug) (cite-name) =
-   strip-hyphens (slugify slug 0 "") 0 "" == strip-hyphens (slugify cite-name 0 "") 0 ""
+   strip-hyphens (slugify slug) == strip-hyphens (slugify cite-name)
 
-  strip-hyphens : Text -> Integer -> Text -> Text
-  strip-hyphens (s) (i) (acc) =
-   if i == text-length s then acc
+  strip-hyphens-loop : Text -> Integer -> Integer -> List Text -> List Text
+  strip-hyphens-loop (s) (i) (len) (acc) =
+   if i == len then acc
    else let c = char-code-at s i
-   in if c == char-code-at "-" 0 then strip-hyphens s (i + 1) acc
-      else strip-hyphens s (i + 1) (acc ++ char-to-text (code-to-char c))
+   in if c == char-code-at "-" 0 then strip-hyphens-loop s (i + 1) len acc
+      else strip-hyphens-loop s (i + 1) len (list-snoc acc (char-to-text (code-to-char c)))
+
+  strip-hyphens : Text -> Text
+  strip-hyphens (s) = text-concat-list (strip-hyphens-loop s 0 (text-length s) [])
 
   apply-cite-selected : List RenameEntry -> List Name -> Text -> List Text -> List ChapterAssignment -> Text -> Integer -> List RenameEntry
   apply-cite-selected (rn) (names) (cite-slug) (colliding) (assignments) (cur-slug) (i) =

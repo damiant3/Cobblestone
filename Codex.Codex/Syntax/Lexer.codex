@@ -287,19 +287,23 @@ Section: Character Scanning
       file-id = st.file-id
      }
 
-  process-escapes : Text -> Integer -> Integer -> Text -> Text
-  process-escapes (s) (i) (len) (acc) =
+  process-escapes-loop : Text -> Integer -> Integer -> List Text -> List Text
+  process-escapes-loop (s) (i) (len) (acc) =
    if i >= len then acc
    else let c = char-code-at s i
    in if c == cc-backslash then if i + 1 < len then let nc = char-code-at s (i + 1)
-   in if nc == cc-lower-n then process-escapes s (i + 2) len (acc ++ char-to-text '\n')
-          else if nc == cc-lower-t then process-escapes s (i + 2) len (acc ++ "  ")
-          else if nc == cc-lower-r then process-escapes s (i + 2) len acc
-          else if nc == cc-backslash then process-escapes s (i + 2) len (acc ++ "\\")
-          else if nc == cc-double-quote then process-escapes s (i + 2) len (acc ++ "\"")
-          else process-escapes s (i + 2) len (acc ++ char-to-text (char-at s (i + 1)))
-       else acc ++ char-to-text (char-at s i)
-      else process-escapes s (i + 1) len (acc ++ char-to-text (char-at s i))
+   in if nc == cc-lower-n then process-escapes-loop s (i + 2) len (list-snoc acc (char-to-text '\n'))
+          else if nc == cc-lower-t then process-escapes-loop s (i + 2) len (list-snoc acc "  ")
+          else if nc == cc-lower-r then process-escapes-loop s (i + 2) len acc
+          else if nc == cc-backslash then process-escapes-loop s (i + 2) len (list-snoc acc "\\")
+          else if nc == cc-double-quote then process-escapes-loop s (i + 2) len (list-snoc acc "\"")
+          else process-escapes-loop s (i + 2) len (list-snoc acc (char-to-text (char-at s (i + 1))))
+       else list-snoc acc (char-to-text (char-at s i))
+      else process-escapes-loop s (i + 1) len (list-snoc acc (char-to-text (char-at s i)))
+
+  process-escapes : Text -> Integer -> Integer -> Text
+  process-escapes (s) (i) (len) =
+   text-concat-list (process-escapes-loop s i len [])
 
 Section: Keyword Classification
   classify-word : Text -> TokenKind
@@ -359,7 +363,7 @@ Section: Single Token Scanning
    in let after = scan-string-body (advance-char s)
    in let text-len = after.offset - start - 1
    in let raw = substring (s.source) start text-len
-   in LexToken (make-token TextLiteral (process-escapes raw 0 (text-length raw) "") s) after
+   in LexToken (make-token TextLiteral (process-escapes raw 0 (text-length raw)) s) after
          else if c == cc-single-quote then scan-char-literal s
          else if is-letter-code c then let start = s.offset
    in let after = scan-ident-rest (advance-char s)
