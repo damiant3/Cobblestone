@@ -260,3 +260,54 @@ the emitted IL. Returns the parsed value on success, `0` on failure.
 
 **Details**: See [REFERENCE-COMPILER-NOTES.md](REFERENCE-COMPILER-NOTES.md).
 
+### Override 7: `__list_append` in-place fast path + geometric capacity (2026-04-13)
+
+**Authorized by**: User (project owner)
+**Agent**: Hex (Claude Code CLI, Opus 4.6, 1M context)
+**Justification**: The bare-metal `__list_append` runtime helper emitted by
+the x86-64 backend always allocated a fresh list with `capacity == count`
+(no slack) and copied both inputs. Combined with `acc ++ [x, y]` patterns
+in tight loops (notably `collect-func-addr-patches` and
+`collect-rodata-patches` in `x86-64-finalize`), this produced O(n²) total
+work per pattern and O(n) wasted heap per iteration. For the
+self-compilation binary path, this manifested as `compile-to-binary` taking
+hours and tripping `bin-finalize` past every reasonable timeout — even
+though no fault was occurring. Bisection isolated a 107-line minimum repro
+(`samples/list-append-perf-min.codex`) using only `Integer` and `Text`
+primitives — no Hamt, no Maybe, no sum types, no citations.
+
+**Change**: Rewrote `EmitListAppendHelper` in
+`src/Codex.Emit.X86_64/X86_64CodeGen.cs` to mirror `EmitListSnocHelper`'s
+strategy:
+- **Path 1 (in-place)** when `a.cap - a.count >= b.count`: copy `b`'s
+  slots into `a`'s spare slots, bump `a.count`, return `a`'s pointer.
+  No `r10` rollback (would require contiguity check that fails under
+  intermediate allocations between `a` and `b`); `b`'s small allocation
+  leaks per call but is bounded.
+- **Path 2 (alloc with geometric capacity)** when no spare: allocate new
+  list with `capacity = max(2 * total, 4)` (matching `__list_snoc` Path 3),
+  copy `a` then `b`. Subsequent `++` calls hit Path 1 until cap fills,
+  then double again. Amortized O(1) per element.
+
+**Files modified**:
+- `src/Codex.Emit.X86_64/X86_64CodeGen.cs` — `EmitListAppendHelper` rewritten.
+- `Codex.Codex/Emit/X86_64Helpers.codex` — `emit-list-append` mirrored so
+  the self-host emitter produces byte-identical `__list_append` bytes.
+  Required for binary-pingpong stage1 === stage2 (both stages must emit the
+  same helper encoding).
+
+**Linear ownership invariant**: Path 1 mutates `a` in place — same
+invariant as `__list_snoc` Path 1/2 and `record-set!`. Documented in
+`docs/Designs/Language/SAFE-MUTATION.md`. Both `++` and `list-snoc` now
+share this contract.
+
+**Scope**: x86-64 bare-metal runtime helper only. No parsing, type
+checking, IR, or other emitter changes. ELF size impact: ~120 bytes per
+output binary.
+
+**Verification**:
+- `dotnet build Codex.sln` — clean
+- Text pingpong (`tools/pingpong.sh`) — PASS, stage1 === stage2 byte-identical at 539,852 bytes; sem-equiv PASS
+- Smoke samples — PASS, sizes match pre-fix ±8 bytes (geometric cap header padding)
+- Min repro `samples/list-append-perf-min.codex` — was hitting script's 120s timeout pre-fix, now completes in ~40s
+

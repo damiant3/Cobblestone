@@ -706,9 +706,46 @@ Section: __list_cons
    in emit-list-cons-copy st0
 
 Section: __list_append
-  emit-list-append-alloc : CodegenState -> CodegenState
-  emit-list-append-alloc (st) =
+  emit-list-append-prologue : CodegenState -> HelpResult1
+  emit-list-append-prologue (st) =
     let st0 = record-func-offset st "__list_append"
+   in let st1 = st-append-text st0 (mov-load reg-rcx reg-rdi 0)
+   in let st2 = st-append-text st1 (mov-load reg-rdx reg-rsi 0)
+   in let st3 = st-append-text st2 (mov-load reg-r11 reg-rdi (0 - 8))
+   in let st4 = st-append-text st3 (mov-rr reg-rax reg-r11)
+   in let st5 = st-append-text st4 (sub-rr reg-rax reg-rcx)
+   in let st6 = st-append-text st5 (cmp-rr reg-rax reg-rdx)
+   in let p2-pos = st6.text-len
+   in let st7 = st-append-text st6 (jcc cc-l 0)
+   in HelpResult1 { cg = st7, p1 = p2-pos }
+
+  emit-list-append-path1 : CodegenState -> CodegenState
+  emit-list-append-path1 (st) =
+    let st0 = st-append-text st (mov-rr reg-rax reg-rcx)
+   in let st1 = st-append-text st0 (shl-ri reg-rax 3)
+   in let st2 = st-append-text st1 (add-rr reg-rax reg-rdi)
+   in let st3 = st-append-text st2 (mov-rr reg-r11 reg-rsi)
+   in let st4 = st-append-text st3 (cmp-ri reg-rdx 0)
+   in let skip-pos = st4.text-len
+   in let st5 = st-append-text st4 (jcc cc-e 0)
+   in let loop-pos = st5.text-len
+   in let st6 = st-append-text st5 (mov-load reg-rcx reg-r11 8)
+   in let st7 = st-append-text st6 (mov-store reg-rax reg-rcx 8)
+   in let st8 = st-append-text st7 (add-ri reg-rax 8)
+   in let st9 = st-append-text st8 (add-ri reg-r11 8)
+   in let st10 = st-append-text st9 (sub-ri reg-rdx 1)
+   in let st11 = st-append-text st10 (jcc cc-ne (loop-pos - (st10.text-len + 6)))
+   in let st12 = patch-jcc-at st11 skip-pos (st11.text-len)
+   in let st13 = st-append-text st12 (mov-load reg-rcx reg-rdi 0)
+   in let st14 = st-append-text st13 (mov-load reg-rdx reg-rsi 0)
+   in let st15 = st-append-text st14 (add-rr reg-rcx reg-rdx)
+   in let st16 = st-append-text st15 (mov-store reg-rdi reg-rcx 0)
+   in let st17 = st-append-text st16 (mov-rr reg-rax reg-rdi)
+   in st-append-text st17 x86-ret
+
+  emit-list-append-path2-alloc : CodegenState -> Integer -> CodegenState
+  emit-list-append-path2-alloc (st) (p2-pos) =
+    let st0 = patch-jcc-at st p2-pos (st.text-len)
    in let st1 = st-append-text st0 (push-r reg-rbx)
    in let st2 = st-append-text st1 (push-r reg-r12)
    in let st3 = st-append-text st2 (push-r reg-r13)
@@ -718,65 +755,65 @@ Section: __list_append
    in let st7 = st-append-text st6 (mov-load reg-rdx reg-r12 0)
    in let st8 = st-append-text st7 (mov-rr reg-r13 reg-rcx)
    in let st9 = st-append-text st8 (add-rr reg-r13 reg-rdx)
-   in let st10 = st-append-text st9 (mov-store reg-r10 reg-r13 0)
-   in let st11 = st-append-text st10 (add-ri reg-r10 8)
-   in let st12 = st-append-text st11 (mov-rr reg-rax reg-r10)
-   in let st13 = st-append-text st12 (mov-rr reg-r11 reg-r13)
-   in let st14 = st-append-text st13 (add-ri reg-r11 1)
-   in let st15 = st-append-text st14 (shl-ri reg-r11 3)
-   in let st16 = st-append-text st15 (add-rr reg-r10 reg-r11)
-   in st-append-text st16 (mov-store reg-rax reg-r13 0)
+   in let st10 = st-append-text st9 (mov-rr reg-rax reg-r13)
+   in let st11 = st-append-text st10 (shl-ri reg-rax 1)
+   in let st12 = st-append-text st11 (cmp-ri reg-rax 4)
+   in let cap-ok-pos = st12.text-len
+   in let st13 = st-append-text st12 (jcc cc-ge 0)
+   in let st14 = st-append-text st13 (li reg-rax 4)
+   in let st15 = patch-jcc-at st14 cap-ok-pos (st14.text-len)
+   in let st16 = st-append-text st15 (mov-store reg-r10 reg-rax 0)
+   in let st17 = st-append-text st16 (add-ri reg-r10 8)
+   in let st18 = st-append-text st17 (mov-rr reg-rsi reg-r10)
+   in let st19 = st-append-text st18 (mov-rr reg-r11 reg-rax)
+   in let st20 = st-append-text st19 (add-ri reg-r11 1)
+   in let st21 = st-append-text st20 (shl-ri reg-r11 3)
+   in let st22 = st-append-text st21 (add-rr reg-r10 reg-r11)
+   in st-append-text st22 (mov-store reg-rsi reg-r13 0)
 
-  emit-list-append-copy1 : CodegenState -> CodegenState
-  emit-list-append-copy1 (st) =
-    let st0 = st-append-text st (mov-load reg-rcx reg-rbx 0)
-   in let st1 = st-append-text st0 (shl-ri reg-rcx 3)
-   in let st2 = st-append-text st1 (li reg-r11 0)
-   in let loop1 = st2.text-len
-   in let st3 = st-append-text st2 (cmp-rr reg-r11 reg-rcx)
-   in let exit1-pos = st3.text-len
-   in let st4 = st-append-text st3 (jcc cc-ge 0)
-   in let st5 = st-append-text st4 (mov-rr reg-rdx reg-rbx)
-   in let st6 = st-append-text st5 (add-rr reg-rdx reg-r11)
-   in let st7 = st-append-text st6 (mov-load reg-rdx reg-rdx 8)
-   in let st8 = st-append-text st7 (mov-rr reg-rsi reg-rax)
-   in let st9 = st-append-text st8 (add-rr reg-rsi reg-r11)
-   in let st10 = st-append-text st9 (mov-store reg-rsi reg-rdx 8)
-   in let st11 = st-append-text st10 (add-ri reg-r11 8)
-   in let st12 = st-append-text st11 (jmp (loop1 - (st11.text-len + 5)))
-   in patch-jcc-at st12 exit1-pos (st12.text-len)
+  emit-list-append-path2-copy-a : CodegenState -> CodegenState
+  emit-list-append-path2-copy-a (st) =
+    let st0 = st-append-text st (mov-rr reg-rax reg-rbx)
+   in let st1 = st-append-text st0 (mov-rr reg-rdi reg-rsi)
+   in let st2 = st-append-text st1 (cmp-ri reg-rcx 0)
+   in let skip-pos = st2.text-len
+   in let st3 = st-append-text st2 (jcc cc-e 0)
+   in let loop-pos = st3.text-len
+   in let st4 = st-append-text st3 (mov-load reg-r11 reg-rax 8)
+   in let st5 = st-append-text st4 (mov-store reg-rdi reg-r11 8)
+   in let st6 = st-append-text st5 (add-ri reg-rax 8)
+   in let st7 = st-append-text st6 (add-ri reg-rdi 8)
+   in let st8 = st-append-text st7 (sub-ri reg-rcx 1)
+   in let st9 = st-append-text st8 (jcc cc-ne (loop-pos - (st8.text-len + 6)))
+   in patch-jcc-at st9 skip-pos (st9.text-len)
 
-  emit-list-append-copy2 : CodegenState -> CodegenState
-  emit-list-append-copy2 (st) =
-    let st0 = st-append-text st (mov-load reg-rcx reg-rbx 0)
-   in let st1 = st-append-text st0 (shl-ri reg-rcx 3)
-   in let st2 = st-append-text st1 (mov-load reg-rdx reg-r12 0)
-   in let st3 = st-append-text st2 (shl-ri reg-rdx 3)
-   in let st4 = st-append-text st3 (li reg-r11 0)
-   in let loop2 = st4.text-len
-   in let st5 = st-append-text st4 (cmp-rr reg-r11 reg-rdx)
-   in let exit2-pos = st5.text-len
-   in let st6 = st-append-text st5 (jcc cc-ge 0)
-   in let st7 = st-append-text st6 (mov-rr reg-rsi reg-r12)
-   in let st8 = st-append-text st7 (add-rr reg-rsi reg-r11)
-   in let st9 = st-append-text st8 (mov-load reg-rsi reg-rsi 8)
-   in let st10 = st-append-text st9 (mov-rr reg-rdi reg-rax)
-   in let st11 = st-append-text st10 (add-rr reg-rdi reg-rcx)
-   in let st12 = st-append-text st11 (add-rr reg-rdi reg-r11)
-   in let st13 = st-append-text st12 (mov-store reg-rdi reg-rsi 8)
-   in let st14 = st-append-text st13 (add-ri reg-r11 8)
-   in let st15 = st-append-text st14 (jmp (loop2 - (st14.text-len + 5)))
-   in patch-jcc-at st15 exit2-pos (st15.text-len)
+  emit-list-append-path2-copy-b : CodegenState -> CodegenState
+  emit-list-append-path2-copy-b (st) =
+    let st0 = st-append-text st (mov-rr reg-rax reg-r12)
+   in let st1 = st-append-text st0 (cmp-ri reg-rdx 0)
+   in let skip-pos = st1.text-len
+   in let st2 = st-append-text st1 (jcc cc-e 0)
+   in let loop-pos = st2.text-len
+   in let st3 = st-append-text st2 (mov-load reg-r11 reg-rax 8)
+   in let st4 = st-append-text st3 (mov-store reg-rdi reg-r11 8)
+   in let st5 = st-append-text st4 (add-ri reg-rax 8)
+   in let st6 = st-append-text st5 (add-ri reg-rdi 8)
+   in let st7 = st-append-text st6 (sub-ri reg-rdx 1)
+   in let st8 = st-append-text st7 (jcc cc-ne (loop-pos - (st7.text-len + 6)))
+   in let st9 = patch-jcc-at st8 skip-pos (st8.text-len)
+   in let st10 = st-append-text st9 (mov-rr reg-rax reg-rsi)
+   in let st11 = st-append-text st10 (pop-r reg-r13)
+   in let st12 = st-append-text st11 (pop-r reg-r12)
+   in let st13 = st-append-text st12 (pop-r reg-rbx)
+   in st-append-text st13 x86-ret
 
   emit-list-append : CodegenState -> CodegenState
   emit-list-append (st) =
-    let st0 = emit-list-append-alloc st
-   in let st1 = emit-list-append-copy1 st0
-   in let st2 = emit-list-append-copy2 st1
-   in let st3 = st-append-text st2 (pop-r reg-r13)
-   in let st4 = st-append-text st3 (pop-r reg-r12)
-   in let st5 = st-append-text st4 (pop-r reg-rbx)
-   in st-append-text st5 x86-ret
+    let h = emit-list-append-prologue st
+   in let st1 = emit-list-append-path1 (h.cg)
+   in let st2 = emit-list-append-path2-alloc st1 (h.p1)
+   in let st3 = emit-list-append-path2-copy-a st2
+   in emit-list-append-path2-copy-b st3
 
 Section: __list_snoc
   emit-list-snoc-path1 : CodegenState -> HelpResult1
