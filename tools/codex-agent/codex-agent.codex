@@ -161,32 +161,32 @@ do-status : List Text -> [Console, FileSystem] Nothing
 do-status (args) =
  print-line (
   "=== Codex Agent Status ===\n" ++
-  check-file-status "  Solution     " "Codex.sln" ++ "\n" ++
-  check-file-status "  Build props  " "Directory.Build.props" ++ "\n" ++
-  check-file-status "  Contributing " "CONTRIBUTING.md" ++ "\n" ++
-  check-file-status "  Lock doc     " "docs/Active/Compiler/REFERENCE-COMPILER-LOCK.md" ++ "\n" ++
-  check-file-status "  Current plan " "docs/CurrentPlan.md" ++ "\n" ++
-  check-file-status "  Agent rules  " ".github/copilot-instructions.md" ++ "\n" ++
+  check-file-status "  Solution     " (repo-path "Codex.sln") ++ "\n" ++
+  check-file-status "  Build props  " (repo-path "Directory.Build.props") ++ "\n" ++
+  check-file-status "  Contributing " (repo-path "CONTRIBUTING.md") ++ "\n" ++
+  check-file-status "  Lock doc     " (repo-path "docs/Active/Compiler/REFERENCE-COMPILER-LOCK.md") ++ "\n" ++
+  check-file-status "  Current plan " (repo-path "docs/CurrentPlan.md") ++ "\n" ++
+  check-file-status "  Agent rules  " (repo-path ".github/copilot-instructions.md") ++ "\n" ++
   "=========================="
  )
 
 plan-file : Text
-plan-file = ".codex-agent/plan.txt"
+plan-file = repo-path ".codex-agent/plan.txt"
 
 log-file : Text
-log-file = ".codex-agent/session.log"
+log-file = repo-path ".codex-agent/session.log"
 
 build-log : Text
-build-log = ".codex-agent/last-build.txt"
+build-log = repo-path ".codex-agent/last-build.txt"
 
 test-log : Text
-test-log = ".codex-agent/last-test.txt"
+test-log = repo-path ".codex-agent/last-test.txt"
 
 known-conditions-file : Text
-known-conditions-file = "docs/KNOWN-CONDITIONS.md"
+known-conditions-file = repo-path "docs/KNOWN-CONDITIONS.md"
 
 handoff-file : Text
-handoff-file = ".handoff"
+handoff-file = repo-path ".handoff"
 
 collect-args : List Text -> Integer -> Integer -> Text
 collect-args (args) (idx) (start) =
@@ -459,7 +459,8 @@ do-doctor (args) =
   in let kc-lines = if text-length kc-body > 0 then text-split kc-body "\n" else text-split "" "\n"
    in let n-conditions = count-condition-headers kc-lines 0 0
     in let summaries = collect-condition-summaries kc-lines 0
-     in let cs5001-check = if file-exists "Codex.Codex/Codex.Codex.csproj" then let csproj = read-file "Codex.Codex/Codex.Codex.csproj" in if text-contains csproj "<OutputType>Exe</OutputType>" then "  CS5001 trap: ACTIVE (Codex.Codex is Exe, will emit CS5001 -- this is expected)" else "  CS5001 trap: cleared" else "  CS5001 trap: n/a (no Codex.Codex project)"
+     in let csproj-path = repo-path "Codex.Codex/Codex.Codex.csproj"
+      in let cs5001-check = if file-exists csproj-path then let csproj = read-file csproj-path in if text-contains csproj "<OutputType>Exe</OutputType>" then "  CS5001 trap: ACTIVE (Codex.Codex is Exe, will emit CS5001 -- this is expected)" else "  CS5001 trap: cleared" else "  CS5001 trap: n/a (no Codex.Codex project)"
       in let session-status = if file-exists log-file then let log-content = read-file log-file in let log-lines = count-lines log-content in "  Session log: " ++ integer-to-text log-lines ++ " entries" else "  Session log: (none -- new session)"
        in let last-build-status = if file-exists build-log then let bc = read-file build-log in let bl = text-split bc "\n" in let be = count-error-lines bl 0 0 in "  Last build: " ++ integer-to-text be ++ " errors (see " ++ build-log ++ ")" else "  Last build: (no record)"
         in let last-test-status = if file-exists test-log then let tc = read-file test-log in let tl = text-split tc "\n" in let tp = count-test-passed tl 0 in "  Last test: " ++ tp ++ " (see " ++ test-log ++ ")" else "  Last test: (no record)"
@@ -557,17 +558,23 @@ do-check (args) =
  in let name = if argc > 2 then list-at args 2 else "unknown"
   in let budget = agent-budget name
    in let label = agent-label name
-    in let pc = if file-exists "Codex.Codex/Syntax/Parser.codex" then read-file "Codex.Codex/Syntax/Parser.codex" else ""
+    in let pp = repo-path "Codex.Codex/Syntax/Parser.codex"
+     in let pc = if file-exists pp then read-file pp else ""
      in let parser-chars = text-length pc
-      in let tc = if file-exists "Codex.Codex/Types/TypeChecker.codex" then read-file "Codex.Codex/Types/TypeChecker.codex" else ""
+      in let tp = repo-path "Codex.Codex/Types/TypeChecker.codex"
+       in let tc = if file-exists tp then read-file tp else ""
        in let tc-chars = text-length tc
-        in let ec = if file-exists "Codex.Codex/Emit/CSharpEmitter.codex" then read-file "Codex.Codex/Emit/CSharpEmitter.codex" else ""
+        in let ep = repo-path "Codex.Codex/Emit/CSharpEmitter.codex"
+         in let ec = if file-exists ep then read-file ep else ""
          in let emitter-chars = text-length ec
-          in let lc = if file-exists "Codex.Codex/IR/Lowering.codex" then read-file "Codex.Codex/IR/Lowering.codex" else ""
+          in let lp = repo-path "Codex.Codex/IR/Lowering.codex"
+           in let lc = if file-exists lp then read-file lp else ""
            in let lowering-chars = text-length lc
-            in let uc = if file-exists "Codex.Codex/Types/Unifier.codex" then read-file "Codex.Codex/Types/Unifier.codex" else ""
+            in let up = repo-path "Codex.Codex/Types/Unifier.codex"
+             in let uc = if file-exists up then read-file up else ""
              in let unifier-chars = text-length uc
-              in let xc = if file-exists "Codex.Codex/Syntax/Lexer.codex" then read-file "Codex.Codex/Syntax/Lexer.codex" else ""
+              in let xp = repo-path "Codex.Codex/Syntax/Lexer.codex"
+               in let xc = if file-exists xp then read-file xp else ""
                in let lexer-chars = text-length xc
                 in let total-hot = parser-chars + tc-chars + emitter-chars + lowering-chars + unifier-chars + lexer-chars
                  in let pct = (total-hot * 100) / budget
@@ -650,8 +657,38 @@ print-help =
   "Built from codex-agent.codex via the Codex IL backend."
  )
 
+join-parts-loop : List Text -> Integer -> Integer -> Text -> Text
+join-parts-loop (parts) (idx) (last-idx) (acc) =
+ if idx > last-idx then acc
+ else let part = list-at parts idx
+  in let next = if text-length acc == 0 then part else acc ++ "/" ++ part
+   in join-parts-loop parts (idx + 1) last-idx next
+
+find-repo-root-loop : List Text -> Integer -> Integer -> Text
+find-repo-root-loop (parts) (idx) (n) =
+ if idx >= n then ""
+ else if text-starts-with (list-at parts idx) "NewRepository" then join-parts-loop parts 0 idx ""
+  else find-repo-root-loop parts (idx + 1) n
+
+repo-root : Text
+repo-root =
+ let cwd = current-dir
+ in let normalized = text-replace cwd "\\" "/"
+  in let parts = text-split normalized "/"
+   in find-repo-root-loop parts 0 (list-length parts)
+
+repo-path : Text -> Text
+repo-path (rel) =
+ let root = repo-root
+ in if text-length root == 0 then rel
+  else root ++ "/" ++ rel
+
+repo-root-missing-msg : Text
+repo-root-missing-msg =
+ "  Could not find project root.\n  Looking for 'NewRepository*' in the parent path of:\n    " ++ current-dir ++ "\n  cd into a NewRepository-* checkout and try again."
+
 agents-dir : Text
-agents-dir = "docs/Agents"
+agents-dir = repo-path "docs/Agents"
 
 agent-file : Text -> Text
 agent-file (name) = agents-dir ++ "/" ++ name ++ ".txt"
@@ -701,19 +738,21 @@ do-roster (args) =
 
 orient-level0 : [Console, FileSystem] Nothing
 orient-level0 =
- let lock-status = if file-exists "docs/Active/Compiler/REFERENCE-COMPILER-LOCK.md" then
-   let lock-content = read-file "docs/Active/Compiler/REFERENCE-COMPILER-LOCK.md"
+ let lock-doc = repo-path "docs/Active/Compiler/REFERENCE-COMPILER-LOCK.md"
+ in let plan-doc = repo-path "docs/CurrentPlan.md"
+ in let lock-status = if file-exists lock-doc then
+   let lock-content = read-file lock-doc
    in if text-contains lock-content "LIFTED" then "LIFTED — src/ is modifiable"
     else if text-contains lock-content "LOCKED" then "LOCKED — do not modify src/"
-     else "see docs/Active/Compiler/REFERENCE-COMPILER-LOCK.md"
+     else "see " ++ lock-doc
   else "unknown"
  in let roster-files = list-files agents-dir "*.txt"
  in let roster-info = if list-length roster-files > 0 then format-roster-loop roster-files 0
   else "  (none registered -- use 'codex-agent greet <name>')"
- in let plan-info = if file-exists "docs/CurrentPlan.md" then
-   let pc = read-file "docs/CurrentPlan.md"
+ in let plan-info = if file-exists plan-doc then
+   let pc = read-file plan-doc
    in let pl = text-split pc "\n"
-    in "  Current plan: docs/CurrentPlan.md (" ++ integer-to-text (list-length pl) ++ " lines)"
+    in "  Current plan: " ++ plan-doc ++ " (" ++ integer-to-text (list-length pl) ++ " lines)"
   else "  Current plan: (none)"
  in print-line (
   "=== Codex Project — Quick Orientation ===\n" ++
@@ -753,14 +792,17 @@ orient-level0 =
 orient-topic : Text -> [Console, FileSystem] Nothing
 orient-topic (topic) =
  if topic == "vision" then
-  if file-exists "docs/FOUNDING-VISION.md" then print-line (read-file "docs/FOUNDING-VISION.md")
-  else print-line "  docs/FOUNDING-VISION.md not found"
+  let p = repo-path "docs/FOUNDING-VISION.md"
+  in if file-exists p then print-line (read-file p)
+   else print-line ("  " ++ p ++ " not found")
  else if topic == "syntax" then
-  if file-exists "docs/SYNTAX-QUICKREF.md" then print-line (read-file "docs/SYNTAX-QUICKREF.md")
-  else print-line "  docs/SYNTAX-QUICKREF.md not found"
+  let p = repo-path "docs/SYNTAX-QUICKREF.md"
+  in if file-exists p then print-line (read-file p)
+   else print-line ("  " ++ p ++ " not found")
  else if topic == "pitfalls" then
-  if file-exists "docs/KNOWN-CONDITIONS.md" then print-line (read-file "docs/KNOWN-CONDITIONS.md")
-  else print-line "  docs/KNOWN-CONDITIONS.md not found"
+  let p = repo-path "docs/KNOWN-CONDITIONS.md"
+  in if file-exists p then print-line (read-file p)
+   else print-line ("  " ++ p ++ " not found")
  else if topic == "style" then
   print-line (
    "=== Code Style Quick Reference ===\n" ++
@@ -859,12 +901,14 @@ do-orient (args) =
 
 do-init : List Text -> [Console, FileSystem] Nothing
 do-init (args) =
- let agent = "tools/codex-agent/codex-agent.dll"
+ let agent = repo-path "tools/codex-agent/codex-agent.dll"
+ in let verify-script = repo-path "tools/codex-agent-verify.ps1"
+  in let verify-files = (repo-path "docs/CurrentPlan.md") ++ " " ++ (repo-path "docs/Active/ToDo/CSharpCleanup.md") ++ " " ++ (repo-path "docs/Agents/TOOL-ERROR-REGISTRY.md") ++ " " ++ (repo-path "docs/KNOWN-CONDITIONS.md") ++ " " ++ (repo-path ".github/copilot-instructions.md")
  in let doctor-out = run-process "dotnet" (agent ++ " doctor")
   in let check-out = run-process "dotnet" (agent ++ " check")
    in let status-out = run-process "dotnet" (agent ++ " status")
     in let handoff-out = run-process "dotnet" (agent ++ " handoff show")
-     in let verify-out = run-process "pwsh" "-File tools/codex-agent-verify.ps1 docs/CurrentPlan.md docs/Active/ToDo/CSharpCleanup.md docs/Agents/TOOL-ERROR-REGISTRY.md docs/KNOWN-CONDITIONS.md .github/copilot-instructions.md"
+     in let verify-out = run-process "pwsh" ("-File " ++ verify-script ++ " " ++ verify-files)
       in let git-log = run-process "git" "log --oneline -5"
        in let git-branches = run-process "git" "branch -r"
         in print-line (doctor-out ++ "\n" ++ check-out ++ "\n" ++ status-out ++ "\n" ++ handoff-out ++ "\n" ++ verify-out ++ "\n=== Recent Commits ===\n" ++ git-log ++ "\n=== Remote Branches ===\n" ++ git-branches)
@@ -878,18 +922,19 @@ main = do
     in if cmd == "peek" then do-peek args
      else if cmd == "stat" then do-stat args
       else if cmd == "snap" then do-snap args
-       else if cmd == "init" then do-init args
-        else if cmd == "status" then do-status args
-         else if cmd == "plan" then do-plan args
-          else if cmd == "check" then do-check args
-           else if cmd == "doctor" then do-doctor args
-            else if cmd == "handoff" then do-handoff args
-             else if cmd == "log" then do-log args
-              else if cmd == "recall" then do-recall args
-               else if cmd == "build" then do-build args
-                else if cmd == "test" then do-test args
-                 else if cmd == "orient" then do-orient args
-                  else if cmd == "greet" then do-greet args
-                   else if cmd == "roster" then do-roster args
-                    else if cmd == "help" then print-help
-                     else print-line ("Unknown command: " ++ cmd ++ ". Run 'codex-agent help' for usage.")
+       else if cmd == "help" then print-help
+        else if text-length repo-root == 0 then print-line repo-root-missing-msg
+         else if cmd == "init" then do-init args
+          else if cmd == "status" then do-status args
+           else if cmd == "plan" then do-plan args
+            else if cmd == "check" then do-check args
+             else if cmd == "doctor" then do-doctor args
+              else if cmd == "handoff" then do-handoff args
+               else if cmd == "log" then do-log args
+                else if cmd == "recall" then do-recall args
+                 else if cmd == "build" then do-build args
+                  else if cmd == "test" then do-test args
+                   else if cmd == "orient" then do-orient args
+                    else if cmd == "greet" then do-greet args
+                     else if cmd == "roster" then do-roster args
+                      else print-line ("Unknown command: " ++ cmd ++ ". Run 'codex-agent help' for usage.")
