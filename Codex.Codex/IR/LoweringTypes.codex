@@ -15,6 +15,35 @@ Section: Type Lookup
    in if b.name == name then b.bound-type
       else lookup-type-loop bindings name (i + 1) len
 
+  lookup-type-bsearch : List TypeBinding -> Text -> CodexType
+  lookup-type-bsearch (bindings) (name) =
+   let len = list-length bindings
+   in if len == 0 then ErrorTy
+   else let pos = bsearch-text-pos bindings name 0 len
+   in if pos >= len then ErrorTy
+   else let b = list-at bindings pos
+   in if b.name == name then b.bound-type else ErrorTy
+
+  lookup-type-split : List TypeBinding -> List TypeBinding -> Text -> CodexType
+  lookup-type-split (overlay) (base) (name) =
+   let overlay-hit = lookup-type-loop overlay name 0 (list-length overlay)
+   in when overlay-hit
+    if ErrorTy -> lookup-type-bsearch base name
+    if _ -> overlay-hit
+
+  sort-bindings-loop : List TypeBinding -> Integer -> Integer -> List TypeBinding -> List TypeBinding
+  sort-bindings-loop (xs) (i) (len) (acc) =
+   if i == len then acc
+   else let b = list-at xs i
+   in let acc-len = list-length acc
+   in let pos = bsearch-text-pos acc (b.name) 0 acc-len
+   in if pos < acc-len then if (list-at acc pos).name == b.name then sort-bindings-loop xs (i + 1) len acc
+      else sort-bindings-loop xs (i + 1) len (list-insert-at acc pos b)
+      else sort-bindings-loop xs (i + 1) len (list-insert-at acc pos b)
+
+  sort-bindings : List TypeBinding -> List TypeBinding
+  sort-bindings (xs) = sort-bindings-loop xs 0 (list-length xs) []
+
   peel-fun-param : CodexType -> CodexType
   peel-fun-param (ty) =
    when ty
