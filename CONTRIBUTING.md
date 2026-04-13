@@ -30,14 +30,15 @@ See [docs/10-PRINCIPLES.md](docs/10-PRINCIPLES.md) for the full set of governing
 
 ---
 
-## Code Style
+## Code Style for C#
 
 These rules must be enforced by all contributors and automated agents when generating or modifying code:
+These rules have not been enforced.  Whenever you are editing a C# file, please apply these rules to the entire file.  This is the only exception to the "do not refactor other code" rule mentioned elsewhere.  We should seek to back-fill these rules whenever convienient.
 
-- Use 4 spaces for indentation.
+- Use 4 spaces for indentation in C#.
 - End files with a single newline.
-- Maximum line length: 120 characters.
-- Encoding: UTF-8. Line endings: CRLF (normalized by `.editorconfig`).
+- Maximum line length: 150 characters.
+- File Encoding: UTF-8. Line endings: CRLF (normalized by `.editorconfig`).
 - **Private instance fields MUST use the `m_` prefix** (e.g. `m_root`, `m_diagnostics`, `m_localEnv`).
 - **Private static fields MUST use the `s_` prefix** (e.g. `s_instance`, `s_cache`). Constants are exempt (PascalCase).
 - Private `readonly` fields: `m_` prefix and `readonly` where appropriate.
@@ -58,25 +59,9 @@ These rules must be enforced by all contributors and automated agents when gener
 
 ---
 
-## Naming Conventions by Layer
-
-| Layer | Key Types | Naming Pattern |
-|-------|-----------|----------------|
-| `Codex.Core` | `SourceText`, `Span`, `Diagnostic`, `DiagnosticBag` | Core prefix-free |
-| `Codex.Syntax` | `Token`, `TokenKind`, CST nodes (`DocumentNode`, `DefinitionNode`) | `*Node` for CST |
-| `Codex.Ast` | `Module`, `Definition`, `Expr`, `Desugarer` | No prefix |
-| `Codex.Semantics` | `NameResolver`, `ResolvedModule` | `Resolved*` for outputs |
-| `Codex.Types` | `TypeChecker`, `CodexType` and subclasses | `Codex*` for types |
-| `Codex.IR` | `IRModule`, `IRDefinition`, `IRExpr` subclasses, `Lowering` | `IR*` prefix |
-| `Codex.Emit` | `ICodeEmitter` | `I*` for interfaces |
-| `Codex.Emit.CSharp` | `CSharpEmitter` | Target name prefix |
-| `Codex.Cli` | `Program` | Standard CLI layout |
-
----
-
 ## Comments
 
-Do not add `///` XML doc comments. Code should be self-documenting. Only add a regular `//` comment if it is genuinely needed to avoid re-discovering a non-obvious decision.
+Do not add comments, particularly xml `///` or comments that restate the steps of the code. Code should be self-documenting. Only add a regular `//` comment if it is genuinely needed to avoid re-discovering a non-obvious decision.
 
 ---
 
@@ -145,8 +130,6 @@ To add a new emission target (e.g., Rust, Python):
 - **Do not modify `docs/Vision/`** (`NewRepository.txt`, `IntelligenceLayer.txt`) — ever.
 - **Do not modify `docs/00-OVERVIEW.md` or `docs/10-PRINCIPLES.md`** unless explicitly asked. They are the north-star specification.
 - **Do not modify `Directory.Build.props`** without permission.
-- **When adding a new compiler phase**, update `docs/OldStatus/ITERATION-*-HANDOFF.md` with a brief summary of what was done.
-- See [`.github/copilot-instructions.md`](.github/copilot-instructions.md) for terminal and file-editing discipline rules.
 
 ---
 
@@ -154,7 +137,7 @@ To add a new emission target (e.g., Rust, Python):
 
 - Build must pass: `dotnet build Codex.sln` with no warnings (warnings are errors).
 - All tests must pass: `dotnet test Codex.sln`.
-- No new unused fields, variables, or parameters.
+- No new unused fields, variables, or parameters, or namespace using declarations.
 
 ---
 

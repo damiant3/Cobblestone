@@ -164,9 +164,8 @@ do-status (args) =
   check-file-status "  Solution     " (repo-path "Codex.sln") ++ "\n" ++
   check-file-status "  Build props  " (repo-path "Directory.Build.props") ++ "\n" ++
   check-file-status "  Contributing " (repo-path "CONTRIBUTING.md") ++ "\n" ++
-  check-file-status "  Lock doc     " (repo-path "docs/Active/Compiler/REFERENCE-COMPILER-LOCK.md") ++ "\n" ++
   check-file-status "  Current plan " (repo-path "docs/CurrentPlan.md") ++ "\n" ++
-  check-file-status "  Agent rules  " (repo-path ".github/copilot-instructions.md") ++ "\n" ++
+  check-file-status "  Agent rules  " (repo-path "CONTRIBUTING.md") ++ "\n" ++
   "=========================="
  )
 
@@ -533,15 +532,13 @@ do-plan (args) =
 
 agent-budget : Text -> Integer
 agent-budget (name) =
- if name == "cam" then 800000
- else if name == "windows" then 60000
+ if name == "windows" then 60000
   else if name == "linux" then 60000
    else 60000
 
 agent-label : Text -> Text
 agent-label (name) =
- if name == "cam" then "Cam (Claude Code CLI, 1M context)"
- else if name == "windows" then "Agent Windows (Copilot/VS)"
+ if name == "windows" then "Agent Windows (VS)"
   else if name == "linux" then "Agent Linux (Claude sandbox)"
    else "unknown agent (using default 60K budget)"
 
@@ -596,7 +593,7 @@ do-build (args) =
          in let log-entry = "[BUILD] " ++ status ++ " errors=" ++ integer-to-text errs ++ " warnings=" ++ integer-to-text warns
           in let log-existing = if file-exists log-file then read-file log-file else ""
            in let _ = write-file log-file (log-existing ++ log-entry ++ "\n")
-            in let verify-output = run-process "pwsh" "-File tools/codex-agent-verify.ps1 docs/CurrentPlan.md docs/Active/ToDo/CSharpCleanup.md docs/Agents/TOOL-ERROR-REGISTRY.md docs/KNOWN-CONDITIONS.md .github/copilot-instructions.md"
+            in let verify-output = run-process "pwsh" "-File tools/codex-agent-verify.ps1 docs/CurrentPlan.md docs/Active/ToDo/CSharpCleanup.md docs/Agents/TOOL-ERROR-REGISTRY.md docs/KNOWN-CONDITIONS.md CONTRIBUTING.md"
              in print-line (summary ++ "\n" ++ verify-output)
 
 do-test : List Text -> [Console, FileSystem] Nothing
@@ -716,7 +713,7 @@ format-agent-entry (content) =
    in let tools-val = kv-get "tools" lines 0
     in let os-val = kv-get "os" lines 0
      in let workdir-val = kv-get "workdir" lines 0
-      in "  " ++ pad-right name 16 ++ pad-right (if text-length ctx > 0 then ctx else "?") 44 ++ pad-right os-val 40 ++ pad-right tools-val 44 ++ workdir-val
+      in "  " ++ pad-right name 16 ++ "  " ++ pad-right (if text-length ctx > 0 then ctx else "?") 44 ++ "  " ++ pad-right os-val 40 ++ "  " ++ pad-right tools-val 44 ++ "  " ++ workdir-val
 
 format-roster-loop : List Text -> Integer -> [FileSystem] Text
 format-roster-loop (files) (idx) =
@@ -738,14 +735,7 @@ do-roster (args) =
 
 orient-level0 : [Console, FileSystem] Nothing
 orient-level0 =
- let lock-doc = repo-path "docs/Active/Compiler/REFERENCE-COMPILER-LOCK.md"
- in let plan-doc = repo-path "docs/CurrentPlan.md"
- in let lock-status = if file-exists lock-doc then
-   let lock-content = read-file lock-doc
-   in if text-contains lock-content "LIFTED" then "LIFTED — src/ is modifiable"
-    else if text-contains lock-content "LOCKED" then "LOCKED — do not modify src/"
-     else "see " ++ lock-doc
-  else "unknown"
+ let plan-doc = repo-path "docs/CurrentPlan.md"
  in let roster-files = list-files agents-dir "*.txt"
  in let roster-info = if list-length roster-files > 0 then format-roster-loop roster-files 0
   else "  (none registered -- use 'codex-agent greet <name>')"
@@ -764,8 +754,6 @@ orient-level0 =
   "  Build:     dotnet build Codex.sln (.NET 8, TreatWarningsAsErrors)\n" ++
   "  Self-host: 26 .codex files in Codex.Codex/\n" ++
   "\n" ++
-  "  Ref compiler lock: " ++ lock-status ++ "\n" ++
-  "\n" ++
   "  Agents:\n" ++ roster-info ++ "\n" ++
   "\n" ++
   plan-info ++ "\n" ++
@@ -777,7 +765,7 @@ orient-level0 =
   "    Syntax:       docs/SYNTAX-QUICKREF.md\n" ++
   "    Pitfalls:     docs/KNOWN-CONDITIONS.md\n" ++
   "    Tool errors:  docs/Agents/TOOL-ERROR-REGISTRY.md\n" ++
-  "    Code style:   .github/copilot-instructions.md\n" ++
+  "    Code style:   CONTRIBUTING.md\n" ++
   "    Route map:    docs/Stories/THE-LAST-PEAK.md\n" ++
   "\n" ++
   "  Project structure:\n" ++
@@ -822,18 +810,18 @@ orient-topic (topic) =
    "    All functions curried. Effects in brackets: [Console] Nothing\n" ++
    "    Do NOT extract effectful helper functions — inline instead.\n" ++
    "\n" ++
-   "  Full details: .github/copilot-instructions.md\n" ++
+   "  Full details: CONTRIBUTING.md\n" ++
    "=================================")
  else if topic == "agents" then
   let agent-files = list-files agents-dir "*.txt"
   in if list-length agent-files > 0 then
    let entries = format-roster-loop agent-files 0
-   in print-line ("=== Agent Roster (detailed) ===\n" ++ entries ++ "\n\n  Register: codex-agent greet <name> <context> <tools> <os> <workdir>\n" ++ "  Branch prefixes: windows/, linux/, cam/, nut/\n" ++ "  No agent merges own work to master without review.\n" ++ "==============================")
+   in print-line ("=== Agent Roster (detailed) ===\n" ++ entries ++ "\n\n  Register: codex-agent greet <name> <context> <tools> <os> <workdir>\n" ++ "  Branch prefixes: windows/, linux/, nut/, hex/\n" ++ "  No agent merges own work to master without review.\n" ++ "==============================")
   else print-line "  No agents registered. Use 'codex-agent greet <name>'."
  else if topic == "git" then
   print-line (
    "=== Git Workflow ===\n" ++
-   "  Branch naming: windows/<topic>, linux/<topic>, cam/<topic>, nut/<topic>\n" ++
+   "  Branch naming: windows/<topic>, linux/<topic>, nut/<topic>, hex/<topic>\n" ++
    "  Conventional Commits: feat:, fix:, docs:, test:, chore:, refactor:\n" ++
    "  No agent merges own work to master without review.\n" ++
    "  Handoff: codex-agent handoff push/review/approve/merge\n" ++
@@ -903,7 +891,7 @@ do-init : List Text -> [Console, FileSystem] Nothing
 do-init (args) =
  let agent = repo-path "tools/codex-agent/codex-agent.dll"
  in let verify-script = repo-path "tools/codex-agent-verify.ps1"
-  in let verify-files = (repo-path "docs/CurrentPlan.md") ++ " " ++ (repo-path "docs/Active/ToDo/CSharpCleanup.md") ++ " " ++ (repo-path "docs/Agents/TOOL-ERROR-REGISTRY.md") ++ " " ++ (repo-path "docs/KNOWN-CONDITIONS.md") ++ " " ++ (repo-path ".github/copilot-instructions.md")
+  in let verify-files = (repo-path "docs/CurrentPlan.md") ++ " " ++ (repo-path "docs/Active/ToDo/CSharpCleanup.md") ++ " " ++ (repo-path "docs/Agents/TOOL-ERROR-REGISTRY.md") ++ " " ++ (repo-path "docs/KNOWN-CONDITIONS.md") ++ " " ++ (repo-path "CONTRIBUTING.md")
  in let doctor-out = run-process "dotnet" (agent ++ " doctor")
   in let check-out = run-process "dotnet" (agent ++ " check")
    in let status-out = run-process "dotnet" (agent ++ " status")
