@@ -2487,22 +2487,30 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             case "list-with-capacity" when args.Count >= 1:
             {
                 // List layout: [capacity @ -8 | count @ 0 | elem0 @ 8 | ...]
-                // Allocate (capacity + 1) * 8 bytes on heap
+                // Allocate (capacity + 1) * 8 bytes on heap.
+                // rd is AllocTemp'd from a pool that includes R11, so we must
+                // not touch R11 before returning rd.
                 byte capReg = EmitExpr(args[0]);
                 byte rd = AllocTemp();
-                // Store capacity at [R10]
+                // Store capacity at [R10]; bump past capacity word.
                 X86_64Encoder.MovStore(m_text, HeapReg, capReg, 0);
                 X86_64Encoder.AddRI(m_text, HeapReg, 8);
-                // rd = R10 (points to count word)
+                // rd = R10 (points to count word) — locked in before any
+                // further temp allocations.
                 X86_64Encoder.MovRR(m_text, rd, HeapReg);
-                // Store count = 0
-                X86_64Encoder.Li(m_text, Reg.R11, 0);
-                X86_64Encoder.MovStore(m_text, HeapReg, Reg.R11, 0);
-                // Advance heap by capacity * 8 (for element slots)
-                X86_64Encoder.MovRR(m_text, Reg.R11, capReg);
-                X86_64Encoder.ShlRI(m_text, Reg.R11, 3);
-                X86_64Encoder.AddRI(m_text, Reg.R11, 8); // +8 for count word
-                X86_64Encoder.AddRR(m_text, HeapReg, Reg.R11);
+                // Store count = 0 using a fresh temp (not R11 directly —
+                // see header comment; if rd happened to be R11 we would
+                // have clobbered it, causing list-with-capacity to return
+                // the size instead of the pointer).
+                byte zeroReg = AllocTemp();
+                X86_64Encoder.Li(m_text, zeroReg, 0);
+                X86_64Encoder.MovStore(m_text, HeapReg, zeroReg, 0);
+                // Advance heap by (capacity + 1) * 8.
+                byte advReg = AllocTemp();
+                X86_64Encoder.MovRR(m_text, advReg, capReg);
+                X86_64Encoder.ShlRI(m_text, advReg, 3);
+                X86_64Encoder.AddRI(m_text, advReg, 8);
+                X86_64Encoder.AddRR(m_text, HeapReg, advReg);
                 return rd;
             }
             case "buf-write-byte" when args.Count >= 3:
@@ -6820,6 +6828,24 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         foreach (byte ch in " RIP="u8) EmitSerialByte(ch);
         // Saved RIP: at [rsp+40] (5 regs pushed since ISR entry)
         X86_64Encoder.MovLoad(m_text, Reg.RDI, Reg.RSP, 40);
+        EmitSerialHexQwordRdi();
+        // Callee-saved + heap pointer: these are what the faulting code was
+        // working with. RBX often holds `this`/record pointer, R12-R14 hold
+        // loop state, R10 is the heap allocation pointer.
+        foreach (byte ch in " RBX="u8) EmitSerialByte(ch);
+        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RBX);
+        EmitSerialHexQwordRdi();
+        foreach (byte ch in " R12="u8) EmitSerialByte(ch);
+        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.R12);
+        EmitSerialHexQwordRdi();
+        foreach (byte ch in " R13="u8) EmitSerialByte(ch);
+        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.R13);
+        EmitSerialHexQwordRdi();
+        foreach (byte ch in " R14="u8) EmitSerialByte(ch);
+        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.R14);
+        EmitSerialHexQwordRdi();
+        foreach (byte ch in " R10="u8) EmitSerialByte(ch);
+        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.R10);
         EmitSerialHexQwordRdi();
         EmitSerialByte((byte)'\n');
         X86_64Encoder.Cli(m_text);
