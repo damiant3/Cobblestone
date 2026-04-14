@@ -142,7 +142,7 @@ Legend: ✅ at parity · 🟡 partial / different · ❌ missing · ⏭️ delib
 | C# emitter (bootstrap) | ✓ | ✓ | ✅ | |
 | Codex text emitter (pingpong) | ✓ | ✓ | ✅ | |
 | IL emitter | ✓ | ❌ | ⏭️ | Deliberate — .NET dependency being retired (BACKLOG) |
-| x86-64 Linux user mode | ✓ | ❔ | ❔ | Not verified |
+| x86-64 Linux user mode | ✓ | ❌ | ⏭️ | Ref-only target (emits syscalls, runs ring 3 under Linux). Self-host targets bare-metal x86-64 end-to-end (ring 0, port I/O, owns interrupts) — strictly harder, and what MM4 actually needs. Not a parity gap under "Parity is Narrow" — a deliberately-diverged target backend, same category as the retired IL emitter. |
 
 ## What landed since this audit was first written
 
@@ -166,8 +166,6 @@ are documented as lower-order wins.
    self-host behaviour unconfirmed. Needs a focused test.
 3. **Polymorphism coverage audit** — type system row marked ❔. No
    systematic test sweep exists; build one before claiming parity.
-4. **x86-64 Linux user mode on the self-host** — marked ❔. Bare-metal
-   works end-to-end but the Linux ELF path has never been verified.
 
 ## Not in scope
 
