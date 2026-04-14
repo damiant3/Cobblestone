@@ -1689,6 +1689,15 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         int bodyLocal = AllocLocal();
         StoreLocal(bodyLocal, bodyResult2);
 
+        // Before allocating the fwd table: if an inner region escape-copied
+        // into result space (advancing r15 above r10), our fwd table would
+        // clobber that data. Bump r10 up to r15 first. (CDX-C5)
+        X86_64Encoder.CmpRR(m_text, HeapReg, ResultReg);
+        int skipBumpHeap = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0);
+        X86_64Encoder.MovRR(m_text, HeapReg, ResultReg);
+        PatchJcc(skipBumpHeap, m_text.Count);
+
         // Allocate and zero the forwarding hash table in working space.
         // Writes table base to rodata global, advances HeapReg past the table.
         EmitFwdTableZero();
