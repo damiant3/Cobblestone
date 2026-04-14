@@ -85,7 +85,8 @@ public sealed partial class CSharpEmitter : ICodeEmitter
 
     static void EmitTypeDefinitions(StringBuilder sb, IRChapter module)
     {
-        foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
+        foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions
+            .OrderBy(kv => kv.Key, StringComparer.Ordinal))
         {
             switch (kv.Value)
             {
