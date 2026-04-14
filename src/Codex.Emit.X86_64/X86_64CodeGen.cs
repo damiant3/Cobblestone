@@ -2487,22 +2487,30 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             case "list-with-capacity" when args.Count >= 1:
             {
                 // List layout: [capacity @ -8 | count @ 0 | elem0 @ 8 | ...]
-                // Allocate (capacity + 1) * 8 bytes on heap
+                // Allocate (capacity + 1) * 8 bytes on heap.
+                // rd is AllocTemp'd from a pool that includes R11, so we must
+                // not touch R11 before returning rd.
                 byte capReg = EmitExpr(args[0]);
                 byte rd = AllocTemp();
-                // Store capacity at [R10]
+                // Store capacity at [R10]; bump past capacity word.
                 X86_64Encoder.MovStore(m_text, HeapReg, capReg, 0);
                 X86_64Encoder.AddRI(m_text, HeapReg, 8);
-                // rd = R10 (points to count word)
+                // rd = R10 (points to count word) — locked in before any
+                // further temp allocations.
                 X86_64Encoder.MovRR(m_text, rd, HeapReg);
-                // Store count = 0
-                X86_64Encoder.Li(m_text, Reg.R11, 0);
-                X86_64Encoder.MovStore(m_text, HeapReg, Reg.R11, 0);
-                // Advance heap by capacity * 8 (for element slots)
-                X86_64Encoder.MovRR(m_text, Reg.R11, capReg);
-                X86_64Encoder.ShlRI(m_text, Reg.R11, 3);
-                X86_64Encoder.AddRI(m_text, Reg.R11, 8); // +8 for count word
-                X86_64Encoder.AddRR(m_text, HeapReg, Reg.R11);
+                // Store count = 0 using a fresh temp (not R11 directly —
+                // see header comment; if rd happened to be R11 we would
+                // have clobbered it, causing list-with-capacity to return
+                // the size instead of the pointer).
+                byte zeroReg = AllocTemp();
+                X86_64Encoder.Li(m_text, zeroReg, 0);
+                X86_64Encoder.MovStore(m_text, HeapReg, zeroReg, 0);
+                // Advance heap by (capacity + 1) * 8.
+                byte advReg = AllocTemp();
+                X86_64Encoder.MovRR(m_text, advReg, capReg);
+                X86_64Encoder.ShlRI(m_text, advReg, 3);
+                X86_64Encoder.AddRI(m_text, advReg, 8);
+                X86_64Encoder.AddRR(m_text, HeapReg, advReg);
                 return rd;
             }
             case "buf-write-byte" when args.Count >= 3:
