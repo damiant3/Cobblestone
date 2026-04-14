@@ -783,16 +783,13 @@ public sealed partial class CSharpEmitter
 
             case "int-mod" when args.Count == 2:
             {
-                // Euclidean modulo: ((a % b) + b) % b — always non-negative
-                sb.Append("((");
+                // Euclidean modulo: result is always in [0, |b|) for any nonzero b.
+                // Lambda-wrap so a and b each evaluate once.
+                sb.Append("((Func<long, long, long>)((_a, _b) => { long _abs = _b < 0L ? -_b : _b; long _r = _a % _abs; return _r < 0L ? _r + _abs : _r; }))(");
                 EmitExpr(sb, args[0], indent);
-                sb.Append(" % ");
+                sb.Append(", ");
                 EmitExpr(sb, args[1], indent);
-                sb.Append(" + ");
-                EmitExpr(sb, args[1], indent);
-                sb.Append(") % ");
-                EmitExpr(sb, args[1], indent);
-                sb.Append(')');
+                sb.Append(")");
                 return true;
             }
 

@@ -62,7 +62,8 @@ Legend: ✅ at parity · 🟡 partial / different · ❌ missing · ⏭️ delib
 | `Character` | ✓ | ✓ | ✅ | |
 | `Boolean` | ✓ | ✓ | ✅ | |
 | Bitwise: `bit-and`, `bit-or`, `bit-xor`, `bit-shl`, `bit-shr`, `bit-not` | ✓ | ✓ | ✅ | Full pipeline: TypeEnv, NameResolver, CSharpEmitter, X86_64 codegen (landed around `211dea3`, `b4f9f4b`) |
-| Arithmetic: `abs`, `min`, `max`, `mod`, `div` negative-semantics | ✓ | 🟡 | 🟡 | Builtins exist; negative-operand mod/div semantics have not been re-verified against reference |
+| `int-mod` Euclidean on all nonzero divisors | ✓ | ✓ | ✅ | Result always in `[0, |b|)` for any nonzero `b` — both ref emitters (C# + x86-64) and the self-host's internal `int-mod` agree. Sample: `samples/arith-neg-mod.codex`. |
+| Integer `/` truncates toward zero | ✓ | ✓ | ✅ | Consistent across backends — sign of result = sign(a) × sign(b). |
 | CCE-ordered comparison on `Text` | ✓ | ✓ | ✅ | |
 
 ### Diagnostics & error reporting
@@ -166,9 +167,7 @@ are documented as lower-order wins.
    reduce API surprise across stdlib boundary.
 3. **Parameterized records through C# emit path** — reference chokes;
    self-host behaviour unconfirmed. Needs a focused test.
-4. **Arithmetic semantics on negative operands** — `mod` / `div` edge
-   cases not re-verified after recent changes.
-5. **Richer CPU-exception dump on bare metal** — add error-code, R10, RSP
+4. **Richer CPU-exception dump on bare metal** — add error-code, R10, RSP
    to the `!EXC=` message so faults localize without external tooling.
    Self-host side only (UX).
 

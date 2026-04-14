@@ -2320,24 +2320,34 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             // ── Arithmetic builtins ──────────────────────────────────
             case "int-mod" when args.Count >= 2:
             {
-                // Euclidean modulo: remainder = RDX after idiv, then fix sign
+                // Euclidean modulo: result is always in [0, |b|) for any nonzero b.
+                // Strategy: idiv produces a truncating remainder in RDX whose sign
+                // matches the dividend. If that remainder is negative, add |divisor|
+                // to get the Euclidean remainder.
                 byte left = EmitExpr(args[0]);
                 int savedLeft = AllocLocal();
                 StoreLocal(savedLeft, left);
                 byte right = EmitExpr(args[1]);
                 int savedRight = AllocLocal();
                 StoreLocal(savedRight, right);
-                // RAX = left, sign-extend to RDX:RAX, idiv right → remainder in RDX
+                // RAX = left, sign-extend to RDX:RAX, idiv right → trunc-remainder in RDX
                 X86_64Encoder.MovRR(m_text, Reg.RAX, LoadLocal(savedLeft));
                 X86_64Encoder.Cqo(m_text);
                 X86_64Encoder.IdivR(m_text, LoadLocal(savedRight));
-                // RDX = remainder. Fix sign: if RDX < 0, add divisor
                 byte rd = AllocTemp();
                 X86_64Encoder.MovRR(m_text, rd, Reg.RDX);
                 X86_64Encoder.TestRR(m_text, rd, rd);
                 int jnsOffset = m_text.Count;
-                X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0); // skip if non-negative
-                X86_64Encoder.AddRR(m_text, rd, LoadLocal(savedRight));
+                X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_GE, 0); // skip fixup if non-negative
+                // Compute |right| branchless: (x ^ (x >> 63)) - (x >> 63)
+                byte rightCopy = AllocTemp();
+                X86_64Encoder.MovRR(m_text, rightCopy, LoadLocal(savedRight));
+                byte signMask = AllocTemp();
+                X86_64Encoder.MovRR(m_text, signMask, rightCopy);
+                X86_64Encoder.SarRI(m_text, signMask, 63);
+                X86_64Encoder.XorRR(m_text, rightCopy, signMask);
+                X86_64Encoder.SubRR(m_text, rightCopy, signMask);
+                X86_64Encoder.AddRR(m_text, rd, rightCopy);
                 PatchJcc(jnsOffset, m_text.Count);
                 return rd;
             }
