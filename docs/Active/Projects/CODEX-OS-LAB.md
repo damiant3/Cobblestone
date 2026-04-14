@@ -198,17 +198,14 @@ To avoid stomping on the main box's branches:
 
 ## Next Steps
 
-1. ~~Provision WSL + Ubuntu~~ ✅
-2. ~~Install QEMU (riscv64, aarch64, system-riscv64)~~ ✅
-3. ~~Install wasmtime~~ ✅
-4. Run native backend tests from WSL to verify the full matrix
-5. Install QEMU for Windows + verify WHPX acceleration works
-6. Flash phone with TWRP (see `docs/Active/Projects/PHONE-WIPE.md`)
-7. `adb push` an ARM64 Codex binary to the phone
-8. Build a minimal x86-64 bootable kernel image from Codex
-9. Boot it in QEMU (Rung 0), then QEMU+WHPX (Rung 1a)
-10. When kernel has serial console + memory: partition SSD (Rung 2)
-11. When kernel is self-sustaining: delete Windows (Rung 3)
+1. Run native backend tests from WSL to verify the full matrix
+2. Install QEMU for Windows + verify WHPX acceleration works
+3. Flash phone with TWRP (see `docs/Active/Projects/PHONE-WIPE.md`)
+4. `adb push` an ARM64 Codex binary to the phone
+5. Build a minimal x86-64 bootable kernel image from Codex
+6. Boot it in QEMU (Rung 0), then QEMU+WHPX (Rung 1a)
+7. When kernel has serial console + memory: partition SSD (Rung 2)
+8. When kernel is self-sustaining: delete Windows (Rung 3)
 
 ---
 

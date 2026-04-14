@@ -33,12 +33,13 @@ The Codex compiler crossed the self-hosting threshold. The original design docum
 | Prelude | 11 modules (Maybe, Result, Either, Pair, List, CCE, Hamt, StringBuilder, Set, Queue, TextSearch) |
 | Tests | 843 passing |
 
-### The C# Bootstrap (Locked)
+### The C# Bootstrap
 
-The reference C# compiler in `src/` is frozen at commit `6d8bb2c`. It served its
-purpose: bootstrapping a language that can now sustain itself. It is not deleted —
-it remains as the foundation the self-hosted compiler stands on — but it receives
-no new features. See `docs/Active/Compiler/REFERENCE-COMPILER-LOCK.md`.
+The reference C# compiler in `src/` bootstrapped the language and now serves as
+Stage 0 for the self-hosted compiler. Parity between the two is narrow by design —
+the reference is a baseline, not a mirror; the self-host is expected to be a
+strict superset. See principle 11 in `docs/10-PRINCIPLES.md` and the running
+parity inventory in `docs/Active/Compiler/SELF-HOST-PARITY-AUDIT.md`.
 
 ## The Three Pillars
 
@@ -67,7 +68,7 @@ The compiler is free of its C# cradle. The road forward is written in Codex:
 | `00-OVERVIEW.md` | This file — project overview and status |
 | `10-PRINCIPLES.md` | Engineering principles that govern all decisions |
 | `CurrentPlan.md` | Active plan and near-term direction |
-| `Compiler/REFERENCE-COMPILER-LOCK.md` | Policy for the frozen C# compiler |
+| `Active/Compiler/SELF-HOST-PARITY-AUDIT.md` | Running inventory of where the self-host and reference stand on the output-affecting axis |
 | `Milestones/MM1/` | Archive of bootstrap-era design documents (01–09, Glossary) |
 | `Vision/NewRepository.txt` | The original vision document |
 | `Vision/IntelligenceLayer.txt` | The intelligence layer manifesto |

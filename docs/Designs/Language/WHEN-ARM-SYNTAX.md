@@ -115,14 +115,6 @@ Two-phase rollout recommended:
    `if` means exactly one thing (boolean conditional), and `_` is no
    longer a pattern.
 
-## Reference-compiler lock
-
-Feature addition to the frozen reference compiler. Requires an entry
-in `docs/Active/Compiler/REFERENCE-COMPILER-LOCK.md` when implemented,
-justifying why the ref compiler is being modified after freeze
-(user-requested readability improvement; low-risk keyword-swap;
-valuable before MM4 so the self-host is cleaner from the start).
-
 ## Status
 
 Designed. Not implemented. Own branch suggested:

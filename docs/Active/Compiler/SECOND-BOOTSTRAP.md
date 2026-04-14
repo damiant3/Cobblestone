@@ -22,12 +22,11 @@ the C# reference compiler. The chain today:
     → emits .codex over serial
 ```
 
-The reference compiler lock has been broken 20+ times. It will keep being
-broken because the C# compiler IS the compiler. The .codex source proves
-the front end can regenerate itself, but it cannot produce the binary that
-runs it. The x86-64 instruction encoder, the ELF writer, the register
-allocator, the boot trampoline, the escape-copy machinery, the 50+
-builtins, the 22 runtime helpers — all C#.
+The C# compiler IS the compiler — the .codex source proves the front end
+can regenerate itself, but it cannot produce the binary that runs it. The
+x86-64 instruction encoder, the ELF writer, the register allocator, the
+boot trampoline, the escape-copy machinery, the 50+ builtins, the 22
+runtime helpers — all C#.
 
 **MM3 proved the front end is self-sustaining. It did not prove the compiler
 is self-sustaining.** This document is the plan to finish the job.
@@ -47,8 +46,6 @@ Stage 2:  ELF' (Stage 1) compiles .codex source → bare-metal ELF''
 ```
 
 After Stage 2, the C# compiler is genuinely archival. Nothing depends on it.
-The reference compiler lock becomes real because there is nothing left to
-unlock.
 
 This is MM4: **self-sustaining native compiler on bare metal.**
 
@@ -300,7 +297,8 @@ binaries. The test:
    C# and the compiler built by itself produce identical binaries.
 
 After this, Stage 0 is archived. All future builds use Stage 1 (or its
-successors). The C# reference compiler is truly frozen.
+successors). The C# reference compiler becomes genuinely archival — nothing
+downstream of the second bootstrap depends on it.
 
 ---
 
@@ -308,12 +306,6 @@ successors). The C# reference compiler is truly frozen.
 
 | Milestone | What | How you know it works |
 |-----------|------|----------------------|
-| ~~**M1**~~ | ~~Encoder in Codex~~ | ~~Byte-identical output vs C# encoder for all instruction types~~ |
-| ~~**M2**~~ | ~~ELF writer in Codex~~ | ~~Minimal ELF boots in QEMU, prints to serial~~ |
-| ~~**M3**~~ | ~~`main = 42`~~ | ~~Codex compiler (on .NET) emits bare-metal ELF, boots, prints `42`~~ |
-| ~~**M4**~~ | ~~`factorial 5`~~ | ~~Non-trivial program: recursion, arithmetic, print. Also: records, match, lists, TCO, closures~~ |
-| ~~**M5**~~ | ~~Runtime helpers~~ | ~~16 of 22 helpers ported. Pingpong green at 213K output, 548KB ELF, 109MB HWM~~ |
-| ~~**M5b**~~ | ~~Builtins (30 pure-CCE ops)~~ | ~~Done — 30 builtins wired, pingpong green at 566KB ELF, 113MB HWM~~ |
 | **M6** | Escape copy | Region-based heap reclamation working — will shrink HWM from 109MB |
 | **M7** | Self-compilation | The compiler compiles itself to a bare-metal ELF |
 | **M8** | Fixed point | Stage 1 ELF == Stage 2 ELF. **This is MM4.** |
@@ -427,9 +419,8 @@ After MM4, the following are genuinely archival:
 - `src/Codex.Emit.IL/` — no Codex replacement needed yet
 - All transpilation backends (JS, Python, Rust, etc.) — barbarian land
 
-The reference compiler lock becomes permanent. The `src/` tree becomes a
-museum. The only compiler is the one written in Codex, compiling itself on
-bare metal, producing bare-metal binaries.
+The `src/` tree becomes a museum. The only compiler is the one written in
+Codex, compiling itself on bare metal, producing bare-metal binaries.
 
 The cord is cut.
 

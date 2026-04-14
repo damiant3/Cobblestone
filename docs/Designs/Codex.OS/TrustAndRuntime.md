@@ -1776,9 +1776,8 @@ something added to Codex, I will not take their code.  I will still have you cut
   way around.
 
   The build process is auditable. git log shows every change. git blame shows who wrote
-  what. The C# reference compiler is frozen at a known commit. The self-hosted compiler's
-  source is in .codex files that are human-readable — that's the entire point of literate
-  programming. You can diff any two points in history and see exactly what changed and
+  what. The self-hosted compiler's source is in .codex files that are human-readable —
+  that's the entire point of literate programming. You can diff any two points in history and see exactly what changed and
   why.
 
   There are two compilers. The C# reference compiler and the Codex self-hosted compiler

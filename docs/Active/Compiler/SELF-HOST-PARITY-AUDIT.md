@@ -43,7 +43,7 @@ Legend: ✅ at parity · 🟡 partial / different · ❌ missing · ⏭️ delib
 |------|-----------|-----------|--------|-------|
 | `List` | ✓ | ✓ | ✅ | Mutable-via-heap-top, geometric growth, `list-set-at` in-place (post-P1) |
 | `TextSet` (sorted) | ✓ | ✓ `Core/Set.codex` | ✅ | O(log n) contains, O(n) insert. Used by NameResolver dup-check |
-| `HamtMap` | ✓ | ✓ `Core/Hamt.codex` | ✅ | 8192-slot open addressing; text + integer keys; used at link-time func-offset lookup (P5) |
+| Flat text→int table | ✓ `foreword/Hamt.codex` | ✓ `Core/OffsetTable.codex` | ✅ | 8192-slot open addressing with linear probing; used at link-time func-offset lookup. Self-host's was renamed from `Chapter: Hamt` (collision with foreword's real persistent HAMT) to `Chapter: OffsetTable`. |
 | `Maybe` / `Option` | ✓ stdlib | ❌ | ❌ | Exists in `foreword/Maybe.codex` but self-host compiler code does not use it. Callers work around via sentinel pairs. |
 | `LinkedList` | ✓ | 🟡 | 🟡 | Type exists; `record-set` builtin + O(1) text-chunks mutation landed (`827ce6e`). Need audit of call sites. |
 | `Queue` / `Stack` | ✓ stdlib | ❌ in self-host | ❌ | `foreword/Queue.codex` present but compiler does not consume it |
@@ -83,7 +83,7 @@ Legend: ✅ at parity · 🟡 partial / different · ❌ missing · ⏭️ delib
 | Staged compilation with error gates | ✓ | ✓ | ✅ | Phase 4 — halt at stage boundary on errors (`0d1239d`) |
 | Diagnostic-display tests per severity | ✓ | ✓ | ✅ | (`792158c`) |
 | Bare-metal BINARY-DIAG mode with per-stage PH markers | n/a | ✓ | ✅ | Emit-side (`02b71e9`, `8250b89`, `04b5c26`) |
-| `let`-bind on effectful value rejected (CDX2033) | ✓ | ✓ | 🟡 | Ref emits diagnostic at `binding.Value.Span`; self-host uses `synthetic-span` (`add-unify-error` takes no span). Landed on `hex-hex/fix-let-effectful-bind` — fix commit `1b49158`, repro `samples/let-effectful-bug.codex`. Follow-up: thread binding span through `add-unify-error` in self-host so the diagnostic points at the offending line. |
+| `let`-bind on effectful value rejected (CDX2033) | ✓ | ✓ | 🟡 | Both compilers emit the error. Ref uses `binding.Value.Span`; self-host uses `synthetic-span` because `add-unify-error` takes no span, so the diagnostic points at (0,0). Diagnostic-only divergence under "Parity is Narrow" — doesn't affect compilation output. Follow-up: thread binding span through `add-unify-error` in self-host. Repro: `samples/let-effectful-bug.codex`. |
 | Parser error recovery (skip-to-next-def resync) | ✓ | ❌ | ❌ | Bag captures what it can; cascading failures still happen on malformed input. **Open gap.** |
 
 ### Debugging / crash behavior
@@ -92,7 +92,7 @@ Legend: ✅ at parity · 🟡 partial / different · ❌ missing · ⏭️ delib
 |------|-----------|-----------|--------|-------|
 | .NET exception stack traces | ✓ | ✓ | ✅ | |
 | Bare-metal ISR plumbing (timer, keyboard, serial) | ✓ | ✓ `X86_64Boot.codex` | ✅ | `emit-common-interrupt-handler` handles vectors 32/33/36 |
-| CPU-exception ISRs (vectors 0-31: #DE, #UD, #GP, #PF, …) with register/fault dump to serial | ❌ frozen | 🟡 self-host only | 🟡 | Self-host bare-metal emitter dumps `!EXC=<vec> RIP=<hex>` and halts on any vec<32. Reference compiler unchanged (frozen). Binary-mode MM4 runs now get fault diagnostics; pingpong ELF (reference-built) still hangs silently. |
+| CPU-exception ISRs (vectors 0-31: #DE, #UD, #GP, #PF, …) with register/fault dump to serial | ❌ | ✓ | ⏭️ | Self-host bare-metal emitter dumps `!EXC=<vec> RIP=<hex>` and halts on any vec<32 (commit `e014553`). Reference has no equivalent and doesn't need one under "Parity is Narrow" — fault diagnostics are UX, not compilation output. Richer dump (error-code, R10, RSP) tracked as future work. |
 | Source-location tracking through IR lowering | ✓ | ✓ | ✅ | IR-span surfaced to codegen errors |
 | `--diagnostic` bare-metal allocation / function tracing | ✓ | ✓ | ✅ | (`f38e2d0`) |
 
@@ -135,7 +135,7 @@ Legend: ✅ at parity · 🟡 partial / different · ❌ missing · ⏭️ delib
 
 | Item | Reference | Self-host | Status | Notes |
 |------|-----------|-----------|--------|-------|
-| x86-64 bare-metal codegen | ✓ (frozen) | ✓ | ✅ | Primary MM4 target |
+| x86-64 bare-metal codegen | ✓ | ✓ | ✅ | Primary MM4 target |
 | ELF writer | ✓ | ✓ | ✅ | |
 | CDX writer | ✓ | ✓ | ✅ | |
 | C# emitter (bootstrap) | ✓ | ✓ | ✅ | |
@@ -158,26 +158,24 @@ are documented as lower-order wins.
 
 ## Top open gaps (priority order)
 
-1. **CPU-exception ISRs with serial register dump** — self-host bare-metal
-   emitter now dumps `!EXC=<vec> RIP=<hex>` and halts on vec<32 (`hex/cpu-exception-isrs`).
-   Remaining: (a) add error-code, R10, RSP; (b) decide whether to backport
-   to reference so pingpong's ELF also gets diagnostics.
-2. **Parser error recovery (skip-to-next-def resync)** — bag captures
+1. **Parser error recovery (skip-to-next-def resync)** — bag captures
    what it can, but one malformed def still cascades. Classic technique:
    on parse error, skip tokens until column-1 `name :` pattern, resume.
-3. **Self-host adoption of foreword `Maybe`** — the library exists; the
+2. **Self-host adoption of foreword `Maybe`** — the library exists; the
    compiler doesn't use it. Low urgency (sentinel pairs work) but would
    reduce API surprise across stdlib boundary.
-4. **Parameterized records through C# emit path** — reference chokes;
+3. **Parameterized records through C# emit path** — reference chokes;
    self-host behaviour unconfirmed. Needs a focused test.
-5. **Arithmetic semantics on negative operands** — `mod` / `div` edge
+4. **Arithmetic semantics on negative operands** — `mod` / `div` edge
    cases not re-verified after recent changes.
+5. **Richer CPU-exception dump on bare metal** — add error-code, R10, RSP
+   to the `!EXC=` message so faults localize without external tooling.
+   Self-host side only (UX).
 
 ## Not in scope
 
 - Actually implementing every row (each is follow-up work per ticket)
-- Making self-host byte-identical to reference (it's allowed to diverge)
-- Rewriting the reference (it's frozen)
+- Making self-host and reference byte-identical on the UX surface (diagnostic wording, CLI output, debug dumps — per "Parity is Narrow," free to diverge)
 
 ## How to keep this current
 

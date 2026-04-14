@@ -88,14 +88,6 @@ Strictly additive. All existing source continues to parse. The
 pretty-printer / Codex text emitter can keep emitting the two-line form
 until we decide on a style rule — no forced migration.
 
-## Reference-compiler lock
-
-This is a deliberate language feature addition, not a bug fix. It
-requires an entry in `docs/Active/Compiler/REFERENCE-COMPILER-LOCK.md`
-when implemented, justifying why the ref-compiler is being modified
-after freeze (user-requested language evolution; low-risk grammar
-extension; needed before MM4 to avoid perpetuating verbose source).
-
 ## Status
 
 Designed. Not implemented. Land on its own feature branch

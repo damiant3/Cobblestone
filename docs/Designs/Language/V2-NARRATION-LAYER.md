@@ -143,7 +143,7 @@ Highest value, most tractable. ~90 minutes.
 
 ---
 
-## Reference Compiler Lock Justification
+## Scope
 
 All changes are in `src/Codex.Syntax/` (parser) and `tools/Codex.Cli/` (CLI).
 They extend the prose parser — a forward-looking feature for `.codex` authoring.

@@ -238,10 +238,9 @@ WASM to RISC-V, test each phase before moving to the next. One session
 should cover Phases 1-4 (heap, records, sum types, pattern matching).
 A second session for Phases 5-7 (text builtins, system builtins, regions).
 
-**Reference compiler lock**: All changes are in `src/Codex.Emit.RiscV/`
-(new backend code) and `tests/` (new tests). No changes to parser, type
-checker, IR, or any other emitter. Lock override justified: extending an
-existing backend, all additive.
+**Scope**: All changes are in `src/Codex.Emit.RiscV/` (new backend code)
+and `tests/` (new tests). No changes to parser, type checker, IR, or any
+other emitter — all additive extension of an existing backend.
 
 ---
 
