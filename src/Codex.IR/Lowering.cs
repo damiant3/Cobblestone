@@ -266,6 +266,27 @@ public sealed class Lowering(
             // Wrap each let binding's value in its own region.
             // Scalar-returning expressions reclaim intermediates immediately.
             // Heap-returning expressions skip reclamation (handled by EmitRegion).
+            //
+            // Skip the wrap when the value is a direct call to heap-advance.
+            // heap-advance returns Integer (0) but has the side effect of
+            // moving HeapReg up. The scalar-reclaim path would restore
+            // HeapReg from the mark, undoing the advance — silently breaking
+            // x86-64-init-codegen-streaming's text/rodata buffer reservation
+            // and causing list metadata to be overwritten by later text
+            // emission. CDX-C5 root cause.
+            //
+            // heap-restore is intentionally NOT exempted: main.codex's
+            // emit-defs-binary-gated uses `let hr = heap-restore watermark`
+            // after each def emission and threads cg2 (a CodegenState)
+            // forward. If the reclaim ever became real, cg2's pointers
+            // would dangle into the freed region. That's its own latent
+            // issue but tied to escape-copy semantics; leave heap-restore
+            // as a reclaim-no-op for now.
+            if (IsHeapAdvance(value))
+            {
+                body = new IRLet(name, value.Type, value, body);
+                continue;
+            }
             bool letNeedsEscape = IRRegion.TypeNeedsHeapEscape(value.Type);
             IRExpr regionValue = new IRRegion(value, value.Type, letNeedsEscape);
             body = new IRLet(name, value.Type, regionValue, body);
@@ -865,4 +886,14 @@ public sealed class Lowering(
     static bool IsNumeric(CodexType type) => type is IntegerType or NumberType;
 
     static bool IsText(CodexType type) => type is TextType;
+
+    // A direct call to the heap-advance builtin: returns Integer but
+    // moves HeapReg, so it must not be wrapped in a scalar-reclaim region.
+    static bool IsHeapAdvance(IRExpr expr)
+    {
+        if (expr is not IRApply apply) return false;
+        IRExpr f = apply.Function;
+        while (f is IRApply inner) f = inner.Function;
+        return f is IRName name && name.Name == "heap-advance";
+    }
 }
