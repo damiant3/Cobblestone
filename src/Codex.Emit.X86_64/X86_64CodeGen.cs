@@ -6829,6 +6829,24 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         // Saved RIP: at [rsp+40] (5 regs pushed since ISR entry)
         X86_64Encoder.MovLoad(m_text, Reg.RDI, Reg.RSP, 40);
         EmitSerialHexQwordRdi();
+        // Callee-saved + heap pointer: these are what the faulting code was
+        // working with. RBX often holds `this`/record pointer, R12-R14 hold
+        // loop state, R10 is the heap allocation pointer.
+        foreach (byte ch in " RBX="u8) EmitSerialByte(ch);
+        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RBX);
+        EmitSerialHexQwordRdi();
+        foreach (byte ch in " R12="u8) EmitSerialByte(ch);
+        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.R12);
+        EmitSerialHexQwordRdi();
+        foreach (byte ch in " R13="u8) EmitSerialByte(ch);
+        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.R13);
+        EmitSerialHexQwordRdi();
+        foreach (byte ch in " R14="u8) EmitSerialByte(ch);
+        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.R14);
+        EmitSerialHexQwordRdi();
+        foreach (byte ch in " R10="u8) EmitSerialByte(ch);
+        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.R10);
+        EmitSerialHexQwordRdi();
         EmitSerialByte((byte)'\n');
         X86_64Encoder.Cli(m_text);
         int haltPos = m_text.Count;
