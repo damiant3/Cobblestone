@@ -13089,7 +13089,7 @@ public static class Codex_Codex_Codex
 
     public static ParseDefResult finish_def(List<TypeAnn> ann, Token name_tok, List<Token> @params, ParseState st)
     {
-        return ((Func<ParseState, ParseDefResult>)((st2) => ((Func<ParseState, ParseDefResult>)((st3) => ((Func<ParseExprResult, ParseDefResult>)((body_result) => unwrap_def_body(body_result, ann, name_tok, @params)))(parse_expr_col(st3, name_tok.column))))(skip_newlines(st2))))(expect(new Equals_(), st));
+        return (is_equals(current_kind(st)) ? ((Func<ParseState, ParseDefResult>)((st2) => ((Func<ParseState, ParseDefResult>)((st3) => ((Func<ParseExprResult, ParseDefResult>)((body_result) => unwrap_def_body(body_result, ann, name_tok, @params)))(parse_expr_col(st3, name_tok.column))))(skip_newlines(st2))))(advance(st)) : ((Func<Token, ParseDefResult>)((tok) => ((Func<ParseState, ParseDefResult>)((err_st) => ((Func<ParseState, ParseDefResult>)((st2) => new DefOk(new Def(name_tok, @params, ann, new ErrExpr(tok), ""), st2)))(skip_body_tokens(err_st, name_tok.column))))(expect(new Equals_(), st))))(current(st)));
     }
 
     public static ParseDefResult unwrap_def_body(ParseExprResult r, List<TypeAnn> ann, Token name_tok, List<Token> @params)

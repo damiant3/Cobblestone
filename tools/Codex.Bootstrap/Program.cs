@@ -158,6 +158,12 @@ partial class Program
             Document doc = Codex_Codex_Codex.parse_document(st);
             AChapter ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("MiniTest"));
 
+            Console.WriteLine($"  Parse errors: {doc.parse_bag.diagnostics.Count}");
+            for (int pi = 0; pi < doc.parse_bag.diagnostics.Count; pi++)
+            {
+                Diagnostic d = doc.parse_bag.diagnostics[pi];
+                Console.WriteLine($"    P{pi}: [{d.code}] {d.message} @ ({d.span.start.line}:{d.span.start.column})");
+            }
             Console.WriteLine($"  Defs: {ast.defs.Count}, TypeDefs: {ast.type_defs.Count}");
 
             ChapterResult checkResult = Codex_Codex_Codex.check_chapter(ast);
