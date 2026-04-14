@@ -6682,6 +6682,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         // If both R10 and RIP (within 4 KB) stay flat for ~30 s, panic.
         EmitWatchdogCheck();
 
+        // ── Sampling profiler (env-gated): every 100 ticks (~5.5s) print
+        // "S:<RIP-hex>\n" to serial. Look up RIP in funcoffsets.txt to find
+        // the hot function. Used to localize C4-style algorithmic blow-ups
+        // that the watchdog can't catch (per-iter heap progress).
+        if (Environment.GetEnvironmentVariable("CODEX_BARE_METAL_PROFILER") is not null)
+            EmitSamplingProfiler();
+
         // Send EOI early (before potential stack switch)
         EmitOutByte(0x20, 0x20);
 
@@ -6867,6 +6874,84 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         int haltLoop = m_text.Count;
         m_text.Add(0xF4); // hlt
         X86_64Encoder.Jmp(m_text, haltLoop - (m_text.Count + 5));
+    }
+
+    void EmitSamplingProfiler()
+    {
+        // Every 100 ticks, print "S:<16 hex digits of saved RIP>\n" to COM1.
+        // Run the bare-metal compiler with a heavy input, grep "^S:" lines,
+        // bucket the addresses, look them up in funcoffsets.txt to find which
+        // function is consuming all the time.
+        //
+        // RIP source: saved at [rsp+40] (5 GP regs pushed on ISR entry).
+        // R11 is NOT pushed by the ISR; we touch it for the value to print,
+        // so we save+restore it locally to keep the interrupt transparent.
+
+        // tick = [TickCountAddr]; if tick % 5 != 0, skip
+        // (every 5 ticks ≈ 275 ms — reasonable density without flooding
+        // serial. Note: actual capture rate is well below this in practice
+        // because the kernel masks interrupts during long compute regions
+        // and timer ticks merge — see C4 investigation notes.)
+        X86_64Encoder.Li(m_text, Reg.RDI, TickCountAddr);
+        X86_64Encoder.MovLoad(m_text, Reg.RAX, Reg.RDI, 0);
+        X86_64Encoder.Cqo(m_text);
+        X86_64Encoder.Li(m_text, Reg.RCX, 5);
+        X86_64Encoder.IdivR(m_text, Reg.RCX);
+        X86_64Encoder.TestRR(m_text, Reg.RDX, Reg.RDX);
+        int skipSample = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
+
+        // Save R11 (we'll use it as a scratch for the hex value)
+        X86_64Encoder.PushR(m_text, Reg.R11);
+
+        // Print "S:"
+        foreach (byte ch in "S:"u8)
+        {
+            EmitSerialWaitThr();
+            X86_64Encoder.Li(m_text, Reg.RAX, ch);
+            X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+            X86_64Encoder.OutDxAl(m_text);
+        }
+
+        // Load saved RIP into R11. Note: we just pushed R11, so saved RIP
+        // is now at [rsp+48] (the 8 we pushed plus the original 40 offset).
+        X86_64Encoder.MovLoad(m_text, Reg.R11, Reg.RSP, 48);
+
+        // Print 16 hex digits of R11, MSB first (unrolled — ~16 × ~30 bytes)
+        for (int shift = 60; shift >= 0; shift -= 4)
+        {
+            // RAX = (R11 >> shift) & 0xF
+            X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.R11);
+            if (shift > 0)
+                X86_64Encoder.SarRI(m_text, Reg.RAX, (byte)shift);
+            // and rax, 0xF (REX.W + 83 /4 ib)
+            m_text.Add(0x48); m_text.Add(0x83); m_text.Add(0xE0); m_text.Add(0x0F);
+            // if rax >= 10 → letter ('a' + rax - 10 = rax + 87)
+            // else        → digit ('0' + rax = rax + 48)
+            X86_64Encoder.CmpRI(m_text, Reg.RAX, 10);
+            int isLetter = m_text.Count;
+            X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0);
+            X86_64Encoder.AddRI(m_text, Reg.RAX, '0');
+            int doneNibble = m_text.Count;
+            X86_64Encoder.Jmp(m_text, 0);
+            PatchJcc(isLetter, m_text.Count);
+            X86_64Encoder.AddRI(m_text, Reg.RAX, 87);
+            PatchJmp(doneNibble, m_text.Count);
+            // Send AL via UART
+            EmitSerialWaitThr();
+            X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+            X86_64Encoder.OutDxAl(m_text);
+        }
+
+        // Print "\n"
+        EmitSerialWaitThr();
+        X86_64Encoder.Li(m_text, Reg.RAX, '\n');
+        X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+        X86_64Encoder.OutDxAl(m_text);
+
+        X86_64Encoder.PopR(m_text, Reg.R11);
+
+        PatchJcc(skipSample, m_text.Count);
     }
 
     void EmitSerialString(string s)
