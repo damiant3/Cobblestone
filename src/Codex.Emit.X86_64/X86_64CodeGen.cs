@@ -5017,7 +5017,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         X86_64Encoder.AddRR(m_text, Reg.RAX, Reg.RBX);
         X86_64Encoder.MovLoad(m_text, Reg.RAX, Reg.RAX, 8);  // element value
 
-        // Direct send — no THR wait. QEMU UART accepts immediately.
+        // Serial wait + send (AL = low byte). Without the THR poll the guest
+        // races the UART's FIFO and QEMU drops bytes once the buffer fills.
+        EmitSerialWaitThr();
         X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
         X86_64Encoder.OutDxAl(m_text);
 
