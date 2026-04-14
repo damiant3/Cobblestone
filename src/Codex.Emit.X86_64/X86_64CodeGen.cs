@@ -6684,8 +6684,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         // movzx eax, al = 0F B6 C0
         m_text.Add(0x0F); m_text.Add(0xB6); m_text.Add(0xC0);
 
-        // Check: vector 32 = timer, vector 33 = keyboard
+        // Check: vector < 32 → CPU exception, vector 32 = timer, vector 33 = keyboard
         X86_64Encoder.CmpRI(m_text, Reg.RAX, 32);
+        int excJcc = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_B, 0); // patched to exc-handler below
         int notTimer = m_text.Count;
         X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_NE, 0);
 
@@ -6804,6 +6806,71 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         X86_64Encoder.PopR(m_text, Reg.RCX);
         X86_64Encoder.PopR(m_text, Reg.RAX);
         X86_64Encoder.Iretq(m_text);
+
+        // ── CPU exception dump: reached via jb at vec<32. Prints
+        // "!EXC=<vec-hex> RIP=<rip-hex>\n" on COM1 then halts. Without this,
+        // a CPU exception (e.g. #GP from a bad pointer) would fall through
+        // the normal IRQ path → EOI → iretq → re-fault → silent infinite
+        // loop. Mirror of emit-cpu-exception-dump in X86_64Boot.codex.
+        PatchJcc(excJcc, m_text.Count);
+        // RDI = vec (RAX holds vec)
+        X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
+        foreach (byte ch in "!EXC="u8) EmitSerialByte(ch);
+        EmitSerialHexByteRdi();
+        foreach (byte ch in " RIP="u8) EmitSerialByte(ch);
+        // Saved RIP: at [rsp+40] (5 regs pushed since ISR entry)
+        X86_64Encoder.MovLoad(m_text, Reg.RDI, Reg.RSP, 40);
+        EmitSerialHexQwordRdi();
+        EmitSerialByte((byte)'\n');
+        X86_64Encoder.Cli(m_text);
+        int haltPos = m_text.Count;
+        m_text.Add(0xF4); // hlt
+        X86_64Encoder.Jmp(m_text, haltPos - (m_text.Count + 5));
+    }
+
+    void EmitSerialByte(byte b)
+    {
+        // Wait for THR empty (EmitSerialWaitThr preserves RAX via push/pop),
+        // then load the char and write it.
+        EmitSerialWaitThr();
+        X86_64Encoder.Li(m_text, Reg.RAX, b);
+        X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+        m_text.Add(0xEE); // out dx, al
+    }
+
+    void EmitSerialHexByteRdi()
+    {
+        // Print low byte of RDI as two hex digits.
+        EmitOneHexNibble(4);
+        EmitOneHexNibble(0);
+    }
+
+    void EmitSerialHexQwordRdi()
+    {
+        // Print RDI as 16 hex digits, MSB first.
+        for (int shift = 60; shift >= 0; shift -= 4)
+            EmitOneHexNibble(shift);
+    }
+
+    void EmitOneHexNibble(int shift)
+    {
+        // Compute nibble into RAX, convert to ASCII, send via UART.
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RDI);
+        if (shift > 0) X86_64Encoder.SarRI(m_text, Reg.RAX, (byte)shift);
+        m_text.Add(0x48); m_text.Add(0x83); m_text.Add(0xE0); m_text.Add(0x0F); // and rax, 0xF
+        X86_64Encoder.CmpRI(m_text, Reg.RAX, 10);
+        int isLetter = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_AE, 0);
+        X86_64Encoder.AddRI(m_text, Reg.RAX, '0');
+        int doneNibble = m_text.Count;
+        X86_64Encoder.Jmp(m_text, 0);
+        PatchJcc(isLetter, m_text.Count);
+        X86_64Encoder.AddRI(m_text, Reg.RAX, 'a' - 10);
+        PatchJmp(doneNibble, m_text.Count);
+        // THR wait preserves RAX, then OUT DX, AL.
+        EmitSerialWaitThr();
+        X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+        m_text.Add(0xEE); // out dx, al
     }
 
     void EmitWatchdogCheck()
