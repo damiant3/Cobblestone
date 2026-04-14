@@ -1,6 +1,6 @@
 # Current Plan
 
-**Updated**: 2026-04-13
+**Updated**: 2026-04-14
 
 ---
 
@@ -8,13 +8,23 @@
 
 The self-hosted Codex compiler compiled **itself** on bare metal x86-64 under
 QEMU. Pingpong is green — Codex in, Codex out, fixed point holds.
-Latest text-mode pingpong (2026-04-13): stage1 === stage2 byte-identical
-at **537,984 bytes**, sem-equiv PASS, ~35s per stage, heap HWM ~244 MB
-(after `a725ac7` bumped the bare-metal heap from 2 MB to ~1 GB).
+Latest text-mode pingpong (2026-04-14): stage1 === stage2 byte-identical
+at **544,780 bytes**, sem-equiv PASS, ~35s per stage.
 
-**Binary pingpong** still fails at the `SIZE:` marker on stage 1
-(`compile-to-binary` path). BINARY-DIAG mode (`02b71e9`) is now wired
-for per-stage phase markers to track this down.
+## MM4: THE CORD IS NEARLY CUT
+
+Binary pingpong progression:
+- **Pre-C5**: self-host crashed in `__list_snoc` inside `build-offset-table-loop`
+  before even reaching `SIZE:`. Compile pipeline never finished.
+- **Post-C5** (`f221359`): self-host kernel runs on bare metal, accepts
+  `BINARY\n<source>\x04` over serial, completes compile, prints
+  `SIZE:4218032`, and streams 4.2 MB of ELF bytes. The compile pipeline
+  **runs to completion end-to-end in bare metal**.
+- **Remaining**: first 5 bytes of the streamed binary are corrupted
+  (`07 07 0c 2d 0b` instead of `7f 45 4c 46 01`). Bytes 5+ match the
+  reference-built ELF exactly. Filed as CDX-C6 in BACKLOG with probe
+  suggestions. Once C6 is fixed, binary pingpong's stage1 output should
+  boot cleanly and the MM4 fixed-point proof is cuttable.
 
 ## Recently Landed (MM4 path)
 
