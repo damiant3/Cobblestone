@@ -1189,7 +1189,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         {
             byte builtinResult = TryEmitBuiltin(funcName, args);
             if (builtinResult != byte.MaxValue)
+            {
+                m_inTailPosition = savedTailPos;
                 return builtinResult;
+            }
 
             // Sum type constructor: allocate [tag][field0][field1]... on heap
             SumType? sumType = apply.Type as SumType;
@@ -1199,12 +1202,19 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             {
                 byte ctorResult = EmitConstructor(funcName, args, sumType);
                 if (ctorResult != byte.MaxValue)
+                {
+                    m_inTailPosition = savedTailPos;
                     return ctorResult;
+                }
             }
 
             // Partial application: result is a function → create closure
             if (apply.Type is FunctionType && !m_locals.ContainsKey(funcName))
-                return EmitPartialApplication(funcName, args);
+            {
+                byte partialResult = EmitPartialApplication(funcName, args);
+                m_inTailPosition = savedTailPos;
+                return partialResult;
+            }
         }
 
         // Evaluate and save args
