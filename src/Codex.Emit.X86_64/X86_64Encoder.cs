@@ -334,6 +334,7 @@ static class X86_64Encoder
     }
 
     // Condition codes for Jcc and Setcc
+    public const byte CC_B  = 0x2;  // below (CF=1), unsigned
     public const byte CC_AE = 0x3;  // above or equal (CF=0), unsigned
     public const byte CC_E  = 0x4;  // equal (ZF=1)
     public const byte CC_NE = 0x5;  // not equal (ZF=0)

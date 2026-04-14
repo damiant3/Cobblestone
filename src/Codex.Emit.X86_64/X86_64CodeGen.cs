@@ -6425,6 +6425,12 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     const long ResultArenaBaseAddr = 0x7030;
     const long HeapHwmAddr = 0x7038;
     const long StackMinRspAddr = 0x7040;
+    // Watchdog state (timer-ISR–driven hang detector)
+    const long WdLastHeapAddr   = 0x7048;
+    const long WdLastRipAddr    = 0x7050;
+    const long WdStaleTicksAddr = 0x7058;
+    // 30s @ ~18.2 Hz default PIT = ~546 ticks. Round up.
+    const long WdStaleThreshold = 550;
     const long SerialRingBufAddr = 0x300000;
     const long SerialRingBufSize = 0x100000; // 1MB — must be power of 2
 
@@ -6463,6 +6469,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         X86_64Encoder.Li(m_text, Reg.RDI, ArenaBaseAddr);
         X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
         X86_64Encoder.Li(m_text, Reg.RDI, ResultArenaBaseAddr);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+        // Watchdog state: zero last-heap, last-rip, stale-ticks
+        X86_64Encoder.Li(m_text, Reg.RDI, WdLastHeapAddr);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+        X86_64Encoder.Li(m_text, Reg.RDI, WdLastRipAddr);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+        X86_64Encoder.Li(m_text, Reg.RDI, WdStaleTicksAddr);
         X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
 
         // 5. Enable interrupts (needed for serial ring buffer IRQ4 handler)
@@ -6663,6 +6676,12 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         X86_64Encoder.AddRI(m_text, Reg.RSI, 1);
         X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RSI, 0);
 
+        // ── Watchdog: detect hang via heap-pointer (R10) + RIP staleness ──
+        // R10 is the live user heap pointer; never pushed by interrupt entry.
+        // Saved RIP is at [rsp+40] (5 saved regs above: rax/rcx/rdx/rsi/rdi).
+        // If both R10 and RIP (within 4 KB) stay flat for ~30 s, panic.
+        EmitWatchdogCheck();
+
         // Send EOI early (before potential stack switch)
         EmitOutByte(0x20, 0x20);
 
@@ -6759,6 +6778,95 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         X86_64Encoder.PopR(m_text, Reg.RCX);
         X86_64Encoder.PopR(m_text, Reg.RAX);
         X86_64Encoder.Iretq(m_text);
+    }
+
+    void EmitWatchdogCheck()
+    {
+        // Compares R10 (live heap pointer) and the saved RIP at [rsp+40] to
+        // their last-tick snapshots. If either changed, reset the stale
+        // counter and update snapshots. If both unchanged, increment the
+        // stale counter; when it crosses WdStaleThreshold, panic.
+        // RIP "unchanged" tolerates a 4 KB window so a normal loop body
+        // that fits in one page doesn't get false-flagged as stuck.
+
+        // RCX <- saved RIP
+        X86_64Encoder.MovLoad(m_text, Reg.RCX, Reg.RSP, 40);
+
+        // Compare R10 to WdLastHeapAddr
+        X86_64Encoder.Li(m_text, Reg.RDI, WdLastHeapAddr);
+        X86_64Encoder.MovLoad(m_text, Reg.RDX, Reg.RDI, 0);
+        X86_64Encoder.CmpRR(m_text, Reg.R10, Reg.RDX);
+        int heapSame = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_E, 0);
+
+        // Heap changed: snapshot, reset stale, exit
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.R10, 0);
+        X86_64Encoder.Li(m_text, Reg.RDI, WdLastRipAddr);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RCX, 0);
+        X86_64Encoder.Li(m_text, Reg.RDI, WdStaleTicksAddr);
+        X86_64Encoder.Li(m_text, Reg.RAX, 0);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+        int doneA = m_text.Count;
+        X86_64Encoder.Jmp(m_text, 0);
+
+        // Heap unchanged: check RIP delta
+        PatchJcc(heapSame, m_text.Count);
+        X86_64Encoder.Li(m_text, Reg.RDI, WdLastRipAddr);
+        X86_64Encoder.MovLoad(m_text, Reg.RDX, Reg.RDI, 0);
+        X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RCX);
+        X86_64Encoder.SubRR(m_text, Reg.RAX, Reg.RDX);
+        // abs(RAX) via SAR/XOR/SUB
+        X86_64Encoder.MovRR(m_text, Reg.RDX, Reg.RAX);
+        X86_64Encoder.SarRI(m_text, Reg.RDX, 63);
+        X86_64Encoder.XorRR(m_text, Reg.RAX, Reg.RDX);
+        X86_64Encoder.SubRR(m_text, Reg.RAX, Reg.RDX);
+        X86_64Encoder.CmpRI(m_text, Reg.RAX, 4096);
+        int ripSame = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_BE, 0);
+
+        // RIP changed: snapshot, reset stale, exit
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RCX, 0);
+        X86_64Encoder.Li(m_text, Reg.RDI, WdStaleTicksAddr);
+        X86_64Encoder.Li(m_text, Reg.RAX, 0);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+        int doneB = m_text.Count;
+        X86_64Encoder.Jmp(m_text, 0);
+
+        // Both unchanged: increment stale counter, check threshold
+        PatchJcc(ripSame, m_text.Count);
+        X86_64Encoder.Li(m_text, Reg.RDI, WdStaleTicksAddr);
+        X86_64Encoder.MovLoad(m_text, Reg.RAX, Reg.RDI, 0);
+        X86_64Encoder.AddRI(m_text, Reg.RAX, 1);
+        X86_64Encoder.MovStore(m_text, Reg.RDI, Reg.RAX, 0);
+        X86_64Encoder.CmpRI(m_text, Reg.RAX, (int)WdStaleThreshold);
+        int doneC = m_text.Count;
+        X86_64Encoder.Jcc(m_text, X86_64Encoder.CC_B, 0);
+
+        // FIRE: panic dump + HLT loop (no return)
+        EmitWatchdogPanic();
+
+        PatchJmp(doneA, m_text.Count);
+        PatchJmp(doneB, m_text.Count);
+        PatchJcc(doneC, m_text.Count);
+    }
+
+    void EmitWatchdogPanic()
+    {
+        // Minimal panic: print "WD!\n" to COM1, then halt forever.
+        // Future v2 should also dump RIP/RSP/heap as hex, but the existing
+        // PH:* markers narrow the function down already, so this is enough
+        // to confirm the watchdog fires.
+        foreach (byte ch in "WD!\n"u8)
+        {
+            EmitSerialWaitThr();
+            X86_64Encoder.Li(m_text, Reg.RAX, ch);
+            X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
+            X86_64Encoder.OutDxAl(m_text);
+        }
+        X86_64Encoder.Cli(m_text);
+        int haltLoop = m_text.Count;
+        m_text.Add(0xF4); // hlt
+        X86_64Encoder.Jmp(m_text, haltLoop - (m_text.Count + 5));
     }
 
     void EmitSerialString(string s)
