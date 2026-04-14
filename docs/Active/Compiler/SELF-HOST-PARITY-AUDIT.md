@@ -1,25 +1,37 @@
 # Self-Host Parity Audit
 
-## Why this exists
+## What parity means
 
-The self-hosted compiler (`Codex.Codex/`) is supposed to be modeled on the
-reference compiler (`src/`). The reference is the source of truth for what
-Codex *should* do. The self-host is supposed to match it, feature for feature,
-so we can eventually cut the cord and not lose anything.
+See **principle 11 "Parity Is Narrow"** in `docs/10-PRINCIPLES.md`. Briefly:
+the reference compiler (`src/`) is a **baseline**, not a mirror. The self-host
+(`Codex.Codex/`) is expected to be a strict superset — doing more, doing
+better, diverging on shape.
 
-In practice, large chunks of the reference's foundational infrastructure
-never made it into the self-host. We keep discovering these gaps one at a
-time, painfully, often at the moment we most need the missing feature.
+The parity requirement is narrow and sharp. Only things that affect the
+**compilation output** must mirror precisely — lexing, parsing, desugaring,
+type checking, lowering, codegen semantics. Two compilers operating on the
+same source must reach the same program; `pingpong.sh` is the acceptance
+test.
 
-This document is the running inventory — green rows are in parity, yellow
-rows are partially there, red rows are open gaps, and every row has an owner
-or a note so future-Hex doesn't trip over the same rake twice.
+Things that only change what a human reads on the console — diagnostic
+wording, error formatting, span precision, CLI output, debug dumps,
+profiler output, build-time telemetry — are free to diverge. The self-host
+can innovate or lag on this axis without violating the contract.
 
-## What this is not
+When the line is contested: ask "does this affect what a conforming program
+can legally be, or what bytes it compiles to?" If yes, mirror. If no,
+diverge freely.
 
-Not a call to backport everything from the reference. Some reference
-features are dumb and we want to replace them. That's fine — document the
-decision in the "Notes" column.
+## How to read this inventory
+
+This document is the running inventory of where the two compilers stand on
+the output-affecting axis. Green rows are in parity, yellow rows are
+partially there, red rows are open gaps, and every row has a note so
+future-Hex doesn't trip over the same rake twice.
+
+Rows in the UX/diagnostics area are tracked only when a precision
+difference is operationally load-bearing (e.g., a span offset that tooling
+parses); otherwise they're out of scope.
 
 ## Parity matrix
 

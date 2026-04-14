@@ -63,6 +63,10 @@ That is all we need to know.
 
 If you need to write a script, you can use bash (.sh), powershell (.ps1), Codex, or C#.  We don't need another dependency.
 
+### 8. Parity is narrow
+
+The reference (`src/`) is a baseline, not a mirror. The self-host (`Codex.Codex/`) is a strict superset — free to do more, do better, diverge on shape. The parity requirement is narrow: anything that affects the **compilation output** (lexer, parser, desugarer, type checker, lowering, codegen semantics) must mirror precisely; everything else (diagnostics wording, CLI output, debug dumps, profiler output, span precision, error formatting) is free to diverge. `pingpong.sh` is the acceptance test for the narrow invariant. Full treatment in principle 11 of `docs/10-PRINCIPLES.md` and applied in `docs/Active/Compiler/SELF-HOST-PARITY-AUDIT.md`.
+
 ### Key Tools
 
 | Tool | What |
