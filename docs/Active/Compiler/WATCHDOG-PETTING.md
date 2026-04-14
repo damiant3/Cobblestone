@@ -141,9 +141,25 @@ Define `progress-tick : Nothing` as a builtin. Lower it to a NOP in all current 
 
 Filed as a non-blocking task; no MM4 dependency.
 
+## Follow-ups from the v1 basic-watchdog review
+
+Captured during review of `hex-hex/basic-watchdog` (commit `53af10b`) — the minimal soft-lockup detector that landed before this scoping doc's deferral: timer-ISR samples `R10` and saved `RIP`, panics `WD!\n` + HLT after 550 ticks (~30 s) with heap unchanged and RIP inside a 4 KB window. Real work (text pingpong, 39 s compiles) does not false-positive. These are the known-deferred improvements on top of that v1:
+
+1. **Self-host mirror in `Codex.Codex/Emit/X86_64Boot.codex`.** The v1 lives only in the reference emitter (`src/Codex.Emit.X86_64/X86_64CodeGen.cs`, ~108 lines of codegen). The self-host's bare-metal emitter does not emit the watchdog, so `codex build --target x86-64-bare` on the self-host produces a watchdog-less ELF. Mirror is blocked on C4 finishing — binary-pingpong byte-identity between ref and self-host is already broken by C4, so adding the mirror while C4 is live won't move the needle. Once C4 lands: port the watchdog to `Codex.Codex/Emit/X86_64Boot.codex` to restore byte-identical ref/self-host ELFs.
+
+2. **Richer panic dump.** v1 prints just `WD!\n` before `HLT`. Matching the Tier 3 output described earlier in this doc — `RIP`, `RSP`, top stack frames, `text-len`, `heap-hwm` in hex — is a direct upgrade. You'd combine it with BINARY-DIAG's `PH:*` markers to localize the stall, but a self-contained dump removes the dependency on other diagnostic paths being active.
+
+3. **Idle-wait petting.** v1's known false positive: after the bare-metal compiler reaches `PH:compile-done` and enters its REPL read-line idle wait, the heap pointer stops moving and RIP sits in the serial-read loop — the watchdog fires ~30 s later. This is the canonical use case for the `progress-tick` primitive committed at the bottom of this doc: emit a `progress-tick` at idle-wait loop entry (or tick it on each received byte), and the v1 watchdog's heap/RIP-flatness check continues to work because the tick updates one of the state slots. Cleanest resolution once `progress-tick` exists.
+
+4. **Runtime disable flag.** Single-stepping a stalled RIP in GDB would fire the watchdog within 30 s of the session, well before you've finished inspecting. A `--no-watchdog` build flag (or an env-gated emit path) skipping `EmitWatchdogCheck()` avoids this. Cheap; not a blocker for v1's use as a compile-time hang detector.
+
+5. **Configurable threshold.** v1 hardcodes 550 ticks. Exposing the threshold via a compile-time constant or env-var makes it easy to tune per-sample (e.g., drop to 5 s for a test suite that should never idle at all; raise to 5 min for cross-quire regressions that legitimately take longer).
+
+6. **Align with the tiered escalation.** v1 is Tier 3 only — it goes straight to halt. The tiered scheme described above (Tier 1 stall-now log, Tier 2 ring-buffer dump, Tier 3 halt) produces better diagnostics for the same engineering cost and fits the same ISR slot. Worth revisiting when we touch the panic path anyway (see follow-up #2).
+
 ## Scope: things this doc does not commit to
 
-- Whether to build the watchdog ISR
+- Whether to build the full tiered watchdog (beyond v1)
 - Whether to ever ship a satellite target
 - Whether gas metering is the right answer for some future target
 - Specific timer frequency, ring-buffer size, address layout
