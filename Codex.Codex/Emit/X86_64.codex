@@ -1615,26 +1615,31 @@ Section: Function Application
 
   emit-apply : CodegenState -> IRExpr -> IRExpr -> CodexType -> EmitResult
   emit-apply (st) (func-expr) (arg-expr) (result-ty) =
-   let full-expr = IrApply func-expr arg-expr result-ty (ir-expr-span func-expr)
-   in if st.tco.active & st.tco.in-tail-pos & is-self-call full-expr (st.tco.current-func) then emit-tail-call st func-expr arg-expr
-   else let flat = flatten-apply func-expr [arg-expr]
-   in if is-builtin (flat.func-name) then emit-builtin st (flat.func-name) (flat.args)
-         else let resolved-result-ty = resolve-constructed-ty st result-ty
-         in when resolved-result-ty
-          if SumTy (sname) (ctors) ->
-           let tag = find-ctor-tag ctors (flat.func-name) 0
-   in if tag >= 0 then emit-sum-ctor st (flat.args) tag
-              else let is-local-sum = lookup-local (st.locals) (flat.func-name) >= 0
-              in if is-local-sum then emit-indirect-call st flat
-              else emit-direct-call st flat
-          if FunTy (pt) (rt) ->
-           let is-local = lookup-local (st.locals) (flat.func-name) >= 0
-   in if is-local then emit-indirect-call st flat
-              else emit-partial-application st (flat.func-name) (flat.args)
-          if _ ->
-           let is-local = lookup-local (st.locals) (flat.func-name) >= 0
-   in if is-local then emit-indirect-call st flat
-              else emit-direct-call st flat
+   let saved-tail = st.tco.in-tail-pos
+   in let full-expr = IrApply func-expr arg-expr result-ty (ir-expr-span func-expr)
+   in let r = if st.tco.active & saved-tail & is-self-call full-expr (st.tco.current-func) then emit-tail-call st func-expr arg-expr
+              else let flat = flatten-apply func-expr [arg-expr]
+              in if is-builtin (flat.func-name) then emit-builtin st (flat.func-name) (flat.args)
+                    else let resolved-result-ty = resolve-constructed-ty st result-ty
+                    in when resolved-result-ty
+                     if SumTy (sname) (ctors) ->
+                      let tag = find-ctor-tag ctors (flat.func-name) 0
+              in if tag >= 0 then emit-sum-ctor st (flat.args) tag
+                         else let is-local-sum = lookup-local (st.locals) (flat.func-name) >= 0
+                         in if is-local-sum then emit-indirect-call st flat
+                         else emit-direct-call st flat
+                     if FunTy (pt) (rt) ->
+                      let is-local = lookup-local (st.locals) (flat.func-name) >= 0
+              in if is-local then emit-indirect-call st flat
+                         else emit-partial-application st (flat.func-name) (flat.args)
+                     if _ ->
+                      let is-local = lookup-local (st.locals) (flat.func-name) >= 0
+              in if is-local then emit-indirect-call st flat
+                         else emit-direct-call st flat
+   in EmitResult {
+    state = st-set-tail-pos (r.state) saved-tail,
+    reg = r.reg
+   }
 
   emit-direct-call : CodegenState -> FlatApply -> EmitResult
   emit-direct-call (st) (flat) =

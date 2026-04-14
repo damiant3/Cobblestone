@@ -337,6 +337,19 @@ public static partial class Program
             string outputPath = Path.Combine(outputDir, chapterName + ext);
             File.WriteAllBytes(outputPath, elf);
             Console.WriteLine($"✓ Compiled to {outputPath} ({target}, {elf.Length:N0} bytes)");
+
+            if (Environment.GetEnvironmentVariable("CODEX_DUMP_FUNC_OFFSETS") is not null)
+            {
+                Dictionary<string, int>? offs = x64Emitter.GetFunctionOffsets();
+                if (offs is not null)
+                {
+                    string offsPath = Path.Combine(outputDir, chapterName + ".funcoffsets.txt");
+                    using StreamWriter sw = new(offsPath);
+                    foreach (KeyValuePair<string, int> kv in offs.OrderBy(o => o.Value))
+                        sw.WriteLine($"{kv.Value:X8} {kv.Key}");
+                    Console.WriteLine($"  func offsets: {offsPath} ({offs.Count} entries)");
+                }
+            }
             PrintTypes(irResult);
 
             if (s_dumpFrames)
