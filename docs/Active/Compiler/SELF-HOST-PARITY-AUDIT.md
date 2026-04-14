@@ -113,7 +113,6 @@ Legend: ✅ at parity · 🟡 partial / different · ❌ missing · ⏭️ delib
 |------|-----------|-----------|--------|-------|
 | Hindley-Milner-ish inference | ✓ | ✓ | ✅ | |
 | Unifier with substitution map | ✓ | ✓ | ✅ | Fused `has-subst` + `subst-lookup` (P8) |
-| Parameterized records | 🟡 C# emit chokes | 🟡 | 🟡 | Reference x86-64 path works; C# emitter path unverified |
 | Union types with type variables | 🟡 | 🟡 | 🟡 | Needs dedicated pass |
 | `EffectfulTy` / `ForAllTy` unwrapping | ✓ | ✓ | ✅ | T1/T2 fixes (`f71d8d7`, `8475298`, `785ff64`) |
 | Polymorphism coverage audit | ? | ? | ❔ | Not yet done |
@@ -162,9 +161,7 @@ are documented as lower-order wins.
 1. **Self-host adoption of foreword `Maybe`** — the library exists; the
    compiler doesn't use it. Low urgency (sentinel pairs work) but would
    reduce API surprise across stdlib boundary.
-2. **Parameterized records through C# emit path** — reference chokes;
-   self-host behaviour unconfirmed. Needs a focused test.
-3. **Polymorphism coverage audit** — type system row marked ❔. No
+2. **Polymorphism coverage audit** — type system row marked ❔. No
    systematic test sweep exists; build one before claiming parity.
 
 ## Not in scope
