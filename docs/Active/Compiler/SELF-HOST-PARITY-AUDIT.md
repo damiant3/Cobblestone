@@ -71,6 +71,7 @@ Legend: ✅ at parity · 🟡 partial / different · ❌ missing · ⏭️ delib
 | Staged compilation with error gates | ✓ | ✓ | ✅ | Phase 4 — halt at stage boundary on errors (`0d1239d`) |
 | Diagnostic-display tests per severity | ✓ | ✓ | ✅ | (`792158c`) |
 | Bare-metal BINARY-DIAG mode with per-stage PH markers | n/a | ✓ | ✅ | Emit-side (`02b71e9`, `8250b89`, `04b5c26`) |
+| `let`-bind on effectful value rejected (CDX2033) | ✓ | ✓ | 🟡 | Ref emits diagnostic at `binding.Value.Span`; self-host uses `synthetic-span` (`add-unify-error` takes no span). Landed on `hex-hex/fix-let-effectful-bind` — fix commit `1b49158`, repro `samples/let-effectful-bug.codex`. Follow-up: thread binding span through `add-unify-error` in self-host so the diagnostic points at the offending line. |
 | Parser error recovery (skip-to-next-def resync) | ✓ | ❌ | ❌ | Bag captures what it can; cascading failures still happen on malformed input. **Open gap.** |
 
 ### Debugging / crash behavior
