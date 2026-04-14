@@ -99,6 +99,7 @@ public static class CdxCodes
     public const int EffectLabelMustBeName = 2030;
     public const int EffectNotDeclared = 2031;
     public const int TypeArgArityMismatch = 2032;
+    public const int LetBindsEffectfulValue = 2033;
 
     // Linearity (204x)
     public const int LinearUnused = 2040;
@@ -275,6 +276,9 @@ public static class CdxCodes
         [TypeArgArityMismatch] = new(TypeArgArityMismatch, nameof(TypeArgArityMismatch),
             DiagnosticSeverity.Error, CdxPhase.TypeChecker,
             "A type constructor received the wrong number of arguments."),
+        [LetBindsEffectfulValue] = new(LetBindsEffectfulValue, nameof(LetBindsEffectfulValue),
+            DiagnosticSeverity.Error, CdxPhase.TypeChecker,
+            "let-binding the result of an effectful call silently corrupts on bare metal; use do-bind (X <- expr) inside a do block."),
 
         [LinearUnused] = new(LinearUnused, nameof(LinearUnused),
             DiagnosticSeverity.Error, CdxPhase.Linearity,
