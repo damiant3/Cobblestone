@@ -85,7 +85,7 @@ Legend: ✅ at parity · 🟡 partial / different · ❌ missing · ⏭️ delib
 | Diagnostic-display tests per severity | ✓ | ✓ | ✅ | (`792158c`) |
 | Bare-metal BINARY-DIAG mode with per-stage PH markers | n/a | ✓ | ✅ | Emit-side (`02b71e9`, `8250b89`, `04b5c26`) |
 | `let`-bind on effectful value rejected (CDX2033) | ✓ | ✓ | 🟡 | Both compilers emit the error. Ref uses `binding.Value.Span`; self-host uses `synthetic-span` because `add-unify-error` takes no span, so the diagnostic points at (0,0). Diagnostic-only divergence under "Parity is Narrow" — doesn't affect compilation output. Follow-up: thread binding span through `add-unify-error` in self-host. Repro: `samples/let-effectful-bug.codex`. |
-| Parser error recovery (skip-to-next-def resync) | ✓ | ❌ | ❌ | Bag captures what it can; cascading failures still happen on malformed input. **Open gap.** |
+| Parser error recovery (skip-to-next-def resync) | ✓ | ✓ | ✅ | `finish-def` resyncs to next top-level def on missing `=` via `skip-body-tokens` at the name column. Each malformed def emits one diagnostic; valid defs after it continue parsing. Repro: `samples/parser-resync.codex`. |
 
 ### Debugging / crash behavior
 
@@ -103,7 +103,7 @@ Legend: ✅ at parity · 🟡 partial / different · ❌ missing · ⏭️ delib
 |------|-----------|-----------|--------|-------|
 | Source span on every token / node | ✓ | ✓ | ✅ | |
 | Indentation-sensitive grouping | ✓ | ✓ | ✅ | |
-| Error recovery (resync to next top-level def) | ✓ | ❌ | ❌ | See diagnostics row above |
+| Error recovery (resync to next top-level def) | ✓ | ✓ | ✅ | See diagnostics row above |
 | `do`-block stop-set correctness | ✓ | ✓ | ✅ | `is-else-keyword`, `is-in-keyword` added (`058ac7c`) |
 | Effect-annotation parsing | ✓ | ✓ | ✅ | No longer discarded (`2c8b520`) |
 
@@ -159,15 +159,12 @@ are documented as lower-order wins.
 
 ## Top open gaps (priority order)
 
-1. **Parser error recovery (skip-to-next-def resync)** — bag captures
-   what it can, but one malformed def still cascades. Classic technique:
-   on parse error, skip tokens until column-1 `name :` pattern, resume.
-2. **Self-host adoption of foreword `Maybe`** — the library exists; the
+1. **Self-host adoption of foreword `Maybe`** — the library exists; the
    compiler doesn't use it. Low urgency (sentinel pairs work) but would
    reduce API surprise across stdlib boundary.
-3. **Parameterized records through C# emit path** — reference chokes;
+2. **Parameterized records through C# emit path** — reference chokes;
    self-host behaviour unconfirmed. Needs a focused test.
-4. **Richer CPU-exception dump on bare metal** — add error-code, R10, RSP
+3. **Richer CPU-exception dump on bare metal** — add error-code, R10, RSP
    to the `!EXC=` message so faults localize without external tooling.
    Self-host side only (UX).
 
