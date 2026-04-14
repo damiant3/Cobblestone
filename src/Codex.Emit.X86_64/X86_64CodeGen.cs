@@ -1650,6 +1650,16 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         if (region.Type is FunctionType)
             return EmitExpr(region.Body);
 
+        // Bare metal: no reclamation anywhere. The scalar-reclaim path
+        // (save mark / reset HeapReg at region exit) is unsafe when a
+        // region's body allocates heap that is reachable via some
+        // outer reference — e.g. `compile-to-binary`'s result record
+        // holds pointers into heap the body set up, and resetting
+        // HeapReg below those pointers lets the next allocation
+        // overwrite them. CDX-C6.
+        if (m_target == X86_64Target.BareMetal)
+            return EmitExpr(region.Body);
+
         if (!region.NeedsEscapeCopy)
         {
             // Scalar return — save/restore HeapReg to reclaim intermediates.
@@ -1664,11 +1674,6 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             X86_64Encoder.MovRR(m_text, HeapReg, LoadLocal(mark));
             return bodyResult;
         }
-
-        // Bare metal: 2 MB heap too small for 512 KB forwarding table.
-        // Fall back to pass-through (no reclamation).
-        if (m_target == X86_64Target.BareMetal)
-            return EmitExpr(region.Body);
 
         // ── Two-space reclamation with forwarding hash table ──────
         // Escape-copy the heap result to result space, then reset
@@ -2471,7 +2476,15 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             case "heap-restore" when args.Count >= 1:
             {
                 byte val = EmitExpr(args[0]);
-                X86_64Encoder.MovRR(m_text, HeapReg, val);
+                // Bare metal: heap-restore is a no-op. The self-host emits
+                // `let hr = heap-restore watermark` expecting the reclaim
+                // to never actually happen (because scalar-reclaim used to
+                // no-op it). Now that scalar-reclaim is pass-through on
+                // bare metal, heap-restore would genuinely reset HeapReg —
+                // which dangles the CodegenState threaded forward across it.
+                // CDX-C6: make it explicit.
+                if (m_target != X86_64Target.BareMetal)
+                    X86_64Encoder.MovRR(m_text, HeapReg, val);
                 byte rd = AllocTemp();
                 X86_64Encoder.Li(m_text, rd, 0);
                 return rd;
