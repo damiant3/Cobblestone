@@ -3,64 +3,66 @@
 ## Problem
 
 Today a Codex compilation is a flat concatenation of every `.codex`
-file the CLI walks, bucketed by `Chapter: X` headers in the source.
-That's it. There is no grouping unit above chapter, and two files in
+file the CLI walks, bucketed only by `Chapter: X` headers in the
+source. There is no grouping unit above chapter, and two files in
 completely unrelated parts of the tree can both declare `Chapter: X`
 and silently merge into one chapter.
 
 A recent session hit exactly this: an earlier agent added a second
-`Chapter: Hamt` file. The scanner merged it with the real `Hamt`
+`Chapter: Hamt` file. The scanner merged it with the original `Hamt`
 chapter. Downstream scoping, renaming, and collision detection all
 operated on the merged bag as if it were one chapter. Whether the
-ref compiler or the self-host emitted *this* `hamt-get` or *that*
-`hamt-get` at any given call site was, at best, undefined.
+compiler emitted *this* `hamt-get` or *that* `hamt-get` at any given
+call site was undefined.
 
 Silent merging of same-named chapters is a bug class the language
-has to close. It's also the cause of downstream behavior drift —
-adding an unrelated top-level def changes which function a call
-resolves to, because the name-resolution tiebreaker depends on
+has to close. It is also the cause of downstream behavior drift —
+adding an unrelated top-level def today can change which function a
+call resolves to, because the name-resolution tiebreaker depends on
 source-order, which depends on what else is in the bag.
 
-We already have a partial mechanism: `Page N of M` markers at the
-end of files that intentionally split one chapter across multiple
-files (today: `Parser` ×3 in `Syntax/`, `X86-64 Code Generator` ×3
-in `Emit/`, `Type Checker` ×2 in `Types/`, `Lowering` ×2 in `IR/`,
-`CSharp Emitter` ×2 in `Emit/`). The markers are parsed but not
-enforced — they're decoration.
+A partial mechanism already exists: `Page N of M` markers at the end
+of files that intentionally split one chapter across multiple files
+(today: `Parser` ×3 in `Syntax/`, `X86-64 Code Generator` ×3 in
+`Emit/`, `Type Checker` ×2 in `Types/`, `Lowering` ×2 in `IR/`,
+`CSharp Emitter` ×2 in `Emit/`). These markers are parsed but not
+enforced — decoration only.
 
 ## The vocabulary
 
 A Codex compilation has four structural levels, all authentic
 medieval-codex terms:
 
-| Level     | What it is                                                   | On disk                              |
-|-----------|--------------------------------------------------------------|--------------------------------------|
-| **Codex** | The whole compilation                                        | The root directory                   |
-| **Quire** | A gathering of chapters                                      | A top-level subdirectory of the root |
-| **Chapter** | A named unit of definitions, type defs, effect defs       | One or more `.codex` files           |
-| **Page**  | A file's portion of a multi-file chapter                     | A `Page N of M` marker inside a file |
+| Level       | What it is                                              | On disk                              |
+|-------------|---------------------------------------------------------|--------------------------------------|
+| **Codex**   | The whole compilation                                   | The root directory                   |
+| **Quire**   | A gathering of chapters                                 | A top-level subdirectory of the root |
+| **Chapter** | A named unit of definitions, type defs, effect defs     | One or more `.codex` files           |
+| **Page**    | A file's portion of a multi-file chapter                | A `Page N of M` marker inside a file |
 
-A *codex* (pre-binding book form) is literally a loose collection of
+A *codex* (pre-binding book form) is a loose collection of
 gatherings. A *quire* is one such gathering — a stack of pages about
-to become part of the larger work. That matches what we're doing:
-the repo is a codex; each top-level directory is a quire; quires
-hold chapters; chapters span pages.
+to become part of the larger work. That matches what we are doing:
+the repo is a codex, each top-level directory is a quire, quires
+hold chapters, chapters span pages.
 
 ## Filesystem mapping
 
-- The **root directory** is the codex. Its `main.codex` sits directly
-  in the root — it is part of the codex itself, not of any named
-  quire.
+- The **root directory** is the codex. It is the composition root.
+  `main.codex` sits directly in the root — it is part of the codex
+  itself, not of any named quire.
 - Every **top-level subdirectory** of the root is a quire. The
   quire's name is the subdirectory's basename.
-- **Only one level of subdivision.** A quire may itself contain
+- **Only one level of subdivision.** A quire may contain deeper
   subdirectories, but the compiler **ignores** them — `.codex` files
   inside sub-subdirectories are not scanned. Quires do not nest.
+- Every `.codex` file must declare a `Chapter: <name>` header.
+  (Today's 39 source files all do; this formalizes the convention.)
 
 Applied to today's tree (`Codex.Codex/`):
 
 ```
-Codex.Codex/                  ← the codex
+Codex.Codex/                  ← the codex (composition root)
 ├── main.codex                ← in the codex itself (no quire)
 ├── Ast/                      ← quire: Ast
 ├── Core/                     ← quire: Core
@@ -71,148 +73,191 @@ Codex.Codex/                  ← the codex
 └── Types/                    ← quire: Types
 ```
 
-This leaves the option to add deeper directories later for
-organization that is *not* compilation-relevant (e.g., docs, tests,
-scratch files), without changing what the compiler sees.
+Deeper directories are available for organization that is *not*
+compilation-relevant (docs, tests, scratch) without changing what
+the compiler sees.
+
+## Scoping rule
+
+**The only implicit scope is the current chapter.** A def may
+reference other defs, type defs, and effect defs declared in the
+same chapter (whether on the same page or a different page of that
+chapter) without any qualification. Every other reference requires
+a cite — even to a chapter in the same quire.
+
+Rationale: this makes `cites` the single, uniform mechanism for
+expressing cross-chapter dependencies. A file's cites are its
+complete inbound-dependency list, readable at a glance, regardless
+of whether the dependency is in-quire or cross-quire. It also closes
+the source-order-tiebreaker class of bugs — no unqualified name
+can silently bind to a different chapter's def because someone
+reordered the file walk.
 
 ## Within-quire rules
 
-Inside a single quire:
-
-1. **Chapter names are unique within a quire** — with one exception.
+1. **Chapter names are unique within a quire.** Same-named chapters
+   in the same quire are an error, caught at scan time, with a
+   diagnostic naming both files and suggesting either a rename or
+   page markers.
 2. **A chapter may be split across multiple files via `Page N of M`
-   markers**, provided all pages are present and coherent: every
-   integer in `1..M` appears exactly once, all pages declare the same
-   M, and all pages live in the same quire.
-3. **Any other repetition of a chapter name within a quire is an
-   error** — caught at scan time, with a message naming both files
-   and suggesting either a rename or page markers.
-
-Across quires, chapter names may collide freely. Two `Chapter: Hamt`
-files in two different quires are two different chapters.
+   markers.** All M pages must be present in the same quire, each
+   integer in `1..M` appears exactly once, and every page declares
+   the same M. Missing pages, duplicate page numbers, disagreeing M,
+   or pages in different quires are compiler errors.
+3. **Chapter names may collide freely across quires.** Two
+   `Chapter: Hamt` files in two different quires are two different
+   chapters. The quire name is part of the chapter's identity.
 
 ## Cite syntax
 
-Cross-quire calls **require** an explicit cite. A method call must
-not silently leave its quire — if code in quire A reaches into a
-chapter of quire B, the file declaring the caller must say so.
-
-The required form:
+Every cross-chapter reference — same quire or not — requires an
+explicit cite:
 
 ```
-cites <Quire> chapter <Chapter> (<name>, <name>, …)
+cites <Quire> chapter <Chapter Title> (<name>, <name>, …)
 ```
 
-The `chapter` keyword is mandatory. It disambiguates where the
-(possibly multi-word) quire name ends and the (possibly multi-word)
-chapter name begins — a real ambiguity, since today's codebase
-already has quire names that would swallow the start of a chapter
-name otherwise.
+- The `chapter` keyword is mandatory. It disambiguates where the
+  (possibly multi-word) quire name ends and the (possibly multi-word)
+  chapter title begins. Without it, `cites Emit CSharp Emitter (…)`
+  would be structurally ambiguous.
+- **Chapter titles in cites use the exact title from the
+  `Chapter:` header.** No shortening, no slugs, no canonical
+  aliases. Multi-word titles are allowed and common.
+- Quire names are the exact subdirectory basename.
+- The parenthesized list is the set of names imported into local
+  scope by this cite.
 
 Example:
 
 ```
-cites Foreword chapter LinkedList (add, remove, clear)
+cites Emit chapter CSharp Emitter (emit-full-chapter)
 ```
 
 Space-separated keyword form was chosen over `/`, `.`, and `::`:
 
 - `.` collides with record-field access.
-- `/` is visually noisy and Damian dislikes it.
-- `::` is borrowed from languages we are not trying to imitate.
+- `/` is visually noisy.
+- `::` is borrowed from languages we are not imitating.
 
-The space-keyword form also reads aloud as English prose, which
-matches the literate-programming aesthetic of the language.
+The space-keyword form also reads as English prose, matching the
+literate-programming aesthetic.
 
-### Existing cites migrated
+### Self-quire cites
+
+A chapter in quire `Syntax` that needs defs from another chapter in
+quire `Syntax` uses the same cite form with its own quire name:
+
+```
+cites Syntax chapter Lexer (tokenize)
+```
+
+There is no abbreviated same-quire form. Uniformity wins over
+brevity — every cite looks the same whether it crosses a quire
+boundary or not.
+
+### The root is not a cite target
+
+The codex root (where `main.codex` lives) is the composition root.
+Code in the root may cite into any quire; no quire may cite into
+the root. There is no reserved quire name that refers to the codex
+root. Defs that need to be shared belong in a quire.
+
+### The migration table
 
 All current cites live in `Codex.Codex/main.codex`. Under the new
 rule they become:
 
 ```
-cites Emit chapter CSharpEmitter (emit-full-chapter)
-cites Emit chapter CodexEmitter (emit-type-defs, emit-def, collect-ctor-names)
-cites Types chapter TypeChecker (resolve-type-expr)
+cites Emit chapter CSharp Emitter (emit-full-chapter)
+cites Emit chapter Codex Emitter (emit-type-defs, emit-def, collect-ctor-names)
+cites Types chapter Type Checker (resolve-type-expr)
 cites Emit chapter X86-64 Code Generator (x86-64-emit-chapter)
 ```
 
-Note that `X86-64` in the current source is the short form of the
-chapter title `X86-64 Code Generator` — the cite-rewrite either
-carries the full title or we adopt a canonical short-name mechanism
-(see Open Questions).
+Today's source uses short forms (`CSharpEmitter`, `X86-64`) that are
+inferred against the real multi-word headers (`CSharp Emitter`,
+`X86-64 Code Generator`). The "full title only" rule retires that
+inference layer.
 
 ## Call-site resolution
 
-Within a quire, chapter names are unique, so unqualified references
-to a chapter's definitions are unambiguous and resolve locally.
+At a call site:
 
-Across quires, the cite declaration is the resolution mechanism.
-After `cites Emit chapter CodexEmitter (emit-def, …)` at the top of
-`main.codex`, the identifier `emit-def` in that file resolves to the
-`CodexEmitter` chapter's `emit-def`. The same call site with no cite
-is an error — there is no implicit cross-quire resolution, and there
-is no inline-qualified form at the call site. If you want to call
-into another quire, you cite it.
+1. If the name is declared in the current chapter (any page), it
+   resolves to that def. Done.
+2. Otherwise, the name must be introduced by a cite at the top of
+   the enclosing file. The cite's `(name, name, …)` list is the set
+   of identifiers it brings into local scope, each resolving to the
+   cited chapter's definition.
+3. A name that is neither local-chapter nor cite-imported is an
+   error.
 
-## Why no inline cross-quire call syntax
-
-The temptation is to allow something like `Emit chapter CodexEmitter
-emit-def` at the call site, mirroring the cite form. We are *not*
-adding this. Reasons:
-
-1. Cites already do this cleanly — a file's set of cites is also its
-   set of cross-quire imports, readable at a glance.
-2. Inline qualification invites scattered cross-quire dependencies
-   that are hard to audit.
-3. Every inline-qualified call can be written as a cite plus an
-   unqualified call; the cite form is not less expressive, only more
-   structured.
+There is no inline-qualified call syntax (`Emit chapter CodexEmitter
+emit-def`). Every inline-qualified call is expressible as a cite
+plus an unqualified call; the cite form is not less expressive, only
+more structured, and keeps cross-chapter dependencies at the top of
+each file.
 
 ## What this closes
 
-- The HAMT-collision class of bugs: two files silently sharing a
-  chapter name.
-- Downstream non-determinism in name resolution: adding an unrelated
-  def no longer shifts which chapter's function wins at a call site,
-  because the winner is picked by the cite, not by source-order
-  tiebreaking.
-- The "what is the compilation unit?" question: the compilation unit
-  is the codex (the root directory). Files, chapters, and quires are
-  sub-structure of it.
+- **Silent chapter-name collisions**, within a quire (now an error)
+  and across quires (now well-defined — different quires mean
+  different chapters).
+- **Source-order-dependent name resolution.** Adding an unrelated
+  top-level def can no longer shift which chapter's function wins
+  at a call site, because the winner is picked by the cite, not by
+  the tiebreaker.
+- **The compilation-unit question.** The compilation unit is the
+  codex (the root directory). Files, pages, chapters, and quires are
+  all sub-structure of it.
+- **The short-name-vs-title ambiguity.** Cites use the exact title.
 
-## Open questions (not yet decided)
+## Migration
 
-1. **Same-quire cites.** Must chapters in the same quire be cited
-   too, or are they implicitly in scope because within-quire
-   uniqueness is enforced? Today's code treats them as in scope.
-   Leaving them implicit is simpler; requiring same-quire cites
-   would be more symmetric.
-2. **Codex-quire (root) naming.** When code in a named quire wants
-   to cite a chapter that lives in the root (alongside `main`), what
-   quire name does it use? Candidates: a reserved keyword (`codex`),
-   an empty name, or disallow root-quire chapters from being cited
-   at all (the root contains `main` only, by convention).
-3. **Canonical chapter naming.** Chapters today have both a header
-   title (`Chapter: X86-64 Code Generator`) and, in cites, a short
-   form (`X86-64`). The quire model tightens the ambiguity: decide
-   whether cites must use the exact chapter title, whether an alias
-   mechanism exists, or whether titles are required to be
-   single-token.
-4. **Page-marker completeness enforcement.** Today `Page N of M`
-   is parsed but not validated. Under the quire model it becomes
-   load-bearing — all M pages must be present in the same quire,
-   numbers 1..M exactly once. Exact diagnostic codes and wording TBD.
-5. **Migration plan.** Land scanner changes first (detect violations
-   and error), then migrate `main.codex`'s cites, then enforce the
-   new cite form as the only valid one. Each step must keep the text
-   pingpong green.
+Single change, not phased. Do the minimum consistent set in one
+branch:
+
+1. Scanner: enforce within-quire chapter-name uniqueness (error on
+   violation); enforce `Page N of M` coherence; stop scanning below
+   depth 2.
+2. Cite parser: require `<Quire> chapter <Chapter Title> (…)`.
+3. Rewrite the four cites in `main.codex`.
+4. Pingpong must stay green at the end of the branch.
+
+Phased migration would leave the compiler in an inconsistent state
+between steps and invite iteration burn. One branch, one merge.
 
 ## Not in scope
 
-- Changing the chapter/page vocabulary itself — chapters and pages
-  stay.
-- Nested quires. Intentionally excluded to keep the metaphor flat
-  and the filesystem walk predictable.
-- Cross-codex references. A codex is the unit of compilation; there
-  is no syntax for reaching into a *different* codex. If we ever
-  need that, it becomes a separate design.
+- **Nested quires.** Intentionally excluded — quires do not nest,
+  to keep the metaphor flat and the filesystem walk predictable.
+- **Inline cross-chapter call syntax.** Cites are the only
+  cross-chapter mechanism.
+- **Cross-codex references.** A codex is the unit of compilation and
+  distribution. There is no syntax for reaching into a *different*
+  codex. If you need code from elsewhere, bring it in as source.
+  We are not building a library/linker model — that pushes us into
+  versioning, ABI stability, and the rest of the 16-bit-era
+  complexity that Codex is deliberately avoiding.
+- **Changing the chapter/page vocabulary.** Chapters and pages stay.
+
+## Encoding
+
+Quire names and chapter titles are CCE text, same as all compiler
+internals. Anything outside CCE Tier 0 is normalized to `?` at the
+I/O boundary on the way in. Name a folder in Chinese and you will
+get `????????`, and your cites will have to match the
+`????????` the scanner produced. That is working as intended
+until the compiler learns to handle tiers above T0 — at which point
+the normalization layer is replaced, not the design.
+
+## Open questions
+
+1. **One chapter per file, or can a file declare multiple?** Today
+   all 39 source files declare exactly one `Chapter:` header.
+   Requiring "one chapter per file" simplifies the scanner and makes
+   the file the natural page boundary. The alternative (multiple
+   chapters per file) is not free and has no current use case.
+   Defaulting to "one chapter per file" until someone names a case
+   for the other.
