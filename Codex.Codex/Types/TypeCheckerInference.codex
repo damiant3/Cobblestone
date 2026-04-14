@@ -191,8 +191,25 @@ Section: Infer Let
    }
    else let b = list-at bindings i
    in let vr = infer-expr st env (b.value)
-   in let env2 = env-bind env (b.name.value) (vr.inferred-type)
-   in infer-let-bindings (vr.state) env2 bindings (i + 1) len
+   in let bound-ty = unwrap-effectful-or-error (vr.inferred-type) (b.name.value) (vr.state)
+   in let env2 = env-bind env (b.name.value) (bound-ty.ty)
+   in infer-let-bindings (bound-ty.state) env2 bindings (i + 1) len
+
+  UnwrapResult = record {
+   ty : CodexType,
+   state : UnificationState
+  }
+
+  unwrap-effectful-or-error : CodexType -> Text -> UnificationState -> UnwrapResult
+  unwrap-effectful-or-error (ty) (name) (st) =
+   when ty
+    if EffectfulTy (effs) (inner) ->
+     if list-length effs == 0 then UnwrapResult { ty = ty, state = st }
+     else UnwrapResult {
+      ty = inner,
+      state = add-unify-error st cdx-let-binds-effectful-value ("let-binding '" ++ name ++ "' to an effectful value is not allowed outside a do-bind. Use '" ++ name ++ " <- ...' inside a do block.")
+     }
+    if _ -> UnwrapResult { ty = ty, state = st }
 
 Section: Infer Lambda
   infer-lambda : UnificationState -> TypeEnv -> List Name -> AExpr -> CheckResult
