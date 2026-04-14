@@ -6682,7 +6682,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         // If both R10 and RIP (within 4 KB) stay flat for ~30 s, panic.
         EmitWatchdogCheck();
 
-        // ── Sampling profiler (env-gated): every 100 ticks (~5.5s) print
+        // ── Sampling profiler (env-gated): every 5 ticks (~275 ms) print
         // "S:<RIP-hex>\n" to serial. Look up RIP in funcoffsets.txt to find
         // the hot function. Used to localize C4-style algorithmic blow-ups
         // that the watchdog can't catch (per-iter heap progress).
