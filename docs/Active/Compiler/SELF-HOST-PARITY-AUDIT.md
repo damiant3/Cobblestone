@@ -85,7 +85,7 @@ Legend: ✅ at parity · 🟡 partial / different · ❌ missing · ⏭️ delib
 | Diagnostic-display tests per severity | ✓ | ✓ | ✅ | (`792158c`) |
 | Bare-metal BINARY-DIAG mode with per-stage PH markers | n/a | ✓ | ✅ | Emit-side (`02b71e9`, `8250b89`, `04b5c26`) |
 | `let`-bind on effectful value rejected (CDX2033) | ✓ | ✓ | 🟡 | Both compilers emit the error. Ref uses `binding.Value.Span`; self-host uses `synthetic-span` because `add-unify-error` takes no span, so the diagnostic points at (0,0). Diagnostic-only divergence under "Parity is Narrow" — doesn't affect compilation output. Follow-up: thread binding span through `add-unify-error` in self-host. Repro: `samples/let-effectful-bug.codex`. |
-| Parser error recovery (skip-to-next-def resync) | ✓ | ✓ | ✅ | `finish-def` resyncs to next top-level def on missing `=` via `skip-body-tokens` at the name column. Each malformed def emits one diagnostic; valid defs after it continue parsing. Repro: `samples/parser-resync.codex`. |
+| Parser error recovery (skip-to-next-def resync) | ✓ | ✓ | ✅ | `finish-def` resyncs to next top-level def on missing `=` via `skip-body-tokens` at the name column. Each malformed def emits one diagnostic; valid defs after it continue parsing. Repro: `samples/parser-resync.codex` (`8d35439`). |
 
 ### Debugging / crash behavior
 
@@ -93,7 +93,7 @@ Legend: ✅ at parity · 🟡 partial / different · ❌ missing · ⏭️ delib
 |------|-----------|-----------|--------|-------|
 | .NET exception stack traces | ✓ | ✓ | ✅ | |
 | Bare-metal ISR plumbing (timer, keyboard, serial) | ✓ | ✓ `X86_64Boot.codex` | ✅ | `emit-common-interrupt-handler` handles vectors 32/33/36 |
-| CPU-exception ISRs (vectors 0-31: #DE, #UD, #GP, #PF, …) with register/fault dump to serial | ❌ | ✓ | ⏭️ | Self-host bare-metal emitter dumps `!EXC=<vec> RIP=<hex>` and halts on any vec<32 (commit `e014553`). Reference has no equivalent and doesn't need one under "Parity is Narrow" — fault diagnostics are UX, not compilation output. Richer dump (error-code, R10, RSP) tracked as future work. |
+| CPU-exception ISRs (vectors 0-31: #DE, #UD, #GP, #PF, …) with register/fault dump to serial | ✓ | ✓ | ✅ | Both bare-metal emitters now dispatch vec<32 to a panic handler that prints `!EXC=<vec> RIP=<hex> RBX=<hex> R12=<hex> R13=<hex> R14=<hex> R10=<hex>` and halts. Self-host: `e014553`. Reference: `b00b9ce` (basic dispatch) + `fdbc1d2` (callee-saved regs). The RBX=0x220 dump was what root-caused CDX-C5. |
 | Source-location tracking through IR lowering | ✓ | ✓ | ✅ | IR-span surfaced to codegen errors |
 | `--diagnostic` bare-metal allocation / function tracing | ✓ | ✓ | ✅ | (`f38e2d0`) |
 
@@ -164,9 +164,10 @@ are documented as lower-order wins.
    reduce API surprise across stdlib boundary.
 2. **Parameterized records through C# emit path** — reference chokes;
    self-host behaviour unconfirmed. Needs a focused test.
-3. **Richer CPU-exception dump on bare metal** — add error-code, R10, RSP
-   to the `!EXC=` message so faults localize without external tooling.
-   Self-host side only (UX).
+3. **Polymorphism coverage audit** — type system row marked ❔. No
+   systematic test sweep exists; build one before claiming parity.
+4. **x86-64 Linux user mode on the self-host** — marked ❔. Bare-metal
+   works end-to-end but the Linux ELF path has never been verified.
 
 ## Not in scope
 
