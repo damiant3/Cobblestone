@@ -70,8 +70,25 @@ wait 2>/dev/null || true
 rm -f "$PIPE"
 
 echo "=== Sample: $SAMPLE ($(wc -c < "$SAMPLE") bytes) ==="
-echo "--- Raw serial (printable, last 60 lines) ---"
-strings -n 1 "$RAW" | tail -60 || tail -c 4000 "$RAW"
+echo "--- Raw serial (printable, last 80 lines) ---"
+strings -n 1 "$RAW" | tail -80 || tail -c 4000 "$RAW"
+echo
+echo "--- OOM/EXC context (250 bytes after first OUT OF MEM marker) ---"
+OOM_OFF=$(grep -boa 'OUT OF MEM' "$RAW" | head -1 | cut -d: -f1 || echo "")
+if [ -n "$OOM_OFF" ]; then
+    dd if="$RAW" bs=1 skip="$OOM_OFF" count=250 2>/dev/null | cat -v
+else
+    echo "(no OOM marker)"
+fi
+echo
+echo "--- Hex dump of bytes around last 'PH:hamt:i:26' marker ---"
+LAST_OFF=$(grep -boa 'PH:hamt:i:26' "$RAW" | tail -1 | cut -d: -f1 || echo "")
+if [ -n "$LAST_OFF" ]; then
+    SKIP=$((LAST_OFF))
+    dd if="$RAW" bs=1 skip="$SKIP" count=300 2>/dev/null | xxd
+else
+    echo "(no iter-26 marker)"
+fi
 echo
 echo "--- PH:* markers seen ---"
 grep -ao 'PH:[A-Za-z0-9:_-]*' "$RAW" | nl
