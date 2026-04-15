@@ -340,10 +340,11 @@ Section: Document Parsing
 
   collect-cite-title : ParseState -> Text -> CiteTitleResult
   collect-cite-title (st) (acc) =
-   if is-type-ident (current-kind st) then let tok = current st
-     in let joined = if text-length acc == 0 then tok.text else acc ++ " " ++ tok.text
-     in collect-cite-title (advance st) joined
-    else CiteTitleResult { title = acc, state = st }
+   if is-done st then CiteTitleResult { title = acc, state = st }
+    else when current-kind st
+     if Newline -> CiteTitleResult { title = acc, state = st }
+     if LeftParen -> CiteTitleResult { title = acc, state = st }
+     if _ -> collect-cite-title (advance st) (join-title-parts acc (current st).text)
 
   parse-citations : ParseState -> Text -> List CitesDecl -> ImportParseResult
   parse-citations (st) (citing) (acc) =
@@ -417,13 +418,22 @@ Section: Document Parsing
    let st2 = advance (advance st)
    in collect-title-tokens st2 ""
 
+  join-title-parts : Text -> Text -> Text
+  join-title-parts (acc) (next) =
+   if text-length acc == 0 then next
+    else if text-length next == 0 then acc
+    else let prev-last = char-code-at acc (text-length acc - 1)
+     in let next-first = char-code-at next 0
+     in if (is-letter-code prev-last | is-digit-code prev-last) & (is-letter-code next-first | is-digit-code next-first)
+        then acc ++ " " ++ next
+        else acc ++ next
+
   collect-title-tokens : ParseState -> Text -> Text
   collect-title-tokens (st) (acc) =
    if is-done st then acc
    else when current-kind st
     if Newline -> acc
-    if _ -> let sep = if acc == "" then "" else " "
-     in collect-title-tokens (advance st) (acc ++ sep ++ (current st).text)
+    if _ -> collect-title-tokens (advance st) (join-title-parts acc (current st).text)
 
   is-prose-line : ParseState -> Boolean
   is-prose-line (st) = (current st).column == 2

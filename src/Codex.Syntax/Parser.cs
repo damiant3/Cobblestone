@@ -1,3 +1,4 @@
+using System.Text;
 using Codex.Core;
 
 namespace Codex.Syntax;
@@ -244,16 +245,29 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
                 Current.Span);
             return new CitesNode(quire, "", citesKw.Span.Through(Current.Span));
         }
-        List<Token> titleTokens = [Current];
+        // Collect title tokens until we hit a terminator. Join with a single
+        // space only between alnum-alnum boundaries so punctuation tokens
+        // (e.g. a Minus between letters, or two Minuses side by side) round-trip
+        // losslessly: `Foo-Bar` stays `Foo-Bar`, `Foo--Bar` stays `Foo--Bar`.
+        StringBuilder titleBuf = new();
         Token titleEnd = Current;
-        Advance();
-        while (Current.Kind == TokenKind.TypeIdentifier)
+        while (Current.Kind != TokenKind.LeftParen
+               && Current.Kind != TokenKind.Newline
+               && Current.Kind != TokenKind.EndOfFile)
         {
-            titleTokens.Add(Current);
+            string text = Current.Text;
+            if (text.Length > 0)
+            {
+                if (titleBuf.Length > 0
+                    && char.IsLetterOrDigit(titleBuf[^1])
+                    && char.IsLetterOrDigit(text[0]))
+                    titleBuf.Append(' ');
+                titleBuf.Append(text);
+            }
             titleEnd = Current;
             Advance();
         }
-        string chapterTitle = string.Join(" ", titleTokens.Select(t => t.Text));
+        string chapterTitle = titleBuf.ToString();
 
         List<Token> selectedNames = [];
         if (Current.Kind == TokenKind.LeftParen)
