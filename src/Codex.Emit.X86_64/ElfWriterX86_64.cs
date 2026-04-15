@@ -94,10 +94,6 @@ sealed class ElfWriterX86_64
         return ms.ToArray();
     }
 
-    /// <summary>
-    /// Write a bare-metal ELF with PVH note for QEMU direct boot.
-    /// QEMU enters the 32-bit trampoline which sets up long mode.
-    /// </summary>
     public static byte[] WriteBareMetal(byte[] textSection, byte[] rodataSection, uint pvhEntry32)
     {
         // Layout: ELF64 header + 3 PHDRs (text LOAD + rodata LOAD + PVH NOTE) + note + text + rodata

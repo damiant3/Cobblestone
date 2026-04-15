@@ -2,9 +2,6 @@ using Codex.Core;
 
 namespace Codex.Repository;
 
-/// <summary>
-/// Trust weight for a fact, computed from the vouch graph.
-/// </summary>
 public readonly record struct TrustScore(double Weight, string Reason);
 
 partial class FactStore
@@ -17,10 +14,6 @@ partial class FactStore
         [TrustDegree.Critical] = 1.0,
     };
 
-    /// <summary>
-    /// Compute the trust score for a fact as seen by a specific viewer.
-    /// Walks the vouch graph with transitive decay.
-    /// </summary>
     public TrustScore ComputeTrust(ContentHash factHash, string viewer)
     {
         return ComputeTrustWalk(factHash, viewer, [], 0);
@@ -151,9 +144,6 @@ partial class FactStore
 
     // --- Trust threshold on views ---
 
-    /// <summary>
-    /// Check view consistency with trust enforcement on imports.
-    /// </summary>
     public ViewConsistencyResult CheckViewConsistencyWithTrust(
         string viewName,
         IViewConsistencyChecker checker,

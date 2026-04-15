@@ -8,10 +8,6 @@ sealed class PackageResolver(string projectDirectory, DiagnosticBag diagnostics)
     readonly string m_projectDirectory = projectDirectory;
     readonly DiagnosticBag m_diagnostics = diagnostics;
 
-    /// <summary>
-    /// Resolves all package references for a project into module loaders.
-    /// Returns loaders in dependency order (foreword first, then explicit packages).
-    /// </summary>
     public List<IChapterLoader> ResolveAll(Program.CodexProject project)
     {
         List<IChapterLoader> loaders = [];
@@ -95,10 +91,6 @@ sealed class PackageResolver(string projectDirectory, DiagnosticBag diagnostics)
         return null;
     }
 
-    /// <summary>
-    /// Finds a package in the local cache directory.
-    /// Cache layout: ~/.codex/packages/{name}/{version}/
-    /// </summary>
     static string? FindInCache(string name, string versionConstraint)
     {
         string cacheRoot = GetCacheDirectory();
@@ -127,10 +119,6 @@ sealed class PackageResolver(string projectDirectory, DiagnosticBag diagnostics)
             : null;
     }
 
-    /// <summary>
-    /// Installs a package from a source directory into the local cache.
-    /// Returns the cache path.
-    /// </summary>
     public static string InstallToCache(string sourceDirectory, Program.CodexProject project)
     {
         string cacheRoot = GetCacheDirectory();
@@ -168,10 +156,6 @@ sealed class PackageResolver(string projectDirectory, DiagnosticBag diagnostics)
         return targetDir;
     }
 
-    /// <summary>
-    /// Creates a content hash for a package directory (for lock file).
-    /// Uses the same content-addressing scheme as the Codex repository.
-    /// </summary>
     public static string ComputeContentHash(string directory, Program.CodexProject project)
     {
         string[] sources = Program.ResolveProjectSources(directory, project);

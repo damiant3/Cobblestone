@@ -555,9 +555,6 @@ public class LinuxNativeTests
         }
     }
 
-    /// <summary>
-    /// Write ELF to /tmp, chmod +x, run (directly or via qemu-user), return stdout.
-    /// </summary>
     static string? RunElf(byte[] elfBytes, string chapterName, string? qemuBinary)
     {
         string tempDir = Path.Combine(Path.GetTempPath(),

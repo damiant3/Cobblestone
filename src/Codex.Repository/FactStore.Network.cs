@@ -5,23 +5,14 @@ using Codex.Core;
 
 namespace Codex.Repository;
 
-/// <summary>
-/// Result of a network sync operation.
-/// </summary>
 public sealed record NetworkSyncResult(int Sent, int Received, IReadOnlyList<string> Errors);
 
-/// <summary>
-/// A known peer repository for fact exchange.
-/// </summary>
 public sealed record Peer(string Url, string Name);
 
 partial class FactStore
 {
     List<Peer> m_peers = [];
 
-    /// <summary>
-    /// Add a peer for network sync.
-    /// </summary>
     public void AddPeer(string url, string name)
     {
         if (!m_peers.Any(p => p.Url == url))
@@ -30,23 +21,13 @@ partial class FactStore
         }
     }
 
-    /// <summary>
-    /// Remove a peer by URL.
-    /// </summary>
     public void RemovePeer(string url)
     {
         m_peers.RemoveAll(p => p.Url == url);
     }
 
-    /// <summary>
-    /// List known peers.
-    /// </summary>
     public IReadOnlyList<Peer> ListPeers() => m_peers;
 
-    /// <summary>
-    /// Fetch a single fact from a peer by hash.
-    /// Returns null if the peer doesn't have it.
-    /// </summary>
     public async Task<Fact?> FetchFactFromPeer(HttpClient client, string peerUrl, ContentHash hash)
     {
         try
@@ -80,10 +61,6 @@ partial class FactStore
         }
     }
 
-    /// <summary>
-    /// Sync with a remote peer over HTTP.
-    /// Fetches facts the local store is missing, sends facts the peer is missing.
-    /// </summary>
     public async Task<NetworkSyncResult> SyncWithPeer(HttpClient client, string peerUrl)
     {
         int sent = 0;
@@ -170,10 +147,6 @@ partial class FactStore
         return new NetworkSyncResult(sent, received, errors);
     }
 
-    /// <summary>
-    /// Start a minimal HTTP server for fact exchange.
-    /// Returns the listener so it can be stopped.
-    /// </summary>
     public HttpListener StartFactServer(string prefix)
     {
         HttpListener listener = new();

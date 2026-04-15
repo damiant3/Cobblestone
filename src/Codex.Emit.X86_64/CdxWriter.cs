@@ -16,10 +16,6 @@ static class CdxWriter
     public const ushort FlagNeedsStackGuard = 4;
     public const ushort FlagHasProofs = 8;
 
-    /// <summary>
-    /// Build a CDX1 binary with the given sections and metadata.
-    /// Crypto fields are zero-filled (development mode).
-    /// </summary>
     public static byte[] Build(
         ushort flags,
         byte[] textSection,
