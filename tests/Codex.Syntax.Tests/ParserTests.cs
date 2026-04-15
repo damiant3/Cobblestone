@@ -78,6 +78,26 @@ public class ParserTests
     }
 
     [Fact]
+    public void Parse_reserved_keyword_as_parameter_name_emits_1060()
+    {
+        var (_, diags) = ParseWithDiags("f : Integer -> Integer\nf (cites) = 0\n");
+        Assert.Contains(diags.ToImmutable(), d =>
+            d.Code == CdxCodes.ReservedKeywordAsIdentifier
+            && d.Message.Contains("'cites'")
+            && d.Message.Contains("parameter"));
+    }
+
+    [Fact]
+    public void Parse_reserved_keyword_as_let_binding_name_emits_1060()
+    {
+        var (_, diags) = ParseWithDiags("f (x) =\n let when = x\n in when\n");
+        Assert.Contains(diags.ToImmutable(), d =>
+            d.Code == CdxCodes.ReservedKeywordAsIdentifier
+            && d.Message.Contains("'when'")
+            && d.Message.Contains("let-binding"));
+    }
+
+    [Fact]
     public void Parse_inline_const_integer()
     {
         DocumentNode doc = Parse("c : Integer = 1000");

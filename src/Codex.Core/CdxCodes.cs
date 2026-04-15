@@ -72,6 +72,7 @@ public static class CdxCodes
     public const int ExpectedTypeDefBody = 1050;
     public const int ExpectedRecordFieldName = 1051;
     public const int ExpectedConstructorName = 1052;
+    public const int ReservedKeywordAsIdentifier = 1060;
     public const int ExpectedPageOrEffectKeyword = 1070;
     public const int EffectRequiresOperation = 1071;
     public const int HandleClauseMissingResume = 1080;
@@ -228,6 +229,9 @@ public static class CdxCodes
         [ExpectedConstructorName] = new(ExpectedConstructorName, nameof(ExpectedConstructorName),
             DiagnosticSeverity.Error, CdxPhase.Parser,
             "Expected a constructor name after '|' in a variant declaration."),
+        [ReservedKeywordAsIdentifier] = new(ReservedKeywordAsIdentifier, nameof(ReservedKeywordAsIdentifier),
+            DiagnosticSeverity.Error, CdxPhase.Parser,
+            "A reserved keyword was used where an identifier was required (e.g. a parameter or let-binding name); rename it."),
         [ExpectedPageOrEffectKeyword] = new(ExpectedPageOrEffectKeyword, nameof(ExpectedPageOrEffectKeyword),
             DiagnosticSeverity.Error, CdxPhase.Parser,
             "Expected 'of' page count or 'where' effect body."),
