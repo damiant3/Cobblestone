@@ -47,6 +47,7 @@ sealed partial class ILAssemblyBuilder
     MemberReferenceHandle m_cceDecodeRef;       // CceTable.Decode(string) → string
     MemberReferenceHandle m_cceUniToCceRef;     // CceTable.UnicharToCce(long) → long
     MemberReferenceHandle m_cceCceToUniRef;     // CceTable.CceToUnichar(long) → long
+    MemberReferenceHandle m_cceEncodeListRef;   // CceTable.EncodeList(IEnumerable<string>) → List<string>
     MemberReferenceHandle m_stringEqualsRef;
 
     // ── List<T> support ──────────────────────────────────────────
@@ -676,6 +677,28 @@ sealed partial class ILAssemblyBuilder
             EncodeMethodSignature(SignatureCallingConvention.Default, true,
                 returnType: b => b.Type().Int64(),
                 parameters: new Action<ParameterTypeEncoder>[] { p => p.Type().Int64() }));
+
+        // CceTable.EncodeList(string[]) → List<string>
+        {
+            BlobBuilder sig = new();
+            new BlobEncoder(sig)
+                .MethodSignature(SignatureCallingConvention.Default, 0, isInstanceMethod: false)
+                .Parameters(1,
+                    returnType =>
+                    {
+                        GenericTypeArgumentsEncoder genArgs = returnType.Type()
+                            .GenericInstantiation(m_listOpenRef, 1, isValueType: false);
+                        genArgs.AddArgument().String();
+                    },
+                    parameters =>
+                    {
+                        parameters.AddParameter().Type().SZArray().String();
+                    });
+            m_cceEncodeListRef = m_metadata.AddMemberReference(
+                cceTableRef,
+                m_metadata.GetOrAddString("EncodeList"),
+                m_metadata.GetOrAddBlob(sig));
+        }
     }
 
     public void EmitModule(IRChapter module)
@@ -853,24 +876,24 @@ sealed partial class ILAssemblyBuilder
         ControlFlowBuilder entryControlFlow = new();
         InstructionEncoder il = new(new BlobBuilder(), entryControlFlow);
 
-        bool isEffectful = mainDef.Type is EffectfulType or VoidType;
+        // Unwrap effect annotations: main's runtime value has the inner type.
+        // VoidType/NothingType both lower to an IL void return (see EncodeType),
+        // so the call leaves the stack empty — just Ret. Otherwise we print.
+        CodexType innerType = mainDef.Type is EffectfulType eff ? eff.Return : mainDef.Type;
 
-        if (isEffectful)
+        il.Call(m_definedMethods["main"]!.Value);
+
+        switch (innerType)
         {
-            il.Call(m_definedMethods["main"]!.Value);
-        }
-        else
-        {
-            il.Call(m_definedMethods["main"]!.Value);
-            // Text values are CCE-encoded internally; decode to Unicode before writing.
-            if (mainDef.Type is TextType)
-            {
+            case VoidType:
+            case NothingType:
+                break;
+            case TextType:
                 il.Call(m_cceDecodeRef);
                 il.Call(m_writeLineStringRef);
-            }
-            else
-            {
-                MemberReferenceHandle writeLine = mainDef.Type switch
+                break;
+            default:
+                MemberReferenceHandle writeLine = innerType switch
                 {
                     IntegerType or CharType => m_writeLineInt64Ref,
                     NumberType => m_writeLineDoubleRef,
@@ -878,7 +901,7 @@ sealed partial class ILAssemblyBuilder
                     _ => m_writeLineStringRef,
                 };
                 il.Call(writeLine);
-            }
+                break;
         }
 
         il.OpCode(ILOpCode.Ret);
@@ -1347,11 +1370,9 @@ sealed partial class ILAssemblyBuilder
             // ── List<T> builtins ─────────────────────────────────
             case "get-args" when args.Count == 0:
             {
-                // new List<string>(Environment.GetCommandLineArgs())
-                ListInstantiation inst = GetOrCreateListInstantiation(TextType.s_instance);
+                // CceTable.EncodeList(Environment.GetCommandLineArgs()) — CCE-encoded List<string>.
                 il.Call(m_getCommandLineArgsRef);
-                il.OpCode(ILOpCode.Newobj);
-                il.Token(inst.CtorIEnumerable);
+                il.Call(m_cceEncodeListRef);
                 return true;
             }
 
@@ -1415,7 +1436,9 @@ sealed partial class ILAssemblyBuilder
                 emitSub(args[1]);
                 il.Call(m_cceDecodeRef);     // CCE content → Unicode
                 il.Call(m_fileWriteAllTextRef);
-                il.OpCode(ILOpCode.Ldnull);
+                // File.WriteAllText is void — leave nothing on the stack. Do-bind
+                // sites bind write-file's Nothing result via IRDoBind, which skips
+                // StoreLocal for void-like NameType (see EmitDo).
                 return true;
 
             // ── Process builtins ────────────────────────────────
@@ -1511,19 +1534,13 @@ sealed partial class ILAssemblyBuilder
 
             case "list-files" when args.Count == 2:
             {
-                // new List<string>(Directory.GetFiles(_Cce.Decode(path), _Cce.Decode(pattern)))
-                // Paths in the result list are still Unicode — per-element CCE encoding
-                // would require a list mapping helper. Callers that re-feed these paths
-                // to read-file/write-file/file-exists will hit decode errors; documented
-                // as a followup in BACKLOG #8.
-                ListInstantiation inst = GetOrCreateListInstantiation(TextType.s_instance);
+                // CceTable.EncodeList(Directory.GetFiles(Decode(path), Decode(pattern)))
                 emitSub(args[0]);
                 il.Call(m_cceDecodeRef);
                 emitSub(args[1]);
                 il.Call(m_cceDecodeRef);
                 il.Call(m_directoryGetFilesRef);
-                il.OpCode(ILOpCode.Newobj);
-                il.Token(inst.CtorIEnumerable);
+                il.Call(m_cceEncodeListRef);
                 return true;
             }
 
@@ -1625,8 +1642,13 @@ sealed partial class ILAssemblyBuilder
             {
                 case IRDoBind bind:
                     EmitExpr(il, bind.Value, locals, parameters);
-                    int localIndex = locals.AddLocal(bind.Name, bind.NameType);
-                    il.StoreLocal(localIndex);
+                    // Void-like binds (e.g. `_ <- write-file ...`) produce no
+                    // IL value — skip StoreLocal rather than storing from empty stack.
+                    if (!IsVoidLike(bind.NameType))
+                    {
+                        int localIndex = locals.AddLocal(bind.Name, bind.NameType);
+                        il.StoreLocal(localIndex);
+                    }
                     break;
                 case IRDoExec exec:
                     EmitExpr(il, exec.Expression, locals, parameters);
