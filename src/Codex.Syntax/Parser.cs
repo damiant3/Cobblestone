@@ -339,7 +339,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         SkipNewlines();
 
         List<EffectOperationNode> operations = [];
-        while (Current.Kind == TokenKind.Identifier && Peek(1)?.Kind == TokenKind.Colon)
+        while (IsIdentifierLike(Current.Kind) && Peek(1)?.Kind == TokenKind.Colon)
         {
             int savedPos = m_position;
             Token opName = Current;
@@ -386,7 +386,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         List<RecordTypeFieldNode> fields = [];
         while (Current.Kind != TokenKind.RightBrace && !IsAtEnd)
         {
-            if (Current.Kind == TokenKind.Identifier)
+            if (IsIdentifierLike(Current.Kind))
             {
                 Token fieldName = Current;
                 Advance();
@@ -454,7 +454,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
             {
                 Advance();
                 Token? fieldName = null;
-                if (Current.Kind == TokenKind.Identifier && Peek(1)?.Kind == TokenKind.Colon)
+                if (IsIdentifierLike(Current.Kind) && Peek(1)?.Kind == TokenKind.Colon)
                 {
                     fieldName = Current;
                     Advance();
@@ -525,7 +525,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         while (Current.Kind == TokenKind.LeftParen)
         {
             Advance();
-            if (Current.Kind is TokenKind.Identifier or TokenKind.TypeIdentifier)
+            if (IsIdentifierLike(Current.Kind) || Current.Kind == TokenKind.TypeIdentifier)
             {
                 parameters.Add(Current);
                 Advance();
@@ -538,7 +538,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
             Expect(TokenKind.RightParen);
         }
 
-        while (Current.Kind == TokenKind.Identifier && Peek(1)?.Kind != TokenKind.Colon)
+        while (IsIdentifierLike(Current.Kind) && Peek(1)?.Kind != TokenKind.Colon)
         {
             if (Current.Kind == TokenKind.Identifier && Current.Text == "=")
             {
@@ -635,6 +635,19 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         m_diagnostics.Error(CdxCodes.ExpectedTokenKind, $"Expected {kind}, found {Current.Kind}", Current.Span);
         return Current;
     }
+
+    /// <summary>
+    /// Returns true when the token can stand in for an identifier in a position that
+    /// unambiguously needs one (record field decl, field access, record expr field,
+    /// let-binding name, parameter name, etc.). Phase A added `act`/`end`/`qed` as
+    /// reserved keywords, but existing code uses them as identifiers in non-ambiguous
+    /// contexts — e.g. `SourceSpan = record { start, end, ... }` or `let end = ...`.
+    /// </summary>
+    static bool IsIdentifierLike(TokenKind kind) => kind is
+        TokenKind.Identifier
+        or TokenKind.ActKeyword
+        or TokenKind.EndKeyword
+        or TokenKind.QedKeyword;
 
     void SkipNewlines()
     {

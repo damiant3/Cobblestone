@@ -71,11 +71,13 @@ public sealed partial class Parser
             else if (Current.Kind == TokenKind.Dot)
             {
                 Advance();
-                Token field = Expect(TokenKind.Identifier);
-                if (field.Kind != TokenKind.Identifier)
+                if (!IsIdentifierLike(Current.Kind))
                 {
+                    Expect(TokenKind.Identifier);
                     break;
                 }
+                Token field = Current;
+                Advance();
 
                 func = new FieldAccessExpressionNode(func, field, func.Span.Through(field.Span));
             }
@@ -102,6 +104,8 @@ public sealed partial class Parser
             or TokenKind.LeftBracket
             or TokenKind.DoKeyword
             or TokenKind.ActKeyword
+            or TokenKind.EndKeyword
+            or TokenKind.QedKeyword
             or TokenKind.WithKeyword;
     }
 
@@ -126,6 +130,8 @@ public sealed partial class Parser
 
             case TokenKind.Identifier:
             case TokenKind.TypeIdentifier:
+            case TokenKind.EndKeyword:
+            case TokenKind.QedKeyword:
             {
                 Token token = Current;
                 Advance();
@@ -139,13 +145,14 @@ public sealed partial class Parser
                 while (Current.Kind == TokenKind.Dot)
                 {
                     Advance();
-                    Token field = Expect(TokenKind.Identifier);
-                    if (field.Kind != TokenKind.Identifier)
-                        {
-                            break;
-                        }
-
-                        node = new FieldAccessExpressionNode(node, field, node.Span.Through(field.Span));
+                    if (!IsIdentifierLike(Current.Kind))
+                    {
+                        Expect(TokenKind.Identifier);
+                        break;
+                    }
+                    Token field = Current;
+                    Advance();
+                    node = new FieldAccessExpressionNode(node, field, node.Span.Through(field.Span));
                 }
                 return node;
             }
@@ -162,13 +169,14 @@ public sealed partial class Parser
                 while (Current.Kind == TokenKind.Dot)
                 {
                     Advance();
-                    Token field = Expect(TokenKind.Identifier);
-                    if (field.Kind != TokenKind.Identifier)
-                        {
-                            break;
-                        }
-
-                        node = new FieldAccessExpressionNode(node, field, node.Span.Through(field.Span));
+                    if (!IsIdentifierLike(Current.Kind))
+                    {
+                        Expect(TokenKind.Identifier);
+                        break;
+                    }
+                    Token field = Current;
+                    Advance();
+                    node = new FieldAccessExpressionNode(node, field, node.Span.Through(field.Span));
                 }
                 return node;
             }
@@ -214,7 +222,7 @@ public sealed partial class Parser
 
         // Collect parameters: identifiers before ->
         List<Token> parameters = [];
-        while (Current.Kind == TokenKind.Identifier && !IsAtEnd)
+        while (IsIdentifierLike(Current.Kind) && !IsAtEnd)
         {
             parameters.Add(Current);
             Advance();
@@ -236,7 +244,7 @@ public sealed partial class Parser
         List<RecordFieldNode> fields = [];
         while (Current.Kind != TokenKind.RightBrace && !IsAtEnd)
         {
-            if (Current.Kind != TokenKind.Identifier)
+            if (!IsIdentifierLike(Current.Kind))
             {
                 m_diagnostics.Error(CdxCodes.ExpectedFieldName,
                     $"Expected field name, found {Current.Kind}", Current.Span);
@@ -392,10 +400,10 @@ public sealed partial class Parser
         SkipNewlines();
 
         List<Syntax.LetBinding> bindings = [];
-        while (Current.Kind == TokenKind.Identifier
+        while (IsIdentifierLike(Current.Kind)
             || (IsReservedKeyword(Current.Kind) && Peek(1)?.Kind == TokenKind.Equals))
         {
-            if (IsReservedKeyword(Current.Kind))
+            if (IsReservedKeyword(Current.Kind) && !IsIdentifierLike(Current.Kind))
             {
                 ReportReservedKeywordAsIdentifier("a let-binding name");
             }
@@ -511,7 +519,7 @@ public sealed partial class Parser
                                     or TokenKind.ElseKeyword or TokenKind.InKeyword)
             && !(Current.Kind == TokenKind.Identifier && Peek(1)?.Kind == TokenKind.Colon))
         {
-            if (Current.Kind == TokenKind.Identifier && Peek(1)?.Kind == TokenKind.LeftArrow)
+            if (IsIdentifierLike(Current.Kind) && Peek(1)?.Kind == TokenKind.LeftArrow)
             {
                 Token name = Current;
                 Advance();
@@ -545,7 +553,7 @@ public sealed partial class Parser
         List<DoStatementNode> statements = [];
         while (!IsAtEnd && Current.Kind != TokenKind.EndKeyword && Current.Kind != TokenKind.EndOfFile)
         {
-            if (Current.Kind == TokenKind.Identifier && Peek(1)?.Kind == TokenKind.LeftArrow)
+            if (IsIdentifierLike(Current.Kind) && Peek(1)?.Kind == TokenKind.LeftArrow)
             {
                 Token name = Current;
                 Advance();
