@@ -170,6 +170,13 @@ Section: Definitions
     "=========================="
    )
 
+  codex-agent-dir : Text = repo-path ".codex-agent"
+
+  ensure-codex-agent-dir : [FileSystem] Text
+  ensure-codex-agent-dir =
+   if file-exists codex-agent-dir then ""
+   else run-process "pwsh" ("-Command New-Item -ItemType Directory -Force -Path " ++ codex-agent-dir)
+
   plan-file : Text = repo-path ".codex-agent/plan.txt"
 
   log-file : Text = repo-path ".codex-agent/session.log"
@@ -514,6 +521,7 @@ Section: Definitions
    let argc = list-length args
    in if argc < 3 then print-line "Usage: codex-agent log <message>"
     else do
+     _ <- ensure-codex-agent-dir
      existing <- if file-exists log-file then read-file log-file else ""
      let msg = collect-args args 2 2
       in let entry = "[LOG] " ++ msg
@@ -564,11 +572,13 @@ Section: Definitions
     else let action = list-at args 2
      in if action == "show" then do-plan-show
       else if action == "clear" then do
+       _ <- ensure-codex-agent-dir
        _ <- write-file plan-file ""
        print-line "  Plan cleared."
       else if action == "add" then
        if argc < 4 then print-line "Usage: codex-agent plan add <task description>"
        else do
+        _ <- ensure-codex-agent-dir
         existing <- if file-exists plan-file then read-file plan-file else ""
         let task = do-plan-add args 3
          in let new-content = if text-length existing == 0 then "- " ++ task ++ "\n" else existing ++ "- " ++ task ++ "\n"
@@ -633,6 +643,7 @@ Section: Definitions
 
   do-build : List Text -> [Console, FileSystem] Nothing
   do-build (args) = do
+   _ <- ensure-codex-agent-dir
    output <- run-process "dotnet" "build Codex.sln --verbosity quiet"
    _ <- write-file build-log output
    log-existing <- read-if-exists log-file
@@ -654,6 +665,7 @@ Section: Definitions
    let argc = list-length args
    in let extra = if argc > 2 then " --filter " ++ list-at args 2 else ""
     in do
+     _ <- ensure-codex-agent-dir
      output <- run-process "dotnet" ("test Codex.sln --verbosity quiet" ++ extra)
      _ <- write-file test-log output
      log-existing <- read-if-exists log-file
