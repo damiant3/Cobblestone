@@ -152,7 +152,7 @@ run_stage() {
 echo ""
 echo "[1/2] Stage 1: compile(stage0)..."
 run_stage 1 "$STAGE0" "$OUTDIR/stage1.codex"
-grep -v '^STACK:\|^HEAP:' "$OUTDIR/stage1.codex" > "$OUTDIR/stage1.clean.codex"
+grep -v '^STACK:\|^HEAP:\|^RESULT:' "$OUTDIR/stage1.codex" > "$OUTDIR/stage1.clean.codex"
 RESULT="PASS"
 echo ""
 SOURCE_NAMES=$(grep -P '^\s*[a-zA-Z_][a-zA-Z0-9_-]* :' "$SOURCE" | sed 's/ :.*//; s/^\s*//' | sort -u)
@@ -207,7 +207,7 @@ fi
 
 echo "[2/2] Stage 2: compile(stage1)..."
 run_stage 2 "$OUTDIR/stage1.clean.codex" "$OUTDIR/stage2.codex"
-grep -v '^STACK:\|^HEAP:' "$OUTDIR/stage2.codex" > "$OUTDIR/stage2.clean.codex"
+grep -v '^STACK:\|^HEAP:\|^RESULT:' "$OUTDIR/stage2.codex" > "$OUTDIR/stage2.clean.codex"
 
 if diff -q "$OUTDIR/stage1.clean.codex" "$OUTDIR/stage2.clean.codex" > /dev/null 2>&1; then
     echo "PASS: stage1 === stage2 (byte-identical)"

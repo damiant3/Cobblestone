@@ -131,11 +131,6 @@ public sealed record EffectfulTy(List<Name> Field0, CodexType Field1) : CodexTyp
 
 public sealed record CollectResult(List<string> names, List<Diagnostic> errors);
 
-public abstract record CompileResult;
-
-public sealed record CompileOk(string Field0, ChapterResult Field1) : CompileResult;
-public sealed record CompileError(List<Diagnostic> Field0) : CompileResult;
-
 public sealed record ConcatManyEval(CodegenState state, List<long> locals);
 
 public sealed record CtorCollectResult(List<string> type_names, List<string> ctor_names);
@@ -15745,188 +15740,14 @@ public static class Codex_Codex_Codex
         return ((Func<List<Token>, string>)((tokens) => ((Func<ParseState, string>)((st) => ((Func<ScanResult, string>)((scan) => ((Func<List<ChapterAssignment>, string>)((assignments) => ((Func<List<string>, string>)((colliding) => ((Func<Document, string>)((doc) => ((Func<AChapter, string>)((ast) => ((Func<AChapter, string>)((scoped) => ((Func<ChapterResult, string>)((check_result) => ((Func<IRChapter, string>)((ir) => csharp_emitter_emit_full_chapter(ir, scoped.type_defs)))(lower_chapter(scoped, check_result.types, check_result.state))))(check_chapter(scoped))))(scope_achapter(ast, colliding, assignments))))(desugar_document(doc, chapter_name))))(parse_document(make_parse_state(tokens)))))(find_colliding_names(assignments))))(build_all_assignments(scan.def_headers, 0L, new List<ChapterAssignment>()))))(scan_document(st))))(make_parse_state(tokens))))(tokenize(source, 1L));
     }
 
-    public static CompileResult compile_checked(string source, string chapter_name)
+    public static string compile_text(string source, string chapter_name)
     {
-        return compile_with_citations(source, chapter_name, new List<ResolveResult>());
+        return ((Func<List<Token>, string>)((tokens) => ((Func<ParseState, string>)((st) => ((Func<ScanResult, string>)((scan) => ((Func<List<ChapterAssignment>, string>)((assignments) => ((Func<List<string>, string>)((colliding) => ((Func<Document, string>)((doc) => ((Func<AChapter, string>)((ast) => ((Func<AChapter, string>)((scoped) => ((Func<ChapterResult, string>)((check_result) => ((Func<IRChapter, string>)((ir) => ((Func<List<string>, string>)((ctor_names) => string.Concat(codex_emitter_emit_type_defs(scoped.type_defs, 0L), emit_text_defs(ir.defs, ctor_names, 0L))))(codex_emitter_collect_ctor_names(scoped.type_defs, 0L))))(lower_chapter(scoped, check_result.types, check_result.state))))(check_chapter(scoped))))(scope_achapter(ast, colliding, assignments))))(desugar_document(doc, chapter_name))))(parse_document(make_parse_state(tokens)))))(find_colliding_names(assignments))))(build_all_assignments(scan.def_headers, 0L, new List<ChapterAssignment>()))))(scan_document(st))))(make_parse_state(tokens))))(tokenize(source, 1L));
     }
 
-    public static CompileResult compile_with_citations(string source, string chapter_name, List<ResolveResult> imported)
+    public static string emit_text_defs(List<IRDef> defs, List<string> ctor_names, long i)
     {
-        return ((Func<List<Token>, CompileResult>)((tokens) => ((Func<ParseState, CompileResult>)((st) => ((Func<Document, CompileResult>)((doc) => (bag_has_errors(doc.parse_bag) ? new CompileError(bag_diagnostics(doc.parse_bag)) : ((Func<AChapter, CompileResult>)((ast) => ((Func<ResolveResult, CompileResult>)((resolve_result) => ((Func<DiagnosticBag, CompileResult>)((post_resolve) => (bag_has_errors(resolve_result.bag) ? new CompileError(bag_diagnostics(post_resolve)) : ((Func<ChapterResult, CompileResult>)((check_result) => ((Func<DiagnosticBag, CompileResult>)((post_check) => (bag_has_errors(check_result.state.bag) ? new CompileError(bag_diagnostics(post_check)) : ((Func<IRChapter, CompileResult>)((ir) => new CompileOk(csharp_emitter_emit_full_chapter(ir, ast.type_defs), check_result)))(lower_chapter(ast, check_result.types, check_result.state)))))(bag_merge(post_resolve, check_result.state.bag))))(check_chapter(ast)))))(bag_merge(doc.parse_bag, resolve_result.bag))))(resolve_chapter_with_citations(ast, imported))))(desugar_document(doc, chapter_name)))))(parse_document(st))))(make_parse_state(tokens))))(tokenize(source, 1L));
-    }
-
-    public static object compile_streaming(string source, string chapter_name)
-    {
-        return ((Func<List<Token>, object>)((tokens) => ((Func<ParseState, object>)((st) => ((Func<Document, object>)((doc) => ((Func<object>)(() => {
-                print_parse_errors(bag_diagnostics(doc.parse_bag), 0L);
-                ((Func<AChapter, object>)((ast) => ((Func<ChapterResult, object>)((check_result) => ((Func<List<TypeBinding>, object>)((ctor_types) => ((Func<List<TypeBinding>, object>)((all_types) => ((Func<List<string>, object>)((ctor_names) => ((Func<object>)(() => {
-                        ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(codex_emitter_emit_type_defs(ast.type_defs, 0L))); return null; }))();
-                        stream_defs(ast.defs, all_types, check_result.state, ctor_names, 0L, ((long)ast.defs.Count));
-                        ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("")); return null; }))();
-                        return null;
-                    }))()))(codex_emitter_collect_ctor_names(ast.type_defs, 0L))))(Enumerable.Concat(ctor_types, Enumerable.Concat(check_result.types, builtin_type_env().bindings).ToList()).ToList())))(collect_ctor_bindings(ast.type_defs, 0L, ((long)ast.type_defs.Count), new List<TypeBinding>()))))(check_chapter(ast))))(desugar_document(doc, chapter_name));
-                return null;
-            }))()))(parse_document(st))))(make_parse_state(tokens))))(tokenize(source, 1L));
-    }
-
-    public static object print_parse_errors(List<Diagnostic> errors, long i)
-    {
-        return ((i == ((long)errors.Count)) ? ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("")); return null; }))() : ((Func<object>)(() => {
-                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(diagnostic_display(errors[(int)i], empty_file_table()))); return null; }))();
-                print_parse_errors(errors, (i + 1L));
-                return null;
-            }))());
-    }
-
-    public static object stream_defs(List<ADef> defs, List<TypeBinding> types, UnificationState ust, List<string> ctor_names, long i, long len)
-    {
-        return ((i == len) ? ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("")); return null; }))() : ((Func<ADef, object>)((def) => ((Func<IRDef, object>)((ir_def) => (is_error_body(ir_def.body) ? ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(string.Concat("2*49+1'I'//*/E\u0002\u0016\u000D\u001C\u0002G", ir_def.name, "G\u0002\u0014\u000F\u0013\u0002\u000D\u0015\u0015\u0010\u0015\u0002 \u0010\u0016\u001EE\u0002", error_message(ir_def.body)))); return null; }))() : ((Func<string, object>)((text) => ((Func<object>)(() => {
-                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(text)); return null; }))();
-                stream_defs(defs, types, ust, ctor_names, (i + 1L), len);
-                return null;
-            }))()))(codex_emitter_emit_def(ir_def, ctor_names)))))(lower_def(def, types, ust))))(defs[(int)i]));
-    }
-
-    public static object compile_streaming_v2(string source, string chapter_name)
-    {
-        return ((Func<List<Token>, object>)((tokens) => ((Func<ParseState, object>)((st) => ((Func<ScanResult, object>)((scan) => ((Func<List<ATypeDef>, object>)((type_defs) => ((Func<List<DefHeader>, object>)((headers) => ((Func<List<ChapterAssignment>, object>)((assignments) => ((Func<List<string>, object>)((colliding) => ((Func<object>)(() => {
-                compile_with_scope(tokens, type_defs, headers, assignments, colliding);
-                return null;
-            }))()))(find_colliding_names(assignments))))(build_all_assignments(headers, 0L, new List<ChapterAssignment>()))))(scan.def_headers)))(map_list(new Func<TypeDef, ATypeDef>(desugar_type_def), scan.type_defs))))(scan_document(st))))(make_parse_state(tokens))))(tokenize(source, 1L));
-    }
-
-    public static object compile_with_scope(List<Token> tokens, List<ATypeDef> type_defs, List<DefHeader> headers, List<ChapterAssignment> assignments, List<string> colliding)
-    {
-        return ((Func<List<DefHeader>, object>)((scoped_headers) => ((Func<List<TypeBinding>, object>)((tdm) => ((Func<LetBindResult, object>)((tenv) => ((Func<LetBindResult, object>)((env) => ((Func<List<TypeBinding>, object>)((ctor_types) => ((Func<List<TypeBinding>, object>)((all_types) => ((Func<List<string>, object>)((ctor_names) => ((Func<object>)(() => {
-                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(codex_emitter_emit_type_defs(type_defs, 0L))); return null; }))();
-                emit_defs_scoped(tokens, headers, all_types, env.state, ctor_names, colliding, assignments, 0L, ((long)headers.Count));
-                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("")); return null; }))();
-                return null;
-            }))()))(codex_emitter_collect_ctor_names(type_defs, 0L))))(Enumerable.Concat(ctor_types, env.env.bindings).ToList())))(collect_ctor_bindings(type_defs, 0L, ((long)type_defs.Count), new List<TypeBinding>()))))(register_def_headers(tenv.state, tenv.env, tdm, scoped_headers, 0L, ((long)scoped_headers.Count)))))(register_type_defs(empty_unification_state(), builtin_type_env(), tdm, type_defs, 0L, ((long)type_defs.Count)))))(build_type_def_map(type_defs, 0L, ((long)type_defs.Count), new List<TypeBinding>()))))(scope_def_headers(headers, colliding, assignments, 0L, new List<DefHeader>()));
-    }
-
-    public static LetBindResult register_def_headers(UnificationState st, TypeEnv env, List<TypeBinding> tdm, List<DefHeader> headers, long i, long len)
-    {
-        while (true)
-        {
-            if ((i == len))
-            {
-                return new LetBindResult(st, env);
-            }
-            else
-            {
-                var hdr = headers[(int)i];
-                var declared = desugar_annotations(hdr.ann);
-                var ty = ((((long)declared.Count) == 0L) ? ((Func<FreshResult, LetBindResult>)((fr) => ((Func<TypeEnv, LetBindResult>)((env2) => new LetBindResult(fr.state, env2)))(env_bind(env, hdr.name.text, fr.var_type))))(fresh_and_advance(st)) : ((Func<CodexType, LetBindResult>)((resolved) => ((Func<ParamResult, LetBindResult>)((pr) => new LetBindResult(pr.state, env_bind(env, hdr.name.text, pr.parameterized))))(parameterize_type(st, resolved))))(type_checker_resolve_type_expr(tdm, declared[(int)0L])));
-                var _tco_0 = ty.state;
-                var _tco_1 = ty.env;
-                var _tco_2 = tdm;
-                var _tco_3 = headers;
-                var _tco_4 = (i + 1L);
-                var _tco_5 = len;
-                st = _tco_0;
-                env = _tco_1;
-                tdm = _tco_2;
-                headers = _tco_3;
-                i = _tco_4;
-                len = _tco_5;
-                continue;
-            }
-        }
-    }
-
-    public static ChapterResult check_defs_streaming(List<Token> tokens, List<DefHeader> headers, UnificationState ust, TypeEnv env, long i, long len, List<TypeBinding> acc)
-    {
-        while (true)
-        {
-            if ((i == len))
-            {
-                return new ChapterResult(acc, ust);
-            }
-            else
-            {
-                var hdr = headers[(int)i];
-                var body_st = new ParseState(tokens, hdr.body_pos, empty_bag());
-                var body_result = parse_expr(body_st);
-                var def = new Def(hdr.name, hdr.@params, hdr.ann, unwrap_body(body_result), hdr.chapter_slug);
-                var adef = desugar_def(def);
-                var r = check_def(ust, env, adef);
-                var resolved = deep_resolve(r.state, r.inferred_type);
-                var entry = new TypeBinding(adef.name.value, resolved);
-                var _tco_0 = tokens;
-                var _tco_1 = headers;
-                var _tco_2 = r.state;
-                var _tco_3 = env;
-                var _tco_4 = (i + 1L);
-                var _tco_5 = len;
-                var _tco_6 = ((Func<List<TypeBinding>>)(() => { var _l = acc; _l.Add(entry); return _l; }))();
-                tokens = _tco_0;
-                headers = _tco_1;
-                ust = _tco_2;
-                env = _tco_3;
-                i = _tco_4;
-                len = _tco_5;
-                acc = _tco_6;
-                continue;
-            }
-        }
-    }
-
-    public static object emit_defs_streaming(List<Token> tokens, List<DefHeader> headers, List<TypeBinding> all_types, UnificationState ust, List<string> ctor_names, long i, long len)
-    {
-        return ((i == len) ? ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("")); return null; }))() : ((Func<DefHeader, object>)((hdr) => ((Func<ParseState, object>)((body_st) => ((Func<ParseExprResult, object>)((body_result) => ((Func<List<Diagnostic>, object>)((parse_errs) => ((Func<Def, object>)((def) => ((Func<ADef, object>)((adef) => ((Func<IRDef, object>)((ir_def) => emit_streaming_def_checked(hdr.name.text, parse_errs, ir_def, ctor_names, tokens, headers, all_types, ust, (i + 1L), len)))(lower_def(adef, all_types, ust))))(desugar_def(def))))(new Def(hdr.name, hdr.@params, hdr.ann, unwrap_body(body_result), hdr.chapter_slug))))(unwrap_parse_errors(body_result))))(parse_expr(body_st))))(new ParseState(tokens, hdr.body_pos, empty_bag()))))(headers[(int)i]));
-    }
-
-    public static object emit_streaming_def_checked(string def_name, List<Diagnostic> parse_errs, IRDef ir_def, List<string> ctor_names, List<Token> tokens, List<DefHeader> headers, List<TypeBinding> all_types, UnificationState ust, long next_i, long len)
-    {
-        return ((((long)parse_errs.Count) > 0L) ? print_def_parse_errors(def_name, parse_errs) : (is_error_body(ir_def.body) ? ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(string.Concat("2*49+1'I'//*/E\u0002\u0016\u000D\u001C\u0002G", ir_def.name, "G\u0002\u0014\u000F\u0013\u0002\u000D\u0015\u0015\u0010\u0015\u0002 \u0010\u0016\u001EE\u0002", error_message(ir_def.body)))); return null; }))() : ((Func<string, object>)((text) => ((text == "") ? emit_defs_streaming(tokens, headers, all_types, ust, ctor_names, next_i, len) : ((Func<object>)(() => {
-                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(text)); return null; }))();
-                emit_defs_streaming(tokens, headers, all_types, ust, ctor_names, next_i, len);
-                return null;
-            }))())))(codex_emitter_emit_def(ir_def, ctor_names))));
-    }
-
-    public static object emit_defs_scoped(List<Token> tokens, List<DefHeader> headers, List<TypeBinding> all_types, UnificationState ust, List<string> ctor_names, List<string> colliding, List<ChapterAssignment> assignments, long i, long len)
-    {
-        return ((i == len) ? ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("")); return null; }))() : ((Func<DefHeader, object>)((hdr) => ((Func<List<RenameEntry>, object>)((rn) => emit_defs_same_chapter(tokens, headers, all_types, ust, ctor_names, colliding, assignments, rn, hdr.chapter_slug, i, len)))(build_chapter_rename_map(colliding, assignments, hdr.chapter_slug))))(headers[(int)i]));
-    }
-
-    public static object emit_defs_same_chapter(List<Token> tokens, List<DefHeader> headers, List<TypeBinding> all_types, UnificationState ust, List<string> ctor_names, List<string> colliding, List<ChapterAssignment> assignments, List<RenameEntry> rn, string cur_slug, long i, long len)
-    {
-        return ((i == len) ? ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("")); return null; }))() : ((Func<DefHeader, object>)((hdr) => ((hdr.chapter_slug != cur_slug) ? emit_defs_scoped(tokens, headers, all_types, ust, ctor_names, colliding, assignments, i, len) : emit_one_scoped_def(tokens, hdr, all_types, ust, ctor_names, colliding, assignments, rn, headers, i, len))))(headers[(int)i]));
-    }
-
-    public static object emit_one_scoped_def(List<Token> tokens, DefHeader hdr, List<TypeBinding> all_types, UnificationState ust, List<string> ctor_names, List<string> colliding, List<ChapterAssignment> assignments, List<RenameEntry> rn, List<DefHeader> headers, long i, long len)
-    {
-        return ((Func<ParseState, object>)((body_st) => ((Func<ParseExprResult, object>)((body_result) => ((Func<List<Diagnostic>, object>)((parse_errs) => ((Func<Def, object>)((def) => ((Func<ADef, object>)((adef_raw) => ((Func<string, object>)((scoped_name) => ((Func<ADef, object>)((adef) => ((Func<IRDef, object>)((ir_def) => ((Func<IRExpr, object>)((scoped_body) => ((Func<IRDef, object>)((scoped_def) => emit_scoped_def_checked(hdr.name.text, parse_errs, scoped_def, ctor_names, tokens, headers, all_types, ust, colliding, assignments, rn, hdr.chapter_slug, (i + 1L), len)))(new IRDef(ir_def.name, ir_def.@params, ir_def.type_val, scoped_body, hdr.chapter_slug, ir_def.span))))(rename_ir_expr(rn, ir_def.body))))(lower_def(adef, all_types, ust))))(new ADef(make_name(scoped_name), adef_raw.@params, adef_raw.declared_type, adef_raw.body, adef_raw.chapter_slug, adef_raw.span))))(scope_def_name(colliding, assignments, adef_raw.name.value, hdr.chapter_slug))))(desugar_def(def))))(new Def(hdr.name, hdr.@params, hdr.ann, unwrap_body(body_result), hdr.chapter_slug))))(unwrap_parse_errors(body_result))))(parse_expr(body_st))))(new ParseState(tokens, hdr.body_pos, empty_bag()));
-    }
-
-    public static object emit_scoped_def_checked(string def_name, List<Diagnostic> parse_errs, IRDef scoped_def, List<string> ctor_names, List<Token> tokens, List<DefHeader> headers, List<TypeBinding> all_types, UnificationState ust, List<string> colliding, List<ChapterAssignment> assignments, List<RenameEntry> rn, string slug, long next_i, long len)
-    {
-        return ((((long)parse_errs.Count) > 0L) ? print_def_parse_errors(def_name, parse_errs) : (is_error_body(scoped_def.body) ? ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(string.Concat("2*49+1'I'//*/E\u0002\u0016\u000D\u001C\u0002G", scoped_def.name, "G\u0002\u0014\u000F\u0013\u0002\u000D\u0015\u0015\u0010\u0015\u0002 \u0010\u0016\u001EE\u0002", error_message(scoped_def.body)))); return null; }))() : ((Func<string, object>)((text) => ((text == "") ? emit_defs_same_chapter(tokens, headers, all_types, ust, ctor_names, colliding, assignments, rn, slug, next_i, len) : ((Func<object>)(() => {
-                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(text)); return null; }))();
-                emit_defs_same_chapter(tokens, headers, all_types, ust, ctor_names, colliding, assignments, rn, slug, next_i, len);
-                return null;
-            }))())))(codex_emitter_emit_def(scoped_def, ctor_names))));
-    }
-
-    public static Expr unwrap_body(ParseExprResult r)
-    {
-        return (r is ExprOk _mExprOk211_ ? ((Func<ParseState, Expr>)((st) => ((Func<Expr, Expr>)((e) => e))((Expr)_mExprOk211_.Field0)))((ParseState)_mExprOk211_.Field1) : throw new InvalidOperationException("Non-exhaustive match"));
-    }
-
-    public static List<Diagnostic> unwrap_parse_errors(ParseExprResult r)
-    {
-        return (r is ExprOk _mExprOk212_ ? ((Func<ParseState, List<Diagnostic>>)((st) => ((Func<Expr, List<Diagnostic>>)((e) => bag_diagnostics(st.bag)))((Expr)_mExprOk212_.Field0)))((ParseState)_mExprOk212_.Field1) : throw new InvalidOperationException("Non-exhaustive match"));
-    }
-
-    public static object print_def_parse_errors(string def_name, List<Diagnostic> errs)
-    {
-        return ((((long)errs.Count) == 0L) ? ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("")); return null; }))() : ((Func<object>)(() => {
-                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(string.Concat("9)/-'I'//*/-\u0002\u0011\u0012\u0002G", def_name, "GE"))); return null; }))();
-                print_parse_errors(errs, 0L);
-                return null;
-            }))());
+        return ((i == ((long)defs.Count)) ? "" : string.Concat(codex_emitter_emit_def(defs[(int)i], ctor_names), "\u0001", emit_text_defs(defs, ctor_names, (i + 1L))));
     }
 
     public static string normalize_whitespace(string s)
@@ -15950,34 +15771,6 @@ public static class Codex_Codex_Codex
     public static EmitChapterResult compile_to_binary(string source, string chapter_name)
     {
         return ((Func<List<Token>, EmitChapterResult>)((tokens) => ((Func<ParseState, EmitChapterResult>)((st) => ((Func<ScanResult, EmitChapterResult>)((scan) => ((Func<List<ChapterAssignment>, EmitChapterResult>)((assignments) => ((Func<List<string>, EmitChapterResult>)((colliding) => ((Func<Document, EmitChapterResult>)((doc) => ((Func<AChapter, EmitChapterResult>)((ast) => ((Func<AChapter, EmitChapterResult>)((scoped) => ((Func<ChapterResult, EmitChapterResult>)((check_result) => ((Func<IRChapter, EmitChapterResult>)((ir) => ((Func<List<TypeBinding>, EmitChapterResult>)((ctor_types) => x86_64_emit_chapter(ir, ctor_types)))(collect_ctor_bindings(scoped.type_defs, 0L, ((long)scoped.type_defs.Count), new List<TypeBinding>()))))(lower_chapter(scoped, check_result.types, check_result.state))))(check_chapter(scoped))))(scope_achapter(ast, colliding, assignments))))(desugar_document(doc, chapter_name))))(parse_document(make_parse_state(tokens)))))(find_colliding_names(assignments))))(build_all_assignments(scan.def_headers, 0L, new List<ChapterAssignment>()))))(scan_document(st))))(make_parse_state(tokens))))(tokenize(source, 1L));
-    }
-
-    public static List<DefHeader> scope_def_headers(List<DefHeader> headers, List<string> colliding, List<ChapterAssignment> assignments, long i, List<DefHeader> acc)
-    {
-        while (true)
-        {
-            if ((i == ((long)headers.Count)))
-            {
-                return acc;
-            }
-            else
-            {
-                var h = headers[(int)i];
-                var scoped_text = scope_def_name(colliding, assignments, h.name.text, h.chapter_slug);
-                var scoped_tok = new Token(h.name.kind, scoped_text, h.name.offset, h.name.line, h.name.column, h.name.file_id);
-                var _tco_0 = headers;
-                var _tco_1 = colliding;
-                var _tco_2 = assignments;
-                var _tco_3 = (i + 1L);
-                var _tco_4 = ((Func<List<DefHeader>>)(() => { var _l = acc; _l.Add(new DefHeader(scoped_tok, h.@params, h.ann, h.body_pos, h.chapter_slug)); return _l; }))();
-                headers = _tco_0;
-                colliding = _tco_1;
-                assignments = _tco_2;
-                i = _tco_3;
-                acc = _tco_4;
-                continue;
-            }
-        }
     }
 
     public static object print_codegen_errors(List<Diagnostic> errs, long i, long len)
@@ -16012,7 +15805,7 @@ public static class Codex_Codex_Codex
         return ((Func<object>)(() => {
                 var mode = _Cce.FromUnicode(Console.ReadLine() ?? "");
                 var source = _Cce.FromUnicode(File.ReadAllText(_Cce.ToUnicode(mode)));
-                ((Func<string, object>)((clean) => ((mode == ":+,)/8") ? main_emit_binary(clean) : compile_streaming_v2(clean, "9\u0015\u0010\u001D\u0015\u000F\u001A"))))(normalize_whitespace(source));
+                ((Func<string, object>)((clean) => ((mode == ":+,)/8") ? main_emit_binary(clean) : ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(compile_text(clean, "9\u0015\u0010\u001D\u0015\u000F\u001A"))); return null; }))())))(normalize_whitespace(source));
                 return null;
             }))();
     }

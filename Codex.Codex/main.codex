@@ -23,259 +23,25 @@ Section: Pipeline
    in let ir = lower-chapter scoped (check-result.types) (check-result.state)
    in emit-full-chapter ir (scoped.type-defs)
 
-Section: Pipeline with Name Resolution
-
-  compile-checked : Text -> Text -> CompileResult
-  compile-checked (source) (chapter-name) =
-   compile-with-citations source chapter-name []
-
-  compile-with-citations : Text -> Text -> List ResolveResult -> CompileResult
-  compile-with-citations (source) (chapter-name) (imported) =
-   let tokens = tokenize source 1
-   in let st = make-parse-state tokens
-   in let doc = parse-document st
-   in if bag-has-errors (doc.parse-bag) then CompileError (bag-diagnostics (doc.parse-bag))
-      else let ast = desugar-document doc chapter-name
-   in let resolve-result = resolve-chapter-with-citations ast imported
-   in let post-resolve = bag-merge (doc.parse-bag) (resolve-result.bag)
-   in if bag-has-errors (resolve-result.bag) then CompileError (bag-diagnostics post-resolve)
-      else let check-result = check-chapter ast
-   in let post-check = bag-merge post-resolve (check-result.state.bag)
-   in if bag-has-errors (check-result.state.bag) then CompileError (bag-diagnostics post-check)
-      else let ir = lower-chapter ast (check-result.types) (check-result.state)
-   in CompileOk (emit-full-chapter ir (ast.type-defs)) check-result
-
-  CompileResult =
-   | CompileOk (Text) (ChapterResult)
-   | CompileError (List Diagnostic)
-
-Section: Streaming Pipeline
-
-  compile-streaming : Text -> Text -> [Console] Nothing
-  compile-streaming (source) (chapter-name) =
-   let tokens = tokenize source 1
-   in let st = make-parse-state tokens
-   in let doc = parse-document st
-   in do
-       print-parse-errors (bag-diagnostics (doc.parse-bag)) 0
-       let ast = desugar-document doc chapter-name
-       in let check-result = check-chapter ast
-       in let ctor-types = collect-ctor-bindings (ast.type-defs) 0 (list-length (ast.type-defs)) []
-       in let all-types = ctor-types ++ check-result.types ++ builtin-type-env.bindings
-       in let ctor-names = collect-ctor-names (ast.type-defs) 0
-       in do
-           print-line (emit-type-defs (ast.type-defs) 0)
-           stream-defs (ast.defs) all-types (check-result.state) ctor-names 0 (list-length (ast.defs))
-           print-line ""
-
-  print-parse-errors : List Diagnostic -> Integer -> [Console] Nothing
-  print-parse-errors (errors) (i) =
-   if i == list-length errors then print-line ""
-   else do
-     print-line (diagnostic-display (list-at errors i) empty-file-table)
-     print-parse-errors errors (i + 1)
-
-  stream-defs : List ADef -> List TypeBinding -> UnificationState -> List Text -> Integer -> Integer -> [Console] Nothing
-  stream-defs (defs) (types) (ust) (ctor-names) (i) (len) =
-   if i == len then print-line ""
-   else let def = list-at defs i
-   in let ir-def = lower-def def types ust
-   in if is-error-body (ir-def.body) then print-line ("COMPILE-ERROR: def '" ++ ir-def.name ++ "' has error body: " ++ error-message (ir-def.body))
-   else let text = emit-def ir-def ctor-names
-   in do
-       print-line text
-       stream-defs defs types ust ctor-names (i + 1) len
-
-Section: Streaming Pipeline v2
-
-  compile-streaming-v2 : Text -> Text -> [Console] Nothing
-  compile-streaming-v2 (source) (chapter-name) =
+  compile-text : Text -> Text -> Text
+  compile-text (source) (chapter-name) =
    let tokens = tokenize source 1
    in let st = make-parse-state tokens
    in let scan = scan-document st
-   in let type-defs = map-list desugar-type-def (scan.type-defs)
-   in let headers = scan.def-headers
-   in let assignments = build-all-assignments headers 0 []
+   in let assignments = build-all-assignments (scan.def-headers) 0 []
    in let colliding = find-colliding-names assignments
-   in do
-    compile-with-scope tokens type-defs headers assignments colliding
+   in let doc = parse-document (make-parse-state tokens)
+   in let ast = desugar-document doc chapter-name
+   in let scoped = scope-achapter ast colliding assignments
+   in let check-result = check-chapter scoped
+   in let ir = lower-chapter scoped (check-result.types) (check-result.state)
+   in let ctor-names = collect-ctor-names (scoped.type-defs) 0
+   in emit-type-defs (scoped.type-defs) 0 ++ emit-text-defs (ir.defs) ctor-names 0
 
-  compile-with-scope : List Token -> List ATypeDef -> List DefHeader -> List ChapterAssignment -> List Text -> [Console] Nothing
-  compile-with-scope (tokens) (type-defs) (headers) (assignments) (colliding) =
-   let scoped-headers = scope-def-headers headers colliding assignments 0 []
-   in let tdm = build-type-def-map type-defs 0 (list-length type-defs) []
-   in let tenv = register-type-defs empty-unification-state builtin-type-env tdm type-defs 0 (list-length type-defs)
-   in let env = register-def-headers (tenv.state) (tenv.env) tdm scoped-headers 0 (list-length scoped-headers)
-   in let ctor-types = collect-ctor-bindings type-defs 0 (list-length type-defs) []
-   in let all-types = ctor-types ++ env.env.bindings
-   in let ctor-names = collect-ctor-names type-defs 0
-   in do
-    print-line (emit-type-defs type-defs 0)
-    emit-defs-scoped tokens headers all-types (env.state) ctor-names colliding assignments 0 (list-length headers)
-    print-line ""
-
-  register-def-headers : UnificationState -> TypeEnv -> List TypeBinding -> List DefHeader -> Integer -> Integer -> LetBindResult
-  register-def-headers (st) (env) (tdm) (headers) (i) (len) =
-   if i == len then LetBindResult {
-    state = st,
-    env = env
-   }
-   else let hdr = list-at headers i
-   in let declared = desugar-annotations (hdr.ann)
-   in let ty = if list-length declared == 0 then let fr = fresh-and-advance st
-     in let env2 = env-bind env (hdr.name.text) (fr.var-type)
-     in LetBindResult {
-      state = fr.state,
-      env = env2
-     }
-     else let resolved = resolve-type-expr tdm (list-at declared 0)
-     in let pr = parameterize-type st resolved
-     in LetBindResult {
-      state = pr.state,
-      env = env-bind env (hdr.name.text) (pr.parameterized)
-     }
-   in register-def-headers (ty.state) (ty.env) tdm headers (i + 1) len
-
-  check-defs-streaming : List Token -> List DefHeader -> UnificationState -> TypeEnv -> Integer -> Integer -> List TypeBinding -> ChapterResult
-  check-defs-streaming (tokens) (headers) (ust) (env) (i) (len) (acc) =
-   if i == len then ChapterResult {
-    types = acc,
-    state = ust
-   }
-   else let hdr = list-at headers i
-   in let body-st = ParseState {
-    tokens = tokens,
-    pos = hdr.body-pos,
-    bag = empty-bag
-   }
-   in let body-result = parse-expr body-st
-   in let def = Def {
-    name = hdr.name,
-    params = hdr.params,
-    ann = hdr.ann,
-    body = unwrap-body body-result,
-    chapter-slug = hdr.chapter-slug
-   }
-   in let adef = desugar-def def
-   in let r = check-def ust env adef
-   in let resolved = deep-resolve (r.state) (r.inferred-type)
-   in let entry = TypeBinding {
-    name = adef.name.value,
-    bound-type = resolved
-   }
-   in check-defs-streaming tokens headers (r.state) env (i + 1) len (list-snoc acc entry)
-
-  emit-defs-streaming : List Token -> List DefHeader -> List TypeBinding -> UnificationState -> List Text -> Integer -> Integer -> [Console] Nothing
-  emit-defs-streaming (tokens) (headers) (all-types) (ust) (ctor-names) (i) (len) =
-   if i == len then print-line ""
-   else let hdr = list-at headers i
-   in let body-st = ParseState {
-    tokens = tokens,
-    pos = hdr.body-pos,
-    bag = empty-bag
-   }
-   in let body-result = parse-expr body-st
-   in let parse-errs = unwrap-parse-errors body-result
-   in let def = Def {
-    name = hdr.name,
-    params = hdr.params,
-    ann = hdr.ann,
-    body = unwrap-body body-result,
-    chapter-slug = hdr.chapter-slug
-   }
-   in let adef = desugar-def def
-   in let ir-def = lower-def adef all-types ust
-   in emit-streaming-def-checked (hdr.name.text) parse-errs ir-def ctor-names tokens headers all-types ust (i + 1) len
-
-  emit-streaming-def-checked : Text -> List Diagnostic -> IRDef -> List Text -> List Token -> List DefHeader -> List TypeBinding -> UnificationState -> Integer -> Integer -> [Console] Nothing
-  emit-streaming-def-checked (def-name) (parse-errs) (ir-def) (ctor-names) (tokens) (headers) (all-types) (ust) (next-i) (len) =
-   if list-length parse-errs > 0 then print-def-parse-errors def-name parse-errs
-   else if is-error-body (ir-def.body) then print-line ("COMPILE-ERROR: def '" ++ ir-def.name ++ "' has error body: " ++ error-message (ir-def.body))
-   else let text = emit-def ir-def ctor-names
-   in if text == "" then emit-defs-streaming tokens headers all-types ust ctor-names next-i len
-   else do
-    print-line text
-    emit-defs-streaming tokens headers all-types ust ctor-names next-i len
-
-  emit-defs-scoped : List Token -> List DefHeader -> List TypeBinding -> UnificationState -> List Text -> List Text -> List ChapterAssignment -> Integer -> Integer -> [Console] Nothing
-  emit-defs-scoped (tokens) (headers) (all-types) (ust) (ctor-names) (colliding) (assignments) (i) (len) =
-   if i == len then print-line ""
-   else let hdr = list-at headers i
-   in let rn = build-chapter-rename-map colliding assignments (hdr.chapter-slug)
-   in emit-defs-same-chapter tokens headers all-types ust ctor-names colliding assignments rn (hdr.chapter-slug) i len
-
-  emit-defs-same-chapter : List Token -> List DefHeader -> List TypeBinding -> UnificationState -> List Text -> List Text -> List ChapterAssignment -> List RenameEntry -> Text -> Integer -> Integer -> [Console] Nothing
-  emit-defs-same-chapter (tokens) (headers) (all-types) (ust) (ctor-names) (colliding) (assignments) (rn) (cur-slug) (i) (len) =
-   if i == len then print-line ""
-   else let hdr = list-at headers i
-   in if hdr.chapter-slug /= cur-slug
-      then emit-defs-scoped tokens headers all-types ust ctor-names colliding assignments i len
-      else emit-one-scoped-def tokens hdr all-types ust ctor-names colliding assignments rn headers i len
-
-  emit-one-scoped-def : List Token -> DefHeader -> List TypeBinding -> UnificationState -> List Text -> List Text -> List ChapterAssignment -> List RenameEntry -> List DefHeader -> Integer -> Integer -> [Console] Nothing
-  emit-one-scoped-def (tokens) (hdr) (all-types) (ust) (ctor-names) (colliding) (assignments) (rn) (headers) (i) (len) =
-   let body-st = ParseState {
-    tokens = tokens,
-    pos = hdr.body-pos,
-    bag = empty-bag
-   }
-   in let body-result = parse-expr body-st
-   in let parse-errs = unwrap-parse-errors body-result
-   in let def = Def {
-    name = hdr.name,
-    params = hdr.params,
-    ann = hdr.ann,
-    body = unwrap-body body-result,
-    chapter-slug = hdr.chapter-slug
-   }
-   in let adef-raw = desugar-def def
-   in let scoped-name = scope-def-name colliding assignments (adef-raw.name.value) (hdr.chapter-slug)
-   in let adef = ADef {
-    name = make-name scoped-name,
-    params = adef-raw.params,
-    declared-type = adef-raw.declared-type,
-    body = adef-raw.body,
-    chapter-slug = adef-raw.chapter-slug,
-    span = adef-raw.span
-   }
-   in let ir-def = lower-def adef all-types ust
-   in let scoped-body = rename-ir-expr rn (ir-def.body)
-   in let scoped-def = IRDef {
-    name = ir-def.name,
-    params = ir-def.params,
-    type-val = ir-def.type-val,
-    body = scoped-body,
-    chapter-slug = hdr.chapter-slug,
-    span = ir-def.span
-   }
-   in emit-scoped-def-checked (hdr.name.text) parse-errs scoped-def ctor-names tokens headers all-types ust colliding assignments rn (hdr.chapter-slug) (i + 1) len
-
-  emit-scoped-def-checked : Text -> List Diagnostic -> IRDef -> List Text -> List Token -> List DefHeader -> List TypeBinding -> UnificationState -> List Text -> List ChapterAssignment -> List RenameEntry -> Text -> Integer -> Integer -> [Console] Nothing
-  emit-scoped-def-checked (def-name) (parse-errs) (scoped-def) (ctor-names) (tokens) (headers) (all-types) (ust) (colliding) (assignments) (rn) (slug) (next-i) (len) =
-   if list-length parse-errs > 0 then print-def-parse-errors def-name parse-errs
-   else if is-error-body (scoped-def.body) then print-line ("COMPILE-ERROR: def '" ++ scoped-def.name ++ "' has error body: " ++ error-message (scoped-def.body))
-   else let text = emit-def scoped-def ctor-names
-   in if text == "" then emit-defs-same-chapter tokens headers all-types ust ctor-names colliding assignments rn slug next-i len
-   else do
-    print-line text
-    emit-defs-same-chapter tokens headers all-types ust ctor-names colliding assignments rn slug next-i len
-
-  unwrap-body : ParseExprResult -> Expr
-  unwrap-body (r) =
-   when r
-    if ExprOk (e) (st) -> e
-
-  unwrap-parse-errors : ParseExprResult -> List Diagnostic
-  unwrap-parse-errors (r) =
-   when r
-    if ExprOk (e) (st) -> bag-diagnostics (st.bag)
-
-  print-def-parse-errors : Text -> List Diagnostic -> [Console] Nothing
-  print-def-parse-errors (def-name) (errs) =
-   if list-length errs == 0 then print-line ""
-   else do
-    print-line ("PARSE-ERRORS in '" ++ def-name ++ "':")
-    print-parse-errors errs 0
+  emit-text-defs : List IRDef -> List Text -> Integer -> Text
+  emit-text-defs (defs) (ctor-names) (i) =
+   if i == list-length defs then ""
+   else emit-def (list-at defs i) ctor-names ++ "\n" ++ emit-text-defs defs ctor-names (i + 1)
 
 Section: Whitespace Normalization
 
@@ -301,28 +67,6 @@ Section: Binary Compilation
    in let ir = lower-chapter scoped (check-result.types) (check-result.state)
    in let ctor-types = collect-ctor-bindings (scoped.type-defs) 0 (list-length (scoped.type-defs)) []
    in x86-64-emit-chapter ir ctor-types
-
-Section: Header Scoping
-  scope-def-headers : List DefHeader -> List Text -> List ChapterAssignment -> Integer -> List DefHeader -> List DefHeader
-  scope-def-headers (headers) (colliding) (assignments) (i) (acc) =
-   if i == list-length headers then acc
-   else let h = list-at headers i
-   in let scoped-text = scope-def-name colliding assignments (h.name.text) (h.chapter-slug)
-   in let scoped-tok = Token {
-    kind = h.name.kind,
-    text = scoped-text,
-    offset = h.name.offset,
-    line = h.name.line,
-    column = h.name.column,
-    file-id = h.name.file-id
-   }
-   in scope-def-headers headers colliding assignments (i + 1) (list-snoc acc (DefHeader {
-    name = scoped-tok,
-    params = h.params,
-    ann = h.ann,
-    body-pos = h.body-pos,
-    chapter-slug = h.chapter-slug
-   }))
 
 Section: Codegen Diagnostics
 
@@ -357,7 +101,6 @@ Section: Entry Point
    source <- read-file mode
    let clean = normalize-whitespace source
    in if mode == "BINARY" then emit-binary clean
-      else compile-streaming-v2 clean "Program"
+      else print-line (compile-text clean "Program")
 
 Page 1
-

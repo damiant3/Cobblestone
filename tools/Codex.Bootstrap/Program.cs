@@ -182,7 +182,8 @@ partial class Program
             for (int ei = 0; ei < checkResult.state.bag.diagnostics.Count; ei++)
             {
                 Diagnostic diag = checkResult.state.bag.diagnostics[ei];
-                Console.WriteLine($"  ERR {ei}: [{diag.code}] {diag.message}");
+                string msg = _Cce.ToUnicode(diag.message);
+                Console.WriteLine($"  ERR {ei}: [{diag.code}] {msg} @ ({diag.span.start.line}:{diag.span.start.column})");
             }
 
             IRChapter ir = Codex_Codex_Codex.lower_chapter(ast, checkResult.types, checkResult.state);
