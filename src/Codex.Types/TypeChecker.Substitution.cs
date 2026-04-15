@@ -254,7 +254,7 @@ public sealed partial class TypeChecker
             },
             ForAllType fa when fa.VariableId != varId =>
                 fa with { Body = SubstituteVar(fa.Body, varId, replacement) },
-            SumType s => s with
+            SumType s when !s.TypeParamIds.IsEmpty => s with
             {
                 Constructors = [.. s.Constructors.Select(c => c with
                 {
@@ -262,7 +262,7 @@ public sealed partial class TypeChecker
                         f => SubstituteVar(f, varId, replacement))]
                 })]
             },
-            RecordType r => r with
+            RecordType r when !r.TypeParamIds.IsEmpty => r with
             {
                 Fields = [.. r.Fields.Select(f => f with
                 {
