@@ -466,6 +466,14 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         if (Peek(1)?.Kind == TokenKind.Colon)
         {
             annotation = ParseTypeAnnotation();
+            if (Current.Kind == TokenKind.Equals)
+            {
+                Expect(TokenKind.Equals);
+                SkipNewlines();
+                ExpressionNode inlineBody = ParseExpression();
+                SourceSpan inlineSpan = annotation.Span.Through(inlineBody.Span);
+                return new DefinitionNode(annotation.Name, [], annotation, inlineBody, inlineSpan);
+            }
             SkipNewlines();
         }
 
