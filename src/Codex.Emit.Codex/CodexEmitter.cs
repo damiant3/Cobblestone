@@ -654,7 +654,7 @@ public sealed class CodexEmitter : ICodeEmitter
 
     void EmitDo(StringBuilder sb, IRDo doExpr, int indent)
     {
-        sb.Append("do");
+        sb.Append("act");
         foreach (IRDoStatement stmt in doExpr.Statements)
         {
             sb.AppendLine();
@@ -670,6 +670,9 @@ public sealed class CodexEmitter : ICodeEmitter
                     break;
             }
         }
+        sb.AppendLine();
+        EmitIndent(sb, indent);
+        sb.Append("end");
     }
 
     // ── Record construction ──────────────────────────────────────
