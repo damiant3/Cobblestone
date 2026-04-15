@@ -18,7 +18,9 @@ internal sealed class DocumentSymbolHandler(DocumentStore store) : DocumentSymbo
         string uri = request.TextDocument.Uri.ToString();
         AnalysisResult? result = m_store.GetResult(uri);
         if (result is null)
+        {
             return Task.FromResult<SymbolInformationOrDocumentSymbolContainer?>(null);
+        }
 
         List<SymbolInformationOrDocumentSymbol> symbols = [];
         foreach (Definition def in result.Definitions)

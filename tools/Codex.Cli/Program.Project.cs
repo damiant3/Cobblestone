@@ -58,7 +58,10 @@ public static partial class Program
     internal static CodexProject? LoadProjectFile(string directory)
     {
         string projectPath = Path.Combine(directory, "codex.project.json");
-        if (!File.Exists(projectPath)) return null;
+        if (!File.Exists(projectPath))
+        {
+            return null;
+        }
 
         string json = File.ReadAllText(projectPath);
         return JsonSerializer.Deserialize<CodexProject>(json, s_jsonOptions);
@@ -74,7 +77,10 @@ public static partial class Program
     internal static PackageLock? LoadLockFile(string directory)
     {
         string lockPath = Path.Combine(directory, "codex.lock.json");
-        if (!File.Exists(lockPath)) return null;
+        if (!File.Exists(lockPath))
+        {
+            return null;
+        }
 
         string json = File.ReadAllText(lockPath);
         return JsonSerializer.Deserialize<PackageLock>(json, s_jsonOptions);
@@ -100,19 +106,34 @@ public static partial class Program
                 // (each top-level subdirectory is a quire). Nested subdirectories
                 // below depth 1 are not scanned.
                 foreach (string file in Directory.GetFiles(directory, filePattern, SearchOption.TopDirectoryOnly))
-                    if (!files.Contains(file)) files.Add(file);
+                {
+                    if (!files.Contains(file))
+                    {
+                        files.Add(file);
+                    }
+                }
+
                 if (recursive)
                 {
                     foreach (string subDir in Directory.GetDirectories(directory))
-                    foreach (string file in Directory.GetFiles(subDir, filePattern, SearchOption.TopDirectoryOnly))
-                        if (!files.Contains(file)) files.Add(file);
+                    {
+                        foreach (string file in Directory.GetFiles(subDir, filePattern, SearchOption.TopDirectoryOnly))
+                        {
+                            if (!files.Contains(file))
+                            {
+                                files.Add(file);
+                            }
+                        }
+                    }
                 }
             }
             else
             {
                 string fullPath = Path.Combine(directory, pattern);
                 if (File.Exists(fullPath) && !files.Contains(fullPath))
+                {
                     files.Add(fullPath);
+                }
             }
         }
 
@@ -127,16 +148,27 @@ public static partial class Program
             {
                 string excludeDir = Path.Combine(directory, excludeSubDir ?? "");
                 if (Directory.Exists(excludeDir))
+                {
                     foreach (string f in Directory.GetFiles(excludeDir, excludePattern, SearchOption.TopDirectoryOnly))
+                    {
                         excluded.Add(f);
+                    }
+                }
             }
             else
             {
                 foreach (string f in Directory.GetFiles(directory, excludePattern, SearchOption.TopDirectoryOnly))
+                {
                     excluded.Add(f);
+                }
+
                 foreach (string subDir in Directory.GetDirectories(directory))
-                foreach (string f in Directory.GetFiles(subDir, excludePattern, SearchOption.TopDirectoryOnly))
-                    excluded.Add(f);
+                {
+                    foreach (string f in Directory.GetFiles(subDir, excludePattern, SearchOption.TopDirectoryOnly))
+                    {
+                        excluded.Add(f);
+                    }
+                }
             }
             files.RemoveAll(f => excluded.Contains(f));
         }

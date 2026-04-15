@@ -25,7 +25,9 @@ public sealed partial class ProseParser
             }
 
             if (member is not ProseBlockNode prose)
+            {
                 continue;
+            }
 
             // Find the next notation block after this prose block
             NotationBlockNode? notation = null;
@@ -37,7 +39,9 @@ public sealed partial class ProseParser
                     break;
                 }
                 if (members[j] is ProseBlockNode or SectionNode)
+                {
                     break;
+                }
             }
 
             if (notation is null)

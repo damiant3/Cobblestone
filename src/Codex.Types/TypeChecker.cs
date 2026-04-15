@@ -21,7 +21,10 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
     void EnsureBuiltinEffects()
     {
         if (m_builtinEffectsRegistered)
+        {
             return;
+        }
+
         m_builtinEffectsRegistered = true;
         RegisterEffectDefinitions(BuiltinEffects.Load());
     }
@@ -64,8 +67,10 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
             m_unifier.Unify(checkType, bodyType, def.Span);
             m_unifier.ContextSpan = null;
             if (m_diagnostics.Count > errorsBefore)
+            {
                 m_diagnostics.Info(CdxCodes.InDefinition,
                     $"in definition '{def.Name.Value}'", def.Span);
+            }
         }
 
         Map<string, CodexType> result = Map<string, CodexType>.s_empty;
@@ -73,7 +78,10 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
         {
             CodexType t = m_unifier.DeepResolve(kv.Value);
             while (t is ForAllType fa)
+            {
                 t = fa.Body;
+            }
+
             result = result.Set(kv.Key, t);
         }
 
@@ -83,6 +91,7 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
     void RegisterTypeDefinitions(IReadOnlyList<TypeDef> typeDefs)
     {
         foreach (TypeDef td in typeDefs)
+        {
             switch (td)
             {
                 case RecordTypeDef rec:
@@ -92,14 +101,23 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
                     m_typeDefMap = m_typeDefMap.Set(variant.Name.Value, new ConstructedType(variant.Name, []));
                     break;
             }
+        }
 
         foreach (TypeDef td in typeDefs)
+        {
             if (td is RecordTypeDef rec)
+            {
                 RegisterRecord(rec);
+            }
+        }
 
         foreach (TypeDef td in typeDefs)
+        {
             if (td is VariantTypeDef variant)
+            {
                 RegisterVariant(variant);
+            }
+        }
     }
 
     void RegisterRecord(RecordTypeDef rec)
@@ -119,7 +137,10 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
         ImmutableArray<RecordFieldType>.Builder fields =
             ImmutableArray.CreateBuilder<RecordFieldType>();
         foreach (RecordFieldDef f in rec.Fields)
+        {
             fields.Add(new(f.FieldName, ResolveTypeExpr(f.Type)));
+        }
+
         RecordType recordType = new(rec.Name, paramIds.ToImmutable(), fields.ToImmutable());
         m_typeDefMap = m_typeDefMap.Set(rec.Name.Value, recordType);
 
@@ -147,7 +168,10 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
             ImmutableArray<CodexType>.Builder ctorFields =
                 ImmutableArray.CreateBuilder<CodexType>();
             foreach (VariantFieldDef f in c.Fields)
+            {
                 ctorFields.Add(ResolveTypeExpr(f.Type));
+            }
+
             ctors.Add(new(c.Name, ctorFields.ToImmutable()));
         }
         SumType sumType = new(variant.Name, paramIds.ToImmutable(), ctors.ToImmutable());
@@ -157,9 +181,15 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
         {
             CodexType ctorType = sumType;
             for (int i = ctor.Fields.Length - 1; i >= 0; i--)
+            {
                 ctorType = new FunctionType(ctor.Fields[i], ctorType);
+            }
+
             for (int i = paramIds.Count - 1; i >= 0; i--)
+            {
                 ctorType = new ForAllType(paramIds[i], ctorType);
+            }
+
             m_ctorMap = m_ctorMap.Set(ctor.Name.Value, new(ctorType, sumType));
             m_env = m_env.Bind(ctor.Name, ctorType);
         }

@@ -279,7 +279,11 @@ sealed partial class ILAssemblyBuilder
                 case IRWildcardPattern:
                     EmitExpr(il, branch.Body, locals, parameters);
                     il.StoreLocal(resultLocal);
-                    if (!isLast) il.Branch(ILOpCode.Br, endLabel);
+                    if (!isLast)
+                    {
+                        il.Branch(ILOpCode.Br, endLabel);
+                    }
+
                     break;
 
                 case IRVarPattern varPat:
@@ -288,7 +292,11 @@ sealed partial class ILAssemblyBuilder
                     il.StoreLocal(varLocal);
                     EmitExpr(il, branch.Body, locals, parameters);
                     il.StoreLocal(resultLocal);
-                    if (!isLast) il.Branch(ILOpCode.Br, endLabel);
+                    if (!isLast)
+                    {
+                        il.Branch(ILOpCode.Br, endLabel);
+                    }
+
                     break;
 
                 case IRLiteralPattern litPat:
@@ -395,7 +403,10 @@ sealed partial class ILAssemblyBuilder
                         il.OpCode(ILOpCode.Ldfld);
                         il.Token(fh);
                         if (storedType is not null)
+                        {
                             EmitUnboxIfNeeded(il, storedType, vp.Type);
+                        }
+
                         int varLocal = locals.AddLocal(vp.Name, vp.Type);
                         il.StoreLocal(varLocal);
                     }
@@ -411,7 +422,10 @@ sealed partial class ILAssemblyBuilder
                         il.OpCode(ILOpCode.Ldfld);
                         il.Token(nestedFh);
                         if (storedType is not null)
+                        {
                             EmitUnboxIfNeeded(il, storedType, nested.Type);
+                        }
+
                         int nestedLocal = locals.AddLocal($"__nested_{i}", nested.Type);
                         il.StoreLocal(nestedLocal);
                         string nestedName = SanitizeName(nested.Name);

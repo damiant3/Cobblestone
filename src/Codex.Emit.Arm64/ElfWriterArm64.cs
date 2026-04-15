@@ -86,23 +86,32 @@ sealed class ElfWriterArm64
 
         // ── Pad to text offset ─────────────────────────────────
         while (ms.Position < textFileOffset)
+        {
             w.Write((byte)0);
+        }
 
         w.Write(textSection);
 
         while (ms.Position < rodataFileOffset)
+        {
             w.Write((byte)0);
+        }
 
         w.Write(rodataSection);
 
         // ── .shstrtab data ─────────────────────────────────────
         while (ms.Position < shstrtabOffset)
+        {
             w.Write((byte)0);
+        }
+
         w.Write(s_shstrtabData);
 
         // ── Section Header Table ───────────────────────────────
         while (ms.Position < shOffset)
+        {
             w.Write((byte)0);
+        }
 
         // Entry 0: SHT_NULL (64 bytes of zeros)
         w.Write(new byte[SectionHeaderSize]);

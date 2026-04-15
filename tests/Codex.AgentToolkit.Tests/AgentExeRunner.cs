@@ -10,7 +10,10 @@ sealed class AgentExeRunner
     {
         string? dir = AppContext.BaseDirectory;
         while (dir != null && !File.Exists(Path.Combine(dir, "Codex.sln")))
+        {
             dir = Path.GetDirectoryName(dir);
+        }
+
         m_solutionRoot = dir ?? throw new InvalidOperationException("Could not find solution root");
     }
 
@@ -28,7 +31,9 @@ sealed class AgentExeRunner
         string dllPath = Path.Combine(m_solutionRoot, "tools", "codex-agent", $"{stem}.dll");
 
         if (!File.Exists(dllPath))
+        {
             throw new InvalidOperationException($"IL-compiled tool not found: {dllPath}");
+        }
 
         ProcessStartInfo psi = new("dotnet",
             $"\"{dllPath}\" {string.Join(' ', args.Select(a => $"\"{a}\""))}")
@@ -71,7 +76,9 @@ sealed class AgentExeRunner
                 try { Directory.Delete(dir, recursive: true); } catch { }
             }
             if (Directory.GetFileSystemEntries(parent).Length == 0)
+            {
                 Directory.Delete(parent);
+            }
         }
     }
 }

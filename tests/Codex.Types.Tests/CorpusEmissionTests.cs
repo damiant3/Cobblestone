@@ -34,7 +34,10 @@ public class CorpusEmissionTests
         {
             string candidate = Path.Combine(dir, "samples");
             if (Directory.Exists(candidate))
+            {
                 return candidate;
+            }
+
             dir = Path.GetDirectoryName(dir)!;
         }
         throw new DirectoryNotFoundException("Cannot find samples/ directory");
@@ -47,7 +50,10 @@ public class CorpusEmissionTests
         {
             string candidate = Path.Combine(dir, "samples");
             if (Directory.Exists(candidate))
+            {
                 return Path.Combine(dir, "generated-output");
+            }
+
             dir = Path.GetDirectoryName(dir)!;
         }
         throw new DirectoryNotFoundException("Cannot find repo root");
@@ -75,7 +81,11 @@ public class CorpusEmissionTests
         foreach (string file in Directory.GetFiles(FindSamplesDir(), "*.codex").OrderBy(f => f))
         {
             string name = Path.GetFileName(file);
-            if (s_negativeSamples.Contains(name)) continue;
+            if (s_negativeSamples.Contains(name))
+            {
+                continue;
+            }
+
             yield return [name];
         }
     }
@@ -86,7 +96,11 @@ public class CorpusEmissionTests
         foreach (string file in samples)
         {
             string name = Path.GetFileName(file);
-            if (s_negativeSamples.Contains(name)) continue;
+            if (s_negativeSamples.Contains(name))
+            {
+                continue;
+            }
+
             foreach (ICodeEmitter emitter in s_emitters)
             {
                 yield return [name, emitter.TargetName];
@@ -104,7 +118,9 @@ public class CorpusEmissionTests
         string filePath = Path.Combine(s_samplesDir, sampleFile);
         string source = File.ReadAllText(filePath);
         if (RequiresModuleLoader(source))
+        {
             return; // Multi-file samples need a module loader; skip in single-file tests
+        }
 
         string chapterName = Path.GetFileNameWithoutExtension(sampleFile).Replace("-", "_");
 
@@ -135,7 +151,9 @@ public class CorpusEmissionTests
                 string source = File.ReadAllText(filePath);
 
                 if (RequiresModuleLoader(source))
+                {
                     continue; // Multi-file samples need a module loader; skip in single-file tests
+                }
 
                 string? output = Helpers.CompileToTarget(source, chapterName, emitter);
                 if (output is null)

@@ -79,6 +79,7 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
             typeNames = typeNames.Add(td.Name.Value);
 
             if (td is VariantTypeDef variant)
+            {
                 foreach (VariantCtorDef ctor in variant.Constructors)
                 {
                     if (ctorNames.Contains(ctor.Name.Value))
@@ -89,6 +90,7 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
                     }
                     ctorNames = ctorNames.Add(ctor.Name.Value);
                 }
+            }
         }
 
         // Register effect operation names
@@ -133,7 +135,10 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
         {
             Set<string> scope = allKnownNames;
             foreach (Parameter p in def.Parameters)
+            {
                 scope = scope.Add(p.Name.Value);
+            }
+
             ResolveExpr(def.Body, scope);
         }
 
@@ -210,12 +215,18 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
 
             case ListExpr list:
                 foreach (Expr element in list.Elements)
+                {
                     ResolveExpr(element, scope);
+                }
+
                 break;
 
             case RecordExpr rec:
                 foreach (RecordFieldExpr field in rec.Fields)
+                {
                     ResolveExpr(field.Value, scope);
+                }
+
                 break;
 
             case FieldAccessExpr fa:
@@ -248,8 +259,11 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
                 {
                     Set<string> clauseScope = scope;
                     foreach (Name p in clause.Parameters)
-                        clauseScope = clauseScope.Add(p.Value);
-                    clauseScope = clauseScope.Add(clause.ResumeName.Value);
+                        {
+                            clauseScope = clauseScope.Add(p.Value);
+                        }
+
+                        clauseScope = clauseScope.Add(clause.ResumeName.Value);
                     ResolveExpr(clause.Body, clauseScope);
                 }
                 break;
@@ -269,7 +283,10 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
                 break;
             case CtorPattern ctor:
                 foreach (Pattern sub in ctor.SubPatterns)
+                {
                     CollectPatternBindings(sub, ref scope);
+                }
+
                 break;
             case WildcardPattern:
             case LiteralPattern:

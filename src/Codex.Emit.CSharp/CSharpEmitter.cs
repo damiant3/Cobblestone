@@ -25,7 +25,10 @@ public sealed partial class CSharpEmitter : ICodeEmitter
         m_definitionParamNames = ValueMap<string, ImmutableArray<string>>.s_empty;
         m_typeDefsForRecordSet = [];
         foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
+        {
             m_typeDefsForRecordSet[kv.Key] = kv.Value;
+        }
+
         m_matchCounter = 0;
         foreach (IRDefinition d in module.Definitions)
         {
@@ -118,7 +121,11 @@ public sealed partial class CSharpEmitter : ICodeEmitter
                 sb.Append($"public sealed record {ctorName}(");
                 for (int i = 0; i < ctor.Fields.Length; i++)
                 {
-                    if (i > 0) sb.Append(", ");
+                    if (i > 0)
+                    {
+                        sb.Append(", ");
+                    }
+
                     sb.Append($"{EmitType(ctor.Fields[i])} Field{i}");
                 }
                 sb.AppendLine($") : {baseName};");
@@ -133,7 +140,11 @@ public sealed partial class CSharpEmitter : ICodeEmitter
         sb.Append($"public sealed record {name}(");
         for (int i = 0; i < rec.Fields.Length; i++)
         {
-            if (i > 0) sb.Append(", ");
+            if (i > 0)
+            {
+                sb.Append(", ");
+            }
+
             RecordFieldType field = rec.Fields[i];
             sb.Append($"{EmitType(field.Type)} {SanitizeIdentifier(field.FieldName.Value)}");
         }
@@ -206,7 +217,11 @@ public sealed partial class CSharpEmitter : ICodeEmitter
 
         for (int i = 0; i < def.Parameters.Length; i++)
         {
-            if (i > 0) sb.Append(", ");
+            if (i > 0)
+            {
+                sb.Append(", ");
+            }
+
             IRParameter param = def.Parameters[i];
             sb.Append($"{EmitType(param.Type)} {SanitizeIdentifier(param.Name)}");
         }

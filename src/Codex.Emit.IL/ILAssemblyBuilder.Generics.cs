@@ -114,7 +114,9 @@ sealed partial class ILAssemblyBuilder
     {
         string key = GetListCacheKey(elementType);
         if (m_listCache.TryGetValue(key, out ListInstantiation cached))
+        {
             return cached;
+        }
 
         // Build TypeSpec for List<elementType>
         TypeSpecificationHandle typeSpec;
@@ -198,7 +200,10 @@ sealed partial class ILAssemblyBuilder
     static CodexType ExtractListElementType(List<IRExpr> args, int argIndex)
     {
         if (argIndex < args.Count && args[argIndex].Type is ListType lt)
+        {
             return lt.Element;
+        }
+
         return TextType.s_instance; // fallback: List<string> for backward compat
     }
 }

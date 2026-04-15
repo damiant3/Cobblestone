@@ -23,7 +23,9 @@ public sealed class FortranEmitter : ICodeEmitter
         m_definitionArity = ValueMap<string, int>.s_empty;
         m_tagCounter = 0;
         foreach (IRDefinition d in module.Definitions)
+        {
             m_definitionArity = m_definitionArity.Set(d.Name, d.Parameters.Length);
+        }
 
         string modName = SanitizeUpper(module.Name.Parts.Count > 0
             ? module.Name.Parts[module.Name.Parts.Count - 1].Value : "main");
@@ -50,7 +52,11 @@ public sealed class FortranEmitter : ICodeEmitter
 
             foreach (IRDefinition def in module.Definitions)
             {
-                if (def == mainDef2) continue;
+                if (def == mainDef2)
+                {
+                    continue;
+                }
+
                 EmitDefinition(sb, def);
                 sb.AppendLine();
             }
@@ -65,7 +71,10 @@ public sealed class FortranEmitter : ICodeEmitter
         sb.AppendLine("program main_program");
         if (module.TypeDefinitions.Count > 0 || module.Definitions.Length > 1
             || (module.Definitions.Length == 1 && module.Definitions[0].Name != "main"))
+        {
             sb.AppendLine($"  use codex_{modName}");
+        }
+
         sb.AppendLine("  implicit none");
 
         if (mainDef is not null)
@@ -117,7 +126,12 @@ public sealed class FortranEmitter : ICodeEmitter
         sb.AppendLine($"  ! Sum type: {sum.TypeName.Value}");
         int maxFields = 0;
         foreach (SumConstructorType ctor in sum.Constructors)
-            if (ctor.Fields.Length > maxFields) maxFields = ctor.Fields.Length;
+        {
+            if (ctor.Fields.Length > maxFields)
+            {
+                maxFields = ctor.Fields.Length;
+            }
+        }
 
         sb.AppendLine("  ! Tag constants:");
         foreach (SumConstructorType ctor in sum.Constructors)
@@ -130,7 +144,10 @@ public sealed class FortranEmitter : ICodeEmitter
         sb.AppendLine($"  type :: {baseName}");
         sb.AppendLine("    integer :: tag");
         for (int f = 0; f < maxFields; f++)
+        {
             sb.AppendLine($"    integer(8) :: field{f}");
+        }
+
         sb.AppendLine($"  end type {baseName}");
         sb.AppendLine();
     }
@@ -164,13 +181,20 @@ public sealed class FortranEmitter : ICodeEmitter
             sb.Append($"  subroutine {name}(");
             for (int i = 0; i < def.Parameters.Length; i++)
             {
-                if (i > 0) sb.Append(", ");
+                if (i > 0)
+                {
+                    sb.Append(", ");
+                }
+
                 sb.Append(SanitizeUpper(def.Parameters[i].Name));
             }
             sb.AppendLine(")");
             for (int i = 0; i < def.Parameters.Length; i++)
+            {
                 sb.AppendLine(
                     $"    {EmitType(def.Parameters[i].Type)}, intent(in) :: {SanitizeUpper(def.Parameters[i].Name)}");
+            }
+
             sb.AppendLine("    implicit none");
             EmitStatement(sb, def.Body, 2);
             sb.AppendLine($"  end subroutine {name}");
@@ -181,13 +205,20 @@ public sealed class FortranEmitter : ICodeEmitter
             sb.Append($"  {retType} function {name}(");
             for (int i = 0; i < def.Parameters.Length; i++)
             {
-                if (i > 0) sb.Append(", ");
+                if (i > 0)
+                {
+                    sb.Append(", ");
+                }
+
                 sb.Append(SanitizeUpper(def.Parameters[i].Name));
             }
             sb.AppendLine(")");
             for (int i = 0; i < def.Parameters.Length; i++)
+            {
                 sb.AppendLine(
                     $"    {EmitType(def.Parameters[i].Type)}, intent(in) :: {SanitizeUpper(def.Parameters[i].Name)}");
+            }
+
             if (def.Body is IRMatch bodyMatch)
             {
                 EmitMatchStatement(sb, bodyMatch, $"{name} =", 2);
@@ -210,19 +241,32 @@ public sealed class FortranEmitter : ICodeEmitter
         sb.Append($"  {retType} function {name}(");
         for (int i = 0; i < def.Parameters.Length; i++)
         {
-            if (i > 0) sb.Append(", ");
+            if (i > 0)
+            {
+                sb.Append(", ");
+            }
+
             sb.Append($"{SanitizeUpper(def.Parameters[i].Name)}_in");
         }
         sb.AppendLine(")");
         for (int i = 0; i < def.Parameters.Length; i++)
+        {
             sb.AppendLine(
                 $"    {EmitType(def.Parameters[i].Type)}, intent(in) :: {SanitizeUpper(def.Parameters[i].Name)}_in");
+        }
+
         for (int i = 0; i < def.Parameters.Length; i++)
+        {
             sb.AppendLine(
                 $"    {EmitType(def.Parameters[i].Type)} :: {SanitizeUpper(def.Parameters[i].Name)}");
+        }
+
         for (int i = 0; i < def.Parameters.Length; i++)
+        {
             sb.AppendLine(
                 $"    {SanitizeUpper(def.Parameters[i].Name)} = {SanitizeUpper(def.Parameters[i].Name)}_in");
+        }
+
         sb.AppendLine("    do while (.true.)");
         EmitTailCallBody(sb, def.Body, def.Name, def.Parameters, 3);
         sb.AppendLine("    end do");
@@ -284,7 +328,11 @@ public sealed class FortranEmitter : ICodeEmitter
 
             case IRNumberLit lit:
                 string numStr = lit.Value.ToString();
-                if (!numStr.Contains('.')) numStr += ".0";
+                if (!numStr.Contains('.'))
+                {
+                    numStr += ".0";
+                }
+
                 sb.Append($"{numStr}d0");
                 break;
 
@@ -297,15 +345,29 @@ public sealed class FortranEmitter : ICodeEmitter
                 break;
 
             case IRName name:
-                if (name.Name == "True") sb.Append(".true.");
-                else if (name.Name == "False") sb.Append(".false.");
-                else if (name.Name == "Nothing") sb.Append('0');
+                if (name.Name == "True")
+                {
+                    sb.Append(".true.");
+                }
+                else if (name.Name == "False")
+                {
+                    sb.Append(".false.");
+                }
+                else if (name.Name == "Nothing")
+                {
+                    sb.Append('0');
+                }
                 else if (m_definitionArity.TryGet(name.Name, out int nameArity)
                     && nameArity == 0
                     && name.Type is not FunctionType)
+                {
                     sb.Append($"{SanitizeUpper(name.Name)}()");
+                }
                 else
+                {
                     sb.Append(SanitizeUpper(name.Name));
+                }
+
                 break;
 
             case IRBinary bin:
@@ -340,7 +402,11 @@ public sealed class FortranEmitter : ICodeEmitter
                 sb.Append($"{SanitizeUpper(rec.TypeName)}(");
                 for (int i = 0; i < rec.Fields.Length; i++)
                 {
-                    if (i > 0) sb.Append(", ");
+                    if (i > 0)
+                    {
+                        sb.Append(", ");
+                    }
+
                     EmitExpr(sb, rec.Fields[i].Value, indent);
                 }
                 sb.Append(')');
@@ -381,11 +447,17 @@ public sealed class FortranEmitter : ICodeEmitter
         }
 
         for (int i = 0; i < branches.Length - 1; i++)
+        {
             sb.Append("merge(");
+        }
 
         for (int i = 0; i < branches.Length; i++)
         {
-            if (i > 0) sb.Append(", ");
+            if (i > 0)
+            {
+                sb.Append(", ");
+            }
+
             EmitExpr(sb, branches[i].Body, indent);
             if (i < branches.Length - 1)
             {
@@ -451,7 +523,11 @@ public sealed class FortranEmitter : ICodeEmitter
                 sb.Append($"{SanitizeUpper(defName)}(");
                 for (int i = 0; i < args.Count; i++)
                 {
-                    if (i > 0) sb.Append(", ");
+                    if (i > 0)
+                    {
+                        sb.Append(", ");
+                    }
+
                     EmitExpr(sb, args[i], indent);
                 }
                 sb.Append(')');
@@ -587,7 +663,9 @@ public sealed class FortranEmitter : ICodeEmitter
         for (int i = 0; i < pattern.SubPatterns.Length; i++)
         {
             if (pattern.SubPatterns[i] is IRVarPattern vp)
+            {
                 varFields[vp.Name] = i;
+            }
         }
         return RewriteExpr(expr, scrutinee, varFields);
     }
@@ -651,26 +729,55 @@ public sealed class FortranEmitter : ICodeEmitter
         CodexType type = def.Type;
         for (int i = 0; i < def.Parameters.Length; i++)
         {
-            while (type is FunctionType pft && pft.Parameter is ProofType) type = pft.Return;
-            if (type is FunctionType ft) type = ft.Return;
-            else if (type is DependentFunctionType dep) type = dep.Body;
-            else break;
+            while (type is FunctionType pft && pft.Parameter is ProofType)
+            {
+                type = pft.Return;
+            }
+
+            if (type is FunctionType ft)
+            {
+                type = ft.Return;
+            }
+            else if (type is DependentFunctionType dep)
+            {
+                type = dep.Body;
+            }
+            else
+            {
+                break;
+            }
         }
-        while (type is FunctionType pft2 && pft2.Parameter is ProofType) type = pft2.Return;
-        if (type is EffectfulType eft) type = eft.Return;
+        while (type is FunctionType pft2 && pft2.Parameter is ProofType)
+        {
+            type = pft2.Return;
+        }
+
+        if (type is EffectfulType eft)
+        {
+            type = eft.Return;
+        }
+
         return type;
     }
 
     static string? FindDefinitionName(IRApply app)
     {
         IRExpr current = app.Function;
-        while (current is IRApply inner) current = inner.Function;
+        while (current is IRApply inner)
+        {
+            current = inner.Function;
+        }
+
         return current is IRName name && name.Name.Length > 0 && char.IsLower(name.Name[0]) ? name.Name : null;
     }
 
     static void CollectApplyArgs(IRApply app, List<IRExpr> args)
     {
-        if (app.Function is IRApply inner) CollectApplyArgs(inner, args);
+        if (app.Function is IRApply inner)
+        {
+            CollectApplyArgs(inner, args);
+        }
+
         args.Add(app.Argument);
     }
 
@@ -678,9 +785,16 @@ public sealed class FortranEmitter : ICodeEmitter
     {
         Set<string> names = Set<string>.s_empty;
         foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
+        {
             if (kv.Value is SumType sum)
+            {
                 foreach (SumConstructorType ctor in sum.Constructors)
+                {
                     names = names.Add(ctor.Name.Value);
+                }
+            }
+        }
+
         return names;
     }
 
@@ -688,11 +802,16 @@ public sealed class FortranEmitter : ICodeEmitter
     {
         Map<string, string> map = Map<string, string>.s_empty;
         foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
+        {
             if (kv.Value is SumType sum)
+            {
                 foreach (SumConstructorType ctor in sum.Constructors)
                 {
                     map = map.Set(ctor.Name.Value, (++m_tagCounter).ToString());
                 }
+            }
+        }
+
         return map;
     }
 
@@ -711,7 +830,11 @@ public sealed class FortranEmitter : ICodeEmitter
     static bool IsSelfCall(IRApply app, string funcName)
     {
         IRExpr root = app.Function;
-        while (root is IRApply inner) root = inner.Function;
+        while (root is IRApply inner)
+        {
+            root = inner.Function;
+        }
+
         return root is IRName name && name.Name == funcName;
     }
 
@@ -720,12 +843,29 @@ public sealed class FortranEmitter : ICodeEmitter
         CodexType type = def.Type;
         for (int i = 0; i < def.Parameters.Length; i++)
         {
-            while (type is FunctionType pft && pft.Parameter is ProofType) type = pft.Return;
-            if (type is FunctionType ft) type = ft.Return;
-            else if (type is DependentFunctionType dep) type = dep.Body;
-            else break;
+            while (type is FunctionType pft && pft.Parameter is ProofType)
+            {
+                type = pft.Return;
+            }
+
+            if (type is FunctionType ft)
+            {
+                type = ft.Return;
+            }
+            else if (type is DependentFunctionType dep)
+            {
+                type = dep.Body;
+            }
+            else
+            {
+                break;
+            }
         }
-        while (type is FunctionType pft2 && pft2.Parameter is ProofType) type = pft2.Return;
+        while (type is FunctionType pft2 && pft2.Parameter is ProofType)
+        {
+            type = pft2.Return;
+        }
+
         return type is EffectfulType;
     }
 

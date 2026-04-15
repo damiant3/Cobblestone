@@ -24,7 +24,9 @@ public sealed class Lowering(
     {
         ImmutableArray<IRDefinition>.Builder allDefs = ImmutableArray.CreateBuilder<IRDefinition>();
         foreach (Definition def in chapter.Definitions)
+        {
             allDefs.Add(LowerDefinition(def));
+        }
 
         // Build sections: group typedefs and definitions by SourceChapter
         ImmutableArray<IRDefinition> loweredDefs = allDefs.ToImmutable();
@@ -38,7 +40,9 @@ public sealed class Lowering(
             string mod = td.SourceChapter ?? "";
             if (seen.Add(mod)) { chapterOrder.Add(mod); groups[mod] = ([], []); }
             if (m_typeDefMap.ContainsKey(td.Name.Value))
+            {
                 groups[mod].Types.Add((td.Name.Value, m_typeDefMap[td.Name.Value]!));
+            }
         }
 
         for (int i = 0; i < chapter.Definitions.Count; i++)
@@ -81,7 +85,9 @@ public sealed class Lowering(
         foreach (Parameter param in def.Parameters)
         {
             while (currentType is FunctionType skipFt && skipFt.Parameter is ProofType)
+            {
                 currentType = skipFt.Return;
+            }
 
             CodexType paramType;
             if (currentType is FunctionType ft)
@@ -103,7 +109,9 @@ public sealed class Lowering(
         }
 
         while (currentType is FunctionType skipFt2 && skipFt2.Parameter is ProofType)
+        {
             currentType = skipFt2.Return;
+        }
 
         IRExpr body = LowerExpr(def.Body, currentType);
         bool needsEscape = IRRegion.TypeNeedsHeapEscape(body.Type);
@@ -202,9 +210,13 @@ public sealed class Lowering(
 
         CodexType rightExpected = expectedType;
         if (bin.Op == BinaryOp.Append && left.Type is ListType)
+        {
             rightExpected = left.Type;
+        }
         else if (bin.Op == BinaryOp.Cons && left.Type is not ErrorType)
+        {
             rightExpected = new ListType(left.Type);
+        }
 
         IRExpr right = LowerExpr(bin.Right, rightExpected);
 
@@ -320,9 +332,13 @@ public sealed class Lowering(
             if (resultType is ErrorType or EffectfulType)
             {
                 if (comp.Type is FunctionType compFt && compFt.Return is EffectfulType eft)
+                {
                     resultType = eft.Return;
+                }
                 else if (comp.Type is FunctionType compFt2)
+                {
                     resultType = compFt2.Return;
+                }
             }
             return new IRRunState(init, comp, stateType, resultType);
         }
@@ -356,10 +372,14 @@ public sealed class Lowering(
         CodexType paramType, CodexType argType, CodexType target)
     {
         if (paramType is TypeVariable tv)
+        {
             return SubstituteTypeVar(target, tv.Id, argType);
+        }
 
         if (paramType is ListType lp && argType is ListType la)
+        {
             return SubstituteTypeVarsFromArg(lp.Element, la.Element, target);
+        }
 
         if (paramType is FunctionType fp && argType is FunctionType fa)
         {
@@ -429,7 +449,10 @@ public sealed class Lowering(
             IRExpr body = LowerExpr(branch.Body, resolvedType);
             branches.Add(new(pattern, body));
             if (resolvedType is ErrorType && body.Type is not ErrorType)
+            {
                 resolvedType = body.Type;
+            }
+
             m_localEnv = savedEnv;
         }
 
@@ -527,7 +550,11 @@ public sealed class Lowering(
 
     static CodexType InferElementType(ListExpr list)
     {
-        if (list.Elements.Count == 0) return ErrorType.s_instance;
+        if (list.Elements.Count == 0)
+        {
+            return ErrorType.s_instance;
+        }
+
         return list.Elements[0] switch
         {
             LiteralExpr lit => lit.Kind switch
@@ -562,7 +589,10 @@ public sealed class Lowering(
             ?? s_builtinTypes[name]
             ?? fallback;
         while (result is ForAllType fa)
+        {
             result = fa.Body;
+        }
+
         return result;
     }
 
@@ -606,9 +636,13 @@ public sealed class Lowering(
         {
             IRDoStatement last = stmts[^1];
             if (last is IRDoExec exec)
+            {
                 doType = exec.Expression.Type;
+            }
             else if (last is IRDoBind bind)
+            {
                 doType = bind.NameType;
+            }
         }
 
         return new IRDo(stmts, doType);
@@ -643,7 +677,10 @@ public sealed class Lowering(
 
             Map<string, CodexType> savedEnv = m_localEnv;
             for (int i = 0; i < paramNames.Count; i++)
+            {
                 m_localEnv = m_localEnv.Set(paramNames[i], paramTypes[i]);
+            }
+
             m_localEnv = m_localEnv.Set(clause.ResumeName.Value,
                 new FunctionType(resumeParamType, expectedType));
 
@@ -675,7 +712,9 @@ public sealed class Lowering(
             CodexType? looked = m_typeMap[typeName] ?? m_typeDefMap[typeName];
             rt = looked as RecordType;
             if (rt is not null)
+            {
                 recType = rt;
+            }
         }
 
         foreach (RecordFieldExpr field in rec.Fields)
@@ -685,7 +724,10 @@ public sealed class Lowering(
             {
                 RecordFieldType? rft = rt.Fields
                     .FirstOrDefault(f => f.FieldName.Value == field.FieldName.Value);
-                if (rft is not null) fieldType = rft.Type;
+                if (rft is not null)
+                {
+                    fieldType = rft.Type;
+                }
             }
             fields.Add((field.FieldName.Value, LowerExpr(field.Value, fieldType)));
         }
@@ -713,11 +755,16 @@ public sealed class Lowering(
         {
             RecordFieldType? rft = rt.Fields
                 .FirstOrDefault(f => f.FieldName.Value == fa.FieldName.Value);
-            if (rft is not null) fieldType = rft.Type;
+            if (rft is not null)
+            {
+                fieldType = rft.Type;
+            }
 
             // Ensure emitters see RecordType (not ConstructedType) so they can compute field indices
             if (record.Type is not RecordType)
+            {
                 record = record with { Type = rt };
+            }
         }
         return new IRFieldAccess(record, fa.FieldName.Value, fieldType);
     }
@@ -891,9 +938,17 @@ public sealed class Lowering(
     // moves HeapReg, so it must not be wrapped in a scalar-reclaim region.
     static bool IsHeapAdvance(IRExpr expr)
     {
-        if (expr is not IRApply apply) return false;
+        if (expr is not IRApply apply)
+        {
+            return false;
+        }
+
         IRExpr f = apply.Function;
-        while (f is IRApply inner) f = inner.Function;
+        while (f is IRApply inner)
+        {
+            f = inner.Function;
+        }
+
         return f is IRName name && name.Name == "heap-advance";
     }
 }

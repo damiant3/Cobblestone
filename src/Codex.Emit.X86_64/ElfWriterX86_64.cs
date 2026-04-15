@@ -78,12 +78,16 @@ sealed class ElfWriterX86_64
 
         // ── Pad to text offset ─────────────────────────────────
         while (ms.Position < textFileOffset)
+        {
             w.Write((byte)0);
+        }
 
         w.Write(textSection);
 
         while (ms.Position < rodataFileOffset)
+        {
             w.Write((byte)0);
+        }
 
         w.Write(rodataSection);
 
@@ -182,17 +186,26 @@ sealed class ElfWriterX86_64
 
         // ── Note data ──
         while (ms.Position < noteFileOffset)
+        {
             w.Write((byte)0);
+        }
+
         w.Write(noteData);
 
         // ── .text ──
         while (ms.Position < textFileOffset)
+        {
             w.Write((byte)0);
+        }
+
         w.Write(textSection);
 
         // ── .rodata ──
         while (ms.Position < rodataFileOffset)
+        {
             w.Write((byte)0);
+        }
+
         w.Write(rodataSection);
 
         return ms.ToArray();

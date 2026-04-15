@@ -10,21 +10,32 @@ internal static class LspHelpers
     {
         string[] lines = text.Split('\n');
         if (line < 0 || line >= lines.Length)
+        {
             return null;
+        }
+
         string lineText = lines[line];
         if (col < 0 || col >= lineText.Length)
+        {
             return null;
+        }
 
         if (!IsIdentChar(lineText[col]))
+        {
             return null;
+        }
 
         int start = col;
         while (start > 0 && IsIdentChar(lineText[start - 1]))
+        {
             start--;
+        }
 
         int end = col;
         while (end < lineText.Length - 1 && IsIdentChar(lineText[end + 1]))
+        {
             end++;
+        }
 
         return lineText[start..(end + 1)];
     }

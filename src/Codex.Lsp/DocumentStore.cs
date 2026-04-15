@@ -19,7 +19,9 @@ internal sealed class DocumentStore
     {
         DocumentEntry? existing = m_entries[uri];
         if (existing is not null)
+        {
             m_entries = m_entries.Set(uri, existing with { Result = result });
+        }
     }
 
     public void Remove(string uri)

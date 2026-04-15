@@ -25,7 +25,9 @@ partial class FactStore
     public void AddPeer(string url, string name)
     {
         if (!m_peers.Any(p => p.Url == url))
+        {
             m_peers.Add(new Peer(url.TrimEnd('/'), name));
+        }
     }
 
     /// <summary>
@@ -52,12 +54,16 @@ partial class FactStore
             string url = $"{peerUrl}/fact/{hash.ToHex()}";
             HttpResponseMessage response = await client.GetAsync(url);
             if (!response.IsSuccessStatusCode)
+            {
                 return null;
+            }
 
             string json = await response.Content.ReadAsStringAsync();
             NetworkFactDto? dto = JsonSerializer.Deserialize<NetworkFactDto>(json, s_jsonOptions);
             if (dto is null)
+            {
                 return null;
+            }
 
             return new Fact(
                 ContentHash.FromHex(dto.Hash),
@@ -106,13 +112,17 @@ partial class FactStore
             Set<string> localHashes = CollectAllHashes();
             Set<string> remoteSet = Set<string>.s_empty;
             foreach (string h in remoteHashes)
+            {
                 remoteSet = remoteSet.Add(h);
+            }
 
             // Fetch facts we don't have
             foreach (string hex in remoteHashes)
             {
                 if (localHashes.Contains(hex))
+                {
                     continue;
+                }
 
                 Fact? fact = await FetchFactFromPeer(client, baseUrl, ContentHash.FromHex(hex));
                 if (fact is not null)
@@ -126,10 +136,15 @@ partial class FactStore
             foreach (string hex in localHashes)
             {
                 if (remoteSet.Contains(hex))
+                {
                     continue;
+                }
 
                 Fact? fact = Load(ContentHash.FromHex(hex));
-                if (fact is null) continue;
+                if (fact is null)
+                {
+                    continue;
+                }
 
                 try
                 {
@@ -137,7 +152,9 @@ partial class FactStore
                     HttpResponseMessage putResponse = await client.PostAsJsonAsync(
                         $"{baseUrl}/fact", dto, s_jsonOptions);
                     if (putResponse.IsSuccessStatusCode)
+                    {
                         sent++;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -203,7 +220,9 @@ partial class FactStore
             Set<string> hashes = CollectAllHashes();
             List<string> list = [];
             foreach (string h in hashes)
+            {
                 list.Add(h);
+            }
 
             ctx.Response.ContentType = "application/json";
             await JsonSerializer.SerializeAsync(ctx.Response.OutputStream, list, s_jsonOptions);

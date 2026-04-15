@@ -123,13 +123,40 @@ public sealed record DocumentNode(
     {
         get
         {
-            foreach (CitesNode cite in Citations) yield return cite;
-            foreach (EffectDefinitionNode eff in EffectDefinitions) yield return eff;
-            foreach (ChapterNode ch in Chapters) yield return ch;
-            foreach (TypeDefinitionNode td in TypeDefinitions) yield return td;
-            foreach (ClaimNode cl in Claims) yield return cl;
-            foreach (ProofNode pr in Proofs) yield return pr;
-            foreach (DefinitionNode def in Definitions) yield return def;
+            foreach (CitesNode cite in Citations)
+            {
+                yield return cite;
+            }
+
+            foreach (EffectDefinitionNode eff in EffectDefinitions)
+            {
+                yield return eff;
+            }
+
+            foreach (ChapterNode ch in Chapters)
+            {
+                yield return ch;
+            }
+
+            foreach (TypeDefinitionNode td in TypeDefinitions)
+            {
+                yield return td;
+            }
+
+            foreach (ClaimNode cl in Claims)
+            {
+                yield return cl;
+            }
+
+            foreach (ProofNode pr in Proofs)
+            {
+                yield return pr;
+            }
+
+            foreach (DefinitionNode def in Definitions)
+            {
+                yield return def;
+            }
         }
     }
 }
@@ -251,7 +278,11 @@ public sealed record DefinitionNode(
     {
         get
         {
-            if (TypeAnnotation is not null) yield return TypeAnnotation;
+            if (TypeAnnotation is not null)
+            {
+                yield return TypeAnnotation;
+            }
+
             yield return Body;
         }
     }
@@ -302,7 +333,11 @@ public sealed record LetExpressionNode(IReadOnlyList<LetBinding> Bindings, Expre
     {
         get
         {
-            foreach (LetBinding b in Bindings) yield return b.Value;
+            foreach (LetBinding b in Bindings)
+            {
+                yield return b.Value;
+            }
+
             yield return Body;
         }
     }
@@ -324,7 +359,10 @@ public sealed record MatchExpressionNode(ExpressionNode Scrutinee, IReadOnlyList
         get
         {
             yield return Scrutinee;
-            foreach (MatchBranchNode b in Branches) yield return b;
+            foreach (MatchBranchNode b in Branches)
+            {
+                yield return b;
+            }
         }
     }
 }
@@ -445,7 +483,10 @@ public sealed record ApplicationTypeNode(TypeNode Constructor, IReadOnlyList<Typ
         get
         {
             yield return Constructor;
-            foreach (TypeNode a in Arguments) yield return a;
+            foreach (TypeNode a in Arguments)
+            {
+                yield return a;
+            }
         }
     }
 }
@@ -463,7 +504,11 @@ public sealed record EffectfulTypeNode(IReadOnlyList<TypeNode> Effects, TypeNode
     {
         get
         {
-            foreach (TypeNode e in Effects) yield return e;
+            foreach (TypeNode e in Effects)
+            {
+                yield return e;
+            }
+
             yield return Return;
         }
     }
@@ -597,7 +642,10 @@ public sealed record HandleExpressionNode(
         get
         {
             yield return Computation;
-            foreach (HandleClauseNode c in Clauses) yield return c;
+            foreach (HandleClauseNode c in Clauses)
+            {
+                yield return c;
+            }
         }
     }
 }
@@ -666,7 +714,10 @@ public sealed record InductionNode(
     {
         get
         {
-            foreach (ProofCaseNode c in Cases) yield return c;
+            foreach (ProofCaseNode c in Cases)
+            {
+                yield return c;
+            }
         }
     }
 }
@@ -696,7 +747,10 @@ public sealed record ProofApplyNode(
     {
         get
         {
-            foreach (ExpressionNode a in Arguments) yield return a;
+            foreach (ExpressionNode a in Arguments)
+            {
+                yield return a;
+            }
         }
     }
 }

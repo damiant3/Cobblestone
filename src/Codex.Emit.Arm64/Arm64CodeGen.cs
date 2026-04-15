@@ -54,7 +54,9 @@ sealed class Arm64CodeGen
         EmitRuntimeHelpers();
 
         foreach (IRDefinition def in module.Definitions)
+        {
             EmitFunction(def);
+        }
 
         EmitEscapeCopyHelpers();
         EmitStart(module);
@@ -95,7 +97,11 @@ sealed class Arm64CodeGen
     };
     static bool IsSelfCall(IRExpr expr, string fn)
     {
-        IRExpr c = expr; while (c is IRApply a) c = a.Function;
+        IRExpr c = expr; while (c is IRApply a)
+        {
+            c = a.Function;
+        }
+
         return c is IRName n && n.Name == fn;
     }
 
@@ -142,7 +148,9 @@ sealed class Arm64CodeGen
         {
             m_tcoTempLocals = new uint[def.Parameters.Length];
             for (int i = 0; i < def.Parameters.Length; i++)
+            {
                 m_tcoTempLocals[i] = AllocLocal();
+            }
         }
         m_tcoLoopTop = m_instructions.Count;
         m_tcoSavedNextLocal = (int)m_nextLocal;
@@ -151,14 +159,21 @@ sealed class Arm64CodeGen
 
         uint resultReg = EmitExpr(def.Body);
         if (resultReg >= SpillBase)
+        {
             EmitSpillLoad(Arm64Reg.X0, resultReg);
+        }
         else if (resultReg != Arm64Reg.X0)
+        {
             Emit(Arm64Encoder.Mov(Arm64Reg.X0, resultReg));
+        }
 
         m_spillCounts[def.Name] = m_spillCount;
 
         int frameSize = 96 + m_spillCount * 8;
-        if (frameSize % 16 != 0) frameSize += 8;
+        if (frameSize % 16 != 0)
+        {
+            frameSize += 8;
+        }
 
         // Patch prologue
         PatchFrameAdjust(m_prologueIndex, frameSize);
@@ -199,7 +214,11 @@ sealed class Arm64CodeGen
         }
         else
         {
-            foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, imm)) Emit(insn);
+            foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, imm))
+            {
+                Emit(insn);
+            }
+
             Emit(Arm64Encoder.Add(Arm64Reg.Sp, Arm64Reg.Sp, Arm64Reg.X9));
         }
     }
@@ -237,7 +256,10 @@ sealed class Arm64CodeGen
     {
         uint rd = AllocTemp();
         foreach (uint insn in Arm64Encoder.Li(rd, value))
+        {
             Emit(insn);
+        }
+
         return rd;
     }
 
@@ -249,7 +271,11 @@ sealed class Arm64CodeGen
             byte[] utf8 = Encoding.UTF8.GetBytes(value);
             m_rodata.AddRange(BitConverter.GetBytes((long)utf8.Length));
             m_rodata.AddRange(utf8);
-            while (m_rodata.Count % 8 != 0) m_rodata.Add(0);
+            while (m_rodata.Count % 8 != 0)
+            {
+                m_rodata.Add(0);
+            }
+
             m_stringOffsets[value] = rodataOffset;
         }
 
@@ -268,10 +294,14 @@ sealed class Arm64CodeGen
     uint EmitName(IRName name)
     {
         if (m_locals.TryGetValue(name.Name, out uint reg))
+        {
             return LoadLocal(reg);
+        }
 
         if (name.Type is FunctionType)
+        {
             return EmitPartialApplication(name.Name, new List<IRExpr>());
+        }
 
         if (name.Type is SumType sumType)
         {
@@ -287,7 +317,11 @@ sealed class Arm64CodeGen
                 Emit(Arm64Encoder.Mov(ptrReg, HeapReg));
                 Emit(Arm64Encoder.AddImm(HeapReg, HeapReg, 8));
                 uint tagReg = AllocTemp();
-                foreach (uint insn in Arm64Encoder.Li(tagReg, tag)) Emit(insn);
+                foreach (uint insn in Arm64Encoder.Li(tagReg, tag))
+                {
+                    Emit(insn);
+                }
+
                 Emit(Arm64Encoder.Str(tagReg, ptrReg, 0));
                 return ptrReg;
             }
@@ -356,7 +390,11 @@ sealed class Arm64CodeGen
                     // Invert: XOR with 1
                     Emit(Arm64Encoder.Mov(rd, Arm64Reg.X0));
                     uint oneReg = AllocTemp();
-                    foreach (uint insn in Arm64Encoder.Li(oneReg, 1)) Emit(insn);
+                    foreach (uint insn in Arm64Encoder.Li(oneReg, 1))
+                    {
+                        Emit(insn);
+                    }
+
                     Emit(Arm64Encoder.Xor(rd, rd, oneReg));
                 }
                 else
@@ -481,7 +519,11 @@ sealed class Arm64CodeGen
         {
             EmitArm64TailCall(apply);
             uint dummy = AllocTemp();
-            foreach (uint insn in Arm64Encoder.Li(dummy, 0)) Emit(insn);
+            foreach (uint insn in Arm64Encoder.Li(dummy, 0))
+            {
+                Emit(insn);
+            }
+
             return dummy;
         }
         // Sub-expressions of a call are NOT in tail position
@@ -500,17 +542,23 @@ sealed class Arm64CodeGen
         if (func is IRName funcName)
         {
             if (TryEmitBuiltin(funcName.Name, args))
+            {
                 return Arm64Reg.X0;
+            }
 
             if (apply.Type is SumType sumType)
             {
                 uint ctorResult = EmitConstructor(funcName.Name, args, sumType);
                 if (ctorResult != Arm64Reg.Xzr)
+                {
                     return ctorResult;
+                }
             }
 
             if (apply.Type is FunctionType && !m_locals.ContainsKey(funcName.Name))
+            {
                 return EmitPartialApplication(funcName.Name, args);
+            }
 
             List<uint> argRegs = new();
             foreach (IRExpr arg in args)
@@ -525,7 +573,9 @@ sealed class Arm64CodeGen
             {
                 uint argVal = LoadLocal(argRegs[i]);
                 if (argVal != Arm64Reg.X0 + (uint)i)
+                {
                     Emit(Arm64Encoder.Mov(Arm64Reg.X0 + (uint)i, argVal));
+                }
             }
 
             if (m_locals.ContainsKey(funcName.Name))
@@ -573,12 +623,16 @@ sealed class Arm64CodeGen
         for (int i = 7; i >= 0; i--)
         {
             if (i + numCaptures <= 7)
+            {
                 Emit(Arm64Encoder.Mov(Arm64Reg.X0 + (uint)(i + numCaptures), Arm64Reg.X0 + (uint)i));
+            }
         }
 
         // Load captured args from closure (X11) into X0..X(numCaptures-1)
         for (int i = 0; i < numCaptures; i++)
+        {
             Emit(Arm64Encoder.Ldr(Arm64Reg.X0 + (uint)i, Arm64Reg.X11, 8 + i * 8));
+        }
 
         // Tail-jump to real function
         EmitLoadFunctionAddress(Arm64Reg.X9, funcName);
@@ -597,7 +651,9 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.Str(Arm64Reg.X9, ptrReg, 0));
 
         for (int i = 0; i < capRegs.Count; i++)
+        {
             Emit(Arm64Encoder.Str(LoadLocal(capRegs[i]), ptrReg, 8 + i * 8));
+        }
 
         return ptrReg;
     }
@@ -655,7 +711,9 @@ sealed class Arm64CodeGen
             {
                 string fieldName = rt.Fields[i].FieldName.Value;
                 if (fieldMap.TryGetValue(fieldName, out uint saved))
+                {
                     Emit(Arm64Encoder.Str(LoadLocal(saved), ptrReg, i * 8));
+                }
             }
         }
         else
@@ -696,7 +754,10 @@ sealed class Arm64CodeGen
             if (sumType.Constructors[i].Name.Value == ctorName)
             { tag = i; break; }
         }
-        if (tag < 0) return Arm64Reg.Xzr;
+        if (tag < 0)
+        {
+            return Arm64Reg.Xzr;
+        }
 
         List<uint> argRegs = new();
         foreach (IRExpr arg in args)
@@ -713,11 +774,17 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.AddImm(HeapReg, HeapReg, totalSize));
 
         uint tagReg = AllocTemp();
-        foreach (uint insn in Arm64Encoder.Li(tagReg, tag)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(tagReg, tag))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Str(tagReg, ptrReg, 0));
 
         for (int i = 0; i < argRegs.Count; i++)
+        {
             Emit(Arm64Encoder.Str(LoadLocal(argRegs[i]), ptrReg, 8 + i * 8));
+        }
 
         return ptrReg;
     }
@@ -738,7 +805,11 @@ sealed class Arm64CodeGen
 
     void EmitMatchBranches(IRMatch match, int index, uint scrutReg, uint resultReg)
     {
-        if (index >= match.Branches.Length) return;
+        if (index >= match.Branches.Length)
+        {
+            return;
+        }
+
         IRMatchBranch branch = match.Branches[index];
 
         switch (branch.Pattern)
@@ -796,9 +867,12 @@ sealed class Arm64CodeGen
                 }
 
                 uint expectedReg = AllocTemp();
-                foreach (uint insn in Arm64Encoder.Li(expectedReg, expectedTag)) Emit(insn);
+                foreach (uint insn in Arm64Encoder.Li(expectedReg, expectedTag))
+                    {
+                        Emit(insn);
+                    }
 
-                Emit(Arm64Encoder.Cmp(tagReg, expectedReg));
+                    Emit(Arm64Encoder.Cmp(tagReg, expectedReg));
                 int branchIdx = m_instructions.Count;
                 Emit(Arm64Encoder.Nop()); // patched: B.NE -> next
 
@@ -836,14 +910,18 @@ sealed class Arm64CodeGen
     {
         // Closures: skip region (capture types unknown at region exit)
         if (region.Type is FunctionType)
+        {
             return EmitExpr(region.Body);
+        }
 
         // Heap-returning functions: skip region reclamation.
         // Pattern matching extracts pointers to intermediate heap allocations
         // that are still live in locals — reclaiming corrupts them.
         // Only scalar-returning regions are safe to reclaim.
         if (region.NeedsEscapeCopy)
+        {
             return EmitExpr(region.Body);
+        }
 
         // Save heap pointer (region entry)
         uint savedHeap = AllocLocal();
@@ -875,11 +953,17 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.AddImm(HeapReg, HeapReg, totalSize));
 
         uint lenReg = AllocTemp();
-        foreach (uint insn in Arm64Encoder.Li(lenReg, list.Elements.Length)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(lenReg, list.Elements.Length))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Str(lenReg, ptrReg, 0));
 
         for (int i = 0; i < elemRegs.Count; i++)
+        {
             Emit(Arm64Encoder.Str(LoadLocal(elemRegs[i]), ptrReg, 8 + i * 8));
+        }
 
         return ptrReg;
     }
@@ -889,10 +973,22 @@ sealed class Arm64CodeGen
         uint msgReg = EmitTextLit(err.Message);
         Emit(Arm64Encoder.Ldr(Arm64Reg.X2, msgReg, 0));       // len
         Emit(Arm64Encoder.AddImm(Arm64Reg.X1, msgReg, 8));    // buf
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X8, 64)) Emit(insn);  // SYS_write
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 2)) Emit(insn);   // stderr
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X8, 64))
+        {
+            Emit(insn);  // SYS_write
+        }
+
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 2))
+        {
+            Emit(insn);   // stderr
+        }
+
         Emit(Arm64Encoder.Svc());
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 1)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 1))
+        {
+            Emit(insn);
+        }
+
         EmitSyscallExit();
         return Arm64Reg.Xzr;
     }
@@ -984,8 +1080,12 @@ sealed class Arm64CodeGen
                 Emit(Arm64Encoder.AddImm(Arm64Reg.X11, Arm64Reg.X0, 8)); // dst = result+8
 
                 // Copy loop
-                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X12, 0)) Emit(insn);
-                int loopStart = m_instructions.Count;
+                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X12, 0))
+                    {
+                        Emit(insn);
+                    }
+
+                    int loopStart = m_instructions.Count;
                 Emit(Arm64Encoder.Cmp(Arm64Reg.X12, Arm64Reg.X10));
                 int exitIdx = m_instructions.Count;
                 Emit(Arm64Encoder.Nop()); // B.GE -> exit
@@ -1027,8 +1127,12 @@ sealed class Arm64CodeGen
                 StoreLocal(savedList, listReg);
                 uint idxReg = EmitExpr(args[1]);
                 Emit(Arm64Encoder.Mov(Arm64Reg.X11, idxReg));
-                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, 8)) Emit(insn);
-                Emit(Arm64Encoder.Mul(Arm64Reg.X11, Arm64Reg.X11, Arm64Reg.X9));
+                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, 8))
+                    {
+                        Emit(insn);
+                    }
+
+                    Emit(Arm64Encoder.Mul(Arm64Reg.X11, Arm64Reg.X11, Arm64Reg.X9));
                 uint listVal = LoadLocal(savedList);
                 Emit(Arm64Encoder.Add(Arm64Reg.X9, listVal, Arm64Reg.X11));
                 Emit(Arm64Encoder.Ldr(Arm64Reg.X0, Arm64Reg.X9, 8));
@@ -1065,8 +1169,12 @@ sealed class Arm64CodeGen
                 uint pathReg = EmitExpr(args[0]);
                 Emit(Arm64Encoder.Mov(Arm64Reg.X0, pathReg));
                 EmitCallTo("__read_file");
-                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 1)) Emit(insn);
-                return true;
+                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 1))
+                    {
+                        Emit(insn);
+                    }
+
+                    return true;
             }
 
             case "get-args" when args.Count == 0:
@@ -1119,8 +1227,12 @@ sealed class Arm64CodeGen
                 uint codeReg = EmitExpr(args[0]);
                 Emit(Arm64Encoder.Mov(Arm64Reg.X0, HeapReg));
                 Emit(Arm64Encoder.AddImm(HeapReg, HeapReg, 16));
-                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, 1)) Emit(insn);
-                Emit(Arm64Encoder.Str(Arm64Reg.X9, Arm64Reg.X0, 0));
+                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, 1))
+                    {
+                        Emit(insn);
+                    }
+
+                    Emit(Arm64Encoder.Str(Arm64Reg.X9, Arm64Reg.X0, 0));
                 Emit(Arm64Encoder.Strb(codeReg, Arm64Reg.X0, 8));
                 return true;
             }
@@ -1131,8 +1243,12 @@ sealed class Arm64CodeGen
                 // Single range check: (val - 13) <= 51
                 uint charReg = EmitExpr(args[0]);
                 Emit(Arm64Encoder.Mov(Arm64Reg.X9, charReg));
-                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 13)) Emit(insn);
-                Emit(Arm64Encoder.Sub(Arm64Reg.X11, Arm64Reg.X9, Arm64Reg.X10));
+                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 13))
+                    {
+                        Emit(insn);
+                    }
+
+                    Emit(Arm64Encoder.Sub(Arm64Reg.X11, Arm64Reg.X9, Arm64Reg.X10));
                 Emit(Arm64Encoder.CmpImm(Arm64Reg.X11, 51));
                 m_instructions.Add(0x9A9F87E0u | Arm64Reg.X0); // CSINC X0, XZR, XZR, HI (1 if LS)
                 return true;
@@ -1144,8 +1260,12 @@ sealed class Arm64CodeGen
                 // (val - 3) <= 9
                 uint charReg = EmitExpr(args[0]);
                 Emit(Arm64Encoder.Mov(Arm64Reg.X9, charReg));
-                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 3)) Emit(insn);
-                Emit(Arm64Encoder.Sub(Arm64Reg.X11, Arm64Reg.X9, Arm64Reg.X10));
+                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 3))
+                    {
+                        Emit(insn);
+                    }
+
+                    Emit(Arm64Encoder.Sub(Arm64Reg.X11, Arm64Reg.X9, Arm64Reg.X10));
                 Emit(Arm64Encoder.CmpImm(Arm64Reg.X11, 9));
                 m_instructions.Add(0x9A9F87E0u | Arm64Reg.X0); // CSINC X0, XZR, XZR, HI (1 if LS)
                 return true;
@@ -1220,8 +1340,12 @@ sealed class Arm64CodeGen
                 uint taskPtr = AllocTemp();
                 Emit(Arm64Encoder.Mov(taskPtr, HeapReg));
                 Emit(Arm64Encoder.AddImm(HeapReg, HeapReg, 16));
-                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, 0)) Emit(insn);
-                Emit(Arm64Encoder.Str(Arm64Reg.X9, taskPtr, 0)); // done = 0
+                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, 0))
+                    {
+                        Emit(insn);
+                    }
+
+                    Emit(Arm64Encoder.Str(Arm64Reg.X9, taskPtr, 0)); // done = 0
                 Emit(Arm64Encoder.Str(Arm64Reg.X9, taskPtr, 8)); // result = 0 (byte offset 8)
                 uint savedTask = AllocLocal();
                 StoreLocal(savedTask, taskPtr);
@@ -1229,16 +1353,24 @@ sealed class Arm64CodeGen
                 // Call thunk(null): thunk is a closure [code_ptr, caps...], load code ptr then call
                 // Trampoline expects X11 = closure pointer (for captured arg access)
                 uint thunkLoaded = LoadLocal(savedThunk);
-                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0)) Emit(insn);
-                Emit(Arm64Encoder.Mov(Arm64Reg.X11, thunkLoaded)); // X11 = closure (trampoline convention)
+                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0))
+                    {
+                        Emit(insn);
+                    }
+
+                    Emit(Arm64Encoder.Mov(Arm64Reg.X11, thunkLoaded)); // X11 = closure (trampoline convention)
                 Emit(Arm64Encoder.Ldr(Arm64Reg.X9, thunkLoaded, 0)); // X9 = [thunk+0] = code ptr
                 Emit(Arm64Encoder.Blr(Arm64Reg.X9));
 
                 // Store result (X0) into task[8], set done
                 uint taskLoaded = LoadLocal(savedTask);
                 Emit(Arm64Encoder.Str(Arm64Reg.X0, taskLoaded, 8)); // task[8] = result
-                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, 1)) Emit(insn);
-                Emit(Arm64Encoder.Str(Arm64Reg.X9, taskLoaded, 0)); // task[0] = 1
+                foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, 1))
+                    {
+                        Emit(insn);
+                    }
+
+                    Emit(Arm64Encoder.Str(Arm64Reg.X9, taskLoaded, 0)); // task[0] = 1
 
                 // TryEmitBuiltin caller expects result in X0
                 Emit(Arm64Encoder.Mov(Arm64Reg.X0, taskLoaded));
@@ -1330,12 +1462,19 @@ sealed class Arm64CodeGen
     int AddRodataString(string value)
     {
         if (m_stringOffsets.TryGetValue(value, out int offset))
+        {
             return offset;
+        }
+
         offset = m_rodata.Count;
         byte[] utf8 = Encoding.UTF8.GetBytes(value);
         m_rodata.AddRange(BitConverter.GetBytes((long)utf8.Length));
         m_rodata.AddRange(utf8);
-        while (m_rodata.Count % 8 != 0) m_rodata.Add(0);
+        while (m_rodata.Count % 8 != 0)
+        {
+            m_rodata.Add(0);
+        }
+
         m_stringOffsets[value] = offset;
         return offset;
     }
@@ -1407,7 +1546,11 @@ sealed class Arm64CodeGen
         // Found
         int foundLbl = m_instructions.Count;
         m_instructions[foundBr] = Arm64Encoder.Bge(foundLbl - foundBr);
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 1)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 1))
+        {
+            Emit(insn);
+        }
+
         int doneBr = m_instructions.Count;
         Emit(Arm64Encoder.Nop()); // B → done
 
@@ -1420,7 +1563,10 @@ sealed class Arm64CodeGen
         // Not found
         int notFoundLbl = m_instructions.Count;
         m_instructions[notFoundBr] = Arm64Encoder.Bge(notFoundLbl - notFoundBr);
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0))
+        {
+            Emit(insn);
+        }
 
         // Done
         int doneLbl = m_instructions.Count;
@@ -1465,14 +1611,22 @@ sealed class Arm64CodeGen
         // Matched
         int matchedLbl = m_instructions.Count;
         m_instructions[matchedBr] = Arm64Encoder.Bge(matchedLbl - matchedBr);
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 1)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 1))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Ret());
 
         // False
         int falseLbl = m_instructions.Count;
         m_instructions[tooLongBr] = Arm64Encoder.Blt(falseLbl - tooLongBr);
         m_instructions[mismatchBr] = Arm64Encoder.Bne(falseLbl - mismatchBr);
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Ret());
     }
 
@@ -1483,7 +1637,11 @@ sealed class Arm64CodeGen
         m_functionOffsets["__escape_text"] = m_instructions.Count;
         // Null guard: if non-null, skip to copy code; null falls through to return 0
         Emit(Arm64Encoder.Cbnz(Arm64Reg.X0, 3 * 4));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Ret());
         // Save LR + x19-x21
         Emit(Arm64Encoder.SubImm(Arm64Reg.Sp, Arm64Reg.Sp, 32));
@@ -1501,7 +1659,11 @@ sealed class Arm64CodeGen
         // Store length
         Emit(Arm64Encoder.Str(Arm64Reg.X20, Arm64Reg.X0, 0));
         // Copy bytes: index in x9
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, 0)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, 0))
+        {
+            Emit(insn);
+        }
+
         int loopStart = m_instructions.Count;
         Emit(Arm64Encoder.Cmp(Arm64Reg.X9, Arm64Reg.X20));
         int exitIdx = m_instructions.Count;
@@ -1533,7 +1695,10 @@ sealed class Arm64CodeGen
 
         Emit(Arm64Encoder.AddImm(Arm64Reg.X0, Arm64Reg.X0, 8));
         Emit(Arm64Encoder.AddImm(Arm64Reg.X1, Arm64Reg.X1, 8));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X11, 0)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X11, 0))
+        {
+            Emit(insn);
+        }
 
         int loopStart = m_instructions.Count;
         Emit(Arm64Encoder.Cmp(Arm64Reg.X11, Arm64Reg.X9));
@@ -1549,11 +1714,19 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.AddImm(Arm64Reg.X11, Arm64Reg.X11, 1));
         Emit(Arm64Encoder.B((loopStart - m_instructions.Count) * 4));
         int equalLabel = m_instructions.Count;
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 1)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 1))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Ret());
 
         int notEqLabel = m_instructions.Count;
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Ret());
 
         m_instructions[bneLen] = Arm64Encoder.Bcond(Arm64Encoder.CondNe, (notEqLabel - bneLen) * 4);
@@ -1582,7 +1755,11 @@ sealed class Arm64CodeGen
         // Copy first string
         Emit(Arm64Encoder.AddImm(Arm64Reg.X11, Arm64Reg.X0, 8));  // dst
         Emit(Arm64Encoder.AddImm(Arm64Reg.X12, Arm64Reg.X13, 8)); // src1
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X2, 0)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X2, 0))
+        {
+            Emit(insn);
+        }
+
         int loop1 = m_instructions.Count;
         Emit(Arm64Encoder.Cmp(Arm64Reg.X2, Arm64Reg.X9));
         int exit1 = m_instructions.Count;
@@ -1596,7 +1773,11 @@ sealed class Arm64CodeGen
         // Copy second string — byte by byte, same pattern as first loop
         Emit(Arm64Encoder.Add(Arm64Reg.X11, Arm64Reg.X11, Arm64Reg.X9)); // dst += len1
         Emit(Arm64Encoder.AddImm(Arm64Reg.X12, Arm64Reg.X14, 8));        // src2
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X2, 0)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X2, 0))
+        {
+            Emit(insn);
+        }
+
         int loop2 = m_instructions.Count;
         Emit(Arm64Encoder.Cmp(Arm64Reg.X2, Arm64Reg.X10));
         int exit2 = m_instructions.Count;
@@ -1626,11 +1807,18 @@ sealed class Arm64CodeGen
         m_instructions[skipNeg] = Arm64Encoder.Bcond(Arm64Encoder.CondGe, (posLabel - skipNeg) * 4);
 
         Emit(Arm64Encoder.AddImm(Arm64Reg.X9, Arm64Reg.Sp, 30));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 0)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 0))
+        {
+            Emit(insn);
+        }
 
         int skipZero = m_instructions.Count;
         Emit(Arm64Encoder.Nop());
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X11, '0')) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X11, '0'))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Strb(Arm64Reg.X11, Arm64Reg.X9, 0));
         Emit(Arm64Encoder.SubImm(Arm64Reg.X9, Arm64Reg.X9, 1));
         Emit(Arm64Encoder.AddImm(Arm64Reg.X10, Arm64Reg.X10, 1));
@@ -1642,7 +1830,11 @@ sealed class Arm64CodeGen
 
         int loopExit = m_instructions.Count;
         Emit(Arm64Encoder.Nop());
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X12, 10)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X12, 10))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Sdiv(Arm64Reg.X11, Arm64Reg.X13, Arm64Reg.X12));
         Emit(Arm64Encoder.Msub(Arm64Reg.X15, Arm64Reg.X11, Arm64Reg.X12, Arm64Reg.X13));
         Emit(Arm64Encoder.AddImm(Arm64Reg.X15, Arm64Reg.X15, '0'));
@@ -1658,7 +1850,11 @@ sealed class Arm64CodeGen
 
         int skipMinus = m_instructions.Count;
         Emit(Arm64Encoder.Nop());
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X11, '-')) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X11, '-'))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Strb(Arm64Reg.X11, Arm64Reg.X9, 0));
         Emit(Arm64Encoder.SubImm(Arm64Reg.X9, Arm64Reg.X9, 1));
         Emit(Arm64Encoder.AddImm(Arm64Reg.X10, Arm64Reg.X10, 1));
@@ -1672,7 +1868,11 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.Add(HeapReg, HeapReg, Arm64Reg.X11));
         Emit(Arm64Encoder.Str(Arm64Reg.X10, Arm64Reg.X0, 0));
 
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X11, 0)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X11, 0))
+        {
+            Emit(insn);
+        }
+
         int copyLoop = m_instructions.Count;
         Emit(Arm64Encoder.Cmp(Arm64Reg.X11, Arm64Reg.X10));
         int copyExit = m_instructions.Count;
@@ -1694,9 +1894,20 @@ sealed class Arm64CodeGen
         m_functionOffsets["__text_to_int"] = m_instructions.Count;
         Emit(Arm64Encoder.Ldr(Arm64Reg.X9, Arm64Reg.X0, 0));
         Emit(Arm64Encoder.AddImm(Arm64Reg.X0, Arm64Reg.X0, 8));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 0)) Emit(insn);
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X11, 0)) Emit(insn);
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X12, 0)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 0))
+        {
+            Emit(insn);
+        }
+
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X11, 0))
+        {
+            Emit(insn);
+        }
+
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X12, 0))
+        {
+            Emit(insn);
+        }
 
         int emptyCheck = m_instructions.Count;
         Emit(Arm64Encoder.Nop());
@@ -1704,7 +1915,11 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.CmpImm(Arm64Reg.X13, '-'));
         int noMinus = m_instructions.Count;
         Emit(Arm64Encoder.Nop());
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X12, 1)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X12, 1))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.AddImm(Arm64Reg.X11, Arm64Reg.X11, 1));
 
         int parseLoop = m_instructions.Count;
@@ -1715,7 +1930,11 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.Nop());
         Emit(Arm64Encoder.LdrbReg(Arm64Reg.X13, Arm64Reg.X0, Arm64Reg.X11));
         Emit(Arm64Encoder.SubImm(Arm64Reg.X13, Arm64Reg.X13, '0'));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X14, 10)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X14, 10))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Mul(Arm64Reg.X10, Arm64Reg.X10, Arm64Reg.X14));
         Emit(Arm64Encoder.Add(Arm64Reg.X10, Arm64Reg.X10, Arm64Reg.X13));
         Emit(Arm64Encoder.AddImm(Arm64Reg.X11, Arm64Reg.X11, 1));
@@ -1745,16 +1964,27 @@ sealed class Arm64CodeGen
 
         Emit(Arm64Encoder.Mov(Arm64Reg.X0, HeapReg));
         Emit(Arm64Encoder.AddImm(Arm64Reg.X11, Arm64Reg.X10, 1));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X14, 8)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X14, 8))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Mul(Arm64Reg.X11, Arm64Reg.X11, Arm64Reg.X14));
         Emit(Arm64Encoder.Add(HeapReg, HeapReg, Arm64Reg.X11));
 
         Emit(Arm64Encoder.Str(Arm64Reg.X10, Arm64Reg.X0, 0));
         Emit(Arm64Encoder.Str(Arm64Reg.X12, Arm64Reg.X0, 8));
 
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X14, 8)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X14, 8))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Mul(Arm64Reg.X14, Arm64Reg.X9, Arm64Reg.X14));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X11, 0)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X11, 0))
+        {
+            Emit(insn);
+        }
 
         int loopStart = m_instructions.Count;
         Emit(Arm64Encoder.Cmp(Arm64Reg.X11, Arm64Reg.X14));
@@ -1782,14 +2012,26 @@ sealed class Arm64CodeGen
 
         Emit(Arm64Encoder.Mov(Arm64Reg.X0, HeapReg));
         Emit(Arm64Encoder.AddImm(Arm64Reg.X11, Arm64Reg.X15, 1));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X12, 8)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X12, 8))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Mul(Arm64Reg.X11, Arm64Reg.X11, Arm64Reg.X12));
         Emit(Arm64Encoder.Add(HeapReg, HeapReg, Arm64Reg.X11));
         Emit(Arm64Encoder.Str(Arm64Reg.X15, Arm64Reg.X0, 0));
 
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X12, 8)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X12, 8))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Mul(Arm64Reg.X11, Arm64Reg.X9, Arm64Reg.X12));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X12, 0)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X12, 0))
+        {
+            Emit(insn);
+        }
+
         int loop1 = m_instructions.Count;
         Emit(Arm64Encoder.Cmp(Arm64Reg.X12, Arm64Reg.X11));
         int exit1 = m_instructions.Count;
@@ -1802,9 +2044,17 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.B((loop1 - m_instructions.Count) * 4));
         m_instructions[exit1] = Arm64Encoder.Bcond(Arm64Encoder.CondGe, (m_instructions.Count - exit1) * 4);
 
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X2, 8)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X2, 8))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Mul(Arm64Reg.X11, Arm64Reg.X10, Arm64Reg.X2));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X2, 0)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X2, 0))
+        {
+            Emit(insn);
+        }
+
         int loop2 = m_instructions.Count;
         Emit(Arm64Encoder.Cmp(Arm64Reg.X2, Arm64Reg.X11));
         int exit2 = m_instructions.Count;
@@ -1831,7 +2081,11 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.AddImm(Arm64Reg.X10, Arm64Reg.X0, 8));
 
         Emit(Arm64Encoder.Mov(Arm64Reg.X13, HeapReg));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X11, 0)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X11, 0))
+        {
+            Emit(insn);
+        }
+
         int cpLoop = m_instructions.Count;
         Emit(Arm64Encoder.Cmp(Arm64Reg.X11, Arm64Reg.X9));
         int cpExit = m_instructions.Count;
@@ -1844,11 +2098,27 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.Add(Arm64Reg.X12, Arm64Reg.X13, Arm64Reg.X9));
         Emit(Arm64Encoder.Strb(Arm64Reg.Xzr, Arm64Reg.X12, 0));
 
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, -100)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, -100))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Mov(Arm64Reg.X1, Arm64Reg.X13));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X2, 0)) Emit(insn);
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X3, 0)) Emit(insn);
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X8, 56)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X2, 0))
+        {
+            Emit(insn);
+        }
+
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X3, 0))
+        {
+            Emit(insn);
+        }
+
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X8, 56))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Svc());
 
         Emit(Arm64Encoder.Str(Arm64Reg.X0, Arm64Reg.Sp, 0));
@@ -1857,14 +2127,25 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.Str(Arm64Reg.X13, Arm64Reg.Sp, 8));
 
         Emit(Arm64Encoder.Mov(Arm64Reg.X14, Arm64Reg.X13));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X15, 0)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X15, 0))
+        {
+            Emit(insn);
+        }
 
         int readLoop = m_instructions.Count;
         Emit(Arm64Encoder.Ldr(Arm64Reg.X0, Arm64Reg.Sp, 0));
         Emit(Arm64Encoder.Add(Arm64Reg.X1, Arm64Reg.X14, Arm64Reg.X15));
         Emit(Arm64Encoder.AddImm(Arm64Reg.X1, Arm64Reg.X1, 8));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X2, 4096)) Emit(insn);
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X8, 63)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X2, 4096))
+        {
+            Emit(insn);
+        }
+
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X8, 63))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Svc());
         int doneRead = m_instructions.Count;
         Emit(Arm64Encoder.Nop());
@@ -1874,7 +2155,11 @@ sealed class Arm64CodeGen
         m_instructions[doneRead] = Arm64Encoder.Cbz(Arm64Reg.X0, (doneTarget - doneRead) * 4);
 
         Emit(Arm64Encoder.Ldr(Arm64Reg.X0, Arm64Reg.Sp, 0));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X8, 57)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X8, 57))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Svc());
 
         Emit(Arm64Encoder.Ldr(Arm64Reg.X14, Arm64Reg.Sp, 8));
@@ -1894,14 +2179,29 @@ sealed class Arm64CodeGen
     {
         m_functionOffsets["__read_line"] = m_instructions.Count;
         Emit(Arm64Encoder.Mov(Arm64Reg.X13, HeapReg));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X14, 0)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X14, 0))
+        {
+            Emit(insn);
+        }
 
         int rdLoop = m_instructions.Count;
         Emit(Arm64Encoder.SubImm(Arm64Reg.Sp, Arm64Reg.Sp, 16));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Mov(Arm64Reg.X1, Arm64Reg.Sp));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X2, 1)) Emit(insn);
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X8, 63)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X2, 1))
+        {
+            Emit(insn);
+        }
+
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X8, 63))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Svc());
         Emit(Arm64Encoder.Ldrb(Arm64Reg.X9, Arm64Reg.Sp, 0));
         Emit(Arm64Encoder.AddImm(Arm64Reg.Sp, Arm64Reg.Sp, 16));
@@ -1953,8 +2253,15 @@ sealed class Arm64CodeGen
         // Result buffer at current heap ptr
         Emit(Arm64Encoder.Mov(Arm64Reg.X12, HeapReg));          // x12 = result base
         Emit(Arm64Encoder.Str(Arm64Reg.X12, Arm64Reg.Sp, 48)); // [sp+48] = result base
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X13, 0)) Emit(insn); // x13 = out_len
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X14, 0)) Emit(insn); // x14 = source index i
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X13, 0))
+        {
+            Emit(insn); // x13 = out_len
+        }
+
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X14, 0))
+        {
+            Emit(insn); // x14 = source index i
+        }
 
         // ── Main loop ──
         int mainLoop = m_instructions.Count;
@@ -1977,7 +2284,11 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.Nop()); // B.GT → no_match
 
         // Compare text[i..i+old_len] with old
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X15, 0)) Emit(insn); // j = 0
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X15, 0))
+        {
+            Emit(insn); // j = 0
+        }
+
         Emit(Arm64Encoder.Ldr(Arm64Reg.X0, Arm64Reg.Sp, 0));   // text_ptr
         Emit(Arm64Encoder.Ldr(Arm64Reg.X1, Arm64Reg.Sp, 8));   // old_ptr
 
@@ -2008,7 +2319,11 @@ sealed class Arm64CodeGen
 
         Emit(Arm64Encoder.Ldr(Arm64Reg.X2, Arm64Reg.Sp, 16));  // new_ptr
         Emit(Arm64Encoder.Ldr(Arm64Reg.X11, Arm64Reg.Sp, 40)); // new_len
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X15, 0)) Emit(insn); // j = 0
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X15, 0))
+        {
+            Emit(insn); // j = 0
+        }
+
         Emit(Arm64Encoder.Ldr(Arm64Reg.X12, Arm64Reg.Sp, 48)); // result base
 
         int copyNewLoop = m_instructions.Count;
@@ -2076,14 +2391,26 @@ sealed class Arm64CodeGen
 
     void EmitSyscallWrite()
     {
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X8, 64)) Emit(insn);
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 1)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X8, 64))
+        {
+            Emit(insn);
+        }
+
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 1))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Svc());
     }
 
     void EmitSyscallExit()
     {
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X8, 93)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X8, 93))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Svc());
     }
 
@@ -2093,7 +2420,9 @@ sealed class Arm64CodeGen
     {
         CodexType resolved = ResolveType(type);
         if (!IRRegion.TypeNeedsHeapEscape(resolved))
+        {
             return LoadLocal(srcLocal);
+        }
 
         string helperName = GetOrQueueEscapeHelper(resolved);
         uint src = LoadLocal(srcLocal);
@@ -2107,7 +2436,10 @@ sealed class Arm64CodeGen
     CodexType ResolveType(CodexType type)
     {
         if (type is ConstructedType ct && m_typeDefs[ct.Constructor.Value] is CodexType resolved)
+        {
             return resolved;
+        }
+
         return type;
     }
 
@@ -2124,7 +2456,10 @@ sealed class Arm64CodeGen
     {
         string key = EscapeCopyKey(type);
         if (m_escapeHelperNames.TryGetValue(key, out string? name))
+        {
             return name;
+        }
+
         name = $"__escape_{key}";
         m_escapeHelperNames[key] = name;
         m_escapeHelperQueue.Enqueue((key, name, type));
@@ -2162,7 +2497,11 @@ sealed class Arm64CodeGen
         m_functionOffsets[name] = m_instructions.Count;
         // Null guard: if x0 == 0, return 0 immediately
         Emit(Arm64Encoder.Cbz(Arm64Reg.X0, 2 * 4)); // skip ret
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Ret());
         // Save callee-saved regs + LR
         Emit(Arm64Encoder.SubImm(Arm64Reg.Sp, Arm64Reg.Sp, 48));
@@ -2208,7 +2547,9 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.AddImm(HeapReg, HeapReg, totalSize));
 
         for (int i = 0; i < rt.Fields.Length; i++)
+        {
             EmitEscapeFieldCopy(i * 8, i * 8, rt.Fields[i].Type);
+        }
 
         EmitEscapeHelperEpilogue();
     }
@@ -2221,7 +2562,11 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.Ldr(Arm64Reg.X21, Arm64Reg.X19, 0));
         // totalSize = (1 + len) * 8
         Emit(Arm64Encoder.AddImm(Arm64Reg.X9, Arm64Reg.X21, 1));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 3)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 3))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Lsl(Arm64Reg.X9, Arm64Reg.X9, Arm64Reg.X10));
         Emit(Arm64Encoder.Mov(Arm64Reg.X20, HeapReg));
         Emit(Arm64Encoder.Add(HeapReg, HeapReg, Arm64Reg.X9));
@@ -2233,14 +2578,22 @@ sealed class Arm64CodeGen
         string? elemHelper = deepCopy ? GetOrQueueEscapeHelper(elemType) : null;
 
         // x22 = index = 0
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X22, 0)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X22, 0))
+        {
+            Emit(insn);
+        }
+
         int loopStart = m_instructions.Count;
         Emit(Arm64Encoder.Cmp(Arm64Reg.X22, Arm64Reg.X21));
         int exitIdx = m_instructions.Count;
         Emit(Arm64Encoder.Nop()); // B.GE -> exit
 
         // Load element: x0 = old[8 + index*8]
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 3)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 3))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Lsl(Arm64Reg.X9, Arm64Reg.X22, Arm64Reg.X10));
         Emit(Arm64Encoder.Add(Arm64Reg.X9, Arm64Reg.X9, Arm64Reg.X19));
         Emit(Arm64Encoder.Ldr(Arm64Reg.X0, Arm64Reg.X9, 8));
@@ -2252,7 +2605,11 @@ sealed class Arm64CodeGen
         }
 
         // Store to new list: new[8 + index*8] = x0
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 3)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X10, 3))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Lsl(Arm64Reg.X9, Arm64Reg.X22, Arm64Reg.X10));
         Emit(Arm64Encoder.Add(Arm64Reg.X9, Arm64Reg.X9, Arm64Reg.X20));
         Emit(Arm64Encoder.Str(Arm64Reg.X0, Arm64Reg.X9, 8));
@@ -2301,7 +2658,9 @@ sealed class Arm64CodeGen
 
         int endIdx = m_instructions.Count;
         foreach (int jIdx in jumpToEndIdxs)
+        {
             m_instructions[jIdx] = Arm64Encoder.B((endIdx - jIdx) * 4);
+        }
 
         EmitEscapeHelperEpilogue();
     }
@@ -2314,7 +2673,9 @@ sealed class Arm64CodeGen
         Emit(Arm64Encoder.Str(Arm64Reg.X21, Arm64Reg.X20, 0));
         // Copy fields
         for (int i = 0; i < ctor.Fields.Length; i++)
+        {
             EmitEscapeFieldCopy((1 + i) * 8, (1 + i) * 8, ctor.Fields[i]);
+        }
     }
 
     // -- _start ---------------------------------------------------
@@ -2323,13 +2684,29 @@ sealed class Arm64CodeGen
     {
         m_functionOffsets["__start"] = m_instructions.Count;
 
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0)) Emit(insn);
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X8, 214)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0))
+        {
+            Emit(insn);
+        }
+
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X8, 214))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Svc());
         Emit(Arm64Encoder.Mov(HeapReg, Arm64Reg.X0));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, 64 * 1024 * 1024)) Emit(insn); // 64MB heap
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X9, 64 * 1024 * 1024))
+        {
+            Emit(insn); // 64MB heap
+        }
+
         Emit(Arm64Encoder.Add(Arm64Reg.X0, HeapReg, Arm64Reg.X9));
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X8, 214)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X8, 214))
+        {
+            Emit(insn);
+        }
+
         Emit(Arm64Encoder.Svc());
 
         IRDefinition? mainDef = null;
@@ -2340,7 +2717,11 @@ sealed class Arm64CodeGen
 
         if (mainDef is null)
         {
-            foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0)) Emit(insn);
+            foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0))
+            {
+                Emit(insn);
+            }
+
             EmitSyscallExit();
             return;
         }
@@ -2355,7 +2736,11 @@ sealed class Arm64CodeGen
             case TextType:    EmitPrintText(Arm64Reg.X0); break;
         }
 
-        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0)) Emit(insn);
+        foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X0, 0))
+        {
+            Emit(insn);
+        }
+
         EmitSyscallExit();
     }
 
@@ -2372,9 +2757,13 @@ sealed class Arm64CodeGen
         foreach ((int insnIndex, string target) in m_callPatches)
         {
             if (m_functionOffsets.TryGetValue(target, out int targetIndex))
+            {
                 m_instructions[insnIndex] = Arm64Encoder.Bl((targetIndex - insnIndex) * 4);
+            }
             else
+            {
                 Console.Error.WriteLine($"ARM64 WARNING: unresolved call to '{target}' at {insnIndex}");
+            }
         }
 
         int textSizeBytes = m_instructions.Count * 4;
@@ -2385,7 +2774,9 @@ sealed class Arm64CodeGen
             long addr = (long)(rodataVaddr + (ulong)fixup.RodataOffset);
             uint[] insns = Arm64Encoder.Li(fixup.Register, addr);
             for (int i = 0; i < 2 && i < insns.Length; i++)
+            {
                 m_instructions[fixup.InstructionIndex + i] = insns[i];
+            }
         }
 
         ulong textVaddr = 0x400000UL + (ulong)ElfWriterArm64.ComputeTextFileOffset();
@@ -2396,7 +2787,9 @@ sealed class Arm64CodeGen
                 long funcAddr = (long)(textVaddr + (ulong)(funcIndex * 4));
                 uint[] insns = Arm64Encoder.Li(fixup.Register, funcAddr);
                 for (int i = 0; i < 2 && i < insns.Length; i++)
+                {
                     m_instructions[fixup.InstructionIndex + i] = insns[i];
+                }
             }
         }
     }
@@ -2407,7 +2800,11 @@ sealed class Arm64CodeGen
     {
         uint reg = m_nextTemp;
         m_nextTemp++;
-        if (m_nextTemp > Arm64Reg.X15) m_nextTemp = Arm64Reg.X12;
+        if (m_nextTemp > Arm64Reg.X15)
+        {
+            m_nextTemp = Arm64Reg.X12;
+        }
+
         return reg;
     }
 
@@ -2431,9 +2828,13 @@ sealed class Arm64CodeGen
     void StoreLocal(uint local, uint valueReg)
     {
         if (local < SpillBase)
+        {
             Emit(Arm64Encoder.Mov(local, valueReg));
+        }
         else
+        {
             EmitSpillStore(valueReg, local);
+        }
     }
 
     uint m_loadLocalToggle;
@@ -2441,7 +2842,10 @@ sealed class Arm64CodeGen
     uint LoadLocal(uint local)
     {
         if (local < SpillBase)
+        {
             return local;
+        }
+
         uint scratch = (m_loadLocalToggle++ % 2 == 0) ? Arm64Reg.X9 : Arm64Reg.X10;
         EmitSpillLoad(scratch, local);
         return scratch;
@@ -2456,7 +2860,11 @@ sealed class Arm64CodeGen
         }
         else
         {
-            foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X11, offset)) Emit(insn);
+            foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X11, offset))
+            {
+                Emit(insn);
+            }
+
             Emit(Arm64Encoder.Add(Arm64Reg.X11, Arm64Reg.Sp, Arm64Reg.X11));
             Emit(Arm64Encoder.Str(valueReg, Arm64Reg.X11, 0));
         }
@@ -2471,7 +2879,11 @@ sealed class Arm64CodeGen
         }
         else
         {
-            foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X11, offset)) Emit(insn);
+            foreach (uint insn in Arm64Encoder.Li(Arm64Reg.X11, offset))
+            {
+                Emit(insn);
+            }
+
             Emit(Arm64Encoder.Add(Arm64Reg.X11, Arm64Reg.Sp, Arm64Reg.X11));
             Emit(Arm64Encoder.Ldr(rd, Arm64Reg.X11, 0));
         }
@@ -2484,8 +2896,14 @@ sealed class Arm64CodeGen
         CodexType current = type;
         for (int i = 0; i < paramCount; i++)
         {
-            if (current is FunctionType ft) current = ft.Return;
-            else break;
+            if (current is FunctionType ft)
+            {
+                current = ft.Return;
+            }
+            else
+            {
+                break;
+            }
         }
         return current;
     }

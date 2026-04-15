@@ -63,7 +63,9 @@ partial class FactStore
     public static ViewProposal? ParseViewProposal(Fact proposal)
     {
         if (proposal.Kind != FactKind.Proposal)
+        {
             return null;
+        }
 
         string name = "";
         List<ProposalAddition> additions = [];
@@ -93,7 +95,9 @@ partial class FactStore
         }
 
         if (name.Length == 0)
+        {
             return null;
+        }
 
         return new ViewProposal(name, additions, removals);
     }
@@ -167,7 +171,9 @@ partial class FactStore
         }
 
         if (definitions.Count == 0)
+        {
             return new ViewConsistencyResult(true, []);
+        }
 
         return checker.Check(definitions);
     }
@@ -183,18 +189,26 @@ partial class FactStore
     {
         Fact? proposalFact = Load(proposalFactHash);
         if (proposalFact is null)
+        {
             return false;
+        }
 
         if (!CheckConsensus(proposalFactHash))
+        {
             return false;
+        }
 
         ViewProposal? proposal = ParseViewProposal(proposalFact);
         if (proposal is null)
+        {
             return false;
+        }
 
         ViewConsistencyResult consistency = CheckProposalConsistency(viewName, proposal, checker);
         if (!consistency.IsConsistent)
+        {
             return false;
+        }
 
         // Apply changes
         RequireViewExists(viewName);
@@ -202,10 +216,14 @@ partial class FactStore
         Map<string, string> map = LoadViewMapFrom(viewFile);
 
         foreach (string removal in proposal.Removals)
+        {
             map = map.Remove(removal);
+        }
 
         foreach (ProposalAddition addition in proposal.Additions)
+        {
             map = map.Set(addition.DefinitionName, addition.DefinitionHash.ToHex());
+        }
 
         SaveViewMapTo(viewFile, map);
         return true;

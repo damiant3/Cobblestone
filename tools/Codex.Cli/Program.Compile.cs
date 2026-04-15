@@ -22,7 +22,10 @@ public static partial class Program
     static CompilationResult? CompileFile(string filePath)
     {
         IRCompilationResult? irResult = CompileToIR(filePath);
-        if (irResult is null) return null;
+        if (irResult is null)
+        {
+            return null;
+        }
 
         CSharpEmitter emitter = new();
         string csharpSource = emitter.Emit(irResult.Chapter);
@@ -59,7 +62,9 @@ public static partial class Program
 
         // Import types from dependency modules before checking main chapter
         foreach (ResolvedChapter imported in resolved.CitedChapters)
+        {
             checker.CiteChapter(imported.Chapter);
+        }
 
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
@@ -155,7 +160,9 @@ public static partial class Program
         TypeChecker checker = new(diagnostics);
 
         foreach (ResolvedChapter imported in resolved.CitedChapters)
+        {
             checker.CiteChapter(imported.Chapter);
+        }
 
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
@@ -219,17 +226,23 @@ public static partial class Program
         if (extraLoaders is not null)
         {
             foreach (IChapterLoader loader in extraLoaders)
+            {
                 loaders.Add(loader);
+            }
         }
 
         ForewordChapterLoader? foreword = ForewordChapterLoader.TryCreate(diagnostics);
         if (foreword is not null)
+        {
             loaders.Add(foreword);
+        }
 
         Codex.Repository.FactStore? store =
             Codex.Repository.FactStore.Open(Directory.GetCurrentDirectory());
         if (store is not null)
+        {
             loaders.Add(new RepositoryChapterLoader(store, diagnostics));
+        }
 
         return new NameResolver(diagnostics, new CompositeChapterLoader([.. loaders]));
     }
@@ -307,7 +320,9 @@ public static partial class Program
         TypeChecker checker = new(diagnostics);
 
         foreach (ResolvedChapter imported in resolved.CitedChapters)
+        {
             checker.CiteChapter(imported.Chapter);
+        }
 
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
@@ -348,7 +363,10 @@ public static partial class Program
             List<(string FilePath, string? Quire, string ChapterName, PageMarker? Page)> files = group.ToList();
 
             // Single-file chapter: no collision, no page coherence to check.
-            if (files.Count == 1) continue;
+            if (files.Count == 1)
+            {
+                continue;
+            }
 
             // Multi-file chapter: all files must carry 'Page N of M' markers
             // agreeing on M; any file without that marker means this is a

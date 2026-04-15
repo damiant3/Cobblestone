@@ -21,7 +21,9 @@ public static partial class Program
         for (int ai = 2; ai < args.Length; ai++)
         {
             if (args[ai] == "--show" && ai + 1 < args.Length)
+            {
                 showDef = args[++ai];
+            }
         }
 
         string stage0Text = File.ReadAllText(args[0]).Replace("\r\n", "\n");
@@ -54,7 +56,9 @@ public static partial class Program
             string normSig0 = AlphaNormalizeTypeVars(s0.Sig);
             string normSig1 = AlphaNormalizeTypeVars(s1.Sig);
             if (normSig0 == normSig1)
+            {
                 sigMatches++;
+            }
             else
             {
                 sigMismatches++;
@@ -64,7 +68,9 @@ public static partial class Program
             string body0 = CollapseWhitespace(DemangleNames(s0.Body, slugsSorted));
             string body1 = CollapseWhitespace(DemangleNames(s1.Body, slugsSorted));
             if (body0 == body1)
+            {
                 bodyMatches++;
+            }
             else
             {
                 bodyMismatches++;
@@ -110,9 +116,15 @@ public static partial class Program
                 string chapterName = raw[9..].Trim();
                 currentSlug = chapterName.ToLowerInvariant().Replace(' ', '-');
                 if (!slugs.Contains(currentSlug))
+                {
                     slugs.Add(currentSlug);
+                }
+
                 if (!chapters.ContainsKey(currentSlug))
+                {
                     chapters[currentSlug] = new List<SemDef>();
+                }
+
                 statChapters++;
                 i++;
                 continue;
@@ -159,7 +171,10 @@ public static partial class Program
                     // Extract a def from the indented block
                     (SemDef? def, int nextI) =ExtractStage0Def(rawLines, i, currentSlug);
                     if (def != null && chapters.ContainsKey(currentSlug))
+                    {
                         chapters[currentSlug].Add(def);
+                    }
+
                     i = nextI;
                     continue;
                 }
@@ -170,7 +185,10 @@ public static partial class Program
             {
                 (SemDef? def, int nextI) =ParseOneDef(rawLines, i, currentSlug);
                 if (def != null && chapters.ContainsKey(currentSlug))
+                {
                     chapters[currentSlug].Add(def);
+                }
+
                 i = nextI;
                 continue;
             }
@@ -188,7 +206,9 @@ public static partial class Program
             {
                 (string slug, string baseName)? dm = DemangleName(defs[di].Name, s0Slugs);
                 if (dm is var (slug, baseName) && slug == ch)
+                {
                     defs[di] = defs[di] with { Name = baseName };
+                }
             }
         }
 
@@ -219,10 +239,14 @@ public static partial class Program
             {
                 int peek = i + 1;
                 while (peek < rawLines.Length && rawLines[peek].Length == 0)
+                {
                     peek++;
+                }
 
                 if (peek >= rawLines.Length)
+                {
                     break;
+                }
 
                 string next = rawLines[peek];
                 // If next non-blank line is 2-space indented and looks like a continuation
@@ -243,7 +267,9 @@ public static partial class Program
         }
 
         if (defLines.Count == 0)
+        {
             return (null, i);
+        }
 
         string[] lines = defLines.ToArray();
         (SemDef? def, int _) = ParseOneDef(lines, 0, chapter);
@@ -272,7 +298,10 @@ public static partial class Program
             {
                 (SemDef? def, int nextI) =ParseOneDef(lines, i, "");
                 if (def != null)
+                {
                     defs.Add(def);
+                }
+
                 i = nextI;
             }
             else
@@ -299,7 +328,9 @@ public static partial class Program
         {
             int eqPos = firstLine.IndexOf(" =", StringComparison.Ordinal);
             if (eqPos < 0)
+            {
                 return (null, start + 1);
+            }
 
             name = firstLine[..eqPos].Trim();
             sig = "";
@@ -308,7 +339,9 @@ public static partial class Program
         {
             int colonPos = firstLine.IndexOf(" : ", StringComparison.Ordinal);
             if (colonPos < 0)
+            {
                 return (null, start + 1);
+            }
 
             name = firstLine[..colonPos];
             sig = firstLine[(colonPos + 3)..];
@@ -324,7 +357,10 @@ public static partial class Program
                 lines = (string[])lines.Clone();
                 string indent = "";
                 for (int k = 0; k < firstLine.Length && char.IsWhiteSpace(firstLine[k]); k++)
+                {
                     indent += firstLine[k];
+                }
+
                 lines[start] = $"{indent}{name.TrimStart()} : {sig}";
                 List<string> newLines = new List<string>(lines);
                 newLines.Insert(start + 1, $"{indent}{name.TrimStart()} = {inlineBody}");
@@ -358,13 +394,19 @@ public static partial class Program
             {
                 int peek = j + 1;
                 while (peek < lines.Length && lines[peek].Length == 0)
+                {
                     peek++;
+                }
 
                 if (peek >= lines.Length)
+                {
                     break;
+                }
 
                 if (lines[peek].Length > 0 && !char.IsWhiteSpace(lines[peek][0]))
+                {
                     break;
+                }
 
                 bodyLines.AppendLine();
                 j++;
@@ -433,7 +475,9 @@ public static partial class Program
         {
             string prefix = slug + "_";
             if (name.StartsWith(prefix, StringComparison.Ordinal) && name.Length > prefix.Length)
+            {
                 return (slug, name[prefix.Length..]);
+            }
         }
         return null;
     }
@@ -447,7 +491,9 @@ public static partial class Program
             foreach (SemDef d in defs)
             {
                 if (!collidingNames.Contains(d.Name))
+                {
                     nameToChapter.TryAdd(d.Name, ch);
+                }
             }
         }
 
@@ -491,9 +537,13 @@ public static partial class Program
                 string key = ch + "|" + s0.Name;
                 s0Keys.Add(key);
                 if (s1ByKey.TryGetValue(key, out SemDef? s1))
+                {
                     matched.Add((s0, s1));
+                }
                 else
+                {
                     dropped.Add(s0);
+                }
             }
         }
 
@@ -511,7 +561,11 @@ public static partial class Program
         Dictionary<string, List<SemDef>> extraByName = new Dictionary<string, List<SemDef>>();
         foreach (SemDef d in extra)
         {
-            if (d.Chapter != "?") continue;
+            if (d.Chapter != "?")
+            {
+                continue;
+            }
+
             if (!extraByName.TryGetValue(d.Name, out List<SemDef>? list))
             {
                 list = [];
@@ -526,7 +580,9 @@ public static partial class Program
         foreach (SemDef s0 in dropped)
         {
             if (!extraByName.TryGetValue(s0.Name, out List<SemDef>? candidates))
+            {
                 continue;
+            }
 
             // Normalize stage0 body for comparison
             string body0 = CollapseWhitespace(DemangleNames(s0.Body, slugsSorted));
@@ -534,7 +590,11 @@ public static partial class Program
             SemDef? bestMatch = null;
             foreach (SemDef s1 in candidates)
             {
-                if (resolvedExtra.Contains(s1)) continue;
+                if (resolvedExtra.Contains(s1))
+                {
+                    continue;
+                }
+
                 string body1 = CollapseWhitespace(DemangleNames(s1.Body, slugsSorted));
                 if (body0 == body1)
                 {
@@ -549,7 +609,11 @@ public static partial class Program
                 string sig0 = AlphaNormalizeTypeVars(s0.Sig);
                 foreach (SemDef s1 in candidates)
                 {
-                    if (resolvedExtra.Contains(s1)) continue;
+                    if (resolvedExtra.Contains(s1))
+                    {
+                        continue;
+                    }
+
                     string sig1 = AlphaNormalizeTypeVars(s1.Sig);
                     if (sig0 == sig1)
                     {
@@ -568,9 +632,14 @@ public static partial class Program
         }
 
         foreach (SemDef d in resolvedDropped)
+        {
             dropped.Remove(d);
+        }
+
         foreach (SemDef d in resolvedExtra)
+        {
             extra.Remove(d);
+        }
     }
 
     // ── Comparison-time transforms (applied during compare, not stored) ──
@@ -616,7 +685,11 @@ public static partial class Program
             joined = Regex.Replace(joined, @"\(\s([^()]+?)\s\)", m =>
             {
                 string inner = m.Groups[1].Value.Trim();
-                if (ParenIsRedundant(inner)) return inner;
+                if (ParenIsRedundant(inner))
+                {
+                    return inner;
+                }
+
                 return m.Value;
             });
         } while (joined != prev);
@@ -638,11 +711,22 @@ public static partial class Program
     static bool ParenIsRedundant(string inner)
     {
         string[] parts = inner.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length == 0) return true;
-        if (s_scopeKeywords.Contains(parts[0])) return true;
+        if (parts.Length == 0)
+        {
+            return true;
+        }
+
+        if (s_scopeKeywords.Contains(parts[0]))
+        {
+            return true;
+        }
+
         foreach (string t in parts)
         {
-            if (s_binaryOps.Contains(t)) return false;
+            if (s_binaryOps.Contains(t))
+            {
+                return false;
+            }
         }
         return true;
     }
@@ -656,7 +740,10 @@ public static partial class Program
         {
             string full = m.Value;
             if (IsKnownTypeName(full))
+            {
                 return full;
+            }
+
             if (!varMap.TryGetValue(full, out string? canonical))
             {
                 canonical = $"t{nextVar++}";
@@ -703,9 +790,14 @@ public static partial class Program
             Console.WriteLine();
 
             if (body0 == body1)
+            {
                 Console.WriteLine("MATCH");
+            }
             else
+            {
                 Console.WriteLine($"DIFF: {FirstDiff(body0, body1)}");
+            }
+
             Console.WriteLine();
         }
     }
@@ -726,7 +818,10 @@ public static partial class Program
             }
         }
         if (tokA.Length != tokB.Length)
+        {
             return $"length differs: S0 has {tokA.Length} tokens, S1 has {tokB.Length}";
+        }
+
         return "identical (unexpected)";
     }
 
@@ -786,7 +881,9 @@ public static partial class Program
 
         int unknownExtra = extra.Count(d => d.Chapter == "?");
         if (unknownExtra > 0)
+        {
             Console.WriteLine($"  {"(unassigned)",-32} {"",4} {unknownExtra,4} {"",5} {"",5} {unknownExtra,5}");
+        }
 
         string totalBodyPct = totalMatch > 0 ? $"{100.0 * bodyMatches / totalMatch:F0}%" : "--";
         Console.WriteLine("  " + new string('-', 67));
@@ -797,7 +894,9 @@ public static partial class Program
             Console.WriteLine();
             Console.WriteLine($"Dropped ({dropped.Count}):");
             foreach (SemDef d in dropped)
+            {
                 Console.WriteLine($"  {d.Chapter}: {d.Name} (line {d.LineNo})");
+            }
         }
 
         if (extra.Count > 0)
@@ -810,7 +909,9 @@ public static partial class Program
                 Console.WriteLine($"  {d.Chapter}: {d.Name} : {d.Sig}{leaked}");
             }
             if (extra.Count > 30)
+            {
                 Console.WriteLine($"  ... and {extra.Count - 30} more");
+            }
         }
 
         if (sigMismatchList.Count > 0)
@@ -818,9 +919,14 @@ public static partial class Program
             Console.WriteLine();
             Console.WriteLine($"Sig Mismatches ({sigMismatchList.Count}):");
             foreach ((SemDef s0, SemDef s1) in sigMismatchList.Take(20))
+            {
                 Console.WriteLine($"  {s0.Chapter}: {s0.Name}");
+            }
+
             if (sigMismatchList.Count > 20)
+            {
                 Console.WriteLine($"  ... and {sigMismatchList.Count - 20} more");
+            }
         }
 
         if (bodyMismatchList.Count > 0)
@@ -828,7 +934,9 @@ public static partial class Program
             Console.WriteLine();
             Console.WriteLine($"Body Mismatches ({bodyMismatchList.Count}):");
             foreach ((SemDef s0, SemDef s1, string diff) in bodyMismatchList)
+            {
                 Console.WriteLine($"  {s0.Chapter}: {s0.Name} — {diff}");
+            }
         }
     }
 }

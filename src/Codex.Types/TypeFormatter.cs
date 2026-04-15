@@ -44,19 +44,29 @@ public static class TypeFormatter
 
             case ConstructedType ct:
             {
-                if (ct.Arguments.IsEmpty) return ct.Constructor.Value;
-                List<string> argParts = [];
+                if (ct.Arguments.IsEmpty)
+                    {
+                        return ct.Constructor.Value;
+                    }
+
+                    List<string> argParts = [];
                 foreach (CodexType arg in ct.Arguments)
-                    argParts.Add(FormatInner(arg, ref varNames, ref nextVar, true));
-                return $"{ct.Constructor.Value} {string.Join(" ", argParts)}";
+                    {
+                        argParts.Add(FormatInner(arg, ref varNames, ref nextVar, true));
+                    }
+
+                    return $"{ct.Constructor.Value} {string.Join(" ", argParts)}";
             }
 
             case EffectfulType eft:
             {
                 List<string> effectParts = [];
                 foreach (CodexType e in eft.Effects)
-                    effectParts.Add(FormatInner(e, ref varNames, ref nextVar, false));
-                string eftRet = FormatInner(eft.Return, ref varNames, ref nextVar, false);
+                    {
+                        effectParts.Add(FormatInner(e, ref varNames, ref nextVar, false));
+                    }
+
+                    string eftRet = FormatInner(eft.Return, ref varNames, ref nextVar, false);
                 string row = eft.RowVariable is not null
                     ? $", {GetVarName(eft.RowVariable.Id, ref varNames, ref nextVar)}"
                     : "";
@@ -88,7 +98,10 @@ public static class TypeFormatter
     static string GetVarName(int id, ref Map<int, string> varNames, ref int nextVar)
     {
         string? existing = varNames[id];
-        if (existing is not null) return existing;
+        if (existing is not null)
+        {
+            return existing;
+        }
 
         string name = nextVar < 26
             ? ((char)('a' + nextVar)).ToString()

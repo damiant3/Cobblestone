@@ -45,7 +45,11 @@ public class X86_64EmitterTests
             main : Integer
             main = 42
             """, "int42_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("42", output.Trim());
     }
 
@@ -59,7 +63,11 @@ public class X86_64EmitterTests
             main : Integer
             main = add 3 4
             """, "add_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("7", output.Trim());
     }
 
@@ -73,7 +81,11 @@ public class X86_64EmitterTests
             main : Integer
             main = square 5
             """, "square_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("25", output.Trim());
     }
 
@@ -87,7 +99,11 @@ public class X86_64EmitterTests
             main : Integer
             main = factorial 5
             """, "fact_run_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("120", output.Trim());
     }
 
@@ -98,7 +114,11 @@ public class X86_64EmitterTests
             main : Integer
             main = let x = 10 in let y = 20 in x + y
             """, "let_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("30", output.Trim());
     }
 
@@ -109,7 +129,11 @@ public class X86_64EmitterTests
             main : Integer
             main = if 1 == 1 then 42 else 0
             """, "ifelse_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("42", output.Trim());
     }
 
@@ -127,7 +151,11 @@ public class X86_64EmitterTests
             main : Integer
             main = let p = Point { x = 3, y = 4 } in p.x + p.y
             """, "record_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("7", output.Trim());
     }
 
@@ -146,7 +174,11 @@ public class X86_64EmitterTests
             main : Integer
             main = sum-pair (Pair { fst = 10, snd = 20 })
             """, "recfn_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("30", output.Trim());
     }
 
@@ -169,7 +201,11 @@ public class X86_64EmitterTests
             main : Integer
             main = area (Circle 5)
             """, "match_circle_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("25", output.Trim());
     }
 
@@ -190,7 +226,11 @@ public class X86_64EmitterTests
             main : Integer
             main = area (Rect 5 7)
             """, "match_rect_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("35", output.Trim());
     }
 
@@ -203,7 +243,11 @@ public class X86_64EmitterTests
             main : Integer
             main = list-length [1, 2, 3]
             """, "listlen_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("3", output.Trim());
     }
 
@@ -214,7 +258,11 @@ public class X86_64EmitterTests
             main : Integer
             main = list-at [10, 20, 30] 1
             """, "listat_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("20", output.Trim());
     }
 
@@ -225,7 +273,11 @@ public class X86_64EmitterTests
             main : Integer
             main = list-length (0 :: [1, 2, 3])
             """, "listcons_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("4", output.Trim());
     }
 
@@ -236,7 +288,11 @@ public class X86_64EmitterTests
             main : Integer
             main = list-length ([1, 2] ++ [3, 4, 5])
             """, "listapp_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("5", output.Trim());
     }
 
@@ -249,7 +305,11 @@ public class X86_64EmitterTests
             main : Integer
             main = text-length "hello"
             """, "textlen_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("5", output.Trim());
     }
 
@@ -260,7 +320,11 @@ public class X86_64EmitterTests
             main : Text
             main = "hello " ++ "world"
             """, "concat_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("hello world", output.Trim());
     }
 
@@ -271,7 +335,11 @@ public class X86_64EmitterTests
             main : Text
             main = show 42
             """, "show_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("42", output.Trim());
     }
 
@@ -282,7 +350,11 @@ public class X86_64EmitterTests
             main : Text
             main = show True
             """, "show_true_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("True", output.Trim());
     }
 
@@ -293,7 +365,11 @@ public class X86_64EmitterTests
             main : Text
             main = show False
             """, "show_false_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("False", output.Trim());
     }
 
@@ -304,7 +380,11 @@ public class X86_64EmitterTests
             main : Integer
             main = if "abc" == "abc" then 1 else 0
             """, "streq_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("1", output.Trim());
     }
 
@@ -315,7 +395,11 @@ public class X86_64EmitterTests
             main : Integer
             main = if "abc" == "xyz" then 1 else 0
             """, "strneq_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("0", output.Trim());
     }
 
@@ -334,7 +418,11 @@ public class X86_64EmitterTests
             main : Integer
             main = apply-fn double 21
             """, "hof_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("42", output.Trim());
     }
 
@@ -350,7 +438,11 @@ public class X86_64EmitterTests
               let d = 4 in let e = 5 in let f = 6 in
               a + b + c + d + e + f
             """, "spill_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("21", output.Trim());
     }
 
@@ -369,7 +461,11 @@ public class X86_64EmitterTests
             main : Integer
             main = do-fork
             """, "fork_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("42", output.Trim());
     }
 
@@ -387,9 +483,15 @@ public class X86_64EmitterTests
     static string? CompileAndRun(string source, string chapterName)
     {
         byte[]? bytes = Helpers.CompileToX86_64(source, chapterName);
-        if (bytes is null) return null;
+        if (bytes is null)
+        {
+            return null;
+        }
 
-        if (!IsWslAvailable()) return null;
+        if (!IsWslAvailable())
+        {
+            return null;
+        }
 
         string tempDir = Path.Combine(Path.GetTempPath(),
             "codex_x64_test_" + chapterName + "_" + Guid.NewGuid().ToString("N")[..8]);
@@ -415,15 +517,20 @@ public class X86_64EmitterTests
             };
 
             using Process? proc = Process.Start(psi);
-            if (proc is null) return null;
+            if (proc is null)
+            {
+                return null;
+            }
 
             string stdout = proc.StandardOutput.ReadToEnd();
             string stderr = proc.StandardError.ReadToEnd();
             proc.WaitForExit(10_000);
 
             if (proc.ExitCode != 0)
+            {
                 throw new InvalidOperationException(
                     $"x86-64 binary exited with code {proc.ExitCode}.\nstdout: {stdout}\nstderr: {stderr}");
+            }
 
             return stdout;
         }
@@ -445,7 +552,11 @@ public class X86_64EmitterTests
                 CreateNoWindow = true
             };
             using Process? proc = Process.Start(psi);
-            if (proc is null) return false;
+            if (proc is null)
+            {
+                return false;
+            }
+
             string output = proc.StandardOutput.ReadToEnd();
             proc.WaitForExit(5_000);
             return proc.ExitCode == 0 && output.Trim() == "x86_64";
@@ -463,7 +574,11 @@ public class X86_64EmitterTests
             main : Integer
             main = 2 ^ 10
             """, "pow_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("1024", output.Trim());
     }
 
@@ -474,7 +589,11 @@ public class X86_64EmitterTests
             main : Integer
             main = 7 ^ 0
             """, "pow0_x64");
-        if (output is null) return;
+        if (output is null)
+        {
+            return;
+        }
+
         Assert.Equal("1", output.Trim());
     }
 

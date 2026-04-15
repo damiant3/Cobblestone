@@ -52,7 +52,9 @@ public class CdxWriterGoldenTests
         byte[] cdx = CdxWriter.Build(0, new byte[4], Array.Empty<byte>(), 0, 4096, 0);
         // content_hash at 0x08, 32 bytes, all zeros
         for (int i = 0x08; i < 0x28; i++)
+        {
             Assert.Equal(0, cdx[i]);
+        }
     }
 
     [Fact]
@@ -61,7 +63,9 @@ public class CdxWriterGoldenTests
         byte[] cdx = CdxWriter.Build(0, new byte[4], Array.Empty<byte>(), 0, 4096, 0);
         // author_key at 0x28, 32 bytes, all zeros
         for (int i = 0x28; i < 0x48; i++)
+        {
             Assert.Equal(0, cdx[i]);
+        }
     }
 
     [Fact]
@@ -70,7 +74,9 @@ public class CdxWriterGoldenTests
         byte[] cdx = CdxWriter.Build(0, new byte[4], Array.Empty<byte>(), 0, 4096, 0);
         // signature at 0x48, 64 bytes, all zeros
         for (int i = 0x48; i < 0x88; i++)
+        {
             Assert.Equal(0, cdx[i]);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════

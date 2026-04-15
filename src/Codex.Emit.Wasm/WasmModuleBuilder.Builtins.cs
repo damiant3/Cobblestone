@@ -125,7 +125,9 @@ sealed partial class WasmModuleBuilder
             case "negate" when args.Count == 1:
                 EmitExpr(body, args[0], localMap, ref nextLocal, localTypes, args[0].Type);
                 if (args[0].Type is NumberType)
+                {
                     body.WriteByte(OpF64Neg);
+                }
                 else
                 {
                     // 0 - value: save value, push 0, restore value, subtract

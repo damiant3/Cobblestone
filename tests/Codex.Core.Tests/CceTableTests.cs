@@ -53,7 +53,9 @@ public class CceTableTests
         for (char c = ' '; c <= '~'; c++)
         {
             if (CceTable.s_fromUnicode.ContainsKey(c))
+            {
                 sb.Append(c);
+            }
         }
         string original = sb.ToString();
         Assert.True(original.Length > 80, $"Expected 80+ mapped ASCII chars, got {original.Length}");
@@ -95,23 +97,31 @@ public class CceTableTests
     {
         // Whitespace: 0-2
         for (int b = 0; b <= 2; b++)
+        {
             Assert.True(CceTable.s_toUnicode[b] == 0 || char.IsWhiteSpace((char)CceTable.s_toUnicode[b]) || CceTable.s_toUnicode[b] == 0,
                 $"CCE {b} should be whitespace");
+        }
 
         // Digits: 3-12
         for (int b = 3; b <= 12; b++)
+        {
             Assert.True(char.IsDigit((char)CceTable.s_toUnicode[b]),
                 $"CCE {b} (U+{CceTable.s_toUnicode[b]}) should be a digit");
+        }
 
         // Lowercase: 13-38
         for (int b = 13; b <= 38; b++)
+        {
             Assert.True(char.IsLower((char)CceTable.s_toUnicode[b]),
                 $"CCE {b} (U+{CceTable.s_toUnicode[b]}) should be lowercase");
+        }
 
         // Uppercase: 39-64
         for (int b = 39; b <= 64; b++)
+        {
             Assert.True(char.IsUpper((char)CceTable.s_toUnicode[b]),
                 $"CCE {b} (U+{CceTable.s_toUnicode[b]}) should be uppercase");
+        }
     }
 
     [Fact]
@@ -267,7 +277,11 @@ public class CceTableTests
         for (int i = 0; i < CceTable.s_tier1ToUnicode.Length; i++)
         {
             int u = CceTable.s_tier1ToUnicode[i];
-            if (u == 0) continue; // unmapped slot
+            if (u == 0)
+            {
+                continue; // unmapped slot
+            }
+
             Assert.True(seen.Add(u), $"Duplicate Unicode {u} at Tier 1 position {i}");
         }
     }
@@ -278,7 +292,11 @@ public class CceTableTests
         for (int i = 0; i < CceTable.s_tier1ToUnicode.Length; i++)
         {
             int u = CceTable.s_tier1ToUnicode[i];
-            if (u == 0) continue;
+            if (u == 0)
+            {
+                continue;
+            }
+
             Assert.False(CceTable.s_fromUnicode.ContainsKey(u),
                 $"Unicode {u} at Tier 1 position {i} also exists in Tier 0");
         }
@@ -305,7 +323,13 @@ public class CceTableTests
         // Block 0 (0x000-0x07F) should have Latin Extended characters
         int count = 0;
         for (int i = 0; i < 0x80; i++)
-            if (CceTable.s_tier1ToUnicode[i] != 0) count++;
+        {
+            if (CceTable.s_tier1ToUnicode[i] != 0)
+            {
+                count++;
+            }
+        }
+
         Assert.True(count >= 80, $"Latin Extended block should have 80+ entries, got {count}");
     }
 
@@ -315,7 +339,13 @@ public class CceTableTests
         // Block 1 (0x080-0x0FF) should have Cyrillic characters
         int count = 0;
         for (int i = 0x80; i < 0x100; i++)
-            if (CceTable.s_tier1ToUnicode[i] != 0) count++;
+        {
+            if (CceTable.s_tier1ToUnicode[i] != 0)
+            {
+                count++;
+            }
+        }
+
         Assert.True(count >= 50, $"Cyrillic block should have 50+ entries, got {count}");
     }
 
@@ -389,7 +419,10 @@ public class CceTableTests
                 Assert.Equal(-1, CceTable.TierOf(encoded[i + 1]));
                 i += 2; charCount++;
             }
-            else Assert.Fail($"Unexpected byte {b:X2} (tier {tier}) at position {i}");
+            else
+            {
+                Assert.Fail($"Unexpected byte {b:X2} (tier {tier}) at position {i}");
+            }
         }
         Assert.Equal(5, charCount); // a, ß, b, г, c
     }
@@ -429,7 +462,13 @@ public class CceTableTests
     {
         int count = 0;
         for (int i = 0x100; i < 0x200; i++)
-            if (CceTable.s_tier1ToUnicode[i] != 0) count++;
+        {
+            if (CceTable.s_tier1ToUnicode[i] != 0)
+            {
+                count++;
+            }
+        }
+
         Assert.True(count >= 49, $"Greek block should have 49+ entries, got {count}");
     }
 
@@ -438,7 +477,13 @@ public class CceTableTests
     {
         int count = 0;
         for (int i = 0x600; i < 0x700; i++)
-            if (CceTable.s_tier1ToUnicode[i] != 0) count++;
+        {
+            if (CceTable.s_tier1ToUnicode[i] != 0)
+            {
+                count++;
+            }
+        }
+
         Assert.True(count >= 170, $"Japanese block should have 170+ entries, got {count}");
     }
 
@@ -447,7 +492,13 @@ public class CceTableTests
     {
         int count = 0;
         for (int i = 0x400; i < 0x600; i++)
-            if (CceTable.s_tier1ToUnicode[i] != 0) count++;
+        {
+            if (CceTable.s_tier1ToUnicode[i] != 0)
+            {
+                count++;
+            }
+        }
+
         Assert.True(count >= 100, $"CJK block should have 100+ entries, got {count}");
     }
 
@@ -508,7 +559,10 @@ public class CceTableTests
         while (dir != null)
         {
             if (Directory.Exists(Path.Combine(dir, "Codex.Codex")))
+            {
                 return dir;
+            }
+
             dir = Path.GetDirectoryName(dir)!;
         }
         // Fallback: walk up from current directory
@@ -516,7 +570,10 @@ public class CceTableTests
         while (dir != null)
         {
             if (Directory.Exists(Path.Combine(dir, "Codex.Codex")))
+            {
                 return dir;
+            }
+
             dir = Path.GetDirectoryName(dir)!;
         }
         return Directory.GetCurrentDirectory();

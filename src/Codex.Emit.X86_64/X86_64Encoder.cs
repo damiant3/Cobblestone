@@ -131,7 +131,10 @@ static class X86_64Encoder
         // REX needed for SPL/BPL/SIL/DIL or extended registers
         byte rex = Rex(false, rs >= 8, false, rd >= 8);
         if (rex != 0x40 || rs >= 4) // need REX for uniform byte access
+        {
             buf.Add(rex);
+        }
+
         buf.Add(0x88); // MOV r/m8, r8
         EmitMemOperand(buf, rs, rd, offset);
     }
@@ -327,7 +330,10 @@ static class X86_64Encoder
     public static void Setcc(List<byte> buf, byte cc, byte rd)
     {
         if (rd >= 8 || rd >= 4) // need REX for uniform byte access
+        {
             buf.Add(Rex(false, false, false, rd >= 8));
+        }
+
         buf.Add(0x0F);
         buf.Add((byte)(0x90 + cc));
         buf.Add(ModRM(0b11, 0, rd));
@@ -404,7 +410,10 @@ static class X86_64Encoder
     public static void PushR(List<byte> buf, byte rd)
     {
         if (rd >= 8)
+        {
             buf.Add(Rex(false, false, false, true));
+        }
+
         buf.Add((byte)(0x50 + (rd & 7)));
     }
 
@@ -412,7 +421,10 @@ static class X86_64Encoder
     public static void PopR(List<byte> buf, byte rd)
     {
         if (rd >= 8)
+        {
             buf.Add(Rex(false, false, false, true));
+        }
+
         buf.Add((byte)(0x58 + (rd & 7)));
     }
 
@@ -466,7 +478,11 @@ static class X86_64Encoder
     {
         // No REX.W — 32-bit XOR implicitly zero-extends
         byte rex = Rex(false, rs >= 8, false, rd >= 8);
-        if (rex != 0x40) buf.Add(rex);
+        if (rex != 0x40)
+        {
+            buf.Add(rex);
+        }
+
         buf.Add(0x31);
         buf.Add(ModRM(0b11, rs, rd));
     }
@@ -528,20 +544,28 @@ static class X86_64Encoder
         {
             buf.Add(ModRM(0b00, reg, rm));
             if (needsSib)
+            {
                 buf.Add(Sib(0, 4, rmLow)); // SIB: no index, base=RSP/R12
+            }
         }
         else if (offset >= -128 && offset <= 127)
         {
             buf.Add(ModRM(0b01, reg, rm));
             if (needsSib)
+            {
                 buf.Add(Sib(0, 4, rmLow));
+            }
+
             buf.Add((byte)(sbyte)offset);
         }
         else
         {
             buf.Add(ModRM(0b10, reg, rm));
             if (needsSib)
+            {
                 buf.Add(Sib(0, 4, rmLow));
+            }
+
             WriteI32(buf, offset);
         }
     }
@@ -620,7 +644,9 @@ static class X86_64Encoder
     static void WriteI64(List<byte> buf, long value)
     {
         for (int i = 0; i < 8; i++)
+        {
             buf.Add((byte)((value >> (i * 8)) & 0xFF));
+        }
     }
 
     // ── SSE2 Instructions ───────────────────────────────────────

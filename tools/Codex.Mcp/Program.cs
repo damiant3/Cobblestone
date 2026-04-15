@@ -24,8 +24,15 @@ sealed class McpServer
         while (true)
         {
             string? line = await reader.ReadLineAsync();
-            if (line is null) break;
-            if (string.IsNullOrWhiteSpace(line)) continue;
+            if (line is null)
+            {
+                break;
+            }
+
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
 
             JsonNode? request;
             try
@@ -67,9 +74,13 @@ sealed class McpServer
                 };
 
                 if (id is not null && result is not null)
+                {
                     await WriteResult(writer, id, result);
+                }
                 else if (id is not null)
+                {
                     await WriteResult(writer, id, new JsonObject());
+                }
             }
             catch (McpException ex)
             {

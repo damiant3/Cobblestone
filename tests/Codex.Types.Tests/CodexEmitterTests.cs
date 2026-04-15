@@ -17,7 +17,10 @@ public sealed class CodexEmitterTests
         {
             string candidate = Path.Combine(dir, "samples");
             if (Directory.Exists(candidate))
+            {
                 return candidate;
+            }
+
             dir = Path.GetDirectoryName(dir)!;
         }
         throw new DirectoryNotFoundException("Cannot find samples/ directory");

@@ -48,7 +48,10 @@ public sealed class DiagnosticBag
             {
                 m_errorCount++;
                 if (m_errorCount > MaxErrors)
+                {
                     return;
+                }
+
                 if (m_errorCount == MaxErrors)
                 {
                     m_diagnostics.Add(new Diagnostic(

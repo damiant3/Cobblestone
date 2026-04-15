@@ -20,10 +20,16 @@ public sealed class Unifier(DiagnosticBag diagnostics)
         a = Resolve(a);
         b = Resolve(b);
 
-        if (a.Equals(b)) return true;
+        if (a.Equals(b))
+        {
+            return true;
+        }
 
         // Suppress cascading errors: if either side is already an error, unification "succeeds"
-        if (a is ErrorType || b is ErrorType) return true;
+        if (a is ErrorType || b is ErrorType)
+        {
+            return true;
+        }
 
         if (a is TypeVariable va)
         {
@@ -54,21 +60,31 @@ public sealed class Unifier(DiagnosticBag diagnostics)
         }
 
         if (a is ListType la && b is ListType lb)
+        {
             return Unify(la.Element, lb.Element, span);
+        }
 
         if (a is LinkedListType lla && b is LinkedListType llb)
+        {
             return Unify(lla.Element, llb.Element, span);
+        }
 
         if (a is SumType sa && b is SumType sb && sa.TypeName == sb.TypeName)
         {
-            if (sa.Constructors.Length != sb.Constructors.Length) return true;
+            if (sa.Constructors.Length != sb.Constructors.Length)
+            {
+                return true;
+            }
+
             for (int i = 0; i < sa.Constructors.Length; i++)
             {
                 SumConstructorType sca = sa.Constructors[i];
                 SumConstructorType scb = sb.Constructors[i];
                 int fieldCount = Math.Min(sca.Fields.Length, scb.Fields.Length);
                 for (int j = 0; j < fieldCount; j++)
+                {
                     Unify(sca.Fields[j], scb.Fields[j], span);
+                }
             }
             return true;
         }
@@ -77,12 +93,17 @@ public sealed class Unifier(DiagnosticBag diagnostics)
         {
             int fieldCount = Math.Min(ra.Fields.Length, rb.Fields.Length);
             for (int i = 0; i < fieldCount; i++)
+            {
                 Unify(ra.Fields[i].Type, rb.Fields[i].Type, span);
+            }
+
             return true;
         }
 
         if (a is LinearType la2 && b is LinearType lb2)
+        {
             return Unify(la2.Inner, lb2.Inner, span);
+        }
 
         if (a is EffectfulType ea && b is EffectfulType eb)
         {
@@ -91,10 +112,14 @@ public sealed class Unifier(DiagnosticBag diagnostics)
         }
 
         if (a is EffectfulType ea2)
+        {
             return Unify(ea2.Return, b, span);
+        }
 
         if (b is EffectfulType eb2)
+        {
             return Unify(a, eb2.Return, span);
+        }
 
         if (a is ConstructedType ca && b is ConstructedType cb)
         {
@@ -106,34 +131,48 @@ public sealed class Unifier(DiagnosticBag diagnostics)
             for (int i = 0; i < ca.Arguments.Length; i++)
             {
                 if (!Unify(ca.Arguments[i], cb.Arguments[i], span))
+                {
                     return false;
+                }
             }
             return true;
         }
 
         if (a is ConstructedType ca2 && b is SumType sb2 && ca2.Constructor == sb2.TypeName
             && ca2.Arguments.Length == 0)
+        {
             return true;
+        }
 
         if (a is SumType sa3 && b is ConstructedType cb3 && sa3.TypeName == cb3.Constructor
             && cb3.Arguments.Length == 0)
+        {
             return true;
+        }
 
         if (a is ConstructedType ca3 && b is RecordType rb3 && ca3.Constructor == rb3.TypeName
             && ca3.Arguments.Length == 0)
+        {
             return true;
+        }
 
         if (a is RecordType ra3 && b is ConstructedType cb4 && ra3.TypeName == cb4.Constructor
             && cb4.Arguments.Length == 0)
+        {
             return true;
+        }
 
         if (a is ListType la3 && b is ConstructedType cv && cv.Constructor.Value == "Vector"
             && cv.Arguments.Length == 2)
+        {
             return Unify(la3.Element, cv.Arguments[1], span);
+        }
 
         if (a is ConstructedType cv2 && cv2.Constructor.Value == "Vector"
             && cv2.Arguments.Length == 2 && b is ListType lb3)
+        {
             return Unify(cv2.Arguments[1], lb3.Element, span);
+        }
 
         if (a is DependentFunctionType da && b is DependentFunctionType db)
         {
@@ -168,23 +207,36 @@ public sealed class Unifier(DiagnosticBag diagnostics)
             CodexType normA = NormalizeTypeLevelExpr(a);
             CodexType normB = NormalizeTypeLevelExpr(b);
             if (!normA.Equals(a) || !normB.Equals(b))
+            {
                 return Unify(normA, normB, span);
+            }
         }
 
         if (a is TypeLevelVar tva && b is TypeLevelVar tvb)
         {
-            if (tva.Name == tvb.Name) return true;
+            if (tva.Name == tvb.Name)
+            {
+                return true;
+            }
+
             ReportMismatch(a, b, span);
             return false;
         }
 
         if (a is ProofType pa && b is ProofType pb)
+        {
             return Unify(pa.Claim, pb.Claim, span);
+        }
 
         if (a is LessThanClaim lta && b is LessThanClaim ltb)
+        {
             return Unify(lta.Left, ltb.Left, span) && Unify(lta.Right, ltb.Right, span);
+        }
 
-        if (a is ErrorType || b is ErrorType) return true;
+        if (a is ErrorType || b is ErrorType)
+        {
+            return true;
+        }
 
         ReportMismatch(a, b, span);
         return false;
@@ -205,10 +257,17 @@ public sealed class Unifier(DiagnosticBag diagnostics)
 
     public ImmutableArray<EffectType> ResolveEffectRow(EffectRowVariable? rowVar)
     {
-        if (rowVar is null) return [];
+        if (rowVar is null)
+        {
+            return [];
+        }
+
         CodexType resolved = Resolve(rowVar);
         if (resolved is EffectfulType eft)
+        {
             return eft.Effects;
+        }
+
         return [];
     }
 
@@ -259,12 +318,16 @@ public sealed class Unifier(DiagnosticBag diagnostics)
         foreach (EffectType e in eft.Effects)
         {
             if (seen.Add(e.EffectName.Value))
+            {
                 merged.Add(e);
+            }
         }
         foreach (EffectType e in extraEffects)
         {
             if (seen.Add(e.EffectName.Value))
+            {
                 merged.Add(e);
+            }
         }
         return new EffectfulType(merged.ToImmutable(), DeepResolve(eft.Return));
     }

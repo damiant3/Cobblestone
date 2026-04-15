@@ -74,7 +74,9 @@ public class ElfWriterBootTest
             (string? output, string? qemuStderr) = RunWsl(cmd);
             m_output.WriteLine($"QEMU output: [{output}]");
             if (!string.IsNullOrEmpty(qemuStderr))
+            {
                 m_output.WriteLine($"QEMU stderr: [{qemuStderr}]");
+            }
 
             Assert.NotNull(output);
 
@@ -129,7 +131,11 @@ public class ElfWriterBootTest
                 UseShellExecute = false,
                 CreateNoWindow = true,
             });
-            if (proc is null) return (null, null);
+            if (proc is null)
+            {
+                return (null, null);
+            }
+
             string stdout = proc.StandardOutput.ReadToEnd();
             string stderr = proc.StandardError.ReadToEnd();
             proc.WaitForExit(10_000);
@@ -140,7 +146,11 @@ public class ElfWriterBootTest
 
     static bool HasWslQemu()
     {
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return false;
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            return false;
+        }
+
         try
         {
             (string? result, _) = RunWsl("which qemu-system-x86_64 2>/dev/null && echo FOUND");

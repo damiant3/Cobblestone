@@ -56,7 +56,10 @@ public static partial class Program
             if (trimmed.Length == 0)
             {
                 if (!lastWasBlank)
+                {
                     output.Append('\n');
+                }
+
                 lastWasBlank = true;
                 chainIndent = -1;
                 continue;
@@ -159,11 +162,17 @@ public static partial class Program
                     if (isChainLine)
                     {
                         if (chainIndent < 0)
+                        {
                             chainIndent = indent;
+                        }
                         else if (indent > chainIndent)
+                        {
                             indent = chainIndent;
+                        }
                         else
+                        {
                             chainIndent = indent;
+                        }
                     }
 
                     output.Append(new string(' ', indent));
@@ -184,7 +193,10 @@ public static partial class Program
 
     static bool IsCodeStartLine(string trimmed)
     {
-        if (trimmed.Length == 0) return false;
+        if (trimmed.Length == 0)
+        {
+            return false;
+        }
 
         // Type definition: starts with uppercase Name followed by = or type params
         // Function annotation: starts with lowercase name followed by :
@@ -194,21 +206,34 @@ public static partial class Program
         char first = trimmed[0];
 
         // Variant constructor line
-        if (first == '|') return true;
+        if (first == '|')
+        {
+            return true;
+        }
 
         // Must start with letter or underscore
-        if (!char.IsLetter(first) && first != '_') return false;
+        if (!char.IsLetter(first) && first != '_')
+        {
+            return false;
+        }
 
         // Scan past the first word (letters, digits, hyphens, underscores)
         int i = 1;
         while (i < trimmed.Length && trimmed[i] != ' ')
+        {
             i++;
+        }
 
         // Skip whitespace after the word
         while (i < trimmed.Length && trimmed[i] == ' ')
+        {
             i++;
+        }
 
-        if (i >= trimmed.Length) return false;
+        if (i >= trimmed.Length)
+        {
+            return false;
+        }
 
         // The character after "name " determines the line type
         char afterName = trimmed[i];

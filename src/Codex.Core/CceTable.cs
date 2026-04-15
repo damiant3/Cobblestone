@@ -67,7 +67,10 @@ public static class CceTable
     {
         Dictionary<int, int> d = new Dictionary<int, int>();
         for (int i = 0; i < s_toUnicode.Length; i++)
+        {
             d[s_toUnicode[i]] = i;
+        }
+
         return d;
     }
 
@@ -89,7 +92,13 @@ public static class CceTable
     {
         int count = 0;
         for (int i = 0; i < s_tier1ToUnicode.Length; i++)
-            if (s_tier1ToUnicode[i] != 0) count++;
+        {
+            if (s_tier1ToUnicode[i] != 0)
+            {
+                count++;
+            }
+        }
+
         return count;
     }
 
@@ -125,9 +134,20 @@ public static class CceTable
         };
 
         int slot = 0;
-        foreach (int cp in latinLower) t[slot++] = cp;
-        foreach (int cp in latinUpper) t[slot++] = cp;
-        foreach (int cp in latinSymbols) t[slot++] = cp;
+        foreach (int cp in latinLower)
+        {
+            t[slot++] = cp;
+        }
+
+        foreach (int cp in latinUpper)
+        {
+            t[slot++] = cp;
+        }
+
+        foreach (int cp in latinSymbols)
+        {
+            t[slot++] = cp;
+        }
         // Remaining slots 0x000-0x07F stay 0 (unmapped/reserved)
 
         // Block 1 (0x080-0x0FF): Cyrillic Extended
@@ -155,9 +175,20 @@ public static class CceTable
         };
 
         slot = 0x080;
-        foreach (int cp in cyrillicLower) t[slot++] = cp;
-        foreach (int cp in cyrillicUpper) t[slot++] = cp;
-        foreach (int cp in cyrillicExt) t[slot++] = cp;
+        foreach (int cp in cyrillicLower)
+        {
+            t[slot++] = cp;
+        }
+
+        foreach (int cp in cyrillicUpper)
+        {
+            t[slot++] = cp;
+        }
+
+        foreach (int cp in cyrillicExt)
+        {
+            t[slot++] = cp;
+        }
 
         // Block 2 (0x100-0x1FF): Greek
         int[] greekLower =
@@ -179,9 +210,20 @@ public static class CceTable
         };
 
         slot = 0x100;
-        foreach (int cp in greekLower) t[slot++] = cp;
-        foreach (int cp in greekUpper) t[slot++] = cp;
-        foreach (int cp in greekSymbols) t[slot++] = cp;
+        foreach (int cp in greekLower)
+        {
+            t[slot++] = cp;
+        }
+
+        foreach (int cp in greekUpper)
+        {
+            t[slot++] = cp;
+        }
+
+        foreach (int cp in greekSymbols)
+        {
+            t[slot++] = cp;
+        }
 
         // Block 3 (0x200-0x3FF): Arabic + Devanagari
         // Arabic: most frequent letters
@@ -207,8 +249,15 @@ public static class CceTable
         };
 
         slot = 0x200;
-        foreach (int cp in arabic) t[slot++] = cp;
-        foreach (int cp in devanagari) t[slot++] = cp;
+        foreach (int cp in arabic)
+        {
+            t[slot++] = cp;
+        }
+
+        foreach (int cp in devanagari)
+        {
+            t[slot++] = cp;
+        }
 
         // Block 4-5 (0x400-0x5FF): CJK (most frequent Chinese characters, deduplicated)
         int[] cjkFrequent =
@@ -245,28 +294,53 @@ public static class CceTable
         slot = 0x400;
         foreach (int cp in cjkFrequent)
         {
-            if (slot >= 0x600) break;
-            if (cp != 0 && cjkSeen.Add(cp)) t[slot++] = cp;
+            if (slot >= 0x600)
+            {
+                break;
+            }
+
+            if (cp != 0 && cjkSeen.Add(cp))
+            {
+                t[slot++] = cp;
+            }
         }
 
         // Block 6 (0x600-0x6FF): Japanese Hiragana + Katakana
         // Hiragana: U+3041-U+3093 (83 chars)
         slot = 0x600;
-        for (int cp = 0x3041; cp <= 0x3093; cp++) t[slot++] = cp;
+        for (int cp = 0x3041; cp <= 0x3093; cp++)
+        {
+            t[slot++] = cp;
+        }
         // Katakana: U+30A1-U+30F6 (86 chars)
-        for (int cp = 0x30A1; cp <= 0x30F6; cp++) t[slot++] = cp;
+        for (int cp = 0x30A1; cp <= 0x30F6; cp++)
+        {
+            t[slot++] = cp;
+        }
         // Japanese punctuation
         int[] japanesePunct = { 0x3001, 0x3002, 0x300C, 0x300D, 0x3005, 0x30FC, 0x30FB };  // 、。「」々ー・
-        foreach (int cp in japanesePunct) t[slot++] = cp;
+        foreach (int cp in japanesePunct)
+        {
+            t[slot++] = cp;
+        }
 
         // Block 7 (0x700-0x7FF): Korean Jamo + frequent syllables
         // Hangul Jamo consonants: U+1100-U+1112 (19)
         slot = 0x700;
-        for (int cp = 0x1100; cp <= 0x1112; cp++) t[slot++] = cp;
+        for (int cp = 0x1100; cp <= 0x1112; cp++)
+        {
+            t[slot++] = cp;
+        }
         // Hangul Jamo vowels: U+1161-U+1175 (21)
-        for (int cp = 0x1161; cp <= 0x1175; cp++) t[slot++] = cp;
+        for (int cp = 0x1161; cp <= 0x1175; cp++)
+        {
+            t[slot++] = cp;
+        }
         // Hangul Jamo final consonants: U+11A8-U+11C2 (27)
-        for (int cp = 0x11A8; cp <= 0x11C2; cp++) t[slot++] = cp;
+        for (int cp = 0x11A8; cp <= 0x11C2; cp++)
+        {
+            t[slot++] = cp;
+        }
         // Most frequent Hangul syllables (deduplicated)
         int[] koreanFrequent =
         {
@@ -278,7 +352,10 @@ public static class CceTable
         HashSet<int> korSeen = new HashSet<int>();
         foreach (int cp in koreanFrequent)
         {
-            if (cp != 0 && korSeen.Add(cp)) t[slot++] = cp;
+            if (cp != 0 && korSeen.Add(cp))
+            {
+                t[slot++] = cp;
+            }
         }
 
         return t;
@@ -290,7 +367,9 @@ public static class CceTable
         for (int i = 0; i < s_tier1ToUnicode.Length; i++)
         {
             if (s_tier1ToUnicode[i] != 0)
+            {
                 d[s_tier1ToUnicode[i]] = i;
+            }
         }
         return d;
     }
@@ -314,13 +393,22 @@ public static class CceTable
     public static string NormalizeUnicode(string unicode)
     {
         if (unicode.IndexOfAny(['\t', '\r']) < 0)
+        {
             return unicode;
+        }
+
         System.Text.StringBuilder sb = new System.Text.StringBuilder(unicode.Length);
         foreach (char c in unicode)
         {
-            if (c == '\t') sb.Append("  ");
+            if (c == '\t')
+            {
+                sb.Append("  ");
+            }
             else if (c == '\r') { /* stripped */ }
-            else sb.Append(c);
+            else
+            {
+                sb.Append(c);
+            }
         }
         return sb.ToString();
     }
@@ -410,9 +498,14 @@ public static class CceTable
                 int full = ((b & 0x07) << 18) | ((cce[i + 1] & 0x3F) << 12)
                          | ((cce[i + 2] & 0x3F) << 6) | (cce[i + 3] & 0x3F);
                 if (full >= 0x10000 && full <= 0x10FFFF)
+                {
                     sb.Append(char.ConvertFromUtf32(full));
+                }
                 else
+                {
                     sb.Append('\uFFFD');
+                }
+
                 i += 4;
             }
             else
@@ -449,7 +542,11 @@ public static class CceTable
     public static List<string> EncodeList(string[] unicodes)
     {
         List<string> result = new List<string>(unicodes.Length);
-        foreach (string s in unicodes) result.Add(Encode(s));
+        foreach (string s in unicodes)
+        {
+            result.Add(Encode(s));
+        }
+
         return result;
     }
 
@@ -488,12 +585,17 @@ public static class CceTable
         for (int i = 0; i < s_tier1ToUnicode.Length; i++)
         {
             if (s_tier1ToUnicode[i] != 0)
+            {
                 sb.AppendLine($"        [{i}] = {s_tier1ToUnicode[i]},");
+            }
         }
         sb.AppendLine("    };");
         sb.AppendLine("    static readonly Dictionary<int, int> _t1FromUni = new() {");
         foreach (KeyValuePair<int, int> kv in s_tier1FromUnicode)
+        {
             sb.AppendLine($"        [{kv.Key}] = {kv.Value},");
+        }
+
         sb.AppendLine("    };");
 
         // Tier 0 reverse lookup
@@ -561,7 +663,10 @@ public static class CceTable
     {
         string[] parts = new string[count];
         for (int i = 0; i < count; i++)
+        {
             parts[i] = table[start + i].ToString();
+        }
+
         bool isLast = (start + count) >= table.Length;
         return string.Join(", ", parts) + (isLast ? "" : ",");
     }

@@ -37,7 +37,9 @@ sealed class ViewConsistencyChecker : IViewConsistencyChecker
         }
 
         if (diagnostics.HasErrors)
+        {
             return ToResult(diagnostics);
+        }
 
         SourceSpan combinedSpan = allDefinitions.Count > 0
             ? allDefinitions[0].Span
@@ -58,23 +60,31 @@ sealed class ViewConsistencyChecker : IViewConsistencyChecker
         ResolvedChapter resolved = resolver.Resolve(combined);
 
         if (diagnostics.HasErrors)
+        {
             return ToResult(diagnostics);
+        }
 
         TypeChecker checker = new(diagnostics);
 
         foreach (ResolvedChapter imported in resolved.CitedChapters)
+        {
             checker.CiteChapter(imported.Chapter);
+        }
 
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
         if (diagnostics.HasErrors)
+        {
             return ToResult(diagnostics);
+        }
 
         LinearityChecker linearityChecker = new(diagnostics, types);
         linearityChecker.CheckChapter(resolved.Chapter);
 
         if (diagnostics.HasErrors)
+        {
             return ToResult(diagnostics);
+        }
 
         ProofChecker proofChecker = new(diagnostics);
         proofChecker.CheckChapter(resolved.Chapter, types);
@@ -83,7 +93,9 @@ sealed class ViewConsistencyChecker : IViewConsistencyChecker
         int provenCount = allProofs.Count;
 
         if (diagnostics.HasErrors)
+        {
             return ToResult(diagnostics, claimCount, provenCount);
+        }
 
         return new ViewConsistencyResult(true, [], claimCount, provenCount);
     }
@@ -107,7 +119,9 @@ sealed class ViewConsistencyChecker : IViewConsistencyChecker
         foreach (Diagnostic diag in diagnostics.ToImmutable())
         {
             if (diag.Severity == DiagnosticSeverity.Error)
+            {
                 errors.Add($"{diag.Code}: {diag.Message} {diag.Span}");
+            }
         }
         return new ViewConsistencyResult(false, errors, claimCount, provenCount);
     }

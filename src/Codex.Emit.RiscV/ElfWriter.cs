@@ -104,14 +104,18 @@ sealed class ElfWriter
 
         // ── Pad to text offset ─────────────────────────────────
         while (ms.Position < textFileOffset)
+        {
             w.Write((byte)0);
+        }
 
         // ── .text ──────────────────────────────────────────────
         w.Write(textSection);
 
         // ── Pad to rodata offset ───────────────────────────────
         while (ms.Position < rodataFileOffset)
+        {
             w.Write((byte)0);
+        }
 
         // ── .rodata ────────────────────────────────────────────
         w.Write(rodataSection);
@@ -149,7 +153,11 @@ sealed class ElfWriter
 
     public static int ComputeTextFileOffset(RiscVTarget target = RiscVTarget.LinuxUser)
     {
-        if (target == RiscVTarget.BareMetal) return 0;
+        if (target == RiscVTarget.BareMetal)
+        {
+            return 0;
+        }
+
         int headersTotalSize = ElfHeaderSize + ProgramHeaderSize * 2;
         return Align(headersTotalSize, 16);
     }

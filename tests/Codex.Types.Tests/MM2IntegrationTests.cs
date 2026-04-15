@@ -179,7 +179,9 @@ public class MM2IntegrationTests
             }
 
             if (document.Chapters.Count > 0)
+            {
                 chapterName = document.Chapters[0].Title;
+            }
 
             chapters.Add(desugarer.Desugar(document, chapterName));
         }
@@ -229,7 +231,9 @@ public class MM2IntegrationTests
     void DumpErrors(DiagnosticBag bag, int max)
     {
         foreach (Diagnostic? d in bag.ToImmutable().Where(d => d.IsError).Take(max))
+        {
             m_output.WriteLine($"  {d.Code}: {d.Message}");
+        }
     }
 
     // ── Helpers ──────────────────────────────────────────────────
@@ -237,14 +241,22 @@ public class MM2IntegrationTests
     static string? CompileAndBootBareMetal(string source, string chapterName)
     {
         byte[]? bytes = Helpers.CompileToX86_64BareMetal(source, chapterName);
-        if (bytes is null) return null;
+        if (bytes is null)
+        {
+            return null;
+        }
+
         return BootAndCapture(bytes, chapterName, null);
     }
 
     static string? CompileAndBootWithSerialInput(string source, string chapterName, string serialInput)
     {
         byte[]? bytes = Helpers.CompileToX86_64BareMetal(source, chapterName);
-        if (bytes is null) return null;
+        if (bytes is null)
+        {
+            return null;
+        }
+
         return BootAndCapture(bytes, chapterName, serialInput);
     }
 
@@ -273,7 +285,10 @@ public class MM2IntegrationTests
             };
 
             using Process? proc = Process.Start(psi);
-            if (proc is null) return null;
+            if (proc is null)
+            {
+                return null;
+            }
 
             if (serialInput is not null)
             {
@@ -322,7 +337,10 @@ public class MM2IntegrationTests
             if (IsProseDocument(content))
             {
                 string code = ExtractCodeBlocks(content);
-                if (code.Length > 0) codeBlocks.Add(code);
+                if (code.Length > 0)
+                {
+                    codeBlocks.Add(code);
+                }
             }
             else
             {
@@ -372,7 +390,9 @@ public class MM2IntegrationTests
                     {
                         int peekIdx = i + 1;
                         while (peekIdx < lines.Length && lines[peekIdx].Trim().Length == 0)
+                        {
                             peekIdx++;
+                        }
 
                         if (peekIdx < lines.Length && MeasureIndent(lines[peekIdx]) >= baseIndent)
                         {
@@ -385,11 +405,15 @@ public class MM2IntegrationTests
 
                     int lineIndent = MeasureIndent(line);
                     if (lineIndent < baseIndent)
+                    {
                         break;
+                    }
 
                     if (lt.StartsWith("Chapter:", StringComparison.Ordinal) ||
                         lt.StartsWith("Section:", StringComparison.Ordinal))
+                    {
                         break;
+                    }
 
                     string dedented = lineIndent >= baseIndent
                         ? line[baseIndent..].TrimEnd('\r')
@@ -399,7 +423,9 @@ public class MM2IntegrationTests
                 }
 
                 if (block.Count > 0)
+                {
                     result.Add(string.Join("\n", block));
+                }
             }
             else
             {
@@ -412,14 +438,37 @@ public class MM2IntegrationTests
 
     static bool LooksLikeNotation(string trimmed)
     {
-        if (trimmed.Length == 0) return false;
-        if (trimmed[0] == '|') return true;
+        if (trimmed.Length == 0)
+        {
+            return false;
+        }
+
+        if (trimmed[0] == '|')
+        {
+            return true;
+        }
+
         if (char.IsLetter(trimmed[0]) || trimmed[0] == '_')
         {
-            if (trimmed.Contains(" : ")) return true;
-            if (trimmed.Contains(" = ")) return true;
-            if (trimmed.EndsWith(" =") || trimmed.EndsWith("=")) return true;
-            if (trimmed.Contains('(')) return true;
+            if (trimmed.Contains(" : "))
+            {
+                return true;
+            }
+
+            if (trimmed.Contains(" = "))
+            {
+                return true;
+            }
+
+            if (trimmed.EndsWith(" =") || trimmed.EndsWith("="))
+            {
+                return true;
+            }
+
+            if (trimmed.Contains('('))
+            {
+                return true;
+            }
         }
         return false;
     }
@@ -429,8 +478,14 @@ public class MM2IntegrationTests
         int count = 0;
         foreach (char c in line)
         {
-            if (c == ' ') count++;
-            else break;
+            if (c == ' ')
+            {
+                count++;
+            }
+            else
+            {
+                break;
+            }
         }
         return count;
     }
@@ -441,9 +496,16 @@ public class MM2IntegrationTests
         for (int i = 0; i < 10; i++)
         {
             string candidate = Path.Combine(dir, "Codex.Codex");
-            if (Directory.Exists(candidate)) return candidate;
+            if (Directory.Exists(candidate))
+            {
+                return candidate;
+            }
+
             dir = Path.GetDirectoryName(dir)!;
-            if (dir is null) break;
+            if (dir is null)
+            {
+                break;
+            }
         }
         return null;
     }

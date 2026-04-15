@@ -535,7 +535,9 @@ sealed partial class WasmModuleBuilder
         {
             if (m_types[i].Params.SequenceEqual(paramTypes) &&
                 m_types[i].Results.SequenceEqual(resultTypes))
+            {
                 return i;
+            }
         }
         m_types.Add(new WasmFuncType(paramTypes, resultTypes));
         return m_types.Count - 1;
@@ -573,9 +575,13 @@ sealed partial class WasmModuleBuilder
         for (int i = 0; i < paramCount; i++)
         {
             if (current is FunctionType ft)
+            {
                 current = ft.Return;
+            }
             else
+            {
                 break;
+            }
         }
         return current;
     }
@@ -632,7 +638,11 @@ sealed partial class WasmModuleBuilder
 
     void WriteImportSection(BinaryWriter w)
     {
-        if (m_imports.Count == 0) return;
+        if (m_imports.Count == 0)
+        {
+            return;
+        }
+
         MemoryStream section = new();
         WriteUnsignedLeb128(section, m_imports.Count);
         foreach (WasmImport imp in m_imports)
@@ -667,7 +677,11 @@ sealed partial class WasmModuleBuilder
 
     void WriteGlobalSection(BinaryWriter w)
     {
-        if (m_globals.Count == 0) return;
+        if (m_globals.Count == 0)
+        {
+            return;
+        }
+
         MemoryStream section = new();
         WriteUnsignedLeb128(section, m_globals.Count);
         foreach (WasmGlobal g in m_globals)
@@ -708,7 +722,11 @@ sealed partial class WasmModuleBuilder
 
     void WriteDataSection(BinaryWriter w)
     {
-        if (m_dataSegments.Count == 0) return;
+        if (m_dataSegments.Count == 0)
+        {
+            return;
+        }
+
         MemoryStream section = new();
         WriteUnsignedLeb128(section, m_dataSegments.Count);
         int currentOffset = 1024;
@@ -744,7 +762,11 @@ sealed partial class WasmModuleBuilder
         {
             byte b = (byte)(v & 0x7F);
             v >>= 7;
-            if (v != 0) b |= 0x80;
+            if (v != 0)
+            {
+                b |= 0x80;
+            }
+
             stream.WriteByte(b);
         } while (v != 0);
     }
@@ -757,9 +779,14 @@ sealed partial class WasmModuleBuilder
             byte b = (byte)(value & 0x7F);
             value >>= 7;
             if ((value == 0 && (b & 0x40) == 0) || (value == -1 && (b & 0x40) != 0))
+            {
                 more = false;
+            }
             else
+            {
                 b |= 0x80;
+            }
+
             stream.WriteByte(b);
         }
     }

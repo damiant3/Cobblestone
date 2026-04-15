@@ -48,23 +48,31 @@ internal sealed class SemanticTokensHandler(DocumentStore store) : SemanticToken
         string uri = request.TextDocument.Uri.ToString();
         AnalysisResult? result = m_store.GetResult(uri);
         if (result is null)
+        {
             return Task.CompletedTask;
+        }
 
         foreach (Token token in result.Tokens)
         {
             if (token.Kind is TokenKind.Newline or TokenKind.Indent
                 or TokenKind.Dedent or TokenKind.EndOfFile)
+            {
                 continue;
+            }
 
             int tokenType = ClassifyToken(token);
             if (tokenType < 0)
+            {
                 continue;
+            }
 
             int line = Math.Max(0, token.Span.Start.Line - 1);
             int col = Math.Max(0, token.Span.Start.Column - 1);
             int length = token.Span.Length;
             if (length <= 0)
+            {
                 continue;
+            }
 
             builder.Push(line, col, length, tokenType, 0);
         }

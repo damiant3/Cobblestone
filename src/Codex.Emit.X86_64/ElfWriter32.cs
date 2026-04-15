@@ -86,7 +86,9 @@ static class ElfWriter32
 
         // ── .rodata ──
         if (rodata.Length > 0)
+        {
             Array.Copy(rodata, 0, elf, rodataStart, rodata.Length);
+        }
 
         return elf;
     }

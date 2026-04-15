@@ -29,7 +29,9 @@ public static partial class Program
                     return 0;
                 default:
                     if (!args[i].StartsWith('-'))
+                    {
                         inputFile = args[i];
+                    }
                     else
                     {
                         Console.Error.WriteLine($"Unknown option: {args[i]}");
@@ -70,9 +72,13 @@ public static partial class Program
             };
 
             if (outputFile != null)
+            {
                 File.WriteAllText(outputFile, output);
+            }
             else
+            {
                 Console.Write(output);
+            }
 
             return 0;
         }

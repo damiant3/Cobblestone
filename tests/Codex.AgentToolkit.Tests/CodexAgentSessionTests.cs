@@ -103,7 +103,9 @@ public class CodexAgentSessionTests : IDisposable
         try
         {
             if (File.Exists(m_logPath))
+            {
                 File.Delete(m_logPath);
+            }
 
             (int exit, string stdout, string stderr) = m_runner.Run("codex-agent.exe", "recall");
             Assert.Equal(0, exit);
@@ -115,7 +117,9 @@ public class CodexAgentSessionTests : IDisposable
         finally
         {
             if (m_hadLog)
+            {
                 File.WriteAllText(m_logPath, m_logBackup!);
+            }
         }
     }
 

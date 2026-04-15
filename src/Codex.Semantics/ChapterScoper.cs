@@ -38,7 +38,9 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
         foreach (KeyValuePair<string, List<string>> kvp in nameToModules)
         {
             if (kvp.Value.Count > 1)
+            {
                 collidingNames.Add(kvp.Key);
+            }
         }
 
         // A chapter's identity is (quire, chapter-title). Same chapter title
@@ -120,7 +122,9 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
             }
 
             foreach (TypeDef td in mod.TypeDefinitions)
+            {
                 allTypeDefinitions.Add(td);
+            }
 
             allClaims.AddRange(mod.Claims);
             allProofs.AddRange(mod.Proofs);
@@ -130,7 +134,9 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
             foreach (CitesDecl cite in mod.Citations)
             {
                 if (cite.SelectedNames.Count == 0)
+                {
                     allCitations.Add(cite);
+                }
             }
         }
 
@@ -141,8 +147,12 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
         // Merge prose maps from all per-file chapters
         Dictionary<string, ChapterProse> mergedProse = [];
         foreach (Chapter mod in perFileChapters)
+        {
             foreach (KeyValuePair<string, ChapterProse> kvp in mod.ProseByFile)
+            {
                 mergedProse[kvp.Key] = kvp.Value;
+            }
+        }
 
         return new Chapter(
             QualifiedName.Simple(combinedName),
@@ -168,13 +178,18 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
             if (c == ' ' || c == '_')
             {
                 if (sb.Length > 0 && sb[^1] != '-')
+                {
                     sb.Append('-');
+                }
             }
             else if (char.IsUpper(c))
             {
                 // Insert hyphen before uppercase if preceded by lowercase
                 if (i > 0 && char.IsLower(chapterName[i - 1]) && sb.Length > 0 && sb[^1] != '-')
+                {
                     sb.Append('-');
+                }
+
                 sb.Append(char.ToLowerInvariant(c));
             }
             else if (char.IsLetterOrDigit(c) || c == '-')
@@ -184,13 +199,19 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
         }
         // Trim trailing hyphens
         while (sb.Length > 0 && sb[^1] == '-')
+        {
             sb.Length--;
+        }
+
         return sb.ToString();
     }
 
     Expr RenameExpr(Expr expr, Dictionary<string, string> renameMap)
     {
-        if (renameMap.Count == 0) return expr;
+        if (renameMap.Count == 0)
+        {
+            return expr;
+        }
 
         return expr switch
         {
@@ -324,7 +345,10 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
                 break;
             case CtorPattern ctor:
                 foreach (Pattern sub in ctor.SubPatterns)
+                {
                     CollectPatternVars(sub, vars);
+                }
+
                 break;
         }
     }

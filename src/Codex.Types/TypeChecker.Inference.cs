@@ -17,7 +17,9 @@ public sealed partial class TypeChecker
         foreach (Parameter param in def.Parameters)
         {
             while (currentExpected is FunctionType skipFt && skipFt.Parameter is ProofType)
+            {
                 currentExpected = skipFt.Return;
+            }
 
             CodexType paramType;
             if (currentExpected is FunctionType ft)
@@ -43,7 +45,9 @@ public sealed partial class TypeChecker
         }
 
         while (currentExpected is FunctionType skipFt2 && skipFt2.Parameter is ProofType)
+        {
             currentExpected = skipFt2.Return;
+        }
 
         CodexType bodyType = InferExpr(def.Body);
         m_unifier.Unify(currentExpected, bodyType, def.Body.Span);
@@ -161,9 +165,12 @@ public sealed partial class TypeChecker
         m_unifier.Unify(left, right, bin.Span);
         CodexType resolved = m_unifier.Resolve(left);
         if (resolved is not (IntegerType or NumberType or TypeVariable or ErrorType))
+        {
             m_diagnostics.Error(CdxCodes.ArithmeticRequiresNumeric,
                 $"Arithmetic operator requires Integer or Number, but found {resolved}",
                 bin.Span);
+        }
+
         return left;
     }
 
@@ -229,9 +236,14 @@ public sealed partial class TypeChecker
         {
             isEffectHandler = true;
             foreach (EffectType e in paramEft.Effects)
+            {
                 m_currentEffects = m_currentEffects.Add(e.EffectName.Value);
+            }
+
             if (paramEft.RowVariable is not null)
+            {
                 m_currentEffects = m_currentEffects.Add("*");
+            }
         }
 
         CodexType argType2 = InferExpr(app.Argument);
@@ -241,21 +253,27 @@ public sealed partial class TypeChecker
         CodexType returnType = m_unifier.FreshVar();
 
         if (!m_unifier.Unify(funcType, new FunctionType(argType2, returnType), app.Span))
+        {
             return ErrorType.s_instance;
+        }
 
         CodexType resolved = m_unifier.Resolve(returnType);
         resolved = TryDischargeProofParams(resolved, app.Span);
 
         // Effect handlers eliminate effects — don't re-check the return type
         if (!isEffectHandler)
+        {
             CheckEffectAllowed(resolved, app.Span);
+        }
 
         // If the handler returned an EffectfulType with no concrete effects, unwrap it
         if (isEffectHandler && resolved is EffectfulType handledEft && handledEft.Effects.IsEmpty)
         {
             ImmutableArray<EffectType> rowEffects = m_unifier.ResolveEffectRow(handledEft.RowVariable);
             if (rowEffects.IsEmpty)
+            {
                 resolved = handledEft.Return;
+            }
         }
 
         return resolved;
@@ -305,7 +323,9 @@ public sealed partial class TypeChecker
 
         CodexType result = bodyType;
         for (int i = paramTypes.Count - 1; i >= 0; i--)
+        {
             result = new FunctionType(paramTypes[i], result);
+        }
 
         return result;
     }
@@ -333,22 +353,34 @@ public sealed partial class TypeChecker
     {
         CodexType resolved = m_unifier.Resolve(scrutineeType);
         if (resolved is not SumType sumType)
+        {
             return;
+        }
 
         bool hasCatchAll = match.Branches.Any(b =>
             b.Pattern is VarPattern or WildcardPattern);
         if (hasCatchAll)
+        {
             return;
+        }
 
         Set<string> covered = Set<string>.s_empty;
         foreach (MatchBranch branch in match.Branches)
+        {
             if (branch.Pattern is CtorPattern cp)
+            {
                 covered = covered.Add(cp.Constructor.Value);
+            }
+        }
 
         List<string> missing = [];
         foreach (SumConstructorType ctor in sumType.Constructors)
+        {
             if (!covered.Contains(ctor.Name.Value))
+            {
                 missing.Add(ctor.Name.Value);
+            }
+        }
 
         if (missing.Count > 0)
         {
@@ -394,12 +426,16 @@ public sealed partial class TypeChecker
 
                     int count = Math.Min(ctor.SubPatterns.Count, fieldTypes.Count);
                     for (int i = 0; i < count; i++)
+                    {
                         CheckPattern(ctor.SubPatterns[i], fieldTypes[i]);
+                    }
                 }
                 else
                 {
                     foreach (Pattern sub in ctor.SubPatterns)
+                    {
                         CheckPattern(sub, m_unifier.FreshVar());
+                    }
                 }
                 break;
 
@@ -411,11 +447,15 @@ public sealed partial class TypeChecker
     CodexType InferRecord(RecordExpr rec)
     {
         if (rec.TypeName is null)
+        {
             return m_unifier.FreshVar();
+        }
 
         CodexType? typeDef = m_typeDefMap[rec.TypeName.Value.Value];
         if (typeDef is not RecordType recordType)
+        {
             return m_unifier.FreshVar();
+        }
 
         foreach (RecordFieldExpr field in rec.Fields)
         {
@@ -423,7 +463,9 @@ public sealed partial class TypeChecker
                 .FirstOrDefault(f => f.FieldName.Value == field.FieldName.Value);
             CodexType fieldType = InferExpr(field.Value);
             if (expectedField is not null)
+            {
                 m_unifier.Unify(fieldType, expectedField.Type, field.Span);
+            }
         }
         return recordType;
     }
@@ -433,12 +475,16 @@ public sealed partial class TypeChecker
         CodexType recordType = InferExpr(fa.Record);
         CodexType resolved = m_unifier.Resolve(recordType);
         if (resolved is not RecordType rt)
+        {
             return m_unifier.FreshVar();
+        }
 
         RecordFieldType? field = rt.Fields
             .FirstOrDefault(f => f.FieldName.Value == fa.FieldName.Value);
         if (field is not null)
+        {
             return field.Type;
+        }
 
         m_diagnostics.Error(CdxCodes.RecordFieldNotFound,
             $"Record type '{rt.TypeName.Value}' has no field '{fa.FieldName.Value}'",
@@ -492,16 +538,24 @@ public sealed partial class TypeChecker
     static CodexType UnwrapEffectful(CodexType type, ref Set<string> effects)
     {
         if (type is not EffectfulType eft)
+        {
             return type;
+        }
+
         foreach (EffectType effect in eft.Effects)
+        {
             effects = effects.Add(effect.EffectName.Value);
+        }
+
         return eft.Return;
     }
 
     ListType InferList(ListExpr list)
     {
         if (list.Elements.Count == 0)
+        {
             return new ListType(m_unifier.FreshVar());
+        }
 
         CodexType elementType = InferExpr(list.Elements[0]);
         for (int i = 1; i < list.Elements.Count; i++)

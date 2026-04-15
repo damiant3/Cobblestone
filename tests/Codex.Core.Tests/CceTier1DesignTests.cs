@@ -18,7 +18,10 @@ public class CceTier1DesignTests
     static byte[] EncodeTier1(int codePoint)
     {
         if (codePoint < 0 || codePoint > 2047)
+        {
             throw new System.ArgumentOutOfRangeException(nameof(codePoint));
+        }
+
         byte b1 = (byte)(0xC0 | (codePoint >> 6));   // 110xxxxx
         byte b2 = (byte)(0x80 | (codePoint & 0x3F));  // 10xxxxxx
         return [b1, b2];
@@ -27,8 +30,16 @@ public class CceTier1DesignTests
     // Decode a 2-byte Tier 1 sequence back to a code point.
     static int DecodeTier1(byte b1, byte b2)
     {
-        if ((b1 & 0xE0) != 0xC0) throw new System.FormatException("Not a Tier 1 start byte");
-        if ((b2 & 0xC0) != 0x80) throw new System.FormatException("Not a continuation byte");
+        if ((b1 & 0xE0) != 0xC0)
+        {
+            throw new System.FormatException("Not a Tier 1 start byte");
+        }
+
+        if ((b2 & 0xC0) != 0x80)
+        {
+            throw new System.FormatException("Not a continuation byte");
+        }
+
         return ((b1 & 0x1F) << 6) | (b2 & 0x3F);
     }
 
@@ -94,7 +105,9 @@ public class CceTier1DesignTests
         {
             int next = pos;
             while (next < stream.Length && !IsStartByte(stream[next]))
+            {
                 next++;
+            }
 
             // next should be at a valid character boundary (0, 2, or 4)
             Assert.True(next % 2 == 0 || next == stream.Length,
@@ -179,7 +192,10 @@ public class CceTier1DesignTests
             int tier = TierOf(stream[pos]);
             if (tier == 0) { pos += 1; charCount++; }
             else if (tier == 1) { pos += 2; charCount++; }
-            else Assert.Fail($"Unexpected tier {tier} at position {pos}");
+            else
+            {
+                Assert.Fail($"Unexpected tier {tier} at position {pos}");
+            }
         }
         Assert.Equal(4, charCount);
         Assert.Equal(stream.Length, pos); // consumed exactly

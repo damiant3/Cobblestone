@@ -777,7 +777,11 @@ sealed partial class ILAssemblyBuilder
     {
         ImmutableArray<int> typeVarIds = ImmutableArray<int>.Empty;
         m_definitionTypeVarIds.TryGet(def.Name, out typeVarIds);
-        if (typeVarIds.IsDefault) typeVarIds = ImmutableArray<int>.Empty;
+        if (typeVarIds.IsDefault)
+        {
+            typeVarIds = ImmutableArray<int>.Empty;
+        }
+
         m_currentTypeVarIds = typeVarIds;
         int genericArity = typeVarIds.Length;
 
@@ -871,7 +875,10 @@ sealed partial class ILAssemblyBuilder
             }
         }
 
-        if (mainDef is null) return;
+        if (mainDef is null)
+        {
+            return;
+        }
 
         ControlFlowBuilder entryControlFlow = new();
         InstructionEncoder il = new(new BlobBuilder(), entryControlFlow);
@@ -1026,13 +1033,19 @@ sealed partial class ILAssemblyBuilder
 
             case IRGetState:
                 if (locals.TryGetLocal("__state", out int getStateIdx))
+                {
                     il.LoadLocal(getStateIdx);
+                }
+
                 break;
 
             case IRSetState setState:
                 EmitExpr(il, setState.NewValue, locals, parameters);
                 if (locals.TryGetLocal("__state", out int setStateIdx))
+                {
                     il.StoreLocal(setStateIdx);
+                }
+
                 break;
 
             case IRRunState runState:
@@ -1075,9 +1088,14 @@ sealed partial class ILAssemblyBuilder
                 break;
             case IRBinaryOp.Eq:
                 if (IsTextLike(bin.Left.Type))
+                {
                     il.Call(m_stringEqualsRef);
+                }
                 else
+                {
                     il.OpCode(ILOpCode.Ceq);
+                }
+
                 break;
             case IRBinaryOp.NotEq:
                 if (IsTextLike(bin.Left.Type))
@@ -1178,7 +1196,9 @@ sealed partial class ILAssemblyBuilder
             }
 
             if (TryEmitBuiltin(il, funcName.Name, args, locals, parameters))
+            {
                 return;
+            }
 
             if (m_ctorDefs.TryGet(funcName.Name, out MethodDefinitionHandle ctorDef))
             {
@@ -1877,7 +1897,10 @@ sealed partial class ILAssemblyBuilder
     {
         for (int i = 0; i < parameters.Length; i++)
         {
-            if (parameters[i].Name == name) return i;
+            if (parameters[i].Name == name)
+            {
+                return i;
+            }
         }
         return -1;
     }
@@ -1893,7 +1916,10 @@ sealed partial class ILAssemblyBuilder
     void EmitBoxIfNeeded(InstructionEncoder il, CodexType actualType, CodexType expectedType)
     {
         if (expectedType is not (TypeVariable or ForAllType))
+        {
             return;
+        }
+
         TypeReferenceHandle? boxTarget = actualType switch
         {
             IntegerType or CharType => m_int64Ref,
@@ -1911,7 +1937,10 @@ sealed partial class ILAssemblyBuilder
     void EmitUnboxIfNeeded(InstructionEncoder il, CodexType storedType, CodexType targetType)
     {
         if (storedType is not (TypeVariable or ForAllType))
+        {
             return;
+        }
+
         TypeReferenceHandle? unboxTarget = targetType switch
         {
             IntegerType or CharType => m_int64Ref,
@@ -1948,16 +1977,26 @@ sealed partial class ILAssemblyBuilder
         CodexType current = fullType;
         // Unwrap ForAllType wrappers
         while (current is ForAllType fa)
+        {
             current = fa.Body;
+        }
+
         for (int i = 0; i < parameterCount; i++)
         {
             if (current is FunctionType ft)
+            {
                 current = ft.Return;
+            }
             else
+            {
                 break;
+            }
         }
         if (current is EffectfulType eft)
+        {
             current = eft.Return;
+        }
+
         return current;
     }
 
@@ -1989,7 +2028,10 @@ sealed partial class ILAssemblyBuilder
                 break;
             case ConstructedType ct:
                 foreach (CodexType arg in ct.Arguments)
+                {
                     CollectTypeVarIdsInto(arg, ids);
+                }
+
                 break;
         }
     }
@@ -1999,7 +2041,10 @@ sealed partial class ILAssemblyBuilder
     static bool HasSelfTailCall(IRDefinition def)
     {
         if (def.Parameters.Length == 0)
+        {
             return false;
+        }
+
         return ExprHasTailCall(def.Body, def.Name);
     }
 
@@ -2021,7 +2066,10 @@ sealed partial class ILAssemblyBuilder
     {
         IRExpr root = app.Function;
         while (root is IRApply inner)
+        {
             root = inner.Function;
+        }
+
         return root is IRName name && name.Name == funcName;
     }
 
@@ -2151,7 +2199,10 @@ sealed partial class ILAssemblyBuilder
                     {
                         EmitTcoExpr(il, branch.Body, locals, parameters, paramLocals);
                         il.StoreLocal(resultLocal);
-                        if (!isLast) il.Branch(ILOpCode.Br, endLabel);
+                        if (!isLast)
+                        {
+                            il.Branch(ILOpCode.Br, endLabel);
+                        }
                     }
                     break;
 
@@ -2167,7 +2218,10 @@ sealed partial class ILAssemblyBuilder
                     {
                         EmitTcoExpr(il, branch.Body, locals, parameters, paramLocals);
                         il.StoreLocal(resultLocal);
-                        if (!isLast) il.Branch(ILOpCode.Br, endLabel);
+                        if (!isLast)
+                        {
+                            il.Branch(ILOpCode.Br, endLabel);
+                        }
                     }
                     break;
 
@@ -2454,9 +2508,14 @@ sealed partial class ILAssemblyBuilder
                 break;
             case IRBinaryOp.Eq:
                 if (IsTextLike(bin.Left.Type))
+                {
                     il.Call(m_stringEqualsRef);
+                }
                 else
+                {
                     il.OpCode(ILOpCode.Ceq);
+                }
+
                 break;
             case IRBinaryOp.NotEq:
                 if (IsTextLike(bin.Left.Type))
@@ -2513,7 +2572,9 @@ sealed partial class ILAssemblyBuilder
         {
             if (TryEmitBuiltinCore(il, funcName.Name, args, locals,
                     expr => EmitTcoExpr(il, expr, locals, parameters, paramLocals)))
+            {
                 return;
+            }
 
             if (m_ctorDefs.TryGet(funcName.Name, out MethodDefinitionHandle ctorDef))
             {
@@ -2564,7 +2625,11 @@ sealed partial class ILAssemblyBuilder
                 case IRWildcardPattern:
                     EmitTcoExpr(il, branch.Body, locals, parameters, paramLocals);
                     il.StoreLocal(resultLocal);
-                    if (!isLast) il.Branch(ILOpCode.Br, endLabel);
+                    if (!isLast)
+                    {
+                        il.Branch(ILOpCode.Br, endLabel);
+                    }
+
                     break;
 
                 case IRVarPattern varPat:
@@ -2573,7 +2638,11 @@ sealed partial class ILAssemblyBuilder
                     il.StoreLocal(varLocal);
                     EmitTcoExpr(il, branch.Body, locals, parameters, paramLocals);
                     il.StoreLocal(resultLocal);
-                    if (!isLast) il.Branch(ILOpCode.Br, endLabel);
+                    if (!isLast)
+                    {
+                        il.Branch(ILOpCode.Br, endLabel);
+                    }
+
                     break;
 
                 case IRLiteralPattern litPat:
@@ -2686,7 +2755,10 @@ sealed partial class ILAssemblyBuilder
                 int scrutDepth = EstimateStackDepth(match.Scrutinee);
                 int branchMax = 0;
                 foreach (IRMatchBranch branch in match.Branches)
+                {
                     branchMax = Math.Max(branchMax, EstimateStackDepth(branch.Body));
+                }
+
                 return Math.Max(scrutDepth, branchMax);
 
             case IRRegion region:
