@@ -356,6 +356,33 @@ Section: Byte Patching
    in let rel32 = target-offset - (p.patch-offset + 5)
    in collect-call-patches patches offset-map (i + 1) (list-snoc acc (make-i32-patch (p.patch-offset + 1) rel32))
 
+  check-call-patch-targets : CodegenState -> OffsetTable -> Integer -> CodegenState
+  check-call-patch-targets (st) (fm) (i) =
+   let patches = st.call-patches
+   in if i == list-length patches then st
+   else let p = list-at patches i
+   in let off = offset-table-lookup fm (p.target)
+   in if off == 0 - 1
+    then check-call-patch-targets (st-add-error st cdx-unresolved-func-offset ("Unresolved call to '" ++ p.target ++ "'") synthetic-span) fm (i + 1)
+    else check-call-patch-targets st fm (i + 1)
+
+  check-func-addr-targets : CodegenState -> OffsetTable -> Integer -> CodegenState
+  check-func-addr-targets (st) (fm) (i) =
+   let fixups = st.func-addr-fixups
+   in if i == list-length fixups then st
+   else let f = list-at fixups i
+   in let off = offset-table-lookup fm (f.target)
+   in if off == 0 - 1
+    then check-func-addr-targets (st-add-error st cdx-unresolved-func-offset ("Unresolved func-addr reference to '" ++ f.target ++ "'") synthetic-span) fm (i + 1)
+    else check-func-addr-targets st fm (i + 1)
+
+  check-runtime-symbol : CodegenState -> OffsetTable -> Text -> CodegenState
+  check-runtime-symbol (st) (fm) (name) =
+   let off = offset-table-lookup fm name
+   in if off == 0 - 1
+    then st-add-error st cdx-unresolved-func-offset ("Missing runtime symbol '" ++ name ++ "'") synthetic-span
+    else st
+
 
   align-16 : Integer -> Integer
   align-16 (n) =
@@ -1349,18 +1376,21 @@ Section: Builtin Emission
     is IrTextLit (s) (sp) -> s
     is otherwise -> ""
    in let rec-ty = resolve-constructed-ty st (ir-expr-type (list-at args 0))
-   in let field-idx = when rec-ty
-    is RecordTy (rname) (rfields) -> find-record-field-index rfields field-name 0
-    is otherwise -> 0
    in let val-result = emit-expr st1 (list-at args 2)
    in let loaded = load-local (val-result.state) (rec-loc.reg)
-   in let st-checked = when rec-ty
-    is RecordTy (rn) (rf) -> loaded.state
-    is otherwise -> st-add-error (loaded.state) cdx-ir-error ("record-set: unresolved type for field '" ++ field-name ++ "'") (ir-expr-span (list-at args 0))
-   in EmitResult {
-   state = st-append-text st-checked (mov-store (loaded.reg) (val-result.reg) (field-idx * 8)),
-   reg = loaded.reg
-  }
+   in when rec-ty
+    is RecordTy (rname) (rfields) ->
+     let field-idx = find-record-field-index rfields field-name 0
+     in EmitResult {
+      state = st-append-text (loaded.state) (mov-store (loaded.reg) (val-result.reg) (field-idx * 8)),
+      reg = loaded.reg
+     }
+    is otherwise ->
+     let st-err = st-add-error (loaded.state) cdx-ir-error ("record-set: unresolved type for field '" ++ field-name ++ "'") (ir-expr-span (list-at args 0))
+     in EmitResult {
+      state = st-append-text st-err [15, 11],
+      reg = loaded.reg
+     }
 
   emit-heap-save-builtin : CodegenState -> EmitResult
   emit-heap-save-builtin (st) =
@@ -1947,18 +1977,22 @@ Section: Record Emission
   emit-field-access : CodegenState -> IRExpr -> Text -> EmitResult
   emit-field-access (st) (rec-expr) (field-name) =
    let rec-ty = resolve-constructed-ty st (ir-expr-type rec-expr)
-   in let field-idx = when rec-ty
-    is RecordTy (rname) (rfields) -> find-record-field-index rfields field-name 0
-    is otherwise -> 0
    in let rec-result = emit-expr st rec-expr
-   in let st-checked = when rec-ty
-    is RecordTy (rn) (rf) -> rec-result.state
-    is otherwise -> st-add-error (rec-result.state) cdx-ir-error ("emit-field-access: unresolved type for field '" ++ field-name ++ "'") (ir-expr-span rec-expr)
-   in let rd = alloc-temp st-checked
-   in EmitResult {
-   state = st-append-text (rd.state) (mov-load (rd.reg) (rec-result.reg) (field-idx * 8)),
-   reg = rd.reg
-  }
+   in when rec-ty
+    is RecordTy (rname) (rfields) ->
+     let field-idx = find-record-field-index rfields field-name 0
+     in let rd = alloc-temp (rec-result.state)
+     in EmitResult {
+      state = st-append-text (rd.state) (mov-load (rd.reg) (rec-result.reg) (field-idx * 8)),
+      reg = rd.reg
+     }
+    is otherwise ->
+     let st-err = st-add-error (rec-result.state) cdx-ir-error ("emit-field-access: unresolved type for field '" ++ field-name ++ "'") (ir-expr-span rec-expr)
+     in let rd = alloc-temp st-err
+     in EmitResult {
+      state = st-append-text (rd.state) [15, 11],
+      reg = rd.reg
+     }
 
 Section: Pattern Matching
   emit-match : CodegenState -> IRExpr -> List IRBranch -> EmitResult
@@ -2563,23 +2597,27 @@ Section: Chapter Entry Point
    in let syscall-result = emit-syscall-handler (isr-result.state)
    in let st2 = emit-start (syscall-result.state) (isr-result.first-stub-vaddr) (syscall-result.handler-offset)
    in let func-map = build-offset-table (st2.func-offsets)
+   in let st2a = check-call-patch-targets st2 func-map 0
+   in let st2b = check-func-addr-targets st2a func-map 0
+   in let st2c = check-runtime-symbol st2b func-map "__start"
+   in let st2d = check-runtime-symbol st2c func-map "__out_of_memory"
    in let start-offset = offset-table-lookup func-map "__start"
    in let start-addr = bare-metal-load-addr + start-offset
    in let far-jump-entry = make-i32-patch (far-jump-patch-pos + 1) start-addr
-   in let n-call = list-length (st2.call-patches)
-   in let call-entries = collect-call-patches (st2.call-patches) func-map 0 (list-with-capacity n-call)
-   in let n-addr = list-length (st2.func-addr-fixups)
-   in let addr-entries = collect-func-addr-patches (st2.func-addr-fixups) func-map bare-metal-load-addr 0 (list-with-capacity (n-addr * 2))
-   in let rodata-vaddr = compute-rodata-vaddr-bare (st2.text-len)
-   in let n-rodata = list-length (st2.rodata-fixups)
-   in let rodata-entries = collect-rodata-patches (st2.rodata-fixups) rodata-vaddr 0 (list-with-capacity (n-rodata * 2))
+   in let n-call = list-length (st2d.call-patches)
+   in let call-entries = collect-call-patches (st2d.call-patches) func-map 0 (list-with-capacity n-call)
+   in let n-addr = list-length (st2d.func-addr-fixups)
+   in let addr-entries = collect-func-addr-patches (st2d.func-addr-fixups) func-map bare-metal-load-addr 0 (list-with-capacity (n-addr * 2))
+   in let rodata-vaddr = compute-rodata-vaddr-bare (st2d.text-len)
+   in let n-rodata = list-length (st2d.rodata-fixups)
+   in let rodata-entries = collect-rodata-patches (st2d.rodata-fixups) rodata-vaddr 0 (list-with-capacity (n-rodata * 2))
    in let oom-offset = offset-table-lookup func-map "__out_of_memory"
-   in let n-overflow = list-length (st2.stack-overflow-checks)
-   in let overflow-entries = collect-overflow-patches (st2.stack-overflow-checks) oom-offset 0 (list-with-capacity n-overflow)
-   in let all-patches = [far-jump-entry] ++ call-entries ++ addr-entries ++ rodata-entries ++ overflow-entries ++ (st2.deferred-patches)
-   in let patched = apply-all-patches-buf (st2.text-buf-addr) all-patches 0
-   in let text-len = st2.text-len
-   in let rodata-len = st2.rodata-len
+   in let n-overflow = list-length (st2d.stack-overflow-checks)
+   in let overflow-entries = collect-overflow-patches (st2d.stack-overflow-checks) oom-offset 0 (list-with-capacity n-overflow)
+   in let all-patches = [far-jump-entry] ++ call-entries ++ addr-entries ++ rodata-entries ++ overflow-entries ++ (st2d.deferred-patches)
+   in let patched = apply-all-patches-buf (st2d.text-buf-addr) all-patches 0
+   in let text-len = st2d.text-len
+   in let rodata-len = st2d.rodata-len
    in let load-addr = bare-metal-load-addr
    in let headers-end = elf32-header-size + elf32-phdr-size * 2
    in let note-offset = elf-align headers-end 4
@@ -2600,12 +2638,12 @@ Section: Chapter Entry Point
    in let bw2 = buf-write-bytes elf-buf (elf32-header-size + elf32-phdr-size) ph2
    in let note = pvh-note entry
    in let bw3 = buf-write-bytes elf-buf note-offset note
-   in let bw4 = buf-write-bytes elf-buf text-start (buf-read-bytes (st2.text-buf-addr) 0 text-len)
-   in let bw5 = buf-write-bytes elf-buf rodata-start (buf-read-bytes (st2.rodata-buf-addr) 0 rodata-len)
+   in let bw4 = buf-write-bytes elf-buf text-start (buf-read-bytes (st2d.text-buf-addr) 0 text-len)
+   in let bw5 = buf-write-bytes elf-buf rodata-start (buf-read-bytes (st2d.rodata-buf-addr) 0 rodata-len)
    in let elf-bytes = buf-read-bytes elf-buf 0 file-size
    in EmitChapterResult {
     bytes = elf-bytes,
-    bag = st2.bag
+    bag = st2d.bag
    }
 
   x86-64-emit-chapter : IRChapter -> List TypeBinding -> EmitChapterResult
