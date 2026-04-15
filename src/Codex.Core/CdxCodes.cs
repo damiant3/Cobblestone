@@ -87,6 +87,8 @@ public static class CdxCodes
     public const int ProseFunctionNameMismatch = 1101;
     public const int ProseParameterNameMismatch = 1102;
     public const int ProseClaimWithoutNotation = 1105;
+    public const int FileMissingChapter = 1106;
+    public const int FileMultipleChapters = 1107;
 
     // ---- Type checker / Unifier (2xxx) ----
     public const int IrError = 2000;
@@ -245,6 +247,12 @@ public static class CdxCodes
         [ProseClaimWithoutNotation] = new(ProseClaimWithoutNotation, nameof(ProseClaimWithoutNotation),
             DiagnosticSeverity.Warning, CdxPhase.ProseValidation,
             "Prose declares a claim but no formal claim follows in notation."),
+        [FileMissingChapter] = new(FileMissingChapter, nameof(FileMissingChapter),
+            DiagnosticSeverity.Error, CdxPhase.ProseValidation,
+            "Every .codex file must declare a 'Chapter:' header at column 0."),
+        [FileMultipleChapters] = new(FileMultipleChapters, nameof(FileMultipleChapters),
+            DiagnosticSeverity.Error, CdxPhase.ProseValidation,
+            "A .codex file may declare at most one 'Chapter:' header; split into separate files."),
 
         [IrError] = new(IrError, nameof(IrError),
             DiagnosticSeverity.Error, CdxPhase.CodeGen,

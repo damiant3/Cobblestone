@@ -112,11 +112,22 @@ public static partial class Program
             string content = File.ReadAllText(filePath);
             SourceText source = new(filePath, content);
             DocumentNode document = ParseSourceFile(source, content, diagnostics);
-            // Use Chapter title if available (pages of the same chapter share a name);
-            // fall back to filename for files without Chapter headers
-            string fileModule = document.Chapters.Count > 0
-                ? document.Chapters[0].Title
-                : Path.GetFileNameWithoutExtension(filePath);
+            SourceSpan fileSpan = SourceSpan.Single(0, 1, 1, filePath);
+            if (document.Chapters.Count == 0)
+            {
+                diagnostics.Error(CdxCodes.FileMissingChapter,
+                    $"'{Path.GetFileName(filePath)}' has no 'Chapter:' header",
+                    fileSpan);
+                continue;
+            }
+            if (document.Chapters.Count > 1)
+            {
+                diagnostics.Error(CdxCodes.FileMultipleChapters,
+                    $"'{Path.GetFileName(filePath)}' declares {document.Chapters.Count} chapters; one per file",
+                    fileSpan);
+                continue;
+            }
+            string fileModule = document.Chapters[0].Title;
             string? quire = inferredRoot is not null
                 ? QuireNameFor(filePath, inferredRoot)
                 : null;
@@ -124,6 +135,8 @@ public static partial class Program
             Chapter chapter = desugarer.Desugar(document, fileModule);
             perFileChapters.Add(chapter);
         }
+
+        if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         ValidatePageMarkers(pageMarkers, diagnostics);
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
