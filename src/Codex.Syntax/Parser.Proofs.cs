@@ -7,7 +7,9 @@ public sealed partial class Parser
     ClaimNode? TryParseClaim()
     {
         if (Current.Kind != TokenKind.ClaimKeyword)
+        {
             return null;
+        }
 
         Token claimKw = Current;
         Advance();
@@ -34,7 +36,9 @@ public sealed partial class Parser
     ProofNode? TryParseProof()
     {
         if (Current.Kind != TokenKind.ProofKeyword)
+        {
             return null;
+        }
 
         Token proofKw = Current;
         Advance();
@@ -169,7 +173,9 @@ public sealed partial class Parser
                     args.Add(ParseExpression());
                     Token rp = Expect(TokenKind.RightParen);
                     if (rp.Kind != TokenKind.RightParen)
+                    {
                         break;
+                    }
                 }
                 else
                 {
@@ -180,7 +186,9 @@ public sealed partial class Parser
             }
 
             if (args.Count > 0)
+            {
                 return new ProofApplyNode(name, args, name.Span.Through(args[^1].Span));
+            }
 
             return new ProofNameNode(name, name.Span);
         }

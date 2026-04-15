@@ -27,13 +27,20 @@ public sealed class CodexEmitter : ICodeEmitter
                 // Emit Chapter header and prose
                 if (section.ChapterTitle is not null)
                 {
-                    if (sectionIndex > 0) sb.AppendLine();
+                    if (sectionIndex > 0)
+                    {
+                        sb.AppendLine();
+                    }
+
                     sb.AppendLine($"Chapter: {section.ChapterTitle}");
                     sb.AppendLine();
                     if (section.Prose is not null)
                     {
                         foreach (string line in section.Prose.Split('\n'))
+                        {
                             sb.AppendLine($" {line}");
+                        }
+
                         sb.AppendLine();
                     }
                 }
@@ -113,7 +120,11 @@ public sealed class CodexEmitter : ICodeEmitter
         sb.Append($"{rec.TypeName.Value} = record {{");
         for (int i = 0; i < rec.Fields.Length; i++)
         {
-            if (i > 0) sb.Append(',');
+            if (i > 0)
+            {
+                sb.Append(',');
+            }
+
             RecordFieldType field = rec.Fields[i];
             sb.AppendLine();
             sb.Append($" {field.FieldName.Value} : {EmitType(field.Type)}");
@@ -185,14 +196,20 @@ public sealed class CodexEmitter : ICodeEmitter
     static string WrapComplex(CodexType type)
     {
         if (type is FunctionType or ListType or LinkedListType)
+        {
             return $"({EmitType(type)})";
+        }
+
         return EmitType(type);
     }
 
     static string WrapFunctionParam(CodexType type)
     {
         if (type is FunctionType)
+        {
             return $"({EmitType(type)})";
+        }
+
         return EmitType(type);
     }
 
@@ -309,14 +326,30 @@ public sealed class CodexEmitter : ICodeEmitter
         {
             // Left side of ++ may also need wrapping (e.g., if-expressions)
             bool wrapLeft = bin.Left is IRIf or IRLet or IRMatch or IRLambda;
-            if (wrapLeft) sb.Append('(');
+            if (wrapLeft)
+            {
+                sb.Append('(');
+            }
+
             EmitExpr(sb, bin.Left, indent);
-            if (wrapLeft) sb.Append(')');
+            if (wrapLeft)
+            {
+                sb.Append(')');
+            }
+
             sb.Append(" ++ ");
             bool wrapRight = bin.Right is IRIf or IRLet or IRMatch or IRLambda;
-            if (wrapRight) sb.Append('(');
+            if (wrapRight)
+            {
+                sb.Append('(');
+            }
+
             EmitExpr(sb, bin.Right, indent);
-            if (wrapRight) sb.Append(')');
+            if (wrapRight)
+            {
+                sb.Append(')');
+            }
+
             return;
         }
 
@@ -352,13 +385,28 @@ public sealed class CodexEmitter : ICodeEmitter
             || (bin.Right is IRBinary rb && BinPrecedence(rb.Op) <= outerPrec
                 && !(rb.Op == bin.Op && IsAssociative(bin.Op))); // only skip parens for same associative op
 
-        if (leftNeedsParens) sb.Append('(');
+        if (leftNeedsParens)
+        {
+            sb.Append('(');
+        }
+
         EmitExpr(sb, bin.Left, indent);
-        if (leftNeedsParens) sb.Append(')');
+        if (leftNeedsParens)
+        {
+            sb.Append(')');
+        }
+
         sb.Append($" {op} ");
-        if (rightNeedsParens) sb.Append('(');
+        if (rightNeedsParens)
+        {
+            sb.Append('(');
+        }
+
         EmitExpr(sb, bin.Right, indent);
-        if (rightNeedsParens) sb.Append(')');
+        if (rightNeedsParens)
+        {
+            sb.Append(')');
+        }
     }
 
     static int BinPrecedence(IRBinaryOp op) => op switch
@@ -403,9 +451,13 @@ public sealed class CodexEmitter : ICodeEmitter
             EmitSpaces(sb, ifColumn);
             sb.Append("else ");
             if (iff.Else is IRIf elseIf)
+            {
                 EmitIf(sb, elseIf, indent);
+            }
             else
+            {
                 EmitExpr(sb, iff.Else, indent);
+            }
         }
         else
         {
@@ -417,9 +469,13 @@ public sealed class CodexEmitter : ICodeEmitter
             EmitSpaces(sb, ifColumn);
             sb.Append("else ");
             if (iff.Else is IRIf elseIf2)
+            {
                 EmitIf(sb, elseIf2, indent);
+            }
             else
+            {
                 EmitExpr(sb, iff.Else, indent + 1);
+            }
         }
     }
 
@@ -433,9 +489,13 @@ public sealed class CodexEmitter : ICodeEmitter
         EmitIndent(sb, indent);
         sb.Append("else ");
         if (iff.Else is IRIf elseIf)
+        {
             EmitIfFlat(sb, elseIf, indent);
+        }
         else
+        {
             EmitExpr(sb, iff.Else, indent);
+        }
     }
 
     static int CountIfChainDepth(IRIf iff)
@@ -451,7 +511,11 @@ public sealed class CodexEmitter : ICodeEmitter
         int col = 0;
         for (int i = sb.Length - 1; i >= 0; i--)
         {
-            if (sb[i] == '\n') break;
+            if (sb[i] == '\n')
+            {
+                break;
+            }
+
             col++;
         }
         return col;
@@ -460,7 +524,9 @@ public sealed class CodexEmitter : ICodeEmitter
     static void EmitSpaces(StringBuilder sb, int count)
     {
         for (int i = 0; i < count; i++)
+        {
             sb.Append(' ');
+        }
     }
 
     // ── Let ──────────────────────────────────────────────────────
@@ -514,7 +580,11 @@ public sealed class CodexEmitter : ICodeEmitter
         sb.Append('\\');
         for (int i = 0; i < lam.Parameters.Length; i++)
         {
-            if (i > 0) sb.Append(' ');
+            if (i > 0)
+            {
+                sb.Append(' ');
+            }
+
             sb.Append(lam.Parameters[i].Name);
         }
         sb.Append(" -> ");
@@ -528,7 +598,11 @@ public sealed class CodexEmitter : ICodeEmitter
         sb.Append('[');
         for (int i = 0; i < list.Elements.Length; i++)
         {
-            if (i > 0) sb.Append(", ");
+            if (i > 0)
+            {
+                sb.Append(", ");
+            }
+
             EmitExpr(sb, list.Elements[i], indent);
         }
         sb.Append(']');
@@ -607,7 +681,11 @@ public sealed class CodexEmitter : ICodeEmitter
             sb.Append($"{rec.TypeName} {{");
             for (int i = 0; i < rec.Fields.Length; i++)
             {
-                if (i > 0) sb.Append(',');
+                if (i > 0)
+                {
+                    sb.Append(',');
+                }
+
                 sb.Append($" {rec.Fields[i].FieldName} = ");
                 EmitExpr(sb, rec.Fields[i].Value, indent);
             }
@@ -621,7 +699,11 @@ public sealed class CodexEmitter : ICodeEmitter
                 EmitIndent(sb, indent + 1);
                 sb.Append($"{rec.Fields[i].FieldName} = ");
                 EmitExpr(sb, rec.Fields[i].Value, indent + 1);
-                if (i < rec.Fields.Length - 1) sb.Append(',');
+                if (i < rec.Fields.Length - 1)
+                {
+                    sb.Append(',');
+                }
+
                 sb.AppendLine();
             }
             EmitIndent(sb, indent);
@@ -639,7 +721,9 @@ public sealed class CodexEmitter : ICodeEmitter
             if (kv.Value is SumType sum)
             {
                 foreach (SumConstructorType ctor in sum.Constructors)
+                {
                     names = names.Add(ctor.Name.Value);
+                }
             }
         }
         return names;
@@ -654,9 +738,12 @@ public sealed class CodexEmitter : ICodeEmitter
 
     static bool AllSimpleFields(IRRecord rec)
     {
-        foreach (var field in rec.Fields)
+        foreach ((string FieldName, IRExpr Value) field in rec.Fields)
         {
-            if (!IsSimpleExpr(field.Value)) return false;
+            if (!IsSimpleExpr(field.Value))
+            {
+                return false;
+            }
         }
         return true;
     }
@@ -665,16 +752,24 @@ public sealed class CodexEmitter : ICodeEmitter
     {
         if (expr is IRApply or IRBinary or IRIf or IRLet
             or IRMatch or IRNegate or IRLambda or IRFieldAccess or IRRecord)
+        {
             return true;
+        }
+
         if (isCtor && expr is IRName { Type: FunctionType })
+        {
             return true;
+        }
+
         return false;
     }
 
     static void EmitIndent(StringBuilder sb, int indent)
     {
         for (int i = 0; i < indent; i++)
+        {
             sb.Append(' ');
+        }
     }
 
     static string EscapeString(string value)

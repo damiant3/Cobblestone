@@ -78,22 +78,22 @@ sealed class ElfWriterX86_64
 
         // ── Pad to text offset ─────────────────────────────────
         while (ms.Position < textFileOffset)
+        {
             w.Write((byte)0);
+        }
 
         w.Write(textSection);
 
         while (ms.Position < rodataFileOffset)
+        {
             w.Write((byte)0);
+        }
 
         w.Write(rodataSection);
 
         return ms.ToArray();
     }
 
-    /// <summary>
-    /// Write a bare-metal ELF with PVH note for QEMU direct boot.
-    /// QEMU enters the 32-bit trampoline which sets up long mode.
-    /// </summary>
     public static byte[] WriteBareMetal(byte[] textSection, byte[] rodataSection, uint pvhEntry32)
     {
         // Layout: ELF64 header + 3 PHDRs (text LOAD + rodata LOAD + PVH NOTE) + note + text + rodata
@@ -182,17 +182,26 @@ sealed class ElfWriterX86_64
 
         // ── Note data ──
         while (ms.Position < noteFileOffset)
+        {
             w.Write((byte)0);
+        }
+
         w.Write(noteData);
 
         // ── .text ──
         while (ms.Position < textFileOffset)
+        {
             w.Write((byte)0);
+        }
+
         w.Write(textSection);
 
         // ── .rodata ──
         while (ms.Position < rodataFileOffset)
+        {
             w.Write((byte)0);
+        }
+
         w.Write(rodataSection);
 
         return ms.ToArray();

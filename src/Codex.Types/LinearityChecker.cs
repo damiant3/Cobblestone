@@ -30,7 +30,9 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
         foreach (Parameter param in def.Parameters)
         {
             while (currentType is FunctionType skipFt && skipFt.Parameter is ProofType)
+            {
                 currentType = skipFt.Return;
+            }
 
             CodexType paramType;
             if (currentType is FunctionType ft)
@@ -88,7 +90,10 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
                 {
                     HashSet<string> captured = CheckLambdaExpr(directLam);
                     foreach (string name in captured)
+                    {
                         RecordUsage(name, app.Span);
+                    }
+
                     CheckExpr(app.Argument);
                 }
                 break;
@@ -103,7 +108,9 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
                     {
                         HashSet<string> captured = CheckLambdaExpr(argLam);
                         foreach (string name in captured)
+                        {
                             RecordUsage(name, app.Span);
+                        }
                     }
                     else
                     {
@@ -155,12 +162,18 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
 
             case ListExpr list:
                 foreach (Expr element in list.Elements)
+                {
                     CheckExpr(element);
+                }
+
                 break;
 
             case RecordExpr rec:
                 foreach (RecordFieldExpr field in rec.Fields)
+                {
                     CheckExpr(field.Value);
+                }
+
                 break;
 
             case FieldAccessExpr fa:
@@ -204,7 +217,10 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
                 if (captured.Count > 0)
                 {
                     foreach (string name in captured)
+                    {
                         RecordUsage(name, binding.Value.Span);
+                    }
+
                     m_linearBindings = m_linearBindings.Set(
                         binding.Name.Value, new LinearType(ErrorType.s_instance));
                     m_usageCounts = m_usageCounts.Set(binding.Name.Value, 0);
@@ -232,7 +248,9 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
         foreach (KeyValuePair<string, CodexType> kv in m_linearBindings)
         {
             if (outerLinear[kv.Key] is not null)
+            {
                 continue;
+            }
 
             int count = m_usageCounts[kv.Key] ?? 0;
             if (count == 0)
@@ -287,7 +305,7 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
         }
 
         // Detect closure capture of outer linear variables
-        var captured = new HashSet<string>();
+        HashSet<string> captured = new HashSet<string>();
         foreach (KeyValuePair<string, CodexType> kv in savedLinear)
         {
             int beforeCount = savedCounts[kv.Key] ?? 0;
@@ -327,7 +345,10 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
 
     void CheckMatchBranches(MatchExpr match)
     {
-        if (match.Branches.Count == 0) return;
+        if (match.Branches.Count == 0)
+        {
+            return;
+        }
 
         ValueMap<string, int> savedCounts = m_usageCounts;
         ValueMap<string, int>? mergedCounts = null;
@@ -348,7 +369,9 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
         }
 
         if (mergedCounts is not null)
+        {
             m_usageCounts = mergedCounts;
+        }
     }
 
     void MergeBranchCounts(
@@ -373,7 +396,10 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
 
     void RecordUsage(string name, SourceSpan span)
     {
-        if (m_linearBindings[name] is null) return;
+        if (m_linearBindings[name] is null)
+        {
+            return;
+        }
 
         int current = m_usageCounts[name] ?? 0;
         m_usageCounts = m_usageCounts.Set(name, current + 1);

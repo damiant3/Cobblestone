@@ -3,9 +3,6 @@ using Codex.Core;
 
 namespace Codex.Repository;
 
-/// <summary>
-/// A structured proposal: a named set of additions and removals to a view.
-/// </summary>
 public sealed record ViewProposal(
     string Name,
     IReadOnlyList<ProposalAddition> Additions,
@@ -13,9 +10,6 @@ public sealed record ViewProposal(
 
 public sealed record ProposalAddition(string DefinitionName, ContentHash DefinitionHash);
 
-/// <summary>
-/// Result of previewing a proposal against a view.
-/// </summary>
 public sealed record ProposalPreview(
     ValueMap<string, ContentHash> ResultingView,
     IReadOnlyList<string> AddedNames,
@@ -24,9 +18,6 @@ public sealed record ProposalPreview(
 
 partial class FactStore
 {
-    /// <summary>
-    /// Create a proposal fact that describes a view diff (multiple adds/removes).
-    /// </summary>
     public Fact CreateViewProposal(
         string proposalName,
         IReadOnlyList<ProposalAddition> additions,
@@ -57,13 +48,12 @@ partial class FactStore
             justification, refs.ToImmutableArray());
     }
 
-    /// <summary>
-    /// Parse a view proposal fact into structured form.
-    /// </summary>
     public static ViewProposal? ParseViewProposal(Fact proposal)
     {
         if (proposal.Kind != FactKind.Proposal)
+        {
             return null;
+        }
 
         string name = "";
         List<ProposalAddition> additions = [];
@@ -93,15 +83,13 @@ partial class FactStore
         }
 
         if (name.Length == 0)
+        {
             return null;
+        }
 
         return new ViewProposal(name, additions, removals);
     }
 
-    /// <summary>
-    /// Preview what a view would look like after applying a proposal.
-    /// Does not modify the view.
-    /// </summary>
     public ProposalPreview PreviewProposal(string viewName, ViewProposal proposal)
     {
         RequireViewExists(viewName);
@@ -139,9 +127,6 @@ partial class FactStore
         return new ProposalPreview(result, added, removed, modified);
     }
 
-    /// <summary>
-    /// Check whether applying a proposal to a view would produce a consistent result.
-    /// </summary>
     public ViewConsistencyResult CheckProposalConsistency(
         string viewName,
         ViewProposal proposal,
@@ -167,15 +152,13 @@ partial class FactStore
         }
 
         if (definitions.Count == 0)
+        {
             return new ViewConsistencyResult(true, []);
+        }
 
         return checker.Check(definitions);
     }
 
-    /// <summary>
-    /// Apply a proposal to a view. Requires consensus and consistency.
-    /// Returns true if applied successfully.
-    /// </summary>
     public bool ApplyViewProposal(
         ContentHash proposalFactHash,
         string viewName,
@@ -183,18 +166,26 @@ partial class FactStore
     {
         Fact? proposalFact = Load(proposalFactHash);
         if (proposalFact is null)
+        {
             return false;
+        }
 
         if (!CheckConsensus(proposalFactHash))
+        {
             return false;
+        }
 
         ViewProposal? proposal = ParseViewProposal(proposalFact);
         if (proposal is null)
+        {
             return false;
+        }
 
         ViewConsistencyResult consistency = CheckProposalConsistency(viewName, proposal, checker);
         if (!consistency.IsConsistent)
+        {
             return false;
+        }
 
         // Apply changes
         RequireViewExists(viewName);
@@ -202,10 +193,14 @@ partial class FactStore
         Map<string, string> map = LoadViewMapFrom(viewFile);
 
         foreach (string removal in proposal.Removals)
+        {
             map = map.Remove(removal);
+        }
 
         foreach (ProposalAddition addition in proposal.Additions)
+        {
             map = map.Set(addition.DefinitionName, addition.DefinitionHash.ToHex());
+        }
 
         SaveViewMapTo(viewFile, map);
         return true;

@@ -29,11 +29,15 @@ public sealed partial class TypeChecker
     {
         CodexType? fromTypeLevelEnv = m_typeLevelEnv[name.Value];
         if (fromTypeLevelEnv is not null)
+        {
             return fromTypeLevelEnv;
+        }
 
         CodexType? fromTypeParam = m_typeParamEnv[name.Value];
         if (fromTypeParam is not null)
+        {
             return fromTypeParam;
+        }
 
         CodexType? fromPrimitive = name.Value switch
         {
@@ -47,11 +51,15 @@ public sealed partial class TypeChecker
             _ => null
         };
         if (fromPrimitive is not null)
+        {
             return fromPrimitive;
+        }
 
         CodexType? userDef = m_typeDefMap[name.Value];
         if (userDef is not null)
+        {
             return userDef;
+        }
 
         if (name.IsValueName)
         {
@@ -67,11 +75,15 @@ public sealed partial class TypeChecker
     {
         if (app.Constructor is NamedTypeExpr namedCtor && namedCtor.Name.Value == "List"
             && app.Arguments.Count == 1)
+        {
             return new ListType(ResolveTypeExpr(app.Arguments[0]));
+        }
 
         if (app.Constructor is NamedTypeExpr namedCtor2 && namedCtor2.Name.Value == "LinkedList"
             && app.Arguments.Count == 1)
+        {
             return new LinkedListType(ResolveTypeExpr(app.Arguments[0]));
+        }
 
         if (app.Constructor is NamedTypeExpr named)
         {
@@ -119,10 +131,14 @@ public sealed partial class TypeChecker
                     m_effectRowVars = m_effectRowVars.Set(named.Name.Value, rowVar);
                 }
                 else
+                {
                     effects.Add(new EffectType(named.Name));
+                }
             }
             else
+            {
                 m_diagnostics.Error(CdxCodes.EffectLabelMustBeName, "Effect label must be a name", e.Span);
+            }
         }
         CodexType returnType = ResolveTypeExpr(eff.Return);
         return new EffectfulType(effects.ToImmutable(), returnType, rowVar);

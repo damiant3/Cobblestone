@@ -19,18 +19,24 @@ internal sealed class DefinitionHandler(DocumentStore store) : DefinitionHandler
         AnalysisResult? result = m_store.GetResult(uri);
         string? text = m_store.GetText(uri);
         if (result is null || text is null)
+        {
             return Task.FromResult<LocationOrLocationLinks?>(null);
+        }
 
         int line = (int)request.Position.Line;
         int col = (int)request.Position.Character;
 
         string? word = LspHelpers.GetWordAt(text, line, col);
         if (word is null)
+        {
             return Task.FromResult<LocationOrLocationLinks?>(null);
+        }
 
         SourceSpan? targetSpan = FindDefinitionSpan(result, word);
         if (targetSpan is null)
+        {
             return Task.FromResult<LocationOrLocationLinks?>(null);
+        }
 
         Location location = new()
         {
@@ -46,20 +52,26 @@ internal sealed class DefinitionHandler(DocumentStore store) : DefinitionHandler
         foreach (Definition def in result.Definitions)
         {
             if (def.Name.Value == name)
+            {
                 return def.Span;
+            }
         }
 
         foreach (TypeDef typeDef in result.TypeDefinitions)
         {
             if (typeDef.Name.Value == name)
+            {
                 return typeDef.Span;
+            }
 
             if (typeDef is VariantTypeDef variant)
             {
                 foreach (VariantCtorDef ctor in variant.Constructors)
                 {
                     if (ctor.Name.Value == name)
+                    {
                         return ctor.Span;
+                    }
                 }
             }
         }

@@ -318,7 +318,10 @@ public sealed class Lexer
                 while (!IsAtEnd && depth > 0)
                 {
                     SkipSpaces();
-                    if (IsAtEnd) break;
+                    if (IsAtEnd)
+                    {
+                        break;
+                    }
 
                     if (Current == '}')
                     {
@@ -334,7 +337,11 @@ public sealed class Lexer
 
                     if (depth > 0 && !IsAtEnd)
                     {
-                        if (Current == '{') depth++;
+                        if (Current == '{')
+                        {
+                            depth++;
+                        }
+
                         Token exprToken = ScanExpressionToken();
                         m_pending.Add(exprToken);
                     }
@@ -423,9 +430,21 @@ public sealed class Lexer
         SkipSpaces();
         char c = Current;
 
-        if (c == '"') return ScanPlainTextLiteral();
-        if (CharHelpers.IsAsciiDigit(c)) return ScanNumber();
-        if (char.IsLetter(c) || c == '_') return ScanIdentifierOrKeyword();
+        if (c == '"')
+        {
+            return ScanPlainTextLiteral();
+        }
+
+        if (CharHelpers.IsAsciiDigit(c))
+        {
+            return ScanNumber();
+        }
+
+        if (char.IsLetter(c) || c == '_')
+        {
+            return ScanIdentifierOrKeyword();
+        }
+
         return ScanOperator();
     }
 

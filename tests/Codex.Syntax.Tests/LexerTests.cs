@@ -280,55 +280,55 @@ public class LexerTests
     [Fact]
     public void Tab_escape_in_text_literal_emits_CDX0005()
     {
-        var (tokens, bag) = TokenizeWithDiag("\"hello\\tworld\"");
+        (IReadOnlyList<Token> tokens, DiagnosticBag bag) = TokenizeWithDiag("\"hello\\tworld\"");
         Assert.True(bag.HasErrors);
-        var diag = bag.ToImmutable().First(d => d.Code == CdxCodes.InvalidTabEscape);
+        Diagnostic diag = bag.ToImmutable().First(d => d.Code == CdxCodes.InvalidTabEscape);
         Assert.Contains("\\t", diag.Message);
         // Recovery: \t normalizes to two spaces
-        var lit = tokens.First(t => t.Kind == TokenKind.TextLiteral);
+        Token lit = tokens.First(t => t.Kind == TokenKind.TextLiteral);
         Assert.Equal("hello  world", lit.LiteralValue);
     }
 
     [Fact]
     public void CR_escape_in_text_literal_emits_CDX0006()
     {
-        var (tokens, bag) = TokenizeWithDiag("\"hello\\rworld\"");
+        (IReadOnlyList<Token> tokens, DiagnosticBag bag) = TokenizeWithDiag("\"hello\\rworld\"");
         Assert.True(bag.HasErrors);
-        var diag = bag.ToImmutable().First(d => d.Code == CdxCodes.InvalidCarriageReturnEscape);
+        Diagnostic diag = bag.ToImmutable().First(d => d.Code == CdxCodes.InvalidCarriageReturnEscape);
         Assert.Contains("\\r", diag.Message);
         // Recovery: \r stripped
-        var lit = tokens.First(t => t.Kind == TokenKind.TextLiteral);
+        Token lit = tokens.First(t => t.Kind == TokenKind.TextLiteral);
         Assert.Equal("helloworld", lit.LiteralValue);
     }
 
     [Fact]
     public void Tab_escape_in_char_literal_emits_CDX0005()
     {
-        var (tokens, bag) = TokenizeWithDiag("'\\t'");
+        (IReadOnlyList<Token> tokens, DiagnosticBag bag) = TokenizeWithDiag("'\\t'");
         Assert.True(bag.HasErrors);
         Assert.Contains(bag.ToImmutable(), d => d.Code == CdxCodes.InvalidTabEscape);
         // Recovery: maps to space (32)
-        var lit = tokens.First(t => t.Kind == TokenKind.CharLiteral);
+        Token lit = tokens.First(t => t.Kind == TokenKind.CharLiteral);
         Assert.Equal((long)' ', lit.LiteralValue);
     }
 
     [Fact]
     public void CR_escape_in_char_literal_emits_CDX0006()
     {
-        var (tokens, bag) = TokenizeWithDiag("'\\r'");
+        (IReadOnlyList<Token> tokens, DiagnosticBag bag) = TokenizeWithDiag("'\\r'");
         Assert.True(bag.HasErrors);
         Assert.Contains(bag.ToImmutable(), d => d.Code == CdxCodes.InvalidCarriageReturnEscape);
         // Recovery: maps to newline (10)
-        var lit = tokens.First(t => t.Kind == TokenKind.CharLiteral);
+        Token lit = tokens.First(t => t.Kind == TokenKind.CharLiteral);
         Assert.Equal((long)'\n', lit.LiteralValue);
     }
 
     [Fact]
     public void Valid_escapes_still_work()
     {
-        var (tokens, bag) = TokenizeWithDiag("\"hello\\nworld\\\\end\"");
+        (IReadOnlyList<Token> tokens, DiagnosticBag bag) = TokenizeWithDiag("\"hello\\nworld\\\\end\"");
         Assert.False(bag.HasErrors);
-        var lit = tokens.First(t => t.Kind == TokenKind.TextLiteral);
+        Token lit = tokens.First(t => t.Kind == TokenKind.TextLiteral);
         Assert.Equal("hello\nworld\\end", lit.LiteralValue);
     }
 }

@@ -22,7 +22,10 @@ public static partial class Program
     static CompilationResult? CompileFile(string filePath)
     {
         IRCompilationResult? irResult = CompileToIR(filePath);
-        if (irResult is null) return null;
+        if (irResult is null)
+        {
+            return null;
+        }
 
         CSharpEmitter emitter = new();
         string csharpSource = emitter.Emit(irResult.Chapter);
@@ -59,7 +62,9 @@ public static partial class Program
 
         // Import types from dependency modules before checking main chapter
         foreach (ResolvedChapter imported in resolved.CitedChapters)
+        {
             checker.CiteChapter(imported.Chapter);
+        }
 
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
@@ -155,7 +160,9 @@ public static partial class Program
         TypeChecker checker = new(diagnostics);
 
         foreach (ResolvedChapter imported in resolved.CitedChapters)
+        {
             checker.CiteChapter(imported.Chapter);
+        }
 
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
@@ -219,17 +226,23 @@ public static partial class Program
         if (extraLoaders is not null)
         {
             foreach (IChapterLoader loader in extraLoaders)
+            {
                 loaders.Add(loader);
+            }
         }
 
         ForewordChapterLoader? foreword = ForewordChapterLoader.TryCreate(diagnostics);
         if (foreword is not null)
+        {
             loaders.Add(foreword);
+        }
 
         Codex.Repository.FactStore? store =
             Codex.Repository.FactStore.Open(Directory.GetCurrentDirectory());
         if (store is not null)
+        {
             loaders.Add(new RepositoryChapterLoader(store, diagnostics));
+        }
 
         return new NameResolver(diagnostics, new CompositeChapterLoader([.. loaders]));
     }
@@ -307,7 +320,9 @@ public static partial class Program
         TypeChecker checker = new(diagnostics);
 
         foreach (ResolvedChapter imported in resolved.CitedChapters)
+        {
             checker.CiteChapter(imported.Chapter);
+        }
 
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
 
@@ -338,22 +353,25 @@ public static partial class Program
     {
         // Group every file by (quire, chapter-name). A chapter is identified by
         // (quire, name); same name in different quires = different chapters.
-        var byChapter = markers.GroupBy(m => (m.Quire, m.ChapterName));
+        IEnumerable<IGrouping<(string? Quire, string ChapterName), (string FilePath, string? Quire, string ChapterName, PageMarker? Page)>> byChapter = markers.GroupBy(m => (m.Quire, m.ChapterName));
 
-        foreach (var group in byChapter)
+        foreach (IGrouping<(string? Quire, string ChapterName), (string FilePath, string? Quire, string ChapterName, PageMarker? Page)> group in byChapter)
         {
             string chapterLabel = group.Key.Quire is null
                 ? group.Key.ChapterName
                 : $"{group.Key.Quire}/{group.Key.ChapterName}";
-            var files = group.ToList();
+            List<(string FilePath, string? Quire, string ChapterName, PageMarker? Page)> files = group.ToList();
 
             // Single-file chapter: no collision, no page coherence to check.
-            if (files.Count == 1) continue;
+            if (files.Count == 1)
+            {
+                continue;
+            }
 
             // Multi-file chapter: all files must carry 'Page N of M' markers
             // agreeing on M; any file without that marker means this is a
             // chapter-name collision, not a legitimate split.
-            var unpaged = files.Where(m => m.Page?.TotalPages is null).ToList();
+            List<(string FilePath, string? Quire, string ChapterName, PageMarker? Page)> unpaged = files.Where(m => m.Page?.TotalPages is null).ToList();
             if (unpaged.Count > 0)
             {
                 SourceSpan firstSpan = SourceSpan.Single(0, 1, 1, files[0].FilePath);
@@ -364,7 +382,7 @@ public static partial class Program
                 continue;
             }
 
-            var totals = files.Select(m => m.Page!.TotalPages!.Value).Distinct().ToList();
+            List<int> totals = files.Select(m => m.Page!.TotalPages!.Value).Distinct().ToList();
             if (totals.Count > 1)
             {
                 diagnostics.Error(CdxCodes.PageCountMismatch,
@@ -383,7 +401,7 @@ public static partial class Program
             }
 
             HashSet<int> seen = [];
-            foreach (var m in files)
+            foreach ((string FilePath, string? Quire, string ChapterName, PageMarker? Page) m in files)
             {
                 if (!seen.Add(m.Page!.PageNumber))
                 {
@@ -406,7 +424,7 @@ public static partial class Program
 
         // Also emit the existing "missing page marker" warning for every file
         // that lacks one. (Not an error — single-file chapters don't need one.)
-        foreach (var (filePath, _, _, page) in markers)
+        foreach ((string filePath, string? _, string _, PageMarker? page) in markers)
         {
             if (page is null)
             {

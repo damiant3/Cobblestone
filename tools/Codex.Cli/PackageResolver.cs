@@ -8,10 +8,6 @@ sealed class PackageResolver(string projectDirectory, DiagnosticBag diagnostics)
     readonly string m_projectDirectory = projectDirectory;
     readonly DiagnosticBag m_diagnostics = diagnostics;
 
-    /// <summary>
-    /// Resolves all package references for a project into module loaders.
-    /// Returns loaders in dependency order (foreword first, then explicit packages).
-    /// </summary>
     public List<IChapterLoader> ResolveAll(Program.CodexProject project)
     {
         List<IChapterLoader> loaders = [];
@@ -21,7 +17,9 @@ sealed class PackageResolver(string projectDirectory, DiagnosticBag diagnostics)
         {
             ForewordChapterLoader? foreword = ForewordChapterLoader.TryCreate(m_diagnostics);
             if (foreword is not null)
+            {
                 loaders.Add(foreword);
+            }
         }
 
         // Resolve explicit path dependencies (existing behavior)
@@ -93,16 +91,14 @@ sealed class PackageResolver(string projectDirectory, DiagnosticBag diagnostics)
         return null;
     }
 
-    /// <summary>
-    /// Finds a package in the local cache directory.
-    /// Cache layout: ~/.codex/packages/{name}/{version}/
-    /// </summary>
     static string? FindInCache(string name, string versionConstraint)
     {
         string cacheRoot = GetCacheDirectory();
         string packageDir = Path.Combine(cacheRoot, name);
         if (!Directory.Exists(packageDir))
+        {
             return null;
+        }
 
         // Find best matching version
         string[] versions = Directory.GetDirectories(packageDir)
@@ -112,7 +108,9 @@ sealed class PackageResolver(string projectDirectory, DiagnosticBag diagnostics)
             .ToArray();
 
         if (versions.Length == 0)
+        {
             return null;
+        }
 
         string bestVersion = versions[0];
         string resolved = Path.Combine(packageDir, bestVersion);
@@ -121,24 +119,24 @@ sealed class PackageResolver(string projectDirectory, DiagnosticBag diagnostics)
             : null;
     }
 
-    /// <summary>
-    /// Installs a package from a source directory into the local cache.
-    /// Returns the cache path.
-    /// </summary>
     public static string InstallToCache(string sourceDirectory, Program.CodexProject project)
     {
         string cacheRoot = GetCacheDirectory();
         string targetDir = Path.Combine(cacheRoot, project.Name, project.Version);
 
         if (Directory.Exists(targetDir))
+        {
             Directory.Delete(targetDir, recursive: true);
+        }
 
         Directory.CreateDirectory(targetDir);
 
         // Copy project file
         string sourceProject = Path.Combine(sourceDirectory, "codex.project.json");
         if (File.Exists(sourceProject))
+        {
             File.Copy(sourceProject, Path.Combine(targetDir, "codex.project.json"));
+        }
 
         // Copy source files
         string[] sources = Program.ResolveProjectSources(sourceDirectory, project);
@@ -148,17 +146,16 @@ sealed class PackageResolver(string projectDirectory, DiagnosticBag diagnostics)
             string targetPath = Path.Combine(targetDir, relativePath);
             string? targetSubDir = Path.GetDirectoryName(targetPath);
             if (targetSubDir is not null && !Directory.Exists(targetSubDir))
+            {
                 Directory.CreateDirectory(targetSubDir);
+            }
+
             File.Copy(source, targetPath, overwrite: true);
         }
 
         return targetDir;
     }
 
-    /// <summary>
-    /// Creates a content hash for a package directory (for lock file).
-    /// Uses the same content-addressing scheme as the Codex repository.
-    /// </summary>
     public static string ComputeContentHash(string directory, Program.CodexProject project)
     {
         string[] sources = Program.ResolveProjectSources(directory, project);
@@ -184,7 +181,9 @@ sealed class PackageResolver(string projectDirectory, DiagnosticBag diagnostics)
     static bool VersionMatches(string actual, string constraint)
     {
         if (string.IsNullOrEmpty(constraint) || constraint == "*")
+        {
             return true;
+        }
 
         if (constraint.EndsWith(".*"))
         {
@@ -205,7 +204,10 @@ sealed class PackageResolver(string projectDirectory, DiagnosticBag diagnostics)
     {
         string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         if (string.IsNullOrEmpty(home))
+        {
             home = Environment.GetEnvironmentVariable("HOME") ?? "/tmp";
+        }
+
         return Path.Combine(home, ".codex", "packages");
     }
 }

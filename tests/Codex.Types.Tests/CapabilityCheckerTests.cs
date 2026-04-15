@@ -106,7 +106,9 @@ public class CapabilityCheckerTests
         foreach (Diagnostic diag in diagnostics.ToImmutable())
         {
             if (diag.Code == CdxCodes.CapabilityNotGranted && diag.Message.Contains("FileSystem"))
+            {
                 found = true;
+            }
         }
         Assert.True(found, "Expected CDX4001 error for missing FileSystem capability");
     }
@@ -152,15 +154,24 @@ public class CapabilityCheckerTests
 
         Codex.Ast.Desugarer desugarer = new(diagnostics);
         Codex.Ast.Chapter module = desugarer.Desugar(document, "test");
-        if (diagnostics.HasErrors) return null;
+        if (diagnostics.HasErrors)
+        {
+            return null;
+        }
 
         Codex.Semantics.NameResolver resolver = new(diagnostics);
         Codex.Semantics.ResolvedChapter resolved = resolver.Resolve(module);
-        if (diagnostics.HasErrors) return null;
+        if (diagnostics.HasErrors)
+        {
+            return null;
+        }
 
         TypeChecker checker = new(diagnostics);
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
-        if (diagnostics.HasErrors) return null;
+        if (diagnostics.HasErrors)
+        {
+            return null;
+        }
 
         CapabilityChecker capChecker = new(diagnostics, types);
         return capChecker.CheckChapter(resolved.Chapter);
@@ -187,7 +198,9 @@ public class CapabilityCheckerTests
 
         Set<string> grantSet = Set<string>.s_empty;
         foreach (string g in grants)
+        {
             grantSet = grantSet.Add(g);
+        }
 
         CapabilityChecker capChecker = new(diagnostics, types);
         capChecker.CheckChapter(resolved.Chapter, grantSet);
@@ -207,7 +220,9 @@ public class CapabilityCheckerTests
         foreach (Diagnostic diag in diagnostics.ToImmutable())
         {
             if (diag.Code == CdxCodes.CapabilityNotGranted && diag.Message.Contains("Network"))
+            {
                 found = true;
+            }
         }
         Assert.True(found, "Expected CDX4001 for missing Network capability");
     }
@@ -236,7 +251,9 @@ public class CapabilityCheckerTests
         foreach (Diagnostic diag in diagnostics.ToImmutable())
         {
             if (diag.Code == CdxCodes.CapabilityNotGranted && diag.Message.Contains("Camera"))
+            {
                 found = true;
+            }
         }
         Assert.True(found, "Expected CDX4001 for missing Camera capability");
     }
@@ -254,7 +271,9 @@ public class CapabilityCheckerTests
         foreach (Diagnostic diag in diagnostics.ToImmutable())
         {
             if (diag.Code == CdxCodes.CapabilityNotGranted && diag.Message.Contains("Microphone"))
+            {
                 found = true;
+            }
         }
         Assert.True(found, "Expected CDX4001 for missing Microphone capability");
     }
@@ -275,7 +294,9 @@ public class CapabilityCheckerTests
         foreach (Diagnostic diag in diagnostics.ToImmutable())
         {
             if (diag.Code == CdxCodes.CapabilityNotGranted && diag.Message.Contains("Network"))
+            {
                 found = true;
+            }
         }
         Assert.True(found, "Expected CDX4001 for missing Network — the flashlight test");
     }

@@ -252,7 +252,10 @@ public class ILEmitterBuiltinTests
     static string? CompileAndRun(string source, string chapterName)
     {
         byte[]? bytes = Helpers.CompileToIL(source, chapterName);
-        if (bytes is null) return null;
+        if (bytes is null)
+        {
+            return null;
+        }
 
         string tempDir = Path.Combine(Path.GetTempPath(),
             "codex_il_test_" + chapterName + "_" + Guid.NewGuid().ToString("N")[..8]);
@@ -286,15 +289,20 @@ public class ILEmitterBuiltinTests
             };
 
             using Process? proc = Process.Start(psi);
-            if (proc is null) return null;
+            if (proc is null)
+            {
+                return null;
+            }
 
             string stdout = proc.StandardOutput.ReadToEnd();
             string stderr = proc.StandardError.ReadToEnd();
             proc.WaitForExit(10_000);
 
             if (proc.ExitCode != 0)
+            {
                 throw new InvalidOperationException(
                     $"dotnet exited with code {proc.ExitCode}.\nstdout: {stdout}\nstderr: {stderr}");
+            }
 
             return stdout;
         }

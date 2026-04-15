@@ -106,7 +106,9 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
     PageMarker? TryParsePageMarker()
     {
         if (Current.Kind != TokenKind.TypeIdentifier || Current.Text != "Page")
+        {
             return null;
+        }
 
         int saved = m_position;
         Token pageKw = Current;
@@ -147,7 +149,9 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
     TypeDefinitionNode? TryParseTypeDefinition()
     {
         if (Current.Kind != TokenKind.TypeIdentifier)
+        {
             return null;
+        }
 
         int savedPos = m_position;
 
@@ -210,8 +214,16 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         while (lookahead < m_tokens.Count)
         {
             TokenKind kind = m_tokens[lookahead].Kind;
-            if (kind == TokenKind.Pipe) return true;
-            if (kind is TokenKind.Newline or TokenKind.EndOfFile) return false;
+            if (kind == TokenKind.Pipe)
+            {
+                return true;
+            }
+
+            if (kind is TokenKind.Newline or TokenKind.EndOfFile)
+            {
+                return false;
+            }
+
             lookahead++;
         }
         return false;
@@ -220,7 +232,10 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
     CitesNode? TryParseCites()
     {
         if (Current.Kind != TokenKind.CitesKeyword)
+        {
             return null;
+        }
+
         Token citesKw = Current;
         Advance();
 
@@ -261,7 +276,10 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
                 if (titleBuf.Length > 0
                     && char.IsLetterOrDigit(titleBuf[^1])
                     && char.IsLetterOrDigit(text[0]))
+                {
                     titleBuf.Append(' ');
+                }
+
                 titleBuf.Append(text);
             }
             titleEnd = Current;
@@ -302,7 +320,10 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
     EffectDefinitionNode? TryParseEffectDefinition()
     {
         if (Current.Kind != TokenKind.EffectKeyword)
+        {
             return null;
+        }
+
         Token effectKw = Current;
         Advance();
 
@@ -404,7 +425,10 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         while (Current.Kind == TokenKind.Pipe || firstCtor)
         {
             if (Current.Kind == TokenKind.Pipe)
+            {
                 Advance();
+            }
+
             firstCtor = false;
             SkipNewlines();
 
@@ -444,7 +468,10 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
 
             SourceSpan ctorSpan = ctorName.Span;
             if (fields.Count > 0)
+            {
                 ctorSpan = ctorName.Span.Through(fields[^1].Span);
+            }
+
             constructors.Add(new VariantConstructorNode(ctorName, fields, ctorSpan));
             SkipNewlines();
         }
@@ -651,7 +678,9 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         // can begin a type atom. This is not a heuristic: it matches the grammar exactly.
         if (Current.Kind is not (TokenKind.TypeIdentifier or TokenKind.Identifier
             or TokenKind.LeftParen or TokenKind.IntegerLiteral))
+        {
             return false;
+        }
 
         // Avoid consuming the next definition's name as a type argument.
         // If the next token after this identifier is a colon, it's a definition signature,
@@ -660,7 +689,9 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         {
             Token? next = Peek(1);
             if (next is not null && next.Kind == TokenKind.Colon)
+            {
                 return false;
+            }
         }
 
         return true;
@@ -680,7 +711,9 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
                     // Indented tokens are continuations of the current definition.
                     int col = Current.Span.Start.Column;
                     if (col <= 3)
+                    {
                         return;
+                    }
                 }
             }
             else
@@ -695,7 +728,9 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         while (!IsAtEnd)
         {
             if (Current.Kind is TokenKind.Newline or TokenKind.Dedent)
+            {
                 return;
+            }
 
             if (Current.Kind is TokenKind.ThenKeyword or TokenKind.ElseKeyword
                 or TokenKind.InKeyword or TokenKind.IfKeyword or TokenKind.IsKeyword

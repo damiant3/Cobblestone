@@ -19,15 +19,21 @@ sealed class RepositoryChapterLoader(FactStore store, DiagnosticBag diagnostics)
         string viewKey = $"{quire}/{chapterName}";
         ResolvedChapter? cached = m_cache[viewKey];
         if (cached is not null)
+        {
             return cached;
+        }
 
         ContentHash? hash = m_store.LookupView(viewKey);
         if (hash is null)
+        {
             return null;
+        }
 
         Fact? fact = m_store.Load(hash.Value);
         if (fact is null || fact.Kind != FactKind.Definition)
+        {
             return null;
+        }
 
         string source = fact.Content;
         SourceText src = new($"{chapterName}.codex", source);
@@ -35,17 +41,23 @@ sealed class RepositoryChapterLoader(FactStore store, DiagnosticBag diagnostics)
 
         DocumentNode document = DocumentParser.Parse(src, compileDiag);
         if (compileDiag.HasErrors)
+        {
             return null;
+        }
 
         Desugarer desugarer = new(compileDiag);
         Chapter chapter = desugarer.Desugar(document, chapterName);
         if (compileDiag.HasErrors)
+        {
             return null;
+        }
 
         NameResolver resolver = new(compileDiag);
         ResolvedChapter resolved = resolver.Resolve(chapter);
         if (compileDiag.HasErrors)
+        {
             return null;
+        }
 
         m_cache = m_cache.Set(viewKey, resolved);
         return resolved;

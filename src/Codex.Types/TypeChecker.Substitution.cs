@@ -19,7 +19,10 @@ public sealed partial class TypeChecker
         CodexType result = typeDef;
         int count = Math.Min(paramIds.Length, args.Length);
         for (int i = 0; i < count; i++)
+        {
             result = SubstituteVar(result, paramIds[i], args[i]);
+        }
+
         return result;
     }
 
@@ -66,7 +69,10 @@ public sealed partial class TypeChecker
         CollectFreeTypeVars(type, freeVars);
         CodexType result = type;
         foreach (int varId in freeVars)
+        {
             result = new ForAllType(varId, result);
+        }
+
         return result;
     }
 
@@ -93,11 +99,17 @@ public sealed partial class TypeChecker
                 break;
             case ConstructedType ct:
                 foreach (CodexType arg in ct.Arguments)
+                {
                     CollectFreeTypeVars(arg, vars);
+                }
+
                 break;
             case EffectfulType eft:
                 foreach (EffectType e in eft.Effects)
+                {
                     CollectFreeTypeVars(e, vars);
+                }
+
                 CollectFreeTypeVars(eft.Return, vars);
                 break;
             case DependentFunctionType dep:
@@ -111,35 +123,57 @@ public sealed partial class TypeChecker
     {
         CodexType current = type;
         while (current is FunctionType ft)
+        {
             current = ft.Return;
+        }
+
         while (current is DependentFunctionType dep)
+        {
             current = dep.Body;
+        }
 
         if (current is not EffectfulType eft)
+        {
             return Set<string>.s_empty;
+        }
 
         Set<string> result = Set<string>.s_empty;
         foreach (EffectType e in eft.Effects)
+        {
             result = result.Add(e.EffectName.Value);
+        }
+
         if (eft.RowVariable is not null)
+        {
             result = result.Add("*");
+        }
+
         return result;
     }
 
     void CheckEffectAllowed(CodexType type, SourceSpan span)
     {
         if (type is not EffectfulType eft)
+        {
             return;
+        }
+
         if (m_currentEffects.Contains("*"))
+        {
             return;
+        }
 
         ImmutableArray<EffectType> resolved = m_unifier.ResolveEffectRow(eft.RowVariable);
         foreach (EffectType effect in eft.Effects.AddRange(resolved))
+        {
             if (!m_currentEffects.Contains(effect.EffectName.Value))
+            {
                 m_diagnostics.Error(CdxCodes.EffectNotDeclared,
                     $"Effect '{effect.EffectName.Value}' is not allowed in this context. "
                     + "Declare it in the function's type signature.",
                     span);
+            }
+        }
     }
 
     CodexType TryDischargeProofParams(CodexType type, SourceSpan span)
@@ -147,7 +181,9 @@ public sealed partial class TypeChecker
         while (type is FunctionType ft && ft.Parameter is ProofType proof)
         {
             if (TryDischargeProof(proof.Claim))
+            {
                 type = ft.Return;
+            }
             else
             {
                 m_diagnostics.Error(CdxCodes.LinearUnused,
@@ -162,18 +198,26 @@ public sealed partial class TypeChecker
     static bool TryDischargeProof(CodexType claim)
     {
         if (claim is not LessThanClaim lt)
+        {
             return false;
+        }
+
         CodexType left = NormalizeTypeLevelExpr(lt.Left);
         CodexType right = NormalizeTypeLevelExpr(lt.Right);
         if (left is TypeLevelValue lv && right is TypeLevelValue rv)
+        {
             return lv.Value < rv.Value;
+        }
+
         return false;
     }
 
     static CodexType NormalizeTypeLevelExpr(CodexType type)
     {
         if (type is not TypeLevelBinary bin)
+        {
             return type;
+        }
 
         CodexType left = NormalizeTypeLevelExpr(bin.Left);
         CodexType right = NormalizeTypeLevelExpr(bin.Right);
@@ -251,9 +295,15 @@ public sealed partial class TypeChecker
     CodexType? TryExtractTypeLevelValue(Expr expr)
     {
         if (expr is LiteralExpr lit && lit.Kind == LiteralKind.Integer)
+        {
             return new TypeLevelValue(Convert.ToInt64(lit.Value));
+        }
+
         if (expr is ListExpr list)
+        {
             return new TypeLevelValue(list.Elements.Count);
+        }
+
         return null;
     }
 

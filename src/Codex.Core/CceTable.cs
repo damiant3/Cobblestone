@@ -40,7 +40,7 @@ public static class CceTable
     // ── Tier 0 ──────────────────────────────────────────────────────────
 
     /// <summary>CCE byte → Unicode code point (128 entries, indexed by CCE value).</summary>
-    public static readonly int[] ToUnicode =
+    public static readonly int[] s_toUnicode =
     {
         0, 10, 32,                                                             // 0-2: whitespace
         48, 49, 50, 51, 52, 53, 54, 55, 56, 57,                               // 3-12: digits
@@ -60,14 +60,17 @@ public static class CceTable
         1074, 1083, 1082, 1084, 1076, 1087, 1091                              // 121-127
     };
 
-    /// <summary>Unicode code point → CCE byte. Built lazily from <see cref="ToUnicode"/>.</summary>
-    public static readonly Dictionary<int, int> FromUnicode = BuildFromUnicode();
+    /// <summary>Unicode code point → CCE byte. Built lazily from <see cref="s_toUnicode"/>.</summary>
+    public static readonly Dictionary<int, int> s_fromUnicode = BuildFromUnicode();
 
     static Dictionary<int, int> BuildFromUnicode()
     {
-        var d = new Dictionary<int, int>();
-        for (int i = 0; i < ToUnicode.Length; i++)
-            d[ToUnicode[i]] = i;
+        Dictionary<int, int> d = new Dictionary<int, int>();
+        for (int i = 0; i < s_toUnicode.Length; i++)
+        {
+            d[s_toUnicode[i]] = i;
+        }
+
         return d;
     }
 
@@ -77,25 +80,31 @@ public static class CceTable
     // ── Tier 1 ──────────────────────────────────────────────────────────
 
     /// <summary>Tier 1 code point → Unicode (2048 entries). 0 = unmapped.</summary>
-    public static readonly int[] Tier1ToUnicode = BuildTier1Table();
+    public static readonly int[] s_tier1ToUnicode = BuildTier1Table();
 
     /// <summary>Unicode → Tier 1 code point. Only contains mapped characters.</summary>
-    public static readonly Dictionary<int, int> Tier1FromUnicode = BuildTier1FromUnicode();
+    public static readonly Dictionary<int, int> s_tier1FromUnicode = BuildTier1FromUnicode();
 
     /// <summary>Number of populated Tier 1 entries (for diagnostics/stats).</summary>
-    public static readonly int Tier1Count = CountTier1Entries();
+    public static readonly int s_tier1Count = CountTier1Entries();
 
     static int CountTier1Entries()
     {
         int count = 0;
-        for (int i = 0; i < Tier1ToUnicode.Length; i++)
-            if (Tier1ToUnicode[i] != 0) count++;
+        for (int i = 0; i < s_tier1ToUnicode.Length; i++)
+        {
+            if (s_tier1ToUnicode[i] != 0)
+            {
+                count++;
+            }
+        }
+
         return count;
     }
 
     static int[] BuildTier1Table()
     {
-        var t = new int[2048];
+        int[] t = new int[2048];
 
         // Block 0 (0x000-0x07F): Latin Extended
         // Lowercase not in Tier 0
@@ -125,9 +134,20 @@ public static class CceTable
         };
 
         int slot = 0;
-        foreach (int cp in latinLower) t[slot++] = cp;
-        foreach (int cp in latinUpper) t[slot++] = cp;
-        foreach (int cp in latinSymbols) t[slot++] = cp;
+        foreach (int cp in latinLower)
+        {
+            t[slot++] = cp;
+        }
+
+        foreach (int cp in latinUpper)
+        {
+            t[slot++] = cp;
+        }
+
+        foreach (int cp in latinSymbols)
+        {
+            t[slot++] = cp;
+        }
         // Remaining slots 0x000-0x07F stay 0 (unmapped/reserved)
 
         // Block 1 (0x080-0x0FF): Cyrillic Extended
@@ -155,9 +175,20 @@ public static class CceTable
         };
 
         slot = 0x080;
-        foreach (int cp in cyrillicLower) t[slot++] = cp;
-        foreach (int cp in cyrillicUpper) t[slot++] = cp;
-        foreach (int cp in cyrillicExt) t[slot++] = cp;
+        foreach (int cp in cyrillicLower)
+        {
+            t[slot++] = cp;
+        }
+
+        foreach (int cp in cyrillicUpper)
+        {
+            t[slot++] = cp;
+        }
+
+        foreach (int cp in cyrillicExt)
+        {
+            t[slot++] = cp;
+        }
 
         // Block 2 (0x100-0x1FF): Greek
         int[] greekLower =
@@ -179,9 +210,20 @@ public static class CceTable
         };
 
         slot = 0x100;
-        foreach (int cp in greekLower) t[slot++] = cp;
-        foreach (int cp in greekUpper) t[slot++] = cp;
-        foreach (int cp in greekSymbols) t[slot++] = cp;
+        foreach (int cp in greekLower)
+        {
+            t[slot++] = cp;
+        }
+
+        foreach (int cp in greekUpper)
+        {
+            t[slot++] = cp;
+        }
+
+        foreach (int cp in greekSymbols)
+        {
+            t[slot++] = cp;
+        }
 
         // Block 3 (0x200-0x3FF): Arabic + Devanagari
         // Arabic: most frequent letters
@@ -207,8 +249,15 @@ public static class CceTable
         };
 
         slot = 0x200;
-        foreach (int cp in arabic) t[slot++] = cp;
-        foreach (int cp in devanagari) t[slot++] = cp;
+        foreach (int cp in arabic)
+        {
+            t[slot++] = cp;
+        }
+
+        foreach (int cp in devanagari)
+        {
+            t[slot++] = cp;
+        }
 
         // Block 4-5 (0x400-0x5FF): CJK (most frequent Chinese characters, deduplicated)
         int[] cjkFrequent =
@@ -241,32 +290,57 @@ public static class CceTable
         };
 
         // Deduplicate: only insert first occurrence of each code point
-        var cjkSeen = new HashSet<int>();
+        HashSet<int> cjkSeen = new HashSet<int>();
         slot = 0x400;
         foreach (int cp in cjkFrequent)
         {
-            if (slot >= 0x600) break;
-            if (cp != 0 && cjkSeen.Add(cp)) t[slot++] = cp;
+            if (slot >= 0x600)
+            {
+                break;
+            }
+
+            if (cp != 0 && cjkSeen.Add(cp))
+            {
+                t[slot++] = cp;
+            }
         }
 
         // Block 6 (0x600-0x6FF): Japanese Hiragana + Katakana
         // Hiragana: U+3041-U+3093 (83 chars)
         slot = 0x600;
-        for (int cp = 0x3041; cp <= 0x3093; cp++) t[slot++] = cp;
+        for (int cp = 0x3041; cp <= 0x3093; cp++)
+        {
+            t[slot++] = cp;
+        }
         // Katakana: U+30A1-U+30F6 (86 chars)
-        for (int cp = 0x30A1; cp <= 0x30F6; cp++) t[slot++] = cp;
+        for (int cp = 0x30A1; cp <= 0x30F6; cp++)
+        {
+            t[slot++] = cp;
+        }
         // Japanese punctuation
         int[] japanesePunct = { 0x3001, 0x3002, 0x300C, 0x300D, 0x3005, 0x30FC, 0x30FB };  // 、。「」々ー・
-        foreach (int cp in japanesePunct) t[slot++] = cp;
+        foreach (int cp in japanesePunct)
+        {
+            t[slot++] = cp;
+        }
 
         // Block 7 (0x700-0x7FF): Korean Jamo + frequent syllables
         // Hangul Jamo consonants: U+1100-U+1112 (19)
         slot = 0x700;
-        for (int cp = 0x1100; cp <= 0x1112; cp++) t[slot++] = cp;
+        for (int cp = 0x1100; cp <= 0x1112; cp++)
+        {
+            t[slot++] = cp;
+        }
         // Hangul Jamo vowels: U+1161-U+1175 (21)
-        for (int cp = 0x1161; cp <= 0x1175; cp++) t[slot++] = cp;
+        for (int cp = 0x1161; cp <= 0x1175; cp++)
+        {
+            t[slot++] = cp;
+        }
         // Hangul Jamo final consonants: U+11A8-U+11C2 (27)
-        for (int cp = 0x11A8; cp <= 0x11C2; cp++) t[slot++] = cp;
+        for (int cp = 0x11A8; cp <= 0x11C2; cp++)
+        {
+            t[slot++] = cp;
+        }
         // Most frequent Hangul syllables (deduplicated)
         int[] koreanFrequent =
         {
@@ -275,10 +349,13 @@ public static class CceTable
             47484, 50640, 51060, 51032, 51012, 51008, 44163, 48320,       // 를 에 이 의 을 은 각 보
             49373, 51068, 51204, 51201, 45908, 47196, 46108               // 서 있 저 적 되 로 된
         };
-        var korSeen = new HashSet<int>();
+        HashSet<int> korSeen = new HashSet<int>();
         foreach (int cp in koreanFrequent)
         {
-            if (cp != 0 && korSeen.Add(cp)) t[slot++] = cp;
+            if (cp != 0 && korSeen.Add(cp))
+            {
+                t[slot++] = cp;
+            }
         }
 
         return t;
@@ -286,11 +363,13 @@ public static class CceTable
 
     static Dictionary<int, int> BuildTier1FromUnicode()
     {
-        var d = new Dictionary<int, int>();
-        for (int i = 0; i < Tier1ToUnicode.Length; i++)
+        Dictionary<int, int> d = new Dictionary<int, int>();
+        for (int i = 0; i < s_tier1ToUnicode.Length; i++)
         {
-            if (Tier1ToUnicode[i] != 0)
-                d[Tier1ToUnicode[i]] = i;
+            if (s_tier1ToUnicode[i] != 0)
+            {
+                d[s_tier1ToUnicode[i]] = i;
+            }
         }
         return d;
     }
@@ -314,13 +393,22 @@ public static class CceTable
     public static string NormalizeUnicode(string unicode)
     {
         if (unicode.IndexOfAny(['\t', '\r']) < 0)
+        {
             return unicode;
-        var sb = new System.Text.StringBuilder(unicode.Length);
+        }
+
+        System.Text.StringBuilder sb = new System.Text.StringBuilder(unicode.Length);
         foreach (char c in unicode)
         {
-            if (c == '\t') sb.Append("  ");
+            if (c == '\t')
+            {
+                sb.Append("  ");
+            }
             else if (c == '\r') { /* stripped */ }
-            else sb.Append(c);
+            else
+            {
+                sb.Append(c);
+            }
         }
         return sb.ToString();
     }
@@ -332,7 +420,7 @@ public static class CceTable
     public static string Encode(string unicode)
     {
         string normalized = NormalizeUnicode(unicode);
-        var sb = new System.Text.StringBuilder(normalized.Length);
+        System.Text.StringBuilder sb = new System.Text.StringBuilder(normalized.Length);
         for (int idx = 0; idx < normalized.Length; idx++)
         {
             int u = normalized[idx];
@@ -351,11 +439,11 @@ public static class CceTable
                 continue;
             }
 
-            if (FromUnicode.TryGetValue(u, out int cce))
+            if (s_fromUnicode.TryGetValue(u, out int cce))
             {
                 sb.Append((char)cce);                              // Tier 0: 1 byte
             }
-            else if (Tier1FromUnicode.TryGetValue(u, out int t1cp))
+            else if (s_tier1FromUnicode.TryGetValue(u, out int t1cp))
             {
                 sb.Append((char)(0xC0 | (t1cp >> 6)));             // Tier 1: 2 bytes
                 sb.Append((char)(0x80 | (t1cp & 0x3F)));
@@ -374,7 +462,7 @@ public static class CceTable
     /// <summary>Convert a CCE-encoded string to Unicode. Full coverage: Tier 0-3.</summary>
     public static string Decode(string cce)
     {
-        var sb = new System.Text.StringBuilder(cce.Length);
+        System.Text.StringBuilder sb = new System.Text.StringBuilder(cce.Length);
         int i = 0;
         while (i < cce.Length)
         {
@@ -382,15 +470,15 @@ public static class CceTable
             if (b < 0x80)
             {
                 // Tier 0: single byte → table lookup
-                sb.Append((char)ToUnicode[b]);
+                sb.Append((char)s_toUnicode[b]);
                 i++;
             }
             else if (b >= 0xC0 && b < 0xE0 && i + 1 < cce.Length && (cce[i + 1] & 0xC0) == 0x80)
             {
                 // Tier 1: 2 bytes → table lookup
                 int cp = ((b & 0x1F) << 6) | (cce[i + 1] & 0x3F);
-                int uni = (cp < Tier1ToUnicode.Length && Tier1ToUnicode[cp] != 0)
-                    ? Tier1ToUnicode[cp] : 0xFFFD;
+                int uni = (cp < s_tier1ToUnicode.Length && s_tier1ToUnicode[cp] != 0)
+                    ? s_tier1ToUnicode[cp] : 0xFFFD;
                 sb.Append((char)uni);
                 i += 2;
             }
@@ -410,9 +498,14 @@ public static class CceTable
                 int full = ((b & 0x07) << 18) | ((cce[i + 1] & 0x3F) << 12)
                          | ((cce[i + 2] & 0x3F) << 6) | (cce[i + 3] & 0x3F);
                 if (full >= 0x10000 && full <= 0x10FFFF)
+                {
                     sb.Append(char.ConvertFromUtf32(full));
+                }
                 else
+                {
                     sb.Append('\uFFFD');
+                }
+
                 i += 4;
             }
             else
@@ -428,13 +521,13 @@ public static class CceTable
     /// Used by x86-64 backend for char literals. Unmapped returns '?' (68).</summary>
     public static long UnicharToCce(long unicode)
     {
-        return FromUnicode.TryGetValue((int)unicode, out int cce) ? cce : ReplacementCce;
+        return s_fromUnicode.TryGetValue((int)unicode, out int cce) ? cce : ReplacementCce;
     }
 
     /// <summary>Convert a single CCE byte to Unicode code point (Tier 0 only).</summary>
     public static long CceToUnichar(long cce)
     {
-        return (cce >= 0 && cce < 128) ? ToUnicode[(int)cce] : 65533;
+        return (cce >= 0 && cce < 128) ? s_toUnicode[(int)cce] : 65533;
     }
 
     /// <summary>
@@ -448,8 +541,12 @@ public static class CceTable
     /// </summary>
     public static List<string> EncodeList(string[] unicodes)
     {
-        var result = new List<string>(unicodes.Length);
-        foreach (string s in unicodes) result.Add(Encode(s));
+        List<string> result = new List<string>(unicodes.Length);
+        foreach (string s in unicodes)
+        {
+            result.Add(Encode(s));
+        }
+
         return result;
     }
 
@@ -461,47 +558,52 @@ public static class CceTable
     /// </summary>
     public static string GenerateRuntimeSource()
     {
-        var sb = new System.Text.StringBuilder();
+        System.Text.StringBuilder sb = new System.Text.StringBuilder();
         sb.AppendLine("static class _Cce {");
 
         // Tier 0 table
         sb.AppendLine("    static readonly int[] _toUni = {");
-        sb.AppendLine($"        {FormatRow(ToUnicode, 0, 3)}");     // whitespace
-        sb.AppendLine($"        {FormatRow(ToUnicode, 3, 10)}");    // digits
-        sb.AppendLine($"        {FormatRow(ToUnicode, 13, 10)}");   // lower 1
-        sb.AppendLine($"        {FormatRow(ToUnicode, 23, 10)}");   // lower 2
-        sb.AppendLine($"        {FormatRow(ToUnicode, 33, 6)}");    // lower 3
-        sb.AppendLine($"        {FormatRow(ToUnicode, 39, 10)}");   // upper 1
-        sb.AppendLine($"        {FormatRow(ToUnicode, 49, 10)}");   // upper 2
-        sb.AppendLine($"        {FormatRow(ToUnicode, 59, 6)}");    // upper 3
-        sb.AppendLine($"        {FormatRow(ToUnicode, 65, 11)}");   // prose punct
-        sb.AppendLine($"        {FormatRow(ToUnicode, 76, 5)}");    // operators
-        sb.AppendLine($"        {FormatRow(ToUnicode, 81, 13)}");   // syntax
-        sb.AppendLine($"        {FormatRow(ToUnicode, 94, 10)}");   // accented 1
-        sb.AppendLine($"        {FormatRow(ToUnicode, 104, 9)}");   // accented 2
-        sb.AppendLine($"        {FormatRow(ToUnicode, 113, 8)}");   // cyrillic 1
-        sb.AppendLine($"        {FormatRow(ToUnicode, 121, 7)}");   // cyrillic 2
+        sb.AppendLine($"        {FormatRow(s_toUnicode, 0, 3)}");     // whitespace
+        sb.AppendLine($"        {FormatRow(s_toUnicode, 3, 10)}");    // digits
+        sb.AppendLine($"        {FormatRow(s_toUnicode, 13, 10)}");   // lower 1
+        sb.AppendLine($"        {FormatRow(s_toUnicode, 23, 10)}");   // lower 2
+        sb.AppendLine($"        {FormatRow(s_toUnicode, 33, 6)}");    // lower 3
+        sb.AppendLine($"        {FormatRow(s_toUnicode, 39, 10)}");   // upper 1
+        sb.AppendLine($"        {FormatRow(s_toUnicode, 49, 10)}");   // upper 2
+        sb.AppendLine($"        {FormatRow(s_toUnicode, 59, 6)}");    // upper 3
+        sb.AppendLine($"        {FormatRow(s_toUnicode, 65, 11)}");   // prose punct
+        sb.AppendLine($"        {FormatRow(s_toUnicode, 76, 5)}");    // operators
+        sb.AppendLine($"        {FormatRow(s_toUnicode, 81, 13)}");   // syntax
+        sb.AppendLine($"        {FormatRow(s_toUnicode, 94, 10)}");   // accented 1
+        sb.AppendLine($"        {FormatRow(s_toUnicode, 104, 9)}");   // accented 2
+        sb.AppendLine($"        {FormatRow(s_toUnicode, 113, 8)}");   // cyrillic 1
+        sb.AppendLine($"        {FormatRow(s_toUnicode, 121, 7)}");   // cyrillic 2
         sb.AppendLine("    };");
 
         // Tier 1 table — emit only non-zero entries as a sparse dictionary
         sb.AppendLine("    static readonly Dictionary<int, int> _t1ToUni = new() {");
-        for (int i = 0; i < Tier1ToUnicode.Length; i++)
+        for (int i = 0; i < s_tier1ToUnicode.Length; i++)
         {
-            if (Tier1ToUnicode[i] != 0)
-                sb.AppendLine($"        [{i}] = {Tier1ToUnicode[i]},");
+            if (s_tier1ToUnicode[i] != 0)
+            {
+                sb.AppendLine($"        [{i}] = {s_tier1ToUnicode[i]},");
+            }
         }
         sb.AppendLine("    };");
         sb.AppendLine("    static readonly Dictionary<int, int> _t1FromUni = new() {");
-        foreach (var kv in Tier1FromUnicode)
+        foreach (KeyValuePair<int, int> kv in s_tier1FromUnicode)
+        {
             sb.AppendLine($"        [{kv.Key}] = {kv.Value},");
+        }
+
         sb.AppendLine("    };");
 
         // Tier 0 reverse lookup
         sb.AppendLine("    static readonly Dictionary<int, int> _fromUni = new();");
         sb.AppendLine("    static _Cce() { for (int i = 0; i < 128; i++) _fromUni[_toUni[i]] = i; }");
 
-        // FromUnicode — full Tier 0-3
-        sb.AppendLine("    public static string FromUnicode(string s) {");
+        // s_fromUnicode — full Tier 0-3
+        sb.AppendLine("    public static string s_fromUnicode(string s) {");
         sb.AppendLine("        s = s.Replace(\"\\t\", \"  \").Replace(\"\\r\", \"\");");
         sb.AppendLine("        var sb = new System.Text.StringBuilder(s.Length);");
         sb.AppendLine("        for (int i = 0; i < s.Length; i++) {");
@@ -521,8 +623,8 @@ public static class CceTable
         sb.AppendLine("        return sb.ToString();");
         sb.AppendLine("    }");
 
-        // ToUnicode — full Tier 0-3
-        sb.AppendLine("    public static string ToUnicode(string s) {");
+        // s_toUnicode — full Tier 0-3
+        sb.AppendLine("    public static string s_toUnicode(string s) {");
         sb.AppendLine("        var sb = new System.Text.StringBuilder(s.Length);");
         sb.AppendLine("        int i = 0;");
         sb.AppendLine("        while (i < s.Length) {");
@@ -559,9 +661,12 @@ public static class CceTable
 
     static string FormatRow(int[] table, int start, int count)
     {
-        var parts = new string[count];
+        string[] parts = new string[count];
         for (int i = 0; i < count; i++)
+        {
             parts[i] = table[start + i].ToString();
+        }
+
         bool isLast = (start + count) >= table.Length;
         return string.Join(", ", parts) + (isLast ? "" : ",");
     }

@@ -41,7 +41,11 @@ public static partial class Program
     static BuildManifest LoadManifest(string directory)
     {
         string path = ManifestPath(directory);
-        if (!File.Exists(path)) return new BuildManifest();
+        if (!File.Exists(path))
+        {
+            return new BuildManifest();
+        }
+
         string json = File.ReadAllText(path);
         return JsonSerializer.Deserialize<BuildManifest>(json,
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new BuildManifest();
@@ -51,7 +55,10 @@ public static partial class Program
     {
         string buildDir = Path.Combine(directory, ".codex-build");
         if (!Directory.Exists(buildDir))
+        {
             Directory.CreateDirectory(buildDir);
+        }
+
         string json = JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true });
         File.WriteAllText(ManifestPath(directory), json);
     }
@@ -67,11 +74,15 @@ public static partial class Program
     {
         string relativePath = filePath;
         if (!manifest.Files.TryGetValue(relativePath, out FileEntry? entry))
+        {
             return true;
+        }
 
         long ticks = File.GetLastWriteTimeUtc(filePath).Ticks;
         if (ticks != entry.LastModifiedTicks)
+        {
             return true;
+        }
 
         string hash = ComputeFileHash(filePath);
         return hash != entry.Hash;
@@ -89,9 +100,13 @@ public static partial class Program
         foreach (string file in allFiles)
         {
             if (IsFileChanged(file, manifest))
+            {
                 changedFiles.Add(file);
+            }
             else
+            {
                 unchangedFiles.Add(file);
+            }
         }
 
         if (changedFiles.Count == 0 && File.Exists(outputPath))
@@ -112,7 +127,9 @@ public static partial class Program
         {
             PerFileFrontEndResult? result = RunFrontEnd(filePath, diagnostics);
             if (result is not null)
+            {
                 results.Add(result);
+            }
         });
 
         if (diagnostics.HasErrors)
@@ -161,7 +178,10 @@ public static partial class Program
         };
 
         IRCompilationResult? irResult = RunBackEnd(combined, diagnostics, extraLoaders);
-        if (irResult is null) return 1;
+        if (irResult is null)
+        {
+            return 1;
+        }
 
         Codex.Emit.ICodeEmitter emitter = CreateEmitter(target);
         string output = emitter.Emit(irResult.Chapter);
@@ -186,7 +206,10 @@ public static partial class Program
         sw.Stop();
         Console.WriteLine($"✓ Compiled to {outputPath} ({target}, {sw.ElapsedMilliseconds}ms)");
         foreach (KeyValuePair<string, CodexType> kv in irResult.Types)
+        {
             Console.WriteLine($"  {kv.Key} : {kv.Value}");
+        }
+
         return 0;
     }
 
@@ -203,7 +226,9 @@ public static partial class Program
         {
             PerFileFrontEndResult? result = RunFrontEnd(filePath, diagnostics);
             if (result is not null)
+            {
                 results.Add(result);
+            }
         });
 
         if (diagnostics.HasErrors)
@@ -244,10 +269,15 @@ public static partial class Program
             combinedSpan);
 
         IRCompilationResult? irResult = RunBackEnd(combined, diagnostics, extraLoaders);
-        if (irResult is null) return 1;
+        if (irResult is null)
+        {
+            return 1;
+        }
 
         if (!Directory.Exists(outputDir))
+        {
             Directory.CreateDirectory(outputDir);
+        }
 
         ConcurrentBag<string> emitResults = [];
 
@@ -263,9 +293,15 @@ public static partial class Program
         sw.Stop();
         Console.WriteLine($"✓ Built {targets.Length} target(s) in {sw.ElapsedMilliseconds}ms");
         foreach (string line in emitResults.OrderBy(s => s))
+        {
             Console.WriteLine(line);
+        }
+
         foreach (KeyValuePair<string, CodexType> kv in irResult.Types)
+        {
             Console.WriteLine($"  {kv.Key} : {kv.Value}");
+        }
+
         return 0;
     }
 
@@ -284,9 +320,14 @@ public static partial class Program
         Chapter chapter = desugarer.Desugar(document, fileModule);
 
         foreach (Diagnostic d in localDiag.ToImmutable())
+        {
             diagnostics.Add(d);
+        }
 
-        if (localDiag.HasErrors) return null;
+        if (localDiag.HasErrors)
+        {
+            return null;
+        }
 
         return new PerFileFrontEndResult
         {
@@ -307,15 +348,22 @@ public static partial class Program
         if (extraLoaders is not null)
         {
             foreach (Codex.Semantics.IChapterLoader loader in extraLoaders)
+            {
                 loaders.Add(loader);
+            }
         }
         ForewordChapterLoader? foreword = ForewordChapterLoader.TryCreate(diagnostics);
         if (foreword is not null)
+        {
             loaders.Add(foreword);
+        }
+
         Codex.Repository.FactStore? store =
             Codex.Repository.FactStore.Open(Directory.GetCurrentDirectory());
         if (store is not null)
+        {
             loaders.Add(new RepositoryChapterLoader(store, diagnostics));
+        }
 
         Codex.Semantics.IChapterLoader? compositeLoader = loaders.Count > 0
             ? new CompositeChapterLoader([.. loaders])
@@ -329,7 +377,9 @@ public static partial class Program
         Codex.Types.TypeChecker checker = new(diagnostics);
 
         foreach (Codex.Semantics.ResolvedChapter imported in resolved.CitedChapters)
+        {
             checker.CiteChapter(imported.Chapter);
+        }
 
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }

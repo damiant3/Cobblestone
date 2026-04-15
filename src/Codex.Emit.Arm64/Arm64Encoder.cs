@@ -98,13 +98,21 @@ static class Arm64Encoder
         // For -8 (= 0xFFFFFFFFFFFFFFF8): N=1, immr=61, imms=60 (61 ones rotated right by 61)
         uint n_immr_imms;
         if (imm == -8)
+        {
             n_immr_imms = (1u << 22) | (61u << 16) | (60u << 10); // N=1 immr=61 imms=60
+        }
         else if (imm == 0xFF)
+        {
             n_immr_imms = (1u << 22) | (0u << 16) | (7u << 10);
+        }
         else if (imm == 0xFFF)
+        {
             n_immr_imms = (1u << 22) | (0u << 16) | (11u << 10);
+        }
         else
+        {
             throw new ArgumentException($"Unsupported AND immediate: {imm}. Use register form.");
+        }
 
         return 0x92000000u | n_immr_imms | (rn << 5) | rd;
     }
@@ -244,7 +252,11 @@ static class Arm64Encoder
     // ADD encodes reg 31 as SP; ORR encodes it as XZR
     public static uint Mov(uint rd, uint rm)
     {
-        if (rm == Arm64Reg.Sp || rd == Arm64Reg.Sp) return AddImm(rd, rm, 0);
+        if (rm == Arm64Reg.Sp || rd == Arm64Reg.Sp)
+        {
+            return AddImm(rd, rm, 0);
+        }
+
         return Or(rd, Arm64Reg.Xzr, rm);
     }
 
@@ -252,28 +264,44 @@ static class Arm64Encoder
     public static uint MovImm(uint rd, long value)
     {
         if (value >= 0 && value <= 0xFFFF)
+        {
             return Movz(rd, (int)value);
+        }
+
         if (value < 0 && value >= -0x10000)
+        {
             return Movn(rd, (int)(~value));
+        }
+
         throw new ArgumentException($"MovImm value {value} doesn't fit in 16 bits. Use Li().");
     }
 
     public static uint[] Li(uint rd, long value)
     {
         if (value >= 0 && value <= 0xFFFF)
+        {
             return [Movz(rd, (int)value)];
+        }
 
         if (value < 0 && value >= -0x10000)
+        {
             return [Movn(rd, (int)(~value))];
+        }
 
         if (value >= 0 && value <= 0xFFFFFFFF)
         {
             int lo16 = (int)(value & 0xFFFF);
             int hi16 = (int)((value >> 16) & 0xFFFF);
             if (hi16 == 0)
+            {
                 return [Movz(rd, lo16)];
+            }
+
             if (lo16 == 0)
+            {
                 return [Movz(rd, hi16, 16)];
+            }
+
             return [Movz(rd, lo16), Movk(rd, hi16, 16)];
         }
 
@@ -298,7 +326,9 @@ static class Arm64Encoder
         }
 
         if (insns.Count == 0)
+        {
             insns.Add(Movz(rd, 0));
+        }
 
         return [.. insns];
     }

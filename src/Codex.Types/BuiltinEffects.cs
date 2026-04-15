@@ -93,7 +93,9 @@ sealed class BuiltinEffects
     public static IReadOnlyList<EffectDef> Load()
     {
         if (s_cached is not null)
+        {
             return s_cached;
+        }
 
         List<EffectDef> allEffects = [];
         DiagnosticBag diagnostics = new();

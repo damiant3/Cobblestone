@@ -126,7 +126,10 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
         {
             case ReflProofExpr:
                 if (TypesEqual(goal.Left, goal.Right, env))
+                {
                     return goal;
+                }
+
                 m_diagnostics.Error(CdxCodes.ReflSidesNotEqual,
                     $"Refl requires both sides to be equal, but got {goal.Left} and {goal.Right}",
                     expr.Span);
@@ -148,23 +151,31 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
                 if (leftResult is null)
                 {
                     leftResult = CheckProofExpr(trans.Left, goal, env);
-                    if (leftResult is null) return null;
-                }
+                    if (leftResult is null)
+                        {
+                            return null;
+                        }
+                    }
 
                 EqualityType? rightResult = InferProofExpr(trans.Right, env);
                 if (rightResult is null)
                 {
                     EqualityType rightGoal = new(leftResult.Right, goal.Right);
                     rightResult = CheckProofExpr(trans.Right, rightGoal, env);
-                    if (rightResult is null) return null;
-                }
+                    if (rightResult is null)
+                        {
+                            return null;
+                        }
+                    }
 
                 if (TypesEqual(leftResult.Left, goal.Left, env)
                     && TypesEqual(leftResult.Right, rightResult.Left, env)
                     && TypesEqual(rightResult.Right, goal.Right, env))
-                    return goal;
+                    {
+                        return goal;
+                    }
 
-                m_diagnostics.Error(CdxCodes.TransChainMismatch,
+                    m_diagnostics.Error(CdxCodes.TransChainMismatch,
                     $"Trans: chain {leftResult.Left} ≡ {leftResult.Right} ≡ {rightResult.Right} does not match goal {goal}",
                     expr.Span);
                 return null;
@@ -182,8 +193,10 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
                         EqualityType innerGoal = new(innerLeft, innerRight);
                         EqualityType? checked_ = CheckProofExpr(cong.Inner, innerGoal, env);
                         if (checked_ is not null)
-                            return goal;
-                    }
+                            {
+                                return goal;
+                            }
+                        }
                     m_diagnostics.Error(CdxCodes.CongProofMismatch,
                         $"Cong {cong.FunctionName.Value}: cannot infer inner proof",
                         expr.Span);
@@ -194,9 +207,11 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
                 CodexType newRight = ApplyFunction(cong.FunctionName.Value, innerResult.Right);
 
                 if (TypesEqual(newLeft, goal.Left, env) && TypesEqual(newRight, goal.Right, env))
-                    return goal;
+                    {
+                        return goal;
+                    }
 
-                m_diagnostics.Error(CdxCodes.CongProofMismatch,
+                    m_diagnostics.Error(CdxCodes.CongProofMismatch,
                     $"Cong {cong.FunctionName.Value}: expected {goal}, but got {newLeft} ≡ {newRight}",
                     expr.Span);
                 return null;
@@ -217,9 +232,11 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
                 }
                 if (TypesEqual(lemma.Left, goal.Left, env)
                     && TypesEqual(lemma.Right, goal.Right, env))
-                    return goal;
+                    {
+                        return goal;
+                    }
 
-                m_diagnostics.Error(CdxCodes.LemmaGoalMismatch,
+                    m_diagnostics.Error(CdxCodes.LemmaGoalMismatch,
                     $"Lemma '{nameRef.Name.Value}' proves {lemma}, but goal is {goal}",
                     expr.Span);
                 return null;
@@ -246,8 +263,12 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
             case SymProofExpr sym:
             {
                 EqualityType? inner = InferProofExpr(sym.Inner, env);
-                if (inner is null) return null;
-                return new EqualityType(inner.Right, inner.Left);
+                if (inner is null)
+                    {
+                        return null;
+                    }
+
+                    return new EqualityType(inner.Right, inner.Left);
             }
 
             default:
@@ -363,7 +384,9 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
 
         if (TypesEqual(instantiated.Left, goal.Left, env)
             && TypesEqual(instantiated.Right, goal.Right, env))
+        {
             return goal;
+        }
 
         m_diagnostics.Error(CdxCodes.LemmaGoalMismatch,
             $"Lemma '{apply.LemmaName.Value}' proves {instantiated.Left} ≡ {instantiated.Right}, but goal is {goal.Left} ≡ {goal.Right}",

@@ -24,8 +24,15 @@ sealed class McpServer
         while (true)
         {
             string? line = await reader.ReadLineAsync();
-            if (line is null) break;
-            if (string.IsNullOrWhiteSpace(line)) continue;
+            if (line is null)
+            {
+                break;
+            }
+
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
 
             JsonNode? request;
             try
@@ -67,9 +74,13 @@ sealed class McpServer
                 };
 
                 if (id is not null && result is not null)
+                {
                     await WriteResult(writer, id, result);
+                }
                 else if (id is not null)
+                {
                     await WriteResult(writer, id, new JsonObject());
+                }
             }
             catch (McpException ex)
             {
@@ -186,7 +197,7 @@ sealed class McpServer
             ["id"] = id?.DeepClone(),
             ["result"] = result,
         };
-        await writer.WriteLineAsync(response.ToJsonString(JsonOpts.Compact));
+        await writer.WriteLineAsync(response.ToJsonString(JsonOpts.s_compact));
     }
 
     static async Task WriteError(StreamWriter writer, JsonNode? id, int code, string message)
@@ -201,13 +212,13 @@ sealed class McpServer
                 ["message"] = message,
             },
         };
-        await writer.WriteLineAsync(response.ToJsonString(JsonOpts.Compact));
+        await writer.WriteLineAsync(response.ToJsonString(JsonOpts.s_compact));
     }
 }
 
 static class JsonOpts
 {
-    public static readonly JsonSerializerOptions Compact = new()
+    public static readonly JsonSerializerOptions s_compact = new()
     {
         WriteIndented = false,
     };

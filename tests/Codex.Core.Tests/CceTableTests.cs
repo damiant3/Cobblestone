@@ -9,17 +9,17 @@ public class CceTableTests
     [Fact]
     public void Table_has_128_entries()
     {
-        Assert.Equal(128, CceTable.ToUnicode.Length);
+        Assert.Equal(128, CceTable.s_toUnicode.Length);
     }
 
     [Fact]
     public void Table_is_bijective()
     {
         // Every CCE byte maps to a unique Unicode code point
-        var seen = new HashSet<int>();
-        for (int i = 0; i < CceTable.ToUnicode.Length; i++)
+        HashSet<int> seen = new HashSet<int>();
+        for (int i = 0; i < CceTable.s_toUnicode.Length; i++)
         {
-            int u = CceTable.ToUnicode[i];
+            int u = CceTable.s_toUnicode[i];
             Assert.True(seen.Add(u), $"Duplicate Unicode code point {u} at CCE positions");
         }
     }
@@ -29,10 +29,10 @@ public class CceTableTests
     {
         for (int cce = 0; cce < 128; cce++)
         {
-            int unicode = CceTable.ToUnicode[cce];
-            Assert.True(CceTable.FromUnicode.ContainsKey(unicode),
-                $"Unicode {unicode} (CCE {cce}) not in FromUnicode dictionary");
-            Assert.Equal(cce, CceTable.FromUnicode[unicode]);
+            int unicode = CceTable.s_toUnicode[cce];
+            Assert.True(CceTable.s_fromUnicode.ContainsKey(unicode),
+                $"Unicode {unicode} (CCE {cce}) not in s_fromUnicode dictionary");
+            Assert.Equal(cce, CceTable.s_fromUnicode[unicode]);
         }
     }
 
@@ -49,11 +49,13 @@ public class CceTableTests
     public void Encode_decode_roundtrip_all_mapped_ascii()
     {
         // Only characters that are in the CCE table should roundtrip
-        var sb = new System.Text.StringBuilder();
+        System.Text.StringBuilder sb = new System.Text.StringBuilder();
         for (char c = ' '; c <= '~'; c++)
         {
-            if (CceTable.FromUnicode.ContainsKey(c))
+            if (CceTable.s_fromUnicode.ContainsKey(c))
+            {
                 sb.Append(c);
+            }
         }
         string original = sb.ToString();
         Assert.True(original.Length > 80, $"Expected 80+ mapped ASCII chars, got {original.Length}");
@@ -95,23 +97,31 @@ public class CceTableTests
     {
         // Whitespace: 0-2
         for (int b = 0; b <= 2; b++)
-            Assert.True(CceTable.ToUnicode[b] == 0 || char.IsWhiteSpace((char)CceTable.ToUnicode[b]) || CceTable.ToUnicode[b] == 0,
+        {
+            Assert.True(CceTable.s_toUnicode[b] == 0 || char.IsWhiteSpace((char)CceTable.s_toUnicode[b]) || CceTable.s_toUnicode[b] == 0,
                 $"CCE {b} should be whitespace");
+        }
 
         // Digits: 3-12
         for (int b = 3; b <= 12; b++)
-            Assert.True(char.IsDigit((char)CceTable.ToUnicode[b]),
-                $"CCE {b} (U+{CceTable.ToUnicode[b]}) should be a digit");
+        {
+            Assert.True(char.IsDigit((char)CceTable.s_toUnicode[b]),
+                $"CCE {b} (U+{CceTable.s_toUnicode[b]}) should be a digit");
+        }
 
         // Lowercase: 13-38
         for (int b = 13; b <= 38; b++)
-            Assert.True(char.IsLower((char)CceTable.ToUnicode[b]),
-                $"CCE {b} (U+{CceTable.ToUnicode[b]}) should be lowercase");
+        {
+            Assert.True(char.IsLower((char)CceTable.s_toUnicode[b]),
+                $"CCE {b} (U+{CceTable.s_toUnicode[b]}) should be lowercase");
+        }
 
         // Uppercase: 39-64
         for (int b = 39; b <= 64; b++)
-            Assert.True(char.IsUpper((char)CceTable.ToUnicode[b]),
-                $"CCE {b} (U+{CceTable.ToUnicode[b]}) should be uppercase");
+        {
+            Assert.True(char.IsUpper((char)CceTable.s_toUnicode[b]),
+                $"CCE {b} (U+{CceTable.s_toUnicode[b]}) should be uppercase");
+        }
     }
 
     [Fact]
@@ -130,7 +140,7 @@ public class CceTableTests
     {
         // Verify the generated _Cce runtime class contains the same values
         string source = CceTable.GenerateRuntimeSource();
-        var numbers = Regex.Matches(source, @"(?<=[\s,{])(\d+)(?=[,\s}])")
+        List<int> numbers = Regex.Matches(source, @"(?<=[\s,{])(\d+)(?=[,\s}])")
             .Select(m => int.Parse(m.Value))
             .ToList();
 
@@ -149,7 +159,7 @@ public class CceTableTests
 
         for (int cce = 0; cce < 128; cce++)
         {
-            Assert.Equal(CceTable.ToUnicode[cce], numbers[start + cce]);
+            Assert.Equal(CceTable.s_toUnicode[cce], numbers[start + cce]);
         }
     }
 
@@ -157,7 +167,7 @@ public class CceTableTests
     public void SelfHosted_emitter_table_matches_CceTable()
     {
         // Parse the self-hosted emitter's string-concatenated table and verify
-        // it matches CceTable.ToUnicode. This catches the triple-copy sync bug.
+        // it matches CceTable.s_toUnicode. This catches the triple-copy sync bug.
         string emitterPath = Path.Combine(
             FindRepoRoot(), "Codex.Codex", "Emit", "CSharpEmitter.codex");
 
@@ -181,7 +191,7 @@ public class CceTableTests
         Assert.True(arrayEnd >= 0, "Could not find end of _toUni array");
 
         string arrayText = source.Substring(arrayStart, arrayEnd - arrayStart);
-        var numbers = Regex.Matches(arrayText, @"\b(\d+)\b")
+        List<int> numbers = Regex.Matches(arrayText, @"\b(\d+)\b")
             .Select(m => int.Parse(m.Value))
             .ToList();
 
@@ -204,7 +214,7 @@ public class CceTableTests
 
         for (int cce = 0; cce < 128; cce++)
         {
-            Assert.Equal(CceTable.ToUnicode[cce], numbers[start + cce]);
+            Assert.Equal(CceTable.s_toUnicode[cce], numbers[start + cce]);
         }
     }
 
@@ -257,17 +267,21 @@ public class CceTableTests
     [Fact]
     public void Tier1_table_has_2048_entries()
     {
-        Assert.Equal(2048, CceTable.Tier1ToUnicode.Length);
+        Assert.Equal(2048, CceTable.s_tier1ToUnicode.Length);
     }
 
     [Fact]
     public void Tier1_table_is_bijective()
     {
-        var seen = new HashSet<int>();
-        for (int i = 0; i < CceTable.Tier1ToUnicode.Length; i++)
+        HashSet<int> seen = new HashSet<int>();
+        for (int i = 0; i < CceTable.s_tier1ToUnicode.Length; i++)
         {
-            int u = CceTable.Tier1ToUnicode[i];
-            if (u == 0) continue; // unmapped slot
+            int u = CceTable.s_tier1ToUnicode[i];
+            if (u == 0)
+            {
+                continue; // unmapped slot
+            }
+
             Assert.True(seen.Add(u), $"Duplicate Unicode {u} at Tier 1 position {i}");
         }
     }
@@ -275,11 +289,15 @@ public class CceTableTests
     [Fact]
     public void Tier1_does_not_overlap_tier0()
     {
-        for (int i = 0; i < CceTable.Tier1ToUnicode.Length; i++)
+        for (int i = 0; i < CceTable.s_tier1ToUnicode.Length; i++)
         {
-            int u = CceTable.Tier1ToUnicode[i];
-            if (u == 0) continue;
-            Assert.False(CceTable.FromUnicode.ContainsKey(u),
+            int u = CceTable.s_tier1ToUnicode[i];
+            if (u == 0)
+            {
+                continue;
+            }
+
+            Assert.False(CceTable.s_fromUnicode.ContainsKey(u),
                 $"Unicode {u} at Tier 1 position {i} also exists in Tier 0");
         }
     }
@@ -287,16 +305,16 @@ public class CceTableTests
     [Fact]
     public void Tier1_from_unicode_is_inverse()
     {
-        foreach (var kv in CceTable.Tier1FromUnicode)
+        foreach (KeyValuePair<int, int> kv in CceTable.s_tier1FromUnicode)
         {
-            Assert.Equal(kv.Key, CceTable.Tier1ToUnicode[kv.Value]);
+            Assert.Equal(kv.Key, CceTable.s_tier1ToUnicode[kv.Value]);
         }
     }
 
     [Fact]
     public void Tier1_count_is_positive()
     {
-        Assert.True(CceTable.Tier1Count > 100, $"Expected 100+ Tier 1 entries, got {CceTable.Tier1Count}");
+        Assert.True(CceTable.s_tier1Count > 100, $"Expected 100+ Tier 1 entries, got {CceTable.s_tier1Count}");
     }
 
     [Fact]
@@ -305,7 +323,13 @@ public class CceTableTests
         // Block 0 (0x000-0x07F) should have Latin Extended characters
         int count = 0;
         for (int i = 0; i < 0x80; i++)
-            if (CceTable.Tier1ToUnicode[i] != 0) count++;
+        {
+            if (CceTable.s_tier1ToUnicode[i] != 0)
+            {
+                count++;
+            }
+        }
+
         Assert.True(count >= 80, $"Latin Extended block should have 80+ entries, got {count}");
     }
 
@@ -315,7 +339,13 @@ public class CceTableTests
         // Block 1 (0x080-0x0FF) should have Cyrillic characters
         int count = 0;
         for (int i = 0x80; i < 0x100; i++)
-            if (CceTable.Tier1ToUnicode[i] != 0) count++;
+        {
+            if (CceTable.s_tier1ToUnicode[i] != 0)
+            {
+                count++;
+            }
+        }
+
         Assert.True(count >= 50, $"Cyrillic block should have 50+ entries, got {count}");
     }
 
@@ -357,7 +387,7 @@ public class CceTableTests
     {
         // Every Tier 1 character should encode as exactly 2 bytes:
         // start byte (0xC0-0xDF) + continuation (0x80-0xBF)
-        foreach (var kv in CceTable.Tier1FromUnicode)
+        foreach (KeyValuePair<int, int> kv in CceTable.s_tier1FromUnicode)
         {
             string s = new string((char)kv.Key, 1);
             string encoded = CceTable.Encode(s);
@@ -389,7 +419,10 @@ public class CceTableTests
                 Assert.Equal(-1, CceTable.TierOf(encoded[i + 1]));
                 i += 2; charCount++;
             }
-            else Assert.Fail($"Unexpected byte {b:X2} (tier {tier}) at position {i}");
+            else
+            {
+                Assert.Fail($"Unexpected byte {b:X2} (tier {tier}) at position {i}");
+            }
         }
         Assert.Equal(5, charCount); // a, ß, b, г, c
     }
@@ -429,7 +462,13 @@ public class CceTableTests
     {
         int count = 0;
         for (int i = 0x100; i < 0x200; i++)
-            if (CceTable.Tier1ToUnicode[i] != 0) count++;
+        {
+            if (CceTable.s_tier1ToUnicode[i] != 0)
+            {
+                count++;
+            }
+        }
+
         Assert.True(count >= 49, $"Greek block should have 49+ entries, got {count}");
     }
 
@@ -438,7 +477,13 @@ public class CceTableTests
     {
         int count = 0;
         for (int i = 0x600; i < 0x700; i++)
-            if (CceTable.Tier1ToUnicode[i] != 0) count++;
+        {
+            if (CceTable.s_tier1ToUnicode[i] != 0)
+            {
+                count++;
+            }
+        }
+
         Assert.True(count >= 170, $"Japanese block should have 170+ entries, got {count}");
     }
 
@@ -447,7 +492,13 @@ public class CceTableTests
     {
         int count = 0;
         for (int i = 0x400; i < 0x600; i++)
-            if (CceTable.Tier1ToUnicode[i] != 0) count++;
+        {
+            if (CceTable.s_tier1ToUnicode[i] != 0)
+            {
+                count++;
+            }
+        }
+
         Assert.True(count >= 100, $"CJK block should have 100+ entries, got {count}");
     }
 
@@ -488,8 +539,8 @@ public class CceTableTests
     [Fact]
     public void Tier1_total_coverage()
     {
-        Assert.True(CceTable.Tier1Count >= 500,
-            $"Expected 500+ total Tier 1 entries, got {CceTable.Tier1Count}");
+        Assert.True(CceTable.s_tier1Count >= 500,
+            $"Expected 500+ total Tier 1 entries, got {CceTable.s_tier1Count}");
     }
 
     [Fact]
@@ -498,8 +549,8 @@ public class CceTableTests
         string source = CceTable.GenerateRuntimeSource();
         Assert.Contains("_t1ToUni", source);
         Assert.Contains("_t1FromUni", source);
-        Assert.Contains("0xC0", source);  // Tier 1 encoding in FromUnicode
-        Assert.Contains("0x1F", source);  // Tier 1 decoding mask in ToUnicode
+        Assert.Contains("0xC0", source);  // Tier 1 encoding in s_fromUnicode
+        Assert.Contains("0x1F", source);  // Tier 1 decoding mask in s_toUnicode
     }
 
     static string FindRepoRoot()
@@ -508,7 +559,10 @@ public class CceTableTests
         while (dir != null)
         {
             if (Directory.Exists(Path.Combine(dir, "Codex.Codex")))
+            {
                 return dir;
+            }
+
             dir = Path.GetDirectoryName(dir)!;
         }
         // Fallback: walk up from current directory
@@ -516,7 +570,10 @@ public class CceTableTests
         while (dir != null)
         {
             if (Directory.Exists(Path.Combine(dir, "Codex.Codex")))
+            {
                 return dir;
+            }
+
             dir = Path.GetDirectoryName(dir)!;
         }
         return Directory.GetCurrentDirectory();

@@ -5,11 +5,11 @@ namespace Codex.AgentToolkit.Tests;
 
 public class McpToolNameTests
 {
-    static readonly Regex MakeToolPattern = new(
+    static readonly Regex s_makeToolPattern = new(
         @"MakeTool\(\s*""([^""]+)""",
         RegexOptions.Compiled);
 
-    static readonly Regex ValidToolName = new(
+    static readonly Regex s_validToolName = new(
         @"^[a-zA-Z0-9_-]{1,64}$",
         RegexOptions.Compiled);
 
@@ -22,7 +22,7 @@ public class McpToolNameTests
         Assert.True(File.Exists(mcpProgram), $"MCP server source not found at {mcpProgram}");
 
         string source = File.ReadAllText(mcpProgram);
-        MatchCollection matches = MakeToolPattern.Matches(source);
+        MatchCollection matches = s_makeToolPattern.Matches(source);
 
         Assert.True(matches.Count > 0, "No MakeTool calls found in Program.cs — test may be stale");
 
@@ -30,8 +30,10 @@ public class McpToolNameTests
         foreach (Match match in matches)
         {
             string toolName = match.Groups[1].Value;
-            if (!ValidToolName.IsMatch(toolName))
+            if (!s_validToolName.IsMatch(toolName))
+            {
                 invalid.Add(toolName);
+            }
         }
 
         Assert.True(invalid.Count == 0,
@@ -52,13 +54,17 @@ public class McpToolNameTests
         string dispatcherSource = File.ReadAllText(dispatcherFile);
 
         HashSet<string> listedNames = new();
-        foreach (Match match in MakeToolPattern.Matches(programSource))
+        foreach (Match match in s_makeToolPattern.Matches(programSource))
+        {
             listedNames.Add(match.Groups[1].Value);
+        }
 
         Regex dispatchPattern = new(@"""(codex-[^""]+)""\s*=>");
         HashSet<string> dispatchedNames = new();
         foreach (Match match in dispatchPattern.Matches(dispatcherSource))
+        {
             dispatchedNames.Add(match.Groups[1].Value);
+        }
 
         Assert.True(listedNames.Count > 0, "No tool names found in Program.cs");
         Assert.True(dispatchedNames.Count > 0, "No dispatch names found in ToolDispatcher.cs");
@@ -81,7 +87,10 @@ public class McpToolNameTests
         while (dir is not null)
         {
             if (File.Exists(Path.Combine(dir, "Codex.sln")))
+            {
                 return dir;
+            }
+
             dir = Path.GetDirectoryName(dir)!;
         }
         throw new InvalidOperationException("Could not find repo root (Codex.sln)");

@@ -29,7 +29,11 @@ public sealed partial class CSharpEmitter
         int openParens = 0;
         foreach (IRMatchBranch branch in match.Branches)
         {
-            if (!first) sb.Append(" : ");
+            if (!first)
+            {
+                sb.Append(" : ");
+            }
+
             first = false;
 
             switch (branch.Pattern)
@@ -38,9 +42,14 @@ public sealed partial class CSharpEmitter
                     sb.Append('(');
                     openParens++;
                     if (hasMultipleCtorBranches)
+                    {
                         sb.Append(scrutineeRef);
+                    }
                     else
+                    {
                         EmitExpr(sb, match.Scrutinee, indent);
+                    }
+
                     sb.Append(litPat.Value switch
                     {
                         bool b => $".Equals({(b ? "true" : "false")})",
@@ -58,9 +67,14 @@ public sealed partial class CSharpEmitter
                     sb.Append('(');
                     openParens++;
                     if (hasMultipleCtorBranches)
+                    {
                         sb.Append(scrutineeRef);
+                    }
                     else
+                    {
                         EmitExpr(sb, match.Scrutinee, indent);
+                    }
+
                     sb.Append($" is {ctorId} {binding} ? ");
                     EmitCtorPatternBody(sb, ctorPat, binding, branch.Body, indent);
                     break;
@@ -73,11 +87,20 @@ public sealed partial class CSharpEmitter
                     EmitExpr(sb, branch.Body, indent);
                     sb.Append("))(");
                     if (hasMultipleCtorBranches)
+                    {
                         sb.Append(scrutineeRef);
+                    }
                     else
+                    {
                         EmitExpr(sb, match.Scrutinee, indent);
+                    }
+
                     sb.Append(')');
-                    for (int i = 0; i < openParens; i++) sb.Append(')');
+                    for (int i = 0; i < openParens; i++)
+                    {
+                        sb.Append(')');
+                    }
+
                     if (hasMultipleCtorBranches)
                     {
                         sb.Append("))(");
@@ -88,7 +111,11 @@ public sealed partial class CSharpEmitter
 
                 case IRWildcardPattern:
                     EmitExpr(sb, branch.Body, indent);
-                    for (int i = 0; i < openParens; i++) sb.Append(')');
+                    for (int i = 0; i < openParens; i++)
+                    {
+                        sb.Append(')');
+                    }
+
                     if (hasMultipleCtorBranches)
                     {
                         sb.Append("))(");
@@ -100,7 +127,11 @@ public sealed partial class CSharpEmitter
         }
 
         sb.Append($" : throw new InvalidOperationException(\"Non-exhaustive match\")");
-        for (int i = 0; i < openParens; i++) sb.Append(')');
+        for (int i = 0; i < openParens; i++)
+        {
+            sb.Append(')');
+        }
+
         if (hasMultipleCtorBranches)
         {
             sb.Append("))(");

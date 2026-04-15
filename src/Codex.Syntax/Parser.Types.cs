@@ -21,7 +21,10 @@ public sealed partial class Parser
     public TypeNode? TryParseType()
     {
         if (Current.Kind == TokenKind.EndOfFile)
+        {
             return null;
+        }
+
         return ParseType();
     }
 

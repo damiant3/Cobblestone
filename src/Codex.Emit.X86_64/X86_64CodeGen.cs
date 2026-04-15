@@ -25,12 +25,12 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     // Register allocator state (per-function)
     // Temps: RAX, RCX, RDX, RSI, RDI, R11 (caller-saved, recycled)
     // Locals: RBX, R12-R14 (callee-saved, monotonic)
-    // Spill scratch: R8, R9 (used by LoadLocal for spilled values — NOT in TempRegs)
+    // Spill scratch: R8, R9 (used by LoadLocal for spilled values — NOT in s_tempRegs)
     // Reserved: RSP (stack), RBP (frame), R10 (heap pointer), R15 (result-space pointer)
     const byte HeapReg = Reg.R10;    // working-space heap pointer
     const byte ResultReg = Reg.R15;  // result-space heap pointer (region reclamation)
-    static readonly byte[] TempRegs = [Reg.RAX, Reg.RCX, Reg.RDX, Reg.RSI, Reg.RDI, Reg.R11];
-    static readonly byte[] LocalRegs = [Reg.RBX, Reg.R12, Reg.R13, Reg.R14];
+    static readonly byte[] s_tempRegs = [Reg.RAX, Reg.RCX, Reg.RDX, Reg.RSI, Reg.RDI, Reg.R11];
+    static readonly byte[] s_localRegs = [Reg.RBX, Reg.R12, Reg.R13, Reg.R14];
     const int SpillBase = 32; // virtual register numbers for spilled locals
 
     int m_nextTemp;
@@ -51,7 +51,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     {
         // Bare metal: emit multiboot header + 32→64 trampoline at byte 0
         if (m_target == X86_64Target.BareMetal)
+        {
             EmitMultibootHeader();
+        }
 
         m_typeDefs = module.TypeDefinitions;
         m_escapeHelperNames["text"] = "__escape_text";
@@ -61,35 +63,57 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         // that are already in result space (avoids redundant deep-copies).
         // Lives in rodata (not text) so QEMU usermode W^X enforcement allows the write.
         m_resultBaseGlobalOffset = m_rodata.Count;
-        for (int i = 0; i < 8; i++) m_rodata.Add(0);
+        for (int i = 0; i < 8; i++)
+        {
+            m_rodata.Add(0);
+        }
 
         // Reserve 8 bytes in .rodata for the forwarding table base pointer.
         // Written by EmitRegion before escape-copy, read by escape helpers.
         m_fwdTableGlobalOffset = m_rodata.Count;
-        for (int i = 0; i < 8; i++) m_rodata.Add(0);
+        for (int i = 0; i < 8; i++)
+        {
+            m_rodata.Add(0);
+        }
 
         // Emit CCE→Unicode lookup table (128 bytes) into .rodata.
         // Used by print helpers to convert CCE bytes back to Unicode for output.
         m_cceToUnicodeTableOffset = m_rodata.Count;
         for (int i = 0; i < 128; i++)
-            m_rodata.Add((byte)CceTable.ToUnicode[i]);
-        while (m_rodata.Count % 8 != 0) m_rodata.Add(0);
+        {
+            m_rodata.Add((byte)CceTable.s_toUnicode[i]);
+        }
+
+        while (m_rodata.Count % 8 != 0)
+        {
+            m_rodata.Add(0);
+        }
 
         // Emit Unicode→CCE lookup table (256 bytes) into .rodata.
         // Used by serial input to convert incoming Unicode bytes to CCE encoding.
         m_unicodeToCceTableOffset = m_rodata.Count;
         for (int i = 0; i < 256; i++)
-            m_rodata.Add((byte)(CceTable.FromUnicode.TryGetValue(i, out int cce) ? cce : CceTable.ReplacementCce));
-        while (m_rodata.Count % 8 != 0) m_rodata.Add(0);
+        {
+            m_rodata.Add((byte)(CceTable.s_fromUnicode.TryGetValue(i, out int cce) ? cce : CceTable.ReplacementCce));
+        }
+
+        while (m_rodata.Count % 8 != 0)
+        {
+            m_rodata.Add(0);
+        }
 
         EmitRuntimeHelpers();
 
         foreach (IRDefinition def in module.Definitions)
+        {
             EmitFunction(def);
+        }
 
         // Patch stack overflow checks — must happen AFTER all EmitFunction calls
         if (m_target == X86_64Target.BareMetal)
+        {
             PatchStackOverflowChecks();
+        }
 
         EmitEscapeCopyHelpers();
         EmitDiagHexHelper();
@@ -120,7 +144,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         }
 
         if (m_functionOffsets.TryGetValue("__start", out int startOffset))
+        {
             return ElfWriterX86_64.WriteExecutable(text, rodata, (ulong)startOffset);
+        }
 
         return ElfWriterX86_64.WriteExecutable(text, rodata, 0);
     }
@@ -135,7 +161,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         // Rodata is appended after text, aligned to 8 bytes.
         List<byte> binary = new(m_text);
         while (binary.Count % 8 != 0)
+        {
             binary.Add(0);
+        }
+
         int rodataOffset = binary.Count;
         binary.AddRange(m_rodata);
 
@@ -192,7 +221,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     {
         IRExpr current = expr;
         while (current is IRApply app)
+        {
             current = app.Function;
+        }
+
         return current is IRName name && name.Name == funcName;
     }
 
@@ -287,7 +319,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             {
                 CodexType resolved = ResolveType(m_tcoParamTypes[i]);
                 if (!IRRegion.TypeNeedsHeapEscape(resolved))
+                {
                     continue; // scalar — no check needed
+                }
+
                 if (resolved is ListType)
                 {
                     listIndices.Add(i);
@@ -318,7 +353,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
                 for (int f = 0; f < rt.Fields.Length; f++)
                 {
                     if (ResolveType(rt.Fields[f].Type) is ListType)
+                    {
                         listFieldIndices.Add((idx, f));
+                    }
                 }
             }
 
@@ -338,7 +375,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
                         if (ft is not ListType && IRRegion.TypeNeedsHeapEscape(ft))
                         { anyChecks = true; break; }
                     }
-                    if (anyChecks) break;
+                    if (anyChecks)
+                    {
+                        break;
+                    }
                 }
             }
 
@@ -495,7 +535,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
                     for (int f = 0; f < rt.Fields.Length; f++)
                     {
                         CodexType ft = ResolveType(rt.Fields[f].Type);
-                        if (ft is ListType) continue; // handled by listFieldIndices checks above
+                        if (ft is ListType)
+                        {
+                            continue; // handled by listFieldIndices checks above
+                        }
+
                         if (IRRegion.TypeNeedsHeapEscape(ft))
                         {
                             byte fv = LoadLocal(m_tcoDecompLocals[idx]![f]);
@@ -527,7 +571,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
                 // Patch all skip-reset jumps to land here (after reset + reconstruction)
                 int noResetTarget = m_text.Count;
                 foreach (int offset in skipResetOffsets)
+                {
                     PatchJcc(offset, noResetTarget);
+                }
             }
         }
 
@@ -562,8 +608,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         X86_64Encoder.PushR(m_text, Reg.RBP);
         X86_64Encoder.MovRR(m_text, Reg.RBP, Reg.RSP);
 
-        foreach (byte reg in LocalRegs)
+        foreach (byte reg in s_localRegs)
+        {
             X86_64Encoder.PushR(m_text, reg);
+        }
 
         int frameSizePatchOffset = m_text.Count;
         EmitSubRspImm32(0);
@@ -594,13 +642,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         for (int i = 0; i < def.Parameters.Length; i++)
         {
             int local = AllocLocal();
-            if (i < Reg.ArgRegs.Length)
+            if (i < Reg.s_argRegs.Length)
             {
-                StoreLocal(local, Reg.ArgRegs[i]);
+                StoreLocal(local, Reg.s_argRegs[i]);
             }
             else
             {
-                int stackOffset = 16 + (i - Reg.ArgRegs.Length) * 8;
+                int stackOffset = 16 + (i - Reg.s_argRegs.Length) * 8;
                 byte tmp = AllocTemp();
                 X86_64Encoder.MovLoad(m_text, tmp, Reg.RBP, stackOffset);
                 StoreLocal(local, tmp);
@@ -614,12 +662,16 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         {
             m_tcoTempLocals = new int[def.Parameters.Length];
             for (int i = 0; i < def.Parameters.Length; i++)
+            {
                 m_tcoTempLocals[i] = AllocLocal();
+            }
 
             // Store parameter types for heap-reset check in EmitTailCall
             m_tcoParamTypes = new CodexType[def.Parameters.Length];
             for (int i = 0; i < def.Parameters.Length; i++)
+            {
                 m_tcoParamTypes[i] = def.Parameters[i].Type;
+            }
 
             // Pre-allocate field locals for record decomposition (Phase 2b).
             // Record-typed TCO args are decomposed into individual fields
@@ -633,7 +685,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
                 {
                     m_tcoDecompLocals[i] = new int[rt.Fields.Length];
                     for (int f = 0; f < rt.Fields.Length; f++)
+                    {
                         m_tcoDecompLocals[i]![f] = AllocLocal();
+                    }
                 }
             }
 
@@ -664,7 +718,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
                             hasListField = true;
                         }
                         else
+                        {
                             fieldCounts[f] = -1;
+                        }
                     }
                     m_tcoOldListFieldCountLocals[i] = hasListField ? fieldCounts : null;
                 }
@@ -696,15 +752,19 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
         // Move result to RAX
         if (result != Reg.RAX)
+        {
             X86_64Encoder.MovRR(m_text, Reg.RAX, result);
+        }
 
         EmitDiagFuncExit(def.Name);
 
         // Epilogue: skip spill space, restore callee-saved, pop rbp, ret
         // lea rsp, [rbp - 32] points rsp at saved r14 (4 callee-saved × 8 bytes)
-        X86_64Encoder.Lea(m_text, Reg.RSP, Reg.RBP, -LocalRegs.Length * 8);
-        for (int i = LocalRegs.Length - 1; i >= 0; i--)
-            X86_64Encoder.PopR(m_text, LocalRegs[i]);
+        X86_64Encoder.Lea(m_text, Reg.RSP, Reg.RBP, -s_localRegs.Length * 8);
+        for (int i = s_localRegs.Length - 1; i >= 0; i--)
+        {
+            X86_64Encoder.PopR(m_text, s_localRegs[i]);
+        }
 
         X86_64Encoder.PopR(m_text, Reg.RBP);
         X86_64Encoder.Ret(m_text);
@@ -720,7 +780,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         m_text[frameSizePatchOffset + 6] = (byte)((frameSize >> 24) & 0xFF);
 
         // Total stack frame: spill slots + 4 callee-saved regs (32B) + saved RBP (8B) + return addr (8B)
-        m_functionFrameSizes[def.Name] = frameSize + LocalRegs.Length * 8 + 16;
+        m_functionFrameSizes[def.Name] = frameSize + s_localRegs.Length * 8 + 16;
     }
 
     byte EmitExpr(IRExpr expr) => expr switch
@@ -766,11 +826,17 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             string cceEncoded = CceTable.Encode(value);
             byte[] cceBytes = new byte[cceEncoded.Length];
             for (int i = 0; i < cceEncoded.Length; i++)
+            {
                 cceBytes[i] = (byte)cceEncoded[i];
+            }
             // Length-prefixed: 8-byte i64 length + CCE data, 8-byte aligned
             m_rodata.AddRange(BitConverter.GetBytes((long)cceBytes.Length));
             m_rodata.AddRange(cceBytes);
-            while (m_rodata.Count % 8 != 0) m_rodata.Add(0);
+            while (m_rodata.Count % 8 != 0)
+            {
+                m_rodata.Add(0);
+            }
+
             m_stringOffsets[value] = rodataOffset;
         }
 
@@ -784,16 +850,22 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     byte EmitName(IRName name)
     {
         if (m_locals.TryGetValue(name.Name, out int local))
+        {
             return LoadLocal(local);
+        }
 
         // Try zero-arg builtins
         byte builtinResult = TryEmitBuiltin(name.Name, []);
         if (builtinResult != byte.MaxValue)
+        {
             return builtinResult;
+        }
 
         // Function used as a value — wrap as 0-capture closure
         if (name.Type is FunctionType)
+        {
             return EmitPartialApplication(name.Name, []);
+        }
 
         // Zero-arg sum type constructor
         if (name.Type is SumType sumType)
@@ -1178,7 +1250,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             func = inner.Function;
         }
         if (func is IRName name)
+        {
             funcName = name.Name;
+        }
 
         // Sub-expressions of a call (args, constructor fields, builtins) are NOT in tail position
         bool savedTailPos = m_inTailPosition;
@@ -1197,7 +1271,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             // Sum type constructor: allocate [tag][field0][field1]... on heap
             SumType? sumType = apply.Type as SumType;
             if (sumType is null && apply.Type is ConstructedType ctApply)
+            {
                 sumType = m_typeDefs[ctApply.Constructor.Value] as SumType;
+            }
+
             if (sumType is not null)
             {
                 byte ctorResult = EmitConstructor(funcName, args, sumType);
@@ -1229,21 +1306,23 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
         // Push stack args first (7th+), then set up register args (1st-6th).
         // Stack args pushed in reverse order so callee sees them at [rbp+16], [rbp+24]...
-        for (int i = argLocals.Count - 1; i >= Reg.ArgRegs.Length; i--)
+        for (int i = argLocals.Count - 1; i >= Reg.s_argRegs.Length; i--)
         {
             byte loaded = LoadLocal(argLocals[i]);
             X86_64Encoder.PushR(m_text, loaded);
         }
 
         // Register args: two-phase push/pop to avoid R8/R9 spill/arg conflict
-        int regArgCount = Math.Min(argLocals.Count, Reg.ArgRegs.Length);
+        int regArgCount = Math.Min(argLocals.Count, Reg.s_argRegs.Length);
         for (int i = 0; i < regArgCount; i++)
         {
             byte loaded = LoadLocal(argLocals[i]);
             X86_64Encoder.PushR(m_text, loaded);
         }
         for (int i = regArgCount - 1; i >= 0; i--)
-            X86_64Encoder.PopR(m_text, Reg.ArgRegs[i]);
+        {
+            X86_64Encoder.PopR(m_text, Reg.s_argRegs[i]);
+        }
 
         if (funcName is not null)
         {
@@ -1263,9 +1342,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         }
 
         // Clean up stack args after call
-        int stackArgCount = argLocals.Count - Reg.ArgRegs.Length;
+        int stackArgCount = argLocals.Count - Reg.s_argRegs.Length;
         if (stackArgCount > 0)
+        {
             X86_64Encoder.AddRI(m_text, Reg.RSP, stackArgCount * 8);
+        }
 
         m_inTailPosition = savedTailPos;
         byte result = AllocTemp();
@@ -1284,7 +1365,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
                 break;
             }
         }
-        if (tag < 0) return byte.MaxValue;
+        if (tag < 0)
+        {
+            return byte.MaxValue;
+        }
 
         List<int> argLocals = [];
         foreach (IRExpr arg in args)
@@ -1339,15 +1423,19 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
         // Trampoline: R11 = closure pointer
         // Shift visible args right by numCaptures (backward to avoid clobbering)
-        for (int i = Reg.ArgRegs.Length - 1; i >= 0; i--)
+        for (int i = Reg.s_argRegs.Length - 1; i >= 0; i--)
         {
-            if (i + numCaptures < Reg.ArgRegs.Length)
-                X86_64Encoder.MovRR(m_text, Reg.ArgRegs[i + numCaptures], Reg.ArgRegs[i]);
+            if (i + numCaptures < Reg.s_argRegs.Length)
+            {
+                X86_64Encoder.MovRR(m_text, Reg.s_argRegs[i + numCaptures], Reg.s_argRegs[i]);
+            }
         }
 
         // Load captured args from closure into first N arg registers
-        for (int i = 0; i < numCaptures && i < Reg.ArgRegs.Length; i++)
-            X86_64Encoder.MovLoad(m_text, Reg.ArgRegs[i], Reg.R11, 8 + i * 8);
+        for (int i = 0; i < numCaptures && i < Reg.s_argRegs.Length; i++)
+        {
+            X86_64Encoder.MovLoad(m_text, Reg.s_argRegs[i], Reg.R11, 8 + i * 8);
+        }
 
         // Tail-jump to the real function (load address, jmp via rax)
         EmitLoadFunctionAddress(Reg.RAX, funcName);
@@ -1403,12 +1491,20 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
         CodexType recCreateType = rec.Type;
         if (recCreateType is EffectfulType eftRc)
+        {
             recCreateType = eftRc.Return;
+        }
+
         if (recCreateType is ForAllType fatRc)
+        {
             recCreateType = fatRc.Body;
+        }
+
         RecordType? rt = recCreateType as RecordType;
         if (rt is null && recCreateType is ConstructedType ctRec)
+        {
             rt = m_typeDefs[ctRec.Constructor.Value] as RecordType;
+        }
 
         int fieldCount = rt?.Fields.Length ?? rec.Fields.Length;
         int totalSize = fieldCount * 8;
@@ -1445,13 +1541,20 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
         CodexType recType = fa.Record.Type;
         if (recType is EffectfulType eft)
+        {
             recType = eft.Return;
+        }
+
         if (recType is ForAllType fat)
+        {
             recType = fat.Body;
+        }
 
         RecordType? rt = recType as RecordType;
         if (rt is null && recType is ConstructedType ctFa)
+        {
             rt = m_typeDefs[ctFa.Constructor.Value] as RecordType;
+        }
 
         if (rt is not null)
         {
@@ -1530,14 +1633,21 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
                     int expectedTag = 0;
                     SumType? matchSumType = ctorPat.Type as SumType;
                     if (matchSumType is null && ctorPat.Type is ConstructedType ctMatch)
-                        matchSumType = m_typeDefs[ctMatch.Constructor.Value] as SumType;
-                    if (matchSumType is null)
-                        matchSumType = match.Scrutinee.Type as SumType;
-                    if (matchSumType is null && match.Scrutinee.Type is ConstructedType ctScrut)
-                        matchSumType = m_typeDefs[ctScrut.Constructor.Value] as SumType;
+                        {
+                            matchSumType = m_typeDefs[ctMatch.Constructor.Value] as SumType;
+                        }
 
+                        if (matchSumType is null)
+                        {
+                            matchSumType = match.Scrutinee.Type as SumType;
+                        }
 
-                    if (matchSumType is SumType sumType)
+                        if (matchSumType is null && match.Scrutinee.Type is ConstructedType ctScrut)
+                        {
+                            matchSumType = m_typeDefs[ctScrut.Constructor.Value] as SumType;
+                        }
+
+                        if (matchSumType is SumType sumType)
                     {
                         for (int t = 0; t < sumType.Constructors.Length; t++)
                         {
@@ -1584,12 +1694,16 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             }
 
             if (nextBranchPatch >= 0)
+            {
                 PatchJcc(nextBranchPatch, m_text.Count);
+            }
         }
 
         int endOffset = m_text.Count;
         foreach (int patchOffset in jumpToEndOffsets)
+        {
             PatchJmp(patchOffset, endOffset);
+        }
 
         return LoadLocal(resultLocal);
     }
@@ -1648,7 +1762,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     {
         // Closures: skip region (capture types unknown at region exit)
         if (region.Type is FunctionType)
+        {
             return EmitExpr(region.Body);
+        }
 
         // Bare metal: no reclamation anywhere. The scalar-reclaim path
         // (save mark / reset HeapReg at region exit) is unsafe when a
@@ -1658,7 +1774,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         // HeapReg below those pointers lets the next allocation
         // overwrite them. CDX-C6.
         if (m_target == X86_64Target.BareMetal)
+        {
             return EmitExpr(region.Body);
+        }
 
         if (!region.NeedsEscapeCopy)
         {
@@ -1680,7 +1798,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         // the working-space bump pointer to reclaim all intermediates.
         CodexType resolved = ResolveType(region.Type);
         if (resolved is ConstructedType)
+        {
             return EmitExpr(region.Body);
+        }
 
         // Save working-space mark (region entry)
         int mark2 = AllocLocal();
@@ -1751,7 +1871,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     {
         CodexType resolved = ResolveType(type);
         if (!IRRegion.TypeNeedsHeapEscape(resolved))
+        {
             return LoadLocal(srcLocal);
+        }
 
         string helperName = GetOrQueueEscapeHelper(resolved);
         byte src = LoadLocal(srcLocal);
@@ -1885,14 +2007,22 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
                 string fieldName = args[1] is IRTextLit lit ? lit.Value : "";
                 CodexType rsType = args[0].Type;
                 if (rsType is EffectfulType eftRs)
-                    rsType = eftRs.Return;
-                if (rsType is ForAllType fatRs)
-                    rsType = fatRs.Body;
-                RecordType? rt = rsType as RecordType;
-                if (rt is null && rsType is ConstructedType ctRs)
-                    rt = m_typeDefs[ctRs.Constructor.Value] as RecordType;
+                    {
+                        rsType = eftRs.Return;
+                    }
 
-                int fieldIndex = 0;
+                    if (rsType is ForAllType fatRs)
+                    {
+                        rsType = fatRs.Body;
+                    }
+
+                    RecordType? rt = rsType as RecordType;
+                if (rt is null && rsType is ConstructedType ctRs)
+                    {
+                        rt = m_typeDefs[ctRs.Constructor.Value] as RecordType;
+                    }
+
+                    int fieldIndex = 0;
                 if (rt is not null)
                 {
                     for (int i = 0; i < rt.Fields.Length; i++)
@@ -2484,8 +2614,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
                 // which dangles the CodegenState threaded forward across it.
                 // CDX-C6: make it explicit.
                 if (m_target != X86_64Target.BareMetal)
-                    X86_64Encoder.MovRR(m_text, HeapReg, val);
-                byte rd = AllocTemp();
+                    {
+                        X86_64Encoder.MovRR(m_text, HeapReg, val);
+                    }
+
+                    byte rd = AllocTemp();
                 X86_64Encoder.Li(m_text, rd, 0);
                 return rd;
             }
@@ -3202,13 +3335,19 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         X86_64Encoder.MovRR(m_text, Reg.RBP, Reg.RSP);
 
         foreach (byte ch in "OUT OF MEMORY RSP="u8)
+        {
             EmitSerialWaitAndSend(ch);
+        }
+
         X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RBX);
         EmitCallTo("__itoa");
         EmitPrintText(Reg.RAX);
 
         foreach (byte ch in " HEAP="u8)
+        {
             EmitSerialWaitAndSend(ch);
+        }
+
         X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.R12);
         EmitCallTo("__itoa");
         EmitPrintText(Reg.RAX);
@@ -3221,8 +3360,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     void PatchStackOverflowChecks()
     {
         int handlerOffset = m_functionOffsets["__out_of_memory"];
-        foreach (var (patchOffset, _) in m_stackOverflowChecks)
+        foreach ((int patchOffset, string _) in m_stackOverflowChecks)
+        {
             PatchJcc(patchOffset, handlerOffset);
+        }
     }
 
     void EmitStrConcatHelper()
@@ -5337,16 +5478,27 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     CodexType ResolveType(CodexType type)
     {
         if (type is EffectfulType eft)
+        {
             return ResolveType(eft.Return);
+        }
+
         if (type is ForAllType fat)
+        {
             return ResolveType(fat.Body);
+        }
+
         if (type is ConstructedType ct && m_typeDefs[ct.Constructor.Value] is CodexType resolved)
+        {
             return resolved;
+        }
+
         if (type is ListType lt)
         {
             CodexType resolvedElem = ResolveType(lt.Element);
             if (!ReferenceEquals(resolvedElem, lt.Element))
+            {
                 return new ListType(resolvedElem);
+            }
         }
         return type;
     }
@@ -5366,7 +5518,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         type = ResolveType(type);
         string key = EscapeCopyKey(type);
         if (m_escapeHelperNames.TryGetValue(key, out string? name))
+        {
             return name;
+        }
+
         name = $"__escape_{key}";
         m_escapeHelperNames[key] = name;
         m_escapeHelperQueue.Enqueue((key, name, type));
@@ -5598,7 +5753,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         EmitFwdTableInsert();
 
         for (int i = 0; i < rt.Fields.Length; i++)
+        {
             EmitEscapeFieldCopy(i * 8, i * 8, rt.Fields[i].Type);
+        }
 
         EmitEscapeHelperEpilogue();
     }
@@ -5710,7 +5867,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
         int endIdx = m_text.Count;
         foreach (int jIdx in jumpToEndIdxs)
+        {
             PatchJmp(jIdx, endIdx);
+        }
 
         EmitEscapeHelperEpilogue();
     }
@@ -5727,7 +5886,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         X86_64Encoder.MovStore(m_text, Reg.R12, Reg.R13, 0);
         // Copy fields
         for (int i = 0; i < ctor.Fields.Length; i++)
+        {
             EmitEscapeFieldCopy((1 + i) * 8, (1 + i) * 8, ctor.Fields[i]);
+        }
     }
 
     // ── _start entry point ───────────────────────────────────────
@@ -5940,7 +6101,10 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         EmitSerialWaitThr();
         X86_64Encoder.Li(m_text, Reg.RDX, 0x3F8);
         if (reg != Reg.RAX)
+        {
             X86_64Encoder.MovRR(m_text, Reg.RAX, reg);
+        }
+
         X86_64Encoder.OutDxAl(m_text);
     }
 
@@ -6552,7 +6716,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     // Uses push/pop to avoid clobbering live registers.
     void EmitUpdateHeapHwm()
     {
-        if (m_target != X86_64Target.BareMetal) return;
+        if (m_target != X86_64Target.BareMetal)
+        {
+            return;
+        }
+
         X86_64Encoder.PushR(m_text, Reg.R11);
         X86_64Encoder.Li(m_text, Reg.R11, HeapHwmAddr);
         X86_64Encoder.PushR(m_text, Reg.RAX);
@@ -6613,9 +6781,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             // Exceptions 8,10-14,17,21,29,30 push an error code — pop it.
             // Non-error-code stubs get a 4-byte NOP to keep all stubs the same size.
             if (vec is 8 or (>= 10 and <= 14) or 17 or 21 or 29 or 30)
+            {
                 X86_64Encoder.AddRI(m_text, Reg.RSP, 8);
+            }
             else
+            {
                 m_text.AddRange([0x0F, 0x1F, 0x40, 0x00]); // 4-byte NOP
+            }
 
             // push rax
             X86_64Encoder.PushR(m_text, Reg.RAX);
@@ -6636,7 +6808,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
             // Store stub address for later IDT construction
             if (vec < m_isrStubAddrs.Length)
+            {
                 m_isrStubAddrs[vec] = stubVaddr;
+            }
         }
     }
 
@@ -6729,7 +6903,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         // the hot function. Used to localize C4-style algorithmic blow-ups
         // that the watchdog can't catch (per-iter heap progress).
         if (Environment.GetEnvironmentVariable("CODEX_BARE_METAL_PROFILER") is not null)
+        {
             EmitSamplingProfiler();
+        }
 
         // Send EOI early (before potential stack switch)
         EmitOutByte(0x20, 0x20);
@@ -6836,28 +7012,55 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         PatchJcc(excJcc, m_text.Count);
         // RDI = vec (RAX holds vec)
         X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RAX);
-        foreach (byte ch in "!EXC="u8) EmitSerialByte(ch);
+        foreach (byte ch in "!EXC="u8)
+        {
+            EmitSerialByte(ch);
+        }
+
         EmitSerialHexByteRdi();
-        foreach (byte ch in " RIP="u8) EmitSerialByte(ch);
+        foreach (byte ch in " RIP="u8)
+        {
+            EmitSerialByte(ch);
+        }
         // Saved RIP: at [rsp+40] (5 regs pushed since ISR entry)
         X86_64Encoder.MovLoad(m_text, Reg.RDI, Reg.RSP, 40);
         EmitSerialHexQwordRdi();
         // Callee-saved + heap pointer: these are what the faulting code was
         // working with. RBX often holds `this`/record pointer, R12-R14 hold
         // loop state, R10 is the heap allocation pointer.
-        foreach (byte ch in " RBX="u8) EmitSerialByte(ch);
+        foreach (byte ch in " RBX="u8)
+        {
+            EmitSerialByte(ch);
+        }
+
         X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.RBX);
         EmitSerialHexQwordRdi();
-        foreach (byte ch in " R12="u8) EmitSerialByte(ch);
+        foreach (byte ch in " R12="u8)
+        {
+            EmitSerialByte(ch);
+        }
+
         X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.R12);
         EmitSerialHexQwordRdi();
-        foreach (byte ch in " R13="u8) EmitSerialByte(ch);
+        foreach (byte ch in " R13="u8)
+        {
+            EmitSerialByte(ch);
+        }
+
         X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.R13);
         EmitSerialHexQwordRdi();
-        foreach (byte ch in " R14="u8) EmitSerialByte(ch);
+        foreach (byte ch in " R14="u8)
+        {
+            EmitSerialByte(ch);
+        }
+
         X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.R14);
         EmitSerialHexQwordRdi();
-        foreach (byte ch in " R10="u8) EmitSerialByte(ch);
+        foreach (byte ch in " R10="u8)
+        {
+            EmitSerialByte(ch);
+        }
+
         X86_64Encoder.MovRR(m_text, Reg.RDI, Reg.R10);
         EmitSerialHexQwordRdi();
         EmitSerialByte((byte)'\n');
@@ -6888,14 +7091,20 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     {
         // Print RDI as 16 hex digits, MSB first.
         for (int shift = 60; shift >= 0; shift -= 4)
+        {
             EmitOneHexNibble(shift);
+        }
     }
 
     void EmitOneHexNibble(int shift)
     {
         // Compute nibble into RAX, convert to ASCII, send via UART.
         X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.RDI);
-        if (shift > 0) X86_64Encoder.SarRI(m_text, Reg.RAX, (byte)shift);
+        if (shift > 0)
+        {
+            X86_64Encoder.SarRI(m_text, Reg.RAX, (byte)shift);
+        }
+
         m_text.Add(0x48); m_text.Add(0x83); m_text.Add(0xE0); m_text.Add(0x0F); // and rax, 0xF
         X86_64Encoder.CmpRI(m_text, Reg.RAX, 10);
         int isLetter = m_text.Count;
@@ -7048,7 +7257,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             // RAX = (R11 >> shift) & 0xF
             X86_64Encoder.MovRR(m_text, Reg.RAX, Reg.R11);
             if (shift > 0)
+            {
                 X86_64Encoder.SarRI(m_text, Reg.RAX, (byte)shift);
+            }
             // and rax, 0xF (REX.W + 83 /4 ib)
             m_text.Add(0x48); m_text.Add(0x83); m_text.Add(0xE0); m_text.Add(0x0F);
             // if rax >= 10 → letter ('a' + rax - 10 = rax + 87)
@@ -7103,8 +7314,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         // Prologue (needed for AllocLocal/StoreLocal in print helpers)
         X86_64Encoder.PushR(m_text, Reg.RBP);
         X86_64Encoder.MovRR(m_text, Reg.RBP, Reg.RSP);
-        foreach (byte reg in LocalRegs)
+        foreach (byte reg in s_localRegs)
+        {
             X86_64Encoder.PushR(m_text, reg);
+        }
+
         int frameSizePatchOffset = m_text.Count;
         EmitSubRspImm32(0); // patched later
 
@@ -7363,11 +7577,21 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         CodexType current = type;
         for (int i = 0; i < paramCount; i++)
         {
-            if (current is FunctionType ft) current = ft.Return;
-            else break;
+            if (current is FunctionType ft)
+            {
+                current = ft.Return;
+            }
+            else
+            {
+                break;
+            }
         }
         // Unwrap EffectfulType to get the actual return type
-        if (current is EffectfulType eft) current = eft.Return;
+        if (current is EffectfulType eft)
+        {
+            current = eft.Return;
+        }
+
         return current;
     }
 
@@ -7375,16 +7599,16 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
     byte AllocTemp()
     {
-        byte reg = TempRegs[m_nextTemp % TempRegs.Length];
+        byte reg = s_tempRegs[m_nextTemp % s_tempRegs.Length];
         m_nextTemp++;
         return reg;
     }
 
     int AllocLocal()
     {
-        if (m_nextLocal < LocalRegs.Length)
+        if (m_nextLocal < s_localRegs.Length)
         {
-            int reg = LocalRegs[m_nextLocal];
+            int reg = s_localRegs[m_nextLocal];
             m_nextLocal++;
             return reg;
         }
@@ -7399,11 +7623,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         if (local < SpillBase)
         {
             if (local != valueReg)
+            {
                 X86_64Encoder.MovRR(m_text, (byte)local, valueReg);
+            }
         }
         else
         {
-            int offset = -((local - SpillBase) + 1) * 8 - LocalRegs.Length * 8;
+            int offset = -((local - SpillBase) + 1) * 8 - s_localRegs.Length * 8;
             X86_64Encoder.MovStore(m_text, Reg.RBP, valueReg, offset);
         }
     }
@@ -7411,9 +7637,12 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     byte LoadLocal(int local)
     {
         if (local < SpillBase)
+        {
             return (byte)local;
+        }
+
         byte scratch = (m_loadLocalToggle++ % 2 == 0) ? Reg.R8 : Reg.R9;
-        int offset = -((local - SpillBase) + 1) * 8 - LocalRegs.Length * 8;
+        int offset = -((local - SpillBase) + 1) * 8 - s_localRegs.Length * 8;
         X86_64Encoder.MovLoad(m_text, scratch, Reg.RBP, offset);
         return scratch;
     }
@@ -7423,16 +7652,26 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     int AddRodataString(string value)
     {
         if (m_stringOffsets.TryGetValue(value, out int offset))
+        {
             return offset;
+        }
+
         offset = m_rodata.Count;
         // CCE-encode, matching EmitTextLit
         string cceEncoded = CceTable.Encode(value);
         byte[] cceBytes = new byte[cceEncoded.Length];
         for (int i = 0; i < cceEncoded.Length; i++)
+        {
             cceBytes[i] = (byte)cceEncoded[i];
+        }
+
         m_rodata.AddRange(BitConverter.GetBytes((long)cceBytes.Length));
         m_rodata.AddRange(cceBytes);
-        while (m_rodata.Count % 8 != 0) m_rodata.Add(0);
+        while (m_rodata.Count % 8 != 0)
+        {
+            m_rodata.Add(0);
+        }
+
         m_stringOffsets[value] = offset;
         return offset;
     }
@@ -7510,7 +7749,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             ulong addr = rodataVaddr + (ulong)fixup.RodataOffset;
             byte[] bytes = BitConverter.GetBytes((long)addr);
             for (int i = 0; i < 8; i++)
+            {
                 m_text[fixup.PatchOffset + i] = bytes[i];
+            }
         }
 
         // Patch function address references (for closures/trampolines)
@@ -7533,7 +7774,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
                 ulong addr = textVaddr + (ulong)funcOffset;
                 byte[] bytes = BitConverter.GetBytes((long)addr);
                 for (int i = 0; i < 8; i++)
+                {
                     m_text[fixup.PatchOffset + i] = bytes[i];
+                }
             }
         }
     }
@@ -7562,7 +7805,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
     void EmitDiagHexHelper()
     {
-        if (!m_diagnostic) return;
+        if (!m_diagnostic)
+        {
+            return;
+        }
+
         m_functionOffsets["__diag_hex"] = m_text.Count;
 
         // Print 16 hex digits of RDI to serial. Clobbers RAX, RCX, RDX.
@@ -7595,7 +7842,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
     void EmitDiagLiteral(string s)
     {
-        if (!m_diagnostic) return;
+        if (!m_diagnostic)
+        {
+            return;
+        }
+
         foreach (char c in s)
         {
             X86_64Encoder.Li(m_text, Reg.RAX, c);
@@ -7607,15 +7858,26 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
     void EmitDiagHexReg(byte reg)
     {
-        if (!m_diagnostic) return;
+        if (!m_diagnostic)
+        {
+            return;
+        }
+
         if (reg != Reg.RDI)
+        {
             X86_64Encoder.MovRR(m_text, Reg.RDI, reg);
+        }
+
         EmitCallTo("__diag_hex");
     }
 
     void EmitDiagTag(string tag)
     {
-        if (!m_diagnostic) return;
+        if (!m_diagnostic)
+        {
+            return;
+        }
+
         X86_64Encoder.PushR(m_text, Reg.RAX);
         X86_64Encoder.PushR(m_text, Reg.RCX);
         X86_64Encoder.PushR(m_text, Reg.RDX);
@@ -7625,7 +7887,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
     void EmitDiagEnd()
     {
-        if (!m_diagnostic) return;
+        if (!m_diagnostic)
+        {
+            return;
+        }
+
         EmitDiagLiteral("\n");
         X86_64Encoder.PopR(m_text, Reg.RDI);
         X86_64Encoder.PopR(m_text, Reg.RDX);
@@ -7635,7 +7901,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
     void EmitDiagAlloc()
     {
-        if (!m_diagnostic) return;
+        if (!m_diagnostic)
+        {
+            return;
+        }
+
         EmitDiagTag("A");
         EmitDiagHexReg(HeapReg);
         EmitDiagEnd();
@@ -7643,7 +7913,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
     void EmitDiagFuncEntry(string name)
     {
-        if (!m_diagnostic) return;
+        if (!m_diagnostic)
+        {
+            return;
+        }
+
         EmitDiagTag("FE");
         EmitDiagLiteral(name);
         EmitDiagEnd();
@@ -7651,7 +7925,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
     void EmitDiagFuncExit(string name)
     {
-        if (!m_diagnostic) return;
+        if (!m_diagnostic)
+        {
+            return;
+        }
+
         EmitDiagTag("FX");
         EmitDiagLiteral(name);
         EmitDiagEnd();
@@ -7659,7 +7937,11 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
     void EmitDiagTcoMark(string name)
     {
-        if (!m_diagnostic) return;
+        if (!m_diagnostic)
+        {
+            return;
+        }
+
         EmitDiagTag("TM");
         byte mark = LoadLocal(m_tcoHeapMarkLocal);
         EmitDiagHexReg(mark);

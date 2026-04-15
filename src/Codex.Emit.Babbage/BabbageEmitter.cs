@@ -24,7 +24,9 @@ public sealed class BabbageEmitter : ICodeEmitter
         m_labelCounter = 0;
 
         foreach (IRDefinition d in module.Definitions)
+        {
             m_definitionArity = m_definitionArity.Set(d.Name, d.Parameters.Length);
+        }
 
         StringBuilder sb = new();
         sb.AppendLine(". ---------------------------------------------------");
@@ -43,7 +45,11 @@ public sealed class BabbageEmitter : ICodeEmitter
 
         foreach (IRDefinition def in module.Definitions)
         {
-            if (def == mainDef) continue;
+            if (def == mainDef)
+            {
+                continue;
+            }
+
             EmitDefinition(sb, def);
             sb.AppendLine();
         }
@@ -62,9 +68,14 @@ public sealed class BabbageEmitter : ICodeEmitter
         {
             sb.AppendLine(". === MAIN PROGRAM ===");
             if (module.Definitions.Length == 0)
+            {
                 sb.AppendLine(". All proofs verified. No computation required.");
+            }
             else
+            {
                 sb.AppendLine(". No entry point. Chapter loaded.");
+            }
+
             sb.AppendLine();
             sb.AppendLine("H  . Halt the Engine");
         }
@@ -265,7 +276,10 @@ public sealed class BabbageEmitter : ICodeEmitter
     int AllocStore(string name)
     {
         if (m_storeMap.TryGet(name, out int existing))
+        {
             return existing;
+        }
+
         int col = m_nextStore++;
         m_storeMap = m_storeMap.Set(name, col);
         return col;
@@ -274,7 +288,10 @@ public sealed class BabbageEmitter : ICodeEmitter
     int GetStore(string name)
     {
         if (m_storeMap.TryGet(name, out int col))
+        {
             return col;
+        }
+
         return AllocStore(name);
     }
 
@@ -317,13 +334,21 @@ public sealed class BabbageEmitter : ICodeEmitter
     static string? FindDefinitionName(IRApply app)
     {
         IRExpr current = app.Function;
-        while (current is IRApply inner) current = inner.Function;
+        while (current is IRApply inner)
+        {
+            current = inner.Function;
+        }
+
         return current is IRName name && name.Name.Length > 0 && char.IsLower(name.Name[0]) ? name.Name : null;
     }
 
     static void CollectApplyArgs(IRApply app, List<IRExpr> args)
     {
-        if (app.Function is IRApply inner) CollectApplyArgs(inner, args);
+        if (app.Function is IRApply inner)
+        {
+            CollectApplyArgs(inner, args);
+        }
+
         args.Add(app.Argument);
     }
 
@@ -342,7 +367,11 @@ public sealed class BabbageEmitter : ICodeEmitter
     static bool IsSelfCall(IRApply app, string funcName)
     {
         IRExpr root = app.Function;
-        while (root is IRApply inner) root = inner.Function;
+        while (root is IRApply inner)
+        {
+            root = inner.Function;
+        }
+
         return root is IRName name && name.Name == funcName;
     }
 }

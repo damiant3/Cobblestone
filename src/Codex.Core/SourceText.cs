@@ -44,13 +44,22 @@ public sealed class SourceText(string fileName, string content)
     static string NormalizeLineEndings(string raw)
     {
         if (raw.IndexOfAny(['\t', '\r']) < 0)
+        {
             return raw;
-        var sb = new System.Text.StringBuilder(raw.Length);
+        }
+
+        System.Text.StringBuilder sb = new System.Text.StringBuilder(raw.Length);
         foreach (char c in raw)
         {
-            if (c == '\t') sb.Append("  ");
+            if (c == '\t')
+            {
+                sb.Append("  ");
+            }
             else if (c == '\r') { /* stripped */ }
-            else sb.Append(c);
+            else
+            {
+                sb.Append(c);
+            }
         }
         return sb.ToString();
     }

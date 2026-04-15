@@ -38,14 +38,19 @@ public static partial class Program
         List<string> bootFiles = [];
         bootFiles.AddRange(Directory.GetFiles(codexDir, "*.codex", SearchOption.TopDirectoryOnly));
         foreach (string subDir in Directory.GetDirectories(codexDir))
+        {
             bootFiles.AddRange(Directory.GetFiles(subDir, "*.codex", SearchOption.TopDirectoryOnly));
+        }
+
         string[] files = bootFiles
             .OrderBy(f => f, StringComparer.Ordinal)
             .ToArray();
 
         string outputDir = Path.Combine(repoRoot, "build-output", "bootstrap");
         if (!Directory.Exists(outputDir))
+        {
             Directory.CreateDirectory(outputDir);
+        }
 
         string chapterName = "Codex.Codex";
         IRCompilationResult? irResult = CompileMultipleToIR(files, chapterName, codexRoot: codexDir);
@@ -210,7 +215,11 @@ public static partial class Program
         };
 
         using Process? proc = Process.Start(psi);
-        if (proc is null) return 1;
+        if (proc is null)
+        {
+            return 1;
+        }
+
         proc.StandardOutput.ReadToEnd();
         proc.StandardError.ReadToEnd();
         proc.WaitForExit(120_000);
@@ -229,7 +238,11 @@ public static partial class Program
         };
 
         using Process? proc = Process.Start(psi);
-        if (proc is null) return 1;
+        if (proc is null)
+        {
+            return 1;
+        }
+
         proc.StandardOutput.ReadToEnd();
         proc.StandardError.ReadToEnd();
         proc.WaitForExit(60_000);
@@ -248,12 +261,19 @@ public static partial class Program
         };
 
         using Process? proc = Process.Start(psi);
-        if (proc is null) return 1;
+        if (proc is null)
+        {
+            return 1;
+        }
+
         proc.StandardOutput.ReadToEnd();
         string stderr = proc.StandardError.ReadToEnd();
         proc.WaitForExit(30_000);
         if (proc.ExitCode != 0 && stderr.Length > 0)
+        {
             Console.Error.WriteLine(stderr);
+        }
+
         return proc.ExitCode;
     }
 
@@ -269,12 +289,19 @@ public static partial class Program
         };
 
         using Process? proc = Process.Start(psi);
-        if (proc is null) return 1;
+        if (proc is null)
+        {
+            return 1;
+        }
+
         proc.StandardOutput.ReadToEnd();
         string stderr = proc.StandardError.ReadToEnd();
         proc.WaitForExit(60_000);
         if (proc.ExitCode != 0 && stderr.Length > 0)
+        {
             Console.Error.WriteLine(stderr);
+        }
+
         return proc.ExitCode;
     }
 
@@ -284,7 +311,9 @@ public static partial class Program
         if (Directory.Exists(outDir))
         {
             foreach (string file in Directory.GetFiles(outDir))
+            {
                 File.Delete(file);
+            }
         }
         else
         {

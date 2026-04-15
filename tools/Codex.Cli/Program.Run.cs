@@ -14,7 +14,10 @@ public static partial class Program
 
         string filePath = args[0];
         CompilationResult? result = CompileFile(filePath);
-        if (result is null) return 1;
+        if (result is null)
+        {
+            return 1;
+        }
 
         string tempDir = Path.Combine(Path.GetTempPath(), "codex_run_" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(tempDir);
@@ -74,9 +77,14 @@ public static partial class Program
             runProc.WaitForExit();
 
             if (output.Length > 0)
+            {
                 Console.Write(output);
+            }
+
             if (errOutput.Length > 0)
+            {
                 Console.Error.Write(errOutput);
+            }
 
             return runProc.ExitCode;
         }

@@ -60,7 +60,11 @@ public sealed record ConstructedType(Name Constructor, ImmutableArray<CodexType>
 {
     public override string ToString()
     {
-        if (Arguments.IsEmpty) return Constructor.Value;
+        if (Arguments.IsEmpty)
+        {
+            return Constructor.Value;
+        }
+
         return $"{Constructor.Value} {string.Join(" ", Arguments)}";
     }
 }
@@ -115,7 +119,11 @@ public sealed record SumConstructorType(Name Name, ImmutableArray<CodexType> Fie
 {
     public override string ToString()
     {
-        if (Fields.IsEmpty) return Name.Value;
+        if (Fields.IsEmpty)
+        {
+            return Name.Value;
+        }
+
         return $"{Name.Value} {string.Join(" ", Fields.Select(f => f.ToString()))}";
     }
 }

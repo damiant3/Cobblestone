@@ -467,21 +467,33 @@ public class LinuxNativeTests
     static string? CompileAndRunX86_64(string source, string chapterName)
     {
         byte[]? bytes = Helpers.CompileToX86_64(source, chapterName);
-        if (bytes is null) return null;
+        if (bytes is null)
+        {
+            return null;
+        }
+
         return RunElf(bytes, chapterName, null);
     }
 
     static string? CompileAndRunArm64(string source, string chapterName)
     {
         byte[]? bytes = Helpers.CompileToArm64(source, chapterName);
-        if (bytes is null) return null;
+        if (bytes is null)
+        {
+            return null;
+        }
+
         return RunElf(bytes, chapterName, "qemu-aarch64");
     }
 
     static string? CompileAndRunRiscV(string source, string chapterName)
     {
         byte[]? bytes = Helpers.CompileToRiscV(source, chapterName);
-        if (bytes is null) return null;
+        if (bytes is null)
+        {
+            return null;
+        }
+
         return RunElf(bytes, chapterName, "qemu-riscv64");
     }
 
@@ -490,7 +502,10 @@ public class LinuxNativeTests
     static string? CompileAndBootBareMetal(string source, string chapterName)
     {
         byte[]? bytes = Helpers.CompileToX86_64BareMetal(source, chapterName);
-        if (bytes is null) return null;
+        if (bytes is null)
+        {
+            return null;
+        }
 
         string tempDir = Path.Combine(Path.GetTempPath(),
             $"codex_bm_{chapterName}_{Guid.NewGuid().ToString("N")[..8]}");
@@ -513,7 +528,10 @@ public class LinuxNativeTests
             };
 
             using Process? proc = Process.Start(psi);
-            if (proc is null) return null;
+            if (proc is null)
+            {
+                return null;
+            }
 
             string stdout = proc.StandardOutput.ReadToEnd();
             proc.WaitForExit(10_000);
@@ -537,9 +555,6 @@ public class LinuxNativeTests
         }
     }
 
-    /// <summary>
-    /// Write ELF to /tmp, chmod +x, run (directly or via qemu-user), return stdout.
-    /// </summary>
     static string? RunElf(byte[] elfBytes, string chapterName, string? qemuBinary)
     {
         string tempDir = Path.Combine(Path.GetTempPath(),
@@ -581,7 +596,10 @@ public class LinuxNativeTests
             };
 
             using Process? proc = Process.Start(psi);
-            if (proc is null) return null;
+            if (proc is null)
+            {
+                return null;
+            }
 
             string stdout = proc.StandardOutput.ReadToEnd();
             string stderr = proc.StandardError.ReadToEnd();
@@ -595,8 +613,10 @@ public class LinuxNativeTests
             }
 
             if (proc.ExitCode != 0)
+            {
                 throw new InvalidOperationException(
                     $"{fileName} exited with code {proc.ExitCode}.\nstdout: {stdout}\nstderr: {stderr}");
+            }
 
             return stdout;
         }
@@ -625,7 +645,11 @@ public class LinuxNativeTests
                 CreateNoWindow = true
             };
             using Process? proc = Process.Start(psi);
-            if (proc is null) return false;
+            if (proc is null)
+            {
+                return false;
+            }
+
             proc.WaitForExit(5_000);
             return proc.ExitCode == 0;
         }

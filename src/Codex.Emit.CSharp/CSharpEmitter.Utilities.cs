@@ -42,10 +42,18 @@ public sealed partial class CSharpEmitter
         string baseName = SanitizeIdentifier(st.TypeName.Value);
         HashSet<int> ids = [];
         foreach (SumConstructorType ctor in st.Constructors)
+        {
             foreach (CodexType field in ctor.Fields)
+            {
                 CollectTypeVarIds(field, ids);
+            }
+        }
+
         if (ids.Count == 0)
+        {
             return baseName;
+        }
+
         return baseName + "<" + string.Join(", ", ids.Order().Select(id => $"T{id}")) + ">";
     }
 
@@ -55,18 +63,33 @@ public sealed partial class CSharpEmitter
         for (int i = 0; i < def.Parameters.Length; i++)
         {
             while (type is FunctionType pft && pft.Parameter is ProofType)
+            {
                 type = pft.Return;
+            }
+
             if (type is FunctionType ft)
+            {
                 type = ft.Return;
+            }
             else if (type is DependentFunctionType dep)
+            {
                 type = dep.Body;
+            }
             else
+            {
                 break;
+            }
         }
         while (type is FunctionType pft2 && pft2.Parameter is ProofType)
+        {
             type = pft2.Return;
+        }
+
         if (type is EffectfulType eft)
+        {
             type = eft.Return;
+        }
+
         return type;
     }
 
@@ -89,7 +112,10 @@ public sealed partial class CSharpEmitter
                 break;
             case ConstructedType ct:
                 foreach (CodexType arg in ct.Arguments)
+                {
                     CollectTypeVarIds(arg, ids);
+                }
+
                 break;
         }
     }
@@ -100,16 +126,28 @@ public sealed partial class CSharpEmitter
         for (int i = 0; i < def.Parameters.Length; i++)
         {
             while (type is FunctionType pft && pft.Parameter is ProofType)
+            {
                 type = pft.Return;
+            }
+
             if (type is FunctionType ft)
+            {
                 type = ft.Return;
+            }
             else if (type is DependentFunctionType dep)
+            {
                 type = dep.Body;
+            }
             else
+            {
                 break;
+            }
         }
         while (type is FunctionType pft2 && pft2.Parameter is ProofType)
+        {
             type = pft2.Return;
+        }
+
         return type;
     }
 
@@ -157,13 +195,25 @@ public sealed partial class CSharpEmitter
     /// <summary>Escape a CCE-encoded string for C# string literal emission.</summary>
     static string EscapeCceString(string cce)
     {
-        var sb = new StringBuilder(cce.Length * 4);
+        StringBuilder sb = new StringBuilder(cce.Length * 4);
         foreach (char c in cce)
         {
-            if (c == '\\') sb.Append("\\\\");
-            else if (c == '"') sb.Append("\\\"");
-            else if (c >= 32 && c < 127) sb.Append(c);
-            else sb.Append($"\\u{(int)c:X4}");
+            if (c == '\\')
+            {
+                sb.Append("\\\\");
+            }
+            else if (c == '"')
+            {
+                sb.Append("\\\"");
+            }
+            else if (c >= 32 && c < 127)
+            {
+                sb.Append(c);
+            }
+            else
+            {
+                sb.Append($"\\u{(int)c:X4}");
+            }
         }
         return sb.ToString();
     }

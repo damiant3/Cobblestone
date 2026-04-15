@@ -16,7 +16,10 @@ public class ForewordTests
         {
             string candidate = Path.Combine(dir, "foreword");
             if (Directory.Exists(candidate))
+            {
                 return candidate;
+            }
+
             dir = Path.GetDirectoryName(dir)!;
         }
         throw new DirectoryNotFoundException("Cannot find foreword/ directory");
@@ -32,15 +35,24 @@ public class ForewordTests
         DiagnosticBag diagnostics = new();
 
         DocumentNode document = DocumentParser.Parse(src, diagnostics);
-        if (diagnostics.HasErrors) return diagnostics;
+        if (diagnostics.HasErrors)
+        {
+            return diagnostics;
+        }
 
         Desugarer desugarer = new(diagnostics);
         Chapter chapter = desugarer.Desugar(document, chapterName);
-        if (diagnostics.HasErrors) return diagnostics;
+        if (diagnostics.HasErrors)
+        {
+            return diagnostics;
+        }
 
         NameResolver resolver = new(diagnostics);
         ResolvedChapter resolved = resolver.Resolve(chapter);
-        if (diagnostics.HasErrors) return diagnostics;
+        if (diagnostics.HasErrors)
+        {
+            return diagnostics;
+        }
 
         TypeChecker checker = new(diagnostics);
         checker.CheckChapter(resolved.Chapter);
@@ -337,21 +349,32 @@ public class ForewordTests
         DiagnosticBag diagnostics = new();
 
         DocumentNode document = DocumentParser.Parse(src, diagnostics);
-        if (diagnostics.HasErrors) return diagnostics;
+        if (diagnostics.HasErrors)
+        {
+            return diagnostics;
+        }
 
         Desugarer desugarer = new(diagnostics);
         Chapter chapter = desugarer.Desugar(document, chapterName);
-        if (diagnostics.HasErrors) return diagnostics;
+        if (diagnostics.HasErrors)
+        {
+            return diagnostics;
+        }
 
         ForewordTestLoader forewordLoader = new(forewordDir, diagnostics);
         NameResolver resolver = new(diagnostics, forewordLoader);
         ResolvedChapter resolved = resolver.Resolve(chapter);
-        if (diagnostics.HasErrors) return diagnostics;
+        if (diagnostics.HasErrors)
+        {
+            return diagnostics;
+        }
 
         TypeChecker checker = new(diagnostics);
 
         foreach (ResolvedChapter imported in resolved.CitedChapters)
+        {
             checker.CheckChapter(imported.Chapter);
+        }
 
         checker.CheckChapter(resolved.Chapter);
         return diagnostics;
@@ -364,21 +387,32 @@ public class ForewordTests
         DiagnosticBag diagnostics = new();
 
         DocumentNode document = DocumentParser.Parse(src, diagnostics);
-        if (diagnostics.HasErrors) return diagnostics;
+        if (diagnostics.HasErrors)
+        {
+            return diagnostics;
+        }
 
         Desugarer desugarer = new(diagnostics);
         Chapter chapter = desugarer.Desugar(document, "test");
-        if (diagnostics.HasErrors) return diagnostics;
+        if (diagnostics.HasErrors)
+        {
+            return diagnostics;
+        }
 
         ForewordTestLoader forewordLoader = new(forewordDir, diagnostics);
         NameResolver resolver = new(diagnostics, forewordLoader);
         ResolvedChapter resolved = resolver.Resolve(chapter);
-        if (diagnostics.HasErrors) return diagnostics;
+        if (diagnostics.HasErrors)
+        {
+            return diagnostics;
+        }
 
         TypeChecker checker = new(diagnostics);
 
         foreach (ResolvedChapter imported in resolved.CitedChapters)
+        {
             checker.CheckChapter(imported.Chapter);
+        }
 
         checker.CheckChapter(resolved.Chapter);
         return diagnostics;
@@ -394,10 +428,16 @@ sealed class ForewordTestLoader(string forewordDir, DiagnosticBag diagnostics) :
 
     public ResolvedChapter? Load(string quire, string chapterName)
     {
-        if (quire != QuireName) return null;
+        if (quire != QuireName)
+        {
+            return null;
+        }
+
         ResolvedChapter? cached = m_cache[chapterName];
         if (cached is not null)
+        {
             return cached;
+        }
 
         // Scan forward files for a matching Chapter: header.
         string? filePath = null;
@@ -405,31 +445,54 @@ sealed class ForewordTestLoader(string forewordDir, DiagnosticBag diagnostics) :
         {
             string? firstLine;
             using (StreamReader r = new(candidate))
+            {
                 firstLine = r.ReadLine();
-            if (firstLine is null) continue;
-            if (!firstLine.StartsWith("Chapter:", StringComparison.Ordinal)) continue;
+            }
+
+            if (firstLine is null)
+            {
+                continue;
+            }
+
+            if (!firstLine.StartsWith("Chapter:", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
             if (firstLine["Chapter:".Length..].Trim() == chapterName)
             {
                 filePath = candidate;
                 break;
             }
         }
-        if (filePath is null) return null;
+        if (filePath is null)
+        {
+            return null;
+        }
 
         string source = File.ReadAllText(filePath);
         SourceText src = new(filePath, source);
         DiagnosticBag compileDiag = new();
 
         DocumentNode document = DocumentParser.Parse(src, compileDiag);
-        if (compileDiag.HasErrors) return null;
+        if (compileDiag.HasErrors)
+        {
+            return null;
+        }
 
         Desugarer desugarer = new(compileDiag);
         Chapter chapter = desugarer.Desugar(document, chapterName);
-        if (compileDiag.HasErrors) return null;
+        if (compileDiag.HasErrors)
+        {
+            return null;
+        }
 
         NameResolver resolver = new(compileDiag, this);
         ResolvedChapter resolved = resolver.Resolve(chapter);
-        if (compileDiag.HasErrors) return null;
+        if (compileDiag.HasErrors)
+        {
+            return null;
+        }
 
         m_cache = m_cache.Set(chapterName, resolved);
         return resolved;

@@ -56,7 +56,10 @@ public sealed partial class Parser
             or IfExpressionNode
             or LetExpressionNode
             or DoExpressionNode;
-        if (isCompound) return func;
+        if (isCompound)
+        {
+            return func;
+        }
 
         while (true)
         {
@@ -70,7 +73,10 @@ public sealed partial class Parser
                 Advance();
                 Token field = Expect(TokenKind.Identifier);
                 if (field.Kind != TokenKind.Identifier)
+                {
                     break;
+                }
+
                 func = new FieldAccessExpressionNode(func, field, func.Span.Through(field.Span));
             }
             else
@@ -134,8 +140,11 @@ public sealed partial class Parser
                     Advance();
                     Token field = Expect(TokenKind.Identifier);
                     if (field.Kind != TokenKind.Identifier)
-                        break;
-                    node = new FieldAccessExpressionNode(node, field, node.Span.Through(field.Span));
+                        {
+                            break;
+                        }
+
+                        node = new FieldAccessExpressionNode(node, field, node.Span.Through(field.Span));
                 }
                 return node;
             }
@@ -154,8 +163,11 @@ public sealed partial class Parser
                     Advance();
                     Token field = Expect(TokenKind.Identifier);
                     if (field.Kind != TokenKind.Identifier)
-                        break;
-                    node = new FieldAccessExpressionNode(node, field, node.Span.Through(field.Span));
+                        {
+                            break;
+                        }
+
+                        node = new FieldAccessExpressionNode(node, field, node.Span.Through(field.Span));
                 }
                 return node;
             }
@@ -226,7 +238,10 @@ public sealed partial class Parser
                     $"Expected field name, found {Current.Kind}", Current.Span);
                 Synchronize();
                 if (Current.Kind == TokenKind.RightBrace)
+                {
                     break;
+                }
+
                 SkipNewlines();
                 continue;
             }
@@ -238,7 +253,10 @@ public sealed partial class Parser
             {
                 Synchronize();
                 if (Current.Kind == TokenKind.RightBrace)
+                {
                     break;
+                }
+
                 SkipNewlines();
                 continue;
             }
@@ -271,7 +289,9 @@ public sealed partial class Parser
             {
                 SkipNewlines();
                 if (Current.Kind == TokenKind.RightBracket)
+                {
                     break;
+                }
             }
 
             elements.Add(ParseExpression());
@@ -308,9 +328,13 @@ public sealed partial class Parser
                 $"Expected 'then' after condition, found {Current.Kind}", Current.Span);
             Synchronize();
             if (Current.Kind == TokenKind.ThenKeyword)
+            {
                 Advance();
+            }
             else
+            {
                 return new ErrorExpressionNode(start);
+            }
         }
         else
         {
@@ -327,10 +351,14 @@ public sealed partial class Parser
                 $"Expected 'else' after 'then' branch, found {Current.Kind}", Current.Span);
             Synchronize();
             if (Current.Kind == TokenKind.ElseKeyword)
+            {
                 Advance();
+            }
             else
+            {
                 return new IfExpressionNode(condition, thenExpr,
                     new ErrorExpressionNode(Current), start.Span.Through(thenExpr.Span));
+            }
         }
         else
         {
@@ -425,7 +453,9 @@ public sealed partial class Parser
                     $"Expected '->' after pattern, found {Current.Kind}", Current.Span);
                 Synchronize();
                 if (Current.Kind == TokenKind.Arrow)
+                {
                     Advance();
+                }
                 else
                 {
                     SkipNewlines();

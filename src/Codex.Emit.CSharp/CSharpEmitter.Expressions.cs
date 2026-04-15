@@ -37,38 +37,69 @@ public sealed partial class CSharpEmitter
 
             case IRName name:
                 if (name.Name == "read-line")
+                {
                     sb.Append("_Cce.FromUnicode(Console.ReadLine() ?? \"\")");
+                }
                 else if (name.Name == "get-args")
+                {
                     sb.Append("Environment.GetCommandLineArgs().Select(_Cce.FromUnicode).ToList()");
+                }
                 else if (name.Name == "current-dir")
+                {
                     sb.Append("_Cce.FromUnicode(Directory.GetCurrentDirectory())");
+                }
                 else if (name.Name == "heap-save")
+                {
                     sb.Append("_Buf.heap_save()");
+                }
                 else if (name.Name == "heap-restore")
+                {
                     sb.Append("new Func<object, long>(_p => _Buf.heap_restore(_p))");
+                }
                 else if (name.Name == "heap-advance")
+                {
                     sb.Append("new Func<object, long>(_n => _Buf.heap_advance(_n))");
+                }
                 else if (name.Name == "list-with-capacity")
+                {
                     sb.Append("new Func<object, List<long>>(_c => _Buf.list_with_capacity(_c))");
+                }
                 else if (name.Name == "buf-write-byte")
+                {
                     sb.Append("new Func<object, Func<object, Func<object, long>>>(_b => _o => _v => _Buf.buf_write_byte(_b, _o, _v))");
+                }
                 else if (name.Name == "buf-write-bytes")
+                {
                     sb.Append("new Func<object, Func<object, Func<object, long>>>(_b => _o => _vs => _Buf.buf_write_bytes(_b, _o, _vs))");
+                }
                 else if (name.Name == "buf-read-bytes")
+                {
                     sb.Append("new Func<object, Func<object, Func<object, List<long>>>>(_b => _o => _n => _Buf.buf_read_bytes(_b, _o, _n))");
+                }
                 else if (name.Name == "show")
+                {
                     sb.Append("new Func<object, string>(x => Convert.ToString(x))");
+                }
                 else if (name.Name == "negate")
+                {
                     sb.Append("new Func<long, long>(x => -x)");
+                }
                 else if (name.Name.Length > 0 && char.IsUpper(name.Name[0])
                     && name.Type is not FunctionType)
+                {
                     sb.Append($"new {SanitizeIdentifier(name.Name)}()");
+                }
                 else if (m_definitionArity.TryGet(name.Name, out int nameArity)
                     && nameArity == 0
                     && name.Type is not FunctionType)
+                {
                     sb.Append($"{SanitizeIdentifier(name.Name)}()");
+                }
                 else
+                {
                     sb.Append(SanitizeIdentifier(name.Name));
+                }
+
                 break;
 
             case IRBinary bin:
@@ -123,7 +154,11 @@ public sealed partial class CSharpEmitter
                 sb.Append($"new {SanitizeIdentifier(rec.TypeName)}(");
                 for (int i = 0; i < rec.Fields.Length; i++)
                 {
-                    if (i > 0) sb.Append(", ");
+                    if (i > 0)
+                    {
+                        sb.Append(", ");
+                    }
+
                     EmitExpr(sb, rec.Fields[i].Value, indent);
                 }
                 sb.Append(')');
@@ -325,7 +360,11 @@ public sealed partial class CSharpEmitter
             sb.Append($"new {SanitizeIdentifier(ctorName)}(");
             for (int i = 0; i < args.Count; i++)
             {
-                if (i > 0) sb.Append(", ");
+                if (i > 0)
+                {
+                    sb.Append(", ");
+                }
+
                 EmitExpr(sb, args[i], indent);
             }
             sb.Append(')');
@@ -345,7 +384,11 @@ public sealed partial class CSharpEmitter
                     sb.Append('(');
                     for (int i = 0; i < args.Count; i++)
                     {
-                        if (i > 0) sb.Append(", ");
+                        if (i > 0)
+                        {
+                            sb.Append(", ");
+                        }
+
                         EmitArgument(sb, args[i], indent);
                     }
                     sb.Append(')');
@@ -404,25 +447,38 @@ public sealed partial class CSharpEmitter
     {
         // [x] as IRList with one element
         if (expr is IRList list && list.Elements.Length == 1)
+        {
             return list.Elements[0];
+        }
         // [x] ++ [] as ConsList(x, emptyList)
         if (expr is IRBinary cons && cons.Op == IRBinaryOp.ConsList
             && cons.Right is IRList empty && empty.Elements.Length == 0)
+        {
             return cons.Left;
+        }
+
         return null;
     }
 
     static void CollectTextConcatParts(IRBinary bin, List<IRExpr> parts)
     {
         if (bin.Left is IRBinary left && left.Op == IRBinaryOp.AppendText)
+        {
             CollectTextConcatParts(left, parts);
+        }
         else
+        {
             parts.Add(bin.Left);
+        }
 
         if (bin.Right is IRBinary right && right.Op == IRBinaryOp.AppendText)
+        {
             CollectTextConcatParts(right, parts);
+        }
         else
+        {
             parts.Add(bin.Right);
+        }
     }
 
     static void CollectApplyArgs(IRApply app, List<IRExpr> args)
@@ -451,16 +507,25 @@ public sealed partial class CSharpEmitter
     {
         IRExpr current = app.Function;
         while (current is IRApply inner)
+        {
             current = inner.Function;
+        }
+
         if (current is IRName name && s_multiArgBuiltins.Contains(name.Name))
+        {
             return name.Name;
+        }
+
         return null;
     }
 
     bool TryEmitMultiArgBuiltin(StringBuilder sb, IRApply app, int indent)
     {
         string? name = FindBuiltinRoot(app);
-        if (name is null) return false;
+        if (name is null)
+        {
+            return false;
+        }
 
         List<IRExpr> args = [];
         CollectApplyArgs(app, args);
@@ -728,9 +793,11 @@ public sealed partial class CSharpEmitter
                     RecordType? rt = args[0].Type as RecordType;
                     if (rt is null && args[0].Type is ConstructedType ctRs
                         && m_typeDefsForRecordSet.TryGetValue(ctRs.Constructor.Value, out CodexType? td))
-                        rt = td as RecordType;
+                        {
+                            rt = td as RecordType;
+                        }
 
-                    if (rt is not null)
+                        if (rt is not null)
                     {
                         CodexType? fieldType = null;
                         for (int fi = 0; fi < rt.Fields.Length; fi++)
@@ -745,8 +812,12 @@ public sealed partial class CSharpEmitter
                         sb.Append($"((Func<{SanitizeIdentifier(rt.TypeName.Value)}, {SanitizeIdentifier(rt.TypeName.Value)}>)((_rs) => new {SanitizeIdentifier(rt.TypeName.Value)}(");
                         for (int i = 0; i < rt.Fields.Length; i++)
                         {
-                            if (i > 0) sb.Append(", ");
-                            string fn = rt.Fields[i].FieldName.Value;
+                            if (i > 0)
+                                {
+                                    sb.Append(", ");
+                                }
+
+                                string fn = rt.Fields[i].FieldName.Value;
                             if (fn == fieldLit.Value)
                             {
                                 if (args[2] is IRList emptyList && emptyList.Elements.Length == 0
@@ -755,8 +826,10 @@ public sealed partial class CSharpEmitter
                                     sb.Append($"new List<{EmitType(flt.Element)}>()");
                                 }
                                 else
-                                    EmitExpr(sb, args[2], indent);
-                            }
+                                    {
+                                        EmitExpr(sb, args[2], indent);
+                                    }
+                                }
                             else
                             {
                                 sb.Append("_rs.");
@@ -867,8 +940,12 @@ public sealed partial class CSharpEmitter
                 sb.Append("string.Concat(");
                 for (int i = 0; i < parts.Count; i++)
                 {
-                    if (i > 0) sb.Append(", ");
-                    EmitExpr(sb, parts[i], indent);
+                    if (i > 0)
+                        {
+                            sb.Append(", ");
+                        }
+
+                        EmitExpr(sb, parts[i], indent);
                 }
                 sb.Append(')');
                 break;
@@ -935,7 +1012,11 @@ public sealed partial class CSharpEmitter
     void EmitLet(StringBuilder sb, IRLet let, int indent)
     {
         string nameType = EmitType(let.NameType);
-        if (nameType == "object") nameType = "dynamic";
+        if (nameType == "object")
+        {
+            nameType = "dynamic";
+        }
+
         string funcType = $"Func<{nameType}, {EmitType(let.Body.Type)}>";
         sb.Append("((" + funcType + ")((");
         sb.Append(SanitizeIdentifier(let.Name));
@@ -969,7 +1050,11 @@ public sealed partial class CSharpEmitter
         }
         for (int i = 0; i < remaining; i++)
         {
-            if (i > 0) sb.Append(", ");
+            if (i > 0)
+            {
+                sb.Append(", ");
+            }
+
             int paramIdx = firstRemaining + i;
             string name = paramIdx < paramNames.Length
                 ? SanitizeIdentifier(paramNames[paramIdx])
@@ -984,7 +1069,11 @@ public sealed partial class CSharpEmitter
         sb.Append('(');
         for (int i = 0; i < lam.Parameters.Length; i++)
         {
-            if (i > 0) sb.Append(", ");
+            if (i > 0)
+            {
+                sb.Append(", ");
+            }
+
             sb.Append($"{EmitType(lam.Parameters[i].Type)} {SanitizeIdentifier(lam.Parameters[i].Name)}");
         }
         sb.Append(") => ");
@@ -999,7 +1088,11 @@ public sealed partial class CSharpEmitter
             sb.Append(" { ");
             for (int i = 0; i < list.Elements.Length; i++)
             {
-                if (i > 0) sb.Append(", ");
+                if (i > 0)
+                {
+                    sb.Append(", ");
+                }
+
                 EmitExpr(sb, list.Elements[i], indent);
             }
             sb.Append(" }");
@@ -1089,10 +1182,18 @@ public sealed partial class CSharpEmitter
 
             for (int i = 0; i < clause.Parameters.Length; i++)
             {
-                if (i > 0) sb.Append(", ");
+                if (i > 0)
+                {
+                    sb.Append(", ");
+                }
+
                 sb.Append(SanitizeIdentifier(clause.Parameters[i]));
             }
-            if (clause.Parameters.Length > 0) sb.Append(", ");
+            if (clause.Parameters.Length > 0)
+            {
+                sb.Append(", ");
+            }
+
             sb.Append(SanitizeIdentifier(clause.ResumeName));
             sb.AppendLine(") => {");
 

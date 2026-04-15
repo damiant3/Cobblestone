@@ -25,7 +25,9 @@ public static partial class Program
                 string[] capNames = args[++i].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
                 grantedCapabilities = Set<string>.s_empty;
                 foreach (string cap in capNames)
+                {
                     grantedCapabilities = grantedCapabilities.Add(cap);
+                }
             }
         }
         if (!File.Exists(filePath))
@@ -93,7 +95,10 @@ public static partial class Program
             {
                 List<string> names = [];
                 foreach (string c in capReport.MainEffects)
+                {
                     names.Add(c);
+                }
+
                 Console.WriteLine($"  Capabilities: [{string.Join(", ", names)}]");
             }
         }

@@ -35,10 +35,12 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
 
         // Identify colliding names (appear in 2+ modules)
         HashSet<string> collidingNames = [];
-        foreach (var kvp in nameToModules)
+        foreach (KeyValuePair<string, List<string>> kvp in nameToModules)
         {
             if (kvp.Value.Count > 1)
+            {
                 collidingNames.Add(kvp.Key);
+            }
         }
 
         // A chapter's identity is (quire, chapter-title). Same chapter title
@@ -81,7 +83,7 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
         {
             string modName = mod.Name.Parts[^1].Value;
             string modSlug = SlugFor(mod);
-            var citeAliases = chapterCiteAliases.GetValueOrDefault(modSlug)
+            Dictionary<string, string> citeAliases = chapterCiteAliases.GetValueOrDefault(modSlug)
                 ?? new Dictionary<string, string>();
 
             // Build the rename map for this module
@@ -120,7 +122,9 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
             }
 
             foreach (TypeDef td in mod.TypeDefinitions)
+            {
                 allTypeDefinitions.Add(td);
+            }
 
             allClaims.AddRange(mod.Claims);
             allProofs.AddRange(mod.Proofs);
@@ -130,7 +134,9 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
             foreach (CitesDecl cite in mod.Citations)
             {
                 if (cite.SelectedNames.Count == 0)
+                {
                     allCitations.Add(cite);
+                }
             }
         }
 
@@ -141,8 +147,12 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
         // Merge prose maps from all per-file chapters
         Dictionary<string, ChapterProse> mergedProse = [];
         foreach (Chapter mod in perFileChapters)
-            foreach (var kvp in mod.ProseByFile)
+        {
+            foreach (KeyValuePair<string, ChapterProse> kvp in mod.ProseByFile)
+            {
                 mergedProse[kvp.Key] = kvp.Value;
+            }
+        }
 
         return new Chapter(
             QualifiedName.Simple(combinedName),
@@ -161,20 +171,25 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
     static string ToSlug(string chapterName)
     {
         // Convert "CodexEmitter" or "Codex Emitter" to "codex-emitter"
-        var sb = new System.Text.StringBuilder(chapterName.Length + 4);
+        System.Text.StringBuilder sb = new System.Text.StringBuilder(chapterName.Length + 4);
         for (int i = 0; i < chapterName.Length; i++)
         {
             char c = chapterName[i];
             if (c == ' ' || c == '_')
             {
                 if (sb.Length > 0 && sb[^1] != '-')
+                {
                     sb.Append('-');
+                }
             }
             else if (char.IsUpper(c))
             {
                 // Insert hyphen before uppercase if preceded by lowercase
                 if (i > 0 && char.IsLower(chapterName[i - 1]) && sb.Length > 0 && sb[^1] != '-')
+                {
                     sb.Append('-');
+                }
+
                 sb.Append(char.ToLowerInvariant(c));
             }
             else if (char.IsLetterOrDigit(c) || c == '-')
@@ -184,13 +199,19 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
         }
         // Trim trailing hyphens
         while (sb.Length > 0 && sb[^1] == '-')
+        {
             sb.Length--;
+        }
+
         return sb.ToString();
     }
 
     Expr RenameExpr(Expr expr, Dictionary<string, string> renameMap)
     {
-        if (renameMap.Count == 0) return expr;
+        if (renameMap.Count == 0)
+        {
+            return expr;
+        }
 
         return expr switch
         {
@@ -280,7 +301,7 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
         // Each binding's value is renamed with the map BEFORE that binding's name
         // is in scope. After all bindings, the body uses a map with bound names removed.
         List<LetBinding> bindings = [];
-        var bodyMap = renameMap;
+        Dictionary<string, string> bodyMap = renameMap;
         foreach (LetBinding b in let.Bindings)
         {
             bindings.Add(new LetBinding(b.Name, RenameExpr(b.Value, bodyMap)));
@@ -298,7 +319,7 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
 
     Expr RenameLambdaExpr(LambdaExpr lam, Dictionary<string, string> renameMap)
     {
-        var bodyMap = WithoutKeys(renameMap,
+        Dictionary<string, string> bodyMap = WithoutKeys(renameMap,
             lam.Parameters.Select(p => p.Name.Value));
         return lam with { Body = RenameExpr(lam.Body, bodyMap) };
     }
@@ -308,7 +329,7 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
         // Collect all variable names bound by the pattern
         List<string> patternVars = [];
         CollectPatternVars(branch.Pattern, patternVars);
-        var bodyMap = WithoutKeys(renameMap, patternVars);
+        Dictionary<string, string> bodyMap = WithoutKeys(renameMap, patternVars);
         return new MatchBranch(
             RenamePattern(branch.Pattern, renameMap),
             RenameExpr(branch.Body, bodyMap),
@@ -324,7 +345,10 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
                 break;
             case CtorPattern ctor:
                 foreach (Pattern sub in ctor.SubPatterns)
+                {
                     CollectPatternVars(sub, vars);
+                }
+
                 break;
         }
     }
@@ -333,7 +357,7 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
     {
         // Each bind statement introduces a name that shadows in subsequent statements
         List<DoStatement> stmts = [];
-        var currentMap = renameMap;
+        Dictionary<string, string> currentMap = renameMap;
         foreach (DoStatement stmt in doExpr.Statements)
         {
             stmts.Add(RenameDoStatement(stmt, currentMap));
@@ -352,7 +376,7 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
             Computation = RenameExpr(handle.Computation, renameMap),
             Clauses = handle.Clauses.Select(c =>
             {
-                var clauseMap = WithoutKeys(renameMap,
+                Dictionary<string, string> clauseMap = WithoutKeys(renameMap,
                     c.Parameters.Select(p => p.Value).Append(c.ResumeName.Value));
                 return new HandleClause(
                     c.OperationName,

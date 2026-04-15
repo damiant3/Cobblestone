@@ -33,15 +33,21 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
             foreach (DocumentMember member in ch.Members)
             {
                 if (member is ProseBlockNode pb && prose is null)
+                {
                     prose = pb.Text;
+                }
                 else if (member is SectionNode sec)
+                {
                     sectionTitles.Add(sec.Title);
+                }
             }
         }
 
-        var proseByFile = new Dictionary<string, ChapterProse>();
+        Dictionary<string, ChapterProse> proseByFile = new Dictionary<string, ChapterProse>();
         if (chapterTitle is not null)
+        {
             proseByFile[chapterName] = new ChapterProse(chapterTitle, prose, sectionTitles);
+        }
 
         return new Chapter(name, definitions, typeDefinitions, claims, proofs, document.Span)
             { Citations = citations, EffectDefs = effectDefs,

@@ -9,7 +9,10 @@ public sealed partial class CSharpEmitter
     static bool HasSelfTailCall(IRDefinition def)
     {
         if (def.Parameters.Length == 0)
+        {
             return false;
+        }
+
         return ExprHasTailCall(def.Body, def.Name);
     }
 
@@ -31,7 +34,10 @@ public sealed partial class CSharpEmitter
     {
         IRExpr root = app.Function;
         while (root is IRApply inner)
+        {
             root = inner.Function;
+        }
+
         return root is IRName name && name.Name == funcName;
     }
 
@@ -44,7 +50,11 @@ public sealed partial class CSharpEmitter
         sb.Append($"    public static {returnType} {name}{generics}(");
         for (int i = 0; i < def.Parameters.Length; i++)
         {
-            if (i > 0) sb.Append(", ");
+            if (i > 0)
+            {
+                sb.Append(", ");
+            }
+
             IRParameter param = def.Parameters[i];
             sb.Append($"{EmitType(param.Type)} {SanitizeIdentifier(param.Name)}");
         }
@@ -132,7 +142,10 @@ public sealed partial class CSharpEmitter
                 case IRVarPattern:
                     sb.AppendLine($"{pad}{{");
                     if (branch.Pattern is IRVarPattern vp)
+                    {
                         sb.AppendLine($"{pad}    var {SanitizeIdentifier(vp.Name)} = {scrutineeVar};");
+                    }
+
                     EmitTailCallBody(sb, branch.Body, funcName, parameters, indent + 1);
                     sb.AppendLine($"{pad}}}");
                     break;
@@ -143,7 +156,9 @@ public sealed partial class CSharpEmitter
                     for (int i = 0; i < ctorPat.SubPatterns.Length; i++)
                     {
                         if (ctorPat.SubPatterns[i] is IRVarPattern svp)
+                        {
                             sb.AppendLine($"{pad}    var {SanitizeIdentifier(svp.Name)} = {matchVar}.Field{i};");
+                        }
                     }
                     EmitTailCallBody(sb, branch.Body, funcName, parameters, indent + 1);
                     sb.AppendLine($"{pad}}}");

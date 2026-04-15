@@ -56,7 +56,9 @@ sealed partial class WasmModuleBuilder
 
         byte[] paramTypes = new byte[paramCount];
         for (int i = 0; i < paramCount; i++)
+        {
             paramTypes[i] = WasmTypeFor(def.Parameters[i].Type);
+        }
 
         byte[] resultTypes = returnType is VoidType or NothingType
             ? Array.Empty<byte>() : new byte[] { WasmTypeFor(returnType) };
@@ -68,7 +70,9 @@ sealed partial class WasmModuleBuilder
         List<byte> localTypes = new();
         ValueMap<string, int> localMap = ValueMap<string, int>.s_empty;
         for (int i = 0; i < paramCount; i++)
+        {
             localMap = localMap.Set(def.Parameters[i].Name, i);
+        }
 
         MemoryStream body = new();
         int nextLocal = paramCount;
@@ -317,20 +321,48 @@ sealed partial class WasmModuleBuilder
                 body.WriteByte(OpI32Eqz);
                 break;
             case IRBinaryOp.Lt:
-                if (bin.Left.Type is NumberType) body.WriteByte(OpF64Lt);
-                else body.WriteByte(OpI64LtS);
+                if (bin.Left.Type is NumberType)
+                {
+                    body.WriteByte(OpF64Lt);
+                }
+                else
+                {
+                    body.WriteByte(OpI64LtS);
+                }
+
                 break;
             case IRBinaryOp.Gt:
-                if (bin.Left.Type is NumberType) body.WriteByte(OpF64Gt);
-                else body.WriteByte(OpI64GtS);
+                if (bin.Left.Type is NumberType)
+                {
+                    body.WriteByte(OpF64Gt);
+                }
+                else
+                {
+                    body.WriteByte(OpI64GtS);
+                }
+
                 break;
             case IRBinaryOp.LtEq:
-                if (bin.Left.Type is NumberType) body.WriteByte(OpF64Le);
-                else body.WriteByte(OpI64LeS);
+                if (bin.Left.Type is NumberType)
+                {
+                    body.WriteByte(OpF64Le);
+                }
+                else
+                {
+                    body.WriteByte(OpI64LeS);
+                }
+
                 break;
             case IRBinaryOp.GtEq:
-                if (bin.Left.Type is NumberType) body.WriteByte(OpF64Ge);
-                else body.WriteByte(OpI64GeS);
+                if (bin.Left.Type is NumberType)
+                {
+                    body.WriteByte(OpF64Ge);
+                }
+                else
+                {
+                    body.WriteByte(OpI64GeS);
+                }
+
                 break;
             case IRBinaryOp.And:
                 body.WriteByte(OpI32Mul); // both are i32 0/1
@@ -417,7 +449,9 @@ sealed partial class WasmModuleBuilder
         if (func is IRName funcName)
         {
             if (TryEmitBuiltin(body, funcName.Name, args, localMap, ref nextLocal, localTypes))
+            {
                 return;
+            }
 
             if (m_functionIndex.TryGet(funcName.Name, out int funcIdx))
             {
@@ -432,7 +466,9 @@ sealed partial class WasmModuleBuilder
 
             // Sum type constructor: allocate [tag i32][field0 8B][field1 8B]...
             if (TryEmitConstructor(body, funcName.Name, args, apply.Type, localMap, ref nextLocal, localTypes))
+            {
                 return;
+            }
         }
     }
 
@@ -443,7 +479,9 @@ sealed partial class WasmModuleBuilder
         // Walk through the result type to find a SumType
         SumType? sumType = resultType as SumType;
         if (sumType is null)
+        {
             return false;
+        }
 
         // Find the tag index
         int tag = -1;
@@ -456,7 +494,9 @@ sealed partial class WasmModuleBuilder
             }
         }
         if (tag < 0)
+        {
             return false;
+        }
 
         int totalSize = 8 + args.Count * 8; // tag + fields
 
@@ -511,7 +551,10 @@ sealed partial class WasmModuleBuilder
                     EmitExpr(body, doExecStmt.Expression, localMap, ref nextLocal, localTypes, doExecStmt.Expression.Type);
                     // Drop result if not the last statement or if void
                     if (i < doExpr.Statements.Length - 1 && doExecStmt.Expression.Type is not (VoidType or NothingType))
+                    {
                         body.WriteByte(OpDrop);
+                    }
+
                     break;
 
                 case IRDoBind doBind:

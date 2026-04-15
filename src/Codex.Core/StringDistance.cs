@@ -4,14 +4,23 @@ public static class StringDistance
 {
     public static int Levenshtein(string a, string b)
     {
-        if (a.Length == 0) return b.Length;
-        if (b.Length == 0) return a.Length;
+        if (a.Length == 0)
+        {
+            return b.Length;
+        }
+
+        if (b.Length == 0)
+        {
+            return a.Length;
+        }
 
         int[] prev = new int[b.Length + 1];
         int[] curr = new int[b.Length + 1];
 
         for (int j = 0; j <= b.Length; j++)
+        {
             prev[j] = j;
+        }
 
         for (int i = 1; i <= a.Length; i++)
         {
@@ -38,7 +47,9 @@ public static class StringDistance
         {
             // Skip if length difference alone exceeds max distance
             if (Math.Abs(candidate.Length - target.Length) > maxDistance)
+            {
                 continue;
+            }
 
             int dist = Levenshtein(target, candidate);
             if (dist < bestDist)

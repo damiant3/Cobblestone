@@ -38,23 +38,41 @@ public static partial class Program
         for (int i = 1; i < args.Length; i++)
         {
             if (args[i] == "--target" && i + 1 < args.Length)
+            {
                 targetOverride = args[++i].ToLowerInvariant();
+            }
             else if (args[i] == "--targets" && i + 1 < args.Length)
+            {
                 multiTargets = args[++i].ToLowerInvariant().Split(',', StringSplitOptions.RemoveEmptyEntries);
+            }
             else if (args[i] == "--view" && i + 1 < args.Length)
+            {
                 viewName = args[++i];
+            }
             else if (args[i] == "--capabilities" && i + 1 < args.Length)
+            {
                 capNames = args[++i].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            }
             else if (args[i] == "--output-dir" && i + 1 < args.Length)
+            {
                 outputDirOverride = args[++i];
+            }
             else if (args[i] == "--incremental" || args[i] == "-i")
+            {
                 incremental = true;
+            }
             else if (args[i] == "--verbose" || args[i] == "-v")
+            {
                 verbose = true;
+            }
             else if (args[i] == "--dump-frames")
+            {
                 dumpFrames = true;
+            }
             else if (args[i] == "--diagnostic")
+            {
                 diagnostic = true;
+            }
         }
         s_verbose = verbose;
         s_dumpFrames = dumpFrames;
@@ -65,7 +83,9 @@ public static partial class Program
         {
             grantedCapabilities = Set<string>.s_empty;
             foreach (string cap in capNames)
+            {
                 grantedCapabilities = grantedCapabilities.Add(cap);
+            }
         }
 
         // Also support: codex build --view <name> (without a file arg)
@@ -76,12 +96,16 @@ public static partial class Program
             for (int i = 2; i < args.Length; i++)
             {
                 if (args[i] == "--target" && i + 1 < args.Length)
+                {
                     targetOverride = args[++i].ToLowerInvariant();
+                }
             }
         }
 
         if (viewName is not null)
+        {
             return RunBuildView(viewName, targetOverride ?? "cs", grantedCapabilities);
+        }
 
         if (filePath == "." || filePath == "./" || filePath == ".\\"
             || (Directory.Exists(filePath) && File.Exists(Path.Combine(filePath, "codex.project.json"))))
@@ -124,13 +148,17 @@ public static partial class Program
             depLoaders.Count > 0 ? depLoaders : null;
 
         if (depLoaders.Count > 0)
+        {
             Console.WriteLine($"  Dependencies: {depLoaders.Count} loader(s)");
+        }
 
         string outputDir = outputDirOverride is not null
             ? Path.GetFullPath(outputDirOverride)
             : Path.GetFullPath(Path.Combine(directory, project.Output));
         if (!Directory.Exists(outputDir))
+        {
             Directory.CreateDirectory(outputDir);
+        }
 
         if (multiTargets is not null && multiTargets.Length > 1)
         {
@@ -158,7 +186,10 @@ public static partial class Program
         }
 
         IRCompilationResult? irResult = CompileMultipleToIR(files, project.Name, extraLoaders, codexRoot: fullDir);
-        if (irResult is null) return 1;
+        if (irResult is null)
+        {
+            return 1;
+        }
 
         if (IsAssemblyTarget(target))
         {
@@ -181,7 +212,10 @@ public static partial class Program
         List<string> fileList = [];
         fileList.AddRange(Directory.GetFiles(directory, "*.codex", SearchOption.TopDirectoryOnly));
         foreach (string subDir in Directory.GetDirectories(directory))
+        {
             fileList.AddRange(Directory.GetFiles(subDir, "*.codex", SearchOption.TopDirectoryOnly));
+        }
+
         string[] files = fileList.ToArray();
         if (files.Length == 0)
         {
@@ -191,7 +225,10 @@ public static partial class Program
         Array.Sort(files, StringComparer.Ordinal);
         string chapterName = Path.GetFileName(Path.GetFullPath(directory));
         IRCompilationResult? irResult = CompileMultipleToIR(files, chapterName, codexRoot: Path.GetFullPath(directory));
-        if (irResult is null) return 1;
+        if (irResult is null)
+        {
+            return 1;
+        }
 
         if (IsAssemblyTarget(target))
         {
@@ -211,7 +248,10 @@ public static partial class Program
     static int RunBuildFile(string filePath, string target, Set<string>? grantedCapabilities = null, string? outputDirOverride = null)
     {
         IRCompilationResult? irResult = CompileToIR(filePath, grantedCapabilities);
-        if (irResult is null) return 1;
+        if (irResult is null)
+        {
+            return 1;
+        }
 
         if (IsAssemblyTarget(target))
         {
@@ -253,12 +293,17 @@ public static partial class Program
         Console.WriteLine($"Building from view: {viewName}");
 
         IRCompilationResult? irResult = CompileViewToIR(store, viewName, viewName, grantedCapabilities);
-        if (irResult is null) return 1;
+        if (irResult is null)
+        {
+            return 1;
+        }
 
         string outputDir = Directory.GetCurrentDirectory();
 
         if (IsAssemblyTarget(target))
+        {
             return EmitAssembly(irResult, outputDir, viewName, target);
+        }
 
         Codex.Emit.ICodeEmitter emitter = CreateEmitter(target);
         string output = emitter.Emit(irResult.Chapter);
@@ -274,11 +319,17 @@ public static partial class Program
     static void PrintCapabilityReport(CapabilityReport? report)
     {
         if (report is null || !report.MainRequiresEffects)
+        {
             return;
+        }
+
         Set<string> caps = report.RequiredCapabilities;
         List<string> names = [];
         foreach (string c in report.MainEffects)
+        {
             names.Add(c);
+        }
+
         Console.WriteLine($"  Capabilities: [{string.Join(", ", names)}]");
     }
 
@@ -288,9 +339,15 @@ public static partial class Program
 
     static void PrintTypes(IRCompilationResult irResult)
     {
-        if (!s_verbose) return;
+        if (!s_verbose)
+        {
+            return;
+        }
+
         foreach (KeyValuePair<string, CodexType> kv in irResult.Types)
+        {
             Console.WriteLine($"  {kv.Key} : {kv.Value}");
+        }
     }
 
     static bool IsAssemblyTarget(string target) => target is "il" or "exe" or "riscv" or "riscv-bare" or "wasm" or "arm64" or "x86-64" or "x86-64-bare";
@@ -352,7 +409,10 @@ public static partial class Program
                     string offsPath = Path.Combine(outputDir, chapterName + ".funcoffsets.txt");
                     using StreamWriter sw = new(offsPath);
                     foreach (KeyValuePair<string, int> kv in offs.OrderBy(o => o.Value))
+                    {
                         sw.WriteLine($"{kv.Value:X8} {kv.Key}");
+                    }
+
                     Console.WriteLine($"  func offsets: {offsPath} ({offs.Count} entries)");
                 }
             }
@@ -390,7 +450,9 @@ public static partial class Program
         // next to the output so `dotnet <file>.dll` resolves it via default probing.
         string codexCoreDll = typeof(Codex.Core.CceTable).Assembly.Location;
         if (!string.IsNullOrEmpty(codexCoreDll))
+        {
             File.Copy(codexCoreDll, Path.Combine(outputDir, "Codex.Core.dll"), overwrite: true);
+        }
 
         string runtimeConfigPath = Path.Combine(outputDir, chapterName + ".runtimeconfig.json");
         File.WriteAllText(runtimeConfigPath, """
@@ -410,9 +472,13 @@ public static partial class Program
         bool appHostCreated = TryCreateAppHost(dllPath, exePath, chapterName + ".dll");
 
         if (appHostCreated)
+        {
             Console.WriteLine($"✓ Compiled to {exePath} ({target}, apphost + {chapterName}.dll)");
+        }
         else
+        {
             Console.WriteLine($"✓ Compiled to {dllPath} ({target}, run with: dotnet {dllPath})");
+        }
 
         PrintTypes(irResult);
         return 0;
@@ -438,11 +504,17 @@ public static partial class Program
                 string? dir = candidate;
                 // Walk up from candidate until we find a dir containing "sdk/"
                 while (dir != null && !Directory.Exists(Path.Combine(dir, "sdk")))
+                {
                     dir = Path.GetDirectoryName(dir);
+                }
+
                 if (dir != null) { dotnetRoot = dir; break; }
             }
 
-            if (dotnetRoot == null) return false;
+            if (dotnetRoot == null)
+            {
+                return false;
+            }
 
             // Find the latest SDK's AppHostTemplate
             string sdkDir = Path.Combine(dotnetRoot, "sdk");
@@ -451,7 +523,10 @@ public static partial class Program
                 .OrderByDescending(d => d)
                 .FirstOrDefault();
 
-            if (latestSdk == null) return false;
+            if (latestSdk == null)
+            {
+                return false;
+            }
 
             string templatePath = Path.Combine(latestSdk, "AppHostTemplate", "apphost.exe");
             byte[] appHost = File.ReadAllBytes(templatePath);
@@ -461,11 +536,17 @@ public static partial class Program
                 "c3ab8ff13720e8ad9047dd39466b3c8974e592c2fa383d4a3960714caef0c4f2");
 
             int offset = FindBytes(appHost, placeholder);
-            if (offset < 0) return false;
+            if (offset < 0)
+            {
+                return false;
+            }
 
             // Write the DLL filename (UTF-8, null-terminated, padded to 1024)
             byte[] dllNameBytes = System.Text.Encoding.UTF8.GetBytes(dllFileName);
-            if (dllNameBytes.Length >= 1024) return false;
+            if (dllNameBytes.Length >= 1024)
+            {
+                return false;
+            }
 
             // Clear the 1024-byte slot and write the filename
             Array.Clear(appHost, offset, 1024);
@@ -489,7 +570,10 @@ public static partial class Program
             {
                 if (haystack[i + j] != needle[j]) { match = false; break; }
             }
-            if (match) return i;
+            if (match)
+            {
+                return i;
+            }
         }
         return -1;
     }

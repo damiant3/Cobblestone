@@ -28,17 +28,23 @@ sealed class FileChapterLoader(
         string key = $"{quire}::{chapterName}";
         ResolvedChapter? cached = m_cache[key];
         if (cached is not null)
+        {
             return cached;
+        }
 
         string quireDir = (m_virtualQuireName is not null && quire == m_virtualQuireName)
             ? m_baseDirectory
             : Path.Combine(m_baseDirectory, quire);
         if (!Directory.Exists(quireDir))
+        {
             return null;
+        }
 
         string? filePath = FindFileForChapter(quireDir, chapterName);
         if (filePath is null)
+        {
             return null;
+        }
 
         string source = File.ReadAllText(filePath);
         SourceText src = new(filePath, source);
@@ -46,19 +52,25 @@ sealed class FileChapterLoader(
 
         DocumentNode document = DocumentParser.Parse(src, compileDiag);
         if (compileDiag.HasErrors)
+        {
             return null;
+        }
 
         Desugarer desugarer = new(compileDiag);
         Chapter chapter = desugarer.Desugar(document, chapterName);
         if (compileDiag.HasErrors)
+        {
             return null;
+        }
 
         // Transitive imports resolve against the same codex root + quire layout.
         FileChapterLoader transitiveLoader = new(m_baseDirectory, compileDiag, m_virtualQuireName);
         NameResolver resolver = new(compileDiag, transitiveLoader);
         ResolvedChapter resolved = resolver.Resolve(chapter);
         if (compileDiag.HasErrors)
+        {
             return null;
+        }
 
         m_cache = m_cache.Set(key, resolved);
         return resolved;
@@ -70,12 +82,25 @@ sealed class FileChapterLoader(
         {
             string? firstLine = null;
             using (StreamReader r = new(file))
+            {
                 firstLine = r.ReadLine();
-            if (firstLine is null) continue;
-            if (!firstLine.StartsWith("Chapter:", StringComparison.Ordinal)) continue;
+            }
+
+            if (firstLine is null)
+            {
+                continue;
+            }
+
+            if (!firstLine.StartsWith("Chapter:", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
             string title = firstLine["Chapter:".Length..].Trim();
             if (title == chapterName)
+            {
                 return file;
+            }
         }
         return null;
     }

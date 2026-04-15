@@ -66,7 +66,10 @@ sealed class ToolDispatcher
         {
             string[] codexFiles = Directory.GetFiles(path, "*.codex");
             if (codexFiles.Length == 0)
+            {
                 throw new McpException(-32602, $"No .codex files found in {path}");
+            }
+
             file = codexFiles[0];
         }
 
@@ -239,7 +242,9 @@ sealed class ToolDispatcher
         {
             CodexType? type = env.Lookup(name);
             if (type is not null)
+            {
                 lines.Add($"{name} : {type}");
+            }
         }
 
         lines.Sort(StringComparer.Ordinal);
@@ -260,7 +265,9 @@ sealed class ToolDispatcher
     static McpAnalysisResult AnalyzeFile(string file)
     {
         if (!File.Exists(file))
+        {
             throw new McpException(-32602, $"File not found: {file}");
+        }
 
         string text = File.ReadAllText(file);
         SourceText source = new(file, text);
@@ -358,7 +365,10 @@ sealed class ToolDispatcher
             // Emitted IL depends on Codex.Core.CceTable; copy it next to the output.
             string codexCoreDll = typeof(Codex.Core.CceTable).Assembly.Location;
             if (!string.IsNullOrEmpty(codexCoreDll))
+            {
                 File.Copy(codexCoreDll, Path.Combine(outputDir, "Codex.Core.dll"), overwrite: true);
+            }
+
             return outputPath;
         }
 
@@ -385,14 +395,18 @@ sealed class ToolDispatcher
         int warnings = result.Diagnostics.Count(d => d.Severity == DiagnosticSeverity.Warning);
         int typeCount = 0;
         foreach (KeyValuePair<string, CodexType> _ in result.Types)
+        {
             typeCount++;
+        }
 
         string summary = errors == 0
             ? $"✓ {file}: {typeCount} definition(s), no errors"
             : $"✗ {file}: {errors} error(s), {warnings} warning(s)";
 
         if (result.Diagnostics.Length > 0)
+        {
             summary += "\n" + FormatDiagnostics(result.Diagnostics);
+        }
 
         return summary;
     }
@@ -407,7 +421,10 @@ sealed class ToolDispatcher
     {
         string? value = args?[name]?.GetValue<string>();
         if (value is null)
+        {
             throw new McpException(-32602, $"Missing required argument: {name}");
+        }
+
         return value;
     }
 }

@@ -17,18 +17,24 @@ internal sealed class HoverHandler(DocumentStore store) : HoverHandlerBase
         AnalysisResult? result = m_store.GetResult(uri);
         string? text = m_store.GetText(uri);
         if (result is null || text is null)
+        {
             return Task.FromResult<Hover?>(null);
+        }
 
         int line = (int)request.Position.Line;
         int col = (int)request.Position.Character;
 
         string? word = LspHelpers.GetWordAt(text, line, col);
         if (word is null)
+        {
             return Task.FromResult<Hover?>(null);
+        }
 
         string? content = GetHoverContent(result, word);
         if (content is null)
+        {
             return Task.FromResult<Hover?>(null);
+        }
 
         return Task.FromResult<Hover?>(new Hover
         {
@@ -44,19 +50,25 @@ internal sealed class HoverHandler(DocumentStore store) : HoverHandlerBase
     {
         CodexType? type = result.Types[word];
         if (type is not null)
+        {
             return $"**{word}** : `{type}`";
+        }
 
         foreach (TypeDef typeDef in result.TypeDefinitions)
         {
             if (typeDef.Name.Value == word)
+            {
                 return FormatTypeDef(typeDef);
+            }
 
             if (typeDef is VariantTypeDef variant)
             {
                 foreach (VariantCtorDef ctor in variant.Constructors)
                 {
                     if (ctor.Name.Value == word)
+                    {
                         return FormatConstructor(variant, ctor);
+                    }
                 }
             }
         }
@@ -82,7 +94,10 @@ internal sealed class HoverHandler(DocumentStore store) : HoverHandlerBase
     static string FormatConstructor(VariantTypeDef variant, VariantCtorDef ctor)
     {
         if (ctor.Fields.Count == 0)
+        {
             return $"**{ctor.Name.Value}** : `{variant.Name.Value}`";
+        }
+
         string fields = string.Join(", ", ctor.Fields.Select(f =>
             f.FieldName is not null ? $"{f.FieldName.Value} : {f.Type}" : $"{f.Type}"));
         return $"**{ctor.Name.Value}** ({fields}) : `{variant.Name.Value}`";

@@ -182,7 +182,10 @@ static class RiscVEncoder
             int hi20 = (val + 0x800) >> 12; // round up for sign extension
             int lo12 = val - (hi20 << 12);
             if (lo12 == 0)
+            {
                 return new[] { Lui(rd, hi20) };
+            }
+
             return new[] { Lui(rd, hi20), Addiw(rd, rd, lo12) };
         }
 
@@ -192,7 +195,10 @@ static class RiscVEncoder
         // upper 32 bits.  Bump hi32 by 1 so the add cancels those bits out.
         int lo32 = (int)(value & 0xFFFFFFFF);
         int hi32 = (int)(value >> 32);
-        if (lo32 < 0) hi32++;
+        if (lo32 < 0)
+        {
+            hi32++;
+        }
 
         List<uint> insns = new();
 

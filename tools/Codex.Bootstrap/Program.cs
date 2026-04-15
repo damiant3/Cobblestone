@@ -18,17 +18,24 @@ partial class Program
     /// </summary>
     static string LoadCodexSourceConcatenated(string codexDir)
     {
-        var files = new List<string>();
+        List<string> files = new List<string>();
         files.AddRange(Directory.GetFiles(codexDir, "*.codex", SearchOption.TopDirectoryOnly));
         foreach (string sub in Directory.GetDirectories(codexDir))
+        {
             files.AddRange(Directory.GetFiles(sub, "*.codex", SearchOption.TopDirectoryOnly));
+        }
+
         files.Sort(StringComparer.Ordinal);
 
-        var buf = new StringBuilder();
+        StringBuilder buf = new StringBuilder();
         foreach (string f in files)
         {
             string content = File.ReadAllText(f);
-            if (content.Length == 0) continue;
+            if (content.Length == 0)
+            {
+                continue;
+            }
+
             string quire = QuireOf(f, codexDir);
             if (quire.Length > 0)
             {
@@ -37,7 +44,11 @@ partial class Program
                     m => m.Groups[1].Value + quire + "--" + m.Groups[2].Value.Trim(),
                     RegexOptions.Multiline);
             }
-            if (buf.Length > 0) buf.Append("\n\n");
+            if (buf.Length > 0)
+            {
+                buf.Append("\n\n");
+            }
+
             buf.Append(content);
         }
         return buf.ToString();
@@ -55,7 +66,7 @@ partial class Program
     static int Main(string[] args)
     {
         int exitCode = 1;
-        var thread = new Thread(() => exitCode = Run(args), 256 * 1024 * 1024);
+        Thread thread = new Thread(() => exitCode = Run(args), 256 * 1024 * 1024);
         thread.Start();
         thread.Join();
         return exitCode;
@@ -64,21 +75,44 @@ partial class Program
     static int Run(string[] args)
     {
         if (args.Length > 0 && args[0] == "--mini" && args.Length > 1)
+        {
             return RunMini(args[1]);
+        }
+
         if (args.Length > 0 && args[0] == "--bench")
+        {
             return RunBench(args.Length > 1 ? args[1] : null);
+        }
+
         if (args.Length > 0 && args[0] == "--bench-check")
+        {
             return RunBenchCheck(args.Length > 1 ? args[1] : null);
+        }
+
         if (args.Length > 0 && args[0] == "--bench-save")
+        {
             return RunBenchSave(args.Length > 1 ? args[1] : null);
+        }
+
         if (args.Length > 0 && args[0] == "--dump-source")
+        {
             return RunDumpSource(args.Length > 1 ? args[1] : null);
+        }
+
         if (args.Length > 0 && args[0] == "--codex-emit")
+        {
             return RunCodexEmit(args.Length > 1 ? args[1] : null, args.Length > 2 ? args[2] : null);
+        }
+
         if (args.Length > 0 && args[0] == "--scan-test" && args.Length > 1)
+        {
             return RunScanTest(args[1]);
+        }
+
         if (args.Length > 0 && args[0] == "--binary")
+        {
             return RunBinaryEmit(args.Length > 1 ? args[1] : null);
+        }
 
         bool verbose = args.Contains("--verbose");
         string[] posArgs = args.Where(a => !a.StartsWith("--")).ToArray();
@@ -104,47 +138,47 @@ partial class Program
 
         try
         {
-            var sw = System.Diagnostics.Stopwatch.StartNew();
+            System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
             string chapterCce = _Cce.FromUnicode("Codex_Codex");
 
             Console.WriteLine("  [1/11] tokenize...");
-            var tokens = Codex_Codex_Codex.tokenize(cceCombined, 1L);
+            List<Token> tokens = Codex_Codex_Codex.tokenize(cceCombined, 1L);
             Console.WriteLine($"         {sw.ElapsedMilliseconds}ms — {tokens.Count} tokens");
 
             Console.WriteLine("  [2/11] make_parse_state...");
-            var ps = Codex_Codex_Codex.make_parse_state(tokens);
+            ParseState ps = Codex_Codex_Codex.make_parse_state(tokens);
             Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
 
             Console.WriteLine("  [3/11] scan_document...");
-            var scan = Codex_Codex_Codex.scan_document(ps);
+            ScanResult scan = Codex_Codex_Codex.scan_document(ps);
             Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
 
             Console.WriteLine("  [4/11] build_all_assignments...");
-            var assignments = Codex_Codex_Codex.build_all_assignments(scan.def_headers, 0L, new List<ChapterAssignment>());
+            List<ChapterAssignment> assignments = Codex_Codex_Codex.build_all_assignments(scan.def_headers, 0L, new List<ChapterAssignment>());
             Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
 
             Console.WriteLine("  [5/11] find_colliding_names...");
-            var colliding = Codex_Codex_Codex.find_colliding_names(assignments);
+            List<string> colliding = Codex_Codex_Codex.find_colliding_names(assignments);
             Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
 
             Console.WriteLine("  [6/11] parse_document...");
-            var doc = Codex_Codex_Codex.parse_document(Codex_Codex_Codex.make_parse_state(tokens));
+            Document doc = Codex_Codex_Codex.parse_document(Codex_Codex_Codex.make_parse_state(tokens));
             Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
 
             Console.WriteLine("  [7/11] desugar_document...");
-            var ast = Codex_Codex_Codex.desugar_document(doc, chapterCce);
+            AChapter ast = Codex_Codex_Codex.desugar_document(doc, chapterCce);
             Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
 
             Console.WriteLine("  [8/11] scope_achapter...");
-            var scoped = Codex_Codex_Codex.scope_achapter(ast, colliding, assignments);
+            AChapter scoped = Codex_Codex_Codex.scope_achapter(ast, colliding, assignments);
             Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
 
             Console.WriteLine("  [9/11] check_chapter...");
-            var checkResult = Codex_Codex_Codex.check_chapter(scoped);
+            ChapterResult checkResult = Codex_Codex_Codex.check_chapter(scoped);
             Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
 
             Console.WriteLine("  [10/11] lower_chapter...");
-            var ir = Codex_Codex_Codex.lower_chapter(scoped, checkResult.types, checkResult.state);
+            IRChapter ir = Codex_Codex_Codex.lower_chapter(scoped, checkResult.types, checkResult.state);
             Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
 
             Console.WriteLine("  [11/11] csharp_emitter_emit_full_chapter...");
@@ -307,35 +341,35 @@ partial class Program
         out double resolveMs, out double checkMs, out double lowerMs,
         out double emitMs, out double totalMs)
     {
-        var total = System.Diagnostics.Stopwatch.StartNew();
+        System.Diagnostics.Stopwatch total = System.Diagnostics.Stopwatch.StartNew();
 
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        var tokens = Codex_Codex_Codex.tokenize(source, 1L);
+        System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
+        List<Token> tokens = Codex_Codex_Codex.tokenize(source, 1L);
         sw.Stop(); lexMs = sw.Elapsed.TotalMilliseconds;
 
         sw.Restart();
-        var pst = Codex_Codex_Codex.make_parse_state(tokens);
-        var doc = Codex_Codex_Codex.parse_document(pst);
+        ParseState pst = Codex_Codex_Codex.make_parse_state(tokens);
+        Document doc = Codex_Codex_Codex.parse_document(pst);
         sw.Stop(); parseMs = sw.Elapsed.TotalMilliseconds;
 
         sw.Restart();
-        var ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("Bench"));
+        AChapter ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("Bench"));
         sw.Stop(); desugarMs = sw.Elapsed.TotalMilliseconds;
 
         sw.Restart();
-        var resolved = Codex_Codex_Codex.resolve_chapter(ast);
+        ResolveResult resolved = Codex_Codex_Codex.resolve_chapter(ast);
         sw.Stop(); resolveMs = sw.Elapsed.TotalMilliseconds;
 
         sw.Restart();
-        var checkResult = Codex_Codex_Codex.check_chapter(ast);
+        ChapterResult checkResult = Codex_Codex_Codex.check_chapter(ast);
         sw.Stop(); checkMs = sw.Elapsed.TotalMilliseconds;
 
         sw.Restart();
-        var ir = Codex_Codex_Codex.lower_chapter(ast, checkResult.types, checkResult.state);
+        IRChapter ir = Codex_Codex_Codex.lower_chapter(ast, checkResult.types, checkResult.state);
         sw.Stop(); lowerMs = sw.Elapsed.TotalMilliseconds;
 
         sw.Restart();
-        var output = Codex_Codex_Codex.emit__csharp_emitter_emit_full_chapter(ir, ast.type_defs);
+        string output = Codex_Codex_Codex.emit__csharp_emitter_emit_full_chapter(ir, ast.type_defs);
         sw.Stop(); emitMs = sw.Elapsed.TotalMilliseconds;
 
         total.Stop(); totalMs = total.Elapsed.TotalMilliseconds;
@@ -361,9 +395,11 @@ partial class Program
         // Minimal JSON parsing — extract medianMs and thresholdPercent
         double baselineMs = ExtractJsonDouble(json, "medianMs");
         double threshold = ExtractJsonDouble(json, "thresholdPercent");
-        var baselineStages = new Dictionary<string, double>();
+        Dictionary<string, double> baselineStages = new Dictionary<string, double>();
         foreach (string stage in new[] { "lex", "parse", "desugar", "resolve", "typecheck", "lower", "emit" })
+        {
             baselineStages[stage] = ExtractJsonDouble(json, stage);
+        }
 
         Console.WriteLine($"Baseline: {baselineMs:F2}ms (threshold: {threshold}%)");
         Console.WriteLine();
@@ -401,7 +437,7 @@ partial class Program
         Array.Sort(emitT); Array.Sort(totalT);
         int mid = measured / 2;
 
-        var current = new Dictionary<string, double>
+        Dictionary<string, double> current = new Dictionary<string, double>
         {
             ["lex"] = lexT[mid], ["parse"] = parseT[mid], ["desugar"] = desugarT[mid],
             ["resolve"] = resolveT[mid], ["typecheck"] = checkT[mid],
@@ -475,9 +511,9 @@ partial class Program
         string commit = "unknown";
         try
         {
-            var psi = new System.Diagnostics.ProcessStartInfo("git", "rev-parse --short HEAD")
+            System.Diagnostics.ProcessStartInfo psi = new System.Diagnostics.ProcessStartInfo("git", "rev-parse --short HEAD")
             { RedirectStandardOutput = true, UseShellExecute = false };
-            var proc = System.Diagnostics.Process.Start(psi);
+            System.Diagnostics.Process? proc = System.Diagnostics.Process.Start(psi);
             if (proc is not null) { commit = proc.StandardOutput.ReadToEnd().Trim(); proc.WaitForExit(); }
         }
         catch { /* git not available */ }
@@ -515,13 +551,29 @@ partial class Program
     {
         // Simple: find "key": value
         int idx = json.IndexOf($"\"{key}\"");
-        if (idx < 0) return 0;
+        if (idx < 0)
+        {
+            return 0;
+        }
+
         int colon = json.IndexOf(':', idx);
-        if (colon < 0) return 0;
+        if (colon < 0)
+        {
+            return 0;
+        }
+
         int start = colon + 1;
-        while (start < json.Length && (json[start] == ' ' || json[start] == '\t')) start++;
+        while (start < json.Length && (json[start] == ' ' || json[start] == '\t'))
+        {
+            start++;
+        }
+
         int end = start;
-        while (end < json.Length && (char.IsDigit(json[end]) || json[end] == '.' || json[end] == '-')) end++;
+        while (end < json.Length && (char.IsDigit(json[end]) || json[end] == '.' || json[end] == '-'))
+        {
+            end++;
+        }
+
         return double.TryParse(json[start..end], System.Globalization.CultureInfo.InvariantCulture, out double v) ? v : 0;
     }
 
@@ -545,17 +597,17 @@ partial class Program
         string source = _Cce.FromUnicode(combined);
         Console.Error.WriteLine($"Source: {combined.Length} chars");
 
-        var tokens = Codex_Codex_Codex.tokenize(source, 1L);
-        var st = Codex_Codex_Codex.make_parse_state(tokens);
-        var doc = Codex_Codex_Codex.parse_document(st);
-        var ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("Codex_Codex"));
+        List<Token> tokens = Codex_Codex_Codex.tokenize(source, 1L);
+        ParseState st = Codex_Codex_Codex.make_parse_state(tokens);
+        Document doc = Codex_Codex_Codex.parse_document(st);
+        AChapter ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("Codex_Codex"));
         Console.Error.WriteLine($"  Defs: {ast.defs.Count}, TypeDefs: {ast.type_defs.Count}");
 
-        var checkResult = Codex_Codex_Codex.check_chapter(ast);
+        ChapterResult checkResult = Codex_Codex_Codex.check_chapter(ast);
         Console.Error.WriteLine($"  Type bindings: {checkResult.types.Count}");
         Console.Error.WriteLine($"  Unification errors: {checkResult.state.bag.diagnostics.Count}");
 
-        var ir = Codex_Codex_Codex.lower_chapter(ast, checkResult.types, checkResult.state);
+        IRChapter ir = Codex_Codex_Codex.lower_chapter(ast, checkResult.types, checkResult.state);
         Console.Error.WriteLine($"  IR defs: {ir.defs.Count}");
 
         string cceOutput = Codex_Codex_Codex.emit__codex_emitter_emit_full_chapter(ir, ast.type_defs);
@@ -571,23 +623,23 @@ partial class Program
     {
         string source = File.ReadAllText(filePath);
         string cceSrc = _Cce.FromUnicode(source);
-        var tokens = Codex_Codex_Codex.tokenize(cceSrc, 1L);
+        List<Token> tokens = Codex_Codex_Codex.tokenize(cceSrc, 1L);
 
         // Test scan_document
-        var st = Codex_Codex_Codex.make_parse_state(tokens);
-        var scan = Codex_Codex_Codex.scan_document(st);
+        ParseState st = Codex_Codex_Codex.make_parse_state(tokens);
+        ScanResult scan = Codex_Codex_Codex.scan_document(st);
         Console.WriteLine($"scan_document: type_defs={scan.type_defs.Count}, def_headers={scan.def_headers.Count}");
 
         // Test parse_document for comparison
-        var st2 = Codex_Codex_Codex.make_parse_state(tokens);
-        var doc = Codex_Codex_Codex.parse_document(st2);
-        var ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("Test"));
+        ParseState st2 = Codex_Codex_Codex.make_parse_state(tokens);
+        Document doc = Codex_Codex_Codex.parse_document(st2);
+        AChapter ast = Codex_Codex_Codex.desugar_document(doc, _Cce.FromUnicode("Test"));
         Console.WriteLine($"parse_document: type_defs={ast.type_defs.Count}, defs={ast.defs.Count}");
 
         // Show first few type def names from scan
         for (int i = 0; i < Math.Min(scan.type_defs.Count, 10); i++)
         {
-            var td = scan.type_defs[i];
+            TypeDef td = scan.type_defs[i];
             Console.WriteLine($"  scan td[{i}]: {_Cce.ToUnicode(td.name.text)}");
         }
 
@@ -607,23 +659,25 @@ partial class Program
         Console.WriteLine($"Binary emit: {combined.Length} chars");
         Console.WriteLine();
 
-        var sw = System.Diagnostics.Stopwatch.StartNew();
+        System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
 
         try
         {
             Console.WriteLine("  compile_to_binary...");
-            var result = Codex_Codex_Codex.compile_to_binary(source, chapterName);
+            EmitChapterResult result = Codex_Codex_Codex.compile_to_binary(source, chapterName);
             Console.WriteLine($"  done: {sw.ElapsedMilliseconds}ms");
 
-            var errors = result.bag.diagnostics;
+            List<Diagnostic> errors = result.bag.diagnostics;
             if (errors.Count > 0)
             {
                 Console.WriteLine($"  {errors.Count} error(s):");
                 for (int i = 0; i < Math.Min(errors.Count, 20); i++)
+                {
                     Console.WriteLine($"    [{errors[i].code}] {_Cce.ToUnicode(errors[i].message)}");
+                }
             }
 
-            var bytes = result.bytes;
+            List<long> bytes = result.bytes;
             Console.WriteLine($"  ELF size: {bytes.Count} bytes");
 
             string dest = outputPath ?? Path.Combine(
@@ -633,7 +687,10 @@ partial class Program
 
             byte[] elfBytes = new byte[bytes.Count];
             for (int i = 0; i < bytes.Count; i++)
+            {
                 elfBytes[i] = (byte)bytes[i];
+            }
+
             File.WriteAllBytes(dest, elfBytes);
 
             Console.WriteLine($"  Output: {dest}");
