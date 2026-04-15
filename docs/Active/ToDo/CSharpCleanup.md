@@ -149,18 +149,7 @@ Rules reference: `.github/copilot-instructions.md` → **C# Code Style** section
 
 ---
 
-## 8. Block-scoped namespace declarations (P1)
-
-**Rule:** File-scoped namespace declarations.
-
-| File | Line | Current |
-|------|------|---------|
-| `tests/Codex.Types.Tests/Helpers.cs` | 10 | `namespace Codex.Types.Tests {` |
-| `tests/Codex.Types.Tests/IntegrationTests3.cs` | 4 | `namespace Codex.Types.Tests {` |
-
----
-
-## 9. Constants not PascalCase — EXEMPTED
+## 8. Constants not PascalCase — EXEMPTED
 
 **Status:** Blanket exemption granted (2026-03-25).
 
@@ -176,7 +165,7 @@ No action required.
 
 | Priority | Count | Description |
 |----------|-------|-------------|
-| **P1** | ~70 items | `s_` on public statics, `var`, `///`, `private`, redundant usings, block namespaces |
+| **P1** | ~70 items | `s_` on public statics, `var`, `///`, `private`, redundant usings |
 | **P2** | ~20 items | Fully-qualified types |
 | **P3** | ~0 items | ISA/spec constant naming — exempted |
 
@@ -186,7 +175,6 @@ No action required.
 2. **Section 4** (`var` → explicit types in Bootstrap) — isolated to one file
 3. **Section 5** (drop `private`) — mechanical, test files only
 4. **Section 6** (redundant usings) — one file, trivial
-5. **Section 8** (block → file-scoped namespace) — two files
-6. **Section 3** (remove `///` comments) — spread across 7 files
-7. **Section 2** (private static `s_` prefix) — 7 fields across 4 files
-8. **Section 7** (FQ types → using) — many files, add usings + shorten
+5. **Section 3** (remove `///` comments) — spread across 7 files
+6. **Section 2** (private static `s_` prefix) — 7 fields across 4 files
+7. **Section 7** (FQ types → using) — many files, add usings + shorten
