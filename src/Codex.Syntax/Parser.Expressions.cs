@@ -240,7 +240,12 @@ public sealed partial class Parser
             {
                 m_diagnostics.Error(CdxCodes.ExpectedFieldName,
                     $"Expected field name, found {Current.Kind}", Current.Span);
+                int before = m_position;
                 Synchronize();
+                if (m_position == before)
+                {
+                    Advance();
+                }
                 if (Current.Kind == TokenKind.RightBrace)
                 {
                     break;
@@ -255,7 +260,12 @@ public sealed partial class Parser
             Token eqToken = Expect(TokenKind.Equals);
             if (eqToken.Kind != TokenKind.Equals)
             {
+                int before = m_position;
                 Synchronize();
+                if (m_position == before)
+                {
+                    Advance();
+                }
                 if (Current.Kind == TokenKind.RightBrace)
                 {
                     break;
