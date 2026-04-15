@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 
 public sealed record AChapter(Name name, List<ADef> defs, List<ATypeDef> type_defs, List<AEffectDef> effect_defs, List<ACitesDecl> citations, string chapter_title, string prose, List<string> section_titles, SourceSpan span);
 
-public sealed record ACitesDecl(Name chapter_name, List<Name> selected_names, string citing_chapter, SourceSpan span);
+public sealed record ACitesDecl(Name quire, Name chapter_name, List<Name> selected_names, string citing_chapter, SourceSpan span);
 
 public sealed record ADef(Name name, List<AParam> @params, List<ATypeExpr> declared_type, AExpr body, string chapter_slug, SourceSpan span);
 
@@ -105,7 +105,9 @@ public sealed record ChapterResult(List<TypeBinding> types, UnificationState sta
 
 public sealed record CheckResult(CodexType inferred_type, UnificationState state);
 
-public sealed record CitesDecl(Token chapter_name, List<Token> selected_names, string citing_chapter);
+public sealed record CiteTitleResult(string title, ParseState state);
+
+public sealed record CitesDecl(Token quire, string chapter_name, List<Token> selected_names, string citing_chapter);
 
 public sealed record CodegenState(long text_buf_addr, long text_len, long rodata_buf_addr, long rodata_len, List<FuncOffset> func_offsets, List<CallPatch> call_patches, List<FuncAddrFixup> func_addr_fixups, List<RodataFixup> rodata_fixups, List<PatchEntry> deferred_patches, List<LocalBinding> locals, long next_temp, long next_local, long spill_count, long load_local_toggle, TcoState tco, List<TypeBinding> type_defs, List<long> stack_overflow_checks, DiagnosticBag bag);
 
@@ -2436,7 +2438,7 @@ public static class Codex_Codex_Codex
 
     public static ACitesDecl desugar_cite(CitesDecl imp)
     {
-        return new ACitesDecl(make_name(imp.chapter_name.text), map_list(new Func<Token, Name>(desugar_cite_name), imp.selected_names), imp.citing_chapter, token_span(imp.chapter_name));
+        return new ACitesDecl(make_name(imp.quire.text), make_name(imp.chapter_name), map_list(new Func<Token, Name>(desugar_cite_name), imp.selected_names), imp.citing_chapter, token_span(imp.quire));
     }
 
     public static Name desugar_cite_name(Token tok)
@@ -13246,6 +13248,27 @@ public static class Codex_Codex_Codex
         return ((Func<ParseState, Document>)((st2) => ((Func<ImportParseResult, Document>)((imp_result) => parse_top_level(new List<Def>(), new List<TypeDef>(), new List<EffectDef>(), imp_result.imports, "", new List<string>(), imp_result.state)))(parse_citations(st2, "", new List<CitesDecl>()))))(skip_newlines(st));
     }
 
+    public static CiteTitleResult collect_cite_title(ParseState st, string acc)
+    {
+        while (true)
+        {
+            if (is_type_ident(current_kind(st)))
+            {
+                var tok = current(st);
+                var joined = ((((long)acc.Length) == 0L) ? tok.text : string.Concat(acc, "\u0002", tok.text));
+                var _tco_0 = advance(st);
+                var _tco_1 = joined;
+                st = _tco_0;
+                acc = _tco_1;
+                continue;
+            }
+            else
+            {
+                return new CiteTitleResult(acc, st);
+            }
+        }
+    }
+
     public static ImportParseResult parse_citations(ParseState st, string citing, List<CitesDecl> acc)
     {
         while (true)
@@ -13253,15 +13276,18 @@ public static class Codex_Codex_Codex
             if (is_cites_keyword(current_kind(st)))
             {
                 var st2 = advance(st);
-                var name_tok = current(st2);
+                var quire_tok = current(st2);
                 var st3 = advance(st2);
-                if (is_left_paren(current_kind(st3)))
+                var st4 = advance(st3);
+                var title_result = collect_cite_title(st4, "");
+                var st5 = title_result.state;
+                if (is_left_paren(current_kind(st5)))
                 {
-                    var sel = parse_selected_names(advance(st3), new List<Token>());
-                    var st4 = skip_newlines(sel.state);
-                    var _tco_0 = st4;
+                    var sel = parse_selected_names(advance(st5), new List<Token>());
+                    var st6 = skip_newlines(sel.state);
+                    var _tco_0 = st6;
                     var _tco_1 = citing;
-                    var _tco_2 = ((Func<List<CitesDecl>>)(() => { var _l = acc; _l.Add(new CitesDecl(name_tok, sel.names, citing)); return _l; }))();
+                    var _tco_2 = ((Func<List<CitesDecl>>)(() => { var _l = acc; _l.Add(new CitesDecl(quire_tok, title_result.title, sel.names, citing)); return _l; }))();
                     st = _tco_0;
                     citing = _tco_1;
                     acc = _tco_2;
@@ -13269,10 +13295,10 @@ public static class Codex_Codex_Codex
                 }
                 else
                 {
-                    var st4 = skip_newlines(st3);
-                    var _tco_0 = st4;
+                    var st6 = skip_newlines(st5);
+                    var _tco_0 = st6;
                     var _tco_1 = citing;
-                    var _tco_2 = ((Func<List<CitesDecl>>)(() => { var _l = acc; _l.Add(new CitesDecl(name_tok, new List<Token>(), citing)); return _l; }))();
+                    var _tco_2 = ((Func<List<CitesDecl>>)(() => { var _l = acc; _l.Add(new CitesDecl(quire_tok, title_result.title, new List<Token>(), citing)); return _l; }))();
                     st = _tco_0;
                     citing = _tco_1;
                     acc = _tco_2;
