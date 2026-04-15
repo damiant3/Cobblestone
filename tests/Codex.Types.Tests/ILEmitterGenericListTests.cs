@@ -193,6 +193,7 @@ public class ILEmitterGenericListTests
         {
             string exePath = Path.Combine(tempDir, chapterName + ".dll");
             File.WriteAllBytes(exePath, bytes);
+            Helpers.CopyIlRuntimeDeps(tempDir);
 
             string runtimeConfigPath = Path.Combine(tempDir, chapterName + ".runtimeconfig.json");
             File.WriteAllText(runtimeConfigPath, """

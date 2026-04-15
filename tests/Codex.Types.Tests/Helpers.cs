@@ -12,6 +12,18 @@ namespace Codex.Types.Tests
 {
     public static class Helpers
     {
+        /// <summary>
+        /// Emitted IL references Codex.Core.CceTable for CCE ↔ Unicode conversion
+        /// at I/O boundaries. Copy the assembly next to the test output so
+        /// `dotnet &lt;dll&gt;` can resolve it via the default probing path.
+        /// </summary>
+        public static void CopyIlRuntimeDeps(string tempDir)
+        {
+            string codexCoreDll = typeof(CceTable).Assembly.Location;
+            if (!string.IsNullOrEmpty(codexCoreDll))
+                File.Copy(codexCoreDll, Path.Combine(tempDir, "Codex.Core.dll"), overwrite: true);
+        }
+
         public static DiagnosticBag CheckWithProofs(string source, string chapterName = "test")
         {
             SourceText src = new("test.codex", source);

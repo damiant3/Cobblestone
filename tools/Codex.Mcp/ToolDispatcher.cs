@@ -355,6 +355,10 @@ sealed class ToolDispatcher
             byte[] assembly = emitter.EmitAssembly(irResult.Chapter, chapterName);
             string outputPath = Path.Combine(outputDir, chapterName + ".exe");
             File.WriteAllBytes(outputPath, assembly);
+            // Emitted IL depends on Codex.Core.CceTable; copy it next to the output.
+            string codexCoreDll = typeof(Codex.Core.CceTable).Assembly.Location;
+            if (!string.IsNullOrEmpty(codexCoreDll))
+                File.Copy(codexCoreDll, Path.Combine(outputDir, "Codex.Core.dll"), overwrite: true);
             return outputPath;
         }
 
