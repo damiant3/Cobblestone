@@ -312,6 +312,24 @@ public static partial class Program
 
             name = firstLine[..colonPos];
             sig = firstLine[(colonPos + 3)..];
+
+            // Inline const form: `name : Type = value` — split sig from body.
+            int inlineEq = sig.IndexOf(" = ", StringComparison.Ordinal);
+            if (inlineEq >= 0)
+            {
+                string inlineBody = sig[(inlineEq + 3)..];
+                sig = sig[..inlineEq];
+                // Synthesize a `name = body` line so the body collector below
+                // picks it up exactly as it would for the two-line form.
+                lines = (string[])lines.Clone();
+                string indent = "";
+                for (int k = 0; k < firstLine.Length && char.IsWhiteSpace(firstLine[k]); k++)
+                    indent += firstLine[k];
+                lines[start] = $"{indent}{name.TrimStart()} : {sig}";
+                var newLines = new List<string>(lines);
+                newLines.Insert(start + 1, $"{indent}{name.TrimStart()} = {inlineBody}");
+                lines = newLines.ToArray();
+            }
         }
 
         var bodyLines = new StringBuilder();

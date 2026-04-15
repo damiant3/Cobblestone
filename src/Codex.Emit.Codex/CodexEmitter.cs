@@ -544,7 +544,7 @@ public sealed class CodexEmitter : ICodeEmitter
         {
             sb.AppendLine();
             EmitIndent(sb, indent + 1);
-            sb.Append("if ");
+            sb.Append("is ");
             EmitPattern(sb, branch.Pattern);
             sb.Append(" -> ");
             EmitExpr(sb, branch.Body, indent + 1);
@@ -571,7 +571,7 @@ public sealed class CodexEmitter : ICodeEmitter
                 }
                 break;
             case IRWildcardPattern:
-                sb.Append('_');
+                sb.Append("otherwise");
                 break;
         }
     }
