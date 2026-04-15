@@ -412,6 +412,48 @@ Section: AST Expression Renaming
     span = c.span
    }))
 
+Section: Duplicate Cite Detection
+  cite-selects-name : ACitesDecl -> Text -> Boolean
+  cite-selects-name (c) (name) =
+   cite-selects-name-loop (c.selected-names) name 0 (list-length (c.selected-names))
+
+  cite-selects-name-loop : List Name -> Text -> Integer -> Integer -> Boolean
+  cite-selects-name-loop (names) (target) (j) (len) =
+   if j == len then False
+   else if (list-at names j).value == target then True
+   else cite-selects-name-loop names target (j + 1) len
+
+  find-cite-conflict : List ACitesDecl -> Text -> Text -> Integer -> Integer -> Text
+  find-cite-conflict (citations) (citing) (name) (k) (total) =
+   if k == total then ""
+   else let c = list-at citations k
+   in if c.citing-chapter == citing then if cite-selects-name c name then c.chapter-name.value
+     else find-cite-conflict citations citing name (k + 1) total
+     else find-cite-conflict citations citing name (k + 1) total
+
+  add-duplicate-cite-error : DiagnosticBag -> ACitesDecl -> Text -> Text -> DiagnosticBag
+  add-duplicate-cite-error (bag) (cite) (name-val) (conflict) =
+   bag-add bag (make-error cdx-duplicate-cite ("Name '" ++ name-val ++ "' is cited from both '" ++ (cite.chapter-name.value) ++ "' and '" ++ conflict ++ "' in chapter '" ++ (cite.citing-chapter) ++ "'") (cite.span))
+
+  check-cite-names : ACitesDecl -> Integer -> Integer -> List ACitesDecl -> Integer -> Integer -> DiagnosticBag -> DiagnosticBag
+  check-cite-names (cite) (j) (nlen) (all-citations) (i) (total) (bag) =
+   if j == nlen then bag
+   else let name = list-at (cite.selected-names) j
+   in let conflict = find-cite-conflict all-citations (cite.citing-chapter) (name.value) (i + 1) total
+   in let bag2 = if conflict == "" then bag else add-duplicate-cite-error bag cite (name.value) conflict
+   in check-cite-names cite (j + 1) nlen all-citations i total bag2
+
+  check-duplicate-cites-loop : List ACitesDecl -> Integer -> Integer -> DiagnosticBag -> DiagnosticBag
+  check-duplicate-cites-loop (citations) (i) (len) (bag) =
+   if i == len then bag
+   else let cite-i = list-at citations i
+   in let bag2 = check-cite-names cite-i 0 (list-length (cite-i.selected-names)) citations i len bag
+   in check-duplicate-cites-loop citations (i + 1) len bag2
+
+  check-duplicate-cites : List ACitesDecl -> DiagnosticBag
+  check-duplicate-cites (citations) =
+   check-duplicate-cites-loop citations 0 (list-length citations) empty-bag
+
 Section: AST-Level Chapter Scoping
   scope-achapter : AChapter -> List Text -> List ChapterAssignment -> AChapter
   scope-achapter (ast) (colliding) (assignments) =
