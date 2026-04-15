@@ -101,6 +101,7 @@ public sealed partial class Parser
             or TokenKind.LeftParen
             or TokenKind.LeftBracket
             or TokenKind.DoKeyword
+            or TokenKind.ActKeyword
             or TokenKind.WithKeyword;
     }
 
@@ -186,6 +187,9 @@ public sealed partial class Parser
 
             case TokenKind.DoKeyword:
                 return ParseDoExpression();
+
+            case TokenKind.ActKeyword:
+                return ParseActExpression();
 
             case TokenKind.WithKeyword:
                 return ParseHandleExpression();
@@ -520,6 +524,41 @@ public sealed partial class Parser
 
         SourceSpan endSpan = statements.Count > 0 ? statements[^1].Span : start.Span;
         return new DoExpressionNode(statements, start.Span.Through(endSpan));
+    }
+
+    ExpressionNode ParseActExpression()
+    {
+        Token start = Current;
+        Advance();
+        SkipNewlines();
+
+        List<DoStatementNode> statements = [];
+        while (!IsAtEnd && Current.Kind != TokenKind.EndKeyword && Current.Kind != TokenKind.EndOfFile)
+        {
+            if (Current.Kind == TokenKind.Identifier && Peek(1)?.Kind == TokenKind.LeftArrow)
+            {
+                Token name = Current;
+                Advance();
+                Advance();
+                ExpressionNode value = ParseExpression();
+                statements.Add(new DoBindStatementNode(name, value, name.Span.Through(value.Span)));
+            }
+            else
+            {
+                ExpressionNode expr = ParseExpression();
+                statements.Add(new DoExprStatementNode(expr, expr.Span));
+            }
+            SkipNewlines();
+        }
+
+        Token endTok = Expect(TokenKind.EndKeyword);
+
+        if (statements.Count == 0)
+        {
+            m_diagnostics.Error(CdxCodes.EmptyDoBlock, "act expression requires at least one statement", start.Span);
+        }
+
+        return new DoExpressionNode(statements, start.Span.Through(endTok.Span));
     }
 
     ExpressionNode ParseInterpolatedString()

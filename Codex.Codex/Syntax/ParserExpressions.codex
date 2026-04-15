@@ -82,6 +82,7 @@ Section: Expression Parsing
    else if is-let-keyword (current-kind st) then parse-let-expr st
    else if is-when-keyword (current-kind st) then parse-match-expr st
    else if is-do-keyword (current-kind st) then parse-do-expr st
+   else if is-act-keyword (current-kind st) then parse-act-expr st
    else if is-with-keyword (current-kind st) then parse-handle-expr st
    else if is-backslash (current-kind st) then parse-lambda-expr st
               else ExprOk (ErrExpr (current st)) (advance st)
@@ -332,6 +333,40 @@ Section: Compound Expression Parsing
   finish-do-expr (acc) (e) (st) =
    let st2 = skip-newlines st
    in parse-do-stmts (list-snoc acc (DoExprStmt e)) st2
+
+  parse-act-expr : ParseState -> ParseExprResult
+  parse-act-expr (st) =
+   let st2 = skip-newlines (advance st)
+   in parse-act-stmts [] st2
+
+  parse-act-stmts : List DoStmt -> ParseState -> ParseExprResult
+  parse-act-stmts (acc) (st) =
+   if is-done st then ExprOk (DoExpr acc) st
+   else if is-end-keyword (current-kind st) then ExprOk (DoExpr acc) (advance st)
+     else if is-do-bind st then parse-act-bind-stmt acc st
+      else parse-act-expr-stmt acc st
+
+  parse-act-bind-stmt : List DoStmt -> ParseState -> ParseExprResult
+  parse-act-bind-stmt (acc) (st) =
+   let name-tok = current st
+   in let st2 = advance (advance st)
+   in let val-result = parse-expr st2
+   in unwrap-expr-ok val-result (finish-act-bind acc name-tok)
+
+  finish-act-bind : List DoStmt -> Token -> Expr -> ParseState -> ParseExprResult
+  finish-act-bind (acc) (name-tok) (v) (st) =
+   let st2 = skip-newlines st
+   in parse-act-stmts (list-snoc acc (DoBindStmt name-tok v)) st2
+
+  parse-act-expr-stmt : List DoStmt -> ParseState -> ParseExprResult
+  parse-act-expr-stmt (acc) (st) =
+   let expr-result = parse-expr st
+   in unwrap-expr-ok expr-result (finish-act-expr acc)
+
+  finish-act-expr : List DoStmt -> Expr -> ParseState -> ParseExprResult
+  finish-act-expr (acc) (e) (st) =
+   let st2 = skip-newlines st
+   in parse-act-stmts (list-snoc acc (DoExprStmt e)) st2
 
   parse-handle-expr : ParseState -> ParseExprResult
   parse-handle-expr (st) =

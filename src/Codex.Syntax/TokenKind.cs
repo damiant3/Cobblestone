@@ -44,6 +44,8 @@ public enum TokenKind
     WhereKeyword,
     SuchThatKeyword,
     DoKeyword,
+    ActKeyword,
+    EndKeyword,
     RecordKeyword,
     CitesKeyword,
     ClaimKeyword,
