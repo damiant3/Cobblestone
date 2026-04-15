@@ -20,67 +20,67 @@ Section: Expression Lowering
   lower-expr : AExpr -> CodexType -> LowerCtx -> IRExpr
   lower-expr (e) (ty) (ctx) =
    when e
-    if ALitExpr (text) (kind) (s) -> lower-literal text kind (lowered-span s)
-    if ANameExpr (name) (s) -> lower-name (name.value) ty ctx (lowered-span s)
-    if AApplyExpr (f) (a) (s) -> lower-apply f a ty ctx (lowered-span s)
-    if ABinaryExpr (l) (op) (r) (s) ->
+    is ALitExpr (text) (kind) (s) -> lower-literal text kind (lowered-span s)
+    is ANameExpr (name) (s) -> lower-name (name.value) ty ctx (lowered-span s)
+    is AApplyExpr (f) (a) (s) -> lower-apply f a ty ctx (lowered-span s)
+    is ABinaryExpr (l) (op) (r) (s) ->
      let left-ir = lower-expr l ty ctx
      in let left-ty = ir-expr-type left-ir
      in let right-ir = lower-expr r ty ctx
      in IrBinary (lower-bin-op op left-ty) left-ir right-ir (binary-result-type op left-ty ty) (lowered-span s)
-    if AUnaryExpr (operand) (s) -> IrNegate (lower-expr operand IntegerTy ctx) (lowered-span s)
-    if AIfExpr (c) (t) (e2) (s) ->
+    is AUnaryExpr (operand) (s) -> IrNegate (lower-expr operand IntegerTy ctx) (lowered-span s)
+    is AIfExpr (c) (t) (e2) (s) ->
      let resolved = deep-resolve (ctx.ust) ty
      in let then-ir = lower-expr t resolved ctx
      in let then-ty = ir-expr-type then-ir
      in let result-ty = when resolved
-        if ErrorTy -> then-ty
-        if _ -> resolved
+        is ErrorTy -> then-ty
+        is otherwise -> resolved
      in let else-ir = lower-expr e2 result-ty ctx
      in IrIf (lower-expr c BooleanTy ctx) then-ir else-ir result-ty (lowered-span s)
-    if ALetExpr (binds) (body) (s) -> lower-let binds body ty ctx (lowered-span s)
-    if ALambdaExpr (params) (body) (s) -> lower-lambda params body ty ctx (lowered-span s)
-    if AMatchExpr (scrut) (arms) (s) -> lower-match scrut arms ty ctx (lowered-span s)
-    if AListExpr (elems) (s) -> lower-list elems ty ctx (lowered-span s)
-    if ARecordExpr (name) (fields) (s) -> lower-record name fields ty ctx (lowered-span s)
-    if AFieldAccess (rec) (field) (s) ->
+    is ALetExpr (binds) (body) (s) -> lower-let binds body ty ctx (lowered-span s)
+    is ALambdaExpr (params) (body) (s) -> lower-lambda params body ty ctx (lowered-span s)
+    is AMatchExpr (scrut) (arms) (s) -> lower-match scrut arms ty ctx (lowered-span s)
+    is AListExpr (elems) (s) -> lower-list elems ty ctx (lowered-span s)
+    is ARecordExpr (name) (fields) (s) -> lower-record name fields ty ctx (lowered-span s)
+    is AFieldAccess (rec) (field) (s) ->
      let rec-ir = lower-expr rec ErrorTy ctx
      in let rec-ty = deep-resolve (ctx.ust) (ir-expr-type rec-ir)
      in let stripped-rec-ty = when rec-ty
-        if EffectfulTy (effs) (ret) -> deep-resolve (ctx.ust) ret
-        if ForAllTy (id) (body) -> deep-resolve (ctx.ust) body
-        if _ -> rec-ty
+        is EffectfulTy (effs) (ret) -> deep-resolve (ctx.ust) ret
+        is ForAllTy (id) (body) -> deep-resolve (ctx.ust) body
+        is otherwise -> rec-ty
      in let resolved-rec-ty = when stripped-rec-ty
-        if RecordTy (rn) (rf) -> stripped-rec-ty
-        if ConstructedTy (cname) (cargs) ->
+        is RecordTy (rn) (rf) -> stripped-rec-ty
+        is ConstructedTy (cname) (cargs) ->
          let ctor-raw = lookup-type-split (ctx.overlay) (ctx.base) (cname.value)
      in let resolved-record = when ctor-raw
-            if ErrorTy -> stripped-rec-ty
-            if _ -> strip-fun-args-lower (deep-resolve (ctx.ust) ctor-raw)
+            is ErrorTy -> stripped-rec-ty
+            is otherwise -> strip-fun-args-lower (deep-resolve (ctx.ust) ctor-raw)
      in when resolved-record
-          if RecordTy (rn) (rf) -> resolved-record
-          if _ -> stripped-rec-ty
-        if _ -> stripped-rec-ty
+          is RecordTy (rn) (rf) -> resolved-record
+          is otherwise -> stripped-rec-ty
+        is otherwise -> stripped-rec-ty
      in let field-ty = when resolved-rec-ty
-        if RecordTy (rname) (rfields) -> lookup-record-field rfields (field.value)
-        if _ -> ty
+        is RecordTy (rname) (rfields) -> lookup-record-field rfields (field.value)
+        is otherwise -> ty
      in let actual-field-ty = when field-ty
-        if ErrorTy -> ty
-        if _ -> field-ty
+        is ErrorTy -> ty
+        is otherwise -> field-ty
      in let fixed-rec = when rec-ty
-        if RecordTy (rn) (rf) -> rec-ir
-        if _ -> set-ir-expr-type rec-ir resolved-rec-ty
+        is RecordTy (rn) (rf) -> rec-ir
+        is otherwise -> set-ir-expr-type rec-ir resolved-rec-ty
      in IrFieldAccess fixed-rec (field.value) actual-field-ty (lowered-span s)
-    if ADoExpr (stmts) (s) -> lower-do stmts ty ctx (lowered-span s)
-    if AHandleExpr (eff) (body) (clauses) (s) -> lower-handle eff body clauses ty ctx (lowered-span s)
-    if AErrorExpr (msg) (s) -> IrError msg ty (lowered-span s)
+    is ADoExpr (stmts) (s) -> lower-do stmts ty ctx (lowered-span s)
+    is AHandleExpr (eff) (body) (clauses) (s) -> lower-handle eff body clauses ty ctx (lowered-span s)
+    is AErrorExpr (msg) (s) -> IrError msg ty (lowered-span s)
 
   lower-name : Text -> CodexType -> LowerCtx -> SourceSpan -> IRExpr
   lower-name (name) (ty) (ctx) (sp) =
    let raw = lookup-type-split (ctx.overlay) (ctx.base) name
    in when raw
-    if ErrorTy -> IrName name ty sp
-    if _ ->
+    is ErrorTy -> IrName name ty sp
+    is otherwise ->
      let resolved = deep-resolve (ctx.ust) raw
    in let stripped = strip-forall-ty resolved
    in IrName name stripped sp
@@ -88,11 +88,11 @@ Section: Expression Lowering
   lower-literal : Text -> LiteralKind -> SourceSpan -> IRExpr
   lower-literal (text) (kind) (sp) =
    when kind
-    if IntLit -> IrIntLit (text-to-integer text) sp
-    if NumLit -> IrNumLit (text-to-double-bits text) sp
-    if TextLit -> IrTextLit text sp
-    if CharLit -> IrCharLit (text-to-integer text) sp
-    if BoolLit -> IrBoolLit (text == "True") sp
+    is IntLit -> IrIntLit (text-to-integer text) sp
+    is NumLit -> IrNumLit (text-to-double-bits text) sp
+    is TextLit -> IrTextLit text sp
+    is CharLit -> IrCharLit (text-to-integer text) sp
+    is BoolLit -> IrBoolLit (text == "True") sp
 
   lower-apply : AExpr -> AExpr -> CodexType -> LowerCtx -> SourceSpan -> IRExpr
   lower-apply (f) (a) (ty) (ctx) (sp) =
@@ -103,18 +103,18 @@ Section: Expression Lowering
    in let arg-ir = lower-expr a arg-ty ctx
    in let resolved-ret = subst-type-vars-from-arg arg-ty (ir-expr-type arg-ir) ret-ty
    in let actual-ret = when resolved-ret
-      if ErrorTy -> ty
-      if _ -> resolved-ret
+      is ErrorTy -> ty
+      is otherwise -> resolved-ret
    in lower-apply-dispatch func-ir arg-ir actual-ret sp
 
   lower-apply-dispatch : IRExpr -> IRExpr -> CodexType -> SourceSpan -> IRExpr
   lower-apply-dispatch (func-ir) (arg-ir) (ret-ty) (sp) =
    when func-ir
-    if IrName (n) (fty) (ns) ->
+    is IrName (n) (fty) (ns) ->
      if n == "fork" then IrFork arg-ir ret-ty sp
      else if n == "await" then IrAwait arg-ir ret-ty sp
      else IrApply func-ir arg-ir ret-ty sp
-    if _ -> IrApply func-ir arg-ir ret-ty sp
+    is otherwise -> IrApply func-ir arg-ir ret-ty sp
 
 Section: Let and Lambda
   lower-let : List ALetBind -> AExpr -> CodexType -> LowerCtx -> SourceSpan -> IRExpr
@@ -192,8 +192,8 @@ Section: Let and Lambda
   get-lambda-return (ty) (n) =
    if n == 0 then ty
    else when ty
-    if FunTy (p) (r) -> get-lambda-return r (n - 1)
-    if _ -> ErrorTy
+    is FunTy (p) (r) -> get-lambda-return r (n - 1)
+    is otherwise -> ErrorTy
 
 Section: Match Lowering
   lower-match : AExpr -> List AMatchArm -> CodexType -> LowerCtx -> SourceSpan -> IRExpr
@@ -202,8 +202,8 @@ Section: Match Lowering
    in let scrut-ty = ir-expr-type scrut-ir
    in let branches = lower-match-arms-loop arms ty scrut-ty ctx 0 (list-length arms)
    in let result-ty = when ty
-      if ErrorTy -> infer-match-type branches 0 (list-length branches)
-      if _ -> ty
+      is ErrorTy -> infer-match-type branches 0 (list-length branches)
+      is otherwise -> ty
    in IrMatch scrut-ir branches result-ty sp
 
   infer-match-type : List IRBranch -> Integer -> Integer -> CodexType
@@ -212,8 +212,8 @@ Section: Match Lowering
    else let b = list-at branches i
    in let body-ty = ir-expr-type (b.body)
    in when body-ty
-     if ErrorTy -> infer-match-type branches (i + 1) len
-     if _ -> body-ty
+     is ErrorTy -> infer-match-type branches (i + 1) len
+     is otherwise -> body-ty
 
   lower-match-arms-loop : List AMatchArm -> CodexType -> CodexType -> LowerCtx -> Integer -> Integer -> List IRBranch
   lower-match-arms-loop (arms) (ty) (scrut-ty) (ctx) (i) (len) =
@@ -233,7 +233,7 @@ Section: Match Lowering
   bind-pattern-to-ctx : LowerCtx -> APat -> CodexType -> LowerCtx
   bind-pattern-to-ctx (ctx) (pat) (ty) =
    when pat
-    if AVarPat (name) (s) ->
+    is AVarPat (name) (s) ->
      LowerCtx {
       overlay = [TypeBinding {
        name = name.value,
@@ -242,32 +242,32 @@ Section: Match Lowering
       base = ctx.base,
       ust = ctx.ust
      }
-    if ACtorPat (ctor-name) (sub-pats) (s) ->
+    is ACtorPat (ctor-name) (sub-pats) (s) ->
      let ctor-raw = lookup-type-split (ctx.overlay) (ctx.base) (ctor-name.value)
      in let ctor-ty = deep-resolve (ctx.ust) ctor-raw
      in let ctor-stripped = strip-forall-ty ctor-ty
      in bind-ctor-pattern-fields ctx sub-pats ctor-stripped 0 (list-length sub-pats)
-    if AWildPat (s) -> ctx
-    if ALitPat (text) (kind) (s) -> ctx
+    is AWildPat (s) -> ctx
+    is ALitPat (text) (kind) (s) -> ctx
 
   bind-ctor-pattern-fields : LowerCtx -> List APat -> CodexType -> Integer -> Integer -> LowerCtx
   bind-ctor-pattern-fields (ctx) (sub-pats) (ctor-ty) (i) (len) =
    if i == len then ctx
    else when ctor-ty
-     if FunTy (param-ty) (ret-ty) ->
+     is FunTy (param-ty) (ret-ty) ->
       let ctx2 = bind-pattern-to-ctx ctx (list-at sub-pats i) param-ty
       in bind-ctor-pattern-fields ctx2 sub-pats ret-ty (i + 1) len
-     if _ ->
+     is otherwise ->
       let ctx2 = bind-pattern-to-ctx ctx (list-at sub-pats i) ErrorTy
       in bind-ctor-pattern-fields ctx2 sub-pats ctor-ty (i + 1) len
 
   lower-pattern : APat -> CodexType -> IRPat
   lower-pattern (p) (scrut-ty) =
    when p
-    if AVarPat (name) (s) -> IrVarPat (name.value) scrut-ty (lowered-span s)
-    if ALitPat (text) (kind) (s) -> IrLitPat text scrut-ty (lowered-span s)
-    if ACtorPat (name) (subs) (s) -> IrCtorPat (name.value) (lower-ctor-sub-patterns subs scrut-ty (name.value) 0) scrut-ty (lowered-span s)
-    if AWildPat (s) -> IrWildPat (lowered-span s)
+    is AVarPat (name) (s) -> IrVarPat (name.value) scrut-ty (lowered-span s)
+    is ALitPat (text) (kind) (s) -> IrLitPat text scrut-ty (lowered-span s)
+    is ACtorPat (name) (subs) (s) -> IrCtorPat (name.value) (lower-ctor-sub-patterns subs scrut-ty (name.value) 0) scrut-ty (lowered-span s)
+    is AWildPat (s) -> IrWildPat (lowered-span s)
 
   lower-ctor-sub-patterns : List APat -> CodexType -> Text -> Integer -> List IRPat
   lower-ctor-sub-patterns (subs) (scrut-ty) (ctor-name) (i) =
@@ -278,8 +278,8 @@ Section: Match Lowering
   lookup-ctor-field-type : CodexType -> Text -> Integer -> CodexType
   lookup-ctor-field-type (ty) (ctor-name) (field-idx) =
    when ty
-    if SumTy (sname) (ctors) -> find-ctor-field-type ctors ctor-name field-idx 0
-    if _ -> ErrorTy
+    is SumTy (sname) (ctors) -> find-ctor-field-type ctors ctor-name field-idx 0
+    is otherwise -> ErrorTy
 
   find-ctor-field-type : List SumCtor -> Text -> Integer -> Integer -> CodexType
   find-ctor-field-type (ctors) (ctor-name) (field-idx) (i) =
@@ -293,8 +293,8 @@ Section: Collections and Do
   lower-list (elems) (ty) (ctx) (sp) =
    let resolved = deep-resolve (ctx.ust) ty
    in let elem-ty = when resolved
-      if ListTy (e) -> e
-      if _ ->
+      is ListTy (e) -> e
+      is otherwise ->
        if list-length elems == 0 then ErrorTy
        else ir-expr-type (lower-expr (list-at elems 0) ErrorTy ctx)
    in IrList (lower-list-elems-loop elems elem-ty ctx 0 (list-length elems)) elem-ty sp
@@ -312,11 +312,11 @@ Section: Collections and Do
   lower-record (name) (fields) (ty) (ctx) (sp) =
    let ctor-raw = lookup-type-split (ctx.overlay) (ctx.base) (name.value)
    in let record-ty = when ctor-raw
-      if ErrorTy -> ty
-      if _ -> strip-fun-args-lower (deep-resolve (ctx.ust) ctor-raw)
+      is ErrorTy -> ty
+      is otherwise -> strip-fun-args-lower (deep-resolve (ctx.ust) ctor-raw)
    in let actual-ty = when record-ty
-      if ErrorTy -> ty
-      if _ -> record-ty
+      is ErrorTy -> ty
+      is otherwise -> record-ty
    in IrRecord (name.value) (lower-record-fields-typed fields actual-ty ctx 0 (list-length fields)) actual-ty sp
 
   lower-record-fields-typed : List AFieldExpr -> CodexType -> LowerCtx -> Integer -> Integer -> List IRFieldVal
@@ -328,8 +328,8 @@ Section: Collections and Do
    if i == len then acc
    else let f = list-at fields i
    in let field-expected = when record-ty
-       if RecordTy (rname) (rfields) -> lookup-record-field rfields (f.name.value)
-       if _ -> ErrorTy
+       is RecordTy (rname) (rfields) -> lookup-record-field rfields (f.name.value)
+       is otherwise -> ErrorTy
    in lower-record-fields-acc fields record-ty ctx (i + 1) len (list-snoc acc (IRFieldVal {
     name = f.name.value,
     value = lower-expr (f.value) field-expected ctx,
@@ -347,8 +347,8 @@ Section: Collections and Do
    if list-length stmts == 0 then fallback
    else let last = list-at stmts (list-length stmts - 1)
    in when last
-     if IrDoExec (e) (sp) -> ir-expr-type e
-     if IrDoBind (nm) (bty) (e) (sp) -> bty
+     is IrDoExec (e) (sp) -> ir-expr-type e
+     is IrDoBind (nm) (bty) (e) (sp) -> bty
 
   lower-do-stmts-loop : List ADoStmt -> CodexType -> LowerCtx -> Integer -> Integer -> List IRDoStmt
   lower-do-stmts-loop (stmts) (ty) (ctx) (i) (len) =
@@ -359,7 +359,7 @@ Section: Collections and Do
    if i == len then acc
    else let s = list-at stmts i
    in when s
-     if ADoBindStmt (name) (val) (sp) ->
+     is ADoBindStmt (name) (val) (sp) ->
       let val-ir = lower-expr val ty ctx
    in let val-ty = ir-expr-type val-ir
    in let ctx2 = LowerCtx {
@@ -371,7 +371,7 @@ Section: Collections and Do
        ust = ctx.ust
       }
    in lower-do-stmts-acc stmts ty ctx2 (i + 1) len (list-snoc acc (IrDoBind (name.value) val-ty val-ir (lowered-span sp)))
-     if ADoExprStmt (e) (sp) ->
+     is ADoExprStmt (e) (sp) ->
       lower-do-stmts-acc stmts ty ctx (i + 1) len (list-snoc acc (IrDoExec (lower-expr e ty ctx) (lowered-span sp)))
 
   lower-handle : Name -> AExpr -> List AHandleClause -> CodexType -> LowerCtx -> SourceSpan -> IRExpr
@@ -462,8 +462,8 @@ Section: Definition Lowering
   get-return-type-n (ty) (n) =
    if n == 0 then ty
    else when ty
-    if FunTy (p) (r) -> get-return-type-n r (n - 1)
-    if _ -> ErrorTy
+    is FunTy (p) (r) -> get-return-type-n r (n - 1)
+    is otherwise -> ErrorTy
 
   lower-chapter : AChapter -> List TypeBinding -> UnificationState -> IRChapter
   lower-chapter (m) (types) (ust) =

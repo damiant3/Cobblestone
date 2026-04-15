@@ -88,7 +88,7 @@ public class NameResolverTests
     [Fact]
     public void Match_pattern_binds_variable()
     {
-        string source = "f = when True if y -> y";
+        string source = "f = when True is y -> y";
         (ResolvedChapter _, DiagnosticBag diags) = ResolveSource(source);
         Assert.False(diags.HasErrors);
     }

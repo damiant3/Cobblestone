@@ -384,8 +384,8 @@ public class RiscVEmitterTests
             area : Shape -> Integer
             area (s) =
               when s
-                if Circle (r) -> r * r
-                if Rect (w) (h) -> w * h
+                is Circle (r) -> r * r
+                is Rect (w) (h) -> w * h
 
             main : Integer
             main = area (Circle 5)
@@ -406,8 +406,8 @@ public class RiscVEmitterTests
             area : Shape -> Integer
             area (s) =
               when s
-                if Circle (r) -> r * r
-                if Rect (w) (h) -> w * h
+                is Circle (r) -> r * r
+                is Rect (w) (h) -> w * h
 
             main : Integer
             main = area (Circle 5)
@@ -428,8 +428,8 @@ public class RiscVEmitterTests
             area : Shape -> Integer
             area (s) =
               when s
-                if Circle (r) -> r * r
-                if Rect (w) (h) -> w * h
+                is Circle (r) -> r * r
+                is Rect (w) (h) -> w * h
 
             main : Integer
             main = area (Rect 5 7)
@@ -455,8 +455,8 @@ public class RiscVEmitterTests
             area : Shape -> Integer
             area (s) =
               when s
-                if Circle (r) -> r * r
-                if Rect (w) (h) -> w * h
+                is Circle (r) -> r * r
+                is Rect (w) (h) -> w * h
 
             main : Integer
             main = let p = Point { x = 3, y = 4 } in area (Rect p.x p.y)

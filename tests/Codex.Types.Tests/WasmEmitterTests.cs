@@ -443,8 +443,8 @@ public class WasmEmitterTests
             area : Shape -> Integer
             area (s) =
               when s
-                if Circle (r) -> r * r
-                if Rect (w) (h) -> w * h
+                is Circle (r) -> r * r
+                is Rect (w) (h) -> w * h
 
             main : Integer
             main = area (Circle 5)
@@ -465,8 +465,8 @@ public class WasmEmitterTests
             area : Shape -> Integer
             area (s) =
               when s
-                if Circle (r) -> r * r
-                if Rect (w) (h) -> w * h
+                is Circle (r) -> r * r
+                is Rect (w) (h) -> w * h
 
             main : Integer
             main = area (Rect 3 4)

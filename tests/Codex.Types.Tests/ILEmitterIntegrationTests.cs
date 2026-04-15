@@ -456,7 +456,7 @@ public class ILEmitterIntegrationTests
 
             safe-divide (x) (y) = if y == 0 then Failure "division by zero" else Success (x / y)
 
-            describe (result) = when result if Success (n) -> "got " ++ show n if Failure (msg) -> "error: " ++ msg
+            describe (result) = when result is Success (n) -> "got " ++ show n is Failure (msg) -> "error: " ++ msg
 
             main : Text
             main = describe (safe-divide 42 7)

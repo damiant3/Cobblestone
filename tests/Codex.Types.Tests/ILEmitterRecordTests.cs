@@ -110,9 +110,9 @@ public class ILEmitterRecordTests
 
             describe : Color -> Text
             describe (c) = when c
-              if Red -> "red"
-              if Green -> "green"
-              if Blue -> "blue"
+              is Red -> "red"
+              is Green -> "green"
+              is Blue -> "blue"
 
             main : Text
             main = describe Red
@@ -133,9 +133,9 @@ public class ILEmitterRecordTests
 
             describe : Color -> Text
             describe (c) = when c
-              if Red -> "red"
-              if Green -> "green"
-              if Blue -> "blue"
+              is Red -> "red"
+              is Green -> "green"
+              is Blue -> "blue"
 
             main : Text
             main = describe Red
@@ -170,9 +170,9 @@ public class ILEmitterRecordTests
 
             describe : Color -> Text
             describe (c) = when c
-              if Red -> "red"
-              if Green -> "green"
-              if Blue -> "blue"
+              is Red -> "red"
+              is Green -> "green"
+              is Blue -> "blue"
 
             main : Text
             main = describe Green
@@ -192,8 +192,8 @@ public class ILEmitterRecordTests
 
             area : Shape -> Integer
             area (s) = when s
-              if Circle (r) -> r * r
-              if Rect (w) (h) -> w * h
+              is Circle (r) -> r * r
+              is Rect (w) (h) -> w * h
 
             main : Integer
             main = area (Rect 3 4)
@@ -213,8 +213,8 @@ public class ILEmitterRecordTests
 
             area : Shape -> Integer
             area (s) = when s
-              if Circle (r) -> r * r
-              if Rect (w) (h) -> w * h
+              is Circle (r) -> r * r
+              is Rect (w) (h) -> w * h
 
             main : Integer
             main = area (Circle 5)
@@ -234,8 +234,8 @@ public class ILEmitterRecordTests
 
             eval : Expr -> Integer
             eval (e) = when e
-              if Lit (n) -> n
-              if Add (a) (b) -> eval a + eval b
+              is Lit (n) -> n
+              is Add (a) (b) -> eval a + eval b
 
             main : Integer
             main = eval (Add (Lit 3) (Lit 4))
@@ -256,9 +256,9 @@ public class ILEmitterRecordTests
 
             eval : Op -> Integer
             eval (e) = when e
-              if Lit (n) -> n
-              if Add (a) (b) -> eval a + eval b
-              if Mul (a) (b) -> eval a * eval b
+              is Lit (n) -> n
+              is Add (a) (b) -> eval a + eval b
+              is Mul (a) (b) -> eval a * eval b
 
             main : Integer
             main = eval (Mul (Add (Lit 2) (Lit 3)) (Lit 4))
@@ -279,8 +279,8 @@ public class ILEmitterRecordTests
 
             is-red : Color -> Text
             is-red (c) = when c
-              if Red -> "yes"
-              if _ -> "no"
+              is Red -> "yes"
+              is otherwise -> "no"
 
             main : Text
             main = is-red Blue

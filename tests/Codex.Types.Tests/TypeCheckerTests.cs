@@ -200,7 +200,7 @@ public class TypeCheckerTests
     [Fact]
     public void Match_branches_must_agree()
     {
-        string source = "x = when True if True -> 1 if False -> 0";
+        string source = "x = when True is True -> 1 is False -> 0";
         (Map<string, CodexType> types, DiagnosticBag diags) = Check(source);
         Assert.False(diags.HasErrors);
         Assert.IsType<IntegerType>(types["x"]);

@@ -67,8 +67,8 @@ public partial class IntegrationTests
             "use-in-match : linear FileHandle -> Boolean -> [FileSystem] Nothing\n" +
             "use-in-match (h) (b) =\n" +
             "  when b\n" +
-            "    if True -> close-file h\n" +
-            "    if False -> close-file h\n";
+            "    is True -> close-file h\n" +
+            "    is False -> close-file h\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
         Assert.DoesNotContain(diag.ToImmutable(), d =>
             d.Code == CdxCodes.LinearUnused || d.Code == CdxCodes.LinearUsedTwice);

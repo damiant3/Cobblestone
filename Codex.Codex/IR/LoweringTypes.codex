@@ -28,8 +28,8 @@ Section: Type Lookup
   lookup-type-split (overlay) (base) (name) =
    let overlay-hit = lookup-type-loop overlay name 0 (list-length overlay)
    in when overlay-hit
-    if ErrorTy -> lookup-type-bsearch base name
-    if _ -> overlay-hit
+    is ErrorTy -> lookup-type-bsearch base name
+    is otherwise -> overlay-hit
 
   sort-bindings-loop : List TypeBinding -> Integer -> Integer -> List TypeBinding -> List TypeBinding
   sort-bindings-loop (xs) (i) (len) (acc) =
@@ -47,69 +47,69 @@ Section: Type Lookup
   peel-fun-param : CodexType -> CodexType
   peel-fun-param (ty) =
    when ty
-    if FunTy (p) (r) -> p
-    if ForAllTy (id) (body) -> peel-fun-param body
-    if _ -> ErrorTy
+    is FunTy (p) (r) -> p
+    is ForAllTy (id) (body) -> peel-fun-param body
+    is otherwise -> ErrorTy
 
   peel-fun-return : CodexType -> CodexType
   peel-fun-return (ty) =
    when ty
-    if FunTy (p) (r) -> r
-    if ForAllTy (id) (body) -> peel-fun-return body
-    if _ -> ErrorTy
+    is FunTy (p) (r) -> r
+    is ForAllTy (id) (body) -> peel-fun-return body
+    is otherwise -> ErrorTy
 
   strip-forall-ty : CodexType -> CodexType
   strip-forall-ty (ty) =
    when ty
-    if ForAllTy (id) (body) -> strip-forall-ty body
-    if _ -> ty
+    is ForAllTy (id) (body) -> strip-forall-ty body
+    is otherwise -> ty
 
 Section: Type Substitution
   subst-type-vars-from-arg : CodexType -> CodexType -> CodexType -> CodexType
   subst-type-vars-from-arg (param-ty) (arg-ty) (target) =
    when param-ty
-    if TypeVar (id) -> subst-type-var-in-target target id arg-ty
-    if ListTy (pe) -> subst-from-list pe arg-ty target
-    if FunTy (pp) (pr) -> subst-from-fun pp pr arg-ty target
-    if _ -> target
+    is TypeVar (id) -> subst-type-var-in-target target id arg-ty
+    is ListTy (pe) -> subst-from-list pe arg-ty target
+    is FunTy (pp) (pr) -> subst-from-fun pp pr arg-ty target
+    is otherwise -> target
 
   subst-from-list : CodexType -> CodexType -> CodexType -> CodexType
   subst-from-list (pe) (arg-ty) (target) =
    when arg-ty
-    if ListTy (ae) -> subst-type-vars-from-arg pe ae target
-    if _ -> target
+    is ListTy (ae) -> subst-type-vars-from-arg pe ae target
+    is otherwise -> target
 
   subst-from-fun : CodexType -> CodexType -> CodexType -> CodexType -> CodexType
   subst-from-fun (pp) (pr) (arg-ty) (target) =
    when arg-ty
-    if FunTy (ap) (ar) ->
+    is FunTy (ap) (ar) ->
      let t2 = subst-type-vars-from-arg pp ap target
      in subst-type-vars-from-arg pr ar t2
-    if _ -> target
+    is otherwise -> target
 
   subst-type-var-in-target : CodexType -> Integer -> CodexType -> CodexType
   subst-type-var-in-target (ty) (var-id) (replacement) =
    when ty
-    if TypeVar (id) -> if id == var-id then replacement else ty
-    if FunTy (p) (r) -> FunTy (subst-type-var-in-target p var-id replacement) (subst-type-var-in-target r var-id replacement)
-    if ListTy (elem) -> ListTy (subst-type-var-in-target elem var-id replacement)
-    if ForAllTy (fid) (body) ->
+    is TypeVar (id) -> if id == var-id then replacement else ty
+    is FunTy (p) (r) -> FunTy (subst-type-var-in-target p var-id replacement) (subst-type-var-in-target r var-id replacement)
+    is ListTy (elem) -> ListTy (subst-type-var-in-target elem var-id replacement)
+    is ForAllTy (fid) (body) ->
      if fid == var-id then ty
      else ForAllTy fid (subst-type-var-in-target body var-id replacement)
-    if _ -> ty
+    is otherwise -> ty
 
   strip-fun-args-lower : CodexType -> CodexType
   strip-fun-args-lower (ty) =
    when ty
-    if FunTy (p) (r) -> strip-fun-args-lower r
-    if ForAllTy (id) (body) -> strip-fun-args-lower body
-    if _ -> ty
+    is FunTy (p) (r) -> strip-fun-args-lower r
+    is ForAllTy (id) (body) -> strip-fun-args-lower body
+    is otherwise -> ty
 
   is-text-type : CodexType -> Boolean
   is-text-type (ty) =
    when ty
-    if TextTy -> True
-    if _ -> False
+    is TextTy -> True
+    is otherwise -> False
 
 Section: Constructor Bindings
   collect-ctor-bindings : List ATypeDef -> Integer -> Integer -> List TypeBinding -> List TypeBinding
@@ -122,11 +122,11 @@ Section: Constructor Bindings
   ctor-bindings-for-typedef : ATypeDef -> List TypeBinding
   ctor-bindings-for-typedef (td) =
    when td
-    if AVariantTypeDef (name) (type-params) (ctors) (s) ->
+    is AVariantTypeDef (name) (type-params) (ctors) (s) ->
      let sum-ctors = build-sum-ctors ctors 0 (list-length ctors) []
      in let result-ty = SumTy name sum-ctors
      in [TypeBinding { name = name.value, bound-type = result-ty }] ++ collect-variant-ctor-bindings ctors result-ty 0 (list-length ctors) []
-    if ARecordTypeDef (name) (type-params) (fields) (s) ->
+    is ARecordTypeDef (name) (type-params) (fields) (s) ->
      let resolved-fields = build-record-fields fields 0 (list-length fields) []
      in let result-ty = RecordTy name resolved-fields
      in let ctor-ty = build-record-ctor-type fields result-ty 0 (list-length fields)
@@ -180,66 +180,66 @@ Section: Constructor Bindings
   resolve-type-expr : ATypeExpr -> CodexType
   resolve-type-expr (texpr) =
    when texpr
-    if ANamedType (name) (s) ->
+    is ANamedType (name) (s) ->
      if name.value == "Integer" then IntegerTy
      else if name.value == "Number" then NumberTy
      else if name.value == "Text" then TextTy
      else if name.value == "Boolean" then BooleanTy
      else if name.value == "Nothing" then NothingTy
      else ConstructedTy name []
-    if AFunType (param) (ret) (s) -> FunTy (resolve-type-expr param) (resolve-type-expr ret)
-    if AAppType (ctor) (args) (s) ->
+    is AFunType (param) (ret) (s) -> FunTy (resolve-type-expr param) (resolve-type-expr ret)
+    is AAppType (ctor) (args) (s) ->
      when ctor
-      if ANamedType (cname) (s2) ->
+      is ANamedType (cname) (s2) ->
        if cname.value == "List" then if list-length args == 1 then ListTy (resolve-type-expr (list-at args 0))
          else ListTy ErrorTy
         else ConstructedTy cname []
-      if _ -> ErrorTy
-    if AEffectType (effs) (ret) (s) -> EffectfulTy effs (resolve-type-expr ret)
+      is otherwise -> ErrorTy
+    is AEffectType (effs) (ret) (s) -> EffectfulTy effs (resolve-type-expr ret)
 
 Section: Binary Op Lowering
   is-number-type : CodexType -> Boolean
   is-number-type (ty) =
    when ty
-    if NumberTy -> True
-    if _ -> False
+    is NumberTy -> True
+    is otherwise -> False
 
   lower-bin-op : BinaryOp -> CodexType -> IRBinaryOp
   lower-bin-op (op) (ty) =
    when op
-    if OpAdd -> if is-number-type ty then IrAddNum else IrAddInt
-    if OpSub -> if is-number-type ty then IrSubNum else IrSubInt
-    if OpMul -> if is-number-type ty then IrMulNum else IrMulInt
-    if OpDiv -> if is-number-type ty then IrDivNum else IrDivInt
-    if OpPow -> IrPowInt
-    if OpEq -> IrEq
-    if OpNotEq -> IrNotEq
-    if OpLt -> IrLt
-    if OpGt -> IrGt
-    if OpLtEq -> IrLtEq
-    if OpGtEq -> IrGtEq
-    if OpDefEq -> IrEq
-    if OpAppend -> if is-text-type ty then IrAppendText else IrAppendList
-    if OpCons -> IrConsList
-    if OpAnd -> IrAnd
-    if OpOr -> IrOr
+    is OpAdd -> if is-number-type ty then IrAddNum else IrAddInt
+    is OpSub -> if is-number-type ty then IrSubNum else IrSubInt
+    is OpMul -> if is-number-type ty then IrMulNum else IrMulInt
+    is OpDiv -> if is-number-type ty then IrDivNum else IrDivInt
+    is OpPow -> IrPowInt
+    is OpEq -> IrEq
+    is OpNotEq -> IrNotEq
+    is OpLt -> IrLt
+    is OpGt -> IrGt
+    is OpLtEq -> IrLtEq
+    is OpGtEq -> IrGtEq
+    is OpDefEq -> IrEq
+    is OpAppend -> if is-text-type ty then IrAppendText else IrAppendList
+    is OpCons -> IrConsList
+    is OpAnd -> IrAnd
+    is OpOr -> IrOr
 
   binary-result-type : BinaryOp -> CodexType -> CodexType -> CodexType
   binary-result-type (op) (left-ty) (expected-ty) =
    when op
-    if OpEq -> BooleanTy
-    if OpNotEq -> BooleanTy
-    if OpLt -> BooleanTy
-    if OpGt -> BooleanTy
-    if OpLtEq -> BooleanTy
-    if OpGtEq -> BooleanTy
-    if OpDefEq -> BooleanTy
-    if OpAnd -> BooleanTy
-    if OpOr -> BooleanTy
-    if OpAppend -> if is-text-type left-ty then TextTy
+    is OpEq -> BooleanTy
+    is OpNotEq -> BooleanTy
+    is OpLt -> BooleanTy
+    is OpGt -> BooleanTy
+    is OpLtEq -> BooleanTy
+    is OpGtEq -> BooleanTy
+    is OpDefEq -> BooleanTy
+    is OpAnd -> BooleanTy
+    is OpOr -> BooleanTy
+    is OpAppend -> if is-text-type left-ty then TextTy
            else if is-text-type expected-ty then TextTy
            else left-ty
-    if _ -> left-ty
+    is otherwise -> left-ty
 
 Page 2 of 2
 

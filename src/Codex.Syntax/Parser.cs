@@ -675,7 +675,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
                 return;
 
             if (Current.Kind is TokenKind.ThenKeyword or TokenKind.ElseKeyword
-                or TokenKind.InKeyword or TokenKind.IfKeyword
+                or TokenKind.InKeyword or TokenKind.IfKeyword or TokenKind.IsKeyword
                 or TokenKind.WhenKeyword or TokenKind.DoKeyword
                 or TokenKind.LetKeyword
                 or TokenKind.RightParen or TokenKind.RightBracket or TokenKind.RightBrace)

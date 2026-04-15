@@ -267,8 +267,8 @@ public class Arm64EmitterTests
             area : Shape -> Integer
             area (s) =
               when s
-                if Circle (r) -> r * r
-                if Rect (w) (h) -> w * h
+                is Circle (r) -> r * r
+                is Rect (w) (h) -> w * h
 
             main : Integer
             main = area (Circle 5)
@@ -289,8 +289,8 @@ public class Arm64EmitterTests
             area : Shape -> Integer
             area (s) =
               when s
-                if Circle (r) -> r * r
-                if Rect (w) (h) -> w * h
+                is Circle (r) -> r * r
+                is Rect (w) (h) -> w * h
 
             main : Integer
             main = area (Rect 6 7)
@@ -311,8 +311,8 @@ public class Arm64EmitterTests
             area : Shape -> Integer
             area (s) =
               when s
-                if Circle (r) -> r * r
-                if Rect (w) (h) -> w * h
+                is Circle (r) -> r * r
+                is Rect (w) (h) -> w * h
 
             main : Integer
             main = area (Circle 3) + area (Rect 4 5)

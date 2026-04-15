@@ -400,9 +400,15 @@ public sealed partial class Parser
         SkipNewlines();
 
         List<MatchBranchNode> branches = [];
-        int branchColumn = Current.Kind == TokenKind.IfKeyword ? Current.Span.Start.Column : -1;
-        int branchLine = Current.Kind == TokenKind.IfKeyword ? Current.Span.Start.Line : -1;
-        while (Current.Kind == TokenKind.IfKeyword
+        if (Current.Kind == TokenKind.IfKeyword)
+        {
+            m_diagnostics.Error(CdxCodes.ExpectedMatchBranch,
+                "Use 'is' to introduce a when-arm; 'if' is reserved for boolean conditionals",
+                Current.Span);
+        }
+        int branchColumn = Current.Kind == TokenKind.IsKeyword ? Current.Span.Start.Column : -1;
+        int branchLine = Current.Kind == TokenKind.IsKeyword ? Current.Span.Start.Line : -1;
+        while (Current.Kind == TokenKind.IsKeyword
             && (Current.Span.Start.Line == branchLine || Current.Span.Start.Column == branchColumn))
         {
             Advance();
@@ -524,8 +530,18 @@ public sealed partial class Parser
     {
         switch (Current.Kind)
         {
+            case TokenKind.OtherwiseKeyword:
+            {
+                Token token = Current;
+                Advance();
+                return new WildcardPatternNode(token);
+            }
+
             case TokenKind.Underscore:
             {
+                m_diagnostics.Error(CdxCodes.ExpectedPattern,
+                    "Use 'otherwise' for the wildcard pattern; '_' is no longer a pattern",
+                    Current.Span);
                 Token token = Current;
                 Advance();
                 return new WildcardPatternNode(token);
@@ -566,6 +582,14 @@ public sealed partial class Parser
             case TokenKind.Identifier:
             {
                 Token token = Current;
+                if (token.Text == "_")
+                {
+                    m_diagnostics.Error(CdxCodes.ExpectedPattern,
+                        "Use 'otherwise' for the wildcard pattern; '_' is no longer a pattern",
+                        Current.Span);
+                    Advance();
+                    return new WildcardPatternNode(token);
+                }
                 Advance();
                 return new VariablePatternNode(token);
             }
