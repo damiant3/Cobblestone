@@ -350,8 +350,13 @@ public sealed partial class Parser
         SkipNewlines();
 
         List<Syntax.LetBinding> bindings = [];
-        while (Current.Kind == TokenKind.Identifier)
+        while (Current.Kind == TokenKind.Identifier
+            || (IsReservedKeyword(Current.Kind) && Peek(1)?.Kind == TokenKind.Equals))
         {
+            if (IsReservedKeyword(Current.Kind))
+            {
+                ReportReservedKeywordAsIdentifier("a let-binding name");
+            }
             Token name = Current;
             Advance();
             Expect(TokenKind.Equals);

@@ -503,6 +503,11 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
                 parameters.Add(Current);
                 Advance();
             }
+            else if (IsReservedKeyword(Current.Kind))
+            {
+                ReportReservedKeywordAsIdentifier("a parameter name");
+                Advance();
+            }
             Expect(TokenKind.RightParen);
         }
 
@@ -610,6 +615,24 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         {
             Advance();
         }
+    }
+
+    static bool IsReservedKeyword(TokenKind kind) => kind
+        is TokenKind.LetKeyword or TokenKind.InKeyword
+        or TokenKind.IfKeyword or TokenKind.IsKeyword or TokenKind.OtherwiseKeyword
+        or TokenKind.ThenKeyword or TokenKind.ElseKeyword
+        or TokenKind.WhenKeyword or TokenKind.WhereKeyword or TokenKind.SuchThatKeyword
+        or TokenKind.DoKeyword or TokenKind.RecordKeyword or TokenKind.CitesKeyword
+        or TokenKind.ClaimKeyword or TokenKind.ProofKeyword
+        or TokenKind.ForAllKeyword or TokenKind.ThereExistsKeyword
+        or TokenKind.LinearKeyword or TokenKind.EffectKeyword or TokenKind.WithKeyword
+        or TokenKind.TrueKeyword or TokenKind.FalseKeyword;
+
+    void ReportReservedKeywordAsIdentifier(string context)
+    {
+        m_diagnostics.Error(CdxCodes.ReservedKeywordAsIdentifier,
+            $"'{Current.Text}' is a reserved keyword and cannot be used as {context}; rename it",
+            Current.Span);
     }
 
     bool IsDependentTypeLookahead()
