@@ -437,6 +437,22 @@ public static class CceTable
         return (cce >= 0 && cce < 128) ? ToUnicode[(int)cce] : 65533;
     }
 
+    /// <summary>
+    /// Encode each element of a Unicode string array into CCE, returning a
+    /// concrete <see cref="List{String}"/>. Used by the IL emitter's builtins
+    /// that return lists of strings from the OS (e.g. <c>list-files</c>,
+    /// <c>get-args</c>) so callers see CCE-encoded paths/arguments. The input
+    /// is typed as <c>string[]</c> to match <see cref="Directory.GetFiles(string, string)"/>
+    /// and <see cref="Environment.GetCommandLineArgs"/> exactly, avoiding IL
+    /// verifier complaints about array → IEnumerable covariance at the call site.
+    /// </summary>
+    public static List<string> EncodeList(string[] unicodes)
+    {
+        var result = new List<string>(unicodes.Length);
+        foreach (string s in unicodes) result.Add(Encode(s));
+        return result;
+    }
+
     // ── Runtime source generation ───────────────────────────────────────
 
     /// <summary>

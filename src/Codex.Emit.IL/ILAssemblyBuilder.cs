@@ -42,10 +42,12 @@ sealed partial class ILAssemblyBuilder
     MemberReferenceHandle m_int64TryParseRef;
     MemberReferenceHandle m_doubleParseRef;
     MemberReferenceHandle m_charToStringRef;
-    MemberReferenceHandle m_charIsLetterRef;
-    MemberReferenceHandle m_charIsDigitRef;
-    MemberReferenceHandle m_charIsWhiteSpaceRef;
     MemberReferenceHandle m_doubleToStringRef;
+    MemberReferenceHandle m_cceEncodeRef;       // CceTable.Encode(string) → string
+    MemberReferenceHandle m_cceDecodeRef;       // CceTable.Decode(string) → string
+    MemberReferenceHandle m_cceUniToCceRef;     // CceTable.UnicharToCce(long) → long
+    MemberReferenceHandle m_cceCceToUniRef;     // CceTable.CceToUnichar(long) → long
+    MemberReferenceHandle m_cceEncodeListRef;   // CceTable.EncodeList(IEnumerable<string>) → List<string>
     MemberReferenceHandle m_stringEqualsRef;
 
     // ── List<T> support ──────────────────────────────────────────
@@ -340,30 +342,6 @@ sealed partial class ILAssemblyBuilder
                 returnType: b => b.Type().String(),
                 parameters: Array.Empty<Action<ParameterTypeEncoder>>()));
 
-        // Char.IsLetter(char) : bool  (static)
-        m_charIsLetterRef = m_metadata.AddMemberReference(
-            m_charRef,
-            m_metadata.GetOrAddString("IsLetter"),
-            EncodeMethodSignature(SignatureCallingConvention.Default, true,
-                returnType: b => b.Type().Boolean(),
-                parameters: new Action<ParameterTypeEncoder>[] { p => p.Type().Char() }));
-
-        // Char.IsDigit(char) : bool  (static)
-        m_charIsDigitRef = m_metadata.AddMemberReference(
-            m_charRef,
-            m_metadata.GetOrAddString("IsDigit"),
-            EncodeMethodSignature(SignatureCallingConvention.Default, true,
-                returnType: b => b.Type().Boolean(),
-                parameters: new Action<ParameterTypeEncoder>[] { p => p.Type().Char() }));
-
-        // Char.IsWhiteSpace(char) : bool  (static)
-        m_charIsWhiteSpaceRef = m_metadata.AddMemberReference(
-            m_charRef,
-            m_metadata.GetOrAddString("IsWhiteSpace"),
-            EncodeMethodSignature(SignatureCallingConvention.Default, true,
-                returnType: b => b.Type().Boolean(),
-                parameters: new Action<ParameterTypeEncoder>[] { p => p.Type().Char() }));
-
         // Double.ToString() : string  (instance on double)
         m_doubleToStringRef = m_metadata.AddMemberReference(
             m_doubleRef,
@@ -590,21 +568,36 @@ sealed partial class ILAssemblyBuilder
                 parameters: Array.Empty<Action<ParameterTypeEncoder>>()));
 
         // ── Additional String instance methods ──────────────────
-        // String.Contains(string) : bool (instance)
+        // String.Contains(string, StringComparison) : bool (instance)
+        // Must use the ordinal-aware overload — strings are CCE-encoded byte
+        // sequences, and the default Contains/StartsWith are culture-sensitive,
+        // which collapses control-char prefixes (CCE's letter range is 13-64).
+        TypeReferenceHandle stringComparisonRef = m_metadata.AddTypeReference(
+            m_corlibRef,
+            m_metadata.GetOrAddString("System"),
+            m_metadata.GetOrAddString("StringComparison"));
         m_stringContainsRef = m_metadata.AddMemberReference(
             m_stringRef,
             m_metadata.GetOrAddString("Contains"),
             EncodeMethodSignature(SignatureCallingConvention.Default, false,
                 returnType: b => b.Type().Boolean(),
-                parameters: new Action<ParameterTypeEncoder>[] { p => p.Type().String() }));
+                parameters: new Action<ParameterTypeEncoder>[]
+                {
+                    p => p.Type().String(),
+                    p => p.Type().Type(stringComparisonRef, isValueType: true),
+                }));
 
-        // String.StartsWith(string) : bool (instance)
+        // String.StartsWith(string, StringComparison) : bool (instance)
         m_stringStartsWithRef = m_metadata.AddMemberReference(
             m_stringRef,
             m_metadata.GetOrAddString("StartsWith"),
             EncodeMethodSignature(SignatureCallingConvention.Default, false,
                 returnType: b => b.Type().Boolean(),
-                parameters: new Action<ParameterTypeEncoder>[] { p => p.Type().String() }));
+                parameters: new Action<ParameterTypeEncoder>[]
+                {
+                    p => p.Type().String(),
+                    p => p.Type().Type(stringComparisonRef, isValueType: true),
+                }));
 
         // ── Environment.GetEnvironmentVariable ──────────────────
         m_getEnvVarRef = m_metadata.AddMemberReference(
@@ -643,6 +636,67 @@ sealed partial class ILAssemblyBuilder
             m_directoryGetFilesRef = m_metadata.AddMemberReference(
                 m_directoryRef,
                 m_metadata.GetOrAddString("GetFiles"),
+                m_metadata.GetOrAddBlob(sig));
+        }
+
+        // ── Codex.Core.CceTable (for CCE ↔ Unicode conversion at I/O boundaries) ──
+        AssemblyReferenceHandle codexCoreAsmRef = m_metadata.AddAssemblyReference(
+            m_metadata.GetOrAddString("Codex.Core"),
+            new Version(1, 0, 0, 0),
+            default, default, default, default);
+
+        TypeReferenceHandle cceTableRef = m_metadata.AddTypeReference(
+            codexCoreAsmRef,
+            m_metadata.GetOrAddString("Codex.Core"),
+            m_metadata.GetOrAddString("CceTable"));
+
+        m_cceEncodeRef = m_metadata.AddMemberReference(
+            cceTableRef,
+            m_metadata.GetOrAddString("Encode"),
+            EncodeMethodSignature(SignatureCallingConvention.Default, true,
+                returnType: b => b.Type().String(),
+                parameters: new Action<ParameterTypeEncoder>[] { p => p.Type().String() }));
+
+        m_cceDecodeRef = m_metadata.AddMemberReference(
+            cceTableRef,
+            m_metadata.GetOrAddString("Decode"),
+            EncodeMethodSignature(SignatureCallingConvention.Default, true,
+                returnType: b => b.Type().String(),
+                parameters: new Action<ParameterTypeEncoder>[] { p => p.Type().String() }));
+
+        m_cceUniToCceRef = m_metadata.AddMemberReference(
+            cceTableRef,
+            m_metadata.GetOrAddString("UnicharToCce"),
+            EncodeMethodSignature(SignatureCallingConvention.Default, true,
+                returnType: b => b.Type().Int64(),
+                parameters: new Action<ParameterTypeEncoder>[] { p => p.Type().Int64() }));
+
+        m_cceCceToUniRef = m_metadata.AddMemberReference(
+            cceTableRef,
+            m_metadata.GetOrAddString("CceToUnichar"),
+            EncodeMethodSignature(SignatureCallingConvention.Default, true,
+                returnType: b => b.Type().Int64(),
+                parameters: new Action<ParameterTypeEncoder>[] { p => p.Type().Int64() }));
+
+        // CceTable.EncodeList(string[]) → List<string>
+        {
+            BlobBuilder sig = new();
+            new BlobEncoder(sig)
+                .MethodSignature(SignatureCallingConvention.Default, 0, isInstanceMethod: false)
+                .Parameters(1,
+                    returnType =>
+                    {
+                        GenericTypeArgumentsEncoder genArgs = returnType.Type()
+                            .GenericInstantiation(m_listOpenRef, 1, isValueType: false);
+                        genArgs.AddArgument().String();
+                    },
+                    parameters =>
+                    {
+                        parameters.AddParameter().Type().SZArray().String();
+                    });
+            m_cceEncodeListRef = m_metadata.AddMemberReference(
+                cceTableRef,
+                m_metadata.GetOrAddString("EncodeList"),
                 m_metadata.GetOrAddBlob(sig));
         }
     }
@@ -822,23 +876,32 @@ sealed partial class ILAssemblyBuilder
         ControlFlowBuilder entryControlFlow = new();
         InstructionEncoder il = new(new BlobBuilder(), entryControlFlow);
 
-        bool isEffectful = mainDef.Type is EffectfulType or VoidType;
+        // Unwrap effect annotations: main's runtime value has the inner type.
+        // VoidType/NothingType both lower to an IL void return (see EncodeType),
+        // so the call leaves the stack empty — just Ret. Otherwise we print.
+        CodexType innerType = mainDef.Type is EffectfulType eff ? eff.Return : mainDef.Type;
 
-        if (isEffectful)
+        il.Call(m_definedMethods["main"]!.Value);
+
+        switch (innerType)
         {
-            il.Call(m_definedMethods["main"]!.Value);
-        }
-        else
-        {
-            il.Call(m_definedMethods["main"]!.Value);
-            MemberReferenceHandle writeLine = mainDef.Type switch
-            {
-                IntegerType or CharType => m_writeLineInt64Ref,
-                NumberType => m_writeLineDoubleRef,
-                BooleanType => m_writeLineBoolRef,
-                _ => m_writeLineStringRef,
-            };
-            il.Call(writeLine);
+            case VoidType:
+            case NothingType:
+                break;
+            case TextType:
+                il.Call(m_cceDecodeRef);
+                il.Call(m_writeLineStringRef);
+                break;
+            default:
+                MemberReferenceHandle writeLine = innerType switch
+                {
+                    IntegerType or CharType => m_writeLineInt64Ref,
+                    NumberType => m_writeLineDoubleRef,
+                    BooleanType => m_writeLineBoolRef,
+                    _ => m_writeLineStringRef,
+                };
+                il.Call(writeLine);
+                break;
         }
 
         il.OpCode(ILOpCode.Ret);
@@ -865,7 +928,11 @@ sealed partial class ILAssemblyBuilder
         switch (expr)
         {
             case IRTextLit t:
-                il.LoadString(m_metadata.GetOrAddUserString(t.Value));
+                il.LoadString(m_metadata.GetOrAddUserString(CceTable.Encode(t.Value)));
+                break;
+
+            case IRCharLit c:
+                il.LoadConstantI8(CceTable.UnicharToCce(c.Value));
                 break;
 
             case IRIntegerLit i:
@@ -1156,15 +1223,24 @@ sealed partial class ILAssemblyBuilder
         {
             case "print-line" when args.Count == 1:
                 emitSub(args[0]);
-                // Choose the right overload based on the argument type
-                MemberReferenceHandle writeLine = args[0].Type switch
+                // Choose the right overload based on the argument type.
+                // Text is stored as CCE internally — decode to Unicode before writing.
+                if (args[0].Type is TextType)
                 {
-                    IntegerType or CharType => m_writeLineInt64Ref,
-                    NumberType => m_writeLineDoubleRef,
-                    BooleanType => m_writeLineBoolRef,
-                    _ => m_writeLineStringRef,
-                };
-                il.Call(writeLine);
+                    il.Call(m_cceDecodeRef);
+                    il.Call(m_writeLineStringRef);
+                }
+                else
+                {
+                    MemberReferenceHandle writeLine = args[0].Type switch
+                    {
+                        IntegerType or CharType => m_writeLineInt64Ref,
+                        NumberType => m_writeLineDoubleRef,
+                        BooleanType => m_writeLineBoolRef,
+                        _ => m_writeLineStringRef,
+                    };
+                    il.Call(writeLine);
+                }
                 return true;
 
             case "show" when args.Count == 1:
@@ -1237,8 +1313,9 @@ sealed partial class ILAssemblyBuilder
 
             case "text-to-integer" when args.Count == 1:
             {
-                // Safe parse: Int64.TryParse(s, out result) ? result : 0L
+                // Safe parse: Int64.TryParse(_Cce.Decode(s), out result) ? result : 0L
                 emitSub(args[0]);
+                il.Call(m_cceDecodeRef); // CCE → Unicode for Int64.TryParse
                 int tmpResult = locals.AddLocal("__tti_result", IntegerType.s_instance);
                 il.OpCode(ILOpCode.Ldloca_s);
                 il.CodeBuilder.WriteByte((byte)tmpResult);
@@ -1260,36 +1337,42 @@ sealed partial class ILAssemblyBuilder
                 return true;
 
             case "is-letter" when args.Count == 1:
-                // Char.IsLetter((char)val)
+                // CCE: letters are 13-64 inclusive. (val - 13) u< 52 covers [13, 64].
                 emitSub(args[0]);
-                il.OpCode(ILOpCode.Conv_u2);
-                il.Call(m_charIsLetterRef);
+                il.LoadConstantI8(13);
+                il.OpCode(ILOpCode.Sub);
+                il.LoadConstantI8(52);
+                il.OpCode(ILOpCode.Clt_un);
                 return true;
 
             case "is-digit" when args.Count == 1:
+                // CCE: digits are 3-12 inclusive. (val - 3) u< 10 covers [3, 12].
                 emitSub(args[0]);
-                il.OpCode(ILOpCode.Conv_u2);
-                il.Call(m_charIsDigitRef);
+                il.LoadConstantI8(3);
+                il.OpCode(ILOpCode.Sub);
+                il.LoadConstantI8(10);
+                il.OpCode(ILOpCode.Clt_un);
                 return true;
 
             case "is-whitespace" when args.Count == 1:
+                // CCE: whitespace is 0-2 inclusive. val u< 3 covers [0, 2].
                 emitSub(args[0]);
-                il.OpCode(ILOpCode.Conv_u2);
-                il.Call(m_charIsWhiteSpaceRef);
+                il.LoadConstantI8(3);
+                il.OpCode(ILOpCode.Clt_un);
                 return true;
 
             case "read-line" when args.Count == 0:
+                // Console.ReadLine() returns Unicode; encode to CCE.
                 il.Call(m_consoleReadLineRef);
+                il.Call(m_cceEncodeRef);
                 return true;
 
             // ── List<T> builtins ─────────────────────────────────
             case "get-args" when args.Count == 0:
             {
-                // new List<string>(Environment.GetCommandLineArgs())
-                ListInstantiation inst = GetOrCreateListInstantiation(TextType.s_instance);
+                // CceTable.EncodeList(Environment.GetCommandLineArgs()) — CCE-encoded List<string>.
                 il.Call(m_getCommandLineArgsRef);
-                il.OpCode(ILOpCode.Newobj);
-                il.Token(inst.CtorIEnumerable);
+                il.Call(m_cceEncodeListRef);
                 return true;
             }
 
@@ -1332,31 +1415,39 @@ sealed partial class ILAssemblyBuilder
             }
 
             // ── File I/O builtins ────────────────────────────────
+            // Paths and content are CCE-encoded internally — decode to Unicode
+            // before calling .NET I/O; encode results back to CCE.
             case "read-file" when args.Count == 1:
-                // File.ReadAllText(path)
                 emitSub(args[0]);
+                il.Call(m_cceDecodeRef);     // CCE path → Unicode
                 il.Call(m_fileReadAllTextRef);
+                il.Call(m_cceEncodeRef);     // Unicode content → CCE
                 return true;
 
             case "file-exists" when args.Count == 1:
-                // File.Exists(path)
                 emitSub(args[0]);
+                il.Call(m_cceDecodeRef);     // CCE path → Unicode
                 il.Call(m_fileExistsRef);
                 return true;
 
             case "write-file" when args.Count == 2:
-                // File.WriteAllText(path, content) — void return, push null for let bindings
                 emitSub(args[0]);
+                il.Call(m_cceDecodeRef);     // CCE path → Unicode
                 emitSub(args[1]);
+                il.Call(m_cceDecodeRef);     // CCE content → Unicode
                 il.Call(m_fileWriteAllTextRef);
-                il.OpCode(ILOpCode.Ldnull);
+                // File.WriteAllText is void — leave nothing on the stack. Do-bind
+                // sites bind write-file's Nothing result via IRDoBind, which skips
+                // StoreLocal for void-like NameType (see EmitDo).
                 return true;
 
             // ── Process builtins ────────────────────────────────
             case "run-process" when args.Count == 2:
-                // var psi = new ProcessStartInfo(program, arguments);
+                // var psi = new ProcessStartInfo(program, arguments); — args are CCE
                 emitSub(args[0]);
+                il.Call(m_cceDecodeRef);     // CCE → Unicode for OS call
                 emitSub(args[1]);
+                il.Call(m_cceDecodeRef);     // CCE → Unicode for OS call
                 il.OpCode(ILOpCode.Newobj);
                 il.Token(m_psiCtorRef);
 
@@ -1382,54 +1473,74 @@ sealed partial class ILAssemblyBuilder
                 il.OpCode(ILOpCode.Callvirt);
                 il.Token(m_streamReaderReadToEndRef);
 
-                // stash output, call WaitForExit, load output
+                // stash output, call WaitForExit, load output, encode Unicode → CCE
                 {
                     int tmpOut = locals.AddLocal("__proc_out", TextType.s_instance);
                     il.StoreLocal(tmpOut);
                     il.OpCode(ILOpCode.Callvirt);
                     il.Token(m_processWaitForExitRef);
                     il.LoadLocal(tmpOut);
+                    il.Call(m_cceEncodeRef);
                 }
                 return true;
 
             // ── Additional text builtins ─────────────────────────
             case "text-contains" when args.Count == 2:
-                // text.Contains(substring) : bool
+                // text.Contains(substring, StringComparison.Ordinal) : bool
                 emitSub(args[0]);
                 emitSub(args[1]);
+                il.LoadConstantI4(4); // StringComparison.Ordinal
                 il.OpCode(ILOpCode.Callvirt);
                 il.Token(m_stringContainsRef);
                 return true;
 
             case "text-starts-with" when args.Count == 2:
-                // text.StartsWith(prefix) : bool
+                // text.StartsWith(prefix, StringComparison.Ordinal) : bool
                 emitSub(args[0]);
                 emitSub(args[1]);
+                il.LoadConstantI4(4); // StringComparison.Ordinal
                 il.OpCode(ILOpCode.Callvirt);
                 il.Token(m_stringStartsWithRef);
                 return true;
 
             // ── Environment / Directory builtins ─────────────────
             case "get-env" when args.Count == 1:
-                // Environment.GetEnvironmentVariable(name) : string
+                // Environment.GetEnvironmentVariable(name) : string? — decode name, encode result.
+                // Null result from a missing env var would NRE downstream; substitute "" like the C# emitter does.
                 emitSub(args[0]);
+                il.Call(m_cceDecodeRef);
                 il.Call(m_getEnvVarRef);
+                {
+                    int tmpEnv = locals.AddLocal("__env_val", TextType.s_instance);
+                    il.StoreLocal(tmpEnv);
+                    il.LoadLocal(tmpEnv);
+                    LabelHandle nonNull = il.DefineLabel();
+                    il.Branch(ILOpCode.Brtrue_s, nonNull);
+                    il.LoadString(m_metadata.GetOrAddUserString(""));
+                    LabelHandle done = il.DefineLabel();
+                    il.Branch(ILOpCode.Br_s, done);
+                    il.MarkLabel(nonNull);
+                    il.LoadLocal(tmpEnv);
+                    il.MarkLabel(done);
+                }
+                il.Call(m_cceEncodeRef);
                 return true;
 
             case "current-dir" when args.Count == 0:
-                // Directory.GetCurrentDirectory() : string
+                // Directory.GetCurrentDirectory() returns Unicode; encode to CCE.
                 il.Call(m_directoryGetCurrentRef);
+                il.Call(m_cceEncodeRef);
                 return true;
 
             case "list-files" when args.Count == 2:
             {
-                // new List<string>(Directory.GetFiles(path, pattern))
-                ListInstantiation inst = GetOrCreateListInstantiation(TextType.s_instance);
+                // CceTable.EncodeList(Directory.GetFiles(Decode(path), Decode(pattern)))
                 emitSub(args[0]);
+                il.Call(m_cceDecodeRef);
                 emitSub(args[1]);
+                il.Call(m_cceDecodeRef);
                 il.Call(m_directoryGetFilesRef);
-                il.OpCode(ILOpCode.Newobj);
-                il.Token(inst.CtorIEnumerable);
+                il.Call(m_cceEncodeListRef);
                 return true;
             }
 
@@ -1476,14 +1587,16 @@ sealed partial class ILAssemblyBuilder
                 EmitCharToString(il, locals);
                 break;
             case TextType:
-                // Already a string, nothing to do
-                break;
+                // Already a CCE-encoded string, nothing to do
+                return;
             default:
                 // Reference type — just callvirt Object.ToString()
                 il.OpCode(ILOpCode.Callvirt);
                 il.Token(m_objectToStringRef);
                 break;
         }
+        // .NET ToString produces Unicode; encode to CCE to match the C# emitter.
+        il.Call(m_cceEncodeRef);
     }
 
     void EmitCharToString(InstructionEncoder il, LocalsBuilder locals)
@@ -1529,8 +1642,13 @@ sealed partial class ILAssemblyBuilder
             {
                 case IRDoBind bind:
                     EmitExpr(il, bind.Value, locals, parameters);
-                    int localIndex = locals.AddLocal(bind.Name, bind.NameType);
-                    il.StoreLocal(localIndex);
+                    // Void-like binds (e.g. `_ <- write-file ...`) produce no
+                    // IL value — skip StoreLocal rather than storing from empty stack.
+                    if (!IsVoidLike(bind.NameType))
+                    {
+                        int localIndex = locals.AddLocal(bind.Name, bind.NameType);
+                        il.StoreLocal(localIndex);
+                    }
                     break;
                 case IRDoExec exec:
                     EmitExpr(il, exec.Expression, locals, parameters);
@@ -2158,7 +2276,11 @@ sealed partial class ILAssemblyBuilder
         switch (expr)
         {
             case IRTextLit t:
-                il.LoadString(m_metadata.GetOrAddUserString(t.Value));
+                il.LoadString(m_metadata.GetOrAddUserString(CceTable.Encode(t.Value)));
+                break;
+
+            case IRCharLit c:
+                il.LoadConstantI8(CceTable.UnicharToCce(c.Value));
                 break;
 
             case IRIntegerLit i:

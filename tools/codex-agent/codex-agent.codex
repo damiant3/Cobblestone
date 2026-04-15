@@ -67,9 +67,9 @@ Section: Definitions
    let argc = list-length args
    in if argc < 3 then print-line "Usage: codex-agent peek <file> [start] [end]"
     else let file = list-at args 2
-     in if file-exists file then
-      let content = read-file file
-      in let all-lines = text-split content "\n"
+     in if file-exists file then do
+      content <- read-file file
+      let all-lines = text-split content "\n"
        in let total = list-length all-lines
         in let raw-start = if argc > 3 then parse-int-or (list-at args 3) 1 else 1
          in let start = if raw-start < 1 then 1 else raw-start
@@ -86,15 +86,14 @@ Section: Definitions
      "\n" ++ pad-right ("TOTAL (" ++ integer-to-text (idx - 2) ++ " files)") 50 ++ pad-left (integer-to-text total-lines) 7 ++ pad-left (integer-to-text total-chars) 9
     else ""
    else let file = list-at args idx
-    in if file-exists file then
-     let content = read-file file
-     in let lines = count-lines content
-      in let chars = text-length content
-       in let row = pad-right file 50 ++ pad-left (integer-to-text lines) 7 ++ pad-left (integer-to-text chars) 9 ++ size-hint lines
-        in let rest = stat-loop args (idx + 1) (total-lines + lines) (total-chars + chars)
-         in row ++ "\n" ++ rest
-    else let rest = stat-loop args (idx + 1) total-lines total-chars
-     in "  (not found: " ++ file ++ ")\n" ++ rest
+    in if file-exists file then do
+     content <- read-file file
+     rest <- stat-loop args (idx + 1) (total-lines + count-lines content) (total-chars + text-length content)
+     let row = pad-right file 50 ++ pad-left (integer-to-text (count-lines content)) 7 ++ pad-left (integer-to-text (text-length content)) 9 ++ size-hint (count-lines content)
+      in row ++ "\n" ++ rest
+    else do
+     rest <- stat-loop args (idx + 1) total-lines total-chars
+     "  (not found: " ++ file ++ ")\n" ++ rest
 
   do-stat : List Text -> [Console, FileSystem] Nothing
   do-stat (args) =
@@ -106,37 +105,35 @@ Section: Definitions
 
   do-snap-save : Text -> [Console, FileSystem] Nothing
   do-snap-save (file) =
-   if file-exists file then
-    let content = read-file file
-    in let lines = count-lines content
-     in let _ = write-file (snap-path file) content
-      in print-line ("  Snapshot saved: " ++ file ++ " (" ++ integer-to-text lines ++ " lines)")
+   if file-exists file then do
+    content <- read-file file
+    _ <- write-file (snap-path file) content
+    print-line ("  Snapshot saved: " ++ file ++ " (" ++ integer-to-text (count-lines content) ++ " lines)")
    else print-line ("  File not found: " ++ file)
 
   do-snap-restore : Text -> [Console, FileSystem] Nothing
   do-snap-restore (file) =
    let snap = snap-path file
-   in if file-exists snap then
-    let content = read-file snap
-    in let lines = count-lines content
-     in let _ = write-file file content
-      in print-line ("  Restored: " ++ file ++ " (" ++ integer-to-text lines ++ " lines)")
+   in if file-exists snap then do
+    content <- read-file snap
+    _ <- write-file file content
+    print-line ("  Restored: " ++ file ++ " (" ++ integer-to-text (count-lines content) ++ " lines)")
    else print-line ("  No snapshot found for " ++ file ++ ". Run 'snap save' first.")
 
   do-snap-diff : Text -> [Console, FileSystem] Nothing
   do-snap-diff (file) =
    let snap = snap-path file
    in if file-exists snap then
-    if file-exists file then
-     let old-content = read-file snap
-     in let new-content = read-file file
-      in let old-lines = count-lines old-content
-       in let new-lines = count-lines new-content
-        in let delta = new-lines - old-lines
-         in if old-content == new-content then
-          print-line ("-- " ++ file ++ ": no changes (" ++ integer-to-text old-lines ++ " lines) --")
-         else
-          print-line ("-- " ++ file ++ " --\n  Before: " ++ integer-to-text old-lines ++ " lines   After: " ++ integer-to-text new-lines ++ " lines   Delta: " ++ integer-to-text delta ++ "\n  Use 'codex-agent peek " ++ file ++ "' to inspect.\n-- End diff --")
+    if file-exists file then do
+     old-content <- read-file snap
+     new-content <- read-file file
+     let old-lines = count-lines old-content
+      in let new-lines = count-lines new-content
+       in let delta = new-lines - old-lines
+        in if old-content == new-content then
+         print-line ("-- " ++ file ++ ": no changes (" ++ integer-to-text old-lines ++ " lines) --")
+        else
+         print-line ("-- " ++ file ++ " --\n  Before: " ++ integer-to-text old-lines ++ " lines   After: " ++ integer-to-text new-lines ++ " lines   Delta: " ++ integer-to-text delta ++ "\n  Use 'codex-agent peek " ++ file ++ "' to inspect.\n-- End diff --")
     else print-line ("  File not found: " ++ file)
    else print-line ("  No snapshot for " ++ file ++ ". Run 'codex-agent snap save " ++ file ++ "' first.")
 
@@ -172,6 +169,13 @@ Section: Definitions
     check-file-status "  Agent rules  " (repo-path "CONTRIBUTING.md") ++ "\n" ++
     "=========================="
    )
+
+  codex-agent-dir : Text = repo-path ".codex-agent"
+
+  ensure-codex-agent-dir : [FileSystem] Text
+  ensure-codex-agent-dir =
+   if file-exists codex-agent-dir then ""
+   else run-process "pwsh" ("-Command New-Item -ItemType Directory -Force -Path " ++ codex-agent-dir)
 
   plan-file : Text = repo-path ".codex-agent/plan.txt"
 
@@ -254,9 +258,9 @@ Section: Definitions
 
   do-handoff-show : [Console, FileSystem] Nothing
   do-handoff-show =
-   if file-exists handoff-file then
-    let content = read-file handoff-file
-    in let lines = text-split content "\n"
+   if file-exists handoff-file then do
+    content <- read-file handoff-file
+    let lines = text-split content "\n"
      in let state = kv-get "state" lines 0
       in let branch = kv-get "branch" lines 0
        in let author = kv-get "author" lines 0
@@ -271,75 +275,83 @@ Section: Definitions
   make-handoff-content (branch) (agent) (summary) (state) =
    "state=" ++ state ++ "\nbranch=" ++ branch ++ "\nauthor=" ++ agent ++ "\nreviewer=\nsummary=" ++ summary ++ "\nupdated=see-git-log\nnotes=\n"
 
+  read-handoff-or-empty : [FileSystem] Text
+  read-handoff-or-empty = if file-exists handoff-file then read-file handoff-file else ""
+
   do-handoff-push : List Text -> [Console, FileSystem] Nothing
   do-handoff-push (args) =
    let argc = list-length args
    in if argc < 4 then print-line "Usage: codex-agent handoff push <summary>"
-    else let summary = collect-args args 3 3
-     in let branch = get-current-branch
-      in let agent = detect-agent
-       in let old-content = if file-exists handoff-file then read-file handoff-file else ""
-        in let old-lines = text-split old-content "\n"
-         in let old-state = kv-get "state" old-lines 0
-          in let from-state = if text-length old-state == 0 then "draft" else old-state
-           in let ok = valid-transition from-state "awaiting-review"
-            in if ok == 0 then print-line ("  ERROR: cannot transition from '" ++ from-state ++ "' to 'awaiting-review'")
-             else let new-content = make-handoff-content branch agent summary "awaiting-review"
-              in let _ = write-file handoff-file new-content
-               in let _ = run-process "git" ("add " ++ handoff-file)
-                in let _ = run-process "git" ("commit -m \"handoff: " ++ summary ++ "\"")
-                 in print-line ("  Handoff created: awaiting-review\n  Branch:  " ++ branch ++ "\n  Author:  " ++ agent ++ "\n  Summary: " ++ summary ++ "\n  Next: push branch to origin, then another agent runs 'handoff review'")
+    else do
+     branch <- get-current-branch
+     agent <- detect-agent
+     old-content <- read-handoff-or-empty
+     let summary = collect-args args 3 3
+      in let old-lines = text-split old-content "\n"
+       in let old-state = kv-get "state" old-lines 0
+        in let from-state = if text-length old-state == 0 then "draft" else old-state
+         in let ok = valid-transition from-state "awaiting-review"
+          in if ok == 0 then print-line ("  ERROR: cannot transition from '" ++ from-state ++ "' to 'awaiting-review'")
+           else let new-content = make-handoff-content branch agent summary "awaiting-review"
+            in do
+             _ <- write-file handoff-file new-content
+             _ <- run-process "git" ("add " ++ handoff-file)
+             _ <- run-process "git" ("commit -m \"handoff: " ++ summary ++ "\"")
+             print-line ("  Handoff created: awaiting-review\n  Branch:  " ++ branch ++ "\n  Author:  " ++ agent ++ "\n  Summary: " ++ summary ++ "\n  Next: push branch to origin, then another agent runs 'handoff review'")
 
   do-handoff-review : List Text -> [Console, FileSystem] Nothing
   do-handoff-review (args) =
-   if file-exists handoff-file then
-    let content = read-file handoff-file
-    in let lines = text-split content "\n"
+   if file-exists handoff-file then do
+    content <- read-file handoff-file
+    agent <- detect-agent
+    let lines = text-split content "\n"
      in let state = kv-get "state" lines 0
       in let ok = valid-transition state "under-review"
        in if ok == 0 then print-line ("  ERROR: cannot review from state '" ++ state ++ "' (need awaiting-review)")
-        else let agent = detect-agent
-         in let new-content = kv-set "state" "under-review" (kv-set "reviewer" agent content)
-          in let _ = write-file handoff-file new-content
-           in let branch = kv-get "branch" lines 0
-            in let summary = kv-get "summary" lines 0
-             in print-line ("  Review started\n  Branch:   " ++ branch ++ "\n  Summary:  " ++ summary ++ "\n  Reviewer: " ++ agent ++ "\n  Next: build, test, review code, then 'handoff approve' or 'handoff request-changes <reason>'")
+        else let new-content = kv-set "state" "under-review" (kv-set "reviewer" agent content)
+         in do
+          _ <- write-file handoff-file new-content
+          let branch = kv-get "branch" lines 0
+           in let summary = kv-get "summary" lines 0
+            in print-line ("  Review started\n  Branch:   " ++ branch ++ "\n  Summary:  " ++ summary ++ "\n  Reviewer: " ++ agent ++ "\n  Next: build, test, review code, then 'handoff approve' or 'handoff request-changes <reason>'")
    else print-line "  No handoff found. Nothing to review."
 
   do-handoff-approve : List Text -> [Console, FileSystem] Nothing
   do-handoff-approve (args) =
-   if file-exists handoff-file then
-    let content = read-file handoff-file
-    in let lines = text-split content "\n"
+   if file-exists handoff-file then do
+    content <- read-file handoff-file
+    let lines = text-split content "\n"
      in let state = kv-get "state" lines 0
       in let ok = valid-transition state "approved"
        in if ok == 0 then print-line ("  ERROR: cannot approve from state '" ++ state ++ "' (need under-review)")
         else let new-content = kv-set "state" "approved" content
-         in let _ = write-file handoff-file new-content
-          in let branch = kv-get "branch" lines 0
+         in do
+          _ <- write-file handoff-file new-content
+          let branch = kv-get "branch" lines 0
            in print-line ("  APPROVED\n  Branch: " ++ branch ++ "\n  Next: run 'handoff merge' to merge to master and clean up")
    else print-line "  No handoff found."
 
   do-handoff-request-changes : List Text -> [Console, FileSystem] Nothing
   do-handoff-request-changes (args) =
-   if file-exists handoff-file then
-    let content = read-file handoff-file
-    in let lines = text-split content "\n"
+   if file-exists handoff-file then do
+    content <- read-file handoff-file
+    let lines = text-split content "\n"
      in let state = kv-get "state" lines 0
       in let ok = valid-transition state "changes-requested"
        in if ok == 0 then print-line ("  ERROR: cannot request changes from state '" ++ state ++ "' (need under-review)")
         else let reason = if list-length args > 3 then collect-args args 3 3 else "(no reason given)"
          in let new-content = kv-set "state" "changes-requested" (kv-set "notes" reason content)
-          in let _ = write-file handoff-file new-content
-           in let branch = kv-get "branch" lines 0
+          in do
+           _ <- write-file handoff-file new-content
+           let branch = kv-get "branch" lines 0
             in print-line ("  CHANGES REQUESTED\n  Branch: " ++ branch ++ "\n  Reason: " ++ reason ++ "\n  Next: author fixes issues, then 'handoff push <summary>'")
    else print-line "  No handoff found."
 
   do-handoff-merge : List Text -> [Console, FileSystem] Nothing
   do-handoff-merge (args) =
-   if file-exists handoff-file then
-    let content = read-file handoff-file
-    in let lines = text-split content "\n"
+   if file-exists handoff-file then do
+    content <- read-file handoff-file
+    let lines = text-split content "\n"
      in let state = kv-get "state" lines 0
       in let ok = valid-transition state "merged"
        in if ok == 0 then print-line ("  ERROR: cannot merge from state '" ++ state ++ "' (need approved)")
@@ -348,21 +360,23 @@ Section: Definitions
           in let author = kv-get "author" lines 0
            in let reviewer = kv-get "reviewer" lines 0
             in let merge-msg = "merge: " ++ branch ++ " -- " ++ summary ++ " (author: " ++ author ++ ", reviewer: " ++ reviewer ++ ")"
-             in let _ = write-file handoff-file (kv-set "state" "merged" content)
-              in let _ = run-process "git" "checkout master"
-               in let _ = run-process "git" ("merge " ++ branch ++ " --no-ff -m \"" ++ merge-msg ++ "\"")
-                in print-line ("  MERGED to master\n  Commit: " ++ merge-msg ++ "\n  Next: push master")
+             in do
+              _ <- write-file handoff-file (kv-set "state" "merged" content)
+              _ <- run-process "git" "checkout master"
+              _ <- run-process "git" ("merge " ++ branch ++ " --no-ff -m \"" ++ merge-msg ++ "\"")
+              print-line ("  MERGED to master\n  Commit: " ++ merge-msg ++ "\n  Next: push master")
    else print-line "  No handoff found."
 
   do-handoff-abandon : List Text -> [Console, FileSystem] Nothing
   do-handoff-abandon (args) =
-   if file-exists handoff-file then
-    let content = read-file handoff-file
-    in let lines = text-split content "\n"
+   if file-exists handoff-file then do
+    content <- read-file handoff-file
+    let lines = text-split content "\n"
      in let state = kv-get "state" lines 0
       in let new-content = kv-set "state" "abandoned" content
-       in let _ = write-file handoff-file new-content
-        in let branch = kv-get "branch" lines 0
+       in do
+        _ <- write-file handoff-file new-content
+        let branch = kv-get "branch" lines 0
          in print-line ("  ABANDONED\n  Branch: " ++ branch ++ "\n  Previous state: " ++ state)
    else print-line "  No handoff found."
 
@@ -449,30 +463,71 @@ Section: Definitions
       "  * " ++ line ++ "\n" ++ rest
      else rest
 
+  cs5001-check-for : Text -> [FileSystem] Text
+  cs5001-check-for (csproj-path) =
+   if file-exists csproj-path then do
+    csproj <- read-file csproj-path
+    if text-contains csproj "<OutputType>Exe</OutputType>" then "  CS5001 trap: ACTIVE (Codex.Codex is Exe, will emit CS5001 -- this is expected)"
+    else "  CS5001 trap: cleared"
+   else "  CS5001 trap: n/a (no Codex.Codex project)"
+
+  session-status-line : [FileSystem] Text
+  session-status-line =
+   if file-exists log-file then do
+    log-content <- read-file log-file
+    "  Session log: " ++ integer-to-text (count-lines log-content) ++ " entries"
+   else "  Session log: (none -- new session)"
+
+  last-build-status-line : [FileSystem] Text
+  last-build-status-line =
+   if file-exists build-log then do
+    bc <- read-file build-log
+    "  Last build: " ++ integer-to-text (count-error-lines (text-split bc "\n") 0 0) ++ " errors (see " ++ build-log ++ ")"
+   else "  Last build: (no record)"
+
+  last-test-status-line : [FileSystem] Text
+  last-test-status-line =
+   if file-exists test-log then do
+    tc <- read-file test-log
+    "  Last test: " ++ count-test-passed (text-split tc "\n") 0 ++ " (see " ++ test-log ++ ")"
+   else "  Last test: (no record)"
+
+  handoff-status-line : [FileSystem] Text
+  handoff-status-line =
+   if file-exists handoff-file then do
+    hc <- read-file handoff-file
+    let hl = text-split hc "\n"
+     in let hs = kv-get "state" hl 0
+      in let hb = kv-get "branch" hl 0
+       in "  Handoff: " ++ hs ++ " on " ++ hb ++ " -- " ++ next-action-hint hs
+   else "  Handoff: (none active)"
+
   do-doctor : List Text -> [Console, FileSystem] Nothing
-  do-doctor (args) =
+  do-doctor (args) = do
+   kc-body <- if file-exists known-conditions-file then read-file known-conditions-file else ""
+   cs5001-check <- cs5001-check-for (repo-path "Codex.Codex/Codex.Codex.csproj")
+   session-status <- session-status-line
+   last-build-status <- last-build-status-line
+   last-test-status <- last-test-status-line
+   handoff-status <- handoff-status-line
    let kc-status = if file-exists known-conditions-file then "found" else "MISSING"
-   in let kc-body = if file-exists known-conditions-file then read-file known-conditions-file else ""
     in let kc-lines = if text-length kc-body > 0 then text-split kc-body "\n" else text-split "" "\n"
      in let n-conditions = count-condition-headers kc-lines 0 0
       in let summaries = collect-condition-summaries kc-lines 0
-       in let csproj-path = repo-path "Codex.Codex/Codex.Codex.csproj"
-        in let cs5001-check = if file-exists csproj-path then let csproj = read-file csproj-path in if text-contains csproj "<OutputType>Exe</OutputType>" then "  CS5001 trap: ACTIVE (Codex.Codex is Exe, will emit CS5001 -- this is expected)" else "  CS5001 trap: cleared" else "  CS5001 trap: n/a (no Codex.Codex project)"
-        in let session-status = if file-exists log-file then let log-content = read-file log-file in let log-lines = count-lines log-content in "  Session log: " ++ integer-to-text log-lines ++ " entries" else "  Session log: (none -- new session)"
-         in let last-build-status = if file-exists build-log then let bc = read-file build-log in let bl = text-split bc "\n" in let be = count-error-lines bl 0 0 in "  Last build: " ++ integer-to-text be ++ " errors (see " ++ build-log ++ ")" else "  Last build: (no record)"
-          in let last-test-status = if file-exists test-log then let tc = read-file test-log in let tl = text-split tc "\n" in let tp = count-test-passed tl 0 in "  Last test: " ++ tp ++ " (see " ++ test-log ++ ")" else "  Last test: (no record)"
-           in let handoff-status = if file-exists handoff-file then let hc = read-file handoff-file in let hl = text-split hc "\n" in let hs = kv-get "state" hl 0 in let hb = kv-get "branch" hl 0 in "  Handoff: " ++ hs ++ " on " ++ hb ++ " -- " ++ next-action-hint hs else "  Handoff: (none active)"
-            in print-line ("=== Doctor -- Known Conditions & Diagnostics ===\n" ++ "  Conditions file: " ++ kc-status ++ " (" ++ integer-to-text n-conditions ++ " known)\n" ++ summaries ++ cs5001-check ++ "\n" ++ session-status ++ "\n" ++ last-build-status ++ "\n" ++ last-test-status ++ "\n" ++ handoff-status ++ "\n" ++ "  Advice: CS5001 in Codex.Codex is PRE-EXISTING. Do NOT investigate.\n" ++ "  Advice: Do NOT extract effectful helper functions in .codex -- inline instead.\n" ++ "  Advice: After editing .codex files, check for else->then corruption.\n" ++ "  Advice: ALWAYS snap save before editing. edit_file has deleted code from files in this repo. See TEF-009.\n" ++ "  See: docs/KNOWN-CONDITIONS.md for full details.\n" ++ "================================================")
+       in print-line ("=== Doctor -- Known Conditions & Diagnostics ===\n" ++ "  Conditions file: " ++ kc-status ++ " (" ++ integer-to-text n-conditions ++ " known)\n" ++ summaries ++ cs5001-check ++ "\n" ++ session-status ++ "\n" ++ last-build-status ++ "\n" ++ last-test-status ++ "\n" ++ handoff-status ++ "\n" ++ "  Advice: CS5001 in Codex.Codex is PRE-EXISTING. Do NOT investigate.\n" ++ "  Advice: Do NOT extract effectful helper functions in .codex -- inline instead.\n" ++ "  Advice: After editing .codex files, check for else->then corruption.\n" ++ "  Advice: ALWAYS snap save before editing. edit_file has deleted code from files in this repo. See TEF-009.\n" ++ "  See: docs/KNOWN-CONDITIONS.md for full details.\n" ++ "================================================")
 
   do-log : List Text -> [Console, FileSystem] Nothing
   do-log (args) =
    let argc = list-length args
    in if argc < 3 then print-line "Usage: codex-agent log <message>"
-    else let msg = collect-args args 2 2
-     in let existing = if file-exists log-file then read-file log-file else ""
+    else do
+     _ <- ensure-codex-agent-dir
+     existing <- if file-exists log-file then read-file log-file else ""
+     let msg = collect-args args 2 2
       in let entry = "[LOG] " ++ msg
-       in let _ = write-file log-file (existing ++ entry ++ "\n")
-        in print-line ("  Logged: " ++ msg)
+       in do
+        _ <- write-file log-file (existing ++ entry ++ "\n")
+        print-line ("  Logged: " ++ msg)
 
   take-last-n : List Text -> Integer -> Integer -> Integer -> Text
   take-last-n (lines) (idx) (start) (total) =
@@ -485,23 +540,23 @@ Section: Definitions
 
   do-recall : List Text -> [Console, FileSystem] Nothing
   do-recall (args) =
-   if file-exists log-file then
-    let content = read-file log-file
-    in if text-length content == 0 then print-line "  (session log is empty)"
-     else let lines = text-split content "\n"
-      in let raw-total = list-length lines
-       in let total = if raw-total > 0 then raw-total - 1 else 0
-        in let n = if list-length args > 2 then parse-int-or (list-at args 2) 10 else 10
-         in let start = if total > n then total - n else 0
-          in print-line ("=== Session Log (last " ++ integer-to-text n ++ ") ===\n" ++ take-last-n lines 0 start total ++ "\n===========================")
+   if file-exists log-file then do
+    content <- read-file log-file
+    if text-length content == 0 then print-line "  (session log is empty)"
+    else let lines = text-split content "\n"
+     in let raw-total = list-length lines
+      in let total = if raw-total > 0 then raw-total - 1 else 0
+       in let n = if list-length args > 2 then parse-int-or (list-at args 2) 10 else 10
+        in let start = if total > n then total - n else 0
+         in print-line ("=== Session Log (last " ++ integer-to-text n ++ ") ===\n" ++ take-last-n lines 0 start total ++ "\n===========================")
    else print-line "  (no session log yet. Use 'codex-agent log <msg>' or run build/test.)"
 
   do-plan-show : [Console, FileSystem] Nothing
   do-plan-show =
-   if file-exists plan-file then
-    let content = read-file plan-file
-    in if text-length content == 0 then print-line "  (no tasks)"
-     else print-line ("=== Agent Plan ===\n" ++ content ++ "==================")
+   if file-exists plan-file then do
+    content <- read-file plan-file
+    if text-length content == 0 then print-line "  (no tasks)"
+    else print-line ("=== Agent Plan ===\n" ++ content ++ "==================")
    else print-line "  (no plan file yet. Use 'codex-agent plan add <task>' to start.)"
 
   do-plan-add : List Text -> Integer -> Text
@@ -516,16 +571,20 @@ Section: Definitions
    in if argc < 3 then do-plan-show
     else let action = list-at args 2
      in if action == "show" then do-plan-show
-      else if action == "clear" then
-       let _ = write-file plan-file ""
-       in print-line "  Plan cleared."
+      else if action == "clear" then do
+       _ <- ensure-codex-agent-dir
+       _ <- write-file plan-file ""
+       print-line "  Plan cleared."
       else if action == "add" then
        if argc < 4 then print-line "Usage: codex-agent plan add <task description>"
-       else let task = do-plan-add args 3
-        in let existing = if file-exists plan-file then read-file plan-file else ""
+       else do
+        _ <- ensure-codex-agent-dir
+        existing <- if file-exists plan-file then read-file plan-file else ""
+        let task = do-plan-add args 3
          in let new-content = if text-length existing == 0 then "- " ++ task ++ "\n" else existing ++ "- " ++ task ++ "\n"
-          in let _ = write-file plan-file new-content
-           in print-line ("  Added: " ++ task)
+          in do
+           _ <- write-file plan-file new-content
+           print-line ("  Added: " ++ task)
       else print-line ("Unknown plan action: " ++ action ++ ". Use add, show, or clear.")
 
   agent-budget : Text -> Integer
@@ -547,71 +606,81 @@ Section: Definitions
     else if pct > 40 then "YELLOW - moderate, stay focused"
      else "GREEN - plenty of headroom"
 
+  read-if-exists : Text -> [FileSystem] Text
+  read-if-exists (path) = if file-exists path then read-file path else ""
+
+  plan-status-line : [FileSystem] Text
+  plan-status-line =
+   if file-exists plan-file then do
+    planc <- read-file plan-file
+    if text-length planc == 0 then "  Plan: (empty)"
+    else "  Plan: " ++ integer-to-text (list-length (text-split planc "\n") - 1) ++ " tasks"
+   else "  Plan: (none)"
+
   do-check : List Text -> [Console, FileSystem] Nothing
-  do-check (args) =
+  do-check (args) = do
+   pc <- read-if-exists (repo-path "Codex.Codex/Syntax/Parser.codex")
+   tc <- read-if-exists (repo-path "Codex.Codex/Types/TypeChecker.codex")
+   ec <- read-if-exists (repo-path "Codex.Codex/Emit/CSharpEmitter.codex")
+   lc <- read-if-exists (repo-path "Codex.Codex/IR/Lowering.codex")
+   uc <- read-if-exists (repo-path "Codex.Codex/Types/Unifier.codex")
+   xc <- read-if-exists (repo-path "Codex.Codex/Syntax/Lexer.codex")
+   plan-status <- plan-status-line
    let argc = list-length args
-   in let name = if argc > 2 then list-at args 2 else "unknown"
-    in let budget = agent-budget name
-     in let label = agent-label name
-      in let pp = repo-path "Codex.Codex/Syntax/Parser.codex"
-       in let pc = if file-exists pp then read-file pp else ""
+    in let name = if argc > 2 then list-at args 2 else "unknown"
+     in let budget = agent-budget name
+      in let label = agent-label name
        in let parser-chars = text-length pc
-        in let tp = repo-path "Codex.Codex/Types/TypeChecker.codex"
-         in let tc = if file-exists tp then read-file tp else ""
-         in let tc-chars = text-length tc
-          in let ep = repo-path "Codex.Codex/Emit/CSharpEmitter.codex"
-           in let ec = if file-exists ep then read-file ep else ""
-           in let emitter-chars = text-length ec
-            in let lp = repo-path "Codex.Codex/IR/Lowering.codex"
-             in let lc = if file-exists lp then read-file lp else ""
-             in let lowering-chars = text-length lc
-              in let up = repo-path "Codex.Codex/Types/Unifier.codex"
-               in let uc = if file-exists up then read-file up else ""
-               in let unifier-chars = text-length uc
-                in let xp = repo-path "Codex.Codex/Syntax/Lexer.codex"
-                 in let xc = if file-exists xp then read-file xp else ""
-                 in let lexer-chars = text-length xc
-                  in let total-hot = parser-chars + tc-chars + emitter-chars + lowering-chars + unifier-chars + lexer-chars
-                   in let pct = (total-hot * 100) / budget
-                    in let level = check-level pct
-                     in let plan-status = if file-exists plan-file then let planc = read-file plan-file in if text-length planc == 0 then "  Plan: (empty)" else "  Plan: " ++ integer-to-text (list-length (text-split planc "\n") - 1) ++ " tasks" else "  Plan: (none)"
-                      in print-line ("=== Cognitive Check ===\n" ++ "  Agent:  " ++ label ++ "\n" ++ "  Hot path files: " ++ integer-to-text total-hot ++ " chars / " ++ integer-to-text budget ++ " budget (" ++ integer-to-text pct ++ "%)\n" ++ "  Load: " ++ level ++ "\n" ++ "  Parser.codex:       " ++ pad-left (integer-to-text parser-chars) 6 ++ " chars\n" ++ "  TypeChecker.codex:  " ++ pad-left (integer-to-text tc-chars) 6 ++ " chars\n" ++ "  CSharpEmitter.codex:" ++ pad-left (integer-to-text emitter-chars) 6 ++ " chars\n" ++ "  Lowering.codex:     " ++ pad-left (integer-to-text lowering-chars) 6 ++ " chars\n" ++ "  Unifier.codex:      " ++ pad-left (integer-to-text unifier-chars) 6 ++ " chars\n" ++ "  Lexer.codex:        " ++ pad-left (integer-to-text lexer-chars) 6 ++ " chars\n" ++ plan-status ++ "\n" ++ "=======================")
+        in let tc-chars = text-length tc
+         in let emitter-chars = text-length ec
+          in let lowering-chars = text-length lc
+           in let unifier-chars = text-length uc
+            in let lexer-chars = text-length xc
+             in let total-hot = parser-chars + tc-chars + emitter-chars + lowering-chars + unifier-chars + lexer-chars
+              in let pct = (total-hot * 100) / budget
+               in let level = check-level pct
+                in print-line ("=== Cognitive Check ===\n" ++ "  Agent:  " ++ label ++ "\n" ++ "  Hot path files: " ++ integer-to-text total-hot ++ " chars / " ++ integer-to-text budget ++ " budget (" ++ integer-to-text pct ++ "%)\n" ++ "  Load: " ++ level ++ "\n" ++ "  Parser.codex:       " ++ pad-left (integer-to-text parser-chars) 6 ++ " chars\n" ++ "  TypeChecker.codex:  " ++ pad-left (integer-to-text tc-chars) 6 ++ " chars\n" ++ "  CSharpEmitter.codex:" ++ pad-left (integer-to-text emitter-chars) 6 ++ " chars\n" ++ "  Lowering.codex:     " ++ pad-left (integer-to-text lowering-chars) 6 ++ " chars\n" ++ "  Unifier.codex:      " ++ pad-left (integer-to-text unifier-chars) 6 ++ " chars\n" ++ "  Lexer.codex:        " ++ pad-left (integer-to-text lexer-chars) 6 ++ " chars\n" ++ plan-status ++ "\n" ++ "=======================")
 
   do-build : List Text -> [Console, FileSystem] Nothing
-  do-build (args) =
-   let output = run-process "dotnet" "build Codex.sln --verbosity quiet"
-   in let _ = write-file build-log output
-    in let lines = text-split output "\n"
-     in let errs = count-error-lines lines 0 0
-      in let warns = count-warning-lines lines 0 0
-       in let ok = has-succeeded lines 0
-        in let status = if ok == 1 then "PASS" else "FAIL"
-         in let first-err = if errs > 0 then "\n  First error: " ++ first-error-line lines 0 else ""
-          in let summary = "=== Build " ++ status ++ " === errors: " ++ integer-to-text errs ++ "  warnings: " ++ integer-to-text warns ++ first-err ++ "\n  Full log: " ++ build-log
-           in let log-entry = "[BUILD] " ++ status ++ " errors=" ++ integer-to-text errs ++ " warnings=" ++ integer-to-text warns
-            in let log-existing = if file-exists log-file then read-file log-file else ""
-             in let _ = write-file log-file (log-existing ++ log-entry ++ "\n")
-              in let verify-output = run-process "pwsh" "-File tools/codex-agent-verify.ps1 docs/CurrentPlan.md docs/Active/ToDo/CSharpCleanup.md docs/Agents/TOOL-ERROR-REGISTRY.md docs/KNOWN-CONDITIONS.md CONTRIBUTING.md"
-               in print-line (summary ++ "\n" ++ verify-output)
+  do-build (args) = do
+   _ <- ensure-codex-agent-dir
+   output <- run-process "dotnet" "build Codex.sln --verbosity quiet"
+   _ <- write-file build-log output
+   log-existing <- read-if-exists log-file
+   verify-output <- run-process "pwsh" "-File tools/codex-agent-verify.ps1 docs/CurrentPlan.md docs/Active/ToDo/CSharpCleanup.md docs/Agents/TOOL-ERROR-REGISTRY.md docs/KNOWN-CONDITIONS.md CONTRIBUTING.md"
+   let lines = text-split output "\n"
+    in let errs = count-error-lines lines 0 0
+     in let warns = count-warning-lines lines 0 0
+      in let ok = has-succeeded lines 0
+       in let status = if ok == 1 then "PASS" else "FAIL"
+        in let first-err = if errs > 0 then "\n  First error: " ++ first-error-line lines 0 else ""
+         in let summary = "=== Build " ++ status ++ " === errors: " ++ integer-to-text errs ++ "  warnings: " ++ integer-to-text warns ++ first-err ++ "\n  Full log: " ++ build-log
+          in let log-entry = "[BUILD] " ++ status ++ " errors=" ++ integer-to-text errs ++ " warnings=" ++ integer-to-text warns
+           in do
+            _ <- write-file log-file (log-existing ++ log-entry ++ "\n")
+            print-line (summary ++ "\n" ++ verify-output)
 
   do-test : List Text -> [Console, FileSystem] Nothing
   do-test (args) =
    let argc = list-length args
    in let extra = if argc > 2 then " --filter " ++ list-at args 2 else ""
-    in let output = run-process "dotnet" ("test Codex.sln --verbosity quiet" ++ extra)
-     in let _ = write-file test-log output
-      in let lines = text-split output "\n"
-       in let errs = count-error-lines lines 0 0
-        in let test-line = count-test-passed lines 0
-         in let has-tests = has-any-test-result lines 0
-          in let has-fail = has-test-failure lines 0
-           in let status = if errs > 0 then "BUILD-FAIL" else if has-tests == 1 then if has-fail == 1 then "FAIL" else "PASS" else "FAIL"
+    in do
+     _ <- ensure-codex-agent-dir
+     output <- run-process "dotnet" ("test Codex.sln --verbosity quiet" ++ extra)
+     _ <- write-file test-log output
+     log-existing <- read-if-exists log-file
+     let lines = text-split output "\n"
+      in let errs = count-error-lines lines 0 0
+       in let test-line = count-test-passed lines 0
+        in let has-tests = has-any-test-result lines 0
+         in let has-fail = has-test-failure lines 0
+          in let status = if errs > 0 then "BUILD-FAIL" else if has-tests == 1 then if has-fail == 1 then "FAIL" else "PASS" else "FAIL"
            in let first-err = if errs > 0 then "\n  First error: " ++ first-error-line lines 0 else ""
             in let summary = "=== Test " ++ status ++ " === " ++ test-line ++ first-err ++ "\n  Full log: " ++ test-log
              in let log-entry = "[TEST] " ++ status ++ " " ++ test-line
-              in let log-existing = if file-exists log-file then read-file log-file else ""
-               in let _ = write-file log-file (log-existing ++ log-entry ++ "\n")
-                in print-line summary
+              in do
+               _ <- write-file log-file (log-existing ++ log-entry ++ "\n")
+               print-line summary
 
   print-help : [Console] Nothing
   print-help =
@@ -691,16 +760,18 @@ Section: Definitions
   do-greet (args) =
    let argc = list-length args
    in if argc < 3 then print-line "Usage: codex-agent greet <name> <context> <tools> <os> <workdir>"
-    else let name = list-at args 2
-     in let _ = if file-exists agents-dir then "" else run-process "pwsh" ("-Command New-Item -ItemType Directory -Force -Path " ++ agents-dir)
+    else do
+     _ <- if file-exists agents-dir then "" else run-process "pwsh" ("-Command New-Item -ItemType Directory -Force -Path " ++ agents-dir)
+     dotnet-ver <- run-process "dotnet" "--version"
+     workdir-val <- if argc > 6 then list-at args 6 else current-dir
+     let name = list-at args 2
       in let ctx = if argc > 3 then list-at args 3 else ""
        in let tools-val = if argc > 4 then list-at args 4 else ""
         in let os-val = if argc > 5 then list-at args 5 else ""
-         in let workdir-val = if argc > 6 then list-at args 6 else current-dir
-          in let dotnet-ver = run-process "dotnet" "--version"
-           in let content = "agent=" ++ name ++ "\ncontext=" ++ ctx ++ "\ntools=" ++ tools-val ++ "\nos=" ++ os-val ++ "\nworkdir=" ++ workdir-val ++ "\ndotnet=" ++ dotnet-ver ++ "last-seen=see-git-log\n"
-            in let _ = write-file (agent-file name) content
-             in print-line ("  Agent registered: " ++ name ++ "\n  Context: " ++ (if text-length ctx > 0 then ctx else "(default)") ++ "\n  Tools: " ++ (if text-length tools-val > 0 then tools-val else "(none)") ++ "\n  OS: " ++ (if text-length os-val > 0 then os-val else "(unknown)") ++ "\n  Workdir: " ++ workdir-val)
+         in let content = "agent=" ++ name ++ "\ncontext=" ++ ctx ++ "\ntools=" ++ tools-val ++ "\nos=" ++ os-val ++ "\nworkdir=" ++ workdir-val ++ "\ndotnet=" ++ dotnet-ver ++ "last-seen=see-git-log\n"
+          in do
+           _ <- write-file (agent-file name) content
+           print-line ("  Agent registered: " ++ name ++ "\n  Context: " ++ (if text-length ctx > 0 then ctx else "(default)") ++ "\n  Tools: " ++ (if text-length tools-val > 0 then tools-val else "(none)") ++ "\n  OS: " ++ (if text-length os-val > 0 then os-val else "(unknown)") ++ "\n  Workdir: " ++ workdir-val)
 
   format-agent-entry : Text -> Text
   format-agent-entry (content) =
@@ -715,33 +786,39 @@ Section: Definitions
   format-roster-loop : List Text -> Integer -> [FileSystem] Text
   format-roster-loop (files) (idx) =
    if idx >= list-length files then ""
-   else let path = list-at files idx
-    in let content = read-file path
-     in let entry = format-agent-entry content
-      in let rest = format-roster-loop files (idx + 1)
-       in if text-length rest == 0 then entry
-        else entry ++ "\n" ++ rest
+   else do
+    content <- read-file (list-at files idx)
+    rest <- format-roster-loop files (idx + 1)
+    let entry = format-agent-entry content
+     in if text-length rest == 0 then entry
+      else entry ++ "\n" ++ rest
 
   do-roster : List Text -> [Console, FileSystem] Nothing
-  do-roster (args) =
-   let files = list-files agents-dir "*.txt"
-   in if list-length files == 0 then print-line "  No agents registered. Use 'codex-agent greet <name>' to register."
-    else let header = "=== Agent Roster ==="
-     in let entries = format-roster-loop files 0
-      in print-line (header ++ "\n" ++ entries ++ "\n=====================")
+  do-roster (args) = do
+   files <- list-files agents-dir "*.txt"
+   if list-length files == 0 then print-line "  No agents registered. Use 'codex-agent greet <name>' to register."
+   else do
+    entries <- format-roster-loop files 0
+    let header = "=== Agent Roster ==="
+     in print-line (header ++ "\n" ++ entries ++ "\n=====================")
+
+  plan-info-line : Text -> [FileSystem] Text
+  plan-info-line (plan-doc) =
+   if file-exists plan-doc then do
+    pc <- read-file plan-doc
+    let pl = text-split pc "\n"
+     in "  Current plan: " ++ plan-doc ++ " (" ++ integer-to-text (list-length pl) ++ " lines)"
+   else "  Current plan: (none)"
 
   orient-level0 : [Console, FileSystem] Nothing
   orient-level0 =
    let plan-doc = repo-path "docs/CurrentPlan.md"
-   in let roster-files = list-files agents-dir "*.txt"
-   in let roster-info = if list-length roster-files > 0 then format-roster-loop roster-files 0
-    else "  (none registered -- use 'codex-agent greet <name>')"
-   in let plan-info = if file-exists plan-doc then
-     let pc = read-file plan-doc
-     in let pl = text-split pc "\n"
-      in "  Current plan: " ++ plan-doc ++ " (" ++ integer-to-text (list-length pl) ++ " lines)"
-    else "  Current plan: (none)"
-   in print-line (
+   in do
+    roster-files <- list-files agents-dir "*.txt"
+    roster-info <- if list-length roster-files > 0 then format-roster-loop roster-files 0
+     else "  (none registered -- use 'codex-agent greet <name>')"
+    plan-info <- plan-info-line plan-doc
+    print-line (
     "=== Codex Project — Quick Orientation ===\n" ++
     "\n" ++
     "  Language:  Self-hosting compiler, .codex source, ML-family syntax\n" ++
@@ -809,11 +886,11 @@ Section: Definitions
      "\n" ++
      "  Full details: CONTRIBUTING.md\n" ++
      "=================================")
-   else if topic == "agents" then
-    let agent-files = list-files agents-dir "*.txt"
-    in if list-length agent-files > 0 then
-     let entries = format-roster-loop agent-files 0
-     in print-line ("=== Agent Roster (detailed) ===\n" ++ entries ++ "\n\n  Register: codex-agent greet <name> <context> <tools> <os> <workdir>\n" ++ "  Branch prefixes: windows/, linux/, nut/, hex/\n" ++ "  No agent merges own work to master without review.\n" ++ "==============================")
+   else if topic == "agents" then do
+    agent-files <- list-files agents-dir "*.txt"
+    if list-length agent-files > 0 then do
+     entries <- format-roster-loop agent-files 0
+     print-line ("=== Agent Roster (detailed) ===\n" ++ entries ++ "\n\n  Register: codex-agent greet <name> <context> <tools> <os> <workdir>\n" ++ "  Branch prefixes: windows/, linux/, nut/, hex/\n" ++ "  No agent merges own work to master without review.\n" ++ "==============================")
     else print-line "  No agents registered. Use 'codex-agent greet <name>'."
    else if topic == "git" then
     print-line (

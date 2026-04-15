@@ -157,6 +157,96 @@ public class ILEmitterBuiltinTests
         Assert.Equal("found files", output.Trim());
     }
 
+    // ── is-letter / is-digit / is-whitespace (CCE ranges) ──────
+    // CCE encodes letters at 13-64, digits at 3-12, whitespace at 0-2.
+    // The IL emitter must do range checks on the CCE value, not
+    // delegate to .NET's Char.Is* (which interpret the value as a
+    // Unicode codepoint and return false for CCE letter positions).
+
+    [Fact]
+    public void Is_letter_true_for_cce_letter()
+    {
+        string source = """
+            main : Text
+            main = show (is-letter (char-at "a" 0))
+            """;
+        string? output = CompileAndRun(source, "is_letter_true");
+        Assert.NotNull(output);
+        Assert.Equal("True", output.Trim());
+    }
+
+    [Fact]
+    public void Is_letter_false_for_digit()
+    {
+        string source = """
+            main : Text
+            main = show (is-letter (char-at "1" 0))
+            """;
+        string? output = CompileAndRun(source, "is_letter_false_digit");
+        Assert.NotNull(output);
+        Assert.Equal("False", output.Trim());
+    }
+
+    [Fact]
+    public void Is_letter_false_for_space()
+    {
+        string source = """
+            main : Text
+            main = show (is-letter (char-at " " 0))
+            """;
+        string? output = CompileAndRun(source, "is_letter_false_space");
+        Assert.NotNull(output);
+        Assert.Equal("False", output.Trim());
+    }
+
+    [Fact]
+    public void Is_digit_true_for_cce_digit()
+    {
+        string source = """
+            main : Text
+            main = show (is-digit (char-at "7" 0))
+            """;
+        string? output = CompileAndRun(source, "is_digit_true");
+        Assert.NotNull(output);
+        Assert.Equal("True", output.Trim());
+    }
+
+    [Fact]
+    public void Is_digit_false_for_letter()
+    {
+        string source = """
+            main : Text
+            main = show (is-digit (char-at "a" 0))
+            """;
+        string? output = CompileAndRun(source, "is_digit_false_letter");
+        Assert.NotNull(output);
+        Assert.Equal("False", output.Trim());
+    }
+
+    [Fact]
+    public void Is_whitespace_true_for_space()
+    {
+        string source = """
+            main : Text
+            main = show (is-whitespace (char-at " " 0))
+            """;
+        string? output = CompileAndRun(source, "is_ws_true");
+        Assert.NotNull(output);
+        Assert.Equal("True", output.Trim());
+    }
+
+    [Fact]
+    public void Is_whitespace_false_for_letter()
+    {
+        string source = """
+            main : Text
+            main = show (is-whitespace (char-at "a" 0))
+            """;
+        string? output = CompileAndRun(source, "is_ws_false_letter");
+        Assert.NotNull(output);
+        Assert.Equal("False", output.Trim());
+    }
+
     // ── Helpers ─────────────────────────────────────────────────
 
     static string? CompileAndRun(string source, string chapterName)
@@ -171,6 +261,7 @@ public class ILEmitterBuiltinTests
         {
             string exePath = Path.Combine(tempDir, chapterName + ".dll");
             File.WriteAllBytes(exePath, bytes);
+            Helpers.CopyIlRuntimeDeps(tempDir);
 
             string runtimeConfigPath = Path.Combine(tempDir, chapterName + ".runtimeconfig.json");
             File.WriteAllText(runtimeConfigPath, """

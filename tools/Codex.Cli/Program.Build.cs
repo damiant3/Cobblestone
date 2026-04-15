@@ -385,6 +385,13 @@ public static partial class Program
         string dllPath = Path.Combine(outputDir, chapterName + ".dll");
         File.WriteAllBytes(dllPath, assembly);
 
+        // Emitted IL references Codex.Core.CceTable for CCE ↔ Unicode conversion
+        // at I/O boundaries (print-line, read-file, get-env, etc.). Copy the dll
+        // next to the output so `dotnet <file>.dll` resolves it via default probing.
+        string codexCoreDll = typeof(Codex.Core.CceTable).Assembly.Location;
+        if (!string.IsNullOrEmpty(codexCoreDll))
+            File.Copy(codexCoreDll, Path.Combine(outputDir, "Codex.Core.dll"), overwrite: true);
+
         string runtimeConfigPath = Path.Combine(outputDir, chapterName + ".runtimeconfig.json");
         File.WriteAllText(runtimeConfigPath, """
             {
