@@ -2646,11 +2646,88 @@ Section: Chapter Entry Point
     bag = st2d.bag
    }
 
+Section: ErrorTy Boundary Check
+
+  type-has-errorty : CodexType -> Boolean
+  type-has-errorty (ty) =
+   when ty
+    is ErrorTy -> True
+    is FunTy (p) (r) -> if type-has-errorty p then True else type-has-errorty r
+    is ListTy (e) -> type-has-errorty e
+    is LinkedListTy (e) -> type-has-errorty e
+    is ForAllTy (id) (body) -> type-has-errorty body
+    is EffectfulTy (effs) (ret) -> type-has-errorty ret
+    is otherwise -> False
+
+  check-ir-expr-errorty : CodegenState -> IRExpr -> CodegenState
+  check-ir-expr-errorty (st) (e) =
+   let ty = ir-expr-type e
+   in let st1 = if type-has-errorty ty
+    then st-add-error st cdx-error-type-in-ir "IR node reached codegen with ErrorTy in its type" (ir-expr-span e)
+    else st
+   in when e
+    is IrBinary (op) (l) (r) (t) (s) -> check-ir-expr-errorty (check-ir-expr-errorty st1 l) r
+    is IrNegate (x) (s) -> check-ir-expr-errorty st1 x
+    is IrIf (c) (th) (el) (t) (s) -> check-ir-expr-errorty (check-ir-expr-errorty (check-ir-expr-errorty st1 c) th) el
+    is IrLet (n) (t) (v) (b) (s) -> check-ir-expr-errorty (check-ir-expr-errorty st1 v) b
+    is IrApply (f) (a) (t) (s) -> check-ir-expr-errorty (check-ir-expr-errorty st1 f) a
+    is IrLambda (ps) (b) (t) (s) -> check-ir-expr-errorty st1 b
+    is IrList (es) (t) (s) -> check-ir-list-errorty st1 es 0
+    is IrMatch (sc) (bs) (t) (s) -> check-ir-branches-errorty (check-ir-expr-errorty st1 sc) bs 0
+    is IrDo (ss) (t) (s) -> check-ir-do-stmts-errorty st1 ss 0
+    is IrHandle (eff) (h) (cs) (t) (s) -> check-ir-handle-clauses-errorty (check-ir-expr-errorty st1 h) cs 0
+    is IrRecord (n) (fs) (t) (s) -> check-ir-record-fields-errorty st1 fs 0
+    is IrFieldAccess (r) (f) (t) (s) -> check-ir-expr-errorty st1 r
+    is IrFork (body) (t) (s) -> check-ir-expr-errorty st1 body
+    is IrAwait (task) (t) (s) -> check-ir-expr-errorty st1 task
+    is otherwise -> st1
+
+  check-ir-list-errorty : CodegenState -> List IRExpr -> Integer -> CodegenState
+  check-ir-list-errorty (st) (es) (i) =
+   if i == list-length es then st
+   else check-ir-list-errorty (check-ir-expr-errorty st (list-at es i)) es (i + 1)
+
+  check-ir-branches-errorty : CodegenState -> List IRBranch -> Integer -> CodegenState
+  check-ir-branches-errorty (st) (bs) (i) =
+   if i == list-length bs then st
+   else let b = list-at bs i
+   in check-ir-branches-errorty (check-ir-expr-errorty st (b.body)) bs (i + 1)
+
+  check-ir-do-stmts-errorty : CodegenState -> List IRDoStmt -> Integer -> CodegenState
+  check-ir-do-stmts-errorty (st) (ss) (i) =
+   if i == list-length ss then st
+   else let s = list-at ss i
+   in when s
+    is IrDoBind (n) (t) (v) (sp) -> check-ir-do-stmts-errorty (check-ir-expr-errorty st v) ss (i + 1)
+    is IrDoExec (v) (sp) -> check-ir-do-stmts-errorty (check-ir-expr-errorty st v) ss (i + 1)
+
+  check-ir-handle-clauses-errorty : CodegenState -> List IRHandleClause -> Integer -> CodegenState
+  check-ir-handle-clauses-errorty (st) (cs) (i) =
+   if i == list-length cs then st
+   else let c = list-at cs i
+   in check-ir-handle-clauses-errorty (check-ir-expr-errorty st (c.body)) cs (i + 1)
+
+  check-ir-record-fields-errorty : CodegenState -> List IRFieldVal -> Integer -> CodegenState
+  check-ir-record-fields-errorty (st) (fs) (i) =
+   if i == list-length fs then st
+   else let f = list-at fs i
+   in check-ir-record-fields-errorty (check-ir-expr-errorty st (f.value)) fs (i + 1)
+
+  check-ir-defs-errorty : CodegenState -> List IRDef -> Integer -> CodegenState
+  check-ir-defs-errorty (st) (defs) (i) =
+   if i == list-length defs then st
+   else let d = list-at defs i
+   in let st1 = if type-has-errorty (d.type-val)
+    then st-add-error st cdx-error-type-in-ir ("Definition '" ++ (d.name) ++ "' has ErrorTy in its type") (d.span)
+    else st
+   in check-ir-defs-errorty (check-ir-expr-errorty st1 (d.body)) defs (i + 1)
+
   x86-64-emit-chapter : IRChapter -> List TypeBinding -> EmitChapterResult
   x86-64-emit-chapter (m) (tdefs) =
    let tramp = bare-metal-trampoline
    in let st0 = x86-64-init-codegen tdefs
-   in let st0a = emit-runtime-helpers st0
+   in let st-checked = check-ir-defs-errorty st0 (m.defs) 0
+   in let st0a = emit-runtime-helpers st-checked
    in let st1 = emit-all-defs st0a (m.defs) 0
    in x86-64-finalize st1 (tramp.far-jump-patch-pos)
 
