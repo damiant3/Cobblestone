@@ -46,6 +46,42 @@ public class ParserTests
     }
 
     [Fact]
+    public void Parse_inline_const_integer()
+    {
+        DocumentNode doc = Parse("c : Integer = 1000");
+        Assert.Single(doc.Definitions);
+        DefinitionNode def = doc.Definitions[0];
+        Assert.Equal("c", def.Name.Text);
+        Assert.NotNull(def.TypeAnnotation);
+        Assert.Empty(def.Parameters);
+        Assert.IsType<LiteralExpressionNode>(def.Body);
+    }
+
+    [Fact]
+    public void Parse_inline_const_text()
+    {
+        DocumentNode doc = Parse("greeting : Text = \"hi\"");
+        Assert.Single(doc.Definitions);
+        DefinitionNode def = doc.Definitions[0];
+        Assert.Equal("greeting", def.Name.Text);
+        Assert.NotNull(def.TypeAnnotation);
+        Assert.Empty(def.Parameters);
+        Assert.IsType<LiteralExpressionNode>(def.Body);
+    }
+
+    [Fact]
+    public void Parse_inline_and_twoline_mixed()
+    {
+        string source = "a : Integer = 1\nb : Integer\nb = 2\n";
+        DocumentNode doc = Parse(source);
+        Assert.Equal(2, doc.Definitions.Count);
+        Assert.Equal("a", doc.Definitions[0].Name.Text);
+        Assert.NotNull(doc.Definitions[0].TypeAnnotation);
+        Assert.Equal("b", doc.Definitions[1].Name.Text);
+        Assert.NotNull(doc.Definitions[1].TypeAnnotation);
+    }
+
+    [Fact]
     public void Parse_definition_with_parameters()
     {
         DocumentNode doc = Parse("add (x) (y) = x + y");

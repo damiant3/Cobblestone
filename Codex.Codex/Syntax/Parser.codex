@@ -128,28 +128,39 @@ Section: Definition Parsing
 
   try-parse-def : ParseState -> ParseDefResult
   try-parse-def (st) =
-   if is-colon (peek-kind st 1) then let ann-result = parse-type-annotation st
-     in unwrap-type-for-def ann-result
+   if is-colon (peek-kind st 1) then let first-name = current st
+     in let ann-result = parse-type-annotation st
+     in unwrap-type-for-def first-name ann-result
     else parse-def-body-with-ann [] st
 
-  unwrap-type-for-def : ParseTypeResult -> ParseDefResult
-  unwrap-type-for-def (r) =
+  unwrap-type-for-def : Token -> ParseTypeResult -> ParseDefResult
+  unwrap-type-for-def (first-name) (r) =
    when r
     if TypeOk (ann-type) (st) ->
-     let name-tok = Token {
-      kind = Identifier,
-      text = "",
-      offset = 0,
-      line = 0,
-      column = 0,
-      file-id = 0
-     }
-     in let ann = [TypeAnn {
-      name = name-tok,
-      type-expr = ann-type
-     }]
-     in let st2 = skip-newlines st
-     in parse-def-body-with-ann ann st2
+     if is-equals (current-kind st) then
+      let ann = [TypeAnn {
+       name = first-name,
+       type-expr = ann-type
+      }]
+      in let st2 = advance st
+      in let st3 = skip-newlines st2
+      in let body-result = parse-expr-col st3 (first-name.column)
+      in unwrap-def-body body-result ann first-name []
+     else
+      let name-tok = Token {
+       kind = Identifier,
+       text = "",
+       offset = 0,
+       line = 0,
+       column = 0,
+       file-id = 0
+      }
+      in let ann = [TypeAnn {
+       name = name-tok,
+       type-expr = ann-type
+      }]
+      in let st2 = skip-newlines st
+      in parse-def-body-with-ann ann st2
 
   parse-def-body-with-ann : List TypeAnn -> ParseState -> ParseDefResult
   parse-def-body-with-ann (ann) (st) =
@@ -605,28 +616,46 @@ Section: Header Scanning (streaming)
 
   try-scan-def : Text -> ParseState -> ScanDefResult
   try-scan-def (cur-chap) (st) =
-   if is-colon (peek-kind st 1) then let ann-result = parse-type-annotation st
-     in unwrap-type-for-scan cur-chap ann-result
+   if is-colon (peek-kind st 1) then let first-name = current st
+     in let ann-result = parse-type-annotation st
+     in unwrap-type-for-scan cur-chap first-name ann-result
     else scan-def-body-with-ann cur-chap [] st
 
-  unwrap-type-for-scan : Text -> ParseTypeResult -> ScanDefResult
-  unwrap-type-for-scan (cur-chap) (r) =
+  unwrap-type-for-scan : Text -> Token -> ParseTypeResult -> ScanDefResult
+  unwrap-type-for-scan (cur-chap) (first-name) (r) =
    when r
     if TypeOk (ann-type) (st) ->
-     let name-tok = Token {
-      kind = Identifier,
-      text = "",
-      offset = 0,
-      line = 0,
-      column = 0,
-      file-id = 0
-     }
-     in let ann = [TypeAnn {
-      name = name-tok,
-      type-expr = ann-type
-     }]
-     in let st2 = skip-newlines st
-     in scan-def-body-with-ann cur-chap ann st2
+     if is-equals (current-kind st) then
+      let ann = [TypeAnn {
+       name = first-name,
+       type-expr = ann-type
+      }]
+      in let st2 = advance st
+      in let st3 = skip-newlines st2
+      in let body-pos = st3.pos
+      in let st4 = skip-body-tokens st3 (first-name.column)
+      in DefHeaderOk (DefHeader {
+          name = first-name,
+          params = [],
+          ann = ann,
+          body-pos = body-pos,
+          chapter-slug = cur-chap
+         }) st4
+     else
+      let name-tok = Token {
+       kind = Identifier,
+       text = "",
+       offset = 0,
+       line = 0,
+       column = 0,
+       file-id = 0
+      }
+      in let ann = [TypeAnn {
+       name = name-tok,
+       type-expr = ann-type
+      }]
+      in let st2 = skip-newlines st
+      in scan-def-body-with-ann cur-chap ann st2
 
   scan-def-body-with-ann : Text -> List TypeAnn -> ParseState -> ScanDefResult
   scan-def-body-with-ann (cur-chap) (ann) (st) =
