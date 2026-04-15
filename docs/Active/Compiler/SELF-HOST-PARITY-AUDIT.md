@@ -21,6 +21,7 @@ Legend: 🟡 partial / different · ❌ missing · ⏭️ deliberately diverged
 
 | Item | Reference | Self-host | Status | Notes |
 |------|-----------|-----------|--------|-------|
+
 | `Maybe` / `Option` | ✓ stdlib | ❌ | ❌ | Exists in `foreword/Maybe.codex` but self-host compiler code does not use it. Callers work around via sentinel pairs. |
 | `LinkedList` | ✓ | 🟡 | 🟡 | Type exists; `record-set` builtin + O(1) text-chunks mutation landed (`827ce6e`). Need audit of call sites. |
 | `Queue` / `Stack` | ✓ stdlib | ❌ in self-host | ❌ | `foreword/Queue.codex` present but compiler does not consume it |
@@ -29,19 +30,18 @@ Legend: 🟡 partial / different · ❌ missing · ⏭️ deliberately diverged
 | `TextSearch` (trie) | ✓ stdlib | ❌ in self-host | ❌ | `foreword/TextSearch.codex` present but unused |
 
 
-### Primitives & runtime
-
-| Item | Reference | Self-host | Status | Notes |
-|------|-----------|-----------|--------|-------|
-the self-host's internal `int-mod` agree. Sample: `samples/arith-neg-mod.codex`. |
-
-
 ### Diagnostics & error reporting
 
 | Item | Reference | Self-host | Status | Notes |
 |------|-----------|-----------|--------|-------|
 
 | `let`-bind on effectful value rejected (CDX2033) | ✓ | ✓ | 🟡 | Both compilers emit the error. Ref uses `binding.Value.Span`; self-host uses `synthetic-span` because `add-unify-error` takes no span, so the diagnostic points at (0,0). Diagnostic-only divergence under "Parity is Narrow" — doesn't affect compilation output. Follow-up: thread binding span through `add-unify-error` in self-host. Repro: `samples/let-effectful-bug.codex`. |
+
+
+### Debugging / crash behavior
+
+| Item | Reference | Self-host | Status | Notes |
+|------|-----------|-----------|--------|-------|
 
 ### Parser features
 
@@ -58,21 +58,17 @@ the self-host's internal `int-mod` agree. Sample: `samples/arith-neg-mod.codex`.
 | Union types with type variables | 🟡 | 🟡 | 🟡 | Needs dedicated pass |
 | Polymorphism coverage audit | ? | ? | ❔ | Not yet done |
 
+
 ### Codegen / emission features
 
 | Item | Reference | Self-host | Status | Notes |
 |------|-----------|-----------|--------|-------|
+
 | IL emitter | ✓ | ❌ | ⏭️ | Deliberate — .NET dependency being retired (BACKLOG) |
 | x86-64 Linux user mode | ✓ | ❌ | ⏭️ | Ref-only target (emits syscalls, runs ring 3 under Linux). Self-host targets bare-metal x86-64 end-to-end (ring 0, port I/O, owns interrupts) — strictly harder, and what MM4 actually needs. Not a parity gap under "Parity is Narrow" — a deliberately-diverged target backend, same category as the retired IL emitter. |
 
 ## Top open gaps (priority order)
 
-1. **Self-host adoption of foreword `Maybe`** — the library exists; the
-   compiler doesn't use it. Low urgency (sentinel pairs work) but would
-   reduce API surprise across stdlib boundary.
 2. **Polymorphism coverage audit** — type system row marked ❔. No
    systematic test sweep exists; build one before claiming parity.
 
-## Not in scope
-
-- Making self-host and reference byte-identical on the UX surface (diagnostic wording, CLI output, debug dumps — per "Parity is Narrow," free to diverge)
