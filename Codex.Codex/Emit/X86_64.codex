@@ -1376,18 +1376,21 @@ Section: Builtin Emission
     is IrTextLit (s) (sp) -> s
     is otherwise -> ""
    in let rec-ty = resolve-constructed-ty st (ir-expr-type (list-at args 0))
-   in let field-idx = when rec-ty
-    is RecordTy (rname) (rfields) -> find-record-field-index rfields field-name 0
-    is otherwise -> 0
    in let val-result = emit-expr st1 (list-at args 2)
    in let loaded = load-local (val-result.state) (rec-loc.reg)
-   in let st-checked = when rec-ty
-    is RecordTy (rn) (rf) -> loaded.state
-    is otherwise -> st-add-error (loaded.state) cdx-ir-error ("record-set: unresolved type for field '" ++ field-name ++ "'") (ir-expr-span (list-at args 0))
-   in EmitResult {
-   state = st-append-text st-checked (mov-store (loaded.reg) (val-result.reg) (field-idx * 8)),
-   reg = loaded.reg
-  }
+   in when rec-ty
+    is RecordTy (rname) (rfields) ->
+     let field-idx = find-record-field-index rfields field-name 0
+     in EmitResult {
+      state = st-append-text (loaded.state) (mov-store (loaded.reg) (val-result.reg) (field-idx * 8)),
+      reg = loaded.reg
+     }
+    is otherwise ->
+     let st-err = st-add-error (loaded.state) cdx-ir-error ("record-set: unresolved type for field '" ++ field-name ++ "'") (ir-expr-span (list-at args 0))
+     in EmitResult {
+      state = st-append-text st-err [15, 11],
+      reg = loaded.reg
+     }
 
   emit-heap-save-builtin : CodegenState -> EmitResult
   emit-heap-save-builtin (st) =
@@ -1974,18 +1977,22 @@ Section: Record Emission
   emit-field-access : CodegenState -> IRExpr -> Text -> EmitResult
   emit-field-access (st) (rec-expr) (field-name) =
    let rec-ty = resolve-constructed-ty st (ir-expr-type rec-expr)
-   in let field-idx = when rec-ty
-    is RecordTy (rname) (rfields) -> find-record-field-index rfields field-name 0
-    is otherwise -> 0
    in let rec-result = emit-expr st rec-expr
-   in let st-checked = when rec-ty
-    is RecordTy (rn) (rf) -> rec-result.state
-    is otherwise -> st-add-error (rec-result.state) cdx-ir-error ("emit-field-access: unresolved type for field '" ++ field-name ++ "'") (ir-expr-span rec-expr)
-   in let rd = alloc-temp st-checked
-   in EmitResult {
-   state = st-append-text (rd.state) (mov-load (rd.reg) (rec-result.reg) (field-idx * 8)),
-   reg = rd.reg
-  }
+   in when rec-ty
+    is RecordTy (rname) (rfields) ->
+     let field-idx = find-record-field-index rfields field-name 0
+     in let rd = alloc-temp (rec-result.state)
+     in EmitResult {
+      state = st-append-text (rd.state) (mov-load (rd.reg) (rec-result.reg) (field-idx * 8)),
+      reg = rd.reg
+     }
+    is otherwise ->
+     let st-err = st-add-error (rec-result.state) cdx-ir-error ("emit-field-access: unresolved type for field '" ++ field-name ++ "'") (ir-expr-span rec-expr)
+     in let rd = alloc-temp st-err
+     in EmitResult {
+      state = st-append-text (rd.state) [15, 11],
+      reg = rd.reg
+     }
 
 Section: Pattern Matching
   emit-match : CodegenState -> IRExpr -> List IRBranch -> EmitResult
