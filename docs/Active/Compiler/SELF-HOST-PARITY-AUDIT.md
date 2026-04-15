@@ -106,6 +106,8 @@ Legend: ✅ at parity · 🟡 partial / different · ❌ missing · ⏭️ delib
 | Error recovery (resync to next top-level def) | ✓ | ✓ | ✅ | See diagnostics row above |
 | `do`-block stop-set correctness | ✓ | ✓ | ✅ | `is-else-keyword`, `is-in-keyword` added (`058ac7c`) |
 | Effect-annotation parsing | ✓ | ✓ | ✅ | No longer discarded (`2c8b520`) |
+| `(atom).field` chaining inside the atom rule | ✓ | ✓ | ✅ | Both parsers run the `.field` loop on identifier / type-ident-as-name / paren-expr atoms before returning, so `f arg (atom).field` parses as `f arg ((atom).field)` rather than `(f arg (atom)).field`. Self-host fix: `736ddfb` (`Codex.Codex/Syntax/ParserExpressions.codex`); ref reference: `src/Codex.Syntax/Parser.Expressions.cs:120-141, 143-160`. |
+| `(record-expr).field` chaining | 🟡 | 🟡 | 🟡 | Neither `ParseRecordExpression` (ref `Parser.Expressions.cs:214-258`) nor `parse-record-expr` (self-host `ParserExpressions.codex`) runs the `.field` loop on its return path, so `Foo { x = 1 }.x` does not chain — the trailing `.x` is left for the application loop's else-branch fallback to attach, which only fires after the record has been swallowed by an apply. Workaround in source: bind first (`let r = Foo { x = 1 } in r.x`). **Symmetric gap, not a parity divergence**: tracked here so future-Hex who fixes one side knows to fix the other in the same commit, otherwise pingpong byte-identity flips. The natural fix is calling `parse-field-access` (or ref's `while Current.Kind == Dot` loop) at both record-expr return sites — same shape as the `(atom).field` row above. |
 
 ### Type system
 
