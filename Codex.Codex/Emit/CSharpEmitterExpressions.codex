@@ -139,94 +139,108 @@ Section: Apply Chain
    if i == count then ""
    else "(_p" ++ integer-to-text i ++ "_) => " ++ emit-partial-wrappers (i + 1) count
 
-  builtin-names : List Text
-  builtin-names =
-   let unsorted = ["show", "negate", "print-line", "text-length",
-    "is-letter", "is-digit", "is-whitespace",
-    "text-to-integer", "text-to-double-bits", "integer-to-text",
-    "char-code", "char-code-at", "code-to-char", "char-to-text",
-    "list-length", "char-at", "substring",
-    "list-at", "list-insert-at", "list-set-at", "list-snoc", "list-contains",
-    "text-compare", "text-replace",
-    "open-file", "read-all", "close-file", "read-line", "read-file",
-    "write-file", "write-binary", "file-exists", "list-files",
-    "text-concat-list", "text-split", "text-contains", "text-starts-with",
-    "get-args", "get-env", "current-dir", "run-process",
-    "fork", "await", "par", "race",
-    "record-set",
-    "linked-list-empty", "linked-list-push", "linked-list-to-list",
-    "heap-save", "heap-restore", "heap-advance", "list-with-capacity",
-    "buf-write-byte", "buf-write-bytes", "buf-read-bytes",
-    "bit-and", "bit-or", "bit-xor", "bit-shl", "bit-shr", "bit-not"]
-   in sort-text-list unsorted
+  BuiltinEmitter = record {
+   name : Text,
+   emit : List IRExpr -> List ArityEntry -> CodexType -> Text
+  }
+
+  bsearch-emitter-pos : List BuiltinEmitter -> Text -> Integer -> Integer -> Integer
+  bsearch-emitter-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-emitter-pos entries name lo mid
+      else bsearch-emitter-pos entries name (mid + 1) hi
+
+  sorted-insert-emitter : List BuiltinEmitter -> BuiltinEmitter -> List BuiltinEmitter
+  sorted-insert-emitter (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-emitter-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  sort-emitters : List BuiltinEmitter -> List BuiltinEmitter
+  sort-emitters (xs) = fold-list sorted-insert-emitter [] xs
+
+  builtin-emitters : List BuiltinEmitter = sort-emitters [
+   BuiltinEmitter { name = "show", emit = \args -> \arities -> \ty -> emit-builtin-show args arities },
+   BuiltinEmitter { name = "negate", emit = \args -> \arities -> \ty -> "(-" ++ emit-expr (list-at args 0) arities ++ ")" },
+   BuiltinEmitter { name = "print-line", emit = \args -> \arities -> \ty -> emit-builtin-print-line args arities },
+   BuiltinEmitter { name = "text-length", emit = \args -> \arities -> \ty -> "((long)" ++ emit-expr (list-at args 0) arities ++ ".Length)" },
+   BuiltinEmitter { name = "is-letter", emit = \args -> \arities -> \ty -> emit-builtin-is-letter args arities },
+   BuiltinEmitter { name = "is-digit", emit = \args -> \arities -> \ty -> emit-builtin-is-digit args arities },
+   BuiltinEmitter { name = "is-whitespace", emit = \args -> \arities -> \ty -> "(" ++ emit-expr (list-at args 0) arities ++ " <= 2L)" },
+   BuiltinEmitter { name = "text-to-integer", emit = \args -> \arities -> \ty -> emit-builtin-text-to-integer args arities },
+   BuiltinEmitter { name = "text-to-double-bits", emit = \args -> \arities -> \ty -> emit-builtin-text-to-double-bits args arities },
+   BuiltinEmitter { name = "integer-to-text", emit = \args -> \arities -> \ty -> emit-builtin-integer-to-text args arities },
+   BuiltinEmitter { name = "char-code", emit = \args -> \arities -> \ty -> emit-expr (list-at args 0) arities },
+   BuiltinEmitter { name = "char-code-at", emit = \args -> \arities -> \ty -> emit-builtin-char-code-at args arities },
+   BuiltinEmitter { name = "code-to-char", emit = \args -> \arities -> \ty -> emit-expr (list-at args 0) arities },
+   BuiltinEmitter { name = "char-to-text", emit = \args -> \arities -> \ty -> "((char)" ++ emit-expr (list-at args 0) arities ++ ").ToString()" },
+   BuiltinEmitter { name = "list-length", emit = \args -> \arities -> \ty -> "((long)" ++ emit-expr (list-at args 0) arities ++ ".Count)" },
+   BuiltinEmitter { name = "char-at", emit = \args -> \arities -> \ty -> emit-builtin-char-at args arities },
+   BuiltinEmitter { name = "substring", emit = \args -> \arities -> \ty -> emit-builtin-substring args arities },
+   BuiltinEmitter { name = "list-at", emit = \args -> \arities -> \ty -> emit-builtin-list-at args arities },
+   BuiltinEmitter { name = "list-insert-at", emit = \args -> \arities -> \ty -> emit-builtin-list-insert-at args arities },
+   BuiltinEmitter { name = "list-set-at", emit = \args -> \arities -> \ty -> emit-builtin-list-set-at args arities },
+   BuiltinEmitter { name = "list-snoc", emit = \args -> \arities -> \ty -> emit-builtin-list-snoc args arities },
+   BuiltinEmitter { name = "list-contains", emit = \args -> \arities -> \ty -> emit-expr (list-at args 0) arities ++ ".Contains(" ++ emit-expr (list-at args 1) arities ++ ")" },
+   BuiltinEmitter { name = "text-compare", emit = \args -> \arities -> \ty -> emit-builtin-text-compare args arities },
+   BuiltinEmitter { name = "text-replace", emit = \args -> \arities -> \ty -> emit-builtin-text-replace args arities },
+   BuiltinEmitter { name = "open-file", emit = \args -> \arities -> \ty -> "File.OpenRead(" ++ emit-expr (list-at args 0) arities ++ ")" },
+   BuiltinEmitter { name = "read-all", emit = \args -> \arities -> \ty -> emit-builtin-read-all args arities },
+   BuiltinEmitter { name = "close-file", emit = \args -> \arities -> \ty -> emit-expr (list-at args 0) arities ++ ".Dispose()" },
+   BuiltinEmitter { name = "read-line", emit = \args -> \arities -> \ty -> "_Cce.FromUnicode(Console.ReadLine() ?? \"\")" },
+   BuiltinEmitter { name = "read-file", emit = \args -> \arities -> \ty -> emit-builtin-read-file args arities },
+   BuiltinEmitter { name = "write-file", emit = \args -> \arities -> \ty -> emit-builtin-write-file args arities },
+   BuiltinEmitter { name = "write-binary", emit = \args -> \arities -> \ty -> "((Func<object>)(() => { var _bl = (List<long>)" ++ emit-expr (list-at args 0) arities ++ "; using var _s = Console.OpenStandardOutput(); foreach (var _b in _bl) _s.WriteByte((byte)_b); _s.Flush(); return null; }))()" },
+   BuiltinEmitter { name = "file-exists", emit = \args -> \arities -> \ty -> emit-builtin-file-exists args arities },
+   BuiltinEmitter { name = "list-files", emit = \args -> \arities -> \ty -> emit-builtin-list-files args arities },
+   BuiltinEmitter { name = "text-concat-list", emit = \args -> \arities -> \ty -> "string.Concat(" ++ emit-expr (list-at args 0) arities ++ ")" },
+   BuiltinEmitter { name = "text-split", emit = \args -> \arities -> \ty -> emit-builtin-text-split args arities },
+   BuiltinEmitter { name = "text-contains", emit = \args -> \arities -> \ty -> emit-builtin-text-contains args arities },
+   BuiltinEmitter { name = "text-starts-with", emit = \args -> \arities -> \ty -> emit-builtin-text-starts-with args arities },
+   BuiltinEmitter { name = "get-args", emit = \args -> \arities -> \ty -> "Environment.GetCommandLineArgs().Select(_Cce.FromUnicode).ToList()" },
+   BuiltinEmitter { name = "get-env", emit = \args -> \arities -> \ty -> emit-builtin-get-env args arities },
+   BuiltinEmitter { name = "current-dir", emit = \args -> \arities -> \ty -> "_Cce.FromUnicode(Directory.GetCurrentDirectory())" },
+   BuiltinEmitter { name = "run-process", emit = \args -> \arities -> \ty -> emit-builtin-run-process args arities },
+   BuiltinEmitter { name = "fork", emit = \args -> \arities -> \ty -> "Task.Run(() => (" ++ emit-expr (list-at args 0) arities ++ ")(null))" },
+   BuiltinEmitter { name = "await", emit = \args -> \arities -> \ty -> "(" ++ emit-expr (list-at args 0) arities ++ ").Result" },
+   BuiltinEmitter { name = "par", emit = \args -> \arities -> \ty -> emit-builtin-par args arities },
+   BuiltinEmitter { name = "race", emit = \args -> \arities -> \ty -> emit-builtin-race args arities },
+   BuiltinEmitter { name = "record-set", emit = \args -> \arities -> \ty -> emit-builtin-record-set args arities },
+   BuiltinEmitter { name = "linked-list-empty", emit = \args -> \arities -> \ty -> let et = when ty if LinkedListTy (elem) -> cs-type elem if _ -> "object" in "new List<" ++ et ++ ">()" },
+   BuiltinEmitter { name = "linked-list-push", emit = \args -> \arities -> \ty -> let et = when ty if LinkedListTy (elem) -> cs-type elem if _ -> "object" in "((Func<List<" ++ et ++ ">, " ++ et ++ ", List<" ++ et ++ ">>)((_ll, _v) => { _ll.Add(_v); return _ll; }))(" ++ emit-expr (list-at args 0) arities ++ ", " ++ emit-expr (list-at args 1) arities ++ ")" },
+   BuiltinEmitter { name = "linked-list-to-list", emit = \args -> \arities -> \ty -> emit-expr (list-at args 0) arities },
+   BuiltinEmitter { name = "heap-save", emit = \args -> \arities -> \ty -> "_Buf.heap_save()" },
+   BuiltinEmitter { name = "heap-restore", emit = \args -> \arities -> \ty -> emit-buf-call-1 "heap-restore" args arities },
+   BuiltinEmitter { name = "heap-advance", emit = \args -> \arities -> \ty -> emit-buf-call-1 "heap-advance" args arities },
+   BuiltinEmitter { name = "list-with-capacity", emit = \args -> \arities -> \ty -> emit-buf-call-1 "list-with-capacity" args arities },
+   BuiltinEmitter { name = "buf-write-byte", emit = \args -> \arities -> \ty -> emit-buf-call-3 "buf-write-byte" args arities },
+   BuiltinEmitter { name = "buf-write-bytes", emit = \args -> \arities -> \ty -> emit-buf-call-3 "buf-write-bytes" args arities },
+   BuiltinEmitter { name = "buf-read-bytes", emit = \args -> \arities -> \ty -> emit-buf-call-3 "buf-read-bytes" args arities },
+   BuiltinEmitter { name = "bit-and", emit = \args -> \arities -> \ty -> emit-bit-builtin "bit-and" args arities },
+   BuiltinEmitter { name = "bit-or", emit = \args -> \arities -> \ty -> emit-bit-builtin "bit-or" args arities },
+   BuiltinEmitter { name = "bit-xor", emit = \args -> \arities -> \ty -> emit-bit-builtin "bit-xor" args arities },
+   BuiltinEmitter { name = "bit-shl", emit = \args -> \arities -> \ty -> emit-bit-builtin "bit-shl" args arities },
+   BuiltinEmitter { name = "bit-shr", emit = \args -> \arities -> \ty -> emit-bit-builtin "bit-shr" args arities },
+   BuiltinEmitter { name = "bit-not", emit = \args -> \arities -> \ty -> emit-bit-builtin "bit-not" args arities }
+  ]
 
   is-builtin-name : Text -> Boolean
-  is-builtin-name (n) = text-set-has builtin-names n
+  is-builtin-name (n) =
+   let len = list-length builtin-emitters
+   in let pos = bsearch-emitter-pos builtin-emitters n 0 len
+   in if pos >= len then False
+      else (list-at builtin-emitters pos).name == n
 
   emit-builtin : Text -> List IRExpr -> List ArityEntry -> CodexType -> Text
   emit-builtin (n) (args) (arities) (result-ty) =
-   if n == "show" then emit-builtin-show args arities
-   else if n == "negate" then "(-" ++ emit-expr (list-at args 0) arities ++ ")"
-   else if n == "print-line" then emit-builtin-print-line args arities
-   else if n == "text-length" then "((long)" ++ emit-expr (list-at args 0) arities ++ ".Length)"
-   else if n == "is-letter" then emit-builtin-is-letter args arities
-   else if n == "is-digit" then emit-builtin-is-digit args arities
-   else if n == "is-whitespace" then "(" ++ emit-expr (list-at args 0) arities ++ " <= 2L)"
-   else if n == "text-to-integer" then emit-builtin-text-to-integer args arities
-   else if n == "text-to-double-bits" then emit-builtin-text-to-double-bits args arities
-   else if n == "integer-to-text" then emit-builtin-integer-to-text args arities
-   else if n == "char-code" then emit-expr (list-at args 0) arities
-   else if n == "char-code-at" then emit-builtin-char-code-at args arities
-   else if n == "code-to-char" then emit-expr (list-at args 0) arities
-   else if n == "char-to-text" then "((char)" ++ emit-expr (list-at args 0) arities ++ ").ToString()"
-   else if n == "list-length" then "((long)" ++ emit-expr (list-at args 0) arities ++ ".Count)"
-   else if n == "char-at" then emit-builtin-char-at args arities
-   else if n == "substring" then emit-builtin-substring args arities
-   else if n == "list-at" then emit-builtin-list-at args arities
-   else if n == "list-insert-at" then emit-builtin-list-insert-at args arities
-   else if n == "list-set-at" then emit-builtin-list-set-at args arities
-   else if n == "list-snoc" then emit-builtin-list-snoc args arities
-   else if n == "list-contains" then emit-expr (list-at args 0) arities ++ ".Contains(" ++ emit-expr (list-at args 1) arities ++ ")"
-   else if n == "text-compare" then emit-builtin-text-compare args arities
-   else if n == "text-replace" then emit-builtin-text-replace args arities
-   else if n == "open-file" then "File.OpenRead(" ++ emit-expr (list-at args 0) arities ++ ")"
-   else if n == "read-all" then emit-builtin-read-all args arities
-   else if n == "close-file" then emit-expr (list-at args 0) arities ++ ".Dispose()"
-   else if n == "read-line" then "_Cce.FromUnicode(Console.ReadLine() ?? \"\")"
-   else if n == "read-file" then emit-builtin-read-file args arities
-   else if n == "write-file" then emit-builtin-write-file args arities
-   else if n == "write-binary" then "((Func<object>)(() => { var _bl = (List<long>)" ++ emit-expr (list-at args 0) arities ++ "; using var _s = Console.OpenStandardOutput(); foreach (var _b in _bl) _s.WriteByte((byte)_b); _s.Flush(); return null; }))()"
-   else if n == "file-exists" then emit-builtin-file-exists args arities
-   else if n == "list-files" then emit-builtin-list-files args arities
-   else if n == "text-concat-list" then "string.Concat(" ++ emit-expr (list-at args 0) arities ++ ")"
-   else if n == "text-split" then emit-builtin-text-split args arities
-   else if n == "text-contains" then emit-builtin-text-contains args arities
-   else if n == "text-starts-with" then emit-builtin-text-starts-with args arities
-   else if n == "get-args" then "Environment.GetCommandLineArgs().Select(_Cce.FromUnicode).ToList()"
-   else if n == "get-env" then emit-builtin-get-env args arities
-   else if n == "run-process" then emit-builtin-run-process args arities
-   else if n == "current-dir" then "_Cce.FromUnicode(Directory.GetCurrentDirectory())"
-   else if n == "fork" then "Task.Run(() => (" ++ emit-expr (list-at args 0) arities ++ ")(null))"
-   else if n == "await" then "(" ++ emit-expr (list-at args 0) arities ++ ").Result"
-   else if n == "par" then emit-builtin-par args arities
-   else if n == "race" then emit-builtin-race args arities
-   else if n == "record-set" then emit-builtin-record-set args arities
-   else if n == "linked-list-empty" then let et = when result-ty if LinkedListTy (elem) -> cs-type elem if _ -> "object" in "new List<" ++ et ++ ">()"
-   else if n == "linked-list-push" then let et = when result-ty if LinkedListTy (elem) -> cs-type elem if _ -> "object" in "((Func<List<" ++ et ++ ">, " ++ et ++ ", List<" ++ et ++ ">>)((_ll, _v) => { _ll.Add(_v); return _ll; }))(" ++ emit-expr (list-at args 0) arities ++ ", " ++ emit-expr (list-at args 1) arities ++ ")"
-   else if n == "linked-list-to-list" then emit-expr (list-at args 0) arities
-   else if n == "heap-save" then "_Buf.heap_save()"
-   else if is-heap-or-capacity n then emit-buf-call-1 n args arities
-   else if is-buf-builtin n then emit-buf-call-3 n args arities
-   else if is-bit-builtin n then emit-bit-builtin n args arities
-   else ""
-
-  is-heap-or-capacity : Text -> Boolean
-  is-heap-or-capacity (n) =
-   n == "heap-restore" | n == "heap-advance" | n == "list-with-capacity"
-
-  is-buf-builtin : Text -> Boolean
-  is-buf-builtin (n) =
-   n == "buf-write-byte" | n == "buf-write-bytes" | n == "buf-read-bytes"
+   let len = list-length builtin-emitters
+   in let pos = bsearch-emitter-pos builtin-emitters n 0 len
+   in if pos >= len then ""
+      else let entry = list-at builtin-emitters pos
+      in if entry.name == n then entry.emit args arities result-ty
+         else ""
 
   cs-name-for : Text -> Text
   cs-name-for (n) = text-replace n "-" "_"
@@ -241,11 +255,6 @@ Section: Apply Chain
     ++ emit-expr (list-at args 0) arities ++ ", "
     ++ emit-expr (list-at args 1) arities ++ ", "
     ++ emit-expr (list-at args 2) arities ++ ")"
-
-  is-bit-builtin : Text -> Boolean
-  is-bit-builtin (n) =
-   n == "bit-and" | n == "bit-or" | n == "bit-xor"
-   | n == "bit-shl" | n == "bit-shr" | n == "bit-not"
 
   bit-op-symbol : Text -> Text
   bit-op-symbol (n) =
