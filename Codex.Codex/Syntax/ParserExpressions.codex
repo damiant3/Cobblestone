@@ -62,10 +62,11 @@ Section: Expression Parsing
   parse-app-loop (func) (st) =
    if is-compound func then parse-dot-only func st
    else if is-done st then ExprOk func st
-   else if is-app-start (current-kind st) then
-     let arg-result = parse-atom st
+   else let st1 = if st.paren-depth > 0 then skip-newlines st else st
+   in if is-app-start (current-kind st1) then
+     let arg-result = parse-atom st1
      in unwrap-expr-ok arg-result (continue-app func)
-   else parse-field-access func st
+   else parse-field-access func st1
 
   continue-app : Expr -> Expr -> ParseState -> ParseExprResult
   continue-app (func) (arg) (st) =
@@ -113,7 +114,7 @@ Section: Expression Parsing
 
   parse-paren-expr : ParseState -> ParseExprResult
   parse-paren-expr (st) =
-   let st2 = skip-newlines st
+   let st2 = skip-newlines (enter-paren st)
    in let inner = parse-expr st2
    in unwrap-expr-ok inner finish-paren-expr
 
@@ -121,7 +122,7 @@ Section: Expression Parsing
   finish-paren-expr (e) (st) =
    let st2 = skip-newlines st
    in let st3 = expect RightParen st2
-   in parse-field-access (ParenExpr e) st3
+   in parse-field-access (ParenExpr e) (exit-paren st3)
 
 Section: Compound Expression Parsing
   parse-record-expr : Token -> ParseState -> ParseExprResult

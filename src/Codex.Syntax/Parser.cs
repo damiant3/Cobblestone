@@ -8,6 +8,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
     readonly IReadOnlyList<Token> m_tokens = tokens;
     readonly DiagnosticBag m_diagnostics = diagnostics;
     int m_position = 0;
+    int m_parenDepth = 0;
 
     public DiagnosticBag Diagnostics => m_diagnostics;
 

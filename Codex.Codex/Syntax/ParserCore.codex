@@ -8,7 +8,8 @@ Section: Parser State
   ParseState = record {
    tokens : List Token,
    pos : Integer,
-   bag : DiagnosticBag
+   bag : DiagnosticBag,
+   paren-depth : Integer
   }
 
   make-parse-state : List Token -> ParseState
@@ -16,7 +17,8 @@ Section: Parser State
    ParseState {
     tokens = toks,
     pos = 0,
-    bag = empty-bag
+    bag = empty-bag,
+    paren-depth = 0
    }
 
   current : ParseState -> Token
@@ -32,7 +34,26 @@ Section: Parser State
    else ParseState {
     tokens = st.tokens,
     pos = st.pos + 1,
-    bag = st.bag
+    bag = st.bag,
+    paren-depth = st.paren-depth
+   }
+
+  enter-paren : ParseState -> ParseState
+  enter-paren (st) =
+   ParseState {
+    tokens = st.tokens,
+    pos = st.pos,
+    bag = st.bag,
+    paren-depth = st.paren-depth + 1
+   }
+
+  exit-paren : ParseState -> ParseState
+  exit-paren (st) =
+   ParseState {
+    tokens = st.tokens,
+    pos = st.pos,
+    bag = st.bag,
+    paren-depth = st.paren-depth - 1
    }
 
   is-done : ParseState -> Boolean
@@ -397,7 +418,8 @@ Section: Token Helpers
    in ParseState {
     tokens = st.tokens,
     pos = st.pos,
-    bag = bag-add (st.bag) (make-error cdx-expected-token-kind ("Expected token kind mismatch, got '" ++ tok.text ++ "'") (span-at (tok.line) (tok.column) (tok.offset) (text-length (tok.text)) (tok.file-id)))
+    bag = bag-add (st.bag) (make-error cdx-expected-token-kind ("Expected token kind mismatch, got '" ++ tok.text ++ "'") (span-at (tok.line) (tok.column) (tok.offset) (text-length (tok.text)) (tok.file-id))),
+    paren-depth = st.paren-depth
    }
 
   report-reserved-keyword : Text -> ParseState -> ParseState
@@ -406,7 +428,8 @@ Section: Token Helpers
    in ParseState {
     tokens = st.tokens,
     pos = st.pos,
-    bag = bag-add (st.bag) (make-error cdx-reserved-keyword-as-identifier ("'" ++ tok.text ++ "' is a reserved keyword and cannot be used as " ++ context ++ "; rename it") (span-at (tok.line) (tok.column) (tok.offset) (text-length (tok.text)) (tok.file-id)))
+    bag = bag-add (st.bag) (make-error cdx-reserved-keyword-as-identifier ("'" ++ tok.text ++ "' is a reserved keyword and cannot be used as " ++ context ++ "; rename it") (span-at (tok.line) (tok.column) (tok.offset) (text-length (tok.text)) (tok.file-id))),
+    paren-depth = st.paren-depth
    }
 
   skip-newlines-pos : List Token -> Integer -> Integer -> Integer
@@ -426,7 +449,8 @@ Section: Token Helpers
       else ParseState {
        tokens = st.tokens,
        pos = end-pos,
-       bag = st.bag
+       bag = st.bag,
+       paren-depth = st.paren-depth
       }
 
 Page 2 of 3

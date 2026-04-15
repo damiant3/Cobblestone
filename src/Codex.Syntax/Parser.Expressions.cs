@@ -63,6 +63,7 @@ public sealed partial class Parser
 
         while (true)
         {
+            if (m_parenDepth > 0) SkipNewlines();
             if (IsApplicationStart())
             {
                 ExpressionNode arg = ParseAtom();
@@ -156,10 +157,12 @@ public sealed partial class Parser
             {
                 Token start = Current;
                 Advance();
+                m_parenDepth++;
                 SkipNewlines();
                 ExpressionNode inner = ParseExpression();
                 SkipNewlines();
                 Expect(TokenKind.RightParen);
+                m_parenDepth--;
                 ExpressionNode node = new ParenthesizedExpressionNode(inner, start.Span.Through(Previous.Span));
                 while (Current.Kind == TokenKind.Dot)
                 {
