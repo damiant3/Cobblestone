@@ -24,7 +24,9 @@ public sealed partial class CSharpEmitter
             LinkedListType llt => $"List<{EmitType(llt.Element)}>",
             SumType st => SanitizeIdentifier(st.TypeName.Value),
             RecordType rt => SanitizeIdentifier(rt.TypeName.Value),
-            ConstructedType ct => SanitizeIdentifier(ct.Constructor.Value),
+            ConstructedType ct => ct.Arguments.IsEmpty
+                ? SanitizeIdentifier(ct.Constructor.Value)
+                : $"{SanitizeIdentifier(ct.Constructor.Value)}<{string.Join(", ", ct.Arguments.Select(EmitType))}>",
             FunctionType ft => $"Func<{EmitType(ft.Parameter)}, {EmitType(ft.Return)}>",
             DependentFunctionType dep => $"Func<{EmitType(dep.ParamType)}, {EmitType(dep.Body)}>",
             TypeLevelValue => "long",
