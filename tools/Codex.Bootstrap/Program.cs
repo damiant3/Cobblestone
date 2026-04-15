@@ -3,10 +3,36 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 
 partial class Program
 {
+    /// <summary>
+    /// Enumerates .codex files under a codex directory with quire semantics
+    /// (root + one level of subdirectory) and concatenates them. Self-host
+    /// sees one blob of source — it has no quire awareness, relying on chapter
+    /// names alone for identity.
+    /// </summary>
+    static string LoadCodexSourceConcatenated(string codexDir)
+    {
+        var files = new List<string>();
+        files.AddRange(Directory.GetFiles(codexDir, "*.codex", SearchOption.TopDirectoryOnly));
+        foreach (string sub in Directory.GetDirectories(codexDir))
+            files.AddRange(Directory.GetFiles(sub, "*.codex", SearchOption.TopDirectoryOnly));
+        files.Sort(StringComparer.Ordinal);
+
+        var buf = new StringBuilder();
+        foreach (string f in files)
+        {
+            string content = File.ReadAllText(f);
+            if (content.Length == 0) continue;
+            if (buf.Length > 0) buf.Append("\n\n");
+            buf.Append(content);
+        }
+        return buf.ToString();
+    }
+
     static int Main(string[] args)
     {
         int exitCode = 1;
@@ -48,24 +74,7 @@ partial class Program
 
         Console.WriteLine($"Reading .codex sources from: {codexDir}");
 
-        string[] files = Directory.GetFiles(codexDir, "*.codex", SearchOption.AllDirectories)
-            .OrderBy(f => f, StringComparer.Ordinal)
-            .ToArray();
-
-        Console.WriteLine($"Found {files.Length} .codex files");
-
-        List<string> codeBlocks = [];
-        foreach (string f in files)
-        {
-            string rel = Path.GetRelativePath(codexDir, f);
-            string content = File.ReadAllText(f);
-            Console.WriteLine($"  {rel}");
-
-            if (content.Length > 0)
-                codeBlocks.Add(content);
-        }
-
-        string combined = string.Join("\n\n", codeBlocks);
+        string combined = LoadCodexSourceConcatenated(codexDir);
 
         Console.WriteLine($"Total source after prose extraction: {combined.Length} chars");
         Console.WriteLine("Compiling with Codex.Codex (Stage 1)...");
@@ -119,8 +128,8 @@ partial class Program
             var ir = Codex_Codex_Codex.lower_chapter(scoped, checkResult.types, checkResult.state);
             Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
 
-            Console.WriteLine("  [11/11] emit__csharp_emitter_emit_full_chapter...");
-            string cceOutput = Codex_Codex_Codex.emit__csharp_emitter_emit_full_chapter(ir, scoped.type_defs);
+            Console.WriteLine("  [11/11] csharp_emitter_emit_full_chapter...");
+            string cceOutput = Codex_Codex_Codex.csharp_emitter_emit_full_chapter(ir, scoped.type_defs);
             Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
 
             string output = _Cce.ToUnicode(cceOutput);
@@ -188,7 +197,7 @@ partial class Program
             }
 
             IRChapter ir = Codex_Codex_Codex.lower_chapter(ast, checkResult.types, checkResult.state);
-            string output = Codex_Codex_Codex.emit__csharp_emitter_emit_full_chapter(ir, ast.type_defs);
+            string output = Codex_Codex_Codex.csharp_emitter_emit_full_chapter(ir, ast.type_defs);
 
             string outPath = Path.ChangeExtension(filePath, ".g.cs");
             File.WriteAllText(outPath, output);
@@ -215,18 +224,10 @@ partial class Program
 
         if (!Directory.Exists(codexDir)) { Console.Error.WriteLine($"Not found: {codexDir}"); return 1; }
 
-        // Load source once
-        string[] files = Directory.GetFiles(codexDir, "*.codex", SearchOption.AllDirectories)
-            .OrderBy(f => f, StringComparer.Ordinal).ToArray();
-        List<string> codeBlocks = [];
-        foreach (string f in files)
-        {
-            string content = File.ReadAllText(f);
-            codeBlocks.Add(content);
-        }
-        string source = _Cce.FromUnicode(string.Join("\n\n", codeBlocks));
+        // Load source once (quire-aware concatenation)
+        string source = _Cce.FromUnicode(LoadCodexSourceConcatenated(codexDir));
 
-        Console.WriteLine($"Benchmark: {source.Length} chars, {files.Length} files");
+        Console.WriteLine($"Benchmark: {source.Length} chars");
         Console.WriteLine("Protocol: 3 warmup + 10 measured, median reported");
         Console.WriteLine();
 
@@ -315,7 +316,7 @@ partial class Program
         sw.Stop(); lowerMs = sw.Elapsed.TotalMilliseconds;
 
         sw.Restart();
-        var output = Codex_Codex_Codex.emit__csharp_emitter_emit_full_chapter(ir, ast.type_defs);
+        var output = Codex_Codex_Codex.csharp_emitter_emit_full_chapter(ir, ast.type_defs);
         sw.Stop(); emitMs = sw.Elapsed.TotalMilliseconds;
 
         total.Stop(); totalMs = total.Elapsed.TotalMilliseconds;
@@ -353,15 +354,7 @@ partial class Program
             Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Codex.Codex"));
         if (!Directory.Exists(codexDir)) { Console.Error.WriteLine($"Not found: {codexDir}"); return 1; }
 
-        string[] files = Directory.GetFiles(codexDir, "*.codex", SearchOption.AllDirectories)
-            .OrderBy(f => f, StringComparer.Ordinal).ToArray();
-        List<string> codeBlocks = [];
-        foreach (string f in files)
-        {
-            string content = File.ReadAllText(f);
-            codeBlocks.Add(content);
-        }
-        string source = _Cce.FromUnicode(string.Join("\n\n", codeBlocks));
+        string source = _Cce.FromUnicode(LoadCodexSourceConcatenated(codexDir));
 
         int warmup = 3, measured = 10;
         for (int w = 0; w < warmup; w++)
@@ -427,17 +420,9 @@ partial class Program
             Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Codex.Codex"));
         if (!Directory.Exists(codexDir)) { Console.Error.WriteLine($"Not found: {codexDir}"); return 1; }
 
-        string[] files = Directory.GetFiles(codexDir, "*.codex", SearchOption.AllDirectories)
-            .OrderBy(f => f, StringComparer.Ordinal).ToArray();
-        List<string> codeBlocks = [];
-        foreach (string f in files)
-        {
-            string content = File.ReadAllText(f);
-            codeBlocks.Add(content);
-        }
-        string source = _Cce.FromUnicode(string.Join("\n\n", codeBlocks));
+        string source = _Cce.FromUnicode(LoadCodexSourceConcatenated(codexDir));
 
-        Console.WriteLine($"Benchmark: {source.Length} chars, {files.Length} files");
+        Console.WriteLine($"Benchmark: {source.Length} chars");
         Console.WriteLine("Protocol: 3 warmup + 10 measured, saving median as new baseline");
         Console.WriteLine();
 
@@ -524,19 +509,10 @@ partial class Program
     static int RunDumpSource(string? outputPath)
     {
         string codexDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Codex.Codex"));
-        string[] files = Directory.GetFiles(codexDir, "*.codex", SearchOption.AllDirectories)
-            .OrderBy(f => f, StringComparer.Ordinal).ToArray();
-        List<string> codeBlocks = [];
-        foreach (string f in files)
-        {
-            string content = File.ReadAllText(f);
-            if (content.Length > 0)
-                codeBlocks.Add(content);
-        }
-        string combined = string.Join("\n\n", codeBlocks);
+        string combined = LoadCodexSourceConcatenated(codexDir);
         string dest = outputPath ?? Path.Combine(Path.GetTempPath(), "codex-all-source.codex");
         File.WriteAllText(dest, combined);
-        Console.WriteLine($"Wrote {combined.Length} chars ({files.Length} files) to {dest}");
+        Console.WriteLine($"Wrote {combined.Length} chars to {dest}");
         return 0;
     }
 
@@ -546,18 +522,9 @@ partial class Program
             Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Codex.Codex"));
         if (!Directory.Exists(codexDir)) { Console.Error.WriteLine($"Not found: {codexDir}"); return 1; }
 
-        string[] files = Directory.GetFiles(codexDir, "*.codex", SearchOption.AllDirectories)
-            .OrderBy(f => f, StringComparer.Ordinal).ToArray();
-        List<string> codeBlocks = [];
-        foreach (string f in files)
-        {
-            string content = File.ReadAllText(f);
-            if (content.Length > 0)
-                codeBlocks.Add(content);
-        }
-        string combined = string.Join("\n\n", codeBlocks);
+        string combined = LoadCodexSourceConcatenated(codexDir);
         string source = _Cce.FromUnicode(combined);
-        Console.Error.WriteLine($"Source: {combined.Length} chars ({files.Length} files)");
+        Console.Error.WriteLine($"Source: {combined.Length} chars");
 
         var tokens = Codex_Codex_Codex.tokenize(source, 1L);
         var st = Codex_Codex_Codex.make_parse_state(tokens);
@@ -572,7 +539,7 @@ partial class Program
         var ir = Codex_Codex_Codex.lower_chapter(ast, checkResult.types, checkResult.state);
         Console.Error.WriteLine($"  IR defs: {ir.defs.Count}");
 
-        string cceOutput = Codex_Codex_Codex.emit__codex_emitter_emit_full_chapter(ir, ast.type_defs);
+        string cceOutput = Codex_Codex_Codex.codex_emitter_emit_full_chapter(ir, ast.type_defs);
         string output = _Cce.ToUnicode(cceOutput);
 
         string dest = outputPath ?? Path.Combine(Path.GetFullPath(Path.Combine(codexDir, "..")), "build-output", "bootstrap", "stage1-codex.codex");
@@ -614,20 +581,11 @@ partial class Program
             Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Codex.Codex"));
         if (!Directory.Exists(codexDir)) { Console.Error.WriteLine($"Not found: {codexDir}"); return 1; }
 
-        string[] files = Directory.GetFiles(codexDir, "*.codex", SearchOption.AllDirectories)
-            .OrderBy(f => f, StringComparer.Ordinal).ToArray();
-        List<string> codeBlocks = [];
-        foreach (string f in files)
-        {
-            string content = File.ReadAllText(f);
-            if (content.Length > 0)
-                codeBlocks.Add(content);
-        }
-        string combined = string.Join("\n\n", codeBlocks);
+        string combined = LoadCodexSourceConcatenated(codexDir);
         string source = _Cce.FromUnicode(combined);
         string chapterName = _Cce.FromUnicode("Codex_Codex");
 
-        Console.WriteLine($"Binary emit: {combined.Length} chars ({files.Length} files)");
+        Console.WriteLine($"Binary emit: {combined.Length} chars");
         Console.WriteLine();
 
         var sw = System.Diagnostics.Stopwatch.StartNew();

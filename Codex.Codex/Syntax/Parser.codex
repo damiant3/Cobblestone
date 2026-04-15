@@ -336,21 +336,35 @@ Section: Document Parsing
    in let imp-result = parse-citations st2 "" []
    in parse-top-level [] [] [] (imp-result.imports) "" [] (imp-result.state)
 
+  CiteTitleResult = record { title : Text, state : ParseState }
+
+  collect-cite-title : ParseState -> Text -> CiteTitleResult
+  collect-cite-title (st) (acc) =
+   if is-type-ident (current-kind st) then let tok = current st
+     in let joined = if text-length acc == 0 then tok.text else acc ++ " " ++ tok.text
+     in collect-cite-title (advance st) joined
+    else CiteTitleResult { title = acc, state = st }
+
   parse-citations : ParseState -> Text -> List CitesDecl -> ImportParseResult
   parse-citations (st) (citing) (acc) =
    if is-cites-keyword (current-kind st) then let st2 = advance st
-     in let name-tok = current st2
+     in let quire-tok = current st2
      in let st3 = advance st2
-     in if is-left-paren (current-kind st3) then let sel = parse-selected-names (advance st3) []
-     in let st4 = skip-newlines (sel.state)
-     in parse-citations st4 citing (list-snoc acc (CitesDecl {
-           chapter-name = name-tok,
+     in let st4 = advance st3
+     in let title-result = collect-cite-title st4 ""
+     in let st5 = title-result.state
+     in if is-left-paren (current-kind st5) then let sel = parse-selected-names (advance st5) []
+     in let st6 = skip-newlines (sel.state)
+     in parse-citations st6 citing (list-snoc acc (CitesDecl {
+           quire = quire-tok,
+           chapter-name = title-result.title,
            selected-names = sel.names,
            citing-chapter = citing
           }))
-     else let st4 = skip-newlines st3
-     in parse-citations st4 citing (list-snoc acc (CitesDecl {
-          chapter-name = name-tok,
+     else let st6 = skip-newlines st5
+     in parse-citations st6 citing (list-snoc acc (CitesDecl {
+          quire = quire-tok,
+          chapter-name = title-result.title,
           selected-names = [],
           citing-chapter = citing
          }))

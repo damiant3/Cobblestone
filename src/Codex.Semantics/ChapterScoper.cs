@@ -41,15 +41,15 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
                 collidingNames.Add(kvp.Key);
         }
 
-        // A chapter's identity is (quire, chapter-title). Same chapter title
-        // in different quires must produce different slugs.
-        static string SlugFor(Chapter c)
-        {
-            string name = c.Name.Parts[^1].Value;
-            return c.Quire is null ? ToSlug(name) : ToSlug(c.Quire) + "--" + ToSlug(name);
-        }
-        static string SlugForCite(CitesDecl cite) =>
-            ToSlug(cite.Quire.Value) + "--" + ToSlug(cite.ChapterName.Value);
+        // Slug identifies a chapter by its title alone. The quire prefix is
+        // tracked on CitesDecl for name resolution but is NOT mixed into the
+        // slug — self-host's tokenizer splits any separator char into its own
+        // token and re-concatenates with spaces, which prevents a byte-identical
+        // slug from surviving the round trip. Cross-quire chapter uniqueness
+        // (same title in different quires) is a known gap to revisit once the
+        // self-host tokenizer grows a way to preserve quire/chapter boundary.
+        static string SlugFor(Chapter c) => ToSlug(c.Name.Parts[^1].Value);
+        static string SlugForCite(CitesDecl cite) => ToSlug(cite.ChapterName.Value);
 
         // Build selective cite maps per chapter (keyed by per-file chapter slug).
         Dictionary<string, Dictionary<string, string>> chapterCiteAliases = [];

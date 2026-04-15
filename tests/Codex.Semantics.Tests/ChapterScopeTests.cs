@@ -74,10 +74,10 @@ public class ChapterScopeTests
     [Fact]
     public void Selective_import_maps_name()
     {
-        // ModA and ModC both define emit-expr (collision).
-        // ModB imports emit-expr from ModA selectively.
-        // All three sit in the same quire 'Test'; selective-cite mangling uses
-        // the (quire, chapter) slug pair so cross-quire reuse stays distinct.
+        // ModA and ModC both define emit-expr (collision). ModB imports from
+        // ModA selectively. Cite carries (quire, chapter); the scoper slug
+        // currently uses chapter-title only, so within-quire selectivity still
+        // works. Cross-quire reuse is a known follow-up.
         Chapter modA = ParseModule("emit-expr (x) = x", "ModA") with { Quire = "Test" };
         Chapter modB = ParseModule(
             "cites Test chapter ModA (emit-expr)\nhelper (x) = emit-expr x",
@@ -91,7 +91,7 @@ public class ChapterScopeTests
         Definition helper = combined.Definitions.First(d => d.Name.Value == "helper");
         ApplyExpr app = Assert.IsType<ApplyExpr>(helper.Body);
         NameExpr callee = Assert.IsType<NameExpr>(app.Function);
-        Assert.Equal("test--mod-a_emit-expr", callee.Name.Value);
+        Assert.Equal("mod-a_emit-expr", callee.Name.Value);
     }
 
     [Fact]
