@@ -2646,6 +2646,139 @@ Section: Chapter Entry Point
     bag = st2d.bag
    }
 
+Section: ConstructedTy Rewrite Pass
+
+  resolve-ty-deep : List TypeBinding -> CodexType -> CodexType
+  resolve-ty-deep (tdefs) (ty) =
+   when ty
+    is ConstructedTy (cname) (cargs) ->
+     let raw = lookup-type-binding tdefs (cname.value)
+     in when raw
+      is RecordTy (rn) (rf) -> raw
+      is SumTy (sn) (sc) -> raw
+      is FunTy (p) (r) -> strip-fun-args-emitter r
+      is otherwise -> ConstructedTy cname (resolve-ty-list tdefs cargs 0 (list-length cargs) [])
+    is FunTy (p) (r) -> FunTy (resolve-ty-deep tdefs p) (resolve-ty-deep tdefs r)
+    is ListTy (e) -> ListTy (resolve-ty-deep tdefs e)
+    is LinkedListTy (e) -> LinkedListTy (resolve-ty-deep tdefs e)
+    is ForAllTy (id) (body) -> ForAllTy id (resolve-ty-deep tdefs body)
+    is EffectfulTy (effs) (ret) -> EffectfulTy effs (resolve-ty-deep tdefs ret)
+    is otherwise -> ty
+
+  resolve-ty-list : List TypeBinding -> List CodexType -> Integer -> Integer -> List CodexType -> List CodexType
+  resolve-ty-list (tdefs) (tys) (i) (len) (acc) =
+   if i == len then acc
+   else resolve-ty-list tdefs tys (i + 1) len (list-snoc acc (resolve-ty-deep tdefs (list-at tys i)))
+
+  rewrite-ir-pat : List TypeBinding -> IRPat -> IRPat
+  rewrite-ir-pat (tdefs) (p) =
+   when p
+    is IrVarPat (name) (t) (s) -> IrVarPat name (resolve-ty-deep tdefs t) s
+    is IrLitPat (v) (t) (s) -> IrLitPat v (resolve-ty-deep tdefs t) s
+    is IrCtorPat (name) (subs) (t) (s) -> IrCtorPat name (rewrite-ir-pat-list tdefs subs 0 (list-length subs) []) (resolve-ty-deep tdefs t) s
+    is IrWildPat (s) -> p
+
+  rewrite-ir-pat-list : List TypeBinding -> List IRPat -> Integer -> Integer -> List IRPat -> List IRPat
+  rewrite-ir-pat-list (tdefs) (ps) (i) (len) (acc) =
+   if i == len then acc
+   else rewrite-ir-pat-list tdefs ps (i + 1) len (list-snoc acc (rewrite-ir-pat tdefs (list-at ps i)))
+
+  rewrite-ir-expr : List TypeBinding -> IRExpr -> IRExpr
+  rewrite-ir-expr (tdefs) (e) =
+   when e
+    is IrIntLit (v) (s) -> e
+    is IrNumLit (v) (s) -> e
+    is IrTextLit (v) (s) -> e
+    is IrBoolLit (v) (s) -> e
+    is IrCharLit (v) (s) -> e
+    is IrName (n) (t) (s) -> IrName n (resolve-ty-deep tdefs t) s
+    is IrBinary (op) (l) (r) (t) (s) -> IrBinary op (rewrite-ir-expr tdefs l) (rewrite-ir-expr tdefs r) (resolve-ty-deep tdefs t) s
+    is IrNegate (x) (s) -> IrNegate (rewrite-ir-expr tdefs x) s
+    is IrIf (c) (th) (el) (t) (s) -> IrIf (rewrite-ir-expr tdefs c) (rewrite-ir-expr tdefs th) (rewrite-ir-expr tdefs el) (resolve-ty-deep tdefs t) s
+    is IrLet (n) (t) (v) (b) (s) -> IrLet n (resolve-ty-deep tdefs t) (rewrite-ir-expr tdefs v) (rewrite-ir-expr tdefs b) s
+    is IrApply (f) (a) (t) (s) -> IrApply (rewrite-ir-expr tdefs f) (rewrite-ir-expr tdefs a) (resolve-ty-deep tdefs t) s
+    is IrLambda (ps) (b) (t) (s) -> IrLambda (rewrite-ir-params tdefs ps 0 (list-length ps) []) (rewrite-ir-expr tdefs b) (resolve-ty-deep tdefs t) s
+    is IrList (es) (t) (s) -> IrList (rewrite-ir-expr-list tdefs es 0 (list-length es) []) (resolve-ty-deep tdefs t) s
+    is IrMatch (sc) (bs) (t) (s) -> IrMatch (rewrite-ir-expr tdefs sc) (rewrite-ir-branches tdefs bs 0 (list-length bs) []) (resolve-ty-deep tdefs t) s
+    is IrDo (ss) (t) (s) -> IrDo (rewrite-ir-do-stmts tdefs ss 0 (list-length ss) []) (resolve-ty-deep tdefs t) s
+    is IrHandle (eff) (h) (cs) (t) (s) -> IrHandle eff (rewrite-ir-expr tdefs h) (rewrite-ir-handle-clauses tdefs cs 0 (list-length cs) []) (resolve-ty-deep tdefs t) s
+    is IrRecord (n) (fs) (t) (s) -> IrRecord n (rewrite-ir-record-fields tdefs fs 0 (list-length fs) []) (resolve-ty-deep tdefs t) s
+    is IrFieldAccess (r) (f) (t) (s) -> IrFieldAccess (rewrite-ir-expr tdefs r) f (resolve-ty-deep tdefs t) s
+    is IrFork (body) (t) (s) -> IrFork (rewrite-ir-expr tdefs body) (resolve-ty-deep tdefs t) s
+    is IrAwait (task) (t) (s) -> IrAwait (rewrite-ir-expr tdefs task) (resolve-ty-deep tdefs t) s
+    is IrError (m) (t) (s) -> IrError m (resolve-ty-deep tdefs t) s
+
+  rewrite-ir-expr-list : List TypeBinding -> List IRExpr -> Integer -> Integer -> List IRExpr -> List IRExpr
+  rewrite-ir-expr-list (tdefs) (es) (i) (len) (acc) =
+   if i == len then acc
+   else rewrite-ir-expr-list tdefs es (i + 1) len (list-snoc acc (rewrite-ir-expr tdefs (list-at es i)))
+
+  rewrite-ir-params : List TypeBinding -> List IRParam -> Integer -> Integer -> List IRParam -> List IRParam
+  rewrite-ir-params (tdefs) (ps) (i) (len) (acc) =
+   if i == len then acc
+   else let p = list-at ps i
+   in rewrite-ir-params tdefs ps (i + 1) len (list-snoc acc (IRParam {
+    name = p.name,
+    type-val = resolve-ty-deep tdefs (p.type-val),
+    span = p.span
+   }))
+
+  rewrite-ir-branches : List TypeBinding -> List IRBranch -> Integer -> Integer -> List IRBranch -> List IRBranch
+  rewrite-ir-branches (tdefs) (bs) (i) (len) (acc) =
+   if i == len then acc
+   else let b = list-at bs i
+   in rewrite-ir-branches tdefs bs (i + 1) len (list-snoc acc (IRBranch {
+    pattern = rewrite-ir-pat tdefs (b.pattern),
+    body = rewrite-ir-expr tdefs (b.body),
+    span = b.span
+   }))
+
+  rewrite-ir-do-stmts : List TypeBinding -> List IRDoStmt -> Integer -> Integer -> List IRDoStmt -> List IRDoStmt
+  rewrite-ir-do-stmts (tdefs) (ss) (i) (len) (acc) =
+   if i == len then acc
+   else let s = list-at ss i
+   in let ns = when s
+    is IrDoBind (n) (t) (v) (sp) -> IrDoBind n (resolve-ty-deep tdefs t) (rewrite-ir-expr tdefs v) sp
+    is IrDoExec (v) (sp) -> IrDoExec (rewrite-ir-expr tdefs v) sp
+   in rewrite-ir-do-stmts tdefs ss (i + 1) len (list-snoc acc ns)
+
+  rewrite-ir-handle-clauses : List TypeBinding -> List IRHandleClause -> Integer -> Integer -> List IRHandleClause -> List IRHandleClause
+  rewrite-ir-handle-clauses (tdefs) (cs) (i) (len) (acc) =
+   if i == len then acc
+   else let c = list-at cs i
+   in rewrite-ir-handle-clauses tdefs cs (i + 1) len (list-snoc acc (IRHandleClause {
+    op-name = c.op-name,
+    resume-name = c.resume-name,
+    body = rewrite-ir-expr tdefs (c.body),
+    span = c.span
+   }))
+
+  rewrite-ir-record-fields : List TypeBinding -> List IRFieldVal -> Integer -> Integer -> List IRFieldVal -> List IRFieldVal
+  rewrite-ir-record-fields (tdefs) (fs) (i) (len) (acc) =
+   if i == len then acc
+   else let f = list-at fs i
+   in rewrite-ir-record-fields tdefs fs (i + 1) len (list-snoc acc (IRFieldVal {
+    name = f.name,
+    value = rewrite-ir-expr tdefs (f.value),
+    span = f.span
+   }))
+
+  rewrite-ir-def : List TypeBinding -> IRDef -> IRDef
+  rewrite-ir-def (tdefs) (d) =
+   IRDef {
+    name = d.name,
+    params = rewrite-ir-params tdefs (d.params) 0 (list-length (d.params)) [],
+    type-val = resolve-ty-deep tdefs (d.type-val),
+    body = rewrite-ir-expr tdefs (d.body),
+    chapter-slug = d.chapter-slug,
+    span = d.span
+   }
+
+  rewrite-ir-defs : List TypeBinding -> List IRDef -> Integer -> Integer -> List IRDef -> List IRDef
+  rewrite-ir-defs (tdefs) (defs) (i) (len) (acc) =
+   if i == len then acc
+   else rewrite-ir-defs tdefs defs (i + 1) len (list-snoc acc (rewrite-ir-def tdefs (list-at defs i)))
+
 Section: ErrorTy Boundary Check
 
   type-has-errorty : CodexType -> Boolean
@@ -2726,9 +2859,10 @@ Section: ErrorTy Boundary Check
   x86-64-emit-chapter (m) (tdefs) =
    let tramp = bare-metal-trampoline
    in let st0 = x86-64-init-codegen tdefs
-   in let st-checked = check-ir-defs-errorty st0 (m.defs) 0
+   in let defs-resolved = rewrite-ir-defs tdefs (m.defs) 0 (list-length (m.defs)) []
+   in let st-checked = check-ir-defs-errorty st0 defs-resolved 0
    in let st0a = emit-runtime-helpers st-checked
-   in let st1 = emit-all-defs st0a (m.defs) 0
+   in let st1 = emit-all-defs st0a defs-resolved 0
    in x86-64-finalize st1 (tramp.far-jump-patch-pos)
 
 Page 1 of 3
