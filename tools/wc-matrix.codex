@@ -1,79 +1,85 @@
-pad-right : Text -> Integer -> Text
-pad-right (s) (width) =
- if text-length s >= width then s
- else pad-right (s ++ " ") width
+Chapter: Wc Matrix
 
-pad-left : Text -> Integer -> Text
-pad-left (s) (width) =
- if text-length s >= width then s
- else pad-left (" " ++ s) width
+Section: Definitions
 
-basename : Text -> Text
-basename (path) =
- let normalized = text-replace path "\\" "/"
-  in let parts = text-split normalized "/"
-   in if list-length parts == 0 then normalized
-    else list-at parts (list-length parts - 1)
+  pad-right : Text -> Integer -> Text
+  pad-right (s) (width) =
+   if text-length s >= width then s
+   else pad-right (s ++ " ") width
 
-sum-digits : Text -> Integer -> Integer -> Integer -> Integer
-sum-digits (s) (i) (n) (acc) =
- if i >= n then acc
- else let c = char-code-at s i
-  in if c >= 48 & c <= 57 then sum-digits s (i + 1) n (acc * 10 + (c - 48))
-  else sum-digits s (i + 1) n acc
+  pad-left : Text -> Integer -> Text
+  pad-left (s) (width) =
+   if text-length s >= width then s
+   else pad-left (" " ++ s) width
 
-find-count-loop : List Text -> Text -> Integer -> Integer -> Integer
-find-count-loop (lines) (header) (idx) (n) =
- if idx >= n then 0
- else let line = list-at lines idx
-  in if text-starts-with line header then sum-digits line 0 (text-length line) 0
-  else find-count-loop lines header (idx + 1) n
+  basename : Text -> Text
+  basename (path) =
+   let normalized = text-replace path "\\" "/"
+    in let parts = text-split normalized "/"
+     in if list-length parts == 0 then normalized
+      else list-at parts (list-length parts - 1)
 
-find-count-for-header : Text -> Text -> Integer
-find-count-for-header (output) (header) =
- let lines = text-split output "\n"
-  in find-count-loop lines header 0 (list-length lines)
+  sum-digits : Text -> Integer -> Integer -> Integer -> Integer
+  sum-digits (s) (i) (n) (acc) =
+   if i >= n then acc
+   else let c = char-code-at s i
+    in if c >= 48 & c <= 57 then sum-digits s (i + 1) n (acc * 10 + (c - 48))
+    else sum-digits s (i + 1) n acc
 
-ref-pass : Text -> Boolean
-ref-pass (output) = text-contains output "no errors."
+  find-count-loop : List Text -> Text -> Integer -> Integer -> Integer
+  find-count-loop (lines) (header) (idx) (n) =
+   if idx >= n then 0
+   else let line = list-at lines idx
+    in if text-starts-with line header then sum-digits line 0 (text-length line) 0
+    else find-count-loop lines header (idx + 1) n
 
-make-verdict : Boolean -> Integer -> Integer -> Text
-make-verdict (ref-ok) (pe) (ue) =
- if ref-ok then
-  if pe == 0 & ue == 0 then "CLEAN"
-  else "WC-REGRESSION"
- else "-- (ref broken)"
+  find-count-for-header : Text -> Text -> Integer
+  find-count-for-header (output) (header) =
+   let lines = text-split output "\n"
+    in find-count-loop lines header 0 (list-length lines)
 
-process-samples : List Text -> Text -> Text -> Integer -> Integer -> Integer -> Integer -> Integer -> [Console, FileSystem] Nothing
-process-samples (files) (cli-dll) (boot-dll) (idx) (n) (clean-count) (wc-reg-count) (ref-broken-count) =
- if idx >= n then do
-  print-line ""
-  print-line ("Summary: " ++ integer-to-text n ++ " samples  |  CLEAN=" ++ integer-to-text clean-count ++ "  WC-REGRESSION=" ++ integer-to-text wc-reg-count ++ "  ref-broken=" ++ integer-to-text ref-broken-count)
- else let file = list-at files idx
-  in let ref-out = run-process "dotnet" (cli-dll ++ " check " ++ file)
-   in let mini-out = run-process "dotnet" (boot-dll ++ " --mini " ++ file)
-    in let ref-ok = ref-pass ref-out
-     in let pe = find-count-for-header mini-out "  Parse errors:"
-      in let ue = find-count-for-header mini-out "  Unification errors:"
-       in let verdict = make-verdict ref-ok pe ue
-        in let new-clean = if verdict == "CLEAN" then clean-count + 1 else clean-count
-         in let new-wc-reg = if verdict == "WC-REGRESSION" then wc-reg-count + 1 else wc-reg-count
-          in let new-ref-broken = if ref-ok then ref-broken-count else ref-broken-count + 1
-           in do
-            print-line (pad-right (basename file) 40 ++ " " ++ pad-right (if ref-ok then "OK" else "FAIL") 6 ++ " " ++ pad-left (integer-to-text pe) 6 ++ " " ++ pad-left (integer-to-text ue) 6 ++ "  " ++ verdict)
-            process-samples files cli-dll boot-dll (idx + 1) n new-clean new-wc-reg new-ref-broken
+  ref-pass : Text -> Boolean
+  ref-pass (output) = text-contains output "no errors."
 
-main : [Console, FileSystem] Nothing
-main = do
- let args = get-args
- in let argc = list-length args
-  in let dir = if argc > 1 then list-at args 1 else "samples"
-   in let cli-dll = "tools/Codex.Cli/bin/Debug/net8.0/Codex.Cli.dll"
-    in let boot-dll = "tools/Codex.Bootstrap/bin/Debug/net8.0/Codex.Bootstrap.dll"
-     in let files = list-files dir "*.codex"
-      in let n = list-length files
-       in do
-        print-line ("Whole-chapter matrix: " ++ integer-to-text n ++ " sample(s) in " ++ dir)
-        print-line (pad-right "SAMPLE" 40 ++ " " ++ pad-right "REF" 6 ++ " " ++ pad-left "PARSE" 6 ++ " " ++ pad-left "UNIFY" 6 ++ "  VERDICT")
-        print-line (pad-right "----------------------------------------" 40 ++ " " ++ pad-right "------" 6 ++ " " ++ pad-left "-----" 6 ++ " " ++ pad-left "-----" 6 ++ "  -------")
-        process-samples files cli-dll boot-dll 0 n 0 0 0
+  make-verdict : Boolean -> Integer -> Integer -> Text
+  make-verdict (ref-ok) (pe) (ue) =
+   if ref-ok then
+    if pe == 0 & ue == 0 then "CLEAN"
+    else "WC-REGRESSION"
+   else "-- (ref broken)"
+
+  process-samples : List Text -> Text -> Text -> Integer -> Integer -> Integer -> Integer -> Integer -> [Console, FileSystem] Nothing
+  process-samples (files) (cli-dll) (boot-dll) (idx) (n) (clean-count) (wc-reg-count) (ref-broken-count) =
+   if idx >= n then do
+    print-line ""
+    print-line ("Summary: " ++ integer-to-text n ++ " samples  |  CLEAN=" ++ integer-to-text clean-count ++ "  WC-REGRESSION=" ++ integer-to-text wc-reg-count ++ "  ref-broken=" ++ integer-to-text ref-broken-count)
+   else let file = list-at files idx
+    in let ref-out = run-process "dotnet" (cli-dll ++ " check " ++ file)
+     in let mini-out = run-process "dotnet" (boot-dll ++ " --mini " ++ file)
+      in let ref-ok = ref-pass ref-out
+       in let pe = find-count-for-header mini-out "  Parse errors:"
+        in let ue = find-count-for-header mini-out "  Unification errors:"
+         in let verdict = make-verdict ref-ok pe ue
+          in let new-clean = if verdict == "CLEAN" then clean-count + 1 else clean-count
+           in let new-wc-reg = if verdict == "WC-REGRESSION" then wc-reg-count + 1 else wc-reg-count
+            in let new-ref-broken = if ref-ok then ref-broken-count else ref-broken-count + 1
+             in do
+              print-line (pad-right (basename file) 40 ++ " " ++ pad-right (if ref-ok then "OK" else "FAIL") 6 ++ " " ++ pad-left (integer-to-text pe) 6 ++ " " ++ pad-left (integer-to-text ue) 6 ++ "  " ++ verdict)
+              process-samples files cli-dll boot-dll (idx + 1) n new-clean new-wc-reg new-ref-broken
+
+  main : [Console, FileSystem] Nothing
+  main = do
+   let args = get-args
+   in let argc = list-length args
+    in let dir = if argc > 1 then list-at args 1 else "samples"
+     in let cli-dll = "tools/Codex.Cli/bin/Debug/net8.0/Codex.Cli.dll"
+      in let boot-dll = "tools/Codex.Bootstrap/bin/Debug/net8.0/Codex.Bootstrap.dll"
+       in let files = list-files dir "*.codex"
+        in let n = list-length files
+         in do
+          print-line ("Whole-chapter matrix: " ++ integer-to-text n ++ " sample(s) in " ++ dir)
+          print-line (pad-right "SAMPLE" 40 ++ " " ++ pad-right "REF" 6 ++ " " ++ pad-left "PARSE" 6 ++ " " ++ pad-left "UNIFY" 6 ++ "  VERDICT")
+          print-line (pad-right "----------------------------------------" 40 ++ " " ++ pad-right "------" 6 ++ " " ++ pad-left "-----" 6 ++ " " ++ pad-left "-----" 6 ++ "  -------")
+          process-samples files cli-dll boot-dll 0 n 0 0 0
+
+Page 1

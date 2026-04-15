@@ -31,10 +31,7 @@ public class ForewordTests
         SourceText src = new(path, source);
         DiagnosticBag diagnostics = new();
 
-        Lexer lexer = new(src, diagnostics);
-        IReadOnlyList<Token> tokens = lexer.TokenizeAll();
-        Parser parser = new(tokens, diagnostics);
-        DocumentNode document = parser.ParseDocument();
+        DocumentNode document = DocumentParser.Parse(src, diagnostics);
         if (diagnostics.HasErrors) return diagnostics;
 
         Desugarer desugarer = new(diagnostics);
@@ -339,10 +336,7 @@ public class ForewordTests
         SourceText src = new(path, source);
         DiagnosticBag diagnostics = new();
 
-        Lexer lexer = new(src, diagnostics);
-        IReadOnlyList<Token> tokens = lexer.TokenizeAll();
-        Parser parser = new(tokens, diagnostics);
-        DocumentNode document = parser.ParseDocument();
+        DocumentNode document = DocumentParser.Parse(src, diagnostics);
         if (diagnostics.HasErrors) return diagnostics;
 
         Desugarer desugarer = new(diagnostics);
@@ -369,10 +363,7 @@ public class ForewordTests
         SourceText src = new("test.codex", source);
         DiagnosticBag diagnostics = new();
 
-        Lexer lexer = new(src, diagnostics);
-        IReadOnlyList<Token> tokens = lexer.TokenizeAll();
-        Parser parser = new(tokens, diagnostics);
-        DocumentNode document = parser.ParseDocument();
+        DocumentNode document = DocumentParser.Parse(src, diagnostics);
         if (diagnostics.HasErrors) return diagnostics;
 
         Desugarer desugarer = new(diagnostics);
@@ -414,10 +405,7 @@ sealed class ForewordTestLoader(string forewordDir, DiagnosticBag diagnostics) :
         SourceText src = new(filePath, source);
         DiagnosticBag compileDiag = new();
 
-        Lexer lexer = new(src, compileDiag);
-        IReadOnlyList<Token> tokens = lexer.TokenizeAll();
-        Parser parser = new(tokens, compileDiag);
-        DocumentNode document = parser.ParseDocument();
+        DocumentNode document = DocumentParser.Parse(src, compileDiag);
         if (compileDiag.HasErrors) return null;
 
         Desugarer desugarer = new(compileDiag);
