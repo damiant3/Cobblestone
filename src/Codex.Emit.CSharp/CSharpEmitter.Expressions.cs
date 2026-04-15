@@ -1066,17 +1066,16 @@ public sealed partial class CSharpEmitter
 
     void EmitLambda(StringBuilder sb, IRLambda lam, int indent)
     {
-        sb.Append('(');
+        if (lam.Parameters.Length == 0)
+        {
+            sb.Append("() => ");
+            EmitExpr(sb, lam.Body, indent);
+            return;
+        }
         for (int i = 0; i < lam.Parameters.Length; i++)
         {
-            if (i > 0)
-            {
-                sb.Append(", ");
-            }
-
-            sb.Append($"{EmitType(lam.Parameters[i].Type)} {SanitizeIdentifier(lam.Parameters[i].Name)}");
+            sb.Append($"({EmitType(lam.Parameters[i].Type)} {SanitizeIdentifier(lam.Parameters[i].Name)}) => ");
         }
-        sb.Append(") => ");
         EmitExpr(sb, lam.Body, indent);
     }
 
