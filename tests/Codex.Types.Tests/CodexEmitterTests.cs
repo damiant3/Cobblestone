@@ -55,7 +55,7 @@ public sealed class CodexEmitterTests
         Assert.Contains("| Circle", codex);
         Assert.Contains("| Rectangle", codex);
         Assert.Contains("when", codex);
-        Assert.Contains("if Circle", codex);
+        Assert.Contains("is Circle", codex);
     }
 
     [Fact]
