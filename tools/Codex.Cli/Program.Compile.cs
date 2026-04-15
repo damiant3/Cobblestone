@@ -336,59 +336,54 @@ public static partial class Program
 
     static void ValidatePageMarkers(List<(string FilePath, string? Quire, string ChapterName, PageMarker? Page)> markers, DiagnosticBag diagnostics)
     {
-        // Check: every file must have a page marker
-        foreach (var (filePath, _, _, page) in markers)
-        {
-            if (page is null)
-            {
-                diagnostics.Warning(CdxCodes.MissingPageMarker,
-                    $"No page marker in '{Path.GetFileName(filePath)}' — expected 'Page N' or 'Page N of M' at end of file",
-                    SourceSpan.Single(0, 1, 1, filePath));
-            }
-        }
-
-        // A chapter is identified by (quire, chapter-name). Chapters with the
-        // same name in different quires are different chapters; pages belong
-        // to exactly one chapter, which lives in exactly one quire.
-        var byChapter = markers
-            .Where(m => m.Page?.TotalPages is not null)
-            .GroupBy(m => (m.Quire, m.ChapterName));
+        // Group every file by (quire, chapter-name). A chapter is identified by
+        // (quire, name); same name in different quires = different chapters.
+        var byChapter = markers.GroupBy(m => (m.Quire, m.ChapterName));
 
         foreach (var group in byChapter)
         {
             string chapterLabel = group.Key.Quire is null
                 ? group.Key.ChapterName
                 : $"{group.Key.Quire}/{group.Key.ChapterName}";
+            var files = group.ToList();
 
-            // All pages of a chapter must be in the same quire. If they aren't,
-            // the grouping above already split them — each split will then fail
-            // completeness separately, and we also emit a dedicated error so
-            // the cause is obvious.
-            var crossQuireSiblings = markers
-                .Where(m => m.ChapterName == group.Key.ChapterName
-                            && m.Quire != group.Key.Quire
-                            && m.Page?.TotalPages is not null)
-                .ToList();
-            if (crossQuireSiblings.Count > 0)
+            // Single-file chapter: no collision, no page coherence to check.
+            if (files.Count == 1) continue;
+
+            // Multi-file chapter: all files must carry 'Page N of M' markers
+            // agreeing on M; any file without that marker means this is a
+            // chapter-name collision, not a legitimate split.
+            var unpaged = files.Where(m => m.Page?.TotalPages is null).ToList();
+            if (unpaged.Count > 0)
             {
-                diagnostics.Error(CdxCodes.PageCountMismatch,
-                    $"Chapter '{group.Key.ChapterName}' has pages split across quires; all pages must live in the same quire",
-                    group.First().Page!.Span);
+                SourceSpan firstSpan = SourceSpan.Single(0, 1, 1, files[0].FilePath);
+                string names = string.Join(", ", files.Select(f => $"'{Path.GetFileName(f.FilePath)}'"));
+                diagnostics.Error(CdxCodes.DuplicateChapterInQuire,
+                    $"Chapter '{chapterLabel}' is declared by {files.Count} files ({names}) — within a quire each chapter name is unique; to split one chapter across files add 'Page N of M' markers to every file",
+                    firstSpan);
                 continue;
             }
 
-            var totals = group.Select(m => m.Page!.TotalPages!.Value).Distinct().ToList();
+            var totals = files.Select(m => m.Page!.TotalPages!.Value).Distinct().ToList();
             if (totals.Count > 1)
             {
                 diagnostics.Error(CdxCodes.PageCountMismatch,
                     $"Page count mismatch in '{chapterLabel}': files disagree ({string.Join(" vs ", totals)})",
-                    group.First().Page!.Span);
+                    files[0].Page!.Span);
                 continue;
             }
 
             int expectedTotal = totals[0];
+            if (expectedTotal != files.Count)
+            {
+                diagnostics.Error(CdxCodes.PageCountMismatch,
+                    $"Chapter '{chapterLabel}' declares 'of {expectedTotal}' but {files.Count} files carry its header",
+                    files[0].Page!.Span);
+                continue;
+            }
+
             HashSet<int> seen = [];
-            foreach (var m in group)
+            foreach (var m in files)
             {
                 if (!seen.Add(m.Page!.PageNumber))
                 {
@@ -404,8 +399,20 @@ public static partial class Program
                 {
                     diagnostics.Error(CdxCodes.MissingPage,
                         $"Missing page {i} of {expectedTotal} in '{chapterLabel}'",
-                        group.First().Page!.Span);
+                        files[0].Page!.Span);
                 }
+            }
+        }
+
+        // Also emit the existing "missing page marker" warning for every file
+        // that lacks one. (Not an error — single-file chapters don't need one.)
+        foreach (var (filePath, _, _, page) in markers)
+        {
+            if (page is null)
+            {
+                diagnostics.Warning(CdxCodes.MissingPageMarker,
+                    $"No page marker in '{Path.GetFileName(filePath)}' — expected 'Page N' or 'Page N of M' at end of file",
+                    SourceSpan.Single(0, 1, 1, filePath));
             }
         }
     }

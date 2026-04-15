@@ -81,6 +81,7 @@ public static class CdxCodes
     public const int PageCountMismatch = 1072;
     public const int DuplicatePage = 1073;
     public const int MissingPage = 1074;
+    public const int DuplicateChapterInQuire = 1075;
 
     // Prose-mode warnings (11xx)
     public const int ProseMissingChapter = 1100;
@@ -155,6 +156,9 @@ public static class CdxCodes
         [MissingPage] = new(MissingPage, nameof(MissingPage),
             DiagnosticSeverity.Error, CdxPhase.Infrastructure,
             "A chapter is missing one of its expected pages."),
+        [DuplicateChapterInQuire] = new(DuplicateChapterInQuire, nameof(DuplicateChapterInQuire),
+            DiagnosticSeverity.Error, CdxPhase.Infrastructure,
+            "Two or more files in the same quire declare the same chapter without 'Page N of M' markers."),
         [UnexpectedCharacter] = new(UnexpectedCharacter, nameof(UnexpectedCharacter),
             DiagnosticSeverity.Error, CdxPhase.Lexer,
             "Character outside any known lexical class."),
