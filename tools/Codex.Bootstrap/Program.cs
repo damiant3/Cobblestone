@@ -174,9 +174,10 @@ partial class Program
             {
                 TypeBinding tb = checkResult.types[i];
                 CodexType resolved = Codex_Codex_Codex.deep_resolve(checkResult.state, tb.bound_type);
-                string csType = Codex_Codex_Codex.cs_type(resolved);
+                string csType = _Cce.ToUnicode(Codex_Codex_Codex.cs_type(resolved));
+                string name = _Cce.ToUnicode(tb.name);
                 bool isErr = resolved is ErrorTy;
-                Console.WriteLine($"    {tb.name} : {csType}{(isErr ? " [ERRORTY]" : "")}");
+                Console.WriteLine($"    {name} : {csType}{(isErr ? " [ERRORTY]" : "")}");
             }
 
             for (int ei = 0; ei < checkResult.state.bag.diagnostics.Count; ei++)
