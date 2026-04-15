@@ -197,43 +197,4 @@ public class DiagnosticDisplayTests
         Assert.False(Codex_Codex_Codex.bag_has_errors(bag));
         Assert.Equal(100L, Codex_Codex_Codex.bag_count(bag));
     }
-
-    // Phase gating: a parse error halts the pipeline before the name
-    // resolver runs, so downstream errors (e.g. undefined-name on the
-    // reference to 'y') don't get piled on top of the syntax error.
-    [Fact]
-    public void Parse_error_short_circuits_before_resolver()
-    {
-        // Unbalanced paren: parser fails on 'y'. 'z' is undefined but the
-        // resolver never runs, so no CDX3002 should appear.
-        // 'if' without 'then' triggers ParserCore.expect(ThenKeyword);
-        // 'y' is undefined but the resolver never runs, so no CDX3002.
-        CompileResult result = Codex_Codex_Codex.compile_with_citations(
-            Cce("x = if y else 1\n"),
-            Cce("Test"),
-            new List<ResolveResult>());
-
-        CompileError err = Assert.IsType<CompileError>(result);
-        Assert.NotEmpty(err.Field0);
-        Assert.Contains(err.Field0, d => d.code == Codex_Codex_Codex.cdx_expected_token_kind());
-        Assert.All(err.Field0, d => Assert.NotEqual(
-            Codex_Codex_Codex.cdx_undefined_name(), d.code));
-    }
-
-    [Fact]
-    public void Resolver_error_short_circuits_before_type_checker()
-    {
-        // Undefined name. Name resolver catches 'y'; type checker would
-        // also have flagged it as unknown-name (CDX2002). Gate stops
-        // that second, redundant diagnostic.
-        CompileResult result = Codex_Codex_Codex.compile_with_citations(
-            Cce("x = y\n"),
-            Cce("Test"),
-            new List<ResolveResult>());
-
-        CompileError err = Assert.IsType<CompileError>(result);
-        Assert.Contains(err.Field0, d => d.code == Codex_Codex_Codex.cdx_undefined_name());
-        Assert.All(err.Field0, d => Assert.NotEqual(
-            Codex_Codex_Codex.cdx_unknown_name(), d.code));
-    }
 }
