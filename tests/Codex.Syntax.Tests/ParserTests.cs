@@ -66,21 +66,21 @@ public class ParserTests
     [Fact]
     public void Parse_when_with_if_emits_diagnostic()
     {
-        var (_, diags) = ParseWithDiags("f (k) = when k\n if True -> 1\n");
+        (DocumentNode _, DiagnosticBag diags) = ParseWithDiags("f (k) = when k\n if True -> 1\n");
         Assert.Contains(diags.ToImmutable(), d => d.Message.Contains("Use 'is'"));
     }
 
     [Fact]
     public void Parse_underscore_pattern_emits_diagnostic()
     {
-        var (_, diags) = ParseWithDiags("f (k) = when k\n is True -> 1\n is _ -> 0\n");
+        (DocumentNode _, DiagnosticBag diags) = ParseWithDiags("f (k) = when k\n is True -> 1\n is _ -> 0\n");
         Assert.Contains(diags.ToImmutable(), d => d.Message.Contains("Use 'otherwise'"));
     }
 
     [Fact]
     public void Parse_reserved_keyword_as_parameter_name_emits_1060()
     {
-        var (_, diags) = ParseWithDiags("f : Integer -> Integer\nf (cites) = 0\n");
+        (DocumentNode _, DiagnosticBag diags) = ParseWithDiags("f : Integer -> Integer\nf (cites) = 0\n");
         Assert.Contains(diags.ToImmutable(), d =>
             d.Code == CdxCodes.ReservedKeywordAsIdentifier
             && d.Message.Contains("'cites'")
@@ -90,7 +90,7 @@ public class ParserTests
     [Fact]
     public void Parse_reserved_keyword_as_let_binding_name_emits_1060()
     {
-        var (_, diags) = ParseWithDiags("f (x) =\n let when = x\n in when\n");
+        (DocumentNode _, DiagnosticBag diags) = ParseWithDiags("f (x) =\n let when = x\n in when\n");
         Assert.Contains(diags.ToImmutable(), d =>
             d.Code == CdxCodes.ReservedKeywordAsIdentifier
             && d.Message.Contains("'when'")

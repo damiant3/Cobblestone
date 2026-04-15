@@ -742,7 +742,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
 
                 // Patch all skip-reset branches to land here
                 int noResetTarget = m_instructions.Count;
-                foreach (var (brIdx, rs1, rs2) in skipBranches)
+                foreach ((int brIdx, uint rs1, uint rs2) in skipBranches)
                     m_instructions[brIdx] = RiscVEncoder.Bge(rs1, rs2,
                         (noResetTarget - brIdx) * 4);
             }

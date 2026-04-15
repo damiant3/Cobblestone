@@ -654,7 +654,7 @@ public sealed class CodexEmitter : ICodeEmitter
 
     static bool AllSimpleFields(IRRecord rec)
     {
-        foreach (var field in rec.Fields)
+        foreach ((string FieldName, IRExpr Value) field in rec.Fields)
         {
             if (!IsSimpleExpr(field.Value)) return false;
         }

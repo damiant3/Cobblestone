@@ -116,10 +116,10 @@ public class DiagnosticDisplayTests
     static ResolveResult ResolveSource(string source, out FileTable table)
     {
         table = TableWith("test.codex");
-        var tokens = Codex_Codex_Codex.tokenize(Cce(source), 1L);
-        var parseState = Codex_Codex_Codex.make_parse_state(tokens);
-        var doc = Codex_Codex_Codex.parse_document(parseState);
-        var chapter = Codex_Codex_Codex.desugar_document(doc, Cce("Test"));
+        List<Token> tokens = Codex_Codex_Codex.tokenize(Cce(source), 1L);
+        ParseState parseState = Codex_Codex_Codex.make_parse_state(tokens);
+        Document doc = Codex_Codex_Codex.parse_document(parseState);
+        AChapter chapter = Codex_Codex_Codex.desugar_document(doc, Cce("Test"));
         return Codex_Codex_Codex.resolve_chapter_with_citations(
             chapter, new List<ResolveResult>());
     }

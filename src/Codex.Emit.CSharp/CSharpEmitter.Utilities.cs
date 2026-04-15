@@ -157,7 +157,7 @@ public sealed partial class CSharpEmitter
     /// <summary>Escape a CCE-encoded string for C# string literal emission.</summary>
     static string EscapeCceString(string cce)
     {
-        var sb = new StringBuilder(cce.Length * 4);
+        StringBuilder sb = new StringBuilder(cce.Length * 4);
         foreach (char c in cce)
         {
             if (c == '\\') sb.Append("\\\\");

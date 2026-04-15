@@ -3221,7 +3221,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     void PatchStackOverflowChecks()
     {
         int handlerOffset = m_functionOffsets["__out_of_memory"];
-        foreach (var (patchOffset, _) in m_stackOverflowChecks)
+        foreach ((int patchOffset, string _) in m_stackOverflowChecks)
             PatchJcc(patchOffset, handlerOffset);
     }
 

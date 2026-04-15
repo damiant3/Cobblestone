@@ -13,7 +13,7 @@ public class X86_64EncoderGoldenTests
 {
     static byte[] Encode(Action<List<byte>> emit)
     {
-        var buf = new List<byte>();
+        List<byte> buf = new List<byte>();
         emit(buf);
         return buf.ToArray();
     }

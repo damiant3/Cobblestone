@@ -65,7 +65,7 @@ public static class CceTable
 
     static Dictionary<int, int> BuildFromUnicode()
     {
-        var d = new Dictionary<int, int>();
+        Dictionary<int, int> d = new Dictionary<int, int>();
         for (int i = 0; i < ToUnicode.Length; i++)
             d[ToUnicode[i]] = i;
         return d;
@@ -95,7 +95,7 @@ public static class CceTable
 
     static int[] BuildTier1Table()
     {
-        var t = new int[2048];
+        int[] t = new int[2048];
 
         // Block 0 (0x000-0x07F): Latin Extended
         // Lowercase not in Tier 0
@@ -241,7 +241,7 @@ public static class CceTable
         };
 
         // Deduplicate: only insert first occurrence of each code point
-        var cjkSeen = new HashSet<int>();
+        HashSet<int> cjkSeen = new HashSet<int>();
         slot = 0x400;
         foreach (int cp in cjkFrequent)
         {
@@ -275,7 +275,7 @@ public static class CceTable
             47484, 50640, 51060, 51032, 51012, 51008, 44163, 48320,       // 를 에 이 의 을 은 각 보
             49373, 51068, 51204, 51201, 45908, 47196, 46108               // 서 있 저 적 되 로 된
         };
-        var korSeen = new HashSet<int>();
+        HashSet<int> korSeen = new HashSet<int>();
         foreach (int cp in koreanFrequent)
         {
             if (cp != 0 && korSeen.Add(cp)) t[slot++] = cp;
@@ -286,7 +286,7 @@ public static class CceTable
 
     static Dictionary<int, int> BuildTier1FromUnicode()
     {
-        var d = new Dictionary<int, int>();
+        Dictionary<int, int> d = new Dictionary<int, int>();
         for (int i = 0; i < Tier1ToUnicode.Length; i++)
         {
             if (Tier1ToUnicode[i] != 0)
@@ -315,7 +315,7 @@ public static class CceTable
     {
         if (unicode.IndexOfAny(['\t', '\r']) < 0)
             return unicode;
-        var sb = new System.Text.StringBuilder(unicode.Length);
+        System.Text.StringBuilder sb = new System.Text.StringBuilder(unicode.Length);
         foreach (char c in unicode)
         {
             if (c == '\t') sb.Append("  ");
@@ -332,7 +332,7 @@ public static class CceTable
     public static string Encode(string unicode)
     {
         string normalized = NormalizeUnicode(unicode);
-        var sb = new System.Text.StringBuilder(normalized.Length);
+        System.Text.StringBuilder sb = new System.Text.StringBuilder(normalized.Length);
         for (int idx = 0; idx < normalized.Length; idx++)
         {
             int u = normalized[idx];
@@ -374,7 +374,7 @@ public static class CceTable
     /// <summary>Convert a CCE-encoded string to Unicode. Full coverage: Tier 0-3.</summary>
     public static string Decode(string cce)
     {
-        var sb = new System.Text.StringBuilder(cce.Length);
+        System.Text.StringBuilder sb = new System.Text.StringBuilder(cce.Length);
         int i = 0;
         while (i < cce.Length)
         {
@@ -448,7 +448,7 @@ public static class CceTable
     /// </summary>
     public static List<string> EncodeList(string[] unicodes)
     {
-        var result = new List<string>(unicodes.Length);
+        List<string> result = new List<string>(unicodes.Length);
         foreach (string s in unicodes) result.Add(Encode(s));
         return result;
     }
@@ -461,7 +461,7 @@ public static class CceTable
     /// </summary>
     public static string GenerateRuntimeSource()
     {
-        var sb = new System.Text.StringBuilder();
+        System.Text.StringBuilder sb = new System.Text.StringBuilder();
         sb.AppendLine("static class _Cce {");
 
         // Tier 0 table
@@ -492,7 +492,7 @@ public static class CceTable
         }
         sb.AppendLine("    };");
         sb.AppendLine("    static readonly Dictionary<int, int> _t1FromUni = new() {");
-        foreach (var kv in Tier1FromUnicode)
+        foreach (KeyValuePair<int, int> kv in Tier1FromUnicode)
             sb.AppendLine($"        [{kv.Key}] = {kv.Value},");
         sb.AppendLine("    };");
 
@@ -559,7 +559,7 @@ public static class CceTable
 
     static string FormatRow(int[] table, int start, int count)
     {
-        var parts = new string[count];
+        string[] parts = new string[count];
         for (int i = 0; i < count; i++)
             parts[i] = table[start + i].ToString();
         bool isLast = (start + count) >= table.Length;

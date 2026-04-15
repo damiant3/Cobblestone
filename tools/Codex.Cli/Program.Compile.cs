@@ -338,14 +338,14 @@ public static partial class Program
     {
         // Group every file by (quire, chapter-name). A chapter is identified by
         // (quire, name); same name in different quires = different chapters.
-        var byChapter = markers.GroupBy(m => (m.Quire, m.ChapterName));
+        IEnumerable<IGrouping<(string? Quire, string ChapterName), (string FilePath, string? Quire, string ChapterName, PageMarker? Page)>> byChapter = markers.GroupBy(m => (m.Quire, m.ChapterName));
 
-        foreach (var group in byChapter)
+        foreach (IGrouping<(string? Quire, string ChapterName), (string FilePath, string? Quire, string ChapterName, PageMarker? Page)> group in byChapter)
         {
             string chapterLabel = group.Key.Quire is null
                 ? group.Key.ChapterName
                 : $"{group.Key.Quire}/{group.Key.ChapterName}";
-            var files = group.ToList();
+            List<(string FilePath, string? Quire, string ChapterName, PageMarker? Page)> files = group.ToList();
 
             // Single-file chapter: no collision, no page coherence to check.
             if (files.Count == 1) continue;
@@ -353,7 +353,7 @@ public static partial class Program
             // Multi-file chapter: all files must carry 'Page N of M' markers
             // agreeing on M; any file without that marker means this is a
             // chapter-name collision, not a legitimate split.
-            var unpaged = files.Where(m => m.Page?.TotalPages is null).ToList();
+            List<(string FilePath, string? Quire, string ChapterName, PageMarker? Page)> unpaged = files.Where(m => m.Page?.TotalPages is null).ToList();
             if (unpaged.Count > 0)
             {
                 SourceSpan firstSpan = SourceSpan.Single(0, 1, 1, files[0].FilePath);
@@ -364,7 +364,7 @@ public static partial class Program
                 continue;
             }
 
-            var totals = files.Select(m => m.Page!.TotalPages!.Value).Distinct().ToList();
+            List<int> totals = files.Select(m => m.Page!.TotalPages!.Value).Distinct().ToList();
             if (totals.Count > 1)
             {
                 diagnostics.Error(CdxCodes.PageCountMismatch,
@@ -383,7 +383,7 @@ public static partial class Program
             }
 
             HashSet<int> seen = [];
-            foreach (var m in files)
+            foreach ((string FilePath, string? Quire, string ChapterName, PageMarker? Page) m in files)
             {
                 if (!seen.Add(m.Page!.PageNumber))
                 {
@@ -406,7 +406,7 @@ public static partial class Program
 
         // Also emit the existing "missing page marker" warning for every file
         // that lacks one. (Not an error — single-file chapters don't need one.)
-        foreach (var (filePath, _, _, page) in markers)
+        foreach ((string filePath, string? _, string _, PageMarker? page) in markers)
         {
             if (page is null)
             {

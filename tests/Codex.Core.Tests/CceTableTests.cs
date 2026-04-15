@@ -16,7 +16,7 @@ public class CceTableTests
     public void Table_is_bijective()
     {
         // Every CCE byte maps to a unique Unicode code point
-        var seen = new HashSet<int>();
+        HashSet<int> seen = new HashSet<int>();
         for (int i = 0; i < CceTable.ToUnicode.Length; i++)
         {
             int u = CceTable.ToUnicode[i];
@@ -49,7 +49,7 @@ public class CceTableTests
     public void Encode_decode_roundtrip_all_mapped_ascii()
     {
         // Only characters that are in the CCE table should roundtrip
-        var sb = new System.Text.StringBuilder();
+        System.Text.StringBuilder sb = new System.Text.StringBuilder();
         for (char c = ' '; c <= '~'; c++)
         {
             if (CceTable.FromUnicode.ContainsKey(c))
@@ -130,7 +130,7 @@ public class CceTableTests
     {
         // Verify the generated _Cce runtime class contains the same values
         string source = CceTable.GenerateRuntimeSource();
-        var numbers = Regex.Matches(source, @"(?<=[\s,{])(\d+)(?=[,\s}])")
+        List<int> numbers = Regex.Matches(source, @"(?<=[\s,{])(\d+)(?=[,\s}])")
             .Select(m => int.Parse(m.Value))
             .ToList();
 
@@ -181,7 +181,7 @@ public class CceTableTests
         Assert.True(arrayEnd >= 0, "Could not find end of _toUni array");
 
         string arrayText = source.Substring(arrayStart, arrayEnd - arrayStart);
-        var numbers = Regex.Matches(arrayText, @"\b(\d+)\b")
+        List<int> numbers = Regex.Matches(arrayText, @"\b(\d+)\b")
             .Select(m => int.Parse(m.Value))
             .ToList();
 
@@ -263,7 +263,7 @@ public class CceTableTests
     [Fact]
     public void Tier1_table_is_bijective()
     {
-        var seen = new HashSet<int>();
+        HashSet<int> seen = new HashSet<int>();
         for (int i = 0; i < CceTable.Tier1ToUnicode.Length; i++)
         {
             int u = CceTable.Tier1ToUnicode[i];
@@ -287,7 +287,7 @@ public class CceTableTests
     [Fact]
     public void Tier1_from_unicode_is_inverse()
     {
-        foreach (var kv in CceTable.Tier1FromUnicode)
+        foreach (KeyValuePair<int, int> kv in CceTable.Tier1FromUnicode)
         {
             Assert.Equal(kv.Key, CceTable.Tier1ToUnicode[kv.Value]);
         }
@@ -357,7 +357,7 @@ public class CceTableTests
     {
         // Every Tier 1 character should encode as exactly 2 bytes:
         // start byte (0xC0-0xDF) + continuation (0x80-0xBF)
-        foreach (var kv in CceTable.Tier1FromUnicode)
+        foreach (KeyValuePair<int, int> kv in CceTable.Tier1FromUnicode)
         {
             string s = new string((char)kv.Key, 1);
             string encoded = CceTable.Encode(s);

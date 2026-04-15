@@ -50,7 +50,7 @@ public sealed class Lowering(
 
         foreach (string mod in chapterOrder)
         {
-            var g = groups[mod];
+            (List<(string, CodexType)> Types, List<IRDefinition> Defs) g = groups[mod];
             chapter.ProseByFile.TryGetValue(mod, out ChapterProse? prose);
             sections.Add(new IRChapterSection(
                 mod,

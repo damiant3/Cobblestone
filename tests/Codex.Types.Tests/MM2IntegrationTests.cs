@@ -154,8 +154,8 @@ public class MM2IntegrationTests
             .ToArray();
         m_output.WriteLine($"Compiler source: {files.Length} files");
 
-        var diag = new DiagnosticBag();
-        var desugarer = new Codex.Ast.Desugarer(diag);
+        DiagnosticBag diag = new DiagnosticBag();
+        Desugarer desugarer = new Codex.Ast.Desugarer(diag);
         List<Chapter> chapters = [];
 
         // Parse and desugar each file as its own chapter
@@ -174,7 +174,7 @@ public class MM2IntegrationTests
             else
             {
                 src = new SourceText(filePath, content);
-                var tokens = new Lexer(src, diag).TokenizeAll();
+                IReadOnlyList<Token> tokens = new Lexer(src, diag).TokenizeAll();
                 document = new Parser(tokens, diag).ParseDocument();
             }
 
@@ -189,20 +189,20 @@ public class MM2IntegrationTests
         if (diag.HasErrors) { DumpErrors(diag, 10); Assert.Fail("Parse/Desugar failed"); return; }
 
         // Scope chapters (handles duplicate names across files)
-        var scoper = new ChapterScoper(diag);
+        ChapterScoper scoper = new ChapterScoper(diag);
         Chapter combined = scoper.Scope(chapters, "CompilerKernel");
         m_output.WriteLine($"Scope: {combined.Definitions.Count} defs, {CountErrors(diag)} errors");
         if (diag.HasErrors) { DumpErrors(diag, 10); Assert.Fail("Chapter scoping failed"); return; }
 
         // Resolve
-        var resolved = new Codex.Semantics.NameResolver(diag).Resolve(combined);
+        ResolvedChapter resolved = new Codex.Semantics.NameResolver(diag).Resolve(combined);
         int resolveErrors = CountErrors(diag);
         m_output.WriteLine($"Resolve: {resolveErrors} total errors");
         if (diag.HasErrors) { DumpErrors(diag, 10); Assert.Fail("Name resolution failed"); return; }
 
         // TypeCheck
-        var checker = new Codex.Types.TypeChecker(diag);
-        var types = checker.CheckChapter(resolved.Chapter);
+        TypeChecker checker = new Codex.Types.TypeChecker(diag);
+        Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
         int typeErrors = CountErrors(diag);
         m_output.WriteLine($"TypeCheck: {typeErrors} total errors");
         if (diag.HasErrors) { DumpErrors(diag, 10); Assert.Fail("Type checking failed"); return; }
@@ -212,12 +212,12 @@ public class MM2IntegrationTests
         if (diag.HasErrors) { DumpErrors(diag, 10); Assert.Fail("Linearity check failed"); return; }
 
         // Lower
-        var irModule = new Lowering(types, checker.ConstructorMap, checker.TypeDefMap, diag).Lower(resolved.Chapter);
+        IRChapter irModule = new Lowering(types, checker.ConstructorMap, checker.TypeDefMap, diag).Lower(resolved.Chapter);
         m_output.WriteLine($"Lower: {irModule.Definitions.Length} IR defs, {CountErrors(diag)} total errors");
         if (diag.HasErrors) { DumpErrors(diag, 10); Assert.Fail("Lowering failed"); return; }
 
         // Emit bare metal
-        var emitter = new Codex.Emit.X86_64.X86_64Emitter(Codex.Emit.X86_64.X86_64Target.BareMetal);
+        Emit.X86_64.X86_64Emitter emitter = new Codex.Emit.X86_64.X86_64Emitter(Codex.Emit.X86_64.X86_64Target.BareMetal);
         byte[] bytes = emitter.EmitAssembly(irModule, "CompilerKernel");
         m_output.WriteLine($"SUCCESS: Compiler kernel = {bytes.Length} bytes ({bytes.Length / 1024} KB)");
         Assert.True(bytes.Length > 0);
@@ -228,7 +228,7 @@ public class MM2IntegrationTests
 
     void DumpErrors(DiagnosticBag bag, int max)
     {
-        foreach (var d in bag.ToImmutable().Where(d => d.IsError).Take(max))
+        foreach (Diagnostic? d in bag.ToImmutable().Where(d => d.IsError).Take(max))
             m_output.WriteLine($"  {d.Code}: {d.Message}");
     }
 

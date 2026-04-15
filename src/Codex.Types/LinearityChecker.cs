@@ -287,7 +287,7 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
         }
 
         // Detect closure capture of outer linear variables
-        var captured = new HashSet<string>();
+        HashSet<string> captured = new HashSet<string>();
         foreach (KeyValuePair<string, CodexType> kv in savedLinear)
         {
             int beforeCount = savedCounts[kv.Key] ?? 0;

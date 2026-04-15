@@ -42,7 +42,7 @@ public static partial class Program
     static string FormatCodexSource(string content)
     {
         string[] lines = content.Split('\n');
-        var output = new System.Text.StringBuilder(content.Length);
+        System.Text.StringBuilder output = new System.Text.StringBuilder(content.Length);
         bool inCode = false;
         bool lastWasBlank = false;
         int chainIndent = -1; // tracks base indent of current in-let chain

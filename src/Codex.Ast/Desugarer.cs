@@ -39,7 +39,7 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
             }
         }
 
-        var proseByFile = new Dictionary<string, ChapterProse>();
+        Dictionary<string, ChapterProse> proseByFile = new Dictionary<string, ChapterProse>();
         if (chapterTitle is not null)
             proseByFile[chapterName] = new ChapterProse(chapterTitle, prose, sectionTitles);
 
