@@ -90,6 +90,8 @@ public static class CdxCodes
     public const int ProseClaimWithoutNotation = 1105;
     public const int FileMissingChapter = 1106;
     public const int FileMultipleChapters = 1107;
+    public const int CiteExpectedChapterKeyword = 1108;
+    public const int CiteExpectedChapterTitle = 1109;
 
     // ---- Type checker / Unifier (2xxx) ----
     public const int IrError = 2000;
@@ -257,6 +259,12 @@ public static class CdxCodes
         [FileMultipleChapters] = new(FileMultipleChapters, nameof(FileMultipleChapters),
             DiagnosticSeverity.Error, CdxPhase.ProseValidation,
             "A .codex file may declare at most one 'Chapter:' header; split into separate files."),
+        [CiteExpectedChapterKeyword] = new(CiteExpectedChapterKeyword, nameof(CiteExpectedChapterKeyword),
+            DiagnosticSeverity.Error, CdxPhase.Parser,
+            "A cite must be written 'cites <Quire> chapter <Title> (names, ...)'."),
+        [CiteExpectedChapterTitle] = new(CiteExpectedChapterTitle, nameof(CiteExpectedChapterTitle),
+            DiagnosticSeverity.Error, CdxPhase.Parser,
+            "A cite must name a chapter title (one or more capitalized words) after the 'chapter' keyword."),
 
         [IrError] = new(IrError, nameof(IrError),
             DiagnosticSeverity.Error, CdxPhase.CodeGen,

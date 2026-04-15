@@ -12,13 +12,16 @@ sealed class RepositoryChapterLoader(FactStore store, DiagnosticBag diagnostics)
     readonly DiagnosticBag m_diagnostics = diagnostics;
     Map<string, ResolvedChapter> m_cache = Map<string, ResolvedChapter>.s_empty;
 
-    public ResolvedChapter? Load(string chapterName)
+    public ResolvedChapter? Load(string quire, string chapterName)
     {
-        ResolvedChapter? cached = m_cache[chapterName];
+        // Repository views are keyed by a single string today; a (quire, chapter)
+        // pair maps to a "Quire/ChapterName" view name.
+        string viewKey = $"{quire}/{chapterName}";
+        ResolvedChapter? cached = m_cache[viewKey];
         if (cached is not null)
             return cached;
 
-        ContentHash? hash = m_store.LookupView(chapterName);
+        ContentHash? hash = m_store.LookupView(viewKey);
         if (hash is null)
             return null;
 
@@ -30,20 +33,7 @@ sealed class RepositoryChapterLoader(FactStore store, DiagnosticBag diagnostics)
         SourceText src = new($"{chapterName}.codex", source);
         DiagnosticBag compileDiag = new();
 
-        DocumentNode document;
-        if (ProseParser.IsProseDocument(source))
-        {
-            ProseParser proseParser = new(src, compileDiag);
-            document = proseParser.ParseDocument();
-        }
-        else
-        {
-            Lexer lexer = new(src, compileDiag);
-            IReadOnlyList<Token> tokens = lexer.TokenizeAll();
-            Parser parser = new(tokens, compileDiag);
-            document = parser.ParseDocument();
-        }
-
+        DocumentNode document = DocumentParser.Parse(src, compileDiag);
         if (compileDiag.HasErrors)
             return null;
 
@@ -57,7 +47,7 @@ sealed class RepositoryChapterLoader(FactStore store, DiagnosticBag diagnostics)
         if (compileDiag.HasErrors)
             return null;
 
-        m_cache = m_cache.Set(chapterName, resolved);
+        m_cache = m_cache.Set(viewKey, resolved);
         return resolved;
     }
 }

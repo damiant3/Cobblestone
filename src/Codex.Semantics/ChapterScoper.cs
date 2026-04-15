@@ -41,17 +41,27 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
                 collidingNames.Add(kvp.Key);
         }
 
-        // Build selective cite maps per chapter
+        // A chapter's identity is (quire, chapter-title). Same chapter title
+        // in different quires must produce different slugs.
+        static string SlugFor(Chapter c)
+        {
+            string name = c.Name.Parts[^1].Value;
+            return c.Quire is null ? ToSlug(name) : ToSlug(c.Quire) + "--" + ToSlug(name);
+        }
+        static string SlugForCite(CitesDecl cite) =>
+            ToSlug(cite.Quire.Value) + "--" + ToSlug(cite.ChapterName.Value);
+
+        // Build selective cite maps per chapter (keyed by per-file chapter slug).
         Dictionary<string, Dictionary<string, string>> chapterCiteAliases = [];
         foreach (Chapter mod in perFileChapters)
         {
-            string modName = mod.Name.Parts[^1].Value;
+            string modKey = SlugFor(mod);
             Dictionary<string, string> aliases = [];
             foreach (CitesDecl cite in mod.Citations)
             {
                 if (cite.SelectedNames.Count > 0)
                 {
-                    string importedModSlug = ToSlug(cite.ChapterName.Value);
+                    string importedModSlug = SlugForCite(cite);
                     foreach (Name selected in cite.SelectedNames)
                     {
                         string mangledName = $"{importedModSlug}_{selected.Value}";
@@ -59,15 +69,15 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
                     }
                 }
             }
-            chapterCiteAliases[modName] = aliases;
+            chapterCiteAliases[modKey] = aliases;
         }
 
         // Process each module: mangle colliding names, rewrite expressions
         foreach (Chapter mod in perFileChapters)
         {
             string modName = mod.Name.Parts[^1].Value;
-            string modSlug = ToSlug(modName);
-            var citeAliases = chapterCiteAliases.GetValueOrDefault(modName)
+            string modSlug = SlugFor(mod);
+            var citeAliases = chapterCiteAliases.GetValueOrDefault(modSlug)
                 ?? new Dictionary<string, string>();
 
             // Build the rename map for this module

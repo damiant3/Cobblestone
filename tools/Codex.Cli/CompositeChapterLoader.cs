@@ -6,11 +6,11 @@ sealed class CompositeChapterLoader(params IChapterLoader[] loaders) : IChapterL
 {
     readonly IChapterLoader[] m_loaders = loaders;
 
-    public ResolvedChapter? Load(string chapterName)
+    public ResolvedChapter? Load(string quire, string chapterName)
     {
         foreach (IChapterLoader loader in m_loaders)
         {
-            ResolvedChapter? result = loader.Load(chapterName);
+            ResolvedChapter? result = loader.Load(quire, chapterName);
             if (result is not null)
                 return result;
         }

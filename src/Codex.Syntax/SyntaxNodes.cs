@@ -229,7 +229,7 @@ public sealed record NotationBlockNode(
     public override IEnumerable<SyntaxNode> Children => Definitions;
 }
 
-public sealed record CitesNode(Token Name, SourceSpan Span)
+public sealed record CitesNode(Token Quire, string ChapterTitle, SourceSpan Span)
     : SyntaxNode(SyntaxKind.Cites, Span)
 {
     public IReadOnlyList<Token> SelectedNames { get; init; } = [];

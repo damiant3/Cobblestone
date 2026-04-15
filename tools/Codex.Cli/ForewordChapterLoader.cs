@@ -5,14 +5,20 @@ namespace Codex.Cli;
 
 sealed class ForewordChapterLoader : IChapterLoader
 {
+    const string QuireName = "Foreword";
     readonly FileChapterLoader m_inner;
 
     ForewordChapterLoader(string forewordDir, DiagnosticBag diagnostics)
     {
-        m_inner = new FileChapterLoader(forewordDir, diagnostics);
+        // The foreword is a single quire whose files sit at project root.
+        m_inner = new FileChapterLoader(forewordDir, diagnostics, virtualQuireName: QuireName);
     }
 
-    public ResolvedChapter? Load(string chapterName) => m_inner.Load(chapterName);
+    public ResolvedChapter? Load(string quire, string chapterName)
+    {
+        if (quire != QuireName) return null;
+        return m_inner.Load(quire, chapterName);
+    }
 
     public static ForewordChapterLoader? TryCreate(DiagnosticBag diagnostics)
     {

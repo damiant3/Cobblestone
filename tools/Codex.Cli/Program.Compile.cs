@@ -132,7 +132,7 @@ public static partial class Program
                 ? QuireNameFor(filePath, inferredRoot)
                 : null;
             pageMarkers.Add((filePath, quire, fileModule, document.Page));
-            Chapter chapter = desugarer.Desugar(document, fileModule);
+            Chapter chapter = desugarer.Desugar(document, fileModule) with { Quire = quire };
             perFileChapters.Add(chapter);
         }
 

@@ -22,13 +22,14 @@ sealed class ProjectChapterLoader : IChapterLoader
         m_diagnostics = diagnostics;
     }
 
-    public ResolvedChapter? Load(string chapterName)
+    public ResolvedChapter? Load(string quire, string chapterName)
     {
-        ResolvedChapter? cached = m_cache[chapterName];
+        string key = $"{quire}::{chapterName}";
+        ResolvedChapter? cached = m_cache[key];
         if (cached is not null)
             return cached;
 
-        string? filePath = FindSourceFile(chapterName);
+        string? filePath = FindSourceFile(quire, chapterName);
         if (filePath is null)
             return null;
 
@@ -36,20 +37,7 @@ sealed class ProjectChapterLoader : IChapterLoader
         SourceText src = new(filePath, source);
         DiagnosticBag compileDiag = new();
 
-        DocumentNode document;
-        if (ProseParser.IsProseDocument(source))
-        {
-            ProseParser proseParser = new(src, compileDiag);
-            document = proseParser.ParseDocument();
-        }
-        else
-        {
-            Lexer lexer = new(src, compileDiag);
-            IReadOnlyList<Token> tokens = lexer.TokenizeAll();
-            Parser parser = new(tokens, compileDiag);
-            document = parser.ParseDocument();
-        }
-
+        DocumentNode document = DocumentParser.Parse(src, compileDiag);
         if (compileDiag.HasErrors)
             return null;
 
@@ -58,32 +46,33 @@ sealed class ProjectChapterLoader : IChapterLoader
         if (compileDiag.HasErrors)
             return null;
 
-        FileChapterLoader transitiveLoader = new(
-            Path.GetDirectoryName(filePath) ?? m_projectDirectory, compileDiag);
+        FileChapterLoader transitiveLoader = new(m_projectDirectory, compileDiag);
         NameResolver resolver = new(compileDiag, transitiveLoader);
         ResolvedChapter resolved = resolver.Resolve(chapter);
         if (compileDiag.HasErrors)
             return null;
 
-        m_cache = m_cache.Set(chapterName, resolved);
+        m_cache = m_cache.Set(key, resolved);
         return resolved;
     }
 
-    string? FindSourceFile(string chapterName)
+    string? FindSourceFile(string quire, string chapterName)
     {
-        string target = chapterName + ".codex";
-        string targetLower = chapterName.ToLowerInvariant() + ".codex";
-
         foreach (string file in m_sourceFiles)
         {
-            string fileName = Path.GetFileName(file);
-            if (string.Equals(fileName, target, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(fileName, targetLower, StringComparison.OrdinalIgnoreCase))
-            {
-                return file;
-            }
-        }
+            // Match by (containing directory basename == quire) AND chapter title.
+            string? dir = Path.GetDirectoryName(file);
+            string quireOfFile = dir is null ? "" : Path.GetFileName(dir);
+            if (quireOfFile != quire) continue;
 
+            string? firstLine = null;
+            using (StreamReader r = new(file))
+                firstLine = r.ReadLine();
+            if (firstLine is null) continue;
+            if (!firstLine.StartsWith("Chapter:", StringComparison.Ordinal)) continue;
+            string title = firstLine["Chapter:".Length..].Trim();
+            if (title == chapterName) return file;
+        }
         return null;
     }
 

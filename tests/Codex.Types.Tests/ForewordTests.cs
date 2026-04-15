@@ -184,7 +184,7 @@ public class ForewordTests
     public void Maybe_used_in_program()
     {
         string source = """
-            cites Maybe
+            cites Foreword chapter Maybe
 
             safe-div : Integer -> Integer -> Maybe Integer
             safe-div (a) (b) = if b == 0 then None else Just (a / b)
@@ -200,7 +200,7 @@ public class ForewordTests
     public void Result_used_in_program()
     {
         string source = """
-            cites Result
+            cites Foreword chapter Result
 
             parse-nat : Text -> Result Integer Text
             parse-nat (t) = Ok (text-to-integer t)
@@ -216,7 +216,7 @@ public class ForewordTests
     public void Either_used_in_program()
     {
         string source = """
-            cites Either
+            cites Foreword chapter Either
 
             to-zero : Text -> Integer
             to-zero (s) = 0
@@ -238,7 +238,7 @@ public class ForewordTests
     public void Pair_used_in_program()
     {
         string source = """
-            cites Pair
+            cites Foreword chapter Pair
 
             main : Integer
             main = pair-fst (make-pair 1 2)
@@ -251,7 +251,7 @@ public class ForewordTests
     public void CCE_used_in_program()
     {
         string source = """
-            cites CCE
+            cites Foreword chapter CCE
 
             main : Boolean
             main = is-digit 10
@@ -264,8 +264,8 @@ public class ForewordTests
     public void Hamt_used_in_program()
     {
         string source = """
-            cites Maybe
-            cites Hamt
+            cites Foreword chapter Maybe
+            cites Foreword chapter Hamt
 
             main : Integer
             main = hamt-size (hamt-set hamt-empty "key" 42)
@@ -278,7 +278,7 @@ public class ForewordTests
     public void List_used_in_program()
     {
         string source = """
-            cites List
+            cites Foreword chapter List
 
             main : Integer
             main = list-length (cons 1 (cons 2 (cons 3 nil)))
@@ -387,19 +387,34 @@ public class ForewordTests
 
 sealed class ForewordTestLoader(string forewordDir, DiagnosticBag diagnostics) : IChapterLoader
 {
+    const string QuireName = "Foreword";
     readonly string m_forewordDir = forewordDir;
     readonly DiagnosticBag m_diagnostics = diagnostics;
     Map<string, ResolvedChapter> m_cache = Map<string, ResolvedChapter>.s_empty;
 
-    public ResolvedChapter? Load(string chapterName)
+    public ResolvedChapter? Load(string quire, string chapterName)
     {
+        if (quire != QuireName) return null;
         ResolvedChapter? cached = m_cache[chapterName];
         if (cached is not null)
             return cached;
 
-        string filePath = Path.Combine(m_forewordDir, chapterName + ".codex");
-        if (!File.Exists(filePath))
-            return null;
+        // Scan forward files for a matching Chapter: header.
+        string? filePath = null;
+        foreach (string candidate in Directory.GetFiles(m_forewordDir, "*.codex"))
+        {
+            string? firstLine;
+            using (StreamReader r = new(candidate))
+                firstLine = r.ReadLine();
+            if (firstLine is null) continue;
+            if (!firstLine.StartsWith("Chapter:", StringComparison.Ordinal)) continue;
+            if (firstLine["Chapter:".Length..].Trim() == chapterName)
+            {
+                filePath = candidate;
+                break;
+            }
+        }
+        if (filePath is null) return null;
 
         string source = File.ReadAllText(filePath);
         SourceText src = new(filePath, source);

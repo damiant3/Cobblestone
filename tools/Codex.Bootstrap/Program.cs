@@ -119,8 +119,8 @@ partial class Program
             var ir = Codex_Codex_Codex.lower_chapter(scoped, checkResult.types, checkResult.state);
             Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
 
-            Console.WriteLine("  [11/11] csharp_emitter_emit_full_chapter...");
-            string cceOutput = Codex_Codex_Codex.csharp_emitter_emit_full_chapter(ir, scoped.type_defs);
+            Console.WriteLine("  [11/11] emit__csharp_emitter_emit_full_chapter...");
+            string cceOutput = Codex_Codex_Codex.emit__csharp_emitter_emit_full_chapter(ir, scoped.type_defs);
             Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
 
             string output = _Cce.ToUnicode(cceOutput);
@@ -188,7 +188,7 @@ partial class Program
             }
 
             IRChapter ir = Codex_Codex_Codex.lower_chapter(ast, checkResult.types, checkResult.state);
-            string output = Codex_Codex_Codex.csharp_emitter_emit_full_chapter(ir, ast.type_defs);
+            string output = Codex_Codex_Codex.emit__csharp_emitter_emit_full_chapter(ir, ast.type_defs);
 
             string outPath = Path.ChangeExtension(filePath, ".g.cs");
             File.WriteAllText(outPath, output);
@@ -315,7 +315,7 @@ partial class Program
         sw.Stop(); lowerMs = sw.Elapsed.TotalMilliseconds;
 
         sw.Restart();
-        var output = Codex_Codex_Codex.csharp_emitter_emit_full_chapter(ir, ast.type_defs);
+        var output = Codex_Codex_Codex.emit__csharp_emitter_emit_full_chapter(ir, ast.type_defs);
         sw.Stop(); emitMs = sw.Elapsed.TotalMilliseconds;
 
         total.Stop(); totalMs = total.Elapsed.TotalMilliseconds;
@@ -572,7 +572,7 @@ partial class Program
         var ir = Codex_Codex_Codex.lower_chapter(ast, checkResult.types, checkResult.state);
         Console.Error.WriteLine($"  IR defs: {ir.defs.Count}");
 
-        string cceOutput = Codex_Codex_Codex.codex_emitter_emit_full_chapter(ir, ast.type_defs);
+        string cceOutput = Codex_Codex_Codex.emit__codex_emitter_emit_full_chapter(ir, ast.type_defs);
         string output = _Cce.ToUnicode(cceOutput);
 
         string dest = outputPath ?? Path.Combine(Path.GetFullPath(Path.Combine(codexDir, "..")), "build-output", "bootstrap", "stage1-codex.codex");

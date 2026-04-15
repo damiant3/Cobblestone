@@ -76,21 +76,22 @@ public class ChapterScopeTests
     {
         // ModA and ModC both define emit-expr (collision).
         // ModB imports emit-expr from ModA selectively.
-        Chapter modA = ParseModule("emit-expr (x) = x", "ModA");
+        // All three sit in the same quire 'Test'; selective-cite mangling uses
+        // the (quire, chapter) slug pair so cross-quire reuse stays distinct.
+        Chapter modA = ParseModule("emit-expr (x) = x", "ModA") with { Quire = "Test" };
         Chapter modB = ParseModule(
-            "cites ModA (emit-expr)\nhelper (x) = emit-expr x",
-            "ModB");
-        Chapter modC = ParseModule("emit-expr (x) = x", "ModC");
+            "cites Test chapter ModA (emit-expr)\nhelper (x) = emit-expr x",
+            "ModB") with { Quire = "Test" };
+        Chapter modC = ParseModule("emit-expr (x) = x", "ModC") with { Quire = "Test" };
 
         DiagnosticBag diags = new();
         ChapterScoper scoper = new(diags);
         Chapter combined = scoper.Scope([modA, modB, modC], "Combined");
 
-        // helper's body should reference mod-a_emit-expr via the import alias
         Definition helper = combined.Definitions.First(d => d.Name.Value == "helper");
         ApplyExpr app = Assert.IsType<ApplyExpr>(helper.Body);
         NameExpr callee = Assert.IsType<NameExpr>(app.Function);
-        Assert.Equal("mod-a_emit-expr", callee.Name.Value);
+        Assert.Equal("test--mod-a_emit-expr", callee.Name.Value);
     }
 
     [Fact]

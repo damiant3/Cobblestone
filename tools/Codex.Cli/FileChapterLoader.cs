@@ -5,46 +5,46 @@ using Codex.Syntax;
 
 namespace Codex.Cli;
 
-sealed class FileChapterLoader(string baseDirectory, DiagnosticBag diagnostics) : IChapterLoader
+/// <summary>
+/// Loads chapters from a codex directory. The quire parameter is resolved to
+/// a subdirectory of <paramref name="baseDirectory"/> — unless it matches
+/// <paramref name="virtualQuireName"/>, in which case the root directory
+/// itself is treated as the quire body (used by stdlib-style codexes like
+/// the foreword, whose chapter files live at project root but are presented
+/// as a single named quire).
+/// </summary>
+sealed class FileChapterLoader(
+    string baseDirectory,
+    DiagnosticBag diagnostics,
+    string? virtualQuireName = null) : IChapterLoader
 {
     readonly string m_baseDirectory = baseDirectory;
     readonly DiagnosticBag m_diagnostics = diagnostics;
+    readonly string? m_virtualQuireName = virtualQuireName;
     Map<string, ResolvedChapter> m_cache = Map<string, ResolvedChapter>.s_empty;
 
-    public ResolvedChapter? Load(string chapterName)
+    public ResolvedChapter? Load(string quire, string chapterName)
     {
-        ResolvedChapter? cached = m_cache[chapterName];
+        string key = $"{quire}::{chapterName}";
+        ResolvedChapter? cached = m_cache[key];
         if (cached is not null)
             return cached;
 
-        string filePath = Path.Combine(m_baseDirectory, chapterName + ".codex");
-        if (!File.Exists(filePath))
-        {
-            // Try lowercase
-            filePath = Path.Combine(m_baseDirectory,
-                chapterName.ToLowerInvariant() + ".codex");
-            if (!File.Exists(filePath))
-                return null;
-        }
+        string quireDir = (m_virtualQuireName is not null && quire == m_virtualQuireName)
+            ? m_baseDirectory
+            : Path.Combine(m_baseDirectory, quire);
+        if (!Directory.Exists(quireDir))
+            return null;
+
+        string? filePath = FindFileForChapter(quireDir, chapterName);
+        if (filePath is null)
+            return null;
 
         string source = File.ReadAllText(filePath);
         SourceText src = new(filePath, source);
         DiagnosticBag compileDiag = new();
 
-        DocumentNode document;
-        if (ProseParser.IsProseDocument(source))
-        {
-            ProseParser proseParser = new(src, compileDiag);
-            document = proseParser.ParseDocument();
-        }
-        else
-        {
-            Lexer lexer = new(src, compileDiag);
-            IReadOnlyList<Token> tokens = lexer.TokenizeAll();
-            Parser parser = new(tokens, compileDiag);
-            document = parser.ParseDocument();
-        }
-
+        DocumentNode document = DocumentParser.Parse(src, compileDiag);
         if (compileDiag.HasErrors)
             return null;
 
@@ -53,15 +53,30 @@ sealed class FileChapterLoader(string baseDirectory, DiagnosticBag diagnostics) 
         if (compileDiag.HasErrors)
             return null;
 
-        // Use a fresh FileChapterLoader for transitive imports from the same directory
-        FileChapterLoader transitiveLoader = new(
-            Path.GetDirectoryName(filePath) ?? m_baseDirectory, compileDiag);
+        // Transitive imports resolve against the same codex root + quire layout.
+        FileChapterLoader transitiveLoader = new(m_baseDirectory, compileDiag, m_virtualQuireName);
         NameResolver resolver = new(compileDiag, transitiveLoader);
         ResolvedChapter resolved = resolver.Resolve(chapter);
         if (compileDiag.HasErrors)
             return null;
 
-        m_cache = m_cache.Set(chapterName, resolved);
+        m_cache = m_cache.Set(key, resolved);
         return resolved;
+    }
+
+    static string? FindFileForChapter(string quireDir, string chapterName)
+    {
+        foreach (string file in Directory.GetFiles(quireDir, "*.codex"))
+        {
+            string? firstLine = null;
+            using (StreamReader r = new(file))
+                firstLine = r.ReadLine();
+            if (firstLine is null) continue;
+            if (!firstLine.StartsWith("Chapter:", StringComparison.Ordinal)) continue;
+            string title = firstLine["Chapter:".Length..].Trim();
+            if (title == chapterName)
+                return file;
+        }
+        return null;
     }
 }

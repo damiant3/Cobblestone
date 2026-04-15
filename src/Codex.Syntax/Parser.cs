@@ -222,7 +222,38 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
             return null;
         Token citesKw = Current;
         Advance();
-        Token name = Expect(TokenKind.TypeIdentifier);
+
+        // Grammar: cites <Quire> chapter <Title words...> ( <names>, ... )
+        // Quire is a single TypeIdentifier (quire directory basename).
+        // Chapter title is one or more TypeIdentifier tokens joined by spaces.
+        Token quire = Expect(TokenKind.TypeIdentifier);
+
+        if (!(Current.Kind == TokenKind.Identifier && Current.Text == "chapter"))
+        {
+            m_diagnostics.Error(CdxCodes.CiteExpectedChapterKeyword,
+                $"Expected 'chapter' after quire name in cite, found {Current.Kind} '{Current.Text}'",
+                Current.Span);
+            return new CitesNode(quire, "", citesKw.Span.Through(quire.Span));
+        }
+        Advance(); // consume 'chapter'
+
+        if (Current.Kind != TokenKind.TypeIdentifier)
+        {
+            m_diagnostics.Error(CdxCodes.CiteExpectedChapterTitle,
+                $"Expected chapter title (capitalized word) after 'chapter', found {Current.Kind}",
+                Current.Span);
+            return new CitesNode(quire, "", citesKw.Span.Through(Current.Span));
+        }
+        List<Token> titleTokens = [Current];
+        Token titleEnd = Current;
+        Advance();
+        while (Current.Kind == TokenKind.TypeIdentifier)
+        {
+            titleTokens.Add(Current);
+            titleEnd = Current;
+            Advance();
+        }
+        string chapterTitle = string.Join(" ", titleTokens.Select(t => t.Text));
 
         List<Token> selectedNames = [];
         if (Current.Kind == TokenKind.LeftParen)
@@ -250,8 +281,8 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
 
         SourceSpan span = selectedNames.Count > 0
             ? citesKw.Span.Through(selectedNames[^1].Span)
-            : citesKw.Span.Through(name.Span);
-        return new CitesNode(name, span) { SelectedNames = selectedNames };
+            : citesKw.Span.Through(titleEnd.Span);
+        return new CitesNode(quire, chapterTitle, span) { SelectedNames = selectedNames };
     }
 
     EffectDefinitionNode? TryParseEffectDefinition()

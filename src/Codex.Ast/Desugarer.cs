@@ -17,7 +17,7 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
         List<ClaimDef> claims = document.Claims.Select(DesugarClaim).ToList();
         List<ProofDef> proofs = document.Proofs.Select(DesugarProof).ToList();
         List<CitesDecl> citations = document.Citations
-            .Select(i => new CitesDecl(new Name(i.Name.Text), i.Span)
+            .Select(i => new CitesDecl(new Name(i.Quire.Text), new Name(i.ChapterTitle), i.Span)
                 { SelectedNames = i.SelectedNames.Select(n => new Name(n.Text)).ToList() })
             .ToList();
         List<EffectDef> effectDefs = document.EffectDefinitions

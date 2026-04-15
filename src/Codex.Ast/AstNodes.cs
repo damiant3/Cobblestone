@@ -16,6 +16,8 @@ public sealed record Chapter(
     public string? Prose { get; init; }
     public IReadOnlyList<string> SectionTitles { get; init; } = [];
     public Dictionary<string, ChapterProse> ProseByFile { get; init; } = [];
+    /// <summary>The quire this chapter lives in (null for files at codex root).</summary>
+    public string? Quire { get; init; }
 }
 
 public sealed record Definition(
@@ -33,7 +35,7 @@ public sealed record Parameter(Name Name, TypeExpr? TypeAnnotation, SourceSpan S
 
 public sealed record ChapterProse(string? ChapterTitle, string? Prose, IReadOnlyList<string> SectionTitles);
 
-public sealed record CitesDecl(Name ChapterName, SourceSpan Span)
+public sealed record CitesDecl(Name Quire, Name ChapterName, SourceSpan Span)
 {
     public IReadOnlyList<Name> SelectedNames { get; init; } = [];
 }

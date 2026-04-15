@@ -111,11 +111,11 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
         List<ResolvedChapter> citedChapters = [];
         foreach (CitesDecl cite in chapter.Citations)
         {
-            ResolvedChapter? cited = m_loader?.Load(cite.ChapterName.Value);
+            ResolvedChapter? cited = m_loader?.Load(cite.Quire.Value, cite.ChapterName.Value);
             if (cited is null)
             {
                 m_diagnostics.Error(CdxCodes.UnresolvedCitation,
-                    $"Cannot resolve citation '{cite.ChapterName.Value}'",
+                    $"Cannot resolve citation '{cite.Quire.Value} chapter {cite.ChapterName.Value}'",
                     cite.Span);
                 continue;
             }
