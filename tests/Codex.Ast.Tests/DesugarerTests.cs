@@ -97,7 +97,7 @@ public class DesugarerTests
     [Fact]
     public void Desugar_match_expression()
     {
-        string source = "x = when y if True -> 1 if False -> 0";
+        string source = "x = when y is True -> 1 is False -> 0";
         Chapter chapter = ParseAndDesugar(source);
         Assert.IsType<MatchExpr>(chapter.Definitions[0].Body);
         MatchExpr match = (MatchExpr)chapter.Definitions[0].Body;

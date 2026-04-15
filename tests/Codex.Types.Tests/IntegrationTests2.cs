@@ -131,8 +131,8 @@ public partial class IntegrationTests
             "unwrap-nested : Maybe (Maybe Integer) -> Integer\n" +
             "unwrap-nested (m) =\n" +
             "  when m\n" +
-            "    if Just (Just (n)) -> n\n" +
-            "    if _ -> 0\n";
+            "    is Just (Just (n)) -> n\n" +
+            "    is otherwise -> 0\n";
         string? cs = Helpers.CompileToCS(source, "nested");
         Assert.NotNull(cs);
         Assert.Contains("Just", cs!);

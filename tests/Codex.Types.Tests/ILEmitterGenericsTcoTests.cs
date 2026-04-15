@@ -93,8 +93,8 @@ public class ILEmitterGenericsTcoTests
 
             count-circles : Shape -> Integer -> Integer
             count-circles (s) (acc) = when s
-              if Circle (r) -> acc + 1
-              if Rect (w) (h) -> acc
+              is Circle (r) -> acc + 1
+              is Rect (w) (h) -> acc
 
             main : Integer
             main = count-circles (Circle 5) 0
@@ -160,8 +160,8 @@ public class ILEmitterGenericsTcoTests
               | Err (Text)
 
             get-or-default (r) (d) = when r
-              if Ok (v) -> v
-              if Err (msg) -> d
+              is Ok (v) -> v
+              is Err (msg) -> d
 
             main : Integer
             main = get-or-default (Ok 42) 0

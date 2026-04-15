@@ -11,10 +11,10 @@ Section: Type Definition Emission
   emit-type-def : ATypeDef -> Text
   emit-type-def (td) =
    when td
-    if ARecordTypeDef (name) (tparams) (fields) (s) ->
+    is ARecordTypeDef (name) (tparams) (fields) (s) ->
      let gen = emit-tparameter-suffix tparams
      in "public sealed record " ++ sanitize (name.value) ++ gen ++ "(" ++ emit-record-field-defs fields tparams 0 ++ ");\n"
-    if AVariantTypeDef (name) (tparams) (ctors) (s) ->
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      let gen = emit-tparameter-suffix tparams
      in "public abstract record " ++ sanitize (name.value) ++ gen ++ ";\n" ++ emit-variant-ctors ctors name tparams 0 ++ "\n"
 
@@ -59,13 +59,13 @@ Section: Type Definition Emission
   emit-type-expr-tp : ATypeExpr -> List Name -> Text
   emit-type-expr-tp (te) (tparams) =
    when te
-    if ANamedType (name) (s) ->
+    is ANamedType (name) (s) ->
 
      let idx = find-tparam-index tparams (name.value) 0
      in if idx >= 0 then "T" ++ integer-to-text idx
         else when-type-name (name.value)
-    if AFunType (p) (r) (s) -> "Func<" ++ emit-type-expr-tp p tparams ++ ", " ++ emit-type-expr-tp r tparams ++ ">"
-    if AAppType (base) (args) (s) -> emit-type-expr-tp base tparams ++ "<" ++ emit-type-expr-list-tp args tparams 0 ++ ">"
+    is AFunType (p) (r) (s) -> "Func<" ++ emit-type-expr-tp p tparams ++ ", " ++ emit-type-expr-tp r tparams ++ ">"
+    is AAppType (base) (args) (s) -> emit-type-expr-tp base tparams ++ "<" ++ emit-type-expr-list-tp args tparams 0 ++ ">"
 
   find-tparam-index : List Name -> Text -> Integer -> Integer
   find-tparam-index (tparams) (name) (i) =
@@ -97,13 +97,13 @@ Section: Generic Helpers
   collect-type-var-ids : CodexType -> List Integer -> List Integer
   collect-type-var-ids (ty) (acc) =
    when ty
-    if TypeVar (id) -> if list-contains-int acc id then acc
+    is TypeVar (id) -> if list-contains-int acc id then acc
     else list-append-int acc id
-    if FunTy (p) (r) -> collect-type-var-ids r (collect-type-var-ids p acc)
-    if ListTy (elem) -> collect-type-var-ids elem acc
-    if ForAllTy (id) (body) -> collect-type-var-ids body acc
-    if ConstructedTy (name) (args) -> collect-type-var-ids-list args acc
-    if _ -> acc
+    is FunTy (p) (r) -> collect-type-var-ids r (collect-type-var-ids p acc)
+    is ListTy (elem) -> collect-type-var-ids elem acc
+    is ForAllTy (id) (body) -> collect-type-var-ids body acc
+    is ConstructedTy (name) (args) -> collect-type-var-ids-list args acc
+    is otherwise -> acc
 
   collect-type-var-ids-list : List CodexType -> List Integer -> List Integer
   collect-type-var-ids-list (types) (acc) =
@@ -143,10 +143,10 @@ Section: Generic Helpers
   extract-ctor-type-args : CodexType -> Text
   extract-ctor-type-args (ty) =
    when ty
-    if ConstructedTy (name) (args) ->
+    is ConstructedTy (name) (args) ->
      if list-length args == 0 then ""
      else "<" ++ emit-cs-type-args args 0 ++ ">"
-    if _ -> ""
+    is otherwise -> ""
 
 Section: Tail Call Optimization
   is-self-call : IRExpr -> Text -> Boolean
@@ -157,17 +157,17 @@ Section: Tail Call Optimization
   is-self-call-root : IRExpr -> Text -> Boolean
   is-self-call-root (e) (func-name) =
    when e
-    if IrName (n) (ty) (sp) -> n == func-name
-    if _ -> False
+    is IrName (n) (ty) (sp) -> n == func-name
+    is otherwise -> False
 
   has-tail-call : IRExpr -> Text -> Boolean
   has-tail-call (e) (func-name) =
    when e
-    if IrIf (c) (t) (el) (ty) (sp) -> has-tail-call t func-name | has-tail-call el func-name
-    if IrLet (name) (ty) (val) (body) (sp) -> has-tail-call body func-name
-    if IrMatch (scrut) (branches) (ty) (sp) -> has-tail-call-branches branches func-name 0
-    if IrApply (f) (a) (ty) (sp) -> is-self-call e func-name
-    if _ -> False
+    is IrIf (c) (t) (el) (ty) (sp) -> has-tail-call t func-name | has-tail-call el func-name
+    is IrLet (name) (ty) (val) (body) (sp) -> has-tail-call body func-name
+    is IrMatch (scrut) (branches) (ty) (sp) -> has-tail-call-branches branches func-name 0
+    is IrApply (f) (a) (ty) (sp) -> is-self-call e func-name
+    is otherwise -> False
 
   has-tail-call-branches : List IRBranch -> Text -> Integer -> Boolean
   has-tail-call-branches (branches) (func-name) (i) =
@@ -190,18 +190,18 @@ Section: Tail Call Optimization
   emit-tco-body : IRExpr -> Text -> List IRParam -> List ArityEntry -> Text
   emit-tco-body (e) (func-name) (params) (arities) =
    when e
-    if IrIf (c) (t) (el) (ty) (sp) -> emit-tco-if c t el func-name params arities
-    if IrLet (name) (ty) (val) (body) (sp) -> emit-tco-let name ty val body func-name params arities
-    if IrMatch (scrut) (branches) (ty) (sp) -> emit-tco-match scrut branches func-name params arities
-    if IrApply (f) (a) (rty) (sp) -> emit-tco-apply e func-name params arities
-    if _ -> "            return " ++ emit-expr e arities ++ ";\n"
+    is IrIf (c) (t) (el) (ty) (sp) -> emit-tco-if c t el func-name params arities
+    is IrLet (name) (ty) (val) (body) (sp) -> emit-tco-let name ty val body func-name params arities
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-tco-match scrut branches func-name params arities
+    is IrApply (f) (a) (rty) (sp) -> emit-tco-apply e func-name params arities
+    is otherwise -> "            return " ++ emit-expr e arities ++ ";\n"
 
   emit-tco-apply : IRExpr -> Text -> List IRParam -> List ArityEntry -> Text
   emit-tco-apply (e) (func-name) (params) (arities) =
    if is-self-call e func-name then emit-tco-jump e params arities
    else "            return " ++ emit-expr e arities ++ ";\n"
 
-  emit-tco-if : IRExpr -> IRExpr -> IRExpr -> Text -> List IRParam -> List ArityEntry -> Text
+  emit-tco-is : IRExpr -> IRExpr -> IRExpr -> Text -> List IRParam -> List ArityEntry -> Text
   emit-tco-if (cond) (t) (el) (func-name) (params) (arities) =
    "            if (" ++ emit-expr cond arities ++ ")\n            {\n" ++ emit-tco-body t func-name params arities ++ "            }\n            else\n            {\n" ++ emit-tco-body el func-name params arities ++ "            }\n"
 
@@ -222,13 +222,13 @@ Section: Tail Call Optimization
   emit-tco-match-branch : IRBranch -> Text -> List IRParam -> List ArityEntry -> Integer -> Boolean -> Text
   emit-tco-match-branch (b) (func-name) (params) (arities) (idx) (is-first) =
    when b.pattern
-    if IrWildPat (sp) -> "            {\n" ++ emit-tco-body (b.body) func-name params arities ++ "            }\n"
-    if IrVarPat (name) (ty) (sp) -> "            {\n                var " ++ sanitize name ++ " = _tco_s;\n" ++ emit-tco-body (b.body) func-name params arities ++ "            }\n"
-    if IrCtorPat (name) (subs) (ty) (sp) ->
+    is IrWildPat (sp) -> "            {\n" ++ emit-tco-body (b.body) func-name params arities ++ "            }\n"
+    is IrVarPat (name) (ty) (sp) -> "            {\n                var " ++ sanitize name ++ " = _tco_s;\n" ++ emit-tco-body (b.body) func-name params arities ++ "            }\n"
+    is IrCtorPat (name) (subs) (ty) (sp) ->
      let keyword = if is-first then "if" else "else if"
      in let match-var = "_tco_m" ++ integer-to-text idx
      in "            " ++ keyword ++ " (_tco_s is " ++ sanitize name ++ " " ++ match-var ++ ")\n            {\n" ++ emit-tco-ctor-bindings subs match-var 0 ++ emit-tco-body (b.body) func-name params arities ++ "            }\n"
-    if IrLitPat (text) (ty) (sp) ->
+    is IrLitPat (text) (ty) (sp) ->
      let keyword = if is-first then "if" else "else if"
      in "            " ++ keyword ++ " (object.Equals(_tco_s, " ++ text ++ "))\n            {\n" ++ emit-tco-body (b.body) func-name params arities ++ "            }\n"
 
@@ -241,8 +241,8 @@ Section: Tail Call Optimization
   emit-tco-ctor-binding : IRPat -> Text -> Integer -> Text
   emit-tco-ctor-binding (sub) (match-var) (i) =
    when sub
-    if IrVarPat (name) (ty) (sp) -> "                var " ++ sanitize name ++ " = " ++ match-var ++ ".Field" ++ integer-to-text i ++ ";\n"
-    if _ -> ""
+    is IrVarPat (name) (ty) (sp) -> "                var " ++ sanitize name ++ " = " ++ match-var ++ ".Field" ++ integer-to-text i ++ ";\n"
+    is otherwise -> ""
 
   emit-tco-jump : IRExpr -> List IRParam -> List ArityEntry -> Text
   emit-tco-jump (e) (params) (arities) =
@@ -272,14 +272,14 @@ Section: Definition Emission
   get-return-type (ty) (n) =
    if n == 0 then strip-forall ty
    else when strip-forall ty
-    if FunTy (p) (r) -> get-return-type r (n - 1)
-    if _ -> ty
+    is FunTy (p) (r) -> get-return-type r (n - 1)
+    is otherwise -> ty
 
   strip-forall : CodexType -> CodexType
   strip-forall (ty) =
    when ty
-    if ForAllTy (id) (body) -> strip-forall body
-    if _ -> ty
+    is ForAllTy (id) (body) -> strip-forall body
+    is otherwise -> ty
 
   emit-def-params : List IRParam -> Integer -> Text
   emit-def-params (params) (i) =

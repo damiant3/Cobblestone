@@ -46,6 +46,38 @@ public class ParserTests
     }
 
     [Fact]
+    public void Parse_when_arm_with_is()
+    {
+        DocumentNode doc = Parse("f (k) = when k\n is True -> 1\n is False -> 0\n");
+        ExpressionNode body = doc.Definitions[0].Body;
+        Assert.IsType<MatchExpressionNode>(body);
+        MatchExpressionNode match = (MatchExpressionNode)body;
+        Assert.Equal(2, match.Branches.Count);
+    }
+
+    [Fact]
+    public void Parse_otherwise_wildcard()
+    {
+        DocumentNode doc = Parse("f (k) = when k\n is True -> 1\n is otherwise -> 0\n");
+        MatchExpressionNode match = (MatchExpressionNode)doc.Definitions[0].Body;
+        Assert.IsType<WildcardPatternNode>(match.Branches[1].Pattern);
+    }
+
+    [Fact]
+    public void Parse_when_with_if_emits_diagnostic()
+    {
+        var (_, diags) = ParseWithDiags("f (k) = when k\n if True -> 1\n");
+        Assert.Contains(diags.ToImmutable(), d => d.Message.Contains("Use 'is'"));
+    }
+
+    [Fact]
+    public void Parse_underscore_pattern_emits_diagnostic()
+    {
+        var (_, diags) = ParseWithDiags("f (k) = when k\n is True -> 1\n is _ -> 0\n");
+        Assert.Contains(diags.ToImmutable(), d => d.Message.Contains("Use 'otherwise'"));
+    }
+
+    [Fact]
     public void Parse_inline_const_integer()
     {
         DocumentNode doc = Parse("c : Integer = 1000");
@@ -141,7 +173,7 @@ public class ParserTests
     [Fact]
     public void Parse_match_expression()
     {
-        string source = "x = when y if True -> 1 if False -> 0";
+        string source = "x = when y is True -> 1 is False -> 0";
         (DocumentNode doc, DiagnosticBag diags) = ParseWithDiags(source);
         ExpressionNode body = doc.Definitions[0].Body;
         Assert.IsType<MatchExpressionNode>(body);
@@ -469,8 +501,8 @@ public class ParserTests
         string source = "claim id (xs) : xs === xs\n" +
                          "proof id (xs) =\n" +
                          "  induction xs\n" +
-                         "    if Nil -> Refl\n" +
-                         "    if Cons (h) (t) -> Refl\n";
+                         "    is Nil -> Refl\n" +
+                         "    is Cons (h) (t) -> Refl\n";
         DocumentNode doc = Parse(source);
         Assert.Single(doc.Proofs);
         InductionNode ind = Assert.IsType<InductionNode>(doc.Proofs[0].Body);
@@ -538,7 +570,7 @@ public class ParserTests
     [Fact]
     public void Recovery_match_missing_arrow()
     {
-        string source = "x = when y if True 1 if False 0";
+        string source = "x = when y is True 1 is False 0";
         (DocumentNode doc, DiagnosticBag diags) = ParseWithDiags(source);
         Assert.True(diags.HasErrors);
         Assert.Contains(diags.ToImmutable(), d => d.Code == CdxCodes.ExpectedArrowAfterPattern);

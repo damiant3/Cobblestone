@@ -84,7 +84,8 @@ internal sealed class SemanticTokensHandler(DocumentStore store) : SemanticToken
         return token.Kind switch
         {
             TokenKind.LetKeyword or TokenKind.InKeyword
-                or TokenKind.IfKeyword or TokenKind.ThenKeyword or TokenKind.ElseKeyword
+                or TokenKind.IfKeyword or TokenKind.IsKeyword or TokenKind.OtherwiseKeyword
+                or TokenKind.ThenKeyword or TokenKind.ElseKeyword
                 or TokenKind.WhenKeyword or TokenKind.DoKeyword
                 or TokenKind.LinearKeyword or TokenKind.RecordKeyword
                 or TokenKind.WhereKeyword or TokenKind.SuchThatKeyword

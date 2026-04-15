@@ -510,6 +510,8 @@ public sealed class Lexer
         "let" => TokenKind.LetKeyword,
         "in" => TokenKind.InKeyword,
         "if" => TokenKind.IfKeyword,
+        "is" => TokenKind.IsKeyword,
+        "otherwise" => TokenKind.OtherwiseKeyword,
         "then" => TokenKind.ThenKeyword,
         "else" => TokenKind.ElseKeyword,
         "when" => TokenKind.WhenKeyword,

@@ -6,21 +6,21 @@ Section: Resolve Type Expression
   resolve-type-expr : List TypeBinding -> ATypeExpr -> CodexType
   resolve-type-expr (tdm) (texpr) =
    when texpr
-    if ANamedType (name) (s) -> resolve-type-name tdm (name.value)
-    if AFunType (param) (ret) (s) -> FunTy (resolve-type-expr tdm param) (resolve-type-expr tdm ret)
-    if AAppType (ctor) (args) (s) -> resolve-applied-type tdm ctor args
-    if AEffectType (effs) (ret) (s) -> EffectfulTy effs (resolve-type-expr tdm ret)
+    is ANamedType (name) (s) -> resolve-type-name tdm (name.value)
+    is AFunType (param) (ret) (s) -> FunTy (resolve-type-expr tdm param) (resolve-type-expr tdm ret)
+    is AAppType (ctor) (args) (s) -> resolve-applied-type tdm ctor args
+    is AEffectType (effs) (ret) (s) -> EffectfulTy effs (resolve-type-expr tdm ret)
 
   resolve-applied-type : List TypeBinding -> ATypeExpr -> List ATypeExpr -> CodexType
   resolve-applied-type (tdm) (ctor) (args) =
    when ctor
-    if ANamedType (name) (s) ->
+    is ANamedType (name) (s) ->
      if name.value == "List" then if list-length args == 1 then ListTy (resolve-type-expr tdm (list-at args 0))
        else ListTy ErrorTy
       else if name.value == "LinkedList" then if list-length args == 1 then LinkedListTy (resolve-type-expr tdm (list-at args 0))
        else LinkedListTy ErrorTy
       else ConstructedTy name (resolve-type-expr-list tdm args 0 (list-length args) [])
-    if _ -> resolve-type-expr tdm ctor
+    is otherwise -> resolve-type-expr tdm ctor
 
   resolve-type-expr-list : List TypeBinding -> List ATypeExpr -> Integer -> Integer -> List CodexType -> List CodexType
   resolve-type-expr-list (tdm) (args) (i) (len) (acc) =
@@ -90,7 +90,7 @@ Section: Parameterize Type
   parameterize-walk : UnificationState -> List ParamEntry -> CodexType -> WalkResult
   parameterize-walk (st) (entries) (ty) =
    when ty
-    if ConstructedTy (name) (args) ->
+    is ConstructedTy (name) (args) ->
      if list-length args == 0 & is-value-name (name.value)
       then
        let looked = find-param-entry entries (name.value) 0 (list-length entries)
@@ -101,7 +101,7 @@ Section: Parameterize Type
        }
        else let fr = fresh-and-advance st
        in when fr.var-type
-          if TypeVar (new-id) ->
+          is TypeVar (new-id) ->
            let new-entry = ParamEntry {
             param-name = name.value,
             var-id = new-id
@@ -111,7 +111,7 @@ Section: Parameterize Type
             entries = entries ++ [new-entry],
             state = fr.state
            }
-          if _ -> WalkResult {
+          is otherwise -> WalkResult {
            walked = ty,
            entries = entries,
            state = fr.state
@@ -122,7 +122,7 @@ Section: Parameterize Type
         entries = args-r.entries,
         state = args-r.state
        }
-    if FunTy (param) (ret) ->
+    is FunTy (param) (ret) ->
      let pr = parameterize-walk st entries param
      in let rr = parameterize-walk (pr.state) (pr.entries) ret
      in WalkResult {
@@ -130,28 +130,28 @@ Section: Parameterize Type
       entries = rr.entries,
       state = rr.state
      }
-    if ListTy (elem) ->
+    is ListTy (elem) ->
      let er = parameterize-walk st entries elem
      in WalkResult {
       walked = ListTy (er.walked),
       entries = er.entries,
       state = er.state
      }
-    if LinkedListTy (elem) ->
+    is LinkedListTy (elem) ->
      let er = parameterize-walk st entries elem
      in WalkResult {
       walked = LinkedListTy (er.walked),
       entries = er.entries,
       state = er.state
      }
-    if ForAllTy (id) (body) ->
+    is ForAllTy (id) (body) ->
      let br = parameterize-walk st entries body
      in WalkResult {
       walked = ForAllTy id (br.walked),
       entries = br.entries,
       state = br.state
      }
-    if _ -> WalkResult {
+    is otherwise -> WalkResult {
      walked = ty,
      entries = entries,
      state = st
@@ -234,10 +234,10 @@ Section: Check Definition
    }
    else let p = list-at params i
    in when remaining
-     if FunTy (param-ty) (ret-ty) ->
+     is FunTy (param-ty) (ret-ty) ->
       let env2 = env-bind env (p.name.value) param-ty
    in bind-def-params st env2 params ret-ty (i + 1) len
-     if _ ->
+     is otherwise ->
       let fr = fresh-and-advance st
    in let env2 = env-bind env (p.name.value) (fr.var-type)
    in bind-def-params (fr.state) env2 params remaining (i + 1) len
@@ -297,13 +297,13 @@ Section: Register Type Definitions
    if i == len then acc
    else let td = list-at tdefs i
    in let entry = when td
-       if AVariantTypeDef (name) (type-params) (ctors) (s) ->
+       is AVariantTypeDef (name) (type-params) (ctors) (s) ->
         let sum-ctors = build-sum-ctors tdefs ctors 0 (list-length ctors) [] acc
    in TypeBinding {
          name = name.value,
          bound-type = SumTy name sum-ctors
         }
-       if ARecordTypeDef (name) (type-params) (fields) (s) ->
+       is ARecordTypeDef (name) (type-params) (fields) (s) ->
         let rec-fields = build-record-fields-for-map tdefs fields 0 (list-length fields) [] acc
    in TypeBinding {
          name = name.value,
@@ -350,10 +350,10 @@ Section: Register Type Definitions
   register-one-type-def : UnificationState -> TypeEnv -> List TypeBinding -> ATypeDef -> LetBindResult
   register-one-type-def (st) (env) (tdm) (td) =
    when td
-    if AVariantTypeDef (name) (type-params) (ctors) (s) ->
+    is AVariantTypeDef (name) (type-params) (ctors) (s) ->
      let result-ty = lookup-type-def tdm (name.value)
      in register-variant-ctors st env tdm ctors result-ty 0 (list-length ctors)
-    if ARecordTypeDef (name) (type-params) (fields) (s) ->
+    is ARecordTypeDef (name) (type-params) (fields) (s) ->
      let resolved-fields = build-record-fields tdm fields 0 (list-length fields) []
      in let result-ty = RecordTy name resolved-fields
      in let ctor-ty = build-record-ctor-type tdm fields result-ty 0 (list-length fields)

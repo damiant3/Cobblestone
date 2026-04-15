@@ -136,9 +136,9 @@ public class CoreIntegrationTests  // see IntegrationTests2.cs for adding more t
             "name : Color -> Text\n" +
             "name (c) =\n" +
             "  when c\n" +
-            "    if Red -> \"red\"\n" +
-            "    if Green -> \"green\"\n" +
-            "    if Blue -> \"blue\"\n";
+            "    is Red -> \"red\"\n" +
+            "    is Green -> \"green\"\n" +
+            "    is Blue -> \"blue\"\n";
         Map<string, CodexType>? types = Helpers.TypeCheck(source);
         Assert.NotNull(types);
         Assert.True(types!.ContainsKey("name"));
@@ -154,8 +154,8 @@ public class CoreIntegrationTests  // see IntegrationTests2.cs for adding more t
             "describe : Shape -> Text\n" +
             "describe (s) =\n" +
             "  when s\n" +
-            "    if Circle (r) -> \"circle\"\n" +
-            "    if Rect (w) (h) -> \"rect\"\n";
+            "    is Circle (r) -> \"circle\"\n" +
+            "    is Rect (w) (h) -> \"rect\"\n";
         Map<string, CodexType>? types = Helpers.TypeCheck(source);
         Assert.NotNull(types);
         Assert.True(types!.ContainsKey("describe"));
@@ -172,9 +172,9 @@ public class CoreIntegrationTests  // see IntegrationTests2.cs for adding more t
             "name : Color -> Text\n" +
             "name (c) =\n" +
             "  when c\n" +
-            "    if Red -> \"red\"\n" +
-            "    if Green -> \"green\"\n" +
-            "    if Blue -> \"blue\"\n";
+            "    is Red -> \"red\"\n" +
+            "    is Green -> \"green\"\n" +
+            "    is Blue -> \"blue\"\n";
         string? cs = Helpers.CompileToCS(source, "colors");
         Assert.NotNull(cs);
         Assert.Contains("name", cs);
@@ -236,9 +236,9 @@ public class CoreIntegrationTests  // see IntegrationTests2.cs for adding more t
             "name : Color -> Text\n" +
             "name (c) =\n" +
             "  when c\n" +
-            "    if Red -> \"red\"\n" +
-            "    if Green -> \"green\"\n" +
-            "    if Blue -> \"blue\"\n";
+            "    is Red -> \"red\"\n" +
+            "    is Green -> \"green\"\n" +
+            "    is Blue -> \"blue\"\n";
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors);
         Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == CdxCodes.NonExhaustiveMatch);
@@ -255,8 +255,8 @@ public class CoreIntegrationTests  // see IntegrationTests2.cs for adding more t
             "name : Color -> Text\n" +
             "name (c) =\n" +
             "  when c\n" +
-            "    if Red -> \"red\"\n" +
-            "    if Green -> \"green\"\n";
+            "    is Red -> \"red\"\n" +
+            "    is Green -> \"green\"\n";
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors);
         Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.NonExhaustiveMatch && d.Message.Contains("Blue"));
@@ -273,8 +273,8 @@ public class CoreIntegrationTests  // see IntegrationTests2.cs for adding more t
             "is-red : Color -> Boolean\n" +
             "is-red (c) =\n" +
             "  when c\n" +
-            "    if Red -> True\n" +
-            "    if _ -> False\n";
+            "    is Red -> True\n" +
+            "    is otherwise -> False\n";
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors);
         Assert.DoesNotContain(diag.ToImmutable(), d => d.Code == CdxCodes.NonExhaustiveMatch);
@@ -304,8 +304,8 @@ public class CoreIntegrationTests  // see IntegrationTests2.cs for adding more t
             "unwrap : Maybe Integer -> Integer\n" +
             "unwrap (m) =\n" +
             "  when m\n" +
-            "    if Just (n) -> n\n" +
-            "    if None -> 0\n";
+            "    is Just (n) -> n\n" +
+            "    is None -> 0\n";
         Map<string, CodexType>? types = Helpers.TypeCheck(source);
         Assert.NotNull(types);
         Assert.True(types!.ContainsKey("unwrap"));
@@ -325,8 +325,8 @@ public class CoreIntegrationTests  // see IntegrationTests2.cs for adding more t
             "main : Integer\n" +
             "main =\n" +
             "  when wrap 42\n" +
-            "    if Just (n) -> n\n" +
-            "    if None -> 0\n";
+            "    is Just (n) -> n\n" +
+            "    is None -> 0\n";
         string? cs = Helpers.CompileToCS(source, "maybe_test");
         Assert.NotNull(cs);
         Assert.Contains("Just", cs);

@@ -110,7 +110,7 @@ public sealed partial class Parser
             SkipNewlines();
 
             List<ProofCaseNode> cases = [];
-            while (Current.Kind == TokenKind.IfKeyword)
+            while (Current.Kind == TokenKind.IsKeyword)
             {
                 Advance();
                 SkipNewlines();

@@ -110,8 +110,8 @@ namespace Codex.Types.Tests
                 "claim list-id (xs) : xs === xs\n" +
                 "proof list-id (xs) =\n" +
                 "  induction xs\n" +
-                "    if Nil -> Refl\n" +
-                "    if Cons (head) (tail) -> Refl\n";
+                "    is Nil -> Refl\n" +
+                "    is Cons (head) (tail) -> Refl\n";
             DiagnosticBag diag = Helpers.CheckWithProofs(source);
             Assert.DoesNotContain(diag.ToImmutable(), d => d.Severity == DiagnosticSeverity.Error);
         }
@@ -149,8 +149,8 @@ namespace Codex.Types.Tests
                 "proof rev-cons (head) (tail) = assume\n\n" +
                 "proof rev-rev (xs) =\n" +
                 "  induction xs\n" +
-                "    if Nil -> rev-nil\n" +
-                "    if Cons (head) (tail) -> rev-cons head tail\n";
+                "    is Nil -> rev-nil\n" +
+                "    is Cons (head) (tail) -> rev-cons head tail\n";
             DiagnosticBag diag = Helpers.CheckWithProofs(source);
             Assert.DoesNotContain(diag.ToImmutable(), d => d.Severity == DiagnosticSeverity.Error);
         }
@@ -200,8 +200,8 @@ namespace Codex.Types.Tests
                 "claim tail-eq (xs) : xs === xs\n" +
                 "proof tail-eq (xs) =\n" +
                 "  induction xs\n" +
-                "    if Nil -> Refl\n" +
-                "    if Cons (head) (tail) -> Refl\n";
+                "    is Nil -> Refl\n" +
+                "    is Cons (head) (tail) -> Refl\n";
             DiagnosticBag diag = Helpers.CheckWithProofs(source);
             Assert.DoesNotContain(diag.ToImmutable(), d => d.Severity == DiagnosticSeverity.Error);
         }
@@ -219,8 +219,8 @@ namespace Codex.Types.Tests
                 "claim rev-rev (xs) : reverse (reverse xs) === xs\n" +
                 "proof rev-rev (xs) =\n" +
                 "  induction xs\n" +
-                "    if Nil -> assume\n" +
-                "    if Cons (head) (tail) -> assume\n";
+                "    is Nil -> assume\n" +
+                "    is Cons (head) (tail) -> assume\n";
             DiagnosticBag diag = Helpers.CheckWithProofs(source);
             Assert.DoesNotContain(diag.ToImmutable(), d => d.Severity == DiagnosticSeverity.Error);
         }
@@ -247,8 +247,8 @@ namespace Codex.Types.Tests
                 "claim f-id (xs) : f xs === xs\n" +
                 "proof f-id (xs) =\n" +
                 "  induction xs\n" +
-                "    if Nil -> assume\n" +
-                "    if Cons (head) (tail) -> assume\n";
+                "    is Nil -> assume\n" +
+                "    is Cons (head) (tail) -> assume\n";
             DiagnosticBag diag = Helpers.CheckWithProofs(source);
             Assert.DoesNotContain(diag.ToImmutable(), d => d.Severity == DiagnosticSeverity.Error);
         }
@@ -264,8 +264,8 @@ namespace Codex.Types.Tests
                 "claim plus-zero (n) : (n + 0) === n\n" +
                 "proof plus-zero (n) =\n" +
                 "  induction n\n" +
-                "    if 0 -> Refl\n" +
-                "    if Cons (head) (tail) -> assume\n";
+                "    is 0 -> Refl\n" +
+                "    is Cons (head) (tail) -> assume\n";
             DiagnosticBag diag = Helpers.CheckWithProofs(source);
             Assert.DoesNotContain(diag.ToImmutable(), d => d.Severity == DiagnosticSeverity.Error);
         }
@@ -278,8 +278,8 @@ namespace Codex.Types.Tests
                 "claim list-id (xs) : xs === xs\n" +
                 "proof list-id (xs) =\n" +
                 "  induction xs\n" +
-                "    if Nil -> __ih_tail\n" +
-                "    if Cons (head) (tail) -> Refl\n";
+                "    is Nil -> __ih_tail\n" +
+                "    is Cons (head) (tail) -> Refl\n";
             DiagnosticBag diag = Helpers.CheckWithProofs(source);
             Assert.Contains(diag.ToImmutable(), d => d.Severity == DiagnosticSeverity.Error);
         }

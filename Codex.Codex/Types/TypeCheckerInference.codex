@@ -12,23 +12,23 @@ Section: Infer Literal
   infer-literal : UnificationState -> LiteralKind -> CheckResult
   infer-literal (st) (kind) =
    when kind
-    if IntLit -> CheckResult {
+    is IntLit -> CheckResult {
      inferred-type = IntegerTy,
      state = st
     }
-    if NumLit -> CheckResult {
+    is NumLit -> CheckResult {
      inferred-type = NumberTy,
      state = st
     }
-    if TextLit -> CheckResult {
+    is TextLit -> CheckResult {
      inferred-type = TextTy,
      state = st
     }
-    if CharLit -> CheckResult {
+    is CharLit -> CheckResult {
      inferred-type = CharTy,
      state = st
     }
-    if BoolLit -> CheckResult {
+    is BoolLit -> CheckResult {
      inferred-type = BooleanTy,
      state = st
     }
@@ -52,11 +52,11 @@ Section: Infer Name
   instantiate-type : UnificationState -> CodexType -> FreshResult
   instantiate-type (st) (ty) =
    when ty
-    if ForAllTy (var-id) (body) ->
+    is ForAllTy (var-id) (body) ->
      let fr = fresh-and-advance st
      in let substituted = subst-type-var body var-id (fr.var-type)
      in instantiate-type (fr.state) substituted
-    if _ -> FreshResult {
+    is otherwise -> FreshResult {
      var-type = ty,
      state = st
     }
@@ -64,17 +64,17 @@ Section: Infer Name
   subst-type-var : CodexType -> Integer -> CodexType -> CodexType
   subst-type-var (ty) (var-id) (replacement) =
    when ty
-    if TypeVar (id) -> if id == var-id then replacement else ty
-    if FunTy (param) (ret) -> FunTy (subst-type-var param var-id replacement) (subst-type-var ret var-id replacement)
-    if ListTy (elem) -> ListTy (subst-type-var elem var-id replacement)
-    if LinkedListTy (elem) -> LinkedListTy (subst-type-var elem var-id replacement)
-    if ForAllTy (inner-id) (body) ->
+    is TypeVar (id) -> if id == var-id then replacement else ty
+    is FunTy (param) (ret) -> FunTy (subst-type-var param var-id replacement) (subst-type-var ret var-id replacement)
+    is ListTy (elem) -> ListTy (subst-type-var elem var-id replacement)
+    is LinkedListTy (elem) -> LinkedListTy (subst-type-var elem var-id replacement)
+    is ForAllTy (inner-id) (body) ->
      if inner-id == var-id then ty
      else ForAllTy inner-id (subst-type-var body var-id replacement)
-    if ConstructedTy (name) (args) -> ConstructedTy name (map-subst-type-var args var-id replacement 0 (list-length args) [])
-    if SumTy (name) (ctors) -> ty
-    if RecordTy (name) (fields) -> ty
-    if _ -> ty
+    is ConstructedTy (name) (args) -> ConstructedTy name (map-subst-type-var args var-id replacement 0 (list-length args) [])
+    is SumTy (name) (ctors) -> ty
+    is RecordTy (name) (fields) -> ty
+    is otherwise -> ty
 
   map-subst-type-var : List CodexType -> Integer -> CodexType -> Integer -> Integer -> List CodexType -> List CodexType
   map-subst-type-var (args) (var-id) (replacement) (i) (len) (acc) =
@@ -91,22 +91,22 @@ Section: Infer Binary
   infer-binary-op : UnificationState -> CodexType -> CodexType -> BinaryOp -> CheckResult
   infer-binary-op (st) (lt) (rt) (op) =
    when op
-    if OpAdd -> infer-arithmetic st lt rt
-    if OpSub -> infer-arithmetic st lt rt
-    if OpMul -> infer-arithmetic st lt rt
-    if OpDiv -> infer-arithmetic st lt rt
-    if OpPow -> infer-arithmetic st lt rt
-    if OpEq -> infer-comparison st lt rt
-    if OpNotEq -> infer-comparison st lt rt
-    if OpLt -> infer-comparison st lt rt
-    if OpGt -> infer-comparison st lt rt
-    if OpLtEq -> infer-comparison st lt rt
-    if OpGtEq -> infer-comparison st lt rt
-    if OpAnd -> infer-logical st lt rt
-    if OpOr -> infer-logical st lt rt
-    if OpAppend -> infer-append st lt rt
-    if OpCons -> infer-cons st lt rt
-    if OpDefEq -> infer-comparison st lt rt
+    is OpAdd -> infer-arithmetic st lt rt
+    is OpSub -> infer-arithmetic st lt rt
+    is OpMul -> infer-arithmetic st lt rt
+    is OpDiv -> infer-arithmetic st lt rt
+    is OpPow -> infer-arithmetic st lt rt
+    is OpEq -> infer-comparison st lt rt
+    is OpNotEq -> infer-comparison st lt rt
+    is OpLt -> infer-comparison st lt rt
+    is OpGt -> infer-comparison st lt rt
+    is OpLtEq -> infer-comparison st lt rt
+    is OpGtEq -> infer-comparison st lt rt
+    is OpAnd -> infer-logical st lt rt
+    is OpOr -> infer-logical st lt rt
+    is OpAppend -> infer-append st lt rt
+    is OpCons -> infer-cons st lt rt
+    is OpDefEq -> infer-comparison st lt rt
 
   infer-arithmetic : UnificationState -> CodexType -> CodexType -> CheckResult
   infer-arithmetic (st) (lt) (rt) =
@@ -137,13 +137,13 @@ Section: Infer Binary
   infer-append (st) (lt) (rt) =
    let resolved = resolve st lt
    in when resolved
-    if TextTy ->
+    is TextTy ->
      let r = unify st rt TextTy
    in CheckResult {
       inferred-type = TextTy,
       state = r.state
      }
-    if _ ->
+    is otherwise ->
      let r = unify st lt rt
    in CheckResult {
       inferred-type = lt,
@@ -160,7 +160,7 @@ Section: Infer Binary
    }
 
 Section: Infer If
-  infer-if : UnificationState -> TypeEnv -> AExpr -> AExpr -> AExpr -> CheckResult
+  infer-is : UnificationState -> TypeEnv -> AExpr -> AExpr -> AExpr -> CheckResult
   infer-if (st) (env) (cond) (then-e) (else-e) =
    let cr = infer-expr st env cond
    in let r1 = unify (cr.state) (cr.inferred-type) BooleanTy
@@ -203,13 +203,13 @@ Section: Infer Let
   unwrap-effectful-or-error : CodexType -> Text -> UnificationState -> UnwrapResult
   unwrap-effectful-or-error (ty) (name) (st) =
    when ty
-    if EffectfulTy (effs) (inner) ->
+    is EffectfulTy (effs) (inner) ->
      if list-length effs == 0 then UnwrapResult { ty = ty, state = st }
      else UnwrapResult {
       ty = inner,
       state = add-unify-error st cdx-let-binds-effectful-value ("let-binding '" ++ name ++ "' to an effectful value is not allowed outside a do-bind. Use '" ++ name ++ " <- ...' inside a do block.")
      }
-    if _ -> UnwrapResult { ty = ty, state = st }
+    is otherwise -> UnwrapResult { ty = ty, state = st }
 
 Section: Infer Lambda
   infer-lambda : UnificationState -> TypeEnv -> List Name -> AExpr -> CheckResult
@@ -313,19 +313,19 @@ Section: Infer Match
   bind-pattern : UnificationState -> TypeEnv -> APat -> CodexType -> PatBindResult
   bind-pattern (st) (env) (pat) (ty) =
    when pat
-    if AVarPat (name) (s) -> PatBindResult {
+    is AVarPat (name) (s) -> PatBindResult {
      state = st,
      env = env-bind env (name.value) ty
     }
-    if AWildPat (s) -> PatBindResult {
+    is AWildPat (s) -> PatBindResult {
      state = st,
      env = env
     }
-    if ALitPat (val) (kind) (s) -> PatBindResult {
+    is ALitPat (val) (kind) (s) -> PatBindResult {
      state = st,
      env = env
     }
-    if ACtorPat (ctor-name) (sub-pats) (s) ->
+    is ACtorPat (ctor-name) (sub-pats) (s) ->
      let ctor-lookup = instantiate-type st (env-lookup env (ctor-name.value))
      in bind-ctor-sub-patterns (ctor-lookup.state) env sub-pats (ctor-lookup.var-type) 0 (list-length sub-pats)
 
@@ -336,10 +336,10 @@ Section: Infer Match
     env = env
    }
    else when ctor-ty
-     if FunTy (param-ty) (ret-ty) ->
+     is FunTy (param-ty) (ret-ty) ->
       let pr = bind-pattern st env (list-at sub-pats i) param-ty
       in bind-ctor-sub-patterns (pr.state) (pr.env) sub-pats ret-ty (i + 1) len
-     if _ ->
+     is otherwise ->
       let fr = fresh-and-advance st
       in let pr = bind-pattern (fr.state) env (list-at sub-pats i) (fr.var-type)
       in bind-ctor-sub-patterns (pr.state) (pr.env) sub-pats ctor-ty (i + 1) len
@@ -357,10 +357,10 @@ Section: Infer Do
    }
    else let stmt = list-at stmts i
    in when stmt
-     if ADoExprStmt (e) (s) ->
+     is ADoExprStmt (e) (s) ->
       let er = infer-expr st env e
    in infer-do-loop (er.state) env stmts (i + 1) len (er.inferred-type)
-     if ADoBindStmt (name) (e) (s) ->
+     is ADoBindStmt (name) (e) (s) ->
       let er = infer-expr st env e
    in let env2 = env-bind env (name.value) (er.inferred-type)
    in infer-do-loop (er.state) env2 stmts (i + 1) len (er.inferred-type)
@@ -369,56 +369,56 @@ Section: Infer Expression (dispatch)
   infer-expr : UnificationState -> TypeEnv -> AExpr -> CheckResult
   infer-expr (st) (env) (expr) =
    when expr
-    if ALitExpr (val) (kind) (s) -> infer-literal st kind
-    if ANameExpr (name) (s) -> infer-name st env (name.value)
-    if ABinaryExpr (left) (op) (right) (s) -> infer-binary st env left op right
-    if AUnaryExpr (operand) (s) ->
+    is ALitExpr (val) (kind) (s) -> infer-literal st kind
+    is ANameExpr (name) (s) -> infer-name st env (name.value)
+    is ABinaryExpr (left) (op) (right) (s) -> infer-binary st env left op right
+    is AUnaryExpr (operand) (s) ->
      let r = infer-expr st env operand
      in let u = unify (r.state) (r.inferred-type) IntegerTy
      in CheckResult {
       inferred-type = IntegerTy,
       state = u.state
      }
-    if AApplyExpr (func) (arg) (s) -> infer-application st env func arg
-    if AIfExpr (cond) (then-e) (else-e) (s) -> infer-if st env cond then-e else-e
-    if ALetExpr (bindings) (body) (s) -> infer-let st env bindings body
-    if ALambdaExpr (params) (body) (s) -> infer-lambda st env params body
-    if AMatchExpr (scrutinee) (arms) (s) -> infer-match st env scrutinee arms
-    if AListExpr (elems) (s) -> infer-list st env elems
-    if ADoExpr (stmts) (s) -> infer-do st env stmts
-    if AFieldAccess (obj) (field) (s) ->
+    is AApplyExpr (func) (arg) (s) -> infer-application st env func arg
+    is AIfExpr (cond) (then-e) (else-e) (s) -> infer-if st env cond then-e else-e
+    is ALetExpr (bindings) (body) (s) -> infer-let st env bindings body
+    is ALambdaExpr (params) (body) (s) -> infer-lambda st env params body
+    is AMatchExpr (scrutinee) (arms) (s) -> infer-match st env scrutinee arms
+    is AListExpr (elems) (s) -> infer-list st env elems
+    is ADoExpr (stmts) (s) -> infer-do st env stmts
+    is AFieldAccess (obj) (field) (s) ->
      let r = infer-expr st env obj
      in let resolved = deep-resolve (r.state) (r.inferred-type)
      in when resolved
-      if RecordTy (rname) (rfields) ->
+      is RecordTy (rname) (rfields) ->
        let ftype = lookup-record-field rfields (field.value)
      in CheckResult {
         inferred-type = ftype,
         state = r.state
        }
-      if ConstructedTy (cname) (cargs) ->
+      is ConstructedTy (cname) (cargs) ->
        let record-type = resolve-constructed-to-record env (cname.value)
      in when record-type
-        if RecordTy (rname) (rfields) ->
+        is RecordTy (rname) (rfields) ->
          let ftype = lookup-record-field rfields (field.value)
      in CheckResult {
           inferred-type = ftype,
           state = r.state
          }
-        if _ ->
+        is otherwise ->
          let fr = fresh-and-advance (r.state)
      in CheckResult {
           inferred-type = fr.var-type,
           state = fr.state
          }
-      if _ ->
+      is otherwise ->
        let fr = fresh-and-advance (r.state)
      in CheckResult {
         inferred-type = fr.var-type,
         state = fr.state
        }
 
-    if ARecordExpr (name) (fields) (s) ->
+    is ARecordExpr (name) (fields) (s) ->
      let st2 = infer-record-fields st env fields 0 (list-length fields)
      in let ctor-type = if env-has env (name.value) then env-lookup env (name.value) else ErrorTy
      in let result-type = strip-fun-args ctor-type
@@ -426,7 +426,7 @@ Section: Infer Expression (dispatch)
       inferred-type = result-type,
       state = st2
      }
-    if AErrorExpr (msg) (s) -> CheckResult {
+    is AErrorExpr (msg) (s) -> CheckResult {
      inferred-type = ErrorTy,
      state = st
     }
@@ -446,8 +446,8 @@ Section: Infer Expression (dispatch)
   strip-fun-args : CodexType -> CodexType
   strip-fun-args (ty) =
    when ty
-    if FunTy (p) (r) -> strip-fun-args r
-    if _ -> ty
+    is FunTy (p) (r) -> strip-fun-args r
+    is otherwise -> ty
 
 Page 2 of 2
 

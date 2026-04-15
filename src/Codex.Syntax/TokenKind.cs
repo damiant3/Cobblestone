@@ -36,6 +36,8 @@ public enum TokenKind
     LetKeyword,
     InKeyword,
     IfKeyword,
+    IsKeyword,
+    OtherwiseKeyword,
     ThenKeyword,
     ElseKeyword,
     WhenKeyword,

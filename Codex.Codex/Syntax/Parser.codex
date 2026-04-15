@@ -22,7 +22,7 @@ Section: Type Parsing
   unwrap-type-ok : ParseTypeResult -> (TypeExpr -> ParseState -> ParseTypeResult) -> ParseTypeResult
   unwrap-type-ok (r) (f) =
    when r
-    if TypeOk (t) (st) -> f t st
+    is TypeOk (t) (st) -> f t st
 
   parse-type-atom : ParseState -> ParseTypeResult
   parse-type-atom (st) =
@@ -88,7 +88,7 @@ Section: Type Parsing
 Section: Pattern Parsing
   parse-pattern : ParseState -> ParsePatResult
   parse-pattern (st) =
-   if is-underscore (current-kind st) then PatOk (WildPat (current st)) (advance st)
+   if is-wildcard-pat (current-kind st) then PatOk (WildPat (current st)) (advance st)
    else if is-literal (current-kind st) then PatOk (LitPat (current st)) (advance st)
    else if is-type-ident (current-kind st) then let tok = current st
        in parse-ctor-pattern-fields tok [] (advance st)
@@ -110,7 +110,7 @@ Section: Pattern Parsing
   unwrap-pat-ok : ParsePatResult -> (Pat -> ParseState -> ParsePatResult) -> ParsePatResult
   unwrap-pat-ok (r) (f) =
    when r
-    if PatOk (p) (st) -> f p st
+    is PatOk (p) (st) -> f p st
 
 Section: Definition Parsing
   parse-type-annotation : ParseState -> ParseTypeResult
@@ -136,7 +136,7 @@ Section: Definition Parsing
   unwrap-type-for-def : Token -> ParseTypeResult -> ParseDefResult
   unwrap-type-for-def (first-name) (r) =
    when r
-    if TypeOk (ann-type) (st) ->
+    is TypeOk (ann-type) (st) ->
      if is-equals (current-kind st) then
       let ann = [TypeAnn {
        name = first-name,
@@ -199,7 +199,7 @@ Section: Definition Parsing
   unwrap-def-body : ParseExprResult -> List TypeAnn -> Token -> List Token -> ParseDefResult
   unwrap-def-body (r) (ann) (name-tok) (params) =
    when r
-    if ExprOk (b) (st) ->
+    is ExprOk (b) (st) ->
      DefOk (Def {
       name = name-tok,
       params = params,
@@ -280,7 +280,7 @@ Section: Type Definition Parsing
   unwrap-record-field-type : Token -> List Token -> List RecordFieldDef -> Token -> ParseTypeResult -> ParseTypeDefResult
   unwrap-record-field-type (name-tok) (tparams) (acc) (field-name) (r) =
    when r
-    if TypeOk (ft) (st) ->
+    is TypeOk (ft) (st) ->
      let field = RecordFieldDef {
       name = field-name,
       type-expr = ft
@@ -299,9 +299,9 @@ Section: Type Definition Parsing
    else let k = (list-at tokens i).kind
    in if is-pipe k then True
       else when k
-      if Newline -> False
-      if EndOfFile -> False
-      if _ -> looks-like-variant-scan tokens (i + 1) len
+      is Newline -> False
+      is EndOfFile -> False
+      is otherwise -> looks-like-variant-scan tokens (i + 1) len
 
   parse-variant-type : Token -> List Token -> ParseState -> ParseTypeDefResult
   parse-variant-type (name-tok) (tparams) (st) =
@@ -336,7 +336,7 @@ Section: Type Definition Parsing
   unwrap-ctor-field : ParseTypeResult -> Token -> List TypeExpr -> Token -> List Token -> List VariantCtorDef -> ParseTypeDefResult
   unwrap-ctor-field (r) (ctor-name) (fields) (name-tok) (tparams) (acc) =
    when r
-    if TypeOk (ty) (st) ->
+    is TypeOk (ty) (st) ->
      let st2 = expect RightParen st
       in parse-ctor-fields ctor-name (fields ++ [ty]) st2 name-tok tparams acc
 
@@ -353,9 +353,9 @@ Section: Document Parsing
   collect-cite-title (st) (acc) =
    if is-done st then CiteTitleResult { title = acc, state = st }
     else when current-kind st
-     if Newline -> CiteTitleResult { title = acc, state = st }
-     if LeftParen -> CiteTitleResult { title = acc, state = st }
-     if _ -> let tok = current st
+     is Newline -> CiteTitleResult { title = acc, state = st }
+     is LeftParen -> CiteTitleResult { title = acc, state = st }
+     is otherwise -> let tok = current st
       in collect-cite-title (advance st) (join-title-parts acc (tok.text))
 
   parse-citations : ParseState -> Text -> List CitesDecl -> ImportParseResult
@@ -444,8 +444,8 @@ Section: Document Parsing
   collect-title-tokens (st) (acc) =
    if is-done st then acc
    else when current-kind st
-    if Newline -> acc
-    if _ -> let tok = current st
+    is Newline -> acc
+    is otherwise -> let tok = current st
      in collect-title-tokens (advance st) (join-title-parts acc (tok.text))
 
   is-prose-line : ParseState -> Boolean
@@ -462,8 +462,8 @@ Section: Document Parsing
   skip-to-next-line (st) =
    if is-done st then st
    else when current-kind st
-    if Newline -> advance st
-    if _ -> skip-to-next-line (advance st)
+    is Newline -> advance st
+    is otherwise -> skip-to-next-line (advance st)
 
   parse-top-level : List Def -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> List Text -> ParseState -> Document
   parse-top-level (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (st) =
@@ -508,7 +508,7 @@ Section: Document Parsing
       in let st2 = advance (advance st)
       in let type-result = parse-type st2
       in when type-result
-         if TypeOk (ty) (st3) ->
+         is TypeOk (ty) (st3) ->
           let op = EffectOpDef {
            name = op-tok,
            type-expr = ty
@@ -527,16 +527,16 @@ Section: Document Parsing
   try-top-level-type-def (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (st) =
    let td-result = parse-type-def st
    in when td-result
-    if TypeDefOk (td) (st2) ->
+    is TypeDefOk (td) (st2) ->
      parse-top-level defs (type-defs ++ [td]) effect-defs imports ch-title sec-titles (skip-newlines st2)
-    if TypeDefNone (st2) ->
+    is TypeDefNone (st2) ->
      try-top-level-def defs type-defs effect-defs imports ch-title sec-titles st
 
   try-top-level-def : List Def -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> List Text -> ParseState -> Document
   try-top-level-def (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (st) =
    let def-result = parse-definition st
    in when def-result
-    if DefOk (d) (st2) ->
+    is DefOk (d) (st2) ->
      let tagged = Def {
       name = d.name,
       params = d.params,
@@ -545,7 +545,7 @@ Section: Document Parsing
       chapter-slug = ch-title
      }
    in parse-top-level (defs ++ [tagged]) type-defs effect-defs imports ch-title sec-titles (skip-newlines st2)
-    if DefNone (st2) ->
+    is DefNone (st2) ->
      parse-top-level defs type-defs effect-defs imports ch-title sec-titles (skip-newlines (advance st2))
 
 Section: Header Scanning (streaming)
@@ -593,18 +593,18 @@ Section: Header Scanning (streaming)
   try-scan-type-def (headers) (type-defs) (effect-defs) (imports) (cur-chap) (ch-title) (sec-titles) (st) =
    let td-result = parse-type-def st
    in when td-result
-    if TypeDefOk (td) (st2) ->
+    is TypeDefOk (td) (st2) ->
      scan-top-level headers (type-defs ++ [td]) effect-defs imports cur-chap ch-title sec-titles (skip-newlines st2)
-    if TypeDefNone (st2) ->
+    is TypeDefNone (st2) ->
      try-scan-def-header headers type-defs effect-defs imports cur-chap ch-title sec-titles st
 
   try-scan-def-header : List DefHeader -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> Text -> List Text -> ParseState -> ScanResult
   try-scan-def-header (headers) (type-defs) (effect-defs) (imports) (cur-chap) (ch-title) (sec-titles) (st) =
    let hdr-result = scan-definition cur-chap st
    in when hdr-result
-    if DefHeaderOk (hdr) (st2) ->
+    is DefHeaderOk (hdr) (st2) ->
      scan-top-level (headers ++ [hdr]) type-defs effect-defs imports cur-chap ch-title sec-titles (skip-newlines st2)
-    if DefHeaderNone (st2) ->
+    is DefHeaderNone (st2) ->
      scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles (skip-newlines (advance st2))
 
   scan-definition : Text -> ParseState -> ScanDefResult
@@ -624,7 +624,7 @@ Section: Header Scanning (streaming)
   unwrap-type-for-scan : Text -> Token -> ParseTypeResult -> ScanDefResult
   unwrap-type-for-scan (cur-chap) (first-name) (r) =
    when r
-    if TypeOk (ann-type) (st) ->
+    is TypeOk (ann-type) (st) ->
      if is-equals (current-kind st) then
       let ann = [TypeAnn {
        name = first-name,
@@ -693,10 +693,10 @@ Section: Header Scanning (streaming)
    if is-done st then st
    else let tok = current st
    in when tok.kind
-     if Newline -> skip-body-tokens (advance st) name-col
-     if Indent -> skip-body-tokens (advance st) name-col
-     if Dedent -> skip-body-tokens (advance st) name-col
-     if _ -> if tok.column <= name-col then st
+     is Newline -> skip-body-tokens (advance st) name-col
+     is Indent -> skip-body-tokens (advance st) name-col
+     is Dedent -> skip-body-tokens (advance st) name-col
+     is otherwise -> if tok.column <= name-col then st
       else skip-body-tokens (advance st) name-col
 
 Page 1 of 3

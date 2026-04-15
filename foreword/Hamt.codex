@@ -88,12 +88,12 @@ Section: Definitions
   hamt-node-get : HamtNode a -> Integer -> Text -> Integer -> Maybe a
   hamt-node-get (node) (hash) (key) (level) =
     when node
-      if HamtEmpty -> None
-      if HamtLeaf (h) (k) (v) ->
+      is HamtEmpty -> None
+      is HamtLeaf (h) (k) (v) ->
         if k == key then Just v else None
-      if HamtCollision (h) (entries) ->
+      is HamtCollision (h) (entries) ->
         if h == hash then collision-find entries key else None
-      if HamtBranch (bitmap) (children) ->
+      is HamtBranch (bitmap) (children) ->
         let chunk = extract-chunk hash level
         in if bitmap-has bitmap chunk
           then let idx = bitmap-index bitmap chunk
@@ -121,23 +121,23 @@ Section: Definitions
   hamt-node-set : HamtNode a -> Integer -> Text -> a -> Integer -> HamtSetResult a
   hamt-node-set (node) (hash) (key) (value) (level) =
     when node
-      if HamtEmpty ->
+      is HamtEmpty ->
         HamtSetResult { node = HamtLeaf hash key value, delta = 1 }
-      if HamtLeaf (h) (k) (v) ->
+      is HamtLeaf (h) (k) (v) ->
         if k == key
           then HamtSetResult { node = HamtLeaf h key value, delta = 0 }
         else if h == hash
           then HamtSetResult { node = HamtCollision h [HamtEntry { key = k, value = v }, HamtEntry { key = key, value = value }], delta = 1 }
         else let new-node = make-branch h k v hash key value level
           in HamtSetResult { node = new-node, delta = 1 }
-      if HamtCollision (h) (entries) ->
+      is HamtCollision (h) (entries) ->
         if h == hash
           then let updated = collision-set entries key value
             in HamtSetResult { node = HamtCollision h updated.entries, delta = updated.delta }
         else let col-node = HamtCollision h entries
           in let branch = hamt-node-set (make-single-branch col-node h level) hash key value level
           in branch
-      if HamtBranch (bitmap) (children) ->
+      is HamtBranch (bitmap) (children) ->
         let chunk = extract-chunk hash level
         in if bitmap-has bitmap chunk
           then let idx = bitmap-index bitmap chunk
@@ -188,16 +188,16 @@ Section: Definitions
     let hash = djb2-hash key
     in let result = hamt-node-remove m.root hash key 0
     in when result
-      if Just (new-root) -> HamtMap { root = new-root, size = m.size - 1 }
-      if None -> m
+      is Just (new-root) -> HamtMap { root = new-root, size = m.size - 1 }
+      is None -> m
 
   hamt-node-remove : HamtNode a -> Integer -> Text -> Integer -> Maybe HamtNode a
   hamt-node-remove (node) (hash) (key) (level) =
     when node
-      if HamtEmpty -> None
-      if HamtLeaf (h) (k) (v) ->
+      is HamtEmpty -> None
+      is HamtLeaf (h) (k) (v) ->
         if k == key then Just HamtEmpty else None
-      if HamtCollision (h) (entries) ->
+      is HamtCollision (h) (entries) ->
         if h == hash
           then let filtered = collision-remove entries key
             in if list-length filtered == list-length entries then None
@@ -206,21 +206,21 @@ Section: Definitions
                 in Just (HamtLeaf h e.key e.value)
             else Just (HamtCollision h filtered)
         else None
-      if HamtBranch (bitmap) (children) ->
+      is HamtBranch (bitmap) (children) ->
         let chunk = extract-chunk hash level
         in if bitmap-has bitmap chunk
           then let idx = bitmap-index bitmap chunk
             in let child = list-at children idx
             in let result = hamt-node-remove child hash key (level + 1)
             in when result
-              if None -> None
-              if Just (new-child) ->
+              is None -> None
+              is Just (new-child) ->
                 when new-child
-                  if HamtEmpty ->
+                  is HamtEmpty ->
                     if list-length children == 1 then Just HamtEmpty
                     else let new-bitmap = bitmap - pow32 chunk
                       in Just (HamtBranch new-bitmap (list-remove-at children idx))
-                  if _ -> Just (HamtBranch bitmap (list-replace-at children idx new-child))
+                  is otherwise -> Just (HamtBranch bitmap (list-replace-at children idx new-child))
           else None
 
   collision-remove : List HamtEntry a -> Text -> List HamtEntry a
@@ -233,8 +233,8 @@ Section: Definitions
   hamt-contains : HamtMap a -> Text -> Boolean
   hamt-contains (m) (key) =
     when hamt-get m key
-      if Just (_) -> True
-      if None -> False
+      is Just (otherwise) -> True
+      is None -> False
 
   hamt-size : HamtMap a -> Integer
   hamt-size (m) = m.size
@@ -245,10 +245,10 @@ Section: Definitions
   hamt-node-fold : (b -> Text -> a -> b) -> b -> HamtNode a -> b
   hamt-node-fold (f) (acc) (node) =
     when node
-      if HamtEmpty -> acc
-      if HamtLeaf (h) (k) (v) -> f acc k v
-      if HamtCollision (h) (entries) -> fold-entries f acc entries 0
-      if HamtBranch (bitmap) (children) -> fold-children f acc children 0
+      is HamtEmpty -> acc
+      is HamtLeaf (h) (k) (v) -> f acc k v
+      is HamtCollision (h) (entries) -> fold-entries f acc entries 0
+      is HamtBranch (bitmap) (children) -> fold-children f acc children 0
 
   fold-entries : (b -> Text -> a -> b) -> b -> List HamtEntry a -> Integer -> b
   fold-entries (f) (acc) (entries) (i) =
