@@ -542,6 +542,7 @@ public sealed class Lexer
         "cites" => TokenKind.CitesKeyword,
         "claim" => TokenKind.ClaimKeyword,
         "proof" => TokenKind.ProofKeyword,
+        "qed" => TokenKind.QedKeyword,
         "forall" => TokenKind.ForAllKeyword,
         "exists" => TokenKind.ThereExistsKeyword,
         "linear" => TokenKind.LinearKeyword,

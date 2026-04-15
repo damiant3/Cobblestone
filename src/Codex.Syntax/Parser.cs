@@ -650,7 +650,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         or TokenKind.ThenKeyword or TokenKind.ElseKeyword
         or TokenKind.WhenKeyword or TokenKind.WhereKeyword or TokenKind.SuchThatKeyword
         or TokenKind.DoKeyword or TokenKind.ActKeyword or TokenKind.EndKeyword or TokenKind.RecordKeyword or TokenKind.CitesKeyword
-        or TokenKind.ClaimKeyword or TokenKind.ProofKeyword
+        or TokenKind.ClaimKeyword or TokenKind.ProofKeyword or TokenKind.QedKeyword
         or TokenKind.ForAllKeyword or TokenKind.ThereExistsKeyword
         or TokenKind.LinearKeyword or TokenKind.EffectKeyword or TokenKind.WithKeyword
         or TokenKind.TrueKeyword or TokenKind.FalseKeyword;

@@ -50,6 +50,7 @@ public enum TokenKind
     CitesKeyword,
     ClaimKeyword,
     ProofKeyword,
+    QedKeyword,
     ForAllKeyword,
     ThereExistsKeyword,
     LinearKeyword,

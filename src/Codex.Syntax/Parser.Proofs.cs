@@ -58,8 +58,29 @@ public sealed partial class Parser
 
         ProofExprNode body = ParseProofExpr();
 
+        SourceSpan endSpan = body.Span;
+        if (Current.Kind is TokenKind.Newline or TokenKind.Indent or TokenKind.Dedent)
+        {
+            int save = m_position;
+            SkipNewlines();
+            if (Current.Kind == TokenKind.QedKeyword)
+            {
+                endSpan = Current.Span;
+                Advance();
+            }
+            else
+            {
+                m_position = save;
+            }
+        }
+        else if (Current.Kind == TokenKind.QedKeyword)
+        {
+            endSpan = Current.Span;
+            Advance();
+        }
+
         return new ProofNode(name, parameters, body,
-            proofKw.Span.Through(body.Span));
+            proofKw.Span.Through(endSpan));
     }
 
     ProofExprNode ParseProofExpr()

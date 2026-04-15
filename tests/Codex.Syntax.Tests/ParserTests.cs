@@ -395,6 +395,24 @@ public class ParserTests
     }
 
     [Fact]
+    public void Parse_proof_with_qed_terminator()
+    {
+        string source = "claim x : Nil === Nil\nproof x = Refl\nqed\n";
+        (DocumentNode doc, DiagnosticBag diags) = ParseWithDiags(source);
+        Assert.DoesNotContain(diags.ToImmutable(), d => d.Severity == DiagnosticSeverity.Error);
+        Assert.Single(doc.Proofs);
+    }
+
+    [Fact]
+    public void Parse_proof_without_qed_still_works()
+    {
+        string source = "claim x : Nil === Nil\nproof x = Refl\n";
+        (DocumentNode doc, DiagnosticBag diags) = ParseWithDiags(source);
+        Assert.DoesNotContain(diags.ToImmutable(), d => d.Severity == DiagnosticSeverity.Error);
+        Assert.Single(doc.Proofs);
+    }
+
+    [Fact]
     public void Parse_function_with_effectful_return()
     {
         string source = "greet : Text -> [Console] Nothing\ngreet (name) = print-line name\n";
