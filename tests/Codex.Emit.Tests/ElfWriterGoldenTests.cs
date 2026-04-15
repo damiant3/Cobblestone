@@ -95,8 +95,10 @@ public class ElfWriterGoldenTests
         int ph0 = 52;
         uint filesz = BitConverter.ToUInt32(elf, ph0 + 16);
         uint memsz = BitConverter.ToUInt32(elf, ph0 + 20);
-        // memsz = filesz + 0x200000 (2 MB heap)
-        Assert.Equal(filesz + 0x200000u, memsz);
+        // memsz = filesz + ~1 GB heap (upper bound of the 1 GB identity page map).
+        // Bumped from 2 MB → 1 GB by commit a725ac7; keep this in lockstep with
+        // ElfWriter32.WriteExecutable's p_memsz computation.
+        Assert.Equal(filesz + 0x3FC00000u, memsz);
     }
 
     [Fact]

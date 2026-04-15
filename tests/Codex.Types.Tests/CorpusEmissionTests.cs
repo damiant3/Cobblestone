@@ -61,11 +61,22 @@ public class CorpusEmissionTests
         string name => name.ToLowerInvariant(),
     };
 
+    // Samples that are intentional error repros — they live in samples/ as
+    // references for diagnostic tests and the parity audit, not as programs
+    // that should compile cleanly.
+    static readonly HashSet<string> s_negativeSamples = new(StringComparer.Ordinal)
+    {
+        "let-effectful-bug.codex", // CDX2033 repro (see commit 1b49158)
+        "parser-resync.codex",     // parser error-recovery repro
+    };
+
     public static IEnumerable<object[]> AllSamples()
     {
         foreach (string file in Directory.GetFiles(FindSamplesDir(), "*.codex").OrderBy(f => f))
         {
-            yield return [Path.GetFileName(file)];
+            string name = Path.GetFileName(file);
+            if (s_negativeSamples.Contains(name)) continue;
+            yield return [name];
         }
     }
 
@@ -74,9 +85,11 @@ public class CorpusEmissionTests
         string[] samples = Directory.GetFiles(FindSamplesDir(), "*.codex").OrderBy(f => f).ToArray();
         foreach (string file in samples)
         {
+            string name = Path.GetFileName(file);
+            if (s_negativeSamples.Contains(name)) continue;
             foreach (ICodeEmitter emitter in s_emitters)
             {
-                yield return [Path.GetFileName(file), emitter.TargetName];
+                yield return [name, emitter.TargetName];
             }
         }
     }

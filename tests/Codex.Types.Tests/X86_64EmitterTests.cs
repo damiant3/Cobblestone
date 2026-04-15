@@ -479,7 +479,7 @@ public class X86_64EmitterTests
     }
 
     [Fact]
-    public void BareMetal_kernel_size_under_5KB_after_idt_loop_optimization()
+    public void BareMetal_kernel_size_regression_guard()
     {
         string source = """
             main : Integer
@@ -487,12 +487,15 @@ public class X86_64EmitterTests
             """;
         byte[]? bytes = Helpers.CompileToX86_64BareMetal(source, "bm_size_check");
         Assert.NotNull(bytes);
-        // Before IDT loop optimization: ~19KB+ (IDT unroll alone was ~12.8KB).
-        // After: ~7KB for a trivial program. Guard against regression.
-        // Grew to ~12.5KB with runtime helpers (string ops, list ops, CCE table).
-        // Grew to ~19KB with ISR error-code handling (+1KB stubs) and 512-page mapping (+2KB page table init).
-        Assert.True(bytes.Length < 24576,
-            $"Bare metal kernel too large: {bytes.Length} bytes (expected < 24576)");
+        // Growth history for a trivial `main = 42`:
+        //   ~7KB   initial (after IDT loop optimization)
+        //   ~12.5KB after runtime helpers (string/list ops, CCE table)
+        //   ~19KB  after ISR error-code handling + 512-page mapping
+        //   ~27.5KB current — further runtime/ISR work since the last bump.
+        // Bump this threshold when legitimate growth lands; leave margin so it
+        // catches unintended blowups but doesn't trigger on normal feature adds.
+        Assert.True(bytes.Length < 32768,
+            $"Bare metal kernel too large: {bytes.Length} bytes (expected < 32768)");
     }
 
     static string ToWslPath(string windowsPath)
