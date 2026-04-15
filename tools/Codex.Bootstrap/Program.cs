@@ -10,9 +10,11 @@ partial class Program
 {
     /// <summary>
     /// Enumerates .codex files under a codex directory with quire semantics
-    /// (root + one level of subdirectory) and concatenates them. Self-host
-    /// sees one blob of source — it has no quire awareness, relying on chapter
-    /// names alone for identity.
+    /// (root + one level of subdirectory) and concatenates them. Each file's
+    /// `Chapter: X` header is rewritten to `Chapter: &lt;Quire&gt;--X` so the
+    /// self-host parser — which sees only a token stream — can slug chapters
+    /// by (quire, title) and stay byte-identical with the reference compiler.
+    /// Files at the codex root (no quire) pass through unchanged.
     /// </summary>
     static string LoadCodexSourceConcatenated(string codexDir)
     {
@@ -27,10 +29,27 @@ partial class Program
         {
             string content = File.ReadAllText(f);
             if (content.Length == 0) continue;
+            string quire = QuireOf(f, codexDir);
+            if (quire.Length > 0)
+            {
+                content = Regex.Replace(content,
+                    @"^(Chapter:\s*)(.+?)\s*$",
+                    m => m.Groups[1].Value + quire + "--" + m.Groups[2].Value.Trim(),
+                    RegexOptions.Multiline);
+            }
             if (buf.Length > 0) buf.Append("\n\n");
             buf.Append(content);
         }
         return buf.ToString();
+    }
+
+    static string QuireOf(string filePath, string codexRoot)
+    {
+        string full = Path.GetFullPath(filePath);
+        string fullRoot = Path.GetFullPath(codexRoot);
+        string rel = Path.GetRelativePath(fullRoot, full);
+        int sep = rel.IndexOfAny(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar });
+        return sep < 0 ? "" : rel.Substring(0, sep);
     }
 
     static int Main(string[] args)
@@ -129,7 +148,7 @@ partial class Program
             Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
 
             Console.WriteLine("  [11/11] csharp_emitter_emit_full_chapter...");
-            string cceOutput = Codex_Codex_Codex.csharp_emitter_emit_full_chapter(ir, scoped.type_defs);
+            string cceOutput = Codex_Codex_Codex.emit__csharp_emitter_emit_full_chapter(ir, scoped.type_defs);
             Console.WriteLine($"         {sw.ElapsedMilliseconds}ms");
 
             string output = _Cce.ToUnicode(cceOutput);
@@ -197,7 +216,7 @@ partial class Program
             }
 
             IRChapter ir = Codex_Codex_Codex.lower_chapter(ast, checkResult.types, checkResult.state);
-            string output = Codex_Codex_Codex.csharp_emitter_emit_full_chapter(ir, ast.type_defs);
+            string output = Codex_Codex_Codex.emit__csharp_emitter_emit_full_chapter(ir, ast.type_defs);
 
             string outPath = Path.ChangeExtension(filePath, ".g.cs");
             File.WriteAllText(outPath, output);
@@ -316,7 +335,7 @@ partial class Program
         sw.Stop(); lowerMs = sw.Elapsed.TotalMilliseconds;
 
         sw.Restart();
-        var output = Codex_Codex_Codex.csharp_emitter_emit_full_chapter(ir, ast.type_defs);
+        var output = Codex_Codex_Codex.emit__csharp_emitter_emit_full_chapter(ir, ast.type_defs);
         sw.Stop(); emitMs = sw.Elapsed.TotalMilliseconds;
 
         total.Stop(); totalMs = total.Elapsed.TotalMilliseconds;
@@ -539,7 +558,7 @@ partial class Program
         var ir = Codex_Codex_Codex.lower_chapter(ast, checkResult.types, checkResult.state);
         Console.Error.WriteLine($"  IR defs: {ir.defs.Count}");
 
-        string cceOutput = Codex_Codex_Codex.codex_emitter_emit_full_chapter(ir, ast.type_defs);
+        string cceOutput = Codex_Codex_Codex.emit__codex_emitter_emit_full_chapter(ir, ast.type_defs);
         string output = _Cce.ToUnicode(cceOutput);
 
         string dest = outputPath ?? Path.Combine(Path.GetFullPath(Path.Combine(codexDir, "..")), "build-output", "bootstrap", "stage1-codex.codex");
