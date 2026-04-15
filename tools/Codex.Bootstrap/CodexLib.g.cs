@@ -76,10 +76,6 @@ public sealed record ApplyChain(IRExpr root, List<IRExpr> args);
 
 public sealed record ArityEntry(string name, long arity);
 
-public sealed record BinaryAnalysis(BinaryEnv env, List<ParsedDef> parse_results, List<string> bad_full, DiagnosticBag all_parse_bag);
-
-public sealed record BinaryEnv(BinaryScope scope, UnificationState ust, List<TypeBinding> ctor_types, List<TypeBinding> all_types);
-
 public abstract record BinaryOp;
 
 public sealed record OpAdd : BinaryOp;
@@ -99,17 +95,11 @@ public sealed record OpCons : BinaryOp;
 public sealed record OpAnd : BinaryOp;
 public sealed record OpOr : BinaryOp;
 
-public sealed record BinaryScan(List<Token> tokens, List<ATypeDef> type_defs, List<DefHeader> headers, List<CitesDecl> citations, long n_defs);
-
-public sealed record BinaryScope(BinaryScan scan, List<ChapterAssignment> assignments, List<string> colliding, List<DefHeader> scoped_headers);
-
 public sealed record CallPatch(long patch_offset, string target);
 
 public sealed record CdxCodeInfo(long code, string name, long severity, long phase, string summary);
 
 public sealed record ChapterAssignment(string def_name, string chapter_slug);
-
-public sealed record ChapterBag(string slug, DiagnosticBag bag);
 
 public sealed record ChapterResult(List<TypeBinding> types, UnificationState state);
 
@@ -371,8 +361,6 @@ public sealed record TypeDefNone(ParseState Field0) : ParseTypeDefResult;
 public abstract record ParseTypeResult;
 
 public sealed record TypeOk(TypeExpr Field0, ParseState Field1) : ParseTypeResult;
-
-public sealed record ParsedDef(DefHeader header, Expr body, DiagnosticBag parse_bag);
 
 public abstract record Pat;
 
@@ -7978,7 +7966,7 @@ public static class Codex_Codex_Codex
 
     public static CodegenState emit_cpu_exception_dump(CodegenState st)
     {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st13a) => ((Func<CodegenState, CodegenState>)((st13b) => ((Func<CodegenState, CodegenState>)((st13c) => ((Func<CodegenState, CodegenState>)((st13d) => ((Func<CodegenState, CodegenState>)((st13e) => ((Func<CodegenState, CodegenState>)((st13f) => ((Func<CodegenState, CodegenState>)((st13g) => ((Func<CodegenState, CodegenState>)((st13h) => ((Func<CodegenState, CodegenState>)((st13i) => ((Func<CodegenState, CodegenState>)((st13j) => ((Func<CodegenState, CodegenState>)((st13k) => ((Func<CodegenState, CodegenState>)((st13l) => ((Func<CodegenState, CodegenState>)((st13m) => ((Func<CodegenState, CodegenState>)((st13n) => ((Func<CodegenState, CodegenState>)((st13o) => ((Func<CodegenState, CodegenState>)((st13p) => ((Func<CodegenState, CodegenState>)((st13q) => ((Func<CodegenState, CodegenState>)((st13r) => ((Func<CodegenState, CodegenState>)((st13s) => ((Func<CodegenState, CodegenState>)((st13t) => ((Func<CodegenState, CodegenState>)((st13u) => ((Func<CodegenState, CodegenState>)((st13v) => ((Func<CodegenState, CodegenState>)((st13w) => ((Func<CodegenState, CodegenState>)((st13x) => ((Func<CodegenState, CodegenState>)((st13y) => ((Func<CodegenState, CodegenState>)((st13z) => ((Func<CodegenState, CodegenState>)((st13aa) => ((Func<CodegenState, CodegenState>)((st13ab) => ((Func<CodegenState, CodegenState>)((st13ac) => ((Func<CodegenState, CodegenState>)((st13ad) => ((Func<CodegenState, CodegenState>)((st13ae) => ((Func<CodegenState, CodegenState>)((st13af) => ((Func<CodegenState, CodegenState>)((st13ag) => ((Func<CodegenState, CodegenState>)((st13ah) => ((Func<CodegenState, CodegenState>)((st13ai) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<long, CodegenState>)((halt_pos) => ((Func<CodegenState, CodegenState>)((st16) => st_append_text(st16, jmp((halt_pos - (st16.text_len + 5L))))))(st_append_text(st15, hlt()))))(st15.text_len)))(st_append_text(st14, cli()))))(emit_serial_wait_and_send(st13ai, 10L))))(emit_print_hex_qword_rdi(st13ah))))(st_append_text(st13ag, mov_rr(reg_rdi(), reg_r10())))))(emit_serial_wait_and_send(st13af, 61L))))(emit_serial_wait_and_send(st13ae, 48L))))(emit_serial_wait_and_send(st13ad, 49L))))(emit_serial_wait_and_send(st13ac, 82L))))(emit_serial_wait_and_send(st13ab, 32L))))(emit_print_hex_qword_rdi(st13aa))))(st_append_text(st13z, mov_rr(reg_rdi(), reg_r14())))))(emit_serial_wait_and_send(st13y, 61L))))(emit_serial_wait_and_send(st13x, 52L))))(emit_serial_wait_and_send(st13w, 49L))))(emit_serial_wait_and_send(st13v, 82L))))(emit_serial_wait_and_send(st13u, 32L))))(emit_print_hex_qword_rdi(st13t))))(st_append_text(st13s, mov_rr(reg_rdi(), reg_r13())))))(emit_serial_wait_and_send(st13r, 61L))))(emit_serial_wait_and_send(st13q, 51L))))(emit_serial_wait_and_send(st13p, 49L))))(emit_serial_wait_and_send(st13o, 82L))))(emit_serial_wait_and_send(st13n, 32L))))(emit_print_hex_qword_rdi(st13m))))(st_append_text(st13l, mov_rr(reg_rdi(), reg_r12())))))(emit_serial_wait_and_send(st13k, 61L))))(emit_serial_wait_and_send(st13j, 50L))))(emit_serial_wait_and_send(st13i, 49L))))(emit_serial_wait_and_send(st13h, 82L))))(emit_serial_wait_and_send(st13g, 32L))))(emit_print_hex_qword_rdi(st13f))))(st_append_text(st13e, mov_rr(reg_rdi(), reg_rbx())))))(emit_serial_wait_and_send(st13d, 61L))))(emit_serial_wait_and_send(st13c, 88L))))(emit_serial_wait_and_send(st13b, 66L))))(emit_serial_wait_and_send(st13a, 82L))))(emit_serial_wait_and_send(st13, 32L))))(emit_print_hex_qword_rdi(st12))))(st_append_text(st11, mov_load(reg_rdi(), reg_rsp(), 40L)))))(emit_serial_wait_and_send(st10, 61L))))(emit_serial_wait_and_send(st9, 80L))))(emit_serial_wait_and_send(st8, 73L))))(emit_serial_wait_and_send(st7, 82L))))(emit_serial_wait_and_send(st6, 32L))))(emit_print_hex_byte_rdi(st5))))(emit_serial_wait_and_send(st4, 61L))))(emit_serial_wait_and_send(st3, 67L))))(emit_serial_wait_and_send(st2, 88L))))(emit_serial_wait_and_send(st1, 69L))))(emit_serial_wait_and_send(st0, 33L))))(st_append_text(st, mov_rr(reg_rdi(), reg_rax())));
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st13a) => ((Func<CodegenState, CodegenState>)((st13b) => ((Func<CodegenState, CodegenState>)((st13c) => ((Func<CodegenState, CodegenState>)((st13d) => ((Func<CodegenState, CodegenState>)((st13e) => ((Func<CodegenState, CodegenState>)((st13f) => ((Func<CodegenState, CodegenState>)((st13g) => ((Func<CodegenState, CodegenState>)((st13h) => ((Func<CodegenState, CodegenState>)((st13i) => ((Func<CodegenState, CodegenState>)((st13j) => ((Func<CodegenState, CodegenState>)((st13k) => ((Func<CodegenState, CodegenState>)((st13l) => ((Func<CodegenState, CodegenState>)((st13m) => ((Func<CodegenState, CodegenState>)((st13n) => ((Func<CodegenState, CodegenState>)((st13o) => ((Func<CodegenState, CodegenState>)((st13p) => ((Func<CodegenState, CodegenState>)((st13q) => ((Func<CodegenState, CodegenState>)((st13r) => ((Func<CodegenState, CodegenState>)((st13s) => ((Func<CodegenState, CodegenState>)((st13t) => ((Func<CodegenState, CodegenState>)((st13u) => ((Func<CodegenState, CodegenState>)((st13v) => ((Func<CodegenState, CodegenState>)((st13w) => ((Func<CodegenState, CodegenState>)((st13x) => ((Func<CodegenState, CodegenState>)((st13y) => ((Func<CodegenState, CodegenState>)((st13z) => ((Func<CodegenState, CodegenState>)((st13aa) => ((Func<CodegenState, CodegenState>)((st13ab) => ((Func<CodegenState, CodegenState>)((st13ac) => ((Func<CodegenState, CodegenState>)((st13ad) => ((Func<CodegenState, CodegenState>)((st13ae) => ((Func<CodegenState, CodegenState>)((st13af) => ((Func<CodegenState, CodegenState>)((st13ag) => ((Func<CodegenState, CodegenState>)((st13ah) => ((Func<CodegenState, CodegenState>)((st13ai) => ((Func<CodegenState, CodegenState>)((st13aj) => ((Func<CodegenState, CodegenState>)((st13ak) => ((Func<CodegenState, CodegenState>)((st13al) => ((Func<CodegenState, CodegenState>)((st13am) => ((Func<CodegenState, CodegenState>)((st13an) => ((Func<CodegenState, CodegenState>)((st13ao) => ((Func<CodegenState, CodegenState>)((st13ap) => ((Func<CodegenState, CodegenState>)((st13aq) => ((Func<CodegenState, CodegenState>)((st13ar) => ((Func<CodegenState, CodegenState>)((st13as) => ((Func<CodegenState, CodegenState>)((st13at) => ((Func<CodegenState, CodegenState>)((st13au) => ((Func<CodegenState, CodegenState>)((st13av) => ((Func<CodegenState, CodegenState>)((st13aw) => ((Func<CodegenState, CodegenState>)((st13ax) => ((Func<CodegenState, CodegenState>)((st13ay) => ((Func<CodegenState, CodegenState>)((st13az) => ((Func<CodegenState, CodegenState>)((st13ba) => ((Func<CodegenState, CodegenState>)((st13bb) => ((Func<CodegenState, CodegenState>)((st13bc) => ((Func<CodegenState, CodegenState>)((st13bd) => ((Func<CodegenState, CodegenState>)((st13be) => ((Func<CodegenState, CodegenState>)((st13bf) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<long, CodegenState>)((halt_pos) => ((Func<CodegenState, CodegenState>)((st16) => st_append_text(st16, jmp((halt_pos - (st16.text_len + 5L))))))(st_append_text(st15, hlt()))))(st15.text_len)))(st_append_text(st14, cli()))))(emit_serial_wait_and_send(st13bf, 10L))))(emit_print_hex_qword_rdi(st13be))))(st_append_text(st13bd, mov_load(reg_rdi(), reg_rsp(), 64L)))))(emit_serial_wait_and_send(st13bc, 61L))))(emit_serial_wait_and_send(st13bb, 82L))))(emit_serial_wait_and_send(st13ba, 108L))))(emit_serial_wait_and_send(st13az, 108L))))(emit_serial_wait_and_send(st13ay, 97L))))(emit_serial_wait_and_send(st13ax, 67L))))(emit_serial_wait_and_send(st13aw, 32L))))(emit_print_hex_qword_rdi(st13av))))(st_append_text(st13au, mov_load(reg_rdi(), reg_rsp(), 8L)))))(emit_serial_wait_and_send(st13at, 61L))))(emit_serial_wait_and_send(st13as, 73L))))(emit_serial_wait_and_send(st13ar, 83L))))(emit_serial_wait_and_send(st13aq, 82L))))(emit_serial_wait_and_send(st13ap, 32L))))(emit_print_hex_qword_rdi(st13ao))))(st_append_text(st13an, mov_load(reg_rdi(), reg_rsp(), 0L)))))(emit_serial_wait_and_send(st13am, 61L))))(emit_serial_wait_and_send(st13al, 73L))))(emit_serial_wait_and_send(st13ak, 68L))))(emit_serial_wait_and_send(st13aj, 82L))))(emit_serial_wait_and_send(st13ai, 32L))))(emit_print_hex_qword_rdi(st13ah))))(st_append_text(st13ag, mov_rr(reg_rdi(), reg_r10())))))(emit_serial_wait_and_send(st13af, 61L))))(emit_serial_wait_and_send(st13ae, 48L))))(emit_serial_wait_and_send(st13ad, 49L))))(emit_serial_wait_and_send(st13ac, 82L))))(emit_serial_wait_and_send(st13ab, 32L))))(emit_print_hex_qword_rdi(st13aa))))(st_append_text(st13z, mov_rr(reg_rdi(), reg_r14())))))(emit_serial_wait_and_send(st13y, 61L))))(emit_serial_wait_and_send(st13x, 52L))))(emit_serial_wait_and_send(st13w, 49L))))(emit_serial_wait_and_send(st13v, 82L))))(emit_serial_wait_and_send(st13u, 32L))))(emit_print_hex_qword_rdi(st13t))))(st_append_text(st13s, mov_rr(reg_rdi(), reg_r13())))))(emit_serial_wait_and_send(st13r, 61L))))(emit_serial_wait_and_send(st13q, 51L))))(emit_serial_wait_and_send(st13p, 49L))))(emit_serial_wait_and_send(st13o, 82L))))(emit_serial_wait_and_send(st13n, 32L))))(emit_print_hex_qword_rdi(st13m))))(st_append_text(st13l, mov_rr(reg_rdi(), reg_r12())))))(emit_serial_wait_and_send(st13k, 61L))))(emit_serial_wait_and_send(st13j, 50L))))(emit_serial_wait_and_send(st13i, 49L))))(emit_serial_wait_and_send(st13h, 82L))))(emit_serial_wait_and_send(st13g, 32L))))(emit_print_hex_qword_rdi(st13f))))(st_append_text(st13e, mov_rr(reg_rdi(), reg_rbx())))))(emit_serial_wait_and_send(st13d, 61L))))(emit_serial_wait_and_send(st13c, 88L))))(emit_serial_wait_and_send(st13b, 66L))))(emit_serial_wait_and_send(st13a, 82L))))(emit_serial_wait_and_send(st13, 32L))))(emit_print_hex_qword_rdi(st12))))(st_append_text(st11, mov_load(reg_rdi(), reg_rsp(), 40L)))))(emit_serial_wait_and_send(st10, 61L))))(emit_serial_wait_and_send(st9, 80L))))(emit_serial_wait_and_send(st8, 73L))))(emit_serial_wait_and_send(st7, 82L))))(emit_serial_wait_and_send(st6, 32L))))(emit_print_hex_byte_rdi(st5))))(emit_serial_wait_and_send(st4, 61L))))(emit_serial_wait_and_send(st3, 67L))))(emit_serial_wait_and_send(st2, 88L))))(emit_serial_wait_and_send(st1, 69L))))(emit_serial_wait_and_send(st0, 33L))))(st_append_text(st, mov_rr(reg_rdi(), reg_rax())));
     }
 
     public static CodegenState emit_common_interrupt_handler(CodegenState st)
@@ -15959,39 +15947,9 @@ public static class Codex_Codex_Codex
         }
     }
 
-    public static BinaryScan bin_tokenize(string source)
-    {
-        return ((Func<List<Token>, BinaryScan>)((tokens) => ((Func<ParseState, BinaryScan>)((st) => ((Func<ScanResult, BinaryScan>)((scan) => new BinaryScan(tokens, map_list(new Func<TypeDef, ATypeDef>(desugar_type_def), scan.type_defs), scan.def_headers, scan.citations, ((long)scan.def_headers.Count))))(scan_document(st))))(make_parse_state(tokens))))(tokenize(source, 1L));
-    }
-
-    public static BinaryScope bin_scope(BinaryScan scan)
-    {
-        return ((Func<List<ChapterAssignment>, BinaryScope>)((assignments) => ((Func<List<string>, BinaryScope>)((colliding) => ((Func<List<DefHeader>, BinaryScope>)((scoped_headers) => new BinaryScope(scan, assignments, colliding, scoped_headers)))(scope_def_headers(scan.headers, colliding, assignments, 0L, new List<DefHeader>()))))(find_colliding_names(assignments))))(build_all_assignments(scan.headers, 0L, new List<ChapterAssignment>()));
-    }
-
-    public static BinaryEnv bin_build_env(BinaryScope scope)
-    {
-        return ((Func<BinaryScan, BinaryEnv>)((scan) => ((Func<List<TypeBinding>, BinaryEnv>)((tdm) => ((Func<LetBindResult, BinaryEnv>)((tenv) => ((Func<LetBindResult, BinaryEnv>)((env) => ((Func<List<TypeBinding>, BinaryEnv>)((ctor_types) => new BinaryEnv(scope, env.state, ctor_types, Enumerable.Concat(ctor_types, env.env.bindings).ToList())))(collect_ctor_bindings(scan.type_defs, 0L, ((long)scan.type_defs.Count), new List<TypeBinding>()))))(register_def_headers(tenv.state, tenv.env, tdm, scope.scoped_headers, 0L, ((long)scope.scoped_headers.Count)))))(register_type_defs(empty_unification_state(), builtin_type_env(), tdm, scan.type_defs, 0L, ((long)scan.type_defs.Count)))))(build_type_def_map(scan.type_defs, 0L, ((long)scan.type_defs.Count), new List<TypeBinding>()))))(scope.scan);
-    }
-
-    public static BinaryAnalysis bin_analyze(BinaryEnv benv)
-    {
-        return ((Func<BinaryScope, BinaryAnalysis>)((scope) => ((Func<BinaryScan, BinaryAnalysis>)((scan) => ((Func<List<ParsedDef>, BinaryAnalysis>)((parse_results) => ((Func<List<ChapterBag>, BinaryAnalysis>)((chapter_bags) => ((Func<List<string>, BinaryAnalysis>)((bad_initial) => ((Func<List<string>, BinaryAnalysis>)((bad_full) => ((Func<DiagnosticBag, BinaryAnalysis>)((all_parse_bag) => new BinaryAnalysis(benv, parse_results, bad_full, all_parse_bag)))(merge_all_parse_bags(parse_results, 0L, empty_bag()))))(close_bad_chapters_under_citations(bad_initial, scan.citations))))(collect_bad_chapters(chapter_bags, 0L, new List<string>()))))(group_parse_bags(parse_results, 0L, new List<ChapterBag>()))))(parse_all_bodies(scan.tokens, scan.headers, 0L, scan.n_defs, new List<ParsedDef>()))))(scope.scan)))(benv.scope);
-    }
-
-    public static CodegenState bin_emit_codegen(BinaryAnalysis an)
-    {
-        return ((Func<BinaryEnv, CodegenState>)((benv) => ((Func<BinaryScope, CodegenState>)((scope) => ((Func<CodegenState, CodegenState>)((cg0) => ((Func<CodegenState, CodegenState>)((cg0_seeded) => ((Func<dynamic, CodegenState>)((pre_rt_wm) => ((Func<CodegenState, CodegenState>)((cg1) => ((Func<dynamic, CodegenState>)((rt_cleanup) => ((Func<dynamic, CodegenState>)((watermark) => ((Func<TrampolineResult, CodegenState>)((tramp) => emit_defs_binary_gated(an.parse_results, an.bad_full, benv.all_types, benv.ust, scope.colliding, scope.assignments, cg1, watermark, 0L, ((long)an.parse_results.Count))))(bare_metal_trampoline())))(_Buf.heap_save())))(_Buf.heap_restore(pre_rt_wm))))(emit_runtime_helpers(cg0_seeded))))(_Buf.heap_save())))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, an.all_parse_bag)))(cg0))))(x86_64_init_codegen_streaming(benv.ctor_types, scope.scan.n_defs))))(benv.scope)))(an.env);
-    }
-
-    public static EmitChapterResult bin_finalize(CodegenState cg)
-    {
-        return ((Func<TrampolineResult, EmitChapterResult>)((tramp) => x86_64_finalize(cg, tramp.far_jump_patch_pos)))(bare_metal_trampoline());
-    }
-
     public static EmitChapterResult compile_to_binary(string source, string chapter_name)
     {
-        return ((Func<BinaryScan, EmitChapterResult>)((scan) => ((Func<BinaryScope, EmitChapterResult>)((scope) => ((Func<BinaryEnv, EmitChapterResult>)((benv) => ((Func<BinaryAnalysis, EmitChapterResult>)((an) => ((Func<CodegenState, EmitChapterResult>)((cg) => bin_finalize(cg)))(bin_emit_codegen(an))))(bin_analyze(benv))))(bin_build_env(scope))))(bin_scope(scan))))(bin_tokenize(source));
+        return ((Func<List<Token>, EmitChapterResult>)((tokens) => ((Func<ParseState, EmitChapterResult>)((st) => ((Func<ScanResult, EmitChapterResult>)((scan) => ((Func<List<ChapterAssignment>, EmitChapterResult>)((assignments) => ((Func<List<string>, EmitChapterResult>)((colliding) => ((Func<Document, EmitChapterResult>)((doc) => ((Func<AChapter, EmitChapterResult>)((ast) => ((Func<AChapter, EmitChapterResult>)((scoped) => ((Func<ChapterResult, EmitChapterResult>)((check_result) => ((Func<IRChapter, EmitChapterResult>)((ir) => ((Func<List<TypeBinding>, EmitChapterResult>)((ctor_types) => x86_64_emit_chapter(ir, ctor_types)))(collect_ctor_bindings(scoped.type_defs, 0L, ((long)scoped.type_defs.Count), new List<TypeBinding>()))))(lower_chapter(scoped, check_result.types, check_result.state))))(check_chapter(scoped))))(scope_achapter(ast, colliding, assignments))))(desugar_document(doc, chapter_name))))(parse_document(make_parse_state(tokens)))))(find_colliding_names(assignments))))(build_all_assignments(scan.def_headers, 0L, new List<ChapterAssignment>()))))(scan_document(st))))(make_parse_state(tokens))))(tokenize(source, 1L));
     }
 
     public static List<DefHeader> scope_def_headers(List<DefHeader> headers, List<string> colliding, List<ChapterAssignment> assignments, long i, List<DefHeader> acc)
@@ -16018,383 +15976,6 @@ public static class Codex_Codex_Codex
                 i = _tco_3;
                 acc = _tco_4;
                 continue;
-            }
-        }
-    }
-
-    public static List<ParsedDef> parse_all_bodies(List<Token> tokens, List<DefHeader> headers, long i, long n, List<ParsedDef> acc)
-    {
-        while (true)
-        {
-            if ((i >= n))
-            {
-                return acc;
-            }
-            else
-            {
-                var hdr = headers[(int)i];
-                var body_st = new ParseState(tokens, hdr.body_pos, empty_bag());
-                var body_result = parse_expr(body_st);
-                var bag = parse_bag_of(body_result);
-                var body = unwrap_body(body_result);
-                var _tco_0 = tokens;
-                var _tco_1 = headers;
-                var _tco_2 = (i + 1L);
-                var _tco_3 = n;
-                var _tco_4 = ((Func<List<ParsedDef>>)(() => { var _l = acc; _l.Add(new ParsedDef(hdr, body, bag)); return _l; }))();
-                tokens = _tco_0;
-                headers = _tco_1;
-                i = _tco_2;
-                n = _tco_3;
-                acc = _tco_4;
-                continue;
-            }
-        }
-    }
-
-    public static DiagnosticBag parse_bag_of(ParseExprResult r)
-    {
-        return (r is ExprOk _mExprOk213_ ? ((Func<ParseState, DiagnosticBag>)((st) => ((Func<Expr, DiagnosticBag>)((e) => st.bag))((Expr)_mExprOk213_.Field0)))((ParseState)_mExprOk213_.Field1) : throw new InvalidOperationException("Non-exhaustive match"));
-    }
-
-    public static DiagnosticBag merge_all_parse_bags(List<ParsedDef> pds, long i, DiagnosticBag acc)
-    {
-        while (true)
-        {
-            if ((i == ((long)pds.Count)))
-            {
-                return acc;
-            }
-            else
-            {
-                var _tco_0 = pds;
-                var _tco_1 = (i + 1L);
-                var _tco_2 = bag_merge(acc, pds[(int)i].parse_bag);
-                pds = _tco_0;
-                i = _tco_1;
-                acc = _tco_2;
-                continue;
-            }
-        }
-    }
-
-    public static List<ChapterBag> group_parse_bags(List<ParsedDef> pds, long i, List<ChapterBag> acc)
-    {
-        while (true)
-        {
-            if ((i == ((long)pds.Count)))
-            {
-                return acc;
-            }
-            else
-            {
-                var pd = pds[(int)i];
-                var _tco_0 = pds;
-                var _tco_1 = (i + 1L);
-                var _tco_2 = chapter_bag_insert(acc, pd.header.chapter_slug, pd.parse_bag, 0L, ((long)acc.Count));
-                pds = _tco_0;
-                i = _tco_1;
-                acc = _tco_2;
-                continue;
-            }
-        }
-    }
-
-    public static List<ChapterBag> chapter_bag_insert(List<ChapterBag> acc, string slug, DiagnosticBag bag, long i, long len)
-    {
-        while (true)
-        {
-            if ((i >= len))
-            {
-                return ((Func<List<ChapterBag>>)(() => { var _l = acc; _l.Add(new ChapterBag(slug, bag)); return _l; }))();
-            }
-            else
-            {
-                var cb = acc[(int)i];
-                if ((cb.slug == slug))
-                {
-                    return replace_at(acc, i, new ChapterBag(slug, bag_merge(cb.bag, bag)), 0L, len, new List<ChapterBag>());
-                }
-                else
-                {
-                    var _tco_0 = acc;
-                    var _tco_1 = slug;
-                    var _tco_2 = bag;
-                    var _tco_3 = (i + 1L);
-                    var _tco_4 = len;
-                    acc = _tco_0;
-                    slug = _tco_1;
-                    bag = _tco_2;
-                    i = _tco_3;
-                    len = _tco_4;
-                    continue;
-                }
-            }
-        }
-    }
-
-    public static List<ChapterBag> replace_at(List<ChapterBag> xs, long target, ChapterBag new_val, long i, long n, List<ChapterBag> acc)
-    {
-        while (true)
-        {
-            if ((i == n))
-            {
-                return acc;
-            }
-            else
-            {
-                if ((i == target))
-                {
-                    var _tco_0 = xs;
-                    var _tco_1 = target;
-                    var _tco_2 = new_val;
-                    var _tco_3 = (i + 1L);
-                    var _tco_4 = n;
-                    var _tco_5 = ((Func<List<ChapterBag>>)(() => { var _l = acc; _l.Add(new_val); return _l; }))();
-                    xs = _tco_0;
-                    target = _tco_1;
-                    new_val = _tco_2;
-                    i = _tco_3;
-                    n = _tco_4;
-                    acc = _tco_5;
-                    continue;
-                }
-                else
-                {
-                    var _tco_0 = xs;
-                    var _tco_1 = target;
-                    var _tco_2 = new_val;
-                    var _tco_3 = (i + 1L);
-                    var _tco_4 = n;
-                    var _tco_5 = ((Func<List<ChapterBag>>)(() => { var _l = acc; _l.Add(xs[(int)i]); return _l; }))();
-                    xs = _tco_0;
-                    target = _tco_1;
-                    new_val = _tco_2;
-                    i = _tco_3;
-                    n = _tco_4;
-                    acc = _tco_5;
-                    continue;
-                }
-            }
-        }
-    }
-
-    public static List<string> collect_bad_chapters(List<ChapterBag> cbs, long i, List<string> acc)
-    {
-        while (true)
-        {
-            if ((i == ((long)cbs.Count)))
-            {
-                return acc;
-            }
-            else
-            {
-                var cb = cbs[(int)i];
-                if (bag_has_errors(cb.bag))
-                {
-                    var _tco_0 = cbs;
-                    var _tco_1 = (i + 1L);
-                    var _tco_2 = ((Func<List<string>>)(() => { var _l = acc; _l.Add(cb.slug); return _l; }))();
-                    cbs = _tco_0;
-                    i = _tco_1;
-                    acc = _tco_2;
-                    continue;
-                }
-                else
-                {
-                    var _tco_0 = cbs;
-                    var _tco_1 = (i + 1L);
-                    var _tco_2 = acc;
-                    cbs = _tco_0;
-                    i = _tco_1;
-                    acc = _tco_2;
-                    continue;
-                }
-            }
-        }
-    }
-
-    public static bool has_slug(List<string> xs, string name)
-    {
-        return has_slug_loop(xs, name, 0L, ((long)xs.Count));
-    }
-
-    public static bool has_slug_loop(List<string> xs, string name, long i, long n)
-    {
-        while (true)
-        {
-            if ((i == n))
-            {
-                return false;
-            }
-            else
-            {
-                if ((xs[(int)i] == name))
-                {
-                    return true;
-                }
-                else
-                {
-                    var _tco_0 = xs;
-                    var _tco_1 = name;
-                    var _tco_2 = (i + 1L);
-                    var _tco_3 = n;
-                    xs = _tco_0;
-                    name = _tco_1;
-                    i = _tco_2;
-                    n = _tco_3;
-                    continue;
-                }
-            }
-        }
-    }
-
-    public static List<string> close_bad_chapters_under_citations(List<string> bad, List<CitesDecl> citations)
-    {
-        while (true)
-        {
-            var bad2 = propagate_bad_once(bad, citations, 0L, ((long)citations.Count));
-            if ((((long)bad2.Count) == ((long)bad.Count)))
-            {
-                return bad;
-            }
-            else
-            {
-                var _tco_0 = bad2;
-                var _tco_1 = citations;
-                bad = _tco_0;
-                citations = _tco_1;
-                continue;
-            }
-        }
-    }
-
-    public static List<string> propagate_bad_once(List<string> bad, List<CitesDecl> citations, long i, long n)
-    {
-        while (true)
-        {
-            if ((i == n))
-            {
-                return bad;
-            }
-            else
-            {
-                var c = citations[(int)i];
-                var cited = c.chapter_name.text;
-                var citer = c.citing_chapter;
-                if (has_slug(bad, cited))
-                {
-                    if (has_slug(bad, citer))
-                    {
-                        var _tco_0 = bad;
-                        var _tco_1 = citations;
-                        var _tco_2 = (i + 1L);
-                        var _tco_3 = n;
-                        bad = _tco_0;
-                        citations = _tco_1;
-                        i = _tco_2;
-                        n = _tco_3;
-                        continue;
-                    }
-                    else
-                    {
-                        var _tco_0 = ((Func<List<string>>)(() => { var _l = bad; _l.Add(citer); return _l; }))();
-                        var _tco_1 = citations;
-                        var _tco_2 = (i + 1L);
-                        var _tco_3 = n;
-                        bad = _tco_0;
-                        citations = _tco_1;
-                        i = _tco_2;
-                        n = _tco_3;
-                        continue;
-                    }
-                }
-                else
-                {
-                    var _tco_0 = bad;
-                    var _tco_1 = citations;
-                    var _tco_2 = (i + 1L);
-                    var _tco_3 = n;
-                    bad = _tco_0;
-                    citations = _tco_1;
-                    i = _tco_2;
-                    n = _tco_3;
-                    continue;
-                }
-            }
-        }
-    }
-
-    public static CodegenState emit_defs_binary_gated(List<ParsedDef> pds, List<string> bad_chapters, List<TypeBinding> all_types, UnificationState ust, List<string> colliding, List<ChapterAssignment> assignments, CodegenState cg, long watermark, long i, long n)
-    {
-        while (true)
-        {
-            if ((i >= n))
-            {
-                return cg;
-            }
-            else
-            {
-                var pd = pds[(int)i];
-                var hdr = pd.header;
-                var slug = hdr.chapter_slug;
-                if (has_slug(bad_chapters, slug))
-                {
-                    var _tco_0 = pds;
-                    var _tco_1 = bad_chapters;
-                    var _tco_2 = all_types;
-                    var _tco_3 = ust;
-                    var _tco_4 = colliding;
-                    var _tco_5 = assignments;
-                    var _tco_6 = cg;
-                    var _tco_7 = watermark;
-                    var _tco_8 = (i + 1L);
-                    var _tco_9 = n;
-                    pds = _tco_0;
-                    bad_chapters = _tco_1;
-                    all_types = _tco_2;
-                    ust = _tco_3;
-                    colliding = _tco_4;
-                    assignments = _tco_5;
-                    cg = _tco_6;
-                    watermark = _tco_7;
-                    i = _tco_8;
-                    n = _tco_9;
-                    continue;
-                }
-                else
-                {
-                    var rn = build_chapter_rename_map(colliding, assignments, slug);
-                    var def = new Def(hdr.name, hdr.@params, hdr.ann, pd.body, slug);
-                    var adef_raw = desugar_def(def);
-                    var scoped_name = scope_def_name(colliding, assignments, adef_raw.name.value, slug);
-                    var adef = new ADef(make_name(scoped_name), adef_raw.@params, adef_raw.declared_type, adef_raw.body, adef_raw.chapter_slug, adef_raw.span);
-                    var ir_def = lower_def(adef, all_types, ust);
-                    var scoped_body = rename_ir_expr(rn, ir_def.body);
-                    var scoped = new IRDef(ir_def.name, ir_def.@params, ir_def.type_val, scoped_body, slug, ir_def.span);
-                    var cg2 = emit_function(cg, scoped);
-                    var _tco_0 = pds;
-                    var _tco_1 = bad_chapters;
-                    var _tco_2 = all_types;
-                    var _tco_3 = ust;
-                    var _tco_4 = colliding;
-                    var _tco_5 = assignments;
-                    var _tco_6 = cg2;
-                    var _tco_7 = watermark;
-                    var _tco_8 = (i + 1L);
-                    var _tco_9 = n;
-                    pds = _tco_0;
-                    bad_chapters = _tco_1;
-                    all_types = _tco_2;
-                    ust = _tco_3;
-                    colliding = _tco_4;
-                    assignments = _tco_5;
-                    cg = _tco_6;
-                    watermark = _tco_7;
-                    i = _tco_8;
-                    n = _tco_9;
-                    continue;
-                }
             }
         }
     }
@@ -16426,71 +16007,12 @@ public static class Codex_Codex_Codex
             }))()))(compile_to_binary(source, "2\u0010\u0016\u000D$U2\u0010\u0016\u000D$"));
     }
 
-    public static CodegenState emit_defs_diag_loop(List<ParsedDef> pds, List<string> bad_chapters, List<TypeBinding> all_types, UnificationState ust, List<string> colliding, List<ChapterAssignment> assignments, CodegenState cg, long watermark, long i, long n)
-    {
-        return ((i >= n) ? cg : ((Func<ParsedDef, CodegenState>)((pd) => ((Func<DefHeader, CodegenState>)((hdr) => ((Func<string, CodegenState>)((slug) => ((Func<CodegenState>)(() => {
-                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(string.Concat("9.E\u0016\u000D\u001CE", _Cce.FromUnicode(i.ToString()), "E", hdr.name.text))); return null; }))();
-                return (has_slug(bad_chapters, slug) ? emit_defs_diag_loop(pds, bad_chapters, all_types, ust, colliding, assignments, cg, watermark, (i + 1L), n) : ((Func<List<RenameEntry>, CodegenState>)((rn) => ((Func<Def, CodegenState>)((def) => ((Func<ADef, CodegenState>)((adef_raw) => ((Func<string, CodegenState>)((scoped_name) => ((Func<ADef, CodegenState>)((adef) => ((Func<IRDef, CodegenState>)((ir_def) => ((Func<CodegenState>)(() => {
-                        ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(string.Concat("9.E\u0017\u0010\u001B\u000D\u0015\u000D\u0016E", _Cce.FromUnicode(i.ToString())))); return null; }))();
-                        return ((Func<IRExpr, CodegenState>)((scoped_body) => ((Func<IRDef, CodegenState>)((scoped) => ((Func<CodegenState>)(() => {
-                                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(string.Concat("9.E\u0015\u000D\u0012\u000F\u001A\u000D\u0016E", _Cce.FromUnicode(i.ToString())))); return null; }))();
-                                return ((Func<CodegenState, CodegenState>)((cg2) => ((Func<CodegenState>)(() => {
-                                        ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(string.Concat("9.E\u000D\u001A\u0011\u000E\u000E\u000D\u0016E", _Cce.FromUnicode(i.ToString())))); return null; }))();
-                                        return emit_defs_diag_loop(pds, bad_chapters, all_types, ust, colliding, assignments, cg2, watermark, (i + 1L), n);
-                                    }))()))(emit_function(cg, scoped));
-                            }))()))(new IRDef(ir_def.name, ir_def.@params, ir_def.type_val, scoped_body, slug, ir_def.span))))(rename_ir_expr(rn, ir_def.body));
-                    }))()))(lower_def(adef, all_types, ust))))(new ADef(make_name(scoped_name), adef_raw.@params, adef_raw.declared_type, adef_raw.body, adef_raw.chapter_slug, adef_raw.span))))(scope_def_name(colliding, assignments, adef_raw.name.value, slug))))(desugar_def(def))))(new Def(hdr.name, hdr.@params, hdr.ann, pd.body, slug))))(build_chapter_rename_map(colliding, assignments, slug)));
-            }))()))(hdr.chapter_slug)))(pd.header)))(pds[(int)i]));
-    }
-
-    public static object emit_binary_diag(string source)
-    {
-        return ((Func<object>)(() => {
-                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("9.E\u000E\u0010\"\u000D\u0012\u0011&\u000D")); return null; }))();
-                ((Func<BinaryScan, object>)((scan) => ((Func<object>)(() => {
-                        ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("9.E\u0013\u0018\u0010\u001F\u000D")); return null; }))();
-                        ((Func<BinaryScope, object>)((scope) => ((Func<object>)(() => {
-                                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("9.E \u0019\u0011\u0017\u0016I\u000D\u0012!")); return null; }))();
-                                ((Func<BinaryEnv, object>)((benv) => ((Func<object>)(() => {
-                                        ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("9.E\u000F\u0012\u000F\u0017\u001E&\u000D")); return null; }))();
-                                        ((Func<BinaryAnalysis, object>)((an) => ((Func<object>)(() => {
-                                                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("9.E\u0018\u0010\u0016\u000D\u001D\u000D\u0012")); return null; }))();
-                                                ((Func<BinaryEnv, object>)((benv) => ((Func<BinaryScope, object>)((scope) => ((Func<CodegenState, object>)((cg0) => ((Func<CodegenState, object>)((cg0_seeded) => ((Func<object>)(() => {
-                                                        ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("9.E\u0018\u0010\u0016\u000D\u001D\u000D\u0012I\u0015\u000E")); return null; }))();
-                                                        ((Func<CodegenState, object>)((cg1) => ((Func<dynamic, object>)((watermark) => ((Func<object>)(() => {
-                                                                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("9.E\u0018\u0010\u0016\u000D\u001D\u000D\u0012I\u0016\u000D\u001C\u0013")); return null; }))();
-                                                                var cg = emit_defs_diag_loop(an.parse_results, an.bad_full, benv.all_types, benv.ust, scope.colliding, scope.assignments, cg1, watermark, 0L, ((long)an.parse_results.Count));
-                                                                ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("9.E\u001C\u0011\u0012\u000F\u0017\u0011&\u000D")); return null; }))();
-                                                                ((Func<EmitChapterResult, object>)((result) => ((Func<object>)(() => {
-                                                                        ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("9.E\u0018\u0010\u001A\u001F\u0011\u0017\u000DI\u0016\u0010\u0012\u000D")); return null; }))();
-                                                                        print_codegen_error_header(bag_diagnostics(result.bag));
-                                                                        ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(string.Concat("-+@'E", _Cce.FromUnicode(((long)result.bytes.Count).ToString())))); return null; }))();
-                                                                        ((Func<object>)(() => { var _bl = (List<long>)result.bytes; using var _s = Console.OpenStandardOutput(); foreach (var _b in _bl) _s.WriteByte((byte)_b); _s.Flush(); return null; }))();
-                                                                        ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode("9.E\u001B\u0015\u0010\u000E\u000D")); return null; }))();
-                                                                        return null;
-                                                                    }))()))(bin_finalize(cg));
-                                                                return null;
-                                                            }))()))(_Buf.heap_save())))(emit_runtime_helpers(cg0_seeded));
-                                                        return null;
-                                                    }))()))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, an.all_parse_bag)))(cg0))))(x86_64_init_codegen_streaming(benv.ctor_types, scope.scan.n_defs))))(benv.scope)))(an.env);
-                                                return null;
-                                            }))()))(bin_analyze(benv));
-                                        return null;
-                                    }))()))(bin_build_env(scope));
-                                return null;
-                            }))()))(bin_scope(scan));
-                        return null;
-                    }))()))(bin_tokenize(source));
-                return null;
-            }))();
-    }
-
     public static object main()
     {
         return ((Func<object>)(() => {
                 var mode = _Cce.FromUnicode(Console.ReadLine() ?? "");
                 var source = _Cce.FromUnicode(File.ReadAllText(_Cce.ToUnicode(mode)));
-                ((Func<string, object>)((clean) => ((mode == ":+,)/8") ? main_emit_binary(clean) : ((mode == ":+,)/8I0+)7") ? emit_binary_diag(clean) : compile_streaming_v2(clean, "9\u0015\u0010\u001D\u0015\u000F\u001A")))))(normalize_whitespace(source));
+                ((Func<string, object>)((clean) => ((mode == ":+,)/8") ? main_emit_binary(clean) : compile_streaming_v2(clean, "9\u0015\u0010\u001D\u0015\u000F\u001A"))))(normalize_whitespace(source));
                 return null;
             }))();
     }

@@ -287,116 +287,20 @@ Section: Whitespace Normalization
 
 Section: Binary Compilation
 
-  BinaryScan = record {
-   tokens : List Token,
-   type-defs : List ATypeDef,
-   headers : List DefHeader,
-   citations : List CitesDecl,
-   n-defs : Integer
-  }
-
-  BinaryScope = record {
-   scan : BinaryScan,
-   assignments : List ChapterAssignment,
-   colliding : List Text,
-   scoped-headers : List DefHeader
-  }
-
-  BinaryEnv = record {
-   scope : BinaryScope,
-   ust : UnificationState,
-   ctor-types : List TypeBinding,
-   all-types : List TypeBinding
-  }
-
-  BinaryAnalysis = record {
-   env : BinaryEnv,
-   parse-results : List ParsedDef,
-   bad-full : List Text,
-   all-parse-bag : DiagnosticBag
-  }
-
-  bin-tokenize : Text -> BinaryScan
-  bin-tokenize (source) =
+  compile-to-binary : Text -> Text -> EmitChapterResult
+  compile-to-binary (source) (chapter-name) =
    let tokens = tokenize source 1
    in let st = make-parse-state tokens
    in let scan = scan-document st
-   in BinaryScan {
-    tokens = tokens,
-    type-defs = map-list desugar-type-def (scan.type-defs),
-    headers = scan.def-headers,
-    citations = scan.citations,
-    n-defs = list-length (scan.def-headers)
-   }
-
-  bin-scope : BinaryScan -> BinaryScope
-  bin-scope (scan) =
-   let assignments = build-all-assignments (scan.headers) 0 []
+   in let assignments = build-all-assignments (scan.def-headers) 0 []
    in let colliding = find-colliding-names assignments
-   in let scoped-headers = scope-def-headers (scan.headers) colliding assignments 0 []
-   in BinaryScope {
-    scan = scan,
-    assignments = assignments,
-    colliding = colliding,
-    scoped-headers = scoped-headers
-   }
-
-  bin-build-env : BinaryScope -> BinaryEnv
-  bin-build-env (scope) =
-   let scan = scope.scan
-   in let tdm = build-type-def-map (scan.type-defs) 0 (list-length (scan.type-defs)) []
-   in let tenv = register-type-defs empty-unification-state builtin-type-env tdm (scan.type-defs) 0 (list-length (scan.type-defs))
-   in let env = register-def-headers (tenv.state) (tenv.env) tdm (scope.scoped-headers) 0 (list-length (scope.scoped-headers))
-   in let ctor-types = collect-ctor-bindings (scan.type-defs) 0 (list-length (scan.type-defs)) []
-   in BinaryEnv {
-    scope = scope,
-    ust = env.state,
-    ctor-types = ctor-types,
-    all-types = ctor-types ++ env.env.bindings
-   }
-
-  bin-analyze : BinaryEnv -> BinaryAnalysis
-  bin-analyze (benv) =
-   let scope = benv.scope
-   in let scan = scope.scan
-   in let parse-results = parse-all-bodies (scan.tokens) (scan.headers) 0 (scan.n-defs) []
-   in let chapter-bags = group-parse-bags parse-results 0 []
-   in let bad-initial = collect-bad-chapters chapter-bags 0 []
-   in let bad-full = close-bad-chapters-under-citations bad-initial (scan.citations)
-   in let all-parse-bag = merge-all-parse-bags parse-results 0 empty-bag
-   in BinaryAnalysis {
-    env = benv,
-    parse-results = parse-results,
-    bad-full = bad-full,
-    all-parse-bag = all-parse-bag
-   }
-
-  bin-emit-codegen : BinaryAnalysis -> CodegenState
-  bin-emit-codegen (an) =
-   let benv = an.env
-   in let scope = benv.scope
-   in let cg0 = x86-64-init-codegen-streaming (benv.ctor-types) (scope.scan.n-defs)
-   in let cg0-seeded = record-set cg0 "bag" (an.all-parse-bag)
-   in let pre-rt-wm = heap-save
-   in let cg1 = emit-runtime-helpers cg0-seeded
-   in let rt-cleanup = heap-restore pre-rt-wm
-   in let watermark = heap-save
-   in let tramp = bare-metal-trampoline
-   in emit-defs-binary-gated (an.parse-results) (an.bad-full) (benv.all-types) (benv.ust) (scope.colliding) (scope.assignments) cg1 watermark 0 (list-length (an.parse-results))
-
-  bin-finalize : CodegenState -> EmitChapterResult
-  bin-finalize (cg) =
-   let tramp = bare-metal-trampoline
-   in x86-64-finalize cg (tramp.far-jump-patch-pos)
-
-  compile-to-binary : Text -> Text -> EmitChapterResult
-  compile-to-binary (source) (chapter-name) =
-   let scan = bin-tokenize source
-   in let scope = bin-scope scan
-   in let benv = bin-build-env scope
-   in let an = bin-analyze benv
-   in let cg = bin-emit-codegen an
-   in bin-finalize cg
+   in let doc = parse-document (make-parse-state tokens)
+   in let ast = desugar-document doc chapter-name
+   in let scoped = scope-achapter ast colliding assignments
+   in let check-result = check-chapter scoped
+   in let ir = lower-chapter scoped (check-result.types) (check-result.state)
+   in let ctor-types = collect-ctor-bindings (scoped.type-defs) 0 (list-length (scoped.type-defs)) []
+   in x86-64-emit-chapter ir ctor-types
 
 Section: Header Scoping
   scope-def-headers : List DefHeader -> List Text -> List ChapterAssignment -> Integer -> List DefHeader -> List DefHeader
@@ -420,136 +324,7 @@ Section: Header Scoping
     chapter-slug = h.chapter-slug
    }))
 
-Section: Per-def Parse Collection
-
-  ParsedDef = record {
-   header : DefHeader,
-   body : Expr,
-   parse-bag : DiagnosticBag
-  }
-
-  parse-all-bodies : List Token -> List DefHeader -> Integer -> Integer -> List ParsedDef -> List ParsedDef
-  parse-all-bodies (tokens) (headers) (i) (n) (acc) =
-   if i >= n then acc
-   else let hdr = list-at headers i
-   in let body-st = ParseState {
-    tokens = tokens,
-    pos = hdr.body-pos,
-    bag = empty-bag
-   }
-   in let body-result = parse-expr body-st
-   in let bag = parse-bag-of body-result
-   in let body = unwrap-body body-result
-   in parse-all-bodies tokens headers (i + 1) n (list-snoc acc (ParsedDef { header = hdr, body = body, parse-bag = bag }))
-
-  parse-bag-of : ParseExprResult -> DiagnosticBag
-  parse-bag-of (r) =
-   when r
-    if ExprOk (e) (st) -> st.bag
-
-  merge-all-parse-bags : List ParsedDef -> Integer -> DiagnosticBag -> DiagnosticBag
-  merge-all-parse-bags (pds) (i) (acc) =
-   if i == list-length pds then acc
-   else merge-all-parse-bags pds (i + 1) (bag-merge acc ((list-at pds i).parse-bag))
-
-Section: Chapter Gating
-
-  ChapterBag = record {
-   slug : Text,
-   bag : DiagnosticBag
-  }
-
-  group-parse-bags : List ParsedDef -> Integer -> List ChapterBag -> List ChapterBag
-  group-parse-bags (pds) (i) (acc) =
-   if i == list-length pds then acc
-   else let pd = list-at pds i
-   in group-parse-bags pds (i + 1) (chapter-bag-insert acc (pd.header.chapter-slug) (pd.parse-bag) 0 (list-length acc))
-
-  chapter-bag-insert : List ChapterBag -> Text -> DiagnosticBag -> Integer -> Integer -> List ChapterBag
-  chapter-bag-insert (acc) (slug) (bag) (i) (len) =
-   if i >= len then list-snoc acc (ChapterBag { slug = slug, bag = bag })
-   else let cb = list-at acc i
-   in if cb.slug == slug then replace-at acc i (ChapterBag { slug = slug, bag = bag-merge (cb.bag) bag }) 0 len []
-   else chapter-bag-insert acc slug bag (i + 1) len
-
-  replace-at : List ChapterBag -> Integer -> ChapterBag -> Integer -> Integer -> List ChapterBag -> List ChapterBag
-  replace-at (xs) (target) (new-val) (i) (n) (acc) =
-   if i == n then acc
-   else if i == target then replace-at xs target new-val (i + 1) n (list-snoc acc new-val)
-   else replace-at xs target new-val (i + 1) n (list-snoc acc (list-at xs i))
-
-  collect-bad-chapters : List ChapterBag -> Integer -> List Text -> List Text
-  collect-bad-chapters (cbs) (i) (acc) =
-   if i == list-length cbs then acc
-   else let cb = list-at cbs i
-   in if bag-has-errors (cb.bag) then collect-bad-chapters cbs (i + 1) (list-snoc acc (cb.slug))
-   else collect-bad-chapters cbs (i + 1) acc
-
-  has-slug : List Text -> Text -> Boolean
-  has-slug (xs) (name) =
-   has-slug-loop xs name 0 (list-length xs)
-
-  has-slug-loop : List Text -> Text -> Integer -> Integer -> Boolean
-  has-slug-loop (xs) (name) (i) (n) =
-   if i == n then False
-   else if list-at xs i == name then True
-   else has-slug-loop xs name (i + 1) n
-
-  close-bad-chapters-under-citations : List Text -> List CitesDecl -> List Text
-  close-bad-chapters-under-citations (bad) (citations) =
-   let bad2 = propagate-bad-once bad citations 0 (list-length citations)
-   in if list-length bad2 == list-length bad then bad
-      else close-bad-chapters-under-citations bad2 citations
-
-  propagate-bad-once : List Text -> List CitesDecl -> Integer -> Integer -> List Text
-  propagate-bad-once (bad) (citations) (i) (n) =
-   if i == n then bad
-   else let c = list-at citations i
-   in let cited = c.chapter-name.text
-   in let citer = c.citing-chapter
-   in if has-slug bad cited then if has-slug bad citer then propagate-bad-once bad citations (i + 1) n
-         else propagate-bad-once (list-snoc bad citer) citations (i + 1) n
-      else propagate-bad-once bad citations (i + 1) n
-
-Section: Gated Binary Emit
-
-  emit-defs-binary-gated : List ParsedDef -> List Text -> List TypeBinding -> UnificationState -> List Text -> List ChapterAssignment -> CodegenState -> Integer -> Integer -> Integer -> CodegenState
-  emit-defs-binary-gated (pds) (bad-chapters) (all-types) (ust) (colliding) (assignments) (cg) (watermark) (i) (n) =
-   if i >= n then cg
-   else let pd = list-at pds i
-   in let hdr = pd.header
-   in let slug = hdr.chapter-slug
-   in if has-slug bad-chapters slug then emit-defs-binary-gated pds bad-chapters all-types ust colliding assignments cg watermark (i + 1) n
-      else let rn = build-chapter-rename-map colliding assignments slug
-   in let def = Def {
-    name = hdr.name,
-    params = hdr.params,
-    ann = hdr.ann,
-    body = pd.body,
-    chapter-slug = slug
-   }
-   in let adef-raw = desugar-def def
-   in let scoped-name = scope-def-name colliding assignments (adef-raw.name.value) slug
-   in let adef = ADef {
-    name = make-name scoped-name,
-    params = adef-raw.params,
-    declared-type = adef-raw.declared-type,
-    body = adef-raw.body,
-    chapter-slug = adef-raw.chapter-slug,
-    span = adef-raw.span
-   }
-   in let ir-def = lower-def adef all-types ust
-   in let scoped-body = rename-ir-expr rn (ir-def.body)
-   in let scoped = IRDef {
-    name = ir-def.name,
-    params = ir-def.params,
-    type-val = ir-def.type-val,
-    body = scoped-body,
-    chapter-slug = slug,
-    span = ir-def.span
-   }
-   in let cg2 = emit-function cg scoped
-   in emit-defs-binary-gated pds bad-chapters all-types ust colliding assignments cg2 watermark (i + 1) n
+Section: Codegen Diagnostics
 
   print-codegen-errors : List Diagnostic -> Integer -> Integer -> [Console] Nothing
   print-codegen-errors (errs) (i) (len) =
@@ -576,94 +351,12 @@ Section: Entry Point
     print-line ("SIZE:" ++ integer-to-text (list-length (result.bytes)))
     write-binary (result.bytes)
 
-  emit-defs-diag-loop : List ParsedDef -> List Text -> List TypeBinding -> UnificationState -> List Text -> List ChapterAssignment -> CodegenState -> Integer -> Integer -> Integer -> [Console] CodegenState
-  emit-defs-diag-loop (pds) (bad-chapters) (all-types) (ust) (colliding) (assignments) (cg) (watermark) (i) (n) =
-   if i >= n then cg
-   else let pd = list-at pds i
-   in let hdr = pd.header
-   in let slug = hdr.chapter-slug
-   in do
-    print-line ("PH:def:" ++ integer-to-text i ++ ":" ++ hdr.name.text)
-    if has-slug bad-chapters slug then emit-defs-diag-loop pds bad-chapters all-types ust colliding assignments cg watermark (i + 1) n
-    else let rn = build-chapter-rename-map colliding assignments slug
-    in let def = Def {
-     name = hdr.name,
-     params = hdr.params,
-     ann = hdr.ann,
-     body = pd.body,
-     chapter-slug = slug
-    }
-    in let adef-raw = desugar-def def
-    in let scoped-name = scope-def-name colliding assignments (adef-raw.name.value) slug
-    in let adef = ADef {
-     name = make-name scoped-name,
-     params = adef-raw.params,
-     declared-type = adef-raw.declared-type,
-     body = adef-raw.body,
-     chapter-slug = adef-raw.chapter-slug,
-     span = adef-raw.span
-    }
-    in let ir-def = lower-def adef all-types ust
-    in do
-     print-line ("PH:lowered:" ++ integer-to-text i)
-     let scoped-body = rename-ir-expr rn (ir-def.body)
-     in let scoped = IRDef {
-      name = ir-def.name,
-      params = ir-def.params,
-      type-val = ir-def.type-val,
-      body = scoped-body,
-      chapter-slug = slug,
-      span = ir-def.span
-     }
-     in do
-      print-line ("PH:renamed:" ++ integer-to-text i)
-      let cg2 = emit-function cg scoped
-      in do
-       print-line ("PH:emitted:" ++ integer-to-text i)
-       emit-defs-diag-loop pds bad-chapters all-types ust colliding assignments cg2 watermark (i + 1) n
-
-  emit-binary-diag : Text -> [Console, FileSystem] Nothing
-  emit-binary-diag (source) = do
-   print-line "PH:tokenize"
-   let scan = bin-tokenize source
-   in do
-    print-line "PH:scope"
-    let scope = bin-scope scan
-    in do
-     print-line "PH:build-env"
-     let benv = bin-build-env scope
-     in do
-      print-line "PH:analyze"
-      let an = bin-analyze benv
-      in do
-       print-line "PH:codegen"
-       let benv = an.env
-       in let scope = benv.scope
-       in let cg0 = x86-64-init-codegen-streaming (benv.ctor-types) (scope.scan.n-defs)
-       in let cg0-seeded = record-set cg0 "bag" (an.all-parse-bag)
-       in do
-        print-line "PH:codegen-rt"
-        let cg1 = emit-runtime-helpers cg0-seeded
-        in let watermark = heap-save
-        in do
-         print-line "PH:codegen-defs"
-         cg <- emit-defs-diag-loop (an.parse-results) (an.bad-full) (benv.all-types) (benv.ust) (scope.colliding) (scope.assignments) cg1 watermark 0 (list-length (an.parse-results))
-         print-line "PH:finalize"
-         let result = bin-finalize cg
-         in do
-          print-line "PH:compile-done"
-          print-codegen-error-header (bag-diagnostics (result.bag))
-          print-line ("SIZE:" ++ integer-to-text (list-length (result.bytes)))
-          write-binary (result.bytes)
-          print-line "PH:wrote"
-
   main : [Console, FileSystem] Nothing
   main = do
    mode <- read-line
    source <- read-file mode
    let clean = normalize-whitespace source
    in if mode == "BINARY" then emit-binary clean
-      else if mode == "BINARY-DIAG" then emit-binary-diag clean
       else compile-streaming-v2 clean "Program"
 
 Page 1
