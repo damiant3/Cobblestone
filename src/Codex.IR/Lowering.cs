@@ -400,6 +400,24 @@ public sealed class Lowering(
                 SubstituteTypeVar(ft.Return, varId, replacement)),
             ListType lt => new ListType(SubstituteTypeVar(lt.Element, varId, replacement)),
             LinkedListType lt => new LinkedListType(SubstituteTypeVar(lt.Element, varId, replacement)),
+            ConstructedType ct => ct with
+            {
+                Arguments = [.. ct.Arguments.Select(a => SubstituteTypeVar(a, varId, replacement))]
+            },
+            SumType st when !st.TypeParamIds.IsEmpty => st with
+            {
+                Constructors = [.. st.Constructors.Select(c => c with
+                {
+                    Fields = [.. c.Fields.Select(f => SubstituteTypeVar(f, varId, replacement))]
+                })]
+            },
+            RecordType rt when !rt.TypeParamIds.IsEmpty => rt with
+            {
+                Fields = [.. rt.Fields.Select(f => f with
+                {
+                    Type = SubstituteTypeVar(f.Type, varId, replacement)
+                })]
+            },
             _ => type
         };
     }
