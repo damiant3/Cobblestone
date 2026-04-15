@@ -631,6 +631,30 @@ Section: Expression Emission
    reg = rd.reg
   }
 
+  emit-show-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-show-builtin (st) (args) =
+   let arg = list-at args 0
+   in when ir-expr-type arg
+    is BooleanTy -> emit-show-bool st arg
+    is otherwise -> emit-helper-call-1 st args "__itoa"
+
+  emit-show-bool : CodegenState -> IRExpr -> EmitResult
+  emit-show-bool (st) (arg) =
+   let val-result = emit-expr (st-set-tail-pos st False) arg
+   in let st1 = st-append-text (val-result.state) (test-rr (val-result.reg) (val-result.reg))
+   in let je-false-pos = st1.text-len
+   in let st2 = st-append-text st1 (jcc cc-e 0)
+   in let true-result = emit-text-lit st2 "True"
+   in let result-loc = alloc-local (true-result.state)
+   in let st3 = store-local (result-loc.state) (result-loc.reg) (true-result.reg)
+   in let jmp-end-pos = st3.text-len
+   in let st4 = st-append-text st3 (jmp 0)
+   in let st5 = patch-jcc-at st4 je-false-pos (st4.text-len)
+   in let false-result = emit-text-lit st5 "False"
+   in let st6 = store-local (false-result.state) (result-loc.reg) (false-result.reg)
+   in let st7 = patch-jmp-at st6 jmp-end-pos (st6.text-len)
+   in load-local st7 (result-loc.reg)
+
   emit-num-arith : CodegenState -> Integer -> Integer -> Integer -> EmitResult
   emit-num-arith (st) (l-reg) (r-reg) (sse-op) =
    let rd = alloc-temp st
@@ -1558,7 +1582,7 @@ Section: Builtin Emission
     else if name == "write-binary" then emit-write-binary-builtin st args
     else if name == "text-length" then emit-text-length-builtin st args
     else if name == "integer-to-text" then emit-helper-call-1 st args "__itoa"
-    else if name == "show" then emit-helper-call-1 st args "__itoa"
+    else if name == "show" then emit-show-builtin st args
     else if name == "text-to-integer" then emit-helper-call-1 st args "__text_to_int"
     else if name == "text-replace" then emit-helper-call-3 st args "__str_replace"
     else if name == "text-contains" then emit-helper-call-2 st args "__text_contains"
