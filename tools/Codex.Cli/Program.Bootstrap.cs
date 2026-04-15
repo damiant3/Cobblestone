@@ -34,7 +34,12 @@ public static partial class Program
         Console.Write("Stage 0: Compiling .codex source (bootstrap compiler)...");
         Stopwatch sw = Stopwatch.StartNew();
 
-        string[] files = Directory.GetFiles(codexDir, "*.codex", SearchOption.AllDirectories)
+        // Quire semantics: root + one level of subdirectory only.
+        List<string> bootFiles = [];
+        bootFiles.AddRange(Directory.GetFiles(codexDir, "*.codex", SearchOption.TopDirectoryOnly));
+        foreach (string subDir in Directory.GetDirectories(codexDir))
+            bootFiles.AddRange(Directory.GetFiles(subDir, "*.codex", SearchOption.TopDirectoryOnly));
+        string[] files = bootFiles
             .OrderBy(f => f, StringComparer.Ordinal)
             .ToArray();
 
@@ -43,7 +48,7 @@ public static partial class Program
             Directory.CreateDirectory(outputDir);
 
         string chapterName = "Codex.Codex";
-        IRCompilationResult? irResult = CompileMultipleToIR(files, chapterName);
+        IRCompilationResult? irResult = CompileMultipleToIR(files, chapterName, codexRoot: codexDir);
         if (irResult is null)
         {
             Console.WriteLine(" FAILED");

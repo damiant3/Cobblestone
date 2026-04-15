@@ -94,15 +94,18 @@ public static partial class Program
         {
             if (pattern.Contains('*'))
             {
-                string searchDir = directory;
-                SearchOption searchOpt = pattern.Contains("**")
-                    ? SearchOption.AllDirectories
-                    : SearchOption.TopDirectoryOnly;
                 string filePattern = Path.GetFileName(pattern);
-                foreach (string file in Directory.GetFiles(searchDir, filePattern, searchOpt))
+                bool recursive = pattern.Contains("**");
+                // Quire semantics: `**` means root + one level of subdirectory
+                // (each top-level subdirectory is a quire). Nested subdirectories
+                // below depth 1 are not scanned.
+                foreach (string file in Directory.GetFiles(directory, filePattern, SearchOption.TopDirectoryOnly))
+                    if (!files.Contains(file)) files.Add(file);
+                if (recursive)
                 {
-                    if (!files.Contains(file))
-                        files.Add(file);
+                    foreach (string subDir in Directory.GetDirectories(directory))
+                    foreach (string file in Directory.GetFiles(subDir, filePattern, SearchOption.TopDirectoryOnly))
+                        if (!files.Contains(file)) files.Add(file);
                 }
             }
             else
@@ -118,21 +121,41 @@ public static partial class Program
         {
             string excludePattern = Path.GetFileName(exclude);
             bool recursive = exclude.Contains("**");
-            SearchOption excludeOpt = recursive
-                ? SearchOption.AllDirectories
-                : SearchOption.TopDirectoryOnly;
-            string excludeDir = recursive ? directory
-                : Path.Combine(directory, Path.GetDirectoryName(exclude) ?? "");
-            if (Directory.Exists(excludeDir))
+            string? excludeSubDir = recursive ? null : Path.GetDirectoryName(exclude);
+            HashSet<string> excluded = new(StringComparer.OrdinalIgnoreCase);
+            if (!recursive)
             {
-                HashSet<string> excluded = new(
-                    Directory.GetFiles(excludeDir, excludePattern, excludeOpt),
-                    StringComparer.OrdinalIgnoreCase);
-                files.RemoveAll(f => excluded.Contains(f));
+                string excludeDir = Path.Combine(directory, excludeSubDir ?? "");
+                if (Directory.Exists(excludeDir))
+                    foreach (string f in Directory.GetFiles(excludeDir, excludePattern, SearchOption.TopDirectoryOnly))
+                        excluded.Add(f);
             }
+            else
+            {
+                foreach (string f in Directory.GetFiles(directory, excludePattern, SearchOption.TopDirectoryOnly))
+                    excluded.Add(f);
+                foreach (string subDir in Directory.GetDirectories(directory))
+                foreach (string f in Directory.GetFiles(subDir, excludePattern, SearchOption.TopDirectoryOnly))
+                    excluded.Add(f);
+            }
+            files.RemoveAll(f => excluded.Contains(f));
         }
 
         files.Sort(StringComparer.Ordinal);
         return files.ToArray();
+    }
+
+    /// <summary>
+    /// The quire a file belongs to, relative to <paramref name="codexRoot"/>.
+    /// Returns null for files sitting directly in the codex root; otherwise
+    /// returns the top-level subdirectory basename.
+    /// </summary>
+    internal static string? QuireNameFor(string filePath, string codexRoot)
+    {
+        string fullFile = Path.GetFullPath(filePath);
+        string fullRoot = Path.GetFullPath(codexRoot);
+        string rel = Path.GetRelativePath(fullRoot, fullFile);
+        int sep = rel.IndexOfAny(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar });
+        return sep < 0 ? null : rel.Substring(0, sep);
     }
 }

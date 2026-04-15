@@ -88,12 +88,18 @@ public static partial class Program
 
     static IRCompilationResult? CompileMultipleToIR(
         string[] filePaths, string chapterName, IReadOnlyList<IChapterLoader>? extraLoaders = null,
-        Set<string>? grantedCapabilities = null)
+        Set<string>? grantedCapabilities = null, string? codexRoot = null)
     {
         DiagnosticBag diagnostics = new();
         Desugarer desugarer = new(diagnostics);
         List<Chapter> perFileChapters = [];
-        List<(string FilePath, string ChapterName, PageMarker? Page)> pageMarkers = [];
+        List<(string FilePath, string? Quire, string ChapterName, PageMarker? Page)> pageMarkers = [];
+
+        // If no explicit root was given, infer it from the first file's directory.
+        // This keeps bare `codex build <file>` behavior stable (null quire for everything).
+        string? inferredRoot = codexRoot ?? (filePaths.Length > 0
+            ? Path.GetDirectoryName(Path.GetFullPath(filePaths[0]))
+            : null);
 
         foreach (string filePath in filePaths)
         {
@@ -111,7 +117,10 @@ public static partial class Program
             string fileModule = document.Chapters.Count > 0
                 ? document.Chapters[0].Title
                 : Path.GetFileNameWithoutExtension(filePath);
-            pageMarkers.Add((filePath, fileModule, document.Page));
+            string? quire = inferredRoot is not null
+                ? QuireNameFor(filePath, inferredRoot)
+                : null;
+            pageMarkers.Add((filePath, quire, fileModule, document.Page));
             Chapter chapter = desugarer.Desugar(document, fileModule);
             perFileChapters.Add(chapter);
         }
@@ -312,10 +321,10 @@ public static partial class Program
         return new IRCompilationResult(irModule, types, capReport);
     }
 
-    static void ValidatePageMarkers(List<(string FilePath, string ChapterName, PageMarker? Page)> markers, DiagnosticBag diagnostics)
+    static void ValidatePageMarkers(List<(string FilePath, string? Quire, string ChapterName, PageMarker? Page)> markers, DiagnosticBag diagnostics)
     {
         // Check: every file must have a page marker
-        foreach (var (filePath, _, page) in markers)
+        foreach (var (filePath, _, _, page) in markers)
         {
             if (page is null)
             {
@@ -325,18 +334,41 @@ public static partial class Program
             }
         }
 
-        // Validate per chapter
+        // A chapter is identified by (quire, chapter-name). Chapters with the
+        // same name in different quires are different chapters; pages belong
+        // to exactly one chapter, which lives in exactly one quire.
         var byChapter = markers
             .Where(m => m.Page?.TotalPages is not null)
-            .GroupBy(m => m.ChapterName);
+            .GroupBy(m => (m.Quire, m.ChapterName));
 
         foreach (var group in byChapter)
         {
+            string chapterLabel = group.Key.Quire is null
+                ? group.Key.ChapterName
+                : $"{group.Key.Quire}/{group.Key.ChapterName}";
+
+            // All pages of a chapter must be in the same quire. If they aren't,
+            // the grouping above already split them — each split will then fail
+            // completeness separately, and we also emit a dedicated error so
+            // the cause is obvious.
+            var crossQuireSiblings = markers
+                .Where(m => m.ChapterName == group.Key.ChapterName
+                            && m.Quire != group.Key.Quire
+                            && m.Page?.TotalPages is not null)
+                .ToList();
+            if (crossQuireSiblings.Count > 0)
+            {
+                diagnostics.Error(CdxCodes.PageCountMismatch,
+                    $"Chapter '{group.Key.ChapterName}' has pages split across quires; all pages must live in the same quire",
+                    group.First().Page!.Span);
+                continue;
+            }
+
             var totals = group.Select(m => m.Page!.TotalPages!.Value).Distinct().ToList();
             if (totals.Count > 1)
             {
                 diagnostics.Error(CdxCodes.PageCountMismatch,
-                    $"Page count mismatch in '{group.Key}': files disagree ({string.Join(" vs ", totals)})",
+                    $"Page count mismatch in '{chapterLabel}': files disagree ({string.Join(" vs ", totals)})",
                     group.First().Page!.Span);
                 continue;
             }
@@ -348,7 +380,7 @@ public static partial class Program
                 if (!seen.Add(m.Page!.PageNumber))
                 {
                     diagnostics.Error(CdxCodes.DuplicatePage,
-                        $"Duplicate page {m.Page.PageNumber} in '{group.Key}'",
+                        $"Duplicate page {m.Page.PageNumber} in '{chapterLabel}'",
                         m.Page.Span);
                 }
             }
@@ -358,7 +390,7 @@ public static partial class Program
                 if (!seen.Contains(i))
                 {
                     diagnostics.Error(CdxCodes.MissingPage,
-                        $"Missing page {i} of {expectedTotal} in '{group.Key}'",
+                        $"Missing page {i} of {expectedTotal} in '{chapterLabel}'",
                         group.First().Page!.Span);
                 }
             }

@@ -157,7 +157,7 @@ public static partial class Program
             return RunIncrementalBuild(directory, target, files, outputPath, extraLoaders);
         }
 
-        IRCompilationResult? irResult = CompileMultipleToIR(files, project.Name, extraLoaders);
+        IRCompilationResult? irResult = CompileMultipleToIR(files, project.Name, extraLoaders, codexRoot: fullDir);
         if (irResult is null) return 1;
 
         if (IsAssemblyTarget(target))
@@ -176,7 +176,13 @@ public static partial class Program
     }
     static int RunBuildDirectory(string directory, string target)
     {
-        string[] files = Directory.GetFiles(directory, "*.codex", SearchOption.AllDirectories);
+        // Quire semantics: walk root + one level of subdirectory. Nested
+        // subdirectories below depth 1 are not part of the codex.
+        List<string> fileList = [];
+        fileList.AddRange(Directory.GetFiles(directory, "*.codex", SearchOption.TopDirectoryOnly));
+        foreach (string subDir in Directory.GetDirectories(directory))
+            fileList.AddRange(Directory.GetFiles(subDir, "*.codex", SearchOption.TopDirectoryOnly));
+        string[] files = fileList.ToArray();
         if (files.Length == 0)
         {
             Console.Error.WriteLine($"No .codex files found in {directory}");
@@ -184,7 +190,7 @@ public static partial class Program
         }
         Array.Sort(files, StringComparer.Ordinal);
         string chapterName = Path.GetFileName(Path.GetFullPath(directory));
-        IRCompilationResult? irResult = CompileMultipleToIR(files, chapterName);
+        IRCompilationResult? irResult = CompileMultipleToIR(files, chapterName, codexRoot: Path.GetFullPath(directory));
         if (irResult is null) return 1;
 
         if (IsAssemblyTarget(target))
