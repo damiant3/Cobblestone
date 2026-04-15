@@ -25,12 +25,12 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
     // Register allocator state (per-function)
     // Temps: RAX, RCX, RDX, RSI, RDI, R11 (caller-saved, recycled)
     // Locals: RBX, R12-R14 (callee-saved, monotonic)
-    // Spill scratch: R8, R9 (used by LoadLocal for spilled values — NOT in TempRegs)
+    // Spill scratch: R8, R9 (used by LoadLocal for spilled values — NOT in s_tempRegs)
     // Reserved: RSP (stack), RBP (frame), R10 (heap pointer), R15 (result-space pointer)
     const byte HeapReg = Reg.R10;    // working-space heap pointer
     const byte ResultReg = Reg.R15;  // result-space heap pointer (region reclamation)
-    static readonly byte[] TempRegs = [Reg.RAX, Reg.RCX, Reg.RDX, Reg.RSI, Reg.RDI, Reg.R11];
-    static readonly byte[] LocalRegs = [Reg.RBX, Reg.R12, Reg.R13, Reg.R14];
+    static readonly byte[] s_tempRegs = [Reg.RAX, Reg.RCX, Reg.RDX, Reg.RSI, Reg.RDI, Reg.R11];
+    static readonly byte[] s_localRegs = [Reg.RBX, Reg.R12, Reg.R13, Reg.R14];
     const int SpillBase = 32; // virtual register numbers for spilled locals
 
     int m_nextTemp;
@@ -72,14 +72,14 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         // Used by print helpers to convert CCE bytes back to Unicode for output.
         m_cceToUnicodeTableOffset = m_rodata.Count;
         for (int i = 0; i < 128; i++)
-            m_rodata.Add((byte)CceTable.ToUnicode[i]);
+            m_rodata.Add((byte)CceTable.s_toUnicode[i]);
         while (m_rodata.Count % 8 != 0) m_rodata.Add(0);
 
         // Emit Unicode→CCE lookup table (256 bytes) into .rodata.
         // Used by serial input to convert incoming Unicode bytes to CCE encoding.
         m_unicodeToCceTableOffset = m_rodata.Count;
         for (int i = 0; i < 256; i++)
-            m_rodata.Add((byte)(CceTable.FromUnicode.TryGetValue(i, out int cce) ? cce : CceTable.ReplacementCce));
+            m_rodata.Add((byte)(CceTable.s_fromUnicode.TryGetValue(i, out int cce) ? cce : CceTable.ReplacementCce));
         while (m_rodata.Count % 8 != 0) m_rodata.Add(0);
 
         EmitRuntimeHelpers();
@@ -562,7 +562,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         X86_64Encoder.PushR(m_text, Reg.RBP);
         X86_64Encoder.MovRR(m_text, Reg.RBP, Reg.RSP);
 
-        foreach (byte reg in LocalRegs)
+        foreach (byte reg in s_localRegs)
             X86_64Encoder.PushR(m_text, reg);
 
         int frameSizePatchOffset = m_text.Count;
@@ -594,13 +594,13 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         for (int i = 0; i < def.Parameters.Length; i++)
         {
             int local = AllocLocal();
-            if (i < Reg.ArgRegs.Length)
+            if (i < Reg.s_argRegs.Length)
             {
-                StoreLocal(local, Reg.ArgRegs[i]);
+                StoreLocal(local, Reg.s_argRegs[i]);
             }
             else
             {
-                int stackOffset = 16 + (i - Reg.ArgRegs.Length) * 8;
+                int stackOffset = 16 + (i - Reg.s_argRegs.Length) * 8;
                 byte tmp = AllocTemp();
                 X86_64Encoder.MovLoad(m_text, tmp, Reg.RBP, stackOffset);
                 StoreLocal(local, tmp);
@@ -702,9 +702,9 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
         // Epilogue: skip spill space, restore callee-saved, pop rbp, ret
         // lea rsp, [rbp - 32] points rsp at saved r14 (4 callee-saved × 8 bytes)
-        X86_64Encoder.Lea(m_text, Reg.RSP, Reg.RBP, -LocalRegs.Length * 8);
-        for (int i = LocalRegs.Length - 1; i >= 0; i--)
-            X86_64Encoder.PopR(m_text, LocalRegs[i]);
+        X86_64Encoder.Lea(m_text, Reg.RSP, Reg.RBP, -s_localRegs.Length * 8);
+        for (int i = s_localRegs.Length - 1; i >= 0; i--)
+            X86_64Encoder.PopR(m_text, s_localRegs[i]);
 
         X86_64Encoder.PopR(m_text, Reg.RBP);
         X86_64Encoder.Ret(m_text);
@@ -720,7 +720,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         m_text[frameSizePatchOffset + 6] = (byte)((frameSize >> 24) & 0xFF);
 
         // Total stack frame: spill slots + 4 callee-saved regs (32B) + saved RBP (8B) + return addr (8B)
-        m_functionFrameSizes[def.Name] = frameSize + LocalRegs.Length * 8 + 16;
+        m_functionFrameSizes[def.Name] = frameSize + s_localRegs.Length * 8 + 16;
     }
 
     byte EmitExpr(IRExpr expr) => expr switch
@@ -1229,21 +1229,21 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
         // Push stack args first (7th+), then set up register args (1st-6th).
         // Stack args pushed in reverse order so callee sees them at [rbp+16], [rbp+24]...
-        for (int i = argLocals.Count - 1; i >= Reg.ArgRegs.Length; i--)
+        for (int i = argLocals.Count - 1; i >= Reg.s_argRegs.Length; i--)
         {
             byte loaded = LoadLocal(argLocals[i]);
             X86_64Encoder.PushR(m_text, loaded);
         }
 
         // Register args: two-phase push/pop to avoid R8/R9 spill/arg conflict
-        int regArgCount = Math.Min(argLocals.Count, Reg.ArgRegs.Length);
+        int regArgCount = Math.Min(argLocals.Count, Reg.s_argRegs.Length);
         for (int i = 0; i < regArgCount; i++)
         {
             byte loaded = LoadLocal(argLocals[i]);
             X86_64Encoder.PushR(m_text, loaded);
         }
         for (int i = regArgCount - 1; i >= 0; i--)
-            X86_64Encoder.PopR(m_text, Reg.ArgRegs[i]);
+            X86_64Encoder.PopR(m_text, Reg.s_argRegs[i]);
 
         if (funcName is not null)
         {
@@ -1263,7 +1263,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         }
 
         // Clean up stack args after call
-        int stackArgCount = argLocals.Count - Reg.ArgRegs.Length;
+        int stackArgCount = argLocals.Count - Reg.s_argRegs.Length;
         if (stackArgCount > 0)
             X86_64Encoder.AddRI(m_text, Reg.RSP, stackArgCount * 8);
 
@@ -1339,15 +1339,15 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
         // Trampoline: R11 = closure pointer
         // Shift visible args right by numCaptures (backward to avoid clobbering)
-        for (int i = Reg.ArgRegs.Length - 1; i >= 0; i--)
+        for (int i = Reg.s_argRegs.Length - 1; i >= 0; i--)
         {
-            if (i + numCaptures < Reg.ArgRegs.Length)
-                X86_64Encoder.MovRR(m_text, Reg.ArgRegs[i + numCaptures], Reg.ArgRegs[i]);
+            if (i + numCaptures < Reg.s_argRegs.Length)
+                X86_64Encoder.MovRR(m_text, Reg.s_argRegs[i + numCaptures], Reg.s_argRegs[i]);
         }
 
         // Load captured args from closure into first N arg registers
-        for (int i = 0; i < numCaptures && i < Reg.ArgRegs.Length; i++)
-            X86_64Encoder.MovLoad(m_text, Reg.ArgRegs[i], Reg.R11, 8 + i * 8);
+        for (int i = 0; i < numCaptures && i < Reg.s_argRegs.Length; i++)
+            X86_64Encoder.MovLoad(m_text, Reg.s_argRegs[i], Reg.R11, 8 + i * 8);
 
         // Tail-jump to the real function (load address, jmp via rax)
         EmitLoadFunctionAddress(Reg.RAX, funcName);
@@ -7103,7 +7103,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         // Prologue (needed for AllocLocal/StoreLocal in print helpers)
         X86_64Encoder.PushR(m_text, Reg.RBP);
         X86_64Encoder.MovRR(m_text, Reg.RBP, Reg.RSP);
-        foreach (byte reg in LocalRegs)
+        foreach (byte reg in s_localRegs)
             X86_64Encoder.PushR(m_text, reg);
         int frameSizePatchOffset = m_text.Count;
         EmitSubRspImm32(0); // patched later
@@ -7375,16 +7375,16 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
 
     byte AllocTemp()
     {
-        byte reg = TempRegs[m_nextTemp % TempRegs.Length];
+        byte reg = s_tempRegs[m_nextTemp % s_tempRegs.Length];
         m_nextTemp++;
         return reg;
     }
 
     int AllocLocal()
     {
-        if (m_nextLocal < LocalRegs.Length)
+        if (m_nextLocal < s_localRegs.Length)
         {
-            int reg = LocalRegs[m_nextLocal];
+            int reg = s_localRegs[m_nextLocal];
             m_nextLocal++;
             return reg;
         }
@@ -7403,7 +7403,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         }
         else
         {
-            int offset = -((local - SpillBase) + 1) * 8 - LocalRegs.Length * 8;
+            int offset = -((local - SpillBase) + 1) * 8 - s_localRegs.Length * 8;
             X86_64Encoder.MovStore(m_text, Reg.RBP, valueReg, offset);
         }
     }
@@ -7413,7 +7413,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         if (local < SpillBase)
             return (byte)local;
         byte scratch = (m_loadLocalToggle++ % 2 == 0) ? Reg.R8 : Reg.R9;
-        int offset = -((local - SpillBase) + 1) * 8 - LocalRegs.Length * 8;
+        int offset = -((local - SpillBase) + 1) * 8 - s_localRegs.Length * 8;
         X86_64Encoder.MovLoad(m_text, scratch, Reg.RBP, offset);
         return scratch;
     }

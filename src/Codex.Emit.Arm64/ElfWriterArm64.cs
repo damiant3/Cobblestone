@@ -17,7 +17,7 @@ sealed class ElfWriterArm64
     const int SectionHeaderSize = 64;
 
     // Minimal .shstrtab: "\0.shstrtab\0" = 11 bytes
-    static readonly byte[] ShstrtabData = { 0, 0x2E, 0x73, 0x68, 0x73, 0x74, 0x72, 0x74, 0x61, 0x62, 0 };
+    static readonly byte[] s_shstrtabData = { 0, 0x2E, 0x73, 0x68, 0x73, 0x74, 0x72, 0x74, 0x61, 0x62, 0 };
 
     public static byte[] WriteExecutable(byte[] textSection, byte[] rodataSection, ulong entryOffset)
     {
@@ -33,7 +33,7 @@ sealed class ElfWriterArm64
 
         // .shstrtab section data follows rodata
         int shstrtabOffset = Align(rodataFileOffset + rodataSection.Length, 8);
-        int shstrtabSize = ShstrtabData.Length;
+        int shstrtabSize = s_shstrtabData.Length;
 
         // Section header table follows .shstrtab (2 entries: SHT_NULL + .shstrtab)
         int shOffset = Align(shstrtabOffset + shstrtabSize, 8);
@@ -98,7 +98,7 @@ sealed class ElfWriterArm64
         // ── .shstrtab data ─────────────────────────────────────
         while (ms.Position < shstrtabOffset)
             w.Write((byte)0);
-        w.Write(ShstrtabData);
+        w.Write(s_shstrtabData);
 
         // ── Section Header Table ───────────────────────────────
         while (ms.Position < shOffset)

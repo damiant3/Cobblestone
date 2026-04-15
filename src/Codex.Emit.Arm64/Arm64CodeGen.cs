@@ -40,7 +40,7 @@ sealed class Arm64CodeGen
     int m_tcoSavedNextLocal;
     uint m_tcoSavedNextTemp;
 
-    static readonly uint[] CalleeSaved = {
+    static readonly uint[] s_calleeSaved = {
         Arm64Reg.X19, Arm64Reg.X20, Arm64Reg.X21, Arm64Reg.X22,
         Arm64Reg.X23, Arm64Reg.X24, Arm64Reg.X25, Arm64Reg.X26,
         Arm64Reg.X27

@@ -28,8 +28,8 @@ static class Reg
     //   Return:  RAX
     //   Callee-saved: RBX, RBP, R12-R15
     //   Caller-saved: RAX, RCX, RDX, RSI, RDI, R8-R11
-    public static readonly byte[] ArgRegs = [RDI, RSI, RDX, RCX, R8, R9];
-    public static readonly byte[] CalleeSaved = [RBX, R12, R13, R14, R15];
+    public static readonly byte[] s_argRegs = [RDI, RSI, RDX, RCX, R8, R9];
+    public static readonly byte[] s_calleeSaved = [RBX, R12, R13, R14, R15];
     // RBP used as frame pointer, not in callee-saved rotation
 }
 

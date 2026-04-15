@@ -186,7 +186,7 @@ sealed class McpServer
             ["id"] = id?.DeepClone(),
             ["result"] = result,
         };
-        await writer.WriteLineAsync(response.ToJsonString(JsonOpts.Compact));
+        await writer.WriteLineAsync(response.ToJsonString(JsonOpts.s_compact));
     }
 
     static async Task WriteError(StreamWriter writer, JsonNode? id, int code, string message)
@@ -201,13 +201,13 @@ sealed class McpServer
                 ["message"] = message,
             },
         };
-        await writer.WriteLineAsync(response.ToJsonString(JsonOpts.Compact));
+        await writer.WriteLineAsync(response.ToJsonString(JsonOpts.s_compact));
     }
 }
 
 static class JsonOpts
 {
-    public static readonly JsonSerializerOptions Compact = new()
+    public static readonly JsonSerializerOptions s_compact = new()
     {
         WriteIndented = false,
     };

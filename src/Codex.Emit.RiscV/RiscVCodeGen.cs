@@ -53,7 +53,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
     // None of these are saved/restored by functions — they are global state.
     const uint ResultReg = Reg.S11;
     const uint ResultBaseReg = Reg.S10;
-    static readonly uint[] CalleeSaved = {
+    static readonly uint[] s_calleeSaved = {
         Reg.S2, Reg.S3, Reg.S4, Reg.S5, Reg.S6,
         Reg.S7, Reg.S8, Reg.S9
     };
@@ -75,12 +75,12 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         // Emit CCE↔Unicode lookup tables into .rodata
         m_cceToUnicodeTableOffset = m_rodata.Count;
         for (int i = 0; i < 128; i++)
-            m_rodata.Add((byte)CceTable.ToUnicode[i]);
+            m_rodata.Add((byte)CceTable.s_toUnicode[i]);
         while (m_rodata.Count % 8 != 0) m_rodata.Add(0);
 
         m_unicodeToCceTableOffset = m_rodata.Count;
         for (int i = 0; i < 256; i++)
-            m_rodata.Add((byte)(CceTable.FromUnicode.TryGetValue(i, out int cce) ? cce : CceTable.ReplacementCce));
+            m_rodata.Add((byte)(CceTable.s_fromUnicode.TryGetValue(i, out int cce) ? cce : CceTable.ReplacementCce));
         while (m_rodata.Count % 8 != 0) m_rodata.Add(0);
 
         EmitRuntimeHelpers();
@@ -187,8 +187,8 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         Emit(RiscVEncoder.Nop());                       // slot 2: patched or nop
         Emit(RiscVEncoder.Sd(Reg.Sp, Reg.Ra, 72));
         Emit(RiscVEncoder.Sd(Reg.Sp, Reg.S0, 64));
-        for (int i = 0; i < CalleeSaved.Length; i++)
-            Emit(RiscVEncoder.Sd(Reg.Sp, CalleeSaved[i], 56 - i * 8));
+        for (int i = 0; i < s_calleeSaved.Length; i++)
+            Emit(RiscVEncoder.Sd(Reg.Sp, s_calleeSaved[i], 56 - i * 8));
         // S0 = frame pointer: reserve 3 slots for large frame
         Emit(RiscVEncoder.Addi(Reg.S0, Reg.Sp, 80));   // slot A: patched
         Emit(RiscVEncoder.Nop());                        // slot B: patched or nop
@@ -271,12 +271,12 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         // Patch prologue: SP adjustment (3 instruction slots)
         PatchFrameAdjust(m_prologueIndex, Reg.Sp, Reg.Sp, -frameSize);
         // Patch S0 setup (3 instruction slots after callee-saved stores)
-        int s0Index = m_prologueIndex + 3 + 2 + CalleeSaved.Length; // 3 prologue + sd ra + sd s0 + callee saves
+        int s0Index = m_prologueIndex + 3 + 2 + s_calleeSaved.Length; // 3 prologue + sd ra + sd s0 + callee saves
         PatchFrameAdjust(s0Index, Reg.S0, Reg.Sp, frameSize);
 
         // Epilogue
-        for (int i = 0; i < CalleeSaved.Length; i++)
-            Emit(RiscVEncoder.Ld(CalleeSaved[i], Reg.Sp, 56 - i * 8));
+        for (int i = 0; i < s_calleeSaved.Length; i++)
+            Emit(RiscVEncoder.Ld(s_calleeSaved[i], Reg.Sp, 56 - i * 8));
         Emit(RiscVEncoder.Ld(Reg.Ra, Reg.Sp, 72));
         Emit(RiscVEncoder.Ld(Reg.S0, Reg.Sp, 64));
         EmitAddSp(frameSize);
