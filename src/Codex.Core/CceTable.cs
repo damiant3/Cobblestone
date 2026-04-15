@@ -602,8 +602,8 @@ public static class CceTable
         sb.AppendLine("    static readonly Dictionary<int, int> _fromUni = new();");
         sb.AppendLine("    static _Cce() { for (int i = 0; i < 128; i++) _fromUni[_toUni[i]] = i; }");
 
-        // s_fromUnicode — full Tier 0-3
-        sb.AppendLine("    public static string s_fromUnicode(string s) {");
+        // FromUnicode — full Tier 0-3
+        sb.AppendLine("    public static string FromUnicode(string s) {");
         sb.AppendLine("        s = s.Replace(\"\\t\", \"  \").Replace(\"\\r\", \"\");");
         sb.AppendLine("        var sb = new System.Text.StringBuilder(s.Length);");
         sb.AppendLine("        for (int i = 0; i < s.Length; i++) {");
@@ -623,8 +623,8 @@ public static class CceTable
         sb.AppendLine("        return sb.ToString();");
         sb.AppendLine("    }");
 
-        // s_toUnicode — full Tier 0-3
-        sb.AppendLine("    public static string s_toUnicode(string s) {");
+        // ToUnicode — full Tier 0-3
+        sb.AppendLine("    public static string ToUnicode(string s) {");
         sb.AppendLine("        var sb = new System.Text.StringBuilder(s.Length);");
         sb.AppendLine("        int i = 0;");
         sb.AppendLine("        while (i < s.Length) {");
