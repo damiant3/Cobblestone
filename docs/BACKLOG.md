@@ -61,14 +61,17 @@
 
 ## Performance — Quadratic hotspots in self-host (remaining)
 
-| # | Location | Pattern | Impact |
+Re-profiled 2026-04-16 on 589K-char self-host source. Typecheck = 1419ms,
+emit = 1136ms (see `docs/Test/PERF-HOTSPOTS-2026-04-16.md`).
+Ordered by measured cost.
+
+| # | Location | Pattern | Measured impact |
 |---|----------|---------|--------|
-| P2 | `Codex.Codex/Types/TypeEnv.codex:37-45` `env-bind` | Uses `list-insert-at` (O(n) shift per insert) for sorted binding insert | Building N-binding env is O(n²). Partially mitigated by `list-insert-at` Path 1 in-place shift (`0f75f96`) and the HAMT-partial merge (`88e056a` / `1a90eeb`), but each call still O(n) bytes. Affects type-checking at module scope. |
-| P3 | `Codex.Codex/Core/Set.codex:14-20` `set-insert` | Same `list-insert-at` pattern as P2 | O(n) per insert; O(n²) to build an n-element set. |
-| P7 | `Codex.Codex/Types/TypeChecker.codex:295-312` `build-type-def-map` | `list-insert-at` sorted-insert per type def to keep `tdm` sorted | O(T²) where T = number of type defs. Typical T ≈ 50–100 → modest. Still O(n²) pattern worth flagging. |
-| P9 | `Codex.Codex/Types/Unifier.codex:83-89` `resolve` | Walks the substitution chain without path compression | `TypeVar → TypeVar → …` chain of depth D resolves in O(D * log S). With classic union-find path compression this becomes amortized O(α(S)). Lookup-side 2×-bsearch already fused via `9a8a723` (P8); the insert-side `add-subst` still uses `list-insert-at`. |
-| P13-tail | `Codex.Codex/Emit/CodexEmitter.codex:579,616-630` `replace-def` + `list-set` | During dominance analysis, each dominated def triggers `replace-def` (O(N) scan) + `list-set` (O(N) rebuild via snoc-loop) | O(N²) total for module with N defs. Only in Codex emitter (not bare-metal), so not a binary-mode hotspot. Head of P13 closed by `list-set-at` builtin (`466a08b`); the scan-side remains. |
-| P14 | `Codex.Codex/Types/TypeChecker.codex:376-381` `lookup-record-field` | Linear scan over record fields per `.field` access | Record field count is small (typically ≤ 10), so O(F) per access is modest. But called on every record projection across the program → cumulative. Low priority; keep a linear probe since F is bounded. |
+| P9 | `Codex.Codex/Types/Unifier.codex:96-108` `add-subst` | Sorted-list substitution table; every call rebuilds the whole list (`List<SubstEntry>` copy + `Insert` at bsearch pos) | **Biggest typecheck hotspot.** 20,394 calls, max N = 20,393, total work ≈ 208M copy ops ≈ **~400ms = 28% of typecheck**. `var_id` is sequentially allocated — fix by switching to dense `var_id`-indexed storage (O(1) insert/lookup). Note: `resolve`-side "path compression" previously listed here is a non-issue — max chain depth is 2, avg 0 hops. |
+| P2 | `Codex.Codex/Types/TypeEnv.codex:37-45` `env-bind` | Sorted `List<TypeBinding>` with per-call list-copy + `Insert` (open-coded `list-insert-at`) | 10,493 calls, max N = 1,877, total work ≈ 17M ops ≈ **~35ms = ~2% of typecheck**. Real but small on current workload. Landed speedup `85cfa4d` (sorted bsearch + `list-snoc`) still mostly holds. HAMT (`88e056a`) was tried and **reverted** (`f85d031`) for being slower. |
+| P13-tail | `Codex.Codex/Emit/CodexEmitter.codex:579,616-630` `replace-def` + `list-set` | O(N) scan + O(N) rebuild per dominated def | **Codex-to-Codex emitter only** — 0 calls on pingpong bench (C# emit path). Only hit if we rebuild the Codex emitter as part of the toolchain. |
+| P14 | `Codex.Codex/Types/TypeChecker.codex:376-381` `lookup-record-field` | Linear scan over record fields per `.field` access | Unprofiled; F is bounded (≤ ~10) so cost is linear-small. Keep the probe. Low priority. |
+| EMIT-TBD | `Codex.Codex/Emit/**` (needs profiling) | Unknown — emit phase is 1136ms (40% of total compile) with no hotspot named in the backlog | Needs a profiling pass similar to the one that produced the rows above. Next perf target after P9. |
 
 
 ## Compiler Correctness (low priority, non-blocking, continued)
