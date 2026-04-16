@@ -1,0 +1,400 @@
+Chapter: X86-64 Code Generator
+
+ State records, constants, rodata tables, register allocation, and
+ byte-patching helpers used throughout the x86-64 code generator.
+
+Section: Record Types
+  FuncOffset = record {
+   name : Text,
+   offset : Integer
+  }
+
+  CallPatch = record {
+   patch-offset : Integer,
+   target : Text
+  }
+
+  LocalBinding = record {
+   name : Text,
+   slot : Integer
+  }
+
+  FuncAddrFixup = record {
+   patch-offset : Integer,
+   target : Text
+  }
+
+  RodataFixup = record {
+   patch-offset : Integer,
+   rodata-offset : Integer
+  }
+
+  TcoState = record {
+   active : Boolean,
+   in-tail-pos : Boolean,
+   loop-top : Integer,
+   param-locals : List Integer,
+   temp-locals : List Integer,
+   current-func : Text,
+   saved-next-local : Integer,
+   saved-next-temp : Integer
+  }
+
+  CodegenState = record {
+   text-buf-addr : Integer,
+   text-len : Integer,
+   rodata-buf-addr : Integer,
+   rodata-len : Integer,
+   func-offsets : List FuncOffset,
+   call-patches : List CallPatch,
+   func-addr-fixups : List FuncAddrFixup,
+   rodata-fixups : List RodataFixup,
+   deferred-patches : List PatchEntry,
+   locals : List LocalBinding,
+   next-temp : Integer,
+   next-local : Integer,
+   spill-count : Integer,
+   load-local-toggle : Integer,
+   tco : TcoState,
+   type-defs : List TypeBinding,
+   stack-overflow-checks : List Integer,
+   bag : DiagnosticBag
+  }
+
+  EmitResult = record {
+   state : CodegenState,
+   reg : Integer
+  }
+
+  TrampolineResult = record {
+   bytes : List Integer,
+   far-jump-patch-pos : Integer
+  }
+
+  EmitChapterResult = record {
+   bytes : List Integer,
+   bag : DiagnosticBag
+  }
+
+  FlatApply = record {
+   func-name : Text,
+   args : List IRExpr
+  }
+
+  SavedArgs = record {
+   state : CodegenState,
+   locals : List Integer
+  }
+
+  FieldLocal = record {
+   name : Text,
+   slot : Integer
+  }
+
+  EvalFieldsResult = record {
+   state : CodegenState,
+   field-locals : List FieldLocal
+  }
+
+  MatchBranchState = record {
+   cg-state : CodegenState,
+   end-patches : List Integer
+  }
+
+Section: Constants
+  default-tco-state : TcoState
+  default-tco-state =
+   TcoState {
+    active = False,
+    in-tail-pos = False,
+    loop-top = 0,
+    param-locals = [],
+    temp-locals = [],
+    current-func = "",
+    saved-next-local = 0,
+    saved-next-temp = 0
+  }
+
+  temp-regs : List Integer
+  temp-regs =
+   [0, 1, 2, 6, 7, 11]
+
+  local-regs : List Integer
+  local-regs =
+   [3, 12, 13, 14]
+
+  spill-base : Integer
+  spill-base =
+   32
+
+  bare-metal-load-addr : Integer
+  bare-metal-load-addr =
+   1048576
+
+  bare-metal-stack-top : Integer
+  bare-metal-stack-top =
+   1073741824
+
+Section: Rodata Tables
+  cce-to-unicode-table : List Integer
+  cce-to-unicode-table =
+   [0, 10, 32, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 101, 116, 97, 111, 105, 110, 115, 104, 114, 100, 108, 99, 117, 109, 119, 102, 103, 121, 112, 98, 118, 107, 106, 120, 113, 122, 69, 84, 65, 79, 73, 78, 83, 72, 82, 68, 76, 67, 85, 77, 87, 70, 71, 89, 80, 66, 86, 75, 74, 88, 81, 90, 46, 44, 33, 63, 58, 59, 39, 34, 45, 40, 41, 43, 61, 42, 60, 62, 47, 64, 35, 38, 95, 92, 124, 91, 93, 123, 125, 126, 96, 94, 233, 232, 234, 235, 225, 224, 226, 228, 243, 244, 246, 250, 249, 251, 252, 241, 231, 237, 48, 62, 53, 56, 61, 66, 65, 64, 50, 59, 58, 60, 52, 63, 67]
+
+  unicode-to-cce-table : List Integer
+  unicode-to-cce-table =
+   [0, 68, 68, 68, 68, 68, 68, 68, 68, 68, 1, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 2, 67, 72, 83, 68, 68, 84, 71, 74, 75, 78, 76, 66, 73, 65, 81, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 69, 70, 79, 77, 80, 68, 82, 41, 58, 50, 48, 39, 54, 55, 46, 43, 61, 60, 49, 52, 44, 42, 57, 63, 47, 45, 40, 51, 59, 53, 62, 56, 64, 88, 86, 89, 94, 85, 93, 15, 32, 24, 22, 13, 28, 29, 20, 17, 35, 34, 23, 26, 18, 16, 31, 37, 21, 19, 14, 25, 33, 27, 36, 30, 38, 90, 87, 91, 92, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 100, 99, 101, 68, 102, 68, 68, 111, 96, 95, 97, 98, 68, 112, 68, 68, 68, 110, 68, 103, 104, 68, 105, 68, 68, 107, 106, 108, 109, 68, 68, 68]
+
+  result-base-rodata-offset : Integer = 0
+
+  fwd-table-rodata-offset : Integer = 8
+
+  cce-to-unicode-rodata-offset : Integer = 16
+
+  unicode-to-cce-rodata-offset : Integer = 144
+
+  init-rodata : List Integer
+  init-rodata =
+   let zeros-8 = [0, 0, 0, 0, 0, 0, 0, 0]
+   in zeros-8 ++ zeros-8 ++ cce-to-unicode-table ++ unicode-to-cce-table
+
+Section: State Helpers
+  empty-codegen-state : CodegenState
+  empty-codegen-state =
+   CodegenState {
+   text-buf-addr = 0,
+   text-len = 0,
+   rodata-buf-addr = 0,
+   rodata-len = 0,
+   func-offsets = [],
+   call-patches = [],
+   func-addr-fixups = [],
+   rodata-fixups = [],
+   deferred-patches = [],
+   locals = [],
+   next-temp = 0,
+   next-local = 0,
+   spill-count = 0,
+   load-local-toggle = 0,
+   tco = TcoState {
+    active = False,
+    in-tail-pos = False,
+    loop-top = 0,
+    param-locals = [],
+    temp-locals = [],
+    current-func = "",
+    saved-next-local = 0,
+    saved-next-temp = 0
+   },
+   type-defs = [],
+   stack-overflow-checks = [],
+   bag = empty-bag
+  }
+
+  st-add-error : CodegenState -> Integer -> Text -> SourceSpan -> CodegenState
+  st-add-error (st) (code) (msg) (sp) =
+   record-set st "bag" (bag-add (st.bag) (make-error code msg sp))
+
+  st-append-text : CodegenState -> List Integer -> CodegenState
+  st-append-text (st) (bytes) =
+   let new-len = buf-write-bytes (st.text-buf-addr) (st.text-len) bytes
+   in record-set st "text-len" new-len
+
+
+  record-func-offset : CodegenState -> Text -> CodegenState
+  record-func-offset (st) (name) =
+   record-set st "func-offsets" (list-snoc (st.func-offsets) (FuncOffset {
+     name = name,
+     offset = st.text-len
+    }))
+
+  fresh-empty-locals : Integer -> List LocalBinding
+  fresh-empty-locals (x) = []
+
+  reset-func-state : CodegenState -> Text -> CodegenState
+  reset-func-state (st) (name) =
+   let st1 = record-set st "func-offsets" (list-snoc (st.func-offsets) (FuncOffset {
+     name = name,
+     offset = st.text-len
+    }))
+   in let st2 = record-set st1 "locals" (fresh-empty-locals 0)
+   in let st3 = record-set st2 "next-temp" 0
+   in let st4 = record-set st3 "next-local" 0
+   in let st5 = record-set st4 "spill-count" 0
+   in let st6 = record-set st5 "load-local-toggle" 0
+   in record-set st6 "tco" (TcoState {
+    active = False,
+    in-tail-pos = False,
+    loop-top = 0,
+    param-locals = [],
+    temp-locals = [],
+    current-func = "",
+    saved-next-local = 0,
+    saved-next-temp = 0
+   })
+
+Section: Register Allocation
+  alloc-temp : CodegenState -> EmitResult
+  alloc-temp (st) =
+   let idx = int-mod (st.next-temp) 6
+   in let reg = list-at temp-regs idx
+   in EmitResult {
+   state = record-set st "next-temp" (st.next-temp + 1),
+   reg = reg
+  }
+
+  alloc-local : CodegenState -> EmitResult
+  alloc-local (st) =
+   if st.next-local < 4 then let reg = list-at local-regs (st.next-local)
+   in EmitResult {
+   state = record-set st "next-local" (st.next-local + 1),
+   reg = reg
+  }
+   else let slot = spill-base + st.spill-count
+   in let st1 = record-set st "next-local" (st.next-local + 1)
+   in EmitResult {
+   state = record-set st1 "spill-count" (st.spill-count + 1),
+   reg = slot
+  }
+
+  store-local : CodegenState -> Integer -> Integer -> CodegenState
+  store-local (st) (local) (value-reg) =
+   if local < spill-base then if local == value-reg then st
+   else st-append-text st (mov-rr local value-reg)
+   else let offset = 0 - ((local - spill-base + 1) * 8 + 32)
+   in st-append-text st (mov-store reg-rbp value-reg offset)
+
+  load-local-scratch-for : Integer -> Integer
+  load-local-scratch-for (toggle) =
+   let idx = int-mod toggle 3
+   in if idx == 0 then reg-r8
+      else if idx == 1 then reg-r9
+      else reg-r15
+
+  load-local : CodegenState -> Integer -> EmitResult
+  load-local (st) (local) =
+   if local < spill-base then EmitResult {
+   state = st,
+   reg = local
+  }
+   else let scratch = load-local-scratch-for (st.load-local-toggle)
+   in let offset = 0 - ((local - spill-base + 1) * 8 + 32)
+   in let st1 = st-append-text st (mov-load scratch reg-rbp offset)
+   in EmitResult {
+   state = record-set st1 "load-local-toggle" (st.load-local-toggle + 1),
+   reg = scratch
+  }
+
+Section: Byte Patching
+  patch-i32-at : List Integer -> Integer -> Integer -> List Integer
+  patch-i32-at (bytes) (pos) (value) =
+   let new-bytes = write-i32 value
+   in patch-4-loop bytes pos new-bytes 0 (list-length bytes) []
+
+  patch-4-loop : List Integer -> Integer -> List Integer -> Integer -> Integer -> List Integer -> List Integer
+  patch-4-loop (bytes) (pos) (new-bytes) (i) (len) (acc) =
+   if i == len then acc
+   else if i >= pos & i < pos + 4 then patch-4-loop bytes pos new-bytes (i + 1) len (list-snoc acc (list-at new-bytes (i - pos)))
+   else patch-4-loop bytes pos new-bytes (i + 1) len (list-snoc acc (list-at bytes i))
+
+  st-add-deferred-patch : CodegenState -> PatchEntry -> CodegenState
+  st-add-deferred-patch (st) (entry) =
+   record-set st "deferred-patches" (list-snoc (st.deferred-patches) entry)
+
+  patch-jcc-at : CodegenState -> Integer -> Integer -> CodegenState
+  patch-jcc-at (st) (jcc-pos) (target-pos) =
+   let rel32 = target-pos - (jcc-pos + 6)
+   in st-add-deferred-patch st (make-i32-patch (jcc-pos + 2) rel32)
+
+  patch-jmp-at : CodegenState -> Integer -> Integer -> CodegenState
+  patch-jmp-at (st) (jmp-pos) (target-pos) =
+   let rel32 = target-pos - (jmp-pos + 5)
+   in st-add-deferred-patch st (make-i32-patch (jmp-pos + 1) rel32)
+
+  patch-call-at : CodegenState -> Integer -> Integer -> CodegenState
+  patch-call-at (st) (call-pos) (target-pos) =
+   let rel32 = target-pos - (call-pos + 5)
+   in st-add-deferred-patch st (make-i32-patch (call-pos + 1) rel32)
+
+  PatchEntry = record {
+   pos : Integer,
+   b0 : Integer,
+   b1 : Integer,
+   b2 : Integer,
+   b3 : Integer
+  }
+
+  make-i32-patch : Integer -> Integer -> PatchEntry
+  make-i32-patch (pos) (value) =
+   let bs = write-i32 value
+   in PatchEntry {
+    pos = pos,
+    b0 = list-at bs 0,
+    b1 = list-at bs 1,
+    b2 = list-at bs 2,
+    b3 = list-at bs 3
+  }
+
+  apply-all-patches : List Integer -> List PatchEntry -> List Integer
+  apply-all-patches (bytes) (patches) =
+   apply-patch-walk bytes patches 0 (list-length bytes) []
+
+  apply-patch-walk : List Integer -> List PatchEntry -> Integer -> Integer -> List Integer -> List Integer
+  apply-patch-walk (bytes) (patches) (i) (len) (acc) =
+   if i == len then acc
+   else let b = find-patch-byte patches i 0 (list-length patches)
+   in if b >= 0 then apply-patch-walk bytes patches (i + 1) len (list-snoc acc b)
+      else apply-patch-walk bytes patches (i + 1) len (list-snoc acc (list-at bytes i))
+
+  find-patch-byte : List PatchEntry -> Integer -> Integer -> Integer -> Integer
+  find-patch-byte (patches) (i) (j) (len) =
+   if j == len then -1
+   else let p = list-at patches j
+   in if i == p.pos then p.b0
+      else if i == p.pos + 1 then p.b1
+      else if i == p.pos + 2 then p.b2
+      else if i == p.pos + 3 then p.b3
+      else find-patch-byte patches i (j + 1) len
+
+  collect-call-patches : List CallPatch -> OffsetTable -> Integer -> List PatchEntry -> List PatchEntry
+  collect-call-patches (patches) (offset-map) (i) (acc) =
+   if i == list-length patches then acc
+   else let p = list-at patches i
+   in let target-offset = offset-table-lookup offset-map (p.target)
+   in let rel32 = target-offset - (p.patch-offset + 5)
+   in collect-call-patches patches offset-map (i + 1) (list-snoc acc (make-i32-patch (p.patch-offset + 1) rel32))
+
+  check-call-patch-targets : CodegenState -> OffsetTable -> Integer -> CodegenState
+  check-call-patch-targets (st) (fm) (i) =
+   let patches = st.call-patches
+   in if i == list-length patches then st
+   else let p = list-at patches i
+   in let off = offset-table-lookup fm (p.target)
+   in if off == 0 - 1
+    then check-call-patch-targets (st-add-error st cdx-unresolved-func-offset ("Unresolved call to '" ++ p.target ++ "'") synthetic-span) fm (i + 1)
+    else check-call-patch-targets st fm (i + 1)
+
+  check-func-addr-targets : CodegenState -> OffsetTable -> Integer -> CodegenState
+  check-func-addr-targets (st) (fm) (i) =
+   let fixups = st.func-addr-fixups
+   in if i == list-length fixups then st
+   else let f = list-at fixups i
+   in let off = offset-table-lookup fm (f.target)
+   in if off == 0 - 1
+    then check-func-addr-targets (st-add-error st cdx-unresolved-func-offset ("Unresolved func-addr reference to '" ++ f.target ++ "'") synthetic-span) fm (i + 1)
+    else check-func-addr-targets st fm (i + 1)
+
+  check-runtime-symbol : CodegenState -> OffsetTable -> Text -> CodegenState
+  check-runtime-symbol (st) (fm) (name) =
+   let off = offset-table-lookup fm name
+   in if off == 0 - 1
+    then st-add-error st cdx-unresolved-func-offset ("Missing runtime symbol '" ++ name ++ "'") synthetic-span
+    else st
+
+
+  align-16 : Integer -> Integer
+  align-16 (n) =
+   let r = int-mod n 16
+   in if r == 0 then n else n + 16 - r
+
+
+Page 2 of 10
