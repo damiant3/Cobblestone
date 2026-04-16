@@ -302,7 +302,7 @@ public static class CdxCodes
             "A type constructor received the wrong number of arguments."),
         [LetBindsEffectfulValue] = new(LetBindsEffectfulValue, nameof(LetBindsEffectfulValue),
             DiagnosticSeverity.Error, CdxPhase.TypeChecker,
-            "let-binding the result of an effectful call silently corrupts on bare metal; use do-bind (X <- expr) inside a do block."),
+            "let-binding the result of an effectful call silently corrupts on bare metal; use act-bind (X <- expr) inside an act block."),
 
         [LinearUnused] = new(LinearUnused, nameof(LinearUnused),
             DiagnosticSeverity.Error, CdxPhase.Linearity,

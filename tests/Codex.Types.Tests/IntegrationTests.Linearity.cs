@@ -25,7 +25,8 @@ public partial class IntegrationTests
             "bad : linear FileHandle -> [FileSystem] Nothing\n" +
             "bad (h) = let x = h in act\n" +
             "  close-file x\n" +
-            "  close-file h\n";
+            "  close-file h\n" +
+            "end\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
         Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.LinearUsedTwice);
     }

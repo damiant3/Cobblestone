@@ -236,7 +236,7 @@ sealed class Arm64CodeGen
         IRLet letExpr => EmitLet(letExpr),
         IRApply apply => EmitApply(apply),
         IRNegate neg => EmitNegate(neg),
-        IRAct actExpr => EmitDo(actExpr),
+        IRAct actExpr => EmitAct(actExpr),
         IRRecord rec => EmitRecord(rec),
         IRFieldAccess fa => EmitFieldAccess(fa),
         IRMatch match => EmitMatch(match),
@@ -666,7 +666,7 @@ sealed class Arm64CodeGen
         return rd;
     }
 
-    uint EmitDo(IRAct actExpr)
+    uint EmitAct(IRAct actExpr)
     {
         uint lastReg = Arm64Reg.Xzr;
         foreach (IRActStatement stmt in actExpr.Statements)

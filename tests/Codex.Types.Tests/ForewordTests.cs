@@ -308,6 +308,7 @@ public class ForewordTests
               print-line "hello"
               name <- read-line
               print-line name
+            end
             """;
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));

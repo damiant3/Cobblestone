@@ -323,7 +323,7 @@ public class ParserTests
     [Fact]
     public void Parse_do_expression()
     {
-        string source = "main : [Console] Nothing\nmain = act\n  print-line \"hello\"\n";
+        string source = "main : [Console] Nothing\nmain = act\n  print-line \"hello\"\nend\n";
         DocumentNode doc = Parse(source);
         Assert.IsType<ActExpressionNode>(doc.Definitions[0].Body);
         ActExpressionNode actExpr = (ActExpressionNode)doc.Definitions[0].Body;
@@ -334,7 +334,7 @@ public class ParserTests
     [Fact]
     public void Parse_do_bind_statement()
     {
-        string source = "main : [Console] Nothing\nmain = act\n  x <- read-line\n  print-line x\n";
+        string source = "main : [Console] Nothing\nmain = act\n  x <- read-line\n  print-line x\nend\n";
         DocumentNode doc = Parse(source);
         Assert.IsType<ActExpressionNode>(doc.Definitions[0].Body);
         ActExpressionNode actExpr = (ActExpressionNode)doc.Definitions[0].Body;
@@ -755,7 +755,7 @@ public class ParserTests
     [Fact]
     public void Recovery_do_expression_continues_after_bad_statement()
     {
-        string source = "f = act\n  @#$ bad\n  print-line \"hello\"";
+        string source = "f = act\n  @#$ bad\n  print-line \"hello\"\nend";
         (DocumentNode doc, DiagnosticBag diags) = ParseWithDiags(source);
         Assert.True(diags.HasErrors);
         Assert.Single(doc.Definitions);

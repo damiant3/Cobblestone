@@ -796,7 +796,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         IRLet letExpr => EmitLet(letExpr),
         IRApply apply => EmitApply(apply),
         IRNegate neg => EmitNegate(neg),
-        IRAct actExpr => EmitDo(actExpr),
+        IRAct actExpr => EmitAct(actExpr),
         IRRecord rec => EmitRecord(rec),
         IRFieldAccess fa => EmitFieldAccess(fa),
         IRMatch match => EmitMatch(match),
@@ -1203,7 +1203,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         return EmitExpr(letExpr.Body);
     }
 
-    byte EmitDo(IRAct actExpr)
+    byte EmitAct(IRAct actExpr)
     {
         byte lastReg = AllocTemp();
         X86_64Encoder.Li(m_text, lastReg, 0);

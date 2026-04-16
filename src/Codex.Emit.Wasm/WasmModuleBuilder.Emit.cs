@@ -210,7 +210,7 @@ sealed partial class WasmModuleBuilder
                 break;
 
             case IRAct actExpr:
-                EmitDo(body, actExpr, localMap, ref nextLocal, localTypes);
+                EmitAct(body, actExpr, localMap, ref nextLocal, localTypes);
                 break;
 
             case IRNegate neg:
@@ -539,7 +539,7 @@ sealed partial class WasmModuleBuilder
         return true;
     }
 
-    void EmitDo(MemoryStream body, IRAct actExpr,
+    void EmitAct(MemoryStream body, IRAct actExpr,
         ValueMap<string, int> localMap, ref int nextLocal, List<byte> localTypes)
     {
         for (int i = 0; i < actExpr.Statements.Length; i++)

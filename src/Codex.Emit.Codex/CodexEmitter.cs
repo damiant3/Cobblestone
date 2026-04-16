@@ -286,7 +286,7 @@ public sealed class CodexEmitter : ICodeEmitter
                 break;
 
             case IRAct actExpr:
-                EmitDo(sb, actExpr, indent);
+                EmitAct(sb, actExpr, indent);
                 break;
 
             case IRRecord rec:
@@ -652,7 +652,7 @@ public sealed class CodexEmitter : ICodeEmitter
 
     // ── Do blocks ────────────────────────────────────────────────
 
-    void EmitDo(StringBuilder sb, IRAct actExpr, int indent)
+    void EmitAct(StringBuilder sb, IRAct actExpr, int indent)
     {
         sb.Append("act");
         foreach (IRActStatement stmt in actExpr.Statements)

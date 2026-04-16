@@ -56,6 +56,7 @@ public class CapabilityCheckerTests
             main = act
               contents <- read-file "input.txt"
               print-line contents
+            end
             """;
         CapabilityReport? report = CheckCapabilities(source);
         Assert.NotNull(report);
@@ -99,6 +100,7 @@ public class CapabilityCheckerTests
             main = act
               contents <- read-file "input.txt"
               print-line contents
+            end
             """;
         DiagnosticBag diagnostics = CheckWithGrants(source, ["Console"]);
         Assert.True(diagnostics.HasErrors);
@@ -132,6 +134,7 @@ public class CapabilityCheckerTests
             main = act
               contents <- read-file "input.txt"
               print-line contents
+            end
             """;
         CapabilityReport? report = CheckCapabilities(source);
         Assert.NotNull(report);
@@ -287,6 +290,7 @@ public class CapabilityCheckerTests
               clear
               fetch "https://spy.example.com"
               draw-text "hello" 0 0
+            end
             """;
         DiagnosticBag diagnostics = CheckWithGrants(source, ["Display"]);
         Assert.True(diagnostics.HasErrors);

@@ -16,7 +16,8 @@ public partial class IntegrationTests
         string source =
             "main : [Console] Nothing\n" +
             "main = act\n" +
-            "  print-line \"hello\"\n";
+            "  print-line \"hello\"\n" +
+            "end\n";
         Map<string, CodexType>? types = Helpers.TypeCheck(source);
         Assert.NotNull(types);
         Assert.True(types!.ContainsKey("main"));
@@ -29,7 +30,8 @@ public partial class IntegrationTests
         string source =
             "main : [Console] Nothing\n" +
             "main = act\n" +
-            "  print-line \"hello\"\n";
+            "  print-line \"hello\"\n" +
+            "end\n";
         string? cs = Helpers.CompileToCS(source, "eftest");
         Assert.NotNull(cs);
         Assert.Contains("Console.WriteLine", cs!);
@@ -43,7 +45,8 @@ public partial class IntegrationTests
             "main : [Console] Nothing\n" +
             "main = act\n" +
             "  name <- read-line\n" +
-            "  print-line name\n";
+            "  print-line name\n" +
+            "end\n";
         Map<string, CodexType>? types = Helpers.TypeCheck(source);
         Assert.NotNull(types);
         Assert.True(types!.ContainsKey("main"));
@@ -56,7 +59,8 @@ public partial class IntegrationTests
             "main : [Console] Nothing\n" +
             "main = act\n" +
             "  name <- read-line\n" +
-            "  print-line (\"Hello, \" ++ name)\n";
+            "  print-line (\"Hello, \" ++ name)\n" +
+            "end\n";
         string? cs = Helpers.CompileToCS(source, "dobind");
         Assert.NotNull(cs);
         Assert.Contains("Console.ReadLine()", cs!);
@@ -71,7 +75,8 @@ public partial class IntegrationTests
             "greet (name) = print-line (\"Hello, \" ++ name)\n\n" +
             "main : [Console] Nothing\n" +
             "main = act\n" +
-            "  greet \"World\"\n";
+            "  greet \"World\"\n" +
+            "end\n";
         string? cs = Helpers.CompileToCS(source, "efhelper");
         Assert.NotNull(cs);
         Assert.Contains("greet", cs!);
@@ -106,7 +111,8 @@ public partial class IntegrationTests
             "main = act\n" +
             "  print-line \"one\"\n" +
             "  print-line \"two\"\n" +
-            "  print-line \"three\"\n";
+            "  print-line \"three\"\n" +
+            "end\n";
         string? cs = Helpers.CompileToCS(source, "multi");
         Assert.NotNull(cs);
         int count = 0;
@@ -212,7 +218,8 @@ public partial class IntegrationTests
             "use-twice : linear FileHandle -> [FileSystem] Nothing\n" +
             "use-twice (h) = act\n" +
             "  close-file h\n" +
-            "  close-file h\n";
+            "  close-file h\n" +
+            "end\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
         Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.LinearUsedTwice);
     }
@@ -234,7 +241,8 @@ public partial class IntegrationTests
             "open-and-close : Text -> [FileSystem] Nothing\n" +
             "open-and-close (path) = act\n" +
             "  handle <- open-file path\n" +
-            "  close-file handle\n";
+            "  close-file handle\n" +
+            "end\n";
         Map<string, CodexType>? types = Helpers.TypeCheck(source);
         Assert.NotNull(types);
     }
@@ -257,7 +265,8 @@ public partial class IntegrationTests
             "open-and-close : Text -> [FileSystem] Nothing\n" +
             "open-and-close (path) = act\n" +
             "  h <- open-file path\n" +
-            "  close-file h\n";
+            "  close-file h\n" +
+            "end\n";
         string? cs = Helpers.CompileToCS(source, "openclose");
         Assert.NotNull(cs);
         Assert.Contains("File.OpenRead", cs!);

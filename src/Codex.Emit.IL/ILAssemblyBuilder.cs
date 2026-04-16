@@ -1008,7 +1008,7 @@ sealed partial class ILAssemblyBuilder
                 break;
 
             case IRAct actExpr:
-                EmitDo(il, actExpr, locals, parameters);
+                EmitAct(il, actExpr, locals, parameters);
                 break;
 
             case IRRecord rec:
@@ -1458,7 +1458,7 @@ sealed partial class ILAssemblyBuilder
                 il.Call(m_fileWriteAllTextRef);
                 // File.WriteAllText is void — leave nothing on the stack. Do-bind
                 // sites bind write-file's Nothing result via IRActBind, which skips
-                // StoreLocal for void-like NameType (see EmitDo).
+                // StoreLocal for void-like NameType (see EmitAct).
                 return true;
 
             // ── Process builtins ────────────────────────────────
@@ -1652,7 +1652,7 @@ sealed partial class ILAssemblyBuilder
         il.Call(methodSpec);
     }
 
-    void EmitDo(InstructionEncoder il, IRAct actExpr, LocalsBuilder locals,
+    void EmitAct(InstructionEncoder il, IRAct actExpr, LocalsBuilder locals,
         ImmutableArray<IRParameter> parameters)
     {
         for (int i = 0; i < actExpr.Statements.Length; i++)

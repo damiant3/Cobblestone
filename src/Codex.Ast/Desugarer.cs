@@ -178,7 +178,7 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
         ActBindStatementNode bind => new ActBindStatement(
             new Name(bind.Name.Text), DesugarExpr(bind.Value), bind.Span),
         ActExprStatementNode expr => new ActExprStatement(DesugarExpr(expr.Expression), expr.Span),
-        _ => new ActExprStatement(new ErrorExpr("unknown do statement", node.Span), node.Span)
+        _ => new ActExprStatement(new ErrorExpr("unknown act statement", node.Span), node.Span)
     };
 
     HandleClause DesugarHandleClause(HandleClauseNode node) =>

@@ -289,11 +289,11 @@ public sealed partial class TypeChecker
             // let X = effectful-call silently corrupts on bare metal because
             // downstream uses read X as if it were the unwrapped value type
             // when it's actually the effect wrapper. Force the user to
-            // sequence with do-bind (X <- expr) instead.
+            // sequence with act-bind (X <- expr) instead.
             if (valueType is EffectfulType eft && !eft.Effects.IsEmpty)
             {
                 m_diagnostics.Error(CdxCodes.LetBindsEffectfulValue,
-                    $"let-binding '{binding.Name.Value}' to a value of effectful type '{valueType}' is not allowed outside a do-bind. Use '{binding.Name.Value} <- ...' inside a do block.",
+                    $"let-binding '{binding.Name.Value}' to a value of effectful type '{valueType}' is not allowed outside an act-bind. Use '{binding.Name.Value} <- ...' inside an act block.",
                     binding.Value.Span);
                 // Unwrap so downstream type-checking doesn't cascade with the wrapper.
                 valueType = eft.Return;

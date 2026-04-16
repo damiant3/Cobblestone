@@ -16,6 +16,7 @@ public class DoNotationTests
             program = act
               x <- ask
               x + 1
+            end
             """;
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
@@ -32,6 +33,7 @@ public class DoNotationTests
             program = act
               x <- ask
               x + 1
+            end
             """;
         string? cs = Helpers.CompileToCS(source);
         Assert.NotNull(cs);
@@ -49,6 +51,7 @@ public class DoNotationTests
               a <- inc
               b <- inc
               a + b
+            end
             """;
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
@@ -65,6 +68,7 @@ public class DoNotationTests
             program = act
               x <- ask
               x + 1
+            end
 
             main : Integer
             main = with Ask program
@@ -85,6 +89,7 @@ public class DoNotationTests
             program = act
               x <- ask
               x + 1
+            end
 
             main : Integer
             main = with Ask program
@@ -102,6 +107,7 @@ public class DoNotationTests
             main = act
               print-line "hello"
               42
+            end
             """;
         string? cs = Helpers.CompileToCS(source);
         Assert.NotNull(cs);
@@ -120,6 +126,7 @@ public class DoNotationTests
               print-line "starting"
               x <- log "step1"
               x
+            end
             """;
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));

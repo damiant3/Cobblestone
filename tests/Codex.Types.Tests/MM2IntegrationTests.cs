@@ -40,6 +40,7 @@ public class MM2IntegrationTests
             main = act
               content <- read-file "test.codex"
               print-line content
+            end
             """;
 
         string serialInput = "Hello from serial!";

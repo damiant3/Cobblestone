@@ -13,6 +13,7 @@ public class EffectHandlerTests
             counter = act
               x <- get-state
               x
+            end
             """;
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
@@ -26,6 +27,7 @@ public class EffectHandlerTests
             bump = act
               x <- get-state
               set-state (x + 1)
+            end
             """;
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
@@ -36,10 +38,11 @@ public class EffectHandlerTests
     {
         string source = """
             main : Integer
-            main = run-state 0= act
+            main = run-state 0 act
               x <- get-state
               set-state (x + 1)
               get-state
+            end
             """;
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
@@ -50,10 +53,11 @@ public class EffectHandlerTests
     {
         string source = """
             main : Integer
-            main = run-state 0= act
+            main = run-state 0 act
               x <- get-state
               set-state (x + 1)
               get-state
+            end
             """;
         string? cs = Helpers.CompileToCS(source);
         Assert.NotNull(cs);
@@ -77,9 +81,10 @@ public class EffectHandlerTests
     {
         string source = """
             main : Integer
-            main = run-state 0= act
+            main = run-state 0 act
               set-state 10
               get-state
+            end
             """;
         string? cs = Helpers.CompileToCS(source);
         Assert.NotNull(cs);
@@ -102,12 +107,13 @@ public class EffectHandlerTests
     {
         string source = """
             main : Integer
-            main = run-state 0= act
+            main = run-state 0 act
               x <- get-state
               set-state (x + 10)
               y <- get-state
               set-state (y * 2)
               get-state
+            end
             """;
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
@@ -118,11 +124,12 @@ public class EffectHandlerTests
     {
         string source = """
             main : Text
-            main = run-state ""= act
+            main = run-state "" act
               set-state "hello"
               x <- get-state
               set-state (x ++ " world")
               get-state
+            end
             """;
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
@@ -147,9 +154,10 @@ public class EffectHandlerTests
     {
         string source = """
             main : Integer
-            main = run-state 0= act
+            main = run-state 0 act
               set-state 42
               get-state
+            end
             """;
         string? cs = Helpers.CompileToCS(source);
         Assert.NotNull(cs);
@@ -165,6 +173,7 @@ public class EffectHandlerTests
             pure-fn (x) = act
               set-state x
               get-state
+            end
             """;
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.True(diag.HasErrors);
