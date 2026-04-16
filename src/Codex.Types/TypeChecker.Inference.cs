@@ -457,9 +457,17 @@ public sealed partial class TypeChecker
             return m_unifier.FreshVar();
         }
 
+        // Each construction site needs its own fresh type vars, otherwise a
+        // call like `P { f = p.s, s = p.f } : P b a` from a `P a b` value
+        // unifies the type def's shared params and collapses a with b.
+        ImmutableArray<CodexType> freshArgs = [.. recordType.TypeParamIds
+            .Select(_ => (CodexType)m_unifier.FreshVar())];
+        RecordType instantiated =
+            (RecordType)InstantiateParametricType(recordType, freshArgs);
+
         foreach (RecordFieldExpr field in rec.Fields)
         {
-            RecordFieldType? expectedField = recordType.Fields
+            RecordFieldType? expectedField = instantiated.Fields
                 .FirstOrDefault(f => f.FieldName.Value == field.FieldName.Value);
             CodexType fieldType = InferExpr(field.Value);
             if (expectedField is not null)
@@ -467,7 +475,7 @@ public sealed partial class TypeChecker
                 m_unifier.Unify(fieldType, expectedField.Type, field.Span);
             }
         }
-        return recordType;
+        return instantiated;
     }
 
     CodexType InferFieldAccess(FieldAccessExpr fa)
