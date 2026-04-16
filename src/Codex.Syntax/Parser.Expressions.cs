@@ -134,36 +134,10 @@ public sealed partial class Parser
 
                 if (token.Kind == TokenKind.TypeIdentifier && Current.Kind == TokenKind.LeftBrace)
                 {
-                    ExpressionNode rec = ParseRecordExpression(token);
-                    while (Current.Kind == TokenKind.Dot)
-                    {
-                        Advance();
-                        if (!IsIdentifierLike(Current.Kind))
-                        {
-                            Expect(TokenKind.Identifier);
-                            break;
-                        }
-                        Token recField = Current;
-                        Advance();
-                        rec = new FieldAccessExpressionNode(rec, recField, rec.Span.Through(recField.Span));
-                    }
-                    return rec;
+                    return ChainFieldAccess(ParseRecordExpression(token));
                 }
 
-                ExpressionNode node = new NameExpressionNode(token);
-                while (Current.Kind == TokenKind.Dot)
-                {
-                    Advance();
-                    if (!IsIdentifierLike(Current.Kind))
-                    {
-                        Expect(TokenKind.Identifier);
-                        break;
-                    }
-                    Token field = Current;
-                    Advance();
-                    node = new FieldAccessExpressionNode(node, field, node.Span.Through(field.Span));
-                }
-                return node;
+                return ChainFieldAccess(new NameExpressionNode(token));
             }
 
             case TokenKind.LeftParen:
@@ -176,20 +150,7 @@ public sealed partial class Parser
                 SkipNewlines();
                 Expect(TokenKind.RightParen);
                 m_parenDepth--;
-                ExpressionNode node = new ParenthesizedExpressionNode(inner, start.Span.Through(Previous.Span));
-                while (Current.Kind == TokenKind.Dot)
-                {
-                    Advance();
-                    if (!IsIdentifierLike(Current.Kind))
-                    {
-                        Expect(TokenKind.Identifier);
-                        break;
-                    }
-                    Token field = Current;
-                    Advance();
-                    node = new FieldAccessExpressionNode(node, field, node.Span.Through(field.Span));
-                }
-                return node;
+                return ChainFieldAccess(new ParenthesizedExpressionNode(inner, start.Span.Through(Previous.Span)));
             }
 
             case TokenKind.LeftBracket:
@@ -722,5 +683,22 @@ public sealed partial class Parser
             ? withKw.Span.Through(clauses[^1].Span)
             : withKw.Span.Through(effectName.Span);
         return new HandleExpressionNode(computation, effectName, clauses, span);
+    }
+
+    ExpressionNode ChainFieldAccess(ExpressionNode node)
+    {
+        while (Current.Kind == TokenKind.Dot)
+        {
+            Advance();
+            if (!IsIdentifierLike(Current.Kind))
+            {
+                Expect(TokenKind.Identifier);
+                break;
+            }
+            Token field = Current;
+            Advance();
+            node = new FieldAccessExpressionNode(node, field, node.Span.Through(field.Span));
+        }
+        return node;
     }
 }
