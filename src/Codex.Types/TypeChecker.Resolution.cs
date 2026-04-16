@@ -91,6 +91,16 @@ public sealed partial class TypeChecker
             if (userDef is not null)
             {
                 ImmutableArray<CodexType> args = [.. app.Arguments.Select(ResolveTypeExpr)];
+
+                // userDef is still a registration placeholder (forward reference
+                // across record→variant or variant→record). We can't check arity
+                // or instantiate yet — preserve the args in a ConstructedType so
+                // emitters and downstream unification see the applied-to info.
+                if (userDef is ConstructedType placeholderCt && placeholderCt.Arguments.IsEmpty)
+                {
+                    return new ConstructedType(named.Name, args);
+                }
+
                 int expectedArity = userDef switch
                 {
                     SumType s => s.TypeParamIds.Length,

@@ -87,7 +87,7 @@ public sealed partial class CSharpEmitter
                 else if (name.Name.Length > 0 && char.IsUpper(name.Name[0])
                     && name.Type is not FunctionType)
                 {
-                    sb.Append($"new {SanitizeIdentifier(name.Name)}()");
+                    sb.Append($"new {SanitizeIdentifier(name.Name)}{CtorTypeArgs(name.Type)}()");
                 }
                 else if (m_definitionArity.TryGet(name.Name, out int nameArity)
                     && nameArity == 0
@@ -357,7 +357,7 @@ public sealed partial class CSharpEmitter
         {
             List<IRExpr> args = [];
             CollectApplyArgs(app, args);
-            sb.Append($"new {SanitizeIdentifier(ctorName)}(");
+            sb.Append($"new {SanitizeIdentifier(ctorName)}{CtorTypeArgs(app.Type)}(");
             for (int i = 0; i < args.Count; i++)
             {
                 if (i > 0)

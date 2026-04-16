@@ -23,7 +23,16 @@ public sealed partial class TypeChecker
             result = SubstituteVar(result, paramIds[i], args[i]);
         }
 
-        return result;
+        // Record the concrete type arguments on the result so emitters can
+        // render `Name<arg1, arg2>` for record fields and function signatures.
+        // Substitution baked args into constructor/field types but lost the
+        // applied-to information.
+        return result switch
+        {
+            SumType s when args.Length > 0 => s with { TypeArguments = args },
+            RecordType r when args.Length > 0 => r with { TypeArguments = args },
+            _ => result
+        };
     }
 
     CodexType Instantiate(CodexType type)
@@ -260,14 +269,18 @@ public sealed partial class TypeChecker
                 {
                     Fields = [.. c.Fields.Select(
                         f => SubstituteVar(f, varId, replacement))]
-                })]
+                })],
+                TypeArguments = [.. s.TypeArguments.Select(
+                    a => SubstituteVar(a, varId, replacement))]
             },
             RecordType r when !r.TypeParamIds.IsEmpty => r with
             {
                 Fields = [.. r.Fields.Select(f => f with
                 {
                     Type = SubstituteVar(f.Type, varId, replacement)
-                })]
+                })],
+                TypeArguments = [.. r.TypeArguments.Select(
+                    a => SubstituteVar(a, varId, replacement))]
             },
             EffectfulType eft => eft with
             {

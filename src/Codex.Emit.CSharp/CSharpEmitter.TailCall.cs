@@ -151,7 +151,7 @@ public sealed partial class CSharpEmitter
                     break;
 
                 case IRCtorPattern ctorPat:
-                    sb.AppendLine($"{pad}{keyword} ({scrutineeVar} is {SanitizeIdentifier(ctorPat.Name)} {matchVar})");
+                    sb.AppendLine($"{pad}{keyword} ({scrutineeVar} is {SanitizeIdentifier(ctorPat.Name)}{CtorTypeArgs(match.Scrutinee.Type)} {matchVar})");
                     sb.AppendLine($"{pad}{{");
                     for (int i = 0; i < ctorPat.SubPatterns.Length; i++)
                     {

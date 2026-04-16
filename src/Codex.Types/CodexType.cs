@@ -94,6 +94,8 @@ public sealed record RecordType(
     ImmutableArray<int> TypeParamIds,
     ImmutableArray<RecordFieldType> Fields) : CodexType
 {
+    public ImmutableArray<CodexType> TypeArguments { get; init; } = [];
+
     public override string ToString()
     {
         string fieldsStr = string.Join(", ", Fields.Select(f => $"{f.FieldName.Value} : {f.Type}"));
@@ -108,6 +110,8 @@ public sealed record SumType(
     ImmutableArray<int> TypeParamIds,
     ImmutableArray<SumConstructorType> Constructors) : CodexType
 {
+    public ImmutableArray<CodexType> TypeArguments { get; init; } = [];
+
     public override string ToString()
     {
         string ctorsStr = string.Join(" | ", Constructors.Select(c => c.ToString()));

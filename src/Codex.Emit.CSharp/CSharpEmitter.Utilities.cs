@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text;
 using Codex.Core;
 using Codex.IR;
@@ -22,8 +23,12 @@ public sealed partial class CSharpEmitter
             LinearType lin => EmitType(lin.Inner),
             ListType lt => $"List<{EmitType(lt.Element)}>",
             LinkedListType llt => $"List<{EmitType(llt.Element)}>",
-            SumType st => SanitizeIdentifier(st.TypeName.Value),
-            RecordType rt => SanitizeIdentifier(rt.TypeName.Value),
+            SumType st => st.TypeArguments.IsEmpty
+                ? SanitizeIdentifier(st.TypeName.Value)
+                : $"{SanitizeIdentifier(st.TypeName.Value)}<{string.Join(", ", st.TypeArguments.Select(EmitType))}>",
+            RecordType rt => rt.TypeArguments.IsEmpty
+                ? SanitizeIdentifier(rt.TypeName.Value)
+                : $"{SanitizeIdentifier(rt.TypeName.Value)}<{string.Join(", ", rt.TypeArguments.Select(EmitType))}>",
             ConstructedType ct => ct.Arguments.IsEmpty
                 ? SanitizeIdentifier(ct.Constructor.Value)
                 : $"{SanitizeIdentifier(ct.Constructor.Value)}<{string.Join(", ", ct.Arguments.Select(EmitType))}>",
@@ -38,6 +43,37 @@ public sealed partial class CSharpEmitter
             _ => "object"
         };
     }
+
+    // Extract <T1, T2> suffix for emitting `new Just<Foo>(x)` at constructor
+    // call sites. The expression's type carries the instantiated arguments
+    // either directly (ConstructedType) or via TypeArguments on SumType.
+    static string CtorTypeArgs(CodexType type)
+    {
+        ImmutableArray<CodexType> args = type switch
+        {
+            SumType st => st.TypeArguments,
+            RecordType rt => rt.TypeArguments,
+            ConstructedType ct => ct.Arguments,
+            EffectfulType eft => CtorTypeArgsFrom(eft.Return),
+            _ => []
+        };
+
+        if (args.IsDefaultOrEmpty)
+        {
+            return "";
+        }
+
+        return "<" + string.Join(", ", args.Select(EmitType)) + ">";
+    }
+
+    static ImmutableArray<CodexType> CtorTypeArgsFrom(CodexType type) => type switch
+    {
+        SumType st => st.TypeArguments,
+        RecordType rt => rt.TypeArguments,
+        ConstructedType ct => ct.Arguments,
+        EffectfulType eft => CtorTypeArgsFrom(eft.Return),
+        _ => []
+    };
 
     static string EmitSumTypeName(SumType st)
     {

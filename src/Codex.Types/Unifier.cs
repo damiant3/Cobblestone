@@ -86,6 +86,11 @@ public sealed class Unifier(DiagnosticBag diagnostics)
                     Unify(sca.Fields[j], scb.Fields[j], span);
                 }
             }
+            int argCount = Math.Min(sa.TypeArguments.Length, sb.TypeArguments.Length);
+            for (int i = 0; i < argCount; i++)
+            {
+                Unify(sa.TypeArguments[i], sb.TypeArguments[i], span);
+            }
             return true;
         }
 
@@ -95,6 +100,11 @@ public sealed class Unifier(DiagnosticBag diagnostics)
             for (int i = 0; i < fieldCount; i++)
             {
                 Unify(ra.Fields[i].Type, rb.Fields[i].Type, span);
+            }
+            int argCount = Math.Min(ra.TypeArguments.Length, rb.TypeArguments.Length);
+            for (int i = 0; i < argCount; i++)
+            {
+                Unify(ra.TypeArguments[i], rb.TypeArguments[i], span);
             }
 
             return true;
@@ -138,27 +148,43 @@ public sealed class Unifier(DiagnosticBag diagnostics)
             return true;
         }
 
-        if (a is ConstructedType ca2 && b is SumType sb2 && ca2.Constructor == sb2.TypeName
-            && ca2.Arguments.Length == 0)
+        if (a is ConstructedType ca2 && b is SumType sb2 && ca2.Constructor == sb2.TypeName)
         {
+            int n = Math.Min(ca2.Arguments.Length, sb2.TypeArguments.Length);
+            for (int i = 0; i < n; i++)
+            {
+                Unify(ca2.Arguments[i], sb2.TypeArguments[i], span);
+            }
             return true;
         }
 
-        if (a is SumType sa3 && b is ConstructedType cb3 && sa3.TypeName == cb3.Constructor
-            && cb3.Arguments.Length == 0)
+        if (a is SumType sa3 && b is ConstructedType cb3 && sa3.TypeName == cb3.Constructor)
         {
+            int n = Math.Min(sa3.TypeArguments.Length, cb3.Arguments.Length);
+            for (int i = 0; i < n; i++)
+            {
+                Unify(sa3.TypeArguments[i], cb3.Arguments[i], span);
+            }
             return true;
         }
 
-        if (a is ConstructedType ca3 && b is RecordType rb3 && ca3.Constructor == rb3.TypeName
-            && ca3.Arguments.Length == 0)
+        if (a is ConstructedType ca3 && b is RecordType rb3 && ca3.Constructor == rb3.TypeName)
         {
+            int n = Math.Min(ca3.Arguments.Length, rb3.TypeArguments.Length);
+            for (int i = 0; i < n; i++)
+            {
+                Unify(ca3.Arguments[i], rb3.TypeArguments[i], span);
+            }
             return true;
         }
 
-        if (a is RecordType ra3 && b is ConstructedType cb4 && ra3.TypeName == cb4.Constructor
-            && cb4.Arguments.Length == 0)
+        if (a is RecordType ra3 && b is ConstructedType cb4 && ra3.TypeName == cb4.Constructor)
         {
+            int n = Math.Min(ra3.TypeArguments.Length, cb4.Arguments.Length);
+            for (int i = 0; i < n; i++)
+            {
+                Unify(ra3.TypeArguments[i], cb4.Arguments[i], span);
+            }
             return true;
         }
 
@@ -289,14 +315,16 @@ public sealed class Unifier(DiagnosticBag diagnostics)
                 Constructors = [.. s.Constructors.Select(c => c with
                 {
                     Fields = [.. c.Fields.Select(DeepResolve)]
-                })]
+                })],
+                TypeArguments = [.. s.TypeArguments.Select(DeepResolve)]
             },
             RecordType r => r with
             {
                 Fields = [.. r.Fields.Select(f => f with
                 {
                     Type = DeepResolve(f.Type)
-                })]
+                })],
+                TypeArguments = [.. r.TypeArguments.Select(DeepResolve)]
             },
             EffectfulType eft => DeepResolveEffectful(eft),
             LinearType lin => new LinearType(DeepResolve(lin.Inner)),
