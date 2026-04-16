@@ -12,14 +12,9 @@ Chapter: Unification
 
 Section: State
   UnificationState = record {
-   substitutions : List SubstEntry,
+   substitutions : List CodexType,
    next-id : Integer,
    bag : DiagnosticBag
-  }
-
-  SubstEntry = record {
-   var-id : Integer,
-   resolved-type : CodexType
   }
 
   UnifyResult = record {
@@ -31,7 +26,7 @@ Section: Construction
   empty-unification-state : UnificationState
   empty-unification-state =
    UnificationState {
-    substitutions = [],
+    substitutions = [TypeVar 0, TypeVar 1],
     next-id = 2,
     bag = empty-bag
    }
@@ -44,7 +39,7 @@ Section: Fresh Variables
   advance-id : UnificationState -> UnificationState
   advance-id (st) =
    UnificationState {
-    substitutions = st.substitutions,
+    substitutions = list-snoc (st.substitutions) (TypeVar (st.next-id)),
     next-id = st.next-id + 1,
     bag = st.bag
    }
@@ -61,48 +56,27 @@ Section: Fresh Variables
    state : UnificationState
   }
 
-Section: Substitution Lookup (binary search on sorted substitutions)
-  subst-lookup : Integer -> List SubstEntry -> CodexType
-  subst-lookup (var-id) (entries) =
-   let len = list-length entries
-   in if len == 0 then ErrorTy
-   else let pos = bsearch-int-pos entries var-id 0 len
-   in if pos >= len then ErrorTy
-   else let entry = list-at entries pos
-   in if entry.var-id == var-id then entry.resolved-type else ErrorTy
-
-  has-subst : Integer -> List SubstEntry -> Boolean
-  has-subst (var-id) (entries) =
-   let len = list-length entries
-   in if len == 0 then False
-   else let pos = bsearch-int-pos entries var-id 0 len
-   in if pos >= len then False
-      else (list-at entries pos).var-id == var-id
-
 Section: Resolve
   resolve : UnificationState -> CodexType -> CodexType
   resolve (st) (ty) =
    when ty
     is TypeVar (id) ->
-     let entries = st.substitutions
-     in let len = list-length entries
-     in if len == 0 then ty
-     else let pos = bsearch-int-pos entries id 0 len
-     in if pos >= len then ty
-     else let entry = list-at entries pos
-     in if entry.var-id == id then resolve st (entry.resolved-type) else ty
+     if id >= list-length (st.substitutions) then ty
+     else let slot = list-at (st.substitutions) id
+     in if slot-is-unbound slot id then ty else resolve st slot
     is otherwise -> ty
+
+  slot-is-unbound : CodexType -> Integer -> Boolean
+  slot-is-unbound (slot) (id) =
+   when slot
+    is TypeVar (slot-id) -> slot-id == id
+    is otherwise -> False
 
 Section: Add Substitution
   add-subst : UnificationState -> Integer -> CodexType -> UnificationState
   add-subst (st) (var-id) (ty) =
-   let entry = SubstEntry {
-    var-id = var-id,
-    resolved-type = ty
-   }
-   in let pos = bsearch-int-pos (st.substitutions) var-id 0 (list-length (st.substitutions))
-   in UnificationState {
-    substitutions = list-insert-at (st.substitutions) pos entry,
+   UnificationState {
+    substitutions = list-set-at (st.substitutions) var-id ty,
     next-id = st.next-id,
     bag = st.bag
    }
