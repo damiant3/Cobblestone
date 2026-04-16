@@ -4578,7 +4578,30 @@ public static class Codex_Codex_Codex
 
     public static string emit__codex_emitter_emit_type_defs(List<ATypeDef> tds, long i)
     {
-        return ((i == ((long)tds.Count)) ? "" : string.Concat(emit__codex_emitter_emit_type_def(tds[(int)i]), "\u0001", emit__codex_emitter_emit_type_defs(tds, (i + 1L))));
+        return string.Concat(emit_type_defs_acc(tds, 0L, ((long)tds.Count), new List<string>()));
+    }
+
+    public static List<string> emit_type_defs_acc(List<ATypeDef> tds, long i, long len, List<string> acc)
+    {
+        while (true)
+        {
+            if ((i == len))
+            {
+                return acc;
+            }
+            else
+            {
+                var _tco_0 = tds;
+                var _tco_1 = (i + 1L);
+                var _tco_2 = len;
+                var _tco_3 = ((Func<List<string>>)(() => { var _l = acc; _l.Add(string.Concat(emit__codex_emitter_emit_type_def(tds[(int)i]), "\u0001")); return _l; }))();
+                tds = _tco_0;
+                i = _tco_1;
+                len = _tco_2;
+                acc = _tco_3;
+                continue;
+            }
+        }
     }
 
     public static string emit__codex_emitter_emit_type_def(ATypeDef td)
@@ -5218,7 +5241,32 @@ public static class Codex_Codex_Codex
 
     public static string emit__codex_emitter_emit_all_defs(List<IRDef> defs, List<string> ctor_names, long i)
     {
-        return ((i == ((long)defs.Count)) ? "" : string.Concat(emit__codex_emitter_emit_def(defs[(int)i], ctor_names), "\u0001", emit__codex_emitter_emit_all_defs(defs, ctor_names, (i + 1L))));
+        return string.Concat(emit_all_defs_acc(defs, ctor_names, 0L, ((long)defs.Count), new List<string>()));
+    }
+
+    public static List<string> emit_all_defs_acc(List<IRDef> defs, List<string> ctor_names, long i, long len, List<string> acc)
+    {
+        while (true)
+        {
+            if ((i == len))
+            {
+                return acc;
+            }
+            else
+            {
+                var _tco_0 = defs;
+                var _tco_1 = ctor_names;
+                var _tco_2 = (i + 1L);
+                var _tco_3 = len;
+                var _tco_4 = ((Func<List<string>>)(() => { var _l = acc; _l.Add(string.Concat(emit__codex_emitter_emit_def(defs[(int)i], ctor_names), "\u0001")); return _l; }))();
+                defs = _tco_0;
+                ctor_names = _tco_1;
+                i = _tco_2;
+                len = _tco_3;
+                acc = _tco_4;
+                continue;
+            }
+        }
     }
 
     public static string emit_def_list(List<IRDef> defs, List<string> ctor_names, long i)
