@@ -646,8 +646,8 @@ public sealed class Lowering(
         m_localEnv = savedEnv;
 
         // Compute the act-block's type from the last statement rather than
-        // relying on expectedType, which is often ErrorType when the do
-        // appears in let-binding RHS.  This matches InferDoExpr's logic.
+        // relying on expectedType, which is often ErrorType when the act
+        // appears in let-binding RHS.  This matches InferActExpr's logic.
         ImmutableArray<IRActStatement> stmts = statements.ToImmutable();
         CodexType doType = expectedType;
         if (stmts.Length > 0)
