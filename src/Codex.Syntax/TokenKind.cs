@@ -43,7 +43,6 @@ public enum TokenKind
     WhenKeyword,
     WhereKeyword,
     SuchThatKeyword,
-    DoKeyword,
     ActKeyword,
     EndKeyword,
     RecordKeyword,

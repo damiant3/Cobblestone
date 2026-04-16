@@ -10,7 +10,7 @@ public class EffectHandlerTests
     {
         string source = """
             counter : [State, Console] Integer
-            counter = do
+            counter = act
               x <- get-state
               x
             """;
@@ -23,7 +23,7 @@ public class EffectHandlerTests
     {
         string source = """
             bump : [State] Nothing
-            bump = do
+            bump = act
               x <- get-state
               set-state (x + 1)
             """;
@@ -36,7 +36,7 @@ public class EffectHandlerTests
     {
         string source = """
             main : Integer
-            main = run-state 0 do
+            main = run-state 0= act
               x <- get-state
               set-state (x + 1)
               get-state
@@ -50,7 +50,7 @@ public class EffectHandlerTests
     {
         string source = """
             main : Integer
-            main = run-state 0 do
+            main = run-state 0= act
               x <- get-state
               set-state (x + 1)
               get-state
@@ -77,7 +77,7 @@ public class EffectHandlerTests
     {
         string source = """
             main : Integer
-            main = run-state 0 do
+            main = run-state 0= act
               set-state 10
               get-state
             """;
@@ -102,7 +102,7 @@ public class EffectHandlerTests
     {
         string source = """
             main : Integer
-            main = run-state 0 do
+            main = run-state 0= act
               x <- get-state
               set-state (x + 10)
               y <- get-state
@@ -118,7 +118,7 @@ public class EffectHandlerTests
     {
         string source = """
             main : Text
-            main = run-state "" do
+            main = run-state ""= act
               set-state "hello"
               x <- get-state
               set-state (x ++ " world")
@@ -147,7 +147,7 @@ public class EffectHandlerTests
     {
         string source = """
             main : Integer
-            main = run-state 0 do
+            main = run-state 0= act
               set-state 42
               get-state
             """;
@@ -162,7 +162,7 @@ public class EffectHandlerTests
     {
         string source = """
             pure-fn : Integer -> Integer
-            pure-fn (x) = do
+            pure-fn (x) = act
               set-state x
               get-state
             """;

@@ -304,7 +304,7 @@ public class ForewordTests
     {
         string source = """
             main : [Console] Nothing
-            main = do
+            main = act
               print-line "hello"
               name <- read-line
               print-line name

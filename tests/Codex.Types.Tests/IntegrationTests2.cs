@@ -15,7 +15,7 @@ public partial class IntegrationTests
     {
         string source =
             "main : [Console] Nothing\n" +
-            "main = do\n" +
+            "main = act\n" +
             "  print-line \"hello\"\n";
         Map<string, CodexType>? types = Helpers.TypeCheck(source);
         Assert.NotNull(types);
@@ -28,7 +28,7 @@ public partial class IntegrationTests
     {
         string source =
             "main : [Console] Nothing\n" +
-            "main = do\n" +
+            "main = act\n" +
             "  print-line \"hello\"\n";
         string? cs = Helpers.CompileToCS(source, "eftest");
         Assert.NotNull(cs);
@@ -41,7 +41,7 @@ public partial class IntegrationTests
     {
         string source =
             "main : [Console] Nothing\n" +
-            "main = do\n" +
+            "main = act\n" +
             "  name <- read-line\n" +
             "  print-line name\n";
         Map<string, CodexType>? types = Helpers.TypeCheck(source);
@@ -54,7 +54,7 @@ public partial class IntegrationTests
     {
         string source =
             "main : [Console] Nothing\n" +
-            "main = do\n" +
+            "main = act\n" +
             "  name <- read-line\n" +
             "  print-line (\"Hello, \" ++ name)\n";
         string? cs = Helpers.CompileToCS(source, "dobind");
@@ -70,7 +70,7 @@ public partial class IntegrationTests
             "greet : Text -> [Console] Nothing\n" +
             "greet (name) = print-line (\"Hello, \" ++ name)\n\n" +
             "main : [Console] Nothing\n" +
-            "main = do\n" +
+            "main = act\n" +
             "  greet \"World\"\n";
         string? cs = Helpers.CompileToCS(source, "efhelper");
         Assert.NotNull(cs);
@@ -103,7 +103,7 @@ public partial class IntegrationTests
     {
         string source =
             "main : [Console] Nothing\n" +
-            "main = do\n" +
+            "main = act\n" +
             "  print-line \"one\"\n" +
             "  print-line \"two\"\n" +
             "  print-line \"three\"\n";
@@ -210,7 +210,7 @@ public partial class IntegrationTests
     {
         string source =
             "use-twice : linear FileHandle -> [FileSystem] Nothing\n" +
-            "use-twice (h) = do\n" +
+            "use-twice (h) = act\n" +
             "  close-file h\n" +
             "  close-file h\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);
@@ -232,7 +232,7 @@ public partial class IntegrationTests
     {
         string source =
             "open-and-close : Text -> [FileSystem] Nothing\n" +
-            "open-and-close (path) = do\n" +
+            "open-and-close (path) = act\n" +
             "  handle <- open-file path\n" +
             "  close-file handle\n";
         Map<string, CodexType>? types = Helpers.TypeCheck(source);
@@ -255,7 +255,7 @@ public partial class IntegrationTests
     {
         string source =
             "open-and-close : Text -> [FileSystem] Nothing\n" +
-            "open-and-close (path) = do\n" +
+            "open-and-close (path) = act\n" +
             "  h <- open-file path\n" +
             "  close-file h\n";
         string? cs = Helpers.CompileToCS(source, "openclose");

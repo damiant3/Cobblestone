@@ -894,7 +894,7 @@ public class RiscVEmitterTests
     {
         string source = """
             main : [Console] Nothing
-            main = do
+            main = act
               print-line "hello bare metal"
             """;
         string? output = CompileAndRunBareMetal(source, "bm_println");
@@ -914,7 +914,7 @@ public class RiscVEmitterTests
             greet (name) = "hello " ++ name ++ "!"
 
             main : [Console] Nothing
-            main = do
+            main = act
               print-line (greet "world")
               print-line "done"
             """;

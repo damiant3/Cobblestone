@@ -13,7 +13,7 @@ public class DoNotationTests
               ask : Integer
 
             program : [Ask] Integer
-            program = do
+            program = act
               x <- ask
               x + 1
             """;
@@ -29,7 +29,7 @@ public class DoNotationTests
               ask : Integer
 
             program : [Ask] Integer
-            program = do
+            program = act
               x <- ask
               x + 1
             """;
@@ -45,7 +45,7 @@ public class DoNotationTests
               inc : Integer
 
             count-twice : [Counter] Integer
-            count-twice = do
+            count-twice = act
               a <- inc
               b <- inc
               a + b
@@ -62,7 +62,7 @@ public class DoNotationTests
               ask : Integer
 
             program : [Ask] Integer
-            program = do
+            program = act
               x <- ask
               x + 1
 
@@ -82,7 +82,7 @@ public class DoNotationTests
               ask : Integer
 
             program : [Ask] Integer
-            program = do
+            program = act
               x <- ask
               x + 1
 
@@ -99,7 +99,7 @@ public class DoNotationTests
     {
         string source = """
             main : [Console] Integer
-            main = do
+            main = act
               print-line "hello"
               42
             """;
@@ -116,7 +116,7 @@ public class DoNotationTests
               log : Text -> Integer
 
             main : [Console, Logger] Integer
-            main = do
+            main = act
               print-line "starting"
               x <- log "step1"
               x

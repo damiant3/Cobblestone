@@ -81,7 +81,6 @@ Section: Expression Parsing
    else if is-if-keyword (current-kind st) then parse-if-expr st
    else if is-let-keyword (current-kind st) then parse-let-expr st
    else if is-when-keyword (current-kind st) then parse-match-expr st
-   else if is-do-keyword (current-kind st) then parse-do-expr st
    else if is-act-keyword (current-kind st) then parse-act-expr st
    else if is-with-keyword (current-kind st) then parse-handle-expr st
    else if is-backslash (current-kind st) then parse-lambda-expr st
@@ -286,24 +285,6 @@ Section: Compound Expression Parsing
    in let st2 = skip-newlines st
    in parse-match-branches scrut (list-snoc acc arm) col ln st2
 
-  parse-do-expr : ParseState -> ParseExprResult
-  parse-do-expr (st) =
-   let st2 = skip-newlines (advance st)
-   in parse-do-stmts [] st2
-
-  parse-do-stmts : List ActStmt -> ParseState -> ParseExprResult
-  parse-do-stmts (acc) (st) =
-   if is-done st then ExprOk (ActExpr acc) st
-   else if is-dedent (current-kind st) then ExprOk (ActExpr acc) st
-   else if is-else-keyword (current-kind st) then ExprOk (ActExpr acc) st
-   else if is-in-keyword (current-kind st) then ExprOk (ActExpr acc) st
-   else if looks-like-top-level-def st then ExprOk (ActExpr acc) st
-   else if is-chapter-header st then ExprOk (ActExpr acc) st
-   else if is-section-header st then ExprOk (ActExpr acc) st
-   else if is-page-marker st then ExprOk (ActExpr acc) st
-     else if is-do-bind st then parse-do-bind-stmt acc st
-      else parse-do-expr-stmt acc st
-
   looks-like-top-level-def : ParseState -> Boolean
   looks-like-top-level-def (st) =
    if is-ident (current-kind st) | is-type-ident (current-kind st) then is-colon (peek-kind st 1)
@@ -313,28 +294,6 @@ Section: Compound Expression Parsing
   is-do-bind (st) =
    if is-ident (current-kind st) then is-left-arrow (peek-kind st 1)
    else False
-
-  parse-do-bind-stmt : List ActStmt -> ParseState -> ParseExprResult
-  parse-do-bind-stmt (acc) (st) =
-   let name-tok = current st
-   in let st2 = advance (advance st)
-   in let val-result = parse-expr st2
-   in unwrap-expr-ok val-result (finish-do-bind acc name-tok)
-
-  finish-do-bind : List ActStmt -> Token -> Expr -> ParseState -> ParseExprResult
-  finish-do-bind (acc) (name-tok) (v) (st) =
-   let st2 = skip-newlines st
-   in parse-do-stmts (list-snoc acc (ActBindStmt name-tok v)) st2
-
-  parse-do-expr-stmt : List ActStmt -> ParseState -> ParseExprResult
-  parse-do-expr-stmt (acc) (st) =
-   let expr-result = parse-expr st
-   in unwrap-expr-ok expr-result (finish-do-expr acc)
-
-  finish-do-expr : List ActStmt -> Expr -> ParseState -> ParseExprResult
-  finish-do-expr (acc) (e) (st) =
-   let st2 = skip-newlines st
-   in parse-do-stmts (list-snoc acc (ActExprStmt e)) st2
 
   parse-act-expr : ParseState -> ParseExprResult
   parse-act-expr (st) =

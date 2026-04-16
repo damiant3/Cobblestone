@@ -23,7 +23,7 @@ public partial class IntegrationTests
     {
         string source =
             "bad : linear FileHandle -> [FileSystem] Nothing\n" +
-            "bad (h) = let x = h in do\n" +
+            "bad (h) = let x = h in act\n" +
             "  close-file x\n" +
             "  close-file h\n";
         DiagnosticBag diag = Helpers.CheckWithLinearity(source);

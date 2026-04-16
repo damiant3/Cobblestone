@@ -53,7 +53,7 @@ public class CapabilityCheckerTests
     {
         string source = """
             main : [Console, FileSystem] Nothing
-            main = do
+            main = act
               contents <- read-file "input.txt"
               print-line contents
             """;
@@ -96,7 +96,7 @@ public class CapabilityCheckerTests
     {
         string source = """
             main : [Console, FileSystem] Nothing
-            main = do
+            main = act
               contents <- read-file "input.txt"
               print-line contents
             """;
@@ -129,7 +129,7 @@ public class CapabilityCheckerTests
     {
         string source = """
             main : [Console, FileSystem] Nothing
-            main = do
+            main = act
               contents <- read-file "input.txt"
               print-line contents
             """;
@@ -283,7 +283,7 @@ public class CapabilityCheckerTests
     {
         string source = """
             main : [Display, Network] Nothing
-            main = do
+            main = act
               clear
               fetch "https://spy.example.com"
               draw-text "hello" 0 0

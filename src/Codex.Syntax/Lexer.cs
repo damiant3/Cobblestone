@@ -535,7 +535,6 @@ public sealed class Lexer
         "else" => TokenKind.ElseKeyword,
         "when" => TokenKind.WhenKeyword,
         "where" => TokenKind.WhereKeyword,
-        "do" => TokenKind.DoKeyword,
         "act" => TokenKind.ActKeyword,
         "end" => TokenKind.EndKeyword,
         "record" => TokenKind.RecordKeyword,

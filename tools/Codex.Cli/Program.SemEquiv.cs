@@ -762,7 +762,7 @@ public static partial class Program
 
     static bool IsKnownTypeName(string name)
     {
-        return name is "in" or "if" or "of" or "do" or "is" or "act" or "end" or "qed";
+        return name is "in" or "if" or "of" or "is" or "act" or "end" or "qed";
     }
 
     // ── Output ──────────────────────────────────────────────────────

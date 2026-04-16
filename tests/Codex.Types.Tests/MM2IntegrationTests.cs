@@ -37,7 +37,7 @@ public class MM2IntegrationTests
 
         string source = """
             main : [Console, FileSystem] Nothing
-            main = do
+            main = act
               content <- read-file "test.codex"
               print-line content
             """;

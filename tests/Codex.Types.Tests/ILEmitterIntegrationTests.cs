@@ -439,7 +439,7 @@ public class ILEmitterIntegrationTests
     {
         string source = """
             main : [Console] Nothing
-            main = do
+            main = act
               print-line "first"
               print-line "second"
             """;
@@ -474,7 +474,7 @@ public class ILEmitterIntegrationTests
     {
         string source = """
             main : [Console] Nothing
-            main = do
+            main = act
               print-line "What is your name?"
               name <- read-line
               print-line ("Hello, " ++ name ++ "!")
@@ -653,7 +653,7 @@ public class ILEmitterIntegrationTests
     {
         string source = """
             main : Integer
-            main = run-state 0 do
+            main = run-state 0= act
               set-state 10
               get-state
             """;
@@ -667,7 +667,7 @@ public class ILEmitterIntegrationTests
     {
         string source = """
             main : Integer
-            main = run-state 0 do
+            main = run-state 0= act
               x <- get-state
               set-state (x + 1)
               get-state
@@ -682,7 +682,7 @@ public class ILEmitterIntegrationTests
     {
         string source = """
             main : Integer
-            main = run-state 0 do
+            main = run-state 0= act
               x <- get-state
               set-state (x + 10)
               y <- get-state
@@ -699,7 +699,7 @@ public class ILEmitterIntegrationTests
     {
         string source = """
             main : Text
-            main = run-state "hello" do
+            main = run-state "hello"= act
               s <- get-state
               set-state (s ++ " world")
               get-state
@@ -714,7 +714,7 @@ public class ILEmitterIntegrationTests
     {
         string source = """
             main : Integer
-            main = run-state 0 do
+            main = run-state 0= act
               x <- get-state
               set-state (x + 1)
               get-state

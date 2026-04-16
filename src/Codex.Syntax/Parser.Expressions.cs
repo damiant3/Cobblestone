@@ -102,7 +102,6 @@ public sealed partial class Parser
             or TokenKind.FalseKeyword
             or TokenKind.LeftParen
             or TokenKind.LeftBracket
-            or TokenKind.DoKeyword
             or TokenKind.ActKeyword
             or TokenKind.WithKeyword;
     }
@@ -189,8 +188,6 @@ public sealed partial class Parser
             case TokenKind.WhenKeyword:
                 return ParseMatchExpression();
 
-            case TokenKind.DoKeyword:
-                return ParseDoExpression();
 
             case TokenKind.ActKeyword:
                 return ParseActExpression();
@@ -501,43 +498,6 @@ public sealed partial class Parser
         SourceSpan endSpan = branches.Count > 0 ? branches[^1].Span : scrutinee.Span;
         return new MatchExpressionNode(scrutinee, branches,
             start.Span.Through(endSpan));
-    }
-
-    ExpressionNode ParseDoExpression()
-    {
-        Token start = Current;
-        Advance();
-        SkipNewlines();
-
-        List<ActStatementNode> statements = [];
-        while (!IsAtEnd
-            && Current.Kind is not (TokenKind.EndOfFile or TokenKind.Dedent
-                                    or TokenKind.ElseKeyword or TokenKind.InKeyword)
-            && !(Current.Kind == TokenKind.Identifier && Peek(1)?.Kind == TokenKind.Colon))
-        {
-            if (Current.Kind == TokenKind.Identifier && Peek(1)?.Kind == TokenKind.LeftArrow)
-            {
-                Token name = Current;
-                Advance();
-                Advance();
-                ExpressionNode value = ParseExpression();
-                statements.Add(new ActBindStatementNode(name, value, name.Span.Through(value.Span)));
-            }
-            else
-            {
-                ExpressionNode expr = ParseExpression();
-                statements.Add(new ActExprStatementNode(expr, expr.Span));
-            }
-            SkipNewlines();
-        }
-
-        if (statements.Count == 0)
-        {
-            m_diagnostics.Error(CdxCodes.EmptyActBlock, "act expression requires at least one statement", start.Span);
-        }
-
-        SourceSpan endSpan = statements.Count > 0 ? statements[^1].Span : start.Span;
-        return new ActExpressionNode(statements, start.Span.Through(endSpan));
     }
 
     ExpressionNode ParseActExpression()

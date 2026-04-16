@@ -53,7 +53,7 @@ public partial class IntegrationTests
     {
         string source =
             "log-and-apply : (a -> [e] b) -> a -> [Console, e] b\n" +
-            "log-and-apply (f) (x) = do\n" +
+            "log-and-apply (f) (x) = act\n" +
             "  print-line \"applying\"\n" +
             "  f (x)\n";
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
@@ -65,7 +65,7 @@ public partial class IntegrationTests
     {
         string source =
             "pure-only : Integer -> Integer\n" +
-            "pure-only (x) = do\n" +
+            "pure-only (x) = act\n" +
             "  print-line \"oops\"\n" +
             "  x\n";
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
