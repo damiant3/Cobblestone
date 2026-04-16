@@ -180,8 +180,8 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
                 CheckExpr(fa.Record);
                 break;
 
-            case DoExpr doExpr:
-                CheckDoExpr(doExpr);
+            case ActExpr actExpr:
+                CheckDoExpr(actExpr);
                 break;
 
             case ErrorExpr:
@@ -322,24 +322,24 @@ public sealed class LinearityChecker(DiagnosticBag diagnostics, Map<string, Code
         return captured;
     }
 
-    void CheckDoExpr(DoExpr doExpr)
+    void CheckDoExpr(ActExpr actExpr)
     {
         Map<string, CodexType> savedLinear = m_linearBindings;
 
-        foreach (DoStatement stmt in doExpr.Statements)
+        foreach (ActStatement stmt in actExpr.Statements)
         {
             switch (stmt)
             {
-                case DoBindStatement bind:
+                case ActBindStatement bind:
                     CheckExpr(bind.Value);
                     break;
-                case DoExprStatement exprStmt:
+                case ActExprStatement exprStmt:
                     CheckExpr(exprStmt.Expression);
                     break;
             }
         }
 
-        ReportUnusedLetLinearBindings(doExpr.Span, savedLinear);
+        ReportUnusedLetLinearBindings(actExpr.Span, savedLinear);
         m_linearBindings = savedLinear;
     }
 

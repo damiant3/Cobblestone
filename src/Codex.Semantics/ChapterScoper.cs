@@ -272,7 +272,7 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
                 Record = RenameExpr(fa.Record, renameMap)
             },
 
-            DoExpr doExpr => RenameDoExpr(doExpr, renameMap),
+            ActExpr actExpr => RenameDoExpr(actExpr, renameMap),
 
             HandleExpr handle => RenameHandleExpr(handle, renameMap),
 
@@ -353,20 +353,20 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
         }
     }
 
-    Expr RenameDoExpr(DoExpr doExpr, Dictionary<string, string> renameMap)
+    Expr RenameDoExpr(ActExpr actExpr, Dictionary<string, string> renameMap)
     {
         // Each bind statement introduces a name that shadows in subsequent statements
-        List<DoStatement> stmts = [];
+        List<ActStatement> stmts = [];
         Dictionary<string, string> currentMap = renameMap;
-        foreach (DoStatement stmt in doExpr.Statements)
+        foreach (ActStatement stmt in actExpr.Statements)
         {
-            stmts.Add(RenameDoStatement(stmt, currentMap));
-            if (stmt is DoBindStatement bind && renameMap.ContainsKey(bind.Name.Value))
+            stmts.Add(RenameActStatement(stmt, currentMap));
+            if (stmt is ActBindStatement bind && renameMap.ContainsKey(bind.Name.Value))
             {
                 currentMap = WithoutKeys(currentMap, [bind.Name.Value]);
             }
         }
-        return doExpr with { Statements = stmts };
+        return actExpr with { Statements = stmts };
     }
 
     Expr RenameHandleExpr(HandleExpr handle, Dictionary<string, string> renameMap)
@@ -407,12 +407,12 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
         };
     }
 
-    DoStatement RenameDoStatement(DoStatement stmt, Dictionary<string, string> renameMap)
+    ActStatement RenameActStatement(ActStatement stmt, Dictionary<string, string> renameMap)
     {
         return stmt switch
         {
-            DoBindStatement bind => bind with { Value = RenameExpr(bind.Value, renameMap) },
-            DoExprStatement exprStmt => exprStmt with { Expression = RenameExpr(exprStmt.Expression, renameMap) },
+            ActBindStatement bind => bind with { Value = RenameExpr(bind.Value, renameMap) },
+            ActExprStatement exprStmt => exprStmt with { Expression = RenameExpr(exprStmt.Expression, renameMap) },
             _ => stmt
         };
     }

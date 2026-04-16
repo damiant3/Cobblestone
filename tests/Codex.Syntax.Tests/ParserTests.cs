@@ -325,10 +325,10 @@ public class ParserTests
     {
         string source = "main : [Console] Nothing\nmain = do\n  print-line \"hello\"\n";
         DocumentNode doc = Parse(source);
-        Assert.IsType<DoExpressionNode>(doc.Definitions[0].Body);
-        DoExpressionNode doExpr = (DoExpressionNode)doc.Definitions[0].Body;
-        Assert.Single(doExpr.Statements);
-        Assert.IsType<DoExprStatementNode>(doExpr.Statements[0]);
+        Assert.IsType<ActExpressionNode>(doc.Definitions[0].Body);
+        ActExpressionNode actExpr = (ActExpressionNode)doc.Definitions[0].Body;
+        Assert.Single(actExpr.Statements);
+        Assert.IsType<ActExprStatementNode>(actExpr.Statements[0]);
     }
 
     [Fact]
@@ -336,11 +336,11 @@ public class ParserTests
     {
         string source = "main : [Console] Nothing\nmain = do\n  x <- read-line\n  print-line x\n";
         DocumentNode doc = Parse(source);
-        Assert.IsType<DoExpressionNode>(doc.Definitions[0].Body);
-        DoExpressionNode doExpr = (DoExpressionNode)doc.Definitions[0].Body;
-        Assert.Equal(2, doExpr.Statements.Count);
-        Assert.IsType<DoBindStatementNode>(doExpr.Statements[0]);
-        DoBindStatementNode bind = (DoBindStatementNode)doExpr.Statements[0];
+        Assert.IsType<ActExpressionNode>(doc.Definitions[0].Body);
+        ActExpressionNode actExpr = (ActExpressionNode)doc.Definitions[0].Body;
+        Assert.Equal(2, actExpr.Statements.Count);
+        Assert.IsType<ActBindStatementNode>(actExpr.Statements[0]);
+        ActBindStatementNode bind = (ActBindStatementNode)actExpr.Statements[0];
         Assert.Equal("x", bind.Name.Text);
     }
 
@@ -349,10 +349,10 @@ public class ParserTests
     {
         string source = "main : [Console] Nothing\nmain = act\n  print-line \"hello\"\n end\n";
         DocumentNode doc = Parse(source);
-        Assert.IsType<DoExpressionNode>(doc.Definitions[0].Body);
-        DoExpressionNode actExpr = (DoExpressionNode)doc.Definitions[0].Body;
+        Assert.IsType<ActExpressionNode>(doc.Definitions[0].Body);
+        ActExpressionNode actExpr = (ActExpressionNode)doc.Definitions[0].Body;
         Assert.Single(actExpr.Statements);
-        Assert.IsType<DoExprStatementNode>(actExpr.Statements[0]);
+        Assert.IsType<ActExprStatementNode>(actExpr.Statements[0]);
     }
 
     [Fact]
@@ -360,11 +360,11 @@ public class ParserTests
     {
         string source = "main : [Console] Nothing\nmain = act\n  x <- read-line\n  print-line x\n end\n";
         DocumentNode doc = Parse(source);
-        Assert.IsType<DoExpressionNode>(doc.Definitions[0].Body);
-        DoExpressionNode actExpr = (DoExpressionNode)doc.Definitions[0].Body;
+        Assert.IsType<ActExpressionNode>(doc.Definitions[0].Body);
+        ActExpressionNode actExpr = (ActExpressionNode)doc.Definitions[0].Body;
         Assert.Equal(2, actExpr.Statements.Count);
-        Assert.IsType<DoBindStatementNode>(actExpr.Statements[0]);
-        DoBindStatementNode bind = (DoBindStatementNode)actExpr.Statements[0];
+        Assert.IsType<ActBindStatementNode>(actExpr.Statements[0]);
+        ActBindStatementNode bind = (ActBindStatementNode)actExpr.Statements[0];
         Assert.Equal("x", bind.Name.Text);
     }
 
@@ -383,7 +383,7 @@ public class ParserTests
         string source = "main : [Console] Nothing\nmain = act\n x <- act\n  y <- read-line\n  return y\n end\n print-line x\nend\n";
         (DocumentNode doc, DiagnosticBag diags) = ParseWithDiags(source);
         Assert.DoesNotContain(diags.ToImmutable(), d => d.Severity == DiagnosticSeverity.Error);
-        Assert.IsType<DoExpressionNode>(doc.Definitions[0].Body);
+        Assert.IsType<ActExpressionNode>(doc.Definitions[0].Body);
     }
 
     [Fact]
@@ -391,7 +391,7 @@ public class ParserTests
     {
         string source = "main : [Console] Nothing\nmain = act end\n";
         (_, DiagnosticBag diags) = ParseWithDiags(source);
-        Assert.Contains(diags.ToImmutable(), d => d.Code == CdxCodes.EmptyDoBlock);
+        Assert.Contains(diags.ToImmutable(), d => d.Code == CdxCodes.EmptyActBlock);
     }
 
     [Fact]

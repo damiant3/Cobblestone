@@ -119,8 +119,8 @@ public sealed partial class TypeChecker
             case FieldAccessExpr fa:
                 return InferFieldAccess(fa);
 
-            case DoExpr doExpr:
-                return InferDoExpr(doExpr);
+            case ActExpr actExpr:
+                return InferDoExpr(actExpr);
 
             case HandleExpr handleExpr:
                 return InferHandleExpr(handleExpr);
@@ -492,17 +492,17 @@ public sealed partial class TypeChecker
         return ErrorType.s_instance;
     }
 
-    CodexType InferDoExpr(DoExpr doExpr)
+    CodexType InferDoExpr(ActExpr actExpr)
     {
         TypeEnvironment savedEnv = m_env;
         Set<string> collectedEffects = Set<string>.s_empty;
         CodexType lastType = NothingType.s_instance;
 
-        foreach (DoStatement stmt in doExpr.Statements)
+        foreach (ActStatement stmt in actExpr.Statements)
         {
             switch (stmt)
             {
-                case DoBindStatement bind:
+                case ActBindStatement bind:
                 {
                     CodexType valueType = InferExpr(bind.Value);
                     CodexType unwrapped =
@@ -511,7 +511,7 @@ public sealed partial class TypeChecker
                     lastType = NothingType.s_instance;
                     break;
                 }
-                case DoExprStatement exprStmt:
+                case ActExprStatement exprStmt:
                 {
                     CodexType stmtType = InferExpr(exprStmt.Expression);
                     UnwrapEffectful(stmtType, ref collectedEffects);

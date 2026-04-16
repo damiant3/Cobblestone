@@ -100,7 +100,7 @@ public sealed record FieldAccessExpr(Expr Record, Name FieldName, SourceSpan Spa
 
 public sealed record ErrorExpr(string Message, SourceSpan Span) : Expr(Span);
 
-public sealed record DoExpr(IReadOnlyList<DoStatement> Statements, SourceSpan Span) : Expr(Span);
+public sealed record ActExpr(IReadOnlyList<ActStatement> Statements, SourceSpan Span) : Expr(Span);
 
 public sealed record HandleExpr(
     Expr Computation,
@@ -115,11 +115,11 @@ public sealed record HandleClause(
     Expr Body,
     SourceSpan Span);
 
-public abstract record DoStatement(SourceSpan Span);
+public abstract record ActStatement(SourceSpan Span);
 
-public sealed record DoBindStatement(Name Name, Expr Value, SourceSpan Span) : DoStatement(Span);
+public sealed record ActBindStatement(Name Name, Expr Value, SourceSpan Span) : ActStatement(Span);
 
-public sealed record DoExprStatement(Expr Expression, SourceSpan Span) : DoStatement(Span);
+public sealed record ActExprStatement(Expr Expression, SourceSpan Span) : ActStatement(Span);
 
 public abstract record Pattern(SourceSpan Span);
 

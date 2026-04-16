@@ -597,18 +597,18 @@ public sealed class FortranEmitter : ICodeEmitter
     void EmitStatement(StringBuilder sb, IRExpr expr, int indent)
     {
         string pad = new(' ', indent * 2);
-        if (expr is IRDo doExpr)
+        if (expr is IRAct actExpr)
         {
-            foreach (IRDoStatement stmt in doExpr.Statements)
+            foreach (IRActStatement stmt in actExpr.Statements)
             {
                 switch (stmt)
                 {
-                    case IRDoExec exec:
+                    case IRActExec exec:
                         sb.Append(pad);
                         EmitExpr(sb, exec.Expression, indent);
                         sb.AppendLine();
                         break;
-                    case IRDoBind bind:
+                    case IRActBind bind:
                         sb.AppendLine($"{pad}! bind: {bind.Name}");
                         break;
                 }

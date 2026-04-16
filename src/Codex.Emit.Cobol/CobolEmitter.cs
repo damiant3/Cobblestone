@@ -505,16 +505,16 @@ public sealed class CobolEmitter : ICodeEmitter
 
     void EmitStatementCobol(StringBuilder sb, IRExpr expr)
     {
-        if (expr is IRDo doExpr)
+        if (expr is IRAct actExpr)
         {
-            foreach (IRDoStatement stmt in doExpr.Statements)
+            foreach (IRActStatement stmt in actExpr.Statements)
             {
                 switch (stmt)
                 {
-                    case IRDoExec exec:
+                    case IRActExec exec:
                         EmitExprToVar(sb, exec.Expression);
                         break;
-                    case IRDoBind bind:
+                    case IRActBind bind:
                         sb.AppendLine($"      *>   bind: {bind.Name}");
                         break;
                 }

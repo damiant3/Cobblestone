@@ -446,11 +446,11 @@ Section: Function Emission
     is IrLet (n) (t) (v) (b) (sp) -> has-tail-call b func-name
     is IrMatch (s) (bs) (t) (sp) -> has-tail-call-branches bs func-name 0
     is IrApply (f) (a) (t) (sp) -> is-self-call expr func-name
-    is IrDo (stmts) (t) (sp) -> has-tail-call-do stmts func-name
+    is IrAct (stmts) (t) (sp) -> has-tail-call-act stmts func-name
     is otherwise -> False
 
-  has-tail-call-do : List IRDoStmt -> Text -> Boolean
-  has-tail-call-do (stmts) (func-name) =
+  has-tail-call-act : List IRActStmt -> Text -> Boolean
+  has-tail-call-act (stmts) (func-name) =
    let len = list-length stmts
    in if len == 0 then False
     else let last = list-at stmts (len - 1)
@@ -568,14 +568,14 @@ Section: Expression Emission
     is IrFieldAccess (rec) (field) (ty) (sp) -> emit-field-access st rec field
     is IrMatch (scrut) (branches) (ty) (sp) -> emit-match st scrut branches
     is IrList (elems) (ty) (sp) -> emit-list st elems
-    is IrDo (stmts) (ty) (sp) -> emit-do-stmts st stmts 0 (list-length stmts)
+    is IrAct (stmts) (ty) (sp) -> emit-act-stmts st stmts 0 (list-length stmts)
     is otherwise -> EmitResult {
      state = st,
      reg = reg-rax
     }
 
-  emit-do-stmts : CodegenState -> List IRDoStmt -> Integer -> Integer -> EmitResult
-  emit-do-stmts (st) (stmts) (i) (len) =
+  emit-act-stmts : CodegenState -> List IRActStmt -> Integer -> Integer -> EmitResult
+  emit-act-stmts (st) (stmts) (i) (len) =
    if i == len then EmitResult { state = st, reg = reg-rax }
    else let s = list-at stmts i
     in when s
@@ -584,11 +584,11 @@ Section: Expression Emission
       in let loc = alloc-local (val-result.state)
        in let st1 = store-local (loc.state) (loc.reg) (val-result.reg)
         in let st2 = add-local st1 name (loc.reg)
-         in emit-do-stmts st2 stmts (i + 1) len
+         in emit-act-stmts st2 stmts (i + 1) len
      is IrDoExec (e) (sp) ->
       if i == len - 1 then emit-expr st e
       else let r = emit-expr st e
-       in emit-do-stmts (r.state) stmts (i + 1) len
+       in emit-act-stmts (r.state) stmts (i + 1) len
 
   emit-text-lit : CodegenState -> Text -> EmitResult
   emit-text-lit (st) (value) =
@@ -2731,7 +2731,7 @@ Section: ConstructedTy Rewrite Pass
     is IrLambda (ps) (b) (t) (s) -> IrLambda (rewrite-ir-params tdefs ps 0 (list-length ps) []) (rewrite-ir-expr tdefs b) (resolve-ty-deep tdefs t) s
     is IrList (es) (t) (s) -> IrList (rewrite-ir-expr-list tdefs es 0 (list-length es) []) (resolve-ty-deep tdefs t) s
     is IrMatch (sc) (bs) (t) (s) -> IrMatch (rewrite-ir-expr tdefs sc) (rewrite-ir-branches tdefs bs 0 (list-length bs) []) (resolve-ty-deep tdefs t) s
-    is IrDo (ss) (t) (s) -> IrDo (rewrite-ir-do-stmts tdefs ss 0 (list-length ss) []) (resolve-ty-deep tdefs t) s
+    is IrAct (ss) (t) (s) -> IrAct (rewrite-ir-act-stmts tdefs ss 0 (list-length ss) []) (resolve-ty-deep tdefs t) s
     is IrHandle (eff) (h) (cs) (t) (s) -> IrHandle eff (rewrite-ir-expr tdefs h) (rewrite-ir-handle-clauses tdefs cs 0 (list-length cs) []) (resolve-ty-deep tdefs t) s
     is IrRecord (n) (fs) (t) (s) -> IrRecord n (rewrite-ir-record-fields tdefs fs 0 (list-length fs) []) (resolve-ty-deep tdefs t) s
     is IrFieldAccess (r) (f) (t) (s) -> IrFieldAccess (rewrite-ir-expr tdefs r) f (resolve-ty-deep tdefs t) s
@@ -2764,14 +2764,14 @@ Section: ConstructedTy Rewrite Pass
     span = b.span
    }))
 
-  rewrite-ir-do-stmts : List TypeBinding -> List IRDoStmt -> Integer -> Integer -> List IRDoStmt -> List IRDoStmt
-  rewrite-ir-do-stmts (tdefs) (ss) (i) (len) (acc) =
+  rewrite-ir-act-stmts : List TypeBinding -> List IRActStmt -> Integer -> Integer -> List IRActStmt -> List IRActStmt
+  rewrite-ir-act-stmts (tdefs) (ss) (i) (len) (acc) =
    if i == len then acc
    else let s = list-at ss i
    in let ns = when s
     is IrDoBind (n) (t) (v) (sp) -> IrDoBind n (resolve-ty-deep tdefs t) (rewrite-ir-expr tdefs v) sp
     is IrDoExec (v) (sp) -> IrDoExec (rewrite-ir-expr tdefs v) sp
-   in rewrite-ir-do-stmts tdefs ss (i + 1) len (list-snoc acc ns)
+   in rewrite-ir-act-stmts tdefs ss (i + 1) len (list-snoc acc ns)
 
   rewrite-ir-handle-clauses : List TypeBinding -> List IRHandleClause -> Integer -> Integer -> List IRHandleClause -> List IRHandleClause
   rewrite-ir-handle-clauses (tdefs) (cs) (i) (len) (acc) =
@@ -2838,7 +2838,7 @@ Section: ErrorTy Boundary Check
     is IrLambda (ps) (b) (t) (s) -> check-ir-expr-errorty st1 b
     is IrList (es) (t) (s) -> check-ir-list-errorty st1 es 0
     is IrMatch (sc) (bs) (t) (s) -> check-ir-branches-errorty (check-ir-expr-errorty st1 sc) bs 0
-    is IrDo (ss) (t) (s) -> check-ir-do-stmts-errorty st1 ss 0
+    is IrAct (ss) (t) (s) -> check-ir-act-stmts-errorty st1 ss 0
     is IrHandle (eff) (h) (cs) (t) (s) -> check-ir-handle-clauses-errorty (check-ir-expr-errorty st1 h) cs 0
     is IrRecord (n) (fs) (t) (s) -> check-ir-record-fields-errorty st1 fs 0
     is IrFieldAccess (r) (f) (t) (s) -> check-ir-expr-errorty st1 r
@@ -2857,13 +2857,13 @@ Section: ErrorTy Boundary Check
    else let b = list-at bs i
    in check-ir-branches-errorty (check-ir-expr-errorty st (b.body)) bs (i + 1)
 
-  check-ir-do-stmts-errorty : CodegenState -> List IRDoStmt -> Integer -> CodegenState
-  check-ir-do-stmts-errorty (st) (ss) (i) =
+  check-ir-act-stmts-errorty : CodegenState -> List IRActStmt -> Integer -> CodegenState
+  check-ir-act-stmts-errorty (st) (ss) (i) =
    if i == list-length ss then st
    else let s = list-at ss i
    in when s
-    is IrDoBind (n) (t) (v) (sp) -> check-ir-do-stmts-errorty (check-ir-expr-errorty st v) ss (i + 1)
-    is IrDoExec (v) (sp) -> check-ir-do-stmts-errorty (check-ir-expr-errorty st v) ss (i + 1)
+    is IrDoBind (n) (t) (v) (sp) -> check-ir-act-stmts-errorty (check-ir-expr-errorty st v) ss (i + 1)
+    is IrDoExec (v) (sp) -> check-ir-act-stmts-errorty (check-ir-expr-errorty st v) ss (i + 1)
 
   check-ir-handle-clauses-errorty : CodegenState -> List IRHandleClause -> Integer -> CodegenState
   check-ir-handle-clauses-errorty (st) (cs) (i) =

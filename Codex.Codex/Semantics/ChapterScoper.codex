@@ -146,7 +146,7 @@ Section: IR Expression Renaming
     is IrMatch (scrut) (branches) (ty) (sp) -> IrMatch (rename-ir-expr rn scrut) (rename-ir-branches rn branches 0 []) ty sp
     is IrList (elems) (ty) (sp) -> IrList (rename-ir-exprs rn elems 0 []) ty sp
     is IrRecord (nm) (fields) (ty) (sp) -> IrRecord nm (rename-ir-fields rn fields 0 []) ty sp
-    is IrDo (stmts) (ty) (sp) -> IrDo (rename-ir-do-stmts rn stmts 0 []) ty sp
+    is IrAct (stmts) (ty) (sp) -> IrAct (rename-ir-act-stmts rn stmts 0 []) ty sp
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> IrHandle eff (rename-ir-expr rn body) (rename-ir-handle-clauses rn clauses 0 []) ty sp
 
   rename-ir-let : List RenameEntry -> Text -> CodexType -> IRExpr -> IRExpr -> SourceSpan -> IRExpr
@@ -199,16 +199,16 @@ Section: IR Collection Renaming
    if i == list-length pats then rn
    else remove-renames-for-pats (remove-renames-for-pat rn (list-at pats i)) pats (i + 1)
 
-  rename-ir-do-stmts : List RenameEntry -> List IRDoStmt -> Integer -> List IRDoStmt -> List IRDoStmt
-  rename-ir-do-stmts (rn) (stmts) (i) (acc) =
+  rename-ir-act-stmts : List RenameEntry -> List IRActStmt -> Integer -> List IRActStmt -> List IRActStmt
+  rename-ir-act-stmts (rn) (stmts) (i) (acc) =
    if i == list-length stmts then acc
    else let stmt = list-at stmts i
    in when stmt
     is IrDoBind (nm) (ty) (expr) (sp) ->
      let rn2 = remove-rename rn nm
-   in rename-ir-do-stmts rn2 stmts (i + 1) (list-snoc acc (IrDoBind nm ty (rename-ir-expr rn expr) sp))
+   in rename-ir-act-stmts rn2 stmts (i + 1) (list-snoc acc (IrDoBind nm ty (rename-ir-expr rn expr) sp))
     is IrDoExec (expr) (sp) ->
-     rename-ir-do-stmts rn stmts (i + 1) (list-snoc acc (IrDoExec (rename-ir-expr rn expr) sp))
+     rename-ir-act-stmts rn stmts (i + 1) (list-snoc acc (IrDoExec (rename-ir-expr rn expr) sp))
 
   rename-ir-handle-clauses : List RenameEntry -> List IRHandleClause -> Integer -> List IRHandleClause -> List IRHandleClause
   rename-ir-handle-clauses (rn) (clauses) (i) (acc) =
@@ -316,7 +316,7 @@ Section: AST Expression Renaming
     is AListExpr (elems) (s) -> AListExpr (rename-aexprs rn elems 0 []) s
     is ARecordExpr (name) (fields) (s) -> ARecordExpr name (rename-afields rn fields 0 []) s
     is AFieldAccess (rec) (field) (s) -> AFieldAccess (rename-aexpr rn rec) field s
-    is ADoExpr (stmts) (s) -> ADoExpr (rename-ado-stmts rn stmts 0 []) s
+    is AActExpr (stmts) (s) -> AActExpr (rename-ado-stmts rn stmts 0 []) s
     is AHandleExpr (eff) (body) (clauses) (s) -> AHandleExpr eff (rename-aexpr rn body) (rename-ahandle-clauses rn clauses 0 []) s
 
   rename-alet : List RenameEntry -> List ALetBind -> AExpr -> SourceSpan -> AExpr
@@ -389,16 +389,16 @@ Section: AST Expression Renaming
    if i == list-length pats then rn
    else remove-renames-for-apats (remove-renames-for-apat rn (list-at pats i)) pats (i + 1)
 
-  rename-ado-stmts : List RenameEntry -> List ADoStmt -> Integer -> List ADoStmt -> List ADoStmt
+  rename-ado-stmts : List RenameEntry -> List AActStmt -> Integer -> List AActStmt -> List AActStmt
   rename-ado-stmts (rn) (stmts) (i) (acc) =
    if i == list-length stmts then acc
    else let s = list-at stmts i
    in when s
-    is ADoBindStmt (nm) (expr) (sp) ->
+    is AActBindStmt (nm) (expr) (sp) ->
      let rn2 = remove-rename rn (nm.value)
-   in rename-ado-stmts rn2 stmts (i + 1) (list-snoc acc (ADoBindStmt nm (rename-aexpr rn expr) sp))
-    is ADoExprStmt (expr) (sp) ->
-     rename-ado-stmts rn stmts (i + 1) (list-snoc acc (ADoExprStmt (rename-aexpr rn expr) sp))
+   in rename-ado-stmts rn2 stmts (i + 1) (list-snoc acc (AActBindStmt nm (rename-aexpr rn expr) sp))
+    is AActExprStmt (expr) (sp) ->
+     rename-ado-stmts rn stmts (i + 1) (list-snoc acc (AActExprStmt (rename-aexpr rn expr) sp))
 
   rename-ahandle-clauses : List RenameEntry -> List AHandleClause -> Integer -> List AHandleClause -> List AHandleClause
   rename-ahandle-clauses (rn) (clauses) (i) (acc) =

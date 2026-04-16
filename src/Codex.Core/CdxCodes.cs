@@ -68,7 +68,7 @@ public static class CdxCodes
     public const int ExpectedMatchBranch = 1030;
     public const int ExpectedPattern = 1031;
     public const int ExpectedArrowAfterPattern = 1032;
-    public const int EmptyDoBlock = 1040;
+    public const int EmptyActBlock = 1040;
     public const int ExpectedTypeDefBody = 1050;
     public const int ExpectedRecordFieldName = 1051;
     public const int ExpectedConstructorName = 1052;
@@ -217,7 +217,7 @@ public static class CdxCodes
         [ExpectedArrowAfterPattern] = new(ExpectedArrowAfterPattern, nameof(ExpectedArrowAfterPattern),
             DiagnosticSeverity.Error, CdxPhase.Parser,
             "Pattern was not followed by '->'."),
-        [EmptyDoBlock] = new(EmptyDoBlock, nameof(EmptyDoBlock),
+        [EmptyActBlock] = new(EmptyActBlock, nameof(EmptyActBlock),
             DiagnosticSeverity.Error, CdxPhase.Parser,
             "'do' expression requires at least one statement."),
         [ExpectedTypeDefBody] = new(ExpectedTypeDefBody, nameof(ExpectedTypeDefBody),

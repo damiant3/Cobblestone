@@ -1007,8 +1007,8 @@ sealed partial class ILAssemblyBuilder
                 EmitApply(il, apply, locals, parameters);
                 break;
 
-            case IRDo doExpr:
-                EmitDo(il, doExpr, locals, parameters);
+            case IRAct actExpr:
+                EmitDo(il, actExpr, locals, parameters);
                 break;
 
             case IRRecord rec:
@@ -1457,7 +1457,7 @@ sealed partial class ILAssemblyBuilder
                 il.Call(m_cceDecodeRef);     // CCE content → Unicode
                 il.Call(m_fileWriteAllTextRef);
                 // File.WriteAllText is void — leave nothing on the stack. Do-bind
-                // sites bind write-file's Nothing result via IRDoBind, which skips
+                // sites bind write-file's Nothing result via IRActBind, which skips
                 // StoreLocal for void-like NameType (see EmitDo).
                 return true;
 
@@ -1652,15 +1652,15 @@ sealed partial class ILAssemblyBuilder
         il.Call(methodSpec);
     }
 
-    void EmitDo(InstructionEncoder il, IRDo doExpr, LocalsBuilder locals,
+    void EmitDo(InstructionEncoder il, IRAct actExpr, LocalsBuilder locals,
         ImmutableArray<IRParameter> parameters)
     {
-        for (int i = 0; i < doExpr.Statements.Length; i++)
+        for (int i = 0; i < actExpr.Statements.Length; i++)
         {
-            IRDoStatement stmt = doExpr.Statements[i];
+            IRActStatement stmt = actExpr.Statements[i];
             switch (stmt)
             {
-                case IRDoBind bind:
+                case IRActBind bind:
                     EmitExpr(il, bind.Value, locals, parameters);
                     // Void-like binds (e.g. `_ <- write-file ...`) produce no
                     // IL value — skip StoreLocal rather than storing from empty stack.
@@ -1670,9 +1670,9 @@ sealed partial class ILAssemblyBuilder
                         il.StoreLocal(localIndex);
                     }
                     break;
-                case IRDoExec exec:
+                case IRActExec exec:
                     EmitExpr(il, exec.Expression, locals, parameters);
-                    bool isLast = i == doExpr.Statements.Length - 1;
+                    bool isLast = i == actExpr.Statements.Length - 1;
                     if (!isLast && !IsVoidLike(exec.Expression.Type))
                     {
                         il.OpCode(ILOpCode.Pop);
@@ -1692,14 +1692,14 @@ sealed partial class ILAssemblyBuilder
 
         // Emit the computation.  If it is a do-block we inline the statements
         // directly so that IRGetState / IRSetState resolve the __state local.
-        if (runState.Computation is IRDo doExpr)
+        if (runState.Computation is IRAct actExpr)
         {
-            for (int i = 0; i < doExpr.Statements.Length; i++)
+            for (int i = 0; i < actExpr.Statements.Length; i++)
             {
-                IRDoStatement stmt = doExpr.Statements[i];
+                IRActStatement stmt = actExpr.Statements[i];
                 switch (stmt)
                 {
-                    case IRDoBind bind:
+                    case IRActBind bind:
                         EmitExpr(il, bind.Value, locals, parameters);
                         // The lowering may assign ErrorType to binds of get-state
                         // because the do-block is lowered without state-type context.
@@ -1710,9 +1710,9 @@ sealed partial class ILAssemblyBuilder
                         int bindLocal = locals.AddLocal(bind.Name, bindType);
                         il.StoreLocal(bindLocal);
                         break;
-                    case IRDoExec exec:
+                    case IRActExec exec:
                         EmitExpr(il, exec.Expression, locals, parameters);
-                        bool isLast = i == doExpr.Statements.Length - 1;
+                        bool isLast = i == actExpr.Statements.Length - 1;
                         if (!isLast && !IsVoidLike(exec.Expression.Type))
                         {
                             il.OpCode(ILOpCode.Pop);
@@ -2412,20 +2412,20 @@ sealed partial class ILAssemblyBuilder
                 EmitTcoApply(il, apply, locals, parameters, paramLocals);
                 break;
 
-            case IRDo doExpr:
-                for (int i = 0; i < doExpr.Statements.Length; i++)
+            case IRAct actExpr:
+                for (int i = 0; i < actExpr.Statements.Length; i++)
                 {
-                    IRDoStatement stmt = doExpr.Statements[i];
+                    IRActStatement stmt = actExpr.Statements[i];
                     switch (stmt)
                     {
-                        case IRDoBind bind:
+                        case IRActBind bind:
                             EmitTcoExpr(il, bind.Value, locals, parameters, paramLocals);
                             int doLocal = locals.AddLocal(bind.Name, bind.NameType);
                             il.StoreLocal(doLocal);
                             break;
-                        case IRDoExec exec:
+                        case IRActExec exec:
                             EmitTcoExpr(il, exec.Expression, locals, parameters, paramLocals);
-                            bool isLast = i == doExpr.Statements.Length - 1;
+                            bool isLast = i == actExpr.Statements.Length - 1;
                             if (!isLast && !IsVoidLike(exec.Expression.Type))
                             {
                                 il.OpCode(ILOpCode.Pop);
@@ -2737,14 +2737,14 @@ sealed partial class ILAssemblyBuilder
                 int elseDepth = EstimateStackDepth(ifExpr.Else);
                 return Math.Max(condDepth, Math.Max(thenDepth, elseDepth));
 
-            case IRDo doExpr:
+            case IRAct actExpr:
                 int maxDo = 0;
-                foreach (IRDoStatement stmt in doExpr.Statements)
+                foreach (IRActStatement stmt in actExpr.Statements)
                 {
                     int d = stmt switch
                     {
-                        IRDoBind bind => EstimateStackDepth(bind.Value),
-                        IRDoExec exec => EstimateStackDepth(exec.Expression),
+                        IRActBind bind => EstimateStackDepth(bind.Value),
+                        IRActExec exec => EstimateStackDepth(exec.Expression),
                         _ => 1
                     };
                     maxDo = Math.Max(maxDo, d);

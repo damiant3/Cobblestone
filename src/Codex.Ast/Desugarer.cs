@@ -156,9 +156,9 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
 
         ParenthesizedExpressionNode paren => DesugarExpr(paren.Inner),
 
-        DoExpressionNode doExpr => new DoExpr(
-            doExpr.Statements.Select(DesugarDoStatement).ToList(),
-            doExpr.Span),
+        ActExpressionNode actExpr => new ActExpr(
+            actExpr.Statements.Select(DesugarActStatement).ToList(),
+            actExpr.Span),
 
         HandleExpressionNode handle => new HandleExpr(
             DesugarExpr(handle.Computation),
@@ -173,12 +173,12 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
         _ => new ErrorExpr($"unknown expression node: {node.Kind}", node.Span)
     };
 
-    DoStatement DesugarDoStatement(DoStatementNode node) => node switch
+    ActStatement DesugarActStatement(ActStatementNode node) => node switch
     {
-        DoBindStatementNode bind => new DoBindStatement(
+        ActBindStatementNode bind => new ActBindStatement(
             new Name(bind.Name.Text), DesugarExpr(bind.Value), bind.Span),
-        DoExprStatementNode expr => new DoExprStatement(DesugarExpr(expr.Expression), expr.Span),
-        _ => new DoExprStatement(new ErrorExpr("unknown do statement", node.Span), node.Span)
+        ActExprStatementNode expr => new ActExprStatement(DesugarExpr(expr.Expression), expr.Span),
+        _ => new ActExprStatement(new ErrorExpr("unknown do statement", node.Span), node.Span)
     };
 
     HandleClause DesugarHandleClause(HandleClauseNode node) =>

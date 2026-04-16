@@ -55,7 +55,7 @@ public sealed partial class Parser
         bool isCompound = func is MatchExpressionNode
             or IfExpressionNode
             or LetExpressionNode
-            or DoExpressionNode;
+            or ActExpressionNode;
         if (isCompound)
         {
             return func;
@@ -509,7 +509,7 @@ public sealed partial class Parser
         Advance();
         SkipNewlines();
 
-        List<DoStatementNode> statements = [];
+        List<ActStatementNode> statements = [];
         while (!IsAtEnd
             && Current.Kind is not (TokenKind.EndOfFile or TokenKind.Dedent
                                     or TokenKind.ElseKeyword or TokenKind.InKeyword)
@@ -521,23 +521,23 @@ public sealed partial class Parser
                 Advance();
                 Advance();
                 ExpressionNode value = ParseExpression();
-                statements.Add(new DoBindStatementNode(name, value, name.Span.Through(value.Span)));
+                statements.Add(new ActBindStatementNode(name, value, name.Span.Through(value.Span)));
             }
             else
             {
                 ExpressionNode expr = ParseExpression();
-                statements.Add(new DoExprStatementNode(expr, expr.Span));
+                statements.Add(new ActExprStatementNode(expr, expr.Span));
             }
             SkipNewlines();
         }
 
         if (statements.Count == 0)
         {
-            m_diagnostics.Error(CdxCodes.EmptyDoBlock, "do expression requires at least one statement", start.Span);
+            m_diagnostics.Error(CdxCodes.EmptyActBlock, "do expression requires at least one statement", start.Span);
         }
 
         SourceSpan endSpan = statements.Count > 0 ? statements[^1].Span : start.Span;
-        return new DoExpressionNode(statements, start.Span.Through(endSpan));
+        return new ActExpressionNode(statements, start.Span.Through(endSpan));
     }
 
     ExpressionNode ParseActExpression()
@@ -546,7 +546,7 @@ public sealed partial class Parser
         Advance();
         SkipNewlines();
 
-        List<DoStatementNode> statements = [];
+        List<ActStatementNode> statements = [];
         while (!IsAtEnd && Current.Kind != TokenKind.EndKeyword && Current.Kind != TokenKind.EndOfFile)
         {
             if (Current.Kind == TokenKind.Identifier && Peek(1)?.Kind == TokenKind.LeftArrow)
@@ -555,12 +555,12 @@ public sealed partial class Parser
                 Advance();
                 Advance();
                 ExpressionNode value = ParseExpression();
-                statements.Add(new DoBindStatementNode(name, value, name.Span.Through(value.Span)));
+                statements.Add(new ActBindStatementNode(name, value, name.Span.Through(value.Span)));
             }
             else
             {
                 ExpressionNode expr = ParseExpression();
-                statements.Add(new DoExprStatementNode(expr, expr.Span));
+                statements.Add(new ActExprStatementNode(expr, expr.Span));
             }
             SkipNewlines();
         }
@@ -569,10 +569,10 @@ public sealed partial class Parser
 
         if (statements.Count == 0)
         {
-            m_diagnostics.Error(CdxCodes.EmptyDoBlock, "act expression requires at least one statement", start.Span);
+            m_diagnostics.Error(CdxCodes.EmptyActBlock, "act expression requires at least one statement", start.Span);
         }
 
-        return new DoExpressionNode(statements, start.Span.Through(endTok.Span));
+        return new ActExpressionNode(statements, start.Span.Through(endTok.Span));
     }
 
     ExpressionNode ParseInterpolatedString()
