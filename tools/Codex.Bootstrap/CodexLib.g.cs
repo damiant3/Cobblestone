@@ -8063,7 +8063,7 @@ public static class Codex_Codex_Codex
                 var _tco_1 = offset_map;
                 var _tco_2 = text_base;
                 var _tco_3 = (i + 1L);
-                var _tco_4 = Enumerable.Concat(acc, new List<PatchEntry>() { p0, p1 }).ToList();
+                var _tco_4 = ((Func<List<PatchEntry>>)(() => { var _l = ((Func<List<PatchEntry>>)(() => { var _l = acc; _l.Add(p0); return _l; }))(); _l.Add(p1); return _l; }))();
                 fixups = _tco_0;
                 offset_map = _tco_1;
                 text_base = _tco_2;
@@ -8092,7 +8092,7 @@ public static class Codex_Codex_Codex
                 var _tco_0 = fixups;
                 var _tco_1 = rodata_vaddr;
                 var _tco_2 = (i + 1L);
-                var _tco_3 = Enumerable.Concat(acc, new List<PatchEntry>() { p0, p1 }).ToList();
+                var _tco_3 = ((Func<List<PatchEntry>>)(() => { var _l = ((Func<List<PatchEntry>>)(() => { var _l = acc; _l.Add(p0); return _l; }))(); _l.Add(p1); return _l; }))();
                 fixups = _tco_0;
                 rodata_vaddr = _tco_1;
                 i = _tco_2;
