@@ -14385,7 +14385,7 @@ public static class Codex_Codex_Codex
 
     public static ParseTypeDefResult unwrap_ctor_field(ParseTypeResult r, Token ctor_name, List<TypeExpr> fields, Token name_tok, List<Token> tparams, List<VariantCtorDef> acc)
     {
-        return (r is TypeOk _mTypeOk128_ ? ((Func<ParseState, ParseTypeDefResult>)((st) => ((Func<TypeExpr, ParseTypeDefResult>)((ty) => ((Func<ParseState, ParseTypeDefResult>)((st2) => parse_ctor_fields(ctor_name, Enumerable.Concat(fields, new List<TypeExpr>() { ty }).ToList(), st2, name_tok, tparams, acc)))(expect(new RightParen(), st))))((TypeExpr)_mTypeOk128_.Field0)))((ParseState)_mTypeOk128_.Field1) : throw new InvalidOperationException("Non-exhaustive match"));
+        return (r is TypeOk _mTypeOk128_ ? ((Func<ParseState, ParseTypeDefResult>)((st) => ((Func<TypeExpr, ParseTypeDefResult>)((ty) => ((Func<ParseState, ParseTypeDefResult>)((st2) => parse_ctor_fields(ctor_name, ((Func<List<TypeExpr>>)(() => { var _l = fields; _l.Add(ty); return _l; }))(), st2, name_tok, tparams, acc)))(expect(new RightParen(), st))))((TypeExpr)_mTypeOk128_.Field0)))((ParseState)_mTypeOk128_.Field1) : throw new InvalidOperationException("Non-exhaustive match"));
     }
 
     public static Document parse_document(ParseState st)
@@ -14647,7 +14647,7 @@ public static class Codex_Codex_Codex
                         var _tco_2 = effect_defs;
                         var _tco_3 = imports;
                         var _tco_4 = ch_title;
-                        var _tco_5 = Enumerable.Concat(sec_titles, new List<string>() { title }).ToList();
+                        var _tco_5 = ((Func<List<string>>)(() => { var _l = sec_titles; _l.Add(title); return _l; }))();
                         var _tco_6 = skip_prose_lines(skip_to_next_line(st));
                         defs = _tco_0;
                         type_defs = _tco_1;
@@ -14740,7 +14740,7 @@ public static class Codex_Codex_Codex
 
     public static Document parse_top_level_effect(List<Def> defs, List<TypeDef> type_defs, List<EffectDef> effect_defs, List<CitesDecl> imports, string ch_title, List<string> sec_titles, ParseState st)
     {
-        return ((Func<ParseState, Document>)((st1) => ((Func<Token, Document>)((name_tok) => ((Func<ParseState, Document>)((st2) => ((Func<ParseState, Document>)((st3) => ((Func<EffectOpsResult, Document>)((ops) => ((Func<EffectDef, Document>)((ed) => parse_top_level(defs, type_defs, Enumerable.Concat(effect_defs, new List<EffectDef>() { ed }).ToList(), imports, ch_title, sec_titles, skip_newlines(ops.state))))(new EffectDef(name_tok, ops.ops))))(parse_effect_ops(st3, new List<EffectOpDef>()))))((is_where_keyword(current_kind(st2)) ? skip_newlines(advance(st2)) : st2))))(advance(st1))))(current(st1))))(advance(st));
+        return ((Func<ParseState, Document>)((st1) => ((Func<Token, Document>)((name_tok) => ((Func<ParseState, Document>)((st2) => ((Func<ParseState, Document>)((st3) => ((Func<EffectOpsResult, Document>)((ops) => ((Func<EffectDef, Document>)((ed) => parse_top_level(defs, type_defs, ((Func<List<EffectDef>>)(() => { var _l = effect_defs; _l.Add(ed); return _l; }))(), imports, ch_title, sec_titles, skip_newlines(ops.state))))(new EffectDef(name_tok, ops.ops))))(parse_effect_ops(st3, new List<EffectOpDef>()))))((is_where_keyword(current_kind(st2)) ? skip_newlines(advance(st2)) : st2))))(advance(st1))))(current(st1))))(advance(st));
     }
 
     public static EffectOpsResult parse_effect_ops(ParseState st, List<EffectOpDef> acc)
@@ -14781,12 +14781,12 @@ public static class Codex_Codex_Codex
 
     public static Document try_top_level_type_def(List<Def> defs, List<TypeDef> type_defs, List<EffectDef> effect_defs, List<CitesDecl> imports, string ch_title, List<string> sec_titles, ParseState st)
     {
-        return ((Func<ParseTypeDefResult, Document>)((td_result) => ((Func<ParseState, Document>)((st2) => ((Func<Maybe<TypeDef>, Document>)((_scrutinee129_) => (_scrutinee129_ is Just<TypeDef> _mJust129_ ? ((Func<TypeDef, Document>)((td) => parse_top_level(defs, Enumerable.Concat(type_defs, new List<TypeDef>() { td }).ToList(), effect_defs, imports, ch_title, sec_titles, skip_newlines(st2))))((TypeDef)_mJust129_.Field0) : (_scrutinee129_ is None<TypeDef> _mNone129_ ? try_top_level_def(defs, type_defs, effect_defs, imports, ch_title, sec_titles, st) : throw new InvalidOperationException("Non-exhaustive match")))))(td_result.maybe_type_def)))(td_result.state)))(parse_type_def(st));
+        return ((Func<ParseTypeDefResult, Document>)((td_result) => ((Func<ParseState, Document>)((st2) => ((Func<Maybe<TypeDef>, Document>)((_scrutinee129_) => (_scrutinee129_ is Just<TypeDef> _mJust129_ ? ((Func<TypeDef, Document>)((td) => parse_top_level(defs, ((Func<List<TypeDef>>)(() => { var _l = type_defs; _l.Add(td); return _l; }))(), effect_defs, imports, ch_title, sec_titles, skip_newlines(st2))))((TypeDef)_mJust129_.Field0) : (_scrutinee129_ is None<TypeDef> _mNone129_ ? try_top_level_def(defs, type_defs, effect_defs, imports, ch_title, sec_titles, st) : throw new InvalidOperationException("Non-exhaustive match")))))(td_result.maybe_type_def)))(td_result.state)))(parse_type_def(st));
     }
 
     public static Document try_top_level_def(List<Def> defs, List<TypeDef> type_defs, List<EffectDef> effect_defs, List<CitesDecl> imports, string ch_title, List<string> sec_titles, ParseState st)
     {
-        return ((Func<ParseDefResult, Document>)((def_result) => ((Func<ParseState, Document>)((st2) => ((Func<Maybe<Def>, Document>)((_scrutinee130_) => (_scrutinee130_ is Just<Def> _mJust130_ ? ((Func<Def, Document>)((d) => ((Func<Def, Document>)((tagged) => parse_top_level(Enumerable.Concat(defs, new List<Def>() { tagged }).ToList(), type_defs, effect_defs, imports, ch_title, sec_titles, skip_newlines(st2))))(new Def(d.name, d.@params, d.ann, d.body, ch_title))))((Def)_mJust130_.Field0) : (_scrutinee130_ is None<Def> _mNone130_ ? parse_top_level(defs, type_defs, effect_defs, imports, ch_title, sec_titles, skip_newlines(advance(st2))) : throw new InvalidOperationException("Non-exhaustive match")))))(def_result.maybe_def)))(def_result.state)))(parse_definition(st));
+        return ((Func<ParseDefResult, Document>)((def_result) => ((Func<ParseState, Document>)((st2) => ((Func<Maybe<Def>, Document>)((_scrutinee130_) => (_scrutinee130_ is Just<Def> _mJust130_ ? ((Func<Def, Document>)((d) => ((Func<Def, Document>)((tagged) => parse_top_level(((Func<List<Def>>)(() => { var _l = defs; _l.Add(tagged); return _l; }))(), type_defs, effect_defs, imports, ch_title, sec_titles, skip_newlines(st2))))(new Def(d.name, d.@params, d.ann, d.body, ch_title))))((Def)_mJust130_.Field0) : (_scrutinee130_ is None<Def> _mNone130_ ? parse_top_level(defs, type_defs, effect_defs, imports, ch_title, sec_titles, skip_newlines(advance(st2))) : throw new InvalidOperationException("Non-exhaustive match")))))(def_result.maybe_def)))(def_result.state)))(parse_definition(st));
     }
 
     public static ScanResult scan_document(ParseState st)
