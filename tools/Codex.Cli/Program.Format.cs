@@ -157,7 +157,7 @@ public static partial class Program
                     // Plain "else <expr>" keeps its alignment with the if.
                     bool isChainLine = trimmed.StartsWith("in ")
                         || trimmed.StartsWith("else let ")
-                        || trimmed.StartsWith("else do")
+                        || trimmed.StartsWith("else act")
                         || trimmed == "else";
                     if (isChainLine)
                     {

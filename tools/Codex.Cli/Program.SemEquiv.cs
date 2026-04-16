@@ -676,7 +676,7 @@ public static partial class Program
         // Iteratively strip redundant parens. A balanced innermost pair of
         // parens is dropped when its content is unambiguously equivalent to
         // its unwrapped form:
-        //   - content starts with a scope-defining keyword (if/when/let/do/
+        //   - content starts with a scope-defining keyword (if/when/let/act/
         //     match/lambda/\\): the keyword's scope is greedy and self-
         //     terminating, so parens add no disambiguation.
         //   - content has no binary operator at the top of the token stream:
