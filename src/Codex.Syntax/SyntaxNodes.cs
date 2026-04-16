@@ -34,7 +34,7 @@ public enum SyntaxKind
     RecordField,
     FieldAccessExpression,
     ParenthesizedExpression,
-    DoExpression,
+    ActExpression,
     ActBindStatement,
     ActExprStatement,
     InterpolatedStringExpression,
@@ -410,7 +410,7 @@ public sealed record ErrorExpressionNode(Token ErrorToken)
 }
 
 public sealed record ActExpressionNode(IReadOnlyList<ActStatementNode> Statements, SourceSpan Span)
-    : ExpressionNode(SyntaxKind.DoExpression, Span)
+    : ExpressionNode(SyntaxKind.ActExpression, Span)
 {
     public override IEnumerable<SyntaxNode> Children => Statements;
 }

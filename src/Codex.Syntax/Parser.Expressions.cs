@@ -190,7 +190,7 @@ public sealed partial class Parser
                 return ParseMatchExpression();
 
             case TokenKind.DoKeyword:
-                return ParseDoExpression();
+                return ParseActExpression();
 
             case TokenKind.ActKeyword:
                 return ParseActExpression();
@@ -503,7 +503,7 @@ public sealed partial class Parser
             start.Span.Through(endSpan));
     }
 
-    ExpressionNode ParseDoExpression()
+    ExpressionNode ParseActExpression()
     {
         Token start = Current;
         Advance();
