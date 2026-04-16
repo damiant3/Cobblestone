@@ -306,6 +306,10 @@ public sealed record LetBind(Token name, Expr value);
 
 public sealed record LetBindResult(UnificationState state, TypeEnv env);
 
+public sealed record LetBinding(string name, CodexType type_val, IRExpr val);
+
+public sealed record LetChain(List<LetBinding> bindings, IRExpr body);
+
 public abstract record LexResult;
 
 public sealed record LexToken(Token Field0, LexState Field1) : LexResult;
@@ -4373,9 +4377,96 @@ public static class Codex_Codex_Codex
         return ((Func<string, string>)((t) => ((t == "\u0010 #\u000D\u0018\u000E") ? "\u0016\u001E\u0012\u000F\u001A\u0011\u0018" : t)))(cs_type(ty));
     }
 
+    public static LetChain collect_let_chain(IRExpr expr, List<LetBinding> acc)
+    {
+        while (true)
+        {
+            var _tco_s = expr;
+            if (_tco_s is IrLet _tco_m0)
+            {
+                var name = _tco_m0.Field0;
+                var ty = _tco_m0.Field1;
+                var val = _tco_m0.Field2;
+                var body = _tco_m0.Field3;
+                var sp = _tco_m0.Field4;
+                if (let_chain_has_name(acc, name, 0L, ((long)acc.Count)))
+                {
+                    return new LetChain(acc, expr);
+                }
+                else
+                {
+                    var _tco_0 = body;
+                    var _tco_1 = ((Func<List<LetBinding>>)(() => { var _l = acc; _l.Add(new LetBinding(name, ty, val)); return _l; }))();
+                    expr = _tco_0;
+                    acc = _tco_1;
+                    continue;
+                }
+            }
+            {
+                return new LetChain(acc, expr);
+            }
+        }
+    }
+
+    public static bool let_chain_has_name(List<LetBinding> bindings, string name, long i, long len)
+    {
+        while (true)
+        {
+            if ((i == len))
+            {
+                return false;
+            }
+            else
+            {
+                if ((bindings[(int)i].name == name))
+                {
+                    return true;
+                }
+                else
+                {
+                    var _tco_0 = bindings;
+                    var _tco_1 = name;
+                    var _tco_2 = (i + 1L);
+                    var _tco_3 = len;
+                    bindings = _tco_0;
+                    name = _tco_1;
+                    i = _tco_2;
+                    len = _tco_3;
+                    continue;
+                }
+            }
+        }
+    }
+
+    public static List<string> emit_let_bindings_acc(List<LetBinding> bindings, List<ArityEntry> arities, long i, long len, List<string> acc)
+    {
+        while (true)
+        {
+            if ((i == len))
+            {
+                return acc;
+            }
+            else
+            {
+                var b = bindings[(int)i];
+                var _tco_0 = bindings;
+                var _tco_1 = arities;
+                var _tco_2 = (i + 1L);
+                var _tco_3 = len;
+                var _tco_4 = ((Func<List<string>>)(() => { var _l = acc; _l.Add(string.Concat(cs_type_or_dynamic(b.type_val), "\u0002", sanitize(b.name), "\u0002M\u0002", emit__csharp_emitter_emit_expr(b.val, arities), "F\u0002")); return _l; }))();
+                bindings = _tco_0;
+                arities = _tco_1;
+                i = _tco_2;
+                len = _tco_3;
+                acc = _tco_4;
+                continue;
+            }
+        }
+    }
+
     public static string emit__csharp_emitter_emit_let(string name, CodexType ty, IRExpr val, IRExpr body, List<ArityEntry> arities)
     {
-        return string.Concat("JJ6\u0019\u0012\u0018O", cs_type_or_dynamic(ty), "B\u0002", cs_type(ir_expr_type(body)), "PKJJ", sanitize(name), "K\u0002MP\u0002", emit__csharp_emitter_emit_expr(body, arities), "KKJ", emit__csharp_emitter_emit_expr(val, arities), "K");
+        return ((Func<LetChain, string>)((chain) => ((Func<string, string>)((ret_type) => ((Func<string, string>)((bindings_text) => string.Concat("JJ6\u0019\u0012\u0018O", ret_type, "PKJJK\u0002MP\u0002Z\u0002", bindings_text, "\u0015\u000D\u000E\u0019\u0015\u0012\u0002", emit__csharp_emitter_emit_expr(chain.body, arities), "F\u0002[KKJK")))(string.Concat(emit_let_bindings_acc(chain.bindings, arities, 0L, ((long)chain.bindings.Count), new List<string>())))))(cs_type(ir_expr_type(chain.body)))))(collect_let_chain(body, new List<LetBinding>() { new LetBinding(name, ty, val) }));
     }
 
     public static string emit__csharp_emitter_emit_lambda(List<IRParam> @params, IRExpr body, List<ArityEntry> arities)

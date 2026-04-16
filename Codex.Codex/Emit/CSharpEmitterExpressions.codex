@@ -583,9 +583,58 @@ Section: Expression Emission
    let t = cs-type ty
    in if t == "object" then "dynamic" else t
 
+  LetBinding = record {
+   name : Text,
+   type-val : CodexType,
+   val : IRExpr
+  }
+
+  LetChain = record {
+   bindings : List LetBinding,
+   body : IRExpr
+  }
+
+  collect-let-chain : IRExpr -> List LetBinding -> LetChain
+  collect-let-chain (expr) (acc) =
+   when expr
+    is IrLet (name) (ty) (val) (body) (sp) ->
+     if let-chain-has-name acc name 0 (list-length acc)
+      then LetChain {
+       bindings = acc,
+       body = expr
+      }
+      else collect-let-chain body (list-snoc acc (LetBinding {
+       name = name,
+       type-val = ty,
+       val = val
+      }))
+    is otherwise -> LetChain {
+     bindings = acc,
+     body = expr
+    }
+
+  let-chain-has-name : List LetBinding -> Text -> Integer -> Integer -> Boolean
+  let-chain-has-name (bindings) (name) (i) (len) =
+   if i == len then False
+   else if (list-at bindings i).name == name then True
+   else let-chain-has-name bindings name (i + 1) len
+
+  emit-let-bindings-acc : List LetBinding -> List ArityEntry -> Integer -> Integer -> List Text -> List Text
+  emit-let-bindings-acc (bindings) (arities) (i) (len) (acc) =
+   if i == len then acc
+   else let b = list-at bindings i
+   in emit-let-bindings-acc bindings arities (i + 1) len (list-snoc acc (cs-type-or-dynamic (b.type-val) ++ " " ++ sanitize (b.name) ++ " = " ++ emit-expr (b.val) arities ++ "; "))
+
   emit-let : Text -> CodexType -> IRExpr -> IRExpr -> List ArityEntry -> Text
   emit-let (name) (ty) (val) (body) (arities) =
-   "((Func<" ++ cs-type-or-dynamic ty ++ ", " ++ cs-type (ir-expr-type body) ++ ">)((" ++ sanitize name ++ ") => " ++ emit-expr body arities ++ "))(" ++ emit-expr val arities ++ ")"
+   let chain = collect-let-chain body [LetBinding {
+    name = name,
+    type-val = ty,
+    val = val
+   }]
+   in let ret-type = cs-type (ir-expr-type (chain.body))
+   in let bindings-text = text-concat-list (emit-let-bindings-acc (chain.bindings) arities 0 (list-length (chain.bindings)) [])
+   in "((Func<" ++ ret-type ++ ">)(() => { " ++ bindings-text ++ "return " ++ emit-expr (chain.body) arities ++ "; }))()"
 
   emit-lambda : List IRParam -> IRExpr -> List ArityEntry -> Text
   emit-lambda (params) (body) (arities) =
