@@ -16944,9 +16944,39 @@ public static class Codex_Codex_Codex
         return ((Func<List<Token>, string>)((tokens) => ((Func<ParseState, string>)((st) => ((Func<ScanResult, string>)((scan) => ((Func<List<ChapterAssignment>, string>)((assignments) => ((Func<List<string>, string>)((colliding) => ((Func<Document, string>)((doc) => ((Func<AChapter, string>)((ast) => ((Func<AChapter, string>)((scoped) => ((Func<ChapterResult, string>)((check_result) => ((Func<IRChapter, string>)((ir) => ((Func<List<string>, string>)((ctor_names) => string.Concat(emit__codex_emitter_emit_type_defs(scoped.type_defs, 0L), emit_text_defs(ir.defs, ctor_names, 0L))))(emit__codex_emitter_collect_ctor_names(scoped.type_defs, 0L))))(lower_chapter(scoped, check_result.types, check_result.state))))(check_chapter(scoped))))(scope_achapter(ast, colliding, assignments))))(desugar_document(doc, chapter_name))))(parse_document(make_parse_state(tokens)))))(find_colliding_names(assignments))))(build_all_assignments(scan.def_headers, 0L, new List<ChapterAssignment>()))))(scan_document(st))))(make_parse_state(tokens))))(tokenize(source, 1L));
     }
 
+    public static string compile_measure(string source, string chapter_name)
+    {
+        return ((Func<dynamic, string>)((h0) => ((Func<List<Token>, string>)((tokens) => ((Func<dynamic, string>)((h1) => ((Func<ParseState, string>)((st) => ((Func<ScanResult, string>)((scan) => ((Func<dynamic, string>)((h2) => ((Func<List<ChapterAssignment>, string>)((assignments) => ((Func<List<string>, string>)((colliding) => ((Func<dynamic, string>)((h3) => ((Func<Document, string>)((doc) => ((Func<dynamic, string>)((h4) => ((Func<AChapter, string>)((ast) => ((Func<dynamic, string>)((h5) => ((Func<AChapter, string>)((scoped) => ((Func<dynamic, string>)((h6) => ((Func<ChapterResult, string>)((check_result) => ((Func<dynamic, string>)((h7) => ((Func<IRChapter, string>)((ir) => ((Func<dynamic, string>)((h8) => ((Func<List<string>, string>)((ctor_names) => ((Func<dynamic, string>)((h9) => ((Func<long, string>)((body_size) => ((Func<dynamic, string>)((h10) => string.Concat("9.)-'I\u0014\u0003I\u0013\u000E\u000F\u0015\u000EE", _Cce.FromUnicode(h0.ToString()), "\u00019.)-'I\u0014\u0004I\u000E\u0010\"\u000D\u0012\u0011&\u000DE", _Cce.FromUnicode(h1.ToString()), "\u00019.)-'I\u0014\u0005I\u0013\u0018\u000F\u0012E", _Cce.FromUnicode(h2.ToString()), "\u00019.)-'I\u0014\u0006I\u000F\u0013\u0013\u0011\u001D\u0012\u001A\u000D\u0012\u000E\u0013E", _Cce.FromUnicode(h3.ToString()), "\u00019.)-'I\u0014\u0007I\u001F\u000F\u0015\u0013\u000DE", _Cce.FromUnicode(h4.ToString()), "\u00019.)-'I\u0014\u0008I\u0016\u000D\u0013\u0019\u001D\u000F\u0015E", _Cce.FromUnicode(h5.ToString()), "\u00019.)-'I\u0014\u0009I\u0013\u0018\u0010\u001F\u000DE", _Cce.FromUnicode(h6.ToString()), "\u00019.)-'I\u0014\u000AI\u0018\u0014\u000D\u0018\"E", _Cce.FromUnicode(h7.ToString()), "\u00019.)-'I\u0014\u000BI\u0017\u0010\u001B\u000D\u0015E", _Cce.FromUnicode(h8.ToString()), "\u00019.)-'I\u0014\u000CI\u0018\u000E\u0010\u0015\u0013E", _Cce.FromUnicode(h9.ToString()), "\u00019.)-'I\u0014\u0004\u0003I\u000D\u001A\u0011\u000EE", _Cce.FromUnicode(h10.ToString()), "\u0001'4+(I:8('-E", _Cce.FromUnicode(body_size.ToString()), "\u0001")))(_Buf.heap_save())))(((long)string.Concat(emit__codex_emitter_emit_type_defs(scoped.type_defs, 0L), emit_text_defs(ir.defs, ctor_names, 0L)).Length))))(_Buf.heap_save())))(emit__codex_emitter_collect_ctor_names(scoped.type_defs, 0L))))(_Buf.heap_save())))(lower_chapter(scoped, check_result.types, check_result.state))))(_Buf.heap_save())))(check_chapter(scoped))))(_Buf.heap_save())))(scope_achapter(ast, colliding, assignments))))(_Buf.heap_save())))(desugar_document(doc, chapter_name))))(_Buf.heap_save())))(parse_document(make_parse_state(tokens)))))(_Buf.heap_save())))(find_colliding_names(assignments))))(build_all_assignments(scan.def_headers, 0L, new List<ChapterAssignment>()))))(_Buf.heap_save())))(scan_document(st))))(make_parse_state(tokens))))(_Buf.heap_save())))(tokenize(source, 1L))))(_Buf.heap_save());
+    }
+
     public static string emit_text_defs(List<IRDef> defs, List<string> ctor_names, long i)
     {
-        return ((i == ((long)defs.Count)) ? "" : string.Concat(emit__codex_emitter_emit_def(defs[(int)i], ctor_names), "\u0001", emit_text_defs(defs, ctor_names, (i + 1L))));
+        return string.Concat(emit_text_defs_acc(defs, ctor_names, 0L, ((long)defs.Count), new List<string>()));
+    }
+
+    public static List<string> emit_text_defs_acc(List<IRDef> defs, List<string> ctor_names, long i, long len, List<string> acc)
+    {
+        while (true)
+        {
+            if ((i == len))
+            {
+                return acc;
+            }
+            else
+            {
+                var _tco_0 = defs;
+                var _tco_1 = ctor_names;
+                var _tco_2 = (i + 1L);
+                var _tco_3 = len;
+                var _tco_4 = ((Func<List<string>>)(() => { var _l = ((Func<List<string>>)(() => { var _l = acc; _l.Add(emit__codex_emitter_emit_def(defs[(int)i], ctor_names)); return _l; }))(); _l.Add("\u0001"); return _l; }))();
+                defs = _tco_0;
+                ctor_names = _tco_1;
+                i = _tco_2;
+                len = _tco_3;
+                acc = _tco_4;
+                continue;
+            }
+        }
     }
 
     public static string normalize_whitespace(string s)
@@ -17004,7 +17034,7 @@ public static class Codex_Codex_Codex
         return ((Func<object>)(() => {
                 var mode = _Cce.FromUnicode(Console.ReadLine() ?? "");
                 var source = _Cce.FromUnicode(File.ReadAllText(_Cce.ToUnicode(mode)));
-                ((Func<string, object>)((clean) => ((mode == ":+,)/8") ? main_emit_binary(clean) : ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(compile_text(clean, "9\u0015\u0010\u001D\u0015\u000F\u001A"))); return null; }))())))(normalize_whitespace(source));
+                ((Func<string, object>)((clean) => ((mode == ":+,)/8") ? main_emit_binary(clean) : ((mode == "4')-3/'") ? ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(compile_measure(clean, "9\u0015\u0010\u001D\u0015\u000F\u001A"))); return null; }))() : ((Func<object>)(() => { Console.WriteLine(_Cce.ToUnicode(compile_text(clean, "9\u0015\u0010\u001D\u0015\u000F\u001A"))); return null; }))()))))(normalize_whitespace(source));
                 return null;
             }))();
     }

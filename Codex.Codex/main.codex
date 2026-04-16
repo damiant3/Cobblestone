@@ -22,10 +22,52 @@ Section: Pipeline
    in let ctor-names = collect-ctor-names (scoped.type-defs) 0
    in emit-type-defs (scoped.type-defs) 0 ++ emit-text-defs (ir.defs) ctor-names 0
 
+  compile-measure : Text -> Text -> Text
+  compile-measure (source) (chapter-name) =
+   let h0 = heap-save
+   in let tokens = tokenize source 1
+   in let h1 = heap-save
+   in let st = make-parse-state tokens
+   in let scan = scan-document st
+   in let h2 = heap-save
+   in let assignments = build-all-assignments (scan.def-headers) 0 []
+   in let colliding = find-colliding-names assignments
+   in let h3 = heap-save
+   in let doc = parse-document (make-parse-state tokens)
+   in let h4 = heap-save
+   in let ast = desugar-document doc chapter-name
+   in let h5 = heap-save
+   in let scoped = scope-achapter ast colliding assignments
+   in let h6 = heap-save
+   in let check-result = check-chapter scoped
+   in let h7 = heap-save
+   in let ir = lower-chapter scoped (check-result.types) (check-result.state)
+   in let h8 = heap-save
+   in let ctor-names = collect-ctor-names (scoped.type-defs) 0
+   in let h9 = heap-save
+   in let body-size = text-length (emit-type-defs (scoped.type-defs) 0 ++ emit-text-defs (ir.defs) ctor-names 0)
+   in let h10 = heap-save
+   in "PHASE-h0-start:" ++ integer-to-text h0
+    ++ "\nPHASE-h1-tokenize:" ++ integer-to-text h1
+    ++ "\nPHASE-h2-scan:" ++ integer-to-text h2
+    ++ "\nPHASE-h3-assignments:" ++ integer-to-text h3
+    ++ "\nPHASE-h4-parse:" ++ integer-to-text h4
+    ++ "\nPHASE-h5-desugar:" ++ integer-to-text h5
+    ++ "\nPHASE-h6-scope:" ++ integer-to-text h6
+    ++ "\nPHASE-h7-check:" ++ integer-to-text h7
+    ++ "\nPHASE-h8-lower:" ++ integer-to-text h8
+    ++ "\nPHASE-h9-ctors:" ++ integer-to-text h9
+    ++ "\nPHASE-h10-emit:" ++ integer-to-text h10
+    ++ "\nEMIT-BYTES:" ++ integer-to-text body-size ++ "\n"
+
   emit-text-defs : List IRDef -> List Text -> Integer -> Text
   emit-text-defs (defs) (ctor-names) (i) =
-   if i == list-length defs then ""
-   else emit-def (list-at defs i) ctor-names ++ "\n" ++ emit-text-defs defs ctor-names (i + 1)
+   text-concat-list (emit-text-defs-acc defs ctor-names 0 (list-length defs) [])
+
+  emit-text-defs-acc : List IRDef -> List Text -> Integer -> Integer -> List Text -> List Text
+  emit-text-defs-acc (defs) (ctor-names) (i) (len) (acc) =
+   if i == len then acc
+   else emit-text-defs-acc defs ctor-names (i + 1) len (list-snoc (list-snoc acc (emit-def (list-at defs i) ctor-names)) "\n")
 
 Section: Whitespace Normalization
 
@@ -92,6 +134,7 @@ Section: Entry Point
    source <- read-file mode
    let clean = normalize-whitespace source
    in if mode == "BINARY" then emit-binary clean
+      else if mode == "MEASURE" then print-line (compile-measure clean "Program")
       else print-line (compile-text clean "Program")
   end
 
