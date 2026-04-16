@@ -54,19 +54,25 @@ main : [Console] Nothing
 main = print-line "hello"
 
 greet : Text -> [Console, FileSystem] Nothing
-greet (name) = do
+greet (name) = act
   contents <- read-file "template.txt"
   print-line (contents ++ name)
+end
 ```
 
-## Do Notation
+## Act Blocks (statement sequencing)
 
 ```
 main : [Console] Nothing
-main = do
+main = act
   name <- read-line
   print-line ("Hello, " ++ name)
+end
 ```
+
+`act ... end` replaced the former `do` keyword. Inside an act block,
+newlines separate statements. Outside, newlines are whitespace — multi-line
+function applications work everywhere.
 
 ## If/Then/Else
 
@@ -115,6 +121,10 @@ close-file : linear FileHandle -> [FileSystem] Nothing
 ```
 
 ## Pitfalls
+
+**Contextual keywords.** `act`, `end`, and `qed` are contextual: they
+only act as keywords in record-scoped positions (inside an act block,
+after a proof body, etc.). Elsewhere they're valid identifiers.
 
 **Inline if/then/else in arithmetic.** The Codex emitter does not
 preserve parentheses around if expressions. An expression like

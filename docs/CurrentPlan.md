@@ -1,57 +1,48 @@
 # Current Plan
 
-**Updated**: 2026-04-14
+**Updated**: 2026-04-15
 
 ---
 
 ## MM3 IS PROVEN
 
 The self-hosted Codex compiler compiled **itself** on bare metal x86-64 under
-QEMU. Pingpong is green — Codex in, Codex out, fixed point holds.
-Latest text-mode pingpong (2026-04-14): stage1 === stage2 byte-identical
-at **544,780 bytes**, sem-equiv PASS, ~35s per stage.
+QEMU. Pingpong is green — Codex in, Codex out, fixed point holds. Text-mode
+pingpong is byte-identical at ~545 KB, ~35 s per stage, sem-equiv PASS.
 
 ## MM4: THE CORD IS NEARLY CUT
 
-Binary pingpong progression:
-- **Pre-C5**: self-host crashed in `__list_snoc` inside `build-offset-table-loop`
-  before even reaching `SIZE:`. Compile pipeline never finished.
-- **Post-C5** (`f221359`): self-host kernel runs on bare metal, accepts
-  `BINARY\n<source>\x04` over serial, completes compile, prints
-  `SIZE:4218032`, and streams 4.2 MB of ELF bytes. The compile pipeline
-  **runs to completion end-to-end in bare metal**.
-- **Remaining**: first 5 bytes of the streamed binary are corrupted
-  (`07 07 0c 2d 0b` instead of `7f 45 4c 46 01`). Bytes 5+ match the
-  reference-built ELF exactly. Filed as CDX-C6 in BACKLOG with probe
-  suggestions. Once C6 is fixed, binary pingpong's stage1 output should
-  boot cleanly and the MM4 fixed-point proof is cuttable.
+Binary pingpong is running end-to-end: the self-host kernel runs on bare
+metal, accepts source over serial, compiles, and streams a ~4 MB ELF back.
+What's left is isolated byte-level corruption in the streamed output; once
+that class of bug is cleared, MM4 fixed-point is cuttable. See `BACKLOG.md`
+for the live list of remaining CDX-C items.
 
-## Recently Landed (MM4 path)
+## Recently Landed
 
-- **T1 fix (`f71d8d7` + `785ff64` ref backport)**: bare-metal nested
-  record-field access. Defensive `EffectfulTy`/`ForAllTy` unwrapping
-  across `deep-resolve`, field-access lowering, `resolve-constructed-ty`;
-  `emit-field-access`/`emit-record-set-builtin` now diagnose instead of
-  silently defaulting to field-idx 0. BACKLOG T1 closed.
-- **Parse bug #4 fixed (`785ff64` + `9cc73e6`)**: `ElseKeyword`/`InKeyword`
-  added to do-block stop-set in both ref and self-host parsers. Multi-line
-  `if X then do { ... } else Y` and `let P = do ... in Y` now parse
-  correctly through the ref compiler. BACKLOG #4 closed.
-- **Do-block type fix (`96b24db`)**: `lower-do` computes type from the
-  last statement instead of trusting `expectedType`.
-- **T2 (`8475298`)**: strip `EffectfulTy` in `emit-do` before type
-  matching; could not reproduce the original C# emitter symptom but the
-  fix is harmless and defensively correct.
-- **Diagnostics infrastructure (Phases 1-4) shipped**: CDX registry
-  (`7b00b46`), SourceSpan file-id + AST/IR span threading
-  (`dacc14c`/`7601cd8`/`d190cb6`/`8cda64d`/`792158c`), `DiagnosticBag`
-  threading (`2004592`), staged compilation with error gates
-  (`0d1239d`), streaming-binary parse-bag + chapter gating (`1484914`).
-  Phase 5 (presentation) explicitly pushed out of the compiler
-  (`8c5d693`). See `docs/Active/Compiler/DIAGNOSTICS-AND-STAGING.md`.
-- **Bare-metal heap (`a725ac7`)**: 2 MB → ~1 GB.
-- **Effect annotations (`2c8b520`)**: parser now parses `[E]` effect
-  annotations instead of discarding them.
+- **`do` → `act ... end` (2026-04-15)**: `do` is out of the language.
+  Statement sequencing uses explicit `act ... end`. `act`/`end`/`qed`
+  are contextual keywords (only keywordish in record-scoped positions).
+  Phases A + B merged, tests migrated. Rationale archived in
+  `docs/Done/Compiler/DO-TO-ACT.md`.
+- **Multi-line function application in parens (2026-04-15)**: paren-depth
+  tracking in both parsers; `make-error (…) (span-at …)` no longer has
+  to be squeezed onto one line. Self-host + reference both pass.
+- **Self-host adopts `Maybe`**: parser sentinel-pair sums replaced with
+  `Maybe` records; C# emitter carries type args through ctor sites,
+  record fields, and patterns; bootstrap loads cited foreword chapters.
+- **Multi-arg lambda C# emission**: `\a b c -> body` now emits as the
+  curried nested form `(a) => (b) => (c) => body`, matching the curried
+  delegate type. Self-host and reference both fixed.
+- **Contextual keyword parse-record recovery**: `Synchronize` now advances
+  past `end`/`qed` tokens; 3 infinite-loop bugs collapsed into one review
+  commit.
+- **Heuristic audit closed**: H-001..H-009 all resolved on master. Doc
+  preserved as a stub in `docs/Done/HEURISTIC-AUDIT.md`.
+- **Diagnostics infrastructure Phases 1–4 shipped**; Phase 5 (presentation)
+  explicitly pushed out of the compiler. Tier 3 (per-def resolve +
+  type-check on the streaming binary path) is the remaining gap.
+- **Bare-metal heap 2 MB → ~1 GB**.
 
 ---
 
@@ -68,8 +59,9 @@ x86-64 binaries, achieving fixed-point self-compilation. No C# in the chain.
 
 | Phase | What | Status |
 |-------|------|--------|
+| 1–5, 7 | Encoder, ELF writer, core codegen, helpers, builtins, boot | Shipped |
 | 6 | Escape copy & regions | **Deferred to post-MM4** — attempted twice, needs architectural rethink |
-| 8 | Self-compilation fixed point | **MM4: cord is cut** |
+| 8 | Self-compilation fixed point | **In flight** — binary pingpong runs end-to-end; isolated byte-level corruption remaining |
 
 **Work style**: Single agent (Hex), one phase at a time. Other agents review
 completed phases, not concurrent feature work. Minimize coordination overhead.

@@ -7,13 +7,16 @@ environment. The compiler is **self-hosting**: it is written in Codex and compil
 itself. The C# bootstrap implementation that brought the project to this point is
 locked and preserved as historical artifact.
 
-The vision documents (`docs/Vision/NewRepository.txt` and `docs/Vision/IntelligenceLayer.txt`)
+The vision documents (`docs/Stories/Vision/NewRepository.txt` and `docs/Stories/Vision/IntelligenceLayer.txt`)
 define the philosophical and technical north star. This document describes where the
 project stands and where it is going.
 
 ## Major Milestone 1 — Self-Hosting (Achieved 2026-03-19)
 
-The Codex compiler crossed the self-hosting threshold. The original design documents
+The Codex compiler crossed the self-hosting threshold (MM1). MM2 bare-metal readiness
+followed, and MM3 proved the self-hosted front end is a fixed point. MM4 — a Codex
+compiler compiled entirely by Codex, producing bare-metal x86-64 binaries — is the
+current active milestone. See `CurrentPlan.md`. The original design documents
 (01–09, Glossary) that guided the bootstrap phase are archived in `docs/Done/MM1/`.
 
 ### What Was Proven
@@ -69,9 +72,10 @@ The compiler is free of its C# cradle. The road forward is written in Codex:
 | `10-PRINCIPLES.md` | Engineering principles that govern all decisions |
 | `CurrentPlan.md` | Active plan and near-term direction |
 | `Active/Compiler/SELF-HOST-PARITY-AUDIT.md` | Running inventory of where the self-host and reference stand on the output-affecting axis |
-| `Milestones/MM1/` | Archive of bootstrap-era design documents (01–09, Glossary) |
-| `Vision/NewRepository.txt` | The original vision document |
-| `Vision/IntelligenceLayer.txt` | The intelligence layer manifesto |
+| `Done/MM1/` | Archive of bootstrap-era design documents (01–09, Glossary) |
+| `Done/MM2/` | Bare-metal compiler readiness archive |
+| `Done/History/` | Iteration handoffs and decision log |
+| `Stories/Vision/NewRepository.txt` | The original vision document |
+| `Stories/Vision/IntelligenceLayer.txt` | The intelligence layer manifesto |
 | `Designs/` | Feature design documents (Language, Features, Backends, Memory, Tools) |
-| `History/` | Iteration handoffs and decision log |
-| `Codex.OS/` | Codex operating system vision |
+| `Active/Compiler/SECOND-BOOTSTRAP.md` | MM4 plan — the critical path |

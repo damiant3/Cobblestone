@@ -1,7 +1,7 @@
 # Phase 3: Core Codegen — Expressions in Codex
 
 **Date**: 2026-03-31
-**Status**: Design
+**Status**: SHIPPED. Self-host bare-metal codegen lives in `Codex.Codex/Emit/X86_64*.codex`. Binary pingpong runs the full compile pipeline end-to-end on bare metal. Archived for rationale; current work tracked in `Active/Compiler/SECOND-BOOTSTRAP.md` and `CurrentPlan.md`.
 **Depends on**: Phase 1 (x86-64 encoder, done), Phase 2 (ELF/CDX writers, done)
 **Acceptance**: `main = 42` compiles to bare-metal ELF, boots in QEMU, prints `42`
 

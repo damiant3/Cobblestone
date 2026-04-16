@@ -1,7 +1,7 @@
 # The Second Bootstrap — Cutting the Cord
 
 **Date**: 2026-03-31
-**Status**: Plan
+**Status**: Phases 1–5 and 7 shipped. Phase 6 (escape copy) deferred post-MM4 after two failed attempts. Phase 8 (fixed point) in flight — binary pingpong runs end-to-end; isolated byte-level corruption in streamed ELF remaining. See `CurrentPlan.md` for the live status.
 **Depends on**: MM3 (proven), Codex emitter (done), pingpong (green at 55 MB HWM)
 
 ---

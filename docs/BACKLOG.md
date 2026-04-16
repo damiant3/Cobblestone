@@ -6,7 +6,7 @@
 |---|------|-----------|-------|
 | 1 | **Second Bootstrap (MM4)** | `docs/Active/Compiler/SECOND-BOOTSTRAP.md` | Port x86-64 backend to Codex. 8 phases. The critical path. |
 | 2 | Escape copy bare-metal | `docs/Designs/Memory/CAMP-IIIA-ESCAPE-ANALYSIS.md` | Skip removed, tests passing. Rearchitect deferred till after MM4. |
-| 3 | **Self-host parity audit** | `docs/Active/Compiler/SELF-HOST-PARITY-AUDIT.md` | Living gap doc: reference vs self-host, per data structure / diagnostic / runtime behavior / primitive. Top open gaps: self-host adoption of foreword `Maybe`; polymorphism coverage audit. |
+| 3 | **Self-host parity audit** | `docs/Active/Compiler/SELF-HOST-PARITY-AUDIT.md` | Living gap doc: reference vs self-host, per data structure / diagnostic / runtime behavior / primitive. Top open gap: polymorphism coverage audit. |
 
 ## Needs Design Doc
 
@@ -29,10 +29,10 @@
 | Agent protocol (7 messages) | `docs/Designs/Codex.OS/TrustAndRuntime.md` §1 | Medium |
 | Policy contract | `docs/Designs/Codex.OS/TrustAndRuntime.md` §2 | Medium |
 | Forensics layer | `docs/Designs/Codex.OS/TrustAndRuntime.md` §3 | Medium |
-| Capability refinement Steps 2-8 | `docs/Designs/Features/CAPABILITY-REFINEMENT.md` | Weeks |
+| Capability refinement Steps 2-8 | `docs/Designs/Language/CAPABILITY-REFINEMENT.md` | Weeks |
 | Structured concurrency runtime | `docs/Designs/Features/CAMP-IIIC-STRUCTURED-CONCURRENCY.md` | ~1 week |
 | Stdlib expansion (Set, Queue, StringBuilder, TextSearch) | `docs/Designs/Features/STDLIB-AND-CONCURRENCY.md` | ~2 weeks |
-| V2 Narration Phases 4-6 | `docs/Designs/Features/V2-NARRATION-LAYER.md` | Medium |
+| V2 Narration Phases 4-6 | `docs/Designs/Language/V2-NARRATION-LAYER.md` | Medium |
 | V3 Repository federation | `docs/Designs/Features/V3-REPOSITORY-FEDERATION.md` | Large |
 
 ## Deferred Indefinitely
@@ -58,7 +58,6 @@
 |---|------|-------|
 | 3 | NetworkSync test failures | 4 tests need self-contained peer or integration-only marking |
 | 5 | `text-to-double-bits` bare metal implementation | On x86-64 bare metal, `text-to-double-bits` falls through to `__text_to_int` (integer parser). Need a proper `__text_to_double` runtime helper that parses decimal text to IEEE 754 bits. Not blocking — the builtin is only called at compile time when the compiler runs as .NET, not at runtime on bare metal. |
-| 7 | **Reference C# emitter: multi-arg lambda type/value mismatch in record fields** | The reference C# emitter (`src/Codex.Emit.CSharp/`) emits `\a b c -> body` as the uncurried C# `(a, b, c) =>` lambda, but types `FunTy A (FunTy B (FunTy C D))` as the curried `Func<A, Func<B, Func<C, D>>>`. These don't match: a record field typed `Func<A, Func<B, Func<C, D>>>` assigned a `(a, b, c) =>` lambda produces `CS1593: Delegate ... does not take 3 arguments`. Works fine for function definitions (they compile to named C# methods, not lambdas) and for single-arg lambdas. Hit 2026-04-15 while landing the builtin dispatch table; worked around there by writing all lambdas in nested single-arg curried form (`\a -> \b -> \c -> body`). Repro: `samples/multi-lambda-probe.codex` (deleted in that commit — trivial to reconstruct: record field of type `Integer -> Integer -> Integer -> Integer` assigned `\a b c -> a + b + c`). Fix direction: either emit multi-arg lambdas as nested single-arg C# lambdas, or emit `FunTy A (FunTy B (FunTy C D))` as `Func<A, B, C, D>` uncurried. Self-host emitter may have the same bug — not yet verified. |
 
 ## Performance — Quadratic hotspots in self-host (remaining)
 

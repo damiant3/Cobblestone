@@ -1,7 +1,7 @@
 # `do` → `act ... end`: Replacing the Monadic Block Keyword
 
-**Status:** Planned
-**Owners:** Hex-hex (Phase A, Phase B parser), coordinate with Cam for pingpong/migration timing.
+**Status:** DONE (2026-04-15). `do` is removed from the language; `act ... end` is the only statement-sequence form. Contextual `act`/`end`/`qed` keywords restrict keywordness to record-scoped positions. Rationale preserved here; implementation lives in git (`act-phase-a`, `act-phase-b`, contextual-keyword commits).
+**Owners (historical):** Hex-hex (Phase A, Phase B parser); Cam (pingpong/migration coordination).
 
 ---
 

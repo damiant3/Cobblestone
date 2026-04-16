@@ -3,8 +3,8 @@
 **Read this before writing any code.**
 
 This is the condensed philosophy of the Codex project, distilled from the
-founding specification (`docs/Vision/NewRepository.txt`) and the intelligence
-layer manifesto (`docs/Vision/IntelligenceLayer.txt`). Every agent working on
+founding specification (`docs/Stories/Vision/NewRepository.txt`) and the intelligence
+layer manifesto (`docs/Stories/Vision/IntelligenceLayer.txt`). Every agent working on
 this codebase should internalize these commitments. They are not aspirational —
 they are the standard against which your work will be measured.
 
@@ -76,5 +76,5 @@ machine checks that you meant it. That is all we ever wanted.
 
 ---
 
-*Full source documents: `docs/Vision/NewRepository.txt`,
-`docs/Vision/IntelligenceLayer.txt`*
+*Full source documents: `docs/Stories/Vision/NewRepository.txt`,
+`docs/Stories/Vision/IntelligenceLayer.txt`*
