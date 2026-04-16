@@ -1,0 +1,229 @@
+Chapter: X86-64 Code Generator
+
+Section: 32-bit Bare-Metal Trampoline
+  multiboot-header : List Integer
+  multiboot-header =
+   write-i32 464367618 ++ write-i32 0 ++ write-i32 3830599678
+
+  tramp-clear-pages : List Integer
+  tramp-clear-pages =
+   [250, 191, 0, 16, 0, 0, 185, 0, 12, 0, 0, 49, 192, 243, 171]
+
+  tramp-page-tables : List Integer
+  tramp-page-tables =
+   [199, 5, 0, 16, 0, 0, 3, 32, 0, 0, 199, 5, 0, 32, 0, 0, 3, 48, 0, 0, 191, 0, 48, 0, 0, 185, 0, 1, 0, 0, 184, 131, 0, 0, 0, 137, 7, 199, 71, 4, 0, 0, 0, 0, 131, 199, 8, 5, 0, 0, 32, 0, 73, 117, 236]
+
+  tramp-enable-long-mode : List Integer
+  tramp-enable-long-mode =
+   [184, 0, 16, 0, 0, 15, 34, 216, 15, 32, 224, 131, 200, 32, 15, 34, 224, 185, 128, 0, 0, 192, 15, 50, 13, 0, 1, 0, 0, 15, 48, 15, 32, 192, 13, 0, 0, 0, 128, 15, 34, 192]
+
+  trampoline-code : List Integer
+  trampoline-code =
+   tramp-clear-pages ++ tramp-page-tables ++ tramp-enable-long-mode
+
+  tramp-gdt-data : List Integer
+  tramp-gdt-data =
+   [235, 30, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 0, 0, 0, 154, 175, 0, 255, 255, 0, 0, 0, 146, 207, 0]
+
+  trampoline-gdt-section : List Integer
+  trampoline-gdt-section =
+   tramp-gdt-data ++ write-i16 23 ++ write-i32 (bare-metal-load-addr + 126) ++ [15, 1, 21] ++ write-i32 (bare-metal-load-addr + 150) ++ [234, 0, 0, 0, 0, 8, 0]
+
+  bare-metal-trampoline : TrampolineResult
+  bare-metal-trampoline =
+   let bytes = multiboot-header ++ trampoline-code ++ trampoline-gdt-section
+   in TrampolineResult {
+    bytes = bytes,
+    far-jump-patch-pos = 163
+  }
+
+Section: Serial I/O
+  emit-out-byte : CodegenState -> Integer -> Integer -> CodegenState
+  emit-out-byte (st) (port) (value) =
+   let st1 = st-append-text st (li reg-rdx port)
+   in let st2 = st-append-text st1 (li reg-rax value)
+   in st-append-text st2 out-dx-al
+
+  emit-com1-init : CodegenState -> CodegenState
+  emit-com1-init (st) =
+   let st1 = emit-out-byte st 1019 128
+   in let st2 = emit-out-byte st1 1016 1
+   in let st3 = emit-out-byte st2 1017 0
+   in let st4 = emit-out-byte st3 1019 3
+   in let st5 = emit-out-byte st4 1018 199
+   in emit-out-byte st5 1020 11
+
+  emit-serial-wait-and-send : CodegenState -> Integer -> CodegenState
+  emit-serial-wait-and-send (st) (byte-val) =
+   let wait-top = st.text-len
+   in let st1 = st-append-text st (li reg-rdx 1021)
+   in let st2 = st-append-text st1 [236]
+   in let st3 = st-append-text st2 [168, 32]
+   in let jne-pos = st3.text-len
+   in let st4 = st-append-text st3 (jcc cc-ne 0)
+   in let st5 = st-append-text st4 (jmp (wait-top - (st4.text-len + 5)))
+   in let st6 = patch-jcc-at st5 jne-pos (st5.text-len)
+   in let st7 = st-append-text st6 (li reg-rdx 1016)
+   in let st8 = st-append-text st7 (li reg-rax byte-val)
+   in st-append-text st8 out-dx-al
+
+  emit-serial-send-rdi : CodegenState -> CodegenState
+  emit-serial-send-rdi (st) =
+   let wait-top = st.text-len
+   in let st1 = st-append-text st (li reg-rdx 1021)
+   in let st2 = st-append-text st1 [236]
+   in let st3 = st-append-text st2 [168, 32]
+   in let jne-pos = st3.text-len
+   in let st4 = st-append-text st3 (jcc cc-ne 0)
+   in let st5 = st-append-text st4 (jmp (wait-top - (st4.text-len + 5)))
+   in let st6 = patch-jcc-at st5 jne-pos (st5.text-len)
+   in let st7 = st-append-text st6 (li reg-rdx 1016)
+   in let st8 = st-append-text st7 (mov-rr reg-rax reg-rdi)
+   in st-append-text st8 out-dx-al
+
+Section: Inline Integer Print
+  ItoaState = record {
+   cg : CodegenState,
+   jmp-done-zero-pos : Integer
+  }
+
+  emit-itoa-zero-check : CodegenState -> ItoaState
+  emit-itoa-zero-check (st) =
+   let st1 = st-append-text st (mov-rr reg-rbx reg-rax)
+   in let st2 = st-append-text st1 (test-rr reg-rbx reg-rbx)
+   in let jne-pos = st2.text-len
+   in let st3 = st-append-text st2 (jcc cc-ne 0)
+   in let st4 = emit-serial-wait-and-send st3 48
+   in let jmp-pos = st4.text-len
+   in let st5 = st-append-text st4 (jmp 0)
+   in let st6 = patch-jcc-at st5 jne-pos (st5.text-len)
+   in ItoaState {
+    cg = st6,
+    jmp-done-zero-pos = jmp-pos
+  }
+
+  emit-itoa-sign-and-digits : CodegenState -> CodegenState
+  emit-itoa-sign-and-digits (st) =
+   let st1 = st-append-text st (test-rr reg-rbx reg-rbx)
+   in let jns-pos = st1.text-len
+   in let st2 = st-append-text st1 (jcc cc-ge 0)
+   in let st3 = emit-serial-wait-and-send st2 45
+   in let st4 = st-append-text st3 (neg-r reg-rbx)
+   in let st5 = patch-jcc-at st4 jns-pos (st4.text-len)
+   in let st6 = st-append-text st5 (li reg-rcx 0)
+   in let st7 = st-append-text st6 (li reg-r11 10)
+   in let loop-top = st7.text-len
+   in let st8 = st-append-text st7 (mov-rr reg-rax reg-rbx)
+   in let st9 = st-append-text st8 cqo
+   in let st10 = st-append-text st9 (idiv-r reg-r11)
+   in let st11 = st-append-text st10 (mov-rr reg-rbx reg-rax)
+   in let st12 = st-append-text st11 (add-ri reg-rdx 48)
+   in let st13 = st-append-text st12 (push-r reg-rdx)
+   in let st14 = st-append-text st13 (add-ri reg-rcx 1)
+   in let st15 = st-append-text st14 (test-rr reg-rbx reg-rbx)
+   in st-append-text st15 (jcc cc-ne (loop-top - (st15.text-len + 6)))
+
+  emit-itoa-print-loop : CodegenState -> CodegenState
+  emit-itoa-print-loop (st) =
+   let loop-top = st.text-len
+   in let st1 = st-append-text st (test-rr reg-rcx reg-rcx)
+   in let je-pos = st1.text-len
+   in let st2 = st-append-text st1 (jcc cc-e 0)
+   in let st3 = st-append-text st2 (pop-r reg-rdi)
+   in let st4 = st-append-text st3 (push-r reg-rcx)
+   in let st5 = emit-serial-send-rdi st4
+   in let st6 = st-append-text st5 (pop-r reg-rcx)
+   in let st7 = st-append-text st6 (sub-ri reg-rcx 1)
+   in let st8 = st-append-text st7 (jmp (loop-top - (st7.text-len + 5)))
+   in patch-jcc-at st8 je-pos (st8.text-len)
+
+  emit-inline-itoa-and-print : CodegenState -> CodegenState
+  emit-inline-itoa-and-print (st) =
+   let zero = emit-itoa-zero-check st
+   in let st1 = emit-itoa-sign-and-digits (zero.cg)
+   in let st2 = emit-itoa-print-loop st1
+   in patch-jmp-at st2 (zero.jmp-done-zero-pos) (st2.text-len)
+
+Section: Print Text
+  emit-serial-wait-thr : CodegenState -> CodegenState
+  emit-serial-wait-thr (st) =
+   let st1 = st-append-text st (push-r reg-rax)
+   in let wait-top = st1.text-len
+   in let st2 = st-append-text st1 (li reg-rdx 1021)
+   in let st3 = st-append-text st2 [236]
+   in let st4 = st-append-text st3 [168, 32]
+   in let jne-pos = st4.text-len
+   in let st5 = st-append-text st4 (jcc cc-ne 0)
+   in let st6 = st-append-text st5 (jmp (wait-top - (st5.text-len + 5)))
+   in let st7 = patch-jcc-at st6 jne-pos (st6.text-len)
+   in st-append-text st7 (pop-r reg-rax)
+
+  emit-print-newline : CodegenState -> CodegenState
+  emit-print-newline (st) =
+   let st1 = emit-serial-wait-thr st
+   in let st2 = st-append-text st1 (li reg-rax 10)
+   in let st3 = st-append-text st2 (li reg-rdx 1016)
+   in st-append-text st3 out-dx-al
+
+  emit-print-text-loop : CodegenState -> Integer -> Integer -> Integer -> Integer -> CodegenState
+  emit-print-text-loop (st) (saved-ptr) (saved-table) (saved-len) (saved-idx) =
+   let loop-top = st.text-len
+   in let idx = load-local st saved-idx
+   in let len-check = load-local (idx.state) saved-len
+   in let st1 = st-append-text (len-check.state) (cmp-rr (idx.reg) (len-check.reg))
+   in let done-jump = st1.text-len
+   in let st2 = st-append-text st1 (jcc cc-ge 0)
+   in let ptr-l = load-local st2 saved-ptr
+   in let idx2 = load-local (ptr-l.state) saved-idx
+   in let st3 = st-append-text (idx2.state) (lea reg-rsi (ptr-l.reg) 8)
+   in let st4 = st-append-text st3 (add-rr reg-rsi (idx2.reg))
+   in let st5 = st-append-text st4 (movzx-byte reg-rax reg-rsi 0)
+   in let tbl = load-local st5 saved-table
+   in let st6 = st-append-text (tbl.state) (add-rr reg-rax (tbl.reg))
+   in let st7 = st-append-text st6 (movzx-byte reg-rax reg-rax 0)
+   in let st8 = emit-serial-wait-thr st7
+   in let st9 = st-append-text st8 (li reg-rdx 1016)
+   in let st10 = st-append-text st9 out-dx-al
+   in let idx3 = load-local st10 saved-idx
+   in let st11 = st-append-text (idx3.state) (add-ri (idx3.reg) 1)
+   in let st12 = store-local st11 saved-idx (idx3.reg)
+   in let st13 = st-append-text st12 (jmp (loop-top - (st12.text-len + 5)))
+   in patch-jcc-at st13 done-jump (st13.text-len)
+
+  emit-print-text : CodegenState -> Integer -> CodegenState
+  emit-print-text (st) (ptr-reg) =
+   let saved-ptr = alloc-local st
+   in let st1 = store-local (saved-ptr.state) (saved-ptr.reg) ptr-reg
+   in let saved-table = alloc-local st1
+   in let st2 = emit-load-rodata-addr (saved-table.state) reg-r11 cce-to-unicode-rodata-offset
+   in let st2a = store-local st2 (saved-table.reg) reg-r11
+   in let ptr-ld = load-local st2a (saved-ptr.reg)
+   in let tmp-len = alloc-temp (ptr-ld.state)
+   in let st3 = st-append-text (tmp-len.state) (mov-load (tmp-len.reg) (ptr-ld.reg) 0)
+   in let saved-len = alloc-local st3
+   in let st4 = store-local (saved-len.state) (saved-len.reg) (tmp-len.reg)
+   in let saved-idx = alloc-local st4
+   in let st5 = st-append-text (saved-idx.state) (li reg-r11 0)
+   in let st6 = store-local st5 (saved-idx.reg) reg-r11
+   in let st7 = emit-print-text-loop st6 (saved-ptr.reg) (saved-table.reg) (saved-len.reg) (saved-idx.reg)
+   in emit-print-newline st7
+
+  emit-print-text-no-newline : CodegenState -> Integer -> CodegenState
+  emit-print-text-no-newline (st) (ptr-reg) =
+   let saved-ptr = alloc-local st
+   in let st1 = store-local (saved-ptr.state) (saved-ptr.reg) ptr-reg
+   in let saved-table = alloc-local st1
+   in let st2 = emit-load-rodata-addr (saved-table.state) reg-r11 cce-to-unicode-rodata-offset
+   in let st2a = store-local st2 (saved-table.reg) reg-r11
+   in let ptr-ld = load-local st2a (saved-ptr.reg)
+   in let tmp-len = alloc-temp (ptr-ld.state)
+   in let st3 = st-append-text (tmp-len.state) (mov-load (tmp-len.reg) (ptr-ld.reg) 0)
+   in let saved-len = alloc-local st3
+   in let st4 = store-local (saved-len.state) (saved-len.reg) (tmp-len.reg)
+   in let saved-idx = alloc-local st4
+   in let st5 = st-append-text (saved-idx.state) (li reg-r11 0)
+   in let st6 = store-local st5 (saved-idx.reg) reg-r11
+   in emit-print-text-loop st6 (saved-ptr.reg) (saved-table.reg) (saved-len.reg) (saved-idx.reg)
+
+
+Page 6 of 6

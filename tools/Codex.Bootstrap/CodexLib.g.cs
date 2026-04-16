@@ -6703,1194 +6703,6 @@ public static class Codex_Codex_Codex
         return ((Func<bool, EmitResult>)((saved_tail) => ((Func<EmitResult, EmitResult>)((cond_result) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<long, EmitResult>)((je_false_pos) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((then_result) => ((Func<EmitResult, EmitResult>)((result_loc) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<long, EmitResult>)((jmp_end_pos) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<EmitResult, EmitResult>)((else_result) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<CodegenState, EmitResult>)((st7) => load_local(st7, result_loc.reg)))(patch_jmp_at(st6, jmp_end_pos, st6.text_len))))(store_local(else_result.state, result_loc.reg, else_result.reg))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st5, saved_tail), else_e))))(patch_jcc_at(st4, je_false_pos, st4.text_len))))(st_append_text(st3, jmp(0L)))))(st3.text_len)))(store_local(result_loc.state, result_loc.reg, then_result.reg))))(alloc_local(then_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st2, saved_tail), then_e))))(st_append_text(st1, jcc(cc_e(), 0L)))))(st1.text_len)))(st_append_text(cond_result.state, test_rr(cond_result.reg, cond_result.reg)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), cond))))(st.tco.in_tail_pos);
     }
 
-    public static bool is_string_builtin(string name)
-    {
-        return ((name == "\u000E\u000D$\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? true : ((name == "\u0011\u0012\u000E\u000D\u001D\u000D\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? true : ((name == "\u0013\u0014\u0010\u001B") ? true : ((name == "\u000E\u000D$\u000EI\u000E\u0010I\u0011\u0012\u000E\u000D\u001D\u000D\u0015") ? true : ((name == "\u000E\u000D$\u000EI\u0015\u000D\u001F\u0017\u000F\u0018\u000D") ? true : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? true : ((name == "\u000E\u000D$\u000EI\u0013\u000E\u000F\u0015\u000E\u0013I\u001B\u0011\u000E\u0014") ? true : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u001A\u001F\u000F\u0015\u000D") ? true : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u0018\u000F\u000EI\u0017\u0011\u0013\u000E") ? true : ((name == "\u000E\u000D$\u000EI\u0013\u001F\u0017\u0011\u000E") ? true : ((name == "\u0013\u0019 \u0013\u000E\u0015\u0011\u0012\u001D") ? true : false)))))))))));
-    }
-
-    public static bool is_list_builtin(string name)
-    {
-        return ((name == "\u0017\u0011\u0013\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? true : ((name == "\u0017\u0011\u0013\u000EI\u000F\u000E") ? true : ((name == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u0013") ? true : ((name == "\u0017\u0011\u0013\u000EI\u000F\u001F\u001F\u000D\u0012\u0016") ? true : ((name == "\u0017\u0011\u0013\u000EI\u0013\u0012\u0010\u0018") ? true : ((name == "\u0017\u0011\u0013\u000EI\u0011\u0012\u0013\u000D\u0015\u000EI\u000F\u000E") ? true : ((name == "\u0017\u0011\u0013\u000EI\u0013\u000D\u000EI\u000F\u000E") ? true : ((name == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? true : false))))))));
-    }
-
-    public static bool is_char_builtin(string name)
-    {
-        return ((name == "\u0018\u0014\u000F\u0015I\u000F\u000E") ? true : ((name == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000DI\u000F\u000E") ? true : ((name == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000D") ? true : ((name == "\u0018\u0010\u0016\u000DI\u000E\u0010I\u0018\u0014\u000F\u0015") ? true : ((name == "\u0018\u0014\u000F\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? true : ((name == "\u0011\u0013I\u0017\u000D\u000E\u000E\u000D\u0015") ? true : ((name == "\u0011\u0013I\u0016\u0011\u001D\u0011\u000E") ? true : ((name == "\u0011\u0013I\u001B\u0014\u0011\u000E\u000D\u0013\u001F\u000F\u0018\u000D") ? true : false))))))));
-    }
-
-    public static bool is_io_builtin(string name)
-    {
-        return ((name == "\u001F\u0015\u0011\u0012\u000EI\u0017\u0011\u0012\u000D") ? true : ((name == "\u0015\u000D\u000F\u0016I\u001C\u0011\u0017\u000D") ? true : ((name == "\u001B\u0015\u0011\u000E\u000DI\u001C\u0011\u0017\u000D") ? true : ((name == "\u0015\u000D\u000F\u0016I\u0017\u0011\u0012\u000D") ? true : ((name == "\u001B\u0015\u0011\u000E\u000DI \u0011\u0012\u000F\u0015\u001E") ? true : false)))));
-    }
-
-    public static bool is_misc_builtin(string name)
-    {
-        return ((name == "\u0012\u000D\u001D\u000F\u000E\u000D") ? true : ((name == "\u001D\u000D\u000EI\u000F\u0015\u001D\u0013") ? true : ((name == "\u0018\u0019\u0015\u0015\u000D\u0012\u000EI\u0016\u0011\u0015") ? true : ((name == "\u001C\u0011\u0017\u000DI\u000D$\u0011\u0013\u000E\u0013") ? true : ((name == "\u0015\u000D\u0018\u0010\u0015\u0016I\u0013\u000D\u000E") ? true : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000D\u001A\u001F\u000E\u001E") ? true : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u001F\u0019\u0013\u0014") ? true : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000E\u0010I\u0017\u0011\u0013\u000E") ? true : ((name == "\u0014\u000D\u000F\u001FI\u0013\u000F!\u000D") ? true : ((name == "\u0014\u000D\u000F\u001FI\u0015\u000D\u0013\u000E\u0010\u0015\u000D") ? true : ((name == "\u0014\u000D\u000F\u001FI\u000F\u0016!\u000F\u0012\u0018\u000D") ? true : ((name == "\u0017\u0011\u0013\u000EI\u001B\u0011\u000E\u0014I\u0018\u000F\u001F\u000F\u0018\u0011\u000E\u001E") ? true : ((name == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D") ? true : ((name == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D\u0013") ? true : ((name == " \u0019\u001CI\u0015\u000D\u000F\u0016I \u001E\u000E\u000D\u0013") ? true : ((name == " \u0011\u000EI\u000F\u0012\u0016") ? true : ((name == " \u0011\u000EI\u0010\u0015") ? true : ((name == " \u0011\u000EI$\u0010\u0015") ? true : ((name == " \u0011\u000EI\u0013\u0014\u0017") ? true : ((name == " \u0011\u000EI\u0013\u0014\u0015") ? true : ((name == " \u0011\u000EI\u0012\u0010\u000E") ? true : false)))))))))))))))))))));
-    }
-
-    public static bool is_builtin(string name)
-    {
-        return (is_string_builtin(name) ? true : (is_list_builtin(name) ? true : (is_char_builtin(name) ? true : (is_io_builtin(name) ? true : is_misc_builtin(name)))));
-    }
-
-    public static EmitResult emit_helper_call_1(CodegenState st, List<IRExpr> args, string helper)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_rr(tmp.reg, reg_rax())), tmp.reg)))(alloc_temp(st2))))(emit_call_to(st1, helper))))(st_append_text(r.state, mov_rr(reg_rdi(), r.reg)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_helper_call_2(CodegenState st, List<IRExpr> args, string helper)
-    {
-        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((loaded) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_rr(tmp.reg, reg_rax())), tmp.reg)))(alloc_temp(st4))))(emit_call_to(st3, helper))))(st_append_text(st2, mov_rr(reg_rdi(), loaded.reg)))))(st_append_text(loaded.state, mov_rr(reg_rsi(), r1.reg)))))(load_local(r1.state, loc.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc.state, loc.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_helper_call_3(CodegenState st, List<IRExpr> args, string helper)
-    {
-        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc0) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((loc1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((r2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((ld1) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((ld0) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_rr(tmp.reg, reg_rax())), tmp.reg)))(alloc_temp(st6))))(emit_call_to(st5, helper))))(st_append_text(ld0.state, mov_rr(reg_rdi(), ld0.reg)))))(load_local(st4, loc0.reg))))(st_append_text(ld1.state, mov_rr(reg_rsi(), ld1.reg)))))(load_local(st3, loc1.reg))))(st_append_text(r2.state, mov_rr(reg_rdx(), r2.reg)))))(emit__x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(loc1.state, loc1.reg, r1.reg))))(alloc_local(r1.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc0.state, loc0.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_text_length_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_load(tmp.reg, r.reg, 0L)), tmp.reg)))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_list_length_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_load(tmp.reg, r.reg, 0L)), tmp.reg)))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_list_at_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((list_loaded) => ((Func<EmitResult, EmitResult>)((addr) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_load(rd.reg, addr.reg, 8L)), rd.reg)))(alloc_temp(st4))))(st_append_text(st3, add_rr(addr.reg, list_loaded.reg)))))(st_append_text(st2, shl_ri(addr.reg, 3L)))))(st_append_text(addr.state, mov_rr(addr.reg, r1.reg)))))(alloc_temp(list_loaded.state))))(load_local(r1.state, loc.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc.state, loc.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_char_at_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((str_loaded) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => new EmitResult(st3, r1.reg)))(st_append_text(st2, movzx_byte(r1.reg, r1.reg, 8L)))))(st_append_text(str_loaded.state, add_rr(r1.reg, str_loaded.reg)))))(load_local(r1.state, loc.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc.state, loc.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_char_code_at_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((text_loaded) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => new EmitResult(st4, rd.reg)))(st_append_text(st3, movzx_byte(rd.reg, rd.reg, 8L)))))(st_append_text(st2, add_rr(rd.reg, r1.reg)))))(st_append_text(rd.state, mov_rr(rd.reg, text_loaded.reg)))))(alloc_temp(text_loaded.state))))(load_local(r1.state, loc.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc.state, loc.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_char_to_text_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((ptr_loc) => ((Func<EmitResult, EmitResult>)((ptr_tmp) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<EmitResult, EmitResult>)((ptr_loaded) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((code_loaded) => ((Func<EmitResult, EmitResult>)((ptr_loaded2) => ((Func<CodegenState, EmitResult>)((st7) => ((Func<EmitResult, EmitResult>)((result) => new EmitResult(result.state, result.reg)))(load_local(st7, ptr_loc.reg))))(st_append_text(ptr_loaded2.state, mov_store_byte(ptr_loaded2.reg, code_loaded.reg, 8L)))))(load_local(code_loaded.state, ptr_loc.reg))))(load_local(st6, loc.reg))))(st_append_text(ptr_loaded.state, mov_store(ptr_loaded.reg, reg_r11(), 0L)))))(load_local(st5, ptr_loc.reg))))(st_append_text(st4, li(reg_r11(), 1L)))))(st_append_text(st3, add_ri(reg_r10(), 16L)))))(store_local(st2, ptr_loc.reg, ptr_tmp.reg))))(st_append_text(ptr_tmp.state, mov_rr(ptr_tmp.reg, reg_r10())))))(alloc_temp(ptr_loc.state))))(alloc_local(st1))))(store_local(loc.state, loc.reg, r.reg))))(alloc_local(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_is_letter_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => new EmitResult(st4, r.reg)))(st_append_text(st3, movzx_byte_self(r.reg)))))(st_append_text(st2, setcc(cc_be(), r.reg)))))(st_append_text(st1, cmp_ri(r.reg, 51L)))))(st_append_text(r.state, sub_ri(r.reg, 13L)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_is_digit_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => new EmitResult(st4, r.reg)))(st_append_text(st3, movzx_byte_self(r.reg)))))(st_append_text(st2, setcc(cc_be(), r.reg)))))(st_append_text(st1, cmp_ri(r.reg, 9L)))))(st_append_text(r.state, sub_ri(r.reg, 3L)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_is_whitespace_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => new EmitResult(st3, r.reg)))(st_append_text(st2, movzx_byte_self(r.reg)))))(st_append_text(st1, setcc(cc_be(), r.reg)))))(st_append_text(r.state, cmp_ri(r.reg, 2L)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_negate_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => new EmitResult(st2, rd.reg)))(st_append_text(st1, neg_r(rd.reg)))))(st_append_text(rd.state, mov_rr(rd.reg, r.reg)))))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_get_args_builtin(CodegenState st)
-    {
-        return ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => new EmitResult(st6, rd.reg)))(st_append_text(st5, add_ri(reg_r10(), 8L)))))(st_append_text(st4, mov_store(reg_r10(), reg_r11(), 0L)))))(st_append_text(st3, mov_rr(rd.reg, reg_r10())))))(st_append_text(st2, add_ri(reg_r10(), 8L)))))(st_append_text(st1, mov_store(reg_r10(), reg_r11(), 0L)))))(st_append_text(rd.state, li(reg_r11(), 0L)))))(alloc_temp(st));
-    }
-
-    public static EmitResult emit_current_dir_builtin(CodegenState st)
-    {
-        return ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => new EmitResult(st4, rd.reg)))(st_append_text(st3, add_ri(reg_r10(), 8L)))))(st_append_text(st2, mov_store(reg_r10(), reg_r11(), 0L)))))(st_append_text(st1, li(reg_r11(), 0L)))))(st_append_text(rd.state, mov_rr(rd.reg, reg_r10())))))(alloc_temp(st));
-    }
-
-    public static EmitResult emit_file_exists_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => new EmitResult(st1, rd.reg)))(st_append_text(rd.state, li(rd.reg, 1L)))))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static CodegenState emit_substring_alloc(CodegenState st, long str_loc, long start_loc, long len_loc)
-    {
-        return ((Func<EmitResult, CodegenState>)((len_loaded) => ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => st_append_text(st2, add_rr(reg_r10(), reg_r11()))))(st_append_text(st1, and_ri(reg_r11(), (0L - 8L))))))(st_append_text(st0, add_ri(reg_r11(), 15L)))))(st_append_text(len_loaded.state, mov_rr(reg_r11(), len_loaded.reg)))))(load_local(st, len_loc));
-    }
-
-    public static CodegenState emit_substring_copy(CodegenState st, long str_loc, long start_loc, long len_loc, long ptr_loc)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<long, CodegenState>)((sub_loop) => ((Func<EmitResult, CodegenState>)((len_ld) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((sub_exit_pos) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<EmitResult, CodegenState>)((src_ld) => ((Func<EmitResult, CodegenState>)((start_ld) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<EmitResult, CodegenState>)((ptr_ld) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => patch_jcc_at(st11, sub_exit_pos, st11.text_len)))(st_append_text(st10, jmp((sub_loop - (st10.text_len + 5L)))))))(st_append_text(st9, add_ri(reg_r11(), 1L)))))(st_append_text(st8, mov_store_byte(reg_rdx(), reg_rsi(), 8L)))))(st_append_text(st7, add_rr(reg_rdx(), reg_r11())))))(st_append_text(ptr_ld.state, mov_rr(reg_rdx(), ptr_ld.reg)))))(load_local(st6, ptr_loc))))(st_append_text(st5, movzx_byte(reg_rsi(), reg_rsi(), 8L)))))(st_append_text(st4, add_rr(reg_rsi(), reg_r11())))))(st_append_text(st3, add_rr(reg_rsi(), start_ld.reg)))))(st_append_text(start_ld.state, mov_rr(reg_rsi(), src_ld.reg)))))(load_local(src_ld.state, start_loc))))(load_local(st2, str_loc))))(st_append_text(st1, jcc(cc_ge(), 0L)))))(st1.text_len)))(st_append_text(len_ld.state, cmp_rr(reg_r11(), len_ld.reg)))))(load_local(st0, len_loc))))(st0.text_len)))(st_append_text(st, li(reg_r11(), 0L)));
-    }
-
-    public static EmitResult emit_substring_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc0) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((loc1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((r2) => ((Func<EmitResult, EmitResult>)((loc2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((ptr_loc) => ((Func<EmitResult, EmitResult>)((ptr_tmp) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<EmitResult, EmitResult>)((len_ld) => ((Func<EmitResult, EmitResult>)((ptr_ld) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<CodegenState, EmitResult>)((st7) => ((Func<CodegenState, EmitResult>)((st8) => ((Func<EmitResult, EmitResult>)((result) => new EmitResult(result.state, result.reg)))(load_local(st8, ptr_loc.reg))))(emit_substring_copy(st7, loc0.reg, loc1.reg, loc2.reg, ptr_loc.reg))))(emit_substring_alloc(st6, loc0.reg, loc1.reg, loc2.reg))))(st_append_text(ptr_ld.state, mov_store(ptr_ld.reg, len_ld.reg, 0L)))))(load_local(len_ld.state, ptr_loc.reg))))(load_local(st5, loc2.reg))))(store_local(st4, ptr_loc.reg, ptr_tmp.reg))))(st_append_text(ptr_tmp.state, mov_rr(ptr_tmp.reg, reg_r10())))))(alloc_temp(ptr_loc.state))))(alloc_local(st3))))(store_local(loc2.state, loc2.reg, r2.reg))))(alloc_local(r2.state))))(emit__x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(loc1.state, loc1.reg, r1.reg))))(alloc_local(r1.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc0.state, loc0.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_print_line_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, li(rd.reg, 0L)), rd.reg)))(alloc_temp(st1))))(emit_print_text(r.state, r.reg))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_read_file_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st2))))(emit_call_to(st1, "UU \u000F\u0015\u000DU\u001A\u000D\u000E\u000F\u0017U\u0015\u000D\u000F\u0016U\u0013\u000D\u0015\u0011\u000F\u0017"))))(st_append_text(r.state, mov_rr(reg_rdi(), r.reg)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_write_file_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, li(rd.reg, 0L)), rd.reg)))(alloc_temp(st1))))(emit_print_text_no_newline(r1.state, r1.reg))))(emit__x86_64_code_generator_emit_expr(r0.state, args[(int)1L]))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_read_line_builtin(CodegenState st)
-    {
-        return ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st1))))(emit_call_to(st, "UU\u0015\u000D\u000F\u0016U\u0017\u0011\u0012\u000D"));
-    }
-
-    public static EmitResult emit_write_binary_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, li(rd.reg, 0L)), rd.reg)))(alloc_temp(st2))))(emit_call_to(st1, "UU\u001B\u0015\u0011\u000E\u000DU \u0011\u0012\u000F\u0015\u001E"))))(st_append_text(r.state, mov_rr(reg_rdi(), r.reg)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_linked_list_empty_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, li(rd.reg, 0L)), rd.reg)))(alloc_temp(st));
-    }
-
-    public static EmitResult emit_linked_list_push_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((list_result) => ((Func<EmitResult, EmitResult>)((list_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((val_result) => ((Func<EmitResult, EmitResult>)((val_loc) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((ptr) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((vr) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((lr) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => new EmitResult(st6, ptr.reg)))(st_append_text(st5, add_ri(reg_r10(), 16L)))))(st_append_text(lr.state, mov_store(ptr.reg, lr.reg, 8L)))))(load_local(st4, list_loc.reg))))(st_append_text(vr.state, mov_store(ptr.reg, vr.reg, 0L)))))(load_local(st3, val_loc.reg))))(st_append_text(ptr.state, mov_rr(ptr.reg, reg_r10())))))(alloc_temp(st2))))(store_local(val_loc.state, val_loc.reg, val_result.reg))))(alloc_local(val_result.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(list_loc.state, list_loc.reg, list_result.reg))))(alloc_local(list_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_linked_list_to_list_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((head_result) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st2))))(emit_call_to(st1, "UU\u0017\u0011\u0012\"\u000D\u0016U\u0017\u0011\u0013\u000EU\u000E\u0010U\u0017\u0011\u0013\u000E"))))(st_append_text(head_result.state, mov_rr(reg_rdi(), head_result.reg)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_record_set_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((rec_result) => ((Func<EmitResult, EmitResult>)((rec_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<string, EmitResult>)((field_name) => ((Func<CodexType, EmitResult>)((rec_ty) => ((Func<EmitResult, EmitResult>)((val_result) => ((Func<EmitResult, EmitResult>)((loaded) => (rec_ty is RecordTy _mRecordTy66_ ? ((Func<List<RecordField>, EmitResult>)((rfields) => ((Func<Name, EmitResult>)((rname) => ((Func<long, EmitResult>)((field_idx) => new EmitResult(st_append_text(loaded.state, mov_store(loaded.reg, val_result.reg, (field_idx * 8L))), loaded.reg)))(find_record_field_index(rfields, field_name, 0L))))((Name)_mRecordTy66_.Field0)))((List<RecordField>)_mRecordTy66_.Field1) : ((Func<CodegenState, EmitResult>)((st_err) => new EmitResult(st_append_text(st_err, new List<long>() { 15L, 11L }), loaded.reg)))(st_add_error(loaded.state, cdx_ir_error(), string.Concat("\u0015\u000D\u0018\u0010\u0015\u0016I\u0013\u000D\u000EE\u0002\u0019\u0012\u0015\u000D\u0013\u0010\u0017!\u000D\u0016\u0002\u000E\u001E\u001F\u000D\u0002\u001C\u0010\u0015\u0002\u001C\u0011\u000D\u0017\u0016\u0002G", field_name, "G"), ir_expr_span(args[(int)0L]))))))(load_local(val_result.state, rec_loc.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)2L]))))(resolve_constructed_ty(st, ir_expr_type(args[(int)0L])))))((args[(int)1L] is IrTextLit _mIrTextLit67_ ? ((Func<SourceSpan, string>)((sp) => ((Func<string, string>)((s) => s))((string)_mIrTextLit67_.Field0)))((SourceSpan)_mIrTextLit67_.Field1) : ""))))(store_local(rec_loc.state, rec_loc.reg, rec_result.reg))))(alloc_local(rec_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_heap_save_builtin(CodegenState st)
-    {
-        return ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_r10())), rd.reg)))(alloc_temp(st));
-    }
-
-    public static EmitResult emit_heap_restore_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, li(rd.reg, 0L)), rd.reg)))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_heap_advance_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => new EmitResult(st_append_text(st1, li(rd.reg, 0L)), rd.reg)))(st_append_text(rd.state, add_rr(reg_r10(), r.reg)))))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_list_with_capacity_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((cap_result) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((zero_tmp) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<EmitResult, EmitResult>)((adv_tmp) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<CodegenState, EmitResult>)((st7) => ((Func<CodegenState, EmitResult>)((st8) => new EmitResult(st_append_text(st8, add_rr(reg_r10(), adv_tmp.reg)), rd.reg)))(st_append_text(st7, add_ri(adv_tmp.reg, 8L)))))(st_append_text(st6, shl_ri(adv_tmp.reg, 3L)))))(st_append_text(adv_tmp.state, mov_rr(adv_tmp.reg, cap_result.reg)))))(alloc_temp(st5))))(st_append_text(st4, mov_store(reg_r10(), zero_tmp.reg, 0L)))))(st_append_text(zero_tmp.state, li(zero_tmp.reg, 0L)))))(alloc_temp(st3))))(st_append_text(st2, mov_rr(rd.reg, reg_r10())))))(st_append_text(st1, add_ri(reg_r10(), 8L)))))(st_append_text(rd.state, mov_store(reg_r10(), cap_result.reg, 0L)))))(alloc_temp(cap_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_buf_write_byte_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((base_result) => ((Func<EmitResult, EmitResult>)((base_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((off_result) => ((Func<EmitResult, EmitResult>)((off_loc) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((byte_result) => ((Func<EmitResult, EmitResult>)((byte_loc) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((addr) => ((Func<EmitResult, EmitResult>)((base2) => ((Func<EmitResult, EmitResult>)((off2) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<EmitResult, EmitResult>)((byte2) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<EmitResult, EmitResult>)((off3) => ((Func<CodegenState, EmitResult>)((st7) => new EmitResult(st_append_text(st7, add_ri(rd.reg, 1L)), rd.reg)))(st_append_text(off3.state, mov_rr(rd.reg, off3.reg)))))(load_local(rd.state, off_loc.reg))))(alloc_temp(st6))))(st_append_text(byte2.state, mov_store_byte(addr.reg, byte2.reg, 0L)))))(load_local(st5, byte_loc.reg))))(st_append_text(st4, add_rr(addr.reg, off2.reg)))))(st_append_text(off2.state, mov_rr(addr.reg, base2.reg)))))(load_local(base2.state, off_loc.reg))))(load_local(addr.state, base_loc.reg))))(alloc_temp(st3))))(store_local(byte_loc.state, byte_loc.reg, byte_result.reg))))(alloc_local(byte_result.state))))(emit__x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(off_loc.state, off_loc.reg, off_result.reg))))(alloc_local(off_result.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(base_loc.state, base_loc.reg, base_result.reg))))(alloc_local(base_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_buf_write_bytes_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((base_result) => ((Func<EmitResult, EmitResult>)((base_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((off_result) => ((Func<EmitResult, EmitResult>)((off_loc) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((list_result) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((off2) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((base2) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st6))))(emit_call_to(st5, "UU \u0019\u001CU\u001B\u0015\u0011\u000E\u000DU \u001E\u000E\u000D\u0013"))))(st_append_text(base2.state, mov_rr(reg_rdi(), base2.reg)))))(load_local(st4, base_loc.reg))))(st_append_text(off2.state, mov_rr(reg_rsi(), off2.reg)))))(load_local(st3, off_loc.reg))))(st_append_text(list_result.state, mov_rr(reg_rdx(), list_result.reg)))))(emit__x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(off_loc.state, off_loc.reg, off_result.reg))))(alloc_local(off_result.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(base_loc.state, base_loc.reg, base_result.reg))))(alloc_local(base_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_buf_read_bytes_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((base_result) => ((Func<EmitResult, EmitResult>)((base_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((off_result) => ((Func<EmitResult, EmitResult>)((off_loc) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((count_result) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((off2) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((base2) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st6))))(emit_call_to(st5, "UU \u0019\u001CU\u0015\u000D\u000F\u0016U \u001E\u000E\u000D\u0013"))))(st_append_text(base2.state, mov_rr(reg_rdi(), base2.reg)))))(load_local(st4, base_loc.reg))))(st_append_text(off2.state, mov_rr(reg_rsi(), off2.reg)))))(load_local(st3, off_loc.reg))))(st_append_text(count_result.state, mov_rr(reg_rdx(), count_result.reg)))))(emit__x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(off_loc.state, off_loc.reg, off_result.reg))))(alloc_local(off_result.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(base_loc.state, base_loc.reg, base_result.reg))))(alloc_local(base_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_bit_op_2(CodegenState st, List<IRExpr> args, Func<long, Func<long, List<long>>> op_bytes)
-    {
-        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc0) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((ld0) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, Enumerable.Concat(mov_rr(rd.reg, ld0.reg), op_bytes(rd.reg)(r1.reg)).ToList()), rd.reg)))(alloc_temp(ld0.state))))(load_local(r1.state, loc0.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc0.state, loc0.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_bit_shift(CodegenState st, List<IRExpr> args, Func<long, List<long>> shift_bytes)
-    {
-        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc0) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((ld0) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, Enumerable.Concat(mov_rr(rd.reg, ld0.reg), shift_bytes(rd.reg)).ToList()), rd.reg)))(alloc_temp(ld0.state))))(load_local(st2, loc0.reg))))(st_append_text(r1.state, mov_rr(reg_rcx(), r1.reg)))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc0.state, loc0.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_bit_not(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, Enumerable.Concat(mov_rr(rd.reg, r0.reg), not_r(rd.reg)).ToList()), rd.reg)))(alloc_temp(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit__x86_64_code_generator_emit_builtin(CodegenState st, string name, List<IRExpr> args)
-    {
-        return ((name == "\u001F\u0015\u0011\u0012\u000EI\u0017\u0011\u0012\u000D") ? emit_print_line_builtin(st, args) : ((name == "\u0015\u000D\u000F\u0016I\u001C\u0011\u0017\u000D") ? emit_read_file_builtin(st, args) : ((name == "\u001B\u0015\u0011\u000E\u000DI\u001C\u0011\u0017\u000D") ? emit_write_file_builtin(st, args) : ((name == "\u0015\u000D\u000F\u0016I\u0017\u0011\u0012\u000D") ? emit_read_line_builtin(st) : ((name == "\u001B\u0015\u0011\u000E\u000DI \u0011\u0012\u000F\u0015\u001E") ? emit_write_binary_builtin(st, args) : ((name == "\u000E\u000D$\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? emit_text_length_builtin(st, args) : ((name == "\u0011\u0012\u000E\u000D\u001D\u000D\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? emit_helper_call_1(st, args, "UU\u0011\u000E\u0010\u000F") : ((name == "\u0013\u0014\u0010\u001B") ? emit_show_builtin(st, args) : ((name == "\u000E\u000D$\u000EI\u000E\u0010I\u0011\u0012\u000E\u000D\u001D\u000D\u0015") ? emit_helper_call_1(st, args, "UU\u000E\u000D$\u000EU\u000E\u0010U\u0011\u0012\u000E") : ((name == "\u000E\u000D$\u000EI\u0015\u000D\u001F\u0017\u000F\u0018\u000D") ? emit_helper_call_3(st, args, "UU\u0013\u000E\u0015U\u0015\u000D\u001F\u0017\u000F\u0018\u000D") : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") : ((name == "\u000E\u000D$\u000EI\u0013\u000E\u000F\u0015\u000E\u0013I\u001B\u0011\u000E\u0014") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0013\u000E\u000F\u0015\u000E\u0013U\u001B\u0011\u000E\u0014") : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u001A\u001F\u000F\u0015\u000D") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0018\u0010\u001A\u001F\u000F\u0015\u000D") : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u0018\u000F\u000EI\u0017\u0011\u0013\u000E") ? emit_helper_call_1(st, args, "UU\u000E\u000D$\u000EU\u0018\u0010\u0012\u0018\u000F\u000EU\u0017\u0011\u0013\u000E") : ((name == "\u000E\u000D$\u000EI\u0013\u001F\u0017\u0011\u000E") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0013\u001F\u0017\u0011\u000E") : ((name == "\u0013\u0019 \u0013\u000E\u0015\u0011\u0012\u001D") ? emit_substring_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? emit_list_length_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u000F\u000E") ? emit_list_at_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u0013") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u0018\u0010\u0012\u0013") : ((name == "\u0017\u0011\u0013\u000EI\u000F\u001F\u001F\u000D\u0012\u0016") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u000F\u001F\u001F\u000D\u0012\u0016") : ((name == "\u0017\u0011\u0013\u000EI\u0013\u0012\u0010\u0018") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u0013\u0012\u0010\u0018") : ((name == "\u0017\u0011\u0013\u000EI\u0011\u0012\u0013\u000D\u0015\u000EI\u000F\u000E") ? emit_helper_call_3(st, args, "UU\u0017\u0011\u0013\u000EU\u0011\u0012\u0013\u000D\u0015\u000EU\u000F\u000E") : ((name == "\u0017\u0011\u0013\u000EI\u0013\u000D\u000EI\u000F\u000E") ? emit_helper_call_3(st, args, "UU\u0017\u0011\u0013\u000EU\u0013\u000D\u000EU\u000F\u000E") : ((name == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") : ((name == "\u0018\u0014\u000F\u0015I\u000F\u000E") ? emit_char_at_builtin(st, args) : ((name == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000DI\u000F\u000E") ? emit_char_code_at_builtin(st, args) : ((name == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000D") ? emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]) : ((name == "\u0018\u0010\u0016\u000DI\u000E\u0010I\u0018\u0014\u000F\u0015") ? emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]) : ((name == "\u0018\u0014\u000F\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? emit_char_to_text_builtin(st, args) : ((name == "\u0011\u0013I\u0017\u000D\u000E\u000E\u000D\u0015") ? emit_is_letter_builtin(st, args) : ((name == "\u0011\u0013I\u0016\u0011\u001D\u0011\u000E") ? emit_is_digit_builtin(st, args) : ((name == "\u0011\u0013I\u001B\u0014\u0011\u000E\u000D\u0013\u001F\u000F\u0018\u000D") ? emit_is_whitespace_builtin(st, args) : ((name == "\u0012\u000D\u001D\u000F\u000E\u000D") ? emit_negate_builtin(st, args) : ((name == "\u001D\u000D\u000EI\u000F\u0015\u001D\u0013") ? emit_get_args_builtin(st) : ((name == "\u0018\u0019\u0015\u0015\u000D\u0012\u000EI\u0016\u0011\u0015") ? emit_current_dir_builtin(st) : ((name == "\u0015\u000D\u0018\u0010\u0015\u0016I\u0013\u000D\u000E") ? emit_record_set_builtin(st, args) : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000D\u001A\u001F\u000E\u001E") ? emit_linked_list_empty_builtin(st, args) : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u001F\u0019\u0013\u0014") ? emit_linked_list_push_builtin(st, args) : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000E\u0010I\u0017\u0011\u0013\u000E") ? emit_linked_list_to_list_builtin(st, args) : ((name == "\u0014\u000D\u000F\u001FI\u0013\u000F!\u000D") ? emit_heap_save_builtin(st) : ((name == "\u0014\u000D\u000F\u001FI\u0015\u000D\u0013\u000E\u0010\u0015\u000D") ? emit_heap_restore_builtin(st, args) : ((name == "\u0014\u000D\u000F\u001FI\u000F\u0016!\u000F\u0012\u0018\u000D") ? emit_heap_advance_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u001B\u0011\u000E\u0014I\u0018\u000F\u001F\u000F\u0018\u0011\u000E\u001E") ? emit_list_with_capacity_builtin(st, args) : ((name == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D") ? emit_buf_write_byte_builtin(st, args) : ((name == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D\u0013") ? emit_buf_write_bytes_builtin(st, args) : ((name == " \u0019\u001CI\u0015\u000D\u000F\u0016I \u001E\u000E\u000D\u0013") ? emit_buf_read_bytes_builtin(st, args) : ((name == " \u0011\u000EI\u000F\u0012\u0016") ? emit_bit_op_2(st, args, (rd) => (rs) => and_rr(rd, rs)) : ((name == " \u0011\u000EI\u0010\u0015") ? emit_bit_op_2(st, args, (rd) => (rs) => or_rr(rd, rs)) : ((name == " \u0011\u000EI$\u0010\u0015") ? emit_bit_op_2(st, args, (rd) => (rs) => xor_rr(rd, rs)) : ((name == " \u0011\u000EI\u0013\u0014\u0017") ? emit_bit_shift(st, args, new Func<long, List<long>>(shl_cl)) : ((name == " \u0011\u000EI\u0013\u0014\u0015") ? emit_bit_shift(st, args, new Func<long, List<long>>(shr_cl)) : ((name == " \u0011\u000EI\u0012\u0010\u000E") ? emit_bit_not(st, args) : emit_file_exists_builtin(st, args)))))))))))))))))))))))))))))))))))))))))))))))))))));
-    }
-
-    public static FlatApply flatten_apply(IRExpr expr, List<IRExpr> acc)
-    {
-        while (true)
-        {
-            var _tco_s = expr;
-            if (_tco_s is IrApply _tco_m0)
-            {
-                var f = _tco_m0.Field0;
-                var a = _tco_m0.Field1;
-                var t = _tco_m0.Field2;
-                var sp = _tco_m0.Field3;
-                var _tco_0 = f;
-                var _tco_1 = Enumerable.Concat(new List<IRExpr>() { a }, acc).ToList();
-                expr = _tco_0;
-                acc = _tco_1;
-                continue;
-            }
-            else if (_tco_s is IrName _tco_m1)
-            {
-                var n = _tco_m1.Field0;
-                var t = _tco_m1.Field1;
-                var sp = _tco_m1.Field2;
-                return new FlatApply(n, acc);
-            }
-            {
-                return new FlatApply("", acc);
-            }
-        }
-    }
-
-    public static SavedArgs save_args_loop(CodegenState st, List<IRExpr> args, long i, List<long> acc)
-    {
-        while (true)
-        {
-            if ((i == ((long)args.Count)))
-            {
-                return new SavedArgs(st, acc);
-            }
-            else
-            {
-                var r = emit__x86_64_code_generator_emit_expr(st, args[(int)i]);
-                var loc = alloc_local(r.state);
-                var st1 = store_local(loc.state, loc.reg, r.reg);
-                var _tco_0 = st1;
-                var _tco_1 = args;
-                var _tco_2 = (i + 1L);
-                var _tco_3 = ((Func<List<long>>)(() => { var _l = acc; _l.Add(loc.reg); return _l; }))();
-                st = _tco_0;
-                args = _tco_1;
-                i = _tco_2;
-                acc = _tco_3;
-                continue;
-            }
-        }
-    }
-
-    public static CodegenState push_reg_args(CodegenState st, List<long> arg_locals, long i, long count)
-    {
-        while (true)
-        {
-            if ((i == count))
-            {
-                return st;
-            }
-            else
-            {
-                var loaded = load_local(st, arg_locals[(int)i]);
-                var _tco_0 = st_append_text(loaded.state, push_r(loaded.reg));
-                var _tco_1 = arg_locals;
-                var _tco_2 = (i + 1L);
-                var _tco_3 = count;
-                st = _tco_0;
-                arg_locals = _tco_1;
-                i = _tco_2;
-                count = _tco_3;
-                continue;
-            }
-        }
-    }
-
-    public static CodegenState pop_to_arg_regs(CodegenState st, long i)
-    {
-        while (true)
-        {
-            if ((i < 0L))
-            {
-                return st;
-            }
-            else
-            {
-                var _tco_0 = st_append_text(st, pop_r(arg_regs()[(int)i]));
-                var _tco_1 = (i - 1L);
-                st = _tco_0;
-                i = _tco_1;
-                continue;
-            }
-        }
-    }
-
-    public static CodegenState push_stack_args(CodegenState st, List<long> arg_locals, long i)
-    {
-        while (true)
-        {
-            if ((i < 6L))
-            {
-                return st;
-            }
-            else
-            {
-                var loaded = load_local(st, arg_locals[(int)i]);
-                var _tco_0 = st_append_text(loaded.state, push_r(loaded.reg));
-                var _tco_1 = arg_locals;
-                var _tco_2 = (i - 1L);
-                st = _tco_0;
-                arg_locals = _tco_1;
-                i = _tco_2;
-                continue;
-            }
-        }
-    }
-
-    public static EmitResult emit__x86_64_code_generator_emit_apply(CodegenState st, IRExpr func_expr, IRExpr arg_expr, CodexType result_ty)
-    {
-        return ((Func<bool, EmitResult>)((saved_tail) => ((Func<IRExpr, EmitResult>)((full_expr) => ((Func<EmitResult, EmitResult>)((r) => new EmitResult(st_set_tail_pos(r.state, saved_tail), r.reg)))((((st.tco.active && saved_tail) && emit__x86_64_code_generator_is_self_call(full_expr, st.tco.current_func)) ? emit_tail_call(st, func_expr, arg_expr) : ((Func<FlatApply, EmitResult>)((flat) => (is_builtin(flat.func_name) ? emit__x86_64_code_generator_emit_builtin(st, flat.func_name, flat.args) : ((Func<CodexType, EmitResult>)((resolved_result_ty) => ((Func<CodexType, EmitResult>)((_scrutinee68_) => (_scrutinee68_ is SumTy _mSumTy68_ ? ((Func<List<SumCtor>, EmitResult>)((ctors) => ((Func<Name, EmitResult>)((sname) => ((Func<long, EmitResult>)((tag) => ((tag >= 0L) ? emit_sum_ctor(st, flat.args, tag) : ((Func<bool, EmitResult>)((is_local_sum) => (is_local_sum ? emit_indirect_call(st, flat) : emit_direct_call(st, flat))))((lookup_local(st.locals, flat.func_name) >= 0L)))))(find_ctor_tag(ctors, flat.func_name, 0L))))((Name)_mSumTy68_.Field0)))((List<SumCtor>)_mSumTy68_.Field1) : (_scrutinee68_ is FunTy _mFunTy68_ ? ((Func<CodexType, EmitResult>)((rt) => ((Func<CodexType, EmitResult>)((pt) => ((Func<bool, EmitResult>)((is_local) => (is_local ? emit_indirect_call(st, flat) : emit_partial_application(st, flat.func_name, flat.args))))((lookup_local(st.locals, flat.func_name) >= 0L))))((CodexType)_mFunTy68_.Field0)))((CodexType)_mFunTy68_.Field1) : ((Func<bool, EmitResult>)((is_local) => (is_local ? emit_indirect_call(st, flat) : emit_direct_call(st, flat))))((lookup_local(st.locals, flat.func_name) >= 0L))))))(resolved_result_ty)))(resolve_constructed_ty(st, result_ty)))))(flatten_apply(func_expr, new List<IRExpr>() { arg_expr }))))))(new IrApply(func_expr, arg_expr, result_ty, ir_expr_span(func_expr)))))(st.tco.in_tail_pos);
-    }
-
-    public static EmitResult emit_direct_call(CodegenState st, FlatApply flat)
-    {
-        return ((Func<SavedArgs, EmitResult>)((saved) => ((Func<long, EmitResult>)((arg_count) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<long, EmitResult>)((reg_count) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<long, EmitResult>)((stack_arg_count) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_rr(tmp.reg, reg_rax())), tmp.reg)))(alloc_temp(st5))))(((stack_arg_count > 0L) ? st_append_text(st4, add_ri(reg_rsp(), (stack_arg_count * 8L))) : st4))))((arg_count - 6L))))(emit_call_to(st3, flat.func_name))))(pop_to_arg_regs(st2, (reg_count - 1L)))))(push_reg_args(st1, saved.locals, 0L, reg_count))))(((arg_count < 6L) ? arg_count : 6L))))(push_stack_args(saved.state, saved.locals, (arg_count - 1L)))))(((long)flat.args.Count))))(save_args_loop(st_set_tail_pos(st, false), flat.args, 0L, new List<long>()));
-    }
-
-    public static EmitResult emit_indirect_call(CodegenState st, FlatApply flat)
-    {
-        return ((Func<SavedArgs, EmitResult>)((saved) => ((Func<long, EmitResult>)((arg_count) => ((Func<long, EmitResult>)((reg_count) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((closure_load) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_rr(tmp.reg, reg_rax())), tmp.reg)))(alloc_temp(st5))))(st_append_text(st4, new List<long>() { 255L, 208L }))))(st_append_text(st3, mov_load(reg_rax(), reg_r11(), 0L)))))(st_append_text(closure_load.state, mov_rr(reg_r11(), closure_load.reg)))))(load_local(st2, lookup_local(st2.locals, flat.func_name)))))(pop_to_arg_regs(st1, (reg_count - 1L)))))(push_reg_args(saved.state, saved.locals, 0L, reg_count))))(((arg_count < 6L) ? arg_count : 6L))))(((long)flat.args.Count))))(save_args_loop(st_set_tail_pos(st, false), flat.args, 0L, new List<long>()));
-    }
-
-    public static List<IRExpr> flatten_tail_args(IRExpr expr, List<IRExpr> acc)
-    {
-        while (true)
-        {
-            var _tco_s = expr;
-            if (_tco_s is IrApply _tco_m0)
-            {
-                var f = _tco_m0.Field0;
-                var a = _tco_m0.Field1;
-                var t = _tco_m0.Field2;
-                var sp = _tco_m0.Field3;
-                var _tco_0 = f;
-                var _tco_1 = Enumerable.Concat(new List<IRExpr>() { a }, acc).ToList();
-                expr = _tco_0;
-                acc = _tco_1;
-                continue;
-            }
-            {
-                return acc;
-            }
-        }
-    }
-
-    public static CodegenState eval_tail_args(CodegenState st, List<IRExpr> args, List<long> temp_locals, long i)
-    {
-        while (true)
-        {
-            if ((i == ((long)args.Count)))
-            {
-                return st;
-            }
-            else
-            {
-                var st_notail = st_set_tail_pos(st, false);
-                var r = emit__x86_64_code_generator_emit_expr(st_notail, args[(int)i]);
-                var st1 = store_local(r.state, temp_locals[(int)i], r.reg);
-                var _tco_0 = st1;
-                var _tco_1 = args;
-                var _tco_2 = temp_locals;
-                var _tco_3 = (i + 1L);
-                st = _tco_0;
-                args = _tco_1;
-                temp_locals = _tco_2;
-                i = _tco_3;
-                continue;
-            }
-        }
-    }
-
-    public static CodegenState copy_temps_to_params(CodegenState st, List<long> temp_locals, List<long> param_locals, long i)
-    {
-        while (true)
-        {
-            if ((i == ((long)temp_locals.Count)))
-            {
-                return st;
-            }
-            else
-            {
-                var loaded = load_local(st, temp_locals[(int)i]);
-                var st1 = store_local(loaded.state, param_locals[(int)i], loaded.reg);
-                var _tco_0 = st1;
-                var _tco_1 = temp_locals;
-                var _tco_2 = param_locals;
-                var _tco_3 = (i + 1L);
-                st = _tco_0;
-                temp_locals = _tco_1;
-                param_locals = _tco_2;
-                i = _tco_3;
-                continue;
-            }
-        }
-    }
-
-    public static EmitResult emit_tail_call(CodegenState st, IRExpr func_expr, IRExpr arg_expr)
-    {
-        return ((Func<List<IRExpr>, EmitResult>)((args) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<long, EmitResult>)((rel32) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((dummy) => new EmitResult(st_append_text(dummy.state, li(dummy.reg, 0L)), dummy.reg)))(alloc_temp(st3))))(st_append_text(st2, jmp(rel32)))))((st.tco.loop_top - (st2.text_len + 5L)))))(copy_temps_to_params(st1, st.tco.temp_locals, st.tco.param_locals, 0L))))(eval_tail_args(st, args, st.tco.temp_locals, 0L))))(flatten_tail_args(func_expr, new List<IRExpr>() { arg_expr }));
-    }
-
-    public static EmitResult emit_sum_ctor(CodegenState st, List<IRExpr> args, long tag)
-    {
-        return ((Func<SavedArgs, EmitResult>)((saved) => ((Func<long, EmitResult>)((field_count) => ((Func<long, EmitResult>)((total_size) => ((Func<EmitResult, EmitResult>)((ptr_loc) => ((Func<EmitResult, EmitResult>)((ptr_tmp) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((tag_tmp) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((ptr_load1) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => load_local(st6, ptr_loc.reg)))(emit_store_ctor_fields(st5, saved.locals, ptr_loc.reg, 0L))))(st_append_text(ptr_load1.state, mov_store(ptr_load1.reg, tag_tmp.reg, 0L)))))(load_local(st4, ptr_loc.reg))))(st_append_text(tag_tmp.state, li(tag_tmp.reg, tag)))))(alloc_temp(st3))))(st_append_text(st2, add_ri(reg_r10(), total_size)))))(store_local(st1, ptr_loc.reg, ptr_tmp.reg))))(st_append_text(ptr_tmp.state, mov_rr(ptr_tmp.reg, reg_r10())))))(alloc_temp(ptr_loc.state))))(alloc_local(saved.state))))(((1L + field_count) * 8L))))(((long)args.Count))))(save_args_loop(st, args, 0L, new List<long>()));
-    }
-
-    public static CodegenState emit_store_ctor_fields(CodegenState st, List<long> field_locals, long ptr_loc, long i)
-    {
-        while (true)
-        {
-            if ((i == ((long)field_locals.Count)))
-            {
-                return st;
-            }
-            else
-            {
-                var val = load_local(st, field_locals[(int)i]);
-                var ptr = load_local(val.state, ptr_loc);
-                var st1 = st_append_text(ptr.state, mov_store(ptr.reg, val.reg, (8L + (i * 8L))));
-                var _tco_0 = st1;
-                var _tco_1 = field_locals;
-                var _tco_2 = ptr_loc;
-                var _tco_3 = (i + 1L);
-                st = _tco_0;
-                field_locals = _tco_1;
-                ptr_loc = _tco_2;
-                i = _tco_3;
-                continue;
-            }
-        }
-    }
-
-    public static CodegenState emit_load_rodata_addr(CodegenState st, long reg, long rodata_off)
-    {
-        return ((Func<RodataFixup, CodegenState>)((fixup) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, ((Func<List<RodataFixup>>)(() => { var _l = st1.rodata_fixups; _l.Add(fixup); return _l; }))(), _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st1)))(st_append_text(st, mov_ri64(reg, 0L)))))(new RodataFixup((st.text_len + 2L), rodata_off));
-    }
-
-    public static CodegenState emit_load_func_addr(CodegenState st, long reg, string func_name)
-    {
-        return ((Func<FuncAddrFixup, CodegenState>)((fixup) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, ((Func<List<FuncAddrFixup>>)(() => { var _l = st1.func_addr_fixups; _l.Add(fixup); return _l; }))(), _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st1)))(st_append_text(st, mov_ri64(reg, 0L)))))(new FuncAddrFixup((st.text_len + 2L), func_name));
-    }
-
-    public static CodegenState emit_trampoline_shift_args(CodegenState st, long i, long num_captures)
-    {
-        while (true)
-        {
-            if ((i < 0L))
-            {
-                return st;
-            }
-            else
-            {
-                if (((i + num_captures) < 6L))
-                {
-                    var _tco_0 = st_append_text(st, mov_rr(arg_regs()[(int)(i + num_captures)], arg_regs()[(int)i]));
-                    var _tco_1 = (i - 1L);
-                    var _tco_2 = num_captures;
-                    st = _tco_0;
-                    i = _tco_1;
-                    num_captures = _tco_2;
-                    continue;
-                }
-                else
-                {
-                    var _tco_0 = st;
-                    var _tco_1 = (i - 1L);
-                    var _tco_2 = num_captures;
-                    st = _tco_0;
-                    i = _tco_1;
-                    num_captures = _tco_2;
-                    continue;
-                }
-            }
-        }
-    }
-
-    public static CodegenState emit_trampoline_load_captures(CodegenState st, long i, long num_captures)
-    {
-        while (true)
-        {
-            if ((i == num_captures))
-            {
-                return st;
-            }
-            else
-            {
-                if ((i < 6L))
-                {
-                    var _tco_0 = st_append_text(st, mov_load(arg_regs()[(int)i], reg_r11(), (8L + (i * 8L))));
-                    var _tco_1 = (i + 1L);
-                    var _tco_2 = num_captures;
-                    st = _tco_0;
-                    i = _tco_1;
-                    num_captures = _tco_2;
-                    continue;
-                }
-                else
-                {
-                    return st;
-                }
-            }
-        }
-    }
-
-    public static EmitResult emit_partial_application(CodegenState st, string func_name, List<IRExpr> captured_args)
-    {
-        return ((Func<SavedArgs, EmitResult>)((saved) => ((Func<long, EmitResult>)((num_captures) => ((Func<string, EmitResult>)((tramp_name) => ((Func<long, EmitResult>)((jmp_over_pos) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<CodegenState, EmitResult>)((st7) => ((Func<long, EmitResult>)((closure_size) => ((Func<EmitResult, EmitResult>)((ptr_loc) => ((Func<EmitResult, EmitResult>)((ptr_tmp) => ((Func<CodegenState, EmitResult>)((st8) => ((Func<CodegenState, EmitResult>)((st9) => ((Func<CodegenState, EmitResult>)((st10) => ((Func<CodegenState, EmitResult>)((st11) => ((Func<EmitResult, EmitResult>)((ptr_load1) => ((Func<CodegenState, EmitResult>)((st12) => ((Func<CodegenState, EmitResult>)((st13) => load_local(st13, ptr_loc.reg)))(emit_store_closure_captures(st12, saved.locals, ptr_loc.reg, 0L))))(st_append_text(ptr_load1.state, mov_store(ptr_load1.reg, reg_rax(), 0L)))))(load_local(st11, ptr_loc.reg))))(emit_load_func_addr(st10, reg_rax(), tramp_name))))(st_append_text(st9, add_ri(reg_r10(), closure_size)))))(store_local(st8, ptr_loc.reg, ptr_tmp.reg))))(st_append_text(ptr_tmp.state, mov_rr(ptr_tmp.reg, reg_r10())))))(alloc_temp(ptr_loc.state))))(alloc_local(st7))))(((1L + num_captures) * 8L))))(patch_jmp_at(st6, jmp_over_pos, st6.text_len))))(st_append_text(st5, new List<long>() { 255L, 224L }))))(emit_load_func_addr(st4, reg_rax(), func_name))))(emit_trampoline_load_captures(st3, 0L, num_captures))))(emit_trampoline_shift_args(st2, 5L, num_captures))))(record_func_offset(st1, tramp_name))))(st_append_text(saved.state, jmp(0L)))))(saved.state.text_len)))(string.Concat(func_name, "UU\u000E\u0015\u000F\u001A\u001FUU", _Cce.FromUnicode(num_captures.ToString()), "UU", _Cce.FromUnicode(saved.state.text_len.ToString())))))(((long)captured_args.Count))))(save_args_loop(st_set_tail_pos(st, false), captured_args, 0L, new List<long>()));
-    }
-
-    public static CodegenState emit_store_closure_captures(CodegenState st, List<long> cap_locals, long ptr_loc, long i)
-    {
-        while (true)
-        {
-            if ((i == ((long)cap_locals.Count)))
-            {
-                return st;
-            }
-            else
-            {
-                var val = load_local(st, cap_locals[(int)i]);
-                var ptr = load_local(val.state, ptr_loc);
-                var st1 = st_append_text(ptr.state, mov_store(ptr.reg, val.reg, (8L + (i * 8L))));
-                var _tco_0 = st1;
-                var _tco_1 = cap_locals;
-                var _tco_2 = ptr_loc;
-                var _tco_3 = (i + 1L);
-                st = _tco_0;
-                cap_locals = _tco_1;
-                ptr_loc = _tco_2;
-                i = _tco_3;
-                continue;
-            }
-        }
-    }
-
-    public static List<PatchEntry> collect_func_addr_patches(List<FuncAddrFixup> fixups, OffsetTable offset_map, long text_base, long i, List<PatchEntry> acc)
-    {
-        while (true)
-        {
-            if ((i == ((long)fixups.Count)))
-            {
-                return acc;
-            }
-            else
-            {
-                var f = fixups[(int)i];
-                var func_offset = offset_table_lookup(offset_map, f.target);
-                var addr = (text_base + func_offset);
-                var addr_bytes = write_i64(addr);
-                var p0 = new PatchEntry(f.patch_offset, addr_bytes[(int)0L], addr_bytes[(int)1L], addr_bytes[(int)2L], addr_bytes[(int)3L]);
-                var p1 = new PatchEntry((f.patch_offset + 4L), addr_bytes[(int)4L], addr_bytes[(int)5L], addr_bytes[(int)6L], addr_bytes[(int)7L]);
-                var _tco_0 = fixups;
-                var _tco_1 = offset_map;
-                var _tco_2 = text_base;
-                var _tco_3 = (i + 1L);
-                var _tco_4 = Enumerable.Concat(acc, new List<PatchEntry>() { p0, p1 }).ToList();
-                fixups = _tco_0;
-                offset_map = _tco_1;
-                text_base = _tco_2;
-                i = _tco_3;
-                acc = _tco_4;
-                continue;
-            }
-        }
-    }
-
-    public static List<PatchEntry> collect_rodata_patches(List<RodataFixup> fixups, long rodata_vaddr, long i, List<PatchEntry> acc)
-    {
-        while (true)
-        {
-            if ((i == ((long)fixups.Count)))
-            {
-                return acc;
-            }
-            else
-            {
-                var f = fixups[(int)i];
-                var addr = (rodata_vaddr + f.rodata_offset);
-                var addr_bytes = write_i64(addr);
-                var p0 = new PatchEntry(f.patch_offset, addr_bytes[(int)0L], addr_bytes[(int)1L], addr_bytes[(int)2L], addr_bytes[(int)3L]);
-                var p1 = new PatchEntry((f.patch_offset + 4L), addr_bytes[(int)4L], addr_bytes[(int)5L], addr_bytes[(int)6L], addr_bytes[(int)7L]);
-                var _tco_0 = fixups;
-                var _tco_1 = rodata_vaddr;
-                var _tco_2 = (i + 1L);
-                var _tco_3 = Enumerable.Concat(acc, new List<PatchEntry>() { p0, p1 }).ToList();
-                fixups = _tco_0;
-                rodata_vaddr = _tco_1;
-                i = _tco_2;
-                acc = _tco_3;
-                continue;
-            }
-        }
-    }
-
-    public static CodexType resolve_constructed_raw(CodexType raw, CodexType fallback)
-    {
-        return ((Func<CodexType, CodexType>)((_scrutinee69_) => (_scrutinee69_ is RecordTy _mRecordTy69_ ? ((Func<List<RecordField>, CodexType>)((rf) => ((Func<Name, CodexType>)((rn) => raw))((Name)_mRecordTy69_.Field0)))((List<RecordField>)_mRecordTy69_.Field1) : (_scrutinee69_ is SumTy _mSumTy69_ ? ((Func<List<SumCtor>, CodexType>)((sc) => ((Func<Name, CodexType>)((sn) => raw))((Name)_mSumTy69_.Field0)))((List<SumCtor>)_mSumTy69_.Field1) : (_scrutinee69_ is FunTy _mFunTy69_ ? ((Func<CodexType, CodexType>)((r) => ((Func<CodexType, CodexType>)((p) => strip_fun_args_emitter(r)))((CodexType)_mFunTy69_.Field0)))((CodexType)_mFunTy69_.Field1) : fallback)))))(raw);
-    }
-
-    public static CodexType resolve_constructed_ty(CodegenState st, CodexType ty)
-    {
-        while (true)
-        {
-            var _tco_s = ty;
-            if (_tco_s is RecordTy _tco_m0)
-            {
-                var rn = _tco_m0.Field0;
-                var rf = _tco_m0.Field1;
-                return ty;
-            }
-            else if (_tco_s is SumTy _tco_m1)
-            {
-                var sn = _tco_m1.Field0;
-                var sc = _tco_m1.Field1;
-                return ty;
-            }
-            else if (_tco_s is ConstructedTy _tco_m2)
-            {
-                var cname = _tco_m2.Field0;
-                var cargs = _tco_m2.Field1;
-                var raw = lookup_type_binding(st.type_defs, cname.value);
-                return resolve_constructed_raw(raw, ty);
-            }
-            else if (_tco_s is EffectfulTy _tco_m3)
-            {
-                var effs = _tco_m3.Field0;
-                var ret = _tco_m3.Field1;
-                var _tco_0 = st;
-                var _tco_1 = ret;
-                st = _tco_0;
-                ty = _tco_1;
-                continue;
-            }
-            else if (_tco_s is ForAllTy _tco_m4)
-            {
-                var id = _tco_m4.Field0;
-                var body = _tco_m4.Field1;
-                var _tco_0 = st;
-                var _tco_1 = body;
-                st = _tco_0;
-                ty = _tco_1;
-                continue;
-            }
-            {
-                return ty;
-            }
-        }
-    }
-
-    public static CodexType strip_fun_args_emitter(CodexType ty)
-    {
-        while (true)
-        {
-            var _tco_s = ty;
-            if (_tco_s is FunTy _tco_m0)
-            {
-                var p = _tco_m0.Field0;
-                var r = _tco_m0.Field1;
-                var _tco_0 = r;
-                ty = _tco_0;
-                continue;
-            }
-            {
-                return ty;
-            }
-        }
-    }
-
-    public static CodexType lookup_type_binding(List<TypeBinding> bindings, string name)
-    {
-        return lookup_type_binding_loop(bindings, name, 0L, ((long)bindings.Count));
-    }
-
-    public static CodexType lookup_type_binding_loop(List<TypeBinding> bindings, string name, long i, long len)
-    {
-        while (true)
-        {
-            if ((i == len))
-            {
-                return new ErrorTy();
-            }
-            else
-            {
-                var b = bindings[(int)i];
-                if ((b.name == name))
-                {
-                    return b.bound_type;
-                }
-                else
-                {
-                    var _tco_0 = bindings;
-                    var _tco_1 = name;
-                    var _tco_2 = (i + 1L);
-                    var _tco_3 = len;
-                    bindings = _tco_0;
-                    name = _tco_1;
-                    i = _tco_2;
-                    len = _tco_3;
-                    continue;
-                }
-            }
-        }
-    }
-
-    public static long find_record_field_index(List<RecordField> fields, string name, long i)
-    {
-        while (true)
-        {
-            if ((i == ((long)fields.Count)))
-            {
-                return 0L;
-            }
-            else
-            {
-                var f = fields[(int)i];
-                if ((f.name.value == name))
-                {
-                    return i;
-                }
-                else
-                {
-                    var _tco_0 = fields;
-                    var _tco_1 = name;
-                    var _tco_2 = (i + 1L);
-                    fields = _tco_0;
-                    name = _tco_1;
-                    i = _tco_2;
-                    continue;
-                }
-            }
-        }
-    }
-
-    public static EvalFieldsResult emit_eval_record_fields(CodegenState st, List<IRFieldVal> fields, long i, List<FieldLocal> acc)
-    {
-        while (true)
-        {
-            if ((i == ((long)fields.Count)))
-            {
-                return new EvalFieldsResult(st, acc);
-            }
-            else
-            {
-                var fv = fields[(int)i];
-                var r = emit__x86_64_code_generator_emit_expr(st, fv.value);
-                var loc = alloc_local(r.state);
-                var st1 = store_local(loc.state, loc.reg, r.reg);
-                var _tco_0 = st1;
-                var _tco_1 = fields;
-                var _tco_2 = (i + 1L);
-                var _tco_3 = ((Func<List<FieldLocal>>)(() => { var _l = acc; _l.Add(new FieldLocal(fv.name, loc.reg)); return _l; }))();
-                st = _tco_0;
-                fields = _tco_1;
-                i = _tco_2;
-                acc = _tco_3;
-                continue;
-            }
-        }
-    }
-
-    public static long find_field_local_slot(List<FieldLocal> fls, string name, long i)
-    {
-        while (true)
-        {
-            if ((i == ((long)fls.Count)))
-            {
-                return (-1L);
-            }
-            else
-            {
-                var fl = fls[(int)i];
-                if ((fl.name == name))
-                {
-                    return fl.slot;
-                }
-                else
-                {
-                    var _tco_0 = fls;
-                    var _tco_1 = name;
-                    var _tco_2 = (i + 1L);
-                    fls = _tco_0;
-                    name = _tco_1;
-                    i = _tco_2;
-                    continue;
-                }
-            }
-        }
-    }
-
-    public static CodegenState emit_store_record_fields_by_type(CodegenState st, List<RecordField> type_fields, List<FieldLocal> field_locals, long ptr_loc, long i)
-    {
-        while (true)
-        {
-            if ((i == ((long)type_fields.Count)))
-            {
-                return st;
-            }
-            else
-            {
-                var tf = type_fields[(int)i];
-                var slot = find_field_local_slot(field_locals, tf.name.value, 0L);
-                if ((slot >= 0L))
-                {
-                    var val = load_local(st, slot);
-                    var ptr = load_local(val.state, ptr_loc);
-                    var st1 = st_append_text(ptr.state, mov_store(ptr.reg, val.reg, (i * 8L)));
-                    var _tco_0 = st1;
-                    var _tco_1 = type_fields;
-                    var _tco_2 = field_locals;
-                    var _tco_3 = ptr_loc;
-                    var _tco_4 = (i + 1L);
-                    st = _tco_0;
-                    type_fields = _tco_1;
-                    field_locals = _tco_2;
-                    ptr_loc = _tco_3;
-                    i = _tco_4;
-                    continue;
-                }
-                else
-                {
-                    var _tco_0 = st;
-                    var _tco_1 = type_fields;
-                    var _tco_2 = field_locals;
-                    var _tco_3 = ptr_loc;
-                    var _tco_4 = (i + 1L);
-                    st = _tco_0;
-                    type_fields = _tco_1;
-                    field_locals = _tco_2;
-                    ptr_loc = _tco_3;
-                    i = _tco_4;
-                    continue;
-                }
-            }
-        }
-    }
-
-    public static CodegenState emit_store_record_fields_by_list(CodegenState st, List<FieldLocal> field_locals, long ptr_loc, long i)
-    {
-        while (true)
-        {
-            if ((i == ((long)field_locals.Count)))
-            {
-                return st;
-            }
-            else
-            {
-                var fl = field_locals[(int)i];
-                var val = load_local(st, fl.slot);
-                var ptr = load_local(val.state, ptr_loc);
-                var st1 = st_append_text(ptr.state, mov_store(ptr.reg, val.reg, (i * 8L)));
-                var _tco_0 = st1;
-                var _tco_1 = field_locals;
-                var _tco_2 = ptr_loc;
-                var _tco_3 = (i + 1L);
-                st = _tco_0;
-                field_locals = _tco_1;
-                ptr_loc = _tco_2;
-                i = _tco_3;
-                continue;
-            }
-        }
-    }
-
-    public static EmitResult emit__x86_64_code_generator_emit_record(CodegenState st, List<IRFieldVal> fields, CodexType ty)
-    {
-        return ((Func<EvalFieldsResult, EmitResult>)((evaled) => ((Func<long, EmitResult>)((field_count) => ((Func<long, EmitResult>)((total_size) => ((Func<EmitResult, EmitResult>)((ptr_loc) => ((Func<EmitResult, EmitResult>)((ptr_tmp) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodexType, EmitResult>)((resolved_ty) => ((Func<CodegenState, EmitResult>)((st4) => load_local(st4, ptr_loc.reg)))((resolved_ty is RecordTy _mRecordTy70_ ? ((Func<List<RecordField>, CodegenState>)((type_fields) => ((Func<Name, CodegenState>)((rname) => emit_store_record_fields_by_type(st3, type_fields, evaled.field_locals, ptr_loc.reg, 0L)))((Name)_mRecordTy70_.Field0)))((List<RecordField>)_mRecordTy70_.Field1) : emit_store_record_fields_by_list(st3, evaled.field_locals, ptr_loc.reg, 0L)))))(resolve_constructed_ty(st, ty))))(st_append_text(st2, add_ri(reg_r10(), total_size)))))(store_local(st1, ptr_loc.reg, ptr_tmp.reg))))(st_append_text(ptr_tmp.state, mov_rr(ptr_tmp.reg, reg_r10())))))(alloc_temp(ptr_loc.state))))(alloc_local(evaled.state))))((field_count * 8L))))(((long)fields.Count))))(emit_eval_record_fields(st, fields, 0L, new List<FieldLocal>()));
-    }
-
-    public static EmitResult emit__x86_64_code_generator_emit_field_access(CodegenState st, IRExpr rec_expr, string field_name)
-    {
-        return ((Func<CodexType, EmitResult>)((rec_ty) => ((Func<EmitResult, EmitResult>)((rec_result) => (rec_ty is RecordTy _mRecordTy71_ ? ((Func<List<RecordField>, EmitResult>)((rfields) => ((Func<Name, EmitResult>)((rname) => ((Func<long, EmitResult>)((field_idx) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_load(rd.reg, rec_result.reg, (field_idx * 8L))), rd.reg)))(alloc_temp(rec_result.state))))(find_record_field_index(rfields, field_name, 0L))))((Name)_mRecordTy71_.Field0)))((List<RecordField>)_mRecordTy71_.Field1) : ((Func<CodegenState, EmitResult>)((st_err) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, new List<long>() { 15L, 11L }), rd.reg)))(alloc_temp(st_err))))(st_add_error(rec_result.state, cdx_ir_error(), string.Concat("\u000D\u001A\u0011\u000EI\u001C\u0011\u000D\u0017\u0016I\u000F\u0018\u0018\u000D\u0013\u0013E\u0002\u0019\u0012\u0015\u000D\u0013\u0010\u0017!\u000D\u0016\u0002\u000E\u001E\u001F\u000D\u0002\u001C\u0010\u0015\u0002\u001C\u0011\u000D\u0017\u0016\u0002G", field_name, "G"), ir_expr_span(rec_expr))))))(emit__x86_64_code_generator_emit_expr(st, rec_expr))))(resolve_constructed_ty(st, ir_expr_type(rec_expr)));
-    }
-
-    public static EmitResult emit__x86_64_code_generator_emit_match(CodegenState st, IRExpr scrut_expr, List<IRBranch> branches)
-    {
-        return ((Func<bool, EmitResult>)((saved_tail) => ((Func<CodexType, EmitResult>)((scrut_ty) => ((Func<EmitResult, EmitResult>)((scrut_result) => ((Func<EmitResult, EmitResult>)((scrut_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st1a) => ((Func<EmitResult, EmitResult>)((result_loc) => ((Func<MatchBranchState, EmitResult>)((mbs) => ((Func<MatchBranchState, EmitResult>)((mbs_final) => ((Func<CodegenState, EmitResult>)((st_end) => load_local(st_end, result_loc.reg)))(patch_match_end_jumps(mbs_final.cg_state, mbs_final.end_patches, 0L))))(emit_match_branch_loop(mbs, scrut_loc.reg, result_loc.reg, branches, 0L, ((long)branches.Count), scrut_ty))))(new MatchBranchState(st1a, new List<long>()))))(alloc_local(st1a))))(st_set_tail_pos(st1, saved_tail))))(store_local(scrut_loc.state, scrut_loc.reg, scrut_result.reg))))(alloc_local(scrut_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), scrut_expr))))(resolve_constructed_ty(st, ir_expr_type(scrut_expr)))))(st.tco.in_tail_pos);
-    }
-
-    public static MatchBranchState emit_match_branch_loop(MatchBranchState mbs, long scrut_loc, long result_loc, List<IRBranch> branches, long i, long total, CodexType scrut_ty)
-    {
-        while (true)
-        {
-            if ((i == total))
-            {
-                return mbs;
-            }
-            else
-            {
-                var b = branches[(int)i];
-                var mbs1 = emit_one_match_branch(mbs, scrut_loc, result_loc, b, (i < (total - 1L)), scrut_ty);
-                var _tco_0 = mbs1;
-                var _tco_1 = scrut_loc;
-                var _tco_2 = result_loc;
-                var _tco_3 = branches;
-                var _tco_4 = (i + 1L);
-                var _tco_5 = total;
-                var _tco_6 = scrut_ty;
-                mbs = _tco_0;
-                scrut_loc = _tco_1;
-                result_loc = _tco_2;
-                branches = _tco_3;
-                i = _tco_4;
-                total = _tco_5;
-                scrut_ty = _tco_6;
-                continue;
-            }
-        }
-    }
-
-    public static MatchBranchState emit_one_match_branch(MatchBranchState mbs, long scrut_loc, long result_loc, IRBranch branch, bool needs_jmp_end, CodexType scrut_ty)
-    {
-        return ((Func<EmitPatternResult, MatchBranchState>)((pat_result) => ((Func<EmitResult, MatchBranchState>)((body_result) => ((Func<CodegenState, MatchBranchState>)((st1) => ((Func<MatchBranchState, MatchBranchState>)((st2) => ((Func<MatchBranchState, MatchBranchState>)((st3) => st3))(((pat_result.next_branch_patch >= 0L) ? new MatchBranchState(patch_jcc_at(st2.cg_state, pat_result.next_branch_patch, st2.cg_state.text_len), st2.end_patches) : st2))))((needs_jmp_end ? ((Func<long, MatchBranchState>)((jmp_pos) => new MatchBranchState(st_append_text(st1, jmp(0L)), ((Func<List<long>>)(() => { var _l = mbs.end_patches; _l.Add(jmp_pos); return _l; }))())))(st1.text_len) : new MatchBranchState(st1, mbs.end_patches)))))(store_local(body_result.state, result_loc, body_result.reg))))(emit__x86_64_code_generator_emit_expr(pat_result.state, branch.body))))(emit__x86_64_code_generator_emit_pattern(mbs.cg_state, scrut_loc, branch.pattern, scrut_ty));
-    }
-
-    public static EmitPatternResult emit__x86_64_code_generator_emit_pattern(CodegenState st, long scrut_loc, IRPat pat, CodexType scrut_ty)
-    {
-        return ((Func<IRPat, EmitPatternResult>)((_scrutinee72_) => (_scrutinee72_ is IrWildPat _mIrWildPat72_ ? ((Func<SourceSpan, EmitPatternResult>)((sp) => new EmitPatternResult(st, (-1L))))((SourceSpan)_mIrWildPat72_.Field0) : (_scrutinee72_ is IrVarPat _mIrVarPat72_ ? ((Func<SourceSpan, EmitPatternResult>)((sp) => ((Func<CodexType, EmitPatternResult>)((ty) => ((Func<string, EmitPatternResult>)((name) => ((Func<EmitResult, EmitPatternResult>)((var_loc) => ((Func<EmitResult, EmitPatternResult>)((loaded) => ((Func<CodegenState, EmitPatternResult>)((st1) => new EmitPatternResult(add_local(st1, name, var_loc.reg), (-1L))))(store_local(loaded.state, var_loc.reg, loaded.reg))))(load_local(var_loc.state, scrut_loc))))(alloc_local(st))))((string)_mIrVarPat72_.Field0)))((CodexType)_mIrVarPat72_.Field1)))((SourceSpan)_mIrVarPat72_.Field2) : (_scrutinee72_ is IrCtorPat _mIrCtorPat72_ ? ((Func<SourceSpan, EmitPatternResult>)((sp) => ((Func<CodexType, EmitPatternResult>)((ty) => ((Func<List<IRPat>, EmitPatternResult>)((sub_pats) => ((Func<string, EmitPatternResult>)((name) => ((Func<EmitResult, EmitPatternResult>)((scrut_load) => ((Func<EmitResult, EmitPatternResult>)((tag_reg) => ((Func<CodegenState, EmitPatternResult>)((st1) => ((Func<CodexType, EmitPatternResult>)((resolve_ty) => ((Func<long, EmitPatternResult>)((expected_tag) => ((Func<CodegenState, EmitPatternResult>)((st2) => ((Func<long, EmitPatternResult>)((jcc_pos) => ((Func<CodegenState, EmitPatternResult>)((st3) => ((Func<CodegenState, EmitPatternResult>)((st4) => new EmitPatternResult(st4, jcc_pos)))(bind_ctor_fields(st3, scrut_loc, sub_pats, 0L))))(st_append_text(st2, jcc(cc_ne(), 0L)))))(st2.text_len)))(st_append_text(st1, cmp_ri(tag_reg.reg, expected_tag)))))((resolve_ty is SumTy _mSumTy73_ ? ((Func<List<SumCtor>, long>)((ctors) => ((Func<Name, long>)((sname) => find_ctor_tag(ctors, name, 0L)))((Name)_mSumTy73_.Field0)))((List<SumCtor>)_mSumTy73_.Field1) : 0L))))((scrut_ty is SumTy _mSumTy74_ ? ((Func<List<SumCtor>, CodexType>)((cs) => ((Func<Name, CodexType>)((sn) => scrut_ty))((Name)_mSumTy74_.Field0)))((List<SumCtor>)_mSumTy74_.Field1) : resolve_constructed_ty(st, ty)))))(st_append_text(tag_reg.state, mov_load(tag_reg.reg, scrut_load.reg, 0L)))))(alloc_temp(scrut_load.state))))(load_local(st, scrut_loc))))((string)_mIrCtorPat72_.Field0)))((List<IRPat>)_mIrCtorPat72_.Field1)))((CodexType)_mIrCtorPat72_.Field2)))((SourceSpan)_mIrCtorPat72_.Field3) : (_scrutinee72_ is IrLitPat _mIrLitPat72_ ? ((Func<SourceSpan, EmitPatternResult>)((sp) => ((Func<CodexType, EmitPatternResult>)((ty) => ((Func<string, EmitPatternResult>)((value) => new EmitPatternResult(st, (-1L))))((string)_mIrLitPat72_.Field0)))((CodexType)_mIrLitPat72_.Field1)))((SourceSpan)_mIrLitPat72_.Field2) : throw new InvalidOperationException("Non-exhaustive match")))))))(pat);
-    }
-
-    public static CodegenState bind_ctor_fields(CodegenState st, long scrut_loc, List<IRPat> sub_pats, long i)
-    {
-        while (true)
-        {
-            if ((i == ((long)sub_pats.Count)))
-            {
-                return st;
-            }
-            else
-            {
-                var sub = sub_pats[(int)i];
-                var _tco_s = sub;
-                if (_tco_s is IrVarPat _tco_m0)
-                {
-                    var name = _tco_m0.Field0;
-                    var ty = _tco_m0.Field1;
-                    var sp = _tco_m0.Field2;
-                    var field_loc = alloc_local(st);
-                    var scrut_load = load_local(field_loc.state, scrut_loc);
-                    var field_val = alloc_temp(scrut_load.state);
-                    var st1 = st_append_text(field_val.state, mov_load(field_val.reg, scrut_load.reg, ((1L + i) * 8L)));
-                    var st2 = store_local(st1, field_loc.reg, field_val.reg);
-                    var _tco_0 = add_local(st2, name, field_loc.reg);
-                    var _tco_1 = scrut_loc;
-                    var _tco_2 = sub_pats;
-                    var _tco_3 = (i + 1L);
-                    st = _tco_0;
-                    scrut_loc = _tco_1;
-                    sub_pats = _tco_2;
-                    i = _tco_3;
-                    continue;
-                }
-                {
-                    var _tco_0 = st;
-                    var _tco_1 = scrut_loc;
-                    var _tco_2 = sub_pats;
-                    var _tco_3 = (i + 1L);
-                    st = _tco_0;
-                    scrut_loc = _tco_1;
-                    sub_pats = _tco_2;
-                    i = _tco_3;
-                    continue;
-                }
-            }
-        }
-    }
-
-    public static CodegenState patch_match_end_jumps(CodegenState st, List<long> patches, long i)
-    {
-        while (true)
-        {
-            if ((i == ((long)patches.Count)))
-            {
-                return st;
-            }
-            else
-            {
-                var _tco_0 = patch_jmp_at(st, patches[(int)i], st.text_len);
-                var _tco_1 = patches;
-                var _tco_2 = (i + 1L);
-                st = _tco_0;
-                patches = _tco_1;
-                i = _tco_2;
-                continue;
-            }
-        }
-    }
-
-    public static SavedArgs emit_eval_list_elems(CodegenState st, List<IRExpr> elems, long i, List<long> acc)
-    {
-        while (true)
-        {
-            if ((i == ((long)elems.Count)))
-            {
-                return new SavedArgs(st, acc);
-            }
-            else
-            {
-                var r = emit__x86_64_code_generator_emit_expr(st, elems[(int)i]);
-                var loc = alloc_local(r.state);
-                var st1 = store_local(loc.state, loc.reg, r.reg);
-                var _tco_0 = st1;
-                var _tco_1 = elems;
-                var _tco_2 = (i + 1L);
-                var _tco_3 = ((Func<List<long>>)(() => { var _l = acc; _l.Add(loc.reg); return _l; }))();
-                st = _tco_0;
-                elems = _tco_1;
-                i = _tco_2;
-                acc = _tco_3;
-                continue;
-            }
-        }
-    }
-
-    public static CodegenState emit_store_list_elems(CodegenState st, List<long> elem_locals, long ptr_loc, long i)
-    {
-        while (true)
-        {
-            if ((i == ((long)elem_locals.Count)))
-            {
-                return st;
-            }
-            else
-            {
-                var val = load_local(st, elem_locals[(int)i]);
-                var ptr = load_local(val.state, ptr_loc);
-                var st1 = st_append_text(ptr.state, mov_store(ptr.reg, val.reg, (8L + (i * 8L))));
-                var _tco_0 = st1;
-                var _tco_1 = elem_locals;
-                var _tco_2 = ptr_loc;
-                var _tco_3 = (i + 1L);
-                st = _tco_0;
-                elem_locals = _tco_1;
-                ptr_loc = _tco_2;
-                i = _tco_3;
-                continue;
-            }
-        }
-    }
-
-    public static EmitResult emit__x86_64_code_generator_emit_list(CodegenState st, List<IRExpr> elems)
-    {
-        return ((Func<SavedArgs, EmitResult>)((saved) => ((Func<long, EmitResult>)((count) => ((Func<EmitResult, EmitResult>)((cap_tmp) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((ptr_loc) => ((Func<EmitResult, EmitResult>)((ptr_tmp) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((len_tmp) => ((Func<CodegenState, EmitResult>)((st7) => ((Func<EmitResult, EmitResult>)((ptr_load) => ((Func<CodegenState, EmitResult>)((st8) => ((Func<CodegenState, EmitResult>)((st9) => load_local(st9, ptr_loc.reg)))(emit_store_list_elems(st8, saved.locals, ptr_loc.reg, 0L))))(st_append_text(ptr_load.state, mov_store(ptr_load.reg, len_tmp.reg, 0L)))))(load_local(st7, ptr_loc.reg))))(st_append_text(len_tmp.state, li(len_tmp.reg, count)))))(alloc_temp(st6))))(st_append_text(st5, add_ri(reg_r10(), ((count + 1L) * 8L))))))(store_local(st4, ptr_loc.reg, ptr_tmp.reg))))(st_append_text(ptr_tmp.state, mov_rr(ptr_tmp.reg, reg_r10())))))(alloc_temp(ptr_loc.state))))(alloc_local(st3))))(st_append_text(st2, add_ri(reg_r10(), 8L)))))(st_append_text(st1, mov_store(reg_r10(), cap_tmp.reg, 0L)))))(st_append_text(cap_tmp.state, li(cap_tmp.reg, count)))))(alloc_temp(saved.state))))(((long)elems.Count))))(emit_eval_list_elems(st, elems, 0L, new List<long>()));
-    }
-
-    public static List<long> multiboot_header()
-    {
-        return Enumerable.Concat(write_i32(464367618L), Enumerable.Concat(write_i32(0L), write_i32(3830599678L)).ToList()).ToList();
-    }
-
-    public static List<long> tramp_clear_pages()
-    {
-        return new List<long>() { 250L, 191L, 0L, 16L, 0L, 0L, 185L, 0L, 12L, 0L, 0L, 49L, 192L, 243L, 171L };
-    }
-
-    public static List<long> tramp_page_tables()
-    {
-        return new List<long>() { 199L, 5L, 0L, 16L, 0L, 0L, 3L, 32L, 0L, 0L, 199L, 5L, 0L, 32L, 0L, 0L, 3L, 48L, 0L, 0L, 191L, 0L, 48L, 0L, 0L, 185L, 0L, 1L, 0L, 0L, 184L, 131L, 0L, 0L, 0L, 137L, 7L, 199L, 71L, 4L, 0L, 0L, 0L, 0L, 131L, 199L, 8L, 5L, 0L, 0L, 32L, 0L, 73L, 117L, 236L };
-    }
-
-    public static List<long> tramp_enable_long_mode()
-    {
-        return new List<long>() { 184L, 0L, 16L, 0L, 0L, 15L, 34L, 216L, 15L, 32L, 224L, 131L, 200L, 32L, 15L, 34L, 224L, 185L, 128L, 0L, 0L, 192L, 15L, 50L, 13L, 0L, 1L, 0L, 0L, 15L, 48L, 15L, 32L, 192L, 13L, 0L, 0L, 0L, 128L, 15L, 34L, 192L };
-    }
-
-    public static List<long> trampoline_code()
-    {
-        return Enumerable.Concat(tramp_clear_pages(), Enumerable.Concat(tramp_page_tables(), tramp_enable_long_mode()).ToList()).ToList();
-    }
-
-    public static List<long> tramp_gdt_data()
-    {
-        return new List<long>() { 235L, 30L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 255L, 255L, 0L, 0L, 0L, 154L, 175L, 0L, 255L, 255L, 0L, 0L, 0L, 146L, 207L, 0L };
-    }
-
-    public static List<long> trampoline_gdt_section()
-    {
-        return Enumerable.Concat(tramp_gdt_data(), Enumerable.Concat(write_i16(23L), Enumerable.Concat(write_i32((bare_metal_load_addr() + 126L)), Enumerable.Concat(new List<long>() { 15L, 1L, 21L }, Enumerable.Concat(write_i32((bare_metal_load_addr() + 150L)), new List<long>() { 234L, 0L, 0L, 0L, 0L, 8L, 0L }).ToList()).ToList()).ToList()).ToList()).ToList();
-    }
-
-    public static TrampolineResult bare_metal_trampoline()
-    {
-        return ((Func<List<long>, TrampolineResult>)((bytes) => new TrampolineResult(bytes, 163L)))(Enumerable.Concat(multiboot_header(), Enumerable.Concat(trampoline_code(), trampoline_gdt_section()).ToList()).ToList());
-    }
-
-    public static CodegenState emit_out_byte(CodegenState st, long port, long value)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => st_append_text(st2, out_dx_al())))(st_append_text(st1, li(reg_rax(), value)))))(st_append_text(st, li(reg_rdx(), port)));
-    }
-
-    public static CodegenState emit_com1_init(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => emit_out_byte(st5, 1020L, 11L)))(emit_out_byte(st4, 1018L, 199L))))(emit_out_byte(st3, 1019L, 3L))))(emit_out_byte(st2, 1017L, 0L))))(emit_out_byte(st1, 1016L, 1L))))(emit_out_byte(st, 1019L, 128L));
-    }
-
-    public static CodegenState emit_serial_wait_and_send(CodegenState st, long byte_val)
-    {
-        return ((Func<long, CodegenState>)((wait_top) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<long, CodegenState>)((jne_pos) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => st_append_text(st8, out_dx_al())))(st_append_text(st7, li(reg_rax(), byte_val)))))(st_append_text(st6, li(reg_rdx(), 1016L)))))(patch_jcc_at(st5, jne_pos, st5.text_len))))(st_append_text(st4, jmp((wait_top - (st4.text_len + 5L)))))))(st_append_text(st3, jcc(cc_ne(), 0L)))))(st3.text_len)))(st_append_text(st2, new List<long>() { 168L, 32L }))))(st_append_text(st1, new List<long>() { 236L }))))(st_append_text(st, li(reg_rdx(), 1021L)))))(st.text_len);
-    }
-
-    public static CodegenState emit_serial_send_rdi(CodegenState st)
-    {
-        return ((Func<long, CodegenState>)((wait_top) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<long, CodegenState>)((jne_pos) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => st_append_text(st8, out_dx_al())))(st_append_text(st7, mov_rr(reg_rax(), reg_rdi())))))(st_append_text(st6, li(reg_rdx(), 1016L)))))(patch_jcc_at(st5, jne_pos, st5.text_len))))(st_append_text(st4, jmp((wait_top - (st4.text_len + 5L)))))))(st_append_text(st3, jcc(cc_ne(), 0L)))))(st3.text_len)))(st_append_text(st2, new List<long>() { 168L, 32L }))))(st_append_text(st1, new List<long>() { 236L }))))(st_append_text(st, li(reg_rdx(), 1021L)))))(st.text_len);
-    }
-
-    public static ItoaState emit_itoa_zero_check(CodegenState st)
-    {
-        return ((Func<CodegenState, ItoaState>)((st1) => ((Func<CodegenState, ItoaState>)((st2) => ((Func<long, ItoaState>)((jne_pos) => ((Func<CodegenState, ItoaState>)((st3) => ((Func<CodegenState, ItoaState>)((st4) => ((Func<long, ItoaState>)((jmp_pos) => ((Func<CodegenState, ItoaState>)((st5) => ((Func<CodegenState, ItoaState>)((st6) => new ItoaState(st6, jmp_pos)))(patch_jcc_at(st5, jne_pos, st5.text_len))))(st_append_text(st4, jmp(0L)))))(st4.text_len)))(emit_serial_wait_and_send(st3, 48L))))(st_append_text(st2, jcc(cc_ne(), 0L)))))(st2.text_len)))(st_append_text(st1, test_rr(reg_rbx(), reg_rbx())))))(st_append_text(st, mov_rr(reg_rbx(), reg_rax())));
-    }
-
-    public static CodegenState emit_itoa_sign_and_digits(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((jns_pos) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<long, CodegenState>)((loop_top) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => st_append_text(st15, jcc(cc_ne(), (loop_top - (st15.text_len + 6L))))))(st_append_text(st14, test_rr(reg_rbx(), reg_rbx())))))(st_append_text(st13, add_ri(reg_rcx(), 1L)))))(st_append_text(st12, push_r(reg_rdx())))))(st_append_text(st11, add_ri(reg_rdx(), 48L)))))(st_append_text(st10, mov_rr(reg_rbx(), reg_rax())))))(st_append_text(st9, idiv_r(reg_r11())))))(st_append_text(st8, cqo()))))(st_append_text(st7, mov_rr(reg_rax(), reg_rbx())))))(st7.text_len)))(st_append_text(st6, li(reg_r11(), 10L)))))(st_append_text(st5, li(reg_rcx(), 0L)))))(patch_jcc_at(st4, jns_pos, st4.text_len))))(st_append_text(st3, neg_r(reg_rbx())))))(emit_serial_wait_and_send(st2, 45L))))(st_append_text(st1, jcc(cc_ge(), 0L)))))(st1.text_len)))(st_append_text(st, test_rr(reg_rbx(), reg_rbx())));
-    }
-
-    public static CodegenState emit_itoa_print_loop(CodegenState st)
-    {
-        return ((Func<long, CodegenState>)((loop_top) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((je_pos) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => patch_jcc_at(st8, je_pos, st8.text_len)))(st_append_text(st7, jmp((loop_top - (st7.text_len + 5L)))))))(st_append_text(st6, sub_ri(reg_rcx(), 1L)))))(st_append_text(st5, pop_r(reg_rcx())))))(emit_serial_send_rdi(st4))))(st_append_text(st3, push_r(reg_rcx())))))(st_append_text(st2, pop_r(reg_rdi())))))(st_append_text(st1, jcc(cc_e(), 0L)))))(st1.text_len)))(st_append_text(st, test_rr(reg_rcx(), reg_rcx())))))(st.text_len);
-    }
-
-    public static CodegenState emit_inline_itoa_and_print(CodegenState st)
-    {
-        return ((Func<ItoaState, CodegenState>)((zero) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => patch_jmp_at(st2, zero.jmp_done_zero_pos, st2.text_len)))(emit_itoa_print_loop(st1))))(emit_itoa_sign_and_digits(zero.cg))))(emit_itoa_zero_check(st));
-    }
-
-    public static CodegenState emit_serial_wait_thr(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((wait_top) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<long, CodegenState>)((jne_pos) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => st_append_text(st7, pop_r(reg_rax()))))(patch_jcc_at(st6, jne_pos, st6.text_len))))(st_append_text(st5, jmp((wait_top - (st5.text_len + 5L)))))))(st_append_text(st4, jcc(cc_ne(), 0L)))))(st4.text_len)))(st_append_text(st3, new List<long>() { 168L, 32L }))))(st_append_text(st2, new List<long>() { 236L }))))(st_append_text(st1, li(reg_rdx(), 1021L)))))(st1.text_len)))(st_append_text(st, push_r(reg_rax())));
-    }
-
-    public static CodegenState emit_print_newline(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => st_append_text(st3, out_dx_al())))(st_append_text(st2, li(reg_rdx(), 1016L)))))(st_append_text(st1, li(reg_rax(), 10L)))))(emit_serial_wait_thr(st));
-    }
-
-    public static CodegenState emit_print_text_loop(CodegenState st, long saved_ptr, long saved_table, long saved_len, long saved_idx)
-    {
-        return ((Func<long, CodegenState>)((loop_top) => ((Func<EmitResult, CodegenState>)((idx) => ((Func<EmitResult, CodegenState>)((len_check) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((done_jump) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<EmitResult, CodegenState>)((ptr_l) => ((Func<EmitResult, CodegenState>)((idx2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<EmitResult, CodegenState>)((tbl) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<EmitResult, CodegenState>)((idx3) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => patch_jcc_at(st13, done_jump, st13.text_len)))(st_append_text(st12, jmp((loop_top - (st12.text_len + 5L)))))))(store_local(st11, saved_idx, idx3.reg))))(st_append_text(idx3.state, add_ri(idx3.reg, 1L)))))(load_local(st10, saved_idx))))(st_append_text(st9, out_dx_al()))))(st_append_text(st8, li(reg_rdx(), 1016L)))))(emit_serial_wait_thr(st7))))(st_append_text(st6, movzx_byte(reg_rax(), reg_rax(), 0L)))))(st_append_text(tbl.state, add_rr(reg_rax(), tbl.reg)))))(load_local(st5, saved_table))))(st_append_text(st4, movzx_byte(reg_rax(), reg_rsi(), 0L)))))(st_append_text(st3, add_rr(reg_rsi(), idx2.reg)))))(st_append_text(idx2.state, lea(reg_rsi(), ptr_l.reg, 8L)))))(load_local(ptr_l.state, saved_idx))))(load_local(st2, saved_ptr))))(st_append_text(st1, jcc(cc_ge(), 0L)))))(st1.text_len)))(st_append_text(len_check.state, cmp_rr(idx.reg, len_check.reg)))))(load_local(idx.state, saved_len))))(load_local(st, saved_idx))))(st.text_len);
-    }
-
-    public static CodegenState emit_print_text(CodegenState st, long ptr_reg)
-    {
-        return ((Func<EmitResult, CodegenState>)((saved_ptr) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<EmitResult, CodegenState>)((saved_table) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st2a) => ((Func<EmitResult, CodegenState>)((ptr_ld) => ((Func<EmitResult, CodegenState>)((tmp_len) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<EmitResult, CodegenState>)((saved_len) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<EmitResult, CodegenState>)((saved_idx) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => emit_print_newline(st7)))(emit_print_text_loop(st6, saved_ptr.reg, saved_table.reg, saved_len.reg, saved_idx.reg))))(store_local(st5, saved_idx.reg, reg_r11()))))(st_append_text(saved_idx.state, li(reg_r11(), 0L)))))(alloc_local(st4))))(store_local(saved_len.state, saved_len.reg, tmp_len.reg))))(alloc_local(st3))))(st_append_text(tmp_len.state, mov_load(tmp_len.reg, ptr_ld.reg, 0L)))))(alloc_temp(ptr_ld.state))))(load_local(st2a, saved_ptr.reg))))(store_local(st2, saved_table.reg, reg_r11()))))(emit_load_rodata_addr(saved_table.state, reg_r11(), cce_to_unicode_rodata_offset()))))(alloc_local(st1))))(store_local(saved_ptr.state, saved_ptr.reg, ptr_reg))))(alloc_local(st));
-    }
-
-    public static CodegenState emit_print_text_no_newline(CodegenState st, long ptr_reg)
-    {
-        return ((Func<EmitResult, CodegenState>)((saved_ptr) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<EmitResult, CodegenState>)((saved_table) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st2a) => ((Func<EmitResult, CodegenState>)((ptr_ld) => ((Func<EmitResult, CodegenState>)((tmp_len) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<EmitResult, CodegenState>)((saved_len) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<EmitResult, CodegenState>)((saved_idx) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => emit_print_text_loop(st6, saved_ptr.reg, saved_table.reg, saved_len.reg, saved_idx.reg)))(store_local(st5, saved_idx.reg, reg_r11()))))(st_append_text(saved_idx.state, li(reg_r11(), 0L)))))(alloc_local(st4))))(store_local(saved_len.state, saved_len.reg, tmp_len.reg))))(alloc_local(st3))))(st_append_text(tmp_len.state, mov_load(tmp_len.reg, ptr_ld.reg, 0L)))))(alloc_temp(ptr_ld.state))))(load_local(st2a, saved_ptr.reg))))(store_local(st2, saved_table.reg, reg_r11()))))(emit_load_rodata_addr(saved_table.state, reg_r11(), cce_to_unicode_rodata_offset()))))(alloc_local(st1))))(store_local(saved_ptr.state, saved_ptr.reg, ptr_reg))))(alloc_local(st));
-    }
-
     public static CodegenState emit_call_to(CodegenState st, string target)
     {
         return ((Func<long, CodegenState>)((patch_pos) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, ((Func<List<CallPatch>>)(() => { var _l = st1.call_patches; _l.Add(new CallPatch(patch_pos, target)); return _l; }))(), _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st1)))(st_append_text(st, x86_call(0L)))))(st.text_len);
@@ -8050,7 +6862,7 @@ public static class Codex_Codex_Codex
 
     public static CodexType resolve_ty_deep(List<TypeBinding> tdefs, CodexType ty)
     {
-        return ((Func<CodexType, CodexType>)((_scrutinee75_) => (_scrutinee75_ is ConstructedTy _mConstructedTy75_ ? ((Func<List<CodexType>, CodexType>)((cargs) => ((Func<Name, CodexType>)((cname) => ((Func<CodexType, CodexType>)((raw) => ((Func<CodexType, CodexType>)((_scrutinee76_) => (_scrutinee76_ is RecordTy _mRecordTy76_ ? ((Func<List<RecordField>, CodexType>)((rf) => ((Func<Name, CodexType>)((rn) => raw))((Name)_mRecordTy76_.Field0)))((List<RecordField>)_mRecordTy76_.Field1) : (_scrutinee76_ is SumTy _mSumTy76_ ? ((Func<List<SumCtor>, CodexType>)((sc) => ((Func<Name, CodexType>)((sn) => raw))((Name)_mSumTy76_.Field0)))((List<SumCtor>)_mSumTy76_.Field1) : (_scrutinee76_ is FunTy _mFunTy76_ ? ((Func<CodexType, CodexType>)((r) => ((Func<CodexType, CodexType>)((p) => strip_fun_args_emitter(r)))((CodexType)_mFunTy76_.Field0)))((CodexType)_mFunTy76_.Field1) : new ConstructedTy(cname, resolve_ty_list(tdefs, cargs, 0L, ((long)cargs.Count), new List<CodexType>())))))))(raw)))(lookup_type_binding(tdefs, cname.value))))((Name)_mConstructedTy75_.Field0)))((List<CodexType>)_mConstructedTy75_.Field1) : (_scrutinee75_ is FunTy _mFunTy75_ ? ((Func<CodexType, CodexType>)((r) => ((Func<CodexType, CodexType>)((p) => new FunTy(resolve_ty_deep(tdefs, p), resolve_ty_deep(tdefs, r))))((CodexType)_mFunTy75_.Field0)))((CodexType)_mFunTy75_.Field1) : (_scrutinee75_ is ListTy _mListTy75_ ? ((Func<CodexType, CodexType>)((e) => new ListTy(resolve_ty_deep(tdefs, e))))((CodexType)_mListTy75_.Field0) : (_scrutinee75_ is LinkedListTy _mLinkedListTy75_ ? ((Func<CodexType, CodexType>)((e) => new LinkedListTy(resolve_ty_deep(tdefs, e))))((CodexType)_mLinkedListTy75_.Field0) : (_scrutinee75_ is ForAllTy _mForAllTy75_ ? ((Func<CodexType, CodexType>)((body) => ((Func<long, CodexType>)((id) => new ForAllTy(id, resolve_ty_deep(tdefs, body))))((long)_mForAllTy75_.Field0)))((CodexType)_mForAllTy75_.Field1) : (_scrutinee75_ is EffectfulTy _mEffectfulTy75_ ? ((Func<CodexType, CodexType>)((ret) => ((Func<List<Name>, CodexType>)((effs) => new EffectfulTy(effs, resolve_ty_deep(tdefs, ret))))((List<Name>)_mEffectfulTy75_.Field0)))((CodexType)_mEffectfulTy75_.Field1) : ty))))))))(ty);
+        return ((Func<CodexType, CodexType>)((_scrutinee66_) => (_scrutinee66_ is ConstructedTy _mConstructedTy66_ ? ((Func<List<CodexType>, CodexType>)((cargs) => ((Func<Name, CodexType>)((cname) => ((Func<CodexType, CodexType>)((raw) => ((Func<CodexType, CodexType>)((_scrutinee67_) => (_scrutinee67_ is RecordTy _mRecordTy67_ ? ((Func<List<RecordField>, CodexType>)((rf) => ((Func<Name, CodexType>)((rn) => raw))((Name)_mRecordTy67_.Field0)))((List<RecordField>)_mRecordTy67_.Field1) : (_scrutinee67_ is SumTy _mSumTy67_ ? ((Func<List<SumCtor>, CodexType>)((sc) => ((Func<Name, CodexType>)((sn) => raw))((Name)_mSumTy67_.Field0)))((List<SumCtor>)_mSumTy67_.Field1) : (_scrutinee67_ is FunTy _mFunTy67_ ? ((Func<CodexType, CodexType>)((r) => ((Func<CodexType, CodexType>)((p) => strip_fun_args_emitter(r)))((CodexType)_mFunTy67_.Field0)))((CodexType)_mFunTy67_.Field1) : new ConstructedTy(cname, resolve_ty_list(tdefs, cargs, 0L, ((long)cargs.Count), new List<CodexType>())))))))(raw)))(lookup_type_binding(tdefs, cname.value))))((Name)_mConstructedTy66_.Field0)))((List<CodexType>)_mConstructedTy66_.Field1) : (_scrutinee66_ is FunTy _mFunTy66_ ? ((Func<CodexType, CodexType>)((r) => ((Func<CodexType, CodexType>)((p) => new FunTy(resolve_ty_deep(tdefs, p), resolve_ty_deep(tdefs, r))))((CodexType)_mFunTy66_.Field0)))((CodexType)_mFunTy66_.Field1) : (_scrutinee66_ is ListTy _mListTy66_ ? ((Func<CodexType, CodexType>)((e) => new ListTy(resolve_ty_deep(tdefs, e))))((CodexType)_mListTy66_.Field0) : (_scrutinee66_ is LinkedListTy _mLinkedListTy66_ ? ((Func<CodexType, CodexType>)((e) => new LinkedListTy(resolve_ty_deep(tdefs, e))))((CodexType)_mLinkedListTy66_.Field0) : (_scrutinee66_ is ForAllTy _mForAllTy66_ ? ((Func<CodexType, CodexType>)((body) => ((Func<long, CodexType>)((id) => new ForAllTy(id, resolve_ty_deep(tdefs, body))))((long)_mForAllTy66_.Field0)))((CodexType)_mForAllTy66_.Field1) : (_scrutinee66_ is EffectfulTy _mEffectfulTy66_ ? ((Func<CodexType, CodexType>)((ret) => ((Func<List<Name>, CodexType>)((effs) => new EffectfulTy(effs, resolve_ty_deep(tdefs, ret))))((List<Name>)_mEffectfulTy66_.Field0)))((CodexType)_mEffectfulTy66_.Field1) : ty))))))))(ty);
     }
 
     public static List<CodexType> resolve_ty_list(List<TypeBinding> tdefs, List<CodexType> tys, long i, long len, List<CodexType> acc)
@@ -8080,7 +6892,7 @@ public static class Codex_Codex_Codex
 
     public static IRPat rewrite_ir_pat(List<TypeBinding> tdefs, IRPat p)
     {
-        return ((Func<IRPat, IRPat>)((_scrutinee77_) => (_scrutinee77_ is IrVarPat _mIrVarPat77_ ? ((Func<SourceSpan, IRPat>)((s) => ((Func<CodexType, IRPat>)((t) => ((Func<string, IRPat>)((name) => new IrVarPat(name, resolve_ty_deep(tdefs, t), s)))((string)_mIrVarPat77_.Field0)))((CodexType)_mIrVarPat77_.Field1)))((SourceSpan)_mIrVarPat77_.Field2) : (_scrutinee77_ is IrLitPat _mIrLitPat77_ ? ((Func<SourceSpan, IRPat>)((s) => ((Func<CodexType, IRPat>)((t) => ((Func<string, IRPat>)((v) => new IrLitPat(v, resolve_ty_deep(tdefs, t), s)))((string)_mIrLitPat77_.Field0)))((CodexType)_mIrLitPat77_.Field1)))((SourceSpan)_mIrLitPat77_.Field2) : (_scrutinee77_ is IrCtorPat _mIrCtorPat77_ ? ((Func<SourceSpan, IRPat>)((s) => ((Func<CodexType, IRPat>)((t) => ((Func<List<IRPat>, IRPat>)((subs) => ((Func<string, IRPat>)((name) => new IrCtorPat(name, rewrite_ir_pat_list(tdefs, subs, 0L, ((long)subs.Count), new List<IRPat>()), resolve_ty_deep(tdefs, t), s)))((string)_mIrCtorPat77_.Field0)))((List<IRPat>)_mIrCtorPat77_.Field1)))((CodexType)_mIrCtorPat77_.Field2)))((SourceSpan)_mIrCtorPat77_.Field3) : (_scrutinee77_ is IrWildPat _mIrWildPat77_ ? ((Func<SourceSpan, IRPat>)((s) => p))((SourceSpan)_mIrWildPat77_.Field0) : throw new InvalidOperationException("Non-exhaustive match")))))))(p);
+        return ((Func<IRPat, IRPat>)((_scrutinee68_) => (_scrutinee68_ is IrVarPat _mIrVarPat68_ ? ((Func<SourceSpan, IRPat>)((s) => ((Func<CodexType, IRPat>)((t) => ((Func<string, IRPat>)((name) => new IrVarPat(name, resolve_ty_deep(tdefs, t), s)))((string)_mIrVarPat68_.Field0)))((CodexType)_mIrVarPat68_.Field1)))((SourceSpan)_mIrVarPat68_.Field2) : (_scrutinee68_ is IrLitPat _mIrLitPat68_ ? ((Func<SourceSpan, IRPat>)((s) => ((Func<CodexType, IRPat>)((t) => ((Func<string, IRPat>)((v) => new IrLitPat(v, resolve_ty_deep(tdefs, t), s)))((string)_mIrLitPat68_.Field0)))((CodexType)_mIrLitPat68_.Field1)))((SourceSpan)_mIrLitPat68_.Field2) : (_scrutinee68_ is IrCtorPat _mIrCtorPat68_ ? ((Func<SourceSpan, IRPat>)((s) => ((Func<CodexType, IRPat>)((t) => ((Func<List<IRPat>, IRPat>)((subs) => ((Func<string, IRPat>)((name) => new IrCtorPat(name, rewrite_ir_pat_list(tdefs, subs, 0L, ((long)subs.Count), new List<IRPat>()), resolve_ty_deep(tdefs, t), s)))((string)_mIrCtorPat68_.Field0)))((List<IRPat>)_mIrCtorPat68_.Field1)))((CodexType)_mIrCtorPat68_.Field2)))((SourceSpan)_mIrCtorPat68_.Field3) : (_scrutinee68_ is IrWildPat _mIrWildPat68_ ? ((Func<SourceSpan, IRPat>)((s) => p))((SourceSpan)_mIrWildPat68_.Field0) : throw new InvalidOperationException("Non-exhaustive match")))))))(p);
     }
 
     public static List<IRPat> rewrite_ir_pat_list(List<TypeBinding> tdefs, List<IRPat> ps, long i, long len, List<IRPat> acc)
@@ -8110,7 +6922,7 @@ public static class Codex_Codex_Codex
 
     public static IRExpr rewrite_ir_expr(List<TypeBinding> tdefs, IRExpr e)
     {
-        return ((Func<IRExpr, IRExpr>)((_scrutinee78_) => (_scrutinee78_ is IrIntLit _mIrIntLit78_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<long, IRExpr>)((v) => e))((long)_mIrIntLit78_.Field0)))((SourceSpan)_mIrIntLit78_.Field1) : (_scrutinee78_ is IrNumLit _mIrNumLit78_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<long, IRExpr>)((v) => e))((long)_mIrNumLit78_.Field0)))((SourceSpan)_mIrNumLit78_.Field1) : (_scrutinee78_ is IrTextLit _mIrTextLit78_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<string, IRExpr>)((v) => e))((string)_mIrTextLit78_.Field0)))((SourceSpan)_mIrTextLit78_.Field1) : (_scrutinee78_ is IrBoolLit _mIrBoolLit78_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<bool, IRExpr>)((v) => e))((bool)_mIrBoolLit78_.Field0)))((SourceSpan)_mIrBoolLit78_.Field1) : (_scrutinee78_ is IrCharLit _mIrCharLit78_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<long, IRExpr>)((v) => e))((long)_mIrCharLit78_.Field0)))((SourceSpan)_mIrCharLit78_.Field1) : (_scrutinee78_ is IrName _mIrName78_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<string, IRExpr>)((n) => new IrName(n, resolve_ty_deep(tdefs, t), s)))((string)_mIrName78_.Field0)))((CodexType)_mIrName78_.Field1)))((SourceSpan)_mIrName78_.Field2) : (_scrutinee78_ is IrBinary _mIrBinary78_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((r) => ((Func<IRExpr, IRExpr>)((l) => ((Func<IRBinaryOp, IRExpr>)((op) => new IrBinary(op, rewrite_ir_expr(tdefs, l), rewrite_ir_expr(tdefs, r), resolve_ty_deep(tdefs, t), s)))((IRBinaryOp)_mIrBinary78_.Field0)))((IRExpr)_mIrBinary78_.Field1)))((IRExpr)_mIrBinary78_.Field2)))((CodexType)_mIrBinary78_.Field3)))((SourceSpan)_mIrBinary78_.Field4) : (_scrutinee78_ is IrNegate _mIrNegate78_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<IRExpr, IRExpr>)((x) => new IrNegate(rewrite_ir_expr(tdefs, x), s)))((IRExpr)_mIrNegate78_.Field0)))((SourceSpan)_mIrNegate78_.Field1) : (_scrutinee78_ is IrIf _mIrIf78_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((el) => ((Func<IRExpr, IRExpr>)((th) => ((Func<IRExpr, IRExpr>)((c) => new IrIf(rewrite_ir_expr(tdefs, c), rewrite_ir_expr(tdefs, th), rewrite_ir_expr(tdefs, el), resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrIf78_.Field0)))((IRExpr)_mIrIf78_.Field1)))((IRExpr)_mIrIf78_.Field2)))((CodexType)_mIrIf78_.Field3)))((SourceSpan)_mIrIf78_.Field4) : (_scrutinee78_ is IrLet _mIrLet78_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<IRExpr, IRExpr>)((b) => ((Func<IRExpr, IRExpr>)((v) => ((Func<CodexType, IRExpr>)((t) => ((Func<string, IRExpr>)((n) => new IrLet(n, resolve_ty_deep(tdefs, t), rewrite_ir_expr(tdefs, v), rewrite_ir_expr(tdefs, b), s)))((string)_mIrLet78_.Field0)))((CodexType)_mIrLet78_.Field1)))((IRExpr)_mIrLet78_.Field2)))((IRExpr)_mIrLet78_.Field3)))((SourceSpan)_mIrLet78_.Field4) : (_scrutinee78_ is IrApply _mIrApply78_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((a) => ((Func<IRExpr, IRExpr>)((f) => new IrApply(rewrite_ir_expr(tdefs, f), rewrite_ir_expr(tdefs, a), resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrApply78_.Field0)))((IRExpr)_mIrApply78_.Field1)))((CodexType)_mIrApply78_.Field2)))((SourceSpan)_mIrApply78_.Field3) : (_scrutinee78_ is IrLambda _mIrLambda78_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((b) => ((Func<List<IRParam>, IRExpr>)((ps) => new IrLambda(rewrite_ir_params(tdefs, ps, 0L, ((long)ps.Count), new List<IRParam>()), rewrite_ir_expr(tdefs, b), resolve_ty_deep(tdefs, t), s)))((List<IRParam>)_mIrLambda78_.Field0)))((IRExpr)_mIrLambda78_.Field1)))((CodexType)_mIrLambda78_.Field2)))((SourceSpan)_mIrLambda78_.Field3) : (_scrutinee78_ is IrList _mIrList78_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<List<IRExpr>, IRExpr>)((es) => new IrList(rewrite_ir_expr_list(tdefs, es, 0L, ((long)es.Count), new List<IRExpr>()), resolve_ty_deep(tdefs, t), s)))((List<IRExpr>)_mIrList78_.Field0)))((CodexType)_mIrList78_.Field1)))((SourceSpan)_mIrList78_.Field2) : (_scrutinee78_ is IrMatch _mIrMatch78_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<List<IRBranch>, IRExpr>)((bs) => ((Func<IRExpr, IRExpr>)((sc) => new IrMatch(rewrite_ir_expr(tdefs, sc), rewrite_ir_branches(tdefs, bs, 0L, ((long)bs.Count), new List<IRBranch>()), resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrMatch78_.Field0)))((List<IRBranch>)_mIrMatch78_.Field1)))((CodexType)_mIrMatch78_.Field2)))((SourceSpan)_mIrMatch78_.Field3) : (_scrutinee78_ is IrAct _mIrAct78_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<List<IRActStmt>, IRExpr>)((ss) => new IrAct(rewrite_ir_act_stmts(tdefs, ss, 0L, ((long)ss.Count), new List<IRActStmt>()), resolve_ty_deep(tdefs, t), s)))((List<IRActStmt>)_mIrAct78_.Field0)))((CodexType)_mIrAct78_.Field1)))((SourceSpan)_mIrAct78_.Field2) : (_scrutinee78_ is IrHandle _mIrHandle78_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<List<IRHandleClause>, IRExpr>)((cs) => ((Func<IRExpr, IRExpr>)((h) => ((Func<string, IRExpr>)((eff) => new IrHandle(eff, rewrite_ir_expr(tdefs, h), rewrite_ir_handle_clauses(tdefs, cs, 0L, ((long)cs.Count), new List<IRHandleClause>()), resolve_ty_deep(tdefs, t), s)))((string)_mIrHandle78_.Field0)))((IRExpr)_mIrHandle78_.Field1)))((List<IRHandleClause>)_mIrHandle78_.Field2)))((CodexType)_mIrHandle78_.Field3)))((SourceSpan)_mIrHandle78_.Field4) : (_scrutinee78_ is IrRecord _mIrRecord78_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<List<IRFieldVal>, IRExpr>)((fs) => ((Func<string, IRExpr>)((n) => new IrRecord(n, rewrite_ir_record_fields(tdefs, fs, 0L, ((long)fs.Count), new List<IRFieldVal>()), resolve_ty_deep(tdefs, t), s)))((string)_mIrRecord78_.Field0)))((List<IRFieldVal>)_mIrRecord78_.Field1)))((CodexType)_mIrRecord78_.Field2)))((SourceSpan)_mIrRecord78_.Field3) : (_scrutinee78_ is IrFieldAccess _mIrFieldAccess78_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<string, IRExpr>)((f) => ((Func<IRExpr, IRExpr>)((r) => new IrFieldAccess(rewrite_ir_expr(tdefs, r), f, resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrFieldAccess78_.Field0)))((string)_mIrFieldAccess78_.Field1)))((CodexType)_mIrFieldAccess78_.Field2)))((SourceSpan)_mIrFieldAccess78_.Field3) : (_scrutinee78_ is IrFork _mIrFork78_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((body) => new IrFork(rewrite_ir_expr(tdefs, body), resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrFork78_.Field0)))((CodexType)_mIrFork78_.Field1)))((SourceSpan)_mIrFork78_.Field2) : (_scrutinee78_ is IrAwait _mIrAwait78_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((task) => new IrAwait(rewrite_ir_expr(tdefs, task), resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrAwait78_.Field0)))((CodexType)_mIrAwait78_.Field1)))((SourceSpan)_mIrAwait78_.Field2) : (_scrutinee78_ is IrError _mIrError78_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<string, IRExpr>)((m) => new IrError(m, resolve_ty_deep(tdefs, t), s)))((string)_mIrError78_.Field0)))((CodexType)_mIrError78_.Field1)))((SourceSpan)_mIrError78_.Field2) : throw new InvalidOperationException("Non-exhaustive match"))))))))))))))))))))))))(e);
+        return ((Func<IRExpr, IRExpr>)((_scrutinee69_) => (_scrutinee69_ is IrIntLit _mIrIntLit69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<long, IRExpr>)((v) => e))((long)_mIrIntLit69_.Field0)))((SourceSpan)_mIrIntLit69_.Field1) : (_scrutinee69_ is IrNumLit _mIrNumLit69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<long, IRExpr>)((v) => e))((long)_mIrNumLit69_.Field0)))((SourceSpan)_mIrNumLit69_.Field1) : (_scrutinee69_ is IrTextLit _mIrTextLit69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<string, IRExpr>)((v) => e))((string)_mIrTextLit69_.Field0)))((SourceSpan)_mIrTextLit69_.Field1) : (_scrutinee69_ is IrBoolLit _mIrBoolLit69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<bool, IRExpr>)((v) => e))((bool)_mIrBoolLit69_.Field0)))((SourceSpan)_mIrBoolLit69_.Field1) : (_scrutinee69_ is IrCharLit _mIrCharLit69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<long, IRExpr>)((v) => e))((long)_mIrCharLit69_.Field0)))((SourceSpan)_mIrCharLit69_.Field1) : (_scrutinee69_ is IrName _mIrName69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<string, IRExpr>)((n) => new IrName(n, resolve_ty_deep(tdefs, t), s)))((string)_mIrName69_.Field0)))((CodexType)_mIrName69_.Field1)))((SourceSpan)_mIrName69_.Field2) : (_scrutinee69_ is IrBinary _mIrBinary69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((r) => ((Func<IRExpr, IRExpr>)((l) => ((Func<IRBinaryOp, IRExpr>)((op) => new IrBinary(op, rewrite_ir_expr(tdefs, l), rewrite_ir_expr(tdefs, r), resolve_ty_deep(tdefs, t), s)))((IRBinaryOp)_mIrBinary69_.Field0)))((IRExpr)_mIrBinary69_.Field1)))((IRExpr)_mIrBinary69_.Field2)))((CodexType)_mIrBinary69_.Field3)))((SourceSpan)_mIrBinary69_.Field4) : (_scrutinee69_ is IrNegate _mIrNegate69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<IRExpr, IRExpr>)((x) => new IrNegate(rewrite_ir_expr(tdefs, x), s)))((IRExpr)_mIrNegate69_.Field0)))((SourceSpan)_mIrNegate69_.Field1) : (_scrutinee69_ is IrIf _mIrIf69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((el) => ((Func<IRExpr, IRExpr>)((th) => ((Func<IRExpr, IRExpr>)((c) => new IrIf(rewrite_ir_expr(tdefs, c), rewrite_ir_expr(tdefs, th), rewrite_ir_expr(tdefs, el), resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrIf69_.Field0)))((IRExpr)_mIrIf69_.Field1)))((IRExpr)_mIrIf69_.Field2)))((CodexType)_mIrIf69_.Field3)))((SourceSpan)_mIrIf69_.Field4) : (_scrutinee69_ is IrLet _mIrLet69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<IRExpr, IRExpr>)((b) => ((Func<IRExpr, IRExpr>)((v) => ((Func<CodexType, IRExpr>)((t) => ((Func<string, IRExpr>)((n) => new IrLet(n, resolve_ty_deep(tdefs, t), rewrite_ir_expr(tdefs, v), rewrite_ir_expr(tdefs, b), s)))((string)_mIrLet69_.Field0)))((CodexType)_mIrLet69_.Field1)))((IRExpr)_mIrLet69_.Field2)))((IRExpr)_mIrLet69_.Field3)))((SourceSpan)_mIrLet69_.Field4) : (_scrutinee69_ is IrApply _mIrApply69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((a) => ((Func<IRExpr, IRExpr>)((f) => new IrApply(rewrite_ir_expr(tdefs, f), rewrite_ir_expr(tdefs, a), resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrApply69_.Field0)))((IRExpr)_mIrApply69_.Field1)))((CodexType)_mIrApply69_.Field2)))((SourceSpan)_mIrApply69_.Field3) : (_scrutinee69_ is IrLambda _mIrLambda69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((b) => ((Func<List<IRParam>, IRExpr>)((ps) => new IrLambda(rewrite_ir_params(tdefs, ps, 0L, ((long)ps.Count), new List<IRParam>()), rewrite_ir_expr(tdefs, b), resolve_ty_deep(tdefs, t), s)))((List<IRParam>)_mIrLambda69_.Field0)))((IRExpr)_mIrLambda69_.Field1)))((CodexType)_mIrLambda69_.Field2)))((SourceSpan)_mIrLambda69_.Field3) : (_scrutinee69_ is IrList _mIrList69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<List<IRExpr>, IRExpr>)((es) => new IrList(rewrite_ir_expr_list(tdefs, es, 0L, ((long)es.Count), new List<IRExpr>()), resolve_ty_deep(tdefs, t), s)))((List<IRExpr>)_mIrList69_.Field0)))((CodexType)_mIrList69_.Field1)))((SourceSpan)_mIrList69_.Field2) : (_scrutinee69_ is IrMatch _mIrMatch69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<List<IRBranch>, IRExpr>)((bs) => ((Func<IRExpr, IRExpr>)((sc) => new IrMatch(rewrite_ir_expr(tdefs, sc), rewrite_ir_branches(tdefs, bs, 0L, ((long)bs.Count), new List<IRBranch>()), resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrMatch69_.Field0)))((List<IRBranch>)_mIrMatch69_.Field1)))((CodexType)_mIrMatch69_.Field2)))((SourceSpan)_mIrMatch69_.Field3) : (_scrutinee69_ is IrAct _mIrAct69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<List<IRActStmt>, IRExpr>)((ss) => new IrAct(rewrite_ir_act_stmts(tdefs, ss, 0L, ((long)ss.Count), new List<IRActStmt>()), resolve_ty_deep(tdefs, t), s)))((List<IRActStmt>)_mIrAct69_.Field0)))((CodexType)_mIrAct69_.Field1)))((SourceSpan)_mIrAct69_.Field2) : (_scrutinee69_ is IrHandle _mIrHandle69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<List<IRHandleClause>, IRExpr>)((cs) => ((Func<IRExpr, IRExpr>)((h) => ((Func<string, IRExpr>)((eff) => new IrHandle(eff, rewrite_ir_expr(tdefs, h), rewrite_ir_handle_clauses(tdefs, cs, 0L, ((long)cs.Count), new List<IRHandleClause>()), resolve_ty_deep(tdefs, t), s)))((string)_mIrHandle69_.Field0)))((IRExpr)_mIrHandle69_.Field1)))((List<IRHandleClause>)_mIrHandle69_.Field2)))((CodexType)_mIrHandle69_.Field3)))((SourceSpan)_mIrHandle69_.Field4) : (_scrutinee69_ is IrRecord _mIrRecord69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<List<IRFieldVal>, IRExpr>)((fs) => ((Func<string, IRExpr>)((n) => new IrRecord(n, rewrite_ir_record_fields(tdefs, fs, 0L, ((long)fs.Count), new List<IRFieldVal>()), resolve_ty_deep(tdefs, t), s)))((string)_mIrRecord69_.Field0)))((List<IRFieldVal>)_mIrRecord69_.Field1)))((CodexType)_mIrRecord69_.Field2)))((SourceSpan)_mIrRecord69_.Field3) : (_scrutinee69_ is IrFieldAccess _mIrFieldAccess69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<string, IRExpr>)((f) => ((Func<IRExpr, IRExpr>)((r) => new IrFieldAccess(rewrite_ir_expr(tdefs, r), f, resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrFieldAccess69_.Field0)))((string)_mIrFieldAccess69_.Field1)))((CodexType)_mIrFieldAccess69_.Field2)))((SourceSpan)_mIrFieldAccess69_.Field3) : (_scrutinee69_ is IrFork _mIrFork69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((body) => new IrFork(rewrite_ir_expr(tdefs, body), resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrFork69_.Field0)))((CodexType)_mIrFork69_.Field1)))((SourceSpan)_mIrFork69_.Field2) : (_scrutinee69_ is IrAwait _mIrAwait69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((task) => new IrAwait(rewrite_ir_expr(tdefs, task), resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrAwait69_.Field0)))((CodexType)_mIrAwait69_.Field1)))((SourceSpan)_mIrAwait69_.Field2) : (_scrutinee69_ is IrError _mIrError69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<string, IRExpr>)((m) => new IrError(m, resolve_ty_deep(tdefs, t), s)))((string)_mIrError69_.Field0)))((CodexType)_mIrError69_.Field1)))((SourceSpan)_mIrError69_.Field2) : throw new InvalidOperationException("Non-exhaustive match"))))))))))))))))))))))))(e);
     }
 
     public static List<IRExpr> rewrite_ir_expr_list(List<TypeBinding> tdefs, List<IRExpr> es, long i, long len, List<IRExpr> acc)
@@ -8201,7 +7013,7 @@ public static class Codex_Codex_Codex
             else
             {
                 var s = ss[(int)i];
-                var ns = ((Func<IRActStmt, IRActStmt>)((_scrutinee79_) => (_scrutinee79_ is IrDoBind _mIrDoBind79_ ? ((Func<SourceSpan, IRActStmt>)((sp) => ((Func<IRExpr, IRActStmt>)((v) => ((Func<CodexType, IRActStmt>)((t) => ((Func<string, IRActStmt>)((n) => new IrDoBind(n, resolve_ty_deep(tdefs, t), rewrite_ir_expr(tdefs, v), sp)))((string)_mIrDoBind79_.Field0)))((CodexType)_mIrDoBind79_.Field1)))((IRExpr)_mIrDoBind79_.Field2)))((SourceSpan)_mIrDoBind79_.Field3) : (_scrutinee79_ is IrDoExec _mIrDoExec79_ ? ((Func<SourceSpan, IRActStmt>)((sp) => ((Func<IRExpr, IRActStmt>)((v) => new IrDoExec(rewrite_ir_expr(tdefs, v), sp)))((IRExpr)_mIrDoExec79_.Field0)))((SourceSpan)_mIrDoExec79_.Field1) : throw new InvalidOperationException("Non-exhaustive match")))))(s);
+                var ns = ((Func<IRActStmt, IRActStmt>)((_scrutinee70_) => (_scrutinee70_ is IrDoBind _mIrDoBind70_ ? ((Func<SourceSpan, IRActStmt>)((sp) => ((Func<IRExpr, IRActStmt>)((v) => ((Func<CodexType, IRActStmt>)((t) => ((Func<string, IRActStmt>)((n) => new IrDoBind(n, resolve_ty_deep(tdefs, t), rewrite_ir_expr(tdefs, v), sp)))((string)_mIrDoBind70_.Field0)))((CodexType)_mIrDoBind70_.Field1)))((IRExpr)_mIrDoBind70_.Field2)))((SourceSpan)_mIrDoBind70_.Field3) : (_scrutinee70_ is IrDoExec _mIrDoExec70_ ? ((Func<SourceSpan, IRActStmt>)((sp) => ((Func<IRExpr, IRActStmt>)((v) => new IrDoExec(rewrite_ir_expr(tdefs, v), sp)))((IRExpr)_mIrDoExec70_.Field0)))((SourceSpan)_mIrDoExec70_.Field1) : throw new InvalidOperationException("Non-exhaustive match")))))(s);
                 var _tco_0 = tdefs;
                 var _tco_1 = ss;
                 var _tco_2 = (i + 1L);
@@ -8945,6 +7757,1089 @@ public static class Codex_Codex_Codex
     public static CodegenState emit_update_heap_hwm(CodegenState st)
     {
         return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<long, CodegenState>)((skip_update) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => st_append_text(st9, pop_r(reg_r11()))))(st_append_text(st8, pop_r(reg_rax())))))(patch_jcc_at(st7, skip_update, st7.text_len))))(st_append_text(st6, mov_store(reg_r11(), reg_r10(), 0L)))))(st_append_text(st5, jcc(cc_le(), 0L)))))(st5.text_len)))(st_append_text(st4, cmp_rr(reg_r10(), reg_rax())))))(st_append_text(st3, mov_load(reg_rax(), reg_r11(), 0L)))))(st_append_text(st2, push_r(reg_rax())))))(st_append_text(st1, li(reg_r11(), heap_hwm_addr())))))(st_append_text(st, push_r(reg_r11())));
+    }
+
+    public static bool is_string_builtin(string name)
+    {
+        return ((name == "\u000E\u000D$\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? true : ((name == "\u0011\u0012\u000E\u000D\u001D\u000D\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? true : ((name == "\u0013\u0014\u0010\u001B") ? true : ((name == "\u000E\u000D$\u000EI\u000E\u0010I\u0011\u0012\u000E\u000D\u001D\u000D\u0015") ? true : ((name == "\u000E\u000D$\u000EI\u0015\u000D\u001F\u0017\u000F\u0018\u000D") ? true : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? true : ((name == "\u000E\u000D$\u000EI\u0013\u000E\u000F\u0015\u000E\u0013I\u001B\u0011\u000E\u0014") ? true : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u001A\u001F\u000F\u0015\u000D") ? true : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u0018\u000F\u000EI\u0017\u0011\u0013\u000E") ? true : ((name == "\u000E\u000D$\u000EI\u0013\u001F\u0017\u0011\u000E") ? true : ((name == "\u0013\u0019 \u0013\u000E\u0015\u0011\u0012\u001D") ? true : false)))))))))));
+    }
+
+    public static bool is_list_builtin(string name)
+    {
+        return ((name == "\u0017\u0011\u0013\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? true : ((name == "\u0017\u0011\u0013\u000EI\u000F\u000E") ? true : ((name == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u0013") ? true : ((name == "\u0017\u0011\u0013\u000EI\u000F\u001F\u001F\u000D\u0012\u0016") ? true : ((name == "\u0017\u0011\u0013\u000EI\u0013\u0012\u0010\u0018") ? true : ((name == "\u0017\u0011\u0013\u000EI\u0011\u0012\u0013\u000D\u0015\u000EI\u000F\u000E") ? true : ((name == "\u0017\u0011\u0013\u000EI\u0013\u000D\u000EI\u000F\u000E") ? true : ((name == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? true : false))))))));
+    }
+
+    public static bool is_char_builtin(string name)
+    {
+        return ((name == "\u0018\u0014\u000F\u0015I\u000F\u000E") ? true : ((name == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000DI\u000F\u000E") ? true : ((name == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000D") ? true : ((name == "\u0018\u0010\u0016\u000DI\u000E\u0010I\u0018\u0014\u000F\u0015") ? true : ((name == "\u0018\u0014\u000F\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? true : ((name == "\u0011\u0013I\u0017\u000D\u000E\u000E\u000D\u0015") ? true : ((name == "\u0011\u0013I\u0016\u0011\u001D\u0011\u000E") ? true : ((name == "\u0011\u0013I\u001B\u0014\u0011\u000E\u000D\u0013\u001F\u000F\u0018\u000D") ? true : false))))))));
+    }
+
+    public static bool is_io_builtin(string name)
+    {
+        return ((name == "\u001F\u0015\u0011\u0012\u000EI\u0017\u0011\u0012\u000D") ? true : ((name == "\u0015\u000D\u000F\u0016I\u001C\u0011\u0017\u000D") ? true : ((name == "\u001B\u0015\u0011\u000E\u000DI\u001C\u0011\u0017\u000D") ? true : ((name == "\u0015\u000D\u000F\u0016I\u0017\u0011\u0012\u000D") ? true : ((name == "\u001B\u0015\u0011\u000E\u000DI \u0011\u0012\u000F\u0015\u001E") ? true : false)))));
+    }
+
+    public static bool is_misc_builtin(string name)
+    {
+        return ((name == "\u0012\u000D\u001D\u000F\u000E\u000D") ? true : ((name == "\u001D\u000D\u000EI\u000F\u0015\u001D\u0013") ? true : ((name == "\u0018\u0019\u0015\u0015\u000D\u0012\u000EI\u0016\u0011\u0015") ? true : ((name == "\u001C\u0011\u0017\u000DI\u000D$\u0011\u0013\u000E\u0013") ? true : ((name == "\u0015\u000D\u0018\u0010\u0015\u0016I\u0013\u000D\u000E") ? true : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000D\u001A\u001F\u000E\u001E") ? true : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u001F\u0019\u0013\u0014") ? true : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000E\u0010I\u0017\u0011\u0013\u000E") ? true : ((name == "\u0014\u000D\u000F\u001FI\u0013\u000F!\u000D") ? true : ((name == "\u0014\u000D\u000F\u001FI\u0015\u000D\u0013\u000E\u0010\u0015\u000D") ? true : ((name == "\u0014\u000D\u000F\u001FI\u000F\u0016!\u000F\u0012\u0018\u000D") ? true : ((name == "\u0017\u0011\u0013\u000EI\u001B\u0011\u000E\u0014I\u0018\u000F\u001F\u000F\u0018\u0011\u000E\u001E") ? true : ((name == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D") ? true : ((name == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D\u0013") ? true : ((name == " \u0019\u001CI\u0015\u000D\u000F\u0016I \u001E\u000E\u000D\u0013") ? true : ((name == " \u0011\u000EI\u000F\u0012\u0016") ? true : ((name == " \u0011\u000EI\u0010\u0015") ? true : ((name == " \u0011\u000EI$\u0010\u0015") ? true : ((name == " \u0011\u000EI\u0013\u0014\u0017") ? true : ((name == " \u0011\u000EI\u0013\u0014\u0015") ? true : ((name == " \u0011\u000EI\u0012\u0010\u000E") ? true : false)))))))))))))))))))));
+    }
+
+    public static bool is_builtin(string name)
+    {
+        return (is_string_builtin(name) ? true : (is_list_builtin(name) ? true : (is_char_builtin(name) ? true : (is_io_builtin(name) ? true : is_misc_builtin(name)))));
+    }
+
+    public static EmitResult emit_helper_call_1(CodegenState st, List<IRExpr> args, string helper)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_rr(tmp.reg, reg_rax())), tmp.reg)))(alloc_temp(st2))))(emit_call_to(st1, helper))))(st_append_text(r.state, mov_rr(reg_rdi(), r.reg)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_helper_call_2(CodegenState st, List<IRExpr> args, string helper)
+    {
+        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((loaded) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_rr(tmp.reg, reg_rax())), tmp.reg)))(alloc_temp(st4))))(emit_call_to(st3, helper))))(st_append_text(st2, mov_rr(reg_rdi(), loaded.reg)))))(st_append_text(loaded.state, mov_rr(reg_rsi(), r1.reg)))))(load_local(r1.state, loc.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc.state, loc.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_helper_call_3(CodegenState st, List<IRExpr> args, string helper)
+    {
+        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc0) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((loc1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((r2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((ld1) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((ld0) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_rr(tmp.reg, reg_rax())), tmp.reg)))(alloc_temp(st6))))(emit_call_to(st5, helper))))(st_append_text(ld0.state, mov_rr(reg_rdi(), ld0.reg)))))(load_local(st4, loc0.reg))))(st_append_text(ld1.state, mov_rr(reg_rsi(), ld1.reg)))))(load_local(st3, loc1.reg))))(st_append_text(r2.state, mov_rr(reg_rdx(), r2.reg)))))(emit__x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(loc1.state, loc1.reg, r1.reg))))(alloc_local(r1.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc0.state, loc0.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_text_length_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_load(tmp.reg, r.reg, 0L)), tmp.reg)))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_list_length_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_load(tmp.reg, r.reg, 0L)), tmp.reg)))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_list_at_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((list_loaded) => ((Func<EmitResult, EmitResult>)((addr) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_load(rd.reg, addr.reg, 8L)), rd.reg)))(alloc_temp(st4))))(st_append_text(st3, add_rr(addr.reg, list_loaded.reg)))))(st_append_text(st2, shl_ri(addr.reg, 3L)))))(st_append_text(addr.state, mov_rr(addr.reg, r1.reg)))))(alloc_temp(list_loaded.state))))(load_local(r1.state, loc.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc.state, loc.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_char_at_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((str_loaded) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => new EmitResult(st3, r1.reg)))(st_append_text(st2, movzx_byte(r1.reg, r1.reg, 8L)))))(st_append_text(str_loaded.state, add_rr(r1.reg, str_loaded.reg)))))(load_local(r1.state, loc.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc.state, loc.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_char_code_at_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((text_loaded) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => new EmitResult(st4, rd.reg)))(st_append_text(st3, movzx_byte(rd.reg, rd.reg, 8L)))))(st_append_text(st2, add_rr(rd.reg, r1.reg)))))(st_append_text(rd.state, mov_rr(rd.reg, text_loaded.reg)))))(alloc_temp(text_loaded.state))))(load_local(r1.state, loc.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc.state, loc.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_char_to_text_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((ptr_loc) => ((Func<EmitResult, EmitResult>)((ptr_tmp) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<EmitResult, EmitResult>)((ptr_loaded) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((code_loaded) => ((Func<EmitResult, EmitResult>)((ptr_loaded2) => ((Func<CodegenState, EmitResult>)((st7) => ((Func<EmitResult, EmitResult>)((result) => new EmitResult(result.state, result.reg)))(load_local(st7, ptr_loc.reg))))(st_append_text(ptr_loaded2.state, mov_store_byte(ptr_loaded2.reg, code_loaded.reg, 8L)))))(load_local(code_loaded.state, ptr_loc.reg))))(load_local(st6, loc.reg))))(st_append_text(ptr_loaded.state, mov_store(ptr_loaded.reg, reg_r11(), 0L)))))(load_local(st5, ptr_loc.reg))))(st_append_text(st4, li(reg_r11(), 1L)))))(st_append_text(st3, add_ri(reg_r10(), 16L)))))(store_local(st2, ptr_loc.reg, ptr_tmp.reg))))(st_append_text(ptr_tmp.state, mov_rr(ptr_tmp.reg, reg_r10())))))(alloc_temp(ptr_loc.state))))(alloc_local(st1))))(store_local(loc.state, loc.reg, r.reg))))(alloc_local(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_is_letter_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => new EmitResult(st4, r.reg)))(st_append_text(st3, movzx_byte_self(r.reg)))))(st_append_text(st2, setcc(cc_be(), r.reg)))))(st_append_text(st1, cmp_ri(r.reg, 51L)))))(st_append_text(r.state, sub_ri(r.reg, 13L)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_is_digit_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => new EmitResult(st4, r.reg)))(st_append_text(st3, movzx_byte_self(r.reg)))))(st_append_text(st2, setcc(cc_be(), r.reg)))))(st_append_text(st1, cmp_ri(r.reg, 9L)))))(st_append_text(r.state, sub_ri(r.reg, 3L)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_is_whitespace_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => new EmitResult(st3, r.reg)))(st_append_text(st2, movzx_byte_self(r.reg)))))(st_append_text(st1, setcc(cc_be(), r.reg)))))(st_append_text(r.state, cmp_ri(r.reg, 2L)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_negate_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => new EmitResult(st2, rd.reg)))(st_append_text(st1, neg_r(rd.reg)))))(st_append_text(rd.state, mov_rr(rd.reg, r.reg)))))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_get_args_builtin(CodegenState st)
+    {
+        return ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => new EmitResult(st6, rd.reg)))(st_append_text(st5, add_ri(reg_r10(), 8L)))))(st_append_text(st4, mov_store(reg_r10(), reg_r11(), 0L)))))(st_append_text(st3, mov_rr(rd.reg, reg_r10())))))(st_append_text(st2, add_ri(reg_r10(), 8L)))))(st_append_text(st1, mov_store(reg_r10(), reg_r11(), 0L)))))(st_append_text(rd.state, li(reg_r11(), 0L)))))(alloc_temp(st));
+    }
+
+    public static EmitResult emit_current_dir_builtin(CodegenState st)
+    {
+        return ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => new EmitResult(st4, rd.reg)))(st_append_text(st3, add_ri(reg_r10(), 8L)))))(st_append_text(st2, mov_store(reg_r10(), reg_r11(), 0L)))))(st_append_text(st1, li(reg_r11(), 0L)))))(st_append_text(rd.state, mov_rr(rd.reg, reg_r10())))))(alloc_temp(st));
+    }
+
+    public static EmitResult emit_file_exists_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => new EmitResult(st1, rd.reg)))(st_append_text(rd.state, li(rd.reg, 1L)))))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static CodegenState emit_substring_alloc(CodegenState st, long str_loc, long start_loc, long len_loc)
+    {
+        return ((Func<EmitResult, CodegenState>)((len_loaded) => ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => st_append_text(st2, add_rr(reg_r10(), reg_r11()))))(st_append_text(st1, and_ri(reg_r11(), (0L - 8L))))))(st_append_text(st0, add_ri(reg_r11(), 15L)))))(st_append_text(len_loaded.state, mov_rr(reg_r11(), len_loaded.reg)))))(load_local(st, len_loc));
+    }
+
+    public static CodegenState emit_substring_copy(CodegenState st, long str_loc, long start_loc, long len_loc, long ptr_loc)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<long, CodegenState>)((sub_loop) => ((Func<EmitResult, CodegenState>)((len_ld) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((sub_exit_pos) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<EmitResult, CodegenState>)((src_ld) => ((Func<EmitResult, CodegenState>)((start_ld) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<EmitResult, CodegenState>)((ptr_ld) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => patch_jcc_at(st11, sub_exit_pos, st11.text_len)))(st_append_text(st10, jmp((sub_loop - (st10.text_len + 5L)))))))(st_append_text(st9, add_ri(reg_r11(), 1L)))))(st_append_text(st8, mov_store_byte(reg_rdx(), reg_rsi(), 8L)))))(st_append_text(st7, add_rr(reg_rdx(), reg_r11())))))(st_append_text(ptr_ld.state, mov_rr(reg_rdx(), ptr_ld.reg)))))(load_local(st6, ptr_loc))))(st_append_text(st5, movzx_byte(reg_rsi(), reg_rsi(), 8L)))))(st_append_text(st4, add_rr(reg_rsi(), reg_r11())))))(st_append_text(st3, add_rr(reg_rsi(), start_ld.reg)))))(st_append_text(start_ld.state, mov_rr(reg_rsi(), src_ld.reg)))))(load_local(src_ld.state, start_loc))))(load_local(st2, str_loc))))(st_append_text(st1, jcc(cc_ge(), 0L)))))(st1.text_len)))(st_append_text(len_ld.state, cmp_rr(reg_r11(), len_ld.reg)))))(load_local(st0, len_loc))))(st0.text_len)))(st_append_text(st, li(reg_r11(), 0L)));
+    }
+
+    public static EmitResult emit_substring_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc0) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((loc1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((r2) => ((Func<EmitResult, EmitResult>)((loc2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((ptr_loc) => ((Func<EmitResult, EmitResult>)((ptr_tmp) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<EmitResult, EmitResult>)((len_ld) => ((Func<EmitResult, EmitResult>)((ptr_ld) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<CodegenState, EmitResult>)((st7) => ((Func<CodegenState, EmitResult>)((st8) => ((Func<EmitResult, EmitResult>)((result) => new EmitResult(result.state, result.reg)))(load_local(st8, ptr_loc.reg))))(emit_substring_copy(st7, loc0.reg, loc1.reg, loc2.reg, ptr_loc.reg))))(emit_substring_alloc(st6, loc0.reg, loc1.reg, loc2.reg))))(st_append_text(ptr_ld.state, mov_store(ptr_ld.reg, len_ld.reg, 0L)))))(load_local(len_ld.state, ptr_loc.reg))))(load_local(st5, loc2.reg))))(store_local(st4, ptr_loc.reg, ptr_tmp.reg))))(st_append_text(ptr_tmp.state, mov_rr(ptr_tmp.reg, reg_r10())))))(alloc_temp(ptr_loc.state))))(alloc_local(st3))))(store_local(loc2.state, loc2.reg, r2.reg))))(alloc_local(r2.state))))(emit__x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(loc1.state, loc1.reg, r1.reg))))(alloc_local(r1.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc0.state, loc0.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_print_line_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, li(rd.reg, 0L)), rd.reg)))(alloc_temp(st1))))(emit_print_text(r.state, r.reg))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_read_file_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st2))))(emit_call_to(st1, "UU \u000F\u0015\u000DU\u001A\u000D\u000E\u000F\u0017U\u0015\u000D\u000F\u0016U\u0013\u000D\u0015\u0011\u000F\u0017"))))(st_append_text(r.state, mov_rr(reg_rdi(), r.reg)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_write_file_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, li(rd.reg, 0L)), rd.reg)))(alloc_temp(st1))))(emit_print_text_no_newline(r1.state, r1.reg))))(emit__x86_64_code_generator_emit_expr(r0.state, args[(int)1L]))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_read_line_builtin(CodegenState st)
+    {
+        return ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st1))))(emit_call_to(st, "UU\u0015\u000D\u000F\u0016U\u0017\u0011\u0012\u000D"));
+    }
+
+    public static EmitResult emit_write_binary_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, li(rd.reg, 0L)), rd.reg)))(alloc_temp(st2))))(emit_call_to(st1, "UU\u001B\u0015\u0011\u000E\u000DU \u0011\u0012\u000F\u0015\u001E"))))(st_append_text(r.state, mov_rr(reg_rdi(), r.reg)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_linked_list_empty_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, li(rd.reg, 0L)), rd.reg)))(alloc_temp(st));
+    }
+
+    public static EmitResult emit_linked_list_push_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((list_result) => ((Func<EmitResult, EmitResult>)((list_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((val_result) => ((Func<EmitResult, EmitResult>)((val_loc) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((ptr) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((vr) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((lr) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => new EmitResult(st6, ptr.reg)))(st_append_text(st5, add_ri(reg_r10(), 16L)))))(st_append_text(lr.state, mov_store(ptr.reg, lr.reg, 8L)))))(load_local(st4, list_loc.reg))))(st_append_text(vr.state, mov_store(ptr.reg, vr.reg, 0L)))))(load_local(st3, val_loc.reg))))(st_append_text(ptr.state, mov_rr(ptr.reg, reg_r10())))))(alloc_temp(st2))))(store_local(val_loc.state, val_loc.reg, val_result.reg))))(alloc_local(val_result.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(list_loc.state, list_loc.reg, list_result.reg))))(alloc_local(list_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_linked_list_to_list_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((head_result) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st2))))(emit_call_to(st1, "UU\u0017\u0011\u0012\"\u000D\u0016U\u0017\u0011\u0013\u000EU\u000E\u0010U\u0017\u0011\u0013\u000E"))))(st_append_text(head_result.state, mov_rr(reg_rdi(), head_result.reg)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_record_set_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((rec_result) => ((Func<EmitResult, EmitResult>)((rec_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<string, EmitResult>)((field_name) => ((Func<CodexType, EmitResult>)((rec_ty) => ((Func<EmitResult, EmitResult>)((val_result) => ((Func<EmitResult, EmitResult>)((loaded) => (rec_ty is RecordTy _mRecordTy71_ ? ((Func<List<RecordField>, EmitResult>)((rfields) => ((Func<Name, EmitResult>)((rname) => ((Func<long, EmitResult>)((field_idx) => new EmitResult(st_append_text(loaded.state, mov_store(loaded.reg, val_result.reg, (field_idx * 8L))), loaded.reg)))(find_record_field_index(rfields, field_name, 0L))))((Name)_mRecordTy71_.Field0)))((List<RecordField>)_mRecordTy71_.Field1) : ((Func<CodegenState, EmitResult>)((st_err) => new EmitResult(st_append_text(st_err, new List<long>() { 15L, 11L }), loaded.reg)))(st_add_error(loaded.state, cdx_ir_error(), string.Concat("\u0015\u000D\u0018\u0010\u0015\u0016I\u0013\u000D\u000EE\u0002\u0019\u0012\u0015\u000D\u0013\u0010\u0017!\u000D\u0016\u0002\u000E\u001E\u001F\u000D\u0002\u001C\u0010\u0015\u0002\u001C\u0011\u000D\u0017\u0016\u0002G", field_name, "G"), ir_expr_span(args[(int)0L]))))))(load_local(val_result.state, rec_loc.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)2L]))))(resolve_constructed_ty(st, ir_expr_type(args[(int)0L])))))((args[(int)1L] is IrTextLit _mIrTextLit72_ ? ((Func<SourceSpan, string>)((sp) => ((Func<string, string>)((s) => s))((string)_mIrTextLit72_.Field0)))((SourceSpan)_mIrTextLit72_.Field1) : ""))))(store_local(rec_loc.state, rec_loc.reg, rec_result.reg))))(alloc_local(rec_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_heap_save_builtin(CodegenState st)
+    {
+        return ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_r10())), rd.reg)))(alloc_temp(st));
+    }
+
+    public static EmitResult emit_heap_restore_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, li(rd.reg, 0L)), rd.reg)))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_heap_advance_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => new EmitResult(st_append_text(st1, li(rd.reg, 0L)), rd.reg)))(st_append_text(rd.state, add_rr(reg_r10(), r.reg)))))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_list_with_capacity_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((cap_result) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((zero_tmp) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<EmitResult, EmitResult>)((adv_tmp) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<CodegenState, EmitResult>)((st7) => ((Func<CodegenState, EmitResult>)((st8) => new EmitResult(st_append_text(st8, add_rr(reg_r10(), adv_tmp.reg)), rd.reg)))(st_append_text(st7, add_ri(adv_tmp.reg, 8L)))))(st_append_text(st6, shl_ri(adv_tmp.reg, 3L)))))(st_append_text(adv_tmp.state, mov_rr(adv_tmp.reg, cap_result.reg)))))(alloc_temp(st5))))(st_append_text(st4, mov_store(reg_r10(), zero_tmp.reg, 0L)))))(st_append_text(zero_tmp.state, li(zero_tmp.reg, 0L)))))(alloc_temp(st3))))(st_append_text(st2, mov_rr(rd.reg, reg_r10())))))(st_append_text(st1, add_ri(reg_r10(), 8L)))))(st_append_text(rd.state, mov_store(reg_r10(), cap_result.reg, 0L)))))(alloc_temp(cap_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_buf_write_byte_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((base_result) => ((Func<EmitResult, EmitResult>)((base_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((off_result) => ((Func<EmitResult, EmitResult>)((off_loc) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((byte_result) => ((Func<EmitResult, EmitResult>)((byte_loc) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((addr) => ((Func<EmitResult, EmitResult>)((base2) => ((Func<EmitResult, EmitResult>)((off2) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<EmitResult, EmitResult>)((byte2) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<EmitResult, EmitResult>)((off3) => ((Func<CodegenState, EmitResult>)((st7) => new EmitResult(st_append_text(st7, add_ri(rd.reg, 1L)), rd.reg)))(st_append_text(off3.state, mov_rr(rd.reg, off3.reg)))))(load_local(rd.state, off_loc.reg))))(alloc_temp(st6))))(st_append_text(byte2.state, mov_store_byte(addr.reg, byte2.reg, 0L)))))(load_local(st5, byte_loc.reg))))(st_append_text(st4, add_rr(addr.reg, off2.reg)))))(st_append_text(off2.state, mov_rr(addr.reg, base2.reg)))))(load_local(base2.state, off_loc.reg))))(load_local(addr.state, base_loc.reg))))(alloc_temp(st3))))(store_local(byte_loc.state, byte_loc.reg, byte_result.reg))))(alloc_local(byte_result.state))))(emit__x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(off_loc.state, off_loc.reg, off_result.reg))))(alloc_local(off_result.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(base_loc.state, base_loc.reg, base_result.reg))))(alloc_local(base_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_buf_write_bytes_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((base_result) => ((Func<EmitResult, EmitResult>)((base_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((off_result) => ((Func<EmitResult, EmitResult>)((off_loc) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((list_result) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((off2) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((base2) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st6))))(emit_call_to(st5, "UU \u0019\u001CU\u001B\u0015\u0011\u000E\u000DU \u001E\u000E\u000D\u0013"))))(st_append_text(base2.state, mov_rr(reg_rdi(), base2.reg)))))(load_local(st4, base_loc.reg))))(st_append_text(off2.state, mov_rr(reg_rsi(), off2.reg)))))(load_local(st3, off_loc.reg))))(st_append_text(list_result.state, mov_rr(reg_rdx(), list_result.reg)))))(emit__x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(off_loc.state, off_loc.reg, off_result.reg))))(alloc_local(off_result.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(base_loc.state, base_loc.reg, base_result.reg))))(alloc_local(base_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_buf_read_bytes_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((base_result) => ((Func<EmitResult, EmitResult>)((base_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((off_result) => ((Func<EmitResult, EmitResult>)((off_loc) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((count_result) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((off2) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((base2) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st6))))(emit_call_to(st5, "UU \u0019\u001CU\u0015\u000D\u000F\u0016U \u001E\u000E\u000D\u0013"))))(st_append_text(base2.state, mov_rr(reg_rdi(), base2.reg)))))(load_local(st4, base_loc.reg))))(st_append_text(off2.state, mov_rr(reg_rsi(), off2.reg)))))(load_local(st3, off_loc.reg))))(st_append_text(count_result.state, mov_rr(reg_rdx(), count_result.reg)))))(emit__x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(off_loc.state, off_loc.reg, off_result.reg))))(alloc_local(off_result.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(base_loc.state, base_loc.reg, base_result.reg))))(alloc_local(base_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_bit_op_2(CodegenState st, List<IRExpr> args, Func<long, Func<long, List<long>>> op_bytes)
+    {
+        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc0) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((ld0) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, Enumerable.Concat(mov_rr(rd.reg, ld0.reg), op_bytes(rd.reg)(r1.reg)).ToList()), rd.reg)))(alloc_temp(ld0.state))))(load_local(r1.state, loc0.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc0.state, loc0.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_bit_shift(CodegenState st, List<IRExpr> args, Func<long, List<long>> shift_bytes)
+    {
+        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc0) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((ld0) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, Enumerable.Concat(mov_rr(rd.reg, ld0.reg), shift_bytes(rd.reg)).ToList()), rd.reg)))(alloc_temp(ld0.state))))(load_local(st2, loc0.reg))))(st_append_text(r1.state, mov_rr(reg_rcx(), r1.reg)))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc0.state, loc0.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_bit_not(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, Enumerable.Concat(mov_rr(rd.reg, r0.reg), not_r(rd.reg)).ToList()), rd.reg)))(alloc_temp(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit__x86_64_code_generator_emit_builtin(CodegenState st, string name, List<IRExpr> args)
+    {
+        return ((name == "\u001F\u0015\u0011\u0012\u000EI\u0017\u0011\u0012\u000D") ? emit_print_line_builtin(st, args) : ((name == "\u0015\u000D\u000F\u0016I\u001C\u0011\u0017\u000D") ? emit_read_file_builtin(st, args) : ((name == "\u001B\u0015\u0011\u000E\u000DI\u001C\u0011\u0017\u000D") ? emit_write_file_builtin(st, args) : ((name == "\u0015\u000D\u000F\u0016I\u0017\u0011\u0012\u000D") ? emit_read_line_builtin(st) : ((name == "\u001B\u0015\u0011\u000E\u000DI \u0011\u0012\u000F\u0015\u001E") ? emit_write_binary_builtin(st, args) : ((name == "\u000E\u000D$\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? emit_text_length_builtin(st, args) : ((name == "\u0011\u0012\u000E\u000D\u001D\u000D\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? emit_helper_call_1(st, args, "UU\u0011\u000E\u0010\u000F") : ((name == "\u0013\u0014\u0010\u001B") ? emit_show_builtin(st, args) : ((name == "\u000E\u000D$\u000EI\u000E\u0010I\u0011\u0012\u000E\u000D\u001D\u000D\u0015") ? emit_helper_call_1(st, args, "UU\u000E\u000D$\u000EU\u000E\u0010U\u0011\u0012\u000E") : ((name == "\u000E\u000D$\u000EI\u0015\u000D\u001F\u0017\u000F\u0018\u000D") ? emit_helper_call_3(st, args, "UU\u0013\u000E\u0015U\u0015\u000D\u001F\u0017\u000F\u0018\u000D") : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") : ((name == "\u000E\u000D$\u000EI\u0013\u000E\u000F\u0015\u000E\u0013I\u001B\u0011\u000E\u0014") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0013\u000E\u000F\u0015\u000E\u0013U\u001B\u0011\u000E\u0014") : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u001A\u001F\u000F\u0015\u000D") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0018\u0010\u001A\u001F\u000F\u0015\u000D") : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u0018\u000F\u000EI\u0017\u0011\u0013\u000E") ? emit_helper_call_1(st, args, "UU\u000E\u000D$\u000EU\u0018\u0010\u0012\u0018\u000F\u000EU\u0017\u0011\u0013\u000E") : ((name == "\u000E\u000D$\u000EI\u0013\u001F\u0017\u0011\u000E") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0013\u001F\u0017\u0011\u000E") : ((name == "\u0013\u0019 \u0013\u000E\u0015\u0011\u0012\u001D") ? emit_substring_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? emit_list_length_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u000F\u000E") ? emit_list_at_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u0013") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u0018\u0010\u0012\u0013") : ((name == "\u0017\u0011\u0013\u000EI\u000F\u001F\u001F\u000D\u0012\u0016") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u000F\u001F\u001F\u000D\u0012\u0016") : ((name == "\u0017\u0011\u0013\u000EI\u0013\u0012\u0010\u0018") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u0013\u0012\u0010\u0018") : ((name == "\u0017\u0011\u0013\u000EI\u0011\u0012\u0013\u000D\u0015\u000EI\u000F\u000E") ? emit_helper_call_3(st, args, "UU\u0017\u0011\u0013\u000EU\u0011\u0012\u0013\u000D\u0015\u000EU\u000F\u000E") : ((name == "\u0017\u0011\u0013\u000EI\u0013\u000D\u000EI\u000F\u000E") ? emit_helper_call_3(st, args, "UU\u0017\u0011\u0013\u000EU\u0013\u000D\u000EU\u000F\u000E") : ((name == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") : ((name == "\u0018\u0014\u000F\u0015I\u000F\u000E") ? emit_char_at_builtin(st, args) : ((name == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000DI\u000F\u000E") ? emit_char_code_at_builtin(st, args) : ((name == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000D") ? emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]) : ((name == "\u0018\u0010\u0016\u000DI\u000E\u0010I\u0018\u0014\u000F\u0015") ? emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]) : ((name == "\u0018\u0014\u000F\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? emit_char_to_text_builtin(st, args) : ((name == "\u0011\u0013I\u0017\u000D\u000E\u000E\u000D\u0015") ? emit_is_letter_builtin(st, args) : ((name == "\u0011\u0013I\u0016\u0011\u001D\u0011\u000E") ? emit_is_digit_builtin(st, args) : ((name == "\u0011\u0013I\u001B\u0014\u0011\u000E\u000D\u0013\u001F\u000F\u0018\u000D") ? emit_is_whitespace_builtin(st, args) : ((name == "\u0012\u000D\u001D\u000F\u000E\u000D") ? emit_negate_builtin(st, args) : ((name == "\u001D\u000D\u000EI\u000F\u0015\u001D\u0013") ? emit_get_args_builtin(st) : ((name == "\u0018\u0019\u0015\u0015\u000D\u0012\u000EI\u0016\u0011\u0015") ? emit_current_dir_builtin(st) : ((name == "\u0015\u000D\u0018\u0010\u0015\u0016I\u0013\u000D\u000E") ? emit_record_set_builtin(st, args) : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000D\u001A\u001F\u000E\u001E") ? emit_linked_list_empty_builtin(st, args) : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u001F\u0019\u0013\u0014") ? emit_linked_list_push_builtin(st, args) : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000E\u0010I\u0017\u0011\u0013\u000E") ? emit_linked_list_to_list_builtin(st, args) : ((name == "\u0014\u000D\u000F\u001FI\u0013\u000F!\u000D") ? emit_heap_save_builtin(st) : ((name == "\u0014\u000D\u000F\u001FI\u0015\u000D\u0013\u000E\u0010\u0015\u000D") ? emit_heap_restore_builtin(st, args) : ((name == "\u0014\u000D\u000F\u001FI\u000F\u0016!\u000F\u0012\u0018\u000D") ? emit_heap_advance_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u001B\u0011\u000E\u0014I\u0018\u000F\u001F\u000F\u0018\u0011\u000E\u001E") ? emit_list_with_capacity_builtin(st, args) : ((name == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D") ? emit_buf_write_byte_builtin(st, args) : ((name == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D\u0013") ? emit_buf_write_bytes_builtin(st, args) : ((name == " \u0019\u001CI\u0015\u000D\u000F\u0016I \u001E\u000E\u000D\u0013") ? emit_buf_read_bytes_builtin(st, args) : ((name == " \u0011\u000EI\u000F\u0012\u0016") ? emit_bit_op_2(st, args, (rd) => (rs) => and_rr(rd, rs)) : ((name == " \u0011\u000EI\u0010\u0015") ? emit_bit_op_2(st, args, (rd) => (rs) => or_rr(rd, rs)) : ((name == " \u0011\u000EI$\u0010\u0015") ? emit_bit_op_2(st, args, (rd) => (rs) => xor_rr(rd, rs)) : ((name == " \u0011\u000EI\u0013\u0014\u0017") ? emit_bit_shift(st, args, new Func<long, List<long>>(shl_cl)) : ((name == " \u0011\u000EI\u0013\u0014\u0015") ? emit_bit_shift(st, args, new Func<long, List<long>>(shr_cl)) : ((name == " \u0011\u000EI\u0012\u0010\u000E") ? emit_bit_not(st, args) : emit_file_exists_builtin(st, args)))))))))))))))))))))))))))))))))))))))))))))))))))));
+    }
+
+    public static FlatApply flatten_apply(IRExpr expr, List<IRExpr> acc)
+    {
+        while (true)
+        {
+            var _tco_s = expr;
+            if (_tco_s is IrApply _tco_m0)
+            {
+                var f = _tco_m0.Field0;
+                var a = _tco_m0.Field1;
+                var t = _tco_m0.Field2;
+                var sp = _tco_m0.Field3;
+                var _tco_0 = f;
+                var _tco_1 = Enumerable.Concat(new List<IRExpr>() { a }, acc).ToList();
+                expr = _tco_0;
+                acc = _tco_1;
+                continue;
+            }
+            else if (_tco_s is IrName _tco_m1)
+            {
+                var n = _tco_m1.Field0;
+                var t = _tco_m1.Field1;
+                var sp = _tco_m1.Field2;
+                return new FlatApply(n, acc);
+            }
+            {
+                return new FlatApply("", acc);
+            }
+        }
+    }
+
+    public static SavedArgs save_args_loop(CodegenState st, List<IRExpr> args, long i, List<long> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)args.Count)))
+            {
+                return new SavedArgs(st, acc);
+            }
+            else
+            {
+                var r = emit__x86_64_code_generator_emit_expr(st, args[(int)i]);
+                var loc = alloc_local(r.state);
+                var st1 = store_local(loc.state, loc.reg, r.reg);
+                var _tco_0 = st1;
+                var _tco_1 = args;
+                var _tco_2 = (i + 1L);
+                var _tco_3 = ((Func<List<long>>)(() => { var _l = acc; _l.Add(loc.reg); return _l; }))();
+                st = _tco_0;
+                args = _tco_1;
+                i = _tco_2;
+                acc = _tco_3;
+                continue;
+            }
+        }
+    }
+
+    public static CodegenState push_reg_args(CodegenState st, List<long> arg_locals, long i, long count)
+    {
+        while (true)
+        {
+            if ((i == count))
+            {
+                return st;
+            }
+            else
+            {
+                var loaded = load_local(st, arg_locals[(int)i]);
+                var _tco_0 = st_append_text(loaded.state, push_r(loaded.reg));
+                var _tco_1 = arg_locals;
+                var _tco_2 = (i + 1L);
+                var _tco_3 = count;
+                st = _tco_0;
+                arg_locals = _tco_1;
+                i = _tco_2;
+                count = _tco_3;
+                continue;
+            }
+        }
+    }
+
+    public static CodegenState pop_to_arg_regs(CodegenState st, long i)
+    {
+        while (true)
+        {
+            if ((i < 0L))
+            {
+                return st;
+            }
+            else
+            {
+                var _tco_0 = st_append_text(st, pop_r(arg_regs()[(int)i]));
+                var _tco_1 = (i - 1L);
+                st = _tco_0;
+                i = _tco_1;
+                continue;
+            }
+        }
+    }
+
+    public static CodegenState push_stack_args(CodegenState st, List<long> arg_locals, long i)
+    {
+        while (true)
+        {
+            if ((i < 6L))
+            {
+                return st;
+            }
+            else
+            {
+                var loaded = load_local(st, arg_locals[(int)i]);
+                var _tco_0 = st_append_text(loaded.state, push_r(loaded.reg));
+                var _tco_1 = arg_locals;
+                var _tco_2 = (i - 1L);
+                st = _tco_0;
+                arg_locals = _tco_1;
+                i = _tco_2;
+                continue;
+            }
+        }
+    }
+
+    public static EmitResult emit__x86_64_code_generator_emit_apply(CodegenState st, IRExpr func_expr, IRExpr arg_expr, CodexType result_ty)
+    {
+        return ((Func<bool, EmitResult>)((saved_tail) => ((Func<IRExpr, EmitResult>)((full_expr) => ((Func<EmitResult, EmitResult>)((r) => new EmitResult(st_set_tail_pos(r.state, saved_tail), r.reg)))((((st.tco.active && saved_tail) && emit__x86_64_code_generator_is_self_call(full_expr, st.tco.current_func)) ? emit_tail_call(st, func_expr, arg_expr) : ((Func<FlatApply, EmitResult>)((flat) => (is_builtin(flat.func_name) ? emit__x86_64_code_generator_emit_builtin(st, flat.func_name, flat.args) : ((Func<CodexType, EmitResult>)((resolved_result_ty) => ((Func<CodexType, EmitResult>)((_scrutinee73_) => (_scrutinee73_ is SumTy _mSumTy73_ ? ((Func<List<SumCtor>, EmitResult>)((ctors) => ((Func<Name, EmitResult>)((sname) => ((Func<long, EmitResult>)((tag) => ((tag >= 0L) ? emit_sum_ctor(st, flat.args, tag) : ((Func<bool, EmitResult>)((is_local_sum) => (is_local_sum ? emit_indirect_call(st, flat) : emit_direct_call(st, flat))))((lookup_local(st.locals, flat.func_name) >= 0L)))))(find_ctor_tag(ctors, flat.func_name, 0L))))((Name)_mSumTy73_.Field0)))((List<SumCtor>)_mSumTy73_.Field1) : (_scrutinee73_ is FunTy _mFunTy73_ ? ((Func<CodexType, EmitResult>)((rt) => ((Func<CodexType, EmitResult>)((pt) => ((Func<bool, EmitResult>)((is_local) => (is_local ? emit_indirect_call(st, flat) : emit_partial_application(st, flat.func_name, flat.args))))((lookup_local(st.locals, flat.func_name) >= 0L))))((CodexType)_mFunTy73_.Field0)))((CodexType)_mFunTy73_.Field1) : ((Func<bool, EmitResult>)((is_local) => (is_local ? emit_indirect_call(st, flat) : emit_direct_call(st, flat))))((lookup_local(st.locals, flat.func_name) >= 0L))))))(resolved_result_ty)))(resolve_constructed_ty(st, result_ty)))))(flatten_apply(func_expr, new List<IRExpr>() { arg_expr }))))))(new IrApply(func_expr, arg_expr, result_ty, ir_expr_span(func_expr)))))(st.tco.in_tail_pos);
+    }
+
+    public static EmitResult emit_direct_call(CodegenState st, FlatApply flat)
+    {
+        return ((Func<SavedArgs, EmitResult>)((saved) => ((Func<long, EmitResult>)((arg_count) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<long, EmitResult>)((reg_count) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<long, EmitResult>)((stack_arg_count) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_rr(tmp.reg, reg_rax())), tmp.reg)))(alloc_temp(st5))))(((stack_arg_count > 0L) ? st_append_text(st4, add_ri(reg_rsp(), (stack_arg_count * 8L))) : st4))))((arg_count - 6L))))(emit_call_to(st3, flat.func_name))))(pop_to_arg_regs(st2, (reg_count - 1L)))))(push_reg_args(st1, saved.locals, 0L, reg_count))))(((arg_count < 6L) ? arg_count : 6L))))(push_stack_args(saved.state, saved.locals, (arg_count - 1L)))))(((long)flat.args.Count))))(save_args_loop(st_set_tail_pos(st, false), flat.args, 0L, new List<long>()));
+    }
+
+    public static EmitResult emit_indirect_call(CodegenState st, FlatApply flat)
+    {
+        return ((Func<SavedArgs, EmitResult>)((saved) => ((Func<long, EmitResult>)((arg_count) => ((Func<long, EmitResult>)((reg_count) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((closure_load) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_rr(tmp.reg, reg_rax())), tmp.reg)))(alloc_temp(st5))))(st_append_text(st4, new List<long>() { 255L, 208L }))))(st_append_text(st3, mov_load(reg_rax(), reg_r11(), 0L)))))(st_append_text(closure_load.state, mov_rr(reg_r11(), closure_load.reg)))))(load_local(st2, lookup_local(st2.locals, flat.func_name)))))(pop_to_arg_regs(st1, (reg_count - 1L)))))(push_reg_args(saved.state, saved.locals, 0L, reg_count))))(((arg_count < 6L) ? arg_count : 6L))))(((long)flat.args.Count))))(save_args_loop(st_set_tail_pos(st, false), flat.args, 0L, new List<long>()));
+    }
+
+    public static List<IRExpr> flatten_tail_args(IRExpr expr, List<IRExpr> acc)
+    {
+        while (true)
+        {
+            var _tco_s = expr;
+            if (_tco_s is IrApply _tco_m0)
+            {
+                var f = _tco_m0.Field0;
+                var a = _tco_m0.Field1;
+                var t = _tco_m0.Field2;
+                var sp = _tco_m0.Field3;
+                var _tco_0 = f;
+                var _tco_1 = Enumerable.Concat(new List<IRExpr>() { a }, acc).ToList();
+                expr = _tco_0;
+                acc = _tco_1;
+                continue;
+            }
+            {
+                return acc;
+            }
+        }
+    }
+
+    public static CodegenState eval_tail_args(CodegenState st, List<IRExpr> args, List<long> temp_locals, long i)
+    {
+        while (true)
+        {
+            if ((i == ((long)args.Count)))
+            {
+                return st;
+            }
+            else
+            {
+                var st_notail = st_set_tail_pos(st, false);
+                var r = emit__x86_64_code_generator_emit_expr(st_notail, args[(int)i]);
+                var st1 = store_local(r.state, temp_locals[(int)i], r.reg);
+                var _tco_0 = st1;
+                var _tco_1 = args;
+                var _tco_2 = temp_locals;
+                var _tco_3 = (i + 1L);
+                st = _tco_0;
+                args = _tco_1;
+                temp_locals = _tco_2;
+                i = _tco_3;
+                continue;
+            }
+        }
+    }
+
+    public static CodegenState copy_temps_to_params(CodegenState st, List<long> temp_locals, List<long> param_locals, long i)
+    {
+        while (true)
+        {
+            if ((i == ((long)temp_locals.Count)))
+            {
+                return st;
+            }
+            else
+            {
+                var loaded = load_local(st, temp_locals[(int)i]);
+                var st1 = store_local(loaded.state, param_locals[(int)i], loaded.reg);
+                var _tco_0 = st1;
+                var _tco_1 = temp_locals;
+                var _tco_2 = param_locals;
+                var _tco_3 = (i + 1L);
+                st = _tco_0;
+                temp_locals = _tco_1;
+                param_locals = _tco_2;
+                i = _tco_3;
+                continue;
+            }
+        }
+    }
+
+    public static EmitResult emit_tail_call(CodegenState st, IRExpr func_expr, IRExpr arg_expr)
+    {
+        return ((Func<List<IRExpr>, EmitResult>)((args) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<long, EmitResult>)((rel32) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((dummy) => new EmitResult(st_append_text(dummy.state, li(dummy.reg, 0L)), dummy.reg)))(alloc_temp(st3))))(st_append_text(st2, jmp(rel32)))))((st.tco.loop_top - (st2.text_len + 5L)))))(copy_temps_to_params(st1, st.tco.temp_locals, st.tco.param_locals, 0L))))(eval_tail_args(st, args, st.tco.temp_locals, 0L))))(flatten_tail_args(func_expr, new List<IRExpr>() { arg_expr }));
+    }
+
+    public static EmitResult emit_sum_ctor(CodegenState st, List<IRExpr> args, long tag)
+    {
+        return ((Func<SavedArgs, EmitResult>)((saved) => ((Func<long, EmitResult>)((field_count) => ((Func<long, EmitResult>)((total_size) => ((Func<EmitResult, EmitResult>)((ptr_loc) => ((Func<EmitResult, EmitResult>)((ptr_tmp) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((tag_tmp) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((ptr_load1) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => load_local(st6, ptr_loc.reg)))(emit_store_ctor_fields(st5, saved.locals, ptr_loc.reg, 0L))))(st_append_text(ptr_load1.state, mov_store(ptr_load1.reg, tag_tmp.reg, 0L)))))(load_local(st4, ptr_loc.reg))))(st_append_text(tag_tmp.state, li(tag_tmp.reg, tag)))))(alloc_temp(st3))))(st_append_text(st2, add_ri(reg_r10(), total_size)))))(store_local(st1, ptr_loc.reg, ptr_tmp.reg))))(st_append_text(ptr_tmp.state, mov_rr(ptr_tmp.reg, reg_r10())))))(alloc_temp(ptr_loc.state))))(alloc_local(saved.state))))(((1L + field_count) * 8L))))(((long)args.Count))))(save_args_loop(st, args, 0L, new List<long>()));
+    }
+
+    public static CodegenState emit_store_ctor_fields(CodegenState st, List<long> field_locals, long ptr_loc, long i)
+    {
+        while (true)
+        {
+            if ((i == ((long)field_locals.Count)))
+            {
+                return st;
+            }
+            else
+            {
+                var val = load_local(st, field_locals[(int)i]);
+                var ptr = load_local(val.state, ptr_loc);
+                var st1 = st_append_text(ptr.state, mov_store(ptr.reg, val.reg, (8L + (i * 8L))));
+                var _tco_0 = st1;
+                var _tco_1 = field_locals;
+                var _tco_2 = ptr_loc;
+                var _tco_3 = (i + 1L);
+                st = _tco_0;
+                field_locals = _tco_1;
+                ptr_loc = _tco_2;
+                i = _tco_3;
+                continue;
+            }
+        }
+    }
+
+    public static CodegenState emit_load_rodata_addr(CodegenState st, long reg, long rodata_off)
+    {
+        return ((Func<RodataFixup, CodegenState>)((fixup) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, ((Func<List<RodataFixup>>)(() => { var _l = st1.rodata_fixups; _l.Add(fixup); return _l; }))(), _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st1)))(st_append_text(st, mov_ri64(reg, 0L)))))(new RodataFixup((st.text_len + 2L), rodata_off));
+    }
+
+    public static CodegenState emit_load_func_addr(CodegenState st, long reg, string func_name)
+    {
+        return ((Func<FuncAddrFixup, CodegenState>)((fixup) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, ((Func<List<FuncAddrFixup>>)(() => { var _l = st1.func_addr_fixups; _l.Add(fixup); return _l; }))(), _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st1)))(st_append_text(st, mov_ri64(reg, 0L)))))(new FuncAddrFixup((st.text_len + 2L), func_name));
+    }
+
+    public static CodegenState emit_trampoline_shift_args(CodegenState st, long i, long num_captures)
+    {
+        while (true)
+        {
+            if ((i < 0L))
+            {
+                return st;
+            }
+            else
+            {
+                if (((i + num_captures) < 6L))
+                {
+                    var _tco_0 = st_append_text(st, mov_rr(arg_regs()[(int)(i + num_captures)], arg_regs()[(int)i]));
+                    var _tco_1 = (i - 1L);
+                    var _tco_2 = num_captures;
+                    st = _tco_0;
+                    i = _tco_1;
+                    num_captures = _tco_2;
+                    continue;
+                }
+                else
+                {
+                    var _tco_0 = st;
+                    var _tco_1 = (i - 1L);
+                    var _tco_2 = num_captures;
+                    st = _tco_0;
+                    i = _tco_1;
+                    num_captures = _tco_2;
+                    continue;
+                }
+            }
+        }
+    }
+
+    public static CodegenState emit_trampoline_load_captures(CodegenState st, long i, long num_captures)
+    {
+        while (true)
+        {
+            if ((i == num_captures))
+            {
+                return st;
+            }
+            else
+            {
+                if ((i < 6L))
+                {
+                    var _tco_0 = st_append_text(st, mov_load(arg_regs()[(int)i], reg_r11(), (8L + (i * 8L))));
+                    var _tco_1 = (i + 1L);
+                    var _tco_2 = num_captures;
+                    st = _tco_0;
+                    i = _tco_1;
+                    num_captures = _tco_2;
+                    continue;
+                }
+                else
+                {
+                    return st;
+                }
+            }
+        }
+    }
+
+    public static EmitResult emit_partial_application(CodegenState st, string func_name, List<IRExpr> captured_args)
+    {
+        return ((Func<SavedArgs, EmitResult>)((saved) => ((Func<long, EmitResult>)((num_captures) => ((Func<string, EmitResult>)((tramp_name) => ((Func<long, EmitResult>)((jmp_over_pos) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<CodegenState, EmitResult>)((st7) => ((Func<long, EmitResult>)((closure_size) => ((Func<EmitResult, EmitResult>)((ptr_loc) => ((Func<EmitResult, EmitResult>)((ptr_tmp) => ((Func<CodegenState, EmitResult>)((st8) => ((Func<CodegenState, EmitResult>)((st9) => ((Func<CodegenState, EmitResult>)((st10) => ((Func<CodegenState, EmitResult>)((st11) => ((Func<EmitResult, EmitResult>)((ptr_load1) => ((Func<CodegenState, EmitResult>)((st12) => ((Func<CodegenState, EmitResult>)((st13) => load_local(st13, ptr_loc.reg)))(emit_store_closure_captures(st12, saved.locals, ptr_loc.reg, 0L))))(st_append_text(ptr_load1.state, mov_store(ptr_load1.reg, reg_rax(), 0L)))))(load_local(st11, ptr_loc.reg))))(emit_load_func_addr(st10, reg_rax(), tramp_name))))(st_append_text(st9, add_ri(reg_r10(), closure_size)))))(store_local(st8, ptr_loc.reg, ptr_tmp.reg))))(st_append_text(ptr_tmp.state, mov_rr(ptr_tmp.reg, reg_r10())))))(alloc_temp(ptr_loc.state))))(alloc_local(st7))))(((1L + num_captures) * 8L))))(patch_jmp_at(st6, jmp_over_pos, st6.text_len))))(st_append_text(st5, new List<long>() { 255L, 224L }))))(emit_load_func_addr(st4, reg_rax(), func_name))))(emit_trampoline_load_captures(st3, 0L, num_captures))))(emit_trampoline_shift_args(st2, 5L, num_captures))))(record_func_offset(st1, tramp_name))))(st_append_text(saved.state, jmp(0L)))))(saved.state.text_len)))(string.Concat(func_name, "UU\u000E\u0015\u000F\u001A\u001FUU", _Cce.FromUnicode(num_captures.ToString()), "UU", _Cce.FromUnicode(saved.state.text_len.ToString())))))(((long)captured_args.Count))))(save_args_loop(st_set_tail_pos(st, false), captured_args, 0L, new List<long>()));
+    }
+
+    public static CodegenState emit_store_closure_captures(CodegenState st, List<long> cap_locals, long ptr_loc, long i)
+    {
+        while (true)
+        {
+            if ((i == ((long)cap_locals.Count)))
+            {
+                return st;
+            }
+            else
+            {
+                var val = load_local(st, cap_locals[(int)i]);
+                var ptr = load_local(val.state, ptr_loc);
+                var st1 = st_append_text(ptr.state, mov_store(ptr.reg, val.reg, (8L + (i * 8L))));
+                var _tco_0 = st1;
+                var _tco_1 = cap_locals;
+                var _tco_2 = ptr_loc;
+                var _tco_3 = (i + 1L);
+                st = _tco_0;
+                cap_locals = _tco_1;
+                ptr_loc = _tco_2;
+                i = _tco_3;
+                continue;
+            }
+        }
+    }
+
+    public static List<PatchEntry> collect_func_addr_patches(List<FuncAddrFixup> fixups, OffsetTable offset_map, long text_base, long i, List<PatchEntry> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)fixups.Count)))
+            {
+                return acc;
+            }
+            else
+            {
+                var f = fixups[(int)i];
+                var func_offset = offset_table_lookup(offset_map, f.target);
+                var addr = (text_base + func_offset);
+                var addr_bytes = write_i64(addr);
+                var p0 = new PatchEntry(f.patch_offset, addr_bytes[(int)0L], addr_bytes[(int)1L], addr_bytes[(int)2L], addr_bytes[(int)3L]);
+                var p1 = new PatchEntry((f.patch_offset + 4L), addr_bytes[(int)4L], addr_bytes[(int)5L], addr_bytes[(int)6L], addr_bytes[(int)7L]);
+                var _tco_0 = fixups;
+                var _tco_1 = offset_map;
+                var _tco_2 = text_base;
+                var _tco_3 = (i + 1L);
+                var _tco_4 = Enumerable.Concat(acc, new List<PatchEntry>() { p0, p1 }).ToList();
+                fixups = _tco_0;
+                offset_map = _tco_1;
+                text_base = _tco_2;
+                i = _tco_3;
+                acc = _tco_4;
+                continue;
+            }
+        }
+    }
+
+    public static List<PatchEntry> collect_rodata_patches(List<RodataFixup> fixups, long rodata_vaddr, long i, List<PatchEntry> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)fixups.Count)))
+            {
+                return acc;
+            }
+            else
+            {
+                var f = fixups[(int)i];
+                var addr = (rodata_vaddr + f.rodata_offset);
+                var addr_bytes = write_i64(addr);
+                var p0 = new PatchEntry(f.patch_offset, addr_bytes[(int)0L], addr_bytes[(int)1L], addr_bytes[(int)2L], addr_bytes[(int)3L]);
+                var p1 = new PatchEntry((f.patch_offset + 4L), addr_bytes[(int)4L], addr_bytes[(int)5L], addr_bytes[(int)6L], addr_bytes[(int)7L]);
+                var _tco_0 = fixups;
+                var _tco_1 = rodata_vaddr;
+                var _tco_2 = (i + 1L);
+                var _tco_3 = Enumerable.Concat(acc, new List<PatchEntry>() { p0, p1 }).ToList();
+                fixups = _tco_0;
+                rodata_vaddr = _tco_1;
+                i = _tco_2;
+                acc = _tco_3;
+                continue;
+            }
+        }
+    }
+
+    public static CodexType resolve_constructed_raw(CodexType raw, CodexType fallback)
+    {
+        return ((Func<CodexType, CodexType>)((_scrutinee74_) => (_scrutinee74_ is RecordTy _mRecordTy74_ ? ((Func<List<RecordField>, CodexType>)((rf) => ((Func<Name, CodexType>)((rn) => raw))((Name)_mRecordTy74_.Field0)))((List<RecordField>)_mRecordTy74_.Field1) : (_scrutinee74_ is SumTy _mSumTy74_ ? ((Func<List<SumCtor>, CodexType>)((sc) => ((Func<Name, CodexType>)((sn) => raw))((Name)_mSumTy74_.Field0)))((List<SumCtor>)_mSumTy74_.Field1) : (_scrutinee74_ is FunTy _mFunTy74_ ? ((Func<CodexType, CodexType>)((r) => ((Func<CodexType, CodexType>)((p) => strip_fun_args_emitter(r)))((CodexType)_mFunTy74_.Field0)))((CodexType)_mFunTy74_.Field1) : fallback)))))(raw);
+    }
+
+    public static CodexType resolve_constructed_ty(CodegenState st, CodexType ty)
+    {
+        while (true)
+        {
+            var _tco_s = ty;
+            if (_tco_s is RecordTy _tco_m0)
+            {
+                var rn = _tco_m0.Field0;
+                var rf = _tco_m0.Field1;
+                return ty;
+            }
+            else if (_tco_s is SumTy _tco_m1)
+            {
+                var sn = _tco_m1.Field0;
+                var sc = _tco_m1.Field1;
+                return ty;
+            }
+            else if (_tco_s is ConstructedTy _tco_m2)
+            {
+                var cname = _tco_m2.Field0;
+                var cargs = _tco_m2.Field1;
+                var raw = lookup_type_binding(st.type_defs, cname.value);
+                return resolve_constructed_raw(raw, ty);
+            }
+            else if (_tco_s is EffectfulTy _tco_m3)
+            {
+                var effs = _tco_m3.Field0;
+                var ret = _tco_m3.Field1;
+                var _tco_0 = st;
+                var _tco_1 = ret;
+                st = _tco_0;
+                ty = _tco_1;
+                continue;
+            }
+            else if (_tco_s is ForAllTy _tco_m4)
+            {
+                var id = _tco_m4.Field0;
+                var body = _tco_m4.Field1;
+                var _tco_0 = st;
+                var _tco_1 = body;
+                st = _tco_0;
+                ty = _tco_1;
+                continue;
+            }
+            {
+                return ty;
+            }
+        }
+    }
+
+    public static CodexType strip_fun_args_emitter(CodexType ty)
+    {
+        while (true)
+        {
+            var _tco_s = ty;
+            if (_tco_s is FunTy _tco_m0)
+            {
+                var p = _tco_m0.Field0;
+                var r = _tco_m0.Field1;
+                var _tco_0 = r;
+                ty = _tco_0;
+                continue;
+            }
+            {
+                return ty;
+            }
+        }
+    }
+
+    public static CodexType lookup_type_binding(List<TypeBinding> bindings, string name)
+    {
+        return lookup_type_binding_loop(bindings, name, 0L, ((long)bindings.Count));
+    }
+
+    public static CodexType lookup_type_binding_loop(List<TypeBinding> bindings, string name, long i, long len)
+    {
+        while (true)
+        {
+            if ((i == len))
+            {
+                return new ErrorTy();
+            }
+            else
+            {
+                var b = bindings[(int)i];
+                if ((b.name == name))
+                {
+                    return b.bound_type;
+                }
+                else
+                {
+                    var _tco_0 = bindings;
+                    var _tco_1 = name;
+                    var _tco_2 = (i + 1L);
+                    var _tco_3 = len;
+                    bindings = _tco_0;
+                    name = _tco_1;
+                    i = _tco_2;
+                    len = _tco_3;
+                    continue;
+                }
+            }
+        }
+    }
+
+    public static long find_record_field_index(List<RecordField> fields, string name, long i)
+    {
+        while (true)
+        {
+            if ((i == ((long)fields.Count)))
+            {
+                return 0L;
+            }
+            else
+            {
+                var f = fields[(int)i];
+                if ((f.name.value == name))
+                {
+                    return i;
+                }
+                else
+                {
+                    var _tco_0 = fields;
+                    var _tco_1 = name;
+                    var _tco_2 = (i + 1L);
+                    fields = _tco_0;
+                    name = _tco_1;
+                    i = _tco_2;
+                    continue;
+                }
+            }
+        }
+    }
+
+    public static EvalFieldsResult emit_eval_record_fields(CodegenState st, List<IRFieldVal> fields, long i, List<FieldLocal> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)fields.Count)))
+            {
+                return new EvalFieldsResult(st, acc);
+            }
+            else
+            {
+                var fv = fields[(int)i];
+                var r = emit__x86_64_code_generator_emit_expr(st, fv.value);
+                var loc = alloc_local(r.state);
+                var st1 = store_local(loc.state, loc.reg, r.reg);
+                var _tco_0 = st1;
+                var _tco_1 = fields;
+                var _tco_2 = (i + 1L);
+                var _tco_3 = ((Func<List<FieldLocal>>)(() => { var _l = acc; _l.Add(new FieldLocal(fv.name, loc.reg)); return _l; }))();
+                st = _tco_0;
+                fields = _tco_1;
+                i = _tco_2;
+                acc = _tco_3;
+                continue;
+            }
+        }
+    }
+
+    public static long find_field_local_slot(List<FieldLocal> fls, string name, long i)
+    {
+        while (true)
+        {
+            if ((i == ((long)fls.Count)))
+            {
+                return (-1L);
+            }
+            else
+            {
+                var fl = fls[(int)i];
+                if ((fl.name == name))
+                {
+                    return fl.slot;
+                }
+                else
+                {
+                    var _tco_0 = fls;
+                    var _tco_1 = name;
+                    var _tco_2 = (i + 1L);
+                    fls = _tco_0;
+                    name = _tco_1;
+                    i = _tco_2;
+                    continue;
+                }
+            }
+        }
+    }
+
+    public static CodegenState emit_store_record_fields_by_type(CodegenState st, List<RecordField> type_fields, List<FieldLocal> field_locals, long ptr_loc, long i)
+    {
+        while (true)
+        {
+            if ((i == ((long)type_fields.Count)))
+            {
+                return st;
+            }
+            else
+            {
+                var tf = type_fields[(int)i];
+                var slot = find_field_local_slot(field_locals, tf.name.value, 0L);
+                if ((slot >= 0L))
+                {
+                    var val = load_local(st, slot);
+                    var ptr = load_local(val.state, ptr_loc);
+                    var st1 = st_append_text(ptr.state, mov_store(ptr.reg, val.reg, (i * 8L)));
+                    var _tco_0 = st1;
+                    var _tco_1 = type_fields;
+                    var _tco_2 = field_locals;
+                    var _tco_3 = ptr_loc;
+                    var _tco_4 = (i + 1L);
+                    st = _tco_0;
+                    type_fields = _tco_1;
+                    field_locals = _tco_2;
+                    ptr_loc = _tco_3;
+                    i = _tco_4;
+                    continue;
+                }
+                else
+                {
+                    var _tco_0 = st;
+                    var _tco_1 = type_fields;
+                    var _tco_2 = field_locals;
+                    var _tco_3 = ptr_loc;
+                    var _tco_4 = (i + 1L);
+                    st = _tco_0;
+                    type_fields = _tco_1;
+                    field_locals = _tco_2;
+                    ptr_loc = _tco_3;
+                    i = _tco_4;
+                    continue;
+                }
+            }
+        }
+    }
+
+    public static CodegenState emit_store_record_fields_by_list(CodegenState st, List<FieldLocal> field_locals, long ptr_loc, long i)
+    {
+        while (true)
+        {
+            if ((i == ((long)field_locals.Count)))
+            {
+                return st;
+            }
+            else
+            {
+                var fl = field_locals[(int)i];
+                var val = load_local(st, fl.slot);
+                var ptr = load_local(val.state, ptr_loc);
+                var st1 = st_append_text(ptr.state, mov_store(ptr.reg, val.reg, (i * 8L)));
+                var _tco_0 = st1;
+                var _tco_1 = field_locals;
+                var _tco_2 = ptr_loc;
+                var _tco_3 = (i + 1L);
+                st = _tco_0;
+                field_locals = _tco_1;
+                ptr_loc = _tco_2;
+                i = _tco_3;
+                continue;
+            }
+        }
+    }
+
+    public static EmitResult emit__x86_64_code_generator_emit_record(CodegenState st, List<IRFieldVal> fields, CodexType ty)
+    {
+        return ((Func<EvalFieldsResult, EmitResult>)((evaled) => ((Func<long, EmitResult>)((field_count) => ((Func<long, EmitResult>)((total_size) => ((Func<EmitResult, EmitResult>)((ptr_loc) => ((Func<EmitResult, EmitResult>)((ptr_tmp) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodexType, EmitResult>)((resolved_ty) => ((Func<CodegenState, EmitResult>)((st4) => load_local(st4, ptr_loc.reg)))((resolved_ty is RecordTy _mRecordTy75_ ? ((Func<List<RecordField>, CodegenState>)((type_fields) => ((Func<Name, CodegenState>)((rname) => emit_store_record_fields_by_type(st3, type_fields, evaled.field_locals, ptr_loc.reg, 0L)))((Name)_mRecordTy75_.Field0)))((List<RecordField>)_mRecordTy75_.Field1) : emit_store_record_fields_by_list(st3, evaled.field_locals, ptr_loc.reg, 0L)))))(resolve_constructed_ty(st, ty))))(st_append_text(st2, add_ri(reg_r10(), total_size)))))(store_local(st1, ptr_loc.reg, ptr_tmp.reg))))(st_append_text(ptr_tmp.state, mov_rr(ptr_tmp.reg, reg_r10())))))(alloc_temp(ptr_loc.state))))(alloc_local(evaled.state))))((field_count * 8L))))(((long)fields.Count))))(emit_eval_record_fields(st, fields, 0L, new List<FieldLocal>()));
+    }
+
+    public static EmitResult emit__x86_64_code_generator_emit_field_access(CodegenState st, IRExpr rec_expr, string field_name)
+    {
+        return ((Func<CodexType, EmitResult>)((rec_ty) => ((Func<EmitResult, EmitResult>)((rec_result) => (rec_ty is RecordTy _mRecordTy76_ ? ((Func<List<RecordField>, EmitResult>)((rfields) => ((Func<Name, EmitResult>)((rname) => ((Func<long, EmitResult>)((field_idx) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_load(rd.reg, rec_result.reg, (field_idx * 8L))), rd.reg)))(alloc_temp(rec_result.state))))(find_record_field_index(rfields, field_name, 0L))))((Name)_mRecordTy76_.Field0)))((List<RecordField>)_mRecordTy76_.Field1) : ((Func<CodegenState, EmitResult>)((st_err) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, new List<long>() { 15L, 11L }), rd.reg)))(alloc_temp(st_err))))(st_add_error(rec_result.state, cdx_ir_error(), string.Concat("\u000D\u001A\u0011\u000EI\u001C\u0011\u000D\u0017\u0016I\u000F\u0018\u0018\u000D\u0013\u0013E\u0002\u0019\u0012\u0015\u000D\u0013\u0010\u0017!\u000D\u0016\u0002\u000E\u001E\u001F\u000D\u0002\u001C\u0010\u0015\u0002\u001C\u0011\u000D\u0017\u0016\u0002G", field_name, "G"), ir_expr_span(rec_expr))))))(emit__x86_64_code_generator_emit_expr(st, rec_expr))))(resolve_constructed_ty(st, ir_expr_type(rec_expr)));
+    }
+
+    public static EmitResult emit__x86_64_code_generator_emit_match(CodegenState st, IRExpr scrut_expr, List<IRBranch> branches)
+    {
+        return ((Func<bool, EmitResult>)((saved_tail) => ((Func<CodexType, EmitResult>)((scrut_ty) => ((Func<EmitResult, EmitResult>)((scrut_result) => ((Func<EmitResult, EmitResult>)((scrut_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st1a) => ((Func<EmitResult, EmitResult>)((result_loc) => ((Func<MatchBranchState, EmitResult>)((mbs) => ((Func<MatchBranchState, EmitResult>)((mbs_final) => ((Func<CodegenState, EmitResult>)((st_end) => load_local(st_end, result_loc.reg)))(patch_match_end_jumps(mbs_final.cg_state, mbs_final.end_patches, 0L))))(emit_match_branch_loop(mbs, scrut_loc.reg, result_loc.reg, branches, 0L, ((long)branches.Count), scrut_ty))))(new MatchBranchState(st1a, new List<long>()))))(alloc_local(st1a))))(st_set_tail_pos(st1, saved_tail))))(store_local(scrut_loc.state, scrut_loc.reg, scrut_result.reg))))(alloc_local(scrut_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), scrut_expr))))(resolve_constructed_ty(st, ir_expr_type(scrut_expr)))))(st.tco.in_tail_pos);
+    }
+
+    public static MatchBranchState emit_match_branch_loop(MatchBranchState mbs, long scrut_loc, long result_loc, List<IRBranch> branches, long i, long total, CodexType scrut_ty)
+    {
+        while (true)
+        {
+            if ((i == total))
+            {
+                return mbs;
+            }
+            else
+            {
+                var b = branches[(int)i];
+                var mbs1 = emit_one_match_branch(mbs, scrut_loc, result_loc, b, (i < (total - 1L)), scrut_ty);
+                var _tco_0 = mbs1;
+                var _tco_1 = scrut_loc;
+                var _tco_2 = result_loc;
+                var _tco_3 = branches;
+                var _tco_4 = (i + 1L);
+                var _tco_5 = total;
+                var _tco_6 = scrut_ty;
+                mbs = _tco_0;
+                scrut_loc = _tco_1;
+                result_loc = _tco_2;
+                branches = _tco_3;
+                i = _tco_4;
+                total = _tco_5;
+                scrut_ty = _tco_6;
+                continue;
+            }
+        }
+    }
+
+    public static MatchBranchState emit_one_match_branch(MatchBranchState mbs, long scrut_loc, long result_loc, IRBranch branch, bool needs_jmp_end, CodexType scrut_ty)
+    {
+        return ((Func<EmitPatternResult, MatchBranchState>)((pat_result) => ((Func<EmitResult, MatchBranchState>)((body_result) => ((Func<CodegenState, MatchBranchState>)((st1) => ((Func<MatchBranchState, MatchBranchState>)((st2) => ((Func<MatchBranchState, MatchBranchState>)((st3) => st3))(((pat_result.next_branch_patch >= 0L) ? new MatchBranchState(patch_jcc_at(st2.cg_state, pat_result.next_branch_patch, st2.cg_state.text_len), st2.end_patches) : st2))))((needs_jmp_end ? ((Func<long, MatchBranchState>)((jmp_pos) => new MatchBranchState(st_append_text(st1, jmp(0L)), ((Func<List<long>>)(() => { var _l = mbs.end_patches; _l.Add(jmp_pos); return _l; }))())))(st1.text_len) : new MatchBranchState(st1, mbs.end_patches)))))(store_local(body_result.state, result_loc, body_result.reg))))(emit__x86_64_code_generator_emit_expr(pat_result.state, branch.body))))(emit__x86_64_code_generator_emit_pattern(mbs.cg_state, scrut_loc, branch.pattern, scrut_ty));
+    }
+
+    public static EmitPatternResult emit__x86_64_code_generator_emit_pattern(CodegenState st, long scrut_loc, IRPat pat, CodexType scrut_ty)
+    {
+        return ((Func<IRPat, EmitPatternResult>)((_scrutinee77_) => (_scrutinee77_ is IrWildPat _mIrWildPat77_ ? ((Func<SourceSpan, EmitPatternResult>)((sp) => new EmitPatternResult(st, (-1L))))((SourceSpan)_mIrWildPat77_.Field0) : (_scrutinee77_ is IrVarPat _mIrVarPat77_ ? ((Func<SourceSpan, EmitPatternResult>)((sp) => ((Func<CodexType, EmitPatternResult>)((ty) => ((Func<string, EmitPatternResult>)((name) => ((Func<EmitResult, EmitPatternResult>)((var_loc) => ((Func<EmitResult, EmitPatternResult>)((loaded) => ((Func<CodegenState, EmitPatternResult>)((st1) => new EmitPatternResult(add_local(st1, name, var_loc.reg), (-1L))))(store_local(loaded.state, var_loc.reg, loaded.reg))))(load_local(var_loc.state, scrut_loc))))(alloc_local(st))))((string)_mIrVarPat77_.Field0)))((CodexType)_mIrVarPat77_.Field1)))((SourceSpan)_mIrVarPat77_.Field2) : (_scrutinee77_ is IrCtorPat _mIrCtorPat77_ ? ((Func<SourceSpan, EmitPatternResult>)((sp) => ((Func<CodexType, EmitPatternResult>)((ty) => ((Func<List<IRPat>, EmitPatternResult>)((sub_pats) => ((Func<string, EmitPatternResult>)((name) => ((Func<EmitResult, EmitPatternResult>)((scrut_load) => ((Func<EmitResult, EmitPatternResult>)((tag_reg) => ((Func<CodegenState, EmitPatternResult>)((st1) => ((Func<CodexType, EmitPatternResult>)((resolve_ty) => ((Func<long, EmitPatternResult>)((expected_tag) => ((Func<CodegenState, EmitPatternResult>)((st2) => ((Func<long, EmitPatternResult>)((jcc_pos) => ((Func<CodegenState, EmitPatternResult>)((st3) => ((Func<CodegenState, EmitPatternResult>)((st4) => new EmitPatternResult(st4, jcc_pos)))(bind_ctor_fields(st3, scrut_loc, sub_pats, 0L))))(st_append_text(st2, jcc(cc_ne(), 0L)))))(st2.text_len)))(st_append_text(st1, cmp_ri(tag_reg.reg, expected_tag)))))((resolve_ty is SumTy _mSumTy78_ ? ((Func<List<SumCtor>, long>)((ctors) => ((Func<Name, long>)((sname) => find_ctor_tag(ctors, name, 0L)))((Name)_mSumTy78_.Field0)))((List<SumCtor>)_mSumTy78_.Field1) : 0L))))((scrut_ty is SumTy _mSumTy79_ ? ((Func<List<SumCtor>, CodexType>)((cs) => ((Func<Name, CodexType>)((sn) => scrut_ty))((Name)_mSumTy79_.Field0)))((List<SumCtor>)_mSumTy79_.Field1) : resolve_constructed_ty(st, ty)))))(st_append_text(tag_reg.state, mov_load(tag_reg.reg, scrut_load.reg, 0L)))))(alloc_temp(scrut_load.state))))(load_local(st, scrut_loc))))((string)_mIrCtorPat77_.Field0)))((List<IRPat>)_mIrCtorPat77_.Field1)))((CodexType)_mIrCtorPat77_.Field2)))((SourceSpan)_mIrCtorPat77_.Field3) : (_scrutinee77_ is IrLitPat _mIrLitPat77_ ? ((Func<SourceSpan, EmitPatternResult>)((sp) => ((Func<CodexType, EmitPatternResult>)((ty) => ((Func<string, EmitPatternResult>)((value) => new EmitPatternResult(st, (-1L))))((string)_mIrLitPat77_.Field0)))((CodexType)_mIrLitPat77_.Field1)))((SourceSpan)_mIrLitPat77_.Field2) : throw new InvalidOperationException("Non-exhaustive match")))))))(pat);
+    }
+
+    public static CodegenState bind_ctor_fields(CodegenState st, long scrut_loc, List<IRPat> sub_pats, long i)
+    {
+        while (true)
+        {
+            if ((i == ((long)sub_pats.Count)))
+            {
+                return st;
+            }
+            else
+            {
+                var sub = sub_pats[(int)i];
+                var _tco_s = sub;
+                if (_tco_s is IrVarPat _tco_m0)
+                {
+                    var name = _tco_m0.Field0;
+                    var ty = _tco_m0.Field1;
+                    var sp = _tco_m0.Field2;
+                    var field_loc = alloc_local(st);
+                    var scrut_load = load_local(field_loc.state, scrut_loc);
+                    var field_val = alloc_temp(scrut_load.state);
+                    var st1 = st_append_text(field_val.state, mov_load(field_val.reg, scrut_load.reg, ((1L + i) * 8L)));
+                    var st2 = store_local(st1, field_loc.reg, field_val.reg);
+                    var _tco_0 = add_local(st2, name, field_loc.reg);
+                    var _tco_1 = scrut_loc;
+                    var _tco_2 = sub_pats;
+                    var _tco_3 = (i + 1L);
+                    st = _tco_0;
+                    scrut_loc = _tco_1;
+                    sub_pats = _tco_2;
+                    i = _tco_3;
+                    continue;
+                }
+                {
+                    var _tco_0 = st;
+                    var _tco_1 = scrut_loc;
+                    var _tco_2 = sub_pats;
+                    var _tco_3 = (i + 1L);
+                    st = _tco_0;
+                    scrut_loc = _tco_1;
+                    sub_pats = _tco_2;
+                    i = _tco_3;
+                    continue;
+                }
+            }
+        }
+    }
+
+    public static CodegenState patch_match_end_jumps(CodegenState st, List<long> patches, long i)
+    {
+        while (true)
+        {
+            if ((i == ((long)patches.Count)))
+            {
+                return st;
+            }
+            else
+            {
+                var _tco_0 = patch_jmp_at(st, patches[(int)i], st.text_len);
+                var _tco_1 = patches;
+                var _tco_2 = (i + 1L);
+                st = _tco_0;
+                patches = _tco_1;
+                i = _tco_2;
+                continue;
+            }
+        }
+    }
+
+    public static SavedArgs emit_eval_list_elems(CodegenState st, List<IRExpr> elems, long i, List<long> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)elems.Count)))
+            {
+                return new SavedArgs(st, acc);
+            }
+            else
+            {
+                var r = emit__x86_64_code_generator_emit_expr(st, elems[(int)i]);
+                var loc = alloc_local(r.state);
+                var st1 = store_local(loc.state, loc.reg, r.reg);
+                var _tco_0 = st1;
+                var _tco_1 = elems;
+                var _tco_2 = (i + 1L);
+                var _tco_3 = ((Func<List<long>>)(() => { var _l = acc; _l.Add(loc.reg); return _l; }))();
+                st = _tco_0;
+                elems = _tco_1;
+                i = _tco_2;
+                acc = _tco_3;
+                continue;
+            }
+        }
+    }
+
+    public static CodegenState emit_store_list_elems(CodegenState st, List<long> elem_locals, long ptr_loc, long i)
+    {
+        while (true)
+        {
+            if ((i == ((long)elem_locals.Count)))
+            {
+                return st;
+            }
+            else
+            {
+                var val = load_local(st, elem_locals[(int)i]);
+                var ptr = load_local(val.state, ptr_loc);
+                var st1 = st_append_text(ptr.state, mov_store(ptr.reg, val.reg, (8L + (i * 8L))));
+                var _tco_0 = st1;
+                var _tco_1 = elem_locals;
+                var _tco_2 = ptr_loc;
+                var _tco_3 = (i + 1L);
+                st = _tco_0;
+                elem_locals = _tco_1;
+                ptr_loc = _tco_2;
+                i = _tco_3;
+                continue;
+            }
+        }
+    }
+
+    public static EmitResult emit__x86_64_code_generator_emit_list(CodegenState st, List<IRExpr> elems)
+    {
+        return ((Func<SavedArgs, EmitResult>)((saved) => ((Func<long, EmitResult>)((count) => ((Func<EmitResult, EmitResult>)((cap_tmp) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((ptr_loc) => ((Func<EmitResult, EmitResult>)((ptr_tmp) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((len_tmp) => ((Func<CodegenState, EmitResult>)((st7) => ((Func<EmitResult, EmitResult>)((ptr_load) => ((Func<CodegenState, EmitResult>)((st8) => ((Func<CodegenState, EmitResult>)((st9) => load_local(st9, ptr_loc.reg)))(emit_store_list_elems(st8, saved.locals, ptr_loc.reg, 0L))))(st_append_text(ptr_load.state, mov_store(ptr_load.reg, len_tmp.reg, 0L)))))(load_local(st7, ptr_loc.reg))))(st_append_text(len_tmp.state, li(len_tmp.reg, count)))))(alloc_temp(st6))))(st_append_text(st5, add_ri(reg_r10(), ((count + 1L) * 8L))))))(store_local(st4, ptr_loc.reg, ptr_tmp.reg))))(st_append_text(ptr_tmp.state, mov_rr(ptr_tmp.reg, reg_r10())))))(alloc_temp(ptr_loc.state))))(alloc_local(st3))))(st_append_text(st2, add_ri(reg_r10(), 8L)))))(st_append_text(st1, mov_store(reg_r10(), cap_tmp.reg, 0L)))))(st_append_text(cap_tmp.state, li(cap_tmp.reg, count)))))(alloc_temp(saved.state))))(((long)elems.Count))))(emit_eval_list_elems(st, elems, 0L, new List<long>()));
     }
 
     public static long int_mod(long n, long d)
@@ -9910,6 +9805,111 @@ public static class Codex_Codex_Codex
     public static CodegenState emit_linked_list_to_list_helper(CodegenState st)
     {
         return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<long, CodegenState>)((count_loop) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<long, CodegenState>)((count_done) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => ((Func<CodegenState, CodegenState>)((st23) => ((Func<long, CodegenState>)((fill_loop) => ((Func<CodegenState, CodegenState>)((st24) => ((Func<long, CodegenState>)((fill_done) => ((Func<CodegenState, CodegenState>)((st25) => ((Func<CodegenState, CodegenState>)((st26) => ((Func<CodegenState, CodegenState>)((st27) => ((Func<CodegenState, CodegenState>)((st28) => ((Func<CodegenState, CodegenState>)((st29) => ((Func<CodegenState, CodegenState>)((st30) => ((Func<CodegenState, CodegenState>)((st31) => ((Func<CodegenState, CodegenState>)((st32) => ((Func<CodegenState, CodegenState>)((st33) => ((Func<CodegenState, CodegenState>)((st34) => ((Func<CodegenState, CodegenState>)((st35) => ((Func<CodegenState, CodegenState>)((st36) => ((Func<CodegenState, CodegenState>)((st37) => ((Func<CodegenState, CodegenState>)((st38) => ((Func<CodegenState, CodegenState>)((st39) => ((Func<CodegenState, CodegenState>)((st40) => st_append_text(st40, x86_ret())))(st_append_text(st39, pop_r(reg_rbp())))))(st_append_text(st38, pop_r(reg_rbx())))))(st_append_text(st37, pop_r(reg_r12())))))(st_append_text(st36, pop_r(reg_r13())))))(st_append_text(st35, mov_rr(reg_rax(), reg_r13())))))(patch_jcc_at(st34, fill_done, st34.text_len))))(st_append_text(st33, jmp((fill_loop - (st33.text_len + 5L)))))))(st_append_text(st32, mov_load(reg_rcx(), reg_rcx(), 8L)))))(st_append_text(st31, mov_store(reg_rsi(), reg_rax(), 0L)))))(st_append_text(st30, add_rr(reg_rsi(), reg_r13())))))(st_append_text(st29, shl_ri(reg_rsi(), 3L)))))(st_append_text(st28, add_ri(reg_rsi(), 1L)))))(st_append_text(st27, mov_rr(reg_rsi(), reg_rdx())))))(st_append_text(st26, mov_load(reg_rax(), reg_rcx(), 0L)))))(st_append_text(st25, sub_ri(reg_rdx(), 1L)))))(st_append_text(st24, jcc(cc_e(), 0L)))))(st24.text_len)))(st_append_text(st23, test_rr(reg_rcx(), reg_rcx())))))(st23.text_len)))(st_append_text(st22, mov_rr(reg_rdx(), reg_r12())))))(st_append_text(st21, mov_rr(reg_rcx(), reg_rbx())))))(st_append_text(st20, add_rr(reg_r10(), reg_rax())))))(st_append_text(st19, shl_ri(reg_rax(), 3L)))))(st_append_text(st18, add_ri(reg_rax(), 1L)))))(st_append_text(st17, mov_rr(reg_rax(), reg_r12())))))(st_append_text(st16, mov_store(reg_r13(), reg_r12(), 0L)))))(st_append_text(st15, mov_rr(reg_r13(), reg_r10())))))(patch_jcc_at(st14, count_done, st14.text_len))))(st_append_text(st13, jmp((count_loop - (st13.text_len + 5L)))))))(st_append_text(st12, mov_load(reg_rcx(), reg_rcx(), 8L)))))(st_append_text(st11, add_ri(reg_r12(), 1L)))))(st_append_text(st10, jcc(cc_e(), 0L)))))(st10.text_len)))(st_append_text(st9, test_rr(reg_rcx(), reg_rcx())))))(st9.text_len)))(st_append_text(st8, mov_rr(reg_rcx(), reg_rbx())))))(st_append_text(st7, li(reg_r12(), 0L)))))(st_append_text(st6, mov_rr(reg_rbx(), reg_rdi())))))(st_append_text(st5, push_r(reg_r13())))))(st_append_text(st4, push_r(reg_r12())))))(st_append_text(st3, push_r(reg_rbx())))))(st_append_text(st2, mov_rr(reg_rbp(), reg_rsp())))))(st_append_text(st1, push_r(reg_rbp())))))(record_func_offset(st, "UU\u0017\u0011\u0012\"\u000D\u0016U\u0017\u0011\u0013\u000EU\u000E\u0010U\u0017\u0011\u0013\u000E"));
+    }
+
+    public static List<long> multiboot_header()
+    {
+        return Enumerable.Concat(write_i32(464367618L), Enumerable.Concat(write_i32(0L), write_i32(3830599678L)).ToList()).ToList();
+    }
+
+    public static List<long> tramp_clear_pages()
+    {
+        return new List<long>() { 250L, 191L, 0L, 16L, 0L, 0L, 185L, 0L, 12L, 0L, 0L, 49L, 192L, 243L, 171L };
+    }
+
+    public static List<long> tramp_page_tables()
+    {
+        return new List<long>() { 199L, 5L, 0L, 16L, 0L, 0L, 3L, 32L, 0L, 0L, 199L, 5L, 0L, 32L, 0L, 0L, 3L, 48L, 0L, 0L, 191L, 0L, 48L, 0L, 0L, 185L, 0L, 1L, 0L, 0L, 184L, 131L, 0L, 0L, 0L, 137L, 7L, 199L, 71L, 4L, 0L, 0L, 0L, 0L, 131L, 199L, 8L, 5L, 0L, 0L, 32L, 0L, 73L, 117L, 236L };
+    }
+
+    public static List<long> tramp_enable_long_mode()
+    {
+        return new List<long>() { 184L, 0L, 16L, 0L, 0L, 15L, 34L, 216L, 15L, 32L, 224L, 131L, 200L, 32L, 15L, 34L, 224L, 185L, 128L, 0L, 0L, 192L, 15L, 50L, 13L, 0L, 1L, 0L, 0L, 15L, 48L, 15L, 32L, 192L, 13L, 0L, 0L, 0L, 128L, 15L, 34L, 192L };
+    }
+
+    public static List<long> trampoline_code()
+    {
+        return Enumerable.Concat(tramp_clear_pages(), Enumerable.Concat(tramp_page_tables(), tramp_enable_long_mode()).ToList()).ToList();
+    }
+
+    public static List<long> tramp_gdt_data()
+    {
+        return new List<long>() { 235L, 30L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 255L, 255L, 0L, 0L, 0L, 154L, 175L, 0L, 255L, 255L, 0L, 0L, 0L, 146L, 207L, 0L };
+    }
+
+    public static List<long> trampoline_gdt_section()
+    {
+        return Enumerable.Concat(tramp_gdt_data(), Enumerable.Concat(write_i16(23L), Enumerable.Concat(write_i32((bare_metal_load_addr() + 126L)), Enumerable.Concat(new List<long>() { 15L, 1L, 21L }, Enumerable.Concat(write_i32((bare_metal_load_addr() + 150L)), new List<long>() { 234L, 0L, 0L, 0L, 0L, 8L, 0L }).ToList()).ToList()).ToList()).ToList()).ToList();
+    }
+
+    public static TrampolineResult bare_metal_trampoline()
+    {
+        return ((Func<List<long>, TrampolineResult>)((bytes) => new TrampolineResult(bytes, 163L)))(Enumerable.Concat(multiboot_header(), Enumerable.Concat(trampoline_code(), trampoline_gdt_section()).ToList()).ToList());
+    }
+
+    public static CodegenState emit_out_byte(CodegenState st, long port, long value)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => st_append_text(st2, out_dx_al())))(st_append_text(st1, li(reg_rax(), value)))))(st_append_text(st, li(reg_rdx(), port)));
+    }
+
+    public static CodegenState emit_com1_init(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => emit_out_byte(st5, 1020L, 11L)))(emit_out_byte(st4, 1018L, 199L))))(emit_out_byte(st3, 1019L, 3L))))(emit_out_byte(st2, 1017L, 0L))))(emit_out_byte(st1, 1016L, 1L))))(emit_out_byte(st, 1019L, 128L));
+    }
+
+    public static CodegenState emit_serial_wait_and_send(CodegenState st, long byte_val)
+    {
+        return ((Func<long, CodegenState>)((wait_top) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<long, CodegenState>)((jne_pos) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => st_append_text(st8, out_dx_al())))(st_append_text(st7, li(reg_rax(), byte_val)))))(st_append_text(st6, li(reg_rdx(), 1016L)))))(patch_jcc_at(st5, jne_pos, st5.text_len))))(st_append_text(st4, jmp((wait_top - (st4.text_len + 5L)))))))(st_append_text(st3, jcc(cc_ne(), 0L)))))(st3.text_len)))(st_append_text(st2, new List<long>() { 168L, 32L }))))(st_append_text(st1, new List<long>() { 236L }))))(st_append_text(st, li(reg_rdx(), 1021L)))))(st.text_len);
+    }
+
+    public static CodegenState emit_serial_send_rdi(CodegenState st)
+    {
+        return ((Func<long, CodegenState>)((wait_top) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<long, CodegenState>)((jne_pos) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => st_append_text(st8, out_dx_al())))(st_append_text(st7, mov_rr(reg_rax(), reg_rdi())))))(st_append_text(st6, li(reg_rdx(), 1016L)))))(patch_jcc_at(st5, jne_pos, st5.text_len))))(st_append_text(st4, jmp((wait_top - (st4.text_len + 5L)))))))(st_append_text(st3, jcc(cc_ne(), 0L)))))(st3.text_len)))(st_append_text(st2, new List<long>() { 168L, 32L }))))(st_append_text(st1, new List<long>() { 236L }))))(st_append_text(st, li(reg_rdx(), 1021L)))))(st.text_len);
+    }
+
+    public static ItoaState emit_itoa_zero_check(CodegenState st)
+    {
+        return ((Func<CodegenState, ItoaState>)((st1) => ((Func<CodegenState, ItoaState>)((st2) => ((Func<long, ItoaState>)((jne_pos) => ((Func<CodegenState, ItoaState>)((st3) => ((Func<CodegenState, ItoaState>)((st4) => ((Func<long, ItoaState>)((jmp_pos) => ((Func<CodegenState, ItoaState>)((st5) => ((Func<CodegenState, ItoaState>)((st6) => new ItoaState(st6, jmp_pos)))(patch_jcc_at(st5, jne_pos, st5.text_len))))(st_append_text(st4, jmp(0L)))))(st4.text_len)))(emit_serial_wait_and_send(st3, 48L))))(st_append_text(st2, jcc(cc_ne(), 0L)))))(st2.text_len)))(st_append_text(st1, test_rr(reg_rbx(), reg_rbx())))))(st_append_text(st, mov_rr(reg_rbx(), reg_rax())));
+    }
+
+    public static CodegenState emit_itoa_sign_and_digits(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((jns_pos) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<long, CodegenState>)((loop_top) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => st_append_text(st15, jcc(cc_ne(), (loop_top - (st15.text_len + 6L))))))(st_append_text(st14, test_rr(reg_rbx(), reg_rbx())))))(st_append_text(st13, add_ri(reg_rcx(), 1L)))))(st_append_text(st12, push_r(reg_rdx())))))(st_append_text(st11, add_ri(reg_rdx(), 48L)))))(st_append_text(st10, mov_rr(reg_rbx(), reg_rax())))))(st_append_text(st9, idiv_r(reg_r11())))))(st_append_text(st8, cqo()))))(st_append_text(st7, mov_rr(reg_rax(), reg_rbx())))))(st7.text_len)))(st_append_text(st6, li(reg_r11(), 10L)))))(st_append_text(st5, li(reg_rcx(), 0L)))))(patch_jcc_at(st4, jns_pos, st4.text_len))))(st_append_text(st3, neg_r(reg_rbx())))))(emit_serial_wait_and_send(st2, 45L))))(st_append_text(st1, jcc(cc_ge(), 0L)))))(st1.text_len)))(st_append_text(st, test_rr(reg_rbx(), reg_rbx())));
+    }
+
+    public static CodegenState emit_itoa_print_loop(CodegenState st)
+    {
+        return ((Func<long, CodegenState>)((loop_top) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((je_pos) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => patch_jcc_at(st8, je_pos, st8.text_len)))(st_append_text(st7, jmp((loop_top - (st7.text_len + 5L)))))))(st_append_text(st6, sub_ri(reg_rcx(), 1L)))))(st_append_text(st5, pop_r(reg_rcx())))))(emit_serial_send_rdi(st4))))(st_append_text(st3, push_r(reg_rcx())))))(st_append_text(st2, pop_r(reg_rdi())))))(st_append_text(st1, jcc(cc_e(), 0L)))))(st1.text_len)))(st_append_text(st, test_rr(reg_rcx(), reg_rcx())))))(st.text_len);
+    }
+
+    public static CodegenState emit_inline_itoa_and_print(CodegenState st)
+    {
+        return ((Func<ItoaState, CodegenState>)((zero) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => patch_jmp_at(st2, zero.jmp_done_zero_pos, st2.text_len)))(emit_itoa_print_loop(st1))))(emit_itoa_sign_and_digits(zero.cg))))(emit_itoa_zero_check(st));
+    }
+
+    public static CodegenState emit_serial_wait_thr(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((wait_top) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<long, CodegenState>)((jne_pos) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => st_append_text(st7, pop_r(reg_rax()))))(patch_jcc_at(st6, jne_pos, st6.text_len))))(st_append_text(st5, jmp((wait_top - (st5.text_len + 5L)))))))(st_append_text(st4, jcc(cc_ne(), 0L)))))(st4.text_len)))(st_append_text(st3, new List<long>() { 168L, 32L }))))(st_append_text(st2, new List<long>() { 236L }))))(st_append_text(st1, li(reg_rdx(), 1021L)))))(st1.text_len)))(st_append_text(st, push_r(reg_rax())));
+    }
+
+    public static CodegenState emit_print_newline(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => st_append_text(st3, out_dx_al())))(st_append_text(st2, li(reg_rdx(), 1016L)))))(st_append_text(st1, li(reg_rax(), 10L)))))(emit_serial_wait_thr(st));
+    }
+
+    public static CodegenState emit_print_text_loop(CodegenState st, long saved_ptr, long saved_table, long saved_len, long saved_idx)
+    {
+        return ((Func<long, CodegenState>)((loop_top) => ((Func<EmitResult, CodegenState>)((idx) => ((Func<EmitResult, CodegenState>)((len_check) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((done_jump) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<EmitResult, CodegenState>)((ptr_l) => ((Func<EmitResult, CodegenState>)((idx2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<EmitResult, CodegenState>)((tbl) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<EmitResult, CodegenState>)((idx3) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => patch_jcc_at(st13, done_jump, st13.text_len)))(st_append_text(st12, jmp((loop_top - (st12.text_len + 5L)))))))(store_local(st11, saved_idx, idx3.reg))))(st_append_text(idx3.state, add_ri(idx3.reg, 1L)))))(load_local(st10, saved_idx))))(st_append_text(st9, out_dx_al()))))(st_append_text(st8, li(reg_rdx(), 1016L)))))(emit_serial_wait_thr(st7))))(st_append_text(st6, movzx_byte(reg_rax(), reg_rax(), 0L)))))(st_append_text(tbl.state, add_rr(reg_rax(), tbl.reg)))))(load_local(st5, saved_table))))(st_append_text(st4, movzx_byte(reg_rax(), reg_rsi(), 0L)))))(st_append_text(st3, add_rr(reg_rsi(), idx2.reg)))))(st_append_text(idx2.state, lea(reg_rsi(), ptr_l.reg, 8L)))))(load_local(ptr_l.state, saved_idx))))(load_local(st2, saved_ptr))))(st_append_text(st1, jcc(cc_ge(), 0L)))))(st1.text_len)))(st_append_text(len_check.state, cmp_rr(idx.reg, len_check.reg)))))(load_local(idx.state, saved_len))))(load_local(st, saved_idx))))(st.text_len);
+    }
+
+    public static CodegenState emit_print_text(CodegenState st, long ptr_reg)
+    {
+        return ((Func<EmitResult, CodegenState>)((saved_ptr) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<EmitResult, CodegenState>)((saved_table) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st2a) => ((Func<EmitResult, CodegenState>)((ptr_ld) => ((Func<EmitResult, CodegenState>)((tmp_len) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<EmitResult, CodegenState>)((saved_len) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<EmitResult, CodegenState>)((saved_idx) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => emit_print_newline(st7)))(emit_print_text_loop(st6, saved_ptr.reg, saved_table.reg, saved_len.reg, saved_idx.reg))))(store_local(st5, saved_idx.reg, reg_r11()))))(st_append_text(saved_idx.state, li(reg_r11(), 0L)))))(alloc_local(st4))))(store_local(saved_len.state, saved_len.reg, tmp_len.reg))))(alloc_local(st3))))(st_append_text(tmp_len.state, mov_load(tmp_len.reg, ptr_ld.reg, 0L)))))(alloc_temp(ptr_ld.state))))(load_local(st2a, saved_ptr.reg))))(store_local(st2, saved_table.reg, reg_r11()))))(emit_load_rodata_addr(saved_table.state, reg_r11(), cce_to_unicode_rodata_offset()))))(alloc_local(st1))))(store_local(saved_ptr.state, saved_ptr.reg, ptr_reg))))(alloc_local(st));
+    }
+
+    public static CodegenState emit_print_text_no_newline(CodegenState st, long ptr_reg)
+    {
+        return ((Func<EmitResult, CodegenState>)((saved_ptr) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<EmitResult, CodegenState>)((saved_table) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st2a) => ((Func<EmitResult, CodegenState>)((ptr_ld) => ((Func<EmitResult, CodegenState>)((tmp_len) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<EmitResult, CodegenState>)((saved_len) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<EmitResult, CodegenState>)((saved_idx) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => emit_print_text_loop(st6, saved_ptr.reg, saved_table.reg, saved_len.reg, saved_idx.reg)))(store_local(st5, saved_idx.reg, reg_r11()))))(st_append_text(saved_idx.state, li(reg_r11(), 0L)))))(alloc_local(st4))))(store_local(saved_len.state, saved_len.reg, tmp_len.reg))))(alloc_local(st3))))(st_append_text(tmp_len.state, mov_load(tmp_len.reg, ptr_ld.reg, 0L)))))(alloc_temp(ptr_ld.state))))(load_local(st2a, saved_ptr.reg))))(store_local(st2, saved_table.reg, reg_r11()))))(emit_load_rodata_addr(saved_table.state, reg_r11(), cce_to_unicode_rodata_offset()))))(alloc_local(st1))))(store_local(saved_ptr.state, saved_ptr.reg, ptr_reg))))(alloc_local(st));
     }
 
     public static CodexType ir_expr_type(IRExpr e)
