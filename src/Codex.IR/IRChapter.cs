@@ -89,13 +89,13 @@ public sealed record IRWildcardPattern : IRPattern;
 
 public sealed record IRError(string Message, CodexType Type) : IRExpr(Type);
 
-public sealed record IRDo(ImmutableArray<IRDoStatement> Statements, CodexType Type) : IRExpr(Type);
+public sealed record IRAct(ImmutableArray<IRActStatement> Statements, CodexType Type) : IRExpr(Type);
 
-public abstract record IRDoStatement;
+public abstract record IRActStatement;
 
-public sealed record IRDoBind(string Name, CodexType NameType, IRExpr Value) : IRDoStatement;
+public sealed record IRActBind(string Name, CodexType NameType, IRExpr Value) : IRActStatement;
 
-public sealed record IRDoExec(IRExpr Expression) : IRDoStatement;
+public sealed record IRActExec(IRExpr Expression) : IRActStatement;
 
 public sealed record IRRecord(string TypeName, ImmutableArray<(string FieldName, IRExpr Value)> Fields, CodexType Type)
     : IRExpr(Type);

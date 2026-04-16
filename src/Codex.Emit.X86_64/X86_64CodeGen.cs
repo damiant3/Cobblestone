@@ -210,8 +210,8 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
             IRMatch match => match.Branches.Any(b => HasTailCall(b.Body, funcName)),
             IRRegion region => HasTailCall(region.Body, funcName),
             IRApply app => IsSelfCall(app, funcName),
-            IRDo doExpr => doExpr.Statements.Length > 0 &&
-                doExpr.Statements[^1] is IRDoExec exec &&
+            IRAct actExpr => actExpr.Statements.Length > 0 &&
+                actExpr.Statements[^1] is IRActExec exec &&
                 HasTailCall(exec.Expression, funcName),
             _ => false
         };
@@ -796,7 +796,7 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         IRLet letExpr => EmitLet(letExpr),
         IRApply apply => EmitApply(apply),
         IRNegate neg => EmitNegate(neg),
-        IRDo doExpr => EmitDo(doExpr),
+        IRAct actExpr => EmitAct(actExpr),
         IRRecord rec => EmitRecord(rec),
         IRFieldAccess fa => EmitFieldAccess(fa),
         IRMatch match => EmitMatch(match),
@@ -1203,18 +1203,18 @@ sealed class X86_64CodeGen(X86_64Target target = X86_64Target.LinuxUser, bool di
         return EmitExpr(letExpr.Body);
     }
 
-    byte EmitDo(IRDo doExpr)
+    byte EmitAct(IRAct actExpr)
     {
         byte lastReg = AllocTemp();
         X86_64Encoder.Li(m_text, lastReg, 0);
-        foreach (IRDoStatement stmt in doExpr.Statements)
+        foreach (IRActStatement stmt in actExpr.Statements)
         {
             switch (stmt)
             {
-                case IRDoExec exec:
+                case IRActExec exec:
                     lastReg = EmitExpr(exec.Expression);
                     break;
-                case IRDoBind bind:
+                case IRActBind bind:
                     byte valReg = EmitExpr(bind.Value);
                     int savedReg = AllocLocal();
                     StoreLocal(savedReg, valReg);

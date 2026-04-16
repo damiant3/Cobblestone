@@ -209,8 +209,8 @@ sealed partial class WasmModuleBuilder
                 EmitApply(body, apply, localMap, ref nextLocal, localTypes);
                 break;
 
-            case IRDo doExpr:
-                EmitDo(body, doExpr, localMap, ref nextLocal, localTypes);
+            case IRAct actExpr:
+                EmitAct(body, actExpr, localMap, ref nextLocal, localTypes);
                 break;
 
             case IRNegate neg:
@@ -539,25 +539,25 @@ sealed partial class WasmModuleBuilder
         return true;
     }
 
-    void EmitDo(MemoryStream body, IRDo doExpr,
+    void EmitAct(MemoryStream body, IRAct actExpr,
         ValueMap<string, int> localMap, ref int nextLocal, List<byte> localTypes)
     {
-        for (int i = 0; i < doExpr.Statements.Length; i++)
+        for (int i = 0; i < actExpr.Statements.Length; i++)
         {
-            IRDoStatement stmt = doExpr.Statements[i];
+            IRActStatement stmt = actExpr.Statements[i];
             switch (stmt)
             {
-                case IRDoExec doExecStmt:
+                case IRActExec doExecStmt:
                     EmitExpr(body, doExecStmt.Expression, localMap, ref nextLocal, localTypes, doExecStmt.Expression.Type);
                     // Drop result if not the last statement or if void
-                    if (i < doExpr.Statements.Length - 1 && doExecStmt.Expression.Type is not (VoidType or NothingType))
+                    if (i < actExpr.Statements.Length - 1 && doExecStmt.Expression.Type is not (VoidType or NothingType))
                     {
                         body.WriteByte(OpDrop);
                     }
 
                     break;
 
-                case IRDoBind doBind:
+                case IRActBind doBind:
                     EmitExpr(body, doBind.Value, localMap, ref nextLocal, localTypes, doBind.NameType);
                     int bindLocal = nextLocal++;
                     localTypes.Add(WasmTypeFor(doBind.NameType));

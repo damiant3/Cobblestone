@@ -285,8 +285,8 @@ public sealed class CodexEmitter : ICodeEmitter
                 EmitMatch(sb, match, indent);
                 break;
 
-            case IRDo doExpr:
-                EmitDo(sb, doExpr, indent);
+            case IRAct actExpr:
+                EmitAct(sb, actExpr, indent);
                 break;
 
             case IRRecord rec:
@@ -650,26 +650,29 @@ public sealed class CodexEmitter : ICodeEmitter
         }
     }
 
-    // ── Do blocks ────────────────────────────────────────────────
+    // ── Act blocks ────────────────────────────────────────────────
 
-    void EmitDo(StringBuilder sb, IRDo doExpr, int indent)
+    void EmitAct(StringBuilder sb, IRAct actExpr, int indent)
     {
-        sb.Append("do");
-        foreach (IRDoStatement stmt in doExpr.Statements)
+        sb.Append("act");
+        foreach (IRActStatement stmt in actExpr.Statements)
         {
             sb.AppendLine();
             EmitIndent(sb, indent + 1);
             switch (stmt)
             {
-                case IRDoBind bind:
+                case IRActBind bind:
                     sb.Append($"{bind.Name} <- ");
                     EmitExpr(sb, bind.Value, indent + 1);
                     break;
-                case IRDoExec exec:
+                case IRActExec exec:
                     EmitExpr(sb, exec.Expression, indent + 1);
                     break;
             }
         }
+        sb.AppendLine();
+        EmitIndent(sb, indent);
+        sb.Append("end");
     }
 
     // ── Record construction ──────────────────────────────────────
@@ -734,7 +737,7 @@ public sealed class CodexEmitter : ICodeEmitter
         or IRCharLit or IRName or IRFieldAccess;
 
     static bool IsCompactExpr(IRExpr expr) => expr is not
-        (IRIf or IRLet or IRMatch or IRDo or IRRecord);
+        (IRIf or IRLet or IRMatch or IRAct or IRRecord);
 
     static bool AllSimpleFields(IRRecord rec)
     {

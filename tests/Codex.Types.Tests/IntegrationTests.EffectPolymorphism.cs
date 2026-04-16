@@ -53,9 +53,10 @@ public partial class IntegrationTests
     {
         string source =
             "log-and-apply : (a -> [e] b) -> a -> [Console, e] b\n" +
-            "log-and-apply (f) (x) = do\n" +
+            "log-and-apply (f) (x) = act\n" +
             "  print-line \"applying\"\n" +
-            "  f (x)\n";
+            "  f (x)\n" +
+            "end\n";
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
     }
@@ -65,9 +66,10 @@ public partial class IntegrationTests
     {
         string source =
             "pure-only : Integer -> Integer\n" +
-            "pure-only (x) = do\n" +
+            "pure-only (x) = act\n" +
             "  print-line \"oops\"\n" +
-            "  x\n";
+            "  x\n" +
+            "end\n";
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.True(diag.HasErrors);
         Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.EffectNotDeclared);

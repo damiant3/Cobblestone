@@ -386,7 +386,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         List<RecordTypeFieldNode> fields = [];
         while (Current.Kind != TokenKind.RightBrace && !IsAtEnd)
         {
-            if (Current.Kind == TokenKind.Identifier)
+            if (IsIdentifierLike(Current.Kind))
             {
                 Token fieldName = Current;
                 Advance();
@@ -454,7 +454,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
             {
                 Advance();
                 Token? fieldName = null;
-                if (Current.Kind == TokenKind.Identifier && Peek(1)?.Kind == TokenKind.Colon)
+                if (IsIdentifierLike(Current.Kind) && Peek(1)?.Kind == TokenKind.Colon)
                 {
                     fieldName = Current;
                     Advance();
@@ -636,6 +636,19 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         return Current;
     }
 
+    /// <summary>
+    /// Returns true when the token can stand in for an identifier in a position that
+    /// unambiguously needs one (record field decl, field access, record expr field,
+    /// let-binding name, parameter name, etc.). Phase A added `act`/`end`/`qed` as
+    /// reserved keywords, but existing code uses them as identifiers in non-ambiguous
+    /// contexts — e.g. `SourceSpan = record { start, end, ... }` or `let end = ...`.
+    /// </summary>
+    static bool IsIdentifierLike(TokenKind kind) => kind is
+        TokenKind.Identifier
+        or TokenKind.ActKeyword
+        or TokenKind.EndKeyword
+        or TokenKind.QedKeyword;
+
     void SkipNewlines()
     {
         while (Current.Kind is TokenKind.Newline or TokenKind.Indent or TokenKind.Dedent)
@@ -649,8 +662,8 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         or TokenKind.IfKeyword or TokenKind.IsKeyword or TokenKind.OtherwiseKeyword
         or TokenKind.ThenKeyword or TokenKind.ElseKeyword
         or TokenKind.WhenKeyword or TokenKind.WhereKeyword or TokenKind.SuchThatKeyword
-        or TokenKind.DoKeyword or TokenKind.RecordKeyword or TokenKind.CitesKeyword
-        or TokenKind.ClaimKeyword or TokenKind.ProofKeyword
+        or TokenKind.ActKeyword or TokenKind.EndKeyword or TokenKind.RecordKeyword or TokenKind.CitesKeyword
+        or TokenKind.ClaimKeyword or TokenKind.ProofKeyword or TokenKind.QedKeyword
         or TokenKind.ForAllKeyword or TokenKind.ThereExistsKeyword
         or TokenKind.LinearKeyword or TokenKind.EffectKeyword or TokenKind.WithKeyword
         or TokenKind.TrueKeyword or TokenKind.FalseKeyword;
@@ -734,7 +747,8 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
 
             if (Current.Kind is TokenKind.ThenKeyword or TokenKind.ElseKeyword
                 or TokenKind.InKeyword or TokenKind.IfKeyword or TokenKind.IsKeyword
-                or TokenKind.WhenKeyword or TokenKind.DoKeyword
+                or TokenKind.WhenKeyword
+                or TokenKind.ActKeyword or TokenKind.EndKeyword
                 or TokenKind.LetKeyword
                 or TokenKind.RightParen or TokenKind.RightBracket or TokenKind.RightBrace)
             {

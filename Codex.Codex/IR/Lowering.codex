@@ -71,7 +71,7 @@ Section: Expression Lowering
         is RecordTy (rn) (rf) -> rec-ir
         is otherwise -> set-ir-expr-type rec-ir resolved-rec-ty
      in IrFieldAccess fixed-rec (field.value) actual-field-ty (lowered-span s)
-    is ADoExpr (stmts) (s) -> lower-do stmts ty ctx (lowered-span s)
+    is AActExpr (stmts) (s) -> lower-act stmts ty ctx (lowered-span s)
     is AHandleExpr (eff) (body) (clauses) (s) -> lower-handle eff body clauses ty ctx (lowered-span s)
     is AErrorExpr (msg) (s) -> IrError msg ty (lowered-span s)
 
@@ -288,7 +288,7 @@ Section: Match Lowering
    in if c.name.value == ctor-name then if field-idx < list-length (c.fields) then list-at (c.fields) field-idx else ErrorTy
       else find-ctor-field-type ctors ctor-name field-idx (i + 1)
 
-Section: Collections and Do
+Section: Collections and Act
   lower-list : List AExpr -> CodexType -> LowerCtx -> SourceSpan -> IRExpr
   lower-list (elems) (ty) (ctx) (sp) =
    let resolved = deep-resolve (ctx.ust) ty
@@ -336,30 +336,30 @@ Section: Collections and Do
     span = f.span
    }))
 
-  lower-do : List ADoStmt -> CodexType -> LowerCtx -> SourceSpan -> IRExpr
-  lower-do (stmts) (ty) (ctx) (sp) =
-   let lowered = lower-do-stmts-loop stmts ty ctx 0 (list-length stmts)
-   in let do-ty = do-block-type lowered ty
-   in IrDo lowered do-ty sp
+  lower-act : List AActStmt -> CodexType -> LowerCtx -> SourceSpan -> IRExpr
+  lower-act (stmts) (ty) (ctx) (sp) =
+   let lowered = lower-act-stmts-loop stmts ty ctx 0 (list-length stmts)
+   in let act-ty = act-block-type lowered ty
+   in IrAct lowered act-ty sp
 
-  do-block-type : List IRDoStmt -> CodexType -> CodexType
-  do-block-type (stmts) (fallback) =
+  act-block-type : List IRActStmt -> CodexType -> CodexType
+  act-block-type (stmts) (fallback) =
    if list-length stmts == 0 then fallback
    else let last = list-at stmts (list-length stmts - 1)
    in when last
      is IrDoExec (e) (sp) -> ir-expr-type e
      is IrDoBind (nm) (bty) (e) (sp) -> bty
 
-  lower-do-stmts-loop : List ADoStmt -> CodexType -> LowerCtx -> Integer -> Integer -> List IRDoStmt
-  lower-do-stmts-loop (stmts) (ty) (ctx) (i) (len) =
-   lower-do-stmts-acc stmts ty ctx i len []
+  lower-act-stmts-loop : List AActStmt -> CodexType -> LowerCtx -> Integer -> Integer -> List IRActStmt
+  lower-act-stmts-loop (stmts) (ty) (ctx) (i) (len) =
+   lower-act-stmts-acc stmts ty ctx i len []
 
-  lower-do-stmts-acc : List ADoStmt -> CodexType -> LowerCtx -> Integer -> Integer -> List IRDoStmt -> List IRDoStmt
-  lower-do-stmts-acc (stmts) (ty) (ctx) (i) (len) (acc) =
+  lower-act-stmts-acc : List AActStmt -> CodexType -> LowerCtx -> Integer -> Integer -> List IRActStmt -> List IRActStmt
+  lower-act-stmts-acc (stmts) (ty) (ctx) (i) (len) (acc) =
    if i == len then acc
    else let s = list-at stmts i
    in when s
-     is ADoBindStmt (name) (val) (sp) ->
+     is AActBindStmt (name) (val) (sp) ->
       let val-ir = lower-expr val ty ctx
    in let val-ty = ir-expr-type val-ir
    in let ctx2 = LowerCtx {
@@ -370,9 +370,9 @@ Section: Collections and Do
        base = ctx.base,
        ust = ctx.ust
       }
-   in lower-do-stmts-acc stmts ty ctx2 (i + 1) len (list-snoc acc (IrDoBind (name.value) val-ty val-ir (lowered-span sp)))
-     is ADoExprStmt (e) (sp) ->
-      lower-do-stmts-acc stmts ty ctx (i + 1) len (list-snoc acc (IrDoExec (lower-expr e ty ctx) (lowered-span sp)))
+   in lower-act-stmts-acc stmts ty ctx2 (i + 1) len (list-snoc acc (IrDoBind (name.value) val-ty val-ir (lowered-span sp)))
+     is AActExprStmt (e) (sp) ->
+      lower-act-stmts-acc stmts ty ctx (i + 1) len (list-snoc acc (IrDoExec (lower-expr e ty ctx) (lowered-span sp)))
 
   lower-handle : Name -> AExpr -> List AHandleClause -> CodexType -> LowerCtx -> SourceSpan -> IRExpr
   lower-handle (eff) (body) (clauses) (ty) (ctx) (sp) =

@@ -498,7 +498,7 @@ Section: Expression Emission
     is IrLambda (params) (body) (ty) (sp) -> emit-lambda params body arities
     is IrList (elems) (ty) (sp) -> emit-list elems ty arities
     is IrMatch (scrut) (branches) (ty) (sp) -> emit-match scrut branches ty arities
-    is IrDo (stmts) (ty) (sp) -> emit-do stmts ty arities
+    is IrAct (stmts) (ty) (sp) -> emit-act stmts ty arities
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-handle eff body clauses ty arities
     is IrRecord (name) (fields) (ty) (sp) -> emit-record name fields arities
     is IrFieldAccess (rec) (field) (ty) (sp) -> emit-expr rec arities ++ "." ++ sanitize field
@@ -661,30 +661,30 @@ Section: Expression Emission
     is IrWildPat (sp) -> "_"
     is IrLitPat (text) (ty) (sp) -> text
 
-  emit-do : List IRDoStmt -> CodexType -> List ArityEntry -> Text
-  emit-do (stmts) (ty) (arities) =
+  emit-act : List IRActStmt -> CodexType -> List ArityEntry -> Text
+  emit-act (stmts) (ty) (arities) =
    let actual-ty = when ty
     is EffectfulTy (effs) (ret) -> ret
     is otherwise -> ty
    in let ret-type = cs-type actual-ty
    in let len = list-length stmts
    in when actual-ty
-    is VoidTy -> "((Func<object>)(() => { " ++ emit-do-stmts stmts 0 len False arities ++ " return null; }))()"
-    is NothingTy -> "((Func<object>)(() => { " ++ emit-do-stmts stmts 0 len False arities ++ " return null; }))()"
-    is ErrorTy -> "((Func<object>)(() => { " ++ emit-do-stmts stmts 0 len False arities ++ " return null; }))()"
+    is VoidTy -> "((Func<object>)(() => { " ++ emit-act-stmts stmts 0 len False arities ++ " return null; }))()"
+    is NothingTy -> "((Func<object>)(() => { " ++ emit-act-stmts stmts 0 len False arities ++ " return null; }))()"
+    is ErrorTy -> "((Func<object>)(() => { " ++ emit-act-stmts stmts 0 len False arities ++ " return null; }))()"
     is otherwise -> if len == 0 then "((Func<" ++ ret-type ++ ">)(() => { return null; }))()"
-    else "((Func<" ++ ret-type ++ ">)(() => { " ++ emit-do-stmts stmts 0 len True arities ++ " }))()"
+    else "((Func<" ++ ret-type ++ ">)(() => { " ++ emit-act-stmts stmts 0 len True arities ++ " }))()"
 
-  emit-do-stmts : List IRDoStmt -> Integer -> Integer -> Boolean -> List ArityEntry -> Text
-  emit-do-stmts (stmts) (i) (len) (needs-return) (arities) =
+  emit-act-stmts : List IRActStmt -> Integer -> Integer -> Boolean -> List ArityEntry -> Text
+  emit-act-stmts (stmts) (i) (len) (needs-return) (arities) =
    if i == len then ""
    else let s = list-at stmts i
    in let is-last = i == len - 1
    in let use-return = if is-last then needs-return else False
-   in emit-do-stmt s use-return arities ++ " " ++ emit-do-stmts stmts (i + 1) len needs-return arities
+   in emit-act-stmt s use-return arities ++ " " ++ emit-act-stmts stmts (i + 1) len needs-return arities
 
-  emit-do-stmt : IRDoStmt -> Boolean -> List ArityEntry -> Text
-  emit-do-stmt (s) (use-return) (arities) =
+  emit-act-stmt : IRActStmt -> Boolean -> List ArityEntry -> Text
+  emit-act-stmt (s) (use-return) (arities) =
    when s
     is IrDoBind (name) (ty) (val) (sp) -> "var " ++ sanitize name ++ " = " ++ emit-expr val arities ++ ";"
     is IrDoExec (e) (sp) ->

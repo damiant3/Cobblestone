@@ -34,9 +34,9 @@ public enum SyntaxKind
     RecordField,
     FieldAccessExpression,
     ParenthesizedExpression,
-    DoExpression,
-    DoBindStatement,
-    DoExprStatement,
+    ActExpression,
+    ActBindStatement,
+    ActExprStatement,
     InterpolatedStringExpression,
 
     // Patterns
@@ -409,22 +409,22 @@ public sealed record ErrorExpressionNode(Token ErrorToken)
     public override IEnumerable<SyntaxNode> Children => [];
 }
 
-public sealed record DoExpressionNode(IReadOnlyList<DoStatementNode> Statements, SourceSpan Span)
-    : ExpressionNode(SyntaxKind.DoExpression, Span)
+public sealed record ActExpressionNode(IReadOnlyList<ActStatementNode> Statements, SourceSpan Span)
+    : ExpressionNode(SyntaxKind.ActExpression, Span)
 {
     public override IEnumerable<SyntaxNode> Children => Statements;
 }
 
-public abstract record DoStatementNode(SyntaxKind Kind, SourceSpan Span) : SyntaxNode(Kind, Span);
+public abstract record ActStatementNode(SyntaxKind Kind, SourceSpan Span) : SyntaxNode(Kind, Span);
 
-public sealed record DoBindStatementNode(Token Name, ExpressionNode Value, SourceSpan Span)
-    : DoStatementNode(SyntaxKind.DoBindStatement, Span)
+public sealed record ActBindStatementNode(Token Name, ExpressionNode Value, SourceSpan Span)
+    : ActStatementNode(SyntaxKind.ActBindStatement, Span)
 {
     public override IEnumerable<SyntaxNode> Children => [Value];
 }
 
-public sealed record DoExprStatementNode(ExpressionNode Expression, SourceSpan Span)
-    : DoStatementNode(SyntaxKind.DoExprStatement, Span)
+public sealed record ActExprStatementNode(ExpressionNode Expression, SourceSpan Span)
+    : ActStatementNode(SyntaxKind.ActExprStatement, Span)
 {
     public override IEnumerable<SyntaxNode> Children => [Expression];
 }

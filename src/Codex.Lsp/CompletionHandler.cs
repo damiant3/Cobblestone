@@ -12,7 +12,7 @@ internal sealed class CompletionHandler(DocumentStore store) : CompletionHandler
 
     static readonly string[] s_keywords =
     [
-        "if", "then", "else", "let", "in", "when", "do", "linear",
+        "if", "then", "else", "let", "in", "when", "act", "linear",
         "record", "True", "False",
     ];
 

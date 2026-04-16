@@ -152,12 +152,12 @@ public static partial class Program
                     // Continuation/body line
                     int indent = currentIndent > 0 ? currentIndent : 3;
 
-                    // Flatten in-let chains: "in ..." and "else let/do" lines at
+                    // Flatten in-let chains: "in ..." and "else let/act" lines at
                     // increasing indentation are normalized to the chain base.
                     // Plain "else <expr>" keeps its alignment with the if.
                     bool isChainLine = trimmed.StartsWith("in ")
                         || trimmed.StartsWith("else let ")
-                        || trimmed.StartsWith("else do")
+                        || trimmed.StartsWith("else act")
                         || trimmed == "else";
                     if (isChainLine)
                     {

@@ -439,9 +439,10 @@ public class ILEmitterIntegrationTests
     {
         string source = """
             main : [Console] Nothing
-            main = do
+            main = act
               print-line "first"
               print-line "second"
+            end
             """;
         string? output = CompileAndRun(source, "do_run");
         Assert.NotNull(output);
@@ -474,10 +475,11 @@ public class ILEmitterIntegrationTests
     {
         string source = """
             main : [Console] Nothing
-            main = do
+            main = act
               print-line "What is your name?"
               name <- read-line
               print-line ("Hello, " ++ name ++ "!")
+            end
             """;
         byte[]? bytes = Helpers.CompileToIL(source, "effectful_do");
         Assert.NotNull(bytes);
@@ -653,9 +655,10 @@ public class ILEmitterIntegrationTests
     {
         string source = """
             main : Integer
-            main = run-state 0 do
+            main = run-state 0 act
               set-state 10
               get-state
+            end
             """;
         string? output = CompileAndRun(source, "rs_set_get");
         Assert.NotNull(output);
@@ -667,10 +670,11 @@ public class ILEmitterIntegrationTests
     {
         string source = """
             main : Integer
-            main = run-state 0 do
+            main = run-state 0 act
               x <- get-state
               set-state (x + 1)
               get-state
+            end
             """;
         string? output = CompileAndRun(source, "rs_increment");
         Assert.NotNull(output);
@@ -682,12 +686,13 @@ public class ILEmitterIntegrationTests
     {
         string source = """
             main : Integer
-            main = run-state 0 do
+            main = run-state 0 act
               x <- get-state
               set-state (x + 10)
               y <- get-state
               set-state (y * 2)
               get-state
+            end
             """;
         string? output = CompileAndRun(source, "rs_arith_chain");
         Assert.NotNull(output);
@@ -699,10 +704,11 @@ public class ILEmitterIntegrationTests
     {
         string source = """
             main : Text
-            main = run-state "hello" do
+            main = run-state "hello" act
               s <- get-state
               set-state (s ++ " world")
               get-state
+            end
             """;
         string? output = CompileAndRun(source, "rs_text");
         Assert.NotNull(output);
@@ -714,10 +720,11 @@ public class ILEmitterIntegrationTests
     {
         string source = """
             main : Integer
-            main = run-state 0 do
+            main = run-state 0 act
               x <- get-state
               set-state (x + 1)
               get-state
+            end
             """;
         byte[]? bytes = Helpers.CompileToIL(source, "rs_emit");
         Assert.NotNull(bytes);

@@ -233,18 +233,18 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
                 ResolveExpr(fa.Record, scope);
                 break;
 
-            case DoExpr doExpr:
+            case ActExpr actExpr:
             {
                 Set<string> doScope = scope;
-                foreach (DoStatement stmt in doExpr.Statements)
+                foreach (ActStatement stmt in actExpr.Statements)
                 {
                     switch (stmt)
                     {
-                        case DoBindStatement bind:
+                        case ActBindStatement bind:
                             ResolveExpr(bind.Value, doScope);
                             doScope = doScope.Add(bind.Name.Value);
                             break;
-                        case DoExprStatement exprStmt:
+                        case ActExprStatement exprStmt:
                             ResolveExpr(exprStmt.Expression, doScope);
                             break;
                     }

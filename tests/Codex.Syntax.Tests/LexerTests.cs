@@ -85,13 +85,13 @@ public class LexerTests
     [Fact]
     public void Keywords_are_recognized()
     {
-        IReadOnlyList<Token> tokens = NonTrivialTokens("let in if then else when where do");
+        IReadOnlyList<Token> tokens = NonTrivialTokens("let in if then else when where act");
         TokenKind[] kinds = tokens.Select(t => t.Kind).ToArray();
         Assert.Equal(new[]
         {
             TokenKind.LetKeyword, TokenKind.InKeyword,
             TokenKind.IfKeyword, TokenKind.ThenKeyword, TokenKind.ElseKeyword,
-            TokenKind.WhenKeyword, TokenKind.WhereKeyword, TokenKind.DoKeyword
+            TokenKind.WhenKeyword, TokenKind.WhereKeyword, TokenKind.ActKeyword
         }, kinds);
     }
 

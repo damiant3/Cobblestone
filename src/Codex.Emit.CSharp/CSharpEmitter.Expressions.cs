@@ -146,8 +146,8 @@ public sealed partial class CSharpEmitter
                 EmitMatch(sb, match, indent);
                 break;
 
-            case IRDo doExpr:
-                EmitDoExpr(sb, doExpr, indent);
+            case IRAct actExpr:
+                EmitActExpr(sb, actExpr, indent);
                 break;
 
             case IRRecord rec:
@@ -1109,21 +1109,21 @@ public sealed partial class CSharpEmitter
         EmitExpr(sb, runState.InitialState, indent + 2);
         sb.AppendLine(";");
 
-        if (runState.Computation is IRDo doExpr)
+        if (runState.Computation is IRAct actExpr)
         {
-            for (int i = 0; i < doExpr.Statements.Length; i++)
+            for (int i = 0; i < actExpr.Statements.Length; i++)
             {
-                IRDoStatement stmt = doExpr.Statements[i];
-                bool isLast = i == doExpr.Statements.Length - 1;
+                IRActStatement stmt = actExpr.Statements[i];
+                bool isLast = i == actExpr.Statements.Length - 1;
                 switch (stmt)
                 {
-                    case IRDoBind bind:
+                    case IRActBind bind:
                         sb.Append(pad);
                         sb.Append($"var {SanitizeIdentifier(bind.Name)} = ");
                         EmitExpr(sb, bind.Value, indent + 2);
                         sb.AppendLine(";");
                         break;
-                    case IRDoExec exec:
+                    case IRActExec exec:
                         sb.Append(pad);
                         if (isLast && !IsVoidLike(runState.ResultType))
                         {

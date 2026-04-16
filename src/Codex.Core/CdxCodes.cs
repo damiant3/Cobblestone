@@ -68,7 +68,7 @@ public static class CdxCodes
     public const int ExpectedMatchBranch = 1030;
     public const int ExpectedPattern = 1031;
     public const int ExpectedArrowAfterPattern = 1032;
-    public const int EmptyDoBlock = 1040;
+    public const int EmptyActBlock = 1040;
     public const int ExpectedTypeDefBody = 1050;
     public const int ExpectedRecordFieldName = 1051;
     public const int ExpectedConstructorName = 1052;
@@ -217,9 +217,9 @@ public static class CdxCodes
         [ExpectedArrowAfterPattern] = new(ExpectedArrowAfterPattern, nameof(ExpectedArrowAfterPattern),
             DiagnosticSeverity.Error, CdxPhase.Parser,
             "Pattern was not followed by '->'."),
-        [EmptyDoBlock] = new(EmptyDoBlock, nameof(EmptyDoBlock),
+        [EmptyActBlock] = new(EmptyActBlock, nameof(EmptyActBlock),
             DiagnosticSeverity.Error, CdxPhase.Parser,
-            "'do' expression requires at least one statement."),
+            "'act' expression requires at least one statement."),
         [ExpectedTypeDefBody] = new(ExpectedTypeDefBody, nameof(ExpectedTypeDefBody),
             DiagnosticSeverity.Error, CdxPhase.Parser,
             "Expected 'record', a variant body, or constructors after '='."),
@@ -302,7 +302,7 @@ public static class CdxCodes
             "A type constructor received the wrong number of arguments."),
         [LetBindsEffectfulValue] = new(LetBindsEffectfulValue, nameof(LetBindsEffectfulValue),
             DiagnosticSeverity.Error, CdxPhase.TypeChecker,
-            "let-binding the result of an effectful call silently corrupts on bare metal; use do-bind (X <- expr) inside a do block."),
+            "let-binding the result of an effectful call silently corrupts on bare metal; use act-bind (X <- expr) inside an act block."),
 
         [LinearUnused] = new(LinearUnused, nameof(LinearUnused),
             DiagnosticSeverity.Error, CdxPhase.Linearity,

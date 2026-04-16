@@ -323,25 +323,93 @@ public class ParserTests
     [Fact]
     public void Parse_do_expression()
     {
-        string source = "main : [Console] Nothing\nmain = do\n  print-line \"hello\"\n";
+        string source = "main : [Console] Nothing\nmain = act\n  print-line \"hello\"\nend\n";
         DocumentNode doc = Parse(source);
-        Assert.IsType<DoExpressionNode>(doc.Definitions[0].Body);
-        DoExpressionNode doExpr = (DoExpressionNode)doc.Definitions[0].Body;
-        Assert.Single(doExpr.Statements);
-        Assert.IsType<DoExprStatementNode>(doExpr.Statements[0]);
+        Assert.IsType<ActExpressionNode>(doc.Definitions[0].Body);
+        ActExpressionNode actExpr = (ActExpressionNode)doc.Definitions[0].Body;
+        Assert.Single(actExpr.Statements);
+        Assert.IsType<ActExprStatementNode>(actExpr.Statements[0]);
     }
 
     [Fact]
     public void Parse_do_bind_statement()
     {
-        string source = "main : [Console] Nothing\nmain = do\n  x <- read-line\n  print-line x\n";
+        string source = "main : [Console] Nothing\nmain = act\n  x <- read-line\n  print-line x\nend\n";
         DocumentNode doc = Parse(source);
-        Assert.IsType<DoExpressionNode>(doc.Definitions[0].Body);
-        DoExpressionNode doExpr = (DoExpressionNode)doc.Definitions[0].Body;
-        Assert.Equal(2, doExpr.Statements.Count);
-        Assert.IsType<DoBindStatementNode>(doExpr.Statements[0]);
-        DoBindStatementNode bind = (DoBindStatementNode)doExpr.Statements[0];
+        Assert.IsType<ActExpressionNode>(doc.Definitions[0].Body);
+        ActExpressionNode actExpr = (ActExpressionNode)doc.Definitions[0].Body;
+        Assert.Equal(2, actExpr.Statements.Count);
+        Assert.IsType<ActBindStatementNode>(actExpr.Statements[0]);
+        ActBindStatementNode bind = (ActBindStatementNode)actExpr.Statements[0];
         Assert.Equal("x", bind.Name.Text);
+    }
+
+    [Fact]
+    public void Parse_act_expression_single_stmt()
+    {
+        string source = "main : [Console] Nothing\nmain = act\n  print-line \"hello\"\n end\n";
+        DocumentNode doc = Parse(source);
+        Assert.IsType<ActExpressionNode>(doc.Definitions[0].Body);
+        ActExpressionNode actExpr = (ActExpressionNode)doc.Definitions[0].Body;
+        Assert.Single(actExpr.Statements);
+        Assert.IsType<ActExprStatementNode>(actExpr.Statements[0]);
+    }
+
+    [Fact]
+    public void Parse_act_bind_statement()
+    {
+        string source = "main : [Console] Nothing\nmain = act\n  x <- read-line\n  print-line x\n end\n";
+        DocumentNode doc = Parse(source);
+        Assert.IsType<ActExpressionNode>(doc.Definitions[0].Body);
+        ActExpressionNode actExpr = (ActExpressionNode)doc.Definitions[0].Body;
+        Assert.Equal(2, actExpr.Statements.Count);
+        Assert.IsType<ActBindStatementNode>(actExpr.Statements[0]);
+        ActBindStatementNode bind = (ActBindStatementNode)actExpr.Statements[0];
+        Assert.Equal("x", bind.Name.Text);
+    }
+
+    [Fact]
+    public void Parse_act_inside_parens_with_let()
+    {
+        string source = "main : [Console] Nothing\nmain =\n let y = (act\n  a <- read-line\n  return a\n end)\n in y\n";
+        (DocumentNode doc, DiagnosticBag diags) = ParseWithDiags(source);
+        Assert.Empty(diags.ToImmutable());
+        Assert.IsType<LetExpressionNode>(doc.Definitions[0].Body);
+    }
+
+    [Fact]
+    public void Parse_nested_act_blocks()
+    {
+        string source = "main : [Console] Nothing\nmain = act\n x <- act\n  y <- read-line\n  return y\n end\n print-line x\nend\n";
+        (DocumentNode doc, DiagnosticBag diags) = ParseWithDiags(source);
+        Assert.DoesNotContain(diags.ToImmutable(), d => d.Severity == DiagnosticSeverity.Error);
+        Assert.IsType<ActExpressionNode>(doc.Definitions[0].Body);
+    }
+
+    [Fact]
+    public void Parse_empty_act_reports_diagnostic()
+    {
+        string source = "main : [Console] Nothing\nmain = act end\n";
+        (_, DiagnosticBag diags) = ParseWithDiags(source);
+        Assert.Contains(diags.ToImmutable(), d => d.Code == CdxCodes.EmptyActBlock);
+    }
+
+    [Fact]
+    public void Parse_proof_with_qed_terminator()
+    {
+        string source = "claim x : Nil === Nil\nproof x = Refl\nqed\n";
+        (DocumentNode doc, DiagnosticBag diags) = ParseWithDiags(source);
+        Assert.DoesNotContain(diags.ToImmutable(), d => d.Severity == DiagnosticSeverity.Error);
+        Assert.Single(doc.Proofs);
+    }
+
+    [Fact]
+    public void Parse_proof_without_qed_still_works()
+    {
+        string source = "claim x : Nil === Nil\nproof x = Refl\n";
+        (DocumentNode doc, DiagnosticBag diags) = ParseWithDiags(source);
+        Assert.DoesNotContain(diags.ToImmutable(), d => d.Severity == DiagnosticSeverity.Error);
+        Assert.Single(doc.Proofs);
     }
 
     [Fact]
@@ -687,7 +755,7 @@ public class ParserTests
     [Fact]
     public void Recovery_do_expression_continues_after_bad_statement()
     {
-        string source = "f = do\n  @#$ bad\n  print-line \"hello\"";
+        string source = "f = act\n  @#$ bad\n  print-line \"hello\"\nend";
         (DocumentNode doc, DiagnosticBag diags) = ParseWithDiags(source);
         Assert.True(diags.HasErrors);
         Assert.Single(doc.Definitions);

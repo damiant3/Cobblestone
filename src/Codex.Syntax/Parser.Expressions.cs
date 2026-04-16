@@ -55,7 +55,7 @@ public sealed partial class Parser
         bool isCompound = func is MatchExpressionNode
             or IfExpressionNode
             or LetExpressionNode
-            or DoExpressionNode;
+            or ActExpressionNode;
         if (isCompound)
         {
             return func;
@@ -71,11 +71,13 @@ public sealed partial class Parser
             else if (Current.Kind == TokenKind.Dot)
             {
                 Advance();
-                Token field = Expect(TokenKind.Identifier);
-                if (field.Kind != TokenKind.Identifier)
+                if (!IsIdentifierLike(Current.Kind))
                 {
+                    Expect(TokenKind.Identifier);
                     break;
                 }
+                Token field = Current;
+                Advance();
 
                 func = new FieldAccessExpressionNode(func, field, func.Span.Through(field.Span));
             }
@@ -100,7 +102,7 @@ public sealed partial class Parser
             or TokenKind.FalseKeyword
             or TokenKind.LeftParen
             or TokenKind.LeftBracket
-            or TokenKind.DoKeyword
+            or TokenKind.ActKeyword
             or TokenKind.WithKeyword;
     }
 
@@ -138,13 +140,14 @@ public sealed partial class Parser
                 while (Current.Kind == TokenKind.Dot)
                 {
                     Advance();
-                    Token field = Expect(TokenKind.Identifier);
-                    if (field.Kind != TokenKind.Identifier)
-                        {
-                            break;
-                        }
-
-                        node = new FieldAccessExpressionNode(node, field, node.Span.Through(field.Span));
+                    if (!IsIdentifierLike(Current.Kind))
+                    {
+                        Expect(TokenKind.Identifier);
+                        break;
+                    }
+                    Token field = Current;
+                    Advance();
+                    node = new FieldAccessExpressionNode(node, field, node.Span.Through(field.Span));
                 }
                 return node;
             }
@@ -161,13 +164,14 @@ public sealed partial class Parser
                 while (Current.Kind == TokenKind.Dot)
                 {
                     Advance();
-                    Token field = Expect(TokenKind.Identifier);
-                    if (field.Kind != TokenKind.Identifier)
-                        {
-                            break;
-                        }
-
-                        node = new FieldAccessExpressionNode(node, field, node.Span.Through(field.Span));
+                    if (!IsIdentifierLike(Current.Kind))
+                    {
+                        Expect(TokenKind.Identifier);
+                        break;
+                    }
+                    Token field = Current;
+                    Advance();
+                    node = new FieldAccessExpressionNode(node, field, node.Span.Through(field.Span));
                 }
                 return node;
             }
@@ -184,8 +188,9 @@ public sealed partial class Parser
             case TokenKind.WhenKeyword:
                 return ParseMatchExpression();
 
-            case TokenKind.DoKeyword:
-                return ParseDoExpression();
+
+            case TokenKind.ActKeyword:
+                return ParseActExpression();
 
             case TokenKind.WithKeyword:
                 return ParseHandleExpression();
@@ -232,11 +237,16 @@ public sealed partial class Parser
         List<RecordFieldNode> fields = [];
         while (Current.Kind != TokenKind.RightBrace && !IsAtEnd)
         {
-            if (Current.Kind != TokenKind.Identifier)
+            if (!IsIdentifierLike(Current.Kind))
             {
                 m_diagnostics.Error(CdxCodes.ExpectedFieldName,
                     $"Expected field name, found {Current.Kind}", Current.Span);
+                int before = m_position;
                 Synchronize();
+                if (m_position == before)
+                {
+                    Advance();
+                }
                 if (Current.Kind == TokenKind.RightBrace)
                 {
                     break;
@@ -251,7 +261,12 @@ public sealed partial class Parser
             Token eqToken = Expect(TokenKind.Equals);
             if (eqToken.Kind != TokenKind.Equals)
             {
+                int before = m_position;
                 Synchronize();
+                if (m_position == before)
+                {
+                    Advance();
+                }
                 if (Current.Kind == TokenKind.RightBrace)
                 {
                     break;
@@ -485,17 +500,14 @@ public sealed partial class Parser
             start.Span.Through(endSpan));
     }
 
-    ExpressionNode ParseDoExpression()
+    ExpressionNode ParseActExpression()
     {
         Token start = Current;
         Advance();
         SkipNewlines();
 
-        List<DoStatementNode> statements = [];
-        while (!IsAtEnd
-            && Current.Kind is not (TokenKind.EndOfFile or TokenKind.Dedent
-                                    or TokenKind.ElseKeyword or TokenKind.InKeyword)
-            && !(Current.Kind == TokenKind.Identifier && Peek(1)?.Kind == TokenKind.Colon))
+        List<ActStatementNode> statements = [];
+        while (!IsAtEnd && Current.Kind != TokenKind.EndKeyword && Current.Kind != TokenKind.EndOfFile)
         {
             if (Current.Kind == TokenKind.Identifier && Peek(1)?.Kind == TokenKind.LeftArrow)
             {
@@ -503,23 +515,24 @@ public sealed partial class Parser
                 Advance();
                 Advance();
                 ExpressionNode value = ParseExpression();
-                statements.Add(new DoBindStatementNode(name, value, name.Span.Through(value.Span)));
+                statements.Add(new ActBindStatementNode(name, value, name.Span.Through(value.Span)));
             }
             else
             {
                 ExpressionNode expr = ParseExpression();
-                statements.Add(new DoExprStatementNode(expr, expr.Span));
+                statements.Add(new ActExprStatementNode(expr, expr.Span));
             }
             SkipNewlines();
         }
 
+        Token endTok = Expect(TokenKind.EndKeyword);
+
         if (statements.Count == 0)
         {
-            m_diagnostics.Error(CdxCodes.EmptyDoBlock, "do expression requires at least one statement", start.Span);
+            m_diagnostics.Error(CdxCodes.EmptyActBlock, "act expression requires at least one statement", start.Span);
         }
 
-        SourceSpan endSpan = statements.Count > 0 ? statements[^1].Span : start.Span;
-        return new DoExpressionNode(statements, start.Span.Through(endSpan));
+        return new ActExpressionNode(statements, start.Span.Through(endTok.Span));
     }
 
     ExpressionNode ParseInterpolatedString()

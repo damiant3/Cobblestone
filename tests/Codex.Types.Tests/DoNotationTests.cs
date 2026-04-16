@@ -13,9 +13,10 @@ public class DoNotationTests
               ask : Integer
 
             program : [Ask] Integer
-            program = do
+            program = act
               x <- ask
               x + 1
+            end
             """;
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
@@ -29,9 +30,10 @@ public class DoNotationTests
               ask : Integer
 
             program : [Ask] Integer
-            program = do
+            program = act
               x <- ask
               x + 1
+            end
             """;
         string? cs = Helpers.CompileToCS(source);
         Assert.NotNull(cs);
@@ -45,10 +47,11 @@ public class DoNotationTests
               inc : Integer
 
             count-twice : [Counter] Integer
-            count-twice = do
+            count-twice = act
               a <- inc
               b <- inc
               a + b
+            end
             """;
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
@@ -62,9 +65,10 @@ public class DoNotationTests
               ask : Integer
 
             program : [Ask] Integer
-            program = do
+            program = act
               x <- ask
               x + 1
+            end
 
             main : Integer
             main = with Ask program
@@ -82,9 +86,10 @@ public class DoNotationTests
               ask : Integer
 
             program : [Ask] Integer
-            program = do
+            program = act
               x <- ask
               x + 1
+            end
 
             main : Integer
             main = with Ask program
@@ -99,9 +104,10 @@ public class DoNotationTests
     {
         string source = """
             main : [Console] Integer
-            main = do
+            main = act
               print-line "hello"
               42
+            end
             """;
         string? cs = Helpers.CompileToCS(source);
         Assert.NotNull(cs);
@@ -116,10 +122,11 @@ public class DoNotationTests
               log : Text -> Integer
 
             main : [Console, Logger] Integer
-            main = do
+            main = act
               print-line "starting"
               x <- log "step1"
               x
+            end
             """;
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));

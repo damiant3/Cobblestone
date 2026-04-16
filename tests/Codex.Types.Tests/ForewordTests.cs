@@ -304,10 +304,11 @@ public class ForewordTests
     {
         string source = """
             main : [Console] Nothing
-            main = do
+            main = act
               print-line "hello"
               name <- read-line
               print-line name
+            end
             """;
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));

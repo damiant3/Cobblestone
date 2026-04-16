@@ -894,8 +894,9 @@ public class RiscVEmitterTests
     {
         string source = """
             main : [Console] Nothing
-            main = do
+            main = act
               print-line "hello bare metal"
+            end
             """;
         string? output = CompileAndRunBareMetal(source, "bm_println");
         if (output is null)
@@ -914,9 +915,10 @@ public class RiscVEmitterTests
             greet (name) = "hello " ++ name ++ "!"
 
             main : [Console] Nothing
-            main = do
+            main = act
               print-line (greet "world")
               print-line "done"
+            end
             """;
         string? output = CompileAndRunBareMetal(source, "bm_concat");
         if (output is null)

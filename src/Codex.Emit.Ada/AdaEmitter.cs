@@ -447,8 +447,8 @@ public sealed class AdaEmitter : ICodeEmitter
                 EmitMatch(sb, match, indent);
                 break;
 
-            case IRDo doExpr:
-                EmitDoExpr(sb, doExpr, indent);
+            case IRAct actExpr:
+                EmitActExpr(sb, actExpr, indent);
                 break;
 
             case IRRecord rec:
@@ -643,7 +643,7 @@ public sealed class AdaEmitter : ICodeEmitter
         sb.Append("when others => raise Program_Error)");
     }
 
-    void EmitDoExpr(StringBuilder sb, IRDo doExpr, int indent)
+    void EmitActExpr(StringBuilder sb, IRAct actExpr, int indent)
     {
         sb.Append("null");
     }
@@ -651,16 +651,16 @@ public sealed class AdaEmitter : ICodeEmitter
     void EmitStatement(StringBuilder sb, IRExpr expr, int indent)
     {
         string pad = new(' ', indent * 3);
-        if (expr is IRDo doExpr)
+        if (expr is IRAct actExpr)
         {
-            foreach (IRDoStatement stmt in doExpr.Statements)
+            foreach (IRActStatement stmt in actExpr.Statements)
             {
                 switch (stmt)
                 {
-                    case IRDoBind bind:
+                    case IRActBind bind:
                         sb.AppendLine($"{pad}-- bind: {Sanitize(bind.Name)}");
                         break;
-                    case IRDoExec exec:
+                    case IRActExec exec:
                         sb.Append(pad);
                         EmitExpr(sb, exec.Expression, indent);
                         sb.AppendLine(";");

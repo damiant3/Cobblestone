@@ -246,28 +246,28 @@ public sealed partial class CSharpEmitter
         }
     }
 
-    void EmitDoExpr(StringBuilder sb, IRDo doExpr, int indent)
+    void EmitActExpr(StringBuilder sb, IRAct actExpr, int indent)
     {
-        string returnType = EmitType(doExpr.Type);
+        string returnType = EmitType(actExpr.Type);
         sb.AppendLine($"((Func<{returnType}>)(() => {{");
         string pad = new(' ', (indent + 2) * 4);
 
-        for (int i = 0; i < doExpr.Statements.Length; i++)
+        for (int i = 0; i < actExpr.Statements.Length; i++)
         {
-            IRDoStatement stmt = doExpr.Statements[i];
-            bool isLast = i == doExpr.Statements.Length - 1;
+            IRActStatement stmt = actExpr.Statements[i];
+            bool isLast = i == actExpr.Statements.Length - 1;
 
             switch (stmt)
             {
-                case IRDoBind bind:
+                case IRActBind bind:
                     sb.Append(pad);
                     sb.Append($"var {SanitizeIdentifier(bind.Name)} = ");
                     EmitExpr(sb, bind.Value, indent + 2);
                     sb.AppendLine(";");
                     break;
-                case IRDoExec exec:
+                case IRActExec exec:
                     sb.Append(pad);
-                    if (isLast && !IsVoidLike(doExpr.Type))
+                    if (isLast && !IsVoidLike(actExpr.Type))
                     {
                         sb.Append("return ");
                         EmitExpr(sb, exec.Expression, indent + 2);
@@ -290,7 +290,7 @@ public sealed partial class CSharpEmitter
         }
 
         // If the last statement was a bind (not an expression), return the bound value
-        if (doExpr.Statements.Length > 0 && doExpr.Statements[^1] is IRDoBind lastBind)
+        if (actExpr.Statements.Length > 0 && actExpr.Statements[^1] is IRActBind lastBind)
         {
             sb.Append(pad);
             sb.AppendLine($"return {SanitizeIdentifier(lastBind.Name)};");

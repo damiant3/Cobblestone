@@ -552,8 +552,8 @@ public sealed class CppEmitter : ICodeEmitter
                 EmitMatch(sb, match, indent);
                 break;
 
-            case IRDo doExpr:
-                EmitDoExpr(sb, doExpr, indent);
+            case IRAct actExpr:
+                EmitActExpr(sb, actExpr, indent);
                 break;
 
             case IRRecord rec:
@@ -926,20 +926,20 @@ public sealed class CppEmitter : ICodeEmitter
         sb.Append(')');
     }
 
-    void EmitDoExpr(StringBuilder sb, IRDo doExpr, int indent)
+    void EmitActExpr(StringBuilder sb, IRAct actExpr, int indent)
     {
         sb.AppendLine("[&]{");
         string pad = new(' ', (indent + 1) * 4);
-        foreach (IRDoStatement stmt in doExpr.Statements)
+        foreach (IRActStatement stmt in actExpr.Statements)
         {
             switch (stmt)
             {
-                case IRDoBind bind:
+                case IRActBind bind:
                     sb.Append($"{pad}auto {Sanitize(bind.Name)} = ");
                     EmitExpr(sb, bind.Value, indent + 1);
                     sb.AppendLine(";");
                     break;
-                case IRDoExec exec:
+                case IRActExec exec:
                     sb.Append(pad);
                     EmitExpr(sb, exec.Expression, indent + 1);
                     sb.AppendLine(";");
@@ -953,18 +953,18 @@ public sealed class CppEmitter : ICodeEmitter
     void EmitStatement(StringBuilder sb, IRExpr expr, int indent)
     {
         string pad = new(' ', indent * 4);
-        if (expr is IRDo doExpr)
+        if (expr is IRAct actExpr)
         {
-            foreach (IRDoStatement stmt in doExpr.Statements)
+            foreach (IRActStatement stmt in actExpr.Statements)
             {
                 switch (stmt)
                 {
-                    case IRDoBind bind:
+                    case IRActBind bind:
                         sb.Append($"{pad}auto {Sanitize(bind.Name)} = ");
                         EmitExpr(sb, bind.Value, indent);
                         sb.AppendLine(";");
                         break;
-                    case IRDoExec exec:
+                    case IRActExec exec:
                         sb.Append(pad);
                         EmitExpr(sb, exec.Expression, indent);
                         sb.AppendLine(";");

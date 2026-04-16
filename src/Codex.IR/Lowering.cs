@@ -171,8 +171,8 @@ public sealed class Lowering(
             case ListExpr list:
                 return LowerList(list, expectedType);
 
-            case DoExpr doExpr:
-                return LowerDoExpr(doExpr, expectedType);
+            case ActExpr actExpr:
+                return LowerDoExpr(actExpr, expectedType);
 
             case HandleExpr handleExpr:
                 return LowerHandleExpr(handleExpr, expectedType);
@@ -614,30 +614,30 @@ public sealed class Lowering(
         return result;
     }
 
-    IRExpr LowerDoExpr(DoExpr doExpr, CodexType expectedType)
+    IRExpr LowerDoExpr(ActExpr actExpr, CodexType expectedType)
     {
         Map<string, CodexType> savedEnv = m_localEnv;
-        ImmutableArray<IRDoStatement>.Builder statements = ImmutableArray.CreateBuilder<IRDoStatement>();
+        ImmutableArray<IRActStatement>.Builder statements = ImmutableArray.CreateBuilder<IRActStatement>();
 
-        foreach (DoStatement stmt in doExpr.Statements)
+        foreach (ActStatement stmt in actExpr.Statements)
         {
             switch (stmt)
             {
-                case DoBindStatement bind:
+                case ActBindStatement bind:
                 {
                     IRExpr value = LowerExpr(bind.Value, ErrorType.s_instance);
                     CodexType boundType = value.Type is EffectfulType eft ? eft.Return : value.Type;
                     // Wrap in IRRegion for two-space reclamation, same as let-bindings.
                     bool needsEscape = IRRegion.TypeNeedsHeapEscape(boundType);
                     IRExpr regionValue = new IRRegion(value, boundType, needsEscape);
-                    statements.Add(new IRDoBind(bind.Name.Value, boundType, regionValue));
+                    statements.Add(new IRActBind(bind.Name.Value, boundType, regionValue));
                     m_localEnv = m_localEnv.Set(bind.Name.Value, boundType);
                     break;
                 }
-                case DoExprStatement exprStmt:
+                case ActExprStatement exprStmt:
                 {
                     IRExpr value = LowerExpr(exprStmt.Expression, ErrorType.s_instance);
-                    statements.Add(new IRDoExec(value));
+                    statements.Add(new IRActExec(value));
                     break;
                 }
             }
@@ -645,25 +645,25 @@ public sealed class Lowering(
 
         m_localEnv = savedEnv;
 
-        // Compute the do-block's type from the last statement rather than
-        // relying on expectedType, which is often ErrorType when the do
-        // appears in let-binding RHS.  This matches InferDoExpr's logic.
-        ImmutableArray<IRDoStatement> stmts = statements.ToImmutable();
+        // Compute the act-block's type from the last statement rather than
+        // relying on expectedType, which is often ErrorType when the act
+        // appears in let-binding RHS.  This matches InferActExpr's logic.
+        ImmutableArray<IRActStatement> stmts = statements.ToImmutable();
         CodexType doType = expectedType;
         if (stmts.Length > 0)
         {
-            IRDoStatement last = stmts[^1];
-            if (last is IRDoExec exec)
+            IRActStatement last = stmts[^1];
+            if (last is IRActExec exec)
             {
                 doType = exec.Expression.Type;
             }
-            else if (last is IRDoBind bind)
+            else if (last is IRActBind bind)
             {
                 doType = bind.NameType;
             }
         }
 
-        return new IRDo(stmts, doType);
+        return new IRAct(stmts, doType);
     }
 
     IRExpr LowerHandleExpr(HandleExpr handleExpr, CodexType expectedType)

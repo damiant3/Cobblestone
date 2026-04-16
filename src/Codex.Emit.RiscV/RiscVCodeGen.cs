@@ -177,8 +177,8 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         IRMatch match => match.Branches.Any(b => HasTailCall(b.Body, funcName)),
         IRRegion region => HasTailCall(region.Body, funcName),
         IRApply app => IsSelfCall(app, funcName),
-        IRDo doExpr => doExpr.Statements.Length > 0 &&
-            doExpr.Statements[^1] is IRDoExec exec &&
+        IRAct actExpr => actExpr.Statements.Length > 0 &&
+            actExpr.Statements[^1] is IRActExec exec &&
             HasTailCall(exec.Expression, funcName),
         _ => false
     };
@@ -384,7 +384,7 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         IRLet letExpr => EmitLet(letExpr),
         IRApply apply => EmitApply(apply),
         IRNegate neg => EmitNegate(neg),
-        IRDo doExpr => EmitDo(doExpr),
+        IRAct actExpr => EmitAct(actExpr),
         IRRecord rec => EmitRecord(rec),
         IRFieldAccess fa => EmitFieldAccess(fa),
         IRMatch match => EmitMatch(match),
@@ -1076,17 +1076,17 @@ sealed class RiscVCodeGen(RiscVTarget target = RiscVTarget.LinuxUser)
         return rd;
     }
 
-    uint EmitDo(IRDo doExpr)
+    uint EmitAct(IRAct actExpr)
     {
         uint lastReg = Reg.Zero;
-        foreach (IRDoStatement stmt in doExpr.Statements)
+        foreach (IRActStatement stmt in actExpr.Statements)
         {
             switch (stmt)
             {
-                case IRDoExec exec:
+                case IRActExec exec:
                     lastReg = EmitExpr(exec.Expression);
                     break;
-                case IRDoBind bind:
+                case IRActBind bind:
                     uint valReg = EmitExpr(bind.Value);
                     uint savedReg = AllocLocal();
                     StoreLocal(savedReg, valReg);

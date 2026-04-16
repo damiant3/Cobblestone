@@ -91,7 +91,8 @@ public sealed class CodexEmitterTests
         string source = ReadSample("effectful-hello.codex");
         string? codex = Helpers.CompileToCodex(source, "effectful_hello");
         Assert.NotNull(codex);
-        Assert.Contains("do", codex);
+        Assert.Contains("act", codex);
+        Assert.Contains("end", codex);
         Assert.Contains("print-line", codex);
         Assert.Contains("name <-", codex);
     }

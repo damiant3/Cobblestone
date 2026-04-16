@@ -92,7 +92,7 @@ sealed class Arm64CodeGen
         IRMatch m => m.Branches.Any(b => HasTailCall(b.Body, fn)),
         IRRegion region => HasTailCall(region.Body, fn),
         IRApply app => IsSelfCall(app, fn),
-        IRDo d => d.Statements.Length > 0 && d.Statements[^1] is IRDoExec e && HasTailCall(e.Expression, fn),
+        IRAct d => d.Statements.Length > 0 && d.Statements[^1] is IRActExec e && HasTailCall(e.Expression, fn),
         _ => false
     };
     static bool IsSelfCall(IRExpr expr, string fn)
@@ -236,7 +236,7 @@ sealed class Arm64CodeGen
         IRLet letExpr => EmitLet(letExpr),
         IRApply apply => EmitApply(apply),
         IRNegate neg => EmitNegate(neg),
-        IRDo doExpr => EmitDo(doExpr),
+        IRAct actExpr => EmitAct(actExpr),
         IRRecord rec => EmitRecord(rec),
         IRFieldAccess fa => EmitFieldAccess(fa),
         IRMatch match => EmitMatch(match),
@@ -666,17 +666,17 @@ sealed class Arm64CodeGen
         return rd;
     }
 
-    uint EmitDo(IRDo doExpr)
+    uint EmitAct(IRAct actExpr)
     {
         uint lastReg = Arm64Reg.Xzr;
-        foreach (IRDoStatement stmt in doExpr.Statements)
+        foreach (IRActStatement stmt in actExpr.Statements)
         {
             switch (stmt)
             {
-                case IRDoExec exec:
+                case IRActExec exec:
                     lastReg = EmitExpr(exec.Expression);
                     break;
-                case IRDoBind bind:
+                case IRActBind bind:
                     uint valReg = EmitExpr(bind.Value);
                     uint savedReg = AllocLocal();
                     StoreLocal(savedReg, valReg);
