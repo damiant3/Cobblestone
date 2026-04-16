@@ -35,7 +35,7 @@ Legend: 🟡 partial / different · ❌ missing · ⏭️ deliberately diverged
 | Item | Reference | Self-host | Status | Notes |
 |------|-----------|-----------|--------|-------|
 
-| `let`-bind on effectful value rejected (CDX2033) | ✓ | ✓ | ✓ | Both compilers emit the error with a real source span. Self-host `add-unify-error` now takes a `SourceSpan`; `unwrap-effectful-or-error` passes the binding's value span through `aexpr-span`. Unifier-internal callers (infinite-type, type-mismatch) still pass `synthetic-span` because the unifier itself doesn't thread a context span yet — follow-up if it matters. |
+| Unifier diagnostics carry source spans | ✓ | ✓ | ✓ | Self-host `unify` and its family (`unify-resolved`, `unify-rhs`, `unify-structural`, `unify-fun`, `unify-constructed-args`, `unify-mismatch`) now take a `SourceSpan`; `add-unify-error` takes a span. Callers (binary, unary, if, application, list, match, let-effectful, def body) pass the appropriate AExpr span via `aexpr-span`. Covers CDX2001 (type mismatch), CDX2010 (infinite type), CDX2033 (let-binds-effectful), CDX3002 (unknown name). Mirrors reference `Unify(a, b, span)`. |
 
 
 ### Debugging / crash behavior

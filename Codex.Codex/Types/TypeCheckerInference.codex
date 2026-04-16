@@ -82,91 +82,91 @@ Section: Infer Name
    else map-subst-type-var args var-id replacement (i + 1) len (list-snoc acc (subst-type-var (list-at args i) var-id replacement))
 
 Section: Infer Binary
-  infer-binary : UnificationState -> TypeEnv -> AExpr -> BinaryOp -> AExpr -> CheckResult
-  infer-binary (st) (env) (left) (op) (right) =
+  infer-binary : UnificationState -> TypeEnv -> AExpr -> BinaryOp -> AExpr -> SourceSpan -> CheckResult
+  infer-binary (st) (env) (left) (op) (right) (span) =
    let lr = infer-expr st env left
    in let rr = infer-expr (lr.state) env right
-   in infer-binary-op (rr.state) (lr.inferred-type) (rr.inferred-type) op
+   in infer-binary-op (rr.state) (lr.inferred-type) (rr.inferred-type) op span
 
-  infer-binary-op : UnificationState -> CodexType -> CodexType -> BinaryOp -> CheckResult
-  infer-binary-op (st) (lt) (rt) (op) =
+  infer-binary-op : UnificationState -> CodexType -> CodexType -> BinaryOp -> SourceSpan -> CheckResult
+  infer-binary-op (st) (lt) (rt) (op) (span) =
    when op
-    is OpAdd -> infer-arithmetic st lt rt
-    is OpSub -> infer-arithmetic st lt rt
-    is OpMul -> infer-arithmetic st lt rt
-    is OpDiv -> infer-arithmetic st lt rt
-    is OpPow -> infer-arithmetic st lt rt
-    is OpEq -> infer-comparison st lt rt
-    is OpNotEq -> infer-comparison st lt rt
-    is OpLt -> infer-comparison st lt rt
-    is OpGt -> infer-comparison st lt rt
-    is OpLtEq -> infer-comparison st lt rt
-    is OpGtEq -> infer-comparison st lt rt
-    is OpAnd -> infer-logical st lt rt
-    is OpOr -> infer-logical st lt rt
-    is OpAppend -> infer-append st lt rt
-    is OpCons -> infer-cons st lt rt
-    is OpDefEq -> infer-comparison st lt rt
+    is OpAdd -> infer-arithmetic st lt rt span
+    is OpSub -> infer-arithmetic st lt rt span
+    is OpMul -> infer-arithmetic st lt rt span
+    is OpDiv -> infer-arithmetic st lt rt span
+    is OpPow -> infer-arithmetic st lt rt span
+    is OpEq -> infer-comparison st lt rt span
+    is OpNotEq -> infer-comparison st lt rt span
+    is OpLt -> infer-comparison st lt rt span
+    is OpGt -> infer-comparison st lt rt span
+    is OpLtEq -> infer-comparison st lt rt span
+    is OpGtEq -> infer-comparison st lt rt span
+    is OpAnd -> infer-logical st lt rt span
+    is OpOr -> infer-logical st lt rt span
+    is OpAppend -> infer-append st lt rt span
+    is OpCons -> infer-cons st lt rt span
+    is OpDefEq -> infer-comparison st lt rt span
 
-  infer-arithmetic : UnificationState -> CodexType -> CodexType -> CheckResult
-  infer-arithmetic (st) (lt) (rt) =
-   let r = unify st lt rt
+  infer-arithmetic : UnificationState -> CodexType -> CodexType -> SourceSpan -> CheckResult
+  infer-arithmetic (st) (lt) (rt) (span) =
+   let r = unify st lt rt span
    in CheckResult {
     inferred-type = lt,
     state = r.state
    }
 
-  infer-comparison : UnificationState -> CodexType -> CodexType -> CheckResult
-  infer-comparison (st) (lt) (rt) =
-   let r = unify st lt rt
+  infer-comparison : UnificationState -> CodexType -> CodexType -> SourceSpan -> CheckResult
+  infer-comparison (st) (lt) (rt) (span) =
+   let r = unify st lt rt span
    in CheckResult {
     inferred-type = BooleanTy,
     state = r.state
    }
 
-  infer-logical : UnificationState -> CodexType -> CodexType -> CheckResult
-  infer-logical (st) (lt) (rt) =
-   let r1 = unify st lt BooleanTy
-   in let r2 = unify (r1.state) rt BooleanTy
+  infer-logical : UnificationState -> CodexType -> CodexType -> SourceSpan -> CheckResult
+  infer-logical (st) (lt) (rt) (span) =
+   let r1 = unify st lt BooleanTy span
+   in let r2 = unify (r1.state) rt BooleanTy span
    in CheckResult {
     inferred-type = BooleanTy,
     state = r2.state
    }
 
-  infer-append : UnificationState -> CodexType -> CodexType -> CheckResult
-  infer-append (st) (lt) (rt) =
+  infer-append : UnificationState -> CodexType -> CodexType -> SourceSpan -> CheckResult
+  infer-append (st) (lt) (rt) (span) =
    let resolved = resolve st lt
    in when resolved
     is TextTy ->
-     let r = unify st rt TextTy
+     let r = unify st rt TextTy span
    in CheckResult {
       inferred-type = TextTy,
       state = r.state
      }
     is otherwise ->
-     let r = unify st lt rt
+     let r = unify st lt rt span
    in CheckResult {
       inferred-type = lt,
       state = r.state
      }
 
-  infer-cons : UnificationState -> CodexType -> CodexType -> CheckResult
-  infer-cons (st) (lt) (rt) =
+  infer-cons : UnificationState -> CodexType -> CodexType -> SourceSpan -> CheckResult
+  infer-cons (st) (lt) (rt) (span) =
    let list-ty = ListTy lt
-   in let r = unify st rt list-ty
+   in let r = unify st rt list-ty span
    in CheckResult {
     inferred-type = list-ty,
     state = r.state
    }
 
 Section: Infer If
-  infer-if : UnificationState -> TypeEnv -> AExpr -> AExpr -> AExpr -> CheckResult
-  infer-if (st) (env) (cond) (then-e) (else-e) =
+  infer-if : UnificationState -> TypeEnv -> AExpr -> AExpr -> AExpr -> SourceSpan -> CheckResult
+  infer-if (st) (env) (cond) (then-e) (else-e) (span) =
    let cr = infer-expr st env cond
-   in let r1 = unify (cr.state) (cr.inferred-type) BooleanTy
+   in let r1 = unify (cr.state) (cr.inferred-type) BooleanTy (aexpr-span cond)
    in let tr = infer-expr (r1.state) env then-e
    in let er = infer-expr (tr.state) env else-e
-   in let r2 = unify (er.state) (tr.inferred-type) (er.inferred-type)
+   in let r2 = unify (er.state) (tr.inferred-type) (er.inferred-type) span
    in CheckResult {
     inferred-type = tr.inferred-type,
     state = r2.state
@@ -250,12 +250,12 @@ Section: Infer Lambda
    else wrap-fun-type-loop param-types (FunTy (list-at param-types i) result) (i - 1)
 
 Section: Infer Application
-  infer-application : UnificationState -> TypeEnv -> AExpr -> AExpr -> CheckResult
-  infer-application (st) (env) (func) (arg) =
+  infer-application : UnificationState -> TypeEnv -> AExpr -> AExpr -> SourceSpan -> CheckResult
+  infer-application (st) (env) (func) (arg) (span) =
    let fr = infer-expr st env func
    in let ar = infer-expr (fr.state) env arg
    in let ret = fresh-and-advance (ar.state)
-   in let r = unify (ret.state) (fr.inferred-type) (FunTy (ar.inferred-type) (ret.var-type))
+   in let r = unify (ret.state) (fr.inferred-type) (FunTy (ar.inferred-type) (ret.var-type)) span
    in CheckResult {
     inferred-type = ret.var-type,
     state = r.state
@@ -281,8 +281,9 @@ Section: Infer List
   unify-list-elems : UnificationState -> TypeEnv -> List AExpr -> CodexType -> Integer -> Integer -> UnificationState
   unify-list-elems (st) (env) (elems) (elem-ty) (i) (len) =
    if i == len then st
-   else let er = infer-expr st env (list-at elems i)
-   in let r = unify (er.state) (er.inferred-type) elem-ty
+   else let e = list-at elems i
+   in let er = infer-expr st env e
+   in let r = unify (er.state) (er.inferred-type) elem-ty (aexpr-span e)
    in unify-list-elems (r.state) env elems elem-ty (i + 1) len
 
 Section: Infer Match
@@ -302,7 +303,7 @@ Section: Infer Match
    else let arm = list-at arms i
    in let pr = bind-pattern st env (arm.pattern) scrut-ty
    in let br = infer-expr (pr.state) (pr.env) (arm.body)
-   in let r = unify (br.state) (br.inferred-type) result-ty
+   in let r = unify (br.state) (br.inferred-type) result-ty (aexpr-span (arm.body))
    in infer-match-arms (r.state) env scrut-ty result-ty arms (i + 1) len
 
   PatBindResult = record {
@@ -371,16 +372,16 @@ Section: Infer Expression (dispatch)
    when expr
     is ALitExpr (val) (kind) (s) -> infer-literal st kind
     is ANameExpr (name) (s) -> infer-name st env (name.value) s
-    is ABinaryExpr (left) (op) (right) (s) -> infer-binary st env left op right
+    is ABinaryExpr (left) (op) (right) (s) -> infer-binary st env left op right s
     is AUnaryExpr (operand) (s) ->
      let r = infer-expr st env operand
-     in let u = unify (r.state) (r.inferred-type) IntegerTy
+     in let u = unify (r.state) (r.inferred-type) IntegerTy (aexpr-span operand)
      in CheckResult {
       inferred-type = IntegerTy,
       state = u.state
      }
-    is AApplyExpr (func) (arg) (s) -> infer-application st env func arg
-    is AIfExpr (cond) (then-e) (else-e) (s) -> infer-if st env cond then-e else-e
+    is AApplyExpr (func) (arg) (s) -> infer-application st env func arg s
+    is AIfExpr (cond) (then-e) (else-e) (s) -> infer-if st env cond then-e else-e s
     is ALetExpr (bindings) (body) (s) -> infer-let st env bindings body
     is ALambdaExpr (params) (body) (s) -> infer-lambda st env params body
     is AMatchExpr (scrutinee) (arms) (s) -> infer-match st env scrutinee arms

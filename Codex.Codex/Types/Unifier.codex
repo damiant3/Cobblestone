@@ -128,14 +128,14 @@ Section: Occurs Check
     is otherwise -> False
 
 Section: Unify
-  unify : UnificationState -> CodexType -> CodexType -> UnifyResult
-  unify (st) (a) (b) =
+  unify : UnificationState -> CodexType -> CodexType -> SourceSpan -> UnifyResult
+  unify (st) (a) (b) (span) =
    let ra = resolve st a
    in let rb = resolve st b
-   in unify-resolved st ra rb
+   in unify-resolved st ra rb span
 
-  unify-resolved : UnificationState -> CodexType -> CodexType -> UnifyResult
-  unify-resolved (st) (a) (b) =
+  unify-resolved : UnificationState -> CodexType -> CodexType -> SourceSpan -> UnifyResult
+  unify-resolved (st) (a) (b) (span) =
    if types-equal a b then UnifyResult {
     success = True,
     state = st
@@ -144,13 +144,13 @@ Section: Unify
     is TypeVar (id-a) ->
      if occurs-in st id-a b then UnifyResult {
       success = False,
-      state = add-unify-error st cdx-infinite-type "Infinite type" synthetic-span
+      state = add-unify-error st cdx-infinite-type "Infinite type" span
      }
       else UnifyResult {
        success = True,
        state = add-subst st id-a b
       }
-    is otherwise -> unify-rhs st a b
+    is otherwise -> unify-rhs st a b span
 
   types-equal : CodexType -> CodexType -> Boolean
   types-equal (a) (b) =
@@ -184,22 +184,22 @@ Section: Unify
      is otherwise -> False
     is otherwise -> False
 
-  unify-rhs : UnificationState -> CodexType -> CodexType -> UnifyResult
-  unify-rhs (st) (a) (b) =
+  unify-rhs : UnificationState -> CodexType -> CodexType -> SourceSpan -> UnifyResult
+  unify-rhs (st) (a) (b) (span) =
    when b
     is TypeVar (id-b) ->
      if occurs-in st id-b a then UnifyResult {
       success = False,
-      state = add-unify-error st cdx-infinite-type "Infinite type" synthetic-span
+      state = add-unify-error st cdx-infinite-type "Infinite type" span
      }
       else UnifyResult {
        success = True,
        state = add-subst st id-b a
       }
-    is otherwise -> unify-structural st a b
+    is otherwise -> unify-structural st a b span
 
-  unify-structural : UnificationState -> CodexType -> CodexType -> UnifyResult
-  unify-structural (st) (a) (b) =
+  unify-structural : UnificationState -> CodexType -> CodexType -> SourceSpan -> UnifyResult
+  unify-structural (st) (a) (b) (span) =
    when a
     is IntegerTy -> when b
      is IntegerTy -> UnifyResult {
@@ -210,7 +210,7 @@ Section: Unify
       success = True,
       state = st
      }
-     is otherwise -> unify-mismatch st a b
+     is otherwise -> unify-mismatch st a b span
     is NumberTy -> when b
      is NumberTy -> UnifyResult {
       success = True,
@@ -220,7 +220,7 @@ Section: Unify
       success = True,
       state = st
      }
-     is otherwise -> unify-mismatch st a b
+     is otherwise -> unify-mismatch st a b span
     is TextTy -> when b
      is TextTy -> UnifyResult {
       success = True,
@@ -230,7 +230,7 @@ Section: Unify
       success = True,
       state = st
      }
-     is otherwise -> unify-mismatch st a b
+     is otherwise -> unify-mismatch st a b span
     is BooleanTy -> when b
      is BooleanTy -> UnifyResult {
       success = True,
@@ -240,7 +240,7 @@ Section: Unify
       success = True,
       state = st
      }
-     is otherwise -> unify-mismatch st a b
+     is otherwise -> unify-mismatch st a b span
     is NothingTy -> when b
      is NothingTy -> UnifyResult {
       success = True,
@@ -250,7 +250,7 @@ Section: Unify
       success = True,
       state = st
      }
-     is otherwise -> unify-mismatch st a b
+     is otherwise -> unify-mismatch st a b span
     is VoidTy -> when b
      is VoidTy -> UnifyResult {
       success = True,
@@ -260,107 +260,107 @@ Section: Unify
       success = True,
       state = st
      }
-     is otherwise -> unify-mismatch st a b
+     is otherwise -> unify-mismatch st a b span
     is ErrorTy -> UnifyResult {
      success = True,
      state = st
     }
     is FunTy (pa) (ra) -> when b
-     is FunTy (pb) (rb) -> unify-fun st pa ra pb rb
+     is FunTy (pb) (rb) -> unify-fun st pa ra pb rb span
      is ErrorTy -> UnifyResult {
       success = True,
       state = st
      }
-     is otherwise -> unify-mismatch st a b
+     is otherwise -> unify-mismatch st a b span
     is ListTy (ea) -> when b
-     is ListTy (eb) -> unify st ea eb
+     is ListTy (eb) -> unify st ea eb span
      is ErrorTy -> UnifyResult {
       success = True,
       state = st
      }
-     is otherwise -> unify-mismatch st a b
+     is otherwise -> unify-mismatch st a b span
     is LinkedListTy (ea) -> when b
-     is LinkedListTy (eb) -> unify st ea eb
+     is LinkedListTy (eb) -> unify st ea eb span
      is ErrorTy -> UnifyResult {
       success = True,
       state = st
      }
-     is otherwise -> unify-mismatch st a b
+     is otherwise -> unify-mismatch st a b span
     is ConstructedTy (na) (args-a) -> when b
      is ConstructedTy (nb) (args-b) ->
-      if na.value == nb.value then unify-constructed-args st args-a args-b 0 (list-length args-a)
-       else unify-mismatch st a b
+      if na.value == nb.value then unify-constructed-args st args-a args-b 0 (list-length args-a) span
+       else unify-mismatch st a b span
      is SumTy (sb-name) (sb-ctors) ->
       if na.value == sb-name.value then UnifyResult {
        success = True,
        state = st
       }
-      else unify-mismatch st a b
+      else unify-mismatch st a b span
      is RecordTy (rb-name) (rb-fields) ->
       if na.value == rb-name.value then UnifyResult {
        success = True,
        state = st
       }
-      else unify-mismatch st a b
+      else unify-mismatch st a b span
      is ErrorTy -> UnifyResult {
       success = True,
       state = st
      }
-     is otherwise -> unify-mismatch st a b
+     is otherwise -> unify-mismatch st a b span
     is SumTy (sa-name) (sa-ctors) -> when b
      is SumTy (sb-name) (sb-ctors) ->
       if sa-name.value == sb-name.value then UnifyResult {
        success = True,
        state = st
       }
-      else unify-mismatch st a b
+      else unify-mismatch st a b span
      is ConstructedTy (nb) (args-b) ->
       if sa-name.value == nb.value then UnifyResult {
        success = True,
        state = st
       }
-      else unify-mismatch st a b
+      else unify-mismatch st a b span
      is ErrorTy -> UnifyResult {
       success = True,
       state = st
      }
-     is otherwise -> unify-mismatch st a b
+     is otherwise -> unify-mismatch st a b span
     is RecordTy (ra-name) (ra-fields) -> when b
      is RecordTy (rb-name) (rb-fields) ->
       if ra-name.value == rb-name.value then UnifyResult {
        success = True,
        state = st
       }
-      else unify-mismatch st a b
+      else unify-mismatch st a b span
      is ConstructedTy (nb) (args-b) ->
       if ra-name.value == nb.value then UnifyResult {
        success = True,
        state = st
       }
-      else unify-mismatch st a b
+      else unify-mismatch st a b span
      is ErrorTy -> UnifyResult {
       success = True,
       state = st
      }
-     is otherwise -> unify-mismatch st a b
-    is ForAllTy (id) (body) -> unify st body b
+     is otherwise -> unify-mismatch st a b span
+    is ForAllTy (id) (body) -> unify st body b span
     is EffectfulTy (effs-a) (ret-a) -> when b
-     is EffectfulTy (effs-b) (ret-b) -> unify st ret-a ret-b
+     is EffectfulTy (effs-b) (ret-b) -> unify st ret-a ret-b span
      is ErrorTy -> UnifyResult {
       success = True,
       state = st
      }
-     is otherwise -> unify st ret-a b
+     is otherwise -> unify st ret-a b span
     is otherwise -> when b
-     is EffectfulTy (effs-b) (ret-b) -> unify st a ret-b
+     is EffectfulTy (effs-b) (ret-b) -> unify st a ret-b span
      is ErrorTy -> UnifyResult {
       success = True,
       state = st
      }
-     is otherwise -> unify-mismatch st a b
+     is otherwise -> unify-mismatch st a b span
 
-  unify-constructed-args : UnificationState -> List CodexType -> List CodexType -> Integer -> Integer -> UnifyResult
-  unify-constructed-args (st) (args-a) (args-b) (i) (len) =
+  unify-constructed-args : UnificationState -> List CodexType -> List CodexType -> Integer -> Integer -> SourceSpan -> UnifyResult
+  unify-constructed-args (st) (args-a) (args-b) (i) (len) (span) =
    if i == len then UnifyResult {
     success = True,
     state = st
@@ -369,21 +369,21 @@ Section: Unify
     success = True,
     state = st
    }
-   else let r = unify st (list-at args-a i) (list-at args-b i)
-   in if r.success then unify-constructed-args (r.state) args-a args-b (i + 1) len
+   else let r = unify st (list-at args-a i) (list-at args-b i) span
+   in if r.success then unify-constructed-args (r.state) args-a args-b (i + 1) len span
         else r
 
-  unify-fun : UnificationState -> CodexType -> CodexType -> CodexType -> CodexType -> UnifyResult
-  unify-fun (st) (pa) (ra) (pb) (rb) =
-   let r1 = unify st pa pb
-   in if r1.success then unify (r1.state) ra rb
+  unify-fun : UnificationState -> CodexType -> CodexType -> CodexType -> CodexType -> SourceSpan -> UnifyResult
+  unify-fun (st) (pa) (ra) (pb) (rb) (span) =
+   let r1 = unify st pa pb span
+   in if r1.success then unify (r1.state) ra rb span
       else r1
 
-  unify-mismatch : UnificationState -> CodexType -> CodexType -> UnifyResult
-  unify-mismatch (st) (a) (b) =
+  unify-mismatch : UnificationState -> CodexType -> CodexType -> SourceSpan -> UnifyResult
+  unify-mismatch (st) (a) (b) (span) =
    UnifyResult {
     success = False,
-    state = add-unify-error st cdx-type-mismatch ("Type mismatch: " ++ type-tag a ++ " vs " ++ type-tag b) synthetic-span
+    state = add-unify-error st cdx-type-mismatch ("Type mismatch: " ++ type-tag a ++ " vs " ++ type-tag b) span
    }
 
   type-tag : CodexType -> Text
