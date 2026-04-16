@@ -106,7 +106,8 @@ public sealed partial class CSharpEmitter : ICodeEmitter
     static void EmitSumType(StringBuilder sb, SumType sum)
     {
         string baseName = SanitizeIdentifier(sum.TypeName.Value);
-        sb.AppendLine($"public abstract record {baseName};");
+        string generics = FormatTypeParams(sum.TypeParamIds);
+        sb.AppendLine($"public abstract record {baseName}{generics};");
         sb.AppendLine();
 
         foreach (SumConstructorType ctor in sum.Constructors)
@@ -114,11 +115,11 @@ public sealed partial class CSharpEmitter : ICodeEmitter
             string ctorName = SanitizeIdentifier(ctor.Name.Value);
             if (ctor.Fields.IsEmpty)
             {
-                sb.AppendLine($"public sealed record {ctorName} : {baseName};");
+                sb.AppendLine($"public sealed record {ctorName}{generics} : {baseName}{generics};");
             }
             else
             {
-                sb.Append($"public sealed record {ctorName}(");
+                sb.Append($"public sealed record {ctorName}{generics}(");
                 for (int i = 0; i < ctor.Fields.Length; i++)
                 {
                     if (i > 0)
@@ -128,7 +129,7 @@ public sealed partial class CSharpEmitter : ICodeEmitter
 
                     sb.Append($"{EmitType(ctor.Fields[i])} Field{i}");
                 }
-                sb.AppendLine($") : {baseName};");
+                sb.AppendLine($") : {baseName}{generics};");
             }
         }
         sb.AppendLine();
@@ -137,7 +138,8 @@ public sealed partial class CSharpEmitter : ICodeEmitter
     static void EmitRecordType(StringBuilder sb, RecordType rec)
     {
         string name = SanitizeIdentifier(rec.TypeName.Value);
-        sb.Append($"public sealed record {name}(");
+        string generics = FormatTypeParams(rec.TypeParamIds);
+        sb.Append($"public sealed record {name}{generics}(");
         for (int i = 0; i < rec.Fields.Length; i++)
         {
             if (i > 0)
@@ -150,6 +152,16 @@ public sealed partial class CSharpEmitter : ICodeEmitter
         }
         sb.AppendLine(");");
         sb.AppendLine();
+    }
+
+    static string FormatTypeParams(System.Collections.Immutable.ImmutableArray<int> ids)
+    {
+        if (ids.IsDefaultOrEmpty)
+        {
+            return "";
+        }
+
+        return "<" + string.Join(", ", ids.Select(id => $"T{id}")) + ">";
     }
 
     static Set<string> CollectConstructorNames(IRChapter module)
