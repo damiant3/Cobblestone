@@ -29,8 +29,5 @@ Legend: 🟡 partial / different · ❌ missing · ⏭️ deliberately diverged
 | `Pair` | ✓ stdlib | 🟡 ad-hoc | 🟡 | `foreword/Pair.codex` exists; self-host uses per-purpose 2-field records |
 | `TextSearch` (trie) | ✓ stdlib | ❌ in self-host | ❌ | `foreword/TextSearch.codex` present but unused |
 
-| Polymorphism coverage audit | ? | ? | ❔ | Not yet done |
-
-2. **Polymorphism coverage audit** — type system row marked ❔. No
-   systematic test sweep exists; build one before claiming parity.
+| Polymorphism coverage | ✓ | ✓ pingpong | 🟡 | Sweep at `samples/polymorphism-coverage.codex` (13 defs): identity, const, polymorphic sum + map, polymorphic record + accessors, nested `Pair-r a b` / `List (Opt Integer)`, polymorphic function-as-arg, concrete instantiations — all green in the reference. Self-host's own source uses `Maybe a`, `ParseExprResult`, etc. throughout and pingpong is byte-identical, so the same shapes work there too. **Known gap (ref):** record construction with permuted type vars fails — e.g. `swap : P a b -> P b a / swap (p) = P { f = p.s, s = p.f }` defines fine but call sites emit CDX2001 type-mismatch (Integer↔Text swap). Definition-side polymorphism is intact; instantiation flips the field types incorrectly. |
 
