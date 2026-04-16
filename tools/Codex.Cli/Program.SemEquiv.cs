@@ -422,6 +422,13 @@ public static partial class Program
                     continue;
                 }
 
+                if (ln is "end" or "qed")
+                {
+                    bodyLines.AppendLine(ln);
+                    j++;
+                    continue;
+                }
+
                 bool looksLikeSig = ln.Contains(" : ");
                 bool looksLikeTypeDef = char.IsUpper(ln[0]) && ln.Contains(" =");
 
@@ -699,7 +706,7 @@ public static partial class Program
 
     static readonly HashSet<string> s_scopeKeywords = new()
     {
-        "if", "when", "let", "do", "match", "lambda", "\\", "handle", "fork", "await"
+        "if", "when", "let", "act", "match", "lambda", "\\", "handle", "fork", "await"
     };
 
     static readonly HashSet<string> s_binaryOps = new()
@@ -755,7 +762,7 @@ public static partial class Program
 
     static bool IsKnownTypeName(string name)
     {
-        return name is "in" or "if" or "of" or "do" or "is";
+        return name is "in" or "if" or "of" or "do" or "is" or "act" or "end" or "qed";
     }
 
     // ── Output ──────────────────────────────────────────────────────
