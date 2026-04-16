@@ -1,0 +1,495 @@
+Chapter: X86-64 Code Generator
+
+ Bare-metal start routine, chapter entry point (x86-64-emit-chapter),
+ and the two IR-rewrite / boundary-check passes (ConstructedTy resolve,
+ ErrorTy boundary check) that run before codegen.
+
+Section: Bare-Metal Start
+  bare-metal-heap-base : Integer
+  bare-metal-heap-base =
+   4194304
+
+  emit-oom-string : CodegenState -> List Integer -> Integer -> CodegenState
+  emit-oom-string (st) (chars) (i) =
+   if i >= list-length chars then st
+   else emit-oom-string (emit-serial-wait-and-send st (list-at chars i)) chars (i + 1)
+
+  emit-out-of-memory-handler : CodegenState -> CodegenState
+  emit-out-of-memory-handler (st) =
+   let st1 = record-func-offset st "__out_of_memory"
+   in let st2 = st-append-text st1 (mov-rr reg-rbx reg-rsp)
+   in let st3 = st-append-text st2 (mov-rr reg-r12 reg-r10)
+   in let st4 = st-append-text st3 (li reg-rsp bare-metal-stack-top)
+   in let st5 = st-append-text st4 (mov-rr reg-rbp reg-rsp)
+   in let st6 = emit-oom-string st5 [79, 85, 84, 32, 79, 70, 32, 77, 69, 77, 79, 82, 89, 10] 0
+   in let st7 = st-append-text st6 [244]
+   in st-append-text st7 (jmp (0 - 6))
+
+  collect-overflow-patches : List Integer -> Integer -> Integer -> List PatchEntry -> List PatchEntry
+  collect-overflow-patches (checks) (oom-offset) (i) (acc) =
+   if i >= list-length checks then acc
+   else let pos = list-at checks i
+    in let rel32 = oom-offset - (pos + 6)
+    in collect-overflow-patches checks oom-offset (i + 1) (list-snoc acc (make-i32-patch (pos + 2) rel32))
+
+  emit-start : CodegenState -> Integer -> Integer -> CodegenState
+  emit-start (st) (first-stub-vaddr) (syscall-handler-offset) =
+   let st1 = record-func-offset st "__start"
+   in let st2 = st-append-text st1 cli
+   in let st3 = st-append-text st2 (li reg-rsp bare-metal-stack-top)
+   in let st4 = st-append-text st3 (mov-rr reg-rbp reg-rsp)
+   in let st5 = st-append-text st4 (li reg-r10 bare-metal-heap-base)
+   in let st6 = st-append-text st5 (mov-rr reg-r15 reg-r10)
+   in let st7 = st-append-text st6 (li reg-r11 stack-min-rsp-addr)
+   in let st8 = st-append-text st7 (li reg-rax bare-metal-stack-top)
+   in let st9 = st-append-text st8 (mov-store reg-r11 reg-rax 0)
+   in let st10 = emit-load-rodata-addr st9 reg-r11 result-base-rodata-offset
+   in let st11 = st-append-text st10 (mov-store reg-r11 reg-r15 0)
+   in let st12 = emit-process-setup st11
+   in let st13 = emit-grant-capability st12 0 cap-console
+   in let st14 = emit-grant-capability st13 0 cap-concurrent
+   in let st15 = emit-grant-capability st14 1 cap-console
+   in let syscall-vaddr = bare-metal-load-addr + syscall-handler-offset
+   in let st16 = emit-write-msr st15 3221225601 (8 * 4294967296)
+   in let st17 = emit-write-msr st16 3221225602 syscall-vaddr
+   in let st18 = emit-write-msr st17 3221225604 512
+   in let st19 = st-append-text st18 (li reg-rcx 3221225600)
+   in let st20 = st-append-text st19 [15, 50]
+   in let st21 = st-append-text st20 [72, 131, 200, 1]
+   in let st22 = st-append-text st21 [15, 48]
+   in let st23 = emit-out-byte st22 1019 128
+   in let st24 = emit-out-byte st23 1016 1
+   in let st25 = emit-out-byte st24 1017 0
+   in let st26 = emit-out-byte st25 1019 3
+   in let st27 = emit-out-byte st26 1018 199
+   in let st28 = emit-out-byte st27 1020 11
+   in let st29 = emit-out-byte st28 1017 1
+   in let st30 = st-append-text st29 (li reg-rdi serial-write-pos-addr)
+   in let st31 = st-append-text st30 (li reg-rax 0)
+   in let st32 = st-append-text st31 (mov-store reg-rdi reg-rax 0)
+   in let st33 = st-append-text st32 (li reg-rdi serial-read-pos-addr)
+   in let st34 = st-append-text st33 (mov-store reg-rdi reg-rax 0)
+   in let st35 = emit-idt-entries st34 first-stub-vaddr
+   in let st36 = emit-interrupt-setup st35
+   in let st37 = emit-serial-string st36 [82, 69, 65, 68, 89, 10]
+   in let st38 = st-append-text st37 (li reg-rdi arena-base-addr)
+   in let st39 = st-append-text st38 (mov-store reg-rdi reg-r10 0)
+   in let st40 = st-append-text st39 (li reg-rdi result-arena-base-addr)
+   in let st41 = st-append-text st40 (mov-store reg-rdi reg-r15 0)
+   in let repl-loop = st41.text-len
+   in let st42 = st-append-text st41 (li reg-rdi arena-base-addr)
+   in let st43 = st-append-text st42 (mov-load reg-r10 reg-rdi 0)
+   in let st44 = st-append-text st43 (li reg-rdi result-arena-base-addr)
+   in let st45 = st-append-text st44 (mov-load reg-r15 reg-rdi 0)
+   in let st46 = st-append-text st45 (li reg-rdi heap-hwm-addr)
+   in let st47 = st-append-text st46 (mov-store reg-rdi reg-r10 0)
+   in let st48 = emit-call-to st47 "main"
+   in let st48a = emit-inline-itoa-and-print st48
+   in let st48b = emit-serial-wait-and-send st48a 10
+   in let st49 = emit-update-heap-hwm st48b
+   in let st50 = emit-serial-string st49 [72, 69, 65, 80, 58]
+   in let st51 = st-append-text st50 (li reg-rdi heap-hwm-addr)
+   in let st52 = st-append-text st51 (mov-load reg-rax reg-rdi 0)
+   in let st53 = emit-inline-itoa-and-print st52
+   in let st54 = emit-serial-wait-and-send st53 10
+   in let st55 = emit-serial-string st54 [83, 84, 65, 67, 75, 58]
+   in let st56 = st-append-text st55 (li reg-rsi bare-metal-stack-top)
+   in let st57 = st-append-text st56 (li reg-rdi stack-min-rsp-addr)
+   in let st58 = st-append-text st57 (mov-load reg-rdi reg-rdi 0)
+   in let st59 = st-append-text st58 (sub-rr reg-rsi reg-rdi)
+   in let st60 = st-append-text st59 (mov-rr reg-rax reg-rsi)
+   in let st61 = emit-inline-itoa-and-print st60
+   in let st62 = emit-serial-wait-and-send st61 10
+   in let st63 = st-append-text st62 (li reg-r11 stack-min-rsp-addr)
+   in let st64 = st-append-text st63 (li reg-rax bare-metal-stack-top)
+   in let st65 = st-append-text st64 (mov-store reg-r11 reg-rax 0)
+   in st-append-text st65 (jmp (repl-loop - (st65.text-len + 5)))
+
+Section: Chapter Entry Point
+  flatten-chunks : LinkedList (List Integer) -> List Integer
+  flatten-chunks (chunks) =
+   let chunk-list = linked-list-to-list chunks
+   in flatten-chunks-loop chunk-list 0 (list-length chunk-list) []
+
+  flatten-chunks-loop : List (List Integer) -> Integer -> Integer -> List Integer -> List Integer
+  flatten-chunks-loop (chunks) (i) (len) (acc) =
+   if i == len then acc
+   else flatten-one-chunk (list-at chunks i) 0 (list-length (list-at chunks i)) acc chunks (i + 1) len
+
+  flatten-one-chunk : List Integer -> Integer -> Integer -> List Integer -> List (List Integer) -> Integer -> Integer -> List Integer
+  flatten-one-chunk (chunk) (j) (clen) (acc) (chunks) (next-i) (len) =
+   if j == clen then flatten-chunks-loop chunks next-i len acc
+   else flatten-one-chunk chunk (j + 1) clen (list-snoc acc (list-at chunk j)) chunks next-i len
+
+  text-buf-size : Integer = 2097152
+
+  rodata-buf-size : Integer = 524288
+
+  apply-one-patch-buf : Integer -> PatchEntry -> Integer
+  apply-one-patch-buf (base-addr) (p) =
+   buf-write-byte base-addr (p.pos) (p.b0)
+   + buf-write-byte base-addr (p.pos + 1) (p.b1)
+   + buf-write-byte base-addr (p.pos + 2) (p.b2)
+   + buf-write-byte base-addr (p.pos + 3) (p.b3)
+
+  apply-all-patches-buf : Integer -> List PatchEntry -> Integer -> Integer
+  apply-all-patches-buf (base-addr) (patches) (i) =
+   if i >= list-length patches then 0
+   else let r = apply-one-patch-buf base-addr (list-at patches i)
+   in apply-all-patches-buf base-addr patches (i + 1)
+
+  x86-64-init-codegen-streaming : List TypeBinding -> Integer -> CodegenState
+  x86-64-init-codegen-streaming (tdefs) (n-defs) =
+   let tramp = bare-metal-trampoline
+   in let text-addr = heap-save
+   in let ha1 = heap-advance text-buf-size
+   in let rodata-addr = heap-save
+   in let ha2 = heap-advance rodata-buf-size
+   in let bw1 = buf-write-bytes text-addr 0 (tramp.bytes)
+   in let bw2 = buf-write-bytes rodata-addr 0 init-rodata
+   in CodegenState {
+   text-buf-addr = text-addr,
+   text-len = list-length (tramp.bytes),
+   rodata-buf-addr = rodata-addr,
+   rodata-len = list-length init-rodata,
+   func-offsets = list-with-capacity (n-defs + 64),
+   call-patches = list-with-capacity (n-defs * 12),
+   func-addr-fixups = list-with-capacity (n-defs * 4),
+   rodata-fixups = list-with-capacity (n-defs * 8),
+   deferred-patches = list-with-capacity (n-defs * 4),
+   locals = [],
+   next-temp = 0,
+   next-local = 0,
+   spill-count = 0,
+   load-local-toggle = 0,
+   tco = TcoState {
+    active = False,
+    in-tail-pos = False,
+    loop-top = 0,
+    param-locals = [],
+    temp-locals = [],
+    current-func = "",
+    saved-next-local = 0,
+    saved-next-temp = 0
+   },
+   type-defs = tdefs,
+   stack-overflow-checks = list-with-capacity (n-defs + 16),
+   bag = empty-bag
+  }
+
+  x86-64-init-codegen : List TypeBinding -> CodegenState
+  x86-64-init-codegen (tdefs) =
+   let tramp = bare-metal-trampoline
+   in let text-addr = heap-save
+   in let ha1 = heap-advance text-buf-size
+   in let rodata-addr = heap-save
+   in let ha2 = heap-advance rodata-buf-size
+   in let bw1 = buf-write-bytes text-addr 0 (tramp.bytes)
+   in let bw2 = buf-write-bytes rodata-addr 0 init-rodata
+   in CodegenState {
+   text-buf-addr = text-addr,
+   text-len = list-length (tramp.bytes),
+   rodata-buf-addr = rodata-addr,
+   rodata-len = list-length init-rodata,
+   func-offsets = [],
+   call-patches = [],
+   func-addr-fixups = [],
+   rodata-fixups = [],
+   deferred-patches = [],
+   locals = [],
+   next-temp = 0,
+   next-local = 0,
+   spill-count = 0,
+   load-local-toggle = 0,
+   tco = TcoState {
+    active = False,
+    in-tail-pos = False,
+    loop-top = 0,
+    param-locals = [],
+    temp-locals = [],
+    current-func = "",
+    saved-next-local = 0,
+    saved-next-temp = 0
+   },
+   type-defs = tdefs,
+   stack-overflow-checks = [],
+   bag = empty-bag
+  }
+
+  x86-64-finalize : CodegenState -> Integer -> EmitChapterResult
+  x86-64-finalize (st1) (far-jump-patch-pos) =
+   let st1a = emit-out-of-memory-handler st1
+   in let isr-result = emit-isr-stubs st1a
+   in let syscall-result = emit-syscall-handler (isr-result.state)
+   in let st2 = emit-start (syscall-result.state) (isr-result.first-stub-vaddr) (syscall-result.handler-offset)
+   in let func-map = build-offset-table (st2.func-offsets)
+   in let st2a = check-call-patch-targets st2 func-map 0
+   in let st2b = check-func-addr-targets st2a func-map 0
+   in let st2c = check-runtime-symbol st2b func-map "__start"
+   in let st2d = check-runtime-symbol st2c func-map "__out_of_memory"
+   in let start-offset = offset-table-lookup func-map "__start"
+   in let start-addr = bare-metal-load-addr + start-offset
+   in let far-jump-entry = make-i32-patch (far-jump-patch-pos + 1) start-addr
+   in let n-call = list-length (st2d.call-patches)
+   in let call-entries = collect-call-patches (st2d.call-patches) func-map 0 (list-with-capacity n-call)
+   in let n-addr = list-length (st2d.func-addr-fixups)
+   in let addr-entries = collect-func-addr-patches (st2d.func-addr-fixups) func-map bare-metal-load-addr 0 (list-with-capacity (n-addr * 2))
+   in let rodata-vaddr = compute-rodata-vaddr-bare (st2d.text-len)
+   in let n-rodata = list-length (st2d.rodata-fixups)
+   in let rodata-entries = collect-rodata-patches (st2d.rodata-fixups) rodata-vaddr 0 (list-with-capacity (n-rodata * 2))
+   in let oom-offset = offset-table-lookup func-map "__out_of_memory"
+   in let n-overflow = list-length (st2d.stack-overflow-checks)
+   in let overflow-entries = collect-overflow-patches (st2d.stack-overflow-checks) oom-offset 0 (list-with-capacity n-overflow)
+   in let all-patches = [far-jump-entry] ++ call-entries ++ addr-entries ++ rodata-entries ++ overflow-entries ++ (st2d.deferred-patches)
+   in let patched = apply-all-patches-buf (st2d.text-buf-addr) all-patches 0
+   in let text-len = st2d.text-len
+   in let rodata-len = st2d.rodata-len
+   in let load-addr = bare-metal-load-addr
+   in let headers-end = elf32-header-size + elf32-phdr-size * 2
+   in let note-offset = elf-align headers-end 4
+   in let text-start = elf-align (note-offset + 20) 16
+   in let text-end = text-start + text-len
+   in let rodata-start = elf-align text-end 8
+   in let file-size = rodata-start + rodata-len
+   in let entry = load-addr + 12
+   in let seg-filesz = file-size - text-start
+   in let seg-memsz = seg-filesz + elf-bare-metal-heap-size
+   in let elf-buf = heap-save
+   in let ha = heap-advance file-size
+   in let hdr = elf32-header-bytes entry elf32-header-size 2
+   in let bw0 = buf-write-bytes elf-buf 0 hdr
+   in let ph1 = phdr-32 pt-load text-start load-addr load-addr seg-filesz seg-memsz pf-rwx elf-page-size
+   in let bw1 = buf-write-bytes elf-buf elf32-header-size ph1
+   in let ph2 = phdr-32 pt-note note-offset 0 0 20 20 pf-r 4
+   in let bw2 = buf-write-bytes elf-buf (elf32-header-size + elf32-phdr-size) ph2
+   in let note = pvh-note entry
+   in let bw3 = buf-write-bytes elf-buf note-offset note
+   in let bw4 = buf-write-bytes elf-buf text-start (buf-read-bytes (st2d.text-buf-addr) 0 text-len)
+   in let bw5 = buf-write-bytes elf-buf rodata-start (buf-read-bytes (st2d.rodata-buf-addr) 0 rodata-len)
+   in let elf-bytes = buf-read-bytes elf-buf 0 file-size
+   in EmitChapterResult {
+    bytes = elf-bytes,
+    bag = st2d.bag
+   }
+
+Section: ConstructedTy Rewrite Pass
+
+  resolve-ty-deep : List TypeBinding -> CodexType -> CodexType
+  resolve-ty-deep (tdefs) (ty) =
+   when ty
+    is ConstructedTy (cname) (cargs) ->
+     let raw = lookup-type-binding tdefs (cname.value)
+     in when raw
+      is RecordTy (rn) (rf) -> raw
+      is SumTy (sn) (sc) -> raw
+      is FunTy (p) (r) -> strip-fun-args-emitter r
+      is otherwise -> ConstructedTy cname (resolve-ty-list tdefs cargs 0 (list-length cargs) [])
+    is FunTy (p) (r) -> FunTy (resolve-ty-deep tdefs p) (resolve-ty-deep tdefs r)
+    is ListTy (e) -> ListTy (resolve-ty-deep tdefs e)
+    is LinkedListTy (e) -> LinkedListTy (resolve-ty-deep tdefs e)
+    is ForAllTy (id) (body) -> ForAllTy id (resolve-ty-deep tdefs body)
+    is EffectfulTy (effs) (ret) -> EffectfulTy effs (resolve-ty-deep tdefs ret)
+    is otherwise -> ty
+
+  resolve-ty-list : List TypeBinding -> List CodexType -> Integer -> Integer -> List CodexType -> List CodexType
+  resolve-ty-list (tdefs) (tys) (i) (len) (acc) =
+   if i == len then acc
+   else resolve-ty-list tdefs tys (i + 1) len (list-snoc acc (resolve-ty-deep tdefs (list-at tys i)))
+
+  rewrite-ir-pat : List TypeBinding -> IRPat -> IRPat
+  rewrite-ir-pat (tdefs) (p) =
+   when p
+    is IrVarPat (name) (t) (s) -> IrVarPat name (resolve-ty-deep tdefs t) s
+    is IrLitPat (v) (t) (s) -> IrLitPat v (resolve-ty-deep tdefs t) s
+    is IrCtorPat (name) (subs) (t) (s) -> IrCtorPat name (rewrite-ir-pat-list tdefs subs 0 (list-length subs) []) (resolve-ty-deep tdefs t) s
+    is IrWildPat (s) -> p
+
+  rewrite-ir-pat-list : List TypeBinding -> List IRPat -> Integer -> Integer -> List IRPat -> List IRPat
+  rewrite-ir-pat-list (tdefs) (ps) (i) (len) (acc) =
+   if i == len then acc
+   else rewrite-ir-pat-list tdefs ps (i + 1) len (list-snoc acc (rewrite-ir-pat tdefs (list-at ps i)))
+
+  rewrite-ir-expr : List TypeBinding -> IRExpr -> IRExpr
+  rewrite-ir-expr (tdefs) (e) =
+   when e
+    is IrIntLit (v) (s) -> e
+    is IrNumLit (v) (s) -> e
+    is IrTextLit (v) (s) -> e
+    is IrBoolLit (v) (s) -> e
+    is IrCharLit (v) (s) -> e
+    is IrName (n) (t) (s) -> IrName n (resolve-ty-deep tdefs t) s
+    is IrBinary (op) (l) (r) (t) (s) -> IrBinary op (rewrite-ir-expr tdefs l) (rewrite-ir-expr tdefs r) (resolve-ty-deep tdefs t) s
+    is IrNegate (x) (s) -> IrNegate (rewrite-ir-expr tdefs x) s
+    is IrIf (c) (th) (el) (t) (s) -> IrIf (rewrite-ir-expr tdefs c) (rewrite-ir-expr tdefs th) (rewrite-ir-expr tdefs el) (resolve-ty-deep tdefs t) s
+    is IrLet (n) (t) (v) (b) (s) -> IrLet n (resolve-ty-deep tdefs t) (rewrite-ir-expr tdefs v) (rewrite-ir-expr tdefs b) s
+    is IrApply (f) (a) (t) (s) -> IrApply (rewrite-ir-expr tdefs f) (rewrite-ir-expr tdefs a) (resolve-ty-deep tdefs t) s
+    is IrLambda (ps) (b) (t) (s) -> IrLambda (rewrite-ir-params tdefs ps 0 (list-length ps) []) (rewrite-ir-expr tdefs b) (resolve-ty-deep tdefs t) s
+    is IrList (es) (t) (s) -> IrList (rewrite-ir-expr-list tdefs es 0 (list-length es) []) (resolve-ty-deep tdefs t) s
+    is IrMatch (sc) (bs) (t) (s) -> IrMatch (rewrite-ir-expr tdefs sc) (rewrite-ir-branches tdefs bs 0 (list-length bs) []) (resolve-ty-deep tdefs t) s
+    is IrAct (ss) (t) (s) -> IrAct (rewrite-ir-act-stmts tdefs ss 0 (list-length ss) []) (resolve-ty-deep tdefs t) s
+    is IrHandle (eff) (h) (cs) (t) (s) -> IrHandle eff (rewrite-ir-expr tdefs h) (rewrite-ir-handle-clauses tdefs cs 0 (list-length cs) []) (resolve-ty-deep tdefs t) s
+    is IrRecord (n) (fs) (t) (s) -> IrRecord n (rewrite-ir-record-fields tdefs fs 0 (list-length fs) []) (resolve-ty-deep tdefs t) s
+    is IrFieldAccess (r) (f) (t) (s) -> IrFieldAccess (rewrite-ir-expr tdefs r) f (resolve-ty-deep tdefs t) s
+    is IrFork (body) (t) (s) -> IrFork (rewrite-ir-expr tdefs body) (resolve-ty-deep tdefs t) s
+    is IrAwait (task) (t) (s) -> IrAwait (rewrite-ir-expr tdefs task) (resolve-ty-deep tdefs t) s
+    is IrError (m) (t) (s) -> IrError m (resolve-ty-deep tdefs t) s
+
+  rewrite-ir-expr-list : List TypeBinding -> List IRExpr -> Integer -> Integer -> List IRExpr -> List IRExpr
+  rewrite-ir-expr-list (tdefs) (es) (i) (len) (acc) =
+   if i == len then acc
+   else rewrite-ir-expr-list tdefs es (i + 1) len (list-snoc acc (rewrite-ir-expr tdefs (list-at es i)))
+
+  rewrite-ir-params : List TypeBinding -> List IRParam -> Integer -> Integer -> List IRParam -> List IRParam
+  rewrite-ir-params (tdefs) (ps) (i) (len) (acc) =
+   if i == len then acc
+   else let p = list-at ps i
+   in rewrite-ir-params tdefs ps (i + 1) len (list-snoc acc (IRParam {
+    name = p.name,
+    type-val = resolve-ty-deep tdefs (p.type-val),
+    span = p.span
+   }))
+
+  rewrite-ir-branches : List TypeBinding -> List IRBranch -> Integer -> Integer -> List IRBranch -> List IRBranch
+  rewrite-ir-branches (tdefs) (bs) (i) (len) (acc) =
+   if i == len then acc
+   else let b = list-at bs i
+   in rewrite-ir-branches tdefs bs (i + 1) len (list-snoc acc (IRBranch {
+    pattern = rewrite-ir-pat tdefs (b.pattern),
+    body = rewrite-ir-expr tdefs (b.body),
+    span = b.span
+   }))
+
+  rewrite-ir-act-stmts : List TypeBinding -> List IRActStmt -> Integer -> Integer -> List IRActStmt -> List IRActStmt
+  rewrite-ir-act-stmts (tdefs) (ss) (i) (len) (acc) =
+   if i == len then acc
+   else let s = list-at ss i
+   in let ns = when s
+    is IrDoBind (n) (t) (v) (sp) -> IrDoBind n (resolve-ty-deep tdefs t) (rewrite-ir-expr tdefs v) sp
+    is IrDoExec (v) (sp) -> IrDoExec (rewrite-ir-expr tdefs v) sp
+   in rewrite-ir-act-stmts tdefs ss (i + 1) len (list-snoc acc ns)
+
+  rewrite-ir-handle-clauses : List TypeBinding -> List IRHandleClause -> Integer -> Integer -> List IRHandleClause -> List IRHandleClause
+  rewrite-ir-handle-clauses (tdefs) (cs) (i) (len) (acc) =
+   if i == len then acc
+   else let c = list-at cs i
+   in rewrite-ir-handle-clauses tdefs cs (i + 1) len (list-snoc acc (IRHandleClause {
+    op-name = c.op-name,
+    resume-name = c.resume-name,
+    body = rewrite-ir-expr tdefs (c.body),
+    span = c.span
+   }))
+
+  rewrite-ir-record-fields : List TypeBinding -> List IRFieldVal -> Integer -> Integer -> List IRFieldVal -> List IRFieldVal
+  rewrite-ir-record-fields (tdefs) (fs) (i) (len) (acc) =
+   if i == len then acc
+   else let f = list-at fs i
+   in rewrite-ir-record-fields tdefs fs (i + 1) len (list-snoc acc (IRFieldVal {
+    name = f.name,
+    value = rewrite-ir-expr tdefs (f.value),
+    span = f.span
+   }))
+
+  rewrite-ir-def : List TypeBinding -> IRDef -> IRDef
+  rewrite-ir-def (tdefs) (d) =
+   IRDef {
+    name = d.name,
+    params = rewrite-ir-params tdefs (d.params) 0 (list-length (d.params)) [],
+    type-val = resolve-ty-deep tdefs (d.type-val),
+    body = rewrite-ir-expr tdefs (d.body),
+    chapter-slug = d.chapter-slug,
+    span = d.span
+   }
+
+  rewrite-ir-defs : List TypeBinding -> List IRDef -> Integer -> Integer -> List IRDef -> List IRDef
+  rewrite-ir-defs (tdefs) (defs) (i) (len) (acc) =
+   if i == len then acc
+   else rewrite-ir-defs tdefs defs (i + 1) len (list-snoc acc (rewrite-ir-def tdefs (list-at defs i)))
+
+Section: ErrorTy Boundary Check
+
+  type-has-errorty : CodexType -> Boolean
+  type-has-errorty (ty) =
+   when ty
+    is ErrorTy -> True
+    is FunTy (p) (r) -> if type-has-errorty p then True else type-has-errorty r
+    is ListTy (e) -> type-has-errorty e
+    is LinkedListTy (e) -> type-has-errorty e
+    is ForAllTy (id) (body) -> type-has-errorty body
+    is EffectfulTy (effs) (ret) -> type-has-errorty ret
+    is otherwise -> False
+
+  check-ir-expr-errorty : CodegenState -> IRExpr -> CodegenState
+  check-ir-expr-errorty (st) (e) =
+   let ty = ir-expr-type e
+   in let st1 = if type-has-errorty ty
+    then st-add-error st cdx-error-type-in-ir "IR node reached codegen with ErrorTy in its type" (ir-expr-span e)
+    else st
+   in when e
+    is IrBinary (op) (l) (r) (t) (s) -> check-ir-expr-errorty (check-ir-expr-errorty st1 l) r
+    is IrNegate (x) (s) -> check-ir-expr-errorty st1 x
+    is IrIf (c) (th) (el) (t) (s) -> check-ir-expr-errorty (check-ir-expr-errorty (check-ir-expr-errorty st1 c) th) el
+    is IrLet (n) (t) (v) (b) (s) -> check-ir-expr-errorty (check-ir-expr-errorty st1 v) b
+    is IrApply (f) (a) (t) (s) -> check-ir-expr-errorty (check-ir-expr-errorty st1 f) a
+    is IrLambda (ps) (b) (t) (s) -> check-ir-expr-errorty st1 b
+    is IrList (es) (t) (s) -> check-ir-list-errorty st1 es 0
+    is IrMatch (sc) (bs) (t) (s) -> check-ir-branches-errorty (check-ir-expr-errorty st1 sc) bs 0
+    is IrAct (ss) (t) (s) -> check-ir-act-stmts-errorty st1 ss 0
+    is IrHandle (eff) (h) (cs) (t) (s) -> check-ir-handle-clauses-errorty (check-ir-expr-errorty st1 h) cs 0
+    is IrRecord (n) (fs) (t) (s) -> check-ir-record-fields-errorty st1 fs 0
+    is IrFieldAccess (r) (f) (t) (s) -> check-ir-expr-errorty st1 r
+    is IrFork (body) (t) (s) -> check-ir-expr-errorty st1 body
+    is IrAwait (task) (t) (s) -> check-ir-expr-errorty st1 task
+    is otherwise -> st1
+
+  check-ir-list-errorty : CodegenState -> List IRExpr -> Integer -> CodegenState
+  check-ir-list-errorty (st) (es) (i) =
+   if i == list-length es then st
+   else check-ir-list-errorty (check-ir-expr-errorty st (list-at es i)) es (i + 1)
+
+  check-ir-branches-errorty : CodegenState -> List IRBranch -> Integer -> CodegenState
+  check-ir-branches-errorty (st) (bs) (i) =
+   if i == list-length bs then st
+   else let b = list-at bs i
+   in check-ir-branches-errorty (check-ir-expr-errorty st (b.body)) bs (i + 1)
+
+  check-ir-act-stmts-errorty : CodegenState -> List IRActStmt -> Integer -> CodegenState
+  check-ir-act-stmts-errorty (st) (ss) (i) =
+   if i == list-length ss then st
+   else let s = list-at ss i
+   in when s
+    is IrDoBind (n) (t) (v) (sp) -> check-ir-act-stmts-errorty (check-ir-expr-errorty st v) ss (i + 1)
+    is IrDoExec (v) (sp) -> check-ir-act-stmts-errorty (check-ir-expr-errorty st v) ss (i + 1)
+
+  check-ir-handle-clauses-errorty : CodegenState -> List IRHandleClause -> Integer -> CodegenState
+  check-ir-handle-clauses-errorty (st) (cs) (i) =
+   if i == list-length cs then st
+   else let c = list-at cs i
+   in check-ir-handle-clauses-errorty (check-ir-expr-errorty st (c.body)) cs (i + 1)
+
+  check-ir-record-fields-errorty : CodegenState -> List IRFieldVal -> Integer -> CodegenState
+  check-ir-record-fields-errorty (st) (fs) (i) =
+   if i == list-length fs then st
+   else let f = list-at fs i
+   in check-ir-record-fields-errorty (check-ir-expr-errorty st (f.value)) fs (i + 1)
+
+  check-ir-defs-errorty : CodegenState -> List IRDef -> Integer -> CodegenState
+  check-ir-defs-errorty (st) (defs) (i) =
+   if i == list-length defs then st
+   else let d = list-at defs i
+   in let st1 = if type-has-errorty (d.type-val)
+    then st-add-error st cdx-error-type-in-ir ("Definition '" ++ (d.name) ++ "' has ErrorTy in its type") (d.span)
+    else st
+   in check-ir-defs-errorty (check-ir-expr-errorty st1 (d.body)) defs (i + 1)
+
+  x86-64-emit-chapter : IRChapter -> List TypeBinding -> EmitChapterResult
+  x86-64-emit-chapter (m) (tdefs) =
+   let tramp = bare-metal-trampoline
+   in let st0 = x86-64-init-codegen tdefs
+   in let defs-resolved = rewrite-ir-defs tdefs (m.defs) 0 (list-length (m.defs)) []
+   in let st-checked = check-ir-defs-errorty st0 defs-resolved 0
+   in let st0a = emit-runtime-helpers st-checked
+   in let st1 = emit-all-defs st0a defs-resolved 0
+   in x86-64-finalize st1 (tramp.far-jump-patch-pos)
+
+
+Page 3 of 10

@@ -5645,412 +5645,6 @@ public static class Codex_Codex_Codex
         return ((Func<long, long>)((headers_end) => ((Func<long, long>)((note_offset) => elf_align((note_offset + 20L), 16L)))(elf_align(headers_end, 4L))))((elf32_header_size() + (elf32_phdr_size() * 2L)));
     }
 
-    public static TcoState default_tco_state()
-    {
-        return new TcoState(false, false, 0L, new List<long>(), new List<long>(), "", 0L, 0L);
-    }
-
-    public static List<long> temp_regs()
-    {
-        return new List<long>() { 0L, 1L, 2L, 6L, 7L, 11L };
-    }
-
-    public static List<long> local_regs()
-    {
-        return new List<long>() { 3L, 12L, 13L, 14L };
-    }
-
-    public static long spill_base()
-    {
-        return 32L;
-    }
-
-    public static long bare_metal_load_addr()
-    {
-        return 1048576L;
-    }
-
-    public static long bare_metal_stack_top()
-    {
-        return 1073741824L;
-    }
-
-    public static List<long> cce_to_unicode_table()
-    {
-        return new List<long>() { 0L, 10L, 32L, 48L, 49L, 50L, 51L, 52L, 53L, 54L, 55L, 56L, 57L, 101L, 116L, 97L, 111L, 105L, 110L, 115L, 104L, 114L, 100L, 108L, 99L, 117L, 109L, 119L, 102L, 103L, 121L, 112L, 98L, 118L, 107L, 106L, 120L, 113L, 122L, 69L, 84L, 65L, 79L, 73L, 78L, 83L, 72L, 82L, 68L, 76L, 67L, 85L, 77L, 87L, 70L, 71L, 89L, 80L, 66L, 86L, 75L, 74L, 88L, 81L, 90L, 46L, 44L, 33L, 63L, 58L, 59L, 39L, 34L, 45L, 40L, 41L, 43L, 61L, 42L, 60L, 62L, 47L, 64L, 35L, 38L, 95L, 92L, 124L, 91L, 93L, 123L, 125L, 126L, 96L, 94L, 233L, 232L, 234L, 235L, 225L, 224L, 226L, 228L, 243L, 244L, 246L, 250L, 249L, 251L, 252L, 241L, 231L, 237L, 48L, 62L, 53L, 56L, 61L, 66L, 65L, 64L, 50L, 59L, 58L, 60L, 52L, 63L, 67L };
-    }
-
-    public static List<long> unicode_to_cce_table()
-    {
-        return new List<long>() { 0L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 1L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 2L, 67L, 72L, 83L, 68L, 68L, 84L, 71L, 74L, 75L, 78L, 76L, 66L, 73L, 65L, 81L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L, 11L, 12L, 69L, 70L, 79L, 77L, 80L, 68L, 82L, 41L, 58L, 50L, 48L, 39L, 54L, 55L, 46L, 43L, 61L, 60L, 49L, 52L, 44L, 42L, 57L, 63L, 47L, 45L, 40L, 51L, 59L, 53L, 62L, 56L, 64L, 88L, 86L, 89L, 94L, 85L, 93L, 15L, 32L, 24L, 22L, 13L, 28L, 29L, 20L, 17L, 35L, 34L, 23L, 26L, 18L, 16L, 31L, 37L, 21L, 19L, 14L, 25L, 33L, 27L, 36L, 30L, 38L, 90L, 87L, 91L, 92L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 100L, 99L, 101L, 68L, 102L, 68L, 68L, 111L, 96L, 95L, 97L, 98L, 68L, 112L, 68L, 68L, 68L, 110L, 68L, 103L, 104L, 68L, 105L, 68L, 68L, 107L, 106L, 108L, 109L, 68L, 68L, 68L };
-    }
-
-    public static long result_base_rodata_offset()
-    {
-        return 0L;
-    }
-
-    public static long fwd_table_rodata_offset()
-    {
-        return 8L;
-    }
-
-    public static long cce_to_unicode_rodata_offset()
-    {
-        return 16L;
-    }
-
-    public static long unicode_to_cce_rodata_offset()
-    {
-        return 144L;
-    }
-
-    public static List<long> init_rodata()
-    {
-        return ((Func<List<long>, List<long>>)((zeros_8) => Enumerable.Concat(zeros_8, Enumerable.Concat(zeros_8, Enumerable.Concat(cce_to_unicode_table(), unicode_to_cce_table()).ToList()).ToList()).ToList()))(new List<long>() { 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L });
-    }
-
-    public static CodegenState empty_codegen_state()
-    {
-        return new CodegenState(0L, 0L, 0L, 0L, new List<FuncOffset>(), new List<CallPatch>(), new List<FuncAddrFixup>(), new List<RodataFixup>(), new List<PatchEntry>(), new List<LocalBinding>(), 0L, 0L, 0L, 0L, new TcoState(false, false, 0L, new List<long>(), new List<long>(), "", 0L, 0L), new List<TypeBinding>(), new List<long>(), empty_bag());
-    }
-
-    public static CodegenState st_add_error(CodegenState st, long code, string msg, SourceSpan sp)
-    {
-        return ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, bag_add(st.bag, make_error(code, msg, sp)))))(st);
-    }
-
-    public static CodegenState st_append_text(CodegenState st, List<long> bytes)
-    {
-        return ((Func<dynamic, CodegenState>)((new_len) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, new_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st)))(_Buf.buf_write_bytes(st.text_buf_addr, st.text_len, bytes));
-    }
-
-    public static CodegenState record_func_offset(CodegenState st, string name)
-    {
-        return ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, ((Func<List<FuncOffset>>)(() => { var _l = st.func_offsets; _l.Add(new FuncOffset(name, st.text_len)); return _l; }))(), _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st);
-    }
-
-    public static List<LocalBinding> fresh_empty_locals(long x)
-    {
-        return new List<LocalBinding>();
-    }
-
-    public static CodegenState reset_func_state(CodegenState st, string name)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, new TcoState(false, false, 0L, new List<long>(), new List<long>(), "", 0L, 0L), _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st6)))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, 0L, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st5))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, 0L, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st4))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, 0L, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st3))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, 0L, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st2))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, fresh_empty_locals(0L), _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st1))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, ((Func<List<FuncOffset>>)(() => { var _l = st.func_offsets; _l.Add(new FuncOffset(name, st.text_len)); return _l; }))(), _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st));
-    }
-
-    public static EmitResult alloc_temp(CodegenState st)
-    {
-        return ((Func<long, EmitResult>)((idx) => ((Func<long, EmitResult>)((reg) => new EmitResult(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, (st.next_temp + 1L), _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st), reg)))(temp_regs()[(int)idx])))(((Func<long, long, long>)((_a, _b) => { long _abs = _b < 0L ? -_b : _b; long _r = _a % _abs; return _r < 0L ? _r + _abs : _r; }))(st.next_temp, 6L));
-    }
-
-    public static EmitResult alloc_local(CodegenState st)
-    {
-        return ((st.next_local < 4L) ? ((Func<long, EmitResult>)((reg) => new EmitResult(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, (st.next_local + 1L), _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st), reg)))(local_regs()[(int)st.next_local]) : ((Func<long, EmitResult>)((slot) => ((Func<CodegenState, EmitResult>)((st1) => new EmitResult(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, (st.spill_count + 1L), _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st1), slot)))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, (st.next_local + 1L), _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st))))((spill_base() + st.spill_count)));
-    }
-
-    public static CodegenState store_local(CodegenState st, long local, long value_reg)
-    {
-        return ((local < spill_base()) ? ((local == value_reg) ? st : st_append_text(st, mov_rr(local, value_reg))) : ((Func<long, CodegenState>)((offset) => st_append_text(st, mov_store(reg_rbp(), value_reg, offset))))((0L - ((((local - spill_base()) + 1L) * 8L) + 32L))));
-    }
-
-    public static long load_local_scratch_for(long toggle)
-    {
-        return ((Func<long, long>)((idx) => ((idx == 0L) ? reg_r8() : ((idx == 1L) ? reg_r9() : reg_r15()))))(((Func<long, long, long>)((_a, _b) => { long _abs = _b < 0L ? -_b : _b; long _r = _a % _abs; return _r < 0L ? _r + _abs : _r; }))(toggle, 3L));
-    }
-
-    public static EmitResult load_local(CodegenState st, long local)
-    {
-        return ((local < spill_base()) ? new EmitResult(st, local) : ((Func<long, EmitResult>)((scratch) => ((Func<long, EmitResult>)((offset) => ((Func<CodegenState, EmitResult>)((st1) => new EmitResult(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, (st.load_local_toggle + 1L), _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st1), scratch)))(st_append_text(st, mov_load(scratch, reg_rbp(), offset)))))((0L - ((((local - spill_base()) + 1L) * 8L) + 32L)))))(load_local_scratch_for(st.load_local_toggle)));
-    }
-
-    public static List<long> patch_i32_at(List<long> bytes, long pos, long value)
-    {
-        return ((Func<List<long>, List<long>>)((new_bytes) => patch_4_loop(bytes, pos, new_bytes, 0L, ((long)bytes.Count), new List<long>())))(write_i32(value));
-    }
-
-    public static List<long> patch_4_loop(List<long> bytes, long pos, List<long> new_bytes, long i, long len, List<long> acc)
-    {
-        while (true)
-        {
-            if ((i == len))
-            {
-                return acc;
-            }
-            else
-            {
-                if (((i >= pos) && (i < (pos + 4L))))
-                {
-                    var _tco_0 = bytes;
-                    var _tco_1 = pos;
-                    var _tco_2 = new_bytes;
-                    var _tco_3 = (i + 1L);
-                    var _tco_4 = len;
-                    var _tco_5 = ((Func<List<long>>)(() => { var _l = acc; _l.Add(new_bytes[(int)(i - pos)]); return _l; }))();
-                    bytes = _tco_0;
-                    pos = _tco_1;
-                    new_bytes = _tco_2;
-                    i = _tco_3;
-                    len = _tco_4;
-                    acc = _tco_5;
-                    continue;
-                }
-                else
-                {
-                    var _tco_0 = bytes;
-                    var _tco_1 = pos;
-                    var _tco_2 = new_bytes;
-                    var _tco_3 = (i + 1L);
-                    var _tco_4 = len;
-                    var _tco_5 = ((Func<List<long>>)(() => { var _l = acc; _l.Add(bytes[(int)i]); return _l; }))();
-                    bytes = _tco_0;
-                    pos = _tco_1;
-                    new_bytes = _tco_2;
-                    i = _tco_3;
-                    len = _tco_4;
-                    acc = _tco_5;
-                    continue;
-                }
-            }
-        }
-    }
-
-    public static CodegenState st_add_deferred_patch(CodegenState st, PatchEntry entry)
-    {
-        return ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, ((Func<List<PatchEntry>>)(() => { var _l = st.deferred_patches; _l.Add(entry); return _l; }))(), _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st);
-    }
-
-    public static CodegenState patch_jcc_at(CodegenState st, long jcc_pos, long target_pos)
-    {
-        return ((Func<long, CodegenState>)((rel32) => st_add_deferred_patch(st, make_i32_patch((jcc_pos + 2L), rel32))))((target_pos - (jcc_pos + 6L)));
-    }
-
-    public static CodegenState patch_jmp_at(CodegenState st, long jmp_pos, long target_pos)
-    {
-        return ((Func<long, CodegenState>)((rel32) => st_add_deferred_patch(st, make_i32_patch((jmp_pos + 1L), rel32))))((target_pos - (jmp_pos + 5L)));
-    }
-
-    public static CodegenState patch_call_at(CodegenState st, long call_pos, long target_pos)
-    {
-        return ((Func<long, CodegenState>)((rel32) => st_add_deferred_patch(st, make_i32_patch((call_pos + 1L), rel32))))((target_pos - (call_pos + 5L)));
-    }
-
-    public static PatchEntry make_i32_patch(long pos, long value)
-    {
-        return ((Func<List<long>, PatchEntry>)((bs) => new PatchEntry(pos, bs[(int)0L], bs[(int)1L], bs[(int)2L], bs[(int)3L])))(write_i32(value));
-    }
-
-    public static List<long> apply_all_patches(List<long> bytes, List<PatchEntry> patches)
-    {
-        return apply_patch_walk(bytes, patches, 0L, ((long)bytes.Count), new List<long>());
-    }
-
-    public static List<long> apply_patch_walk(List<long> bytes, List<PatchEntry> patches, long i, long len, List<long> acc)
-    {
-        while (true)
-        {
-            if ((i == len))
-            {
-                return acc;
-            }
-            else
-            {
-                var b = find_patch_byte(patches, i, 0L, ((long)patches.Count));
-                if ((b >= 0L))
-                {
-                    var _tco_0 = bytes;
-                    var _tco_1 = patches;
-                    var _tco_2 = (i + 1L);
-                    var _tco_3 = len;
-                    var _tco_4 = ((Func<List<long>>)(() => { var _l = acc; _l.Add(b); return _l; }))();
-                    bytes = _tco_0;
-                    patches = _tco_1;
-                    i = _tco_2;
-                    len = _tco_3;
-                    acc = _tco_4;
-                    continue;
-                }
-                else
-                {
-                    var _tco_0 = bytes;
-                    var _tco_1 = patches;
-                    var _tco_2 = (i + 1L);
-                    var _tco_3 = len;
-                    var _tco_4 = ((Func<List<long>>)(() => { var _l = acc; _l.Add(bytes[(int)i]); return _l; }))();
-                    bytes = _tco_0;
-                    patches = _tco_1;
-                    i = _tco_2;
-                    len = _tco_3;
-                    acc = _tco_4;
-                    continue;
-                }
-            }
-        }
-    }
-
-    public static long find_patch_byte(List<PatchEntry> patches, long i, long j, long len)
-    {
-        while (true)
-        {
-            if ((j == len))
-            {
-                return (-1L);
-            }
-            else
-            {
-                var p = patches[(int)j];
-                if ((i == p.pos))
-                {
-                    return p.b0;
-                }
-                else
-                {
-                    if ((i == (p.pos + 1L)))
-                    {
-                        return p.b1;
-                    }
-                    else
-                    {
-                        if ((i == (p.pos + 2L)))
-                        {
-                            return p.b2;
-                        }
-                        else
-                        {
-                            if ((i == (p.pos + 3L)))
-                            {
-                                return p.b3;
-                            }
-                            else
-                            {
-                                var _tco_0 = patches;
-                                var _tco_1 = i;
-                                var _tco_2 = (j + 1L);
-                                var _tco_3 = len;
-                                patches = _tco_0;
-                                i = _tco_1;
-                                j = _tco_2;
-                                len = _tco_3;
-                                continue;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    public static List<PatchEntry> collect_call_patches(List<CallPatch> patches, OffsetTable offset_map, long i, List<PatchEntry> acc)
-    {
-        while (true)
-        {
-            if ((i == ((long)patches.Count)))
-            {
-                return acc;
-            }
-            else
-            {
-                var p = patches[(int)i];
-                var target_offset = offset_table_lookup(offset_map, p.target);
-                var rel32 = (target_offset - (p.patch_offset + 5L));
-                var _tco_0 = patches;
-                var _tco_1 = offset_map;
-                var _tco_2 = (i + 1L);
-                var _tco_3 = ((Func<List<PatchEntry>>)(() => { var _l = acc; _l.Add(make_i32_patch((p.patch_offset + 1L), rel32)); return _l; }))();
-                patches = _tco_0;
-                offset_map = _tco_1;
-                i = _tco_2;
-                acc = _tco_3;
-                continue;
-            }
-        }
-    }
-
-    public static CodegenState check_call_patch_targets(CodegenState st, OffsetTable fm, long i)
-    {
-        while (true)
-        {
-            var patches = st.call_patches;
-            if ((i == ((long)patches.Count)))
-            {
-                return st;
-            }
-            else
-            {
-                var p = patches[(int)i];
-                var off = offset_table_lookup(fm, p.target);
-                if ((off == (0L - 1L)))
-                {
-                    var _tco_0 = st_add_error(st, cdx_unresolved_func_offset(), string.Concat("3\u0012\u0015\u000D\u0013\u0010\u0017!\u000D\u0016\u0002\u0018\u000F\u0017\u0017\u0002\u000E\u0010\u0002G", p.target, "G"), synthetic_span());
-                    var _tco_1 = fm;
-                    var _tco_2 = (i + 1L);
-                    st = _tco_0;
-                    fm = _tco_1;
-                    i = _tco_2;
-                    continue;
-                }
-                else
-                {
-                    var _tco_0 = st;
-                    var _tco_1 = fm;
-                    var _tco_2 = (i + 1L);
-                    st = _tco_0;
-                    fm = _tco_1;
-                    i = _tco_2;
-                    continue;
-                }
-            }
-        }
-    }
-
-    public static CodegenState check_func_addr_targets(CodegenState st, OffsetTable fm, long i)
-    {
-        while (true)
-        {
-            var fixups = st.func_addr_fixups;
-            if ((i == ((long)fixups.Count)))
-            {
-                return st;
-            }
-            else
-            {
-                var f = fixups[(int)i];
-                var off = offset_table_lookup(fm, f.target);
-                if ((off == (0L - 1L)))
-                {
-                    var _tco_0 = st_add_error(st, cdx_unresolved_func_offset(), string.Concat("3\u0012\u0015\u000D\u0013\u0010\u0017!\u000D\u0016\u0002\u001C\u0019\u0012\u0018I\u000F\u0016\u0016\u0015\u0002\u0015\u000D\u001C\u000D\u0015\u000D\u0012\u0018\u000D\u0002\u000E\u0010\u0002G", f.target, "G"), synthetic_span());
-                    var _tco_1 = fm;
-                    var _tco_2 = (i + 1L);
-                    st = _tco_0;
-                    fm = _tco_1;
-                    i = _tco_2;
-                    continue;
-                }
-                else
-                {
-                    var _tco_0 = st;
-                    var _tco_1 = fm;
-                    var _tco_2 = (i + 1L);
-                    st = _tco_0;
-                    fm = _tco_1;
-                    i = _tco_2;
-                    continue;
-                }
-            }
-        }
-    }
-
-    public static CodegenState check_runtime_symbol(CodegenState st, OffsetTable fm, string name)
-    {
-        return ((Func<long, CodegenState>)((off) => ((off == (0L - 1L)) ? st_add_error(st, cdx_unresolved_func_offset(), string.Concat("4\u0011\u0013\u0013\u0011\u0012\u001D\u0002\u0015\u0019\u0012\u000E\u0011\u001A\u000D\u0002\u0013\u001E\u001A \u0010\u0017\u0002G", name, "G"), synthetic_span()) : st)))(offset_table_lookup(fm, name));
-    }
-
-    public static long align_16(long n)
-    {
-        return ((Func<long, long>)((r) => ((r == 0L) ? n : ((n + 16L) - r))))(((Func<long, long, long>)((_a, _b) => { long _abs = _b < 0L ? -_b : _b; long _r = _a % _abs; return _r < 0L ? _r + _abs : _r; }))(n, 16L));
-    }
-
     public static List<long> emit_sub_rsp_imm32(long imm)
     {
         return Enumerable.Concat(new List<long>() { 72L, 129L, 236L }, write_i32(imm)).ToList();
@@ -6733,6 +6327,503 @@ public static class Codex_Codex_Codex
         return ((Func<long, CodegenState>)((patch_pos) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, ((Func<List<CallPatch>>)(() => { var _l = st1.call_patches; _l.Add(new CallPatch(patch_pos, target)); return _l; }))(), _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st1)))(st_append_text(st, x86_call(0L)))))(st.text_len);
     }
 
+    public static long idt_base()
+    {
+        return 24576L;
+    }
+
+    public static long tick_count_addr()
+    {
+        return 28672L;
+    }
+
+    public static long key_buffer_addr()
+    {
+        return 28680L;
+    }
+
+    public static long current_proc_addr()
+    {
+        return 28688L;
+    }
+
+    public static long arena_base_addr()
+    {
+        return 28696L;
+    }
+
+    public static long serial_write_pos_addr()
+    {
+        return 28704L;
+    }
+
+    public static long serial_read_pos_addr()
+    {
+        return 28712L;
+    }
+
+    public static long result_arena_base_addr()
+    {
+        return 28720L;
+    }
+
+    public static long heap_hwm_addr()
+    {
+        return 28728L;
+    }
+
+    public static long stack_min_rsp_addr()
+    {
+        return 28736L;
+    }
+
+    public static long serial_ring_buf_addr()
+    {
+        return 3145728L;
+    }
+
+    public static long serial_ring_buf_size()
+    {
+        return 1048576L;
+    }
+
+    public static long serial_ring_buf_mask()
+    {
+        return 1048575L;
+    }
+
+    public static long proc_table_base()
+    {
+        return 20480L;
+    }
+
+    public static long proc_entry_size()
+    {
+        return 256L;
+    }
+
+    public static long proc_cap_offset()
+    {
+        return 56L;
+    }
+
+    public static long cap_console()
+    {
+        return 0L;
+    }
+
+    public static long cap_concurrent()
+    {
+        return 3L;
+    }
+
+    public static CodegenState emit_pic_init(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => emit_out_byte(st9, 161L, 255L)))(emit_out_byte(st8, 33L, 236L))))(emit_out_byte(st7, 161L, 1L))))(emit_out_byte(st6, 33L, 1L))))(emit_out_byte(st5, 161L, 2L))))(emit_out_byte(st4, 33L, 4L))))(emit_out_byte(st3, 161L, 40L))))(emit_out_byte(st2, 33L, 32L))))(emit_out_byte(st1, 160L, 17L))))(emit_out_byte(st, 32L, 17L));
+    }
+
+    public static CodegenState emit_print_hex_nibble_rdi(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<long, CodegenState>)((jge_pos) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<long, CodegenState>)((jmp_pos) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => emit_serial_send_rdi(st8)))(patch_jmp_at(st7, jmp_pos, st7.text_len))))(st_append_text(st6, add_ri(reg_rdi(), 87L)))))(patch_jcc_at(st5, jge_pos, st5.text_len))))(st_append_text(st4, jmp(0L)))))(st4.text_len)))(st_append_text(st3, add_ri(reg_rdi(), 48L)))))(st_append_text(st2, jcc(cc_ge(), 0L)))))(st2.text_len)))(st_append_text(st1, cmp_ri(reg_rdi(), 10L)))))(st_append_text(st, and_ri(reg_rdi(), 15L)));
+    }
+
+    public static CodegenState emit_print_hex_qword_rdi_loop(CodegenState st, long nibble_idx)
+    {
+        while (true)
+        {
+            if ((nibble_idx < 0L))
+            {
+                return st;
+            }
+            else
+            {
+                var st1 = st_append_text(st, push_r(reg_rdi()));
+                var shift = (nibble_idx * 4L);
+                var st2 = ((shift == 0L) ? st1 : st_append_text(st1, shr_ri(reg_rdi(), shift)));
+                var st3 = emit_print_hex_nibble_rdi(st2);
+                var st4 = st_append_text(st3, pop_r(reg_rdi()));
+                var _tco_0 = st4;
+                var _tco_1 = (nibble_idx - 1L);
+                st = _tco_0;
+                nibble_idx = _tco_1;
+                continue;
+            }
+        }
+    }
+
+    public static CodegenState emit_print_hex_qword_rdi(CodegenState st)
+    {
+        return emit_print_hex_qword_rdi_loop(st, 15L);
+    }
+
+    public static CodegenState emit_print_hex_byte_rdi(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => emit_print_hex_nibble_rdi(st4)))(st_append_text(st3, pop_r(reg_rdi())))))(emit_print_hex_nibble_rdi(st2))))(st_append_text(st1, shr_ri(reg_rdi(), 4L)))))(st_append_text(st, push_r(reg_rdi())));
+    }
+
+    public static CodegenState emit_cpu_exception_dump(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st13a) => ((Func<CodegenState, CodegenState>)((st13b) => ((Func<CodegenState, CodegenState>)((st13c) => ((Func<CodegenState, CodegenState>)((st13d) => ((Func<CodegenState, CodegenState>)((st13e) => ((Func<CodegenState, CodegenState>)((st13f) => ((Func<CodegenState, CodegenState>)((st13g) => ((Func<CodegenState, CodegenState>)((st13h) => ((Func<CodegenState, CodegenState>)((st13i) => ((Func<CodegenState, CodegenState>)((st13j) => ((Func<CodegenState, CodegenState>)((st13k) => ((Func<CodegenState, CodegenState>)((st13l) => ((Func<CodegenState, CodegenState>)((st13m) => ((Func<CodegenState, CodegenState>)((st13n) => ((Func<CodegenState, CodegenState>)((st13o) => ((Func<CodegenState, CodegenState>)((st13p) => ((Func<CodegenState, CodegenState>)((st13q) => ((Func<CodegenState, CodegenState>)((st13r) => ((Func<CodegenState, CodegenState>)((st13s) => ((Func<CodegenState, CodegenState>)((st13t) => ((Func<CodegenState, CodegenState>)((st13u) => ((Func<CodegenState, CodegenState>)((st13v) => ((Func<CodegenState, CodegenState>)((st13w) => ((Func<CodegenState, CodegenState>)((st13x) => ((Func<CodegenState, CodegenState>)((st13y) => ((Func<CodegenState, CodegenState>)((st13z) => ((Func<CodegenState, CodegenState>)((st13aa) => ((Func<CodegenState, CodegenState>)((st13ab) => ((Func<CodegenState, CodegenState>)((st13ac) => ((Func<CodegenState, CodegenState>)((st13ad) => ((Func<CodegenState, CodegenState>)((st13ae) => ((Func<CodegenState, CodegenState>)((st13af) => ((Func<CodegenState, CodegenState>)((st13ag) => ((Func<CodegenState, CodegenState>)((st13ah) => ((Func<CodegenState, CodegenState>)((st13ai) => ((Func<CodegenState, CodegenState>)((st13aj) => ((Func<CodegenState, CodegenState>)((st13ak) => ((Func<CodegenState, CodegenState>)((st13al) => ((Func<CodegenState, CodegenState>)((st13am) => ((Func<CodegenState, CodegenState>)((st13an) => ((Func<CodegenState, CodegenState>)((st13ao) => ((Func<CodegenState, CodegenState>)((st13ap) => ((Func<CodegenState, CodegenState>)((st13aq) => ((Func<CodegenState, CodegenState>)((st13ar) => ((Func<CodegenState, CodegenState>)((st13as) => ((Func<CodegenState, CodegenState>)((st13at) => ((Func<CodegenState, CodegenState>)((st13au) => ((Func<CodegenState, CodegenState>)((st13av) => ((Func<CodegenState, CodegenState>)((st13aw) => ((Func<CodegenState, CodegenState>)((st13ax) => ((Func<CodegenState, CodegenState>)((st13ay) => ((Func<CodegenState, CodegenState>)((st13az) => ((Func<CodegenState, CodegenState>)((st13ba) => ((Func<CodegenState, CodegenState>)((st13bb) => ((Func<CodegenState, CodegenState>)((st13bc) => ((Func<CodegenState, CodegenState>)((st13bd) => ((Func<CodegenState, CodegenState>)((st13be) => ((Func<CodegenState, CodegenState>)((st13bf) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<long, CodegenState>)((halt_pos) => ((Func<CodegenState, CodegenState>)((st16) => st_append_text(st16, jmp((halt_pos - (st16.text_len + 5L))))))(st_append_text(st15, hlt()))))(st15.text_len)))(st_append_text(st14, cli()))))(emit_serial_wait_and_send(st13bf, 10L))))(emit_print_hex_qword_rdi(st13be))))(st_append_text(st13bd, mov_load(reg_rdi(), reg_rsp(), 64L)))))(emit_serial_wait_and_send(st13bc, 61L))))(emit_serial_wait_and_send(st13bb, 82L))))(emit_serial_wait_and_send(st13ba, 108L))))(emit_serial_wait_and_send(st13az, 108L))))(emit_serial_wait_and_send(st13ay, 97L))))(emit_serial_wait_and_send(st13ax, 67L))))(emit_serial_wait_and_send(st13aw, 32L))))(emit_print_hex_qword_rdi(st13av))))(st_append_text(st13au, mov_load(reg_rdi(), reg_rsp(), 8L)))))(emit_serial_wait_and_send(st13at, 61L))))(emit_serial_wait_and_send(st13as, 73L))))(emit_serial_wait_and_send(st13ar, 83L))))(emit_serial_wait_and_send(st13aq, 82L))))(emit_serial_wait_and_send(st13ap, 32L))))(emit_print_hex_qword_rdi(st13ao))))(st_append_text(st13an, mov_load(reg_rdi(), reg_rsp(), 0L)))))(emit_serial_wait_and_send(st13am, 61L))))(emit_serial_wait_and_send(st13al, 73L))))(emit_serial_wait_and_send(st13ak, 68L))))(emit_serial_wait_and_send(st13aj, 82L))))(emit_serial_wait_and_send(st13ai, 32L))))(emit_print_hex_qword_rdi(st13ah))))(st_append_text(st13ag, mov_rr(reg_rdi(), reg_r10())))))(emit_serial_wait_and_send(st13af, 61L))))(emit_serial_wait_and_send(st13ae, 48L))))(emit_serial_wait_and_send(st13ad, 49L))))(emit_serial_wait_and_send(st13ac, 82L))))(emit_serial_wait_and_send(st13ab, 32L))))(emit_print_hex_qword_rdi(st13aa))))(st_append_text(st13z, mov_rr(reg_rdi(), reg_r14())))))(emit_serial_wait_and_send(st13y, 61L))))(emit_serial_wait_and_send(st13x, 52L))))(emit_serial_wait_and_send(st13w, 49L))))(emit_serial_wait_and_send(st13v, 82L))))(emit_serial_wait_and_send(st13u, 32L))))(emit_print_hex_qword_rdi(st13t))))(st_append_text(st13s, mov_rr(reg_rdi(), reg_r13())))))(emit_serial_wait_and_send(st13r, 61L))))(emit_serial_wait_and_send(st13q, 51L))))(emit_serial_wait_and_send(st13p, 49L))))(emit_serial_wait_and_send(st13o, 82L))))(emit_serial_wait_and_send(st13n, 32L))))(emit_print_hex_qword_rdi(st13m))))(st_append_text(st13l, mov_rr(reg_rdi(), reg_r12())))))(emit_serial_wait_and_send(st13k, 61L))))(emit_serial_wait_and_send(st13j, 50L))))(emit_serial_wait_and_send(st13i, 49L))))(emit_serial_wait_and_send(st13h, 82L))))(emit_serial_wait_and_send(st13g, 32L))))(emit_print_hex_qword_rdi(st13f))))(st_append_text(st13e, mov_rr(reg_rdi(), reg_rbx())))))(emit_serial_wait_and_send(st13d, 61L))))(emit_serial_wait_and_send(st13c, 88L))))(emit_serial_wait_and_send(st13b, 66L))))(emit_serial_wait_and_send(st13a, 82L))))(emit_serial_wait_and_send(st13, 32L))))(emit_print_hex_qword_rdi(st12))))(st_append_text(st11, mov_load(reg_rdi(), reg_rsp(), 40L)))))(emit_serial_wait_and_send(st10, 61L))))(emit_serial_wait_and_send(st9, 80L))))(emit_serial_wait_and_send(st8, 73L))))(emit_serial_wait_and_send(st7, 82L))))(emit_serial_wait_and_send(st6, 32L))))(emit_print_hex_byte_rdi(st5))))(emit_serial_wait_and_send(st4, 61L))))(emit_serial_wait_and_send(st3, 67L))))(emit_serial_wait_and_send(st2, 88L))))(emit_serial_wait_and_send(st1, 69L))))(emit_serial_wait_and_send(st0, 33L))))(st_append_text(st, mov_rr(reg_rdi(), reg_rax())));
+    }
+
+    public static CodegenState emit_common_interrupt_handler(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<long, CodegenState>)((exc_jcc) => ((Func<CodegenState, CodegenState>)((st6a) => ((Func<long, CodegenState>)((not_timer) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<long, CodegenState>)((not_keyboard) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => ((Func<CodegenState, CodegenState>)((st23) => ((Func<CodegenState, CodegenState>)((st24) => ((Func<CodegenState, CodegenState>)((st25) => ((Func<CodegenState, CodegenState>)((st26) => ((Func<CodegenState, CodegenState>)((st27) => ((Func<CodegenState, CodegenState>)((st28) => ((Func<long, CodegenState>)((not_serial) => ((Func<CodegenState, CodegenState>)((st29) => ((Func<long, CodegenState>)((serial_drain_loop) => ((Func<CodegenState, CodegenState>)((st30) => ((Func<CodegenState, CodegenState>)((st31) => ((Func<CodegenState, CodegenState>)((st32) => ((Func<CodegenState, CodegenState>)((st33) => ((Func<CodegenState, CodegenState>)((st34) => ((Func<long, CodegenState>)((serial_drain_done) => ((Func<CodegenState, CodegenState>)((st35) => ((Func<CodegenState, CodegenState>)((st36) => ((Func<CodegenState, CodegenState>)((st37) => ((Func<CodegenState, CodegenState>)((st38) => ((Func<CodegenState, CodegenState>)((st39) => ((Func<CodegenState, CodegenState>)((st40) => ((Func<CodegenState, CodegenState>)((st41) => ((Func<CodegenState, CodegenState>)((st42) => ((Func<CodegenState, CodegenState>)((st43) => ((Func<CodegenState, CodegenState>)((st44) => ((Func<CodegenState, CodegenState>)((st45) => ((Func<CodegenState, CodegenState>)((st46) => ((Func<CodegenState, CodegenState>)((st47) => ((Func<CodegenState, CodegenState>)((st48) => ((Func<CodegenState, CodegenState>)((st49) => ((Func<CodegenState, CodegenState>)((st50) => ((Func<CodegenState, CodegenState>)((st51) => ((Func<CodegenState, CodegenState>)((st52) => ((Func<CodegenState, CodegenState>)((st53) => ((Func<CodegenState, CodegenState>)((st54) => ((Func<CodegenState, CodegenState>)((st55) => ((Func<CodegenState, CodegenState>)((st56) => ((Func<long, CodegenState>)((exc_handler_pos) => ((Func<CodegenState, CodegenState>)((st57) => patch_jcc_at(st57, exc_jcc, exc_handler_pos)))(emit_cpu_exception_dump(st56))))(st56.text_len)))(st_append_text(st55, iretq()))))(st_append_text(st54, pop_r(reg_rax())))))(st_append_text(st53, pop_r(reg_rcx())))))(st_append_text(st52, pop_r(reg_rdx())))))(st_append_text(st51, pop_r(reg_rsi())))))(st_append_text(st50, pop_r(reg_rdi())))))(emit_out_byte(st49, 32L, 32L))))(patch_jcc_at(st48, not_serial, st48.text_len))))(patch_jcc_at(st47, serial_drain_done, st47.text_len))))(st_append_text(st46, jmp((serial_drain_loop - (st46.text_len + 5L)))))))(st_append_text(st45, mov_store(reg_rdi(), reg_rcx(), 0L)))))(st_append_text(st44, add_ri(reg_rcx(), 1L)))))(st_append_text(st43, new List<long>() { 136L, 6L }))))(st_append_text(st42, add_ri(reg_rsi(), serial_ring_buf_addr())))))(st_append_text(st41, and_ri(reg_rsi(), serial_ring_buf_mask())))))(st_append_text(st40, mov_rr(reg_rsi(), reg_rcx())))))(st_append_text(st39, mov_load(reg_rcx(), reg_rdi(), 0L)))))(st_append_text(st38, li(reg_rdi(), serial_write_pos_addr())))))(st_append_text(st37, new List<long>() { 72L, 15L, 182L, 192L }))))(st_append_text(st36, in_al_dx()))))(st_append_text(st35, li(reg_rdx(), 1016L)))))(st_append_text(st34, jcc(cc_e(), 0L)))))(st34.text_len)))(st_append_text(st33, test_rr(reg_rax(), reg_rax())))))(st_append_text(st32, and_rr(reg_rax(), reg_rcx())))))(st_append_text(st31, li(reg_rcx(), 1L)))))(st_append_text(st30, in_al_dx()))))(st_append_text(st29, li(reg_rdx(), 1021L)))))(st29.text_len)))(st_append_text(st28, jcc(cc_ne(), 0L)))))(st28.text_len)))(st_append_text(st27, cmp_ri(reg_rax(), 36L)))))(patch_jcc_at(st26, not_keyboard, st26.text_len))))(st_append_text(st25, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st24, new List<long>() { 72L, 15L, 182L, 192L }))))(st_append_text(st23, li(reg_rdi(), key_buffer_addr())))))(st_append_text(st22, in_al_dx()))))(st_append_text(st21, li(reg_rdx(), 96L)))))(st_append_text(st20, jcc(cc_ne(), 0L)))))(st20.text_len)))(st_append_text(st19, cmp_ri(reg_rax(), 33L)))))(patch_jcc_at(st18, not_timer, st18.text_len))))(st_append_text(st17, iretq()))))(st_append_text(st16, pop_r(reg_rax())))))(st_append_text(st15, pop_r(reg_rcx())))))(st_append_text(st14, pop_r(reg_rdx())))))(st_append_text(st13, pop_r(reg_rsi())))))(st_append_text(st12, pop_r(reg_rdi())))))(emit_out_byte(st11, 32L, 32L))))(st_append_text(st10, mov_store(reg_rdi(), reg_rsi(), 0L)))))(st_append_text(st9, add_ri(reg_rsi(), 1L)))))(st_append_text(st8, mov_load(reg_rsi(), reg_rdi(), 0L)))))(st_append_text(st7, li(reg_rdi(), tick_count_addr())))))(st_append_text(st6a, jcc(cc_ne(), 0L)))))(st6a.text_len)))(st_append_text(st6, jcc(cc_b(), 0L)))))(st6.text_len)))(st_append_text(st5, cmp_ri(reg_rax(), 32L)))))(st_append_text(st4, new List<long>() { 15L, 182L, 192L }))))(st_append_text(st3, push_r(reg_rdi())))))(st_append_text(st2, push_r(reg_rsi())))))(st_append_text(st1, push_r(reg_rdx())))))(st_append_text(st, push_r(reg_rcx())));
+    }
+
+    public static bool has_error_code(long vec)
+    {
+        return ((vec == 8L) ? true : ((vec == 10L) ? true : ((vec == 11L) ? true : ((vec == 12L) ? true : ((vec == 13L) ? true : ((vec == 14L) ? true : ((vec == 17L) ? true : ((vec == 21L) ? true : ((vec == 29L) ? true : ((vec == 30L) ? true : false))))))))));
+    }
+
+    public static CodegenState emit_isr_stub(CodegenState st, long vec, long common_handler_offset)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<long, CodegenState>)((rel) => st_append_text(st3, jmp(rel))))((common_handler_offset - (st3.text_len + 5L)))))(st_append_text(st2, new List<long>() { 176L, vec }))))(st_append_text(st1, push_r(reg_rax())))))((has_error_code(vec) ? st_append_text(st, add_ri(reg_rsp(), 8L)) : st_append_text(st, new List<long>() { 15L, 31L, 64L, 0L })));
+    }
+
+    public static CodegenState emit_isr_stubs_loop(CodegenState st, long vec, long common_handler_offset)
+    {
+        while (true)
+        {
+            if ((vec == 256L))
+            {
+                return st;
+            }
+            else
+            {
+                var _tco_0 = emit_isr_stub(st, vec, common_handler_offset);
+                var _tco_1 = (vec + 1L);
+                var _tco_2 = common_handler_offset;
+                st = _tco_0;
+                vec = _tco_1;
+                common_handler_offset = _tco_2;
+                continue;
+            }
+        }
+    }
+
+    public static IsrStubResult emit_isr_stubs(CodegenState st)
+    {
+        return ((Func<long, IsrStubResult>)((common_handler_offset) => ((Func<CodegenState, IsrStubResult>)((st1) => ((Func<long, IsrStubResult>)((first_stub_offset) => ((Func<CodegenState, IsrStubResult>)((st2) => new IsrStubResult(st2, (bare_metal_load_addr() + first_stub_offset))))(emit_isr_stubs_loop(st1, 0L, common_handler_offset))))(st1.text_len)))(emit_common_interrupt_handler(st))))(st.text_len);
+    }
+
+    public static CodegenState emit_idt_entries(CodegenState st, long first_stub_vaddr)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<long, CodegenState>)((loop_top) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<long, CodegenState>)((jcc_pos) => ((Func<CodegenState, CodegenState>)((st18) => patch_jcc_at(st18, jcc_pos, loop_top)))(st_append_text(st17, jcc(cc_ne(), 0L)))))(st17.text_len)))(st_append_text(st16, sub_ri(reg_rcx(), 1L)))))(st_append_text(st15, add_ri(reg_rsi(), 12L)))))(st_append_text(st14, add_ri(reg_rdi(), 16L)))))(st_append_text(st13, mov_store(reg_rdi(), reg_rax(), 8L)))))(st_append_text(st12, li(reg_rax(), 0L)))))(st_append_text(st11, mov_store(reg_rdi(), reg_rax(), 4L)))))(st_append_text(st10, add_ri(reg_rax(), 36352L)))))(st_append_text(st9, shl_ri(reg_rax(), 16L)))))(st_append_text(st8, shr_ri(reg_rax(), 16L)))))(st_append_text(st7, mov_rr(reg_rax(), reg_rsi())))))(st_append_text(st6, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st5, add_ri(reg_rax(), 524288L)))))(st_append_text(st4, and_ri(reg_rax(), 65535L)))))(st_append_text(st3, mov_rr(reg_rax(), reg_rsi())))))(st3.text_len)))(st_append_text(st2, li(reg_rsi(), first_stub_vaddr)))))(st_append_text(st1, li(reg_rdi(), idt_base())))))(st_append_text(st, li(reg_rcx(), 256L)));
+    }
+
+    public static CodegenState emit_interrupt_setup(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<long, CodegenState>)((idtr_low) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => st_append_text(st18, sti())))(st_append_text(st17, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st16, li(reg_rdi(), result_arena_base_addr())))))(st_append_text(st15, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st14, li(reg_rdi(), arena_base_addr())))))(st_append_text(st13, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st12, li(reg_rdi(), key_buffer_addr())))))(st_append_text(st11, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st10, li(reg_rax(), 0L)))))(st_append_text(st9, li(reg_rdi(), tick_count_addr())))))(st_append_text(st8, add_ri(reg_rsp(), 16L)))))(st_append_text(st7, lidt_rdi()))))(st_append_text(st6, mov_rr(reg_rdi(), reg_rsp())))))(st_append_text(st5, mov_store(reg_rsp(), reg_rax(), 8L)))))(st_append_text(st4, li(reg_rax(), 0L)))))(st_append_text(st3, mov_store(reg_rsp(), reg_rax(), 0L)))))(st_append_text(st2, li(reg_rax(), idtr_low)))))((((Func<long, long, long>)((_a, _b) => { long _abs = _b < 0L ? -_b : _b; long _r = _a % _abs; return _r < 0L ? _r + _abs : _r; }))(((256L * 16L) - 1L), 65536L) + (idt_base() * 65536L)))))(st_append_text(st1, sub_ri(reg_rsp(), 16L)))))(emit_pic_init(st));
+    }
+
+    public static CodegenState emit_zero_region(CodegenState st, long addr, long qwords)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => st_append_text(st3, new List<long>() { 72L, 243L, 171L })))(st_append_text(st2, li(reg_rax(), 0L)))))(st_append_text(st1, li(reg_rcx(), qwords)))))(st_append_text(st, li(reg_rdi(), addr)));
+    }
+
+    public static CodegenState emit_pd_entries(CodegenState st, long i, long n)
+    {
+        return ((Func<long, CodegenState>)((count) => ((count <= 0L) ? st : ((Func<long, CodegenState>)((phys_start) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<long, CodegenState>)((loop_start) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<long, CodegenState>)((cur) => st_append_text(st6, jcc(cc_ne(), (loop_start - (cur + 6L))))))(st6.text_len)))(st_append_text(st5, sub_ri(reg_rcx(), 1L)))))(st_append_text(st4, add_ri(reg_rax(), 2097152L)))))(st_append_text(st3, add_ri(reg_rdi(), 8L)))))(st_append_text(st2, mov_store(reg_rdi(), reg_rax(), 0L)))))(st2.text_len)))(st_append_text(st1, li(reg_rcx(), count)))))(st_append_text(st, li(reg_rax(), (phys_start + 131L))))))((i * 2097152L)))))((n - i));
+    }
+
+    public static CodegenState emit_build_process_page_tables(CodegenState st, long pml4_addr, long heap_phys)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<long, CodegenState>)((pd_addr) => ((Func<CodegenState, CodegenState>)((st8) => emit_pd_entries(st8, 0L, 512L)))(st_append_text(st7, li(reg_rdi(), pd_addr)))))((pml4_addr + 8192L))))(st_append_text(st6, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st5, li(reg_rax(), ((pml4_addr + 8192L) + 3L))))))(st_append_text(st4, li(reg_rdi(), (pml4_addr + 4096L))))))(st_append_text(st3, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st2, li(reg_rax(), ((pml4_addr + 4096L) + 3L))))))(st_append_text(st1, li(reg_rdi(), pml4_addr)))))(emit_zero_region(st, pml4_addr, 1536L));
+    }
+
+    public static CodegenState emit_create_process(CodegenState st, long proc_index, long state_val, long cr3_val, long heap_base)
+    {
+        return ((Func<long, CodegenState>)((entry_addr) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => st_append_text(st10, mov_store(reg_rdi(), reg_rax(), 0L))))(st_append_text(st9, li(reg_rdi(), (entry_addr + 48L))))))(st_append_text(st8, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st7, li(reg_rax(), heap_base)))))(st_append_text(st6, li(reg_rdi(), (entry_addr + 40L))))))(st_append_text(st5, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st4, li(reg_rax(), cr3_val)))))(st_append_text(st3, li(reg_rdi(), (entry_addr + 16L))))))(st_append_text(st2, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st1, li(reg_rax(), state_val)))))(st_append_text(st, li(reg_rdi(), entry_addr)))))((proc_table_base() + (proc_index * proc_entry_size())));
+    }
+
+    public static CodegenState emit_process_setup(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => st_append_text(st8, li(reg_r10(), 4194304L))))(st_append_text(st7, new List<long>() { 15L, 34L, 216L }))))(st_append_text(st6, li(reg_rax(), 32768L)))))(emit_create_process(st5, 0L, 1L, 32768L, 4194304L))))(emit_build_process_page_tables(st4, 32768L, 4194304L))))(st_append_text(st3, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st2, li(reg_rax(), 0L)))))(st_append_text(st1, li(reg_rdi(), current_proc_addr())))))(emit_zero_region(st, proc_table_base(), ((16L * proc_entry_size()) / 8L)));
+    }
+
+    public static CodegenState emit_grant_capability(CodegenState st, long proc_index, long cap_bit)
+    {
+        return ((Func<long, CodegenState>)((cap_addr) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<long, CodegenState>)((bit_mask) => ((Func<CodegenState, CodegenState>)((st3) => st_append_text(st3, mov_store(reg_rdi(), reg_rax(), 0L))))(st_append_text(st2, or_ri(reg_rax(), bit_mask)))))(shl_1(cap_bit))))(st_append_text(st1, mov_load(reg_rax(), reg_rdi(), 0L)))))(st_append_text(st, li(reg_rdi(), cap_addr)))))(((proc_table_base() + (proc_index * proc_entry_size())) + proc_cap_offset()));
+    }
+
+    public static long shl_1(long n)
+    {
+        return ((n == 0L) ? 1L : (2L * shl_1((n - 1L))));
+    }
+
+    public static CodegenState emit_write_msr(CodegenState st, long msr_addr, long value)
+    {
+        return ((Func<long, CodegenState>)((low32) => ((Func<long, CodegenState>)((high32) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => st_append_text(st3, new List<long>() { 15L, 48L })))(st_append_text(st2, li(reg_rdx(), high32)))))(st_append_text(st1, li(reg_rax(), low32)))))(st_append_text(st, li(reg_rcx(), msr_addr)))))((value / 4294967296L))))(((Func<long, long, long>)((_a, _b) => { long _abs = _b < 0L ? -_b : _b; long _r = _a % _abs; return _r < 0L ? _r + _abs : _r; }))(value, 4294967296L));
+    }
+
+    public static CodegenState emit_check_capability(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => st_append_text(st12, pop_r(reg_rcx()))))(st_append_text(st11, pop_r(reg_r11())))))(st_append_text(st10, new List<long>() { 72L, 15L, 163L, 209L }))))(st_append_text(st9, mov_load(reg_rcx(), reg_rcx(), 0L)))))(st_append_text(st8, add_ri(reg_rcx(), proc_cap_offset())))))(st_append_text(st7, add_ri(reg_rcx(), proc_table_base())))))(st_append_text(st6, new List<long>() { 72L, 15L, 175L, 203L }))))(st_append_text(st5, li(reg_rcx(), proc_entry_size())))))(st_append_text(st4, mov_load(reg_r11(), reg_r11(), 0L)))))(st_append_text(st3, li(reg_r11(), current_proc_addr())))))(st_append_text(st2, push_r(reg_r11())))))(st_append_text(st1, li(reg_rcx(), proc_table_base())))))(st_append_text(st, push_r(reg_rcx())));
+    }
+
+    public static SyscallResult emit_syscall_handler(CodegenState st)
+    {
+        return ((Func<long, SyscallResult>)((handler_offset) => ((Func<CodegenState, SyscallResult>)((st1) => ((Func<CodegenState, SyscallResult>)((st2) => ((Func<CodegenState, SyscallResult>)((st3) => ((Func<long, SyscallResult>)((not_write) => ((Func<CodegenState, SyscallResult>)((st4) => ((Func<CodegenState, SyscallResult>)((st5) => ((Func<CodegenState, SyscallResult>)((st6) => ((Func<long, SyscallResult>)((no_write_cap) => ((Func<CodegenState, SyscallResult>)((st7) => ((Func<CodegenState, SyscallResult>)((st8) => ((Func<CodegenState, SyscallResult>)((st9) => ((Func<CodegenState, SyscallResult>)((st10) => ((Func<CodegenState, SyscallResult>)((st11) => ((Func<CodegenState, SyscallResult>)((st12) => ((Func<long, SyscallResult>)((write_done) => ((Func<CodegenState, SyscallResult>)((st13) => ((Func<CodegenState, SyscallResult>)((st14) => ((Func<CodegenState, SyscallResult>)((st15) => ((Func<long, SyscallResult>)((not_read_key) => ((Func<CodegenState, SyscallResult>)((st16) => ((Func<CodegenState, SyscallResult>)((st17) => ((Func<CodegenState, SyscallResult>)((st18) => ((Func<long, SyscallResult>)((read_done) => ((Func<CodegenState, SyscallResult>)((st19) => ((Func<CodegenState, SyscallResult>)((st20) => ((Func<CodegenState, SyscallResult>)((st21) => ((Func<long, SyscallResult>)((not_get_ticks) => ((Func<CodegenState, SyscallResult>)((st22) => ((Func<CodegenState, SyscallResult>)((st23) => ((Func<CodegenState, SyscallResult>)((st24) => ((Func<long, SyscallResult>)((ticks_done) => ((Func<CodegenState, SyscallResult>)((st25) => ((Func<CodegenState, SyscallResult>)((st26) => ((Func<CodegenState, SyscallResult>)((st27) => ((Func<long, SyscallResult>)((common_exit) => ((Func<CodegenState, SyscallResult>)((st28) => ((Func<CodegenState, SyscallResult>)((st29) => ((Func<CodegenState, SyscallResult>)((st30) => ((Func<CodegenState, SyscallResult>)((st31) => ((Func<CodegenState, SyscallResult>)((st32) => ((Func<CodegenState, SyscallResult>)((st33) => ((Func<CodegenState, SyscallResult>)((st34) => ((Func<CodegenState, SyscallResult>)((st35) => new SyscallResult(st35, handler_offset)))(st_append_text(st34, new List<long>() { 255L, 225L }))))(st_append_text(st33, new List<long>() { 157L }))))(st_append_text(st32, push_r(reg_r11())))))(st_append_text(st31, pop_r(reg_rcx())))))(st_append_text(st30, pop_r(reg_r11())))))(patch_jmp_at(st29, ticks_done, common_exit))))(patch_jmp_at(st28, read_done, common_exit))))(patch_jmp_at(st27, write_done, common_exit))))(st27.text_len)))(st_append_text(st26, li(reg_rax(), (-1L))))))(patch_jcc_at(st25, not_get_ticks, st25.text_len))))(st_append_text(st24, jmp(0L)))))(st24.text_len)))(st_append_text(st23, mov_load(reg_rax(), reg_rdi(), 0L)))))(st_append_text(st22, li(reg_rdi(), tick_count_addr())))))(st_append_text(st21, jcc(cc_ne(), 0L)))))(st21.text_len)))(st_append_text(st20, cmp_ri(reg_rax(), 3L)))))(patch_jcc_at(st19, not_read_key, st19.text_len))))(st_append_text(st18, jmp(0L)))))(st18.text_len)))(st_append_text(st17, mov_load(reg_rax(), reg_rdi(), 0L)))))(st_append_text(st16, li(reg_rdi(), key_buffer_addr())))))(st_append_text(st15, jcc(cc_ne(), 0L)))))(st15.text_len)))(st_append_text(st14, cmp_ri(reg_rax(), 2L)))))(patch_jcc_at(st13, not_write, st13.text_len))))(st_append_text(st12, jmp(0L)))))(st12.text_len)))(st_append_text(st11, li(reg_rax(), 0L)))))(patch_jcc_at(st10, no_write_cap, st10.text_len))))(st_append_text(st9, out_dx_al()))))(st_append_text(st8, li(reg_rdx(), 1016L)))))(st_append_text(st7, mov_rr(reg_rax(), reg_rdx())))))(st_append_text(st6, jcc(cc_e(), 0L)))))(st6.text_len)))(emit_check_capability(st5))))(st_append_text(st4, mov_rr(reg_rdx(), reg_rdi())))))(st_append_text(st3, jcc(cc_ne(), 0L)))))(st3.text_len)))(st_append_text(st2, cmp_ri(reg_rax(), 1L)))))(st_append_text(st1, push_r(reg_r11())))))(st_append_text(st, push_r(reg_rcx())))))(st.text_len);
+    }
+
+    public static CodegenState emit_serial_string_loop(CodegenState st, List<long> chars, long i)
+    {
+        while (true)
+        {
+            if ((i == ((long)chars.Count)))
+            {
+                return st;
+            }
+            else
+            {
+                var st1 = emit_serial_wait_and_send(st, chars[(int)i]);
+                var _tco_0 = st1;
+                var _tco_1 = chars;
+                var _tco_2 = (i + 1L);
+                st = _tco_0;
+                chars = _tco_1;
+                i = _tco_2;
+                continue;
+            }
+        }
+    }
+
+    public static CodegenState emit_serial_string(CodegenState st, List<long> chars)
+    {
+        return emit_serial_string_loop(st, chars, 0L);
+    }
+
+    public static CodegenState emit_update_heap_hwm(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<long, CodegenState>)((skip_update) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => st_append_text(st9, pop_r(reg_r11()))))(st_append_text(st8, pop_r(reg_rax())))))(patch_jcc_at(st7, skip_update, st7.text_len))))(st_append_text(st6, mov_store(reg_r11(), reg_r10(), 0L)))))(st_append_text(st5, jcc(cc_le(), 0L)))))(st5.text_len)))(st_append_text(st4, cmp_rr(reg_r10(), reg_rax())))))(st_append_text(st3, mov_load(reg_rax(), reg_r11(), 0L)))))(st_append_text(st2, push_r(reg_rax())))))(st_append_text(st1, li(reg_r11(), heap_hwm_addr())))))(st_append_text(st, push_r(reg_r11())));
+    }
+
+    public static bool is_string_builtin(string name)
+    {
+        return ((name == "\u000E\u000D$\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? true : ((name == "\u0011\u0012\u000E\u000D\u001D\u000D\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? true : ((name == "\u0013\u0014\u0010\u001B") ? true : ((name == "\u000E\u000D$\u000EI\u000E\u0010I\u0011\u0012\u000E\u000D\u001D\u000D\u0015") ? true : ((name == "\u000E\u000D$\u000EI\u0015\u000D\u001F\u0017\u000F\u0018\u000D") ? true : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? true : ((name == "\u000E\u000D$\u000EI\u0013\u000E\u000F\u0015\u000E\u0013I\u001B\u0011\u000E\u0014") ? true : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u001A\u001F\u000F\u0015\u000D") ? true : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u0018\u000F\u000EI\u0017\u0011\u0013\u000E") ? true : ((name == "\u000E\u000D$\u000EI\u0013\u001F\u0017\u0011\u000E") ? true : ((name == "\u0013\u0019 \u0013\u000E\u0015\u0011\u0012\u001D") ? true : false)))))))))));
+    }
+
+    public static bool is_list_builtin(string name)
+    {
+        return ((name == "\u0017\u0011\u0013\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? true : ((name == "\u0017\u0011\u0013\u000EI\u000F\u000E") ? true : ((name == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u0013") ? true : ((name == "\u0017\u0011\u0013\u000EI\u000F\u001F\u001F\u000D\u0012\u0016") ? true : ((name == "\u0017\u0011\u0013\u000EI\u0013\u0012\u0010\u0018") ? true : ((name == "\u0017\u0011\u0013\u000EI\u0011\u0012\u0013\u000D\u0015\u000EI\u000F\u000E") ? true : ((name == "\u0017\u0011\u0013\u000EI\u0013\u000D\u000EI\u000F\u000E") ? true : ((name == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? true : false))))))));
+    }
+
+    public static bool is_char_builtin(string name)
+    {
+        return ((name == "\u0018\u0014\u000F\u0015I\u000F\u000E") ? true : ((name == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000DI\u000F\u000E") ? true : ((name == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000D") ? true : ((name == "\u0018\u0010\u0016\u000DI\u000E\u0010I\u0018\u0014\u000F\u0015") ? true : ((name == "\u0018\u0014\u000F\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? true : ((name == "\u0011\u0013I\u0017\u000D\u000E\u000E\u000D\u0015") ? true : ((name == "\u0011\u0013I\u0016\u0011\u001D\u0011\u000E") ? true : ((name == "\u0011\u0013I\u001B\u0014\u0011\u000E\u000D\u0013\u001F\u000F\u0018\u000D") ? true : false))))))));
+    }
+
+    public static bool is_io_builtin(string name)
+    {
+        return ((name == "\u001F\u0015\u0011\u0012\u000EI\u0017\u0011\u0012\u000D") ? true : ((name == "\u0015\u000D\u000F\u0016I\u001C\u0011\u0017\u000D") ? true : ((name == "\u001B\u0015\u0011\u000E\u000DI\u001C\u0011\u0017\u000D") ? true : ((name == "\u0015\u000D\u000F\u0016I\u0017\u0011\u0012\u000D") ? true : ((name == "\u001B\u0015\u0011\u000E\u000DI \u0011\u0012\u000F\u0015\u001E") ? true : false)))));
+    }
+
+    public static bool is_misc_builtin(string name)
+    {
+        return ((name == "\u0012\u000D\u001D\u000F\u000E\u000D") ? true : ((name == "\u001D\u000D\u000EI\u000F\u0015\u001D\u0013") ? true : ((name == "\u0018\u0019\u0015\u0015\u000D\u0012\u000EI\u0016\u0011\u0015") ? true : ((name == "\u001C\u0011\u0017\u000DI\u000D$\u0011\u0013\u000E\u0013") ? true : ((name == "\u0015\u000D\u0018\u0010\u0015\u0016I\u0013\u000D\u000E") ? true : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000D\u001A\u001F\u000E\u001E") ? true : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u001F\u0019\u0013\u0014") ? true : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000E\u0010I\u0017\u0011\u0013\u000E") ? true : ((name == "\u0014\u000D\u000F\u001FI\u0013\u000F!\u000D") ? true : ((name == "\u0014\u000D\u000F\u001FI\u0015\u000D\u0013\u000E\u0010\u0015\u000D") ? true : ((name == "\u0014\u000D\u000F\u001FI\u000F\u0016!\u000F\u0012\u0018\u000D") ? true : ((name == "\u0017\u0011\u0013\u000EI\u001B\u0011\u000E\u0014I\u0018\u000F\u001F\u000F\u0018\u0011\u000E\u001E") ? true : ((name == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D") ? true : ((name == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D\u0013") ? true : ((name == " \u0019\u001CI\u0015\u000D\u000F\u0016I \u001E\u000E\u000D\u0013") ? true : ((name == " \u0011\u000EI\u000F\u0012\u0016") ? true : ((name == " \u0011\u000EI\u0010\u0015") ? true : ((name == " \u0011\u000EI$\u0010\u0015") ? true : ((name == " \u0011\u000EI\u0013\u0014\u0017") ? true : ((name == " \u0011\u000EI\u0013\u0014\u0015") ? true : ((name == " \u0011\u000EI\u0012\u0010\u000E") ? true : false)))))))))))))))))))));
+    }
+
+    public static bool is_builtin(string name)
+    {
+        return (is_string_builtin(name) ? true : (is_list_builtin(name) ? true : (is_char_builtin(name) ? true : (is_io_builtin(name) ? true : is_misc_builtin(name)))));
+    }
+
+    public static EmitResult emit_helper_call_1(CodegenState st, List<IRExpr> args, string helper)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_rr(tmp.reg, reg_rax())), tmp.reg)))(alloc_temp(st2))))(emit_call_to(st1, helper))))(st_append_text(r.state, mov_rr(reg_rdi(), r.reg)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_helper_call_2(CodegenState st, List<IRExpr> args, string helper)
+    {
+        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((loaded) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_rr(tmp.reg, reg_rax())), tmp.reg)))(alloc_temp(st4))))(emit_call_to(st3, helper))))(st_append_text(st2, mov_rr(reg_rdi(), loaded.reg)))))(st_append_text(loaded.state, mov_rr(reg_rsi(), r1.reg)))))(load_local(r1.state, loc.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc.state, loc.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_helper_call_3(CodegenState st, List<IRExpr> args, string helper)
+    {
+        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc0) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((loc1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((r2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((ld1) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((ld0) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_rr(tmp.reg, reg_rax())), tmp.reg)))(alloc_temp(st6))))(emit_call_to(st5, helper))))(st_append_text(ld0.state, mov_rr(reg_rdi(), ld0.reg)))))(load_local(st4, loc0.reg))))(st_append_text(ld1.state, mov_rr(reg_rsi(), ld1.reg)))))(load_local(st3, loc1.reg))))(st_append_text(r2.state, mov_rr(reg_rdx(), r2.reg)))))(emit__x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(loc1.state, loc1.reg, r1.reg))))(alloc_local(r1.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc0.state, loc0.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_text_length_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_load(tmp.reg, r.reg, 0L)), tmp.reg)))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_list_length_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_load(tmp.reg, r.reg, 0L)), tmp.reg)))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_list_at_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((list_loaded) => ((Func<EmitResult, EmitResult>)((addr) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_load(rd.reg, addr.reg, 8L)), rd.reg)))(alloc_temp(st4))))(st_append_text(st3, add_rr(addr.reg, list_loaded.reg)))))(st_append_text(st2, shl_ri(addr.reg, 3L)))))(st_append_text(addr.state, mov_rr(addr.reg, r1.reg)))))(alloc_temp(list_loaded.state))))(load_local(r1.state, loc.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc.state, loc.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_char_at_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((str_loaded) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => new EmitResult(st3, r1.reg)))(st_append_text(st2, movzx_byte(r1.reg, r1.reg, 8L)))))(st_append_text(str_loaded.state, add_rr(r1.reg, str_loaded.reg)))))(load_local(r1.state, loc.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc.state, loc.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_char_code_at_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((text_loaded) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => new EmitResult(st4, rd.reg)))(st_append_text(st3, movzx_byte(rd.reg, rd.reg, 8L)))))(st_append_text(st2, add_rr(rd.reg, r1.reg)))))(st_append_text(rd.state, mov_rr(rd.reg, text_loaded.reg)))))(alloc_temp(text_loaded.state))))(load_local(r1.state, loc.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc.state, loc.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_char_to_text_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((ptr_loc) => ((Func<EmitResult, EmitResult>)((ptr_tmp) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<EmitResult, EmitResult>)((ptr_loaded) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((code_loaded) => ((Func<EmitResult, EmitResult>)((ptr_loaded2) => ((Func<CodegenState, EmitResult>)((st7) => ((Func<EmitResult, EmitResult>)((result) => new EmitResult(result.state, result.reg)))(load_local(st7, ptr_loc.reg))))(st_append_text(ptr_loaded2.state, mov_store_byte(ptr_loaded2.reg, code_loaded.reg, 8L)))))(load_local(code_loaded.state, ptr_loc.reg))))(load_local(st6, loc.reg))))(st_append_text(ptr_loaded.state, mov_store(ptr_loaded.reg, reg_r11(), 0L)))))(load_local(st5, ptr_loc.reg))))(st_append_text(st4, li(reg_r11(), 1L)))))(st_append_text(st3, add_ri(reg_r10(), 16L)))))(store_local(st2, ptr_loc.reg, ptr_tmp.reg))))(st_append_text(ptr_tmp.state, mov_rr(ptr_tmp.reg, reg_r10())))))(alloc_temp(ptr_loc.state))))(alloc_local(st1))))(store_local(loc.state, loc.reg, r.reg))))(alloc_local(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_is_letter_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => new EmitResult(st4, r.reg)))(st_append_text(st3, movzx_byte_self(r.reg)))))(st_append_text(st2, setcc(cc_be(), r.reg)))))(st_append_text(st1, cmp_ri(r.reg, 51L)))))(st_append_text(r.state, sub_ri(r.reg, 13L)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_is_digit_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => new EmitResult(st4, r.reg)))(st_append_text(st3, movzx_byte_self(r.reg)))))(st_append_text(st2, setcc(cc_be(), r.reg)))))(st_append_text(st1, cmp_ri(r.reg, 9L)))))(st_append_text(r.state, sub_ri(r.reg, 3L)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_is_whitespace_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => new EmitResult(st3, r.reg)))(st_append_text(st2, movzx_byte_self(r.reg)))))(st_append_text(st1, setcc(cc_be(), r.reg)))))(st_append_text(r.state, cmp_ri(r.reg, 2L)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_negate_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => new EmitResult(st2, rd.reg)))(st_append_text(st1, neg_r(rd.reg)))))(st_append_text(rd.state, mov_rr(rd.reg, r.reg)))))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_get_args_builtin(CodegenState st)
+    {
+        return ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => new EmitResult(st6, rd.reg)))(st_append_text(st5, add_ri(reg_r10(), 8L)))))(st_append_text(st4, mov_store(reg_r10(), reg_r11(), 0L)))))(st_append_text(st3, mov_rr(rd.reg, reg_r10())))))(st_append_text(st2, add_ri(reg_r10(), 8L)))))(st_append_text(st1, mov_store(reg_r10(), reg_r11(), 0L)))))(st_append_text(rd.state, li(reg_r11(), 0L)))))(alloc_temp(st));
+    }
+
+    public static EmitResult emit_current_dir_builtin(CodegenState st)
+    {
+        return ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => new EmitResult(st4, rd.reg)))(st_append_text(st3, add_ri(reg_r10(), 8L)))))(st_append_text(st2, mov_store(reg_r10(), reg_r11(), 0L)))))(st_append_text(st1, li(reg_r11(), 0L)))))(st_append_text(rd.state, mov_rr(rd.reg, reg_r10())))))(alloc_temp(st));
+    }
+
+    public static EmitResult emit_file_exists_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => new EmitResult(st1, rd.reg)))(st_append_text(rd.state, li(rd.reg, 1L)))))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static CodegenState emit_substring_alloc(CodegenState st, long str_loc, long start_loc, long len_loc)
+    {
+        return ((Func<EmitResult, CodegenState>)((len_loaded) => ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => st_append_text(st2, add_rr(reg_r10(), reg_r11()))))(st_append_text(st1, and_ri(reg_r11(), (0L - 8L))))))(st_append_text(st0, add_ri(reg_r11(), 15L)))))(st_append_text(len_loaded.state, mov_rr(reg_r11(), len_loaded.reg)))))(load_local(st, len_loc));
+    }
+
+    public static CodegenState emit_substring_copy(CodegenState st, long str_loc, long start_loc, long len_loc, long ptr_loc)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<long, CodegenState>)((sub_loop) => ((Func<EmitResult, CodegenState>)((len_ld) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((sub_exit_pos) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<EmitResult, CodegenState>)((src_ld) => ((Func<EmitResult, CodegenState>)((start_ld) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<EmitResult, CodegenState>)((ptr_ld) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => patch_jcc_at(st11, sub_exit_pos, st11.text_len)))(st_append_text(st10, jmp((sub_loop - (st10.text_len + 5L)))))))(st_append_text(st9, add_ri(reg_r11(), 1L)))))(st_append_text(st8, mov_store_byte(reg_rdx(), reg_rsi(), 8L)))))(st_append_text(st7, add_rr(reg_rdx(), reg_r11())))))(st_append_text(ptr_ld.state, mov_rr(reg_rdx(), ptr_ld.reg)))))(load_local(st6, ptr_loc))))(st_append_text(st5, movzx_byte(reg_rsi(), reg_rsi(), 8L)))))(st_append_text(st4, add_rr(reg_rsi(), reg_r11())))))(st_append_text(st3, add_rr(reg_rsi(), start_ld.reg)))))(st_append_text(start_ld.state, mov_rr(reg_rsi(), src_ld.reg)))))(load_local(src_ld.state, start_loc))))(load_local(st2, str_loc))))(st_append_text(st1, jcc(cc_ge(), 0L)))))(st1.text_len)))(st_append_text(len_ld.state, cmp_rr(reg_r11(), len_ld.reg)))))(load_local(st0, len_loc))))(st0.text_len)))(st_append_text(st, li(reg_r11(), 0L)));
+    }
+
+    public static EmitResult emit_substring_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc0) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((loc1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((r2) => ((Func<EmitResult, EmitResult>)((loc2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((ptr_loc) => ((Func<EmitResult, EmitResult>)((ptr_tmp) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<EmitResult, EmitResult>)((len_ld) => ((Func<EmitResult, EmitResult>)((ptr_ld) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<CodegenState, EmitResult>)((st7) => ((Func<CodegenState, EmitResult>)((st8) => ((Func<EmitResult, EmitResult>)((result) => new EmitResult(result.state, result.reg)))(load_local(st8, ptr_loc.reg))))(emit_substring_copy(st7, loc0.reg, loc1.reg, loc2.reg, ptr_loc.reg))))(emit_substring_alloc(st6, loc0.reg, loc1.reg, loc2.reg))))(st_append_text(ptr_ld.state, mov_store(ptr_ld.reg, len_ld.reg, 0L)))))(load_local(len_ld.state, ptr_loc.reg))))(load_local(st5, loc2.reg))))(store_local(st4, ptr_loc.reg, ptr_tmp.reg))))(st_append_text(ptr_tmp.state, mov_rr(ptr_tmp.reg, reg_r10())))))(alloc_temp(ptr_loc.state))))(alloc_local(st3))))(store_local(loc2.state, loc2.reg, r2.reg))))(alloc_local(r2.state))))(emit__x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(loc1.state, loc1.reg, r1.reg))))(alloc_local(r1.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc0.state, loc0.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_print_line_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, li(rd.reg, 0L)), rd.reg)))(alloc_temp(st1))))(emit_print_text(r.state, r.reg))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_read_file_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st2))))(emit_call_to(st1, "UU \u000F\u0015\u000DU\u001A\u000D\u000E\u000F\u0017U\u0015\u000D\u000F\u0016U\u0013\u000D\u0015\u0011\u000F\u0017"))))(st_append_text(r.state, mov_rr(reg_rdi(), r.reg)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_write_file_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, li(rd.reg, 0L)), rd.reg)))(alloc_temp(st1))))(emit_print_text_no_newline(r1.state, r1.reg))))(emit__x86_64_code_generator_emit_expr(r0.state, args[(int)1L]))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_read_line_builtin(CodegenState st)
+    {
+        return ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st1))))(emit_call_to(st, "UU\u0015\u000D\u000F\u0016U\u0017\u0011\u0012\u000D"));
+    }
+
+    public static EmitResult emit_write_binary_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, li(rd.reg, 0L)), rd.reg)))(alloc_temp(st2))))(emit_call_to(st1, "UU\u001B\u0015\u0011\u000E\u000DU \u0011\u0012\u000F\u0015\u001E"))))(st_append_text(r.state, mov_rr(reg_rdi(), r.reg)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_linked_list_empty_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, li(rd.reg, 0L)), rd.reg)))(alloc_temp(st));
+    }
+
+    public static EmitResult emit_linked_list_push_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((list_result) => ((Func<EmitResult, EmitResult>)((list_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((val_result) => ((Func<EmitResult, EmitResult>)((val_loc) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((ptr) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((vr) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((lr) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => new EmitResult(st6, ptr.reg)))(st_append_text(st5, add_ri(reg_r10(), 16L)))))(st_append_text(lr.state, mov_store(ptr.reg, lr.reg, 8L)))))(load_local(st4, list_loc.reg))))(st_append_text(vr.state, mov_store(ptr.reg, vr.reg, 0L)))))(load_local(st3, val_loc.reg))))(st_append_text(ptr.state, mov_rr(ptr.reg, reg_r10())))))(alloc_temp(st2))))(store_local(val_loc.state, val_loc.reg, val_result.reg))))(alloc_local(val_result.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(list_loc.state, list_loc.reg, list_result.reg))))(alloc_local(list_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_linked_list_to_list_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((head_result) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st2))))(emit_call_to(st1, "UU\u0017\u0011\u0012\"\u000D\u0016U\u0017\u0011\u0013\u000EU\u000E\u0010U\u0017\u0011\u0013\u000E"))))(st_append_text(head_result.state, mov_rr(reg_rdi(), head_result.reg)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_record_set_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((rec_result) => ((Func<EmitResult, EmitResult>)((rec_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<string, EmitResult>)((field_name) => ((Func<CodexType, EmitResult>)((rec_ty) => ((Func<EmitResult, EmitResult>)((val_result) => ((Func<EmitResult, EmitResult>)((loaded) => (rec_ty is RecordTy _mRecordTy66_ ? ((Func<List<RecordField>, EmitResult>)((rfields) => ((Func<Name, EmitResult>)((rname) => ((Func<long, EmitResult>)((field_idx) => new EmitResult(st_append_text(loaded.state, mov_store(loaded.reg, val_result.reg, (field_idx * 8L))), loaded.reg)))(find_record_field_index(rfields, field_name, 0L))))((Name)_mRecordTy66_.Field0)))((List<RecordField>)_mRecordTy66_.Field1) : ((Func<CodegenState, EmitResult>)((st_err) => new EmitResult(st_append_text(st_err, new List<long>() { 15L, 11L }), loaded.reg)))(st_add_error(loaded.state, cdx_ir_error(), string.Concat("\u0015\u000D\u0018\u0010\u0015\u0016I\u0013\u000D\u000EE\u0002\u0019\u0012\u0015\u000D\u0013\u0010\u0017!\u000D\u0016\u0002\u000E\u001E\u001F\u000D\u0002\u001C\u0010\u0015\u0002\u001C\u0011\u000D\u0017\u0016\u0002G", field_name, "G"), ir_expr_span(args[(int)0L]))))))(load_local(val_result.state, rec_loc.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)2L]))))(resolve_constructed_ty(st, ir_expr_type(args[(int)0L])))))((args[(int)1L] is IrTextLit _mIrTextLit67_ ? ((Func<SourceSpan, string>)((sp) => ((Func<string, string>)((s) => s))((string)_mIrTextLit67_.Field0)))((SourceSpan)_mIrTextLit67_.Field1) : ""))))(store_local(rec_loc.state, rec_loc.reg, rec_result.reg))))(alloc_local(rec_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_heap_save_builtin(CodegenState st)
+    {
+        return ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_r10())), rd.reg)))(alloc_temp(st));
+    }
+
+    public static EmitResult emit_heap_restore_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, li(rd.reg, 0L)), rd.reg)))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_heap_advance_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => new EmitResult(st_append_text(st1, li(rd.reg, 0L)), rd.reg)))(st_append_text(rd.state, add_rr(reg_r10(), r.reg)))))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_list_with_capacity_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((cap_result) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((zero_tmp) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<EmitResult, EmitResult>)((adv_tmp) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<CodegenState, EmitResult>)((st7) => ((Func<CodegenState, EmitResult>)((st8) => new EmitResult(st_append_text(st8, add_rr(reg_r10(), adv_tmp.reg)), rd.reg)))(st_append_text(st7, add_ri(adv_tmp.reg, 8L)))))(st_append_text(st6, shl_ri(adv_tmp.reg, 3L)))))(st_append_text(adv_tmp.state, mov_rr(adv_tmp.reg, cap_result.reg)))))(alloc_temp(st5))))(st_append_text(st4, mov_store(reg_r10(), zero_tmp.reg, 0L)))))(st_append_text(zero_tmp.state, li(zero_tmp.reg, 0L)))))(alloc_temp(st3))))(st_append_text(st2, mov_rr(rd.reg, reg_r10())))))(st_append_text(st1, add_ri(reg_r10(), 8L)))))(st_append_text(rd.state, mov_store(reg_r10(), cap_result.reg, 0L)))))(alloc_temp(cap_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_buf_write_byte_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((base_result) => ((Func<EmitResult, EmitResult>)((base_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((off_result) => ((Func<EmitResult, EmitResult>)((off_loc) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((byte_result) => ((Func<EmitResult, EmitResult>)((byte_loc) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((addr) => ((Func<EmitResult, EmitResult>)((base2) => ((Func<EmitResult, EmitResult>)((off2) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<EmitResult, EmitResult>)((byte2) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<EmitResult, EmitResult>)((off3) => ((Func<CodegenState, EmitResult>)((st7) => new EmitResult(st_append_text(st7, add_ri(rd.reg, 1L)), rd.reg)))(st_append_text(off3.state, mov_rr(rd.reg, off3.reg)))))(load_local(rd.state, off_loc.reg))))(alloc_temp(st6))))(st_append_text(byte2.state, mov_store_byte(addr.reg, byte2.reg, 0L)))))(load_local(st5, byte_loc.reg))))(st_append_text(st4, add_rr(addr.reg, off2.reg)))))(st_append_text(off2.state, mov_rr(addr.reg, base2.reg)))))(load_local(base2.state, off_loc.reg))))(load_local(addr.state, base_loc.reg))))(alloc_temp(st3))))(store_local(byte_loc.state, byte_loc.reg, byte_result.reg))))(alloc_local(byte_result.state))))(emit__x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(off_loc.state, off_loc.reg, off_result.reg))))(alloc_local(off_result.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(base_loc.state, base_loc.reg, base_result.reg))))(alloc_local(base_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_buf_write_bytes_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((base_result) => ((Func<EmitResult, EmitResult>)((base_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((off_result) => ((Func<EmitResult, EmitResult>)((off_loc) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((list_result) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((off2) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((base2) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st6))))(emit_call_to(st5, "UU \u0019\u001CU\u001B\u0015\u0011\u000E\u000DU \u001E\u000E\u000D\u0013"))))(st_append_text(base2.state, mov_rr(reg_rdi(), base2.reg)))))(load_local(st4, base_loc.reg))))(st_append_text(off2.state, mov_rr(reg_rsi(), off2.reg)))))(load_local(st3, off_loc.reg))))(st_append_text(list_result.state, mov_rr(reg_rdx(), list_result.reg)))))(emit__x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(off_loc.state, off_loc.reg, off_result.reg))))(alloc_local(off_result.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(base_loc.state, base_loc.reg, base_result.reg))))(alloc_local(base_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_buf_read_bytes_builtin(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((base_result) => ((Func<EmitResult, EmitResult>)((base_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((off_result) => ((Func<EmitResult, EmitResult>)((off_loc) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((count_result) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((off2) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((base2) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st6))))(emit_call_to(st5, "UU \u0019\u001CU\u0015\u000D\u000F\u0016U \u001E\u000E\u000D\u0013"))))(st_append_text(base2.state, mov_rr(reg_rdi(), base2.reg)))))(load_local(st4, base_loc.reg))))(st_append_text(off2.state, mov_rr(reg_rsi(), off2.reg)))))(load_local(st3, off_loc.reg))))(st_append_text(count_result.state, mov_rr(reg_rdx(), count_result.reg)))))(emit__x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(off_loc.state, off_loc.reg, off_result.reg))))(alloc_local(off_result.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(base_loc.state, base_loc.reg, base_result.reg))))(alloc_local(base_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_bit_op_2(CodegenState st, List<IRExpr> args, Func<long, Func<long, List<long>>> op_bytes)
+    {
+        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc0) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((ld0) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, Enumerable.Concat(mov_rr(rd.reg, ld0.reg), op_bytes(rd.reg)(r1.reg)).ToList()), rd.reg)))(alloc_temp(ld0.state))))(load_local(r1.state, loc0.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc0.state, loc0.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_bit_shift(CodegenState st, List<IRExpr> args, Func<long, List<long>> shift_bytes)
+    {
+        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc0) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((ld0) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, Enumerable.Concat(mov_rr(rd.reg, ld0.reg), shift_bytes(rd.reg)).ToList()), rd.reg)))(alloc_temp(ld0.state))))(load_local(st2, loc0.reg))))(st_append_text(r1.state, mov_rr(reg_rcx(), r1.reg)))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc0.state, loc0.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit_bit_not(CodegenState st, List<IRExpr> args)
+    {
+        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, Enumerable.Concat(mov_rr(rd.reg, r0.reg), not_r(rd.reg)).ToList()), rd.reg)))(alloc_temp(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
+    }
+
+    public static EmitResult emit__x86_64_code_generator_emit_builtin(CodegenState st, string name, List<IRExpr> args)
+    {
+        return ((name == "\u001F\u0015\u0011\u0012\u000EI\u0017\u0011\u0012\u000D") ? emit_print_line_builtin(st, args) : ((name == "\u0015\u000D\u000F\u0016I\u001C\u0011\u0017\u000D") ? emit_read_file_builtin(st, args) : ((name == "\u001B\u0015\u0011\u000E\u000DI\u001C\u0011\u0017\u000D") ? emit_write_file_builtin(st, args) : ((name == "\u0015\u000D\u000F\u0016I\u0017\u0011\u0012\u000D") ? emit_read_line_builtin(st) : ((name == "\u001B\u0015\u0011\u000E\u000DI \u0011\u0012\u000F\u0015\u001E") ? emit_write_binary_builtin(st, args) : ((name == "\u000E\u000D$\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? emit_text_length_builtin(st, args) : ((name == "\u0011\u0012\u000E\u000D\u001D\u000D\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? emit_helper_call_1(st, args, "UU\u0011\u000E\u0010\u000F") : ((name == "\u0013\u0014\u0010\u001B") ? emit_show_builtin(st, args) : ((name == "\u000E\u000D$\u000EI\u000E\u0010I\u0011\u0012\u000E\u000D\u001D\u000D\u0015") ? emit_helper_call_1(st, args, "UU\u000E\u000D$\u000EU\u000E\u0010U\u0011\u0012\u000E") : ((name == "\u000E\u000D$\u000EI\u0015\u000D\u001F\u0017\u000F\u0018\u000D") ? emit_helper_call_3(st, args, "UU\u0013\u000E\u0015U\u0015\u000D\u001F\u0017\u000F\u0018\u000D") : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") : ((name == "\u000E\u000D$\u000EI\u0013\u000E\u000F\u0015\u000E\u0013I\u001B\u0011\u000E\u0014") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0013\u000E\u000F\u0015\u000E\u0013U\u001B\u0011\u000E\u0014") : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u001A\u001F\u000F\u0015\u000D") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0018\u0010\u001A\u001F\u000F\u0015\u000D") : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u0018\u000F\u000EI\u0017\u0011\u0013\u000E") ? emit_helper_call_1(st, args, "UU\u000E\u000D$\u000EU\u0018\u0010\u0012\u0018\u000F\u000EU\u0017\u0011\u0013\u000E") : ((name == "\u000E\u000D$\u000EI\u0013\u001F\u0017\u0011\u000E") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0013\u001F\u0017\u0011\u000E") : ((name == "\u0013\u0019 \u0013\u000E\u0015\u0011\u0012\u001D") ? emit_substring_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? emit_list_length_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u000F\u000E") ? emit_list_at_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u0013") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u0018\u0010\u0012\u0013") : ((name == "\u0017\u0011\u0013\u000EI\u000F\u001F\u001F\u000D\u0012\u0016") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u000F\u001F\u001F\u000D\u0012\u0016") : ((name == "\u0017\u0011\u0013\u000EI\u0013\u0012\u0010\u0018") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u0013\u0012\u0010\u0018") : ((name == "\u0017\u0011\u0013\u000EI\u0011\u0012\u0013\u000D\u0015\u000EI\u000F\u000E") ? emit_helper_call_3(st, args, "UU\u0017\u0011\u0013\u000EU\u0011\u0012\u0013\u000D\u0015\u000EU\u000F\u000E") : ((name == "\u0017\u0011\u0013\u000EI\u0013\u000D\u000EI\u000F\u000E") ? emit_helper_call_3(st, args, "UU\u0017\u0011\u0013\u000EU\u0013\u000D\u000EU\u000F\u000E") : ((name == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") : ((name == "\u0018\u0014\u000F\u0015I\u000F\u000E") ? emit_char_at_builtin(st, args) : ((name == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000DI\u000F\u000E") ? emit_char_code_at_builtin(st, args) : ((name == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000D") ? emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]) : ((name == "\u0018\u0010\u0016\u000DI\u000E\u0010I\u0018\u0014\u000F\u0015") ? emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]) : ((name == "\u0018\u0014\u000F\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? emit_char_to_text_builtin(st, args) : ((name == "\u0011\u0013I\u0017\u000D\u000E\u000E\u000D\u0015") ? emit_is_letter_builtin(st, args) : ((name == "\u0011\u0013I\u0016\u0011\u001D\u0011\u000E") ? emit_is_digit_builtin(st, args) : ((name == "\u0011\u0013I\u001B\u0014\u0011\u000E\u000D\u0013\u001F\u000F\u0018\u000D") ? emit_is_whitespace_builtin(st, args) : ((name == "\u0012\u000D\u001D\u000F\u000E\u000D") ? emit_negate_builtin(st, args) : ((name == "\u001D\u000D\u000EI\u000F\u0015\u001D\u0013") ? emit_get_args_builtin(st) : ((name == "\u0018\u0019\u0015\u0015\u000D\u0012\u000EI\u0016\u0011\u0015") ? emit_current_dir_builtin(st) : ((name == "\u0015\u000D\u0018\u0010\u0015\u0016I\u0013\u000D\u000E") ? emit_record_set_builtin(st, args) : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000D\u001A\u001F\u000E\u001E") ? emit_linked_list_empty_builtin(st, args) : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u001F\u0019\u0013\u0014") ? emit_linked_list_push_builtin(st, args) : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000E\u0010I\u0017\u0011\u0013\u000E") ? emit_linked_list_to_list_builtin(st, args) : ((name == "\u0014\u000D\u000F\u001FI\u0013\u000F!\u000D") ? emit_heap_save_builtin(st) : ((name == "\u0014\u000D\u000F\u001FI\u0015\u000D\u0013\u000E\u0010\u0015\u000D") ? emit_heap_restore_builtin(st, args) : ((name == "\u0014\u000D\u000F\u001FI\u000F\u0016!\u000F\u0012\u0018\u000D") ? emit_heap_advance_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u001B\u0011\u000E\u0014I\u0018\u000F\u001F\u000F\u0018\u0011\u000E\u001E") ? emit_list_with_capacity_builtin(st, args) : ((name == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D") ? emit_buf_write_byte_builtin(st, args) : ((name == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D\u0013") ? emit_buf_write_bytes_builtin(st, args) : ((name == " \u0019\u001CI\u0015\u000D\u000F\u0016I \u001E\u000E\u000D\u0013") ? emit_buf_read_bytes_builtin(st, args) : ((name == " \u0011\u000EI\u000F\u0012\u0016") ? emit_bit_op_2(st, args, (rd) => (rs) => and_rr(rd, rs)) : ((name == " \u0011\u000EI\u0010\u0015") ? emit_bit_op_2(st, args, (rd) => (rs) => or_rr(rd, rs)) : ((name == " \u0011\u000EI$\u0010\u0015") ? emit_bit_op_2(st, args, (rd) => (rs) => xor_rr(rd, rs)) : ((name == " \u0011\u000EI\u0013\u0014\u0017") ? emit_bit_shift(st, args, new Func<long, List<long>>(shl_cl)) : ((name == " \u0011\u000EI\u0013\u0014\u0015") ? emit_bit_shift(st, args, new Func<long, List<long>>(shr_cl)) : ((name == " \u0011\u000EI\u0012\u0010\u000E") ? emit_bit_not(st, args) : emit_file_exists_builtin(st, args)))))))))))))))))))))))))))))))))))))))))))))))))))));
+    }
+
     public static long bare_metal_heap_base()
     {
         return 4194304L;
@@ -6887,7 +6978,7 @@ public static class Codex_Codex_Codex
 
     public static CodexType resolve_ty_deep(List<TypeBinding> tdefs, CodexType ty)
     {
-        return ((Func<CodexType, CodexType>)((_scrutinee66_) => (_scrutinee66_ is ConstructedTy _mConstructedTy66_ ? ((Func<List<CodexType>, CodexType>)((cargs) => ((Func<Name, CodexType>)((cname) => ((Func<CodexType, CodexType>)((raw) => ((Func<CodexType, CodexType>)((_scrutinee67_) => (_scrutinee67_ is RecordTy _mRecordTy67_ ? ((Func<List<RecordField>, CodexType>)((rf) => ((Func<Name, CodexType>)((rn) => raw))((Name)_mRecordTy67_.Field0)))((List<RecordField>)_mRecordTy67_.Field1) : (_scrutinee67_ is SumTy _mSumTy67_ ? ((Func<List<SumCtor>, CodexType>)((sc) => ((Func<Name, CodexType>)((sn) => raw))((Name)_mSumTy67_.Field0)))((List<SumCtor>)_mSumTy67_.Field1) : (_scrutinee67_ is FunTy _mFunTy67_ ? ((Func<CodexType, CodexType>)((r) => ((Func<CodexType, CodexType>)((p) => strip_fun_args_emitter(r)))((CodexType)_mFunTy67_.Field0)))((CodexType)_mFunTy67_.Field1) : new ConstructedTy(cname, resolve_ty_list(tdefs, cargs, 0L, ((long)cargs.Count), new List<CodexType>())))))))(raw)))(lookup_type_binding(tdefs, cname.value))))((Name)_mConstructedTy66_.Field0)))((List<CodexType>)_mConstructedTy66_.Field1) : (_scrutinee66_ is FunTy _mFunTy66_ ? ((Func<CodexType, CodexType>)((r) => ((Func<CodexType, CodexType>)((p) => new FunTy(resolve_ty_deep(tdefs, p), resolve_ty_deep(tdefs, r))))((CodexType)_mFunTy66_.Field0)))((CodexType)_mFunTy66_.Field1) : (_scrutinee66_ is ListTy _mListTy66_ ? ((Func<CodexType, CodexType>)((e) => new ListTy(resolve_ty_deep(tdefs, e))))((CodexType)_mListTy66_.Field0) : (_scrutinee66_ is LinkedListTy _mLinkedListTy66_ ? ((Func<CodexType, CodexType>)((e) => new LinkedListTy(resolve_ty_deep(tdefs, e))))((CodexType)_mLinkedListTy66_.Field0) : (_scrutinee66_ is ForAllTy _mForAllTy66_ ? ((Func<CodexType, CodexType>)((body) => ((Func<long, CodexType>)((id) => new ForAllTy(id, resolve_ty_deep(tdefs, body))))((long)_mForAllTy66_.Field0)))((CodexType)_mForAllTy66_.Field1) : (_scrutinee66_ is EffectfulTy _mEffectfulTy66_ ? ((Func<CodexType, CodexType>)((ret) => ((Func<List<Name>, CodexType>)((effs) => new EffectfulTy(effs, resolve_ty_deep(tdefs, ret))))((List<Name>)_mEffectfulTy66_.Field0)))((CodexType)_mEffectfulTy66_.Field1) : ty))))))))(ty);
+        return ((Func<CodexType, CodexType>)((_scrutinee68_) => (_scrutinee68_ is ConstructedTy _mConstructedTy68_ ? ((Func<List<CodexType>, CodexType>)((cargs) => ((Func<Name, CodexType>)((cname) => ((Func<CodexType, CodexType>)((raw) => ((Func<CodexType, CodexType>)((_scrutinee69_) => (_scrutinee69_ is RecordTy _mRecordTy69_ ? ((Func<List<RecordField>, CodexType>)((rf) => ((Func<Name, CodexType>)((rn) => raw))((Name)_mRecordTy69_.Field0)))((List<RecordField>)_mRecordTy69_.Field1) : (_scrutinee69_ is SumTy _mSumTy69_ ? ((Func<List<SumCtor>, CodexType>)((sc) => ((Func<Name, CodexType>)((sn) => raw))((Name)_mSumTy69_.Field0)))((List<SumCtor>)_mSumTy69_.Field1) : (_scrutinee69_ is FunTy _mFunTy69_ ? ((Func<CodexType, CodexType>)((r) => ((Func<CodexType, CodexType>)((p) => strip_fun_args_emitter(r)))((CodexType)_mFunTy69_.Field0)))((CodexType)_mFunTy69_.Field1) : new ConstructedTy(cname, resolve_ty_list(tdefs, cargs, 0L, ((long)cargs.Count), new List<CodexType>())))))))(raw)))(lookup_type_binding(tdefs, cname.value))))((Name)_mConstructedTy68_.Field0)))((List<CodexType>)_mConstructedTy68_.Field1) : (_scrutinee68_ is FunTy _mFunTy68_ ? ((Func<CodexType, CodexType>)((r) => ((Func<CodexType, CodexType>)((p) => new FunTy(resolve_ty_deep(tdefs, p), resolve_ty_deep(tdefs, r))))((CodexType)_mFunTy68_.Field0)))((CodexType)_mFunTy68_.Field1) : (_scrutinee68_ is ListTy _mListTy68_ ? ((Func<CodexType, CodexType>)((e) => new ListTy(resolve_ty_deep(tdefs, e))))((CodexType)_mListTy68_.Field0) : (_scrutinee68_ is LinkedListTy _mLinkedListTy68_ ? ((Func<CodexType, CodexType>)((e) => new LinkedListTy(resolve_ty_deep(tdefs, e))))((CodexType)_mLinkedListTy68_.Field0) : (_scrutinee68_ is ForAllTy _mForAllTy68_ ? ((Func<CodexType, CodexType>)((body) => ((Func<long, CodexType>)((id) => new ForAllTy(id, resolve_ty_deep(tdefs, body))))((long)_mForAllTy68_.Field0)))((CodexType)_mForAllTy68_.Field1) : (_scrutinee68_ is EffectfulTy _mEffectfulTy68_ ? ((Func<CodexType, CodexType>)((ret) => ((Func<List<Name>, CodexType>)((effs) => new EffectfulTy(effs, resolve_ty_deep(tdefs, ret))))((List<Name>)_mEffectfulTy68_.Field0)))((CodexType)_mEffectfulTy68_.Field1) : ty))))))))(ty);
     }
 
     public static List<CodexType> resolve_ty_list(List<TypeBinding> tdefs, List<CodexType> tys, long i, long len, List<CodexType> acc)
@@ -6917,7 +7008,7 @@ public static class Codex_Codex_Codex
 
     public static IRPat rewrite_ir_pat(List<TypeBinding> tdefs, IRPat p)
     {
-        return ((Func<IRPat, IRPat>)((_scrutinee68_) => (_scrutinee68_ is IrVarPat _mIrVarPat68_ ? ((Func<SourceSpan, IRPat>)((s) => ((Func<CodexType, IRPat>)((t) => ((Func<string, IRPat>)((name) => new IrVarPat(name, resolve_ty_deep(tdefs, t), s)))((string)_mIrVarPat68_.Field0)))((CodexType)_mIrVarPat68_.Field1)))((SourceSpan)_mIrVarPat68_.Field2) : (_scrutinee68_ is IrLitPat _mIrLitPat68_ ? ((Func<SourceSpan, IRPat>)((s) => ((Func<CodexType, IRPat>)((t) => ((Func<string, IRPat>)((v) => new IrLitPat(v, resolve_ty_deep(tdefs, t), s)))((string)_mIrLitPat68_.Field0)))((CodexType)_mIrLitPat68_.Field1)))((SourceSpan)_mIrLitPat68_.Field2) : (_scrutinee68_ is IrCtorPat _mIrCtorPat68_ ? ((Func<SourceSpan, IRPat>)((s) => ((Func<CodexType, IRPat>)((t) => ((Func<List<IRPat>, IRPat>)((subs) => ((Func<string, IRPat>)((name) => new IrCtorPat(name, rewrite_ir_pat_list(tdefs, subs, 0L, ((long)subs.Count), new List<IRPat>()), resolve_ty_deep(tdefs, t), s)))((string)_mIrCtorPat68_.Field0)))((List<IRPat>)_mIrCtorPat68_.Field1)))((CodexType)_mIrCtorPat68_.Field2)))((SourceSpan)_mIrCtorPat68_.Field3) : (_scrutinee68_ is IrWildPat _mIrWildPat68_ ? ((Func<SourceSpan, IRPat>)((s) => p))((SourceSpan)_mIrWildPat68_.Field0) : throw new InvalidOperationException("Non-exhaustive match")))))))(p);
+        return ((Func<IRPat, IRPat>)((_scrutinee70_) => (_scrutinee70_ is IrVarPat _mIrVarPat70_ ? ((Func<SourceSpan, IRPat>)((s) => ((Func<CodexType, IRPat>)((t) => ((Func<string, IRPat>)((name) => new IrVarPat(name, resolve_ty_deep(tdefs, t), s)))((string)_mIrVarPat70_.Field0)))((CodexType)_mIrVarPat70_.Field1)))((SourceSpan)_mIrVarPat70_.Field2) : (_scrutinee70_ is IrLitPat _mIrLitPat70_ ? ((Func<SourceSpan, IRPat>)((s) => ((Func<CodexType, IRPat>)((t) => ((Func<string, IRPat>)((v) => new IrLitPat(v, resolve_ty_deep(tdefs, t), s)))((string)_mIrLitPat70_.Field0)))((CodexType)_mIrLitPat70_.Field1)))((SourceSpan)_mIrLitPat70_.Field2) : (_scrutinee70_ is IrCtorPat _mIrCtorPat70_ ? ((Func<SourceSpan, IRPat>)((s) => ((Func<CodexType, IRPat>)((t) => ((Func<List<IRPat>, IRPat>)((subs) => ((Func<string, IRPat>)((name) => new IrCtorPat(name, rewrite_ir_pat_list(tdefs, subs, 0L, ((long)subs.Count), new List<IRPat>()), resolve_ty_deep(tdefs, t), s)))((string)_mIrCtorPat70_.Field0)))((List<IRPat>)_mIrCtorPat70_.Field1)))((CodexType)_mIrCtorPat70_.Field2)))((SourceSpan)_mIrCtorPat70_.Field3) : (_scrutinee70_ is IrWildPat _mIrWildPat70_ ? ((Func<SourceSpan, IRPat>)((s) => p))((SourceSpan)_mIrWildPat70_.Field0) : throw new InvalidOperationException("Non-exhaustive match")))))))(p);
     }
 
     public static List<IRPat> rewrite_ir_pat_list(List<TypeBinding> tdefs, List<IRPat> ps, long i, long len, List<IRPat> acc)
@@ -6947,7 +7038,7 @@ public static class Codex_Codex_Codex
 
     public static IRExpr rewrite_ir_expr(List<TypeBinding> tdefs, IRExpr e)
     {
-        return ((Func<IRExpr, IRExpr>)((_scrutinee69_) => (_scrutinee69_ is IrIntLit _mIrIntLit69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<long, IRExpr>)((v) => e))((long)_mIrIntLit69_.Field0)))((SourceSpan)_mIrIntLit69_.Field1) : (_scrutinee69_ is IrNumLit _mIrNumLit69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<long, IRExpr>)((v) => e))((long)_mIrNumLit69_.Field0)))((SourceSpan)_mIrNumLit69_.Field1) : (_scrutinee69_ is IrTextLit _mIrTextLit69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<string, IRExpr>)((v) => e))((string)_mIrTextLit69_.Field0)))((SourceSpan)_mIrTextLit69_.Field1) : (_scrutinee69_ is IrBoolLit _mIrBoolLit69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<bool, IRExpr>)((v) => e))((bool)_mIrBoolLit69_.Field0)))((SourceSpan)_mIrBoolLit69_.Field1) : (_scrutinee69_ is IrCharLit _mIrCharLit69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<long, IRExpr>)((v) => e))((long)_mIrCharLit69_.Field0)))((SourceSpan)_mIrCharLit69_.Field1) : (_scrutinee69_ is IrName _mIrName69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<string, IRExpr>)((n) => new IrName(n, resolve_ty_deep(tdefs, t), s)))((string)_mIrName69_.Field0)))((CodexType)_mIrName69_.Field1)))((SourceSpan)_mIrName69_.Field2) : (_scrutinee69_ is IrBinary _mIrBinary69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((r) => ((Func<IRExpr, IRExpr>)((l) => ((Func<IRBinaryOp, IRExpr>)((op) => new IrBinary(op, rewrite_ir_expr(tdefs, l), rewrite_ir_expr(tdefs, r), resolve_ty_deep(tdefs, t), s)))((IRBinaryOp)_mIrBinary69_.Field0)))((IRExpr)_mIrBinary69_.Field1)))((IRExpr)_mIrBinary69_.Field2)))((CodexType)_mIrBinary69_.Field3)))((SourceSpan)_mIrBinary69_.Field4) : (_scrutinee69_ is IrNegate _mIrNegate69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<IRExpr, IRExpr>)((x) => new IrNegate(rewrite_ir_expr(tdefs, x), s)))((IRExpr)_mIrNegate69_.Field0)))((SourceSpan)_mIrNegate69_.Field1) : (_scrutinee69_ is IrIf _mIrIf69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((el) => ((Func<IRExpr, IRExpr>)((th) => ((Func<IRExpr, IRExpr>)((c) => new IrIf(rewrite_ir_expr(tdefs, c), rewrite_ir_expr(tdefs, th), rewrite_ir_expr(tdefs, el), resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrIf69_.Field0)))((IRExpr)_mIrIf69_.Field1)))((IRExpr)_mIrIf69_.Field2)))((CodexType)_mIrIf69_.Field3)))((SourceSpan)_mIrIf69_.Field4) : (_scrutinee69_ is IrLet _mIrLet69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<IRExpr, IRExpr>)((b) => ((Func<IRExpr, IRExpr>)((v) => ((Func<CodexType, IRExpr>)((t) => ((Func<string, IRExpr>)((n) => new IrLet(n, resolve_ty_deep(tdefs, t), rewrite_ir_expr(tdefs, v), rewrite_ir_expr(tdefs, b), s)))((string)_mIrLet69_.Field0)))((CodexType)_mIrLet69_.Field1)))((IRExpr)_mIrLet69_.Field2)))((IRExpr)_mIrLet69_.Field3)))((SourceSpan)_mIrLet69_.Field4) : (_scrutinee69_ is IrApply _mIrApply69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((a) => ((Func<IRExpr, IRExpr>)((f) => new IrApply(rewrite_ir_expr(tdefs, f), rewrite_ir_expr(tdefs, a), resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrApply69_.Field0)))((IRExpr)_mIrApply69_.Field1)))((CodexType)_mIrApply69_.Field2)))((SourceSpan)_mIrApply69_.Field3) : (_scrutinee69_ is IrLambda _mIrLambda69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((b) => ((Func<List<IRParam>, IRExpr>)((ps) => new IrLambda(rewrite_ir_params(tdefs, ps, 0L, ((long)ps.Count), new List<IRParam>()), rewrite_ir_expr(tdefs, b), resolve_ty_deep(tdefs, t), s)))((List<IRParam>)_mIrLambda69_.Field0)))((IRExpr)_mIrLambda69_.Field1)))((CodexType)_mIrLambda69_.Field2)))((SourceSpan)_mIrLambda69_.Field3) : (_scrutinee69_ is IrList _mIrList69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<List<IRExpr>, IRExpr>)((es) => new IrList(rewrite_ir_expr_list(tdefs, es, 0L, ((long)es.Count), new List<IRExpr>()), resolve_ty_deep(tdefs, t), s)))((List<IRExpr>)_mIrList69_.Field0)))((CodexType)_mIrList69_.Field1)))((SourceSpan)_mIrList69_.Field2) : (_scrutinee69_ is IrMatch _mIrMatch69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<List<IRBranch>, IRExpr>)((bs) => ((Func<IRExpr, IRExpr>)((sc) => new IrMatch(rewrite_ir_expr(tdefs, sc), rewrite_ir_branches(tdefs, bs, 0L, ((long)bs.Count), new List<IRBranch>()), resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrMatch69_.Field0)))((List<IRBranch>)_mIrMatch69_.Field1)))((CodexType)_mIrMatch69_.Field2)))((SourceSpan)_mIrMatch69_.Field3) : (_scrutinee69_ is IrAct _mIrAct69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<List<IRActStmt>, IRExpr>)((ss) => new IrAct(rewrite_ir_act_stmts(tdefs, ss, 0L, ((long)ss.Count), new List<IRActStmt>()), resolve_ty_deep(tdefs, t), s)))((List<IRActStmt>)_mIrAct69_.Field0)))((CodexType)_mIrAct69_.Field1)))((SourceSpan)_mIrAct69_.Field2) : (_scrutinee69_ is IrHandle _mIrHandle69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<List<IRHandleClause>, IRExpr>)((cs) => ((Func<IRExpr, IRExpr>)((h) => ((Func<string, IRExpr>)((eff) => new IrHandle(eff, rewrite_ir_expr(tdefs, h), rewrite_ir_handle_clauses(tdefs, cs, 0L, ((long)cs.Count), new List<IRHandleClause>()), resolve_ty_deep(tdefs, t), s)))((string)_mIrHandle69_.Field0)))((IRExpr)_mIrHandle69_.Field1)))((List<IRHandleClause>)_mIrHandle69_.Field2)))((CodexType)_mIrHandle69_.Field3)))((SourceSpan)_mIrHandle69_.Field4) : (_scrutinee69_ is IrRecord _mIrRecord69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<List<IRFieldVal>, IRExpr>)((fs) => ((Func<string, IRExpr>)((n) => new IrRecord(n, rewrite_ir_record_fields(tdefs, fs, 0L, ((long)fs.Count), new List<IRFieldVal>()), resolve_ty_deep(tdefs, t), s)))((string)_mIrRecord69_.Field0)))((List<IRFieldVal>)_mIrRecord69_.Field1)))((CodexType)_mIrRecord69_.Field2)))((SourceSpan)_mIrRecord69_.Field3) : (_scrutinee69_ is IrFieldAccess _mIrFieldAccess69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<string, IRExpr>)((f) => ((Func<IRExpr, IRExpr>)((r) => new IrFieldAccess(rewrite_ir_expr(tdefs, r), f, resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrFieldAccess69_.Field0)))((string)_mIrFieldAccess69_.Field1)))((CodexType)_mIrFieldAccess69_.Field2)))((SourceSpan)_mIrFieldAccess69_.Field3) : (_scrutinee69_ is IrFork _mIrFork69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((body) => new IrFork(rewrite_ir_expr(tdefs, body), resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrFork69_.Field0)))((CodexType)_mIrFork69_.Field1)))((SourceSpan)_mIrFork69_.Field2) : (_scrutinee69_ is IrAwait _mIrAwait69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((task) => new IrAwait(rewrite_ir_expr(tdefs, task), resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrAwait69_.Field0)))((CodexType)_mIrAwait69_.Field1)))((SourceSpan)_mIrAwait69_.Field2) : (_scrutinee69_ is IrError _mIrError69_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<string, IRExpr>)((m) => new IrError(m, resolve_ty_deep(tdefs, t), s)))((string)_mIrError69_.Field0)))((CodexType)_mIrError69_.Field1)))((SourceSpan)_mIrError69_.Field2) : throw new InvalidOperationException("Non-exhaustive match"))))))))))))))))))))))))(e);
+        return ((Func<IRExpr, IRExpr>)((_scrutinee71_) => (_scrutinee71_ is IrIntLit _mIrIntLit71_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<long, IRExpr>)((v) => e))((long)_mIrIntLit71_.Field0)))((SourceSpan)_mIrIntLit71_.Field1) : (_scrutinee71_ is IrNumLit _mIrNumLit71_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<long, IRExpr>)((v) => e))((long)_mIrNumLit71_.Field0)))((SourceSpan)_mIrNumLit71_.Field1) : (_scrutinee71_ is IrTextLit _mIrTextLit71_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<string, IRExpr>)((v) => e))((string)_mIrTextLit71_.Field0)))((SourceSpan)_mIrTextLit71_.Field1) : (_scrutinee71_ is IrBoolLit _mIrBoolLit71_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<bool, IRExpr>)((v) => e))((bool)_mIrBoolLit71_.Field0)))((SourceSpan)_mIrBoolLit71_.Field1) : (_scrutinee71_ is IrCharLit _mIrCharLit71_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<long, IRExpr>)((v) => e))((long)_mIrCharLit71_.Field0)))((SourceSpan)_mIrCharLit71_.Field1) : (_scrutinee71_ is IrName _mIrName71_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<string, IRExpr>)((n) => new IrName(n, resolve_ty_deep(tdefs, t), s)))((string)_mIrName71_.Field0)))((CodexType)_mIrName71_.Field1)))((SourceSpan)_mIrName71_.Field2) : (_scrutinee71_ is IrBinary _mIrBinary71_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((r) => ((Func<IRExpr, IRExpr>)((l) => ((Func<IRBinaryOp, IRExpr>)((op) => new IrBinary(op, rewrite_ir_expr(tdefs, l), rewrite_ir_expr(tdefs, r), resolve_ty_deep(tdefs, t), s)))((IRBinaryOp)_mIrBinary71_.Field0)))((IRExpr)_mIrBinary71_.Field1)))((IRExpr)_mIrBinary71_.Field2)))((CodexType)_mIrBinary71_.Field3)))((SourceSpan)_mIrBinary71_.Field4) : (_scrutinee71_ is IrNegate _mIrNegate71_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<IRExpr, IRExpr>)((x) => new IrNegate(rewrite_ir_expr(tdefs, x), s)))((IRExpr)_mIrNegate71_.Field0)))((SourceSpan)_mIrNegate71_.Field1) : (_scrutinee71_ is IrIf _mIrIf71_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((el) => ((Func<IRExpr, IRExpr>)((th) => ((Func<IRExpr, IRExpr>)((c) => new IrIf(rewrite_ir_expr(tdefs, c), rewrite_ir_expr(tdefs, th), rewrite_ir_expr(tdefs, el), resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrIf71_.Field0)))((IRExpr)_mIrIf71_.Field1)))((IRExpr)_mIrIf71_.Field2)))((CodexType)_mIrIf71_.Field3)))((SourceSpan)_mIrIf71_.Field4) : (_scrutinee71_ is IrLet _mIrLet71_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<IRExpr, IRExpr>)((b) => ((Func<IRExpr, IRExpr>)((v) => ((Func<CodexType, IRExpr>)((t) => ((Func<string, IRExpr>)((n) => new IrLet(n, resolve_ty_deep(tdefs, t), rewrite_ir_expr(tdefs, v), rewrite_ir_expr(tdefs, b), s)))((string)_mIrLet71_.Field0)))((CodexType)_mIrLet71_.Field1)))((IRExpr)_mIrLet71_.Field2)))((IRExpr)_mIrLet71_.Field3)))((SourceSpan)_mIrLet71_.Field4) : (_scrutinee71_ is IrApply _mIrApply71_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((a) => ((Func<IRExpr, IRExpr>)((f) => new IrApply(rewrite_ir_expr(tdefs, f), rewrite_ir_expr(tdefs, a), resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrApply71_.Field0)))((IRExpr)_mIrApply71_.Field1)))((CodexType)_mIrApply71_.Field2)))((SourceSpan)_mIrApply71_.Field3) : (_scrutinee71_ is IrLambda _mIrLambda71_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((b) => ((Func<List<IRParam>, IRExpr>)((ps) => new IrLambda(rewrite_ir_params(tdefs, ps, 0L, ((long)ps.Count), new List<IRParam>()), rewrite_ir_expr(tdefs, b), resolve_ty_deep(tdefs, t), s)))((List<IRParam>)_mIrLambda71_.Field0)))((IRExpr)_mIrLambda71_.Field1)))((CodexType)_mIrLambda71_.Field2)))((SourceSpan)_mIrLambda71_.Field3) : (_scrutinee71_ is IrList _mIrList71_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<List<IRExpr>, IRExpr>)((es) => new IrList(rewrite_ir_expr_list(tdefs, es, 0L, ((long)es.Count), new List<IRExpr>()), resolve_ty_deep(tdefs, t), s)))((List<IRExpr>)_mIrList71_.Field0)))((CodexType)_mIrList71_.Field1)))((SourceSpan)_mIrList71_.Field2) : (_scrutinee71_ is IrMatch _mIrMatch71_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<List<IRBranch>, IRExpr>)((bs) => ((Func<IRExpr, IRExpr>)((sc) => new IrMatch(rewrite_ir_expr(tdefs, sc), rewrite_ir_branches(tdefs, bs, 0L, ((long)bs.Count), new List<IRBranch>()), resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrMatch71_.Field0)))((List<IRBranch>)_mIrMatch71_.Field1)))((CodexType)_mIrMatch71_.Field2)))((SourceSpan)_mIrMatch71_.Field3) : (_scrutinee71_ is IrAct _mIrAct71_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<List<IRActStmt>, IRExpr>)((ss) => new IrAct(rewrite_ir_act_stmts(tdefs, ss, 0L, ((long)ss.Count), new List<IRActStmt>()), resolve_ty_deep(tdefs, t), s)))((List<IRActStmt>)_mIrAct71_.Field0)))((CodexType)_mIrAct71_.Field1)))((SourceSpan)_mIrAct71_.Field2) : (_scrutinee71_ is IrHandle _mIrHandle71_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<List<IRHandleClause>, IRExpr>)((cs) => ((Func<IRExpr, IRExpr>)((h) => ((Func<string, IRExpr>)((eff) => new IrHandle(eff, rewrite_ir_expr(tdefs, h), rewrite_ir_handle_clauses(tdefs, cs, 0L, ((long)cs.Count), new List<IRHandleClause>()), resolve_ty_deep(tdefs, t), s)))((string)_mIrHandle71_.Field0)))((IRExpr)_mIrHandle71_.Field1)))((List<IRHandleClause>)_mIrHandle71_.Field2)))((CodexType)_mIrHandle71_.Field3)))((SourceSpan)_mIrHandle71_.Field4) : (_scrutinee71_ is IrRecord _mIrRecord71_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<List<IRFieldVal>, IRExpr>)((fs) => ((Func<string, IRExpr>)((n) => new IrRecord(n, rewrite_ir_record_fields(tdefs, fs, 0L, ((long)fs.Count), new List<IRFieldVal>()), resolve_ty_deep(tdefs, t), s)))((string)_mIrRecord71_.Field0)))((List<IRFieldVal>)_mIrRecord71_.Field1)))((CodexType)_mIrRecord71_.Field2)))((SourceSpan)_mIrRecord71_.Field3) : (_scrutinee71_ is IrFieldAccess _mIrFieldAccess71_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<string, IRExpr>)((f) => ((Func<IRExpr, IRExpr>)((r) => new IrFieldAccess(rewrite_ir_expr(tdefs, r), f, resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrFieldAccess71_.Field0)))((string)_mIrFieldAccess71_.Field1)))((CodexType)_mIrFieldAccess71_.Field2)))((SourceSpan)_mIrFieldAccess71_.Field3) : (_scrutinee71_ is IrFork _mIrFork71_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((body) => new IrFork(rewrite_ir_expr(tdefs, body), resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrFork71_.Field0)))((CodexType)_mIrFork71_.Field1)))((SourceSpan)_mIrFork71_.Field2) : (_scrutinee71_ is IrAwait _mIrAwait71_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<IRExpr, IRExpr>)((task) => new IrAwait(rewrite_ir_expr(tdefs, task), resolve_ty_deep(tdefs, t), s)))((IRExpr)_mIrAwait71_.Field0)))((CodexType)_mIrAwait71_.Field1)))((SourceSpan)_mIrAwait71_.Field2) : (_scrutinee71_ is IrError _mIrError71_ ? ((Func<SourceSpan, IRExpr>)((s) => ((Func<CodexType, IRExpr>)((t) => ((Func<string, IRExpr>)((m) => new IrError(m, resolve_ty_deep(tdefs, t), s)))((string)_mIrError71_.Field0)))((CodexType)_mIrError71_.Field1)))((SourceSpan)_mIrError71_.Field2) : throw new InvalidOperationException("Non-exhaustive match"))))))))))))))))))))))))(e);
     }
 
     public static List<IRExpr> rewrite_ir_expr_list(List<TypeBinding> tdefs, List<IRExpr> es, long i, long len, List<IRExpr> acc)
@@ -7038,7 +7129,7 @@ public static class Codex_Codex_Codex
             else
             {
                 var s = ss[(int)i];
-                var ns = ((Func<IRActStmt, IRActStmt>)((_scrutinee70_) => (_scrutinee70_ is IrDoBind _mIrDoBind70_ ? ((Func<SourceSpan, IRActStmt>)((sp) => ((Func<IRExpr, IRActStmt>)((v) => ((Func<CodexType, IRActStmt>)((t) => ((Func<string, IRActStmt>)((n) => new IrDoBind(n, resolve_ty_deep(tdefs, t), rewrite_ir_expr(tdefs, v), sp)))((string)_mIrDoBind70_.Field0)))((CodexType)_mIrDoBind70_.Field1)))((IRExpr)_mIrDoBind70_.Field2)))((SourceSpan)_mIrDoBind70_.Field3) : (_scrutinee70_ is IrDoExec _mIrDoExec70_ ? ((Func<SourceSpan, IRActStmt>)((sp) => ((Func<IRExpr, IRActStmt>)((v) => new IrDoExec(rewrite_ir_expr(tdefs, v), sp)))((IRExpr)_mIrDoExec70_.Field0)))((SourceSpan)_mIrDoExec70_.Field1) : throw new InvalidOperationException("Non-exhaustive match")))))(s);
+                var ns = ((Func<IRActStmt, IRActStmt>)((_scrutinee72_) => (_scrutinee72_ is IrDoBind _mIrDoBind72_ ? ((Func<SourceSpan, IRActStmt>)((sp) => ((Func<IRExpr, IRActStmt>)((v) => ((Func<CodexType, IRActStmt>)((t) => ((Func<string, IRActStmt>)((n) => new IrDoBind(n, resolve_ty_deep(tdefs, t), rewrite_ir_expr(tdefs, v), sp)))((string)_mIrDoBind72_.Field0)))((CodexType)_mIrDoBind72_.Field1)))((IRExpr)_mIrDoBind72_.Field2)))((SourceSpan)_mIrDoBind72_.Field3) : (_scrutinee72_ is IrDoExec _mIrDoExec72_ ? ((Func<SourceSpan, IRActStmt>)((sp) => ((Func<IRExpr, IRActStmt>)((v) => new IrDoExec(rewrite_ir_expr(tdefs, v), sp)))((IRExpr)_mIrDoExec72_.Field0)))((SourceSpan)_mIrDoExec72_.Field1) : throw new InvalidOperationException("Non-exhaustive match")))))(s);
                 var _tco_0 = tdefs;
                 var _tco_1 = ss;
                 var _tco_2 = (i + 1L);
@@ -7510,503 +7601,6 @@ public static class Codex_Codex_Codex
     public static EmitChapterResult x86_64_emit_chapter(IRChapter m, List<TypeBinding> tdefs)
     {
         return ((Func<TrampolineResult, EmitChapterResult>)((tramp) => ((Func<CodegenState, EmitChapterResult>)((st0) => ((Func<List<IRDef>, EmitChapterResult>)((defs_resolved) => ((Func<CodegenState, EmitChapterResult>)((st_checked) => ((Func<CodegenState, EmitChapterResult>)((st0a) => ((Func<CodegenState, EmitChapterResult>)((st1) => x86_64_finalize(st1, tramp.far_jump_patch_pos)))(emit__x86_64_code_generator_emit_all_defs(st0a, defs_resolved, 0L))))(emit_runtime_helpers(st_checked))))(check_ir_defs_errorty(st0, defs_resolved, 0L))))(rewrite_ir_defs(tdefs, m.defs, 0L, ((long)m.defs.Count), new List<IRDef>()))))(x86_64_init_codegen(tdefs))))(bare_metal_trampoline());
-    }
-
-    public static long idt_base()
-    {
-        return 24576L;
-    }
-
-    public static long tick_count_addr()
-    {
-        return 28672L;
-    }
-
-    public static long key_buffer_addr()
-    {
-        return 28680L;
-    }
-
-    public static long current_proc_addr()
-    {
-        return 28688L;
-    }
-
-    public static long arena_base_addr()
-    {
-        return 28696L;
-    }
-
-    public static long serial_write_pos_addr()
-    {
-        return 28704L;
-    }
-
-    public static long serial_read_pos_addr()
-    {
-        return 28712L;
-    }
-
-    public static long result_arena_base_addr()
-    {
-        return 28720L;
-    }
-
-    public static long heap_hwm_addr()
-    {
-        return 28728L;
-    }
-
-    public static long stack_min_rsp_addr()
-    {
-        return 28736L;
-    }
-
-    public static long serial_ring_buf_addr()
-    {
-        return 3145728L;
-    }
-
-    public static long serial_ring_buf_size()
-    {
-        return 1048576L;
-    }
-
-    public static long serial_ring_buf_mask()
-    {
-        return 1048575L;
-    }
-
-    public static long proc_table_base()
-    {
-        return 20480L;
-    }
-
-    public static long proc_entry_size()
-    {
-        return 256L;
-    }
-
-    public static long proc_cap_offset()
-    {
-        return 56L;
-    }
-
-    public static long cap_console()
-    {
-        return 0L;
-    }
-
-    public static long cap_concurrent()
-    {
-        return 3L;
-    }
-
-    public static CodegenState emit_pic_init(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => emit_out_byte(st9, 161L, 255L)))(emit_out_byte(st8, 33L, 236L))))(emit_out_byte(st7, 161L, 1L))))(emit_out_byte(st6, 33L, 1L))))(emit_out_byte(st5, 161L, 2L))))(emit_out_byte(st4, 33L, 4L))))(emit_out_byte(st3, 161L, 40L))))(emit_out_byte(st2, 33L, 32L))))(emit_out_byte(st1, 160L, 17L))))(emit_out_byte(st, 32L, 17L));
-    }
-
-    public static CodegenState emit_print_hex_nibble_rdi(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<long, CodegenState>)((jge_pos) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<long, CodegenState>)((jmp_pos) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => emit_serial_send_rdi(st8)))(patch_jmp_at(st7, jmp_pos, st7.text_len))))(st_append_text(st6, add_ri(reg_rdi(), 87L)))))(patch_jcc_at(st5, jge_pos, st5.text_len))))(st_append_text(st4, jmp(0L)))))(st4.text_len)))(st_append_text(st3, add_ri(reg_rdi(), 48L)))))(st_append_text(st2, jcc(cc_ge(), 0L)))))(st2.text_len)))(st_append_text(st1, cmp_ri(reg_rdi(), 10L)))))(st_append_text(st, and_ri(reg_rdi(), 15L)));
-    }
-
-    public static CodegenState emit_print_hex_qword_rdi_loop(CodegenState st, long nibble_idx)
-    {
-        while (true)
-        {
-            if ((nibble_idx < 0L))
-            {
-                return st;
-            }
-            else
-            {
-                var st1 = st_append_text(st, push_r(reg_rdi()));
-                var shift = (nibble_idx * 4L);
-                var st2 = ((shift == 0L) ? st1 : st_append_text(st1, shr_ri(reg_rdi(), shift)));
-                var st3 = emit_print_hex_nibble_rdi(st2);
-                var st4 = st_append_text(st3, pop_r(reg_rdi()));
-                var _tco_0 = st4;
-                var _tco_1 = (nibble_idx - 1L);
-                st = _tco_0;
-                nibble_idx = _tco_1;
-                continue;
-            }
-        }
-    }
-
-    public static CodegenState emit_print_hex_qword_rdi(CodegenState st)
-    {
-        return emit_print_hex_qword_rdi_loop(st, 15L);
-    }
-
-    public static CodegenState emit_print_hex_byte_rdi(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => emit_print_hex_nibble_rdi(st4)))(st_append_text(st3, pop_r(reg_rdi())))))(emit_print_hex_nibble_rdi(st2))))(st_append_text(st1, shr_ri(reg_rdi(), 4L)))))(st_append_text(st, push_r(reg_rdi())));
-    }
-
-    public static CodegenState emit_cpu_exception_dump(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st13a) => ((Func<CodegenState, CodegenState>)((st13b) => ((Func<CodegenState, CodegenState>)((st13c) => ((Func<CodegenState, CodegenState>)((st13d) => ((Func<CodegenState, CodegenState>)((st13e) => ((Func<CodegenState, CodegenState>)((st13f) => ((Func<CodegenState, CodegenState>)((st13g) => ((Func<CodegenState, CodegenState>)((st13h) => ((Func<CodegenState, CodegenState>)((st13i) => ((Func<CodegenState, CodegenState>)((st13j) => ((Func<CodegenState, CodegenState>)((st13k) => ((Func<CodegenState, CodegenState>)((st13l) => ((Func<CodegenState, CodegenState>)((st13m) => ((Func<CodegenState, CodegenState>)((st13n) => ((Func<CodegenState, CodegenState>)((st13o) => ((Func<CodegenState, CodegenState>)((st13p) => ((Func<CodegenState, CodegenState>)((st13q) => ((Func<CodegenState, CodegenState>)((st13r) => ((Func<CodegenState, CodegenState>)((st13s) => ((Func<CodegenState, CodegenState>)((st13t) => ((Func<CodegenState, CodegenState>)((st13u) => ((Func<CodegenState, CodegenState>)((st13v) => ((Func<CodegenState, CodegenState>)((st13w) => ((Func<CodegenState, CodegenState>)((st13x) => ((Func<CodegenState, CodegenState>)((st13y) => ((Func<CodegenState, CodegenState>)((st13z) => ((Func<CodegenState, CodegenState>)((st13aa) => ((Func<CodegenState, CodegenState>)((st13ab) => ((Func<CodegenState, CodegenState>)((st13ac) => ((Func<CodegenState, CodegenState>)((st13ad) => ((Func<CodegenState, CodegenState>)((st13ae) => ((Func<CodegenState, CodegenState>)((st13af) => ((Func<CodegenState, CodegenState>)((st13ag) => ((Func<CodegenState, CodegenState>)((st13ah) => ((Func<CodegenState, CodegenState>)((st13ai) => ((Func<CodegenState, CodegenState>)((st13aj) => ((Func<CodegenState, CodegenState>)((st13ak) => ((Func<CodegenState, CodegenState>)((st13al) => ((Func<CodegenState, CodegenState>)((st13am) => ((Func<CodegenState, CodegenState>)((st13an) => ((Func<CodegenState, CodegenState>)((st13ao) => ((Func<CodegenState, CodegenState>)((st13ap) => ((Func<CodegenState, CodegenState>)((st13aq) => ((Func<CodegenState, CodegenState>)((st13ar) => ((Func<CodegenState, CodegenState>)((st13as) => ((Func<CodegenState, CodegenState>)((st13at) => ((Func<CodegenState, CodegenState>)((st13au) => ((Func<CodegenState, CodegenState>)((st13av) => ((Func<CodegenState, CodegenState>)((st13aw) => ((Func<CodegenState, CodegenState>)((st13ax) => ((Func<CodegenState, CodegenState>)((st13ay) => ((Func<CodegenState, CodegenState>)((st13az) => ((Func<CodegenState, CodegenState>)((st13ba) => ((Func<CodegenState, CodegenState>)((st13bb) => ((Func<CodegenState, CodegenState>)((st13bc) => ((Func<CodegenState, CodegenState>)((st13bd) => ((Func<CodegenState, CodegenState>)((st13be) => ((Func<CodegenState, CodegenState>)((st13bf) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<long, CodegenState>)((halt_pos) => ((Func<CodegenState, CodegenState>)((st16) => st_append_text(st16, jmp((halt_pos - (st16.text_len + 5L))))))(st_append_text(st15, hlt()))))(st15.text_len)))(st_append_text(st14, cli()))))(emit_serial_wait_and_send(st13bf, 10L))))(emit_print_hex_qword_rdi(st13be))))(st_append_text(st13bd, mov_load(reg_rdi(), reg_rsp(), 64L)))))(emit_serial_wait_and_send(st13bc, 61L))))(emit_serial_wait_and_send(st13bb, 82L))))(emit_serial_wait_and_send(st13ba, 108L))))(emit_serial_wait_and_send(st13az, 108L))))(emit_serial_wait_and_send(st13ay, 97L))))(emit_serial_wait_and_send(st13ax, 67L))))(emit_serial_wait_and_send(st13aw, 32L))))(emit_print_hex_qword_rdi(st13av))))(st_append_text(st13au, mov_load(reg_rdi(), reg_rsp(), 8L)))))(emit_serial_wait_and_send(st13at, 61L))))(emit_serial_wait_and_send(st13as, 73L))))(emit_serial_wait_and_send(st13ar, 83L))))(emit_serial_wait_and_send(st13aq, 82L))))(emit_serial_wait_and_send(st13ap, 32L))))(emit_print_hex_qword_rdi(st13ao))))(st_append_text(st13an, mov_load(reg_rdi(), reg_rsp(), 0L)))))(emit_serial_wait_and_send(st13am, 61L))))(emit_serial_wait_and_send(st13al, 73L))))(emit_serial_wait_and_send(st13ak, 68L))))(emit_serial_wait_and_send(st13aj, 82L))))(emit_serial_wait_and_send(st13ai, 32L))))(emit_print_hex_qword_rdi(st13ah))))(st_append_text(st13ag, mov_rr(reg_rdi(), reg_r10())))))(emit_serial_wait_and_send(st13af, 61L))))(emit_serial_wait_and_send(st13ae, 48L))))(emit_serial_wait_and_send(st13ad, 49L))))(emit_serial_wait_and_send(st13ac, 82L))))(emit_serial_wait_and_send(st13ab, 32L))))(emit_print_hex_qword_rdi(st13aa))))(st_append_text(st13z, mov_rr(reg_rdi(), reg_r14())))))(emit_serial_wait_and_send(st13y, 61L))))(emit_serial_wait_and_send(st13x, 52L))))(emit_serial_wait_and_send(st13w, 49L))))(emit_serial_wait_and_send(st13v, 82L))))(emit_serial_wait_and_send(st13u, 32L))))(emit_print_hex_qword_rdi(st13t))))(st_append_text(st13s, mov_rr(reg_rdi(), reg_r13())))))(emit_serial_wait_and_send(st13r, 61L))))(emit_serial_wait_and_send(st13q, 51L))))(emit_serial_wait_and_send(st13p, 49L))))(emit_serial_wait_and_send(st13o, 82L))))(emit_serial_wait_and_send(st13n, 32L))))(emit_print_hex_qword_rdi(st13m))))(st_append_text(st13l, mov_rr(reg_rdi(), reg_r12())))))(emit_serial_wait_and_send(st13k, 61L))))(emit_serial_wait_and_send(st13j, 50L))))(emit_serial_wait_and_send(st13i, 49L))))(emit_serial_wait_and_send(st13h, 82L))))(emit_serial_wait_and_send(st13g, 32L))))(emit_print_hex_qword_rdi(st13f))))(st_append_text(st13e, mov_rr(reg_rdi(), reg_rbx())))))(emit_serial_wait_and_send(st13d, 61L))))(emit_serial_wait_and_send(st13c, 88L))))(emit_serial_wait_and_send(st13b, 66L))))(emit_serial_wait_and_send(st13a, 82L))))(emit_serial_wait_and_send(st13, 32L))))(emit_print_hex_qword_rdi(st12))))(st_append_text(st11, mov_load(reg_rdi(), reg_rsp(), 40L)))))(emit_serial_wait_and_send(st10, 61L))))(emit_serial_wait_and_send(st9, 80L))))(emit_serial_wait_and_send(st8, 73L))))(emit_serial_wait_and_send(st7, 82L))))(emit_serial_wait_and_send(st6, 32L))))(emit_print_hex_byte_rdi(st5))))(emit_serial_wait_and_send(st4, 61L))))(emit_serial_wait_and_send(st3, 67L))))(emit_serial_wait_and_send(st2, 88L))))(emit_serial_wait_and_send(st1, 69L))))(emit_serial_wait_and_send(st0, 33L))))(st_append_text(st, mov_rr(reg_rdi(), reg_rax())));
-    }
-
-    public static CodegenState emit_common_interrupt_handler(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<long, CodegenState>)((exc_jcc) => ((Func<CodegenState, CodegenState>)((st6a) => ((Func<long, CodegenState>)((not_timer) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<long, CodegenState>)((not_keyboard) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => ((Func<CodegenState, CodegenState>)((st23) => ((Func<CodegenState, CodegenState>)((st24) => ((Func<CodegenState, CodegenState>)((st25) => ((Func<CodegenState, CodegenState>)((st26) => ((Func<CodegenState, CodegenState>)((st27) => ((Func<CodegenState, CodegenState>)((st28) => ((Func<long, CodegenState>)((not_serial) => ((Func<CodegenState, CodegenState>)((st29) => ((Func<long, CodegenState>)((serial_drain_loop) => ((Func<CodegenState, CodegenState>)((st30) => ((Func<CodegenState, CodegenState>)((st31) => ((Func<CodegenState, CodegenState>)((st32) => ((Func<CodegenState, CodegenState>)((st33) => ((Func<CodegenState, CodegenState>)((st34) => ((Func<long, CodegenState>)((serial_drain_done) => ((Func<CodegenState, CodegenState>)((st35) => ((Func<CodegenState, CodegenState>)((st36) => ((Func<CodegenState, CodegenState>)((st37) => ((Func<CodegenState, CodegenState>)((st38) => ((Func<CodegenState, CodegenState>)((st39) => ((Func<CodegenState, CodegenState>)((st40) => ((Func<CodegenState, CodegenState>)((st41) => ((Func<CodegenState, CodegenState>)((st42) => ((Func<CodegenState, CodegenState>)((st43) => ((Func<CodegenState, CodegenState>)((st44) => ((Func<CodegenState, CodegenState>)((st45) => ((Func<CodegenState, CodegenState>)((st46) => ((Func<CodegenState, CodegenState>)((st47) => ((Func<CodegenState, CodegenState>)((st48) => ((Func<CodegenState, CodegenState>)((st49) => ((Func<CodegenState, CodegenState>)((st50) => ((Func<CodegenState, CodegenState>)((st51) => ((Func<CodegenState, CodegenState>)((st52) => ((Func<CodegenState, CodegenState>)((st53) => ((Func<CodegenState, CodegenState>)((st54) => ((Func<CodegenState, CodegenState>)((st55) => ((Func<CodegenState, CodegenState>)((st56) => ((Func<long, CodegenState>)((exc_handler_pos) => ((Func<CodegenState, CodegenState>)((st57) => patch_jcc_at(st57, exc_jcc, exc_handler_pos)))(emit_cpu_exception_dump(st56))))(st56.text_len)))(st_append_text(st55, iretq()))))(st_append_text(st54, pop_r(reg_rax())))))(st_append_text(st53, pop_r(reg_rcx())))))(st_append_text(st52, pop_r(reg_rdx())))))(st_append_text(st51, pop_r(reg_rsi())))))(st_append_text(st50, pop_r(reg_rdi())))))(emit_out_byte(st49, 32L, 32L))))(patch_jcc_at(st48, not_serial, st48.text_len))))(patch_jcc_at(st47, serial_drain_done, st47.text_len))))(st_append_text(st46, jmp((serial_drain_loop - (st46.text_len + 5L)))))))(st_append_text(st45, mov_store(reg_rdi(), reg_rcx(), 0L)))))(st_append_text(st44, add_ri(reg_rcx(), 1L)))))(st_append_text(st43, new List<long>() { 136L, 6L }))))(st_append_text(st42, add_ri(reg_rsi(), serial_ring_buf_addr())))))(st_append_text(st41, and_ri(reg_rsi(), serial_ring_buf_mask())))))(st_append_text(st40, mov_rr(reg_rsi(), reg_rcx())))))(st_append_text(st39, mov_load(reg_rcx(), reg_rdi(), 0L)))))(st_append_text(st38, li(reg_rdi(), serial_write_pos_addr())))))(st_append_text(st37, new List<long>() { 72L, 15L, 182L, 192L }))))(st_append_text(st36, in_al_dx()))))(st_append_text(st35, li(reg_rdx(), 1016L)))))(st_append_text(st34, jcc(cc_e(), 0L)))))(st34.text_len)))(st_append_text(st33, test_rr(reg_rax(), reg_rax())))))(st_append_text(st32, and_rr(reg_rax(), reg_rcx())))))(st_append_text(st31, li(reg_rcx(), 1L)))))(st_append_text(st30, in_al_dx()))))(st_append_text(st29, li(reg_rdx(), 1021L)))))(st29.text_len)))(st_append_text(st28, jcc(cc_ne(), 0L)))))(st28.text_len)))(st_append_text(st27, cmp_ri(reg_rax(), 36L)))))(patch_jcc_at(st26, not_keyboard, st26.text_len))))(st_append_text(st25, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st24, new List<long>() { 72L, 15L, 182L, 192L }))))(st_append_text(st23, li(reg_rdi(), key_buffer_addr())))))(st_append_text(st22, in_al_dx()))))(st_append_text(st21, li(reg_rdx(), 96L)))))(st_append_text(st20, jcc(cc_ne(), 0L)))))(st20.text_len)))(st_append_text(st19, cmp_ri(reg_rax(), 33L)))))(patch_jcc_at(st18, not_timer, st18.text_len))))(st_append_text(st17, iretq()))))(st_append_text(st16, pop_r(reg_rax())))))(st_append_text(st15, pop_r(reg_rcx())))))(st_append_text(st14, pop_r(reg_rdx())))))(st_append_text(st13, pop_r(reg_rsi())))))(st_append_text(st12, pop_r(reg_rdi())))))(emit_out_byte(st11, 32L, 32L))))(st_append_text(st10, mov_store(reg_rdi(), reg_rsi(), 0L)))))(st_append_text(st9, add_ri(reg_rsi(), 1L)))))(st_append_text(st8, mov_load(reg_rsi(), reg_rdi(), 0L)))))(st_append_text(st7, li(reg_rdi(), tick_count_addr())))))(st_append_text(st6a, jcc(cc_ne(), 0L)))))(st6a.text_len)))(st_append_text(st6, jcc(cc_b(), 0L)))))(st6.text_len)))(st_append_text(st5, cmp_ri(reg_rax(), 32L)))))(st_append_text(st4, new List<long>() { 15L, 182L, 192L }))))(st_append_text(st3, push_r(reg_rdi())))))(st_append_text(st2, push_r(reg_rsi())))))(st_append_text(st1, push_r(reg_rdx())))))(st_append_text(st, push_r(reg_rcx())));
-    }
-
-    public static bool has_error_code(long vec)
-    {
-        return ((vec == 8L) ? true : ((vec == 10L) ? true : ((vec == 11L) ? true : ((vec == 12L) ? true : ((vec == 13L) ? true : ((vec == 14L) ? true : ((vec == 17L) ? true : ((vec == 21L) ? true : ((vec == 29L) ? true : ((vec == 30L) ? true : false))))))))));
-    }
-
-    public static CodegenState emit_isr_stub(CodegenState st, long vec, long common_handler_offset)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<long, CodegenState>)((rel) => st_append_text(st3, jmp(rel))))((common_handler_offset - (st3.text_len + 5L)))))(st_append_text(st2, new List<long>() { 176L, vec }))))(st_append_text(st1, push_r(reg_rax())))))((has_error_code(vec) ? st_append_text(st, add_ri(reg_rsp(), 8L)) : st_append_text(st, new List<long>() { 15L, 31L, 64L, 0L })));
-    }
-
-    public static CodegenState emit_isr_stubs_loop(CodegenState st, long vec, long common_handler_offset)
-    {
-        while (true)
-        {
-            if ((vec == 256L))
-            {
-                return st;
-            }
-            else
-            {
-                var _tco_0 = emit_isr_stub(st, vec, common_handler_offset);
-                var _tco_1 = (vec + 1L);
-                var _tco_2 = common_handler_offset;
-                st = _tco_0;
-                vec = _tco_1;
-                common_handler_offset = _tco_2;
-                continue;
-            }
-        }
-    }
-
-    public static IsrStubResult emit_isr_stubs(CodegenState st)
-    {
-        return ((Func<long, IsrStubResult>)((common_handler_offset) => ((Func<CodegenState, IsrStubResult>)((st1) => ((Func<long, IsrStubResult>)((first_stub_offset) => ((Func<CodegenState, IsrStubResult>)((st2) => new IsrStubResult(st2, (bare_metal_load_addr() + first_stub_offset))))(emit_isr_stubs_loop(st1, 0L, common_handler_offset))))(st1.text_len)))(emit_common_interrupt_handler(st))))(st.text_len);
-    }
-
-    public static CodegenState emit_idt_entries(CodegenState st, long first_stub_vaddr)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<long, CodegenState>)((loop_top) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<long, CodegenState>)((jcc_pos) => ((Func<CodegenState, CodegenState>)((st18) => patch_jcc_at(st18, jcc_pos, loop_top)))(st_append_text(st17, jcc(cc_ne(), 0L)))))(st17.text_len)))(st_append_text(st16, sub_ri(reg_rcx(), 1L)))))(st_append_text(st15, add_ri(reg_rsi(), 12L)))))(st_append_text(st14, add_ri(reg_rdi(), 16L)))))(st_append_text(st13, mov_store(reg_rdi(), reg_rax(), 8L)))))(st_append_text(st12, li(reg_rax(), 0L)))))(st_append_text(st11, mov_store(reg_rdi(), reg_rax(), 4L)))))(st_append_text(st10, add_ri(reg_rax(), 36352L)))))(st_append_text(st9, shl_ri(reg_rax(), 16L)))))(st_append_text(st8, shr_ri(reg_rax(), 16L)))))(st_append_text(st7, mov_rr(reg_rax(), reg_rsi())))))(st_append_text(st6, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st5, add_ri(reg_rax(), 524288L)))))(st_append_text(st4, and_ri(reg_rax(), 65535L)))))(st_append_text(st3, mov_rr(reg_rax(), reg_rsi())))))(st3.text_len)))(st_append_text(st2, li(reg_rsi(), first_stub_vaddr)))))(st_append_text(st1, li(reg_rdi(), idt_base())))))(st_append_text(st, li(reg_rcx(), 256L)));
-    }
-
-    public static CodegenState emit_interrupt_setup(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<long, CodegenState>)((idtr_low) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => st_append_text(st18, sti())))(st_append_text(st17, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st16, li(reg_rdi(), result_arena_base_addr())))))(st_append_text(st15, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st14, li(reg_rdi(), arena_base_addr())))))(st_append_text(st13, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st12, li(reg_rdi(), key_buffer_addr())))))(st_append_text(st11, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st10, li(reg_rax(), 0L)))))(st_append_text(st9, li(reg_rdi(), tick_count_addr())))))(st_append_text(st8, add_ri(reg_rsp(), 16L)))))(st_append_text(st7, lidt_rdi()))))(st_append_text(st6, mov_rr(reg_rdi(), reg_rsp())))))(st_append_text(st5, mov_store(reg_rsp(), reg_rax(), 8L)))))(st_append_text(st4, li(reg_rax(), 0L)))))(st_append_text(st3, mov_store(reg_rsp(), reg_rax(), 0L)))))(st_append_text(st2, li(reg_rax(), idtr_low)))))((((Func<long, long, long>)((_a, _b) => { long _abs = _b < 0L ? -_b : _b; long _r = _a % _abs; return _r < 0L ? _r + _abs : _r; }))(((256L * 16L) - 1L), 65536L) + (idt_base() * 65536L)))))(st_append_text(st1, sub_ri(reg_rsp(), 16L)))))(emit_pic_init(st));
-    }
-
-    public static CodegenState emit_zero_region(CodegenState st, long addr, long qwords)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => st_append_text(st3, new List<long>() { 72L, 243L, 171L })))(st_append_text(st2, li(reg_rax(), 0L)))))(st_append_text(st1, li(reg_rcx(), qwords)))))(st_append_text(st, li(reg_rdi(), addr)));
-    }
-
-    public static CodegenState emit_pd_entries(CodegenState st, long i, long n)
-    {
-        return ((Func<long, CodegenState>)((count) => ((count <= 0L) ? st : ((Func<long, CodegenState>)((phys_start) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<long, CodegenState>)((loop_start) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<long, CodegenState>)((cur) => st_append_text(st6, jcc(cc_ne(), (loop_start - (cur + 6L))))))(st6.text_len)))(st_append_text(st5, sub_ri(reg_rcx(), 1L)))))(st_append_text(st4, add_ri(reg_rax(), 2097152L)))))(st_append_text(st3, add_ri(reg_rdi(), 8L)))))(st_append_text(st2, mov_store(reg_rdi(), reg_rax(), 0L)))))(st2.text_len)))(st_append_text(st1, li(reg_rcx(), count)))))(st_append_text(st, li(reg_rax(), (phys_start + 131L))))))((i * 2097152L)))))((n - i));
-    }
-
-    public static CodegenState emit_build_process_page_tables(CodegenState st, long pml4_addr, long heap_phys)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<long, CodegenState>)((pd_addr) => ((Func<CodegenState, CodegenState>)((st8) => emit_pd_entries(st8, 0L, 512L)))(st_append_text(st7, li(reg_rdi(), pd_addr)))))((pml4_addr + 8192L))))(st_append_text(st6, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st5, li(reg_rax(), ((pml4_addr + 8192L) + 3L))))))(st_append_text(st4, li(reg_rdi(), (pml4_addr + 4096L))))))(st_append_text(st3, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st2, li(reg_rax(), ((pml4_addr + 4096L) + 3L))))))(st_append_text(st1, li(reg_rdi(), pml4_addr)))))(emit_zero_region(st, pml4_addr, 1536L));
-    }
-
-    public static CodegenState emit_create_process(CodegenState st, long proc_index, long state_val, long cr3_val, long heap_base)
-    {
-        return ((Func<long, CodegenState>)((entry_addr) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => st_append_text(st10, mov_store(reg_rdi(), reg_rax(), 0L))))(st_append_text(st9, li(reg_rdi(), (entry_addr + 48L))))))(st_append_text(st8, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st7, li(reg_rax(), heap_base)))))(st_append_text(st6, li(reg_rdi(), (entry_addr + 40L))))))(st_append_text(st5, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st4, li(reg_rax(), cr3_val)))))(st_append_text(st3, li(reg_rdi(), (entry_addr + 16L))))))(st_append_text(st2, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st1, li(reg_rax(), state_val)))))(st_append_text(st, li(reg_rdi(), entry_addr)))))((proc_table_base() + (proc_index * proc_entry_size())));
-    }
-
-    public static CodegenState emit_process_setup(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => st_append_text(st8, li(reg_r10(), 4194304L))))(st_append_text(st7, new List<long>() { 15L, 34L, 216L }))))(st_append_text(st6, li(reg_rax(), 32768L)))))(emit_create_process(st5, 0L, 1L, 32768L, 4194304L))))(emit_build_process_page_tables(st4, 32768L, 4194304L))))(st_append_text(st3, mov_store(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st2, li(reg_rax(), 0L)))))(st_append_text(st1, li(reg_rdi(), current_proc_addr())))))(emit_zero_region(st, proc_table_base(), ((16L * proc_entry_size()) / 8L)));
-    }
-
-    public static CodegenState emit_grant_capability(CodegenState st, long proc_index, long cap_bit)
-    {
-        return ((Func<long, CodegenState>)((cap_addr) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<long, CodegenState>)((bit_mask) => ((Func<CodegenState, CodegenState>)((st3) => st_append_text(st3, mov_store(reg_rdi(), reg_rax(), 0L))))(st_append_text(st2, or_ri(reg_rax(), bit_mask)))))(shl_1(cap_bit))))(st_append_text(st1, mov_load(reg_rax(), reg_rdi(), 0L)))))(st_append_text(st, li(reg_rdi(), cap_addr)))))(((proc_table_base() + (proc_index * proc_entry_size())) + proc_cap_offset()));
-    }
-
-    public static long shl_1(long n)
-    {
-        return ((n == 0L) ? 1L : (2L * shl_1((n - 1L))));
-    }
-
-    public static CodegenState emit_write_msr(CodegenState st, long msr_addr, long value)
-    {
-        return ((Func<long, CodegenState>)((low32) => ((Func<long, CodegenState>)((high32) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => st_append_text(st3, new List<long>() { 15L, 48L })))(st_append_text(st2, li(reg_rdx(), high32)))))(st_append_text(st1, li(reg_rax(), low32)))))(st_append_text(st, li(reg_rcx(), msr_addr)))))((value / 4294967296L))))(((Func<long, long, long>)((_a, _b) => { long _abs = _b < 0L ? -_b : _b; long _r = _a % _abs; return _r < 0L ? _r + _abs : _r; }))(value, 4294967296L));
-    }
-
-    public static CodegenState emit_check_capability(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => st_append_text(st12, pop_r(reg_rcx()))))(st_append_text(st11, pop_r(reg_r11())))))(st_append_text(st10, new List<long>() { 72L, 15L, 163L, 209L }))))(st_append_text(st9, mov_load(reg_rcx(), reg_rcx(), 0L)))))(st_append_text(st8, add_ri(reg_rcx(), proc_cap_offset())))))(st_append_text(st7, add_ri(reg_rcx(), proc_table_base())))))(st_append_text(st6, new List<long>() { 72L, 15L, 175L, 203L }))))(st_append_text(st5, li(reg_rcx(), proc_entry_size())))))(st_append_text(st4, mov_load(reg_r11(), reg_r11(), 0L)))))(st_append_text(st3, li(reg_r11(), current_proc_addr())))))(st_append_text(st2, push_r(reg_r11())))))(st_append_text(st1, li(reg_rcx(), proc_table_base())))))(st_append_text(st, push_r(reg_rcx())));
-    }
-
-    public static SyscallResult emit_syscall_handler(CodegenState st)
-    {
-        return ((Func<long, SyscallResult>)((handler_offset) => ((Func<CodegenState, SyscallResult>)((st1) => ((Func<CodegenState, SyscallResult>)((st2) => ((Func<CodegenState, SyscallResult>)((st3) => ((Func<long, SyscallResult>)((not_write) => ((Func<CodegenState, SyscallResult>)((st4) => ((Func<CodegenState, SyscallResult>)((st5) => ((Func<CodegenState, SyscallResult>)((st6) => ((Func<long, SyscallResult>)((no_write_cap) => ((Func<CodegenState, SyscallResult>)((st7) => ((Func<CodegenState, SyscallResult>)((st8) => ((Func<CodegenState, SyscallResult>)((st9) => ((Func<CodegenState, SyscallResult>)((st10) => ((Func<CodegenState, SyscallResult>)((st11) => ((Func<CodegenState, SyscallResult>)((st12) => ((Func<long, SyscallResult>)((write_done) => ((Func<CodegenState, SyscallResult>)((st13) => ((Func<CodegenState, SyscallResult>)((st14) => ((Func<CodegenState, SyscallResult>)((st15) => ((Func<long, SyscallResult>)((not_read_key) => ((Func<CodegenState, SyscallResult>)((st16) => ((Func<CodegenState, SyscallResult>)((st17) => ((Func<CodegenState, SyscallResult>)((st18) => ((Func<long, SyscallResult>)((read_done) => ((Func<CodegenState, SyscallResult>)((st19) => ((Func<CodegenState, SyscallResult>)((st20) => ((Func<CodegenState, SyscallResult>)((st21) => ((Func<long, SyscallResult>)((not_get_ticks) => ((Func<CodegenState, SyscallResult>)((st22) => ((Func<CodegenState, SyscallResult>)((st23) => ((Func<CodegenState, SyscallResult>)((st24) => ((Func<long, SyscallResult>)((ticks_done) => ((Func<CodegenState, SyscallResult>)((st25) => ((Func<CodegenState, SyscallResult>)((st26) => ((Func<CodegenState, SyscallResult>)((st27) => ((Func<long, SyscallResult>)((common_exit) => ((Func<CodegenState, SyscallResult>)((st28) => ((Func<CodegenState, SyscallResult>)((st29) => ((Func<CodegenState, SyscallResult>)((st30) => ((Func<CodegenState, SyscallResult>)((st31) => ((Func<CodegenState, SyscallResult>)((st32) => ((Func<CodegenState, SyscallResult>)((st33) => ((Func<CodegenState, SyscallResult>)((st34) => ((Func<CodegenState, SyscallResult>)((st35) => new SyscallResult(st35, handler_offset)))(st_append_text(st34, new List<long>() { 255L, 225L }))))(st_append_text(st33, new List<long>() { 157L }))))(st_append_text(st32, push_r(reg_r11())))))(st_append_text(st31, pop_r(reg_rcx())))))(st_append_text(st30, pop_r(reg_r11())))))(patch_jmp_at(st29, ticks_done, common_exit))))(patch_jmp_at(st28, read_done, common_exit))))(patch_jmp_at(st27, write_done, common_exit))))(st27.text_len)))(st_append_text(st26, li(reg_rax(), (-1L))))))(patch_jcc_at(st25, not_get_ticks, st25.text_len))))(st_append_text(st24, jmp(0L)))))(st24.text_len)))(st_append_text(st23, mov_load(reg_rax(), reg_rdi(), 0L)))))(st_append_text(st22, li(reg_rdi(), tick_count_addr())))))(st_append_text(st21, jcc(cc_ne(), 0L)))))(st21.text_len)))(st_append_text(st20, cmp_ri(reg_rax(), 3L)))))(patch_jcc_at(st19, not_read_key, st19.text_len))))(st_append_text(st18, jmp(0L)))))(st18.text_len)))(st_append_text(st17, mov_load(reg_rax(), reg_rdi(), 0L)))))(st_append_text(st16, li(reg_rdi(), key_buffer_addr())))))(st_append_text(st15, jcc(cc_ne(), 0L)))))(st15.text_len)))(st_append_text(st14, cmp_ri(reg_rax(), 2L)))))(patch_jcc_at(st13, not_write, st13.text_len))))(st_append_text(st12, jmp(0L)))))(st12.text_len)))(st_append_text(st11, li(reg_rax(), 0L)))))(patch_jcc_at(st10, no_write_cap, st10.text_len))))(st_append_text(st9, out_dx_al()))))(st_append_text(st8, li(reg_rdx(), 1016L)))))(st_append_text(st7, mov_rr(reg_rax(), reg_rdx())))))(st_append_text(st6, jcc(cc_e(), 0L)))))(st6.text_len)))(emit_check_capability(st5))))(st_append_text(st4, mov_rr(reg_rdx(), reg_rdi())))))(st_append_text(st3, jcc(cc_ne(), 0L)))))(st3.text_len)))(st_append_text(st2, cmp_ri(reg_rax(), 1L)))))(st_append_text(st1, push_r(reg_r11())))))(st_append_text(st, push_r(reg_rcx())))))(st.text_len);
-    }
-
-    public static CodegenState emit_serial_string_loop(CodegenState st, List<long> chars, long i)
-    {
-        while (true)
-        {
-            if ((i == ((long)chars.Count)))
-            {
-                return st;
-            }
-            else
-            {
-                var st1 = emit_serial_wait_and_send(st, chars[(int)i]);
-                var _tco_0 = st1;
-                var _tco_1 = chars;
-                var _tco_2 = (i + 1L);
-                st = _tco_0;
-                chars = _tco_1;
-                i = _tco_2;
-                continue;
-            }
-        }
-    }
-
-    public static CodegenState emit_serial_string(CodegenState st, List<long> chars)
-    {
-        return emit_serial_string_loop(st, chars, 0L);
-    }
-
-    public static CodegenState emit_update_heap_hwm(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<long, CodegenState>)((skip_update) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => st_append_text(st9, pop_r(reg_r11()))))(st_append_text(st8, pop_r(reg_rax())))))(patch_jcc_at(st7, skip_update, st7.text_len))))(st_append_text(st6, mov_store(reg_r11(), reg_r10(), 0L)))))(st_append_text(st5, jcc(cc_le(), 0L)))))(st5.text_len)))(st_append_text(st4, cmp_rr(reg_r10(), reg_rax())))))(st_append_text(st3, mov_load(reg_rax(), reg_r11(), 0L)))))(st_append_text(st2, push_r(reg_rax())))))(st_append_text(st1, li(reg_r11(), heap_hwm_addr())))))(st_append_text(st, push_r(reg_r11())));
-    }
-
-    public static bool is_string_builtin(string name)
-    {
-        return ((name == "\u000E\u000D$\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? true : ((name == "\u0011\u0012\u000E\u000D\u001D\u000D\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? true : ((name == "\u0013\u0014\u0010\u001B") ? true : ((name == "\u000E\u000D$\u000EI\u000E\u0010I\u0011\u0012\u000E\u000D\u001D\u000D\u0015") ? true : ((name == "\u000E\u000D$\u000EI\u0015\u000D\u001F\u0017\u000F\u0018\u000D") ? true : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? true : ((name == "\u000E\u000D$\u000EI\u0013\u000E\u000F\u0015\u000E\u0013I\u001B\u0011\u000E\u0014") ? true : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u001A\u001F\u000F\u0015\u000D") ? true : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u0018\u000F\u000EI\u0017\u0011\u0013\u000E") ? true : ((name == "\u000E\u000D$\u000EI\u0013\u001F\u0017\u0011\u000E") ? true : ((name == "\u0013\u0019 \u0013\u000E\u0015\u0011\u0012\u001D") ? true : false)))))))))));
-    }
-
-    public static bool is_list_builtin(string name)
-    {
-        return ((name == "\u0017\u0011\u0013\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? true : ((name == "\u0017\u0011\u0013\u000EI\u000F\u000E") ? true : ((name == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u0013") ? true : ((name == "\u0017\u0011\u0013\u000EI\u000F\u001F\u001F\u000D\u0012\u0016") ? true : ((name == "\u0017\u0011\u0013\u000EI\u0013\u0012\u0010\u0018") ? true : ((name == "\u0017\u0011\u0013\u000EI\u0011\u0012\u0013\u000D\u0015\u000EI\u000F\u000E") ? true : ((name == "\u0017\u0011\u0013\u000EI\u0013\u000D\u000EI\u000F\u000E") ? true : ((name == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? true : false))))))));
-    }
-
-    public static bool is_char_builtin(string name)
-    {
-        return ((name == "\u0018\u0014\u000F\u0015I\u000F\u000E") ? true : ((name == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000DI\u000F\u000E") ? true : ((name == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000D") ? true : ((name == "\u0018\u0010\u0016\u000DI\u000E\u0010I\u0018\u0014\u000F\u0015") ? true : ((name == "\u0018\u0014\u000F\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? true : ((name == "\u0011\u0013I\u0017\u000D\u000E\u000E\u000D\u0015") ? true : ((name == "\u0011\u0013I\u0016\u0011\u001D\u0011\u000E") ? true : ((name == "\u0011\u0013I\u001B\u0014\u0011\u000E\u000D\u0013\u001F\u000F\u0018\u000D") ? true : false))))))));
-    }
-
-    public static bool is_io_builtin(string name)
-    {
-        return ((name == "\u001F\u0015\u0011\u0012\u000EI\u0017\u0011\u0012\u000D") ? true : ((name == "\u0015\u000D\u000F\u0016I\u001C\u0011\u0017\u000D") ? true : ((name == "\u001B\u0015\u0011\u000E\u000DI\u001C\u0011\u0017\u000D") ? true : ((name == "\u0015\u000D\u000F\u0016I\u0017\u0011\u0012\u000D") ? true : ((name == "\u001B\u0015\u0011\u000E\u000DI \u0011\u0012\u000F\u0015\u001E") ? true : false)))));
-    }
-
-    public static bool is_misc_builtin(string name)
-    {
-        return ((name == "\u0012\u000D\u001D\u000F\u000E\u000D") ? true : ((name == "\u001D\u000D\u000EI\u000F\u0015\u001D\u0013") ? true : ((name == "\u0018\u0019\u0015\u0015\u000D\u0012\u000EI\u0016\u0011\u0015") ? true : ((name == "\u001C\u0011\u0017\u000DI\u000D$\u0011\u0013\u000E\u0013") ? true : ((name == "\u0015\u000D\u0018\u0010\u0015\u0016I\u0013\u000D\u000E") ? true : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000D\u001A\u001F\u000E\u001E") ? true : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u001F\u0019\u0013\u0014") ? true : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000E\u0010I\u0017\u0011\u0013\u000E") ? true : ((name == "\u0014\u000D\u000F\u001FI\u0013\u000F!\u000D") ? true : ((name == "\u0014\u000D\u000F\u001FI\u0015\u000D\u0013\u000E\u0010\u0015\u000D") ? true : ((name == "\u0014\u000D\u000F\u001FI\u000F\u0016!\u000F\u0012\u0018\u000D") ? true : ((name == "\u0017\u0011\u0013\u000EI\u001B\u0011\u000E\u0014I\u0018\u000F\u001F\u000F\u0018\u0011\u000E\u001E") ? true : ((name == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D") ? true : ((name == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D\u0013") ? true : ((name == " \u0019\u001CI\u0015\u000D\u000F\u0016I \u001E\u000E\u000D\u0013") ? true : ((name == " \u0011\u000EI\u000F\u0012\u0016") ? true : ((name == " \u0011\u000EI\u0010\u0015") ? true : ((name == " \u0011\u000EI$\u0010\u0015") ? true : ((name == " \u0011\u000EI\u0013\u0014\u0017") ? true : ((name == " \u0011\u000EI\u0013\u0014\u0015") ? true : ((name == " \u0011\u000EI\u0012\u0010\u000E") ? true : false)))))))))))))))))))));
-    }
-
-    public static bool is_builtin(string name)
-    {
-        return (is_string_builtin(name) ? true : (is_list_builtin(name) ? true : (is_char_builtin(name) ? true : (is_io_builtin(name) ? true : is_misc_builtin(name)))));
-    }
-
-    public static EmitResult emit_helper_call_1(CodegenState st, List<IRExpr> args, string helper)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_rr(tmp.reg, reg_rax())), tmp.reg)))(alloc_temp(st2))))(emit_call_to(st1, helper))))(st_append_text(r.state, mov_rr(reg_rdi(), r.reg)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_helper_call_2(CodegenState st, List<IRExpr> args, string helper)
-    {
-        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((loaded) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_rr(tmp.reg, reg_rax())), tmp.reg)))(alloc_temp(st4))))(emit_call_to(st3, helper))))(st_append_text(st2, mov_rr(reg_rdi(), loaded.reg)))))(st_append_text(loaded.state, mov_rr(reg_rsi(), r1.reg)))))(load_local(r1.state, loc.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc.state, loc.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_helper_call_3(CodegenState st, List<IRExpr> args, string helper)
-    {
-        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc0) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((loc1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((r2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((ld1) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((ld0) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_rr(tmp.reg, reg_rax())), tmp.reg)))(alloc_temp(st6))))(emit_call_to(st5, helper))))(st_append_text(ld0.state, mov_rr(reg_rdi(), ld0.reg)))))(load_local(st4, loc0.reg))))(st_append_text(ld1.state, mov_rr(reg_rsi(), ld1.reg)))))(load_local(st3, loc1.reg))))(st_append_text(r2.state, mov_rr(reg_rdx(), r2.reg)))))(emit__x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(loc1.state, loc1.reg, r1.reg))))(alloc_local(r1.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc0.state, loc0.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_text_length_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_load(tmp.reg, r.reg, 0L)), tmp.reg)))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_list_length_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((tmp) => new EmitResult(st_append_text(tmp.state, mov_load(tmp.reg, r.reg, 0L)), tmp.reg)))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_list_at_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((list_loaded) => ((Func<EmitResult, EmitResult>)((addr) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_load(rd.reg, addr.reg, 8L)), rd.reg)))(alloc_temp(st4))))(st_append_text(st3, add_rr(addr.reg, list_loaded.reg)))))(st_append_text(st2, shl_ri(addr.reg, 3L)))))(st_append_text(addr.state, mov_rr(addr.reg, r1.reg)))))(alloc_temp(list_loaded.state))))(load_local(r1.state, loc.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc.state, loc.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_char_at_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((str_loaded) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => new EmitResult(st3, r1.reg)))(st_append_text(st2, movzx_byte(r1.reg, r1.reg, 8L)))))(st_append_text(str_loaded.state, add_rr(r1.reg, str_loaded.reg)))))(load_local(r1.state, loc.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc.state, loc.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_char_code_at_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((text_loaded) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => new EmitResult(st4, rd.reg)))(st_append_text(st3, movzx_byte(rd.reg, rd.reg, 8L)))))(st_append_text(st2, add_rr(rd.reg, r1.reg)))))(st_append_text(rd.state, mov_rr(rd.reg, text_loaded.reg)))))(alloc_temp(text_loaded.state))))(load_local(r1.state, loc.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc.state, loc.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_char_to_text_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((ptr_loc) => ((Func<EmitResult, EmitResult>)((ptr_tmp) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<EmitResult, EmitResult>)((ptr_loaded) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((code_loaded) => ((Func<EmitResult, EmitResult>)((ptr_loaded2) => ((Func<CodegenState, EmitResult>)((st7) => ((Func<EmitResult, EmitResult>)((result) => new EmitResult(result.state, result.reg)))(load_local(st7, ptr_loc.reg))))(st_append_text(ptr_loaded2.state, mov_store_byte(ptr_loaded2.reg, code_loaded.reg, 8L)))))(load_local(code_loaded.state, ptr_loc.reg))))(load_local(st6, loc.reg))))(st_append_text(ptr_loaded.state, mov_store(ptr_loaded.reg, reg_r11(), 0L)))))(load_local(st5, ptr_loc.reg))))(st_append_text(st4, li(reg_r11(), 1L)))))(st_append_text(st3, add_ri(reg_r10(), 16L)))))(store_local(st2, ptr_loc.reg, ptr_tmp.reg))))(st_append_text(ptr_tmp.state, mov_rr(ptr_tmp.reg, reg_r10())))))(alloc_temp(ptr_loc.state))))(alloc_local(st1))))(store_local(loc.state, loc.reg, r.reg))))(alloc_local(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_is_letter_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => new EmitResult(st4, r.reg)))(st_append_text(st3, movzx_byte_self(r.reg)))))(st_append_text(st2, setcc(cc_be(), r.reg)))))(st_append_text(st1, cmp_ri(r.reg, 51L)))))(st_append_text(r.state, sub_ri(r.reg, 13L)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_is_digit_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => new EmitResult(st4, r.reg)))(st_append_text(st3, movzx_byte_self(r.reg)))))(st_append_text(st2, setcc(cc_be(), r.reg)))))(st_append_text(st1, cmp_ri(r.reg, 9L)))))(st_append_text(r.state, sub_ri(r.reg, 3L)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_is_whitespace_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => new EmitResult(st3, r.reg)))(st_append_text(st2, movzx_byte_self(r.reg)))))(st_append_text(st1, setcc(cc_be(), r.reg)))))(st_append_text(r.state, cmp_ri(r.reg, 2L)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_negate_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => new EmitResult(st2, rd.reg)))(st_append_text(st1, neg_r(rd.reg)))))(st_append_text(rd.state, mov_rr(rd.reg, r.reg)))))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_get_args_builtin(CodegenState st)
-    {
-        return ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => new EmitResult(st6, rd.reg)))(st_append_text(st5, add_ri(reg_r10(), 8L)))))(st_append_text(st4, mov_store(reg_r10(), reg_r11(), 0L)))))(st_append_text(st3, mov_rr(rd.reg, reg_r10())))))(st_append_text(st2, add_ri(reg_r10(), 8L)))))(st_append_text(st1, mov_store(reg_r10(), reg_r11(), 0L)))))(st_append_text(rd.state, li(reg_r11(), 0L)))))(alloc_temp(st));
-    }
-
-    public static EmitResult emit_current_dir_builtin(CodegenState st)
-    {
-        return ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<CodegenState, EmitResult>)((st4) => new EmitResult(st4, rd.reg)))(st_append_text(st3, add_ri(reg_r10(), 8L)))))(st_append_text(st2, mov_store(reg_r10(), reg_r11(), 0L)))))(st_append_text(st1, li(reg_r11(), 0L)))))(st_append_text(rd.state, mov_rr(rd.reg, reg_r10())))))(alloc_temp(st));
-    }
-
-    public static EmitResult emit_file_exists_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => new EmitResult(st1, rd.reg)))(st_append_text(rd.state, li(rd.reg, 1L)))))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static CodegenState emit_substring_alloc(CodegenState st, long str_loc, long start_loc, long len_loc)
-    {
-        return ((Func<EmitResult, CodegenState>)((len_loaded) => ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => st_append_text(st2, add_rr(reg_r10(), reg_r11()))))(st_append_text(st1, and_ri(reg_r11(), (0L - 8L))))))(st_append_text(st0, add_ri(reg_r11(), 15L)))))(st_append_text(len_loaded.state, mov_rr(reg_r11(), len_loaded.reg)))))(load_local(st, len_loc));
-    }
-
-    public static CodegenState emit_substring_copy(CodegenState st, long str_loc, long start_loc, long len_loc, long ptr_loc)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<long, CodegenState>)((sub_loop) => ((Func<EmitResult, CodegenState>)((len_ld) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((sub_exit_pos) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<EmitResult, CodegenState>)((src_ld) => ((Func<EmitResult, CodegenState>)((start_ld) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<EmitResult, CodegenState>)((ptr_ld) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => patch_jcc_at(st11, sub_exit_pos, st11.text_len)))(st_append_text(st10, jmp((sub_loop - (st10.text_len + 5L)))))))(st_append_text(st9, add_ri(reg_r11(), 1L)))))(st_append_text(st8, mov_store_byte(reg_rdx(), reg_rsi(), 8L)))))(st_append_text(st7, add_rr(reg_rdx(), reg_r11())))))(st_append_text(ptr_ld.state, mov_rr(reg_rdx(), ptr_ld.reg)))))(load_local(st6, ptr_loc))))(st_append_text(st5, movzx_byte(reg_rsi(), reg_rsi(), 8L)))))(st_append_text(st4, add_rr(reg_rsi(), reg_r11())))))(st_append_text(st3, add_rr(reg_rsi(), start_ld.reg)))))(st_append_text(start_ld.state, mov_rr(reg_rsi(), src_ld.reg)))))(load_local(src_ld.state, start_loc))))(load_local(st2, str_loc))))(st_append_text(st1, jcc(cc_ge(), 0L)))))(st1.text_len)))(st_append_text(len_ld.state, cmp_rr(reg_r11(), len_ld.reg)))))(load_local(st0, len_loc))))(st0.text_len)))(st_append_text(st, li(reg_r11(), 0L)));
-    }
-
-    public static EmitResult emit_substring_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc0) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((loc1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((r2) => ((Func<EmitResult, EmitResult>)((loc2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((ptr_loc) => ((Func<EmitResult, EmitResult>)((ptr_tmp) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<EmitResult, EmitResult>)((len_ld) => ((Func<EmitResult, EmitResult>)((ptr_ld) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<CodegenState, EmitResult>)((st7) => ((Func<CodegenState, EmitResult>)((st8) => ((Func<EmitResult, EmitResult>)((result) => new EmitResult(result.state, result.reg)))(load_local(st8, ptr_loc.reg))))(emit_substring_copy(st7, loc0.reg, loc1.reg, loc2.reg, ptr_loc.reg))))(emit_substring_alloc(st6, loc0.reg, loc1.reg, loc2.reg))))(st_append_text(ptr_ld.state, mov_store(ptr_ld.reg, len_ld.reg, 0L)))))(load_local(len_ld.state, ptr_loc.reg))))(load_local(st5, loc2.reg))))(store_local(st4, ptr_loc.reg, ptr_tmp.reg))))(st_append_text(ptr_tmp.state, mov_rr(ptr_tmp.reg, reg_r10())))))(alloc_temp(ptr_loc.state))))(alloc_local(st3))))(store_local(loc2.state, loc2.reg, r2.reg))))(alloc_local(r2.state))))(emit__x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(loc1.state, loc1.reg, r1.reg))))(alloc_local(r1.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc0.state, loc0.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_print_line_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, li(rd.reg, 0L)), rd.reg)))(alloc_temp(st1))))(emit_print_text(r.state, r.reg))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_read_file_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st2))))(emit_call_to(st1, "UU \u000F\u0015\u000DU\u001A\u000D\u000E\u000F\u0017U\u0015\u000D\u000F\u0016U\u0013\u000D\u0015\u0011\u000F\u0017"))))(st_append_text(r.state, mov_rr(reg_rdi(), r.reg)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_write_file_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, li(rd.reg, 0L)), rd.reg)))(alloc_temp(st1))))(emit_print_text_no_newline(r1.state, r1.reg))))(emit__x86_64_code_generator_emit_expr(r0.state, args[(int)1L]))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_read_line_builtin(CodegenState st)
-    {
-        return ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st1))))(emit_call_to(st, "UU\u0015\u000D\u000F\u0016U\u0017\u0011\u0012\u000D"));
-    }
-
-    public static EmitResult emit_write_binary_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, li(rd.reg, 0L)), rd.reg)))(alloc_temp(st2))))(emit_call_to(st1, "UU\u001B\u0015\u0011\u000E\u000DU \u0011\u0012\u000F\u0015\u001E"))))(st_append_text(r.state, mov_rr(reg_rdi(), r.reg)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_linked_list_empty_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, li(rd.reg, 0L)), rd.reg)))(alloc_temp(st));
-    }
-
-    public static EmitResult emit_linked_list_push_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((list_result) => ((Func<EmitResult, EmitResult>)((list_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((val_result) => ((Func<EmitResult, EmitResult>)((val_loc) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((ptr) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((vr) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((lr) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => new EmitResult(st6, ptr.reg)))(st_append_text(st5, add_ri(reg_r10(), 16L)))))(st_append_text(lr.state, mov_store(ptr.reg, lr.reg, 8L)))))(load_local(st4, list_loc.reg))))(st_append_text(vr.state, mov_store(ptr.reg, vr.reg, 0L)))))(load_local(st3, val_loc.reg))))(st_append_text(ptr.state, mov_rr(ptr.reg, reg_r10())))))(alloc_temp(st2))))(store_local(val_loc.state, val_loc.reg, val_result.reg))))(alloc_local(val_result.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(list_loc.state, list_loc.reg, list_result.reg))))(alloc_local(list_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_linked_list_to_list_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((head_result) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st2))))(emit_call_to(st1, "UU\u0017\u0011\u0012\"\u000D\u0016U\u0017\u0011\u0013\u000EU\u000E\u0010U\u0017\u0011\u0013\u000E"))))(st_append_text(head_result.state, mov_rr(reg_rdi(), head_result.reg)))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_record_set_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((rec_result) => ((Func<EmitResult, EmitResult>)((rec_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<string, EmitResult>)((field_name) => ((Func<CodexType, EmitResult>)((rec_ty) => ((Func<EmitResult, EmitResult>)((val_result) => ((Func<EmitResult, EmitResult>)((loaded) => (rec_ty is RecordTy _mRecordTy71_ ? ((Func<List<RecordField>, EmitResult>)((rfields) => ((Func<Name, EmitResult>)((rname) => ((Func<long, EmitResult>)((field_idx) => new EmitResult(st_append_text(loaded.state, mov_store(loaded.reg, val_result.reg, (field_idx * 8L))), loaded.reg)))(find_record_field_index(rfields, field_name, 0L))))((Name)_mRecordTy71_.Field0)))((List<RecordField>)_mRecordTy71_.Field1) : ((Func<CodegenState, EmitResult>)((st_err) => new EmitResult(st_append_text(st_err, new List<long>() { 15L, 11L }), loaded.reg)))(st_add_error(loaded.state, cdx_ir_error(), string.Concat("\u0015\u000D\u0018\u0010\u0015\u0016I\u0013\u000D\u000EE\u0002\u0019\u0012\u0015\u000D\u0013\u0010\u0017!\u000D\u0016\u0002\u000E\u001E\u001F\u000D\u0002\u001C\u0010\u0015\u0002\u001C\u0011\u000D\u0017\u0016\u0002G", field_name, "G"), ir_expr_span(args[(int)0L]))))))(load_local(val_result.state, rec_loc.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)2L]))))(resolve_constructed_ty(st, ir_expr_type(args[(int)0L])))))((args[(int)1L] is IrTextLit _mIrTextLit72_ ? ((Func<SourceSpan, string>)((sp) => ((Func<string, string>)((s) => s))((string)_mIrTextLit72_.Field0)))((SourceSpan)_mIrTextLit72_.Field1) : ""))))(store_local(rec_loc.state, rec_loc.reg, rec_result.reg))))(alloc_local(rec_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_heap_save_builtin(CodegenState st)
-    {
-        return ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_r10())), rd.reg)))(alloc_temp(st));
-    }
-
-    public static EmitResult emit_heap_restore_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, li(rd.reg, 0L)), rd.reg)))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_heap_advance_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => new EmitResult(st_append_text(st1, li(rd.reg, 0L)), rd.reg)))(st_append_text(rd.state, add_rr(reg_r10(), r.reg)))))(alloc_temp(r.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_list_with_capacity_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((cap_result) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((zero_tmp) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<EmitResult, EmitResult>)((adv_tmp) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<CodegenState, EmitResult>)((st7) => ((Func<CodegenState, EmitResult>)((st8) => new EmitResult(st_append_text(st8, add_rr(reg_r10(), adv_tmp.reg)), rd.reg)))(st_append_text(st7, add_ri(adv_tmp.reg, 8L)))))(st_append_text(st6, shl_ri(adv_tmp.reg, 3L)))))(st_append_text(adv_tmp.state, mov_rr(adv_tmp.reg, cap_result.reg)))))(alloc_temp(st5))))(st_append_text(st4, mov_store(reg_r10(), zero_tmp.reg, 0L)))))(st_append_text(zero_tmp.state, li(zero_tmp.reg, 0L)))))(alloc_temp(st3))))(st_append_text(st2, mov_rr(rd.reg, reg_r10())))))(st_append_text(st1, add_ri(reg_r10(), 8L)))))(st_append_text(rd.state, mov_store(reg_r10(), cap_result.reg, 0L)))))(alloc_temp(cap_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_buf_write_byte_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((base_result) => ((Func<EmitResult, EmitResult>)((base_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((off_result) => ((Func<EmitResult, EmitResult>)((off_loc) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((byte_result) => ((Func<EmitResult, EmitResult>)((byte_loc) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((addr) => ((Func<EmitResult, EmitResult>)((base2) => ((Func<EmitResult, EmitResult>)((off2) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<EmitResult, EmitResult>)((byte2) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((rd) => ((Func<EmitResult, EmitResult>)((off3) => ((Func<CodegenState, EmitResult>)((st7) => new EmitResult(st_append_text(st7, add_ri(rd.reg, 1L)), rd.reg)))(st_append_text(off3.state, mov_rr(rd.reg, off3.reg)))))(load_local(rd.state, off_loc.reg))))(alloc_temp(st6))))(st_append_text(byte2.state, mov_store_byte(addr.reg, byte2.reg, 0L)))))(load_local(st5, byte_loc.reg))))(st_append_text(st4, add_rr(addr.reg, off2.reg)))))(st_append_text(off2.state, mov_rr(addr.reg, base2.reg)))))(load_local(base2.state, off_loc.reg))))(load_local(addr.state, base_loc.reg))))(alloc_temp(st3))))(store_local(byte_loc.state, byte_loc.reg, byte_result.reg))))(alloc_local(byte_result.state))))(emit__x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(off_loc.state, off_loc.reg, off_result.reg))))(alloc_local(off_result.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(base_loc.state, base_loc.reg, base_result.reg))))(alloc_local(base_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_buf_write_bytes_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((base_result) => ((Func<EmitResult, EmitResult>)((base_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((off_result) => ((Func<EmitResult, EmitResult>)((off_loc) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((list_result) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((off2) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((base2) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st6))))(emit_call_to(st5, "UU \u0019\u001CU\u001B\u0015\u0011\u000E\u000DU \u001E\u000E\u000D\u0013"))))(st_append_text(base2.state, mov_rr(reg_rdi(), base2.reg)))))(load_local(st4, base_loc.reg))))(st_append_text(off2.state, mov_rr(reg_rsi(), off2.reg)))))(load_local(st3, off_loc.reg))))(st_append_text(list_result.state, mov_rr(reg_rdx(), list_result.reg)))))(emit__x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(off_loc.state, off_loc.reg, off_result.reg))))(alloc_local(off_result.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(base_loc.state, base_loc.reg, base_result.reg))))(alloc_local(base_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_buf_read_bytes_builtin(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((base_result) => ((Func<EmitResult, EmitResult>)((base_loc) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((off_result) => ((Func<EmitResult, EmitResult>)((off_loc) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((count_result) => ((Func<CodegenState, EmitResult>)((st3) => ((Func<EmitResult, EmitResult>)((off2) => ((Func<CodegenState, EmitResult>)((st4) => ((Func<EmitResult, EmitResult>)((base2) => ((Func<CodegenState, EmitResult>)((st5) => ((Func<CodegenState, EmitResult>)((st6) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, mov_rr(rd.reg, reg_rax())), rd.reg)))(alloc_temp(st6))))(emit_call_to(st5, "UU \u0019\u001CU\u0015\u000D\u000F\u0016U \u001E\u000E\u000D\u0013"))))(st_append_text(base2.state, mov_rr(reg_rdi(), base2.reg)))))(load_local(st4, base_loc.reg))))(st_append_text(off2.state, mov_rr(reg_rsi(), off2.reg)))))(load_local(st3, off_loc.reg))))(st_append_text(count_result.state, mov_rr(reg_rdx(), count_result.reg)))))(emit__x86_64_code_generator_emit_expr(st2, args[(int)2L]))))(store_local(off_loc.state, off_loc.reg, off_result.reg))))(alloc_local(off_result.state))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(base_loc.state, base_loc.reg, base_result.reg))))(alloc_local(base_result.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_bit_op_2(CodegenState st, List<IRExpr> args, Func<long, Func<long, List<long>>> op_bytes)
-    {
-        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc0) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<EmitResult, EmitResult>)((ld0) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, Enumerable.Concat(mov_rr(rd.reg, ld0.reg), op_bytes(rd.reg)(r1.reg)).ToList()), rd.reg)))(alloc_temp(ld0.state))))(load_local(r1.state, loc0.reg))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc0.state, loc0.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_bit_shift(CodegenState st, List<IRExpr> args, Func<long, List<long>> shift_bytes)
-    {
-        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((loc0) => ((Func<CodegenState, EmitResult>)((st1) => ((Func<EmitResult, EmitResult>)((r1) => ((Func<CodegenState, EmitResult>)((st2) => ((Func<EmitResult, EmitResult>)((ld0) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, Enumerable.Concat(mov_rr(rd.reg, ld0.reg), shift_bytes(rd.reg)).ToList()), rd.reg)))(alloc_temp(ld0.state))))(load_local(st2, loc0.reg))))(st_append_text(r1.state, mov_rr(reg_rcx(), r1.reg)))))(emit__x86_64_code_generator_emit_expr(st1, args[(int)1L]))))(store_local(loc0.state, loc0.reg, r0.reg))))(alloc_local(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit_bit_not(CodegenState st, List<IRExpr> args)
-    {
-        return ((Func<EmitResult, EmitResult>)((r0) => ((Func<EmitResult, EmitResult>)((rd) => new EmitResult(st_append_text(rd.state, Enumerable.Concat(mov_rr(rd.reg, r0.reg), not_r(rd.reg)).ToList()), rd.reg)))(alloc_temp(r0.state))))(emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]));
-    }
-
-    public static EmitResult emit__x86_64_code_generator_emit_builtin(CodegenState st, string name, List<IRExpr> args)
-    {
-        return ((name == "\u001F\u0015\u0011\u0012\u000EI\u0017\u0011\u0012\u000D") ? emit_print_line_builtin(st, args) : ((name == "\u0015\u000D\u000F\u0016I\u001C\u0011\u0017\u000D") ? emit_read_file_builtin(st, args) : ((name == "\u001B\u0015\u0011\u000E\u000DI\u001C\u0011\u0017\u000D") ? emit_write_file_builtin(st, args) : ((name == "\u0015\u000D\u000F\u0016I\u0017\u0011\u0012\u000D") ? emit_read_line_builtin(st) : ((name == "\u001B\u0015\u0011\u000E\u000DI \u0011\u0012\u000F\u0015\u001E") ? emit_write_binary_builtin(st, args) : ((name == "\u000E\u000D$\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? emit_text_length_builtin(st, args) : ((name == "\u0011\u0012\u000E\u000D\u001D\u000D\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? emit_helper_call_1(st, args, "UU\u0011\u000E\u0010\u000F") : ((name == "\u0013\u0014\u0010\u001B") ? emit_show_builtin(st, args) : ((name == "\u000E\u000D$\u000EI\u000E\u0010I\u0011\u0012\u000E\u000D\u001D\u000D\u0015") ? emit_helper_call_1(st, args, "UU\u000E\u000D$\u000EU\u000E\u0010U\u0011\u0012\u000E") : ((name == "\u000E\u000D$\u000EI\u0015\u000D\u001F\u0017\u000F\u0018\u000D") ? emit_helper_call_3(st, args, "UU\u0013\u000E\u0015U\u0015\u000D\u001F\u0017\u000F\u0018\u000D") : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") : ((name == "\u000E\u000D$\u000EI\u0013\u000E\u000F\u0015\u000E\u0013I\u001B\u0011\u000E\u0014") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0013\u000E\u000F\u0015\u000E\u0013U\u001B\u0011\u000E\u0014") : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u001A\u001F\u000F\u0015\u000D") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0018\u0010\u001A\u001F\u000F\u0015\u000D") : ((name == "\u000E\u000D$\u000EI\u0018\u0010\u0012\u0018\u000F\u000EI\u0017\u0011\u0013\u000E") ? emit_helper_call_1(st, args, "UU\u000E\u000D$\u000EU\u0018\u0010\u0012\u0018\u000F\u000EU\u0017\u0011\u0013\u000E") : ((name == "\u000E\u000D$\u000EI\u0013\u001F\u0017\u0011\u000E") ? emit_helper_call_2(st, args, "UU\u000E\u000D$\u000EU\u0013\u001F\u0017\u0011\u000E") : ((name == "\u0013\u0019 \u0013\u000E\u0015\u0011\u0012\u001D") ? emit_substring_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u0017\u000D\u0012\u001D\u000E\u0014") ? emit_list_length_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u000F\u000E") ? emit_list_at_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u0013") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u0018\u0010\u0012\u0013") : ((name == "\u0017\u0011\u0013\u000EI\u000F\u001F\u001F\u000D\u0012\u0016") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u000F\u001F\u001F\u000D\u0012\u0016") : ((name == "\u0017\u0011\u0013\u000EI\u0013\u0012\u0010\u0018") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u0013\u0012\u0010\u0018") : ((name == "\u0017\u0011\u0013\u000EI\u0011\u0012\u0013\u000D\u0015\u000EI\u000F\u000E") ? emit_helper_call_3(st, args, "UU\u0017\u0011\u0013\u000EU\u0011\u0012\u0013\u000D\u0015\u000EU\u000F\u000E") : ((name == "\u0017\u0011\u0013\u000EI\u0013\u000D\u000EI\u000F\u000E") ? emit_helper_call_3(st, args, "UU\u0017\u0011\u0013\u000EU\u0013\u000D\u000EU\u000F\u000E") : ((name == "\u0017\u0011\u0013\u000EI\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") ? emit_helper_call_2(st, args, "UU\u0017\u0011\u0013\u000EU\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013") : ((name == "\u0018\u0014\u000F\u0015I\u000F\u000E") ? emit_char_at_builtin(st, args) : ((name == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000DI\u000F\u000E") ? emit_char_code_at_builtin(st, args) : ((name == "\u0018\u0014\u000F\u0015I\u0018\u0010\u0016\u000D") ? emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]) : ((name == "\u0018\u0010\u0016\u000DI\u000E\u0010I\u0018\u0014\u000F\u0015") ? emit__x86_64_code_generator_emit_expr(st_set_tail_pos(st, false), args[(int)0L]) : ((name == "\u0018\u0014\u000F\u0015I\u000E\u0010I\u000E\u000D$\u000E") ? emit_char_to_text_builtin(st, args) : ((name == "\u0011\u0013I\u0017\u000D\u000E\u000E\u000D\u0015") ? emit_is_letter_builtin(st, args) : ((name == "\u0011\u0013I\u0016\u0011\u001D\u0011\u000E") ? emit_is_digit_builtin(st, args) : ((name == "\u0011\u0013I\u001B\u0014\u0011\u000E\u000D\u0013\u001F\u000F\u0018\u000D") ? emit_is_whitespace_builtin(st, args) : ((name == "\u0012\u000D\u001D\u000F\u000E\u000D") ? emit_negate_builtin(st, args) : ((name == "\u001D\u000D\u000EI\u000F\u0015\u001D\u0013") ? emit_get_args_builtin(st) : ((name == "\u0018\u0019\u0015\u0015\u000D\u0012\u000EI\u0016\u0011\u0015") ? emit_current_dir_builtin(st) : ((name == "\u0015\u000D\u0018\u0010\u0015\u0016I\u0013\u000D\u000E") ? emit_record_set_builtin(st, args) : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000D\u001A\u001F\u000E\u001E") ? emit_linked_list_empty_builtin(st, args) : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u001F\u0019\u0013\u0014") ? emit_linked_list_push_builtin(st, args) : ((name == "\u0017\u0011\u0012\"\u000D\u0016I\u0017\u0011\u0013\u000EI\u000E\u0010I\u0017\u0011\u0013\u000E") ? emit_linked_list_to_list_builtin(st, args) : ((name == "\u0014\u000D\u000F\u001FI\u0013\u000F!\u000D") ? emit_heap_save_builtin(st) : ((name == "\u0014\u000D\u000F\u001FI\u0015\u000D\u0013\u000E\u0010\u0015\u000D") ? emit_heap_restore_builtin(st, args) : ((name == "\u0014\u000D\u000F\u001FI\u000F\u0016!\u000F\u0012\u0018\u000D") ? emit_heap_advance_builtin(st, args) : ((name == "\u0017\u0011\u0013\u000EI\u001B\u0011\u000E\u0014I\u0018\u000F\u001F\u000F\u0018\u0011\u000E\u001E") ? emit_list_with_capacity_builtin(st, args) : ((name == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D") ? emit_buf_write_byte_builtin(st, args) : ((name == " \u0019\u001CI\u001B\u0015\u0011\u000E\u000DI \u001E\u000E\u000D\u0013") ? emit_buf_write_bytes_builtin(st, args) : ((name == " \u0019\u001CI\u0015\u000D\u000F\u0016I \u001E\u000E\u000D\u0013") ? emit_buf_read_bytes_builtin(st, args) : ((name == " \u0011\u000EI\u000F\u0012\u0016") ? emit_bit_op_2(st, args, (rd) => (rs) => and_rr(rd, rs)) : ((name == " \u0011\u000EI\u0010\u0015") ? emit_bit_op_2(st, args, (rd) => (rs) => or_rr(rd, rs)) : ((name == " \u0011\u000EI$\u0010\u0015") ? emit_bit_op_2(st, args, (rd) => (rs) => xor_rr(rd, rs)) : ((name == " \u0011\u000EI\u0013\u0014\u0017") ? emit_bit_shift(st, args, new Func<long, List<long>>(shl_cl)) : ((name == " \u0011\u000EI\u0013\u0014\u0015") ? emit_bit_shift(st, args, new Func<long, List<long>>(shr_cl)) : ((name == " \u0011\u000EI\u0012\u0010\u000E") ? emit_bit_not(st, args) : emit_file_exists_builtin(st, args)))))))))))))))))))))))))))))))))))))))))))))))))))));
     }
 
     public static FlatApply flatten_apply(IRExpr expr, List<IRExpr> acc)
@@ -9367,6 +8961,712 @@ public static class Codex_Codex_Codex
         return new List<long>() { 102L, 15L, 46L, modrm(3L, a, b) };
     }
 
+    public static CodegenState emit_cce_to_unicode_helper(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => st_append_text(st4, x86_ret())))(st_append_text(st3, movzx_byte(reg_rax(), reg_rax(), 0L)))))(st_append_text(st2, add_rr(reg_rax(), reg_rdi())))))(emit_load_rodata_addr(st1, reg_rax(), cce_to_unicode_rodata_offset()))))(record_func_offset(st, "UU\u0018\u0018\u000DU\u000E\u0010U\u0019\u0012\u0011\u0018\u0010\u0016\u000D"));
+    }
+
+    public static CodegenState emit_unicode_to_cce_helper(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => st_append_text(st4, x86_ret())))(st_append_text(st3, movzx_byte(reg_rax(), reg_rax(), 0L)))))(st_append_text(st2, add_rr(reg_rax(), reg_rdi())))))(emit_load_rodata_addr(st1, reg_rax(), unicode_to_cce_rodata_offset()))))(record_func_offset(st, "UU\u0019\u0012\u0011\u0018\u0010\u0016\u000DU\u000E\u0010U\u0018\u0018\u000D"));
+    }
+
+    public static CodegenState emit_read_line_helper(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<long, CodegenState>)((read_byte) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<long, CodegenState>)((wait_loop) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<long, CodegenState>)((has_data) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => ((Func<CodegenState, CodegenState>)((st23) => ((Func<CodegenState, CodegenState>)((st24) => ((Func<long, CodegenState>)((skip_cr) => ((Func<CodegenState, CodegenState>)((st25) => ((Func<CodegenState, CodegenState>)((st26) => ((Func<CodegenState, CodegenState>)((st27) => ((Func<CodegenState, CodegenState>)((st28) => ((Func<CodegenState, CodegenState>)((st29) => ((Func<CodegenState, CodegenState>)((st30) => ((Func<CodegenState, CodegenState>)((st31) => ((Func<CodegenState, CodegenState>)((st32) => ((Func<CodegenState, CodegenState>)((st33) => ((Func<CodegenState, CodegenState>)((st34) => ((Func<CodegenState, CodegenState>)((st35) => ((Func<long, CodegenState>)((eof) => ((Func<CodegenState, CodegenState>)((st36) => ((Func<CodegenState, CodegenState>)((st37) => ((Func<CodegenState, CodegenState>)((st38) => ((Func<CodegenState, CodegenState>)((st39) => ((Func<CodegenState, CodegenState>)((st40) => ((Func<long, CodegenState>)((got_nl) => ((Func<CodegenState, CodegenState>)((st41) => ((Func<CodegenState, CodegenState>)((st42) => ((Func<CodegenState, CodegenState>)((st43) => ((Func<CodegenState, CodegenState>)((st44) => ((Func<CodegenState, CodegenState>)((st45) => ((Func<CodegenState, CodegenState>)((st46) => ((Func<CodegenState, CodegenState>)((st47) => ((Func<CodegenState, CodegenState>)((st48) => ((Func<CodegenState, CodegenState>)((st49) => ((Func<CodegenState, CodegenState>)((st50) => ((Func<CodegenState, CodegenState>)((st51) => ((Func<CodegenState, CodegenState>)((st52) => ((Func<CodegenState, CodegenState>)((st53) => ((Func<CodegenState, CodegenState>)((st54) => ((Func<CodegenState, CodegenState>)((st55) => ((Func<CodegenState, CodegenState>)((st56) => ((Func<CodegenState, CodegenState>)((st57) => ((Func<CodegenState, CodegenState>)((st58) => ((Func<CodegenState, CodegenState>)((st59) => ((Func<CodegenState, CodegenState>)((st60) => st_append_text(st60, x86_ret())))(st_append_text(st59, pop_r(reg_rbx())))))(st_append_text(st58, pop_r(reg_r12())))))(st_append_text(st57, mov_rr(reg_rax(), reg_rbx())))))(st_append_text(st56, add_rr(reg_r10(), reg_rax())))))(st_append_text(st55, and_ri(reg_rax(), (0L - 8L))))))(st_append_text(st54, add_ri(reg_rax(), 15L)))))(st_append_text(st53, mov_rr(reg_rax(), reg_rcx())))))(st_append_text(st52, mov_store(reg_rbx(), reg_rcx(), 0L)))))(patch_jcc_at(st51, got_nl, st51.text_len))))(patch_jcc_at(st50, eof, st50.text_len))))(st_append_text(st49, jmp((read_byte - (st49.text_len + 5L)))))))(st_append_text(st48, add_ri(reg_rcx(), 1L)))))(st_append_text(st47, new List<long>() { 136L, 6L }))))(st_append_text(st46, movzx_byte(reg_rax(), reg_rax(), 0L)))))(st_append_text(st45, add_rr(reg_rax(), reg_r12())))))(st_append_text(st44, movzx_byte(reg_rax(), reg_rsi(), 0L)))))(st_append_text(st43, add_ri(reg_rsi(), 8L)))))(st_append_text(st42, add_rr(reg_rsi(), reg_rcx())))))(st_append_text(st41, mov_rr(reg_rsi(), reg_rbx())))))(st_append_text(st40, jcc(cc_e(), 0L)))))(st40.text_len)))(st_append_text(st39, cmp_ri(reg_rdx(), 10L)))))(st_append_text(st38, movzx_byte(reg_rdx(), reg_rdx(), 8L)))))(st_append_text(st37, add_rr(reg_rdx(), reg_rcx())))))(st_append_text(st36, mov_rr(reg_rdx(), reg_rbx())))))(st_append_text(st35, jcc(cc_le(), 0L)))))(st35.text_len)))(st_append_text(st34, test_rr(reg_rax(), reg_rax())))))(st_append_text(st33, pop_r(reg_rcx())))))(patch_jcc_at(st32, skip_cr, wait_loop))))(st_append_text(st31, li(reg_rax(), 1L)))))(st_append_text(st30, new List<long>() { 136L, 6L }))))(st_append_text(st29, add_ri(reg_rsi(), 8L)))))(st_append_text(st28, add_rr(reg_rsi(), reg_rcx())))))(st_append_text(st27, mov_rr(reg_rsi(), reg_rbx())))))(st_append_text(st26, push_r(reg_rcx())))))(st_append_text(st25, pop_r(reg_rcx())))))(st_append_text(st24, jcc(cc_e(), 0L)))))(st24.text_len)))(st_append_text(st23, cmp_ri(reg_rax(), 13L)))))(st_append_text(st22, mov_store(reg_rdi(), reg_r11(), 0L)))))(st_append_text(st21, li(reg_rdi(), serial_read_pos_addr())))))(st_append_text(st20, add_ri(reg_r11(), 1L)))))(st_append_text(st19, movzx_byte(reg_rax(), reg_rax(), 0L)))))(st_append_text(st18, add_ri(reg_rax(), serial_ring_buf_addr())))))(st_append_text(st17, and_ri(reg_rax(), serial_ring_buf_mask())))))(st_append_text(st16, mov_rr(reg_rax(), reg_r11())))))(patch_jcc_at(st15, has_data, st15.text_len))))(st_append_text(st14, jmp((wait_loop - (st14.text_len + 5L)))))))(st_append_text(st13, hlt()))))(st_append_text(st12, jcc(cc_ne(), 0L)))))(st12.text_len)))(st_append_text(st11, cmp_rr(reg_rsi(), reg_r11())))))(st_append_text(st10, mov_load(reg_r11(), reg_rdi(), 0L)))))(st_append_text(st9, li(reg_rdi(), serial_read_pos_addr())))))(st_append_text(st8, mov_load(reg_rsi(), reg_rdi(), 0L)))))(st_append_text(st7, li(reg_rdi(), serial_write_pos_addr())))))(st7.text_len)))(st_append_text(st6, push_r(reg_rcx())))))(st6.text_len)))(st_append_text(st5, li(reg_rcx(), 0L)))))(st_append_text(st4, mov_rr(reg_rbx(), reg_r10())))))(emit_load_rodata_addr(st3, reg_r12(), unicode_to_cce_rodata_offset()))))(st_append_text(st2, push_r(reg_r12())))))(st_append_text(st1, push_r(reg_rbx())))))(record_func_offset(st, "UU\u0015\u000D\u000F\u0016U\u0017\u0011\u0012\u000D"));
+    }
+
+    public static CodegenState emit_read_file_helper(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => st_append_text(st2, x86_ret())))(emit_call_to(st1, "UU \u000F\u0015\u000DU\u001A\u000D\u000E\u000F\u0017U\u0015\u000D\u000F\u0016U\u0013\u000D\u0015\u0011\u000F\u0017"))))(record_func_offset(st, "UU\u0015\u000D\u000F\u0016U\u001C\u0011\u0017\u000D"));
+    }
+
+    public static CodegenState emit_bare_metal_read_serial(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st3a) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<long, CodegenState>)((read_loop) => ((Func<long, CodegenState>)((wait_loop) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<long, CodegenState>)((has_data) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => ((Func<CodegenState, CodegenState>)((st23) => ((Func<long, CodegenState>)((got_eot) => ((Func<CodegenState, CodegenState>)((st24) => ((Func<CodegenState, CodegenState>)((st25) => ((Func<long, CodegenState>)((got_null) => ((Func<CodegenState, CodegenState>)((st26) => ((Func<CodegenState, CodegenState>)((st27) => ((Func<long, CodegenState>)((skip_cr) => ((Func<CodegenState, CodegenState>)((st28) => ((Func<CodegenState, CodegenState>)((st29) => ((Func<CodegenState, CodegenState>)((st30) => ((Func<CodegenState, CodegenState>)((st31) => ((Func<CodegenState, CodegenState>)((st32) => ((Func<CodegenState, CodegenState>)((st33) => ((Func<CodegenState, CodegenState>)((st34) => ((Func<CodegenState, CodegenState>)((st35) => ((Func<CodegenState, CodegenState>)((st36) => ((Func<CodegenState, CodegenState>)((st37) => ((Func<CodegenState, CodegenState>)((st38) => ((Func<CodegenState, CodegenState>)((st39) => ((Func<CodegenState, CodegenState>)((st40) => ((Func<CodegenState, CodegenState>)((st41) => ((Func<CodegenState, CodegenState>)((st42) => ((Func<CodegenState, CodegenState>)((st43) => ((Func<CodegenState, CodegenState>)((st44) => ((Func<CodegenState, CodegenState>)((st45) => ((Func<CodegenState, CodegenState>)((st46) => ((Func<CodegenState, CodegenState>)((st47) => ((Func<CodegenState, CodegenState>)((st48) => ((Func<CodegenState, CodegenState>)((st49) => st_append_text(st49, x86_ret())))(st_append_text(st48, pop_r(reg_rbx())))))(st_append_text(st47, pop_r(reg_rcx())))))(st_append_text(st46, pop_r(reg_r12())))))(st_append_text(st45, mov_rr(reg_rax(), reg_rbx())))))(st_append_text(st44, add_rr(reg_r10(), reg_rax())))))(st_append_text(st43, add_ri(reg_rax(), 8L)))))(st_append_text(st42, and_ri(reg_rax(), (0L - 8L))))))(st_append_text(st41, add_ri(reg_rax(), 15L)))))(st_append_text(st40, mov_rr(reg_rax(), reg_rcx())))))(st_append_text(st39, mov_store(reg_rbx(), reg_rcx(), 0L)))))(patch_jcc_at(st38, got_null, st38.text_len))))(patch_jcc_at(st37, got_eot, st37.text_len))))(st_append_text(st36, jmp((read_loop - (st36.text_len + 5L)))))))(patch_jcc_at(st35, skip_cr, st35.text_len))))(st_append_text(st34, add_ri(reg_rcx(), 1L)))))(st_append_text(st33, new List<long>() { 136L, 6L }))))(st_append_text(st32, add_ri(reg_rsi(), 8L)))))(st_append_text(st31, add_rr(reg_rsi(), reg_rcx())))))(st_append_text(st30, mov_rr(reg_rsi(), reg_rbx())))))(st_append_text(st29, movzx_byte(reg_rax(), reg_rax(), 0L)))))(st_append_text(st28, add_rr(reg_rax(), reg_r12())))))(st_append_text(st27, jcc(cc_e(), 0L)))))(st27.text_len)))(st_append_text(st26, cmp_ri(reg_rax(), 13L)))))(st_append_text(st25, jcc(cc_e(), 0L)))))(st25.text_len)))(st_append_text(st24, test_rr(reg_rax(), reg_rax())))))(st_append_text(st23, jcc(cc_e(), 0L)))))(st23.text_len)))(st_append_text(st22, cmp_ri(reg_rax(), 4L)))))(st_append_text(st21, mov_store(reg_rdi(), reg_r11(), 0L)))))(st_append_text(st20, li(reg_rdi(), serial_read_pos_addr())))))(st_append_text(st19, add_ri(reg_r11(), 1L)))))(st_append_text(st18, movzx_byte(reg_rax(), reg_rax(), 0L)))))(st_append_text(st17, add_ri(reg_rax(), serial_ring_buf_addr())))))(st_append_text(st16, and_ri(reg_rax(), serial_ring_buf_mask())))))(st_append_text(st15, mov_rr(reg_rax(), reg_r11())))))(patch_jcc_at(st14, has_data, st14.text_len))))(st_append_text(st13, jmp((wait_loop - (st13.text_len + 5L)))))))(st_append_text(st12, hlt()))))(st_append_text(st11, jcc(cc_ne(), 0L)))))(st11.text_len)))(st_append_text(st10, cmp_rr(reg_rsi(), reg_r11())))))(st_append_text(st9, mov_load(reg_r11(), reg_rdi(), 0L)))))(st_append_text(st8, li(reg_rdi(), serial_read_pos_addr())))))(st_append_text(st7, mov_load(reg_rsi(), reg_rdi(), 0L)))))(st_append_text(st6, li(reg_rdi(), serial_write_pos_addr())))))(st6.text_len)))(st6.text_len)))(st_append_text(st5, li(reg_rcx(), 0L)))))(st_append_text(st4, mov_rr(reg_rbx(), reg_r10())))))(emit_load_rodata_addr(st3a, reg_r12(), unicode_to_cce_rodata_offset()))))(st_append_text(st3, push_r(reg_r12())))))(st_append_text(st2, push_r(reg_rcx())))))(st_append_text(st1, push_r(reg_rbx())))))(record_func_offset(st, "UU \u000F\u0015\u000DU\u001A\u000D\u000E\u000F\u0017U\u0015\u000D\u000F\u0016U\u0013\u000D\u0015\u0011\u000F\u0017"));
+    }
+
+    public static CodegenState emit_runtime_helpers(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st12b) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => ((Func<CodegenState, CodegenState>)((st23) => emit_list_concat_many_helper(st23)))(emit_buf_read_bytes_helper(st22))))(emit_buf_write_bytes_helper(st21))))(emit_write_binary_helper(st20))))(emit_bare_metal_read_serial(st19))))(emit_read_file_helper(st18))))(emit_read_line_helper(st17))))(emit_unicode_to_cce_helper(st16))))(emit_cce_to_unicode_helper(st15))))(emit_text_split(st14))))(emit_text_concat_list(st13))))(emit_list_contains(st12b))))(emit_list_set_at(st12))))(emit_list_insert_at(st11))))(emit_list_append(st10))))(emit_list_cons(st9))))(emit_list_snoc(st8))))(emit_str_replace(st7))))(emit_text_compare(st6))))(emit_text_contains(st5))))(emit_text_starts_with(st4))))(emit_text_to_int(st3))))(emit_ipow(st2))))(emit_itoa(st1))))(emit_str_eq(st0))))(emit_str_concat(st));
+    }
+
+    public static CodegenState emit_buf_write_bytes_helper(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<long, CodegenState>)((skip_pos) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<long, CodegenState>)((loop_top) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<long, CodegenState>)((back_pos) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => st_append_text(st22, Enumerable.Concat(pop_r(reg_r13()), Enumerable.Concat(pop_r(reg_r12()), Enumerable.Concat(pop_r(reg_rbx()), x86_ret()).ToList()).ToList()).ToList())))(st_append_text(st21, mov_rr(reg_rax(), reg_rsi())))))(st_append_text(st20, add_rr(reg_rsi(), reg_r13())))))(patch_jcc_at(st19, skip_pos, st19.text_len))))(patch_jcc_at(st18, back_pos, loop_top))))(st_append_text(st17, jcc(cc_l(), 0L)))))(st17.text_len)))(st_append_text(st16, cmp_rr(reg_rcx(), reg_r13())))))(st_append_text(st15, add_ri(reg_rcx(), 1L)))))(st_append_text(st14, add_ri(reg_rbx(), 1L)))))(st_append_text(st13, mov_store_byte(reg_rbx(), reg_rax(), 0L)))))(st_append_text(st12, mov_load(reg_rax(), reg_rax(), 8L)))))(st_append_text(st11, add_rr(reg_rax(), reg_r12())))))(st_append_text(st10, shl_ri(reg_rax(), 3L)))))(st_append_text(st9, mov_rr(reg_rax(), reg_rcx())))))(st9.text_len)))(st_append_text(st8, jcc(cc_ge(), 0L)))))(st8.text_len)))(st_append_text(st7, cmp_rr(reg_rcx(), reg_r13())))))(st_append_text(st6, li(reg_rcx(), 0L)))))(st_append_text(st5, mov_load(reg_r13(), reg_r12(), 0L)))))(st_append_text(st4, mov_rr(reg_r12(), reg_rdx())))))(st_append_text(st3, add_rr(reg_rbx(), reg_rsi())))))(st_append_text(st2, mov_rr(reg_rbx(), reg_rdi())))))(st_append_text(st1, Enumerable.Concat(push_r(reg_rbx()), Enumerable.Concat(push_r(reg_r12()), push_r(reg_r13())).ToList()).ToList()))))(record_func_offset(st, "UU \u0019\u001CU\u001B\u0015\u0011\u000E\u000DU \u001E\u000E\u000D\u0013"));
+    }
+
+    public static CodegenState emit_buf_read_bytes_helper(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<long, CodegenState>)((skip_pos) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<long, CodegenState>)((loop_top) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => ((Func<CodegenState, CodegenState>)((st23) => ((Func<CodegenState, CodegenState>)((st24) => ((Func<CodegenState, CodegenState>)((st25) => ((Func<long, CodegenState>)((back_pos) => ((Func<CodegenState, CodegenState>)((st26) => ((Func<CodegenState, CodegenState>)((st27) => ((Func<CodegenState, CodegenState>)((st28) => ((Func<CodegenState, CodegenState>)((st29) => st_append_text(st29, Enumerable.Concat(pop_r(reg_r14()), Enumerable.Concat(pop_r(reg_r13()), Enumerable.Concat(pop_r(reg_r12()), Enumerable.Concat(pop_r(reg_rbx()), x86_ret()).ToList()).ToList()).ToList()).ToList())))(st_append_text(st28, mov_rr(reg_rax(), reg_rbx())))))(patch_jcc_at(st27, skip_pos, st27.text_len))))(patch_jcc_at(st26, back_pos, loop_top))))(st_append_text(st25, jcc(cc_l(), 0L)))))(st25.text_len)))(st_append_text(st24, cmp_rr(reg_rcx(), reg_r13())))))(st_append_text(st23, add_ri(reg_rcx(), 1L)))))(st_append_text(st22, mov_store(reg_rax(), reg_r14(), 8L)))))(st_append_text(st21, add_rr(reg_rax(), reg_rbx())))))(st_append_text(st20, shl_ri(reg_rax(), 3L)))))(st_append_text(st19, mov_rr(reg_rax(), reg_rcx())))))(st_append_text(st18, movzx_byte(reg_r14(), reg_r14(), 0L)))))(st_append_text(st17, add_rr(reg_r14(), reg_rcx())))))(st_append_text(st16, mov_rr(reg_r14(), reg_r12())))))(st16.text_len)))(st_append_text(st15, jcc(cc_ge(), 0L)))))(st15.text_len)))(st_append_text(st14, cmp_rr(reg_rcx(), reg_r13())))))(st_append_text(st13, li(reg_rcx(), 0L)))))(st_append_text(st12, add_rr(reg_r10(), reg_rax())))))(st_append_text(st11, shl_ri(reg_rax(), 3L)))))(st_append_text(st10, add_ri(reg_rax(), 1L)))))(st_append_text(st9, mov_rr(reg_rax(), reg_r13())))))(st_append_text(st8, mov_store(reg_r10(), reg_r13(), 0L)))))(st_append_text(st7, mov_rr(reg_rbx(), reg_r10())))))(st_append_text(st6, add_ri(reg_r10(), 8L)))))(st_append_text(st5, mov_store(reg_r10(), reg_r13(), 0L)))))(st_append_text(st4, mov_rr(reg_r13(), reg_rdx())))))(st_append_text(st3, add_rr(reg_r12(), reg_rsi())))))(st_append_text(st2, mov_rr(reg_r12(), reg_rdi())))))(st_append_text(st1, Enumerable.Concat(push_r(reg_rbx()), Enumerable.Concat(push_r(reg_r12()), Enumerable.Concat(push_r(reg_r13()), push_r(reg_r14())).ToList()).ToList()).ToList()))))(record_func_offset(st, "UU \u0019\u001CU\u0015\u000D\u000F\u0016U \u001E\u000E\u000D\u0013"));
+    }
+
+    public static CodegenState emit_write_binary_helper(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<long, CodegenState>)((loop_top) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<long, CodegenState>)((done_pos) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<long, CodegenState>)((wait_top) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<long, CodegenState>)((thr_ready) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => ((Func<CodegenState, CodegenState>)((st23) => ((Func<CodegenState, CodegenState>)((st24) => ((Func<CodegenState, CodegenState>)((st25) => ((Func<CodegenState, CodegenState>)((st26) => ((Func<CodegenState, CodegenState>)((st27) => ((Func<CodegenState, CodegenState>)((st28) => ((Func<CodegenState, CodegenState>)((st29) => st_append_text(st29, x86_ret())))(st_append_text(st28, pop_r(reg_rbx())))))(st_append_text(st27, pop_r(reg_rcx())))))(st_append_text(st26, pop_r(reg_r11())))))(patch_jcc_at(st25, done_pos, st25.text_len))))(st_append_text(st24, jmp((loop_top - (st24.text_len + 5L)))))))(st_append_text(st23, add_ri(reg_r11(), 1L)))))(st_append_text(st22, out_dx_al()))))(st_append_text(st21, li(reg_rdx(), 1016L)))))(st_append_text(st20, pop_r(reg_rax())))))(patch_jcc_at(st19, thr_ready, st19.text_len))))(st_append_text(st18, jmp((wait_top - (st18.text_len + 5L)))))))(st_append_text(st17, jcc(cc_ne(), 0L)))))(st17.text_len)))(st_append_text(st16, new List<long>() { 168L, 32L }))))(st_append_text(st15, new List<long>() { 236L }))))(st_append_text(st14, li(reg_rdx(), 1021L)))))(st14.text_len)))(st_append_text(st13, push_r(reg_rax())))))(st_append_text(st12, mov_load(reg_rax(), reg_rax(), 8L)))))(st_append_text(st11, add_rr(reg_rax(), reg_rbx())))))(st_append_text(st10, shl_ri(reg_rax(), 3L)))))(st_append_text(st9, mov_rr(reg_rax(), reg_r11())))))(st_append_text(st8, jcc(cc_ge(), 0L)))))(st8.text_len)))(st_append_text(st7, cmp_rr(reg_r11(), reg_rcx())))))(st7.text_len)))(st_append_text(st6, li(reg_r11(), 0L)))))(st_append_text(st5, mov_load(reg_rcx(), reg_rbx(), 0L)))))(st_append_text(st4, mov_rr(reg_rbx(), reg_rdi())))))(st_append_text(st3, push_r(reg_r11())))))(st_append_text(st2, push_r(reg_rcx())))))(st_append_text(st1, push_r(reg_rbx())))))(record_func_offset(st, "UU\u001B\u0015\u0011\u000E\u000DU \u0011\u0012\u000F\u0015\u001E"));
+    }
+
+    public static CodegenState emit_linked_list_to_list_helper(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<long, CodegenState>)((count_loop) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<long, CodegenState>)((count_done) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => ((Func<CodegenState, CodegenState>)((st23) => ((Func<long, CodegenState>)((fill_loop) => ((Func<CodegenState, CodegenState>)((st24) => ((Func<long, CodegenState>)((fill_done) => ((Func<CodegenState, CodegenState>)((st25) => ((Func<CodegenState, CodegenState>)((st26) => ((Func<CodegenState, CodegenState>)((st27) => ((Func<CodegenState, CodegenState>)((st28) => ((Func<CodegenState, CodegenState>)((st29) => ((Func<CodegenState, CodegenState>)((st30) => ((Func<CodegenState, CodegenState>)((st31) => ((Func<CodegenState, CodegenState>)((st32) => ((Func<CodegenState, CodegenState>)((st33) => ((Func<CodegenState, CodegenState>)((st34) => ((Func<CodegenState, CodegenState>)((st35) => ((Func<CodegenState, CodegenState>)((st36) => ((Func<CodegenState, CodegenState>)((st37) => ((Func<CodegenState, CodegenState>)((st38) => ((Func<CodegenState, CodegenState>)((st39) => ((Func<CodegenState, CodegenState>)((st40) => st_append_text(st40, x86_ret())))(st_append_text(st39, pop_r(reg_rbp())))))(st_append_text(st38, pop_r(reg_rbx())))))(st_append_text(st37, pop_r(reg_r12())))))(st_append_text(st36, pop_r(reg_r13())))))(st_append_text(st35, mov_rr(reg_rax(), reg_r13())))))(patch_jcc_at(st34, fill_done, st34.text_len))))(st_append_text(st33, jmp((fill_loop - (st33.text_len + 5L)))))))(st_append_text(st32, mov_load(reg_rcx(), reg_rcx(), 8L)))))(st_append_text(st31, mov_store(reg_rsi(), reg_rax(), 0L)))))(st_append_text(st30, add_rr(reg_rsi(), reg_r13())))))(st_append_text(st29, shl_ri(reg_rsi(), 3L)))))(st_append_text(st28, add_ri(reg_rsi(), 1L)))))(st_append_text(st27, mov_rr(reg_rsi(), reg_rdx())))))(st_append_text(st26, mov_load(reg_rax(), reg_rcx(), 0L)))))(st_append_text(st25, sub_ri(reg_rdx(), 1L)))))(st_append_text(st24, jcc(cc_e(), 0L)))))(st24.text_len)))(st_append_text(st23, test_rr(reg_rcx(), reg_rcx())))))(st23.text_len)))(st_append_text(st22, mov_rr(reg_rdx(), reg_r12())))))(st_append_text(st21, mov_rr(reg_rcx(), reg_rbx())))))(st_append_text(st20, add_rr(reg_r10(), reg_rax())))))(st_append_text(st19, shl_ri(reg_rax(), 3L)))))(st_append_text(st18, add_ri(reg_rax(), 1L)))))(st_append_text(st17, mov_rr(reg_rax(), reg_r12())))))(st_append_text(st16, mov_store(reg_r13(), reg_r12(), 0L)))))(st_append_text(st15, mov_rr(reg_r13(), reg_r10())))))(patch_jcc_at(st14, count_done, st14.text_len))))(st_append_text(st13, jmp((count_loop - (st13.text_len + 5L)))))))(st_append_text(st12, mov_load(reg_rcx(), reg_rcx(), 8L)))))(st_append_text(st11, add_ri(reg_r12(), 1L)))))(st_append_text(st10, jcc(cc_e(), 0L)))))(st10.text_len)))(st_append_text(st9, test_rr(reg_rcx(), reg_rcx())))))(st9.text_len)))(st_append_text(st8, mov_rr(reg_rcx(), reg_rbx())))))(st_append_text(st7, li(reg_r12(), 0L)))))(st_append_text(st6, mov_rr(reg_rbx(), reg_rdi())))))(st_append_text(st5, push_r(reg_r13())))))(st_append_text(st4, push_r(reg_r12())))))(st_append_text(st3, push_r(reg_rbx())))))(st_append_text(st2, mov_rr(reg_rbp(), reg_rsp())))))(st_append_text(st1, push_r(reg_rbp())))))(record_func_offset(st, "UU\u0017\u0011\u0012\"\u000D\u0016U\u0017\u0011\u0013\u000EU\u000E\u0010U\u0017\u0011\u0013\u000E"));
+    }
+
+    public static List<long> multiboot_header()
+    {
+        return Enumerable.Concat(write_i32(464367618L), Enumerable.Concat(write_i32(0L), write_i32(3830599678L)).ToList()).ToList();
+    }
+
+    public static List<long> tramp_clear_pages()
+    {
+        return new List<long>() { 250L, 191L, 0L, 16L, 0L, 0L, 185L, 0L, 12L, 0L, 0L, 49L, 192L, 243L, 171L };
+    }
+
+    public static List<long> tramp_page_tables()
+    {
+        return new List<long>() { 199L, 5L, 0L, 16L, 0L, 0L, 3L, 32L, 0L, 0L, 199L, 5L, 0L, 32L, 0L, 0L, 3L, 48L, 0L, 0L, 191L, 0L, 48L, 0L, 0L, 185L, 0L, 1L, 0L, 0L, 184L, 131L, 0L, 0L, 0L, 137L, 7L, 199L, 71L, 4L, 0L, 0L, 0L, 0L, 131L, 199L, 8L, 5L, 0L, 0L, 32L, 0L, 73L, 117L, 236L };
+    }
+
+    public static List<long> tramp_enable_long_mode()
+    {
+        return new List<long>() { 184L, 0L, 16L, 0L, 0L, 15L, 34L, 216L, 15L, 32L, 224L, 131L, 200L, 32L, 15L, 34L, 224L, 185L, 128L, 0L, 0L, 192L, 15L, 50L, 13L, 0L, 1L, 0L, 0L, 15L, 48L, 15L, 32L, 192L, 13L, 0L, 0L, 0L, 128L, 15L, 34L, 192L };
+    }
+
+    public static List<long> trampoline_code()
+    {
+        return Enumerable.Concat(tramp_clear_pages(), Enumerable.Concat(tramp_page_tables(), tramp_enable_long_mode()).ToList()).ToList();
+    }
+
+    public static List<long> tramp_gdt_data()
+    {
+        return new List<long>() { 235L, 30L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 255L, 255L, 0L, 0L, 0L, 154L, 175L, 0L, 255L, 255L, 0L, 0L, 0L, 146L, 207L, 0L };
+    }
+
+    public static List<long> trampoline_gdt_section()
+    {
+        return Enumerable.Concat(tramp_gdt_data(), Enumerable.Concat(write_i16(23L), Enumerable.Concat(write_i32((bare_metal_load_addr() + 126L)), Enumerable.Concat(new List<long>() { 15L, 1L, 21L }, Enumerable.Concat(write_i32((bare_metal_load_addr() + 150L)), new List<long>() { 234L, 0L, 0L, 0L, 0L, 8L, 0L }).ToList()).ToList()).ToList()).ToList()).ToList();
+    }
+
+    public static TrampolineResult bare_metal_trampoline()
+    {
+        return ((Func<List<long>, TrampolineResult>)((bytes) => new TrampolineResult(bytes, 163L)))(Enumerable.Concat(multiboot_header(), Enumerable.Concat(trampoline_code(), trampoline_gdt_section()).ToList()).ToList());
+    }
+
+    public static CodegenState emit_out_byte(CodegenState st, long port, long value)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => st_append_text(st2, out_dx_al())))(st_append_text(st1, li(reg_rax(), value)))))(st_append_text(st, li(reg_rdx(), port)));
+    }
+
+    public static CodegenState emit_com1_init(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => emit_out_byte(st5, 1020L, 11L)))(emit_out_byte(st4, 1018L, 199L))))(emit_out_byte(st3, 1019L, 3L))))(emit_out_byte(st2, 1017L, 0L))))(emit_out_byte(st1, 1016L, 1L))))(emit_out_byte(st, 1019L, 128L));
+    }
+
+    public static CodegenState emit_serial_wait_and_send(CodegenState st, long byte_val)
+    {
+        return ((Func<long, CodegenState>)((wait_top) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<long, CodegenState>)((jne_pos) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => st_append_text(st8, out_dx_al())))(st_append_text(st7, li(reg_rax(), byte_val)))))(st_append_text(st6, li(reg_rdx(), 1016L)))))(patch_jcc_at(st5, jne_pos, st5.text_len))))(st_append_text(st4, jmp((wait_top - (st4.text_len + 5L)))))))(st_append_text(st3, jcc(cc_ne(), 0L)))))(st3.text_len)))(st_append_text(st2, new List<long>() { 168L, 32L }))))(st_append_text(st1, new List<long>() { 236L }))))(st_append_text(st, li(reg_rdx(), 1021L)))))(st.text_len);
+    }
+
+    public static CodegenState emit_serial_send_rdi(CodegenState st)
+    {
+        return ((Func<long, CodegenState>)((wait_top) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<long, CodegenState>)((jne_pos) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => st_append_text(st8, out_dx_al())))(st_append_text(st7, mov_rr(reg_rax(), reg_rdi())))))(st_append_text(st6, li(reg_rdx(), 1016L)))))(patch_jcc_at(st5, jne_pos, st5.text_len))))(st_append_text(st4, jmp((wait_top - (st4.text_len + 5L)))))))(st_append_text(st3, jcc(cc_ne(), 0L)))))(st3.text_len)))(st_append_text(st2, new List<long>() { 168L, 32L }))))(st_append_text(st1, new List<long>() { 236L }))))(st_append_text(st, li(reg_rdx(), 1021L)))))(st.text_len);
+    }
+
+    public static ItoaState emit_itoa_zero_check(CodegenState st)
+    {
+        return ((Func<CodegenState, ItoaState>)((st1) => ((Func<CodegenState, ItoaState>)((st2) => ((Func<long, ItoaState>)((jne_pos) => ((Func<CodegenState, ItoaState>)((st3) => ((Func<CodegenState, ItoaState>)((st4) => ((Func<long, ItoaState>)((jmp_pos) => ((Func<CodegenState, ItoaState>)((st5) => ((Func<CodegenState, ItoaState>)((st6) => new ItoaState(st6, jmp_pos)))(patch_jcc_at(st5, jne_pos, st5.text_len))))(st_append_text(st4, jmp(0L)))))(st4.text_len)))(emit_serial_wait_and_send(st3, 48L))))(st_append_text(st2, jcc(cc_ne(), 0L)))))(st2.text_len)))(st_append_text(st1, test_rr(reg_rbx(), reg_rbx())))))(st_append_text(st, mov_rr(reg_rbx(), reg_rax())));
+    }
+
+    public static CodegenState emit_itoa_sign_and_digits(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((jns_pos) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<long, CodegenState>)((loop_top) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => st_append_text(st15, jcc(cc_ne(), (loop_top - (st15.text_len + 6L))))))(st_append_text(st14, test_rr(reg_rbx(), reg_rbx())))))(st_append_text(st13, add_ri(reg_rcx(), 1L)))))(st_append_text(st12, push_r(reg_rdx())))))(st_append_text(st11, add_ri(reg_rdx(), 48L)))))(st_append_text(st10, mov_rr(reg_rbx(), reg_rax())))))(st_append_text(st9, idiv_r(reg_r11())))))(st_append_text(st8, cqo()))))(st_append_text(st7, mov_rr(reg_rax(), reg_rbx())))))(st7.text_len)))(st_append_text(st6, li(reg_r11(), 10L)))))(st_append_text(st5, li(reg_rcx(), 0L)))))(patch_jcc_at(st4, jns_pos, st4.text_len))))(st_append_text(st3, neg_r(reg_rbx())))))(emit_serial_wait_and_send(st2, 45L))))(st_append_text(st1, jcc(cc_ge(), 0L)))))(st1.text_len)))(st_append_text(st, test_rr(reg_rbx(), reg_rbx())));
+    }
+
+    public static CodegenState emit_itoa_print_loop(CodegenState st)
+    {
+        return ((Func<long, CodegenState>)((loop_top) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((je_pos) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => patch_jcc_at(st8, je_pos, st8.text_len)))(st_append_text(st7, jmp((loop_top - (st7.text_len + 5L)))))))(st_append_text(st6, sub_ri(reg_rcx(), 1L)))))(st_append_text(st5, pop_r(reg_rcx())))))(emit_serial_send_rdi(st4))))(st_append_text(st3, push_r(reg_rcx())))))(st_append_text(st2, pop_r(reg_rdi())))))(st_append_text(st1, jcc(cc_e(), 0L)))))(st1.text_len)))(st_append_text(st, test_rr(reg_rcx(), reg_rcx())))))(st.text_len);
+    }
+
+    public static CodegenState emit_inline_itoa_and_print(CodegenState st)
+    {
+        return ((Func<ItoaState, CodegenState>)((zero) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => patch_jmp_at(st2, zero.jmp_done_zero_pos, st2.text_len)))(emit_itoa_print_loop(st1))))(emit_itoa_sign_and_digits(zero.cg))))(emit_itoa_zero_check(st));
+    }
+
+    public static CodegenState emit_serial_wait_thr(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((wait_top) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<long, CodegenState>)((jne_pos) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => st_append_text(st7, pop_r(reg_rax()))))(patch_jcc_at(st6, jne_pos, st6.text_len))))(st_append_text(st5, jmp((wait_top - (st5.text_len + 5L)))))))(st_append_text(st4, jcc(cc_ne(), 0L)))))(st4.text_len)))(st_append_text(st3, new List<long>() { 168L, 32L }))))(st_append_text(st2, new List<long>() { 236L }))))(st_append_text(st1, li(reg_rdx(), 1021L)))))(st1.text_len)))(st_append_text(st, push_r(reg_rax())));
+    }
+
+    public static CodegenState emit_print_newline(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => st_append_text(st3, out_dx_al())))(st_append_text(st2, li(reg_rdx(), 1016L)))))(st_append_text(st1, li(reg_rax(), 10L)))))(emit_serial_wait_thr(st));
+    }
+
+    public static CodegenState emit_print_text_loop(CodegenState st, long saved_ptr, long saved_table, long saved_len, long saved_idx)
+    {
+        return ((Func<long, CodegenState>)((loop_top) => ((Func<EmitResult, CodegenState>)((idx) => ((Func<EmitResult, CodegenState>)((len_check) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((done_jump) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<EmitResult, CodegenState>)((ptr_l) => ((Func<EmitResult, CodegenState>)((idx2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<EmitResult, CodegenState>)((tbl) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<EmitResult, CodegenState>)((idx3) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => patch_jcc_at(st13, done_jump, st13.text_len)))(st_append_text(st12, jmp((loop_top - (st12.text_len + 5L)))))))(store_local(st11, saved_idx, idx3.reg))))(st_append_text(idx3.state, add_ri(idx3.reg, 1L)))))(load_local(st10, saved_idx))))(st_append_text(st9, out_dx_al()))))(st_append_text(st8, li(reg_rdx(), 1016L)))))(emit_serial_wait_thr(st7))))(st_append_text(st6, movzx_byte(reg_rax(), reg_rax(), 0L)))))(st_append_text(tbl.state, add_rr(reg_rax(), tbl.reg)))))(load_local(st5, saved_table))))(st_append_text(st4, movzx_byte(reg_rax(), reg_rsi(), 0L)))))(st_append_text(st3, add_rr(reg_rsi(), idx2.reg)))))(st_append_text(idx2.state, lea(reg_rsi(), ptr_l.reg, 8L)))))(load_local(ptr_l.state, saved_idx))))(load_local(st2, saved_ptr))))(st_append_text(st1, jcc(cc_ge(), 0L)))))(st1.text_len)))(st_append_text(len_check.state, cmp_rr(idx.reg, len_check.reg)))))(load_local(idx.state, saved_len))))(load_local(st, saved_idx))))(st.text_len);
+    }
+
+    public static CodegenState emit_print_text(CodegenState st, long ptr_reg)
+    {
+        return ((Func<EmitResult, CodegenState>)((saved_ptr) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<EmitResult, CodegenState>)((saved_table) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st2a) => ((Func<EmitResult, CodegenState>)((ptr_ld) => ((Func<EmitResult, CodegenState>)((tmp_len) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<EmitResult, CodegenState>)((saved_len) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<EmitResult, CodegenState>)((saved_idx) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => emit_print_newline(st7)))(emit_print_text_loop(st6, saved_ptr.reg, saved_table.reg, saved_len.reg, saved_idx.reg))))(store_local(st5, saved_idx.reg, reg_r11()))))(st_append_text(saved_idx.state, li(reg_r11(), 0L)))))(alloc_local(st4))))(store_local(saved_len.state, saved_len.reg, tmp_len.reg))))(alloc_local(st3))))(st_append_text(tmp_len.state, mov_load(tmp_len.reg, ptr_ld.reg, 0L)))))(alloc_temp(ptr_ld.state))))(load_local(st2a, saved_ptr.reg))))(store_local(st2, saved_table.reg, reg_r11()))))(emit_load_rodata_addr(saved_table.state, reg_r11(), cce_to_unicode_rodata_offset()))))(alloc_local(st1))))(store_local(saved_ptr.state, saved_ptr.reg, ptr_reg))))(alloc_local(st));
+    }
+
+    public static CodegenState emit_print_text_no_newline(CodegenState st, long ptr_reg)
+    {
+        return ((Func<EmitResult, CodegenState>)((saved_ptr) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<EmitResult, CodegenState>)((saved_table) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st2a) => ((Func<EmitResult, CodegenState>)((ptr_ld) => ((Func<EmitResult, CodegenState>)((tmp_len) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<EmitResult, CodegenState>)((saved_len) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<EmitResult, CodegenState>)((saved_idx) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => emit_print_text_loop(st6, saved_ptr.reg, saved_table.reg, saved_len.reg, saved_idx.reg)))(store_local(st5, saved_idx.reg, reg_r11()))))(st_append_text(saved_idx.state, li(reg_r11(), 0L)))))(alloc_local(st4))))(store_local(saved_len.state, saved_len.reg, tmp_len.reg))))(alloc_local(st3))))(st_append_text(tmp_len.state, mov_load(tmp_len.reg, ptr_ld.reg, 0L)))))(alloc_temp(ptr_ld.state))))(load_local(st2a, saved_ptr.reg))))(store_local(st2, saved_table.reg, reg_r11()))))(emit_load_rodata_addr(saved_table.state, reg_r11(), cce_to_unicode_rodata_offset()))))(alloc_local(st1))))(store_local(saved_ptr.state, saved_ptr.reg, ptr_reg))))(alloc_local(st));
+    }
+
+    public static CodegenState emit_list_contains(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<long, CodegenState>)((loop_top) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<long, CodegenState>)((not_found_pos) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<long, CodegenState>)((found_pos) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => st_append_text(st17, x86_ret())))(st_append_text(st16, li(reg_rax(), 0L)))))(patch_jcc_at(st15, not_found_pos, st15.text_len))))(st_append_text(st14, x86_ret()))))(st_append_text(st13, li(reg_rax(), 1L)))))(patch_jcc_at(st12, found_pos, st12.text_len))))(st_append_text(st11, jmp((loop_top - (st11.text_len + 5L)))))))(st_append_text(st10, add_ri(reg_r11(), 1L)))))(st_append_text(st9, jcc(cc_e(), 0L)))))(st9.text_len)))(st_append_text(st8, cmp_rr(reg_rax(), reg_rsi())))))(st_append_text(st7, mov_load(reg_rax(), reg_rax(), 8L)))))(st_append_text(st6, add_rr(reg_rax(), reg_rdi())))))(st_append_text(st5, shl_ri(reg_rax(), 3L)))))(st_append_text(st4, mov_rr(reg_rax(), reg_r11())))))(st_append_text(st3, jcc(cc_ge(), 0L)))))(st3.text_len)))(st_append_text(st2, cmp_rr(reg_r11(), reg_rcx())))))(st2.text_len)))(st_append_text(st1, li(reg_r11(), 0L)))))(st_append_text(st0, mov_load(reg_rcx(), reg_rdi(), 0L)))))(record_func_offset(st, "UU\u0017\u0011\u0013\u000EU\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013"));
+    }
+
+    public static CodegenState emit_list_cons_alloc(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<long, CodegenState>)((cap_ok_pos) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => st_append_text(st16, mov_store(reg_rax(), reg_rdi(), 8L))))(st_append_text(st15, mov_store(reg_rax(), reg_rdx(), 0L)))))(st_append_text(st14, add_rr(reg_r10(), reg_r11())))))(st_append_text(st13, shl_ri(reg_r11(), 3L)))))(st_append_text(st12, add_ri(reg_r11(), 1L)))))(st_append_text(st11, mov_rr(reg_rax(), reg_r10())))))(st_append_text(st10, add_ri(reg_r10(), 8L)))))(st_append_text(st9, mov_store(reg_r10(), reg_r11(), 0L)))))(patch_jcc_at(st8, cap_ok_pos, st8.text_len))))(st_append_text(st7, li(reg_r11(), 4L)))))(st_append_text(st6, jcc(cc_ge(), 0L)))))(st6.text_len)))(st_append_text(st5, cmp_ri(reg_r11(), 4L)))))(st_append_text(st4, shl_ri(reg_r11(), 1L)))))(st_append_text(st3, mov_rr(reg_r11(), reg_rdx())))))(st_append_text(st2, add_ri(reg_rdx(), 1L)))))(st_append_text(st1, mov_rr(reg_rdx(), reg_rcx())))))(st_append_text(st0, mov_load(reg_rcx(), reg_rsi(), 0L)))))(record_func_offset(st, "UU\u0017\u0011\u0013\u000EU\u0018\u0010\u0012\u0013"));
+    }
+
+    public static CodegenState emit_list_cons_copy(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((loop_top) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<long, CodegenState>)((exit_pos) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => st_append_text(st12, x86_ret())))(patch_jcc_at(st11, exit_pos, st11.text_len))))(st_append_text(st10, jmp((loop_top - (st10.text_len + 5L)))))))(st_append_text(st9, add_ri(reg_r11(), 8L)))))(st_append_text(st8, mov_store(reg_rdi(), reg_rdx(), 16L)))))(st_append_text(st7, add_rr(reg_rdi(), reg_r11())))))(st_append_text(st6, mov_rr(reg_rdi(), reg_rax())))))(st_append_text(st5, mov_load(reg_rdx(), reg_rdx(), 8L)))))(st_append_text(st4, add_rr(reg_rdx(), reg_r11())))))(st_append_text(st3, mov_rr(reg_rdx(), reg_rsi())))))(st_append_text(st2, jcc(cc_ge(), 0L)))))(st2.text_len)))(st_append_text(st1, cmp_rr(reg_r11(), reg_rcx())))))(st1.text_len)))(st_append_text(st0, li(reg_r11(), 0L)))))(st_append_text(st, shl_ri(reg_rcx(), 3L)));
+    }
+
+    public static CodegenState emit_list_cons(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => emit_list_cons_copy(st0)))(emit_list_cons_alloc(st));
+    }
+
+    public static HelpResult1 emit_list_append_prologue(CodegenState st)
+    {
+        return ((Func<CodegenState, HelpResult1>)((st0) => ((Func<CodegenState, HelpResult1>)((st1) => ((Func<CodegenState, HelpResult1>)((st2) => ((Func<CodegenState, HelpResult1>)((st3) => ((Func<CodegenState, HelpResult1>)((st4) => ((Func<CodegenState, HelpResult1>)((st5) => ((Func<CodegenState, HelpResult1>)((st6) => ((Func<long, HelpResult1>)((p2_pos) => ((Func<CodegenState, HelpResult1>)((st7) => new HelpResult1(st7, p2_pos)))(st_append_text(st6, jcc(cc_l(), 0L)))))(st6.text_len)))(st_append_text(st5, cmp_rr(reg_rax(), reg_rdx())))))(st_append_text(st4, sub_rr(reg_rax(), reg_rcx())))))(st_append_text(st3, mov_rr(reg_rax(), reg_r11())))))(st_append_text(st2, mov_load(reg_r11(), reg_rdi(), (0L - 8L))))))(st_append_text(st1, mov_load(reg_rdx(), reg_rsi(), 0L)))))(st_append_text(st0, mov_load(reg_rcx(), reg_rdi(), 0L)))))(record_func_offset(st, "UU\u0017\u0011\u0013\u000EU\u000F\u001F\u001F\u000D\u0012\u0016"));
+    }
+
+    public static CodegenState emit_list_append_path1(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<long, CodegenState>)((skip_pos) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<long, CodegenState>)((loop_pos) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => st_append_text(st17, x86_ret())))(st_append_text(st16, mov_rr(reg_rax(), reg_rdi())))))(st_append_text(st15, mov_store(reg_rdi(), reg_rcx(), 0L)))))(st_append_text(st14, add_rr(reg_rcx(), reg_rdx())))))(st_append_text(st13, mov_load(reg_rdx(), reg_rsi(), 0L)))))(st_append_text(st12, mov_load(reg_rcx(), reg_rdi(), 0L)))))(patch_jcc_at(st11, skip_pos, st11.text_len))))(st_append_text(st10, jcc(cc_ne(), (loop_pos - (st10.text_len + 6L)))))))(st_append_text(st9, sub_ri(reg_rdx(), 1L)))))(st_append_text(st8, add_ri(reg_r11(), 8L)))))(st_append_text(st7, add_ri(reg_rax(), 8L)))))(st_append_text(st6, mov_store(reg_rax(), reg_rcx(), 8L)))))(st_append_text(st5, mov_load(reg_rcx(), reg_r11(), 8L)))))(st5.text_len)))(st_append_text(st4, jcc(cc_e(), 0L)))))(st4.text_len)))(st_append_text(st3, cmp_ri(reg_rdx(), 0L)))))(st_append_text(st2, mov_rr(reg_r11(), reg_rsi())))))(st_append_text(st1, add_rr(reg_rax(), reg_rdi())))))(st_append_text(st0, shl_ri(reg_rax(), 3L)))))(st_append_text(st, mov_rr(reg_rax(), reg_rcx())));
+    }
+
+    public static CodegenState emit_list_append_path2_alloc(CodegenState st, long p2_pos)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<long, CodegenState>)((cap_ok_pos) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => st_append_text(st22, mov_store(reg_rsi(), reg_r13(), 0L))))(st_append_text(st21, add_rr(reg_r10(), reg_r11())))))(st_append_text(st20, shl_ri(reg_r11(), 3L)))))(st_append_text(st19, add_ri(reg_r11(), 1L)))))(st_append_text(st18, mov_rr(reg_r11(), reg_rax())))))(st_append_text(st17, mov_rr(reg_rsi(), reg_r10())))))(st_append_text(st16, add_ri(reg_r10(), 8L)))))(st_append_text(st15, mov_store(reg_r10(), reg_rax(), 0L)))))(patch_jcc_at(st14, cap_ok_pos, st14.text_len))))(st_append_text(st13, li(reg_rax(), 4L)))))(st_append_text(st12, jcc(cc_ge(), 0L)))))(st12.text_len)))(st_append_text(st11, cmp_ri(reg_rax(), 4L)))))(st_append_text(st10, shl_ri(reg_rax(), 1L)))))(st_append_text(st9, mov_rr(reg_rax(), reg_r13())))))(st_append_text(st8, add_rr(reg_r13(), reg_rdx())))))(st_append_text(st7, mov_rr(reg_r13(), reg_rcx())))))(st_append_text(st6, mov_load(reg_rdx(), reg_r12(), 0L)))))(st_append_text(st5, mov_load(reg_rcx(), reg_rbx(), 0L)))))(st_append_text(st4, mov_rr(reg_r12(), reg_rsi())))))(st_append_text(st3, mov_rr(reg_rbx(), reg_rdi())))))(st_append_text(st2, push_r(reg_r13())))))(st_append_text(st1, push_r(reg_r12())))))(st_append_text(st0, push_r(reg_rbx())))))(patch_jcc_at(st, p2_pos, st.text_len));
+    }
+
+    public static CodegenState emit_list_append_path2_copy_a(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<long, CodegenState>)((skip_pos) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<long, CodegenState>)((loop_pos) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => patch_jcc_at(st9, skip_pos, st9.text_len)))(st_append_text(st8, jcc(cc_ne(), (loop_pos - (st8.text_len + 6L)))))))(st_append_text(st7, sub_ri(reg_rcx(), 1L)))))(st_append_text(st6, add_ri(reg_rdi(), 8L)))))(st_append_text(st5, add_ri(reg_rax(), 8L)))))(st_append_text(st4, mov_store(reg_rdi(), reg_r11(), 8L)))))(st_append_text(st3, mov_load(reg_r11(), reg_rax(), 8L)))))(st3.text_len)))(st_append_text(st2, jcc(cc_e(), 0L)))))(st2.text_len)))(st_append_text(st1, cmp_ri(reg_rcx(), 0L)))))(st_append_text(st0, mov_rr(reg_rdi(), reg_rsi())))))(st_append_text(st, mov_rr(reg_rax(), reg_rbx())));
+    }
+
+    public static CodegenState emit_list_append_path2_copy_b(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((skip_pos) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<long, CodegenState>)((loop_pos) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => st_append_text(st13, x86_ret())))(st_append_text(st12, pop_r(reg_rbx())))))(st_append_text(st11, pop_r(reg_r12())))))(st_append_text(st10, pop_r(reg_r13())))))(st_append_text(st9, mov_rr(reg_rax(), reg_rsi())))))(patch_jcc_at(st8, skip_pos, st8.text_len))))(st_append_text(st7, jcc(cc_ne(), (loop_pos - (st7.text_len + 6L)))))))(st_append_text(st6, sub_ri(reg_rdx(), 1L)))))(st_append_text(st5, add_ri(reg_rdi(), 8L)))))(st_append_text(st4, add_ri(reg_rax(), 8L)))))(st_append_text(st3, mov_store(reg_rdi(), reg_r11(), 8L)))))(st_append_text(st2, mov_load(reg_r11(), reg_rax(), 8L)))))(st2.text_len)))(st_append_text(st1, jcc(cc_e(), 0L)))))(st1.text_len)))(st_append_text(st0, cmp_ri(reg_rdx(), 0L)))))(st_append_text(st, mov_rr(reg_rax(), reg_r12())));
+    }
+
+    public static CodegenState emit_list_append(CodegenState st)
+    {
+        return ((Func<HelpResult1, CodegenState>)((h) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => emit_list_append_path2_copy_b(st3)))(emit_list_append_path2_copy_a(st2))))(emit_list_append_path2_alloc(st1, h.p1))))(emit_list_append_path1(h.cg))))(emit_list_append_prologue(st));
+    }
+
+    public static HelpResult1 emit_list_snoc_path1(CodegenState st)
+    {
+        return ((Func<CodegenState, HelpResult1>)((st0) => ((Func<CodegenState, HelpResult1>)((st1) => ((Func<CodegenState, HelpResult1>)((st2) => ((Func<CodegenState, HelpResult1>)((st3) => ((Func<long, HelpResult1>)((path2_pos) => ((Func<CodegenState, HelpResult1>)((st4) => ((Func<CodegenState, HelpResult1>)((st5) => ((Func<CodegenState, HelpResult1>)((st6) => ((Func<CodegenState, HelpResult1>)((st7) => ((Func<CodegenState, HelpResult1>)((st8) => ((Func<CodegenState, HelpResult1>)((st9) => ((Func<CodegenState, HelpResult1>)((st10) => ((Func<CodegenState, HelpResult1>)((st11) => ((Func<CodegenState, HelpResult1>)((st12) => new HelpResult1(st12, path2_pos)))(st_append_text(st11, x86_ret()))))(st_append_text(st10, mov_rr(reg_rax(), reg_rdi())))))(st_append_text(st9, mov_store(reg_rdi(), reg_rcx(), 0L)))))(st_append_text(st8, add_ri(reg_rcx(), 1L)))))(st_append_text(st7, mov_store(reg_rax(), reg_rsi(), 8L)))))(st_append_text(st6, add_rr(reg_rax(), reg_rdi())))))(st_append_text(st5, shl_ri(reg_rax(), 3L)))))(st_append_text(st4, mov_rr(reg_rax(), reg_rcx())))))(st_append_text(st3, jcc(cc_ge(), 0L)))))(st3.text_len)))(st_append_text(st2, cmp_rr(reg_rcx(), reg_rdx())))))(st_append_text(st1, mov_load(reg_rdx(), reg_rdi(), (0L - 8L))))))(st_append_text(st0, mov_load(reg_rcx(), reg_rdi(), 0L)))))(record_func_offset(st, "UU\u0017\u0011\u0013\u000EU\u0013\u0012\u0010\u0018"));
+    }
+
+    public static HelpResult1 emit_list_snoc_path2(CodegenState st, long path2_pos)
+    {
+        return ((Func<CodegenState, HelpResult1>)((st0) => ((Func<CodegenState, HelpResult1>)((st1) => ((Func<CodegenState, HelpResult1>)((st2) => ((Func<CodegenState, HelpResult1>)((st3) => ((Func<CodegenState, HelpResult1>)((st4) => ((Func<CodegenState, HelpResult1>)((st5) => ((Func<long, HelpResult1>)((path3_pos) => ((Func<CodegenState, HelpResult1>)((st6) => ((Func<CodegenState, HelpResult1>)((st7) => ((Func<CodegenState, HelpResult1>)((st8) => ((Func<CodegenState, HelpResult1>)((st9) => ((Func<long, HelpResult1>)((cap_ok_pos) => ((Func<CodegenState, HelpResult1>)((st10) => ((Func<CodegenState, HelpResult1>)((st11) => ((Func<CodegenState, HelpResult1>)((st12) => ((Func<CodegenState, HelpResult1>)((st13) => ((Func<CodegenState, HelpResult1>)((st14) => ((Func<CodegenState, HelpResult1>)((st15) => ((Func<CodegenState, HelpResult1>)((st16) => ((Func<CodegenState, HelpResult1>)((st17) => ((Func<CodegenState, HelpResult1>)((st18) => new HelpResult1(st18, path3_pos)))(st_append_text(st17, shl_ri(reg_rax(), 3L)))))(st_append_text(st16, mov_rr(reg_rax(), reg_rcx())))))(st_append_text(st15, add_rr(reg_r10(), reg_rax())))))(st_append_text(st14, shl_ri(reg_rax(), 3L)))))(st_append_text(st13, sub_rr(reg_rax(), reg_rdx())))))(st_append_text(st12, mov_store(reg_rdi(), reg_rax(), (0L - 8L))))))(patch_jcc_at(st11, cap_ok_pos, st11.text_len))))(st_append_text(st10, li(reg_rax(), 4L)))))(st_append_text(st9, jcc(cc_ge(), 0L)))))(st9.text_len)))(st_append_text(st8, cmp_ri(reg_rax(), 4L)))))(st_append_text(st7, shl_ri(reg_rax(), 1L)))))(st_append_text(st6, mov_rr(reg_rax(), reg_rdx())))))(st_append_text(st5, jcc(cc_ne(), 0L)))))(st5.text_len)))(st_append_text(st4, cmp_rr(reg_rax(), reg_r10())))))(st_append_text(st3, add_rr(reg_rax(), reg_rdi())))))(st_append_text(st2, shl_ri(reg_rax(), 3L)))))(st_append_text(st1, add_ri(reg_rax(), 1L)))))(st_append_text(st0, mov_rr(reg_rax(), reg_rdx())))))(patch_jcc_at(st, path2_pos, st.text_len));
+    }
+
+    public static CodegenState emit_list_snoc_path2_store(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => st_append_text(st4, x86_ret())))(st_append_text(st3, mov_rr(reg_rax(), reg_rdi())))))(st_append_text(st2, mov_store(reg_rdi(), reg_rcx(), 0L)))))(st_append_text(st1, add_ri(reg_rcx(), 1L)))))(st_append_text(st0, mov_store(reg_rax(), reg_rsi(), 8L)))))(st_append_text(st, add_rr(reg_rax(), reg_rdi())));
+    }
+
+    public static CodegenState emit_list_snoc_path3_alloc(CodegenState st, long path3_pos)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<long, CodegenState>)((cap_ok2_pos) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => st_append_text(st17, add_rr(reg_r10(), reg_rdx()))))(st_append_text(st16, shl_ri(reg_rdx(), 3L)))))(st_append_text(st15, add_ri(reg_rdx(), 1L)))))(st_append_text(st14, mov_rr(reg_rdx(), reg_r13())))))(st_append_text(st13, mov_rr(reg_rax(), reg_r10())))))(st_append_text(st12, add_ri(reg_r10(), 8L)))))(st_append_text(st11, mov_store(reg_r10(), reg_r13(), 0L)))))(patch_jcc_at(st10, cap_ok2_pos, st10.text_len))))(st_append_text(st9, li(reg_r13(), 4L)))))(st_append_text(st8, jcc(cc_ge(), 0L)))))(st8.text_len)))(st_append_text(st7, cmp_ri(reg_r13(), 4L)))))(st_append_text(st6, shl_ri(reg_r13(), 1L)))))(st_append_text(st5, mov_rr(reg_r13(), reg_rcx())))))(st_append_text(st4, mov_rr(reg_r12(), reg_rsi())))))(st_append_text(st3, mov_rr(reg_rbx(), reg_rdi())))))(st_append_text(st2, push_r(reg_r13())))))(st_append_text(st1, push_r(reg_r12())))))(st_append_text(st0, push_r(reg_rbx())))))(patch_jcc_at(st, path3_pos, st.text_len));
+    }
+
+    public static CodegenState emit_list_snoc_path3_copy(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<long, CodegenState>)((copy_loop) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<long, CodegenState>)((copy_done_pos) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => patch_jcc_at(st16, copy_done_pos, st16.text_len)))(st_append_text(st15, jmp((copy_loop - (st15.text_len + 5L)))))))(st_append_text(st14, add_ri(reg_r11(), 1L)))))(st_append_text(st13, mov_store(reg_rdi(), reg_rsi(), 8L)))))(st_append_text(st12, add_rr(reg_rdi(), reg_rdx())))))(st_append_text(st11, mov_rr(reg_rdi(), reg_rax())))))(st_append_text(st10, mov_load(reg_rsi(), reg_rsi(), 8L)))))(st_append_text(st9, add_rr(reg_rsi(), reg_rdx())))))(st_append_text(st8, mov_rr(reg_rsi(), reg_rbx())))))(st_append_text(st7, shl_ri(reg_rdx(), 3L)))))(st_append_text(st6, mov_rr(reg_rdx(), reg_r11())))))(st_append_text(st5, jcc(cc_ge(), 0L)))))(st5.text_len)))(st_append_text(st4, cmp_rr(reg_r11(), reg_rcx())))))(st4.text_len)))(st_append_text(st3, li(reg_r11(), 0L)))))(st_append_text(st2, mov_store(reg_rax(), reg_rdx(), 0L)))))(st_append_text(st1, add_ri(reg_rdx(), 1L)))))(st_append_text(st0, mov_rr(reg_rdx(), reg_rcx())))))(st_append_text(st, mov_load(reg_rcx(), reg_rbx(), 0L)));
+    }
+
+    public static CodegenState emit_list_snoc_path3_finish(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => st_append_text(st7, x86_ret())))(st_append_text(st6, pop_r(reg_rbx())))))(st_append_text(st5, pop_r(reg_r12())))))(st_append_text(st4, pop_r(reg_r13())))))(st_append_text(st3, mov_store(reg_rdi(), reg_r12(), 8L)))))(st_append_text(st2, add_rr(reg_rdi(), reg_rdx())))))(st_append_text(st1, mov_rr(reg_rdi(), reg_rax())))))(st_append_text(st0, shl_ri(reg_rdx(), 3L)))))(st_append_text(st, mov_rr(reg_rdx(), reg_rcx())));
+    }
+
+    public static CodegenState emit_list_snoc(CodegenState st)
+    {
+        return ((Func<HelpResult1, CodegenState>)((p1) => ((Func<HelpResult1, CodegenState>)((p2) => ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => emit_list_snoc_path3_finish(st2)))(emit_list_snoc_path3_copy(st1))))(emit_list_snoc_path3_alloc(st0, p2.p1))))(emit_list_snoc_path2_store(p2.cg))))(emit_list_snoc_path2(p1.cg, p1.p1))))(emit_list_snoc_path1(st));
+    }
+
+    public static HelpResult2 emit_list_insert_at_prologue(CodegenState st)
+    {
+        return ((Func<CodegenState, HelpResult2>)((st0) => ((Func<CodegenState, HelpResult2>)((st1) => ((Func<CodegenState, HelpResult2>)((st2) => ((Func<CodegenState, HelpResult2>)((st3) => ((Func<CodegenState, HelpResult2>)((st4) => ((Func<CodegenState, HelpResult2>)((st5) => ((Func<CodegenState, HelpResult2>)((st6) => ((Func<CodegenState, HelpResult2>)((st7) => ((Func<CodegenState, HelpResult2>)((st8) => ((Func<CodegenState, HelpResult2>)((st9) => ((Func<CodegenState, HelpResult2>)((st10) => ((Func<long, HelpResult2>)((in_place_pos) => ((Func<CodegenState, HelpResult2>)((st11) => ((Func<CodegenState, HelpResult2>)((st12) => ((Func<CodegenState, HelpResult2>)((st13) => ((Func<CodegenState, HelpResult2>)((st14) => ((Func<CodegenState, HelpResult2>)((st15) => ((Func<CodegenState, HelpResult2>)((st16) => ((Func<long, HelpResult2>)((path3_pos) => ((Func<CodegenState, HelpResult2>)((st17) => new HelpResult2(st17, in_place_pos, path3_pos)))(st_append_text(st16, jcc(cc_ne(), 0L)))))(st16.text_len)))(st_append_text(st15, cmp_rr(reg_rax(), reg_r10())))))(st_append_text(st14, add_rr(reg_rax(), reg_rbx())))))(st_append_text(st13, shl_ri(reg_rax(), 3L)))))(st_append_text(st12, add_ri(reg_rax(), 1L)))))(st_append_text(st11, mov_rr(reg_rax(), reg_rcx())))))(st_append_text(st10, jcc(cc_l(), 0L)))))(st10.text_len)))(st_append_text(st9, cmp_rr(reg_r14(), reg_rcx())))))(st_append_text(st8, mov_load(reg_rcx(), reg_rbx(), (0L - 8L))))))(st_append_text(st7, mov_load(reg_r14(), reg_rbx(), 0L)))))(st_append_text(st6, mov_rr(reg_r13(), reg_rdx())))))(st_append_text(st5, mov_rr(reg_r12(), reg_rsi())))))(st_append_text(st4, mov_rr(reg_rbx(), reg_rdi())))))(st_append_text(st3, push_r(reg_r14())))))(st_append_text(st2, push_r(reg_r13())))))(st_append_text(st1, push_r(reg_r12())))))(st_append_text(st0, push_r(reg_rbx())))))(record_func_offset(st, "UU\u0017\u0011\u0013\u000EU\u0011\u0012\u0013\u000D\u0015\u000EU\u000F\u000E"));
+    }
+
+    public static CodegenState emit_list_insert_at_grow(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<long, CodegenState>)((cap_ok_pos) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => st_append_text(st8, add_rr(reg_r10(), reg_rax()))))(st_append_text(st7, shl_ri(reg_rax(), 3L)))))(st_append_text(st6, sub_rr(reg_rax(), reg_rcx())))))(st_append_text(st5, mov_store(reg_rbx(), reg_rax(), (0L - 8L))))))(patch_jcc_at(st4, cap_ok_pos, st4.text_len))))(st_append_text(st3, li(reg_rax(), 4L)))))(st_append_text(st2, jcc(cc_ge(), 0L)))))(st2.text_len)))(st_append_text(st1, cmp_ri(reg_rax(), 4L)))))(st_append_text(st0, shl_ri(reg_rax(), 1L)))))(st_append_text(st, mov_rr(reg_rax(), reg_rcx())));
+    }
+
+    public static CodegenState emit_list_insert_at_shift(CodegenState st, long in_place_pos)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<long, CodegenState>)((shift_loop) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<long, CodegenState>)((shift_done_pos) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => patch_jcc_at(st12, shift_done_pos, st12.text_len)))(st_append_text(st11, jmp((shift_loop - (st11.text_len + 5L)))))))(st_append_text(st10, sub_ri(reg_r11(), 1L)))))(st_append_text(st9, mov_store(reg_rax(), reg_rcx(), 16L)))))(st_append_text(st8, mov_load(reg_rcx(), reg_rax(), 8L)))))(st_append_text(st7, add_rr(reg_rax(), reg_rdx())))))(st_append_text(st6, mov_rr(reg_rax(), reg_rbx())))))(st_append_text(st5, shl_ri(reg_rdx(), 3L)))))(st_append_text(st4, mov_rr(reg_rdx(), reg_r11())))))(st_append_text(st3, jcc(cc_l(), 0L)))))(st3.text_len)))(st_append_text(st2, cmp_rr(reg_r11(), reg_r12())))))(st2.text_len)))(st_append_text(st1, sub_ri(reg_r11(), 1L)))))(st_append_text(st0, mov_rr(reg_r11(), reg_r14())))))(patch_jcc_at(st, in_place_pos, st.text_len));
+    }
+
+    public static CodegenState emit_list_insert_at_store(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => st_append_text(st10, x86_ret())))(st_append_text(st9, pop_r(reg_rbx())))))(st_append_text(st8, pop_r(reg_r12())))))(st_append_text(st7, pop_r(reg_r13())))))(st_append_text(st6, pop_r(reg_r14())))))(st_append_text(st5, mov_rr(reg_rax(), reg_rbx())))))(st_append_text(st4, mov_store(reg_rbx(), reg_r14(), 0L)))))(st_append_text(st3, add_ri(reg_r14(), 1L)))))(st_append_text(st2, mov_store(reg_rdx(), reg_r13(), 8L)))))(st_append_text(st1, add_rr(reg_rdx(), reg_rbx())))))(st_append_text(st0, shl_ri(reg_rdx(), 3L)))))(st_append_text(st, mov_rr(reg_rdx(), reg_r12())));
+    }
+
+    public static CodegenState emit_list_insert_at_path3_alloc(CodegenState st, long path3_pos)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<long, CodegenState>)((cap_ok_pos) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => st_append_text(st15, mov_store(reg_rax(), reg_rdx(), 0L))))(st_append_text(st14, add_ri(reg_rdx(), 1L)))))(st_append_text(st13, mov_rr(reg_rdx(), reg_r14())))))(st_append_text(st12, add_rr(reg_r10(), reg_rdx())))))(st_append_text(st11, shl_ri(reg_rdx(), 3L)))))(st_append_text(st10, add_ri(reg_rdx(), 1L)))))(st_append_text(st9, mov_rr(reg_rdx(), reg_rcx())))))(st_append_text(st8, mov_rr(reg_rax(), reg_r10())))))(st_append_text(st7, add_ri(reg_r10(), 8L)))))(st_append_text(st6, mov_store(reg_r10(), reg_rcx(), 0L)))))(patch_jcc_at(st5, cap_ok_pos, st5.text_len))))(st_append_text(st4, li(reg_rcx(), 4L)))))(st_append_text(st3, jcc(cc_ge(), 0L)))))(st3.text_len)))(st_append_text(st2, cmp_ri(reg_rcx(), 4L)))))(st_append_text(st1, shl_ri(reg_rcx(), 1L)))))(st_append_text(st0, mov_rr(reg_rcx(), reg_r14())))))(patch_jcc_at(st, path3_pos, st.text_len));
+    }
+
+    public static CodegenState emit_list_insert_at_path3_pre(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<long, CodegenState>)((pre_loop) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((pre_done_pos) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => patch_jcc_at(st12, pre_done_pos, st12.text_len)))(st_append_text(st11, jmp((pre_loop - (st11.text_len + 5L)))))))(st_append_text(st10, add_ri(reg_r11(), 1L)))))(st_append_text(st9, mov_store(reg_rdi(), reg_rcx(), 8L)))))(st_append_text(st8, add_rr(reg_rdi(), reg_rdx())))))(st_append_text(st7, mov_rr(reg_rdi(), reg_rax())))))(st_append_text(st6, mov_load(reg_rcx(), reg_rsi(), 8L)))))(st_append_text(st5, add_rr(reg_rsi(), reg_rdx())))))(st_append_text(st4, mov_rr(reg_rsi(), reg_rbx())))))(st_append_text(st3, shl_ri(reg_rdx(), 3L)))))(st_append_text(st2, mov_rr(reg_rdx(), reg_r11())))))(st_append_text(st1, jcc(cc_ge(), 0L)))))(st1.text_len)))(st_append_text(st0, cmp_rr(reg_r11(), reg_r12())))))(st0.text_len)))(st_append_text(st, li(reg_r11(), 0L)));
+    }
+
+    public static CodegenState emit_list_insert_at_path3_insert(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => st_append_text(st3, mov_store(reg_rdi(), reg_r13(), 8L))))(st_append_text(st2, add_rr(reg_rdi(), reg_rdx())))))(st_append_text(st1, mov_rr(reg_rdi(), reg_rax())))))(st_append_text(st0, shl_ri(reg_rdx(), 3L)))))(st_append_text(st, mov_rr(reg_rdx(), reg_r12())));
+    }
+
+    public static CodegenState emit_list_insert_at_path3_post(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<long, CodegenState>)((post_loop) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((post_done_pos) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => patch_jcc_at(st13, post_done_pos, st13.text_len)))(st_append_text(st12, jmp((post_loop - (st12.text_len + 5L)))))))(st_append_text(st11, add_ri(reg_r11(), 1L)))))(st_append_text(st10, mov_store(reg_rdi(), reg_rcx(), 8L)))))(st_append_text(st9, add_rr(reg_rdi(), reg_rdx())))))(st_append_text(st8, mov_rr(reg_rdi(), reg_rax())))))(st_append_text(st7, add_ri(reg_rdx(), 8L)))))(st_append_text(st6, mov_load(reg_rcx(), reg_rsi(), 8L)))))(st_append_text(st5, add_rr(reg_rsi(), reg_rdx())))))(st_append_text(st4, mov_rr(reg_rsi(), reg_rbx())))))(st_append_text(st3, shl_ri(reg_rdx(), 3L)))))(st_append_text(st2, mov_rr(reg_rdx(), reg_r11())))))(st_append_text(st1, jcc(cc_ge(), 0L)))))(st1.text_len)))(st_append_text(st0, cmp_rr(reg_r11(), reg_r14())))))(st0.text_len)))(st_append_text(st, mov_rr(reg_r11(), reg_r12())));
+    }
+
+    public static CodegenState emit_list_insert_at_path3_epilogue(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => st_append_text(st3, x86_ret())))(st_append_text(st2, pop_r(reg_rbx())))))(st_append_text(st1, pop_r(reg_r12())))))(st_append_text(st0, pop_r(reg_r13())))))(st_append_text(st, pop_r(reg_r14())));
+    }
+
+    public static CodegenState emit_list_insert_at(CodegenState st)
+    {
+        return ((Func<HelpResult2, CodegenState>)((pro) => ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => emit_list_insert_at_path3_epilogue(st6)))(emit_list_insert_at_path3_post(st5))))(emit_list_insert_at_path3_insert(st4))))(emit_list_insert_at_path3_pre(st3))))(emit_list_insert_at_path3_alloc(st2, pro.p2))))(emit_list_insert_at_store(st1))))(emit_list_insert_at_shift(st0, pro.p1))))(emit_list_insert_at_grow(pro.cg))))(emit_list_insert_at_prologue(st));
+    }
+
+    public static CodegenState emit_list_set_at(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => st_append_text(st4, x86_ret())))(st_append_text(st3, mov_rr(reg_rax(), reg_rdi())))))(st_append_text(st2, mov_store(reg_rsi(), reg_rdx(), 8L)))))(st_append_text(st1, add_rr(reg_rsi(), reg_rdi())))))(st_append_text(st0, shl_ri(reg_rsi(), 3L)))))(record_func_offset(st, "UU\u0017\u0011\u0013\u000EU\u0013\u000D\u000EU\u000F\u000E"));
+    }
+
+    public static CodegenState emit_list_concat_many_helper(CodegenState st)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<long, CodegenState>)((skip_sum) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<long, CodegenState>)((sum_top) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<long, CodegenState>)((sum_back) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => ((Func<CodegenState, CodegenState>)((st23) => ((Func<CodegenState, CodegenState>)((st24) => ((Func<CodegenState, CodegenState>)((st25) => ((Func<CodegenState, CodegenState>)((st26) => ((Func<CodegenState, CodegenState>)((st27) => ((Func<CodegenState, CodegenState>)((st28) => ((Func<CodegenState, CodegenState>)((st29) => ((Func<CodegenState, CodegenState>)((st30) => ((Func<long, CodegenState>)((skip_copy) => ((Func<CodegenState, CodegenState>)((st31) => ((Func<long, CodegenState>)((outer_top) => ((Func<CodegenState, CodegenState>)((st32) => ((Func<CodegenState, CodegenState>)((st33) => ((Func<CodegenState, CodegenState>)((st34) => ((Func<CodegenState, CodegenState>)((st35) => ((Func<CodegenState, CodegenState>)((st36) => ((Func<CodegenState, CodegenState>)((st37) => ((Func<CodegenState, CodegenState>)((st38) => ((Func<long, CodegenState>)((skip_inner) => ((Func<CodegenState, CodegenState>)((st39) => ((Func<long, CodegenState>)((inner_top) => ((Func<CodegenState, CodegenState>)((st40) => ((Func<CodegenState, CodegenState>)((st41) => ((Func<CodegenState, CodegenState>)((st42) => ((Func<CodegenState, CodegenState>)((st43) => ((Func<CodegenState, CodegenState>)((st44) => ((Func<CodegenState, CodegenState>)((st45) => ((Func<CodegenState, CodegenState>)((st46) => ((Func<CodegenState, CodegenState>)((st47) => ((Func<CodegenState, CodegenState>)((st48) => ((Func<CodegenState, CodegenState>)((st49) => ((Func<CodegenState, CodegenState>)((st50) => ((Func<long, CodegenState>)((inner_back) => ((Func<CodegenState, CodegenState>)((st51) => ((Func<CodegenState, CodegenState>)((st52) => ((Func<CodegenState, CodegenState>)((st53) => ((Func<CodegenState, CodegenState>)((st54) => ((Func<CodegenState, CodegenState>)((st55) => ((Func<long, CodegenState>)((outer_back) => ((Func<CodegenState, CodegenState>)((st56) => ((Func<CodegenState, CodegenState>)((st57) => ((Func<CodegenState, CodegenState>)((st58) => ((Func<CodegenState, CodegenState>)((st59) => st_append_text(st59, Enumerable.Concat(pop_r(reg_r15()), Enumerable.Concat(pop_r(reg_r14()), Enumerable.Concat(pop_r(reg_r13()), Enumerable.Concat(pop_r(reg_r12()), Enumerable.Concat(pop_r(reg_rbx()), x86_ret()).ToList()).ToList()).ToList()).ToList()).ToList())))(st_append_text(st58, mov_rr(reg_rax(), reg_rbx())))))(patch_jcc_at(st57, skip_copy, st57.text_len))))(patch_jcc_at(st56, outer_back, outer_top))))(st_append_text(st55, jcc(cc_l(), 0L)))))(st55.text_len)))(st_append_text(st54, cmp_rr(reg_rcx(), reg_r13())))))(st_append_text(st53, add_ri(reg_rcx(), 1L)))))(patch_jcc_at(st52, skip_inner, st52.text_len))))(patch_jcc_at(st51, inner_back, inner_top))))(st_append_text(st50, jcc(cc_l(), 0L)))))(st50.text_len)))(st_append_text(st49, cmp_rr(reg_rdx(), reg_rsi())))))(st_append_text(st48, add_ri(reg_rdx(), 1L)))))(st_append_text(st47, add_ri(reg_r15(), 1L)))))(st_append_text(st46, mov_store(reg_r14(), reg_rax(), 8L)))))(st_append_text(st45, add_rr(reg_r14(), reg_rbx())))))(st_append_text(st44, shl_ri(reg_r14(), 3L)))))(st_append_text(st43, mov_rr(reg_r14(), reg_r15())))))(st_append_text(st42, mov_load(reg_rax(), reg_rax(), 8L)))))(st_append_text(st41, add_rr(reg_rax(), reg_rdi())))))(st_append_text(st40, shl_ri(reg_rax(), 3L)))))(st_append_text(st39, mov_rr(reg_rax(), reg_rdx())))))(st39.text_len)))(st_append_text(st38, jcc(cc_ge(), 0L)))))(st38.text_len)))(st_append_text(st37, cmp_rr(reg_rdx(), reg_rsi())))))(st_append_text(st36, li(reg_rdx(), 0L)))))(st_append_text(st35, mov_load(reg_rsi(), reg_rdi(), 0L)))))(st_append_text(st34, mov_load(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st33, add_rr(reg_rax(), reg_r12())))))(st_append_text(st32, shl_ri(reg_rax(), 3L)))))(st_append_text(st31, mov_rr(reg_rax(), reg_rcx())))))(st31.text_len)))(st_append_text(st30, jcc(cc_ge(), 0L)))))(st30.text_len)))(st_append_text(st29, cmp_rr(reg_rcx(), reg_r13())))))(st_append_text(st28, li(reg_rcx(), 0L)))))(st_append_text(st27, li(reg_r15(), 0L)))))(st_append_text(st26, add_rr(reg_r10(), reg_rax())))))(st_append_text(st25, shl_ri(reg_rax(), 3L)))))(st_append_text(st24, add_ri(reg_rax(), 1L)))))(st_append_text(st23, mov_rr(reg_rax(), reg_r14())))))(st_append_text(st22, mov_store(reg_r10(), reg_r14(), 0L)))))(st_append_text(st21, mov_rr(reg_rbx(), reg_r10())))))(st_append_text(st20, add_ri(reg_r10(), 8L)))))(st_append_text(st19, mov_store(reg_r10(), reg_r14(), 0L)))))(patch_jcc_at(st18, skip_sum, st18.text_len))))(patch_jcc_at(st17, sum_back, sum_top))))(st_append_text(st16, jcc(cc_l(), 0L)))))(st16.text_len)))(st_append_text(st15, cmp_rr(reg_rcx(), reg_r13())))))(st_append_text(st14, add_ri(reg_rcx(), 1L)))))(st_append_text(st13, add_rr(reg_r14(), reg_rax())))))(st_append_text(st12, mov_load(reg_rax(), reg_rax(), 0L)))))(st_append_text(st11, mov_load(reg_rax(), reg_rax(), 0L)))))(st_append_text(st10, add_rr(reg_rax(), reg_r12())))))(st_append_text(st9, shl_ri(reg_rax(), 3L)))))(st_append_text(st8, mov_rr(reg_rax(), reg_rcx())))))(st8.text_len)))(st_append_text(st7, jcc(cc_ge(), 0L)))))(st7.text_len)))(st_append_text(st6, cmp_rr(reg_rcx(), reg_r13())))))(st_append_text(st5, li(reg_rcx(), 0L)))))(st_append_text(st4, li(reg_r14(), 0L)))))(st_append_text(st3, mov_rr(reg_r13(), reg_rsi())))))(st_append_text(st2, mov_rr(reg_r12(), reg_rdi())))))(st_append_text(st1, Enumerable.Concat(push_r(reg_rbx()), Enumerable.Concat(push_r(reg_r12()), Enumerable.Concat(push_r(reg_r13()), Enumerable.Concat(push_r(reg_r14()), push_r(reg_r15())).ToList()).ToList()).ToList()).ToList()))))(record_func_offset(st, "UU\u0017\u0011\u0013\u000EU\u0018\u0010\u0012\u0018\u000F\u000EU\u001A\u000F\u0012\u001E"));
+    }
+
+    public static TcoState default_tco_state()
+    {
+        return new TcoState(false, false, 0L, new List<long>(), new List<long>(), "", 0L, 0L);
+    }
+
+    public static List<long> temp_regs()
+    {
+        return new List<long>() { 0L, 1L, 2L, 6L, 7L, 11L };
+    }
+
+    public static List<long> local_regs()
+    {
+        return new List<long>() { 3L, 12L, 13L, 14L };
+    }
+
+    public static long spill_base()
+    {
+        return 32L;
+    }
+
+    public static long bare_metal_load_addr()
+    {
+        return 1048576L;
+    }
+
+    public static long bare_metal_stack_top()
+    {
+        return 1073741824L;
+    }
+
+    public static List<long> cce_to_unicode_table()
+    {
+        return new List<long>() { 0L, 10L, 32L, 48L, 49L, 50L, 51L, 52L, 53L, 54L, 55L, 56L, 57L, 101L, 116L, 97L, 111L, 105L, 110L, 115L, 104L, 114L, 100L, 108L, 99L, 117L, 109L, 119L, 102L, 103L, 121L, 112L, 98L, 118L, 107L, 106L, 120L, 113L, 122L, 69L, 84L, 65L, 79L, 73L, 78L, 83L, 72L, 82L, 68L, 76L, 67L, 85L, 77L, 87L, 70L, 71L, 89L, 80L, 66L, 86L, 75L, 74L, 88L, 81L, 90L, 46L, 44L, 33L, 63L, 58L, 59L, 39L, 34L, 45L, 40L, 41L, 43L, 61L, 42L, 60L, 62L, 47L, 64L, 35L, 38L, 95L, 92L, 124L, 91L, 93L, 123L, 125L, 126L, 96L, 94L, 233L, 232L, 234L, 235L, 225L, 224L, 226L, 228L, 243L, 244L, 246L, 250L, 249L, 251L, 252L, 241L, 231L, 237L, 48L, 62L, 53L, 56L, 61L, 66L, 65L, 64L, 50L, 59L, 58L, 60L, 52L, 63L, 67L };
+    }
+
+    public static List<long> unicode_to_cce_table()
+    {
+        return new List<long>() { 0L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 1L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 2L, 67L, 72L, 83L, 68L, 68L, 84L, 71L, 74L, 75L, 78L, 76L, 66L, 73L, 65L, 81L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L, 11L, 12L, 69L, 70L, 79L, 77L, 80L, 68L, 82L, 41L, 58L, 50L, 48L, 39L, 54L, 55L, 46L, 43L, 61L, 60L, 49L, 52L, 44L, 42L, 57L, 63L, 47L, 45L, 40L, 51L, 59L, 53L, 62L, 56L, 64L, 88L, 86L, 89L, 94L, 85L, 93L, 15L, 32L, 24L, 22L, 13L, 28L, 29L, 20L, 17L, 35L, 34L, 23L, 26L, 18L, 16L, 31L, 37L, 21L, 19L, 14L, 25L, 33L, 27L, 36L, 30L, 38L, 90L, 87L, 91L, 92L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 68L, 100L, 99L, 101L, 68L, 102L, 68L, 68L, 111L, 96L, 95L, 97L, 98L, 68L, 112L, 68L, 68L, 68L, 110L, 68L, 103L, 104L, 68L, 105L, 68L, 68L, 107L, 106L, 108L, 109L, 68L, 68L, 68L };
+    }
+
+    public static long result_base_rodata_offset()
+    {
+        return 0L;
+    }
+
+    public static long fwd_table_rodata_offset()
+    {
+        return 8L;
+    }
+
+    public static long cce_to_unicode_rodata_offset()
+    {
+        return 16L;
+    }
+
+    public static long unicode_to_cce_rodata_offset()
+    {
+        return 144L;
+    }
+
+    public static List<long> init_rodata()
+    {
+        return ((Func<List<long>, List<long>>)((zeros_8) => Enumerable.Concat(zeros_8, Enumerable.Concat(zeros_8, Enumerable.Concat(cce_to_unicode_table(), unicode_to_cce_table()).ToList()).ToList()).ToList()))(new List<long>() { 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L });
+    }
+
+    public static CodegenState empty_codegen_state()
+    {
+        return new CodegenState(0L, 0L, 0L, 0L, new List<FuncOffset>(), new List<CallPatch>(), new List<FuncAddrFixup>(), new List<RodataFixup>(), new List<PatchEntry>(), new List<LocalBinding>(), 0L, 0L, 0L, 0L, new TcoState(false, false, 0L, new List<long>(), new List<long>(), "", 0L, 0L), new List<TypeBinding>(), new List<long>(), empty_bag());
+    }
+
+    public static CodegenState st_add_error(CodegenState st, long code, string msg, SourceSpan sp)
+    {
+        return ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, bag_add(st.bag, make_error(code, msg, sp)))))(st);
+    }
+
+    public static CodegenState st_append_text(CodegenState st, List<long> bytes)
+    {
+        return ((Func<dynamic, CodegenState>)((new_len) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, new_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st)))(_Buf.buf_write_bytes(st.text_buf_addr, st.text_len, bytes));
+    }
+
+    public static CodegenState record_func_offset(CodegenState st, string name)
+    {
+        return ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, ((Func<List<FuncOffset>>)(() => { var _l = st.func_offsets; _l.Add(new FuncOffset(name, st.text_len)); return _l; }))(), _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st);
+    }
+
+    public static List<LocalBinding> fresh_empty_locals(long x)
+    {
+        return new List<LocalBinding>();
+    }
+
+    public static CodegenState reset_func_state(CodegenState st, string name)
+    {
+        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, new TcoState(false, false, 0L, new List<long>(), new List<long>(), "", 0L, 0L), _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st6)))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, 0L, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st5))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, 0L, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st4))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, 0L, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st3))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, 0L, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st2))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, fresh_empty_locals(0L), _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st1))))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, ((Func<List<FuncOffset>>)(() => { var _l = st.func_offsets; _l.Add(new FuncOffset(name, st.text_len)); return _l; }))(), _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st));
+    }
+
+    public static EmitResult alloc_temp(CodegenState st)
+    {
+        return ((Func<long, EmitResult>)((idx) => ((Func<long, EmitResult>)((reg) => new EmitResult(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, (st.next_temp + 1L), _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st), reg)))(temp_regs()[(int)idx])))(((Func<long, long, long>)((_a, _b) => { long _abs = _b < 0L ? -_b : _b; long _r = _a % _abs; return _r < 0L ? _r + _abs : _r; }))(st.next_temp, 6L));
+    }
+
+    public static EmitResult alloc_local(CodegenState st)
+    {
+        return ((st.next_local < 4L) ? ((Func<long, EmitResult>)((reg) => new EmitResult(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, (st.next_local + 1L), _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st), reg)))(local_regs()[(int)st.next_local]) : ((Func<long, EmitResult>)((slot) => ((Func<CodegenState, EmitResult>)((st1) => new EmitResult(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, (st.spill_count + 1L), _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st1), slot)))(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, (st.next_local + 1L), _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st))))((spill_base() + st.spill_count)));
+    }
+
+    public static CodegenState store_local(CodegenState st, long local, long value_reg)
+    {
+        return ((local < spill_base()) ? ((local == value_reg) ? st : st_append_text(st, mov_rr(local, value_reg))) : ((Func<long, CodegenState>)((offset) => st_append_text(st, mov_store(reg_rbp(), value_reg, offset))))((0L - ((((local - spill_base()) + 1L) * 8L) + 32L))));
+    }
+
+    public static long load_local_scratch_for(long toggle)
+    {
+        return ((Func<long, long>)((idx) => ((idx == 0L) ? reg_r8() : ((idx == 1L) ? reg_r9() : reg_r15()))))(((Func<long, long, long>)((_a, _b) => { long _abs = _b < 0L ? -_b : _b; long _r = _a % _abs; return _r < 0L ? _r + _abs : _r; }))(toggle, 3L));
+    }
+
+    public static EmitResult load_local(CodegenState st, long local)
+    {
+        return ((local < spill_base()) ? new EmitResult(st, local) : ((Func<long, EmitResult>)((scratch) => ((Func<long, EmitResult>)((offset) => ((Func<CodegenState, EmitResult>)((st1) => new EmitResult(((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, _rs.deferred_patches, _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, (st.load_local_toggle + 1L), _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st1), scratch)))(st_append_text(st, mov_load(scratch, reg_rbp(), offset)))))((0L - ((((local - spill_base()) + 1L) * 8L) + 32L)))))(load_local_scratch_for(st.load_local_toggle)));
+    }
+
+    public static List<long> patch_i32_at(List<long> bytes, long pos, long value)
+    {
+        return ((Func<List<long>, List<long>>)((new_bytes) => patch_4_loop(bytes, pos, new_bytes, 0L, ((long)bytes.Count), new List<long>())))(write_i32(value));
+    }
+
+    public static List<long> patch_4_loop(List<long> bytes, long pos, List<long> new_bytes, long i, long len, List<long> acc)
+    {
+        while (true)
+        {
+            if ((i == len))
+            {
+                return acc;
+            }
+            else
+            {
+                if (((i >= pos) && (i < (pos + 4L))))
+                {
+                    var _tco_0 = bytes;
+                    var _tco_1 = pos;
+                    var _tco_2 = new_bytes;
+                    var _tco_3 = (i + 1L);
+                    var _tco_4 = len;
+                    var _tco_5 = ((Func<List<long>>)(() => { var _l = acc; _l.Add(new_bytes[(int)(i - pos)]); return _l; }))();
+                    bytes = _tco_0;
+                    pos = _tco_1;
+                    new_bytes = _tco_2;
+                    i = _tco_3;
+                    len = _tco_4;
+                    acc = _tco_5;
+                    continue;
+                }
+                else
+                {
+                    var _tco_0 = bytes;
+                    var _tco_1 = pos;
+                    var _tco_2 = new_bytes;
+                    var _tco_3 = (i + 1L);
+                    var _tco_4 = len;
+                    var _tco_5 = ((Func<List<long>>)(() => { var _l = acc; _l.Add(bytes[(int)i]); return _l; }))();
+                    bytes = _tco_0;
+                    pos = _tco_1;
+                    new_bytes = _tco_2;
+                    i = _tco_3;
+                    len = _tco_4;
+                    acc = _tco_5;
+                    continue;
+                }
+            }
+        }
+    }
+
+    public static CodegenState st_add_deferred_patch(CodegenState st, PatchEntry entry)
+    {
+        return ((Func<CodegenState, CodegenState>)((_rs) => new CodegenState(_rs.text_buf_addr, _rs.text_len, _rs.rodata_buf_addr, _rs.rodata_len, _rs.func_offsets, _rs.call_patches, _rs.func_addr_fixups, _rs.rodata_fixups, ((Func<List<PatchEntry>>)(() => { var _l = st.deferred_patches; _l.Add(entry); return _l; }))(), _rs.locals, _rs.next_temp, _rs.next_local, _rs.spill_count, _rs.load_local_toggle, _rs.tco, _rs.type_defs, _rs.stack_overflow_checks, _rs.bag)))(st);
+    }
+
+    public static CodegenState patch_jcc_at(CodegenState st, long jcc_pos, long target_pos)
+    {
+        return ((Func<long, CodegenState>)((rel32) => st_add_deferred_patch(st, make_i32_patch((jcc_pos + 2L), rel32))))((target_pos - (jcc_pos + 6L)));
+    }
+
+    public static CodegenState patch_jmp_at(CodegenState st, long jmp_pos, long target_pos)
+    {
+        return ((Func<long, CodegenState>)((rel32) => st_add_deferred_patch(st, make_i32_patch((jmp_pos + 1L), rel32))))((target_pos - (jmp_pos + 5L)));
+    }
+
+    public static CodegenState patch_call_at(CodegenState st, long call_pos, long target_pos)
+    {
+        return ((Func<long, CodegenState>)((rel32) => st_add_deferred_patch(st, make_i32_patch((call_pos + 1L), rel32))))((target_pos - (call_pos + 5L)));
+    }
+
+    public static PatchEntry make_i32_patch(long pos, long value)
+    {
+        return ((Func<List<long>, PatchEntry>)((bs) => new PatchEntry(pos, bs[(int)0L], bs[(int)1L], bs[(int)2L], bs[(int)3L])))(write_i32(value));
+    }
+
+    public static List<long> apply_all_patches(List<long> bytes, List<PatchEntry> patches)
+    {
+        return apply_patch_walk(bytes, patches, 0L, ((long)bytes.Count), new List<long>());
+    }
+
+    public static List<long> apply_patch_walk(List<long> bytes, List<PatchEntry> patches, long i, long len, List<long> acc)
+    {
+        while (true)
+        {
+            if ((i == len))
+            {
+                return acc;
+            }
+            else
+            {
+                var b = find_patch_byte(patches, i, 0L, ((long)patches.Count));
+                if ((b >= 0L))
+                {
+                    var _tco_0 = bytes;
+                    var _tco_1 = patches;
+                    var _tco_2 = (i + 1L);
+                    var _tco_3 = len;
+                    var _tco_4 = ((Func<List<long>>)(() => { var _l = acc; _l.Add(b); return _l; }))();
+                    bytes = _tco_0;
+                    patches = _tco_1;
+                    i = _tco_2;
+                    len = _tco_3;
+                    acc = _tco_4;
+                    continue;
+                }
+                else
+                {
+                    var _tco_0 = bytes;
+                    var _tco_1 = patches;
+                    var _tco_2 = (i + 1L);
+                    var _tco_3 = len;
+                    var _tco_4 = ((Func<List<long>>)(() => { var _l = acc; _l.Add(bytes[(int)i]); return _l; }))();
+                    bytes = _tco_0;
+                    patches = _tco_1;
+                    i = _tco_2;
+                    len = _tco_3;
+                    acc = _tco_4;
+                    continue;
+                }
+            }
+        }
+    }
+
+    public static long find_patch_byte(List<PatchEntry> patches, long i, long j, long len)
+    {
+        while (true)
+        {
+            if ((j == len))
+            {
+                return (-1L);
+            }
+            else
+            {
+                var p = patches[(int)j];
+                if ((i == p.pos))
+                {
+                    return p.b0;
+                }
+                else
+                {
+                    if ((i == (p.pos + 1L)))
+                    {
+                        return p.b1;
+                    }
+                    else
+                    {
+                        if ((i == (p.pos + 2L)))
+                        {
+                            return p.b2;
+                        }
+                        else
+                        {
+                            if ((i == (p.pos + 3L)))
+                            {
+                                return p.b3;
+                            }
+                            else
+                            {
+                                var _tco_0 = patches;
+                                var _tco_1 = i;
+                                var _tco_2 = (j + 1L);
+                                var _tco_3 = len;
+                                patches = _tco_0;
+                                i = _tco_1;
+                                j = _tco_2;
+                                len = _tco_3;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    public static List<PatchEntry> collect_call_patches(List<CallPatch> patches, OffsetTable offset_map, long i, List<PatchEntry> acc)
+    {
+        while (true)
+        {
+            if ((i == ((long)patches.Count)))
+            {
+                return acc;
+            }
+            else
+            {
+                var p = patches[(int)i];
+                var target_offset = offset_table_lookup(offset_map, p.target);
+                var rel32 = (target_offset - (p.patch_offset + 5L));
+                var _tco_0 = patches;
+                var _tco_1 = offset_map;
+                var _tco_2 = (i + 1L);
+                var _tco_3 = ((Func<List<PatchEntry>>)(() => { var _l = acc; _l.Add(make_i32_patch((p.patch_offset + 1L), rel32)); return _l; }))();
+                patches = _tco_0;
+                offset_map = _tco_1;
+                i = _tco_2;
+                acc = _tco_3;
+                continue;
+            }
+        }
+    }
+
+    public static CodegenState check_call_patch_targets(CodegenState st, OffsetTable fm, long i)
+    {
+        while (true)
+        {
+            var patches = st.call_patches;
+            if ((i == ((long)patches.Count)))
+            {
+                return st;
+            }
+            else
+            {
+                var p = patches[(int)i];
+                var off = offset_table_lookup(fm, p.target);
+                if ((off == (0L - 1L)))
+                {
+                    var _tco_0 = st_add_error(st, cdx_unresolved_func_offset(), string.Concat("3\u0012\u0015\u000D\u0013\u0010\u0017!\u000D\u0016\u0002\u0018\u000F\u0017\u0017\u0002\u000E\u0010\u0002G", p.target, "G"), synthetic_span());
+                    var _tco_1 = fm;
+                    var _tco_2 = (i + 1L);
+                    st = _tco_0;
+                    fm = _tco_1;
+                    i = _tco_2;
+                    continue;
+                }
+                else
+                {
+                    var _tco_0 = st;
+                    var _tco_1 = fm;
+                    var _tco_2 = (i + 1L);
+                    st = _tco_0;
+                    fm = _tco_1;
+                    i = _tco_2;
+                    continue;
+                }
+            }
+        }
+    }
+
+    public static CodegenState check_func_addr_targets(CodegenState st, OffsetTable fm, long i)
+    {
+        while (true)
+        {
+            var fixups = st.func_addr_fixups;
+            if ((i == ((long)fixups.Count)))
+            {
+                return st;
+            }
+            else
+            {
+                var f = fixups[(int)i];
+                var off = offset_table_lookup(fm, f.target);
+                if ((off == (0L - 1L)))
+                {
+                    var _tco_0 = st_add_error(st, cdx_unresolved_func_offset(), string.Concat("3\u0012\u0015\u000D\u0013\u0010\u0017!\u000D\u0016\u0002\u001C\u0019\u0012\u0018I\u000F\u0016\u0016\u0015\u0002\u0015\u000D\u001C\u000D\u0015\u000D\u0012\u0018\u000D\u0002\u000E\u0010\u0002G", f.target, "G"), synthetic_span());
+                    var _tco_1 = fm;
+                    var _tco_2 = (i + 1L);
+                    st = _tco_0;
+                    fm = _tco_1;
+                    i = _tco_2;
+                    continue;
+                }
+                else
+                {
+                    var _tco_0 = st;
+                    var _tco_1 = fm;
+                    var _tco_2 = (i + 1L);
+                    st = _tco_0;
+                    fm = _tco_1;
+                    i = _tco_2;
+                    continue;
+                }
+            }
+        }
+    }
+
+    public static CodegenState check_runtime_symbol(CodegenState st, OffsetTable fm, string name)
+    {
+        return ((Func<long, CodegenState>)((off) => ((off == (0L - 1L)) ? st_add_error(st, cdx_unresolved_func_offset(), string.Concat("4\u0011\u0013\u0013\u0011\u0012\u001D\u0002\u0015\u0019\u0012\u000E\u0011\u001A\u000D\u0002\u0013\u001E\u001A \u0010\u0017\u0002G", name, "G"), synthetic_span()) : st)))(offset_table_lookup(fm, name));
+    }
+
+    public static long align_16(long n)
+    {
+        return ((Func<long, long>)((r) => ((r == 0L) ? n : ((n + 16L) - r))))(((Func<long, long, long>)((_a, _b) => { long _abs = _b < 0L ? -_b : _b; long _r = _a % _abs; return _r < 0L ? _r + _abs : _r; }))(n, 16L));
+    }
+
     public static StrEqHeadResult emit_str_eq_head(CodegenState st)
     {
         return ((Func<CodegenState, StrEqHeadResult>)((st0) => ((Func<CodegenState, StrEqHeadResult>)((st1) => ((Func<long, StrEqHeadResult>)((not_same_pos) => ((Func<CodegenState, StrEqHeadResult>)((st2) => ((Func<CodegenState, StrEqHeadResult>)((st3) => ((Func<CodegenState, StrEqHeadResult>)((st4) => ((Func<CodegenState, StrEqHeadResult>)((st5) => ((Func<CodegenState, StrEqHeadResult>)((st6) => ((Func<CodegenState, StrEqHeadResult>)((st7) => ((Func<CodegenState, StrEqHeadResult>)((st8) => ((Func<long, StrEqHeadResult>)((len_ne_pos) => ((Func<CodegenState, StrEqHeadResult>)((st9) => new StrEqHeadResult(st9, len_ne_pos)))(st_append_text(st8, jcc(cc_ne(), 0L)))))(st8.text_len)))(st_append_text(st7, cmp_rr(reg_rcx(), reg_rdx())))))(st_append_text(st6, mov_load(reg_rdx(), reg_rsi(), 0L)))))(st_append_text(st5, mov_load(reg_rcx(), reg_rdi(), 0L)))))(patch_jcc_at(st4, not_same_pos, st4.text_len))))(st_append_text(st3, x86_ret()))))(st_append_text(st2, li(reg_rax(), 1L)))))(st_append_text(st1, jcc(cc_ne(), 0L)))))(st1.text_len)))(st_append_text(st0, cmp_rr(reg_rdi(), reg_rsi())))))(record_func_offset(st, "UU\u0013\u000E\u0015U\u000D%"));
@@ -9532,146 +9832,6 @@ public static class Codex_Codex_Codex
         return ((Func<CodegenState, CodegenState>)((st0) => ((Func<HelpResult3, CodegenState>)((bytes) => ((Func<HelpResult2, CodegenState>)((diff) => ((Func<HelpResult2, CodegenState>)((lens) => ((Func<long, CodegenState>)((end_pos) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => st_append_text(st6, x86_ret())))(st_append_text(st5, pop_r(reg_rbx())))))(st_append_text(st4, pop_r(reg_r12())))))(patch_jmp_at(st3, lens.p2, end_pos))))(patch_jmp_at(st2, lens.p1, end_pos))))(patch_jmp_at(st1, diff.p2, end_pos))))(patch_jmp_at(lens.cg, diff.p1, end_pos))))(lens.cg.text_len)))(emit_text_compare_len(diff.cg, bytes.p1))))(emit_text_compare_diff(bytes.cg, bytes.p2, bytes.p3))))(emit_text_compare_byte_load(st0))))(emit_text_compare_prologue(st));
     }
 
-    public static CodegenState emit_list_contains(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<long, CodegenState>)((loop_top) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<long, CodegenState>)((not_found_pos) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<long, CodegenState>)((found_pos) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => st_append_text(st17, x86_ret())))(st_append_text(st16, li(reg_rax(), 0L)))))(patch_jcc_at(st15, not_found_pos, st15.text_len))))(st_append_text(st14, x86_ret()))))(st_append_text(st13, li(reg_rax(), 1L)))))(patch_jcc_at(st12, found_pos, st12.text_len))))(st_append_text(st11, jmp((loop_top - (st11.text_len + 5L)))))))(st_append_text(st10, add_ri(reg_r11(), 1L)))))(st_append_text(st9, jcc(cc_e(), 0L)))))(st9.text_len)))(st_append_text(st8, cmp_rr(reg_rax(), reg_rsi())))))(st_append_text(st7, mov_load(reg_rax(), reg_rax(), 8L)))))(st_append_text(st6, add_rr(reg_rax(), reg_rdi())))))(st_append_text(st5, shl_ri(reg_rax(), 3L)))))(st_append_text(st4, mov_rr(reg_rax(), reg_r11())))))(st_append_text(st3, jcc(cc_ge(), 0L)))))(st3.text_len)))(st_append_text(st2, cmp_rr(reg_r11(), reg_rcx())))))(st2.text_len)))(st_append_text(st1, li(reg_r11(), 0L)))))(st_append_text(st0, mov_load(reg_rcx(), reg_rdi(), 0L)))))(record_func_offset(st, "UU\u0017\u0011\u0013\u000EU\u0018\u0010\u0012\u000E\u000F\u0011\u0012\u0013"));
-    }
-
-    public static CodegenState emit_list_cons_alloc(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<long, CodegenState>)((cap_ok_pos) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => st_append_text(st16, mov_store(reg_rax(), reg_rdi(), 8L))))(st_append_text(st15, mov_store(reg_rax(), reg_rdx(), 0L)))))(st_append_text(st14, add_rr(reg_r10(), reg_r11())))))(st_append_text(st13, shl_ri(reg_r11(), 3L)))))(st_append_text(st12, add_ri(reg_r11(), 1L)))))(st_append_text(st11, mov_rr(reg_rax(), reg_r10())))))(st_append_text(st10, add_ri(reg_r10(), 8L)))))(st_append_text(st9, mov_store(reg_r10(), reg_r11(), 0L)))))(patch_jcc_at(st8, cap_ok_pos, st8.text_len))))(st_append_text(st7, li(reg_r11(), 4L)))))(st_append_text(st6, jcc(cc_ge(), 0L)))))(st6.text_len)))(st_append_text(st5, cmp_ri(reg_r11(), 4L)))))(st_append_text(st4, shl_ri(reg_r11(), 1L)))))(st_append_text(st3, mov_rr(reg_r11(), reg_rdx())))))(st_append_text(st2, add_ri(reg_rdx(), 1L)))))(st_append_text(st1, mov_rr(reg_rdx(), reg_rcx())))))(st_append_text(st0, mov_load(reg_rcx(), reg_rsi(), 0L)))))(record_func_offset(st, "UU\u0017\u0011\u0013\u000EU\u0018\u0010\u0012\u0013"));
-    }
-
-    public static CodegenState emit_list_cons_copy(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((loop_top) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<long, CodegenState>)((exit_pos) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => st_append_text(st12, x86_ret())))(patch_jcc_at(st11, exit_pos, st11.text_len))))(st_append_text(st10, jmp((loop_top - (st10.text_len + 5L)))))))(st_append_text(st9, add_ri(reg_r11(), 8L)))))(st_append_text(st8, mov_store(reg_rdi(), reg_rdx(), 16L)))))(st_append_text(st7, add_rr(reg_rdi(), reg_r11())))))(st_append_text(st6, mov_rr(reg_rdi(), reg_rax())))))(st_append_text(st5, mov_load(reg_rdx(), reg_rdx(), 8L)))))(st_append_text(st4, add_rr(reg_rdx(), reg_r11())))))(st_append_text(st3, mov_rr(reg_rdx(), reg_rsi())))))(st_append_text(st2, jcc(cc_ge(), 0L)))))(st2.text_len)))(st_append_text(st1, cmp_rr(reg_r11(), reg_rcx())))))(st1.text_len)))(st_append_text(st0, li(reg_r11(), 0L)))))(st_append_text(st, shl_ri(reg_rcx(), 3L)));
-    }
-
-    public static CodegenState emit_list_cons(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => emit_list_cons_copy(st0)))(emit_list_cons_alloc(st));
-    }
-
-    public static HelpResult1 emit_list_append_prologue(CodegenState st)
-    {
-        return ((Func<CodegenState, HelpResult1>)((st0) => ((Func<CodegenState, HelpResult1>)((st1) => ((Func<CodegenState, HelpResult1>)((st2) => ((Func<CodegenState, HelpResult1>)((st3) => ((Func<CodegenState, HelpResult1>)((st4) => ((Func<CodegenState, HelpResult1>)((st5) => ((Func<CodegenState, HelpResult1>)((st6) => ((Func<long, HelpResult1>)((p2_pos) => ((Func<CodegenState, HelpResult1>)((st7) => new HelpResult1(st7, p2_pos)))(st_append_text(st6, jcc(cc_l(), 0L)))))(st6.text_len)))(st_append_text(st5, cmp_rr(reg_rax(), reg_rdx())))))(st_append_text(st4, sub_rr(reg_rax(), reg_rcx())))))(st_append_text(st3, mov_rr(reg_rax(), reg_r11())))))(st_append_text(st2, mov_load(reg_r11(), reg_rdi(), (0L - 8L))))))(st_append_text(st1, mov_load(reg_rdx(), reg_rsi(), 0L)))))(st_append_text(st0, mov_load(reg_rcx(), reg_rdi(), 0L)))))(record_func_offset(st, "UU\u0017\u0011\u0013\u000EU\u000F\u001F\u001F\u000D\u0012\u0016"));
-    }
-
-    public static CodegenState emit_list_append_path1(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<long, CodegenState>)((skip_pos) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<long, CodegenState>)((loop_pos) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => st_append_text(st17, x86_ret())))(st_append_text(st16, mov_rr(reg_rax(), reg_rdi())))))(st_append_text(st15, mov_store(reg_rdi(), reg_rcx(), 0L)))))(st_append_text(st14, add_rr(reg_rcx(), reg_rdx())))))(st_append_text(st13, mov_load(reg_rdx(), reg_rsi(), 0L)))))(st_append_text(st12, mov_load(reg_rcx(), reg_rdi(), 0L)))))(patch_jcc_at(st11, skip_pos, st11.text_len))))(st_append_text(st10, jcc(cc_ne(), (loop_pos - (st10.text_len + 6L)))))))(st_append_text(st9, sub_ri(reg_rdx(), 1L)))))(st_append_text(st8, add_ri(reg_r11(), 8L)))))(st_append_text(st7, add_ri(reg_rax(), 8L)))))(st_append_text(st6, mov_store(reg_rax(), reg_rcx(), 8L)))))(st_append_text(st5, mov_load(reg_rcx(), reg_r11(), 8L)))))(st5.text_len)))(st_append_text(st4, jcc(cc_e(), 0L)))))(st4.text_len)))(st_append_text(st3, cmp_ri(reg_rdx(), 0L)))))(st_append_text(st2, mov_rr(reg_r11(), reg_rsi())))))(st_append_text(st1, add_rr(reg_rax(), reg_rdi())))))(st_append_text(st0, shl_ri(reg_rax(), 3L)))))(st_append_text(st, mov_rr(reg_rax(), reg_rcx())));
-    }
-
-    public static CodegenState emit_list_append_path2_alloc(CodegenState st, long p2_pos)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<long, CodegenState>)((cap_ok_pos) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => st_append_text(st22, mov_store(reg_rsi(), reg_r13(), 0L))))(st_append_text(st21, add_rr(reg_r10(), reg_r11())))))(st_append_text(st20, shl_ri(reg_r11(), 3L)))))(st_append_text(st19, add_ri(reg_r11(), 1L)))))(st_append_text(st18, mov_rr(reg_r11(), reg_rax())))))(st_append_text(st17, mov_rr(reg_rsi(), reg_r10())))))(st_append_text(st16, add_ri(reg_r10(), 8L)))))(st_append_text(st15, mov_store(reg_r10(), reg_rax(), 0L)))))(patch_jcc_at(st14, cap_ok_pos, st14.text_len))))(st_append_text(st13, li(reg_rax(), 4L)))))(st_append_text(st12, jcc(cc_ge(), 0L)))))(st12.text_len)))(st_append_text(st11, cmp_ri(reg_rax(), 4L)))))(st_append_text(st10, shl_ri(reg_rax(), 1L)))))(st_append_text(st9, mov_rr(reg_rax(), reg_r13())))))(st_append_text(st8, add_rr(reg_r13(), reg_rdx())))))(st_append_text(st7, mov_rr(reg_r13(), reg_rcx())))))(st_append_text(st6, mov_load(reg_rdx(), reg_r12(), 0L)))))(st_append_text(st5, mov_load(reg_rcx(), reg_rbx(), 0L)))))(st_append_text(st4, mov_rr(reg_r12(), reg_rsi())))))(st_append_text(st3, mov_rr(reg_rbx(), reg_rdi())))))(st_append_text(st2, push_r(reg_r13())))))(st_append_text(st1, push_r(reg_r12())))))(st_append_text(st0, push_r(reg_rbx())))))(patch_jcc_at(st, p2_pos, st.text_len));
-    }
-
-    public static CodegenState emit_list_append_path2_copy_a(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<long, CodegenState>)((skip_pos) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<long, CodegenState>)((loop_pos) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => patch_jcc_at(st9, skip_pos, st9.text_len)))(st_append_text(st8, jcc(cc_ne(), (loop_pos - (st8.text_len + 6L)))))))(st_append_text(st7, sub_ri(reg_rcx(), 1L)))))(st_append_text(st6, add_ri(reg_rdi(), 8L)))))(st_append_text(st5, add_ri(reg_rax(), 8L)))))(st_append_text(st4, mov_store(reg_rdi(), reg_r11(), 8L)))))(st_append_text(st3, mov_load(reg_r11(), reg_rax(), 8L)))))(st3.text_len)))(st_append_text(st2, jcc(cc_e(), 0L)))))(st2.text_len)))(st_append_text(st1, cmp_ri(reg_rcx(), 0L)))))(st_append_text(st0, mov_rr(reg_rdi(), reg_rsi())))))(st_append_text(st, mov_rr(reg_rax(), reg_rbx())));
-    }
-
-    public static CodegenState emit_list_append_path2_copy_b(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((skip_pos) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<long, CodegenState>)((loop_pos) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => st_append_text(st13, x86_ret())))(st_append_text(st12, pop_r(reg_rbx())))))(st_append_text(st11, pop_r(reg_r12())))))(st_append_text(st10, pop_r(reg_r13())))))(st_append_text(st9, mov_rr(reg_rax(), reg_rsi())))))(patch_jcc_at(st8, skip_pos, st8.text_len))))(st_append_text(st7, jcc(cc_ne(), (loop_pos - (st7.text_len + 6L)))))))(st_append_text(st6, sub_ri(reg_rdx(), 1L)))))(st_append_text(st5, add_ri(reg_rdi(), 8L)))))(st_append_text(st4, add_ri(reg_rax(), 8L)))))(st_append_text(st3, mov_store(reg_rdi(), reg_r11(), 8L)))))(st_append_text(st2, mov_load(reg_r11(), reg_rax(), 8L)))))(st2.text_len)))(st_append_text(st1, jcc(cc_e(), 0L)))))(st1.text_len)))(st_append_text(st0, cmp_ri(reg_rdx(), 0L)))))(st_append_text(st, mov_rr(reg_rax(), reg_r12())));
-    }
-
-    public static CodegenState emit_list_append(CodegenState st)
-    {
-        return ((Func<HelpResult1, CodegenState>)((h) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => emit_list_append_path2_copy_b(st3)))(emit_list_append_path2_copy_a(st2))))(emit_list_append_path2_alloc(st1, h.p1))))(emit_list_append_path1(h.cg))))(emit_list_append_prologue(st));
-    }
-
-    public static HelpResult1 emit_list_snoc_path1(CodegenState st)
-    {
-        return ((Func<CodegenState, HelpResult1>)((st0) => ((Func<CodegenState, HelpResult1>)((st1) => ((Func<CodegenState, HelpResult1>)((st2) => ((Func<CodegenState, HelpResult1>)((st3) => ((Func<long, HelpResult1>)((path2_pos) => ((Func<CodegenState, HelpResult1>)((st4) => ((Func<CodegenState, HelpResult1>)((st5) => ((Func<CodegenState, HelpResult1>)((st6) => ((Func<CodegenState, HelpResult1>)((st7) => ((Func<CodegenState, HelpResult1>)((st8) => ((Func<CodegenState, HelpResult1>)((st9) => ((Func<CodegenState, HelpResult1>)((st10) => ((Func<CodegenState, HelpResult1>)((st11) => ((Func<CodegenState, HelpResult1>)((st12) => new HelpResult1(st12, path2_pos)))(st_append_text(st11, x86_ret()))))(st_append_text(st10, mov_rr(reg_rax(), reg_rdi())))))(st_append_text(st9, mov_store(reg_rdi(), reg_rcx(), 0L)))))(st_append_text(st8, add_ri(reg_rcx(), 1L)))))(st_append_text(st7, mov_store(reg_rax(), reg_rsi(), 8L)))))(st_append_text(st6, add_rr(reg_rax(), reg_rdi())))))(st_append_text(st5, shl_ri(reg_rax(), 3L)))))(st_append_text(st4, mov_rr(reg_rax(), reg_rcx())))))(st_append_text(st3, jcc(cc_ge(), 0L)))))(st3.text_len)))(st_append_text(st2, cmp_rr(reg_rcx(), reg_rdx())))))(st_append_text(st1, mov_load(reg_rdx(), reg_rdi(), (0L - 8L))))))(st_append_text(st0, mov_load(reg_rcx(), reg_rdi(), 0L)))))(record_func_offset(st, "UU\u0017\u0011\u0013\u000EU\u0013\u0012\u0010\u0018"));
-    }
-
-    public static HelpResult1 emit_list_snoc_path2(CodegenState st, long path2_pos)
-    {
-        return ((Func<CodegenState, HelpResult1>)((st0) => ((Func<CodegenState, HelpResult1>)((st1) => ((Func<CodegenState, HelpResult1>)((st2) => ((Func<CodegenState, HelpResult1>)((st3) => ((Func<CodegenState, HelpResult1>)((st4) => ((Func<CodegenState, HelpResult1>)((st5) => ((Func<long, HelpResult1>)((path3_pos) => ((Func<CodegenState, HelpResult1>)((st6) => ((Func<CodegenState, HelpResult1>)((st7) => ((Func<CodegenState, HelpResult1>)((st8) => ((Func<CodegenState, HelpResult1>)((st9) => ((Func<long, HelpResult1>)((cap_ok_pos) => ((Func<CodegenState, HelpResult1>)((st10) => ((Func<CodegenState, HelpResult1>)((st11) => ((Func<CodegenState, HelpResult1>)((st12) => ((Func<CodegenState, HelpResult1>)((st13) => ((Func<CodegenState, HelpResult1>)((st14) => ((Func<CodegenState, HelpResult1>)((st15) => ((Func<CodegenState, HelpResult1>)((st16) => ((Func<CodegenState, HelpResult1>)((st17) => ((Func<CodegenState, HelpResult1>)((st18) => new HelpResult1(st18, path3_pos)))(st_append_text(st17, shl_ri(reg_rax(), 3L)))))(st_append_text(st16, mov_rr(reg_rax(), reg_rcx())))))(st_append_text(st15, add_rr(reg_r10(), reg_rax())))))(st_append_text(st14, shl_ri(reg_rax(), 3L)))))(st_append_text(st13, sub_rr(reg_rax(), reg_rdx())))))(st_append_text(st12, mov_store(reg_rdi(), reg_rax(), (0L - 8L))))))(patch_jcc_at(st11, cap_ok_pos, st11.text_len))))(st_append_text(st10, li(reg_rax(), 4L)))))(st_append_text(st9, jcc(cc_ge(), 0L)))))(st9.text_len)))(st_append_text(st8, cmp_ri(reg_rax(), 4L)))))(st_append_text(st7, shl_ri(reg_rax(), 1L)))))(st_append_text(st6, mov_rr(reg_rax(), reg_rdx())))))(st_append_text(st5, jcc(cc_ne(), 0L)))))(st5.text_len)))(st_append_text(st4, cmp_rr(reg_rax(), reg_r10())))))(st_append_text(st3, add_rr(reg_rax(), reg_rdi())))))(st_append_text(st2, shl_ri(reg_rax(), 3L)))))(st_append_text(st1, add_ri(reg_rax(), 1L)))))(st_append_text(st0, mov_rr(reg_rax(), reg_rdx())))))(patch_jcc_at(st, path2_pos, st.text_len));
-    }
-
-    public static CodegenState emit_list_snoc_path2_store(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => st_append_text(st4, x86_ret())))(st_append_text(st3, mov_rr(reg_rax(), reg_rdi())))))(st_append_text(st2, mov_store(reg_rdi(), reg_rcx(), 0L)))))(st_append_text(st1, add_ri(reg_rcx(), 1L)))))(st_append_text(st0, mov_store(reg_rax(), reg_rsi(), 8L)))))(st_append_text(st, add_rr(reg_rax(), reg_rdi())));
-    }
-
-    public static CodegenState emit_list_snoc_path3_alloc(CodegenState st, long path3_pos)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<long, CodegenState>)((cap_ok2_pos) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => st_append_text(st17, add_rr(reg_r10(), reg_rdx()))))(st_append_text(st16, shl_ri(reg_rdx(), 3L)))))(st_append_text(st15, add_ri(reg_rdx(), 1L)))))(st_append_text(st14, mov_rr(reg_rdx(), reg_r13())))))(st_append_text(st13, mov_rr(reg_rax(), reg_r10())))))(st_append_text(st12, add_ri(reg_r10(), 8L)))))(st_append_text(st11, mov_store(reg_r10(), reg_r13(), 0L)))))(patch_jcc_at(st10, cap_ok2_pos, st10.text_len))))(st_append_text(st9, li(reg_r13(), 4L)))))(st_append_text(st8, jcc(cc_ge(), 0L)))))(st8.text_len)))(st_append_text(st7, cmp_ri(reg_r13(), 4L)))))(st_append_text(st6, shl_ri(reg_r13(), 1L)))))(st_append_text(st5, mov_rr(reg_r13(), reg_rcx())))))(st_append_text(st4, mov_rr(reg_r12(), reg_rsi())))))(st_append_text(st3, mov_rr(reg_rbx(), reg_rdi())))))(st_append_text(st2, push_r(reg_r13())))))(st_append_text(st1, push_r(reg_r12())))))(st_append_text(st0, push_r(reg_rbx())))))(patch_jcc_at(st, path3_pos, st.text_len));
-    }
-
-    public static CodegenState emit_list_snoc_path3_copy(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<long, CodegenState>)((copy_loop) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<long, CodegenState>)((copy_done_pos) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => patch_jcc_at(st16, copy_done_pos, st16.text_len)))(st_append_text(st15, jmp((copy_loop - (st15.text_len + 5L)))))))(st_append_text(st14, add_ri(reg_r11(), 1L)))))(st_append_text(st13, mov_store(reg_rdi(), reg_rsi(), 8L)))))(st_append_text(st12, add_rr(reg_rdi(), reg_rdx())))))(st_append_text(st11, mov_rr(reg_rdi(), reg_rax())))))(st_append_text(st10, mov_load(reg_rsi(), reg_rsi(), 8L)))))(st_append_text(st9, add_rr(reg_rsi(), reg_rdx())))))(st_append_text(st8, mov_rr(reg_rsi(), reg_rbx())))))(st_append_text(st7, shl_ri(reg_rdx(), 3L)))))(st_append_text(st6, mov_rr(reg_rdx(), reg_r11())))))(st_append_text(st5, jcc(cc_ge(), 0L)))))(st5.text_len)))(st_append_text(st4, cmp_rr(reg_r11(), reg_rcx())))))(st4.text_len)))(st_append_text(st3, li(reg_r11(), 0L)))))(st_append_text(st2, mov_store(reg_rax(), reg_rdx(), 0L)))))(st_append_text(st1, add_ri(reg_rdx(), 1L)))))(st_append_text(st0, mov_rr(reg_rdx(), reg_rcx())))))(st_append_text(st, mov_load(reg_rcx(), reg_rbx(), 0L)));
-    }
-
-    public static CodegenState emit_list_snoc_path3_finish(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => st_append_text(st7, x86_ret())))(st_append_text(st6, pop_r(reg_rbx())))))(st_append_text(st5, pop_r(reg_r12())))))(st_append_text(st4, pop_r(reg_r13())))))(st_append_text(st3, mov_store(reg_rdi(), reg_r12(), 8L)))))(st_append_text(st2, add_rr(reg_rdi(), reg_rdx())))))(st_append_text(st1, mov_rr(reg_rdi(), reg_rax())))))(st_append_text(st0, shl_ri(reg_rdx(), 3L)))))(st_append_text(st, mov_rr(reg_rdx(), reg_rcx())));
-    }
-
-    public static CodegenState emit_list_snoc(CodegenState st)
-    {
-        return ((Func<HelpResult1, CodegenState>)((p1) => ((Func<HelpResult1, CodegenState>)((p2) => ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => emit_list_snoc_path3_finish(st2)))(emit_list_snoc_path3_copy(st1))))(emit_list_snoc_path3_alloc(st0, p2.p1))))(emit_list_snoc_path2_store(p2.cg))))(emit_list_snoc_path2(p1.cg, p1.p1))))(emit_list_snoc_path1(st));
-    }
-
-    public static HelpResult2 emit_list_insert_at_prologue(CodegenState st)
-    {
-        return ((Func<CodegenState, HelpResult2>)((st0) => ((Func<CodegenState, HelpResult2>)((st1) => ((Func<CodegenState, HelpResult2>)((st2) => ((Func<CodegenState, HelpResult2>)((st3) => ((Func<CodegenState, HelpResult2>)((st4) => ((Func<CodegenState, HelpResult2>)((st5) => ((Func<CodegenState, HelpResult2>)((st6) => ((Func<CodegenState, HelpResult2>)((st7) => ((Func<CodegenState, HelpResult2>)((st8) => ((Func<CodegenState, HelpResult2>)((st9) => ((Func<CodegenState, HelpResult2>)((st10) => ((Func<long, HelpResult2>)((in_place_pos) => ((Func<CodegenState, HelpResult2>)((st11) => ((Func<CodegenState, HelpResult2>)((st12) => ((Func<CodegenState, HelpResult2>)((st13) => ((Func<CodegenState, HelpResult2>)((st14) => ((Func<CodegenState, HelpResult2>)((st15) => ((Func<CodegenState, HelpResult2>)((st16) => ((Func<long, HelpResult2>)((path3_pos) => ((Func<CodegenState, HelpResult2>)((st17) => new HelpResult2(st17, in_place_pos, path3_pos)))(st_append_text(st16, jcc(cc_ne(), 0L)))))(st16.text_len)))(st_append_text(st15, cmp_rr(reg_rax(), reg_r10())))))(st_append_text(st14, add_rr(reg_rax(), reg_rbx())))))(st_append_text(st13, shl_ri(reg_rax(), 3L)))))(st_append_text(st12, add_ri(reg_rax(), 1L)))))(st_append_text(st11, mov_rr(reg_rax(), reg_rcx())))))(st_append_text(st10, jcc(cc_l(), 0L)))))(st10.text_len)))(st_append_text(st9, cmp_rr(reg_r14(), reg_rcx())))))(st_append_text(st8, mov_load(reg_rcx(), reg_rbx(), (0L - 8L))))))(st_append_text(st7, mov_load(reg_r14(), reg_rbx(), 0L)))))(st_append_text(st6, mov_rr(reg_r13(), reg_rdx())))))(st_append_text(st5, mov_rr(reg_r12(), reg_rsi())))))(st_append_text(st4, mov_rr(reg_rbx(), reg_rdi())))))(st_append_text(st3, push_r(reg_r14())))))(st_append_text(st2, push_r(reg_r13())))))(st_append_text(st1, push_r(reg_r12())))))(st_append_text(st0, push_r(reg_rbx())))))(record_func_offset(st, "UU\u0017\u0011\u0013\u000EU\u0011\u0012\u0013\u000D\u0015\u000EU\u000F\u000E"));
-    }
-
-    public static CodegenState emit_list_insert_at_grow(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<long, CodegenState>)((cap_ok_pos) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => st_append_text(st8, add_rr(reg_r10(), reg_rax()))))(st_append_text(st7, shl_ri(reg_rax(), 3L)))))(st_append_text(st6, sub_rr(reg_rax(), reg_rcx())))))(st_append_text(st5, mov_store(reg_rbx(), reg_rax(), (0L - 8L))))))(patch_jcc_at(st4, cap_ok_pos, st4.text_len))))(st_append_text(st3, li(reg_rax(), 4L)))))(st_append_text(st2, jcc(cc_ge(), 0L)))))(st2.text_len)))(st_append_text(st1, cmp_ri(reg_rax(), 4L)))))(st_append_text(st0, shl_ri(reg_rax(), 1L)))))(st_append_text(st, mov_rr(reg_rax(), reg_rcx())));
-    }
-
-    public static CodegenState emit_list_insert_at_shift(CodegenState st, long in_place_pos)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<long, CodegenState>)((shift_loop) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<long, CodegenState>)((shift_done_pos) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => patch_jcc_at(st12, shift_done_pos, st12.text_len)))(st_append_text(st11, jmp((shift_loop - (st11.text_len + 5L)))))))(st_append_text(st10, sub_ri(reg_r11(), 1L)))))(st_append_text(st9, mov_store(reg_rax(), reg_rcx(), 16L)))))(st_append_text(st8, mov_load(reg_rcx(), reg_rax(), 8L)))))(st_append_text(st7, add_rr(reg_rax(), reg_rdx())))))(st_append_text(st6, mov_rr(reg_rax(), reg_rbx())))))(st_append_text(st5, shl_ri(reg_rdx(), 3L)))))(st_append_text(st4, mov_rr(reg_rdx(), reg_r11())))))(st_append_text(st3, jcc(cc_l(), 0L)))))(st3.text_len)))(st_append_text(st2, cmp_rr(reg_r11(), reg_r12())))))(st2.text_len)))(st_append_text(st1, sub_ri(reg_r11(), 1L)))))(st_append_text(st0, mov_rr(reg_r11(), reg_r14())))))(patch_jcc_at(st, in_place_pos, st.text_len));
-    }
-
-    public static CodegenState emit_list_insert_at_store(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => st_append_text(st10, x86_ret())))(st_append_text(st9, pop_r(reg_rbx())))))(st_append_text(st8, pop_r(reg_r12())))))(st_append_text(st7, pop_r(reg_r13())))))(st_append_text(st6, pop_r(reg_r14())))))(st_append_text(st5, mov_rr(reg_rax(), reg_rbx())))))(st_append_text(st4, mov_store(reg_rbx(), reg_r14(), 0L)))))(st_append_text(st3, add_ri(reg_r14(), 1L)))))(st_append_text(st2, mov_store(reg_rdx(), reg_r13(), 8L)))))(st_append_text(st1, add_rr(reg_rdx(), reg_rbx())))))(st_append_text(st0, shl_ri(reg_rdx(), 3L)))))(st_append_text(st, mov_rr(reg_rdx(), reg_r12())));
-    }
-
-    public static CodegenState emit_list_insert_at_path3_alloc(CodegenState st, long path3_pos)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<long, CodegenState>)((cap_ok_pos) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => st_append_text(st15, mov_store(reg_rax(), reg_rdx(), 0L))))(st_append_text(st14, add_ri(reg_rdx(), 1L)))))(st_append_text(st13, mov_rr(reg_rdx(), reg_r14())))))(st_append_text(st12, add_rr(reg_r10(), reg_rdx())))))(st_append_text(st11, shl_ri(reg_rdx(), 3L)))))(st_append_text(st10, add_ri(reg_rdx(), 1L)))))(st_append_text(st9, mov_rr(reg_rdx(), reg_rcx())))))(st_append_text(st8, mov_rr(reg_rax(), reg_r10())))))(st_append_text(st7, add_ri(reg_r10(), 8L)))))(st_append_text(st6, mov_store(reg_r10(), reg_rcx(), 0L)))))(patch_jcc_at(st5, cap_ok_pos, st5.text_len))))(st_append_text(st4, li(reg_rcx(), 4L)))))(st_append_text(st3, jcc(cc_ge(), 0L)))))(st3.text_len)))(st_append_text(st2, cmp_ri(reg_rcx(), 4L)))))(st_append_text(st1, shl_ri(reg_rcx(), 1L)))))(st_append_text(st0, mov_rr(reg_rcx(), reg_r14())))))(patch_jcc_at(st, path3_pos, st.text_len));
-    }
-
-    public static CodegenState emit_list_insert_at_path3_pre(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<long, CodegenState>)((pre_loop) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((pre_done_pos) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => patch_jcc_at(st12, pre_done_pos, st12.text_len)))(st_append_text(st11, jmp((pre_loop - (st11.text_len + 5L)))))))(st_append_text(st10, add_ri(reg_r11(), 1L)))))(st_append_text(st9, mov_store(reg_rdi(), reg_rcx(), 8L)))))(st_append_text(st8, add_rr(reg_rdi(), reg_rdx())))))(st_append_text(st7, mov_rr(reg_rdi(), reg_rax())))))(st_append_text(st6, mov_load(reg_rcx(), reg_rsi(), 8L)))))(st_append_text(st5, add_rr(reg_rsi(), reg_rdx())))))(st_append_text(st4, mov_rr(reg_rsi(), reg_rbx())))))(st_append_text(st3, shl_ri(reg_rdx(), 3L)))))(st_append_text(st2, mov_rr(reg_rdx(), reg_r11())))))(st_append_text(st1, jcc(cc_ge(), 0L)))))(st1.text_len)))(st_append_text(st0, cmp_rr(reg_r11(), reg_r12())))))(st0.text_len)))(st_append_text(st, li(reg_r11(), 0L)));
-    }
-
-    public static CodegenState emit_list_insert_at_path3_insert(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => st_append_text(st3, mov_store(reg_rdi(), reg_r13(), 8L))))(st_append_text(st2, add_rr(reg_rdi(), reg_rdx())))))(st_append_text(st1, mov_rr(reg_rdi(), reg_rax())))))(st_append_text(st0, shl_ri(reg_rdx(), 3L)))))(st_append_text(st, mov_rr(reg_rdx(), reg_r12())));
-    }
-
-    public static CodegenState emit_list_insert_at_path3_post(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<long, CodegenState>)((post_loop) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((post_done_pos) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => patch_jcc_at(st13, post_done_pos, st13.text_len)))(st_append_text(st12, jmp((post_loop - (st12.text_len + 5L)))))))(st_append_text(st11, add_ri(reg_r11(), 1L)))))(st_append_text(st10, mov_store(reg_rdi(), reg_rcx(), 8L)))))(st_append_text(st9, add_rr(reg_rdi(), reg_rdx())))))(st_append_text(st8, mov_rr(reg_rdi(), reg_rax())))))(st_append_text(st7, add_ri(reg_rdx(), 8L)))))(st_append_text(st6, mov_load(reg_rcx(), reg_rsi(), 8L)))))(st_append_text(st5, add_rr(reg_rsi(), reg_rdx())))))(st_append_text(st4, mov_rr(reg_rsi(), reg_rbx())))))(st_append_text(st3, shl_ri(reg_rdx(), 3L)))))(st_append_text(st2, mov_rr(reg_rdx(), reg_r11())))))(st_append_text(st1, jcc(cc_ge(), 0L)))))(st1.text_len)))(st_append_text(st0, cmp_rr(reg_r11(), reg_r14())))))(st0.text_len)))(st_append_text(st, mov_rr(reg_r11(), reg_r12())));
-    }
-
-    public static CodegenState emit_list_insert_at_path3_epilogue(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => st_append_text(st3, x86_ret())))(st_append_text(st2, pop_r(reg_rbx())))))(st_append_text(st1, pop_r(reg_r12())))))(st_append_text(st0, pop_r(reg_r13())))))(st_append_text(st, pop_r(reg_r14())));
-    }
-
-    public static CodegenState emit_list_insert_at(CodegenState st)
-    {
-        return ((Func<HelpResult2, CodegenState>)((pro) => ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => emit_list_insert_at_path3_epilogue(st6)))(emit_list_insert_at_path3_post(st5))))(emit_list_insert_at_path3_insert(st4))))(emit_list_insert_at_path3_pre(st3))))(emit_list_insert_at_path3_alloc(st2, pro.p2))))(emit_list_insert_at_store(st1))))(emit_list_insert_at_shift(st0, pro.p1))))(emit_list_insert_at_grow(pro.cg))))(emit_list_insert_at_prologue(st));
-    }
-
-    public static CodegenState emit_list_set_at(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => st_append_text(st4, x86_ret())))(st_append_text(st3, mov_rr(reg_rax(), reg_rdi())))))(st_append_text(st2, mov_store(reg_rsi(), reg_rdx(), 8L)))))(st_append_text(st1, add_rr(reg_rsi(), reg_rdi())))))(st_append_text(st0, shl_ri(reg_rsi(), 3L)))))(record_func_offset(st, "UU\u0017\u0011\u0013\u000EU\u0013\u000D\u000EU\u000F\u000E"));
-    }
-
     public static CodegenState emit_text_concat_list_len_pass(CodegenState st)
     {
         return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<long, CodegenState>)((len_loop) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<long, CodegenState>)((len_done_pos) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => patch_jcc_at(st18, len_done_pos, st18.text_len)))(st_append_text(st17, jmp((len_loop - (st17.text_len + 5L)))))))(st_append_text(st16, add_ri(reg_r11(), 1L)))))(st_append_text(st15, add_rr(reg_r13(), reg_rax())))))(st_append_text(st14, mov_load(reg_rax(), reg_rax(), 0L)))))(st_append_text(st13, mov_load(reg_rax(), reg_rax(), 8L)))))(st_append_text(st12, add_rr(reg_rax(), reg_rbx())))))(st_append_text(st11, shl_ri(reg_rax(), 3L)))))(st_append_text(st10, mov_rr(reg_rax(), reg_r11())))))(st_append_text(st9, jcc(cc_ge(), 0L)))))(st9.text_len)))(st_append_text(st8, cmp_rr(reg_r11(), reg_r12())))))(st8.text_len)))(st_append_text(st7, li(reg_r11(), 0L)))))(st_append_text(st6, li(reg_r13(), 0L)))))(st_append_text(st5, mov_load(reg_r12(), reg_rbx(), 0L)))))(st_append_text(st4, mov_rr(reg_rbx(), reg_rdi())))))(st_append_text(st3, push_r(reg_r14())))))(st_append_text(st2, push_r(reg_r13())))))(st_append_text(st1, push_r(reg_r12())))))(st_append_text(st0, push_r(reg_rbx())))))(record_func_offset(st, "UU\u000E\u000D$\u000EU\u0018\u0010\u0012\u0018\u000F\u000EU\u0017\u0011\u0013\u000E"));
@@ -9775,166 +9935,6 @@ public static class Codex_Codex_Codex
     public static CodegenState emit_text_split(CodegenState st)
     {
         return ((Func<CodegenState, CodegenState>)((st0) => ((Func<HelpResult2, CodegenState>)((head) => ((Func<long, CodegenState>)((scan_loop) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => emit_text_split_epilogue(st5)))(emit_text_split_final_copy(st4))))(emit_text_split_final_seg(st3, head.p1))))(emit_text_split_not_delim(st2, head.p2, scan_loop))))(emit_text_split_seg_copy(st1, scan_loop))))(emit_text_split_emit_seg(head.cg, scan_loop))))(st0.text_len)))(emit_text_split_scan_head(st0))))(emit_text_split_prologue(st));
-    }
-
-    public static CodegenState emit_cce_to_unicode_helper(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => st_append_text(st4, x86_ret())))(st_append_text(st3, movzx_byte(reg_rax(), reg_rax(), 0L)))))(st_append_text(st2, add_rr(reg_rax(), reg_rdi())))))(emit_load_rodata_addr(st1, reg_rax(), cce_to_unicode_rodata_offset()))))(record_func_offset(st, "UU\u0018\u0018\u000DU\u000E\u0010U\u0019\u0012\u0011\u0018\u0010\u0016\u000D"));
-    }
-
-    public static CodegenState emit_unicode_to_cce_helper(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => st_append_text(st4, x86_ret())))(st_append_text(st3, movzx_byte(reg_rax(), reg_rax(), 0L)))))(st_append_text(st2, add_rr(reg_rax(), reg_rdi())))))(emit_load_rodata_addr(st1, reg_rax(), unicode_to_cce_rodata_offset()))))(record_func_offset(st, "UU\u0019\u0012\u0011\u0018\u0010\u0016\u000DU\u000E\u0010U\u0018\u0018\u000D"));
-    }
-
-    public static CodegenState emit_read_line_helper(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<long, CodegenState>)((read_byte) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<long, CodegenState>)((wait_loop) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<long, CodegenState>)((has_data) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => ((Func<CodegenState, CodegenState>)((st23) => ((Func<CodegenState, CodegenState>)((st24) => ((Func<long, CodegenState>)((skip_cr) => ((Func<CodegenState, CodegenState>)((st25) => ((Func<CodegenState, CodegenState>)((st26) => ((Func<CodegenState, CodegenState>)((st27) => ((Func<CodegenState, CodegenState>)((st28) => ((Func<CodegenState, CodegenState>)((st29) => ((Func<CodegenState, CodegenState>)((st30) => ((Func<CodegenState, CodegenState>)((st31) => ((Func<CodegenState, CodegenState>)((st32) => ((Func<CodegenState, CodegenState>)((st33) => ((Func<CodegenState, CodegenState>)((st34) => ((Func<CodegenState, CodegenState>)((st35) => ((Func<long, CodegenState>)((eof) => ((Func<CodegenState, CodegenState>)((st36) => ((Func<CodegenState, CodegenState>)((st37) => ((Func<CodegenState, CodegenState>)((st38) => ((Func<CodegenState, CodegenState>)((st39) => ((Func<CodegenState, CodegenState>)((st40) => ((Func<long, CodegenState>)((got_nl) => ((Func<CodegenState, CodegenState>)((st41) => ((Func<CodegenState, CodegenState>)((st42) => ((Func<CodegenState, CodegenState>)((st43) => ((Func<CodegenState, CodegenState>)((st44) => ((Func<CodegenState, CodegenState>)((st45) => ((Func<CodegenState, CodegenState>)((st46) => ((Func<CodegenState, CodegenState>)((st47) => ((Func<CodegenState, CodegenState>)((st48) => ((Func<CodegenState, CodegenState>)((st49) => ((Func<CodegenState, CodegenState>)((st50) => ((Func<CodegenState, CodegenState>)((st51) => ((Func<CodegenState, CodegenState>)((st52) => ((Func<CodegenState, CodegenState>)((st53) => ((Func<CodegenState, CodegenState>)((st54) => ((Func<CodegenState, CodegenState>)((st55) => ((Func<CodegenState, CodegenState>)((st56) => ((Func<CodegenState, CodegenState>)((st57) => ((Func<CodegenState, CodegenState>)((st58) => ((Func<CodegenState, CodegenState>)((st59) => ((Func<CodegenState, CodegenState>)((st60) => st_append_text(st60, x86_ret())))(st_append_text(st59, pop_r(reg_rbx())))))(st_append_text(st58, pop_r(reg_r12())))))(st_append_text(st57, mov_rr(reg_rax(), reg_rbx())))))(st_append_text(st56, add_rr(reg_r10(), reg_rax())))))(st_append_text(st55, and_ri(reg_rax(), (0L - 8L))))))(st_append_text(st54, add_ri(reg_rax(), 15L)))))(st_append_text(st53, mov_rr(reg_rax(), reg_rcx())))))(st_append_text(st52, mov_store(reg_rbx(), reg_rcx(), 0L)))))(patch_jcc_at(st51, got_nl, st51.text_len))))(patch_jcc_at(st50, eof, st50.text_len))))(st_append_text(st49, jmp((read_byte - (st49.text_len + 5L)))))))(st_append_text(st48, add_ri(reg_rcx(), 1L)))))(st_append_text(st47, new List<long>() { 136L, 6L }))))(st_append_text(st46, movzx_byte(reg_rax(), reg_rax(), 0L)))))(st_append_text(st45, add_rr(reg_rax(), reg_r12())))))(st_append_text(st44, movzx_byte(reg_rax(), reg_rsi(), 0L)))))(st_append_text(st43, add_ri(reg_rsi(), 8L)))))(st_append_text(st42, add_rr(reg_rsi(), reg_rcx())))))(st_append_text(st41, mov_rr(reg_rsi(), reg_rbx())))))(st_append_text(st40, jcc(cc_e(), 0L)))))(st40.text_len)))(st_append_text(st39, cmp_ri(reg_rdx(), 10L)))))(st_append_text(st38, movzx_byte(reg_rdx(), reg_rdx(), 8L)))))(st_append_text(st37, add_rr(reg_rdx(), reg_rcx())))))(st_append_text(st36, mov_rr(reg_rdx(), reg_rbx())))))(st_append_text(st35, jcc(cc_le(), 0L)))))(st35.text_len)))(st_append_text(st34, test_rr(reg_rax(), reg_rax())))))(st_append_text(st33, pop_r(reg_rcx())))))(patch_jcc_at(st32, skip_cr, wait_loop))))(st_append_text(st31, li(reg_rax(), 1L)))))(st_append_text(st30, new List<long>() { 136L, 6L }))))(st_append_text(st29, add_ri(reg_rsi(), 8L)))))(st_append_text(st28, add_rr(reg_rsi(), reg_rcx())))))(st_append_text(st27, mov_rr(reg_rsi(), reg_rbx())))))(st_append_text(st26, push_r(reg_rcx())))))(st_append_text(st25, pop_r(reg_rcx())))))(st_append_text(st24, jcc(cc_e(), 0L)))))(st24.text_len)))(st_append_text(st23, cmp_ri(reg_rax(), 13L)))))(st_append_text(st22, mov_store(reg_rdi(), reg_r11(), 0L)))))(st_append_text(st21, li(reg_rdi(), serial_read_pos_addr())))))(st_append_text(st20, add_ri(reg_r11(), 1L)))))(st_append_text(st19, movzx_byte(reg_rax(), reg_rax(), 0L)))))(st_append_text(st18, add_ri(reg_rax(), serial_ring_buf_addr())))))(st_append_text(st17, and_ri(reg_rax(), serial_ring_buf_mask())))))(st_append_text(st16, mov_rr(reg_rax(), reg_r11())))))(patch_jcc_at(st15, has_data, st15.text_len))))(st_append_text(st14, jmp((wait_loop - (st14.text_len + 5L)))))))(st_append_text(st13, hlt()))))(st_append_text(st12, jcc(cc_ne(), 0L)))))(st12.text_len)))(st_append_text(st11, cmp_rr(reg_rsi(), reg_r11())))))(st_append_text(st10, mov_load(reg_r11(), reg_rdi(), 0L)))))(st_append_text(st9, li(reg_rdi(), serial_read_pos_addr())))))(st_append_text(st8, mov_load(reg_rsi(), reg_rdi(), 0L)))))(st_append_text(st7, li(reg_rdi(), serial_write_pos_addr())))))(st7.text_len)))(st_append_text(st6, push_r(reg_rcx())))))(st6.text_len)))(st_append_text(st5, li(reg_rcx(), 0L)))))(st_append_text(st4, mov_rr(reg_rbx(), reg_r10())))))(emit_load_rodata_addr(st3, reg_r12(), unicode_to_cce_rodata_offset()))))(st_append_text(st2, push_r(reg_r12())))))(st_append_text(st1, push_r(reg_rbx())))))(record_func_offset(st, "UU\u0015\u000D\u000F\u0016U\u0017\u0011\u0012\u000D"));
-    }
-
-    public static CodegenState emit_read_file_helper(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => st_append_text(st2, x86_ret())))(emit_call_to(st1, "UU \u000F\u0015\u000DU\u001A\u000D\u000E\u000F\u0017U\u0015\u000D\u000F\u0016U\u0013\u000D\u0015\u0011\u000F\u0017"))))(record_func_offset(st, "UU\u0015\u000D\u000F\u0016U\u001C\u0011\u0017\u000D"));
-    }
-
-    public static CodegenState emit_bare_metal_read_serial(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st3a) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<long, CodegenState>)((read_loop) => ((Func<long, CodegenState>)((wait_loop) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<long, CodegenState>)((has_data) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => ((Func<CodegenState, CodegenState>)((st23) => ((Func<long, CodegenState>)((got_eot) => ((Func<CodegenState, CodegenState>)((st24) => ((Func<CodegenState, CodegenState>)((st25) => ((Func<long, CodegenState>)((got_null) => ((Func<CodegenState, CodegenState>)((st26) => ((Func<CodegenState, CodegenState>)((st27) => ((Func<long, CodegenState>)((skip_cr) => ((Func<CodegenState, CodegenState>)((st28) => ((Func<CodegenState, CodegenState>)((st29) => ((Func<CodegenState, CodegenState>)((st30) => ((Func<CodegenState, CodegenState>)((st31) => ((Func<CodegenState, CodegenState>)((st32) => ((Func<CodegenState, CodegenState>)((st33) => ((Func<CodegenState, CodegenState>)((st34) => ((Func<CodegenState, CodegenState>)((st35) => ((Func<CodegenState, CodegenState>)((st36) => ((Func<CodegenState, CodegenState>)((st37) => ((Func<CodegenState, CodegenState>)((st38) => ((Func<CodegenState, CodegenState>)((st39) => ((Func<CodegenState, CodegenState>)((st40) => ((Func<CodegenState, CodegenState>)((st41) => ((Func<CodegenState, CodegenState>)((st42) => ((Func<CodegenState, CodegenState>)((st43) => ((Func<CodegenState, CodegenState>)((st44) => ((Func<CodegenState, CodegenState>)((st45) => ((Func<CodegenState, CodegenState>)((st46) => ((Func<CodegenState, CodegenState>)((st47) => ((Func<CodegenState, CodegenState>)((st48) => ((Func<CodegenState, CodegenState>)((st49) => st_append_text(st49, x86_ret())))(st_append_text(st48, pop_r(reg_rbx())))))(st_append_text(st47, pop_r(reg_rcx())))))(st_append_text(st46, pop_r(reg_r12())))))(st_append_text(st45, mov_rr(reg_rax(), reg_rbx())))))(st_append_text(st44, add_rr(reg_r10(), reg_rax())))))(st_append_text(st43, add_ri(reg_rax(), 8L)))))(st_append_text(st42, and_ri(reg_rax(), (0L - 8L))))))(st_append_text(st41, add_ri(reg_rax(), 15L)))))(st_append_text(st40, mov_rr(reg_rax(), reg_rcx())))))(st_append_text(st39, mov_store(reg_rbx(), reg_rcx(), 0L)))))(patch_jcc_at(st38, got_null, st38.text_len))))(patch_jcc_at(st37, got_eot, st37.text_len))))(st_append_text(st36, jmp((read_loop - (st36.text_len + 5L)))))))(patch_jcc_at(st35, skip_cr, st35.text_len))))(st_append_text(st34, add_ri(reg_rcx(), 1L)))))(st_append_text(st33, new List<long>() { 136L, 6L }))))(st_append_text(st32, add_ri(reg_rsi(), 8L)))))(st_append_text(st31, add_rr(reg_rsi(), reg_rcx())))))(st_append_text(st30, mov_rr(reg_rsi(), reg_rbx())))))(st_append_text(st29, movzx_byte(reg_rax(), reg_rax(), 0L)))))(st_append_text(st28, add_rr(reg_rax(), reg_r12())))))(st_append_text(st27, jcc(cc_e(), 0L)))))(st27.text_len)))(st_append_text(st26, cmp_ri(reg_rax(), 13L)))))(st_append_text(st25, jcc(cc_e(), 0L)))))(st25.text_len)))(st_append_text(st24, test_rr(reg_rax(), reg_rax())))))(st_append_text(st23, jcc(cc_e(), 0L)))))(st23.text_len)))(st_append_text(st22, cmp_ri(reg_rax(), 4L)))))(st_append_text(st21, mov_store(reg_rdi(), reg_r11(), 0L)))))(st_append_text(st20, li(reg_rdi(), serial_read_pos_addr())))))(st_append_text(st19, add_ri(reg_r11(), 1L)))))(st_append_text(st18, movzx_byte(reg_rax(), reg_rax(), 0L)))))(st_append_text(st17, add_ri(reg_rax(), serial_ring_buf_addr())))))(st_append_text(st16, and_ri(reg_rax(), serial_ring_buf_mask())))))(st_append_text(st15, mov_rr(reg_rax(), reg_r11())))))(patch_jcc_at(st14, has_data, st14.text_len))))(st_append_text(st13, jmp((wait_loop - (st13.text_len + 5L)))))))(st_append_text(st12, hlt()))))(st_append_text(st11, jcc(cc_ne(), 0L)))))(st11.text_len)))(st_append_text(st10, cmp_rr(reg_rsi(), reg_r11())))))(st_append_text(st9, mov_load(reg_r11(), reg_rdi(), 0L)))))(st_append_text(st8, li(reg_rdi(), serial_read_pos_addr())))))(st_append_text(st7, mov_load(reg_rsi(), reg_rdi(), 0L)))))(st_append_text(st6, li(reg_rdi(), serial_write_pos_addr())))))(st6.text_len)))(st6.text_len)))(st_append_text(st5, li(reg_rcx(), 0L)))))(st_append_text(st4, mov_rr(reg_rbx(), reg_r10())))))(emit_load_rodata_addr(st3a, reg_r12(), unicode_to_cce_rodata_offset()))))(st_append_text(st3, push_r(reg_r12())))))(st_append_text(st2, push_r(reg_rcx())))))(st_append_text(st1, push_r(reg_rbx())))))(record_func_offset(st, "UU \u000F\u0015\u000DU\u001A\u000D\u000E\u000F\u0017U\u0015\u000D\u000F\u0016U\u0013\u000D\u0015\u0011\u000F\u0017"));
-    }
-
-    public static CodegenState emit_runtime_helpers(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st0) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st12b) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => ((Func<CodegenState, CodegenState>)((st23) => emit_list_concat_many_helper(st23)))(emit_buf_read_bytes_helper(st22))))(emit_buf_write_bytes_helper(st21))))(emit_write_binary_helper(st20))))(emit_bare_metal_read_serial(st19))))(emit_read_file_helper(st18))))(emit_read_line_helper(st17))))(emit_unicode_to_cce_helper(st16))))(emit_cce_to_unicode_helper(st15))))(emit_text_split(st14))))(emit_text_concat_list(st13))))(emit_list_contains(st12b))))(emit_list_set_at(st12))))(emit_list_insert_at(st11))))(emit_list_append(st10))))(emit_list_cons(st9))))(emit_list_snoc(st8))))(emit_str_replace(st7))))(emit_text_compare(st6))))(emit_text_contains(st5))))(emit_text_starts_with(st4))))(emit_text_to_int(st3))))(emit_ipow(st2))))(emit_itoa(st1))))(emit_str_eq(st0))))(emit_str_concat(st));
-    }
-
-    public static CodegenState emit_buf_write_bytes_helper(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<long, CodegenState>)((skip_pos) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<long, CodegenState>)((loop_top) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<long, CodegenState>)((back_pos) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => st_append_text(st22, Enumerable.Concat(pop_r(reg_r13()), Enumerable.Concat(pop_r(reg_r12()), Enumerable.Concat(pop_r(reg_rbx()), x86_ret()).ToList()).ToList()).ToList())))(st_append_text(st21, mov_rr(reg_rax(), reg_rsi())))))(st_append_text(st20, add_rr(reg_rsi(), reg_r13())))))(patch_jcc_at(st19, skip_pos, st19.text_len))))(patch_jcc_at(st18, back_pos, loop_top))))(st_append_text(st17, jcc(cc_l(), 0L)))))(st17.text_len)))(st_append_text(st16, cmp_rr(reg_rcx(), reg_r13())))))(st_append_text(st15, add_ri(reg_rcx(), 1L)))))(st_append_text(st14, add_ri(reg_rbx(), 1L)))))(st_append_text(st13, mov_store_byte(reg_rbx(), reg_rax(), 0L)))))(st_append_text(st12, mov_load(reg_rax(), reg_rax(), 8L)))))(st_append_text(st11, add_rr(reg_rax(), reg_r12())))))(st_append_text(st10, shl_ri(reg_rax(), 3L)))))(st_append_text(st9, mov_rr(reg_rax(), reg_rcx())))))(st9.text_len)))(st_append_text(st8, jcc(cc_ge(), 0L)))))(st8.text_len)))(st_append_text(st7, cmp_rr(reg_rcx(), reg_r13())))))(st_append_text(st6, li(reg_rcx(), 0L)))))(st_append_text(st5, mov_load(reg_r13(), reg_r12(), 0L)))))(st_append_text(st4, mov_rr(reg_r12(), reg_rdx())))))(st_append_text(st3, add_rr(reg_rbx(), reg_rsi())))))(st_append_text(st2, mov_rr(reg_rbx(), reg_rdi())))))(st_append_text(st1, Enumerable.Concat(push_r(reg_rbx()), Enumerable.Concat(push_r(reg_r12()), push_r(reg_r13())).ToList()).ToList()))))(record_func_offset(st, "UU \u0019\u001CU\u001B\u0015\u0011\u000E\u000DU \u001E\u000E\u000D\u0013"));
-    }
-
-    public static CodegenState emit_buf_read_bytes_helper(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<long, CodegenState>)((skip_pos) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<long, CodegenState>)((loop_top) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => ((Func<CodegenState, CodegenState>)((st23) => ((Func<CodegenState, CodegenState>)((st24) => ((Func<CodegenState, CodegenState>)((st25) => ((Func<long, CodegenState>)((back_pos) => ((Func<CodegenState, CodegenState>)((st26) => ((Func<CodegenState, CodegenState>)((st27) => ((Func<CodegenState, CodegenState>)((st28) => ((Func<CodegenState, CodegenState>)((st29) => st_append_text(st29, Enumerable.Concat(pop_r(reg_r14()), Enumerable.Concat(pop_r(reg_r13()), Enumerable.Concat(pop_r(reg_r12()), Enumerable.Concat(pop_r(reg_rbx()), x86_ret()).ToList()).ToList()).ToList()).ToList())))(st_append_text(st28, mov_rr(reg_rax(), reg_rbx())))))(patch_jcc_at(st27, skip_pos, st27.text_len))))(patch_jcc_at(st26, back_pos, loop_top))))(st_append_text(st25, jcc(cc_l(), 0L)))))(st25.text_len)))(st_append_text(st24, cmp_rr(reg_rcx(), reg_r13())))))(st_append_text(st23, add_ri(reg_rcx(), 1L)))))(st_append_text(st22, mov_store(reg_rax(), reg_r14(), 8L)))))(st_append_text(st21, add_rr(reg_rax(), reg_rbx())))))(st_append_text(st20, shl_ri(reg_rax(), 3L)))))(st_append_text(st19, mov_rr(reg_rax(), reg_rcx())))))(st_append_text(st18, movzx_byte(reg_r14(), reg_r14(), 0L)))))(st_append_text(st17, add_rr(reg_r14(), reg_rcx())))))(st_append_text(st16, mov_rr(reg_r14(), reg_r12())))))(st16.text_len)))(st_append_text(st15, jcc(cc_ge(), 0L)))))(st15.text_len)))(st_append_text(st14, cmp_rr(reg_rcx(), reg_r13())))))(st_append_text(st13, li(reg_rcx(), 0L)))))(st_append_text(st12, add_rr(reg_r10(), reg_rax())))))(st_append_text(st11, shl_ri(reg_rax(), 3L)))))(st_append_text(st10, add_ri(reg_rax(), 1L)))))(st_append_text(st9, mov_rr(reg_rax(), reg_r13())))))(st_append_text(st8, mov_store(reg_r10(), reg_r13(), 0L)))))(st_append_text(st7, mov_rr(reg_rbx(), reg_r10())))))(st_append_text(st6, add_ri(reg_r10(), 8L)))))(st_append_text(st5, mov_store(reg_r10(), reg_r13(), 0L)))))(st_append_text(st4, mov_rr(reg_r13(), reg_rdx())))))(st_append_text(st3, add_rr(reg_r12(), reg_rsi())))))(st_append_text(st2, mov_rr(reg_r12(), reg_rdi())))))(st_append_text(st1, Enumerable.Concat(push_r(reg_rbx()), Enumerable.Concat(push_r(reg_r12()), Enumerable.Concat(push_r(reg_r13()), push_r(reg_r14())).ToList()).ToList()).ToList()))))(record_func_offset(st, "UU \u0019\u001CU\u0015\u000D\u000F\u0016U \u001E\u000E\u000D\u0013"));
-    }
-
-    public static CodegenState emit_list_concat_many_helper(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<long, CodegenState>)((skip_sum) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<long, CodegenState>)((sum_top) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<long, CodegenState>)((sum_back) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => ((Func<CodegenState, CodegenState>)((st23) => ((Func<CodegenState, CodegenState>)((st24) => ((Func<CodegenState, CodegenState>)((st25) => ((Func<CodegenState, CodegenState>)((st26) => ((Func<CodegenState, CodegenState>)((st27) => ((Func<CodegenState, CodegenState>)((st28) => ((Func<CodegenState, CodegenState>)((st29) => ((Func<CodegenState, CodegenState>)((st30) => ((Func<long, CodegenState>)((skip_copy) => ((Func<CodegenState, CodegenState>)((st31) => ((Func<long, CodegenState>)((outer_top) => ((Func<CodegenState, CodegenState>)((st32) => ((Func<CodegenState, CodegenState>)((st33) => ((Func<CodegenState, CodegenState>)((st34) => ((Func<CodegenState, CodegenState>)((st35) => ((Func<CodegenState, CodegenState>)((st36) => ((Func<CodegenState, CodegenState>)((st37) => ((Func<CodegenState, CodegenState>)((st38) => ((Func<long, CodegenState>)((skip_inner) => ((Func<CodegenState, CodegenState>)((st39) => ((Func<long, CodegenState>)((inner_top) => ((Func<CodegenState, CodegenState>)((st40) => ((Func<CodegenState, CodegenState>)((st41) => ((Func<CodegenState, CodegenState>)((st42) => ((Func<CodegenState, CodegenState>)((st43) => ((Func<CodegenState, CodegenState>)((st44) => ((Func<CodegenState, CodegenState>)((st45) => ((Func<CodegenState, CodegenState>)((st46) => ((Func<CodegenState, CodegenState>)((st47) => ((Func<CodegenState, CodegenState>)((st48) => ((Func<CodegenState, CodegenState>)((st49) => ((Func<CodegenState, CodegenState>)((st50) => ((Func<long, CodegenState>)((inner_back) => ((Func<CodegenState, CodegenState>)((st51) => ((Func<CodegenState, CodegenState>)((st52) => ((Func<CodegenState, CodegenState>)((st53) => ((Func<CodegenState, CodegenState>)((st54) => ((Func<CodegenState, CodegenState>)((st55) => ((Func<long, CodegenState>)((outer_back) => ((Func<CodegenState, CodegenState>)((st56) => ((Func<CodegenState, CodegenState>)((st57) => ((Func<CodegenState, CodegenState>)((st58) => ((Func<CodegenState, CodegenState>)((st59) => st_append_text(st59, Enumerable.Concat(pop_r(reg_r15()), Enumerable.Concat(pop_r(reg_r14()), Enumerable.Concat(pop_r(reg_r13()), Enumerable.Concat(pop_r(reg_r12()), Enumerable.Concat(pop_r(reg_rbx()), x86_ret()).ToList()).ToList()).ToList()).ToList()).ToList())))(st_append_text(st58, mov_rr(reg_rax(), reg_rbx())))))(patch_jcc_at(st57, skip_copy, st57.text_len))))(patch_jcc_at(st56, outer_back, outer_top))))(st_append_text(st55, jcc(cc_l(), 0L)))))(st55.text_len)))(st_append_text(st54, cmp_rr(reg_rcx(), reg_r13())))))(st_append_text(st53, add_ri(reg_rcx(), 1L)))))(patch_jcc_at(st52, skip_inner, st52.text_len))))(patch_jcc_at(st51, inner_back, inner_top))))(st_append_text(st50, jcc(cc_l(), 0L)))))(st50.text_len)))(st_append_text(st49, cmp_rr(reg_rdx(), reg_rsi())))))(st_append_text(st48, add_ri(reg_rdx(), 1L)))))(st_append_text(st47, add_ri(reg_r15(), 1L)))))(st_append_text(st46, mov_store(reg_r14(), reg_rax(), 8L)))))(st_append_text(st45, add_rr(reg_r14(), reg_rbx())))))(st_append_text(st44, shl_ri(reg_r14(), 3L)))))(st_append_text(st43, mov_rr(reg_r14(), reg_r15())))))(st_append_text(st42, mov_load(reg_rax(), reg_rax(), 8L)))))(st_append_text(st41, add_rr(reg_rax(), reg_rdi())))))(st_append_text(st40, shl_ri(reg_rax(), 3L)))))(st_append_text(st39, mov_rr(reg_rax(), reg_rdx())))))(st39.text_len)))(st_append_text(st38, jcc(cc_ge(), 0L)))))(st38.text_len)))(st_append_text(st37, cmp_rr(reg_rdx(), reg_rsi())))))(st_append_text(st36, li(reg_rdx(), 0L)))))(st_append_text(st35, mov_load(reg_rsi(), reg_rdi(), 0L)))))(st_append_text(st34, mov_load(reg_rdi(), reg_rax(), 0L)))))(st_append_text(st33, add_rr(reg_rax(), reg_r12())))))(st_append_text(st32, shl_ri(reg_rax(), 3L)))))(st_append_text(st31, mov_rr(reg_rax(), reg_rcx())))))(st31.text_len)))(st_append_text(st30, jcc(cc_ge(), 0L)))))(st30.text_len)))(st_append_text(st29, cmp_rr(reg_rcx(), reg_r13())))))(st_append_text(st28, li(reg_rcx(), 0L)))))(st_append_text(st27, li(reg_r15(), 0L)))))(st_append_text(st26, add_rr(reg_r10(), reg_rax())))))(st_append_text(st25, shl_ri(reg_rax(), 3L)))))(st_append_text(st24, add_ri(reg_rax(), 1L)))))(st_append_text(st23, mov_rr(reg_rax(), reg_r14())))))(st_append_text(st22, mov_store(reg_r10(), reg_r14(), 0L)))))(st_append_text(st21, mov_rr(reg_rbx(), reg_r10())))))(st_append_text(st20, add_ri(reg_r10(), 8L)))))(st_append_text(st19, mov_store(reg_r10(), reg_r14(), 0L)))))(patch_jcc_at(st18, skip_sum, st18.text_len))))(patch_jcc_at(st17, sum_back, sum_top))))(st_append_text(st16, jcc(cc_l(), 0L)))))(st16.text_len)))(st_append_text(st15, cmp_rr(reg_rcx(), reg_r13())))))(st_append_text(st14, add_ri(reg_rcx(), 1L)))))(st_append_text(st13, add_rr(reg_r14(), reg_rax())))))(st_append_text(st12, mov_load(reg_rax(), reg_rax(), 0L)))))(st_append_text(st11, mov_load(reg_rax(), reg_rax(), 0L)))))(st_append_text(st10, add_rr(reg_rax(), reg_r12())))))(st_append_text(st9, shl_ri(reg_rax(), 3L)))))(st_append_text(st8, mov_rr(reg_rax(), reg_rcx())))))(st8.text_len)))(st_append_text(st7, jcc(cc_ge(), 0L)))))(st7.text_len)))(st_append_text(st6, cmp_rr(reg_rcx(), reg_r13())))))(st_append_text(st5, li(reg_rcx(), 0L)))))(st_append_text(st4, li(reg_r14(), 0L)))))(st_append_text(st3, mov_rr(reg_r13(), reg_rsi())))))(st_append_text(st2, mov_rr(reg_r12(), reg_rdi())))))(st_append_text(st1, Enumerable.Concat(push_r(reg_rbx()), Enumerable.Concat(push_r(reg_r12()), Enumerable.Concat(push_r(reg_r13()), Enumerable.Concat(push_r(reg_r14()), push_r(reg_r15())).ToList()).ToList()).ToList()).ToList()))))(record_func_offset(st, "UU\u0017\u0011\u0013\u000EU\u0018\u0010\u0012\u0018\u000F\u000EU\u001A\u000F\u0012\u001E"));
-    }
-
-    public static CodegenState emit_write_binary_helper(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<long, CodegenState>)((loop_top) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<long, CodegenState>)((done_pos) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<long, CodegenState>)((wait_top) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<long, CodegenState>)((thr_ready) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => ((Func<CodegenState, CodegenState>)((st23) => ((Func<CodegenState, CodegenState>)((st24) => ((Func<CodegenState, CodegenState>)((st25) => ((Func<CodegenState, CodegenState>)((st26) => ((Func<CodegenState, CodegenState>)((st27) => ((Func<CodegenState, CodegenState>)((st28) => ((Func<CodegenState, CodegenState>)((st29) => st_append_text(st29, x86_ret())))(st_append_text(st28, pop_r(reg_rbx())))))(st_append_text(st27, pop_r(reg_rcx())))))(st_append_text(st26, pop_r(reg_r11())))))(patch_jcc_at(st25, done_pos, st25.text_len))))(st_append_text(st24, jmp((loop_top - (st24.text_len + 5L)))))))(st_append_text(st23, add_ri(reg_r11(), 1L)))))(st_append_text(st22, out_dx_al()))))(st_append_text(st21, li(reg_rdx(), 1016L)))))(st_append_text(st20, pop_r(reg_rax())))))(patch_jcc_at(st19, thr_ready, st19.text_len))))(st_append_text(st18, jmp((wait_top - (st18.text_len + 5L)))))))(st_append_text(st17, jcc(cc_ne(), 0L)))))(st17.text_len)))(st_append_text(st16, new List<long>() { 168L, 32L }))))(st_append_text(st15, new List<long>() { 236L }))))(st_append_text(st14, li(reg_rdx(), 1021L)))))(st14.text_len)))(st_append_text(st13, push_r(reg_rax())))))(st_append_text(st12, mov_load(reg_rax(), reg_rax(), 8L)))))(st_append_text(st11, add_rr(reg_rax(), reg_rbx())))))(st_append_text(st10, shl_ri(reg_rax(), 3L)))))(st_append_text(st9, mov_rr(reg_rax(), reg_r11())))))(st_append_text(st8, jcc(cc_ge(), 0L)))))(st8.text_len)))(st_append_text(st7, cmp_rr(reg_r11(), reg_rcx())))))(st7.text_len)))(st_append_text(st6, li(reg_r11(), 0L)))))(st_append_text(st5, mov_load(reg_rcx(), reg_rbx(), 0L)))))(st_append_text(st4, mov_rr(reg_rbx(), reg_rdi())))))(st_append_text(st3, push_r(reg_r11())))))(st_append_text(st2, push_r(reg_rcx())))))(st_append_text(st1, push_r(reg_rbx())))))(record_func_offset(st, "UU\u001B\u0015\u0011\u000E\u000DU \u0011\u0012\u000F\u0015\u001E"));
-    }
-
-    public static CodegenState emit_linked_list_to_list_helper(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<long, CodegenState>)((count_loop) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<long, CodegenState>)((count_done) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => ((Func<CodegenState, CodegenState>)((st16) => ((Func<CodegenState, CodegenState>)((st17) => ((Func<CodegenState, CodegenState>)((st18) => ((Func<CodegenState, CodegenState>)((st19) => ((Func<CodegenState, CodegenState>)((st20) => ((Func<CodegenState, CodegenState>)((st21) => ((Func<CodegenState, CodegenState>)((st22) => ((Func<CodegenState, CodegenState>)((st23) => ((Func<long, CodegenState>)((fill_loop) => ((Func<CodegenState, CodegenState>)((st24) => ((Func<long, CodegenState>)((fill_done) => ((Func<CodegenState, CodegenState>)((st25) => ((Func<CodegenState, CodegenState>)((st26) => ((Func<CodegenState, CodegenState>)((st27) => ((Func<CodegenState, CodegenState>)((st28) => ((Func<CodegenState, CodegenState>)((st29) => ((Func<CodegenState, CodegenState>)((st30) => ((Func<CodegenState, CodegenState>)((st31) => ((Func<CodegenState, CodegenState>)((st32) => ((Func<CodegenState, CodegenState>)((st33) => ((Func<CodegenState, CodegenState>)((st34) => ((Func<CodegenState, CodegenState>)((st35) => ((Func<CodegenState, CodegenState>)((st36) => ((Func<CodegenState, CodegenState>)((st37) => ((Func<CodegenState, CodegenState>)((st38) => ((Func<CodegenState, CodegenState>)((st39) => ((Func<CodegenState, CodegenState>)((st40) => st_append_text(st40, x86_ret())))(st_append_text(st39, pop_r(reg_rbp())))))(st_append_text(st38, pop_r(reg_rbx())))))(st_append_text(st37, pop_r(reg_r12())))))(st_append_text(st36, pop_r(reg_r13())))))(st_append_text(st35, mov_rr(reg_rax(), reg_r13())))))(patch_jcc_at(st34, fill_done, st34.text_len))))(st_append_text(st33, jmp((fill_loop - (st33.text_len + 5L)))))))(st_append_text(st32, mov_load(reg_rcx(), reg_rcx(), 8L)))))(st_append_text(st31, mov_store(reg_rsi(), reg_rax(), 0L)))))(st_append_text(st30, add_rr(reg_rsi(), reg_r13())))))(st_append_text(st29, shl_ri(reg_rsi(), 3L)))))(st_append_text(st28, add_ri(reg_rsi(), 1L)))))(st_append_text(st27, mov_rr(reg_rsi(), reg_rdx())))))(st_append_text(st26, mov_load(reg_rax(), reg_rcx(), 0L)))))(st_append_text(st25, sub_ri(reg_rdx(), 1L)))))(st_append_text(st24, jcc(cc_e(), 0L)))))(st24.text_len)))(st_append_text(st23, test_rr(reg_rcx(), reg_rcx())))))(st23.text_len)))(st_append_text(st22, mov_rr(reg_rdx(), reg_r12())))))(st_append_text(st21, mov_rr(reg_rcx(), reg_rbx())))))(st_append_text(st20, add_rr(reg_r10(), reg_rax())))))(st_append_text(st19, shl_ri(reg_rax(), 3L)))))(st_append_text(st18, add_ri(reg_rax(), 1L)))))(st_append_text(st17, mov_rr(reg_rax(), reg_r12())))))(st_append_text(st16, mov_store(reg_r13(), reg_r12(), 0L)))))(st_append_text(st15, mov_rr(reg_r13(), reg_r10())))))(patch_jcc_at(st14, count_done, st14.text_len))))(st_append_text(st13, jmp((count_loop - (st13.text_len + 5L)))))))(st_append_text(st12, mov_load(reg_rcx(), reg_rcx(), 8L)))))(st_append_text(st11, add_ri(reg_r12(), 1L)))))(st_append_text(st10, jcc(cc_e(), 0L)))))(st10.text_len)))(st_append_text(st9, test_rr(reg_rcx(), reg_rcx())))))(st9.text_len)))(st_append_text(st8, mov_rr(reg_rcx(), reg_rbx())))))(st_append_text(st7, li(reg_r12(), 0L)))))(st_append_text(st6, mov_rr(reg_rbx(), reg_rdi())))))(st_append_text(st5, push_r(reg_r13())))))(st_append_text(st4, push_r(reg_r12())))))(st_append_text(st3, push_r(reg_rbx())))))(st_append_text(st2, mov_rr(reg_rbp(), reg_rsp())))))(st_append_text(st1, push_r(reg_rbp())))))(record_func_offset(st, "UU\u0017\u0011\u0012\"\u000D\u0016U\u0017\u0011\u0013\u000EU\u000E\u0010U\u0017\u0011\u0013\u000E"));
-    }
-
-    public static List<long> multiboot_header()
-    {
-        return Enumerable.Concat(write_i32(464367618L), Enumerable.Concat(write_i32(0L), write_i32(3830599678L)).ToList()).ToList();
-    }
-
-    public static List<long> tramp_clear_pages()
-    {
-        return new List<long>() { 250L, 191L, 0L, 16L, 0L, 0L, 185L, 0L, 12L, 0L, 0L, 49L, 192L, 243L, 171L };
-    }
-
-    public static List<long> tramp_page_tables()
-    {
-        return new List<long>() { 199L, 5L, 0L, 16L, 0L, 0L, 3L, 32L, 0L, 0L, 199L, 5L, 0L, 32L, 0L, 0L, 3L, 48L, 0L, 0L, 191L, 0L, 48L, 0L, 0L, 185L, 0L, 1L, 0L, 0L, 184L, 131L, 0L, 0L, 0L, 137L, 7L, 199L, 71L, 4L, 0L, 0L, 0L, 0L, 131L, 199L, 8L, 5L, 0L, 0L, 32L, 0L, 73L, 117L, 236L };
-    }
-
-    public static List<long> tramp_enable_long_mode()
-    {
-        return new List<long>() { 184L, 0L, 16L, 0L, 0L, 15L, 34L, 216L, 15L, 32L, 224L, 131L, 200L, 32L, 15L, 34L, 224L, 185L, 128L, 0L, 0L, 192L, 15L, 50L, 13L, 0L, 1L, 0L, 0L, 15L, 48L, 15L, 32L, 192L, 13L, 0L, 0L, 0L, 128L, 15L, 34L, 192L };
-    }
-
-    public static List<long> trampoline_code()
-    {
-        return Enumerable.Concat(tramp_clear_pages(), Enumerable.Concat(tramp_page_tables(), tramp_enable_long_mode()).ToList()).ToList();
-    }
-
-    public static List<long> tramp_gdt_data()
-    {
-        return new List<long>() { 235L, 30L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 255L, 255L, 0L, 0L, 0L, 154L, 175L, 0L, 255L, 255L, 0L, 0L, 0L, 146L, 207L, 0L };
-    }
-
-    public static List<long> trampoline_gdt_section()
-    {
-        return Enumerable.Concat(tramp_gdt_data(), Enumerable.Concat(write_i16(23L), Enumerable.Concat(write_i32((bare_metal_load_addr() + 126L)), Enumerable.Concat(new List<long>() { 15L, 1L, 21L }, Enumerable.Concat(write_i32((bare_metal_load_addr() + 150L)), new List<long>() { 234L, 0L, 0L, 0L, 0L, 8L, 0L }).ToList()).ToList()).ToList()).ToList()).ToList();
-    }
-
-    public static TrampolineResult bare_metal_trampoline()
-    {
-        return ((Func<List<long>, TrampolineResult>)((bytes) => new TrampolineResult(bytes, 163L)))(Enumerable.Concat(multiboot_header(), Enumerable.Concat(trampoline_code(), trampoline_gdt_section()).ToList()).ToList());
-    }
-
-    public static CodegenState emit_out_byte(CodegenState st, long port, long value)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => st_append_text(st2, out_dx_al())))(st_append_text(st1, li(reg_rax(), value)))))(st_append_text(st, li(reg_rdx(), port)));
-    }
-
-    public static CodegenState emit_com1_init(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => emit_out_byte(st5, 1020L, 11L)))(emit_out_byte(st4, 1018L, 199L))))(emit_out_byte(st3, 1019L, 3L))))(emit_out_byte(st2, 1017L, 0L))))(emit_out_byte(st1, 1016L, 1L))))(emit_out_byte(st, 1019L, 128L));
-    }
-
-    public static CodegenState emit_serial_wait_and_send(CodegenState st, long byte_val)
-    {
-        return ((Func<long, CodegenState>)((wait_top) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<long, CodegenState>)((jne_pos) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => st_append_text(st8, out_dx_al())))(st_append_text(st7, li(reg_rax(), byte_val)))))(st_append_text(st6, li(reg_rdx(), 1016L)))))(patch_jcc_at(st5, jne_pos, st5.text_len))))(st_append_text(st4, jmp((wait_top - (st4.text_len + 5L)))))))(st_append_text(st3, jcc(cc_ne(), 0L)))))(st3.text_len)))(st_append_text(st2, new List<long>() { 168L, 32L }))))(st_append_text(st1, new List<long>() { 236L }))))(st_append_text(st, li(reg_rdx(), 1021L)))))(st.text_len);
-    }
-
-    public static CodegenState emit_serial_send_rdi(CodegenState st)
-    {
-        return ((Func<long, CodegenState>)((wait_top) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<long, CodegenState>)((jne_pos) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => st_append_text(st8, out_dx_al())))(st_append_text(st7, mov_rr(reg_rax(), reg_rdi())))))(st_append_text(st6, li(reg_rdx(), 1016L)))))(patch_jcc_at(st5, jne_pos, st5.text_len))))(st_append_text(st4, jmp((wait_top - (st4.text_len + 5L)))))))(st_append_text(st3, jcc(cc_ne(), 0L)))))(st3.text_len)))(st_append_text(st2, new List<long>() { 168L, 32L }))))(st_append_text(st1, new List<long>() { 236L }))))(st_append_text(st, li(reg_rdx(), 1021L)))))(st.text_len);
-    }
-
-    public static ItoaState emit_itoa_zero_check(CodegenState st)
-    {
-        return ((Func<CodegenState, ItoaState>)((st1) => ((Func<CodegenState, ItoaState>)((st2) => ((Func<long, ItoaState>)((jne_pos) => ((Func<CodegenState, ItoaState>)((st3) => ((Func<CodegenState, ItoaState>)((st4) => ((Func<long, ItoaState>)((jmp_pos) => ((Func<CodegenState, ItoaState>)((st5) => ((Func<CodegenState, ItoaState>)((st6) => new ItoaState(st6, jmp_pos)))(patch_jcc_at(st5, jne_pos, st5.text_len))))(st_append_text(st4, jmp(0L)))))(st4.text_len)))(emit_serial_wait_and_send(st3, 48L))))(st_append_text(st2, jcc(cc_ne(), 0L)))))(st2.text_len)))(st_append_text(st1, test_rr(reg_rbx(), reg_rbx())))))(st_append_text(st, mov_rr(reg_rbx(), reg_rax())));
-    }
-
-    public static CodegenState emit_itoa_sign_and_digits(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((jns_pos) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<long, CodegenState>)((loop_top) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => ((Func<CodegenState, CodegenState>)((st14) => ((Func<CodegenState, CodegenState>)((st15) => st_append_text(st15, jcc(cc_ne(), (loop_top - (st15.text_len + 6L))))))(st_append_text(st14, test_rr(reg_rbx(), reg_rbx())))))(st_append_text(st13, add_ri(reg_rcx(), 1L)))))(st_append_text(st12, push_r(reg_rdx())))))(st_append_text(st11, add_ri(reg_rdx(), 48L)))))(st_append_text(st10, mov_rr(reg_rbx(), reg_rax())))))(st_append_text(st9, idiv_r(reg_r11())))))(st_append_text(st8, cqo()))))(st_append_text(st7, mov_rr(reg_rax(), reg_rbx())))))(st7.text_len)))(st_append_text(st6, li(reg_r11(), 10L)))))(st_append_text(st5, li(reg_rcx(), 0L)))))(patch_jcc_at(st4, jns_pos, st4.text_len))))(st_append_text(st3, neg_r(reg_rbx())))))(emit_serial_wait_and_send(st2, 45L))))(st_append_text(st1, jcc(cc_ge(), 0L)))))(st1.text_len)))(st_append_text(st, test_rr(reg_rbx(), reg_rbx())));
-    }
-
-    public static CodegenState emit_itoa_print_loop(CodegenState st)
-    {
-        return ((Func<long, CodegenState>)((loop_top) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((je_pos) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => patch_jcc_at(st8, je_pos, st8.text_len)))(st_append_text(st7, jmp((loop_top - (st7.text_len + 5L)))))))(st_append_text(st6, sub_ri(reg_rcx(), 1L)))))(st_append_text(st5, pop_r(reg_rcx())))))(emit_serial_send_rdi(st4))))(st_append_text(st3, push_r(reg_rcx())))))(st_append_text(st2, pop_r(reg_rdi())))))(st_append_text(st1, jcc(cc_e(), 0L)))))(st1.text_len)))(st_append_text(st, test_rr(reg_rcx(), reg_rcx())))))(st.text_len);
-    }
-
-    public static CodegenState emit_inline_itoa_and_print(CodegenState st)
-    {
-        return ((Func<ItoaState, CodegenState>)((zero) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => patch_jmp_at(st2, zero.jmp_done_zero_pos, st2.text_len)))(emit_itoa_print_loop(st1))))(emit_itoa_sign_and_digits(zero.cg))))(emit_itoa_zero_check(st));
-    }
-
-    public static CodegenState emit_serial_wait_thr(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((wait_top) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<long, CodegenState>)((jne_pos) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => st_append_text(st7, pop_r(reg_rax()))))(patch_jcc_at(st6, jne_pos, st6.text_len))))(st_append_text(st5, jmp((wait_top - (st5.text_len + 5L)))))))(st_append_text(st4, jcc(cc_ne(), 0L)))))(st4.text_len)))(st_append_text(st3, new List<long>() { 168L, 32L }))))(st_append_text(st2, new List<long>() { 236L }))))(st_append_text(st1, li(reg_rdx(), 1021L)))))(st1.text_len)))(st_append_text(st, push_r(reg_rax())));
-    }
-
-    public static CodegenState emit_print_newline(CodegenState st)
-    {
-        return ((Func<CodegenState, CodegenState>)((st1) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st3) => st_append_text(st3, out_dx_al())))(st_append_text(st2, li(reg_rdx(), 1016L)))))(st_append_text(st1, li(reg_rax(), 10L)))))(emit_serial_wait_thr(st));
-    }
-
-    public static CodegenState emit_print_text_loop(CodegenState st, long saved_ptr, long saved_table, long saved_len, long saved_idx)
-    {
-        return ((Func<long, CodegenState>)((loop_top) => ((Func<EmitResult, CodegenState>)((idx) => ((Func<EmitResult, CodegenState>)((len_check) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<long, CodegenState>)((done_jump) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<EmitResult, CodegenState>)((ptr_l) => ((Func<EmitResult, CodegenState>)((idx2) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<EmitResult, CodegenState>)((tbl) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => ((Func<CodegenState, CodegenState>)((st8) => ((Func<CodegenState, CodegenState>)((st9) => ((Func<CodegenState, CodegenState>)((st10) => ((Func<EmitResult, CodegenState>)((idx3) => ((Func<CodegenState, CodegenState>)((st11) => ((Func<CodegenState, CodegenState>)((st12) => ((Func<CodegenState, CodegenState>)((st13) => patch_jcc_at(st13, done_jump, st13.text_len)))(st_append_text(st12, jmp((loop_top - (st12.text_len + 5L)))))))(store_local(st11, saved_idx, idx3.reg))))(st_append_text(idx3.state, add_ri(idx3.reg, 1L)))))(load_local(st10, saved_idx))))(st_append_text(st9, out_dx_al()))))(st_append_text(st8, li(reg_rdx(), 1016L)))))(emit_serial_wait_thr(st7))))(st_append_text(st6, movzx_byte(reg_rax(), reg_rax(), 0L)))))(st_append_text(tbl.state, add_rr(reg_rax(), tbl.reg)))))(load_local(st5, saved_table))))(st_append_text(st4, movzx_byte(reg_rax(), reg_rsi(), 0L)))))(st_append_text(st3, add_rr(reg_rsi(), idx2.reg)))))(st_append_text(idx2.state, lea(reg_rsi(), ptr_l.reg, 8L)))))(load_local(ptr_l.state, saved_idx))))(load_local(st2, saved_ptr))))(st_append_text(st1, jcc(cc_ge(), 0L)))))(st1.text_len)))(st_append_text(len_check.state, cmp_rr(idx.reg, len_check.reg)))))(load_local(idx.state, saved_len))))(load_local(st, saved_idx))))(st.text_len);
-    }
-
-    public static CodegenState emit_print_text(CodegenState st, long ptr_reg)
-    {
-        return ((Func<EmitResult, CodegenState>)((saved_ptr) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<EmitResult, CodegenState>)((saved_table) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st2a) => ((Func<EmitResult, CodegenState>)((ptr_ld) => ((Func<EmitResult, CodegenState>)((tmp_len) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<EmitResult, CodegenState>)((saved_len) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<EmitResult, CodegenState>)((saved_idx) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => ((Func<CodegenState, CodegenState>)((st7) => emit_print_newline(st7)))(emit_print_text_loop(st6, saved_ptr.reg, saved_table.reg, saved_len.reg, saved_idx.reg))))(store_local(st5, saved_idx.reg, reg_r11()))))(st_append_text(saved_idx.state, li(reg_r11(), 0L)))))(alloc_local(st4))))(store_local(saved_len.state, saved_len.reg, tmp_len.reg))))(alloc_local(st3))))(st_append_text(tmp_len.state, mov_load(tmp_len.reg, ptr_ld.reg, 0L)))))(alloc_temp(ptr_ld.state))))(load_local(st2a, saved_ptr.reg))))(store_local(st2, saved_table.reg, reg_r11()))))(emit_load_rodata_addr(saved_table.state, reg_r11(), cce_to_unicode_rodata_offset()))))(alloc_local(st1))))(store_local(saved_ptr.state, saved_ptr.reg, ptr_reg))))(alloc_local(st));
-    }
-
-    public static CodegenState emit_print_text_no_newline(CodegenState st, long ptr_reg)
-    {
-        return ((Func<EmitResult, CodegenState>)((saved_ptr) => ((Func<CodegenState, CodegenState>)((st1) => ((Func<EmitResult, CodegenState>)((saved_table) => ((Func<CodegenState, CodegenState>)((st2) => ((Func<CodegenState, CodegenState>)((st2a) => ((Func<EmitResult, CodegenState>)((ptr_ld) => ((Func<EmitResult, CodegenState>)((tmp_len) => ((Func<CodegenState, CodegenState>)((st3) => ((Func<EmitResult, CodegenState>)((saved_len) => ((Func<CodegenState, CodegenState>)((st4) => ((Func<EmitResult, CodegenState>)((saved_idx) => ((Func<CodegenState, CodegenState>)((st5) => ((Func<CodegenState, CodegenState>)((st6) => emit_print_text_loop(st6, saved_ptr.reg, saved_table.reg, saved_len.reg, saved_idx.reg)))(store_local(st5, saved_idx.reg, reg_r11()))))(st_append_text(saved_idx.state, li(reg_r11(), 0L)))))(alloc_local(st4))))(store_local(saved_len.state, saved_len.reg, tmp_len.reg))))(alloc_local(st3))))(st_append_text(tmp_len.state, mov_load(tmp_len.reg, ptr_ld.reg, 0L)))))(alloc_temp(ptr_ld.state))))(load_local(st2a, saved_ptr.reg))))(store_local(st2, saved_table.reg, reg_r11()))))(emit_load_rodata_addr(saved_table.state, reg_r11(), cce_to_unicode_rodata_offset()))))(alloc_local(st1))))(store_local(saved_ptr.state, saved_ptr.reg, ptr_reg))))(alloc_local(st));
     }
 
     public static CodexType ir_expr_type(IRExpr e)
