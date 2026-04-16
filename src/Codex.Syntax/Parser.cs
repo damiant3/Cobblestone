@@ -339,7 +339,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         SkipNewlines();
 
         List<EffectOperationNode> operations = [];
-        while (IsIdentifierLike(Current.Kind) && Peek(1)?.Kind == TokenKind.Colon)
+        while (Current.Kind == TokenKind.Identifier && Peek(1)?.Kind == TokenKind.Colon)
         {
             int savedPos = m_position;
             Token opName = Current;
@@ -525,7 +525,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         while (Current.Kind == TokenKind.LeftParen)
         {
             Advance();
-            if (IsIdentifierLike(Current.Kind) || Current.Kind == TokenKind.TypeIdentifier)
+            if (Current.Kind is TokenKind.Identifier or TokenKind.TypeIdentifier)
             {
                 parameters.Add(Current);
                 Advance();
@@ -538,7 +538,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
             Expect(TokenKind.RightParen);
         }
 
-        while (IsIdentifierLike(Current.Kind) && Peek(1)?.Kind != TokenKind.Colon)
+        while (Current.Kind == TokenKind.Identifier && Peek(1)?.Kind != TokenKind.Colon)
         {
             if (Current.Kind == TokenKind.Identifier && Current.Text == "=")
             {

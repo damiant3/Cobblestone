@@ -104,8 +104,6 @@ public sealed partial class Parser
             or TokenKind.LeftBracket
             or TokenKind.DoKeyword
             or TokenKind.ActKeyword
-            or TokenKind.EndKeyword
-            or TokenKind.QedKeyword
             or TokenKind.WithKeyword;
     }
 
@@ -130,8 +128,6 @@ public sealed partial class Parser
 
             case TokenKind.Identifier:
             case TokenKind.TypeIdentifier:
-            case TokenKind.EndKeyword:
-            case TokenKind.QedKeyword:
             {
                 Token token = Current;
                 Advance();
@@ -222,7 +218,7 @@ public sealed partial class Parser
 
         // Collect parameters: identifiers before ->
         List<Token> parameters = [];
-        while (IsIdentifierLike(Current.Kind) && !IsAtEnd)
+        while (Current.Kind == TokenKind.Identifier && !IsAtEnd)
         {
             parameters.Add(Current);
             Advance();
@@ -400,10 +396,10 @@ public sealed partial class Parser
         SkipNewlines();
 
         List<Syntax.LetBinding> bindings = [];
-        while (IsIdentifierLike(Current.Kind)
+        while (Current.Kind == TokenKind.Identifier
             || (IsReservedKeyword(Current.Kind) && Peek(1)?.Kind == TokenKind.Equals))
         {
-            if (IsReservedKeyword(Current.Kind) && !IsIdentifierLike(Current.Kind))
+            if (IsReservedKeyword(Current.Kind))
             {
                 ReportReservedKeywordAsIdentifier("a let-binding name");
             }
@@ -519,7 +515,7 @@ public sealed partial class Parser
                                     or TokenKind.ElseKeyword or TokenKind.InKeyword)
             && !(Current.Kind == TokenKind.Identifier && Peek(1)?.Kind == TokenKind.Colon))
         {
-            if (IsIdentifierLike(Current.Kind) && Peek(1)?.Kind == TokenKind.LeftArrow)
+            if (Current.Kind == TokenKind.Identifier && Peek(1)?.Kind == TokenKind.LeftArrow)
             {
                 Token name = Current;
                 Advance();
@@ -553,7 +549,7 @@ public sealed partial class Parser
         List<DoStatementNode> statements = [];
         while (!IsAtEnd && Current.Kind != TokenKind.EndKeyword && Current.Kind != TokenKind.EndOfFile)
         {
-            if (IsIdentifierLike(Current.Kind) && Peek(1)?.Kind == TokenKind.LeftArrow)
+            if (Current.Kind == TokenKind.Identifier && Peek(1)?.Kind == TokenKind.LeftArrow)
             {
                 Token name = Current;
                 Advance();
