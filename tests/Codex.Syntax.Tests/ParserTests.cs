@@ -191,6 +191,34 @@ public class ParserTests
     }
 
     [Fact]
+    public void Parse_record_field_chain_simple()
+    {
+        DocumentNode doc = Parse("x = Foo { x = 1 }.x");
+        FieldAccessExpressionNode field = Assert.IsType<FieldAccessExpressionNode>(doc.Definitions[0].Body);
+        Assert.Equal("x", field.FieldName.Text);
+        Assert.IsType<RecordExpressionNode>(field.Record);
+    }
+
+    [Fact]
+    public void Parse_record_field_chain_nested()
+    {
+        DocumentNode doc = Parse("x = Foo { x = Bar { y = 2 } }.x.y");
+        FieldAccessExpressionNode outer = Assert.IsType<FieldAccessExpressionNode>(doc.Definitions[0].Body);
+        Assert.Equal("y", outer.FieldName.Text);
+        FieldAccessExpressionNode inner = Assert.IsType<FieldAccessExpressionNode>(outer.Record);
+        Assert.Equal("x", inner.FieldName.Text);
+        Assert.IsType<RecordExpressionNode>(inner.Record);
+    }
+
+    [Fact]
+    public void Parse_record_field_chain_contextual_keyword()
+    {
+        DocumentNode doc = Parse("x = Foo { x = 1 }.end");
+        FieldAccessExpressionNode field = Assert.IsType<FieldAccessExpressionNode>(doc.Definitions[0].Body);
+        Assert.Equal("end", field.FieldName.Text);
+    }
+
+    [Fact]
     public void Parse_match_expression()
     {
         string source = "x = when y is True -> 1 is False -> 0";
