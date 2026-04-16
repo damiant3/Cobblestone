@@ -1,207 +1,192 @@
 # Bootstrap Verification Report
 
-**Date:** 2026-04-13 (re-verified)
-**Compiler version:** Codex self-hosted compiler at head
-**Result:** Text-mode pingpong green — C# bootstrap + bare-metal text pingpong + semantic equivalence all PASS. Binary-mode pingpong currently FAIL (stage 1 `SIZE:` marker not found; tracked, BINARY-DIAG mode available).
+**Date:** 2026-04-16
+**Compiler version:** master @ `e84f674`
+**Result:** Bootstrap 1 and 1.1 green. **Bootstrap 2 (pingpong) RED**
+since `4420b92` (2026-04-15 22:05) — parametric type emission
+regression in the Codex-text emitter. Bootstrap 3 (bare-metal binary)
+not yet green by design.
+
+See `docs/CodexBootstrap.png` for the diagram.
 
 ---
 
-## What Is Bootstrapping?
+## Naming
 
-A self-hosting compiler is one that can compile its own source code. Bootstrapping
-is the process of proving this works — that the compiler, when compiled by itself,
-produces an identical copy of itself.
+Three separate fixed-point proofs, each on a different compiler image
+or output modality:
 
-The test is called a **fixed-point proof**: if you compile the source with compiler A
-to get compiler B, then compile the same source with compiler B to get compiler C,
-and B equals C byte-for-byte, the compiler has reached a fixed point. It is
-self-consistent. No external authority is needed to verify it — the proof is in
-the output.
+| # | Name | Runtime | Emitter | What it proves |
+|---|------|---------|---------|----------------|
+| 1 | Bootstrap 1 | .NET | C# | .NET self-host is self-consistent when emitting C# |
+| 1.1 | Bootstrap 1.1 | .NET | Codex text | .NET self-host is self-consistent when emitting Codex text |
+| 2 | Bootstrap 2 (pingpong) | bare-metal ELF under QEMU | Codex text | self-host compiled to ELF, run on bare hardware, reproduces source semantically and its own output byte-identically |
+| 3 | Bootstrap 3 | bare-metal ELF under QEMU | x86-64 machine code | self-compiled binary reproduces itself byte-identically |
 
-Codex proves this fixed point three independent ways:
+**Bootstrap 1 and 1.1 are not pingpong.** Both run under `dotnet`. A green
+"BOOTSTRAP 1" or "BOOTSTRAP 1.1" message from `codex bootstrap` is a
+`dotnet`-hosted result only; it says nothing about bare metal.
 
-1. **C# Bootstrap** — the self-hosted compiler emits C# code, which is compiled
-   by .NET and run again. Three stages, comparing stage 1 and stage 3.
+**Bootstrap 2 (pingpong) runs on bare metal.** An ELF runs in QEMU, reads source over
+serial, writes Codex text back out. That output, fed back in, must
+produce itself byte-identically.
 
-2. **Bare-Metal Pingpong** — the self-hosted compiler is compiled to a bare-metal
-   x86-64 ELF (no OS, no runtime, no libc), run under QEMU, and its output is
-   fed back through the same binary. Two stages, byte-identical comparison.
+---
 
-3. **Semantic Equivalence** — the source (stage 0) is compared against the
-   bare-metal output (stage 1) definition by definition, proving the compiler
-   reproduces its own source semantically. 1292/1292 body match, no normalizations
-   hiding differences.
+## What Each Bootstrap Requires
+
+### Bootstrap 1 (.NET, C# output)
+
+- Ref compiler → stage 0 (self-host as C#).
+- `dotnet` compiles and runs stage 0 → stage 1 (self-host compiling
+  itself, emitting C#).
+- Stage 1 → stage 3 (same operation, run from stage 1's compiled C#).
+- Fixed point: **stage 1 === stage 3**.
+
+### Bootstrap 1.1 (.NET, Codex-text output)
+
+- Stage 0's emitter emits Codex text → bootstrap 1.1 stage 1.
+- Stage 1's emitter emits Codex text → bootstrap 1.1 stage 2.
+- Fixed point: **bootstrap 1.1 stage 1 === bootstrap 1.1 stage 2**.
+
+### Bootstrap 2 (pingpong) — bare-metal ELF, Codex-text output
+
+- Ref compiler produces the bare-metal ELF (`Codex.Codex.elf`, target
+  `x86-64-bare`). ELF runs under QEMU — no OS, no libc, no dotnet.
+- QEMU sends the ELF `TEXT\n` + source over serial, captures Codex
+  text output → bootstrap 2 (pingpong) stage 1.
+- sem-equiv(source, bootstrap 2 (pingpong) stage 1) must PASS. Without this,
+  stage 1 is garbage and the stage-1=stage-2 check is meaningless.
+- QEMU repeats with bootstrap 2 (pingpong) stage 1 as input → bootstrap 2 (pingpong) stage 2.
+- Fixed point: **bootstrap 2 (pingpong) stage 1 === bootstrap 2 (pingpong) stage 2**,
+  AND sem-equiv PASS.
+
+### Bootstrap 3 (bare-metal binary)
+
+- ELF runs `BINARY` mode, emits x86-64 machine code for its own source.
+- Output is itself a bare-metal ELF.
+- Fixed point: self-compiled binary === reference-compiled binary.
+- **Not green.** MM4 Phase 8.
+
+---
+
+## Current State (2026-04-16)
+
+| # | Check | Size | Time | Verdict |
+|---|-------|------|------|---------|
+| 1 | stage 1 === stage 3 | 946,826 chars | ~11s | PASS |
+| 1.1 | stage 1 === stage 2 | 549,881 chars | ~5s | PASS |
+| 2 | bootstrap 2 (pingpong) stage 1 produced | 562,740 B | 39s | produced |
+| 2 | sem-equiv(source, stage 1) | — | ~1s | **FAIL** |
+| 2 | stage 1 === stage 2 | — | — | **SKIPPED** (gated on sem-equiv) |
+| 3 | self-compiled binary byte-identical | — | — | not green by design |
+
+Bootstrap 2 (pingpong) stage 1 bare-metal metrics:
+- Stack HWM: 2,497,152 B
+- Heap HWM: 1,011,859,392 B (≈965 MB of the ≈1 GB bare-metal heap)
+
+### Bootstrap 2 (pingpong) regression — root cause
+
+Sem-equiv(source, bootstrap 2 (pingpong) stage 1) reports:
+
+- **Dropped (1)**: `foreword--maybe: Maybe (a) (line 1)` — source has
+  `Maybe (a) =`, stage 1 has `Maybe =`. Type parameter dropped from
+  the parametric type definition.
+- **Extra (2)**: `?: Maybe :` (orphan, no chapter attribution);
+  `emit--csharp-emitter: emit-pattern : IRPat -> Text` (pre-existing,
+  not in this session).
+- **Sig mismatches (5)**: `from-maybe`, `is-just`, `is-none`,
+  `maybe-map`, `maybe-bind`. Source: `Maybe a -> ...`. Stage 1:
+  `Maybe -> ...`. Type argument stripped from type *applications*
+  in sigs too.
+- Bodies: 1,536 of 1,536 match. Only type declarations and type
+  references lose parametricity.
+
+Location of the bug: `Codex.Codex/Emit/CodexEmitter.codex:11-17`
+(`emit-type-def`). Both `ARecordTypeDef (name) (tparams) (fields) (s)`
+and `AVariantTypeDef (name) (tparams) (ctors) (s)` destructure
+`tparams` but never emit it. The type-application case in
+`emit-type-expr` similarly loses its argument list when emitting
+sigs (verified by diffing source sigs against `bootstrap2-stage1.codex`
+at `from-maybe` et al).
+
+Regression introduced at `4420b92` (Merge hex-cam/self-host-maybe,
+2026-04-15 22:05). The Maybe merge added parametric Maybe records to
+self-host but did not update the Codex-text emitter to carry type
+parameters through definition or reference emission. Bootstrap 1 and
+1.1 pass because they don't reparse their own Codex-text output —
+Bootstrap 2 (pingpong) fails because pingpong does.
 
 ---
 
 ## Files in This Directory
 
-| File | Size | Description |
-|------|------|-------------|
-| `source.codex` | 462 KB | Combined Codex source — input to both bootstraps |
-| `bootstrap1-stage0.cs` | 833 KB | Reference compiler (hand-written C#) compiles source → C# |
-| `bootstrap1-stage1.cs` | 681 KB | Self-hosted compiler (from stage 0) compiles source → C# |
-| `bootstrap1-stage3.cs` | 681 KB | Self-hosted compiler (from stage 1) compiles source → C# |
-| `bootstrap2-stage1.codex` | 418 KB | Bare-metal ELF compiles source → Codex |
-| `bootstrap2-stage2.codex` | 418 KB | Same ELF compiles stage 1 output → Codex |
+| File | Size (B) | Contents |
+|------|----------|----------|
+| `source.codex` | 600,341 | Concatenated Codex source. Input to all bootstraps. |
+| `bootstrap1-stage0.cs` | 1,141,723 | Ref compiler → C# |
+| `bootstrap1-stage1.cs` | 946,826 | Stage 0 self-host → C# under `dotnet` |
+| `bootstrap1-stage3.cs` | 946,826 | Stage 1 self-host → C# (== stage 1) |
+| `bootstrap1.1-stage1.codex` | 549,881 | Stage 0 self-host → Codex text under `dotnet` |
+| `bootstrap1.1-stage2.codex` | 549,881 | Stage 1 self-host → Codex text under `dotnet` (== stage 1) |
+| `bootstrap2-stage1.codex` | 562,701 | Bare-metal ELF → Codex text (STACK/HEAP/RESULT stripped) |
+| `bootstrap2-stage2.codex` | 36 | Placeholder: `could not produce, sem-equiv failed`. Stage 2 correctly gated and not run. |
 
-**Fixed-point results (most recent re-verification, 2026-04-13):**
-- Bare-metal text pingpong: stage1 (537,984 bytes) === stage2 (537,984 bytes),
-  byte-identical (excluding STACK/HEAP diagnostic lines)
-- Source input: 577,374 bytes
-- ELF binary: 1,017,616 bytes
-- Per-stage: ~35s, stack HWM ~2.4 MB, heap HWM ~244 MB (within the
-  ~1 GB bare-metal heap shipped in `a725ac7`)
-- Sem-equiv: PASS — source vs stage1 match semantically
-- C# bootstrap (`dotnet`-hosted): stage1 === stage3 byte-identical
-- **Binary pingpong: FAIL** — stage 1 `SIZE:` marker not found.
-  BINARY-DIAG mode wired (`02b71e9`) for diagnosis.
-
-**Committed reference artefacts in this directory** (from 2026-04-07)
-are retained for historical comparison; they predate the recent
-diagnostics-infrastructure landings and the T1 fix, so absolute sizes
-differ from today's head.
-
----
-
-## Semantic Equivalence (stage0==stage1)
-
-The `codex sem-equiv` tool compares source definitions against bare-metal output
-honestly — no hidden normalizations. The tool documents what it does:
-
-```
-Stage0 structure (recognized, not compared):
-  33 chapters, 239 sections, 259 prose lines, 4 cites
-
-Comparison method:
-  Applied: name demangling (stage1), whitespace collapse (both), type-var alpha-norm (sigs)
-  Not applied: brace escapes, parenthesization — reported as-is
-
-Bodies: 1292 match, 0 differ
-Verdict: PASS
-```
-
-Chapters, sections, and prose are structural metadata that the emitter does not
-yet produce. They are recognized and counted but not compared. Name demangling
-reverses the compiler's cross-chapter name mangling. Whitespace collapse is
-applied at comparison time (not stored). Everything else — brace escapes,
-parenthesization — is compared as-is.
+The placeholder content of `bootstrap2-stage2.codex` is the proof that
+bootstrap 2 (pingpong) is red at master.
 
 ---
 
 ## How to Reproduce
 
-### Prerequisites
+Prerequisites: .NET 8 SDK; WSL with QEMU + KVM (`/dev/kvm` rw for user's
+primary group).
 
-- .NET 8 SDK
-- WSL with QEMU (`/usr/bin/qemu-system-x86_64`) for bare-metal tests
-- Git clone of this repository
-
-### Method 1: Automated (recommended)
-
-**C# bootstrap only:**
+Full run (clean + build + bootstraps 1, 1.1, 2):
 
 ```bash
-dotnet build tools/Codex.Cli/Codex.Cli.csproj -c Release
-dotnet run --project tools/Codex.Cli -c Release -- bootstrap Codex.Codex
-```
-
-Expected output:
-```
-✅ FIXED POINT PROVEN: Stage 1 = Stage 3 (681,004 chars identical)
-```
-
-**Full verification (C# bootstrap + bare-metal pingpong):**
-
-```bash
+rm -rf build-output tools/Codex.Bootstrap/CodexLib.g.cs \
+       tools/Codex.Bootstrap/bootstrap-output Codex.Codex/out .codex-build
+find . -type d \( -name bin -o -name obj \) -not -path '*/.git/*' | xargs rm -rf
+dotnet build Codex.sln
 wsl bash tools/pingpong.sh
 ```
 
-Expected output:
+`pingpong.sh` Phase 3 = bootstraps 1 + 1.1. Phase 4 = bootstrap 2 (pingpong).
+Bootstrap 3 is not exercised by `pingpong.sh`.
+
+Expected output at master 2026-04-16:
+
 ```
-✅ FIXED POINT PROVEN: Stage 1 = Stage 3 (681,004 chars identical)
-PASS: stage1 === stage2 (byte-identical)
+✅ BOOTSTRAP 1 (.NET, C# output): Stage 1 = Stage 3 (946,826 chars identical)
+✅ BOOTSTRAP 1.1 (.NET, Codex-text output): Stage 1 = Stage 2 (549,881 chars identical)
+Stage 1: 562740 bytes (39s)
+Verdict: FAIL
+sem-equiv: FAIL (exit 1)
+Skipping stage 2 — semantic equivalence failed.
 ```
 
-**Semantic equivalence:**
-
-```bash
-dotnet run --project tools/Codex.Cli -- sem-equiv docs/Test/source.codex docs/Test/bootstrap2-stage1.codex
-```
-
-Expected output: `Verdict: PASS` with 0 body mismatches.
+The first two ✅ are bootstraps 1 and 1.1. The FAIL is bootstrap 2 (pingpong).
+Do not report "pingpong green" based on the two ✅.
 
 ---
 
-## What the Results Mean
+## Trust Chain
 
-### Stage 0 vs Stage 1 (833 KB → 681 KB)
+1. Ref compiler (`src/`) is hand-written, auditable C# — the trust root.
+2. Ref → bootstrap 1 stage 0 (self-host as C#).
+3. Stage 0 → stage 1 via `dotnet`. Stage 1 → stage 3. Stage 1 === stage
+   3 proves .NET self-consistency for C# emission. **Bootstrap 1.**
+4. Same path with Codex-text emitter. Bootstrap 1.1 stage 1 === stage
+   2. Proves .NET self-consistency for Codex-text emission. **Bootstrap 1.1.**
+5. Ref → bare-metal ELF (self-host compiled for `x86-64-bare`).
+6. ELF under QEMU → bootstrap 2 (pingpong) stage 1. sem-equiv(source, stage 1)
+   PASS. **Currently failing.**
+7. Same ELF → bootstrap 2 (pingpong) stage 2 (from stage 1). stage 1 === stage 2.
+   Gated on step 6; blocked.
+8. Bare-metal binary self-compile byte-identical. **Bootstrap 3** — not
+   green by design.
 
-Stage 0 is produced by the **reference compiler** — hand-written C# code in `src/`.
-Stage 1 is produced by the **self-hosted compiler** — Codex code in `Codex.Codex/`,
-compiled to C# by the reference compiler, then executed.
-
-The size difference (833 KB vs 681 KB) is because the two compilers are different
-implementations. The reference compiler is hand-written C#; the self-hosted
-compiler is generated from Codex source. They produce semantically equivalent
-but textually different C# output.
-
-### Stage 1 = Stage 3 (identical)
-
-Stage 1 and stage 3 are both produced by the self-hosted compiler, but compiled
-by different versions of itself. Stage 1 was compiled by the reference compiler.
-Stage 3 was compiled by stage 1's output. The fact that they are identical proves
-the self-hosted compiler is **self-consistent** — compiling itself produces the
-same compiler, which produces the same output.
-
-This is the fixed point. It means the self-hosted compiler does not depend on
-which compiler compiled it. Its behavior is determined entirely by its source code.
-
-### Bare-metal stage1 === stage2 (byte-identical)
-
-The bare-metal test goes further. The compiler is compiled to a raw x86-64 ELF
-binary with no operating system — no libc, no malloc, no syscalls. It runs on
-QEMU bare metal, reading source from a serial pipe and writing output to the
-same pipe.
-
-Stage 1 feeds the source through this binary. Stage 2 feeds stage 1's output
-through the same binary. Byte-identical output proves the compiler works
-correctly on bare hardware with its own memory allocator, its own string
-handling, and its own I/O — no borrowed substrate.
-
-### Source == Stage 1 (semantic equivalence)
-
-The semantic equivalence proof closes the loop. It shows that the bare-metal
-compiler's output reproduces its own source — every definition, every body,
-every type signature (modulo cross-chapter name mangling which is reversed
-during comparison). No normalizations hide differences.
-
-### The Trust Chain
-
-1. **You read the reference compiler** (`src/`) — it is hand-written, auditable C#
-2. **The reference compiler compiles the Codex source** → stage 0
-3. **Stage 0 compiles the same source** → stage 1
-4. **Stage 1 compiles the same source** → stage 3
-5. **Stage 1 = Stage 3** — the self-hosted compiler is self-consistent
-6. **The bare-metal binary proves the same** — no OS in the loop
-7. **Source == stage 1 semantically** — the compiler reproduces its source
-
-The only trust assumption is step 1: that the reference compiler does what it
-claims. After that, the math takes over. The fixed point is the proof.
-
----
-
-## Performance Summary (bare-metal, 2026-04-13)
-
-| Stage | Output | Time | Stack HWM | Heap HWM |
-|-------|--------|------|-----------|----------|
-| Stage 1 | 537,984 bytes | 35s | 2,449,040 B | 248,474,328 B |
-| Stage 2 | 537,984 bytes | 34s | 2,409,640 B | 244,442,592 B |
-
-Both stages run on QEMU x86-64 bare metal with KVM. ELF binary is
-1,017,616 bytes. Source input is 577,374 bytes.
-
-The lower wall-clock vs. the 2026-04-07 numbers reflects the larger
-heap (2 MB → ~1 GB, `a725ac7`) — `sbrk` thrashing eliminated. The
-larger output reflects added diagnostics threading (SourceSpan on
-every AST/IR node) and additional definitions at head.
+Step 1 is the only trust assumption. After that, the fixed-point
+algebra closes the loop — but only when every step is green.
+Bootstraps 1 and 1.1 being green does not imply bootstrap 2 (pingpong) is green.

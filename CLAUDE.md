@@ -27,13 +27,27 @@ agent or Damian reviews, builds, tests, and merges.
 Non-compiler changes (docs, tooling under `tools/` that isn't the compiler,
 agent scripts, CI, etc.) may be pushed directly to master.
 
-### 2. Sem-equiv with pingpong with is the acceptance test
+### 2. Pingpong (bootstrap 2) is the acceptance test
 
-Every change that touches codegen must pass sem-equiv  pingpong before it is considered done.
-`wsl bash tools/pingpong.sh` — if it's not green, back it out.
+There are **three separate bootstraps**. Do not confuse them. See
+`docs/CodexBootstrap.png` and `docs/Test/BOOTSTRAP-REPORT.md`.
 
-`codex sem-equiv` measures how close bootstrap2 stage0 and stage1 outputs are.
-100% body match is already established and required to remain 100% going forward. Any regression is a hard blocker.
+- **Bootstrap 1** — .NET self-host, emits C#. Fixed point: stage 1 === stage 3.
+- **Bootstrap 1.1** — .NET self-host, emits Codex text. Fixed point: stage 1 === stage 2.
+- **Bootstrap 2 (pingpong)** — bare-metal ELF under QEMU, emits Codex text.
+  Fixed point requires **both** sem-equiv(source, stage 1) = PASS **and**
+  stage 1 === stage 2 byte-identical.
+- **Bootstrap 3** — bare-metal ELF emits machine code. Not yet green (MM4 Phase 8).
+
+Bootstraps 1 and 1.1 run under `dotnet`. Pingpong is bootstrap 2, and **only**
+bootstrap 2. A green "BOOTSTRAP 1" or "BOOTSTRAP 1.1" line from `codex bootstrap`
+says nothing about pingpong. If you report pingpong green, it is because
+`wsl bash tools/pingpong.sh` Phase 4 ran green: sem-equiv PASS followed by
+stage1 === stage2 byte-identical.
+
+Every change that touches codegen must pass bootstrap 2 (pingpong) before it
+is considered done. `wsl bash tools/pingpong.sh` — if it's not green, back
+it out.
 
 ### 3. Read before you write
 

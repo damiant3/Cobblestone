@@ -135,17 +135,18 @@ public static partial class Program
             if (stage1Output != stage3Output)
             {
                 total.Stop();
-                Console.WriteLine($"❌ C# DIVERGENCE: Stage 1 ({stage1Output.Length:N0} chars) ≠ Stage 3 ({stage3Output.Length:N0} chars)");
+                Console.WriteLine($"❌ BOOTSTRAP 1 DIVERGENCE (.NET, C# output): Stage 1 ({stage1Output.Length:N0} chars) ≠ Stage 3 ({stage3Output.Length:N0} chars)");
                 Console.WriteLine($"   Total time: {total.ElapsedMilliseconds:N0}ms");
                 return 1;
             }
-            Console.WriteLine($"✅ C# FIXED POINT: Stage 1 = Stage 3 ({stage1Output.Length:N0} chars identical)");
+            Console.WriteLine($"✅ BOOTSTRAP 1 (.NET, C# output): Stage 1 = Stage 3 ({stage1Output.Length:N0} chars identical)");
+            Console.WriteLine($"   NOTE: This is NOT pingpong. Pingpong is bare-metal (bootstrap 2).");
 
             // ── Codex text emission check ──
             // Uses stage 0 CodexLib to emit Codex text, then stage 1 CodexLib to emit again.
             // Fixed point: both outputs must be identical.
             Console.WriteLine();
-            Console.Write("Codex text stage 1: emit Codex text (stage 0 compiler)...");
+            Console.Write("Bootstrap 1.1 stage 1: emit Codex text (stage 0 compiler)...");
             sw.Restart();
             string codexText1Path = Path.Combine(outputDir, "stage1-codex.codex");
             int ct1Exit = RunBootstrapCodexEmit(bootstrapDir, codexDir, codexText1Path);
@@ -159,7 +160,7 @@ public static partial class Program
             sw.Stop();
             Console.WriteLine($" {codexText1.Length:N0} chars ({sw.ElapsedMilliseconds}ms)");
 
-            Console.Write("Codex text stage 2: emit Codex text (stage 1 compiler)...");
+            Console.Write("Bootstrap 1.1 stage 2: emit Codex text (stage 1 compiler)...");
             sw.Restart();
             // Stage 1 CodexLib is already in place from the C# fixed-point test above
             string codexText2Path = Path.Combine(outputDir, "stage2-codex.codex");
@@ -178,14 +179,15 @@ public static partial class Program
             if (codexText1 == codexText2)
             {
                 total.Stop();
-                Console.WriteLine($"✅ CODEX TEXT FIXED POINT: Stage 1 = Stage 2 ({codexText1.Length:N0} chars identical)");
+                Console.WriteLine($"✅ BOOTSTRAP 1.1 (.NET, Codex-text output): Stage 1 = Stage 2 ({codexText1.Length:N0} chars identical)");
+                Console.WriteLine($"   NOTE: Still not pingpong. Pingpong is bare-metal (bootstrap 2).");
                 Console.WriteLine($"   Total time: {total.ElapsedMilliseconds:N0}ms");
                 return 0;
             }
             else
             {
                 total.Stop();
-                Console.WriteLine($"❌ CODEX TEXT DIVERGENCE: Stage 1 ({codexText1.Length:N0} chars) ≠ Stage 2 ({codexText2.Length:N0} chars)");
+                Console.WriteLine($"❌ BOOTSTRAP 1.1 DIVERGENCE (.NET, Codex-text output): Stage 1 ({codexText1.Length:N0} chars) ≠ Stage 2 ({codexText2.Length:N0} chars)");
                 Console.WriteLine($"   Total time: {total.ElapsedMilliseconds:N0}ms");
                 return 1;
             }
