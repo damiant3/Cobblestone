@@ -2,6 +2,8 @@ Chapter: Parser
 
  The parser transforms a flat token list into a concrete syntax tree.
 
+  cites Foreword chapter Maybe
+
 Section: Type Parsing
   parse-type : ParseState -> ParseTypeResult
   parse-type (st) =
@@ -121,10 +123,10 @@ Section: Definition Parsing
 
   parse-definition : ParseState -> ParseDefResult
   parse-definition (st) =
-   if is-done st then DefNone st
+   if is-done st then ParseDefResult { maybe-def = None, state = st }
    else if is-ident (current-kind st) then try-parse-def st
    else if is-type-ident (current-kind st) then try-parse-def st
-     else DefNone st
+     else ParseDefResult { maybe-def = None, state = st }
 
   try-parse-def : ParseState -> ParseDefResult
   try-parse-def (st) =
@@ -194,25 +196,31 @@ Section: Definition Parsing
    else let tok = current st
     in let err-st = expect Equals st
     in let st2 = skip-body-tokens err-st (name-tok.column)
-    in DefOk (Def {
-     name = name-tok,
-     params = params,
-     ann = ann,
-     body = ErrExpr tok,
-     chapter-slug = ""
-    }) st2
+    in ParseDefResult {
+     maybe-def = Just (Def {
+      name = name-tok,
+      params = params,
+      ann = ann,
+      body = ErrExpr tok,
+      chapter-slug = ""
+     }),
+     state = st2
+    }
 
   unwrap-def-body : ParseExprResult -> List TypeAnn -> Token -> List Token -> ParseDefResult
   unwrap-def-body (r) (ann) (name-tok) (params) =
    when r
     is ExprOk (b) (st) ->
-     DefOk (Def {
-      name = name-tok,
-      params = params,
-      ann = ann,
-      body = b,
-      chapter-slug = ""
-     }) st
+     ParseDefResult {
+      maybe-def = Just (Def {
+       name = name-tok,
+       params = params,
+       ann = ann,
+       body = b,
+       chapter-slug = ""
+      }),
+      state = st
+     }
 
 Section: Type Definition Parsing
   is-paren-type-param : ParseState -> Boolean
@@ -250,9 +258,9 @@ Section: Type Definition Parsing
      in if is-record-keyword (current-kind st4) then parse-record-type name-tok tparams st4
             else if is-pipe (current-kind st4) then parse-variant-type name-tok tparams st4
             else if is-type-ident (current-kind st4) & looks-like-variant st4 then parse-variant-type name-tok tparams st4
-            else TypeDefNone st
-         else TypeDefNone st
-    else TypeDefNone st
+            else ParseTypeDefResult { maybe-type-def = None, state = st }
+         else ParseTypeDefResult { maybe-type-def = None, state = st }
+    else ParseTypeDefResult { maybe-type-def = None, state = st }
 
   parse-record-type : Token -> List Token -> ParseState -> ParseTypeDefResult
   parse-record-type (name-tok) (tparams) (st) =
@@ -263,17 +271,23 @@ Section: Type Definition Parsing
 
   parse-record-fields-loop : Token -> List Token -> List RecordFieldDef -> ParseState -> ParseTypeDefResult
   parse-record-fields-loop (name-tok) (tparams) (acc) (st) =
-   if is-right-brace (current-kind st) then TypeDefOk (TypeDef {
-    name = name-tok,
-    type-params = tparams,
-    body = RecordBody acc
-   }) (advance st)
+   if is-right-brace (current-kind st) then ParseTypeDefResult {
+    maybe-type-def = Just (TypeDef {
+     name = name-tok,
+     type-params = tparams,
+     body = RecordBody acc
+    }),
+    state = advance st
+   }
    else if is-ident-like (current-kind st) then parse-one-record-field name-tok tparams acc st
-     else TypeDefOk (TypeDef {
-    name = name-tok,
-    type-params = tparams,
-    body = RecordBody acc
-   }) st
+   else ParseTypeDefResult {
+    maybe-type-def = Just (TypeDef {
+     name = name-tok,
+     type-params = tparams,
+     body = RecordBody acc
+    }),
+    state = st
+   }
 
   parse-one-record-field : Token -> List Token -> List RecordFieldDef -> ParseState -> ParseTypeDefResult
   parse-one-record-field (name-tok) (tparams) (acc) (st) =
@@ -322,11 +336,14 @@ Section: Type Definition Parsing
      in let ctor-name = current st2
      in let st3 = advance st2
      in parse-ctor-fields ctor-name [] st3 name-tok tparams acc
-    else TypeDefOk (TypeDef {
-     name = name-tok,
-     type-params = tparams,
-     body = VariantBody acc
-    }) st
+    else ParseTypeDefResult {
+     maybe-type-def = Just (TypeDef {
+      name = name-tok,
+      type-params = tparams,
+      body = VariantBody acc
+     }),
+     state = st
+    }
 
   parse-ctor-fields : Token -> List TypeExpr -> ParseState -> Token -> List Token -> List VariantCtorDef -> ParseTypeDefResult
   parse-ctor-fields (ctor-name) (fields) (st) (name-tok) (tparams) (acc) =
@@ -532,17 +549,19 @@ Section: Document Parsing
   try-top-level-type-def : List Def -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> List Text -> ParseState -> Document
   try-top-level-type-def (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (st) =
    let td-result = parse-type-def st
-   in when td-result
-    is TypeDefOk (td) (st2) ->
+   in let st2 = td-result.state
+   in when td-result.maybe-type-def
+    is Just (td) ->
      parse-top-level defs (type-defs ++ [td]) effect-defs imports ch-title sec-titles (skip-newlines st2)
-    is TypeDefNone (st2) ->
+    is None ->
      try-top-level-def defs type-defs effect-defs imports ch-title sec-titles st
 
   try-top-level-def : List Def -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> List Text -> ParseState -> Document
   try-top-level-def (defs) (type-defs) (effect-defs) (imports) (ch-title) (sec-titles) (st) =
    let def-result = parse-definition st
-   in when def-result
-    is DefOk (d) (st2) ->
+   in let st2 = def-result.state
+   in when def-result.maybe-def
+    is Just (d) ->
      let tagged = Def {
       name = d.name,
       params = d.params,
@@ -550,8 +569,8 @@ Section: Document Parsing
       body = d.body,
       chapter-slug = ch-title
      }
-   in parse-top-level (defs ++ [tagged]) type-defs effect-defs imports ch-title sec-titles (skip-newlines st2)
-    is DefNone (st2) ->
+     in parse-top-level (defs ++ [tagged]) type-defs effect-defs imports ch-title sec-titles (skip-newlines st2)
+    is None ->
      parse-top-level defs type-defs effect-defs imports ch-title sec-titles (skip-newlines (advance st2))
 
 Section: Header Scanning (streaming)
@@ -598,27 +617,29 @@ Section: Header Scanning (streaming)
   try-scan-type-def : List DefHeader -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> Text -> List Text -> ParseState -> ScanResult
   try-scan-type-def (headers) (type-defs) (effect-defs) (imports) (cur-chap) (ch-title) (sec-titles) (st) =
    let td-result = parse-type-def st
-   in when td-result
-    is TypeDefOk (td) (st2) ->
+   in let st2 = td-result.state
+   in when td-result.maybe-type-def
+    is Just (td) ->
      scan-top-level headers (type-defs ++ [td]) effect-defs imports cur-chap ch-title sec-titles (skip-newlines st2)
-    is TypeDefNone (st2) ->
+    is None ->
      try-scan-def-header headers type-defs effect-defs imports cur-chap ch-title sec-titles st
 
   try-scan-def-header : List DefHeader -> List TypeDef -> List EffectDef -> List CitesDecl -> Text -> Text -> List Text -> ParseState -> ScanResult
   try-scan-def-header (headers) (type-defs) (effect-defs) (imports) (cur-chap) (ch-title) (sec-titles) (st) =
    let hdr-result = scan-definition cur-chap st
-   in when hdr-result
-    is DefHeaderOk (hdr) (st2) ->
+   in let st2 = hdr-result.state
+   in when hdr-result.maybe-header
+    is Just (hdr) ->
      scan-top-level (headers ++ [hdr]) type-defs effect-defs imports cur-chap ch-title sec-titles (skip-newlines st2)
-    is DefHeaderNone (st2) ->
+    is None ->
      scan-top-level headers type-defs effect-defs imports cur-chap ch-title sec-titles (skip-newlines (advance st2))
 
   scan-definition : Text -> ParseState -> ScanDefResult
   scan-definition (cur-chap) (st) =
-   if is-done st then DefHeaderNone st
+   if is-done st then ScanDefResult { maybe-header = None, state = st }
    else if is-ident (current-kind st) then try-scan-def cur-chap st
    else if is-type-ident (current-kind st) then try-scan-def cur-chap st
-     else DefHeaderNone st
+     else ScanDefResult { maybe-header = None, state = st }
 
   try-scan-def : Text -> ParseState -> ScanDefResult
   try-scan-def (cur-chap) (st) =
@@ -640,13 +661,16 @@ Section: Header Scanning (streaming)
       in let st3 = skip-newlines st2
       in let body-pos = st3.pos
       in let st4 = skip-body-tokens st3 (first-name.column)
-      in DefHeaderOk (DefHeader {
-          name = first-name,
-          params = [],
-          ann = ann,
-          body-pos = body-pos,
-          chapter-slug = cur-chap
-         }) st4
+      in ScanDefResult {
+          maybe-header = Just (DefHeader {
+           name = first-name,
+           params = [],
+           ann = ann,
+           body-pos = body-pos,
+           chapter-slug = cur-chap
+          }),
+          state = st4
+         }
      else
       let name-tok = Token {
        kind = Identifier,
@@ -681,18 +705,21 @@ Section: Header Scanning (streaming)
 
   finish-def-scan : Text -> List TypeAnn -> Token -> List Token -> ParseState -> ScanDefResult
   finish-def-scan (cur-chap) (ann) (name-tok) (params) (st) =
-   if is-equals (current-kind st) == False then DefHeaderNone st
+   if is-equals (current-kind st) == False then ScanDefResult { maybe-header = None, state = st }
    else let st2 = advance st
    in let st3 = skip-newlines st2
    in let body-pos = st3.pos
    in let st4 = skip-body-tokens st3 (name-tok.column)
-   in DefHeaderOk (DefHeader {
-       name = name-tok,
-       params = params,
-       ann = ann,
-       body-pos = body-pos,
-       chapter-slug = cur-chap
-      }) st4
+   in ScanDefResult {
+       maybe-header = Just (DefHeader {
+        name = name-tok,
+        params = params,
+        ann = ann,
+        body-pos = body-pos,
+        chapter-slug = cur-chap
+       }),
+       state = st4
+      }
 
   skip-body-tokens : ParseState -> Integer -> ParseState
   skip-body-tokens (st) (name-col) =

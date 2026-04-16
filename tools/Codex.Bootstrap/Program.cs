@@ -51,7 +51,88 @@ partial class Program
 
             buf.Append(content);
         }
+
+        string codexBody = buf.ToString();
+        string forewordPrefix = LoadCitedForewordChapters(codexBody);
+        return forewordPrefix.Length == 0 ? codexBody : forewordPrefix + "\n\n" + codexBody;
+    }
+
+    static string LoadCitedForewordChapters(string codexBody)
+    {
+        string? forewordDir = FindForewordDirectory();
+        if (forewordDir is null)
+        {
+            return "";
+        }
+
+        HashSet<string> cited = new HashSet<string>(StringComparer.Ordinal);
+        foreach (Match m in Regex.Matches(codexBody,
+            @"^\s*cites\s+Foreword\s+chapter\s+([A-Za-z_][A-Za-z0-9_-]*)",
+            RegexOptions.Multiline))
+        {
+            cited.Add(m.Groups[1].Value);
+        }
+
+        if (cited.Count == 0)
+        {
+            return "";
+        }
+
+        List<string> ordered = new List<string>(cited);
+        ordered.Sort(StringComparer.Ordinal);
+
+        StringBuilder buf = new StringBuilder();
+        foreach (string name in ordered)
+        {
+            string path = Path.Combine(forewordDir, name + ".codex");
+            if (!File.Exists(path))
+            {
+                continue;
+            }
+
+            string content = File.ReadAllText(path);
+            if (content.Length == 0)
+            {
+                continue;
+            }
+
+            content = Regex.Replace(content,
+                @"^(Chapter:\s*)(.+?)\s*$",
+                m => m.Groups[1].Value + "Foreword--" + m.Groups[2].Value.Trim(),
+                RegexOptions.Multiline);
+
+            if (buf.Length > 0)
+            {
+                buf.Append("\n\n");
+            }
+
+            buf.Append(content);
+        }
+
         return buf.ToString();
+    }
+
+    static string? FindForewordDirectory()
+    {
+        string? dir = Path.GetDirectoryName(typeof(Program).Assembly.Location);
+        while (dir is not null)
+        {
+            string candidate = Path.Combine(dir, "foreword");
+            if (Directory.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            dir = Path.GetDirectoryName(dir);
+        }
+
+        string cwdCandidate = Path.Combine(Directory.GetCurrentDirectory(), "foreword");
+        if (Directory.Exists(cwdCandidate))
+        {
+            return cwdCandidate;
+        }
+
+        return null;
     }
 
     static string QuireOf(string filePath, string codexRoot)

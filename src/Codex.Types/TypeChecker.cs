@@ -141,7 +141,11 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
             fields.Add(new(f.FieldName, ResolveTypeExpr(f.Type)));
         }
 
-        RecordType recordType = new(rec.Name, paramIds.ToImmutable(), fields.ToImmutable());
+        ImmutableArray<int> paramIdsImm = paramIds.ToImmutable();
+        RecordType recordType = new(rec.Name, paramIdsImm, fields.ToImmutable())
+        {
+            TypeArguments = [.. paramIdsImm.Select(id => (CodexType)new TypeVariable(id))]
+        };
         m_typeDefMap = m_typeDefMap.Set(rec.Name.Value, recordType);
 
         m_typeParamEnv = savedTypeParams;
@@ -174,7 +178,11 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
 
             ctors.Add(new(c.Name, ctorFields.ToImmutable()));
         }
-        SumType sumType = new(variant.Name, paramIds.ToImmutable(), ctors.ToImmutable());
+        ImmutableArray<int> paramIdsImm = paramIds.ToImmutable();
+        SumType sumType = new(variant.Name, paramIdsImm, ctors.ToImmutable())
+        {
+            TypeArguments = [.. paramIdsImm.Select(id => (CodexType)new TypeVariable(id))]
+        };
         m_typeDefMap = m_typeDefMap.Set(variant.Name.Value, sumType);
 
         foreach (SumConstructorType ctor in sumType.Constructors)

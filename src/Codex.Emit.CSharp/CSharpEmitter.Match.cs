@@ -64,6 +64,7 @@ public sealed partial class CSharpEmitter
                 case IRCtorPattern ctorPat:
                     string ctorId = SanitizeIdentifier(ctorPat.Name);
                     string binding = $"_m{ctorId}{matchId}_";
+                    string ctorTypeArgs = CtorTypeArgs(match.Scrutinee.Type);
                     sb.Append('(');
                     openParens++;
                     if (hasMultipleCtorBranches)
@@ -75,7 +76,7 @@ public sealed partial class CSharpEmitter
                         EmitExpr(sb, match.Scrutinee, indent);
                     }
 
-                    sb.Append($" is {ctorId} {binding} ? ");
+                    sb.Append($" is {ctorId}{ctorTypeArgs} {binding} ? ");
                     EmitCtorPatternBody(sb, ctorPat, binding, branch.Body, indent);
                     break;
 

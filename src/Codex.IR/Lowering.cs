@@ -409,14 +409,18 @@ public sealed class Lowering(
                 Constructors = [.. st.Constructors.Select(c => c with
                 {
                     Fields = [.. c.Fields.Select(f => SubstituteTypeVar(f, varId, replacement))]
-                })]
+                })],
+                TypeArguments = [.. st.TypeArguments.Select(
+                    a => SubstituteTypeVar(a, varId, replacement))]
             },
             RecordType rt when !rt.TypeParamIds.IsEmpty => rt with
             {
                 Fields = [.. rt.Fields.Select(f => f with
                 {
                     Type = SubstituteTypeVar(f.Type, varId, replacement)
-                })]
+                })],
+                TypeArguments = [.. rt.TypeArguments.Select(
+                    a => SubstituteTypeVar(a, varId, replacement))]
             },
             _ => type
         };
@@ -606,6 +610,36 @@ public sealed class Lowering(
             ?? m_ctorMap[name]?.ConstructorType
             ?? s_builtinTypes[name]
             ?? fallback;
+
+        // For constructors whose ForAll params correspond to the owner sum/record
+        // type's params, substitute with the expected type's concrete arguments
+        // so downstream emitters see `Maybe<Integer>` instead of `Maybe<T18>`.
+        CtorInfo? ctorInfo = m_ctorMap[name];
+        ImmutableArray<CodexType> expectedArgs = fallback switch
+        {
+            SumType st => st.TypeArguments,
+            RecordType rt => rt.TypeArguments,
+            ConstructedType ct => ct.Arguments,
+            EffectfulType eft => eft.Return switch
+            {
+                SumType st => st.TypeArguments,
+                RecordType rt => rt.TypeArguments,
+                ConstructedType ct => ct.Arguments,
+                _ => []
+            },
+            _ => []
+        };
+
+        if (ctorInfo is not null && !expectedArgs.IsDefaultOrEmpty)
+        {
+            int i = 0;
+            while (result is ForAllType fa && i < expectedArgs.Length)
+            {
+                result = SubstituteTypeVar(fa.Body, fa.VariableId, expectedArgs[i]);
+                i++;
+            }
+        }
+
         while (result is ForAllType fa)
         {
             result = fa.Body;

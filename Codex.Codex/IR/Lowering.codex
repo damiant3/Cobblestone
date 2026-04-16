@@ -83,7 +83,26 @@ Section: Expression Lowering
     is otherwise ->
      let resolved = deep-resolve (ctx.ust) raw
    in let stripped = strip-forall-ty resolved
-   in IrName name stripped sp
+   in IrName name (prefer-applied-ty ty stripped) sp
+
+  peel-effectful-ty : CodexType -> CodexType
+  peel-effectful-ty (ty) =
+   when ty
+    is EffectfulTy (effs) (ret) -> peel-effectful-ty ret
+    is otherwise -> ty
+
+  prefer-applied-ty : CodexType -> CodexType -> CodexType
+  prefer-applied-ty (expected) (stripped) =
+   let peeled = peel-effectful-ty expected
+   in when peeled
+    is ConstructedTy (en) (eargs) ->
+     if list-length eargs == 0 then stripped
+     else when stripped
+      is SumTy (sn) (sc) -> if en.value == sn.value then peeled else stripped
+      is RecordTy (rn) (rf) -> if en.value == rn.value then peeled else stripped
+      is ConstructedTy (cn) (cargs) -> if en.value == cn.value & list-length cargs == 0 then peeled else stripped
+      is otherwise -> stripped
+    is otherwise -> stripped
 
   lower-literal : Text -> LiteralKind -> SourceSpan -> IRExpr
   lower-literal (text) (kind) (sp) =
@@ -105,7 +124,8 @@ Section: Expression Lowering
    in let actual-ret = when resolved-ret
       is ErrorTy -> ty
       is otherwise -> resolved-ret
-   in lower-apply-dispatch func-ir arg-ir actual-ret sp
+   in let preferred-ret = prefer-applied-ty ty actual-ret
+   in lower-apply-dispatch func-ir arg-ir preferred-ret sp
 
   lower-apply-dispatch : IRExpr -> IRExpr -> CodexType -> SourceSpan -> IRExpr
   lower-apply-dispatch (func-ir) (arg-ir) (ret-ty) (sp) =
