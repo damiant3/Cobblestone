@@ -34,8 +34,8 @@ Section: Infer Literal
     }
 
 Section: Infer Name
-  infer-name : UnificationState -> TypeEnv -> Text -> CheckResult
-  infer-name (st) (env) (name) =
+  infer-name : UnificationState -> TypeEnv -> Text -> SourceSpan -> CheckResult
+  infer-name (st) (env) (name) (span) =
    if env-has env name
     then
      let raw = env-lookup env name
@@ -46,7 +46,7 @@ Section: Infer Name
      }
     else CheckResult {
      inferred-type = ErrorTy,
-     state = add-unify-error st cdx-unknown-name ("Unknown name: " ++ name)
+     state = add-unify-error st cdx-unknown-name ("Unknown name: " ++ name) span
     }
 
   instantiate-type : UnificationState -> CodexType -> FreshResult
@@ -191,7 +191,7 @@ Section: Infer Let
    }
    else let b = list-at bindings i
    in let vr = infer-expr st env (b.value)
-   in let bound-ty = unwrap-effectful-or-error (vr.inferred-type) (b.name.value) (vr.state)
+   in let bound-ty = unwrap-effectful-or-error (vr.inferred-type) (b.name.value) (aexpr-span (b.value)) (vr.state)
    in let env2 = env-bind env (b.name.value) (bound-ty.ty)
    in infer-let-bindings (bound-ty.state) env2 bindings (i + 1) len
 
@@ -200,14 +200,14 @@ Section: Infer Let
    state : UnificationState
   }
 
-  unwrap-effectful-or-error : CodexType -> Text -> UnificationState -> UnwrapResult
-  unwrap-effectful-or-error (ty) (name) (st) =
+  unwrap-effectful-or-error : CodexType -> Text -> SourceSpan -> UnificationState -> UnwrapResult
+  unwrap-effectful-or-error (ty) (name) (span) (st) =
    when ty
     is EffectfulTy (effs) (inner) ->
      if list-length effs == 0 then UnwrapResult { ty = ty, state = st }
      else UnwrapResult {
       ty = inner,
-      state = add-unify-error st cdx-let-binds-effectful-value ("let-binding '" ++ name ++ "' to an effectful value is not allowed outside an act-bind. Use '" ++ name ++ " <- ...' inside an act block.")
+      state = add-unify-error st cdx-let-binds-effectful-value ("let-binding '" ++ name ++ "' to an effectful value is not allowed outside an act-bind. Use '" ++ name ++ " <- ...' inside an act block.") span
      }
     is otherwise -> UnwrapResult { ty = ty, state = st }
 
@@ -370,7 +370,7 @@ Section: Infer Expression (dispatch)
   infer-expr (st) (env) (expr) =
    when expr
     is ALitExpr (val) (kind) (s) -> infer-literal st kind
-    is ANameExpr (name) (s) -> infer-name st env (name.value)
+    is ANameExpr (name) (s) -> infer-name st env (name.value) s
     is ABinaryExpr (left) (op) (right) (s) -> infer-binary st env left op right
     is AUnaryExpr (operand) (s) ->
      let r = infer-expr st env operand
