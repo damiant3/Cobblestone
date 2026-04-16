@@ -190,7 +190,7 @@ public sealed partial class Parser
                 return ParseMatchExpression();
 
             case TokenKind.DoKeyword:
-                return ParseActExpression();
+                return ParseDoExpression();
 
             case TokenKind.ActKeyword:
                 return ParseActExpression();
@@ -503,7 +503,7 @@ public sealed partial class Parser
             start.Span.Through(endSpan));
     }
 
-    ExpressionNode ParseActExpression()
+    ExpressionNode ParseDoExpression()
     {
         Token start = Current;
         Advance();
@@ -533,7 +533,7 @@ public sealed partial class Parser
 
         if (statements.Count == 0)
         {
-            m_diagnostics.Error(CdxCodes.EmptyActBlock, "do expression requires at least one statement", start.Span);
+            m_diagnostics.Error(CdxCodes.EmptyActBlock, "act expression requires at least one statement", start.Span);
         }
 
         SourceSpan endSpan = statements.Count > 0 ? statements[^1].Span : start.Span;

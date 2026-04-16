@@ -219,7 +219,7 @@ public static class CdxCodes
             "Pattern was not followed by '->'."),
         [EmptyActBlock] = new(EmptyActBlock, nameof(EmptyActBlock),
             DiagnosticSeverity.Error, CdxPhase.Parser,
-            "'do' expression requires at least one statement."),
+            "'act' expression requires at least one statement."),
         [ExpectedTypeDefBody] = new(ExpectedTypeDefBody, nameof(ExpectedTypeDefBody),
             DiagnosticSeverity.Error, CdxPhase.Parser,
             "Expected 'record', a variant body, or constructors after '='."),
