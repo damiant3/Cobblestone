@@ -650,7 +650,7 @@ public sealed class CodexEmitter : ICodeEmitter
         }
     }
 
-    // ── Do blocks ────────────────────────────────────────────────
+    // ── Act blocks ────────────────────────────────────────────────
 
     void EmitAct(StringBuilder sb, IRAct actExpr, int indent)
     {

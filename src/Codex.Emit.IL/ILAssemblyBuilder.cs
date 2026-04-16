@@ -1690,7 +1690,7 @@ sealed partial class ILAssemblyBuilder
         int stateLocal = locals.AddLocal("__state", runState.StateType);
         il.StoreLocal(stateLocal);
 
-        // Emit the computation.  If it is a do-block we inline the statements
+        // Emit the computation.  If it is a act-block we inline the statements
         // directly so that IRGetState / IRSetState resolve the __state local.
         if (runState.Computation is IRAct actExpr)
         {
@@ -1702,7 +1702,7 @@ sealed partial class ILAssemblyBuilder
                     case IRActBind bind:
                         EmitExpr(il, bind.Value, locals, parameters);
                         // The lowering may assign ErrorType to binds of get-state
-                        // because the do-block is lowered without state-type context.
+                        // because the act-block is lowered without state-type context.
                         // Use the run-state's StateType when the bind type is unusable.
                         CodexType bindType = bind.NameType is ErrorType
                             ? runState.StateType
