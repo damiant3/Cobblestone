@@ -134,7 +134,20 @@ public sealed partial class Parser
 
                 if (token.Kind == TokenKind.TypeIdentifier && Current.Kind == TokenKind.LeftBrace)
                 {
-                    return ParseRecordExpression(token);
+                    ExpressionNode rec = ParseRecordExpression(token);
+                    while (Current.Kind == TokenKind.Dot)
+                    {
+                        Advance();
+                        if (!IsIdentifierLike(Current.Kind))
+                        {
+                            Expect(TokenKind.Identifier);
+                            break;
+                        }
+                        Token recField = Current;
+                        Advance();
+                        rec = new FieldAccessExpressionNode(rec, recField, rec.Span.Through(recField.Span));
+                    }
+                    return rec;
                 }
 
                 ExpressionNode node = new NameExpressionNode(token);

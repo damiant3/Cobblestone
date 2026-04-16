@@ -352,7 +352,7 @@ public abstract record ParsePatResult;
 
 public sealed record PatOk(Pat Field0, ParseState Field1) : ParsePatResult;
 
-public sealed record ParseState(List<Token> tokens, long pos, DiagnosticBag bag);
+public sealed record ParseState(List<Token> tokens, long pos, DiagnosticBag bag, long paren_depth);
 
 public sealed record ParseTypeDefResult(Maybe<TypeDef> maybe_type_def, ParseState state);
 
@@ -14811,7 +14811,7 @@ public static class Codex_Codex_Codex
 
     public static ParseState make_parse_state(List<Token> toks)
     {
-        return new ParseState(toks, 0L, empty_bag());
+        return new ParseState(toks, 0L, empty_bag(), 0L);
     }
 
     public static Token current(ParseState st)
@@ -14826,7 +14826,17 @@ public static class Codex_Codex_Codex
 
     public static ParseState advance(ParseState st)
     {
-        return ((st.pos >= (((long)st.tokens.Count) - 1L)) ? st : new ParseState(st.tokens, (st.pos + 1L), st.bag));
+        return ((st.pos >= (((long)st.tokens.Count) - 1L)) ? st : new ParseState(st.tokens, (st.pos + 1L), st.bag, st.paren_depth));
+    }
+
+    public static ParseState enter_paren(ParseState st)
+    {
+        return new ParseState(st.tokens, st.pos, st.bag, (st.paren_depth + 1L));
+    }
+
+    public static ParseState exit_paren(ParseState st)
+    {
+        return new ParseState(st.tokens, st.pos, st.bag, (st.paren_depth - 1L));
     }
 
     public static bool is_done(ParseState st)
@@ -15056,12 +15066,12 @@ public static class Codex_Codex_Codex
 
     public static ParseState expect(TokenKind kind, ParseState st)
     {
-        return (is_done(st) ? st : ((current_kind(st) == kind) ? advance(st) : ((Func<Token, ParseState>)((tok) => new ParseState(st.tokens, st.pos, bag_add(st.bag, make_error(cdx_expected_token_kind(), string.Concat("'$\u001F\u000D\u0018\u000E\u000D\u0016\u0002\u000E\u0010\"\u000D\u0012\u0002\"\u0011\u0012\u0016\u0002\u001A\u0011\u0013\u001A\u000F\u000E\u0018\u0014B\u0002\u001D\u0010\u000E\u0002G", tok.text, "G"), span_at(tok.line, tok.column, tok.offset, ((long)tok.text.Length), tok.file_id))))))(current(st))));
+        return (is_done(st) ? st : ((current_kind(st) == kind) ? advance(st) : ((Func<Token, ParseState>)((tok) => new ParseState(st.tokens, st.pos, bag_add(st.bag, make_error(cdx_expected_token_kind(), string.Concat("'$\u001F\u000D\u0018\u000E\u000D\u0016\u0002\u000E\u0010\"\u000D\u0012\u0002\"\u0011\u0012\u0016\u0002\u001A\u0011\u0013\u001A\u000F\u000E\u0018\u0014B\u0002\u001D\u0010\u000E\u0002G", tok.text, "G"), span_at(tok.line, tok.column, tok.offset, ((long)tok.text.Length), tok.file_id))), st.paren_depth)))(current(st))));
     }
 
     public static ParseState report_reserved_keyword(string context, ParseState st)
     {
-        return ((Func<Token, ParseState>)((tok) => new ParseState(st.tokens, st.pos, bag_add(st.bag, make_error(cdx_reserved_keyword_as_identifier(), string.Concat("G", tok.text, "G\u0002\u0011\u0013\u0002\u000F\u0002\u0015\u000D\u0013\u000D\u0015!\u000D\u0016\u0002\"\u000D\u001E\u001B\u0010\u0015\u0016\u0002\u000F\u0012\u0016\u0002\u0018\u000F\u0012\u0012\u0010\u000E\u0002 \u000D\u0002\u0019\u0013\u000D\u0016\u0002\u000F\u0013\u0002", context, "F\u0002\u0015\u000D\u0012\u000F\u001A\u000D\u0002\u0011\u000E"), span_at(tok.line, tok.column, tok.offset, ((long)tok.text.Length), tok.file_id))))))(current(st));
+        return ((Func<Token, ParseState>)((tok) => new ParseState(st.tokens, st.pos, bag_add(st.bag, make_error(cdx_reserved_keyword_as_identifier(), string.Concat("G", tok.text, "G\u0002\u0011\u0013\u0002\u000F\u0002\u0015\u000D\u0013\u000D\u0015!\u000D\u0016\u0002\"\u000D\u001E\u001B\u0010\u0015\u0016\u0002\u000F\u0012\u0016\u0002\u0018\u000F\u0012\u0012\u0010\u000E\u0002 \u000D\u0002\u0019\u0013\u000D\u0016\u0002\u000F\u0013\u0002", context, "F\u0002\u0015\u000D\u0012\u000F\u001A\u000D\u0002\u0011\u000E"), span_at(tok.line, tok.column, tok.offset, ((long)tok.text.Length), tok.file_id))), st.paren_depth)))(current(st));
     }
 
     public static long skip_newlines_pos(List<Token> tokens, long pos, long len)
@@ -15115,7 +15125,7 @@ public static class Codex_Codex_Codex
 
     public static ParseState skip_newlines(ParseState st)
     {
-        return ((Func<long, ParseState>)((end_pos) => ((end_pos == st.pos) ? st : new ParseState(st.tokens, end_pos, st.bag))))(skip_newlines_pos(st.tokens, st.pos, ((long)st.tokens.Count)));
+        return ((Func<long, ParseState>)((end_pos) => ((end_pos == st.pos) ? st : new ParseState(st.tokens, end_pos, st.bag, st.paren_depth))))(skip_newlines_pos(st.tokens, st.pos, ((long)st.tokens.Count)));
     }
 
     public static ParseExprResult parse_expr(ParseState st)
@@ -15170,7 +15180,7 @@ public static class Codex_Codex_Codex
 
     public static ParseExprResult parse_app_loop(Expr func, ParseState st)
     {
-        return (is_compound(func) ? parse_dot_only(func, st) : (is_done(st) ? new ExprOk(func, st) : (is_app_start(current_kind(st)) ? ((Func<ParseExprResult, ParseExprResult>)((arg_result) => unwrap_expr_ok(arg_result, (arg) => (st) => continue_app(func, arg, st))))(parse_atom(st)) : parse_field_access(func, st))));
+        return (is_compound(func) ? parse_dot_only(func, st) : (is_done(st) ? new ExprOk(func, st) : ((Func<ParseState, ParseExprResult>)((st1) => (is_app_start(current_kind(st1)) ? ((Func<ParseExprResult, ParseExprResult>)((arg_result) => unwrap_expr_ok(arg_result, (arg) => (st) => continue_app(func, arg, st))))(parse_atom(st1)) : parse_field_access(func, st1))))(((st.paren_depth > 0L) ? skip_newlines(st) : st))));
     }
 
     public static ParseExprResult continue_app(Expr func, Expr arg, ParseState st)
@@ -15243,17 +15253,17 @@ public static class Codex_Codex_Codex
 
     public static ParseExprResult parse_atom_type_ident(ParseState st)
     {
-        return ((Func<Token, ParseExprResult>)((tok) => ((Func<ParseState, ParseExprResult>)((st2) => (is_left_brace(current_kind(st2)) ? parse_record_expr(tok, st2) : parse_field_access(new NameExpr(tok), st2))))(advance(st))))(current(st));
+        return ((Func<Token, ParseExprResult>)((tok) => ((Func<ParseState, ParseExprResult>)((st2) => (is_left_brace(current_kind(st2)) ? ((Func<ParseExprResult, ParseExprResult>)((rec_result) => unwrap_expr_ok(rec_result, (node) => (st) => parse_field_access(node, st))))(parse_record_expr(tok, st2)) : parse_field_access(new NameExpr(tok), st2))))(advance(st))))(current(st));
     }
 
     public static ParseExprResult parse_paren_expr(ParseState st)
     {
-        return ((Func<ParseState, ParseExprResult>)((st2) => ((Func<ParseExprResult, ParseExprResult>)((inner) => unwrap_expr_ok(inner, (e) => (st) => finish_paren_expr(e, st))))(parse_expr(st2))))(skip_newlines(st));
+        return ((Func<ParseState, ParseExprResult>)((st2) => ((Func<ParseExprResult, ParseExprResult>)((inner) => unwrap_expr_ok(inner, (e) => (st) => finish_paren_expr(e, st))))(parse_expr(st2))))(skip_newlines(enter_paren(st)));
     }
 
     public static ParseExprResult finish_paren_expr(Expr e, ParseState st)
     {
-        return ((Func<ParseState, ParseExprResult>)((st2) => ((Func<ParseState, ParseExprResult>)((st3) => parse_field_access(new ParenExpr(e), st3)))(expect(new RightParen(), st2))))(skip_newlines(st));
+        return ((Func<ParseState, ParseExprResult>)((st2) => ((Func<ParseState, ParseExprResult>)((st3) => parse_field_access(new ParenExpr(e), exit_paren(st3))))(expect(new RightParen(), st2))))(skip_newlines(st));
     }
 
     public static ParseExprResult parse_record_expr(Token type_name, ParseState st)
