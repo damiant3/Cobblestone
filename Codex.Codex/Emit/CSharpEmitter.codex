@@ -207,11 +207,11 @@ Section: Tail Call Optimization
 
   emit-tco-let : Text -> CodexType -> IRExpr -> IRExpr -> Text -> List IRParam -> List ArityEntry -> Text
   emit-tco-let (name) (ty) (val) (body) (func-name) (params) (arities) =
-   "            var " ++ sanitize name ++ " = " ++ emit-expr val arities ++ ";\n" ++ emit-tco-body body func-name params arities
+   "            " ++ cs-type-or-dynamic ty ++ " " ++ sanitize name ++ " = " ++ emit-expr val arities ++ ";\n" ++ emit-tco-body body func-name params arities
 
   emit-tco-match : IRExpr -> List IRBranch -> Text -> List IRParam -> List ArityEntry -> Text
   emit-tco-match (scrut) (branches) (func-name) (params) (arities) =
-   "            var _tco_s = " ++ emit-expr scrut arities ++ ";\n" ++ emit-tco-match-branches branches func-name params arities 0 True
+   "            " ++ cs-type-or-dynamic (ir-expr-type scrut) ++ " _tco_s = " ++ emit-expr scrut arities ++ ";\n" ++ emit-tco-match-branches branches func-name params arities 0 True
 
   emit-tco-match-branches : List IRBranch -> Text -> List IRParam -> List ArityEntry -> Integer -> Boolean -> Text
   emit-tco-match-branches (branches) (func-name) (params) (arities) (i) (is-first) =
@@ -223,7 +223,7 @@ Section: Tail Call Optimization
   emit-tco-match-branch (b) (func-name) (params) (arities) (idx) (is-first) =
    when b.pattern
     is IrWildPat (sp) -> "            {\n" ++ emit-tco-body (b.body) func-name params arities ++ "            }\n"
-    is IrVarPat (name) (ty) (sp) -> "            {\n                var " ++ sanitize name ++ " = _tco_s;\n" ++ emit-tco-body (b.body) func-name params arities ++ "            }\n"
+    is IrVarPat (name) (ty) (sp) -> "            {\n                " ++ cs-type-or-dynamic ty ++ " " ++ sanitize name ++ " = _tco_s;\n" ++ emit-tco-body (b.body) func-name params arities ++ "            }\n"
     is IrCtorPat (name) (subs) (ty) (sp) ->
      let keyword = if is-first then "if" else "else if"
      in let match-var = "_tco_m" ++ integer-to-text idx
@@ -241,18 +241,19 @@ Section: Tail Call Optimization
   emit-tco-ctor-binding : IRPat -> Text -> Integer -> Text
   emit-tco-ctor-binding (sub) (match-var) (i) =
    when sub
-    is IrVarPat (name) (ty) (sp) -> "                var " ++ sanitize name ++ " = " ++ match-var ++ ".Field" ++ integer-to-text i ++ ";\n"
+    is IrVarPat (name) (ty) (sp) -> "                " ++ cs-type-or-dynamic ty ++ " " ++ sanitize name ++ " = " ++ match-var ++ ".Field" ++ integer-to-text i ++ ";\n"
     is otherwise -> ""
 
   emit-tco-jump : IRExpr -> List IRParam -> List ArityEntry -> Text
   emit-tco-jump (e) (params) (arities) =
    let chain = collect-apply-chain e []
-   in emit-tco-temps (chain.args) arities 0 ++ emit-tco-assigns params 0 ++ "            continue;\n"
+   in emit-tco-temps (chain.args) params arities 0 ++ emit-tco-assigns params 0 ++ "            continue;\n"
 
-  emit-tco-temps : List IRExpr -> List ArityEntry -> Integer -> Text
-  emit-tco-temps (args) (arities) (i) =
+  emit-tco-temps : List IRExpr -> List IRParam -> List ArityEntry -> Integer -> Text
+  emit-tco-temps (args) (params) (arities) (i) =
    if i == list-length args then ""
-   else "            var _tco_" ++ integer-to-text i ++ " = " ++ emit-expr (list-at args i) arities ++ ";\n" ++ emit-tco-temps args arities (i + 1)
+   else let p = list-at params i
+   in "            " ++ cs-type-or-dynamic (p.type-val) ++ " _tco_" ++ integer-to-text i ++ " = " ++ emit-expr (list-at args i) arities ++ ";\n" ++ emit-tco-temps args params arities (i + 1)
 
   emit-tco-assigns : List IRParam -> Integer -> Text
   emit-tco-assigns (params) (i) =
@@ -313,7 +314,7 @@ Section: Chapter Emission
    "    static _Cce() { for (int i = 0; i < 128; i++) _fromUni[_toUni[i]] = i; }\n" ++
    "    public static string FromUnicode(string s) {\n" ++
    "        s = s.Replace(\"\\t\", \"  \").Replace(\"\\r\", \"\");\n" ++
-   "        var sb = new System.Text.StringBuilder(s.Length);\n" ++
+   "        System.Text.StringBuilder sb = new System.Text.StringBuilder(s.Length);\n" ++
    "        for (int i = 0; i < s.Length; i++) {\n" ++
    "            int u = s[i];\n" ++
    "            if (_fromUni.TryGetValue(u, out int b)) sb.Append((char)b);\n" ++
@@ -323,7 +324,7 @@ Section: Chapter Emission
    "        return sb.ToString();\n" ++
    "    }\n" ++
    "    public static string ToUnicode(string s) {\n" ++
-   "        var sb = new System.Text.StringBuilder(s.Length);\n" ++
+   "        System.Text.StringBuilder sb = new System.Text.StringBuilder(s.Length);\n" ++
    "        for (int i = 0; i < s.Length; i++) {\n" ++
    "            int b = s[i];\n" ++
    "            if (b < 128) sb.Append((char)_toUni[b]);\n" ++
@@ -353,13 +354,13 @@ Section: Chapter Emission
    "    public static long heap_advance(object n) { _ptr += (long)n; return 0; }\n" ++
    "    public static long buf_write_byte(object b, object off, object v) { _mem[(long)b + (long)off] = (byte)(long)v; return (long)off + 1; }\n" ++
    "    public static long buf_write_bytes(object b, object off, object vs) {\n" ++
-   "        var list = (List<long>)vs; long o = (long)off; long ba = (long)b;\n" ++
+   "        List<long> list = (List<long>)vs; long o = (long)off; long ba = (long)b;\n" ++
    "        for (int i = 0; i < list.Count; i++) _mem[ba + o + i] = (byte)list[i];\n" ++
    "        return o + list.Count;\n" ++
    "    }\n" ++
    "    public static List<long> buf_read_bytes(object b, object off, object n) {\n" ++
    "        long ba = (long)b; long o = (long)off; int cnt = (int)(long)n;\n" ++
-   "        var r = new List<long>(cnt);\n" ++
+   "        List<long> r = new List<long>(cnt);\n" ++
    "        for (int i = 0; i < cnt; i++) r.Add(_mem[ba + o + i]);\n" ++
    "        return r;\n" ++
    "    }\n" ++
