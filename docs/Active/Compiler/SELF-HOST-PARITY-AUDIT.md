@@ -29,42 +29,7 @@ Legend: 🟡 partial / different · ❌ missing · ⏭️ deliberately diverged
 | `Pair` | ✓ stdlib | 🟡 ad-hoc | 🟡 | `foreword/Pair.codex` exists; self-host uses per-purpose 2-field records |
 | `TextSearch` (trie) | ✓ stdlib | ❌ in self-host | ❌ | `foreword/TextSearch.codex` present but unused |
 
-
-### Diagnostics & error reporting
-
-| Item | Reference | Self-host | Status | Notes |
-|------|-----------|-----------|--------|-------|
-
-| Unifier diagnostics carry source spans | ✓ | ✓ | ✓ | Self-host `unify` and its family (`unify-resolved`, `unify-rhs`, `unify-structural`, `unify-fun`, `unify-constructed-args`, `unify-mismatch`) now take a `SourceSpan`; `add-unify-error` takes a span. Callers (binary, unary, if, application, list, match, let-effectful, def body) pass the appropriate AExpr span via `aexpr-span`. Covers CDX2001 (type mismatch), CDX2010 (infinite type), CDX2033 (let-binds-effectful), CDX3002 (unknown name). Mirrors reference `Unify(a, b, span)`. |
-
-
-### Debugging / crash behavior
-
-| Item | Reference | Self-host | Status | Notes |
-|------|-----------|-----------|--------|-------|
-
-### Parser features
-
-| Item | Reference | Self-host | Status | Notes |
-|------|-----------|-----------|--------|-------|
-
-### Type system
-
-| Item | Reference | Self-host | Status | Notes |
-|------|-----------|-----------|--------|-------|
-
 | Polymorphism coverage audit | ? | ? | ❔ | Not yet done |
-
-
-### Codegen / emission features
-
-| Item | Reference | Self-host | Status | Notes |
-|------|-----------|-----------|--------|-------|
-
-| IL emitter | ✓ | ❌ | ⏭️ | Deliberate — .NET dependency being retired (BACKLOG) |
-| x86-64 Linux user mode | ✓ | ❌ | ⏭️ | Ref-only target (emits syscalls, runs ring 3 under Linux). Self-host targets bare-metal x86-64 end-to-end (ring 0, port I/O, owns interrupts) — strictly harder, and what MM4 actually needs. Not a parity gap under "Parity is Narrow" — a deliberately-diverged target backend, same category as the retired IL emitter. |
-
-## Top open gaps (priority order)
 
 2. **Polymorphism coverage audit** — type system row marked ❔. No
    systematic test sweep exists; build one before claiming parity.
