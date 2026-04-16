@@ -3782,7 +3782,32 @@ public static class Codex_Codex_Codex
 
     public static List<string> emit_defs_list(List<IRDef> defs, long i, List<ArityEntry> arities)
     {
-        return ((i == ((long)defs.Count)) ? new List<string>() : Enumerable.Concat(new List<string>() { emit__csharp_emitter_emit_def(defs[(int)i], arities), "\u0001" }, emit_defs_list(defs, (i + 1L), arities)).ToList());
+        return emit_defs_list_acc(defs, 0L, ((long)defs.Count), arities, new List<string>());
+    }
+
+    public static List<string> emit_defs_list_acc(List<IRDef> defs, long i, long len, List<ArityEntry> arities, List<string> acc)
+    {
+        while (true)
+        {
+            if ((i == len))
+            {
+                return acc;
+            }
+            else
+            {
+                var _tco_0 = defs;
+                var _tco_1 = (i + 1L);
+                var _tco_2 = len;
+                var _tco_3 = arities;
+                var _tco_4 = ((Func<List<string>>)(() => { var _l = ((Func<List<string>>)(() => { var _l = acc; _l.Add(emit__csharp_emitter_emit_def(defs[(int)i], arities)); return _l; }))(); _l.Add("\u0001"); return _l; }))();
+                defs = _tco_0;
+                i = _tco_1;
+                len = _tco_2;
+                arities = _tco_3;
+                acc = _tco_4;
+                continue;
+            }
+        }
     }
 
     public static List<string> cs_keywords()
