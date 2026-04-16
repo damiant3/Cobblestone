@@ -14836,7 +14836,7 @@ public static class Codex_Codex_Codex
                         var _tco_3 = imports;
                         var _tco_4 = cur_chap;
                         var _tco_5 = ch_title;
-                        var _tco_6 = Enumerable.Concat(sec_titles, new List<string>() { title }).ToList();
+                        var _tco_6 = ((Func<List<string>>)(() => { var _l = sec_titles; _l.Add(title); return _l; }))();
                         var _tco_7 = skip_prose_lines(skip_to_next_line(st));
                         headers = _tco_0;
                         type_defs = _tco_1;
@@ -14936,17 +14936,17 @@ public static class Codex_Codex_Codex
 
     public static ScanResult scan_top_level_effect(List<DefHeader> headers, List<TypeDef> type_defs, List<EffectDef> effect_defs, List<CitesDecl> imports, string cur_chap, string ch_title, List<string> sec_titles, ParseState st)
     {
-        return ((Func<ParseState, ScanResult>)((st1) => ((Func<Token, ScanResult>)((name_tok) => ((Func<ParseState, ScanResult>)((st2) => ((Func<ParseState, ScanResult>)((st3) => ((Func<EffectOpsResult, ScanResult>)((ops) => ((Func<EffectDef, ScanResult>)((ed) => scan_top_level(headers, type_defs, Enumerable.Concat(effect_defs, new List<EffectDef>() { ed }).ToList(), imports, cur_chap, ch_title, sec_titles, skip_newlines(ops.state))))(new EffectDef(name_tok, ops.ops))))(parse_effect_ops(st3, new List<EffectOpDef>()))))((is_where_keyword(current_kind(st2)) ? skip_newlines(advance(st2)) : st2))))(advance(st1))))(current(st1))))(advance(st));
+        return ((Func<ParseState, ScanResult>)((st1) => ((Func<Token, ScanResult>)((name_tok) => ((Func<ParseState, ScanResult>)((st2) => ((Func<ParseState, ScanResult>)((st3) => ((Func<EffectOpsResult, ScanResult>)((ops) => ((Func<EffectDef, ScanResult>)((ed) => scan_top_level(headers, type_defs, ((Func<List<EffectDef>>)(() => { var _l = effect_defs; _l.Add(ed); return _l; }))(), imports, cur_chap, ch_title, sec_titles, skip_newlines(ops.state))))(new EffectDef(name_tok, ops.ops))))(parse_effect_ops(st3, new List<EffectOpDef>()))))((is_where_keyword(current_kind(st2)) ? skip_newlines(advance(st2)) : st2))))(advance(st1))))(current(st1))))(advance(st));
     }
 
     public static ScanResult try_scan_type_def(List<DefHeader> headers, List<TypeDef> type_defs, List<EffectDef> effect_defs, List<CitesDecl> imports, string cur_chap, string ch_title, List<string> sec_titles, ParseState st)
     {
-        return ((Func<ParseTypeDefResult, ScanResult>)((td_result) => ((Func<ParseState, ScanResult>)((st2) => ((Func<Maybe<TypeDef>, ScanResult>)((_scrutinee131_) => (_scrutinee131_ is Just<TypeDef> _mJust131_ ? ((Func<TypeDef, ScanResult>)((td) => scan_top_level(headers, Enumerable.Concat(type_defs, new List<TypeDef>() { td }).ToList(), effect_defs, imports, cur_chap, ch_title, sec_titles, skip_newlines(st2))))((TypeDef)_mJust131_.Field0) : (_scrutinee131_ is None<TypeDef> _mNone131_ ? try_scan_def_header(headers, type_defs, effect_defs, imports, cur_chap, ch_title, sec_titles, st) : throw new InvalidOperationException("Non-exhaustive match")))))(td_result.maybe_type_def)))(td_result.state)))(parse_type_def(st));
+        return ((Func<ParseTypeDefResult, ScanResult>)((td_result) => ((Func<ParseState, ScanResult>)((st2) => ((Func<Maybe<TypeDef>, ScanResult>)((_scrutinee131_) => (_scrutinee131_ is Just<TypeDef> _mJust131_ ? ((Func<TypeDef, ScanResult>)((td) => scan_top_level(headers, ((Func<List<TypeDef>>)(() => { var _l = type_defs; _l.Add(td); return _l; }))(), effect_defs, imports, cur_chap, ch_title, sec_titles, skip_newlines(st2))))((TypeDef)_mJust131_.Field0) : (_scrutinee131_ is None<TypeDef> _mNone131_ ? try_scan_def_header(headers, type_defs, effect_defs, imports, cur_chap, ch_title, sec_titles, st) : throw new InvalidOperationException("Non-exhaustive match")))))(td_result.maybe_type_def)))(td_result.state)))(parse_type_def(st));
     }
 
     public static ScanResult try_scan_def_header(List<DefHeader> headers, List<TypeDef> type_defs, List<EffectDef> effect_defs, List<CitesDecl> imports, string cur_chap, string ch_title, List<string> sec_titles, ParseState st)
     {
-        return ((Func<ScanDefResult, ScanResult>)((hdr_result) => ((Func<ParseState, ScanResult>)((st2) => ((Func<Maybe<DefHeader>, ScanResult>)((_scrutinee132_) => (_scrutinee132_ is Just<DefHeader> _mJust132_ ? ((Func<DefHeader, ScanResult>)((hdr) => scan_top_level(Enumerable.Concat(headers, new List<DefHeader>() { hdr }).ToList(), type_defs, effect_defs, imports, cur_chap, ch_title, sec_titles, skip_newlines(st2))))((DefHeader)_mJust132_.Field0) : (_scrutinee132_ is None<DefHeader> _mNone132_ ? scan_top_level(headers, type_defs, effect_defs, imports, cur_chap, ch_title, sec_titles, skip_newlines(advance(st2))) : throw new InvalidOperationException("Non-exhaustive match")))))(hdr_result.maybe_header)))(hdr_result.state)))(scan_definition(cur_chap, st));
+        return ((Func<ScanDefResult, ScanResult>)((hdr_result) => ((Func<ParseState, ScanResult>)((st2) => ((Func<Maybe<DefHeader>, ScanResult>)((_scrutinee132_) => (_scrutinee132_ is Just<DefHeader> _mJust132_ ? ((Func<DefHeader, ScanResult>)((hdr) => scan_top_level(((Func<List<DefHeader>>)(() => { var _l = headers; _l.Add(hdr); return _l; }))(), type_defs, effect_defs, imports, cur_chap, ch_title, sec_titles, skip_newlines(st2))))((DefHeader)_mJust132_.Field0) : (_scrutinee132_ is None<DefHeader> _mNone132_ ? scan_top_level(headers, type_defs, effect_defs, imports, cur_chap, ch_title, sec_titles, skip_newlines(advance(st2))) : throw new InvalidOperationException("Non-exhaustive match")))))(hdr_result.maybe_header)))(hdr_result.state)))(scan_definition(cur_chap, st));
     }
 
     public static ScanDefResult scan_definition(string cur_chap, ParseState st)
