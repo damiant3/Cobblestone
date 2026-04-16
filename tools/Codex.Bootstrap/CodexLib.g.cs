@@ -412,8 +412,6 @@ public sealed record StrEqHeadResult(CodegenState cg, long len_ne_pos);
 
 public sealed record StrEqLoopResult(CodegenState cg, long loop_done_pos, long byte_ne_pos);
 
-public sealed record SubstEntry(long var_id, CodexType resolved_type);
-
 public sealed record SumCtor(Name name, List<CodexType> fields);
 
 public sealed record SyscallResult(CodegenState state, long handler_offset);
@@ -529,7 +527,7 @@ public sealed record EffectTypeExpr(List<Token> Field0, TypeExpr Field1) : TypeE
 
 public sealed record TypeVarMap(List<long> entries, long next_id);
 
-public sealed record UnificationState(List<SubstEntry> substitutions, long next_id, DiagnosticBag bag);
+public sealed record UnificationState(List<CodexType> substitutions, long next_id, DiagnosticBag bag);
 
 public sealed record UnifyResult(bool success, UnificationState state);
 
@@ -2661,45 +2659,6 @@ public static class Codex_Codex_Codex
                     var _tco_3 = hi;
                     bindings = _tco_0;
                     name = _tco_1;
-                    lo = _tco_2;
-                    hi = _tco_3;
-                    continue;
-                }
-            }
-        }
-    }
-
-    public static long bsearch_int_pos(List<SubstEntry> entries, long key, long lo, long hi)
-    {
-        while (true)
-        {
-            if ((lo >= hi))
-            {
-                return lo;
-            }
-            else
-            {
-                var mid = (lo + ((hi - lo) / 2L));
-                if ((key <= entries[(int)mid].var_id))
-                {
-                    var _tco_0 = entries;
-                    var _tco_1 = key;
-                    var _tco_2 = lo;
-                    var _tco_3 = mid;
-                    entries = _tco_0;
-                    key = _tco_1;
-                    lo = _tco_2;
-                    hi = _tco_3;
-                    continue;
-                }
-                else
-                {
-                    var _tco_0 = entries;
-                    var _tco_1 = key;
-                    var _tco_2 = (mid + 1L);
-                    var _tco_3 = hi;
-                    entries = _tco_0;
-                    key = _tco_1;
                     lo = _tco_2;
                     hi = _tco_3;
                     continue;
@@ -16591,7 +16550,7 @@ public static class Codex_Codex_Codex
 
     public static UnificationState empty_unification_state()
     {
-        return new UnificationState(new List<SubstEntry>(), 2L, empty_bag());
+        return new UnificationState(new List<CodexType>() { new TypeVar(0L), new TypeVar(1L) }, 2L, empty_bag());
     }
 
     public static CodexType fresh_var(UnificationState st)
@@ -16601,22 +16560,12 @@ public static class Codex_Codex_Codex
 
     public static UnificationState advance_id(UnificationState st)
     {
-        return new UnificationState(st.substitutions, (st.next_id + 1L), st.bag);
+        return new UnificationState(((Func<List<CodexType>>)(() => { var _l = st.substitutions; _l.Add(new TypeVar(st.next_id)); return _l; }))(), (st.next_id + 1L), st.bag);
     }
 
     public static FreshResult fresh_and_advance(UnificationState st)
     {
         return new FreshResult(new TypeVar(st.next_id), advance_id(st));
-    }
-
-    public static CodexType subst_lookup(long var_id, List<SubstEntry> entries)
-    {
-        return ((Func<long, CodexType>)((len) => ((len == 0L) ? new ErrorTy() : ((Func<long, CodexType>)((pos) => ((pos >= len) ? new ErrorTy() : ((Func<SubstEntry, CodexType>)((entry) => ((entry.var_id == var_id) ? entry.resolved_type : new ErrorTy())))(entries[(int)pos]))))(bsearch_int_pos(entries, var_id, 0L, len)))))(((long)entries.Count));
-    }
-
-    public static bool has_subst(long var_id, List<SubstEntry> entries)
-    {
-        return ((Func<long, bool>)((len) => ((len == 0L) ? false : ((Func<long, bool>)((pos) => ((pos >= len) ? false : (entries[(int)pos].var_id == var_id))))(bsearch_int_pos(entries, var_id, 0L, len)))))(((long)entries.Count));
     }
 
     public static CodexType resolve(UnificationState st, CodexType ty)
@@ -16627,34 +16576,24 @@ public static class Codex_Codex_Codex
             if (_tco_s is TypeVar _tco_m0)
             {
                 var id = _tco_m0.Field0;
-                var entries = st.substitutions;
-                var len = ((long)entries.Count);
-                if ((len == 0L))
+                if ((id >= ((long)st.substitutions.Count)))
                 {
                     return ty;
                 }
                 else
                 {
-                    var pos = bsearch_int_pos(entries, id, 0L, len);
-                    if ((pos >= len))
+                    var slot = st.substitutions[(int)id];
+                    if (slot_is_unbound(slot, id))
                     {
                         return ty;
                     }
                     else
                     {
-                        var entry = entries[(int)pos];
-                        if ((entry.var_id == id))
-                        {
-                            var _tco_0 = st;
-                            var _tco_1 = entry.resolved_type;
-                            st = _tco_0;
-                            ty = _tco_1;
-                            continue;
-                        }
-                        else
-                        {
-                            return ty;
-                        }
+                        var _tco_0 = st;
+                        var _tco_1 = slot;
+                        st = _tco_0;
+                        ty = _tco_1;
+                        continue;
                     }
                 }
             }
@@ -16664,9 +16603,14 @@ public static class Codex_Codex_Codex
         }
     }
 
+    public static bool slot_is_unbound(CodexType slot, long id)
+    {
+        return (slot is TypeVar _mTypeVar194_ ? ((Func<long, bool>)((slot_id) => (slot_id == id)))((long)_mTypeVar194_.Field0) : false);
+    }
+
     public static UnificationState add_subst(UnificationState st, long var_id, CodexType ty)
     {
-        return ((Func<SubstEntry, UnificationState>)((entry) => ((Func<long, UnificationState>)((pos) => new UnificationState(((Func<List<SubstEntry>>)(() => { var _l = new List<SubstEntry>(st.substitutions); _l.Insert((int)pos, entry); return _l; }))(), st.next_id, st.bag)))(bsearch_int_pos(st.substitutions, var_id, 0L, ((long)st.substitutions.Count)))))(new SubstEntry(var_id, ty));
+        return new UnificationState(((Func<List<CodexType>>)(() => { var _l = st.substitutions; _l[(int)var_id] = ty; return _l; }))(), st.next_id, st.bag);
     }
 
     public static UnificationState add_unify_error(UnificationState st, long code, string msg, SourceSpan span)
@@ -16726,22 +16670,22 @@ public static class Codex_Codex_Codex
 
     public static UnifyResult unify_resolved(UnificationState st, CodexType a, CodexType b, SourceSpan span)
     {
-        return (types_equal(a, b) ? new UnifyResult(true, st) : (a is TypeVar _mTypeVar194_ ? ((Func<long, UnifyResult>)((id_a) => (occurs_in(st, id_a, b) ? new UnifyResult(false, add_unify_error(st, cdx_infinite_type(), "+\u0012\u001C\u0011\u0012\u0011\u000E\u000D\u0002\u000E\u001E\u001F\u000D", span)) : new UnifyResult(true, add_subst(st, id_a, b)))))((long)_mTypeVar194_.Field0) : unify_rhs(st, a, b, span)));
+        return (types_equal(a, b) ? new UnifyResult(true, st) : (a is TypeVar _mTypeVar195_ ? ((Func<long, UnifyResult>)((id_a) => (occurs_in(st, id_a, b) ? new UnifyResult(false, add_unify_error(st, cdx_infinite_type(), "+\u0012\u001C\u0011\u0012\u0011\u000E\u000D\u0002\u000E\u001E\u001F\u000D", span)) : new UnifyResult(true, add_subst(st, id_a, b)))))((long)_mTypeVar195_.Field0) : unify_rhs(st, a, b, span)));
     }
 
     public static bool types_equal(CodexType a, CodexType b)
     {
-        return ((Func<CodexType, bool>)((_scrutinee195_) => (_scrutinee195_ is TypeVar _mTypeVar195_ ? ((Func<long, bool>)((id_a) => (b is TypeVar _mTypeVar196_ ? ((Func<long, bool>)((id_b) => (id_a == id_b)))((long)_mTypeVar196_.Field0) : false)))((long)_mTypeVar195_.Field0) : (_scrutinee195_ is IntegerTy _mIntegerTy195_ ? (b is IntegerTy _mIntegerTy197_ ? true : false) : (_scrutinee195_ is NumberTy _mNumberTy195_ ? (b is NumberTy _mNumberTy198_ ? true : false) : (_scrutinee195_ is TextTy _mTextTy195_ ? (b is TextTy _mTextTy199_ ? true : false) : (_scrutinee195_ is BooleanTy _mBooleanTy195_ ? (b is BooleanTy _mBooleanTy200_ ? true : false) : (_scrutinee195_ is CharTy _mCharTy195_ ? (b is CharTy _mCharTy201_ ? true : false) : (_scrutinee195_ is NothingTy _mNothingTy195_ ? (b is NothingTy _mNothingTy202_ ? true : false) : (_scrutinee195_ is VoidTy _mVoidTy195_ ? (b is VoidTy _mVoidTy203_ ? true : false) : (_scrutinee195_ is ErrorTy _mErrorTy195_ ? (b is ErrorTy _mErrorTy204_ ? true : false) : false)))))))))))(a);
+        return ((Func<CodexType, bool>)((_scrutinee196_) => (_scrutinee196_ is TypeVar _mTypeVar196_ ? ((Func<long, bool>)((id_a) => (b is TypeVar _mTypeVar197_ ? ((Func<long, bool>)((id_b) => (id_a == id_b)))((long)_mTypeVar197_.Field0) : false)))((long)_mTypeVar196_.Field0) : (_scrutinee196_ is IntegerTy _mIntegerTy196_ ? (b is IntegerTy _mIntegerTy198_ ? true : false) : (_scrutinee196_ is NumberTy _mNumberTy196_ ? (b is NumberTy _mNumberTy199_ ? true : false) : (_scrutinee196_ is TextTy _mTextTy196_ ? (b is TextTy _mTextTy200_ ? true : false) : (_scrutinee196_ is BooleanTy _mBooleanTy196_ ? (b is BooleanTy _mBooleanTy201_ ? true : false) : (_scrutinee196_ is CharTy _mCharTy196_ ? (b is CharTy _mCharTy202_ ? true : false) : (_scrutinee196_ is NothingTy _mNothingTy196_ ? (b is NothingTy _mNothingTy203_ ? true : false) : (_scrutinee196_ is VoidTy _mVoidTy196_ ? (b is VoidTy _mVoidTy204_ ? true : false) : (_scrutinee196_ is ErrorTy _mErrorTy196_ ? (b is ErrorTy _mErrorTy205_ ? true : false) : false)))))))))))(a);
     }
 
     public static UnifyResult unify_rhs(UnificationState st, CodexType a, CodexType b, SourceSpan span)
     {
-        return (b is TypeVar _mTypeVar205_ ? ((Func<long, UnifyResult>)((id_b) => (occurs_in(st, id_b, a) ? new UnifyResult(false, add_unify_error(st, cdx_infinite_type(), "+\u0012\u001C\u0011\u0012\u0011\u000E\u000D\u0002\u000E\u001E\u001F\u000D", span)) : new UnifyResult(true, add_subst(st, id_b, a)))))((long)_mTypeVar205_.Field0) : unify_structural(st, a, b, span));
+        return (b is TypeVar _mTypeVar206_ ? ((Func<long, UnifyResult>)((id_b) => (occurs_in(st, id_b, a) ? new UnifyResult(false, add_unify_error(st, cdx_infinite_type(), "+\u0012\u001C\u0011\u0012\u0011\u000E\u000D\u0002\u000E\u001E\u001F\u000D", span)) : new UnifyResult(true, add_subst(st, id_b, a)))))((long)_mTypeVar206_.Field0) : unify_structural(st, a, b, span));
     }
 
     public static UnifyResult unify_structural(UnificationState st, CodexType a, CodexType b, SourceSpan span)
     {
-        return ((Func<CodexType, UnifyResult>)((_scrutinee206_) => (_scrutinee206_ is IntegerTy _mIntegerTy206_ ? ((Func<CodexType, UnifyResult>)((_scrutinee207_) => (_scrutinee207_ is IntegerTy _mIntegerTy207_ ? new UnifyResult(true, st) : (_scrutinee207_ is ErrorTy _mErrorTy207_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span)))))(b) : (_scrutinee206_ is NumberTy _mNumberTy206_ ? ((Func<CodexType, UnifyResult>)((_scrutinee208_) => (_scrutinee208_ is NumberTy _mNumberTy208_ ? new UnifyResult(true, st) : (_scrutinee208_ is ErrorTy _mErrorTy208_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span)))))(b) : (_scrutinee206_ is TextTy _mTextTy206_ ? ((Func<CodexType, UnifyResult>)((_scrutinee209_) => (_scrutinee209_ is TextTy _mTextTy209_ ? new UnifyResult(true, st) : (_scrutinee209_ is ErrorTy _mErrorTy209_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span)))))(b) : (_scrutinee206_ is BooleanTy _mBooleanTy206_ ? ((Func<CodexType, UnifyResult>)((_scrutinee210_) => (_scrutinee210_ is BooleanTy _mBooleanTy210_ ? new UnifyResult(true, st) : (_scrutinee210_ is ErrorTy _mErrorTy210_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span)))))(b) : (_scrutinee206_ is NothingTy _mNothingTy206_ ? ((Func<CodexType, UnifyResult>)((_scrutinee211_) => (_scrutinee211_ is NothingTy _mNothingTy211_ ? new UnifyResult(true, st) : (_scrutinee211_ is ErrorTy _mErrorTy211_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span)))))(b) : (_scrutinee206_ is VoidTy _mVoidTy206_ ? ((Func<CodexType, UnifyResult>)((_scrutinee212_) => (_scrutinee212_ is VoidTy _mVoidTy212_ ? new UnifyResult(true, st) : (_scrutinee212_ is ErrorTy _mErrorTy212_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span)))))(b) : (_scrutinee206_ is ErrorTy _mErrorTy206_ ? new UnifyResult(true, st) : (_scrutinee206_ is FunTy _mFunTy206_ ? ((Func<CodexType, UnifyResult>)((ra) => ((Func<CodexType, UnifyResult>)((pa) => ((Func<CodexType, UnifyResult>)((_scrutinee213_) => (_scrutinee213_ is FunTy _mFunTy213_ ? ((Func<CodexType, UnifyResult>)((rb) => ((Func<CodexType, UnifyResult>)((pb) => unify_fun(st, pa, ra, pb, rb, span)))((CodexType)_mFunTy213_.Field0)))((CodexType)_mFunTy213_.Field1) : (_scrutinee213_ is ErrorTy _mErrorTy213_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span)))))(b)))((CodexType)_mFunTy206_.Field0)))((CodexType)_mFunTy206_.Field1) : (_scrutinee206_ is ListTy _mListTy206_ ? ((Func<CodexType, UnifyResult>)((ea) => ((Func<CodexType, UnifyResult>)((_scrutinee214_) => (_scrutinee214_ is ListTy _mListTy214_ ? ((Func<CodexType, UnifyResult>)((eb) => unify(st, ea, eb, span)))((CodexType)_mListTy214_.Field0) : (_scrutinee214_ is ErrorTy _mErrorTy214_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span)))))(b)))((CodexType)_mListTy206_.Field0) : (_scrutinee206_ is LinkedListTy _mLinkedListTy206_ ? ((Func<CodexType, UnifyResult>)((ea) => ((Func<CodexType, UnifyResult>)((_scrutinee215_) => (_scrutinee215_ is LinkedListTy _mLinkedListTy215_ ? ((Func<CodexType, UnifyResult>)((eb) => unify(st, ea, eb, span)))((CodexType)_mLinkedListTy215_.Field0) : (_scrutinee215_ is ErrorTy _mErrorTy215_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span)))))(b)))((CodexType)_mLinkedListTy206_.Field0) : (_scrutinee206_ is ConstructedTy _mConstructedTy206_ ? ((Func<List<CodexType>, UnifyResult>)((args_a) => ((Func<Name, UnifyResult>)((na) => ((Func<CodexType, UnifyResult>)((_scrutinee216_) => (_scrutinee216_ is ConstructedTy _mConstructedTy216_ ? ((Func<List<CodexType>, UnifyResult>)((args_b) => ((Func<Name, UnifyResult>)((nb) => ((na.value == nb.value) ? unify_constructed_args(st, args_a, args_b, 0L, ((long)args_a.Count), span) : unify_mismatch(st, a, b, span))))((Name)_mConstructedTy216_.Field0)))((List<CodexType>)_mConstructedTy216_.Field1) : (_scrutinee216_ is SumTy _mSumTy216_ ? ((Func<List<SumCtor>, UnifyResult>)((sb_ctors) => ((Func<Name, UnifyResult>)((sb_name) => ((na.value == sb_name.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span))))((Name)_mSumTy216_.Field0)))((List<SumCtor>)_mSumTy216_.Field1) : (_scrutinee216_ is RecordTy _mRecordTy216_ ? ((Func<List<RecordField>, UnifyResult>)((rb_fields) => ((Func<Name, UnifyResult>)((rb_name) => ((na.value == rb_name.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span))))((Name)_mRecordTy216_.Field0)))((List<RecordField>)_mRecordTy216_.Field1) : (_scrutinee216_ is ErrorTy _mErrorTy216_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span)))))))(b)))((Name)_mConstructedTy206_.Field0)))((List<CodexType>)_mConstructedTy206_.Field1) : (_scrutinee206_ is SumTy _mSumTy206_ ? ((Func<List<SumCtor>, UnifyResult>)((sa_ctors) => ((Func<Name, UnifyResult>)((sa_name) => ((Func<CodexType, UnifyResult>)((_scrutinee217_) => (_scrutinee217_ is SumTy _mSumTy217_ ? ((Func<List<SumCtor>, UnifyResult>)((sb_ctors) => ((Func<Name, UnifyResult>)((sb_name) => ((sa_name.value == sb_name.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span))))((Name)_mSumTy217_.Field0)))((List<SumCtor>)_mSumTy217_.Field1) : (_scrutinee217_ is ConstructedTy _mConstructedTy217_ ? ((Func<List<CodexType>, UnifyResult>)((args_b) => ((Func<Name, UnifyResult>)((nb) => ((sa_name.value == nb.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span))))((Name)_mConstructedTy217_.Field0)))((List<CodexType>)_mConstructedTy217_.Field1) : (_scrutinee217_ is ErrorTy _mErrorTy217_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span))))))(b)))((Name)_mSumTy206_.Field0)))((List<SumCtor>)_mSumTy206_.Field1) : (_scrutinee206_ is RecordTy _mRecordTy206_ ? ((Func<List<RecordField>, UnifyResult>)((ra_fields) => ((Func<Name, UnifyResult>)((ra_name) => ((Func<CodexType, UnifyResult>)((_scrutinee218_) => (_scrutinee218_ is RecordTy _mRecordTy218_ ? ((Func<List<RecordField>, UnifyResult>)((rb_fields) => ((Func<Name, UnifyResult>)((rb_name) => ((ra_name.value == rb_name.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span))))((Name)_mRecordTy218_.Field0)))((List<RecordField>)_mRecordTy218_.Field1) : (_scrutinee218_ is ConstructedTy _mConstructedTy218_ ? ((Func<List<CodexType>, UnifyResult>)((args_b) => ((Func<Name, UnifyResult>)((nb) => ((ra_name.value == nb.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span))))((Name)_mConstructedTy218_.Field0)))((List<CodexType>)_mConstructedTy218_.Field1) : (_scrutinee218_ is ErrorTy _mErrorTy218_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span))))))(b)))((Name)_mRecordTy206_.Field0)))((List<RecordField>)_mRecordTy206_.Field1) : (_scrutinee206_ is ForAllTy _mForAllTy206_ ? ((Func<CodexType, UnifyResult>)((body) => ((Func<long, UnifyResult>)((id) => unify(st, body, b, span)))((long)_mForAllTy206_.Field0)))((CodexType)_mForAllTy206_.Field1) : (_scrutinee206_ is EffectfulTy _mEffectfulTy206_ ? ((Func<CodexType, UnifyResult>)((ret_a) => ((Func<List<Name>, UnifyResult>)((effs_a) => ((Func<CodexType, UnifyResult>)((_scrutinee219_) => (_scrutinee219_ is EffectfulTy _mEffectfulTy219_ ? ((Func<CodexType, UnifyResult>)((ret_b) => ((Func<List<Name>, UnifyResult>)((effs_b) => unify(st, ret_a, ret_b, span)))((List<Name>)_mEffectfulTy219_.Field0)))((CodexType)_mEffectfulTy219_.Field1) : (_scrutinee219_ is ErrorTy _mErrorTy219_ ? new UnifyResult(true, st) : unify(st, ret_a, b, span)))))(b)))((List<Name>)_mEffectfulTy206_.Field0)))((CodexType)_mEffectfulTy206_.Field1) : ((Func<CodexType, UnifyResult>)((_scrutinee220_) => (_scrutinee220_ is EffectfulTy _mEffectfulTy220_ ? ((Func<CodexType, UnifyResult>)((ret_b) => ((Func<List<Name>, UnifyResult>)((effs_b) => unify(st, a, ret_b, span)))((List<Name>)_mEffectfulTy220_.Field0)))((CodexType)_mEffectfulTy220_.Field1) : (_scrutinee220_ is ErrorTy _mErrorTy220_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span)))))(b))))))))))))))))))(a);
+        return ((Func<CodexType, UnifyResult>)((_scrutinee207_) => (_scrutinee207_ is IntegerTy _mIntegerTy207_ ? ((Func<CodexType, UnifyResult>)((_scrutinee208_) => (_scrutinee208_ is IntegerTy _mIntegerTy208_ ? new UnifyResult(true, st) : (_scrutinee208_ is ErrorTy _mErrorTy208_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span)))))(b) : (_scrutinee207_ is NumberTy _mNumberTy207_ ? ((Func<CodexType, UnifyResult>)((_scrutinee209_) => (_scrutinee209_ is NumberTy _mNumberTy209_ ? new UnifyResult(true, st) : (_scrutinee209_ is ErrorTy _mErrorTy209_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span)))))(b) : (_scrutinee207_ is TextTy _mTextTy207_ ? ((Func<CodexType, UnifyResult>)((_scrutinee210_) => (_scrutinee210_ is TextTy _mTextTy210_ ? new UnifyResult(true, st) : (_scrutinee210_ is ErrorTy _mErrorTy210_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span)))))(b) : (_scrutinee207_ is BooleanTy _mBooleanTy207_ ? ((Func<CodexType, UnifyResult>)((_scrutinee211_) => (_scrutinee211_ is BooleanTy _mBooleanTy211_ ? new UnifyResult(true, st) : (_scrutinee211_ is ErrorTy _mErrorTy211_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span)))))(b) : (_scrutinee207_ is NothingTy _mNothingTy207_ ? ((Func<CodexType, UnifyResult>)((_scrutinee212_) => (_scrutinee212_ is NothingTy _mNothingTy212_ ? new UnifyResult(true, st) : (_scrutinee212_ is ErrorTy _mErrorTy212_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span)))))(b) : (_scrutinee207_ is VoidTy _mVoidTy207_ ? ((Func<CodexType, UnifyResult>)((_scrutinee213_) => (_scrutinee213_ is VoidTy _mVoidTy213_ ? new UnifyResult(true, st) : (_scrutinee213_ is ErrorTy _mErrorTy213_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span)))))(b) : (_scrutinee207_ is ErrorTy _mErrorTy207_ ? new UnifyResult(true, st) : (_scrutinee207_ is FunTy _mFunTy207_ ? ((Func<CodexType, UnifyResult>)((ra) => ((Func<CodexType, UnifyResult>)((pa) => ((Func<CodexType, UnifyResult>)((_scrutinee214_) => (_scrutinee214_ is FunTy _mFunTy214_ ? ((Func<CodexType, UnifyResult>)((rb) => ((Func<CodexType, UnifyResult>)((pb) => unify_fun(st, pa, ra, pb, rb, span)))((CodexType)_mFunTy214_.Field0)))((CodexType)_mFunTy214_.Field1) : (_scrutinee214_ is ErrorTy _mErrorTy214_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span)))))(b)))((CodexType)_mFunTy207_.Field0)))((CodexType)_mFunTy207_.Field1) : (_scrutinee207_ is ListTy _mListTy207_ ? ((Func<CodexType, UnifyResult>)((ea) => ((Func<CodexType, UnifyResult>)((_scrutinee215_) => (_scrutinee215_ is ListTy _mListTy215_ ? ((Func<CodexType, UnifyResult>)((eb) => unify(st, ea, eb, span)))((CodexType)_mListTy215_.Field0) : (_scrutinee215_ is ErrorTy _mErrorTy215_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span)))))(b)))((CodexType)_mListTy207_.Field0) : (_scrutinee207_ is LinkedListTy _mLinkedListTy207_ ? ((Func<CodexType, UnifyResult>)((ea) => ((Func<CodexType, UnifyResult>)((_scrutinee216_) => (_scrutinee216_ is LinkedListTy _mLinkedListTy216_ ? ((Func<CodexType, UnifyResult>)((eb) => unify(st, ea, eb, span)))((CodexType)_mLinkedListTy216_.Field0) : (_scrutinee216_ is ErrorTy _mErrorTy216_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span)))))(b)))((CodexType)_mLinkedListTy207_.Field0) : (_scrutinee207_ is ConstructedTy _mConstructedTy207_ ? ((Func<List<CodexType>, UnifyResult>)((args_a) => ((Func<Name, UnifyResult>)((na) => ((Func<CodexType, UnifyResult>)((_scrutinee217_) => (_scrutinee217_ is ConstructedTy _mConstructedTy217_ ? ((Func<List<CodexType>, UnifyResult>)((args_b) => ((Func<Name, UnifyResult>)((nb) => ((na.value == nb.value) ? unify_constructed_args(st, args_a, args_b, 0L, ((long)args_a.Count), span) : unify_mismatch(st, a, b, span))))((Name)_mConstructedTy217_.Field0)))((List<CodexType>)_mConstructedTy217_.Field1) : (_scrutinee217_ is SumTy _mSumTy217_ ? ((Func<List<SumCtor>, UnifyResult>)((sb_ctors) => ((Func<Name, UnifyResult>)((sb_name) => ((na.value == sb_name.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span))))((Name)_mSumTy217_.Field0)))((List<SumCtor>)_mSumTy217_.Field1) : (_scrutinee217_ is RecordTy _mRecordTy217_ ? ((Func<List<RecordField>, UnifyResult>)((rb_fields) => ((Func<Name, UnifyResult>)((rb_name) => ((na.value == rb_name.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span))))((Name)_mRecordTy217_.Field0)))((List<RecordField>)_mRecordTy217_.Field1) : (_scrutinee217_ is ErrorTy _mErrorTy217_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span)))))))(b)))((Name)_mConstructedTy207_.Field0)))((List<CodexType>)_mConstructedTy207_.Field1) : (_scrutinee207_ is SumTy _mSumTy207_ ? ((Func<List<SumCtor>, UnifyResult>)((sa_ctors) => ((Func<Name, UnifyResult>)((sa_name) => ((Func<CodexType, UnifyResult>)((_scrutinee218_) => (_scrutinee218_ is SumTy _mSumTy218_ ? ((Func<List<SumCtor>, UnifyResult>)((sb_ctors) => ((Func<Name, UnifyResult>)((sb_name) => ((sa_name.value == sb_name.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span))))((Name)_mSumTy218_.Field0)))((List<SumCtor>)_mSumTy218_.Field1) : (_scrutinee218_ is ConstructedTy _mConstructedTy218_ ? ((Func<List<CodexType>, UnifyResult>)((args_b) => ((Func<Name, UnifyResult>)((nb) => ((sa_name.value == nb.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span))))((Name)_mConstructedTy218_.Field0)))((List<CodexType>)_mConstructedTy218_.Field1) : (_scrutinee218_ is ErrorTy _mErrorTy218_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span))))))(b)))((Name)_mSumTy207_.Field0)))((List<SumCtor>)_mSumTy207_.Field1) : (_scrutinee207_ is RecordTy _mRecordTy207_ ? ((Func<List<RecordField>, UnifyResult>)((ra_fields) => ((Func<Name, UnifyResult>)((ra_name) => ((Func<CodexType, UnifyResult>)((_scrutinee219_) => (_scrutinee219_ is RecordTy _mRecordTy219_ ? ((Func<List<RecordField>, UnifyResult>)((rb_fields) => ((Func<Name, UnifyResult>)((rb_name) => ((ra_name.value == rb_name.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span))))((Name)_mRecordTy219_.Field0)))((List<RecordField>)_mRecordTy219_.Field1) : (_scrutinee219_ is ConstructedTy _mConstructedTy219_ ? ((Func<List<CodexType>, UnifyResult>)((args_b) => ((Func<Name, UnifyResult>)((nb) => ((ra_name.value == nb.value) ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span))))((Name)_mConstructedTy219_.Field0)))((List<CodexType>)_mConstructedTy219_.Field1) : (_scrutinee219_ is ErrorTy _mErrorTy219_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span))))))(b)))((Name)_mRecordTy207_.Field0)))((List<RecordField>)_mRecordTy207_.Field1) : (_scrutinee207_ is ForAllTy _mForAllTy207_ ? ((Func<CodexType, UnifyResult>)((body) => ((Func<long, UnifyResult>)((id) => unify(st, body, b, span)))((long)_mForAllTy207_.Field0)))((CodexType)_mForAllTy207_.Field1) : (_scrutinee207_ is EffectfulTy _mEffectfulTy207_ ? ((Func<CodexType, UnifyResult>)((ret_a) => ((Func<List<Name>, UnifyResult>)((effs_a) => ((Func<CodexType, UnifyResult>)((_scrutinee220_) => (_scrutinee220_ is EffectfulTy _mEffectfulTy220_ ? ((Func<CodexType, UnifyResult>)((ret_b) => ((Func<List<Name>, UnifyResult>)((effs_b) => unify(st, ret_a, ret_b, span)))((List<Name>)_mEffectfulTy220_.Field0)))((CodexType)_mEffectfulTy220_.Field1) : (_scrutinee220_ is ErrorTy _mErrorTy220_ ? new UnifyResult(true, st) : unify(st, ret_a, b, span)))))(b)))((List<Name>)_mEffectfulTy207_.Field0)))((CodexType)_mEffectfulTy207_.Field1) : ((Func<CodexType, UnifyResult>)((_scrutinee221_) => (_scrutinee221_ is EffectfulTy _mEffectfulTy221_ ? ((Func<CodexType, UnifyResult>)((ret_b) => ((Func<List<Name>, UnifyResult>)((effs_b) => unify(st, a, ret_b, span)))((List<Name>)_mEffectfulTy221_.Field0)))((CodexType)_mEffectfulTy221_.Field1) : (_scrutinee221_ is ErrorTy _mErrorTy221_ ? new UnifyResult(true, st) : unify_mismatch(st, a, b, span)))))(b))))))))))))))))))(a);
     }
 
     public static UnifyResult unify_constructed_args(UnificationState st, List<CodexType> args_a, List<CodexType> args_b, long i, long len, SourceSpan span)
@@ -16798,12 +16742,12 @@ public static class Codex_Codex_Codex
 
     public static string type_tag(CodexType ty)
     {
-        return ((Func<CodexType, string>)((_scrutinee221_) => (_scrutinee221_ is IntegerTy _mIntegerTy221_ ? "+\u0012\u000E\u000D\u001D\u000D\u0015" : (_scrutinee221_ is NumberTy _mNumberTy221_ ? ",\u0019\u001A \u000D\u0015" : (_scrutinee221_ is TextTy _mTextTy221_ ? "(\u000D$\u000E" : (_scrutinee221_ is BooleanTy _mBooleanTy221_ ? ":\u0010\u0010\u0017\u000D\u000F\u0012" : (_scrutinee221_ is CharTy _mCharTy221_ ? "2\u0014\u000F\u0015" : (_scrutinee221_ is VoidTy _mVoidTy221_ ? ";\u0010\u0011\u0016" : (_scrutinee221_ is NothingTy _mNothingTy221_ ? ",\u0010\u000E\u0014\u0011\u0012\u001D" : (_scrutinee221_ is ErrorTy _mErrorTy221_ ? "'\u0015\u0015\u0010\u0015" : (_scrutinee221_ is FunTy _mFunTy221_ ? ((Func<CodexType, string>)((r) => ((Func<CodexType, string>)((p) => "6\u0019\u0012"))((CodexType)_mFunTy221_.Field0)))((CodexType)_mFunTy221_.Field1) : (_scrutinee221_ is ListTy _mListTy221_ ? ((Func<CodexType, string>)((e) => "1\u0011\u0013\u000E"))((CodexType)_mListTy221_.Field0) : (_scrutinee221_ is LinkedListTy _mLinkedListTy221_ ? ((Func<CodexType, string>)((e) => "1\u0011\u0012\"\u000D\u00161\u0011\u0013\u000E"))((CodexType)_mLinkedListTy221_.Field0) : (_scrutinee221_ is TypeVar _mTypeVar221_ ? ((Func<long, string>)((id) => string.Concat("(", _Cce.FromUnicode(id.ToString()))))((long)_mTypeVar221_.Field0) : (_scrutinee221_ is ForAllTy _mForAllTy221_ ? ((Func<CodexType, string>)((body) => ((Func<long, string>)((id) => "6\u0010\u0015)\u0017\u0017"))((long)_mForAllTy221_.Field0)))((CodexType)_mForAllTy221_.Field1) : (_scrutinee221_ is SumTy _mSumTy221_ ? ((Func<List<SumCtor>, string>)((ctors) => ((Func<Name, string>)((name) => string.Concat("-\u0019\u001AE", name.value)))((Name)_mSumTy221_.Field0)))((List<SumCtor>)_mSumTy221_.Field1) : (_scrutinee221_ is RecordTy _mRecordTy221_ ? ((Func<List<RecordField>, string>)((fields) => ((Func<Name, string>)((name) => string.Concat("/\u000D\u0018E", name.value)))((Name)_mRecordTy221_.Field0)))((List<RecordField>)_mRecordTy221_.Field1) : (_scrutinee221_ is ConstructedTy _mConstructedTy221_ ? ((Func<List<CodexType>, string>)((args) => ((Func<Name, string>)((name) => string.Concat("2\u0010\u0012E", name.value)))((Name)_mConstructedTy221_.Field0)))((List<CodexType>)_mConstructedTy221_.Field1) : (_scrutinee221_ is EffectfulTy _mEffectfulTy221_ ? ((Func<CodexType, string>)((ret) => ((Func<List<Name>, string>)((effs) => "'\u001C\u001C\u000D\u0018\u000E\u001C\u0019\u0017"))((List<Name>)_mEffectfulTy221_.Field0)))((CodexType)_mEffectfulTy221_.Field1) : throw new InvalidOperationException("Non-exhaustive match"))))))))))))))))))))(ty);
+        return ((Func<CodexType, string>)((_scrutinee222_) => (_scrutinee222_ is IntegerTy _mIntegerTy222_ ? "+\u0012\u000E\u000D\u001D\u000D\u0015" : (_scrutinee222_ is NumberTy _mNumberTy222_ ? ",\u0019\u001A \u000D\u0015" : (_scrutinee222_ is TextTy _mTextTy222_ ? "(\u000D$\u000E" : (_scrutinee222_ is BooleanTy _mBooleanTy222_ ? ":\u0010\u0010\u0017\u000D\u000F\u0012" : (_scrutinee222_ is CharTy _mCharTy222_ ? "2\u0014\u000F\u0015" : (_scrutinee222_ is VoidTy _mVoidTy222_ ? ";\u0010\u0011\u0016" : (_scrutinee222_ is NothingTy _mNothingTy222_ ? ",\u0010\u000E\u0014\u0011\u0012\u001D" : (_scrutinee222_ is ErrorTy _mErrorTy222_ ? "'\u0015\u0015\u0010\u0015" : (_scrutinee222_ is FunTy _mFunTy222_ ? ((Func<CodexType, string>)((r) => ((Func<CodexType, string>)((p) => "6\u0019\u0012"))((CodexType)_mFunTy222_.Field0)))((CodexType)_mFunTy222_.Field1) : (_scrutinee222_ is ListTy _mListTy222_ ? ((Func<CodexType, string>)((e) => "1\u0011\u0013\u000E"))((CodexType)_mListTy222_.Field0) : (_scrutinee222_ is LinkedListTy _mLinkedListTy222_ ? ((Func<CodexType, string>)((e) => "1\u0011\u0012\"\u000D\u00161\u0011\u0013\u000E"))((CodexType)_mLinkedListTy222_.Field0) : (_scrutinee222_ is TypeVar _mTypeVar222_ ? ((Func<long, string>)((id) => string.Concat("(", _Cce.FromUnicode(id.ToString()))))((long)_mTypeVar222_.Field0) : (_scrutinee222_ is ForAllTy _mForAllTy222_ ? ((Func<CodexType, string>)((body) => ((Func<long, string>)((id) => "6\u0010\u0015)\u0017\u0017"))((long)_mForAllTy222_.Field0)))((CodexType)_mForAllTy222_.Field1) : (_scrutinee222_ is SumTy _mSumTy222_ ? ((Func<List<SumCtor>, string>)((ctors) => ((Func<Name, string>)((name) => string.Concat("-\u0019\u001AE", name.value)))((Name)_mSumTy222_.Field0)))((List<SumCtor>)_mSumTy222_.Field1) : (_scrutinee222_ is RecordTy _mRecordTy222_ ? ((Func<List<RecordField>, string>)((fields) => ((Func<Name, string>)((name) => string.Concat("/\u000D\u0018E", name.value)))((Name)_mRecordTy222_.Field0)))((List<RecordField>)_mRecordTy222_.Field1) : (_scrutinee222_ is ConstructedTy _mConstructedTy222_ ? ((Func<List<CodexType>, string>)((args) => ((Func<Name, string>)((name) => string.Concat("2\u0010\u0012E", name.value)))((Name)_mConstructedTy222_.Field0)))((List<CodexType>)_mConstructedTy222_.Field1) : (_scrutinee222_ is EffectfulTy _mEffectfulTy222_ ? ((Func<CodexType, string>)((ret) => ((Func<List<Name>, string>)((effs) => "'\u001C\u001C\u000D\u0018\u000E\u001C\u0019\u0017"))((List<Name>)_mEffectfulTy222_.Field0)))((CodexType)_mEffectfulTy222_.Field1) : throw new InvalidOperationException("Non-exhaustive match"))))))))))))))))))))(ty);
     }
 
     public static CodexType deep_resolve(UnificationState st, CodexType ty)
     {
-        return ((Func<CodexType, CodexType>)((resolved) => ((Func<CodexType, CodexType>)((_scrutinee222_) => (_scrutinee222_ is FunTy _mFunTy222_ ? ((Func<CodexType, CodexType>)((ret) => ((Func<CodexType, CodexType>)((param) => new FunTy(deep_resolve(st, param), deep_resolve(st, ret))))((CodexType)_mFunTy222_.Field0)))((CodexType)_mFunTy222_.Field1) : (_scrutinee222_ is ListTy _mListTy222_ ? ((Func<CodexType, CodexType>)((elem) => new ListTy(deep_resolve(st, elem))))((CodexType)_mListTy222_.Field0) : (_scrutinee222_ is LinkedListTy _mLinkedListTy222_ ? ((Func<CodexType, CodexType>)((elem) => new LinkedListTy(deep_resolve(st, elem))))((CodexType)_mLinkedListTy222_.Field0) : (_scrutinee222_ is ConstructedTy _mConstructedTy222_ ? ((Func<List<CodexType>, CodexType>)((args) => ((Func<Name, CodexType>)((name) => new ConstructedTy(name, deep_resolve_list(st, args, 0L, ((long)args.Count), new List<CodexType>()))))((Name)_mConstructedTy222_.Field0)))((List<CodexType>)_mConstructedTy222_.Field1) : (_scrutinee222_ is ForAllTy _mForAllTy222_ ? ((Func<CodexType, CodexType>)((body) => ((Func<long, CodexType>)((id) => new ForAllTy(id, deep_resolve(st, body))))((long)_mForAllTy222_.Field0)))((CodexType)_mForAllTy222_.Field1) : (_scrutinee222_ is EffectfulTy _mEffectfulTy222_ ? ((Func<CodexType, CodexType>)((ret) => ((Func<List<Name>, CodexType>)((effs) => new EffectfulTy(effs, deep_resolve(st, ret))))((List<Name>)_mEffectfulTy222_.Field0)))((CodexType)_mEffectfulTy222_.Field1) : (_scrutinee222_ is SumTy _mSumTy222_ ? ((Func<List<SumCtor>, CodexType>)((ctors) => ((Func<Name, CodexType>)((name) => resolved))((Name)_mSumTy222_.Field0)))((List<SumCtor>)_mSumTy222_.Field1) : (_scrutinee222_ is RecordTy _mRecordTy222_ ? ((Func<List<RecordField>, CodexType>)((fields) => ((Func<Name, CodexType>)((name) => resolved))((Name)_mRecordTy222_.Field0)))((List<RecordField>)_mRecordTy222_.Field1) : resolved))))))))))(resolved)))(resolve(st, ty));
+        return ((Func<CodexType, CodexType>)((resolved) => ((Func<CodexType, CodexType>)((_scrutinee223_) => (_scrutinee223_ is FunTy _mFunTy223_ ? ((Func<CodexType, CodexType>)((ret) => ((Func<CodexType, CodexType>)((param) => new FunTy(deep_resolve(st, param), deep_resolve(st, ret))))((CodexType)_mFunTy223_.Field0)))((CodexType)_mFunTy223_.Field1) : (_scrutinee223_ is ListTy _mListTy223_ ? ((Func<CodexType, CodexType>)((elem) => new ListTy(deep_resolve(st, elem))))((CodexType)_mListTy223_.Field0) : (_scrutinee223_ is LinkedListTy _mLinkedListTy223_ ? ((Func<CodexType, CodexType>)((elem) => new LinkedListTy(deep_resolve(st, elem))))((CodexType)_mLinkedListTy223_.Field0) : (_scrutinee223_ is ConstructedTy _mConstructedTy223_ ? ((Func<List<CodexType>, CodexType>)((args) => ((Func<Name, CodexType>)((name) => new ConstructedTy(name, deep_resolve_list(st, args, 0L, ((long)args.Count), new List<CodexType>()))))((Name)_mConstructedTy223_.Field0)))((List<CodexType>)_mConstructedTy223_.Field1) : (_scrutinee223_ is ForAllTy _mForAllTy223_ ? ((Func<CodexType, CodexType>)((body) => ((Func<long, CodexType>)((id) => new ForAllTy(id, deep_resolve(st, body))))((long)_mForAllTy223_.Field0)))((CodexType)_mForAllTy223_.Field1) : (_scrutinee223_ is EffectfulTy _mEffectfulTy223_ ? ((Func<CodexType, CodexType>)((ret) => ((Func<List<Name>, CodexType>)((effs) => new EffectfulTy(effs, deep_resolve(st, ret))))((List<Name>)_mEffectfulTy223_.Field0)))((CodexType)_mEffectfulTy223_.Field1) : (_scrutinee223_ is SumTy _mSumTy223_ ? ((Func<List<SumCtor>, CodexType>)((ctors) => ((Func<Name, CodexType>)((name) => resolved))((Name)_mSumTy223_.Field0)))((List<SumCtor>)_mSumTy223_.Field1) : (_scrutinee223_ is RecordTy _mRecordTy223_ ? ((Func<List<RecordField>, CodexType>)((fields) => ((Func<Name, CodexType>)((name) => resolved))((Name)_mRecordTy223_.Field0)))((List<RecordField>)_mRecordTy223_.Field1) : resolved))))))))))(resolved)))(resolve(st, ty));
     }
 
     public static List<CodexType> deep_resolve_list(UnificationState st, List<CodexType> args, long i, long len, List<CodexType> acc)
