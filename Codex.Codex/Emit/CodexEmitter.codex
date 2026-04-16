@@ -12,9 +12,14 @@ Section: Type Definition Emission
   emit-type-def (td) =
    when td
     is ARecordTypeDef (name) (tparams) (fields) (s) ->
-     name.value ++ " = record {" ++ emit-record-field-defs fields 0 ++ "\n}\n"
+     name.value ++ emit-tparams tparams 0 ++ " = record {" ++ emit-record-field-defs fields 0 ++ "\n}\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
-     name.value ++ " =\n" ++ emit-variant-ctors ctors 0
+     name.value ++ emit-tparams tparams 0 ++ " =\n" ++ emit-variant-ctors ctors 0
+
+  emit-tparams : List Name -> Integer -> Text
+  emit-tparams (tparams) (i) =
+   if i == list-length tparams then ""
+   else " (" ++ (list-at tparams i).value ++ ")" ++ emit-tparams tparams (i + 1)
 
   emit-record-field-defs : List ARecordFieldDef -> Integer -> Text
   emit-record-field-defs (fields) (i) =
@@ -95,7 +100,13 @@ Section: TypeVar Normalization
     is ListTy (elem) -> collect-tvars elem m
     is LinkedListTy (elem) -> collect-tvars elem m
     is EffectfulTy (effs) (ret) -> collect-tvars ret m
+    is ConstructedTy (name) (args) -> collect-tvars-list args 0 m
     is otherwise -> m
+
+  collect-tvars-list : List CodexType -> Integer -> TypeVarMap -> TypeVarMap
+  collect-tvars-list (args) (i) (m) =
+   if i == list-length args then m
+   else collect-tvars-list args (i + 1) (collect-tvars (list-at args i) m)
 
   normalize-type : CodexType -> TypeVarMap -> CodexType
   normalize-type (ty) (m) =
@@ -106,7 +117,17 @@ Section: TypeVar Normalization
     is ListTy (elem) -> ListTy (normalize-type elem m)
     is LinkedListTy (elem) -> LinkedListTy (normalize-type elem m)
     is EffectfulTy (effs) (ret) -> EffectfulTy effs (normalize-type ret m)
+    is ConstructedTy (name) (args) -> ConstructedTy name (normalize-type-list args 0 m)
     is otherwise -> ty
+
+  normalize-type-list : List CodexType -> Integer -> TypeVarMap -> List CodexType
+  normalize-type-list (args) (i) (m) =
+   normalize-type-list-loop args i (list-length args) m []
+
+  normalize-type-list-loop : List CodexType -> Integer -> Integer -> TypeVarMap -> List CodexType -> List CodexType
+  normalize-type-list-loop (args) (i) (len) (m) (acc) =
+   if i == len then acc
+   else normalize-type-list-loop args (i + 1) len m (list-snoc acc (normalize-type (list-at args i) m))
 
   normalize-type-vars : CodexType -> CodexType
   normalize-type-vars (ty) =
@@ -133,7 +154,9 @@ Section: CodexType Emission
     is ForAllTy (id) (body) -> emit-type body
     is SumTy (name) (ctors) -> name.value
     is RecordTy (name) (fields) -> name.value
-    is ConstructedTy (name) (args) -> name.value
+    is ConstructedTy (name) (args) ->
+     if list-length args == 0 then name.value
+     else name.value ++ emit-type-args args 0
     is EffectfulTy (effs) (ret) -> "[" ++ emit-type-effect-names effs 0 ++ "] " ++ emit-type ret
 
   wrap-fun-param : CodexType -> Text
@@ -148,7 +171,15 @@ Section: CodexType Emission
     is FunTy (p) (r) -> "(" ++ emit-type ty ++ ")"
     is ListTy (elem) -> "(" ++ emit-type ty ++ ")"
     is LinkedListTy (elem) -> "(" ++ emit-type ty ++ ")"
+    is ConstructedTy (name) (args) ->
+     if list-length args == 0 then name.value
+     else "(" ++ emit-type ty ++ ")"
     is otherwise -> emit-type ty
+
+  emit-type-args : List CodexType -> Integer -> Text
+  emit-type-args (args) (i) =
+   if i == list-length args then ""
+   else " " ++ wrap-complex (list-at args i) ++ emit-type-args args (i + 1)
 
   emit-type-effect-names : List Name -> Integer -> Text
   emit-type-effect-names (effs) (i) =

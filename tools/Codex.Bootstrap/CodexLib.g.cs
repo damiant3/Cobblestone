@@ -4583,7 +4583,12 @@ public static class Codex_Codex_Codex
 
     public static string emit__codex_emitter_emit_type_def(ATypeDef td)
     {
-        return ((Func<ATypeDef, string>)((_scrutinee32_) => (_scrutinee32_ is ARecordTypeDef _mARecordTypeDef32_ ? ((Func<SourceSpan, string>)((s) => ((Func<List<ARecordFieldDef>, string>)((fields) => ((Func<List<Name>, string>)((tparams) => ((Func<Name, string>)((name) => string.Concat(name.value, "\u0002M\u0002\u0015\u000D\u0018\u0010\u0015\u0016\u0002Z", emit__codex_emitter_emit_record_field_defs(fields, 0L), "\u0001[\u0001")))((Name)_mARecordTypeDef32_.Field0)))((List<Name>)_mARecordTypeDef32_.Field1)))((List<ARecordFieldDef>)_mARecordTypeDef32_.Field2)))((SourceSpan)_mARecordTypeDef32_.Field3) : (_scrutinee32_ is AVariantTypeDef _mAVariantTypeDef32_ ? ((Func<SourceSpan, string>)((s) => ((Func<List<AVariantCtorDef>, string>)((ctors) => ((Func<List<Name>, string>)((tparams) => ((Func<Name, string>)((name) => string.Concat(name.value, "\u0002M\u0001", emit__codex_emitter_emit_variant_ctors(ctors, 0L))))((Name)_mAVariantTypeDef32_.Field0)))((List<Name>)_mAVariantTypeDef32_.Field1)))((List<AVariantCtorDef>)_mAVariantTypeDef32_.Field2)))((SourceSpan)_mAVariantTypeDef32_.Field3) : throw new InvalidOperationException("Non-exhaustive match")))))(td);
+        return ((Func<ATypeDef, string>)((_scrutinee32_) => (_scrutinee32_ is ARecordTypeDef _mARecordTypeDef32_ ? ((Func<SourceSpan, string>)((s) => ((Func<List<ARecordFieldDef>, string>)((fields) => ((Func<List<Name>, string>)((tparams) => ((Func<Name, string>)((name) => string.Concat(name.value, emit_tparams(tparams, 0L), "\u0002M\u0002\u0015\u000D\u0018\u0010\u0015\u0016\u0002Z", emit__codex_emitter_emit_record_field_defs(fields, 0L), "\u0001[\u0001")))((Name)_mARecordTypeDef32_.Field0)))((List<Name>)_mARecordTypeDef32_.Field1)))((List<ARecordFieldDef>)_mARecordTypeDef32_.Field2)))((SourceSpan)_mARecordTypeDef32_.Field3) : (_scrutinee32_ is AVariantTypeDef _mAVariantTypeDef32_ ? ((Func<SourceSpan, string>)((s) => ((Func<List<AVariantCtorDef>, string>)((ctors) => ((Func<List<Name>, string>)((tparams) => ((Func<Name, string>)((name) => string.Concat(name.value, emit_tparams(tparams, 0L), "\u0002M\u0001", emit__codex_emitter_emit_variant_ctors(ctors, 0L))))((Name)_mAVariantTypeDef32_.Field0)))((List<Name>)_mAVariantTypeDef32_.Field1)))((List<AVariantCtorDef>)_mAVariantTypeDef32_.Field2)))((SourceSpan)_mAVariantTypeDef32_.Field3) : throw new InvalidOperationException("Non-exhaustive match")))))(td);
+    }
+
+    public static string emit_tparams(List<Name> tparams, long i)
+    {
+        return ((i == ((long)tparams.Count)) ? "" : string.Concat("\u0002J", tparams[(int)i].value, "K", emit_tparams(tparams, (i + 1L))));
     }
 
     public static string emit__codex_emitter_emit_record_field_defs(List<ARecordFieldDef> fields, long i)
@@ -4722,15 +4727,72 @@ public static class Codex_Codex_Codex
                 m = _tco_1;
                 continue;
             }
+            else if (_tco_s is ConstructedTy _tco_m6)
+            {
+                var name = _tco_m6.Field0;
+                var args = _tco_m6.Field1;
+                return collect_tvars_list(args, 0L, m);
+            }
             {
                 return m;
             }
         }
     }
 
+    public static TypeVarMap collect_tvars_list(List<CodexType> args, long i, TypeVarMap m)
+    {
+        while (true)
+        {
+            if ((i == ((long)args.Count)))
+            {
+                return m;
+            }
+            else
+            {
+                var _tco_0 = args;
+                var _tco_1 = (i + 1L);
+                var _tco_2 = collect_tvars(args[(int)i], m);
+                args = _tco_0;
+                i = _tco_1;
+                m = _tco_2;
+                continue;
+            }
+        }
+    }
+
     public static CodexType normalize_type(CodexType ty, TypeVarMap m)
     {
-        return ((Func<CodexType, CodexType>)((_scrutinee36_) => (_scrutinee36_ is TypeVar _mTypeVar36_ ? ((Func<long, CodexType>)((id) => new TypeVar(tvar_map_lookup(m.entries, id, 0L))))((long)_mTypeVar36_.Field0) : (_scrutinee36_ is ForAllTy _mForAllTy36_ ? ((Func<CodexType, CodexType>)((body) => ((Func<long, CodexType>)((id) => new ForAllTy(tvar_map_lookup(m.entries, id, 0L), normalize_type(body, m))))((long)_mForAllTy36_.Field0)))((CodexType)_mForAllTy36_.Field1) : (_scrutinee36_ is FunTy _mFunTy36_ ? ((Func<CodexType, CodexType>)((r) => ((Func<CodexType, CodexType>)((p) => new FunTy(normalize_type(p, m), normalize_type(r, m))))((CodexType)_mFunTy36_.Field0)))((CodexType)_mFunTy36_.Field1) : (_scrutinee36_ is ListTy _mListTy36_ ? ((Func<CodexType, CodexType>)((elem) => new ListTy(normalize_type(elem, m))))((CodexType)_mListTy36_.Field0) : (_scrutinee36_ is LinkedListTy _mLinkedListTy36_ ? ((Func<CodexType, CodexType>)((elem) => new LinkedListTy(normalize_type(elem, m))))((CodexType)_mLinkedListTy36_.Field0) : (_scrutinee36_ is EffectfulTy _mEffectfulTy36_ ? ((Func<CodexType, CodexType>)((ret) => ((Func<List<Name>, CodexType>)((effs) => new EffectfulTy(effs, normalize_type(ret, m))))((List<Name>)_mEffectfulTy36_.Field0)))((CodexType)_mEffectfulTy36_.Field1) : ty))))))))(ty);
+        return ((Func<CodexType, CodexType>)((_scrutinee36_) => (_scrutinee36_ is TypeVar _mTypeVar36_ ? ((Func<long, CodexType>)((id) => new TypeVar(tvar_map_lookup(m.entries, id, 0L))))((long)_mTypeVar36_.Field0) : (_scrutinee36_ is ForAllTy _mForAllTy36_ ? ((Func<CodexType, CodexType>)((body) => ((Func<long, CodexType>)((id) => new ForAllTy(tvar_map_lookup(m.entries, id, 0L), normalize_type(body, m))))((long)_mForAllTy36_.Field0)))((CodexType)_mForAllTy36_.Field1) : (_scrutinee36_ is FunTy _mFunTy36_ ? ((Func<CodexType, CodexType>)((r) => ((Func<CodexType, CodexType>)((p) => new FunTy(normalize_type(p, m), normalize_type(r, m))))((CodexType)_mFunTy36_.Field0)))((CodexType)_mFunTy36_.Field1) : (_scrutinee36_ is ListTy _mListTy36_ ? ((Func<CodexType, CodexType>)((elem) => new ListTy(normalize_type(elem, m))))((CodexType)_mListTy36_.Field0) : (_scrutinee36_ is LinkedListTy _mLinkedListTy36_ ? ((Func<CodexType, CodexType>)((elem) => new LinkedListTy(normalize_type(elem, m))))((CodexType)_mLinkedListTy36_.Field0) : (_scrutinee36_ is EffectfulTy _mEffectfulTy36_ ? ((Func<CodexType, CodexType>)((ret) => ((Func<List<Name>, CodexType>)((effs) => new EffectfulTy(effs, normalize_type(ret, m))))((List<Name>)_mEffectfulTy36_.Field0)))((CodexType)_mEffectfulTy36_.Field1) : (_scrutinee36_ is ConstructedTy _mConstructedTy36_ ? ((Func<List<CodexType>, CodexType>)((args) => ((Func<Name, CodexType>)((name) => new ConstructedTy(name, normalize_type_list(args, 0L, m))))((Name)_mConstructedTy36_.Field0)))((List<CodexType>)_mConstructedTy36_.Field1) : ty)))))))))(ty);
+    }
+
+    public static List<CodexType> normalize_type_list(List<CodexType> args, long i, TypeVarMap m)
+    {
+        return normalize_type_list_loop(args, i, ((long)args.Count), m, new List<CodexType>());
+    }
+
+    public static List<CodexType> normalize_type_list_loop(List<CodexType> args, long i, long len, TypeVarMap m, List<CodexType> acc)
+    {
+        while (true)
+        {
+            if ((i == len))
+            {
+                return acc;
+            }
+            else
+            {
+                var _tco_0 = args;
+                var _tco_1 = (i + 1L);
+                var _tco_2 = len;
+                var _tco_3 = m;
+                var _tco_4 = ((Func<List<CodexType>>)(() => { var _l = acc; _l.Add(normalize_type(args[(int)i], m)); return _l; }))();
+                args = _tco_0;
+                i = _tco_1;
+                len = _tco_2;
+                m = _tco_3;
+                acc = _tco_4;
+                continue;
+            }
+        }
     }
 
     public static CodexType normalize_type_vars(CodexType ty)
@@ -4820,7 +4882,14 @@ public static class Codex_Codex_Codex
             {
                 var name = _tco_m15.Field0;
                 var args = _tco_m15.Field1;
-                return name.value;
+                if ((((long)args.Count) == 0L))
+                {
+                    return name.value;
+                }
+                else
+                {
+                    return string.Concat(name.value, emit_type_args(args, 0L));
+                }
             }
             else if (_tco_s is EffectfulTy _tco_m16)
             {
@@ -4838,7 +4907,12 @@ public static class Codex_Codex_Codex
 
     public static string wrap_complex(CodexType ty)
     {
-        return ((Func<CodexType, string>)((_scrutinee38_) => (_scrutinee38_ is FunTy _mFunTy38_ ? ((Func<CodexType, string>)((r) => ((Func<CodexType, string>)((p) => string.Concat("J", emit_type(ty), "K")))((CodexType)_mFunTy38_.Field0)))((CodexType)_mFunTy38_.Field1) : (_scrutinee38_ is ListTy _mListTy38_ ? ((Func<CodexType, string>)((elem) => string.Concat("J", emit_type(ty), "K")))((CodexType)_mListTy38_.Field0) : (_scrutinee38_ is LinkedListTy _mLinkedListTy38_ ? ((Func<CodexType, string>)((elem) => string.Concat("J", emit_type(ty), "K")))((CodexType)_mLinkedListTy38_.Field0) : emit_type(ty))))))(ty);
+        return ((Func<CodexType, string>)((_scrutinee38_) => (_scrutinee38_ is FunTy _mFunTy38_ ? ((Func<CodexType, string>)((r) => ((Func<CodexType, string>)((p) => string.Concat("J", emit_type(ty), "K")))((CodexType)_mFunTy38_.Field0)))((CodexType)_mFunTy38_.Field1) : (_scrutinee38_ is ListTy _mListTy38_ ? ((Func<CodexType, string>)((elem) => string.Concat("J", emit_type(ty), "K")))((CodexType)_mListTy38_.Field0) : (_scrutinee38_ is LinkedListTy _mLinkedListTy38_ ? ((Func<CodexType, string>)((elem) => string.Concat("J", emit_type(ty), "K")))((CodexType)_mLinkedListTy38_.Field0) : (_scrutinee38_ is ConstructedTy _mConstructedTy38_ ? ((Func<List<CodexType>, string>)((args) => ((Func<Name, string>)((name) => ((((long)args.Count) == 0L) ? name.value : string.Concat("J", emit_type(ty), "K"))))((Name)_mConstructedTy38_.Field0)))((List<CodexType>)_mConstructedTy38_.Field1) : emit_type(ty)))))))(ty);
+    }
+
+    public static string emit_type_args(List<CodexType> args, long i)
+    {
+        return ((i == ((long)args.Count)) ? "" : string.Concat("\u0002", wrap_complex(args[(int)i]), emit_type_args(args, (i + 1L))));
     }
 
     public static string emit_type_effect_names(List<Name> effs, long i)
@@ -13385,7 +13459,35 @@ public static class Codex_Codex_Codex
                                     }
                                     else
                                     {
-                                        return offset;
+                                        if ((nc == cc_minus()))
+                                        {
+                                            if (((offset + 2L) >= len))
+                                            {
+                                                return offset;
+                                            }
+                                            else
+                                            {
+                                                var nnc = ((long)source[(int)(offset + 2L)]);
+                                                if ((is_letter_code(nnc) || is_digit_code(nnc)))
+                                                {
+                                                    var _tco_0 = source;
+                                                    var _tco_1 = (offset + 2L);
+                                                    var _tco_2 = len;
+                                                    source = _tco_0;
+                                                    offset = _tco_1;
+                                                    len = _tco_2;
+                                                    continue;
+                                                }
+                                                else
+                                                {
+                                                    return offset;
+                                                }
+                                            }
+                                        }
+                                        else
+                                        {
+                                            return offset;
+                                        }
                                     }
                                 }
                             }

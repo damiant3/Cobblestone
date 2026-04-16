@@ -497,9 +497,15 @@ public sealed class Lexer
             Advance();
         }
 
-        while (!IsAtEnd && Current == '-' && m_position + 1 < m_text.Length && char.IsLetterOrDigit(m_text[m_position + 1]))
+        while (!IsAtEnd && Current == '-'
+               && ((m_position + 1 < m_text.Length && char.IsLetterOrDigit(m_text[m_position + 1]))
+                   || (m_position + 2 < m_text.Length && m_text[m_position + 1] == '-' && char.IsLetterOrDigit(m_text[m_position + 2]))))
         {
             Advance();
+            if (!IsAtEnd && Current == '-')
+            {
+                Advance();
+            }
             while (!IsAtEnd && (char.IsLetterOrDigit(Current) || Current == '_'))
             {
                 Advance();
