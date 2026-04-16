@@ -55,7 +55,6 @@ Legend: 🟡 partial / different · ❌ missing · ⏭️ deliberately diverged
 | Item | Reference | Self-host | Status | Notes |
 |------|-----------|-----------|--------|-------|
 
-| Union types with type variables | 🟡 | 🟡 | 🟡 | Needs dedicated pass |
 | Polymorphism coverage audit | ? | ? | ❔ | Not yet done |
 
 
