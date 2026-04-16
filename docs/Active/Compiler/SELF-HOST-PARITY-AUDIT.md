@@ -35,7 +35,7 @@ Legend: 🟡 partial / different · ❌ missing · ⏭️ deliberately diverged
 | Item | Reference | Self-host | Status | Notes |
 |------|-----------|-----------|--------|-------|
 
-| `let`-bind on effectful value rejected (CDX2033) | ✓ | ✓ | 🟡 | Both compilers emit the error. Ref uses `binding.Value.Span`; self-host uses `synthetic-span` because `add-unify-error` takes no span, so the diagnostic points at (0,0). Diagnostic-only divergence under "Parity is Narrow" — doesn't affect compilation output. Follow-up: thread binding span through `add-unify-error` in self-host. Repro: `samples/let-effectful-bug.codex`. |
+| Unifier diagnostics carry source spans | ✓ | ✓ | ✓ | Self-host `unify` and its family (`unify-resolved`, `unify-rhs`, `unify-structural`, `unify-fun`, `unify-constructed-args`, `unify-mismatch`) now take a `SourceSpan`; `add-unify-error` takes a span. Callers (binary, unary, if, application, list, match, let-effectful, def body) pass the appropriate AExpr span via `aexpr-span`. Covers CDX2001 (type mismatch), CDX2010 (infinite type), CDX2033 (let-binds-effectful), CDX3002 (unknown name). Mirrors reference `Unify(a, b, span)`. |
 
 
 ### Debugging / crash behavior
