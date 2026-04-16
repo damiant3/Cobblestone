@@ -744,9 +744,11 @@ partial class Program
 
         try
         {
+            PerfCounters.Reset();
             Console.WriteLine("  compile_to_binary...");
             EmitChapterResult result = Codex_Codex_Codex.compile_to_binary(source, chapterName);
             Console.WriteLine($"  done: {sw.ElapsedMilliseconds}ms");
+            PerfCounters.Report();
 
             List<Diagnostic> errors = result.bag.diagnostics;
             if (errors.Count > 0)
