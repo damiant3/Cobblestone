@@ -4,6 +4,11 @@ Agent: Hex-Cam. Purpose: verify which `BACKLOG.md` quadratic-hotspot entries
 are still real on the *current* self-host workload, vs. stale claims from
 before recent compiler growth.
 
+> **P9 landed later the same day in `2293b2e`**: dense `var-id`-indexed
+> substitution list replacing the sorted `List<SubstEntry>`. Typecheck
+> 1418.91ms → 85.00ms (16.7x), total compile 2.03x. Pingpong green. The
+> findings below are the pre-fix snapshot that motivated the commit.
+
 ## Method
 
 Instrumented six hot functions in the bootstrap's generated `CodexLib.g.cs`

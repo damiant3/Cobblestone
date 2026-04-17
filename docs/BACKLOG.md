@@ -67,11 +67,11 @@ Ordered by measured cost.
 
 | # | Location | Pattern | Measured impact |
 |---|----------|---------|--------|
-| P9 | `Codex.Codex/Types/Unifier.codex:96-108` `add-subst` | Sorted-list substitution table; every call rebuilds the whole list (`List<SubstEntry>` copy + `Insert` at bsearch pos) | **Biggest typecheck hotspot.** 20,394 calls, max N = 20,393, total work ≈ 208M copy ops ≈ **~400ms = 28% of typecheck**. `var_id` is sequentially allocated — fix by switching to dense `var_id`-indexed storage (O(1) insert/lookup). Note: `resolve`-side "path compression" previously listed here is a non-issue — max chain depth is 2, avg 0 hops. |
-| P2 | `Codex.Codex/Types/TypeEnv.codex:37-45` `env-bind` | Sorted `List<TypeBinding>` with per-call list-copy + `Insert` (open-coded `list-insert-at`) | 10,493 calls, max N = 1,877, total work ≈ 17M ops ≈ **~35ms = ~2% of typecheck**. Real but small on current workload. Landed speedup `85cfa4d` (sorted bsearch + `list-snoc`) still mostly holds. HAMT (`88e056a`) was tried and **reverted** (`f85d031`) for being slower. |
+| ~~P9~~ | ~~`Codex.Codex/Types/Unifier.codex` `add-subst`~~ | **Landed in `2293b2e` (2026-04-16).** Dense `var-id`-indexed substitution list with self-reference sentinel; O(1) insert + lookup. Typecheck 1418.91ms → 85.00ms (16.7x, −94%). Total compile 2919.99ms → 1436.73ms (2.03x, −51%). Pingpong green. |
+| P2 | `Codex.Codex/Types/TypeEnv.codex:37-45` `env-bind` | Sorted `List<TypeBinding>` with per-call list-copy + `Insert` (open-coded `list-insert-at`) | 10,493 calls, max N = 1,877, total work ≈ 17M ops ≈ **~35ms = ~2% of typecheck**. Real but small on current workload. Landed speedup `85cfa4d` (sorted bsearch + `list-snoc`) still mostly holds. |
 | P13-tail | `Codex.Codex/Emit/CodexEmitter.codex:579,616-630` `replace-def` + `list-set` | O(N) scan + O(N) rebuild per dominated def | **Codex-to-Codex emitter only** — 0 calls on pingpong bench (C# emit path). Only hit if we rebuild the Codex emitter as part of the toolchain. |
 | P14 | `Codex.Codex/Types/TypeChecker.codex:376-381` `lookup-record-field` | Linear scan over record fields per `.field` access | Unprofiled; F is bounded (≤ ~10) so cost is linear-small. Keep the probe. Low priority. |
-| EMIT-TBD | `Codex.Codex/Emit/**` (needs profiling) | Unknown — emit phase is 1136ms (40% of total compile) with no hotspot named in the backlog | Needs a profiling pass similar to the one that produced the rows above. Next perf target after P9. |
+| EMIT-TBD | `Codex.Codex/Emit/**` (needs profiling) | Unknown — emit phase was 1136ms (~40% of total) before P9 landed; now the largest named phase. No hotspot named in the backlog. | Needs a profiling pass similar to the one that produced the rows above. Next perf target. |
 
 
 ## Compiler Correctness (low priority, non-blocking, continued)
