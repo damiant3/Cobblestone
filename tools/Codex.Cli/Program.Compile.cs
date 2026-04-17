@@ -85,6 +85,8 @@ public static partial class Program
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
+        irModule = Lowering.LowerCitedDefs(resolved.CitedChapters, irModule, diagnostics);
+
         CapabilityChecker capChecker = new(diagnostics, types);
         CapabilityReport capReport = capChecker.CheckChapter(resolved.Chapter, grantedCapabilities);
 
@@ -188,6 +190,8 @@ public static partial class Program
         IRChapter irModule = lowering.Lower(resolved.Chapter);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
+
+        irModule = Lowering.LowerCitedDefs(resolved.CitedChapters, irModule, diagnostics);
 
         CapabilityChecker capChecker = new(diagnostics, types);
         CapabilityReport capReport = capChecker.CheckChapter(resolved.Chapter, grantedCapabilities);
@@ -342,6 +346,8 @@ public static partial class Program
         IRChapter irModule = lowering.Lower(resolved.Chapter);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
+
+        irModule = Lowering.LowerCitedDefs(resolved.CitedChapters, irModule, diagnostics);
 
         CapabilityChecker capChecker = new(diagnostics, types);
         CapabilityReport capReport = capChecker.CheckChapter(resolved.Chapter, grantedCapabilities);

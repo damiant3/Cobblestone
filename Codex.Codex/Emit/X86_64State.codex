@@ -3,6 +3,8 @@ Chapter: X86-64 Code Generator
  State records, constants, rodata tables, register allocation, and
  byte-patching helpers used throughout the x86-64 code generator.
 
+  cites Foreword chapter CCE
+
 Section: Record Types
   FuncOffset = record {
    name : Text,
@@ -137,13 +139,27 @@ Section: Constants
    1073741824
 
 Section: Rodata Tables
-  cce-to-unicode-table : List Integer
-  cce-to-unicode-table =
-   [0, 10, 32, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 101, 116, 97, 111, 105, 110, 115, 104, 114, 100, 108, 99, 117, 109, 119, 102, 103, 121, 112, 98, 118, 107, 106, 120, 113, 122, 69, 84, 65, 79, 73, 78, 83, 72, 82, 68, 76, 67, 85, 77, 87, 70, 71, 89, 80, 66, 86, 75, 74, 88, 81, 90, 46, 44, 33, 63, 58, 59, 39, 34, 45, 40, 41, 43, 61, 42, 60, 62, 47, 64, 35, 38, 95, 92, 124, 91, 93, 123, 125, 126, 96, 94, 233, 232, 234, 235, 225, 224, 226, 228, 243, 244, 246, 250, 249, 251, 252, 241, 231, 237, 48, 62, 53, 56, 61, 66, 65, 64, 50, 59, 58, 60, 52, 63, 67]
+  byte-clamp-forward : List Integer -> Integer -> Integer -> List Integer -> List Integer
+  byte-clamp-forward (src) (i) (len) (acc) =
+   if i >= len then acc
+   else byte-clamp-forward src (i + 1) len (list-snoc acc (int-mod (list-at src i) 256))
 
-  unicode-to-cce-table : List Integer
-  unicode-to-cce-table =
-   [0, 68, 68, 68, 68, 68, 68, 68, 68, 68, 1, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 2, 67, 72, 83, 68, 68, 84, 71, 74, 75, 78, 76, 66, 73, 65, 81, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 69, 70, 79, 77, 80, 68, 82, 41, 58, 50, 48, 39, 54, 55, 46, 43, 61, 60, 49, 52, 44, 42, 57, 63, 47, 45, 40, 51, 59, 53, 62, 56, 64, 88, 86, 89, 94, 85, 93, 15, 32, 24, 22, 13, 28, 29, 20, 17, 35, 34, 23, 26, 18, 16, 31, 37, 21, 19, 14, 25, 33, 27, 36, 30, 38, 90, 87, 91, 92, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 68, 100, 99, 101, 68, 102, 68, 68, 111, 96, 95, 97, 98, 68, 112, 68, 68, 68, 110, 68, 103, 104, 68, 105, 68, 68, 107, 106, 108, 109, 68, 68, 68]
+  cce-to-unicode-byte-table : List Integer
+  cce-to-unicode-byte-table = byte-clamp-forward cce-to-unicode-table 0 128 []
+
+  find-cce-for-byte : List Integer -> Integer -> Integer -> Integer -> Integer
+  find-cce-for-byte (src) (u) (i) (len) =
+   if i >= len then 68
+   else if int-mod (list-at src i) 256 == u then i
+   else find-cce-for-byte src u (i + 1) len
+
+  build-reverse-byte-table : List Integer -> Integer -> Integer -> List Integer -> List Integer
+  build-reverse-byte-table (src) (i) (len) (acc) =
+   if i >= len then acc
+   else build-reverse-byte-table src (i + 1) len (list-snoc acc (find-cce-for-byte src i 0 128))
+
+  unicode-to-cce-byte-table : List Integer
+  unicode-to-cce-byte-table = build-reverse-byte-table cce-to-unicode-table 0 256 []
 
   result-base-rodata-offset : Integer = 0
 
@@ -156,7 +172,7 @@ Section: Rodata Tables
   init-rodata : List Integer
   init-rodata =
    let zeros-8 = [0, 0, 0, 0, 0, 0, 0, 0]
-   in zeros-8 ++ zeros-8 ++ cce-to-unicode-table ++ unicode-to-cce-table
+   in zeros-8 ++ zeros-8 ++ cce-to-unicode-byte-table ++ unicode-to-cce-byte-table
 
 Section: State Helpers
   empty-codegen-state : CodegenState

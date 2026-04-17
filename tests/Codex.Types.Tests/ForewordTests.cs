@@ -266,7 +266,7 @@ public class ForewordTests
             cites Foreword chapter CCE
 
             main : Boolean
-            main = is-digit 10
+            main = is-digit (code-to-char 10)
             """;
         DiagnosticBag diag = CompileWithPrelude(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));

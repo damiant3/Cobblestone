@@ -155,6 +155,20 @@ public sealed partial class CSharpEmitter
                 }
 
                 break;
+            case SumType st:
+                foreach (CodexType arg in st.TypeArguments)
+                {
+                    CollectTypeVarIds(arg, ids);
+                }
+
+                break;
+            case RecordType rt:
+                foreach (CodexType arg in rt.TypeArguments)
+                {
+                    CollectTypeVarIds(arg, ids);
+                }
+
+                break;
         }
     }
 

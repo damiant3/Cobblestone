@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using Codex.Core;
 using Codex.Ast;
+using Codex.Semantics;
 using Codex.Types;
 
 namespace Codex.IR;
@@ -1002,5 +1003,51 @@ public sealed class Lowering(
         }
 
         return f is IRName name && name.Name == "heap-advance";
+    }
+
+    public static IRChapter LowerCitedDefs(
+        IReadOnlyList<ResolvedChapter> citedChapters,
+        IRChapter main,
+        DiagnosticBag diagnostics)
+    {
+        if (citedChapters.Count == 0)
+        {
+            return main;
+        }
+
+        ImmutableArray<IRDefinition>.Builder allDefs =
+            ImmutableArray.CreateBuilder<IRDefinition>();
+        allDefs.AddRange(main.Definitions);
+        HashSet<string> emittedNames = new(main.Definitions.Select(d => d.Name));
+
+        foreach (ResolvedChapter imported in citedChapters)
+        {
+            TypeChecker importChecker = new(diagnostics);
+            foreach (ResolvedChapter otherCited in citedChapters)
+            {
+                if (!ReferenceEquals(otherCited, imported))
+                {
+                    importChecker.CiteChapter(otherCited.Chapter);
+                }
+            }
+            Map<string, CodexType> importTypes = importChecker.CheckChapter(imported.Chapter);
+
+            Lowering importLowering = new(
+                importTypes,
+                importChecker.ConstructorMap,
+                importChecker.TypeDefMap,
+                diagnostics);
+            IRChapter importIr = importLowering.Lower(imported.Chapter);
+
+            foreach (IRDefinition def in importIr.Definitions)
+            {
+                if (emittedNames.Add(def.Name))
+                {
+                    allDefs.Add(def);
+                }
+            }
+        }
+
+        return main with { Definitions = allDefs.ToImmutable() };
     }
 }

@@ -169,16 +169,20 @@ Compile with self-host. Observe failure. Pin the exact failure mode (is it emit-
 
 Replace `foreword/CCE.codex:59-180` (the `to-unicode` if-cascade) with a `cce-to-unicode-table : List Integer` constant plus a short `to-unicode b = if b < 0 then 65533 else if b >= 128 then 65533 else list-at cce-to-unicode-table b`. Keep the `from-unicode` cascade for now (its reverse pre-computation is Wedge 3 scope). Update `foreword/CCE.codex:332-357` main to still pass its roundtrip test (the test stays — it's the invariant). Pingpong unaffected (nothing cites CCE yet except the probe test). Commit.
 
-### Wedge 2 — cross-project function emission
+### Wedge 2 — cross-project function emission **[LANDED on hex-hex/oneforeword-emit]**
 
-**This is the feature work.** On branch. Multi-session expected. Enumerate and resolve the decisions above. Incremental commits within the branch, but ship as one merge when Wedge 0's probe test passes. Pingpong must pass on the branch before merge.
+Implementation summary (for reviewer + future-Hex):
 
-Subgoals within the wedge:
-- Emitter traversal that walks `cites` declarations and collects cited chapter defs.
-- Emission layout decision (concatenate / separate file / dll).
-- Deduplication when multiple citing chapters share a foreword chapter.
-- Name-collision rule when a foreword name overlaps a builtin name (the `is-letter` case — currently builtin, soon foreword-defined, during transition both).
-- Integration with the ref Codex→C# emitter in `src/` (the one `tools/Codex.Cli` uses), AND the self-host x86-64 emitter in `Codex.Codex/Emit/`. Both must implement the mechanism or wedges 3+ break on whichever lags.
+- **Ref side (done).** `tools/Codex.Cli/Program.Compile.cs` has a new `LowerCitedDefs` helper. It runs a fresh `TypeChecker` per cited chapter (with other cited chapters in scope), calls `CheckChapter` to produce types, runs `Lowering.Lower`, and concatenates the resulting `IRDefinition`s into the main `IRChapter`. Name-collision dedup via a `HashSet<string>` (main chapter wins). Called from all four compile paths: `CompileToIR`, `CompileMultipleToIR`, `CompileViewToIR`, and the incremental path in `Program.Incremental.cs`. Layout decision: option 1 (concatenation into the same emit unit).
+- **Latent bug fixed.** `src/Codex.Emit.CSharp/CSharpEmitter.Utilities.cs:CollectTypeVarIds` didn't descend into `SumType.TypeArguments` or `RecordType.TypeArguments`. Invisible before because main-chapter polymorphic functions tend to reach type variables through return types; foreword functions like `is-just : Maybe a -> Boolean` have `a` only under the SumType. Fix: added `case SumType st` and `case RecordType rt` to the walker.
+- **Self side: not needed.** The self-host consumes a concatenated source (`tools/Codex.Bootstrap/Program.cs:LoadCodexSourceConcatenated` prepends every cited `foreword/*.codex` to the main source at the I/O boundary). So from the self-host's perspective, foreword chapters are already *in* the compilation unit as plain defs — there is no cross-project gap to bridge on that side. The self-host's `collect-type-var-ids` equivalent in `Codex.Codex/Emit/CSharpEmitter.codex:97` has the same latent SumTy/RecordTy miss, but `SumTy`/`RecordTy` in the self-host's `CodexType` don't carry a type-arguments field — parameterization flows through `ConstructedTy`, which the walker already handles. So no parallel fix lands on the self-host side in this step.
+- **Name-collision with builtins.** Resolved implicitly by ordering: `Lowering.LookupName` in `src/Codex.IR/Lowering.cs:606` consults `m_localEnv`, then `m_typeMap`, then `m_ctorMap`, then `s_builtinTypes`, then the fallback. Foreword-defined `is-letter` would appear in `m_typeMap` (main's checker has it from `CiteChapter`) — but for the emission side, the builtin-emit handler in `CSharpEmitter.Expressions.cs` still wins at the call-site level. That's actually what we want until Step 4 demotes `is-letter` et al. explicitly.
+- **Acceptance.** `samples/cite-fn-call.codex` (Step 0 probe) compiles *and runs* — prints `to-unicode 13 = 101`. Full `dotnet test Codex.sln` green (1170/1170). `codex bootstrap Codex.Codex/` green: stage1 === stage3 at 911,198 chars (Bootstrap 1, C# output) and stage1 === stage2 at 555,024 chars (Bootstrap 1.1, Codex text output). `codex build Codex.Codex/ --target x86-64-bare` emits a 1.06 MB ELF without error. **Bare-metal pingpong (bootstrap 2, `wsl bash tools/pingpong.sh`) NOT verified on this branch** — needs reviewer with WSL/QEMU before merge.
+- **Observed side effect.** With cited foreword functions now emitted, `build-output/bootstrap/Codex.Codex.cs` gained `from_maybe`, `is_just`, `is_none`, `maybe_map`, `maybe_bind` (the Parser's cited Maybe chapter). Dead code at runtime today, but the *presence* of these defs is the proof that the wall is broken for one concrete case.
+
+Open items deferred to later steps, not blocking merge of this step:
+
+- The `s_builtinTypes` map in `src/Codex.IR/Lowering.cs:824-980` is a third copy of the builtin wall (ref-side, alongside `Codex.Codex/Types/TypeEnv.codex:46-110` and `Codex.Codex/Emit/X86_64Builtins.codex`). Adding that to the forensic inventory under "the builtin wall" — the wall is wider than the original doc said.
 
 ### Wedge 3 — collapse the CCE rodata tables
 

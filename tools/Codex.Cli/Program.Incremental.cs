@@ -396,6 +396,8 @@ public static partial class Program
         Codex.IR.IRChapter irModule = lowering.Lower(resolved.Chapter);
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
+        irModule = Codex.IR.Lowering.LowerCitedDefs(resolved.CitedChapters, irModule, diagnostics);
+
         return new IRCompilationResult(irModule, types);
     }
 }
