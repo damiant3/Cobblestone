@@ -43,9 +43,7 @@ public readonly record struct ContentHash : IComparable<ContentHash>, IEquatable
         {
             int cmp = m_bytes[i].CompareTo(other.m_bytes[i]);
             if (cmp != 0)
-            {
                 return cmp;
-            }
         }
         return m_bytes.Length.CompareTo(other.m_bytes.Length);
     }
@@ -58,9 +56,7 @@ public readonly record struct ContentHash : IComparable<ContentHash>, IEquatable
     public override int GetHashCode()
     {
         if (m_bytes is null || m_bytes.Length < 4)
-        {
             return 0;
-        }
         return BitConverter.ToInt32(m_bytes, 0);
     }
 

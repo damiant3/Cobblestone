@@ -116,7 +116,7 @@ public class DiagnosticDisplayTests
     static ResolveResult ResolveSource(string source, out FileTable table)
     {
         table = TableWith("test.codex");
-        List<Token> tokens = Codex_Codex_Codex.tokenize(Cce(source), 1L);
+        List<Token> tokens = Codex_Codex_Codex.tokenize(Cce(source), 1L).tokens;
         ParseState parseState = Codex_Codex_Codex.make_parse_state(tokens);
         Document doc = Codex_Codex_Codex.parse_document(parseState);
         AChapter chapter = Codex_Codex_Codex.desugar_document(doc, Cce("Test"));
@@ -159,6 +159,37 @@ public class DiagnosticDisplayTests
         string rendered = Render(dup, table);
         Assert.StartsWith("test.codex:2:", rendered);
         Assert.Contains("error CDX3001:", rendered);
+    }
+
+    [Fact]
+    public void Tab_escape_in_text_literal_emits_cdx5()
+    {
+        TokenizeResult result = Codex_Codex_Codex.tokenize(Cce("x = \"a\\tb\"\n"), 1L);
+
+        Diagnostic tab = result.errors
+            .Single(d => d.code == Codex_Codex_Codex.cdx_invalid_tab_escape());
+        Assert.Equal(1L, tab.span.start.line);
+        Assert.Equal(1L, tab.span.file_id);
+    }
+
+    [Fact]
+    public void Cr_escape_in_text_literal_emits_cdx6()
+    {
+        TokenizeResult result = Codex_Codex_Codex.tokenize(Cce("x = \"a\\rb\"\n"), 1L);
+
+        Diagnostic cr = result.errors
+            .Single(d => d.code == Codex_Codex_Codex.cdx_invalid_carriage_return_escape());
+        Assert.Equal(1L, cr.span.start.line);
+    }
+
+    [Fact]
+    public void Tab_escape_in_char_literal_emits_cdx5()
+    {
+        TokenizeResult result = Codex_Codex_Codex.tokenize(Cce("x = '\\t'\n"), 1L);
+
+        Diagnostic tab = result.errors
+            .Single(d => d.code == Codex_Codex_Codex.cdx_invalid_tab_escape());
+        Assert.Equal(1L, tab.span.start.line);
     }
 
     [Fact]

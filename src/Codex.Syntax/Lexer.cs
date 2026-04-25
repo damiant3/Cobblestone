@@ -52,9 +52,7 @@ public sealed class Lexer
             Token token = NextToken();
             tokens.Add(token);
             if (token.Kind == TokenKind.EndOfFile)
-            {
                 break;
-            }
         }
         return tokens;
     }
@@ -72,9 +70,7 @@ public sealed class Lexer
         {
             SkipBlankLines();
             if (IsAtEnd)
-            {
                 return EmitDedentsToZero();
-            }
 
             m_currentLineIndent = MeasureIndentation();
             EmitIndentationTokens();
@@ -89,9 +85,7 @@ public sealed class Lexer
         }
 
         if (IsAtEnd)
-        {
             return EmitDedentsToZero();
-        }
 
         return ScanToken();
     }
@@ -101,9 +95,7 @@ public sealed class Lexer
         SkipSpaces();
 
         if (IsAtEnd)
-        {
             return EmitDedentsToZero();
-        }
 
         char c = Current;
 
@@ -116,24 +108,16 @@ public sealed class Lexer
         }
 
         if (c == '"')
-        {
             return ScanTextLiteral();
-        }
 
         if (c == '\'')
-        {
             return ScanCharLiteral();
-        }
 
         if (CharHelpers.IsAsciiDigit(c))
-        {
             return ScanNumber();
-        }
 
         if (char.IsLetter(c) || c == '_')
-        {
             return ScanIdentifierOrKeyword();
-        }
 
         return ScanOperator();
     }
@@ -160,10 +144,10 @@ public sealed class Lexer
                 hasInterpolation = true;
                 break;
             }
-            else
-            {
-                Advance();
-            }
+            else
+            {
+                Advance();
+            }
         }
 
         // Restore position and scan for real.
@@ -172,9 +156,7 @@ public sealed class Lexer
         m_column = savedCol;
 
         if (hasInterpolation)
-        {
             return ScanInterpolatedString();
-        }
 
         return ScanPlainTextLiteral();
     }
@@ -195,10 +177,10 @@ public sealed class Lexer
                     m_diagnostics.Error(CdxCodes.InvalidTabEscape, "\\t escape is not valid in CCE — use spaces directly", MakeSpan(start));
                     sb.Append("  ");
                 }
-                else if (Current == 'r')
-                {
-                    m_diagnostics.Error(CdxCodes.InvalidCarriageReturnEscape, "\\r escape is not valid in CCE — use \\n for newlines", MakeSpan(start));
-                }
+                else if (Current == 'r')
+                {
+                    m_diagnostics.Error(CdxCodes.InvalidCarriageReturnEscape, "\\r escape is not valid in CCE — use \\n for newlines", MakeSpan(start));
+                }
                 else
                 {
                     sb.Append(Current switch
@@ -220,13 +202,9 @@ public sealed class Lexer
         }
 
         if (IsAtEnd || Current == '\n')
-        {
             m_diagnostics.Error(CdxCodes.UnterminatedTextLiteral, "Unterminated text literal", MakeSpan(start));
-        }
         else
-        {
             Advance();
-        }
 
         SourceSpan span = MakeSpan(start);
         return new Token(TokenKind.TextLiteral, m_text[start.Offset..span.End.Offset], span)
@@ -286,9 +264,7 @@ public sealed class Lexer
 
         // Expect closing '
         if (!IsAtEnd && Current == '\'')
-        {
             Advance();
-        }
 
         SourceSpan span = MakeSpan(start);
         return new Token(TokenKind.CharLiteral, m_text[start.Offset..span.End.Offset], span)
@@ -318,10 +294,7 @@ public sealed class Lexer
                 while (!IsAtEnd && depth > 0)
                 {
                     SkipSpaces();
-                    if (IsAtEnd)
-                    {
-                        break;
-                    }
+                    if (IsAtEnd) break;
 
                     if (Current == '}')
                     {
@@ -337,31 +310,25 @@ public sealed class Lexer
 
                     if (depth > 0 && !IsAtEnd)
                     {
-                        if (Current == '{')
-                        {
-                            depth++;
-                        }
-
+                        if (Current == '{') depth++;
                         Token exprToken = ScanExpressionToken();
                         m_pending.Add(exprToken);
                     }
                 }
 
                 if (depth > 0)
-                {
                     m_diagnostics.Error(CdxCodes.UnterminatedInterpolation, "Unterminated interpolation expression", MakeSpan(start));
-                }
             }
-            else
-            {
-                ScanTextFragment();
-            }
+            else
+            {
+                ScanTextFragment();
+            }
         }
 
-        if (IsAtEnd || Current == '\n')
-        {
-            m_diagnostics.Error(CdxCodes.UnterminatedTextLiteral, "Unterminated text literal", MakeSpan(start));
-        }
+        if (IsAtEnd || Current == '\n')
+        {
+            m_diagnostics.Error(CdxCodes.UnterminatedTextLiteral, "Unterminated text literal", MakeSpan(start));
+        }
         else
         {
             SourcePosition endStart = MakePosition();
@@ -391,10 +358,10 @@ public sealed class Lexer
                     m_diagnostics.Error(CdxCodes.InvalidTabEscape, "\\t escape is not valid in CCE — use spaces directly", MakeSpan(escStart));
                     sb.Append("  ");
                 }
-                else if (Current == 'r')
-                {
-                    m_diagnostics.Error(CdxCodes.InvalidCarriageReturnEscape, "\\r escape is not valid in CCE — use \\n for newlines", MakeSpan(escStart));
-                }
+                else if (Current == 'r')
+                {
+                    m_diagnostics.Error(CdxCodes.InvalidCarriageReturnEscape, "\\r escape is not valid in CCE — use \\n for newlines", MakeSpan(escStart));
+                }
                 else
                 {
                     sb.Append(Current switch
@@ -430,21 +397,9 @@ public sealed class Lexer
         SkipSpaces();
         char c = Current;
 
-        if (c == '"')
-        {
-            return ScanPlainTextLiteral();
-        }
-
-        if (CharHelpers.IsAsciiDigit(c))
-        {
-            return ScanNumber();
-        }
-
-        if (char.IsLetter(c) || c == '_')
-        {
-            return ScanIdentifierOrKeyword();
-        }
-
+        if (c == '"') return ScanPlainTextLiteral();
+        if (CharHelpers.IsAsciiDigit(c)) return ScanNumber();
+        if (char.IsLetter(c) || c == '_') return ScanIdentifierOrKeyword();
         return ScanOperator();
     }
 
@@ -454,18 +409,14 @@ public sealed class Lexer
         bool isFloat = false;
 
         while (!IsAtEnd && (CharHelpers.IsAsciiDigit(Current) || Current == '_'))
-        {
             Advance();
-        }
 
         if (!IsAtEnd && Current == '.' && m_position + 1 < m_text.Length && char.IsDigit(m_text[m_position + 1]))
         {
             isFloat = true;
             Advance();
             while (!IsAtEnd && (CharHelpers.IsAsciiDigit(Current) || Current == '_'))
-            {
                 Advance();
-            }
         }
 
         SourceSpan span = MakeSpan(start);
@@ -493,9 +444,7 @@ public sealed class Lexer
         SourcePosition start = MakePosition();
 
         while (!IsAtEnd && (char.IsLetterOrDigit(Current) || Current == '_'))
-        {
             Advance();
-        }
 
         while (!IsAtEnd && Current == '-'
                && ((m_position + 1 < m_text.Length && char.IsLetterOrDigit(m_text[m_position + 1]))
@@ -503,13 +452,9 @@ public sealed class Lexer
         {
             Advance();
             if (!IsAtEnd && Current == '-')
-            {
                 Advance();
-            }
             while (!IsAtEnd && (char.IsLetterOrDigit(Current) || Current == '_'))
-            {
                 Advance();
-            }
         }
 
         SourceSpan span = MakeSpan(start);
@@ -555,6 +500,7 @@ public sealed class Lexer
         "with" => TokenKind.WithKeyword,
         "True" => TokenKind.TrueKeyword,
         "False" => TokenKind.FalseKeyword,
+        "Nothing" => TokenKind.NothingKeyword,
         _ => char.IsUpper(text[0]) ? TokenKind.TypeIdentifier : TokenKind.Identifier
     };
 
@@ -646,16 +592,12 @@ public sealed class Lexer
             int savedCol = m_column;
 
             while (!IsAtEnd && Current == ' ')
-            {
                 Advance();
-            }
 
             if (IsAtEnd || Current == '\n' || Current == '\r')
             {
                 if (!IsAtEnd)
-                {
                     ConsumeNewline();
-                }
                 continue;
             }
 
@@ -698,9 +640,7 @@ public sealed class Lexer
             }
 
             if (indent != m_indentStack.Peek())
-            {
                 m_diagnostics.Warning(CdxCodes.IndentationMismatch, "Indentation does not match any outer level", span);
-            }
         }
     }
 
@@ -745,14 +685,13 @@ public sealed class Lexer
         {
             m_position++;
             if (m_position < m_text.Length && m_text[m_position] == '\n')
-            {
                 m_position++;
-            }
         }
-        else if (Current == '\n')
-        {
-            m_position++;
-        }
+        else if (Current == '\n')
+        {
+            m_position++;
+        }
+
         m_line++;
         m_column = 1;
     }
@@ -760,9 +699,7 @@ public sealed class Lexer
     void SkipSpaces()
     {
         while (!IsAtEnd && Current == ' ')
-        {
             Advance();
-        }
     }
 
     SourcePosition MakePosition() => new(m_position, m_line, m_column);

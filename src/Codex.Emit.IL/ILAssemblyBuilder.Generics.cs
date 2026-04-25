@@ -25,7 +25,10 @@ sealed partial class ILAssemblyBuilder
         MemberReferenceHandle CtorNoArg,
         MemberReferenceHandle GetCount,
         MemberReferenceHandle GetItem,
-        MemberReferenceHandle Add);
+        MemberReferenceHandle Add,
+        MemberReferenceHandle AddRange,
+        MemberReferenceHandle Insert,
+        MemberReferenceHandle SetItem);
 
     readonly Dictionary<string, ListInstantiation> m_listCache = new();
 
@@ -35,6 +38,9 @@ sealed partial class ILAssemblyBuilder
     BlobHandle m_listGetCountSig;
     BlobHandle m_listGetItemSig;
     BlobHandle m_listAddSig;
+    BlobHandle m_listAddRangeSig;
+    BlobHandle m_listInsertSig;
+    BlobHandle m_listSetItemSig;
 
     void InitializeListSignatureBlobs()
     {
@@ -108,15 +114,66 @@ sealed partial class ILAssemblyBuilder
                     });
             m_listAddSig = m_metadata.GetOrAddBlob(sig);
         }
+
+        // AddRange(IEnumerable<!0>) : void — instance
+        {
+            BlobBuilder sig = new();
+            new BlobEncoder(sig).MethodSignature(
+                SignatureCallingConvention.Default, 0, isInstanceMethod: true)
+                .Parameters(1,
+                    returnType => returnType.Void(),
+                    parameters =>
+                    {
+                        SignatureTypeEncoder paramType = parameters.AddParameter().Type();
+                        GenericTypeArgumentsEncoder genArgs = paramType
+                            .GenericInstantiation(m_ienumerableOpenRef, 1, isValueType: false);
+                        SignatureTypeEncoder argEncoder = genArgs.AddArgument();
+                        argEncoder.Builder.WriteByte((byte)SignatureTypeCode.GenericTypeParameter);
+                        argEncoder.Builder.WriteCompressedInteger(0);
+                    });
+            m_listAddRangeSig = m_metadata.GetOrAddBlob(sig);
+        }
+
+        // Insert(int, !0) : void — instance
+        {
+            BlobBuilder sig = new();
+            new BlobEncoder(sig).MethodSignature(
+                SignatureCallingConvention.Default, 0, isInstanceMethod: true)
+                .Parameters(2,
+                    returnType => returnType.Void(),
+                    parameters =>
+                    {
+                        parameters.AddParameter().Type().Int32();
+                        SignatureTypeEncoder paramEncoder = parameters.AddParameter().Type();
+                        paramEncoder.Builder.WriteByte((byte)SignatureTypeCode.GenericTypeParameter);
+                        paramEncoder.Builder.WriteCompressedInteger(0);
+                    });
+            m_listInsertSig = m_metadata.GetOrAddBlob(sig);
+        }
+
+        // set_Item(int, !0) : void — instance
+        {
+            BlobBuilder sig = new();
+            new BlobEncoder(sig).MethodSignature(
+                SignatureCallingConvention.Default, 0, isInstanceMethod: true)
+                .Parameters(2,
+                    returnType => returnType.Void(),
+                    parameters =>
+                    {
+                        parameters.AddParameter().Type().Int32();
+                        SignatureTypeEncoder paramEncoder = parameters.AddParameter().Type();
+                        paramEncoder.Builder.WriteByte((byte)SignatureTypeCode.GenericTypeParameter);
+                        paramEncoder.Builder.WriteCompressedInteger(0);
+                    });
+            m_listSetItemSig = m_metadata.GetOrAddBlob(sig);
+        }
     }
 
     ListInstantiation GetOrCreateListInstantiation(CodexType elementType)
     {
         string key = GetListCacheKey(elementType);
         if (m_listCache.TryGetValue(key, out ListInstantiation cached))
-        {
             return cached;
-        }
 
         // Build TypeSpec for List<elementType>
         TypeSpecificationHandle typeSpec;
@@ -141,8 +198,14 @@ sealed partial class ILAssemblyBuilder
             typeSpec, m_metadata.GetOrAddString("get_Item"), m_listGetItemSig);
         MemberReferenceHandle add = m_metadata.AddMemberReference(
             typeSpec, m_metadata.GetOrAddString("Add"), m_listAddSig);
+        MemberReferenceHandle addRange = m_metadata.AddMemberReference(
+            typeSpec, m_metadata.GetOrAddString("AddRange"), m_listAddRangeSig);
+        MemberReferenceHandle insert = m_metadata.AddMemberReference(
+            typeSpec, m_metadata.GetOrAddString("Insert"), m_listInsertSig);
+        MemberReferenceHandle setItem = m_metadata.AddMemberReference(
+            typeSpec, m_metadata.GetOrAddString("set_Item"), m_listSetItemSig);
 
-        ListInstantiation inst = new(typeSpec, ctorIEnum, ctorNoArg, getCount, getItem, add);
+        ListInstantiation inst = new(typeSpec, ctorIEnum, ctorNoArg, getCount, getItem, add, addRange, insert, setItem);
         m_listCache[key] = inst;
         return inst;
     }
@@ -190,9 +253,7 @@ sealed partial class ILAssemblyBuilder
     {
         // If the List element type is object (erased generic), box value types
         if (elementType is TypeVariable or ForAllType)
-        {
             EmitBoxIfNeeded(il, actualType, elementType);
-        }
     }
 
     // ── Helper: extract element type from a list argument ────────
@@ -200,10 +261,55 @@ sealed partial class ILAssemblyBuilder
     static CodexType ExtractListElementType(List<IRExpr> args, int argIndex)
     {
         if (argIndex < args.Count && args[argIndex].Type is ListType lt)
-        {
             return lt.Element;
+        return TextType.s_instance; // fallback: List<string> for backward compat
+    }
+
+    // ── AppendList / ConsList emit ───────────────────────────────
+    //
+    // AppendList (xs ++ ys): new List<T>(); AddRange(xs); AddRange(ys).
+    // ConsList   (x  :: ys): new List<T>(); Add(x);       AddRange(ys).
+
+    void EmitListConcat(InstructionEncoder il, IRBinary bin, LocalsBuilder locals,
+        ImmutableArray<IRParameter> parameters)
+        => EmitListConcatCore(il, bin,
+            left => EmitExpr(il, left, locals, parameters),
+            right => EmitExpr(il, right, locals, parameters));
+
+    void EmitListConcatTco(InstructionEncoder il, IRBinary bin, LocalsBuilder locals,
+        ImmutableArray<IRParameter> parameters, int[] paramLocals)
+        => EmitListConcatCore(il, bin,
+            left => EmitTcoExpr(il, left, locals, parameters, paramLocals),
+            right => EmitTcoExpr(il, right, locals, parameters, paramLocals));
+
+    void EmitListConcatCore(InstructionEncoder il, IRBinary bin,
+        Action<IRExpr> emitLeft, Action<IRExpr> emitRight)
+    {
+        CodexType elementType = bin.Type is ListType lt ? lt.Element : TextType.s_instance;
+        ListInstantiation inst = GetOrCreateListInstantiation(elementType);
+
+        il.OpCode(ILOpCode.Newobj);
+        il.Token(inst.CtorNoArg);
+
+        if (bin.Op == IRBinaryOp.ConsList)
+        {
+            il.OpCode(ILOpCode.Dup);
+            emitLeft(bin.Left);
+            EmitBoxForListElement(il, bin.Left.Type, elementType);
+            il.OpCode(ILOpCode.Callvirt);
+            il.Token(inst.Add);
+        }
+        else
+        {
+            il.OpCode(ILOpCode.Dup);
+            emitLeft(bin.Left);
+            il.OpCode(ILOpCode.Callvirt);
+            il.Token(inst.AddRange);
         }
 
-        return TextType.s_instance; // fallback: List<string> for backward compat
+        il.OpCode(ILOpCode.Dup);
+        emitRight(bin.Right);
+        il.OpCode(ILOpCode.Callvirt);
+        il.Token(inst.AddRange);
     }
 }

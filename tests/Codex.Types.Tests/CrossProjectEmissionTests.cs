@@ -32,7 +32,7 @@ public class CrossProjectEmissionTests
     static (IRChapter? Ir, DiagnosticBag Diags) CompileWithCitedDefs(
         string mainSource, IChapterLoader loader)
     {
-        SourceText src = new("main.codex", mainSource);
+        SourceText src = new("opening.codex", mainSource);
         DiagnosticBag bag = new();
         DocumentNode doc = DocumentParser.Parse(src, bag);
         Desugarer desugarer = new(bag);
@@ -55,9 +55,11 @@ public class CrossProjectEmissionTests
             return (null, bag);
         }
 
+        List<TypedImport> citedImports = TypedCitations.Check(resolved.CitedChapters, bag);
+
         Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, bag);
-        IRChapter ir = lowering.Lower(resolved.Chapter);
-        ir = Lowering.LowerCitedDefs(resolved.CitedChapters, ir, bag);
+        IRChapter ir = lowering.Lower(resolved);
+        ir = Lowering.LowerCitedDefs(citedImports, ir, bag);
         return (ir, bag);
     }
 

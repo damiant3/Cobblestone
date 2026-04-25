@@ -522,9 +522,7 @@ sealed partial class WasmModuleBuilder
         m_dataOffset += data.Length;
         // Update the global heap pointer initial value
         if (m_globals.Count > 0)
-        {
             m_globals[0] = new WasmGlobal(WasmI32, GlobalMut, m_dataOffset);
-        }
         return offset;
     }
 
@@ -575,13 +573,9 @@ sealed partial class WasmModuleBuilder
         for (int i = 0; i < paramCount; i++)
         {
             if (current is FunctionType ft)
-            {
                 current = ft.Return;
-            }
             else
-            {
                 break;
-            }
         }
         return current;
     }
@@ -597,10 +591,10 @@ sealed partial class WasmModuleBuilder
                 (int c, byte t) = localGroups[^1];
                 localGroups[^1] = (c + 1, t);
             }
-            else
-            {
-                localGroups.Add((1, localTypes[i]));
-            }
+            else
+            {
+                localGroups.Add((1, localTypes[i]));
+            }
         }
 
         MemoryStream bodyStream = new();
@@ -638,11 +632,7 @@ sealed partial class WasmModuleBuilder
 
     void WriteImportSection(BinaryWriter w)
     {
-        if (m_imports.Count == 0)
-        {
-            return;
-        }
-
+        if (m_imports.Count == 0) return;
         MemoryStream section = new();
         WriteUnsignedLeb128(section, m_imports.Count);
         foreach (WasmImport imp in m_imports)
@@ -660,9 +650,7 @@ sealed partial class WasmModuleBuilder
         MemoryStream section = new();
         WriteUnsignedLeb128(section, m_functionTypeIndices.Count);
         foreach (int typeIdx in m_functionTypeIndices)
-        {
             WriteUnsignedLeb128(section, typeIdx);
-        }
         WriteSection(w, SectionFunction, section.ToArray());
     }
 
@@ -677,11 +665,7 @@ sealed partial class WasmModuleBuilder
 
     void WriteGlobalSection(BinaryWriter w)
     {
-        if (m_globals.Count == 0)
-        {
-            return;
-        }
-
+        if (m_globals.Count == 0) return;
         MemoryStream section = new();
         WriteUnsignedLeb128(section, m_globals.Count);
         foreach (WasmGlobal g in m_globals)
@@ -714,19 +698,13 @@ sealed partial class WasmModuleBuilder
         MemoryStream section = new();
         WriteUnsignedLeb128(section, m_functionBodies.Count);
         foreach (byte[] body in m_functionBodies)
-        {
             section.Write(body, 0, body.Length);
-        }
         WriteSection(w, SectionCode, section.ToArray());
     }
 
     void WriteDataSection(BinaryWriter w)
     {
-        if (m_dataSegments.Count == 0)
-        {
-            return;
-        }
-
+        if (m_dataSegments.Count == 0) return;
         MemoryStream section = new();
         WriteUnsignedLeb128(section, m_dataSegments.Count);
         int currentOffset = 1024;
@@ -762,11 +740,7 @@ sealed partial class WasmModuleBuilder
         {
             byte b = (byte)(v & 0x7F);
             v >>= 7;
-            if (v != 0)
-            {
-                b |= 0x80;
-            }
-
+            if (v != 0) b |= 0x80;
             stream.WriteByte(b);
         } while (v != 0);
     }
@@ -779,14 +753,9 @@ sealed partial class WasmModuleBuilder
             byte b = (byte)(value & 0x7F);
             value >>= 7;
             if ((value == 0 && (b & 0x40) == 0) || (value == -1 && (b & 0x40) != 0))
-            {
                 more = false;
-            }
             else
-            {
                 b |= 0x80;
-            }
-
             stream.WriteByte(b);
         }
     }

@@ -19,10 +19,7 @@ public sealed partial class TypeChecker
         CodexType result = typeDef;
         int count = Math.Min(paramIds.Length, args.Length);
         for (int i = 0; i < count; i++)
-        {
             result = SubstituteVar(result, paramIds[i], args[i]);
-        }
-
         // Record the concrete type arguments on the result so emitters can
         // render `Name<arg1, arg2>` for record fields and function signatures.
         // Substitution baked args into constructor/field types but lost the
@@ -55,19 +52,20 @@ public sealed partial class TypeChecker
     }
 
     static bool ContainsEffectRowVar(CodexType type, int varId)
+        => new EffectRowVarContainsFolder(varId).Fold(type);
+
+    sealed class EffectRowVarContainsFolder(int varId) : CodexTypeFolder<bool>
     {
-        return type switch
+        protected override bool Zero => false;
+        protected override bool Combine(bool a, bool b) => a || b;
+
+        public override bool Fold(CodexType type) => type switch
         {
             EffectRowVariable erv => erv.Id == varId,
             EffectfulType eft => (eft.RowVariable is not null && eft.RowVariable.Id == varId)
-                || ContainsEffectRowVar(eft.Return, varId),
-            FunctionType f => ContainsEffectRowVar(f.Parameter, varId)
-                || ContainsEffectRowVar(f.Return, varId),
-            ListType l => ContainsEffectRowVar(l.Element, varId),
-            LinkedListType l => ContainsEffectRowVar(l.Element, varId),
-            ForAllType fa => ContainsEffectRowVar(fa.Body, varId),
-            DependentFunctionType dep => ContainsEffectRowVar(dep.ParamType, varId)
-                || ContainsEffectRowVar(dep.Body, varId),
+                || Fold(eft.Return),
+            FunctionType or ListType or LinkedListType or ForAllType or DependentFunctionType
+                => base.Fold(type),
             _ => false
         };
     }
@@ -78,84 +76,52 @@ public sealed partial class TypeChecker
         CollectFreeTypeVars(type, freeVars);
         CodexType result = type;
         foreach (int varId in freeVars)
-        {
             result = new ForAllType(varId, result);
-        }
-
         return result;
     }
 
     static void CollectFreeTypeVars(CodexType type, HashSet<int> vars)
+        => new FreeVarsWalker(vars).Visit(type);
+
+    sealed class FreeVarsWalker(HashSet<int> vars) : CodexTypeWalker
     {
-        switch (type)
+        public override void Visit(CodexType type)
         {
-            case TypeVariable tv:
-                vars.Add(tv.Id);
-                break;
-            case FunctionType ft:
-                CollectFreeTypeVars(ft.Parameter, vars);
-                CollectFreeTypeVars(ft.Return, vars);
-                break;
-            case ListType lt:
-                CollectFreeTypeVars(lt.Element, vars);
-                break;
-            case LinkedListType llt:
-                CollectFreeTypeVars(llt.Element, vars);
-                break;
-            case ForAllType fa:
-                CollectFreeTypeVars(fa.Body, vars);
-                vars.Remove(fa.VariableId);
-                break;
-            case ConstructedType ct:
-                foreach (CodexType arg in ct.Arguments)
-                {
-                    CollectFreeTypeVars(arg, vars);
-                }
-
-                break;
-            case EffectfulType eft:
-                foreach (EffectType e in eft.Effects)
-                {
-                    CollectFreeTypeVars(e, vars);
-                }
-
-                CollectFreeTypeVars(eft.Return, vars);
-                break;
-            case DependentFunctionType dep:
-                CollectFreeTypeVars(dep.ParamType, vars);
-                CollectFreeTypeVars(dep.Body, vars);
-                break;
+            switch (type)
+            {
+                case TypeVariable tv:
+                    vars.Add(tv.Id);
+                    break;
+                case ForAllType fa:
+                    Visit(fa.Body);
+                    vars.Remove(fa.VariableId);
+                    break;
+                case EffectfulType eft:
+                    foreach (EffectType e in eft.Effects) Visit(e);
+                    Visit(eft.Return);
+                    break;
+                case SumType or RecordType or LinearType or TypeLevelBinary
+                    or ProofType or LessThanClaim:
+                    break;
+                default:
+                    base.Visit(type);
+                    break;
+            }
         }
     }
 
     static Set<string> ExtractEffects(CodexType type)
     {
-        CodexType current = type;
-        while (current is FunctionType ft)
-        {
-            current = ft.Return;
-        }
-
-        while (current is DependentFunctionType dep)
-        {
-            current = dep.Body;
-        }
-
-        if (current is not EffectfulType eft)
-        {
+        EffectfulType? eft = CodexTypeHelpers.ExtractEffectfulType(type);
+        if (eft is null)
             return Set<string>.s_empty;
-        }
 
         Set<string> result = Set<string>.s_empty;
         foreach (EffectType e in eft.Effects)
-        {
             result = result.Add(e.EffectName.Value);
-        }
 
         if (eft.RowVariable is not null)
-        {
             result = result.Add("*");
-        }
 
         return result;
     }
@@ -163,14 +129,10 @@ public sealed partial class TypeChecker
     void CheckEffectAllowed(CodexType type, SourceSpan span)
     {
         if (type is not EffectfulType eft)
-        {
             return;
-        }
 
         if (m_currentEffects.Contains("*"))
-        {
             return;
-        }
 
         ImmutableArray<EffectType> resolved = m_unifier.ResolveEffectRow(eft.RowVariable);
         foreach (EffectType effect in eft.Effects.AddRange(resolved))
@@ -189,10 +151,10 @@ public sealed partial class TypeChecker
     {
         while (type is FunctionType ft && ft.Parameter is ProofType proof)
         {
-            if (TryDischargeProof(proof.Claim))
-            {
-                type = ft.Return;
-            }
+            if (TryDischargeProof(proof.Claim))
+            {
+                type = ft.Return;
+            }
             else
             {
                 m_diagnostics.Error(CdxCodes.LinearUnused,
@@ -207,163 +169,68 @@ public sealed partial class TypeChecker
     static bool TryDischargeProof(CodexType claim)
     {
         if (claim is not LessThanClaim lt)
-        {
             return false;
-        }
 
-        CodexType left = NormalizeTypeLevelExpr(lt.Left);
-        CodexType right = NormalizeTypeLevelExpr(lt.Right);
+        CodexType left = CodexTypeHelpers.NormalizeTypeLevelExpr(lt.Left);
+        CodexType right = CodexTypeHelpers.NormalizeTypeLevelExpr(lt.Right);
         if (left is TypeLevelValue lv && right is TypeLevelValue rv)
-        {
             return lv.Value < rv.Value;
-        }
 
         return false;
     }
 
-    static CodexType NormalizeTypeLevelExpr(CodexType type)
-    {
-        if (type is not TypeLevelBinary bin)
-        {
-            return type;
-        }
-
-        CodexType left = NormalizeTypeLevelExpr(bin.Left);
-        CodexType right = NormalizeTypeLevelExpr(bin.Right);
-
-        if (left is TypeLevelValue lv && right is TypeLevelValue rv)
-        {
-            long result = bin.Op switch
-            {
-                TypeLevelOp.Add => lv.Value + rv.Value,
-                TypeLevelOp.Sub => lv.Value - rv.Value,
-                TypeLevelOp.Mul => lv.Value * rv.Value,
-                _ => 0
-            };
-            return new TypeLevelValue(result);
-        }
-
-        return new TypeLevelBinary(bin.Op, left, right);
-    }
 
     static CodexType SubstituteVar(CodexType type, int varId, CodexType replacement)
+        => new VarSubstituter(varId, replacement).Rewrite(type);
+
+    sealed class VarSubstituter(int varId, CodexType replacement) : CodexTypeRewriter
     {
-        return type switch
+        public override CodexType Rewrite(CodexType type) => type switch
         {
             TypeVariable tv when tv.Id == varId => replacement,
-            FunctionType f => new FunctionType(
-                SubstituteVar(f.Parameter, varId, replacement),
-                SubstituteVar(f.Return, varId, replacement)),
-            ListType l => new ListType(SubstituteVar(l.Element, varId, replacement)),
-            LinkedListType l => new LinkedListType(SubstituteVar(l.Element, varId, replacement)),
-            ConstructedType c => c with
-            {
-                Arguments = [.. c.Arguments.Select(
-                    a => SubstituteVar(a, varId, replacement))]
-            },
-            ForAllType fa when fa.VariableId != varId =>
-                fa with { Body = SubstituteVar(fa.Body, varId, replacement) },
-            SumType s when !s.TypeParamIds.IsEmpty => s with
-            {
-                Constructors = [.. s.Constructors.Select(c => c with
-                {
-                    Fields = [.. c.Fields.Select(
-                        f => SubstituteVar(f, varId, replacement))]
-                })],
-                TypeArguments = [.. s.TypeArguments.Select(
-                    a => SubstituteVar(a, varId, replacement))]
-            },
-            RecordType r when !r.TypeParamIds.IsEmpty => r with
-            {
-                Fields = [.. r.Fields.Select(f => f with
-                {
-                    Type = SubstituteVar(f.Type, varId, replacement)
-                })],
-                TypeArguments = [.. r.TypeArguments.Select(
-                    a => SubstituteVar(a, varId, replacement))]
-            },
-            EffectfulType eft => eft with
-            {
-                Return = SubstituteVar(eft.Return, varId, replacement)
-            },
-            LinearType lin => new LinearType(
-                SubstituteVar(lin.Inner, varId, replacement)),
-            DependentFunctionType dep => new DependentFunctionType(
-                dep.ParamName,
-                SubstituteVar(dep.ParamType, varId, replacement),
-                SubstituteVar(dep.Body, varId, replacement)),
-            TypeLevelBinary bin => NormalizeTypeLevelExpr(new TypeLevelBinary(
-                bin.Op,
-                SubstituteVar(bin.Left, varId, replacement),
-                SubstituteVar(bin.Right, varId, replacement))),
-            ProofType proof => new ProofType(
-                SubstituteVar(proof.Claim, varId, replacement)),
-            LessThanClaim lt => new LessThanClaim(
-                SubstituteVar(lt.Left, varId, replacement),
-                SubstituteVar(lt.Right, varId, replacement)),
-            _ => type
+            ForAllType fa when fa.VariableId == varId => fa,
+            SumType s when s.TypeParamIds.IsEmpty => s,
+            RecordType r when r.TypeParamIds.IsEmpty => r,
+            TypeLevelBinary => CodexTypeHelpers.NormalizeTypeLevelExpr(base.Rewrite(type)),
+            _ => base.Rewrite(type)
         };
     }
 
     CodexType? TryExtractTypeLevelValue(Expr expr)
     {
         if (expr is LiteralExpr lit && lit.Kind == LiteralKind.Integer)
-        {
             return new TypeLevelValue(Convert.ToInt64(lit.Value));
-        }
-
         if (expr is ListExpr list)
-        {
             return new TypeLevelValue(list.Elements.Count);
-        }
-
         return null;
     }
 
     static CodexType SubstituteTypeLevelVar(
         CodexType type, string varName, CodexType replacement)
+        => new TypeLevelVarSubstituter(varName, replacement).Rewrite(type);
+
+    sealed class TypeLevelVarSubstituter(string varName, CodexType replacement) : CodexTypeRewriter
     {
-        return type switch
+        public override CodexType Rewrite(CodexType type) => type switch
         {
             TypeLevelVar tv when tv.Name == varName => replacement,
-            FunctionType f => new FunctionType(
-                SubstituteTypeLevelVar(f.Parameter, varName, replacement),
-                SubstituteTypeLevelVar(f.Return, varName, replacement)),
-            DependentFunctionType dep when dep.ParamName != varName =>
-                new DependentFunctionType(
-                    dep.ParamName,
-                    SubstituteTypeLevelVar(dep.ParamType, varName, replacement),
-                    SubstituteTypeLevelVar(dep.Body, varName, replacement)),
-            ConstructedType c => c with
-            {
-                Arguments = [.. c.Arguments.Select(
-                    a => SubstituteTypeLevelVar(a, varName, replacement))]
-            },
-            ListType l => new ListType(
-                SubstituteTypeLevelVar(l.Element, varName, replacement)),
-            LinkedListType l => new LinkedListType(
-                SubstituteTypeLevelVar(l.Element, varName, replacement)),
-            TypeLevelBinary bin => NormalizeTypeLevelExpr(new TypeLevelBinary(
-                bin.Op,
-                SubstituteTypeLevelVar(bin.Left, varName, replacement),
-                SubstituteTypeLevelVar(bin.Right, varName, replacement))),
-            EffectfulType eft => eft with
-            {
-                Return = SubstituteTypeLevelVar(eft.Return, varName, replacement)
-            },
-            ProofType proof => new ProofType(
-                SubstituteTypeLevelVar(proof.Claim, varName, replacement)),
-            LessThanClaim lt => new LessThanClaim(
-                SubstituteTypeLevelVar(lt.Left, varName, replacement),
-                SubstituteTypeLevelVar(lt.Right, varName, replacement)),
-            _ => type
+            DependentFunctionType dep when dep.ParamName == varName => dep,
+            SumType s => s,
+            RecordType r => r,
+            ForAllType fa => fa,
+            LinearType lin => lin,
+            TypeLevelBinary => CodexTypeHelpers.NormalizeTypeLevelExpr(base.Rewrite(type)),
+            _ => base.Rewrite(type)
         };
     }
 
     static CodexType SubstituteEffectRowVar(
         CodexType type, int varId, EffectRowVariable replacement)
+        => new EffectRowVarSubstituter(varId, replacement).Rewrite(type);
+
+    sealed class EffectRowVarSubstituter(int varId, EffectRowVariable replacement) : CodexTypeRewriter
     {
-        return type switch
+        public override CodexType Rewrite(CodexType type) => type switch
         {
             EffectRowVariable erv when erv.Id == varId => replacement,
             EffectfulType eft => eft with
@@ -371,27 +238,16 @@ public sealed partial class TypeChecker
                 RowVariable = eft.RowVariable is not null && eft.RowVariable.Id == varId
                     ? replacement
                     : eft.RowVariable,
-                Return = SubstituteEffectRowVar(eft.Return, varId, replacement)
+                Return = Rewrite(eft.Return)
             },
-            FunctionType f => new FunctionType(
-                SubstituteEffectRowVar(f.Parameter, varId, replacement),
-                SubstituteEffectRowVar(f.Return, varId, replacement)),
-            ListType l => new ListType(
-                SubstituteEffectRowVar(l.Element, varId, replacement)),
-            LinkedListType l => new LinkedListType(
-                SubstituteEffectRowVar(l.Element, varId, replacement)),
-            ForAllType fa when fa.VariableId != varId =>
-                fa with { Body = SubstituteEffectRowVar(fa.Body, varId, replacement) },
-            DependentFunctionType dep => new DependentFunctionType(
-                dep.ParamName,
-                SubstituteEffectRowVar(dep.ParamType, varId, replacement),
-                SubstituteEffectRowVar(dep.Body, varId, replacement)),
-            ConstructedType c => c with
-            {
-                Arguments = [.. c.Arguments.Select(
-                    a => SubstituteEffectRowVar(a, varId, replacement))]
-            },
-            _ => type
+            ForAllType fa when fa.VariableId == varId => fa,
+            SumType s => s,
+            RecordType r => r,
+            LinearType lin => lin,
+            TypeLevelBinary bin => bin,
+            ProofType proof => proof,
+            LessThanClaim lt => lt,
+            _ => base.Rewrite(type)
         };
     }
 }

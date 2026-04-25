@@ -6,7 +6,7 @@ using Codex.Types;
 
 namespace Codex.Emit.CSharp;
 
-public sealed partial class CSharpEmitter : ICodeEmitter
+public sealed partial class CSharpEmitter : IRExprTextEmitter, ICodeEmitter
 {
     Set<string> m_constructorNames = Set<string>.s_empty;
     ValueMap<string, int> m_definitionArity = ValueMap<string, int>.s_empty;
@@ -20,15 +20,12 @@ public sealed partial class CSharpEmitter : ICodeEmitter
 
     public string Emit(IRChapter module)
     {
-        m_constructorNames = CollectConstructorNames(module);
+        m_constructorNames = module.CollectConstructorNames();
         m_definitionArity = ValueMap<string, int>.s_empty;
         m_definitionParamNames = ValueMap<string, ImmutableArray<string>>.s_empty;
         m_typeDefsForRecordSet = [];
         foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
-        {
             m_typeDefsForRecordSet[kv.Key] = kv.Value;
-        }
-
         m_matchCounter = 0;
         foreach (IRDefinition d in module.Definitions)
         {
@@ -47,18 +44,22 @@ public sealed partial class CSharpEmitter : ICodeEmitter
 
         string className = "Codex_" + SanitizeIdentifier(module.Name.Leaf.Value);
 
-        IRDefinition? mainDef = module.Definitions
-            .FirstOrDefault(d => d.Name == "main");
+        IRDefinition? mainDef = module.FindEntryPoint();
 
-        if (mainDef is not null && mainDef.Parameters.Length == 0)
+        if (mainDef is not null)
         {
-            if (IsEffectfulDefinition(mainDef))
+            string entryPoint = SanitizeIdentifier(Names.OpeningEntryPoint);
+            if (mainDef.IsEffectfulDefinition())
             {
-                sb.AppendLine($"{className}.main();");
+                sb.AppendLine($"{className}.{entryPoint}();");
+            }
+            else if (mainDef.FinalReturnType() is TextType)
+            {
+                sb.AppendLine($"Console.WriteLine(_Cce.ToUnicode({className}.{entryPoint}()));");
             }
             else
             {
-                sb.AppendLine($"Console.WriteLine({className}.main());");
+                sb.AppendLine($"Console.WriteLine({className}.{entryPoint}());");
             }
             sb.AppendLine();
         }
@@ -122,11 +123,7 @@ public sealed partial class CSharpEmitter : ICodeEmitter
                 sb.Append($"public sealed record {ctorName}{generics}(");
                 for (int i = 0; i < ctor.Fields.Length; i++)
                 {
-                    if (i > 0)
-                    {
-                        sb.Append(", ");
-                    }
-
+                    if (i > 0) sb.Append(", ");
                     sb.Append($"{EmitType(ctor.Fields[i])} Field{i}");
                 }
                 sb.AppendLine($") : {baseName}{generics};");
@@ -142,11 +139,7 @@ public sealed partial class CSharpEmitter : ICodeEmitter
         sb.Append($"public sealed record {name}{generics}(");
         for (int i = 0; i < rec.Fields.Length; i++)
         {
-            if (i > 0)
-            {
-                sb.Append(", ");
-            }
-
+            if (i > 0) sb.Append(", ");
             RecordFieldType field = rec.Fields[i];
             sb.Append($"{EmitType(field.Type)} {SanitizeIdentifier(field.FieldName.Value)}");
         }
@@ -157,47 +150,30 @@ public sealed partial class CSharpEmitter : ICodeEmitter
     static string FormatTypeParams(System.Collections.Immutable.ImmutableArray<int> ids)
     {
         if (ids.IsDefaultOrEmpty)
-        {
             return "";
-        }
 
         return "<" + string.Join(", ", ids.Select(id => $"T{id}")) + ">";
     }
 
-    static Set<string> CollectConstructorNames(IRChapter module)
-    {
-        Set<string> names = Set<string>.s_empty;
-        foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
-        {
-            if (kv.Value is SumType sum)
-            {
-                foreach (SumConstructorType ctor in sum.Constructors)
-                {
-                    names = names.Add(ctor.Name.Value);
-                }
-            }
-        }
-        return names;
-    }
 
     void EmitArgument(StringBuilder sb, IRExpr arg, int indent)
     {
-        if (arg is IRName name && name.Name == "show")
-        {
-            sb.Append("new Func<object, string>(x => Convert.ToString(x))");
-        }
-        else if (arg is IRName name2 && name2.Name == "negate")
-        {
-            sb.Append("new Func<long, long>(x => -x)");
-        }
+        if (arg is IRName name && name.Name == "show")
+        {
+            sb.Append("new Func<object, string>(x => Convert.ToString(x))");
+        }
+        else if (arg is IRName name2 && name2.Name == "negate")
+        {
+            sb.Append("new Func<long, long>(x => -x)");
+        }
         else if (arg is IRName fnName && fnName.Type is FunctionType ft
             && !m_constructorNames.Contains(fnName.Name)
             && !HasTypeVariable(ft))
         {
-            if (m_definitionArity.TryGet(fnName.Name, out int arity) && arity > 1)
-            {
-                EmitPartialApplication(sb, fnName.Name, arity, [], indent);
-            }
+            if (m_definitionArity.TryGet(fnName.Name, out int arity) && arity > 1)
+            {
+                EmitPartialApplication(sb, fnName.Name, arity, [], indent);
+            }
             else
             {
                 string pType = EmitType(ft.Parameter);
@@ -207,10 +183,10 @@ public sealed partial class CSharpEmitter : ICodeEmitter
                 sb.Append(')');
             }
         }
-        else
-        {
-            EmitExpr(sb, arg, indent);
-        }
+        else
+        {
+            EmitExpr(sb, arg, indent);
+        }
     }
 
     void EmitDefinition(StringBuilder sb, IRDefinition def)
@@ -221,7 +197,7 @@ public sealed partial class CSharpEmitter : ICodeEmitter
             return;
         }
 
-        string returnType = EmitType(GetReturnType(def));
+        string returnType = EmitType(def.PureReturnType());
         string name = SanitizeIdentifier(def.Name);
         string generics = GenericSuffix(def);
 
@@ -229,11 +205,7 @@ public sealed partial class CSharpEmitter : ICodeEmitter
 
         for (int i = 0; i < def.Parameters.Length; i++)
         {
-            if (i > 0)
-            {
-                sb.Append(", ");
-            }
-
+            if (i > 0) sb.Append(", ");
             IRParameter param = def.Parameters[i];
             sb.Append($"{EmitType(param.Type)} {SanitizeIdentifier(param.Name)}");
         }
@@ -241,7 +213,7 @@ public sealed partial class CSharpEmitter : ICodeEmitter
         sb.AppendLine(")");
         sb.AppendLine("    {");
 
-        if (IsEffectfulDefinition(def) && IsVoidLikeDefinition(def))
+        if (def.IsEffectfulDefinition() && IsVoidLikeDefinition(def))
         {
             sb.Append("        return ");
             EmitExpr(sb, def.Body, 2);

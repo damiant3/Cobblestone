@@ -169,10 +169,7 @@ public static partial class Program
         while (dir is not null)
         {
             if (Directory.Exists(Path.Combine(dir, ".codex")))
-            {
                 return dir;
-            }
-
             dir = Path.GetDirectoryName(dir);
         }
         return "";

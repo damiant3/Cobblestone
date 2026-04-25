@@ -9,8 +9,8 @@ public class X86_64EmitterTests
     public void Simple_integer_emits_elf_bytes()
     {
         string source = """
-            main : Integer
-            main = 42
+            opening : Integer
+            opening = 42
             """;
         byte[]? bytes = Helpers.CompileToX86_64(source, "simple_x64");
         Assert.NotNull(bytes);
@@ -28,8 +28,8 @@ public class X86_64EmitterTests
             factorial : Integer -> Integer
             factorial (n) = if n == 0 then 1 else n * factorial (n - 1)
 
-            main : Integer
-            main = factorial 5
+            opening : Integer
+            opening = factorial 5
             """;
         byte[]? bytes = Helpers.CompileToX86_64(source, "fact_x64");
         Assert.NotNull(bytes);
@@ -42,14 +42,10 @@ public class X86_64EmitterTests
     public void Integer_42_runs_natively()
     {
         string? output = CompileAndRun("""
-            main : Integer
-            main = 42
+            opening : Integer
+            opening = 42
             """, "int42_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("42", output.Trim());
     }
 
@@ -60,14 +56,10 @@ public class X86_64EmitterTests
             add : Integer -> Integer -> Integer
             add (x) (y) = x + y
 
-            main : Integer
-            main = add 3 4
+            opening : Integer
+            opening = add 3 4
             """, "add_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("7", output.Trim());
     }
 
@@ -78,14 +70,10 @@ public class X86_64EmitterTests
             square : Integer -> Integer
             square (x) = x * x
 
-            main : Integer
-            main = square 5
+            opening : Integer
+            opening = square 5
             """, "square_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("25", output.Trim());
     }
 
@@ -96,14 +84,10 @@ public class X86_64EmitterTests
             factorial : Integer -> Integer
             factorial (n) = if n == 0 then 1 else n * factorial (n - 1)
 
-            main : Integer
-            main = factorial 5
+            opening : Integer
+            opening = factorial 5
             """, "fact_run_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("120", output.Trim());
     }
 
@@ -111,14 +95,10 @@ public class X86_64EmitterTests
     public void Let_binding_runs_natively()
     {
         string? output = CompileAndRun("""
-            main : Integer
-            main = let x = 10 in let y = 20 in x + y
+            opening : Integer
+            opening = let x = 10 in let y = 20 in x + y
             """, "let_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("30", output.Trim());
     }
 
@@ -126,14 +106,10 @@ public class X86_64EmitterTests
     public void If_else_runs_natively()
     {
         string? output = CompileAndRun("""
-            main : Integer
-            main = if 1 == 1 then 42 else 0
+            opening : Integer
+            opening = if 1 == 1 then 42 else 0
             """, "ifelse_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("42", output.Trim());
     }
 
@@ -148,14 +124,10 @@ public class X86_64EmitterTests
               y : Integer
             }
 
-            main : Integer
-            main = let p = Point { x = 3, y = 4 } in p.x + p.y
+            opening : Integer
+            opening = let p = Point { x = 3, y = 4 } in p.x + p.y
             """, "record_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("7", output.Trim());
     }
 
@@ -171,14 +143,10 @@ public class X86_64EmitterTests
             sum-pair : Pair -> Integer
             sum-pair (p) = p.fst + p.snd
 
-            main : Integer
-            main = sum-pair (Pair { fst = 10, snd = 20 })
+            opening : Integer
+            opening = sum-pair (Pair { fst = 10, snd = 20 })
             """, "recfn_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("30", output.Trim());
     }
 
@@ -198,14 +166,10 @@ public class X86_64EmitterTests
                 is Circle (r) -> r * r
                 is Rect (w) (h) -> w * h
 
-            main : Integer
-            main = area (Circle 5)
+            opening : Integer
+            opening = area (Circle 5)
             """, "match_circle_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("25", output.Trim());
     }
 
@@ -223,14 +187,10 @@ public class X86_64EmitterTests
                 is Circle (r) -> r * r
                 is Rect (w) (h) -> w * h
 
-            main : Integer
-            main = area (Rect 5 7)
+            opening : Integer
+            opening = area (Rect 5 7)
             """, "match_rect_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("35", output.Trim());
     }
 
@@ -240,14 +200,10 @@ public class X86_64EmitterTests
     public void List_length_runs_natively()
     {
         string? output = CompileAndRun("""
-            main : Integer
-            main = list-length [1, 2, 3]
+            opening : Integer
+            opening = list-length [1, 2, 3]
             """, "listlen_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("3", output.Trim());
     }
 
@@ -255,14 +211,10 @@ public class X86_64EmitterTests
     public void List_at_runs_natively()
     {
         string? output = CompileAndRun("""
-            main : Integer
-            main = list-at [10, 20, 30] 1
+            opening : Integer
+            opening = list-at [10, 20, 30] 1
             """, "listat_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("20", output.Trim());
     }
 
@@ -270,14 +222,10 @@ public class X86_64EmitterTests
     public void List_cons_runs_natively()
     {
         string? output = CompileAndRun("""
-            main : Integer
-            main = list-length (0 :: [1, 2, 3])
+            opening : Integer
+            opening = list-length (0 :: [1, 2, 3])
             """, "listcons_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("4", output.Trim());
     }
 
@@ -285,14 +233,10 @@ public class X86_64EmitterTests
     public void List_append_runs_natively()
     {
         string? output = CompileAndRun("""
-            main : Integer
-            main = list-length ([1, 2] ++ [3, 4, 5])
+            opening : Integer
+            opening = list-length ([1, 2] ++ [3, 4, 5])
             """, "listapp_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("5", output.Trim());
     }
 
@@ -302,14 +246,10 @@ public class X86_64EmitterTests
     public void Text_length_runs_natively()
     {
         string? output = CompileAndRun("""
-            main : Integer
-            main = text-length "hello"
+            opening : Integer
+            opening = text-length "hello"
             """, "textlen_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("5", output.Trim());
     }
 
@@ -317,14 +257,10 @@ public class X86_64EmitterTests
     public void Text_concat_runs_natively()
     {
         string? output = CompileAndRun("""
-            main : Text
-            main = "hello " ++ "world"
+            opening : Text
+            opening = "hello " ++ "world"
             """, "concat_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("hello world", output.Trim());
     }
 
@@ -332,14 +268,10 @@ public class X86_64EmitterTests
     public void Show_integer_runs_natively()
     {
         string? output = CompileAndRun("""
-            main : Text
-            main = show 42
+            opening : Text
+            opening = show 42
             """, "show_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("42", output.Trim());
     }
 
@@ -347,14 +279,10 @@ public class X86_64EmitterTests
     public void Show_true_runs_natively()
     {
         string? output = CompileAndRun("""
-            main : Text
-            main = show True
+            opening : Text
+            opening = show True
             """, "show_true_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("True", output.Trim());
     }
 
@@ -362,14 +290,10 @@ public class X86_64EmitterTests
     public void Show_false_runs_natively()
     {
         string? output = CompileAndRun("""
-            main : Text
-            main = show False
+            opening : Text
+            opening = show False
             """, "show_false_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("False", output.Trim());
     }
 
@@ -377,14 +301,10 @@ public class X86_64EmitterTests
     public void String_equality_runs_natively()
     {
         string? output = CompileAndRun("""
-            main : Integer
-            main = if "abc" == "abc" then 1 else 0
+            opening : Integer
+            opening = if "abc" == "abc" then 1 else 0
             """, "streq_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("1", output.Trim());
     }
 
@@ -392,14 +312,10 @@ public class X86_64EmitterTests
     public void String_inequality_runs_natively()
     {
         string? output = CompileAndRun("""
-            main : Integer
-            main = if "abc" == "xyz" then 1 else 0
+            opening : Integer
+            opening = if "abc" == "xyz" then 1 else 0
             """, "strneq_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("0", output.Trim());
     }
 
@@ -415,14 +331,10 @@ public class X86_64EmitterTests
             double : Integer -> Integer
             double (n) = n * 2
 
-            main : Integer
-            main = apply-fn double 21
+            opening : Integer
+            opening = apply-fn double 21
             """, "hof_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("42", output.Trim());
     }
 
@@ -432,17 +344,13 @@ public class X86_64EmitterTests
     public void Many_locals_spill_runs_natively()
     {
         string? output = CompileAndRun("""
-            main : Integer
-            main =
+            opening : Integer
+            opening =
               let a = 1 in let b = 2 in let c = 3 in
               let d = 4 in let e = 5 in let f = 6 in
               a + b + c + d + e + f
             """, "spill_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("21", output.Trim());
     }
 
@@ -458,14 +366,10 @@ public class X86_64EmitterTests
             do-fork : [Concurrent] Integer
             do-fork = let t = fork compute in await t
 
-            main : Integer
-            main = do-fork
+            opening : Integer
+            opening = do-fork
             """, "fork_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("42", output.Trim());
     }
 
@@ -483,15 +387,9 @@ public class X86_64EmitterTests
     static string? CompileAndRun(string source, string chapterName)
     {
         byte[]? bytes = Helpers.CompileToX86_64(source, chapterName);
-        if (bytes is null)
-        {
-            return null;
-        }
+        if (bytes is null) return null;
 
-        if (!IsWslAvailable())
-        {
-            return null;
-        }
+        if (!IsWslAvailable()) return null;
 
         string tempDir = Path.Combine(Path.GetTempPath(),
             "codex_x64_test_" + chapterName + "_" + Guid.NewGuid().ToString("N")[..8]);
@@ -517,21 +415,18 @@ public class X86_64EmitterTests
             };
 
             using Process? proc = Process.Start(psi);
-            if (proc is null)
-            {
-                return null;
-            }
+            if (proc is null) return null;
 
             string stdout = proc.StandardOutput.ReadToEnd();
             string stderr = proc.StandardError.ReadToEnd();
             proc.WaitForExit(10_000);
 
-            if (proc.ExitCode != 0)
-            {
+            if (proc.ExitCode != 0)
+            {
                 throw new InvalidOperationException(
-                    $"x86-64 binary exited with code {proc.ExitCode}.\nstdout: {stdout}\nstderr: {stderr}");
-            }
-
+                    $"x86-64 binary exited with code {proc.ExitCode}.\nstdout: {stdout}\nstderr: {stderr}");
+            }
+
             return stdout;
         }
         finally
@@ -552,11 +447,7 @@ public class X86_64EmitterTests
                 CreateNoWindow = true
             };
             using Process? proc = Process.Start(psi);
-            if (proc is null)
-            {
-                return false;
-            }
-
+            if (proc is null) return false;
             string output = proc.StandardOutput.ReadToEnd();
             proc.WaitForExit(5_000);
             return proc.ExitCode == 0 && output.Trim() == "x86_64";
@@ -571,14 +462,10 @@ public class X86_64EmitterTests
     public void Power_runs_natively()
     {
         string? output = CompileAndRun("""
-            main : Integer
-            main = 2 ^ 10
+            opening : Integer
+            opening = 2 ^ 10
             """, "pow_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("1024", output.Trim());
     }
 
@@ -586,14 +473,10 @@ public class X86_64EmitterTests
     public void Power_zero_exponent_runs_natively()
     {
         string? output = CompileAndRun("""
-            main : Integer
-            main = 7 ^ 0
+            opening : Integer
+            opening = 7 ^ 0
             """, "pow0_x64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("1", output.Trim());
     }
 
@@ -601,12 +484,12 @@ public class X86_64EmitterTests
     public void BareMetal_kernel_size_regression_guard()
     {
         string source = """
-            main : Integer
-            main = 42
+            opening : Integer
+            opening = 42
             """;
         byte[]? bytes = Helpers.CompileToX86_64BareMetal(source, "bm_size_check");
         Assert.NotNull(bytes);
-        // Growth history for a trivial `main = 42`:
+        // Growth history for a trivial `opening = 42`:
         //   ~7KB   initial (after IDT loop optimization)
         //   ~12.5KB after runtime helpers (string/list ops, CCE table)
         //   ~19KB  after ISR error-code handling + 512-page mapping

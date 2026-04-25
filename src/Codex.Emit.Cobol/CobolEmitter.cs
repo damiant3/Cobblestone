@@ -21,7 +21,7 @@ public sealed class CobolEmitter : ICodeEmitter
 
     public string Emit(IRChapter module)
     {
-        m_constructorNames = CollectConstructorNames(module);
+        m_constructorNames = module.CollectConstructorNames();
         m_ctorToTag = BuildCtorTagMap(module);
         m_definitionArity = ValueMap<string, int>.s_empty;
         m_varCounter = 0;
@@ -50,10 +50,8 @@ public sealed class CobolEmitter : ICodeEmitter
 
         foreach (IRDefinition def in module.Definitions)
         {
-            if (def.Name == "main" && def.Parameters.Length == 0)
-            {
+            if (def.Name == Names.OpeningEntryPoint && def.Parameters.Length == 0)
                 continue;
-            }
 
             EmitDefinitionStorage(sb, def);
         }
@@ -63,23 +61,16 @@ public sealed class CobolEmitter : ICodeEmitter
         sb.AppendLine("       01 WS-TEXT-RESULT     PIC X(256).");
 
         foreach (string ws in m_workingStorage)
-        {
             sb.AppendLine(ws);
-        }
 
         sb.AppendLine();
         sb.AppendLine("       PROCEDURE DIVISION.");
 
-        IRDefinition? mainDef = module.Definitions
-            .FirstOrDefault(d => d.Name == "main" && d.Parameters.Length == 0);
+        IRDefinition? mainDef = module.FindEntryPoint();
 
         foreach (IRDefinition def in module.Definitions)
         {
-            if (def == mainDef)
-            {
-                continue;
-            }
-
+            if (def == mainDef) continue;
             EmitDefinitionParagraph(sb, def);
             sb.AppendLine();
         }
@@ -87,20 +78,21 @@ public sealed class CobolEmitter : ICodeEmitter
         sb.AppendLine("       MAIN-LOGIC.");
         if (mainDef is not null)
         {
-            if (IsEffectfulDefinition(mainDef))
-            {
-                EmitStatementCobol(sb, mainDef.Body);
-            }
+            if (mainDef.IsEffectfulDefinition())
+            {
+                EmitStatementCobol(sb, mainDef.Body);
+            }
             else
             {
                 string resVar = EmitExprToVar(sb, mainDef.Body);
                 sb.AppendLine($"           DISPLAY {resVar}");
             }
         }
-        else if (module.Definitions.Length == 0)
-        {
-            sb.AppendLine("           DISPLAY \"All proofs verified at compile time.\"");
-        }
+        else if (module.Definitions.Length == 0)
+        {
+            sb.AppendLine("           DISPLAY \"All proofs verified at compile time.\"");
+        }
+
         sb.AppendLine("           STOP RUN.");
         sb.AppendLine();
 
@@ -131,18 +123,9 @@ public sealed class CobolEmitter : ICodeEmitter
                     sb.AppendLine($"         05 WS-{sName}-TAG    PIC 9(2).");
                     int maxFields = 0;
                     foreach (SumConstructorType ctor in sum.Constructors)
-                    {
-                        if (ctor.Fields.Length > maxFields)
-                        {
-                            maxFields = ctor.Fields.Length;
-                        }
-                    }
-
+                        if (ctor.Fields.Length > maxFields) maxFields = ctor.Fields.Length;
                     for (int f = 0; f < maxFields; f++)
-                    {
                         sb.AppendLine($"         05 WS-{sName}-F{f}     PIC S9(18).");
-                    }
-
                     int tagNum = 1;
                     foreach (SumConstructorType ctor in sum.Constructors)
                     {
@@ -164,7 +147,7 @@ public sealed class CobolEmitter : ICodeEmitter
             string pic = PicClause(def.Parameters[i].Type);
             sb.AppendLine($"       01 WS-{name}-{pname}  {pic}.");
         }
-        string retPic = PicClause(GetReturnType(def));
+        string retPic = PicClause(def.PureReturnType());
         sb.AppendLine($"       01 WS-{name}-RET     {retPic}.");
     }
 
@@ -210,7 +193,7 @@ public sealed class CobolEmitter : ICodeEmitter
                 break;
             }
 
-            case IRApply app when IsSelfCall(app, funcName):
+            case IRApply app when app.IsSelfCall(funcName):
             {
                 List<IRExpr> args = [];
                 CollectApplyArgs(app, args);
@@ -262,21 +245,9 @@ public sealed class CobolEmitter : ICodeEmitter
                 return lit.Value.ToString();
 
             case IRName name:
-                if (name.Name == "True")
-                {
-                    return "1";
-                }
-
-                if (name.Name == "False")
-                {
-                    return "0";
-                }
-
-                if (name.Name == "Nothing")
-                {
-                    return "0";
-                }
-
+                if (name.Name == "True") return "1";
+                if (name.Name == "False") return "0";
+                if (name.Name == "Nothing") return "0";
                 return $"WS-{Sanitize(name.Name).ToUpper()}";
 
             case IRBinary bin:
@@ -465,10 +436,10 @@ public sealed class CobolEmitter : ICodeEmitter
             sb.AppendLine($"           DISPLAY {argVar}");
             return "0";
         }
-        else if (app.Function is IRName fn2 && fn2.Name == "show")
-        {
-            return EmitExprToVar(sb, app.Argument);
-        }
+        else if (app.Function is IRName fn2 && fn2.Name == "show")
+        {
+            return EmitExprToVar(sb, app.Argument);
+        }
         else if (app.Function is IRName fn3 && fn3.Name == "negate")
         {
             string argVar = EmitExprToVar(sb, app.Argument);
@@ -520,10 +491,10 @@ public sealed class CobolEmitter : ICodeEmitter
                 }
             }
         }
-        else
-        {
-            EmitExprToVar(sb, expr);
-        }
+        else
+        {
+            EmitExprToVar(sb, expr);
+        }
     }
 
     string AllocVar(string hint = "TEMP")
@@ -549,49 +520,12 @@ public sealed class CobolEmitter : ICodeEmitter
         _ => "PIC S9(18)"
     };
 
-    static CodexType GetReturnType(IRDefinition def)
-    {
-        CodexType type = def.Type;
-        for (int i = 0; i < def.Parameters.Length; i++)
-        {
-            while (type is FunctionType pft && pft.Parameter is ProofType)
-            {
-                type = pft.Return;
-            }
-
-            if (type is FunctionType ft)
-            {
-                type = ft.Return;
-            }
-            else if (type is DependentFunctionType dep)
-            {
-                type = dep.Body;
-            }
-            else
-            {
-                break;
-            }
-        }
-        while (type is FunctionType pft2 && pft2.Parameter is ProofType)
-        {
-            type = pft2.Return;
-        }
-
-        if (type is EffectfulType eft)
-        {
-            type = eft.Return;
-        }
-
-        return type;
-    }
 
     static string? FindDefinitionName(IRApply app)
     {
         IRExpr current = app.Function;
         while (current is IRApply inner)
-        {
             current = inner.Function;
-        }
 
         return current is IRName name && name.Name.Length > 0 && char.IsLower(name.Name[0]) ? name.Name : null;
     }
@@ -599,83 +533,16 @@ public sealed class CobolEmitter : ICodeEmitter
     static void CollectApplyArgs(IRApply app, List<IRExpr> args)
     {
         if (app.Function is IRApply inner)
-        {
             CollectApplyArgs(inner, args);
-        }
 
         args.Add(app.Argument);
     }
 
-    static Set<string> CollectConstructorNames(IRChapter module)
-    {
-        Set<string> names = Set<string>.s_empty;
-        foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
-        {
-            if (kv.Value is SumType sum)
-            {
-                foreach (SumConstructorType ctor in sum.Constructors)
-                {
-                    names = names.Add(ctor.Name.Value);
-                }
-            }
-        }
-
-        return names;
-    }
 
     static bool HasSelfTailCall(IRDefinition def) =>
-        def.Parameters.Length > 0 && ExprHasTailCall(def.Body, def.Name);
+        def.Parameters.Length > 0 && def.Body.HasTailCall(def.Name);
 
-    static bool ExprHasTailCall(IRExpr expr, string funcName) => expr switch
-    {
-        IRIf iff => ExprHasTailCall(iff.Then, funcName) || ExprHasTailCall(iff.Else, funcName),
-        IRLet let => ExprHasTailCall(let.Body, funcName),
-        IRMatch match => match.Branches.Any(b => ExprHasTailCall(b.Body, funcName)),
-        IRApply app => IsSelfCall(app, funcName),
-        _ => false
-    };
 
-    static bool IsSelfCall(IRApply app, string funcName)
-    {
-        IRExpr root = app.Function;
-        while (root is IRApply inner)
-        {
-            root = inner.Function;
-        }
-
-        return root is IRName name && name.Name == funcName;
-    }
-
-    static bool IsEffectfulDefinition(IRDefinition def)
-    {
-        CodexType type = def.Type;
-        for (int i = 0; i < def.Parameters.Length; i++)
-        {
-            while (type is FunctionType pft && pft.Parameter is ProofType)
-            {
-                type = pft.Return;
-            }
-
-            if (type is FunctionType ft)
-            {
-                type = ft.Return;
-            }
-            else if (type is DependentFunctionType dep)
-            {
-                type = dep.Body;
-            }
-            else
-            {
-                break;
-            }
-        }
-        while (type is FunctionType pft2 && pft2.Parameter is ProofType)
-        {
-            type = pft2.Return;
-        }
-
-        return type is EffectfulType;
-    }
 
     static string Sanitize(string name) => name.Replace('-', '_');
 
@@ -690,9 +557,7 @@ public sealed class CobolEmitter : ICodeEmitter
             if (kv.Value is SumType sum)
             {
                 foreach (SumConstructorType ctor in sum.Constructors)
-                {
                     map = map.Set(ctor.Name.Value, (++tagCounter).ToString());
-                }
             }
         }
 

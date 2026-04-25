@@ -17,10 +17,7 @@ public sealed class CodexEmitterTests
         {
             string candidate = Path.Combine(dir, "samples");
             if (Directory.Exists(candidate))
-            {
                 return candidate;
-            }
-
             dir = Path.GetDirectoryName(dir)!;
         }
         throw new DirectoryNotFoundException("Cannot find samples/ directory");
@@ -123,11 +120,11 @@ public sealed class CodexEmitterTests
     [Fact]
     public void Output_is_valid_codex_syntax()
     {
-        string source = "double : Integer -> Integer\ndouble (x) = x + x\n\nmain : Integer\nmain = double 21\n";
+        string source = "double : Integer -> Integer\ndouble (x) = x + x\n\nopening : Integer\nopening = double 21\n";
         string? codex = Helpers.CompileToCodex(source, "test");
         Assert.NotNull(codex);
         Assert.Contains("double : Integer -> Integer", codex);
-        Assert.Contains("main : Integer", codex);
+        Assert.Contains("opening : Integer", codex);
         Assert.Contains("x + x", codex);
         Assert.Contains("double 21", codex);
     }
@@ -135,7 +132,7 @@ public sealed class CodexEmitterTests
     [Fact]
     public void Let_binding_emits_let_in()
     {
-        string source = "f : Integer -> Integer\nf (x) = let y = x + 1 in y * 2\n\nmain : Integer\nmain = f 5\n";
+        string source = "f : Integer -> Integer\nf (x) = let y = x + 1 in y * 2\n\nopening : Integer\nopening = f 5\n";
         string? codex = Helpers.CompileToCodex(source, "test");
         Assert.NotNull(codex);
         Assert.Contains("let y =", codex);
@@ -145,7 +142,7 @@ public sealed class CodexEmitterTests
     [Fact]
     public void Lambda_emits_backslash_arrow()
     {
-        string source = "apply : (Integer -> Integer) -> Integer -> Integer\napply (f) (x) = f x\n\nmain : Integer\nmain = apply (\\x -> x + 1) 41\n";
+        string source = "apply : (Integer -> Integer) -> Integer -> Integer\napply (f) (x) = f x\n\nopening : Integer\nopening = apply (\\x -> x + 1) 41\n";
         string? codex = Helpers.CompileToCodex(source, "test");
         Assert.NotNull(codex);
         Assert.Contains("\\", codex);
@@ -155,7 +152,7 @@ public sealed class CodexEmitterTests
     [Fact]
     public void List_literal_emits_brackets()
     {
-        string source = "main : List Integer\nmain = [1, 2, 3]\n";
+        string source = "opening : List Integer\nopening = [1, 2, 3]\n";
         string? codex = Helpers.CompileToCodex(source, "test");
         Assert.NotNull(codex);
         Assert.Contains("[1, 2, 3]", codex);

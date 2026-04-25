@@ -21,9 +21,6 @@ sealed partial class WasmModuleBuilder
     {
         m_heapPtrGlobalIndex = m_globals.Count;
         m_globals.Add(new WasmGlobal(WasmI32, GlobalMut, m_dataOffset));
-
-        m_regionSpGlobalIndex = m_globals.Count;
-        m_globals.Add(new WasmGlobal(WasmI32, GlobalMut, 0));
     }
 
     void PreRegisterFunctions(IRChapter module)
@@ -56,9 +53,7 @@ sealed partial class WasmModuleBuilder
 
         byte[] paramTypes = new byte[paramCount];
         for (int i = 0; i < paramCount; i++)
-        {
             paramTypes[i] = WasmTypeFor(def.Parameters[i].Type);
-        }
 
         byte[] resultTypes = returnType is VoidType or NothingType
             ? Array.Empty<byte>() : new byte[] { WasmTypeFor(returnType) };
@@ -70,9 +65,7 @@ sealed partial class WasmModuleBuilder
         List<byte> localTypes = new();
         ValueMap<string, int> localMap = ValueMap<string, int>.s_empty;
         for (int i = 0; i < paramCount; i++)
-        {
             localMap = localMap.Set(def.Parameters[i].Name, i);
-        }
 
         MemoryStream body = new();
         int nextLocal = paramCount;
@@ -85,15 +78,7 @@ sealed partial class WasmModuleBuilder
     void EmitStartFunction(IRChapter module)
     {
         // _start calls main and prints the result
-        IRDefinition? mainDef = null;
-        foreach (IRDefinition def in module.Definitions)
-        {
-            if (def.Name == "main")
-            {
-                mainDef = def;
-                break;
-            }
-        }
+        IRDefinition? mainDef = module.FindEntryPoint();
 
         int startSlot = m_functionIndex.Get("__wasm_start", 0) - m_importCount;
 
@@ -114,7 +99,7 @@ sealed partial class WasmModuleBuilder
             List<byte> localTypes = new();
             CodexType returnType = ComputeReturnType(mainDef.Type, mainDef.Parameters.Length);
 
-            int mainIdx = m_functionIndex.Get("main", 0);
+            int mainIdx = m_functionIndex.Get(Names.OpeningEntryPoint, 0);
             body.WriteByte(OpCall);
             WriteUnsignedLeb128(body, mainIdx);
 
@@ -225,10 +210,6 @@ sealed partial class WasmModuleBuilder
                 EmitMatch(body, match, localMap, ref nextLocal, localTypes);
                 break;
 
-            case IRRegion region:
-                EmitRegion(body, region, localMap, ref nextLocal, localTypes);
-                break;
-
             case IRRecord rec:
                 EmitRecord(body, rec, localMap, ref nextLocal, localTypes);
                 break;
@@ -321,48 +302,20 @@ sealed partial class WasmModuleBuilder
                 body.WriteByte(OpI32Eqz);
                 break;
             case IRBinaryOp.Lt:
-                if (bin.Left.Type is NumberType)
-                {
-                    body.WriteByte(OpF64Lt);
-                }
-                else
-                {
-                    body.WriteByte(OpI64LtS);
-                }
-
+                if (bin.Left.Type is NumberType) body.WriteByte(OpF64Lt);
+                else body.WriteByte(OpI64LtS);
                 break;
             case IRBinaryOp.Gt:
-                if (bin.Left.Type is NumberType)
-                {
-                    body.WriteByte(OpF64Gt);
-                }
-                else
-                {
-                    body.WriteByte(OpI64GtS);
-                }
-
+                if (bin.Left.Type is NumberType) body.WriteByte(OpF64Gt);
+                else body.WriteByte(OpI64GtS);
                 break;
             case IRBinaryOp.LtEq:
-                if (bin.Left.Type is NumberType)
-                {
-                    body.WriteByte(OpF64Le);
-                }
-                else
-                {
-                    body.WriteByte(OpI64LeS);
-                }
-
+                if (bin.Left.Type is NumberType) body.WriteByte(OpF64Le);
+                else body.WriteByte(OpI64LeS);
                 break;
             case IRBinaryOp.GtEq:
-                if (bin.Left.Type is NumberType)
-                {
-                    body.WriteByte(OpF64Ge);
-                }
-                else
-                {
-                    body.WriteByte(OpI64GeS);
-                }
-
+                if (bin.Left.Type is NumberType) body.WriteByte(OpF64Ge);
+                else body.WriteByte(OpI64GeS);
                 break;
             case IRBinaryOp.And:
                 body.WriteByte(OpI32Mul); // both are i32 0/1
@@ -403,9 +356,7 @@ sealed partial class WasmModuleBuilder
 
         // If condition is i64 (from comparison), wrap to i32
         if (ifExpr.Condition.Type is IntegerType)
-        {
             body.WriteByte(OpI32WrapI64);
-        }
 
         byte blockType = WasmBlockTypeFor(ifExpr.Type);
         body.WriteByte(OpIf);
@@ -449,16 +400,12 @@ sealed partial class WasmModuleBuilder
         if (func is IRName funcName)
         {
             if (TryEmitBuiltin(body, funcName.Name, args, localMap, ref nextLocal, localTypes))
-            {
                 return;
-            }
 
             if (m_functionIndex.TryGet(funcName.Name, out int funcIdx))
             {
                 foreach (IRExpr arg in args)
-                {
                     EmitExpr(body, arg, localMap, ref nextLocal, localTypes, arg.Type);
-                }
                 body.WriteByte(OpCall);
                 WriteUnsignedLeb128(body, funcIdx);
                 return;
@@ -466,9 +413,7 @@ sealed partial class WasmModuleBuilder
 
             // Sum type constructor: allocate [tag i32][field0 8B][field1 8B]...
             if (TryEmitConstructor(body, funcName.Name, args, apply.Type, localMap, ref nextLocal, localTypes))
-            {
                 return;
-            }
         }
     }
 
@@ -479,9 +424,7 @@ sealed partial class WasmModuleBuilder
         // Walk through the result type to find a SumType
         SumType? sumType = resultType as SumType;
         if (sumType is null)
-        {
             return false;
-        }
 
         // Find the tag index
         int tag = -1;
@@ -494,9 +437,7 @@ sealed partial class WasmModuleBuilder
             }
         }
         if (tag < 0)
-        {
             return false;
-        }
 
         int totalSize = 8 + args.Count * 8; // tag + fields
 
@@ -551,10 +492,7 @@ sealed partial class WasmModuleBuilder
                     EmitExpr(body, doExecStmt.Expression, localMap, ref nextLocal, localTypes, doExecStmt.Expression.Type);
                     // Drop result if not the last statement or if void
                     if (i < actExpr.Statements.Length - 1 && doExecStmt.Expression.Type is not (VoidType or NothingType))
-                    {
                         body.WriteByte(OpDrop);
-                    }
-
                     break;
 
                 case IRActBind doBind:
@@ -567,135 +505,6 @@ sealed partial class WasmModuleBuilder
                     break;
             }
         }
-    }
-
-    void EmitRegion(MemoryStream body, IRRegion region,
-        ValueMap<string, int> localMap, ref int nextLocal, List<byte> localTypes)
-    {
-        // Types with nested heap pointers need deep copy — skip region for now
-        if (region.Type is RecordType or SumType or ListType)
-        {
-            if (TypeHasNestedHeapPointers(region.Type))
-            {
-                EmitExpr(body, region.Body, localMap, ref nextLocal, localTypes, region.Type);
-                return;
-            }
-        }
-
-        // Closures: skip region (capture types unknown at region exit)
-        if (region.Type is FunctionType)
-        {
-            EmitExpr(body, region.Body, localMap, ref nextLocal, localTypes, region.Type);
-            return;
-        }
-
-        // Enter region
-        EmitRegionEnter(body);
-
-        // Emit body
-        EmitExpr(body, region.Body, localMap, ref nextLocal, localTypes, region.Type);
-
-        if (region.NeedsEscapeCopy)
-        {
-            // Heap escape promotion: copy the return value to the parent region
-            int oldPtr = nextLocal++; localTypes.Add(WasmI32);
-            int totalSizeLocal = nextLocal++; localTypes.Add(WasmI32);
-            int newPtr = nextLocal++; localTypes.Add(WasmI32);
-
-            // Save result pointer
-            body.WriteByte(OpLocalSet); WriteUnsignedLeb128(body, oldPtr);
-
-            if (region.Type is TextType)
-            {
-                // Text: totalSize = 4 + len (4-byte length prefix + data)
-                int len = nextLocal++; localTypes.Add(WasmI32);
-                body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, oldPtr);
-                body.WriteByte(OpI32Load); body.WriteByte(0x02); WriteUnsignedLeb128(body, 0);
-                body.WriteByte(OpLocalSet); WriteUnsignedLeb128(body, len);
-                body.WriteByte(OpI32Const); WriteSignedLeb128(body, 4);
-                body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, len);
-                body.WriteByte(OpI32Add);
-                body.WriteByte(OpLocalSet); WriteUnsignedLeb128(body, totalSizeLocal);
-            }
-            else
-            {
-                // Record/sum with scalar-only fields: fixed-size flat copy
-                int flatSize = ComputeFlatSize(region.Type);
-                body.WriteByte(OpI32Const); WriteSignedLeb128(body, flatSize);
-                body.WriteByte(OpLocalSet); WriteUnsignedLeb128(body, totalSizeLocal);
-            }
-
-            // Exit region (heap_ptr restored — old data still physically present)
-            EmitRegionExit(body);
-
-            // Bump-allocate in parent region: newPtr = heap_ptr; heap_ptr += totalSize
-            body.WriteByte(OpGlobalGet); WriteUnsignedLeb128(body, m_heapPtrGlobalIndex);
-            body.WriteByte(OpLocalSet); WriteUnsignedLeb128(body, newPtr);
-            body.WriteByte(OpGlobalGet); WriteUnsignedLeb128(body, m_heapPtrGlobalIndex);
-            body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, totalSizeLocal);
-            body.WriteByte(OpI32Add);
-            body.WriteByte(OpGlobalSet); WriteUnsignedLeb128(body, m_heapPtrGlobalIndex);
-
-            // Copy bytes from oldPtr to newPtr
-            EmitMemCopyDirect(body, newPtr, oldPtr, 0, totalSizeLocal, ref nextLocal, localTypes);
-
-            // Push new pointer as the result
-            body.WriteByte(OpLocalGet); WriteUnsignedLeb128(body, newPtr);
-        }
-        else
-        {
-            // Scalar return — value is on the WASM stack, survives region exit
-            EmitRegionExit(body);
-        }
-    }
-
-    static bool TypeHasNestedHeapPointers(CodexType type) => type switch
-    {
-        RecordType rt => rt.Fields.Any(f => IRRegion.TypeNeedsHeapEscape(f.Type)),
-        SumType st => st.Constructors.Any(c => c.Fields.Any(f => IRRegion.TypeNeedsHeapEscape(f))),
-        ListType lt => IRRegion.TypeNeedsHeapEscape(lt.Element),
-        _ => false
-    };
-
-    static int ComputeFlatSize(CodexType type) => type switch
-    {
-        RecordType rt => rt.Fields.Length * 8,
-        SumType st => (1 + st.Constructors.Max(c => c.Fields.Length)) * 8,
-        _ => 8
-    };
-
-    void EmitRegionEnter(MemoryStream body)
-    {
-        // region_stack[region_sp] = heap_ptr; region_sp++
-        body.WriteByte(OpGlobalGet); WriteUnsignedLeb128(body, m_regionSpGlobalIndex);
-        body.WriteByte(OpI32Const); WriteSignedLeb128(body, 4);
-        body.WriteByte(OpI32Mul);
-        body.WriteByte(OpI32Const); WriteSignedLeb128(body, RegionStackBase);
-        body.WriteByte(OpI32Add);
-        body.WriteByte(OpGlobalGet); WriteUnsignedLeb128(body, m_heapPtrGlobalIndex);
-        body.WriteByte(OpI32Store); body.WriteByte(0x02); WriteUnsignedLeb128(body, 0);
-
-        body.WriteByte(OpGlobalGet); WriteUnsignedLeb128(body, m_regionSpGlobalIndex);
-        body.WriteByte(OpI32Const); WriteSignedLeb128(body, 1);
-        body.WriteByte(OpI32Add);
-        body.WriteByte(OpGlobalSet); WriteUnsignedLeb128(body, m_regionSpGlobalIndex);
-    }
-
-    void EmitRegionExit(MemoryStream body)
-    {
-        // region_sp--; heap_ptr = region_stack[region_sp]
-        body.WriteByte(OpGlobalGet); WriteUnsignedLeb128(body, m_regionSpGlobalIndex);
-        body.WriteByte(OpI32Const); WriteSignedLeb128(body, 1);
-        body.WriteByte(OpI32Sub);
-        body.WriteByte(OpGlobalSet); WriteUnsignedLeb128(body, m_regionSpGlobalIndex);
-
-        body.WriteByte(OpGlobalGet); WriteUnsignedLeb128(body, m_regionSpGlobalIndex);
-        body.WriteByte(OpI32Const); WriteSignedLeb128(body, 4);
-        body.WriteByte(OpI32Mul);
-        body.WriteByte(OpI32Const); WriteSignedLeb128(body, RegionStackBase);
-        body.WriteByte(OpI32Add);
-        body.WriteByte(OpI32Load); body.WriteByte(0x02); WriteUnsignedLeb128(body, 0);
-        body.WriteByte(OpGlobalSet); WriteUnsignedLeb128(body, m_heapPtrGlobalIndex);
     }
 
     void EmitMatch(MemoryStream body, IRMatch match,

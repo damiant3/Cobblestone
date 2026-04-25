@@ -13,14 +13,25 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
     Map<string, CodexType> m_typeMap = Map<string, CodexType>.s_empty;
     string? m_currentProofName;
 
+    const int MaxRecursionDepth = 256;
+    int m_depth;
+
+    bool FuelExhausted(SourceSpan span)
+    {
+        if (m_depth < MaxRecursionDepth)
+            return false;
+        m_diagnostics.Error(CdxCodes.ResourceExhausted,
+            $"compiler resource exhausted in proof-checker.CheckProofExpr (budget {MaxRecursionDepth})",
+            span);
+        return true;
+    }
+
     public void CheckChapter(Chapter chapter, Map<string, CodexType> typeMap)
     {
         m_typeMap = typeMap;
         RegisterClaims(chapter.Claims);
         foreach (ProofDef proof in chapter.Proofs)
-        {
             CheckProof(proof);
-        }
     }
 
     public Map<string, EqualityType> ClaimMap => m_claimMap;
@@ -87,7 +98,7 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
             BinaryOp.Mul => TypeLevelOp.Mul,
             _ => TypeLevelOp.Add
         };
-        return NormalizeTypeLevelExpr(new TypeLevelBinary(op, left, right));
+        return CodexTypeHelpers.NormalizeTypeLevelExpr(new TypeLevelBinary(op, left, right));
     }
 
     void CheckProof(ProofDef proof)
@@ -103,9 +114,7 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
 
         Map<string, CodexType> proofEnv = Map<string, CodexType>.s_empty;
         foreach (Parameter param in proof.Parameters)
-        {
             proofEnv = proofEnv.Set(param.Name.Value, new TypeLevelVar(param.Name.Value));
-        }
 
         m_currentProofName = proof.Name.Value;
         EqualityType? result = CheckProofExpr(proof.Body, claim, proofEnv);
@@ -122,14 +131,16 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
     EqualityType? CheckProofExpr(
         ProofExpr expr, EqualityType goal, Map<string, CodexType> env)
     {
+        if (FuelExhausted(expr.Span))
+            return null;
+        m_depth++;
+        try
+        {
         switch (expr)
         {
             case ReflProofExpr:
                 if (TypesEqual(goal.Left, goal.Right, env))
-                {
                     return goal;
-                }
-
                 m_diagnostics.Error(CdxCodes.ReflSidesNotEqual,
                     $"Refl requires both sides to be equal, but got {goal.Left} and {goal.Right}",
                     expr.Span);
@@ -151,31 +162,25 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
                 if (leftResult is null)
                 {
                     leftResult = CheckProofExpr(trans.Left, goal, env);
-                    if (leftResult is null)
-                        {
-                            return null;
-                        }
-                    }
+                    if (leftResult is null) return null;
+                }
 
                 EqualityType? rightResult = InferProofExpr(trans.Right, env);
                 if (rightResult is null)
                 {
                     EqualityType rightGoal = new(leftResult.Right, goal.Right);
                     rightResult = CheckProofExpr(trans.Right, rightGoal, env);
-                    if (rightResult is null)
-                        {
-                            return null;
-                        }
-                    }
+                    if (rightResult is null) return null;
+                }
 
                 if (TypesEqual(leftResult.Left, goal.Left, env)
                     && TypesEqual(leftResult.Right, rightResult.Left, env)
                     && TypesEqual(rightResult.Right, goal.Right, env))
-                    {
-                        return goal;
-                    }
+                        {
+                            return goal;
+                        }
 
-                    m_diagnostics.Error(CdxCodes.TransChainMismatch,
+                        m_diagnostics.Error(CdxCodes.TransChainMismatch,
                     $"Trans: chain {leftResult.Left} ≡ {leftResult.Right} ≡ {rightResult.Right} does not match goal {goal}",
                     expr.Span);
                 return null;
@@ -193,10 +198,8 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
                         EqualityType innerGoal = new(innerLeft, innerRight);
                         EqualityType? checked_ = CheckProofExpr(cong.Inner, innerGoal, env);
                         if (checked_ is not null)
-                            {
-                                return goal;
-                            }
-                        }
+                            return goal;
+                    }
                     m_diagnostics.Error(CdxCodes.CongProofMismatch,
                         $"Cong {cong.FunctionName.Value}: cannot infer inner proof",
                         expr.Span);
@@ -207,11 +210,9 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
                 CodexType newRight = ApplyFunction(cong.FunctionName.Value, innerResult.Right);
 
                 if (TypesEqual(newLeft, goal.Left, env) && TypesEqual(newRight, goal.Right, env))
-                    {
-                        return goal;
-                    }
+                    return goal;
 
-                    m_diagnostics.Error(CdxCodes.CongProofMismatch,
+                m_diagnostics.Error(CdxCodes.CongProofMismatch,
                     $"Cong {cong.FunctionName.Value}: expected {goal}, but got {newLeft} ≡ {newRight}",
                     expr.Span);
                 return null;
@@ -232,11 +233,11 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
                 }
                 if (TypesEqual(lemma.Left, goal.Left, env)
                     && TypesEqual(lemma.Right, goal.Right, env))
-                    {
-                        return goal;
-                    }
+                        {
+                            return goal;
+                        }
 
-                    m_diagnostics.Error(CdxCodes.LemmaGoalMismatch,
+                        m_diagnostics.Error(CdxCodes.LemmaGoalMismatch,
                     $"Lemma '{nameRef.Name.Value}' proves {lemma}, but goal is {goal}",
                     expr.Span);
                 return null;
@@ -247,6 +248,11 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
 
             default:
                 return null;
+        }
+        }
+        finally
+        {
+            m_depth--;
         }
     }
 
@@ -263,12 +269,8 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
             case SymProofExpr sym:
             {
                 EqualityType? inner = InferProofExpr(sym.Inner, env);
-                if (inner is null)
-                    {
-                        return null;
-                    }
-
-                    return new EqualityType(inner.Right, inner.Left);
+                if (inner is null) return null;
+                return new EqualityType(inner.Right, inner.Left);
             }
 
             default:
@@ -368,7 +370,7 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
                 right = SubstituteVar(right, paramNames[i], argType);
             }
             instantiated = new EqualityType(
-                NormalizeTypeLevelExpr(left), NormalizeTypeLevelExpr(right));
+                CodexTypeHelpers.NormalizeTypeLevelExpr(left), CodexTypeHelpers.NormalizeTypeLevelExpr(right));
         }
         else if (paramNames is not null && paramNames.Count > 0 && apply.Arguments.Count == 0)
         {
@@ -432,7 +434,7 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
                 SubstituteVar(f.Parameter, varName, replacement),
                 SubstituteVar(f.Return, varName, replacement)),
             ListType l => new ListType(SubstituteVar(l.Element, varName, replacement)),
-            TypeLevelBinary bin => NormalizeTypeLevelExpr(new TypeLevelBinary(
+            TypeLevelBinary bin => CodexTypeHelpers.NormalizeTypeLevelExpr(new TypeLevelBinary(
                 bin.Op,
                 SubstituteVar(bin.Left, varName, replacement),
                 SubstituteVar(bin.Right, varName, replacement))),
@@ -450,8 +452,8 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
 
     static bool TypesEqual(CodexType a, CodexType b, Map<string, CodexType> env)
     {
-        CodexType normA = NormalizeTypeLevelExpr(a);
-        CodexType normB = NormalizeTypeLevelExpr(b);
+        CodexType normA = CodexTypeHelpers.NormalizeTypeLevelExpr(a);
+        CodexType normB = CodexTypeHelpers.NormalizeTypeLevelExpr(b);
 
         return (normA, normB) switch
         {
@@ -486,41 +488,10 @@ public sealed class ProofChecker(DiagnosticBag diagnostics)
     static EqualityType NormalizeEquality(EqualityType eq)
     {
         return new EqualityType(
-            NormalizeTypeLevelExpr(eq.Left),
-            NormalizeTypeLevelExpr(eq.Right));
+            CodexTypeHelpers.NormalizeTypeLevelExpr(eq.Left),
+            CodexTypeHelpers.NormalizeTypeLevelExpr(eq.Right));
     }
 
-    static CodexType NormalizeTypeLevelExpr(CodexType type)
-    {
-        if (type is TypeLevelBinary bin)
-        {
-            CodexType left = NormalizeTypeLevelExpr(bin.Left);
-            CodexType right = NormalizeTypeLevelExpr(bin.Right);
-
-            if (left is TypeLevelValue lv && right is TypeLevelValue rv)
-            {
-                long result = bin.Op switch
-                {
-                    TypeLevelOp.Add => lv.Value + rv.Value,
-                    TypeLevelOp.Sub => lv.Value - rv.Value,
-                    TypeLevelOp.Mul => lv.Value * rv.Value,
-                    _ => 0
-                };
-                return new TypeLevelValue(result);
-            }
-
-            return new TypeLevelBinary(bin.Op, left, right);
-        }
-
-        if (type is ConstructedType ct)
-        {
-            ImmutableArray<CodexType> normArgs =
-                [.. ct.Arguments.Select(NormalizeTypeLevelExpr)];
-            return ct with { Arguments = normArgs };
-        }
-
-        return type;
-    }
 
     static CodexType ExprToType(Expr expr)
     {

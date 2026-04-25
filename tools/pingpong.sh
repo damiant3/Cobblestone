@@ -25,20 +25,19 @@ mkdir -p "$REPO/build-output/bootstrap"
 mkdir -p "$REPO/build-output/bare-metal"
 rm -rf "$REPO/Codex.Codex/out"
 rm -rf "$REPO/.codex-build"
-rm -rf "$REPO/tools/Codex.Bootstrap/bootstrap-output"
-rm -f "$REPO/tools/Codex.Bootstrap/CodexLib.g.cs"
+rm -rf "$REPO/tools/Codex.Bootstrap-Codex/out"
 find "$REPO" -maxdepth 3 -type f \( -name '*.bak' -o -name '*.tmp' -o -name '*.snap' \) -not -path '*/.git/*' -delete 2>/dev/null || true
 echo "  done"
 echo ""
 echo "Phase 2: Building from source..."
 
-# Build Codex.Cli first (the reference compiler), then Bootstrap.
-# Bootstrap's RegenerateCodexLib target automatically invokes the CLI
-# to compile .codex → C# → CodexLib.g.cs before building itself.
+# Build Codex.Cli first (the reference compiler), then Bootstrap-Codex.
+# Bootstrap-Codex's RegenerateCs target automatically invokes the CLI
+# to compile Main.codex → out/*.cs before building itself.
 # We do NOT build the full solution — Codex.Codex.csproj always fails
 # (it's the generated output, not a buildable project on its own).
 "$DOTNET" build "$WINREPO/tools/Codex.Cli/Codex.Cli.csproj" 2>&1 | tail -3
-"$DOTNET" build "$WINREPO/tools/Codex.Bootstrap/Codex.Bootstrap.csproj" 2>&1 | tail -3
+"$DOTNET" build "$WINREPO/tools/Codex.Bootstrap-Codex/Codex.Bootstrap-Codex.csproj" 2>&1 | tail -3
 echo ""
 echo "Phase 3: C# bootstrap (fixed-point proof)..."
 "$DOTNET" run --project "$WINREPO/tools/Codex.Cli" -- bootstrap "$WINREPO/Codex.Codex"
@@ -53,11 +52,11 @@ echo ""
 echo "Phase 4: Bare-metal pingpong..."
 echo ""
 echo "Building ELF (reference compiler → x86-64-bare)..."
-"$DOTNET" run --project "$WINREPO/tools/Codex.Cli" -- build "$WINREPO/Codex.Codex" --target x86-64-bare --output-dir "$WINREPO/build-output/bare-metal"
+"$DOTNET" run --project "$WINREPO/tools/Codex.Cli" -- build "$WINREPO/Codex.Codex" --target x86-64-bare --exit-mode=qemu-exit --output-dir "$WINREPO/build-output/bare-metal"
 echo ""
 echo "Dumping source..."
 WINSOURCE="$WINREPO/build-output/bare-metal/source.codex"
-"$DOTNET" run --project "$WINREPO/tools/Codex.Bootstrap" -- --dump-source "$WINSOURCE"
+"$DOTNET" run --project "$WINREPO/tools/Codex.Bootstrap-Codex" --no-build -- --dump-source "$WINREPO/Codex.Codex" "$WINSOURCE" --cli="$WINREPO/tools/Codex.Cli/bin/Debug/net8.0/Codex.Cli.exe"
 if [ ! -f "$ELF" ]; then
     echo "FAIL: $ELF not found after build."
     exit 1
@@ -92,6 +91,7 @@ run_stage() {
         -enable-kvm \
         -kernel "$ELF" \
         -serial stdio \
+        -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
         -display none \
         -no-reboot \
         -m 1024 \

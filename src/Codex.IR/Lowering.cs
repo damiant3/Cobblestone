@@ -10,24 +10,53 @@ public sealed class Lowering(
     Map<string, CodexType> typeMap,
     Map<string, CtorInfo> ctorMap,
     Map<string, CodexType> typeDefMap,
-    DiagnosticBag diagnostics)
+    DiagnosticBag diagnostics,
+    IReadOnlyDictionary<Ast.Expr, CodexType>? exprTypes = null)
 {
     readonly Map<string, CodexType> m_typeMap = typeMap;
     readonly Map<string, CtorInfo> m_ctorMap = ctorMap;
     readonly Map<string, CodexType> m_typeDefMap = typeDefMap;
     readonly DiagnosticBag m_diagnostics = diagnostics;
+    // Per-AST-expression deeply-resolved types from the type-checker. When present,
+    // LowerApply prefers these over its own substitution inference, so polymorphic
+    // calls like `head nums : ConsList Integer -> Integer` land in the IR with
+    // Integer rather than a stale TypeVariable.
+    readonly IReadOnlyDictionary<Ast.Expr, CodexType>? m_exprTypes = exprTypes;
     Map<string, CodexType> m_localEnv = Map<string, CodexType>.s_empty;
     CodexType m_currentStateType = ErrorType.s_instance;
 
+    const int MaxRecursionDepth = 256;
+    int m_depth;
+
+    bool FuelExhausted(string op, SourceSpan span)
+    {
+        if (m_depth < MaxRecursionDepth)
+            return false;
+        m_diagnostics.Error(CdxCodes.ResourceExhausted,
+            $"compiler resource exhausted in lowering.{op} (budget {MaxRecursionDepth})",
+            span);
+        return true;
+    }
+
     static readonly Map<string, CodexType> s_builtinTypes = BuildBuiltinTypes();
+
+    // Preferred production entry: thread the NameResolver's scope sets
+    // (TopLevelNames, ConstructorNames) onto IRChapter so downstream passes
+    // don't re-derive them. The bare Lower(Chapter) overload leaves the
+    // fields empty for hand-built IR in tests; consumers fall back to
+    // walking Definitions/TypeDefinitions in that case.
+    public IRChapter Lower(ResolvedChapter resolved) =>
+        Lower(resolved.Chapter) with
+        {
+            TopLevelNames = resolved.TopLevelNames,
+            ConstructorNames = resolved.ConstructorNames
+        };
 
     public IRChapter Lower(Chapter chapter)
     {
         ImmutableArray<IRDefinition>.Builder allDefs = ImmutableArray.CreateBuilder<IRDefinition>();
         foreach (Definition def in chapter.Definitions)
-        {
             allDefs.Add(LowerDefinition(def));
-        }
 
         // Build sections: group typedefs and definitions by SourceChapter
         ImmutableArray<IRDefinition> loweredDefs = allDefs.ToImmutable();
@@ -41,9 +70,7 @@ public sealed class Lowering(
             string mod = td.SourceChapter ?? "";
             if (seen.Add(mod)) { chapterOrder.Add(mod); groups[mod] = ([], []); }
             if (m_typeDefMap.ContainsKey(td.Name.Value))
-            {
                 groups[mod].Types.Add((td.Name.Value, m_typeDefMap[td.Name.Value]!));
-            }
         }
 
         for (int i = 0; i < chapter.Definitions.Count; i++)
@@ -86,9 +113,7 @@ public sealed class Lowering(
         foreach (Parameter param in def.Parameters)
         {
             while (currentType is FunctionType skipFt && skipFt.Parameter is ProofType)
-            {
                 currentType = skipFt.Return;
-            }
 
             CodexType paramType;
             if (currentType is FunctionType ft)
@@ -105,24 +130,41 @@ public sealed class Lowering(
             {
                 paramType = ErrorType.s_instance;
             }
+
             parameters.Add(new(param.Name.Value, paramType));
             m_localEnv = m_localEnv.Set(param.Name.Value, paramType);
         }
 
         while (currentType is FunctionType skipFt2 && skipFt2.Parameter is ProofType)
-        {
             currentType = skipFt2.Return;
-        }
 
         IRExpr body = LowerExpr(def.Body, currentType);
-        bool needsEscape = IRRegion.TypeNeedsHeapEscape(body.Type);
-        body = new IRRegion(body, body.Type, needsEscape);
         m_localEnv = savedEnv;
         return new(def.Name.Value, parameters.ToImmutable(), fullType, body)
-            { Section = def.Section };
+            { Section = def.Section, Span = def.Span };
     }
 
     IRExpr LowerExpr(Expr expr, CodexType expectedType)
+    {
+        if (FuelExhausted(nameof(LowerExpr), expr.Span))
+        {
+            return new IRError("lowering fuel exhausted", expectedType) { Span = expr.Span };
+        }
+        m_depth++;
+        try
+        {
+            // Stamp the AST Expr's span onto the lowered IR root. Nested IR
+            // nodes produced by LowerXxx helpers keep the synthetic default
+            // unless those helpers stamp their own spans — Phase 1 work.
+            return LowerExprCore(expr, expectedType) with { Span = expr.Span };
+        }
+        finally
+        {
+            m_depth--;
+        }
+    }
+
+    IRExpr LowerExprCore(Expr expr, CodexType expectedType)
     {
         switch (expr)
         {
@@ -148,8 +190,11 @@ public sealed class Lowering(
             case IfExpr iff:
             {
                 IRExpr thenExpr = LowerExpr(iff.Then, expectedType);
-                IRExpr elseExpr = LowerExpr(iff.Else, expectedType is ErrorType ? thenExpr.Type : expectedType);
-                CodexType resultType = expectedType is ErrorType ? thenExpr.Type : expectedType;
+                CodexType hint = expectedType is ErrorType ? thenExpr.Type : expectedType;
+                IRExpr elseExpr = LowerExpr(iff.Else, hint);
+                CodexType resultType = MergeTy(hint, elseExpr.Type);
+                if (HasError(thenExpr.Type) && !HasError(resultType))
+                    thenExpr = LowerExpr(iff.Then, resultType);
                 return new IRIf(
                     LowerExpr(iff.Condition, BooleanType.s_instance),
                     thenExpr,
@@ -211,13 +256,9 @@ public sealed class Lowering(
 
         CodexType rightExpected = expectedType;
         if (bin.Op == BinaryOp.Append && left.Type is ListType)
-        {
             rightExpected = left.Type;
-        }
         else if (bin.Op == BinaryOp.Cons && left.Type is not ErrorType)
-        {
             rightExpected = new ListType(left.Type);
-        }
 
         IRExpr right = LowerExpr(bin.Right, rightExpected);
 
@@ -276,33 +317,7 @@ public sealed class Lowering(
         for (int i = loweredBindings.Count - 1; i >= 0; i--)
         {
             (string name, IRExpr value) = loweredBindings[i];
-            // Wrap each let binding's value in its own region.
-            // Scalar-returning expressions reclaim intermediates immediately.
-            // Heap-returning expressions skip reclamation (handled by EmitRegion).
-            //
-            // Skip the wrap when the value is a direct call to heap-advance.
-            // heap-advance returns Integer (0) but has the side effect of
-            // moving HeapReg up. The scalar-reclaim path would restore
-            // HeapReg from the mark, undoing the advance — silently breaking
-            // x86-64-init-codegen-streaming's text/rodata buffer reservation
-            // and causing list metadata to be overwritten by later text
-            // emission. CDX-C5 root cause.
-            //
-            // heap-restore is intentionally NOT exempted: main.codex's
-            // emit-defs-binary-gated uses `let hr = heap-restore watermark`
-            // after each def emission and threads cg2 (a CodegenState)
-            // forward. If the reclaim ever became real, cg2's pointers
-            // would dangle into the freed region. That's its own latent
-            // issue but tied to escape-copy semantics; leave heap-restore
-            // as a reclaim-no-op for now.
-            if (IsHeapAdvance(value))
-            {
-                body = new IRLet(name, value.Type, value, body);
-                continue;
-            }
-            bool letNeedsEscape = IRRegion.TypeNeedsHeapEscape(value.Type);
-            IRExpr regionValue = new IRRegion(value, value.Type, letNeedsEscape);
-            body = new IRLet(name, value.Type, regionValue, body);
+            body = new IRLet(name, value.Type, value, body);
         }
 
         m_localEnv = savedEnv;
@@ -333,13 +348,9 @@ public sealed class Lowering(
             if (resultType is ErrorType or EffectfulType)
             {
                 if (comp.Type is FunctionType compFt && compFt.Return is EffectfulType eft)
-                {
                     resultType = eft.Return;
-                }
                 else if (comp.Type is FunctionType compFt2)
-                {
                     resultType = compFt2.Return;
-                }
             }
             return new IRRunState(init, comp, stateType, resultType);
         }
@@ -366,6 +377,14 @@ public sealed class Lowering(
 
         returnType = SubstituteTypeVarsFromArg(argType, arg.Type, returnType);
 
+        // Prefer the type-checker's deeply-resolved type for this AST node if we have it.
+        // This is the authoritative post-unification type and catches polymorphics that
+        // SubstituteTypeVarsFromArg cannot work out from paramType alone (e.g. the `a`
+        // in `head : ConsList a -> a` gets bound via chained applications in the checker
+        // but the IR sees each Apply in isolation).
+        if (m_exprTypes is not null && m_exprTypes.TryGetValue(app, out CodexType? resolvedExprType))
+            returnType = resolvedExprType;
+
         return new IRApply(func, arg, returnType);
     }
 
@@ -373,19 +392,68 @@ public sealed class Lowering(
         CodexType paramType, CodexType argType, CodexType target)
     {
         if (paramType is TypeVariable tv)
-        {
             return SubstituteTypeVar(target, tv.Id, argType);
-        }
 
         if (paramType is ListType lp && argType is ListType la)
-        {
             return SubstituteTypeVarsFromArg(lp.Element, la.Element, target);
-        }
+
+        if (paramType is LinkedListType llp && argType is LinkedListType lla)
+            return SubstituteTypeVarsFromArg(llp.Element, lla.Element, target);
 
         if (paramType is FunctionType fp && argType is FunctionType fa)
         {
             target = SubstituteTypeVarsFromArg(fp.Parameter, fa.Parameter, target);
             return SubstituteTypeVarsFromArg(fp.Return, fa.Return, target);
+        }
+
+        // User-defined variants / records come through as ConstructedType. `head : ConsList a -> a`
+        // called with a `ConsList Integer` argument must unwrap ConsList on both sides so the
+        // `a` in target can substitute to Integer.
+        if (paramType is ConstructedType cp && argType is ConstructedType ca
+            && cp.Constructor.Value == ca.Constructor.Value
+            && cp.Arguments.Length == ca.Arguments.Length)
+        {
+            for (int i = 0; i < cp.Arguments.Length; i++)
+                target = SubstituteTypeVarsFromArg(cp.Arguments[i], ca.Arguments[i], target);
+            return target;
+        }
+
+        // After InstantiateParametricType, a type-def reference carries its concrete
+        // type-args on SumType.TypeArguments / RecordType.TypeArguments rather than
+        // as a ConstructedType. Match those positions pairwise.
+        if (paramType is SumType sp && argType is SumType sa
+            && sp.TypeName.Value == sa.TypeName.Value
+            && sp.TypeArguments.Length == sa.TypeArguments.Length)
+        {
+            for (int i = 0; i < sp.TypeArguments.Length; i++)
+                target = SubstituteTypeVarsFromArg(sp.TypeArguments[i], sa.TypeArguments[i], target);
+            return target;
+        }
+        if (paramType is RecordType rp && argType is RecordType ra
+            && rp.TypeName.Value == ra.TypeName.Value
+            && rp.TypeArguments.Length == ra.TypeArguments.Length)
+        {
+            for (int i = 0; i < rp.TypeArguments.Length; i++)
+                target = SubstituteTypeVarsFromArg(rp.TypeArguments[i], ra.TypeArguments[i], target);
+            return target;
+        }
+        // Mixed shape: SumType ↔ ConstructedType. Happens when one side is the instantiated
+        // type def and the other is still the un-resolved application form.
+        if (paramType is SumType sp2 && argType is ConstructedType ca2
+            && sp2.TypeName.Value == ca2.Constructor.Value
+            && sp2.TypeArguments.Length == ca2.Arguments.Length)
+        {
+            for (int i = 0; i < sp2.TypeArguments.Length; i++)
+                target = SubstituteTypeVarsFromArg(sp2.TypeArguments[i], ca2.Arguments[i], target);
+            return target;
+        }
+        if (paramType is ConstructedType cp2 && argType is SumType sa2
+            && cp2.Constructor.Value == sa2.TypeName.Value
+            && cp2.Arguments.Length == sa2.TypeArguments.Length)
+        {
+            for (int i = 0; i < cp2.Arguments.Length; i++)
+                target = SubstituteTypeVarsFromArg(cp2.Arguments[i], sa2.TypeArguments[i], target);
+            return target;
         }
 
         return target;
@@ -450,6 +518,7 @@ public sealed class Lowering(
             {
                 paramType = ErrorType.s_instance;
             }
+
             parameters.Add(new(p.Name.Value, paramType));
             m_localEnv = m_localEnv.Set(p.Name.Value, paramType);
         }
@@ -472,10 +541,7 @@ public sealed class Lowering(
             IRExpr body = LowerExpr(branch.Body, resolvedType);
             branches.Add(new(pattern, body));
             if (resolvedType is ErrorType && body.Type is not ErrorType)
-            {
                 resolvedType = body.Type;
-            }
-
             m_localEnv = savedEnv;
         }
 
@@ -484,19 +550,29 @@ public sealed class Lowering(
 
     IRPattern LowerPattern(Pattern pattern, CodexType scrutineeType)
     {
-        switch (pattern)
+        if (FuelExhausted(nameof(LowerPattern), pattern.Span))
+            return new IRWildcardPattern();
+        m_depth++;
+        try
         {
-            case VarPattern v:
-                m_localEnv = m_localEnv.Set(v.Name.Value, scrutineeType);
-                return new IRVarPattern(v.Name.Value, scrutineeType);
-            case CtorPattern ctor:
-                return LowerCtorPattern(ctor, scrutineeType);
-            case LiteralPattern lit:
-                return new IRLiteralPattern(lit.Value, scrutineeType);
-            case WildcardPattern:
-                return new IRWildcardPattern();
-            default:
-                return new IRWildcardPattern();
+            switch (pattern)
+            {
+                case VarPattern v:
+                    m_localEnv = m_localEnv.Set(v.Name.Value, scrutineeType);
+                    return new IRVarPattern(v.Name.Value, scrutineeType);
+                case CtorPattern ctor:
+                    return LowerCtorPattern(ctor, scrutineeType);
+                case LiteralPattern lit:
+                    return new IRLiteralPattern(lit.Value, scrutineeType);
+                case WildcardPattern:
+                    return new IRWildcardPattern();
+                default:
+                    return new IRWildcardPattern();
+            }
+        }
+        finally
+        {
+            m_depth--;
         }
     }
 
@@ -542,10 +618,11 @@ public sealed class Lowering(
 
     IRExpr LowerList(ListExpr list, CodexType expectedType)
     {
+        CodexType fromContext = expectedType is ListType lt ? lt.Element : ErrorType.s_instance;
         CodexType elementType;
-        if (expectedType is ListType lt)
+        if (fromContext is not ErrorType)
         {
-            elementType = lt.Element;
+            elementType = fromContext;
         }
         else if (list.Elements.Count > 0)
         {
@@ -564,20 +641,28 @@ public sealed class Lowering(
 
         ImmutableArray<IRExpr>.Builder elements = ImmutableArray.CreateBuilder<IRExpr>();
         foreach (Expr elem in list.Elements)
-        {
             elements.Add(LowerExpr(elem, elementType));
-        }
 
         return new IRList(elements.ToImmutable(), elementType);
     }
 
+    static bool HasError(CodexType t) => t switch
+    {
+        ErrorType => true,
+        ListType lt => HasError(lt.Element),
+        _ => false
+    };
+
+    static CodexType MergeTy(CodexType a, CodexType b) => (a, b) switch
+    {
+        (ErrorType, _) => b,
+        (ListType la, ListType lb) => new ListType(MergeTy(la.Element, lb.Element)),
+        _ => a
+    };
+
     static CodexType InferElementType(ListExpr list)
     {
-        if (list.Elements.Count == 0)
-        {
-            return ErrorType.s_instance;
-        }
-
+        if (list.Elements.Count == 0) return ErrorType.s_instance;
         return list.Elements[0] switch
         {
             LiteralExpr lit => lit.Kind switch
@@ -642,10 +727,7 @@ public sealed class Lowering(
         }
 
         while (result is ForAllType fa)
-        {
             result = fa.Body;
-        }
-
         return result;
     }
 
@@ -662,10 +744,7 @@ public sealed class Lowering(
                 {
                     IRExpr value = LowerExpr(bind.Value, ErrorType.s_instance);
                     CodexType boundType = value.Type is EffectfulType eft ? eft.Return : value.Type;
-                    // Wrap in IRRegion for two-space reclamation, same as let-bindings.
-                    bool needsEscape = IRRegion.TypeNeedsHeapEscape(boundType);
-                    IRExpr regionValue = new IRRegion(value, boundType, needsEscape);
-                    statements.Add(new IRActBind(bind.Name.Value, boundType, regionValue));
+                    statements.Add(new IRActBind(bind.Name.Value, boundType, value));
                     m_localEnv = m_localEnv.Set(bind.Name.Value, boundType);
                     break;
                 }
@@ -689,13 +768,9 @@ public sealed class Lowering(
         {
             IRActStatement last = stmts[^1];
             if (last is IRActExec exec)
-            {
                 doType = exec.Expression.Type;
-            }
             else if (last is IRActBind bind)
-            {
                 doType = bind.NameType;
-            }
         }
 
         return new IRAct(stmts, doType);
@@ -730,10 +805,7 @@ public sealed class Lowering(
 
             Map<string, CodexType> savedEnv = m_localEnv;
             for (int i = 0; i < paramNames.Count; i++)
-            {
                 m_localEnv = m_localEnv.Set(paramNames[i], paramTypes[i]);
-            }
-
             m_localEnv = m_localEnv.Set(clause.ResumeName.Value,
                 new FunctionType(resumeParamType, expectedType));
 
@@ -765,9 +837,7 @@ public sealed class Lowering(
             CodexType? looked = m_typeMap[typeName] ?? m_typeDefMap[typeName];
             rt = looked as RecordType;
             if (rt is not null)
-            {
                 recType = rt;
-            }
         }
 
         foreach (RecordFieldExpr field in rec.Fields)
@@ -777,10 +847,7 @@ public sealed class Lowering(
             {
                 RecordFieldType? rft = rt.Fields
                     .FirstOrDefault(f => f.FieldName.Value == field.FieldName.Value);
-                if (rft is not null)
-                {
-                    fieldType = rft.Type;
-                }
+                if (rft is not null) fieldType = rft.Type;
             }
             fields.Add((field.FieldName.Value, LowerExpr(field.Value, fieldType)));
         }
@@ -808,16 +875,11 @@ public sealed class Lowering(
         {
             RecordFieldType? rft = rt.Fields
                 .FirstOrDefault(f => f.FieldName.Value == fa.FieldName.Value);
-            if (rft is not null)
-            {
-                fieldType = rft.Type;
-            }
+            if (rft is not null) fieldType = rft.Type;
 
             // Ensure emitters see RecordType (not ConstructedType) so they can compute field indices
             if (record.Type is not RecordType)
-            {
                 record = record with { Type = rt };
-            }
         }
         return new IRFieldAccess(record, fa.FieldName.Value, fieldType);
     }
@@ -889,28 +951,43 @@ public sealed class Lowering(
         map = map.Set("list-snoc", new ForAllType(0,
             new FunctionType(new ListType(new TypeVariable(0)),
                 new FunctionType(new TypeVariable(0), new ListType(new TypeVariable(0))))));
-        map = map.Set("linked-list-empty", new FunctionType(IntegerType.s_instance,
+        map = map.Set(Builtins.LinkedListEmpty, new FunctionType(IntegerType.s_instance,
             new LinkedListType(new ListType(IntegerType.s_instance))));
-        map = map.Set("linked-list-push",
+        map = map.Set(Builtins.LinkedListPush,
             new FunctionType(new LinkedListType(new ListType(IntegerType.s_instance)),
                 new FunctionType(new ListType(IntegerType.s_instance),
                     new LinkedListType(new ListType(IntegerType.s_instance)))));
-        map = map.Set("linked-list-to-list",
+        map = map.Set(Builtins.LinkedListToList,
             new FunctionType(new LinkedListType(new ListType(IntegerType.s_instance)),
                 new ListType(new ListType(IntegerType.s_instance))));
-        map = map.Set("record-set", new ForAllType(0,
+        map = map.Set(Builtins.RecordSet, new ForAllType(0,
             new ForAllType(1,
                 new FunctionType(new TypeVariable(0),
                     new FunctionType(TextType.s_instance,
                         new FunctionType(new TypeVariable(1), new TypeVariable(0)))))));
-        map = map.Set("list-contains", new ForAllType(0,
-            new FunctionType(new ListType(new TypeVariable(0)),
-                new FunctionType(new TypeVariable(0), BooleanType.s_instance))));
-        map = map.Set("get-args", new ListType(TextType.s_instance));
-        map = map.Set("get-env", new FunctionType(TextType.s_instance, TextType.s_instance));
-        map = map.Set("current-dir", TextType.s_instance);
+        EffectfulType processArgs = new(
+            [new EffectType(new Name("Process"))],
+            new ListType(TextType.s_instance));
+        map = map.Set("get-args", processArgs);
+
+        EffectfulType processText = new(
+            [new EffectType(new Name("Process"))],
+            TextType.s_instance);
+        map = map.Set("get-env", new FunctionType(TextType.s_instance, processText));
+        map = map.Set("current-dir", processText);
         map = map.Set("run-process", new FunctionType(TextType.s_instance,
-            new FunctionType(TextType.s_instance, TextType.s_instance)));
+            new FunctionType(TextType.s_instance, processText)));
+
+        EffectfulType processResultEff = new(
+            [new EffectType(new Name("Process"))],
+            Codex.Types.BuiltinChapters.ProcessResultType);
+        map = map.Set("run-process-full", new FunctionType(TextType.s_instance,
+            new FunctionType(TextType.s_instance, processResultEff)));
+
+        EffectfulType processNothing = new(
+            [new EffectType(new Name("Process"))],
+            NothingType.s_instance);
+        map = map.Set("process-exit", new FunctionType(IntegerType.s_instance, processNothing));
 
         map = map.Set("char-at", new FunctionType(TextType.s_instance,
             new FunctionType(IntegerType.s_instance, CharType.s_instance)));
@@ -955,6 +1032,25 @@ public sealed class Lowering(
                 new FunctionType(IntegerType.s_instance, new TypeVariable(0)))));
 
 
+        // Internal __ builtins (heap tracking, buf, list-with-capacity,
+        // record-set, linked-list helpers). These live in
+        // src/Codex.Types/BuiltinChapters.cs and are bound into the type
+        // checker via BindTypedInto, but Lowering's local s_builtinTypes
+        // is a separate hand-curated map that historically didn't pick
+        // them up. Pulling from BuiltinChapters keeps the two in sync —
+        // without it, LookupName falls through to ErrorType on these
+        // names, and downstream emitters that need a concrete type
+        // (notably the IL backend, where local sigs must be precise)
+        // produce JIT-invalid bytecode.
+        foreach (Codex.Types.BuiltinChapter chapter in Codex.Types.BuiltinChapters.All)
+        {
+            foreach ((string bname, CodexType btype) in chapter.TypedBindings)
+            {
+                if (!map.ContainsKey(bname))
+                    map = map.Set(bname, btype);
+            }
+        }
+
         TypeVariable stateS = new(200);
         TypeVariable stateA = new(201);
         EffectRowVariable stateE = new(202);
@@ -987,64 +1083,35 @@ public sealed class Lowering(
 
     static bool IsText(CodexType type) => type is TextType;
 
-    // A direct call to the heap-advance builtin: returns Integer but
-    // moves HeapReg, so it must not be wrapped in a scalar-reclaim region.
-    static bool IsHeapAdvance(IRExpr expr)
-    {
-        if (expr is not IRApply apply)
-        {
-            return false;
-        }
-
-        IRExpr f = apply.Function;
-        while (f is IRApply inner)
-        {
-            f = inner.Function;
-        }
-
-        return f is IRName name && name.Name == "heap-advance";
-    }
 
     public static IRChapter LowerCitedDefs(
-        IReadOnlyList<ResolvedChapter> citedChapters,
+        IReadOnlyList<TypedImport> citedImports,
         IRChapter main,
-        DiagnosticBag diagnostics)
+        DiagnosticBag diagnostics,
+        bool useExprTypes = false)
     {
-        if (citedChapters.Count == 0)
-        {
+        if (citedImports.Count == 0)
             return main;
-        }
 
         ImmutableArray<IRDefinition>.Builder allDefs =
             ImmutableArray.CreateBuilder<IRDefinition>();
         allDefs.AddRange(main.Definitions);
         HashSet<string> emittedNames = new(main.Definitions.Select(d => d.Name));
 
-        foreach (ResolvedChapter imported in citedChapters)
+        foreach (TypedImport imported in citedImports)
         {
-            TypeChecker importChecker = new(diagnostics);
-            foreach (ResolvedChapter otherCited in citedChapters)
-            {
-                if (!ReferenceEquals(otherCited, imported))
-                {
-                    importChecker.CiteChapter(otherCited.Chapter);
-                }
-            }
-            Map<string, CodexType> importTypes = importChecker.CheckChapter(imported.Chapter);
-
             Lowering importLowering = new(
-                importTypes,
-                importChecker.ConstructorMap,
-                importChecker.TypeDefMap,
-                diagnostics);
-            IRChapter importIr = importLowering.Lower(imported.Chapter);
+                imported.Types,
+                imported.ConstructorMap,
+                imported.TypeDefMap,
+                diagnostics,
+                useExprTypes ? imported.ExprTypes : null);
+            IRChapter importIr = importLowering.Lower(imported.Resolved);
 
             foreach (IRDefinition def in importIr.Definitions)
             {
                 if (emittedNames.Add(def.Name))
-                {
                     allDefs.Add(def);
-                }
             }
         }
 

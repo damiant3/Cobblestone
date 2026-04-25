@@ -16,10 +16,7 @@ public class ForewordTests
         {
             string candidate = Path.Combine(dir, "foreword");
             if (Directory.Exists(candidate))
-            {
                 return candidate;
-            }
-
             dir = Path.GetDirectoryName(dir)!;
         }
         throw new DirectoryNotFoundException("Cannot find foreword/ directory");
@@ -35,24 +32,15 @@ public class ForewordTests
         DiagnosticBag diagnostics = new();
 
         DocumentNode document = DocumentParser.Parse(src, diagnostics);
-        if (diagnostics.HasErrors)
-        {
-            return diagnostics;
-        }
+        if (diagnostics.HasErrors) return diagnostics;
 
         Desugarer desugarer = new(diagnostics);
         Chapter chapter = desugarer.Desugar(document, chapterName);
-        if (diagnostics.HasErrors)
-        {
-            return diagnostics;
-        }
+        if (diagnostics.HasErrors) return diagnostics;
 
         NameResolver resolver = new(diagnostics);
         ResolvedChapter resolved = resolver.Resolve(chapter);
-        if (diagnostics.HasErrors)
-        {
-            return diagnostics;
-        }
+        if (diagnostics.HasErrors) return diagnostics;
 
         TypeChecker checker = new(diagnostics);
         checker.CheckChapter(resolved.Chapter);
@@ -201,8 +189,8 @@ public class ForewordTests
             safe-div : Integer -> Integer -> Maybe Integer
             safe-div (a) (b) = if b == 0 then None else Just (a / b)
 
-            main : Integer
-            main = from-maybe (safe-div 10 2) 0
+            opening : Integer
+            opening = from-maybe (safe-div 10 2) 0
             """;
         DiagnosticBag diag = CompileWithPrelude(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
@@ -213,12 +201,13 @@ public class ForewordTests
     {
         string source = """
             cites Foreword chapter Result
+            cites Codex chapter Text
 
             parse-nat : Text -> Result Integer Text
             parse-nat (t) = Ok (text-to-integer t)
 
-            main : Integer
-            main = from-ok (parse-nat "42") 0
+            opening : Integer
+            opening = from-ok (parse-nat "42") 0
             """;
         DiagnosticBag diag = CompileWithPrelude(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
@@ -239,8 +228,8 @@ public class ForewordTests
             classify : Integer -> Either Text Integer
             classify (n) = if n > 0 then Right n else Left "negative"
 
-            main : Integer
-            main = either to-zero identity (classify 5)
+            opening : Integer
+            opening = either to-zero identity (classify 5)
             """;
         DiagnosticBag diag = CompileWithPrelude(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
@@ -252,8 +241,8 @@ public class ForewordTests
         string source = """
             cites Foreword chapter Pair
 
-            main : Integer
-            main = pair-fst (make-pair 1 2)
+            opening : Integer
+            opening = pair-fst (make-pair 1 2)
             """;
         DiagnosticBag diag = CompileWithPrelude(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
@@ -265,8 +254,8 @@ public class ForewordTests
         string source = """
             cites Foreword chapter CCE
 
-            main : Boolean
-            main = is-digit (code-to-char 10)
+            opening : Boolean
+            opening = is-digit (code-to-char 10)
             """;
         DiagnosticBag diag = CompileWithPrelude(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
@@ -279,8 +268,8 @@ public class ForewordTests
             cites Foreword chapter Maybe
             cites Foreword chapter Hamt
 
-            main : Integer
-            main = hamt-size (hamt-set hamt-empty "key" 42)
+            opening : Integer
+            opening = hamt-size (hamt-set hamt-empty "key" 42)
             """;
         DiagnosticBag diag = CompileWithPrelude(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
@@ -292,8 +281,8 @@ public class ForewordTests
         string source = """
             cites Foreword chapter List
 
-            main : Integer
-            main = list-length (cons 1 (cons 2 (cons 3 nil)))
+            opening : Integer
+            opening = list-length (cons 1 (cons 2 (cons 3 nil)))
             """;
         DiagnosticBag diag = CompileWithPrelude(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
@@ -303,8 +292,8 @@ public class ForewordTests
     public void Console_effect_used_in_program()
     {
         string source = """
-            main : [Console] Nothing
-            main = act
+            opening : [Console] Nothing
+            opening = act
               print-line "hello"
               name <- read-line
               print-line name
@@ -318,8 +307,8 @@ public class ForewordTests
     public void FileSystem_effect_used_in_program()
     {
         string source = """
-            main : [FileSystem] Text
-            main = read-file "test.txt"
+            opening : [FileSystem] Text
+            opening = read-file "test.txt"
             """;
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
@@ -332,8 +321,8 @@ public class ForewordTests
             greet : Text -> [Console] Nothing
             greet (name) = print-line ("Hello, " ++ name ++ "!")
 
-            main : [Console] Nothing
-            main = greet "world"
+            opening : [Console] Nothing
+            opening = greet "world"
             """;
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
@@ -350,32 +339,21 @@ public class ForewordTests
         DiagnosticBag diagnostics = new();
 
         DocumentNode document = DocumentParser.Parse(src, diagnostics);
-        if (diagnostics.HasErrors)
-        {
-            return diagnostics;
-        }
+        if (diagnostics.HasErrors) return diagnostics;
 
         Desugarer desugarer = new(diagnostics);
         Chapter chapter = desugarer.Desugar(document, chapterName);
-        if (diagnostics.HasErrors)
-        {
-            return diagnostics;
-        }
+        if (diagnostics.HasErrors) return diagnostics;
 
         ForewordTestLoader forewordLoader = new(forewordDir, diagnostics);
         NameResolver resolver = new(diagnostics, forewordLoader);
         ResolvedChapter resolved = resolver.Resolve(chapter);
-        if (diagnostics.HasErrors)
-        {
-            return diagnostics;
-        }
+        if (diagnostics.HasErrors) return diagnostics;
 
         TypeChecker checker = new(diagnostics);
 
         foreach (ResolvedChapter imported in resolved.CitedChapters)
-        {
             checker.CheckChapter(imported.Chapter);
-        }
 
         checker.CheckChapter(resolved.Chapter);
         return diagnostics;
@@ -388,32 +366,21 @@ public class ForewordTests
         DiagnosticBag diagnostics = new();
 
         DocumentNode document = DocumentParser.Parse(src, diagnostics);
-        if (diagnostics.HasErrors)
-        {
-            return diagnostics;
-        }
+        if (diagnostics.HasErrors) return diagnostics;
 
         Desugarer desugarer = new(diagnostics);
         Chapter chapter = desugarer.Desugar(document, "test");
-        if (diagnostics.HasErrors)
-        {
-            return diagnostics;
-        }
+        if (diagnostics.HasErrors) return diagnostics;
 
         ForewordTestLoader forewordLoader = new(forewordDir, diagnostics);
         NameResolver resolver = new(diagnostics, forewordLoader);
         ResolvedChapter resolved = resolver.Resolve(chapter);
-        if (diagnostics.HasErrors)
-        {
-            return diagnostics;
-        }
+        if (diagnostics.HasErrors) return diagnostics;
 
         TypeChecker checker = new(diagnostics);
 
         foreach (ResolvedChapter imported in resolved.CitedChapters)
-        {
             checker.CheckChapter(imported.Chapter);
-        }
 
         checker.CheckChapter(resolved.Chapter);
         return diagnostics;
@@ -429,16 +396,10 @@ sealed class ForewordTestLoader(string forewordDir, DiagnosticBag diagnostics) :
 
     public ResolvedChapter? Load(string quire, string chapterName)
     {
-        if (quire != QuireName)
-        {
-            return null;
-        }
-
+        if (quire != QuireName) return null;
         ResolvedChapter? cached = m_cache[chapterName];
         if (cached is not null)
-        {
             return cached;
-        }
 
         // Scan forward files for a matching Chapter: header.
         string? filePath = null;
@@ -446,54 +407,31 @@ sealed class ForewordTestLoader(string forewordDir, DiagnosticBag diagnostics) :
         {
             string? firstLine;
             using (StreamReader r = new(candidate))
-            {
                 firstLine = r.ReadLine();
-            }
-
-            if (firstLine is null)
-            {
-                continue;
-            }
-
-            if (!firstLine.StartsWith("Chapter:", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
+            if (firstLine is null) continue;
+            if (!firstLine.StartsWith("Chapter:", StringComparison.Ordinal)) continue;
             if (firstLine["Chapter:".Length..].Trim() == chapterName)
             {
                 filePath = candidate;
                 break;
             }
         }
-        if (filePath is null)
-        {
-            return null;
-        }
+        if (filePath is null) return null;
 
         string source = File.ReadAllText(filePath);
         SourceText src = new(filePath, source);
         DiagnosticBag compileDiag = new();
 
         DocumentNode document = DocumentParser.Parse(src, compileDiag);
-        if (compileDiag.HasErrors)
-        {
-            return null;
-        }
+        if (compileDiag.HasErrors) return null;
 
         Desugarer desugarer = new(compileDiag);
         Chapter chapter = desugarer.Desugar(document, chapterName);
-        if (compileDiag.HasErrors)
-        {
-            return null;
-        }
+        if (compileDiag.HasErrors) return null;
 
         NameResolver resolver = new(compileDiag, this);
         ResolvedChapter resolved = resolver.Resolve(chapter);
-        if (compileDiag.HasErrors)
-        {
-            return null;
-        }
+        if (compileDiag.HasErrors) return null;
 
         m_cache = m_cache.Set(chapterName, resolved);
         return resolved;

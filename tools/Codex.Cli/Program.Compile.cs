@@ -22,17 +22,14 @@ public static partial class Program
     static CompilationResult? CompileFile(string filePath)
     {
         IRCompilationResult? irResult = CompileToIR(filePath);
-        if (irResult is null)
-        {
-            return null;
-        }
+        if (irResult is null) return null;
 
         CSharpEmitter emitter = new();
         string csharpSource = emitter.Emit(irResult.Chapter);
         return new CompilationResult(csharpSource, irResult.Types);
     }
 
-    static IRCompilationResult? CompileToIR(string filePath, Set<string>? grantedCapabilities = null)
+    static IRCompilationResult? CompileToIR(string filePath, Set<string>? grantedCapabilities = null, PhaseDumpSink? dumpSink = null, bool liftLambdas = false)
     {
         if (!File.Exists(filePath))
         {
@@ -43,32 +40,47 @@ public static partial class Program
         string content = File.ReadAllText(filePath);
         SourceText source = new(filePath, content);
         DiagnosticBag diagnostics = new();
+        string chapterName = Path.GetFileNameWithoutExtension(filePath);
 
         DocumentNode document = ParseSourceFile(source, content, diagnostics);
+        dumpSink?.DumpParsed(chapterName, [(filePath, document)]);
 
         Desugarer desugarer = new(diagnostics);
-        string chapterName = Path.GetFileNameWithoutExtension(filePath);
         Chapter chapter = desugarer.Desugar(document, chapterName);
+        dumpSink?.DumpDesugared(chapterName, chapter);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         NameResolver resolver = CreateResolver(diagnostics,
             Path.GetDirectoryName(Path.GetFullPath(filePath)));
         ResolvedChapter resolved = resolver.Resolve(chapter);
+        dumpSink?.DumpResolved(chapterName, resolved);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
+
+        if (s_verifyInvariants)
+        {
+            InvariantVerifier.AfterResolution(resolved);
+        }
 
         TypeChecker checker = new(diagnostics);
 
         // Import types from dependency modules before checking main chapter
         foreach (ResolvedChapter imported in resolved.CitedChapters)
-        {
             checker.CiteChapter(imported.Chapter);
-        }
 
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
+        dumpSink?.DumpTyped(chapterName, resolved, types, checker.ExprTypes);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
+
+        List<TypedImport> citedImports = TypedCitations.Check(resolved.CitedChapters, diagnostics);
+
+        if (s_verifyInvariants)
+        {
+            TypeCheckInvariants.Verify(resolved.Chapter, types);
+            TypeCheckInvariants.VerifyElaboration(resolved.Chapter, checker.ExprTypes);
+        }
 
         LinearityChecker linearityChecker = new(diagnostics, types);
         linearityChecker.CheckChapter(resolved.Chapter);
@@ -80,12 +92,22 @@ public static partial class Program
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
-        Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, diagnostics);
-        IRChapter irModule = lowering.Lower(resolved.Chapter);
+        Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, diagnostics, checker.ExprTypes);
+        IRChapter irModule = lowering.Lower(resolved);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
-        irModule = Lowering.LowerCitedDefs(resolved.CitedChapters, irModule, diagnostics);
+        irModule = Lowering.LowerCitedDefs(citedImports, irModule, diagnostics, useExprTypes: true);
+        if (liftLambdas)
+        {
+            irModule = LambdaLifting.Lift(irModule);
+        }
+        dumpSink?.DumpIR(chapterName, irModule);
+
+        if (s_verifyInvariants)
+        {
+            LoweringInvariants.Verify(irModule);
+        }
 
         CapabilityChecker capChecker = new(diagnostics, types);
         CapabilityReport capReport = capChecker.CheckChapter(resolved.Chapter, grantedCapabilities);
@@ -95,11 +117,13 @@ public static partial class Program
 
     static IRCompilationResult? CompileMultipleToIR(
         string[] filePaths, string chapterName, IReadOnlyList<IChapterLoader>? extraLoaders = null,
-        Set<string>? grantedCapabilities = null, string? codexRoot = null)
+        Set<string>? grantedCapabilities = null, string? codexRoot = null, PhaseDumpSink? dumpSink = null,
+        bool liftLambdas = false)
     {
         DiagnosticBag diagnostics = new();
         Desugarer desugarer = new(diagnostics);
         List<Chapter> perFileChapters = [];
+        List<(string FilePath, DocumentNode Document)> parsedDocs = [];
         List<(string FilePath, string? Quire, string ChapterName, PageMarker? Page)> pageMarkers = [];
 
         // If no explicit root was given, infer it from the first file's directory.
@@ -119,6 +143,7 @@ public static partial class Program
             string content = File.ReadAllText(filePath);
             SourceText source = new(filePath, content);
             DocumentNode document = ParseSourceFile(source, content, diagnostics);
+            parsedDocs.Add((filePath, document));
             SourceSpan fileSpan = SourceSpan.Single(0, 1, 1, filePath);
             if (document.Chapters.Count == 0)
             {
@@ -139,9 +164,11 @@ public static partial class Program
                 ? QuireNameFor(filePath, inferredRoot)
                 : null;
             pageMarkers.Add((filePath, quire, fileModule, document.Page));
-            Chapter chapter = desugarer.Desugar(document, fileModule) with { Quire = quire };
+            Chapter chapter = PhaseTimer.Time("desugar", () => desugarer.Desugar(document, fileModule) with { Quire = quire });
             perFileChapters.Add(chapter);
         }
+
+        dumpSink?.DumpParsed(chapterName, parsedDocs);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
@@ -149,32 +176,40 @@ public static partial class Program
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
         ChapterScoper scoper = new(diagnostics);
-        Chapter combined = scoper.Scope(perFileChapters, chapterName);
+        Chapter combined = PhaseTimer.Time("scope", () => scoper.Scope(perFileChapters, chapterName));
+        dumpSink?.DumpDesugared(chapterName, combined);
 
         string? baseDir = filePaths.Length > 0
             ? Path.GetDirectoryName(Path.GetFullPath(filePaths[0]))
             : null;
         NameResolver resolver = CreateResolver(diagnostics, baseDir, extraLoaders);
-        ResolvedChapter resolved = resolver.Resolve(combined);
+        ResolvedChapter resolved = PhaseTimer.Time("resolve", () => resolver.Resolve(combined));
+        dumpSink?.DumpResolved(chapterName, resolved);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
+
+        if (s_verifyInvariants)
+        {
+            InvariantVerifier.AfterResolution(resolved);
+        }
 
         TypeChecker checker = new(diagnostics);
 
         foreach (ResolvedChapter imported in resolved.CitedChapters)
-        {
             checker.CiteChapter(imported.Chapter);
-        }
 
-        Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
+        Map<string, CodexType> types = PhaseTimer.Time("check", () => checker.CheckChapter(resolved.Chapter));
+        dumpSink?.DumpTyped(chapterName, resolved, types, checker.ExprTypes);
 
-        foreach (ResolvedChapter imported in resolved.CitedChapters)
-        {
-            TypeChecker importChecker = new(diagnostics);
-            importChecker.CheckChapter(imported.Chapter);
-        }
+        List<TypedImport> citedImports = TypedCitations.Check(resolved.CitedChapters, diagnostics);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
+
+        if (s_verifyInvariants)
+        {
+            TypeCheckInvariants.Verify(resolved.Chapter, types);
+            TypeCheckInvariants.VerifyElaboration(resolved.Chapter, checker.ExprTypes);
+        }
 
         LinearityChecker linearityChecker = new(diagnostics, types);
         linearityChecker.CheckChapter(resolved.Chapter);
@@ -186,12 +221,22 @@ public static partial class Program
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
-        Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, diagnostics);
-        IRChapter irModule = lowering.Lower(resolved.Chapter);
+        Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, diagnostics, checker.ExprTypes);
+        IRChapter irModule = PhaseTimer.Time("lower", () => lowering.Lower(resolved));
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
-        irModule = Lowering.LowerCitedDefs(resolved.CitedChapters, irModule, diagnostics);
+        irModule = Lowering.LowerCitedDefs(citedImports, irModule, diagnostics, useExprTypes: true);
+        if (liftLambdas)
+        {
+            irModule = LambdaLifting.Lift(irModule);
+        }
+        dumpSink?.DumpIR(chapterName, irModule);
+
+        if (s_verifyInvariants)
+        {
+            LoweringInvariants.Verify(irModule);
+        }
 
         CapabilityChecker capChecker = new(diagnostics, types);
         CapabilityReport capReport = capChecker.CheckChapter(resolved.Chapter, grantedCapabilities);
@@ -230,30 +275,24 @@ public static partial class Program
         if (extraLoaders is not null)
         {
             foreach (IChapterLoader loader in extraLoaders)
-            {
                 loaders.Add(loader);
-            }
         }
 
         ForewordChapterLoader? foreword = ForewordChapterLoader.TryCreate(diagnostics);
         if (foreword is not null)
-        {
             loaders.Add(foreword);
-        }
 
         Codex.Repository.FactStore? store =
             Codex.Repository.FactStore.Open(Directory.GetCurrentDirectory());
         if (store is not null)
-        {
             loaders.Add(new RepositoryChapterLoader(store, diagnostics));
-        }
 
         return new NameResolver(diagnostics, new CompositeChapterLoader([.. loaders]));
     }
 
     static IRCompilationResult? CompileViewToIR(
         Codex.Repository.FactStore store, string viewName, string chapterName,
-        Set<string>? grantedCapabilities = null)
+        Set<string>? grantedCapabilities = null, bool liftLambdas = false)
     {
         ValueMap<string, ContentHash> view = store.GetNamedView(viewName);
         if (view.Count == 0)
@@ -324,13 +363,20 @@ public static partial class Program
         TypeChecker checker = new(diagnostics);
 
         foreach (ResolvedChapter imported in resolved.CitedChapters)
-        {
             checker.CiteChapter(imported.Chapter);
-        }
 
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
+        // View-mode compile has no dump sink threading today; skip DumpTyped here.
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
+
+        List<TypedImport> citedImports = TypedCitations.Check(resolved.CitedChapters, diagnostics);
+
+        if (s_verifyInvariants)
+        {
+            TypeCheckInvariants.Verify(resolved.Chapter, types);
+            TypeCheckInvariants.VerifyElaboration(resolved.Chapter, checker.ExprTypes);
+        }
 
         LinearityChecker linearityChecker = new(diagnostics, types);
         linearityChecker.CheckChapter(resolved.Chapter);
@@ -342,12 +388,21 @@ public static partial class Program
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
-        Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, diagnostics);
-        IRChapter irModule = lowering.Lower(resolved.Chapter);
+        Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, diagnostics, checker.ExprTypes);
+        IRChapter irModule = lowering.Lower(resolved);
 
         if (diagnostics.HasErrors) { PrintDiagnostics(diagnostics); return null; }
 
-        irModule = Lowering.LowerCitedDefs(resolved.CitedChapters, irModule, diagnostics);
+        irModule = Lowering.LowerCitedDefs(citedImports, irModule, diagnostics, useExprTypes: true);
+        if (liftLambdas)
+        {
+            irModule = LambdaLifting.Lift(irModule);
+        }
+
+        if (s_verifyInvariants)
+        {
+            LoweringInvariants.Verify(irModule);
+        }
 
         CapabilityChecker capChecker = new(diagnostics, types);
         CapabilityReport capReport = capChecker.CheckChapter(resolved.Chapter, grantedCapabilities);
@@ -369,10 +424,7 @@ public static partial class Program
             List<(string FilePath, string? Quire, string ChapterName, PageMarker? Page)> files = group.ToList();
 
             // Single-file chapter: no collision, no page coherence to check.
-            if (files.Count == 1)
-            {
-                continue;
-            }
+            if (files.Count == 1) continue;
 
             // Multi-file chapter: all files must carry 'Page N of M' markers
             // agreeing on M; any file without that marker means this is a

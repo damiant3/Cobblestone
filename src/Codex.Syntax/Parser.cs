@@ -10,6 +10,23 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
     int m_position = 0;
     int m_parenDepth = 0;
 
+    // Fuel budget for recursive descent. Biggest DoS surface in the
+    // compiler — operates directly on user input. 256 matches the other
+    // phases; adversarial paren-bomb or deeply-nested pattern input trips
+    // CDX9001 rather than overflowing the .NET stack.
+    const int MaxRecursionDepth = 256;
+    int m_recursionDepth;
+
+    bool FuelExhausted(string op, SourceSpan span)
+    {
+        if (m_recursionDepth < MaxRecursionDepth)
+            return false;
+        m_diagnostics.Error(CdxCodes.ResourceExhausted,
+            $"compiler resource exhausted in parser.{op} (budget {MaxRecursionDepth})",
+            span);
+        return true;
+    }
+
     public DiagnosticBag Diagnostics => m_diagnostics;
 
     public DocumentNode ParseDocument()
@@ -71,17 +88,17 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
             }
 
             TypeDefinitionNode? typeDef = TryParseTypeDefinition();
-            if (typeDef is not null)
-            {
-                typeDefinitions.Add(typeDef);
-            }
+            if (typeDef is not null)
+            {
+                typeDefinitions.Add(typeDef);
+            }
             else
             {
                 DefinitionNode? def = TryParseDefinition();
-                if (def is not null)
-                {
-                    definitions.Add(def);
-                }
+                if (def is not null)
+                {
+                    definitions.Add(def);
+                }
                 else
                 {
                     PageMarker? pm = TryParsePageMarker();
@@ -107,9 +124,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
     PageMarker? TryParsePageMarker()
     {
         if (Current.Kind != TokenKind.TypeIdentifier || Current.Text != "Page")
-        {
             return null;
-        }
 
         int saved = m_position;
         Token pageKw = Current;
@@ -150,9 +165,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
     TypeDefinitionNode? TryParseTypeDefinition()
     {
         if (Current.Kind != TokenKind.TypeIdentifier)
-        {
             return null;
-        }
 
         int savedPos = m_position;
 
@@ -215,16 +228,8 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         while (lookahead < m_tokens.Count)
         {
             TokenKind kind = m_tokens[lookahead].Kind;
-            if (kind == TokenKind.Pipe)
-            {
-                return true;
-            }
-
-            if (kind is TokenKind.Newline or TokenKind.EndOfFile)
-            {
-                return false;
-            }
-
+            if (kind == TokenKind.Pipe) return true;
+            if (kind is TokenKind.Newline or TokenKind.EndOfFile) return false;
             lookahead++;
         }
         return false;
@@ -233,10 +238,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
     CitesNode? TryParseCites()
     {
         if (Current.Kind != TokenKind.CitesKeyword)
-        {
             return null;
-        }
-
         Token citesKw = Current;
         Advance();
 
@@ -321,10 +323,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
     EffectDefinitionNode? TryParseEffectDefinition()
     {
         if (Current.Kind != TokenKind.EffectKeyword)
-        {
             return null;
-        }
-
         Token effectKw = Current;
         Advance();
 
@@ -426,10 +425,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         while (Current.Kind == TokenKind.Pipe || firstCtor)
         {
             if (Current.Kind == TokenKind.Pipe)
-            {
                 Advance();
-            }
-
             firstCtor = false;
             SkipNewlines();
 
@@ -469,10 +465,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
 
             SourceSpan ctorSpan = ctorName.Span;
             if (fields.Count > 0)
-            {
                 ctorSpan = ctorName.Span.Through(fields[^1].Span);
-            }
-
             constructors.Add(new VariantConstructorNode(ctorName, fields, ctorSpan));
             SkipNewlines();
         }
@@ -484,9 +477,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
     DefinitionNode? TryParseDefinition()
     {
         if (Current.Kind is not (TokenKind.Identifier or TokenKind.TypeIdentifier))
-        {
             return null;
-        }
 
         int startPos = m_position;
 
@@ -542,14 +533,10 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         while (Current.Kind == TokenKind.Identifier && Peek(1)?.Kind != TokenKind.Colon)
         {
             if (Current.Kind == TokenKind.Identifier && Current.Text == "=")
-            {
                 break;
-            }
             TokenKind? nextKind = Peek(1)?.Kind;
             if (nextKind is TokenKind.Equals or TokenKind.Newline or TokenKind.EndOfFile or null)
-            {
                 break;
-            }
             parameters.Add(Current);
             Advance();
         }
@@ -619,9 +606,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
     void Advance()
     {
         if (!IsAtEnd)
-        {
             m_position++;
-        }
     }
 
     Token Expect(TokenKind kind)
@@ -653,9 +638,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
     void SkipNewlines()
     {
         while (Current.Kind is TokenKind.Newline or TokenKind.Indent or TokenKind.Dedent)
-        {
             Advance();
-        }
     }
 
     static bool IsReservedKeyword(TokenKind kind) => kind
@@ -691,7 +674,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         // Stop at arrows, operators, keywords, newlines, and delimiters — none of which
         // can begin a type atom. This is not a heuristic: it matches the grammar exactly.
         if (Current.Kind is not (TokenKind.TypeIdentifier or TokenKind.Identifier
-            or TokenKind.LeftParen or TokenKind.IntegerLiteral))
+            or TokenKind.LeftParen or TokenKind.IntegerLiteral or TokenKind.NothingKeyword))
         {
             return false;
         }
@@ -703,9 +686,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         {
             Token? next = Peek(1);
             if (next is not null && next.Kind == TokenKind.Colon)
-            {
                 return false;
-            }
         }
 
         return true;
@@ -725,15 +706,13 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
                     // Indented tokens are continuations of the current definition.
                     int col = Current.Span.Start.Column;
                     if (col <= 3)
-                    {
                         return;
-                    }
                 }
             }
-            else
-            {
-                Advance();
-            }
+            else
+            {
+                Advance();
+            }
         }
     }
 
@@ -742,9 +721,7 @@ public sealed partial class Parser(IReadOnlyList<Token> tokens, DiagnosticBag di
         while (!IsAtEnd)
         {
             if (Current.Kind is TokenKind.Newline or TokenKind.Dedent)
-            {
                 return;
-            }
 
             if (Current.Kind is TokenKind.ThenKeyword or TokenKind.ElseKeyword
                 or TokenKind.InKeyword or TokenKind.IfKeyword or TokenKind.IsKeyword

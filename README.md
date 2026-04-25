@@ -78,7 +78,7 @@ dotnet run --project tools/Codex.Cli -- build samples/hello.codex --targets cs,j
 dotnet run --project tools/Codex.Cli -- build samples/word-freq/
 
 # Bootstrap: compile the compiler with itself
-dotnet run --project tools/Codex.Bootstrap
+dotnet run --project tools/Codex.Cli -- build Codex.Codex
 
 # Agent toolkit
 dotnet tools/codex-agent/codex-agent.dll orient
@@ -141,9 +141,9 @@ Source (.codex)
     → Emitter       target source code / machine code
 ```
 
-The pipeline exists twice: in C# (the locked reference implementation)
-and in Codex (the self-hosted compiler, 33 files, ~12,000 lines). The
-Codex version is the one that matters.
+The pipeline exists twice: in C# (the reference implementation) and in
+Codex (the self-hosted compiler, 33 files, ~12,000 lines). The Codex
+version is the one that matters.
 
 ---
 
@@ -234,11 +234,11 @@ The compiler compiles itself. Two notations for convergence:
 C# reference compiler proves correctness (Thompson attack resistance).
 
 ```sh
-# Run the bootstrap
-dotnet run --project tools/Codex.Bootstrap
+# Run the bootstrap (full stage 0→1→2→3 fixed-point verification)
+dotnet run --project tools/Codex.Cli -- bootstrap Codex.Codex
 
-# Benchmark (3 warmup + 10 measured, median)
-dotnet run --project tools/Codex.Bootstrap -- --bench
+# Benchmark (3 warmup + 10 measured, median per phase)
+dotnet run --project tools/Codex.Bootstrap-Codex -- --bench Codex.Codex
 ```
 
 ---
@@ -269,7 +269,7 @@ bootstrap: compiler compiled entirely by Codex with no C# in the chain).
 
 ```
 Codex.sln                        40 projects, builds clean, 1,149 tests
-├── src/                         Reference compiler (C#, locked)
+├── src/                         Reference compiler (C#)
 │   ├── Codex.Core               Diagnostics, SourceText, CceTable, Map<K,V>
 │   ├── Codex.Syntax             Lexer, Parser, ProseParser
 │   ├── Codex.Ast                Desugarer, AST nodes
@@ -283,7 +283,8 @@ Codex.sln                        40 projects, builds clean, 1,149 tests
 ├── tests/                       1,149 tests across 9 projects
 ├── tools/
 │   ├── Codex.Cli                Command-line interface
-│   ├── Codex.Bootstrap          Bootstrap harness + benchmark
+│   ├── Codex.Bootstrap-Codex    Codex-side Bootstrap harness (bench / binary / sample / dump-source)
+│   ├── Codex.Bootstrap          Legacy C# Bootstrap harness (still used by `codex bootstrap` and the perf profilers)
 │   ├── codex-agent/             AI agent toolkit (orient, doctor, build, test, handoff)
 │   └── Codex.VsExtension        Visual Studio extension
 ├── samples/                     41 example programs
@@ -339,7 +340,6 @@ Syntax highlighting, bracket matching, auto-indentation, and LSP integration
 | Milestone | What | Status |
 |-----------|------|--------|
 | M0–M12 | Foundation through self-hosting | Done |
-| **MM1** | Reference compiler locked. All development in Codex. | **Done** |
 | Peak II | Native backends (x86-64, RISC-V, ARM64, WASM) | Done |
 | Peak III | Codex.OS — 7KB kernel, bare metal | Done |
 | CCE | Own character encoding, frequency-sorted | Done |

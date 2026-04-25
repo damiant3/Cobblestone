@@ -1,6 +1,15 @@
 Chapter: Type Checker
+  cites Codex chapter Lists
 
  Expression type inference dispatch.
+
+Section: Fuel Budget
+
+ Recursive inference over AExpr caps at max-infer-depth stack
+ frames. Exhaustion emits CDX9001 and returns ErrorTy so the
+ rest of the pipeline cascades gracefully.
+
+  max-infer-depth : Integer = 256
 
 Section: Check Result
   CheckResult = record {
@@ -42,7 +51,7 @@ Section: Infer Name
      in let inst = instantiate-type st raw
      in CheckResult {
       inferred-type = inst.var-type,
-      state = inst.state
+      state = record-expr-type (inst.state) span (inst.var-type)
      }
     else CheckResult {
      inferred-type = ErrorTy,
@@ -65,21 +74,10 @@ Section: Infer Name
   subst-type-var (ty) (var-id) (replacement) =
    when ty
     is TypeVar (id) -> if id == var-id then replacement else ty
-    is FunTy (param) (ret) -> FunTy (subst-type-var param var-id replacement) (subst-type-var ret var-id replacement)
-    is ListTy (elem) -> ListTy (subst-type-var elem var-id replacement)
-    is LinkedListTy (elem) -> LinkedListTy (subst-type-var elem var-id replacement)
     is ForAllTy (inner-id) (body) ->
      if inner-id == var-id then ty
      else ForAllTy inner-id (subst-type-var body var-id replacement)
-    is ConstructedTy (name) (args) -> ConstructedTy name (map-subst-type-var args var-id replacement 0 (list-length args) [])
-    is SumTy (name) (ctors) -> ty
-    is RecordTy (name) (fields) -> ty
-    is otherwise -> ty
-
-  map-subst-type-var : List CodexType -> Integer -> CodexType -> Integer -> Integer -> List CodexType -> List CodexType
-  map-subst-type-var (args) (var-id) (replacement) (i) (len) (acc) =
-   if i == len then acc
-   else map-subst-type-var args var-id replacement (i + 1) len (list-snoc acc (subst-type-var (list-at args i) var-id replacement))
+    is otherwise -> codex-type-map-children (\c -> subst-type-var c var-id replacement) ty
 
 Section: Infer Binary
   infer-binary : UnificationState -> TypeEnv -> AExpr -> BinaryOp -> AExpr -> SourceSpan -> CheckResult
@@ -111,10 +109,23 @@ Section: Infer Binary
   infer-arithmetic : UnificationState -> CodexType -> CodexType -> SourceSpan -> CheckResult
   infer-arithmetic (st) (lt) (rt) (span) =
    let r = unify st lt rt span
+   in let resolved-l = resolve-silent (r.state) lt
+   in let resolved-r = resolve-silent (r.state) rt
+   in let st2 = if is-arithmetic-type resolved-l & is-arithmetic-type resolved-r then r.state
+                else add-unify-error (r.state) cdx-arithmetic-requires-numeric "Arithmetic operator requires Integer or Number" span
    in CheckResult {
     inferred-type = lt,
-    state = r.state
+    state = st2
    }
+
+  is-arithmetic-type : CodexType -> Boolean
+  is-arithmetic-type (ty) =
+   when ty
+    is IntegerTy -> True
+    is NumberTy -> True
+    is TypeVar (id) -> True
+    is ErrorTy -> True
+    is otherwise -> False
 
   infer-comparison : UnificationState -> CodexType -> CodexType -> SourceSpan -> CheckResult
   infer-comparison (st) (lt) (rt) (span) =
@@ -135,7 +146,7 @@ Section: Infer Binary
 
   infer-append : UnificationState -> CodexType -> CodexType -> SourceSpan -> CheckResult
   infer-append (st) (lt) (rt) (span) =
-   let resolved = resolve st lt
+   let resolved = resolve-silent st lt
    in when resolved
     is TextTy ->
      let r = unify st rt TextTy span
@@ -191,7 +202,8 @@ Section: Infer Let
    }
    else let b = list-at bindings i
    in let vr = infer-expr st env (b.value)
-   in let bound-ty = unwrap-effectful-or-error (vr.inferred-type) (b.name.value) (aexpr-span (b.value)) (vr.state)
+   in let resolved-ty = deep-resolve (vr.state) (vr.inferred-type)
+   in let bound-ty = unwrap-effectful-or-error resolved-ty (b.name.value) (aexpr-span (b.value)) (vr.state)
    in let env2 = env-bind env (b.name.value) (bound-ty.ty)
    in infer-let-bindings (bound-ty.state) env2 bindings (i + 1) len
 
@@ -328,7 +340,9 @@ Section: Infer Match
     }
     is ACtorPat (ctor-name) (sub-pats) (s) ->
      let ctor-lookup = instantiate-type st (env-lookup env (ctor-name.value))
-     in bind-ctor-sub-patterns (ctor-lookup.state) env sub-pats (ctor-lookup.var-type) 0 (list-length sub-pats)
+     in let ctor-ret = strip-fun-args (ctor-lookup.var-type)
+     in let unified = unify (ctor-lookup.state) ctor-ret ty s
+     in bind-ctor-sub-patterns (unified.state) env sub-pats (ctor-lookup.var-type) 0 (list-length sub-pats)
 
   bind-ctor-sub-patterns : UnificationState -> TypeEnv -> List APat -> CodexType -> Integer -> Integer -> PatBindResult
   bind-ctor-sub-patterns (st) (env) (sub-pats) (ctor-ty) (i) (len) =
@@ -363,18 +377,28 @@ Section: Infer Act
    in infer-act-loop (er.state) env stmts (i + 1) len (er.inferred-type)
      is AActBindStmt (name) (e) (s) ->
       let er = infer-expr st env e
-   in let env2 = env-bind env (name.value) (er.inferred-type)
+   in let bound-ty = when (er.inferred-type)
+      is EffectfulTy (effs) (inner) -> inner
+      is otherwise -> er.inferred-type
+   in let env2 = env-bind env (name.value) bound-ty
    in infer-act-loop (er.state) env2 stmts (i + 1) len (er.inferred-type)
 
 Section: Infer Expression (dispatch)
   infer-expr : UnificationState -> TypeEnv -> AExpr -> CheckResult
-  infer-expr (st) (env) (expr) =
-   when expr
+  infer-expr (st) (env) (expr) = infer-expr-at st env expr 0
+
+  infer-expr-at : UnificationState -> TypeEnv -> AExpr -> Integer -> CheckResult
+  infer-expr-at (st) (env) (expr) (depth) =
+   if depth >= max-infer-depth then CheckResult {
+    inferred-type = ErrorTy,
+    state = add-unify-error st cdx-resource-exhausted "compiler resource exhausted in type-checker.infer-expr (budget 256)" (aexpr-span expr)
+   }
+   else when expr
     is ALitExpr (val) (kind) (s) -> infer-literal st kind
     is ANameExpr (name) (s) -> infer-name st env (name.value) s
     is ABinaryExpr (left) (op) (right) (s) -> infer-binary st env left op right s
     is AUnaryExpr (operand) (s) ->
-     let r = infer-expr st env operand
+     let r = infer-expr-at st env operand (depth + 1)
      in let u = unify (r.state) (r.inferred-type) IntegerTy (aexpr-span operand)
      in CheckResult {
       inferred-type = IntegerTy,
@@ -388,23 +412,30 @@ Section: Infer Expression (dispatch)
     is AListExpr (elems) (s) -> infer-list st env elems
     is AActExpr (stmts) (s) -> infer-act st env stmts
     is AFieldAccess (obj) (field) (s) ->
-     let r = infer-expr st env obj
+     let r = infer-expr-at st env obj (depth + 1)
      in let resolved = deep-resolve (r.state) (r.inferred-type)
      in when resolved
-      is RecordTy (rname) (rfields) ->
+      is RecordTy (rname) (rargs) (rfields) ->
        let ftype = lookup-record-field rfields (field.value)
+     in let st2 = when ftype
+          is ErrorTy -> add-unify-error (r.state) cdx-unknown-record-field ("Record type has no field '" ++ field.value ++ "'") s
+          is otherwise -> r.state
      in CheckResult {
         inferred-type = ftype,
-        state = r.state
+        state = st2
        }
       is ConstructedTy (cname) (cargs) ->
        let record-type = resolve-constructed-to-record env (cname.value)
      in when record-type
-        is RecordTy (rname) (rfields) ->
-         let ftype = lookup-record-field rfields (field.value)
+        is RecordTy (rname) (rargs) (rfields) ->
+         let raw-ftype = lookup-record-field rfields (field.value)
+     in let ftype = apply-type-args-subst rargs cargs raw-ftype 0 (list-length rargs)
+     in let st2 = when raw-ftype
+            is ErrorTy -> add-unify-error (r.state) cdx-unknown-record-field ("Record type '" ++ cname.value ++ "' has no field '" ++ field.value ++ "'") s
+            is otherwise -> r.state
      in CheckResult {
           inferred-type = ftype,
-          state = r.state
+          state = st2
          }
         is otherwise ->
          let fr = fresh-and-advance (r.state)
@@ -420,13 +451,16 @@ Section: Infer Expression (dispatch)
        }
 
     is ARecordExpr (name) (fields) (s) ->
-     let st2 = infer-record-fields st env fields 0 (list-length fields)
-     in let ctor-type = if env-has env (name.value) then env-lookup env (name.value) else ErrorTy
-     in let result-type = strip-fun-args ctor-type
+     let ctor-raw = if env-has env (name.value) then env-lookup env (name.value) else ErrorTy
+     in let inst = instantiate-type st ctor-raw
+     in let result-type = strip-fun-args (inst.var-type)
+     in let st2 = infer-and-unify-record-fields (inst.state) env fields result-type 0 (list-length fields)
      in CheckResult {
       inferred-type = result-type,
-      state = st2
+      state = record-expr-type st2 s result-type
      }
+    is AHandleExpr (eff) (body) (clauses) (s) ->
+     infer-expr-at st env body (depth + 1)
     is AErrorExpr (msg) (s) -> CheckResult {
      inferred-type = ErrorTy,
      state = st
@@ -437,6 +471,15 @@ Section: Infer Expression (dispatch)
    if env-has env name then strip-fun-args (env-lookup env name)
    else ErrorTy
 
+  apply-type-args-subst : List CodexType -> List CodexType -> CodexType -> Integer -> Integer -> CodexType
+  apply-type-args-subst (generic) (instance) (ty) (i) (len) =
+   if i == len then ty
+   else if i >= list-length instance then ty
+   else let g = list-at generic i
+   in when g
+    is TypeVar (id) -> apply-type-args-subst generic instance (subst-type-var ty id (list-at instance i)) (i + 1) len
+    is otherwise -> apply-type-args-subst generic instance ty (i + 1) len
+
   infer-record-fields : UnificationState -> TypeEnv -> List AFieldExpr -> Integer -> Integer -> UnificationState
   infer-record-fields (st) (env) (fields) (i) (len) =
    if i == len then st
@@ -444,11 +487,18 @@ Section: Infer Expression (dispatch)
    in let r = infer-expr st env (f.value)
    in infer-record-fields (r.state) env fields (i + 1) len
 
-  strip-fun-args : CodexType -> CodexType
-  strip-fun-args (ty) =
-   when ty
-    is FunTy (p) (r) -> strip-fun-args r
-    is otherwise -> ty
+  infer-and-unify-record-fields : UnificationState -> TypeEnv -> List AFieldExpr -> CodexType -> Integer -> Integer -> UnificationState
+  infer-and-unify-record-fields (st) (env) (fields) (record-ty) (i) (len) =
+   if i == len then st
+   else let f = list-at fields i
+   in let r = infer-expr st env (f.value)
+   in let expected = when record-ty
+       is RecordTy (rname) (rargs) (rfields) -> lookup-record-field rfields (f.name.value)
+       is otherwise -> ErrorTy
+   in let st2 = when expected
+       is ErrorTy -> r.state
+       is otherwise -> (unify (r.state) (r.inferred-type) expected (aexpr-span (f.value))).state
+   in infer-and-unify-record-fields st2 env fields record-ty (i + 1) len
 
 Page 2 of 2
 

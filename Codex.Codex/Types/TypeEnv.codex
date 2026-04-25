@@ -1,113 +1,132 @@
-Chapter: Type Environment
-
- An immutable mapping from names to types.
-
-Section: Environment Type
-  TypeEnv = record {
-   bindings : List TypeBinding
-  }
-
-  TypeBinding = record {
-   name : Text,
-   bound-type : CodexType
-  }
-
-Section: Construction
-  empty-type-env : TypeEnv = TypeEnv { bindings = [] }
-
-Section: Lookup (binary search on sorted bindings)
-  env-lookup : TypeEnv -> Text -> CodexType
-  env-lookup (env) (name) =
-   let len = list-length (env.bindings)
-   in if len == 0 then ErrorTy
-   else let pos = bsearch-text-pos (env.bindings) name 0 len
-   in if pos >= len then ErrorTy
-   else let b = list-at (env.bindings) pos
-   in if b.name == name then b.bound-type else ErrorTy
-
-  env-has : TypeEnv -> Text -> Boolean
-  env-has (env) (name) =
-   let len = list-length (env.bindings)
-   in if len == 0 then False
-   else let pos = bsearch-text-pos (env.bindings) name 0 len
-   in if pos >= len then False
-      else (list-at (env.bindings) pos).name == name
-
-Section: Bind (sorted insert via list-insert-at)
-  env-bind : TypeEnv -> Text -> CodexType -> TypeEnv
-  env-bind (env) (name) (ty) =
-   let len = list-length (env.bindings)
-   in let pos = bsearch-text-pos (env.bindings) name 0 len
-   in TypeEnv { bindings = list-insert-at (env.bindings) pos (TypeBinding {
-    name = name,
-    bound-type = ty
-   }) }
-
-Section: Builtins
-  builtin-type-env : TypeEnv
-  builtin-type-env =
-   let e = empty-type-env
-   in let e2 = env-bind e "negate" (FunTy IntegerTy IntegerTy)
-   in let e3 = env-bind e2 "text-length" (FunTy TextTy IntegerTy)
-   in let e4 = env-bind e3 "integer-to-text" (FunTy IntegerTy TextTy)
-   in let e5 = env-bind e4 "char-at" (FunTy TextTy (FunTy IntegerTy CharTy))
-   in let e5b = env-bind e5 "char-to-text" (FunTy CharTy TextTy)
-   in let e6 = env-bind e5b "substring" (FunTy TextTy (FunTy IntegerTy (FunTy IntegerTy TextTy)))
-   in let e7 = env-bind e6 "is-letter" (FunTy CharTy BooleanTy)
-   in let e8 = env-bind e7 "is-digit" (FunTy CharTy BooleanTy)
-   in let e9 = env-bind e8 "is-whitespace" (FunTy CharTy BooleanTy)
-   in let e10 = env-bind e9 "char-code" (FunTy CharTy IntegerTy)
-   in let e10b = env-bind e10 "char-code-at" (FunTy TextTy (FunTy IntegerTy IntegerTy))
-   in let e11 = env-bind e10b "code-to-char" (FunTy IntegerTy CharTy)
-   in let e12 = env-bind e11 "text-replace" (FunTy TextTy (FunTy TextTy (FunTy TextTy TextTy)))
-   in let e12b = env-bind e12 "text-to-double-bits" (FunTy TextTy IntegerTy)
-   in let e13 = env-bind e12b "text-to-integer" (FunTy TextTy IntegerTy)
-   in let e14 = env-bind e13 "show" (ForAllTy 0 (FunTy (TypeVar 0) TextTy))
-   in let e15 = env-bind e14 "print-line" (FunTy TextTy NothingTy)
-   in let e16 = env-bind e15 "list-length" (ForAllTy 0 (FunTy (ListTy (TypeVar 0)) IntegerTy))
-   in let e16b = env-bind e16 "list-insert-at" (ForAllTy 0 (FunTy (ListTy (TypeVar 0)) (FunTy IntegerTy (FunTy (TypeVar 0) (ListTy (TypeVar 0))))))
-   in let e16b2 = env-bind e16b "list-set-at" (ForAllTy 0 (FunTy (ListTy (TypeVar 0)) (FunTy IntegerTy (FunTy (TypeVar 0) (ListTy (TypeVar 0))))))
-   in let e16c = env-bind e16b2 "text-compare" (FunTy TextTy (FunTy TextTy IntegerTy))
-   in let e16d = env-bind e16c "list-snoc" (ForAllTy 0 (FunTy (ListTy (TypeVar 0)) (FunTy (TypeVar 0) (ListTy (TypeVar 0)))))
-   in let e17 = env-bind e16d "list-at" (ForAllTy 0 (FunTy (ListTy (TypeVar 0)) (FunTy IntegerTy (TypeVar 0))))
-   in let e18 = env-bind e17 "map" (ForAllTy 0 (ForAllTy 1 (FunTy (FunTy (TypeVar 0) (TypeVar 1)) (FunTy (ListTy (TypeVar 0)) (ListTy (TypeVar 1))))))
-   in let e19 = env-bind e18 "filter" (ForAllTy 0 (FunTy (FunTy (TypeVar 0) BooleanTy) (FunTy (ListTy (TypeVar 0)) (ListTy (TypeVar 0)))))
-   in let e20 = env-bind e19 "fold" (ForAllTy 0 (ForAllTy 1 (FunTy (FunTy (TypeVar 1) (FunTy (TypeVar 0) (TypeVar 1))) (FunTy (TypeVar 1) (FunTy (ListTy (TypeVar 0)) (TypeVar 1))))))
-   in let e21 = env-bind e20 "read-line" TextTy
-   in let e22 = env-bind e21 "read-file" (FunTy TextTy TextTy)
-   in let e23 = env-bind e22 "write-file" (FunTy TextTy (FunTy TextTy NothingTy))
-   in let e23a = env-bind e23 "write-binary" (FunTy (ListTy IntegerTy) NothingTy)
-   in let e24 = env-bind e23a "file-exists" (FunTy TextTy BooleanTy)
-   in let e25 = env-bind e24 "list-files" (FunTy TextTy (FunTy TextTy (ListTy TextTy)))
-   in let e26 = env-bind e25 "text-split" (FunTy TextTy (FunTy TextTy (ListTy TextTy)))
-   in let e27 = env-bind e26 "text-contains" (FunTy TextTy (FunTy TextTy BooleanTy))
-   in let e28 = env-bind e27 "text-starts-with" (FunTy TextTy (FunTy TextTy BooleanTy))
-   in let e29 = env-bind e28 "get-args" (ListTy TextTy)
-   in let e30 = env-bind e29 "get-env" (FunTy TextTy TextTy)
-   in let e31 = env-bind e30 "current-dir" TextTy
-   in let e32 = env-bind e31 "fork" (ForAllTy 0 (FunTy (FunTy NothingTy (TypeVar 0)) (ConstructedTy (Name { value = "Task" }) [TypeVar 0])))
-   in let e33 = env-bind e32 "await" (ForAllTy 0 (FunTy (ConstructedTy (Name { value = "Task" }) [TypeVar 0]) (TypeVar 0)))
-   in let e34 = env-bind e33 "par" (ForAllTy 0 (ForAllTy 1 (FunTy (FunTy (TypeVar 0) (TypeVar 1)) (FunTy (ListTy (TypeVar 0)) (ListTy (TypeVar 1))))))
-   in let e35 = env-bind e34 "race" (ForAllTy 0 (FunTy (ListTy (FunTy NothingTy (TypeVar 0))) (TypeVar 0)))
-   in let e36 = env-bind e35 "text-concat-list" (FunTy (ListTy TextTy) TextTy)
-   in let e37 = env-bind e36 "linked-list-empty" (FunTy IntegerTy (LinkedListTy (ListTy IntegerTy)))
-   in let e38 = env-bind e37 "linked-list-push" (FunTy (LinkedListTy (ListTy IntegerTy)) (FunTy (ListTy IntegerTy) (LinkedListTy (ListTy IntegerTy))))
-   in let e39 = env-bind e38 "linked-list-to-list" (FunTy (LinkedListTy (ListTy IntegerTy)) (ListTy (ListTy IntegerTy)))
-   in let e40 = env-bind e39 "record-set" (ForAllTy 0 (ForAllTy 1 (FunTy (TypeVar 0) (FunTy TextTy (FunTy (TypeVar 1) (TypeVar 0))))))
-   in let e41 = env-bind e40 "heap-save" IntegerTy
-   in let e42 = env-bind e41 "heap-restore" (FunTy IntegerTy NothingTy)
-   in let e43 = env-bind e42 "heap-advance" (FunTy IntegerTy NothingTy)
-   in let e44 = env-bind e43 "list-with-capacity" (ForAllTy 0 (FunTy IntegerTy (ListTy (TypeVar 0))))
-   in let e45 = env-bind e44 "buf-write-byte" (FunTy IntegerTy (FunTy IntegerTy (FunTy IntegerTy IntegerTy)))
-   in let e46 = env-bind e45 "buf-write-bytes" (FunTy IntegerTy (FunTy IntegerTy (FunTy (ListTy IntegerTy) IntegerTy)))
-   in let e47 = env-bind e46 "buf-read-bytes" (FunTy IntegerTy (FunTy IntegerTy (FunTy IntegerTy (ListTy IntegerTy))))
-   in let e48 = env-bind e47 "bit-and" (FunTy IntegerTy (FunTy IntegerTy IntegerTy))
-   in let e49 = env-bind e48 "bit-or" (FunTy IntegerTy (FunTy IntegerTy IntegerTy))
-   in let e50 = env-bind e49 "bit-xor" (FunTy IntegerTy (FunTy IntegerTy IntegerTy))
-   in let e51 = env-bind e50 "bit-shl" (FunTy IntegerTy (FunTy IntegerTy IntegerTy))
-   in let e52 = env-bind e51 "bit-shr" (FunTy IntegerTy (FunTy IntegerTy IntegerTy))
-   in let e53 = env-bind e52 "bit-not" (FunTy IntegerTy IntegerTy)
-   in e53
-
-Page 1
-
+Chapter: Type Environment
+  cites Codex chapter General
+  cites Codex chapter Console
+  cites Codex chapter Files
+  cites Codex chapter Process
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Numbers
+  cites Codex chapter Bitwise
+  cites Codex chapter Lists
+  cites Codex chapter Concurrency
+  cites Codex chapter Runtime
+
+ An immutable mapping from names to types.
+
+Section: Environment Type
+  TypeEnv = record {
+   bindings : List TypeBinding
+  }
+
+  TypeBinding = record {
+   name : Text,
+   bound-type : CodexType
+  }
+
+Section: Construction
+  empty-type-env : TypeEnv = TypeEnv { bindings = [] }
+
+Section: Lookup (binary search on sorted bindings)
+  env-lookup : TypeEnv -> Text -> CodexType
+  env-lookup (env) (name) =
+   let len = list-length (env.bindings)
+   in if len == 0 then ErrorTy
+   else let pos = bsearch-text-pos (env.bindings) name 0 len
+   in if pos >= len then ErrorTy
+   else let b = list-at (env.bindings) pos
+   in if b.name == name then b.bound-type else ErrorTy
+
+  env-has : TypeEnv -> Text -> Boolean
+  env-has (env) (name) =
+   let len = list-length (env.bindings)
+   in if len == 0 then False
+   else let pos = bsearch-text-pos (env.bindings) name 0 len
+   in if pos >= len then False
+      else (list-at (env.bindings) pos).name == name
+
+Section: Bind (sorted insert via list-insert-at)
+  env-bind : TypeEnv -> Text -> CodexType -> TypeEnv
+  env-bind (env) (name) (ty) =
+   let len = list-length (env.bindings)
+   in let pos = bsearch-text-pos (env.bindings) name 0 len
+   in __record-set env "bindings" (list-insert-at (env.bindings) pos (TypeBinding {
+    name = name,
+    bound-type = ty
+   }))
+
+Section: Builtins
+  builtin-type-env : TypeEnv
+  builtin-type-env =
+   let e = empty-type-env
+   in let e2 = env-bind e "negate" (FunTy IntegerTy IntegerTy)
+   in let e3 = env-bind e2 "text-length" (FunTy TextTy IntegerTy)
+   in let e4 = env-bind e3 "integer-to-text" (FunTy IntegerTy TextTy)
+   in let e5 = env-bind e4 "char-at" (FunTy TextTy (FunTy IntegerTy CharTy))
+   in let e5b = env-bind e5 "char-to-text" (FunTy CharTy TextTy)
+   in let e6 = env-bind e5b "substring" (FunTy TextTy (FunTy IntegerTy (FunTy IntegerTy TextTy)))
+   in let e7 = env-bind e6 "is-letter" (FunTy CharTy BooleanTy)
+   in let e8 = env-bind e7 "is-digit" (FunTy CharTy BooleanTy)
+   in let e9 = env-bind e8 "is-whitespace" (FunTy CharTy BooleanTy)
+   in let e10 = env-bind e9 "char-code" (FunTy CharTy IntegerTy)
+   in let e10b = env-bind e10 "char-code-at" (FunTy TextTy (FunTy IntegerTy IntegerTy))
+   in let e11 = env-bind e10b "code-to-char" (FunTy IntegerTy CharTy)
+   in let e12 = env-bind e11 "text-replace" (FunTy TextTy (FunTy TextTy (FunTy TextTy TextTy)))
+   in let e12b = env-bind e12 "text-to-double-bits" (FunTy TextTy IntegerTy)
+   in let e13 = env-bind e12b "text-to-integer" (FunTy TextTy IntegerTy)
+   in let e14 = env-bind e13 "show" (ForAllTy 0 (FunTy (TypeVar 0) TextTy))
+   in let e15 = env-bind e14 "print-line" (FunTy TextTy (EffectfulTy [Name { value = "Console" }] NothingTy))
+   in let e16 = env-bind e15 "list-length" (ForAllTy 0 (FunTy (ListTy (TypeVar 0)) IntegerTy))
+   in let e16b = env-bind e16 "list-insert-at" (ForAllTy 0 (FunTy (ListTy (TypeVar 0)) (FunTy IntegerTy (FunTy (TypeVar 0) (ListTy (TypeVar 0))))))
+   in let e16b2 = env-bind e16b "list-set-at" (ForAllTy 0 (FunTy (ListTy (TypeVar 0)) (FunTy IntegerTy (FunTy (TypeVar 0) (ListTy (TypeVar 0))))))
+   in let e16c = env-bind e16b2 "text-compare" (FunTy TextTy (FunTy TextTy IntegerTy))
+   in let e16d = env-bind e16c "list-snoc" (ForAllTy 0 (FunTy (ListTy (TypeVar 0)) (FunTy (TypeVar 0) (ListTy (TypeVar 0)))))
+   in let e17 = env-bind e16d "list-at" (ForAllTy 0 (FunTy (ListTy (TypeVar 0)) (FunTy IntegerTy (TypeVar 0))))
+   in let e18 = env-bind e17 "map" (ForAllTy 0 (ForAllTy 1 (FunTy (FunTy (TypeVar 0) (TypeVar 1)) (FunTy (ListTy (TypeVar 0)) (ListTy (TypeVar 1))))))
+   in let e21 = env-bind e18 "read-line" TextTy
+   in let e22 = env-bind e21 "read-file" (FunTy TextTy TextTy)
+   in let e23 = env-bind e22 "write-file" (FunTy TextTy (FunTy TextTy NothingTy))
+   in let e23a = env-bind e23 "write-binary" (FunTy (ListTy IntegerTy) NothingTy)
+   in let e24 = env-bind e23a "file-exists" (FunTy TextTy BooleanTy)
+   in let e25 = env-bind e24 "list-files" (FunTy TextTy (FunTy TextTy (ListTy TextTy)))
+   in let e26 = env-bind e25 "text-split" (FunTy TextTy (FunTy TextTy (ListTy TextTy)))
+   in let e27 = env-bind e26 "text-contains" (FunTy TextTy (FunTy TextTy BooleanTy))
+   in let e28 = env-bind e27 "text-starts-with" (FunTy TextTy (FunTy TextTy BooleanTy))
+   in let e29 = env-bind e28 "get-args" (EffectfulTy [Name { value = "Process" }] (ListTy TextTy))
+   in let e30 = env-bind e29 "get-env" (FunTy TextTy (EffectfulTy [Name { value = "Process" }] TextTy))
+   in let e31 = env-bind e30 "current-dir" (EffectfulTy [Name { value = "Process" }] TextTy)
+   in let e31b = env-bind e31 "run-process" (FunTy TextTy (FunTy TextTy (EffectfulTy [Name { value = "Process" }] TextTy)))
+   in let e31c = env-bind e31b "run-process-full" (FunTy TextTy (FunTy TextTy (EffectfulTy [Name { value = "Process" }] (RecordTy (Name { value = "ProcessResult" }) [] [RecordField { name = Name { value = "stdout" }, type-val = TextTy }, RecordField { name = Name { value = "stderr" }, type-val = TextTy }, RecordField { name = Name { value = "exit-code" }, type-val = IntegerTy }]))))
+   in let e31d = env-bind e31c "process-exit" (FunTy IntegerTy (EffectfulTy [Name { value = "Process" }] NothingTy))
+   in let e32 = env-bind e31d "fork" (ForAllTy 0 (FunTy (FunTy NothingTy (TypeVar 0)) (ConstructedTy (Name { value = "Task" }) [TypeVar 0])))
+   in let e33 = env-bind e32 "await" (ForAllTy 0 (FunTy (ConstructedTy (Name { value = "Task" }) [TypeVar 0]) (TypeVar 0)))
+   in let e34 = env-bind e33 "par" (ForAllTy 0 (ForAllTy 1 (FunTy (FunTy (TypeVar 0) (TypeVar 1)) (FunTy (ListTy (TypeVar 0)) (ListTy (TypeVar 1))))))
+   in let e35 = env-bind e34 "race" (ForAllTy 0 (FunTy (ListTy (FunTy NothingTy (TypeVar 0))) (TypeVar 0)))
+   in let e35b = env-bind e35 "run-state" (FunTy IntegerTy (FunTy IntegerTy IntegerTy))
+   in let e35c = env-bind e35b "get-state" IntegerTy
+   in let e35d = env-bind e35c "set-state" (FunTy IntegerTy NothingTy)
+   in let e36 = env-bind e35d "text-concat-list" (FunTy (ListTy TextTy) TextTy)
+   in let e37 = env-bind e36 "__linked-list-empty" (FunTy IntegerTy (LinkedListTy (ListTy IntegerTy)))
+   in let e38 = env-bind e37 "__linked-list-push" (FunTy (LinkedListTy (ListTy IntegerTy)) (FunTy (ListTy IntegerTy) (LinkedListTy (ListTy IntegerTy))))
+   in let e39 = env-bind e38 "__linked-list-to-list" (FunTy (LinkedListTy (ListTy IntegerTy)) (ListTy (ListTy IntegerTy)))
+   in let e40 = env-bind e39 "__record-set" (ForAllTy 0 (ForAllTy 1 (FunTy (TypeVar 0) (FunTy TextTy (FunTy (TypeVar 1) (TypeVar 0))))))
+   in let e41 = env-bind e40 "__heap-save" IntegerTy
+   in let e42 = env-bind e41 "__heap-restore" (FunTy IntegerTy NothingTy)
+   in let e43 = env-bind e42 "__heap-advance" (FunTy IntegerTy NothingTy)
+   in let e44 = env-bind e43 "__list-with-capacity" (ForAllTy 0 (FunTy IntegerTy (ListTy (TypeVar 0))))
+   in let e45 = env-bind e44 "__buf-write-byte" (FunTy IntegerTy (FunTy IntegerTy (FunTy IntegerTy IntegerTy)))
+   in let e46 = env-bind e45 "__buf-write-bytes" (FunTy IntegerTy (FunTy IntegerTy (FunTy (ListTy IntegerTy) IntegerTy)))
+   in let e47 = env-bind e46 "__buf-read-bytes" (FunTy IntegerTy (FunTy IntegerTy (FunTy IntegerTy (ListTy IntegerTy))))
+   in let e48 = env-bind e47 "bit-and" (FunTy IntegerTy (FunTy IntegerTy IntegerTy))
+   in let e49 = env-bind e48 "bit-or" (FunTy IntegerTy (FunTy IntegerTy IntegerTy))
+   in let e50 = env-bind e49 "bit-xor" (FunTy IntegerTy (FunTy IntegerTy IntegerTy))
+   in let e51 = env-bind e50 "bit-shl" (FunTy IntegerTy (FunTy IntegerTy IntegerTy))
+   in let e52 = env-bind e51 "bit-shr" (FunTy IntegerTy (FunTy IntegerTy IntegerTy))
+   in let e53 = env-bind e52 "bit-not" (FunTy IntegerTy IntegerTy)
+   in let e54 = env-bind e53 "int-mod" (FunTy IntegerTy (FunTy IntegerTy IntegerTy))
+   in let e55 = env-bind e54 "abs" (FunTy IntegerTy IntegerTy)
+   in let e56 = env-bind e55 "min" (FunTy IntegerTy (FunTy IntegerTy IntegerTy))
+   in let e57 = env-bind e56 "max" (FunTy IntegerTy (FunTy IntegerTy IntegerTy))
+   in e57
+
+Page 1
+

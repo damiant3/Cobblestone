@@ -12,8 +12,8 @@ public class WasmEmitterTests
             square : Integer -> Integer
             square (x) = x * x
 
-            main : Integer
-            main = square 5
+            opening : Integer
+            opening = square 5
             """;
         byte[]? bytes = Helpers.CompileToWasm(source, "hello_wasm");
         Assert.NotNull(bytes);
@@ -37,8 +37,8 @@ public class WasmEmitterTests
             factorial : Integer -> Integer
             factorial (n) = if n == 0 then 1 else n * factorial (n - 1)
 
-            main : Integer
-            main = factorial 5
+            opening : Integer
+            opening = factorial 5
             """;
         byte[]? bytes = Helpers.CompileToWasm(source, "factorial_wasm");
         Assert.NotNull(bytes);
@@ -52,8 +52,8 @@ public class WasmEmitterTests
             greeting : Text -> Text
             greeting (name) = "Hello, " ++ name ++ "!"
 
-            main : Text
-            main = greeting "World"
+            opening : Text
+            opening = greeting "World"
             """;
         byte[]? bytes = Helpers.CompileToWasm(source, "greeting_wasm");
         Assert.NotNull(bytes);
@@ -67,8 +67,8 @@ public class WasmEmitterTests
             add : Integer -> Integer -> Integer
             add (x) (y) = x + y
 
-            main : Integer
-            main = add 3 4
+            opening : Integer
+            opening = add 3 4
             """;
         byte[]? bytes = Helpers.CompileToWasm(source, "arithmetic_wasm");
         Assert.NotNull(bytes);
@@ -82,8 +82,8 @@ public class WasmEmitterTests
             is-even : Integer -> Integer
             is-even (n) = if n == 0 then 1 else 0
 
-            main : Integer
-            main = is-even 4
+            opening : Integer
+            opening = is-even 4
             """;
         byte[]? bytes = Helpers.CompileToWasm(source, "bool_wasm");
         Assert.NotNull(bytes);
@@ -97,15 +97,11 @@ public class WasmEmitterTests
             square : Integer -> Integer
             square (x) = x * x
 
-            main : Integer
-            main = square 5
+            opening : Integer
+            opening = square 5
             """;
         string? output = CompileAndRun(source, "hello_run_wasm");
-        if (output is null)
-        {
-            return; // wasmtime not available, skip
-        }
-
+        if (output is null) return; // wasmtime not available, skip
         Assert.Equal("25", output.Trim());
     }
 
@@ -116,15 +112,11 @@ public class WasmEmitterTests
             factorial : Integer -> Integer
             factorial (n) = if n == 0 then 1 else n * factorial (n - 1)
 
-            main : Integer
-            main = factorial 5
+            opening : Integer
+            opening = factorial 5
             """;
         string? output = CompileAndRun(source, "factorial_run_wasm");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("120", output.Trim());
     }
 
@@ -135,15 +127,11 @@ public class WasmEmitterTests
             greeting : Text -> Text
             greeting (name) = "Hello, " ++ name ++ "!"
 
-            main : Text
-            main = greeting "World"
+            opening : Text
+            opening = greeting "World"
             """;
         string? output = CompileAndRun(source, "greeting_run_wasm");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("Hello, World!", output.Trim());
     }
 
@@ -151,15 +139,11 @@ public class WasmEmitterTests
     public void Let_binding_runs_under_wasmtime()
     {
         string source = """
-            main : Integer
-            main = let x = 10 in let y = 20 in x + y
+            opening : Integer
+            opening = let x = 10 in let y = 20 in x + y
             """;
         string? output = CompileAndRun(source, "let_run_wasm");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("30", output.Trim());
     }
 
@@ -167,15 +151,11 @@ public class WasmEmitterTests
     public void Show_integer_runs_under_wasmtime()
     {
         string source = """
-            main : Text
-            main = show 42
+            opening : Text
+            opening = show 42
             """;
         string? output = CompileAndRun(source, "show_int_run_wasm");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("42", output.Trim());
     }
 
@@ -186,8 +166,8 @@ public class WasmEmitterTests
             same : Text -> Text -> Integer
             same (a) (b) = if a == b then 1 else 0
 
-            main : Integer
-            main = same "hello" "hello"
+            opening : Integer
+            opening = same "hello" "hello"
             """;
         byte[]? bytes = Helpers.CompileToWasm(source, "streq_wasm");
         Assert.NotNull(bytes);
@@ -201,15 +181,11 @@ public class WasmEmitterTests
             same : Text -> Text -> Integer
             same (a) (b) = if a == b then 1 else 0
 
-            main : Integer
-            main = same "hello" "hello"
+            opening : Integer
+            opening = same "hello" "hello"
             """;
         string? output = CompileAndRun(source, "streq_true_wasm");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("1", output.Trim());
     }
 
@@ -220,15 +196,11 @@ public class WasmEmitterTests
             same : Text -> Text -> Integer
             same (a) (b) = if a == b then 1 else 0
 
-            main : Integer
-            main = same "hello" "world"
+            opening : Integer
+            opening = same "hello" "world"
             """;
         string? output = CompileAndRun(source, "streq_false_wasm");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("0", output.Trim());
     }
 
@@ -239,15 +211,11 @@ public class WasmEmitterTests
             different : Text -> Text -> Integer
             different (a) (b) = if a != b then 1 else 0
 
-            main : Integer
-            main = different "foo" "bar"
+            opening : Integer
+            opening = different "foo" "bar"
             """;
         string? output = CompileAndRun(source, "strneq_wasm");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("1", output.Trim());
     }
 
@@ -255,15 +223,11 @@ public class WasmEmitterTests
     public void Text_length_runs_under_wasmtime()
     {
         string source = """
-            main : Integer
-            main = text-length "hello"
+            opening : Integer
+            opening = text-length "hello"
             """;
         string? output = CompileAndRun(source, "textlen_wasm");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("5", output.Trim());
     }
 
@@ -271,15 +235,11 @@ public class WasmEmitterTests
     public void Concat_and_compare_runs_under_wasmtime()
     {
         string source = """
-            main : Integer
-            main = if ("ab" ++ "cd") == "abcd" then 1 else 0
+            opening : Integer
+            opening = if ("ab" ++ "cd") == "abcd" then 1 else 0
             """;
         string? output = CompileAndRun(source, "concat_eq_wasm");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("1", output.Trim());
     }
 
@@ -293,15 +253,11 @@ public class WasmEmitterTests
             quad : Integer -> Integer
             quad (x) = double (double x)
 
-            main : Integer
-            main = quad 3
+            opening : Integer
+            opening = quad 3
             """;
         string? output = CompileAndRun(source, "nested_wasm");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("12", output.Trim());
     }
 
@@ -312,15 +268,11 @@ public class WasmEmitterTests
             describe : Integer -> Text
             describe (n) = if n == 0 then "zero" else if n == 1 then "one" else "other"
 
-            main : Text
-            main = describe 1
+            opening : Text
+            opening = describe 1
             """;
         string? output = CompileAndRun(source, "matchlit_wasm");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("one", output.Trim());
     }
 
@@ -328,15 +280,11 @@ public class WasmEmitterTests
     public void Text_to_integer_runs_under_wasmtime()
     {
         string source = """
-            main : Integer
-            main = text-to-integer "42"
+            opening : Integer
+            opening = text-to-integer "42"
             """;
         string? output = CompileAndRun(source, "t2i_wasm");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("42", output.Trim());
     }
 
@@ -344,15 +292,11 @@ public class WasmEmitterTests
     public void Text_to_integer_negative_runs_under_wasmtime()
     {
         string source = """
-            main : Integer
-            main = text-to-integer "-7"
+            opening : Integer
+            opening = text-to-integer "-7"
             """;
         string? output = CompileAndRun(source, "t2i_neg_wasm");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("-7", output.Trim());
     }
 
@@ -360,15 +304,11 @@ public class WasmEmitterTests
     public void Integer_to_text_runs_under_wasmtime()
     {
         string source = """
-            main : Text
-            main = integer-to-text 99
+            opening : Text
+            opening = integer-to-text 99
             """;
         string? output = CompileAndRun(source, "i2t_wasm");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("99", output.Trim());
     }
 
@@ -376,15 +316,11 @@ public class WasmEmitterTests
     public void Char_at_runs_under_wasmtime()
     {
         string source = """
-            main : Text
-            main = char-at "hello" 1
+            opening : Text
+            opening = char-at "hello" 1
             """;
         string? output = CompileAndRun(source, "charat_wasm");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("e", output.Trim());
     }
 
@@ -392,15 +328,11 @@ public class WasmEmitterTests
     public void Substring_runs_under_wasmtime()
     {
         string source = """
-            main : Text
-            main = substring "hello world" 6 5
+            opening : Text
+            opening = substring "hello world" 6 5
             """;
         string? output = CompileAndRun(source, "substr_wasm");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("world", output.Trim());
     }
 
@@ -417,14 +349,11 @@ public class WasmEmitterTests
             loop : Integer -> Integer -> Integer
             loop (i) (acc) = if i == 0 then acc else loop (i - 1) (acc + greet i)
 
-            main : Integer
-            main = loop 1000 0
+            opening : Integer
+            opening = loop 1000 0
             """;
         string? output = CompileAndRun(source, "region_stable_wasm");
-        if (output is null)
-        {
-            return;
-        }
+        if (output is null) return;
         // Each greet call produces "hello N!" where N is 1-1000
         // The sum of text-lengths should be consistent
         int result = int.Parse(output.Trim());
@@ -440,15 +369,11 @@ public class WasmEmitterTests
             make-greeting : Text -> Text
             make-greeting (name) = "Hello, " ++ name ++ "!"
 
-            main : Text
-            main = make-greeting "World"
+            opening : Text
+            opening = make-greeting "World"
             """;
         string? output = CompileAndRun(source, "text_escape_wasm");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("Hello, World!", output.Trim());
     }
 
@@ -464,15 +389,11 @@ public class WasmEmitterTests
             count-chars : Integer -> Integer -> Integer
             count-chars (i) (acc) = if i == 0 then acc else count-chars (i - 1) (acc + text-length (tag i))
 
-            main : Integer
-            main = count-chars 500 0
+            opening : Integer
+            opening = count-chars 500 0
             """;
         string? output = CompileAndRun(source, "text_escape_loop_wasm");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         int result = int.Parse(output.Trim());
         Assert.True(result > 0, $"Expected positive sum, got {result}");
     }
@@ -486,8 +407,8 @@ public class WasmEmitterTests
               y : Integer
             }
 
-            main : Integer
-            main = let p = Point { x = 3, y = 4 } in p.x + p.y
+            opening : Integer
+            opening = let p = Point { x = 3, y = 4 } in p.x + p.y
             """;
         byte[]? bytes = Helpers.CompileToWasm(source, "record_wasm");
         Assert.NotNull(bytes);
@@ -503,15 +424,11 @@ public class WasmEmitterTests
               y : Integer
             }
 
-            main : Integer
-            main = let p = Point { x = 10, y = 20 } in p.x + p.y
+            opening : Integer
+            opening = let p = Point { x = 10, y = 20 } in p.x + p.y
             """;
         string? output = CompileAndRun(source, "record_run_wasm");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("30", output.Trim());
     }
 
@@ -529,8 +446,8 @@ public class WasmEmitterTests
                 is Circle (r) -> r * r
                 is Rect (w) (h) -> w * h
 
-            main : Integer
-            main = area (Circle 5)
+            opening : Integer
+            opening = area (Circle 5)
             """;
         byte[]? bytes = Helpers.CompileToWasm(source, "sum_wasm");
         Assert.NotNull(bytes);
@@ -551,15 +468,11 @@ public class WasmEmitterTests
                 is Circle (r) -> r * r
                 is Rect (w) (h) -> w * h
 
-            main : Integer
-            main = area (Rect 3 4)
+            opening : Integer
+            opening = area (Rect 3 4)
             """;
         string? output = CompileAndRun(source, "sum_run_wasm");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("12", output.Trim());
     }
 
@@ -575,15 +488,11 @@ public class WasmEmitterTests
             sum-point : Point -> Integer
             sum-point (p) = p.x + p.y
 
-            main : Integer
-            main = sum-point (Point { x = 7, y = 8 })
+            opening : Integer
+            opening = sum-point (Point { x = 7, y = 8 })
             """;
         string? output = CompileAndRun(source, "record_fn_wasm");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("15", output.Trim());
     }
 
@@ -592,16 +501,10 @@ public class WasmEmitterTests
     static string? CompileAndRun(string source, string moduleName)
     {
         byte[]? bytes = Helpers.CompileToWasm(source, moduleName);
-        if (bytes is null)
-        {
-            return null;
-        }
+        if (bytes is null) return null;
 
         // Check if wasmtime is available
-        if (!IsWasmtimeAvailable())
-        {
-            return null;
-        }
+        if (!IsWasmtimeAvailable()) return null;
 
         string tempDir = Path.Combine(Path.GetTempPath(),
             "codex_wasm_test_" + moduleName + "_" + Guid.NewGuid().ToString("N")[..8]);
@@ -621,21 +524,18 @@ public class WasmEmitterTests
             };
 
             using Process? proc = Process.Start(psi);
-            if (proc is null)
-            {
-                return null;
-            }
+            if (proc is null) return null;
 
             string stdout = proc.StandardOutput.ReadToEnd();
             string stderr = proc.StandardError.ReadToEnd();
             proc.WaitForExit(10_000);
 
-            if (proc.ExitCode != 0)
-            {
+            if (proc.ExitCode != 0)
+            {
                 throw new InvalidOperationException(
-                    $"wasmtime exited with code {proc.ExitCode}.\nstdout: {stdout}\nstderr: {stderr}");
-            }
-
+                    $"wasmtime exited with code {proc.ExitCode}.\nstdout: {stdout}\nstderr: {stderr}");
+            }
+
             return stdout;
         }
         finally
@@ -656,11 +556,7 @@ public class WasmEmitterTests
                 CreateNoWindow = true
             };
             using Process? proc = Process.Start(psi);
-            if (proc is null)
-            {
-                return false;
-            }
-
+            if (proc is null) return false;
             proc.WaitForExit(5_000);
             return proc.ExitCode == 0;
         }

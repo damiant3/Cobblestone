@@ -54,10 +54,7 @@ public class ViewTests : IDisposable
         ContentHash? hash = null;
         foreach (KeyValuePair<string, ContentHash> kv in experiment)
         {
-            if (kv.Key == "square")
-            {
-                hash = kv.Value;
-            }
+            if (kv.Key == "square") hash = kv.Value;
         }
         Assert.NotNull(hash);
         Assert.Equal(def.Hash, hash.Value);
@@ -114,10 +111,7 @@ public class ViewTests : IDisposable
         ContentHash? hash = null;
         foreach (KeyValuePair<string, ContentHash> kv in view)
         {
-            if (kv.Key == "add")
-            {
-                hash = kv.Value;
-            }
+            if (kv.Key == "add") hash = kv.Value;
         }
         Assert.NotNull(hash);
         Assert.Equal(def.Hash, hash.Value);
@@ -137,10 +131,7 @@ public class ViewTests : IDisposable
         bool found = false;
         foreach (KeyValuePair<string, ContentHash> kv in view)
         {
-            if (kv.Key == "f")
-            {
-                found = true;
-            }
+            if (kv.Key == "f") found = true;
         }
         Assert.False(found);
     }
@@ -155,10 +146,7 @@ public class ViewTests : IDisposable
         ViewInfo? featureView = null;
         foreach (ViewInfo v in views)
         {
-            if (v.Name == "feature-x")
-            {
-                featureView = v;
-            }
+            if (v.Name == "feature-x") featureView = v;
         }
         Assert.NotNull(featureView);
         Assert.True(featureView.IsCurrent);
@@ -185,17 +173,11 @@ public class ViewTests : IDisposable
         ContentHash? hashB = null;
         foreach (KeyValuePair<string, ContentHash> kv in viewA)
         {
-            if (kv.Key == "x")
-            {
-                hashA = kv.Value;
-            }
+            if (kv.Key == "x") hashA = kv.Value;
         }
         foreach (KeyValuePair<string, ContentHash> kv in viewB)
         {
-            if (kv.Key == "x")
-            {
-                hashB = kv.Value;
-            }
+            if (kv.Key == "x") hashB = kv.Value;
         }
 
         Assert.NotNull(hashA);
@@ -214,10 +196,7 @@ public class ViewTests : IDisposable
         ContentHash? hash = null;
         foreach (KeyValuePair<string, ContentHash> kv in canonical)
         {
-            if (kv.Key == "my-fn")
-            {
-                hash = kv.Value;
-            }
+            if (kv.Key == "my-fn") hash = kv.Value;
         }
         Assert.NotNull(hash);
         Assert.Equal(def.Hash, hash.Value);

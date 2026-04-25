@@ -8,196 +8,151 @@ namespace Codex.Emit.CSharp;
 
 public sealed partial class CSharpEmitter
 {
-    void EmitExpr(StringBuilder sb, IRExpr expr, int indent)
+    protected override void EmitFuelExhaustedToken(StringBuilder sb) =>
+        sb.Append("/* fuel exhausted */ default");
+
+    protected override void EmitUnhandled(StringBuilder sb, IRExpr expr, int indent) =>
+        sb.Append("default");
+
+    protected override void EmitIntegerLit(StringBuilder sb, IRIntegerLit lit, int indent) =>
+        sb.Append($"{lit.Value}L");
+
+    protected override void EmitNumberLit(StringBuilder sb, IRNumberLit lit, int indent)
     {
-        switch (expr)
+        sb.Append(lit.Value.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+        sb.Append('d');
+    }
+
+    protected override void EmitTextLit(StringBuilder sb, IRTextLit lit, int indent) =>
+        sb.Append($"\"{EscapeCceString(UnicodeToCce(lit.Value))}\"");
+
+    protected override void EmitBoolLit(StringBuilder sb, IRBoolLit lit, int indent) =>
+        sb.Append(lit.Value ? "true" : "false");
+
+    protected override void EmitCharLit(StringBuilder sb, IRCharLit lit, int indent) =>
+        sb.Append($"{UnicharToCce(lit.Value)}L");
+
+    protected override void EmitName(StringBuilder sb, IRName name, int indent)
+    {
+        if (name.Name == "read-line")
         {
-            case IRIntegerLit lit:
-                sb.Append($"{lit.Value}L");
-                break;
-
-            case IRNumberLit lit:
-                sb.Append(lit.Value.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
-                sb.Append('d');
-                break;
-
-            case IRTextLit lit:
-                // Encode string literal as CCE at compile time
-                sb.Append($"\"{EscapeCceString(UnicodeToCce(lit.Value))}\"");
-                break;
-
-            case IRBoolLit lit:
-                sb.Append(lit.Value ? "true" : "false");
-                break;
-
-            case IRCharLit lit:
-                // Char is a CCE byte — convert Unicode value to CCE at compile time
-                sb.Append($"{UnicharToCce(lit.Value)}L");
-                break;
-
-            case IRName name:
-                if (name.Name == "read-line")
-                {
-                    sb.Append("_Cce.FromUnicode(Console.ReadLine() ?? \"\")");
-                }
-                else if (name.Name == "get-args")
-                {
-                    sb.Append("Environment.GetCommandLineArgs().Select(_Cce.FromUnicode).ToList()");
-                }
-                else if (name.Name == "current-dir")
-                {
-                    sb.Append("_Cce.FromUnicode(Directory.GetCurrentDirectory())");
-                }
-                else if (name.Name == "heap-save")
-                {
-                    sb.Append("_Buf.heap_save()");
-                }
-                else if (name.Name == "heap-restore")
-                {
-                    sb.Append("new Func<object, long>(_p => _Buf.heap_restore(_p))");
-                }
-                else if (name.Name == "heap-advance")
-                {
-                    sb.Append("new Func<object, long>(_n => _Buf.heap_advance(_n))");
-                }
-                else if (name.Name == "list-with-capacity")
-                {
-                    sb.Append("new Func<object, List<long>>(_c => _Buf.list_with_capacity(_c))");
-                }
-                else if (name.Name == "buf-write-byte")
-                {
-                    sb.Append("new Func<object, Func<object, Func<object, long>>>(_b => _o => _v => _Buf.buf_write_byte(_b, _o, _v))");
-                }
-                else if (name.Name == "buf-write-bytes")
-                {
-                    sb.Append("new Func<object, Func<object, Func<object, long>>>(_b => _o => _vs => _Buf.buf_write_bytes(_b, _o, _vs))");
-                }
-                else if (name.Name == "buf-read-bytes")
-                {
-                    sb.Append("new Func<object, Func<object, Func<object, List<long>>>>(_b => _o => _n => _Buf.buf_read_bytes(_b, _o, _n))");
-                }
-                else if (name.Name == "show")
-                {
-                    sb.Append("new Func<object, string>(x => Convert.ToString(x))");
-                }
-                else if (name.Name == "negate")
-                {
-                    sb.Append("new Func<long, long>(x => -x)");
-                }
-                else if (name.Name.Length > 0 && char.IsUpper(name.Name[0])
-                    && name.Type is not FunctionType)
-                {
-                    sb.Append($"new {SanitizeIdentifier(name.Name)}{CtorTypeArgs(name.Type)}()");
-                }
-                else if (m_definitionArity.TryGet(name.Name, out int nameArity)
-                    && nameArity == 0
-                    && name.Type is not FunctionType)
-                {
-                    sb.Append($"{SanitizeIdentifier(name.Name)}()");
-                }
-                else
-                {
-                    sb.Append(SanitizeIdentifier(name.Name));
-                }
-
-                break;
-
-            case IRBinary bin:
-                EmitBinary(sb, bin, indent);
-                break;
-
-            case IRNegate neg:
-                sb.Append("(-");
-                EmitExpr(sb, neg.Operand, indent);
-                sb.Append(')');
-                break;
-
-            case IRIf iff:
-                sb.Append('(');
-                EmitExpr(sb, iff.Condition, indent);
-                sb.Append(" ? ");
-                EmitExpr(sb, iff.Then, indent);
-                sb.Append(" : ");
-                EmitExpr(sb, iff.Else, indent);
-                sb.Append(')');
-                break;
-
-            case IRLet let:
-                EmitLet(sb, let, indent);
-                break;
-
-            case IRApply app:
-                EmitApply(sb, app, indent);
-                break;
-
-            case IRLambda lam:
-                EmitLambda(sb, lam, indent);
-                break;
-
-            case IRList list:
-                EmitList(sb, list, indent);
-                break;
-
-            case IRRegion region:
-                EmitExpr(sb, region.Body, indent);
-                break;
-
-            case IRMatch match:
-                EmitMatch(sb, match, indent);
-                break;
-
-            case IRAct actExpr:
-                EmitActExpr(sb, actExpr, indent);
-                break;
-
-            case IRRecord rec:
-                sb.Append($"new {SanitizeIdentifier(rec.TypeName)}(");
-                for (int i = 0; i < rec.Fields.Length; i++)
-                {
-                    if (i > 0)
-                    {
-                        sb.Append(", ");
-                    }
-
-                    EmitExpr(sb, rec.Fields[i].Value, indent);
-                }
-                sb.Append(')');
-                break;
-
-            case IRFieldAccess fa:
-                EmitExpr(sb, fa.Record, indent);
-                sb.Append('.');
-                sb.Append(SanitizeIdentifier(fa.FieldName));
-                break;
-
-            case IRGetState:
-                sb.Append("__state");
-                break;
-
-            case IRSetState setState:
-                sb.Append("__state = ");
-                EmitExpr(sb, setState.NewValue, indent);
-                break;
-
-            case IRRunState runState:
-                EmitRunState(sb, runState, indent);
-                break;
-
-            case IRHandle handle:
-                EmitHandle(sb, handle, indent);
-                break;
-
-            case IRError err:
-                sb.Append($"throw new InvalidOperationException(\"{EscapeString(err.Message)}\")");
-                break;
-
-            default:
-                sb.Append("default");
-                break;
+            sb.Append("_Cce.FromUnicode(Console.ReadLine() ?? \"\")");
+        }
+        else if (name.Name == "get-args")
+        {
+            sb.Append("Environment.GetCommandLineArgs().Select(_Cce.FromUnicode).ToList()");
+        }
+        else if (name.Name == "current-dir")
+        {
+            sb.Append("_Cce.FromUnicode(Directory.GetCurrentDirectory())");
+        }
+        else if (name.Name == "__heap-save")
+        {
+            sb.Append("_Buf.heap_save()");
+        }
+        else if (name.Name == "__heap-restore")
+        {
+            sb.Append("new Func<object, long>(_p => _Buf.heap_restore(_p))");
+        }
+        else if (name.Name == "__heap-advance")
+        {
+            sb.Append("new Func<object, long>(_n => _Buf.heap_advance(_n))");
+        }
+        else if (name.Name == "__list-with-capacity")
+        {
+            sb.Append("new Func<object, List<long>>(_c => _Buf.list_with_capacity(_c))");
+        }
+        else if (name.Name == "__buf-write-byte")
+        {
+            sb.Append("new Func<object, Func<object, Func<object, long>>>(_b => _o => _v => _Buf.buf_write_byte(_b, _o, _v))");
+        }
+        else if (name.Name == "__buf-write-bytes")
+        {
+            sb.Append("new Func<object, Func<object, Func<object, long>>>(_b => _o => _vs => _Buf.buf_write_bytes(_b, _o, _vs))");
+        }
+        else if (name.Name == "__buf-read-bytes")
+        {
+            sb.Append("new Func<object, Func<object, Func<object, List<long>>>>(_b => _o => _n => _Buf.buf_read_bytes(_b, _o, _n))");
+        }
+        else if (name.Name == "show")
+        {
+            sb.Append("new Func<object, string>(x => Convert.ToString(x))");
+        }
+        else if (name.Name == "negate")
+        {
+            sb.Append("new Func<long, long>(x => -x)");
+        }
+        else if (name.Name.Length > 0 && char.IsUpper(name.Name[0])
+            && name.Type is not FunctionType)
+        {
+            sb.Append($"new {SanitizeIdentifier(name.Name)}{CtorTypeArgs(name.Type)}()");
+        }
+        else if (m_definitionArity.TryGet(name.Name, out int nameArity)
+            && nameArity == 0
+            && name.Type is not FunctionType)
+        {
+            sb.Append($"{SanitizeIdentifier(name.Name)}()");
+        }
+        else
+        {
+            sb.Append(SanitizeIdentifier(name.Name));
         }
     }
 
-    void EmitApply(StringBuilder sb, IRApply app, int indent)
+    protected override void EmitNegate(StringBuilder sb, IRNegate neg, int indent)
+    {
+        sb.Append("(-");
+        EmitExpr(sb, neg.Operand, indent);
+        sb.Append(')');
+    }
+
+    protected override void EmitIf(StringBuilder sb, IRIf iff, int indent)
+    {
+        sb.Append('(');
+        EmitExpr(sb, iff.Condition, indent);
+        sb.Append(" ? ");
+        EmitExpr(sb, iff.Then, indent);
+        sb.Append(" : ");
+        EmitExpr(sb, iff.Else, indent);
+        sb.Append(')');
+    }
+
+    protected override void EmitAct(StringBuilder sb, IRAct act, int indent) =>
+        EmitActExpr(sb, act, indent);
+
+    protected override void EmitRecord(StringBuilder sb, IRRecord rec, int indent)
+    {
+        sb.Append($"new {SanitizeIdentifier(rec.TypeName)}(");
+        for (int i = 0; i < rec.Fields.Length; i++)
+        {
+            if (i > 0)
+                sb.Append(", ");
+
+            EmitExpr(sb, rec.Fields[i].Value, indent);
+        }
+        sb.Append(')');
+    }
+
+    protected override void EmitFieldAccess(StringBuilder sb, IRFieldAccess fa, int indent)
+    {
+        EmitExpr(sb, fa.Record, indent);
+        sb.Append('.');
+        sb.Append(SanitizeIdentifier(fa.FieldName));
+    }
+
+    protected override void EmitGetState(StringBuilder sb, IRGetState get, int indent) =>
+        sb.Append("__state");
+
+    protected override void EmitSetState(StringBuilder sb, IRSetState setState, int indent)
+    {
+        sb.Append("__state = ");
+        EmitExpr(sb, setState.NewValue, indent);
+    }
+
+    protected override void EmitError(StringBuilder sb, IRError err, int indent) =>
+        sb.Append($"throw new InvalidOperationException(\"{EscapeString(err.Message)}\")");
+
+    protected override void EmitApply(StringBuilder sb, IRApply app, int indent)
     {
         if (app.Function is IRName fn && fn.Name == "show")
         {
@@ -360,11 +315,7 @@ public sealed partial class CSharpEmitter
             sb.Append($"new {SanitizeIdentifier(ctorName)}{CtorTypeArgs(app.Type)}(");
             for (int i = 0; i < args.Count; i++)
             {
-                if (i > 0)
-                {
-                    sb.Append(", ");
-                }
-
+                if (i > 0) sb.Append(", ");
                 EmitExpr(sb, args[i], indent);
             }
             sb.Append(')');
@@ -384,11 +335,7 @@ public sealed partial class CSharpEmitter
                     sb.Append('(');
                     for (int i = 0; i < args.Count; i++)
                     {
-                        if (i > 0)
-                        {
-                            sb.Append(", ");
-                        }
-
+                        if (i > 0) sb.Append(", ");
                         EmitArgument(sb, args[i], indent);
                     }
                     sb.Append(')');
@@ -419,13 +366,9 @@ public sealed partial class CSharpEmitter
     {
         IRExpr current = app.Function;
         while (current is IRApply inner)
-        {
             current = inner.Function;
-        }
         if (current is IRName name && name.Name.Length > 0 && char.IsUpper(name.Name[0]))
-        {
             return name.Name;
-        }
         return null;
     }
 
@@ -433,13 +376,9 @@ public sealed partial class CSharpEmitter
     {
         IRExpr current = app.Function;
         while (current is IRApply inner)
-        {
             current = inner.Function;
-        }
         if (current is IRName name && name.Name.Length > 0 && char.IsLower(name.Name[0]))
-        {
             return name.Name;
-        }
         return null;
     }
 
@@ -447,9 +386,7 @@ public sealed partial class CSharpEmitter
     {
         // [x] as IRList with one element
         if (expr is IRList list && list.Elements.Length == 1)
-        {
             return list.Elements[0];
-        }
         // [x] ++ [] as ConsList(x, emptyList)
         if (expr is IRBinary cons && cons.Op == IRBinaryOp.ConsList
             && cons.Right is IRList empty && empty.Elements.Length == 0)
@@ -463,43 +400,33 @@ public sealed partial class CSharpEmitter
     static void CollectTextConcatParts(IRBinary bin, List<IRExpr> parts)
     {
         if (bin.Left is IRBinary left && left.Op == IRBinaryOp.AppendText)
-        {
             CollectTextConcatParts(left, parts);
-        }
         else
-        {
             parts.Add(bin.Left);
-        }
 
         if (bin.Right is IRBinary right && right.Op == IRBinaryOp.AppendText)
-        {
             CollectTextConcatParts(right, parts);
-        }
         else
-        {
             parts.Add(bin.Right);
-        }
     }
 
     static void CollectApplyArgs(IRApply app, List<IRExpr> args)
     {
         if (app.Function is IRApply inner)
-        {
             CollectApplyArgs(inner, args);
-        }
         args.Add(app.Argument);
     }
 
     static readonly Set<string> s_multiArgBuiltins = Set<string>.Of(
-        "char-at", "char-code-at", "substring", "list-at", "list-insert-at", "list-set-at", "list-snoc", "list-contains",
+        "char-at", "char-code-at", "substring", "list-at", "list-insert-at", "list-set-at", "list-snoc",
         "text-replace", "text-compare", "text-concat-list",
-        "write-file", "write-binary", "run-process", "list-files", "text-split", "text-contains", "text-starts-with",
+        "write-file", "write-binary", "run-process", "run-process-full", "process-exit", "list-files", "text-split", "text-contains", "text-starts-with",
         "fork", "await", "par", "race",
-        "record-set",
-        "linked-list-empty", "linked-list-push", "linked-list-to-list",
-        "heap-save", "heap-restore", "heap-advance",
-        "list-with-capacity",
-        "buf-write-byte", "buf-write-bytes", "buf-read-bytes",
+        "__record-set",
+        "__linked-list-empty", "__linked-list-push", "__linked-list-to-list",
+        "__heap-save", "__heap-restore", "__heap-advance",
+        "__list-with-capacity",
+        "__buf-write-byte", "__buf-write-bytes", "__buf-read-bytes",
         "int-mod", "min", "max",
         "bit-and", "bit-or", "bit-xor", "bit-shl", "bit-shr");
 
@@ -507,25 +434,16 @@ public sealed partial class CSharpEmitter
     {
         IRExpr current = app.Function;
         while (current is IRApply inner)
-        {
             current = inner.Function;
-        }
-
         if (current is IRName name && s_multiArgBuiltins.Contains(name.Name))
-        {
             return name.Name;
-        }
-
         return null;
     }
 
     bool TryEmitMultiArgBuiltin(StringBuilder sb, IRApply app, int indent)
     {
         string? name = FindBuiltinRoot(app);
-        if (name is null)
-        {
-            return false;
-        }
+        if (name is null) return false;
 
         List<IRExpr> args = [];
         CollectApplyArgs(app, args);
@@ -566,11 +484,14 @@ public sealed partial class CSharpEmitter
 
             case "list-insert-at" when args.Count == 3:
             {
-                // list-insert-at list idx item → new list with item at idx
+                // list-insert-at list idx item → alias list and insert in place.
+                // Matches list-snoc / list-set-at emit shape; drops a redundant
+                // O(N) copy that dominated costs in hot sites like ExprTypes
+                // populate, arity-map build, env-bind.
                 string elemType = args[0].Type is ListType lt ? EmitType(lt.Element) : "object";
-                sb.Append($"((Func<List<{elemType}>>)(() => {{ var _l = new List<{elemType}>(");
+                sb.Append($"((Func<List<{elemType}>>)(() => {{ var _l = ");
                 EmitExpr(sb, args[0], indent);
-                sb.Append("); _l.Insert((int)");
+                sb.Append("; _l.Insert((int)");
                 EmitExpr(sb, args[1], indent);
                 sb.Append(", ");
                 EmitExpr(sb, args[2], indent);
@@ -604,13 +525,6 @@ public sealed partial class CSharpEmitter
                 sb.Append("); return _l; }))()");
                 return true;
             }
-
-            case "list-contains" when args.Count == 2:
-                EmitExpr(sb, args[0], indent);
-                sb.Append(".Contains(");
-                EmitExpr(sb, args[1], indent);
-                sb.Append(')');
-                return true;
 
             case "text-compare" when args.Count == 2:
                 sb.Append("(long)string.CompareOrdinal(");
@@ -655,6 +569,32 @@ public sealed partial class CSharpEmitter
                 sb.Append("var _o = _p.StandardOutput.ReadToEnd(); _p.WaitForExit(); return _o; }))())");
                 return true;
 
+            case "process-exit" when args.Count == 1:
+                // Terminates the process with the given exit code. Emitted as
+                // a lambda that returns null so the expression type-checks as
+                // Nothing; control never returns from Environment.Exit.
+                sb.Append("((Func<object>)(() => { Environment.Exit((int)");
+                EmitExpr(sb, args[0], indent);
+                sb.Append("); return null; }))()");
+                return true;
+
+            case "run-process-full" when args.Count == 2:
+                // Returns a ProcessResult record populated with CCE-encoded
+                // stdout + stderr and the process's native int exit-code
+                // widened to long (Codex Integer). User code gets the fields
+                // via record access (r.stdout, r.stderr, r.exit-code).
+                sb.Append("((Func<ProcessResult>)(() => { var _psi = new System.Diagnostics.ProcessStartInfo(_Cce.ToUnicode(");
+                EmitExpr(sb, args[0], indent);
+                sb.Append("), _Cce.ToUnicode(");
+                EmitExpr(sb, args[1], indent);
+                sb.Append(")) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false }; ");
+                sb.Append("var _p = System.Diagnostics.Process.Start(_psi)!; ");
+                sb.Append("var _so = _p.StandardOutput.ReadToEnd(); ");
+                sb.Append("var _se = _p.StandardError.ReadToEnd(); ");
+                sb.Append("_p.WaitForExit(); ");
+                sb.Append("return new ProcessResult(_Cce.FromUnicode(_so), _Cce.FromUnicode(_se), (long)_p.ExitCode); }))()");
+                return true;
+
             case "list-files" when args.Count == 2:
                 sb.Append("Directory.GetFiles(_Cce.ToUnicode(");
                 EmitExpr(sb, args[0], indent);
@@ -685,10 +625,14 @@ public sealed partial class CSharpEmitter
                 return true;
 
             case "text-starts-with" when args.Count == 2:
+                // Ordinal: CCE bytes 13-38 are the lowercase-letter codes (U+000D..U+0026,
+                // i.e. control chars and punctuation). Default culture-aware StartsWith
+                // treats those as ignorable, so something like "--cli=...".StartsWith("--watchdog=")
+                // returns true. Force byte-level comparison.
                 EmitExpr(sb, args[0], indent);
                 sb.Append(".StartsWith(");
                 EmitExpr(sb, args[1], indent);
-                sb.Append(')');
+                sb.Append(", StringComparison.Ordinal)");
                 return true;
 
             case "fork" when args.Count == 1:
@@ -717,13 +661,13 @@ public sealed partial class CSharpEmitter
                 sb.Append(".Select(_t_ => Task.Run(() => _t_(null)))).Result.Result");
                 return true;
 
-            case "linked-list-empty" when args.Count == 1:
+            case Builtins.LinkedListEmpty when args.Count == 1:
             {
                 string elemType = app.Type is LinkedListType llt2 ? EmitType(llt2.Element) : "object";
                 sb.Append($"new List<{elemType}>()");
                 return true;
             }
-            case "linked-list-push" when args.Count == 2:
+            case Builtins.LinkedListPush when args.Count == 2:
             {
                 string elemType = app.Type is LinkedListType llt3 ? EmitType(llt3.Element) : "object";
                 sb.Append($"((Func<List<{elemType}>, {elemType}, List<{elemType}>>)((_ll, _v) => {{ _ll.Add(_v); return _ll; }}))(");
@@ -733,24 +677,24 @@ public sealed partial class CSharpEmitter
                 sb.Append(')');
                 return true;
             }
-            case "linked-list-to-list" when args.Count == 1:
+            case Builtins.LinkedListToList when args.Count == 1:
                 EmitExpr(sb, args[0], indent);
                 return true;
 
-            case "heap-save":
+            case Builtins.HeapSave:
                 sb.Append("_Buf.heap_save()");
                 return true;
-            case "heap-restore" when args.Count >= 1:
+            case Builtins.HeapRestore when args.Count >= 1:
                 sb.Append("_Buf.heap_restore(");
                 EmitExpr(sb, args[0], indent);
                 sb.Append(')');
                 return true;
-            case "heap-advance" when args.Count >= 1:
+            case Builtins.HeapAdvance when args.Count >= 1:
                 sb.Append("_Buf.heap_advance(");
                 EmitExpr(sb, args[0], indent);
                 sb.Append(')');
                 return true;
-            case "list-with-capacity" when args.Count >= 1:
+            case Builtins.ListWithCapacity when args.Count >= 1:
                 {
                     string capElemType = app.Type is ListType clt ? EmitType(clt.Element) : "object";
                     sb.Append($"new List<{capElemType}>((int)(long)");
@@ -758,7 +702,7 @@ public sealed partial class CSharpEmitter
                     sb.Append(')');
                     return true;
                 }
-            case "buf-write-byte" when args.Count >= 3:
+            case Builtins.BufWriteByte when args.Count >= 3:
                 sb.Append("_Buf.buf_write_byte(");
                 EmitExpr(sb, args[0], indent);
                 sb.Append(", ");
@@ -767,7 +711,7 @@ public sealed partial class CSharpEmitter
                 EmitExpr(sb, args[2], indent);
                 sb.Append(')');
                 return true;
-            case "buf-write-bytes" when args.Count >= 3:
+            case Builtins.BufWriteBytes when args.Count >= 3:
                 sb.Append("_Buf.buf_write_bytes(");
                 EmitExpr(sb, args[0], indent);
                 sb.Append(", ");
@@ -776,7 +720,7 @@ public sealed partial class CSharpEmitter
                 EmitExpr(sb, args[2], indent);
                 sb.Append(')');
                 return true;
-            case "buf-read-bytes" when args.Count >= 3:
+            case Builtins.BufReadBytes when args.Count >= 3:
                 sb.Append("_Buf.buf_read_bytes(");
                 EmitExpr(sb, args[0], indent);
                 sb.Append(", ");
@@ -786,7 +730,7 @@ public sealed partial class CSharpEmitter
                 sb.Append(')');
                 return true;
 
-            case "record-set" when args.Count == 3:
+            case Builtins.RecordSet when args.Count == 3:
             {
                 if (args[1] is IRTextLit fieldLit)
                 {
@@ -812,12 +756,8 @@ public sealed partial class CSharpEmitter
                         sb.Append($"((Func<{SanitizeIdentifier(rt.TypeName.Value)}, {SanitizeIdentifier(rt.TypeName.Value)}>)((_rs) => new {SanitizeIdentifier(rt.TypeName.Value)}(");
                         for (int i = 0; i < rt.Fields.Length; i++)
                         {
-                            if (i > 0)
-                                {
-                                    sb.Append(", ");
-                                }
-
-                                string fn = rt.Fields[i].FieldName.Value;
+                            if (i > 0) sb.Append(", ");
+                            string fn = rt.Fields[i].FieldName.Value;
                             if (fn == fieldLit.Value)
                             {
                                 if (args[2] is IRList emptyList && emptyList.Elements.Length == 0
@@ -927,7 +867,7 @@ public sealed partial class CSharpEmitter
         }
     }
 
-    void EmitBinary(StringBuilder sb, IRBinary bin, int indent)
+    protected override void EmitBinary(StringBuilder sb, IRBinary bin, int indent)
     {
         switch (bin.Op)
         {
@@ -940,12 +880,8 @@ public sealed partial class CSharpEmitter
                 sb.Append("string.Concat(");
                 for (int i = 0; i < parts.Count; i++)
                 {
-                    if (i > 0)
-                        {
-                            sb.Append(", ");
-                        }
-
-                        EmitExpr(sb, parts[i], indent);
+                    if (i > 0) sb.Append(", ");
+                    EmitExpr(sb, parts[i], indent);
                 }
                 sb.Append(')');
                 break;
@@ -1009,14 +945,10 @@ public sealed partial class CSharpEmitter
         }
     }
 
-    void EmitLet(StringBuilder sb, IRLet let, int indent)
+    protected override void EmitLet(StringBuilder sb, IRLet let, int indent)
     {
         string nameType = EmitType(let.NameType);
-        if (nameType == "object")
-        {
-            nameType = "dynamic";
-        }
-
+        if (nameType == "object") nameType = "dynamic";
         string funcType = $"Func<{nameType}, {EmitType(let.Body.Type)}>";
         sb.Append("((" + funcType + ")((");
         sb.Append(SanitizeIdentifier(let.Name));
@@ -1050,11 +982,7 @@ public sealed partial class CSharpEmitter
         }
         for (int i = 0; i < remaining; i++)
         {
-            if (i > 0)
-            {
-                sb.Append(", ");
-            }
-
+            if (i > 0) sb.Append(", ");
             int paramIdx = firstRemaining + i;
             string name = paramIdx < paramNames.Length
                 ? SanitizeIdentifier(paramNames[paramIdx])
@@ -1064,7 +992,7 @@ public sealed partial class CSharpEmitter
         sb.Append(')');
     }
 
-    void EmitLambda(StringBuilder sb, IRLambda lam, int indent)
+    protected override void EmitLambda(StringBuilder sb, IRLambda lam, int indent)
     {
         if (lam.Parameters.Length == 0)
         {
@@ -1079,7 +1007,7 @@ public sealed partial class CSharpEmitter
         EmitExpr(sb, lam.Body, indent);
     }
 
-    void EmitList(StringBuilder sb, IRList list, int indent)
+    protected override void EmitList(StringBuilder sb, IRList list, int indent)
     {
         sb.Append($"new List<{EmitType(list.ElementType)}>()");
         if (list.Elements.Length > 0)
@@ -1087,18 +1015,14 @@ public sealed partial class CSharpEmitter
             sb.Append(" { ");
             for (int i = 0; i < list.Elements.Length; i++)
             {
-                if (i > 0)
-                {
-                    sb.Append(", ");
-                }
-
+                if (i > 0) sb.Append(", ");
                 EmitExpr(sb, list.Elements[i], indent);
             }
             sb.Append(" }");
         }
     }
 
-    void EmitRunState(StringBuilder sb, IRRunState runState, int indent)
+    protected override void EmitRunState(StringBuilder sb, IRRunState runState, int indent)
     {
         string stateType = EmitType(runState.StateType);
         string resultType = EmitType(runState.ResultType);
@@ -1159,7 +1083,7 @@ public sealed partial class CSharpEmitter
         sb.Append("}))()");
     }
 
-    void EmitHandle(StringBuilder sb, IRHandle handle, int indent)
+    protected override void EmitHandle(StringBuilder sb, IRHandle handle, int indent)
     {
         string resultType = EmitType(handle.Type);
         sb.AppendLine($"((Func<{resultType}>)(() => {{");
@@ -1181,18 +1105,10 @@ public sealed partial class CSharpEmitter
 
             for (int i = 0; i < clause.Parameters.Length; i++)
             {
-                if (i > 0)
-                {
-                    sb.Append(", ");
-                }
-
+                if (i > 0) sb.Append(", ");
                 sb.Append(SanitizeIdentifier(clause.Parameters[i]));
             }
-            if (clause.Parameters.Length > 0)
-            {
-                sb.Append(", ");
-            }
-
+            if (clause.Parameters.Length > 0) sb.Append(", ");
             sb.Append(SanitizeIdentifier(clause.ResumeName));
             sb.AppendLine(") => {");
 

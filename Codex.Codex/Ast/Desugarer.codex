@@ -1,4 +1,6 @@
 Chapter: Desugarer
+  cites Codex chapter Text
+  cites Codex chapter Lists
 
  Transforms the concrete syntax tree into the abstract syntax tree.
  Tokens become Names, literal token text becomes literal values,
@@ -16,37 +18,50 @@ Section: Span Helpers
   desugared-span (s) =
    span-with-provenance s ProvDesugared
 
+Section: Fuel Budget
+
+ Recursive desugaring is capped at max-recursion-depth stack
+ frames. On exhaustion, return an AErrorExpr sentinel; the
+ message rides through the AST and downstream phases surface
+ the failure as an ErrorTy. Bails rather than stack-overflow.
+
+  max-recursion-depth : Integer = 256
+
 Section: Expression Desugaring
   desugar-expr : Expr -> AExpr
-  desugar-expr (node) =
-   when node
+  desugar-expr (node) = desugar-expr-at node 0
+
+  desugar-expr-at : Expr -> Integer -> AExpr
+  desugar-expr-at (node) (depth) =
+   if depth >= max-recursion-depth then AErrorExpr "desugar fuel exhausted" synthetic-span
+   else when node
     is LitExpr (tok) -> desugar-literal tok
     is NameExpr (tok) -> ANameExpr (make-name (tok.text)) (token-span tok)
     is AppExpr (f) (a) ->
-     let df = desugar-expr f
-     in let da = desugar-expr a
+     let df = desugar-expr-at f (depth + 1)
+     in let da = desugar-expr-at a (depth + 1)
      in AApplyExpr df da (desugared-span (aexpr-span df))
     is BinExpr (l) (op) (r) ->
-     let dl = desugar-expr l
-     in let dr = desugar-expr r
+     let dl = desugar-expr-at l (depth + 1)
+     in let dr = desugar-expr-at r (depth + 1)
      in ABinaryExpr dl (desugar-bin-op (op.kind)) dr (token-span op)
-    is UnaryExpr (op) (operand) -> AUnaryExpr (desugar-expr operand) (token-span op)
+    is UnaryExpr (op) (operand) -> AUnaryExpr (desugar-expr-at operand (depth + 1)) (token-span op)
     is IfExpr (c) (t) (e) ->
-     let dc = desugar-expr c
-     in AIfExpr dc (desugar-expr t) (desugar-expr e) (desugared-span (aexpr-span dc))
+     let dc = desugar-expr-at c (depth + 1)
+     in AIfExpr dc (desugar-expr-at t (depth + 1)) (desugar-expr-at e (depth + 1)) (desugared-span (aexpr-span dc))
     is LetExpr (bindings) (body) ->
-     let db = desugar-expr body
+     let db = desugar-expr-at body (depth + 1)
      in ALetExpr (map-list desugar-let-bind bindings) db (desugared-span (aexpr-span db))
     is MatchExpr (scrut) (arms) ->
-     let ds = desugar-expr scrut
+     let ds = desugar-expr-at scrut (depth + 1)
      in AMatchExpr ds (map-list desugar-match-arm arms) (desugared-span (aexpr-span ds))
     is ListExpr (elems) -> AListExpr (map-list desugar-expr elems) synthetic-span
     is RecordExpr (type-tok) (fields) -> ARecordExpr (make-name (type-tok.text)) (map-list desugar-field-expr fields) (token-span type-tok)
-    is FieldExpr (rec) (field-tok) -> AFieldAccess (desugar-expr rec) (make-name (field-tok.text)) (token-span field-tok)
-    is ParenExpr (inner) -> desugar-expr inner
+    is FieldExpr (rec) (field-tok) -> AFieldAccess (desugar-expr-at rec (depth + 1)) (make-name (field-tok.text)) (token-span field-tok)
+    is ParenExpr (inner) -> desugar-expr-at inner (depth + 1)
     is ActExpr (stmts) -> AActExpr (map-list desugar-act-stmt stmts) synthetic-span
-    is HandleExpr (eff-tok) (body) (clauses) -> AHandleExpr (make-name (eff-tok.text)) (desugar-expr body) (map-list desugar-handle-clause clauses) (token-span eff-tok)
-    is LambdaExpr (params) (body) -> ALambdaExpr (map-list desugar-lambda-param params) (desugar-expr body) synthetic-span
+    is HandleExpr (eff-tok) (body) (clauses) -> AHandleExpr (make-name (eff-tok.text)) (desugar-expr-at body (depth + 1)) (map-list desugar-handle-clause clauses) (token-span eff-tok)
+    is LambdaExpr (params) (body) -> ALambdaExpr (map-list desugar-lambda-param params) (desugar-expr-at body (depth + 1)) synthetic-span
     is ErrExpr (tok) -> AErrorExpr (tok.text) (token-span tok)
 
   desugar-literal : Token -> AExpr
@@ -143,8 +158,12 @@ Section: Pattern Desugaring
     is AWildPat (s) -> s
 
   desugar-pattern : Pat -> APat
-  desugar-pattern (p) =
-   when p
+  desugar-pattern (p) = desugar-pattern-at p 0
+
+  desugar-pattern-at : Pat -> Integer -> APat
+  desugar-pattern-at (p) (depth) =
+   if depth >= max-recursion-depth then AWildPat synthetic-span
+   else when p
     is VarPat (tok) -> AVarPat (make-name (tok.text)) (token-span tok)
     is LitPat (tok) -> ALitPat (tok.text) (classify-literal (tok.kind)) (token-span tok)
     is CtorPat (tok) (subs) -> ACtorPat (make-name (tok.text)) (map-list desugar-pattern subs) (token-span tok)
@@ -152,22 +171,26 @@ Section: Pattern Desugaring
 
 Section: Type Desugaring
   desugar-type-expr : TypeExpr -> ATypeExpr
-  desugar-type-expr (t) =
-   when t
+  desugar-type-expr (t) = desugar-type-expr-at t 0
+
+  desugar-type-expr-at : TypeExpr -> Integer -> ATypeExpr
+  desugar-type-expr-at (t) (depth) =
+   if depth >= max-recursion-depth then ANamedType (make-name "_fuel") synthetic-span
+   else when t
     is NamedType (tok) -> ANamedType (make-name (tok.text)) (token-span tok)
     is FunType (param) (ret) ->
-     let dp = desugar-type-expr param
-     in AFunType dp (desugar-type-expr ret) (atype-span dp)
+     let dp = desugar-type-expr-at param (depth + 1)
+     in AFunType dp (desugar-type-expr-at ret (depth + 1)) (atype-span dp)
     is AppType (ctor) (args) ->
-     let dc = desugar-type-expr ctor
+     let dc = desugar-type-expr-at ctor (depth + 1)
      in AAppType dc (map-list desugar-type-expr args) (atype-span dc)
-    is ParenType (inner) -> desugar-type-expr inner
+    is ParenType (inner) -> desugar-type-expr-at inner (depth + 1)
     is ListType (elem) ->
-     let de = desugar-type-expr elem
+     let de = desugar-type-expr-at elem (depth + 1)
      in AAppType (ANamedType (make-name "List") (atype-span de)) [de] (atype-span de)
-    is LinearTypeExpr (inner) -> desugar-type-expr inner
+    is LinearTypeExpr (inner) -> desugar-type-expr-at inner (depth + 1)
     is EffectTypeExpr (effs) (ret) ->
-     let dr = desugar-type-expr ret
+     let dr = desugar-type-expr-at ret (depth + 1)
      in AEffectType (map-list make-type-param-name effs) dr (atype-span dr)
 
   atype-span : ATypeExpr -> SourceSpan

@@ -136,6 +136,9 @@ public static class CdxCodes
     // ---- Capability checker (405x) ----
     public const int CapabilityNotGranted = 4050;
 
+    // ---- Compiler-internal (9xxx) ----
+    public const int ResourceExhausted = 9001;
+
     // Render an integer code as the canonical "CDX####" display string.
     public static string FormatCode(int code) => $"CDX{code:D4}";
 
@@ -365,6 +368,10 @@ public static class CdxCodes
         [CapabilityNotGranted] = new(CapabilityNotGranted, nameof(CapabilityNotGranted),
             DiagnosticSeverity.Error, CdxPhase.CapabilityChecker,
             "A capability required by main was not granted in the runtime policy."),
+
+        [ResourceExhausted] = new(ResourceExhausted, nameof(ResourceExhausted),
+            DiagnosticSeverity.Error, CdxPhase.Infrastructure,
+            "A recursive compiler operation exceeded its fuel budget — likely a cycle (unifier, desugarer, imports) or adversarial depth. Compiler halts rather than hanging or overflowing the stack."),
     };
 
     public static IReadOnlyDictionary<int, CdxCodeInfo> All => s_registry;

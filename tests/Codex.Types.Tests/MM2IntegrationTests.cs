@@ -36,8 +36,8 @@ public class MM2IntegrationTests
         if (!HasQemuSystem()) { m_output.WriteLine("SKIP: no qemu-system-x86_64"); return; }
 
         string source = """
-            main : [Console, FileSystem] Nothing
-            main = act
+            opening : [Console, FileSystem] Nothing
+            opening = act
               content <- read-file "test.codex"
               print-line content
             end
@@ -59,8 +59,8 @@ public class MM2IntegrationTests
         if (!HasQemuSystem()) { m_output.WriteLine("SKIP: no qemu-system-x86_64"); return; }
 
         string source = """
-            main : Integer
-            main =
+            opening : Integer
+            opening =
               let a = text-compare "apple" "banana"
               in let b = text-compare "hello" "hello"
               in let c = text-compare "zebra" "alpha"
@@ -82,8 +82,8 @@ public class MM2IntegrationTests
         if (!HasQemuSystem()) { m_output.WriteLine("SKIP: no qemu-system-x86_64"); return; }
 
         string source = """
-            main : Integer
-            main =
+            opening : Integer
+            opening =
               let xs = list-snoc (list-snoc (list-snoc [] 10) 20) 30
               in list-at xs 0 + list-at xs 1 + list-at xs 2
             """;
@@ -103,8 +103,8 @@ public class MM2IntegrationTests
 
         // Insert 99 at index 1 into [10, 30] → [10, 99, 30]
         string source = """
-            main : Integer
-            main =
+            opening : Integer
+            opening =
               let xs = list-snoc (list-snoc [] 10) 30
               in let ys = list-insert-at xs 1 99
               in list-at ys 0 + list-at ys 1 + list-at ys 2
@@ -128,8 +128,8 @@ public class MM2IntegrationTests
         if (!HasQemuSystem()) { m_output.WriteLine("SKIP: no qemu-system-x86_64"); return; }
 
         string source = """
-            main : [Console] Nothing
-            main = print-line (text-concat-list ["Hello", " ", "World"])
+            opening : [Console] Nothing
+            opening = print-line (text-concat-list ["Hello", " ", "World"])
             """;
 
         string? output = CompileAndBootBareMetal(source, "bm_text_concat_list");
@@ -180,9 +180,7 @@ public class MM2IntegrationTests
             }
 
             if (document.Chapters.Count > 0)
-            {
                 chapterName = document.Chapters[0].Title;
-            }
 
             chapters.Add(desugarer.Desugar(document, chapterName));
         }
@@ -215,7 +213,7 @@ public class MM2IntegrationTests
         if (diag.HasErrors) { DumpErrors(diag, 10); Assert.Fail("Linearity check failed"); return; }
 
         // Lower
-        IRChapter irModule = new Lowering(types, checker.ConstructorMap, checker.TypeDefMap, diag).Lower(resolved.Chapter);
+        IRChapter irModule = new Lowering(types, checker.ConstructorMap, checker.TypeDefMap, diag).Lower(resolved);
         m_output.WriteLine($"Lower: {irModule.Definitions.Length} IR defs, {CountErrors(diag)} total errors");
         if (diag.HasErrors) { DumpErrors(diag, 10); Assert.Fail("Lowering failed"); return; }
 
@@ -232,9 +230,7 @@ public class MM2IntegrationTests
     void DumpErrors(DiagnosticBag bag, int max)
     {
         foreach (Diagnostic? d in bag.ToImmutable().Where(d => d.IsError).Take(max))
-        {
             m_output.WriteLine($"  {d.Code}: {d.Message}");
-        }
     }
 
     // ── Helpers ──────────────────────────────────────────────────
@@ -242,22 +238,14 @@ public class MM2IntegrationTests
     static string? CompileAndBootBareMetal(string source, string chapterName)
     {
         byte[]? bytes = Helpers.CompileToX86_64BareMetal(source, chapterName);
-        if (bytes is null)
-        {
-            return null;
-        }
-
+        if (bytes is null) return null;
         return BootAndCapture(bytes, chapterName, null);
     }
 
     static string? CompileAndBootWithSerialInput(string source, string chapterName, string serialInput)
     {
         byte[]? bytes = Helpers.CompileToX86_64BareMetal(source, chapterName);
-        if (bytes is null)
-        {
-            return null;
-        }
-
+        if (bytes is null) return null;
         return BootAndCapture(bytes, chapterName, serialInput);
     }
 
@@ -286,10 +274,7 @@ public class MM2IntegrationTests
             };
 
             using Process? proc = Process.Start(psi);
-            if (proc is null)
-            {
-                return null;
-            }
+            if (proc is null) return null;
 
             if (serialInput is not null)
             {
@@ -338,10 +323,7 @@ public class MM2IntegrationTests
             if (IsProseDocument(content))
             {
                 string code = ExtractCodeBlocks(content);
-                if (code.Length > 0)
-                {
-                    codeBlocks.Add(code);
-                }
+                if (code.Length > 0) codeBlocks.Add(code);
             }
             else
             {
@@ -391,9 +373,7 @@ public class MM2IntegrationTests
                     {
                         int peekIdx = i + 1;
                         while (peekIdx < lines.Length && lines[peekIdx].Trim().Length == 0)
-                        {
                             peekIdx++;
-                        }
 
                         if (peekIdx < lines.Length && MeasureIndent(lines[peekIdx]) >= baseIndent)
                         {
@@ -406,16 +386,14 @@ public class MM2IntegrationTests
 
                     int lineIndent = MeasureIndent(line);
                     if (lineIndent < baseIndent)
-                    {
                         break;
-                    }
 
                     if (lt.StartsWith("Chapter:", StringComparison.Ordinal) ||
-                        lt.StartsWith("Section:", StringComparison.Ordinal))
-                    {
-                        break;
-                    }
-
+                        lt.StartsWith("Section:", StringComparison.Ordinal))
+                    {
+                        break;
+                    }
+
                     string dedented = lineIndent >= baseIndent
                         ? line[baseIndent..].TrimEnd('\r')
                         : lt;
@@ -424,9 +402,7 @@ public class MM2IntegrationTests
                 }
 
                 if (block.Count > 0)
-                {
                     result.Add(string.Join("\n", block));
-                }
             }
             else
             {
@@ -439,37 +415,14 @@ public class MM2IntegrationTests
 
     static bool LooksLikeNotation(string trimmed)
     {
-        if (trimmed.Length == 0)
-        {
-            return false;
-        }
-
-        if (trimmed[0] == '|')
-        {
-            return true;
-        }
-
+        if (trimmed.Length == 0) return false;
+        if (trimmed[0] == '|') return true;
         if (char.IsLetter(trimmed[0]) || trimmed[0] == '_')
         {
-            if (trimmed.Contains(" : "))
-            {
-                return true;
-            }
-
-            if (trimmed.Contains(" = "))
-            {
-                return true;
-            }
-
-            if (trimmed.EndsWith(" =") || trimmed.EndsWith("="))
-            {
-                return true;
-            }
-
-            if (trimmed.Contains('('))
-            {
-                return true;
-            }
+            if (trimmed.Contains(" : ")) return true;
+            if (trimmed.Contains(" = ")) return true;
+            if (trimmed.EndsWith(" =") || trimmed.EndsWith("=")) return true;
+            if (trimmed.Contains('(')) return true;
         }
         return false;
     }
@@ -479,14 +432,8 @@ public class MM2IntegrationTests
         int count = 0;
         foreach (char c in line)
         {
-            if (c == ' ')
-            {
-                count++;
-            }
-            else
-            {
-                break;
-            }
+            if (c == ' ') count++;
+            else break;
         }
         return count;
     }
@@ -497,16 +444,9 @@ public class MM2IntegrationTests
         for (int i = 0; i < 10; i++)
         {
             string candidate = Path.Combine(dir, "Codex.Codex");
-            if (Directory.Exists(candidate))
-            {
-                return candidate;
-            }
-
+            if (Directory.Exists(candidate)) return candidate;
             dir = Path.GetDirectoryName(dir)!;
-            if (dir is null)
-            {
-                break;
-            }
+            if (dir is null) break;
         }
         return null;
     }

@@ -15,10 +15,7 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
         {
             string trimmed = line.TrimStart();
             if (trimmed.Length == 0)
-            {
                 continue;
-            }
-
             return trimmed.StartsWith("Chapter:", StringComparison.Ordinal);
         }
         return false;
@@ -34,10 +31,10 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
         while (m_lineIndex < m_lines.Length)
         {
             string trimmed = m_lines[m_lineIndex].TrimStart();
-            if (trimmed.StartsWith("Chapter:", StringComparison.Ordinal))
-            {
-                chapters.Add(ParseChapter());
-            }
+            if (trimmed.StartsWith("Chapter:", StringComparison.Ordinal))
+            {
+                chapters.Add(ParseChapter());
+            }
             else
             {
                 SkipBlankLines();
@@ -70,11 +67,7 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
         for (int i = m_lines.Length - 1; i >= 0; i--)
         {
             string ln = m_lines[i].Trim();
-            if (ln.Length == 0)
-            {
-                continue;
-            }
-
+            if (ln.Length == 0) continue;
             if (ln.StartsWith("Page ", StringComparison.Ordinal)
                 && ln.Length > 5 && char.IsDigit(ln[5]))
             {
@@ -112,9 +105,7 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
             }
 
             if (trimmed.StartsWith("Chapter:", StringComparison.Ordinal))
-            {
                 break;
-            }
 
             if (trimmed.StartsWith("Page ", StringComparison.Ordinal)
                 && trimmed.Length > 5 && char.IsDigit(trimmed[5]))
@@ -202,9 +193,7 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
             string trimmed = line.Trim();
 
             if (trimmed.Length == 0)
-            {
                 break;
-            }
 
             if (trimmed.StartsWith("Chapter:", StringComparison.Ordinal) ||
                 trimmed.StartsWith("Section:", StringComparison.Ordinal))
@@ -215,9 +204,7 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
             int indent = MeasureIndent(line);
 
             if (IsNotationIndent(indent))
-            {
                 break;
-            }
 
             proseLines.Add(trimmed);
             m_lineIndex++;
@@ -247,9 +234,7 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
             {
                 int peekIdx = m_lineIndex + 1;
                 while (peekIdx < m_lines.Length && m_lines[peekIdx].Trim().Length == 0)
-                {
                     peekIdx++;
-                }
 
                 if (peekIdx < m_lines.Length && MeasureIndent(m_lines[peekIdx]) >= baseIndent)
                 {
@@ -262,9 +247,7 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
 
             int indent = MeasureIndent(line);
             if (indent < baseIndent)
-            {
                 break;
-            }
 
             if (trimmed.StartsWith("Chapter:", StringComparison.Ordinal) ||
                 trimmed.StartsWith("Section:", StringComparison.Ordinal))
@@ -286,9 +269,7 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
         DocumentNode notationDoc = parser.ParseDocument();
 
         foreach (Diagnostic diag in notationDiag.ToImmutable())
-        {
             m_diagnostics.Add(diag);
-        }
 
         int endOffset = m_lineIndex < m_lines.Length
             ? LineOffset(m_lineIndex)
@@ -316,15 +297,9 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
             if (member is NotationBlockNode notation)
             {
                 foreach (DefinitionNode def in notation.Definitions)
-                {
                     defs.Add(def with { Section = currentSection });
-                }
-
                 foreach (TypeDefinitionNode td in notation.TypeDefinitions)
-                {
                     typeDefs.Add(td with { Section = currentSection });
-                }
-
                 claims.AddRange(notation.Claims);
                 proofs.AddRange(notation.Proofs);
                 citations.AddRange(notation.Citations);
@@ -346,31 +321,18 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
     void SkipBlankLines()
     {
         while (m_lineIndex < m_lines.Length && m_lines[m_lineIndex].Trim().Length == 0)
-        {
             m_lineIndex++;
-        }
     }
 
     static PageMarker? ParsePageMarkerFromLine(string line, int lineIndex)
     {
         // "Page 1" or "Page 1 of 3"
         string[] parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 2 || parts[0] != "Page")
-        {
-            return null;
-        }
-
-        if (!int.TryParse(parts[1], out int pageNum))
-        {
-            return null;
-        }
-
+        if (parts.Length < 2 || parts[0] != "Page") return null;
+        if (!int.TryParse(parts[1], out int pageNum)) return null;
         int? total = null;
         if (parts.Length >= 4 && parts[2] == "of" && int.TryParse(parts[3], out int t))
-        {
             total = t;
-        }
-
         SourceSpan span = SourceSpan.Single(0, lineIndex + 1, 1, "<page>");
         return new PageMarker(pageNum, total, span);
     }
@@ -380,14 +342,8 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
         int count = 0;
         foreach (char c in line)
         {
-            if (c == ' ')
-            {
-                count++;
-            }
-            else
-            {
-                break;
-            }
+            if (c == ' ') count++;
+            else break;
         }
         return count;
     }
@@ -420,10 +376,10 @@ public sealed partial class ProseParser(SourceText source, DiagnosticBag diagnos
                 line++;
                 col = 1;
             }
-            else
-            {
-                col++;
-            }
+            else
+            {
+                col++;
+            }
         }
         return new SourcePosition(offset, line, col);
     }

@@ -16,10 +16,7 @@ public sealed partial class TypeChecker
         CodexType currentExpected = expectedType;
         foreach (Parameter param in def.Parameters)
         {
-            while (currentExpected is FunctionType skipFt && skipFt.Parameter is ProofType)
-            {
-                currentExpected = skipFt.Return;
-            }
+            currentExpected = CodexTypeHelpers.SkipProofParams(currentExpected);
 
             CodexType paramType;
             if (currentExpected is FunctionType ft)
@@ -44,10 +41,7 @@ public sealed partial class TypeChecker
             m_env = m_env.Bind(param.Name, paramType);
         }
 
-        while (currentExpected is FunctionType skipFt2 && skipFt2.Parameter is ProofType)
-        {
-            currentExpected = skipFt2.Return;
-        }
+        currentExpected = CodexTypeHelpers.SkipProofParams(currentExpected);
 
         CodexType bodyType = InferExpr(def.Body);
         m_unifier.Unify(currentExpected, bodyType, def.Body.Span);
@@ -59,6 +53,25 @@ public sealed partial class TypeChecker
 
     CodexType InferExpr(Expr expr)
     {
+        if (InferenceFuelExhausted(expr.Span))
+            return ErrorType.s_instance;
+        m_inferDepth++;
+        try
+        {
+            CodexType inferred = InferExprInner(expr);
+            // Record for the elaborated-AST table. DeepResolve happens at
+            // CheckChapter end so in-flight TypeVariables settle first.
+            m_exprTypes[expr] = inferred;
+            return inferred;
+        }
+        finally
+        {
+            m_inferDepth--;
+        }
+    }
+
+    CodexType InferExprInner(Expr expr)
+    {
         switch (expr)
         {
             case LiteralExpr lit:
@@ -68,6 +81,7 @@ public sealed partial class TypeChecker
                     LiteralKind.Number => NumberType.s_instance,
                     LiteralKind.Text => TextType.s_instance,
                     LiteralKind.Boolean => BooleanType.s_instance,
+                    LiteralKind.Char => CharType.s_instance,
                     _ => ErrorType.s_instance
                 };
 
@@ -236,14 +250,9 @@ public sealed partial class TypeChecker
         {
             isEffectHandler = true;
             foreach (EffectType e in paramEft.Effects)
-            {
                 m_currentEffects = m_currentEffects.Add(e.EffectName.Value);
-            }
-
             if (paramEft.RowVariable is not null)
-            {
                 m_currentEffects = m_currentEffects.Add("*");
-            }
         }
 
         CodexType argType2 = InferExpr(app.Argument);
@@ -253,27 +262,21 @@ public sealed partial class TypeChecker
         CodexType returnType = m_unifier.FreshVar();
 
         if (!m_unifier.Unify(funcType, new FunctionType(argType2, returnType), app.Span))
-        {
             return ErrorType.s_instance;
-        }
 
         CodexType resolved = m_unifier.Resolve(returnType);
         resolved = TryDischargeProofParams(resolved, app.Span);
 
         // Effect handlers eliminate effects — don't re-check the return type
         if (!isEffectHandler)
-        {
             CheckEffectAllowed(resolved, app.Span);
-        }
 
         // If the handler returned an EffectfulType with no concrete effects, unwrap it
         if (isEffectHandler && resolved is EffectfulType handledEft && handledEft.Effects.IsEmpty)
         {
             ImmutableArray<EffectType> rowEffects = m_unifier.ResolveEffectRow(handledEft.RowVariable);
             if (rowEffects.IsEmpty)
-            {
                 resolved = handledEft.Return;
-            }
         }
 
         return resolved;
@@ -323,9 +326,7 @@ public sealed partial class TypeChecker
 
         CodexType result = bodyType;
         for (int i = paramTypes.Count - 1; i >= 0; i--)
-        {
             result = new FunctionType(paramTypes[i], result);
-        }
 
         return result;
     }
@@ -353,33 +354,25 @@ public sealed partial class TypeChecker
     {
         CodexType resolved = m_unifier.Resolve(scrutineeType);
         if (resolved is not SumType sumType)
-        {
             return;
-        }
 
         bool hasCatchAll = match.Branches.Any(b =>
             b.Pattern is VarPattern or WildcardPattern);
         if (hasCatchAll)
-        {
             return;
-        }
 
         Set<string> covered = Set<string>.s_empty;
         foreach (MatchBranch branch in match.Branches)
         {
             if (branch.Pattern is CtorPattern cp)
-            {
                 covered = covered.Add(cp.Constructor.Value);
-            }
         }
 
         List<string> missing = [];
         foreach (SumConstructorType ctor in sumType.Constructors)
         {
             if (!covered.Contains(ctor.Name.Value))
-            {
                 missing.Add(ctor.Name.Value);
-            }
         }
 
         if (missing.Count > 0)
@@ -426,16 +419,12 @@ public sealed partial class TypeChecker
 
                     int count = Math.Min(ctor.SubPatterns.Count, fieldTypes.Count);
                     for (int i = 0; i < count; i++)
-                    {
                         CheckPattern(ctor.SubPatterns[i], fieldTypes[i]);
-                    }
                 }
                 else
                 {
                     foreach (Pattern sub in ctor.SubPatterns)
-                    {
                         CheckPattern(sub, m_unifier.FreshVar());
-                    }
                 }
                 break;
 
@@ -447,15 +436,11 @@ public sealed partial class TypeChecker
     CodexType InferRecord(RecordExpr rec)
     {
         if (rec.TypeName is null)
-        {
             return m_unifier.FreshVar();
-        }
 
         CodexType? typeDef = m_typeDefMap[rec.TypeName.Value.Value];
         if (typeDef is not RecordType recordType)
-        {
             return m_unifier.FreshVar();
-        }
 
         // Each construction site needs its own fresh type vars, otherwise a
         // call like `P { f = p.s, s = p.f } : P b a` from a `P a b` value
@@ -471,9 +456,7 @@ public sealed partial class TypeChecker
                 .FirstOrDefault(f => f.FieldName.Value == field.FieldName.Value);
             CodexType fieldType = InferExpr(field.Value);
             if (expectedField is not null)
-            {
                 m_unifier.Unify(fieldType, expectedField.Type, field.Span);
-            }
         }
         return instantiated;
     }
@@ -483,16 +466,12 @@ public sealed partial class TypeChecker
         CodexType recordType = InferExpr(fa.Record);
         CodexType resolved = m_unifier.Resolve(recordType);
         if (resolved is not RecordType rt)
-        {
             return m_unifier.FreshVar();
-        }
 
         RecordFieldType? field = rt.Fields
             .FirstOrDefault(f => f.FieldName.Value == fa.FieldName.Value);
         if (field is not null)
-        {
             return field.Type;
-        }
 
         m_diagnostics.Error(CdxCodes.RecordFieldNotFound,
             $"Record type '{rt.TypeName.Value}' has no field '{fa.FieldName.Value}'",
@@ -546,24 +525,16 @@ public sealed partial class TypeChecker
     static CodexType UnwrapEffectful(CodexType type, ref Set<string> effects)
     {
         if (type is not EffectfulType eft)
-        {
             return type;
-        }
-
         foreach (EffectType effect in eft.Effects)
-        {
             effects = effects.Add(effect.EffectName.Value);
-        }
-
         return eft.Return;
     }
 
     ListType InferList(ListExpr list)
     {
         if (list.Elements.Count == 0)
-        {
             return new ListType(m_unifier.FreshVar());
-        }
 
         CodexType elementType = InferExpr(list.Elements[0]);
         for (int i = 1; i < list.Elements.Count; i++)
@@ -589,11 +560,11 @@ public sealed partial class TypeChecker
                 e => e.EffectName.Value != handleExpr.EffectName.Value)];
             resultType = remaining.IsEmpty ? eft.Return : new EffectfulType(remaining, eft.Return);
         }
-        else
-        {
-            resultType = compType;
-        }
-
+        else
+        {
+            resultType = compType;
+        }
+
         CodexType handlerResultType = m_unifier.FreshVar();
 
         foreach (HandleClause clause in handleExpr.Clauses)
@@ -620,10 +591,10 @@ public sealed partial class TypeChecker
                     m_env = m_env.Bind(p, ft.Parameter);
                     paramType = ft.Return;
                 }
-                else
-                {
-                    m_env = m_env.Bind(p, m_unifier.FreshVar());
-                }
+                else
+                {
+                    m_env = m_env.Bind(p, m_unifier.FreshVar());
+                }
             }
 
             CodexType opReturnType = paramType is EffectfulType opEft ? opEft.Return : paramType;

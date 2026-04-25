@@ -1,8 +1,8 @@
 # The Second Bootstrap — Cutting the Cord
 
 **Date**: 2026-03-31
-**Status**: Phases 1–5 and 7 shipped. Phase 6 (escape copy) deferred post-MM4 after two failed attempts. Phase 8 (fixed point) in flight — binary pingpong runs end-to-end; isolated byte-level corruption in streamed ELF remaining. See `CurrentPlan.md` for the live status.
-**Depends on**: MM3 (proven), Codex emitter (done), pingpong (green at 55 MB HWM)
+**Status**: Phases 1–5 and 7 shipped against the pre-CL-128 REF; phase 6 (escape copy) deferred post-MM4 after two failed attempts; phase 8 (fixed point) was "in flight" against that same REF. **As of 2026-04-20 (CL 128 reset), every green on the prior REF is treated as ceremonial** — agreement with a REF that had silent correctness holes is not correctness. Re-verification against the new REF baseline gates everything below. See `CurrentPlan.md` for the post-reset milestone path and `docs/Active/Compiler/REF-LESSONS-FOR-SELFHOST.md` for the explicit list of REF fixes the self-host still needs to absorb.
+**Depends on**: front-end self-compilation (structurally proven on pre-CL-128 REF), Codex emitter (ported), REF sample battery (`tools/ref-sweep.sh`, 54 verified / 72 post-CL-128)
 
 ---
 
@@ -42,10 +42,10 @@ on bare metal and achieves fixed point. No C# anywhere in the chain.
 Stage 0:  Last C# build → bare-metal ELF (the final C# artifact)
 Stage 1:  ELF (Stage 0) compiles .codex source → bare-metal ELF'
 Stage 2:  ELF' (Stage 1) compiles .codex source → bare-metal ELF''
-          ELF' == ELF''  →  fixed point. C# is gone.
+          ELF' == ELF''  →  fixed point. Self-host runs itself, no C# in the chain.
 ```
 
-After Stage 2, the C# compiler is genuinely archival. Nothing depends on it.
+After Stage 2, the self-host runs without C# in its build chain. The C# reference compiler remains maintained alongside as the correctness anchor against which the self-host's sample-battery output is diffed.
 
 This is MM4: **self-sustaining native compiler on bare metal.**
 
@@ -296,9 +296,11 @@ binaries. The test:
 4. **Stage 1 ELF == Stage 2 ELF** → fixed point. The compiler built by
    C# and the compiler built by itself produce identical binaries.
 
-After this, Stage 0 is archived. All future builds use Stage 1 (or its
-successors). The C# reference compiler becomes genuinely archival — nothing
-downstream of the second bootstrap depends on it.
+After this, Stage 0 is retired. All future builds use Stage 1 (or its
+successors). The C# reference compiler stays maintained alongside as the
+correctness anchor; nothing in the build chain downstream of the second
+bootstrap depends on it, but the sample-battery gate still diffs self-host
+output against REF output.
 
 ---
 
@@ -408,21 +410,25 @@ copy) is essential for keeping memory bounded.
 
 ---
 
-## What This Retires
+## What This Retires From The Build Chain
 
-After MM4, the following are genuinely archival:
+After MM4, the following stop being in the self-host build chain, but
+remain maintained in `src/` as correctness anchors and as the rope down
+the mountain for anyone who needs to re-climb:
 
-- `src/Codex.Emit.X86_64/` — replaced by `Codex.Codex/Emit/X86_64*.codex`
-- `src/Codex.Emit.CSharp/` — replaced by `Codex.Codex/Emit/CodexEmitter.codex`
+- `src/Codex.Emit.X86_64/` — shadowed by `Codex.Codex/Emit/X86_64*.codex`
+- `src/Codex.Emit.CSharp/` — shadowed by `Codex.Codex/Emit/CodexEmitter.codex`
 - `src/Codex.Emit.RiscV/` — abandoned (per CurrentPlan)
 - `src/Codex.Emit.Arm64/` — abandoned (per CurrentPlan)
-- `src/Codex.Emit.IL/` — no Codex replacement needed yet
-- All transpilation backends (JS, Python, Rust, etc.) — barbarian land
+- `src/Codex.Emit.IL/` — no Codex replacement yet
+- Transpilation backends (JS, Python, Rust, etc.) — kept as REF targets
 
-The `src/` tree becomes a museum. The only compiler is the one written in
-Codex, compiling itself on bare metal, producing bare-metal binaries.
+The `src/` tree is not deleted. CL 128 made it clear that REF-side fixes
+are sometimes the shortest path to correctness and that the sample battery
+diffs self-host output against REF output. The self-host becomes the
+production compiler; the reference stays as the anchor.
 
-The cord is cut.
+The cord into the C# build chain is cut. The anchor stays.
 
 ---
 

@@ -141,7 +141,7 @@ public class DefinitionLookupTests
     [Fact]
     public void Definition_finds_variant_type()
     {
-        string source = "Shape = Circle (Integer) | Rectangle (Integer) (Integer)\n\nmain = 1";
+        string source = "Shape = Circle (Integer) | Rectangle (Integer) (Integer)\n\nopening = 1";
         AnalysisResult result = Analyzer.Analyze("test.codex", source);
         Assert.NotEmpty(result.TypeDefinitions);
         Assert.Equal("Shape", result.TypeDefinitions[0].Name.Value);
@@ -150,7 +150,7 @@ public class DefinitionLookupTests
     [Fact]
     public void Definition_finds_variant_constructors()
     {
-        string source = "Shape = Circle (Integer) | Rectangle (Integer) (Integer)\nmain = 1";
+        string source = "Shape = Circle (Integer) | Rectangle (Integer) (Integer)\nopening = 1";
         AnalysisResult result = Analyzer.Analyze("test.codex", source);
         VariantTypeDef variant = Assert.IsType<VariantTypeDef>(result.TypeDefinitions[0]);
         Assert.Equal(2, variant.Constructors.Count);
@@ -161,7 +161,7 @@ public class DefinitionLookupTests
     [Fact]
     public void Definition_finds_record_type()
     {
-        string source = "Person = record { name : Text, age : Integer }\nmain = 1";
+        string source = "Person = record { name : Text, age : Integer }\nopening = 1";
         AnalysisResult result = Analyzer.Analyze("test.codex", source);
         Assert.Single(result.TypeDefinitions);
         Assert.Equal("Person", result.TypeDefinitions[0].Name.Value);

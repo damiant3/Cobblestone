@@ -12,9 +12,7 @@ sealed class CompositeChapterLoader(params IChapterLoader[] loaders) : IChapterL
         {
             ResolvedChapter? result = loader.Load(quire, chapterName);
             if (result is not null)
-            {
                 return result;
-            }
         }
         return null;
     }

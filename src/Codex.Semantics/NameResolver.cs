@@ -17,38 +17,47 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
     readonly DiagnosticBag m_diagnostics = diagnostics;
     IChapterLoader? m_loader;
 
+    // Fuel budget for recursive descent over the AST. Matches the unifier's
+    // 256. Exceeding it trips CDX9001 instead of hanging or overflowing the
+    // .NET stack — either adversarial input depth or a bug in the walker.
+    const int MaxRecursionDepth = 256;
+    int m_depth;
+
+    public static Set<string> Builtins => s_builtins;
+
+    // Always-in-scope names: reserved (True/False/Nothing) + built-in effect op names
+    // that are auto-registered at type-check time via BuiltinEffects.Load. Typed
+    // builtins are NOT here — they must be brought in via `cites Codex chapter X`.
+    // True / False / Nothing are lexer keywords now; they are never NameExpr values
+    // and never need to be resolved as identifiers. They stay out of this list.
     static readonly Set<string> s_builtins = Set<string>.Of(
-        "show", "negate", "True", "False", "Nothing",
         "print-line", "read-line",
         "open-file", "read-all", "close-file", "read-file",
-        "write-file", "write-binary", "file-exists", "list-files",
-        "char-at", "char-to-text", "text-length", "substring",
-        "is-letter", "is-digit", "is-whitespace",
-        "text-to-integer", "text-to-double-bits", "integer-to-text", "text-replace",
-        "text-split", "text-contains", "text-starts-with",
-        "char-code", "char-code-at", "code-to-char",
-        "list-length", "list-at", "list-insert-at", "list-set-at", "list-snoc", "list-contains",
-        "text-compare", "text-concat-list",
-        "get-args", "get-env", "current-dir",
-        "run-process",
-        "map",
-        "get-state", "set-state", "run-state",
+        "write-file", "write-binary",
+        "get-args", "get-env", "current-dir", "run-process", "run-process-full", "process-exit",
         "now",
         "random-integer",
-        "fork", "await", "par", "race",
-        "record-set",
-        "linked-list-empty", "linked-list-push", "linked-list-to-list",
-        "heap-save", "heap-restore", "heap-advance",
-        "list-with-capacity",
-        "buf-write-byte", "buf-write-bytes", "buf-read-bytes",
-        "bit-and", "bit-or", "bit-xor", "bit-shl", "bit-shr", "bit-not",
-        "int-mod", "abs", "min", "max"
+        "get-state", "set-state",
+        "fetch", "post", "resolve-dns",
+        "draw-text", "draw-rect", "clear", "set-pixel",
+        "capture", "capture-raw",
+        "listen", "is-quiet",
+        "locate", "altitude",
+        "accelerometer", "gyroscope", "barometer", "light-level",
+        "authenticate", "current-user"
     );
 
     public NameResolver(DiagnosticBag diagnostics, IChapterLoader? loader)
         : this(diagnostics)
     {
         m_loader = loader;
+    }
+
+    static Codex.Types.BuiltinChapter? FindBuiltinChapter(string name)
+    {
+        foreach (Codex.Types.BuiltinChapter c in Codex.Types.BuiltinChapters.All)
+            if (c.Name == name) return c;
+        return null;
     }
 
     public ResolvedChapter Resolve(Chapter chapter)
@@ -113,6 +122,48 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
         List<ResolvedChapter> citedChapters = [];
         foreach (CitesDecl cite in chapter.Citations)
         {
+            // Codex quire = synthetic builtin chapters (no .codex file on disk).
+            // Names come from BuiltinChapters; effect-op names are auto-registered
+            // elsewhere (BuiltinEffects.Load) so they are not added here.
+            if (cite.Quire.Value == "Codex")
+            {
+                Codex.Types.BuiltinChapter? bc = FindBuiltinChapter(cite.ChapterName.Value);
+                if (bc is null)
+                {
+                    m_diagnostics.Error(CdxCodes.UnresolvedCitation,
+                        $"Unknown builtin chapter 'Codex chapter {cite.ChapterName.Value}'",
+                        cite.Span);
+                    continue;
+                }
+                foreach ((string name, _) in bc.TypedBindings)
+                    topLevel = topLevel.Add(name);
+
+                // If the builtin chapter declares inline record/variant types
+                // via TypeSource, parse them (lazily cached in BuiltinTypes)
+                // and thread them through citedChapters so
+                // TypeChecker.CiteChapter picks them up in the usual way.
+                Chapter? typeChapter = Codex.Types.BuiltinTypes.ChapterFor(cite.ChapterName.Value);
+                if (typeChapter is not null)
+                {
+                    Set<string> citedTypeNames = Set<string>.s_empty;
+                    Set<string> citedCtorNames = Set<string>.s_empty;
+                    foreach (TypeDef td in typeChapter.TypeDefinitions)
+                    {
+                        citedTypeNames = citedTypeNames.Add(td.Name.Value);
+                        if (td is VariantTypeDef variant)
+                        {
+                            foreach (VariantCtorDef ctor in variant.Constructors)
+                                citedCtorNames = citedCtorNames.Add(ctor.Name.Value);
+                        }
+                    }
+                    typeNames = typeNames.Union(citedTypeNames);
+                    ctorNames = ctorNames.Union(citedCtorNames);
+                    citedChapters.Add(new ResolvedChapter(typeChapter,
+                        Set<string>.s_empty, citedTypeNames, citedCtorNames));
+                }
+                continue;
+            }
+
             ResolvedChapter? cited = m_loader?.Load(cite.Quire.Value, cite.ChapterName.Value);
             if (cited is null)
             {
@@ -135,10 +186,7 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
         {
             Set<string> scope = allKnownNames;
             foreach (Parameter p in def.Parameters)
-            {
                 scope = scope.Add(p.Name.Value);
-            }
-
             ResolveExpr(def.Body, scope);
         }
 
@@ -148,6 +196,16 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
 
     void ResolveExpr(Expr expr, Set<string> scope)
     {
+        if (m_depth >= MaxRecursionDepth)
+        {
+            m_diagnostics.Error(CdxCodes.ResourceExhausted,
+                $"compiler resource exhausted in name-resolver.ResolveExpr (depth {MaxRecursionDepth})",
+                expr.Span);
+            return;
+        }
+        m_depth++;
+        try
+        {
         switch (expr)
         {
             case NameExpr name:
@@ -197,9 +255,7 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
             case LambdaExpr lam:
                 Set<string> lamScope = scope;
                 foreach (Parameter p in lam.Parameters)
-                {
                     lamScope = lamScope.Add(p.Name.Value);
-                }
                 ResolveExpr(lam.Body, lamScope);
                 break;
 
@@ -215,18 +271,12 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
 
             case ListExpr list:
                 foreach (Expr element in list.Elements)
-                {
                     ResolveExpr(element, scope);
-                }
-
                 break;
 
             case RecordExpr rec:
                 foreach (RecordFieldExpr field in rec.Fields)
-                {
                     ResolveExpr(field.Value, scope);
-                }
-
                 break;
 
             case FieldAccessExpr fa:
@@ -259,11 +309,8 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
                 {
                     Set<string> clauseScope = scope;
                     foreach (Name p in clause.Parameters)
-                        {
-                            clauseScope = clauseScope.Add(p.Value);
-                        }
-
-                        clauseScope = clauseScope.Add(clause.ResumeName.Value);
+                        clauseScope = clauseScope.Add(p.Value);
+                    clauseScope = clauseScope.Add(clause.ResumeName.Value);
                     ResolveExpr(clause.Body, clauseScope);
                 }
                 break;
@@ -272,10 +319,25 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
             case ErrorExpr:
                 break;
         }
+        }
+        finally
+        {
+            m_depth--;
+        }
     }
 
-    static void CollectPatternBindings(Pattern pattern, ref Set<string> scope)
+    void CollectPatternBindings(Pattern pattern, ref Set<string> scope)
     {
+        if (m_depth >= MaxRecursionDepth)
+        {
+            m_diagnostics.Error(CdxCodes.ResourceExhausted,
+                $"compiler resource exhausted in name-resolver.CollectPatternBindings (depth {MaxRecursionDepth})",
+                pattern.Span);
+            return;
+        }
+        m_depth++;
+        try
+        {
         switch (pattern)
         {
             case VarPattern v:
@@ -283,14 +345,16 @@ public sealed class NameResolver(DiagnosticBag diagnostics)
                 break;
             case CtorPattern ctor:
                 foreach (Pattern sub in ctor.SubPatterns)
-                {
                     CollectPatternBindings(sub, ref scope);
-                }
-
                 break;
             case WildcardPattern:
             case LiteralPattern:
                 break;
+        }
+        }
+        finally
+        {
+            m_depth--;
         }
     }
 

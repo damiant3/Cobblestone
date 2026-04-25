@@ -11,8 +11,8 @@ public class ILEmitterBuiltinTests
     public void Text_contains_true_case()
     {
         string source = """
-            main : Text
-            main = show (text-contains "hello world" "world")
+            opening : Text
+            opening = show (text-contains "hello world" "world")
             """;
         string? output = CompileAndRun(source, "contains_true");
         Assert.NotNull(output);
@@ -23,8 +23,8 @@ public class ILEmitterBuiltinTests
     public void Text_contains_false_case()
     {
         string source = """
-            main : Text
-            main = show (text-contains "hello world" "xyz")
+            opening : Text
+            opening = show (text-contains "hello world" "xyz")
             """;
         string? output = CompileAndRun(source, "contains_false");
         Assert.NotNull(output);
@@ -35,8 +35,8 @@ public class ILEmitterBuiltinTests
     public void Text_contains_empty_substring()
     {
         string source = """
-            main : Text
-            main = show (text-contains "hello" "")
+            opening : Text
+            opening = show (text-contains "hello" "")
             """;
         string? output = CompileAndRun(source, "contains_empty");
         Assert.NotNull(output);
@@ -49,8 +49,8 @@ public class ILEmitterBuiltinTests
     public void Text_starts_with_true_case()
     {
         string source = """
-            main : Text
-            main = show (text-starts-with "hello world" "hello")
+            opening : Text
+            opening = show (text-starts-with "hello world" "hello")
             """;
         string? output = CompileAndRun(source, "starts_true");
         Assert.NotNull(output);
@@ -61,8 +61,8 @@ public class ILEmitterBuiltinTests
     public void Text_starts_with_false_case()
     {
         string source = """
-            main : Text
-            main = show (text-starts-with "hello world" "world")
+            opening : Text
+            opening = show (text-starts-with "hello world" "world")
             """;
         string? output = CompileAndRun(source, "starts_false");
         Assert.NotNull(output);
@@ -78,8 +78,8 @@ public class ILEmitterBuiltinTests
             has-at : Text -> Text
             has-at (s) = if text-contains s "@" then "email" else "not email"
 
-            main : Text
-            main = has-at "user@example.com"
+            opening : Text
+            opening = has-at "user@example.com"
             """;
         string? output = CompileAndRun(source, "contains_if");
         Assert.NotNull(output);
@@ -93,8 +93,8 @@ public class ILEmitterBuiltinTests
     {
         // PATH is set on both Windows and Linux
         string source = """
-            main : Text
-            main = get-env "PATH"
+            opening : [Process] Text
+            opening = get-env "PATH"
             """;
         string? output = CompileAndRun(source, "getenv_path");
         Assert.NotNull(output);
@@ -107,8 +107,8 @@ public class ILEmitterBuiltinTests
     public void Current_dir_returns_nonempty()
     {
         string source = """
-            main : Text
-            main = current-dir
+            opening : [Process] Text
+            opening = current-dir
             """;
         string? output = CompileAndRun(source, "curdir");
         Assert.NotNull(output);
@@ -119,8 +119,11 @@ public class ILEmitterBuiltinTests
     public void Current_dir_used_in_concatenation()
     {
         string source = """
-            main : Text
-            main = "cwd=" ++ current-dir
+            opening : [Process] Text
+            opening = act
+              cwd <- current-dir
+              "cwd=" ++ cwd
+            end
             """;
         string? output = CompileAndRun(source, "curdir_concat");
         Assert.NotNull(output);
@@ -134,8 +137,8 @@ public class ILEmitterBuiltinTests
     public void List_files_emits_il()
     {
         string source = """
-            main : Integer
-            main = list-length (list-files "." "*")
+            opening : Integer
+            opening = list-length (list-files "." "*")
             """;
         byte[]? bytes = Helpers.CompileToIL(source, "listfiles_emit");
         Assert.NotNull(bytes);
@@ -147,8 +150,8 @@ public class ILEmitterBuiltinTests
     {
         // The temp dir always has at least the .dll and .runtimeconfig.json we write
         string source = """
-            main : Text
-            main = if list-length (list-files "." "*") > 0
+            opening : Text
+            opening = if list-length (list-files "." "*") > 0
               then "found files"
               else "empty"
             """;
@@ -167,8 +170,8 @@ public class ILEmitterBuiltinTests
     public void Is_letter_true_for_cce_letter()
     {
         string source = """
-            main : Text
-            main = show (is-letter (char-at "a" 0))
+            opening : Text
+            opening = show (is-letter (char-at "a" 0))
             """;
         string? output = CompileAndRun(source, "is_letter_true");
         Assert.NotNull(output);
@@ -179,8 +182,8 @@ public class ILEmitterBuiltinTests
     public void Is_letter_false_for_digit()
     {
         string source = """
-            main : Text
-            main = show (is-letter (char-at "1" 0))
+            opening : Text
+            opening = show (is-letter (char-at "1" 0))
             """;
         string? output = CompileAndRun(source, "is_letter_false_digit");
         Assert.NotNull(output);
@@ -191,8 +194,8 @@ public class ILEmitterBuiltinTests
     public void Is_letter_false_for_space()
     {
         string source = """
-            main : Text
-            main = show (is-letter (char-at " " 0))
+            opening : Text
+            opening = show (is-letter (char-at " " 0))
             """;
         string? output = CompileAndRun(source, "is_letter_false_space");
         Assert.NotNull(output);
@@ -203,8 +206,8 @@ public class ILEmitterBuiltinTests
     public void Is_digit_true_for_cce_digit()
     {
         string source = """
-            main : Text
-            main = show (is-digit (char-at "7" 0))
+            opening : Text
+            opening = show (is-digit (char-at "7" 0))
             """;
         string? output = CompileAndRun(source, "is_digit_true");
         Assert.NotNull(output);
@@ -215,8 +218,8 @@ public class ILEmitterBuiltinTests
     public void Is_digit_false_for_letter()
     {
         string source = """
-            main : Text
-            main = show (is-digit (char-at "a" 0))
+            opening : Text
+            opening = show (is-digit (char-at "a" 0))
             """;
         string? output = CompileAndRun(source, "is_digit_false_letter");
         Assert.NotNull(output);
@@ -227,8 +230,8 @@ public class ILEmitterBuiltinTests
     public void Is_whitespace_true_for_space()
     {
         string source = """
-            main : Text
-            main = show (is-whitespace (char-at " " 0))
+            opening : Text
+            opening = show (is-whitespace (char-at " " 0))
             """;
         string? output = CompileAndRun(source, "is_ws_true");
         Assert.NotNull(output);
@@ -239,8 +242,8 @@ public class ILEmitterBuiltinTests
     public void Is_whitespace_false_for_letter()
     {
         string source = """
-            main : Text
-            main = show (is-whitespace (char-at "a" 0))
+            opening : Text
+            opening = show (is-whitespace (char-at "a" 0))
             """;
         string? output = CompileAndRun(source, "is_ws_false_letter");
         Assert.NotNull(output);
@@ -252,10 +255,7 @@ public class ILEmitterBuiltinTests
     static string? CompileAndRun(string source, string chapterName)
     {
         byte[]? bytes = Helpers.CompileToIL(source, chapterName);
-        if (bytes is null)
-        {
-            return null;
-        }
+        if (bytes is null) return null;
 
         string tempDir = Path.Combine(Path.GetTempPath(),
             "codex_il_test_" + chapterName + "_" + Guid.NewGuid().ToString("N")[..8]);
@@ -289,10 +289,7 @@ public class ILEmitterBuiltinTests
             };
 
             using Process? proc = Process.Start(psi);
-            if (proc is null)
-            {
-                return null;
-            }
+            if (proc is null) return null;
 
             string stdout = proc.StandardOutput.ReadToEnd();
             string stderr = proc.StandardError.ReadToEnd();

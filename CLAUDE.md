@@ -17,17 +17,28 @@ Backlog: `docs/BACKLOG.md`
 
 ## The Rules
 
-### 1. Compiler changes go to a feature branch, not master
+### 1. The acceptance test is the sample battery plus byte-identity
 
-**Do not push compiler code directly to master.** Anything that touches the
-reference compiler (`src/`), the self-hosted compiler (`Codex.Codex/`), the
-runtime, or codegen must land on a feature branch (`hex/description`). Another
-agent or Damian reviews, builds, tests, and merges.
+Correctness is **not** "stages agree." Stage agreement is a self-compilation
+gate — it proves that stage N and stage N+1 produce the same bytes. It does
+not prove the bytes are right. Pre-CL-128, pingpong passed while the
+compiled programs were silently wrong (missing `IRLambda` / `IRRunState`
+emit cases, register-clobbering predicate builtins, unpropagated type
+args — see `docs/Active/Compiler/REF-LESSONS-FOR-SELFHOST.md`). Agreement
+with a broken compiler is ceremonial.
 
-Non-compiler changes (docs, tooling under `tools/` that isn't the compiler,
-agent scripts, CI, etc.) may be pushed directly to master.
+The acceptance test has two parts. Both are required; neither is
+sufficient alone:
 
-### 2. Pingpong (bootstrap 2) is the acceptance test
+1. **Sample battery.** `tools/ref-sweep.sh` diffs every sample's runtime
+   output against a hand-verified `.expected` snapshot, every compile
+   failure against a `.failing` CDX code sidecar, and enumerates
+   skips against `.skip` reasons. 54 verified / 8 diag / 10 skip / 0 fail
+   of 72 samples as of CL 128. This is the correctness anchor.
+2. **Byte-identity between stages.** `pingpong.sh` phase 4 (bootstrap 2):
+   sem-equiv(source, stage 1) PASS and stage 1 === stage 2 byte-identical.
+   This is the self-compilation gate — it proves the compiler is a fixed
+   point of its own output.
 
 There are **three separate bootstraps**. Do not confuse them. See
 `docs/CodexBootstrap.png` and `docs/Test/BOOTSTRAP-REPORT.md`.
@@ -35,51 +46,65 @@ There are **three separate bootstraps**. Do not confuse them. See
 - **Bootstrap 1** — .NET self-host, emits C#. Fixed point: stage 1 === stage 3.
 - **Bootstrap 1.1** — .NET self-host, emits Codex text. Fixed point: stage 1 === stage 2.
 - **Bootstrap 2 (pingpong)** — bare-metal ELF under QEMU, emits Codex text.
-  Fixed point requires **both** sem-equiv(source, stage 1) = PASS **and**
-  stage 1 === stage 2 byte-identical.
+  Byte-identity gate: sem-equiv PASS + stage 1 === stage 2.
 - **Bootstrap 3** — bare-metal ELF emits machine code. Not yet green (MM4 Phase 8).
 
 Bootstraps 1 and 1.1 run under `dotnet`. Pingpong is bootstrap 2, and **only**
 bootstrap 2. A green "BOOTSTRAP 1" or "BOOTSTRAP 1.1" line from `codex bootstrap`
 says nothing about pingpong. If you report pingpong green, it is because
 `wsl bash tools/pingpong.sh` Phase 4 ran green: sem-equiv PASS followed by
-stage1 === stage2 byte-identical.
+stage1 === stage2 byte-identical **and** the sample battery is green on the
+same compiler.
 
-Every change that touches codegen must pass bootstrap 2 (pingpong) before it
-is considered done. `wsl bash tools/pingpong.sh` — if it's not green, back
-it out.
+Every change that touches codegen must pass both gates before it is
+considered done. If either is red, back it out.
 
-### 3. Read before you write
+### 2. Read before you write
 
 Do not modify code you have not read. Do not guess at file contents. Do not assume
 structure from names. The self-hosted compiler has subtle invariants — a wrong
 assumption will cost hours.
 
-### 4. One thing at a time
+### 3. One thing at a time
 
 This is in the principles doc and it is the most violated rule. Do one thing. Test it.
 Commit it. Then do the next thing. Do not batch. Do not "while I'm here." The compiler
 is 12,000 lines of Codex and 7,000 lines of C# codegen. A wrong change in one place
 surfaces as a silent corruption three pipeline stages later.
 
-### 5. CCE is the internal encoding
+### 4. CCE is the internal encoding
 
 Everything inside the compiler operates on Codex Character Encoding (CCE).
 Unicode conversion happens ONLY at I/O boundaries. Do not introduce Unicode
 assumptions in internal code.
 
-### 6. No dates, no estimates
-
-Every estimate has been wrong by orders of magnitude. The critical path is ordered.
-That is all we need to know.
-
-### 7. Never use python.
+### 5. Never use python.
 
 If you need to write a script, you can use bash (.sh), powershell (.ps1), Codex, or C#.  We don't need another dependency.
 
-### 8. Parity is narrow
+### 6. Parity is narrow
 
-The reference (`src/`) is a baseline, not a mirror. The self-host (`Codex.Codex/`) is a strict superset — free to do more, do better, diverge on shape. The parity requirement is narrow: anything that affects the **compilation output** (lexer, parser, desugarer, type checker, lowering, codegen semantics) must mirror precisely; everything else (diagnostics wording, CLI output, debug dumps, profiler output, span precision, error formatting) is free to diverge. `pingpong.sh` is the acceptance test for the narrow invariant. Full treatment in principle 11 of `docs/10-PRINCIPLES.md` and applied in `docs/Active/Compiler/SELF-HOST-PARITY-AUDIT.md`.
+The reference (`src/`) is a baseline, not a mirror. The self-host (`Codex.Codex/`) is a strict superset — free to do more, do better, diverge on shape. The parity requirement is narrow: anything that affects the **compilation output** (lexer, parser, desugarer, type checker, lowering, codegen semantics) must mirror precisely; everything else (diagnostics wording, CLI output, debug dumps, profiler output, span precision, error formatting) is free to diverge. The acceptance test for the narrow invariant is Rule 1 (sample battery + byte-identity). Full treatment in principle 11 of `docs/10-PRINCIPLES.md`. Live port guide: `docs/Active/Compiler/REF-LESSONS-FOR-SELFHOST.md`. The older pattern-matched parity matrix in `docs/Active/Compiler/SELF-HOST-PARITY-AUDIT.md` is tagged STALE as of CL 128 and kept only for historical context.
+
+### 7. The entry-point identifier is `opening`
+
+A Codex program's entry point is the function named `opening`, not `main`. This is an aesthetic choice — Codex leans on the book metaphor (chapters, cites, foreword, opening). The compiler's entry-point lookup is hardcoded to `opening` across every emitter backend (`src/Codex.Emit.*`) and in the self-host (`Codex.Codex/Emit/X86_64Chapter.codex` emit-start). Scope-adefs exempts `opening` from slug-mangling; two chapters both defining `opening` is a hard diagnostic, not a silent rename. `main` is free for user code — Forewords and libraries may use it without colliding with the compiler's entry.
+
+### 8. Every review assesses memory and time-complexity risk
+
+This runs on finite hardware. Every review (self-review before shelving, or review of someone else's CL) must include an explicit risk assessment for **heap blow-up** and **time complexity**. "Easiest implementation" is not a defense when it blows the heap or runs quadratic.
+
+**Inspection is the first test. Testing is the fallback.** A 5-minute pingpong run is expensive relative to a 30-second code read. Default to reasoning from the code:
+
+1. **Inspect first.** Read the changed lines. Ask: does this add a loop? An accumulator? A buf↔List round-trip? A call to `buf-read-bytes` in a hot path? A new recursion without a fuel cap? If the answer is "no — this is a bounded match-arm addition / a leaf function / a one-shot computation", inspection alone is sufficient.
+2. **Test when genuinely unsure.** If the change's cost depends on data you don't have (call count at runtime, input-size scaling, existing accumulator behavior), or if the surrounding code is complex enough that inspection would take longer than a test run, run pingpong before/after and diff `heap hwm` + elapsed time.
+3. **Never skip the assessment.** Every CL review must state, in one or two lines, the memory and time-complexity verdict — "inspection: no loops, bounded match-arm, O(1) per call, no heap impact" or "measured: +4 MB stage 1 heap, +0.2s, acceptable for X reason". Silent approvals are not allowed.
+
+**No guessing about allocation behavior.** If a claim is about an implementation's cost, it must cite a file:line. `src/Codex.Emit.X86_64/X86_64CodeGen.cs` is authoritative for `__list_append`, `__list_snoc`, `__buf_read_bytes`, etc. (e.g. `__list_append` is amortized O(1) per element via geometric realloc — verified at line 5468, not "I think it copies".) Claims without a reference are speculation and will be treated as such.
+
+**Red flags that demand a second look.** `buf-read-bytes` in hot paths (8× byte-to-List-slot blowup). Repeated buf→List→buf round-trips. Building full-pipeline accumulators with List when a buf would do. Retaining AST/IR across phases when `heap-save`/`heap-restore` would reset it. Nested loops with unclear pairing. Pattern-matching an allocating idiom from surrounding code without asking whether it's cheap. Bare-metal pingpong has no GC — every allocation is permanent until the producing function returns.
+
+**Localization when something grows.** `Codex.Codex/opening.codex` `compile-measure` instruments 14 phase boundaries with `heap-save`. Use it to localize growth instead of guessing which phase is the culprit. Pingpong already reports `heap hwm` per stage — diff before/after non-trivial changes when inspection is inconclusive.
 
 ### Key Tools
 
@@ -95,15 +120,14 @@ The reference (`src/`) is a baseline, not a mirror. The self-host (`Codex.Codex/
 ```bash
 dotnet build Codex.sln              # Builds everything
 dotnet test Codex.sln               # Runs all tests
-wsl bash tools/pingpong.sh          # Bare-metal self-compilation test with text output
-wsl bash tools/binary-pingpong.sh   # Bare-metal self-compilation test with ELF output
+wsl bash tools/pingpong.sh          # Bootstrap 2 (pingpong): bare-metal ELF emits Codex text
+wsl bash tools/bootstrap3.sh        # Bootstrap 3: bare-metal ELF emits ELF (not pingpong — no ELF ingester)
 ```
 
 ## Agent Identity
 
 Working directory: `D:\Projects\NewRepository-XXX`  Use pwd to find the actual XXX value
 You are **Hex-XXX** where XXX is the last 3 characters of your working directory name.
-Feature Branch prefix: `Hex-XXX/FeatureName`
 Agent file: `docs/Agents/Hex.txt`
 
 ## What Not To Do

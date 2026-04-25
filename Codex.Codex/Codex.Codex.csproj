@@ -27,8 +27,21 @@
   <ItemGroup>
     <CodexSources Include="**\*.codex" />
   </ItemGroup>
-  <Target Name="CodexBuild" BeforeTargets="Build"
-          Inputs="@(CodexSources)"
+  <!-- Build Codex.Cli before CodexBuild fires. Prior behaviour raced a stale
+       CLI from a previous session. ReferenceOutputAssembly=false keeps the
+       Cli's output out of this project's reference graph - we only need the
+       exe on disk. -->
+  <ItemGroup>
+    <ProjectReference Include="$(CodexCliProject)" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+  <!-- BeforeTargets="CoreCompile" puts CodexBuild before CSC looks for the
+       generated file; "Build" fires too late and produces CS2001 on a cold
+       workspace where build-output/bootstrap/Codex.Codex.cs doesn't exist yet.
+       Including $(CodexCliExe) in Inputs re-fires the target when the Cli is
+       rebuilt, so a content change in the Cli regenerates the output even if
+       no .codex file changed. -->
+  <Target Name="CodexBuild" BeforeTargets="CoreCompile"
+          Inputs="@(CodexSources);$(CodexCliExe)"
           Outputs="..\build-output\bootstrap\Codex.Codex.cs">
     <!-- Windows: use the .exe directly -->
     <Exec Command="&quot;$(CodexCliExe)&quot; build ." WorkingDirectory="$(MSBuildProjectDirectory)" Condition="Exists('$(CodexCliExe)')" IgnoreExitCode="true" ConsoleToMSBuild="true">

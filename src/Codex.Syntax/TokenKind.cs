@@ -15,6 +15,7 @@ public enum TokenKind
     CharLiteral,
     TrueKeyword,
     FalseKeyword,
+    NothingKeyword,
 
     // Interpolated strings
     InterpolatedStart,      // opening " of an interpolated string

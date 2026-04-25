@@ -7,7 +7,9 @@ TIMEOUT=${TIMEOUT:-15}
 RAW="/tmp/run-bare-raw-$$"
 rm -f "$RAW"
 timeout "$TIMEOUT" "$QEMU" \
-    -enable-kvm -kernel "$ELF" -serial stdio -display none -no-reboot -m 256 \
+    -enable-kvm -kernel "$ELF" -serial stdio \
+    -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+    -display none -no-reboot -m 256 \
     > "$RAW" 2>/dev/null || true
 strings -n 1 "$RAW" | head -50
 rm -f "$RAW"

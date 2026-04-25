@@ -1,5 +1,17 @@
 namespace Codex.Core;
 
+// Well-known identifiers that thread through every pipeline phase. Each
+// constant captures a language-level contract that tools, emitters, and
+// scopers all need to agree on. String-literal duplicates get hunted down
+// and routed here so "the entry-point name" can never drift by backend.
+public static class Names
+{
+    // The function a Codex program uses as its entry point. Deliberately
+    // lowercase to honor the book metaphor (Chapter / Opening). Emitters
+    // mangle this to target-language main/opening/codex_main as needed.
+    public const string OpeningEntryPoint = "opening";
+}
+
 public readonly record struct Name(string Value) : IComparable<Name>
 {
     public bool IsTypeName => Value.Length > 0 && char.IsUpper(Value[0]);

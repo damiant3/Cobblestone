@@ -149,10 +149,7 @@ public sealed partial class FactStore(string rootPath)
     {
         string codexDir = Path.Combine(rootPath, ".codex");
         if (!Directory.Exists(codexDir))
-        {
             return null;
-        }
-
         return new(rootPath);
     }
 
@@ -187,23 +184,17 @@ public sealed partial class FactStore(string rootPath)
     {
         Fact? cached = m_cache[hash];
         if (cached is not null)
-        {
             return cached;
-        }
 
         string hex = hash.ToHex();
         string factFile = Path.Combine(m_factsPath, hex[..2], hex + ".json");
         if (!File.Exists(factFile))
-        {
             return null;
-        }
 
         string json = File.ReadAllText(factFile);
         FactDto? dto = JsonSerializer.Deserialize<FactDto>(json, s_jsonOptions);
         if (dto is null)
-        {
             return null;
-        }
 
         Fact fact = new(
             ContentHash.FromHex(dto.Hash),
@@ -237,9 +228,7 @@ public sealed partial class FactStore(string rootPath)
         Map<string, string> raw = LoadViewMap();
         ValueMap<string, ContentHash> result = ValueMap<string, ContentHash>.s_empty;
         foreach (KeyValuePair<string, string> kv in raw)
-        {
             result = result.Set(kv.Key, ContentHash.FromHex(kv.Value));
-        }
         return result;
     }
 
@@ -253,18 +242,11 @@ public sealed partial class FactStore(string rootPath)
         {
             string hex = current.Value.ToHex();
             if (visited.Contains(hex))
-            {
                 break;
-            }
-
             visited = visited.Add(hex);
 
             Fact? fact = Load(current.Value);
-            if (fact is null)
-            {
-                break;
-            }
-
+            if (fact is null) break;
             history.Add(fact);
 
             Fact? supersession = FindSupersessionOf(current.Value);
@@ -288,9 +270,7 @@ public sealed partial class FactStore(string rootPath)
     Fact? FindSupersessionOf(ContentHash newHash)
     {
         if (!Directory.Exists(m_factsPath))
-        {
             return null;
-        }
 
         foreach (string subDir in Directory.GetDirectories(m_factsPath))
         {
@@ -299,9 +279,7 @@ public sealed partial class FactStore(string rootPath)
                 string json = File.ReadAllText(file);
                 FactDto? dto = JsonSerializer.Deserialize<FactDto>(json, s_jsonOptions);
                 if (dto?.Kind == "Supersession" && dto.References.Contains(newHash.ToHex()))
-                {
                     return DtoToFact(dto);
-                }
             }
         }
         return null;
@@ -313,9 +291,7 @@ public sealed partial class FactStore(string rootPath)
     {
         List<Fact> results = [];
         if (!Directory.Exists(m_factsPath))
-        {
             return results;
-        }
 
         foreach (string subDir in Directory.GetDirectories(m_factsPath))
         {
@@ -324,9 +300,7 @@ public sealed partial class FactStore(string rootPath)
                 string json = File.ReadAllText(file);
                 FactDto? dto = JsonSerializer.Deserialize<FactDto>(json, s_jsonOptions);
                 if (dto is null || dto.Kind != kind.ToString())
-                {
                     continue;
-                }
 
                 Fact fact = DtoToFact(dto);
                 results.Add(fact);
@@ -348,9 +322,7 @@ public sealed partial class FactStore(string rootPath)
         foreach (Fact verdict in allVerdicts)
         {
             if (verdict.Content.Contains($"proposal:{proposalHex}"))
-            {
                 results.Add(verdict);
-            }
         }
         return results;
     }
@@ -363,10 +335,7 @@ public sealed partial class FactStore(string rootPath)
             {
                 string value = line["stakeholders:".Length..];
                 if (string.IsNullOrWhiteSpace(value))
-                {
                     return [];
-                }
-
                 return [.. value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
             }
         }
@@ -394,9 +363,7 @@ public sealed partial class FactStore(string rootPath)
             {
                 string value = line["decision:".Length..].Trim();
                 if (Enum.TryParse<VerdictDecision>(value, out VerdictDecision decision))
-                {
                     return decision;
-                }
             }
         }
         return null;
@@ -406,15 +373,11 @@ public sealed partial class FactStore(string rootPath)
     {
         Fact? proposal = Load(proposalHash);
         if (proposal is null || proposal.Kind != FactKind.Proposal)
-        {
             return false;
-        }
 
         ImmutableArray<string> stakeholders = ParseStakeholders(proposal);
         if (stakeholders.Length == 0)
-        {
             return true;
-        }
 
         IReadOnlyList<Fact> verdicts = GetVerdicts(proposalHash);
         Set<string> accepted = Set<string>.s_empty;
@@ -423,22 +386,15 @@ public sealed partial class FactStore(string rootPath)
         {
             VerdictDecision? decision = ParseVerdictDecision(verdict);
             if (decision is VerdictDecision.Reject)
-            {
                 return false;
-            }
-
             if (decision is VerdictDecision.Accept or VerdictDecision.Abstain)
-            {
                 accepted = accepted.Add(verdict.Author);
-            }
         }
 
         foreach (string stakeholder in stakeholders)
         {
             if (!accepted.Contains(stakeholder))
-            {
                 return false;
-            }
         }
         return true;
     }
@@ -446,21 +402,15 @@ public sealed partial class FactStore(string rootPath)
     public bool AcceptProposal(ContentHash proposalHash, string viewName)
     {
         if (!CheckConsensus(proposalHash))
-        {
             return false;
-        }
 
         Fact? proposal = Load(proposalHash);
         if (proposal is null)
-        {
             return false;
-        }
 
         ContentHash? definitionHash = ParseDefinitionHash(proposal);
         if (definitionHash is null)
-        {
             return false;
-        }
 
         UpdateView(viewName, definitionHash.Value);
         return true;
@@ -474,9 +424,7 @@ public sealed partial class FactStore(string rootPath)
         foreach (Fact trust in allTrust)
         {
             if (trust.Content.Contains($"target:{targetHex}"))
-            {
                 results.Add(trust);
-            }
         }
         return results;
     }
@@ -489,9 +437,7 @@ public sealed partial class FactStore(string rootPath)
             {
                 string value = line["degree:".Length..].Trim();
                 if (Enum.TryParse<TrustDegree>(value, out TrustDegree degree))
-                {
                     return degree;
-                }
             }
         }
         return null;
@@ -540,9 +486,7 @@ public sealed partial class FactStore(string rootPath)
     {
         Set<string> hashes = Set<string>.s_empty;
         if (!Directory.Exists(m_factsPath))
-        {
             return hashes;
-        }
 
         foreach (string subDir in Directory.GetDirectories(m_factsPath))
         {
@@ -570,24 +514,15 @@ public sealed partial class FactStore(string rootPath)
     Map<string, string> LoadViewMap()
     {
         if (!File.Exists(m_viewPath))
-        {
             return Map<string, string>.s_empty;
-        }
-
         string json = File.ReadAllText(m_viewPath);
         Dictionary<string, string>? raw =
             JsonSerializer.Deserialize<Dictionary<string, string>>(json, s_jsonOptions);
         if (raw is null)
-        {
             return Map<string, string>.s_empty;
-        }
-
         Map<string, string> result = Map<string, string>.s_empty;
         foreach (KeyValuePair<string, string> kv in raw)
-        {
             result = result.Set(kv.Key, kv.Value);
-        }
-
         return result;
     }
 
@@ -595,10 +530,7 @@ public sealed partial class FactStore(string rootPath)
     {
         Dictionary<string, string> raw = [];
         foreach (KeyValuePair<string, string> kv in view)
-        {
             raw[kv.Key] = kv.Value;
-        }
-
         string json = JsonSerializer.Serialize(raw, s_jsonOptions);
         File.WriteAllText(m_viewPath, json);
     }

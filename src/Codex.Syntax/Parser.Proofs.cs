@@ -7,9 +7,7 @@ public sealed partial class Parser
     ClaimNode? TryParseClaim()
     {
         if (Current.Kind != TokenKind.ClaimKeyword)
-        {
             return null;
-        }
 
         Token claimKw = Current;
         Advance();
@@ -36,9 +34,7 @@ public sealed partial class Parser
     ProofNode? TryParseProof()
     {
         if (Current.Kind != TokenKind.ProofKeyword)
-        {
             return null;
-        }
 
         Token proofKw = Current;
         Advance();
@@ -68,10 +64,10 @@ public sealed partial class Parser
                 endSpan = Current.Span;
                 Advance();
             }
-            else
-            {
-                m_position = save;
-            }
+            else
+            {
+                m_position = save;
+            }
         }
         else if (Current.Kind == TokenKind.QedKeyword)
         {
@@ -85,6 +81,11 @@ public sealed partial class Parser
 
     ProofExprNode ParseProofExpr()
     {
+        if (FuelExhausted(nameof(ParseProofExpr), Current.Span))
+            return new ReflNode(Current.Span);
+        m_recursionDepth++;
+        try
+        {
         if (Current.Kind == TokenKind.TypeIdentifier && Current.Text == "Refl")
         {
             Token t = Current;
@@ -153,6 +154,11 @@ public sealed partial class Parser
         }
 
         return ParseProofAtom();
+        }
+        finally
+        {
+            m_recursionDepth--;
+        }
     }
 
     ProofExprNode ParseProofAtom()
@@ -194,9 +200,7 @@ public sealed partial class Parser
                     args.Add(ParseExpression());
                     Token rp = Expect(TokenKind.RightParen);
                     if (rp.Kind != TokenKind.RightParen)
-                    {
                         break;
-                    }
                 }
                 else
                 {
@@ -207,9 +211,7 @@ public sealed partial class Parser
             }
 
             if (args.Count > 0)
-            {
                 return new ProofApplyNode(name, args, name.Span.Through(args[^1].Span));
-            }
 
             return new ProofNameNode(name, name.Span);
         }

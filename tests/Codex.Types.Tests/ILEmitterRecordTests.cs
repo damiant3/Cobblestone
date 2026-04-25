@@ -20,8 +20,8 @@ public class ILEmitterRecordTests
             get-name : Person -> Text
             get-name (p) = p.name
 
-            main : Text
-            main = get-name (Person { name = "Alice", age = 30 })
+            opening : Text
+            opening = get-name (Person { name = "Alice", age = 30 })
             """;
         byte[]? bytes = Helpers.CompileToIL(source, "record_emit");
         Assert.NotNull(bytes);
@@ -40,8 +40,8 @@ public class ILEmitterRecordTests
             get-name : Person -> Text
             get-name (p) = p.name
 
-            main : Text
-            main = get-name (Person { name = "Alice", age = 30 })
+            opening : Text
+            opening = get-name (Person { name = "Alice", age = 30 })
             """;
         byte[]? bytes = Helpers.CompileToIL(source, "record_pe");
         Assert.NotNull(bytes);
@@ -71,8 +71,8 @@ public class ILEmitterRecordTests
             get-name : Person -> Text
             get-name (p) = p.name
 
-            main : Text
-            main = get-name (Person { name = "Alice", age = 30 })
+            opening : Text
+            opening = get-name (Person { name = "Alice", age = 30 })
             """;
         string? output = CompileAndRun(source, "record_field_run");
         Assert.NotNull(output);
@@ -91,8 +91,8 @@ public class ILEmitterRecordTests
             sum-coords : Point -> Integer
             sum-coords (p) = p.x + p.y
 
-            main : Integer
-            main = sum-coords (Point { x = 10, y = 20 })
+            opening : Integer
+            opening = sum-coords (Point { x = 10, y = 20 })
             """;
         string? output = CompileAndRun(source, "record_int_field_run");
         Assert.NotNull(output);
@@ -114,8 +114,8 @@ public class ILEmitterRecordTests
               is Green -> "green"
               is Blue -> "blue"
 
-            main : Text
-            main = describe Red
+            opening : Text
+            opening = describe Red
             """;
         byte[]? bytes = Helpers.CompileToIL(source, "sum_emit");
         Assert.NotNull(bytes);
@@ -137,8 +137,8 @@ public class ILEmitterRecordTests
               is Green -> "green"
               is Blue -> "blue"
 
-            main : Text
-            main = describe Red
+            opening : Text
+            opening = describe Red
             """;
         byte[]? bytes = Helpers.CompileToIL(source, "sum_pe");
         Assert.NotNull(bytes);
@@ -174,8 +174,8 @@ public class ILEmitterRecordTests
               is Green -> "green"
               is Blue -> "blue"
 
-            main : Text
-            main = describe Green
+            opening : Text
+            opening = describe Green
             """;
         string? output = CompileAndRun(source, "sum_match_run");
         Assert.NotNull(output);
@@ -195,8 +195,8 @@ public class ILEmitterRecordTests
               is Circle (r) -> r * r
               is Rect (w) (h) -> w * h
 
-            main : Integer
-            main = area (Rect 3 4)
+            opening : Integer
+            opening = area (Rect 3 4)
             """;
         string? output = CompileAndRun(source, "sum_fields_run");
         Assert.NotNull(output);
@@ -216,8 +216,8 @@ public class ILEmitterRecordTests
               is Circle (r) -> r * r
               is Rect (w) (h) -> w * h
 
-            main : Integer
-            main = area (Circle 5)
+            opening : Integer
+            opening = area (Circle 5)
             """;
         string? output = CompileAndRun(source, "sum_circle_run");
         Assert.NotNull(output);
@@ -237,8 +237,8 @@ public class ILEmitterRecordTests
               is Lit (n) -> n
               is Add (a) (b) -> eval a + eval b
 
-            main : Integer
-            main = eval (Add (Lit 3) (Lit 4))
+            opening : Integer
+            opening = eval (Add (Lit 3) (Lit 4))
             """;
         string? output = CompileAndRun(source, "recursive_sum_run");
         Assert.NotNull(output);
@@ -260,8 +260,8 @@ public class ILEmitterRecordTests
               is Add (a) (b) -> eval a + eval b
               is Mul (a) (b) -> eval a * eval b
 
-            main : Integer
-            main = eval (Mul (Add (Lit 2) (Lit 3)) (Lit 4))
+            opening : Integer
+            opening = eval (Mul (Add (Lit 2) (Lit 3)) (Lit 4))
             """;
         string? output = CompileAndRun(source, "multi_ctor_dispatch_run");
         Assert.NotNull(output);
@@ -282,8 +282,8 @@ public class ILEmitterRecordTests
               is Red -> "yes"
               is otherwise -> "no"
 
-            main : Text
-            main = is-red Blue
+            opening : Text
+            opening = is-red Blue
             """;
         string? output = CompileAndRun(source, "wildcard_run");
         Assert.NotNull(output);
@@ -317,10 +317,7 @@ public class ILEmitterRecordTests
         {
             string candidate = Path.Combine(dir, "samples", name);
             if (File.Exists(candidate))
-            {
                 return candidate;
-            }
-
             dir = Path.GetDirectoryName(dir)!;
         }
         throw new FileNotFoundException($"Cannot find samples/{name}");
@@ -329,10 +326,7 @@ public class ILEmitterRecordTests
     static string? CompileAndRun(string source, string chapterName)
     {
         byte[]? bytes = Helpers.CompileToIL(source, chapterName);
-        if (bytes is null)
-        {
-            return null;
-        }
+        if (bytes is null) return null;
 
         string tempDir = Path.Combine(Path.GetTempPath(),
             "codex_il_test_" + chapterName + "_" + Guid.NewGuid().ToString("N")[..8]);
@@ -366,21 +360,18 @@ public class ILEmitterRecordTests
             };
 
             using Process? proc = Process.Start(psi);
-            if (proc is null)
-            {
-                return null;
-            }
+            if (proc is null) return null;
 
             string stdout = proc.StandardOutput.ReadToEnd();
             string stderr = proc.StandardError.ReadToEnd();
             proc.WaitForExit(10_000);
 
-            if (proc.ExitCode != 0)
-            {
+            if (proc.ExitCode != 0)
+            {
                 throw new InvalidOperationException(
-                    $"dotnet exited with code {proc.ExitCode}.\nstdout: {stdout}\nstderr: {stderr}");
-            }
-
+                    $"dotnet exited with code {proc.ExitCode}.\nstdout: {stdout}\nstderr: {stderr}");
+            }
+
             return stdout;
         }
         finally

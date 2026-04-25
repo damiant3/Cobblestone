@@ -59,9 +59,7 @@ public sealed partial class CSharpEmitter
         };
 
         if (args.IsDefaultOrEmpty)
-        {
             return "";
-        }
 
         return "<" + string.Join(", ", args.Select(EmitType)) + ">";
     }
@@ -82,53 +80,12 @@ public sealed partial class CSharpEmitter
         foreach (SumConstructorType ctor in st.Constructors)
         {
             foreach (CodexType field in ctor.Fields)
-            {
                 CollectTypeVarIds(field, ids);
-            }
         }
 
         if (ids.Count == 0)
-        {
             return baseName;
-        }
-
         return baseName + "<" + string.Join(", ", ids.Order().Select(id => $"T{id}")) + ">";
-    }
-
-    static CodexType GetReturnType(IRDefinition def)
-    {
-        CodexType type = def.Type;
-        for (int i = 0; i < def.Parameters.Length; i++)
-        {
-            while (type is FunctionType pft && pft.Parameter is ProofType)
-            {
-                type = pft.Return;
-            }
-
-            if (type is FunctionType ft)
-            {
-                type = ft.Return;
-            }
-            else if (type is DependentFunctionType dep)
-            {
-                type = dep.Body;
-            }
-            else
-            {
-                break;
-            }
-        }
-        while (type is FunctionType pft2 && pft2.Parameter is ProofType)
-        {
-            type = pft2.Return;
-        }
-
-        if (type is EffectfulType eft)
-        {
-            type = eft.Return;
-        }
-
-        return type;
     }
 
     static void CollectTypeVarIds(CodexType type, HashSet<int> ids)
@@ -150,85 +107,60 @@ public sealed partial class CSharpEmitter
                 break;
             case ConstructedType ct:
                 foreach (CodexType arg in ct.Arguments)
-                {
                     CollectTypeVarIds(arg, ids);
-                }
-
                 break;
             case SumType st:
                 foreach (CodexType arg in st.TypeArguments)
-                {
                     CollectTypeVarIds(arg, ids);
-                }
 
                 break;
             case RecordType rt:
                 foreach (CodexType arg in rt.TypeArguments)
-                {
                     CollectTypeVarIds(arg, ids);
-                }
 
                 break;
         }
     }
-
-    static CodexType FinalReturnType(IRDefinition def)
-    {
-        CodexType type = def.Type;
-        for (int i = 0; i < def.Parameters.Length; i++)
-        {
-            while (type is FunctionType pft && pft.Parameter is ProofType)
-            {
-                type = pft.Return;
-            }
-
-            if (type is FunctionType ft)
-            {
-                type = ft.Return;
-            }
-            else if (type is DependentFunctionType dep)
-            {
-                type = dep.Body;
-            }
-            else
-            {
-                break;
-            }
-        }
-        while (type is FunctionType pft2 && pft2.Parameter is ProofType)
-        {
-            type = pft2.Return;
-        }
-
-        return type;
-    }
-
-    static bool IsEffectfulDefinition(IRDefinition def) =>
-        FinalReturnType(def) is EffectfulType;
 
     static bool IsVoidLikeDefinition(IRDefinition def) =>
-        IsVoidLike(FinalReturnType(def));
+        IsVoidLike(def.FinalReturnType());
 
+    // SanitizeIdentifier has a two-stage escape that doesn't fit NameSanitizer's
+    // single-affix shape: reserved keywords get "@" prefix (the C# verbatim-
+    // identifier mechanism); Object-inherited method names get "_" suffix so
+    // user definitions don't silently override Equals/ToString on the emitted
+    // records. It also needs an extra "." → "_" character map not shared with
+    // other targets.
     static string SanitizeIdentifier(string name)
     {
         string sanitized = name.Replace('-', '_').Replace('.', '_');
-
-        return sanitized switch
+        if (s_reservedKeywords.Contains(sanitized))
         {
-            "class" or "static" or "void" or "return" or "if" or "else" or "for"
-            or "while" or "do" or "switch" or "case" or "break" or "continue"
-            or "new" or "this" or "base" or "null" or "true" or "false" or "int"
-            or "long" or "string" or "bool" or "double" or "decimal" or "object"
-            or "in" or "is" or "as" or "typeof" or "default" or "throw" or "try"
-            or "catch" or "finally" or "using" or "namespace" or "public" or "private"
-            or "protected" or "internal" or "abstract" or "sealed" or "override"
-            or "virtual" or "event" or "delegate" or "out" or "ref" or "params"
-                => $"@{sanitized}",
-            "Equals" or "GetHashCode" or "ToString" or "GetType" or "MemberwiseClone"
-                => $"{sanitized}_",
-            _ => sanitized
-        };
+            return $"@{sanitized}";
+        }
+        if (s_objectMembers.Contains(sanitized))
+        {
+            return $"{sanitized}_";
+        }
+        return sanitized;
     }
+
+    static readonly HashSet<string> s_reservedKeywords =
+    [
+        "class", "static", "void", "return", "if", "else", "for",
+        "while", "do", "switch", "case", "break", "continue",
+        "new", "this", "base", "null", "true", "false", "int",
+        "long", "string", "bool", "double", "decimal", "object",
+        "in", "is", "as", "typeof", "default", "throw", "try",
+        "catch", "finally", "using", "namespace", "public", "private",
+        "protected", "internal", "abstract", "sealed", "override",
+        "virtual", "event", "delegate", "out", "ref", "params",
+    ];
+
+    static readonly HashSet<string> s_objectMembers =
+    [
+        "Equals", "GetHashCode", "ToString", "GetType", "MemberwiseClone",
+    ];
 
     static string EscapeString(string value)
     {
@@ -250,22 +182,10 @@ public sealed partial class CSharpEmitter
         StringBuilder sb = new StringBuilder(cce.Length * 4);
         foreach (char c in cce)
         {
-            if (c == '\\')
-            {
-                sb.Append("\\\\");
-            }
-            else if (c == '"')
-            {
-                sb.Append("\\\"");
-            }
-            else if (c >= 32 && c < 127)
-            {
-                sb.Append(c);
-            }
-            else
-            {
-                sb.Append($"\\u{(int)c:X4}");
-            }
+            if (c == '\\') sb.Append("\\\\");
+            else if (c == '"') sb.Append("\\\"");
+            else if (c >= 32 && c < 127) sb.Append(c);
+            else sb.Append($"\\u{(int)c:X4}");
         }
         return sb.ToString();
     }
