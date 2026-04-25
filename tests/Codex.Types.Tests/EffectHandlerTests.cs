@@ -37,8 +37,8 @@ public class EffectHandlerTests
     public void Run_state_type_checks()
     {
         string source = """
-            main : Integer
-            main = run-state 0 act
+            opening : Integer
+            opening = run-state 0 act
               x <- get-state
               set-state (x + 1)
               get-state
@@ -52,8 +52,8 @@ public class EffectHandlerTests
     public void Run_state_emits_cs()
     {
         string source = """
-            main : Integer
-            main = run-state 0 act
+            opening : Integer
+            opening = run-state 0 act
               x <- get-state
               set-state (x + 1)
               get-state
@@ -68,8 +68,8 @@ public class EffectHandlerTests
     public void Run_state_simple_get_emits_cs()
     {
         string source = """
-            main : Integer
-            main = run-state 42 get-state
+            opening : Integer
+            opening = run-state 42 get-state
             """;
         string? cs = Helpers.CompileToCS(source);
         Assert.NotNull(cs);
@@ -80,8 +80,8 @@ public class EffectHandlerTests
     public void Run_state_increment_emits_cs()
     {
         string source = """
-            main : Integer
-            main = run-state 0 act
+            opening : Integer
+            opening = run-state 0 act
               set-state 10
               get-state
             end
@@ -95,8 +95,8 @@ public class EffectHandlerTests
     public void Run_state_pure_context_eliminates_state_effect()
     {
         string source = """
-            main : Integer
-            main = run-state 100 get-state
+            opening : Integer
+            opening = run-state 100 get-state
             """;
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
@@ -106,8 +106,8 @@ public class EffectHandlerTests
     public void Run_state_with_arithmetic_type_checks()
     {
         string source = """
-            main : Integer
-            main = run-state 0 act
+            opening : Integer
+            opening = run-state 0 act
               x <- get-state
               set-state (x + 10)
               y <- get-state
@@ -123,8 +123,8 @@ public class EffectHandlerTests
     public void Run_state_with_text_type_checks()
     {
         string source = """
-            main : Text
-            main = run-state "" act
+            opening : Text
+            opening = run-state "" act
               set-state "hello"
               x <- get-state
               set-state (x ++ " world")
@@ -142,8 +142,8 @@ public class EffectHandlerTests
             add-ten : Integer -> Integer
             add-ten (x) = x + 10
 
-            main : Integer
-            main = add-ten (run-state 5 get-state)
+            opening : Integer
+            opening = add-ten (run-state 5 get-state)
             """;
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.False(diag.HasErrors, string.Join("; ", diag.ToImmutable()));
@@ -153,8 +153,8 @@ public class EffectHandlerTests
     public void Run_state_cs_emits_get_and_set()
     {
         string source = """
-            main : Integer
-            main = run-state 0 act
+            opening : Integer
+            opening = run-state 0 act
               set-state 42
               get-state
             end
@@ -206,8 +206,8 @@ public class EffectHandlerTests
             program : [Logger] Integer
             program = log "hello"
 
-            main : Integer
-            main = with Logger program
+            opening : Integer
+            opening = with Logger program
               log (msg) (resume) = resume 0
             """;
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
@@ -224,8 +224,8 @@ public class EffectHandlerTests
             program : [Logger] Integer
             program = log "hello"
 
-            main : Integer
-            main = with Logger program
+            opening : Integer
+            opening = with Logger program
               log (msg) (resume) = resume 0
             """;
         string? cs = Helpers.CompileToCS(source);
@@ -243,8 +243,8 @@ public class EffectHandlerTests
             comp : [Ask] Integer
             comp = ask
 
-            main : Integer
-            main = with Ask comp
+            opening : Integer
+            opening = with Ask comp
               ask (resume) = resume 42
             """;
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);

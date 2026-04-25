@@ -16,22 +16,14 @@ sealed class ForewordChapterLoader : IChapterLoader
 
     public ResolvedChapter? Load(string quire, string chapterName)
     {
-        if (quire != QuireName)
-        {
-            return null;
-        }
-
+        if (quire != QuireName) return null;
         return m_inner.Load(quire, chapterName);
     }
 
     public static ForewordChapterLoader? TryCreate(DiagnosticBag diagnostics)
     {
         string? forewordDir = FindForewordDirectory();
-        if (forewordDir is null)
-        {
-            return null;
-        }
-
+        if (forewordDir is null) return null;
         return new ForewordChapterLoader(forewordDir, diagnostics);
     }
 
@@ -42,18 +34,13 @@ sealed class ForewordChapterLoader : IChapterLoader
         {
             string candidate = Path.Combine(dir, "foreword");
             if (Directory.Exists(candidate))
-            {
                 return candidate;
-            }
-
             dir = Path.GetDirectoryName(dir);
         }
 
         string cwdCandidate = Path.Combine(Directory.GetCurrentDirectory(), "foreword");
         if (Directory.Exists(cwdCandidate))
-        {
             return cwdCandidate;
-        }
 
         return null;
     }

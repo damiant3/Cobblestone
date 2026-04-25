@@ -86,8 +86,8 @@ public class ProseParserTests
             "\n" +
             " To greet the world:\n" +
             "\n" +
-            "  main : Text\n" +
-            "  main = greet \"World\"\n";
+            "  opening : Text\n" +
+            "  opening = greet \"World\"\n";
 
         DocumentNode doc = ParseProse(source);
         Assert.Single(doc.Chapters);
@@ -96,7 +96,7 @@ public class ProseParserTests
         // Should have definitions extracted
         Assert.Equal(2, doc.Definitions.Count);
         Assert.Equal("greet", doc.Definitions[0].Name.Text);
-        Assert.Equal("main", doc.Definitions[1].Name.Text);
+        Assert.Equal("opening", doc.Definitions[1].Name.Text);
     }
 
     [Fact]
@@ -146,8 +146,8 @@ public class ProseParserTests
             "  greet : Text -> Text\n" +
             "  greet (name) = \"Hello, \" ++ name ++ \"!\"\n" +
             "\n" +
-            "  main : Text\n" +
-            "  main = greet \"World\"\n";
+            "  opening : Text\n" +
+            "  opening = greet \"World\"\n";
 
         DocumentNode doc = ParseProse(source);
         DiagnosticBag diagnostics = new();
@@ -157,7 +157,7 @@ public class ProseParserTests
         Assert.False(diagnostics.HasErrors);
         Assert.Equal(2, module.Definitions.Count);
         Assert.Equal("greet", module.Definitions[0].Name.Value);
-        Assert.Equal("main", module.Definitions[1].Name.Value);
+        Assert.Equal("opening", module.Definitions[1].Name.Value);
     }
 
     [Fact]

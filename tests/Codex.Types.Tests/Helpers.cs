@@ -12,6 +12,31 @@ namespace Codex.Types.Tests;
 
 public static class Helpers
 {
+    public static Chapter WithAllBuiltinCites(Chapter chapter)
+    {
+        HashSet<string> existing = new();
+        foreach (CitesDecl c in chapter.Citations)
+        {
+            if (c.Quire.Value == "Codex")
+            {
+                existing.Add(c.ChapterName.Value);
+            }
+        }
+        List<CitesDecl> cites = new(chapter.Citations);
+        foreach (BuiltinChapter bc in BuiltinChapters.All)
+        {
+            if (existing.Contains(bc.Name))
+            {
+                continue;
+            }
+            cites.Add(new CitesDecl(
+                new Name("Codex"),
+                new Name(bc.Name),
+                chapter.Span));
+        }
+        return chapter with { Citations = cites };
+    }
+
     /// <summary>
     /// Emitted IL references Codex.Core.CceTable for CCE ↔ Unicode conversion
     /// at I/O boundaries. Copy the assembly next to the test output so
@@ -21,9 +46,7 @@ public static class Helpers
     {
         string codexCoreDll = typeof(CceTable).Assembly.Location;
         if (!string.IsNullOrEmpty(codexCoreDll))
-        {
             File.Copy(codexCoreDll, Path.Combine(tempDir, "Codex.Core.dll"), overwrite: true);
-        }
     }
 
     public static DiagnosticBag CheckWithProofs(string source, string chapterName = "test")
@@ -37,25 +60,16 @@ public static class Helpers
         DocumentNode document = parser.ParseDocument();
 
         Desugarer desugarer = new(diagnostics);
-        Chapter chapter = desugarer.Desugar(document, chapterName);
-        if (diagnostics.HasErrors)
-        {
-            return diagnostics;
-        }
+        Chapter chapter = WithAllBuiltinCites(desugarer.Desugar(document, chapterName));
+        if (diagnostics.HasErrors) return diagnostics;
 
         NameResolver resolver = new(diagnostics);
         ResolvedChapter resolved = resolver.Resolve(chapter);
-        if (diagnostics.HasErrors)
-        {
-            return diagnostics;
-        }
+        if (diagnostics.HasErrors) return diagnostics;
 
         TypeChecker checker = new(diagnostics);
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
-        if (diagnostics.HasErrors)
-        {
-            return diagnostics;
-        }
+        if (diagnostics.HasErrors) return diagnostics;
 
         Codex.Proofs.ProofChecker proofChecker = new(diagnostics);
         proofChecker.CheckChapter(resolved.Chapter, types);
@@ -73,7 +87,7 @@ public static class Helpers
         DocumentNode document = parser.ParseDocument();
 
         Desugarer desugarer = new(diagnostics);
-        Chapter chapter = desugarer.Desugar(document, chapterName);
+        Chapter chapter = WithAllBuiltinCites(desugarer.Desugar(document, chapterName));
 
         NameResolver resolver = new(diagnostics);
         ResolvedChapter resolved = resolver.Resolve(chapter);
@@ -98,7 +112,7 @@ public static class Helpers
         DocumentNode document = parser.ParseDocument();
 
         Desugarer desugarer = new(diagnostics);
-        Chapter chapter = desugarer.Desugar(document, chapterName);
+        Chapter chapter = WithAllBuiltinCites(desugarer.Desugar(document, chapterName));
 
         NameResolver resolver = new(diagnostics);
         ResolvedChapter resolved = resolver.Resolve(chapter);
@@ -202,7 +216,7 @@ public static class Helpers
         }
 
         Desugarer desugarer = new(diagnostics);
-        Chapter chapter = desugarer.Desugar(document, chapterName);
+        Chapter chapter = WithAllBuiltinCites(desugarer.Desugar(document, chapterName));
         if (diagnostics.HasErrors)
         {
             return null;
@@ -230,7 +244,7 @@ public static class Helpers
         }
 
         Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, diagnostics);
-        IRChapter irModule = lowering.Lower(resolved.Chapter);
+        IRChapter irModule = lowering.Lower(resolved);
         if (diagnostics.HasErrors)
         {
             return null;
@@ -242,11 +256,7 @@ public static class Helpers
     public static byte[]? CompileToIL(string source, string chapterName = "test")
     {
         IRChapter? irModule = CompileToIR(source, chapterName);
-        if (irModule is null)
-        {
-            return null;
-        }
-
+        if (irModule is null) return null;
         ILEmitter emitter = new();
         return emitter.EmitAssembly(irModule, chapterName);
     }
@@ -264,11 +274,7 @@ public static class Helpers
     static byte[]? CompileToRiscVTarget(string source, string chapterName, Codex.Emit.RiscV.RiscVTarget target)
     {
         IRChapter? irModule = CompileToIR(source, chapterName);
-        if (irModule is null)
-        {
-            return null;
-        }
-
+        if (irModule is null) return null;
         Codex.Emit.RiscV.RiscVEmitter riscvEmitter = new(target);
         return riscvEmitter.EmitAssembly(irModule, chapterName);
     }
@@ -276,11 +282,7 @@ public static class Helpers
     public static byte[]? CompileToWasm(string source, string chapterName = "test")
     {
         IRChapter? irModule = CompileToIR(source, chapterName);
-        if (irModule is null)
-        {
-            return null;
-        }
-
+        if (irModule is null) return null;
         WasmEmitter emitter = new();
         return emitter.EmitAssembly(irModule, chapterName);
     }
@@ -288,11 +290,7 @@ public static class Helpers
     public static string? CompileToTarget(string source, string chapterName, Codex.Emit.ICodeEmitter emitter)
     {
         IRChapter? irModule = CompileToIR(source, chapterName);
-        if (irModule is null)
-        {
-            return null;
-        }
-
+        if (irModule is null) return null;
         return emitter.Emit(irModule);
     }
 
@@ -318,18 +316,12 @@ public static class Helpers
         }
 
         Desugarer desugarer = new(diagnostics);
-        Chapter chapter = desugarer.Desugar(document, chapterName);
-        if (diagnostics.HasErrors)
-        {
-            return null;
-        }
+        Chapter chapter = WithAllBuiltinCites(desugarer.Desugar(document, chapterName));
+        if (diagnostics.HasErrors) return null;
 
         NameResolver resolver = new(diagnostics);
         ResolvedChapter resolved = resolver.Resolve(chapter);
-        if (diagnostics.HasErrors)
-        {
-            return null;
-        }
+        if (diagnostics.HasErrors) return null;
 
         TypeChecker checker = new(diagnostics);
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
@@ -339,11 +331,7 @@ public static class Helpers
     public static byte[]? CompileToX86_64(string source, string chapterName = "test")
     {
         IRChapter? irModule = CompileToIR(source, chapterName);
-        if (irModule is null)
-        {
-            return null;
-        }
-
+        if (irModule is null) return null;
         Codex.Emit.X86_64.X86_64Emitter emitter = new();
         return emitter.EmitAssembly(irModule, chapterName);
     }
@@ -351,11 +339,7 @@ public static class Helpers
     public static byte[]? CompileToX86_64BareMetal(string source, string chapterName = "test")
     {
         IRChapter? irModule = CompileToIR(source, chapterName);
-        if (irModule is null)
-        {
-            return null;
-        }
-
+        if (irModule is null) return null;
         Codex.Emit.X86_64.X86_64Emitter emitter = new(Codex.Emit.X86_64.X86_64Target.BareMetal);
         return emitter.EmitAssembly(irModule, chapterName);
     }
@@ -363,11 +347,7 @@ public static class Helpers
     public static byte[]? CompileToArm64(string source, string chapterName = "test")
     {
         IRChapter? irModule = CompileToIR(source, chapterName);
-        if (irModule is null)
-        {
-            return null;
-        }
-
+        if (irModule is null) return null;
         Codex.Emit.Arm64.Arm64Emitter emitter = new();
         return emitter.EmitAssembly(irModule, chapterName);
     }

@@ -20,8 +20,8 @@ public class ILEmitterGenericsTcoTests
                 then acc
                 else sum-to (n - 1) (acc + n)
 
-            main : Integer
-            main = sum-to 100 0
+            opening : Integer
+            opening = sum-to 100 0
             """;
         byte[]? bytes = Helpers.CompileToIL(source, "tco_sum_emit");
         Assert.NotNull(bytes);
@@ -38,8 +38,8 @@ public class ILEmitterGenericsTcoTests
                 then acc
                 else sum-to (n - 1) (acc + n)
 
-            main : Integer
-            main = sum-to 100 0
+            opening : Integer
+            opening = sum-to 100 0
             """;
         string? output = CompileAndRun(source, "tco_sum_run");
         Assert.NotNull(output);
@@ -56,8 +56,8 @@ public class ILEmitterGenericsTcoTests
                 then 0
                 else countdown (n - 1)
 
-            main : Integer
-            main = countdown 10000
+            opening : Integer
+            opening = countdown 10000
             """;
         string? output = CompileAndRun(source, "tco_countdown_run");
         Assert.NotNull(output);
@@ -96,8 +96,8 @@ public class ILEmitterGenericsTcoTests
               is Circle (r) -> acc + 1
               is Rect (w) (h) -> acc
 
-            main : Integer
-            main = count-circles (Circle 5) 0
+            opening : Integer
+            opening = count-circles (Circle 5) 0
             """;
         string? output = CompileAndRun(source, "tco_match_run");
         Assert.NotNull(output);
@@ -112,8 +112,8 @@ public class ILEmitterGenericsTcoTests
         string source = """
             id (x) = x
 
-            main : Integer
-            main = id 42
+            opening : Integer
+            opening = id 42
             """;
         byte[]? bytes = Helpers.CompileToIL(source, "generic_id_emit");
         Assert.NotNull(bytes);
@@ -129,8 +129,8 @@ public class ILEmitterGenericsTcoTests
         string source = """
             id (x) = x
 
-            main : Integer
-            main = id 42
+            opening : Integer
+            opening = id 42
             """;
         string? output = CompileAndRun(source, "generic_id_run");
         Assert.NotNull(output);
@@ -143,8 +143,8 @@ public class ILEmitterGenericsTcoTests
         string source = """
             const (x) (y) = x
 
-            main : Integer
-            main = const 7 42
+            opening : Integer
+            opening = const 7 42
             """;
         byte[]? bytes = Helpers.CompileToIL(source, "generic_const_emit");
         Assert.NotNull(bytes);
@@ -163,8 +163,8 @@ public class ILEmitterGenericsTcoTests
               is Ok (v) -> v
               is Err (msg) -> d
 
-            main : Integer
-            main = get-or-default (Ok 42) 0
+            opening : Integer
+            opening = get-or-default (Ok 42) 0
             """;
         byte[]? bytes = Helpers.CompileToIL(source, "generic_sum_emit");
         Assert.NotNull(bytes);
@@ -180,8 +180,8 @@ public class ILEmitterGenericsTcoTests
             factorial : Integer -> Integer
             factorial (n) = if n == 0 then 1 else n * factorial (n - 1)
 
-            main : Integer
-            main = factorial 10
+            opening : Integer
+            opening = factorial 10
             """;
         string? output = CompileAndRun(source, "non_tco_factorial");
         Assert.NotNull(output);
@@ -212,10 +212,7 @@ public class ILEmitterGenericsTcoTests
         {
             string candidate = Path.Combine(dir, "samples");
             if (Directory.Exists(candidate))
-            {
                 return candidate;
-            }
-
             dir = Path.GetDirectoryName(dir)!;
         }
         throw new DirectoryNotFoundException("Cannot find samples/ directory");
@@ -224,10 +221,7 @@ public class ILEmitterGenericsTcoTests
     static string? CompileAndRun(string source, string chapterName)
     {
         byte[]? bytes = Helpers.CompileToIL(source, chapterName);
-        if (bytes is null)
-        {
-            return null;
-        }
+        if (bytes is null) return null;
 
         string tempDir = Path.Combine(Path.GetTempPath(),
             "codex_il_test_" + chapterName + "_" + Guid.NewGuid().ToString("N")[..8]);
@@ -261,21 +255,18 @@ public class ILEmitterGenericsTcoTests
             };
 
             using Process? proc = Process.Start(psi);
-            if (proc is null)
-            {
-                return null;
-            }
+            if (proc is null) return null;
 
             string stdout = proc.StandardOutput.ReadToEnd();
             string stderr = proc.StandardError.ReadToEnd();
             proc.WaitForExit(10_000);
 
-            if (proc.ExitCode != 0)
-            {
+            if (proc.ExitCode != 0)
+            {
                 throw new InvalidOperationException(
-                    $"dotnet exited with code {proc.ExitCode}.\nstdout: {stdout}\nstderr: {stderr}");
-            }
-
+                    $"dotnet exited with code {proc.ExitCode}.\nstdout: {stdout}\nstderr: {stderr}");
+            }
+
             return stdout;
         }
         finally

@@ -7,4 +7,7 @@ public interface IAssemblyEmitter
     string TargetName { get; }
 
     byte[] EmitAssembly(IRChapter module, string assemblyName);
+
+    bool EmitFuelExhausted => false;
+    int MaxEmitDepth => 256;
 }

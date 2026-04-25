@@ -51,14 +51,14 @@ public static partial class Program
         if (ProseParser.IsProseDocument(content))
         {
             ProseParser proseParser = new(source, diagnostics);
-            return proseParser.ParseDocument();
+            return PhaseTimer.Time("parse", () => proseParser.ParseDocument());
         }
         else
         {
             Lexer lexer = new(source, diagnostics);
-            IReadOnlyList<Token> tokens = lexer.TokenizeAll();
+            IReadOnlyList<Token> tokens = PhaseTimer.Time("lex", () => lexer.TokenizeAll());
             Parser parser = new(tokens, diagnostics);
-            return parser.ParseDocument();
+            return PhaseTimer.Time("parse", () => parser.ParseDocument());
         }
     }
 

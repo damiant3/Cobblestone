@@ -1,11 +1,13 @@
 Chapter: Parser
+  cites Codex chapter Lists
 
  Expression and compound expression parsing.
 
 Section: Expression Parsing
   parse-expr : ParseState -> ParseExprResult
   parse-expr (st) =
-   parse-expr-col st 0
+   if parse-fuel-exhausted st then ExprOk (ErrExpr (current st)) (emit-parse-fuel-error st "parse-expr")
+   else parse-expr-col (consume-parse-fuel st) 0
 
   parse-expr-col : ParseState -> Integer -> ParseExprResult
   parse-expr-col (st) (min-col) =
@@ -18,7 +20,9 @@ Section: Expression Parsing
 
   parse-binary : ParseState -> Integer -> Integer -> ParseExprResult
   parse-binary (st) (min-prec) (min-col) =
-   let left-result = parse-unary st
+   if parse-fuel-exhausted st then ExprOk (ErrExpr (current st)) (emit-parse-fuel-error st "parse-binary")
+   else let st0 = consume-parse-fuel st
+   in let left-result = parse-unary st0
    in unwrap-expr-ok left-result (start-binary-loop min-prec min-col)
 
   start-binary-loop : Integer -> Integer -> Expr -> ParseState -> ParseExprResult
@@ -27,7 +31,9 @@ Section: Expression Parsing
 
   parse-binary-loop : Expr -> ParseState -> Integer -> Integer -> ParseExprResult
   parse-binary-loop (left) (st) (min-prec) (min-col) =
-   let st1 = skip-newlines st
+   if parse-fuel-exhausted st then ExprOk left (emit-parse-fuel-error st "parse-binary-loop")
+   else let st-fueled = consume-parse-fuel st
+   in let st1 = skip-newlines st-fueled
    in if is-done st1 then ExprOk left st1
       else if min-col > 0 & (current st1).column > 0 & (current st1).column <= min-col then ExprOk left st1
    else let prec = operator-precedence (current-kind st1)
@@ -44,10 +50,12 @@ Section: Expression Parsing
 
   parse-unary : ParseState -> ParseExprResult
   parse-unary (st) =
-   if is-minus (current-kind st) then let op = current st
-     in let result = parse-unary (advance st)
+   if parse-fuel-exhausted st then ExprOk (ErrExpr (current st)) (emit-parse-fuel-error st "parse-unary")
+   else let st0 = consume-parse-fuel st
+   in if is-minus (current-kind st0) then let op = current st0
+     in let result = parse-unary (advance st0)
      in unwrap-expr-ok result (finish-unary op)
-    else parse-application st
+    else parse-application st0
 
   finish-unary : Token -> Expr -> ParseState -> ParseExprResult
   finish-unary (op) (operand) (st) =
@@ -60,9 +68,11 @@ Section: Expression Parsing
 
   parse-app-loop : Expr -> ParseState -> ParseExprResult
   parse-app-loop (func) (st) =
-   if is-compound func then parse-dot-only func st
-   else if is-done st then ExprOk func st
-   else let st1 = if st.paren-depth > 0 then skip-newlines st else st
+   if parse-fuel-exhausted st then ExprOk func (emit-parse-fuel-error st "parse-app-loop")
+   else let st-fueled = consume-parse-fuel st
+   in if is-compound func then parse-dot-only func st-fueled
+   else if is-done st-fueled then ExprOk func st-fueled
+   else let st1 = if st-fueled.paren-depth > 0 then skip-newlines st-fueled else st-fueled
    in if is-app-start (current-kind st1) then
      let arg-result = parse-atom st1
      in unwrap-expr-ok arg-result (continue-app func)
@@ -89,21 +99,25 @@ Section: Expression Parsing
 
   parse-field-access : Expr -> ParseState -> ParseExprResult
   parse-field-access (node) (st) =
-   if is-dot (current-kind st) then let st2 = advance st
+   if parse-fuel-exhausted st then ExprOk node (emit-parse-fuel-error st "parse-field-access")
+   else let st-fueled = consume-parse-fuel st
+   in if is-dot (current-kind st-fueled) then let st2 = advance st-fueled
      in if is-ident-like (current-kind st2) then let field = current st2
      in let st3 = advance st2
      in parse-field-access (FieldExpr node field) st3
-        else ExprOk node st
-    else ExprOk node st
+        else ExprOk node st-fueled
+    else ExprOk node st-fueled
 
   parse-dot-only : Expr -> ParseState -> ParseExprResult
   parse-dot-only (node) (st) =
-   if is-dot (current-kind st) then let st2 = advance st
+   if parse-fuel-exhausted st then ExprOk node (emit-parse-fuel-error st "parse-dot-only")
+   else let st-fueled = consume-parse-fuel st
+   in if is-dot (current-kind st-fueled) then let st2 = advance st-fueled
      in if is-ident-like (current-kind st2) then let field = current st2
      in let st3 = advance st2
      in parse-dot-only (FieldExpr node field) st3
-        else ExprOk node st
-    else ExprOk node st
+        else ExprOk node st-fueled
+    else ExprOk node st-fueled
 
   parse-atom-type-ident : ParseState -> ParseExprResult
   parse-atom-type-ident (st) =
@@ -138,7 +152,7 @@ Section: Compound Expression Parsing
    let kind = current-kind st
    in if is-right-brace kind then ExprOk (RecordExpr type-name acc) (advance st)
       else if is-ident-like kind then parse-record-field type-name acc st
-      else ExprOk (RecordExpr type-name acc) st
+      else ExprOk (RecordExpr type-name acc) (__record-set st "bag" (bag-add (st.bag) (make-error cdx-bad-field-syntax "Expected field name in record literal" (token-to-span (current st)))))
 
   parse-record-field : Token -> List RecordFieldExpr -> ParseState -> ParseExprResult
   parse-record-field (type-name) (acc) (st) =
@@ -167,6 +181,7 @@ Section: Compound Expression Parsing
   parse-list-elements : List Expr -> ParseState -> ParseExprResult
   parse-list-elements (acc) (st) =
    if is-right-bracket (current-kind st) then ExprOk (ListExpr acc) (advance st)
+   else if is-done st then ExprOk (ListExpr acc) (__record-set st "bag" (bag-add (st.bag) (make-error cdx-list-no-close "Unclosed list literal: expected ']' before end of input" (token-to-span (current st)))))
    else let elem = parse-expr st
    in unwrap-expr-ok elem (finish-list-element acc)
 
@@ -174,7 +189,8 @@ Section: Compound Expression Parsing
   finish-list-element (acc) (e) (st) =
    let st2 = skip-newlines st
    in if is-comma (current-kind st2) then parse-list-elements (list-snoc acc e) (skip-newlines (advance st2))
-      else parse-list-elements (list-snoc acc e) st2
+      else if is-right-bracket (current-kind st2) then parse-list-elements (list-snoc acc e) st2
+      else ExprOk (ListExpr (list-snoc acc e)) (__record-set st2 "bag" (bag-add (st2.bag) (make-error cdx-list-no-close "Unclosed list literal: expected ',' or ']'" (token-to-span (current st2)))))
 
   parse-if-expr : ParseState -> ParseExprResult
   parse-if-expr (st) =
@@ -185,7 +201,7 @@ Section: Compound Expression Parsing
   parse-if-then : Expr -> ParseState -> ParseExprResult
   parse-if-then (c) (st) =
    let st2 = skip-newlines st
-   in let st3 = expect ThenKeyword st2
+   in let st3 = expect-coded ThenKeyword cdx-if-no-then "Expected 'then' in if expression" st2
    in let st4 = skip-newlines st3
    in let then-result = parse-expr st4
    in unwrap-expr-ok then-result (parse-if-else c)
@@ -193,7 +209,7 @@ Section: Compound Expression Parsing
   parse-if-else : Expr -> Expr -> ParseState -> ParseExprResult
   parse-if-else (c) (t) (st) =
    let st2 = skip-newlines st
-   in let st3 = expect ElseKeyword st2
+   in let st3 = expect-coded ElseKeyword cdx-if-no-else "Expected 'else' in if expression" st2
    in let st4 = skip-newlines st3
    in let else-result = parse-expr st4
    in unwrap-expr-ok else-result (finish-if c t)
@@ -213,7 +229,8 @@ Section: Compound Expression Parsing
    else if is-in-keyword (current-kind st) then let st2 = skip-newlines (advance st)
       in let body = parse-expr st2
       in unwrap-expr-ok body (finish-let acc)
-     else let body = parse-expr st
+     else let st-err = __record-set st "bag" (bag-add (st.bag) (make-error cdx-let-no-in "Expected 'in' after let bindings" (token-to-span (current st))))
+     in let body = parse-expr st-err
      in unwrap-expr-ok body (finish-let acc)
 
   is-reserved-keyword-let-name : ParseState -> Boolean
@@ -274,7 +291,7 @@ Section: Compound Expression Parsing
 
   parse-match-branch-body : Expr -> List MatchArm -> Integer -> Integer -> Pat -> ParseState -> ParseExprResult
   parse-match-branch-body (scrut) (acc) (col) (ln) (p) (st) =
-   let st2 = expect Arrow st
+   let st2 = expect-coded Arrow cdx-match-no-arrow "Expected '->' in match arm" st
    in let st3 = skip-newlines st2
    in let body = parse-expr st3
    in unwrap-expr-ok body (finish-match-branch scrut acc col ln p)
@@ -306,7 +323,9 @@ Section: Compound Expression Parsing
   parse-act-stmts : List ActStmt -> ParseState -> ParseExprResult
   parse-act-stmts (acc) (st) =
    if is-done st then ExprOk (ActExpr acc) st
-   else if is-end-keyword (current-kind st) then ExprOk (ActExpr acc) (advance st)
+   else if is-end-keyword (current-kind st) then if list-length acc == 0
+        then ExprOk (ActExpr acc) (advance (__record-set st "bag" (bag-add (st.bag) (make-error cdx-empty-act "Empty act block: 'act end' must contain at least one statement" (token-to-span (current st))))))
+        else ExprOk (ActExpr acc) (advance st)
      else if is-act-bind st then parse-act-bind-stmt acc st
       else parse-act-expr-stmt acc st
 

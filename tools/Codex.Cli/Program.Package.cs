@@ -26,13 +26,9 @@ public static partial class Program
         for (int i = 1; i < args.Length; i++)
         {
             if (args[i] is "--version" or "-v" && i + 1 < args.Length)
-            {
                 version = args[++i];
-            }
             else if (args[i] is "--path" or "-p" && i + 1 < args.Length)
-            {
                 path = args[++i];
-            }
         }
 
         // Check if already added
@@ -83,13 +79,9 @@ public static partial class Program
         foreach (PackageRef pkg in project.Packages)
         {
             if (string.Equals(pkg.Name, packageName, StringComparison.OrdinalIgnoreCase))
-            {
                 found = true;
-            }
             else
-            {
                 remaining.Add(pkg);
-            }
         }
 
         if (!found)
@@ -153,9 +145,7 @@ public static partial class Program
             {
                 Console.WriteLine("  Dependencies:");
                 foreach (string dep in project.Dependencies)
-                {
                     Console.WriteLine($"    {dep}");
-                }
             }
             if (project.Packages.Length > 0)
             {
@@ -167,9 +157,7 @@ public static partial class Program
                 }
             }
             if (project.Dependencies.Length == 0 && project.Packages.Length == 0)
-            {
                 Console.WriteLine("  (no dependencies)");
-            }
         }
 
         // List cached packages
@@ -239,9 +227,7 @@ public static partial class Program
                     resolvedPath = candidatePath;
                     CodexProject? cachedProject = LoadProjectFile(candidatePath);
                     if (cachedProject is not null)
-                    {
                         contentHash = PackageResolver.ComputeContentHash(candidatePath, cachedProject);
-                    }
                 }
             }
 

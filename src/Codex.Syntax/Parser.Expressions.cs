@@ -6,11 +6,26 @@ public sealed partial class Parser
 {
     public ExpressionNode ParseExpression()
     {
-        return ParseBinary(0);
+        if (FuelExhausted(nameof(ParseExpression), Current.Span))
+            return new ErrorExpressionNode(Current);
+        m_recursionDepth++;
+        try
+        {
+            return ParseBinary(0);
+        }
+        finally
+        {
+            m_recursionDepth--;
+        }
     }
 
     ExpressionNode ParseBinary(int minPrecedence)
     {
+        if (FuelExhausted(nameof(ParseBinary), Current.Span))
+            return new ErrorExpressionNode(Current);
+        m_recursionDepth++;
+        try
+        {
         ExpressionNode left = ParseUnary();
 
         while (true)
@@ -18,9 +33,7 @@ public sealed partial class Parser
             SkipNewlines();
             (int prec, Associativity assoc) = GetPrecedence(Current.Kind);
             if (prec < 0 || prec < minPrecedence)
-            {
                 break;
-            }
 
             Token op = Current;
             Advance();
@@ -33,6 +46,11 @@ public sealed partial class Parser
         }
 
         return left;
+        }
+        finally
+        {
+            m_recursionDepth--;
+        }
     }
 
     ExpressionNode ParseUnary()
@@ -55,11 +73,9 @@ public sealed partial class Parser
         bool isCompound = func is MatchExpressionNode
             or IfExpressionNode
             or LetExpressionNode
-            or ActExpressionNode;
-        if (isCompound)
-        {
-            return func;
-        }
+            or ActExpressionNode
+            or LambdaExpressionNode;
+        if (isCompound) return func;
 
         while (true)
         {
@@ -82,10 +98,10 @@ public sealed partial class Parser
 
                 func = new FieldAccessExpressionNode(func, field, func.Span.Through(field.Span));
             }
-            else
-            {
-                break;
-            }
+            else
+            {
+                break;
+            }
         }
 
         return func;
@@ -133,9 +149,7 @@ public sealed partial class Parser
                 Advance();
 
                 if (token.Kind == TokenKind.TypeIdentifier && Current.Kind == TokenKind.LeftBrace)
-                {
                     return ChainFieldAccess(ParseRecordExpression(token));
-                }
 
                 return ChainFieldAccess(new NameExpressionNode(token));
             }
@@ -221,14 +235,9 @@ public sealed partial class Parser
                 int before = m_position;
                 Synchronize();
                 if (m_position == before)
-                {
                     Advance();
-                }
                 if (Current.Kind == TokenKind.RightBrace)
-                {
                     break;
-                }
-
                 SkipNewlines();
                 continue;
             }
@@ -241,14 +250,9 @@ public sealed partial class Parser
                 int before = m_position;
                 Synchronize();
                 if (m_position == before)
-                {
                     Advance();
-                }
                 if (Current.Kind == TokenKind.RightBrace)
-                {
                     break;
-                }
-
                 SkipNewlines();
                 continue;
             }
@@ -281,9 +285,7 @@ public sealed partial class Parser
             {
                 SkipNewlines();
                 if (Current.Kind == TokenKind.RightBracket)
-                {
                     break;
-                }
             }
 
             elements.Add(ParseExpression());
@@ -320,19 +322,15 @@ public sealed partial class Parser
                 $"Expected 'then' after condition, found {Current.Kind}", Current.Span);
             Synchronize();
             if (Current.Kind == TokenKind.ThenKeyword)
-            {
                 Advance();
-            }
             else
-            {
                 return new ErrorExpressionNode(start);
-            }
         }
-        else
-        {
-            Advance();
-        }
-
+        else
+        {
+            Advance();
+        }
+
         SkipNewlines();
         ExpressionNode thenExpr = ParseExpression();
         SkipNewlines();
@@ -342,21 +340,21 @@ public sealed partial class Parser
             m_diagnostics.Error(CdxCodes.ExpectedElseKeyword,
                 $"Expected 'else' after 'then' branch, found {Current.Kind}", Current.Span);
             Synchronize();
-            if (Current.Kind == TokenKind.ElseKeyword)
-            {
-                Advance();
-            }
+            if (Current.Kind == TokenKind.ElseKeyword)
+            {
+                Advance();
+            }
             else
             {
                 return new IfExpressionNode(condition, thenExpr,
                     new ErrorExpressionNode(Current), start.Span.Through(thenExpr.Span));
             }
         }
-        else
-        {
-            Advance();
-        }
-
+        else
+        {
+            Advance();
+        }
+
         SkipNewlines();
         ExpressionNode elseExpr = ParseExpression();
         return new IfExpressionNode(condition, thenExpr, elseExpr,
@@ -374,9 +372,7 @@ public sealed partial class Parser
             || (IsReservedKeyword(Current.Kind) && Peek(1)?.Kind == TokenKind.Equals))
         {
             if (IsReservedKeyword(Current.Kind))
-            {
                 ReportReservedKeywordAsIdentifier("a let-binding name");
-            }
             Token name = Current;
             Advance();
             Expect(TokenKind.Equals);
@@ -396,10 +392,10 @@ public sealed partial class Parser
             m_diagnostics.Error(CdxCodes.ExpectedInKeyword,
                 $"Expected 'in' after let bindings, found {Current.Kind}", Current.Span);
             Synchronize();
-            if (Current.Kind == TokenKind.InKeyword)
-            {
-                Advance();
-            }
+            if (Current.Kind == TokenKind.InKeyword)
+            {
+                Advance();
+            }
             else
             {
                 ExpressionNode errBody = new ErrorExpressionNode(Current);
@@ -407,11 +403,11 @@ public sealed partial class Parser
                     start.Span.Through(errBody.Span));
             }
         }
-        else
-        {
-            Advance();
-        }
-
+        else
+        {
+            Advance();
+        }
+
         SkipNewlines();
         ExpressionNode body = ParseExpression();
         return new LetExpressionNode(bindings, body, start.Span.Through(body.Span));
@@ -444,21 +440,21 @@ public sealed partial class Parser
                 m_diagnostics.Error(CdxCodes.ExpectedArrowAfterPattern,
                     $"Expected '->' after pattern, found {Current.Kind}", Current.Span);
                 Synchronize();
-                if (Current.Kind == TokenKind.Arrow)
-                {
-                    Advance();
-                }
+                if (Current.Kind == TokenKind.Arrow)
+                {
+                    Advance();
+                }
                 else
                 {
                     SkipNewlines();
                     continue;
                 }
             }
-            else
-            {
-                Advance();
-            }
-
+            else
+            {
+                Advance();
+            }
+
             SkipNewlines();
             ExpressionNode body = ParseExpression();
             branches.Add(new MatchBranchNode(pattern, body,
@@ -505,9 +501,7 @@ public sealed partial class Parser
         Token endTok = Expect(TokenKind.EndKeyword);
 
         if (statements.Count == 0)
-        {
             m_diagnostics.Error(CdxCodes.EmptyActBlock, "act expression requires at least one statement", start.Span);
-        }
 
         return new ActExpressionNode(statements, start.Span.Through(endTok.Span));
     }
@@ -536,16 +530,14 @@ public sealed partial class Parser
                     Advance(); // skip }
                 }
             }
-            else
-            {
-                break;
-            }
+            else
+            {
+                break;
+            }
         }
 
         if (Current.Kind == TokenKind.InterpolatedEnd)
-        {
             Advance();
-        }
 
         SourceSpan span = start.Span.Through(Previous.Span);
         return new InterpolatedStringNode(parts, span);
@@ -553,6 +545,14 @@ public sealed partial class Parser
 
     PatternNode ParsePattern()
     {
+        if (FuelExhausted(nameof(ParsePattern), Current.Span))
+        {
+            Token err = Current;
+            return new WildcardPatternNode(err);
+        }
+        m_recursionDepth++;
+        try
+        {
         switch (Current.Kind)
         {
             case TokenKind.OtherwiseKeyword:
@@ -597,9 +597,7 @@ public sealed partial class Parser
                 }
 
                 if (subPatterns.Count > 0)
-                {
                     return new ConstructorPatternNode(ctor, subPatterns, ctor.Span.Through(Previous.Span));
-                }
 
                 return new ConstructorPatternNode(ctor, subPatterns, ctor.Span);
             }
@@ -626,6 +624,11 @@ public sealed partial class Parser
                 Advance();
                 return new WildcardPatternNode(err);
             }
+        }
+        }
+        finally
+        {
+            m_recursionDepth--;
         }
     }
 

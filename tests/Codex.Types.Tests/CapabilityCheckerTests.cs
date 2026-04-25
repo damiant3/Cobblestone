@@ -14,8 +14,8 @@ public class CapabilityCheckerTests
             square : Integer -> Integer
             square (x) = x * x
 
-            main : Integer
-            main = square 5
+            opening : Integer
+            opening = square 5
             """;
         CapabilityReport? report = CheckCapabilities(source);
         Assert.NotNull(report);
@@ -27,8 +27,8 @@ public class CapabilityCheckerTests
     public void Console_effect_detected()
     {
         string source = """
-            main : [Console] Nothing
-            main = print-line "hello"
+            opening : [Console] Nothing
+            opening = print-line "hello"
             """;
         CapabilityReport? report = CheckCapabilities(source);
         Assert.NotNull(report);
@@ -40,8 +40,8 @@ public class CapabilityCheckerTests
     public void FileSystem_effect_detected()
     {
         string source = """
-            main : [FileSystem] Text
-            main = read-file "test.txt"
+            opening : [FileSystem] Text
+            opening = read-file "test.txt"
             """;
         CapabilityReport? report = CheckCapabilities(source);
         Assert.NotNull(report);
@@ -52,8 +52,8 @@ public class CapabilityCheckerTests
     public void Multiple_effects_detected()
     {
         string source = """
-            main : [Console, FileSystem] Nothing
-            main = act
+            opening : [Console, FileSystem] Nothing
+            opening = act
               contents <- read-file "input.txt"
               print-line contents
             end
@@ -72,8 +72,8 @@ public class CapabilityCheckerTests
             greet : Text -> [Console] Nothing
             greet (name) = print-line ("Hello, " ++ name)
 
-            main : [Console] Nothing
-            main = greet "world"
+            opening : [Console] Nothing
+            opening = greet "world"
             """;
         CapabilityReport? report = CheckCapabilities(source);
         Assert.NotNull(report);
@@ -85,8 +85,8 @@ public class CapabilityCheckerTests
     public void Granted_capabilities_satisfied_no_error()
     {
         string source = """
-            main : [Console] Nothing
-            main = print-line "hello"
+            opening : [Console] Nothing
+            opening = print-line "hello"
             """;
         DiagnosticBag diagnostics = CheckWithGrants(source, ["Console"]);
         Assert.False(diagnostics.HasErrors);
@@ -96,8 +96,8 @@ public class CapabilityCheckerTests
     public void Missing_capability_produces_error()
     {
         string source = """
-            main : [Console, FileSystem] Nothing
-            main = act
+            opening : [Console, FileSystem] Nothing
+            opening = act
               contents <- read-file "input.txt"
               print-line contents
             end
@@ -108,9 +108,7 @@ public class CapabilityCheckerTests
         foreach (Diagnostic diag in diagnostics.ToImmutable())
         {
             if (diag.Code == CdxCodes.CapabilityNotGranted && diag.Message.Contains("FileSystem"))
-            {
                 found = true;
-            }
         }
         Assert.True(found, "Expected CDX4001 error for missing FileSystem capability");
     }
@@ -119,8 +117,8 @@ public class CapabilityCheckerTests
     public void Empty_grants_rejects_all_effects()
     {
         string source = """
-            main : [Console] Nothing
-            main = print-line "hello"
+            opening : [Console] Nothing
+            opening = print-line "hello"
             """;
         DiagnosticBag diagnostics = CheckWithGrants(source, []);
         Assert.True(diagnostics.HasErrors);
@@ -130,8 +128,8 @@ public class CapabilityCheckerTests
     public void Required_capabilities_as_set()
     {
         string source = """
-            main : [Console, FileSystem] Nothing
-            main = act
+            opening : [Console, FileSystem] Nothing
+            opening = act
               contents <- read-file "input.txt"
               print-line contents
             end
@@ -157,24 +155,15 @@ public class CapabilityCheckerTests
 
         Codex.Ast.Desugarer desugarer = new(diagnostics);
         Codex.Ast.Chapter module = desugarer.Desugar(document, "test");
-        if (diagnostics.HasErrors)
-        {
-            return null;
-        }
+        if (diagnostics.HasErrors) return null;
 
         Codex.Semantics.NameResolver resolver = new(diagnostics);
         Codex.Semantics.ResolvedChapter resolved = resolver.Resolve(module);
-        if (diagnostics.HasErrors)
-        {
-            return null;
-        }
+        if (diagnostics.HasErrors) return null;
 
         TypeChecker checker = new(diagnostics);
         Map<string, CodexType> types = checker.CheckChapter(resolved.Chapter);
-        if (diagnostics.HasErrors)
-        {
-            return null;
-        }
+        if (diagnostics.HasErrors) return null;
 
         CapabilityChecker capChecker = new(diagnostics, types);
         return capChecker.CheckChapter(resolved.Chapter);
@@ -201,9 +190,7 @@ public class CapabilityCheckerTests
 
         Set<string> grantSet = Set<string>.s_empty;
         foreach (string g in grants)
-        {
             grantSet = grantSet.Add(g);
-        }
 
         CapabilityChecker capChecker = new(diagnostics, types);
         capChecker.CheckChapter(resolved.Chapter, grantSet);
@@ -214,8 +201,8 @@ public class CapabilityCheckerTests
     public void Network_rejected_without_grant()
     {
         string source = """
-            main : [Network] Text
-            main = fetch "https://example.com"
+            opening : [Network] Text
+            opening = fetch "https://example.com"
             """;
         DiagnosticBag diagnostics = CheckWithGrants(source, ["Console"]);
         Assert.True(diagnostics.HasErrors);
@@ -223,9 +210,7 @@ public class CapabilityCheckerTests
         foreach (Diagnostic diag in diagnostics.ToImmutable())
         {
             if (diag.Code == CdxCodes.CapabilityNotGranted && diag.Message.Contains("Network"))
-            {
                 found = true;
-            }
         }
         Assert.True(found, "Expected CDX4001 for missing Network capability");
     }
@@ -234,8 +219,8 @@ public class CapabilityCheckerTests
     public void Network_accepted_with_grant()
     {
         string source = """
-            main : [Console, Network] Nothing
-            main = print-line "connected"
+            opening : [Console, Network] Nothing
+            opening = print-line "connected"
             """;
         DiagnosticBag diagnostics = CheckWithGrants(source, ["Console", "Network"]);
         Assert.False(diagnostics.HasErrors, string.Join("; ", diagnostics.ToImmutable()));
@@ -245,8 +230,8 @@ public class CapabilityCheckerTests
     public void Camera_rejected_without_grant()
     {
         string source = """
-            main : [Camera] Text
-            main = capture
+            opening : [Camera] Text
+            opening = capture
             """;
         DiagnosticBag diagnostics = CheckWithGrants(source, ["Display"]);
         Assert.True(diagnostics.HasErrors);
@@ -254,9 +239,7 @@ public class CapabilityCheckerTests
         foreach (Diagnostic diag in diagnostics.ToImmutable())
         {
             if (diag.Code == CdxCodes.CapabilityNotGranted && diag.Message.Contains("Camera"))
-            {
                 found = true;
-            }
         }
         Assert.True(found, "Expected CDX4001 for missing Camera capability");
     }
@@ -265,8 +248,8 @@ public class CapabilityCheckerTests
     public void Microphone_rejected_without_grant()
     {
         string source = """
-            main : [Microphone] Text
-            main = listen 5000
+            opening : [Microphone] Text
+            opening = listen 5000
             """;
         DiagnosticBag diagnostics = CheckWithGrants(source, []);
         Assert.True(diagnostics.HasErrors);
@@ -274,9 +257,7 @@ public class CapabilityCheckerTests
         foreach (Diagnostic diag in diagnostics.ToImmutable())
         {
             if (diag.Code == CdxCodes.CapabilityNotGranted && diag.Message.Contains("Microphone"))
-            {
                 found = true;
-            }
         }
         Assert.True(found, "Expected CDX4001 for missing Microphone capability");
     }
@@ -285,8 +266,8 @@ public class CapabilityCheckerTests
     public void Display_only_grants_no_network()
     {
         string source = """
-            main : [Display, Network] Nothing
-            main = act
+            opening : [Display, Network] Nothing
+            opening = act
               clear
               fetch "https://spy.example.com"
               draw-text "hello" 0 0
@@ -298,9 +279,7 @@ public class CapabilityCheckerTests
         foreach (Diagnostic diag in diagnostics.ToImmutable())
         {
             if (diag.Code == CdxCodes.CapabilityNotGranted && diag.Message.Contains("Network"))
-            {
                 found = true;
-            }
         }
         Assert.True(found, "Expected CDX4001 for missing Network — the flashlight test");
     }
@@ -309,8 +288,8 @@ public class CapabilityCheckerTests
     public void Phone_app_with_all_grants()
     {
         string source = """
-            main : [Console, Display, Network] Nothing
-            main = print-line "app running"
+            opening : [Console, Display, Network] Nothing
+            opening = print-line "app running"
             """;
         DiagnosticBag diagnostics = CheckWithGrants(source, ["Console", "Display", "Network"]);
         Assert.False(diagnostics.HasErrors, string.Join("; ", diagnostics.ToImmutable()));

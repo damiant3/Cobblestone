@@ -25,7 +25,9 @@ HOLDER=$!
 
 START=$SECONDS
 timeout "$TIMEOUT" "$QEMU" \
-    -enable-kvm -kernel "$KERNEL" -serial stdio -display none -no-reboot -m 1024 \
+    -enable-kvm -kernel "$KERNEL" -serial stdio \
+    -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+    -display none -no-reboot -m 1024 \
     < "$PIPE" > "$RAW" 2>/dev/null &
 QPID=$!
 

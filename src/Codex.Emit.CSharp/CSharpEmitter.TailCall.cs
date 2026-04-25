@@ -9,52 +9,20 @@ public sealed partial class CSharpEmitter
     static bool HasSelfTailCall(IRDefinition def)
     {
         if (def.Parameters.Length == 0)
-        {
             return false;
-        }
-
-        return ExprHasTailCall(def.Body, def.Name);
-    }
-
-    static bool ExprHasTailCall(IRExpr expr, string funcName)
-    {
-        return expr switch
-        {
-            IRIf iff => ExprHasTailCall(iff.Then, funcName)
-                     || ExprHasTailCall(iff.Else, funcName),
-            IRLet let => ExprHasTailCall(let.Body, funcName),
-            IRMatch match => match.Branches.Any(b => ExprHasTailCall(b.Body, funcName)),
-            IRApply app => IsSelfCall(app, funcName),
-            IRRegion region => ExprHasTailCall(region.Body, funcName),
-            _ => false
-        };
-    }
-
-    static bool IsSelfCall(IRApply app, string funcName)
-    {
-        IRExpr root = app.Function;
-        while (root is IRApply inner)
-        {
-            root = inner.Function;
-        }
-
-        return root is IRName name && name.Name == funcName;
+        return def.Body.HasTailCall(def.Name);
     }
 
     void EmitTailCallDefinition(StringBuilder sb, IRDefinition def)
     {
-        string returnType = EmitType(GetReturnType(def));
+        string returnType = EmitType(def.PureReturnType());
         string name = SanitizeIdentifier(def.Name);
         string generics = GenericSuffix(def);
 
         sb.Append($"    public static {returnType} {name}{generics}(");
         for (int i = 0; i < def.Parameters.Length; i++)
         {
-            if (i > 0)
-            {
-                sb.Append(", ");
-            }
-
+            if (i > 0) sb.Append(", ");
             IRParameter param = def.Parameters[i];
             sb.Append($"{EmitType(param.Type)} {SanitizeIdentifier(param.Name)}");
         }
@@ -63,7 +31,7 @@ public sealed partial class CSharpEmitter
         sb.AppendLine("        while (true)");
         sb.AppendLine("        {");
 
-        EmitTailCallBody(sb, def.Body, def.Name, def.Parameters, 3);
+        EmitTailCallBody(sb, def.Body, def.Name, def.Parameters, 3, 0);
 
         sb.AppendLine("        }");
         sb.AppendLine("    }");
@@ -71,7 +39,7 @@ public sealed partial class CSharpEmitter
 
     void EmitTailCallBody(
         StringBuilder sb, IRExpr expr, string funcName,
-        ImmutableArray<IRParameter> parameters, int indent)
+        ImmutableArray<IRParameter> parameters, int indent, int matchDepth)
     {
         string pad = new(' ', indent * 4);
 
@@ -82,11 +50,11 @@ public sealed partial class CSharpEmitter
                 EmitExpr(sb, iff.Condition, indent);
                 sb.AppendLine(")");
                 sb.AppendLine($"{pad}{{");
-                EmitTailCallBody(sb, iff.Then, funcName, parameters, indent + 1);
+                EmitTailCallBody(sb, iff.Then, funcName, parameters, indent + 1, matchDepth);
                 sb.AppendLine($"{pad}}}");
                 sb.AppendLine($"{pad}else");
                 sb.AppendLine($"{pad}{{");
-                EmitTailCallBody(sb, iff.Else, funcName, parameters, indent + 1);
+                EmitTailCallBody(sb, iff.Else, funcName, parameters, indent + 1, matchDepth);
                 sb.AppendLine($"{pad}}}");
                 break;
 
@@ -94,18 +62,14 @@ public sealed partial class CSharpEmitter
                 sb.Append($"{pad}var {SanitizeIdentifier(let.Name)} = ");
                 EmitExpr(sb, let.Value, indent);
                 sb.AppendLine(";");
-                EmitTailCallBody(sb, let.Body, funcName, parameters, indent);
-                break;
-
-            case IRRegion region:
-                EmitTailCallBody(sb, region.Body, funcName, parameters, indent);
+                EmitTailCallBody(sb, let.Body, funcName, parameters, indent, matchDepth);
                 break;
 
             case IRMatch match:
-                EmitTailCallMatch(sb, match, funcName, parameters, indent);
+                EmitTailCallMatch(sb, match, funcName, parameters, indent, matchDepth);
                 break;
 
-            case IRApply app when IsSelfCall(app, funcName):
+            case IRApply app when app.IsSelfCall(funcName):
                 EmitTailCallJump(sb, app, parameters, indent);
                 break;
 
@@ -117,12 +81,22 @@ public sealed partial class CSharpEmitter
         }
     }
 
+    // Scrutinee/match-binding vars are suffixed by nesting depth so that
+    // nested when-expressions in the same C# method don't shadow each
+    // other's `_tco_s` / `_tco_m*`. Depth 0 keeps the historical unsuffixed
+    // names to minimise diff churn for single-match TCO functions.
+    static string TcoScrutVar(int depth) =>
+        depth == 0 ? "_tco_s" : $"_tco_s{depth}";
+
+    static string TcoMatchVar(int depth, int idx) =>
+        depth == 0 ? $"_tco_m{idx}" : $"_tco_m{depth}_{idx}";
+
     void EmitTailCallMatch(
         StringBuilder sb, IRMatch match, string funcName,
-        ImmutableArray<IRParameter> parameters, int indent)
+        ImmutableArray<IRParameter> parameters, int indent, int matchDepth)
     {
         string pad = new(' ', indent * 4);
-        string scrutineeVar = "_tco_s";
+        string scrutineeVar = TcoScrutVar(matchDepth);
         sb.Append($"{pad}var {scrutineeVar} = ");
         EmitExpr(sb, match.Scrutinee, indent);
         sb.AppendLine(";");
@@ -133,7 +107,7 @@ public sealed partial class CSharpEmitter
         {
             string keyword = first ? "if" : "else if";
             first = false;
-            string matchVar = $"_tco_m{branchIdx}";
+            string matchVar = TcoMatchVar(matchDepth, branchIdx);
             branchIdx++;
 
             switch (branch.Pattern)
@@ -142,11 +116,8 @@ public sealed partial class CSharpEmitter
                 case IRVarPattern:
                     sb.AppendLine($"{pad}{{");
                     if (branch.Pattern is IRVarPattern vp)
-                    {
                         sb.AppendLine($"{pad}    var {SanitizeIdentifier(vp.Name)} = {scrutineeVar};");
-                    }
-
-                    EmitTailCallBody(sb, branch.Body, funcName, parameters, indent + 1);
+                    EmitTailCallBody(sb, branch.Body, funcName, parameters, indent + 1, matchDepth + 1);
                     sb.AppendLine($"{pad}}}");
                     break;
 
@@ -156,11 +127,9 @@ public sealed partial class CSharpEmitter
                     for (int i = 0; i < ctorPat.SubPatterns.Length; i++)
                     {
                         if (ctorPat.SubPatterns[i] is IRVarPattern svp)
-                        {
                             sb.AppendLine($"{pad}    var {SanitizeIdentifier(svp.Name)} = {matchVar}.Field{i};");
-                        }
                     }
-                    EmitTailCallBody(sb, branch.Body, funcName, parameters, indent + 1);
+                    EmitTailCallBody(sb, branch.Body, funcName, parameters, indent + 1, matchDepth + 1);
                     sb.AppendLine($"{pad}}}");
                     break;
 
@@ -174,7 +143,7 @@ public sealed partial class CSharpEmitter
                     };
                     sb.AppendLine($"{pad}{keyword} (object.Equals({scrutineeVar}, {litVal}))");
                     sb.AppendLine($"{pad}{{");
-                    EmitTailCallBody(sb, branch.Body, funcName, parameters, indent + 1);
+                    EmitTailCallBody(sb, branch.Body, funcName, parameters, indent + 1, matchDepth + 1);
                     sb.AppendLine($"{pad}}}");
                     break;
             }

@@ -70,8 +70,8 @@ public class DoNotationTests
               x + 1
             end
 
-            main : Integer
-            main = with Ask program
+            opening : Integer
+            opening = with Ask program
               ask (resume) = resume 42
             """;
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
@@ -91,8 +91,8 @@ public class DoNotationTests
               x + 1
             end
 
-            main : Integer
-            main = with Ask program
+            opening : Integer
+            opening = with Ask program
               ask (resume) = resume 42
             """;
         string? cs = Helpers.CompileToCS(source);
@@ -103,8 +103,8 @@ public class DoNotationTests
     public void Do_block_returns_last_expression_in_emitted_cs()
     {
         string source = """
-            main : [Console] Integer
-            main = act
+            opening : [Console] Integer
+            opening = act
               print-line "hello"
               42
             end
@@ -121,8 +121,8 @@ public class DoNotationTests
             effect Logger where
               log : Text -> Integer
 
-            main : [Console, Logger] Integer
-            main = act
+            opening : [Console, Logger] Integer
+            opening = act
               print-line "starting"
               x <- log "step1"
               x

@@ -8,6 +8,19 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
     readonly DiagnosticBag m_diagnostics = diagnostics;
     string? m_currentChapterName;
 
+    const int MaxRecursionDepth = 256;
+    int m_depth;
+
+    bool FuelExhausted(string op, SourceSpan span)
+    {
+        if (m_depth < MaxRecursionDepth)
+            return false;
+        m_diagnostics.Error(CdxCodes.ResourceExhausted,
+            $"compiler resource exhausted in desugarer.{op} (budget {MaxRecursionDepth})",
+            span);
+        return true;
+    }
+
     public Chapter Desugar(DocumentNode document, string chapterName)
     {
         m_currentChapterName = chapterName;
@@ -33,21 +46,15 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
             foreach (DocumentMember member in ch.Members)
             {
                 if (member is ProseBlockNode pb && prose is null)
-                {
                     prose = pb.Text;
-                }
                 else if (member is SectionNode sec)
-                {
                     sectionTitles.Add(sec.Title);
-                }
             }
         }
 
         Dictionary<string, ChapterProse> proseByFile = new Dictionary<string, ChapterProse>();
         if (chapterTitle is not null)
-        {
             proseByFile[chapterName] = new ChapterProse(chapterTitle, prose, sectionTitles);
-        }
 
         return new Chapter(name, definitions, typeDefinitions, claims, proofs, document.Span)
             { Citations = citations, EffectDefs = effectDefs,
@@ -78,8 +85,15 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
             { SourceChapter = m_currentChapterName, Section = node.Section };
     }
 
-    Expr DesugarExpr(ExpressionNode node) => node switch
+    Expr DesugarExpr(ExpressionNode node)
     {
+        if (FuelExhausted(nameof(DesugarExpr), node.Span))
+            return new ErrorExpr("desugar fuel exhausted", node.Span);
+        m_depth++;
+        try
+        {
+            return node switch
+            {
         LiteralExpressionNode lit => new LiteralExpr(
             lit.Literal.LiteralValue ?? lit.Literal.Text,
             lit.Literal.Kind switch
@@ -171,7 +185,13 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
         ErrorExpressionNode err => new ErrorExpr("parse error", err.Span),
 
         _ => new ErrorExpr($"unknown expression node: {node.Kind}", node.Span)
-    };
+            };
+        }
+        finally
+        {
+            m_depth--;
+        }
+    }
 
     ActStatement DesugarActStatement(ActStatementNode node) => node switch
     {
@@ -191,9 +211,7 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
     Expr DesugarInterpolatedString(InterpolatedStringNode node)
     {
         if (node.Parts.Count == 0)
-        {
             return new LiteralExpr("", LiteralKind.Text, node.Span);
-        }
 
         if (node.Parts.Count == 1 && node.Parts[0] is LiteralExpressionNode singleLit
             && singleLit.Literal.Kind == TokenKind.TextLiteral)
@@ -227,29 +245,49 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
             fallbackSpan);
     }
 
-    Pattern DesugarPattern(PatternNode node) => node switch
+    Pattern DesugarPattern(PatternNode node)
     {
-        VariablePatternNode v => new VarPattern(new Name(v.Name.Text), v.Span),
-        LiteralPatternNode l => new LiteralPattern(
-            l.Literal.LiteralValue ?? l.Literal.Text,
-            l.Literal.Kind switch
+        if (FuelExhausted(nameof(DesugarPattern), node.Span))
+            return new WildcardPattern(node.Span);
+        m_depth++;
+        try
+        {
+            return node switch
             {
-                TokenKind.IntegerLiteral => LiteralKind.Integer,
-                TokenKind.TextLiteral => LiteralKind.Text,
-                TokenKind.TrueKeyword or TokenKind.FalseKeyword => LiteralKind.Boolean,
-                _ => LiteralKind.Text
-            },
-            l.Span),
-        ConstructorPatternNode c => new CtorPattern(
-            new Name(c.Constructor.Text),
-            c.SubPatterns.Select(DesugarPattern).ToList(),
-            c.Span),
-        WildcardPatternNode w => new WildcardPattern(w.Span),
-        _ => new WildcardPattern(node.Span)
-    };
+                VariablePatternNode v => new VarPattern(new Name(v.Name.Text), v.Span),
+                LiteralPatternNode l => new LiteralPattern(
+                    l.Literal.LiteralValue ?? l.Literal.Text,
+                    l.Literal.Kind switch
+                    {
+                        TokenKind.IntegerLiteral => LiteralKind.Integer,
+                        TokenKind.TextLiteral => LiteralKind.Text,
+                        TokenKind.TrueKeyword or TokenKind.FalseKeyword => LiteralKind.Boolean,
+                        _ => LiteralKind.Text
+                    },
+                    l.Span),
+                ConstructorPatternNode c => new CtorPattern(
+                    new Name(c.Constructor.Text),
+                    c.SubPatterns.Select(DesugarPattern).ToList(),
+                    c.Span),
+                WildcardPatternNode w => new WildcardPattern(w.Span),
+                _ => new WildcardPattern(node.Span)
+            };
+        }
+        finally
+        {
+            m_depth--;
+        }
+    }
 
-    TypeExpr DesugarType(TypeNode node) => node switch
+    TypeExpr DesugarType(TypeNode node)
     {
+        if (FuelExhausted(nameof(DesugarType), node.Span))
+            return new NamedTypeExpr(new Name("_fuel"), node.Span);
+        m_depth++;
+        try
+        {
+            return node switch
+            {
         NamedTypeNode n => new NamedTypeExpr(new Name(n.Name.Text), n.Span),
         FunctionTypeNode f => new FunctionTypeExpr(
             DesugarType(f.Parameter),
@@ -286,7 +324,13 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
             DesugarType(p.Right),
             p.Span),
         _ => new NamedTypeExpr(new Name("?"), node.Span)
-    };
+            };
+        }
+        finally
+        {
+            m_depth--;
+        }
+    }
 
     TypeDef DesugarTypeDefinition(TypeDefinitionNode node)
     {
@@ -367,27 +411,40 @@ public sealed class Desugarer(DiagnosticBag diagnostics)
         return new ProofDef(name, parameters, body, node.Span);
     }
 
-    ProofExpr DesugarProofExpr(ProofExprNode node) => node switch
+    ProofExpr DesugarProofExpr(ProofExprNode node)
     {
-        ReflNode r => new ReflProofExpr(r.Span),
-        AssumeNode a => new AssumeProofExpr(a.Span),
-        SymNode s => new SymProofExpr(DesugarProofExpr(s.Inner), s.Span),
-        TransNode t => new TransProofExpr(
-            DesugarProofExpr(t.Left), DesugarProofExpr(t.Right), t.Span),
-        CongNode c => new CongProofExpr(
-            new Name(c.FunctionName.Text), DesugarProofExpr(c.Inner), c.Span),
-        InductionNode ind => new InductionProofExpr(
-            new Name(ind.Variable.Text),
-            ind.Cases.Select(c => new ProofCase(
-                DesugarPattern(c.Pattern),
-                DesugarProofExpr(c.Body),
-                c.Span)).ToList(),
-            ind.Span),
-        ProofNameNode n => new NameProofExpr(new Name(n.Name.Text), n.Span),
-        ProofApplyNode a => new ApplyProofExpr(
-            new Name(a.LemmaName.Text),
-            a.Arguments.Select(DesugarExpr).ToList(),
-            a.Span),
-        _ => new ReflProofExpr(node.Span)
-    };
+        if (FuelExhausted(nameof(DesugarProofExpr), node.Span))
+            return new ReflProofExpr(node.Span);
+        m_depth++;
+        try
+        {
+            return node switch
+            {
+                ReflNode r => new ReflProofExpr(r.Span),
+                AssumeNode a => new AssumeProofExpr(a.Span),
+                SymNode s => new SymProofExpr(DesugarProofExpr(s.Inner), s.Span),
+                TransNode t => new TransProofExpr(
+                    DesugarProofExpr(t.Left), DesugarProofExpr(t.Right), t.Span),
+                CongNode c => new CongProofExpr(
+                    new Name(c.FunctionName.Text), DesugarProofExpr(c.Inner), c.Span),
+                InductionNode ind => new InductionProofExpr(
+                    new Name(ind.Variable.Text),
+                    ind.Cases.Select(c => new ProofCase(
+                        DesugarPattern(c.Pattern),
+                        DesugarProofExpr(c.Body),
+                        c.Span)).ToList(),
+                    ind.Span),
+                ProofNameNode n => new NameProofExpr(new Name(n.Name.Text), n.Span),
+                ProofApplyNode a => new ApplyProofExpr(
+                    new Name(a.LemmaName.Text),
+                    a.Arguments.Select(DesugarExpr).ToList(),
+                    a.Span),
+                _ => new ReflProofExpr(node.Span)
+            };
+        }
+        finally
+        {
+            m_depth--;
+        }
+    }
 }

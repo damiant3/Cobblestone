@@ -8,7 +8,7 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
 {
     readonly DiagnosticBag m_diagnostics = diagnostics;
     readonly Unifier m_unifier = new(diagnostics);
-    TypeEnvironment m_env = TypeEnvironment.WithBuiltins();
+    TypeEnvironment m_env = new();
     Map<string, CodexType> m_typeDefMap = Map<string, CodexType>.s_empty;
     Map<string, CtorInfo> m_ctorMap = Map<string, CtorInfo>.s_empty;
     Map<string, CodexType> m_typeParamEnv = Map<string, CodexType>.s_empty;
@@ -18,22 +18,52 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
     Map<string, string> m_operationToEffect = Map<string, string>.s_empty;
     bool m_builtinEffectsRegistered;
 
+    // Elaborated-AST table: every Expr encountered during inference has its
+    // resolved type recorded here. Reference-equality keyed so that two
+    // structurally-identical subtrees (e.g. two LiteralExpr(0, Integer) with
+    // the same span) don't collide. After CheckChapter completes, every
+    // entry has been DeepResolve'd so no substitution placeholders remain
+    // in the exposed types.
+    readonly Dictionary<Ast.Expr, CodexType> m_exprTypes = new(ReferenceEqualityComparer.Instance);
+
+    public IReadOnlyDictionary<Ast.Expr, CodexType> ExprTypes => m_exprTypes;
+
+    const int MaxInferenceDepth = 256;
+    int m_inferDepth;
+
+    bool InferenceFuelExhausted(SourceSpan span)
+    {
+        if (m_inferDepth < MaxInferenceDepth)
+            return false;
+        m_diagnostics.Error(CdxCodes.ResourceExhausted,
+            $"compiler resource exhausted in type-checker.InferExpr (budget {MaxInferenceDepth})",
+            span);
+        return true;
+    }
+
     void EnsureBuiltinEffects()
     {
         if (m_builtinEffectsRegistered)
-        {
             return;
-        }
-
         m_builtinEffectsRegistered = true;
         RegisterEffectDefinitions(BuiltinEffects.Load());
     }
 
+    void BindBuiltinChapterCitations(Chapter chapter)
+    {
+        foreach (CitesDecl cite in chapter.Citations)
+        {
+            if (cite.Quire.Value != "Codex") continue;
+            BuiltinChapter? bc = BuiltinChapters.LookupByName(cite.ChapterName.Value);
+            if (bc is null) continue; // NameResolver already diagnosed
+            foreach ((string name, CodexType type) in bc.TypedBindings)
+                m_env = m_env.Bind(name, type);
+        }
+    }
+
     public Map<string, CodexType> CheckChapter(Chapter chapter)
     {
-        EnsureBuiltinEffects();
-        RegisterTypeDefinitions(chapter.TypeDefinitions);
-        RegisterEffectDefinitions(chapter.EffectDefs);
+        RegisterChapterMetadata(chapter, bindCitations: true);
 
         Map<string, CodexType> topLevelTypes = Map<string, CodexType>.s_empty;
         foreach (Definition def in chapter.Definitions)
@@ -65,6 +95,14 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
             m_unifier.ContextSpan = def.Span;
             CodexType bodyType = InferDefinition(def, checkType);
             m_unifier.Unify(checkType, bodyType, def.Span);
+            // Tie the instantiation vars (fresh per-body) back to the rigid
+            // signature vars so ExprTypes entries resolve to identifiers the
+            // emitter recognizes as in-scope. Without this, polymorphic call
+            // sites in the body retain instantiation-var IDs (T479 rather
+            // than T26), which emit outside the enclosing generic context
+            // and fail downstream CS0246 (M3 in REF-DRY-AUDIT.md).
+            if (envType is ForAllType)
+                m_unifier.Unify(checkType, expectedType, def.Span);
             m_unifier.ContextSpan = null;
             if (m_diagnostics.Count > errorsBefore)
             {
@@ -78,12 +116,17 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
         {
             CodexType t = m_unifier.DeepResolve(kv.Value);
             while (t is ForAllType fa)
-            {
                 t = fa.Body;
-            }
-
             result = result.Set(kv.Key, t);
         }
+
+        // Elaborated-AST finalization: DeepResolve every per-expression type
+        // recorded during inference so the exposed table has concrete types
+        // (no TypeVariable placeholders unless the type is genuinely
+        // polymorphic, which ForAll-stripping at the top level already
+        // handles for public-API entries).
+        foreach (Ast.Expr key in m_exprTypes.Keys.ToList())
+            m_exprTypes[key] = m_unifier.DeepResolve(m_exprTypes[key]);
 
         return result;
     }
@@ -106,17 +149,13 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
         foreach (TypeDef td in typeDefs)
         {
             if (td is RecordTypeDef rec)
-            {
                 RegisterRecord(rec);
-            }
         }
 
         foreach (TypeDef td in typeDefs)
         {
             if (td is VariantTypeDef variant)
-            {
                 RegisterVariant(variant);
-            }
         }
     }
 
@@ -137,10 +176,7 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
         ImmutableArray<RecordFieldType>.Builder fields =
             ImmutableArray.CreateBuilder<RecordFieldType>();
         foreach (RecordFieldDef f in rec.Fields)
-        {
             fields.Add(new(f.FieldName, ResolveTypeExpr(f.Type)));
-        }
-
         ImmutableArray<int> paramIdsImm = paramIds.ToImmutable();
         RecordType recordType = new(rec.Name, paramIdsImm, fields.ToImmutable())
         {
@@ -172,10 +208,7 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
             ImmutableArray<CodexType>.Builder ctorFields =
                 ImmutableArray.CreateBuilder<CodexType>();
             foreach (VariantFieldDef f in c.Fields)
-            {
                 ctorFields.Add(ResolveTypeExpr(f.Type));
-            }
-
             ctors.Add(new(c.Name, ctorFields.ToImmutable()));
         }
         ImmutableArray<int> paramIdsImm = paramIds.ToImmutable();
@@ -189,15 +222,9 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
         {
             CodexType ctorType = sumType;
             for (int i = ctor.Fields.Length - 1; i >= 0; i--)
-            {
                 ctorType = new FunctionType(ctor.Fields[i], ctorType);
-            }
-
             for (int i = paramIds.Count - 1; i >= 0; i--)
-            {
                 ctorType = new ForAllType(paramIds[i], ctorType);
-            }
-
             m_ctorMap = m_ctorMap.Set(ctor.Name.Value, new(ctorType, sumType));
             m_env = m_env.Bind(ctor.Name, ctorType);
         }
@@ -230,11 +257,24 @@ public sealed partial class TypeChecker(DiagnosticBag diagnostics)
 
     public Map<string, string> OperationToEffect => m_operationToEffect;
 
-    public void CiteChapter(Chapter chapter)
+    // Shared preamble for CheckChapter and CiteChapter. CheckChapter threads
+    // the main chapter's `cites Codex chapter X` references onto m_env
+    // (bindCitations: true) so the body-checking loop resolves builtin names;
+    // CiteChapter is called for imported chapters, whose own citations do not
+    // propagate to the enclosing chapter's env — only their type defs and
+    // effect defs do.
+    void RegisterChapterMetadata(Chapter chapter, bool bindCitations)
     {
         EnsureBuiltinEffects();
+        if (bindCitations)
+            BindBuiltinChapterCitations(chapter);
         RegisterTypeDefinitions(chapter.TypeDefinitions);
         RegisterEffectDefinitions(chapter.EffectDefs);
+    }
+
+    public void CiteChapter(Chapter chapter)
+    {
+        RegisterChapterMetadata(chapter, bindCitations: false);
 
         foreach (Definition def in chapter.Definitions)
         {

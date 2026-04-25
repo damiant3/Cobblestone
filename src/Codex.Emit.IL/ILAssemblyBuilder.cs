@@ -16,6 +16,13 @@ sealed partial class ILAssemblyBuilder
     readonly BlobBuilder m_ilStream = new();
     readonly MethodBodyStreamEncoder m_methodBodies;
 
+    const int MaxEmitDepth = 256;
+    int m_emitDepth;
+    bool m_emitFuelExhausted;
+
+    public bool EmitFuelExhausted => m_emitFuelExhausted;
+    public int MaxEmitDepthLimit => MaxEmitDepth;
+
     AssemblyReferenceHandle m_corlibRef;
     TypeReferenceHandle m_consoleRef;
     TypeReferenceHandle m_stringRef;
@@ -24,11 +31,26 @@ sealed partial class ILAssemblyBuilder
     TypeReferenceHandle m_int64Ref;
     TypeReferenceHandle m_doubleRef;
     TypeReferenceHandle m_booleanRef;
+    TypeReferenceHandle m_mathRef;
+    TypeReferenceHandle m_invalidOpExceptionRef;
+    MemberReferenceHandle m_mathPowRef;                // Math.Pow(double, double) : double
+    MemberReferenceHandle m_mathMinInt64Ref;           // Math.Min(long, long) : long
+    MemberReferenceHandle m_mathMaxInt64Ref;           // Math.Max(long, long) : long
+    MemberReferenceHandle m_mathAbsInt64Ref;           // Math.Abs(long) : long
+    MemberReferenceHandle m_stringCompareOrdinalRef;   // string.CompareOrdinal(string, string) : int
+    MemberReferenceHandle m_stringConcatEnumRef;       // string.Concat(IEnumerable<string>) : string
+    MemberReferenceHandle m_invalidOpCtorRef;          // InvalidOperationException(string)
+    TypeReferenceHandle m_streamRef;                   // System.IO.Stream
+    MemberReferenceHandle m_consoleOpenStdoutRef;      // Console.OpenStandardOutput() : Stream
+    MemberReferenceHandle m_streamWriteByteRef;        // Stream.WriteByte(byte) : void
+    MemberReferenceHandle m_streamFlushRef;            // Stream.Flush() : void
     MemberReferenceHandle m_writeLineStringRef;
     MemberReferenceHandle m_writeLineInt64Ref;
     MemberReferenceHandle m_writeLineBoolRef;
     MemberReferenceHandle m_writeLineDoubleRef;
     MemberReferenceHandle m_stringConcatRef;
+    MemberReferenceHandle m_stringConcatArrayRef;      // string.Concat(string[]) : string
+    MemberReferenceHandle m_tryEnsureStackRef;         // RuntimeHelpers.TryEnsureSufficientExecutionStack() : bool
     MemberReferenceHandle m_int64ToStringRef;
     MemberReferenceHandle m_boolToStringRef;
     MemberReferenceHandle m_objectCtorRef;
@@ -73,9 +95,12 @@ sealed partial class ILAssemblyBuilder
     MemberReferenceHandle m_processStartRef;          // Process.Start(ProcessStartInfo) : Process
     MemberReferenceHandle m_processWaitForExitRef;    // Process.WaitForExit() : void
     MemberReferenceHandle m_processGetStdOutRef;      // Process.get_StandardOutput() : StreamReader
+    MemberReferenceHandle m_processGetStdErrRef;      // Process.get_StandardError() : StreamReader
+    MemberReferenceHandle m_processGetExitCodeRef;    // Process.get_ExitCode() : int
     MemberReferenceHandle m_streamReaderReadToEndRef; // StreamReader.ReadToEnd() : string
     MemberReferenceHandle m_psiCtorRef;               // ProcessStartInfo(string, string)
     MemberReferenceHandle m_psiSetRedirectRef;        // set_RedirectStandardOutput(bool)
+    MemberReferenceHandle m_psiSetRedirectErrorRef;   // set_RedirectStandardError(bool)
     MemberReferenceHandle m_psiSetShellRef;           // set_UseShellExecute(bool)
 
     // ── Directory ───────────────────────────────────────────────
@@ -172,6 +197,72 @@ sealed partial class ILAssemblyBuilder
             m_metadata.GetOrAddString("System"),
             m_metadata.GetOrAddString("Boolean"));
 
+        m_mathRef = m_metadata.AddTypeReference(
+            m_corlibRef,
+            m_metadata.GetOrAddString("System"),
+            m_metadata.GetOrAddString("Math"));
+
+        m_invalidOpExceptionRef = m_metadata.AddTypeReference(
+            m_corlibRef,
+            m_metadata.GetOrAddString("System"),
+            m_metadata.GetOrAddString("InvalidOperationException"));
+
+        m_mathPowRef = m_metadata.AddMemberReference(
+            m_mathRef,
+            m_metadata.GetOrAddString("Pow"),
+            EncodeMethodSignature(SignatureCallingConvention.Default, true,
+                returnType: b => b.Type().Double(),
+                parameters: new Action<ParameterTypeEncoder>[]
+                {
+                    p => p.Type().Double(),
+                    p => p.Type().Double()
+                }));
+
+        m_mathMinInt64Ref = m_metadata.AddMemberReference(
+            m_mathRef,
+            m_metadata.GetOrAddString("Min"),
+            EncodeMethodSignature(SignatureCallingConvention.Default, true,
+                returnType: b => b.Type().Int64(),
+                parameters: new Action<ParameterTypeEncoder>[]
+                {
+                    p => p.Type().Int64(),
+                    p => p.Type().Int64()
+                }));
+
+        m_mathMaxInt64Ref = m_metadata.AddMemberReference(
+            m_mathRef,
+            m_metadata.GetOrAddString("Max"),
+            EncodeMethodSignature(SignatureCallingConvention.Default, true,
+                returnType: b => b.Type().Int64(),
+                parameters: new Action<ParameterTypeEncoder>[]
+                {
+                    p => p.Type().Int64(),
+                    p => p.Type().Int64()
+                }));
+
+        m_mathAbsInt64Ref = m_metadata.AddMemberReference(
+            m_mathRef,
+            m_metadata.GetOrAddString("Abs"),
+            EncodeMethodSignature(SignatureCallingConvention.Default, true,
+                returnType: b => b.Type().Int64(),
+                parameters: new Action<ParameterTypeEncoder>[] { p => p.Type().Int64() }));
+
+        m_stringCompareOrdinalRef = m_metadata.AddMemberReference(
+            m_stringRef,
+            m_metadata.GetOrAddString("CompareOrdinal"),
+            EncodeMethodSignature(SignatureCallingConvention.Default, true,
+                returnType: b => b.Type().Int32(),
+                parameters: new Action<ParameterTypeEncoder>[]
+                {
+                    p => p.Type().String(),
+                    p => p.Type().String()
+                }));
+
+        m_invalidOpCtorRef = m_metadata.AddMemberReference(
+            m_invalidOpExceptionRef,
+            m_metadata.GetOrAddString(".ctor"),
+            EncodeCtorSignature(new Action<ParameterTypeEncoder>[] { p => p.Type().String() }));
+
         m_writeLineStringRef = m_metadata.AddMemberReference(
             m_consoleRef,
             m_metadata.GetOrAddString("WriteLine"),
@@ -203,6 +294,35 @@ sealed partial class ILAssemblyBuilder
                     p => p.Type().String(),
                     p => p.Type().String()
                 }));
+
+        // String.Concat(string[]) : string  (static) — O(total length) vs the
+        // 2-arg form's O(F²) when chained over F parts.
+        m_stringConcatArrayRef = m_metadata.AddMemberReference(
+            m_stringRef,
+            m_metadata.GetOrAddString("Concat"),
+            EncodeMethodSignature(SignatureCallingConvention.Default, true,
+                returnType: b => b.Type().String(),
+                parameters: new Action<ParameterTypeEncoder>[]
+                {
+                    p => p.Type().SZArray().String()
+                }));
+
+        // RuntimeHelpers.TryEnsureSufficientExecutionStack() : bool  (static)
+        // Used as an unbounded-recursion guard in emitted ToString bodies.
+        // Returns false when the remaining stack is too small to absorb
+        // another frame — the guarded ToString returns "<…>" instead of
+        // recursing, preventing StackOverflowException on self-referential
+        // records (e.g. `Tree = record { parent : Tree }`).
+        TypeReferenceHandle runtimeHelpersRef = m_metadata.AddTypeReference(
+            m_corlibRef,
+            m_metadata.GetOrAddString("System.Runtime.CompilerServices"),
+            m_metadata.GetOrAddString("RuntimeHelpers"));
+        m_tryEnsureStackRef = m_metadata.AddMemberReference(
+            runtimeHelpersRef,
+            m_metadata.GetOrAddString("TryEnsureSufficientExecutionStack"),
+            EncodeMethodSignature(SignatureCallingConvention.Default, true,
+                returnType: b => b.Type().Boolean(),
+                parameters: Array.Empty<Action<ParameterTypeEncoder>>()));
 
         // String.op_Equality(string, string) : bool  (static)
         m_stringEqualsRef = m_metadata.AddMemberReference(
@@ -375,6 +495,24 @@ sealed partial class ILAssemblyBuilder
         // instantiations are created on demand via GetOrCreateListInstantiation()
         InitializeListSignatureBlobs();
 
+        // string.Concat(IEnumerable<string>) : string — needs m_ienumerableOpenRef
+        {
+            BlobBuilder sig = new();
+            new BlobEncoder(sig).MethodSignature(
+                SignatureCallingConvention.Default, 0, isInstanceMethod: false)
+                .Parameters(1,
+                    returnType => returnType.Type().String(),
+                    parameters =>
+                    {
+                        SignatureTypeEncoder paramType = parameters.AddParameter().Type();
+                        GenericTypeArgumentsEncoder genArgs = paramType
+                            .GenericInstantiation(m_ienumerableOpenRef, 1, isValueType: false);
+                        genArgs.AddArgument().String();
+                    });
+            m_stringConcatEnumRef = m_metadata.AddMemberReference(
+                m_stringRef, m_metadata.GetOrAddString("Concat"), m_metadata.GetOrAddBlob(sig));
+        }
+
         // ── String.Split(string, StringSplitOptions) : string[] ──
         {
             // StringSplitOptions is an enum in System namespace — must be referenced as the type
@@ -515,6 +653,14 @@ sealed partial class ILAssemblyBuilder
                 returnType: b => b.Void(),
                 parameters: new Action<ParameterTypeEncoder>[] { p => p.Type().Boolean() }));
 
+        // ProcessStartInfo.set_RedirectStandardError(bool) (instance)
+        m_psiSetRedirectErrorRef = m_metadata.AddMemberReference(
+            psiRef,
+            m_metadata.GetOrAddString("set_RedirectStandardError"),
+            EncodeMethodSignature(SignatureCallingConvention.Default, false,
+                returnType: b => b.Void(),
+                parameters: new Action<ParameterTypeEncoder>[] { p => p.Type().Boolean() }));
+
         // ProcessStartInfo.set_UseShellExecute(bool) (instance)
         m_psiSetShellRef = m_metadata.AddMemberReference(
             psiRef,
@@ -550,6 +696,29 @@ sealed partial class ILAssemblyBuilder
                 m_metadata.GetOrAddString("get_StandardOutput"),
                 m_metadata.GetOrAddBlob(sig));
         }
+
+        // Process.get_StandardError() : StreamReader (instance)
+        {
+            BlobBuilder sig = new();
+            new BlobEncoder(sig).MethodSignature(
+                SignatureCallingConvention.Default, 0, isInstanceMethod: true)
+                .Parameters(0,
+                    returnType => returnType.Type().Type(streamReaderRef, isValueType: false),
+                    parameters => { });
+            m_processGetStdErrRef = m_metadata.AddMemberReference(
+                processRef,
+                m_metadata.GetOrAddString("get_StandardError"),
+                m_metadata.GetOrAddBlob(sig));
+        }
+
+        // Process.get_ExitCode() : int (instance). Int32 on the runtime; widened
+        // to int64 at the caller so it fits Codex Integer.
+        m_processGetExitCodeRef = m_metadata.AddMemberReference(
+            processRef,
+            m_metadata.GetOrAddString("get_ExitCode"),
+            EncodeMethodSignature(SignatureCallingConvention.Default, false,
+                returnType: b => b.Type().Int32(),
+                parameters: Array.Empty<Action<ParameterTypeEncoder>>()));
 
         // Process.WaitForExit() : void (instance)
         m_processWaitForExitRef = m_metadata.AddMemberReference(
@@ -638,6 +807,33 @@ sealed partial class ILAssemblyBuilder
                 m_metadata.GetOrAddString("GetFiles"),
                 m_metadata.GetOrAddBlob(sig));
         }
+
+        // ── System.IO.Stream (for write-binary) ──────────────────
+        m_streamRef = m_metadata.AddTypeReference(
+            m_corlibRef,
+            m_metadata.GetOrAddString("System.IO"),
+            m_metadata.GetOrAddString("Stream"));
+
+        m_consoleOpenStdoutRef = m_metadata.AddMemberReference(
+            m_consoleRef,
+            m_metadata.GetOrAddString("OpenStandardOutput"),
+            EncodeMethodSignature(SignatureCallingConvention.Default, true,
+                returnType: b => b.Type().Type(m_streamRef, isValueType: false),
+                parameters: Array.Empty<Action<ParameterTypeEncoder>>()));
+
+        m_streamWriteByteRef = m_metadata.AddMemberReference(
+            m_streamRef,
+            m_metadata.GetOrAddString("WriteByte"),
+            EncodeMethodSignature(SignatureCallingConvention.Default, false,
+                returnType: b => b.Void(),
+                parameters: new Action<ParameterTypeEncoder>[] { p => p.Type().Byte() }));
+
+        m_streamFlushRef = m_metadata.AddMemberReference(
+            m_streamRef,
+            m_metadata.GetOrAddString("Flush"),
+            EncodeMethodSignature(SignatureCallingConvention.Default, false,
+                returnType: b => b.Void(),
+                parameters: Array.Empty<Action<ParameterTypeEncoder>>()));
 
         // ── Codex.Core.CceTable (for CCE ↔ Unicode conversion at I/O boundaries) ──
         AssemblyReferenceHandle codexCoreAsmRef = m_metadata.AddAssemblyReference(
@@ -729,8 +925,47 @@ sealed partial class ILAssemblyBuilder
 
         EmitTypeDefinitions(module);
 
+        // Pre-collect generic arities BEFORE emitting closures/adapters so
+        // that EmitCallToMethod inside their Invoke bodies can resolve a
+        // generic target to a MethodSpec (erased to object). Without this,
+        // `il.Call(genericMethod)` emits a bare MethodDef reference that
+        // traps as "method not fully instantiated" at JIT time.
+        foreach (IRDefinition def in module.Definitions)
+        {
+            ImmutableArray<int> typeVarIds = CollectTypeVarIds(def.Type);
+            m_definitionGenericArity = m_definitionGenericArity.Set(def.Name, typeVarIds.Length);
+            m_definitionTypeVarIds = m_definitionTypeVarIds.Set(def.Name, typeVarIds);
+        }
+
+        // Scan for partial-application call sites BEFORE emitting Program. Closure
+        // classes (and object-erasure adapters) are inserted as sibling TypeDefs
+        // between user types and Program so their method rows occupy the slots
+        // before Program's method block.
+        var closureSpecs = ScanPartialApps(module);
+        int adapterCount = m_adapterSpecs.Count;
+
+        // Pre-register user method handles to rows AFTER the closure + adapter
+        // methods (each closure / adapter = 1 ctor + 1 Invoke = 2 method rows).
+        // Done here because closure / adapter Invoke bodies call user methods
+        // through m_definedMethods.
+        int userMethodsStartRow = m_metadata.GetRowCount(TableIndex.MethodDef) + 1
+            + closureSpecs.Count * 2
+            + adapterCount * 2;
+        int methodRow = userMethodsStartRow;
+        foreach (IRDefinition def in module.Definitions)
+        {
+            m_definedMethods = m_definedMethods.Set(def.Name, MetadataTokens.MethodDefinitionHandle(methodRow));
+            methodRow++;
+        }
+        m_definedMethods = m_definedMethods.Set("__entryMain", MetadataTokens.MethodDefinitionHandle(methodRow));
+
+        // Emit closure + adapter classes now — their Invoke bodies reference
+        // user methods via the pre-registered handles above. Each adds exactly
+        // 2 method rows so Program's method block starts at userMethodsStartRow.
+        EmitClosureClasses(closureSpecs);
+        EmitAdapterClasses();
+
         // The static "Program" class holds all user-defined methods and the entry point.
-        // It must be defined after type definitions so its MethodList points past the ctors.
         int firstMethodRow = m_metadata.GetRowCount(TableIndex.MethodDef) + 1;
         int firstFieldRow = m_metadata.GetRowCount(TableIndex.Field) + 1;
         m_moduleClassDef = m_metadata.AddTypeDefinition(
@@ -741,34 +976,12 @@ sealed partial class ILAssemblyBuilder
             MetadataTokens.FieldDefinitionHandle(firstFieldRow),
             MetadataTokens.MethodDefinitionHandle(firstMethodRow));
 
-        // Pre-collect generic arities for all definitions
-        foreach (IRDefinition def in module.Definitions)
-        {
-            ImmutableArray<int> typeVarIds = CollectTypeVarIds(def.Type);
-            m_definitionGenericArity = m_definitionGenericArity.Set(def.Name, typeVarIds.Length);
-            m_definitionTypeVarIds = m_definitionTypeVarIds.Set(def.Name, typeVarIds);
-        }
-
-        // Pre-register method handles so recursive/forward calls resolve correctly.
-        int methodRow = firstMethodRow;
-        foreach (IRDefinition def in module.Definitions)
-        {
-            m_definedMethods = m_definedMethods.Set(def.Name, MetadataTokens.MethodDefinitionHandle(methodRow));
-            methodRow++;
-        }
-        // Reserve a row for the synthetic Main entry point.
-        m_definedMethods = m_definedMethods.Set("__entryMain", MetadataTokens.MethodDefinitionHandle(methodRow));
-
         // Store definitions for handler inlining (must be before EmitDefinition calls).
         foreach (IRDefinition def in module.Definitions)
-        {
             m_definitions = m_definitions.Set(def.Name, def);
-        }
 
         foreach (IRDefinition def in module.Definitions)
-        {
             EmitDefinition(def);
-        }
 
         EmitEntryPoint(module);
     }
@@ -777,11 +990,7 @@ sealed partial class ILAssemblyBuilder
     {
         ImmutableArray<int> typeVarIds = ImmutableArray<int>.Empty;
         m_definitionTypeVarIds.TryGet(def.Name, out typeVarIds);
-        if (typeVarIds.IsDefault)
-        {
-            typeVarIds = ImmutableArray<int>.Empty;
-        }
-
+        if (typeVarIds.IsDefault) typeVarIds = ImmutableArray<int>.Empty;
         m_currentTypeVarIds = typeVarIds;
         int genericArity = typeVarIds.Length;
 
@@ -797,9 +1006,7 @@ sealed partial class ILAssemblyBuilder
             parameters =>
             {
                 foreach (IRParameter param in def.Parameters)
-                {
                     EncodeType(parameters.AddParameter().Type(), param.Type);
-                }
             });
 
         bool isTco = HasSelfTailCall(def);
@@ -865,20 +1072,8 @@ sealed partial class ILAssemblyBuilder
 
     void EmitEntryPoint(IRChapter module)
     {
-        IRDefinition? mainDef = null;
-        foreach (IRDefinition d in module.Definitions)
-        {
-            if (d.Name == "main" && d.Parameters.Length == 0)
-            {
-                mainDef = d;
-                break;
-            }
-        }
-
-        if (mainDef is null)
-        {
-            return;
-        }
+        IRDefinition? mainDef = module.FindEntryPoint();
+        if (mainDef is null) return;
 
         ControlFlowBuilder entryControlFlow = new();
         InstructionEncoder il = new(new BlobBuilder(), entryControlFlow);
@@ -888,7 +1083,7 @@ sealed partial class ILAssemblyBuilder
         // so the call leaves the stack empty — just Ret. Otherwise we print.
         CodexType innerType = mainDef.Type is EffectfulType eff ? eff.Return : mainDef.Type;
 
-        il.Call(m_definedMethods["main"]!.Value);
+        il.Call(m_definedMethods[Names.OpeningEntryPoint]!.Value);
 
         switch (innerType)
         {
@@ -899,15 +1094,25 @@ sealed partial class ILAssemblyBuilder
                 il.Call(m_cceDecodeRef);
                 il.Call(m_writeLineStringRef);
                 break;
+            case IntegerType:
+            case CharType:
+                il.Call(m_writeLineInt64Ref);
+                break;
+            case NumberType:
+                il.Call(m_writeLineDoubleRef);
+                break;
+            case BooleanType:
+                il.Call(m_writeLineBoolRef);
+                break;
             default:
-                MemberReferenceHandle writeLine = innerType switch
-                {
-                    IntegerType or CharType => m_writeLineInt64Ref,
-                    NumberType => m_writeLineDoubleRef,
-                    BooleanType => m_writeLineBoolRef,
-                    _ => m_writeLineStringRef,
-                };
-                il.Call(writeLine);
+                // Reference types (SumType, RecordType, ConstructedType, ...)
+                // get printed via Object.ToString — beats reinterpreting the
+                // pointer as a string and corrupting memory inside
+                // WriteLine(string). Callvirt dispatches to the type's
+                // ToString override if one exists.
+                il.OpCode(ILOpCode.Callvirt);
+                il.Token(m_objectToStringRef);
+                il.Call(m_writeLineStringRef);
                 break;
         }
 
@@ -932,6 +1137,16 @@ sealed partial class ILAssemblyBuilder
 
     void EmitExpr(InstructionEncoder il, IRExpr expr, LocalsBuilder locals, ImmutableArray<IRParameter> parameters)
     {
+        if (m_emitDepth >= MaxEmitDepth)
+        {
+            m_emitFuelExhausted = true;
+            // Safe placeholder: load 0 so the verifier doesn't see a stack underflow.
+            il.LoadConstantI8(0);
+            return;
+        }
+        m_emitDepth++;
+        try
+        {
         switch (expr)
         {
             case IRTextLit t:
@@ -962,14 +1177,14 @@ sealed partial class ILAssemblyBuilder
             case IRName name:
                 int paramIndex = FindParameter(name.Name, parameters);
                 if (paramIndex >= 0)
-                {
-                    il.LoadArgument(paramIndex);
-                }
-                else if (locals.TryGetLocal(name.Name, out int localIndex))
-                {
-                    il.LoadLocal(localIndex);
-                }
-                else if (m_activeHandlerClauses.TryGet(name.Name, out IRHandleClause? zeroArgClause)
+                    {
+                        il.LoadArgument(paramIndex);
+                    }
+                    else if (locals.TryGetLocal(name.Name, out int localIndex))
+                    {
+                        il.LoadLocal(localIndex);
+                    }
+                    else if (m_activeHandlerClauses.TryGet(name.Name, out IRHandleClause? zeroArgClause)
                     && zeroArgClause.Parameters.Length == 0)
                 {
                     // Zero-arg effect operation (e.g. `ask`): inline the handler clause body.
@@ -986,10 +1201,43 @@ sealed partial class ILAssemblyBuilder
                     il.Token(ctorDef);
                 }
                 else if (m_definedMethods.TryGet(name.Name, out MethodDefinitionHandle methodRef))
-                {
-                    EmitCallToMethod(il, name.Name, methodRef, ImmutableArray<IRExpr>.Empty);
-                }
-                break;
+                    {
+                        // A bare IRName typed as a FunctionType is a method
+                        // reference used as a value (e.g. `emit = emit-one`).
+                        // Arity-1: bind as Func<T, TRet> with a null target.
+                        // Arity ≥ 2: use the pre-emitted closure0 which cascades
+                        // through closure{k} for each curry step.
+                        if (IsFunctionTypeExpr(name.Type)
+                            && m_definitions.TryGet(name.Name, out IRDefinition? methodDef)
+                            && methodDef.Parameters.Length == 1)
+                        {
+                            FunctionType fnType = (FunctionType)methodDef.Type;
+                            CodexType retT = UnwrapEffectful(fnType.Return);
+                            MemberReferenceHandle funcCtor = GetFuncCtorRef(
+                                ImmutableArray.Create(methodDef.Parameters[0].Type), retT);
+                            il.OpCode(ILOpCode.Ldnull);
+                            il.OpCode(ILOpCode.Ldftn);
+                            il.Token(methodRef);
+                            il.OpCode(ILOpCode.Newobj);
+                            il.Token(funcCtor);
+                        }
+                        else if (IsFunctionTypeExpr(name.Type)
+                            && m_closures.TryGetValue(new ClosureKey(name.Name, 0), out ClosureInfo c0))
+                        {
+                            il.OpCode(ILOpCode.Newobj);
+                            il.Token(c0.Ctor);
+                            il.OpCode(ILOpCode.Ldftn);
+                            il.Token(c0.Invoke);
+                            il.OpCode(ILOpCode.Newobj);
+                            il.Token(c0.FuncCtor);
+                        }
+                        else
+                        {
+                            EmitCallToMethod(il, name.Name, methodRef, ImmutableArray<IRExpr>.Empty);
+                        }
+                    }
+
+                    break;
 
             case IRBinary bin:
                 EmitBinary(il, bin, locals, parameters);
@@ -1019,10 +1267,6 @@ sealed partial class ILAssemblyBuilder
                 EmitFieldAccess(il, fa, locals, parameters);
                 break;
 
-            case IRRegion region:
-                EmitExpr(il, region.Body, locals, parameters);
-                break;
-
             case IRMatch match:
                 EmitMatch(il, match, locals, parameters);
                 break;
@@ -1033,19 +1277,13 @@ sealed partial class ILAssemblyBuilder
 
             case IRGetState:
                 if (locals.TryGetLocal("__state", out int getStateIdx))
-                {
                     il.LoadLocal(getStateIdx);
-                }
-
                 break;
 
             case IRSetState setState:
                 EmitExpr(il, setState.NewValue, locals, parameters);
                 if (locals.TryGetLocal("__state", out int setStateIdx))
-                {
                     il.StoreLocal(setStateIdx);
-                }
-
                 break;
 
             case IRRunState runState:
@@ -1055,6 +1293,22 @@ sealed partial class ILAssemblyBuilder
             case IRHandle handle:
                 EmitHandle(il, handle, locals, parameters);
                 break;
+
+            case IRError err:
+                il.LoadString(m_metadata.GetOrAddUserString(err.Message));
+                il.OpCode(ILOpCode.Newobj);
+                il.Token(m_invalidOpCtorRef);
+                il.OpCode(ILOpCode.Throw);
+                break;
+
+            default:
+                throw new InvalidOperationException(
+                    $"IL emit: unhandled IR expression kind {expr.GetType().Name}");
+        }
+        }
+        finally
+        {
+            m_emitDepth--;
         }
     }
 
@@ -1066,6 +1320,24 @@ sealed partial class ILAssemblyBuilder
             EmitExpr(il, bin.Left, locals, parameters);
             EmitExpr(il, bin.Right, locals, parameters);
             il.Call(m_stringConcatRef);
+            return;
+        }
+
+        if (bin.Op == IRBinaryOp.PowInt)
+        {
+            // (long)Math.Pow((double)L, (double)R)
+            EmitExpr(il, bin.Left, locals, parameters);
+            il.OpCode(ILOpCode.Conv_r8);
+            EmitExpr(il, bin.Right, locals, parameters);
+            il.OpCode(ILOpCode.Conv_r8);
+            il.Call(m_mathPowRef);
+            il.OpCode(ILOpCode.Conv_i8);
+            return;
+        }
+
+        if (bin.Op is IRBinaryOp.AppendList or IRBinaryOp.ConsList)
+        {
+            EmitListConcat(il, bin, locals, parameters);
             return;
         }
 
@@ -1088,14 +1360,9 @@ sealed partial class ILAssemblyBuilder
                 break;
             case IRBinaryOp.Eq:
                 if (IsTextLike(bin.Left.Type))
-                {
                     il.Call(m_stringEqualsRef);
-                }
                 else
-                {
                     il.OpCode(ILOpCode.Ceq);
-                }
-
                 break;
             case IRBinaryOp.NotEq:
                 if (IsTextLike(bin.Left.Type))
@@ -1133,6 +1400,9 @@ sealed partial class ILAssemblyBuilder
             case IRBinaryOp.Or:
                 il.OpCode(ILOpCode.Or);
                 break;
+            default:
+                throw new InvalidOperationException(
+                    $"IL emit: unhandled binary op {bin.Op}");
         }
     }
 
@@ -1196,9 +1466,7 @@ sealed partial class ILAssemblyBuilder
             }
 
             if (TryEmitBuiltin(il, funcName.Name, args, locals, parameters))
-            {
                 return;
-            }
 
             if (m_ctorDefs.TryGet(funcName.Name, out MethodDefinitionHandle ctorDef))
             {
@@ -1208,32 +1476,192 @@ sealed partial class ILAssemblyBuilder
                 {
                     EmitExpr(il, args[ai], locals, parameters);
                     if (fieldTypes is not null && ai < fieldTypes.Count)
-                    {
                         EmitBoxIfNeeded(il, args[ai].Type, fieldTypes[ai].Type);
-                    }
                 }
                 il.OpCode(ILOpCode.Newobj);
                 il.Token(ctorDef);
                 return;
             }
 
+            // Local or parameter of function type → invoke via Func<>.Invoke per arg.
+            if ((FindParameter(funcName.Name, parameters) >= 0
+                 || locals.TryGetLocal(funcName.Name, out _))
+                && IsFunctionTypeExpr(funcName.Type))
+            {
+                EmitExpr(il, funcName, locals, parameters);
+                EmitInvokeFuncChain(il, funcName.Type, args, locals, parameters);
+                return;
+            }
+
             if (m_definedMethods.TryGet(funcName.Name, out MethodDefinitionHandle methodDef))
             {
-                foreach (IRExpr arg in args)
+                int arity = m_definitions.TryGet(funcName.Name, out IRDefinition? defInfo)
+                    ? defInfo.Parameters.Length : args.Count;
+
+                if (args.Count < arity && args.Count > 0
+                    && m_closures.TryGetValue(new ClosureKey(funcName.Name, args.Count), out ClosureInfo info))
                 {
-                    EmitExpr(il, arg, locals, parameters);
+                    // Partial application: build closure, wrap in Func<>.
+                    for (int ai = 0; ai < args.Count; ai++)
+                    {
+                        EmitExpr(il, args[ai], locals, parameters);
+                        EmitBoxIfNeeded(il, args[ai].Type, info.CapturedTypes[ai]);
+                    }
+                    il.OpCode(ILOpCode.Newobj);
+                    il.Token(info.Ctor);
+                    il.OpCode(ILOpCode.Ldftn);
+                    il.Token(info.Invoke);
+                    il.OpCode(ILOpCode.Newobj);
+                    il.Token(info.FuncCtor);
+                    return;
                 }
-                ImmutableArray<IRExpr> argArray = args.ToImmutableArray();
-                EmitCallToMethod(il, funcName.Name, methodDef, argArray);
+
+                // args.Count == arity (direct call) or args.Count > arity (over-apply).
+                int directArgs = Math.Min(args.Count, arity);
+                for (int ai = 0; ai < directArgs; ai++)
+                {
+                    EmitExpr(il, args[ai], locals, parameters);
+                    if (defInfo is not null && ai < defInfo.Parameters.Length)
+                    {
+                        EmitAdapterWrapIfNeeded(il, args[ai].Type, defInfo.Parameters[ai].Type);
+                        EmitBoxIfNeeded(il, args[ai].Type, defInfo.Parameters[ai].Type);
+                    }
+                }
+                EmitCallToMethod(il, funcName.Name, methodDef,
+                    args.Take(directArgs).ToImmutableArray());
+
+                // A generic method's return erases to `object`. If the caller
+                // site's concrete return is a value type, unbox_any to its IL
+                // form so downstream ldloca/ToString see the right stack type.
+                if (defInfo is not null && args.Count == arity)
+                {
+                    CodexType declaredRet = defInfo.Type;
+                    for (int i = 0; i < arity; i++)
+                    {
+                        if (declaredRet is FunctionType ft) declaredRet = ft.Return;
+                        else break;
+                    }
+                    EmitUnboxIfNeeded(il, UnwrapEffectful(declaredRet), UnwrapEffectful(apply.Type));
+                }
+
+                if (args.Count > arity)
+                {
+                    // Method returned a Func<>; invoke once per remaining arg.
+                    // Starting type is the method's return (peeled of all arity args).
+                    CodexType startType = defInfo?.Type ?? funcName.Type;
+                    for (int i = 0; i < arity; i++)
+                    {
+                        if (startType is FunctionType ftt) startType = ftt.Return;
+                        else break;
+                    }
+                    startType = UnwrapEffectful(startType);
+                    List<IRExpr> rest = args.Skip(arity).ToList();
+                    EmitInvokeFuncChain(il, startType, rest, locals, parameters);
+                }
+                return;
             }
         }
+        else
+        {
+            // func is not IRName — e.g. IRFieldAccess on a record field typed as a function.
+            EmitExpr(il, func, locals, parameters);
+            EmitInvokeFuncChain(il, func.Type, args, locals, parameters);
+        }
     }
+
+    // Consume args one at a time. `stackType` is the type of the function
+    // value currently on the stack. For each arg, emit Func<Arg, Rest>.Invoke(arg),
+    // then peel one level off stackType so the next iteration builds the right
+    // MemberRef.
+    void EmitInvokeFuncChain(InstructionEncoder il, CodexType stackType, List<IRExpr> args,
+        LocalsBuilder locals, ImmutableArray<IRParameter> parameters)
+    {
+        CodexType cur = UnwrapEffectful(stackType);
+        foreach (IRExpr arg in args)
+        {
+            if (cur is not FunctionType ft)
+            {
+                throw new InvalidOperationException(
+                    $"IL emit: expected FunctionType for Invoke chain, got {cur.GetType().Name}");
+            }
+            EmitExpr(il, arg, locals, parameters);
+            CodexType retType = UnwrapEffectful(ft.Return);
+            MemberReferenceHandle invokeRef = GetFuncInvokeRef(
+                ImmutableArray.Create(ft.Parameter), retType);
+            il.OpCode(ILOpCode.Callvirt);
+            il.Token(invokeRef);
+            cur = retType;
+        }
+    }
+
+    static bool IsFunctionTypeExpr(CodexType t) =>
+        t is FunctionType
+        || (t is EffectfulType eff && eff.Return is FunctionType);
 
     bool TryEmitBuiltin(InstructionEncoder il, string name, List<IRExpr> args,
         LocalsBuilder locals, ImmutableArray<IRParameter> parameters)
     {
         return TryEmitBuiltinCore(il, name, args, locals,
             expr => EmitExpr(il, expr, locals, parameters));
+    }
+
+    // write-binary: consume a List<long> and write each element as a byte to stdout.
+    // Produces no value — callers under act ignore the result; let-bindings to
+    // write-binary are barred by the effect system (Nothing return).
+    //
+    // Stream stays on the IL stack across the loop (via dup) so we don't need
+    // a local of System.IO.Stream type — LocalsBuilder takes CodexType and
+    // there's no clean way to encode an arbitrary CLR type as a local sig.
+    // Index is int32 to match List.Count / List.get_Item / List.WriteByte.
+    void EmitWriteBinary(InstructionEncoder il, IRExpr listArg, LocalsBuilder locals,
+        Action<IRExpr> emitSub)
+    {
+        ListInstantiation inst = GetOrCreateListInstantiation(IntegerType.s_instance);
+        int listLocal = locals.AddLocal("__wb_list", listArg.Type);
+        int idxLocal = locals.AddLocal("__wb_i", IntegerType.s_instance);
+
+        emitSub(listArg);
+        il.StoreLocal(listLocal);
+
+        il.Call(m_consoleOpenStdoutRef);
+        // Stack: stream
+
+        il.LoadConstantI8(0);
+        il.StoreLocal(idxLocal);
+
+        LabelHandle loopStart = il.DefineLabel();
+        LabelHandle loopEnd = il.DefineLabel();
+
+        il.MarkLabel(loopStart);
+        // Stack: stream
+        il.LoadLocal(idxLocal);
+        il.LoadLocal(listLocal);
+        il.OpCode(ILOpCode.Callvirt);
+        il.Token(inst.GetCount);
+        il.OpCode(ILOpCode.Conv_i8); // count i32 → i64 to match idx
+        il.Branch(ILOpCode.Bge, loopEnd);
+
+        // Stack: stream — dup so WriteByte consumes one copy and we keep the other.
+        il.OpCode(ILOpCode.Dup);
+        il.LoadLocal(listLocal);
+        il.LoadLocal(idxLocal);
+        il.OpCode(ILOpCode.Conv_i4); // idx i64 → i32 for get_Item
+        il.OpCode(ILOpCode.Callvirt);
+        il.Token(inst.GetItem);
+        il.OpCode(ILOpCode.Conv_u1); // element i64 → byte
+        il.OpCode(ILOpCode.Callvirt);
+        il.Token(m_streamWriteByteRef);
+
+        il.LoadLocal(idxLocal);
+        il.LoadConstantI8(1);
+        il.OpCode(ILOpCode.Add);
+        il.StoreLocal(idxLocal);
+        il.Branch(ILOpCode.Br, loopStart);
+
+        il.MarkLabel(loopEnd);
+        // Stack: stream — Flush consumes it.
+        il.OpCode(ILOpCode.Callvirt);
+        il.Token(m_streamFlushRef);
     }
 
     bool TryEmitBuiltinCore(InstructionEncoder il, string name, List<IRExpr> args,
@@ -1382,10 +1810,21 @@ sealed partial class ILAssemblyBuilder
                 return true;
 
             case "read-line" when args.Count == 0:
-                // Console.ReadLine() returns Unicode; encode to CCE.
+            {
+                // Console.ReadLine() returns Unicode; encode to CCE. On stdin
+                // EOF it returns null, which would NullRef inside CceEncode —
+                // coalesce to "" so the Codex-level contract is "empty line
+                // on EOF" (matching CS/JVM behaviour).
+                LabelHandle notNull = il.DefineLabel();
                 il.Call(m_consoleReadLineRef);
+                il.OpCode(ILOpCode.Dup);
+                il.Branch(ILOpCode.Brtrue, notNull);
+                il.OpCode(ILOpCode.Pop);
+                il.LoadString(m_metadata.GetOrAddUserString(""));
+                il.MarkLabel(notNull);
                 il.Call(m_cceEncodeRef);
                 return true;
+            }
 
             // ── List<T> builtins ─────────────────────────────────
             case "get-args" when args.Count == 0:
@@ -1409,7 +1848,7 @@ sealed partial class ILAssemblyBuilder
                 return true;
             }
 
-            case "list-length" when args.Count == 1:
+            case "list-length" when args.Count == 1 && args[0].Type is ListType:
             {
                 // (long)list.Count — works for any List<T>
                 CodexType elemType = ExtractListElementType(args, 0);
@@ -1421,7 +1860,7 @@ sealed partial class ILAssemblyBuilder
                 return true;
             }
 
-            case "list-at" when args.Count == 2:
+            case "list-at" when args.Count == 2 && args[0].Type is ListType:
             {
                 // list[(int)index] — returns element of the actual type
                 CodexType elemType = ExtractListElementType(args, 0);
@@ -1504,6 +1943,89 @@ sealed partial class ILAssemblyBuilder
                 }
                 return true;
 
+            case "run-process-full" when args.Count == 2:
+            {
+                // Same Process.Start setup as run-process, but also redirect
+                // stderr and read both streams before WaitForExit, then
+                // materialise a ProcessResult(stdout-cce, stderr-cce, exit-code).
+                // Read-before-wait avoids pipe-buffer deadlock for large output.
+                emitSub(args[0]);
+                il.Call(m_cceDecodeRef);
+                emitSub(args[1]);
+                il.Call(m_cceDecodeRef);
+                il.OpCode(ILOpCode.Newobj);
+                il.Token(m_psiCtorRef);
+
+                // psi.RedirectStandardOutput = true;
+                il.OpCode(ILOpCode.Dup);
+                il.LoadConstantI4(1);
+                il.OpCode(ILOpCode.Callvirt);
+                il.Token(m_psiSetRedirectRef);
+
+                // psi.RedirectStandardError = true;
+                il.OpCode(ILOpCode.Dup);
+                il.LoadConstantI4(1);
+                il.OpCode(ILOpCode.Callvirt);
+                il.Token(m_psiSetRedirectErrorRef);
+
+                // psi.UseShellExecute = false;
+                il.OpCode(ILOpCode.Dup);
+                il.LoadConstantI4(0);
+                il.OpCode(ILOpCode.Callvirt);
+                il.Token(m_psiSetShellRef);
+
+                // var proc = Process.Start(psi);
+                il.Call(m_processStartRef);
+
+                // Read stdout: dup proc, getStdOut, ReadToEnd, CceEncode, stash.
+                il.OpCode(ILOpCode.Dup);
+                il.OpCode(ILOpCode.Callvirt);
+                il.Token(m_processGetStdOutRef);
+                il.OpCode(ILOpCode.Callvirt);
+                il.Token(m_streamReaderReadToEndRef);
+                il.Call(m_cceEncodeRef);
+                int tmpStdout = locals.AddLocal("__proc_full_stdout", TextType.s_instance);
+                il.StoreLocal(tmpStdout);
+
+                // Read stderr: dup proc, getStdErr, ReadToEnd, CceEncode, stash.
+                il.OpCode(ILOpCode.Dup);
+                il.OpCode(ILOpCode.Callvirt);
+                il.Token(m_processGetStdErrRef);
+                il.OpCode(ILOpCode.Callvirt);
+                il.Token(m_streamReaderReadToEndRef);
+                il.Call(m_cceEncodeRef);
+                int tmpStderr = locals.AddLocal("__proc_full_stderr", TextType.s_instance);
+                il.StoreLocal(tmpStderr);
+
+                // WaitForExit + ExitCode. Dup keeps a proc for get_ExitCode
+                // since callvirt WaitForExit pops the receiver.
+                il.OpCode(ILOpCode.Dup);
+                il.OpCode(ILOpCode.Callvirt);
+                il.Token(m_processWaitForExitRef);
+                il.OpCode(ILOpCode.Callvirt);
+                il.Token(m_processGetExitCodeRef);
+                il.OpCode(ILOpCode.Conv_i8);
+                int tmpExitCode = locals.AddLocal("__proc_full_exit", IntegerType.s_instance);
+                il.StoreLocal(tmpExitCode);
+
+                // new ProcessResult(stdout, stderr, exit-code). The ctor handle
+                // is registered when the cited Process chapter's ProcessResult
+                // type def is emitted via EmitRecordTypeDef (happens before
+                // any method body emission).
+                if (!m_ctorDefs.TryGet("ProcessResult", out MethodDefinitionHandle prCtor))
+                {
+                    throw new InvalidOperationException(
+                        "run-process-full: ProcessResult ctor not emitted; " +
+                        "caller must `cites Codex chapter Process`.");
+                }
+                il.LoadLocal(tmpStdout);
+                il.LoadLocal(tmpStderr);
+                il.LoadLocal(tmpExitCode);
+                il.OpCode(ILOpCode.Newobj);
+                il.Token(prCtor);
+                return true;
+            }
+
             // ── Additional text builtins ─────────────────────────
             case "text-contains" when args.Count == 2:
                 // text.Contains(substring, StringComparison.Ordinal) : bool
@@ -1552,6 +2074,88 @@ sealed partial class ILAssemblyBuilder
                 il.Call(m_cceEncodeRef);
                 return true;
 
+            // ── Heap-tracking builtins (no-ops on managed runtime) ──
+            // Bare-metal tracks heap positions for phase-boundary measurement
+            // and TCO reset; .NET doesn't have a manual heap, so these are
+            // no-ops here. Without these entries the 0-arg lookup falls
+            // through to ctor/method-ref checks, leaves the stack imbalanced,
+            // and the JIT throws InvalidProgramException at runtime when the
+            // method is first invoked.
+            case "__heap-save" when args.Count == 0:
+                il.LoadConstantI8(0);
+                return true;
+
+            case "__heap-restore" when args.Count == 1:
+            case "__heap-advance" when args.Count == 1:
+                emitSub(args[0]);
+                il.OpCode(ILOpCode.Pop);
+                return true;
+
+            // ── List capacity / record-set helpers ─────────────────
+            // ListWithCapacity: bare-metal pre-reserves heap slots; .NET's
+            // List<T> auto-grows so capacity is just an optimization. Pop
+            // the capacity arg, emit a no-arg List<T>(). Element type
+            // recovered from the call's IRApply.Type at the caller site;
+            // here we fall back to List<long> which matches every current
+            // selfhost use site (string-table buffers, slot maps).
+            case "__list-with-capacity" when args.Count == 1:
+            {
+                ListInstantiation lwcInst = GetOrCreateListInstantiation(IntegerType.s_instance);
+                emitSub(args[0]);
+                il.OpCode(ILOpCode.Pop);
+                il.OpCode(ILOpCode.Newobj);
+                il.Token(lwcInst.CtorNoArg);
+                return true;
+            }
+
+            // RecordSet: `__record-set rec "field" value` returns a copy of
+            // rec with the named field replaced. Inline-emit a re-construction:
+            // store rec in a temp, then newobj with all fields, drawing each
+            // from the temp except the named one which uses `value`.
+            case "__record-set" when args.Count == 3:
+            {
+                if (args[1] is IRTextLit fieldLit)
+                {
+                    RecordType? rt = args[0].Type as RecordType;
+                    if (rt is not null)
+                    {
+                        string typeName = SanitizeName(rt.TypeName.Value);
+                        if (m_ctorDefs.TryGet(typeName, out MethodDefinitionHandle ctorDef))
+                        {
+                            List<(string Name, CodexType Type)>? fieldTypes = m_typeFields[typeName];
+                            if (fieldTypes is not null)
+                            {
+                                emitSub(args[0]);
+                                int recLocal = locals.AddLocal($"__rs_{typeName}", rt);
+                                il.StoreLocal(recLocal);
+                                for (int i = 0; i < fieldTypes.Count; i++)
+                                {
+                                    if (fieldTypes[i].Name == fieldLit.Value)
+                                    {
+                                        emitSub(args[2]);
+                                        EmitBoxIfNeeded(il, args[2].Type, fieldTypes[i].Type);
+                                    }
+                                    else
+                                    {
+                                        il.LoadLocal(recLocal);
+                                        string fieldKey = $"{typeName}.{fieldTypes[i].Name}";
+                                        if (m_fieldDefs.TryGet(fieldKey, out FieldDefinitionHandle fh))
+                                        {
+                                            il.OpCode(ILOpCode.Ldfld);
+                                            il.Token(fh);
+                                        }
+                                    }
+                                }
+                                il.OpCode(ILOpCode.Newobj);
+                                il.Token(ctorDef);
+                                return true;
+                            }
+                        }
+                    }
+                }
+                return false;
+            }
+
             case "list-files" when args.Count == 2:
             {
                 // CceTable.EncodeList(Directory.GetFiles(Decode(path), Decode(pattern)))
@@ -1563,6 +2167,159 @@ sealed partial class ILAssemblyBuilder
                 il.Call(m_cceEncodeListRef);
                 return true;
             }
+
+            case "bit-and" when args.Count == 2:
+                emitSub(args[0]); emitSub(args[1]);
+                il.OpCode(ILOpCode.And);
+                return true;
+
+            case "bit-or" when args.Count == 2:
+                emitSub(args[0]); emitSub(args[1]);
+                il.OpCode(ILOpCode.Or);
+                return true;
+
+            case "bit-xor" when args.Count == 2:
+                emitSub(args[0]); emitSub(args[1]);
+                il.OpCode(ILOpCode.Xor);
+                return true;
+
+            case "bit-shl" when args.Count == 2:
+                emitSub(args[0]);
+                emitSub(args[1]);
+                il.OpCode(ILOpCode.Conv_i4); // shift count is int32 on IL stack
+                il.OpCode(ILOpCode.Shl);
+                return true;
+
+            case "bit-shr" when args.Count == 2:
+                emitSub(args[0]);
+                emitSub(args[1]);
+                il.OpCode(ILOpCode.Conv_i4);
+                il.OpCode(ILOpCode.Shr);
+                return true;
+
+            case "bit-not" when args.Count == 1:
+                emitSub(args[0]);
+                il.OpCode(ILOpCode.Not);
+                return true;
+
+            case "abs" when args.Count == 1:
+                emitSub(args[0]);
+                il.Call(m_mathAbsInt64Ref);
+                return true;
+
+            case "min" when args.Count == 2:
+                emitSub(args[0]); emitSub(args[1]);
+                il.Call(m_mathMinInt64Ref);
+                return true;
+
+            case "max" when args.Count == 2:
+                emitSub(args[0]); emitSub(args[1]);
+                il.Call(m_mathMaxInt64Ref);
+                return true;
+
+            case "int-mod" when args.Count == 2:
+            {
+                // Euclidean modulo: result in [0, |b|) for any nonzero b.
+                // Store a, b to locals; compute |b|; r = a % |b|; if r < 0 then r += |b|.
+                int aLocal = locals.AddLocal("__mod_a", IntegerType.s_instance);
+                int bAbsLocal = locals.AddLocal("__mod_babs", IntegerType.s_instance);
+                int rLocal = locals.AddLocal("__mod_r", IntegerType.s_instance);
+
+                emitSub(args[0]);
+                il.StoreLocal(aLocal);
+
+                emitSub(args[1]);
+                il.OpCode(ILOpCode.Dup);
+                il.LoadConstantI8(0);
+                LabelHandle nonNeg = il.DefineLabel();
+                il.Branch(ILOpCode.Bge, nonNeg);
+                il.OpCode(ILOpCode.Neg);
+                il.MarkLabel(nonNeg);
+                il.StoreLocal(bAbsLocal);
+
+                il.LoadLocal(aLocal);
+                il.LoadLocal(bAbsLocal);
+                il.OpCode(ILOpCode.Rem);
+                il.OpCode(ILOpCode.Dup);
+                il.StoreLocal(rLocal);
+
+                il.LoadConstantI8(0);
+                LabelHandle done = il.DefineLabel();
+                il.Branch(ILOpCode.Bge, done);
+                il.LoadLocal(rLocal);
+                il.LoadLocal(bAbsLocal);
+                il.OpCode(ILOpCode.Add);
+                LabelHandle end = il.DefineLabel();
+                il.Branch(ILOpCode.Br, end);
+                il.MarkLabel(done);
+                il.LoadLocal(rLocal);
+                il.MarkLabel(end);
+                return true;
+            }
+
+            case "text-compare" when args.Count == 2:
+                emitSub(args[0]);
+                il.Call(m_cceDecodeRef);
+                emitSub(args[1]);
+                il.Call(m_cceDecodeRef);
+                il.Call(m_stringCompareOrdinalRef);
+                il.OpCode(ILOpCode.Conv_i8);
+                return true;
+
+            case "text-concat-list" when args.Count == 1:
+                emitSub(args[0]);
+                il.Call(m_stringConcatEnumRef);
+                return true;
+
+            case "list-snoc" when args.Count == 2:
+            {
+                // In-place List<T>.Add, returns same list.
+                CodexType elemType = ExtractListElementType(args, 0);
+                ListInstantiation inst = GetOrCreateListInstantiation(elemType);
+                emitSub(args[0]);
+                il.OpCode(ILOpCode.Dup);
+                emitSub(args[1]);
+                EmitBoxForListElement(il, args[1].Type, elemType);
+                il.OpCode(ILOpCode.Callvirt);
+                il.Token(inst.Add);
+                return true;
+            }
+
+            case "list-insert-at" when args.Count == 3:
+            {
+                // In-place List<T>.Insert(idx, item), returns same list.
+                CodexType elemType = ExtractListElementType(args, 0);
+                ListInstantiation inst = GetOrCreateListInstantiation(elemType);
+                emitSub(args[0]);
+                il.OpCode(ILOpCode.Dup);
+                emitSub(args[1]);
+                il.OpCode(ILOpCode.Conv_i4);
+                emitSub(args[2]);
+                EmitBoxForListElement(il, args[2].Type, elemType);
+                il.OpCode(ILOpCode.Callvirt);
+                il.Token(inst.Insert);
+                return true;
+            }
+
+            case "list-set-at" when args.Count == 3:
+            {
+                // In-place List<T>[idx] = val, returns same list.
+                CodexType elemType = ExtractListElementType(args, 0);
+                ListInstantiation inst = GetOrCreateListInstantiation(elemType);
+                emitSub(args[0]);
+                il.OpCode(ILOpCode.Dup);
+                emitSub(args[1]);
+                il.OpCode(ILOpCode.Conv_i4);
+                emitSub(args[2]);
+                EmitBoxForListElement(il, args[2].Type, elemType);
+                il.OpCode(ILOpCode.Callvirt);
+                il.Token(inst.SetItem);
+                return true;
+            }
+
+            case "write-binary" when args.Count == 1:
+                EmitWriteBinary(il, args[0], locals, emitSub);
+                return true;
 
             default:
                 return false;
@@ -1621,10 +2378,13 @@ sealed partial class ILAssemblyBuilder
 
     void EmitCharToString(InstructionEncoder il, LocalsBuilder locals)
     {
-        // Box the char value and call Object.ToString()
+        // Box the char value and callvirt Object.ToString() so the runtime
+        // dispatches to Char::ToString (1-char string). A non-virtual Call
+        // to Object::ToString returns the type name "System.Char".
         il.OpCode(ILOpCode.Box);
         il.Token(m_charRef);
-        il.Call(m_objectToStringRef);
+        il.OpCode(ILOpCode.Callvirt);
+        il.Token(m_objectToStringRef);
     }
 
     void EmitCallToMethod(InstructionEncoder il, string name,
@@ -1642,9 +2402,7 @@ sealed partial class ILAssemblyBuilder
         BlobEncoder specEncoder = new(specSig);
         GenericTypeArgumentsEncoder genSig = specEncoder.MethodSpecificationSignature(genericArity);
         for (int i = 0; i < genericArity; i++)
-        {
             genSig.AddArgument().Object();
-        }
 
         MethodSpecificationHandle methodSpec = m_metadata.AddMethodSpecification(
             methodDef,
@@ -1674,9 +2432,7 @@ sealed partial class ILAssemblyBuilder
                     EmitExpr(il, exec.Expression, locals, parameters);
                     bool isLast = i == actExpr.Statements.Length - 1;
                     if (!isLast && !IsVoidLike(exec.Expression.Type))
-                    {
                         il.OpCode(ILOpCode.Pop);
-                    }
                     break;
             }
         }
@@ -1714,9 +2470,7 @@ sealed partial class ILAssemblyBuilder
                         EmitExpr(il, exec.Expression, locals, parameters);
                         bool isLast = i == actExpr.Statements.Length - 1;
                         if (!isLast && !IsVoidLike(exec.Expression.Type))
-                        {
                             il.OpCode(ILOpCode.Pop);
-                        }
                         break;
                 }
             }
@@ -1734,9 +2488,7 @@ sealed partial class ILAssemblyBuilder
         // Build a map from operation name to handler clause.
         Map<string, IRHandleClause> clauseMap = Map<string, IRHandleClause>.s_empty;
         foreach (IRHandleClause clause in handle.Clauses)
-        {
             clauseMap = clauseMap.Set(clause.OperationName, clause);
-        }
 
         // Save and install the handler context so that EmitExpr intercepts
         // effect operation calls and resume invocations within the computation.
@@ -1842,6 +2594,7 @@ sealed partial class ILAssemblyBuilder
                 {
                     encoder.Object();
                 }
+
                 break;
             case ForAllType fa:
                 EncodeType(encoder, fa.Body);
@@ -1862,13 +2615,9 @@ sealed partial class ILAssemblyBuilder
     void EncodeUserType(SignatureTypeEncoder encoder, string typeName)
     {
         if (m_emittedTypes.TryGet(typeName, out TypeDefinitionHandle handle))
-        {
             encoder.Type(handle, false);
-        }
         else
-        {
             encoder.Object();
-        }
     }
 
     BlobHandle EncodeMethodSignature(
@@ -1896,12 +2645,7 @@ sealed partial class ILAssemblyBuilder
     static int FindParameter(string name, ImmutableArray<IRParameter> parameters)
     {
         for (int i = 0; i < parameters.Length; i++)
-        {
-            if (parameters[i].Name == name)
-            {
-                return i;
-            }
-        }
+            if (parameters[i].Name == name) return i;
         return -1;
     }
 
@@ -1913,13 +2657,46 @@ sealed partial class ILAssemblyBuilder
     static bool IsTextLike(CodexType type) => type is TextType
         or EffectfulType { Return: TextType };
 
+    // At a call site where the expected param is a (partially) generic
+    // FunctionType slot and the actual arg is a concrete Func<...>, wrap the
+    // concrete delegate in its (possibly chained) erasure adapter so callvirt
+    // inside the callee dispatches correctly at every curry step.
+    void EmitAdapterWrapIfNeeded(InstructionEncoder il, CodexType actualType, CodexType expectedType)
+    {
+        CodexType actual = actualType is EffectfulType ea ? ea.Return : actualType;
+        CodexType expected = expectedType is EffectfulType ee ? ee.Return : expectedType;
+        if (actual is not FunctionType af || expected is not FunctionType ef) return;
+        if (!ContainsTypeVariable(ef)) return;
+        if (ILFuncEncoding(af) == ILFuncEncoding(ef)) return;
+
+        CodexType innerIn = af.Parameter;
+        // For cascade, the logical innerOut is the concrete next Func; for
+        // the leaf it's the final return. Both cases just use af.Return —
+        // FuncTypeKey encodes FunctionType uniquely.
+        CodexType innerOut = UnwrapEffectful(af.Return);
+        CodexType expectOut = UnwrapEffectful(ef.Return);
+        CodexType? outerIn = ContainsTypeVariable(ef.Parameter) ? null : ef.Parameter;
+        CodexType? outerOut = ContainsTypeVariable(expectOut) ? null : expectOut;
+
+        AdapterKey key = new(
+            FuncTypeKey(innerIn),
+            FuncTypeKey(innerOut),
+            outerIn is null ? "object" : FuncTypeKey(outerIn),
+            outerOut is null ? "object" : FuncTypeKey(outerOut));
+        if (!m_adapters.TryGetValue(key, out AdapterInfo info)) return;
+
+        il.OpCode(ILOpCode.Newobj);
+        il.Token(info.Ctor);
+        il.OpCode(ILOpCode.Ldftn);
+        il.Token(info.Invoke);
+        il.OpCode(ILOpCode.Newobj);
+        il.Token(info.OuterFuncCtor);
+    }
+
     void EmitBoxIfNeeded(InstructionEncoder il, CodexType actualType, CodexType expectedType)
     {
         if (expectedType is not (TypeVariable or ForAllType))
-        {
             return;
-        }
-
         TypeReferenceHandle? boxTarget = actualType switch
         {
             IntegerType or CharType => m_int64Ref,
@@ -1937,10 +2714,7 @@ sealed partial class ILAssemblyBuilder
     void EmitUnboxIfNeeded(InstructionEncoder il, CodexType storedType, CodexType targetType)
     {
         if (storedType is not (TypeVariable or ForAllType))
-        {
             return;
-        }
-
         TypeReferenceHandle? unboxTarget = targetType switch
         {
             IntegerType or CharType => m_int64Ref,
@@ -1977,26 +2751,16 @@ sealed partial class ILAssemblyBuilder
         CodexType current = fullType;
         // Unwrap ForAllType wrappers
         while (current is ForAllType fa)
-        {
             current = fa.Body;
-        }
-
         for (int i = 0; i < parameterCount; i++)
         {
             if (current is FunctionType ft)
-            {
                 current = ft.Return;
-            }
             else
-            {
                 break;
-            }
         }
         if (current is EffectfulType eft)
-        {
             current = eft.Return;
-        }
-
         return current;
     }
 
@@ -2028,10 +2792,7 @@ sealed partial class ILAssemblyBuilder
                 break;
             case ConstructedType ct:
                 foreach (CodexType arg in ct.Arguments)
-                {
                     CollectTypeVarIdsInto(arg, ids);
-                }
-
                 break;
         }
     }
@@ -2041,36 +2802,8 @@ sealed partial class ILAssemblyBuilder
     static bool HasSelfTailCall(IRDefinition def)
     {
         if (def.Parameters.Length == 0)
-        {
             return false;
-        }
-
-        return ExprHasTailCall(def.Body, def.Name);
-    }
-
-    static bool ExprHasTailCall(IRExpr expr, string funcName)
-    {
-        return expr switch
-        {
-            IRIf iff => ExprHasTailCall(iff.Then, funcName)
-                     || ExprHasTailCall(iff.Else, funcName),
-            IRLet let => ExprHasTailCall(let.Body, funcName),
-            IRMatch match => match.Branches.Any(b => ExprHasTailCall(b.Body, funcName)),
-            IRApply app => IsSelfCall(app, funcName),
-            IRRegion region => ExprHasTailCall(region.Body, funcName),
-            _ => false
-        };
-    }
-
-    static bool IsSelfCall(IRApply app, string funcName)
-    {
-        IRExpr root = app.Function;
-        while (root is IRApply inner)
-        {
-            root = inner.Function;
-        }
-
-        return root is IRName name && name.Name == funcName;
+        return def.Body.HasTailCall(def.Name);
     }
 
     void EmitTailCallBody(InstructionEncoder il, IRDefinition def, LocalsBuilder locals)
@@ -2122,17 +2855,13 @@ sealed partial class ILAssemblyBuilder
                 break;
             }
 
-            case IRRegion region:
-                EmitTailCallExpr(il, region.Body, funcName, parameters, paramLocals, locals, loopStart);
-                break;
-
             case IRMatch match:
             {
                 EmitTcoMatch(il, match, funcName, parameters, paramLocals, locals, loopStart);
                 break;
             }
 
-            case IRApply app when IsSelfCall(app, funcName):
+            case IRApply app when app.IsSelfCall(funcName):
             {
                 List<IRExpr> args = new();
                 IRExpr func = app;
@@ -2181,7 +2910,7 @@ sealed partial class ILAssemblyBuilder
         int resultLocal = locals.AddLocal("__tco_match_result", match.Type);
 
         LabelHandle endLabel = il.DefineLabel();
-        bool anyBranchIsTailCall = match.Branches.Any(b => ExprHasTailCall(b.Body, funcName));
+        bool anyBranchIsTailCall = match.Branches.Any(b => b.Body.HasTailCall(funcName));
 
         for (int i = 0; i < match.Branches.Length; i++)
         {
@@ -2191,7 +2920,7 @@ sealed partial class ILAssemblyBuilder
             switch (branch.Pattern)
             {
                 case IRWildcardPattern:
-                    if (ExprHasTailCall(branch.Body, funcName))
+                    if (branch.Body.HasTailCall(funcName))
                     {
                         EmitTailCallExpr(il, branch.Body, funcName, parameters, paramLocals, locals, loopStart);
                     }
@@ -2200,9 +2929,7 @@ sealed partial class ILAssemblyBuilder
                         EmitTcoExpr(il, branch.Body, locals, parameters, paramLocals);
                         il.StoreLocal(resultLocal);
                         if (!isLast)
-                        {
                             il.Branch(ILOpCode.Br, endLabel);
-                        }
                     }
                     break;
 
@@ -2210,7 +2937,7 @@ sealed partial class ILAssemblyBuilder
                     il.LoadLocal(scrutineeLocal);
                     int varLocal = locals.AddLocal(varPat.Name, varPat.Type);
                     il.StoreLocal(varLocal);
-                    if (ExprHasTailCall(branch.Body, funcName))
+                    if (branch.Body.HasTailCall(funcName))
                     {
                         EmitTailCallExpr(il, branch.Body, funcName, parameters, paramLocals, locals, loopStart);
                     }
@@ -2218,10 +2945,7 @@ sealed partial class ILAssemblyBuilder
                     {
                         EmitTcoExpr(il, branch.Body, locals, parameters, paramLocals);
                         il.StoreLocal(resultLocal);
-                        if (!isLast)
-                        {
-                            il.Branch(ILOpCode.Br, endLabel);
-                        }
+                        if (!isLast) il.Branch(ILOpCode.Br, endLabel);
                     }
                     break;
 
@@ -2247,11 +2971,11 @@ sealed partial class ILAssemblyBuilder
                     il.OpCode(ILOpCode.Ceq);
                     il.Branch(ILOpCode.Brfalse, nextLabel);
 
-                    if (ExprHasTailCall(branch.Body, funcName))
-                    {
-                        EmitTailCallExpr(il, branch.Body, funcName, parameters, paramLocals, locals, loopStart);
-                    }
-                    else
+                    if (branch.Body.HasTailCall(funcName))
+                        {
+                            EmitTailCallExpr(il, branch.Body, funcName, parameters, paramLocals, locals, loopStart);
+                        }
+                        else
                     {
                         EmitTcoExpr(il, branch.Body, locals, parameters, paramLocals);
                         il.StoreLocal(resultLocal);
@@ -2284,11 +3008,11 @@ sealed partial class ILAssemblyBuilder
 
                     BindCtorSubPatterns(il, ctorPat, ctorName, castLocal, locals, parameters);
 
-                    if (ExprHasTailCall(branch.Body, funcName))
-                    {
-                        EmitTailCallExpr(il, branch.Body, funcName, parameters, paramLocals, locals, loopStart);
-                    }
-                    else
+                    if (branch.Body.HasTailCall(funcName))
+                        {
+                            EmitTailCallExpr(il, branch.Body, funcName, parameters, paramLocals, locals, loopStart);
+                        }
+                        else
                     {
                         EmitTcoExpr(il, branch.Body, locals, parameters, paramLocals);
                         il.StoreLocal(resultLocal);
@@ -2358,14 +3082,14 @@ sealed partial class ILAssemblyBuilder
             {
                 int paramIndex = FindParameter(name.Name, parameters);
                 if (paramIndex >= 0)
-                {
-                    il.LoadLocal(paramLocals[paramIndex]);
-                }
-                else if (locals.TryGetLocal(name.Name, out int localIndex))
-                {
-                    il.LoadLocal(localIndex);
-                }
-                else if (TryEmitBuiltinCore(il, name.Name, new List<IRExpr>(), locals,
+                    {
+                        il.LoadLocal(paramLocals[paramIndex]);
+                    }
+                    else if (locals.TryGetLocal(name.Name, out int localIndex))
+                    {
+                        il.LoadLocal(localIndex);
+                    }
+                    else if (TryEmitBuiltinCore(il, name.Name, new List<IRExpr>(), locals,
                     expr => EmitTcoExpr(il, expr, locals, parameters, paramLocals)))
                 {
                     // Zero-arg builtin handled
@@ -2377,10 +3101,44 @@ sealed partial class ILAssemblyBuilder
                     il.Token(ctorDef);
                 }
                 else if (m_definedMethods.TryGet(name.Name, out MethodDefinitionHandle methodRef))
-                {
-                    EmitCallToMethod(il, name.Name, methodRef, ImmutableArray<IRExpr>.Empty);
-                }
-                break;
+                    {
+                        // Mirrors EmitExpr's IRName value-use path: arity-1
+                        // function refs bind as Func<T, TRet> via ldnull+ldftn;
+                        // arity ≥ 2 fan out through the pre-emitted closure0
+                        // cascade. Without this, a bare function reference
+                        // inside a TCO'd body falls through to EmitCallToMethod
+                        // with zero args and produces invalid IL.
+                        if (IsFunctionTypeExpr(name.Type)
+                            && m_definitions.TryGet(name.Name, out IRDefinition? methodDef)
+                            && methodDef.Parameters.Length == 1)
+                        {
+                            FunctionType fnType = (FunctionType)methodDef.Type;
+                            CodexType retT = UnwrapEffectful(fnType.Return);
+                            MemberReferenceHandle funcCtor = GetFuncCtorRef(
+                                ImmutableArray.Create(methodDef.Parameters[0].Type), retT);
+                            il.OpCode(ILOpCode.Ldnull);
+                            il.OpCode(ILOpCode.Ldftn);
+                            il.Token(methodRef);
+                            il.OpCode(ILOpCode.Newobj);
+                            il.Token(funcCtor);
+                        }
+                        else if (IsFunctionTypeExpr(name.Type)
+                            && m_closures.TryGetValue(new ClosureKey(name.Name, 0), out ClosureInfo c0))
+                        {
+                            il.OpCode(ILOpCode.Newobj);
+                            il.Token(c0.Ctor);
+                            il.OpCode(ILOpCode.Ldftn);
+                            il.Token(c0.Invoke);
+                            il.OpCode(ILOpCode.Newobj);
+                            il.Token(c0.FuncCtor);
+                        }
+                        else
+                        {
+                            EmitCallToMethod(il, name.Name, methodRef, ImmutableArray<IRExpr>.Empty);
+                        }
+                    }
+
+                    break;
             }
 
             case IRBinary bin:
@@ -2427,9 +3185,7 @@ sealed partial class ILAssemblyBuilder
                             EmitTcoExpr(il, exec.Expression, locals, parameters, paramLocals);
                             bool isLast = i == actExpr.Statements.Length - 1;
                             if (!isLast && !IsVoidLike(exec.Expression.Type))
-                            {
                                 il.OpCode(ILOpCode.Pop);
-                            }
                             break;
                     }
                 }
@@ -2437,10 +3193,21 @@ sealed partial class ILAssemblyBuilder
 
             case IRRecord rec:
             {
+                // Mirrors EmitRecordConstruction (Types.cs): box value-type
+                // inits into generic-typed fields before newobj so the
+                // record's `object`-slot field holds a boxed value, not a
+                // reinterpreted int64. Without this, field access on a
+                // generic slot in TCO context returns a pointer-valued
+                // garbage int64.
                 string typeName = SanitizeName(rec.TypeName);
+                List<(string Name, CodexType Type)>? fieldTypes = m_typeFields[typeName];
+                int fi = 0;
                 foreach ((string _, IRExpr value) in rec.Fields)
                 {
                     EmitTcoExpr(il, value, locals, parameters, paramLocals);
+                    if (fieldTypes is not null && fi < fieldTypes.Count)
+                        EmitBoxIfNeeded(il, value.Type, fieldTypes[fi].Type);
+                    fi++;
                 }
                 if (m_ctorDefs.TryGet(typeName, out MethodDefinitionHandle ctorDef2))
                 {
@@ -2460,13 +3227,25 @@ sealed partial class ILAssemblyBuilder
                 {
                     il.OpCode(ILOpCode.Ldfld);
                     il.Token(fieldHandle);
+
+                    // Unbox generic-typed fields down to the use-site's
+                    // concrete type — same contract as the non-TCO
+                    // EmitFieldAccess.
+                    List<(string Name, CodexType Type)>? faFields = m_typeFields[ownerTypeName];
+                    if (faFields is not null)
+                    {
+                        foreach ((string fn, CodexType declared) in faFields)
+                        {
+                            if (fn == fieldName)
+                            {
+                                EmitUnboxIfNeeded(il, declared, fa.Type);
+                                break;
+                            }
+                        }
+                    }
                 }
                 break;
             }
-
-            case IRRegion region:
-                EmitExprWithParamLocals(il, region.Body, locals, parameters, paramLocals);
-                break;
 
             case IRMatch match:
                 EmitTcoMatchExpr(il, match, locals, parameters, paramLocals);
@@ -2489,6 +3268,23 @@ sealed partial class ILAssemblyBuilder
             return;
         }
 
+        if (bin.Op == IRBinaryOp.PowInt)
+        {
+            EmitTcoExpr(il, bin.Left, locals, parameters, paramLocals);
+            il.OpCode(ILOpCode.Conv_r8);
+            EmitTcoExpr(il, bin.Right, locals, parameters, paramLocals);
+            il.OpCode(ILOpCode.Conv_r8);
+            il.Call(m_mathPowRef);
+            il.OpCode(ILOpCode.Conv_i8);
+            return;
+        }
+
+        if (bin.Op is IRBinaryOp.AppendList or IRBinaryOp.ConsList)
+        {
+            EmitListConcatTco(il, bin, locals, parameters, paramLocals);
+            return;
+        }
+
         EmitTcoExpr(il, bin.Left, locals, parameters, paramLocals);
         EmitTcoExpr(il, bin.Right, locals, parameters, paramLocals);
 
@@ -2508,14 +3304,9 @@ sealed partial class ILAssemblyBuilder
                 break;
             case IRBinaryOp.Eq:
                 if (IsTextLike(bin.Left.Type))
-                {
                     il.Call(m_stringEqualsRef);
-                }
                 else
-                {
                     il.OpCode(ILOpCode.Ceq);
-                }
-
                 break;
             case IRBinaryOp.NotEq:
                 if (IsTextLike(bin.Left.Type))
@@ -2553,6 +3344,9 @@ sealed partial class ILAssemblyBuilder
             case IRBinaryOp.Or:
                 il.OpCode(ILOpCode.Or);
                 break;
+            default:
+                throw new InvalidOperationException(
+                    $"IL emit: unhandled binary op {bin.Op}");
         }
     }
 
@@ -2584,24 +3378,80 @@ sealed partial class ILAssemblyBuilder
                 {
                     EmitTcoExpr(il, args[ai], locals, parameters, paramLocals);
                     if (fieldTypes is not null && ai < fieldTypes.Count)
-                    {
                         EmitBoxIfNeeded(il, args[ai].Type, fieldTypes[ai].Type);
-                    }
                 }
                 il.OpCode(ILOpCode.Newobj);
                 il.Token(ctorDef);
                 return;
             }
 
+            // Parameter/local of function type → invoke via Func<>.Invoke per arg.
+            // EmitApply's non-TCO path has this check; without it here, `f h`
+            // inside a tail-call-optimised body emits nothing (brfalse then
+            // pops an empty stack).
+            if ((FindParameter(funcName.Name, parameters) >= 0
+                 || locals.TryGetLocal(funcName.Name, out _))
+                && IsFunctionTypeExpr(funcName.Type))
+            {
+                EmitTcoExpr(il, funcName, locals, parameters, paramLocals);
+                EmitInvokeFuncChainTco(il, funcName.Type, args, locals, parameters, paramLocals);
+                return;
+            }
+
             if (m_definedMethods.TryGet(funcName.Name, out MethodDefinitionHandle methodDef))
             {
-                foreach (IRExpr arg in args)
+                // Mirrors the box/adapter-wrap/unbox sequence in EmitApply's
+                // full-call path (CL 301 fixes). Without these, a generic
+                // user-method call from inside a TCO'd body would (a) pass
+                // an unboxed int64 where the slot expects object,
+                // (b) pass a concrete Func<T,U> where the slot expects the
+                // object-erased adapter, and (c) leave an `object`-typed
+                // return where the caller needs an int64.
+                m_definitions.TryGet(funcName.Name, out IRDefinition? tcoDefInfo);
+                for (int ai = 0; ai < args.Count; ai++)
                 {
-                    EmitTcoExpr(il, arg, locals, parameters, paramLocals);
+                    EmitTcoExpr(il, args[ai], locals, parameters, paramLocals);
+                    if (tcoDefInfo is not null && ai < tcoDefInfo.Parameters.Length)
+                    {
+                        EmitAdapterWrapIfNeeded(il, args[ai].Type, tcoDefInfo.Parameters[ai].Type);
+                        EmitBoxIfNeeded(il, args[ai].Type, tcoDefInfo.Parameters[ai].Type);
+                    }
                 }
                 ImmutableArray<IRExpr> argArray = args.ToImmutableArray();
                 EmitCallToMethod(il, funcName.Name, methodDef, argArray);
+
+                if (tcoDefInfo is not null)
+                {
+                    CodexType declaredRet = tcoDefInfo.Type;
+                    for (int i = 0; i < tcoDefInfo.Parameters.Length; i++)
+                    {
+                        if (declaredRet is FunctionType ft) declaredRet = ft.Return;
+                        else break;
+                    }
+                    EmitUnboxIfNeeded(il, UnwrapEffectful(declaredRet), UnwrapEffectful(apply.Type));
+                }
             }
+        }
+    }
+
+    void EmitInvokeFuncChainTco(InstructionEncoder il, CodexType stackType, List<IRExpr> args,
+        LocalsBuilder locals, ImmutableArray<IRParameter> parameters, int[] paramLocals)
+    {
+        CodexType cur = UnwrapEffectful(stackType);
+        foreach (IRExpr arg in args)
+        {
+            if (cur is not FunctionType ft)
+            {
+                throw new InvalidOperationException(
+                    $"IL emit (TCO): expected FunctionType for Invoke chain, got {cur.GetType().Name}");
+            }
+            EmitTcoExpr(il, arg, locals, parameters, paramLocals);
+            CodexType retType = UnwrapEffectful(ft.Return);
+            MemberReferenceHandle invokeRef = GetFuncInvokeRef(
+                ImmutableArray.Create(ft.Parameter), retType);
+            il.OpCode(ILOpCode.Callvirt);
+            il.Token(invokeRef);
+            cur = retType;
         }
     }
 
@@ -2625,11 +3475,7 @@ sealed partial class ILAssemblyBuilder
                 case IRWildcardPattern:
                     EmitTcoExpr(il, branch.Body, locals, parameters, paramLocals);
                     il.StoreLocal(resultLocal);
-                    if (!isLast)
-                    {
-                        il.Branch(ILOpCode.Br, endLabel);
-                    }
-
+                    if (!isLast) il.Branch(ILOpCode.Br, endLabel);
                     break;
 
                 case IRVarPattern varPat:
@@ -2638,11 +3484,7 @@ sealed partial class ILAssemblyBuilder
                     il.StoreLocal(varLocal);
                     EmitTcoExpr(il, branch.Body, locals, parameters, paramLocals);
                     il.StoreLocal(resultLocal);
-                    if (!isLast)
-                    {
-                        il.Branch(ILOpCode.Br, endLabel);
-                    }
-
+                    if (!isLast) il.Branch(ILOpCode.Br, endLabel);
                     break;
 
                 case IRLiteralPattern litPat:
@@ -2755,14 +3597,8 @@ sealed partial class ILAssemblyBuilder
                 int scrutDepth = EstimateStackDepth(match.Scrutinee);
                 int branchMax = 0;
                 foreach (IRMatchBranch branch in match.Branches)
-                {
                     branchMax = Math.Max(branchMax, EstimateStackDepth(branch.Body));
-                }
-
                 return Math.Max(scrutDepth, branchMax);
-
-            case IRRegion region:
-                return EstimateStackDepth(region.Body);
 
             case IRLambda lambda:
                 return EstimateStackDepth(lambda.Body);
@@ -2775,4 +3611,3 @@ sealed partial class ILAssemblyBuilder
         }
     }
 }
-

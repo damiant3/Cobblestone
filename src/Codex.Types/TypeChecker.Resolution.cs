@@ -29,15 +29,11 @@ public sealed partial class TypeChecker
     {
         CodexType? fromTypeLevelEnv = m_typeLevelEnv[name.Value];
         if (fromTypeLevelEnv is not null)
-        {
             return fromTypeLevelEnv;
-        }
 
         CodexType? fromTypeParam = m_typeParamEnv[name.Value];
         if (fromTypeParam is not null)
-        {
             return fromTypeParam;
-        }
 
         CodexType? fromPrimitive = name.Value switch
         {
@@ -51,15 +47,11 @@ public sealed partial class TypeChecker
             _ => null
         };
         if (fromPrimitive is not null)
-        {
             return fromPrimitive;
-        }
 
         CodexType? userDef = m_typeDefMap[name.Value];
         if (userDef is not null)
-        {
             return userDef;
-        }
 
         if (name.IsValueName)
         {
@@ -97,9 +89,7 @@ public sealed partial class TypeChecker
                 // or instantiate yet — preserve the args in a ConstructedType so
                 // emitters and downstream unification see the applied-to info.
                 if (userDef is ConstructedType placeholderCt && placeholderCt.Arguments.IsEmpty)
-                {
                     return new ConstructedType(named.Name, args);
-                }
 
                 int expectedArity = userDef switch
                 {
@@ -140,15 +130,15 @@ public sealed partial class TypeChecker
                     rowVar = existing ?? m_unifier.FreshEffectVar();
                     m_effectRowVars = m_effectRowVars.Set(named.Name.Value, rowVar);
                 }
-                else
-                {
-                    effects.Add(new EffectType(named.Name));
-                }
+                else
+                {
+                    effects.Add(new EffectType(named.Name));
+                }
             }
-            else
-            {
-                m_diagnostics.Error(CdxCodes.EffectLabelMustBeName, "Effect label must be a name", e.Span);
-            }
+            else
+            {
+                m_diagnostics.Error(CdxCodes.EffectLabelMustBeName, "Effect label must be a name", e.Span);
+            }
         }
         CodexType returnType = ResolveTypeExpr(eff.Return);
         return new EffectfulType(effects.ToImmutable(), returnType, rowVar);
@@ -176,7 +166,7 @@ public sealed partial class TypeChecker
             BinaryOp.Mul => TypeLevelOp.Mul,
             _ => TypeLevelOp.Add
         };
-        return NormalizeTypeLevelExpr(new TypeLevelBinary(op, left, right));
+        return CodexTypeHelpers.NormalizeTypeLevelExpr(new TypeLevelBinary(op, left, right));
     }
 
     CodexType ResolveProofConstraint(ProofConstraintExpr proof)

@@ -135,10 +135,6 @@ sealed partial class WasmModuleBuilder
     // ── Heap pointer global index ────────────────────────────────
     int m_heapPtrGlobalIndex;
 
-    // ── Region stack ──────────────────────────────────────────────
-    const int RegionStackBase = 64;
-    int m_regionSpGlobalIndex;
-
     // ── Runtime helper function indices ──────────────────────────
     int m_printI64Index;
     int m_printBoolIndex;
@@ -152,9 +148,7 @@ sealed partial class WasmModuleBuilder
         EmitRuntimeHelpers();
 
         foreach (IRDefinition def in module.Definitions)
-        {
             EmitDefinition(def);
-        }
 
         EmitStartFunction(module);
     }

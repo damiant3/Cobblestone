@@ -22,10 +22,7 @@ public class ILEmitterIntegrationTests
         {
             string candidate = Path.Combine(dir, "samples");
             if (Directory.Exists(candidate))
-            {
                 return candidate;
-            }
-
             dir = Path.GetDirectoryName(dir)!;
         }
         throw new DirectoryNotFoundException("Cannot find samples/ directory");
@@ -141,10 +138,10 @@ public class ILEmitterIntegrationTests
     public void Simple_text_main_emits_il()
     {
         string source = """
-            main : Text
-            main = "Hello, IL!"
+            opening : Text
+            opening = "Hello, IL!"
             """;
-        byte[]? bytes = Helpers.CompileToIL(source, "textmain");
+        byte[]? bytes = Helpers.CompileToIL(source, "textopening");
         Assert.NotNull(bytes);
         Assert.True(bytes.Length > 0);
 
@@ -156,10 +153,10 @@ public class ILEmitterIntegrationTests
     public void Boolean_main_emits_il()
     {
         string source = """
-            main : Boolean
-            main = 1 == 1
+            opening : Boolean
+            opening = 1 == 1
             """;
-        byte[]? bytes = Helpers.CompileToIL(source, "boolmain");
+        byte[]? bytes = Helpers.CompileToIL(source, "boolopening");
         Assert.NotNull(bytes);
         Assert.True(bytes.Length > 0);
     }
@@ -168,10 +165,10 @@ public class ILEmitterIntegrationTests
     public void Let_binding_emits_il()
     {
         string source = """
-            main : Integer
-            main = let x = 10 in x + 5
+            opening : Integer
+            opening = let x = 10 in x + 5
             """;
-        byte[]? bytes = Helpers.CompileToIL(source, "letmain");
+        byte[]? bytes = Helpers.CompileToIL(source, "letopening");
         Assert.NotNull(bytes);
         Assert.True(bytes.Length > 0);
     }
@@ -180,10 +177,10 @@ public class ILEmitterIntegrationTests
     public void If_then_else_emits_il()
     {
         string source = """
-            main : Integer
-            main = if 1 > 0 then 42 else 0
+            opening : Integer
+            opening = if 1 > 0 then 42 else 0
             """;
-        byte[]? bytes = Helpers.CompileToIL(source, "ifmain");
+        byte[]? bytes = Helpers.CompileToIL(source, "ifopening");
         Assert.NotNull(bytes);
         Assert.True(bytes.Length > 0);
     }
@@ -195,10 +192,10 @@ public class ILEmitterIntegrationTests
             add : Integer -> Integer -> Integer
             add (x) (y) = x + y
 
-            main : Integer
-            main = add 3 4
+            opening : Integer
+            opening = add 3 4
             """;
-        byte[]? bytes = Helpers.CompileToIL(source, "addmain");
+        byte[]? bytes = Helpers.CompileToIL(source, "addopening");
         Assert.NotNull(bytes);
 
         List<string> methodNames = GetMethodNames(bytes);
@@ -239,8 +236,8 @@ public class ILEmitterIntegrationTests
     public void Text_main_exe_runs_and_prints_hello()
     {
         string source = """
-            main : Text
-            main = "Hello, IL!"
+            opening : Text
+            opening = "Hello, IL!"
             """;
         string? output = CompileAndRun(source, "text_run");
         Assert.NotNull(output);
@@ -251,8 +248,8 @@ public class ILEmitterIntegrationTests
     public void Boolean_main_exe_runs_and_prints_true()
     {
         string source = """
-            main : Boolean
-            main = 1 == 1
+            opening : Boolean
+            opening = 1 == 1
             """;
         string? output = CompileAndRun(source, "bool_run");
         Assert.NotNull(output);
@@ -263,8 +260,8 @@ public class ILEmitterIntegrationTests
     public void Let_binding_exe_runs_correctly()
     {
         string source = """
-            main : Integer
-            main = let x = 10 in x + 5
+            opening : Integer
+            opening = let x = 10 in x + 5
             """;
         string? output = CompileAndRun(source, "let_run");
         Assert.NotNull(output);
@@ -275,8 +272,8 @@ public class ILEmitterIntegrationTests
     public void If_then_else_exe_runs_correctly()
     {
         string source = """
-            main : Integer
-            main = if 1 > 0 then 42 else 0
+            opening : Integer
+            opening = if 1 > 0 then 42 else 0
             """;
         string? output = CompileAndRun(source, "if_run");
         Assert.NotNull(output);
@@ -290,8 +287,8 @@ public class ILEmitterIntegrationTests
             add : Integer -> Integer -> Integer
             add (x) (y) = x + y
 
-            main : Integer
-            main = add 3 4
+            opening : Integer
+            opening = add 3 4
             """;
         string? output = CompileAndRun(source, "add_run");
         Assert.NotNull(output);
@@ -305,8 +302,8 @@ public class ILEmitterIntegrationTests
             abs : Integer -> Integer
             abs (x) = if x < 0 then -x else x
 
-            main : Integer
-            main = abs (-5)
+            opening : Integer
+            opening = abs (-5)
             """;
         string? output = CompileAndRun(source, "neg_run");
         Assert.NotNull(output);
@@ -328,8 +325,8 @@ public class ILEmitterIntegrationTests
               let clamped = if x < lo then lo else if x > hi then hi else x
               in clamped
 
-            main : Integer
-            main = clamp 0 100 (abs (max (-42) 37))
+            opening : Integer
+            opening = clamp 0 100 (abs (max (-42) 37))
             """;
         string? output = CompileAndRun(source, "nested_run");
         Assert.NotNull(output);
@@ -344,8 +341,8 @@ public class ILEmitterIntegrationTests
             clamp (lo) (hi) (x) =
               if x < lo then lo else if x > hi then hi else x
 
-            main : Integer
-            main = clamp 0 100 42
+            opening : Integer
+            opening = clamp 0 100 42
             """;
         string? output = CompileAndRun(source, "three_arg_run");
         Assert.NotNull(output);
@@ -359,8 +356,8 @@ public class ILEmitterIntegrationTests
             double : Integer -> Integer
             double (x) = x + x
 
-            main : Integer
-            main = double (double 3)
+            opening : Integer
+            opening = double (double 3)
             """;
         string? output = CompileAndRun(source, "compose_run");
         Assert.NotNull(output);
@@ -378,8 +375,8 @@ public class ILEmitterIntegrationTests
             double : Integer -> Integer
             double (x) = x + x
 
-            main : Integer
-            main = clamp 0 100 (double 25)
+            opening : Integer
+            opening = clamp 0 100 (double 25)
             """;
         string? output = CompileAndRun(source, "call_arg_run");
         Assert.NotNull(output);
@@ -390,8 +387,8 @@ public class ILEmitterIntegrationTests
     public void Show_integer_exe_runs_correctly()
     {
         string source = """
-            main : Text
-            main = show 42
+            opening : Text
+            opening = show 42
             """;
         string? output = CompileAndRun(source, "show_int_run");
         Assert.NotNull(output);
@@ -402,8 +399,8 @@ public class ILEmitterIntegrationTests
     public void Show_boolean_exe_runs_correctly()
     {
         string source = """
-            main : Text
-            main = show (1 == 1)
+            opening : Text
+            opening = show (1 == 1)
             """;
         string? output = CompileAndRun(source, "show_bool_run");
         Assert.NotNull(output);
@@ -414,8 +411,8 @@ public class ILEmitterIntegrationTests
     public void Show_text_exe_runs_correctly()
     {
         string source = """
-            main : Text
-            main = show "hello"
+            opening : Text
+            opening = show "hello"
             """;
         string? output = CompileAndRun(source, "show_text_run");
         Assert.NotNull(output);
@@ -426,8 +423,8 @@ public class ILEmitterIntegrationTests
     public void PrintLine_exe_runs_correctly()
     {
         string source = """
-            main : [Console] Nothing
-            main = print-line "Hello from IL!"
+            opening : [Console] Nothing
+            opening = print-line "Hello from IL!"
             """;
         string? output = CompileAndRun(source, "print_run");
         Assert.NotNull(output);
@@ -438,8 +435,8 @@ public class ILEmitterIntegrationTests
     public void Do_block_exe_runs_correctly()
     {
         string source = """
-            main : [Console] Nothing
-            main = act
+            opening : [Console] Nothing
+            opening = act
               print-line "first"
               print-line "second"
             end
@@ -462,8 +459,8 @@ public class ILEmitterIntegrationTests
 
             describe (result) = when result is Success (n) -> "got " ++ show n is Failure (msg) -> "error: " ++ msg
 
-            main : Text
-            main = describe (safe-divide 42 7)
+            opening : Text
+            opening = describe (safe-divide 42 7)
             """;
         string? output = CompileAndRun(source, "generic_sum_run");
         Assert.NotNull(output);
@@ -474,8 +471,8 @@ public class ILEmitterIntegrationTests
     public void Effectful_do_with_read_line_emits_il()
     {
         string source = """
-            main : [Console] Nothing
-            main = act
+            opening : [Console] Nothing
+            opening = act
               print-line "What is your name?"
               name <- read-line
               print-line ("Hello, " ++ name ++ "!")
@@ -505,10 +502,7 @@ public class ILEmitterIntegrationTests
     static string? CompileAndRun(string source, string chapterName)
     {
         byte[]? bytes = Helpers.CompileToIL(source, chapterName);
-        if (bytes is null)
-        {
-            return null;
-        }
+        if (bytes is null) return null;
 
         string tempDir = Path.Combine(Path.GetTempPath(), "codex_il_test_" + chapterName + "_" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(tempDir);
@@ -541,21 +535,18 @@ public class ILEmitterIntegrationTests
             };
 
             using Process? proc = Process.Start(psi);
-            if (proc is null)
-            {
-                return null;
-            }
+            if (proc is null) return null;
 
             string stdout = proc.StandardOutput.ReadToEnd();
             string stderr = proc.StandardError.ReadToEnd();
             proc.WaitForExit(10_000);
 
-            if (proc.ExitCode != 0)
-            {
+            if (proc.ExitCode != 0)
+            {
                 throw new InvalidOperationException(
-                    $"dotnet exited with code {proc.ExitCode}.\nstdout: {stdout}\nstderr: {stderr}");
-            }
-
+                    $"dotnet exited with code {proc.ExitCode}.\nstdout: {stdout}\nstderr: {stderr}");
+            }
+
             return stdout;
         }
         finally
@@ -568,8 +559,8 @@ public class ILEmitterIntegrationTests
     public void Text_to_integer_on_valid_input()
     {
         string source = """
-            main : Integer
-            main = text-to-integer "42"
+            opening : Integer
+            opening = text-to-integer "42"
             """;
         string? output = CompileAndRun(source, "tti_valid");
         Assert.NotNull(output);
@@ -580,8 +571,8 @@ public class ILEmitterIntegrationTests
     public void Text_to_integer_on_non_numeric_returns_zero()
     {
         string source = """
-            main : Integer
-            main = text-to-integer "abc"
+            opening : Integer
+            opening = text-to-integer "abc"
             """;
         string? output = CompileAndRun(source, "tti_abc");
         Assert.NotNull(output);
@@ -592,8 +583,8 @@ public class ILEmitterIntegrationTests
     public void Text_to_integer_on_empty_string_returns_zero()
     {
         string source = """
-            main : Integer
-            main = text-to-integer ""
+            opening : Integer
+            opening = text-to-integer ""
             """;
         string? output = CompileAndRun(source, "tti_empty");
         Assert.NotNull(output);
@@ -604,8 +595,8 @@ public class ILEmitterIntegrationTests
     public void Text_to_integer_on_negative_number()
     {
         string source = """
-            main : Integer
-            main = text-to-integer "-7"
+            opening : Integer
+            opening = text-to-integer "-7"
             """;
         string? output = CompileAndRun(source, "tti_neg");
         Assert.NotNull(output);
@@ -616,8 +607,8 @@ public class ILEmitterIntegrationTests
     public void Text_to_integer_on_float_string_returns_zero()
     {
         string source = """
-            main : Integer
-            main = text-to-integer "3.14"
+            opening : Integer
+            opening = text-to-integer "3.14"
             """;
         string? output = CompileAndRun(source, "tti_float");
         Assert.NotNull(output);
@@ -628,8 +619,8 @@ public class ILEmitterIntegrationTests
     public void Text_to_integer_on_overflow_returns_zero()
     {
         string source = """
-            main : Integer
-            main = text-to-integer "99999999999999999999"
+            opening : Integer
+            opening = text-to-integer "99999999999999999999"
             """;
         string? output = CompileAndRun(source, "tti_overflow");
         Assert.NotNull(output);
@@ -642,8 +633,8 @@ public class ILEmitterIntegrationTests
     public void Run_state_simple_get_returns_initial()
     {
         string source = """
-            main : Integer
-            main = run-state 42 get-state
+            opening : Integer
+            opening = run-state 42 get-state
             """;
         string? output = CompileAndRun(source, "rs_simple_get");
         Assert.NotNull(output);
@@ -654,8 +645,8 @@ public class ILEmitterIntegrationTests
     public void Run_state_set_then_get()
     {
         string source = """
-            main : Integer
-            main = run-state 0 act
+            opening : Integer
+            opening = run-state 0 act
               set-state 10
               get-state
             end
@@ -669,8 +660,8 @@ public class ILEmitterIntegrationTests
     public void Run_state_increment()
     {
         string source = """
-            main : Integer
-            main = run-state 0 act
+            opening : Integer
+            opening = run-state 0 act
               x <- get-state
               set-state (x + 1)
               get-state
@@ -685,8 +676,8 @@ public class ILEmitterIntegrationTests
     public void Run_state_arithmetic_chain()
     {
         string source = """
-            main : Integer
-            main = run-state 0 act
+            opening : Integer
+            opening = run-state 0 act
               x <- get-state
               set-state (x + 10)
               y <- get-state
@@ -703,8 +694,8 @@ public class ILEmitterIntegrationTests
     public void Run_state_with_text()
     {
         string source = """
-            main : Text
-            main = run-state "hello" act
+            opening : Text
+            opening = run-state "hello" act
               s <- get-state
               set-state (s ++ " world")
               get-state
@@ -719,8 +710,8 @@ public class ILEmitterIntegrationTests
     public void Run_state_emits_valid_il()
     {
         string source = """
-            main : Integer
-            main = run-state 0 act
+            opening : Integer
+            opening = run-state 0 act
               x <- get-state
               set-state (x + 1)
               get-state
@@ -743,8 +734,8 @@ public class ILEmitterIntegrationTests
             comp : [Ask] Integer
             comp = ask
 
-            main : Integer
-            main = with Ask comp
+            opening : Integer
+            opening = with Ask comp
               ask (resume) = resume 42
             """;
         string? output = CompileAndRun(source, "handle_ask");
@@ -759,8 +750,8 @@ public class ILEmitterIntegrationTests
             effect Ask where
               ask : Integer
 
-            main : Integer
-            main = with Ask ask
+            opening : Integer
+            opening = with Ask ask
               ask (resume) = resume 99
             """;
         string? output = CompileAndRun(source, "handle_ask_direct");
@@ -778,8 +769,8 @@ public class ILEmitterIntegrationTests
             program : [Logger] Integer
             program = log "hello"
 
-            main : Integer
-            main = with Logger program
+            opening : Integer
+            opening = with Logger program
               log (msg) (resume) = resume 0
             """;
         string? output = CompileAndRun(source, "handle_log");
@@ -797,8 +788,8 @@ public class ILEmitterIntegrationTests
             comp : [Ask] Integer
             comp = ask + 8
 
-            main : Integer
-            main = with Ask comp
+            opening : Integer
+            opening = with Ask comp
               ask (resume) = resume 34
             """;
         string? output = CompileAndRun(source, "handle_ask_arith");
@@ -816,8 +807,8 @@ public class ILEmitterIntegrationTests
             comp : [Ask] Integer
             comp = ask
 
-            main : Integer
-            main = with Ask comp
+            opening : Integer
+            opening = with Ask comp
               ask (resume) = resume 42
             """;
         byte[]? bytes = Helpers.CompileToIL(source, "handle_emit");

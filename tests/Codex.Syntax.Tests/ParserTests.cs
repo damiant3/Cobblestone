@@ -329,7 +329,7 @@ public class ParserTests
     [Fact]
     public void Parse_effectful_type_annotation()
     {
-        DocumentNode doc = Parse("main : [Console] Nothing\nmain = 42");
+        DocumentNode doc = Parse("opening : [Console] Nothing\nopening = 42");
         Assert.NotNull(doc.Definitions[0].TypeAnnotation);
         Assert.IsType<EffectfulTypeNode>(doc.Definitions[0].TypeAnnotation!.Type);
         EffectfulTypeNode eft = (EffectfulTypeNode)doc.Definitions[0].TypeAnnotation!.Type;
@@ -341,7 +341,7 @@ public class ParserTests
     [Fact]
     public void Parse_effectful_type_with_multiple_effects()
     {
-        DocumentNode doc = Parse("main : [Console, FileSystem] Nothing\nmain = 42");
+        DocumentNode doc = Parse("opening : [Console, FileSystem] Nothing\nopening = 42");
         Assert.NotNull(doc.Definitions[0].TypeAnnotation);
         Assert.IsType<EffectfulTypeNode>(doc.Definitions[0].TypeAnnotation!.Type);
         EffectfulTypeNode eft = (EffectfulTypeNode)doc.Definitions[0].TypeAnnotation!.Type;
@@ -351,7 +351,7 @@ public class ParserTests
     [Fact]
     public void Parse_do_expression()
     {
-        string source = "main : [Console] Nothing\nmain = act\n  print-line \"hello\"\nend\n";
+        string source = "opening : [Console] Nothing\nopening = act\n  print-line \"hello\"\nend\n";
         DocumentNode doc = Parse(source);
         Assert.IsType<ActExpressionNode>(doc.Definitions[0].Body);
         ActExpressionNode actExpr = (ActExpressionNode)doc.Definitions[0].Body;
@@ -362,7 +362,7 @@ public class ParserTests
     [Fact]
     public void Parse_do_bind_statement()
     {
-        string source = "main : [Console] Nothing\nmain = act\n  x <- read-line\n  print-line x\nend\n";
+        string source = "opening : [Console] Nothing\nopening = act\n  x <- read-line\n  print-line x\nend\n";
         DocumentNode doc = Parse(source);
         Assert.IsType<ActExpressionNode>(doc.Definitions[0].Body);
         ActExpressionNode actExpr = (ActExpressionNode)doc.Definitions[0].Body;
@@ -375,7 +375,7 @@ public class ParserTests
     [Fact]
     public void Parse_act_expression_single_stmt()
     {
-        string source = "main : [Console] Nothing\nmain = act\n  print-line \"hello\"\n end\n";
+        string source = "opening : [Console] Nothing\nopening = act\n  print-line \"hello\"\n end\n";
         DocumentNode doc = Parse(source);
         Assert.IsType<ActExpressionNode>(doc.Definitions[0].Body);
         ActExpressionNode actExpr = (ActExpressionNode)doc.Definitions[0].Body;
@@ -386,7 +386,7 @@ public class ParserTests
     [Fact]
     public void Parse_act_bind_statement()
     {
-        string source = "main : [Console] Nothing\nmain = act\n  x <- read-line\n  print-line x\n end\n";
+        string source = "opening : [Console] Nothing\nopening = act\n  x <- read-line\n  print-line x\n end\n";
         DocumentNode doc = Parse(source);
         Assert.IsType<ActExpressionNode>(doc.Definitions[0].Body);
         ActExpressionNode actExpr = (ActExpressionNode)doc.Definitions[0].Body;
@@ -399,7 +399,7 @@ public class ParserTests
     [Fact]
     public void Parse_act_inside_parens_with_let()
     {
-        string source = "main : [Console] Nothing\nmain =\n let y = (act\n  a <- read-line\n  return a\n end)\n in y\n";
+        string source = "opening : [Console] Nothing\nopening =\n let y = (act\n  a <- read-line\n  return a\n end)\n in y\n";
         (DocumentNode doc, DiagnosticBag diags) = ParseWithDiags(source);
         Assert.Empty(diags.ToImmutable());
         Assert.IsType<LetExpressionNode>(doc.Definitions[0].Body);
@@ -408,7 +408,7 @@ public class ParserTests
     [Fact]
     public void Parse_nested_act_blocks()
     {
-        string source = "main : [Console] Nothing\nmain = act\n x <- act\n  y <- read-line\n  return y\n end\n print-line x\nend\n";
+        string source = "opening : [Console] Nothing\nopening = act\n x <- act\n  y <- read-line\n  return y\n end\n print-line x\nend\n";
         (DocumentNode doc, DiagnosticBag diags) = ParseWithDiags(source);
         Assert.DoesNotContain(diags.ToImmutable(), d => d.Severity == DiagnosticSeverity.Error);
         Assert.IsType<ActExpressionNode>(doc.Definitions[0].Body);
@@ -417,7 +417,7 @@ public class ParserTests
     [Fact]
     public void Parse_empty_act_reports_diagnostic()
     {
-        string source = "main : [Console] Nothing\nmain = act end\n";
+        string source = "opening : [Console] Nothing\nopening = act end\n";
         (_, DiagnosticBag diags) = ParseWithDiags(source);
         Assert.Contains(diags.ToImmutable(), d => d.Code == CdxCodes.EmptyActBlock);
     }

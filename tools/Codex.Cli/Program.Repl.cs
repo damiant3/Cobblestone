@@ -22,27 +22,15 @@ public static partial class Program
         {
             Console.Write("codex> ");
             string? line = Console.ReadLine();
-            if (line is null)
-            {
-                break;
-            }
+            if (line is null) break;
 
             line = line.Trim();
-            if (line.Length == 0)
-            {
-                continue;
-            }
+            if (line.Length == 0) continue;
 
             if (line.StartsWith(':'))
             {
-                if (HandleMetaCommand(line, state))
-                {
-                    continue;
-                }
-                else
-                {
-                    break;
-                }
+                if (HandleMetaCommand(line, state)) continue;
+                else break;
             }
 
             EvaluateLine(line, state);
@@ -70,14 +58,9 @@ public static partial class Program
 
             case ":type" or ":t":
                 if (parts.Length < 2)
-                {
                     Console.Error.WriteLine("Usage: :type <expression>");
-                }
                 else
-                {
                     ShowType(parts[1], state);
-                }
-
                 return true;
 
             case ":reset":
@@ -86,21 +69,16 @@ public static partial class Program
                 return true;
 
             case ":defs":
-                if (state.Definitions.Count == 0 && state.TypeDefinitions.Count == 0)
-                {
-                    Console.WriteLine("(no definitions)");
-                }
+                if (state.Definitions.Count == 0 && state.TypeDefinitions.Count == 0)
+                {
+                    Console.WriteLine("(no definitions)");
+                }
                 else
                 {
                     foreach (string def in state.TypeDefinitions)
-                    {
                         Console.WriteLine(def);
-                    }
-
                     foreach (string def in state.Definitions)
-                    {
                         Console.WriteLine(def);
-                    }
                 }
                 return true;
 
@@ -179,14 +157,9 @@ public static partial class Program
             string defName = ExtractDefinitionName(line);
             CodexType? defType = types[defName];
             if (defType is not null)
-            {
                 Console.WriteLine($"{defName} : {defType}");
-            }
             else
-            {
                 Console.WriteLine($"Defined {defName}");
-            }
-
             return;
         }
 
@@ -200,8 +173,8 @@ public static partial class Program
             return;
         }
 
-        Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, diagnostics);
-        IRChapter irModule = lowering.Lower(resolved.Chapter);
+        Lowering lowering = new(types, checker.ConstructorMap, checker.TypeDefMap, diagnostics, checker.ExprTypes);
+        IRChapter irModule = LambdaLifting.Lift(lowering.Lower(resolved));
 
         if (diagnostics.HasErrors)
         {
@@ -217,9 +190,7 @@ public static partial class Program
         {
             output = output.TrimEnd();
             if (output.Length > 0)
-            {
                 Console.WriteLine(output);
-            }
         }
     }
 
@@ -260,13 +231,9 @@ public static partial class Program
 
         CodexType? itType = types["__repl_it"];
         if (itType is not null)
-        {
             Console.WriteLine($"{exprText} : {itType}");
-        }
         else
-        {
             Console.Error.WriteLine("Could not determine type.");
-        }
     }
 
     static bool LooksLikeDefinition(string line)
@@ -277,24 +244,11 @@ public static partial class Program
         int i = 0;
         // skip identifier (lowercase-hyphenated)
         while (i < line.Length && (char.IsLetterOrDigit(line[i]) || line[i] == '-' || line[i] == '_'))
-        {
             i++;
-        }
-
-        if (i == 0)
-        {
-            return false;
-        }
+        if (i == 0) return false;
         // skip whitespace
-        while (i < line.Length && line[i] == ' ')
-        {
-            i++;
-        }
-
-        if (i >= line.Length)
-        {
-            return false;
-        }
+        while (i < line.Length && line[i] == ' ') i++;
+        if (i >= line.Length) return false;
         // definition if next is : or = or (
         return line[i] is ':' or '=' or '(';
     }
@@ -303,10 +257,7 @@ public static partial class Program
     {
         int i = 0;
         while (i < line.Length && (char.IsLetterOrDigit(line[i]) || line[i] == '-' || line[i] == '_'))
-        {
             i++;
-        }
-
         return line[..i];
     }
 
@@ -319,9 +270,7 @@ public static partial class Program
 
         string csproj = Path.Combine(state.TempDir!, "CodexOutput.csproj");
         if (!File.Exists(csproj))
-        {
             File.WriteAllText(csproj, GenerateCsproj());
-        }
 
         System.Diagnostics.ProcessStartInfo buildInfo =
             new("dotnet", "build --nologo --verbosity quiet")
@@ -372,9 +321,7 @@ public static partial class Program
         runProc.WaitForExit();
 
         if (errOutput.Length > 0)
-        {
             Console.Error.Write(errOutput);
-        }
 
         return output;
     }
@@ -384,9 +331,7 @@ public static partial class Program
         foreach (Diagnostic diag in diagnostics.ToImmutable())
         {
             if (diag.Severity == DiagnosticSeverity.Error)
-            {
                 Console.Error.WriteLine($"  {diag.Code}: {diag.Message}");
-            }
         }
     }
 }
@@ -405,13 +350,9 @@ sealed class ReplState
     {
         // Type definitions start with uppercase
         if (line.Length > 0 && char.IsUpper(line[0]))
-        {
             m_typeDefinitions.Add(line);
-        }
         else
-        {
             m_definitions.Add(line);
-        }
     }
 
     public string BuildSource(string? newDefinition, string? expression)
@@ -453,11 +394,7 @@ sealed class ReplState
 
     public void EnsureTempDir()
     {
-        if (m_tempDir is not null)
-        {
-            return;
-        }
-
+        if (m_tempDir is not null) return;
         m_tempDir = Path.Combine(
             Path.GetTempPath(),
             "codex_repl_" + Guid.NewGuid().ToString("N")[..8]);

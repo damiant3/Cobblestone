@@ -13,23 +13,15 @@ public class CodexAgentHandoffTests : IDisposable
     {
         m_handoffPath = Path.Combine(m_runner.SolutionRoot, ".handoff");
         m_origHandoff = File.Exists(m_handoffPath) ? File.ReadAllText(m_handoffPath) : null;
-        if (File.Exists(m_handoffPath))
-        {
-            File.Delete(m_handoffPath);
-        }
+        if (File.Exists(m_handoffPath)) File.Delete(m_handoffPath);
     }
 
     public void Dispose()
     {
         if (m_origHandoff != null)
-        {
             File.WriteAllText(m_handoffPath, m_origHandoff);
-        }
         else if (File.Exists(m_handoffPath))
-        {
             File.Delete(m_handoffPath);
-        }
-
         m_runner.CleanupTestDir();
     }
 

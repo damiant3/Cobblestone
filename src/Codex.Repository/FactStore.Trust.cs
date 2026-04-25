@@ -26,20 +26,14 @@ partial class FactStore
         int depth)
     {
         if (depth > 5)
-        {
             return new TrustScore(0.0, "max depth exceeded");
-        }
 
         if (!visited.Add(factHash))
-        {
             return new TrustScore(0.0, "cycle detected");
-        }
 
         IReadOnlyList<Fact> vouches = GetTrustFacts(factHash);
         if (vouches.Count == 0)
-        {
             return new TrustScore(0.0, "no vouches");
-        }
 
         double maxTrust = 0.0;
         string bestReason = "no vouches";
@@ -48,9 +42,7 @@ partial class FactStore
         {
             TrustDegree? degree = ParseTrustDegree(vouch);
             if (degree is null)
-            {
                 continue;
-            }
 
             double directWeight = s_trustWeights[degree.Value];
 
@@ -86,9 +78,7 @@ partial class FactStore
         int depth)
     {
         if (author == viewer)
-        {
             return 1.0;
-        }
 
         // Find all facts authored by this person that the viewer has vouched for
         IReadOnlyList<Fact> allTrust = GetFactsByKind(FactKind.Trust);
@@ -97,34 +87,24 @@ partial class FactStore
         foreach (Fact vouch in allTrust)
         {
             if (vouch.Author != viewer)
-            {
                 continue;
-            }
 
             // This is a vouch by the viewer — check if it targets something by the author
             string? targetHex = ExtractTarget(vouch);
             if (targetHex is null)
-            {
                 continue;
-            }
 
             Fact? targetFact = Load(ContentHash.FromHex(targetHex));
             if (targetFact is null || targetFact.Author != author)
-            {
                 continue;
-            }
 
             TrustDegree? degree = ParseTrustDegree(vouch);
             if (degree is null)
-            {
                 continue;
-            }
 
             double weight = s_trustWeights[degree.Value];
             if (weight > maxTrust)
-            {
                 maxTrust = weight;
-            }
         }
 
         return maxTrust;
@@ -135,9 +115,7 @@ partial class FactStore
         foreach (string line in trust.Content.Split('\n'))
         {
             if (line.StartsWith("target:", StringComparison.Ordinal))
-            {
                 return line["target:".Length..].Trim();
-            }
         }
         return null;
     }
@@ -198,9 +176,7 @@ partial class FactStore
         }
 
         if (definitions.Count == 0)
-        {
             return new ViewConsistencyResult(true, []);
-        }
 
         return checker.Check(definitions);
     }

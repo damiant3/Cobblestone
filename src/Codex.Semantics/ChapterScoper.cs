@@ -38,9 +38,29 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
         foreach (KeyValuePair<string, List<string>> kvp in nameToModules)
         {
             if (kvp.Value.Count > 1)
-            {
                 collidingNames.Add(kvp.Key);
+        }
+
+        // `opening` is the program entry point. There can be exactly one; it
+        // is never mangled (emitters hardcode the symbol name). Two chapters
+        // both defining `opening` is a hard error, not a candidate for slug
+        // mangling — a silent rename would produce a binary whose call to the
+        // entry point resolves to a -1 sentinel at link time and page-faults
+        // at run time.
+        if (collidingNames.Remove(Names.OpeningEntryPoint))
+        {
+            SourceSpan span = SourceSpan.s_synthetic;
+            foreach (Chapter mod in perFileChapters)
+            {
+                foreach (Definition def in mod.Definitions)
+                {
+                    if (def.Name.Value == Names.OpeningEntryPoint) { span = def.Span; break; }
+                }
+                if (span.FileName.Length > 0) { break; }
             }
+            m_diagnostics.Error(CdxCodes.DuplicateDefinition,
+                $"'{Names.OpeningEntryPoint}' is defined in multiple chapters: {string.Join(", ", nameToModules[Names.OpeningEntryPoint])}. A program has exactly one entry point.",
+                span);
         }
 
         // A chapter's identity is (quire, chapter-title). Same chapter title
@@ -122,9 +142,7 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
             }
 
             foreach (TypeDef td in mod.TypeDefinitions)
-            {
                 allTypeDefinitions.Add(td);
-            }
 
             allClaims.AddRange(mod.Claims);
             allProofs.AddRange(mod.Proofs);
@@ -134,9 +152,7 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
             foreach (CitesDecl cite in mod.Citations)
             {
                 if (cite.SelectedNames.Count == 0)
-                {
                     allCitations.Add(cite);
-                }
             }
         }
 
@@ -149,9 +165,7 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
         foreach (Chapter mod in perFileChapters)
         {
             foreach (KeyValuePair<string, ChapterProse> kvp in mod.ProseByFile)
-            {
                 mergedProse[kvp.Key] = kvp.Value;
-            }
         }
 
         return new Chapter(
@@ -178,40 +192,29 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
             if (c == ' ' || c == '_')
             {
                 if (sb.Length > 0 && sb[^1] != '-')
-                {
                     sb.Append('-');
-                }
             }
             else if (char.IsUpper(c))
             {
                 // Insert hyphen before uppercase if preceded by lowercase
                 if (i > 0 && char.IsLower(chapterName[i - 1]) && sb.Length > 0 && sb[^1] != '-')
-                {
                     sb.Append('-');
-                }
-
                 sb.Append(char.ToLowerInvariant(c));
             }
-            else if (char.IsLetterOrDigit(c) || c == '-')
-            {
-                sb.Append(c);
-            }
+            else if (char.IsLetterOrDigit(c) || c == '-')
+            {
+                sb.Append(c);
+            }
         }
         // Trim trailing hyphens
         while (sb.Length > 0 && sb[^1] == '-')
-        {
             sb.Length--;
-        }
-
         return sb.ToString();
     }
 
     Expr RenameExpr(Expr expr, Dictionary<string, string> renameMap)
     {
-        if (renameMap.Count == 0)
-        {
-            return expr;
-        }
+        if (renameMap.Count == 0) return expr;
 
         return expr switch
         {
@@ -306,9 +309,7 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
         {
             bindings.Add(new LetBinding(b.Name, RenameExpr(b.Value, bodyMap)));
             if (renameMap.ContainsKey(b.Name.Value))
-            {
                 bodyMap = WithoutKeys(bodyMap, [b.Name.Value]);
-            }
         }
         return let with
         {
@@ -345,10 +346,7 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
                 break;
             case CtorPattern ctor:
                 foreach (Pattern sub in ctor.SubPatterns)
-                {
                     CollectPatternVars(sub, vars);
-                }
-
                 break;
         }
     }
@@ -362,9 +360,7 @@ public sealed class ChapterScoper(DiagnosticBag diagnostics)
         {
             stmts.Add(RenameActStatement(stmt, currentMap));
             if (stmt is ActBindStatement bind && renameMap.ContainsKey(bind.Name.Value))
-            {
                 currentMap = WithoutKeys(currentMap, [bind.Name.Value]);
-            }
         }
         return actExpr with { Statements = stmts };
     }

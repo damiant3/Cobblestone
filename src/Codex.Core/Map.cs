@@ -21,10 +21,7 @@ public sealed class Map<TKey, TValue> : IEnumerable<KeyValuePair<TKey, TValue>>
     {
         ImmutableDictionary<TKey, TValue>.Builder builder = ImmutableDictionary.CreateBuilder<TKey, TValue>();
         foreach ((TKey key, TValue value) in items)
-        {
             builder[key] = value;
-        }
-
         return new(builder.ToImmutable());
     }
 
@@ -71,10 +68,7 @@ public sealed class ValueMap<TKey, TValue> : IEnumerable<KeyValuePair<TKey, TVal
     {
         ImmutableDictionary<TKey, TValue>.Builder builder = ImmutableDictionary.CreateBuilder<TKey, TValue>();
         foreach ((TKey key, TValue value) in items)
-        {
             builder[key] = value;
-        }
-
         return new(builder.ToImmutable());
     }
 

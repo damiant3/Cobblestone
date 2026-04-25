@@ -10,11 +10,7 @@ public sealed partial class CSharpEmitter
     {
         HashSet<int> ids = [];
         CollectTypeVarIds(def.Type, ids);
-        if (ids.Count == 0)
-        {
-            return "";
-        }
-
+        if (ids.Count == 0) return "";
         return "<" + string.Join(", ", ids.Order().Select(id => $"T{id}")) + ">";
     }
 
@@ -22,11 +18,7 @@ public sealed partial class CSharpEmitter
     {
         HashSet<int> ids = [];
         CollectTypeVarIds(type, ids);
-        if (ids.Count == 0)
-        {
-            return "";
-        }
-
+        if (ids.Count == 0) return "";
         return "<" + string.Join(", ", ids.Order().Select(id => $"T{id}")) + ">";
     }
 }

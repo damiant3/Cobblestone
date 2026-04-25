@@ -1,15 +1,26 @@
 Chapter: Parser
+  cites Codex chapter Text
+  cites Codex chapter Lists
+  cites Codex chapter Runtime
 
  Core parser utilities: state, results, predicates, helpers.
 
   cites Foreword chapter Maybe
 
 Section: Parser State
+
+ Recursive descent entries decrement `fuel`. Exhaustion emits
+ CDX9001 and forces the relevant parser to return a synthetic
+ sentinel, preventing stack-overflow on pathological input.
+
+  max-parse-fuel : Integer = 10000000
+
   ParseState = record {
    tokens : List Token,
    pos : Integer,
    bag : DiagnosticBag,
-   paren-depth : Integer
+   paren-depth : Integer,
+   fuel : Integer
   }
 
   make-parse-state : List Token -> ParseState
@@ -18,7 +29,8 @@ Section: Parser State
     tokens = toks,
     pos = 0,
     bag = empty-bag,
-    paren-depth = 0
+    paren-depth = 0,
+    fuel = max-parse-fuel
    }
 
   current : ParseState -> Token
@@ -35,26 +47,31 @@ Section: Parser State
     tokens = st.tokens,
     pos = st.pos + 1,
     bag = st.bag,
-    paren-depth = st.paren-depth
+    paren-depth = st.paren-depth,
+    fuel = st.fuel
    }
+
+  parse-fuel-exhausted : ParseState -> Boolean
+  parse-fuel-exhausted (st) = st.fuel <= 0
+
+  consume-parse-fuel : ParseState -> ParseState
+  consume-parse-fuel (st) = __record-set st "fuel" (st.fuel - 1)
+
+  emit-parse-fuel-error : ParseState -> Text -> ParseState
+  emit-parse-fuel-error (st) (op) =
+   __record-set st "bag" (bag-add (st.bag) (make-error cdx-resource-exhausted ("compiler resource exhausted in parser." ++ op ++ " (budget " ++ integer-to-text max-parse-fuel ++ ")") (token-to-span (current st))))
+
+  token-to-span : Token -> SourceSpan
+  token-to-span (tok) =
+   span-at (tok.line) (tok.column) (tok.offset) (text-length (tok.text)) (tok.file-id)
 
   enter-paren : ParseState -> ParseState
   enter-paren (st) =
-   ParseState {
-    tokens = st.tokens,
-    pos = st.pos,
-    bag = st.bag,
-    paren-depth = st.paren-depth + 1
-   }
+   __record-set st "paren-depth" (st.paren-depth + 1)
 
   exit-paren : ParseState -> ParseState
   exit-paren (st) =
-   ParseState {
-    tokens = st.tokens,
-    pos = st.pos,
-    bag = st.bag,
-    paren-depth = st.paren-depth - 1
-   }
+   __record-set st "paren-depth" (st.paren-depth - 1)
 
   is-done : ParseState -> Boolean
   is-done (st) =
@@ -415,22 +432,19 @@ Section: Token Helpers
    if is-done st then st
    else if current-kind st == kind then advance st
    else let tok = current st
-   in ParseState {
-    tokens = st.tokens,
-    pos = st.pos,
-    bag = bag-add (st.bag) (make-error cdx-expected-token-kind ("Expected token kind mismatch, got '" ++ tok.text ++ "'") (span-at (tok.line) (tok.column) (tok.offset) (text-length (tok.text)) (tok.file-id))),
-    paren-depth = st.paren-depth
-   }
+   in __record-set st "bag" (bag-add (st.bag) (make-error cdx-expected-token-kind ("Expected token kind mismatch, got '" ++ tok.text ++ "'") (span-at (tok.line) (tok.column) (tok.offset) (text-length (tok.text)) (tok.file-id))))
+
+  expect-coded : TokenKind -> Integer -> Text -> ParseState -> ParseState
+  expect-coded (kind) (code) (msg) (st) =
+   if is-done st then st
+   else if current-kind st == kind then advance st
+   else let tok = current st
+   in __record-set st "bag" (bag-add (st.bag) (make-error code (msg ++ " (got '" ++ tok.text ++ "')") (span-at (tok.line) (tok.column) (tok.offset) (text-length (tok.text)) (tok.file-id))))
 
   report-reserved-keyword : Text -> ParseState -> ParseState
   report-reserved-keyword (context) (st) =
    let tok = current st
-   in ParseState {
-    tokens = st.tokens,
-    pos = st.pos,
-    bag = bag-add (st.bag) (make-error cdx-reserved-keyword-as-identifier ("'" ++ tok.text ++ "' is a reserved keyword and cannot be used as " ++ context ++ "; rename it") (span-at (tok.line) (tok.column) (tok.offset) (text-length (tok.text)) (tok.file-id))),
-    paren-depth = st.paren-depth
-   }
+   in __record-set st "bag" (bag-add (st.bag) (make-error cdx-reserved-keyword-as-identifier ("'" ++ tok.text ++ "' is a reserved keyword and cannot be used as " ++ context ++ "; rename it") (span-at (tok.line) (tok.column) (tok.offset) (text-length (tok.text)) (tok.file-id))))
 
   skip-newlines-pos : List Token -> Integer -> Integer -> Integer
   skip-newlines-pos (tokens) (pos) (len) =
@@ -446,12 +460,7 @@ Section: Token Helpers
   skip-newlines (st) =
    let end-pos = skip-newlines-pos (st.tokens) (st.pos) (list-length (st.tokens))
    in if end-pos == st.pos then st
-      else ParseState {
-       tokens = st.tokens,
-       pos = end-pos,
-       bag = st.bag,
-       paren-depth = st.paren-depth
-      }
+      else __record-set st "pos" end-pos
 
 Page 2 of 3
 

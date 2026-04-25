@@ -24,9 +24,7 @@ public sealed class BabbageEmitter : ICodeEmitter
         m_labelCounter = 0;
 
         foreach (IRDefinition d in module.Definitions)
-        {
             m_definitionArity = m_definitionArity.Set(d.Name, d.Parameters.Length);
-        }
 
         StringBuilder sb = new();
         sb.AppendLine(". ---------------------------------------------------");
@@ -40,16 +38,11 @@ public sealed class BabbageEmitter : ICodeEmitter
         sb.AppendLine(". ---------------------------------------------------");
         sb.AppendLine();
 
-        IRDefinition? mainDef = module.Definitions
-            .FirstOrDefault(d => d.Name == "main" && d.Parameters.Length == 0);
+        IRDefinition? mainDef = module.FindEntryPoint();
 
         foreach (IRDefinition def in module.Definitions)
         {
-            if (def == mainDef)
-            {
-                continue;
-            }
-
+            if (def == mainDef) continue;
             EmitDefinition(sb, def);
             sb.AppendLine();
         }
@@ -68,14 +61,9 @@ public sealed class BabbageEmitter : ICodeEmitter
         {
             sb.AppendLine(". === MAIN PROGRAM ===");
             if (module.Definitions.Length == 0)
-            {
                 sb.AppendLine(". All proofs verified. No computation required.");
-            }
             else
-            {
                 sb.AppendLine(". No entry point. Chapter loaded.");
-            }
-
             sb.AppendLine();
             sb.AppendLine("H  . Halt the Engine");
         }
@@ -146,7 +134,7 @@ public sealed class BabbageEmitter : ICodeEmitter
                 EmitTailCallBody(sb, let.Body, funcName, parameters, labelStart, labelEnd);
                 break;
 
-            case IRApply app when IsSelfCall(app, funcName):
+            case IRApply app when app.IsSelfCall(funcName):
                 List<IRExpr> args = [];
                 CollectApplyArgs(app, args);
                 for (int i = 0; i < args.Count && i < parameters.Length; i++)
@@ -276,10 +264,7 @@ public sealed class BabbageEmitter : ICodeEmitter
     int AllocStore(string name)
     {
         if (m_storeMap.TryGet(name, out int existing))
-        {
             return existing;
-        }
-
         int col = m_nextStore++;
         m_storeMap = m_storeMap.Set(name, col);
         return col;
@@ -288,10 +273,7 @@ public sealed class BabbageEmitter : ICodeEmitter
     int GetStore(string name)
     {
         if (m_storeMap.TryGet(name, out int col))
-        {
             return col;
-        }
-
         return AllocStore(name);
     }
 
@@ -334,44 +316,17 @@ public sealed class BabbageEmitter : ICodeEmitter
     static string? FindDefinitionName(IRApply app)
     {
         IRExpr current = app.Function;
-        while (current is IRApply inner)
-        {
-            current = inner.Function;
-        }
-
+        while (current is IRApply inner) current = inner.Function;
         return current is IRName name && name.Name.Length > 0 && char.IsLower(name.Name[0]) ? name.Name : null;
     }
 
     static void CollectApplyArgs(IRApply app, List<IRExpr> args)
     {
-        if (app.Function is IRApply inner)
-        {
-            CollectApplyArgs(inner, args);
-        }
-
+        if (app.Function is IRApply inner) CollectApplyArgs(inner, args);
         args.Add(app.Argument);
     }
 
     static bool HasSelfTailCall(IRDefinition def) =>
-        def.Parameters.Length > 0 && ExprHasTailCall(def.Body, def.Name);
+        def.Parameters.Length > 0 && def.Body.HasTailCall(def.Name);
 
-    static bool ExprHasTailCall(IRExpr expr, string funcName) => expr switch
-    {
-        IRIf iff => ExprHasTailCall(iff.Then, funcName) || ExprHasTailCall(iff.Else, funcName),
-        IRLet let => ExprHasTailCall(let.Body, funcName),
-        IRMatch match => match.Branches.Any(b => ExprHasTailCall(b.Body, funcName)),
-        IRApply app => IsSelfCall(app, funcName),
-        _ => false
-    };
-
-    static bool IsSelfCall(IRApply app, string funcName)
-    {
-        IRExpr root = app.Function;
-        while (root is IRApply inner)
-        {
-            root = inner.Function;
-        }
-
-        return root is IRName name && name.Name == funcName;
-    }
 }

@@ -44,22 +44,19 @@ public sealed class SourceText(string fileName, string content)
     static string NormalizeLineEndings(string raw)
     {
         if (raw.IndexOfAny(['\t', '\r']) < 0)
-        {
             return raw;
-        }
-
         System.Text.StringBuilder sb = new System.Text.StringBuilder(raw.Length);
         foreach (char c in raw)
         {
-            if (c == '\t')
-            {
-                sb.Append("  ");
-            }
+            if (c == '\t')
+            {
+                sb.Append("  ");
+            }
             else if (c == '\r') { /* stripped */ }
-            else
-            {
-                sb.Append(c);
-            }
+            else
+            {
+                sb.Append(c);
+            }
         }
         return sb.ToString();
     }
@@ -93,13 +90,9 @@ public sealed class SourceText(string fileName, string content)
         {
             int mid = lo + (hi - lo) / 2;
             if (starts[mid] <= offset)
-            {
                 lo = mid + 1;
-            }
             else
-            {
                 hi = mid - 1;
-            }
         }
         return hi;
     }
@@ -111,9 +104,7 @@ public sealed class SourceText(string fileName, string content)
         for (int i = 0; i < Content.Length; i++)
         {
             if (Content[i] == '\n')
-            {
                 starts.Add(i + 1);
-            }
         }
         return starts.ToArray();
     }

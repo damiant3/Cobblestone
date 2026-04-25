@@ -1,0 +1,314 @@
+Chapter: Opening
+  cites Codex chapter Console
+  cites Codex chapter Files
+  cites Codex chapter Text
+  cites Codex chapter Lists
+  cites Codex chapter Runtime
+
+ Entry point for the Codex compiler.
+
+  cites Emit chapter Codex Emitter (emit-codex-text-chapter)
+  cites Emit chapter C Sharp Emitter (emit-csharp-text-chapter)
+  cites Emit chapter X86-64 Code Generator (x86-64-emit-chapter, x86-64-emit-chapter-with-exit-mode, x86-64-emit-chapter-with-options, X86_64ExitMode, ExitRepl, ExitQemuExit, ExitAcpiS5, X86_64WatchdogMode, WatchdogProgress, WatchdogPet)
+  cites Semantics chapter Name Resolution (resolve-chapter, check-entry-point-duplicate, check-duplicate-cites)
+
+Section: Compile Target
+
+ The transpile / codegen target. Every compile mode reads the same
+ frontend IR; only the final emit phase is target-specific.
+
+  CompileTarget =
+   | CtCodexText
+   | CtCSharp
+   | CtX86_64Bare
+
+Section: Frontend
+
+ Shared pipeline: tokenize, parse, desugar, scope, resolve, type-check,
+ lower. Every compile mode MUST run this; the only permitted divergence
+ is at emit. Records heap positions at phase boundaries so callers can
+ report measurements without a parallel pipeline.
+
+  CompileFrontend = record {
+   scoped : AChapter,
+   ir : IRChapter,
+   type-env : TypeEnv,
+   bag : DiagnosticBag,
+   heap-marks : List Integer
+  }
+
+  compile-frontend : Text -> Text -> CompileFrontend
+  compile-frontend (source) (chapter-name) =
+   let h0 = __heap-save
+   in let tok-result = tokenize source 1
+   in let tokens = tok-result.tokens
+   in let h1 = __heap-save
+   in let st = make-parse-state tokens
+   in let scan = scan-document st
+   in let h2 = __heap-save
+   in let assignments = build-all-assignments (scan.def-headers) 0 []
+   in let colliding = find-colliding-names assignments
+   in let h3 = __heap-save
+   in let entry-dup-bag = bag-from-list (check-entry-point-duplicate assignments)
+   in let doc = parse-document (make-parse-state tokens)
+   in let h4 = __heap-save
+   in let ast = desugar-document doc chapter-name
+   in let h5 = __heap-save
+   in let scoped = scope-achapter ast colliding assignments
+   in let h6 = __heap-save
+   in let cite-bag = check-duplicate-cites (scoped.citations)
+   in let resolve-result = resolve-chapter scoped
+   in let h7 = __heap-save
+   in let check-result = check-chapter scoped
+   in let h8 = __heap-save
+   in let lex-bag = bag-from-list (tok-result.errors)
+   in let pre-emit-bag = bag-merge-all [lex-bag, doc.parse-bag, entry-dup-bag, cite-bag, resolve-result.bag, check-result.state.bag]
+   in let has-errs = bag-has-errors pre-emit-bag
+   in let ir = if has-errs then IRChapter { name = scoped.name, defs = [], chapter-title = scoped.chapter-title, prose = scoped.prose, section-titles = scoped.section-titles, ctor-names = resolve-result.ctor-names, span = scoped.span }
+               else lower-chapter scoped (check-result.types) (check-result.env) (check-result.state) (resolve-result.ctor-names)
+   in let h9 = __heap-save
+   in let type-env = if has-errs then empty-type-env
+                     else check-result.env
+   in let h10 = __heap-save
+   in CompileFrontend {
+    scoped = scoped,
+    ir = ir,
+    type-env = type-env,
+    bag = pre-emit-bag,
+    heap-marks = [h0, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10]
+   }
+
+Section: Foreword Loading
+
+ Scans the user source for `cites Foreword chapter X` declarations,
+ reads each foreword/X.codex file, and renames the foreword chapter
+ headers to "Foreword--X" so they coexist with the citing chapter in
+ a single preconcatenated source. The Codex-side mirror of
+ LoadCitedForewordChapters in tools/Codex.Bootstrap/Program.cs; the
+ mechanism now travels with the compiler itself rather than being a
+ driver-layer hack.
+
+  ForewordLoadResult = record {
+   prefix : Text,
+   bag : DiagnosticBag
+  }
+
+  filter-foreword-cites : List CitesDecl -> Integer -> Integer -> List CitesDecl -> List CitesDecl
+  filter-foreword-cites (citations) (i) (len) (acc) =
+   if i == len then acc
+   else let c = list-at citations i
+   in if (c.quire.text) == "Foreword"
+      then filter-foreword-cites citations (i + 1) len (list-snoc acc c)
+      else filter-foreword-cites citations (i + 1) len acc
+
+  contains-foreword-chapter-name : List CitesDecl -> Text -> Integer -> Integer -> Boolean
+  contains-foreword-chapter-name (cs) (name) (i) (len) =
+   if i == len then False
+   else if (list-at cs i).chapter-name == name then True
+   else contains-foreword-chapter-name cs name (i + 1) len
+
+  dedup-foreword-cites : List CitesDecl -> Integer -> Integer -> List CitesDecl -> List CitesDecl
+  dedup-foreword-cites (cs) (i) (len) (acc) =
+   if i == len then acc
+   else let c = list-at cs i
+   in if contains-foreword-chapter-name acc (c.chapter-name) 0 (list-length acc)
+      then dedup-foreword-cites cs (i + 1) len acc
+      else dedup-foreword-cites cs (i + 1) len (list-snoc acc c)
+
+  load-and-advance-foreword : List CitesDecl -> Integer -> Integer -> List Text -> DiagnosticBag -> Text -> Text -> Boolean -> [FileSystem] ForewordLoadResult
+  load-and-advance-foreword (fwc) (i) (len) (chunks) (bag) (name) (path) (found) =
+   if found then act
+     content <- read-file path
+     read-and-rename-foreword fwc (i + 1) len (list-snoc chunks (text-replace content ("Chapter: " ++ name) ("Chapter: Foreword--" ++ name) ++ "\n\n")) bag
+   end
+   else let cite = list-at fwc i
+   in let missing-bag = bag-add bag (make-error cdx-missing-cite ("Cited foreword chapter '" ++ name ++ "' not found (expected " ++ path ++ ")") (span-at (cite.quire.line) (cite.quire.column) (cite.quire.offset) (text-length (cite.quire.text)) (cite.quire.file-id)))
+   in read-and-rename-foreword fwc (i + 1) len chunks missing-bag
+
+  read-and-rename-foreword : List CitesDecl -> Integer -> Integer -> List Text -> DiagnosticBag -> [FileSystem] ForewordLoadResult
+  read-and-rename-foreword (fwc) (i) (len) (chunks) (bag) =
+   if i == len then ForewordLoadResult { prefix = text-concat-list chunks, bag = bag }
+   else let cite = list-at fwc i
+   in let name = cite.chapter-name
+   in let path = "foreword/" ++ name ++ ".codex"
+   in act
+     found <- file-exists path
+     load-and-advance-foreword fwc i len chunks bag name path found
+   end
+
+  load-cited-foreword : Text -> [FileSystem] ForewordLoadResult
+  load-cited-foreword (source) =
+   let tok-result = tokenize source 1
+   in let doc = parse-document (make-parse-state (tok-result.tokens))
+   in let foreword-cites = filter-foreword-cites (doc.citations) 0 (list-length (doc.citations)) []
+   in let uniq = dedup-foreword-cites foreword-cites 0 (list-length foreword-cites) []
+   in read-and-rename-foreword uniq 0 (list-length uniq) [] empty-bag
+
+Section: Text Compilation
+
+ Transpile targets (Codex text, C#, ... future: JS/Rust/etc.) share
+ this path. Binary targets go through compile-to-binary because their
+ result is bytes, not text. heap-marks exposes phase-boundary heap
+ positions (frontend + pre-emit + post-emit) so callers can report
+ measurements without a parallel pipeline.
+
+  CompileTextResult = record {
+   text : Text,
+   bag : DiagnosticBag,
+   heap-marks : List Integer
+  }
+
+  compile-text : Text -> Text -> CompileTarget -> CompileTextResult
+  compile-text (source) (chapter-name) (target) =
+   let fe = compile-frontend source chapter-name
+   in let h-pre-emit = __heap-save
+   in let text = if bag-has-errors (fe.bag) then ""
+                 else emit-for-text-target target (fe.ir) (fe.scoped.type-defs)
+   in let h-post-emit = __heap-save
+   in CompileTextResult {
+    text = text,
+    bag = fe.bag,
+    heap-marks = fe.heap-marks ++ [h-pre-emit, h-post-emit]
+   }
+
+  compile-source : Text -> Text -> CompileTarget -> [FileSystem] CompileTextResult
+  compile-source (source) (chapter-name) (target) =
+   act
+     loaded <- load-cited-foreword source
+     let combined = if text-length (loaded.prefix) == 0 then source
+                    else loaded.prefix ++ source
+     in let result = compile-text combined chapter-name target
+     in CompileTextResult {
+       text = result.text,
+       bag = bag-merge-all [loaded.bag, result.bag],
+       heap-marks = result.heap-marks
+     }
+   end
+
+  emit-for-text-target : CompileTarget -> IRChapter -> List ATypeDef -> Text
+  emit-for-text-target (target) (ir) (type-defs) =
+   when target
+    is CtCodexText -> emit-codex-text-chapter ir type-defs
+    is CtCSharp -> emit-csharp-text-chapter ir type-defs
+
+Section: Binary Compilation
+
+ x86-64 bare-metal. Output is bytes, not text. Future binary targets
+ (CDX, riscv-bare, ...) will dispatch from here once we have more than
+ one.
+
+  compile-to-binary : Text -> Text -> EmitChapterResult
+  compile-to-binary (source) (chapter-name) =
+   compile-to-binary-with-options source chapter-name ExitRepl WatchdogProgress
+
+  compile-to-binary-with-exit-mode : Text -> Text -> X86_64ExitMode -> EmitChapterResult
+  compile-to-binary-with-exit-mode (source) (chapter-name) (mode) =
+   compile-to-binary-with-options source chapter-name mode WatchdogProgress
+
+  compile-to-binary-with-options : Text -> Text -> X86_64ExitMode -> X86_64WatchdogMode -> EmitChapterResult
+  compile-to-binary-with-options (source) (chapter-name) (exit-mode) (wd-mode) =
+   let fe = compile-frontend source chapter-name
+   in if bag-has-errors (fe.bag) then EmitChapterResult { bytes = [], bag = fe.bag }
+   else let emit-result = x86-64-emit-chapter-with-options (fe.ir) (fe.type-env) exit-mode wd-mode
+    in EmitChapterResult {
+     bytes = emit-result.bytes,
+     bag = bag-merge-all [fe.bag, emit-result.bag]
+    }
+
+Section: Measurement
+
+ Phase labels line up 1:1 with CompileTextResult.heap-marks and
+ CompileFrontend.heap-marks. Callers that want a profile report on a
+ compile call compile-text and format heap-marks with format-heap-marks.
+
+  phase-labels : List Text
+  phase-labels =
+   ["h0-start", "h1-tokenize", "h2-scan", "h3-assignments",
+    "h4-parse", "h5-desugar", "h6-scope", "h7-resolve",
+    "h8-check", "h9-lower", "h10-ctors",
+    "h-pre-emit", "h-post-emit"]
+
+  format-heap-marks : List Integer -> Text
+  format-heap-marks (marks) =
+   text-concat-list (format-heap-marks-acc marks phase-labels 0 (list-length marks) [])
+
+  format-heap-marks-acc : List Integer -> List Text -> Integer -> Integer -> List Text -> List Text
+  format-heap-marks-acc (marks) (labels) (i) (len) (acc) =
+   if i == len then acc
+   else let label = if i < list-length labels then list-at labels i else "h?"
+    in format-heap-marks-acc marks labels (i + 1) len (list-snoc acc ("PHASE-" ++ label ++ ":" ++ integer-to-text (list-at marks i) ++ "\n"))
+
+Section: Whitespace Normalization
+
+  normalize-whitespace : Text -> Text
+  normalize-whitespace (s) =
+   let r = text-replace s "\n\n\n" "\n\n"
+   in if text-length r == text-length s then s
+      else normalize-whitespace r
+
+Section: Codegen Diagnostics
+
+  print-codegen-errors : List Diagnostic -> Integer -> Integer -> [Console] Nothing
+  print-codegen-errors (errs) (i) (len) =
+   if i == len then print-line ""
+   else act
+    print-line (diagnostic-display (list-at errs i) empty-file-table)
+    print-codegen-errors errs (i + 1) len
+   end
+
+  print-codegen-error-header : List Diagnostic -> [Console] Nothing
+  print-codegen-error-header (errs) =
+   let n = list-length errs
+   in if n == 0 then print-line ""
+   else act
+    print-line ("CODEGEN-ERRORS:" ++ integer-to-text n)
+    print-codegen-errors errs 0 n
+   end
+
+Section: Entry Point
+
+  emit-binary : Text -> [Console, FileSystem] Nothing
+  emit-binary (source) =
+   let result = compile-to-binary source "Codex_Codex"
+   in act
+    print-codegen-error-header (bag-diagnostics (result.bag))
+    emit-binary-tail result
+   end
+
+  emit-binary-tail : EmitChapterResult -> [Console, FileSystem] Nothing
+  emit-binary-tail (result) =
+   if bag-has-errors (result.bag) then print-line "CODEGEN-HALTED: errors in bag; no binary emitted"
+   else act
+    print-line ("SIZE:" ++ integer-to-text (list-length (result.bytes)))
+    write-binary (result.bytes)
+   end
+
+  emit-text : CompileTarget -> Text -> [Console] Nothing
+  emit-text (target) (source) =
+   let result = compile-text source "Program" target
+   in act
+    print-codegen-error-header (bag-diagnostics (result.bag))
+    emit-text-tail result
+   end
+
+  emit-text-tail : CompileTextResult -> [Console] Nothing
+  emit-text-tail (result) =
+   if bag-has-errors (result.bag) then print-line "CODEGEN-HALTED: errors in bag; no text emitted"
+   else print-line (result.text)
+
+  emit-measure : Text -> [Console] Nothing
+  emit-measure (source) =
+   let result = compile-text source "Program" CtCodexText
+   in print-line (format-heap-marks (result.heap-marks) ++ "EMIT-BYTES:" ++ integer-to-text (text-length (result.text)) ++ "\n")
+
+  opening : [Console, FileSystem] Nothing = act
+   mode <- read-line
+   source <- read-file mode
+   let clean = normalize-whitespace source
+   in if mode == "BINARY" then emit-binary clean
+      else if mode == "MEASURE" then emit-measure clean
+      else if mode == "CSHARP" then emit-text CtCSharp clean
+      else emit-text CtCodexText clean
+  end
+
+Page 1

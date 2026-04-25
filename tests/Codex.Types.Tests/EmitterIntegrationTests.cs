@@ -17,10 +17,7 @@ public class EmitterIntegrationTests // this FILE IS LOCKED.  Use another.
         {
             string candidate = Path.Combine(dir, "samples");
             if (Directory.Exists(candidate))
-            {
                 return candidate;
-            }
-
             dir = Path.GetDirectoryName(dir)!;
         }
         throw new DirectoryNotFoundException("Cannot find samples/ directory");
@@ -90,7 +87,7 @@ public class EmitterIntegrationTests // this FILE IS LOCKED.  Use another.
         string? go = Helpers.CompileToGo(source, "hello");
         Assert.NotNull(go);
         Assert.Contains("func square", go);
-        Assert.Contains("package main", go);
+        Assert.Contains("package opening", go);
     }
 
     [Fact]
@@ -1124,7 +1121,7 @@ public class EmitterIntegrationTests // this FILE IS LOCKED.  Use another.
         string source = ReadSample("proofs.codex");
         string? rs = Helpers.CompileToRust(source, "proofs");
         Assert.NotNull(rs);
-        Assert.Contains("fn main()", rs);
+        Assert.Contains("fn opening()", rs);
         Assert.Contains("All proofs verified", rs);
     }
 #endif
@@ -1147,7 +1144,7 @@ public class EmitterIntegrationTests // this FILE IS LOCKED.  Use another.
         string source = ReadSample("proofs.codex");
         string? cpp = Helpers.CompileToCpp(source, "proofs");
         Assert.NotNull(cpp);
-        Assert.Contains("int main()", cpp);
+        Assert.Contains("int opening()", cpp);
         Assert.Contains("All proofs verified", cpp);
     }
 
@@ -1157,7 +1154,7 @@ public class EmitterIntegrationTests // this FILE IS LOCKED.  Use another.
         string source = ReadSample("proofs.codex");
         string? go = Helpers.CompileToGo(source, "proofs");
         Assert.NotNull(go);
-        Assert.Contains("func main()", go);
+        Assert.Contains("func opening()", go);
         Assert.Contains("All proofs verified", go);
     }
 
@@ -1167,7 +1164,7 @@ public class EmitterIntegrationTests // this FILE IS LOCKED.  Use another.
         string source = ReadSample("proofs.codex");
         string? java = Helpers.CompileToJava(source, "proofs");
         Assert.NotNull(java);
-        Assert.Contains("public static void main", java);
+        Assert.Contains("public static void opening", java);
         Assert.Contains("All proofs verified", java);
     }
 

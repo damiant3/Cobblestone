@@ -301,8 +301,8 @@ public partial class IntegrationTests  // this file is also locked.  Check Integ
     public void Text_length_compiles_to_csharp()
     {
         string source =
-            "main : Integer\n" +
-            "main = text-length \"hello\"\n";
+            "opening : Integer\n" +
+            "opening = text-length \"hello\"\n";
         string? cs = Helpers.CompileToCS(source, "strlen");
         Assert.NotNull(cs);
         Assert.Contains(".Length", cs!);
@@ -323,8 +323,8 @@ public partial class IntegrationTests  // this file is also locked.  Check Integ
     public void Char_at_compiles_to_csharp()
     {
         string source =
-            "main : Char\n" +
-            "main = char-at \"hello\" 0\n";
+            "opening : Char\n" +
+            "opening = char-at \"hello\" 0\n";
         string? cs = Helpers.CompileToCS(source, "charat");
         Assert.NotNull(cs);
         Assert.Contains("(long)", cs!);
@@ -345,8 +345,8 @@ public partial class IntegrationTests  // this file is also locked.  Check Integ
     public void Substring_compiles_to_csharp()
     {
         string source =
-            "main : Text\n" +
-            "main = substring \"hello\" 1 3\n";
+            "opening : Text\n" +
+            "opening = substring \"hello\" 1 3\n";
         string? cs = Helpers.CompileToCS(source, "substr");
         Assert.NotNull(cs);
         Assert.Contains("Substring", cs!);
@@ -424,8 +424,8 @@ public partial class IntegrationTests  // this file is also locked.  Check Integ
         string source =
             "first-is-digit : Text -> Boolean\n" +
             "first-is-digit (s) = is-digit (char-at s 0)\n\n" +
-            "main : Boolean\n" +
-            "main = first-is-digit \"3abc\"\n";
+            "opening : Boolean\n" +
+            "opening = first-is-digit \"3abc\"\n";
         string? cs = Helpers.CompileToCS(source, "compose");
         Assert.NotNull(cs);
     }
@@ -442,8 +442,8 @@ public partial class IntegrationTests  // this file is also locked.  Check Integ
             "      in if is-letter ch\n" +
             "        then count-letters s (i + 1) (acc + 1)\n" +
             "        else count-letters s (i + 1) acc\n\n" +
-            "main : Integer\n" +
-            "main = count-letters \"hello world\" 0 0\n";
+            "opening : Integer\n" +
+            "opening = count-letters \"hello world\" 0 0\n";
         string? cs = Helpers.CompileToCS(source, "stringops");
         Assert.NotNull(cs);
         Assert.Contains("count_letters", cs!);
@@ -460,8 +460,8 @@ public partial class IntegrationTests  // this file is also locked.  Check Integ
             "}\n\n" +
             "add : Integer -> Integer -> Integer\n" +
             "add (a) (b) = a + b\n\n" +
-            "main : Integer\n" +
-            "main =\n" +
+            "opening : Integer\n" +
+            "opening =\n" +
             "  let p = Pair { first = 3, second = 4 }\n" +
             "  in add p.first p.second\n";
         string? cs = Helpers.CompileToCS(source, "fieldarg");
@@ -482,8 +482,8 @@ public partial class IntegrationTests  // this file is also locked.  Check Integ
             "sum-coords (p) = p.x + p.y\n\n" +
             "double : Integer -> Integer\n" +
             "double (n) = n + n\n\n" +
-            "main : Integer\n" +
-            "main =\n" +
+            "opening : Integer\n" +
+            "opening =\n" +
             "  let p = Point { x = 10, y = 20 }\n" +
             "  in double p.x\n";
         string? cs = Helpers.CompileToCS(source, "fieldarg2");
@@ -504,8 +504,8 @@ public partial class IntegrationTests  // this file is also locked.  Check Integ
             "peek (s) =\n" +
             "  if at-end s then code-to-char 0\n" +
             "  else char-at s.source s.pos\n\n" +
-            "main : Boolean\n" +
-            "main = at-end (LexState { source = \"hello\", pos = 5 })\n";
+            "opening : Boolean\n" +
+            "opening = at-end (LexState { source = \"hello\", pos = 5 })\n";
         string? cs = Helpers.CompileToCS(source, "lexstate");
         Assert.NotNull(cs);
         Assert.Contains("at_end", cs!);

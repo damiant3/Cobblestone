@@ -15,7 +15,7 @@ rm -f "$pipe"; mkfifo "$pipe"
 sleep 999 > "$pipe" &
 holder=$!
 out="/tmp/measure-out-$$"
-timeout "$TIMEOUT" "$QEMU" -enable-kvm -kernel "$ELF" -serial stdio -display none -no-reboot -m 1024 < "$pipe" 2>/dev/null \
+timeout "$TIMEOUT" "$QEMU" -enable-kvm -kernel "$ELF" -serial stdio -device isa-debug-exit,iobase=0xf4,iosize=0x04 -display none -no-reboot -m 1024 < "$pipe" 2>/dev/null \
 | while IFS= read -r line; do
     if [[ "$line" == READY* ]]; then
         (printf 'MEASURE\n'; cat "$SOURCE"; printf '\x04') > "$pipe" &

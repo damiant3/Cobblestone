@@ -28,8 +28,8 @@ public class LinuxNativeTests
         do-fork : [Concurrent] Integer
         do-fork = let t = fork compute in await t
 
-        main : Integer
-        main = do-fork
+        opening : Integer
+        opening = do-fork
         """;
 
     [Fact]
@@ -70,8 +70,8 @@ public class LinuxNativeTests
     // ── Baseline sanity: simple integer (no fork) ────────────────
 
     const string SimpleSource = """
-        main : Integer
-        main = 42
+        opening : Integer
+        opening = 42
         """;
 
     [Fact]
@@ -121,8 +121,8 @@ public class LinuxNativeTests
         do-fork : [Concurrent] Integer
         do-fork = let t = fork compute-fact in await t
 
-        main : Integer
-        main = do-fork
+        opening : Integer
+        opening = do-fork
         """;
 
     [Fact]
@@ -170,8 +170,8 @@ public class LinuxNativeTests
             then acc
             else sum-to (n - 1) (acc + n)
 
-        main : Integer
-        main = sum-to 10 0
+        opening : Integer
+        opening = sum-to 10 0
         """;
 
     // Large TCO: sum 1..100000 = 5000050000 (64MB heap accommodates bump allocator)
@@ -182,8 +182,8 @@ public class LinuxNativeTests
             then acc
             else sum-to (n - 1) (acc + n)
 
-        main : Integer
-        main = sum-to 100000 0
+        opening : Integer
+        opening = sum-to 100000 0
         """;
 
     [Fact]
@@ -207,8 +207,8 @@ public class LinuxNativeTests
                 then acc
                 else sum-to (n - 1) (acc + n)
 
-            main : Integer
-            main = sum-to 1000 0
+            opening : Integer
+            opening = sum-to 1000 0
             """;
         string? output = CompileAndRunX86_64(source, "tco_1k_x64");
         Assert.NotNull(output);
@@ -252,14 +252,14 @@ public class LinuxNativeTests
 
     // Positive case: '5' is a digit
     const string IsDigitPositiveSource = """
-        main : Integer
-        main = if is-digit (char-at "5" 0) then 1 else 0
+        opening : Integer
+        opening = if is-digit (char-at "5" 0) then 1 else 0
         """;
 
     // Negative case: space is NOT a digit (this was the signed comparison bug)
     const string IsDigitNegativeSource = """
-        main : Integer
-        main = if is-digit (char-at " " 0) then 1 else 0
+        opening : Integer
+        opening = if is-digit (char-at " " 0) then 1 else 0
         """;
 
     [Fact]
@@ -324,13 +324,13 @@ public class LinuxNativeTests
     // ── is-whitespace Tests ─────────────────────────────────────
 
     const string IsWhitespacePositiveSource = """
-        main : Integer
-        main = if is-whitespace (char-at " " 0) then 1 else 0
+        opening : Integer
+        opening = if is-whitespace (char-at " " 0) then 1 else 0
         """;
 
     const string IsWhitespaceNegativeSource = """
-        main : Integer
-        main = if is-whitespace (char-at "a" 0) then 1 else 0
+        opening : Integer
+        opening = if is-whitespace (char-at "a" 0) then 1 else 0
         """;
 
     [Fact]
@@ -394,8 +394,8 @@ public class LinuxNativeTests
     // ── negate Tests ────────────────────────────────────────────
 
     const string NegateSource = """
-        main : Integer
-        main = negate 42
+        opening : Integer
+        opening = negate 42
         """;
 
     [Fact]
@@ -453,8 +453,8 @@ public class LinuxNativeTests
             factorial : Integer -> Integer
             factorial (n) = if n <= 1 then 1 else n * factorial (n - 1)
 
-            main : Integer
-            main = factorial 10
+            opening : Integer
+            opening = factorial 10
             """;
         string? output = CompileAndBootBareMetal(source, "bm_fact_x64");
         Assert.NotNull(output);
@@ -467,33 +467,21 @@ public class LinuxNativeTests
     static string? CompileAndRunX86_64(string source, string chapterName)
     {
         byte[]? bytes = Helpers.CompileToX86_64(source, chapterName);
-        if (bytes is null)
-        {
-            return null;
-        }
-
+        if (bytes is null) return null;
         return RunElf(bytes, chapterName, null);
     }
 
     static string? CompileAndRunArm64(string source, string chapterName)
     {
         byte[]? bytes = Helpers.CompileToArm64(source, chapterName);
-        if (bytes is null)
-        {
-            return null;
-        }
-
+        if (bytes is null) return null;
         return RunElf(bytes, chapterName, "qemu-aarch64");
     }
 
     static string? CompileAndRunRiscV(string source, string chapterName)
     {
         byte[]? bytes = Helpers.CompileToRiscV(source, chapterName);
-        if (bytes is null)
-        {
-            return null;
-        }
-
+        if (bytes is null) return null;
         return RunElf(bytes, chapterName, "qemu-riscv64");
     }
 
@@ -502,10 +490,7 @@ public class LinuxNativeTests
     static string? CompileAndBootBareMetal(string source, string chapterName)
     {
         byte[]? bytes = Helpers.CompileToX86_64BareMetal(source, chapterName);
-        if (bytes is null)
-        {
-            return null;
-        }
+        if (bytes is null) return null;
 
         string tempDir = Path.Combine(Path.GetTempPath(),
             $"codex_bm_{chapterName}_{Guid.NewGuid().ToString("N")[..8]}");
@@ -528,10 +513,7 @@ public class LinuxNativeTests
             };
 
             using Process? proc = Process.Start(psi);
-            if (proc is null)
-            {
-                return null;
-            }
+            if (proc is null) return null;
 
             string stdout = proc.StandardOutput.ReadToEnd();
             proc.WaitForExit(10_000);
@@ -596,10 +578,7 @@ public class LinuxNativeTests
             };
 
             using Process? proc = Process.Start(psi);
-            if (proc is null)
-            {
-                return null;
-            }
+            if (proc is null) return null;
 
             string stdout = proc.StandardOutput.ReadToEnd();
             string stderr = proc.StandardError.ReadToEnd();
@@ -612,12 +591,12 @@ public class LinuxNativeTests
                     $"Process timed out after 15s.\nstdout: {stdout}\nstderr: {stderr}");
             }
 
-            if (proc.ExitCode != 0)
-            {
+            if (proc.ExitCode != 0)
+            {
                 throw new InvalidOperationException(
-                    $"{fileName} exited with code {proc.ExitCode}.\nstdout: {stdout}\nstderr: {stderr}");
-            }
-
+                    $"{fileName} exited with code {proc.ExitCode}.\nstdout: {stdout}\nstderr: {stderr}");
+            }
+
             return stdout;
         }
         finally
@@ -645,11 +624,7 @@ public class LinuxNativeTests
                 CreateNoWindow = true
             };
             using Process? proc = Process.Start(psi);
-            if (proc is null)
-            {
-                return false;
-            }
-
+            if (proc is null) return false;
             proc.WaitForExit(5_000);
             return proc.ExitCode == 0;
         }

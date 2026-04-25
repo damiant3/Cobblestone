@@ -8,54 +8,32 @@ public sealed partial class ProseParser
     {
         string lower = line.TrimEnd();
         if (!lower.EndsWith(':'))
-        {
             return null;
-        }
-
         lower = lower[..^1].Trim();
 
         if (!lower.EndsWith("containing", StringComparison.OrdinalIgnoreCase))
-        {
             return null;
-        }
-
         lower = lower[..^"containing".Length].Trim();
 
         if (!lower.EndsWith("record", StringComparison.OrdinalIgnoreCase))
-        {
             return null;
-        }
-
         lower = lower[..^"record".Length].Trim();
 
         if (!lower.EndsWith("a", StringComparison.OrdinalIgnoreCase))
-        {
             return null;
-        }
-
         lower = lower[..^1].Trim();
 
         int isIdx = lower.LastIndexOf(" is", StringComparison.OrdinalIgnoreCase);
         if (isIdx < 0)
-        {
             isIdx = lower.LastIndexOf(" Is", StringComparison.OrdinalIgnoreCase);
-        }
-
         if (isIdx < 0)
-        {
             return null;
-        }
-
         string nameSegment = lower[..isIdx].Trim();
 
         if (nameSegment.StartsWith("An ", StringComparison.OrdinalIgnoreCase))
-        {
             nameSegment = nameSegment[3..].Trim();
-        }
         else if (nameSegment.StartsWith("A ", StringComparison.OrdinalIgnoreCase))
-        {
             nameSegment = nameSegment[2..].Trim();
-        }
 
         return nameSegment.Length > 0 ? nameSegment : null;
     }
@@ -64,25 +42,16 @@ public sealed partial class ProseParser
     {
         string lower = line.TrimEnd();
         if (!lower.EndsWith(':'))
-        {
             return null;
-        }
-
         lower = lower[..^1].Trim();
 
         if (!lower.EndsWith("either", StringComparison.OrdinalIgnoreCase))
-        {
             return null;
-        }
-
         lower = lower[..^"either".Length].Trim();
 
         int isIdx = lower.LastIndexOf(" is", StringComparison.OrdinalIgnoreCase);
         if (isIdx < 0)
-        {
             return null;
-        }
-
         string nameSegment = lower[..isIdx].Trim();
 
         return nameSegment.Length > 0 ? nameSegment : null;
@@ -103,28 +72,19 @@ public sealed partial class ProseParser
             }
         }
         if (toLineIdx < 0)
-        {
             return null;
-        }
 
         // Join the To line and any continuation lines (gives, failing if) into one block
         string combined = string.Join(" ", lines[toLineIdx..].Select(l => l.Trim()));
         // Strip trailing colon or period
         if (combined.EndsWith(':') || combined.EndsWith('.'))
-        {
             combined = combined[..^1].Trim();
-        }
 
         if (!combined.StartsWith("To ", StringComparison.OrdinalIgnoreCase))
-        {
             return null;
-        }
-
         string body = combined[3..].Trim();
         if (body.Length == 0)
-        {
             return null;
-        }
 
         // Extract fail clauses: "failing if ..." or "or fails with "..." if ..."
         List<FailClause> failClauses = [];
@@ -138,16 +98,11 @@ public sealed partial class ProseParser
                 string condition = body[(failIdx + "failing if ".Length)..].Trim();
                 // Strip trailing comma for chained clauses
                 if (condition.EndsWith(','))
-                {
                     condition = condition[..^1].Trim();
-                }
-
                 failClauses.Add(new FailClause(null, condition));
                 body = body[..failIdx].Trim();
                 if (body.EndsWith(','))
-                {
                     body = body[..^1].Trim();
-                }
             }
             else if (orFailIdx >= 0)
             {
@@ -163,37 +118,30 @@ public sealed partial class ProseParser
                         reason = afterOrFails[1..closeQuote];
                         string rest = afterOrFails[(closeQuote + 1)..].Trim();
                         if (rest.StartsWith("if ", StringComparison.OrdinalIgnoreCase))
-                        {
                             rest = rest[3..].Trim();
-                        }
-
                         condition = rest;
                     }
-                    else
-                    {
-                        condition = afterOrFails;
-                    }
+                    else
+                    {
+                        condition = afterOrFails;
+                    }
                 }
-                else
-                {
-                    condition = afterOrFails;
-                }
+                else
+                {
+                    condition = afterOrFails;
+                }
+
                 if (condition.EndsWith(','))
-                {
                     condition = condition[..^1].Trim();
-                }
-
                 failClauses.Add(new FailClause(reason, condition));
                 body = body[..orFailIdx].Trim();
                 if (body.EndsWith(','))
-                {
                     body = body[..^1].Trim();
-                }
             }
-            else
-            {
-                break;
-            }
+            else
+            {
+                break;
+            }
         }
 
         // Extract return type from "gives [a|the|the updated] Type" suffix
@@ -204,22 +152,13 @@ public sealed partial class ProseParser
             string givesText = body[(givesIdx + " gives ".Length)..].Trim();
             // Strip leading articles: "a", "an", "the", "the updated"
             if (givesText.StartsWith("the updated ", StringComparison.OrdinalIgnoreCase))
-            {
                 givesText = givesText["the updated ".Length..].Trim();
-            }
             else if (givesText.StartsWith("an ", StringComparison.OrdinalIgnoreCase))
-            {
                 givesText = givesText[3..].Trim();
-            }
             else if (givesText.StartsWith("a ", StringComparison.OrdinalIgnoreCase))
-            {
                 givesText = givesText[2..].Trim();
-            }
             else if (givesText.StartsWith("the ", StringComparison.OrdinalIgnoreCase))
-            {
                 givesText = givesText[4..].Trim();
-            }
-
             returnType = givesText;
             body = body[..givesIdx].Trim();
         }
@@ -236,10 +175,7 @@ public sealed partial class ProseParser
                 seenParam = true;
                 int close = body.IndexOf(')', i);
                 if (close < 0)
-                {
                     break;
-                }
-
                 string paramText = body[(i + 1)..close].Trim();
                 int colonIdx = paramText.IndexOf(':');
                 if (colonIdx >= 0)
@@ -247,37 +183,27 @@ public sealed partial class ProseParser
                     string pName = paramText[..colonIdx].Trim();
                     string pType = paramText[(colonIdx + 1)..].Trim();
                     if (pName.Length > 0 && pType.Length > 0)
-                    {
                         parameters.Add((ToFieldName(pName), pType));
-                    }
                 }
                 i = close + 1;
             }
-            else if (char.IsWhiteSpace(body[i]))
-            {
-                i++;
-            }
+            else if (char.IsWhiteSpace(body[i]))
+            {
+                i++;
+            }
             else
             {
                 int wordEnd = i;
                 while (wordEnd < body.Length && body[wordEnd] != '(' && !char.IsWhiteSpace(body[wordEnd]))
-                {
                     wordEnd++;
-                }
-
                 if (!seenParam)
-                {
                     nameWords.Add(body[i..wordEnd].ToLowerInvariant());
-                }
-
                 i = wordEnd;
             }
         }
 
         if (nameWords.Count == 0)
-        {
             return null;
-        }
 
         string funcName = string.Join("-", nameWords);
         return new FunctionTemplateInfo(funcName, parameters, returnType, span)
@@ -312,10 +238,7 @@ public sealed partial class ProseParser
             string trimmed = line.Trim();
 
             if (trimmed.Length == 0)
-            {
                 break;
-            }
-
             if (trimmed.StartsWith("Chapter:", StringComparison.Ordinal)
                 || trimmed.StartsWith("Section:", StringComparison.Ordinal))
             {
@@ -324,9 +247,7 @@ public sealed partial class ProseParser
 
             int indent = MeasureIndent(line);
             if (IsNotationIndent(indent))
-            {
                 break;
-            }
 
             if (trimmed.StartsWith('-')
                 && templateLine is not null)
@@ -355,33 +276,23 @@ public sealed partial class ProseParser
         // Detect transition markers
         ProseTransitionKind transition = ProseTransitionKind.None;
         if (text.TrimEnd().EndsWith("We say:", StringComparison.OrdinalIgnoreCase))
-        {
             transition = ProseTransitionKind.WeSay;
-        }
         else if (text.TrimEnd().EndsWith("This is written:", StringComparison.OrdinalIgnoreCase))
-        {
             transition = ProseTransitionKind.ThisIsWritten;
-        }
 
         // Check for function template — may span multiple lines (To..., gives..., failing if...)
         FunctionTemplateInfo? funcTemplate = null;
         if (proseLines.Any(l => l.TrimStart().StartsWith("To ", StringComparison.OrdinalIgnoreCase) && l.Contains('(')))
-        {
             funcTemplate = TryMatchFunctionTemplate(text, proseSpan);
-        }
 
         // Check for Claim: or Proof: template
         ProseClaimInfo? claimTemplate = null;
         ProseProofInfo? proofTemplate = null;
         string trimmedText = text.Trim();
         if (trimmedText.StartsWith("Claim:", StringComparison.OrdinalIgnoreCase))
-        {
             claimTemplate = new ProseClaimInfo(trimmedText["Claim:".Length..].Trim().TrimEnd('.'));
-        }
         else if (trimmedText.StartsWith("Proof:", StringComparison.OrdinalIgnoreCase))
-        {
             proofTemplate = new ProseProofInfo(trimmedText["Proof:".Length..].Trim().TrimEnd('.'));
-        }
 
         // Check for procedure steps (First, / Then, / Finally,)
         ProseProcedure? procedure = TryParseProcedure(text);
@@ -406,9 +317,7 @@ public sealed partial class ProseParser
         });
 
         if (templateLine is null)
-        {
             return;
-        }
 
         SourceSpan templateSpan = MakeLineSpan(templateLineIdx);
 
@@ -454,30 +363,20 @@ public sealed partial class ProseParser
             string line = m_lines[m_lineIndex];
             string trimmed = line.Trim();
             if (trimmed.Length == 0)
-            {
                 break;
-            }
-
             if (!trimmed.StartsWith('-'))
-            {
                 break;
-            }
 
             SourceSpan lineSpan = MakeLineSpan(m_lineIndex);
             string bullet = trimmed[1..].Trim();
             RecordTypeFieldNode? field = ParseRecordBullet(bullet, lineSpan);
             if (field is not null)
-            {
                 fields.Add(field);
-            }
-
             m_lineIndex++;
         }
 
         if (fields.Count == 0)
-        {
             return null;
-        }
 
         List<ProseConstraint> constraints = ParseConstraintLines();
 
@@ -505,31 +404,21 @@ public sealed partial class ProseParser
             string line = m_lines[m_lineIndex];
             string trimmed = line.Trim();
             if (trimmed.Length == 0)
-            {
                 break;
-            }
-
             if (!trimmed.StartsWith('-'))
-            {
                 break;
-            }
 
             SourceSpan lineSpan = MakeLineSpan(m_lineIndex);
             string bullet = trimmed[1..].Trim();
             VariantConstructorNode? ctor =
                 ParseVariantBullet(bullet, lineSpan);
             if (ctor is not null)
-            {
                 ctors.Add(ctor);
-            }
-
             m_lineIndex++;
         }
 
         if (ctors.Count == 0)
-        {
             return null;
-        }
 
         List<ProseConstraint> constraints = ParseConstraintLines();
 
@@ -548,16 +437,12 @@ public sealed partial class ProseParser
     {
         int colonIdx = bullet.IndexOf(':');
         if (colonIdx < 0)
-        {
             return null;
-        }
 
         string fieldName = ToFieldName(bullet[..colonIdx].Trim());
         string fieldType = bullet[(colonIdx + 1)..].Trim();
         if (fieldName.Length == 0 || fieldType.Length == 0)
-        {
             return null;
-        }
 
         Token nameToken = MakeSyntheticToken(
             TokenKind.Identifier, fieldName, span);
@@ -582,9 +467,7 @@ public sealed partial class ProseParser
                 {
                     string trimPart = part.Trim();
                     if (trimPart.Length == 0)
-                    {
                         continue;
-                    }
 
                     int colonIdx = trimPart.IndexOf(':');
                     if (colonIdx >= 0)
@@ -604,15 +487,13 @@ public sealed partial class ProseParser
                 }
             }
         }
-        else
-        {
-            ctorName = ToPascalCase(bullet.Trim());
-        }
-
+        else
+        {
+            ctorName = ToPascalCase(bullet.Trim());
+        }
+
         if (ctorName.Length == 0)
-        {
             return null;
-        }
 
         Token ctorToken = MakeSyntheticToken(
             TokenKind.TypeIdentifier, ctorName, span);
@@ -628,10 +509,7 @@ public sealed partial class ProseParser
         Parser parser = new(tokens, diag);
         TypeNode? result = parser.TryParseType();
         if (result is not null)
-        {
             return result;
-        }
-
         Token synth = MakeSyntheticToken(
             TokenKind.TypeIdentifier, typeText.Trim(), span);
         return new NamedTypeNode(synth);
@@ -652,9 +530,7 @@ public sealed partial class ProseParser
         {
             string line = rawLine.Trim();
             if (line.Length == 0)
-            {
                 continue;
-            }
 
             string? marker = null;
             string body;
@@ -673,18 +549,16 @@ public sealed partial class ProseParser
                 marker = "finally";
                 body = line["Finally,".Length..].Trim();
             }
-            else
-            {
-                continue;
-            }
-
+            else
+            {
+                continue;
+            }
+
             body = body.TrimEnd('.');
 
             ProcedureStep? step = ParseSingleStep(marker, body);
             if (step is not null)
-            {
                 steps.Add(step);
-            }
         }
 
         return steps.Count > 0 ? new ProseProcedure(steps) : null;
@@ -775,10 +649,7 @@ public sealed partial class ProseParser
         foreach (string rawLine in text.Split('\n'))
         {
             string line = rawLine.Trim().TrimEnd('.');
-            if (line.Length == 0)
-            {
-                continue;
-            }
+            if (line.Length == 0) continue;
 
             if (line.StartsWith("for every ", StringComparison.OrdinalIgnoreCase))
             {
@@ -866,9 +737,7 @@ public sealed partial class ProseParser
             string line = m_lines[m_lineIndex];
             string trimmed = line.Trim();
             if (trimmed.Length == 0)
-            {
                 break;
-            }
 
             string? keyword = null;
             string? text = null;
@@ -889,9 +758,7 @@ public sealed partial class ProseParser
             }
 
             if (keyword is null)
-            {
                 break;
-            }
 
             constraints.Add(new ProseConstraint(keyword, text!));
             m_lineIndex++;
@@ -901,11 +768,7 @@ public sealed partial class ProseParser
 
     static string ToPascalCase(string text)
     {
-        if (text.Length == 0)
-        {
-            return text;
-        }
-
+        if (text.Length == 0) return text;
         string[] words = text.Split(new char[] { ' ', '-' }, StringSplitOptions.RemoveEmptyEntries);
         return string.Concat(words.Select(w =>
             char.ToUpperInvariant(w[0]) + w[1..].ToLowerInvariant()));
@@ -914,11 +777,7 @@ public sealed partial class ProseParser
     static string ToFieldName(string text)
     {
         string[] words = text.Split(new char[] { ' ', '-' }, StringSplitOptions.RemoveEmptyEntries);
-        if (words.Length == 0)
-        {
-            return text;
-        }
-
+        if (words.Length == 0) return text;
         string first = words[0].ToLowerInvariant();
         string rest = string.Concat(words.Skip(1).Select(w =>
             char.ToUpperInvariant(w[0]) + w[1..].ToLowerInvariant()));
@@ -938,21 +797,18 @@ public sealed partial class ProseParser
                 {
                     string code = text[(i + 1)..end];
                     if (code.Length > 0 && !code.Contains('`'))
-                    {
                         refs.Add(new InlineCodeRef(code, i, end + 1));
-                    }
-
                     i = end + 1;
                 }
-                else
-                {
-                    i++;
-                }
+                else
+                {
+                    i++;
+                }
             }
-            else
-            {
-                i++;
-            }
+            else
+            {
+                i++;
+            }
         }
         return refs;
     }
@@ -968,10 +824,7 @@ public sealed partial class ProseParser
             {
                 int end = i + 1;
                 while (end < text.Length && (char.IsLetterOrDigit(text[end]) || text[end] == '-'))
-                {
                     end++;
-                }
-
                 string word = text[i..end];
                 // Must be PascalCase (starts upper, has at least one lower)
                 if (word.Length >= 2 && word.Any(char.IsLower)
@@ -981,10 +834,10 @@ public sealed partial class ProseParser
                 }
                 i = end;
             }
-            else
-            {
-                i++;
-            }
+            else
+            {
+                i++;
+            }
         }
         return refs;
     }

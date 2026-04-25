@@ -6,25 +6,32 @@ public sealed partial class Parser
 {
     public TypeNode ParseType()
     {
-        TypeNode left = ParseTypeAtom();
-
-        if (Current.Kind == TokenKind.Arrow)
+        if (FuelExhausted(nameof(ParseType), Current.Span))
+            return new NamedTypeNode(Current);
+        m_recursionDepth++;
+        try
         {
-            Advance();
-            TypeNode right = ParseType();
-            return new FunctionTypeNode(left, right, left.Span.Through(right.Span));
-        }
+            TypeNode left = ParseTypeAtom();
 
-        return left;
+            if (Current.Kind == TokenKind.Arrow)
+            {
+                Advance();
+                TypeNode right = ParseType();
+                return new FunctionTypeNode(left, right, left.Span.Through(right.Span));
+            }
+
+            return left;
+        }
+        finally
+        {
+            m_recursionDepth--;
+        }
     }
 
     public TypeNode? TryParseType()
     {
         if (Current.Kind == TokenKind.EndOfFile)
-        {
             return null;
-        }
-
         return ParseType();
     }
 
@@ -72,9 +79,7 @@ public sealed partial class Parser
             {
                 effects.Add(ParseTypeAtom());
                 if (Current.Kind == TokenKind.Comma)
-                {
                     Advance();
-                }
             }
             Expect(TokenKind.RightBracket);
             TypeNode returnType = ParseType();
@@ -123,7 +128,7 @@ public sealed partial class Parser
             return new IntegerTypeNode(lit, lit.Span);
         }
 
-        if (Current.Kind is TokenKind.TypeIdentifier or TokenKind.Identifier)
+        if (Current.Kind is TokenKind.TypeIdentifier or TokenKind.Identifier or TokenKind.NothingKeyword)
         {
             Token nameToken = Current;
             Advance();
@@ -131,14 +136,10 @@ public sealed partial class Parser
 
             List<TypeNode> args = [];
             while (IsTypeArgStart() && !IsAtEnd)
-            {
                 args.Add(ParseTypeAtomSimple());
-            }
 
             if (args.Count > 0)
-            {
                 return new ApplicationTypeNode(baseType, args, nameToken.Span.Through(args[^1].Span));
-            }
 
             return baseType;
         }
@@ -175,7 +176,7 @@ public sealed partial class Parser
             return new IntegerTypeNode(lit, lit.Span);
         }
 
-        if (Current.Kind is TokenKind.TypeIdentifier or TokenKind.Identifier)
+        if (Current.Kind is TokenKind.TypeIdentifier or TokenKind.Identifier or TokenKind.NothingKeyword)
         {
             Token nameToken = Current;
             Advance();

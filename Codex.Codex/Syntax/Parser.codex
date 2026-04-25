@@ -1,4 +1,7 @@
 Chapter: Parser
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
 
  The parser transforms a flat token list into a concrete syntax tree.
 
@@ -7,15 +10,24 @@ Chapter: Parser
 Section: Type Parsing
   parse-type : ParseState -> ParseTypeResult
   parse-type (st) =
-   let result = parse-type-atom st
-   in unwrap-type-ok result parse-type-continue
+   if parse-fuel-exhausted st then TypeOk (NamedType (current st)) (emit-parse-fuel-error st "parse-type")
+   else let st0 = consume-parse-fuel st
+   in let atom-r = parse-type-atom st0
+   in unwrap-type-ok atom-r parse-type-with-args
+
+  parse-type-with-args : TypeExpr -> ParseState -> ParseTypeResult
+  parse-type-with-args (atom) (st) =
+   let applied-r = parse-type-args atom st
+   in unwrap-type-ok applied-r parse-type-continue
 
   parse-type-continue : TypeExpr -> ParseState -> ParseTypeResult
   parse-type-continue (left) (st) =
-   if is-arrow (current-kind st) then let st2 = advance st
+   if parse-fuel-exhausted st then TypeOk left (emit-parse-fuel-error st "parse-type-continue")
+   else let st-fueled = consume-parse-fuel st
+   in if is-arrow (current-kind st-fueled) then let st2 = advance st-fueled
      in let right-result = parse-type st2
      in unwrap-type-ok right-result (make-fun-type left)
-    else TypeOk left st
+    else TypeOk left st-fueled
 
   make-fun-type : TypeExpr -> TypeExpr -> ParseState -> ParseTypeResult
   make-fun-type (left) (right) (st) =
@@ -29,9 +41,9 @@ Section: Type Parsing
   parse-type-atom : ParseState -> ParseTypeResult
   parse-type-atom (st) =
    if is-ident (current-kind st) then let tok = current st
-   in parse-type-args (NamedType tok) (advance st)
+   in TypeOk (NamedType tok) (advance st)
    else if is-type-ident (current-kind st) then let tok = current st
-   in parse-type-args (NamedType tok) (advance st)
+   in TypeOk (NamedType tok) (advance st)
    else if is-left-paren (current-kind st) then parse-paren-type (advance st)
    else if is-left-bracket (current-kind st) then parse-effect-type (advance st)
    else let tok = current st
@@ -74,9 +86,11 @@ Section: Type Parsing
 
   parse-type-args : TypeExpr -> ParseState -> ParseTypeResult
   parse-type-args (base-type) (st) =
-   if is-done st then TypeOk base-type st
-   else if is-type-arg-start (current-kind st) then parse-type-arg-next base-type st
-   else TypeOk base-type st
+   if parse-fuel-exhausted st then TypeOk base-type (emit-parse-fuel-error st "parse-type-args")
+   else let st-fueled = consume-parse-fuel st
+   in if is-done st-fueled then TypeOk base-type st-fueled
+   else if is-type-arg-start (current-kind st-fueled) then parse-type-arg-next base-type st-fueled
+   else TypeOk base-type st-fueled
 
   parse-type-arg-next : TypeExpr -> ParseState -> ParseTypeResult
   parse-type-arg-next (base-type) (st) =
@@ -90,19 +104,23 @@ Section: Type Parsing
 Section: Pattern Parsing
   parse-pattern : ParseState -> ParsePatResult
   parse-pattern (st) =
-   if is-wildcard-pat (current-kind st) then PatOk (WildPat (current st)) (advance st)
-   else if is-literal (current-kind st) then PatOk (LitPat (current st)) (advance st)
-   else if is-type-ident (current-kind st) then let tok = current st
-       in parse-ctor-pattern-fields tok [] (advance st)
-   else if is-ident (current-kind st) then PatOk (VarPat (current st)) (advance st)
-       else PatOk (WildPat (current st)) (advance st)
+   if parse-fuel-exhausted st then PatOk (WildPat (current st)) (emit-parse-fuel-error st "parse-pattern")
+   else let st-fueled = consume-parse-fuel st
+   in if is-wildcard-pat (current-kind st-fueled) then PatOk (WildPat (current st-fueled)) (advance st-fueled)
+   else if is-literal (current-kind st-fueled) then PatOk (LitPat (current st-fueled)) (advance st-fueled)
+   else if is-type-ident (current-kind st-fueled) then let tok = current st-fueled
+       in parse-ctor-pattern-fields tok [] (advance st-fueled)
+   else if is-ident (current-kind st-fueled) then PatOk (VarPat (current st-fueled)) (advance st-fueled)
+       else PatOk (WildPat (current st-fueled)) (advance st-fueled)
 
   parse-ctor-pattern-fields : Token -> List Pat -> ParseState -> ParsePatResult
   parse-ctor-pattern-fields (ctor) (acc) (st) =
-   if is-left-paren (current-kind st) then let st2 = advance st
+   if parse-fuel-exhausted st then PatOk (CtorPat ctor acc) (emit-parse-fuel-error st "parse-ctor-pattern-fields")
+   else let st-fueled = consume-parse-fuel st
+   in if is-left-paren (current-kind st-fueled) then let st2 = advance st-fueled
      in let sub = parse-pattern st2
      in unwrap-pat-ok sub (continue-ctor-fields ctor acc)
-    else PatOk (CtorPat ctor acc) st
+    else PatOk (CtorPat ctor acc) st-fueled
 
   continue-ctor-fields : Token -> List Pat -> Pat -> ParseState -> ParsePatResult
   continue-ctor-fields (ctor) (acc) (p) (st) =
@@ -413,11 +431,16 @@ Section: Document Parsing
 
   parse-selected-names : ParseState -> List Token -> SelectedNamesResult
   parse-selected-names (st) (acc) =
-   if is-ident (current-kind st) then let tok = current st
+   if is-ident (current-kind st) | is-type-ident (current-kind st) then let tok = current st
      in let st2 = advance st
-     in if is-comma (current-kind st2) then parse-selected-names (skip-newlines (advance st2)) (list-snoc acc tok)
-         else SelectedNamesResult {
-          names = list-snoc acc tok,
+     in let acc2 = list-snoc acc tok
+     in if is-comma (current-kind st2) then parse-selected-names (skip-newlines (advance st2)) acc2
+        else if is-right-paren (current-kind st2) then SelectedNamesResult {
+          names = acc2,
+          state = advance st2
+         }
+        else SelectedNamesResult {
+          names = acc2,
           state = st2
          }
     else if is-right-paren (current-kind st) then SelectedNamesResult {

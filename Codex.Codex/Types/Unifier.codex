@@ -1,4 +1,7 @@
 Chapter: Unification
+  cites Codex chapter Text
+  cites Codex chapter Lists
+  cites Codex chapter Runtime
 
  Type unification for the Codex type checker. The UnificationState
  is threaded through all operations — it tracks type variable
@@ -11,14 +14,26 @@ Chapter: Unification
  mutable reference.
 
 Section: State
+  ExprTypeEntry = record {
+   key : Integer,
+   ty : CodexType
+  }
+
   UnificationState = record {
    substitutions : List CodexType,
    next-id : Integer,
-   bag : DiagnosticBag
+   bag : DiagnosticBag,
+   context-span : SourceSpan,
+   expr-types : List ExprTypeEntry
   }
 
   UnifyResult = record {
    success : Boolean,
+   state : UnificationState
+  }
+
+  TypeResolveResult = record {
+   ty : CodexType,
    state : UnificationState
   }
 
@@ -28,7 +43,9 @@ Section: Construction
    UnificationState {
     substitutions = [TypeVar 0, TypeVar 1],
     next-id = 2,
-    bag = empty-bag
+    bag = empty-bag,
+    context-span = synthetic-span,
+    expr-types = []
    }
 
 Section: Fresh Variables
@@ -38,11 +55,10 @@ Section: Fresh Variables
 
   advance-id : UnificationState -> UnificationState
   advance-id (st) =
-   UnificationState {
-    substitutions = list-snoc (st.substitutions) (TypeVar (st.next-id)),
-    next-id = st.next-id + 1,
-    bag = st.bag
-   }
+   let new-subs = list-snoc (st.substitutions) (TypeVar (st.next-id))
+   in let new-id = st.next-id + 1
+   in let st1 = __record-set st "substitutions" new-subs
+   in __record-set st1 "next-id" new-id
 
   fresh-and-advance : UnificationState -> FreshResult
   fresh-and-advance (st) =
@@ -56,14 +72,54 @@ Section: Fresh Variables
    state : UnificationState
   }
 
+Section: Fuel Budget
+
+ Recursive type-level operations cap at max-recursion-depth stack
+ frames. A legitimate AST is nowhere near 256 deep; exceeding this
+ bound means a bypassed occurs-check, a substitution cycle, or an
+ adversarial input. Emit CDX9001 and bail rather than stack-overflow.
+
+  max-recursion-depth : Integer = 256
+
 Section: Resolve
-  resolve : UnificationState -> CodexType -> CodexType
-  resolve (st) (ty) =
-   when ty
+
+ resolve threads state and emits cdx-resource-exhausted on fuel
+ exhaustion, returning ErrorTy. resolve-silent is a pure variant for
+ callers that can't thread state (occurs-in, deep-resolve-at); it
+ also returns ErrorTy on exhaustion but emits nothing. Emission on
+ the primary unify path is sufficient to surface runaway substitution
+ cycles; occurs-in and deep-resolve callers still return ErrorTy,
+ which the existing cascade-suppression arms treat as a successful
+ unification.
+
+  resolve : UnificationState -> CodexType -> TypeResolveResult
+  resolve (st) (ty) = resolve-at st ty 0
+
+  resolve-at : UnificationState -> CodexType -> Integer -> TypeResolveResult
+  resolve-at (st) (ty) (depth) =
+   if depth >= max-recursion-depth then TypeResolveResult {
+    ty = ErrorTy,
+    state = add-fuel-error st "resolve" (st.context-span)
+   }
+   else when ty
+    is TypeVar (id) ->
+     if id >= list-length (st.substitutions) then TypeResolveResult { ty = ty, state = st }
+     else let slot = list-at (st.substitutions) id
+     in if slot-is-unbound slot id then TypeResolveResult { ty = ty, state = st }
+        else resolve-at st slot (depth + 1)
+    is otherwise -> TypeResolveResult { ty = ty, state = st }
+
+  resolve-silent : UnificationState -> CodexType -> CodexType
+  resolve-silent (st) (ty) = resolve-silent-at st ty 0
+
+  resolve-silent-at : UnificationState -> CodexType -> Integer -> CodexType
+  resolve-silent-at (st) (ty) (depth) =
+   if depth >= max-recursion-depth then ErrorTy
+   else when ty
     is TypeVar (id) ->
      if id >= list-length (st.substitutions) then ty
      else let slot = list-at (st.substitutions) id
-     in if slot-is-unbound slot id then ty else resolve st slot
+     in if slot-is-unbound slot id then ty else resolve-silent-at st slot (depth + 1)
     is otherwise -> ty
 
   slot-is-unbound : CodexType -> Integer -> Boolean
@@ -75,56 +131,128 @@ Section: Resolve
 Section: Add Substitution
   add-subst : UnificationState -> Integer -> CodexType -> UnificationState
   add-subst (st) (var-id) (ty) =
-   UnificationState {
-    substitutions = list-set-at (st.substitutions) var-id ty,
-    next-id = st.next-id,
-    bag = st.bag
-   }
+   __record-set st "substitutions" (list-set-at (st.substitutions) var-id ty)
+
+Section: Expr Types
+
+ Records per-expression resolved types keyed by span, for lowering to
+ consult after type-checking finishes. Spans are keyed as a composite
+ integer (file-id + offsets) and entries are kept sorted by key for
+ O(log N) lookup. Populated only from narrow inference sites
+ (ANameExpr, ARecordExpr) — broad population wrongly overrides match
+ result-ty.
+
+  expr-type-key : SourceSpan -> Integer
+  expr-type-key (sp) =
+   (sp.file-id * 1000000000 + sp.start.offset) * 1000000 + sp.end.offset
+
+  bsearch-expr-type-pos : List ExprTypeEntry -> Integer -> Integer -> Integer -> Integer
+  bsearch-expr-type-pos (entries) (k) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-key = (list-at entries mid).key
+   in if k <= mid-key then bsearch-expr-type-pos entries k lo mid
+      else bsearch-expr-type-pos entries k (mid + 1) hi
+
+  record-expr-type : UnificationState -> SourceSpan -> CodexType -> UnificationState
+  record-expr-type (st) (sp) (ty) =
+   if is-synthetic-span sp then st
+   else let k = expr-type-key sp
+   in let entries = st.expr-types
+   in let len = list-length entries
+   in let pos = bsearch-expr-type-pos entries k 0 len
+   in let entry = ExprTypeEntry { key = k, ty = ty }
+   in if pos < len & (list-at entries pos).key == k
+      then __record-set st "expr-types" (list-set-at entries pos entry)
+      else __record-set st "expr-types" (list-insert-at entries pos entry)
+
+  lookup-expr-type : UnificationState -> SourceSpan -> CodexType
+  lookup-expr-type (st) (sp) =
+   if is-synthetic-span sp then ErrorTy
+   else let k = expr-type-key sp
+   in let entries = st.expr-types
+   in let len = list-length entries
+   in let pos = bsearch-expr-type-pos entries k 0 len
+   in if pos < len & (list-at entries pos).key == k
+      then (list-at entries pos).ty
+      else ErrorTy
 
 Section: Add Error
   add-unify-error : UnificationState -> Integer -> Text -> SourceSpan -> UnificationState
   add-unify-error (st) (code) (msg) (span) =
-   UnificationState {
-    substitutions = st.substitutions,
-    next-id = st.next-id,
-    bag = bag-add (st.bag) (make-error code msg span)
-   }
+   __record-set st "bag" (bag-add (st.bag) (make-error code msg span))
+
+  add-fuel-error : UnificationState -> Text -> SourceSpan -> UnificationState
+  add-fuel-error (st) (op) (span) =
+   add-unify-error st cdx-resource-exhausted ("compiler resource exhausted in unifier." ++ op ++ " (budget " ++ integer-to-text max-recursion-depth ++ ")") span
 
 Section: Occurs Check
-  occurs-in : UnificationState -> Integer -> CodexType -> Boolean
-  occurs-in (st) (var-id) (ty) =
-   let resolved = resolve st ty
+  occurs-in : UnificationState -> Integer -> CodexType -> Integer -> Boolean
+  occurs-in (st) (var-id) (ty) (depth) =
+   if depth >= max-recursion-depth then True
+   else let resolved = resolve-silent st ty
    in when resolved
     is TypeVar (id) -> id == var-id
-    is FunTy (param) (ret) -> occurs-in st var-id param | occurs-in st var-id ret
-    is ListTy (elem) -> occurs-in st var-id elem
-    is LinkedListTy (elem) -> occurs-in st var-id elem
+    is FunTy (param) (ret) -> occurs-in st var-id param (depth + 1) | occurs-in st var-id ret (depth + 1)
+    is ListTy (elem) -> occurs-in st var-id elem (depth + 1)
+    is LinkedListTy (elem) -> occurs-in st var-id elem (depth + 1)
     is otherwise -> False
 
 Section: Unify
   unify : UnificationState -> CodexType -> CodexType -> SourceSpan -> UnifyResult
   unify (st) (a) (b) (span) =
-   let ra = resolve st a
-   in let rb = resolve st b
-   in unify-resolved st ra rb span
+   unify-at (__record-set st "context-span" span) a b span 0
 
-  unify-resolved : UnificationState -> CodexType -> CodexType -> SourceSpan -> UnifyResult
-  unify-resolved (st) (a) (b) (span) =
+  unify-at : UnificationState -> CodexType -> CodexType -> SourceSpan -> Integer -> UnifyResult
+  unify-at (st) (a) (b) (span) (depth) =
+   if depth >= max-recursion-depth then UnifyResult {
+    success = False,
+    state = add-fuel-error st "unify" span
+   }
+   else let ra-r = resolve st a
+   in let rb-r = resolve (ra-r.state) b
+   in let st1 = rb-r.state
+   in let ra = ra-r.ty
+   in let rb = rb-r.ty
+   in when ra
+    is EffectfulTy (effs-a) (ret-a) -> when rb
+     is EffectfulTy (effs-b) (ret-b) -> unify-at st1 ret-a ret-b span (depth + 1)
+     is TypeVar (id-b) -> unify-resolved st1 ra rb span (depth + 1)
+     is otherwise -> unify-at st1 ret-a rb span (depth + 1)
+    is otherwise -> when rb
+     is EffectfulTy (effs-b) (ret-b) -> when ra
+      is TypeVar (id-a) -> unify-resolved st1 ra rb span (depth + 1)
+      is otherwise -> unify-at st1 ra ret-b span (depth + 1)
+     is otherwise -> unify-resolved st1 ra rb span (depth + 1)
+
+  unify-resolved : UnificationState -> CodexType -> CodexType -> SourceSpan -> Integer -> UnifyResult
+  unify-resolved (st) (a) (b) (span) (depth) =
    if types-equal a b then UnifyResult {
     success = True,
     state = st
    }
    else when a
-    is TypeVar (id-a) ->
-     if occurs-in st id-a b then UnifyResult {
-      success = False,
-      state = add-unify-error st cdx-infinite-type "Infinite type" span
-     }
-      else UnifyResult {
-       success = True,
-       state = add-subst st id-a b
+    is TypeVar (id-a) -> when b
+     is TypeVar (id-b) ->
+      if id-a < id-b
+       then UnifyResult {
+        success = True,
+        state = add-subst st id-b a
+       }
+       else UnifyResult {
+        success = True,
+        state = add-subst st id-a b
+       }
+     is otherwise ->
+      if occurs-in st id-a b 0 then UnifyResult {
+       success = False,
+       state = add-unify-error st cdx-infinite-type "Infinite type" span
       }
-    is otherwise -> unify-rhs st a b span
+       else UnifyResult {
+        success = True,
+        state = add-subst st id-a b
+       }
+    is otherwise -> unify-rhs st a b span depth
 
   types-equal : CodexType -> CodexType -> Boolean
   types-equal (a) (b) =
@@ -158,11 +286,11 @@ Section: Unify
      is otherwise -> False
     is otherwise -> False
 
-  unify-rhs : UnificationState -> CodexType -> CodexType -> SourceSpan -> UnifyResult
-  unify-rhs (st) (a) (b) (span) =
+  unify-rhs : UnificationState -> CodexType -> CodexType -> SourceSpan -> Integer -> UnifyResult
+  unify-rhs (st) (a) (b) (span) (depth) =
    when b
     is TypeVar (id-b) ->
-     if occurs-in st id-b a then UnifyResult {
+     if occurs-in st id-b a 0 then UnifyResult {
       success = False,
       state = add-unify-error st cdx-infinite-type "Infinite type" span
      }
@@ -170,10 +298,10 @@ Section: Unify
        success = True,
        state = add-subst st id-b a
       }
-    is otherwise -> unify-structural st a b span
+    is otherwise -> unify-structural st a b span depth
 
-  unify-structural : UnificationState -> CodexType -> CodexType -> SourceSpan -> UnifyResult
-  unify-structural (st) (a) (b) (span) =
+  unify-structural : UnificationState -> CodexType -> CodexType -> SourceSpan -> Integer -> UnifyResult
+  unify-structural (st) (a) (b) (span) (depth) =
    when a
     is IntegerTy -> when b
      is IntegerTy -> UnifyResult {
@@ -240,21 +368,21 @@ Section: Unify
      state = st
     }
     is FunTy (pa) (ra) -> when b
-     is FunTy (pb) (rb) -> unify-fun st pa ra pb rb span
+     is FunTy (pb) (rb) -> unify-fun st pa ra pb rb span depth
      is ErrorTy -> UnifyResult {
       success = True,
       state = st
      }
      is otherwise -> unify-mismatch st a b span
     is ListTy (ea) -> when b
-     is ListTy (eb) -> unify st ea eb span
+     is ListTy (eb) -> unify-at st ea eb span (depth + 1)
      is ErrorTy -> UnifyResult {
       success = True,
       state = st
      }
      is otherwise -> unify-mismatch st a b span
     is LinkedListTy (ea) -> when b
-     is LinkedListTy (eb) -> unify st ea eb span
+     is LinkedListTy (eb) -> unify-at st ea eb span (depth + 1)
      is ErrorTy -> UnifyResult {
       success = True,
       state = st
@@ -262,79 +390,53 @@ Section: Unify
      is otherwise -> unify-mismatch st a b span
     is ConstructedTy (na) (args-a) -> when b
      is ConstructedTy (nb) (args-b) ->
-      if na.value == nb.value then unify-constructed-args st args-a args-b 0 (list-length args-a) span
+      if na.value == nb.value then unify-constructed-args st args-a args-b 0 (list-length args-a) span depth
        else unify-mismatch st a b span
-     is SumTy (sb-name) (sb-ctors) ->
-      if na.value == sb-name.value then UnifyResult {
-       success = True,
-       state = st
-      }
+     is SumTy (sb-name) (sb-args) (sb-ctors) ->
+      if na.value == sb-name.value then unify-constructed-args st args-a sb-args 0 (list-length args-a) span depth
       else unify-mismatch st a b span
-     is RecordTy (rb-name) (rb-fields) ->
-      if na.value == rb-name.value then UnifyResult {
-       success = True,
-       state = st
-      }
+     is RecordTy (rb-name) (rb-args) (rb-fields) ->
+      if na.value == rb-name.value then unify-constructed-args st args-a rb-args 0 (list-length args-a) span depth
       else unify-mismatch st a b span
      is ErrorTy -> UnifyResult {
       success = True,
       state = st
      }
      is otherwise -> unify-mismatch st a b span
-    is SumTy (sa-name) (sa-ctors) -> when b
-     is SumTy (sb-name) (sb-ctors) ->
-      if sa-name.value == sb-name.value then UnifyResult {
-       success = True,
-       state = st
-      }
+    is SumTy (sa-name) (sa-args) (sa-ctors) -> when b
+     is SumTy (sb-name) (sb-args) (sb-ctors) ->
+      if sa-name.value == sb-name.value then unify-constructed-args st sa-args sb-args 0 (list-length sa-args) span depth
       else unify-mismatch st a b span
      is ConstructedTy (nb) (args-b) ->
-      if sa-name.value == nb.value then UnifyResult {
-       success = True,
-       state = st
-      }
+      if sa-name.value == nb.value then unify-constructed-args st sa-args args-b 0 (list-length sa-args) span depth
       else unify-mismatch st a b span
      is ErrorTy -> UnifyResult {
       success = True,
       state = st
      }
      is otherwise -> unify-mismatch st a b span
-    is RecordTy (ra-name) (ra-fields) -> when b
-     is RecordTy (rb-name) (rb-fields) ->
-      if ra-name.value == rb-name.value then UnifyResult {
-       success = True,
-       state = st
-      }
+    is RecordTy (ra-name) (ra-args) (ra-fields) -> when b
+     is RecordTy (rb-name) (rb-args) (rb-fields) ->
+      if ra-name.value == rb-name.value then unify-constructed-args st ra-args rb-args 0 (list-length ra-args) span depth
       else unify-mismatch st a b span
      is ConstructedTy (nb) (args-b) ->
-      if ra-name.value == nb.value then UnifyResult {
-       success = True,
-       state = st
-      }
+      if ra-name.value == nb.value then unify-constructed-args st ra-args args-b 0 (list-length ra-args) span depth
       else unify-mismatch st a b span
      is ErrorTy -> UnifyResult {
       success = True,
       state = st
      }
      is otherwise -> unify-mismatch st a b span
-    is ForAllTy (id) (body) -> unify st body b span
-    is EffectfulTy (effs-a) (ret-a) -> when b
-     is EffectfulTy (effs-b) (ret-b) -> unify st ret-a ret-b span
-     is ErrorTy -> UnifyResult {
-      success = True,
-      state = st
-     }
-     is otherwise -> unify st ret-a b span
+    is ForAllTy (id) (body) -> unify-at st body b span (depth + 1)
     is otherwise -> when b
-     is EffectfulTy (effs-b) (ret-b) -> unify st a ret-b span
      is ErrorTy -> UnifyResult {
       success = True,
       state = st
      }
      is otherwise -> unify-mismatch st a b span
 
-  unify-constructed-args : UnificationState -> List CodexType -> List CodexType -> Integer -> Integer -> SourceSpan -> UnifyResult
-  unify-constructed-args (st) (args-a) (args-b) (i) (len) (span) =
+  unify-constructed-args : UnificationState -> List CodexType -> List CodexType -> Integer -> Integer -> SourceSpan -> Integer -> UnifyResult
+  unify-constructed-args (st) (args-a) (args-b) (i) (len) (span) (depth) =
    if i == len then UnifyResult {
     success = True,
     state = st
@@ -343,25 +445,25 @@ Section: Unify
     success = True,
     state = st
    }
-   else let r = unify st (list-at args-a i) (list-at args-b i) span
-   in if r.success then unify-constructed-args (r.state) args-a args-b (i + 1) len span
+   else let r = unify-at st (list-at args-a i) (list-at args-b i) span (depth + 1)
+   in if r.success then unify-constructed-args (r.state) args-a args-b (i + 1) len span depth
         else r
 
-  unify-fun : UnificationState -> CodexType -> CodexType -> CodexType -> CodexType -> SourceSpan -> UnifyResult
-  unify-fun (st) (pa) (ra) (pb) (rb) (span) =
-   let r1 = unify st pa pb span
-   in if r1.success then unify (r1.state) ra rb span
+  unify-fun : UnificationState -> CodexType -> CodexType -> CodexType -> CodexType -> SourceSpan -> Integer -> UnifyResult
+  unify-fun (st) (pa) (ra) (pb) (rb) (span) (depth) =
+   let r1 = unify-at st pa pb span (depth + 1)
+   in if r1.success then unify-at (r1.state) ra rb span (depth + 1)
       else r1
 
   unify-mismatch : UnificationState -> CodexType -> CodexType -> SourceSpan -> UnifyResult
   unify-mismatch (st) (a) (b) (span) =
    UnifyResult {
     success = False,
-    state = add-unify-error st cdx-type-mismatch ("Type mismatch: " ++ type-tag a ++ " vs " ++ type-tag b) span
+    state = add-unify-error st cdx-type-mismatch ("Type mismatch: " ++ type-desc a ++ " vs " ++ type-desc b) span
    }
 
-  type-tag : CodexType -> Text
-  type-tag (ty) =
+  type-desc : CodexType -> Text
+  type-desc (ty) =
    when ty
     is IntegerTy -> "Integer"
     is NumberTy -> "Number"
@@ -376,30 +478,31 @@ Section: Unify
     is LinkedListTy (e) -> "LinkedList"
     is TypeVar (id) -> "T" ++ integer-to-text id
     is ForAllTy (id) (body) -> "ForAll"
-    is SumTy (name) (ctors) -> "Sum:" ++ name.value
-    is RecordTy (name) (fields) -> "Rec:" ++ name.value
-    is ConstructedTy (name) (args) -> "Con:" ++ name.value
     is EffectfulTy (effs) (ret) -> "Effectful"
+    is ConstructedTy (name) (args) -> if list-length args == 0 then "Con:" ++ name.value
+                                       else "Con:" ++ name.value ++ "[" ++ type-desc-args args 0 ++ "]"
+    is RecordTy (name) (args) (fields) -> if list-length args == 0 then "Rec:" ++ name.value
+                                          else "Rec:" ++ name.value ++ "[" ++ type-desc-args args 0 ++ "]"
+    is SumTy (name) (args) (ctors) -> if list-length args == 0 then "Sum:" ++ name.value
+                                       else "Sum:" ++ name.value ++ "[" ++ type-desc-args args 0 ++ "]"
+
+  type-desc-args : List CodexType -> Integer -> Text
+  type-desc-args (args) (i) =
+   if i >= list-length args then ""
+   else let prefix = if i == 0 then "" else ", "
+   in prefix ++ type-desc (list-at args i) ++ type-desc-args args (i + 1)
 
 Section: Deep Resolve
   deep-resolve : UnificationState -> CodexType -> CodexType
-  deep-resolve (st) (ty) =
-   let resolved = resolve st ty
-   in when resolved
-    is FunTy (param) (ret) -> FunTy (deep-resolve st param) (deep-resolve st ret)
-    is ListTy (elem) -> ListTy (deep-resolve st elem)
-    is LinkedListTy (elem) -> LinkedListTy (deep-resolve st elem)
-    is ConstructedTy (name) (args) -> ConstructedTy name (deep-resolve-list st args 0 (list-length args) [])
-    is ForAllTy (id) (body) -> ForAllTy id (deep-resolve st body)
-    is EffectfulTy (effs) (ret) -> EffectfulTy effs (deep-resolve st ret)
-    is SumTy (name) (ctors) -> resolved
-    is RecordTy (name) (fields) -> resolved
-    is otherwise -> resolved
+  deep-resolve (st) (ty) = deep-resolve-at st ty 0
 
-  deep-resolve-list : UnificationState -> List CodexType -> Integer -> Integer -> List CodexType -> List CodexType
-  deep-resolve-list (st) (args) (i) (len) (acc) =
-   if i == len then acc
-   else deep-resolve-list st args (i + 1) len (list-snoc acc (deep-resolve st (list-at args i)))
+  deep-resolve-at : UnificationState -> CodexType -> Integer -> CodexType
+  deep-resolve-at (st) (ty) (depth) =
+   if depth >= max-recursion-depth then ty
+   else let resolved = resolve-silent st ty
+   in when resolved
+    is SumTy (name) (args) (ctors) -> SumTy name (map-children-list (\c -> deep-resolve-at st c (depth + 1)) args 0 (list-length args) []) ctors
+    is otherwise -> codex-type-map-children (\c -> deep-resolve-at st c (depth + 1)) resolved
 
 Page 1
 

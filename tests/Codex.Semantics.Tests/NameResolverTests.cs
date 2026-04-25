@@ -2,12 +2,38 @@ using Codex.Core;
 using Codex.Syntax;
 using Codex.Ast;
 using Codex.Semantics;
+using Codex.Types;
 using Xunit;
 
 namespace Codex.Semantics.Tests;
 
 public class NameResolverTests
 {
+    static Chapter WithAllBuiltinCites(Chapter chapter)
+    {
+        HashSet<string> existing = new();
+        foreach (CitesDecl c in chapter.Citations)
+        {
+            if (c.Quire.Value == "Codex")
+            {
+                existing.Add(c.ChapterName.Value);
+            }
+        }
+        List<CitesDecl> cites = new(chapter.Citations);
+        foreach (BuiltinChapter bc in BuiltinChapters.All)
+        {
+            if (existing.Contains(bc.Name))
+            {
+                continue;
+            }
+            cites.Add(new CitesDecl(
+                new Name("Codex"),
+                new Name(bc.Name),
+                chapter.Span));
+        }
+        return chapter with { Citations = cites };
+    }
+
     private static (ResolvedChapter Resolved, DiagnosticBag Diags) ResolveSource(string source)
     {
         SourceText src = new("test.codex", source);
@@ -17,7 +43,7 @@ public class NameResolverTests
         Parser parser = new(tokens, bag);
         DocumentNode doc = parser.ParseDocument();
         Desugarer desugarer = new(bag);
-        Chapter chapter = desugarer.Desugar(doc, "Test");
+        Chapter chapter = WithAllBuiltinCites(desugarer.Desugar(doc, "Test"));
         NameResolver resolver = new(bag);
         ResolvedChapter resolved = resolver.Resolve(chapter);
         return (resolved, bag);
@@ -103,7 +129,7 @@ public class NameResolverTests
     [Fact]
     public void Undefined_name_suggests_close_match()
     {
-        string source = "square (x) = x * x\nmain = squre 5";
+        string source = "square (x) = x * x\nopening = squre 5";
         (ResolvedChapter _, DiagnosticBag diags) = ResolveSource(source);
         Assert.True(diags.HasErrors);
         Diagnostic error = diags.ToImmutable().First(d => d.Code == CdxCodes.UndefinedName);
@@ -113,7 +139,7 @@ public class NameResolverTests
     [Fact]
     public void Undefined_name_no_suggestion_when_too_distant()
     {
-        string source = "square (x) = x * x\nmain = xyz 5";
+        string source = "square (x) = x * x\nopening = xyz 5";
         (ResolvedChapter _, DiagnosticBag diags) = ResolveSource(source);
         Assert.True(diags.HasErrors);
         Diagnostic error = diags.ToImmutable().First(d => d.Code == CdxCodes.UndefinedName);

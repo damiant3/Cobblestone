@@ -6,7 +6,7 @@ using Codex.Types;
 
 namespace Codex.Emit.Fortran;
 
-public sealed class FortranEmitter : ICodeEmitter
+public sealed class FortranEmitter : IRExprTextEmitter, ICodeEmitter
 {
     Set<string> m_constructorNames = Set<string>.s_empty;
     ValueMap<string, int> m_definitionArity = ValueMap<string, int>.s_empty;
@@ -18,14 +18,12 @@ public sealed class FortranEmitter : ICodeEmitter
 
     public string Emit(IRChapter module)
     {
-        m_constructorNames = CollectConstructorNames(module);
+        m_constructorNames = module.CollectConstructorNames();
         m_ctorToTag = BuildCtorTagMap(module);
         m_definitionArity = ValueMap<string, int>.s_empty;
         m_tagCounter = 0;
         foreach (IRDefinition d in module.Definitions)
-        {
             m_definitionArity = m_definitionArity.Set(d.Name, d.Parameters.Length);
-        }
 
         string modName = SanitizeUpper(module.Name.Parts.Count > 0
             ? module.Name.Parts[module.Name.Parts.Count - 1].Value : "main");
@@ -36,7 +34,7 @@ public sealed class FortranEmitter : ICodeEmitter
         sb.AppendLine();
 
         if (module.TypeDefinitions.Count > 0 || module.Definitions.Length > 1
-            || (module.Definitions.Length == 1 && module.Definitions[0].Name != "main"))
+            || (module.Definitions.Length == 1 && module.Definitions[0].Name != Names.OpeningEntryPoint))
         {
             sb.AppendLine($"module codex_{modName}");
             sb.AppendLine("  implicit none");
@@ -47,16 +45,11 @@ public sealed class FortranEmitter : ICodeEmitter
             sb.AppendLine("contains");
             sb.AppendLine();
 
-            IRDefinition? mainDef2 = module.Definitions
-                .FirstOrDefault(d => d.Name == "main" && d.Parameters.Length == 0);
+            IRDefinition? mainDef2 = module.FindEntryPoint();
 
             foreach (IRDefinition def in module.Definitions)
             {
-                if (def == mainDef2)
-                {
-                    continue;
-                }
-
+                if (def == mainDef2) continue;
                 EmitDefinition(sb, def);
                 sb.AppendLine();
             }
@@ -65,12 +58,11 @@ public sealed class FortranEmitter : ICodeEmitter
             sb.AppendLine();
         }
 
-        IRDefinition? mainDef = module.Definitions
-            .FirstOrDefault(d => d.Name == "main" && d.Parameters.Length == 0);
+        IRDefinition? mainDef = module.FindEntryPoint();
 
         sb.AppendLine("program main_program");
         if (module.TypeDefinitions.Count > 0 || module.Definitions.Length > 1
-            || (module.Definitions.Length == 1 && module.Definitions[0].Name != "main"))
+            || (module.Definitions.Length == 1 && module.Definitions[0].Name != Names.OpeningEntryPoint))
         {
             sb.AppendLine($"  use codex_{modName}");
         }
@@ -79,14 +71,14 @@ public sealed class FortranEmitter : ICodeEmitter
 
         if (mainDef is not null)
         {
-            if (IsEffectfulDefinition(mainDef))
-            {
-                EmitStatement(sb, mainDef.Body, 1);
-            }
-            else if (mainDef.Body is IRMatch match)
-            {
-                EmitMatchStatement(sb, match, "print *", 1);
-            }
+            if (mainDef.IsEffectfulDefinition())
+            {
+                EmitStatement(sb, mainDef.Body, 1);
+            }
+            else if (mainDef.Body is IRMatch match)
+            {
+                EmitMatchStatement(sb, match, "print *", 1);
+            }
             else
             {
                 sb.Append("  print *, ");
@@ -94,11 +86,11 @@ public sealed class FortranEmitter : ICodeEmitter
                 sb.AppendLine();
             }
         }
-        else if (module.Definitions.Length == 0)
-        {
-            sb.AppendLine("  print *, 'All proofs verified at compile time.'");
-        }
-
+        else if (module.Definitions.Length == 0)
+        {
+            sb.AppendLine("  print *, 'All proofs verified at compile time.'");
+        }
+
         sb.AppendLine("end program main_program");
         return sb.ToString();
     }
@@ -126,12 +118,7 @@ public sealed class FortranEmitter : ICodeEmitter
         sb.AppendLine($"  ! Sum type: {sum.TypeName.Value}");
         int maxFields = 0;
         foreach (SumConstructorType ctor in sum.Constructors)
-        {
-            if (ctor.Fields.Length > maxFields)
-            {
-                maxFields = ctor.Fields.Length;
-            }
-        }
+            if (ctor.Fields.Length > maxFields) maxFields = ctor.Fields.Length;
 
         sb.AppendLine("  ! Tag constants:");
         foreach (SumConstructorType ctor in sum.Constructors)
@@ -144,10 +131,7 @@ public sealed class FortranEmitter : ICodeEmitter
         sb.AppendLine($"  type :: {baseName}");
         sb.AppendLine("    integer :: tag");
         for (int f = 0; f < maxFields; f++)
-        {
             sb.AppendLine($"    integer(8) :: field{f}");
-        }
-
         sb.AppendLine($"  end type {baseName}");
         sb.AppendLine();
     }
@@ -168,7 +152,7 @@ public sealed class FortranEmitter : ICodeEmitter
     void EmitDefinition(StringBuilder sb, IRDefinition def)
     {
         string name = SanitizeUpper(def.Name);
-        bool isProc = IsEffectfulDefinition(def);
+        bool isProc = def.IsEffectfulDefinition();
 
         if (HasSelfTailCall(def))
         {
@@ -181,11 +165,7 @@ public sealed class FortranEmitter : ICodeEmitter
             sb.Append($"  subroutine {name}(");
             for (int i = 0; i < def.Parameters.Length; i++)
             {
-                if (i > 0)
-                {
-                    sb.Append(", ");
-                }
-
+                if (i > 0) sb.Append(", ");
                 sb.Append(SanitizeUpper(def.Parameters[i].Name));
             }
             sb.AppendLine(")");
@@ -205,11 +185,7 @@ public sealed class FortranEmitter : ICodeEmitter
             sb.Append($"  {retType} function {name}(");
             for (int i = 0; i < def.Parameters.Length; i++)
             {
-                if (i > 0)
-                {
-                    sb.Append(", ");
-                }
-
+                if (i > 0) sb.Append(", ");
                 sb.Append(SanitizeUpper(def.Parameters[i].Name));
             }
             sb.AppendLine(")");
@@ -241,11 +217,7 @@ public sealed class FortranEmitter : ICodeEmitter
         sb.Append($"  {retType} function {name}(");
         for (int i = 0; i < def.Parameters.Length; i++)
         {
-            if (i > 0)
-            {
-                sb.Append(", ");
-            }
-
+            if (i > 0) sb.Append(", ");
             sb.Append($"{SanitizeUpper(def.Parameters[i].Name)}_in");
         }
         sb.AppendLine(")");
@@ -295,7 +267,7 @@ public sealed class FortranEmitter : ICodeEmitter
                 EmitExpr(sb, let.Body, indent);
                 break;
 
-            case IRApply app when IsSelfCall(app, funcName):
+            case IRApply app when app.IsSelfCall(funcName):
             {
                 List<IRExpr> args = [];
                 CollectApplyArgs(app, args);
@@ -318,122 +290,100 @@ public sealed class FortranEmitter : ICodeEmitter
         }
     }
 
-    void EmitExpr(StringBuilder sb, IRExpr expr, int indent)
+    protected override void EmitFuelExhaustedToken(StringBuilder sb) => sb.Append('0');
+
+    protected override void EmitUnhandled(StringBuilder sb, IRExpr expr, int indent) => sb.Append('0');
+
+    protected override void EmitIntegerLit(StringBuilder sb, IRIntegerLit lit, int indent) =>
+        sb.Append($"{lit.Value}_8");
+
+    protected override void EmitNumberLit(StringBuilder sb, IRNumberLit lit, int indent)
     {
-        switch (expr)
-        {
-            case IRIntegerLit lit:
-                sb.Append($"{lit.Value}_8");
-                break;
+        string numStr = lit.Value.ToString();
+        if (!numStr.Contains('.'))
+            numStr += ".0";
 
-            case IRNumberLit lit:
-                string numStr = lit.Value.ToString();
-                if (!numStr.Contains('.'))
-                {
-                    numStr += ".0";
-                }
-
-                sb.Append($"{numStr}d0");
-                break;
-
-            case IRTextLit lit:
-                sb.Append($"'{EscapeString(lit.Value)}'");
-                break;
-
-            case IRBoolLit lit:
-                sb.Append(lit.Value ? ".true." : ".false.");
-                break;
-
-            case IRName name:
-                if (name.Name == "True")
-                {
-                    sb.Append(".true.");
-                }
-                else if (name.Name == "False")
-                {
-                    sb.Append(".false.");
-                }
-                else if (name.Name == "Nothing")
-                {
-                    sb.Append('0');
-                }
-                else if (m_definitionArity.TryGet(name.Name, out int nameArity)
-                    && nameArity == 0
-                    && name.Type is not FunctionType)
-                {
-                    sb.Append($"{SanitizeUpper(name.Name)}()");
-                }
-                else
-                {
-                    sb.Append(SanitizeUpper(name.Name));
-                }
-
-                break;
-
-            case IRBinary bin:
-                EmitBinary(sb, bin, indent);
-                break;
-
-            case IRNegate neg:
-                sb.Append("(-");
-                EmitExpr(sb, neg.Operand, indent);
-                sb.Append(')');
-                break;
-
-            case IRIf iff:
-                sb.Append("merge(");
-                EmitExpr(sb, iff.Then, indent);
-                sb.Append(", ");
-                EmitExpr(sb, iff.Else, indent);
-                sb.Append(", ");
-                EmitExpr(sb, iff.Condition, indent);
-                sb.Append(')');
-                break;
-
-            case IRLet let:
-                EmitExpr(sb, let.Body, indent);
-                break;
-
-            case IRApply app:
-                EmitApply(sb, app, indent);
-                break;
-
-            case IRRecord rec:
-                sb.Append($"{SanitizeUpper(rec.TypeName)}(");
-                for (int i = 0; i < rec.Fields.Length; i++)
-                {
-                    if (i > 0)
-                    {
-                        sb.Append(", ");
-                    }
-
-                    EmitExpr(sb, rec.Fields[i].Value, indent);
-                }
-                sb.Append(')');
-                break;
-
-            case IRFieldAccess fa:
-                EmitExpr(sb, fa.Record, indent);
-                sb.Append($"%{SanitizeUpper(fa.FieldName)}");
-                break;
-
-            case IRMatch match:
-                EmitFortranMatch(sb, match, indent);
-                break;
-
-            case IRList list:
-                sb.Append('0');
-                break;
-
-            case IRError err:
-                sb.Append('0');
-                break;
-
-            default:
-                sb.Append('0');
-                break;
-        }
+        sb.Append($"{numStr}d0");
     }
+
+    protected override void EmitTextLit(StringBuilder sb, IRTextLit lit, int indent) =>
+        sb.Append($"'{EscapeString(lit.Value)}'");
+
+    protected override void EmitBoolLit(StringBuilder sb, IRBoolLit lit, int indent) =>
+        sb.Append(lit.Value ? ".true." : ".false.");
+
+    protected override void EmitName(StringBuilder sb, IRName name, int indent)
+    {
+        if (name.Name == "True")
+        {
+            sb.Append(".true.");
+        }
+        else if (name.Name == "False")
+        {
+            sb.Append(".false.");
+        }
+        else if (name.Name == "Nothing")
+        {
+            sb.Append('0');
+        }
+        else if (m_definitionArity.TryGet(name.Name, out int nameArity)
+            && nameArity == 0
+            && name.Type is not FunctionType)
+        {
+            sb.Append($"{SanitizeUpper(name.Name)}()");
+        }
+        else
+        {
+            sb.Append(SanitizeUpper(name.Name));
+        }
+    }
+
+    protected override void EmitNegate(StringBuilder sb, IRNegate neg, int indent)
+    {
+        sb.Append("(-");
+        EmitExpr(sb, neg.Operand, indent);
+        sb.Append(')');
+    }
+
+    protected override void EmitIf(StringBuilder sb, IRIf iff, int indent)
+    {
+        sb.Append("merge(");
+        EmitExpr(sb, iff.Then, indent);
+        sb.Append(", ");
+        EmitExpr(sb, iff.Else, indent);
+        sb.Append(", ");
+        EmitExpr(sb, iff.Condition, indent);
+        sb.Append(')');
+    }
+
+    protected override void EmitLet(StringBuilder sb, IRLet let, int indent) =>
+        EmitExpr(sb, let.Body, indent);
+
+    protected override void EmitRecord(StringBuilder sb, IRRecord rec, int indent)
+    {
+        sb.Append($"{SanitizeUpper(rec.TypeName)}(");
+        for (int i = 0; i < rec.Fields.Length; i++)
+        {
+            if (i > 0)
+                sb.Append(", ");
+
+            EmitExpr(sb, rec.Fields[i].Value, indent);
+        }
+        sb.Append(')');
+    }
+
+    protected override void EmitFieldAccess(StringBuilder sb, IRFieldAccess fa, int indent)
+    {
+        EmitExpr(sb, fa.Record, indent);
+        sb.Append($"%{SanitizeUpper(fa.FieldName)}");
+    }
+
+    protected override void EmitMatch(StringBuilder sb, IRMatch match, int indent) =>
+        EmitFortranMatch(sb, match, indent);
+
+    protected override void EmitList(StringBuilder sb, IRList list, int indent) => sb.Append('0');
+
+    protected override void EmitError(StringBuilder sb, IRError err, int indent) => sb.Append('0');
 
     void EmitFortranMatch(StringBuilder sb, IRMatch match, int indent)
     {
@@ -447,22 +397,16 @@ public sealed class FortranEmitter : ICodeEmitter
         }
 
         for (int i = 0; i < branches.Length - 1; i++)
-        {
             sb.Append("merge(");
-        }
 
         for (int i = 0; i < branches.Length; i++)
         {
             if (i > 0)
-            {
                 sb.Append(", ");
-            }
 
             EmitExpr(sb, branches[i].Body, indent);
             if (i < branches.Length - 1)
-            {
                 sb.Append(", ");
-            }
         }
 
         for (int i = branches.Length - 2; i >= 0; i--)
@@ -474,20 +418,21 @@ public sealed class FortranEmitter : ICodeEmitter
                 EmitExpr(sb, match.Scrutinee, indent);
                 sb.Append($"%tag == TAG_{SanitizeUpper(ctorPat.Name)}");
             }
-            else
-            {
-                sb.Append(".true.");
-            }
+            else
+            {
+                sb.Append(".true.");
+            }
+
             sb.Append(')');
         }
     }
 
-    void EmitApply(StringBuilder sb, IRApply app, int indent)
+    protected override void EmitApply(StringBuilder sb, IRApply app, int indent)
     {
-        if (app.Function is IRName fn && fn.Name == "show")
-        {
-            sb.Append("'<value>'");
-        }
+        if (app.Function is IRName fn && fn.Name == "show")
+        {
+            sb.Append("'<value>'");
+        }
         else if (app.Function is IRName fn3 && fn3.Name == "print-line")
         {
             sb.Append("print *, ");
@@ -499,14 +444,14 @@ public sealed class FortranEmitter : ICodeEmitter
             EmitExpr(sb, app.Argument, indent);
             sb.Append("), 8)");
         }
-        else if (app.Function is IRName fn11b && fn11b.Name == "integer-to-text")
-        {
-            sb.Append("'<integer>'");
-        }
-        else
-        {
-            EmitApplyGeneral(sb, app, indent);
-        }
+        else if (app.Function is IRName fn11b && fn11b.Name == "integer-to-text")
+        {
+            sb.Append("'<integer>'");
+        }
+        else
+        {
+            EmitApplyGeneral(sb, app, indent);
+        }
     }
 
     void EmitApplyGeneral(StringBuilder sb, IRApply app, int indent)
@@ -523,11 +468,7 @@ public sealed class FortranEmitter : ICodeEmitter
                 sb.Append($"{SanitizeUpper(defName)}(");
                 for (int i = 0; i < args.Count; i++)
                 {
-                    if (i > 0)
-                    {
-                        sb.Append(", ");
-                    }
-
+                    if (i > 0) sb.Append(", ");
                     EmitExpr(sb, args[i], indent);
                 }
                 sb.Append(')');
@@ -548,7 +489,7 @@ public sealed class FortranEmitter : ICodeEmitter
         }
     }
 
-    void EmitBinary(StringBuilder sb, IRBinary bin, int indent)
+    protected override void EmitBinary(StringBuilder sb, IRBinary bin, int indent)
     {
         switch (bin.Op)
         {
@@ -663,9 +604,7 @@ public sealed class FortranEmitter : ICodeEmitter
         for (int i = 0; i < pattern.SubPatterns.Length; i++)
         {
             if (pattern.SubPatterns[i] is IRVarPattern vp)
-            {
                 varFields[vp.Name] = i;
-            }
         }
         return RewriteExpr(expr, scrutinee, varFields);
     }
@@ -720,53 +659,16 @@ public sealed class FortranEmitter : ICodeEmitter
 
     string EmitReturnType(IRDefinition def)
     {
-        CodexType type = GetReturnType(def);
+        CodexType type = def.PureReturnType();
         return EmitType(type);
     }
 
-    static CodexType GetReturnType(IRDefinition def)
-    {
-        CodexType type = def.Type;
-        for (int i = 0; i < def.Parameters.Length; i++)
-        {
-            while (type is FunctionType pft && pft.Parameter is ProofType)
-            {
-                type = pft.Return;
-            }
-
-            if (type is FunctionType ft)
-            {
-                type = ft.Return;
-            }
-            else if (type is DependentFunctionType dep)
-            {
-                type = dep.Body;
-            }
-            else
-            {
-                break;
-            }
-        }
-        while (type is FunctionType pft2 && pft2.Parameter is ProofType)
-        {
-            type = pft2.Return;
-        }
-
-        if (type is EffectfulType eft)
-        {
-            type = eft.Return;
-        }
-
-        return type;
-    }
 
     static string? FindDefinitionName(IRApply app)
     {
         IRExpr current = app.Function;
         while (current is IRApply inner)
-        {
             current = inner.Function;
-        }
 
         return current is IRName name && name.Name.Length > 0 && char.IsLower(name.Name[0]) ? name.Name : null;
     }
@@ -774,29 +676,11 @@ public sealed class FortranEmitter : ICodeEmitter
     static void CollectApplyArgs(IRApply app, List<IRExpr> args)
     {
         if (app.Function is IRApply inner)
-        {
             CollectApplyArgs(inner, args);
-        }
 
         args.Add(app.Argument);
     }
 
-    static Set<string> CollectConstructorNames(IRChapter module)
-    {
-        Set<string> names = Set<string>.s_empty;
-        foreach (KeyValuePair<string, CodexType> kv in module.TypeDefinitions)
-        {
-            if (kv.Value is SumType sum)
-            {
-                foreach (SumConstructorType ctor in sum.Constructors)
-                {
-                    names = names.Add(ctor.Name.Value);
-                }
-            }
-        }
-
-        return names;
-    }
 
     Map<string, string> BuildCtorTagMap(IRChapter module)
     {
@@ -806,9 +690,7 @@ public sealed class FortranEmitter : ICodeEmitter
             if (kv.Value is SumType sum)
             {
                 foreach (SumConstructorType ctor in sum.Constructors)
-                {
                     map = map.Set(ctor.Name.Value, (++m_tagCounter).ToString());
-                }
             }
         }
 
@@ -816,58 +698,9 @@ public sealed class FortranEmitter : ICodeEmitter
     }
 
     static bool HasSelfTailCall(IRDefinition def) =>
-        def.Parameters.Length > 0 && ExprHasTailCall(def.Body, def.Name);
+        def.Parameters.Length > 0 && def.Body.HasTailCall(def.Name);
 
-    static bool ExprHasTailCall(IRExpr expr, string funcName) => expr switch
-    {
-        IRIf iff => ExprHasTailCall(iff.Then, funcName) || ExprHasTailCall(iff.Else, funcName),
-        IRLet let => ExprHasTailCall(let.Body, funcName),
-        IRMatch match => match.Branches.Any(b => ExprHasTailCall(b.Body, funcName)),
-        IRApply app => IsSelfCall(app, funcName),
-        _ => false
-    };
 
-    static bool IsSelfCall(IRApply app, string funcName)
-    {
-        IRExpr root = app.Function;
-        while (root is IRApply inner)
-        {
-            root = inner.Function;
-        }
-
-        return root is IRName name && name.Name == funcName;
-    }
-
-    static bool IsEffectfulDefinition(IRDefinition def)
-    {
-        CodexType type = def.Type;
-        for (int i = 0; i < def.Parameters.Length; i++)
-        {
-            while (type is FunctionType pft && pft.Parameter is ProofType)
-            {
-                type = pft.Return;
-            }
-
-            if (type is FunctionType ft)
-            {
-                type = ft.Return;
-            }
-            else if (type is DependentFunctionType dep)
-            {
-                type = dep.Body;
-            }
-            else
-            {
-                break;
-            }
-        }
-        while (type is FunctionType pft2 && pft2.Parameter is ProofType)
-        {
-            type = pft2.Return;
-        }
-
-        return type is EffectfulType;
-    }
 
     static string SanitizeUpper(string name)
     {

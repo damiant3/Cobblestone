@@ -11,8 +11,8 @@ public class Arm64EmitterTests
     public void Simple_integer_emits_elf_bytes()
     {
         string source = """
-            main : Integer
-            main = 42
+            opening : Integer
+            opening = 42
             """;
         byte[]? bytes = Helpers.CompileToArm64(source, "simple_a64");
         Assert.NotNull(bytes);
@@ -32,8 +32,8 @@ public class Arm64EmitterTests
     public void Elf_has_aarch64_machine_type()
     {
         string source = """
-            main : Integer
-            main = 1
+            opening : Integer
+            opening = 1
             """;
         byte[]? bytes = Helpers.CompileToArm64(source, "mach_a64");
         Assert.NotNull(bytes);
@@ -46,8 +46,8 @@ public class Arm64EmitterTests
     public void Elf_has_valid_entry_point()
     {
         string source = """
-            main : Integer
-            main = 99
+            opening : Integer
+            opening = 99
             """;
         byte[]? bytes = Helpers.CompileToArm64(source, "entry_a64");
         Assert.NotNull(bytes);
@@ -63,8 +63,8 @@ public class Arm64EmitterTests
             square : Integer -> Integer
             square (x) = x * x
 
-            main : Integer
-            main = square 5
+            opening : Integer
+            opening = square 5
             """;
         byte[]? bytes = Helpers.CompileToArm64(source, "square_a64");
         Assert.NotNull(bytes);
@@ -79,8 +79,8 @@ public class Arm64EmitterTests
             factorial : Integer -> Integer
             factorial (n) = if n == 0 then 1 else n * factorial (n - 1)
 
-            main : Integer
-            main = factorial 5
+            opening : Integer
+            opening = factorial 5
             """;
         byte[]? bytes = Helpers.CompileToArm64(source, "fact_a64");
         Assert.NotNull(bytes);
@@ -94,15 +94,11 @@ public class Arm64EmitterTests
     public void Integer_42_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = 42
+            opening : Integer
+            opening = 42
             """;
         string? output = CompileAndRun(source, "int42_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("42", output.Trim());
     }
 
@@ -113,15 +109,11 @@ public class Arm64EmitterTests
             add : Integer -> Integer -> Integer
             add (x) (y) = x + y
 
-            main : Integer
-            main = add 3 4
+            opening : Integer
+            opening = add 3 4
             """;
         string? output = CompileAndRun(source, "add_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("7", output.Trim());
     }
 
@@ -132,15 +124,11 @@ public class Arm64EmitterTests
             square : Integer -> Integer
             square (x) = x * x
 
-            main : Integer
-            main = square 5
+            opening : Integer
+            opening = square 5
             """;
         string? output = CompileAndRun(source, "square_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("25", output.Trim());
     }
 
@@ -148,15 +136,11 @@ public class Arm64EmitterTests
     public void Let_binding_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = let x = 10 in let y = 20 in x + y
+            opening : Integer
+            opening = let x = 10 in let y = 20 in x + y
             """;
         string? output = CompileAndRun(source, "let_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("30", output.Trim());
     }
 
@@ -167,15 +151,11 @@ public class Arm64EmitterTests
             factorial : Integer -> Integer
             factorial (n) = if n == 0 then 1 else n * factorial (n - 1)
 
-            main : Integer
-            main = factorial 5
+            opening : Integer
+            opening = factorial 5
             """;
         string? output = CompileAndRun(source, "fact_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("120", output.Trim());
     }
 
@@ -183,15 +163,11 @@ public class Arm64EmitterTests
     public void If_else_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = if 1 == 1 then 42 else 0
+            opening : Integer
+            opening = if 1 == 1 then 42 else 0
             """;
         string? output = CompileAndRun(source, "ifelse_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("42", output.Trim());
     }
 
@@ -199,15 +175,11 @@ public class Arm64EmitterTests
     public void Negative_branch_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = if 1 == 2 then 99 else 7
+            opening : Integer
+            opening = if 1 == 2 then 99 else 7
             """;
         string? output = CompileAndRun(source, "neg_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("7", output.Trim());
     }
 
@@ -215,15 +187,11 @@ public class Arm64EmitterTests
     public void Subtraction_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = 100 - 37
+            opening : Integer
+            opening = 100 - 37
             """;
         string? output = CompileAndRun(source, "sub_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("63", output.Trim());
     }
 
@@ -231,15 +199,11 @@ public class Arm64EmitterTests
     public void Multiply_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = 6 * 7
+            opening : Integer
+            opening = 6 * 7
             """;
         string? output = CompileAndRun(source, "mul_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("42", output.Trim());
     }
 
@@ -247,15 +211,11 @@ public class Arm64EmitterTests
     public void Division_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = 100 / 4
+            opening : Integer
+            opening = 100 / 4
             """;
         string? output = CompileAndRun(source, "div_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("25", output.Trim());
     }
 
@@ -268,15 +228,11 @@ public class Arm64EmitterTests
               y : Integer
             }
 
-            main : Integer
-            main = let p = Point { x = 10, y = 20 } in p.x + p.y
+            opening : Integer
+            opening = let p = Point { x = 10, y = 20 } in p.x + p.y
             """;
         string? output = CompileAndRun(source, "rec_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("30", output.Trim());
     }
 
@@ -292,15 +248,11 @@ public class Arm64EmitterTests
             sum-pair : Pair -> Integer
             sum-pair (p) = p.fst + p.snd
 
-            main : Integer
-            main = sum-pair (Pair { fst = 10, snd = 20 })
+            opening : Integer
+            opening = sum-pair (Pair { fst = 10, snd = 20 })
             """;
         string? output = CompileAndRun(source, "recfn_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("30", output.Trim());
     }
 
@@ -318,15 +270,11 @@ public class Arm64EmitterTests
                 is Circle (r) -> r * r
                 is Rect (w) (h) -> w * h
 
-            main : Integer
-            main = area (Circle 5)
+            opening : Integer
+            opening = area (Circle 5)
             """;
         string? output = CompileAndRun(source, "matchc_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("25", output.Trim());
     }
 
@@ -344,15 +292,11 @@ public class Arm64EmitterTests
                 is Circle (r) -> r * r
                 is Rect (w) (h) -> w * h
 
-            main : Integer
-            main = area (Rect 6 7)
+            opening : Integer
+            opening = area (Rect 6 7)
             """;
         string? output = CompileAndRun(source, "matchr_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("42", output.Trim());
     }
 
@@ -370,15 +314,11 @@ public class Arm64EmitterTests
                 is Circle (r) -> r * r
                 is Rect (w) (h) -> w * h
 
-            main : Integer
-            main = area (Circle 3) + area (Rect 4 5)
+            opening : Integer
+            opening = area (Circle 3) + area (Rect 4 5)
             """;
         string? output = CompileAndRun(source, "recmatch_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("29", output.Trim());
     }
 
@@ -386,8 +326,8 @@ public class Arm64EmitterTests
     public void Many_locals_spill_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main =
+            opening : Integer
+            opening =
                 let a = 1 in
                 let b = 2 in
                 let c = 3 in
@@ -403,11 +343,7 @@ public class Arm64EmitterTests
                 a + b + c + d + e + f + g + h + i + j + k + l
             """;
         string? output = CompileAndRun(source, "spill_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("78", output.Trim());
     }
 
@@ -421,15 +357,11 @@ public class Arm64EmitterTests
             double : Integer -> Integer
             double (n) = n * 2
 
-            main : Integer
-            main = apply-fn double 21
+            opening : Integer
+            opening = apply-fn double 21
             """;
         string? output = CompileAndRun(source, "hof_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("42", output.Trim());
     }
 
@@ -437,15 +369,11 @@ public class Arm64EmitterTests
     public void Text_length_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = text-length "hello"
+            opening : Integer
+            opening = text-length "hello"
             """;
         string? output = CompileAndRun(source, "txtlen_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("5", output.Trim());
     }
 
@@ -453,15 +381,11 @@ public class Arm64EmitterTests
     public void Text_to_integer_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = text-to-integer "123"
+            opening : Integer
+            opening = text-to-integer "123"
             """;
         string? output = CompileAndRun(source, "txtint_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("123", output.Trim());
     }
 
@@ -469,15 +393,11 @@ public class Arm64EmitterTests
     public void Text_to_integer_negative_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = text-to-integer "-42"
+            opening : Integer
+            opening = text-to-integer "-42"
             """;
         string? output = CompileAndRun(source, "txtneg_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("-42", output.Trim());
     }
 
@@ -485,15 +405,11 @@ public class Arm64EmitterTests
     public void Show_integer_runs_under_qemu()
     {
         string source = """
-            main : Text
-            main = show 42
+            opening : Text
+            opening = show 42
             """;
         string? output = CompileAndRun(source, "show_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("42", output.Trim());
     }
 
@@ -501,15 +417,11 @@ public class Arm64EmitterTests
     public void String_equality_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = if "hello" == "hello" then 1 else 0
+            opening : Integer
+            opening = if "hello" == "hello" then 1 else 0
             """;
         string? output = CompileAndRun(source, "streq_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("1", output.Trim());
     }
 
@@ -517,15 +429,11 @@ public class Arm64EmitterTests
     public void String_inequality_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = if "hello" == "world" then 1 else 0
+            opening : Integer
+            opening = if "hello" == "world" then 1 else 0
             """;
         string? output = CompileAndRun(source, "strne_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("0", output.Trim());
     }
 
@@ -533,15 +441,11 @@ public class Arm64EmitterTests
     public void Text_concat_runs_under_qemu()
     {
         string source = """
-            main : Text
-            main = "hello " ++ "world"
+            opening : Text
+            opening = "hello " ++ "world"
             """;
         string? output = CompileAndRun(source, "concat_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("hello world", output.Trim());
     }
 
@@ -549,15 +453,11 @@ public class Arm64EmitterTests
     public void List_literal_length_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = list-length [1, 2, 3]
+            opening : Integer
+            opening = list-length [1, 2, 3]
             """;
         string? output = CompileAndRun(source, "listlen_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("3", output.Trim());
     }
 
@@ -565,15 +465,11 @@ public class Arm64EmitterTests
     public void List_at_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = list-at [10, 20, 30] 1
+            opening : Integer
+            opening = list-at [10, 20, 30] 1
             """;
         string? output = CompileAndRun(source, "listat_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("20", output.Trim());
     }
 
@@ -581,15 +477,11 @@ public class Arm64EmitterTests
     public void List_cons_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = list-length (0 :: [1, 2, 3])
+            opening : Integer
+            opening = list-length (0 :: [1, 2, 3])
             """;
         string? output = CompileAndRun(source, "listcons_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("4", output.Trim());
     }
 
@@ -597,15 +489,11 @@ public class Arm64EmitterTests
     public void List_append_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = list-length ([1, 2] ++ [3, 4, 5])
+            opening : Integer
+            opening = list-length ([1, 2] ++ [3, 4, 5])
             """;
         string? output = CompileAndRun(source, "listapp_run_a64");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("5", output.Trim());
     }
 
@@ -621,8 +509,8 @@ public class Arm64EmitterTests
             do-fork : [Concurrent] Integer
             do-fork = let t = fork compute in await t
 
-            main : Integer
-            main = do-fork
+            opening : Integer
+            opening = do-fork
             """;
         byte[]? bytes = Helpers.CompileToArm64(source, "fork_a64");
         Assert.NotNull(bytes);
@@ -647,10 +535,7 @@ public class Arm64EmitterTests
 
     string? CompileAndRun(string source, string chapterName)
     {
-        if (!IsQemuAvailable())
-        {
-            return null;
-        }
+        if (!IsQemuAvailable()) return null;
 
         byte[]? bytes = Helpers.CompileToArm64(source, chapterName);
         Assert.NotNull(bytes);
@@ -680,21 +565,18 @@ public class Arm64EmitterTests
             };
 
             using Process? proc = Process.Start(psi);
-            if (proc is null)
-            {
-                return null;
-            }
+            if (proc is null) return null;
 
             string stdout = proc.StandardOutput.ReadToEnd();
             string stderr = proc.StandardError.ReadToEnd();
             proc.WaitForExit(10_000);
 
-            if (proc.ExitCode != 0)
-            {
+            if (proc.ExitCode != 0)
+            {
                 throw new InvalidOperationException(
-                    $"qemu-aarch64 exited with code {proc.ExitCode}.\nstdout: {stdout}\nstderr: {stderr}");
-            }
-
+                    $"qemu-aarch64 exited with code {proc.ExitCode}.\nstdout: {stdout}\nstderr: {stderr}");
+            }
+
             return stdout;
         }
         finally
@@ -715,11 +597,7 @@ public class Arm64EmitterTests
                 CreateNoWindow = true
             };
             using Process? proc = Process.Start(psi);
-            if (proc is null)
-            {
-                return false;
-            }
-
+            if (proc is null) return false;
             proc.WaitForExit(5_000);
             return proc.ExitCode == 0;
         }

@@ -13,11 +13,11 @@ public class CoreIntegrationTests  // see IntegrationTests2.cs for adding more t
     [Fact]
     public void Hello_compiles_to_csharp()
     {
-        string source = "square : Integer -> Integer\nsquare (x) = x * x\n\nmain : Integer\nmain = square 5";
+        string source = "square : Integer -> Integer\nsquare (x) = x * x\n\nopening : Integer\nopening = square 5";
         string? cs = Helpers.CompileToCS(source, "hello");
         Assert.NotNull(cs);
         Assert.Contains("square", cs);
-        Assert.Contains("main", cs);
+        Assert.Contains("opening", cs);
         Assert.Contains("Console.WriteLine", cs);
     }
 
@@ -27,7 +27,7 @@ public class CoreIntegrationTests  // see IntegrationTests2.cs for adding more t
         string source =
             "factorial : Integer -> Integer\n" +
             "factorial (n) = if n == 0 then 1 else n * factorial (n - 1)\n\n" +
-            "main : Integer\nmain = factorial 10";
+            "opening : Integer\nopening = factorial 10";
         string? cs = Helpers.CompileToCS(source, "factorial");
         Assert.NotNull(cs);
         Assert.Contains("factorial", cs);
@@ -39,7 +39,7 @@ public class CoreIntegrationTests  // see IntegrationTests2.cs for adding more t
         string source =
             "greeting : Text -> Text\n" +
             "greeting (name) = \"Hello, \" ++ name ++ \"!\"\n\n" +
-            "main : Text\nmain = greeting \"World\"";
+            "opening : Text\nopening = greeting \"World\"";
         string? cs = Helpers.CompileToCS(source, "greeting");
         Assert.NotNull(cs);
         Assert.Contains("string.Concat", cs);
@@ -63,11 +63,11 @@ public class CoreIntegrationTests  // see IntegrationTests2.cs for adding more t
     {
         string source =
             "fib (n) = if n == 0 then 0 else if n == 1 then 1 else fib (n - 1) + fib (n - 2)\n\n" +
-            "main : Integer\nmain = fib 20";
+            "opening : Integer\nopening = fib 20";
         Map<string, CodexType>? types = Helpers.TypeCheck(source);
         Assert.NotNull(types);
         Assert.True(types!.ContainsKey("fib"));
-        Assert.True(types.ContainsKey("main"));
+        Assert.True(types.ContainsKey("opening"));
     }
 
     // --- Prose-mode programs ---
@@ -81,8 +81,8 @@ public class CoreIntegrationTests  // see IntegrationTests2.cs for adding more t
             " We say:\n\n" +
             "  greet : Text -> Text\n" +
             "  greet (name) = \"Hello, \" ++ name ++ \"!\"\n\n" +
-            "  main : Text\n" +
-            "  main = greet \"World\"\n";
+            "  opening : Text\n" +
+            "  opening = greet \"World\"\n";
         string? cs = Helpers.CompileToCS(source, "greeting");
         Assert.NotNull(cs);
         Assert.Contains("greet", cs);
@@ -96,8 +96,8 @@ public class CoreIntegrationTests  // see IntegrationTests2.cs for adding more t
             "Chapter: Math\n\n" +
             "    double : Integer -> Integer\n" +
             "    double (x) = x + x\n\n" +
-            "    main : Integer\n" +
-            "    main = double 21\n";
+            "    opening : Integer\n" +
+            "    opening = double 21\n";
         Map<string, CodexType>? types = Helpers.TypeCheck(source);
         Assert.NotNull(types);
         Assert.True(types!.ContainsKey("double"));
@@ -109,7 +109,7 @@ public class CoreIntegrationTests  // see IntegrationTests2.cs for adding more t
     [Fact]
     public void Emitted_csharp_has_class_prefix()
     {
-        string source = "main : Integer\nmain = 42";
+        string source = "opening : Integer\nopening = 42";
         string? cs = Helpers.CompileToCS(source, "mymodule");
         Assert.NotNull(cs);
         Assert.Contains("Codex_mymodule", cs);
@@ -118,7 +118,7 @@ public class CoreIntegrationTests  // see IntegrationTests2.cs for adding more t
     [Fact]
     public void Emitted_csharp_has_top_level_console_writeline()
     {
-        string source = "main : Integer\nmain = 42";
+        string source = "opening : Integer\nopening = 42";
         string? cs = Helpers.CompileToCS(source);
         Assert.NotNull(cs);
         string beforeClass = cs![..cs.IndexOf("public static class")];
@@ -322,8 +322,8 @@ public class CoreIntegrationTests  // see IntegrationTests2.cs for adding more t
             "  | None\n\n" +
             "wrap : Integer -> Maybe Integer\n" +
             "wrap (x) = Just x\n\n" +
-            "main : Integer\n" +
-            "main =\n" +
+            "opening : Integer\n" +
+            "opening =\n" +
             "  when wrap 42\n" +
             "    is Just (n) -> n\n" +
             "    is None -> 0\n";

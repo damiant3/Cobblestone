@@ -9,8 +9,8 @@ public class RiscVEmitterTests
     public void Simple_integer_emits_elf_bytes()
     {
         string source = """
-            main : Integer
-            main = 42
+            opening : Integer
+            opening = 42
             """;
         byte[]? bytes = Helpers.CompileToRiscV(source, "simple_rv");
         Assert.NotNull(bytes);
@@ -33,8 +33,8 @@ public class RiscVEmitterTests
             square : Integer -> Integer
             square (x) = x * x
 
-            main : Integer
-            main = square 5
+            opening : Integer
+            opening = square 5
             """;
         byte[]? bytes = Helpers.CompileToRiscV(source, "square_rv");
         Assert.NotNull(bytes);
@@ -49,8 +49,8 @@ public class RiscVEmitterTests
             factorial : Integer -> Integer
             factorial (n) = if n == 0 then 1 else n * factorial (n - 1)
 
-            main : Integer
-            main = factorial 5
+            opening : Integer
+            opening = factorial 5
             """;
         byte[]? bytes = Helpers.CompileToRiscV(source, "factorial_rv");
         Assert.NotNull(bytes);
@@ -65,8 +65,8 @@ public class RiscVEmitterTests
             add : Integer -> Integer -> Integer
             add (x) (y) = x + y
 
-            main : Integer
-            main = add 3 4
+            opening : Integer
+            opening = add 3 4
             """;
         byte[]? bytes = Helpers.CompileToRiscV(source, "arith_rv");
         Assert.NotNull(bytes);
@@ -78,8 +78,8 @@ public class RiscVEmitterTests
     public void Let_binding_emits_elf_bytes()
     {
         string source = """
-            main : Integer
-            main = let x = 10 in let y = 20 in x + y
+            opening : Integer
+            opening = let x = 10 in let y = 20 in x + y
             """;
         byte[]? bytes = Helpers.CompileToRiscV(source, "let_rv");
         Assert.NotNull(bytes);
@@ -91,8 +91,8 @@ public class RiscVEmitterTests
     public void If_else_emits_elf_bytes()
     {
         string source = """
-            main : Integer
-            main = if 1 == 1 then 42 else 0
+            opening : Integer
+            opening = if 1 == 1 then 42 else 0
             """;
         byte[]? bytes = Helpers.CompileToRiscV(source, "ifelse_rv");
         Assert.NotNull(bytes);
@@ -104,8 +104,8 @@ public class RiscVEmitterTests
     public void Elf_has_riscv_machine_type()
     {
         string source = """
-            main : Integer
-            main = 1
+            opening : Integer
+            opening = 1
             """;
         byte[]? bytes = Helpers.CompileToRiscV(source, "machine_rv");
         Assert.NotNull(bytes);
@@ -124,8 +124,8 @@ public class RiscVEmitterTests
             do-fork : [Concurrent] Integer
             do-fork = let t = fork compute in await t
 
-            main : Integer
-            main = do-fork
+            opening : Integer
+            opening = do-fork
             """;
         byte[]? bytes = Helpers.CompileToRiscV(source, "fork_rv");
         Assert.NotNull(bytes);
@@ -136,8 +136,8 @@ public class RiscVEmitterTests
     public void Elf_has_valid_entry_point()
     {
         string source = """
-            main : Integer
-            main = 1
+            opening : Integer
+            opening = 1
             """;
         byte[]? bytes = Helpers.CompileToRiscV(source, "entry_rv");
         Assert.NotNull(bytes);
@@ -161,15 +161,11 @@ public class RiscVEmitterTests
     public void Integer_42_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = 42
+            opening : Integer
+            opening = 42
             """;
         string? output = CompileAndRun(source, "int42_run_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("42", output.Trim());
     }
 
@@ -180,15 +176,11 @@ public class RiscVEmitterTests
             add : Integer -> Integer -> Integer
             add (x) (y) = x + y
 
-            main : Integer
-            main = add 3 4
+            opening : Integer
+            opening = add 3 4
             """;
         string? output = CompileAndRun(source, "add_run_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("7", output.Trim());
     }
 
@@ -199,15 +191,11 @@ public class RiscVEmitterTests
             square : Integer -> Integer
             square (x) = x * x
 
-            main : Integer
-            main = square 5
+            opening : Integer
+            opening = square 5
             """;
         string? output = CompileAndRun(source, "square_run_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("25", output.Trim());
     }
 
@@ -215,15 +203,11 @@ public class RiscVEmitterTests
     public void Let_binding_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = let x = 10 in let y = 20 in x + y
+            opening : Integer
+            opening = let x = 10 in let y = 20 in x + y
             """;
         string? output = CompileAndRun(source, "let_run_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("30", output.Trim());
     }
 
@@ -234,15 +218,11 @@ public class RiscVEmitterTests
             factorial : Integer -> Integer
             factorial (n) = if n == 0 then 1 else n * factorial (n - 1)
 
-            main : Integer
-            main = factorial 5
+            opening : Integer
+            opening = factorial 5
             """;
         string? output = CompileAndRun(source, "fact_run_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("120", output.Trim());
     }
 
@@ -251,15 +231,9 @@ public class RiscVEmitterTests
     static string? CompileAndRun(string source, string chapterName)
     {
         byte[]? bytes = Helpers.CompileToRiscV(source, chapterName);
-        if (bytes is null)
-        {
-            return null;
-        }
+        if (bytes is null) return null;
 
-        if (!IsQemuAvailable())
-        {
-            return null;
-        }
+        if (!IsQemuAvailable()) return null;
 
         string tempDir = Path.Combine(Path.GetTempPath(),
             "codex_rv_test_" + chapterName + "_" + Guid.NewGuid().ToString("N")[..8]);
@@ -285,21 +259,18 @@ public class RiscVEmitterTests
             };
 
             using Process? proc = Process.Start(psi);
-            if (proc is null)
-            {
-                return null;
-            }
+            if (proc is null) return null;
 
             string stdout = proc.StandardOutput.ReadToEnd();
             string stderr = proc.StandardError.ReadToEnd();
             proc.WaitForExit(10_000);
 
-            if (proc.ExitCode != 0)
-            {
+            if (proc.ExitCode != 0)
+            {
                 throw new InvalidOperationException(
-                    $"qemu-riscv64 exited with code {proc.ExitCode}.\nstdout: {stdout}\nstderr: {stderr}");
-            }
-
+                    $"qemu-riscv64 exited with code {proc.ExitCode}.\nstdout: {stdout}\nstderr: {stderr}");
+            }
+
             return stdout;
         }
         finally
@@ -320,11 +291,7 @@ public class RiscVEmitterTests
                 CreateNoWindow = true
             };
             using Process? proc = Process.Start(psi);
-            if (proc is null)
-            {
-                return false;
-            }
-
+            if (proc is null) return false;
             proc.WaitForExit(5_000);
             return proc.ExitCode == 0;
         }
@@ -359,8 +326,8 @@ public class RiscVEmitterTests
               y : Integer
             }
 
-            main : Integer
-            main = let p = Point { x = 3, y = 4 } in p.x + p.y
+            opening : Integer
+            opening = let p = Point { x = 3, y = 4 } in p.x + p.y
             """;
         byte[]? bytes = Helpers.CompileToRiscV(source, "record_rv");
         Assert.NotNull(bytes);
@@ -376,15 +343,11 @@ public class RiscVEmitterTests
               y : Integer
             }
 
-            main : Integer
-            main = let p = Point { x = 3, y = 4 } in p.x + p.y
+            opening : Integer
+            opening = let p = Point { x = 3, y = 4 } in p.x + p.y
             """;
         string? output = CompileAndRun(source, "record_run_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("7", output.Trim());
     }
 
@@ -400,15 +363,11 @@ public class RiscVEmitterTests
             sum-pair : Pair -> Integer
             sum-pair (p) = p.fst + p.snd
 
-            main : Integer
-            main = sum-pair (Pair { fst = 10, snd = 20 })
+            opening : Integer
+            opening = sum-pair (Pair { fst = 10, snd = 20 })
             """;
         string? output = CompileAndRun(source, "recfn_run_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("30", output.Trim());
     }
 
@@ -430,8 +389,8 @@ public class RiscVEmitterTests
                 is Circle (r) -> r * r
                 is Rect (w) (h) -> w * h
 
-            main : Integer
-            main = area (Circle 5)
+            opening : Integer
+            opening = area (Circle 5)
             """;
         byte[]? bytes = Helpers.CompileToRiscV(source, "sum_rv");
         Assert.NotNull(bytes);
@@ -452,15 +411,11 @@ public class RiscVEmitterTests
                 is Circle (r) -> r * r
                 is Rect (w) (h) -> w * h
 
-            main : Integer
-            main = area (Circle 5)
+            opening : Integer
+            opening = area (Circle 5)
             """;
         string? output = CompileAndRun(source, "match_circle_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("25", output.Trim());
     }
 
@@ -478,15 +433,11 @@ public class RiscVEmitterTests
                 is Circle (r) -> r * r
                 is Rect (w) (h) -> w * h
 
-            main : Integer
-            main = area (Rect 5 7)
+            opening : Integer
+            opening = area (Rect 5 7)
             """;
         string? output = CompileAndRun(source, "match_rect_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("35", output.Trim());
     }
 
@@ -509,15 +460,11 @@ public class RiscVEmitterTests
                 is Circle (r) -> r * r
                 is Rect (w) (h) -> w * h
 
-            main : Integer
-            main = let p = Point { x = 3, y = 4 } in area (Rect p.x p.y)
+            opening : Integer
+            opening = let p = Point { x = 3, y = 4 } in area (Rect p.x p.y)
             """;
         string? output = CompileAndRun(source, "rec_match_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("12", output.Trim());
     }
 
@@ -531,18 +478,14 @@ public class RiscVEmitterTests
     public void Many_locals_spill_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main =
+            opening : Integer
+            opening =
               let a = 1 in let b = 2 in let c = 3 in
               let d = 4 in let e = 5 in let f = 6 in
               a + b + c + d + e + f
             """;
         string? output = CompileAndRun(source, "spill_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("21", output.Trim());
     }
 
@@ -554,15 +497,11 @@ public class RiscVEmitterTests
     public void List_literal_length_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = list-length [1, 2, 3]
+            opening : Integer
+            opening = list-length [1, 2, 3]
             """;
         string? output = CompileAndRun(source, "listlen_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("3", output.Trim());
     }
 
@@ -570,15 +509,11 @@ public class RiscVEmitterTests
     public void List_at_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = list-at [10, 20, 30] 1
+            opening : Integer
+            opening = list-at [10, 20, 30] 1
             """;
         string? output = CompileAndRun(source, "listat_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("20", output.Trim());
     }
 
@@ -586,15 +521,11 @@ public class RiscVEmitterTests
     public void List_cons_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = list-length (0 :: [1, 2, 3])
+            opening : Integer
+            opening = list-length (0 :: [1, 2, 3])
             """;
         string? output = CompileAndRun(source, "listcons_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("4", output.Trim());
     }
 
@@ -602,15 +533,11 @@ public class RiscVEmitterTests
     public void List_append_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = list-length ([1, 2] ++ [3, 4, 5])
+            opening : Integer
+            opening = list-length ([1, 2] ++ [3, 4, 5])
             """;
         string? output = CompileAndRun(source, "listapp_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("5", output.Trim());
     }
 
@@ -624,15 +551,11 @@ public class RiscVEmitterTests
             double : Integer -> Integer
             double (n) = n * 2
 
-            main : Integer
-            main = apply-fn double 21
+            opening : Integer
+            opening = apply-fn double 21
             """;
         string? output = CompileAndRun(source, "hof_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("42", output.Trim());
     }
 
@@ -644,15 +567,11 @@ public class RiscVEmitterTests
     public void Text_length_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = text-length "hello"
+            opening : Integer
+            opening = text-length "hello"
             """;
         string? output = CompileAndRun(source, "textlen_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("5", output.Trim());
     }
 
@@ -660,15 +579,11 @@ public class RiscVEmitterTests
     public void Text_to_integer_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = text-to-integer "42"
+            opening : Integer
+            opening = text-to-integer "42"
             """;
         string? output = CompileAndRun(source, "txt2int_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("42", output.Trim());
     }
 
@@ -676,15 +591,11 @@ public class RiscVEmitterTests
     public void Text_to_integer_negative_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = text-to-integer "-7"
+            opening : Integer
+            opening = text-to-integer "-7"
             """;
         string? output = CompileAndRun(source, "txt2int_neg_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("-7", output.Trim());
     }
 
@@ -692,8 +603,8 @@ public class RiscVEmitterTests
     public void Text_concat_emits_elf()
     {
         string source = """
-            main : Text
-            main = "hello " ++ "world"
+            opening : Text
+            opening = "hello " ++ "world"
             """;
         byte[]? bytes = Helpers.CompileToRiscV(source, "concat_rv");
         Assert.NotNull(bytes);
@@ -704,15 +615,11 @@ public class RiscVEmitterTests
     public void Text_concat_runs_under_qemu()
     {
         string source = """
-            main : Text
-            main = "hello " ++ "world"
+            opening : Text
+            opening = "hello " ++ "world"
             """;
         string? output = CompileAndRun(source, "concat_run_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("hello world", output.Trim());
     }
 
@@ -720,15 +627,11 @@ public class RiscVEmitterTests
     public void Show_integer_runs_under_qemu()
     {
         string source = """
-            main : Text
-            main = show 42
+            opening : Text
+            opening = show 42
             """;
         string? output = CompileAndRun(source, "show_int_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("42", output.Trim());
     }
 
@@ -736,15 +639,11 @@ public class RiscVEmitterTests
     public void String_equality_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = if "abc" == "abc" then 1 else 0
+            opening : Integer
+            opening = if "abc" == "abc" then 1 else 0
             """;
         string? output = CompileAndRun(source, "streq_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("1", output.Trim());
     }
 
@@ -752,15 +651,11 @@ public class RiscVEmitterTests
     public void String_inequality_runs_under_qemu()
     {
         string source = """
-            main : Integer
-            main = if "abc" == "xyz" then 1 else 0
+            opening : Integer
+            opening = if "abc" == "xyz" then 1 else 0
             """;
         string? output = CompileAndRun(source, "strneq_rv");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Equal("0", output.Trim());
     }
 
@@ -772,8 +667,8 @@ public class RiscVEmitterTests
     public void BareMetal_integer_emits_flat_binary()
     {
         string source = """
-            main : Integer
-            main = 42
+            opening : Integer
+            opening = 42
             """;
         byte[]? bytes = Helpers.CompileToRiscVBareMetal(source, "bm_int");
         Assert.NotNull(bytes);
@@ -794,8 +689,8 @@ public class RiscVEmitterTests
             factorial : Integer -> Integer
             factorial (n) = if n == 0 then 1 else n * factorial (n - 1)
 
-            main : Integer
-            main = factorial 5
+            opening : Integer
+            opening = factorial 5
             """;
         byte[]? bytes = Helpers.CompileToRiscVBareMetal(source, "bm_fact");
         Assert.NotNull(bytes);
@@ -807,8 +702,8 @@ public class RiscVEmitterTests
     public void BareMetal_string_emits_flat_binary()
     {
         string source = """
-            main : Text
-            main = "Hello from bare metal"
+            opening : Text
+            opening = "Hello from bare metal"
             """;
         byte[]? bytes = Helpers.CompileToRiscVBareMetal(source, "bm_text");
         Assert.NotNull(bytes);
@@ -822,8 +717,8 @@ public class RiscVEmitterTests
         // Bare metal should use UART, not Linux syscalls.
         // ecall encodes as 0x00000073.
         string source = """
-            main : Integer
-            main = 42
+            opening : Integer
+            opening = 42
             """;
         byte[]? bytes = Helpers.CompileToRiscVBareMetal(source, "bm_no_ecall");
         Assert.NotNull(bytes);
@@ -842,15 +737,11 @@ public class RiscVEmitterTests
     public void BareMetal_integer_42_runs_under_qemu_system()
     {
         string source = """
-            main : Integer
-            main = 42
+            opening : Integer
+            opening = 42
             """;
         string? output = CompileAndRunBareMetal(source, "bm_int42_run");
-        if (output is null)
-        {
-            return; // skip if qemu-system-riscv64 not available
-        }
-
+        if (output is null) return; // skip if qemu-system-riscv64 not available
         Assert.Contains("42", output);
     }
 
@@ -861,15 +752,11 @@ public class RiscVEmitterTests
             factorial : Integer -> Integer
             factorial (n) = if n == 0 then 1 else n * factorial (n - 1)
 
-            main : Integer
-            main = factorial 5
+            opening : Integer
+            opening = factorial 5
             """;
         string? output = CompileAndRunBareMetal(source, "bm_fact_run");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Contains("120", output);
     }
 
@@ -877,15 +764,11 @@ public class RiscVEmitterTests
     public void BareMetal_text_return_runs_under_qemu_system()
     {
         string source = """
-            main : Text
-            main = "hello"
+            opening : Text
+            opening = "hello"
             """;
         string? output = CompileAndRunBareMetal(source, "bm_text_ret");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Contains("hello", output);
     }
 
@@ -893,17 +776,13 @@ public class RiscVEmitterTests
     public void BareMetal_print_line_runs_under_qemu_system()
     {
         string source = """
-            main : [Console] Nothing
-            main = act
+            opening : [Console] Nothing
+            opening = act
               print-line "hello bare metal"
             end
             """;
         string? output = CompileAndRunBareMetal(source, "bm_println");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Contains("hello bare metal", output);
     }
 
@@ -914,18 +793,14 @@ public class RiscVEmitterTests
             greet : Text -> Text
             greet (name) = "hello " ++ name ++ "!"
 
-            main : [Console] Nothing
-            main = act
+            opening : [Console] Nothing
+            opening = act
               print-line (greet "world")
               print-line "done"
             end
             """;
         string? output = CompileAndRunBareMetal(source, "bm_concat");
-        if (output is null)
-        {
-            return;
-        }
-
+        if (output is null) return;
         Assert.Contains("hello world!", output);
         Assert.Contains("done", output);
     }
@@ -933,15 +808,8 @@ public class RiscVEmitterTests
     static string? CompileAndRunBareMetal(string source, string chapterName)
     {
         byte[]? bytes = Helpers.CompileToRiscVBareMetal(source, chapterName);
-        if (bytes is null)
-        {
-            return null;
-        }
-
-        if (!IsQemuSystemAvailable())
-        {
-            return null;
-        }
+        if (bytes is null) return null;
+        if (!IsQemuSystemAvailable()) return null;
 
         string tempDir = Path.Combine(Path.GetTempPath(),
             "codex_bm_test_" + chapterName + "_" + Guid.NewGuid().ToString("N")[..8]);
@@ -976,10 +844,7 @@ public class RiscVEmitterTests
             };
 
             using Process? proc = Process.Start(psi);
-            if (proc is null)
-            {
-                return null;
-            }
+            if (proc is null) return null;
 
             string stdout = proc.StandardOutput.ReadToEnd();
             proc.WaitForExit(10_000);
@@ -1003,11 +868,7 @@ public class RiscVEmitterTests
                 CreateNoWindow = true
             };
             using Process? proc = Process.Start(psi);
-            if (proc is null)
-            {
-                return false;
-            }
-
+            if (proc is null) return false;
             proc.WaitForExit(5_000);
             return proc.ExitCode == 0;
         }

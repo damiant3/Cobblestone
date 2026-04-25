@@ -7,9 +7,7 @@ public sealed partial class ProseParser
     void ValidateProseNotationConsistency(IReadOnlyList<ChapterNode> chapters)
     {
         foreach (ChapterNode chapter in chapters)
-        {
             ValidateMembers(chapter.Members);
-        }
     }
 
     void ValidateMembers(IReadOnlyList<DocumentMember> members)
@@ -25,9 +23,7 @@ public sealed partial class ProseParser
             }
 
             if (member is not ProseBlockNode prose)
-            {
                 continue;
-            }
 
             // Find the next notation block after this prose block
             NotationBlockNode? notation = null;
@@ -39,9 +35,7 @@ public sealed partial class ProseParser
                     break;
                 }
                 if (members[j] is ProseBlockNode or SectionNode)
-                {
                     break;
-                }
             }
 
             if (notation is null)
@@ -57,9 +51,7 @@ public sealed partial class ProseParser
 
             // Check function template against notation definitions
             if (prose.FunctionTemplate is not null && notation.Definitions.Count > 0)
-            {
                 ValidateFunctionTemplate(prose.FunctionTemplate, notation.Definitions[0]);
-            }
 
             // Check claim template against notation claims
             if (prose.ClaimTemplate is not null && notation.Claims.Count > 0)

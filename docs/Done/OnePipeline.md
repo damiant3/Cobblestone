@@ -139,10 +139,10 @@ Concrete steps:
    - Per-def `rename-ir-expr` call site
 2. **Rewrite** `compile-to-binary` to be the text `compile` with `emit-full-chapter` replaced by `x86-64-emit-chapter`. Exactly one-line difference.
 3. **Keep streaming** only at the emit step if needed for memory: iterate `lower-chapter`'s output defs one at a time into `x86-64-emit-chapter`. Streaming is an emit-side concern; it does NOT justify a separate scoping/type-checking path.
-4. **Verify**: `pingpong.sh` stays green (text). Binary pingpong stage 1 still passes. Binary pingpong stage 2 is the acceptance test for C7.
+4. **Verify**: `pingpong.sh` stays green (text). Bootstrap 3 stage 1 still passes. Bootstrap 3 stage 2 is the acceptance test for C7.
 5. **Re-open CDX-C7** after collapse — if the real coverage gap in `rename-ir-expr` vs `rename-aexpr` was the underlying bug, the collapse fixes it. If any other binary-only bug remains, it's now exposed without the scoping confound.
 
-Post-collapse invariant: **searching `grep -c "bin-" Codex.Codex/main.codex` must return 0 (or only uses like "binary-pingpong" strings).** The word "binary" in function names is a code smell; the pipeline doesn't need to know its output format beyond the last call.
+Post-collapse invariant: **searching `grep -c "bin-" Codex.Codex/main.codex` must return 0 (or only uses like "bootstrap-3" strings).** The word "binary" in function names is a code smell; the pipeline doesn't need to know its output format beyond the last call.
 
 ## Rules going forward
 

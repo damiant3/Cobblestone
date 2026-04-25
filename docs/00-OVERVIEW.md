@@ -4,8 +4,8 @@
 
 Codex is a programming language, a repository protocol, and a unified development
 environment. The compiler is **self-hosting**: it is written in Codex and compiles
-itself. The C# bootstrap implementation that brought the project to this point is
-locked and preserved as historical artifact.
+itself. A C# reference implementation lives alongside and is maintained as the
+correctness anchor for the self-host.
 
 The vision documents (`docs/Stories/Vision/NewRepository.txt` and `docs/Stories/Vision/IntelligenceLayer.txt`)
 define the philosophical and technical north star. This document describes where the

@@ -2,11 +2,14 @@
 
 ## Active
 
+Ordered by gating relationship.
+
 | # | Item | Design Doc | Notes |
 |---|------|-----------|-------|
-| 1 | **Second Bootstrap (MM4)** | `docs/Active/Compiler/SECOND-BOOTSTRAP.md` | Port x86-64 backend to Codex. 8 phases. The critical path. |
-| 2 | Escape copy bare-metal | `docs/Designs/Memory/CAMP-IIIA-ESCAPE-ANALYSIS.md` | Skip removed, tests passing. Rearchitect deferred till after MM4. |
-| 3 | **Self-host parity audit** | `docs/Active/Compiler/SELF-HOST-PARITY-AUDIT.md` | Living gap doc: reference vs self-host, per data structure / diagnostic / runtime behavior / primitive. Top open gap: polymorphism coverage audit. |
+| 1 | **Self-host bare-metal re-audit** | `docs/Active/Compiler/REF-LESSONS-FOR-SELFHOST.md` | C# target lifting complete (selfhost-cs sweep 75/54/20/11/3 post CL 209; 3 fails all target-semantic). Bare-metal target (`--compiler=selfhost`) still has gaps for MM4: IrRunState/IrGetState/IrSetState emit in X86_64, SSE enable on bare-metal entry, `record-set` → `__record-set` rename + Runtime cite, type-aware REPL print. Lessons doc tracks each. **Gates pingpong re-green.** |
+| 2 | **Self-host parity re-audit** (post-MM4) | `docs/Active/Compiler/SELF-HOST-PARITY-AUDIT.md` (stale) | The existing matrix is tagged STALE-post-CL-128. Rewrite once MM4 is closed; anchor every row on the sample-battery gate rather than on code-shape pattern-matching. |
+| 3 | **Second Bootstrap (MM4)** | `docs/Active/Compiler/SECOND-BOOTSTRAP.md` | Port x86-64 backend to Codex. 8 phases. Gated on #1 so pingpong is green first. |
+| 4 | Escape copy bare-metal | `docs/Designs/Memory/CAMP-IIIA-ESCAPE-ANALYSIS.md` | Skip removed, tests passing. Rearchitect deferred till after MM4. |
 
 ## Needs Design Doc
 
@@ -19,6 +22,7 @@
 | Boot sequence / init | First-boot, capability root, fact store loading | Unblocks Codex.OS on real hardware |
 | Process IPC | Inter-process communication, typed channels | Unblocks multi-process OS |
 | Scheduler & quotas | RT scheduling, CPU/memory quotas, watchdog | Unblocks resource enforcement |
+| Compiler concurrency story | DiagnosticBag lock; phase invariant barriers; thread-safety of ExprTypes table, FactStore, ChapterLoader caches; parallel chapter compilation vs sequential | Decide explicitly post-MM4. Currently self-host is single-threaded so the reference's `DiagnosticBag` lock is dead weight; either parallelize in earnest (bag races, invariant barriers, provenance+stable-mangling become load-bearing) or drop the locks. Section I of the diagnostics wishlist before it moved here. |
 
 ## Designed, Awaiting Implementation (after MM4)
 
@@ -59,23 +63,35 @@
 | 3 | NetworkSync test failures | 4 tests need self-contained peer or integration-only marking |
 | 5 | `text-to-double-bits` bare metal implementation | On x86-64 bare metal, `text-to-double-bits` falls through to `__text_to_int` (integer parser). Need a proper `__text_to_double` runtime helper that parses decimal text to IEEE 754 bits. Not blocking — the builtin is only called at compile time when the compiler runs as .NET, not at runtime on bare metal. |
 
-## Performance — Quadratic hotspots in self-host (remaining)
+## REF sample validation
 
-Re-profiled 2026-04-16 on 589K-char self-host source. Typecheck = 1419ms,
-emit = 1136ms (see `docs/Test/PERF-HOTSPOTS-2026-04-16.md`).
-Ordered by measured cost.
+`tools/ref-sweep.sh` is the canonical REF regression gate. Every sample either has a `.expected` snapshot (runtime output diffed), a `.failing` sidecar (compile must fail with a specific CDX code), or a `.skip` sidecar (documented reason).
 
-| # | Location | Pattern | Measured impact |
-|---|----------|---------|--------|
-| ~~P9~~ | ~~`Codex.Codex/Types/Unifier.codex` `add-subst`~~ | **Landed in `2293b2e` (2026-04-16).** Dense `var-id`-indexed substitution list with self-reference sentinel; O(1) insert + lookup. Typecheck 1418.91ms → 85.00ms (16.7x, −94%). Total compile 2919.99ms → 1436.73ms (2.03x, −51%). Pingpong green. |
-| P2 | `Codex.Codex/Types/TypeEnv.codex:37-45` `env-bind` | Sorted `List<TypeBinding>` with per-call list-copy + `Insert` (open-coded `list-insert-at`) | 10,493 calls, max N = 1,877, total work ≈ 17M ops ≈ **~35ms = ~2% of typecheck**. Real but small on current workload. Landed speedup `85cfa4d` (sorted bsearch + `list-snoc`) still mostly holds. |
-| P13-tail | `Codex.Codex/Emit/CodexEmitter.codex:579,616-630` `replace-def` + `list-set` | O(N) scan + O(N) rebuild per dominated def | **Codex-to-Codex emitter only** — 0 calls on pingpong bench (C# emit path). Only hit if we rebuild the Codex emitter as part of the toolchain. |
-| P14 | `Codex.Codex/Types/TypeChecker.codex:376-381` `lookup-record-field` | Linear scan over record fields per `.field` access | Unprofiled; F is bounded (≤ ~10) so cost is linear-small. Keep the probe. Low priority. |
-| EMIT-TBD | `Codex.Codex/Emit/**` (needs profiling) | Unknown — emit phase was 1136ms (~40% of total) before P9 landed; now the largest named phase. No hotspot named in the backlog. | Needs a profiling pass similar to the one that produced the rows above. Next perf target. |
+`--compiler=ref|selfhost` selects which compiler runs. Self-host mode uses `build-output/bare-metal/Codex.Codex.elf` (from `pingpong.sh`) via QEMU.
+
+Current REF state: **54 verified + 8 expected-fail diagnostics + 10 skipped + 0 fail**, out of 72 samples.
+
+Skipped samples are each documented in their `.skip` sidecar. Four are known-broken or not-yet-implemented features (effect handlers, fork/await on bare metal, linear types runtime); four are type-check-only tests with no `opening`; two are missing-dep stubs. They act as TODO markers in the battery — when the capability lands, delete the `.skip` and snapshot.
+
+Diagnostic negative tests cover CDX1000 (parser-resync), CDX2001 (type mismatch), CDX2002 (unknown ctor), CDX2033 (let-effectful), CDX3001 (duplicate def/ctor — 2 tests), CDX3002 (unknown name), CDX3010 (unresolved cite). ~50 live diagnostic codes; 8 covered.
+
+All real bugs surfaced during the test-battery build-out are resolved. Remaining skips are type-check-only samples with no `opening` entry point or missing-dep stubs; track each at its `.skip` sidecar.
+
+Recently fixed REF bugs (in this CL):
+
+| Sample | What it was | Fix |
+|---|---|---|
+| `samples/string-ops.codex` | `count-letters "hello world 123"` returned `1`; expected `10`. | `is-letter` / `is-digit` / `is-whitespace` emit in `X86_64CodeGen` was mutating the source register in place (`SubRI(rd, 13); Setcc(rd)`). When the source register happened to be a parameter register — which it is inside a tail-recursive function that reads a param directly into the builtin call — the parameter got clobbered, and the next TCO iteration saw the clobbered value. Same shape also affected `char-at` (destructive `AddRR(idx, strLoaded)` on the caller's index param). Both fixed by allocating a fresh temp, copying, and mutating that. |
+| `samples/expr-calculator.codex` | Self-tests failed with wrong numeric values. | Not a compiler bug — the sample's digit-parsing logic used `char-code c - 48` assuming ASCII, but Codex Text is CCE-encoded where `'0'` is byte 3, not 48. Changed `- 48` to `- 3`. Recursive-descent parser now passes all 10 self-tests including operator precedence and parens. |
+| `samples/polymorphism-coverage.codex` | `#PF` at `RIP=0x106a45` during `opening`. | Not a polymorphism bug — the sample is a type-checker sweep with no `opening` entry point. Bare-metal trampoline called the missing symbol and landed on garbage. Added a parallel `samples/poly-runtime.codex` that actually drives each polymorphic shape (id, const, opt-map, unbox, rebox, swap-pair, apply-fn) — every pattern produces the correct runtime value. Polymorphism is fine in REF. |
+| `samples/state-demo.codex` | `run-state 0 (get; set(x+10); get; set(y*2); get)` returned `0`; expected `20`. | `X86_64CodeGen.EmitExpr` had no cases for `IRRunState` / `IRGetState` / `IRSetState` — they fell through to `EmitUnhandled` (returns 0). Same class of gap as the missing `IRLambda` case. Added dedicated emit methods: state lives in a single stack slot scoped dynamically around each `run-state`'s body; nested `run-state` saves/restores through a field. Integer-width state works end-to-end; wider state would need heap boxing (defer until a sample needs it). |
+
+Previously broken, now fixed:
+
+| Sample | Symptom | Fix |
+|---|---|---|
+| `samples/shapes.codex` | `#UD` at SSE `mulsd` instruction after `READY` | REF's bare-metal `__start` never enabled SSE. Added CR4.OSFXSR+OSXMMEXCPT and cleared CR0.EM / set CR0.MP in `X86_64CodeGen.cs` before entering long mode. Runtime fixed; separately, bare-metal does not yet format a Number result to text (minor feature gap, not a miscompile). |
+| `samples/list-test.codex` | Runtime asserts `FAIL: length expected [5] got [0]`, then `#GP` | Two compounding bugs: (1) name collision — `foreword/List.codex`'s `list-length : ConsList a -> Integer` silently lost to the builtin `list-length : List a -> Integer`. Fixed by Step 4 cite-gating + emitter priority (user-defined function shadows same-named builtin). (2) Polymorphic return type — `head : ConsList a -> a` applied to `ConsList Integer` lowered with `a` stuck as a `TypeVariable` because `SubstituteTypeVarsFromArg` didn't walk into `ConstructedType` / `SumType` / `RecordType` arguments, and the IR didn't consult the type-checker's deeply-resolved per-expression types. Fixed by threading `TypeChecker.ExprTypes` into `Lowering` and preferring the resolved type in `LowerApply`. All 15 list-test checks now PASS. |
+| `samples/closure-in-record.codex` | Megabytes of garbage bytes on serial, then fault | Three chained gaps in closure handling: (1) X86_64 emitter had no `IRLambda` case at all — lambdas fell through to `EmitUnhandled` which returns 0; the resulting "0 as text pointer" cascaded into `__str_concat` writing through `ptr=0+offset` until it hit unmapped memory. Fixed by a new `src/Codex.IR/LambdaLifting.cs` pass that runs after `LowerCitedDefs` and rewrites every `IRLambda` into a synthesized top-level `IRDefinition` + `IRApply` chain partially applying the free variables. (2) `EmitApply` flattened the whole `IRApply` chain into a single call regardless of the named function's arity, so `(make-adder 10) 5` tried to call `make-adder` with two arguments. Fixed by tracking each user function's arity in `m_userDefinedArity` and splitting the over-apply into `direct-call + indirect-call` phases. (3) Applying a closure obtained from a non-`IRName` expression (`IRFieldAccess`, `IRApply` result) emitted no call at all — `funcName == null` fell off the end of `EmitApply`. Fixed by evaluating such a function expression into a closure local and performing an indirect call against it. All closure probes (direct lambda, lambda as def value, capturing adder, closure stored in record field) produce the correct output. `closure-in-record.codex` prints `a:13` then `b:103` as designed. |
 
 
-## Compiler Correctness (low priority, non-blocking, continued)
-
-| # | Item | Notes |
-|---|------|-------|
-| 6 | **C# bootstrap emitter: `[]` empty-list literal loses element type in conditional branches** | When an empty list literal `[]` appears in a branch of an `if/then/else` whose other branch produces `List Integer`, the self-host C# emitter outputs `(List<long>)new List<object>()` — an invalid cast that fails `dotnet build` of `Codex.Bootstrap.csproj`. Workaround: define a named `no-bytes : List Integer = []` constant and reference it by name — the annotated type flows through. Hit on 2026-04-12 while writing `chunked-write-binary`. Fix lives in `Codex.Codex/Emit/CSharpEmitterExpressions.codex` list-literal emission path — should consult the expected type and emit `new List<long>()` when it's known. |

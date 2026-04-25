@@ -14,50 +14,50 @@ public partial class IntegrationTests
     public void Effectful_function_type_checks()
     {
         string source =
-            "main : [Console] Nothing\n" +
-            "main = act\n" +
+            "opening : [Console] Nothing\n" +
+            "opening = act\n" +
             "  print-line \"hello\"\n" +
             "end\n";
         Map<string, CodexType>? types = Helpers.TypeCheck(source);
         Assert.NotNull(types);
-        Assert.True(types!.ContainsKey("main"));
-        Assert.Contains("Console", types["main"]!.ToString());
+        Assert.True(types!.ContainsKey("opening"));
+        Assert.Contains("Console", types["opening"]!.ToString());
     }
 
     [Fact]
     public void Effectful_function_compiles_to_csharp()
     {
         string source =
-            "main : [Console] Nothing\n" +
-            "main = act\n" +
+            "opening : [Console] Nothing\n" +
+            "opening = act\n" +
             "  print-line \"hello\"\n" +
             "end\n";
         string? cs = Helpers.CompileToCS(source, "eftest");
         Assert.NotNull(cs);
         Assert.Contains("Console.WriteLine", cs!);
-        Assert.DoesNotContain("Console.WriteLine(Codex_eftest.main())", cs);
+        Assert.DoesNotContain("Console.WriteLine(Codex_eftest.opening())", cs);
     }
 
     [Fact]
     public void Do_bind_type_checks()
     {
         string source =
-            "main : [Console] Nothing\n" +
-            "main = act\n" +
+            "opening : [Console] Nothing\n" +
+            "opening = act\n" +
             "  name <- read-line\n" +
             "  print-line name\n" +
             "end\n";
         Map<string, CodexType>? types = Helpers.TypeCheck(source);
         Assert.NotNull(types);
-        Assert.True(types!.ContainsKey("main"));
+        Assert.True(types!.ContainsKey("opening"));
     }
 
     [Fact]
     public void Do_bind_compiles_to_csharp()
     {
         string source =
-            "main : [Console] Nothing\n" +
-            "main = act\n" +
+            "opening : [Console] Nothing\n" +
+            "opening = act\n" +
             "  name <- read-line\n" +
             "  print-line (\"Hello, \" ++ name)\n" +
             "end\n";
@@ -73,8 +73,8 @@ public partial class IntegrationTests
         string source =
             "greet : Text -> [Console] Nothing\n" +
             "greet (name) = print-line (\"Hello, \" ++ name)\n\n" +
-            "main : [Console] Nothing\n" +
-            "main = act\n" +
+            "opening : [Console] Nothing\n" +
+            "opening = act\n" +
             "  greet \"World\"\n" +
             "end\n";
         string? cs = Helpers.CompileToCS(source, "efhelper");
@@ -107,8 +107,8 @@ public partial class IntegrationTests
     public void Multiple_do_statements_compile()
     {
         string source =
-            "main : [Console] Nothing\n" +
-            "main = act\n" +
+            "opening : [Console] Nothing\n" +
+            "opening = act\n" +
             "  print-line \"one\"\n" +
             "  print-line \"two\"\n" +
             "  print-line \"three\"\n" +
@@ -176,8 +176,8 @@ public partial class IntegrationTests
         string source =
             "apply-to : (Integer -> Text) -> Integer -> Text\n" +
             "apply-to (f) (x) = f x\n\n" +
-            "main : Text\n" +
-            "main = apply-to show 42\n";
+            "opening : Text\n" +
+            "opening = apply-to show 42\n";
         string? cs = Helpers.CompileToCS(source, "showval");
         Assert.NotNull(cs);
         Assert.Contains("Convert.ToString", cs!);
@@ -302,11 +302,11 @@ public partial class IntegrationTests
         string source =
             "f : (n : Integer) -> Integer\n" +
             "f (x) = x\n\n" +
-            "main : Integer\n" +
-            "main = f 42\n";
+            "opening : Integer\n" +
+            "opening = f 42\n";
         Map<string, CodexType>? types = Helpers.TypeCheck(source);
         Assert.NotNull(types);
-        Assert.IsType<IntegerType>(types!["main"]);
+        Assert.IsType<IntegerType>(types!["opening"]);
     }
 
     [Fact]
@@ -338,8 +338,8 @@ public partial class IntegrationTests
         string source =
             "f : (n : Integer) -> Integer\n" +
             "f (x) = x\n\n" +
-            "main : Integer\n" +
-            "main = f 5\n";
+            "opening : Integer\n" +
+            "opening = f 5\n";
         string? cs = Helpers.CompileToCS(source, "deptest");
         Assert.NotNull(cs);
         Assert.Contains("f", cs!);
@@ -351,8 +351,8 @@ public partial class IntegrationTests
         string source =
             "f : (m : Integer) -> (n : Integer) -> Vector (m + n) Integer -> Integer\n" +
             "f (a) (b) (v) = a + b\n\n" +
-            "main : Integer\n" +
-            "main = f 3 2 [1, 2, 3, 4, 5]\n";
+            "opening : Integer\n" +
+            "opening = f 3 2 [1, 2, 3, 4, 5]\n";
         Map<string, CodexType>? types = Helpers.TypeCheck(source);
         Assert.NotNull(types);
     }
@@ -363,8 +363,8 @@ public partial class IntegrationTests
         string source =
             "safe-index : (i : Integer) -> (n : Integer) -> {proof : i < n} -> Integer\n" +
             "safe-index (i) (n) = i\n\n" +
-            "main : Integer\n" +
-            "main = safe-index 3 5\n";
+            "opening : Integer\n" +
+            "opening = safe-index 3 5\n";
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.DoesNotContain(diag.ToImmutable(), d => d.Severity == DiagnosticSeverity.Error);
     }
@@ -375,8 +375,8 @@ public partial class IntegrationTests
         string source =
             "safe-index : (i : Integer) -> (n : Integer) -> {proof : i < n} -> Integer\n" +
             "safe-index (i) (n) = i\n\n" +
-            "main : Integer\n" +
-            "main = safe-index 5 3\n";
+            "opening : Integer\n" +
+            "opening = safe-index 5 3\n";
         DiagnosticBag diag = Helpers.TypeCheckWithDiagnostics(source);
         Assert.Contains(diag.ToImmutable(), d => d.Code == CdxCodes.LinearUnused);
     }

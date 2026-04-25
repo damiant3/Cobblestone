@@ -14,8 +14,8 @@ public class ILEmitterGenericListTests
             nums : List Integer
             nums = [10, 20, 30]
 
-            main : Integer
-            main = list-length nums
+            opening : Integer
+            opening = list-length nums
             """;
         byte[]? bytes = Helpers.CompileToIL(source, "list_int_emit");
         Assert.NotNull(bytes);
@@ -29,8 +29,8 @@ public class ILEmitterGenericListTests
             nums : List Integer
             nums = [10, 20, 30]
 
-            main : Integer
-            main = list-length nums
+            opening : Integer
+            opening = list-length nums
             """;
         string? output = CompileAndRun(source, "list_int_len");
         Assert.NotNull(output);
@@ -44,8 +44,8 @@ public class ILEmitterGenericListTests
             nums : List Integer
             nums = [10, 20, 30]
 
-            main : Integer
-            main = list-at nums 1
+            opening : Integer
+            opening = list-at nums 1
             """;
         string? output = CompileAndRun(source, "list_int_at");
         Assert.NotNull(output);
@@ -59,8 +59,8 @@ public class ILEmitterGenericListTests
             nums : List Integer
             nums = [10, 20, 30]
 
-            main : Integer
-            main = list-at nums 0 + list-at nums 1 + list-at nums 2
+            opening : Integer
+            opening = list-at nums 0 + list-at nums 1 + list-at nums 2
             """;
         string? output = CompileAndRun(source, "list_int_arith");
         Assert.NotNull(output);
@@ -76,8 +76,8 @@ public class ILEmitterGenericListTests
             vals : List Number
             vals = [3.14, 2.72, 1.41]
 
-            main : Text
-            main = show (list-at vals 0)
+            opening : Text
+            opening = show (list-at vals 0)
             """;
         string? output = CompileAndRun(source, "list_num_at");
         Assert.NotNull(output);
@@ -93,8 +93,8 @@ public class ILEmitterGenericListTests
             flags : List Boolean
             flags = [True, False, True]
 
-            main : Integer
-            main = list-length flags
+            opening : Integer
+            opening = list-length flags
             """;
         string? output = CompileAndRun(source, "list_bool_len");
         Assert.NotNull(output);
@@ -108,8 +108,8 @@ public class ILEmitterGenericListTests
             flags : List Boolean
             flags = [True, False, True]
 
-            main : Text
-            main = show (list-at flags 2)
+            opening : Text
+            opening = show (list-at flags 2)
             """;
         string? output = CompileAndRun(source, "list_bool_at");
         Assert.NotNull(output);
@@ -125,8 +125,8 @@ public class ILEmitterGenericListTests
             words : List Text
             words = ["hello", "world"]
 
-            main : Text
-            main = list-at words 0 ++ " " ++ list-at words 1
+            opening : Text
+            opening = list-at words 0 ++ " " ++ list-at words 1
             """;
         string? output = CompileAndRun(source, "list_text_regress");
         Assert.NotNull(output);
@@ -137,8 +137,8 @@ public class ILEmitterGenericListTests
     public void Text_split_still_works_through_cache()
     {
         string source = """
-            main : Text
-            main = list-at (text-split "a,b,c" ",") 1
+            opening : Text
+            opening = list-at (text-split "a,b,c" ",") 1
             """;
         string? output = CompileAndRun(source, "text_split_regress");
         Assert.NotNull(output);
@@ -154,8 +154,8 @@ public class ILEmitterGenericListTests
             empty : List Integer
             empty = []
 
-            main : Integer
-            main = list-length empty
+            opening : Integer
+            opening = list-length empty
             """;
         string? output = CompileAndRun(source, "empty_list_len");
         Assert.NotNull(output);
@@ -171,8 +171,8 @@ public class ILEmitterGenericListTests
             one : List Integer
             one = [42]
 
-            main : Integer
-            main = list-at one 0
+            opening : Integer
+            opening = list-at one 0
             """;
         string? output = CompileAndRun(source, "single_elem");
         Assert.NotNull(output);
@@ -184,10 +184,7 @@ public class ILEmitterGenericListTests
     static string? CompileAndRun(string source, string chapterName)
     {
         byte[]? bytes = Helpers.CompileToIL(source, chapterName);
-        if (bytes is null)
-        {
-            return null;
-        }
+        if (bytes is null) return null;
 
         string tempDir = Path.Combine(Path.GetTempPath(),
             "codex_il_test_" + chapterName + "_" + Guid.NewGuid().ToString("N")[..8]);
@@ -221,21 +218,18 @@ public class ILEmitterGenericListTests
             };
 
             using Process? proc = Process.Start(psi);
-            if (proc is null)
-            {
-                return null;
-            }
+            if (proc is null) return null;
 
             string stdout = proc.StandardOutput.ReadToEnd();
             string stderr = proc.StandardError.ReadToEnd();
             proc.WaitForExit(10_000);
 
-            if (proc.ExitCode != 0)
-            {
+            if (proc.ExitCode != 0)
+            {
                 throw new InvalidOperationException(
-                    $"dotnet exited with code {proc.ExitCode}.\nstdout: {stdout}\nstderr: {stderr}");
-            }
-
+                    $"dotnet exited with code {proc.ExitCode}.\nstdout: {stdout}\nstderr: {stderr}");
+            }
+
             return stdout;
         }
         finally

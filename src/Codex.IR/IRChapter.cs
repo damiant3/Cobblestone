@@ -10,6 +10,15 @@ public sealed record IRChapter(
     Map<string, CodexType> TypeDefinitions)
 {
     public ImmutableArray<IRChapterSection> Sections { get; init; }
+
+    // Scope sets carried forward from NameResolver. Lowering populates these
+    // from ResolvedChapter so downstream passes (LoweringInvariants, emit
+    // backends asking "is this name a ctor?") don't re-walk Definitions and
+    // TypeDefinitions on every call. Empty means "not populated" — callers
+    // that need the data fall back to deriving from Definitions/TypeDefinitions
+    // (see IRChapterExtensions.CollectConstructorNames and LoweringInvariants).
+    public Set<string> TopLevelNames { get; init; } = Set<string>.s_empty;
+    public Set<string> ConstructorNames { get; init; } = Set<string>.s_empty;
 }
 
 public sealed record IRChapterSection(
@@ -29,11 +38,26 @@ public sealed record IRDefinition(
     IRExpr Body)
 {
     public string? Section { get; init; }
+
+    // Source location of the top-level Definition that lowered to this IR.
+    // Required for bare-metal DWARF function DIEs (low_pc/high_pc/decl_file/
+    // decl_line). Hand-built IR (tests, tooling) may leave this as the
+    // synthetic default. Lowering.cs wires the real span from Definition.Span.
+    public SourceSpan Span { get; init; } = SourceSpan.s_synthetic;
 }
 
 public sealed record IRParameter(string Name, CodexType Type);
 
-public abstract record IRExpr(CodexType Type);
+public abstract record IRExpr(CodexType Type)
+{
+    // Source span of the AST Expr that lowered to this IR node. Lowering.cs
+    // stamps this on every node via `with { Span = expr.Span }` in LowerExpr's
+    // outer wrapper. Hand-built IR (tests, codegen tooling) leaves the
+    // synthetic default. Used today by DWARF line info (Phase 1, pending) and
+    // better-located diagnostics; section F (provenance) will layer a
+    // transformation tag on top.
+    public SourceSpan Span { get; init; } = SourceSpan.s_synthetic;
+}
 
 public sealed record IRIntegerLit(long Value) : IRExpr(IntegerType.s_instance);
 
@@ -101,13 +125,6 @@ public sealed record IRRecord(string TypeName, ImmutableArray<(string FieldName,
     : IRExpr(Type);
 
 public sealed record IRFieldAccess(IRExpr Record, string FieldName, CodexType Type) : IRExpr(Type);
-
-public sealed record IRRegion(IRExpr Body, CodexType Type, bool NeedsEscapeCopy) : IRExpr(Type)
-{
-    public static bool TypeNeedsHeapEscape(CodexType type) => type is
-        TextType or RecordType or SumType or ListType or LinkedListType or ConstructedType
-        or FunctionType { Return: not null };
-}
 
 public sealed record IRRunState(
     IRExpr InitialState,

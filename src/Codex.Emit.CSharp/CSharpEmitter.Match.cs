@@ -7,7 +7,7 @@ namespace Codex.Emit.CSharp;
 
 public sealed partial class CSharpEmitter
 {
-    void EmitMatch(StringBuilder sb, IRMatch match, int indent)
+    protected override void EmitMatch(StringBuilder sb, IRMatch match, int indent)
     {
         int matchId = m_matchCounter++;
         bool hasMultipleCtorBranches = match.Branches
@@ -29,11 +29,7 @@ public sealed partial class CSharpEmitter
         int openParens = 0;
         foreach (IRMatchBranch branch in match.Branches)
         {
-            if (!first)
-            {
-                sb.Append(" : ");
-            }
-
+            if (!first) sb.Append(" : ");
             first = false;
 
             switch (branch.Pattern)
@@ -42,14 +38,9 @@ public sealed partial class CSharpEmitter
                     sb.Append('(');
                     openParens++;
                     if (hasMultipleCtorBranches)
-                    {
                         sb.Append(scrutineeRef);
-                    }
                     else
-                    {
                         EmitExpr(sb, match.Scrutinee, indent);
-                    }
-
                     sb.Append(litPat.Value switch
                     {
                         bool b => $".Equals({(b ? "true" : "false")})",
@@ -68,14 +59,9 @@ public sealed partial class CSharpEmitter
                     sb.Append('(');
                     openParens++;
                     if (hasMultipleCtorBranches)
-                    {
                         sb.Append(scrutineeRef);
-                    }
                     else
-                    {
                         EmitExpr(sb, match.Scrutinee, indent);
-                    }
-
                     sb.Append($" is {ctorId}{ctorTypeArgs} {binding} ? ");
                     EmitCtorPatternBody(sb, ctorPat, binding, branch.Body, indent);
                     break;
@@ -88,20 +74,11 @@ public sealed partial class CSharpEmitter
                     EmitExpr(sb, branch.Body, indent);
                     sb.Append("))(");
                     if (hasMultipleCtorBranches)
-                    {
                         sb.Append(scrutineeRef);
-                    }
                     else
-                    {
                         EmitExpr(sb, match.Scrutinee, indent);
-                    }
-
                     sb.Append(')');
-                    for (int i = 0; i < openParens; i++)
-                    {
-                        sb.Append(')');
-                    }
-
+                    for (int i = 0; i < openParens; i++) sb.Append(')');
                     if (hasMultipleCtorBranches)
                     {
                         sb.Append("))(");
@@ -112,11 +89,7 @@ public sealed partial class CSharpEmitter
 
                 case IRWildcardPattern:
                     EmitExpr(sb, branch.Body, indent);
-                    for (int i = 0; i < openParens; i++)
-                    {
-                        sb.Append(')');
-                    }
-
+                    for (int i = 0; i < openParens; i++) sb.Append(')');
                     if (hasMultipleCtorBranches)
                     {
                         sb.Append("))(");
@@ -128,11 +101,7 @@ public sealed partial class CSharpEmitter
         }
 
         sb.Append($" : throw new InvalidOperationException(\"Non-exhaustive match\")");
-        for (int i = 0; i < openParens; i++)
-        {
-            sb.Append(')');
-        }
-
+        for (int i = 0; i < openParens; i++) sb.Append(')');
         if (hasMultipleCtorBranches)
         {
             sb.Append("))(");
@@ -202,9 +171,7 @@ public sealed partial class CSharpEmitter
             string patchedAccess = acc;
             string oldPrefix = $"_m{subCtorId}_{nestedCtors.Count}_";
             if (acc.StartsWith(oldPrefix))
-            {
                 patchedAccess = subBinding + acc[oldPrefix.Length..];
-            }
             patchedBindings.Add((name, patchedAccess, type));
         }
 
@@ -274,17 +241,23 @@ public sealed partial class CSharpEmitter
                         EmitExpr(sb, exec.Expression, indent + 2);
                         sb.AppendLine(";");
                     }
-                    else if (isLast)
-                    {
-                        EmitExpr(sb, exec.Expression, indent + 2);
-                        sb.AppendLine(";");
-                        sb.Append(pad);
-                        sb.AppendLine("return null;");
-                    }
                     else
                     {
+                        // Ternary-shaped exprs (if-then-else with Nothing
+                        // branches) aren't legal as a bare C# statement —
+                        // CS0201. Wrap with a discard-assign in that case.
+                        // Regular call/lambda/new stay bare so we don't
+                        // collide with any `_ <- ...` bind the user wrote.
+                        bool needsDiscard = exec.Expression is IRIf;
+                        if (needsDiscard) sb.Append("_ = (");
                         EmitExpr(sb, exec.Expression, indent + 2);
+                        if (needsDiscard) sb.Append(")");
                         sb.AppendLine(";");
+                        if (isLast)
+                        {
+                            sb.Append(pad);
+                            sb.AppendLine("return null;");
+                        }
                     }
                     break;
             }
