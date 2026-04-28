@@ -354,41 +354,63 @@ wsl bash tools/bootstrap3-stageN.sh 5    # produces stage5.elf from stage4.elf
 ## Project Structure
 
 ```
-Codex.sln                        Reference compiler + tests + tools
-├── src/                         Reference compiler (C#)
-│   ├── Codex.Core               Diagnostics, SourceText, CceTable, Map<K,V>
-│   ├── Codex.Syntax             Lexer, Parser, ProseParser
-│   ├── Codex.Ast                Desugarer, AST nodes
-│   ├── Codex.Semantics          ChapterScoper, NameResolver
-│   ├── Codex.Types              TypeChecker, Unifier
-│   ├── Codex.IR                 IR nodes, Lowering, LambdaLifting
-│   ├── Codex.Emit.*             Backend emitters
-│   └── ...                      LSP, Repository, Narration, Proofs
-├── Codex.Codex/                 Self-hosted compiler (~50 .codex files, ~12K lines)
-├── seed/
-│   └── Codex.Codex.elf          Canonical bootstrap seed (~1.4 MB) — the
-│                                proven hard fixed point; pingpong starts here
-├── foreword/                    Standard library
-├── tests/                       Test projects across the solution
-├── tools/
-│   ├── Codex.Cli                Reference CLI (legacy; .NET, C#)
-│   ├── Codex.Cli-Codex          Selfhost-side CLI (Codex source)
-│   ├── Codex.Bootstrap-Codex    Selfhost-side bootstrap harness
-│   ├── sweep.sh                 Sample battery (bare-metal selfhost via QEMU)
-│   ├── pingpong-self.sh         Bootstrap 2 driver (selfhost-driven; live)
-│   ├── bootstrap3.sh            Bootstrap 3 driver
-│   ├── bootstrap3-stageN.sh     Continued fixed-point check
-│   ├── codex-agent/             AI agent toolkit
-│   └── Codex.VsExtension        Visual Studio extension
-├── samples/                     Example programs (105 samples)
-└── docs/
-    ├── FOUNDING-VISION.md       Read this first
-    ├── CurrentPlan.md           What we're doing now
-    ├── Active/                  Work in progress
-    ├── Designs/                 Future work
-    ├── Done/                    Completed milestones
-    ├── Stories/                 Narrative documents — including VoodooChild.md, the BS3-green night
-    └── Vision/                  Original vision documents
+Codex.Codex/                     Self-hosted compiler (~50 .codex files, ~12K lines).
+│                                The live, maintained pipeline.
+├── Core/                        SourceText, CCE table, SkipList, Diagnostics, CdxCodes
+├── Syntax/                      Lexer, Parser, ProseParser
+├── Ast/                         AST nodes, Desugarer
+├── Semantics/                   ChapterScoper, NameResolver
+├── Types/                       TypeChecker, Unifier
+├── IR/                          IR nodes, Lowering, LambdaLifting
+└── Emit/                        Codex-text emitter, C# emitter, X86_64 codegen,
+                                 ElfWriter, DwarfWriter
+
+seed/
+└── Codex.Codex.elf              Canonical bootstrap seed (~1.4 MB) — the
+                                 proven hard fixed point; pingpong starts here.
+foreword/                        Standard library (cited from .codex sources)
+samples/                         Example programs (105 samples)
+
+tools/
+├── Codex.Cli-Codex/             Selfhost-side CLI (Codex source compiled to
+│                                .NET dll by the selfhost itself)
+├── CodexHost/                   Stack-bumped launcher for the selfhost dll
+├── Codex.Bootstrap-Codex/       Selfhost-side bootstrap harness
+├── sweep.sh                     Sample battery (bare-metal selfhost via QEMU)
+├── pingpong-self.sh             Bootstrap 2 driver (selfhost-driven; live)
+├── bootstrap3.sh                Bootstrap 3 driver
+├── bootstrap3-stageN.sh         Continued fixed-point check
+├── sample-compile-selfhost.sh   One-shot: ELF + sample → ELF
+├── run-for-sweep.sh             One-shot: boot ELF in QEMU and capture stdout
+├── qemu-config.sh               WHPX/KVM selection, chardev setup
+├── sublime/                     Sublime Text syntax
+├── vscode/                      VS Code grammar
+├── codex-agent/                 AI agent toolkit
+└── Codex.VsExtension/           Visual Studio extension
+
+docs/
+├── FOUNDING-VISION.md           Read this first
+├── CurrentPlan.md               What we're doing now
+├── BACKLOG.md                   Outstanding work
+├── Active/                      Work in progress
+├── Designs/                     Future work — language, OS, capabilities, etc.
+├── Done/                        Completed milestones and postmortems
+├── Stories/                     Narrative documents — VoodooChild.md (the BS3-green night)
+└── Vision/                      Original vision documents
+
+--- retired (depot history only, no longer maintained) ---
+
+Codex.sln                        Solution file. .csproj TargetFrameworks
+                                 stripped — `dotnet build` is a no-op.
+src/                             C# reference compiler. Bootstrapped the language;
+                                 the cord was cut at MM4 (CL 340). Code stays in
+                                 the depot as historical record. No further work.
+tests/                           xUnit tests for the C# reference compiler.
+                                 Retired by implication — the targets they exercise
+                                 are gone. Pre-CL 447 history if you need them.
+tools/Codex.Cli/                 Legacy C# CLI. Not in the bootstrap chain.
+tools/Codex.Bootstrap/           Legacy C# bootstrap driver. Replaced by
+                                 Codex.Bootstrap-Codex.
 ```
 
 ---
@@ -453,6 +475,10 @@ integration (diagnostics, hover, go-to-definition).
 | CCE | Frequency-sorted byte encoding, no Unicode internally | Done |
 | Bare metal | x86-64 ELF emit, runs on QEMU with no OS | Done |
 | **Self-sustaining** | **BS3 bare-metal compiler reproduces itself byte-identical** | **Done (2026-04-24)** |
+| Reference retired | Stripped C# reference; selfhost is the only path | Done (CL 461, 2026-04-28) |
+| Bounded integers | `Integer between L and H`, auto-width, overflow modes, `__narrow` | Done (CL 411, 2026-04-27) |
+| HWM reduction | Compiler runs end-to-end in tens of MB (645 → 41 MB BS3) | Done (CL 463, 2026-04-28) |
+| Seed in depot | `seed/Codex.Codex.elf` checked-in canonical bootstrap | Done (CL 449, 2026-04-27) |
 | Phase discipline | Survey-before-allocate replaces guess-based reclamation | Designed, implementation pending |
 | Codex.OS | Capability network, agent protocol, shell, FS — built on the self-sustaining substrate | Designed |
 
