@@ -1,6 +1,25 @@
 # Current Plan
 
-**Updated**: 2026-04-23
+**Updated**: 2026-04-25
+
+## REF COMPILER IS LOCKED. MAKE NO CHANGES THERE.
+
+The reference compiler under `src/` is **frozen**. Do not edit it. BS1 and
+BS1.1 are **legacy** — they ran the .NET self-host through C# / Codex-text
+emit and are kept only for historical reference. New work goes through the
+self-host (`Codex.Codex/`), and the gates that must remain green are:
+
+- **BS2 (pingpong)** — bare-metal ELF emits Codex text, stage 1 === stage 2
+  byte-identical under the self-built SUT (semantic equivalence under SUT
+  follows from byte-identity), sample battery green on the same compiler.
+  `wsl bash tools/pingpong-self.sh`. The legacy `tools/pingpong.sh` (REF
+  builds the ELF, REF runs sem-equiv) is preserved untouched for
+  comparison.
+- **BS3** — bare-metal ELF emits ELF (stage-1 self-emits machine code).
+  `wsl bash tools/bootstrap3.sh`.
+
+If a change requires an edit to `src/`, stop and raise it — the freeze is
+the rule, not a guideline.
 
 ## Process: Perforce is primary
 
@@ -25,7 +44,7 @@ output was wrong; several of them did. A self-host that mirrored the same
 holes would agree with the REF, and the test said "green."
 
 CL 128 replaced the implicit "stages agree" gate with an explicit sample
-battery (`tools/ref-sweep.sh` over 72 samples with `.expected` / `.failing` /
+battery (`tools/sweep.sh` over 72 samples with `.expected` / `.failing` /
 `.skip` sidecars). That battery is now the correctness anchor. Byte-identity
 between stages remains a self-compilation gate, but agreement alone never
 again counts as a milestone.
@@ -35,7 +54,7 @@ Live state as of 2026-04-22:
 - **REF correctness baseline**: 59 verified + 21 expected-fail diagnostics
   + 5 unverified-compile + 11 skipped + 1 fail (out of 97 samples). Battery
   grew from 72 to 97 since CL 128.
-- **Self-host C# target — LIFTING COMPLETE**. `tools/ref-sweep.sh
+- **Self-host C# target — LIFTING COMPLETE**. `tools/sweep.sh
   --compiler=selfhost-cs` reports 83 pass / 57 verified / 21 expected-fail /
   5 unverified / 11 skip / 3 fail of 97. All 3 fails (`effectful-hello`,
   `shapes`, `w3`) are target-semantic — REF bare-metal vs selfhost-cs differ
@@ -47,7 +66,7 @@ Live state as of 2026-04-22:
   in opening.codex:12) went unnoticed because the live-state numbers
   were not re-measured. Fixed 2026-04-23 in CL 286
   (parse-selected-names accepts TypeIdentifier + consumes `)`).
-- **Self-host bare-metal target (Row 11) — GREEN**. `tools/ref-sweep.sh
+- **Self-host bare-metal target (Row 11) — GREEN**. `tools/sweep.sh
   --compiler=selfhost --jobs=8` (bare-metal via QEMU, 8-way parallel) reports
   82 pass / 61 verified / 21 expected-fail / 8 skip / 0 fail of 90 in ~96s
   wall. Closed 2026-04-22: type-aware REPL print (CL 240), SSE enable in
@@ -63,7 +82,7 @@ Live state as of 2026-04-22:
   emit-seg and spin the heap ptr into the stack region). Row 11 closure
   unblocks BS2 (pingpong) work on the `__`-prefix L12 + diag-parity
   drift tracked in `docs/Active/Compiler/REF-LESSONS-FOR-SELFHOST.md`.
-- **.net selfhost bare-metal target (Row 9) — GREEN**: `tools/ref-sweep.sh
+- **.net selfhost bare-metal target (Row 9) — GREEN**: `tools/sweep.sh
   --compiler=selfhost-netbin` reports 82 pass / 61 verified / 21 expected-fail /
   8 skip / 0 fail of 90 raw after MM4-Deferred moves (fork-basic,
   prose-banking, handler-basic). Applied denominator 82: all valid tests
@@ -75,7 +94,7 @@ Live state as of 2026-04-22:
   tail-pos reset sweep for sum-ctor / record / list / negate / binary /
   field-access / act-stmt arg eval (CL 259), match-lit-wild compare+branch
   (CL 256).
-- **REF IL backend (Row 18)**: `tools/ref-sweep.sh --compiler=il` reports
+- **REF IL backend (Row 18)**: `tools/sweep.sh --compiler=il` reports
   57 pass / 93 total after parity-lift CLs 273 / 279 / 284. Remaining 28
   gaps: 21 are the pre-existing diag-harness sample set shared with
   `--compiler=ref`; 3 are target-semantic divergence (same 3 that fail
@@ -108,12 +127,6 @@ x86-64 binaries, achieving fixed-point self-compilation. No C# in the chain.
 | 2 | Self-host bare-metal target green | ✅ 2026-04-23 — Row 11 sweep 82/82 (CL 274/278/282). Unblocks BS2 (pingpong). |
 | 3 | BS2 (pingpong) re-green | **Next** — Row 11 closed; next is sem-equiv + stage1===stage2 fixed-point. |
 | 4 | BS3 re-green; MM4 fixed-point cut | Gates on step 3 |
-
-**Deferred (pre-existing)**:
-
-| Phase | What | Status |
-|-------|------|--------|
-| 1 | Escape copy & regions | **Deferred to post-MM4** — attempted twice, needs architectural rethink |
 
 ### After MM4: The OS Stack
 
@@ -154,7 +167,6 @@ Ordered by dependency, not priority.
 |------|-------------|
 | ARM64 backend | x86-64 is the critical path; revisit if hardware demands it |
 | RISC-V backend | x86-64 is the critical path; revisit if hardware demands it |
-| Escape copy & regions (Phase 6) | Two attempts failed; needs coarser architectural change, not incremental fix |
 | Perf automation (--bench-check CI) | Low priority vs cutting the cord |
 | Codex.UI substrate | Medium-term — no design doc yet |
 | Codex.OS on real hardware (WHPX) | After MM4 and basic OS stack |

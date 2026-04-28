@@ -286,6 +286,245 @@ Section: __list_snoc
    in let st2 = emit-list-snoc-path3-copy st1
    in emit-list-snoc-path3-finish st2
 
+Section: __deck_list_snoc
+
+ Phase-discipline twin of __list_snoc that allocates from the deck
+ pointer instead of the bivy bump pointer R10. The body mirrors
+ __list_snoc; the only differences are (a) the prologue saves R14
+ and loads deck-pos into it, (b) every R10 reference in the alloc
+ paths is replaced with R14, and (c) every return is preceded by
+ writing R14 back to the deck-pos cell and restoring R14 from the
+ stack. R10 (bivy) is untouched throughout, so a snoc that fires
+ path-3 leaves the bivy bump pointer where it was — only the deck
+ grows. emit-apply for `list-snoc` dispatches here when
+ st.deck-bound is True at the call site.
+
+  emit-deck-snoc-prologue : CodegenState -> CodegenState
+  emit-deck-snoc-prologue (st) =
+    let st0 = record-func-offset st "__deck_list_snoc"
+   in let st1 = st-append-text st0 (push-r reg-r14)
+   in let st2 = st-append-text st1 (li reg-r11 deck-pos-addr)
+   in st-append-text st2 (mov-load reg-r14 reg-r11 0)
+
+  emit-deck-snoc-tail : CodegenState -> CodegenState
+  emit-deck-snoc-tail (st) =
+    let st1 = st-append-text st (li reg-r11 deck-pos-addr)
+   in let st2 = st-append-text st1 (mov-store reg-r11 reg-r14 0)
+   in let st3 = st-append-text st2 (pop-r reg-r14)
+   in st-append-text st3 x86-ret
+
+  emit-deck-snoc-path1 : CodegenState -> HelpResult1
+  emit-deck-snoc-path1 (st) =
+    let st1 = st-append-text st (mov-load reg-rcx reg-rdi 0)
+   in let st2 = st-append-text st1 (mov-load reg-rdx reg-rdi (-8))
+   in let st3 = st-append-text st2 (cmp-rr reg-rcx reg-rdx)
+   in let path2-pos = st3.text-len
+   in let st4 = st-append-text st3 (jcc cc-ge 0)
+   in let st5 = st-append-text st4 (mov-rr reg-rax reg-rcx)
+   in let st6 = st-append-text st5 (shl-ri reg-rax 3)
+   in let st7 = st-append-text st6 (add-rr reg-rax reg-rdi)
+   in let st8 = st-append-text st7 (mov-store reg-rax reg-rsi 8)
+   in let st9 = st-append-text st8 (add-ri reg-rcx 1)
+   in let st10 = st-append-text st9 (mov-store reg-rdi reg-rcx 0)
+   in let st11 = st-append-text st10 (mov-rr reg-rax reg-rdi)
+   in let st12 = emit-deck-snoc-tail st11
+   in HelpResult1 {
+    cg = st12,
+    p1 = path2-pos
+   }
+
+  emit-deck-snoc-path2 : CodegenState -> Integer -> HelpResult1
+  emit-deck-snoc-path2 (st) (path2-pos) =
+    let st0 = patch-jcc-at st path2-pos (st.text-len)
+   in let st1 = st-append-text st0 (mov-rr reg-rax reg-rdx)
+   in let st2 = st-append-text st1 (add-ri reg-rax 1)
+   in let st3 = st-append-text st2 (shl-ri reg-rax 3)
+   in let st4 = st-append-text st3 (add-rr reg-rax reg-rdi)
+   in let st5 = st-append-text st4 (cmp-rr reg-rax reg-r14)
+   in let path3-pos = st5.text-len
+   in let st6 = st-append-text st5 (jcc cc-ne 0)
+   in let st7 = st-append-text st6 (mov-rr reg-rax reg-rdx)
+   in let st8 = st-append-text st7 (shl-ri reg-rax 1)
+   in let st9 = st-append-text st8 (cmp-ri reg-rax 4)
+   in let cap-ok-pos = st9.text-len
+   in let st10 = st-append-text st9 (jcc cc-ge 0)
+   in let st11 = st-append-text st10 (li reg-rax 4)
+   in let st12 = patch-jcc-at st11 cap-ok-pos (st11.text-len)
+   in let st13 = st-append-text st12 (mov-store reg-rdi reg-rax (-8))
+   in let st14 = st-append-text st13 (sub-rr reg-rax reg-rdx)
+   in let st15 = st-append-text st14 (shl-ri reg-rax 3)
+   in let st16 = st-append-text st15 (add-rr reg-r14 reg-rax)
+   in let st17 = st-append-text st16 (mov-rr reg-rax reg-rcx)
+   in let st18 = st-append-text st17 (shl-ri reg-rax 3)
+   in HelpResult1 {
+    cg = st18,
+    p1 = path3-pos
+   }
+
+  emit-deck-snoc-path2-store : CodegenState -> CodegenState
+  emit-deck-snoc-path2-store (st) =
+    let st0 = st-append-text st (add-rr reg-rax reg-rdi)
+   in let st1 = st-append-text st0 (mov-store reg-rax reg-rsi 8)
+   in let st2 = st-append-text st1 (add-ri reg-rcx 1)
+   in let st3 = st-append-text st2 (mov-store reg-rdi reg-rcx 0)
+   in let st4 = st-append-text st3 (mov-rr reg-rax reg-rdi)
+   in emit-deck-snoc-tail st4
+
+  emit-deck-snoc-path3-alloc : CodegenState -> Integer -> CodegenState
+  emit-deck-snoc-path3-alloc (st) (path3-pos) =
+    let st0 = patch-jcc-at st path3-pos (st.text-len)
+   in let st1 = st-append-text st0 (push-r reg-rbx)
+   in let st2 = st-append-text st1 (push-r reg-r12)
+   in let st3 = st-append-text st2 (push-r reg-r13)
+   in let st4 = st-append-text st3 (mov-rr reg-rbx reg-rdi)
+   in let st5 = st-append-text st4 (mov-rr reg-r12 reg-rsi)
+   in let st6 = st-append-text st5 (mov-rr reg-r13 reg-rcx)
+   in let st7 = st-append-text st6 (shl-ri reg-r13 1)
+   in let st8 = st-append-text st7 (cmp-ri reg-r13 4)
+   in let cap-ok2-pos = st8.text-len
+   in let st9 = st-append-text st8 (jcc cc-ge 0)
+   in let st10 = st-append-text st9 (li reg-r13 4)
+   in let st11 = patch-jcc-at st10 cap-ok2-pos (st10.text-len)
+   in let st12 = st-append-text st11 (mov-store reg-r14 reg-r13 0)
+   in let st13 = st-append-text st12 (add-ri reg-r14 8)
+   in let st14 = st-append-text st13 (mov-rr reg-rax reg-r14)
+   in let st15 = st-append-text st14 (mov-rr reg-rdx reg-r13)
+   in let st16 = st-append-text st15 (add-ri reg-rdx 1)
+   in let st17 = st-append-text st16 (shl-ri reg-rdx 3)
+   in st-append-text st17 (add-rr reg-r14 reg-rdx)
+
+  emit-deck-snoc-path3-copy : CodegenState -> CodegenState
+  emit-deck-snoc-path3-copy (st) =
+    let st0 = st-append-text st (mov-load reg-rcx reg-rbx 0)
+   in let st1 = st-append-text st0 (mov-rr reg-rdx reg-rcx)
+   in let st2 = st-append-text st1 (add-ri reg-rdx 1)
+   in let st3 = st-append-text st2 (mov-store reg-rax reg-rdx 0)
+   in let st4 = st-append-text st3 (li reg-r11 0)
+   in let copy-loop = st4.text-len
+   in let st5 = st-append-text st4 (cmp-rr reg-r11 reg-rcx)
+   in let copy-done-pos = st5.text-len
+   in let st6 = st-append-text st5 (jcc cc-ge 0)
+   in let st7 = st-append-text st6 (mov-rr reg-rdx reg-r11)
+   in let st8 = st-append-text st7 (shl-ri reg-rdx 3)
+   in let st9 = st-append-text st8 (mov-rr reg-rsi reg-rbx)
+   in let st10 = st-append-text st9 (add-rr reg-rsi reg-rdx)
+   in let st11 = st-append-text st10 (mov-load reg-rsi reg-rsi 8)
+   in let st12 = st-append-text st11 (mov-rr reg-rdi reg-rax)
+   in let st13 = st-append-text st12 (add-rr reg-rdi reg-rdx)
+   in let st14 = st-append-text st13 (mov-store reg-rdi reg-rsi 8)
+   in let st15 = st-append-text st14 (add-ri reg-r11 1)
+   in let st16 = st-append-text st15 (jmp (copy-loop - (st15.text-len + 5)))
+   in patch-jcc-at st16 copy-done-pos (st16.text-len)
+
+  emit-deck-snoc-path3-finish : CodegenState -> CodegenState
+  emit-deck-snoc-path3-finish (st) =
+    let st0 = st-append-text st (mov-rr reg-rdx reg-rcx)
+   in let st1 = st-append-text st0 (shl-ri reg-rdx 3)
+   in let st2 = st-append-text st1 (mov-rr reg-rdi reg-rax)
+   in let st3 = st-append-text st2 (add-rr reg-rdi reg-rdx)
+   in let st4 = st-append-text st3 (mov-store reg-rdi reg-r12 8)
+   in let st5 = st-append-text st4 (pop-r reg-r13)
+   in let st6 = st-append-text st5 (pop-r reg-r12)
+   in let st7 = st-append-text st6 (pop-r reg-rbx)
+   in emit-deck-snoc-tail st7
+
+  emit-deck-list-snoc : CodegenState -> CodegenState
+  emit-deck-list-snoc (st) =
+    let st-pro = emit-deck-snoc-prologue st
+   in let p1 = emit-deck-snoc-path1 st-pro
+   in let p2 = emit-deck-snoc-path2 (p1.cg) (p1.p1)
+   in let st0 = emit-deck-snoc-path2-store (p2.cg)
+   in let st1 = emit-deck-snoc-path3-alloc st0 (p2.p1)
+   in let st2 = emit-deck-snoc-path3-copy st1
+   in emit-deck-snoc-path3-finish st2
+
+Section: __deck_list_append
+
+ Phase-discipline twin of __list_append. Always allocates a fresh
+ result list in the deck region (via R14-saved deck-pos cell) and
+ copies a then b into it. The bivy in-place fast path from
+ __list_append is intentionally dropped: when a is in bivy and the
+ bivy is about to be struck, an in-place extend would dangle; when
+ a is in deck, copy-realloc is correct. emit-binary-op for
+ IrAppendList dispatches here when st.deck-bound is True at the
+ call site.
+
+  emit-deck-list-append-prologue : CodegenState -> CodegenState
+  emit-deck-list-append-prologue (st) =
+    let st0 = record-func-offset st "__deck_list_append"
+   in let st1 = st-append-text st0 (push-r reg-rbx)
+   in let st2 = st-append-text st1 (push-r reg-r12)
+   in let st3 = st-append-text st2 (push-r reg-r13)
+   in let st4 = st-append-text st3 (push-r reg-r14)
+   in let st5 = st-append-text st4 (li reg-r11 deck-pos-addr)
+   in let st6 = st-append-text st5 (mov-load reg-r14 reg-r11 0)
+   in let st7 = st-append-text st6 (mov-rr reg-rbx reg-rdi)
+   in let st8 = st-append-text st7 (mov-rr reg-r12 reg-rsi)
+   in let st9 = st-append-text st8 (mov-load reg-rcx reg-rbx 0)
+   in let st10 = st-append-text st9 (mov-load reg-rdx reg-r12 0)
+   in let st11 = st-append-text st10 (mov-rr reg-r13 reg-rcx)
+   in let st12 = st-append-text st11 (add-rr reg-r13 reg-rdx)
+   in let st13 = st-append-text st12 (mov-rr reg-rax reg-r13)
+   in let st14 = st-append-text st13 (shl-ri reg-rax 1)
+   in let st15 = st-append-text st14 (cmp-ri reg-rax 4)
+   in let cap-ok-pos = st15.text-len
+   in let st16 = st-append-text st15 (jcc cc-ge 0)
+   in let st17 = st-append-text st16 (li reg-rax 4)
+   in let st18 = patch-jcc-at st17 cap-ok-pos (st17.text-len)
+   in let st19 = st-append-text st18 (mov-store reg-r14 reg-rax 0)
+   in let st20 = st-append-text st19 (add-ri reg-r14 8)
+   in let st21 = st-append-text st20 (mov-rr reg-rsi reg-r14)
+   in let st22 = st-append-text st21 (mov-rr reg-r11 reg-rax)
+   in let st23 = st-append-text st22 (add-ri reg-r11 1)
+   in let st24 = st-append-text st23 (shl-ri reg-r11 3)
+   in let st25 = st-append-text st24 (add-rr reg-r14 reg-r11)
+   in st-append-text st25 (mov-store reg-rsi reg-r13 0)
+
+  emit-deck-list-append-copy-a : CodegenState -> CodegenState
+  emit-deck-list-append-copy-a (st) =
+    let st0 = st-append-text st (mov-rr reg-rax reg-rbx)
+   in let st1 = st-append-text st0 (mov-rr reg-rdi reg-rsi)
+   in let st2 = st-append-text st1 (cmp-ri reg-rcx 0)
+   in let skip-pos = st2.text-len
+   in let st3 = st-append-text st2 (jcc cc-e 0)
+   in let loop-pos = st3.text-len
+   in let st4 = st-append-text st3 (mov-load reg-r11 reg-rax 8)
+   in let st5 = st-append-text st4 (mov-store reg-rdi reg-r11 8)
+   in let st6 = st-append-text st5 (add-ri reg-rax 8)
+   in let st7 = st-append-text st6 (add-ri reg-rdi 8)
+   in let st8 = st-append-text st7 (sub-ri reg-rcx 1)
+   in let st9 = st-append-text st8 (jcc cc-ne (loop-pos - (st8.text-len + 6)))
+   in patch-jcc-at st9 skip-pos (st9.text-len)
+
+  emit-deck-list-append-copy-b : CodegenState -> CodegenState
+  emit-deck-list-append-copy-b (st) =
+    let st0 = st-append-text st (mov-rr reg-rax reg-r12)
+   in let st1 = st-append-text st0 (cmp-ri reg-rdx 0)
+   in let skip-pos = st1.text-len
+   in let st2 = st-append-text st1 (jcc cc-e 0)
+   in let loop-pos = st2.text-len
+   in let st3 = st-append-text st2 (mov-load reg-r11 reg-rax 8)
+   in let st4 = st-append-text st3 (mov-store reg-rdi reg-r11 8)
+   in let st5 = st-append-text st4 (add-ri reg-rax 8)
+   in let st6 = st-append-text st5 (add-ri reg-rdi 8)
+   in let st7 = st-append-text st6 (sub-ri reg-rdx 1)
+   in let st8 = st-append-text st7 (jcc cc-ne (loop-pos - (st7.text-len + 6)))
+   in let st9 = patch-jcc-at st8 skip-pos (st8.text-len)
+   in let st10 = st-append-text st9 (mov-rr reg-rax reg-rsi)
+   in let st11 = st-append-text st10 (li reg-r11 deck-pos-addr)
+   in let st12 = st-append-text st11 (mov-store reg-r11 reg-r14 0)
+   in let st13 = st-append-text st12 (pop-r reg-r14)
+   in let st14 = st-append-text st13 (pop-r reg-r13)
+   in let st15 = st-append-text st14 (pop-r reg-r12)
+   in let st16 = st-append-text st15 (pop-r reg-rbx)
+   in st-append-text st16 x86-ret
+
+  emit-deck-list-append : CodegenState -> CodegenState
+  emit-deck-list-append (st) =
+    let st0 = emit-deck-list-append-prologue st
+   in let st1 = emit-deck-list-append-copy-a st0
+   in emit-deck-list-append-copy-b st1
+
 Section: __list_insert_at
   emit-list-insert-at-prologue : CodegenState -> HelpResult2
   emit-list-insert-at-prologue (st) =

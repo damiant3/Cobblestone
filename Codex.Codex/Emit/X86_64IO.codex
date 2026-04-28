@@ -81,10 +81,44 @@ Section: Serial I/O
    in let st8 = st-append-text st7 (mov-rr reg-rax reg-rdi)
    in st-append-text st8 out-dx-al
 
+Section: Control Channel Serial I/O
+  emit-com2-init : CodegenState -> CodegenState
+  emit-com2-init (st) =
+   let st1 = emit-out-byte st 763 128
+   in let st2 = emit-out-byte st1 760 1
+   in let st3 = emit-out-byte st2 761 0
+   in let st4 = emit-out-byte st3 763 3
+   in let st5 = emit-out-byte st4 762 199
+   in emit-out-byte st5 764 11
+
+  emit-control-wait-and-send : CodegenState -> Integer -> CodegenState
+  emit-control-wait-and-send (st) (byte-val) =
+   let wait-top = st.text-len
+   in let st1 = st-append-text st (li reg-rdx 765)
+   in let st2 = st-append-text st1 [236]
+   in let st3 = st-append-text st2 [168, 32]
+   in let jne-pos = st3.text-len
+   in let st4 = st-append-text st3 (jcc cc-ne 0)
+   in let st5 = st-append-text st4 (jmp (wait-top - (st4.text-len + 5)))
+   in let st6 = patch-jcc-at st5 jne-pos (st5.text-len)
+   in let st7 = st-append-text st6 (li reg-rdx 760)
+   in let st8 = st-append-text st7 (li reg-rax byte-val)
+   in st-append-text st8 out-dx-al
+
+  emit-control-string-loop : CodegenState -> List Integer -> Integer -> CodegenState
+  emit-control-string-loop (st) (chars) (i) =
+   if i == list-length chars then st
+   else let st1 = emit-control-wait-and-send st (list-at chars i)
+   in emit-control-string-loop st1 chars (i + 1)
+
+  emit-control-string : CodegenState -> List Integer -> CodegenState
+  emit-control-string (st) (chars) =
+   emit-control-string-loop st chars 0
+
 Section: Inline Integer Print
   ItoaState = record {
    cg : CodegenState,
-   jmp-done-zero-pos : Integer
+   jmp-done-zero-pos : Integer between 0 and 4294967295
   }
 
   emit-itoa-zero-check : CodegenState -> ItoaState

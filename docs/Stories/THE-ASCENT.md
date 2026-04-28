@@ -651,7 +651,74 @@ We're going up.
 
 ---
 
+## Voodoo Child — 2026-04-24
+
+> *"Well I stand up next to a mountain, chop it down with the edge of my hand."*
+> — Jimi Hendrix
+
+This document was written 2026-03-21, the day Peak II's first camps fell.
+Three peaks remained on the page; three weeks later, on the night of
+2026-04-24, the open passages on the route closed. The struggles named
+above resolved in a way none of the route plans anticipated.
+
+The struggle: bivy heap reclamation. Camp III-A had a TODO above it —
+"Phase 2c (next): Full escape analysis to re-enable region heap
+reclamation." We had been building IRRegion, EmitRegion, escape-copy
+helpers, result-arena, TCO heap-mark save — machinery to keep the heap
+bounded across phase transitions. The 1 MB bump allocator was a stopgap.
+Three weeks of BS3 red said the stopgap was load-bearing.
+
+Damian saw it first. The machinery to manage the heap was using more
+heap than it saved. ~2,600 lines came out across sixteen files in one
+shelf. Build clean. Pingpong came back **greener** than before — BS2
+dropped 22 MB at the high-water mark. The reclamation we thought we
+needed was a tax we'd been paying for the privilege of accounting for
+allocations the program never asked us to track.
+
+That cleared the gate to Bootstrap 3 — **MM4**. A watchdog bug, embedded
+as ASCII (`WD:stall`) in the middle of executable output where the
+serial port was shared between the watchdog and `__write_binary`,
+explained the last 87% of byte divergence between stage1 and stage2.
+Three lines: pet the watchdog at the top of the byte-emit loop. Build.
+Pingpong. BS3.
+
+stage1 === stage2 byte-identical at 1,223,024 bytes. stage2 === stage3.
+stage3 === stage4. We ran ten stages. Every one was 1,223,024 bytes,
+heap HWM 644,993,672 to the byte, stack HWM 2,593,008 to the byte.
+
+**The cord to .NET is cut.** The compiler, written in Codex, emitted by
+an earlier Codex compiler, running with no operating system underneath,
+takes its own source as input and produces the program that produces
+it. Deterministic down to the bit, on bare metal.
+
+The ELF in `seed/Codex.Codex.elf` is the complete self-sustaining
+compiler: First in its class.
+
+Phase discipline — *survey-before-allocate*, the vocabulary of pinnacle
+and col and base and deck and bivy and prominence — remains the
+principled answer to *how should this allocator know what's live*. But
+it is no longer load-bearing for the bootstrap. It is engineering we
+will do because it's right, not because the ground is on fire.
+
+The full story — three weeks of architectural anxiety, the rip-out,
+the "happens to come out identical is very very suspicious" lever, the
+night the watchdog narrated its anxiety into an ELF — is in
+[VoodooChild.md](VoodooChild.md).
+
+**Peak II is summited.** Three peaks remain. The ridge ahead is shorter
+than the page above suggests, because the same shape that closed Peak II
+— *do less, and what's left does more* — is the shape we'll carry up
+the next one.
+
+The mountain is bigger than we thought. The team is faster than we
+thought. The route is shorter than we thought.
+
+We're still going up.
+
+---
+
 *This document is a sightline, not a specification. The Vision documents
 (`docs/Vision/NewRepository.txt` and `docs/Vision/IntelligenceLayer.txt`)
 remain the north star. The engineering principles (`docs/10-PRINCIPLES.md`)
-govern every step. This document says where the steps lead.*
+govern every step. This document says where the steps lead — and, as of
+2026-04-24, where they led.*

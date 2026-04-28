@@ -36,6 +36,9 @@ Section: Builtin Detection
    "char-to-text",
    "code-to-char",
    "current-dir",
+   "__deck-alloc",
+   "__deck-pos",
+   "__deck-set",
    "file-exists",
    "get-args",
    "__heap-advance",
@@ -59,8 +62,10 @@ Section: Builtin Detection
    "__list-with-capacity",
    "max",
    "min",
+   "__narrow",
    "negate",
    "print-line",
+   "print-error",
    "read-file",
    "read-line",
    "__record-set",
@@ -274,6 +279,10 @@ Section: Builtin Emission
    state = st2,
    reg = rd.reg
   }
+
+  emit-narrow-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-narrow-builtin (st) (args) =
+   emit-expr st (list-at args 0)
 
   emit-abs-builtin : CodegenState -> List IRExpr -> EmitResult
   emit-abs-builtin (st) (args) =
@@ -557,9 +566,9 @@ Section: Builtin Emission
    in let loaded = load-local (val-result.state) (rec-loc.reg)
    in when rec-ty
     is RecordTy (rname) (rargs) (rfields) ->
-     let field-idx = find-record-field-index rfields field-name 0
+     let fot = cce-byte-offset-and-type rfields field-name
      in EmitResult {
-      state = st-append-text (loaded.state) (mov-store (loaded.reg) (val-result.reg) (field-idx * 8)),
+      state = emit-narrow-store-checked (loaded.state) (fot.type-val) (loaded.reg) (val-result.reg) (fot.offset),
       reg = loaded.reg
      }
     is otherwise ->
@@ -580,7 +589,8 @@ Section: Builtin Emission
   emit-heap-restore-builtin : CodegenState -> List IRExpr -> EmitResult
   emit-heap-restore-builtin (st) (args) =
    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
-   in let rd = alloc-temp (r.state)
+   in let st1 = st-append-text (r.state) (mov-rr reg-r10 (r.reg))
+   in let rd = alloc-temp st1
    in EmitResult {
    state = st-append-text (rd.state) (li (rd.reg) 0),
    reg = rd.reg
@@ -596,22 +606,85 @@ Section: Builtin Emission
    reg = rd.reg
   }
 
+  emit-deck-pos-builtin : CodegenState -> EmitResult
+  emit-deck-pos-builtin (st) =
+   let rd = alloc-temp st
+   in let st1 = st-append-text (rd.state) (li (rd.reg) deck-pos-addr)
+   in EmitResult {
+   state = st-append-text st1 (mov-load (rd.reg) (rd.reg) 0),
+   reg = rd.reg
+  }
+
+  emit-deck-set-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-deck-set-builtin (st) (args) =
+   let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let addr-tmp = alloc-temp (r.state)
+   in let st1 = st-append-text (addr-tmp.state) (li (addr-tmp.reg) deck-pos-addr)
+   in let st2 = st-append-text st1 (mov-store (addr-tmp.reg) (r.reg) 0)
+   in let rd = alloc-temp st2
+   in EmitResult {
+   state = st-append-text (rd.state) (li (rd.reg) 0),
+   reg = rd.reg
+  }
+
+  emit-deck-alloc-builtin : CodegenState -> List IRExpr -> EmitResult
+  emit-deck-alloc-builtin (st) (args) =
+   let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let addr-tmp = alloc-temp (r.state)
+   in let st1 = st-append-text (addr-tmp.state) (li (addr-tmp.reg) deck-pos-addr)
+   in let rd = alloc-temp st1
+   in let st2 = st-append-text (rd.state) (mov-load (rd.reg) (addr-tmp.reg) 0)
+   in let new-tmp = alloc-temp st2
+   in let st3 = st-append-text (new-tmp.state) (mov-rr (new-tmp.reg) (rd.reg))
+   in let st4 = st-append-text st3 (add-rr (new-tmp.reg) (r.reg))
+   in EmitResult {
+   state = st-append-text st4 (mov-store (addr-tmp.reg) (new-tmp.reg) 0),
+   reg = rd.reg
+  }
+
   emit-list-with-capacity-builtin : CodegenState -> List IRExpr -> EmitResult
   emit-list-with-capacity-builtin (st) (args) =
    let cap-result = emit-expr (st-set-tail-pos st False) (list-at args 0)
-   in let rd = alloc-temp (cap-result.state)
-   in let st1 = st-append-text (rd.state) (mov-store reg-r10 (cap-result.reg) 0)
+   in emit-list-with-capacity-builtin-bivy (cap-result.state) (cap-result.reg)
+
+  emit-list-with-capacity-builtin-bivy : CodegenState -> Integer -> EmitResult
+  emit-list-with-capacity-builtin-bivy (st) (cap-reg) =
+   let rd = alloc-temp st
+   in let st1 = st-append-text (rd.state) (mov-store reg-r10 cap-reg 0)
    in let st2 = st-append-text st1 (add-ri reg-r10 8)
    in let st3 = st-append-text st2 (mov-rr (rd.reg) reg-r10)
    in let zero-tmp = alloc-temp st3
    in let st4 = st-append-text (zero-tmp.state) (li (zero-tmp.reg) 0)
    in let st5 = st-append-text st4 (mov-store reg-r10 (zero-tmp.reg) 0)
    in let adv-tmp = alloc-temp st5
-   in let st6 = st-append-text (adv-tmp.state) (mov-rr (adv-tmp.reg) (cap-result.reg))
+   in let st6 = st-append-text (adv-tmp.state) (mov-rr (adv-tmp.reg) cap-reg)
    in let st7 = st-append-text st6 (shl-ri (adv-tmp.reg) 3)
    in let st8 = st-append-text st7 (add-ri (adv-tmp.reg) 8)
    in EmitResult {
    state = st-append-text st8 (add-rr reg-r10 (adv-tmp.reg)),
+   reg = rd.reg
+  }
+
+  emit-list-with-capacity-builtin-deck : CodegenState -> Integer -> EmitResult
+  emit-list-with-capacity-builtin-deck (st) (cap-reg) =
+   let addr-tmp = alloc-temp st
+   in let st0 = st-append-text (addr-tmp.state) (li (addr-tmp.reg) deck-pos-addr)
+   in let deckp-tmp = alloc-temp st0
+   in let st1 = st-append-text (deckp-tmp.state) (mov-load (deckp-tmp.reg) (addr-tmp.reg) 0)
+   in let st2 = st-append-text st1 (mov-store (deckp-tmp.reg) cap-reg 0)
+   in let st3 = st-append-text st2 (add-ri (deckp-tmp.reg) 8)
+   in let rd = alloc-temp st3
+   in let st4 = st-append-text (rd.state) (mov-rr (rd.reg) (deckp-tmp.reg))
+   in let zero-tmp = alloc-temp st4
+   in let st5 = st-append-text (zero-tmp.state) (li (zero-tmp.reg) 0)
+   in let st6 = st-append-text st5 (mov-store (deckp-tmp.reg) (zero-tmp.reg) 0)
+   in let adv-tmp = alloc-temp st6
+   in let st7 = st-append-text (adv-tmp.state) (mov-rr (adv-tmp.reg) cap-reg)
+   in let st8 = st-append-text st7 (shl-ri (adv-tmp.reg) 3)
+   in let st9 = st-append-text st8 (add-ri (adv-tmp.reg) 8)
+   in let st10 = st-append-text st9 (add-rr (deckp-tmp.reg) (adv-tmp.reg))
+   in EmitResult {
+   state = st-append-text st10 (mov-store (addr-tmp.reg) (deckp-tmp.reg) 0),
    reg = rd.reg
   }
 
@@ -773,18 +846,38 @@ Section: Builtin Registry
    in if text-compare name mid-name <= 0 then bsearch-x86-emitter-pos entries name lo mid
       else bsearch-x86-emitter-pos entries name (mid + 1) hi
 
-  sorted-insert-x86-emitter : List BuiltinX86Emitter -> BuiltinX86Emitter -> List BuiltinX86Emitter
-  sorted-insert-x86-emitter (xs) (e) =
-   let len = list-length xs
-   in let pos = bsearch-x86-emitter-pos xs (e.name) 0 len
-   in list-insert-at xs pos e
-
   sort-x86-emitters : List BuiltinX86Emitter -> List BuiltinX86Emitter
-  sort-x86-emitters (xs) = fold-list sorted-insert-x86-emitter [] xs
+  sort-x86-emitters (xs) =
+   let len = list-length xs
+   in if len <= 1 then xs
+   else let mid = len / 2
+   in let left = sort-x86-emitters (copy-x86-emitter-range xs 0 mid [])
+   in let right = sort-x86-emitters (copy-x86-emitter-range xs mid len [])
+   in merge-x86-emitters-sorted left right
+
+  copy-x86-emitter-range : List BuiltinX86Emitter -> Integer -> Integer -> List BuiltinX86Emitter -> List BuiltinX86Emitter
+  copy-x86-emitter-range (src) (i) (stop) (acc) =
+   if i >= stop then acc
+   else copy-x86-emitter-range src (i + 1) stop (list-snoc acc (list-at src i))
+
+  merge-x86-emitters-sorted : List BuiltinX86Emitter -> List BuiltinX86Emitter -> List BuiltinX86Emitter
+  merge-x86-emitters-sorted (a) (b) =
+   merge-x86-emitters-loop a b 0 0 (list-length a) (list-length b) []
+
+  merge-x86-emitters-loop : List BuiltinX86Emitter -> List BuiltinX86Emitter -> Integer -> Integer -> Integer -> Integer -> List BuiltinX86Emitter -> List BuiltinX86Emitter
+  merge-x86-emitters-loop (a) (b) (ia) (ib) (la) (lb) (acc) =
+   if ia >= la then copy-x86-emitter-range b ib lb acc
+   else if ib >= lb then copy-x86-emitter-range a ia la acc
+   else let ea = list-at a ia
+   in let eb = list-at b ib
+   in if text-compare (ea.name) (eb.name) <= 0
+      then merge-x86-emitters-loop a b (ia + 1) ib la lb (list-snoc acc ea)
+      else merge-x86-emitters-loop a b ia (ib + 1) la lb (list-snoc acc eb)
 
   x86-builtin-emitters : List BuiltinX86Emitter
   x86-builtin-emitters = sort-x86-emitters [
    BuiltinX86Emitter { name = "print-line", emit = \s a -> emit-print-line-builtin s a },
+   BuiltinX86Emitter { name = "print-error", emit = \s a -> emit-print-line-builtin s a },
    BuiltinX86Emitter { name = "read-file", emit = \s a -> emit-read-file-builtin s a },
    BuiltinX86Emitter { name = "write-file", emit = \s a -> emit-write-file-builtin s a },
    BuiltinX86Emitter { name = "read-line", emit = \s a -> emit-read-line-builtin s },
@@ -820,6 +913,7 @@ Section: Builtin Registry
    BuiltinX86Emitter { name = "abs", emit = \s a -> emit-abs-builtin s a },
    BuiltinX86Emitter { name = "min", emit = \s a -> emit-min-builtin s a },
    BuiltinX86Emitter { name = "max", emit = \s a -> emit-max-builtin s a },
+   BuiltinX86Emitter { name = "__narrow", emit = \s a -> emit-narrow-builtin s a },
    BuiltinX86Emitter { name = "int-mod", emit = \s a -> emit-int-mod-builtin s a },
    BuiltinX86Emitter { name = "get-args", emit = \s a -> emit-get-args-builtin s },
    BuiltinX86Emitter { name = "current-dir", emit = \s a -> emit-current-dir-builtin s },
@@ -830,6 +924,9 @@ Section: Builtin Registry
    BuiltinX86Emitter { name = "__heap-save", emit = \s a -> emit-heap-save-builtin s },
    BuiltinX86Emitter { name = "__heap-restore", emit = \s a -> emit-heap-restore-builtin s a },
    BuiltinX86Emitter { name = "__heap-advance", emit = \s a -> emit-heap-advance-builtin s a },
+   BuiltinX86Emitter { name = "__deck-pos", emit = \s a -> emit-deck-pos-builtin s },
+   BuiltinX86Emitter { name = "__deck-set", emit = \s a -> emit-deck-set-builtin s a },
+   BuiltinX86Emitter { name = "__deck-alloc", emit = \s a -> emit-deck-alloc-builtin s a },
    BuiltinX86Emitter { name = "__list-with-capacity", emit = \s a -> emit-list-with-capacity-builtin s a },
    BuiltinX86Emitter { name = "__buf-write-byte", emit = \s a -> emit-buf-write-byte-builtin s a },
    BuiltinX86Emitter { name = "__buf-write-bytes", emit = \s a -> emit-buf-write-bytes-builtin s a },

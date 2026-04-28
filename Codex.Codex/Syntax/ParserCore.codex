@@ -17,14 +17,14 @@ Section: Parser State
 
   ParseState = record {
    tokens : List Token,
-   pos : Integer,
+   pos : Integer between 0 and 4294967295,
    bag : DiagnosticBag,
-   paren-depth : Integer,
+   paren-depth : Integer between 0 and 65535,
    fuel : Integer
   }
 
-  make-parse-state : List Token -> ParseState
-  make-parse-state (toks) =
+  make-parse-state : List Token -> Text -> ParseState
+  make-parse-state (toks) (source) =
    ParseState {
     tokens = toks,
     pos = 0,
@@ -63,7 +63,7 @@ Section: Parser State
 
   token-to-span : Token -> SourceSpan
   token-to-span (tok) =
-   span-at (tok.line) (tok.column) (tok.offset) (text-length (tok.text)) (tok.file-id)
+   span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id)
 
   enter-paren : ParseState -> ParseState
   enter-paren (st) =
@@ -279,6 +279,12 @@ Section: TokenKind Predicates
     is InKeyword -> True
     is otherwise -> False
 
+  is-between-keyword : TokenKind -> Boolean
+  is-between-keyword (k) =
+   when k
+    is BetweenKeyword -> True
+    is otherwise -> False
+
   is-else-keyword : TokenKind -> Boolean
   is-else-keyword (k) =
    when k
@@ -290,6 +296,7 @@ Section: TokenKind Predicates
    when k
     is LetKeyword -> True
     is InKeyword -> True
+    is BetweenKeyword -> True
     is IfKeyword -> True
     is IsKeyword -> True
     is OtherwiseKeyword -> True
@@ -432,19 +439,19 @@ Section: Token Helpers
    if is-done st then st
    else if current-kind st == kind then advance st
    else let tok = current st
-   in __record-set st "bag" (bag-add (st.bag) (make-error cdx-expected-token-kind ("Expected token kind mismatch, got '" ++ tok.text ++ "'") (span-at (tok.line) (tok.column) (tok.offset) (text-length (tok.text)) (tok.file-id))))
+   in __record-set st "bag" (bag-add (st.bag) (make-error cdx-expected-token-kind ("Expected token kind mismatch, got '" ++ (token-text tok) ++ "'") (span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id))))
 
   expect-coded : TokenKind -> Integer -> Text -> ParseState -> ParseState
   expect-coded (kind) (code) (msg) (st) =
    if is-done st then st
    else if current-kind st == kind then advance st
    else let tok = current st
-   in __record-set st "bag" (bag-add (st.bag) (make-error code (msg ++ " (got '" ++ tok.text ++ "')") (span-at (tok.line) (tok.column) (tok.offset) (text-length (tok.text)) (tok.file-id))))
+   in __record-set st "bag" (bag-add (st.bag) (make-error code (msg ++ " (got '" ++ (token-text tok) ++ "')") (span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id))))
 
   report-reserved-keyword : Text -> ParseState -> ParseState
   report-reserved-keyword (context) (st) =
    let tok = current st
-   in __record-set st "bag" (bag-add (st.bag) (make-error cdx-reserved-keyword-as-identifier ("'" ++ tok.text ++ "' is a reserved keyword and cannot be used as " ++ context ++ "; rename it") (span-at (tok.line) (tok.column) (tok.offset) (text-length (tok.text)) (tok.file-id))))
+   in __record-set st "bag" (bag-add (st.bag) (make-error cdx-reserved-keyword-as-identifier ("'" ++ (token-text tok) ++ "' is a reserved keyword and cannot be used as " ++ context ++ "; rename it") (span-at (tok.line) (tok.column) (tok.offset) (tok.length) (tok.file-id))))
 
   skip-newlines-pos : List Token -> Integer -> Integer -> Integer
   skip-newlines-pos (tokens) (pos) (len) =

@@ -286,6 +286,94 @@ Section: __str_concat
    in let st6 = st-append-text st5 (pop-r reg-rbx)
    in st-append-text st6 x86-ret
 
+Section: __deck_str_concat
+
+ Phase-discipline twin of __str_concat. Always allocates a fresh
+ result text in the deck region (via R14-saved deck-pos cell) and
+ copies a's bytes then b's bytes into it. The bivy in-place fast
+ path from __str_concat is intentionally dropped: it relies on a's
+ bytes ending exactly at the bivy bump pointer R10, which never
+ holds for a deck-allocated source and would dangle if the bivy
+ strikes. emit-binary-op for IrAppendText dispatches here when
+ st.deck-bound is True at the call site.
+
+  emit-deck-str-concat-prologue : CodegenState -> CodegenState
+  emit-deck-str-concat-prologue (st) =
+    let st0 = record-func-offset st "__deck_str_concat"
+   in let st1 = st-append-text st0 (push-r reg-rbx)
+   in let st2 = st-append-text st1 (push-r reg-r12)
+   in let st3 = st-append-text st2 (push-r reg-r13)
+   in let st4 = st-append-text st3 (push-r reg-r14)
+   in let st5 = st-append-text st4 (li reg-r11 deck-pos-addr)
+   in let st6 = st-append-text st5 (mov-load reg-r14 reg-r11 0)
+   in let st7 = st-append-text st6 (mov-rr reg-rbx reg-rdi)
+   in let st8 = st-append-text st7 (mov-rr reg-r12 reg-rsi)
+   in let st9 = st-append-text st8 (mov-load reg-rcx reg-rbx 0)
+   in let st10 = st-append-text st9 (mov-load reg-rdx reg-r12 0)
+   in let st11 = st-append-text st10 (mov-rr reg-r13 reg-rcx)
+   in let st12 = st-append-text st11 (add-rr reg-r13 reg-rdx)
+   in let st13 = st-append-text st12 (mov-rr reg-rax reg-r14)
+   in let st14 = st-append-text st13 (mov-rr reg-r11 reg-r13)
+   in let st15 = st-append-text st14 (add-ri reg-r11 15)
+   in let st16 = st-append-text st15 (and-ri reg-r11 (-8))
+   in let st17 = st-append-text st16 (add-rr reg-r14 reg-r11)
+   in st-append-text st17 (mov-store reg-rax reg-r13 0)
+
+  emit-deck-str-concat-copy1 : CodegenState -> CodegenState
+  emit-deck-str-concat-copy1 (st) =
+    let st0 = st-append-text st (mov-load reg-rcx reg-rbx 0)
+   in let st1 = st-append-text st0 (li reg-r11 0)
+   in let loop1 = st1.text-len
+   in let st2 = st-append-text st1 (cmp-rr reg-r11 reg-rcx)
+   in let exit1-pos = st2.text-len
+   in let st3 = st-append-text st2 (jcc cc-ge 0)
+   in let st4 = st-append-text st3 (mov-rr reg-rdx reg-rbx)
+   in let st5 = st-append-text st4 (add-rr reg-rdx reg-r11)
+   in let st6 = st-append-text st5 (movzx-byte reg-rdx reg-rdx 8)
+   in let st7 = st-append-text st6 (mov-rr reg-rsi reg-rax)
+   in let st8 = st-append-text st7 (add-rr reg-rsi reg-r11)
+   in let st9 = st-append-text st8 (mov-store-byte reg-rsi reg-rdx 8)
+   in let st10 = st-append-text st9 (add-ri reg-r11 1)
+   in let st11 = st-append-text st10 (jmp (loop1 - (st10.text-len + 5)))
+   in patch-jcc-at st11 exit1-pos (st11.text-len)
+
+  emit-deck-str-concat-copy2 : CodegenState -> CodegenState
+  emit-deck-str-concat-copy2 (st) =
+    let st0 = st-append-text st (mov-load reg-rcx reg-rbx 0)
+   in let st1 = st-append-text st0 (mov-load reg-rdx reg-r12 0)
+   in let st2 = st-append-text st1 (li reg-r11 0)
+   in let loop2 = st2.text-len
+   in let st3 = st-append-text st2 (cmp-rr reg-r11 reg-rdx)
+   in let exit2-pos = st3.text-len
+   in let st4 = st-append-text st3 (jcc cc-ge 0)
+   in let st5 = st-append-text st4 (mov-rr reg-rsi reg-r12)
+   in let st6 = st-append-text st5 (add-rr reg-rsi reg-r11)
+   in let st7 = st-append-text st6 (movzx-byte reg-rsi reg-rsi 8)
+   in let st8 = st-append-text st7 (mov-rr reg-rdi reg-rax)
+   in let st9 = st-append-text st8 (add-rr reg-rdi reg-rcx)
+   in let st10 = st-append-text st9 (add-rr reg-rdi reg-r11)
+   in let st11 = st-append-text st10 (mov-store-byte reg-rdi reg-rsi 8)
+   in let st12 = st-append-text st11 (add-ri reg-r11 1)
+   in let st13 = st-append-text st12 (jmp (loop2 - (st12.text-len + 5)))
+   in patch-jcc-at st13 exit2-pos (st13.text-len)
+
+  emit-deck-str-concat-tail : CodegenState -> CodegenState
+  emit-deck-str-concat-tail (st) =
+    let st0 = st-append-text st (li reg-r11 deck-pos-addr)
+   in let st1 = st-append-text st0 (mov-store reg-r11 reg-r14 0)
+   in let st2 = st-append-text st1 (pop-r reg-r14)
+   in let st3 = st-append-text st2 (pop-r reg-r13)
+   in let st4 = st-append-text st3 (pop-r reg-r12)
+   in let st5 = st-append-text st4 (pop-r reg-rbx)
+   in st-append-text st5 x86-ret
+
+  emit-deck-str-concat : CodegenState -> CodegenState
+  emit-deck-str-concat (st) =
+    let st0 = emit-deck-str-concat-prologue st
+   in let st1 = emit-deck-str-concat-copy1 st0
+   in let st2 = emit-deck-str-concat-copy2 st1
+   in emit-deck-str-concat-tail st2
+
 Section: __ipow
   emit-ipow-setup : CodegenState -> HelpResult2
   emit-ipow-setup (st) =

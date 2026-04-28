@@ -30,7 +30,7 @@ rm -f "$PIPE" "$SERIAL"
 mkfifo "$PIPE"
 
 if [ ! -f "$ELF" ]; then
-    echo "ERROR: $ELF not found. Run pingpong first." >&2
+    echo "ERROR: $ELF not found. Run tools/pingpong-self.sh first." >&2
     exit 1
 fi
 if [ ! -f "$SAMPLE" ]; then

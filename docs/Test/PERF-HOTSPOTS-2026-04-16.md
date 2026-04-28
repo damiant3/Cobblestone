@@ -1,6 +1,6 @@
 # Perf Hotspot Re-Evaluation — 2026-04-16
 
-Agent: Hex-Cam. Purpose: verify which `BACKLOG.md` quadratic-hotspot entries
+Purpose: verify which `BACKLOG.md` quadratic-hotspot entries
 are still real on the *current* self-host workload, vs. stale claims from
 before recent compiler growth.
 

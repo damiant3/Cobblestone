@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-16
 **Commit:** master @ `e84f674`
-**Reproduction:** `rm -rf build-output …; dotnet build Codex.sln; wsl bash tools/pingpong.sh`
+**Reproduction:** `rm -rf build-output …; dotnet build Codex.sln; wsl bash tools/pingpong-self.sh`
 
 See `docs/CodexBootstrap.png` for the bootstrap diagram and
 `BOOTSTRAP-REPORT.md` for the long-form description.
@@ -84,7 +84,7 @@ serial; Codex text is captured back.
 (`emit-type-def`) destructures `tparams` but never emits them — so
 `Maybe (a) =` round-trips to `Maybe =`. The same loss happens in type
 references: `Maybe a ->` round-trips to `Maybe ->`. Introduced at
-`4420b92` (Merge hex-cam/self-host-maybe, 2026-04-15 22:05); the Maybe
+`4420b92` (Merge cam/self-host-maybe, 2026-04-15 22:05); the Maybe
 merge added parametric types to self-host but did not update the
 Codex-text emitter.
 

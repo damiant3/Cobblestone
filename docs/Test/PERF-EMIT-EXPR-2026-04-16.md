@@ -1,6 +1,6 @@
 # emit-expr Profile — 2026-04-16
 
-Agent: Hex-Cam. Goal: find the next C# emit hotspot after the P9 + P13 +
+Goal: find the next C# emit hotspot after the P9 + P13 +
 csharp-emit-defs-list wins. Emit is still 71% of compile time (1035ms of
 1496ms); this report tells us where inside emit-expr.
 

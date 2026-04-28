@@ -149,7 +149,7 @@ Rules:
 - Each wedge is one commit or one small PR.
 - Each wedge leaves pingpong green: `wsl bash tools/pingpong.sh` — bootstrap 2, bare-metal ELF under QEMU, stage1 ≡ stage2 byte-identical.
 - Each wedge deletes more than it adds, in the long run.
-- Compiler-touching work goes to a feature branch (CLAUDE.md rule): probably `hex-hex/oneforeword`.
+- Compiler-touching work goes to a feature branch (CLAUDE.md rule): probably `oneforeword`.
 
 ### Wedge 0 — probe test
 
@@ -169,9 +169,9 @@ Compile with self-host. Observe failure. Pin the exact failure mode (is it emit-
 
 Replace `foreword/CCE.codex:59-180` (the `to-unicode` if-cascade) with a `cce-to-unicode-table : List Integer` constant plus a short `to-unicode b = if b < 0 then 65533 else if b >= 128 then 65533 else list-at cce-to-unicode-table b`. Keep the `from-unicode` cascade for now (its reverse pre-computation is Wedge 3 scope). Update `foreword/CCE.codex:332-357` main to still pass its roundtrip test (the test stays — it's the invariant). Pingpong unaffected (nothing cites CCE yet except the probe test). Commit.
 
-### Wedge 2 — cross-project function emission **[LANDED on hex-hex/oneforeword-emit]**
+### Wedge 2 — cross-project function emission **[LANDED on oneforeword-emit]**
 
-Implementation summary (for reviewer + future-Hex):
+Implementation summary:
 
 - **Ref side (done).** `tools/Codex.Cli/Program.Compile.cs` has a new `LowerCitedDefs` helper. It runs a fresh `TypeChecker` per cited chapter (with other cited chapters in scope), calls `CheckChapter` to produce types, runs `Lowering.Lower`, and concatenates the resulting `IRDefinition`s into the main `IRChapter`. Name-collision dedup via a `HashSet<string>` (main chapter wins). Called from all four compile paths: `CompileToIR`, `CompileMultipleToIR`, `CompileViewToIR`, and the incremental path in `Program.Incremental.cs`. Layout decision: option 1 (concatenation into the same emit unit).
 - **Latent bug fixed.** `src/Codex.Emit.CSharp/CSharpEmitter.Utilities.cs:CollectTypeVarIds` didn't descend into `SumType.TypeArguments` or `RecordType.TypeArguments`. Invisible before because main-chapter polymorphic functions tend to reach type variables through return types; foreword functions like `is-just : Maybe a -> Boolean` have `a` only under the SumType. Fix: added `case SumType st` and `case RecordType rt` to the walker.

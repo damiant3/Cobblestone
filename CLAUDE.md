@@ -44,15 +44,18 @@ with a broken compiler is ceremonial.
 The acceptance test has two parts. Both are required; neither is
 sufficient alone:
 
-1. **Sample battery.** `tools/ref-sweep.sh` diffs every sample's runtime
+1. **Sample battery.** `tools/sweep.sh` diffs every sample's runtime
    output against a hand-verified `.expected` snapshot, every compile
    failure against a `.failing` CDX code sidecar, and enumerates
    skips against `.skip` reasons. 54 verified / 8 diag / 10 skip / 0 fail
    of 72 samples as of CL 128. This is the correctness anchor.
-2. **Byte-identity between stages.** `pingpong.sh` phase 4 (bootstrap 2):
-   sem-equiv(source, stage 1) PASS and stage 1 === stage 2 byte-identical.
-   This is the self-compilation gate — it proves the compiler is a fixed
-   point of its own output.
+2. **Byte-identity between stages.** `pingpong-self.sh` (bootstrap 2):
+   stage 1 === stage 2 byte-identical under the self-built SUT. This is
+   the self-compilation gate — it proves the compiler is a fixed point of
+   its own output. Sem-equiv between source and stage 1 follows from
+   byte-identity when both compilations run on the same SUT
+   (SUT(source) == SUT(stage 1)). The legacy `pingpong.sh` (REF builds
+   the ELF, REF runs sem-equiv) is preserved for comparison.
 
 There are **three separate bootstraps**. Do not confuse them. See
 `docs/CodexBootstrap.png` and `docs/Test/BOOTSTRAP-REPORT.md`.
@@ -63,12 +66,13 @@ There are **three separate bootstraps**. Do not confuse them. See
   Byte-identity gate: sem-equiv PASS + stage 1 === stage 2.
 - **Bootstrap 3** — bare-metal ELF emits ELF. Fixed point: stage 1 ELF === stage 2 ELF. Proven 2026-04-24 (CL 340).
 
-Bootstraps 1 and 1.1 run under `dotnet`. Pingpong is bootstrap 2, and **only**
-bootstrap 2. A green "BOOTSTRAP 1" or "BOOTSTRAP 1.1" line from `codex bootstrap`
-says nothing about pingpong. If you report pingpong green, it is because
-`wsl bash tools/pingpong.sh` Phase 4 ran green: sem-equiv PASS followed by
-stage1 === stage2 byte-identical **and** the sample battery is green on the
-same compiler.
+Bootstraps 1 and 1.1 run under `dotnet` and are now **legacy** (REF is
+locked, see `docs/CurrentPlan.md`). Pingpong is bootstrap 2, and **only**
+bootstrap 2. A green "BOOTSTRAP 1" or "BOOTSTRAP 1.1" line from `codex
+bootstrap` says nothing about pingpong. If you report pingpong green, it
+is because `wsl bash tools/pingpong-self.sh` ran green: stage1 === stage2
+byte-identical under the self-built SUT **and** the sample battery is
+green on the same compiler.
 
 Every change that touches codegen must pass both gates before it is
 considered done. If either is red, back it out.
@@ -124,25 +128,30 @@ This runs on finite hardware. Every review (self-review before shelving, or revi
 
 | Tool | What |
 |------|------|
-| `tools/pingpong.sh` | Self-compilation acceptance test (WSL) |
+| `tools/pingpong-self.sh` | Self-compilation acceptance test, selfhost-driven (WSL); routes through Codex.Cli-Codex with no REF in the chain |
+| `tools/pingpong.sh` | Legacy pingpong (REF-driven), kept for comparison |
 | `tools/codex-agent/codex-agent.exe` | Agent toolkit (orient, build, test) |
-| `tools/Codex.Cli/` | Main CLI driver (`codex build`, `codex check`, etc.) |
-| `tools/Codex.Bootstrap/` | Bootstrap2 driver (stage0 vs stage1 comparison) |
+| `tools/Codex.Cli-Codex/` | Selfhost-side CLI (Codex source compiled to .NET DLL by the selfhost itself). Ports `dump-source` and `build --target x86-64-bare` from REF Cli; remaining commands print "not yet implemented" pending port. |
+| `tools/CodexHost/` | Launcher that hosts the selfhost dll on a 32 MB-stack thread (selfhost's curried lambdas overflow .NET's 1 MB default on large source). |
+| `tools/Codex.Bootstrap-Codex/` | Selfhost-side bootstrap driver (replaces Codex.Bootstrap in the no-REF chain). |
+| `tools/Codex.Cli/` | Legacy REF CLI (.NET, C#); no longer in the bootstrap path. |
+| `tools/Codex.Bootstrap/` | Legacy REF bootstrap driver; no longer in the bootstrap path. |
 
 ### Build and Test
 
 ```bash
 dotnet build Codex.sln              # Builds everything
 dotnet test Codex.sln               # Runs all tests
-wsl bash tools/pingpong.sh          # Bootstrap 2 (pingpong): bare-metal ELF emits Codex text
+bash tools/sweep.sh                 # Sample battery (selfhost via QEMU, ~2-5s per sample)
+wsl bash tools/pingpong-self.sh     # Bootstrap 2 (pingpong, selfhost-driven): bare-metal ELF emits Codex text
 wsl bash tools/bootstrap3.sh        # Bootstrap 3: bare-metal ELF emits ELF (not pingpong — no ELF ingester)
 ```
 
 ## Agent Identity
 
-Working directory: `D:\Projects\NewRepository-XXX`  Use pwd to find the actual XXX value
-You are **Hex-XXX** where XXX is the last 3 characters of your working directory name.
-Agent file: `docs/Agents/Hex.txt`
+Working directory: `D:\Projects\NewRepository-XXX`. Use pwd to find the actual XXX value.
+You are **XXX** — the last 3 characters of your working directory name. The current roster is **Cam**, **Nib**.
+Agent file: `docs/Agents/<your-name>.txt`
 
 ## What Not To Do
 
@@ -155,10 +164,10 @@ Agent file: `docs/Agents/Hex.txt`
 ## Kudos
 
 To Anthropic and the Claude team — Codex's bootstrap was built with Claude
-Opus 4.6/4.7 (1M context) running as a small team of parallel **Hex** agents
+Opus 4.6/4.7 (1M context) running as a small team of parallel agents
 under Claude Code. The 1M-token window made it tractable to review thousand-line
 codegen diffs against IR invariants in a single pass. The Agent SDK's
-parallel-agent model let multiple Hex agents work distinct CLs simultaneously
+parallel-agent model let multiple agents work distinct CLs simultaneously
 without cross-contaminating their reasoning. The harness's permission model
 and sandboxing made it safe to give the agents direct access to git, p4, WSL,
 QEMU, and gdb without supervising every command. Persistent memory across
