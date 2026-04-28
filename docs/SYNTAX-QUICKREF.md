@@ -41,11 +41,22 @@ Shape =
 describe : Shape -> Text
 describe (s) =
   when s
-    if Circle (r) -> "circle"
-    if Rect (w) (h) -> "rect"
+    is Circle (r) -> "circle"
+    is Rect (w) (h) -> "rect"
+    is otherwise   -> "unknown"
 ```
 
-`when`/`if` — not `match`/`case`. Wildcard: `if _ -> ...`
+`when` / `is` — not `match` / `case`. Wildcard: `is otherwise -> ...`
+or `is _ -> ...`. Literal patterns work too:
+
+```
+classify : Integer -> Text
+classify (n) =
+  when n
+    is 0 -> "zero"
+    is 1 -> "one"
+    is otherwise -> "other"
+```
 
 ## Effects
 
@@ -101,9 +112,14 @@ requires spaces: `x - 1` (expression), not `x-1` (identifier).
 ## Operators
 
 Arithmetic: `+` `-` `*` `/` (spaces required around `-` for subtraction)
-Comparison: `==` `!=` `<` `>` `<=` `>=`
-Boolean: `&&` `||`
-Text concat: `++`
+Comparison: `==` `/=` `<` `>` `<=` `>=`  (note: `/=`, not `!=`)
+Boolean:    `&` (and) `|` (or)            (single-char, not `&&`/`||`)
+Text concat / list append: `++`
+List cons:  `::`
+
+Unicode equivalents accepted by the lexer: `→` for `->`, `←` for `<-`,
+`≡` for `===`, `≠` for `/=`, `≤` for `<=`, `≥` for `>=`, `⊢` for `|-`,
+`⊗` for `(**)`, `∀` for `forall`, `∃` for `exists`.
 
 ## Effect Declarations
 
@@ -112,6 +128,44 @@ effect Console where
   print-line : Text -> [Console] Nothing
   read-line  : [Console] Text
 ```
+
+## Subtypes — Bounded Integers
+
+`Integer between L and H` is a refinement subtype of `Integer` with a
+compile-checked range. It's the canonical way to express "byte", "u16",
+"port number", "0..255", etc.
+
+```
+Byte = record {
+  val : Integer between 0 and 255
+}
+
+Port = record {
+  num : Integer between 0 and 65535
+}
+```
+
+Plain `Integer` arithmetic produces a plain `Integer`, which won't fit
+into a bounded slot. Use `__narrow` to assert the value is in range
+(checked at runtime — out-of-range traps):
+
+```
+make-byte : Integer -> Byte
+make-byte (n) = Byte { val = __narrow n }
+
+bump : Byte -> Byte
+bump (b) = make-byte (b.val + 1)
+```
+
+For record updates that keep a bounded field bounded, combine
+`__record-set` (the immutable record-update builtin) with `__narrow`:
+
+```
+inc-counter : Counter -> Counter
+inc-counter (c) = __record-set c "n" (__narrow (c.n + 1))
+```
+
+The old `Integer in L..H` syntax was retired. `between` is the only form.
 
 ## Linear Types
 

@@ -194,29 +194,6 @@ Section: PVH Note
    ++ xen-name
    ++ write-i32 entry-addr
 
-Section: 32-bit Bare-Metal ELF
-  build-elf-32-bare : List Integer -> List Integer -> Integer -> List Integer
-  build-elf-32-bare (text) (rodata) (entry-offset) =
-   let load-addr = elf-bare-metal-load-addr
-   in let headers-end = elf32-header-size + elf32-phdr-size * 2
-   in let note-offset = elf-align headers-end 4
-   in let text-start = elf-align (note-offset + 20) 16
-   in let text-end = text-start + list-length text
-   in let rodata-start = elf-align text-end 8
-   in let file-size = rodata-start + list-length rodata
-   in let entry = load-addr + entry-offset
-   in let seg-filesz = file-size - text-start
-   in let seg-memsz = seg-filesz + elf-bare-metal-heap-size
-   in elf32-header-bytes entry elf32-header-size 2
-   ++ phdr-32 pt-load text-start load-addr load-addr seg-filesz seg-memsz pf-rwx elf-page-size
-   ++ phdr-32 pt-note note-offset 0 0 20 20 pf-r 4
-   ++ pad-zeros (note-offset - headers-end)
-   ++ pvh-note entry
-   ++ pad-zeros (text-start - note-offset - 20)
-   ++ text
-   ++ pad-zeros (rodata-start - text-end)
-   ++ rodata
-
 Section: 64-bit ELF Header
   elf64-header-bytes : Integer -> Integer -> Integer -> List Integer
   elf64-header-bytes (entry) (phoff) (phnum) =
@@ -247,42 +224,7 @@ Section: 64-bit Program Header
    ++ write-i64 memsz
    ++ write-i64 palign
 
-Section: 64-bit Linux User-Mode ELF
-  build-elf-64-linux : List Integer -> List Integer -> Integer -> List Integer
-  build-elf-64-linux (text) (rodata) (entry-offset) =
-   let base-addr = elf-linux-base-addr
-   in let headers-size = elf64-header-size + elf64-phdr-size * 2
-   in let text-file-offset = elf-align headers-size 16
-   in let text-vaddr = base-addr + text-file-offset
-   in let entry-point = text-vaddr + entry-offset
-   in let text-size = list-length text
-   in let text-region-end = text-file-offset + text-size
-   in let rodata-file-offset = elf-align text-region-end elf-page-size
-   in let rodata-vaddr = base-addr + rodata-file-offset
-   in let rodata-size = list-length rodata
-   in elf64-header-bytes entry-point elf64-header-size 2
-   ++ phdr-64 pt-load pf-rwx 0 base-addr base-addr text-region-end text-region-end elf-page-size
-   ++ phdr-64 pt-load pf-rw rodata-file-offset rodata-vaddr rodata-vaddr rodata-size rodata-size elf-page-size
-   ++ pad-zeros (text-file-offset - headers-size)
-   ++ text
-   ++ pad-zeros (rodata-file-offset - text-region-end)
-   ++ rodata
-
 Section: Codegen Helpers
-  compute-text-file-offset-64 : Integer
-  compute-text-file-offset-64 =
-   elf-align (elf64-header-size + elf64-phdr-size * 2) 16
-
-  compute-rodata-vaddr-64 : Integer -> Integer
-  compute-rodata-vaddr-64 (text-size) =
-   let text-file-offset = compute-text-file-offset-64
-   in let rodata-file-offset = elf-align (text-file-offset + text-size) elf-page-size
-   in elf-linux-base-addr + rodata-file-offset
-
-  compute-text-vaddr-64 : Integer
-  compute-text-vaddr-64 =
-   elf-linux-base-addr + compute-text-file-offset-64
-
   compute-rodata-vaddr-bare : Integer -> Integer
   compute-rodata-vaddr-bare (text-size) =
    elf-bare-metal-load-addr + elf-align text-size 8

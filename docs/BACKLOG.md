@@ -63,13 +63,13 @@ Ordered by gating relationship.
 | 3 | NetworkSync test failures | 4 tests need self-contained peer or integration-only marking |
 | 5 | `text-to-double-bits` bare metal implementation | On x86-64 bare metal, `text-to-double-bits` falls through to `__text_to_int` (integer parser). Need a proper `__text_to_double` runtime helper that parses decimal text to IEEE 754 bits. Not blocking — the builtin is only called at compile time when the compiler runs as .NET, not at runtime on bare metal. |
 
-## REF sample validation
+## Sample validation
 
-`tools/ref-sweep.sh` is the canonical REF regression gate. Every sample either has a `.expected` snapshot (runtime output diffed), a `.failing` sidecar (compile must fail with a specific CDX code), or a `.skip` sidecar (documented reason).
+`tools/sweep.sh` is the canonical regression gate. Every sample either has a `.expected` snapshot (runtime output diffed), a `.failing` sidecar (compile must fail with a specific CDX code), or a `.skip` sidecar (documented reason).
 
-`--compiler=ref|selfhost` selects which compiler runs. Self-host mode uses `build-output/bare-metal/Codex.Codex.elf` (from `pingpong.sh`) via QEMU.
+Runs the bare-metal selfhost via `build-output/bare-metal/Codex.Codex.elf` (from `pingpong-self.sh`) under QEMU. `--jobs=N` for parallel runs.
 
-Current REF state: **54 verified + 8 expected-fail diagnostics + 10 skipped + 0 fail**, out of 72 samples.
+Current state (CL 463): **72 verified + 22 expected-fail diagnostics + 11 skipped + 0 fail**, out of 105 samples.
 
 Skipped samples are each documented in their `.skip` sidecar. Four are known-broken or not-yet-implemented features (effect handlers, fork/await on bare metal, linear types runtime); four are type-check-only tests with no `opening`; two are missing-dep stubs. They act as TODO markers in the battery — when the capability lands, delete the `.skip` and snapshot.
 

@@ -91,5 +91,5 @@ until we decide on a style rule — no forced migration.
 ## Status
 
 Designed. Not implemented. Land on its own feature branch
-(`hex/inline-const-syntax` suggested) so review and rollback stay
+(`inline-const-syntax` suggested) so review and rollback stay
 clean. Sequenced after the CDX registry work.

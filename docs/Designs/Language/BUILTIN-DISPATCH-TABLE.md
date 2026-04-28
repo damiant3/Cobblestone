@@ -65,7 +65,7 @@ adding a new builtin is one list entry plus its emitter function.
 ## Status
 
 Designed. Not implemented. Sequenced after the CDX registry work.
-Own branch suggested: `hex/builtin-dispatch-table`.
+Own branch suggested: `builtin-dispatch-table`.
 
 ## Related
 

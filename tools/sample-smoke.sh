@@ -2,7 +2,7 @@
 # sample-smoke.sh — feed every samples/*.codex to the bare-metal self-host ELF
 # and report per-sample TEXT (sem-equiv) and BINARY (ELF magic+size) outcomes.
 #
-# Prereq: build-output/bare-metal/Codex.Codex.elf (run tools/pingpong.sh first).
+# Prereq: build-output/bare-metal/Codex.Codex.elf (run tools/pingpong-self.sh first).
 #
 # Usage:
 #   tools/sample-smoke.sh                       # all samples, default 60s each
@@ -32,7 +32,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-[ -f "$KERNEL" ]   || { echo "FAIL: $KERNEL missing — run tools/pingpong.sh first"; exit 1; }
+[ -f "$KERNEL" ]   || { echo "FAIL: $KERNEL missing — run tools/pingpong-self.sh first"; exit 1; }
 [ -x "$QEMU" ]     || { echo "FAIL: $QEMU missing"; exit 1; }
 [ -f "$CLI_DLL" ]  || { echo "FAIL: $CLI_DLL missing — run 'dotnet build Codex.sln'"; exit 1; }
 [ -d "$SAMPLES" ]  || { echo "FAIL: $SAMPLES missing"; exit 1; }

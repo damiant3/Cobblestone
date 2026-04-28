@@ -1,5 +1,5 @@
 #!/bin/bash
-# Bootstrap 3 (bare-metal to ELF). Assumes tools/pingpong.sh has
+# Bootstrap 3 (bare-metal to ELF). Assumes tools/pingpong-self.sh has
 # already run successfully and left $OUTDIR populated with the
 # reference ELF and source dump. Runs the bare-metal binary self-
 # compilation fixed-point check — Stage 0 compiles source to ELF,
@@ -15,7 +15,7 @@ QEMU="/usr/bin/qemu-system-x86_64"
 BINARY_TIMEOUT=${BINARY_TIMEOUT:-360}
 
 if [ ! -f "$ELF" ] || [ ! -f "$SOURCE" ]; then
-    echo "FAIL: $ELF or $SOURCE missing. Run tools/pingpong.sh first."
+    echo "FAIL: $ELF or $SOURCE missing. Run tools/pingpong-self.sh first."
     exit 1
 fi
 if [ ! -x "$QEMU" ]; then

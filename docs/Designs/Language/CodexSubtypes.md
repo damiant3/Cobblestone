@@ -1,7 +1,25 @@
 # Codex Subtypes — Bounded Ranges and Unit Domains
 
-**Date:** 2026-04-16
-**Status:** Early exploration. Ideas from a design conversation, not a proposal.
+**Date:** 2026-04-16 (initial), updated 2026-04-27.
+**Status:** Axis 1 (bounds) shipped through CL 410 + this CL's `__narrow`. Axis 2 (units) deferred — design only, not started.
+
+## Shipped (Axis 1)
+
+| CL | What |
+|---|---|
+| 358 | `Integer in lo..hi` syntax, parser, bidirectional unifier |
+| 372 | Width-aware emit primitives, narrow-store / narrow-load, Boolean → 1 byte |
+| 374 | Width-sort record layout |
+| 376–381 | Token / SourcePosition / Diagnostic / DiagnosticBag and the CL 381 sweep migrated to bounded fields |
+| 384 | Revert ExprTypeEntry.key bound (CL 381 over-narrowed a packed hash) |
+| 403 | Lint pass: CDX2050 (literal out-of-bound, error) + CDX2051 (wider type, warning); `bag-errors` filter so warnings don't pollute TEXT-mode stdout |
+| 404 | `OverflowMode` AST + parser plumbing — `wrapping` / `clamping` / `error` keyword (default `error`) |
+| 409 | Error-mode codegen at narrow-store; `cmp+jcc+ud2`. Bounds in i32-signed range use `cmp-ri`; u32 bounds use a `push-r9 / mov-ri64 / cmp-rr / pop-r9` sandwich. `AdvanceResult.pos` annotated `wrapping` because skip-list span arithmetic is genuinely modular |
+| 410 | Clamping codegen at narrow-store (`cmp + jcc + mov-ri32` saturating). Lint mode-aware: CDX2050/CDX2051 fire only under `error` mode |
+| 411 | `__narrow` builtin — explicit-narrow primitive that suppresses CDX2050/CDX2051 at a specific call site. Codegen pass-through; downstream narrow-store enforces the field's mode |
+| this CL | `between L and H` syntax (canonical, prose-form) accepted alongside `in L..H`. Closed-inclusive only. Spec rewritten throughout to use the new form. Selfhost source migration is the follow-on CL. |
+
+Default overflow mode is **`error`** (Damian, 2026-04-26). Unannotated bounded fields trap on out-of-range writes.
 
 ---
 
@@ -28,22 +46,27 @@ These are two orthogonal problems with a shared solution space.
 How large can the value be? The answer determines storage width.
 
 ```
-Integer                         -- full machine word (64-bit)
-Integer in 0..255               -- 8 bits sufficient
-Integer in 0..16777215          -- 24 bits sufficient
-Integer in 0..1048576           -- 20 bits sufficient
+Integer                                 -- full machine word (64-bit)
+Integer between 0 and 255               -- 8 bits sufficient
+Integer between 0 and 16777215          -- 24 bits sufficient
+Integer between 0 and 1048576           -- 20 bits sufficient
 ```
 
 The compiler picks the tightest power-of-two-aligned representation
 that covers the declared range. The user never writes "Int32" — they
 write the domain constraint. The width follows.
 
+Bounds are closed-inclusive. `Integer between 0 and 255` includes
+255; the storage size (256 = 2^8) is the compiler's derivation,
+not a number the author writes. There is no half-open form;
+mathematical interval pedantry stays out of the source.
+
 Named types carry their bounds:
 
 ```
-ByteOffset = Integer in 0..16777215
-LineNumber = Integer in 1..1048576
-FileId     = Integer in 0..65535
+ByteOffset = Integer between 0 and 16777215
+LineNumber = Integer between 1 and 1048576
+FileId     = Integer between 0 and 65535
 ```
 
 Record fields with bounded types pack tighter: sub-qword loads/stores,
@@ -55,14 +78,21 @@ proper alignment. A record with three 32-bit fields occupies 12 bytes
 Bounds raise the question: what happens when a value exceeds its range?
 
 ```
-Byte       = Integer in 0..255 wrapping     -- modular arithmetic
-Percentage = Integer in 0..100 clamping     -- saturates at bounds
-SafeIndex  = Integer in 0..N error          -- runtime error on overflow
+Byte       = Integer between 0 and 255 wrapping     -- modular arithmetic
+Percentage = Integer between 0 and 100 clamping     -- saturates at bounds
+SafeIndex  = Integer between 0 and N error          -- runtime error on overflow
 ```
 
-Default behavior is TBD. `error` is safest. `wrapping` is standard for
-byte-level work. `clamping` is useful for signal processing. The
-overflow mode could be part of the type declaration.
+Default mode (no keyword) is **`error`**. Unannotated bounded fields
+trap on out-of-range writes. This is the safest default and forces
+authors to be explicit when truncation or saturation is intended.
+
+The `__narrow` builtin is the explicit-narrow primitive: writing
+`__narrow expr` at an assignment site suppresses CDX2050 and CDX2051
+for that site. Codegen is pass-through; the downstream narrow-store
+still enforces the field's mode (so `__narrow` under `error` mode
+will trap if the value really doesn't fit at runtime — it's an
+intent annotation, not an unchecked cast).
 
 ### Axis 2: Units (meaning)
 
@@ -215,7 +245,7 @@ chain extends to units.
 
 | Aspect | Ada | F# | Codex (proposed) |
 |--------|-----|-----|-----------------|
-| Range bounds | `range 0..23` | no | `Integer in 0..23` |
+| Range bounds | `range 0..23` | no | `Integer between 0 and 23` |
 | Distinct types | yes (strong) | yes (measures) | yes (unit) |
 | Conversion | explicit function call | explicit annotated constant | implicit from declared fact |
 | Syntax | `Hour_Type`, `for T'Size use 8` | `float<meter/second^2>` | `Hour`, `Meter` — plain words |
@@ -234,15 +264,46 @@ Key differentiators:
 
 ## Open Questions
 
-1. **Interaction between bounds and units.** Can you write
-   `ShortDuration = Second in 0..3600`? Bounded AND unit-tagged? If so,
-   conversion from `Hour in 0..1` to `ShortDuration` must range-check
-   after converting.
+### Resolved
 
-2. **Arithmetic result types.** `Second + Second → Second` (same unit,
-   range widens). `Second * Integer → Second` (scaling). What about
-   `Second * Second`? Is that `Second^2`? Or just `Integer`? Algebraic
-   dimensions vs flat units — how far do we go?
+5. **Overflow mode default.** Resolved: `error`. Unannotated bounded
+   fields trap on out-of-range writes. Implemented in CL 404
+   (parser/AST default) and CL 409 (codegen).
+
+6. **Migration path.** Resolved in practice: CL-by-CL field
+   migrations driven by the heap-profiling motivation. CL 376–381
+   landed Token / SourcePosition / Diagnostic / DiagnosticBag /
+   ParseState etc. The cascade lives in `project_bounded_integer_
+   cascade.md` (memory). One field reverted (ExprTypeEntry.key, CL
+   384) when its semantic was a packed hash, not a counter. One
+   field annotated `wrapping` (AdvanceResult.pos, CL 409) when the
+   semantic was genuinely modular.
+
+### Still open (Axis 1)
+
+2. **Arithmetic result types.** `Integer between 0 and 255 + Integer
+   between 0 and 255 → Integer between 0 and 510` is not derived. `+`
+   returns unbounded `Integer` regardless of operand bounds, which is why
+   CDX2051 fires on `field + 1` patterns. Refinement-typed
+   arithmetic is the proper fix; for now, `__narrow` is the
+   manual escape hatch.
+
+7. **`__narrow` runtime semantics.** Currently codegen pass-through.
+   Could optionally emit a runtime check at the narrow point itself
+   (catch the violation earlier in the trace) when the destination
+   type is in `error` mode. Deferred — downstream narrow-store
+   already catches it.
+
+8. **Layout details.** Width-sort + alignment rules from CL 374 are
+   codegen decisions with no spec guidance. Spec should formalize
+   so future backends can match.
+
+### Still open (Axis 2 — not started)
+
+1. **Interaction between bounds and units.** Can you write
+   `ShortDuration = Second between 0 and 3600`? Bounded AND unit-tagged?
+   If so, conversion from `Hour between 0 and 1` to `ShortDuration` must
+   range-check after converting.
 
 3. **Conversion ambiguity.** If there are two paths from A to B in the
    unit graph (e.g., via C and via D), which conversion applies? Error?
@@ -253,16 +314,6 @@ Key differentiators:
    scheme). For register-held values, the tag might be implicit from
    static type context. For heap-stored values, it's an extra field.
    Need to quantify the cost.
-
-5. **Overflow mode default.** `error` is safest but adds a branch per
-   arithmetic op. `wrapping` is cheapest but hides bugs. Could default
-   to `error` in debug, `wrapping` in release — but that means debug
-   and release have different semantics. Codex principles probably
-   demand one consistent behavior.
-
-6. **Migration path.** Existing self-host code uses `Integer` everywhere.
-   How do we gradually adopt bounded/unit types without rewriting
-   everything at once?
 
 ---
 

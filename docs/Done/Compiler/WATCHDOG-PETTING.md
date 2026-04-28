@@ -143,7 +143,7 @@ Filed as a non-blocking task; no MM4 dependency.
 
 ## Follow-ups from the v1 basic-watchdog review
 
-Captured during review of `hex-hex/basic-watchdog` (commit `53af10b`) — the minimal soft-lockup detector that landed before this scoping doc's deferral: timer-ISR samples `R10` and saved `RIP`, panics `WD!\n` + HLT after 550 ticks (~30 s) with heap unchanged and RIP inside a 4 KB window. Real work (text pingpong, 39 s compiles) does not false-positive. These are the known-deferred improvements on top of that v1:
+Captured during review of the basic-watchdog work (commit `53af10b`) — the minimal soft-lockup detector that landed before this scoping doc's deferral: timer-ISR samples `R10` and saved `RIP`, panics `WD!\n` + HLT after 550 ticks (~30 s) with heap unchanged and RIP inside a 4 KB window. Real work (text pingpong, 39 s compiles) does not false-positive. These are the known-deferred improvements on top of that v1:
 
 1. **Self-host mirror in `Codex.Codex/Emit/X86_64Boot.codex`.** The v1 lives only in the reference emitter (`src/Codex.Emit.X86_64/X86_64CodeGen.cs`, ~108 lines of codegen). The self-host's bare-metal emitter does not emit the watchdog, so `codex build --target x86-64-bare` on the self-host produces a watchdog-less ELF. Mirror is blocked on C4 finishing — bootstrap 3 byte-identity between ref and self-host is already broken by C4, so adding the mirror while C4 is live won't move the needle. Once C4 lands: port the watchdog to `Codex.Codex/Emit/X86_64Boot.codex` to restore byte-identical ref/self-host ELFs.
 

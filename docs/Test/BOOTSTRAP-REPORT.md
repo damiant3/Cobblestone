@@ -110,7 +110,7 @@ and `AVariantTypeDef (name) (tparams) (ctors) (s)` destructure
 sigs (verified by diffing source sigs against `bootstrap2-stage1.codex`
 at `from-maybe` et al).
 
-Regression introduced at `4420b92` (Merge hex-cam/self-host-maybe,
+Regression introduced at `4420b92` (Merge cam/self-host-maybe,
 2026-04-15 22:05). The Maybe merge added parametric Maybe records to
 self-host but did not update the Codex-text emitter to carry type
 parameters through definition or reference emission. Bootstrap 1 and
@@ -149,11 +149,14 @@ rm -rf build-output tools/Codex.Bootstrap/CodexLib.g.cs \
        tools/Codex.Bootstrap/bootstrap-output Codex.Codex/out .codex-build
 find . -type d \( -name bin -o -name obj \) -not -path '*/.git/*' | xargs rm -rf
 dotnet build Codex.sln
-wsl bash tools/pingpong.sh
+wsl bash tools/pingpong-self.sh
 ```
 
-`pingpong.sh` Phase 3 = bootstraps 1 + 1.1. Phase 4 = bootstrap 2 (pingpong).
-Bootstrap 3 is not exercised by `pingpong.sh`.
+`pingpong-self.sh` is the live BS2 driver (selfhost-built SUT, stage1 ===
+stage2 byte-identity). The legacy `pingpong.sh` (REF builds the ELF, REF
+runs sem-equiv) is preserved for comparison; its Phase 3 = bootstraps 1 +
+1.1, Phase 4 = bootstrap 2 (pingpong). Bootstrap 3 is not exercised by
+either.
 
 Expected output at master 2026-04-16:
 

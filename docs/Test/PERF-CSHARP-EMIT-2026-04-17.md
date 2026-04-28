@@ -1,6 +1,6 @@
 # C# emit-expr Profile — 2026-04-17
 
-Agent: Hex-Hex. Refresh of the C# emit profile now that the `emit-let`
+Refresh of the C# emit profile now that the `emit-let`
 flatten fix has landed (commit `e939b91`). The earlier report
 (`PERF-EMIT-EXPR-2026-04-16.md`) identified IrLet as 67% of emit-expr by
 inclusive time, driving the flatten fix. This report confirms the fix

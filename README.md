@@ -37,20 +37,29 @@ Built solo by one human in collaboration with a fleet of AI agents, in
 
 ## Verified
 
-As of 2026-04-24:
+As of 2026-04-28:
 
 - **Bootstrap 1** (.NET, C# output): stage 1 = stage 3 byte-identical.
 - **Bootstrap 1.1** (.NET, Codex-text output): stage 1 = stage 2 byte-identical.
 - **Bootstrap 2** (bare-metal QEMU, Codex-text output): stage 1 === stage 2
-  byte-identical at 685,903 bytes. Heap HWM 373 MB. Stack HWM 2.2 MB.
+  byte-identical at 766,624 bytes. Heap HWM **9 MB**. Stack HWM 2.8 MB.
 - **Bootstrap 3** (bare-metal QEMU, ELF output): stage 1 === stage 2
-  byte-identical at 1,223,024 bytes. Heap HWM 645 MB. Stack HWM 2.6 MB.
+  byte-identical at 1,384,568 bytes. Heap HWM **41 MB**. Stack HWM 2.8 MB.
 - **Fixed-point continuity**: ten consecutive iterations of Bootstrap 3
-  (stage 2 through stage 10) produced byte-identical output, with
-  identical heap and stack high-water marks — the heap allocator is
-  fully deterministic.
+  produced byte-identical output, with identical heap and stack high-water
+  marks — the heap allocator is fully deterministic.
+- **Sample battery**: 72 verified runtime + 22 expected-fail diagnostics +
+  11 skipped + 0 fail of 105 samples (`tools/sweep.sh`).
 
-The compiler is a hard fixed point of itself on bare metal.
+The compiler is a hard fixed point of itself on bare metal, and runs
+end-to-end in tens of megabytes — down ~16× since the first BS3 green.
+
+**`seed/Codex.Codex.elf`** (1,384,568 bytes):
+
+| Algorithm | Digest |
+|---|---|
+| MD5    | `32f1d28d31492ea934f4423f40df484e` |
+| SHA-256 | `514ccddcab051c2a1d4e4b5ecedbed8b252755488530e0c1f03c1dde4b789498` |
 
 ---
 
@@ -80,80 +89,158 @@ assuming.
 
 ```codex
 Chapter: Greeting
+  cites Codex chapter Text
 
-  A module that greets people by name.
+  A small program that greets the user by name. The opening declares
+  `[Console]` in its type — the effect is part of the contract, not a
+  surprise that happens at runtime.
 
 Section: Functions
 
-    greet : Text -> Text
-    greet (name) = "Hello, " ++ name ++ "!"
+  greet : Text -> Text
+  greet (name) = "Hello, " ++ name ++ "!"
 
-    main : Text
-    main = greet "World"
+  opening : [Console] Nothing = act
+    print-line "What is your name?"
+    name <- read-line
+    print-line (greet name)
+  end
 ```
 
 ---
 
 ## Quick Start
 
-**Prerequisites**: [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
-for the reference path, WSL + QEMU for the bare-metal path.
+**Prerequisites**: WSL + QEMU for the bare-metal path. The .NET reference
+compiler under `src/` has been retired; the live story is the bare-metal
+selfhost driven by `seed/Codex.Codex.elf`.
+
+> **Note on `Codex.sln`**: the reference compiler is **disabled** at the
+> current head — `dotnet build Codex.sln` and `dotnet run --project
+> tools/Codex.Cli` will not work. To exercise the legacy reference path,
+> sync to an earlier checkin (pre-CL 447 era) where the `.NET solution still
+> built. The seed ELF and the selfhost compiler do not depend on it.
 
 ```sh
-# Build everything
-dotnet build Codex.sln
+# Sample battery (bare-metal selfhost, ~2-5s per sample; --jobs=N for parallel)
+bash tools/sweep.sh --jobs=8
 
-# Run all tests
-dotnet test Codex.sln
-
-# Compile and run a program
-dotnet run --project tools/Codex.Cli -- run samples/hello.codex
-
-# Compile to multiple targets
-dotnet run --project tools/Codex.Cli -- build samples/hello.codex --targets cs,js,rust
-
-# Bootstrap 1 + 1.1 (.NET-hosted self-compilation)
-dotnet run --project tools/Codex.Cli -- bootstrap
-
-# Bootstrap 2 (bare-metal pingpong, Codex-text output)
-wsl bash tools/pingpong.sh
+# Bootstrap 2 (bare-metal pingpong, Codex-text output, selfhost-driven)
+wsl bash tools/pingpong-self.sh
 
 # Bootstrap 3 (bare-metal ELF emits bare-metal ELF — the self-sustaining test)
 wsl bash tools/bootstrap3.sh
 ```
+
+### Try it without building (just QEMU + the seed ELF)
+
+The ELF in `seed/Codex.Codex.elf` is a complete compiler. Boot it under
+QEMU, hand it source bytes on serial, and it hands back another ELF on
+the same socket. Two helpers wrap the protocol — feed and run:
+
+```sh
+# Stage the seed where the helpers expect it.
+mkdir -p build-output/bare-metal build-output/try
+cp seed/Codex.Codex.elf build-output/bare-metal/
+
+# Compile a sample with the seed (boots QEMU, sends source, reads emitted ELF).
+wsl bash tools/sample-compile-selfhost.sh samples/hello.codex build-output/try/hello.elf build-output/try/build.log
+
+# Boot the just-compiled program in QEMU and capture its serial output.
+wsl bash tools/run-for-sweep.sh build-output/try/hello.elf build-output/try/hello.out
+cat build-output/try/hello.out
+```
+
+Two-channel serial: COM1 carries data (source in, ELF or runtime stdout
+out), COM2 carries control (`READY` greeting). Inspect
+`tools/sample-compile-selfhost.sh` and `tools/qemu-config.sh` to see the
+raw `qemu-system-x86_64` invocation.
 
 ---
 
 ## Language Features
 
 ```codex
--- Sum types (algebraic data types)
-Shape =
-  | Circle (Number)
-  | Rectangle (Number) (Number)
+Chapter: Feature Tour
+  cites Codex chapter Text
 
--- Record types
-Person = record {
-  name : Text,
-  age : Integer
-}
+Section: Sum types
 
--- Pattern matching
-area : Shape -> Number
-area (s) = when s
-  is Circle (r) -> 3.14 * r * r
-  is Rectangle (w) (h) -> w * h
+  Shape =
+    | Circle (Integer)
+    | Rectangle (Integer) (Integer)
 
--- Polymorphism
-identity : a -> a
-identity (x) = x
+Section: Records
 
--- Effects and act-blocks
-opening : [Console] Nothing = act
-  print-line "What is your name?"
-  name <- read-line
-  print-line ("Hello, " ++ name ++ "!")
-end
+  Person = record {
+    name : Text,
+    age : Integer
+  }
+
+Section: Pattern matching
+
+  area : Shape -> Integer
+  area (s) = when s
+    is Circle (r) -> r * r * 3
+    is Rectangle (w) (h) -> w * h
+
+Section: Polymorphism
+
+  identity : a -> a
+  identity (x) = x
+```
+
+### Bounded integers (subtypes + auto-narrowing)
+
+Codex doesn't have `Int8` / `UInt16` / `Int32` / `UInt64`. It has one
+`Integer` and a *range constraint*:
+
+- `Integer between 0 and 255` — compiler picks 8-bit unsigned storage
+- `Integer between -32768 and 32767` — 16-bit signed
+- `Integer between 1 and 1048576` — 24-bit, unsigned (no negatives)
+- bare `Integer` — 64-bit machine word
+
+The width and signedness are *derived* from the declared range, not
+spelled by the author. Record fields pack tight: three `0..65535`
+fields take 6 bytes, not 24.
+
+Out-of-range values are a static error (CDX2050: literal out of bound,
+CDX2051: wider type than bound). At assignment sites where the
+compiler can't statically prove the value fits, the field's
+**overflow mode** decides what happens at runtime:
+
+```codex
+Byte       = Integer between 0 and 255 wrapping     -- modular arithmetic
+Percentage = Integer between 0 and 100 clamping     -- saturates at bounds
+SafeIndex  = Integer between 0 and 1024             -- default `error` (traps)
+```
+
+`__narrow expr` is the explicit-narrow primitive: write it at a
+narrowing site to acknowledge the intent. The downstream check still
+runs — `__narrow` is intent, not a cast.
+
+```codex
+Chapter: Net
+  cites Codex chapter Text
+
+Section: Types
+
+  Port = record {
+    num : Integer between 0 and 65535
+  }
+
+  Pair = record {
+    lo : Integer between 0 and 255,
+    hi : Integer between 0 and 255
+  }
+
+Section: Functions
+
+  split-u16 : Port -> Pair
+  split-u16 (p) =
+    let lo = __narrow (int-mod (p.num) 256)
+    in let hi = __narrow (p.num / 256)
+    in Pair { lo = lo, hi = hi }
 ```
 
 ---
@@ -172,30 +259,42 @@ Source (.codex)
     → Emitter       target source code / machine code
 ```
 
-The pipeline exists twice: in C# (the reference implementation) and in
-Codex (the self-hosted compiler, ~12,000 lines across 50 `.codex`
-files). The Codex version is the one that runs on bare metal. The C#
-version is scaffolding.
+The pipeline lives in `Codex.Codex/` — the self-hosted compiler,
+~12,000 lines across ~50 `.codex` files. This is the only path that is
+maintained, exercised, and load-bearing.
+
+The original C# reference implementation under `src/` was the
+scaffolding that bootstrapped the language. It is **retired**: the
+`.csproj` files have been stripped of their `TargetFramework` and no
+longer build, the legacy CLI under `tools/Codex.Cli` is no longer in
+the bootstrap chain, and the REF-driven sweep harness was removed in
+CL 461. The reference code remains in the depot as historical record;
+no further maintenance is planned and no change to the live compiler
+should depend on it. To exercise the legacy reference path, sync to a
+pre-CL 447 era checkin where the `.NET solution still built.
 
 ---
 
-## Backends
+## Backends (Codegen and Emitters)
 
-| Backend | Target | Role |
-|---------|--------|------|
-| C# | `--targets cs` | Reference. Bootstrap 1. |
-| Codex-text | (internal) | Bootstrap 1.1, 2. Re-emits self as Codex source. |
-| .NET IL | `--targets il` | Sample target for `.dll`/`.exe` output |
-| JavaScript | `--targets js` | Web target |
-| WebAssembly | `--targets wasm` | Binary `.wasm` modules |
-| Python, Rust, C++, Go, Java, Ada, Fortran, COBOL | various | Sample/research transpilation targets |
-| RISC-V | `--targets riscv` | Native machine code (deferred) |
-| ARM64 | `--targets arm64` | Native machine code (deferred) |
-| **x86-64** | `--targets x86-64-bare` | **Native bare-metal ELF. Self-sustaining target.** |
+| Backend | Target | Status | Role |
+|---------|--------|--------|------|
+| **x86-64 bare metal** | `--targets x86-64-bare` | **Full support** | Native bare-metal ELF. **Self-sustaining target.** |
+| **Codex-text** | (internal) | **Full support** | Bootstrap 1.1, 2. Re-emits self as Codex source. |
+| C# | `--targets cs` | various states (YMMV) | Reference. Bootstrap 1. |
+| .NET IL | `--targets il` | various states (YMMV) | Sample target for `.dll`/`.exe` output |
+| JavaScript | `--targets js` | various states (YMMV) | Web target |
+| WebAssembly | `--targets wasm` | various states (YMMV) | Binary `.wasm` modules |
+| Python, Rust, C++, Go, Java, Ada, Fortran, COBOL | various | various states (YMMV) | Sample/research transpilation targets |
+| RISC-V | `--targets riscv` | deferred | Native machine code |
+| ARM64 | `--targets arm64` | deferred | Native machine code |
 
-x86-64 is the trust target. Everything else is for ergonomics or
-research. When the README says *self-sustaining*, it means the x86-64
-bare-metal output.
+x86-64 bare metal and Codex-text are the load-bearing pair: x86-64 is
+the trust target (the binary that runs on hardware), Codex-text is the
+self-emit target (the binary that re-emits its own source). Both are
+fully supported and gated by the bootstrap battery. Every other backend
+is for ergonomics or research and may not track current language
+features.
 
 ---
 
@@ -204,19 +303,22 @@ bare-metal output.
 Codex has its own 128-byte character encoding, frequency-sorted for
 computation:
 
-| Range | Category | Count |
-|-------|----------|-------|
-| 0-2 | Whitespace (NUL, LF, Space) | 3 |
-| 3-12 | Digits | 10 |
-| 13-38 | Lowercase (frequency-sorted) | 26 |
-| 39-64 | Uppercase | 26 |
-| 65-93 | Punctuation (prose + operators + syntax) | 29 |
-| 94-112 | Accented Latin | 19 |
-| 113-127 | Cyrillic | 15 |
+| Range | Category | Count | Characters |
+|-------|----------|------:|------------|
+| 0-2 | Whitespace | 3 | `NUL` `LF` (space) |
+| 3-12 | Digits | 10 | `0 1 2 3 4 5 6 7 8 9` |
+| 13-38 | Lowercase (frequency-sorted) | 26 | `e t a o i n s h r d l c u m w f g y p b v k j x q z` |
+| 39-64 | Uppercase (frequency-sorted) | 26 | `E T A O I N S H R D L C U M W F G Y P B V K J X Q Z` |
+| 65-96 | Punctuation | 32 | `. , ! ? : ; ' " - ( ) + = * < > / @ # & _ \ \| [ ] { } ~ \` ^ $ %` |
+| 97-112 | Accented Latin | 16 | `é è ê ë á à â ä ó ô ö ú ü ñ ç í` |
+| 113-127 | Cyrillic | 15 | `а о е и н т с р в л к м д п у` |
 
 Character classification is arithmetic, not table lookup:
-- `is-letter(b)` = `b >= 13 && b <= 64`
-- `is-digit(b)` = `b >= 3 && b <= 12`
+- `is-letter (c)` = `char-code c >= 13 && char-code c <= 64`
+- `is-digit (c)` = `char-code c >= 3 && char-code c <= 12`
+- `is-punct (c)` = `char-code c >= 65 && char-code c <= 96`
+- `to-upper (c)` = `is-lower c then code-to-char (char-code c + 26) else c`
+  (case shift is just `±26`)
 
 Unicode exists only at I/O boundaries. Internally, everything is CCE.
 
@@ -237,8 +339,8 @@ under continued iteration. Codex has been verified through stage 10.
 # Full bootstrap chain (BS1, BS1.1, then optionally BS2 and BS3)
 dotnet run --project tools/Codex.Cli -- bootstrap
 
-# BS2 (pingpong: bare-metal Codex-text emit, byte-identity gate)
-wsl bash tools/pingpong.sh
+# BS2 (pingpong: bare-metal Codex-text emit, byte-identity gate, selfhost-driven)
+wsl bash tools/pingpong-self.sh
 
 # BS3 (bare-metal ELF emit, the self-sustaining test)
 wsl bash tools/bootstrap3.sh
@@ -263,18 +365,22 @@ Codex.sln                        Reference compiler + tests + tools
 │   ├── Codex.Emit.*             Backend emitters
 │   └── ...                      LSP, Repository, Narration, Proofs
 ├── Codex.Codex/                 Self-hosted compiler (~50 .codex files, ~12K lines)
+├── seed/
+│   └── Codex.Codex.elf          Canonical bootstrap seed (~1.4 MB) — the
+│                                proven hard fixed point; pingpong starts here
 ├── foreword/                    Standard library
 ├── tests/                       Test projects across the solution
 ├── tools/
-│   ├── Codex.Cli                Command-line interface
-│   ├── Codex.Bootstrap-Codex    Codex-side bootstrap harness
-│   ├── Codex.Bootstrap          Legacy C# bootstrap harness
-│   ├── pingpong.sh              Bootstrap 2 driver
+│   ├── Codex.Cli                Reference CLI (legacy; .NET, C#)
+│   ├── Codex.Cli-Codex          Selfhost-side CLI (Codex source)
+│   ├── Codex.Bootstrap-Codex    Selfhost-side bootstrap harness
+│   ├── sweep.sh                 Sample battery (bare-metal selfhost via QEMU)
+│   ├── pingpong-self.sh         Bootstrap 2 driver (selfhost-driven; live)
 │   ├── bootstrap3.sh            Bootstrap 3 driver
 │   ├── bootstrap3-stageN.sh     Continued fixed-point check
 │   ├── codex-agent/             AI agent toolkit
 │   └── Codex.VsExtension        Visual Studio extension
-├── samples/                     Example programs
+├── samples/                     Example programs (105 samples)
 └── docs/
     ├── FOUNDING-VISION.md       Read this first
     ├── CurrentPlan.md           What we're doing now
@@ -289,15 +395,35 @@ Codex.sln                        Reference compiler + tests + tools
 
 ## CLI
 
+The selfhost CLI lives at:
+
 ```
-codex run       <file.codex>              Compile and execute
-codex build     <file.codex|dir>          Compile (multi-target, incremental)
-codex check     <file.codex>              Type-check only
-codex parse     <file.codex>              Print tokens / CST / AST
-codex encode    [file]                    Convert between Unicode and CCE
-codex bootstrap                            BS1 + BS1.1 self-hosting verification
-codex version                              Print version
+tools/Codex.Cli-Codex/bin/Debug/net8.0/Codex.Cli-Codex.exe
 ```
+
+It is the Codex source for the CLI compiled to a .NET dll by the
+selfhost itself. The CLI runs in CCE internally; .NET hosts it.
+
+**Working commands** (verified at CL 466):
+
+```
+codex build       <file.codex|dir> --target x86-64-bare \
+                  [--output-dir <d>] [--exit-mode repl|qemu-exit] \
+                  [--watchdog progress|pet]
+                                            Compile to bare-metal ELF
+codex dump-source <dir> [out]               Quire-aware concat of all .codex
+                                            in <dir> (cite-resolved, in deps order)
+codex version                               Print version
+codex --help, -h                            Show usage
+```
+
+**Stubbed** (port pending — they print `not yet implemented` and exit):
+`run`, `check`, `parse`, `encode`, `bootstrap`. Targets other than
+`x86-64-bare` print a not-supported diagnostic.
+
+For everything not yet on the CLI, the wrappers under `tools/`
+(`pingpong-self.sh`, `bootstrap3.sh`, `sweep.sh`,
+`sample-compile-selfhost.sh`, `run-for-sweep.sh`) cover the live workflows.
 
 ---
 

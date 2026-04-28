@@ -22,7 +22,7 @@ Section: Infer Literal
   infer-literal (st) (kind) =
    when kind
     is IntLit -> CheckResult {
-     inferred-type = IntegerTy,
+     inferred-type = int-ty-default,
      state = st
     }
     is NumLit -> CheckResult {
@@ -72,11 +72,12 @@ Section: Infer Name
 
   subst-type-var : CodexType -> Integer -> CodexType -> CodexType
   subst-type-var (ty) (var-id) (replacement) =
-   when ty
+   if ty-has-typevars ty == False then ty
+   else when ty
     is TypeVar (id) -> if id == var-id then replacement else ty
     is ForAllTy (inner-id) (body) ->
      if inner-id == var-id then ty
-     else ForAllTy inner-id (subst-type-var body var-id replacement)
+     else deck-record (ForAllTy inner-id (subst-type-var body var-id replacement))
     is otherwise -> codex-type-map-children (\c -> subst-type-var c var-id replacement) ty
 
 Section: Infer Binary
@@ -121,7 +122,7 @@ Section: Infer Binary
   is-arithmetic-type : CodexType -> Boolean
   is-arithmetic-type (ty) =
    when ty
-    is IntegerTy -> True
+    is IntegerTy (lo) (hi) (mode) -> True
     is NumberTy -> True
     is TypeVar (id) -> True
     is ErrorTy -> True
@@ -163,7 +164,7 @@ Section: Infer Binary
 
   infer-cons : UnificationState -> CodexType -> CodexType -> SourceSpan -> CheckResult
   infer-cons (st) (lt) (rt) (span) =
-   let list-ty = ListTy lt
+   let list-ty = deck-record (ListTy lt)
    in let r = unify st rt list-ty span
    in CheckResult {
     inferred-type = list-ty,
@@ -204,7 +205,7 @@ Section: Infer Let
    in let vr = infer-expr st env (b.value)
    in let resolved-ty = deep-resolve (vr.state) (vr.inferred-type)
    in let bound-ty = unwrap-effectful-or-error resolved-ty (b.name.value) (aexpr-span (b.value)) (vr.state)
-   in let env2 = env-bind env (b.name.value) (bound-ty.ty)
+   in let env2 = env-bind-local env (b.name.value) (bound-ty.ty)
    in infer-let-bindings (bound-ty.state) env2 bindings (i + 1) len
 
   UnwrapResult = record {
@@ -249,7 +250,7 @@ Section: Infer Lambda
    }
    else let p = list-at params i
    in let fr = fresh-and-advance st
-   in let env2 = env-bind env (p.value) (fr.var-type)
+   in let env2 = env-bind-local env (p.value) (fr.var-type)
    in bind-lambda-params (fr.state) env2 params (i + 1) len (list-snoc acc (fr.var-type))
 
   wrap-fun-type : List CodexType -> CodexType -> CodexType
@@ -259,19 +260,128 @@ Section: Infer Lambda
   wrap-fun-type-loop : List CodexType -> CodexType -> Integer -> CodexType
   wrap-fun-type-loop (param-types) (result) (i) =
    if i < 0 then result
-   else wrap-fun-type-loop param-types (FunTy (list-at param-types i) result) (i - 1)
+   else wrap-fun-type-loop param-types (deck-record (FunTy (list-at param-types i) result)) (i - 1)
 
 Section: Infer Application
   infer-application : UnificationState -> TypeEnv -> AExpr -> AExpr -> SourceSpan -> CheckResult
   infer-application (st) (env) (func) (arg) (span) =
    let fr = infer-expr st env func
-   in let ar = infer-expr (fr.state) env arg
+   in let ar = when arg
+       is ALitExpr (val) (kind) (s) -> infer-int-lit-arg (fr.state) (fr.inferred-type) val kind
+       is otherwise -> infer-expr (fr.state) env arg
    in let ret = fresh-and-advance (ar.state)
    in let r = unify (ret.state) (fr.inferred-type) (FunTy (ar.inferred-type) (ret.var-type)) span
+   in let st-final = lint-record-set (r.state) env func arg (ar.inferred-type) (ret.var-type) span
    in CheckResult {
     inferred-type = ret.var-type,
-    state = r.state
+    state = st-final
    }
+
+Section: Lint __record-set narrowing
+
+ Tripwire pass for silent narrowing at __record-set call sites. When a
+ `__record-set st "field" value` is detected and the field has a
+ bounded Integer type that the value's static type does not fit, emit
+ a warning. Codegen would silently truncate at runtime via narrow-store;
+ this lint surfaces the site so the author can decide whether the
+ runtime value range actually fits or needs an explicit narrow.
+
+ Literal Integer values are checked against the field bound directly
+ (a literal that fits is silent). All other value shapes (field reads,
+ arithmetic, function calls) compare the inferred type's bound against
+ the field's bound.
+
+  lint-record-set : UnificationState -> TypeEnv -> AExpr -> AExpr -> CodexType -> CodexType -> SourceSpan -> UnificationState
+  lint-record-set (st) (env) (func) (value-arg) (value-ty) (return-ty) (span) =
+   when func
+    is AApplyExpr (inner-func) (field-name-arg) (s2) ->
+     when inner-func
+      is AApplyExpr (rs-name) (obj-arg) (s3) ->
+       when rs-name
+        is ANameExpr (n) (s4) ->
+         if n.value == "__record-set" then
+          lint-record-set-check st env value-arg value-ty return-ty field-name-arg span
+         else st
+        is otherwise -> st
+      is otherwise -> st
+    is otherwise -> st
+
+  lint-record-set-check : UnificationState -> TypeEnv -> AExpr -> CodexType -> CodexType -> AExpr -> SourceSpan -> UnificationState
+  lint-record-set-check (st) (env) (value-arg) (value-ty) (return-ty) (field-name-arg) (span) =
+   when field-name-arg
+    is ALitExpr (text-val) (kind) (s) ->
+     when kind
+      is TextLit ->
+       let resolved-record-ty = deep-resolve st return-ty
+       in let field-ty = lookup-field-ty-for-lint env resolved-record-ty text-val
+       in lint-narrowing-check st value-arg value-ty field-ty span text-val
+      is otherwise -> st
+    is otherwise -> st
+
+  lookup-field-ty-for-lint : TypeEnv -> CodexType -> Text -> CodexType
+  lookup-field-ty-for-lint (env) (ty) (field-name) =
+   when ty
+    is RecordTy (rname) (rargs) (rfields) -> lookup-record-field rfields field-name
+    is ConstructedTy (cname) (cargs) ->
+     let rec-ty = resolve-constructed-to-record env (cname.value)
+     in when rec-ty
+      is RecordTy (rname) (rargs) (rfields) ->
+       let raw-ftype = lookup-record-field rfields field-name
+       in apply-type-args-subst rargs cargs raw-ftype 0 (list-length rargs)
+      is otherwise -> ErrorTy
+    is otherwise -> ErrorTy
+
+  is-narrow-call : AExpr -> Boolean
+  is-narrow-call (e) =
+   when e
+    is AApplyExpr (func) (arg) (s) ->
+     when func
+      is ANameExpr (name) (s2) -> name.value == "__narrow"
+      is otherwise -> False
+    is otherwise -> False
+
+  lint-narrowing-check : UnificationState -> AExpr -> CodexType -> CodexType -> SourceSpan -> Text -> UnificationState
+  lint-narrowing-check (st) (value-arg) (value-ty) (field-ty) (span) (field-name) =
+   if is-narrow-call value-arg then st
+   else when field-ty
+    is IntegerTy (f-lo) (f-hi) (f-mode) ->
+     when f-mode
+      is OvError ->
+       when value-arg
+        is ALitExpr (val-text) (kind) (s) ->
+         when kind
+          is IntLit ->
+           let n = text-to-integer val-text
+           in if n >= f-lo & n <= f-hi then st
+           else __record-set st "bag" (bag-add (st.bag) (make-error cdx-narrowing-record-set-literal ("Field '" ++ field-name ++ "' has bound " ++ integer-to-text f-lo ++ ".." ++ integer-to-text f-hi ++ " but assigned literal " ++ integer-to-text n ++ " is out of range") span))
+          is otherwise -> st
+        is otherwise ->
+         let resolved-vty = deep-resolve st value-ty
+         in when resolved-vty
+          is IntegerTy (v-lo) (v-hi) (v-mode) ->
+           if v-lo >= f-lo & v-hi <= f-hi then st
+           else __record-set st "bag" (bag-add (st.bag) (make-warning cdx-narrowing-record-set ("Field '" ++ field-name ++ "' has bound " ++ integer-to-text f-lo ++ ".." ++ integer-to-text f-hi ++ " but value type is " ++ integer-to-text v-lo ++ ".." ++ integer-to-text v-hi ++ "; codegen will silently truncate if runtime value exceeds bound") span))
+          is otherwise -> st
+      is otherwise -> st
+    is otherwise -> st
+  infer-int-lit-arg : UnificationState -> CodexType -> Text -> LiteralKind -> CheckResult
+  infer-int-lit-arg (st) (func-ty) (val) (kind) =
+   when kind
+    is IntLit ->
+     let stripped = strip-forall-ty func-ty
+     in when stripped
+      is FunTy (param-ty) (ret-ty) ->
+       when param-ty
+        is IntegerTy (lo) (hi) (mode) ->
+         let n = text-to-integer val
+         in if n >= lo & n <= hi then CheckResult {
+          inferred-type = deck-record (IntegerTy lo hi mode),
+          state = st
+         }
+         else infer-literal st kind
+        is otherwise -> infer-literal st kind
+      is otherwise -> infer-literal st kind
+    is otherwise -> infer-literal st kind
 
 Section: Infer List
   infer-list : UnificationState -> TypeEnv -> List AExpr -> CheckResult
@@ -280,13 +390,13 @@ Section: Infer List
     then
      let fr = fresh-and-advance st
      in CheckResult {
-      inferred-type = ListTy (fr.var-type),
+      inferred-type = deck-record (ListTy (fr.var-type)),
       state = fr.state
      }
     else let first = infer-expr st env (list-at elems 0)
     in let st2 = unify-list-elems (first.state) env elems (first.inferred-type) 1 (list-length elems)
     in CheckResult {
-      inferred-type = ListTy (first.inferred-type),
+      inferred-type = deck-record (ListTy (first.inferred-type)),
       state = st2
      }
 
@@ -328,7 +438,7 @@ Section: Infer Match
    when pat
     is AVarPat (name) (s) -> PatBindResult {
      state = st,
-     env = env-bind env (name.value) ty
+     env = env-bind-local env (name.value) ty
     }
     is AWildPat (s) -> PatBindResult {
      state = st,
@@ -380,7 +490,7 @@ Section: Infer Act
    in let bound-ty = when (er.inferred-type)
       is EffectfulTy (effs) (inner) -> inner
       is otherwise -> er.inferred-type
-   in let env2 = env-bind env (name.value) bound-ty
+   in let env2 = env-bind-local env (name.value) bound-ty
    in infer-act-loop (er.state) env2 stmts (i + 1) len (er.inferred-type)
 
 Section: Infer Expression (dispatch)
@@ -399,9 +509,9 @@ Section: Infer Expression (dispatch)
     is ABinaryExpr (left) (op) (right) (s) -> infer-binary st env left op right s
     is AUnaryExpr (operand) (s) ->
      let r = infer-expr-at st env operand (depth + 1)
-     in let u = unify (r.state) (r.inferred-type) IntegerTy (aexpr-span operand)
+     in let u = unify (r.state) (r.inferred-type) int-ty-default (aexpr-span operand)
      in CheckResult {
-      inferred-type = IntegerTy,
+      inferred-type = int-ty-default,
       state = u.state
      }
     is AApplyExpr (func) (arg) (s) -> infer-application st env func arg s
@@ -498,7 +608,8 @@ Section: Infer Expression (dispatch)
    in let st2 = when expected
        is ErrorTy -> r.state
        is otherwise -> (unify (r.state) (r.inferred-type) expected (aexpr-span (f.value))).state
-   in infer-and-unify-record-fields st2 env fields record-ty (i + 1) len
+   in let st3 = lint-narrowing-check st2 (f.value) (r.inferred-type) expected (aexpr-span (f.value)) (f.name.value)
+   in infer-and-unify-record-fields st3 env fields record-ty (i + 1) len
 
 Page 2 of 2
 

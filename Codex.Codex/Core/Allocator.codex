@@ -1,0 +1,74 @@
+Chapter: Allocator
+
+ Phase-allocator primitives. Step 1 of the phase-discipline migration —
+ thin wrappers over the existing bump allocator with no callers in this
+ chapter. See docs/Active/Compiler/PHASE-ARCHITECTURE.md.
+
+ pitch / strike enclose a bivy (phase-local scratch).
+ build / seal enclose a deck (phase-durable contribution).
+
+ No callers yet — every primitive here is dead until a phase routes
+ through it. The runtime support that gives strike teeth on bare metal
+ (un-no-oping __heap-restore, the deck-pos cell, emit-record's
+ deck-bound branch) lives in a companion changelist.
+
+Section: Bivy
+
+ pitch saves the bump pointer and reserves `size` bytes upfront. The
+ size argument is a hint, not a hard cap: the phase can allocate more
+ above the col while it runs (the bivy grows up from `p`), and strike
+ rolls everything past `p` back. Today, strike on bare metal is a
+ no-op (matching __heap-restore as it is currently emitted), so the
+ `size` reservation in pitch effectively burns those bytes from the
+ heap permanently — that is acceptable because nothing calls pitch
+ yet. Once strike acquires real semantics in the runtime CL, pitch
+ starts reclaiming on every call.
+
+  pitch : Integer -> Integer
+  pitch (size) =
+   let p = __heap-save
+   in let advanced = __heap-advance size
+   in p
+
+  strike : Integer -> Nothing
+  strike (start) =
+   __heap-restore start
+
+Section: Deck
+
+ build reserves a deck region of `size` bytes by advancing the bump
+ pointer, and points the deck-pos cell at the deck start so that
+ deck-record allocations land in the deck rather than the bivy. The
+ source-level distinction (build = deck = surveyed and durable,
+ pitch = bivy = scratch) is the contract readers see; today the only
+ runtime distinction is the __deck-set call. seal is a placeholder
+ that emits a no-op via __heap-advance 0; once the escape-invariant
+ enforcement lands seal will validate that no deck slot points into
+ the bivy and atomically commit the deck.
+
+  build : Integer -> Integer
+  build (size) =
+   let p = __heap-save
+   in let deck-init = __deck-set p
+   in let advanced = __heap-advance size
+   in p
+
+  seal : Integer -> Nothing
+  seal (start) =
+   __heap-advance 0
+
+Section: Deck-bound record allocation
+
+ Marker for record literals that must be allocated from the deck
+ pointer instead of the bivy bump pointer. Self-host's emit-apply
+ special-cases the name and routes the wrapped expression through
+ deck-bound codegen. As a plain user function this is just identity,
+ which is what every backend that does not implement the special-case
+ will emit and what runs on .NET where the bump-pointer distinction
+ does not exist.
+
+  deck-record : a -> a
+  deck-record (x) =
+   x
+
+Page 1

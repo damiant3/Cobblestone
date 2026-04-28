@@ -1,7 +1,7 @@
 # `do` → `act ... end`: Replacing the Monadic Block Keyword
 
 **Status:** DONE (2026-04-15). `do` is removed from the language; `act ... end` is the only statement-sequence form. Contextual `act`/`end`/`qed` keywords restrict keywordness to record-scoped positions. Rationale preserved here; implementation lives in git (`act-phase-a`, `act-phase-b`, contextual-keyword commits).
-**Owners (historical):** Hex-hex (Phase A, Phase B parser); Cam (pingpong/migration coordination).
+**Owners (historical):** Cam (pingpong/migration coordination).
 
 ---
 
@@ -23,7 +23,7 @@ This has surfaced as a real bug at least three times (most recently in `check-ci
 
 Two prior attempts to fix this without changing the keyword:
 
-1. **Paren-depth counter** (`hex-hex/parser-multiline-app`, 2026-04-15): "inside `()`, newlines are whitespace." Worked for plain multi-line calls. Broke `let x = (do ...)` because the do-block inside parens had its statement separators eaten — next do-stmt's identifier became an argument continuation of the previous stmt's RHS. Round-trip failed. Branch never merged.
+1. **Paren-depth counter** (2026-04-15): "inside `()`, newlines are whitespace." Worked for plain multi-line calls. Broke `let x = (do ...)` because the do-block inside parens had its statement separators eaten — next do-stmt's identifier became an argument continuation of the previous stmt's RHS. Round-trip failed. Branch never merged.
 
 2. **Indent-aware continuation**: "swallow newlines only if next token is indented past function atom's column." Consistent with how do-blocks already end (column ≤ min-col). Feasible but adds complexity to `parse-app-loop` that scales with every call site.
 
@@ -125,7 +125,7 @@ Two phases so each lands independently and `pingpong.sh` validates each.
 
 **Goal:** accept `act ... end` as alternative syntax. `do`-layout continues to work. No existing code breaks.
 
-**Branch:** `hex-hex/act-phase-a`
+**Branch:** `act-phase-a`
 
 **Changes:**
 
@@ -160,7 +160,7 @@ Two phases so each lands independently and `pingpong.sh` validates each.
 
 **Goal:** rewrite every `do` in the tree to `act ... end`; delete `do`-layout support and the column-tracking machinery that exists only to serve it.
 
-**Branch:** `hex-hex/act-phase-b`
+**Branch:** `act-phase-b`
 
 **Changes:**
 

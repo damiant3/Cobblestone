@@ -74,7 +74,7 @@ This project builds on decades of programming language research. Before implemen
 
 The reference compiler (`src/`) is a baseline, not a mirror. The self-host (`Codex.Codex/`) is allowed — expected — to be a strict superset: do more, do better, diverge on shape. The constraint is narrow and sharp.
 
-**What must mirror precisely:** anything that affects the compilation output. Lexing, parsing, desugaring, type checking, lowering, codegen semantics — the path from source bytes to emitted program. Two compilers operating on the same source must reach the same program. Divergence here is a correctness bug; `pingpong.sh` is the acceptance test.
+**What must mirror precisely:** anything that affects the compilation output. Lexing, parsing, desugaring, type checking, lowering, codegen semantics — the path from source bytes to emitted program. Two compilers operating on the same source must reach the same program. Divergence here is a correctness bug; `pingpong-self.sh` is the acceptance test.
 
 **What is free to diverge:** anything that only changes what a human reads on the console. Diagnostic wording, error formatting, span precision, CLI output, debug dumps, profiler output, build-time telemetry. The self-host can innovate or lag here without violating the contract.
 

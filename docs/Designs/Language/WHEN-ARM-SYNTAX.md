@@ -118,5 +118,5 @@ Two-phase rollout recommended:
 ## Status
 
 Designed. Not implemented. Own branch suggested:
-`hex/when-arm-syntax`. Sequenced after CDX registry and diagnostics
+`when-arm-syntax`. Sequenced after CDX registry and diagnostics
 Phase 1 land.

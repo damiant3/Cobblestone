@@ -12,7 +12,7 @@ KERNEL="$REPO/build-output/bare-metal/Codex.Codex.elf"
 QEMU="/usr/bin/qemu-system-x86_64"
 TIMEOUT=${TIMEOUT:-120}
 
-[ -f "$KERNEL" ] || { echo "FAIL: $KERNEL missing — run tools/pingpong.sh first"; exit 1; }
+[ -f "$KERNEL" ] || { echo "FAIL: $KERNEL missing — run tools/pingpong-self.sh first"; exit 1; }
 [ -f "$INPUT" ] || { echo "FAIL: $INPUT missing"; exit 1; }
 [ -x "$QEMU" ] || { echo "FAIL: $QEMU missing"; exit 1; }
 

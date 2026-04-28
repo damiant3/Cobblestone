@@ -4,6 +4,26 @@ Chapter: Lowering
  Type lookup, substitution, and constructor binding utilities
  used by the main lowering pass.
 
+Section: Lookup Overlay
+
+ Cons-cell stack used by lowering for nested let / lambda / match / act bindings.
+ Each binding prepends a single OverlayCons cell. List<TypeBinding> with `[X]
+ ++ xs` was quadratic per function in the number of sequential bindings —
+ each prepend allocated a fresh List of size N+1 and copied the prior N
+ elements. The cons-cell variant is one cell per binding regardless of depth.
+
+  LookupOverlay =
+   | OverlayNil
+   | OverlayCons (TypeBinding) (LookupOverlay)
+
+  lookup-overlay : LookupOverlay -> Text -> CodexType
+  lookup-overlay (ovl) (name) =
+   when ovl
+    is OverlayNil -> ErrorTy
+    is OverlayCons (b) (rest) ->
+     if b.name == name then b.bound-type
+     else lookup-overlay rest name
+
 Section: Type Lookup
   lookup-type : List TypeBinding -> Text -> CodexType
   lookup-type (bindings) (name) =
@@ -25,25 +45,37 @@ Section: Type Lookup
    else let b = list-at bindings pos
    in if b.name == name then b.bound-type else ErrorTy
 
-  lookup-type-split : List TypeBinding -> List TypeBinding -> Text -> CodexType
+  lookup-type-split : LookupOverlay -> List TypeBinding -> Text -> CodexType
   lookup-type-split (overlay) (base) (name) =
-   let overlay-hit = lookup-type-loop overlay name 0 (list-length overlay)
+   let overlay-hit = lookup-overlay overlay name
    in when overlay-hit
     is ErrorTy -> lookup-type-bsearch base name
     is otherwise -> overlay-hit
 
-  sort-bindings-loop : List TypeBinding -> Integer -> Integer -> List TypeBinding -> List TypeBinding
-  sort-bindings-loop (xs) (i) (len) (acc) =
-   if i == len then acc
-   else let b = list-at xs i
-   in let acc-len = list-length acc
-   in let pos = bsearch-text-pos acc (b.name) 0 acc-len
-   in if pos < acc-len then if (list-at acc pos).name == b.name then sort-bindings-loop xs (i + 1) len acc
-      else sort-bindings-loop xs (i + 1) len (list-insert-at acc pos b)
-      else sort-bindings-loop xs (i + 1) len (list-insert-at acc pos b)
-
   sort-bindings : List TypeBinding -> List TypeBinding
-  sort-bindings (xs) = sort-bindings-loop xs 0 (list-length xs) []
+  sort-bindings (xs) =
+   let len = list-length xs
+   in if len <= 1 then xs
+   else let mid = len / 2
+   in merge-bindings-dedup (sort-bindings (copy-binding-range xs 0 mid [])) (sort-bindings (copy-binding-range xs mid len []))
+
+  copy-binding-range : List TypeBinding -> Integer -> Integer -> List TypeBinding -> List TypeBinding
+  copy-binding-range (xs) (i) (stop) (acc) =
+   if i == stop then acc
+   else copy-binding-range xs (i + 1) stop (list-snoc acc (list-at xs i))
+
+  merge-bindings-dedup : List TypeBinding -> List TypeBinding -> List TypeBinding
+  merge-bindings-dedup (left) (right) =
+   merge-bindings-loop left right 0 0 (list-length left) (list-length right) []
+
+  merge-bindings-loop : List TypeBinding -> List TypeBinding -> Integer -> Integer -> Integer -> Integer -> List TypeBinding -> List TypeBinding
+  merge-bindings-loop (left) (right) (li) (ri) (ll) (rl) (acc) =
+   if li == ll then copy-binding-range right ri rl acc
+   else if ri == rl then copy-binding-range left li ll acc
+   else let cmp = text-compare (list-at left li).name (list-at right ri).name
+   in if cmp < 0 then merge-bindings-loop left right (li + 1) ri ll rl (list-snoc acc (list-at left li))
+   else if cmp > 0 then merge-bindings-loop left right li (ri + 1) ll rl (list-snoc acc (list-at right ri))
+   else merge-bindings-loop left right (li + 1) (ri + 1) ll rl (list-snoc acc (list-at left li))
 
 Section: Type Substitution
   subst-type-vars-from-arg : CodexType -> CodexType -> CodexType -> CodexType
@@ -70,7 +102,8 @@ Section: Type Substitution
 
   subst-type-var-in-target : CodexType -> Integer -> CodexType -> CodexType
   subst-type-var-in-target (ty) (var-id) (replacement) =
-   when ty
+   if ty-has-typevars ty == False then ty
+   else when ty
     is TypeVar (id) -> if id == var-id then replacement else ty
     is ForAllTy (fid) (body) ->
      if fid == var-id then ty
