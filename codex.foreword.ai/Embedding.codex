@@ -1,0 +1,122 @@
+Chapter: Embedding
+  cites Math chapter Cordic
+
+ Token embedding and positional encoding for transformer models.
+ Maps token IDs to dense vectors via lookup table, then adds
+ positional information so the model knows token order. Uses
+ fixed-point scale-1000 arithmetic.
+
+ To embed-lookup gives the embedding vector for a token ID.
+ To embed-sequence gives embedded vectors for a token sequence.
+ To positional-encoding gives sinusoidal positional vectors.
+ To embed-with-position gives embeddings plus positional encoding.
+
+ We say:
+
+Section: Types
+
+  EmbeddingTable = record {
+    emb-weights : List Integer,
+    emb-vocab-size : Integer,
+    emb-dim : Integer
+  }
+
+Section: Construction
+
+  embedding-new : Integer, Integer -> EmbeddingTable
+  embedding-new (vocab-size) (dim) = EmbeddingTable {
+    emb-weights = emb-zeros (vocab-size * dim) 0 [],
+    emb-vocab-size = vocab-size,
+    emb-dim = dim
+  }
+
+  embedding-from-weights : List Integer, Integer, Integer -> EmbeddingTable
+  embedding-from-weights (weights) (vocab-size) (dim) = EmbeddingTable {
+    emb-weights = weights,
+    emb-vocab-size = vocab-size,
+    emb-dim = dim
+  }
+
+Section: Lookup
+
+  embed-lookup : EmbeddingTable, Integer -> List Integer
+  embed-lookup (table) (token-id) =
+    let start = token-id * table.emb-dim
+    in emb-slice (table.emb-weights) start (table.emb-dim) 0 []
+
+  embed-sequence : EmbeddingTable, List Integer -> List Integer
+  embed-sequence (table) (tokens) =
+    emb-seq-loop table tokens 0 (list-length tokens) []
+
+  emb-seq-loop : EmbeddingTable, List Integer, Integer, Integer, List Integer -> List Integer
+  emb-seq-loop (table) (tokens) (i) (len) (acc) =
+    if i >= len then acc
+    else let vec = embed-lookup table (list-at tokens i)
+    in emb-seq-loop table tokens (i + 1) len (acc & vec)
+
+Section: Positional Encoding
+
+  positional-encoding : Integer, Integer -> List Integer
+  positional-encoding (seq-len) (dim) =
+    pos-enc-loop seq-len dim 0 (seq-len * dim) []
+
+  pos-enc-loop : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  pos-enc-loop (seq-len) (dim) (i) (total) (acc) =
+    if i >= total then acc
+    else let pos = i / dim
+    in let d = i - pos * dim
+    in let val = pos-enc-value pos d dim
+    in pos-enc-loop seq-len dim (i + 1) total (list-push acc val)
+
+  pos-enc-value : Integer, Integer, Integer -> Integer
+  pos-enc-value (pos) (d) (dim) =
+    let half-dim = dim / 2
+    in let divisor = pos-enc-divisor (d / 2) half-dim
+    in let freq = pos * 1000 / divisor
+    in if d - (d / 2) * 2 == 0 then cordic-sin freq
+    else cordic-cos freq
+
+  pos-enc-divisor : Integer, Integer -> Integer
+  pos-enc-divisor (i) (half-dim) =
+    if half-dim <= 0 then 1
+    else emb-exp-range (9210 * i / half-dim)
+
+  emb-exp-range : Integer -> Integer
+  emb-exp-range (x) =
+    if x <= 0 then 1000
+    else let k = x / 693
+    in let r = x - k * 693
+    in let exp-r = 1000 + r + r * r / 2000 + r * r * r / 6000000
+    in emb-shl-1000 exp-r k
+
+  emb-shl-1000 : Integer, Integer -> Integer
+  emb-shl-1000 (x) (k) =
+    if k <= 0 then x
+    else emb-shl-1000 (x * 2) (k - 1)
+
+Section: Combined
+
+  embed-with-position : EmbeddingTable, List Integer -> List Integer
+  embed-with-position (table) (tokens) =
+    let embedded = embed-sequence table tokens
+    in let pos-enc = positional-encoding (list-length tokens) (table.emb-dim)
+    in emb-add-vectors embedded pos-enc 0 (list-length embedded) []
+
+  emb-add-vectors : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  emb-add-vectors (a) (b) (i) (len) (acc) =
+    if i >= len then acc
+    else emb-add-vectors a b (i + 1) len (list-push acc (list-at a i + list-at b i))
+
+Section: Helpers
+
+  emb-zeros : Integer, Integer, List Integer -> List Integer
+  emb-zeros (n) (i) (acc) =
+    if i >= n then acc
+    else emb-zeros n (i + 1) (list-push acc 0)
+
+  emb-slice : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  emb-slice (data) (start) (len) (i) (acc) =
+    if i >= len then acc
+    else emb-slice data start len (i + 1) (list-push acc (list-at data (start + i)))
+
+Page 1

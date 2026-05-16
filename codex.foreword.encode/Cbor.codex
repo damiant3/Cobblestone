@@ -1,0 +1,202 @@
+Chapter: Cbor
+  cites Foreword chapter Maybe
+
+ Concise Binary Object Representation (RFC 8949). Schema-less
+ binary serialization — the binary cousin of JSON. Encodes
+ integers, byte strings, text strings, arrays, maps, and simple
+ values (booleans, null) with self-describing type tags.
+
+ To cbor-encode gives a byte list from a CborValue.
+ To cbor-decode gives a Maybe CborValue from a byte list.
+ To cbor-encode-int gives encoded bytes for an integer.
+ To cbor-encode-text gives encoded bytes for a text string.
+
+ We say:
+
+Section: Types
+
+  CborValue =
+    | CborUint (Integer)
+    | CborNint (Integer)
+    | CborBytes (List Integer)
+    | CborText (Text)
+    | CborArray (List CborValue)
+    | CborMap (List CborMapEntry)
+    | CborBool (Boolean)
+    | CborNull
+    | CborTag (Integer) (CborValue)
+
+  CborMapEntry = record {
+    cme-key : CborValue,
+    cme-value : CborValue
+  }
+
+  CborDecodeResult = record {
+    cdr-value : CborValue,
+    cdr-offset : Integer
+  }
+
+Section: Major Types
+
+  cbor-mt-uint : Integer = 0
+  cbor-mt-nint : Integer = 1
+  cbor-mt-bytes : Integer = 2
+  cbor-mt-text : Integer = 3
+  cbor-mt-array : Integer = 4
+  cbor-mt-map : Integer = 5
+  cbor-mt-tag : Integer = 6
+  cbor-mt-simple : Integer = 7
+
+Section: Encoding
+
+  cbor-encode : CborValue -> List Integer
+  cbor-encode (v) = when v
+    is CborUint (n) -> cbor-encode-head cbor-mt-uint n
+    is CborNint (n) -> cbor-encode-head cbor-mt-nint (0 - 1 - n)
+    is CborBytes (bs) -> cbor-encode-head cbor-mt-bytes (list-length bs) & bs
+    is CborText (s) -> cbor-encode-text-value s
+    is CborArray (items) -> cbor-encode-head cbor-mt-array (list-length items) & cbor-encode-array items 0 (list-length items) []
+    is CborMap (entries) -> cbor-encode-head cbor-mt-map (list-length entries) & cbor-encode-map entries 0 (list-length entries) []
+    is CborBool (b) -> [if b then 245 else 244]
+    is CborNull -> [246]
+    is CborTag (tag) (inner) -> cbor-encode-head cbor-mt-tag tag & cbor-encode inner
+
+  cbor-encode-head : Integer, Integer -> List Integer
+  cbor-encode-head (mt) (n) =
+    let major = bit-shl mt 5
+    in if n < 24 then [bit-or major n]
+    else if n < 256 then [bit-or major 24, n]
+    else if n < 65536 then [bit-or major 25, bit-shru n 8, bit-and n 255]
+    else [bit-or major 26, bit-and (bit-shru n 24) 255, bit-and (bit-shru n 16) 255, bit-and (bit-shru n 8) 255, bit-and n 255]
+
+  cbor-encode-text-value : Text -> List Integer
+  cbor-encode-text-value (s) =
+    let bytes = cbor-text-to-bytes s 0 (text-length s) []
+    in cbor-encode-head cbor-mt-text (list-length bytes) & bytes
+
+  cbor-text-to-bytes : Text, Integer, Integer, List Integer -> List Integer
+  cbor-text-to-bytes (s) (i) (len) (acc) =
+    if i >= len then acc
+    else cbor-text-to-bytes s (i + 1) len (list-push acc (char-code (char-at s i)))
+
+  cbor-encode-array : List CborValue, Integer, Integer, List Integer -> List Integer
+  cbor-encode-array (items) (i) (len) (acc) =
+    if i >= len then acc
+    else cbor-encode-array items (i + 1) len (acc & cbor-encode (list-at items i))
+
+  cbor-encode-map : List CborMapEntry, Integer, Integer, List Integer -> List Integer
+  cbor-encode-map (entries) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in cbor-encode-map entries (i + 1) len (acc & cbor-encode (e.cme-key) & cbor-encode (e.cme-value))
+
+Section: Convenience Encoders
+
+  cbor-encode-int : Integer -> List Integer
+  cbor-encode-int (n) =
+    if n >= 0 then cbor-encode (CborUint n)
+    else cbor-encode (CborNint n)
+
+  cbor-encode-text : Text -> List Integer
+  cbor-encode-text (s) = cbor-encode (CborText s)
+
+  cbor-encode-bytes : List Integer -> List Integer
+  cbor-encode-bytes (bs) = cbor-encode (CborBytes bs)
+
+Section: Decoding
+
+  cbor-decode : List Integer -> Maybe CborValue
+  cbor-decode (bs) =
+    if list-length bs == 0 then None
+    else let r = cbor-decode-at bs 0
+    in Just (r.cdr-value)
+
+  cbor-decode-at : List Integer, Integer -> CborDecodeResult
+  cbor-decode-at (bs) (off) =
+    let initial = list-at bs off
+    in let mt = bit-shru initial 5
+    in let ai = bit-and initial 31
+    in let hr = cbor-read-arg bs (off + 1) ai
+    in cbor-dispatch mt (hr.arg) bs (hr.next)
+
+  CborHeadResult = record {
+    arg : Integer,
+    next : Integer
+  }
+
+  cbor-read-arg : List Integer, Integer, Integer -> CborHeadResult
+  cbor-read-arg (bs) (off) (ai) =
+    if ai < 24 then CborHeadResult { arg = ai, next = off }
+    else if ai == 24 then CborHeadResult { arg = list-at bs off, next = off + 1 }
+    else if ai == 25 then CborHeadResult {
+      arg = bit-or (bit-shl (list-at bs off) 8) (list-at bs (off + 1)),
+      next = off + 2
+    }
+    else CborHeadResult {
+      arg = bit-or (bit-or (bit-shl (list-at bs off) 24) (bit-shl (list-at bs (off + 1)) 16))
+                   (bit-or (bit-shl (list-at bs (off + 2)) 8) (list-at bs (off + 3))),
+      next = off + 4
+    }
+
+  cbor-dispatch : Integer, Integer, List Integer, Integer -> CborDecodeResult
+  cbor-dispatch (mt) (arg) (bs) (off) =
+    if mt == cbor-mt-uint then CborDecodeResult { cdr-value = CborUint arg, cdr-offset = off }
+    else if mt == cbor-mt-nint then CborDecodeResult { cdr-value = CborNint (0 - 1 - arg), cdr-offset = off }
+    else if mt == cbor-mt-bytes then cbor-decode-bytes bs off arg
+    else if mt == cbor-mt-text then cbor-decode-text bs off arg
+    else if mt == cbor-mt-array then cbor-decode-array bs off arg
+    else if mt == cbor-mt-map then cbor-decode-map-items bs off arg
+    else if mt == cbor-mt-simple then cbor-decode-simple arg off
+    else CborDecodeResult { cdr-value = CborNull, cdr-offset = off }
+
+  cbor-decode-bytes : List Integer, Integer, Integer -> CborDecodeResult
+  cbor-decode-bytes (bs) (off) (len) =
+    let data = cbor-slice bs off len 0 []
+    in CborDecodeResult { cdr-value = CborBytes data, cdr-offset = off + len }
+
+  cbor-decode-text : List Integer, Integer, Integer -> CborDecodeResult
+  cbor-decode-text (bs) (off) (len) =
+    let bytes = cbor-slice bs off len 0 []
+    in let s = cbor-bytes-to-text bytes 0 (list-length bytes) ""
+    in CborDecodeResult { cdr-value = CborText s, cdr-offset = off + len }
+
+  cbor-decode-array : List Integer, Integer, Integer -> CborDecodeResult
+  cbor-decode-array (bs) (off) (count) =
+    cbor-decode-array-loop bs off count 0 []
+
+  cbor-decode-array-loop : List Integer, Integer, Integer, Integer, List CborValue -> CborDecodeResult
+  cbor-decode-array-loop (bs) (off) (count) (i) (acc) =
+    if i >= count then CborDecodeResult { cdr-value = CborArray acc, cdr-offset = off }
+    else let r = cbor-decode-at bs off
+    in cbor-decode-array-loop bs (r.cdr-offset) count (i + 1) (list-push acc (r.cdr-value))
+
+  cbor-decode-map-items : List Integer, Integer, Integer -> CborDecodeResult
+  cbor-decode-map-items (bs) (off) (count) =
+    cbor-decode-map-loop bs off count 0 []
+
+  cbor-decode-map-loop : List Integer, Integer, Integer, Integer, List CborMapEntry -> CborDecodeResult
+  cbor-decode-map-loop (bs) (off) (count) (i) (acc) =
+    if i >= count then CborDecodeResult { cdr-value = CborMap acc, cdr-offset = off }
+    else let kr = cbor-decode-at bs off
+    in let vr = cbor-decode-at bs (kr.cdr-offset)
+    in cbor-decode-map-loop bs (vr.cdr-offset) count (i + 1) (list-push acc (CborMapEntry { cme-key = kr.cdr-value, cme-value = vr.cdr-value }))
+
+  cbor-decode-simple : Integer, Integer -> CborDecodeResult
+  cbor-decode-simple (val) (off) =
+    if val == 20 then CborDecodeResult { cdr-value = CborBool False, cdr-offset = off }
+    else if val == 21 then CborDecodeResult { cdr-value = CborBool True, cdr-offset = off }
+    else CborDecodeResult { cdr-value = CborNull, cdr-offset = off }
+
+Section: Helpers
+
+  cbor-slice : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  cbor-slice (bs) (off) (len) (i) (acc) =
+    if i >= len then acc
+    else cbor-slice bs off len (i + 1) (list-push acc (list-at bs (off + i)))
+
+  cbor-bytes-to-text : List Integer, Integer, Integer, Text -> Text
+  cbor-bytes-to-text (bs) (i) (len) (acc) =
+    if i >= len then acc
+    else cbor-bytes-to-text bs (i + 1) len (acc & char-to-text (code-to-char (list-at bs i)))
+
+Page 1

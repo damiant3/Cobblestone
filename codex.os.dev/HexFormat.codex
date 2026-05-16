@@ -1,0 +1,112 @@
+Chapter: HexFormat
+  cites Foreword chapter CCE
+
+ HexFormat converts bytes and integers to hexadecimal text
+ representation (nibble-by-nibble) for console diagnostic
+ output.
+
+ We say:
+
+Section: Byte to Hex
+  hex-nibble : Integer -> Text
+  hex-nibble (n) =
+    if n == 0 then "0" else if n == 1 then "1" else if n == 2 then "2"
+    else if n == 3 then "3" else if n == 4 then "4" else if n == 5 then "5"
+    else if n == 6 then "6" else if n == 7 then "7" else if n == 8 then "8"
+    else if n == 9 then "9" else if n == 10 then "a" else if n == 11 then "b"
+    else if n == 12 then "c" else if n == 13 then "d" else if n == 14 then "e"
+    else "f"
+
+  byte-to-hex : Integer -> Text
+  byte-to-hex (b) =
+    hex-nibble (b / 16) & hex-nibble (int-mod b 16)
+
+  u16-to-hex : Integer -> Text
+  u16-to-hex (v) =
+    byte-to-hex (v / 256) & byte-to-hex (int-mod v 256)
+
+  u32-to-hex : Integer -> Text
+  u32-to-hex (v) =
+    u16-to-hex (v / 65536) & u16-to-hex (int-mod v 65536)
+
+Section: Address Formatting
+  addr-to-hex : Integer -> Text
+  addr-to-hex (a) = u32-to-hex (a / 65536) & u32-to-hex (int-mod a 65536)
+
+  addr32-to-hex : Integer -> Text
+  addr32-to-hex (a) = u32-to-hex a
+
+Section: Hex Dump Line
+  hex-dump-byte : Integer, Integer, Integer, Text -> Text
+  hex-dump-byte (buf) (off) (i) (acc) =
+    if i >= 16 then acc
+    else if i == 8 then hex-dump-byte buf off (i + 1) (acc & " " & byte-to-hex (peek-byte buf (off + i)))
+    else hex-dump-byte buf off (i + 1) (acc & " " & byte-to-hex (peek-byte buf (off + i)))
+
+  hex-dump-line : Integer, Integer, Integer -> Text
+  hex-dump-line (buf) (base-addr) (off) =
+    addr32-to-hex (base-addr + off) & " " & hex-dump-byte buf off 0 ""
+
+  hex-dump-lines : Integer, Integer, Integer, Integer -> List Text
+  hex-dump-lines (buf) (base-addr) (off) (len) =
+    if off >= len then []
+    else let line-len = if len - off >= 16 then 16 else len - off
+    in [hex-dump-line buf base-addr off] & hex-dump-lines buf base-addr (off + 16) len
+
+Section: Hex Parsing
+  hex-char-val : Integer -> Integer
+  hex-char-val (c) =
+    if c >= 3 & c <= 12 then c - 3
+    else if c == 15 then 10
+    else if c == 32 then 11
+    else if c == 24 then 12
+    else if c == 22 then 13
+    else if c == 13 then 14
+    else if c == 28 then 15
+    else if c == 41 then 10
+    else if c == 58 then 11
+    else if c == 50 then 12
+    else if c == 48 then 13
+    else if c == 39 then 14
+    else if c == 54 then 15
+    else 0 - 1
+
+  parse-hex : Text -> Integer
+  parse-hex (t) = parse-hex-loop t 0 (text-length t) 0
+
+  parse-hex-loop : Text, Integer, Integer, Integer -> Integer
+  parse-hex-loop (t) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = char-code (char-at t i)
+    in let v = hex-char-val c
+    in if v < 0 then acc
+    else parse-hex-loop t (i + 1) len (acc * 16 + v)
+
+  is-hex-prefix : Text -> Boolean
+  is-hex-prefix (t) =
+    if text-length t > 2 then char-code (char-at t 0) == 3 & char-code (char-at t 1) == 36
+    else False
+
+  parse-number : Text -> Integer
+  parse-number (t) =
+    if is-hex-prefix t then parse-hex (substring t 2 (text-length t - 2))
+    else text-to-integer t
+
+Section: ATA Status Decode
+  ata-decode-status : Integer -> Text
+  ata-decode-status (val) =
+    "BSY=" & bit-flag val 7 & " DRDY=" & bit-flag val 6 & " DF=" & bit-flag val 5
+    & " DSC=" & bit-flag val 4 & " DRQ=" & bit-flag val 3
+    & " ERR=" & bit-flag val 0
+
+  ata-decode-error : Integer -> Text
+  ata-decode-error (val) =
+    "BBK=" & bit-flag val 7 & " UNC=" & bit-flag val 6
+    & " IDNF=" & bit-flag val 4 & " ABRT=" & bit-flag val 2
+    & " AMNF=" & bit-flag val 0
+
+  bit-flag : Integer, Integer -> Text
+  bit-flag (val) (bit) =
+    if bit-and val (bit-shl 1 bit) /= 0 then "1" else "0"
+
+Page 1

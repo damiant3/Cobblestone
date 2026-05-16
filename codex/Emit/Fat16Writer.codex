@@ -1,0 +1,414 @@
+Chapter: FAT16 Writer
+
+  cites Codex chapter Lists
+
+  cites Codex chapter Text
+
+  cites Codex chapter Bitwise
+
+  cites Foreword chapter CCE
+
+  cites Emit chapter GPT Writer (gpt-buf-write-i16, gpt-buf-write-i32, gpt-buf-write-i64, gpt-part-start-lba, gpt-sector-size, gpt-entry-sectors)
+
+  cites Emit chapter ELF Writer (align-up)
+
+
+
+Section: FAT16 Constants
+
+  fat16w-reserved-sectors : Integer = 1
+
+  fat16w-num-fats : Integer = 2
+
+  fat16w-root-entry-count : Integer = 512
+
+  fat16w-sectors-per-cluster : Integer = 2
+
+  fat16w-eoi : Integer = 65535
+
+
+
+Section: Layout
+
+  Fat16Layout = record {
+
+   part-offset : Integer,
+
+   part-sectors : Integer,
+
+   sectors-per-cluster : Integer,
+
+   fat-sectors : Integer,
+
+   root-dir-sectors : Integer,
+
+   data-start-sect : Integer,
+
+   total-clusters : Integer
+
+  }
+
+
+
+  fat16w-compute-layout : Integer -> Fat16Layout
+
+  fat16w-compute-layout (total-sectors) =
+
+   let backup-entries-lba = total-sectors - 1 - gpt-entry-sectors
+
+   in let part-end-lba = backup-entries-lba - 1
+
+   in let part-sectors = part-end-lba - gpt-part-start-lba + 1
+
+   in let part-offset = gpt-part-start-lba * gpt-sector-size
+
+   in let root-dir-sectors = (fat16w-root-entry-count * 32 + gpt-sector-size - 1) / gpt-sector-size
+
+   in let data-sectors = part-sectors - fat16w-reserved-sectors - root-dir-sectors
+
+   in let total-clusters = data-sectors / fat16w-sectors-per-cluster
+
+   in let fat-bytes = (total-clusters + 2) * 2
+
+   in let fat-sectors = (fat-bytes + gpt-sector-size - 1) / gpt-sector-size
+
+   in let data-start-sect = fat16w-reserved-sectors + fat16w-num-fats * fat-sectors + root-dir-sectors
+
+   in let usable-clusters = (part-sectors - data-start-sect) / fat16w-sectors-per-cluster
+
+   in Fat16Layout {
+
+    part-offset = part-offset,
+
+    part-sectors = part-sectors,
+
+    sectors-per-cluster = fat16w-sectors-per-cluster,
+
+    fat-sectors = fat-sectors,
+
+    root-dir-sectors = root-dir-sectors,
+
+    data-start-sect = data-start-sect,
+
+    total-clusters = usable-clusters
+
+   }
+
+
+
+Section: BPB
+
+  fat16w-write-bpb : Integer, Fat16Layout -> Integer
+
+  fat16w-write-bpb (buf) (lay) =
+
+   let p = lay.part-offset
+
+   in let w0 = __buf-write-byte buf p 235
+
+   in let w1 = __buf-write-byte buf (p + 1) 60
+
+   in let w2 = __buf-write-byte buf (p + 2) 144
+
+   in let w3 = fat16w-write-str buf (p + 3) "CODEXOS " 0
+
+   in let w4 = gpt-buf-write-i16 buf (p + 11) gpt-sector-size
+
+   in let w5 = __buf-write-byte buf (p + 13) fat16w-sectors-per-cluster
+
+   in let w6 = gpt-buf-write-i16 buf (p + 14) fat16w-reserved-sectors
+
+   in let w7 = __buf-write-byte buf (p + 16) fat16w-num-fats
+
+   in let w8 = gpt-buf-write-i16 buf (p + 17) fat16w-root-entry-count
+
+   in let w9 = gpt-buf-write-i16 buf (p + 19) 0
+
+   in let w10 = __buf-write-byte buf (p + 21) 248
+
+   in let w11 = gpt-buf-write-i16 buf (p + 22) (lay.fat-sectors)
+
+   in let w12 = gpt-buf-write-i16 buf (p + 24) 63
+
+   in let w13 = gpt-buf-write-i16 buf (p + 26) 255
+
+   in let w14 = gpt-buf-write-i32 buf (p + 28) gpt-part-start-lba
+
+   in let w15 = gpt-buf-write-i32 buf (p + 32) (lay.part-sectors)
+
+   in let w16 = __buf-write-byte buf (p + 36) 128
+
+   in let w17 = __buf-write-byte buf (p + 38) 41
+
+   in let w18 = gpt-buf-write-i32 buf (p + 39) 3235905537
+
+   in let w19 = fat16w-write-str buf (p + 43) "CODEX OS   " 0
+
+   in let w20 = fat16w-write-str buf (p + 54) "FAT16   " 0
+
+   in let w21 = __buf-write-byte buf (p + 510) 85
+
+   in let w22 = __buf-write-byte buf (p + 511) 170
+
+   in 0
+
+
+
+  fat16w-write-str : Integer, Integer, Text, Integer -> Integer
+
+  fat16w-write-str (buf) (off) (s) (i) =
+
+   if i >= text-length s then off + text-length s
+
+   else let cce = char-code-at s i
+
+   in let u = to-unicode cce
+
+   in let byte = if u >= 128 then 63 else u
+
+   in let w = __buf-write-byte buf (off + i) byte
+
+   in fat16w-write-str buf off s (i + 1)
+
+
+
+Section: FAT Tables
+
+  fat16w-fat-offset : Fat16Layout -> Integer
+
+  fat16w-fat-offset (lay) = lay.part-offset + fat16w-reserved-sectors * gpt-sector-size
+
+
+
+  fat16w-root-offset : Fat16Layout -> Integer
+
+  fat16w-root-offset (lay) = lay.part-offset + (fat16w-reserved-sectors + fat16w-num-fats * (lay.fat-sectors)) * gpt-sector-size
+
+
+
+  fat16w-write-fat-entry : Integer, Integer, Integer, Integer -> Integer
+
+  fat16w-write-fat-entry (buf) (fat1-off) (cluster) (value) =
+
+   gpt-buf-write-i16 buf (fat1-off + cluster * 2) value
+
+
+
+  fat16w-write-fat-chain : Integer, Integer, Integer, Integer -> Integer
+
+  fat16w-write-fat-chain (buf) (fat1-off) (start-cluster) (count) =
+
+   fat16w-write-fat-chain-loop buf fat1-off start-cluster count 0
+
+
+
+  fat16w-write-fat-chain-loop : Integer, Integer, Integer, Integer, Integer -> Integer
+
+  fat16w-write-fat-chain-loop (buf) (fat1-off) (start) (count) (i) =
+
+   if i >= count then 0
+
+   else let c = start + i
+
+   in let val = if i == count - 1 then fat16w-eoi else c + 1
+
+   in let w = fat16w-write-fat-entry buf fat1-off c val
+
+   in fat16w-write-fat-chain-loop buf fat1-off start count (i + 1)
+
+
+
+  fat16w-copy-fat2 : Integer, Fat16Layout -> Integer
+
+  fat16w-copy-fat2 (buf) (lay) =
+
+   let fat1 = fat16w-fat-offset lay
+
+   in let fat2 = fat1 + lay.fat-sectors * gpt-sector-size
+
+   in let hp = __heap-save
+
+   in let fat-data = __buf-read-bytes buf fat1 (lay.fat-sectors * gpt-sector-size)
+
+   in let w = __buf-write-bytes buf fat2 fat-data
+
+   in let restored = __heap-restore hp
+
+   in 0
+
+
+
+Section: Directory Entries
+
+  fat16w-cluster-offset : Fat16Layout, Integer -> Integer
+
+  fat16w-cluster-offset (lay) (cluster) =
+
+   lay.part-offset + (lay.data-start-sect + (cluster - 2) * (lay.sectors-per-cluster)) * gpt-sector-size
+
+
+
+  fat16w-write-dir-entry : Integer, Integer, Text, Integer, Integer, Integer -> Integer
+
+  fat16w-write-dir-entry (buf) (off) (name83) (attr) (cluster) (size) =
+
+   let w0 = fat16w-write-str buf off name83 0
+
+   in let w1 = __buf-write-byte buf (off + 11) attr
+
+   in let w2 = gpt-buf-write-i16 buf (off + 22) 20480
+
+   in let w3 = gpt-buf-write-i16 buf (off + 24) 23717
+
+   in let w4 = gpt-buf-write-i16 buf (off + 26) cluster
+
+   in let w5 = gpt-buf-write-i32 buf (off + 28) size
+
+   in off + 32
+
+
+
+Section: Text Writing
+
+  fat16w-write-text-to-buf : Integer, Integer, Text, Integer, Integer -> Integer
+
+  fat16w-write-text-to-buf (buf) (off) (txt) (i) (len) =
+
+   if i >= len then off + len
+
+   else let cce = char-code-at txt i
+
+   in let u = to-unicode cce
+
+   in let byte = if u >= 128 then 63 else u
+
+   in let w = __buf-write-byte buf (off + i) byte
+
+   in fat16w-write-text-to-buf buf off txt (i + 1) len
+
+
+
+Section: Filesystem Assembly
+
+  fat16w-clusters-needed : Integer, Integer -> Integer
+
+  fat16w-clusters-needed (byte-count) (spc) =
+
+   (byte-count + spc * gpt-sector-size - 1) / (spc * gpt-sector-size)
+
+
+
+  fat16w-write-all : Integer, Fat16Layout, List Integer, List Integer, Text -> Integer
+
+  fat16w-write-all (buf) (lay) (efi-bytes) (cdx-bytes) (source) =
+
+   let cdx-size = list-length cdx-bytes
+
+   in let efi-size = list-length efi-bytes
+
+   in let spc = lay.sectors-per-cluster
+
+   in let cdx-start = 5
+
+   in let cdx-clusters = fat16w-clusters-needed cdx-size spc
+
+   in let efi-start = cdx-start + cdx-clusters
+
+   in let w19 = __buf-write-bytes buf (fat16w-cluster-offset lay cdx-start) cdx-bytes
+
+   in let w20 = __buf-write-bytes buf (fat16w-cluster-offset lay efi-start) efi-bytes
+
+   in fat16w-write-fs buf lay efi-size cdx-size source
+
+
+
+  fat16w-write-fs : Integer, Fat16Layout, Integer, Integer, Text -> Integer
+
+  fat16w-write-fs (buf) (lay) (efi-size) (cdx-size) (source) =
+
+   let fat1 = fat16w-fat-offset lay
+
+   in let spc = lay.sectors-per-cluster
+
+   in let src-len = text-length source
+
+   in let w0 = fat16w-write-fat-entry buf fat1 0 65528
+
+   in let w1 = fat16w-write-fat-entry buf fat1 1 fat16w-eoi
+
+   in let efi-dir-cluster = 2
+
+   in let w2 = fat16w-write-fat-entry buf fat1 efi-dir-cluster fat16w-eoi
+
+   in let seed-dir-cluster = 3
+
+   in let w3 = fat16w-write-fat-entry buf fat1 seed-dir-cluster fat16w-eoi
+
+   in let boot-dir-cluster = 4
+
+   in let w4 = fat16w-write-fat-entry buf fat1 boot-dir-cluster fat16w-eoi
+
+   in let cdx-start = 5
+
+   in let cdx-clusters = fat16w-clusters-needed cdx-size spc
+
+   in let w5 = fat16w-write-fat-chain buf fat1 cdx-start cdx-clusters
+
+   in let efi-start = cdx-start + cdx-clusters
+
+   in let efi-clusters = fat16w-clusters-needed efi-size spc
+
+   in let w6 = fat16w-write-fat-chain buf fat1 efi-start efi-clusters
+
+   in let src-start = efi-start + efi-clusters
+
+   in let src-clusters = fat16w-clusters-needed src-len spc
+
+   in let w6s = fat16w-write-fat-chain buf fat1 src-start src-clusters
+
+   in let root-off = fat16w-root-offset lay
+
+   in let w7 = fat16w-write-dir-entry buf root-off "EFI        " 16 efi-dir-cluster 0
+
+   in let w8 = fat16w-write-dir-entry buf (root-off + 32) "SEED       " 16 seed-dir-cluster 0
+
+   in let w9 = fat16w-write-dir-entry buf (root-off + 64) "SOURCE  SRC" 32 src-start src-len
+
+   in let w9b = fat16w-write-dir-entry buf (root-off + 96) "CODEX OS   " 8 0 0
+
+   in let efi-dir-off = fat16w-cluster-offset lay efi-dir-cluster
+
+   in let w10 = fat16w-write-dir-entry buf efi-dir-off ".          " 16 efi-dir-cluster 0
+
+   in let w11 = fat16w-write-dir-entry buf (efi-dir-off + 32) "..         " 16 0 0
+
+   in let w12 = fat16w-write-dir-entry buf (efi-dir-off + 64) "BOOT       " 16 boot-dir-cluster 0
+
+   in let seed-dir-off = fat16w-cluster-offset lay seed-dir-cluster
+
+   in let w13 = fat16w-write-dir-entry buf seed-dir-off ".          " 16 seed-dir-cluster 0
+
+   in let w14 = fat16w-write-dir-entry buf (seed-dir-off + 32) "..         " 16 0 0
+
+   in let w15 = fat16w-write-dir-entry buf (seed-dir-off + 64) "CODEX   CDX" 32 cdx-start cdx-size
+
+   in let boot-dir-off = fat16w-cluster-offset lay boot-dir-cluster
+
+   in let w16 = fat16w-write-dir-entry buf boot-dir-off ".          " 16 boot-dir-cluster 0
+
+   in let w17 = fat16w-write-dir-entry buf (boot-dir-off + 32) "..         " 16 efi-dir-cluster 0
+
+   in let w18 = fat16w-write-dir-entry buf (boot-dir-off + 64) "BOOTX64 EFI" 32 efi-start efi-size
+
+   in let w21 = fat16w-write-text-to-buf buf (fat16w-cluster-offset lay src-start) source 0 src-len
+
+   in let w22 = fat16w-write-bpb buf lay
+
+   in let w23 = fat16w-copy-fat2 buf lay
+
+   in 0
+
+
+
+Page 1
+

@@ -1,0 +1,135 @@
+Chapter: SpatialHash
+
+ Spatial hashing for broadphase collision detection in dense
+ particle systems. Maps 2D positions to grid cells using integer
+ division, then queries return all objects in the same or adjacent
+ cells. Faster than quadtree for uniformly distributed particles.
+
+ To spatial-hash-new gives an empty spatial hash with a cell size.
+ To spatial-hash-insert gives a hash with a new entry.
+ To spatial-hash-query gives all entries near a position.
+ To spatial-hash-clear gives an emptied hash.
+
+ We say:
+
+Section: Types
+
+  SpatialEntry = record {
+    she-id : Integer,
+    she-x : Integer,
+    she-y : Integer
+  }
+
+  SpatialCell = record {
+    shc-key : Integer,
+    shc-entries : List SpatialEntry,
+    shc-count : Integer
+  }
+
+  SpatialHash = record {
+    sh-cells : List SpatialCell,
+    sh-cell-count : Integer,
+    sh-cell-size : Integer,
+    sh-table-size : Integer
+  }
+
+Section: Construction
+
+  spatial-hash-new : Integer -> SpatialHash
+  spatial-hash-new (cell-size) = SpatialHash {
+    sh-cells = [],
+    sh-cell-count = 0,
+    sh-cell-size = cell-size,
+    sh-table-size = 256
+  }
+
+  spatial-hash-clear : SpatialHash -> SpatialHash
+  spatial-hash-clear (sh) = SpatialHash {
+    sh-cells = [],
+    sh-cell-count = 0,
+    sh-cell-size = sh.sh-cell-size,
+    sh-table-size = sh.sh-table-size
+  }
+
+Section: Hashing
+
+  sh-cell-key : SpatialHash, Integer, Integer -> Integer
+  sh-cell-key (sh) (x) (y) =
+    let cx = x / sh.sh-cell-size
+    in let cy = y / sh.sh-cell-size
+    in let raw = cx * 73856093 + cy * 19349663
+    in let positive = if raw < 0 then 0 - raw else raw
+    in positive - (positive / sh.sh-table-size) * sh.sh-table-size
+
+Section: Insert
+
+  spatial-hash-insert : SpatialHash, Integer, Integer, Integer -> SpatialHash
+  spatial-hash-insert (sh) (id) (x) (y) =
+    let key = sh-cell-key sh x y
+    in let entry = SpatialEntry { she-id = id, she-x = x, she-y = y }
+    in let cells = sh-insert-into-cells (sh.sh-cells) key entry 0 (sh.sh-cell-count)
+    in __record-set sh "sh-cells" (cells.result)
+
+  ShInsertResult = record {
+    result : List SpatialCell,
+    found : Boolean
+  }
+
+  sh-insert-into-cells : List SpatialCell, Integer, SpatialEntry, Integer, Integer -> ShInsertResult
+  sh-insert-into-cells (cells) (key) (entry) (i) (len) =
+    if i >= len then ShInsertResult {
+      result = list-push cells (SpatialCell { shc-key = key, shc-entries = [entry], shc-count = 1 }),
+      found = False
+    }
+    else let cell = list-at cells i
+    in if cell.shc-key == key then ShInsertResult {
+      result = list-set-at cells i (SpatialCell {
+        shc-key = key,
+        shc-entries = list-push (cell.shc-entries) entry,
+        shc-count = cell.shc-count + 1
+      }),
+      found = True
+    }
+    else sh-insert-into-cells cells key entry (i + 1) len
+
+Section: Query
+
+  spatial-hash-query : SpatialHash, Integer, Integer -> List SpatialEntry
+  spatial-hash-query (sh) (x) (y) =
+    sh-query-neighbors sh x y (0 - 1) 2 []
+
+  sh-query-neighbors : SpatialHash, Integer, Integer, Integer, Integer, List SpatialEntry -> List SpatialEntry
+  sh-query-neighbors (sh) (x) (y) (dx) (max-dx) (acc) =
+    if dx > max-dx then acc
+    else let acc2 = sh-query-column sh x y dx (0 - 1) 2 acc
+    in sh-query-neighbors sh x y (dx + 1) max-dx acc2
+
+  sh-query-column : SpatialHash, Integer, Integer, Integer, Integer, Integer, List SpatialEntry -> List SpatialEntry
+  sh-query-column (sh) (x) (y) (dx) (dy) (max-dy) (acc) =
+    if dy > max-dy then acc
+    else let nx = x + dx * sh.sh-cell-size
+    in let ny = y + dy * sh.sh-cell-size
+    in let key = sh-cell-key sh nx ny
+    in let entries = sh-find-cell (sh.sh-cells) key 0 (sh.sh-cell-count)
+    in sh-query-column sh x y dx (dy + 1) max-dy (acc & entries)
+
+  sh-find-cell : List SpatialCell, Integer, Integer, Integer -> List SpatialEntry
+  sh-find-cell (cells) (key) (i) (len) =
+    if i >= len then []
+    else let cell = list-at cells i
+    in if cell.shc-key == key then cell.shc-entries
+    else sh-find-cell cells key (i + 1) len
+
+Section: Bulk Operations
+
+  spatial-hash-insert-all : SpatialHash, List SpatialEntry -> SpatialHash
+  spatial-hash-insert-all (sh) (entries) =
+    sh-bulk-loop sh entries 0 (list-length entries)
+
+  sh-bulk-loop : SpatialHash, List SpatialEntry, Integer, Integer -> SpatialHash
+  sh-bulk-loop (sh) (entries) (i) (len) =
+    if i >= len then sh
+    else let e = list-at entries i
+    in sh-bulk-loop (spatial-hash-insert sh (e.she-id) (e.she-x) (e.she-y)) entries (i + 1) len
+
+Page 1

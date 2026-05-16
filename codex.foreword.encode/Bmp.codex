@@ -1,0 +1,102 @@
+Chapter: Bmp
+  cites Game chapter Color
+
+ BMP image encoder/decoder. 24-bit uncompressed Windows bitmap.
+ Produces/consumes the raw byte stream (List Integer). Row order
+ is bottom-up per the BMP spec. Rows padded to 4-byte boundary.
+
+ We say:
+
+Section: Encoding
+  bmp-encode : Integer, Integer, List Rgb -> List Integer
+  bmp-encode (width) (height) (pixels) =
+    let row-bytes = width * 3
+    in let padding = (4 - row-bytes + row-bytes / 4 * 4) - (4 - row-bytes + row-bytes / 4 * 4) / 4 * 4
+    in let padded-row = row-bytes + padding
+    in let pixel-data-size = padded-row * height
+    in let file-size = 54 + pixel-data-size
+    in let header = bmp-file-header file-size & bmp-info-header width height
+    in let pixel-data = bmp-encode-rows pixels width height padding (height - 1) []
+    in header & pixel-data
+
+  bmp-file-header : Integer -> List Integer
+  bmp-file-header (file-size) =
+    [66, 77] & bmp-le32 file-size & [0, 0, 0, 0] & bmp-le32 54
+
+  bmp-info-header : Integer, Integer -> List Integer
+  bmp-info-header (width) (height) =
+    bmp-le32 40 & bmp-le32 width & bmp-le32 height ++
+    bmp-le16 1 & bmp-le16 24 ++
+    bmp-le32 0 & bmp-le32 0 ++
+    bmp-le32 2835 & bmp-le32 2835 ++
+    bmp-le32 0 & bmp-le32 0
+
+  bmp-encode-rows : List Rgb, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  bmp-encode-rows (pixels) (width) (height) (padding) (y) (acc) =
+    if y < 0 then acc
+    else let row = bmp-encode-row pixels width y 0 []
+    in let padded = row & bmp-pad-bytes padding 0 []
+    in bmp-encode-rows pixels width height padding (y - 1) (acc & padded)
+
+  bmp-encode-row : List Rgb, Integer, Integer, Integer, List Integer -> List Integer
+  bmp-encode-row (pixels) (width) (y) (x) (acc) =
+    if x >= width then acc
+    else let px = list-at pixels (y * width + x)
+    in bmp-encode-row pixels width y (x + 1) (acc & [px.cb, px.cg, px.cr])
+
+  bmp-pad-bytes : Integer, Integer, List Integer -> List Integer
+  bmp-pad-bytes (n) (i) (acc) =
+    if i >= n then acc
+    else bmp-pad-bytes n (i + 1) (list-push acc 0)
+
+Section: Decoding
+  BmpImage = record {
+    bmp-width : Integer,
+    bmp-height : Integer,
+    bmp-pixels : List Rgb
+  }
+
+  bmp-decode : List Integer -> BmpImage
+  bmp-decode (bytes) =
+    let width = bmp-read-le32 bytes 18
+    in let height = bmp-read-le32 bytes 22
+    in let bpp = bmp-read-le16 bytes 28
+    in let offset = bmp-read-le32 bytes 10
+    in if bpp /= 24 then BmpImage { bmp-width = 0, bmp-height = 0, bmp-pixels = [] }
+    else let row-bytes = width * 3
+    in let padding = (4 - row-bytes + row-bytes / 4 * 4) - (4 - row-bytes + row-bytes / 4 * 4) / 4 * 4
+    in let padded-row = row-bytes + padding
+    in let pixels = bmp-decode-rows bytes offset width height padded-row (height - 1) []
+    in BmpImage { bmp-width = width, bmp-height = height, bmp-pixels = pixels }
+
+  bmp-decode-rows : List Integer, Integer, Integer, Integer, Integer, Integer, List Rgb -> List Rgb
+  bmp-decode-rows (bytes) (offset) (width) (height) (stride) (y) (acc) =
+    if y < 0 then acc
+    else let row-off = offset + (height - 1 - y) * stride
+    in let row = bmp-decode-row bytes row-off width 0 []
+    in bmp-decode-rows bytes offset width height stride (y - 1) (acc & row)
+
+  bmp-decode-row : List Integer, Integer, Integer, Integer, List Rgb -> List Rgb
+  bmp-decode-row (bytes) (off) (width) (x) (acc) =
+    if x >= width then acc
+    else let i = off + x * 3
+    in let b = list-at bytes i
+    in let g = list-at bytes (i + 1)
+    in let r = list-at bytes (i + 2)
+    in bmp-decode-row bytes off width (x + 1) (list-push acc (rgb r g b))
+
+Section: Helpers
+  bmp-le16 : Integer -> List Integer
+  bmp-le16 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+  bmp-le32 : Integer -> List Integer
+  bmp-le32 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+  bmp-read-le16 : List Integer, Integer -> Integer
+  bmp-read-le16 (bytes) (off) = bit-or (list-at bytes off) (bit-shl (list-at bytes (off + 1)) 8)
+
+  bmp-read-le32 : List Integer, Integer -> Integer
+  bmp-read-le32 (bytes) (off) =
+    bit-or (list-at bytes off) (bit-or (bit-shl (list-at bytes (off + 1)) 8) (bit-or (bit-shl (list-at bytes (off + 2)) 16) (bit-shl (list-at bytes (off + 3)) 24)))
+
+Page 1

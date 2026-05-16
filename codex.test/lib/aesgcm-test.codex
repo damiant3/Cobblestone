@@ -1,0 +1,63 @@
+Chapter: AesGcmTest
+  cites Foreword chapter AesGcm
+  cites Foreword chapter Aes
+  cites Foreword chapter Maybe
+
+ AES-128-GCM round-trip and tag verification.
+
+Section: Helpers
+
+  bytes-to-hex : List Integer -> Text
+  bytes-to-hex (bs) = bth-loop bs 0 (list-length bs) ""
+
+  bth-loop : List Integer, Integer, Integer, Text -> Text
+  bth-loop (bs) (i) (len) (acc) =
+    if i >= len then acc
+    else bth-loop bs (i + 1) len (acc & hex-byte (list-at bs i))
+
+  hex-byte : Integer -> Text
+  hex-byte (b) = hex-nib (bit-shru b 4) & hex-nib (bit-and b 15)
+
+  hex-nib : Integer -> Text
+  hex-nib (n) =
+    if n < 10 then show n
+    else if n == 10 then "a" else if n == 11 then "b" else if n == 12 then "c" else if n == 13 then "d" else if n == 14 then "e" else "f"
+
+  list-eq : List Integer, List Integer -> Boolean
+  list-eq (a) (b) =
+    if list-length a == list-length b then leq-loop a b 0 (list-length a)
+    else False
+
+  leq-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  leq-loop (a) (b) (i) (len) =
+    if i >= len then True
+    else if list-at a i == list-at b i then leq-loop a b (i + 1) len
+    else False
+
+Section: Body
+
+  test-key : List Integer = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  test-nonce : List Integer = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  test-plaintext : List Integer = [72, 101, 108, 108, 111, 32, 87, 111, 114, 108, 100]
+  test-aad : List Integer = [1, 2, 3, 4]
+
+  opening : [Console] Nothing = act
+    let result = aesgcm-encrypt test-key test-nonce test-plaintext test-aad
+    in act
+      print-line ("ct-len=" & show (list-length (result.ciphertext)))
+      print-line ("tag-len=" & show (list-length (result.tag)))
+      let decrypted = aesgcm-decrypt test-key test-nonce (result.ciphertext) test-aad (result.tag)
+      in when decrypted
+        is Just (pt) -> print-line ("roundtrip=" & if list-eq pt test-plaintext then "pass" else "fail")
+        is None -> print-line "roundtrip=fail:decrypt"
+      let tampered-ct = list-set-at (result.ciphertext) 0 (bit-xor (list-at (result.ciphertext) 0) 1)
+      in let bad = aesgcm-decrypt test-key test-nonce tampered-ct test-aad (result.tag)
+      in when bad
+        is Just (pt) -> print-line "tamper-detect=fail"
+        is None -> print-line "tamper-detect=pass"
+      let empty-result = aesgcm-encrypt test-key test-nonce [] []
+      in print-line ("empty-ct=" & show (list-length (empty-result.ciphertext)))
+    end
+  end
+
+Page 1

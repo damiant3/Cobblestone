@@ -1,0 +1,91 @@
+Chapter: EditDistance
+  cites Foreword chapter CCE
+
+ An EditMatch is a record containing em-text, em-distance, and em-index.
+ To edit-distance gives the Levenshtein distance between two texts.
+ To edit-similarity gives a similarity score scaled to 0-1000 between two texts.
+ To edit-best-match gives the EditMatch with the smallest distance from a list of candidates.
+ To edit-within gives all candidates within the given maximum distance of the query.
+ To format-edit-match gives a Text representation of an EditMatch.
+
+ We say:
+
+Section: Levenshtein Distance
+  edit-distance : Text, Text -> Integer
+  edit-distance (a) (b) =
+    let m = text-length a
+    in let n = text-length b
+    in if m == 0 then n
+    else if n == 0 then m
+    else if m > n then edit-distance b a
+    else let row = ed-init-row 0 (n + 1) []
+    in ed-outer a b row 1 m n
+
+  ed-init-row : Integer, Integer, List Integer -> List Integer
+  ed-init-row (i) (len) (acc) =
+    if i >= len then acc
+    else ed-init-row (i + 1) len (list-push acc i)
+
+  ed-outer : Text, Text, List Integer, Integer, Integer, Integer -> Integer
+  ed-outer (a) (b) (row) (i) (m) (n) =
+    if i > m then list-at row n
+    else let new-row = ed-inner a b row i 1 n [i]
+    in ed-outer a b new-row (i + 1) m n
+
+  ed-inner : Text, Text, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ed-inner (a) (b) (prev) (i) (j) (n) (curr) =
+    if j > n then curr
+    else let cost = if char-at a (i - 1) == char-at b (j - 1) then 0 else 1
+    in let del = list-at prev j + 1
+    in let ins = list-at curr (j - 1) + 1
+    in let sub = list-at prev (j - 1) + cost
+    in let best = ed-min3 del ins sub
+    in ed-inner a b prev i (j + 1) n (list-push curr best)
+
+Section: Similarity Ratio
+  edit-similarity : Text, Text -> Integer
+  edit-similarity (a) (b) =
+    let m = text-length a
+    in let n = text-length b
+    in let max-len = if m > n then m else n
+    in if max-len == 0 then 1000
+    else let dist = edit-distance a b
+    in (max-len - dist) * 1000 / max-len
+
+Section: Best Match
+  EditMatch = record { em-text : Text, em-distance : Integer, em-index : Integer }
+
+  edit-best-match : Text, List Text -> EditMatch
+  edit-best-match (query) (candidates) =
+    ed-best-loop query candidates 0 (list-length candidates) (EditMatch { em-text = "", em-distance = 999999, em-index = 0 - 1 })
+
+  ed-best-loop : Text, List Text, Integer, Integer, EditMatch -> EditMatch
+  ed-best-loop (query) (candidates) (i) (n) (best) =
+    if i >= n then best
+    else let c = list-at candidates i
+    in let d = edit-distance query c
+    in let new-best = if d < best.em-distance then EditMatch { em-text = c, em-distance = d, em-index = i } else best
+    in ed-best-loop query candidates (i + 1) n new-best
+
+  edit-within : Text, List Text, Integer -> List Text
+  edit-within (query) (candidates) (max-dist) = ed-within-loop query candidates max-dist 0 (list-length candidates) []
+
+  ed-within-loop : Text, List Text, Integer, Integer, Integer, List Text -> List Text
+  ed-within-loop (query) (candidates) (max-dist) (i) (n) (acc) =
+    if i >= n then acc
+    else let c = list-at candidates i
+    in let d = edit-distance query c
+    in let new-acc = if d <= max-dist then list-push acc c else acc
+    in ed-within-loop query candidates max-dist (i + 1) n new-acc
+
+Section: Helpers
+  ed-min3 : Integer, Integer, Integer -> Integer
+  ed-min3 (a) (b) (c) =
+    let ab = if a < b then a else b
+    in if ab < c then ab else c
+
+Section: Formatting
+  format-edit-match : EditMatch -> Text
+  format-edit-match (m) = m.em-text & " (d=" & show (m.em-distance) & ")"
+
+Page 1

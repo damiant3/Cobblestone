@@ -1,0 +1,56 @@
+Chapter: CdxSign
+  cites Foreword chapter Console
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha512
+  cites Foreword chapter Maybe
+
+Section: Hex Decode
+  hex-val : Char -> Integer
+  hex-val (c) =
+    let code = char-code c
+    in if code >= char-code '0' then if code <= char-code '9' then code - char-code '0'
+    else if code >= char-code 'a' then if code <= char-code 'f' then code - char-code 'a' + 10
+    else 0
+    else 0
+    else 0
+
+  hex-decode : Text -> Integer -> Integer -> List Integer -> List Integer
+  hex-decode (s) (i) (len) (acc) =
+    if i + 1 >= len then acc
+    else let hi = hex-val (char-at s i)
+    in let lo = hex-val (char-at s (i + 1))
+    in hex-decode s (i + 2) len (list-push acc (hi * 16 + lo))
+
+Section: Hex Encode
+  hex-char : Integer -> Text
+  hex-char (n) =
+    if n < 10 then char-to-text (code-to-char (n + char-code '0'))
+    else char-to-text (code-to-char (n - 10 + char-code 'a'))
+
+  hex-byte : Integer -> Text
+  hex-byte (b) =
+    hex-char (b / 16) ++ hex-char (int-mod b 16)
+
+  hex-encode : List Integer -> Integer -> Integer -> Text -> Text
+  hex-encode (bs) (i) (len) (acc) =
+    if i >= len then acc
+    else hex-encode bs (i + 1) len (acc ++ hex-byte (list-at bs i))
+
+Section: Body
+  opening : [Console] Nothing = act
+    print-line "SIGN-READY"
+    print-line ">"
+    input <- read-line
+    when input
+     is Just (line) ->
+      let key-bytes = hex-decode line 0 64 []
+      in let hash-bytes = hex-decode line 64 128 []
+      in let pub-key = ed25519-public-key key-bytes
+      in let sig = ed25519-sign key-bytes pub-key hash-bytes
+      in let pub-hex = hex-encode pub-key 0 32 ""
+      in let sig-hex = hex-encode sig 0 64 ""
+      in act
+        print-line (pub-hex ++ sig-hex)
+      end
+     is None -> print-line "ERROR: no input"
+  end

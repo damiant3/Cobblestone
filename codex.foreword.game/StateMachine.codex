@@ -1,0 +1,116 @@
+Chapter: StateMachine
+  cites Foreword chapter Maybe
+
+ Finite state machine with named states, guarded transitions, and
+ entry/exit action tags. States and transitions are integers for
+ bare-metal efficiency. Action tags are returned for the caller
+ to execute — the FSM itself is pure.
+
+ We say:
+
+Section: Types
+  SmState = record {
+    id : Integer,
+    name : Text,
+    on-enter : Integer,
+    on-exit : Integer
+  }
+
+  SmTransition = record {
+    from-state : Integer,
+    event : Integer,
+    to-state : Integer,
+    guard : Integer
+  }
+
+  StateMachine = record {
+    current : Integer,
+    states : List SmState,
+    transitions : List SmTransition,
+    num-states : Integer between 0 and 255,
+    num-transitions : Integer between 0 and 1024,
+    history : List Integer
+  }
+
+Section: Construction
+  sm-new : Integer -> StateMachine
+  sm-new (initial) = StateMachine { current = initial, states = [], transitions = [], num-states = 0, num-transitions = 0, history = [initial] }
+
+  sm-add-state : StateMachine, Integer, Text, Integer, Integer -> StateMachine
+  sm-add-state (sm) (id) (name) (on-enter) (on-exit) =
+    let state = SmState { id = id, name = name, on-enter = on-enter, on-exit = on-exit }
+    in StateMachine { current = sm.current, states = list-push (sm.states) state, transitions = sm.transitions, num-states = sm.num-states + 1, num-transitions = sm.num-transitions, history = sm.history }
+
+  sm-add-transition : StateMachine, Integer, Integer, Integer, Integer -> StateMachine
+  sm-add-transition (sm) (from) (event) (to) (guard) =
+    let t = SmTransition { from-state = from, event = event, to-state = to, guard = guard }
+    in StateMachine { current = sm.current, states = sm.states, transitions = list-push (sm.transitions) t, num-states = sm.num-states, num-transitions = sm.num-transitions + 1, history = sm.history }
+
+Section: Transition
+  SmResult = record {
+    machine : StateMachine,
+    transitioned : Boolean,
+    exit-action : Integer,
+    enter-action : Integer
+  }
+
+  sm-fire : StateMachine, Integer -> SmResult
+  sm-fire (sm) (event) =
+    let found = sm-find-transition (sm.transitions) (sm.current) event 0 (sm.num-transitions)
+    in when found
+      is None -> SmResult { machine = sm, transitioned = False, exit-action = 0, enter-action = 0 }
+      is Just (t) ->
+        let exit-act = sm-state-exit-action (sm.states) (sm.current) 0 (sm.num-states)
+        in let enter-act = sm-state-enter-action (sm.states) (t.to-state) 0 (sm.num-states)
+        in let new-sm = StateMachine { current = t.to-state, states = sm.states, transitions = sm.transitions, num-states = sm.num-states, num-transitions = sm.num-transitions, history = list-push (sm.history) (t.to-state) }
+        in SmResult { machine = new-sm, transitioned = True, exit-action = exit-act, enter-action = enter-act }
+
+  sm-find-transition : List SmTransition, Integer, Integer, Integer, Integer -> Maybe SmTransition
+  sm-find-transition (ts) (current) (event) (i) (len) =
+    if i >= len then None
+    else let t = list-at ts i
+    in if t.from-state == current then
+      if t.event == event then Just t
+      else sm-find-transition ts current event (i + 1) len
+    else sm-find-transition ts current event (i + 1) len
+
+  sm-state-exit-action : List SmState, Integer, Integer, Integer -> Integer
+  sm-state-exit-action (states) (id) (i) (len) =
+    if i >= len then 0
+    else let s = list-at states i
+    in if s.id == id then s.on-exit
+    else sm-state-exit-action states id (i + 1) len
+
+  sm-state-enter-action : List SmState, Integer, Integer, Integer -> Integer
+  sm-state-enter-action (states) (id) (i) (len) =
+    if i >= len then 0
+    else let s = list-at states i
+    in if s.id == id then s.on-enter
+    else sm-state-enter-action states id (i + 1) len
+
+Section: Queries
+  sm-current : StateMachine -> Integer
+  sm-current (sm) = sm.current
+
+  sm-state-name : StateMachine, Integer -> Text
+  sm-state-name (sm) (id) = sm-lookup-name (sm.states) id 0 (sm.num-states)
+
+  sm-lookup-name : List SmState, Integer, Integer, Integer -> Text
+  sm-lookup-name (states) (id) (i) (len) =
+    if i >= len then "?"
+    else let s = list-at states i
+    in if s.id == id then s.name
+    else sm-lookup-name states id (i + 1) len
+
+  sm-current-name : StateMachine -> Text
+  sm-current-name (sm) = sm-state-name sm (sm.current)
+
+  sm-history-length : StateMachine -> Integer
+  sm-history-length (sm) = list-length (sm.history)
+
+  sm-can-fire : StateMachine, Integer -> Boolean
+  sm-can-fire (sm) (event) =
+    let found = sm-find-transition (sm.transitions) (sm.current) event 0 (sm.num-transitions)
+    in when found is Just (t) -> True is None -> False
+
+Page 1

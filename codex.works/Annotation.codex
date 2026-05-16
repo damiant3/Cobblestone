@@ -1,0 +1,128 @@
+Chapter: Annotation
+  cites Foreword chapter FactStore
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+
+ Semantic annotations attached to definitions. An annotation is a
+ typed, content-addressed fact that names its target by stable
+ identifier (chapter + definition name), not source position.
+ Annotations are the discussion layer of the Codex repository.
+
+ We say:
+
+Section: Kinds
+
+  AnnotationKind =
+    | Rationale
+    | Invariant
+    | Warning
+    | Discovery
+    | Doctrine
+    | Todo
+
+Section: Target
+
+ Targets reference code by stable name. A target is a chapter
+ name plus a definition path within that chapter.
+
+  AnnotationTarget = record {
+    chapter : Text,
+    path : Text
+  }
+
+  make-target : Text, Text -> AnnotationTarget
+  make-target (chapter) (path) = AnnotationTarget { chapter = chapter, path = path }
+
+  target-key : AnnotationTarget -> Text
+  target-key (t) = t.chapter & "::" & t.path
+
+Section: Annotation Record
+
+  Annotation = record {
+    hash : Text,
+    target : AnnotationTarget,
+    kind : AnnotationKind,
+    author : Text,
+    body : Text,
+    timestamp : Integer
+  }
+
+  annotation-content-string : AnnotationTarget, AnnotationKind, Text, Text -> Text
+  annotation-content-string (target) (kind) (author) (body) =
+    target-key target & "|" & annotation-kind-name kind & "|" & author & "|" & body
+
+  create-annotation : AnnotationTarget, AnnotationKind, Text, Text, Integer -> Annotation
+  create-annotation (target) (kind) (author) (body) (ts) =
+    let content = annotation-content-string target kind author body
+    in let hash = sha256-to-hex (sha256 (text-to-bytes content))
+    in Annotation { hash = hash, target = target, kind = kind, author = author, body = body, timestamp = ts }
+
+Section: Kind Helpers
+
+  annotation-kind-name : AnnotationKind -> Text
+  annotation-kind-name (k) = when k
+    is Rationale -> "rationale"
+    is Invariant -> "invariant"
+    is Warning -> "warning"
+    is Discovery -> "discovery"
+    is Doctrine -> "doctrine"
+    is Todo -> "todo"
+
+Section: Annotation Store
+
+ Content-addressed store of annotations, keyed by hash.
+ A second index maps target keys to lists of annotation hashes
+ for efficient lookup by definition.
+
+  AnnotationStore = record {
+    by-hash : HamtMap Annotation,
+    by-target : HamtMap (List Text),
+    count : Integer between 0 and 4294967295
+  }
+
+  annotation-store-empty : AnnotationStore = AnnotationStore {
+    by-hash = hamt-empty,
+    by-target = hamt-empty,
+    count = 0
+  }
+
+  annotation-store-add : AnnotationStore, Annotation -> AnnotationStore
+  annotation-store-add (store) (a) =
+    if hamt-contains (store.by-hash) (a.hash) then store
+    else let new-by-hash = hamt-set (store.by-hash) (a.hash) a
+    in let key = target-key (a.target)
+    in let existing = when hamt-get (store.by-target) key
+         is Just (hashes) -> hashes
+         is None -> []
+    in let new-by-target = hamt-set (store.by-target) key (list-snoc existing (a.hash))
+    in AnnotationStore {
+      by-hash = new-by-hash,
+      by-target = new-by-target,
+      count = store.count + 1
+    }
+
+Section: Queries
+
+  annotation-get : AnnotationStore, Text -> Maybe Annotation
+  annotation-get (store) (hash) = hamt-get (store.by-hash) hash
+
+  annotation-for-target : AnnotationStore, AnnotationTarget -> List Annotation
+  annotation-for-target (store) (target) =
+    let key = target-key target
+    in when hamt-get (store.by-target) key
+      is Just (hashes) -> resolve-hashes store hashes 0 (list-length hashes) []
+      is None -> []
+
+  resolve-hashes : AnnotationStore, List Text, Integer, Integer, List Annotation -> List Annotation
+  resolve-hashes (store) (hashes) (i) (len) (acc) =
+    if i >= len then acc
+    else let h = list-at hashes i
+    in when hamt-get (store.by-hash) h
+      is Just (a) -> resolve-hashes store hashes (i + 1) len (list-push acc a)
+      is None -> resolve-hashes store hashes (i + 1) len acc
+
+  annotation-count : AnnotationStore -> Integer
+  annotation-count (store) = store.count
+
+Page 1

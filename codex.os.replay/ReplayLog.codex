@@ -1,0 +1,158 @@
+Chapter: ReplayLog
+  cites Foreword chapter Sha256
+  cites Foreword chapter Maybe
+
+ A ReplayLog captures scheduler events (yield, await, spawn,
+ exit, preempt, channel block) with sequence numbers and
+ SHA-256 hashes for deterministic replay verification.
+
+ We say:
+
+Section: Event Types
+
+  ScheduleReason =
+    | SchedYield
+    | SchedAwait
+    | SchedSpawn
+    | SchedExit
+    | SchedPreempt
+    | SchedChanSendBlock
+    | SchedChanRecvBlock
+
+  ReplayEvent =
+    | InputEvent (Integer) (Integer) (Text) (List Integer)
+    | TimeEvent (Integer) (Integer) (Integer)
+    | SpawnEvent (Integer) (Integer) (Integer) (Integer)
+    | ScheduleEvent (Integer) (Integer) (ScheduleReason)
+    | ExitEvent (Integer) (Integer)
+
+Section: Replay Session
+
+  ReplaySession = record {
+    program-hash : Text,
+    context-hash : Text,
+    events : List ReplayEvent,
+    event-count : Integer between 0 and 4294967295,
+    cursor : Integer between 0 and 4294967295
+  }
+
+  session-new : Text, Text -> ReplaySession
+  session-new (prog) (ctx) = ReplaySession {
+    program-hash = prog,
+    context-hash = ctx,
+    events = [],
+    event-count = 0,
+    cursor = 0
+  }
+
+Section: Recording
+
+  session-record : ReplaySession, ReplayEvent -> ReplaySession
+  session-record (s) (ev) = ReplaySession {
+    program-hash = s.program-hash,
+    context-hash = s.context-hash,
+    events = list-push (s.events) ev,
+    event-count = s.event-count + 1,
+    cursor = s.cursor
+  }
+
+  record-input : ReplaySession, Integer, Integer, Text, List Integer -> ReplaySession
+  record-input (s) (agent) (cap) (op) (payload) =
+    session-record s (InputEvent agent cap op payload)
+
+  record-time : ReplaySession, Integer, Integer, Integer -> ReplaySession
+  record-time (s) (agent) (cap) (logical-time) =
+    session-record s (TimeEvent agent cap logical-time)
+
+  record-spawn : ReplaySession, Integer, Integer, Integer, Integer -> ReplaySession
+  record-spawn (s) (parent) (child) (entry) (caps) =
+    session-record s (SpawnEvent parent child entry caps)
+
+  record-schedule : ReplaySession, Integer, Integer, ScheduleReason -> ReplaySession
+  record-schedule (s) (from) (to) (reason) =
+    session-record s (ScheduleEvent from to reason)
+
+  record-exit : ReplaySession, Integer, Integer -> ReplaySession
+  record-exit (s) (agent) (code) =
+    session-record s (ExitEvent agent code)
+
+Section: Replay
+
+  ReplayResult = record {
+    session : ReplaySession,
+    event : ReplayEvent,
+    valid : Boolean
+  }
+
+  replay-next : ReplaySession -> ReplayResult
+  replay-next (s) =
+    if s.cursor >= s.event-count then ReplayResult {
+      session = s,
+      event = ExitEvent 0 0,
+      valid = False
+    }
+    else let ev = list-at (s.events) (s.cursor)
+    in ReplayResult {
+      session = ReplaySession { program-hash = s.program-hash, context-hash = s.context-hash, events = s.events, event-count = s.event-count, cursor = s.cursor + 1 },
+      event = ev,
+      valid = True
+    }
+
+  replay-peek : ReplaySession -> Maybe ReplayEvent
+  replay-peek (s) =
+    if s.cursor >= s.event-count then None
+    else Just (list-at (s.events) (s.cursor))
+
+  replay-exhausted : ReplaySession -> Boolean
+  replay-exhausted (s) = s.cursor >= s.event-count
+
+  replay-remaining : ReplaySession -> Integer
+  replay-remaining (s) = s.event-count - s.cursor
+
+Section: Validation
+
+  replay-validate-header : ReplaySession, Text, Text -> Boolean
+  replay-validate-header (s) (prog) (ctx) =
+    if s.program-hash == prog then s.context-hash == ctx
+    else False
+
+  event-agent-id : ReplayEvent -> Integer
+  event-agent-id (ev) = when ev
+    is InputEvent (a) (c) (op) (p) -> a
+    is TimeEvent (a) (c) (t) -> a
+    is SpawnEvent (parent) (child) (e) (caps) -> parent
+    is ScheduleEvent (from) (to) (r) -> from
+    is ExitEvent (a) (code) -> a
+
+  event-type-tag : ReplayEvent -> Integer
+  event-type-tag (ev) = when ev
+    is InputEvent (a) (c) (op) (p) -> 0
+    is TimeEvent (a) (c) (t) -> 1
+    is SpawnEvent (parent) (child) (e) (caps) -> 2
+    is ScheduleEvent (from) (to) (r) -> 3
+    is ExitEvent (a) (code) -> 4
+
+  event-type-name : ReplayEvent -> Text
+  event-type-name (ev) = when ev
+    is InputEvent (a) (c) (op) (p) -> "Input"
+    is TimeEvent (a) (c) (t) -> "Time"
+    is SpawnEvent (parent) (child) (e) (caps) -> "Spawn"
+    is ScheduleEvent (from) (to) (r) -> "Schedule"
+    is ExitEvent (a) (code) -> "Exit"
+
+  reason-name : ScheduleReason -> Text
+  reason-name (r) = when r
+    is SchedYield -> "yield"
+    is SchedAwait -> "await"
+    is SchedSpawn -> "spawn"
+    is SchedExit -> "exit"
+    is SchedPreempt -> "preempt"
+    is SchedChanSendBlock -> "chan-send-block"
+    is SchedChanRecvBlock -> "chan-recv-block"
+
+Section: Session Queries
+
+  session-stats : ReplaySession -> Text
+  session-stats (s) = "events=" & show (s.event-count) & " cursor=" & show (s.cursor) & " remaining=" & show (replay-remaining s)
+
+Page 1

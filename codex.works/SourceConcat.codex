@@ -1,0 +1,184 @@
+Chapter: SourceConcat
+  cites Foreword chapter Sort
+  cites Foreword chapter Maybe
+
+ SourceConcat concatenates Codex compiler source into a single text
+ blob for self-compilation. Replaces concat-codex-self.ps1. Scans
+ codex/ for .codex files, transitively resolves cited foreword
+ chapters, prepends them with quire-prefixed names, then emits
+ root files and subdirectory files (quire-prefixed) in sorted order.
+
+ To concat-compiler-source gives Text,
+   producing the full concatenated source from codex-dir and foreword-dir paths.
+
+ We say:
+
+Section: Chapter Rename
+
+  rename-chapter-header : Text, Text -> Text
+  rename-chapter-header (content) (quire) =
+    if text-length quire == 0 then content
+    else let lines = text-split content "\n"
+    in rename-first-chapter lines quire 0 (list-length lines) []
+
+  rename-first-chapter : List Text, Text, Integer, Integer, List Text -> Text
+  rename-first-chapter (lines) (quire) (i) (len) (acc) =
+    if i >= len then join-lines acc 0 (list-length acc) ""
+    else let line = list-at lines i
+    in if text-starts-with line "Chapter: " then
+      let name = substring line 9 (text-length line - 9)
+      in let renamed = "Chapter: " & quire & "--" & name
+      in rename-first-chapter lines quire (i + 1) len (list-push acc renamed)
+    else rename-first-chapter lines quire (i + 1) len (list-push acc line)
+
+  join-lines : List Text, Integer, Integer, Text -> Text
+  join-lines (lines) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i == 0 then "" else "\n"
+    in join-lines lines (i + 1) len (acc & sep & list-at lines i)
+
+Section: Cite Extraction
+
+  extract-foreword-cites : Text -> List Text
+  extract-foreword-cites (content) =
+    let lines = text-split content "\n"
+    in extract-cites-loop lines 0 (list-length lines) []
+
+  extract-cites-loop : List Text, Integer, Integer, List Text -> List Text
+  extract-cites-loop (lines) (i) (len) (acc) =
+    if i >= len then acc
+    else let line = list-at lines i
+    in if text-contains line "cites Foreword chapter " then
+      let parts = text-split line "cites Foreword chapter "
+      in if list-length parts >= 2 then
+        let name = take-identifier (list-at parts 1) 0 (text-length (list-at parts 1)) ""
+        in if text-length name > 0 then extract-cites-loop lines (i + 1) len (list-push acc name)
+        else extract-cites-loop lines (i + 1) len acc
+      else extract-cites-loop lines (i + 1) len acc
+    else extract-cites-loop lines (i + 1) len acc
+
+  take-identifier : Text, Integer, Integer, Text -> Text
+  take-identifier (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = char-at s i
+    in if is-letter c then take-identifier s (i + 1) len (acc & char-to-text c)
+    else if is-digit c then take-identifier s (i + 1) len (acc & char-to-text c)
+    else if c == char-at "-" 0 then take-identifier s (i + 1) len (acc & char-to-text c)
+    else if c == char-at "_" 0 then take-identifier s (i + 1) len (acc & char-to-text c)
+    else acc
+
+Section: Transitive Foreword Resolution
+
+  CiteQueue = record {
+    cq-seen : List Text,
+    cq-ordered : List Text
+  }
+
+  resolve-forewords-transitive : Text, List Text -> CiteQueue
+  resolve-forewords-transitive (foreword-dir) (initial-names) =
+    process-cite-queue foreword-dir (CiteQueue { cq-seen = [], cq-ordered = [] }) initial-names 0 (list-length initial-names)
+
+  process-cite-queue : Text, CiteQueue, List Text, Integer, Integer -> CiteQueue
+  process-cite-queue (foreword-dir) (q) (names) (i) (len) =
+    if i >= len then q
+    else let name = list-at names i
+    in if list-has-text (q.cq-seen) name 0 (list-length (q.cq-seen))
+      then process-cite-queue foreword-dir q names (i + 1) len
+    else let path = path-combine foreword-dir (name & ".codex")
+    in if file-exists path then
+      let content = read-file path
+      in let sub-cites = extract-foreword-cites content
+      in let q2 = CiteQueue { cq-seen = list-push (q.cq-seen) name, cq-ordered = list-push (q.cq-ordered) name }
+      in let q3 = process-cite-queue foreword-dir q2 sub-cites 0 (list-length sub-cites)
+      in process-cite-queue foreword-dir q3 names (i + 1) len
+    else process-cite-queue foreword-dir (CiteQueue { cq-seen = list-push (q.cq-seen) name, cq-ordered = q.cq-ordered }) names (i + 1) len
+
+  list-has-text : List Text, Text, Integer, Integer -> Boolean
+  list-has-text (xs) (target) (i) (len) =
+    if i >= len then False
+    else if list-at xs i == target then True
+    else list-has-text xs target (i + 1) len
+
+Section: Foreword Loading
+
+  load-forewords : Text, List Text -> Text
+  load-forewords (foreword-dir) (names) =
+    load-forewords-loop foreword-dir names 0 (list-length names) ""
+
+  load-forewords-loop : Text, List Text, Integer, Integer, Text -> Text
+  load-forewords-loop (foreword-dir) (names) (i) (len) (acc) =
+    if i >= len then acc
+    else let name = list-at names i
+    in let path = path-combine foreword-dir (name & ".codex")
+    in if file-exists path then
+      let content = read-file path
+      in let renamed = rename-chapter-header content "Foreword"
+      in load-forewords-loop foreword-dir names (i + 1) len (acc & renamed & "\n\n")
+    else load-forewords-loop foreword-dir names (i + 1) len acc
+
+Section: Source Tree Loading
+
+  load-source-tree : Text -> Text
+  load-source-tree (codex-dir) =
+    let root-files = sort-by (list-files codex-dir ".codex") (\a b -> text-compare a b)
+    in let root-text = load-files-with-quire codex-dir root-files "" 0 (list-length root-files) ""
+    in let sub-dirs = sort-by (list-directories codex-dir) (\a b -> text-compare a b)
+    in let sub-text = load-subdirs codex-dir sub-dirs 0 (list-length sub-dirs) ""
+    in root-text & sub-text
+
+  load-subdirs : Text, List Text, Integer, Integer, Text -> Text
+  load-subdirs (codex-dir) (dirs) (i) (len) (acc) =
+    if i >= len then acc
+    else let dir-name = list-at dirs i
+    in let dir-path = path-combine codex-dir dir-name
+    in let files = sort-by (list-files dir-path ".codex") (\a b -> text-compare a b)
+    in let text = load-files-with-quire dir-path files dir-name 0 (list-length files) ""
+    in load-subdirs codex-dir dirs (i + 1) len (acc & text)
+
+  load-files-with-quire : Text, List Text, Text, Integer, Integer, Text -> Text
+  load-files-with-quire (dir) (paths) (quire) (i) (len) (acc) =
+    if i >= len then acc
+    else let content = read-file (list-at paths i)
+    in let renamed = rename-chapter-header content quire
+    in load-files-with-quire dir paths quire (i + 1) len (acc & renamed & "\n\n")
+
+Section: Full Concatenation
+
+  concat-compiler-source : Text, Text -> Text
+  concat-compiler-source (codex-dir) (foreword-dir) =
+    let all-files = list-files codex-dir ".codex"
+    in let sub-dirs = list-directories codex-dir
+    in let all-cites = collect-all-cites codex-dir all-files sub-dirs
+    in let resolved = resolve-forewords-transitive foreword-dir all-cites
+    in let foreword-text = load-forewords foreword-dir (resolved.cq-ordered)
+    in let source-text = load-source-tree codex-dir
+    in foreword-text & source-text
+
+  collect-all-cites : Text, List Text, List Text -> List Text
+  collect-all-cites (codex-dir) (root-files) (sub-dirs) =
+    let root-cites = collect-cites-from-files root-files 0 (list-length root-files) []
+    in collect-subdir-cites codex-dir sub-dirs 0 (list-length sub-dirs) root-cites
+
+  collect-cites-from-files : List Text, Integer, Integer, List Text -> List Text
+  collect-cites-from-files (paths) (i) (len) (acc) =
+    if i >= len then acc
+    else let content = read-file (list-at paths i)
+    in let found = extract-foreword-cites content
+    in collect-cites-from-files paths (i + 1) len (merge-unique acc found 0 (list-length found))
+
+  collect-subdir-cites : Text, List Text, Integer, Integer, List Text -> List Text
+  collect-subdir-cites (codex-dir) (dirs) (i) (len) (acc) =
+    if i >= len then acc
+    else let dir-path = path-combine codex-dir (list-at dirs i)
+    in let files = list-files dir-path ".codex"
+    in let sub-acc = collect-cites-from-files files 0 (list-length files) acc
+    in collect-subdir-cites codex-dir dirs (i + 1) len sub-acc
+
+  merge-unique : List Text, List Text, Integer, Integer -> List Text
+  merge-unique (acc) (items) (i) (len) =
+    if i >= len then acc
+    else let item = list-at items i
+    in if list-has-text acc item 0 (list-length acc) then merge-unique acc items (i + 1) len
+    else merge-unique (list-push acc item) items (i + 1) len
+
+Page 1

@@ -1,0 +1,185 @@
+Chapter: AST Nodes
+
+ The abstract syntax tree is the desugared representation used
+ by the type checker and later stages. CST nodes carry tokens;
+ AST nodes carry Names, resolved literal values, and a SourceSpan
+ for diagnostics.
+
+Section: Names and Literals
+  LiteralKind =
+   | IntLit
+   | NumLit
+   | TextLit
+   | CharLit
+   | BoolLit
+
+  BinaryOp =
+   | OpAdd
+   | OpSub
+   | OpMul
+   | OpDiv
+   | OpPow
+   | OpEq
+   | OpNotEq
+   | OpLt
+   | OpGt
+   | OpLtEq
+   | OpGtEq
+   | OpDefEq
+   | OpAppend
+   | OpCons
+   | OpAnd
+   | OpOr
+
+Section: Expressions
+  AExpr =
+   | ALitExpr (Text) (LiteralKind) (SourceSpan)
+   | ANameExpr (Name) (SourceSpan)
+   | AApplyExpr (AExpr) (AExpr) (SourceSpan)
+   | ABinaryExpr (AExpr) (BinaryOp) (AExpr) (SourceSpan)
+   | AUnaryExpr (AExpr) (SourceSpan)
+   | AIfExpr (AExpr) (AExpr) (AExpr) (SourceSpan)
+   | ALetExpr (List ALetBind) (AExpr) (SourceSpan)
+   | ALambdaExpr (List Name) (AExpr) (SourceSpan)
+   | AMatchExpr (AExpr) (List AMatchArm) (SourceSpan)
+   | AListExpr (List AExpr) (SourceSpan)
+   | ARecordExpr (Name) (List AFieldExpr) (SourceSpan)
+   | AFieldAccess (AExpr) (Name) (SourceSpan)
+   | AActExpr (List AActStmt) (SourceSpan)
+   | AHandleExpr (Name) (AExpr) (List AHandleClause) (SourceSpan)
+   | AWithTimeoutExpr (Text) (List Name) (List Text) (AExpr) (SourceSpan)
+   | ATryExpr (Integer) (List AActStmt) (List AActStmt) (List AActStmt) (SourceSpan)
+   | AErrorExpr (Text) (SourceSpan)
+
+  ALetBind = record {
+   name : Name,
+   value : AExpr,
+   span : SourceSpan
+  }
+
+  AMatchArm = record {
+   pattern : APat,
+   body : AExpr,
+   span : SourceSpan
+  }
+
+  AFieldExpr = record {
+   name : Name,
+   value : AExpr,
+   span : SourceSpan
+  }
+
+  AActStmt =
+   | AActBindStmt (Name) (AExpr) (SourceSpan)
+   | AActExprStmt (AExpr) (SourceSpan)
+
+  AHandleClause = record {
+   op-name : Name,
+   params : List Name,
+   resume-name : Name,
+   body : AExpr,
+   span : SourceSpan
+  }
+
+Section: Patterns
+  APat =
+   | AVarPat (Name) (SourceSpan)
+   | ALitPat (Text) (LiteralKind) (SourceSpan)
+   | ACtorPat (Name) (List APat) (SourceSpan)
+   | AWildPat (SourceSpan)
+
+Section: Type Expressions
+  ATypeExpr =
+   | ANamedType (Name) (SourceSpan)
+   | AFunType (ATypeExpr) (ATypeExpr) (SourceSpan)
+   | AAppType (ATypeExpr) (List ATypeExpr) (SourceSpan)
+   | AEffectType (List Name) (List Text) (ATypeExpr) (SourceSpan)
+   | ABoundedIntType (ATypeExpr) (Integer) (Integer) (OverflowMode) (SourceSpan)
+
+Section: Definitions
+  AParam = record {
+   name : Name,
+   span : SourceSpan
+  }
+
+  ADef = record {
+   name : Name,
+   params : List AParam,
+   declared-type : List ATypeExpr,
+   body : AExpr,
+   chapter-slug : Text,
+   span : SourceSpan
+  }
+
+  ARecordFieldDef = record {
+   name : Name,
+   type-expr : ATypeExpr,
+   span : SourceSpan
+  }
+
+  AVariantCtorDef = record {
+   name : Name,
+   fields : List ATypeExpr,
+   span : SourceSpan
+  }
+
+  ATypeDef =
+   | ARecordTypeDef (Name) (List Name) (List ARecordFieldDef) (SourceSpan)
+   | AVariantTypeDef (Name) (List Name) (List AVariantCtorDef) (SourceSpan)
+
+  AEffectOpDef = record {
+   name : Name,
+   type-expr : ATypeExpr,
+   span : SourceSpan
+  }
+
+  AEffectDef = record {
+   name : Name,
+   ops : List AEffectOpDef,
+   span : SourceSpan
+  }
+
+Section: Chapter
+  ACitesDecl = record {
+   quire : Name,
+   chapter-name : Name,
+   selected-names : List Name,
+   citing-chapter : Text,
+   span : SourceSpan
+  }
+
+  AChapter = record {
+   name : Name,
+   defs : List ADef,
+   type-defs : List ATypeDef,
+   effect-defs : List AEffectDef,
+   citations : List ACitesDecl,
+   chapter-title : Text,
+   prose : Text,
+   section-titles : List Text,
+   span : SourceSpan
+  }
+
+Section: Span Accessor
+  aexpr-span : AExpr -> SourceSpan
+  aexpr-span (e) =
+   when e
+    is ALitExpr (t) (k) (s) -> s
+    is ANameExpr (n) (s) -> s
+    is AApplyExpr (f) (a) (s) -> s
+    is ABinaryExpr (l) (op) (r) (s) -> s
+    is AUnaryExpr (x) (s) -> s
+    is AIfExpr (c) (t) (el) (s) -> s
+    is ALetExpr (bs) (b) (s) -> s
+    is ALambdaExpr (ps) (b) (s) -> s
+    is AMatchExpr (sc) (arms) (s) -> s
+    is AListExpr (es) (s) -> s
+    is ARecordExpr (n) (fs) (s) -> s
+    is AFieldAccess (r) (f) (s) -> s
+    is AActExpr (ss) (s) -> s
+    is AHandleExpr (eff) (b) (cs) (s) -> s
+    is AWithTimeoutExpr (timeout) (effs) (scopes) (b) (s) -> s
+    is ATryExpr (max) (body) (fb) (fail) (s) -> s
+    is AErrorExpr (m) (s) -> s
+
+Page 1

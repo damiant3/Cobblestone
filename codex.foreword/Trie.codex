@@ -1,0 +1,175 @@
+Chapter: Trie
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+
+ Prefix tree (trie) mapping text keys to integer values. Each node
+ holds up to 128 children indexed by Unicode code point (clamped to
+ ASCII). Insert, lookup, and prefix test all run in O(k) where k
+ equals the key length.
+
+ A TrieNode is a record containing:
+   children  -- 128-element list of child indices (-1 = absent).
+   has-value -- whether the node stores a value.
+   value     -- the stored integer value.
+
+ A Trie is a record containing:
+   nodes -- flat list of TrieNode records (arena-style storage).
+   count -- number of distinct keys stored.
+
+ To trie-empty gives Trie,
+   creating an empty trie with a single root node.
+
+ To trie-insert gives Trie,
+   inserting or updating a key-value pair, returning the updated trie.
+
+ To trie-lookup gives Maybe Integer,
+   returning Just the value if the key exists, or None.
+
+ To trie-contains gives Boolean,
+   True if the key exists in the trie.
+
+ To trie-has-prefix gives Boolean,
+   True if any key in the trie starts with the given prefix.
+
+ To trie-prefix-keys gives List Text,
+   returning all keys that start with the given prefix.
+
+ To trie-count gives Integer,
+   returning the number of distinct keys stored.
+
+ To trie-node-count gives Integer,
+   returning the total number of nodes allocated.
+
+ We say:
+
+Section: Node
+  TrieNode = record {
+    children : List Integer,
+    has-value : Boolean,
+    value : Integer
+  }
+
+  Trie = record {
+    nodes : List TrieNode,
+    count : Integer
+  }
+
+Section: Construction
+  trie-empty : Trie
+  trie-empty = Trie { nodes = [trie-empty-node], count = 0 }
+
+  trie-empty-node : TrieNode
+  trie-empty-node = TrieNode { children = trie-fill-neg 128 0 [], has-value = False, value = 0 }
+
+  trie-fill-neg : Integer, Integer, List Integer -> List Integer
+  trie-fill-neg (n) (i) (acc) =
+   if i >= n then acc
+   else trie-fill-neg n (i + 1) (list-push acc (0 - 1))
+
+Section: Insert
+  trie-insert : Trie, Text, Integer -> Trie
+  trie-insert (t) (key) (val) = trie-insert-at t key 0 (text-length key) 0 val
+
+  trie-insert-at : Trie, Text, Integer, Integer, Integer, Integer -> Trie
+  trie-insert-at (t) (key) (ki) (klen) (node-idx) (val) =
+   if ki >= klen then
+    let node = list-at (t.nodes) node-idx
+    in let new-node = TrieNode { children = node.children, has-value = True, value = val }
+    in let was-new = if node.has-value then 0 else 1
+    in Trie { nodes = list-set-at (t.nodes) node-idx new-node, count = t.count + was-new }
+   else let ch = trie-char-idx key ki
+   in let node = list-at (t.nodes) node-idx
+   in let child-idx = list-at (node.children) ch
+   in if child-idx < 0 then
+    let new-idx = list-length (t.nodes)
+    in let new-children = list-set-at (node.children) ch new-idx
+    in let updated-node = TrieNode { children = new-children, has-value = node.has-value, value = node.value }
+    in let t2 = Trie { nodes = list-set-at (list-push (t.nodes) trie-empty-node) node-idx updated-node, count = t.count }
+    in trie-insert-at t2 key (ki + 1) klen new-idx val
+   else trie-insert-at t key (ki + 1) klen child-idx val
+
+  trie-char-idx : Text, Integer -> Integer
+  trie-char-idx (s) (i) =
+   let c = char-code (char-at s i)
+   in let u = to-unicode c
+   in if u >= 128 then 0 else u
+
+Section: Lookup
+  trie-lookup : Trie, Text -> Maybe Integer
+  trie-lookup (t) (key) = trie-lookup-at t key 0 (text-length key) 0
+
+  trie-lookup-at : Trie, Text, Integer, Integer, Integer -> Maybe Integer
+  trie-lookup-at (t) (key) (ki) (klen) (node-idx) =
+   if ki >= klen then
+    let node = list-at (t.nodes) node-idx
+    in if node.has-value then Just (node.value) else None
+   else let ch = trie-char-idx key ki
+   in let node = list-at (t.nodes) node-idx
+   in let child-idx = list-at (node.children) ch
+   in if child-idx < 0 then None
+   else trie-lookup-at t key (ki + 1) klen child-idx
+
+  trie-contains : Trie, Text -> Boolean
+  trie-contains (t) (key) = trie-has-key (trie-lookup t key)
+
+  trie-has-key : Maybe Integer -> Boolean
+  trie-has-key (m) =
+   when m
+    is Just (v) -> True
+    is None -> False
+
+  trie-has-prefix : Trie, Text -> Boolean
+  trie-has-prefix (t) (prefix) = trie-find-node t prefix 0 (text-length prefix) 0
+
+  trie-find-node : Trie, Text, Integer, Integer, Integer -> Boolean
+  trie-find-node (t) (key) (ki) (klen) (node-idx) =
+   if ki >= klen then True
+   else let ch = trie-char-idx key ki
+   in let node = list-at (t.nodes) node-idx
+   in let child-idx = list-at (node.children) ch
+   in if child-idx < 0 then False
+   else trie-find-node t key (ki + 1) klen child-idx
+
+Section: Prefix Search
+  trie-find-node-idx : Trie, Text -> Integer
+  trie-find-node-idx (t) (prefix) = trie-walk-to-node t prefix 0 (text-length prefix) 0
+
+  trie-walk-to-node : Trie, Text, Integer, Integer, Integer -> Integer
+  trie-walk-to-node (t) (key) (ki) (klen) (node-idx) =
+   if ki >= klen then node-idx
+   else let ch = trie-char-idx key ki
+   in let node = list-at (t.nodes) node-idx
+   in let child-idx = list-at (node.children) ch
+   in if child-idx < 0 then (0 - 1)
+   else trie-walk-to-node t key (ki + 1) klen child-idx
+
+  trie-prefix-keys : Trie, Text -> List Text
+  trie-prefix-keys (t) (prefix) =
+   let ni = trie-find-node-idx t prefix
+   in if ni < 0 then []
+   else trie-collect-keys t ni prefix []
+
+  trie-collect-keys : Trie, Integer, Text, List Text -> List Text
+  trie-collect-keys (t) (node-idx) (prefix) (acc) =
+   let node = list-at (t.nodes) node-idx
+   in let acc2 = if node.has-value then list-push acc prefix else acc
+   in trie-collect-children t node 0 128 prefix acc2
+
+  trie-collect-children : Trie, TrieNode, Integer, Integer, Text, List Text -> List Text
+  trie-collect-children (t) (node) (i) (limit) (prefix) (acc) =
+   if i >= limit then acc
+   else let child-idx = list-at (node.children) i
+   in if child-idx < 0 then trie-collect-children t node (i + 1) limit prefix acc
+   else let cce = from-unicode i
+   in let ch-text = char-to-text (code-to-char cce)
+   in let acc2 = trie-collect-keys t child-idx (prefix & ch-text) acc
+   in trie-collect-children t node (i + 1) limit prefix acc2
+
+Section: Queries
+  trie-count : Trie -> Integer
+  trie-count (t) = t.count
+
+  trie-node-count : Trie -> Integer
+  trie-node-count (t) = list-length (t.nodes)
+
+Page 1

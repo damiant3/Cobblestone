@@ -1,0 +1,182 @@
+Chapter: Aes
+
+ AES-128 block cipher implementing the Rijndael algorithm on 16-byte
+ blocks. Supports ECB (single-block) and CBC (chained) modes. Key
+ expansion produces 44 words (176 bytes) from a 16-byte key. Each
+ encryption round applies SubBytes, ShiftRows, MixColumns, and
+ AddRoundKey; the final round omits MixColumns. All data flows as
+ List Integer byte arrays.
+
+ To aes-expand-key-128 gives List Integer,
+   expanding a 16-byte key into a 176-byte round-key schedule.
+
+ To aes-encrypt-block gives List Integer,
+   encrypting a single 16-byte block under the expanded key in 10 rounds.
+
+ To aes-cbc-encrypt gives List Integer,
+   encrypting plaintext in CBC mode, chaining each block with the previous ciphertext.
+
+ To aes-format-block gives Text,
+   formatting a 16-byte block as a 32-character lowercase hex string.
+
+ We say:
+
+Section: Constants
+  aes-block-size : Integer = 16
+
+Section: S-Box
+  aes-sbox : List Integer
+  aes-sbox = [99, 124, 119, 123, 242, 107, 111, 197, 48, 1, 103, 43, 254, 215, 171, 118, 202, 130, 201, 125, 250, 89, 71, 240, 173, 212, 162, 175, 156, 164, 114, 192, 183, 253, 147, 38, 54, 63, 247, 204, 52, 165, 229, 241, 113, 216, 49, 21, 4, 199, 35, 195, 24, 150, 5, 154, 7, 18, 128, 226, 235, 39, 178, 117, 9, 131, 44, 26, 27, 110, 90, 160, 82, 59, 214, 179, 41, 227, 47, 132, 83, 209, 0, 237, 32, 252, 177, 91, 106, 203, 190, 57, 74, 76, 88, 207, 208, 239, 170, 251, 67, 77, 51, 133, 69, 249, 2, 127, 80, 60, 159, 168, 81, 163, 64, 143, 146, 157, 56, 245, 188, 182, 218, 33, 16, 255, 243, 210, 205, 12, 19, 236, 95, 151, 68, 23, 196, 167, 126, 61, 100, 93, 25, 115, 96, 129, 79, 220, 34, 42, 144, 136, 70, 238, 184, 20, 222, 94, 11, 219, 224, 50, 58, 10, 73, 6, 36, 92, 194, 211, 172, 98, 145, 149, 228, 121, 231, 200, 55, 109, 141, 213, 78, 169, 108, 86, 244, 234, 101, 122, 174, 8, 186, 120, 37, 46, 28, 166, 180, 198, 232, 221, 116, 31, 75, 189, 139, 138, 112, 62, 181, 102, 72, 3, 246, 14, 97, 53, 87, 185, 134, 193, 29, 158, 225, 248, 152, 17, 105, 217, 142, 148, 155, 30, 135, 233, 206, 85, 40, 223, 140, 161, 137, 13, 191, 230, 66, 104, 65, 153, 45, 15, 176, 84, 187, 22]
+
+  aes-inv-sbox : List Integer
+  aes-inv-sbox = [82, 9, 106, 213, 48, 54, 165, 56, 191, 64, 163, 158, 129, 243, 215, 251, 124, 227, 57, 130, 155, 47, 255, 135, 52, 142, 67, 68, 196, 222, 233, 203, 84, 123, 148, 50, 166, 194, 35, 61, 238, 76, 149, 11, 66, 250, 195, 78, 8, 46, 161, 102, 40, 217, 36, 178, 118, 91, 162, 73, 109, 139, 209, 37, 114, 248, 246, 100, 134, 104, 152, 22, 212, 164, 92, 204, 93, 101, 182, 146, 108, 112, 72, 80, 253, 237, 185, 218, 94, 21, 70, 87, 167, 141, 157, 132, 144, 216, 171, 0, 140, 188, 211, 10, 247, 228, 88, 5, 184, 179, 69, 6, 208, 44, 30, 143, 202, 63, 15, 2, 193, 175, 189, 3, 1, 19, 138, 107, 58, 145, 17, 65, 79, 103, 220, 234, 151, 242, 207, 206, 240, 180, 230, 115, 150, 172, 116, 34, 231, 173, 53, 133, 226, 249, 55, 232, 28, 117, 223, 110, 71, 241, 26, 113, 29, 41, 197, 137, 111, 183, 98, 14, 170, 24, 190, 27, 252, 86, 62, 75, 198, 210, 121, 32, 154, 219, 192, 254, 120, 205, 90, 244, 31, 221, 168, 51, 136, 7, 199, 49, 177, 18, 16, 89, 39, 128, 236, 95, 96, 81, 127, 169, 25, 181, 74, 13, 45, 229, 122, 159, 147, 201, 156, 239, 160, 224, 59, 77, 174, 42, 245, 176, 200, 235, 187, 60, 131, 83, 153, 97, 23, 43, 4, 126, 186, 119, 214, 38, 225, 105, 20, 99, 85, 33, 12, 125]
+
+Section: Key Expansion (AES-128)
+  aes-expand-key-128 : List Integer -> List Integer
+  aes-expand-key-128 (key) = aes-key-exp key 4 44 1
+
+  aes-key-exp : List Integer, Integer, Integer, Integer -> List Integer
+  aes-key-exp (w) (i) (n) (rcon) =
+    if i >= n then w
+    else let prev = aes-word-at w (i - 1)
+    in let back = aes-word-at w (i - 4)
+    in let temp = if i - i / 4 * 4 == 0 then aes-xor-words back (aes-sub-word (aes-rot-word prev) rcon)
+      else aes-xor-words back prev
+    in let new-rcon = if i - i / 4 * 4 == 0 then aes-next-rcon rcon else rcon
+    in aes-key-exp (w & aes-word-to-bytes temp) (i + 1) n new-rcon
+
+  aes-word-at : List Integer, Integer -> Integer
+  aes-word-at (w) (i) =
+    let off = i * 4
+    in bit-or (bit-shl (list-at w off) 24) (bit-or (bit-shl (list-at w (off + 1)) 16) (bit-or (bit-shl (list-at w (off + 2)) 8) (list-at w (off + 3))))
+
+  aes-word-to-bytes : Integer -> List Integer
+  aes-word-to-bytes (w) = [bit-and (bit-shru w 24) 255, bit-and (bit-shru w 16) 255, bit-and (bit-shru w 8) 255, bit-and w 255]
+
+  aes-rot-word : Integer -> Integer
+  aes-rot-word (w) = bit-or (bit-and (bit-shl w 8) 4294967295) (bit-and (bit-shru w 24) 255)
+
+  aes-sub-word : Integer, Integer -> Integer
+  aes-sub-word (w) (rcon) =
+    let b0 = list-at aes-sbox (bit-and (bit-shru w 24) 255)
+    in let b1 = list-at aes-sbox (bit-and (bit-shru w 16) 255)
+    in let b2 = list-at aes-sbox (bit-and (bit-shru w 8) 255)
+    in let b3 = list-at aes-sbox (bit-and w 255)
+    in bit-or (bit-shl (bit-xor b0 rcon) 24) (bit-or (bit-shl b1 16) (bit-or (bit-shl b2 8) b3))
+
+  aes-xor-words : Integer, Integer -> Integer
+  aes-xor-words (a) (b) = bit-xor a b
+
+  aes-next-rcon : Integer -> Integer
+  aes-next-rcon (r) = if r >= 128 then bit-xor (bit-and (bit-shl r 1) 255) 27 else bit-shl r 1
+
+Section: Block Encryption
+  aes-encrypt-block : List Integer, List Integer -> List Integer
+  aes-encrypt-block (block) (expanded-key) =
+    let state = aes-add-round-key block expanded-key 0
+    in let after-rounds = aes-enc-rounds state expanded-key 1 10
+    in let sub = aes-sub-bytes after-rounds
+    in let shifted = aes-shift-rows sub
+    in aes-add-round-key shifted expanded-key 10
+
+  aes-enc-rounds : List Integer, List Integer, Integer, Integer -> List Integer
+  aes-enc-rounds (state) (key) (round) (total) =
+    if round >= total then state
+    else let sub = aes-sub-bytes state
+    in let shifted = aes-shift-rows sub
+    in let mixed = aes-mix-columns shifted
+    in let added = aes-add-round-key mixed key round
+    in aes-enc-rounds added key (round + 1) total
+
+Section: SubBytes
+  aes-sub-bytes : List Integer -> List Integer
+  aes-sub-bytes (state) = aes-sub-loop state 0 16 []
+
+  aes-sub-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  aes-sub-loop (state) (i) (n) (acc) =
+    if i >= n then acc
+    else aes-sub-loop state (i + 1) n (list-push acc (list-at aes-sbox (list-at state i)))
+
+Section: ShiftRows
+  aes-shift-rows : List Integer -> List Integer
+  aes-shift-rows (s) =
+    [list-at s 0, list-at s 5, list-at s 10, list-at s 15, list-at s 4, list-at s 9, list-at s 14, list-at s 3, list-at s 8, list-at s 13, list-at s 2, list-at s 7, list-at s 12, list-at s 1, list-at s 6, list-at s 11]
+
+Section: MixColumns
+  aes-mix-columns : List Integer -> List Integer
+  aes-mix-columns (s) =
+    aes-mix-col s 0 & aes-mix-col s 4 & aes-mix-col s 8 & aes-mix-col s 12
+
+  aes-mix-col : List Integer, Integer -> List Integer
+  aes-mix-col (s) (c) =
+    let a0 = list-at s c
+    in let a1 = list-at s (c + 1)
+    in let a2 = list-at s (c + 2)
+    in let a3 = list-at s (c + 3)
+    in [bit-xor (aes-gmul2 a0) (bit-xor (aes-gmul3 a1) (bit-xor a2 a3)), bit-xor a0 (bit-xor (aes-gmul2 a1) (bit-xor (aes-gmul3 a2) a3)), bit-xor a0 (bit-xor a1 (bit-xor (aes-gmul2 a2) (aes-gmul3 a3))), bit-xor (aes-gmul3 a0) (bit-xor a1 (bit-xor a2 (aes-gmul2 a3)))]
+
+  aes-gmul2 : Integer -> Integer
+  aes-gmul2 (a) = if a >= 128 then bit-xor (bit-and (bit-shl a 1) 255) 27 else bit-and (bit-shl a 1) 255
+
+  aes-gmul3 : Integer -> Integer
+  aes-gmul3 (a) = bit-xor a (aes-gmul2 a)
+
+Section: AddRoundKey
+  aes-add-round-key : List Integer, List Integer, Integer -> List Integer
+  aes-add-round-key (state) (key) (round) = aes-ark-loop state key (round * 16) 0 16 []
+
+  aes-ark-loop : List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  aes-ark-loop (state) (key) (offset) (i) (n) (acc) =
+    if i >= n then acc
+    else aes-ark-loop state key offset (i + 1) n (list-push acc (bit-xor (list-at state i) (list-at key (offset + i))))
+
+Section: CBC Mode
+  aes-cbc-encrypt : List Integer, List Integer, List Integer -> List Integer
+  aes-cbc-encrypt (plaintext) (key) (iv) =
+    let expanded = aes-expand-key-128 key
+    in aes-cbc-enc-loop plaintext expanded iv 0 (list-length plaintext) []
+
+  aes-cbc-enc-loop : List Integer, List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  aes-cbc-enc-loop (pt) (key) (prev) (i) (n) (acc) =
+    if i + 16 > n then acc
+    else let block = aes-get-block pt i
+    in let xored = aes-xor-blocks block prev
+    in let encrypted = aes-encrypt-block xored key
+    in aes-cbc-enc-loop pt key encrypted (i + 16) n (acc & encrypted)
+
+  aes-get-block : List Integer, Integer -> List Integer
+  aes-get-block (data) (off) = aes-block-loop data off 0 []
+
+  aes-block-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  aes-block-loop (data) (off) (i) (acc) =
+    if i >= 16 then acc
+    else aes-block-loop data off (i + 1) (list-push acc (if off + i < list-length data then list-at data (off + i) else 0))
+
+  aes-xor-blocks : List Integer, List Integer -> List Integer
+  aes-xor-blocks (a) (b) = aes-xor-loop a b 0 16 []
+
+  aes-xor-loop : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  aes-xor-loop (a) (b) (i) (n) (acc) =
+    if i >= n then acc
+    else aes-xor-loop a b (i + 1) n (list-push acc (bit-xor (list-at a i) (list-at b i)))
+
+Section: Formatting
+  aes-format-block : List Integer -> Text
+  aes-format-block (block) = aes-fmt-loop block 0 16 ""
+
+  aes-fmt-loop : List Integer, Integer, Integer, Text -> Text
+  aes-fmt-loop (block) (i) (n) (acc) =
+    if i >= n then acc
+    else aes-fmt-loop block (i + 1) n (acc & aes-hex-byte (list-at block i))
+
+  aes-hex-byte : Integer -> Text
+  aes-hex-byte (b) = aes-hex-nib (bit-shru b 4) & aes-hex-nib (bit-and b 15)
+
+  aes-hex-nib : Integer -> Text
+  aes-hex-nib (n) =
+    if n == 0 then "0" else if n == 1 then "1" else if n == 2 then "2" else if n == 3 then "3"
+    else if n == 4 then "4" else if n == 5 then "5" else if n == 6 then "6" else if n == 7 then "7"
+    else if n == 8 then "8" else if n == 9 then "9" else if n == 10 then "a" else if n == 11 then "b"
+    else if n == 12 then "c" else if n == 13 then "d" else if n == 14 then "e" else "f"
+
+Page 1

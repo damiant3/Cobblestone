@@ -1,0 +1,86 @@
+Chapter: UnionFind
+  cites Foreword chapter ListUtils
+
+ Disjoint-set (union-find) with path compression and union by rank.
+ O(alpha(n)) amortized per find and union operation. Essential for
+ Kruskal MST, connected-component labeling, and equivalence classes.
+
+ A UnionFind is a record containing:
+   parent -- list mapping each element to its parent (self = root).
+   rank   -- list of tree-depth upper bounds per root.
+   count  -- number of disjoint components.
+
+ A UfFindResult is a record containing:
+   root -- the representative element of the component.
+   uf   -- the union-find after path compression.
+
+ To uf-new gives UnionFind,
+   creating a union-find with the given number of singleton components.
+
+ To uf-find gives UfFindResult,
+   finding the root of the component containing the given element, compressing the path.
+
+ To uf-union gives UnionFind,
+   merging the components of two elements by rank; returns unchanged if already connected.
+
+ To uf-connected gives Boolean,
+   True if two elements belong to the same component.
+
+ To uf-num-components gives Integer,
+   returning the current number of disjoint components.
+
+ We say:
+
+Section: Type
+  UnionFind = record {
+    parent : List Integer,
+    rank : List Integer,
+    count : Integer
+  }
+
+Section: Construction
+  uf-new : Integer -> UnionFind
+  uf-new (n) = UnionFind { parent = uf-iota n 0 [], rank = list-zeros n, count = n }
+
+  uf-iota : Integer, Integer, List Integer -> List Integer
+  uf-iota (n) (i) (acc) =
+    if i >= n then acc
+    else uf-iota n (i + 1) (list-push acc i)
+
+Section: Find with Path Compression
+  UfFindResult = record {
+    root : Integer,
+    uf : UnionFind
+  }
+
+  uf-find : UnionFind, Integer -> UfFindResult
+  uf-find (u) (x) =
+    let p = list-at (u.parent) x
+    in if p == x then UfFindResult { root = x, uf = u }
+    else let result = uf-find u p
+    in let compressed = UnionFind { parent = list-set-at (result.uf.parent) x (result.root), rank = result.uf.rank, count = result.uf.count }
+    in UfFindResult { root = result.root, uf = compressed }
+
+Section: Union by Rank
+  uf-union : UnionFind, Integer, Integer -> UnionFind
+  uf-union (u) (a) (b) =
+    let fa = uf-find u a
+    in let fb = uf-find (fa.uf) b
+    in if fa.root == fb.root then fb.uf
+    else let ra = list-at (fb.uf.rank) (fa.root)
+    in let rb = list-at (fb.uf.rank) (fb.root)
+    in if ra < rb then UnionFind { parent = list-set-at (fb.uf.parent) (fa.root) (fb.root), rank = fb.uf.rank, count = fb.uf.count - 1 }
+    else if ra > rb then UnionFind { parent = list-set-at (fb.uf.parent) (fb.root) (fa.root), rank = fb.uf.rank, count = fb.uf.count - 1 }
+    else UnionFind { parent = list-set-at (fb.uf.parent) (fb.root) (fa.root), rank = list-set-at (fb.uf.rank) (fa.root) (ra + 1), count = fb.uf.count - 1 }
+
+Section: Queries
+  uf-connected : UnionFind, Integer, Integer -> Boolean
+  uf-connected (u) (a) (b) =
+    let fa = uf-find u a
+    in let fb = uf-find (fa.uf) b
+    in fa.root == fb.root
+
+  uf-num-components : UnionFind -> Integer
+  uf-num-components (u) = u.count
+
+Page 1

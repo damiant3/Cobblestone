@@ -1,0 +1,276 @@
+Chapter: DnsResolver
+  cites Net chapter Udp
+  cites Net chapter Ethernet
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter CCE
+
+ The DnsResolver builds DNS query packets and parses responses
+ (A, CNAME, TXT records) over UDP port 53. Maintains a local
+ cache of resolved entries keyed by hostname.
+
+ We say:
+
+Section: DNS Records
+
+  DnsRecord =
+    | DnsA (List Integer)
+    | DnsCname (Text)
+    | DnsTxt (Text)
+
+  DnsEntry = record {
+    name : Text,
+    dns-rec : DnsRecord,
+    ttl : Integer between 0 and 4294967295,
+    created : Integer
+  }
+
+  DnsCache = record {
+    entries : HamtMap DnsEntry,
+    count : Integer between 0 and 65535
+  }
+
+Section: Cache Operations
+
+  dns-cache-empty : DnsCache
+  dns-cache-empty = DnsCache { entries = hamt-empty, count = 0 }
+
+  dns-cache-put : DnsCache, Text, DnsRecord, Integer, Integer -> DnsCache
+  dns-cache-put (cache) (name) (rec) (ttl) (now) =
+    let entry = DnsEntry { name = name, dns-rec = rec, ttl = ttl, created = now }
+    in let had = hamt-contains (cache.entries) name
+    in DnsCache { entries = hamt-set (cache.entries) name entry, count = if had then cache.count else cache.count + 1 }
+
+  dns-cache-lookup : DnsCache, Text, Integer -> Maybe DnsRecord
+  dns-cache-lookup (cache) (name) (now) =
+    let found = hamt-get (cache.entries) name
+    in when found
+      is None -> None
+      is Just (entry) ->
+        if now - entry.created > entry.ttl then None
+        else Just (entry.dns-rec)
+
+  dns-cache-remove : DnsCache, Text -> DnsCache
+  dns-cache-remove (cache) (name) =
+    if hamt-contains (cache.entries) name then
+      DnsCache { entries = hamt-remove (cache.entries) name, count = cache.count - 1 }
+    else cache
+
+  dns-cache-count : DnsCache -> Integer
+  dns-cache-count (cache) = cache.count
+
+Section: Static Host Table
+
+  HostEntry = record {
+    hostname : Text,
+    ip : List Integer
+  }
+
+  HostTable = record {
+    hosts : List HostEntry,
+    count : Integer between 0 and 255
+  }
+
+  host-table-empty : HostTable
+  host-table-empty = HostTable { hosts = [], count = 0 }
+
+  host-table-add : HostTable, Text, List Integer -> HostTable
+  host-table-add (ht) (name) (ip) =
+    let entry = HostEntry { hostname = name, ip = ip }
+    in HostTable { hosts = list-push (ht.hosts) entry, count = ht.count + 1 }
+
+  host-table-lookup : HostTable, Text -> Maybe (List Integer)
+  host-table-lookup (ht) (name) = host-lookup-loop (ht.hosts) name 0 (ht.count)
+
+  host-lookup-loop : List HostEntry, Text, Integer, Integer -> Maybe (List Integer)
+  host-lookup-loop (hosts) (name) (i) (len) =
+    if i >= len then None
+    else let h = list-at hosts i
+    in if h.hostname == name then Just (h.ip)
+    else host-lookup-loop hosts name (i + 1) len
+
+Section: Resolver
+
+  DnsResolver = record {
+    cache : DnsCache,
+    hosts : HostTable
+  }
+
+  resolver-new : HostTable -> DnsResolver
+  resolver-new (ht) = DnsResolver { cache = dns-cache-empty, hosts = ht }
+
+  resolve : DnsResolver, Text, Integer -> Maybe (List Integer)
+  resolve (r) (name) (now) =
+    let host-result = host-table-lookup (r.hosts) name
+    in when host-result
+      is Just (ip) -> Just ip
+      is None ->
+        let cache-result = dns-cache-lookup (r.cache) name now
+        in when cache-result
+          is Just (rec) -> when rec
+            is DnsA (ip) -> Just ip
+            is otherwise -> None
+          is None -> None
+
+  resolver-cache-result : DnsResolver, Text, List Integer, Integer, Integer -> DnsResolver
+  resolver-cache-result (r) (name) (ip) (ttl) (now) =
+    let new-cache = dns-cache-put (r.cache) name (DnsA ip) ttl now
+    in DnsResolver { cache = new-cache, hosts = r.hosts }
+
+Section: Formatting
+
+  format-dns-record : DnsRecord -> Text
+  format-dns-record (rec) = when rec
+    is DnsA (ip) -> format-ip ip
+    is DnsCname (name) -> "CNAME " & name
+    is DnsTxt (txt) -> "TXT " & txt
+
+  format-ip : List Integer -> Text
+  format-ip (ip) =
+    if list-length ip < 4 then "?"
+    else show (list-at ip 0) & "." & show (list-at ip 1) & "." & show (list-at ip 2) & "." & show (list-at ip 3)
+
+Section: Wire Protocol Constants
+  dns-port : Integer = 53
+  dns-type-a : Integer = 1
+  dns-type-cname : Integer = 5
+  dns-type-txt : Integer = 16
+  dns-class-in : Integer = 1
+  dns-flags-query-rd : Integer = 256
+  dns-header-size : Integer = 12
+
+Section: Name Encoding
+  dns-encode-name : Text -> List Integer
+  dns-encode-name (name) =
+    dns-encode-labels name 0 (text-length name) []
+
+  dns-encode-labels : Text, Integer, Integer, List Integer -> List Integer
+  dns-encode-labels (name) (start) (len) (acc) =
+    if start >= len then acc & [0]
+    else let dot-pos = dns-find-dot name start len
+    in let label-len = dot-pos - start
+    in let label-bytes = dns-extract-label name start dot-pos []
+    in let next = if dot-pos < len then dot-pos + 1 else dot-pos
+    in dns-encode-labels name next len (acc & [label-len] & label-bytes)
+
+  dns-find-dot : Text, Integer, Integer -> Integer
+  dns-find-dot (name) (i) (len) =
+    if i >= len then len
+    else if char-at name i == char-at "." 0 then i
+    else dns-find-dot name (i + 1) len
+
+  dns-extract-label : Text, Integer, Integer, List Integer -> List Integer
+  dns-extract-label (name) (i) (stop) (acc) =
+    if i >= stop then acc
+    else dns-extract-label name (i + 1) stop (list-push acc (to-unicode (char-code (char-at name i))))
+
+Section: Query Construction
+  dns-build-query : Integer, Text, Integer -> List Integer
+  dns-build-query (tx-id) (name) (qtype) =
+    let header = write-be16 tx-id & write-be16 dns-flags-query-rd & write-be16 1 & write-be16 0 & write-be16 0 & write-be16 0
+    in let qname = dns-encode-name name
+    in let question = qname & write-be16 qtype & write-be16 dns-class-in
+    in header & question
+
+  dns-build-a-query : Integer, Text -> List Integer
+  dns-build-a-query (tx-id) (name) = dns-build-query tx-id name dns-type-a
+
+Section: Response Parsing
+  DnsAnswer = record {
+    rtype : Integer,
+    ttl : Integer,
+    rdata : List Integer
+  }
+
+  DnsResponse = record {
+    tx-id : Integer,
+    flags : Integer,
+    answer-count : Integer,
+    answers : List DnsAnswer,
+    valid : Boolean
+  }
+
+  dns-parse-response : List Integer -> DnsResponse
+  dns-parse-response (data) =
+    let dlen = list-length data
+    in if dlen < dns-header-size then DnsResponse { tx-id = 0, flags = 0, answer-count = 0, answers = [], valid = False }
+    else let tx-id = read-be16 data 0
+    in let flags = read-be16 data 2
+    in let qdcount = read-be16 data 4
+    in let ancount = read-be16 data 6
+    in let q-end = dns-skip-questions data dns-header-size qdcount
+    in let answers = dns-parse-answers data q-end ancount []
+    in DnsResponse { tx-id = tx-id, flags = flags, answer-count = ancount, answers = answers, valid = True }
+
+  dns-skip-questions : List Integer, Integer, Integer -> Integer
+  dns-skip-questions (data) (off) (count) =
+    if count <= 0 then off
+    else let name-end = dns-skip-name data off
+    in dns-skip-questions data (name-end + 4) (count - 1)
+
+  dns-skip-name : List Integer, Integer -> Integer
+  dns-skip-name (data) (off) =
+    if off >= list-length data then off
+    else let b = list-at data off
+    in if b == 0 then off + 1
+    else if bit-and b 192 == 192 then off + 2
+    else dns-skip-name data (off + 1 + b)
+
+  dns-parse-answers : List Integer, Integer, Integer, List DnsAnswer -> List DnsAnswer
+  dns-parse-answers (data) (off) (count) (acc) =
+    if count <= 0 then acc
+    else if off + 10 > list-length data then acc
+    else let name-end = dns-skip-name data off
+    in let rtype = read-be16 data name-end
+    in let ttl = dns-read-be32 data (name-end + 4)
+    in let rdlen = read-be16 data (name-end + 8)
+    in let rdata = dns-extract-rdata data (name-end + 10) rdlen []
+    in let answer = DnsAnswer { rtype = rtype, ttl = ttl, rdata = rdata }
+    in dns-parse-answers data (name-end + 10 + rdlen) (count - 1) (list-push acc answer)
+
+  dns-read-be32 : List Integer, Integer -> Integer
+  dns-read-be32 (data) (off) =
+    let b0 = bit-shl (list-at data off) 24
+    in let b1 = bit-shl (list-at data (off + 1)) 16
+    in let b2 = bit-shl (list-at data (off + 2)) 8
+    in let b3 = list-at data (off + 3)
+    in bit-or b0 (bit-or b1 (bit-or b2 b3))
+
+  dns-extract-rdata : List Integer, Integer, Integer, List Integer -> List Integer
+  dns-extract-rdata (data) (off) (len) (acc) =
+    if len <= 0 then acc
+    else if off >= list-length data then acc
+    else dns-extract-rdata data (off + 1) (len - 1) (list-push acc (list-at data off))
+
+Section: Response Extraction
+  dns-first-a-record : DnsResponse -> Maybe (List Integer)
+  dns-first-a-record (resp) =
+    if resp.valid == False then None
+    else dns-find-a-in-answers (resp.answers) 0 (resp.answer-count)
+
+  dns-find-a-in-answers : List DnsAnswer, Integer, Integer -> Maybe (List Integer)
+  dns-find-a-in-answers (answers) (i) (len) =
+    if i >= len then None
+    else let a = list-at answers i
+    in if a.rtype == dns-type-a then
+      if list-length (a.rdata) == 4 then Just (a.rdata)
+      else dns-find-a-in-answers answers (i + 1) len
+    else dns-find-a-in-answers answers (i + 1) len
+
+  dns-first-a-ttl : DnsResponse -> Integer
+  dns-first-a-ttl (resp) = dns-find-a-ttl (resp.answers) 0 (resp.answer-count)
+
+  dns-find-a-ttl : List DnsAnswer, Integer, Integer -> Integer
+  dns-find-a-ttl (answers) (i) (len) =
+    if i >= len then 0
+    else let a = list-at answers i
+    in if a.rtype == dns-type-a then a.ttl
+    else dns-find-a-ttl answers (i + 1) len
+
+Section: UDP Integration
+  dns-build-udp-query : List Integer, List Integer, Integer, Text -> List Integer
+  dns-build-udp-query (src-ip) (dns-ip) (tx-id) (name) =
+    let query = dns-build-a-query tx-id name
+    in udp-build-ip-packet src-ip dns-ip 1024 dns-port query
+
+Page 1

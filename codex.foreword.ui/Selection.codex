@@ -1,0 +1,124 @@
+Chapter: Selection
+
+ Text selection model — range tracking for text fields and editors.
+ Handles anchor/focus points, normalization (start <= end),
+ extension via shift-click and shift-arrow, and multi-range
+ selection for block editing.
+
+ To selection-new gives a selection from anchor and focus positions.
+ To selection-empty gives an empty (collapsed) selection.
+ To selection-extend gives an extended selection from a new focus.
+ To selection-length gives the number of selected characters.
+
+ We say:
+
+Section: Range
+
+  SelectionRange = record {
+    sel-anchor : Integer,
+    sel-focus : Integer,
+    sel-start : Integer,
+    sel-end : Integer
+  }
+
+  selection-empty : SelectionRange = SelectionRange {
+    sel-anchor = 0,
+    sel-focus = 0,
+    sel-start = 0,
+    sel-end = 0
+  }
+
+  selection-new : Integer, Integer -> SelectionRange
+  selection-new (anchor) (focus) = SelectionRange {
+    sel-anchor = anchor,
+    sel-focus = focus,
+    sel-start = if anchor < focus then anchor else focus,
+    sel-end = if anchor < focus then focus else anchor
+  }
+
+  selection-from-cursor : Integer -> SelectionRange
+  selection-from-cursor (pos) = selection-new pos pos
+
+Section: Queries
+
+  selection-is-empty : SelectionRange -> Boolean
+  selection-is-empty (s) = s.sel-start == s.sel-end
+
+  selection-length : SelectionRange -> Integer
+  selection-length (s) = s.sel-end - s.sel-start
+
+  selection-contains : SelectionRange, Integer -> Boolean
+  selection-contains (s) (pos) =
+    if pos >= s.sel-start then pos < s.sel-end else False
+
+  selection-normalized : SelectionRange -> SelectionRange
+  selection-normalized (s) = SelectionRange {
+    sel-anchor = s.sel-start,
+    sel-focus = s.sel-end,
+    sel-start = s.sel-start,
+    sel-end = s.sel-end
+  }
+
+Section: Modification
+
+  selection-extend : SelectionRange, Integer, Integer -> SelectionRange
+  selection-extend (s) (old-pos) (new-pos) =
+    let anchor = if selection-is-empty s then old-pos else s.sel-anchor
+    in selection-new anchor new-pos
+
+  selection-collapse-start : SelectionRange -> SelectionRange
+  selection-collapse-start (s) = selection-from-cursor (s.sel-start)
+
+  selection-collapse-end : SelectionRange -> SelectionRange
+  selection-collapse-end (s) = selection-from-cursor (s.sel-end)
+
+  selection-select-all : Integer -> SelectionRange
+  selection-select-all (len) = selection-new 0 len
+
+  selection-select-word : Text, Integer -> SelectionRange
+  selection-select-word (text) (pos) =
+    let start = sel-word-start text pos
+    in let end-pos = sel-word-end text pos (text-length text)
+    in selection-new start end-pos
+
+Section: Word Boundaries
+
+  sel-word-start : Text, Integer -> Integer
+  sel-word-start (text) (pos) =
+    if pos <= 0 then 0
+    else if sel-is-word-char text (pos - 1) then sel-word-start text (pos - 1)
+    else pos
+
+  sel-word-end : Text, Integer, Integer -> Integer
+  sel-word-end (text) (pos) (len) =
+    if pos >= len then len
+    else if sel-is-word-char text pos then sel-word-end text (pos + 1) len
+    else pos
+
+  sel-is-word-char : Text, Integer -> Boolean
+  sel-is-word-char (text) (pos) =
+    let c = char-code (char-at text pos)
+    in if c == 32 then False else if c == 10 then False else if c == 9 then False else True
+
+Section: Multi-Range
+
+  MultiSelection = record {
+    ms-ranges : List SelectionRange,
+    ms-count : Integer
+  }
+
+  multi-selection-empty : MultiSelection = MultiSelection {
+    ms-ranges = [],
+    ms-count = 0
+  }
+
+  multi-selection-add : MultiSelection, SelectionRange -> MultiSelection
+  multi-selection-add (ms) (r) = MultiSelection {
+    ms-ranges = list-push (ms.ms-ranges) r,
+    ms-count = ms.ms-count + 1
+  }
+
+  multi-selection-clear : MultiSelection -> MultiSelection
+  multi-selection-clear (ms) = multi-selection-empty
+
+Page 1

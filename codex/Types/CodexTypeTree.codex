@@ -1,0 +1,74 @@
+Chapter: CodexType Tree
+  cites Codex chapter Lists
+
+ Structural-recursion helpers for CodexType trees. Walkers in Unifier
+ and TypeCheckerInference apply a per-node transformation; the
+ boilerplate of recursing into children of every variant lives here.
+ Adding a new CodexType variant or changing a variant's shape is a
+ single-file edit; every walker that uses these helpers picks up the
+ new recursion automatically.
+
+Section: Children Map
+  codex-type-map-children : (CodexType -> CodexType), CodexType -> CodexType
+  codex-type-map-children (f) (ty) =
+   when ty
+    is FunTy (param) (ret) -> deck-record (FunTy (f param) (f ret))
+    is ListTy (elem) -> deck-record (ListTy (f elem))
+    is LinkedListTy (elem) -> deck-record (LinkedListTy (f elem))
+    is ForAllTy (id) (body) -> deck-record (ForAllTy id (f body))
+    is EffectfulTy (effs) (sc) (ret) -> deck-record (EffectfulTy effs sc (f ret))
+    is ConstructedTy (name) (args) -> deck-record (ConstructedTy name (map-children-list f args 0 (list-length args) []))
+    is SumTy (name) (args) (ctors) -> deck-record (SumTy name (map-children-list f args 0 (list-length args) []) (map-children-sum-ctors f ctors 0 (list-length ctors) []))
+    is RecordTy (name) (args) (fields) -> deck-record (RecordTy name (map-children-list f args 0 (list-length args) []) (map-children-record-fields f fields 0 (list-length fields) []))
+    is otherwise -> ty
+
+  map-children-list : (CodexType -> CodexType), List CodexType, Integer, Integer, List CodexType -> List CodexType
+  map-children-list (f) (xs) (i) (len) (acc) =
+   if i == len then acc
+   else map-children-list f xs (i + 1) len (list-push acc (f (list-at xs i)))
+
+  map-children-record-fields : (CodexType -> CodexType), List RecordField, Integer, Integer, List RecordField -> List RecordField
+  map-children-record-fields (f) (fs) (i) (len) (acc) =
+   if i == len then acc
+   else let r = list-at fs i
+   in map-children-record-fields f fs (i + 1) len (list-push acc (deck-record (RecordField { name = r.name, type-val = f (r.type-val) })))
+
+  map-children-sum-ctors : (CodexType -> CodexType), List SumCtor, Integer, Integer, List SumCtor -> List SumCtor
+  map-children-sum-ctors (f) (cs) (i) (len) (acc) =
+   if i == len then acc
+   else let c = list-at cs i
+   in let new-fields = map-children-list f (c.fields) 0 (list-length (c.fields)) []
+   in map-children-sum-ctors f cs (i + 1) len (list-push acc (deck-record (SumCtor { name = c.name, fields = new-fields })))
+
+Section: Children Fold
+  codex-type-fold-children : (CodexType -> a -> a), CodexType, a -> a
+  codex-type-fold-children (f) (ty) (acc) =
+   when ty
+    is FunTy (p) (r) -> f r (f p acc)
+    is ListTy (elem) -> f elem acc
+    is LinkedListTy (elem) -> f elem acc
+    is ForAllTy (id) (body) -> f body acc
+    is EffectfulTy (effs) (sc) (ret) -> f ret acc
+    is ConstructedTy (name) (args) -> fold-children-list f args 0 (list-length args) acc
+    is SumTy (name) (args) (ctors) -> fold-children-sum-ctors f ctors 0 (list-length ctors) (fold-children-list f args 0 (list-length args) acc)
+    is RecordTy (name) (args) (fields) -> fold-children-record-fields f fields 0 (list-length fields) (fold-children-list f args 0 (list-length args) acc)
+    is otherwise -> acc
+
+  fold-children-list : (CodexType -> a -> a), List CodexType, Integer, Integer, a -> a
+  fold-children-list (f) (xs) (i) (len) (acc) =
+   if i == len then acc
+   else fold-children-list f xs (i + 1) len (f (list-at xs i) acc)
+
+  fold-children-record-fields : (CodexType -> a -> a), List RecordField, Integer, Integer, a -> a
+  fold-children-record-fields (f) (fs) (i) (len) (acc) =
+   if i == len then acc
+   else let r = list-at fs i
+   in fold-children-record-fields f fs (i + 1) len (f (r.type-val) acc)
+
+  fold-children-sum-ctors : (CodexType -> a -> a), List SumCtor, Integer, Integer, a -> a
+  fold-children-sum-ctors (f) (cs) (i) (len) (acc) =
+   if i == len then acc
+   else let c = list-at cs i
+   in fold-children-sum-ctors f cs (i + 1) len (fold-children-list f (c.fields) 0 (list-length (c.fields)) acc)
+
+Page 1

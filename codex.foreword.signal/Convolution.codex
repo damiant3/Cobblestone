@@ -1,0 +1,84 @@
+Chapter: Convolution
+
+ Discrete convolution and FIR filter kernels. Fixed-point (scale
+ 1000). Convolves a signal with a kernel to produce filtered output.
+ Includes standard low-pass, high-pass, and edge-detect kernels.
+
+ We say:
+
+Section: 1D Convolution
+  convolve : List Integer, List Integer -> List Integer
+  convolve (signal) (kernel) =
+    let slen = list-length signal
+    in let klen = list-length kernel
+    in conv-loop signal kernel slen klen 0 []
+
+  conv-loop : List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  conv-loop (signal) (kernel) (slen) (klen) (i) (acc) =
+    if i >= slen then acc
+    else let val = conv-dot signal kernel slen klen i 0 0
+    in conv-loop signal kernel slen klen (i + 1) (list-push acc val)
+
+  conv-dot : List Integer, List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  conv-dot (signal) (kernel) (slen) (klen) (center) (k) (acc) =
+    if k >= klen then acc / 1000
+    else let offset = center - klen / 2 + k
+    in let sample = if offset < 0 then 0 else if offset >= slen then 0 else list-at signal offset
+    in conv-dot signal kernel slen klen center (k + 1) (acc + sample * list-at kernel k)
+
+Section: Standard Kernels
+  kernel-box-3 : List Integer
+  kernel-box-3 = [333, 333, 333]
+
+  kernel-box-5 : List Integer
+  kernel-box-5 = [200, 200, 200, 200, 200]
+
+  kernel-triangle-5 : List Integer
+  kernel-triangle-5 = [100, 250, 300, 250, 100]
+
+  kernel-gaussian-5 : List Integer
+  kernel-gaussian-5 = [62, 244, 388, 244, 62]
+
+  kernel-edge-3 : List Integer
+  kernel-edge-3 = [0 - 1000, 2000, 0 - 1000]
+
+  kernel-diff-3 : List Integer
+  kernel-diff-3 = [0 - 500, 0, 500]
+
+Section: Window Functions
+  window-hamming : Integer -> List Integer
+  window-hamming (n) = window-hamming-loop n 0 []
+
+  window-hamming-loop : Integer, Integer, List Integer -> List Integer
+  window-hamming-loop (n) (i) (acc) =
+    if i >= n then acc
+    else let cos-val = window-cos-approx (i * 6283 / (n - 1))
+    in let w = 540 - 460 * cos-val / 1000
+    in window-hamming-loop n (i + 1) (list-push acc w)
+
+  window-hanning : Integer -> List Integer
+  window-hanning (n) = window-hanning-loop n 0 []
+
+  window-hanning-loop : Integer, Integer, List Integer -> List Integer
+  window-hanning-loop (n) (i) (acc) =
+    if i >= n then acc
+    else let cos-val = window-cos-approx (i * 6283 / (n - 1))
+    in let w = 500 - 500 * cos-val / 1000
+    in window-hanning-loop n (i + 1) (list-push acc w)
+
+  window-cos-approx : Integer -> Integer
+  window-cos-approx (milli-rad) =
+    let x2 = milli-rad * milli-rad / 1000
+    in let x4 = x2 * x2 / 1000
+    in 1000 - x2 / 2 + x4 / 24
+
+Section: Apply Window
+  apply-window : List Integer, List Integer -> List Integer
+  apply-window (signal) (win) = apply-window-loop signal win 0 (list-length signal) []
+
+  apply-window-loop : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  apply-window-loop (signal) (win) (i) (len) (acc) =
+    if i >= len then acc
+    else apply-window-loop signal win (i + 1) len (list-push acc (list-at signal i * list-at win i / 1000))
+
+Page 1

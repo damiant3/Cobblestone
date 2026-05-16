@@ -1,0 +1,125 @@
+Chapter: ChaCha20
+
+ ChaCha20 stream cipher per RFC 7539. Accepts a 256-bit key, a 96-bit
+ nonce, and a 32-bit block counter. Generates a pseudorandom keystream
+ by performing 20 rounds (10 double-rounds) of quarter-round mixing on
+ a 16-word state, then XORs the keystream with plaintext. Used in
+ TLS 1.3 paired with Poly1305 for authenticated encryption.
+
+ To chacha20-encrypt gives List Integer,
+   encrypting or decrypting a byte list using ChaCha20 with a 256-bit key, 96-bit nonce, and initial counter, returning ciphertext of equal length.
+
+ To chacha-block gives List Integer,
+   generating one 16-word keystream block for the given counter value.
+
+ We say:
+
+Section: Constants
+  chacha-rounds : Integer = 20
+
+Section: Quarter Round
+  chacha-qr : List Integer, Integer, Integer, Integer, Integer -> List Integer
+  chacha-qr (state) (a) (b) (c) (d) =
+    let va = list-at state a
+    in let vb = list-at state b
+    in let vc = list-at state c
+    in let vd = list-at state d
+    in let va1 = chacha-add32 va vb
+    in let vd1 = chacha-rotl (bit-xor vd va1) 16
+    in let vc1 = chacha-add32 vc vd1
+    in let vb1 = chacha-rotl (bit-xor vb vc1) 12
+    in let va2 = chacha-add32 va1 vb1
+    in let vd2 = chacha-rotl (bit-xor vd1 va2) 8
+    in let vc2 = chacha-add32 vc1 vd2
+    in let vb2 = chacha-rotl (bit-xor vb1 vc2) 7
+    in list-set-at (list-set-at (list-set-at (list-set-at state a va2) b vb2) c vc2) d vd2
+
+Section: Block Function
+  chacha-block : List Integer, Integer, List Integer -> List Integer
+  chacha-block (key) (counter) (nonce) =
+    let initial = chacha-init-state key counter nonce
+    in let worked = chacha-double-round initial 0
+    in chacha-add-states initial worked
+
+  chacha-init-state : List Integer, Integer, List Integer -> List Integer
+  chacha-init-state (key) (counter) (nonce) =
+    [1634760805, 857760878, 2036477234, 1797285236] ++
+    chacha-words-from-bytes key ++
+    [counter] ++
+    chacha-words-from-bytes nonce
+
+  chacha-double-round : List Integer, Integer -> List Integer
+  chacha-double-round (state) (i) =
+    if i >= chacha-rounds / 2 then state
+    else let s1 = chacha-qr state 0 4 8 12
+    in let s2 = chacha-qr s1 1 5 9 13
+    in let s3 = chacha-qr s2 2 6 10 14
+    in let s4 = chacha-qr s3 3 7 11 15
+    in let s5 = chacha-qr s4 0 5 10 15
+    in let s6 = chacha-qr s5 1 6 11 12
+    in let s7 = chacha-qr s6 2 7 8 13
+    in let s8 = chacha-qr s7 3 4 9 14
+    in chacha-double-round s8 (i + 1)
+
+  chacha-add-states : List Integer, List Integer -> List Integer
+  chacha-add-states (a) (b) = chacha-add-loop a b 0 16 []
+
+  chacha-add-loop : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  chacha-add-loop (a) (b) (i) (n) (acc) =
+    if i >= n then acc
+    else chacha-add-loop a b (i + 1) n (list-push acc (chacha-add32 (list-at a i) (list-at b i)))
+
+Section: Encryption
+  chacha20-encrypt : List Integer, List Integer, List Integer, Integer -> List Integer
+  chacha20-encrypt (key-bytes) (nonce-bytes) (plaintext) (initial-counter) =
+    chacha-enc-loop key-bytes nonce-bytes plaintext initial-counter 0 (list-length plaintext) []
+
+  chacha-enc-loop : List Integer, List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  chacha-enc-loop (key) (nonce) (pt) (counter) (pos) (n) (acc) =
+    if pos >= n then acc
+    else let block = chacha-block key counter nonce
+    in let keystream = chacha-words-to-bytes block
+    in let chunk-len = chacha-min (n - pos) 64
+    in let encrypted = chacha-xor-chunk pt keystream pos chunk-len 0 []
+    in chacha-enc-loop key nonce pt (counter + 1) (pos + 64) n (acc & encrypted)
+
+  chacha-xor-chunk : List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  chacha-xor-chunk (pt) (ks) (pt-off) (len) (i) (acc) =
+    if i >= len then acc
+    else let p = list-at pt (pt-off + i)
+    in let k = list-at ks i
+    in chacha-xor-chunk pt ks pt-off len (i + 1) (list-push acc (bit-xor p k))
+
+Section: Word/Byte Conversion
+  chacha-words-from-bytes : List Integer -> List Integer
+  chacha-words-from-bytes (bytes) = chacha-w2b-loop bytes 0 (list-length bytes / 4) []
+
+  chacha-w2b-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  chacha-w2b-loop (bytes) (i) (n) (acc) =
+    if i >= n then acc
+    else let off = i * 4
+    in let word = bit-or (list-at bytes off) (bit-or (bit-shl (list-at bytes (off + 1)) 8) (bit-or (bit-shl (list-at bytes (off + 2)) 16) (bit-shl (list-at bytes (off + 3)) 24)))
+    in chacha-w2b-loop bytes (i + 1) n (list-push acc word)
+
+  chacha-words-to-bytes : List Integer -> List Integer
+  chacha-words-to-bytes (words) = chacha-b2w-loop words 0 (list-length words) []
+
+  chacha-b2w-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  chacha-b2w-loop (words) (i) (n) (acc) =
+    if i >= n then acc
+    else let w = list-at words i
+    in chacha-b2w-loop words (i + 1) n (acc & [bit-and w 255, bit-and (bit-shr w 8) 255, bit-and (bit-shr w 16) 255, bit-and (bit-shr w 24) 255])
+
+Section: Helpers
+  chacha-add32 : Integer, Integer -> Integer
+  chacha-add32 (a) (b) = bit-and (a + b) 4294967295
+
+  chacha-rotl : Integer, Integer -> Integer
+  chacha-rotl (val) (n) =
+    let masked = bit-and val 4294967295
+    in bit-and (bit-or (bit-shl masked n) (bit-shru masked (32 - n))) 4294967295
+
+  chacha-min : Integer, Integer -> Integer
+  chacha-min (a) (b) = if a < b then a else b
+
+Page 1

@@ -1,0 +1,226 @@
+Chapter: TrustLattice
+
+  cites Foreword chapter Maybe
+
+  cites Foreword chapter Hamt
+
+
+
+ A TrustLattice is a fixed-point scoring system for inter-agent
+
+ trust, mapping integer scores in 0-10000 to the 0.0-1.0 range
+
+ with decay, combination, and threshold operations.
+
+
+
+ We say:
+
+
+
+Section: Trust Scores
+
+
+
+ Fixed-point trust scores: 0-10000 maps to 0.0-1.0.
+
+ 10000 = full trust, 0 = no trust.
+
+
+
+  trust-max : Integer = 10000
+
+
+
+  trust-none : Integer = 0
+
+
+
+  trust-decay-factor : Integer = 8000
+
+
+
+  trust-default-threshold : Integer = 5000
+
+
+
+Section: Vouch Records
+
+
+
+  Vouch = record {
+
+    from : Text,
+
+    target : Text,
+
+    score : Integer between 0 and 65535
+
+  }
+
+
+
+  TrustEntry = record {
+
+    agent : Text,
+
+    direct-score : Integer between 0 and 65535,
+
+    vouches : List Vouch
+
+  }
+
+
+
+  TrustLattice = record {
+
+    entries : HamtMap TrustEntry
+
+  }
+
+
+
+  lattice-empty : TrustLattice = TrustLattice { entries = hamt-empty }
+
+
+
+Section: Lattice Operations
+
+
+
+  lattice-add-direct : TrustLattice, Text, Integer -> TrustLattice
+
+  lattice-add-direct (lat) (agent) (score) =
+
+    let existing = hamt-get (lat.entries) agent
+
+    in let entry = when existing
+
+      is Just (e) -> TrustEntry { agent = agent, direct-score = score, vouches = e.vouches }
+
+      is None -> TrustEntry { agent = agent, direct-score = score, vouches = [] }
+
+    in TrustLattice { entries = hamt-set (lat.entries) agent entry }
+
+
+
+  lattice-add-vouch : TrustLattice, Text, Text, Integer -> TrustLattice
+
+  lattice-add-vouch (lat) (from) (target) (score) =
+
+    let v = Vouch { from = from, target = target, score = score }
+
+    in let existing = hamt-get (lat.entries) target
+
+    in let entry = when existing
+
+      is Just (e) -> TrustEntry { agent = target, direct-score = e.direct-score, vouches = list-push (e.vouches) v }
+
+      is None -> TrustEntry { agent = target, direct-score = 0, vouches = [v] }
+
+    in TrustLattice { entries = hamt-set (lat.entries) target entry }
+
+
+
+Section: Trust Computation
+
+
+
+  lattice-trust-score : TrustLattice, Text -> Integer
+
+  lattice-trust-score (lat) (agent) =
+
+    let entry = hamt-get (lat.entries) agent
+
+    in when entry
+
+      is Just (e) -> compute-trust lat e 0
+
+      is None -> trust-none
+
+
+
+  compute-trust : TrustLattice, TrustEntry, Integer -> Integer
+
+  compute-trust (lat) (entry) (depth) =
+
+    if depth > 5 then trust-none
+
+    else let direct = entry.direct-score
+
+    in let indirect = best-vouch-score lat (entry.vouches) 0 (list-length (entry.vouches)) depth
+
+    in max-int direct indirect
+
+
+
+  best-vouch-score : TrustLattice, List Vouch, Integer, Integer, Integer -> Integer
+
+  best-vouch-score (lat) (vouches) (i) (len) (depth) =
+
+    if i == len then trust-none
+
+    else let v = list-at vouches i
+
+    in let voucher-trust = lattice-trust-score-at-depth lat (v.from) (depth + 1)
+
+    in let decayed = decay-trust voucher-trust (v.score)
+
+    in let rest = best-vouch-score lat vouches (i + 1) len depth
+
+    in max-int decayed rest
+
+
+
+  lattice-trust-score-at-depth : TrustLattice, Text, Integer -> Integer
+
+  lattice-trust-score-at-depth (lat) (agent) (depth) =
+
+    if depth > 5 then trust-none
+
+    else let entry = hamt-get (lat.entries) agent
+
+    in when entry
+
+      is Just (e) -> compute-trust lat e depth
+
+      is None -> trust-none
+
+
+
+  decay-trust : Integer, Integer -> Integer
+
+  decay-trust (voucher-score) (vouch-strength) =
+
+    voucher-score * vouch-strength * trust-decay-factor / (trust-max * trust-max)
+
+
+
+  max-int : Integer, Integer -> Integer
+
+  max-int (a) (b) = if a > b then a else b
+
+
+
+Section: Threshold Checking
+
+
+
+  lattice-meets-threshold : TrustLattice, Text, Integer -> Boolean
+
+  lattice-meets-threshold (lat) (agent) (threshold) =
+
+    lattice-trust-score lat agent >= threshold
+
+
+
+  lattice-is-trusted : TrustLattice, Text -> Boolean
+
+  lattice-is-trusted (lat) (agent) =
+
+    lattice-meets-threshold lat agent trust-default-threshold
+
+
+
+Page 1
+

@@ -1,0 +1,269 @@
+Chapter: AnnotationTransport
+  cites Works chapter RepoProtocol
+  cites Works chapter Annotation
+  cites Works chapter SignedAnnotation
+  cites Works chapter KeyManager
+  cites Works chapter ConsoleEditor
+  cites Trust chapter AgentProtocol
+  cites Trust chapter TrustTransport
+  cites Trust chapter TrustLattice
+  cites Foreword chapter Sha256
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Maybe
+
+ The annotation transport pump connects RepoProtocol's outboxes to
+ the OS-layer TrustTransport. RepoProtocol queues outbound work in
+ repo.outbox (proposals) and repo.verdict-outbox (verdicts); the
+ pump wraps each item in an AnnotateMsg or VerdictMsg envelope,
+ signs it with the local keypair, and trust-sends it on a
+ TrustSession. The receive direction takes any inbound AgentMessage
+ and, if it is a knowledge-publication kind, applies it to the
+ local repo state and editor notifications after passing the trust
+ filter.
+
+ The envelope id is sha256 of the encoded payload — content-
+ addressed, deterministic, idempotent. Replay is detected by id
+ collision; the envelope signature covers (id, fingerprint,
+ kind-tag) so payload integrity follows transitively from id.
+
+ Many functions here are split into small helpers to keep each
+ if-else single-armed and dodge the let-with-multi-arm-if parser
+ landmine documented in KNOWN-CONDITIONS.md.
+
+ We say:
+
+Section: Envelope IDs
+
+  envelope-id : List Integer -> List Integer
+  envelope-id (payload-bytes) = sha256 payload-bytes
+
+  envelope-content : List Integer, Text, Text -> Text
+  envelope-content (id) (fingerprint) (kind) =
+    bytes-to-hex id & "|" & fingerprint & "|" & kind
+
+Section: Outbound Envelopes
+
+  sign-annotate-envelope : Keypair, ProposalPayload -> AnnotateMsg
+  sign-annotate-envelope (kp) (pp) =
+    let payload = encode-proposal-payload pp
+    in let id = envelope-id payload
+    in let content = envelope-content id (kp.fingerprint) "annotate"
+    in let sig = sign-content kp content
+    in AnnotateMsg {
+      id = id,
+      from = AgentIdentity { public-key = kp.public-key },
+      payload = payload,
+      signature = sig
+    }
+
+  sign-verdict-envelope : Keypair, Verdict -> VerdictMsg
+  sign-verdict-envelope (kp) (v) =
+    let payload = encode-verdict v
+    in let id = envelope-id payload
+    in let in-reply = text-to-bytes (v.proposal-id)
+    in let content = envelope-content id (kp.fingerprint) "verdict"
+    in let sig = sign-content kp content
+    in VerdictMsg {
+      id = id,
+      from = AgentIdentity { public-key = kp.public-key },
+      in-reply-to = in-reply,
+      payload = payload,
+      signature = sig
+    }
+
+Section: Outbound Pump
+
+ pump-outbound walks repo.outbox first, then repo.verdict-outbox.
+ If the full annotation list ships, the outbox is drained; same
+ for the verdict outbox. Partial sends leave the remainder for
+ the next cycle.
+
+  AnnotationPumpResult = record {
+    repo : RepoState,
+    session : TrustSession,
+    sent : Integer between 0 and 4294967295
+  }
+
+  send-annotation-list : TrustSession, Keypair, List ProposalPayload, Integer, Integer -> AnnotationPumpStep
+  send-annotation-list (sess) (kp) (xs) (i) (n) =
+    if i >= n then AnnotationPumpStep { session = sess, sent = i, success = True }
+    else send-annotation-step sess kp xs i n
+
+  send-annotation-step : TrustSession, Keypair, List ProposalPayload, Integer, Integer -> AnnotationPumpStep
+  send-annotation-step (sess) (kp) (xs) (i) (n) =
+    let pp = list-at xs i
+    in let env = sign-annotate-envelope kp pp
+    in let sr = trust-send sess (MsgAnnotate env)
+    in continue-annotation-list sr kp xs i n
+
+  continue-annotation-list : TrustSendResult, Keypair, List ProposalPayload, Integer, Integer -> AnnotationPumpStep
+  continue-annotation-list (sr) (kp) (xs) (i) (n) =
+    if sr.success == False then AnnotationPumpStep { session = sr.session, sent = i, success = False }
+    else send-annotation-list (sr.session) kp xs (i + 1) n
+
+  send-verdict-list : TrustSession, Keypair, List Verdict, Integer, Integer -> AnnotationPumpStep
+  send-verdict-list (sess) (kp) (xs) (i) (n) =
+    if i >= n then AnnotationPumpStep { session = sess, sent = i, success = True }
+    else send-verdict-step sess kp xs i n
+
+  send-verdict-step : TrustSession, Keypair, List Verdict, Integer, Integer -> AnnotationPumpStep
+  send-verdict-step (sess) (kp) (xs) (i) (n) =
+    let v = list-at xs i
+    in let env = sign-verdict-envelope kp v
+    in let sr = trust-send sess (MsgVerdict env)
+    in continue-verdict-list sr kp xs i n
+
+  continue-verdict-list : TrustSendResult, Keypair, List Verdict, Integer, Integer -> AnnotationPumpStep
+  continue-verdict-list (sr) (kp) (xs) (i) (n) =
+    if sr.success == False then AnnotationPumpStep { session = sr.session, sent = i, success = False }
+    else send-verdict-list (sr.session) kp xs (i + 1) n
+
+  AnnotationPumpStep = record {
+    session : TrustSession,
+    sent : Integer between 0 and 4294967295,
+    success : Boolean
+  }
+
+  maybe-drain-out : RepoState, Integer, Integer -> RepoState
+  maybe-drain-out (repo) (sent) (total) =
+    if sent == total then drain-outbox repo else repo
+
+  maybe-drain-verdict-out : RepoState, Integer, Integer -> RepoState
+  maybe-drain-verdict-out (repo) (sent) (total) =
+    if sent == total then drain-verdict-outbox repo else repo
+
+  pump-outbound : RepoState, TrustSession, Keypair -> AnnotationPumpResult
+  pump-outbound (repo) (sess) (kp) =
+    let n-ann = list-length (repo.outbox)
+    in let ann = send-annotation-list sess kp (repo.outbox) 0 n-ann
+    in let repo-after-ann = maybe-drain-out repo (ann.sent) n-ann
+    in pump-outbound-verdicts repo-after-ann (ann.session) kp (ann.sent)
+
+  pump-outbound-verdicts : RepoState, TrustSession, Keypair, Integer -> AnnotationPumpResult
+  pump-outbound-verdicts (repo) (sess) (kp) (ann-sent) =
+    let n-ver = list-length (repo.verdict-outbox)
+    in let ver = send-verdict-list sess kp (repo.verdict-outbox) 0 n-ver
+    in let repo-final = maybe-drain-verdict-out repo (ver.sent) n-ver
+    in AnnotationPumpResult {
+      repo = repo-final,
+      session = ver.session,
+      sent = ann-sent + ver.sent
+    }
+
+Section: Envelope Verification
+
+ The envelope sig proves the message was signed by the named
+ sender; verify-annotation against the keyring then proves the
+ inner annotation's authorship. Both must hold for the receiver
+ to trust the payload.
+
+  verify-annotate-envelope : AnnotateMsg -> Boolean
+  verify-annotate-envelope (am) =
+    let computed-id = envelope-id (am.payload)
+    in if bytes-equal computed-id (am.id) then verify-annotate-envelope-sig am
+    else False
+
+  verify-annotate-envelope-sig : AnnotateMsg -> Boolean
+  verify-annotate-envelope-sig (am) =
+    let fp = key-fingerprint (am.from.public-key)
+    in let content = envelope-content (am.id) fp "annotate"
+    in verify-signature (am.from.public-key) content (am.signature)
+
+  verify-verdict-envelope : VerdictMsg -> Boolean
+  verify-verdict-envelope (vm) =
+    let computed-id = envelope-id (vm.payload)
+    in if bytes-equal computed-id (vm.id) then verify-verdict-envelope-sig vm
+    else False
+
+  verify-verdict-envelope-sig : VerdictMsg -> Boolean
+  verify-verdict-envelope-sig (vm) =
+    let fp = key-fingerprint (vm.from.public-key)
+    in let content = envelope-content (vm.id) fp "verdict"
+    in verify-signature (vm.from.public-key) content (vm.signature)
+
+  bytes-equal : List Integer, List Integer -> Boolean
+  bytes-equal (a) (b) =
+    if list-length a /= list-length b then False
+    else bytes-equal-loop a b 0 (list-length a)
+
+  bytes-equal-loop : List Integer, List Integer, Integer, Integer -> Boolean
+  bytes-equal-loop (a) (b) (i) (n) =
+    if i >= n then True
+    else bytes-equal-loop-step a b i n
+
+  bytes-equal-loop-step : List Integer, List Integer, Integer, Integer -> Boolean
+  bytes-equal-loop-step (a) (b) (i) (n) =
+    if list-at a i /= list-at b i then False
+    else bytes-equal-loop a b (i + 1) n
+
+Section: Inbound Dispatch
+
+ dispatch-inbound is the per-message receive callback. For
+ capability/control messages it returns the state unchanged — the
+ existing handlers see those in their own pipelines. For the
+ knowledge-publication kinds it walks a series of guards: envelope
+ verification, annotation verification against the keyring, trust
+ score against the threshold. Any guard that fails drops the
+ message silently.
+
+  InboundResult = record {
+    repo : RepoState,
+    notifications : EditorNotifications
+  }
+
+  drop-inbound : RepoState, EditorNotifications -> InboundResult
+  drop-inbound (repo) (ed) = InboundResult { repo = repo, notifications = ed }
+
+  dispatch-inbound : RepoState, EditorNotifications, AgentMessage, Integer, Integer -> InboundResult
+  dispatch-inbound (repo) (ed) (m) (threshold) (now) = when m
+    is MsgAnnotate (am) -> dispatch-annotate repo ed am threshold now
+    is MsgVerdict (vm) -> dispatch-verdict repo ed vm
+    is otherwise -> drop-inbound repo ed
+
+  dispatch-annotate : RepoState, EditorNotifications, AnnotateMsg, Integer, Integer -> InboundResult
+  dispatch-annotate (repo) (ed) (am) (threshold) (now) =
+    if verify-annotate-envelope am then dispatch-annotate-after-envelope repo ed am threshold now
+    else drop-inbound repo ed
+
+  dispatch-annotate-after-envelope : RepoState, EditorNotifications, AnnotateMsg, Integer, Integer -> InboundResult
+  dispatch-annotate-after-envelope (repo) (ed) (am) (threshold) (now) =
+    let pp = decode-proposal-payload (am.payload)
+    in let sa = verify-annotation (repo.keyring) (pp.annotation)
+    in dispatch-annotate-after-verify repo ed pp sa threshold now
+
+  dispatch-annotate-after-verify : RepoState, EditorNotifications, ProposalPayload, SignedAnnotation, Integer, Integer -> InboundResult
+  dispatch-annotate-after-verify (repo) (ed) (pp) (sa) (threshold) (now) =
+    if sa.verified then dispatch-annotate-after-trust repo ed pp sa threshold now
+    else drop-inbound repo ed
+
+  dispatch-annotate-after-trust : RepoState, EditorNotifications, ProposalPayload, SignedAnnotation, Integer, Integer -> InboundResult
+  dispatch-annotate-after-trust (repo) (ed) (pp) (sa) (threshold) (now) =
+    let score = lattice-trust-score (repo.lattice) (sa.annotation.author)
+    in if score >= threshold then accept-annotation repo ed pp sa now
+    else drop-inbound repo ed
+
+  accept-annotation : RepoState, EditorNotifications, ProposalPayload, SignedAnnotation, Integer -> InboundResult
+  accept-annotation (repo) (ed) (pp) (sa) (now) =
+    let new-repo = repo-add-annotation repo sa
+    in let new-ed = enqueue-notification ed pp now
+    in InboundResult { repo = new-repo, notifications = new-ed }
+
+  dispatch-verdict : RepoState, EditorNotifications, VerdictMsg -> InboundResult
+  dispatch-verdict (repo) (ed) (vm) =
+    if verify-verdict-envelope vm then dispatch-verdict-after-envelope repo ed vm
+    else drop-inbound repo ed
+
+  dispatch-verdict-after-envelope : RepoState, EditorNotifications, VerdictMsg -> InboundResult
+  dispatch-verdict-after-envelope (repo) (ed) (vm) =
+    let v = decode-verdict (vm.payload)
+    in dispatch-verdict-after-decode repo ed v
+
+  dispatch-verdict-after-decode : RepoState, EditorNotifications, Verdict -> InboundResult
+  dispatch-verdict-after-decode (repo) (ed) (v) =
+    if verify-verdict-signature (repo.keyring) v then accept-verdict repo ed v
+    else drop-inbound repo ed
+
+  accept-verdict : RepoState, EditorNotifications, Verdict -> InboundResult
+  accept-verdict (repo) (ed) (v) =
+    let new-repo = repo-submit-verdict repo v
+    in InboundResult { repo = new-repo, notifications = ed }

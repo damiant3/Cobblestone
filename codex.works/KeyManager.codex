@@ -1,0 +1,166 @@
+Chapter: KeyManager
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter StringUtils
+  cites Foreword chapter TextSearch
+  cites Encode chapter Hex
+
+ Key management for the Codex repository protocol. KeyManager
+ generates Ed25519 keypairs, stores public keys in a keyring,
+ exports and imports keys, and derives identities from keys. Private
+ keys never leave the device — signing happens locally; only public
+ keys circulate.
+
+ We say:
+
+Section: Keypair
+
+  Keypair = record {
+    private-key : List Integer,
+    public-key : List Integer,
+    fingerprint : Text
+  }
+
+  generate-keypair : List Integer -> Keypair
+  generate-keypair (seed-bytes) =
+    let priv = sha256 seed-bytes
+    in let pub = ed25519-public-key priv
+    in Keypair {
+      private-key = priv,
+      public-key = pub,
+      fingerprint = key-fingerprint pub
+    }
+
+  key-fingerprint : List Integer -> Text
+  key-fingerprint (pub) =
+    let hash = sha256 pub
+    in fingerprint-hex hash 0 8 ""
+
+  fingerprint-hex : List Integer, Integer, Integer, Text -> Text
+  fingerprint-hex (bytes) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i > 0 then if i - (i / 2) * 2 == 0 then ":" else "" else ""
+    in fingerprint-hex bytes (i + 1) len (acc & sep & byte-to-hex (list-at bytes i))
+
+  byte-to-hex : Integer -> Text
+  byte-to-hex (b) =
+    let hi = bit-and (bit-shru b 4) 15
+    in let lo = bit-and b 15
+    in hex-nibble hi & hex-nibble lo
+
+  hex-nibble : Integer -> Text
+  hex-nibble (n) =
+    if n < 10 then char-to-text (code-to-char (48 + n))
+    else char-to-text (code-to-char (87 + n))
+
+Section: Keyring
+
+  KeyringEntry = record {
+    name : Text,
+    public-key : List Integer,
+    fingerprint : Text,
+    trust-level : Integer
+  }
+
+  Keyring = record {
+    entries : HamtMap KeyringEntry,
+    count : Integer
+  }
+
+  keyring-empty : Keyring = Keyring { entries = hamt-empty, count = 0 }
+
+  keyring-add : Keyring, Text, List Integer, Integer -> Keyring
+  keyring-add (kr) (name) (pub) (trust) =
+    let fp = key-fingerprint pub
+    in let entry = KeyringEntry { name = name, public-key = pub, fingerprint = fp, trust-level = trust }
+    in Keyring { entries = hamt-set (kr.entries) fp entry, count = kr.count + 1 }
+
+  keyring-lookup : Keyring, Text -> Maybe KeyringEntry
+  keyring-lookup (kr) (fingerprint) = hamt-get (kr.entries) fingerprint
+
+  keyring-lookup-by-name : Keyring, Text -> Maybe KeyringEntry
+  keyring-lookup-by-name (kr) (name) =
+    keyring-scan-name (kr.entries) name
+
+  keyring-scan-name : HamtMap KeyringEntry, Text -> Maybe KeyringEntry
+  keyring-scan-name (entries) (name) = None
+
+  keyring-revoke : Keyring, Text -> Keyring
+  keyring-revoke (kr) (fingerprint) =
+    Keyring { entries = hamt-remove (kr.entries) fingerprint, count = kr.count - 1 }
+
+Section: Signing
+
+  sign-content : Keypair, Text -> List Integer
+  sign-content (kp) (content) =
+    let hash = sha256 (text-to-bytes content)
+    in ed25519-sign (kp.private-key) (kp.public-key) hash
+
+  verify-signature : List Integer, Text, List Integer -> Boolean
+  verify-signature (pub) (content) (sig) =
+    let hash = sha256 (text-to-bytes content)
+    in ed25519-verify pub hash sig
+
+Section: Formatting
+
+  format-keyring-entry : KeyringEntry -> Text
+  format-keyring-entry (e) =
+    e.name & " [" & e.fingerprint & "] trust=" & show (e.trust-level)
+
+  format-keypair : Keypair -> Text
+  format-keypair (kp) =
+    "fingerprint: " & kp.fingerprint & "\npublic key: " & show (list-length (kp.public-key)) & " bytes"
+
+Section: Export and Import
+
+ H4: persist a Keypair to a filesystem path (USB stick, encrypted
+ file in home, hardware-token mount, etc.) and re-load it on
+ subsequent boots. The text format is line-oriented so it can be
+ inspected and recovered by hand if the binary form is lost.
+
+  keypair-export-version : Text = "codex-keypair-v1"
+
+  format-keypair-export : Keypair -> Text
+  format-keypair-export (kp) =
+    keypair-export-version & "\n"
+    & "fingerprint: " & kp.fingerprint & "\n"
+    & "private: " & hex-encode (kp.private-key) & "\n"
+    & "public: " & hex-encode (kp.public-key) & "\n"
+
+  export-to-path : Keypair, Text -> Nothing
+  export-to-path (kp) (path) =
+    write-file path (format-keypair-export kp)
+
+  import-from-path : Text -> Maybe Keypair
+  import-from-path (path) =
+    if file-exists path then parse-keypair-export (read-file path)
+    else None
+
+  parse-keypair-export : Text -> Maybe Keypair
+  parse-keypair-export (content) =
+    let lines = text-split content "\n"
+    in if list-length lines < 4 then None
+    else if list-at lines 0 == keypair-export-version then parse-keypair-fields lines
+    else None
+
+  parse-keypair-fields : List Text -> Maybe Keypair
+  parse-keypair-fields (lines) =
+    let fp = strip-prefix (list-at lines 1) "fingerprint: "
+    in let priv-hex = strip-prefix (list-at lines 2) "private: "
+    in let pub-hex = strip-prefix (list-at lines 3) "public: "
+    in Just (Keypair {
+      private-key = hex-decode priv-hex,
+      public-key = hex-decode pub-hex,
+      fingerprint = fp
+    })
+
+  strip-prefix : Text, Text -> Text
+  strip-prefix (s) (prefix) =
+    if text-starts-with s prefix
+    then substring s (text-length prefix) (text-length s - text-length prefix)
+    else s
+
+Page 1
