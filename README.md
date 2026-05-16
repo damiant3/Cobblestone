@@ -348,19 +348,6 @@ resolve quire names to directories at load time.
 
 ---
 
-## Self-Sustaining Bootstrap
-
-`stage1 === stage2` proves convergence on the artifact. Pingpong
-verifies both text round-trip (soft fixed point) and CDX fixed-point
-(hard fixed point) in one script.
-
-```powershell
-# All fixed-point checks: text round-trip + CDX byte-identity + signing
-codex.build/pingpong-self.ps1
-```
-
----
-
 ## Project Structure
 
 ```
