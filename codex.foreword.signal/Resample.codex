@@ -1,0 +1,82 @@
+Chapter: Resample
+  cites Math chapter Cordic
+
+ Sample-rate conversion for audio signals. Converts between sample
+ rates using linear interpolation (fast) or windowed-sinc (quality).
+ Uses fixed-point scale-1000 arithmetic for fractional positions.
+
+ To resample-linear gives linearly interpolated output at a new rate.
+ To resample-sinc gives sinc-interpolated output at a new rate.
+ To resample-ratio gives the output length for a rate change.
+
+ We say:
+
+Section: Linear Interpolation
+
+  resample-linear : List Integer, Integer, Integer -> List Integer
+  resample-linear (input) (from-rate) (to-rate) =
+    let in-len = list-length input
+    in let out-len = resample-ratio in-len from-rate to-rate
+    in resample-linear-loop input in-len from-rate to-rate out-len 0 []
+
+  resample-linear-loop : List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  resample-linear-loop (input) (in-len) (from-rate) (to-rate) (out-len) (i) (acc) =
+    if i >= out-len then acc
+    else let pos = i * from-rate * 1000 / to-rate
+    in let idx = pos / 1000
+    in let frac = pos - idx * 1000
+    in let s0 = if idx < in-len then list-at input idx else 0
+    in let s1 = if idx + 1 < in-len then list-at input (idx + 1) else s0
+    in let sample = s0 * (1000 - frac) / 1000 + s1 * frac / 1000
+    in resample-linear-loop input in-len from-rate to-rate out-len (i + 1) (list-push acc sample)
+
+Section: Sinc Interpolation
+
+  resample-sinc : List Integer, Integer, Integer, Integer -> List Integer
+  resample-sinc (input) (from-rate) (to-rate) (taps) =
+    let in-len = list-length input
+    in let out-len = resample-ratio in-len from-rate to-rate
+    in resample-sinc-loop input in-len from-rate to-rate taps out-len 0 []
+
+  resample-sinc-loop : List Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  resample-sinc-loop (input) (in-len) (from-rate) (to-rate) (taps) (out-len) (i) (acc) =
+    if i >= out-len then acc
+    else let pos = i * from-rate * 1000 / to-rate
+    in let sample = sinc-interpolate input in-len pos taps
+    in resample-sinc-loop input in-len from-rate to-rate taps out-len (i + 1) (list-push acc sample)
+
+  sinc-interpolate : List Integer, Integer, Integer, Integer -> Integer
+  sinc-interpolate (input) (in-len) (pos) (taps) =
+    let center = pos / 1000
+    in let frac = pos - center * 1000
+    in sinc-tap-loop input in-len center frac (0 - taps) taps 0
+
+  sinc-tap-loop : List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  sinc-tap-loop (input) (in-len) (center) (frac) (k) (taps) (acc) =
+    if k > taps then acc
+    else let idx = center + k
+    in let sample = if idx < 0 then 0 else if idx >= in-len then 0 else list-at input idx
+    in let x = (k * 1000 - frac)
+    in let w = sinc-value x * blackman-window k taps / 1000
+    in sinc-tap-loop input in-len center frac (k + 1) taps (acc + sample * w / 1000)
+
+  sinc-value : Integer -> Integer
+  sinc-value (x) =
+    if x == 0 then 1000
+    else let x-pi = x * 3142 / 1000
+    in cordic-sin x-pi * 1000 / x-pi
+
+  blackman-window : Integer, Integer -> Integer
+  blackman-window (k) (taps) =
+    let n = 2 * taps + 1
+    in if n <= 1 then 1000
+    else let pos = k + taps
+    in 420 - 500 * cordic-cos (6283 * pos / (n - 1)) / 1000 + 80 * cordic-cos (12566 * pos / (n - 1)) / 1000
+
+Section: Utilities
+
+  resample-ratio : Integer, Integer, Integer -> Integer
+  resample-ratio (in-len) (from-rate) (to-rate) =
+    in-len * to-rate / from-rate
+
+Page 1

@@ -1,0 +1,222 @@
+Chapter: DiagnosticShell
+  cites Codex chapter General
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+
+ The DiagnosticShell parses and executes low-level debug commands
+ (help, info, heap, stack, ticks, peek, poke) for interactive
+ bare-metal inspection.
+
+ We say:
+
+Section: Types
+
+  DiagCmd =
+    | DcHelp
+    | DcInfo
+    | DcHeap
+    | DcStack
+    | DcTicks
+    | DcPeek (Integer)
+    | DcPoke (Integer) (Integer)
+    | DcPortIn (Integer)
+    | DcPortOut (Integer) (Integer)
+    | DcEcho (Text)
+    | DcExit
+    | DcUnknown (Text)
+
+Section: Constants
+  diag-heap-base : Integer = 4194304
+  diag-stack-top : Integer = 1073741824
+  diag-tick-addr : Integer = 28672
+  diag-heap-hwm-addr : Integer = 28728
+  diag-stack-min-addr : Integer = 28736
+
+Section: Parser
+
+  diag-parse : Text -> DiagCmd
+  diag-parse (line) =
+    let words = text-split line " "
+    in let n = list-length words
+    in if n == 0 then DcUnknown ""
+    else let cmd = list-at words 0
+    in if cmd == "help" then DcHelp
+    else if cmd == "info" then DcInfo
+    else if cmd == "heap" then DcHeap
+    else if cmd == "stack" then DcStack
+    else if cmd == "ticks" then DcTicks
+    else if cmd == "peek" then if n >= 2 then DcPeek (diag-parse-int (list-at words 1)) else DcUnknown "peek <addr>"
+    else if cmd == "poke" then if n >= 3 then DcPoke (diag-parse-int (list-at words 1)) (diag-parse-int (list-at words 2)) else DcUnknown "poke <addr> <byte>"
+    else if cmd == "in" then if n >= 2 then DcPortIn (diag-parse-int (list-at words 1)) else DcUnknown "in <port>"
+    else if cmd == "out" then if n >= 3 then DcPortOut (diag-parse-int (list-at words 1)) (diag-parse-int (list-at words 2)) else DcUnknown "out <port> <byte>"
+    else if cmd == "echo" then DcEcho (diag-rest-of-line words 1 n "")
+    else if cmd == "exit" then DcExit
+    else DcUnknown cmd
+
+  diag-parse-int : Text -> Integer
+  diag-parse-int (s) =
+    let len = text-length s
+    in if len >= 2 then
+      if char-code (char-at s 0) == 3 then
+        if char-code (char-at s 1) == 36 then diag-parse-hex s 2 len 0
+        else diag-atoi s 0 len 0
+      else diag-atoi s 0 len 0
+    else diag-atoi s 0 len 0
+
+  diag-atoi : Text, Integer, Integer, Integer -> Integer
+  diag-atoi (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = char-at s i
+    in if is-digit c then diag-atoi s (i + 1) len (acc * 10 + digit-value c)
+    else acc
+
+  diag-parse-hex : Text, Integer, Integer, Integer -> Integer
+  diag-parse-hex (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = char-at s i
+    in let cc = char-code c
+    in if is-digit c then diag-parse-hex s (i + 1) len (acc * 16 + digit-value c)
+    else if cc >= 13 then if cc <= 18 then diag-parse-hex s (i + 1) len (acc * 16 + cc - 3) else acc
+    else if cc >= 39 then if cc <= 44 then diag-parse-hex s (i + 1) len (acc * 16 + cc - 29) else acc
+    else acc
+
+  diag-rest-of-line : List Text, Integer, Integer, Text -> Text
+  diag-rest-of-line (words) (i) (n) (acc) =
+    if i >= n then acc
+    else let sep = if i == 1 then "" else " "
+    in diag-rest-of-line words (i + 1) n (acc & sep & list-at words i)
+
+Section: Hex Formatting
+
+  diag-hex-digit : Integer -> Text
+  diag-hex-digit (n) =
+    if n < 10 then show n
+    else if n == 10 then "a"
+    else if n == 11 then "b"
+    else if n == 12 then "c"
+    else if n == 13 then "d"
+    else if n == 14 then "e"
+    else "f"
+
+  diag-hex-byte : Integer -> Text
+  diag-hex-byte (v) =
+    diag-hex-digit (bit-and (bit-shru v 4) 15) & diag-hex-digit (bit-and v 15)
+
+  diag-hex-32 : Integer -> Text
+  diag-hex-32 (v) =
+    diag-hex-byte (bit-and (bit-shru v 24) 255) & diag-hex-byte (bit-and (bit-shru v 16) 255) & diag-hex-byte (bit-and (bit-shru v 8) 255) & diag-hex-byte (bit-and v 255)
+
+Section: Commands
+
+  diag-run-help : Text
+  diag-run-help =
+    "Commands:\n  help         show this\n  info         boot constants\n  heap         heap usage\n  stack        stack usage\n  ticks        timer ticks\n  peek <addr>  read 8 bytes (decimal or 0x hex)\n  poke <a> <v> write byte at address\n  in <port>    read I/O port\n  out <p> <v>  write I/O port\n  echo <text>  echo back\n  exit         halt"
+
+  diag-run-info : Text
+  diag-run-info =
+    "heap-base:  " & show diag-heap-base
+    & "\nstack-top:  " & show diag-stack-top
+    & "\ntick-addr:  " & show diag-tick-addr
+    & "\nhwm-addr:   " & show diag-heap-hwm-addr
+    & "\nstack-addr: " & show diag-stack-min-addr
+
+  diag-run-heap : Text
+  diag-run-heap =
+    let cur = __heap-save
+    in let hwm = peek-32 diag-heap-hwm-addr 0
+    in "heap-ptr: 0x" & diag-hex-32 cur & " (" & show cur & ")"
+    & "\nhwm:      0x" & diag-hex-32 hwm & " (" & show hwm & ")"
+    & "\nused:     " & show (cur - diag-heap-base) & " bytes"
+
+  diag-run-stack : Text
+  diag-run-stack =
+    let min-rsp = peek-32 diag-stack-min-addr 0
+    in "stack-top: 0x" & diag-hex-32 diag-stack-top
+    & "\nmin-rsp:   0x" & diag-hex-32 min-rsp
+    & "\nmax-depth: " & show (diag-stack-top - min-rsp) & " bytes"
+
+  diag-run-ticks : Text
+  diag-run-ticks =
+    let t = get-ticks
+    in "ticks: " & show t
+
+  diag-run-peek : Integer -> Text
+  diag-run-peek (addr) =
+    let b0 = peek-byte addr 0
+    in let b1 = peek-byte addr 1
+    in let b2 = peek-byte addr 2
+    in let b3 = peek-byte addr 3
+    in let b4 = peek-byte addr 4
+    in let b5 = peek-byte addr 5
+    in let b6 = peek-byte addr 6
+    in let b7 = peek-byte addr 7
+    in "0x" & diag-hex-32 addr & ": " & diag-hex-byte b0 & " " & diag-hex-byte b1 & " " & diag-hex-byte b2 & " " & diag-hex-byte b3 & " " & diag-hex-byte b4 & " " & diag-hex-byte b5 & " " & diag-hex-byte b6 & " " & diag-hex-byte b7
+
+  diag-run-poke : Integer, Integer -> Text
+  diag-run-poke (addr) (val) =
+    let w = poke-byte addr 0 val
+    in "wrote 0x" & diag-hex-byte val & " to 0x" & diag-hex-32 addr
+
+  diag-run-port-in : Integer -> Text
+  diag-run-port-in (port) =
+    let v = port-in-byte port
+    in "port 0x" & diag-hex-32 port & " = 0x" & diag-hex-byte v & " (" & show v & ")"
+
+  diag-run-port-out : Integer, Integer -> Text
+  diag-run-port-out (port) (val) =
+    let w = port-out-byte port val
+    in "port 0x" & diag-hex-32 port & " <- 0x" & diag-hex-byte val
+
+Section: Dispatch
+
+  diag-dispatch : DiagCmd -> Text
+  diag-dispatch (cmd) = when cmd
+    is DcHelp -> diag-run-help
+    is DcInfo -> diag-run-info
+    is DcHeap -> diag-run-heap
+    is DcStack -> diag-run-stack
+    is DcTicks -> diag-run-ticks
+    is DcPeek (addr) -> diag-run-peek addr
+    is DcPoke (addr) (val) -> diag-run-poke addr val
+    is DcPortIn (port) -> diag-run-port-in port
+    is DcPortOut (port) (val) -> diag-run-port-out port val
+    is DcEcho (text) -> text
+    is DcExit -> "halting."
+    is DcUnknown (s) -> "unknown: " & s & " (type help)"
+
+  diag-is-exit : DiagCmd -> Boolean
+  diag-is-exit (cmd) = when cmd
+    is DcExit -> True
+    is otherwise -> False
+
+Section: REPL
+
+  diag-banner : Text
+  diag-banner =
+    "=== Codex Diagnostic Shell ===\nType help for commands.\n"
+
+  diag-repl : [Console] Nothing
+  diag-repl = act
+    print-line diag-banner
+    diag-repl-loop
+  end
+
+  diag-repl-loop : [Console] Nothing
+  diag-repl-loop = act
+    print-line "diag> "
+    input <- read-line
+    when input
+      is Just (line) ->
+        let cmd = diag-parse line
+        in let output = diag-dispatch cmd
+        in act
+          print-line output
+          if diag-is-exit cmd then print-line ""
+          else diag-repl-loop
+        end
+      is None -> act
+        print-line "EOF"
+      end
+  end
+
+Page 1

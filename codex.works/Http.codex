@@ -1,0 +1,103 @@
+Chapter: Http
+  cites Foreword chapter CCE
+
+ Minimal HTTP/1.0 response formatting. Builds response bytes (status line,
+ headers, body) suitable for sending over TCP. Request parsing is intentionally
+ minimal — just enough to detect GET and extract the path.
+
+ We say:
+
+Section: Status Codes
+  http-200 : Text = "200 OK"
+  http-404 : Text = "404 Not Found"
+  http-500 : Text = "500 Internal Server Error"
+
+Section: Response Building
+  HttpResponse = record {
+    status : Text,
+    content-type : Text,
+    body : Text
+  }
+
+  http-html : Text -> HttpResponse
+  http-html (body) = HttpResponse { status = http-200, content-type = "text/html", body = body }
+
+  http-plain : Text -> HttpResponse
+  http-plain (body) = HttpResponse { status = http-200, content-type = "text/plain", body = body }
+
+  http-not-found : HttpResponse
+  http-not-found = HttpResponse { status = http-404, content-type = "text/plain", body = "404 Not Found" }
+
+  http-error : Text -> HttpResponse
+  http-error (msg) = HttpResponse { status = http-500, content-type = "text/plain", body = msg }
+
+Section: Serialize Response
+  http-encode : HttpResponse -> List Integer
+  http-encode (resp) =
+    let body-bytes = http-text-to-ascii (resp.body)
+    in let status-line = http-text-to-ascii ("HTTP/1.0 " & resp.status) & [13, 10]
+    in let h1 = http-text-to-ascii ("Content-Type: " & resp.content-type) & [13, 10]
+    in let h2 = http-text-to-ascii ("Content-Length: " & show (list-length body-bytes)) & [13, 10]
+    in let h3 = http-text-to-ascii "Connection: close" & [13, 10]
+    in let blank = [13, 10]
+    in status-line & h1 & h2 & h3 & blank & body-bytes
+
+  http-text-to-ascii : Text -> List Integer
+  http-text-to-ascii (s) = http-text-to-bytes s 0 (text-length s) []
+
+  http-text-to-bytes : Text, Integer, Integer, List Integer -> List Integer
+  http-text-to-bytes (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let b = to-unicode (char-code (char-at s i))
+    in if b == 10 then http-text-to-bytes s (i + 1) len (acc & [13, 10])
+    else http-text-to-bytes s (i + 1) len (list-push acc b)
+
+Section: Request Parsing
+  HttpRequest = record {
+    method : Text,
+    path : Text,
+    valid : Boolean
+  }
+
+  http-parse-request : List Integer -> HttpRequest
+  http-parse-request (bs) =
+    let line = http-read-line bs 0 (list-length bs) ""
+    in let parts = text-split line " "
+    in if list-length parts < 2 then HttpRequest { method = "", path = "", valid = False }
+    else HttpRequest { method = list-at parts 0, path = list-at parts 1, valid = True }
+
+  http-read-line : List Integer, Integer, Integer, Text -> Text
+  http-read-line (bs) (i) (len) (acc) =
+    if i >= len then acc
+    else let b = list-at bs i
+    in if b == 13 then acc
+    else if b == 10 then acc
+    else http-read-line bs (i + 1) len (acc & char-to-text (code-to-char (from-unicode b)))
+
+  http-is-get : HttpRequest -> Boolean
+  http-is-get (req) = req.method == "GET"
+
+Section: HTML Helpers
+  html-page : Text, Text -> Text
+  html-page (title) (body) =
+    "<!DOCTYPE html><html><head><title>" & title & "</title>"
+    & "<style>body{font-family:monospace;background:#1a1a2e;color:#e0e0e0;padding:20px}"
+    & "h1{color:#0f0}h2{color:#0af}.ok{color:#0f0}.info{color:#0af}</style>"
+    & "</head><body>" & body & "</body></html>"
+
+  html-h1 : Text -> Text
+  html-h1 (s) = "<h1>" & s & "</h1>"
+
+  html-h2 : Text -> Text
+  html-h2 (s) = "<h2>" & s & "</h2>"
+
+  html-p : Text -> Text
+  html-p (s) = "<p>" & s & "</p>"
+
+  html-span-class : Text, Text -> Text
+  html-span-class (cls) (s) = "<span class='" & cls & "'>" & s & "</span>"
+
+  html-pre : Text -> Text
+  html-pre (s) = "<pre>" & s & "</pre>"
+
+Page 1

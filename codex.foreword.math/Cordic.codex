@@ -1,0 +1,95 @@
+Chapter: Cordic
+
+ CORDIC (COordinate Rotation DIgital Computer) iterative algorithm
+ for computing trig functions and sqrt using only shifts and adds.
+ Perfect for bare-metal integer hardware. Fixed-point scale 1000.
+ 16 iterations gives ~0.1% accuracy.
+
+ We say:
+
+Section: Constants
+  cordic-scale : Integer = 1000
+  cordic-iterations : Integer = 16
+  cordic-gain : Integer = 607
+
+Section: Angle Table
+  cordic-atan-table : List Integer
+  cordic-atan-table = [785, 463, 244, 124, 62, 31, 15, 7, 3, 1, 0, 0, 0, 0, 0, 0]
+
+Section: Rotation Mode (cos/sin)
+  CordicResult = record {
+    cos-val : Integer,
+    sin-val : Integer
+  }
+
+  cordic-sincos : Integer -> CordicResult
+  cordic-sincos (angle-milli) =
+    let a = cordic-normalize angle-milli
+    in cordic-rotate a cordic-scale 0 0
+
+  cordic-normalize : Integer -> Integer
+  cordic-normalize (a) =
+    let full = 6283
+    in let a2 = a - (a / full) * full
+    in if a2 < 0 then a2 + full else a2
+
+  cordic-rotate : Integer, Integer, Integer, Integer -> CordicResult
+  cordic-rotate (target) (x) (y) (i) =
+    if i >= cordic-iterations then CordicResult { cos-val = x * cordic-gain / cordic-scale, sin-val = y * cordic-gain / cordic-scale }
+    else let atan-i = list-at cordic-atan-table i
+    in if target > 0 then cordic-rotate (target - atan-i) (x - (y / (bit-shl 1 i))) (y + (x / (bit-shl 1 i))) (i + 1)
+    else cordic-rotate (target + atan-i) (x + (y / (bit-shl 1 i))) (y - (x / (bit-shl 1 i))) (i + 1)
+
+Section: Individual Functions
+  cordic-cos : Integer -> Integer
+  cordic-cos (angle) = (cordic-sincos angle).cos-val
+
+  cordic-sin : Integer -> Integer
+  cordic-sin (angle) = (cordic-sincos angle).sin-val
+
+  cordic-tan : Integer -> Integer
+  cordic-tan (angle) =
+    let sc = cordic-sincos angle
+    in if sc.cos-val == 0 then 999999
+    else sc.sin-val * cordic-scale / sc.cos-val
+
+Section: Vectoring Mode (atan2, magnitude)
+  CordicVector = record {
+    angle : Integer,
+    magnitude : Integer
+  }
+
+  cordic-atan2 : Integer, Integer -> CordicVector
+  cordic-atan2 (y) (x) =
+    let ax = if x < 0 then -x else x
+    in let ay = if y < 0 then -y else y
+    in let raw = cordic-vector ax ay 0 0
+    in let mag = raw.magnitude * cordic-gain / cordic-scale
+    in let angle = cordic-adjust-quadrant (raw.angle) x y
+    in CordicVector { angle = angle, magnitude = mag }
+
+  cordic-vector : Integer, Integer, Integer, Integer -> CordicVector
+  cordic-vector (x) (y) (angle) (i) =
+    if i >= cordic-iterations then CordicVector { angle = angle, magnitude = x }
+    else let atan-i = list-at cordic-atan-table i
+    in if y > 0 then cordic-vector (x + (y / (bit-shl 1 i))) (y - (x / (bit-shl 1 i))) (angle + atan-i) (i + 1)
+    else cordic-vector (x - (y / (bit-shl 1 i))) (y + (x / (bit-shl 1 i))) (angle - atan-i) (i + 1)
+
+  cordic-adjust-quadrant : Integer, Integer, Integer -> Integer
+  cordic-adjust-quadrant (angle) (x) (y) =
+    if x >= 0 then if y >= 0 then angle else -angle
+    else if y >= 0 then 3141 - angle else angle - 3141
+
+Section: Square Root
+  cordic-sqrt : Integer -> Integer
+  cordic-sqrt (n) =
+    if n <= 0 then 0
+    else cordic-sqrt-loop n (n / 2 + 1)
+
+  cordic-sqrt-loop : Integer, Integer -> Integer
+  cordic-sqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess
+    else cordic-sqrt-loop n next
+
+Page 1

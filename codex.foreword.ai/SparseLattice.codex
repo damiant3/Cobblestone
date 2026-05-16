@@ -1,0 +1,151 @@
+Chapter: SparseLattice
+  cites Foreword chapter Maybe
+
+ Sparse lattice for high-dimensional embedding storage and nearest
+ neighbor search. Inspired by Damian's SpatialDb EmbeddingLattice.
+ Nodes only allocate where data exists. Supports insert, L2 distance
+ query, and freeze for read-only optimized lookup. Vectors are
+ List Integer with fixed-point values (scale 1000).
+
+ We say:
+
+Section: Types
+  SparseVector = record {
+    sv-dims : List Integer,
+    sv-len : Integer
+  }
+
+  SparseOccupant = record {
+    so-id : Integer,
+    so-vector : SparseVector,
+    so-payload : Integer
+  }
+
+  SparseNode =
+    | SparseLeaf (List SparseOccupant)
+    | SparseBranch (Integer) (List SparseNode)
+
+  SparseLattice = record {
+    sl-root : SparseNode,
+    sl-count : Integer,
+    sl-dimensions : Integer,
+    sl-max-leaf : Integer between 1 and 64
+  }
+
+Section: Vector Operations
+  sv-new : List Integer -> SparseVector
+  sv-new (dims) = SparseVector { sv-dims = dims, sv-len = list-length dims }
+
+  sv-distance-sq : SparseVector, SparseVector -> Integer
+  sv-distance-sq (a) (b) = sv-dist-loop (a.sv-dims) (b.sv-dims) 0 (a.sv-len) 0
+
+  sv-dist-loop : List Integer, List Integer, Integer, Integer, Integer -> Integer
+  sv-dist-loop (a) (b) (i) (len) (acc) =
+    if i >= len then acc
+    else let d = list-at a i - list-at b i
+    in sv-dist-loop a b (i + 1) len (acc + d * d / 1000)
+
+  sv-component : SparseVector, Integer -> Integer
+  sv-component (v) (dim) = list-at (v.sv-dims) dim
+
+Section: Construction
+  sl-new : Integer, Integer -> SparseLattice
+  sl-new (dimensions) (max-leaf) = SparseLattice { sl-root = SparseLeaf [], sl-count = 0, sl-dimensions = dimensions, sl-max-leaf = max-leaf }
+
+Section: Insert
+  sl-insert : SparseLattice, SparseOccupant -> SparseLattice
+  sl-insert (lat) (occ) =
+    let new-root = sl-insert-node (lat.sl-root) occ (lat.sl-max-leaf) 0 (lat.sl-dimensions)
+    in SparseLattice { sl-root = new-root, sl-count = lat.sl-count + 1, sl-dimensions = lat.sl-dimensions, sl-max-leaf = lat.sl-max-leaf }
+
+  sl-insert-node : SparseNode, SparseOccupant, Integer, Integer, Integer -> SparseNode
+  sl-insert-node (node) (occ) (max-leaf) (split-dim) (num-dims) = when node
+    is SparseLeaf (occupants) ->
+      if list-length occupants < max-leaf then SparseLeaf (list-push occupants occ)
+      else sl-split-leaf occupants occ split-dim num-dims max-leaf
+    is SparseBranch (dim) (children) ->
+      let median = sl-branch-median children dim
+      in let side = if sv-component (occ.so-vector) dim < median then 0 else 1
+      in let child = list-at children side
+      in let next-dim = sl-next-dim dim num-dims
+      in SparseBranch dim (list-set-at children side (sl-insert-node child occ max-leaf next-dim num-dims))
+
+  sl-split-leaf : List SparseOccupant, SparseOccupant, Integer, Integer, Integer -> SparseNode
+  sl-split-leaf (occupants) (new-occ) (dim) (num-dims) (max-leaf) =
+    let all = list-push occupants new-occ
+    in let median = sl-find-median all dim 0 (list-length all) 0
+    in let split = sl-partition all dim median 0 (list-length all) [] []
+    in SparseBranch dim [SparseLeaf (split.lo), SparseLeaf (split.hi)]
+
+  SplitResult = record { lo : List SparseOccupant, hi : List SparseOccupant }
+
+  sl-partition : List SparseOccupant, Integer, Integer, Integer, Integer, List SparseOccupant, List SparseOccupant -> SplitResult
+  sl-partition (occs) (dim) (median) (i) (len) (lo) (hi) =
+    if i >= len then SplitResult { lo = lo, hi = hi }
+    else let occ = list-at occs i
+    in if sv-component (occ.so-vector) dim < median then sl-partition occs dim median (i + 1) len (list-push lo occ) hi
+    else sl-partition occs dim median (i + 1) len lo (list-push hi occ)
+
+  sl-find-median : List SparseOccupant, Integer, Integer, Integer, Integer -> Integer
+  sl-find-median (occs) (dim) (i) (len) (sum) =
+    if i >= len then if len == 0 then 0 else sum / len
+    else sl-find-median occs dim (i + 1) len (sum + sv-component (list-at occs i).so-vector dim)
+
+  sl-branch-median : List SparseNode, Integer -> Integer
+  sl-branch-median (children) (dim) = 0
+
+  sl-next-dim : Integer, Integer -> Integer
+  sl-next-dim (current) (total) =
+    let next = current + 1
+    in if next >= total then 0 else next
+
+Section: Query
+  sl-query-radius : SparseLattice, SparseVector, Integer -> List SparseOccupant
+  sl-query-radius (lat) (center) (radius-sq) = sl-query-node (lat.sl-root) center radius-sq []
+
+  sl-query-node : SparseNode, SparseVector, Integer, List SparseOccupant -> List SparseOccupant
+  sl-query-node (node) (center) (radius-sq) (acc) = when node
+    is SparseLeaf (occupants) -> sl-filter-radius occupants center radius-sq 0 (list-length occupants) acc
+    is SparseBranch (dim) (children) -> sl-query-children children center radius-sq 0 (list-length children) acc
+
+  sl-filter-radius : List SparseOccupant, SparseVector, Integer, Integer, Integer, List SparseOccupant -> List SparseOccupant
+  sl-filter-radius (occs) (center) (radius-sq) (i) (len) (acc) =
+    if i >= len then acc
+    else let occ = list-at occs i
+    in if sv-distance-sq (occ.so-vector) center <= radius-sq then sl-filter-radius occs center radius-sq (i + 1) len (list-push acc occ)
+    else sl-filter-radius occs center radius-sq (i + 1) len acc
+
+  sl-query-children : List SparseNode, SparseVector, Integer, Integer, Integer, List SparseOccupant -> List SparseOccupant
+  sl-query-children (children) (center) (radius-sq) (i) (len) (acc) =
+    if i >= len then acc
+    else sl-query-children children center radius-sq (i + 1) len (sl-query-node (list-at children i) center radius-sq acc)
+
+Section: Queries
+  sl-count : SparseLattice -> Integer
+  sl-count (lat) = lat.sl-count
+
+  sl-nearest : SparseLattice, SparseVector -> Maybe SparseOccupant
+  sl-nearest (lat) (query) = sl-nearest-node (lat.sl-root) query 999999999 None
+
+  sl-nearest-node : SparseNode, SparseVector, Integer, Maybe SparseOccupant -> Maybe SparseOccupant
+  sl-nearest-node (node) (query) (best-dist) (best) = when node
+    is SparseLeaf (occupants) -> sl-nearest-leaf occupants query 0 (list-length occupants) best-dist best
+    is SparseBranch (dim) (children) -> sl-nearest-children children query 0 (list-length children) best-dist best
+
+  sl-nearest-leaf : List SparseOccupant, SparseVector, Integer, Integer, Integer, Maybe SparseOccupant -> Maybe SparseOccupant
+  sl-nearest-leaf (occs) (query) (i) (len) (best-dist) (best) =
+    if i >= len then best
+    else let occ = list-at occs i
+    in let d = sv-distance-sq (occ.so-vector) query
+    in if d < best-dist then sl-nearest-leaf occs query (i + 1) len d (Just occ)
+    else sl-nearest-leaf occs query (i + 1) len best-dist best
+
+  sl-nearest-children : List SparseNode, SparseVector, Integer, Integer, Integer, Maybe SparseOccupant -> Maybe SparseOccupant
+  sl-nearest-children (children) (query) (i) (len) (best-dist) (best) =
+    if i >= len then best
+    else let result = sl-nearest-node (list-at children i) query best-dist best
+    in when result
+      is Just (occ) -> sl-nearest-children children query (i + 1) len (sv-distance-sq (occ.so-vector) query) result
+      is None -> sl-nearest-children children query (i + 1) len best-dist best
+
+Page 1

@@ -1,0 +1,121 @@
+Chapter: Mouse
+
+ PS/2 mouse driver. Reads 3-byte mouse packets from the kernel's
+ IRQ12 mouse buffer (memory address 28684). Tracks absolute cursor
+ position with configurable bounds. Provides button state and
+ delta movement.
+
+ We say:
+
+Section: Constants
+  mouse-buffer-addr : Integer = 28684
+  mouse-packet-size : Integer = 3
+
+Section: Mouse State
+  MouseState = record {
+    mx : Integer,
+    my : Integer,
+    mdx : Integer,
+    mdy : Integer,
+    m-left : Boolean,
+    m-right : Boolean,
+    m-middle : Boolean,
+    m-max-x : Integer,
+    m-max-y : Integer
+  }
+
+  mouse-new : Integer, Integer -> MouseState
+  mouse-new (max-x) (max-y) = MouseState {
+    mx = max-x / 2, my = max-y / 2,
+    mdx = 0, mdy = 0,
+    m-left = False, m-right = False, m-middle = False,
+    m-max-x = max-x, m-max-y = max-y
+  }
+
+Section: Packet Reading
+  mouse-has-packet : Boolean
+  mouse-has-packet = peek-byte mouse-buffer-addr 0 /= 0
+
+  mouse-read-packet : MouseState -> MouseState
+  mouse-read-packet (st) =
+    let flags = peek-byte mouse-buffer-addr 0
+    in let raw-dx = peek-byte mouse-buffer-addr 1
+    in let raw-dy = peek-byte mouse-buffer-addr 2
+    in let clear = poke-byte mouse-buffer-addr 0 0
+    in let dx = if bit-and flags 16 > 0 then raw-dx - 256 else raw-dx
+    in let dy = if bit-and flags 32 > 0 then raw-dy - 256 else raw-dy
+    in let new-x = mouse-clamp (st.mx + dx) 0 (st.m-max-x - 1)
+    in let new-y = mouse-clamp (st.my - dy) 0 (st.m-max-y - 1)
+    in MouseState {
+      mx = new-x, my = new-y,
+      mdx = dx, mdy = dy,
+      m-left = bit-and flags 1 > 0,
+      m-right = bit-and flags 2 > 0,
+      m-middle = bit-and flags 4 > 0,
+      m-max-x = st.m-max-x, m-max-y = st.m-max-y
+    }
+
+Section: Polling
+  mouse-poll : MouseState -> MouseState
+  mouse-poll (st) =
+    if mouse-has-packet then mouse-read-packet st else st
+
+Section: Cursor Drawing
+  mouse-draw-cursor : Integer, Integer, Integer, Integer -> Integer
+  mouse-draw-cursor (fb-base) (pitch) (x) (y) =
+    let w0 = mouse-cursor-row fb-base pitch x y 0
+    in let w1 = mouse-cursor-row fb-base pitch x y 1
+    in let w2 = mouse-cursor-row fb-base pitch x y 2
+    in let w3 = mouse-cursor-row fb-base pitch x y 3
+    in let w4 = mouse-cursor-row fb-base pitch x y 4
+    in let w5 = mouse-cursor-row fb-base pitch x y 5
+    in let w6 = mouse-cursor-row fb-base pitch x y 6
+    in let w7 = mouse-cursor-row fb-base pitch x y 7
+    in let w8 = mouse-cursor-row fb-base pitch x y 8
+    in let w9 = mouse-cursor-row fb-base pitch x y 9
+    in w0 + w1 + w2 + w3 + w4 + w5 + w6 + w7 + w8 + w9
+
+  mouse-cursor-row : Integer, Integer, Integer, Integer, Integer -> Integer
+  mouse-cursor-row (fb-base) (pitch) (x) (y) (row) =
+    let pattern = mouse-cursor-pattern row
+    in mouse-cursor-bits fb-base pitch x (y + row) pattern 0
+
+  mouse-cursor-bits : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  mouse-cursor-bits (fb-base) (pitch) (x) (y) (pattern) (bit) =
+    if bit >= 10 then 0
+    else let px = bit-and (bit-shru pattern (9 - bit)) 1
+    in let w = if px == 1 then poke-32 fb-base (y * pitch + (x + bit) * 4) 16777215
+      else 0
+    in w + mouse-cursor-bits fb-base pitch x y pattern (bit + 1)
+
+  mouse-cursor-pattern : Integer -> Integer
+  mouse-cursor-pattern (row) =
+    if row == 0 then 512
+    else if row == 1 then 768
+    else if row == 2 then 896
+    else if row == 3 then 960
+    else if row == 4 then 992
+    else if row == 5 then 1008
+    else if row == 6 then 1016
+    else if row == 7 then 1020
+    else if row == 8 then 992
+    else if row == 9 then 408
+    else 0
+
+Section: Queries
+  mouse-in-rect : MouseState, Integer, Integer, Integer, Integer -> Boolean
+  mouse-in-rect (st) (x) (y) (w) (h) =
+    st.mx >= x & st.mx < x + w & st.my >= y & st.my < y + h
+
+  mouse-clicked-in : MouseState, Integer, Integer, Integer, Integer -> Boolean
+  mouse-clicked-in (st) (x) (y) (w) (h) =
+    st.m-left & mouse-in-rect st x y w h
+
+Section: Helpers
+  mouse-clamp : Integer, Integer, Integer -> Integer
+  mouse-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+  format-mouse : MouseState -> Text
+  format-mouse (st) = "mouse(" & show (st.mx) & "," & show (st.my) & ") L=" & show (st.m-left)
+
+Page 1

@@ -1,0 +1,732 @@
+Chapter: Type Checker
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+
+ Bidirectional type checker for Codex.
+
+Section: Resolve Type Expression
+  resolve-type-expr : List TypeBinding, ATypeExpr -> CodexType
+  resolve-type-expr (tdm) (texpr) =
+   when texpr
+    is ANamedType (name) (s) -> resolve-type-name tdm (name.value)
+    is AFunType (param) (ret) (s) -> deck-record (FunTy (resolve-type-expr tdm param) (resolve-type-expr tdm ret))
+    is AAppType (ctor) (args) (s) -> resolve-applied-type tdm ctor args
+    is AEffectType (effs) (scopes) (ret) (s) -> deck-record (EffectfulTy effs scopes (resolve-type-expr tdm ret))
+    is ABoundedIntType (base) (lo) (hi) (mode) (s) -> resolve-bounded-int-type tdm base lo hi mode
+
+  resolve-bounded-int-type : List TypeBinding, ATypeExpr, Integer, Integer, OverflowMode -> CodexType
+  resolve-bounded-int-type (tdm) (base) (lo) (hi) (mode) =
+   let resolved = resolve-type-expr tdm base
+   in when resolved
+    is IntegerTy (b-lo) (b-hi) (b-mode) -> deck-record (IntegerTy lo hi mode)
+    is otherwise -> ErrorTy
+
+  resolve-applied-type : List TypeBinding, ATypeExpr, List ATypeExpr -> CodexType
+  resolve-applied-type (tdm) (ctor) (args) =
+   when ctor
+    is ANamedType (name) (s) ->
+     if name.value == "List" then if list-length args == 1 then deck-record (ListTy (resolve-type-expr tdm (list-at args 0)))
+       else deck-record (ListTy ErrorTy)
+      else if name.value == "LinkedList" then if list-length args == 1 then deck-record (LinkedListTy (resolve-type-expr tdm (list-at args 0)))
+       else deck-record (LinkedListTy ErrorTy)
+      else deck-record (ConstructedTy name (resolve-type-expr-list tdm args 0 (list-length args) []))
+    is AAppType (inner-ctor) (inner-args) (s) ->
+     resolve-applied-type tdm inner-ctor (inner-args & args)
+    is otherwise -> resolve-type-expr tdm ctor
+
+  resolve-type-expr-list : List TypeBinding, List ATypeExpr, Integer, Integer, List CodexType -> List CodexType
+  resolve-type-expr-list (tdm) (args) (i) (len) (acc) =
+   if i == len then acc
+   else resolve-type-expr-list tdm args (i + 1) len (list-push acc (resolve-type-expr tdm (list-at args i)))
+
+  resolve-type-name : List TypeBinding, Text -> CodexType
+  resolve-type-name (tdm) (name) =
+   if name == "Integer" then int-ty-default
+   else if name == "Number" then NumberTy
+   else if name == "Text" then TextTy
+   else if name == "Boolean" then BooleanTy
+   else if name == "Char" then CharTy
+   else if name == "Nothing" then NothingTy
+   else lookup-type-def tdm name
+
+  lookup-type-def : List TypeBinding, Text -> CodexType
+  lookup-type-def (tdm) (name) =
+   let len = list-length tdm
+   in if len == 0 then deck-record (ConstructedTy (Name { value = name }) [])
+   else let pos = bsearch-text-pos tdm name 0 len
+   in if pos >= len then deck-record (ConstructedTy (Name { value = name }) [])
+   else let b = list-at tdm pos
+   in if b.name == name then b.bound-type
+         else deck-record (ConstructedTy (Name { value = name }) [])
+
+Section: Parameterize Type
+  is-value-name : Text -> Boolean
+  is-value-name (name) =
+   if text-length name == 0 then False
+   else let code = char-code (char-at name 0)
+   in code >= char-code 'e' & code <= char-code 'z'
+
+  ParamEntry = record {
+   param-name : Text,
+   var-id : Integer between 0 and 4294967295
+  }
+
+  ParamResult = record {
+   parameterized : CodexType,
+   entries : List ParamEntry,
+   state : UnificationState
+  }
+
+  parameterize-type : UnificationState, CodexType -> ParamResult
+  parameterize-type (st) (ty) =
+   let r = parameterize-walk st [] ty
+   in let wrapped = wrap-forall-from-entries (r.walked) (r.entries) 0 (list-length (r.entries))
+   in ParamResult {
+    parameterized = wrapped,
+    entries = r.entries,
+    state = r.state
+   }
+
+  wrap-forall-from-entries : CodexType, List ParamEntry, Integer, Integer -> CodexType
+  wrap-forall-from-entries (ty) (entries) (i) (len) =
+   if i == len then ty
+   else let e = list-at entries i
+   in deck-record (ForAllTy (e.var-id) (wrap-forall-from-entries ty entries (i + 1) len))
+
+  WalkResult = record {
+   walked : CodexType,
+   entries : List ParamEntry,
+   state : UnificationState
+  }
+
+  parameterize-walk : UnificationState, List ParamEntry, CodexType -> WalkResult
+  parameterize-walk (st) (entries) (ty) =
+   when ty
+    is ConstructedTy (name) (args) ->
+     if list-length args == 0 & is-value-name (name.value)
+      then
+       let looked = find-param-entry entries (name.value) 0 (list-length entries)
+       in if looked >= 0 then WalkResult {
+        walked = TypeVar looked,
+        entries = entries,
+        state = st
+       }
+       else let fr = fresh-and-advance st
+       in when fr.var-type
+          is TypeVar (new-id) ->
+           let new-entry = ParamEntry {
+            param-name = name.value,
+            var-id = new-id
+           }
+       in WalkResult {
+            walked = fr.var-type,
+            entries = list-push entries new-entry,
+            state = fr.state
+           }
+          is otherwise -> WalkResult {
+           walked = ty,
+           entries = entries,
+           state = fr.state
+          }
+      else parameterize-walk-children st entries ty
+    is otherwise -> parameterize-walk-children st entries ty
+
+  parameterize-walk-children : UnificationState, List ParamEntry, CodexType -> WalkResult
+  parameterize-walk-children (st) (entries) (ty) =
+   when ty
+    is FunTy (param) (ret) ->
+     let pr = parameterize-walk st entries param
+     in let rr = parameterize-walk (pr.state) (pr.entries) ret
+     in WalkResult {
+      walked = deck-record (FunTy (pr.walked) (rr.walked)),
+      entries = rr.entries,
+      state = rr.state
+     }
+    is ListTy (elem) ->
+     let er = parameterize-walk st entries elem
+     in WalkResult {
+      walked = deck-record (ListTy (er.walked)),
+      entries = er.entries,
+      state = er.state
+     }
+    is LinkedListTy (elem) ->
+     let er = parameterize-walk st entries elem
+     in WalkResult {
+      walked = deck-record (LinkedListTy (er.walked)),
+      entries = er.entries,
+      state = er.state
+     }
+    is ForAllTy (id) (body) ->
+     let br = parameterize-walk st entries body
+     in WalkResult {
+      walked = deck-record (ForAllTy id (br.walked)),
+      entries = br.entries,
+      state = br.state
+     }
+    is ConstructedTy (name) (args) ->
+     let args-r = parameterize-walk-list st entries args 0 (list-length args) []
+     in WalkResult {
+      walked = deck-record (ConstructedTy name (args-r.walked-list)),
+      entries = args-r.entries,
+      state = args-r.state
+     }
+    is RecordTy (rname) (rargs) (rfields) ->
+     let args-r = parameterize-walk-list st entries rargs 0 (list-length rargs) []
+     in let fields-r = parameterize-walk-record-fields (args-r.state) (args-r.entries) rfields 0 (list-length rfields) []
+     in WalkResult {
+      walked = deck-record (RecordTy rname (args-r.walked-list) (fields-r.walked-fields)),
+      entries = fields-r.entries,
+      state = fields-r.state
+     }
+    is SumTy (sname) (sargs) (sctors) ->
+     let args-r = parameterize-walk-list st entries sargs 0 (list-length sargs) []
+     in let ctors-r = parameterize-walk-sum-ctors (args-r.state) (args-r.entries) sctors 0 (list-length sctors) []
+     in WalkResult {
+      walked = deck-record (SumTy sname (args-r.walked-list) (ctors-r.walked-ctors)),
+      entries = ctors-r.entries,
+      state = ctors-r.state
+     }
+    is otherwise -> WalkResult {
+     walked = ty,
+     entries = entries,
+     state = st
+    }
+
+  ParameterizeFieldsResult = record {
+   walked-fields : List RecordField,
+   entries : List ParamEntry,
+   state : UnificationState
+  }
+
+  parameterize-walk-record-fields : UnificationState, List ParamEntry, List RecordField, Integer, Integer, List RecordField -> ParameterizeFieldsResult
+  parameterize-walk-record-fields (st) (entries) (fields) (i) (len) (acc) =
+   if i == len then ParameterizeFieldsResult {
+    walked-fields = acc,
+    entries = entries,
+    state = st
+   }
+   else let f = list-at fields i
+   in let r = parameterize-walk st entries (f.type-val)
+   in let f2 = deck-record (RecordField { name = f.name, type-val = r.walked })
+   in parameterize-walk-record-fields (r.state) (r.entries) fields (i + 1) len (list-push acc f2)
+
+  ParameterizeCtorsResult = record {
+   walked-ctors : List SumCtor,
+   entries : List ParamEntry,
+   state : UnificationState
+  }
+
+  parameterize-walk-sum-ctors : UnificationState, List ParamEntry, List SumCtor, Integer, Integer, List SumCtor -> ParameterizeCtorsResult
+  parameterize-walk-sum-ctors (st) (entries) (ctors) (i) (len) (acc) =
+   if i == len then ParameterizeCtorsResult {
+    walked-ctors = acc,
+    entries = entries,
+    state = st
+   }
+   else let c = list-at ctors i
+   in let r = parameterize-walk-list st entries (c.fields) 0 (list-length (c.fields)) []
+   in let c2 = deck-record (SumCtor { name = c.name, fields = r.walked-list })
+   in parameterize-walk-sum-ctors (r.state) (r.entries) ctors (i + 1) len (list-push acc c2)
+
+  find-param-entry : List ParamEntry, Text, Integer, Integer -> Integer
+  find-param-entry (entries) (name) (i) (len) =
+   if i == len then -1
+   else let e = list-at entries i
+   in if e.param-name == name then e.var-id
+      else find-param-entry entries name (i + 1) len
+
+  WalkListResult = record {
+   walked-list : List CodexType,
+   entries : List ParamEntry,
+   state : UnificationState
+  }
+
+  parameterize-walk-list : UnificationState, List ParamEntry, List CodexType, Integer, Integer, List CodexType -> WalkListResult
+  parameterize-walk-list (st) (entries) (args) (i) (len) (acc) =
+   if i == len then WalkListResult {
+    walked-list = acc,
+    entries = entries,
+    state = st
+   }
+   else let r = parameterize-walk st entries (list-at args i)
+   in parameterize-walk-list (r.state) (r.entries) args (i + 1) len (list-push acc (r.walked))
+
+Section: Check Definition
+  check-def : UnificationState, TypeEnv, ADef -> CheckResult
+  check-def (st) (env) (def) =
+   let declared = resolve-declared-type st env def
+   in let linked-state = if list-length (def.declared-type) == 0
+        then (unify (declared.state) (env-lookup (declared.env) (def.name.value)) (declared.expected-type) (def.span)).state
+        else declared.state
+   in let env2 = bind-def-params linked-state (declared.env) (def.params) (declared.expected-type) 0 (list-length (def.params))
+   in let body-r = infer-expr (env2.state) (env2.env) (def.body)
+   in let u = unify (body-r.state) (env2.remaining-type) (body-r.inferred-type) (aexpr-span (def.body))
+   in let effect-checked = check-effect-subset (u.state) (env2.remaining-type) (deep-resolve (u.state) (body-r.inferred-type)) (aexpr-span (def.body))
+   in let env-type = env-lookup env (def.name.value)
+   in let tied-state = when env-type
+        is ForAllTy (id) (body) -> (unify effect-checked (declared.expected-type) (strip-forall-ty env-type) (def.span)).state
+        is otherwise -> effect-checked
+   in CheckResult {
+    inferred-type = declared.expected-type,
+    state = tied-state
+   }
+
+  check-effect-subset : UnificationState, CodexType, CodexType, SourceSpan -> UnificationState
+  check-effect-subset (st) (declared) (body) (span) =
+   let declared-effs = extract-effects declared
+   in let body-effs = extract-effects body
+   in find-uncovered-effect st body-effs declared-effs span 0 (list-length body-effs)
+
+  extract-effects : CodexType -> List Name
+  extract-effects (ty) =
+   when ty
+    is EffectfulTy (effs) (sc) (inner) -> effs
+    is otherwise -> []
+
+  extract-scopes : CodexType -> List Text
+  extract-scopes (ty) =
+   when ty
+    is EffectfulTy (effs) (sc) (inner) -> sc
+    is otherwise -> []
+
+  find-uncovered-effect : UnificationState, List Name, List Name, SourceSpan, Integer, Integer -> UnificationState
+  find-uncovered-effect (st) (body-effs) (declared-effs) (span) (i) (len) =
+   if i == len then st
+   else let e = list-at body-effs i
+   in if effect-covered-by declared-effs (e.value) then find-uncovered-effect st body-effs declared-effs span (i + 1) len
+      else add-unify-error st cdx-effect-undeclared ("Effect '" & (e.value) & "' not declared in function signature") span
+
+  effect-covered-by : List Name, Text -> Boolean
+  effect-covered-by (declared) (body-eff) =
+   if name-list-has declared body-eff then True
+   else let dot-pos = find-dot body-eff 0 (text-length body-eff)
+   in if dot-pos >= 0 then name-list-has declared (substring body-eff 0 dot-pos)
+      else False
+
+  find-dot : Text, Integer, Integer -> Integer
+  find-dot (s) (i) (len) =
+   if i == len then 0 - 1
+   else if char-code (char-at s i) == 46 then i
+   else find-dot s (i + 1) len
+
+  name-list-has : List Name, Text -> Boolean
+  name-list-has (names) (target) = name-list-has-loop names target 0 (list-length names)
+
+  name-list-has-loop : List Name, Text, Integer, Integer -> Boolean
+  name-list-has-loop (names) (target) (i) (len) =
+   if i == len then False
+   else if (list-at names i).value == target then True
+   else name-list-has-loop names target (i + 1) len
+
+  DefSetup = record {
+   expected-type : CodexType,
+   remaining-type : CodexType,
+   state : UnificationState,
+   env : TypeEnv
+  }
+
+  resolve-declared-type : UnificationState, TypeEnv, ADef -> DefSetup
+  resolve-declared-type (st) (env) (def) =
+   if list-length (def.declared-type) == 0
+    then
+     let pcount = list-length (def.params)
+     in let fun-built = build-undeclared-fun-type st pcount
+     in DefSetup {
+      expected-type = fun-built.fun-type,
+      remaining-type = fun-built.fun-type,
+      state = fun-built.state,
+      env = env
+     }
+    else let env-type = env-lookup env (def.name.value)
+    in let inst = instantiate-type st env-type
+    in DefSetup {
+      expected-type = inst.var-type,
+      remaining-type = inst.var-type,
+      state = inst.state,
+      env = env
+     }
+
+  FunBuiltResult = record {
+   fun-type : CodexType,
+   state : UnificationState
+  }
+
+  build-undeclared-fun-type : UnificationState, Integer -> FunBuiltResult
+  build-undeclared-fun-type (st) (pcount) =
+   let body-fr = fresh-and-advance st
+   in if pcount == 0 then FunBuiltResult { fun-type = body-fr.var-type, state = body-fr.state }
+   else build-fun-type-loop (body-fr.state) pcount (body-fr.var-type)
+
+  build-fun-type-loop : UnificationState, Integer, CodexType -> FunBuiltResult
+  build-fun-type-loop (st) (n) (acc) =
+   if n == 0 then FunBuiltResult { fun-type = acc, state = st }
+   else let fr = fresh-and-advance st
+   in build-fun-type-loop (fr.state) (n - 1) (FunTy (fr.var-type) acc)
+
+  DefParamResult = record {
+   state : UnificationState,
+   env : TypeEnv,
+   remaining-type : CodexType
+  }
+
+  bind-def-params : UnificationState, TypeEnv, List AParam, CodexType, Integer, Integer -> DefParamResult
+  bind-def-params (st) (env) (params) (remaining) (i) (len) =
+   if i == len then DefParamResult {
+    state = st,
+    env = env,
+    remaining-type = remaining
+   }
+   else let p = list-at params i
+   in when remaining
+     is FunTy (param-ty) (ret-ty) ->
+      let env2 = env-bind-local env (p.name.value) param-ty
+   in bind-def-params st env2 params ret-ty (i + 1) len
+     is otherwise ->
+      let fr = fresh-and-advance st
+   in let env2 = env-bind-local env (p.name.value) (fr.var-type)
+   in bind-def-params (fr.state) env2 params remaining (i + 1) len
+
+Section: Check Chapter
+  ChapterResult = record {
+   types : List TypeBinding,
+   env : TypeEnv,
+   state : UnificationState
+  }
+
+  check-chapter : AChapter -> ChapterResult
+  check-chapter (mod) =
+   let tdm = build-type-def-map (mod.type-defs) 0 (list-length (mod.type-defs)) []
+   in let arity-errors = check-all-type-arities tdm mod
+   in let tenv = register-type-defs empty-unification-state builtin-type-env tdm (mod.type-defs) 0 (list-length (mod.type-defs))
+   in let st-with-arity = add-diagnostics-to-state (tenv.state) arity-errors 0 (list-length arity-errors)
+   in let env = register-all-defs st-with-arity (tenv.env) tdm (mod.defs) 0 (list-length (mod.defs))
+   in let env2 = register-effect-ops (env.state) (env.env) tdm (mod.effect-defs) 0 (list-length (mod.effect-defs))
+   in check-all-defs (env2.state) (env2.env) (mod.defs) 0 (list-length (mod.defs)) []
+
+  add-diagnostics-to-state : UnificationState, List Diagnostic, Integer, Integer -> UnificationState
+  add-diagnostics-to-state (st) (diags) (i) (len) =
+   if i == len then st
+   else let d = list-at diags i
+   in add-diagnostics-to-state (__record-set st "bag" (bag-add (st.bag) d)) diags (i + 1) len
+
+  register-all-defs : UnificationState, TypeEnv, List TypeBinding, List ADef, Integer, Integer -> LetBindResult
+  register-all-defs (st) (env) (tdm) (defs) (i) (len) =
+   if i == len then LetBindResult {
+    state = st,
+    env = env
+   }
+   else let def = list-at defs i
+   in let ty = if list-length (def.declared-type) == 0 then let fr = fresh-and-advance st
+   in let env2 = env-bind env (def.name.value) (fr.var-type)
+   in LetBindResult {
+          state = fr.state,
+          env = env2
+         }
+   else let resolved = resolve-type-expr tdm (list-at (def.declared-type) 0)
+   in let pr = parameterize-type st resolved
+   in LetBindResult {
+          state = pr.state,
+          env = env-bind env (def.name.value) (pr.parameterized)
+         }
+   in register-all-defs (ty.state) (ty.env) tdm defs (i + 1) len
+
+  register-effect-ops : UnificationState, TypeEnv, List TypeBinding, List AEffectDef, Integer, Integer -> LetBindResult
+  register-effect-ops (st) (env) (tdm) (effs) (i) (len) =
+   if i == len then LetBindResult { state = st, env = env }
+   else let eff = list-at effs i
+   in let after = register-effect-ops-of st env tdm (eff.ops) 0 (list-length (eff.ops))
+   in register-effect-ops (after.state) (after.env) tdm effs (i + 1) len
+
+  register-effect-ops-of : UnificationState, TypeEnv, List TypeBinding, List AEffectOpDef, Integer, Integer -> LetBindResult
+  register-effect-ops-of (st) (env) (tdm) (ops) (i) (len) =
+   if i == len then LetBindResult { state = st, env = env }
+   else let op = list-at ops i
+   in if env-has env (op.name.value) then register-effect-ops-of st env tdm ops (i + 1) len
+   else let resolved = resolve-type-expr tdm (op.type-expr)
+   in let pr = parameterize-type st resolved
+   in register-effect-ops-of (pr.state) (env-bind env (op.name.value) (pr.parameterized)) tdm ops (i + 1) len
+
+  check-all-defs : UnificationState, TypeEnv, List ADef, Integer, Integer, List TypeBinding -> ChapterResult
+  check-all-defs (st) (env) (defs) (i) (len) (acc) =
+   if i == len then ChapterResult {
+    types = acc,
+    env = env,
+    state = st
+   }
+   else let def = list-at defs i
+   in let fresh-env = __record-set env "locals" []
+   in let r = check-def st fresh-env def
+   in let resolved = deep-resolve (r.state) (r.inferred-type)
+   in let entry = deck-record (TypeBinding {
+    name = def.name.value,
+    bound-type = resolved
+   })
+   in check-all-defs (r.state) env defs (i + 1) len (list-push acc entry)
+
+Section: Register Type Definitions
+  build-type-def-map : List ATypeDef, Integer, Integer, List TypeBinding -> List TypeBinding
+  build-type-def-map (tdefs) (i) (len) (acc) =
+   if i == len then acc
+   else let td = list-at tdefs i
+   in let entry = when td
+       is AVariantTypeDef (name) (type-params) (ctors) (s) ->
+        let sum-ctors = build-sum-ctors tdefs ctors 0 (list-length ctors) [] acc
+   in let ty-args = type-params-to-refs type-params 0 (list-length type-params) []
+   in deck-record (TypeBinding {
+         name = name.value,
+         bound-type = deck-record (SumTy name ty-args sum-ctors)
+        })
+       is ARecordTypeDef (name) (type-params) (fields) (s) ->
+        let rec-fields = build-record-fields-for-map tdefs fields 0 (list-length fields) [] acc
+   in let ty-args = type-params-to-refs type-params 0 (list-length type-params) []
+   in deck-record (TypeBinding {
+         name = name.value,
+         bound-type = deck-record (RecordTy name ty-args rec-fields)
+        })
+   in build-type-def-map tdefs (i + 1) len (list-insert-at acc (bsearch-text-pos acc (entry.name) 0 (list-length acc)) entry)
+
+  build-sum-ctors : List ATypeDef, List AVariantCtorDef, Integer, Integer, List SumCtor, List TypeBinding -> List SumCtor
+  build-sum-ctors (tdefs) (ctors) (i) (len) (acc) (partial-tdm) =
+   if i == len then acc
+   else let c = list-at ctors i
+   in let field-types = resolve-type-expr-list-for-map tdefs (c.fields) 0 (list-length (c.fields)) [] partial-tdm
+   in let sc = deck-record (SumCtor {
+    name = c.name,
+    fields = field-types
+   })
+   in build-sum-ctors tdefs ctors (i + 1) len (list-push acc sc) partial-tdm
+
+  build-record-fields-for-map : List ATypeDef, List ARecordFieldDef, Integer, Integer, List RecordField, List TypeBinding -> List RecordField
+  build-record-fields-for-map (tdefs) (fields) (i) (len) (acc) (partial-tdm) =
+   if i == len then acc
+   else let f = list-at fields i
+   in let rfield = deck-record (RecordField {
+    name = f.name,
+    type-val = resolve-type-expr partial-tdm (f.type-expr)
+   })
+   in build-record-fields-for-map tdefs fields (i + 1) len (list-push acc rfield) partial-tdm
+
+  resolve-type-expr-list-for-map : List ATypeDef, List ATypeExpr, Integer, Integer, List CodexType, List TypeBinding -> List CodexType
+  resolve-type-expr-list-for-map (tdefs) (args) (i) (len) (acc) (partial-tdm) =
+   if i == len then acc
+   else resolve-type-expr-list-for-map tdefs args (i + 1) len (list-push acc (resolve-type-expr partial-tdm (list-at args i))) partial-tdm
+
+  register-type-defs : UnificationState, TypeEnv, List TypeBinding, List ATypeDef, Integer, Integer -> LetBindResult
+  register-type-defs (st) (env) (tdm) (tdefs) (i) (len) =
+   if i == len then LetBindResult {
+    state = st,
+    env = env
+   }
+   else let td = list-at tdefs i
+   in let r = register-one-type-def st env tdm td
+   in register-type-defs (r.state) (r.env) tdm tdefs (i + 1) len
+
+  type-params-to-refs : List Name, Integer, Integer, List CodexType -> List CodexType
+  type-params-to-refs (params) (i) (len) (acc) =
+   if i == len then acc
+   else let p = list-at params i
+   in type-params-to-refs params (i + 1) len (list-push acc (deck-record (ConstructedTy p [])))
+
+  register-one-type-def : UnificationState, TypeEnv, List TypeBinding, ATypeDef -> LetBindResult
+  register-one-type-def (st) (env) (tdm) (td) =
+   when td
+    is AVariantTypeDef (name) (type-params) (ctors) (s) ->
+     let sum-ty = lookup-type-def tdm (name.value)
+     in let env1 = env-bind env (name.value) sum-ty
+     in let result-ty = if list-length type-params == 0 then sum-ty
+          else deck-record (ConstructedTy name (type-params-to-refs type-params 0 (list-length type-params) []))
+     in register-variant-ctors st env1 tdm ctors result-ty 0 (list-length ctors)
+    is ARecordTypeDef (name) (type-params) (fields) (s) ->
+     let resolved-fields = build-record-fields tdm fields 0 (list-length fields) []
+     in let ty-args = type-params-to-refs type-params 0 (list-length type-params) []
+     in let result-ty = deck-record (RecordTy name ty-args resolved-fields)
+     in let ctor-ty = build-record-ctor-type tdm fields result-ty 0 (list-length fields)
+     in let pr = parameterize-type st ctor-ty
+     in LetBindResult {
+      state = pr.state,
+      env = env-bind env (name.value) (pr.parameterized)
+     }
+
+  build-record-fields : List TypeBinding, List ARecordFieldDef, Integer, Integer, List RecordField -> List RecordField
+  build-record-fields (tdm) (fields) (i) (len) (acc) =
+   if i == len then acc
+   else let f = list-at fields i
+   in let rfield = deck-record (RecordField {
+    name = f.name,
+    type-val = resolve-type-expr tdm (f.type-expr)
+   })
+   in build-record-fields tdm fields (i + 1) len (list-push acc rfield)
+
+  lookup-record-field : List RecordField, Text -> CodexType
+  lookup-record-field (fields) (name) =
+   if list-length fields == 0 then ErrorTy
+   else let f = list-at fields 0
+   in if f.name.value == name then f.type-val
+      else lookup-record-field-loop fields name 1 (list-length fields)
+
+  lookup-record-field-loop : List RecordField, Text, Integer, Integer -> CodexType
+  lookup-record-field-loop (fields) (name) (i) (len) =
+   if i == len then ErrorTy
+   else let f = list-at fields i
+   in if f.name.value == name then f.type-val
+      else lookup-record-field-loop fields name (i + 1) len
+
+  register-variant-ctors : UnificationState, TypeEnv, List TypeBinding, List AVariantCtorDef, CodexType, Integer, Integer -> LetBindResult
+  register-variant-ctors (st) (env) (tdm) (ctors) (result-ty) (i) (len) =
+   if i == len then LetBindResult {
+    state = st,
+    env = env
+   }
+   else let ctor = list-at ctors i
+   in let ctor-ty = build-ctor-type tdm (ctor.fields) result-ty 0 (list-length (ctor.fields))
+   in let pr = parameterize-type st ctor-ty
+   in let env2 = env-bind env (ctor.name.value) (pr.parameterized)
+   in register-variant-ctors (pr.state) env2 tdm ctors result-ty (i + 1) len
+
+  build-ctor-type : List TypeBinding, List ATypeExpr, CodexType, Integer, Integer -> CodexType
+  build-ctor-type (tdm) (fields) (result) (i) (len) =
+   if i == len then result
+   else let rest = build-ctor-type tdm fields result (i + 1) len
+   in deck-record (FunTy (resolve-type-expr tdm (list-at fields i)) rest)
+
+  build-record-ctor-type : List TypeBinding, List ARecordFieldDef, CodexType, Integer, Integer -> CodexType
+  build-record-ctor-type (tdm) (fields) (result) (i) (len) =
+   if i == len then result
+   else let f = list-at fields i
+   in let rest = build-record-ctor-type tdm fields result (i + 1) len
+   in deck-record (FunTy (resolve-type-expr tdm (f.type-expr)) rest)
+
+Section: Type Arity Check
+  FlatAppResult = record {
+   ctor : ATypeExpr,
+   args : List ATypeExpr
+  }
+
+  flatten-app : ATypeExpr, List ATypeExpr -> FlatAppResult
+  flatten-app (expr) (outer-args) =
+   when expr
+    is AAppType (ctor) (args) (s) -> flatten-app ctor (args & outer-args)
+    is otherwise -> FlatAppResult { ctor = expr, args = outer-args }
+
+  expected-arity-for : Text, List TypeBinding -> Integer
+  expected-arity-for (name) (tdm) =
+   if name == "List" then 1
+   else if name == "LinkedList" then 1
+   else let t = lookup-type-def tdm name
+   in when t
+     is RecordTy (n) (args) (fields) -> list-length args
+     is SumTy (n) (args) (ctors) -> list-length args
+     is otherwise -> -1
+
+  atype-named : ATypeExpr -> Text
+  atype-named (expr) =
+   when expr
+    is ANamedType (name) (s) -> name.value
+    is otherwise -> ""
+
+  check-arity-in-expr : List TypeBinding, ATypeExpr, List Diagnostic -> List Diagnostic
+  check-arity-in-expr (tdm) (expr) (acc) =
+   when expr
+    is AAppType (ctor) (args) (s) ->
+     let flat = flatten-app ctor args
+     in let flat-name = atype-named (flat.ctor)
+     in let expected = if text-length flat-name == 0 then -1 else expected-arity-for flat-name tdm
+     in let actual = list-length (flat.args)
+     in let acc2 = if expected >= 0 & actual /= expected
+                   then list-push acc (make-error cdx-type-arity ("Type '" & flat-name & "' expects " & integer-to-text expected & " type argument(s), got " & integer-to-text actual) s)
+                   else acc
+     in check-arity-in-expr-list tdm (flat.args) 0 (list-length (flat.args)) acc2
+    is AFunType (param) (ret) (s) -> check-arity-in-expr tdm ret (check-arity-in-expr tdm param acc)
+    is AEffectType (effs) (scopes) (ret) (s) -> check-arity-in-expr tdm ret acc
+    is otherwise -> acc
+
+  check-arity-in-expr-list : List TypeBinding, List ATypeExpr, Integer, Integer, List Diagnostic -> List Diagnostic
+  check-arity-in-expr-list (tdm) (xs) (i) (len) (acc) =
+   if i == len then acc
+   else check-arity-in-expr-list tdm xs (i + 1) len (check-arity-in-expr tdm (list-at xs i) acc)
+
+  check-arity-in-record-fields : List TypeBinding, List ARecordFieldDef, Integer, Integer, List Diagnostic -> List Diagnostic
+  check-arity-in-record-fields (tdm) (fields) (i) (len) (acc) =
+   if i == len then acc
+   else let f = list-at fields i
+   in check-arity-in-record-fields tdm fields (i + 1) len (check-arity-in-expr tdm (f.type-expr) acc)
+
+  check-arity-in-variant-ctors : List TypeBinding, List AVariantCtorDef, Integer, Integer, List Diagnostic -> List Diagnostic
+  check-arity-in-variant-ctors (tdm) (ctors) (i) (len) (acc) =
+   if i == len then acc
+   else let c = list-at ctors i
+   in check-arity-in-variant-ctors tdm ctors (i + 1) len (check-arity-in-expr-list tdm (c.fields) 0 (list-length (c.fields)) acc)
+
+  check-arity-in-typedef : List TypeBinding, ATypeDef, List Diagnostic -> List Diagnostic
+  check-arity-in-typedef (tdm) (td) (acc) =
+   when td
+    is AVariantTypeDef (name) (type-params) (ctors) (s) -> check-arity-in-variant-ctors tdm ctors 0 (list-length ctors) acc
+    is ARecordTypeDef (name) (type-params) (fields) (s) -> check-arity-in-record-fields tdm fields 0 (list-length fields) acc
+
+  check-arity-in-def : List TypeBinding, ADef, List Diagnostic -> List Diagnostic
+  check-arity-in-def (tdm) (def) (acc) =
+   if list-length (def.declared-type) == 0 then acc
+   else check-arity-in-expr tdm (list-at (def.declared-type) 0) acc
+
+  check-arity-in-defs : List TypeBinding, List ADef, Integer, Integer, List Diagnostic -> List Diagnostic
+  check-arity-in-defs (tdm) (defs) (i) (len) (acc) =
+   if i == len then acc
+   else check-arity-in-defs tdm defs (i + 1) len (check-arity-in-def tdm (list-at defs i) acc)
+
+  check-arity-in-typedefs : List TypeBinding, List ATypeDef, Integer, Integer, List Diagnostic -> List Diagnostic
+  check-arity-in-typedefs (tdm) (tdefs) (i) (len) (acc) =
+   if i == len then acc
+   else check-arity-in-typedefs tdm tdefs (i + 1) len (check-arity-in-typedef tdm (list-at tdefs i) acc)
+
+  check-all-type-arities : List TypeBinding, AChapter -> List Diagnostic
+  check-all-type-arities (tdm) (mod) =
+   let defs-errors = check-arity-in-defs tdm (mod.defs) 0 (list-length (mod.defs)) []
+   in check-arity-in-typedefs tdm (mod.type-defs) 0 (list-length (mod.type-defs)) defs-errors
+
+Section: Capability Checker
+
+  granted-capabilities : List Text
+  granted-capabilities = ["Console", "Console.Read", "Console.Write", "FileSystem", "FileSystem.Read", "FileSystem.Write", "Network", "Network.Read", "Network.Write", "Concurrent"]
+
+  check-opening-capabilities : List TypeBinding -> List Diagnostic
+  check-opening-capabilities (types) =
+   let opening-ty = find-opening-type types 0 (list-length types)
+   in let effs = extract-effects opening-ty
+   in check-cap-list effs granted-capabilities 0 (list-length effs)
+
+  find-opening-type : List TypeBinding, Integer, Integer -> CodexType
+  find-opening-type (types) (i) (len) =
+   if i == len then NothingTy
+   else let t = list-at types i
+   in if t.name == "opening" then strip-fun-args-for-cap (t.bound-type)
+      else find-opening-type types (i + 1) len
+
+  strip-fun-args-for-cap : CodexType -> CodexType
+  strip-fun-args-for-cap (ty) =
+   when ty
+    is FunTy (p) (r) -> strip-fun-args-for-cap r
+    is ForAllTy (id) (body) -> strip-fun-args-for-cap body
+    is otherwise -> ty
+
+  check-cap-list : List Name, List Text, Integer, Integer -> List Diagnostic
+  check-cap-list (effs) (granted) (i) (len) =
+   if i == len then []
+   else let e = list-at effs i
+   in let rest = check-cap-list effs granted (i + 1) len
+   in if cap-name-covered granted (e.value) 0 (list-length granted) then rest
+      else list-push rest (make-error cdx-capability-not-granted ("Effect '" & (e.value) & "' is not a granted capability") synthetic-span)
+
+  cap-name-covered : List Text, Text, Integer, Integer -> Boolean
+  cap-name-covered (granted) (eff) (i) (len) =
+   if i == len then let dot-pos = find-dot eff 0 (text-length eff)
+   in if dot-pos >= 0 then cap-name-covered granted (substring eff 0 dot-pos) 0 len
+      else False
+   else if list-at-text granted i == eff then True
+   else cap-name-covered granted eff (i + 1) len
+
+  list-at-text : List Text, Integer -> Text
+  list-at-text (xs) (i) = list-at xs i
+
+Page 1 of 2
+

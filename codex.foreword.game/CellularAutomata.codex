@@ -1,0 +1,116 @@
+Chapter: CellularAutomata
+
+ Cellular automata on a 2D grid. Supports Conway Game of Life rules
+ and configurable birth/survival rulesets for cave generation,
+ maze building, and other procedural content.
+
+ We say:
+
+Section: Grid
+  CaGrid = record {
+    cells : List Integer,
+    width : Integer between 1 and 255,
+    height : Integer between 1 and 255
+  }
+
+  ca-new : Integer, Integer -> CaGrid
+  ca-new (w) (h) = CaGrid { cells = ca-zero-cells (w * h) 0 [], width = w, height = h }
+
+  ca-zero-cells : Integer, Integer, List Integer -> List Integer
+  ca-zero-cells (n) (i) (acc) =
+    if i >= n then acc
+    else ca-zero-cells n (i + 1) (list-push acc 0)
+
+  ca-get : CaGrid, Integer, Integer -> Integer
+  ca-get (g) (x) (y) =
+    if x < 0 then 0 else if y < 0 then 0
+    else if x >= g.width then 0 else if y >= g.height then 0
+    else list-at (g.cells) (y * g.width + x)
+
+  ca-set : CaGrid, Integer, Integer, Integer -> CaGrid
+  ca-set (g) (x) (y) (val) =
+    CaGrid { cells = list-set-at (g.cells) (y * g.width + x) val, width = g.width, height = g.height }
+
+Section: Neighbor Counting
+  ca-count-neighbors : CaGrid, Integer, Integer -> Integer
+  ca-count-neighbors (g) (x) (y) =
+    ca-get g (x - 1) (y - 1) + ca-get g x (y - 1) + ca-get g (x + 1) (y - 1)
+    + ca-get g (x - 1) y + ca-get g (x + 1) y
+    + ca-get g (x - 1) (y + 1) + ca-get g x (y + 1) + ca-get g (x + 1) (y + 1)
+
+Section: Rules
+  CaRule = record {
+    birth : List Integer,
+    survive : List Integer
+  }
+
+  ca-rule-life : CaRule
+  ca-rule-life = CaRule { birth = [3], survive = [2, 3] }
+
+  ca-rule-caves : CaRule
+  ca-rule-caves = CaRule { birth = [5, 6, 7, 8], survive = [4, 5, 6, 7, 8] }
+
+  ca-rule-maze : CaRule
+  ca-rule-maze = CaRule { birth = [3], survive = [1, 2, 3, 4, 5] }
+
+  ca-in-list : List Integer, Integer, Integer, Integer -> Boolean
+  ca-in-list (xs) (val) (i) (len) =
+    if i >= len then False
+    else if list-at xs i == val then True
+    else ca-in-list xs val (i + 1) len
+
+Section: Step
+  ca-step : CaGrid, CaRule -> CaGrid
+  ca-step (g) (rule) = ca-step-loop g rule 0 0 (ca-new (g.width) (g.height))
+
+  ca-step-loop : CaGrid, CaRule, Integer, Integer, CaGrid -> CaGrid
+  ca-step-loop (g) (rule) (x) (y) (next) =
+    if y >= g.height then next
+    else if x >= g.width then ca-step-loop g rule 0 (y + 1) next
+    else let n = ca-count-neighbors g x y
+    in let alive = ca-get g x y
+    in let new-val = if alive == 1 then (if ca-in-list (rule.survive) n 0 (list-length (rule.survive)) then 1 else 0) else (if ca-in-list (rule.birth) n 0 (list-length (rule.birth)) then 1 else 0)
+    in ca-step-loop g rule (x + 1) y (ca-set next x y new-val)
+
+  ca-run : CaGrid, CaRule, Integer -> CaGrid
+  ca-run (g) (rule) (steps) =
+    if steps <= 0 then g
+    else ca-run (ca-step g rule) rule (steps - 1)
+
+Section: Random Seeding
+  ca-seed-random : CaGrid, Integer, Integer -> CaGrid
+  ca-seed-random (g) (density-pct) (seed) = ca-seed-loop g density-pct seed 0 0
+
+  ca-seed-loop : CaGrid, Integer, Integer, Integer, Integer -> CaGrid
+  ca-seed-loop (g) (density) (seed) (x) (y) =
+    if y >= g.height then g
+    else if x >= g.width then ca-seed-loop g density seed 0 (y + 1)
+    else let h = ca-hash seed x y
+    in let val = if h < density then 1 else 0
+    in ca-seed-loop (ca-set g x y val) density seed (x + 1) y
+
+  ca-hash : Integer, Integer, Integer -> Integer
+  ca-hash (seed) (x) (y) =
+    let h = bit-xor (seed * 2654435761) (x * 40503 + y * 73244475)
+    in let h2 = bit-xor h (bit-shru h 13)
+    in let positive = if h2 < 0 then -h2 else h2
+    in positive - (positive / 100) * 100
+
+Section: Queries
+  ca-count-alive : CaGrid -> Integer
+  ca-count-alive (g) = ca-sum (g.cells) 0 (g.width * g.height) 0
+
+  ca-sum : List Integer, Integer, Integer, Integer -> Integer
+  ca-sum (cells) (i) (len) (acc) =
+    if i >= len then acc
+    else ca-sum cells (i + 1) len (acc + list-at cells i)
+
+  ca-row-text : CaGrid, Integer -> Text
+  ca-row-text (g) (y) = ca-row-loop g 0 y ""
+
+  ca-row-loop : CaGrid, Integer, Integer, Text -> Text
+  ca-row-loop (g) (x) (y) (acc) =
+    if x >= g.width then acc
+    else ca-row-loop g (x + 1) y (acc & if ca-get g x y == 1 then "#" else ".")
+
+Page 1

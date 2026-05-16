@@ -1,0 +1,81 @@
+Chapter: SessionStore
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ A SessionStore maps session IDs to authenticated sessions,
+ each carrying subject identity, creation time, expiry, and
+ key-value data in a HAMT.
+
+ We say:
+
+Section: Session Types
+
+  Session = record {
+    id : Text,
+    subject : Text,
+    created : Integer,
+    expires : Integer,
+    data : HamtMap Text
+  }
+
+  SessionStore = record {
+    sessions : HamtMap Session,
+    count : Integer between 0 and 65535
+  }
+
+Section: Store Operations
+
+  session-store-empty : SessionStore
+  session-store-empty = SessionStore { sessions = hamt-empty, count = 0 }
+
+  session-create : SessionStore, Text, Text, Integer, Integer -> SessionStore
+  session-create (store) (id) (subject) (now) (ttl) =
+    let sess = Session { id = id, subject = subject, created = now, expires = now + ttl, data = hamt-empty }
+    in SessionStore { sessions = hamt-set (store.sessions) id sess, count = store.count + 1 }
+
+  session-get : SessionStore, Text, Integer -> Maybe Session
+  session-get (store) (id) (now) =
+    let found = hamt-get (store.sessions) id
+    in when found
+      is None -> None
+      is Just (sess) -> if now > sess.expires then None else Just sess
+
+  session-destroy : SessionStore, Text -> SessionStore
+  session-destroy (store) (id) =
+    if hamt-contains (store.sessions) id then
+      SessionStore { sessions = hamt-remove (store.sessions) id, count = store.count - 1 }
+    else store
+
+  session-set-data : SessionStore, Text, Text, Text -> SessionStore
+  session-set-data (store) (id) (key) (value) =
+    let found = hamt-get (store.sessions) id
+    in when found
+      is None -> store
+      is Just (sess) ->
+        let updated = Session { id = sess.id, subject = sess.subject, created = sess.created, expires = sess.expires, data = hamt-set (sess.data) key value }
+        in SessionStore { sessions = hamt-set (store.sessions) id updated, count = store.count }
+
+  session-get-data : SessionStore, Text, Text, Integer -> Maybe Text
+  session-get-data (store) (id) (key) (now) =
+    let sess = session-get store id now
+    in when sess
+      is None -> None
+      is Just (s) -> hamt-get (s.data) key
+
+Section: Cleanup
+
+  session-count : SessionStore -> Integer
+  session-count (store) = store.count
+
+  session-valid-count : SessionStore, Integer -> Integer
+  session-valid-count (store) (now) = store.count
+
+Section: Formatting
+
+  format-session : Session -> Text
+  format-session (s) = "session=" & s.id & " subject=" & s.subject & " expires=" & show (s.expires)
+
+  session-store-stats : SessionStore -> Text
+  session-store-stats (store) = "sessions=" & show (store.count)
+
+Page 1

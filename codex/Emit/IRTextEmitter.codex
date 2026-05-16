@@ -1,0 +1,387 @@
+Chapter: IR Text Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+
+ Serializes IRChapter + ATypeDef list as S-expression text. The output
+ is the wire format between the compiler and emit-plug programs (e.g.
+ the C# plug under plugs/csharp/). Plug programs parse this text back
+ into IRChapter + ATypeDef and feed it to a target-specific emitter.
+
+ Format is positional S-expressions: every node is a paren-delimited
+ list whose first element is a tag atom. Strings are double-quoted
+ with backslash escapes for backslash, double-quote, and newline.
+ Identifiers are bare atoms. Spans are elided — the plug fills
+ synthetic-span on parse since downstream emitters don't read span.
+
+Section: Identifier Atoms
+
+ Stable atoms identifying each variant. Plug parsers dispatch on the
+ first atom of each form.
+
+  ov-mode-atom : OverflowMode -> Text
+  ov-mode-atom (m) =
+   when m
+    is OvError -> "ov-error"
+    is OvWrapping -> "ov-wrap"
+    is OvClamping -> "ov-clamp"
+
+  bin-op-atom : IRBinaryOp -> Text
+  bin-op-atom (op) =
+   when op
+    is IrAddInt -> "add-int"
+    is IrSubInt -> "sub-int"
+    is IrMulInt -> "mul-int"
+    is IrDivInt -> "div-int"
+    is IrPowInt -> "pow-int"
+    is IrAddNum -> "add-num"
+    is IrSubNum -> "sub-num"
+    is IrMulNum -> "mul-num"
+    is IrDivNum -> "div-num"
+    is IrEq -> "eq"
+    is IrNotEq -> "ne"
+    is IrLt -> "lt"
+    is IrGt -> "gt"
+    is IrLtEq -> "le"
+    is IrGtEq -> "ge"
+    is IrAnd -> "and"
+    is IrOr -> "or"
+    is IrAppendText -> "append-text"
+    is IrAppendList -> "append-list"
+    is IrConsList -> "cons-list"
+
+Section: String Escaping
+
+ Strings use double quotes. Backslash, double-quote, newline get
+ backslash-escaped. Other CCE bytes pass through literally — the
+ plug parser scans byte-by-byte and reverses the escape mapping.
+
+  ir-quote : Text -> Text
+  ir-quote (s) = "\"" & text-concat-list (ir-quote-collect s 0 (text-length s) []) & "\""
+
+  ir-quote-collect : Text, Integer, Integer, List Text -> List Text
+  ir-quote-collect (s) (i) (len) (acc) =
+   if i == len then acc
+   else let c = char-code-at s i
+   in ir-quote-collect s (i + 1) len (list-push acc (ir-quote-char c))
+
+  ir-quote-char : Integer -> Text
+  ir-quote-char (c) =
+   if c == char-code-at "\\" 0 then "\\\\"
+   else if c == char-code-at "\"" 0 then "\\\""
+   else if c == char-code-at "\n" 0 then "\\n"
+   else char-to-text (code-to-char c)
+
+Section: List Helpers
+
+ Repeated text-list join used everywhere below. Concatenates a list
+ of text fragments with no separator.
+
+  ir-cat : List Text -> Text
+  ir-cat (xs) = text-concat-list xs
+
+  ir-strs-quoted : List Text, Integer, List Text -> List Text
+  ir-strs-quoted (xs) (i) (acc) =
+   if i == list-length xs then acc
+   else ir-strs-quoted xs (i + 1) (list-push acc (" " & ir-quote (list-at xs i)))
+
+  ir-names-quoted : List Name, Integer, List Text -> List Text
+  ir-names-quoted (xs) (i) (acc) =
+   if i == list-length xs then acc
+   else ir-names-quoted xs (i + 1) (list-push acc (" " & ir-quote ((list-at xs i).value)))
+
+Section: CodexType Emission
+
+ Closed match on every CodexType variant. SumTy/RecordTy include their
+ ctor / field lists since downstream emitters dispatch on them.
+
+  is-default-int : Integer, Integer, OverflowMode -> Boolean
+  is-default-int (lo) (hi) (mode) =
+   if lo == i64-min then if hi == i64-max then is-ov-error mode else False
+   else False
+
+  is-ov-error : OverflowMode -> Boolean
+  is-ov-error (m) =
+   when m
+    is OvError -> True
+    is otherwise -> False
+
+ i64-min cannot be passed to integer-to-text: the bare-metal __itoa
+ helper negates negative inputs to a positive register before its digit
+ loop, and abs(i64-min) overflows i64. Emit a sentinel atom instead;
+ plug parsers map it back to i64-min.
+
+  safe-int-text : Integer -> Text
+  safe-int-text (n) = if n == i64-min then "i64-min" else integer-to-text n
+
+  ir-emit-int-bounds : Integer, Integer, OverflowMode -> Text
+  ir-emit-int-bounds (lo) (hi) (mode) =
+   if is-default-int lo hi mode then "int-default"
+   else "(int " & safe-int-text lo & " " & safe-int-text hi & " " & ov-mode-atom mode & ")"
+
+  ir-emit-type : CodexType -> Text
+  ir-emit-type (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) -> ir-emit-int-bounds lo hi mode
+    is NumberTy -> "number"
+    is TextTy -> "text"
+    is BooleanTy -> "boolean"
+    is CharTy -> "char"
+    is VoidTy -> "void"
+    is NothingTy -> "nothing"
+    is ErrorTy -> "error"
+    is FunTy (p) (r) -> "(fn " & ir-emit-type p & " " & ir-emit-type r & ")"
+    is ListTy (elem) -> "(list " & ir-emit-type elem & ")"
+    is LinkedListTy (elem) -> "(llist " & ir-emit-type elem & ")"
+    is TypeVar (id) -> "(tvar " & integer-to-text id & ")"
+    is ForAllTy (id) (body) -> "(forall " & integer-to-text id & " " & ir-emit-type body & ")"
+    is SumTy (name) (args) (ctors) -> "(sum " & ir-quote (name.value) & " (args" & ir-emit-type-list args 0 & ") (sum-ctors" & ir-emit-sum-ctors ctors 0 & "))"
+    is RecordTy (name) (args) (fields) -> "(record-ty " & ir-quote (name.value) & " (args" & ir-emit-type-list args 0 & ") (record-fields" & ir-emit-record-fields fields 0 & "))"
+    is ConstructedTy (name) (args) -> "(ctd " & ir-quote (name.value) & " (args" & ir-emit-type-list args 0 & "))"
+    is EffectfulTy (effs) (sc) (ret) -> "(effectful (effs" & ir-cat (ir-names-quoted effs 0 []) & ") (scopes" & ir-cat (ir-strs-quoted sc 0 []) & ") " & ir-emit-type ret & ")"
+
+  ir-emit-type-list : List CodexType, Integer -> Text
+  ir-emit-type-list (xs) (i) =
+   ir-cat (ir-emit-type-list-acc xs i (list-length xs) [])
+
+  ir-emit-type-list-acc : List CodexType, Integer, Integer, List Text -> List Text
+  ir-emit-type-list-acc (xs) (i) (len) (acc) =
+   if i == len then acc
+   else ir-emit-type-list-acc xs (i + 1) len (list-push acc (" " & ir-emit-type (list-at xs i)))
+
+  ir-emit-sum-ctors : List SumCtor, Integer -> Text
+  ir-emit-sum-ctors (xs) (i) =
+   ir-cat (ir-emit-sum-ctors-acc xs i (list-length xs) [])
+
+  ir-emit-sum-ctors-acc : List SumCtor, Integer, Integer, List Text -> List Text
+  ir-emit-sum-ctors-acc (xs) (i) (len) (acc) =
+   if i == len then acc
+   else let c = list-at xs i
+   in ir-emit-sum-ctors-acc xs (i + 1) len (list-push acc (" (sum-ctor " & ir-quote (c.name.value) & " (fields" & ir-emit-type-list (c.fields) 0 & "))"))
+
+  ir-emit-record-fields : List RecordField, Integer -> Text
+  ir-emit-record-fields (xs) (i) =
+   ir-cat (ir-emit-record-fields-acc xs i (list-length xs) [])
+
+  ir-emit-record-fields-acc : List RecordField, Integer, Integer, List Text -> List Text
+  ir-emit-record-fields-acc (xs) (i) (len) (acc) =
+   if i == len then acc
+   else let f = list-at xs i
+   in ir-emit-record-fields-acc xs (i + 1) len (list-push acc (" (record-field " & ir-quote (f.name.value) & " " & ir-emit-type (f.type-val) & ")"))
+
+Section: ATypeExpr Emission
+
+ Surface AST type expressions. Distinct prefix from CodexType atoms
+ ("a" prefix) so a parser can tell them apart structurally.
+
+  ir-emit-atype-expr : ATypeExpr -> Text
+  ir-emit-atype-expr (te) =
+   when te
+    is ANamedType (name) (s) -> "(a-named " & ir-quote (name.value) & ")"
+    is AFunType (p) (r) (s) -> "(a-fun " & ir-emit-atype-expr p & " " & ir-emit-atype-expr r & ")"
+    is AAppType (base) (args) (s) -> "(a-app " & ir-emit-atype-expr base & " (args" & ir-emit-atype-expr-list args 0 & "))"
+    is AEffectType (effs) (scopes) (r) (s) -> "(a-eff (effs" & ir-cat (ir-names-quoted effs 0 []) & ") (scopes" & ir-cat (ir-strs-quoted scopes 0 []) & ") " & ir-emit-atype-expr r & ")"
+    is ABoundedIntType (b) (lo) (hi) (mode) (s) -> "(a-bounded " & ir-emit-atype-expr b & " " & safe-int-text lo & " " & safe-int-text hi & " " & ov-mode-atom mode & ")"
+
+  ir-emit-atype-expr-list : List ATypeExpr, Integer -> Text
+  ir-emit-atype-expr-list (xs) (i) =
+   ir-cat (ir-emit-atype-expr-list-acc xs i (list-length xs) [])
+
+  ir-emit-atype-expr-list-acc : List ATypeExpr, Integer, Integer, List Text -> List Text
+  ir-emit-atype-expr-list-acc (xs) (i) (len) (acc) =
+   if i == len then acc
+   else ir-emit-atype-expr-list-acc xs (i + 1) len (list-push acc (" " & ir-emit-atype-expr (list-at xs i)))
+
+Section: ATypeDef Emission
+
+  ir-emit-atype-defs : List ATypeDef, Integer -> Text
+  ir-emit-atype-defs (xs) (i) =
+   ir-cat (ir-emit-atype-defs-acc xs i (list-length xs) [])
+
+  ir-emit-atype-defs-acc : List ATypeDef, Integer, Integer, List Text -> List Text
+  ir-emit-atype-defs-acc (xs) (i) (len) (acc) =
+   if i == len then acc
+   else ir-emit-atype-defs-acc xs (i + 1) len (list-push acc ("\n  " & ir-emit-atype-def (list-at xs i)))
+
+  ir-emit-atype-def : ATypeDef -> Text
+  ir-emit-atype-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (s) -> "(rec-def " & ir-quote (name.value) & " (tparams" & ir-cat (ir-names-quoted tparams 0 []) & ") (fields" & ir-emit-rec-field-defs fields 0 & "))"
+    is AVariantTypeDef (name) (tparams) (ctors) (s) -> "(var-def " & ir-quote (name.value) & " (tparams" & ir-cat (ir-names-quoted tparams 0 []) & ") (ctors" & ir-emit-var-ctor-defs ctors 0 & "))"
+
+  ir-emit-rec-field-defs : List ARecordFieldDef, Integer -> Text
+  ir-emit-rec-field-defs (xs) (i) =
+   ir-cat (ir-emit-rec-field-defs-acc xs i (list-length xs) [])
+
+  ir-emit-rec-field-defs-acc : List ARecordFieldDef, Integer, Integer, List Text -> List Text
+  ir-emit-rec-field-defs-acc (xs) (i) (len) (acc) =
+   if i == len then acc
+   else let f = list-at xs i
+   in ir-emit-rec-field-defs-acc xs (i + 1) len (list-push acc (" (rec-field " & ir-quote (f.name.value) & " " & ir-emit-atype-expr (f.type-expr) & ")"))
+
+  ir-emit-var-ctor-defs : List AVariantCtorDef, Integer -> Text
+  ir-emit-var-ctor-defs (xs) (i) =
+   ir-cat (ir-emit-var-ctor-defs-acc xs i (list-length xs) [])
+
+  ir-emit-var-ctor-defs-acc : List AVariantCtorDef, Integer, Integer, List Text -> List Text
+  ir-emit-var-ctor-defs-acc (xs) (i) (len) (acc) =
+   if i == len then acc
+   else let c = list-at xs i
+   in ir-emit-var-ctor-defs-acc xs (i + 1) len (list-push acc (" (var-ctor " & ir-quote (c.name.value) & " (fields" & ir-emit-atype-expr-list (c.fields) 0 & "))"))
+
+Section: IRPattern Emission
+
+  ir-emit-pat : IRPat -> Text
+  ir-emit-pat (p) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "(var-pat " & ir-quote name & " " & ir-emit-type ty & ")"
+    is IrLitPat (text) (ty) (sp) -> "(lit-pat " & ir-quote text & " " & ir-emit-type ty & ")"
+    is IrCtorPat (name) (subs) (ty) (sp) -> "(ctor-pat " & ir-quote name & " (subs" & ir-emit-pat-list subs 0 & ") " & ir-emit-type ty & ")"
+    is IrWildPat (sp) -> "wild-pat"
+
+  ir-emit-pat-list : List IRPat, Integer -> Text
+  ir-emit-pat-list (xs) (i) =
+   ir-cat (ir-emit-pat-list-acc xs i (list-length xs) [])
+
+  ir-emit-pat-list-acc : List IRPat, Integer, Integer, List Text -> List Text
+  ir-emit-pat-list-acc (xs) (i) (len) (acc) =
+   if i == len then acc
+   else ir-emit-pat-list-acc xs (i + 1) len (list-push acc (" " & ir-emit-pat (list-at xs i)))
+
+Section: IRExpr Emission
+
+ The expression printer. Each variant fits a single (atom ...) form.
+ Type tags follow the structural arguments — match the IRExpr
+ constructor order so a parser can read positionally.
+
+  ir-emit-expr : IRExpr -> Text
+  ir-emit-expr (e) =
+   when e
+    is IrIntLit (n) (sp) -> "(int-lit " & safe-int-text n & ")"
+    is IrNumLit (n) (sp) -> "(num-lit " & safe-int-text n & ")"
+    is IrTextLit (s) (sp) -> "(text-lit " & ir-quote s & ")"
+    is IrBoolLit (b) (sp) -> if b then "(bool-lit true)" else "(bool-lit false)"
+    is IrCharLit (c) (sp) -> "(char-lit " & integer-to-text c & ")"
+    is IrName (n) (ty) (sp) -> "(name " & ir-quote n & " " & ir-emit-type ty & ")"
+    is IrBinary (op) (l) (r) (ty) (sp) -> "(binary " & bin-op-atom op & " " & ir-emit-expr l & " " & ir-emit-expr r & " " & ir-emit-type ty & ")"
+    is IrNegate (x) (sp) -> "(negate " & ir-emit-expr x & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(if " & ir-emit-expr c & " " & ir-emit-expr t & " " & ir-emit-expr el & " " & ir-emit-type ty & ")"
+    is IrLet (n) (ty) (v) (b) (sp) -> "(let " & ir-quote n & " " & ir-emit-type ty & " " & ir-emit-expr v & " " & ir-emit-expr b & ")"
+    is IrApply (f) (a) (ty) (sp) -> "(apply " & ir-emit-expr f & " " & ir-emit-expr a & " " & ir-emit-type ty & ")"
+    is IrLambda (params) (body) (ty) (sp) -> "(lambda (params" & ir-emit-params params 0 & ") " & ir-emit-expr body & " " & ir-emit-type ty & ")"
+    is IrList (es) (ty) (sp) -> "(list-expr (elems" & ir-emit-expr-list es 0 & ") " & ir-emit-type ty & ")"
+    is IrMatch (sc) (bs) (ty) (sp) -> "(match " & ir-emit-expr sc & " (branches" & ir-emit-branches bs 0 & ") " & ir-emit-type ty & ")"
+    is IrAct (ss) (ty) (sp) -> "(act (stmts" & ir-emit-act-stmts ss 0 & ") " & ir-emit-type ty & ")"
+    is IrHandle (eff) (h) (cs) (ty) (sp) -> "(handle " & ir-quote eff & " " & ir-emit-expr h & " (clauses" & ir-emit-handle-clauses cs 0 & ") " & ir-emit-type ty & ")"
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> "(with-timeout " & integer-to-text secs & " (effs" & ir-cat (ir-strs-quoted effs 0 []) & ") (scopes" & ir-cat (ir-strs-quoted scopes 0 []) & ") " & ir-emit-expr body & " " & ir-emit-type ty & ")"
+    is IrRecord (n) (fs) (ty) (sp) -> "(record " & ir-quote n & " (fields" & ir-emit-field-vals fs 0 & ") " & ir-emit-type ty & ")"
+    is IrFieldAccess (r) (f) (ty) (sp) -> "(field-access " & ir-emit-expr r & " " & ir-quote f & " " & ir-emit-type ty & ")"
+    is IrFork (b) (ty) (sp) -> "(fork " & ir-emit-expr b & " " & ir-emit-type ty & ")"
+    is IrAwait (t) (ty) (sp) -> "(await " & ir-emit-expr t & " " & ir-emit-type ty & ")"
+    is IrError (m) (ty) (sp) -> "(error " & ir-quote m & " " & ir-emit-type ty & ")"
+
+  ir-emit-expr-list : List IRExpr, Integer -> Text
+  ir-emit-expr-list (xs) (i) =
+   ir-cat (ir-emit-expr-list-acc xs i (list-length xs) [])
+
+  ir-emit-expr-list-acc : List IRExpr, Integer, Integer, List Text -> List Text
+  ir-emit-expr-list-acc (xs) (i) (len) (acc) =
+   if i == len then acc
+   else ir-emit-expr-list-acc xs (i + 1) len (list-push acc (" " & ir-emit-expr (list-at xs i)))
+
+  ir-emit-params : List IRParam, Integer -> Text
+  ir-emit-params (xs) (i) =
+   ir-cat (ir-emit-params-acc xs i (list-length xs) [])
+
+  ir-emit-params-acc : List IRParam, Integer, Integer, List Text -> List Text
+  ir-emit-params-acc (xs) (i) (len) (acc) =
+   if i == len then acc
+   else let p = list-at xs i
+   in ir-emit-params-acc xs (i + 1) len (list-push acc (" (param " & ir-quote (p.name) & " " & ir-emit-type (p.type-val) & ")"))
+
+  ir-emit-branches : List IRBranch, Integer -> Text
+  ir-emit-branches (xs) (i) =
+   ir-cat (ir-emit-branches-acc xs i (list-length xs) [])
+
+  ir-emit-branches-acc : List IRBranch, Integer, Integer, List Text -> List Text
+  ir-emit-branches-acc (xs) (i) (len) (acc) =
+   if i == len then acc
+   else let b = list-at xs i
+   in ir-emit-branches-acc xs (i + 1) len (list-push acc (" (branch " & ir-emit-pat (b.pattern) & " " & ir-emit-expr (b.body) & ")"))
+
+  ir-emit-act-stmts : List IRActStmt, Integer -> Text
+  ir-emit-act-stmts (xs) (i) =
+   ir-cat (ir-emit-act-stmts-acc xs i (list-length xs) [])
+
+  ir-emit-act-stmts-acc : List IRActStmt, Integer, Integer, List Text -> List Text
+  ir-emit-act-stmts-acc (xs) (i) (len) (acc) =
+   if i == len then acc
+   else ir-emit-act-stmts-acc xs (i + 1) len (list-push acc (" " & ir-emit-act-stmt (list-at xs i)))
+
+  ir-emit-act-stmt : IRActStmt -> Text
+  ir-emit-act-stmt (s) =
+   when s
+    is IrDoBind (n) (ty) (v) (sp) -> "(do-bind " & ir-quote n & " " & ir-emit-type ty & " " & ir-emit-expr v & ")"
+    is IrDoExec (e) (sp) -> "(do-exec " & ir-emit-expr e & ")"
+
+  ir-emit-handle-clauses : List IRHandleClause, Integer -> Text
+  ir-emit-handle-clauses (xs) (i) =
+   ir-cat (ir-emit-handle-clauses-acc xs i (list-length xs) [])
+
+  ir-emit-handle-clauses-acc : List IRHandleClause, Integer, Integer, List Text -> List Text
+  ir-emit-handle-clauses-acc (xs) (i) (len) (acc) =
+   if i == len then acc
+   else let c = list-at xs i
+   in ir-emit-handle-clauses-acc xs (i + 1) len (list-push acc (" (handle-clause " & ir-quote (c.op-name) & " (params" & ir-cat (ir-strs-quoted (c.params) 0 []) & ") " & ir-quote (c.resume-name) & " " & ir-emit-expr (c.body) & ")"))
+
+  ir-emit-field-vals : List IRFieldVal, Integer -> Text
+  ir-emit-field-vals (xs) (i) =
+   ir-cat (ir-emit-field-vals-acc xs i (list-length xs) [])
+
+  ir-emit-field-vals-acc : List IRFieldVal, Integer, Integer, List Text -> List Text
+  ir-emit-field-vals-acc (xs) (i) (len) (acc) =
+   if i == len then acc
+   else let f = list-at xs i
+   in ir-emit-field-vals-acc xs (i + 1) len (list-push acc (" (field-val " & ir-quote (f.name) & " " & ir-emit-expr (f.value) & ")"))
+
+Section: IRDef Emission
+
+  ir-emit-def : IRDef -> Text
+  ir-emit-def (d) =
+   "(def " & ir-quote (d.name) & " " & ir-quote (d.chapter-slug) & " (params" & ir-emit-params (d.params) 0 & ") " & ir-emit-type (d.type-val) & " " & ir-emit-expr (d.body) & ")"
+
+  ir-emit-defs : List IRDef, Integer -> Text
+  ir-emit-defs (xs) (i) =
+   ir-cat (ir-emit-defs-acc xs i (list-length xs) [])
+
+  ir-emit-defs-acc : List IRDef, Integer, Integer, List Text -> List Text
+  ir-emit-defs-acc (xs) (i) (len) (acc) =
+   if i == len then acc
+   else ir-emit-defs-acc xs (i + 1) len (list-push acc ("\n  " & ir-emit-def (list-at xs i)))
+
+Section: IRChapter Emission
+
+ Top-level entry. Plug parsers expect a single (chapter ...) form on
+ input. Strings list-fields use a "(strs ...)" wrapper for consistency.
+
+  ir-emit-text-strs : List Text, Integer -> Text
+  ir-emit-text-strs (xs) (i) =
+   ir-cat (ir-strs-quoted xs i [])
+
+  ir-emit-name-strs : List Name, Integer -> Text
+  ir-emit-name-strs (xs) (i) =
+   ir-cat (ir-names-quoted xs i [])
+
+  emit-ir-chapter : IRChapter, List ATypeDef -> Text
+  emit-ir-chapter (m) (type-defs) =
+   "(chapter "
+    & ir-quote (m.name.value) & "\n  "
+    & "(title " & ir-quote (m.chapter-title) & ")\n  "
+    & "(prose " & ir-quote (m.prose) & ")\n  "
+    & "(sections" & ir-emit-text-strs (m.section-titles) 0 & ")\n  "
+    & "(ctors" & ir-emit-text-strs (m.ctor-names) 0 & ")\n  "
+    & "(eff-ops" & ir-emit-text-strs (m.effect-op-names) 0 & ")\n  "
+    & "(type-defs" & ir-emit-atype-defs type-defs 0 & ")\n  "
+    & "(defs" & ir-emit-defs (m.defs) 0 & "))\n"
+
+Page 1

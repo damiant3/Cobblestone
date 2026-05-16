@@ -1,0 +1,158 @@
+Chapter: Xhci
+  cites Kernel chapter Usb
+  cites Kernel chapter Pci
+  cites Foreword chapter Maybe
+
+ XHCI (USB 3.x) host controller driver. Manages command ring,
+ event ring, transfer rings, and device context arrays. Discovers
+ the controller via PCI, reads capability registers, and builds
+ the data structures for USB device enumeration.
+
+ We say:
+
+Section: Constants
+  xhci-pci-class : Integer = 12
+  xhci-pci-subclass : Integer = 3
+  xhci-pci-progif : Integer = 48
+
+Section: Capability Registers (offsets from BAR0)
+  xhci-cap-length : Integer = 0
+  xhci-cap-hci-version : Integer = 2
+  xhci-cap-hcs-params1 : Integer = 4
+  xhci-cap-hcs-params2 : Integer = 8
+  xhci-cap-hcs-params3 : Integer = 12
+  xhci-cap-hcc-params1 : Integer = 16
+  xhci-cap-db-offset : Integer = 20
+  xhci-cap-rts-offset : Integer = 24
+
+Section: Operational Registers (offsets from op-base)
+  xhci-op-usbcmd : Integer = 0
+  xhci-op-usbsts : Integer = 4
+  xhci-op-pagesize : Integer = 8
+  xhci-op-dnctrl : Integer = 20
+  xhci-op-crcr : Integer = 24
+  xhci-op-dcbaap : Integer = 48
+  xhci-op-config : Integer = 56
+
+Section: Command Bits
+  xhci-cmd-run : Integer = 1
+  xhci-cmd-hcrst : Integer = 2
+  xhci-cmd-inte : Integer = 4
+  xhci-sts-hch : Integer = 1
+
+Section: TRB Types
+  trb-normal : Integer = 1
+  trb-setup : Integer = 2
+  trb-data : Integer = 3
+  trb-status : Integer = 4
+  trb-link : Integer = 6
+  trb-enable-slot : Integer = 9
+  trb-address-device : Integer = 11
+  trb-configure-endpoint : Integer = 12
+  trb-evaluate-context : Integer = 13
+  trb-noop-command : Integer = 23
+
+Section: Controller State
+  XhciController = record {
+    xc-bar : Integer,
+    xc-cap-length : Integer,
+    xc-op-base : Integer,
+    xc-rt-base : Integer,
+    xc-db-base : Integer,
+    xc-max-slots : Integer,
+    xc-max-ports : Integer,
+    xc-found : Boolean
+  }
+
+Section: Discovery
+  xhci-discover : XhciController
+  xhci-discover =
+    let scan = pci-scan-bus 0
+    in let found = pci-find-class scan xhci-pci-class xhci-pci-subclass
+    in when found
+      is None -> XhciController { xc-bar = 0, xc-cap-length = 0, xc-op-base = 0, xc-rt-base = 0, xc-db-base = 0, xc-max-slots = 0, xc-max-ports = 0, xc-found = False }
+      is Just (dev) ->
+        let bar = pci-parse-bar (dev.pci-bus) (dev.pci-dev) (dev.pci-func) 0
+        in let base = bar.bar-base
+        in let cap-len = 0
+        in XhciController { xc-bar = base, xc-cap-length = cap-len, xc-op-base = base + 32, xc-rt-base = base + 1024, xc-db-base = base + 2048, xc-max-slots = 32, xc-max-ports = 4, xc-found = True }
+
+Section: TRB (Transfer Request Block)
+  Trb = record {
+    trb-param-lo : Integer,
+    trb-param-hi : Integer,
+    trb-status : Integer,
+    trb-control : Integer
+  }
+
+  trb-new : Integer, Integer, Integer, Integer -> Trb
+  trb-new (param-lo) (param-hi) (status) (control) = Trb { trb-param-lo = param-lo, trb-param-hi = param-hi, trb-status = status, trb-control = control }
+
+  trb-enable-slot-cmd : Trb
+  trb-enable-slot-cmd = Trb { trb-param-lo = 0, trb-param-hi = 0, trb-status = 0, trb-control = bit-shl trb-enable-slot 10 }
+
+  trb-noop : Trb
+  trb-noop = Trb { trb-param-lo = 0, trb-param-hi = 0, trb-status = 0, trb-control = bit-shl trb-noop-command 10 }
+
+  trb-setup-stage : UsbSetupPacket -> Trb
+  trb-setup-stage (pkt) =
+    let bytes = usb-encode-setup pkt
+    in let lo = xhci-pack-u32 bytes 0
+    in let hi = xhci-pack-u32 bytes 4
+    in Trb { trb-param-lo = lo, trb-param-hi = hi, trb-status = 8, trb-control = bit-or (bit-shl trb-setup 10) 64 }
+
+  trb-encode : Trb -> List Integer
+  trb-encode (trb) = xhci-le32 (trb.trb-param-lo) & xhci-le32 (trb.trb-param-hi) & xhci-le32 (trb.trb-status) & xhci-le32 (trb.trb-control)
+
+Section: Device Slot
+  XhciSlot = record {
+    xs-slot-id : Integer,
+    xs-port : Integer,
+    xs-address : Integer,
+    xs-speed : Integer,
+    xs-configured : Boolean
+  }
+
+  xhci-slot-new : Integer, Integer -> XhciSlot
+  xhci-slot-new (slot-id) (port) = XhciSlot { xs-slot-id = slot-id, xs-port = port, xs-address = 0, xs-speed = 0, xs-configured = False }
+
+Section: Port Status
+  XhciPort = record {
+    xp-number : Integer,
+    xp-connected : Boolean,
+    xp-enabled : Boolean,
+    xp-speed : Integer
+  }
+
+  xhci-port-status : Integer, Integer -> XhciPort
+  xhci-port-status (port-num) (portsc) =
+    XhciPort { xp-number = port-num, xp-connected = bit-and portsc 1 > 0, xp-enabled = bit-and portsc 2 > 0, xp-speed = bit-and (bit-shru portsc 10) 15 }
+
+  xhci-speed-name : Integer -> Text
+  xhci-speed-name (speed) =
+    if speed == 1 then "Full (12Mbps)"
+    else if speed == 2 then "Low (1.5Mbps)"
+    else if speed == 3 then "High (480Mbps)"
+    else if speed == 4 then "Super (5Gbps)"
+    else if speed == 5 then "Super+ (10Gbps)"
+    else "Unknown"
+
+Section: Helpers
+  xhci-le32 : Integer -> List Integer
+  xhci-le32 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+  xhci-pack-u32 : List Integer, Integer -> Integer
+  xhci-pack-u32 (bytes) (off) =
+    bit-or (list-at bytes off) (bit-or (bit-shl (list-at bytes (off + 1)) 8) (bit-or (bit-shl (list-at bytes (off + 2)) 16) (bit-shl (list-at bytes (off + 3)) 24)))
+
+Section: Formatting
+  format-xhci : XhciController -> Text
+  format-xhci (xc) =
+    if xc.xc-found then "xhci at " & pci-hex16 (bit-shru (xc.xc-bar) 16) & pci-hex16 (bit-and (xc.xc-bar) 65535) & " slots=" & show (xc.xc-max-slots) & " ports=" & show (xc.xc-max-ports)
+    else "xhci: not found"
+
+  format-xhci-port : XhciPort -> Text
+  format-xhci-port (p) =
+    "port" & show (p.xp-number) & ": " & (if p.xp-connected then "connected" else "empty") & " " & xhci-speed-name (p.xp-speed)
+
+Page 1

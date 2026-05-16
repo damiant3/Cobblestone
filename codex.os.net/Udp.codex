@@ -1,0 +1,89 @@
+Chapter: Udp
+  cites Net chapter Ethernet
+
+ UDP datagram construction and parsing. Pure logic — no I/O.
+ Datagrams are List Integer handed to ip-build-packet with
+ ip-proto-udp; received IP payloads are parsed into UdpDatagram
+ records.
+
+ We say:
+
+Section: Constants
+  udp-header-size : Integer = 8
+
+Section: Datagram Type
+  UdpDatagram = record {
+    src-port : Integer between 0 and 65535,
+    dst-port : Integer between 0 and 65535,
+    payload : List Integer
+  }
+
+Section: Datagram Construction
+  udp-build : Integer, Integer, List Integer -> List Integer
+  udp-build (src-port) (dst-port) (payload) =
+    let len = udp-header-size + list-length payload
+    in write-be16 src-port & write-be16 dst-port & write-be16 len & [0, 0] & payload
+
+Section: Datagram Parsing
+  udp-parse : List Integer -> UdpDatagram
+  udp-parse (data) =
+    let plen = list-length data
+    in if plen < udp-header-size then UdpDatagram { src-port = 0, dst-port = 0, payload = [] }
+    else let payload-len = read-be16 data 4 - udp-header-size
+    in UdpDatagram {
+      src-port = read-be16 data 0,
+      dst-port = read-be16 data 2,
+      payload = udp-extract-payload data udp-header-size (udp-header-size + payload-len) []
+    }
+
+  udp-extract-payload : List Integer, Integer, Integer, List Integer -> List Integer
+  udp-extract-payload (data) (i) (stop) (acc) =
+    if i >= stop then acc
+    else if i >= list-length data then acc
+    else udp-extract-payload data (i + 1) stop (list-push acc (list-at data i))
+
+Section: IP Integration
+  udp-build-ip-packet : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  udp-build-ip-packet (src-ip) (dst-ip) (src-port) (dst-port) (payload) =
+    let udp-data = udp-build src-port dst-port payload
+    in ip-build-packet src-ip dst-ip ip-proto-udp udp-data
+
+  udp-build-frame : List Integer, List Integer, List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  udp-build-frame (dst-mac) (src-mac) (src-ip) (dst-ip) (src-port) (dst-port) (payload) =
+    let ip-pkt = udp-build-ip-packet src-ip dst-ip src-port dst-port payload
+    in eth-build-frame dst-mac src-mac eth-type-ipv4 ip-pkt
+
+Section: Frame Parsing
+  UdpFrame = record {
+    src-ip : List Integer,
+    dst-ip : List Integer,
+    datagram : UdpDatagram,
+    valid : Boolean
+  }
+
+  udp-parse-ip-payload : List Integer, List Integer, List Integer -> UdpFrame
+  udp-parse-ip-payload (ip-payload) (src-ip) (dst-ip) =
+    if list-length ip-payload < udp-header-size
+    then UdpFrame { src-ip = src-ip, dst-ip = dst-ip, datagram = UdpDatagram { src-port = 0, dst-port = 0, payload = [] }, valid = False }
+    else UdpFrame { src-ip = src-ip, dst-ip = dst-ip, datagram = udp-parse ip-payload, valid = True }
+
+Section: Queries
+  udp-datagram-length : UdpDatagram -> Integer
+  udp-datagram-length (d) = list-length (d.payload)
+
+  format-udp-datagram : UdpDatagram -> Text
+  format-udp-datagram (d) =
+    show (d.src-port) & "->" & show (d.dst-port) & " len=" & show (udp-datagram-length d)
+
+  format-udp-frame : UdpFrame -> Text
+  format-udp-frame (f) =
+    udp-format-ip (f.src-ip) & ":" & show (f.datagram.src-port)
+    & " -> " & udp-format-ip (f.dst-ip) & ":" & show (f.datagram.dst-port)
+    & " len=" & show (udp-datagram-length (f.datagram))
+
+  udp-format-ip : List Integer -> Text
+  udp-format-ip (ip) =
+    show (list-at ip 0) & "." & show (list-at ip 1) & "."
+    & show (list-at ip 2) & "." & show (list-at ip 3)
+
+Page 1

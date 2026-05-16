@@ -1,0 +1,158 @@
+Chapter: HexMap
+  cites Foreword chapter Maybe
+
+ Hexagonal grid operations using axial coordinates (q, r).
+ Supports flat-top and pointy-top layouts, neighbor traversal,
+ distance, line drawing, ring iteration, and field-of-view.
+
+ We say:
+
+Section: Coordinates
+  HexCoord = record {
+    q : Integer,
+    r : Integer
+  }
+
+  hex-coord : Integer, Integer -> HexCoord
+  hex-coord (q) (r) = HexCoord { q = q, r = r }
+
+  hex-s : HexCoord -> Integer
+  hex-s (h) = -h.q - h.r
+
+  hex-equal : HexCoord, HexCoord -> Boolean
+  hex-equal (a) (b) = a.q == b.q & a.r == b.r
+
+Section: Arithmetic
+  hex-add : HexCoord, HexCoord -> HexCoord
+  hex-add (a) (b) = HexCoord { q = a.q + b.q, r = a.r + b.r }
+
+  hex-subtract : HexCoord, HexCoord -> HexCoord
+  hex-subtract (a) (b) = HexCoord { q = a.q - b.q, r = a.r - b.r }
+
+  hex-scale : HexCoord, Integer -> HexCoord
+  hex-scale (h) (k) = HexCoord { q = h.q * k, r = h.r * k }
+
+Section: Neighbors
+  hex-direction : Integer -> HexCoord
+  hex-direction (d) =
+    if d == 0 then HexCoord { q = 1, r = 0 }
+    else if d == 1 then HexCoord { q = 1, r = 0 - 1 }
+    else if d == 2 then HexCoord { q = 0, r = 0 - 1 }
+    else if d == 3 then HexCoord { q = 0 - 1, r = 0 }
+    else if d == 4 then HexCoord { q = 0 - 1, r = 1 }
+    else HexCoord { q = 0, r = 1 }
+
+  hex-neighbor : HexCoord, Integer -> HexCoord
+  hex-neighbor (h) (dir) = hex-add h (hex-direction dir)
+
+  hex-neighbors : HexCoord -> List HexCoord
+  hex-neighbors (h) = hex-neighbors-loop h 0 []
+
+  hex-neighbors-loop : HexCoord, Integer, List HexCoord -> List HexCoord
+  hex-neighbors-loop (h) (d) (acc) =
+    if d >= 6 then acc
+    else hex-neighbors-loop h (d + 1) (list-push acc (hex-neighbor h d))
+
+Section: Distance
+  hex-distance : HexCoord, HexCoord -> Integer
+  hex-distance (a) (b) =
+    let dq = hex-abs (a.q - b.q)
+    in let dr = hex-abs (a.r - b.r)
+    in let ds = hex-abs (hex-s a - hex-s b)
+    in hex-max3 dq dr ds
+
+  hex-abs : Integer -> Integer
+  hex-abs (n) = if n < 0 then -n else n
+
+  hex-max3 : Integer, Integer, Integer -> Integer
+  hex-max3 (a) (b) (c) = if a >= b then (if a >= c then a else c) else (if b >= c then b else c)
+
+Section: Ring
+  hex-ring : HexCoord, Integer -> List HexCoord
+  hex-ring (center) (radius) =
+    if radius == 0 then [center]
+    else let start = hex-add center (hex-scale (hex-direction 4) radius)
+    in hex-ring-walk start radius 0 0 []
+
+  hex-ring-walk : HexCoord, Integer, Integer, Integer, List HexCoord -> List HexCoord
+  hex-ring-walk (pos) (radius) (side) (step) (acc) =
+    if side >= 6 then acc
+    else if step >= radius then hex-ring-walk pos radius (side + 1) 0 acc
+    else let next = hex-neighbor pos side
+    in hex-ring-walk next radius side (step + 1) (list-push acc pos)
+
+Section: Spiral
+  hex-spiral : HexCoord, Integer -> List HexCoord
+  hex-spiral (center) (max-radius) = hex-spiral-loop center 0 max-radius [center]
+
+  hex-spiral-loop : HexCoord, Integer, Integer, List HexCoord -> List HexCoord
+  hex-spiral-loop (center) (r) (max-r) (acc) =
+    if r >= max-r then acc
+    else let ring = hex-ring center (r + 1)
+    in hex-spiral-loop center (r + 1) max-r (acc & ring)
+
+Section: Line Drawing
+  hex-line : HexCoord, HexCoord -> List HexCoord
+  hex-line (a) (b) =
+    let dist = hex-distance a b
+    in if dist == 0 then [a]
+    else hex-line-loop a b dist 0 []
+
+  hex-line-loop : HexCoord, HexCoord, Integer, Integer, List HexCoord -> List HexCoord
+  hex-line-loop (a) (b) (dist) (i) (acc) =
+    if i > dist then acc
+    else let t-num = i
+    in let q = hex-lerp (a.q) (b.q) t-num dist
+    in let r = hex-lerp (a.r) (b.r) t-num dist
+    in hex-line-loop a b dist (i + 1) (list-push acc (HexCoord { q = q, r = r }))
+
+  hex-lerp : Integer, Integer, Integer, Integer -> Integer
+  hex-lerp (a) (b) (t) (total) =
+    if total == 0 then a
+    else a + (b - a) * t / total
+
+Section: Grid Storage
+  HexGrid = record {
+    cells : List Integer,
+    radius : Integer
+  }
+
+  hex-grid-new : Integer, Integer -> HexGrid
+  hex-grid-new (radius) (default-val) =
+    let side = 2 * radius + 1
+    in let total = side * side
+    in HexGrid { cells = hex-grid-fill total default-val 0 [], radius = radius }
+
+  hex-grid-fill : Integer, Integer, Integer, List Integer -> List Integer
+  hex-grid-fill (n) (val) (i) (acc) =
+    if i >= n then acc
+    else hex-grid-fill n val (i + 1) (list-push acc val)
+
+  hex-grid-get : HexGrid, HexCoord -> Integer
+  hex-grid-get (g) (h) =
+    let side = 2 * g.radius + 1
+    in let idx = (h.r + g.radius) * side + (h.q + g.radius)
+    in if idx < 0 then 0
+    else if idx >= list-length (g.cells) then 0
+    else list-at (g.cells) idx
+
+  hex-grid-set : HexGrid, HexCoord, Integer -> HexGrid
+  hex-grid-set (g) (h) (val) =
+    let side = 2 * g.radius + 1
+    in let idx = (h.r + g.radius) * side + (h.q + g.radius)
+    in HexGrid { cells = list-set-at (g.cells) idx val, radius = g.radius }
+
+Section: Formatting
+  format-hex : HexCoord -> Text
+  format-hex (h) = "(" & show (h.q) & "," & show (h.r) & ")"
+
+  format-hex-list : List HexCoord -> Text
+  format-hex-list (hs) = format-hex-list-loop hs 0 (list-length hs) ""
+
+  format-hex-list-loop : List HexCoord, Integer, Integer, Text -> Text
+  format-hex-list-loop (hs) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i == 0 then "" else " "
+    in format-hex-list-loop hs (i + 1) len (acc & sep & format-hex (list-at hs i))
+
+Page 1

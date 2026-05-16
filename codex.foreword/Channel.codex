@@ -1,0 +1,119 @@
+Chapter: Channel
+  cites Foreword chapter Maybe
+
+ A Channel is a record containing buffer for fixed-size circular storage, capacity for the maximum number of messages, write-pos and read-pos as slot indices, count for the number of messages currently buffered, and closed as a flag set after closing.
+
+ A SendResult is a record containing sent, True when the message was accepted, and chan, the channel state after the send attempt.
+
+ A RecvResult is a record containing value, a Maybe with the received message or None when empty, and chan, the channel state after the receive attempt.
+
+ To chan-create gives Channel a, allocating a new channel with the given capacity filled with zero placeholders.
+ To chan-try-send gives SendResult a, writing a message into the buffer when the channel is open and not full.
+ To chan-try-recv gives RecvResult a, reading the next message from the buffer when available.
+ To chan-close gives Channel a, marking the channel as closed; no further sends succeed after closing.
+ To chan-is-empty gives Boolean, True when no messages are buffered.
+ To chan-is-full gives Boolean, True when count equals capacity.
+ To chan-is-closed gives Boolean, True when the channel has been closed.
+ To chan-size gives Integer, the number of messages currently buffered.
+
+ We say:
+
+Section: Types
+
+  Channel a = record {
+    buffer : List a,
+    capacity : Integer,
+    write-pos : Integer,
+    read-pos : Integer,
+    count : Integer,
+    closed : Boolean
+  }
+
+  SendResult a = record {
+    sent : Boolean,
+    chan : Channel a
+  }
+
+  RecvResult a = record {
+    value : Maybe a,
+    chan : Channel a
+  }
+
+Section: Construction
+
+  chan-create : Integer, a -> Channel a
+  chan-create (capacity) (zero) =
+    Channel {
+      buffer = chan-fill capacity zero 0 [],
+      capacity = capacity,
+      write-pos = 0,
+      read-pos = 0,
+      count = 0,
+      closed = False
+    }
+
+  chan-fill : Integer, a, Integer, List a -> List a
+  chan-fill (cap) (zero) (i) (acc) =
+    if i >= cap then acc
+    else chan-fill cap zero (i + 1) (list-push acc zero)
+
+Section: Send
+
+  chan-try-send : Channel a, a -> SendResult a
+  chan-try-send (ch) (msg) =
+    if ch.closed then SendResult { sent = False, chan = ch }
+    else if ch.count >= ch.capacity then SendResult { sent = False, chan = ch }
+    else SendResult {
+      sent = True,
+      chan = Channel {
+        buffer = list-set-at (ch.buffer) (ch.write-pos) msg,
+        capacity = ch.capacity,
+        write-pos = int-mod (ch.write-pos + 1) (ch.capacity),
+        read-pos = ch.read-pos,
+        count = ch.count + 1,
+        closed = False
+      }
+    }
+
+Section: Receive
+
+  chan-try-recv : Channel a -> RecvResult a
+  chan-try-recv (ch) =
+    if ch.count == 0 then RecvResult { value = None, chan = ch }
+    else RecvResult {
+      value = Just (list-at (ch.buffer) (ch.read-pos)),
+      chan = Channel {
+        buffer = ch.buffer,
+        capacity = ch.capacity,
+        write-pos = ch.write-pos,
+        read-pos = int-mod (ch.read-pos + 1) (ch.capacity),
+        count = ch.count - 1,
+        closed = ch.closed
+      }
+    }
+
+Section: Close and Query
+
+  chan-close : Channel a -> Channel a
+  chan-close (ch) = Channel {
+    buffer = ch.buffer,
+    capacity = ch.capacity,
+    write-pos = ch.write-pos,
+    read-pos = ch.read-pos,
+    count = ch.count,
+    closed = True
+  }
+
+  chan-is-empty : Channel a -> Boolean
+  chan-is-empty (ch) = ch.count == 0
+
+  chan-is-full : Channel a -> Boolean
+  chan-is-full (ch) = ch.count >= ch.capacity
+
+  chan-is-closed : Channel a -> Boolean
+  chan-is-closed (ch) = ch.closed
+
+  chan-size : Channel a -> Integer
+  chan-size (ch) = ch.count
+
+Page 1

@@ -1,0 +1,196 @@
+Chapter: Pipeline
+  cites Foreword chapter Maybe
+  cites Foreword chapter Result
+
+ To pipe-map gives a new list by applying a function to each element.
+ To pipe-filter gives a new list keeping only elements that satisfy a predicate.
+ To pipe-reduce gives a single accumulated value by folding a function over the list.
+ To pipe-take gives the first n elements of a list.
+ To pipe-drop gives all elements after skipping the first n.
+ To pipe-take-while gives the longest prefix of elements satisfying a predicate.
+ To pipe-zip gives a list interleaving elements from two lists pairwise.
+ To pipe-enumerate gives a list of index-value pairs flattened into a single list.
+ To pipe-partition gives a list with all matching elements first, then all non-matching elements.
+ To pipe-unique gives a list with duplicate values removed.
+ To pipe-scan gives a list of running accumulator values.
+ To pipe-sort gives a sorted copy of the list.
+ To pipe-reverse gives the list in reversed order.
+ To pipe-sum gives the sum of all elements.
+ To pipe-product gives the product of all elements.
+ To pipe-any gives True when at least one element satisfies a predicate.
+ To pipe-all gives True when every element satisfies a predicate.
+ To pipe-count-where gives the number of elements satisfying a predicate.
+
+ We say:
+
+Section: Transform
+  pipe-map : (Integer -> Integer), List Integer -> List Integer
+  pipe-map (f) (xs) = pipe-map-loop f xs 0 (list-length xs) []
+
+  pipe-map-loop : (Integer -> Integer), List Integer, Integer, Integer, List Integer -> List Integer
+  pipe-map-loop (f) (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else pipe-map-loop f xs (i + 1) n (list-push acc (f (list-at xs i)))
+
+  pipe-filter : (Integer -> Boolean), List Integer -> List Integer
+  pipe-filter (pred) (xs) = pipe-filter-loop pred xs 0 (list-length xs) []
+
+  pipe-filter-loop : (Integer -> Boolean), List Integer, Integer, Integer, List Integer -> List Integer
+  pipe-filter-loop (pred) (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else let v = list-at xs i
+    in if pred v then pipe-filter-loop pred xs (i + 1) n (list-push acc v)
+    else pipe-filter-loop pred xs (i + 1) n acc
+
+  pipe-reduce : (Integer, Integer -> Integer), Integer, List Integer -> Integer
+  pipe-reduce (f) (init) (xs) = pipe-reduce-loop f xs init 0 (list-length xs)
+
+  pipe-reduce-loop : (Integer, Integer -> Integer), List Integer, Integer, Integer, Integer -> Integer
+  pipe-reduce-loop (f) (xs) (acc) (i) (n) =
+    if i >= n then acc
+    else pipe-reduce-loop f xs (f acc (list-at xs i)) (i + 1) n
+
+Section: Selection
+  pipe-take : Integer, List Integer -> List Integer
+  pipe-take (n) (xs) = pipe-take-loop xs 0 n []
+
+  pipe-take-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  pipe-take-loop (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else if i >= list-length xs then acc
+    else pipe-take-loop xs (i + 1) n (list-push acc (list-at xs i))
+
+  pipe-drop : Integer, List Integer -> List Integer
+  pipe-drop (n) (xs) = pipe-drop-loop xs n (list-length xs) []
+
+  pipe-drop-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  pipe-drop-loop (xs) (i) (len) (acc) =
+    if i >= len then acc
+    else pipe-drop-loop xs (i + 1) len (list-push acc (list-at xs i))
+
+  pipe-take-while : (Integer -> Boolean), List Integer -> List Integer
+  pipe-take-while (pred) (xs) = pipe-tw-loop pred xs 0 (list-length xs) []
+
+  pipe-tw-loop : (Integer -> Boolean), List Integer, Integer, Integer, List Integer -> List Integer
+  pipe-tw-loop (pred) (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else let v = list-at xs i
+    in if pred v then pipe-tw-loop pred xs (i + 1) n (list-push acc v)
+    else acc
+
+Section: Combination
+  pipe-zip : List Integer, List Integer -> List Integer
+  pipe-zip (xs) (ys) = pipe-zip-loop xs ys 0 (pipe-min (list-length xs) (list-length ys)) []
+
+  pipe-zip-loop : List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  pipe-zip-loop (xs) (ys) (i) (n) (acc) =
+    if i >= n then acc
+    else pipe-zip-loop xs ys (i + 1) n (list-push (list-push acc (list-at xs i)) (list-at ys i))
+
+  pipe-enumerate : List Integer -> List Integer
+  pipe-enumerate (xs) = pipe-enum-loop xs 0 (list-length xs) []
+
+  pipe-enum-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  pipe-enum-loop (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else pipe-enum-loop xs (i + 1) n (list-push (list-push acc i) (list-at xs i))
+
+Section: Partition
+  pipe-partition : (Integer -> Boolean), List Integer -> List Integer
+  pipe-partition (pred) (xs) =
+    let yes = pipe-filter pred xs
+    in let no = pipe-filter (\x -> if pred x then False else True) xs
+    in yes & no
+
+  pipe-unique : List Integer -> List Integer
+  pipe-unique (xs) =
+    let sorted = pipe-sort xs
+    in pipe-dedup-adjacent sorted 0 (list-length sorted) []
+
+  pipe-dedup-adjacent : List Integer, Integer, Integer, List Integer -> List Integer
+  pipe-dedup-adjacent (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else let v = list-at xs i
+    in if i > 0 then
+      if list-at xs (i - 1) == v then pipe-dedup-adjacent xs (i + 1) n acc
+      else pipe-dedup-adjacent xs (i + 1) n (list-push acc v)
+    else pipe-dedup-adjacent xs (i + 1) n (list-push acc v)
+
+  pipe-contains : List Integer, Integer -> Boolean
+  pipe-contains (xs) (val) = pipe-cont-loop xs val 0 (list-length xs)
+
+  pipe-cont-loop : List Integer, Integer, Integer, Integer -> Boolean
+  pipe-cont-loop (xs) (val) (i) (n) =
+    if i >= n then False
+    else if list-at xs i == val then True
+    else pipe-cont-loop xs val (i + 1) n
+
+Section: Scan (prefix sums)
+  pipe-scan : (Integer, Integer -> Integer), Integer, List Integer -> List Integer
+  pipe-scan (f) (init) (xs) = pipe-scan-loop f xs init 0 (list-length xs) [init]
+
+  pipe-scan-loop : (Integer, Integer -> Integer), List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  pipe-scan-loop (f) (xs) (acc) (i) (n) (result) =
+    if i >= n then result
+    else let new-acc = f acc (list-at xs i)
+    in pipe-scan-loop f xs new-acc (i + 1) n (list-push result new-acc)
+
+Section: Sorting
+  pipe-sort : List Integer -> List Integer
+  pipe-sort (xs) =
+    let n = list-length xs
+    in if n <= 1 then xs
+    else let mid = n / 2
+    in let left = pipe-sort (pipe-take mid xs)
+    in let right = pipe-sort (pipe-drop mid xs)
+    in pipe-merge left right
+
+  pipe-merge : List Integer, List Integer -> List Integer
+  pipe-merge (left) (right) =
+    if list-length left == 0 then right
+    else if list-length right == 0 then left
+    else let l = list-at left 0
+    in let r = list-at right 0
+    in if l <= r then [l] & pipe-merge (pipe-drop 1 left) right
+    else [r] & pipe-merge left (pipe-drop 1 right)
+
+  pipe-reverse : List Integer -> List Integer
+  pipe-reverse (xs) = pipe-rev-loop xs (list-length xs - 1) []
+
+  pipe-rev-loop : List Integer, Integer, List Integer -> List Integer
+  pipe-rev-loop (xs) (i) (acc) =
+    if i < 0 then acc
+    else pipe-rev-loop xs (i - 1) (list-push acc (list-at xs i))
+
+Section: Helpers
+  pipe-min : Integer, Integer -> Integer
+  pipe-min (a) (b) = if a < b then a else b
+
+  pipe-sum : List Integer -> Integer
+  pipe-sum (xs) = pipe-reduce (\a -> \b -> a + b) 0 xs
+
+  pipe-product : List Integer -> Integer
+  pipe-product (xs) = pipe-reduce (\a -> \b -> a * b) 1 xs
+
+  pipe-any : (Integer -> Boolean), List Integer -> Boolean
+  pipe-any (pred) (xs) = pipe-any-loop pred xs 0 (list-length xs)
+
+  pipe-any-loop : (Integer -> Boolean), List Integer, Integer, Integer -> Boolean
+  pipe-any-loop (pred) (xs) (i) (n) =
+    if i >= n then False
+    else if pred (list-at xs i) then True
+    else pipe-any-loop pred xs (i + 1) n
+
+  pipe-all : (Integer -> Boolean), List Integer -> Boolean
+  pipe-all (pred) (xs) = pipe-all-loop pred xs 0 (list-length xs)
+
+  pipe-all-loop : (Integer -> Boolean), List Integer, Integer, Integer -> Boolean
+  pipe-all-loop (pred) (xs) (i) (n) =
+    if i >= n then True
+    else if pred (list-at xs i) then pipe-all-loop pred xs (i + 1) n
+    else False
+
+  pipe-count-where : (Integer -> Boolean), List Integer -> Integer
+  pipe-count-where (pred) (xs) = list-length (pipe-filter pred xs)
+
+Page 1

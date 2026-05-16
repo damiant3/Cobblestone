@@ -1,0 +1,121 @@
+Chapter: DevConsoleMenu
+  cites Works chapter UefiConsole
+  cites Foreword chapter Maybe
+
+ Menu system for the UEFI dev console. Vertical selectable menus
+ with keyboard navigation (arrow keys, enter, escape). Menus are
+ data — the rendering and input handling are generic.
+
+ We say:
+
+Section: Menu Item
+
+  MenuItem = record {
+    label : Text,
+    key : Text,
+    enabled : Boolean
+  }
+
+  menu-item : Text, Text -> MenuItem
+  menu-item (label) (key) = MenuItem { label = label, key = key, enabled = True }
+
+  menu-item-disabled : Text, Text -> MenuItem
+  menu-item-disabled (label) (key) = MenuItem { label = label, key = key, enabled = False }
+
+Section: Menu State
+
+  MenuState = record {
+    title : Text,
+    items : List MenuItem,
+    selected : Integer,
+    item-count : Integer
+  }
+
+  menu-new : Text, List MenuItem -> MenuState
+  menu-new (title) (items) =
+    MenuState { title = title, items = items, selected = 0, item-count = list-length items }
+
+  menu-move-up : MenuState -> MenuState
+  menu-move-up (m) =
+    if m.selected <= 0 then __record-set m "selected" (m.item-count - 1)
+    else __record-set m "selected" (m.selected - 1)
+
+  menu-move-down : MenuState -> MenuState
+  menu-move-down (m) =
+    if m.selected >= m.item-count - 1 then __record-set m "selected" 0
+    else __record-set m "selected" (m.selected + 1)
+
+  menu-move-home : MenuState -> MenuState
+  menu-move-home (m) = __record-set m "selected" 0
+
+  menu-move-end : MenuState -> MenuState
+  menu-move-end (m) = __record-set m "selected" (m.item-count - 1)
+
+  menu-move-page-up : MenuState, Integer -> MenuState
+  menu-move-page-up (m) (page-size) =
+    let new-sel = m.selected - page-size
+    in __record-set m "selected" (if new-sel < 0 then 0 else new-sel)
+
+  menu-move-page-down : MenuState, Integer -> MenuState
+  menu-move-page-down (m) (page-size) =
+    let new-sel = m.selected + page-size
+    in let max-sel = m.item-count - 1
+    in __record-set m "selected" (if new-sel > max-sel then max-sel else new-sel)
+
+  menu-selected-key : MenuState -> Text
+  menu-selected-key (m) =
+    if m.selected >= 0 then if m.selected < m.item-count then (list-at (m.items) (m.selected)).key else ""
+    else ""
+
+  menu-selected-label : MenuState -> Text
+  menu-selected-label (m) =
+    if m.selected >= 0 then if m.selected < m.item-count then (list-at (m.items) (m.selected)).label else ""
+    else ""
+
+  menu-find-by-key : MenuState, Text -> Integer
+  menu-find-by-key (m) (key) = menu-find-key-loop (m.items) key 0 (m.item-count)
+
+  menu-find-key-loop : List MenuItem, Text, Integer, Integer -> Integer
+  menu-find-key-loop (items) (key) (i) (len) =
+    if i >= len then 0 - 1
+    else if (list-at items i).key == key then i
+    else menu-find-key-loop items key (i + 1) len
+
+Section: Menu Input
+
+  MenuAction =
+    | MenuSelect (Text)
+    | MenuBack
+    | MenuNone
+
+  menu-handle-key : MenuState, UefiKey -> MenuAction
+  menu-handle-key (m) (k) =
+    if uefi-key-is-enter k then MenuSelect (menu-selected-key m)
+    else if uefi-key-is-escape k then MenuBack
+    else MenuNone
+
+  menu-handle-navigation : MenuState, UefiKey -> MenuState
+  menu-handle-navigation (m) (k) =
+    if uefi-key-is-arrow-up k then menu-move-up m
+    else if uefi-key-is-arrow-down k then menu-move-down m
+    else if uefi-key-is-home k then menu-move-home m
+    else if uefi-key-is-end k then menu-move-end m
+    else if uefi-key-is-page-up k then menu-move-page-up m 10
+    else if uefi-key-is-page-down k then menu-move-page-down m 10
+    else m
+
+Section: Menu Rendering
+
+  render-menu : MenuState -> List Text
+  render-menu (m) = render-menu-items (m.items) (m.selected) 0 (m.item-count) [m.title, ""]
+
+  render-menu-items : List MenuItem, Integer, Integer, Integer, List Text -> List Text
+  render-menu-items (items) (sel) (i) (len) (acc) =
+    if i >= len then acc
+    else let item = list-at items i
+    in let prefix = if i == sel then " > " else "   "
+    in let suffix = if item.enabled then "" else " (disabled)"
+    in let line = prefix & item.label & suffix
+    in render-menu-items items sel (i + 1) len (list-push acc line)
+
+Page 1

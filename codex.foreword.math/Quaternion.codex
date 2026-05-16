@@ -1,0 +1,132 @@
+Chapter: Quaternion
+
+ Quaternion math for 3D rotations using fixed-point arithmetic.
+ Values are scaled by 1000 (milli-units) to avoid floating point.
+ q = w + xi + yj + zk. All operations preserve the scale factor.
+
+ We say:
+
+Section: Constants
+  quat-scale : Integer = 1000
+  quat-half-scale : Integer = 500
+
+Section: Types
+  Quat = record {
+    w : Integer,
+    x : Integer,
+    y : Integer,
+    z : Integer
+  }
+
+  Vec3 = record {
+    vx : Integer,
+    vy : Integer,
+    vz : Integer
+  }
+
+Section: Construction
+  quat-identity : Quat
+  quat-identity = Quat { w = 1000, x = 0, y = 0, z = 0 }
+
+  quat-new : Integer, Integer, Integer, Integer -> Quat
+  quat-new (w) (x) (y) (z) = Quat { w = w, x = x, y = y, z = z }
+
+  vec3-new : Integer, Integer, Integer -> Vec3
+  vec3-new (x) (y) (z) = Vec3 { vx = x, vy = y, vz = z }
+
+  vec3-zero : Vec3
+  vec3-zero = Vec3 { vx = 0, vy = 0, vz = 0 }
+
+Section: Quaternion Arithmetic
+  quat-multiply : Quat, Quat -> Quat
+  quat-multiply (a) (b) = Quat {
+    w = (a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z) / quat-scale,
+    x = (a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y) / quat-scale,
+    y = (a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x) / quat-scale,
+    z = (a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w) / quat-scale
+  }
+
+  quat-conjugate : Quat -> Quat
+  quat-conjugate (q) = Quat { w = q.w, x = -q.x, y = -q.y, z = -q.z }
+
+  quat-add : Quat, Quat -> Quat
+  quat-add (a) (b) = Quat { w = a.w + b.w, x = a.x + b.x, y = a.y + b.y, z = a.z + b.z }
+
+  quat-scale-by : Quat, Integer -> Quat
+  quat-scale-by (q) (s) = Quat { w = q.w * s / quat-scale, x = q.x * s / quat-scale, y = q.y * s / quat-scale, z = q.z * s / quat-scale }
+
+  quat-norm-squared : Quat -> Integer
+  quat-norm-squared (q) = (q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z) / quat-scale
+
+  quat-dot : Quat, Quat -> Integer
+  quat-dot (a) (b) = (a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z) / quat-scale
+
+Section: Rotation
+  quat-from-axis-angle : Vec3, Integer -> Quat
+  quat-from-axis-angle (axis) (angle-milli) =
+    let half = angle-milli / 2
+    in let sin-h = quat-sin-approx half
+    in let cos-h = quat-cos-approx half
+    in Quat { w = cos-h, x = axis.vx * sin-h / quat-scale, y = axis.vy * sin-h / quat-scale, z = axis.vz * sin-h / quat-scale }
+
+  quat-rotate-vec : Quat, Vec3 -> Vec3
+  quat-rotate-vec (q) (v) =
+    let p = Quat { w = 0, x = v.vx, y = v.vy, z = v.vz }
+    in let qp = quat-multiply q p
+    in let result = quat-multiply qp (quat-conjugate q)
+    in Vec3 { vx = result.x, vy = result.y, vz = result.z }
+
+Section: Trig Approximation
+  quat-sin-approx : Integer -> Integer
+  quat-sin-approx (milli-rad) =
+    let x = milli-rad
+    in let x3 = x * x / quat-scale * x / quat-scale
+    in x - x3 / 6
+
+  quat-cos-approx : Integer -> Integer
+  quat-cos-approx (milli-rad) =
+    let x2 = milli-rad * milli-rad / quat-scale
+    in let x4 = x2 * x2 / quat-scale
+    in quat-scale - x2 / 2 + x4 / 24
+
+Section: Common Rotations
+  quat-rotate-x : Integer -> Quat
+  quat-rotate-x (angle) = quat-from-axis-angle (vec3-new 1000 0 0) angle
+
+  quat-rotate-y : Integer -> Quat
+  quat-rotate-y (angle) = quat-from-axis-angle (vec3-new 0 1000 0) angle
+
+  quat-rotate-z : Integer -> Quat
+  quat-rotate-z (angle) = quat-from-axis-angle (vec3-new 0 0 1000) angle
+
+Section: Vector Operations
+  vec3-add : Vec3, Vec3 -> Vec3
+  vec3-add (a) (b) = Vec3 { vx = a.vx + b.vx, vy = a.vy + b.vy, vz = a.vz + b.vz }
+
+  vec3-subtract : Vec3, Vec3 -> Vec3
+  vec3-subtract (a) (b) = Vec3 { vx = a.vx - b.vx, vy = a.vy - b.vy, vz = a.vz - b.vz }
+
+  vec3-scale : Vec3, Integer -> Vec3
+  vec3-scale (v) (s) = Vec3 { vx = v.vx * s / quat-scale, vy = v.vy * s / quat-scale, vz = v.vz * s / quat-scale }
+
+  vec3-dot : Vec3, Vec3 -> Integer
+  vec3-dot (a) (b) = (a.vx * b.vx + a.vy * b.vy + a.vz * b.vz) / quat-scale
+
+  vec3-cross : Vec3, Vec3 -> Vec3
+  vec3-cross (a) (b) = Vec3 {
+    vx = (a.vy * b.vz - a.vz * b.vy) / quat-scale,
+    vy = (a.vz * b.vx - a.vx * b.vz) / quat-scale,
+    vz = (a.vx * b.vy - a.vy * b.vx) / quat-scale
+  }
+
+  vec3-length-squared : Vec3 -> Integer
+  vec3-length-squared (v) = (v.vx * v.vx + v.vy * v.vy + v.vz * v.vz) / quat-scale
+
+Section: Formatting
+  format-quat : Quat -> Text
+  format-quat (q) = "(" & show (q.w) & "," & show (q.x) & "," & show (q.y) & "," & show (q.z) & ")"
+
+  format-vec3 : Vec3 -> Text
+  format-vec3 (v) = "(" & show (v.vx) & "," & show (v.vy) & "," & show (v.vz) & ")"
+
+Page 1

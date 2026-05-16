@@ -1,0 +1,141 @@
+Chapter: MusicTheory
+
+ Music theory primitives. Note-to-frequency conversion, scales,
+ chords, intervals, key signatures. Fixed-point (scale 1000).
+ MIDI note numbers as the common representation.
+
+ We say:
+
+Section: Note Frequencies (A4 = 440Hz, fixed-point mHz)
+  note-freq : Integer -> Integer
+  note-freq (midi-note) =
+    let semitones = midi-note - 69
+    in 440 * mt-pow2-12ths semitones / 1000
+
+  mt-pow2-12ths : Integer -> Integer
+  mt-pow2-12ths (semitones) =
+    if semitones == 0 then 1000
+    else if semitones > 0 then mt-pos-semitones semitones
+    else 1000000 / mt-pos-semitones (-semitones)
+
+  mt-pos-semitones : Integer -> Integer
+  mt-pos-semitones (n) =
+    if n >= 12 then 2 * mt-pos-semitones (n - 12)
+    else list-at mt-semitone-table n
+
+  mt-semitone-table : List Integer
+  mt-semitone-table = [1000, 1059, 1122, 1189, 1260, 1335, 1414, 1498, 1587, 1682, 1782, 1888]
+
+Section: Note Names
+  mt-note-name : Integer -> Text
+  mt-note-name (midi) =
+    let pc = midi - midi / 12 * 12
+    in let octave = midi / 12 - 1
+    in mt-pitch-class pc & show octave
+
+  mt-pitch-class : Integer -> Text
+  mt-pitch-class (pc) =
+    if pc == 0 then "C" else if pc == 1 then "C#"
+    else if pc == 2 then "D" else if pc == 3 then "D#"
+    else if pc == 4 then "E" else if pc == 5 then "F"
+    else if pc == 6 then "F#" else if pc == 7 then "G"
+    else if pc == 8 then "G#" else if pc == 9 then "A"
+    else if pc == 10 then "A#" else "B"
+
+Section: Scales
+  scale-major : Integer -> List Integer
+  scale-major (root) = mt-build-scale root [0, 2, 4, 5, 7, 9, 11]
+
+  scale-minor : Integer -> List Integer
+  scale-minor (root) = mt-build-scale root [0, 2, 3, 5, 7, 8, 10]
+
+  scale-pentatonic : Integer -> List Integer
+  scale-pentatonic (root) = mt-build-scale root [0, 2, 4, 7, 9]
+
+  scale-blues : Integer -> List Integer
+  scale-blues (root) = mt-build-scale root [0, 3, 5, 6, 7, 10]
+
+  scale-chromatic : Integer -> List Integer
+  scale-chromatic (root) = mt-build-scale root [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+
+  scale-dorian : Integer -> List Integer
+  scale-dorian (root) = mt-build-scale root [0, 2, 3, 5, 7, 9, 10]
+
+  scale-mixolydian : Integer -> List Integer
+  scale-mixolydian (root) = mt-build-scale root [0, 2, 4, 5, 7, 9, 10]
+
+  mt-build-scale : Integer, List Integer -> List Integer
+  mt-build-scale (root) (intervals) = mt-scale-loop root intervals 0 (list-length intervals) []
+
+  mt-scale-loop : Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  mt-scale-loop (root) (intervals) (i) (n) (acc) =
+    if i >= n then acc
+    else mt-scale-loop root intervals (i + 1) n (list-push acc (root + list-at intervals i))
+
+Section: Chords
+  chord-major : Integer -> List Integer
+  chord-major (root) = [root, root + 4, root + 7]
+
+  chord-minor : Integer -> List Integer
+  chord-minor (root) = [root, root + 3, root + 7]
+
+  chord-dim : Integer -> List Integer
+  chord-dim (root) = [root, root + 3, root + 6]
+
+  chord-aug : Integer -> List Integer
+  chord-aug (root) = [root, root + 4, root + 8]
+
+  chord-dom7 : Integer -> List Integer
+  chord-dom7 (root) = [root, root + 4, root + 7, root + 10]
+
+  chord-maj7 : Integer -> List Integer
+  chord-maj7 (root) = [root, root + 4, root + 7, root + 11]
+
+  chord-min7 : Integer -> List Integer
+  chord-min7 (root) = [root, root + 3, root + 7, root + 10]
+
+  chord-sus2 : Integer -> List Integer
+  chord-sus2 (root) = [root, root + 2, root + 7]
+
+  chord-sus4 : Integer -> List Integer
+  chord-sus4 (root) = [root, root + 5, root + 7]
+
+Section: Intervals
+  mt-interval-name : Integer -> Text
+  mt-interval-name (semitones) =
+    if semitones == 0 then "unison"
+    else if semitones == 1 then "m2"
+    else if semitones == 2 then "M2"
+    else if semitones == 3 then "m3"
+    else if semitones == 4 then "M3"
+    else if semitones == 5 then "P4"
+    else if semitones == 6 then "tritone"
+    else if semitones == 7 then "P5"
+    else if semitones == 8 then "m6"
+    else if semitones == 9 then "M6"
+    else if semitones == 10 then "m7"
+    else if semitones == 11 then "M7"
+    else if semitones == 12 then "octave"
+    else show semitones & "st"
+
+Section: Tempo/Timing
+  mt-bpm-to-ms : Integer -> Integer
+  mt-bpm-to-ms (bpm) = 60000 / bpm
+
+  mt-note-duration : Integer, Integer -> Integer
+  mt-note-duration (bpm) (note-value) = mt-bpm-to-ms bpm * 4 / note-value
+
+  mt-samples-for-ms : Integer, Integer -> Integer
+  mt-samples-for-ms (ms) (sample-rate) = ms * sample-rate / 1000
+
+Section: Formatting
+  format-chord : List Integer -> Text
+  format-chord (notes) = mt-format-notes notes 0 (list-length notes) ""
+
+  mt-format-notes : List Integer, Integer, Integer, Text -> Text
+  mt-format-notes (notes) (i) (n) (acc) =
+    if i >= n then acc
+    else let sep = if i == 0 then "" else "-"
+    in mt-format-notes notes (i + 1) n (acc & sep & mt-note-name (list-at notes i))
+
+Page 1

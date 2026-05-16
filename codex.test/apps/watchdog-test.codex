@@ -1,0 +1,72 @@
+Chapter: WatchdogTest
+  cites Codex chapter General
+  cites Sched chapter Watchdog
+  cites OS chapter ServiceRegistry
+  cites Observe chapter HealthCheck
+  cites OS chapter ShellCore
+  cites OS chapter ProgramRegistry
+  cites Verify chapter VerifiedLoader
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter FactStore
+  cites Foreword chapter Fuel
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+Section: Body
+
+  test-check-running : Text =
+    let reg = service-register service-registry-empty "svc" 1 32
+    in let action = watchdog-check-service reg "svc" default-policy 10
+    in watchdog-format-action action
+
+  test-check-failed-restart : Text =
+    let reg0 = service-register service-registry-empty "worker" 1 8
+    in let reg1 = service-mark-failed reg0 "worker" "crash"
+    in let action = watchdog-check-service reg1 "worker" default-policy 5
+    in watchdog-format-action action
+
+  test-check-exceeded : Text =
+    let reg0 = service-register service-registry-empty "flaky" 1 4
+    in let reg1 = service-mark-restarted reg0 "flaky" 2
+    in let reg2 = service-mark-restarted reg1 "flaky" 3
+    in let reg3 = service-mark-restarted reg2 "flaky" 4
+    in let reg4 = service-mark-failed reg3 "flaky" "again"
+    in let action = watchdog-check-service reg4 "flaky" default-policy 10
+    in watchdog-format-action action
+
+  test-lenient-exceeded : Text =
+    let reg0 = service-register service-registry-empty "x" 1 1
+    in let reg1 = service-mark-restarted reg0 "x" 2
+    in let reg2 = service-mark-restarted reg1 "x" 3
+    in let reg3 = service-mark-failed reg2 "x" "oops"
+    in let action = watchdog-check-service reg3 "x" lenient-policy 10
+    in watchdog-format-action action
+
+  test-apply-restart : Text =
+    let reg0 = service-register service-registry-empty "svc" 1 16
+    in let reg1 = service-mark-failed reg0 "svc" "err"
+    in let reg2 = watchdog-apply reg1 (WdRestart "svc" 7)
+    in let found = service-lookup reg2 "svc"
+    in when found
+      is Just (e) -> "pid=" & show (e.pid) & " state=" & format-service-state (e.state) & " restarts=" & show (e.restarts)
+      is None -> "not found"
+
+  test-apply-remove : Text =
+    let reg0 = service-register service-registry-empty "bad" 1 1
+    in let reg1 = watchdog-apply reg0 (WdRemove "bad")
+    in "count=" & show (service-count reg1) & " exists=" & show (service-exists reg1 "bad")
+
+  opening : [Console] Nothing = act
+    print-line test-check-running
+    print-line test-check-failed-restart
+    print-line test-check-exceeded
+    print-line test-lenient-exceeded
+    print-line test-apply-restart
+    print-line test-apply-remove
+  end

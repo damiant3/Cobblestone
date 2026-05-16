@@ -1,0 +1,393 @@
+Chapter: VgaTerminalDemo
+  cites Codex chapter General
+  cites Kernel chapter Keyboard
+  cites Kernel chapter Console
+  cites Kernel chapter Vga
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+  cites Foreword chapter TextSearch
+  cites Dev chapter HexFormat
+  cites Dev chapter MemInspector
+  cites Dev chapter IoInspector
+  cites Dev chapter AtaDebugger
+  cites Dev chapter PerfMonitor
+  cites Kernel chapter Lapic
+
+Section: Byte Helpers
+  read-u16-le : Integer, Integer -> Integer
+  read-u16-le (buf) (off) =
+    bit-or (peek-byte buf off) (bit-shl (peek-byte buf (off + 1)) 8)
+
+  read-u32-le : Integer, Integer -> Integer
+  read-u32-le (buf) (off) =
+    let b0 = peek-byte buf off
+    in let b1 = bit-shl (peek-byte buf (off + 1)) 8
+    in let b2 = bit-shl (peek-byte buf (off + 2)) 16
+    in let b3 = bit-shl (peek-byte buf (off + 3)) 24
+    in bit-or b0 (bit-or b1 (bit-or b2 b3))
+
+  read-text-from-buf : Integer, Integer, Integer -> Text
+  read-text-from-buf (buf) (off) (len) =
+    if len <= 0 then ""
+    else read-text-loop buf off len 0 ""
+
+  read-text-loop : Integer, Integer, Integer, Integer, Text -> Text
+  read-text-loop (buf) (off) (len) (i) (acc) =
+    if i >= len then acc
+    else let ascii = peek-byte buf (off + i)
+    in if ascii == 0 then acc
+    else let cce = from-unicode ascii
+    in if cce < 0 then read-text-loop buf off len (i + 1) (acc & "?")
+    else read-text-loop buf off len (i + 1) (acc & char-to-text (code-to-char cce))
+
+Section: Disk State
+  DiskState = record {
+    valid : Boolean,
+    compiler-size : Integer,
+    src-size : Integer,
+    src-blob : Integer
+  }
+
+  empty-disk-state : DiskState = DiskState { valid = False, compiler-size = 0, src-size = 0, src-blob = 0 }
+
+Section: Source File Reader
+  SrcEntry = record { name : Text, content : Text, next-off : Integer }
+
+  read-src-entry : Integer, Integer, Integer -> Maybe SrcEntry
+  read-src-entry (buf) (off) (total) =
+    if off >= total then None
+    else let name-len = read-u16-le buf off
+    in let name = read-text-from-buf buf (off + 2) name-len
+    in let content-len = read-u32-le buf (off + 2 + name-len)
+    in let content = read-text-from-buf buf (off + 2 + name-len + 4) content-len
+    in Just (SrcEntry { name = name, content = content, next-off = off + 2 + name-len + 4 + content-len })
+
+  read-src-at-index : Integer, Integer, Integer, Integer -> Maybe SrcEntry
+  read-src-at-index (buf) (off) (total) (idx) =
+    if idx < 0 then None
+    else let entry = read-src-entry buf off total
+    in when entry
+      is None -> None
+      is Just (e) -> if idx == 0 then Just e
+        else read-src-at-index buf (e.next-off) total (idx - 1)
+
+  count-src-entries : Integer, Integer, Integer -> Integer
+  count-src-entries (buf) (off) (total) =
+    if off >= total then 0
+    else let entry = read-src-entry buf off total
+    in when entry
+      is None -> 0
+      is Just (e) -> 1 + count-src-entries buf (e.next-off) total
+
+  list-src-names : Integer, Integer, Integer, Integer, ConsoleState -> ConsoleState
+  list-src-names (buf) (off) (total) (idx) (con) =
+    if off >= total then con
+    else let entry = read-src-entry buf off total
+    in when entry
+      is None -> con
+      is Just (e) ->
+        let con1 = console-write-text con ("  " & show idx & ": " & e.name)
+        in let con2 = console-write-char con1 1
+        in list-src-names buf (e.next-off) total (idx + 1) con2
+
+  copy-sector-to-buf : Integer, Integer, Integer, Integer, Integer -> Integer
+  copy-sector-to-buf (dst) (dst-off) (src) (i) (len) =
+    if i >= len then 0
+    else let b = peek-byte src i
+    in let p = poke-byte dst (dst-off + i) b
+    in copy-sector-to-buf dst dst-off src (i + 1) len
+
+Section: Pager
+  pager-lines : Integer = 22
+  pager-attr : Integer = vga-attr vga-light-gray vga-black
+  pager-bar-attr : Integer = vga-attr vga-black vga-light-gray
+
+  split-lines : Text -> List Text
+  split-lines (t) = split-lines-loop t 0 (text-length t) 0 []
+
+  split-lines-loop : Text, Integer, Integer, Integer, List Text -> List Text
+  split-lines-loop (t) (start) (len) (i) (acc) =
+    if i >= len then acc & [substring t start (len - start)]
+    else if char-code (char-at t i) == 1 then split-lines-loop t (i + 1) len (i + 1) (acc & [substring t start (i - start)])
+    else split-lines-loop t start len (i + 1) acc
+
+  pager-draw : List Text, Integer -> Integer
+  pager-draw (lines) (top) =
+    let total = list-length lines
+    in let drawn = pager-draw-lines lines top 0 pager-lines total
+    in let bar = vga-clear-row 24 pager-bar-attr
+    in vga-put-text 24 1 ("line " & show (top + 1) & "/" & show total & " - up/down scroll, q exit") pager-bar-attr
+
+  pager-draw-lines : List Text, Integer, Integer, Integer, Integer -> Integer
+  pager-draw-lines (lines) (top) (row) (max-rows) (total) =
+    if row >= max-rows then 0
+    else let r = vga-clear-row (row + 2) pager-attr
+    in let idx = top + row
+    in if idx < total then
+      let w = vga-put-text (row + 2) 0 (list-at lines idx) pager-attr
+      in pager-draw-lines lines top (row + 1) max-rows total
+    else pager-draw-lines lines top (row + 1) max-rows total
+
+  pager-loop : List Text, Integer, KbState -> KbState
+  pager-loop (lines) (top) (kb) =
+    if kb-has-key then
+      let sc = kb-read-scancode
+      in let ev = kb-process-scancode kb sc
+      in let total = list-length lines
+      in if ev.scancode == 80 then
+        let newtop = if top + 1 <= total - pager-lines then top + 1 else top
+        in let d = pager-draw lines newtop
+        in pager-loop lines newtop (ev.state)
+      else if ev.scancode == 72 then
+        let newtop = if top > 0 then top - 1 else 0
+        in let d = pager-draw lines newtop
+        in pager-loop lines newtop (ev.state)
+      else if ev.ascii == 29 then (ev.state)
+      else pager-loop lines top (ev.state)
+    else pager-loop lines top kb
+
+Section: Disk Commands
+  cmd-disk : DiskState, ConsoleState -> ConsoleState
+  cmd-disk (ds) (con) =
+    if ds.valid then
+      let con1 = console-write-text con "Disk contents:"
+      in let con2 = console-write-char con1 1
+      in let con3 = console-write-text con2 ("  Compiler: " & show (ds.compiler-size) & " bytes")
+      in let con4 = console-write-char con3 1
+      in let con5 = console-write-text con4 ("  Source:   " & show (ds.src-size) & " bytes")
+      in let con6 = console-write-char con5 1
+      in let n = count-src-entries (ds.src-blob) 0 (ds.src-size)
+      in let con7 = console-write-text con6 ("  Files:    " & show n)
+      in let con8 = console-write-char con7 1
+      in list-src-names (ds.src-blob) 0 (ds.src-size) 0 con8
+    else console-write-text con "no disk manifest found"
+
+Section: Command Dispatch
+  shell-dispatch : DiskState, ConsoleState, KbState, Text -> ConsoleState
+  shell-dispatch (ds) (con) (kb) (line) =
+    let cmd = text-trim line
+    in if cmd == "" then con
+    else if cmd == "help" then cmd-help con
+    else if cmd == "about" then cmd-about con
+    else if cmd == "clear" then cmd-clear con
+    else if cmd == "ver" then cmd-ver con
+    else if cmd == "disk" then cmd-disk ds con
+    else if starts-with cmd "echo " then cmd-echo con (substring cmd 5 (text-length cmd - 5))
+    else if starts-with cmd "cat " then cmd-cat ds con kb (substring cmd 4 (text-length cmd - 4))
+    else if starts-with cmd "dbg " then dbg-dispatch con kb (substring cmd 4 (text-length cmd - 4))
+    else shell-print con ("unknown command: " & cmd)
+
+  cmd-cat : DiskState, ConsoleState, KbState, Text -> ConsoleState
+  cmd-cat (ds) (con) (kb) (arg) =
+    if ds.valid then
+      let idx = text-to-integer arg
+      in let entry = read-src-at-index (ds.src-blob) 0 (ds.src-size) idx
+      in when entry
+        is None -> console-write-text con ("file not found: " & arg)
+        is Just (e) ->
+          let lines = split-lines (e.content)
+          in let d = pager-draw lines 0
+          in let kb2 = pager-loop lines 0 kb
+          in let c = vga-clear (vga-attr vga-light-gray vga-black)
+          in let h = vga-clear-row 0 (vga-attr vga-white vga-blue)
+          in let w1 = vga-put-text 0 1 "Codex Terminal" (vga-attr vga-white vga-blue)
+          in let w2 = vga-put-text 0 60 "Type to interact" (vga-attr vga-white vga-blue)
+          in ConsoleState { cursor = VgaCursor { row = 2, col = 0, attr = vga-attr vga-light-green vga-black }, input-buf = "", input-ready = False }
+    else console-write-text con "no disk manifest found"
+
+  cmd-help : ConsoleState -> ConsoleState
+  cmd-help (con) =
+    let con1 = shell-print con "commands:"
+    in let con2 = shell-print con1 "  help        show this message"
+    in let con3 = shell-print con2 "  about       about Codex"
+    in let con4 = shell-print con3 "  ver         version info"
+    in let con5 = shell-print con4 "  disk        show disk contents"
+    in let con6 = shell-print con5 "  cat <n>     view source file n"
+    in let con7 = shell-print con6 "  echo <txt>  print text"
+    in let con8 = shell-print con7 "  clear       clear screen"
+    in let con9 = shell-print con8 "  dbg mem <a> memory hex dump"
+    in let con10 = shell-print con9 "  dbg io.ata  ATA register dump"
+    in let con11 = shell-print con10 "  dbg ata.step <lba>  step ATA read"
+    in shell-print con11 "  dbg perf    performance snapshot"
+
+  cmd-about : ConsoleState -> ConsoleState
+  cmd-about (con) =
+    let con1 = shell-print con "Codex - a new computational substrate."
+    in let con2 = shell-print con1 "Self-sustaining compiler on bare metal."
+    in let con3 = shell-print con2 "No C. No OS. No runtime. Just Codex."
+    in shell-print con3 "github.com/damiant3/NewRepository"
+
+  cmd-ver : ConsoleState -> ConsoleState
+  cmd-ver (con) =
+    let con1 = shell-print con "Codex v0.1 - bare-metal x86-64"
+    in shell-print con1 "Bootstrap: 2026-04-24 (day 41)"
+
+  cmd-echo : ConsoleState, Text -> ConsoleState
+  cmd-echo (con) (msg) = shell-print con msg
+
+  cmd-clear : ConsoleState -> ConsoleState
+  cmd-clear (con) =
+    let c = vga-clear (vga-attr vga-light-gray vga-black)
+    in let h = vga-clear-row 0 (vga-attr vga-white vga-blue)
+    in let w1 = vga-put-text 0 1 "Codex Terminal" (vga-attr vga-white vga-blue)
+    in let w2 = vga-put-text 0 60 "Type to interact" (vga-attr vga-white vga-blue)
+    in ConsoleState { cursor = VgaCursor { row = 2, col = 0, attr = vga-attr vga-light-green vga-black }, input-buf = "", input-ready = False }
+
+Section: Debug Dispatch
+  dbg-dispatch : ConsoleState, KbState, Text -> ConsoleState
+  dbg-dispatch (con) (kb) (sub) =
+    let arg = text-trim sub
+    in if arg == "perf" then perf-snapshot con
+    else if arg == "io.ata" then io-ata-dump con
+    else if arg == "io.com1" then io-com1-dump con
+    else if starts-with arg "io.in " then io-read (parse-number (substring arg 6 (text-length arg - 6))) con
+    else if starts-with arg "io.out " then dbg-io-out arg con
+    else if starts-with arg "mem.b " then mem-read-byte (parse-number (substring arg 6 (text-length arg - 6))) con
+    else if starts-with arg "mem.w " then mem-read-u16 (parse-number (substring arg 6 (text-length arg - 6))) con
+    else if starts-with arg "mem.d " then mem-read-u32 (parse-number (substring arg 6 (text-length arg - 6))) con
+    else if starts-with arg "mem.q " then mem-read-u64 (parse-number (substring arg 6 (text-length arg - 6))) con
+    else if starts-with arg "mem " then mem-dump (parse-number (substring arg 4 (text-length arg - 4))) 256 con
+    else if starts-with arg "ata.step " then ata-step-read (parse-number (substring arg 9 (text-length arg - 9))) con kb
+    else if starts-with arg "ata.read " then ata-traced-read (parse-number (substring arg 9 (text-length arg - 9))) con
+    else if starts-with arg "ata.verify " then ata-verify-sector (parse-number (substring arg 11 (text-length arg - 11))) con
+    else console-write-text con ("unknown dbg command: " & arg)
+
+  dbg-io-out : Text, ConsoleState -> ConsoleState
+  dbg-io-out (arg) (con) =
+    let parts = text-split arg " "
+    in if list-length parts >= 3 then
+      let port = parse-number (list-at parts 1)
+      in let val = parse-number (list-at parts 2)
+      in io-write port val con
+    else console-write-text con "usage: dbg io.out <port> <byte>"
+
+Section: Serial Output
+  serial-wait-thr : Integer
+  serial-wait-thr =
+    if bit-and (port-in-byte 1021) 32 /= 0 then 0
+    else serial-wait-thr
+
+  serial-write-byte : Integer -> Integer
+  serial-write-byte (b) =
+    let w = serial-wait-thr
+    in port-out-byte 1016 b
+
+  serial-print-cce : Text -> Integer
+  serial-print-cce (t) = serial-print-loop t 0 (text-length t)
+
+  serial-print-loop : Text, Integer, Integer -> Integer
+  serial-print-loop (t) (i) (len) =
+    if i >= len then 0
+    else let c = char-code (char-at t i)
+    in let u = to-unicode c
+    in let w = if u == 10 then serial-write-byte 13 + serial-write-byte 10
+      else serial-write-byte u
+    in serial-print-loop t (i + 1) len
+
+  serial-println : Text -> Integer
+  serial-println (t) =
+    let w = serial-print-cce t
+    in serial-write-byte 13 + serial-write-byte 10
+
+  shell-print : ConsoleState, Text -> ConsoleState
+  shell-print (con) (text) =
+    let s = serial-println text
+    in let con1 = console-write-text con text
+    in console-write-char con1 1
+
+Section: Serial Input
+  serial-has-data : Boolean
+  serial-has-data = bit-and (port-in-byte 1021) 1 /= 0
+
+  serial-read-byte : Integer
+  serial-read-byte = port-in-byte 1016
+
+  ascii-to-cce : Integer -> Integer
+  ascii-to-cce (a) = from-unicode a
+
+Section: Terminal Loop
+  terminal-loop : DiskState, ConsoleState, KbState -> [Console] Nothing
+  terminal-loop (ds) (con) (kb) =
+    if kb-has-key then
+      let sc = kb-read-scancode
+      in if sc == 14 then terminal-loop ds (console-feed-backspace con) kb
+      else let ev = kb-process-scancode kb sc
+      in if ev.ascii == 0 then terminal-loop ds con (ev.state)
+      else if ev.ascii == 1 then
+        let con1 = console-feed-char con 1
+        in let line = console-get-line con1
+        in let con2 = console-take-line con1
+        in let con3 = shell-dispatch ds con2 (ev.state) line
+        in let con4 = console-write-char con3 1
+        in let con5 = console-write-text con4 "codex> "
+        in terminal-loop ds con5 (ev.state)
+      else terminal-loop ds (console-feed-char con (ev.ascii)) (ev.state)
+    else if serial-has-data then
+      let raw = serial-read-byte
+      in if raw == 13 then
+        let nl = serial-write-byte 13 + serial-write-byte 10
+        in let con1 = console-feed-char con 1
+        in let line = console-get-line con1
+        in let con2 = console-take-line con1
+        in let con3 = shell-dispatch ds con2 kb line
+        in let con4 = console-write-char con3 1
+        in let con5 = console-write-text con4 "codex> "
+        in let prompt = serial-print-cce "codex> "
+        in terminal-loop ds con5 kb
+      else if raw == 10 then terminal-loop ds con kb
+      else if raw == 8 then let bs = serial-write-byte 8 + serial-write-byte 32 + serial-write-byte 8
+        in terminal-loop ds (console-feed-backspace con) kb
+      else if raw == 127 then let bs = serial-write-byte 8 + serial-write-byte 32 + serial-write-byte 8
+        in terminal-loop ds (console-feed-backspace con) kb
+      else let echo = serial-write-byte raw
+      in let cce = ascii-to-cce raw
+      in if cce >= 0 then terminal-loop ds (console-feed-char con cce) kb
+      else terminal-loop ds con kb
+    else terminal-loop ds con kb
+
+Section: Boot Disk Load
+  boot-load-src-sectors : Integer, Integer, Integer, Integer -> Integer
+  boot-load-src-sectors (buf) (start) (count) (i) =
+    if i >= count then buf
+    else let ata-s = port-in-byte 503
+    in let sbuf = block-read-sector (start + i + ata-s / 256)
+    in let copied = copy-sector-to-buf buf (i * 512) sbuf 0 512
+    in boot-load-src-sectors buf start count (i + 1)
+
+Section: Entry
+  opening : [Console] Nothing = act
+    let drained = lapic-drain
+    in let clr = vga-clear (vga-attr vga-light-gray vga-black)
+    in let h = vga-clear-row 0 (vga-attr vga-white vga-blue)
+    in let w1 = vga-put-text 0 1 "Codex Terminal" (vga-attr vga-white vga-blue)
+    in let w2 = vga-put-text 0 60 "Type to interact" (vga-attr vga-white vga-blue)
+    in let con = ConsoleState { cursor = VgaCursor { row = 2, col = 0, attr = vga-attr vga-light-green vga-black }, input-buf = "", input-ready = False }
+    in let kb = kb-state-new
+    in let con1 = console-write-text con "Codex v0.1 - type help for commands"
+    in let con2 = console-write-char con1 1
+    in let con3 = console-write-text con2 "codex> "
+    in let bootsc = read-u16-le 31744 305
+    in let s0 = port-in-byte 503
+    in let mbuf = block-read-sector (1 + bootsc + s0 / 256)
+    in let ds = if peek-byte mbuf 0 == 67 & peek-byte mbuf 1 == 68 & peek-byte mbuf 2 == 88 & peek-byte mbuf 3 == 33 then
+        let csz = read-u32-le mbuf 16
+        in let ssec = read-u32-le mbuf 20
+        in let ssecs = read-u32-le mbuf 24
+        in let ssz = read-u32-le mbuf 28
+        in let blob = alloc-bytes (ssecs * 512)
+        in let loaded = boot-load-src-sectors blob ssec ssecs 0
+        in DiskState { valid = True, compiler-size = csz, src-size = ssz, src-blob = blob }
+      else empty-disk-state
+    in let rb0 = peek-byte mbuf 0
+    in let rb1 = peek-byte mbuf 1
+    in let rb2 = peek-byte mbuf 2
+    in let rb3 = peek-byte mbuf 3
+    in act
+      print-line ("sc=" & show bootsc & " sec=" & show (1 + bootsc) & " raw=[" & show rb0 & " " & show rb1 & " " & show rb2 & " " & show rb3 & "]")
+      print-line ("disk=" & show (if ds.valid then 1 else 0) & " csz=" & show (ds.compiler-size) & " ssz=" & show (ds.src-size))
+      let sp = serial-print-cce "codex> "
+      in terminal-loop ds con3 kb
+    end
+  end
+
+Page 1

@@ -1,0 +1,538 @@
+Chapter: DevHypervisor
+  cites Foreword chapter Maybe
+  cites Works chapter HexFormat
+  cites Works chapter DevConsoleMenu
+  cites Kernel chapter VmSerial
+  cites Kernel chapter VmIde
+
+ Bare-metal VMX hypervisor. Creates a guest VM using Intel VT-x and
+ runs a Codex CDX binary inside it. VM exits for I/O ports are
+ dispatched to Codex device model functions. This replaces QEMU —
+ Codex is its own hypervisor.
+
+ We say:
+
+Section: VMX Constants
+
+  vmx-cr4-vmxe : Integer = 8192
+  vmx-vmcs-size : Integer = 4096
+
+  vmxon-region-addr : Integer = 8388608
+  vmcs-region-addr : Integer = 8392704
+  guest-memory-base : Integer = 16777216
+  guest-stack-top : Integer = 20971520
+  guest-entry-point : Integer = 1048576
+
+Section: VMX Capability MSRs
+
+  msr-vmx-basic : Integer = 1152
+  msr-vmx-pinbased-ctls : Integer = 1153
+  msr-vmx-procbased-ctls : Integer = 1154
+  msr-vmx-exit-ctls : Integer = 1155
+  msr-vmx-entry-ctls : Integer = 1156
+  msr-vmx-cr0-fixed0 : Integer = 1158
+  msr-vmx-cr0-fixed1 : Integer = 1159
+  msr-vmx-cr4-fixed0 : Integer = 1160
+  msr-vmx-cr4-fixed1 : Integer = 1161
+  msr-low32-mask : Integer = 4294967295
+
+  vmx-read-revision-id : Integer
+  vmx-read-revision-id = bit-and (rdmsr msr-vmx-basic) 2147483647
+
+  vmx-adjust-control : Integer, Integer -> Integer
+  vmx-adjust-control (msr-index) (desired) =
+    let raw = rdmsr msr-index
+    in let must-be-1 = bit-and raw msr-low32-mask
+    in let allowed-1 = bit-shru raw 32
+    in bit-and (bit-or desired must-be-1) allowed-1
+
+  vmx-fixed-cr0 : Integer
+  vmx-fixed-cr0 =
+    let fixed0 = rdmsr msr-vmx-cr0-fixed0
+    in let fixed1 = rdmsr msr-vmx-cr0-fixed1
+    in bit-and (bit-or 2147483697 fixed0) fixed1
+
+  vmx-fixed-cr4 : Integer
+  vmx-fixed-cr4 =
+    let fixed0 = rdmsr msr-vmx-cr4-fixed0
+    in let fixed1 = rdmsr msr-vmx-cr4-fixed1
+    in bit-and (bit-or vmx-cr4-vmxe fixed0) fixed1
+
+Section: VMCS Field Encodings
+
+  vmcs-guest-es-sel : Integer = 2048
+  vmcs-guest-cs-sel : Integer = 2050
+  vmcs-guest-ss-sel : Integer = 2052
+  vmcs-guest-ds-sel : Integer = 2054
+  vmcs-guest-fs-sel : Integer = 2056
+  vmcs-guest-gs-sel : Integer = 2058
+  vmcs-guest-ldtr-sel : Integer = 2048
+  vmcs-guest-tr-sel : Integer = 2062
+
+  vmcs-pin-based-controls : Integer = 16384
+  vmcs-proc-based-controls : Integer = 16386
+  vmcs-exit-controls : Integer = 16396
+  vmcs-entry-controls : Integer = 16402
+
+  vmcs-guest-es-limit : Integer = 18432
+  vmcs-guest-cs-limit : Integer = 18434
+  vmcs-guest-ss-limit : Integer = 18436
+  vmcs-guest-ds-limit : Integer = 18438
+  vmcs-guest-fs-limit : Integer = 18440
+  vmcs-guest-gs-limit : Integer = 18442
+  vmcs-guest-ldtr-limit : Integer = 18432
+  vmcs-guest-tr-limit : Integer = 18446
+  vmcs-guest-gdtr-limit : Integer = 18448
+  vmcs-guest-idtr-limit : Integer = 18450
+
+  vmcs-guest-es-ar : Integer = 18454
+  vmcs-guest-cs-ar : Integer = 18456
+  vmcs-guest-ss-ar : Integer = 18458
+  vmcs-guest-ds-ar : Integer = 18460
+  vmcs-guest-fs-ar : Integer = 18462
+  vmcs-guest-gs-ar : Integer = 18464
+  vmcs-guest-ldtr-ar : Integer = 18454
+  vmcs-guest-tr-ar : Integer = 18470
+
+  vmcs-guest-cr0 : Integer = 26624
+  vmcs-guest-cr3 : Integer = 26626
+  vmcs-guest-cr4 : Integer = 26628
+  vmcs-guest-es-base : Integer = 26632
+  vmcs-guest-cs-base : Integer = 26634
+  vmcs-guest-ss-base : Integer = 26636
+  vmcs-guest-ds-base : Integer = 26638
+  vmcs-guest-fs-base : Integer = 26640
+  vmcs-guest-gs-base : Integer = 26642
+  vmcs-guest-ldtr-base : Integer = 26644
+  vmcs-guest-tr-base : Integer = 26646
+  vmcs-guest-gdtr-base : Integer = 26648
+  vmcs-guest-idtr-base : Integer = 26650
+  vmcs-guest-rsp : Integer = 26652
+  vmcs-guest-rip : Integer = 26654
+  vmcs-guest-rflags : Integer = 26656
+  vmcs-guest-sysenter-esp : Integer = 26660
+  vmcs-guest-sysenter-eip : Integer = 26662
+  vmcs-guest-sysenter-cs : Integer = 16426
+
+  vmcs-host-cr0 : Integer = 27648
+  vmcs-host-cr3 : Integer = 27650
+  vmcs-host-cr4 : Integer = 27652
+  vmcs-host-rsp : Integer = 27670
+  vmcs-host-rip : Integer = 27672
+  vmcs-host-cs-sel : Integer = 3074
+  vmcs-host-ss-sel : Integer = 3076
+  vmcs-host-ds-sel : Integer = 3078
+  vmcs-host-es-sel : Integer = 3072
+  vmcs-host-fs-sel : Integer = 3080
+  vmcs-host-gs-sel : Integer = 3082
+  vmcs-host-tr-sel : Integer = 3084
+
+  vmcs-vmx-link-ptr : Integer = 10240
+  vmcs-exit-reason : Integer = 17410
+  vmcs-exit-qualification : Integer = 25600
+
+Section: Guest Configuration
+
+  GuestConfig = record {
+    entry-point : Integer,
+    memory-mb : Integer
+  }
+
+  default-guest-config : GuestConfig
+  default-guest-config = GuestConfig {
+    entry-point = guest-entry-point,
+    memory-mb = 4
+  }
+
+Section: VM State
+
+  VmExitInfo = record {
+    reason : Integer,
+    qualification : Integer
+  }
+
+  VmxStatus =
+    | VmxOk
+    | VmxFailed (Integer)
+
+Section: VMX Lifecycle
+
+  vmx-init-region : Integer, Integer -> Integer
+  vmx-init-region (addr) (revision-id) =
+    let w0 = poke-32 addr 0 revision-id
+    in addr
+
+  vmx-enable : Integer -> VmxStatus
+  vmx-enable (revision-id) =
+    let cr4 = vmx-fixed-cr4
+    in let w0 = vmx-init-region vmxon-region-addr revision-id
+    in let result = vmxon vmxon-region-addr
+    in VmxOk
+
+  vmx-create-vmcs : Integer -> VmxStatus
+  vmx-create-vmcs (revision-id) =
+    let w0 = vmx-init-region vmcs-region-addr revision-id
+    in let c0 = vmclear vmcs-region-addr
+    in let l0 = vmptrld vmcs-region-addr
+    in VmxOk
+
+Section: VMCS Setup
+
+  vmcs-setup-guest-segments : Integer
+  vmcs-setup-guest-segments =
+    let w0 = vmwrite vmcs-guest-cs-sel 8
+    in let w1 = vmwrite vmcs-guest-cs-base 0
+    in let w2 = vmwrite vmcs-guest-cs-limit 4294967295
+    in let w3 = vmwrite vmcs-guest-cs-ar 43019
+    in let w4 = vmwrite vmcs-guest-ds-sel 16
+    in let w5 = vmwrite vmcs-guest-ds-base 0
+    in let w6 = vmwrite vmcs-guest-ds-limit 4294967295
+    in let w7 = vmwrite vmcs-guest-ds-ar 40963
+    in let w8 = vmwrite vmcs-guest-es-sel 16
+    in let w9 = vmwrite vmcs-guest-es-base 0
+    in let w10 = vmwrite vmcs-guest-es-limit 4294967295
+    in let w11 = vmwrite vmcs-guest-es-ar 40963
+    in let w12 = vmwrite vmcs-guest-ss-sel 16
+    in let w13 = vmwrite vmcs-guest-ss-base 0
+    in let w14 = vmwrite vmcs-guest-ss-limit 4294967295
+    in let w15 = vmwrite vmcs-guest-ss-ar 40963
+    in let w16 = vmwrite vmcs-guest-fs-sel 0
+    in let w17 = vmwrite vmcs-guest-fs-base 0
+    in let w18 = vmwrite vmcs-guest-fs-limit 0
+    in let w19 = vmwrite vmcs-guest-fs-ar 65538
+    in let w20 = vmwrite vmcs-guest-gs-sel 0
+    in let w21 = vmwrite vmcs-guest-gs-base 0
+    in let w22 = vmwrite vmcs-guest-gs-limit 0
+    in let w23 = vmwrite vmcs-guest-gs-ar 65538
+    in let w24 = vmwrite vmcs-guest-tr-sel 24
+    in let w25 = vmwrite vmcs-guest-tr-base 0
+    in let w26 = vmwrite vmcs-guest-tr-limit 103
+    in let w27 = vmwrite vmcs-guest-tr-ar 139
+    in let w28 = vmwrite vmcs-guest-ldtr-sel 0
+    in let w29 = vmwrite vmcs-guest-ldtr-base 0
+    in let w30 = vmwrite vmcs-guest-ldtr-limit 0
+    in let w31 = vmwrite vmcs-guest-ldtr-ar 65538
+    in 0
+
+  vmcs-setup-guest-state : Integer, Integer, Integer -> Integer
+  vmcs-setup-guest-state (entry-rip) (entry-rsp) (cr3) =
+    let w0 = vmwrite vmcs-guest-cr0 vmx-fixed-cr0
+    in let w1 = vmwrite vmcs-guest-cr3 cr3
+    in let w2 = vmwrite vmcs-guest-cr4 vmx-fixed-cr4
+    in let w3 = vmwrite vmcs-guest-rip entry-rip
+    in let w4 = vmwrite vmcs-guest-rsp entry-rsp
+    in let w5 = vmwrite vmcs-guest-rflags 2
+    in let w6 = vmwrite vmcs-guest-gdtr-base 0
+    in let w7 = vmwrite vmcs-guest-gdtr-limit 47
+    in let w8 = vmwrite vmcs-guest-idtr-base 0
+    in let w9 = vmwrite vmcs-guest-idtr-limit 0
+    in let w10 = vmwrite vmcs-vmx-link-ptr 4294967295
+    in let w11 = vmwrite vmcs-guest-sysenter-cs 0
+    in let w12 = vmwrite vmcs-guest-sysenter-esp 0
+    in let w13 = vmwrite vmcs-guest-sysenter-eip 0
+    in let w14 = vmcs-setup-guest-segments
+    in 0
+
+  vmcs-setup-host-state : Integer -> Integer
+  vmcs-setup-host-state (host-cr3) =
+    let w0 = vmwrite vmcs-host-cr0 vmx-fixed-cr0
+    in let w1 = vmwrite vmcs-host-cr3 host-cr3
+    in let w2 = vmwrite vmcs-host-cr4 vmx-fixed-cr4
+    in let w5 = vmwrite vmcs-host-cs-sel 8
+    in let w6 = vmwrite vmcs-host-ss-sel 16
+    in let w7 = vmwrite vmcs-host-ds-sel 16
+    in let w8 = vmwrite vmcs-host-es-sel 16
+    in let w9 = vmwrite vmcs-host-fs-sel 0
+    in let w10 = vmwrite vmcs-host-gs-sel 0
+    in let w11 = vmwrite vmcs-host-tr-sel 24
+    in 0
+
+  vmcs-setup-controls : Integer
+  vmcs-setup-controls =
+    let pin = vmx-adjust-control msr-vmx-pinbased-ctls 0
+    in let proc = vmx-adjust-control msr-vmx-procbased-ctls 16777344
+    in let exit-ctl = vmx-adjust-control msr-vmx-exit-ctls 512
+    in let entry-ctl = vmx-adjust-control msr-vmx-entry-ctls 512
+    in let w0 = vmwrite vmcs-pin-based-controls pin
+    in let w1 = vmwrite vmcs-proc-based-controls proc
+    in let w2 = vmwrite vmcs-exit-controls exit-ctl
+    in let w3 = vmwrite vmcs-entry-controls entry-ctl
+    in 0
+
+Section: VM Exit Handling
+
+  vm-read-exit-info : VmExitInfo
+  vm-read-exit-info =
+    let reason = vmread vmcs-exit-reason
+    in let qual = vmread vmcs-exit-qualification
+    in VmExitInfo { reason = reason, qualification = qual }
+
+  vm-exit-is-io : VmExitInfo -> Boolean
+  vm-exit-is-io (info) = bit-and (info.reason) 65535 == 30
+
+  vm-exit-is-hlt : VmExitInfo -> Boolean
+  vm-exit-is-hlt (info) = bit-and (info.reason) 65535 == 12
+
+  vm-exit-io-port : VmExitInfo -> Integer
+  vm-exit-io-port (info) = bit-shru (info.qualification) 16
+
+  vm-exit-io-is-out : VmExitInfo -> Boolean
+  vm-exit-io-is-out (info) = bit-and (info.qualification) 8 == 0
+
+  vm-exit-io-size : VmExitInfo -> Integer
+  vm-exit-io-size (info) = bit-and (info.qualification) 7
+
+  vm-exit-is-cpuid : VmExitInfo -> Boolean
+  vm-exit-is-cpuid (info) = bit-and (info.reason) 65535 == 10
+
+  vm-exit-is-msr-read : VmExitInfo -> Boolean
+  vm-exit-is-msr-read (info) = bit-and (info.reason) 65535 == 31
+
+  vm-exit-is-msr-write : VmExitInfo -> Boolean
+  vm-exit-is-msr-write (info) = bit-and (info.reason) 65535 == 32
+
+  vmcs-guest-rax : Integer = 25600
+  vmcs-guest-inst-len : Integer = 17408
+
+Section: Formatting
+
+Section: CPUID Emulation
+
+  vm-handle-cpuid : Integer
+  vm-handle-cpuid = 0
+
+Section: MSR Emulation
+
+  vm-handle-rdmsr : Integer
+  vm-handle-rdmsr = 0
+
+Section: Formatting
+
+  format-exit-reason : Integer -> Text
+  format-exit-reason (r) =
+    let code = bit-and r 65535
+    in if code == 0 then "exception"
+    else if code == 1 then "external-interrupt"
+    else if code == 7 then "interrupt-window"
+    else if code == 10 then "cpuid"
+    else if code == 12 then "hlt"
+    else if code == 18 then "vmcall"
+    else if code == 28 then "cr-access"
+    else if code == 30 then "io-instruction"
+    else if code == 31 then "rdmsr"
+    else if code == 32 then "wrmsr"
+    else if code == 48 then "ept-violation"
+    else "exit-" & show code
+
+  format-exit-info : VmExitInfo -> Text
+  format-exit-info (info) =
+    "reason=" & format-exit-reason (info.reason) & " qual=0x" & hex-i64 (info.qualification)
+
+Section: Guest Page Tables
+
+  guest-pt-base : Integer = 12582912
+
+  vm-build-pml4 : Integer
+  vm-build-pml4 =
+    let pml4 = guest-pt-base
+    in let pdpt = pml4 + 4096
+    in let pd = pdpt + 4096
+    in let w0 = poke-32 pml4 0 (bit-or (pdpt) 3)
+    in let w1 = poke-32 pml4 4 0
+    in let w2 = vm-zero-rest pml4 8 4096
+    in let w3 = poke-32 pdpt 0 (bit-or pd 3)
+    in let w4 = poke-32 pdpt 4 0
+    in let w5 = vm-zero-rest pdpt 8 4096
+    in let w6 = vm-fill-pd pd 0 512
+    in let w7 = vm-zero-rest pd (512 * 8) 4096
+    in pml4
+
+  vm-fill-pd : Integer, Integer, Integer -> Integer
+  vm-fill-pd (pd) (i) (count) =
+    if i >= count then 0
+    else let addr = i * 2097152
+    in let entry = bit-or addr 131
+    in let w0 = poke-32 pd (i * 8) (bit-and entry 4294967295)
+    in let w1 = poke-32 pd (i * 8 + 4) (bit-shru entry 32)
+    in vm-fill-pd pd (i + 1) count
+
+  vm-zero-rest : Integer, Integer, Integer -> Integer
+  vm-zero-rest (base) (off) (limit) =
+    if off >= limit then 0
+    else let w = poke-32 base off 0
+    in vm-zero-rest base (off + 4) limit
+
+Section: Guest Memory Loading
+
+  vm-load-bytes-to-guest : Integer, List Integer, Integer, Integer -> Integer
+  vm-load-bytes-to-guest (dest) (bs) (i) (len) =
+    if i >= len then 0
+    else let w = poke-byte dest i (list-at bs i)
+    in vm-load-bytes-to-guest dest bs (i + 1) len
+
+Section: VM Run Loop
+
+  VmRunResult =
+    | VmHalted
+    | VmIoExit (VmExitInfo)
+    | VmCrashed (VmExitInfo)
+
+  vm-launch-and-run : Integer -> VmRunResult
+  vm-launch-and-run (max-exits) =
+    let launch-status = vmlaunch-full
+    in vm-run-loop 0 max-exits
+
+  vm-run-loop : Integer, Integer -> VmRunResult
+  vm-run-loop (exits) (max-exits) =
+    if exits >= max-exits then VmCrashed (vm-read-exit-info)
+    else let info = vm-read-exit-info
+    in if vm-exit-is-hlt info then VmHalted
+    else if vm-exit-is-io info then VmIoExit info
+    else VmCrashed info
+
+  vm-resume-after-io : Integer, Integer -> VmRunResult
+  vm-resume-after-io (exits) (max-exits) =
+    let rip = vmread vmcs-guest-rip
+    in let inst-len = vmread 17408
+    in let w = vmwrite vmcs-guest-rip (rip + inst-len)
+    in let resume-status = vmresume-full
+    in vm-run-loop (exits + 1) max-exits
+
+Section: Device-Aware VM Run
+
+  VmDevices = record {
+    vd-com1 : VmSerialPort,
+    vd-com2 : VmSerialPort,
+    vd-ide : VmIdeState
+  }
+
+  VmFullResult = record {
+    vfr-status : VmRunResult,
+    vfr-devices : VmDevices
+  }
+
+  vm-devices-new : VmDevices
+  vm-devices-new = VmDevices {
+    vd-com1 = vm-serial-new vm-com1-base,
+    vd-com2 = vm-serial-new vm-com2-base,
+    vd-ide = vm-ide-new
+  }
+
+  vm-devices-with-input : VmDevices, List Integer -> VmDevices
+  vm-devices-with-input (devs) (data) = VmDevices {
+    vd-com1 = vm-serial-with-input (devs.vd-com1) data,
+    vd-com2 = devs.vd-com2,
+    vd-ide = devs.vd-ide
+  }
+
+  vm-devices-with-disk : VmDevices, Integer, Integer -> VmDevices
+  vm-devices-with-disk (devs) (disk-addr) (total-sectors) = VmDevices {
+    vd-com1 = devs.vd-com1,
+    vd-com2 = devs.vd-com2,
+    vd-ide = vm-ide-attach disk-addr total-sectors
+  }
+
+  vm-launch-with-devices : Integer, VmDevices -> VmFullResult
+  vm-launch-with-devices (max-exits) (devs) =
+    let launch-status = vmlaunch
+    in vm-device-loop 0 max-exits devs
+
+  vm-device-loop : Integer, Integer, VmDevices -> VmFullResult
+  vm-device-loop (exits) (max-exits) (devs) =
+    if exits >= max-exits then VmFullResult { vfr-status = VmCrashed (vm-read-exit-info), vfr-devices = devs }
+    else let info = vm-read-exit-info
+    in let code = bit-and (info.reason) 65535
+    in if code == 12 then VmFullResult { vfr-status = VmHalted, vfr-devices = devs }
+    else if code == 30 then
+      let port = vm-exit-io-port info
+      in let devs2 = vm-dispatch-io devs info port
+      in vm-resume-with-devices (exits + 1) max-exits devs2
+    else if code == 10 then
+      let w = vm-handle-cpuid
+      in vm-resume-with-devices (exits + 1) max-exits devs
+    else if code == 31 then
+      let w = vm-handle-rdmsr
+      in vm-resume-with-devices (exits + 1) max-exits devs
+    else if code == 32 then
+      vm-resume-with-devices (exits + 1) max-exits devs
+    else VmFullResult { vfr-status = VmCrashed info, vfr-devices = devs }
+
+  vm-resume-with-devices : Integer, Integer, VmDevices -> VmFullResult
+  vm-resume-with-devices (exits) (max-exits) (devs) =
+    let rip = vmread vmcs-guest-rip
+    in let inst-len = vmread 17408
+    in let w = vmwrite vmcs-guest-rip (rip + inst-len)
+    in let resume-status = vmresume-full
+    in vm-device-loop (exits + 1) max-exits devs
+
+  vm-dispatch-io : VmDevices, VmExitInfo, Integer -> VmDevices
+  vm-dispatch-io (devs) (info) (port) =
+    if vm-serial-owns-port (devs.vd-com1) port then
+      if vm-exit-io-is-out info then VmDevices {
+        vd-com1 = vm-serial-handle-out (devs.vd-com1) port (vm-exit-io-data info),
+        vd-com2 = devs.vd-com2, vd-ide = devs.vd-ide
+      }
+      else let result = vm-serial-handle-in (devs.vd-com1) port
+      in let w = vm-inject-io-result (result.sir-value)
+      in VmDevices { vd-com1 = result.sir-port, vd-com2 = devs.vd-com2, vd-ide = devs.vd-ide }
+    else if vm-serial-owns-port (devs.vd-com2) port then
+      if vm-exit-io-is-out info then VmDevices {
+        vd-com1 = devs.vd-com1,
+        vd-com2 = vm-serial-handle-out (devs.vd-com2) port (vm-exit-io-data info),
+        vd-ide = devs.vd-ide
+      }
+      else let result = vm-serial-handle-in (devs.vd-com2) port
+      in let w = vm-inject-io-result (result.sir-value)
+      in VmDevices { vd-com1 = devs.vd-com1, vd-com2 = result.sir-port, vd-ide = devs.vd-ide }
+    else if vm-ide-owns-port (devs.vd-ide) port then
+      if vm-exit-io-is-out info then VmDevices {
+        vd-com1 = devs.vd-com1, vd-com2 = devs.vd-com2,
+        vd-ide = vm-ide-handle-out (devs.vd-ide) port (vm-exit-io-data info)
+      }
+      else let result = vm-ide-handle-in (devs.vd-ide) port
+      in let w = vm-inject-io-result (result.iir-value)
+      in VmDevices { vd-com1 = devs.vd-com1, vd-com2 = devs.vd-com2, vd-ide = result.iir-state }
+    else devs
+
+  vm-exit-io-data : VmExitInfo -> Integer
+  vm-exit-io-data (info) = vmread 25602
+
+  vm-inject-io-result : Integer -> Integer
+  vm-inject-io-result (value) = vmwrite 25602 value
+
+Section: Full VM Setup
+
+  vm-setup-and-launch : GuestConfig, Integer, List Integer -> VmRunResult
+  vm-setup-and-launch (cfg) (revision-id) (guest-code) =
+    let e0 = vmx-enable revision-id
+    in let e1 = vmx-create-vmcs revision-id
+    in let pt = vm-build-pml4
+    in let w0 = vm-load-bytes-to-guest (cfg.entry-point) guest-code 0 (list-length guest-code)
+    in let w1 = vmcs-setup-guest-state (cfg.entry-point) guest-stack-top pt
+    in let w2 = vmcs-setup-host-state pt
+    in let w3 = vmcs-setup-controls
+    in vm-launch-and-run 10000
+
+  vm-setup-and-run-with-serial : GuestConfig, Integer, List Integer, List Integer -> VmFullResult
+  vm-setup-and-run-with-serial (cfg) (revision-id) (guest-code) (serial-input) =
+    let e0 = vmx-enable revision-id
+    in let e1 = vmx-create-vmcs revision-id
+    in let pt = vm-build-pml4
+    in let w0 = vm-load-bytes-to-guest (cfg.entry-point) guest-code 0 (list-length guest-code)
+    in let w1 = vmcs-setup-guest-state (cfg.entry-point) guest-stack-top pt
+    in let w2 = vmcs-setup-host-state pt
+    in let w3 = vmcs-setup-controls
+    in let devs = vm-devices-with-input vm-devices-new serial-input
+    in vm-launch-with-devices 1000000 devs
+
+Section: Menu
+
+  hypervisor-menu : MenuState
+  hypervisor-menu = menu-new "Hypervisor" [
+    menu-item "VMX Init Test" "vmx-init",
+    menu-item "Launch Guest (HLT)" "vmx-launch",
+    menu-item "Launch Guest (Serial)" "vmx-serial",
+    menu-item "Back" "back"
+  ]
+
+Page 1

@@ -1,0 +1,98 @@
+Chapter: History
+  cites Foreword chapter Maybe
+  cites Foreword chapter StringUtils
+
+ A CmdHistory is a record containing hist-entries, hist-max, hist-count, and hist-cursor.
+ To history-new gives an empty CmdHistory with the given maximum capacity.
+ To history-add gives a new CmdHistory with the command appended, skipping consecutive duplicates and empty strings.
+ To history-up gives a CmdHistory with the cursor moved one entry earlier.
+ To history-down gives a CmdHistory with the cursor moved one entry later.
+ To history-current gives the entry at the cursor as a Maybe, or None when past the end.
+ To history-reset-cursor gives a CmdHistory with the cursor moved past the last entry.
+ To history-search gives the most recent entry matching the prefix as a Maybe, or None when not found.
+ To history-length gives the number of entries stored.
+ To history-at gives the entry at the given index as a Maybe, or None when out of range.
+ To history-to-list gives all entries as a List.
+
+ We say:
+
+Section: Types
+  CmdHistory = record {
+    hist-entries : List Text,
+    hist-max : Integer,
+    hist-count : Integer,
+    hist-cursor : Integer
+  }
+
+Section: Construction
+  history-new : Integer -> CmdHistory
+  history-new (max) = CmdHistory { hist-entries = [], hist-max = max, hist-count = 0, hist-cursor = 0 }
+
+Section: Adding
+  history-add : CmdHistory, Text -> CmdHistory
+  history-add (h) (cmd) =
+    if text-length cmd == 0 then h
+    else if h.hist-count > 0 then
+      if list-at (h.hist-entries) (h.hist-count - 1) == cmd then history-reset-cursor h
+      else history-push h cmd
+    else history-push h cmd
+
+  history-push : CmdHistory, Text -> CmdHistory
+  history-push (h) (cmd) =
+    let entries = if h.hist-count >= h.hist-max then list-push (hist-drop-first (h.hist-entries)) cmd
+      else list-push (h.hist-entries) cmd
+    in let count = if h.hist-count >= h.hist-max then h.hist-max else h.hist-count + 1
+    in CmdHistory { hist-entries = entries, hist-max = h.hist-max, hist-count = count, hist-cursor = count }
+
+  hist-drop-first : List Text -> List Text
+  hist-drop-first (xs) = hist-drop-loop xs 1 (list-length xs) []
+
+  hist-drop-loop : List Text, Integer, Integer, List Text -> List Text
+  hist-drop-loop (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else hist-drop-loop xs (i + 1) n (list-push acc (list-at xs i))
+
+Section: Navigation
+  history-up : CmdHistory -> CmdHistory
+  history-up (h) =
+    if h.hist-cursor > 0 then CmdHistory { hist-entries = h.hist-entries, hist-max = h.hist-max, hist-count = h.hist-count, hist-cursor = h.hist-cursor - 1 }
+    else h
+
+  history-down : CmdHistory -> CmdHistory
+  history-down (h) =
+    if h.hist-cursor < h.hist-count then CmdHistory { hist-entries = h.hist-entries, hist-max = h.hist-max, hist-count = h.hist-count, hist-cursor = h.hist-cursor + 1 }
+    else h
+
+  history-current : CmdHistory -> Maybe Text
+  history-current (h) =
+    if h.hist-cursor >= 0 then if h.hist-cursor < h.hist-count then Just (list-at (h.hist-entries) (h.hist-cursor))
+      else None
+    else None
+
+  history-reset-cursor : CmdHistory -> CmdHistory
+  history-reset-cursor (h) = CmdHistory { hist-entries = h.hist-entries, hist-max = h.hist-max, hist-count = h.hist-count, hist-cursor = h.hist-count }
+
+Section: Search
+  history-search : CmdHistory, Text -> Maybe Text
+  history-search (h) (prefix) = hist-search-loop (h.hist-entries) prefix (h.hist-count - 1)
+
+  hist-search-loop : List Text, Text, Integer -> Maybe Text
+  hist-search-loop (entries) (prefix) (i) =
+    if i < 0 then None
+    else let entry = list-at entries i
+    in if text-starts-with entry prefix then Just entry
+    else hist-search-loop entries prefix (i - 1)
+
+Section: Queries
+  history-length : CmdHistory -> Integer
+  history-length (h) = h.hist-count
+
+  history-at : CmdHistory, Integer -> Maybe Text
+  history-at (h) (i) =
+    if i >= 0 then if i < h.hist-count then Just (list-at (h.hist-entries) i) else None
+    else None
+
+  history-to-list : CmdHistory -> List Text
+  history-to-list (h) = h.hist-entries
+
+Page 1
