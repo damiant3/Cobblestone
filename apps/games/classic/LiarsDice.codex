@@ -1,0 +1,308 @@
+Chapter: LiarsDice
+  cites Games chapter Rng
+
+ Liar's Dice: 2-4 players, each starts with 5 dice kept hidden.
+ A bid is a quantity and face value. Each bid must raise the quantity
+ or raise the face value at the same quantity. A player may challenge
+ the previous bid. On challenge all dice are revealed: if the total
+ count of the bid face is at least the bid quantity, the bidder wins
+ (challenger loses a die); otherwise the bidder loses a die.
+ A player eliminated when they have 0 dice. Last player remaining wins.
+ Bid encoded as quantity * 10 + face (face 1-6).
+ AI bids based on own dice count of that face plus a probability estimate.
+ AI challenges when bid quantity exceeds plausible total.
+
+ We say:
+
+Section: Types
+
+  LDState = record {
+    dice-counts  : List Integer,
+    dice-pools   : List Integer,
+    num-players  : Integer,
+    current-bid  : Integer,
+    last-bidder  : Integer,
+    current-turn : Integer,
+    alive        : List Integer,
+    alive-count  : Integer,
+    rng          : Rng
+  }
+
+  LiarsResult = record {
+    winner       : Integer,
+    rounds-played : Integer
+  }
+
+Section: Dice Rolling
+
+  ld-roll-all : LDState -> LDState
+  ld-roll-all (s) =
+    ld-roll-players s 0
+
+  ld-roll-players : LDState, Integer -> LDState
+  ld-roll-players (s) (p) =
+    if p >= s.num-players then s
+    else let dc = list-at (s.dice-counts) p
+    in let s2 = ld-roll-player s p dc 0
+    in ld-roll-players s2 (p + 1)
+
+  ld-roll-player : LDState, Integer, Integer, Integer -> LDState
+  ld-roll-player (s) (p) (count) (i) =
+    if i >= count then s
+    else let r2 = rng-next (s.rng)
+    in let face = rng-range r2 1 6
+    in let slot = p * 5 + i
+    in let new-pools = list-set-at (s.dice-pools) slot face
+    in let s2 = LDState {
+           dice-counts  = s.dice-counts,
+           dice-pools   = new-pools,
+           num-players  = s.num-players,
+           current-bid  = s.current-bid,
+           last-bidder  = s.last-bidder,
+           current-turn = s.current-turn,
+           alive        = s.alive,
+           alive-count  = s.alive-count,
+           rng          = r2
+         }
+    in ld-roll-player s2 p count (i + 1)
+
+Section: Bid and Count Helpers
+
+  ld-bid-qty : Integer -> Integer
+  ld-bid-qty (bid) = bid / 10
+
+  ld-bid-face : Integer -> Integer
+  ld-bid-face (bid) = rng-mod bid 10
+
+  ld-count-face : LDState, Integer -> Integer
+  ld-count-face (s) (face) =
+    ld-count-face-loop s face 0 0
+
+  ld-count-face-loop : LDState, Integer, Integer, Integer -> Integer
+  ld-count-face-loop (s) (face) (p) (acc) =
+    if p >= s.num-players then acc
+    else let dc = list-at (s.dice-counts) p
+    in let cnt = ld-count-player-face s p face dc 0 0
+    in ld-count-face-loop s face (p + 1) (acc + cnt)
+
+  ld-count-player-face : LDState, Integer, Integer, Integer, Integer, Integer -> Integer
+  ld-count-player-face (s) (p) (face) (count) (i) (acc) =
+    if i >= count then acc
+    else let slot = p * 5 + i
+    in let die = list-at (s.dice-pools) slot
+    in let got = if die == face then 1 else 0
+    in ld-count-player-face s p face count (i + 1) (acc + got)
+
+  ld-own-face-count : LDState, Integer, Integer -> Integer
+  ld-own-face-count (s) (p) (face) =
+    let dc = list-at (s.dice-counts) p
+    in ld-count-player-face s p face dc 0 0
+
+  ld-total-dice : LDState -> Integer
+  ld-total-dice (s) = ld-total-loop (s.dice-counts) 0 (s.num-players) 0
+
+  ld-total-loop : List Integer, Integer, Integer, Integer -> Integer
+  ld-total-loop (counts) (i) (n) (acc) =
+    if i >= n then acc
+    else ld-total-loop counts (i + 1) n (acc + list-at counts i)
+
+Section: AI Decision
+
+  ld-ai-bid : LDState, Integer -> Integer
+  ld-ai-bid (s) (p) =
+    let cur-qty = ld-bid-qty (s.current-bid)
+    in let cur-face = ld-bid-face (s.current-bid)
+    in let best-face = ld-best-face s p
+    in let own-cnt = ld-own-face-count s p best-face
+    in let new-qty = if own-cnt > cur-qty then own-cnt else cur-qty + 1
+    in if new-qty > cur-qty then new-qty * 10 + best-face
+    else if best-face > cur-face then cur-qty * 10 + best-face
+    else (cur-qty + 1) * 10 + best-face
+
+  ld-best-face : LDState, Integer -> Integer
+  ld-best-face (s) (p) =
+    let dc = list-at (s.dice-counts) p
+    in ld-best-face-loop s p 1 1 0 dc
+
+  ld-best-face-loop : LDState, Integer, Integer, Integer, Integer, Integer -> Integer
+  ld-best-face-loop (s) (p) (face) (best-face) (best-cnt) (count) =
+    if face > 6 then best-face
+    else let cnt = ld-count-player-face s p face count 0 0
+    in if cnt > best-cnt then ld-best-face-loop s p (face + 1) face cnt count
+    else ld-best-face-loop s p (face + 1) best-face best-cnt count
+
+  ld-should-challenge : LDState, Integer -> Boolean
+  ld-should-challenge (s) (p) =
+    let cur-qty = ld-bid-qty (s.current-bid)
+    in let cur-face = ld-bid-face (s.current-bid)
+    in let total = ld-total-dice s
+    in let own-cnt = ld-own-face-count s p cur-face
+    in let expected = total / 6 + 1
+    in cur-qty > expected + own-cnt + 1
+
+Section: Lose Die
+
+  ld-lose-die : LDState, Integer -> LDState
+  ld-lose-die (s) (p) =
+    let dc = list-at (s.dice-counts) p
+    in let new-dc = dc - 1
+    in let new-counts = list-set-at (s.dice-counts) p new-dc
+    in let new-alive = if new-dc <= 0 then list-set-at (s.alive) p 0 else s.alive
+    in let new-alive-count = if new-dc <= 0 then s.alive-count - 1 else s.alive-count
+    in LDState {
+         dice-counts  = new-counts,
+         dice-pools   = s.dice-pools,
+         num-players  = s.num-players,
+         current-bid  = 0,
+         last-bidder  = s.last-bidder,
+         current-turn = s.current-turn,
+         alive        = new-alive,
+         alive-count  = new-alive-count,
+         rng          = s.rng
+       }
+
+Section: Next Player
+
+  ld-next-alive : LDState, Integer -> Integer
+  ld-next-alive (s) (p) =
+    let nxt = rng-mod (p + 1) (s.num-players)
+    in ld-find-alive s nxt 0
+
+  ld-find-alive : LDState, Integer, Integer -> Integer
+  ld-find-alive (s) (p) (tries) =
+    if tries >= s.num-players then p
+    else if list-at (s.alive) p == 1 then p
+    else ld-find-alive s (rng-mod (p + 1) (s.num-players)) (tries + 1)
+
+Section: Turn
+
+  ld-do-turn : LDState -> LDState
+  ld-do-turn (s) =
+    let p = s.current-turn
+    in if s.current-bid == 0 then
+      let bid = ld-ai-bid s p
+      in let s2 = LDState {
+               dice-counts  = s.dice-counts,
+               dice-pools   = s.dice-pools,
+               num-players  = s.num-players,
+               current-bid  = bid,
+               last-bidder  = p,
+               current-turn = ld-next-alive s p,
+               alive        = s.alive,
+               alive-count  = s.alive-count,
+               rng          = s.rng
+             }
+      in s2
+    else if ld-should-challenge s p then
+      let cur-qty = ld-bid-qty (s.current-bid)
+      in let cur-face = ld-bid-face (s.current-bid)
+      in let actual = ld-count-face s cur-face
+      in if actual >= cur-qty then
+        let s2 = ld-lose-die s p
+        in let s3 = ld-roll-all s2
+        in let next = ld-next-alive s3 p
+        in LDState {
+               dice-counts  = s3.dice-counts,
+               dice-pools   = s3.dice-pools,
+               num-players  = s3.num-players,
+               current-bid  = 0,
+               last-bidder  = s3.last-bidder,
+               current-turn = next,
+               alive        = s3.alive,
+               alive-count  = s3.alive-count,
+               rng          = s3.rng
+             }
+      else
+        let s2 = ld-lose-die s (s.last-bidder)
+        in let s3 = ld-roll-all s2
+        in let next = ld-next-alive s3 (s.last-bidder)
+        in LDState {
+               dice-counts  = s3.dice-counts,
+               dice-pools   = s3.dice-pools,
+               num-players  = s3.num-players,
+               current-bid  = 0,
+               last-bidder  = s3.last-bidder,
+               current-turn = next,
+               alive        = s3.alive,
+               alive-count  = s3.alive-count,
+               rng          = s3.rng
+             }
+    else
+      let bid = ld-ai-bid s p
+      in LDState {
+             dice-counts  = s.dice-counts,
+             dice-pools   = s.dice-pools,
+             num-players  = s.num-players,
+             current-bid  = bid,
+             last-bidder  = p,
+             current-turn = ld-next-alive s p,
+             alive        = s.alive,
+             alive-count  = s.alive-count,
+             rng          = s.rng
+           }
+
+Section: Game Runner
+
+  ld-init : Integer, Integer -> LDState
+  ld-init (seed) (num-players) =
+    let np = if num-players < 2 then 2 else if num-players > 4 then 4 else num-players
+    in let counts = ld-build-counts np 5 []
+    in let pools = ld-build-zeroes (np * 5) []
+    in let alive = ld-build-ones np []
+    in let s0 = LDState {
+           dice-counts  = counts,
+           dice-pools   = pools,
+           num-players  = np,
+           current-bid  = 0,
+           last-bidder  = 0,
+           current-turn = 0,
+           alive        = alive,
+           alive-count  = np,
+           rng          = rng-new seed
+         }
+    in ld-roll-all s0
+
+  ld-build-counts : Integer, Integer, List Integer -> List Integer
+  ld-build-counts (n) (val) (acc) =
+    if n <= 0 then acc
+    else ld-build-counts (n - 1) val (list-push acc val)
+
+  ld-build-zeroes : Integer, List Integer -> List Integer
+  ld-build-zeroes (n) (acc) =
+    if n <= 0 then acc
+    else ld-build-zeroes (n - 1) (list-push acc 0)
+
+  ld-build-ones : Integer, List Integer -> List Integer
+  ld-build-ones (n) (acc) =
+    if n <= 0 then acc
+    else ld-build-ones (n - 1) (list-push acc 1)
+
+  run-liars-dice : Integer, Integer -> LiarsResult
+  run-liars-dice (seed) (num-players) =
+    let s = ld-init seed num-players
+    in ld-loop s 0
+
+  ld-loop : LDState, Integer -> LiarsResult
+  ld-loop (s) (rounds) =
+    if s.alive-count <= 1 then
+      let w = ld-find-winner s 0
+      in LiarsResult { winner = w, rounds-played = rounds }
+    else if rounds >= 2000 then
+      let w = ld-find-winner s 0
+      in LiarsResult { winner = w, rounds-played = rounds }
+    else ld-loop (ld-do-turn s) (rounds + 1)
+
+  ld-find-winner : LDState, Integer -> Integer
+  ld-find-winner (s) (p) =
+    if p >= s.num-players then 0
+    else if list-at (s.alive) p == 1 then p
+    else ld-find-winner s (p + 1)
+
+Section: Formatting
+
+  format-liars-result : LiarsResult -> Text
+  format-liars-result (r) =
+    "LiarsDice: Player " & show (r.winner + 1) & " wins after " &
+    show (r.rounds-played) & " rounds"
+
+Page 1

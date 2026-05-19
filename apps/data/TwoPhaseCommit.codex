@@ -1,0 +1,203 @@
+Chapter: TwoPhaseCommit
+  cites Data chapter Transaction
+  cites Data chapter Wal
+  cites Data chapter Protocol
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ Two-phase commit protocol for distributed transactions across
+ multiple Codex DB nodes. The coordinator drives prepare and
+ commit/abort. Participants vote and apply.
+
+ We say:
+
+Section: Participant State
+
+  ParticipantState =
+    | PsIdle
+    | PsVotedCommit
+    | PsVotedAbort
+    | PsCommitted
+    | PsAborted
+
+  Participant = record {
+    pt-id : Integer,
+    pt-address : Text,
+    pt-state : ParticipantState
+  }
+
+  participant-new : Integer, Text -> Participant
+  participant-new (id) (addr) = Participant { pt-id = id, pt-address = addr, pt-state = PsIdle }
+
+Section: Coordinator
+
+  CoordinatorPhase =
+    | CpIdle
+    | CpPreparing
+    | CpCommitting
+    | CpAborting
+    | CpDone
+
+  TpcCoordinator = record {
+    tpc-txn-id : Integer,
+    tpc-participants : List Participant,
+    tpc-phase : CoordinatorPhase,
+    tpc-votes : List Boolean,
+    tpc-decision : Boolean,
+    tpc-wal : WalLog
+  }
+
+  tpc-new : Integer, List Participant -> TpcCoordinator
+  tpc-new (txn-id) (parts) = TpcCoordinator {
+    tpc-txn-id = txn-id,
+    tpc-participants = parts,
+    tpc-phase = CpIdle,
+    tpc-votes = [],
+    tpc-decision = False,
+    tpc-wal = wal-log-new
+  }
+
+Section: Phase 1 — Prepare
+
+  TpcPrepareResult = record {
+    tpr-coord : TpcCoordinator,
+    tpr-messages : List Frame
+  }
+
+  tpc-prepare : TpcCoordinator -> TpcPrepareResult
+  tpc-prepare (coord) =
+    let lsn = wal-log-lsn (coord.tpc-wal)
+    in let wal-rec = wal-prepare lsn (coord.tpc-txn-id)
+    in let new-wal = wal-log-append (coord.tpc-wal) wal-rec
+    in let msgs = tpc-build-prepare-msgs (coord.tpc-participants) (coord.tpc-txn-id) 0 (list-length (coord.tpc-participants)) []
+    in TpcPrepareResult {
+      tpr-coord = TpcCoordinator {
+        tpc-txn-id = coord.tpc-txn-id,
+        tpc-participants = coord.tpc-participants,
+        tpc-phase = CpPreparing,
+        tpc-votes = [],
+        tpc-decision = False,
+        tpc-wal = new-wal
+      },
+      tpr-messages = msgs
+    }
+
+  tpc-build-prepare-msgs : List Participant, Integer, Integer, Integer, List Frame -> List Frame
+  tpc-build-prepare-msgs (parts) (txn-id) (i) (len) (acc) =
+    if i >= len then acc
+    else let payload = proto-encode-u32 txn-id
+    in tpc-build-prepare-msgs parts txn-id (i + 1) len (list-push acc (frame-new msg-2pc-prepare payload))
+
+Section: Collect Votes
+
+  tpc-receive-vote : TpcCoordinator, Integer, Boolean -> TpcCoordinator
+  tpc-receive-vote (coord) (participant-id) (vote) =
+    let new-votes = list-push (coord.tpc-votes) vote
+    in let new-parts = tpc-update-participant (coord.tpc-participants) participant-id (if vote then PsVotedCommit else PsVotedAbort) 0 (list-length (coord.tpc-participants))
+    in TpcCoordinator {
+      tpc-txn-id = coord.tpc-txn-id,
+      tpc-participants = new-parts,
+      tpc-phase = coord.tpc-phase,
+      tpc-votes = new-votes,
+      tpc-decision = coord.tpc-decision,
+      tpc-wal = coord.tpc-wal
+    }
+
+  tpc-update-participant : List Participant, Integer, ParticipantState, Integer, Integer -> List Participant
+  tpc-update-participant (parts) (pid) (state) (i) (len) =
+    if i >= len then parts
+    else let p = list-at parts i
+    in if p.pt-id == pid then list-set-at parts i (Participant { pt-id = p.pt-id, pt-address = p.pt-address, pt-state = state })
+    else tpc-update-participant parts pid state (i + 1) len
+
+  tpc-all-voted : TpcCoordinator -> Boolean
+  tpc-all-voted (coord) = list-length (coord.tpc-votes) >= list-length (coord.tpc-participants)
+
+  tpc-all-commit : TpcCoordinator -> Boolean
+  tpc-all-commit (coord) = tpc-check-all-true (coord.tpc-votes) 0 (list-length (coord.tpc-votes))
+
+  tpc-check-all-true : List Boolean, Integer, Integer -> Boolean
+  tpc-check-all-true (votes) (i) (len) =
+    if i >= len then True
+    else if list-at votes i == False then False
+    else tpc-check-all-true votes (i + 1) len
+
+Section: Phase 2 — Decision
+
+  TpcDecisionResult = record {
+    tdr-coord : TpcCoordinator,
+    tdr-messages : List Frame,
+    tdr-committed : Boolean
+  }
+
+  tpc-decide : TpcCoordinator -> TpcDecisionResult
+  tpc-decide (coord) =
+    let commit = tpc-all-commit coord
+    in let lsn = wal-log-lsn (coord.tpc-wal)
+    in let wal-rec = if commit then wal-commit lsn (coord.tpc-txn-id) else wal-abort lsn (coord.tpc-txn-id)
+    in let new-wal = wal-log-append (coord.tpc-wal) wal-rec
+    in let msg-type = if commit then msg-2pc-commit else msg-2pc-abort
+    in let msgs = tpc-build-decision-msgs (coord.tpc-participants) (coord.tpc-txn-id) msg-type 0 (list-length (coord.tpc-participants)) []
+    in let new-phase = if commit then CpCommitting else CpAborting
+    in let final-state = if commit then PsCommitted else PsAborted
+    in let new-parts = tpc-set-all-state (coord.tpc-participants) final-state 0 (list-length (coord.tpc-participants))
+    in TpcDecisionResult {
+      tdr-coord = TpcCoordinator {
+        tpc-txn-id = coord.tpc-txn-id,
+        tpc-participants = new-parts,
+        tpc-phase = CpDone,
+        tpc-votes = coord.tpc-votes,
+        tpc-decision = commit,
+        tpc-wal = new-wal
+      },
+      tdr-messages = msgs,
+      tdr-committed = commit
+    }
+
+  tpc-build-decision-msgs : List Participant, Integer, Integer, Integer, Integer, List Frame -> List Frame
+  tpc-build-decision-msgs (parts) (txn-id) (msg-type) (i) (len) (acc) =
+    if i >= len then acc
+    else let payload = proto-encode-u32 txn-id
+    in tpc-build-decision-msgs parts txn-id msg-type (i + 1) len (list-push acc (frame-new msg-type payload))
+
+  tpc-set-all-state : List Participant, ParticipantState, Integer, Integer -> List Participant
+  tpc-set-all-state (parts) (state) (i) (len) =
+    if i >= len then parts
+    else let p = list-at parts i
+    in tpc-set-all-state (list-set-at parts i (Participant { pt-id = p.pt-id, pt-address = p.pt-address, pt-state = state })) state (i + 1) len
+
+Section: Participant Handler
+
+  TpcVoteResult = record {
+    tvr-vote : Boolean,
+    tvr-frame : Frame
+  }
+
+  tpc-participant-prepare : Integer, Boolean -> TpcVoteResult
+  tpc-participant-prepare (txn-id) (can-commit) =
+    let vote-byte = if can-commit then 1 else 0
+    in let payload = proto-encode-u32 txn-id & [vote-byte]
+    in TpcVoteResult {
+      tvr-vote = can-commit,
+      tvr-frame = frame-new msg-2pc-vote payload
+    }
+
+Section: Recovery
+
+  tpc-recover : WalLog, Integer -> CoordinatorPhase
+  tpc-recover (wal) (txn-id) =
+    let committed = wal-committed-txns wal
+    in if wal-is-committed committed txn-id then CpDone
+    else CpAborting
+
+Section: Statistics
+
+  tpc-stats : TpcCoordinator -> Text
+  tpc-stats (coord) =
+    "txn=" & show (coord.tpc-txn-id)
+    & " participants=" & show (list-length (coord.tpc-participants))
+    & " votes=" & show (list-length (coord.tpc-votes))
+    & " decided=" & show (coord.tpc-decision)
+
+Page 1

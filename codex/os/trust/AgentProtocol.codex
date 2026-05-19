@@ -1,0 +1,226 @@
+Chapter: AgentProtocol
+  cites Foreword chapter Maybe
+
+ The AgentProtocol defines agent identity (Ed25519 public key),
+ capability grants with direction and scope, and the message
+ types exchanged over the trust network. Seven cover the
+ capability and control vocabulary; two more — Annotate and
+ Verdict — carry knowledge about code as opaque payload bytes,
+ letting Works own the encoding while keeping kind dispatch at
+ the protocol layer.
+
+ We say:
+
+Section: Identity and Addressing
+
+  AgentIdentity = record {
+    public-key : List Integer
+  }
+
+  Capability = record {
+    name : Text,
+    direction : Integer between 0 and 255,
+    scope : Text
+  }
+
+  Scope = record {
+    direction : Integer between 0 and 255,
+    path : Text,
+    duration : Integer between 0 and 4294967295
+  }
+
+Section: Denial and Interrupt Reasons
+
+  DenialReason =
+    | InsufficientTrust
+    | PolicyViolation
+    | Expired
+    | CustomDenial (Text)
+
+  InterruptReason =
+    | Emergency
+    | PolicyRevoked
+    | ContextChanged
+    | Timeout
+
+  InterruptAction =
+    | Pause
+    | Abort
+    | FallbackTo (List Integer)
+
+  ExplainDepth =
+    | Summary
+    | Full
+    | Exhaustive
+
+Section: Reasoning Chain
+
+  ChainLink =
+    | Percept (Text) (Integer)
+    | Belief (List (List Integer)) (Integer)
+    | PolicyLink (List Integer) (Boolean) (Text)
+    | Action (Text) (Text)
+    | Anomaly (Text) (Text) (Text)
+
+Section: Agent Message Types
+
+ The first seven variants are the capability/control vocabulary —
+ propose/grant/deny authorization, explain/narrate reasoning,
+ interrupt/handoff control. They are about what an agent will or
+ won't do.
+
+ The last two — Annotate and Verdict — carry knowledge about code:
+ a SignedAnnotation published by an author, and a Verdict signed
+ by a reviewer responding to one. They live at the protocol layer
+ alongside the capability messages so the trust filter can dispatch
+ on kind, but their payloads cross the layer boundary as opaque
+ bytes — the Works layer (RepoProtocol) owns the encoding of
+ ProposalPayload and Verdict.
+
+  AgentMessage =
+    | MsgPropose (ProposeMsg)
+    | MsgGrant (GrantMsg)
+    | MsgDeny (DenyMsg)
+    | MsgExplain (ExplainMsg)
+    | MsgNarrate (NarrateMsg)
+    | MsgInterrupt (InterruptMsg)
+    | MsgHandoff (HandoffMsg)
+    | MsgAnnotate (AnnotateMsg)
+    | MsgVerdict (VerdictMsg)
+
+  ProposeMsg = record {
+    id : List Integer,
+    from : AgentIdentity,
+    to : AgentIdentity,
+    capability : Capability,
+    context : List (List Integer),
+    expires : Integer,
+    signature : List Integer
+  }
+
+  GrantMsg = record {
+    id : List Integer,
+    proposal : List Integer,
+    from : AgentIdentity,
+    capability : Capability,
+    scope : Scope,
+    expires : Integer,
+    conditions : List (List Integer),
+    signature : List Integer
+  }
+
+  DenyMsg = record {
+    id : List Integer,
+    proposal : List Integer,
+    from : AgentIdentity,
+    reason : DenialReason,
+    evidence : List (List Integer),
+    signature : List Integer
+  }
+
+  ExplainMsg = record {
+    id : List Integer,
+    from : AgentIdentity,
+    to : AgentIdentity,
+    subject : List Integer,
+    depth : ExplainDepth,
+    signature : List Integer
+  }
+
+  NarrateMsg = record {
+    id : List Integer,
+    in-reply-to : List Integer,
+    from : AgentIdentity,
+    chain : List ChainLink,
+    summary : Text,
+    signature : List Integer
+  }
+
+  InterruptMsg = record {
+    id : List Integer,
+    from : AgentIdentity,
+    to : AgentIdentity,
+    reason : InterruptReason,
+    action : InterruptAction,
+    authority : List (List Integer),
+    signature : List Integer
+  }
+
+  HandoffMsg = record {
+    id : List Integer,
+    from : AgentIdentity,
+    to : AgentIdentity,
+    capability : Capability,
+    scope : Scope,
+    expires : Integer,
+    revoke-from : Boolean,
+    audit-required : Boolean,
+    signature : List Integer
+  }
+
+  AnnotateMsg = record {
+    id : List Integer,
+    from : AgentIdentity,
+    payload : List Integer,
+    signature : List Integer
+  }
+
+  VerdictMsg = record {
+    id : List Integer,
+    from : AgentIdentity,
+    in-reply-to : List Integer,
+    payload : List Integer,
+    signature : List Integer
+  }
+
+Section: Message Accessors
+
+  msg-id : AgentMessage -> List Integer
+  msg-id (m) = when m
+    is MsgPropose (p) -> p.id
+    is MsgGrant (g) -> g.id
+    is MsgDeny (d) -> d.id
+    is MsgExplain (e) -> e.id
+    is MsgNarrate (n) -> n.id
+    is MsgInterrupt (i) -> i.id
+    is MsgHandoff (h) -> h.id
+    is MsgAnnotate (a) -> a.id
+    is MsgVerdict (v) -> v.id
+
+  msg-from : AgentMessage -> AgentIdentity
+  msg-from (m) = when m
+    is MsgPropose (p) -> p.from
+    is MsgGrant (g) -> g.from
+    is MsgDeny (d) -> d.from
+    is MsgExplain (e) -> e.from
+    is MsgNarrate (n) -> n.from
+    is MsgInterrupt (i) -> i.from
+    is MsgHandoff (h) -> h.from
+    is MsgAnnotate (a) -> a.from
+    is MsgVerdict (v) -> v.from
+
+  msg-signature : AgentMessage -> List Integer
+  msg-signature (m) = when m
+    is MsgPropose (p) -> p.signature
+    is MsgGrant (g) -> g.signature
+    is MsgDeny (d) -> d.signature
+    is MsgExplain (e) -> e.signature
+    is MsgNarrate (n) -> n.signature
+    is MsgInterrupt (i) -> i.signature
+    is MsgHandoff (h) -> h.signature
+    is MsgAnnotate (a) -> a.signature
+    is MsgVerdict (v) -> v.signature
+
+  msg-type-name : AgentMessage -> Text
+  msg-type-name (m) = when m
+    is MsgPropose (p) -> "Propose"
+    is MsgGrant (g) -> "Grant"
+    is MsgDeny (d) -> "Deny"
+    is MsgExplain (e) -> "Explain"
+    is MsgNarrate (n) -> "Narrate"
+    is MsgInterrupt (i) -> "Interrupt"
+    is MsgHandoff (h) -> "Handoff"
+    is MsgAnnotate (a) -> "Annotate"
+    is MsgVerdict (v) -> "Verdict"
+
+Page 1

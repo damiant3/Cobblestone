@@ -1,0 +1,137 @@
+Chapter: BoxModel
+  cites UI chapter Theme
+
+ CSS-style box model. Every widget occupies a LayoutRect.
+ Margin is outside, border is next, padding is inside, content
+ is innermost. All arithmetic is integer pixels.
+
+Section: Layout Rect
+  LayoutRect = record {
+    lr-x : Integer,
+    lr-y : Integer,
+    lr-w : Integer,
+    lr-h : Integer
+  }
+
+Section: Construction
+  layout-rect : Integer, Integer, Integer, Integer -> LayoutRect
+  layout-rect (x) (y) (w) (h) = LayoutRect { lr-x = x, lr-y = y, lr-w = w, lr-h = h }
+
+  layout-rect-zero : LayoutRect
+  layout-rect-zero = LayoutRect { lr-x = 0, lr-y = 0, lr-w = 0, lr-h = 0 }
+
+Section: Box Decomposition
+  box-margin-rect : LayoutRect, Edges -> LayoutRect
+  box-margin-rect (outer) (margin) =
+    LayoutRect {
+      lr-x = outer.lr-x + margin.edge-left,
+      lr-y = outer.lr-y + margin.edge-top,
+      lr-w = box-clamp0 (outer.lr-w - edges-h margin),
+      lr-h = box-clamp0 (outer.lr-h - edges-v margin)
+    }
+
+  box-border-rect : LayoutRect, Edges, Border -> LayoutRect
+  box-border-rect (outer) (margin) (bdr) =
+    let mr = box-margin-rect outer margin
+    in LayoutRect {
+      lr-x = mr.lr-x,
+      lr-y = mr.lr-y,
+      lr-w = mr.lr-w,
+      lr-h = mr.lr-h
+    }
+
+  box-padding-rect : LayoutRect, Edges, Border -> LayoutRect
+  box-padding-rect (outer) (margin) (bdr) =
+    let br = box-border-rect outer margin bdr
+    in LayoutRect {
+      lr-x = br.lr-x + (bdr.bdr-left).brd-width,
+      lr-y = br.lr-y + (bdr.bdr-top).brd-width,
+      lr-w = box-clamp0 (br.lr-w - border-h bdr),
+      lr-h = box-clamp0 (br.lr-h - border-v bdr)
+    }
+
+  box-content-rect : LayoutRect, Edges, Border, Edges -> LayoutRect
+  box-content-rect (outer) (margin) (bdr) (padding) =
+    let pr = box-padding-rect outer margin bdr
+    in LayoutRect {
+      lr-x = pr.lr-x + padding.edge-left,
+      lr-y = pr.lr-y + padding.edge-top,
+      lr-w = box-clamp0 (pr.lr-w - edges-h padding),
+      lr-h = box-clamp0 (pr.lr-h - edges-v padding)
+    }
+
+  box-content-from-style : LayoutRect, WidgetStyle -> LayoutRect
+  box-content-from-style (outer) (ws) =
+    box-content-rect outer (ws.ws-margin) (ws.ws-border) (ws.ws-padding)
+
+Section: Size Queries
+  border-h : Border -> Integer
+  border-h (b) = (b.bdr-left).brd-width + (b.bdr-right).brd-width
+
+  border-v : Border -> Integer
+  border-v (b) = (b.bdr-top).brd-width + (b.bdr-bottom).brd-width
+
+  style-overhead-w : WidgetStyle -> Integer
+  style-overhead-w (ws) = edges-h (ws.ws-margin) + border-h (ws.ws-border) + edges-h (ws.ws-padding)
+
+  style-overhead-h : WidgetStyle -> Integer
+  style-overhead-h (ws) = edges-v (ws.ws-margin) + border-v (ws.ws-border) + edges-v (ws.ws-padding)
+
+Section: Rect Operations
+  rect-contains : LayoutRect, Integer, Integer -> Boolean
+  rect-contains (r) (px) (py) =
+    if px < r.lr-x then False
+    else if py < r.lr-y then False
+    else if px >= r.lr-x + r.lr-w then False
+    else if py >= r.lr-y + r.lr-h then False
+    else True
+
+  rect-intersects : LayoutRect, LayoutRect -> Boolean
+  rect-intersects (a) (b) =
+    if a.lr-x >= b.lr-x + b.lr-w then False
+    else if b.lr-x >= a.lr-x + a.lr-w then False
+    else if a.lr-y >= b.lr-y + b.lr-h then False
+    else if b.lr-y >= a.lr-y + a.lr-h then False
+    else True
+
+  rect-intersection : LayoutRect, LayoutRect -> LayoutRect
+  rect-intersection (a) (b) =
+    let x0 = box-max (a.lr-x) (b.lr-x)
+    in let y0 = box-max (a.lr-y) (b.lr-y)
+    in let x1 = box-min (a.lr-x + a.lr-w) (b.lr-x + b.lr-w)
+    in let y1 = box-min (a.lr-y + a.lr-h) (b.lr-y + b.lr-h)
+    in LayoutRect { lr-x = x0, lr-y = y0, lr-w = box-clamp0 (x1 - x0), lr-h = box-clamp0 (y1 - y0) }
+
+  rect-union : LayoutRect, LayoutRect -> LayoutRect
+  rect-union (a) (b) =
+    let x0 = box-min (a.lr-x) (b.lr-x)
+    in let y0 = box-min (a.lr-y) (b.lr-y)
+    in let x1 = box-max (a.lr-x + a.lr-w) (b.lr-x + b.lr-w)
+    in let y1 = box-max (a.lr-y + a.lr-h) (b.lr-y + b.lr-h)
+    in LayoutRect { lr-x = x0, lr-y = y0, lr-w = x1 - x0, lr-h = y1 - y0 }
+
+  rect-inset : LayoutRect, Integer -> LayoutRect
+  rect-inset (r) (n) =
+    LayoutRect { lr-x = r.lr-x + n, lr-y = r.lr-y + n, lr-w = box-clamp0 (r.lr-w - 2 * n), lr-h = box-clamp0 (r.lr-h - 2 * n) }
+
+  rect-area : LayoutRect -> Integer
+  rect-area (r) = r.lr-w * r.lr-h
+
+Section: Formatting
+  format-rect : LayoutRect -> Text
+  format-rect (r) = "(" & show (r.lr-x) & "," & show (r.lr-y) & " " & show (r.lr-w) & "x" & show (r.lr-h) & ")"
+
+  format-edges : Edges -> Text
+  format-edges (e) = "(" & show (e.edge-top) & "," & show (e.edge-right) & "," & show (e.edge-bottom) & "," & show (e.edge-left) & ")"
+
+Section: Helpers
+  box-min : Integer, Integer -> Integer
+  box-min (a) (b) = if a < b then a else b
+
+  box-max : Integer, Integer -> Integer
+  box-max (a) (b) = if a > b then a else b
+
+  box-clamp0 : Integer -> Integer
+  box-clamp0 (v) = if v < 0 then 0 else v
+
+Page 1

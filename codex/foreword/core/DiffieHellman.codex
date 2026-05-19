@@ -1,0 +1,160 @@
+Chapter: DiffieHellman
+
+ Elliptic-curve Diffie-Hellman key exchange over Curve25519 (X25519,
+ RFC 7748). Produces a 32-byte shared secret from a private key and a
+ peer's public key. Scalar multiplication uses the Montgomery ladder
+ for constant-time execution. All arithmetic is performed modulo the
+ prime 2^255 - 19.
+
+ A DhLadderState is a record containing:
+   dh-x2, dh-z2, dh-x3, dh-z3 -- projective coordinates for the two ladder points.
+
+ To x25519-public-key gives List Integer,
+   deriving a 32-byte public key from a 32-byte private key.
+
+ To x25519-shared-secret gives List Integer,
+   computing the 32-byte shared secret from a private key and a peer's public key.
+
+ To dh-format-key gives Text,
+   formatting a 32-byte key as a lowercase hex string.
+
+ We say:
+
+Section: Constants
+  x25519-prime : Integer = 57896044618658097711785492504343953926634992332820282019728792003956564819949
+  x25519-a24 : Integer = 121666
+
+Section: Key Generation
+  x25519-public-key : List Integer -> List Integer
+  x25519-public-key (private-key) =
+    let clamped = x25519-clamp private-key
+    in let scalar = dh-bytes-to-int clamped
+    in let result = x25519-scalar-mult scalar 9
+    in dh-int-to-bytes result
+
+  x25519-shared-secret : List Integer, List Integer -> List Integer
+  x25519-shared-secret (my-private) (their-public) =
+    let clamped = x25519-clamp my-private
+    in let scalar = dh-bytes-to-int clamped
+    in let point = dh-bytes-to-int their-public
+    in let result = x25519-scalar-mult scalar point
+    in dh-int-to-bytes result
+
+Section: Key Clamping
+  x25519-clamp : List Integer -> List Integer
+  x25519-clamp (key) =
+    let k0 = bit-and (list-at key 0) 248
+    in let k31 = bit-or (bit-and (list-at key 31) 127) 64
+    in list-set-at (list-set-at key 0 k0) 31 k31
+
+Section: Montgomery Ladder
+  x25519-scalar-mult : Integer, Integer -> Integer
+  x25519-scalar-mult (scalar) (u) =
+    let result = dh-ladder scalar u 254 1 0 u 1
+    in dh-mod-result (result.dh-x2) (result.dh-z2)
+
+  DhLadderState = record {
+    dh-x2 : Integer,
+    dh-z2 : Integer,
+    dh-x3 : Integer,
+    dh-z3 : Integer
+  }
+
+  dh-ladder : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> DhLadderState
+  dh-ladder (scalar) (u) (bit) (x2) (z2) (x3) (z3) =
+    if bit < 0 then DhLadderState { dh-x2 = x2, dh-z2 = z2, dh-x3 = x3, dh-z3 = z3 }
+    else let swap = bit-and (bit-shru scalar bit) 1
+    in let cx2 = if swap == 1 then x3 else x2
+    in let cz2 = if swap == 1 then z3 else z2
+    in let cx3 = if swap == 1 then x2 else x3
+    in let cz3 = if swap == 1 then z2 else z3
+    in let a = dh-mod-add cx2 cz2
+    in let b = dh-mod-sub cx2 cz2
+    in let c = dh-mod-add cx3 cz3
+    in let d = dh-mod-sub cx3 cz3
+    in let da = dh-mod-mul d a
+    in let cb = dh-mod-mul c b
+    in let nx3 = dh-mod-mul (dh-mod-add da cb) (dh-mod-add da cb)
+    in let nz3 = dh-mod-mul u (dh-mod-mul (dh-mod-sub da cb) (dh-mod-sub da cb))
+    in let aa = dh-mod-mul a a
+    in let bb = dh-mod-mul b b
+    in let nx2 = dh-mod-mul aa bb
+    in let e = dh-mod-sub aa bb
+    in let nz2 = dh-mod-mul e (dh-mod-add aa (dh-mod-mul x25519-a24 e))
+    in let rx2 = if swap == 1 then nx3 else nx2
+    in let rz2 = if swap == 1 then nz3 else nz2
+    in let rx3 = if swap == 1 then nx2 else nx3
+    in let rz3 = if swap == 1 then nz2 else nz3
+    in dh-ladder scalar u (bit - 1) rx2 rz2 rx3 rz3
+
+  dh-mod-result : Integer, Integer -> Integer
+  dh-mod-result (x) (z) = dh-mod-mul x (dh-mod-pow z (x25519-prime - 2))
+
+Section: Modular Arithmetic
+  dh-mod-add : Integer, Integer -> Integer
+  dh-mod-add (a) (b) = dh-mod (a + b)
+
+  dh-mod-sub : Integer, Integer -> Integer
+  dh-mod-sub (a) (b) = dh-mod (a - b + x25519-prime)
+
+  dh-mod-mul : Integer, Integer -> Integer
+  dh-mod-mul (a) (b) = dh-mod (a * b)
+
+  dh-mod : Integer -> Integer
+  dh-mod (x) = x - x / x25519-prime * x25519-prime
+
+  dh-mod-pow : Integer, Integer -> Integer
+  dh-mod-pow (base) (exp) = dh-pow-loop base exp 1
+
+  dh-pow-loop : Integer, Integer, Integer -> Integer
+  dh-pow-loop (base) (exp) (acc) =
+    if exp <= 0 then acc
+    else if bit-and exp 1 == 1 then dh-pow-loop (dh-mod-mul base base) (bit-shru exp 1) (dh-mod-mul acc base)
+    else dh-pow-loop (dh-mod-mul base base) (bit-shru exp 1) acc
+
+Section: Byte/Integer Conversion (little-endian 256-bit)
+  dh-bytes-to-int : List Integer -> Integer
+  dh-bytes-to-int (bytes) = dh-b2i-loop bytes 0 32 0
+
+  dh-b2i-loop : List Integer, Integer, Integer, Integer -> Integer
+  dh-b2i-loop (bytes) (i) (n) (acc) =
+    if i >= n then acc
+    else if i >= list-length bytes then acc
+    else dh-b2i-loop bytes (i + 1) n (acc + list-at bytes i * dh-pow256 i)
+
+  dh-pow256 : Integer -> Integer
+  dh-pow256 (n) = dh-pow256-loop n 1
+
+  dh-pow256-loop : Integer, Integer -> Integer
+  dh-pow256-loop (n) (acc) =
+    if n <= 0 then acc
+    else dh-pow256-loop (n - 1) (acc * 256)
+
+  dh-int-to-bytes : Integer -> List Integer
+  dh-int-to-bytes (val) = dh-i2b-loop val 0 32 []
+
+  dh-i2b-loop : Integer, Integer, Integer, List Integer -> List Integer
+  dh-i2b-loop (val) (i) (n) (acc) =
+    if i >= n then acc
+    else dh-i2b-loop (val / 256) (i + 1) n (list-push acc (bit-and val 255))
+
+Section: Formatting
+  dh-format-key : List Integer -> Text
+  dh-format-key (key) = dh-fmt-loop key 0 (list-length key) ""
+
+  dh-fmt-loop : List Integer, Integer, Integer, Text -> Text
+  dh-fmt-loop (key) (i) (n) (acc) =
+    if i >= n then acc
+    else dh-fmt-loop key (i + 1) n (acc & dh-hex-byte (list-at key i))
+
+  dh-hex-byte : Integer -> Text
+  dh-hex-byte (b) = dh-hex-nib (bit-shru b 4) & dh-hex-nib (bit-and b 15)
+
+  dh-hex-nib : Integer -> Text
+  dh-hex-nib (n) =
+    if n == 0 then "0" else if n == 1 then "1" else if n == 2 then "2" else if n == 3 then "3"
+    else if n == 4 then "4" else if n == 5 then "5" else if n == 6 then "6" else if n == 7 then "7"
+    else if n == 8 then "8" else if n == 9 then "9" else if n == 10 then "a" else if n == 11 then "b"
+    else if n == 12 then "c" else if n == 13 then "d" else if n == 14 then "e" else "f"
+
+Page 1

@@ -1,0 +1,188 @@
+Chapter: VmIde
+
+ Virtual ATA PIO disk controller for VMX guests. Handles I/O port
+ exits for the primary IDE channel (0x1F0-0x1F7, 0x3F6). Backs
+ reads against a sector table in host memory. No DMA, no ATAPI.
+
+ To vm-ide-new gives an empty IDE controller with no disk.
+ To vm-ide-attach gives an IDE controller with a disk image.
+ To vm-ide-handle-out processes a guest OUT to an IDE register.
+ To vm-ide-handle-in provides data for a guest IN from an IDE register.
+
+ We say:
+
+Section: Constants
+
+  vm-ide-base : Integer = 496
+  vm-ide-ctrl : Integer = 1014
+  vm-ide-data : Integer = 0
+  vm-ide-error : Integer = 1
+  vm-ide-sect-count : Integer = 2
+  vm-ide-lba-lo : Integer = 3
+  vm-ide-lba-mid : Integer = 4
+  vm-ide-lba-hi : Integer = 5
+  vm-ide-drive-head : Integer = 6
+  vm-ide-command : Integer = 7
+  vm-ide-status : Integer = 7
+
+  vm-ide-status-bsy : Integer = 128
+  vm-ide-status-drdy : Integer = 64
+  vm-ide-status-drq : Integer = 8
+  vm-ide-status-err : Integer = 1
+
+  vm-ide-cmd-read : Integer = 32
+  vm-ide-cmd-write : Integer = 48
+  vm-ide-cmd-identify : Integer = 236
+
+Section: State
+
+  VmIdeState = record {
+    ide-disk-addr : Integer,
+    ide-disk-sectors : Integer,
+    ide-sect-count : Integer,
+    ide-lba-lo : Integer,
+    ide-lba-mid : Integer,
+    ide-lba-hi : Integer,
+    ide-drive-head : Integer,
+    ide-status : Integer,
+    ide-error : Integer,
+    ide-data-buf : Integer,
+    ide-data-pos : Integer,
+    ide-data-len : Integer,
+    ide-sectors-left : Integer
+  }
+
+  vm-ide-new : VmIdeState
+  vm-ide-new = VmIdeState {
+    ide-disk-addr = 0,
+    ide-disk-sectors = 0,
+    ide-sect-count = 0,
+    ide-lba-lo = 0,
+    ide-lba-mid = 0,
+    ide-lba-hi = 0,
+    ide-drive-head = 0,
+    ide-status = 80,
+    ide-error = 0,
+    ide-data-buf = 0,
+    ide-data-pos = 0,
+    ide-data-len = 0,
+    ide-sectors-left = 0
+  }
+
+  vm-ide-attach : Integer, Integer -> VmIdeState
+  vm-ide-attach (disk-addr) (total-sectors) = VmIdeState {
+    ide-disk-addr = disk-addr,
+    ide-disk-sectors = total-sectors,
+    ide-sect-count = 0,
+    ide-lba-lo = 0,
+    ide-lba-mid = 0,
+    ide-lba-hi = 0,
+    ide-drive-head = 0,
+    ide-status = 80,
+    ide-error = 0,
+    ide-data-buf = 0,
+    ide-data-pos = 0,
+    ide-data-len = 0,
+    ide-sectors-left = 0
+  }
+
+Section: Port Ownership
+
+  vm-ide-owns-port : VmIdeState, Integer -> Boolean
+  vm-ide-owns-port (ide) (port) =
+    (port >= vm-ide-base & port < vm-ide-base + 8) | port == vm-ide-ctrl
+
+Section: Command Execution
+
+  vm-ide-get-lba : VmIdeState -> Integer
+  vm-ide-get-lba (ide) =
+    bit-or (ide.ide-lba-lo) (bit-or (bit-shl (ide.ide-lba-mid) 8) (bit-or (bit-shl (ide.ide-lba-hi) 16) (bit-shl (bit-and (ide.ide-drive-head) 15) 24)))
+
+  vm-ide-start-read : VmIdeState -> VmIdeState
+  vm-ide-start-read (ide) =
+    let lba = vm-ide-get-lba ide
+    in let count = if ide.ide-sect-count == 0 then 256 else ide.ide-sect-count
+    in if lba >= ide.ide-disk-sectors then VmIdeState {
+      ide-disk-addr = ide.ide-disk-addr, ide-disk-sectors = ide.ide-disk-sectors,
+      ide-sect-count = ide.ide-sect-count, ide-lba-lo = ide.ide-lba-lo,
+      ide-lba-mid = ide.ide-lba-mid, ide-lba-hi = ide.ide-lba-hi,
+      ide-drive-head = ide.ide-drive-head,
+      ide-status = bit-or vm-ide-status-drdy vm-ide-status-err,
+      ide-error = 16,
+      ide-data-buf = 0, ide-data-pos = 0, ide-data-len = 0, ide-sectors-left = 0
+    }
+    else let sector-addr = ide.ide-disk-addr + lba * 512
+    in VmIdeState {
+      ide-disk-addr = ide.ide-disk-addr, ide-disk-sectors = ide.ide-disk-sectors,
+      ide-sect-count = ide.ide-sect-count, ide-lba-lo = ide.ide-lba-lo,
+      ide-lba-mid = ide.ide-lba-mid, ide-lba-hi = ide.ide-lba-hi,
+      ide-drive-head = ide.ide-drive-head,
+      ide-status = bit-or vm-ide-status-drdy vm-ide-status-drq,
+      ide-error = 0,
+      ide-data-buf = sector-addr, ide-data-pos = 0, ide-data-len = 512,
+      ide-sectors-left = count - 1
+    }
+
+  vm-ide-advance-sector : VmIdeState -> VmIdeState
+  vm-ide-advance-sector (ide) =
+    if ide.ide-sectors-left <= 0 then VmIdeState {
+      ide-disk-addr = ide.ide-disk-addr, ide-disk-sectors = ide.ide-disk-sectors,
+      ide-sect-count = ide.ide-sect-count, ide-lba-lo = ide.ide-lba-lo,
+      ide-lba-mid = ide.ide-lba-mid, ide-lba-hi = ide.ide-lba-hi,
+      ide-drive-head = ide.ide-drive-head,
+      ide-status = vm-ide-status-drdy,
+      ide-error = 0,
+      ide-data-buf = 0, ide-data-pos = 0, ide-data-len = 0, ide-sectors-left = 0
+    }
+    else let next-buf = ide.ide-data-buf + 512
+    in VmIdeState {
+      ide-disk-addr = ide.ide-disk-addr, ide-disk-sectors = ide.ide-disk-sectors,
+      ide-sect-count = ide.ide-sect-count, ide-lba-lo = ide.ide-lba-lo,
+      ide-lba-mid = ide.ide-lba-mid, ide-lba-hi = ide.ide-lba-hi,
+      ide-drive-head = ide.ide-drive-head,
+      ide-status = bit-or vm-ide-status-drdy vm-ide-status-drq,
+      ide-error = 0,
+      ide-data-buf = next-buf, ide-data-pos = 0, ide-data-len = 512,
+      ide-sectors-left = ide.ide-sectors-left - 1
+    }
+
+Section: Output Handling
+
+  vm-ide-handle-out : VmIdeState, Integer, Integer -> VmIdeState
+  vm-ide-handle-out (ide) (port) (value) =
+    let reg = port - vm-ide-base
+    in if reg == vm-ide-sect-count then __record-set ide "ide-sect-count" (bit-and value 255)
+    else if reg == vm-ide-lba-lo then __record-set ide "ide-lba-lo" (bit-and value 255)
+    else if reg == vm-ide-lba-mid then __record-set ide "ide-lba-mid" (bit-and value 255)
+    else if reg == vm-ide-lba-hi then __record-set ide "ide-lba-hi" (bit-and value 255)
+    else if reg == vm-ide-drive-head then __record-set ide "ide-drive-head" (bit-and value 255)
+    else if reg == vm-ide-command then
+      if value == vm-ide-cmd-read then vm-ide-start-read ide
+      else __record-set ide "ide-status" vm-ide-status-drdy
+    else ide
+
+Section: Input Handling
+
+  VmIdeInResult = record {
+    iir-value : Integer,
+    iir-state : VmIdeState
+  }
+
+  vm-ide-handle-in : VmIdeState, Integer -> VmIdeInResult
+  vm-ide-handle-in (ide) (port) =
+    if port == vm-ide-ctrl then VmIdeInResult { iir-value = ide.ide-status, iir-state = ide }
+    else let reg = port - vm-ide-base
+    in if reg == vm-ide-status then VmIdeInResult { iir-value = ide.ide-status, iir-state = ide }
+    else if reg == vm-ide-error then VmIdeInResult { iir-value = ide.ide-error, iir-state = ide }
+    else if reg == vm-ide-data then
+      if ide.ide-data-pos >= ide.ide-data-len then VmIdeInResult { iir-value = 0, iir-state = ide }
+      else let lo = peek-byte (ide.ide-data-buf) (ide.ide-data-pos)
+      in let hi = peek-byte (ide.ide-data-buf) (ide.ide-data-pos + 1)
+      in let word = bit-or lo (bit-shl hi 8)
+      in let new-pos = ide.ide-data-pos + 2
+      in if new-pos >= ide.ide-data-len
+        then VmIdeInResult { iir-value = word, iir-state = vm-ide-advance-sector (__record-set ide "ide-data-pos" new-pos) }
+        else VmIdeInResult { iir-value = word, iir-state = __record-set ide "ide-data-pos" new-pos }
+    else VmIdeInResult { iir-value = 255, iir-state = ide }
+
+Page 1

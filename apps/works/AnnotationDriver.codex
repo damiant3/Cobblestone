@@ -1,0 +1,369 @@
+Chapter: AnnotationDriver
+  cites Works chapter Annotation
+  cites Works chapter AnnotationStore
+  cites Works chapter SignedAnnotation
+  cites Works chapter CodeBrowser
+  cites Works chapter ConsoleEditor
+  cites Works chapter RepoProtocol
+  cites Works chapter KeyManager
+  cites Works chapter AnnotationTransport
+  cites Trust chapter TrustLattice
+  cites Trust chapter AgentProtocol
+  cites Trust chapter TrustTransport
+  cites Foreword chapter Maybe
+
+ Coordinates the H1-H12 annotation surface for the editor. One
+ record holds every piece of state the editor needs to read,
+ author, accept, and propagate annotations. The single-call
+ commands here are the dispatch points the eventual UefiConsole
+ menu wiring fires from key bindings and the TrustService
+ adapter feeds incoming traffic into.
+
+ The Driver is read-only across the chapters it cites — it
+ composes their existing operations rather than reaching into
+ their internals.
+
+ We say:
+
+Section: Driver State
+
+  AnnotationDriver = record {
+    repo : RepoState,
+    facts : AnnotationFact,
+    notifications : EditorNotifications,
+    verdicts : EditorVerdicts,
+    source-index : SourceIndex,
+    keypair : Keypair,
+    lattice : TrustLattice,
+    threshold : Integer,
+    open-chapter : Text
+  }
+
+Section: Construction
+
+ driver-init builds an empty driver around a freshly-generated
+ keypair. open-file refreshes the source index for the file
+ the editor just loaded; the chapter name is parsed off the
+ file path.
+
+  driver-init : Keypair -> AnnotationDriver
+  driver-init (kp) = AnnotationDriver {
+    repo = repo-empty,
+    facts = annotation-fact-empty,
+    notifications = notifications-empty,
+    verdicts = verdicts-empty,
+    source-index = empty-source-index,
+    keypair = kp,
+    lattice = lattice-empty,
+    threshold = trust-default-threshold,
+    open-chapter = ""
+  }
+
+  driver-with-lattice : AnnotationDriver, TrustLattice -> AnnotationDriver
+  driver-with-lattice (d) (lat) = AnnotationDriver {
+    repo = d.repo,
+    facts = d.facts,
+    notifications = d.notifications,
+    verdicts = d.verdicts,
+    source-index = d.source-index,
+    keypair = d.keypair,
+    lattice = lat,
+    threshold = d.threshold,
+    open-chapter = d.open-chapter
+  }
+
+  driver-with-threshold : AnnotationDriver, Integer -> AnnotationDriver
+  driver-with-threshold (d) (t) = AnnotationDriver {
+    repo = d.repo,
+    facts = d.facts,
+    notifications = d.notifications,
+    verdicts = d.verdicts,
+    source-index = d.source-index,
+    keypair = d.keypair,
+    lattice = d.lattice,
+    threshold = t,
+    open-chapter = d.open-chapter
+  }
+
+  driver-with-index : AnnotationDriver, SourceIndex, Text -> AnnotationDriver
+  driver-with-index (d) (idx) (chapter) = AnnotationDriver {
+    repo = d.repo,
+    facts = d.facts,
+    notifications = d.notifications,
+    verdicts = d.verdicts,
+    source-index = idx,
+    keypair = d.keypair,
+    lattice = d.lattice,
+    threshold = d.threshold,
+    open-chapter = chapter
+  }
+
+Section: Reader Path
+
+ The Reader-side calls combine H1's lookup with H3's trust
+ filter. annotations-here returns what the bubble should
+ display for the current cursor.
+
+  annotations-here : AnnotationDriver, EditorState -> List Annotation
+  annotations-here (d) (e) =
+    when def-at-cursor (d.source-index) (d.open-chapter) (e.cursor-line)
+      is None -> []
+      is Just (loc) -> trusted-annotations-for-def (d.facts) (d.lattice) (d.threshold) loc
+
+Section: Writer Path
+
+ annotate-cursor is the H2 entry point. The caller supplies
+ kind, body, and timestamp; the driver looks up the def under
+ cursor, signs and stores via author-annotation-at, and folds
+ the resulting AnnotationFact back into its state. Returns the
+ new driver plus the SignedAnnotation (so the caller can pass
+ it to publish-cursor if they want to publish too).
+
+  AnnotateResult = record {
+    driver : AnnotationDriver,
+    signed : Maybe SignedAnnotation
+  }
+
+  annotate-cursor : AnnotationDriver, EditorState, AnnotationKind, Text, Integer -> AnnotateResult
+  annotate-cursor (d) (e) (kind) (body) (ts) =
+    when annotate-at-cursor e (d.source-index) (d.open-chapter) (d.facts) (d.keypair) kind body ts
+      is None -> AnnotateResult { driver = d, signed = None }
+      is Just (authored) -> AnnotateResult {
+        driver = driver-with-facts d (authored.fact-store),
+        signed = Just (authored.signed)
+      }
+
+  driver-with-facts : AnnotationDriver, AnnotationFact -> AnnotationDriver
+  driver-with-facts (d) (af) = AnnotationDriver {
+    repo = d.repo,
+    facts = af,
+    notifications = d.notifications,
+    verdicts = d.verdicts,
+    source-index = d.source-index,
+    keypair = d.keypair,
+    lattice = d.lattice,
+    threshold = d.threshold,
+    open-chapter = d.open-chapter
+  }
+
+Section: Publish Path
+
+ publish-cursor is the H7 entry point — annotate at cursor AND
+ push the SignedAnnotation onto the repo's outbox. The transport
+ adapter drains the outbox separately. Returns the new driver;
+ caller can inspect repo.outbox to confirm.
+
+  publish-cursor : AnnotationDriver, EditorState, AnnotationKind, Text, Text, Integer -> AnnotationDriver
+  publish-cursor (d) (e) (kind) (body) (suggestion) (ts) =
+    let result = annotate-cursor d e kind body ts
+    in when result.signed
+      is None -> result.driver
+      is Just (sa) -> driver-with-repo (result.driver) (publish-proposal (result.driver.repo) sa suggestion ts)
+
+  driver-with-repo : AnnotationDriver, RepoState -> AnnotationDriver
+  driver-with-repo (d) (r) = AnnotationDriver {
+    repo = r,
+    facts = d.facts,
+    notifications = d.notifications,
+    verdicts = d.verdicts,
+    source-index = d.source-index,
+    keypair = d.keypair,
+    lattice = d.lattice,
+    threshold = d.threshold,
+    open-chapter = d.open-chapter
+  }
+
+Section: Inbound Path
+
+ inject-incoming is the TrustService adapter's entry point.
+ It records the proposal in the local AnnotationStore (so the
+ reader sees it) and appends to the editor's notification queue
+ (so the user sees a throbber/toast).
+
+  inject-incoming : AnnotationDriver, ProposalPayload, Integer -> AnnotationDriver
+  inject-incoming (d) (pp) (now) =
+    let new-facts = annotate-fact-add-signed (d.facts) (pp.annotation)
+    in let new-notifs = enqueue-notification (d.notifications) pp now
+    in driver-replace-inbound d new-facts new-notifs
+
+  annotate-fact-add-signed : AnnotationFact, SignedAnnotation -> AnnotationFact
+  annotate-fact-add-signed (af) (sa) = AnnotationFact {
+    annotations = annotation-store-add (af.annotations) (sa.annotation),
+    discussions = af.discussions,
+    facts = af.facts
+  }
+
+  driver-replace-inbound : AnnotationDriver, AnnotationFact, EditorNotifications -> AnnotationDriver
+  driver-replace-inbound (d) (af) (n) = AnnotationDriver {
+    repo = d.repo,
+    facts = af,
+    notifications = n,
+    verdicts = d.verdicts,
+    source-index = d.source-index,
+    keypair = d.keypair,
+    lattice = d.lattice,
+    threshold = d.threshold,
+    open-chapter = d.open-chapter
+  }
+
+Section: Reviewer Path
+
+ accept-incoming and reject-incoming are H9 entry points — turn
+ a notification into a Verdict, register it locally, and queue
+ it for outbound. The matching notification is marked seen.
+
+  accept-incoming : AnnotationDriver, Text, Text, Integer -> AnnotationDriver
+  accept-incoming (d) (proposal-id) (reason) (ts) =
+    let new-repo = publish-verdict-accept (d.repo) (d.keypair) proposal-id reason ts
+    in let new-notifs = mark-all-seen (d.notifications)
+    in driver-replace-review d new-repo new-notifs
+
+  reject-incoming : AnnotationDriver, Text, Text, Integer -> AnnotationDriver
+  reject-incoming (d) (proposal-id) (reason) (ts) =
+    let new-repo = publish-verdict-reject (d.repo) (d.keypair) proposal-id reason ts
+    in let new-notifs = mark-all-seen (d.notifications)
+    in driver-replace-review d new-repo new-notifs
+
+  driver-replace-review : AnnotationDriver, RepoState, EditorNotifications -> AnnotationDriver
+  driver-replace-review (d) (r) (n) = AnnotationDriver {
+    repo = r,
+    facts = d.facts,
+    notifications = n,
+    verdicts = d.verdicts,
+    source-index = d.source-index,
+    keypair = d.keypair,
+    lattice = d.lattice,
+    threshold = d.threshold,
+    open-chapter = d.open-chapter
+  }
+
+Section: Verdict Reception
+
+ inject-verdict is the inbound side for the original annotator —
+ a verdict on a proposal we authored. The H10 EditorVerdicts
+ inbox filters by authored-proposals, so the editor only learns
+ of verdicts on its own proposals.
+
+  inject-verdict : AnnotationDriver, Verdict, Integer -> AnnotationDriver
+  inject-verdict (d) (v) (now) =
+    let new-verdicts = enqueue-verdict (d.verdicts) v now
+    in let new-repo = repo-submit-verdict (d.repo) v
+    in driver-replace-verdict d new-repo new-verdicts
+
+  remember-authored : AnnotationDriver, Text -> AnnotationDriver
+  remember-authored (d) (proposal-id) =
+    let new-verdicts = remember-authored-proposal (d.verdicts) proposal-id
+    in driver-replace-verdict d (d.repo) new-verdicts
+
+  driver-replace-verdict : AnnotationDriver, RepoState, EditorVerdicts -> AnnotationDriver
+  driver-replace-verdict (d) (r) (v) = AnnotationDriver {
+    repo = r,
+    facts = d.facts,
+    notifications = d.notifications,
+    verdicts = v,
+    source-index = d.source-index,
+    keypair = d.keypair,
+    lattice = d.lattice,
+    threshold = d.threshold,
+    open-chapter = d.open-chapter
+  }
+
+Section: Outbound Drain
+
+ The transport adapter calls drain-* to pull pending payloads,
+ sends them, and then asks the driver to clear what was drained.
+ The two outboxes (proposals and verdicts) drain independently.
+
+  pending-proposals : AnnotationDriver -> List ProposalPayload
+  pending-proposals (d) = d.repo.outbox
+
+  pending-verdicts : AnnotationDriver -> List Verdict
+  pending-verdicts (d) = d.repo.verdict-outbox
+
+  clear-outbound : AnnotationDriver -> AnnotationDriver
+  clear-outbound (d) =
+    let drained = drain-outbox (d.repo)
+    in driver-with-repo d (drain-verdict-outbox drained)
+
+Section: Network Transport
+
+ driver-pump-out drains both outboxes onto a TrustSession in one
+ call, returning the new driver state, the post-send session, and
+ a count. driver-receive is the inverse — given an AgentMessage
+ lifted off the session, it routes annotations through the trust
+ filter into the repo and the editor notifications, and routes
+ verdicts through inject-verdict so the originating editor's
+ EditorVerdicts inbox sees them too.
+
+  DriverPumpResult = record {
+    driver : AnnotationDriver,
+    session : TrustSession,
+    sent : Integer between 0 and 4294967295
+  }
+
+  driver-pump-out : AnnotationDriver, TrustSession -> DriverPumpResult
+  driver-pump-out (d) (sess) =
+    let pump = pump-outbound (d.repo) sess (d.keypair)
+    in DriverPumpResult {
+      driver = driver-with-repo d (pump.repo),
+      session = pump.session,
+      sent = pump.sent
+    }
+
+  driver-receive : AnnotationDriver, AgentMessage, Integer -> AnnotationDriver
+  driver-receive (d) (m) (now) = when m
+    is MsgAnnotate (am) -> driver-receive-annotate d am now
+    is MsgVerdict (vm) -> driver-receive-verdict d vm now
+    is otherwise -> d
+
+  driver-receive-annotate : AnnotationDriver, AnnotateMsg, Integer -> AnnotationDriver
+  driver-receive-annotate (d) (am) (now) =
+    let result = dispatch-annotate (d.repo) (d.notifications) am (d.threshold) now
+    in driver-replace-inbound-from-result d result
+
+  driver-receive-verdict : AnnotationDriver, VerdictMsg, Integer -> AnnotationDriver
+  driver-receive-verdict (d) (vm) (now) =
+    if verify-verdict-envelope vm then driver-receive-verdict-verified d vm now
+    else d
+
+  driver-receive-verdict-verified : AnnotationDriver, VerdictMsg, Integer -> AnnotationDriver
+  driver-receive-verdict-verified (d) (vm) (now) =
+    let v = decode-verdict (vm.payload)
+    in driver-receive-verdict-after-decode d v now
+
+  driver-receive-verdict-after-decode : AnnotationDriver, Verdict, Integer -> AnnotationDriver
+  driver-receive-verdict-after-decode (d) (v) (now) =
+    if verify-verdict-signature (d.repo.keyring) v then inject-verdict d v now
+    else d
+
+  driver-replace-inbound-from-result : AnnotationDriver, InboundResult -> AnnotationDriver
+  driver-replace-inbound-from-result (d) (r) = AnnotationDriver {
+    repo = r.repo,
+    facts = d.facts,
+    notifications = r.notifications,
+    verdicts = d.verdicts,
+    source-index = d.source-index,
+    keypair = d.keypair,
+    lattice = d.lattice,
+    threshold = d.threshold,
+    open-chapter = d.open-chapter
+  }
+
+Section: Status Queries
+
+  driver-unseen-notifications : AnnotationDriver, EditorState -> Integer
+  driver-unseen-notifications (d) (e) =
+    unseen-relevant-count (d.notifications) e
+
+  driver-unseen-verdicts : AnnotationDriver -> Integer
+  driver-unseen-verdicts (d) =
+    unseen-verdict-count (d.verdicts)
+
+  driver-status-line : AnnotationDriver, EditorState -> Text
+  driver-status-line (d) (e) =
+    let notif = driver-unseen-notifications d e
+    in let verd = driver-unseen-verdicts d
+    in let pend = list-length (d.repo.outbox) + list-length (d.repo.verdict-outbox)
+    in "ann: " & show notif & "n " & show verd & "v " & show pend & "out"
+
+Page 1

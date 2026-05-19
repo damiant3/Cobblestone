@@ -1,0 +1,303 @@
+Chapter: Surface
+  cites Foreword chapter Maybe
+  cites UI chapter Theme
+  cites UI chapter BoxModel
+  cites UI chapter Widget
+  cites UI chapter Render
+  cites Game chapter Rasterizer
+  cites Game chapter Color
+  cites Game chapter Bresenham
+
+ Compositor. Manages z-ordered surfaces, each owning a framebuffer.
+ Composites them back-to-front onto a final output framebuffer.
+ Supports dirty-rect tracking so only changed regions re-composite.
+
+Section: Surface
+  Surface = record {
+    sf-id : Text,
+    sf-x : Integer,
+    sf-y : Integer,
+    sf-z : Integer,
+    sf-fb : Framebuf,
+    sf-visible : Boolean,
+    sf-dirty : Boolean,
+    sf-opacity : Integer
+  }
+
+Section: Compositor
+  Compositor = record {
+    comp-surfaces : List Surface,
+    comp-count : Integer,
+    comp-width : Integer,
+    comp-height : Integer,
+    comp-bg : Integer
+  }
+
+Section: Construction
+  surface-new : Text, Integer, Integer, Integer, Integer, Integer -> Surface
+  surface-new (id) (x) (y) (w) (h) (bg) =
+    Surface {
+      sf-id = id,
+      sf-x = x,
+      sf-y = y,
+      sf-z = 0,
+      sf-fb = fb-new w h bg,
+      sf-visible = True,
+      sf-dirty = True,
+      sf-opacity = 1000
+    }
+
+  surface-new-z : Text, Integer, Integer, Integer, Integer, Integer, Integer -> Surface
+  surface-new-z (id) (x) (y) (z) (w) (h) (bg) =
+    Surface {
+      sf-id = id,
+      sf-x = x,
+      sf-y = y,
+      sf-z = z,
+      sf-fb = fb-new w h bg,
+      sf-visible = True,
+      sf-dirty = True,
+      sf-opacity = 1000
+    }
+
+  compositor-new : Integer, Integer, Integer -> Compositor
+  compositor-new (w) (h) (bg) =
+    Compositor { comp-surfaces = [], comp-count = 0, comp-width = w, comp-height = h, comp-bg = bg }
+
+Section: Surface Management
+  compositor-add : Compositor, Surface -> Compositor
+  compositor-add (comp) (sf) =
+    Compositor {
+      comp-surfaces = list-push (comp.comp-surfaces) sf,
+      comp-count = comp.comp-count + 1,
+      comp-width = comp.comp-width,
+      comp-height = comp.comp-height,
+      comp-bg = comp.comp-bg
+    }
+
+  compositor-remove : Compositor, Text -> Compositor
+  compositor-remove (comp) (id) =
+    let filtered = comp-filter (comp.comp-surfaces) id 0 (comp.comp-count) []
+    in Compositor {
+      comp-surfaces = filtered,
+      comp-count = list-length filtered,
+      comp-width = comp.comp-width,
+      comp-height = comp.comp-height,
+      comp-bg = comp.comp-bg
+    }
+
+  comp-filter : List Surface, Text, Integer, Integer, List Surface -> List Surface
+  comp-filter (surfaces) (id) (i) (n) (acc) =
+    if i >= n then acc
+    else let sf = list-at surfaces i
+    in if sf.sf-id == id then comp-filter surfaces id (i + 1) n acc
+    else comp-filter surfaces id (i + 1) n (list-push acc sf)
+
+Section: Surface Modification
+  compositor-update-surface : Compositor, Text, Framebuf -> Compositor
+  compositor-update-surface (comp) (id) (new-fb) =
+    let updated = comp-update-fb (comp.comp-surfaces) id new-fb 0 (comp.comp-count) []
+    in Compositor {
+      comp-surfaces = updated,
+      comp-count = comp.comp-count,
+      comp-width = comp.comp-width,
+      comp-height = comp.comp-height,
+      comp-bg = comp.comp-bg
+    }
+
+  comp-update-fb : List Surface, Text, Framebuf, Integer, Integer, List Surface -> List Surface
+  comp-update-fb (surfaces) (id) (new-fb) (i) (n) (acc) =
+    if i >= n then acc
+    else let sf = list-at surfaces i
+    in if sf.sf-id == id then
+      let updated = Surface {
+        sf-id = sf.sf-id, sf-x = sf.sf-x, sf-y = sf.sf-y, sf-z = sf.sf-z,
+        sf-fb = new-fb, sf-visible = sf.sf-visible, sf-dirty = True, sf-opacity = sf.sf-opacity
+      }
+      in comp-update-fb surfaces id new-fb (i + 1) n (list-push acc updated)
+    else comp-update-fb surfaces id new-fb (i + 1) n (list-push acc sf)
+
+  compositor-move : Compositor, Text, Integer, Integer -> Compositor
+  compositor-move (comp) (id) (dx) (dy) =
+    let moved = comp-move-sf (comp.comp-surfaces) id dx dy 0 (comp.comp-count) []
+    in Compositor {
+      comp-surfaces = moved,
+      comp-count = comp.comp-count,
+      comp-width = comp.comp-width,
+      comp-height = comp.comp-height,
+      comp-bg = comp.comp-bg
+    }
+
+  comp-move-sf : List Surface, Text, Integer, Integer, Integer, Integer, List Surface -> List Surface
+  comp-move-sf (surfaces) (id) (dx) (dy) (i) (n) (acc) =
+    if i >= n then acc
+    else let sf = list-at surfaces i
+    in if sf.sf-id == id then
+      let moved = Surface {
+        sf-id = sf.sf-id, sf-x = sf.sf-x + dx, sf-y = sf.sf-y + dy, sf-z = sf.sf-z,
+        sf-fb = sf.sf-fb, sf-visible = sf.sf-visible, sf-dirty = True, sf-opacity = sf.sf-opacity
+      }
+      in comp-move-sf surfaces id dx dy (i + 1) n (list-push acc moved)
+    else comp-move-sf surfaces id dx dy (i + 1) n (list-push acc sf)
+
+  compositor-set-z : Compositor, Text, Integer -> Compositor
+  compositor-set-z (comp) (id) (z) =
+    let updated = comp-set-z-sf (comp.comp-surfaces) id z 0 (comp.comp-count) []
+    in Compositor {
+      comp-surfaces = updated,
+      comp-count = comp.comp-count,
+      comp-width = comp.comp-width,
+      comp-height = comp.comp-height,
+      comp-bg = comp.comp-bg
+    }
+
+  comp-set-z-sf : List Surface, Text, Integer, Integer, Integer, List Surface -> List Surface
+  comp-set-z-sf (surfaces) (id) (z) (i) (n) (acc) =
+    if i >= n then acc
+    else let sf = list-at surfaces i
+    in if sf.sf-id == id then
+      let updated = Surface {
+        sf-id = sf.sf-id, sf-x = sf.sf-x, sf-y = sf.sf-y, sf-z = z,
+        sf-fb = sf.sf-fb, sf-visible = sf.sf-visible, sf-dirty = True, sf-opacity = sf.sf-opacity
+      }
+      in comp-set-z-sf surfaces id z (i + 1) n (list-push acc updated)
+    else comp-set-z-sf surfaces id z (i + 1) n (list-push acc sf)
+
+  compositor-toggle : Compositor, Text -> Compositor
+  compositor-toggle (comp) (id) =
+    let toggled = comp-toggle-sf (comp.comp-surfaces) id 0 (comp.comp-count) []
+    in Compositor {
+      comp-surfaces = toggled,
+      comp-count = comp.comp-count,
+      comp-width = comp.comp-width,
+      comp-height = comp.comp-height,
+      comp-bg = comp.comp-bg
+    }
+
+  comp-toggle-sf : List Surface, Text, Integer, Integer, List Surface -> List Surface
+  comp-toggle-sf (surfaces) (id) (i) (n) (acc) =
+    if i >= n then acc
+    else let sf = list-at surfaces i
+    in if sf.sf-id == id then
+      let toggled = Surface {
+        sf-id = sf.sf-id, sf-x = sf.sf-x, sf-y = sf.sf-y, sf-z = sf.sf-z,
+        sf-fb = sf.sf-fb, sf-visible = if sf.sf-visible then False else True,
+        sf-dirty = True, sf-opacity = sf.sf-opacity
+      }
+      in comp-toggle-sf surfaces id (i + 1) n (list-push acc toggled)
+    else comp-toggle-sf surfaces id (i + 1) n (list-push acc sf)
+
+Section: Compositing
+  compositor-render : Compositor -> Framebuf
+  compositor-render (comp) =
+    let output = fb-new (comp.comp-width) (comp.comp-height) (comp.comp-bg)
+    in let sorted = comp-sort-by-z (comp.comp-surfaces) (comp.comp-count)
+    in comp-blit-all sorted output 0 (comp.comp-count)
+
+  comp-blit-all : List Surface, Framebuf, Integer, Integer -> Framebuf
+  comp-blit-all (surfaces) (fb) (i) (n) =
+    if i >= n then fb
+    else let sf = list-at surfaces i
+    in let fb2 = if sf.sf-visible then comp-blit-surface sf fb else fb
+    in comp-blit-all surfaces fb2 (i + 1) n
+
+  comp-blit-surface : Surface, Framebuf -> Framebuf
+  comp-blit-surface (sf) (fb) =
+    comp-blit-rows sf fb 0
+
+  comp-blit-rows : Surface, Framebuf, Integer -> Framebuf
+  comp-blit-rows (sf) (fb) (sy) =
+    if sy >= (sf.sf-fb).fb-height then fb
+    else let dy = sf.sf-y + sy
+    in if dy < 0 then comp-blit-rows sf fb (sy + 1)
+    else if dy >= (fb.fb-height) then fb
+    else let fb2 = comp-blit-row sf fb sy dy 0
+    in comp-blit-rows sf fb2 (sy + 1)
+
+  comp-blit-row : Surface, Framebuf, Integer, Integer, Integer -> Framebuf
+  comp-blit-row (sf) (fb) (sy) (dy) (sx) =
+    if sx >= (sf.sf-fb).fb-width then fb
+    else let dx = sf.sf-x + sx
+    in if dx < 0 then comp-blit-row sf fb sy dy (sx + 1)
+    else if dx >= (fb.fb-width) then fb
+    else let pixel = fb-get (sf.sf-fb) sx sy
+    in let fb2 = if sf.sf-opacity >= 1000 then fb-set fb dx dy pixel
+      else comp-blend-pixel fb dx dy pixel (sf.sf-opacity)
+    in comp-blit-row sf fb2 sy dy (sx + 1)
+
+  comp-blend-pixel : Framebuf, Integer, Integer, Integer, Integer -> Framebuf
+  comp-blend-pixel (fb) (x) (y) (src) (alpha) =
+    let dst = fb-get fb x y
+    in let sr = bit-and (bit-shru src 16) 255
+    in let sg = bit-and (bit-shru src 8) 255
+    in let sb = bit-and src 255
+    in let dr = bit-and (bit-shru dst 16) 255
+    in let dg = bit-and (bit-shru dst 8) 255
+    in let db = bit-and dst 255
+    in let inv = 1000 - alpha
+    in let r = (sr * alpha + dr * inv) / 1000
+    in let g = (sg * alpha + dg * inv) / 1000
+    in let b = (sb * alpha + db * inv) / 1000
+    in fb-set fb x y (bit-or (bit-shl r 16) (bit-or (bit-shl g 8) b))
+
+Section: Z-Sort (insertion sort)
+  comp-sort-by-z : List Surface, Integer -> List Surface
+  comp-sort-by-z (surfaces) (n) = comp-isort surfaces 1 n
+
+  comp-isort : List Surface, Integer, Integer -> List Surface
+  comp-isort (surfaces) (i) (n) =
+    if i >= n then surfaces
+    else comp-isort (comp-insert surfaces i) (i + 1) n
+
+  comp-insert : List Surface, Integer -> List Surface
+  comp-insert (surfaces) (i) =
+    if i <= 0 then surfaces
+    else let cur = list-at surfaces i
+    in let prev = list-at surfaces (i - 1)
+    in if cur.sf-z < prev.sf-z then comp-insert (comp-swap surfaces i (i - 1)) (i - 1)
+    else surfaces
+
+  comp-swap : List Surface, Integer, Integer -> List Surface
+  comp-swap (surfaces) (a) (b) =
+    let va = list-at surfaces a
+    in let vb = list-at surfaces b
+    in list-set-at (list-set-at surfaces a vb) b va
+
+Section: Queries
+  compositor-find : Compositor, Text -> Maybe Surface
+  compositor-find (comp) (id) = comp-find-loop (comp.comp-surfaces) id 0 (comp.comp-count)
+
+  comp-find-loop : List Surface, Text, Integer, Integer -> Maybe Surface
+  comp-find-loop (surfaces) (id) (i) (n) =
+    if i >= n then None
+    else let sf = list-at surfaces i
+    in if sf.sf-id == id then Just sf
+    else comp-find-loop surfaces id (i + 1) n
+
+  compositor-hit : Compositor, Integer, Integer -> Maybe Surface
+  compositor-hit (comp) (px) (py) =
+    comp-hit-loop (comp.comp-surfaces) px py (comp.comp-count - 1)
+
+  comp-hit-loop : List Surface, Integer, Integer, Integer -> Maybe Surface
+  comp-hit-loop (surfaces) (px) (py) (i) =
+    if i < 0 then None
+    else let sf = list-at surfaces i
+    in if sf.sf-visible then
+      if px >= sf.sf-x then if px < sf.sf-x + (sf.sf-fb).fb-width then
+        if py >= sf.sf-y then if py < sf.sf-y + (sf.sf-fb).fb-height then Just sf
+          else comp-hit-loop surfaces px py (i - 1)
+        else comp-hit-loop surfaces px py (i - 1)
+      else comp-hit-loop surfaces px py (i - 1)
+      else comp-hit-loop surfaces px py (i - 1)
+    else comp-hit-loop surfaces px py (i - 1)
+
+Section: Formatting
+  format-surface : Surface -> Text
+  format-surface (sf) =
+    sf.sf-id & " (" & show (sf.sf-x) & "," & show (sf.sf-y) & " z=" & show (sf.sf-z) & " " & show ((sf.sf-fb).fb-width) & "x" & show ((sf.sf-fb).fb-height) & " vis=" & fmt-bool (sf.sf-visible) & ")"
+
+  format-compositor : Compositor -> Text
+  format-compositor (comp) =
+    "compositor " & show (comp.comp-width) & "x" & show (comp.comp-height) & " surfaces=" & show (comp.comp-count)
+
+Page 1

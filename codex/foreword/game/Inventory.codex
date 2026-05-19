@@ -1,0 +1,179 @@
+Chapter: Inventory
+  cites Foreword chapter Maybe
+
+ Inventory and equipment system — a grid of item slots with stack
+ limits, equipment slots by body part, and transfer operations
+ between inventories. Items are identified by integer ID and carry
+ a quantity.
+
+ To inv-new gives an empty inventory with a capacity.
+ To inv-add gives an inventory with an item added.
+ To inv-remove gives an inventory with an item removed.
+ To inv-has gives True when the item is present.
+ To inv-equip gives an inventory with an item equipped.
+
+ We say:
+
+Section: Types
+
+  ItemStack = record {
+    is-item-id : Integer,
+    is-quantity : Integer,
+    is-max-stack : Integer
+  }
+
+  EquipSlot =
+    | SlotHead
+    | SlotChest
+    | SlotLegs
+    | SlotFeet
+    | SlotMainHand
+    | SlotOffHand
+    | SlotRing
+    | SlotNecklace
+
+  EquipEntry = record {
+    ee-slot : EquipSlot,
+    ee-item-id : Integer
+  }
+
+  Inventory = record {
+    inv-slots : List (Maybe ItemStack),
+    inv-capacity : Integer,
+    inv-equipped : List EquipEntry,
+    inv-equip-count : Integer
+  }
+
+Section: Construction
+
+  inv-new : Integer -> Inventory
+  inv-new (capacity) = Inventory {
+    inv-slots = inv-empty-slots capacity 0 [],
+    inv-capacity = capacity,
+    inv-equipped = [],
+    inv-equip-count = 0
+  }
+
+  inv-empty-slots : Integer, Integer, List (Maybe ItemStack) -> List (Maybe ItemStack)
+  inv-empty-slots (n) (i) (acc) =
+    if i >= n then acc
+    else inv-empty-slots n (i + 1) (list-push acc None)
+
+  item-stack : Integer, Integer, Integer -> ItemStack
+  item-stack (id) (qty) (max-stack) = ItemStack { is-item-id = id, is-quantity = qty, is-max-stack = max-stack }
+
+Section: Add
+
+  inv-add : Inventory, Integer, Integer, Integer -> Inventory
+  inv-add (inv) (item-id) (quantity) (max-stack) =
+    let existing = inv-find-stackable inv item-id max-stack 0 (inv.inv-capacity)
+    in if existing >= 0 then inv-add-to-slot inv existing quantity
+    else let empty = inv-find-empty inv 0 (inv.inv-capacity)
+    in if empty >= 0 then __record-set inv "inv-slots" (list-set-at (inv.inv-slots) empty (Just (item-stack item-id quantity max-stack)))
+    else inv
+
+  inv-add-to-slot : Inventory, Integer, Integer -> Inventory
+  inv-add-to-slot (inv) (slot) (qty) =
+    when list-at (inv.inv-slots) slot
+      is Just (stack) ->
+        let new-qty = if stack.is-quantity + qty > stack.is-max-stack then stack.is-max-stack else stack.is-quantity + qty
+        in __record-set inv "inv-slots" (list-set-at (inv.inv-slots) slot (Just (__record-set stack "is-quantity" new-qty)))
+      is None -> inv
+
+  inv-find-stackable : Inventory, Integer, Integer, Integer, Integer -> Integer
+  inv-find-stackable (inv) (item-id) (max-stack) (i) (len) =
+    if i >= len then 0 - 1
+    else when list-at (inv.inv-slots) i
+      is Just (stack) -> if stack.is-item-id == item-id then if stack.is-quantity < max-stack then i else inv-find-stackable inv item-id max-stack (i + 1) len else inv-find-stackable inv item-id max-stack (i + 1) len
+      is None -> inv-find-stackable inv item-id max-stack (i + 1) len
+
+  inv-find-empty : Inventory, Integer, Integer -> Integer
+  inv-find-empty (inv) (i) (len) =
+    if i >= len then 0 - 1
+    else when list-at (inv.inv-slots) i
+      is None -> i
+      is Just (s) -> inv-find-empty inv (i + 1) len
+
+Section: Remove
+
+  inv-remove : Inventory, Integer, Integer -> Inventory
+  inv-remove (inv) (item-id) (quantity) =
+    let slot = inv-find-item inv item-id 0 (inv.inv-capacity)
+    in if slot < 0 then inv
+    else inv-remove-from-slot inv slot quantity
+
+  inv-remove-from-slot : Inventory, Integer, Integer -> Inventory
+  inv-remove-from-slot (inv) (slot) (qty) =
+    when list-at (inv.inv-slots) slot
+      is Just (stack) ->
+        let remaining = stack.is-quantity - qty
+        in if remaining <= 0 then __record-set inv "inv-slots" (list-set-at (inv.inv-slots) slot None)
+        else __record-set inv "inv-slots" (list-set-at (inv.inv-slots) slot (Just (__record-set stack "is-quantity" remaining)))
+      is None -> inv
+
+  inv-find-item : Inventory, Integer, Integer, Integer -> Integer
+  inv-find-item (inv) (item-id) (i) (len) =
+    if i >= len then 0 - 1
+    else when list-at (inv.inv-slots) i
+      is Just (stack) -> if stack.is-item-id == item-id then i else inv-find-item inv item-id (i + 1) len
+      is None -> inv-find-item inv item-id (i + 1) len
+
+Section: Queries
+
+  inv-has : Inventory, Integer -> Boolean
+  inv-has (inv) (item-id) = inv-find-item inv item-id 0 (inv.inv-capacity) >= 0
+
+  inv-count : Inventory, Integer -> Integer
+  inv-count (inv) (item-id) = inv-count-loop inv item-id 0 (inv.inv-capacity) 0
+
+  inv-count-loop : Inventory, Integer, Integer, Integer, Integer -> Integer
+  inv-count-loop (inv) (item-id) (i) (len) (acc) =
+    if i >= len then acc
+    else when list-at (inv.inv-slots) i
+      is Just (stack) -> if stack.is-item-id == item-id then inv-count-loop inv item-id (i + 1) len (acc + stack.is-quantity) else inv-count-loop inv item-id (i + 1) len acc
+      is None -> inv-count-loop inv item-id (i + 1) len acc
+
+  inv-used-slots : Inventory -> Integer
+  inv-used-slots (inv) = inv-used-loop inv 0 (inv.inv-capacity) 0
+
+  inv-used-loop : Inventory, Integer, Integer, Integer -> Integer
+  inv-used-loop (inv) (i) (len) (acc) =
+    if i >= len then acc
+    else when list-at (inv.inv-slots) i
+      is Just (s) -> inv-used-loop inv (i + 1) len (acc + 1)
+      is None -> inv-used-loop inv (i + 1) len acc
+
+Section: Equipment
+
+  inv-equip : Inventory, EquipSlot, Integer -> Inventory
+  inv-equip (inv) (slot) (item-id) =
+    let cleaned = inv-unequip-slot (inv.inv-equipped) slot 0 (inv.inv-equip-count) []
+    in let entry = EquipEntry { ee-slot = slot, ee-item-id = item-id }
+    in __record-set (__record-set inv "inv-equipped" (list-push cleaned entry)) "inv-equip-count" (list-length cleaned + 1)
+
+  inv-unequip : Inventory, EquipSlot -> Inventory
+  inv-unequip (inv) (slot) =
+    let cleaned = inv-unequip-slot (inv.inv-equipped) slot 0 (inv.inv-equip-count) []
+    in __record-set (__record-set inv "inv-equipped" cleaned) "inv-equip-count" (list-length cleaned)
+
+  inv-unequip-slot : List EquipEntry, EquipSlot, Integer, Integer, List EquipEntry -> List EquipEntry
+  inv-unequip-slot (entries) (slot) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in inv-unequip-slot entries slot (i + 1) len (if equip-slot-eq (e.ee-slot) slot then acc else list-push acc e)
+
+  equip-slot-eq : EquipSlot, EquipSlot -> Boolean
+  equip-slot-eq (a) (b) = equip-slot-id a == equip-slot-id b
+
+  equip-slot-id : EquipSlot -> Integer
+  equip-slot-id (s) = when s
+    is SlotHead -> 0
+    is SlotChest -> 1
+    is SlotLegs -> 2
+    is SlotFeet -> 3
+    is SlotMainHand -> 4
+    is SlotOffHand -> 5
+    is SlotRing -> 6
+    is SlotNecklace -> 7
+
+Page 1

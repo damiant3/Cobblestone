@@ -1,0 +1,503 @@
+Chapter: RepoProtocol
+  cites Works chapter Annotation
+  cites Works chapter SignedAnnotation
+  cites Works chapter Discussion
+  cites Works chapter KeyManager
+  cites Works chapter BuildRecord
+  cites Works chapter DigestCompute
+  cites Trust chapter TrustLattice
+  cites Trust chapter AgentProtocol
+  cites Net chapter MessageFraming
+  cites Foreword chapter FactStore
+  cites Foreword chapter Sha256
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ The Codex repository protocol. Facts, proposals, verdicts, and
+ discussions — all content-addressed and signed. This is the
+ implementation of Part Three of the Codex book: the repository
+ that replaces Git.
+
+ We say:
+
+ The repository contains facts. Every fact is immutable, content-
+ addressed, attributed, and typed. A "new version" of a definition
+ is a new fact that supersedes an old fact. The old fact still
+ exists. The repository is an append-only log.
+
+Section: Proposal
+
+ A proposal is a definition plus a justification plus a set of
+ required stakeholders. There are no pull requests — there are
+ proposals.
+
+  Proposal = record {
+    id : Text,
+    author-fingerprint : Text,
+    target : AnnotationTarget,
+    description : Text,
+    justification : Text,
+    changed-definitions : List Text,
+    signature : List Integer,
+    timestamp : Integer,
+    status : ProposalStatus
+  }
+
+  ProposalStatus =
+    | ProposalOpen
+    | ProposalAccepted
+    | ProposalRejected
+    | ProposalAmended
+
+  create-proposal : Keypair, AnnotationTarget, Text, Text, List Text, Integer -> Proposal
+  create-proposal (kp) (target) (desc) (justification) (defs) (ts) =
+    let content = target-key target & "|" & desc & "|" & justification
+    in let id = sha256-to-hex (sha256 (text-to-bytes content))
+    in let sig = sign-content kp content
+    in Proposal {
+      id = id,
+      author-fingerprint = kp.fingerprint,
+      target = target,
+      description = desc,
+      justification = justification,
+      changed-definitions = defs,
+      signature = sig,
+      timestamp = ts,
+      status = ProposalOpen
+    }
+
+Section: Verdict
+
+  VerdictKind =
+    | Accept
+    | Reject
+    | Amend (Text)
+    | Abstain
+
+  Verdict = record {
+    id : Text,
+    proposal-id : Text,
+    author-fingerprint : Text,
+    kind : VerdictKind,
+    reason : Text,
+    signature : List Integer,
+    timestamp : Integer
+  }
+
+  create-verdict : Keypair, Text, VerdictKind, Text, Integer -> Verdict
+  create-verdict (kp) (proposal-id) (kind) (reason) (ts) =
+    let content = proposal-id & "|" & verdict-kind-name kind & "|" & reason
+    in let id = sha256-to-hex (sha256 (text-to-bytes content))
+    in let sig = sign-content kp content
+    in Verdict {
+      id = id,
+      proposal-id = proposal-id,
+      author-fingerprint = kp.fingerprint,
+      kind = kind,
+      reason = reason,
+      signature = sig,
+      timestamp = ts
+    }
+
+  verdict-kind-name : VerdictKind -> Text
+  verdict-kind-name (k) = when k
+    is Accept -> "accept"
+    is Reject -> "reject"
+    is Amend (note) -> "amend"
+    is Abstain -> "abstain"
+
+  verdict-content-string : Verdict -> Text
+  verdict-content-string (v) =
+    v.proposal-id & "|" & verdict-kind-name (v.kind) & "|" & v.reason
+
+  verify-verdict-signature : Keyring, Verdict -> Boolean
+  verify-verdict-signature (kr) (v) =
+    when keyring-lookup kr (v.author-fingerprint)
+      is None -> False
+      is Just (entry) ->
+        verify-signature (entry.public-key) (verdict-content-string v) (v.signature)
+
+Section: Repository State
+
+  RepoState = record {
+    facts : BareFactStore,
+    proposals : HamtMap Proposal,
+    verdicts : HamtMap (List Verdict),
+    keyring : Keyring,
+    lattice : TrustLattice,
+    annotations : AnnotationStore,
+    outbox : List ProposalPayload,
+    verdict-outbox : List Verdict,
+    supersession : HamtMap Text,
+    head-sequence : Integer
+  }
+
+  repo-empty : RepoState = RepoState {
+    facts = fact-store-empty,
+    proposals = hamt-empty,
+    verdicts = hamt-empty,
+    keyring = keyring-empty,
+    lattice = lattice-empty,
+    annotations = annotation-store-empty,
+    outbox = [],
+    verdict-outbox = [],
+    supersession = hamt-empty,
+    head-sequence = 0
+  }
+
+Section: Proposal Payload
+
+ H7: a proposal as it travels the trust grid. The SignedAnnotation
+ is the load-bearing carrier (the body holds the prose; this
+ record adds the code suggestion, target chapter, and a stable
+ timestamp). The outbox is a list of these on RepoState; the
+ transport adapter drains it via TrustTransport.
+
+  ProposalPayload = record {
+    annotation : SignedAnnotation,
+    code-suggestion : Text,
+    target-chapter : Text,
+    timestamp : Integer
+  }
+
+  make-proposal-payload : SignedAnnotation, Text, Text, Integer -> ProposalPayload
+  make-proposal-payload (sa) (suggestion) (chapter) (ts) =
+    ProposalPayload {
+      annotation = sa,
+      code-suggestion = suggestion,
+      target-chapter = chapter,
+      timestamp = ts
+    }
+
+  payload-id : ProposalPayload -> Text
+  payload-id (pp) =
+    (pp.annotation.annotation).hash & "@" & show (pp.timestamp)
+
+Section: Repository Operations
+
+  repo-register-key : RepoState, Text, List Integer, Integer -> RepoState
+  repo-register-key (repo) (name) (pub) (trust) =
+    let kr = keyring-add (repo.keyring) name pub trust
+    in let lat = lattice-add-direct (repo.lattice) name trust
+    in __record-set (__record-set repo "keyring" kr) "lattice" lat
+
+  repo-submit-proposal : RepoState, Proposal -> RepoState
+  repo-submit-proposal (repo) (p) =
+    let fact = fact-create DefinitionFact (p.id & "|" & p.description) (p.author-fingerprint) (p.timestamp)
+    in let new-facts = fact-store (repo.facts) fact
+    in let new-proposals = hamt-set (repo.proposals) (p.id) p
+    in __record-set (__record-set repo "facts" new-facts) "proposals" new-proposals
+
+  repo-submit-verdict : RepoState, Verdict -> RepoState
+  repo-submit-verdict (repo) (v) =
+    let existing = when hamt-get (repo.verdicts) (v.proposal-id)
+      is Just (vs) -> vs
+      is None -> []
+    in let new-verdicts = hamt-set (repo.verdicts) (v.proposal-id) (list-snoc existing v)
+    in __record-set repo "verdicts" new-verdicts
+
+  repo-add-annotation : RepoState, SignedAnnotation -> RepoState
+  repo-add-annotation (repo) (sa) =
+    let new-annots = annotation-store-add (repo.annotations) (sa.annotation)
+    in __record-set repo "annotations" new-annots
+
+Section: Outbound Proposal
+
+ publish-proposal is the H7 entry point. It registers the
+ SignedAnnotation in the local AnnotationStore (so the local
+ Reader sees it immediately) and queues a ProposalPayload on
+ the outbox for outbound delivery. The transport adapter
+ (a separate effect handler) consumes the outbox.
+
+  publish-proposal : RepoState, SignedAnnotation, Text, Integer -> RepoState
+  publish-proposal (repo) (sa) (code-suggestion) (ts) =
+    let target-chapter = (sa.annotation.target).chapter
+    in let payload = make-proposal-payload sa code-suggestion target-chapter ts
+    in let with-annot = repo-add-annotation repo sa
+    in let new-outbox = list-snoc (with-annot.outbox) payload
+    in __record-set with-annot "outbox" new-outbox
+
+  drain-outbox : RepoState -> RepoState
+  drain-outbox (repo) = __record-set repo "outbox" []
+
+  outbox-size : RepoState -> Integer
+  outbox-size (repo) = list-length (repo.outbox)
+
+  peek-outbox-head : RepoState -> Maybe ProposalPayload
+  peek-outbox-head (repo) =
+    if list-length (repo.outbox) == 0 then None
+    else Just (list-at (repo.outbox) 0)
+
+Section: Verdict Publishing
+
+ H9: when the user accepts/rejects/amends an inbound proposal,
+ a Verdict is created, registered locally via repo-submit-verdict,
+ and queued on verdict-outbox for outbound delivery. The
+ transport adapter drains the outbox into TrustTransport frames.
+
+ publish-verdict-accept is the path Damian named — "boom i build,
+ test, and publish the update on the spot". The gates (sweep /
+ pingpong / verifier) run in the driver effect, not here.
+
+  publish-verdict : RepoState, Keypair, Text, VerdictKind, Text, Integer -> RepoState
+  publish-verdict (repo) (kp) (proposal-id) (kind) (reason) (ts) =
+    let v = create-verdict kp proposal-id kind reason ts
+    in let with-verdict = repo-submit-verdict repo v
+    in let new-outbox = list-snoc (with-verdict.verdict-outbox) v
+    in __record-set with-verdict "verdict-outbox" new-outbox
+
+  publish-verdict-accept : RepoState, Keypair, Text, Text, Integer -> RepoState
+  publish-verdict-accept (repo) (kp) (proposal-id) (reason) (ts) =
+    publish-verdict repo kp proposal-id Accept reason ts
+
+  publish-verdict-reject : RepoState, Keypair, Text, Text, Integer -> RepoState
+  publish-verdict-reject (repo) (kp) (proposal-id) (reason) (ts) =
+    publish-verdict repo kp proposal-id Reject reason ts
+
+  drain-verdict-outbox : RepoState -> RepoState
+  drain-verdict-outbox (repo) = __record-set repo "verdict-outbox" []
+
+  verdict-outbox-size : RepoState -> Integer
+  verdict-outbox-size (repo) = list-length (repo.verdict-outbox)
+
+Section: Wire Codec
+
+ The OS-layer AgentProtocol carries Annotate and Verdict messages
+ with opaque payload bytes; this section is where those bytes get
+ their meaning. encode-proposal-payload and encode-verdict produce
+ byte sequences that decode-proposal-payload and decode-verdict
+ read back into records. The Works layer owns this encoding so
+ Trust does not have to learn about ProposalPayload, Annotation,
+ SignedAnnotation, or VerdictKind.
+
+ The verified flag on SignedAnnotation never travels — it is
+ receiver-local and recomputed via verify-annotation against the
+ receiver's keyring.
+
+  encode-annotation-kind : AnnotationKind -> Integer
+  encode-annotation-kind (k) = when k
+    is Rationale -> 0
+    is Invariant -> 1
+    is Warning -> 2
+    is Discovery -> 3
+    is Doctrine -> 4
+    is Todo -> 5
+
+  decode-annotation-kind : Integer -> AnnotationKind
+  decode-annotation-kind (b) =
+    if b == 0 then Rationale
+    else if b == 1 then Invariant
+    else if b == 2 then Warning
+    else if b == 3 then Discovery
+    else if b == 4 then Doctrine
+    else Todo
+
+  encode-target : AnnotationTarget -> List Integer
+  encode-target (t) = frame-encode-text (t.chapter) & frame-encode-text (t.path)
+
+  TargetDecodeResult = record {
+    target : AnnotationTarget,
+    next-offset : Integer between 0 and 4294967295
+  }
+
+  decode-target : List Integer, Integer -> TargetDecodeResult
+  decode-target (bs) (off) =
+    let cr = frame-decode-text bs off
+    in let pr = frame-decode-text bs (cr.next-offset)
+    in TargetDecodeResult {
+      target = AnnotationTarget { chapter = cr.value, path = pr.value },
+      next-offset = pr.next-offset
+    }
+
+  encode-annotation : Annotation -> List Integer
+  encode-annotation (a) =
+    frame-encode-text (a.hash)
+    & encode-target (a.target)
+    & [encode-annotation-kind (a.kind)]
+    & frame-encode-text (a.author)
+    & frame-encode-text (a.body)
+    & frame-le64 (a.timestamp)
+
+  AnnotationDecodeResult = record {
+    annotation : Annotation,
+    next-offset : Integer between 0 and 4294967295
+  }
+
+  decode-annotation : List Integer, Integer -> AnnotationDecodeResult
+  decode-annotation (bs) (off) =
+    let hr = frame-decode-text bs off
+    in let tr = decode-target bs (hr.next-offset)
+    in let kind = decode-annotation-kind (list-at bs (tr.next-offset))
+    in let ar = frame-decode-text bs (tr.next-offset + 1)
+    in let br = frame-decode-text bs (ar.next-offset)
+    in let ts = frame-read-le64 bs (br.next-offset)
+    in AnnotationDecodeResult {
+      annotation = Annotation {
+        hash = hr.value,
+        target = tr.target,
+        kind = kind,
+        author = ar.value,
+        body = br.value,
+        timestamp = ts
+      },
+      next-offset = br.next-offset + 8
+    }
+
+  encode-signed-annotation : SignedAnnotation -> List Integer
+  encode-signed-annotation (sa) =
+    encode-annotation (sa.annotation)
+    & frame-encode-bytes (sa.signature)
+    & frame-encode-text (sa.signer-fingerprint)
+
+  SignedAnnotationDecodeResult = record {
+    signed : SignedAnnotation,
+    next-offset : Integer between 0 and 4294967295
+  }
+
+  decode-signed-annotation : List Integer, Integer -> SignedAnnotationDecodeResult
+  decode-signed-annotation (bs) (off) =
+    let ar = decode-annotation bs off
+    in let sr = frame-decode-bytes bs (ar.next-offset)
+    in let fr = frame-decode-text bs (sr.next-offset)
+    in SignedAnnotationDecodeResult {
+      signed = SignedAnnotation {
+        annotation = ar.annotation,
+        signature = sr.value,
+        signer-fingerprint = fr.value,
+        verified = False
+      },
+      next-offset = fr.next-offset
+    }
+
+  encode-proposal-payload : ProposalPayload -> List Integer
+  encode-proposal-payload (pp) =
+    encode-signed-annotation (pp.annotation)
+    & frame-encode-text (pp.code-suggestion)
+    & frame-encode-text (pp.target-chapter)
+    & frame-le64 (pp.timestamp)
+
+  decode-proposal-payload : List Integer -> ProposalPayload
+  decode-proposal-payload (bs) =
+    let sr = decode-signed-annotation bs 0
+    in let cr = frame-decode-text bs (sr.next-offset)
+    in let tr = frame-decode-text bs (cr.next-offset)
+    in let ts = frame-read-le64 bs (tr.next-offset)
+    in ProposalPayload {
+      annotation = sr.signed,
+      code-suggestion = cr.value,
+      target-chapter = tr.value,
+      timestamp = ts
+    }
+
+  encode-verdict-kind : VerdictKind -> List Integer
+  encode-verdict-kind (k) = when k
+    is Accept -> [0]
+    is Reject -> [1]
+    is Amend (note) -> [2] & frame-encode-text note
+    is Abstain -> [3]
+
+  VerdictKindDecodeResult = record {
+    kind : VerdictKind,
+    next-offset : Integer between 0 and 4294967295
+  }
+
+  decode-verdict-kind : List Integer, Integer -> VerdictKindDecodeResult
+  decode-verdict-kind (bs) (off) =
+    let tag = list-at bs off
+    in if tag == 0 then VerdictKindDecodeResult { kind = Accept, next-offset = off + 1 }
+    else if tag == 1 then VerdictKindDecodeResult { kind = Reject, next-offset = off + 1 }
+    else if tag == 2 then
+      let nr = frame-decode-text bs (off + 1)
+      in VerdictKindDecodeResult { kind = Amend (nr.value), next-offset = nr.next-offset }
+    else VerdictKindDecodeResult { kind = Abstain, next-offset = off + 1 }
+
+  encode-verdict : Verdict -> List Integer
+  encode-verdict (v) =
+    frame-encode-text (v.id)
+    & frame-encode-text (v.proposal-id)
+    & frame-encode-text (v.author-fingerprint)
+    & encode-verdict-kind (v.kind)
+    & frame-encode-text (v.reason)
+    & frame-encode-bytes (v.signature)
+    & frame-le64 (v.timestamp)
+
+  decode-verdict : List Integer -> Verdict
+  decode-verdict (bs) =
+    let ir = frame-decode-text bs 0
+    in let pr = frame-decode-text bs (ir.next-offset)
+    in let ar = frame-decode-text bs (pr.next-offset)
+    in let kr = decode-verdict-kind bs (ar.next-offset)
+    in let rr = frame-decode-text bs (kr.next-offset)
+    in let sr = frame-decode-bytes bs (rr.next-offset)
+    in let ts = frame-read-le64 bs (sr.next-offset)
+    in Verdict {
+      id = ir.value,
+      proposal-id = pr.value,
+      author-fingerprint = ar.value,
+      kind = kr.kind,
+      reason = rr.value,
+      signature = sr.value,
+      timestamp = ts
+    }
+
+Section: Supersession
+
+ D.5: when a new annotation supersedes an old one (same kind, same
+ target, but the new one wins by the resolution rule), the old
+ hash is mapped to the new in the supersession HAMT. The Reader's
+ default queries hide superseded entries.
+
+  record-supersession : RepoState, Text, Text -> RepoState
+  record-supersession (repo) (old-hash) (new-hash) =
+    let new-map = hamt-set (repo.supersession) old-hash new-hash
+    in __record-set repo "supersession" new-map
+
+  is-superseded : RepoState, Text -> Boolean
+  is-superseded (repo) (annotation-hash) =
+    when hamt-get (repo.supersession) annotation-hash
+      is None -> False
+      is Just (replacement) -> True
+
+  supersession-target : RepoState, Text -> Maybe Text
+  supersession-target (repo) (annotation-hash) =
+    hamt-get (repo.supersession) annotation-hash
+
+Section: Proposal Resolution
+
+  proposal-is-accepted : RepoState, Text -> Boolean
+  proposal-is-accepted (repo) (proposal-id) =
+    when hamt-get (repo.verdicts) proposal-id
+      is None -> False
+      is Just (vs) -> all-accept-or-abstain vs 0 (list-length vs)
+
+  all-accept-or-abstain : List Verdict, Integer, Integer -> Boolean
+  all-accept-or-abstain (vs) (i) (len) =
+    if i >= len then True
+    else let v = list-at vs i
+    in when v.kind
+      is Accept -> all-accept-or-abstain vs (i + 1) len
+      is Abstain -> all-accept-or-abstain vs (i + 1) len
+      is otherwise -> False
+
+Section: Formatting
+
+  format-proposal : Proposal -> Text
+  format-proposal (p) =
+    "Proposal " & p.id & " [" & proposal-status-name (p.status) & "]\n"
+    & "  " & p.description & "\n"
+    & "  by " & p.author-fingerprint & " at " & show (p.timestamp)
+
+  proposal-status-name : ProposalStatus -> Text
+  proposal-status-name (s) = when s
+    is ProposalOpen -> "open"
+    is ProposalAccepted -> "accepted"
+    is ProposalRejected -> "rejected"
+    is ProposalAmended -> "amended"
+
+  format-verdict : Verdict -> Text
+  format-verdict (v) =
+    verdict-kind-name (v.kind) & " by " & v.author-fingerprint
+    & ": " & v.reason
+
+Page 1

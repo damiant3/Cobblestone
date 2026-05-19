@@ -1,0 +1,833 @@
+Chapter: DiskFacts
+
+  cites Foreword chapter FactStore
+
+  cites Foreword chapter Maybe
+
+  cites Foreword chapter Sha256
+
+
+
+ DiskFacts persists FactStore entries to disk sectors using a
+
+ superblock, log-structured writes, and SHA-256 integrity checks,
+
+ giving the OS durable key-value storage.
+
+
+
+ We say:
+
+
+
+Section: Constants
+
+
+
+  superblock-magic : Text = "CODEXFS1"
+
+  fact-log-start : Integer = 2
+
+  sector-size : Integer = 512
+
+
+
+Section: Byte Packing (Little-Endian)
+
+
+
+  pack-u8 : Integer, Integer, Integer -> Integer
+
+  pack-u8 (buf) (off) (val) =
+
+    let p0 = poke-byte buf off (bit-and val 255)
+
+    in off + 1
+
+
+
+  unpack-u8 : Integer, Integer -> Integer
+
+  unpack-u8 (buf) (off) = peek-byte buf off
+
+
+
+  pack-u16-le : Integer, Integer, Integer -> Integer
+
+  pack-u16-le (buf) (off) (val) =
+
+    let p0 = poke-byte buf off (bit-and val 255)
+
+    in let p1 = poke-byte buf (off + 1) (bit-and (bit-shru val 8) 255)
+
+    in off + 2
+
+
+
+  unpack-u16-le : Integer, Integer -> Integer
+
+  unpack-u16-le (buf) (off) =
+
+    bit-or (peek-byte buf off) (bit-shl (peek-byte buf (off + 1)) 8)
+
+
+
+  pack-u32-le : Integer, Integer, Integer -> Integer
+
+  pack-u32-le (buf) (off) (val) =
+
+    let p0 = poke-byte buf off (bit-and val 255)
+
+    in let p1 = poke-byte buf (off + 1) (bit-and (bit-shru val 8) 255)
+
+    in let p2 = poke-byte buf (off + 2) (bit-and (bit-shru val 16) 255)
+
+    in let p3 = poke-byte buf (off + 3) (bit-and (bit-shru val 24) 255)
+
+    in off + 4
+
+
+
+  unpack-u32-le : Integer, Integer -> Integer
+
+  unpack-u32-le (buf) (off) =
+
+    let b0 = peek-byte buf off
+
+    in let b1 = bit-shl (peek-byte buf (off + 1)) 8
+
+    in let b2 = bit-shl (peek-byte buf (off + 2)) 16
+
+    in let b3 = bit-shl (peek-byte buf (off + 3)) 24
+
+    in bit-or b0 (bit-or b1 (bit-or b2 b3))
+
+
+
+  pack-u64-le : Integer, Integer, Integer -> Integer
+
+  pack-u64-le (buf) (off) (val) =
+
+    let p0 = poke-byte buf off (bit-and val 255)
+
+    in let p1 = poke-byte buf (off + 1) (bit-and (bit-shru val 8) 255)
+
+    in let p2 = poke-byte buf (off + 2) (bit-and (bit-shru val 16) 255)
+
+    in let p3 = poke-byte buf (off + 3) (bit-and (bit-shru val 24) 255)
+
+    in let p4 = poke-byte buf (off + 4) (bit-and (bit-shru val 32) 255)
+
+    in let p5 = poke-byte buf (off + 5) (bit-and (bit-shru val 40) 255)
+
+    in let p6 = poke-byte buf (off + 6) (bit-and (bit-shru val 48) 255)
+
+    in let p7 = poke-byte buf (off + 7) (bit-and (bit-shru val 56) 255)
+
+    in off + 8
+
+
+
+  unpack-u64-le : Integer, Integer -> Integer
+
+  unpack-u64-le (buf) (off) =
+
+    let b0 = peek-byte buf off
+
+    in let b1 = bit-shl (peek-byte buf (off + 1)) 8
+
+    in let b2 = bit-shl (peek-byte buf (off + 2)) 16
+
+    in let b3 = bit-shl (peek-byte buf (off + 3)) 24
+
+    in let b4 = bit-shl (peek-byte buf (off + 4)) 32
+
+    in let b5 = bit-shl (peek-byte buf (off + 5)) 40
+
+    in let b6 = bit-shl (peek-byte buf (off + 6)) 48
+
+    in let b7 = bit-shl (peek-byte buf (off + 7)) 56
+
+    in bit-or b0 (bit-or b1 (bit-or b2 (bit-or b3 (bit-or b4 (bit-or b5 (bit-or b6 b7))))))
+
+
+
+Section: Buffer Utilities
+
+
+
+  zero-bytes : Integer, Integer, Integer -> Integer
+
+  zero-bytes (buf) (off) (count) =
+
+    zero-bytes-loop buf off count 0
+
+
+
+  zero-bytes-loop : Integer, Integer, Integer, Integer -> Integer
+
+  zero-bytes-loop (buf) (off) (count) (i) =
+
+    if i >= count then 0
+
+    else let p = poke-byte buf (off + i) 0
+
+         in zero-bytes-loop buf off count (i + 1)
+
+
+
+  pack-text : Integer, Integer, Text -> Integer
+
+  pack-text (buf) (off) (txt) =
+
+    pack-text-loop buf off txt 0 (text-length txt)
+
+
+
+  pack-text-loop : Integer, Integer, Text, Integer, Integer -> Integer
+
+  pack-text-loop (buf) (off) (txt) (i) (len) =
+
+    if i >= len then off + i
+
+    else let p = poke-byte buf (off + i) (char-code-at txt i)
+
+         in pack-text-loop buf off txt (i + 1) len
+
+
+
+  unpack-text : Integer, Integer, Integer -> Text
+
+  unpack-text (buf) (off) (len) =
+
+    unpack-text-loop buf off len 0 ""
+
+
+
+  unpack-text-loop : Integer, Integer, Integer, Integer, Text -> Text
+
+  unpack-text-loop (buf) (off) (len) (i) (acc) =
+
+    if i >= len then acc
+
+    else let ch = char-to-text (code-to-char (peek-byte buf (off + i)))
+
+         in unpack-text-loop buf off len (i + 1) (acc & ch)
+
+
+
+Section: Hash Utilities
+
+
+
+  pack-sha256-bytes : Integer, Integer, List Integer -> Integer
+
+  pack-sha256-bytes (buf) (off) (words) =
+
+    pack-sha256-loop buf off words 0
+
+
+
+  pack-sha256-loop : Integer, Integer, List Integer, Integer -> Integer
+
+  pack-sha256-loop (buf) (off) (words) (i) =
+
+    if i >= 8 then off + 32
+
+    else let w = list-at words i
+
+    in let p0 = poke-byte buf (off + i * 4) (bit-and (bit-shru w 24) 255)
+
+    in let p1 = poke-byte buf (off + i * 4 + 1) (bit-and (bit-shru w 16) 255)
+
+    in let p2 = poke-byte buf (off + i * 4 + 2) (bit-and (bit-shru w 8) 255)
+
+    in let p3 = poke-byte buf (off + i * 4 + 3) (bit-and w 255)
+
+    in pack-sha256-loop buf off words (i + 1)
+
+
+
+  unpack-sha256-hex : Integer, Integer -> Text
+
+  unpack-sha256-hex (buf) (off) =
+
+    unpack-sha256-hex-loop buf off 0 ""
+
+
+
+  unpack-sha256-hex-loop : Integer, Integer, Integer, Text -> Text
+
+  unpack-sha256-hex-loop (buf) (off) (i) (acc) =
+
+    if i >= 32 then acc
+
+    else let b = peek-byte buf (off + i)
+
+    in unpack-sha256-hex-loop buf off (i + 1) (acc & byte-to-hex b)
+
+
+
+Section: Superblock
+
+
+
+  Superblock = record {
+
+    log-head : Integer,
+
+    fact-count : Integer,
+
+    index-gen : Integer
+
+  }
+
+
+
+  empty-superblock : Superblock = Superblock {
+
+    log-head = fact-log-start,
+
+    fact-count = 0,
+
+    index-gen = 1
+
+  }
+
+
+
+  pack-superblock : Integer, Superblock -> Integer
+
+  pack-superblock (buf) (sb) =
+
+    let z = zero-bytes buf 0 sector-size
+
+    in let off0 = pack-text buf 0 superblock-magic
+
+    in let off1 = pack-u64-le buf off0 (sb.log-head)
+
+    in let off2 = pack-u64-le buf off1 (sb.fact-count)
+
+    in pack-u64-le buf off2 (sb.index-gen)
+
+
+
+  unpack-superblock : Integer -> Maybe Superblock
+
+  unpack-superblock (buf) =
+
+    let magic = unpack-text buf 0 8
+
+    in if magic == superblock-magic then
+
+      Just (Superblock {
+
+        log-head = unpack-u64-le buf 8,
+
+        fact-count = unpack-u64-le buf 16,
+
+        index-gen = unpack-u64-le buf 24
+
+      })
+
+    else None
+
+
+
+  write-superblock : Superblock -> Integer
+
+  write-superblock (sb) =
+
+    let buf = alloc-bytes sector-size
+
+    in let off = pack-superblock buf sb
+
+    in block-write-sector (int-mod (sb.index-gen) 2) buf
+
+
+
+  read-superblock-at : Integer -> Maybe Superblock
+
+  read-superblock-at (sector) =
+
+    let buf = block-read-sector sector
+
+    in unpack-superblock buf
+
+
+
+  pick-superblock : Maybe Superblock, Maybe Superblock -> Maybe Superblock
+
+  pick-superblock (a) (b) =
+
+    when a
+
+      is None -> b
+
+      is Just (sa) -> when b
+
+        is None -> Just sa
+
+        is Just (sb-val) ->
+
+          if sb-val.index-gen > sa.index-gen then Just sb-val else Just sa
+
+
+
+  read-superblock : Maybe Superblock
+
+  read-superblock =
+
+    let sb0 = read-superblock-at 0
+
+    in let sb1 = read-superblock-at 1
+
+    in pick-superblock sb0 sb1
+
+
+
+Section: Fact Log Entries
+
+
+
+  fact-kind-to-int : FactKind -> Integer
+
+  fact-kind-to-int (k) =
+
+    when k
+
+      is DefinitionFact -> 0
+
+      is ProofFact -> 1
+
+      is VouchFact -> 2
+
+      is PolicyFact -> 3
+
+      is CapabilityFact -> 4
+
+
+
+  int-to-fact-kind : Integer -> FactKind
+
+  int-to-fact-kind (i) =
+
+    if i == 0 then DefinitionFact
+
+    else if i == 1 then ProofFact
+
+    else if i == 2 then VouchFact
+
+    else if i == 3 then PolicyFact
+
+    else CapabilityFact
+
+
+
+  fact-entry-header-size : Integer = 78
+
+
+
+  sectors-for-fact : Integer -> Integer
+
+  sectors-for-fact (content-len) =
+
+    let entry-size = fact-entry-header-size + content-len
+
+    in (entry-size + sector-size - 1) / sector-size
+
+
+
+  pack-fact-entry : Integer, FactKind, Text, Integer -> Integer
+
+  pack-fact-entry (buf) (kind) (content) (timestamp) =
+
+    let content-len = text-length content
+
+    in let num-sectors = sectors-for-fact content-len
+
+    in let buf-size = num-sectors * sector-size
+
+    in let z = zero-bytes buf 0 buf-size
+
+    in let hash-words = sha256 (text-to-bytes content)
+
+    in let off0 = pack-sha256-bytes buf 0 hash-words
+
+    in let off1 = pack-u16-le buf off0 (fact-kind-to-int kind)
+
+    in let off2 = off1 + 32
+
+    in let off3 = pack-u64-le buf off2 timestamp
+
+    in let off4 = pack-u32-le buf off3 content-len
+
+    in pack-text buf off4 content
+
+
+
+  write-fact-sectors : Integer, Integer, Integer, Integer -> Integer
+
+  write-fact-sectors (buf) (start-sector) (count) (i) =
+
+    if i >= count then 0
+
+    else let w = block-write-sector (start-sector + i) (buf + i * sector-size)
+
+         in write-fact-sectors buf start-sector count (i + 1)
+
+
+
+Section: Disk Operations
+
+
+
+  DiskFactStore = record {
+
+    superblock : Superblock,
+
+    mem : BareFactStore
+
+  }
+
+
+
+  disk-init : DiskFactStore
+
+  disk-init = DiskFactStore {
+
+    superblock = empty-superblock,
+
+    mem = fact-store-empty
+
+  }
+
+
+
+  disk-write-fact : DiskFactStore, FactKind, Text, Integer -> DiskFactStore
+
+  disk-write-fact (store) (kind) (content) (timestamp) =
+
+    let sb = store.superblock
+
+    in let content-len = text-length content
+
+    in if content-len > max-single-sector-content then store
+
+    else let buf = alloc-bytes sector-size
+
+    in let packed = pack-fact-entry buf kind content timestamp
+
+    in let written = write-fact-sectors buf (sb.log-head) 1 0
+
+    in let new-sb = Superblock {
+
+      log-head = sb.log-head + 1,
+
+      fact-count = sb.fact-count + 1,
+
+      index-gen = sb.index-gen
+
+    }
+
+    in let fact = fact-create kind content "" timestamp
+
+    in let new-mem = fact-store (store.mem) fact
+
+    in DiskFactStore {
+
+      superblock = new-sb,
+
+      mem = new-mem
+
+    }
+
+
+
+  disk-checkpoint : DiskFactStore -> DiskFactStore
+
+  disk-checkpoint (store) =
+
+    let sb = store.superblock
+
+    in let new-sb = Superblock {
+
+      log-head = sb.log-head,
+
+      fact-count = sb.fact-count,
+
+      index-gen = sb.index-gen + 1
+
+    }
+
+    in let written = write-superblock new-sb
+
+    in DiskFactStore {
+
+      superblock = new-sb,
+
+      mem = store.mem
+
+    }
+
+
+
+  disk-read-fact : DiskFactStore, Text -> Maybe Fact
+
+  disk-read-fact (store) (hash) = fact-load (store.mem) hash
+
+
+
+  disk-fact-count : DiskFactStore -> Integer
+
+  disk-fact-count (store) = store.superblock.fact-count
+
+
+
+Section: Disk Load (Boot-Time Recovery)
+
+
+
+  max-single-sector-content : Integer = 434
+
+
+
+  read-fact-from-sector : Integer -> Maybe Fact
+
+  read-fact-from-sector (sector) =
+
+    let buf = block-read-sector sector
+
+    in let kind-int = unpack-u16-le buf 32
+
+    in let timestamp = unpack-u64-le buf 66
+
+    in let content-len = unpack-u32-le buf 74
+
+    in if content-len > max-single-sector-content then None
+
+    else if content-len == 0 then None
+
+    else let content = unpack-text buf 78 content-len
+
+         in let stored-hash = unpack-sha256-hex buf 0
+
+         in let computed-hash = fact-content-hash content
+
+         in if stored-hash == computed-hash then
+
+           Just (Fact { hash = computed-hash, kind = int-to-fact-kind kind-int, content = content, author = "", timestamp = timestamp })
+
+         else None
+
+
+
+  disk-load-facts : Integer, Integer, BareFactStore -> BareFactStore
+
+  disk-load-facts (sector) (end-sector) (mem) =
+
+    if sector >= end-sector then mem
+
+    else let fact-maybe = read-fact-from-sector sector
+
+         in when fact-maybe
+
+           is Just (f) ->
+
+             let content-len = text-length (f.content)
+
+             in let nsec = sectors-for-fact content-len
+
+             in disk-load-facts (sector + nsec) end-sector (fact-store mem f)
+
+           is None -> mem
+
+
+
+  disk-load-with-sb : Superblock -> DiskFactStore
+
+  disk-load-with-sb (sb) =
+
+    let mem = disk-load-facts fact-log-start (sb.log-head) fact-store-empty
+
+    in DiskFactStore { superblock = sb, mem = mem }
+
+
+
+  disk-load : DiskFactStore
+
+  disk-load =
+
+    let sb-maybe = read-superblock
+
+    in when sb-maybe
+
+      is Just (sb) -> disk-load-with-sb sb
+
+      is None -> disk-init
+
+
+
+Section: System DB Types
+
+  IdentityRecord = record {
+    id-version : Integer,
+    id-salt : List Integer,
+    id-iv : List Integer,
+    id-encrypted-key : List Integer,
+    id-public-key : List Integer,
+    id-created-ticks : Integer
+  }
+
+  SysBootConfig = record {
+    sbc-boot-mode : Integer,
+    sbc-boot-partition : Integer,
+    sbc-boot-drive-serial : Text
+  }
+
+  sysdb-boot-mode-console : Integer = 0
+  sysdb-boot-mode-ui : Integer = 1
+  sysdb-boot-mode-serial : Integer = 2
+
+Section: System DB Fact Kinds
+
+  sysdb-kind-identity : Integer = 10
+  sysdb-kind-boot-config : Integer = 11
+  sysdb-kind-trust-vouch : Integer = 12
+  sysdb-kind-drive-registry : Integer = 13
+  sysdb-kind-installed-os : Integer = 14
+
+Section: Identity Serialization
+
+  sysdb-pack-identity : Integer, IdentityRecord -> Integer
+  sysdb-pack-identity (buf) (rec) =
+    let z = zero-bytes buf 0 sector-size
+    in let off0 = pack-u8 buf 0 (rec.id-version)
+    in let off1 = sysdb-pack-bytes buf off0 (rec.id-salt)
+    in let off2 = sysdb-pack-bytes buf off1 (rec.id-iv)
+    in let off3 = sysdb-pack-bytes buf off2 (rec.id-encrypted-key)
+    in let off4 = sysdb-pack-bytes buf off3 (rec.id-public-key)
+    in pack-u64-le buf off4 (rec.id-created-ticks)
+
+  sysdb-unpack-identity : Integer -> Maybe IdentityRecord
+  sysdb-unpack-identity (buf) =
+    let version = unpack-u8 buf 0
+    in let salt = sysdb-unpack-bytes buf 1 16
+    in let iv = sysdb-unpack-bytes buf 17 16
+    in let enc-key = sysdb-unpack-bytes buf 33 48
+    in let pub-key = sysdb-unpack-bytes buf 81 32
+    in let ticks = unpack-u64-le buf 113
+    in Just (IdentityRecord {
+      id-version = version,
+      id-salt = salt,
+      id-iv = iv,
+      id-encrypted-key = enc-key,
+      id-public-key = pub-key,
+      id-created-ticks = ticks
+    })
+
+Section: Boot Config Serialization
+
+  sysdb-pack-boot-config : Integer, SysBootConfig -> Integer
+  sysdb-pack-boot-config (buf) (cfg) =
+    let z = zero-bytes buf 0 sector-size
+    in let off0 = pack-u8 buf 0 (cfg.sbc-boot-mode)
+    in let off1 = pack-u8 buf off0 (cfg.sbc-boot-partition)
+    in let off2 = pack-text buf off1 (cfg.sbc-boot-drive-serial)
+    in pack-u8 buf off2 0
+
+  sysdb-unpack-boot-config : Integer -> Maybe SysBootConfig
+  sysdb-unpack-boot-config (buf) =
+    let mode = unpack-u8 buf 0
+    in let part = unpack-u8 buf 1
+    in let serial = sysdb-unpack-cstr buf 2
+    in Just (SysBootConfig {
+      sbc-boot-mode = mode,
+      sbc-boot-partition = part,
+      sbc-boot-drive-serial = serial
+    })
+
+Section: System DB Byte Helpers
+
+  sysdb-pack-bytes : Integer, Integer, List Integer -> Integer
+  sysdb-pack-bytes (buf) (off) (bs) = sysdb-pack-bytes-loop buf off bs 0 (list-length bs)
+
+  sysdb-pack-bytes-loop : Integer, Integer, List Integer, Integer, Integer -> Integer
+  sysdb-pack-bytes-loop (buf) (off) (bs) (i) (len) =
+    if i >= len then off + len
+    else let p = poke-byte buf (off + i) (list-at bs i)
+    in sysdb-pack-bytes-loop buf off bs (i + 1) len
+
+  sysdb-unpack-bytes : Integer, Integer, Integer -> List Integer
+  sysdb-unpack-bytes (buf) (off) (len) = sysdb-unpack-bytes-loop buf off len 0 []
+
+  sysdb-unpack-bytes-loop : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  sysdb-unpack-bytes-loop (buf) (off) (len) (i) (acc) =
+    if i >= len then acc
+    else sysdb-unpack-bytes-loop buf off len (i + 1) (list-push acc (peek-byte buf (off + i)))
+
+  sysdb-unpack-cstr : Integer, Integer -> Text
+  sysdb-unpack-cstr (buf) (off) = sysdb-cstr-loop buf off ""
+
+  sysdb-cstr-loop : Integer, Integer, Text -> Text
+  sysdb-cstr-loop (buf) (off) (acc) =
+    let b = peek-byte buf off
+    in if b == 0 then acc
+    else sysdb-cstr-loop buf (off + 1) (acc & char-to-text (code-to-char b))
+
+Section: System DB Disk Operations
+
+  sysdb-write-identity : DiskFactStore, IdentityRecord, Integer -> DiskFactStore
+  sysdb-write-identity (store) (rec) (timestamp) =
+    let buf = alloc-bytes sector-size
+    in let packed = sysdb-pack-identity buf rec
+    in let content = unpack-text buf 0 121
+    in disk-write-fact store (int-to-fact-kind sysdb-kind-identity) content timestamp
+
+  sysdb-write-boot-config : DiskFactStore, SysBootConfig, Integer -> DiskFactStore
+  sysdb-write-boot-config (store) (cfg) (timestamp) =
+    let buf = alloc-bytes sector-size
+    in let packed = sysdb-pack-boot-config buf cfg
+    in let serial-len = text-length (cfg.sbc-boot-drive-serial)
+    in let content = unpack-text buf 0 (3 + serial-len)
+    in disk-write-fact store (int-to-fact-kind sysdb-kind-boot-config) content timestamp
+
+  sysdb-find-identity : DiskFactStore -> Maybe IdentityRecord
+  sysdb-find-identity (store) =
+    sysdb-scan-for-kind store sysdb-kind-identity fact-log-start
+
+  sysdb-find-boot-config : DiskFactStore -> Maybe SysBootConfig
+  sysdb-find-boot-config (store) =
+    sysdb-scan-config store sysdb-kind-boot-config fact-log-start
+
+  sysdb-scan-for-kind : DiskFactStore, Integer, Integer -> Maybe IdentityRecord
+  sysdb-scan-for-kind (store) (target-kind) (sector) =
+    if sector >= store.superblock.log-head then None
+    else let buf = block-read-sector sector
+    in let kind-int = unpack-u16-le buf 32
+    in if kind-int == target-kind then sysdb-unpack-identity buf
+    else sysdb-scan-for-kind store target-kind (sector + 1)
+
+  sysdb-scan-config : DiskFactStore, Integer, Integer -> Maybe SysBootConfig
+  sysdb-scan-config (store) (target-kind) (sector) =
+    if sector >= store.superblock.log-head then None
+    else let buf = block-read-sector sector
+    in let kind-int = unpack-u16-le buf 32
+    in if kind-int == target-kind then
+      let content-len = unpack-u32-le buf 74
+      in let content-buf = alloc-bytes sector-size
+      in let w = sysdb-copy-content buf 78 content-buf 0 content-len
+      in sysdb-unpack-boot-config content-buf
+    else sysdb-scan-config store target-kind (sector + 1)
+
+  sysdb-copy-content : Integer, Integer, Integer, Integer, Integer -> Integer
+  sysdb-copy-content (src) (src-off) (dst) (dst-off) (len) =
+    if len <= 0 then 0
+    else let w = poke-byte dst dst-off (peek-byte src src-off)
+    in sysdb-copy-content src (src-off + 1) dst (dst-off + 1) (len - 1)
+
+  sysdb-is-fresh : DiskFactStore -> Boolean
+  sysdb-is-fresh (store) = store.superblock.fact-count == 0
+
+Page 1
+

@@ -1,0 +1,86 @@
+Chapter: IntervalTree
+  cites Foreword chapter Maybe
+
+ An Interval is a record containing iv-lo, iv-hi, and iv-val.
+ An IntervalTree is a record containing iv-intervals and iv-count.
+ To ivt-empty gives an IntervalTree with no intervals.
+ To ivt-insert gives a new IntervalTree with the interval added in sorted order.
+ To ivt-query-point gives all intervals that contain the given point.
+ To ivt-query-range gives all intervals that overlap the given lo-hi range.
+ To ivt-count gives the number of intervals stored.
+ To format-interval gives a Text representation of an Interval.
+
+ We say:
+
+Section: Types
+  Interval = record {
+    iv-lo : Integer,
+    iv-hi : Integer,
+    iv-val : Integer
+  }
+
+  IntervalTree = record {
+    iv-intervals : List Interval,
+    iv-count : Integer
+  }
+
+Section: Construction
+  ivt-empty : IntervalTree
+  ivt-empty = IntervalTree { iv-intervals = [], iv-count = 0 }
+
+  ivt-insert : IntervalTree, Integer, Integer, Integer -> IntervalTree
+  ivt-insert (tree) (lo) (hi) (val) =
+    let iv = Interval { iv-lo = lo, iv-hi = hi, iv-val = val }
+    in let pos = ivt-find-insert-pos (tree.iv-intervals) lo 0 (tree.iv-count)
+    in IntervalTree { iv-intervals = ivt-list-insert (tree.iv-intervals) pos iv (tree.iv-count), iv-count = tree.iv-count + 1 }
+
+  ivt-find-insert-pos : List Interval, Integer, Integer, Integer -> Integer
+  ivt-find-insert-pos (ivs) (lo) (i) (len) =
+    if i >= len then len
+    else if (list-at ivs i).iv-lo > lo then i
+    else ivt-find-insert-pos ivs lo (i + 1) len
+
+  ivt-list-insert : List Interval, Integer, Interval, Integer -> List Interval
+  ivt-list-insert (ivs) (pos) (new-iv) (len) = ivt-splice ivs pos new-iv 0 len []
+
+  ivt-splice : List Interval, Integer, Interval, Integer, Integer, List Interval -> List Interval
+  ivt-splice (ivs) (pos) (new-iv) (i) (len) (acc) =
+    if i > len then acc
+    else if i == pos then ivt-splice ivs pos new-iv (i + 1) len (list-push (list-push acc new-iv) (if i < len then list-at ivs i else new-iv))
+    else if i < len then ivt-splice ivs pos new-iv (i + 1) len (list-push acc (list-at ivs i))
+    else acc
+
+Section: Point Query
+  ivt-query-point : IntervalTree, Integer -> List Interval
+  ivt-query-point (tree) (point) = ivt-point-scan (tree.iv-intervals) point 0 (tree.iv-count) []
+
+  ivt-point-scan : List Interval, Integer, Integer, Integer, List Interval -> List Interval
+  ivt-point-scan (ivs) (point) (i) (len) (acc) =
+    if i >= len then acc
+    else let iv = list-at ivs i
+    in if iv.iv-lo > point then acc
+    else if point >= iv.iv-lo then if point <= iv.iv-hi then ivt-point-scan ivs point (i + 1) len (list-push acc iv)
+      else ivt-point-scan ivs point (i + 1) len acc
+    else ivt-point-scan ivs point (i + 1) len acc
+
+Section: Range Query
+  ivt-query-range : IntervalTree, Integer, Integer -> List Interval
+  ivt-query-range (tree) (lo) (hi) = ivt-range-scan (tree.iv-intervals) lo hi 0 (tree.iv-count) []
+
+  ivt-range-scan : List Interval, Integer, Integer, Integer, Integer, List Interval -> List Interval
+  ivt-range-scan (ivs) (lo) (hi) (i) (len) (acc) =
+    if i >= len then acc
+    else let iv = list-at ivs i
+    in if iv.iv-lo > hi then acc
+    else if iv.iv-hi >= lo then if iv.iv-lo <= hi then ivt-range-scan ivs lo hi (i + 1) len (list-push acc iv)
+      else ivt-range-scan ivs lo hi (i + 1) len acc
+    else ivt-range-scan ivs lo hi (i + 1) len acc
+
+Section: Queries
+  ivt-count : IntervalTree -> Integer
+  ivt-count (tree) = tree.iv-count
+
+  format-interval : Interval -> Text
+  format-interval (iv) = "[" & show (iv.iv-lo) & "," & show (iv.iv-hi) & "]=" & show (iv.iv-val)
+
+Page 1

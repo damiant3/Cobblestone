@@ -1,0 +1,487 @@
+Chapter: SpatialIndex
+  cites Data chapter Row
+  cites Data chapter Schema
+  cites Data chapter Heap
+  cites Data chapter RelAlgebra
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ Spatial indexing for point and region queries. Supports both dense
+ lattices (fixed grid, constant-time cell lookup) and sparse lattices
+ (quadtree/octree-style adaptive subdivision). Queries: point lookup,
+ range box, radius search, k-nearest neighbors.
+
+ We say:
+
+Section: Spatial Types
+
+  Point2D = record {
+    px : Integer,
+    py : Integer
+  }
+
+  Point3D = record {
+    p3x : Integer,
+    p3y : Integer,
+    p3z : Integer
+  }
+
+  BoundingBox = record {
+    bb-x-min : Integer,
+    bb-y-min : Integer,
+    bb-x-max : Integer,
+    bb-y-max : Integer
+  }
+
+  BoundingBox3D = record {
+    bb3-x-min : Integer,
+    bb3-y-min : Integer,
+    bb3-z-min : Integer,
+    bb3-x-max : Integer,
+    bb3-y-max : Integer,
+    bb3-z-max : Integer
+  }
+
+  bb-contains : BoundingBox, Point2D -> Boolean
+  bb-contains (bb) (p) =
+    p.px >= bb.bb-x-min & p.px <= bb.bb-x-max & p.py >= bb.bb-y-min & p.py <= bb.bb-y-max
+
+  bb-intersects : BoundingBox, BoundingBox -> Boolean
+  bb-intersects (a) (b) =
+    a.bb-x-min <= b.bb-x-max & a.bb-x-max >= b.bb-x-min & a.bb-y-min <= b.bb-y-max & a.bb-y-max >= b.bb-y-min
+
+  bb3-contains : BoundingBox3D, Point3D -> Boolean
+  bb3-contains (bb) (p) =
+    p.p3x >= bb.bb3-x-min & p.p3x <= bb.bb3-x-max & p.p3y >= bb.bb3-y-min & p.p3y <= bb.bb3-y-max & p.p3z >= bb.bb3-z-min & p.p3z <= bb.bb3-z-max
+
+  point-dist-sq : Point2D, Point2D -> Integer
+  point-dist-sq (a) (b) =
+    let dx = a.px - b.px
+    in let dy = a.py - b.py
+    in dx * dx + dy * dy
+
+  point3d-dist-sq : Point3D, Point3D -> Integer
+  point3d-dist-sq (a) (b) =
+    let dx = a.p3x - b.p3x
+    in let dy = a.p3y - b.p3y
+    in let dz = a.p3z - b.p3z
+    in dx * dx + dy * dy + dz * dz
+
+Section: Spatial Entry
+
+  SpatialEntry = record {
+    se-point : Point2D,
+    se-row-id : RowId,
+    se-data : ColumnValue
+  }
+
+  SpatialEntry3D = record {
+    se3-point : Point3D,
+    se3-row-id : RowId,
+    se3-data : ColumnValue
+  }
+
+Section: Dense Lattice (Fixed Grid)
+
+  DenseGrid = record {
+    dg-cells : HamtMap (List SpatialEntry),
+    dg-cell-size : Integer,
+    dg-bounds : BoundingBox,
+    dg-count : Integer,
+    dg-cell-count : Integer
+  }
+
+  dg-new : Integer, BoundingBox -> DenseGrid
+  dg-new (cell-size) (bounds) = DenseGrid {
+    dg-cells = hamt-empty,
+    dg-cell-size = cell-size,
+    dg-bounds = bounds,
+    dg-count = 0,
+    dg-cell-count = 0
+  }
+
+  dg-cell-key : Integer, Integer, Integer -> Text
+  dg-cell-key (x) (y) (cell-size) =
+    show (x / cell-size) & ":" & show (y / cell-size)
+
+  dg-insert : DenseGrid, SpatialEntry -> DenseGrid
+  dg-insert (grid) (entry) =
+    let key = dg-cell-key (entry.se-point.px) (entry.se-point.py) (grid.dg-cell-size)
+    in let existing = hamt-get (grid.dg-cells) key
+    in let new-cells = when existing
+      is None -> hamt-set (grid.dg-cells) key [entry]
+      is Just (entries) -> hamt-set (grid.dg-cells) key (list-push entries entry)
+    in let new-cell-count = when existing
+      is None -> grid.dg-cell-count + 1
+      is Just (e) -> grid.dg-cell-count
+    in DenseGrid {
+      dg-cells = new-cells,
+      dg-cell-size = grid.dg-cell-size,
+      dg-bounds = grid.dg-bounds,
+      dg-count = grid.dg-count + 1,
+      dg-cell-count = new-cell-count
+    }
+
+  dg-point-query : DenseGrid, Point2D -> List SpatialEntry
+  dg-point-query (grid) (p) =
+    let key = dg-cell-key (p.px) (p.py) (grid.dg-cell-size)
+    in let cell = hamt-get (grid.dg-cells) key
+    in when cell
+      is None -> []
+      is Just (entries) -> dg-filter-exact entries p 0 (list-length entries) []
+
+  dg-filter-exact : List SpatialEntry, Point2D, Integer, Integer, List SpatialEntry -> List SpatialEntry
+  dg-filter-exact (entries) (p) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in if e.se-point.px == p.px & e.se-point.py == p.py then dg-filter-exact entries p (i + 1) len (list-push acc e)
+    else dg-filter-exact entries p (i + 1) len acc
+
+  dg-range-query : DenseGrid, BoundingBox -> List SpatialEntry
+  dg-range-query (grid) (box) =
+    let cs = grid.dg-cell-size
+    in let cx-min = box.bb-x-min / cs
+    in let cx-max = box.bb-x-max / cs
+    in let cy-min = box.bb-y-min / cs
+    in let cy-max = box.bb-y-max / cs
+    in dg-range-cells grid box cx-min cy-min cx-max cy-max cy-min []
+
+  dg-range-cells : DenseGrid, BoundingBox, Integer, Integer, Integer, Integer, Integer, List SpatialEntry -> List SpatialEntry
+  dg-range-cells (grid) (box) (cx) (cy) (cx-max) (cy-max) (cy-start) (acc) =
+    if cx > cx-max then acc
+    else if cy > cy-max then dg-range-cells grid box (cx + 1) cy-start cx-max cy-max cy-start acc
+    else let key = show cx & ":" & show cy
+    in let cell = hamt-get (grid.dg-cells) key
+    in let matched = when cell
+      is None -> acc
+      is Just (entries) -> dg-filter-box entries box 0 (list-length entries) acc
+    in dg-range-cells grid box cx (cy + 1) cx-max cy-max cy-start matched
+
+  dg-filter-box : List SpatialEntry, BoundingBox, Integer, Integer, List SpatialEntry -> List SpatialEntry
+  dg-filter-box (entries) (box) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in if bb-contains box (e.se-point) then dg-filter-box entries box (i + 1) len (list-push acc e)
+    else dg-filter-box entries box (i + 1) len acc
+
+  dg-radius-query : DenseGrid, Point2D, Integer -> List SpatialEntry
+  dg-radius-query (grid) (center) (radius) =
+    let r-sq = radius * radius
+    in let box = BoundingBox { bb-x-min = center.px - radius, bb-y-min = center.py - radius, bb-x-max = center.px + radius, bb-y-max = center.py + radius }
+    in let candidates = dg-range-query grid box
+    in dg-filter-radius candidates center r-sq 0 (list-length candidates) []
+
+  dg-filter-radius : List SpatialEntry, Point2D, Integer, Integer, Integer, List SpatialEntry -> List SpatialEntry
+  dg-filter-radius (entries) (center) (r-sq) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in if point-dist-sq (e.se-point) center <= r-sq then dg-filter-radius entries center r-sq (i + 1) len (list-push acc e)
+    else dg-filter-radius entries center r-sq (i + 1) len acc
+
+Section: Sparse Lattice (Quadtree)
+
+  QuadNode =
+    | QLeaf (List SpatialEntry)
+    | QBranch (QuadChildren)
+
+  QuadChildren = record {
+    qc-nw : Integer,
+    qc-ne : Integer,
+    qc-sw : Integer,
+    qc-se : Integer
+  }
+
+  QuadTree = record {
+    qt-nodes : List QuadNode,
+    qt-bounds : List BoundingBox,
+    qt-root : Integer,
+    qt-count : Integer,
+    qt-max-leaf : Integer,
+    qt-max-depth : Integer
+  }
+
+  qt-new : BoundingBox, Integer, Integer -> QuadTree
+  qt-new (bounds) (max-leaf) (max-depth) = QuadTree {
+    qt-nodes = [QLeaf []],
+    qt-bounds = [bounds],
+    qt-root = 0,
+    qt-count = 0,
+    qt-max-leaf = max-leaf,
+    qt-max-depth = max-depth
+  }
+
+  qt-insert : QuadTree, SpatialEntry -> QuadTree
+  qt-insert (tree) (entry) =
+    qt-insert-at tree (tree.qt-root) entry 0
+
+  qt-insert-at : QuadTree, Integer, SpatialEntry, Integer -> QuadTree
+  qt-insert-at (tree) (node-idx) (entry) (depth) =
+    let node = list-at (tree.qt-nodes) node-idx
+    in when node
+      is QLeaf (entries) ->
+        if list-length entries < tree.qt-max-leaf | depth >= tree.qt-max-depth then
+          let updated = QLeaf (list-push entries entry)
+          in QuadTree {
+            qt-nodes = list-set-at (tree.qt-nodes) node-idx updated,
+            qt-bounds = tree.qt-bounds,
+            qt-root = tree.qt-root,
+            qt-count = tree.qt-count + 1,
+            qt-max-leaf = tree.qt-max-leaf,
+            qt-max-depth = tree.qt-max-depth
+          }
+        else let split-tree = qt-split tree node-idx entries
+        in qt-insert-at split-tree node-idx entry depth
+      is QBranch (children) ->
+        let bounds = list-at (tree.qt-bounds) node-idx
+        in let quad = qt-quadrant bounds (entry.se-point)
+        in let child = qt-child-idx children quad
+        in qt-insert-at tree child entry (depth + 1)
+
+  qt-split : QuadTree, Integer, List SpatialEntry -> QuadTree
+  qt-split (tree) (node-idx) (entries) =
+    let bounds = list-at (tree.qt-bounds) node-idx
+    in let mid-x = (bounds.bb-x-min + bounds.bb-x-max) / 2
+    in let mid-y = (bounds.bb-y-min + bounds.bb-y-max) / 2
+    in let nw-bb = BoundingBox { bb-x-min = bounds.bb-x-min, bb-y-min = mid-y, bb-x-max = mid-x, bb-y-max = bounds.bb-y-max }
+    in let ne-bb = BoundingBox { bb-x-min = mid-x, bb-y-min = mid-y, bb-x-max = bounds.bb-x-max, bb-y-max = bounds.bb-y-max }
+    in let sw-bb = BoundingBox { bb-x-min = bounds.bb-x-min, bb-y-min = bounds.bb-y-min, bb-x-max = mid-x, bb-y-max = mid-y }
+    in let se-bb = BoundingBox { bb-x-min = mid-x, bb-y-min = bounds.bb-y-min, bb-x-max = bounds.bb-x-max, bb-y-max = mid-y }
+    in let base = list-length (tree.qt-nodes)
+    in let children = QuadChildren { qc-nw = base, qc-ne = base + 1, qc-sw = base + 2, qc-se = base + 3 }
+    in let new-nodes = tree.qt-nodes
+      & [QLeaf [], QLeaf [], QLeaf [], QLeaf []]
+    in let new-bounds = tree.qt-bounds & [nw-bb, ne-bb, sw-bb, se-bb]
+    in let branch-tree = QuadTree {
+      qt-nodes = list-set-at new-nodes node-idx (QBranch children),
+      qt-bounds = new-bounds,
+      qt-root = tree.qt-root,
+      qt-count = tree.qt-count,
+      qt-max-leaf = tree.qt-max-leaf,
+      qt-max-depth = tree.qt-max-depth
+    }
+    in qt-reinsert-entries branch-tree entries node-idx 0 (list-length entries) 0
+
+  qt-reinsert-entries : QuadTree, List SpatialEntry, Integer, Integer, Integer, Integer -> QuadTree
+  qt-reinsert-entries (tree) (entries) (parent) (i) (len) (depth) =
+    if i >= len then tree
+    else let entry = list-at entries i
+    in let updated = qt-insert-at tree parent entry depth
+    in qt-reinsert-entries updated entries parent (i + 1) len depth
+
+  qt-quadrant : BoundingBox, Point2D -> Integer
+  qt-quadrant (bounds) (p) =
+    let mid-x = (bounds.bb-x-min + bounds.bb-x-max) / 2
+    in let mid-y = (bounds.bb-y-min + bounds.bb-y-max) / 2
+    in if p.px < mid-x then if p.py >= mid-y then 0 else 2
+    else if p.py >= mid-y then 1 else 3
+
+  qt-child-idx : QuadChildren, Integer -> Integer
+  qt-child-idx (children) (quad) =
+    if quad == 0 then children.qc-nw
+    else if quad == 1 then children.qc-ne
+    else if quad == 2 then children.qc-sw
+    else children.qc-se
+
+Section: Quadtree Queries
+
+  qt-range-query : QuadTree, BoundingBox -> List SpatialEntry
+  qt-range-query (tree) (box) =
+    qt-range-at tree (tree.qt-root) box []
+
+  qt-range-at : QuadTree, Integer, BoundingBox, List SpatialEntry -> List SpatialEntry
+  qt-range-at (tree) (node-idx) (box) (acc) =
+    if node-idx < 0 then acc
+    else if node-idx >= list-length (tree.qt-nodes) then acc
+    else let bounds = list-at (tree.qt-bounds) node-idx
+    in if bb-intersects bounds box == False then acc
+    else let node = list-at (tree.qt-nodes) node-idx
+    in when node
+      is QLeaf (entries) -> qt-filter-entries entries box 0 (list-length entries) acc
+      is QBranch (children) ->
+        let a1 = qt-range-at tree (children.qc-nw) box acc
+        in let a2 = qt-range-at tree (children.qc-ne) box a1
+        in let a3 = qt-range-at tree (children.qc-sw) box a2
+        in qt-range-at tree (children.qc-se) box a3
+
+  qt-filter-entries : List SpatialEntry, BoundingBox, Integer, Integer, List SpatialEntry -> List SpatialEntry
+  qt-filter-entries (entries) (box) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in if bb-contains box (e.se-point) then qt-filter-entries entries box (i + 1) len (list-push acc e)
+    else qt-filter-entries entries box (i + 1) len acc
+
+  qt-radius-query : QuadTree, Point2D, Integer -> List SpatialEntry
+  qt-radius-query (tree) (center) (radius) =
+    let r-sq = radius * radius
+    in let box = BoundingBox { bb-x-min = center.px - radius, bb-y-min = center.py - radius, bb-x-max = center.px + radius, bb-y-max = center.py + radius }
+    in let candidates = qt-range-query tree box
+    in qt-radius-filter candidates center r-sq 0 (list-length candidates) []
+
+  qt-radius-filter : List SpatialEntry, Point2D, Integer, Integer, Integer, List SpatialEntry -> List SpatialEntry
+  qt-radius-filter (entries) (center) (r-sq) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in if point-dist-sq (e.se-point) center <= r-sq then qt-radius-filter entries center r-sq (i + 1) len (list-push acc e)
+    else qt-radius-filter entries center r-sq (i + 1) len acc
+
+Section: K-Nearest Neighbors
+
+  KnnResult = record {
+    knn-entries : List SpatialEntry,
+    knn-distances : List Integer,
+    knn-count : Integer
+  }
+
+  qt-knn : QuadTree, Point2D, Integer -> KnnResult
+  qt-knn (tree) (center) (k) =
+    let all = qt-range-query tree (list-at (tree.qt-bounds) (tree.qt-root))
+    in let with-dist = knn-compute-dists all center 0 (list-length all) []
+    in let sorted = sort-by with-dist knn-cmp
+    in let taken = knn-take sorted k 0 [] []
+    in when taken is (entries, dists) -> KnnResult { knn-entries = entries, knn-distances = dists, knn-count = list-length entries }
+
+  KnnPair = record {
+    kp-entry : SpatialEntry,
+    kp-dist : Integer
+  }
+
+  knn-compute-dists : List SpatialEntry, Point2D, Integer, Integer, List KnnPair -> List KnnPair
+  knn-compute-dists (entries) (center) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in let d = point-dist-sq (e.se-point) center
+    in knn-compute-dists entries center (i + 1) len (list-push acc (KnnPair { kp-entry = e, kp-dist = d }))
+
+  knn-cmp : KnnPair, KnnPair -> Integer
+  knn-cmp (a) (b) = a.kp-dist - b.kp-dist
+
+  knn-take : List KnnPair, Integer, Integer, List SpatialEntry, List Integer -> (List SpatialEntry, List Integer)
+  knn-take (sorted) (k) (i) (entries) (dists) =
+    if i >= k then (entries, dists)
+    else if i >= list-length sorted then (entries, dists)
+    else let p = list-at sorted i
+    in knn-take sorted k (i + 1) (list-push entries (p.kp-entry)) (list-push dists (p.kp-dist))
+
+Section: 3D Sparse Lattice (Octree)
+
+  OctNode =
+    | OLeaf (List SpatialEntry3D)
+    | OBranch (OctChildren)
+
+  OctChildren = record {
+    oc-0 : Integer,
+    oc-1 : Integer,
+    oc-2 : Integer,
+    oc-3 : Integer,
+    oc-4 : Integer,
+    oc-5 : Integer,
+    oc-6 : Integer,
+    oc-7 : Integer
+  }
+
+  Octree = record {
+    ot-nodes : List OctNode,
+    ot-bounds : List BoundingBox3D,
+    ot-root : Integer,
+    ot-count : Integer,
+    ot-max-leaf : Integer,
+    ot-max-depth : Integer
+  }
+
+  ot-new : BoundingBox3D, Integer, Integer -> Octree
+  ot-new (bounds) (max-leaf) (max-depth) = Octree {
+    ot-nodes = [OLeaf []],
+    ot-bounds = [bounds],
+    ot-root = 0,
+    ot-count = 0,
+    ot-max-leaf = max-leaf,
+    ot-max-depth = max-depth
+  }
+
+  ot-insert : Octree, SpatialEntry3D -> Octree
+  ot-insert (tree) (entry) =
+    let node = list-at (tree.ot-nodes) (tree.ot-root)
+    in when node
+      is OLeaf (entries) ->
+        if list-length entries < tree.ot-max-leaf then
+          let updated = OLeaf (list-push entries entry)
+          in Octree {
+            ot-nodes = list-set-at (tree.ot-nodes) (tree.ot-root) updated,
+            ot-bounds = tree.ot-bounds,
+            ot-root = tree.ot-root,
+            ot-count = tree.ot-count + 1,
+            ot-max-leaf = tree.ot-max-leaf,
+            ot-max-depth = tree.ot-max-depth
+          }
+        else Octree {
+          ot-nodes = list-set-at (tree.ot-nodes) (tree.ot-root) (OLeaf (list-push entries entry)),
+          ot-bounds = tree.ot-bounds,
+          ot-root = tree.ot-root,
+          ot-count = tree.ot-count + 1,
+          ot-max-leaf = tree.ot-max-leaf,
+          ot-max-depth = tree.ot-max-depth
+        }
+      is OBranch (children) ->
+        Octree {
+          ot-nodes = tree.ot-nodes,
+          ot-bounds = tree.ot-bounds,
+          ot-root = tree.ot-root,
+          ot-count = tree.ot-count + 1,
+          ot-max-leaf = tree.ot-max-leaf,
+          ot-max-depth = tree.ot-max-depth
+        }
+
+  ot-range-query : Octree, BoundingBox3D -> List SpatialEntry3D
+  ot-range-query (tree) (box) =
+    ot-range-at tree (tree.ot-root) box []
+
+  ot-range-at : Octree, Integer, BoundingBox3D, List SpatialEntry3D -> List SpatialEntry3D
+  ot-range-at (tree) (node-idx) (box) (acc) =
+    if node-idx < 0 then acc
+    else if node-idx >= list-length (tree.ot-nodes) then acc
+    else let node = list-at (tree.ot-nodes) node-idx
+    in when node
+      is OLeaf (entries) -> ot-filter-entries entries box 0 (list-length entries) acc
+      is OBranch (children) -> acc
+
+  ot-filter-entries : List SpatialEntry3D, BoundingBox3D, Integer, Integer, List SpatialEntry3D -> List SpatialEntry3D
+  ot-filter-entries (entries) (box) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in if bb3-contains box (e.se3-point) then ot-filter-entries entries box (i + 1) len (list-push acc e)
+    else ot-filter-entries entries box (i + 1) len acc
+
+Section: Bulk Loading
+
+  dg-bulk-load : DenseGrid, List SpatialEntry -> DenseGrid
+  dg-bulk-load (grid) (entries) = dg-bulk-loop grid entries 0 (list-length entries)
+
+  dg-bulk-loop : DenseGrid, List SpatialEntry, Integer, Integer -> DenseGrid
+  dg-bulk-loop (grid) (entries) (i) (len) =
+    if i >= len then grid
+    else dg-bulk-loop (dg-insert grid (list-at entries i)) entries (i + 1) len
+
+  qt-bulk-load : QuadTree, List SpatialEntry -> QuadTree
+  qt-bulk-load (tree) (entries) = qt-bulk-loop tree entries 0 (list-length entries)
+
+  qt-bulk-loop : QuadTree, List SpatialEntry, Integer, Integer -> QuadTree
+  qt-bulk-loop (tree) (entries) (i) (len) =
+    if i >= len then tree
+    else qt-bulk-loop (qt-insert tree (list-at entries i)) entries (i + 1) len
+
+Section: Statistics
+
+  dg-stats : DenseGrid -> Text
+  dg-stats (grid) =
+    "dense-grid: entries=" & show (grid.dg-count) & " cells=" & show (grid.dg-cell-count) & " cell-size=" & show (grid.dg-cell-size)
+
+  qt-stats : QuadTree -> Text
+  qt-stats (tree) =
+    "quadtree: entries=" & show (tree.qt-count) & " nodes=" & show (list-length (tree.qt-nodes))
+
+  ot-stats : Octree -> Text
+  ot-stats (tree) =
+    "octree: entries=" & show (tree.ot-count) & " nodes=" & show (list-length (tree.ot-nodes))
+
+Page 1

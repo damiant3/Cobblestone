@@ -1,0 +1,100 @@
+Chapter: Perlin
+
+ Perlin noise generator using fixed-point arithmetic (scale 1000).
+ Produces coherent pseudorandom values for procedural content:
+ terrain, textures, animation. Supports 1D, 2D, and octave layering.
+
+ We say:
+
+Section: Constants
+  perlin-scale : Integer = 1000
+
+Section: Hash
+  perlin-hash : Integer -> Integer
+  perlin-hash (x) =
+    let h = bit-xor (x * 2654435761) 1013904223
+    in let h2 = bit-xor h (bit-shru h 13)
+    in let h3 = h2 * 1103515245 + 12345
+    in let positive = if h3 < 0 then -h3 else h3
+    in positive
+
+  perlin-hash2 : Integer, Integer -> Integer
+  perlin-hash2 (x) (y) = perlin-hash (x + perlin-hash y)
+
+Section: Gradient
+  perlin-grad1 : Integer, Integer -> Integer
+  perlin-grad1 (hash) (dx) =
+    if bit-and hash 1 == 0 then dx else -dx
+
+  perlin-grad2 : Integer, Integer, Integer -> Integer
+  perlin-grad2 (hash) (dx) (dy) =
+    let h = bit-and hash 3
+    in if h == 0 then dx + dy
+    else if h == 1 then dx - dy
+    else if h == 2 then -dx + dy
+    else -dx - dy
+
+Section: Interpolation
+  perlin-fade : Integer -> Integer
+  perlin-fade (t) =
+    let t2 = t * t / perlin-scale
+    in let t3 = t2 * t / perlin-scale
+    in t3 * (t * (t * 6 / perlin-scale - 15) / perlin-scale + 10) / perlin-scale
+
+  perlin-lerp : Integer, Integer, Integer -> Integer
+  perlin-lerp (a) (b) (t) =
+    a + (b - a) * t / perlin-scale
+
+Section: 1D Noise
+  perlin-noise1 : Integer -> Integer
+  perlin-noise1 (x-milli) =
+    let xi = x-milli / perlin-scale
+    in let xf = x-milli - xi * perlin-scale
+    in let u = perlin-fade xf
+    in let g0 = perlin-grad1 (perlin-hash xi) xf
+    in let g1 = perlin-grad1 (perlin-hash (xi + 1)) (xf - perlin-scale)
+    in perlin-lerp g0 g1 u
+
+Section: 2D Noise
+  perlin-noise2 : Integer, Integer -> Integer
+  perlin-noise2 (x-milli) (y-milli) =
+    let xi = x-milli / perlin-scale
+    in let yi = y-milli / perlin-scale
+    in let xf = x-milli - xi * perlin-scale
+    in let yf = y-milli - yi * perlin-scale
+    in let u = perlin-fade xf
+    in let v = perlin-fade yf
+    in let g00 = perlin-grad2 (perlin-hash2 xi yi) xf yf
+    in let g10 = perlin-grad2 (perlin-hash2 (xi + 1) yi) (xf - perlin-scale) yf
+    in let g01 = perlin-grad2 (perlin-hash2 xi (yi + 1)) xf (yf - perlin-scale)
+    in let g11 = perlin-grad2 (perlin-hash2 (xi + 1) (yi + 1)) (xf - perlin-scale) (yf - perlin-scale)
+    in let x0 = perlin-lerp g00 g10 u
+    in let x1 = perlin-lerp g01 g11 u
+    in perlin-lerp x0 x1 v
+
+Section: Octaves
+  perlin-octaves1 : Integer, Integer, Integer, Integer -> Integer
+  perlin-octaves1 (x) (num-octaves) (persistence) (lacunarity) =
+    perlin-oct1-loop x num-octaves persistence lacunarity 0 perlin-scale perlin-scale 0
+
+  perlin-oct1-loop : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  perlin-oct1-loop (x) (oct) (persist) (lac) (i) (amp) (freq) (total) =
+    if i >= oct then total
+    else let val = perlin-noise1 (x * freq / perlin-scale) * amp / perlin-scale
+    in perlin-oct1-loop x oct persist lac (i + 1) (amp * persist / perlin-scale) (freq * lac / perlin-scale) (total + val)
+
+  perlin-octaves2 : Integer, Integer, Integer, Integer, Integer -> Integer
+  perlin-octaves2 (x) (y) (num-octaves) (persistence) (lacunarity) =
+    perlin-oct2-loop x y num-octaves persistence lacunarity 0 perlin-scale perlin-scale 0
+
+  perlin-oct2-loop : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  perlin-oct2-loop (x) (y) (oct) (persist) (lac) (i) (amp) (freq) (total) =
+    if i >= oct then total
+    else let val = perlin-noise2 (x * freq / perlin-scale) (y * freq / perlin-scale) * amp / perlin-scale
+    in perlin-oct2-loop x y oct persist lac (i + 1) (amp * persist / perlin-scale) (freq * lac / perlin-scale) (total + val)
+
+Section: Helpers
+  perlin-normalize : Integer -> Integer
+  perlin-normalize (val) = (val + perlin-scale) * 500 / perlin-scale
+
+Page 1

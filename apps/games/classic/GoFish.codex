@@ -1,0 +1,364 @@
+Chapter: GoFish
+  cites Games chapter Rng
+
+ Go Fish: standard 52-card deck, 2-4 players. Card encoding: 0-51,
+ rank = card mod 13, suit = card / 13. 7 cards each (5 if 4+ players).
+ Ask opponent for a rank; if they have it, take all of that rank.
+ If not, draw from pile. Complete 4-of-a-kind = book. Game ends
+ when all 13 books are collected or deck + hands are empty.
+ AI asks for the rank it holds most of, targeting the player with most cards.
+
+ We say:
+
+Section: Types
+
+  GoFishState = record {
+    hands          : List Integer,
+    hand-sizes     : List Integer,
+    draw-pile      : List Integer,
+    pile-size      : Integer,
+    books          : List Integer,
+    current-player : Integer,
+    num-players    : Integer,
+    game-over      : Boolean,
+    total-books    : Integer
+  }
+
+  GoFishResult = record {
+    winner     : Integer,
+    books-each : List Integer,
+    turns      : Integer
+  }
+
+Section: Card Helpers
+
+  gf-rank : Integer -> Integer
+  gf-rank (c) = rng-mod c 13
+
+Section: Deck
+
+  gf-build-deck : Integer, List Integer -> List Integer
+  gf-build-deck (i) (acc) =
+    if i >= 52 then acc
+    else gf-build-deck (i + 1) (list-push acc i)
+
+  gf-shuffle : List Integer, Rng -> List Integer
+  gf-shuffle (deck) (r) = gf-fy deck 51 r
+
+  gf-fy : List Integer, Integer, Rng -> List Integer
+  gf-fy (deck) (i) (r) =
+    if i <= 0 then deck
+    else let r2 = rng-next r
+    in let j = rng-mod (rng-value r2) (i + 1)
+    in let a = list-at deck i
+    in let b = list-at deck j
+    in let d2 = list-set-at deck i b
+    in let d3 = list-set-at d2 j a
+    in gf-fy d3 (i - 1) r2
+
+Section: Hand Storage
+
+ Hands are stored in a flat list of 52 slots per player (player*52 + card-slot).
+ hand-sizes tracks how many cards each player holds.
+ A slot value of 1 means the player holds that card index, 0 means not held.
+
+  gf-hand-has : GoFishState, Integer, Integer -> Boolean
+  gf-hand-has (s) (player) (card-idx) =
+    list-at (s.hands) (player * 52 + card-idx) == 1
+
+  gf-hand-set : GoFishState, Integer, Integer, Integer -> GoFishState
+  gf-hand-set (s) (player) (card-idx) (val) =
+    let slot = player * 52 + card-idx
+    in let old = list-at (s.hands) slot
+    in let delta = val - old
+    in let new-hands = list-set-at (s.hands) slot val
+    in let new-size = list-at (s.hand-sizes) player + delta
+    in let new-sizes = list-set-at (s.hand-sizes) player new-size
+    in GoFishState {
+         hands = new-hands,
+         hand-sizes = new-sizes,
+         draw-pile = s.draw-pile,
+         pile-size = s.pile-size,
+         books = s.books,
+         current-player = s.current-player,
+         num-players = s.num-players,
+         game-over = s.game-over,
+         total-books = s.total-books
+       }
+
+  gf-count-rank-in-hand : GoFishState, Integer, Integer -> Integer
+  gf-count-rank-in-hand (s) (player) (rank) =
+    gf-count-rank-loop s player rank 0 0
+
+  gf-count-rank-loop : GoFishState, Integer, Integer, Integer, Integer -> Integer
+  gf-count-rank-loop (s) (player) (rank) (suit) (acc) =
+    if suit >= 4 then acc
+    else let card-idx = suit * 13 + rank
+    in let held = if gf-hand-has s player card-idx then 1 else 0
+    in gf-count-rank-loop s player rank (suit + 1) (acc + held)
+
+Section: Initial Deal
+
+  gf-init : Integer, Integer -> GoFishState
+  gf-init (seed) (num-players) =
+    let deck = gf-shuffle (gf-build-deck 0 []) (rng-new seed)
+    in let cards-each = if num-players >= 4 then 5 else 7
+    in let hand-slots = gf-build-zeroes 0 (num-players * 52) []
+    in let sizes = gf-build-zeroes 0 num-players []
+    in let books = gf-build-zeroes 0 num-players []
+    in let pile = gf-build-zeroes 0 52 []
+    in let s0 = GoFishState {
+         hands = hand-slots,
+         hand-sizes = sizes,
+         draw-pile = pile,
+         pile-size = 0,
+         books = books,
+         current-player = 0,
+         num-players = num-players,
+         game-over = False,
+         total-books = 0
+       }
+    in let total-deal = cards-each * num-players
+    in let s1 = gf-deal-cards s0 deck 0 num-players cards-each 0
+    in let s2 = gf-load-pile s1 deck total-deal 0
+    in s2
+
+  gf-build-zeroes : Integer, Integer, List Integer -> List Integer
+  gf-build-zeroes (i) (n) (acc) =
+    if i >= n then acc
+    else gf-build-zeroes (i + 1) n (list-push acc 0)
+
+  gf-deal-cards : GoFishState, List Integer, Integer, Integer, Integer, Integer -> GoFishState
+  gf-deal-cards (s) (deck) (dealt) (num-players) (cards-each) (player) =
+    if dealt >= cards-each * num-players then s
+    else let p = rng-mod dealt cards-each
+    in let pp = if p == 0 then player else player
+    in let actual-player = dealt / cards-each
+    in let card-idx = list-at deck dealt
+    in let s2 = gf-hand-set s actual-player card-idx 1
+    in gf-deal-cards s2 deck (dealt + 1) num-players cards-each player
+
+  gf-load-pile : GoFishState, List Integer, Integer, Integer -> GoFishState
+  gf-load-pile (s) (deck) (start) (i) =
+    if start + i >= 52 then s
+    else let card-idx = list-at deck (start + i)
+    in let new-pile = list-set-at (s.draw-pile) i card-idx
+    in let s2 = GoFishState {
+         hands = s.hands,
+         hand-sizes = s.hand-sizes,
+         draw-pile = new-pile,
+         pile-size = s.pile-size + 1,
+         books = s.books,
+         current-player = s.current-player,
+         num-players = s.num-players,
+         game-over = s.game-over,
+         total-books = s.total-books
+       }
+    in gf-load-pile s2 deck start (i + 1)
+
+Section: Book Checking
+
+  gf-check-books : GoFishState, Integer -> GoFishState
+  gf-check-books (s) (player) =
+    gf-check-books-loop s player 0
+
+  gf-check-books-loop : GoFishState, Integer, Integer -> GoFishState
+  gf-check-books-loop (s) (player) (rank) =
+    if rank >= 13 then s
+    else let cnt = gf-count-rank-in-hand s player rank
+    in if cnt == 4 then
+      let s2 = gf-remove-rank s player rank 0
+      in let new-books = list-set-at (s2.books) player (list-at (s2.books) player + 1)
+      in let s3 = GoFishState {
+           hands = s2.hands,
+           hand-sizes = s2.hand-sizes,
+           draw-pile = s2.draw-pile,
+           pile-size = s2.pile-size,
+           books = new-books,
+           current-player = s2.current-player,
+           num-players = s2.num-players,
+           game-over = s2.game-over,
+           total-books = s2.total-books + 1
+         }
+      in gf-check-books-loop s3 player (rank + 1)
+    else gf-check-books-loop s player (rank + 1)
+
+  gf-remove-rank : GoFishState, Integer, Integer, Integer -> GoFishState
+  gf-remove-rank (s) (player) (rank) (suit) =
+    if suit >= 4 then s
+    else let card-idx = suit * 13 + rank
+    in let s2 = gf-hand-set s player card-idx 0
+    in gf-remove-rank s2 player rank (suit + 1)
+
+Section: Draw from Pile
+
+  gf-draw-card : GoFishState, Integer -> GoFishState
+  gf-draw-card (s) (player) =
+    if s.pile-size <= 0 then s
+    else let card-idx = list-at (s.draw-pile) 0
+    in let new-pile = gf-shift-pile (s.draw-pile) 0 (s.pile-size)
+    in let s2 = GoFishState {
+         hands = s.hands,
+         hand-sizes = s.hand-sizes,
+         draw-pile = new-pile,
+         pile-size = s.pile-size - 1,
+         books = s.books,
+         current-player = s.current-player,
+         num-players = s.num-players,
+         game-over = s.game-over,
+         total-books = s.total-books
+       }
+    in let s3 = gf-hand-set s2 player card-idx 1
+    in gf-check-books s3 player
+
+  gf-shift-pile : List Integer, Integer, Integer -> List Integer
+  gf-shift-pile (pile) (i) (sz) =
+    if i + 1 >= sz then pile
+    else let next = list-at pile (i + 1)
+    in let p2 = list-set-at pile i next
+    in gf-shift-pile p2 (i + 1) sz
+
+Section: Transfer Cards
+
+  gf-transfer-rank : GoFishState, Integer, Integer, Integer -> GoFishState
+  gf-transfer-rank (s) (from-player) (to-player) (rank) =
+    gf-transfer-rank-loop s from-player to-player rank 0
+
+  gf-transfer-rank-loop : GoFishState, Integer, Integer, Integer, Integer -> GoFishState
+  gf-transfer-rank-loop (s) (from-p) (to-p) (rank) (suit) =
+    if suit >= 4 then s
+    else let card-idx = suit * 13 + rank
+    in if gf-hand-has s from-p card-idx then
+      let s2 = gf-hand-set s from-p card-idx 0
+      in let s3 = gf-hand-set s2 to-p card-idx 1
+      in gf-transfer-rank-loop s3 from-p to-p rank (suit + 1)
+    else gf-transfer-rank-loop s from-p to-p rank (suit + 1)
+
+Section: AI Strategy
+
+  gf-ai-rank-to-ask : GoFishState, Integer -> Integer
+  gf-ai-rank-to-ask (s) (player) =
+    gf-best-rank-loop s player 0 (-1) 0
+
+  gf-best-rank-loop : GoFishState, Integer, Integer, Integer, Integer -> Integer
+  gf-best-rank-loop (s) (player) (rank) (best-rank) (best-count) =
+    if rank >= 13 then if best-rank < 0 then 0 else best-rank
+    else let cnt = gf-count-rank-in-hand s player rank
+    in if cnt > best-count then gf-best-rank-loop s player (rank + 1) rank cnt
+    else gf-best-rank-loop s player (rank + 1) best-rank best-count
+
+  gf-ai-target : GoFishState, Integer -> Integer
+  gf-ai-target (s) (player) =
+    gf-target-loop s player 0 (rng-mod player s.num-players) 0
+
+  gf-target-loop : GoFishState, Integer, Integer, Integer, Integer -> Integer
+  gf-target-loop (s) (player) (i) (best-target) (best-size) =
+    if i >= s.num-players then best-target
+    else if i == player then gf-target-loop s player (i + 1) best-target best-size
+    else let sz = list-at (s.hand-sizes) i
+    in if sz > best-size then gf-target-loop s player (i + 1) i sz
+    else gf-target-loop s player (i + 1) best-target best-size
+
+Section: Turn
+
+  gf-do-turn : GoFishState -> GoFishState
+  gf-do-turn (s) =
+    if s.game-over then s
+    else let player = s.current-player
+    in let rank = gf-ai-rank-to-ask s player
+    in let cnt-held = gf-count-rank-in-hand s player rank
+    in if cnt-held == 0 then gf-advance-player s
+    else let target = gf-ai-target s player
+    in let target-has = gf-count-rank-in-hand s target rank
+    in if target-has > 0 then
+      let s2 = gf-transfer-rank s target player rank
+      in let s3 = gf-check-books s2 player
+      in let s4 = gf-check-game-over s3
+      in gf-advance-player s4
+    else
+      let s2 = gf-draw-card s player
+      in let s3 = gf-check-game-over s2
+      in gf-advance-player s3
+
+  gf-advance-player : GoFishState -> GoFishState
+  gf-advance-player (s) =
+    let next = rng-mod (s.current-player + 1) s.num-players
+    in GoFishState {
+         hands = s.hands,
+         hand-sizes = s.hand-sizes,
+         draw-pile = s.draw-pile,
+         pile-size = s.pile-size,
+         books = s.books,
+         current-player = next,
+         num-players = s.num-players,
+         game-over = s.game-over,
+         total-books = s.total-books
+       }
+
+  gf-check-game-over : GoFishState -> GoFishState
+  gf-check-game-over (s) =
+    let done = s.total-books >= 13 | s.pile-size == 0 & gf-all-hands-empty s
+    in GoFishState {
+         hands = s.hands,
+         hand-sizes = s.hand-sizes,
+         draw-pile = s.draw-pile,
+         pile-size = s.pile-size,
+         books = s.books,
+         current-player = s.current-player,
+         num-players = s.num-players,
+         game-over = done,
+         total-books = s.total-books
+       }
+
+  gf-all-hands-empty : GoFishState -> Boolean
+  gf-all-hands-empty (s) =
+    gf-hands-empty-loop s 0
+
+  gf-hands-empty-loop : GoFishState, Integer -> Boolean
+  gf-hands-empty-loop (s) (i) =
+    if i >= s.num-players then True
+    else if list-at (s.hand-sizes) i > 0 then False
+    else gf-hands-empty-loop s (i + 1)
+
+Section: Game Runner
+
+  run-go-fish : Integer, Integer -> GoFishResult
+  run-go-fish (seed) (num-players) =
+    let np = if num-players < 2 then 2 else if num-players > 4 then 4 else num-players
+    in let s = gf-init seed np
+    in gf-loop s 0
+
+  gf-loop : GoFishState, Integer -> GoFishResult
+  gf-loop (s) (turns) =
+    if s.game-over then gf-make-result s turns
+    else if turns > 500 then gf-make-result s turns
+    else gf-loop (gf-do-turn s) (turns + 1)
+
+  gf-make-result : GoFishState, Integer -> GoFishResult
+  gf-make-result (s) (turns) =
+    let winner = gf-find-winner s 0 0 (-1)
+    in GoFishResult { winner = winner, books-each = s.books, turns = turns }
+
+  gf-find-winner : GoFishState, Integer, Integer, Integer -> Integer
+  gf-find-winner (s) (i) (best-books) (best-player) =
+    if i >= s.num-players then best-player
+    else let b = list-at (s.books) i
+    in if b > best-books then gf-find-winner s (i + 1) b i
+    else gf-find-winner s (i + 1) best-books best-player
+
+Section: Formatting
+
+  format-go-fish : GoFishResult, Integer -> Text
+  format-go-fish (r) (num-players) =
+    let w = if r.winner < 0 then "None" else "P" & show (r.winner + 1)
+    in "GoFish (" & show num-players & "p, " & show r.turns & " turns): winner=" & w &
+       " books=" & gf-format-books (r.books-each) num-players 0
+
+  gf-format-books : List Integer, Integer, Integer -> Text
+  gf-format-books (books) (np) (i) =
+    if i >= np then ""
+    else let sep = if i == 0 then "[" else ","
+    in let tail = if i + 1 >= np then "]" else ""
+    in sep & show (list-at books i) & tail & gf-format-books books np (i + 1)
+
+Page 1

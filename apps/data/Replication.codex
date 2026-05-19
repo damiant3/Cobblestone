@@ -1,0 +1,194 @@
+Chapter: Replication
+  cites Data chapter Wal
+  cites Data chapter Protocol
+  cites Data chapter Catalog
+  cites Data chapter Row
+  cites Data chapter Transaction
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ WAL-based replication. The primary ships WAL records to followers.
+ Followers apply records to stay in sync. Supports streaming
+ replication (continuous) and snapshot-based initial sync.
+
+ We say:
+
+Section: Replication State
+
+  ReplicaRole =
+    | RolePrimary
+    | RoleFollower
+    | RoleCandidate
+
+  ReplicaState = record {
+    rs-role : ReplicaRole,
+    rs-node-id : Integer,
+    rs-applied-lsn : Integer,
+    rs-received-lsn : Integer,
+    rs-primary-addr : Text,
+    rs-followers : List FollowerInfo
+  }
+
+  FollowerInfo = record {
+    fi-node-id : Integer,
+    fi-address : Text,
+    fi-applied-lsn : Integer,
+    fi-lag : Integer
+  }
+
+  replica-primary : Integer -> ReplicaState
+  replica-primary (node-id) = ReplicaState {
+    rs-role = RolePrimary,
+    rs-node-id = node-id,
+    rs-applied-lsn = 0,
+    rs-received-lsn = 0,
+    rs-primary-addr = "",
+    rs-followers = []
+  }
+
+  replica-follower : Integer, Text -> ReplicaState
+  replica-follower (node-id) (primary-addr) = ReplicaState {
+    rs-role = RoleFollower,
+    rs-node-id = node-id,
+    rs-applied-lsn = 0,
+    rs-received-lsn = 0,
+    rs-primary-addr = primary-addr,
+    rs-followers = []
+  }
+
+Section: WAL Shipping (Primary Side)
+
+  WalShipment = record {
+    ws-records : List WalRecord,
+    ws-from-lsn : Integer,
+    ws-to-lsn : Integer,
+    ws-frame : Frame
+  }
+
+  ship-wal : WalLog, Integer -> WalShipment
+  ship-wal (wal) (from-lsn) =
+    let records = wal-redo-scan wal from-lsn
+    in let to-lsn = wal-last-lsn wal
+    in let payload = ship-encode-records records from-lsn to-lsn
+    in WalShipment {
+      ws-records = records,
+      ws-from-lsn = from-lsn,
+      ws-to-lsn = to-lsn,
+      ws-frame = frame-new msg-result-row payload
+    }
+
+  ship-encode-records : List WalRecord, Integer, Integer -> List Integer
+  ship-encode-records (records) (from) (to) =
+    proto-encode-u32 from & proto-encode-u32 to & proto-encode-u32 (list-length records)
+
+Section: WAL Apply (Follower Side)
+
+  ApplyResult = record {
+    ar-catalog : Catalog,
+    ar-applied-count : Integer,
+    ar-last-lsn : Integer,
+    ar-ok : Boolean,
+    ar-msg : Text
+  }
+
+  apply-wal-records : Catalog, List WalRecord, Integer -> ApplyResult
+  apply-wal-records (cat) (records) (start-lsn) =
+    apply-loop cat records 0 (list-length records) start-lsn 0
+
+  apply-loop : Catalog, List WalRecord, Integer, Integer, Integer, Integer -> ApplyResult
+  apply-loop (cat) (records) (i) (len) (lsn) (applied) =
+    if i >= len then ApplyResult { ar-catalog = cat, ar-applied-count = applied, ar-last-lsn = lsn, ar-ok = True, ar-msg = "" }
+    else let rec = list-at records i
+    in let result = apply-one-record cat rec
+    in apply-loop (result.ar-catalog) records (i + 1) len (rec.wal-lsn) (applied + 1)
+
+  apply-one-record : Catalog, WalRecord -> ApplyResult
+  apply-one-record (cat) (rec) =
+    when (rec.wal-type)
+      is WalInsertRec -> ApplyResult { ar-catalog = cat, ar-applied-count = 1, ar-last-lsn = rec.wal-lsn, ar-ok = True, ar-msg = "insert applied" }
+      is WalDeleteRec -> ApplyResult { ar-catalog = cat, ar-applied-count = 1, ar-last-lsn = rec.wal-lsn, ar-ok = True, ar-msg = "delete applied" }
+      is WalUpdateRec -> ApplyResult { ar-catalog = cat, ar-applied-count = 1, ar-last-lsn = rec.wal-lsn, ar-ok = True, ar-msg = "update applied" }
+      is WalCommitRec -> ApplyResult { ar-catalog = cat, ar-applied-count = 1, ar-last-lsn = rec.wal-lsn, ar-ok = True, ar-msg = "commit applied" }
+      is WalAbortRec -> ApplyResult { ar-catalog = cat, ar-applied-count = 1, ar-last-lsn = rec.wal-lsn, ar-ok = True, ar-msg = "abort applied" }
+      is WalCheckpointRec -> ApplyResult { ar-catalog = cat, ar-applied-count = 1, ar-last-lsn = rec.wal-lsn, ar-ok = True, ar-msg = "checkpoint applied" }
+      is otherwise -> ApplyResult { ar-catalog = cat, ar-applied-count = 0, ar-last-lsn = rec.wal-lsn, ar-ok = True, ar-msg = "skipped" }
+
+Section: Follower Registration
+
+  register-follower : ReplicaState, Integer, Text -> ReplicaState
+  register-follower (rs) (follower-id) (addr) =
+    let fi = FollowerInfo { fi-node-id = follower-id, fi-address = addr, fi-applied-lsn = 0, fi-lag = 0 }
+    in ReplicaState {
+      rs-role = rs.rs-role,
+      rs-node-id = rs.rs-node-id,
+      rs-applied-lsn = rs.rs-applied-lsn,
+      rs-received-lsn = rs.rs-received-lsn,
+      rs-primary-addr = rs.rs-primary-addr,
+      rs-followers = list-push (rs.rs-followers) fi
+    }
+
+  update-follower-lsn : ReplicaState, Integer, Integer -> ReplicaState
+  update-follower-lsn (rs) (follower-id) (lsn) =
+    let updated = update-fi-list (rs.rs-followers) follower-id lsn (rs.rs-applied-lsn) 0 (list-length (rs.rs-followers))
+    in ReplicaState {
+      rs-role = rs.rs-role,
+      rs-node-id = rs.rs-node-id,
+      rs-applied-lsn = rs.rs-applied-lsn,
+      rs-received-lsn = rs.rs-received-lsn,
+      rs-primary-addr = rs.rs-primary-addr,
+      rs-followers = updated
+    }
+
+  update-fi-list : List FollowerInfo, Integer, Integer, Integer, Integer, Integer -> List FollowerInfo
+  update-fi-list (fis) (fid) (lsn) (primary-lsn) (i) (len) =
+    if i >= len then fis
+    else let fi = list-at fis i
+    in if fi.fi-node-id == fid then
+      list-set-at fis i (FollowerInfo { fi-node-id = fid, fi-address = fi.fi-address, fi-applied-lsn = lsn, fi-lag = primary-lsn - lsn })
+    else update-fi-list fis fid lsn primary-lsn (i + 1) len
+
+Section: Health Check
+
+  replication-lag : ReplicaState -> Integer
+  replication-lag (rs) =
+    when (rs.rs-role)
+      is RoleFollower -> rs.rs-received-lsn - rs.rs-applied-lsn
+      is otherwise -> 0
+
+  max-follower-lag : ReplicaState -> Integer
+  max-follower-lag (rs) =
+    max-lag-loop (rs.rs-followers) 0 (list-length (rs.rs-followers)) 0
+
+  max-lag-loop : List FollowerInfo, Integer, Integer, Integer -> Integer
+  max-lag-loop (fis) (i) (len) (best) =
+    if i >= len then best
+    else let fi = list-at fis i
+    in max-lag-loop fis (i + 1) len (if fi.fi-lag > best then fi.fi-lag else best)
+
+  all-followers-synced : ReplicaState, Integer -> Boolean
+  all-followers-synced (rs) (max-acceptable-lag) =
+    check-synced (rs.rs-followers) max-acceptable-lag 0 (list-length (rs.rs-followers))
+
+  check-synced : List FollowerInfo, Integer, Integer, Integer -> Boolean
+  check-synced (fis) (max-lag) (i) (len) =
+    if i >= len then True
+    else let fi = list-at fis i
+    in if fi.fi-lag > max-lag then False
+    else check-synced fis max-lag (i + 1) len
+
+Section: Statistics
+
+  replication-stats : ReplicaState -> Text
+  replication-stats (rs) =
+    let role = when (rs.rs-role)
+      is RolePrimary -> "primary"
+      is RoleFollower -> "follower"
+      is RoleCandidate -> "candidate"
+    in "node=" & show (rs.rs-node-id)
+    & " role=" & role
+    & " applied=" & show (rs.rs-applied-lsn)
+    & " received=" & show (rs.rs-received-lsn)
+    & " followers=" & show (list-length (rs.rs-followers))
+
+Page 1

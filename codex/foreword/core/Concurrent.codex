@@ -1,0 +1,117 @@
+Chapter: Concurrent
+
+  cites Foreword chapter Maybe
+
+ A Task is a record containing value.
+
+ To seq-fork gives a Task wrapping the provided result.
+
+ To seq-await gives the value inside a Task.
+
+ To par-map gives a new list by applying a function to each element in parallel.
+
+ To race gives the first result from a list of thunks, or None for an empty list.
+
+ To par-reduce gives a single accumulated value by splitting work in parallel.
+
+ To par-pipeline gives a list transformed by two functions applied in sequence.
+
+ To par-filter gives a new list keeping only elements that satisfy a predicate.
+
+ To par-zip-with gives a list produced by combining two lists element-wise with a function.
+
+ We say:
+
+Section: Task Type
+
+  Task a = record {
+
+    value : a
+  }
+
+Section: Sequential Primitives
+
+  seq-fork : a -> Task a
+  seq-fork (result) = Task { value = result }
+
+  seq-await : Task a -> a
+  seq-await (t) = t.value
+
+Section: Parallel Map
+
+  par-map : (a -> b), List a -> List b
+  par-map (f) (xs) =
+    let tasks = par-fork-all f xs 0 (list-length xs) []
+    in par-await-all tasks 0 (list-length tasks) []
+
+  par-fork-all : (a -> b), List a, Integer, Integer, List (Task b) -> List (Task b)
+  par-fork-all (f) (xs) (i) (len) (acc) =
+    if i == len then acc
+    else par-fork-all f xs (i + 1) len (list-push acc (fork (\u -> f (list-at xs i))))
+
+  par-await-all : List (Task a), Integer, Integer, List a -> List a
+  par-await-all (tasks) (i) (len) (acc) =
+    if i == len then acc
+    else par-await-all tasks (i + 1) len (list-push acc (await (list-at tasks i)))
+
+Section: Race (First to Finish)
+
+  race : List (Integer -> a) -> Maybe a
+  race (thunks) =
+    if list-length thunks == 0 then None
+    else let f = list-at thunks 0
+    in Just (f 0)
+
+Section: Parallel Reduce
+
+  par-reduce : (a, a -> a), a, List a -> a
+  par-reduce (f) (zero) (xs) =
+    if list-length xs == 0 then zero
+    else if list-length xs == 1 then list-at xs 0
+    else let mid = list-length xs / 2
+    in let tl = fork (\u -> par-reduce f zero (par-take xs mid))
+    in let tr = fork (\u -> par-reduce f zero (par-drop xs mid))
+    in f (await tl) (await tr)
+
+  par-take : List a, Integer -> List a
+  par-take (xs) (n) = par-take-loop xs 0 n []
+
+  par-take-loop : List a, Integer, Integer, List a -> List a
+  par-take-loop (xs) (i) (n) (acc) =
+    if i >= n then acc
+    else par-take-loop xs (i + 1) n (list-push acc (list-at xs i))
+
+  par-drop : List a, Integer -> List a
+  par-drop (xs) (n) = par-take-loop xs n (list-length xs) []
+
+Section: Pipeline
+
+  par-pipeline : (a -> b), (b -> c), List a -> List c
+  par-pipeline (f) (g) (xs) = par-map g (par-map f xs)
+
+Section: Parallel Filter
+
+  par-filter : (a -> Boolean), List a -> List a
+  par-filter (pred) (xs) = par-filter-loop pred xs 0 (list-length xs) []
+
+  par-filter-loop : (a -> Boolean), List a, Integer, Integer, List a -> List a
+  par-filter-loop (pred) (xs) (i) (len) (acc) =
+    if i == len then acc
+    else let x = list-at xs i
+    in if pred x then par-filter-loop pred xs (i + 1) len (list-push acc x)
+    else par-filter-loop pred xs (i + 1) len acc
+
+Section: Parallel Zip
+
+  par-zip-with : (a, b -> c), List a, List b -> List c
+  par-zip-with (f) (as) (bs) =
+    let len = if list-length as < list-length bs then list-length as else list-length bs
+    in par-zip-loop f as bs 0 len []
+
+  par-zip-loop : (a, b -> c), List a, List b, Integer, Integer, List c -> List c
+  par-zip-loop (f) (as) (bs) (i) (len) (acc) =
+    if i == len then acc
+    else par-zip-loop f as bs (i + 1) len (list-push acc (f (list-at as i) (list-at bs i)))
+
+Page 1
+

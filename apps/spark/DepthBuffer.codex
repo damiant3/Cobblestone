@@ -1,0 +1,80 @@
+Chapter: DepthBuffer
+
+ Z-buffer for depth-tested 3D rasterization. Stores per-pixel depth
+ values as integers (scale 1000). Larger values are farther from the
+ camera. The buffer is a flat list indexed row-major (y * width + x).
+
+ We say:
+
+Section: Types
+
+  DepthBuf = record {
+    db-width : Integer,
+    db-height : Integer,
+    db-data : List Integer
+  }
+
+Section: Construction
+
+  depth-buf-new : Integer, Integer -> DepthBuf
+  depth-buf-new (w) (h) = DepthBuf {
+    db-width = w,
+    db-height = h,
+    db-data = db-fill (w * h) 2147483647
+  }
+
+  depth-buf-clear : DepthBuf -> DepthBuf
+  depth-buf-clear (db) = DepthBuf {
+    db-width = db.db-width,
+    db-height = db.db-height,
+    db-data = db-fill (db.db-width * db.db-height) 2147483647
+  }
+
+  db-fill : Integer, Integer -> List Integer
+  db-fill (n) (val) = db-fill-loop n val []
+
+  db-fill-loop : Integer, Integer, List Integer -> List Integer
+  db-fill-loop (n) (val) (acc) =
+    if n <= 0 then acc
+    else db-fill-loop (n - 1) val (list-push acc val)
+
+Section: Depth Test
+
+  depth-test : DepthBuf, Integer, Integer, Integer -> Boolean
+  depth-test (db) (x) (y) (z) =
+    if x < 0 then False
+    else if y < 0 then False
+    else if x >= db.db-width then False
+    else if y >= db.db-height then False
+    else let idx = y * db.db-width + x
+    in z < list-at (db.db-data) idx
+
+  depth-write : DepthBuf, Integer, Integer, Integer -> DepthBuf
+  depth-write (db) (x) (y) (z) =
+    if x < 0 then db
+    else if y < 0 then db
+    else if x >= db.db-width then db
+    else if y >= db.db-height then db
+    else let idx = y * db.db-width + x
+    in DepthBuf {
+      db-width = db.db-width,
+      db-height = db.db-height,
+      db-data = list-set-at (db.db-data) idx z
+    }
+
+  depth-test-and-write : DepthBuf, Integer, Integer, Integer -> DepthBuf
+  depth-test-and-write (db) (x) (y) (z) =
+    if depth-test db x y z then depth-write db x y z
+    else db
+
+Section: Queries
+
+  depth-at : DepthBuf, Integer, Integer -> Integer
+  depth-at (db) (x) (y) =
+    if x < 0 then 2147483647
+    else if y < 0 then 2147483647
+    else if x >= db.db-width then 2147483647
+    else if y >= db.db-height then 2147483647
+    else list-at (db.db-data) (y * db.db-width + x)
+
+Page 1

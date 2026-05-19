@@ -1,0 +1,236 @@
+Chapter: ChangeStream
+  cites Data chapter Row
+  cites Data chapter Schema
+  cites Data chapter Wal
+  cites Data chapter Protocol
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ Change data capture and event streaming. Tails the WAL and emits
+ change events to subscribers. Supports filtered subscriptions per
+ table, event replay from a position, and consumer group tracking.
+
+ We say:
+
+Section: Change Events
+
+  ChangeKind =
+    | CkInsert
+    | CkUpdate
+    | CkDelete
+
+  ChangeEvent = record {
+    ce-lsn : Integer,
+    ce-txn-id : Integer,
+    ce-table : Text,
+    ce-kind : ChangeKind,
+    ce-row-data : List Integer,
+    ce-prev-data : List Integer
+  }
+
+  change-kind-name : ChangeKind -> Text
+  change-kind-name (k) =
+    when k
+      is CkInsert -> "INSERT"
+      is CkUpdate -> "UPDATE"
+      is CkDelete -> "DELETE"
+
+Section: WAL to Events
+
+  wal-to-events : List WalRecord, HamtMap Text -> List ChangeEvent
+  wal-to-events (records) (table-names) =
+    wte-loop records table-names 0 (list-length records) []
+
+  wte-loop : List WalRecord, HamtMap Text, Integer, Integer, List ChangeEvent -> List ChangeEvent
+  wte-loop (records) (table-names) (i) (len) (acc) =
+    if i >= len then acc
+    else let rec = list-at records i
+    in let event = wal-record-to-event rec table-names
+    in when event
+      is Just (ce) -> wte-loop records table-names (i + 1) len (list-push acc ce)
+      is None -> wte-loop records table-names (i + 1) len acc
+
+  wal-record-to-event : WalRecord, HamtMap Text -> Maybe ChangeEvent
+  wal-record-to-event (rec) (table-names) =
+    let table = when (hamt-get table-names (show (rec.wal-table-id))) is Just (t) -> t is None -> ""
+    in when (rec.wal-type)
+      is WalInsertRec -> Just (ChangeEvent { ce-lsn = rec.wal-lsn, ce-txn-id = rec.wal-txn-id, ce-table = table, ce-kind = CkInsert, ce-row-data = rec.wal-data, ce-prev-data = [] })
+      is WalUpdateRec -> Just (ChangeEvent { ce-lsn = rec.wal-lsn, ce-txn-id = rec.wal-txn-id, ce-table = table, ce-kind = CkUpdate, ce-row-data = rec.wal-data, ce-prev-data = rec.wal-prev-data })
+      is WalDeleteRec -> Just (ChangeEvent { ce-lsn = rec.wal-lsn, ce-txn-id = rec.wal-txn-id, ce-table = table, ce-kind = CkDelete, ce-row-data = rec.wal-data, ce-prev-data = [] })
+      is otherwise -> None
+
+Section: Subscription
+
+  Subscription = record {
+    sub-id : Integer,
+    sub-name : Text,
+    sub-tables : List Text,
+    sub-from-lsn : Integer,
+    sub-last-acked : Integer,
+    sub-active : Boolean
+  }
+
+  sub-new : Integer, Text, List Text, Integer -> Subscription
+  sub-new (id) (name) (tables) (from-lsn) = Subscription {
+    sub-id = id,
+    sub-name = name,
+    sub-tables = tables,
+    sub-from-lsn = from-lsn,
+    sub-last-acked = from-lsn,
+    sub-active = True
+  }
+
+  sub-matches : Subscription, ChangeEvent -> Boolean
+  sub-matches (sub) (event) =
+    if sub.sub-active == False then False
+    else if event.ce-lsn <= sub.sub-last-acked then False
+    else sub-table-match (sub.sub-tables) (event.ce-table) 0 (list-length (sub.sub-tables))
+
+  sub-table-match : List Text, Text, Integer, Integer -> Boolean
+  sub-table-match (tables) (target) (i) (len) =
+    if len == 0 then True
+    else if i >= len then False
+    else if list-at tables i == target then True
+    else if list-at tables i == "*" then True
+    else sub-table-match tables target (i + 1) len
+
+  sub-ack : Subscription, Integer -> Subscription
+  sub-ack (sub) (lsn) = Subscription {
+    sub-id = sub.sub-id,
+    sub-name = sub.sub-name,
+    sub-tables = sub.sub-tables,
+    sub-from-lsn = sub.sub-from-lsn,
+    sub-last-acked = lsn,
+    sub-active = sub.sub-active
+  }
+
+  sub-pause : Subscription -> Subscription
+  sub-pause (sub) = Subscription { sub-id = sub.sub-id, sub-name = sub.sub-name, sub-tables = sub.sub-tables, sub-from-lsn = sub.sub-from-lsn, sub-last-acked = sub.sub-last-acked, sub-active = False }
+
+  sub-resume : Subscription -> Subscription
+  sub-resume (sub) = Subscription { sub-id = sub.sub-id, sub-name = sub.sub-name, sub-tables = sub.sub-tables, sub-from-lsn = sub.sub-from-lsn, sub-last-acked = sub.sub-last-acked, sub-active = True }
+
+Section: Consumer Group
+
+  ConsumerGroup = record {
+    cg-name : Text,
+    cg-members : List Subscription,
+    cg-member-count : Integer
+  }
+
+  cg-new : Text -> ConsumerGroup
+  cg-new (name) = ConsumerGroup { cg-name = name, cg-members = [], cg-member-count = 0 }
+
+  cg-add-member : ConsumerGroup, Subscription -> ConsumerGroup
+  cg-add-member (group) (sub) = ConsumerGroup {
+    cg-name = group.cg-name,
+    cg-members = list-push (group.cg-members) sub,
+    cg-member-count = group.cg-member-count + 1
+  }
+
+  cg-min-acked : ConsumerGroup -> Integer
+  cg-min-acked (group) = cg-min-loop (group.cg-members) 0 (group.cg-member-count) 2147483647
+
+  cg-min-loop : List Subscription, Integer, Integer, Integer -> Integer
+  cg-min-loop (members) (i) (len) (best) =
+    if i >= len then best
+    else let s = list-at members i
+    in let v = s.sub-last-acked
+    in cg-min-loop members (i + 1) len (if v < best then v else best)
+
+Section: Change Stream
+
+  ChangeStream = record {
+    cs-subscriptions : HamtMap Subscription,
+    cs-groups : HamtMap ConsumerGroup,
+    cs-next-sub-id : Integer,
+    cs-total-events : Integer,
+    cs-total-delivered : Integer
+  }
+
+  cs-new : ChangeStream
+  cs-new = ChangeStream { cs-subscriptions = hamt-empty, cs-groups = hamt-empty, cs-next-sub-id = 1, cs-total-events = 0, cs-total-delivered = 0 }
+
+  cs-subscribe : ChangeStream, Text, List Text, Integer -> (ChangeStream, Subscription)
+  cs-subscribe (cs) (name) (tables) (from-lsn) =
+    let sub = sub-new (cs.cs-next-sub-id) name tables from-lsn
+    in let new-cs = ChangeStream {
+      cs-subscriptions = hamt-set (cs.cs-subscriptions) name sub,
+      cs-groups = cs.cs-groups,
+      cs-next-sub-id = cs.cs-next-sub-id + 1,
+      cs-total-events = cs.cs-total-events,
+      cs-total-delivered = cs.cs-total-delivered
+    }
+    in (new-cs, sub)
+
+  cs-unsubscribe : ChangeStream, Text -> ChangeStream
+  cs-unsubscribe (cs) (name) = ChangeStream {
+    cs-subscriptions = hamt-remove (cs.cs-subscriptions) name,
+    cs-groups = cs.cs-groups,
+    cs-next-sub-id = cs.cs-next-sub-id,
+    cs-total-events = cs.cs-total-events,
+    cs-total-delivered = cs.cs-total-delivered
+  }
+
+Section: Deliver Events
+
+  DeliveryResult = record {
+    dr-events : List ChangeEvent,
+    dr-count : Integer,
+    dr-stream : ChangeStream
+  }
+
+  cs-poll : ChangeStream, Text, List ChangeEvent -> DeliveryResult
+  cs-poll (cs) (sub-name) (available) =
+    let found = hamt-get (cs.cs-subscriptions) sub-name
+    in when found
+      is None -> DeliveryResult { dr-events = [], dr-count = 0, dr-stream = cs }
+      is Just (sub) ->
+        let matched = cs-filter-for-sub sub available 0 (list-length available) []
+        in let new-acked = if list-length matched == 0 then sub.sub-last-acked
+           else (list-at matched (list-length matched - 1)).ce-lsn
+        in let updated-sub = sub-ack sub new-acked
+        in DeliveryResult {
+          dr-events = matched,
+          dr-count = list-length matched,
+          dr-stream = ChangeStream {
+            cs-subscriptions = hamt-set (cs.cs-subscriptions) sub-name updated-sub,
+            cs-groups = cs.cs-groups,
+            cs-next-sub-id = cs.cs-next-sub-id,
+            cs-total-events = cs.cs-total-events,
+            cs-total-delivered = cs.cs-total-delivered + list-length matched
+          }
+        }
+
+  cs-filter-for-sub : Subscription, List ChangeEvent, Integer, Integer, List ChangeEvent -> List ChangeEvent
+  cs-filter-for-sub (sub) (events) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at events i
+    in if sub-matches sub e then cs-filter-for-sub sub events (i + 1) len (list-push acc e)
+    else cs-filter-for-sub sub events (i + 1) len acc
+
+Section: Event Replay
+
+  cs-replay : ChangeStream, Text, List ChangeEvent, Integer -> DeliveryResult
+  cs-replay (cs) (sub-name) (all-events) (from-lsn) =
+    let from-events = cs-events-from all-events from-lsn 0 (list-length all-events) []
+    in cs-poll cs sub-name from-events
+
+  cs-events-from : List ChangeEvent, Integer, Integer, Integer, List ChangeEvent -> List ChangeEvent
+  cs-events-from (events) (from-lsn) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at events i
+    in if e.ce-lsn >= from-lsn then cs-events-from events from-lsn (i + 1) len (list-push acc e)
+    else cs-events-from events from-lsn (i + 1) len acc
+
+Section: Statistics
+
+  cs-stats : ChangeStream -> Text
+  cs-stats (cs) =
+    "subscriptions=" & show (hamt-size (cs.cs-subscriptions))
+    & " groups=" & show (hamt-size (cs.cs-groups))
+    & " events=" & show (cs.cs-total-events)
+    & " delivered=" & show (cs.cs-total-delivered)
+
+Page 1

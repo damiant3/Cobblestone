@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Codex — Royal Game of Ur</title>
+<link rel="stylesheet" href="/web/style.css?v={{VERSION}}">
+<style>
+  body { background: #0d0a06; }
+  .game-page { max-width: 900px; margin: 0 auto; }
+  .bg-scene { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: url('/assets/games/royalur/bg-scene.png') center/cover no-repeat;
+    filter: brightness(0.3) blur(2px); z-index: 0; }
+  .content { position: relative; z-index: 1; }
+
+  .board-wrap { background: url('/assets/games/royalur/board.png') center/cover;
+    border: 4px solid #8a7a40; border-radius: 12px; padding: 20px;
+    margin-bottom: 16px; position: relative;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.7), inset 0 2px 12px rgba(0,0,0,0.4); }
+
+  .ur-grid { display: grid; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(3, 60px);
+    gap: 4px; max-width: 600px; margin: 0 auto; }
+  .ur-cell { background: #1a150acc; border: 1px solid #8a7a4044; border-radius: 4px;
+    display: flex; align-items: center; justify-content: center; font-size: 24px;
+    position: relative; backdrop-filter: blur(2px); }
+  .ur-cell.rosette { background: #8a7a4033; border-color: #c8a848; }
+  .ur-cell.rosette::after { content: '✦'; position: absolute; font-size: 12px; color: #c8a84866; bottom: 2px; right: 4px; }
+  .ur-cell.empty-cell { background: transparent; border-color: transparent; }
+  .ur-piece-1 { width: 32px; height: 32px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #4488cc, #1a3a6a);
+    border: 2px solid #6aaaee; box-shadow: 0 2px 6px rgba(0,0,0,0.5); }
+  .ur-piece-2 { width: 32px; height: 32px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #cc4444, #6a1a1a);
+    border: 2px solid #ee6a6a; box-shadow: 0 2px 6px rgba(0,0,0,0.5); }
+
+  .score-bar { display: flex; justify-content: center; gap: 32px; margin-bottom: 12px; font-size: 14px; }
+  .score-p1 { color: #6aaaee; } .score-p2 { color: #ee6a6a; }
+  .dice-display { text-align: center; font-size: 28px; color: #c8a848; margin: 8px 0; min-height: 36px; }
+
+  .result-text { text-align: center; font-size: 22px; font-weight: bold; color: #c8a848;
+    letter-spacing: 2px; margin: 12px 0; text-shadow: 0 2px 8px rgba(0,0,0,0.5); }
+
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; justify-content: center; }
+  .controls button { background: linear-gradient(180deg, #2a2210, #1a1408);
+    border: 1px solid #8a7a40; border-radius: 6px; color: #c8a848;
+    font-family: inherit; font-size: 14px; padding: 8px 24px; cursor: pointer;
+    letter-spacing: 1px; text-transform: uppercase; }
+  .controls button:hover { color: #f5e6c8; box-shadow: 0 0 12px rgba(200,168,72,0.2); }
+  .controls button:disabled { opacity: 0.3; }
+  .speed-label { color: #8a7a40; font-size: 12px; }
+  .engine-tag { background: #1a1408; color: #c8a848; font-size: 10px; padding: 2px 8px;
+    border-radius: 4px; margin-left: 12px; border: 1px solid #8a7a4044; }
+  .history { background: #0d0a06cc; border: 1px solid #8a7a4022; border-radius: 6px 6px 0 0;
+    padding: 8px 14px; max-height: 80px; overflow-y: auto; font-size: 11px;
+    color: #8a7a4066; line-height: 1.6; backdrop-filter: blur(4px);
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 10; }
+  .history .ply-1 { color: #6aaaee; } .history .ply-2 { color: #ee6a6a; }
+</style>
+</head>
+<body>
+<div class="bg-scene"></div>
+<nav class="topbar" style="background:#0d0a06;border-color:#8a7a4022">
+  <span class="topbar-logo" style="color:#c8a848">&#x2588; CODEX</span>
+  <a href="/#games" class="tab-btn" style="color:#8a7a4066">&#x2190; Games</a>
+  <span class="tab-btn active" style="color:#c8a848;border-color:#c8a848">Royal Game of Ur</span>
+  <span class="engine-tag">Codex VM</span>
+</nav>
+<div class="content game-page">
+  <div class="controls">
+    <button onclick="runGame()">&#x1F3DB; Play Game</button>
+  </div>
+  <div class="score-bar">
+    <span class="score-p1">&#x25CF; Sumerian: <span id="sc-1">0</span>/7</span>
+    <span class="score-p2">&#x25CF; Akkadian: <span id="sc-2">0</span>/7</span>
+  </div>
+  <div class="dice-display" id="dice"></div>
+  <div class="board-wrap">
+    <div class="ur-grid" id="board"></div>
+  </div>
+  <div class="result-text" id="result"></div>
+  <div class="history" id="history"></div>
+</div>
+<script>
+var BOARD_LAYOUT = [
+  [1,1],[1,1],[1,1],[1,1],[0,0],[0,0],[1,1],[1,1],
+  [1,1],[1,1],[1,1],[1,1],[1,1],[1,1],[1,1],[1,1],
+  [1,1],[1,1],[1,1],[1,1],[0,0],[0,0],[1,1],[1,1]
+];
+var ROSETTES = new Set([3,11,19, 7, 15]);
+
+function renderEmpty() {
+  var h = '';
+  for (var i = 0; i < 24; i++) {
+    if (BOARD_LAYOUT[i][0] === 0) h += '<div class="ur-cell empty-cell"></div>';
+    else h += '<div class="ur-cell' + (ROSETTES.has(i) ? ' rosette' : '') + '"></div>';
+  }
+  document.getElementById('board').innerHTML = h;
+}
+
+async function runGame() {
+  renderEmpty();
+  document.getElementById('result').textContent = '';
+  document.getElementById('dice').innerHTML = '&#x25A2; &#x25A2; &#x25A2; &#x25A2;';
+  document.getElementById('result').textContent = 'The ancients play...';
+  try {
+    var r = await fetch('/api/run/royalur?seed=' + (Date.now() & 0x7FFFFFFF));
+    var d = await r.json();
+    var m = d.result.match(/Player (\d) wins.*?(\d+) moves/);
+    if (m) {
+      var w = parseInt(m[1]);
+      document.getElementById('sc-' + w).textContent = '7';
+      document.getElementById('result').textContent = (w === 1 ? 'SUMERIAN' : 'AKKADIAN') + ' VICTORY — ' + m[2] + ' moves';
+    } else {
+      document.getElementById('result').textContent = d.result;
+    }
+    document.getElementById('history').innerHTML = d.result + '<br>' + document.getElementById('history').innerHTML;
+  } catch(e) { document.getElementById('result').textContent = 'Error: ' + e.message; }
+}
+renderEmpty();
+</script>
+</body>
+</html>

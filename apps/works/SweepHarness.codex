@@ -1,0 +1,123 @@
+Chapter: SweepHarness
+  cites Foreword chapter Maybe
+  cites Foreword chapter ListUtils
+
+ Sample battery logic: enumerate test files, classify by sidecar
+ (.expected, .failing, .skip), and compare results. SweepHarness
+ contains the decision logic from sweep.ps1 — the compile-and-run
+ orchestration stays in the host, but the pass/fail classification
+ lives in Codex.
+
+ We say:
+
+Section: Sample Classification
+
+  SampleKind =
+    | ExpectedOutput
+    | ExpectedFailure
+    | CompileOnly
+    | Skipped
+
+  SampleEntry = record {
+    name : Text,
+    source-path : Text,
+    kind : SampleKind,
+    sidecar : Text
+  }
+
+  classify-sample : Text, Text -> SampleEntry
+  classify-sample (source-path) (name) =
+    let base-dir = text-dir source-path
+    in let skip-path = base-dir & "/" & name & ".skip"
+    in let fail-path = base-dir & "/" & name & ".failing"
+    in let expected-path = base-dir & "/" & name & ".expected"
+    in if file-exists skip-path then SampleEntry { name = name, source-path = source-path, kind = Skipped, sidecar = read-file skip-path }
+    else if file-exists fail-path then SampleEntry { name = name, source-path = source-path, kind = ExpectedFailure, sidecar = read-file fail-path }
+    else if file-exists expected-path then SampleEntry { name = name, source-path = source-path, kind = ExpectedOutput, sidecar = read-file expected-path }
+    else SampleEntry { name = name, source-path = source-path, kind = CompileOnly, sidecar = "" }
+
+  text-dir : Text -> Text
+  text-dir (path) =
+    let parts = text-split path "/"
+    in if list-length parts <= 1 then "."
+    else join-with-sep parts "/" 0 (list-length parts - 1) ""
+
+  join-with-sep : List Text, Text, Integer, Integer, Text -> Text
+  join-with-sep (parts) (sep) (i) (len) (acc) =
+    if i >= len then acc
+    else let s = if i == 0 then "" else sep
+    in join-with-sep parts sep (i + 1) len (acc & s & list-at parts i)
+
+Section: Result Evaluation
+
+  SampleResult =
+    | PassVerified
+    | PassFailing
+    | PassUnverified
+    | FailCompile
+    | FailOutput
+    | FailExpectedButCompiled
+    | FailWrongDiagnostic
+    | SkippedResult
+
+  evaluate-expected : Text, Text -> SampleResult
+  evaluate-expected (expected) (actual) =
+    if expected == actual then PassVerified else FailOutput
+
+  evaluate-failing : Boolean, Text, Text -> SampleResult
+  evaluate-failing (compile-ok) (expected-codes) (compile-log) =
+    if compile-ok then FailExpectedButCompiled
+    else if text-length expected-codes == 0 then PassFailing
+    else if all-codes-present expected-codes compile-log then PassFailing
+    else FailWrongDiagnostic
+
+  all-codes-present : Text, Text -> Boolean
+  all-codes-present (codes-text) (log) =
+    let codes = text-split codes-text "\n"
+    in check-codes-loop codes log 0 (list-length codes)
+
+  check-codes-loop : List Text, Text, Integer, Integer -> Boolean
+  check-codes-loop (codes) (log) (i) (len) =
+    if i >= len then True
+    else let code = list-at codes i
+    in if text-length code == 0 then check-codes-loop codes log (i + 1) len
+    else if text-contains log code then check-codes-loop codes log (i + 1) len
+    else False
+
+Section: Summary
+
+  SweepSummary = record {
+    pass-verified : Integer,
+    pass-failing : Integer,
+    pass-unverified : Integer,
+    skipped : Integer,
+    failed : Integer,
+    total : Integer
+  }
+
+  empty-sweep-summary : SweepSummary = SweepSummary {
+    pass-verified = 0, pass-failing = 0, pass-unverified = 0,
+    skipped = 0, failed = 0, total = 0
+  }
+
+  tally-result : SweepSummary, SampleResult -> SweepSummary
+  tally-result (s) (r) = when r
+    is PassVerified -> SweepSummary { pass-verified = s.pass-verified + 1, pass-failing = s.pass-failing, pass-unverified = s.pass-unverified, skipped = s.skipped, failed = s.failed, total = s.total + 1 }
+    is PassFailing -> SweepSummary { pass-verified = s.pass-verified, pass-failing = s.pass-failing + 1, pass-unverified = s.pass-unverified, skipped = s.skipped, failed = s.failed, total = s.total + 1 }
+    is PassUnverified -> SweepSummary { pass-verified = s.pass-verified, pass-failing = s.pass-failing, pass-unverified = s.pass-unverified + 1, skipped = s.skipped, failed = s.failed, total = s.total + 1 }
+    is SkippedResult -> SweepSummary { pass-verified = s.pass-verified, pass-failing = s.pass-failing, pass-unverified = s.pass-unverified, skipped = s.skipped + 1, failed = s.failed, total = s.total + 1 }
+    is otherwise -> SweepSummary { pass-verified = s.pass-verified, pass-failing = s.pass-failing, pass-unverified = s.pass-unverified, skipped = s.skipped, failed = s.failed + 1, total = s.total + 1 }
+
+  sweep-all-green : SweepSummary -> Boolean
+  sweep-all-green (s) = s.failed == 0
+
+  format-sweep-summary : SweepSummary -> Text
+  format-sweep-summary (s) =
+    show (s.pass-verified) & " verified, "
+    & show (s.pass-failing) & " expected-fail, "
+    & show (s.pass-unverified) & " unverified, "
+    & show (s.skipped) & " skipped, "
+    & show (s.failed) & " FAILED / "
+    & show (s.total) & " total"
+
+Page 1

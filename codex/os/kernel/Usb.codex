@@ -1,0 +1,164 @@
+Chapter: Usb
+  cites Foreword chapter Maybe
+
+ USB protocol layer. Device/configuration/interface/endpoint
+ descriptors, control transfer setup packets, standard requests.
+ Supports USB 2.0 and 3.x descriptor formats.
+
+ We say:
+
+Section: Descriptor Types
+  usb-desc-device : Integer = 1
+  usb-desc-config : Integer = 2
+  usb-desc-string : Integer = 3
+  usb-desc-interface : Integer = 4
+  usb-desc-endpoint : Integer = 5
+
+Section: Standard Requests
+  usb-req-get-status : Integer = 0
+  usb-req-clear-feature : Integer = 1
+  usb-req-set-feature : Integer = 3
+  usb-req-set-address : Integer = 5
+  usb-req-get-descriptor : Integer = 6
+  usb-req-set-config : Integer = 9
+
+Section: Device Descriptor
+  UsbDeviceDesc = record {
+    usb-vendor : Integer,
+    usb-product : Integer,
+    usb-class : Integer,
+    usb-subclass : Integer,
+    usb-protocol : Integer,
+    usb-max-packet : Integer,
+    usb-num-configs : Integer,
+    usb-speed : Integer
+  }
+
+  usb-parse-device-desc : List Integer -> UsbDeviceDesc
+  usb-parse-device-desc (bytes) =
+    UsbDeviceDesc {
+      usb-vendor = usb-le16 bytes 8,
+      usb-product = usb-le16 bytes 10,
+      usb-class = list-at bytes 4,
+      usb-subclass = list-at bytes 5,
+      usb-protocol = list-at bytes 6,
+      usb-max-packet = list-at bytes 7,
+      usb-num-configs = list-at bytes 17,
+      usb-speed = 0
+    }
+
+Section: Endpoint Descriptor
+  UsbEndpoint = record {
+    ep-address : Integer,
+    ep-direction : Integer,
+    ep-type : Integer,
+    ep-max-packet : Integer,
+    ep-interval : Integer
+  }
+
+  usb-ep-dir-in : Integer = 128
+  usb-ep-dir-out : Integer = 0
+  usb-ep-type-control : Integer = 0
+  usb-ep-type-iso : Integer = 1
+  usb-ep-type-bulk : Integer = 2
+  usb-ep-type-interrupt : Integer = 3
+
+  usb-parse-endpoint : List Integer, Integer -> UsbEndpoint
+  usb-parse-endpoint (bytes) (offset) =
+    let addr = list-at bytes (offset + 2)
+    in UsbEndpoint {
+      ep-address = bit-and addr 15,
+      ep-direction = bit-and addr 128,
+      ep-type = bit-and (list-at bytes (offset + 3)) 3,
+      ep-max-packet = usb-le16 bytes (offset + 4),
+      ep-interval = list-at bytes (offset + 6)
+    }
+
+Section: Interface Descriptor
+  UsbInterface = record {
+    if-number : Integer,
+    if-alt-setting : Integer,
+    if-class : Integer,
+    if-subclass : Integer,
+    if-protocol : Integer,
+    if-num-endpoints : Integer
+  }
+
+  usb-parse-interface : List Integer, Integer -> UsbInterface
+  usb-parse-interface (bytes) (offset) =
+    UsbInterface {
+      if-number = list-at bytes (offset + 2),
+      if-alt-setting = list-at bytes (offset + 3),
+      if-class = list-at bytes (offset + 5),
+      if-subclass = list-at bytes (offset + 6),
+      if-protocol = list-at bytes (offset + 7),
+      if-num-endpoints = list-at bytes (offset + 4)
+    }
+
+Section: Setup Packet (control transfers)
+  UsbSetupPacket = record {
+    sp-request-type : Integer,
+    sp-request : Integer,
+    sp-value : Integer,
+    sp-index : Integer,
+    sp-length : Integer
+  }
+
+  usb-setup-get-descriptor : Integer, Integer, Integer -> UsbSetupPacket
+  usb-setup-get-descriptor (desc-type) (desc-index) (length) =
+    UsbSetupPacket { sp-request-type = 128, sp-request = usb-req-get-descriptor, sp-value = bit-or (bit-shl desc-type 8) desc-index, sp-index = 0, sp-length = length }
+
+  usb-setup-set-address : Integer -> UsbSetupPacket
+  usb-setup-set-address (addr) =
+    UsbSetupPacket { sp-request-type = 0, sp-request = usb-req-set-address, sp-value = addr, sp-index = 0, sp-length = 0 }
+
+  usb-setup-set-config : Integer -> UsbSetupPacket
+  usb-setup-set-config (config) =
+    UsbSetupPacket { sp-request-type = 0, sp-request = usb-req-set-config, sp-value = config, sp-index = 0, sp-length = 0 }
+
+  usb-encode-setup : UsbSetupPacket -> List Integer
+  usb-encode-setup (pkt) =
+    [pkt.sp-request-type, pkt.sp-request] & usb-le16-encode (pkt.sp-value) & usb-le16-encode (pkt.sp-index) & usb-le16-encode (pkt.sp-length)
+
+Section: Audio Class Constants
+  usb-class-audio : Integer = 1
+  usb-subclass-audio-control : Integer = 1
+  usb-subclass-audio-streaming : Integer = 2
+  usb-audio-format-pcm : Integer = 1
+
+Section: Device Classes
+  usb-class-hid : Integer = 3
+  usb-class-mass-storage : Integer = 8
+  usb-class-hub : Integer = 9
+  usb-class-video : Integer = 14
+  usb-class-wireless : Integer = 224
+
+Section: Helpers
+  usb-le16 : List Integer, Integer -> Integer
+  usb-le16 (bytes) (offset) = bit-or (list-at bytes offset) (bit-shl (list-at bytes (offset + 1)) 8)
+
+  usb-le16-encode : Integer -> List Integer
+  usb-le16-encode (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+Section: Formatting
+  format-usb-device : UsbDeviceDesc -> Text
+  format-usb-device (d) =
+    usb-hex16 (d.usb-vendor) & ":" & usb-hex16 (d.usb-product) & " class=" & show (d.usb-class) & "." & show (d.usb-subclass)
+
+  format-usb-endpoint : UsbEndpoint -> Text
+  format-usb-endpoint (ep) =
+    let dir = if ep.ep-direction == 128 then "IN" else "OUT"
+    in let typ = if ep.ep-type == 0 then "CTRL" else if ep.ep-type == 1 then "ISO" else if ep.ep-type == 2 then "BULK" else "INT"
+    in "EP" & show (ep.ep-address) & " " & dir & " " & typ & " maxpkt=" & show (ep.ep-max-packet)
+
+  usb-hex16 : Integer -> Text
+  usb-hex16 (v) = usb-nib (bit-and (bit-shru v 12) 15) & usb-nib (bit-and (bit-shru v 8) 15) & usb-nib (bit-and (bit-shru v 4) 15) & usb-nib (bit-and v 15)
+
+  usb-nib : Integer -> Text
+  usb-nib (n) =
+    if n == 0 then "0" else if n == 1 then "1" else if n == 2 then "2" else if n == 3 then "3"
+    else if n == 4 then "4" else if n == 5 then "5" else if n == 6 then "6" else if n == 7 then "7"
+    else if n == 8 then "8" else if n == 9 then "9" else if n == 10 then "a" else if n == 11 then "b"
+    else if n == 12 then "c" else if n == 13 then "d" else if n == 14 then "e" else "f"
+
+Page 1

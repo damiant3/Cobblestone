@@ -1,0 +1,108 @@
+Chapter: DevUiLauncher
+  cites Works chapter UefiConsole
+  cites Works chapter DevConsoleMenu
+  cites Foreword chapter Maybe
+
+ Launches the full graphical UI from the dev console. Transitions
+ from UEFI text mode to GOP framebuffer mode, initializes the UI
+ orchestrator, and enters the graphical shell.
+
+ We say:
+
+ UEFI Graphics Output Protocol (GOP):
+   SystemTable->BootServices->LocateProtocol -> EFI_GRAPHICS_OUTPUT_PROTOCOL
+   GOP->SetMode(mode) — switch to framebuffer
+   GOP->Mode->FrameBufferBase — physical address of framebuffer
+   GOP->Mode->Info->HorizontalResolution
+   GOP->Mode->Info->VerticalResolution
+   GOP->Mode->Info->PixelsPerScanLine
+
+Section: Display Mode
+
+  DisplayConfig = record {
+    width : Integer,
+    height : Integer,
+    stride : Integer,
+    framebuffer : Integer,
+    pixel-format : PixelFormat
+  }
+
+  PixelFormat =
+    | PixelRgb
+    | PixelBgr
+    | PixelBitmask
+
+Section: GOP Discovery
+
+  GopResult =
+    | GopFound (DisplayConfig)
+    | GopNotFound
+
+Section: Mode Selection
+
+  preferred-modes : List DisplayPreference
+  preferred-modes = [
+    DisplayPreference { pref-width = 1920, pref-height = 1080 },
+    DisplayPreference { pref-width = 1280, pref-height = 720 },
+    DisplayPreference { pref-width = 1024, pref-height = 768 },
+    DisplayPreference { pref-width = 800, pref-height = 600 }
+  ]
+
+  DisplayPreference = record {
+    pref-width : Integer,
+    pref-height : Integer
+  }
+
+Section: UI Launch
+
+  UiLaunchResult =
+    | UiLaunched (DisplayConfig)
+    | UiLaunchFailed (Text)
+
+Section: UI Launcher Menu
+
+  ui-launcher-menu : MenuState
+  ui-launcher-menu = menu-new "UI Launcher" [
+    menu-item "Launch Full UI (auto resolution)" "auto",
+    menu-item "Launch at 1920x1080" "1080p",
+    menu-item "Launch at 1280x720" "720p",
+    menu-item "Launch at 1024x768" "xga",
+    menu-item "List Available Modes" "list-modes",
+    menu-item "Back" "back"
+  ]
+
+Section: Framebuffer Operations
+
+  fb-clear : Integer, Integer, Integer, Integer -> Integer
+  fb-clear (fb) (stride) (height) (color) =
+    fb-clear-loop fb stride height color 0
+
+  fb-clear-loop : Integer, Integer, Integer, Integer, Integer -> Integer
+  fb-clear-loop (fb) (stride) (height) (color) (y) =
+    if y >= height then 0
+    else let row-start = fb + y * stride * 4
+    in let w = fb-fill-row row-start stride color 0
+    in fb-clear-loop fb stride height color (y + 1)
+
+  fb-fill-row : Integer, Integer, Integer, Integer -> Integer
+  fb-fill-row (addr) (width) (color) (x) =
+    if x >= width then 0
+    else let w = poke-byte addr (x * 4) (bit-and color 255)
+    in let w2 = poke-byte addr (x * 4 + 1) (bit-and (bit-shru color 8) 255)
+    in let w3 = poke-byte addr (x * 4 + 2) (bit-and (bit-shru color 16) 255)
+    in fb-fill-row addr width color (x + 1)
+
+  fb-put-char : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  fb-put-char (fb) (stride) (x) (y) (ch) (color) =
+    let row = fb + y * stride * 4 + x * 4
+    in poke-byte row 0 (bit-and color 255)
+
+Section: Transition
+
+  format-display-config : DisplayConfig -> Text
+  format-display-config (cfg) =
+    show (cfg.width) & "x" & show (cfg.height)
+    & " stride=" & show (cfg.stride)
+    & " fb=0x" & hex-i64 (cfg.framebuffer)
+
+Page 1

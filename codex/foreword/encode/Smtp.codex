@@ -1,0 +1,119 @@
+Chapter: Smtp
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+
+ SMTP client protocol (RFC 5321). Builds SMTP command sequences
+ for sending email. Produces byte streams for wire transmission
+ over TCP. Supports EHLO, MAIL FROM, RCPT TO, DATA, QUIT.
+
+ We say:
+
+Section: Types
+  SmtpEmail = record {
+    smtp-from : Text,
+    smtp-to : List Text,
+    smtp-subject : Text,
+    smtp-body : Text,
+    smtp-headers : List Text
+  }
+
+  SmtpCommand =
+    | SmtpEhlo (Text)
+    | SmtpMailFrom (Text)
+    | SmtpRcptTo (Text)
+    | SmtpData
+    | SmtpQuit
+    | SmtpRaw (Text)
+
+Section: Construction
+  email-new : Text, Text, Text, Text -> SmtpEmail
+  email-new (from) (to) (subject) (body) = SmtpEmail { smtp-from = from, smtp-to = [to], smtp-subject = subject, smtp-body = body, smtp-headers = [] }
+
+  email-add-recipient : SmtpEmail, Text -> SmtpEmail
+  email-add-recipient (e) (to) = SmtpEmail { smtp-from = e.smtp-from, smtp-to = list-push (e.smtp-to) to, smtp-subject = e.smtp-subject, smtp-body = e.smtp-body, smtp-headers = e.smtp-headers }
+
+  email-add-header : SmtpEmail, Text -> SmtpEmail
+  email-add-header (e) (header) = SmtpEmail { smtp-from = e.smtp-from, smtp-to = e.smtp-to, smtp-subject = e.smtp-subject, smtp-body = e.smtp-body, smtp-headers = list-push (e.smtp-headers) header }
+
+Section: Command Encoding
+  smtp-encode-cmd : SmtpCommand -> Text
+  smtp-encode-cmd (cmd) = when cmd
+    is SmtpEhlo (domain) -> "EHLO " & domain & "\n"
+    is SmtpMailFrom (addr) -> "MAIL FROM:<" & addr & ">\n"
+    is SmtpRcptTo (addr) -> "RCPT TO:<" & addr & ">\n"
+    is SmtpData -> "DATA\n"
+    is SmtpQuit -> "QUIT\n"
+    is SmtpRaw (text) -> text & "\n"
+
+Section: Full Session
+  smtp-build-session : Text, SmtpEmail -> List Text
+  smtp-build-session (domain) (email) =
+    let ehlo = [smtp-encode-cmd (SmtpEhlo domain)]
+    in let mail-from = [smtp-encode-cmd (SmtpMailFrom (email.smtp-from))]
+    in let rcpts = smtp-rcpt-cmds (email.smtp-to) 0 (list-length (email.smtp-to)) []
+    in let data-cmd = [smtp-encode-cmd SmtpData]
+    in let message = [smtp-format-message email]
+    in let quit = [smtp-encode-cmd SmtpQuit]
+    in ehlo & mail-from & rcpts & data-cmd & message & quit
+
+  smtp-rcpt-cmds : List Text, Integer, Integer, List Text -> List Text
+  smtp-rcpt-cmds (recipients) (i) (n) (acc) =
+    if i >= n then acc
+    else smtp-rcpt-cmds recipients (i + 1) n (list-push acc (smtp-encode-cmd (SmtpRcptTo (list-at recipients i))))
+
+Section: Message Formatting (RFC 5322)
+  smtp-format-message : SmtpEmail -> Text
+  smtp-format-message (email) =
+    "From: " & email.smtp-from & "\n" ++
+    smtp-format-to (email.smtp-to) ++
+    "Subject: " & email.smtp-subject & "\n" ++
+    smtp-format-extra-headers (email.smtp-headers) 0 (list-length (email.smtp-headers)) "" ++
+    "\n" ++
+    email.smtp-body & "\n" ++
+    ".\n"
+
+  smtp-format-to : List Text -> Text
+  smtp-format-to (recipients) = smtp-to-loop recipients 0 (list-length recipients) ""
+
+  smtp-to-loop : List Text, Integer, Integer, Text -> Text
+  smtp-to-loop (recipients) (i) (n) (acc) =
+    if i >= n then acc
+    else let sep = if i == 0 then "" else ", "
+    in smtp-to-loop recipients (i + 1) n (acc & sep & list-at recipients i)
+
+  smtp-format-extra-headers : List Text, Integer, Integer, Text -> Text
+  smtp-format-extra-headers (headers) (i) (n) (acc) =
+    if i >= n then acc
+    else smtp-format-extra-headers headers (i + 1) n (acc & list-at headers i & "\n")
+
+Section: Response Parsing
+  SmtpResponse = record { smtp-code : Integer, smtp-message : Text }
+
+  smtp-parse-response : Text -> SmtpResponse
+  smtp-parse-response (line) =
+    let code = smtp-parse-code line
+    in let msg = smtp-response-msg line
+    in SmtpResponse { smtp-code = code, smtp-message = msg }
+
+  smtp-parse-code : Text -> Integer
+  smtp-parse-code (line) =
+    if text-length line < 3 then 0
+    else smtp-digit-val (char-at line 0) * 100 + smtp-digit-val (char-at line 1) * 10 + smtp-digit-val (char-at line 2)
+
+  smtp-digit-val : Char -> Integer
+  smtp-digit-val (c) = if is-digit c then digit-value c else 0
+
+  smtp-response-msg : Text -> Text
+  smtp-response-msg (line) =
+    if text-length line <= 4 then ""
+    else substring line 4 (text-length line - 4)
+
+  smtp-is-success : SmtpResponse -> Boolean
+  smtp-is-success (r) =
+    if r.smtp-code >= 200 then r.smtp-code < 400 else False
+
+Section: Formatting
+  format-smtp-email : SmtpEmail -> Text
+  format-smtp-email (e) = "from=" & e.smtp-from & " to=" & show (list-length (e.smtp-to)) & " subj=" & e.smtp-subject
+
+Page 1

@@ -1,0 +1,108 @@
+Chapter: ParticleSystem
+
+ Particle emitter and update system. Fixed-point (scale 1000).
+ Particles have position, velocity, lifetime, and color. Emitter
+ produces particles from a source point with spread. Dead particles
+ are compacted on update.
+
+ We say:
+
+Section: Particle
+  Particle = record {
+    part-x : Integer, part-y : Integer, part-z : Integer,
+    part-vx : Integer, part-vy : Integer, part-vz : Integer,
+    part-life : Integer between 0 and 65535,
+    part-max-life : Integer between 1 and 65535,
+    part-color : Integer
+  }
+
+Section: Emitter
+  ParticleEmitter = record {
+    emit-x : Integer, emit-y : Integer, emit-z : Integer,
+    emit-vx : Integer, emit-vy : Integer, emit-vz : Integer,
+    emit-spread : Integer,
+    emit-life : Integer between 1 and 65535,
+    emit-color : Integer
+  }
+
+  emitter-new : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> ParticleEmitter
+  emitter-new (x) (y) (z) (vx) (vy) (vz) (spread) (life) (color) = ParticleEmitter { emit-x = x, emit-y = y, emit-z = z, emit-vx = vx, emit-vy = vy, emit-vz = vz, emit-spread = spread, emit-life = life, emit-color = color }
+
+Section: System
+  ParticleSystem = record {
+    particles : List Particle,
+    count : Integer between 0 and 65535,
+    max-particles : Integer between 1 and 65535
+  }
+
+  psys-new : Integer -> ParticleSystem
+  psys-new (max) = ParticleSystem { particles = [], count = 0, max-particles = max }
+
+Section: Emit
+  psys-emit : ParticleSystem, ParticleEmitter, Integer, Integer -> ParticleSystem
+  psys-emit (sys) (emitter) (num) (seed) = psys-emit-loop sys emitter num seed 0
+
+  psys-emit-loop : ParticleSystem, ParticleEmitter, Integer, Integer, Integer -> ParticleSystem
+  psys-emit-loop (sys) (em) (num) (seed) (i) =
+    if i >= num then sys
+    else if sys.count >= sys.max-particles then sys
+    else let s = psys-hash seed i
+    in let spread = em.emit-spread
+    in let svx = em.emit-vx + psys-noise s spread
+    in let svy = em.emit-vy + psys-noise (s + 1000) spread
+    in let svz = em.emit-vz + psys-noise (s + 2000) spread
+    in let p = Particle { part-x = em.emit-x, part-y = em.emit-y, part-z = em.emit-z, part-vx = svx, part-vy = svy, part-vz = svz, part-life = em.emit-life, part-max-life = em.emit-life, part-color = em.emit-color }
+    in psys-emit-loop (ParticleSystem { particles = list-push (sys.particles) p, count = sys.count + 1, max-particles = sys.max-particles }) em num seed (i + 1)
+
+  psys-hash : Integer, Integer -> Integer
+  psys-hash (seed) (i) =
+    let h = bit-xor (seed * 2654435761) (i * 40503)
+    in let positive = if h < 0 then -h else h
+    in positive
+
+  psys-noise : Integer, Integer -> Integer
+  psys-noise (hash-val) (spread) =
+    if spread == 0 then 0
+    else let range = spread * 2
+    in let positive = if hash-val < 0 then -hash-val else hash-val
+    in (positive - (positive / range) * range) - spread
+
+Section: Update
+  psys-update : ParticleSystem, Integer, Integer -> ParticleSystem
+  psys-update (sys) (dt) (gravity) = psys-compact (psys-update-all sys dt gravity)
+
+  psys-update-all : ParticleSystem, Integer, Integer -> ParticleSystem
+  psys-update-all (sys) (dt) (gravity) =
+    ParticleSystem { particles = psys-update-loop (sys.particles) 0 (sys.count) dt gravity [], count = sys.count, max-particles = sys.max-particles }
+
+  psys-update-loop : List Particle, Integer, Integer, Integer, Integer, List Particle -> List Particle
+  psys-update-loop (ps) (i) (len) (dt) (gravity) (acc) =
+    if i >= len then acc
+    else let p = list-at ps i
+    in let updated = Particle { part-x = p.part-x + p.part-vx * dt / 1000, part-y = p.part-y + p.part-vy * dt / 1000, part-z = p.part-z + p.part-vz * dt / 1000, part-vx = p.part-vx, part-vy = p.part-vy - gravity * dt / 1000, part-vz = p.part-vz, part-life = p.part-life - dt, part-max-life = p.part-max-life, part-color = p.part-color }
+    in psys-update-loop ps (i + 1) len dt gravity (list-push acc updated)
+
+  psys-compact : ParticleSystem -> ParticleSystem
+  psys-compact (sys) = psys-compact-loop (sys.particles) 0 (sys.count) [] 0 (sys.max-particles)
+
+  psys-compact-loop : List Particle, Integer, Integer, List Particle, Integer, Integer -> ParticleSystem
+  psys-compact-loop (ps) (i) (len) (acc) (alive) (max) =
+    if i >= len then ParticleSystem { particles = acc, count = alive, max-particles = max }
+    else let p = list-at ps i
+    in if p.part-life <= 0 then psys-compact-loop ps (i + 1) len acc alive max
+    else psys-compact-loop ps (i + 1) len (list-push acc p) (alive + 1) max
+
+Section: Queries
+  psys-count : ParticleSystem -> Integer
+  psys-count (sys) = sys.count
+
+  psys-alive-count : ParticleSystem -> Integer
+  psys-alive-count (sys) = psys-count-alive (sys.particles) 0 (sys.count) 0
+
+  psys-count-alive : List Particle, Integer, Integer, Integer -> Integer
+  psys-count-alive (ps) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at ps i
+    in psys-count-alive ps (i + 1) len (acc + if p.part-life > 0 then 1 else 0)
+
+Page 1

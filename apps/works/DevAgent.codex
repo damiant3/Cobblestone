@@ -1,0 +1,123 @@
+Chapter: DevAgent
+  cites Works chapter UefiConsole
+  cites Works chapter DevConsoleMenu
+  cites Works chapter AgentRuntime
+  cites Works chapter AgentAcquisition
+  cites Works chapter AgentCoordinator
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter Sha256
+
+ Agent management in the dev console. DevAgent is a local AI that
+ runs on the device — DevAgent loads a GGUF model, runs inference
+ via the NeuralNet/Tensor stack, and provides a chat interface for
+ code assistance. For hard problems DevAgent escalates to an
+ upstream server with a larger model.
+
+ Three acquisition paths: bundled on the .img, loaded from USB,
+ or downloaded from network. First boot walks through setup.
+
+ We say:
+
+Section: Agent State
+
+  AgentManifest = record {
+    name : Text,
+    version : Text,
+    author-key : Text,
+    cdx-hash : Text,
+    capabilities : List Text,
+    gpu-required : Boolean
+  }
+
+  AgentStatus =
+    | AgentReady
+    | AgentRunning
+    | AgentStopped
+    | AgentError (Text)
+
+  AgentState = record {
+    manifest : AgentManifest,
+    status : AgentStatus,
+    runtime : AgentRuntimeState,
+    coordinator : CoordinatorState,
+    process-id : Integer,
+    output-buffer : List Text
+  }
+
+  agent-state-new : AgentManifest, RoleConfig -> AgentState
+  agent-state-new (m) (role) = AgentState {
+    manifest = m,
+    status = AgentReady,
+    runtime = runtime-init,
+    coordinator = coordinator-init role,
+    process-id = 0,
+    output-buffer = []
+  }
+
+Section: Agent Registry
+
+  AgentRegistry = record {
+    agents : HamtMap AgentState,
+    count : Integer
+  }
+
+  agent-registry-empty : AgentRegistry = AgentRegistry { agents = hamt-empty, count = 0 }
+
+  agent-register : AgentRegistry, AgentManifest, RoleConfig -> AgentRegistry
+  agent-register (reg) (m) (role) =
+    if hamt-contains (reg.agents) (m.name) then reg
+    else AgentRegistry {
+      agents = hamt-set (reg.agents) (m.name) (agent-state-new m role),
+      count = reg.count + 1
+    }
+
+  agent-lookup : AgentRegistry, Text -> Maybe AgentState
+  agent-lookup (reg) (name) = hamt-get (reg.agents) name
+
+Section: Agent Menu
+
+  agent-menu : MenuState
+  agent-menu = menu-new "Agent Manager" [
+    menu-item "Chat with Agent" "chat",
+    menu-item "Agent Status" "status",
+    menu-item "Switch Role" "role",
+    menu-item "List Agents" "list",
+    menu-item "Load Agent" "load",
+    menu-item "Download Agent" "download",
+    menu-item "Configure Upstream" "upstream",
+    menu-item "GPU Bridge Status" "gpu",
+    menu-item "Back" "back"
+  ]
+
+  role-switch-menu : MenuState
+  role-switch-menu = menu-new "Switch Agent Role" [
+    menu-item "Dev Console Assistant" "dev",
+    menu-item "UI Design Assistant" "ui",
+    menu-item "Build Watcher" "build",
+    menu-item "Code Reviewer" "review",
+    menu-item "General Assistant" "general",
+    menu-item "Back" "back"
+  ]
+
+Section: Formatting
+
+  format-agent-status : AgentStatus -> Text
+  format-agent-status (s) = when s
+    is AgentReady -> "ready"
+    is AgentRunning -> "running"
+    is AgentStopped -> "stopped"
+    is AgentError (msg) -> "error: " & msg
+
+  format-agent-info : AgentState -> Text
+  format-agent-info (a) =
+    a.manifest.name & " v" & a.manifest.version
+    & " [" & format-agent-status (a.status) & "]"
+    & "\n  " & format-coordinator-status (a.coordinator)
+
+  format-gpu-status : GpuBridge -> Text
+  format-gpu-status (bridge) =
+    "GPU Bridge: " & if bridge.bridge-ready then "READY (COM3 @ 0x3E8)" else "NOT READY"
+
+Page 1

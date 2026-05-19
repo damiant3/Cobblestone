@@ -1,0 +1,131 @@
+Chapter: SceneOutliner
+  cites Spark chapter SceneGraph
+  cites Spark chapter Selection
+
+ Tree view of the scene graph. Shows hierarchy with expand/collapse,
+ selection highlighting, visibility toggles, and drag-to-reparent.
+
+ We say:
+
+Section: Types
+
+  OutlinerNode = record {
+    on-index : Integer,
+    on-name : Text,
+    on-depth : Integer,
+    on-expanded : Boolean,
+    on-visible : Boolean,
+    on-selected : Boolean,
+    on-has-children : Boolean
+  }
+
+  OutlinerState = record {
+    ols-nodes : List OutlinerNode,
+    ols-count : Integer,
+    ols-scroll-y : Integer,
+    ols-row-height : Integer,
+    ols-indent : Integer
+  }
+
+Section: Construction
+
+  outliner-new : OutlinerState
+  outliner-new = OutlinerState {
+    ols-nodes = [],
+    ols-count = 0,
+    ols-scroll-y = 0,
+    ols-row-height = 18,
+    ols-indent = 16
+  }
+
+Section: Build From Scene
+
+  outliner-from-scene : SceneGraph3D, SelectionState -> OutlinerState
+  outliner-from-scene (sg) (sel) =
+    ols-build-loop sg sel 0 outliner-new
+
+  ols-build-loop : SceneGraph3D, SelectionState, Integer, OutlinerState -> OutlinerState
+  ols-build-loop (sg) (sel) (i) (ols) =
+    if i >= sg.sg-count then ols
+    else let node = sg-get-node sg i
+    in let children = sg-children sg (node.sgn-id)
+    in let depth = ols-compute-depth sg node 0
+    in let onode = OutlinerNode {
+      on-index = i,
+      on-name = node.sgn-name,
+      on-depth = depth,
+      on-expanded = True,
+      on-visible = node.sgn-visible,
+      on-selected = selection-contains sel i,
+      on-has-children = list-length children > 0
+    }
+    in let ols2 = ols-add-node ols onode
+    in ols-build-loop sg sel (i + 1) ols2
+
+  ols-compute-depth : SceneGraph3D, SceneGraphNode, Integer -> Integer
+  ols-compute-depth (sg) (node) (depth) =
+    if node.sgn-parent <= 0 then depth
+    else let parent-idx = sg-find-by-id sg (node.sgn-parent)
+    in if parent-idx < 0 then depth
+    else ols-compute-depth sg (sg-get-node sg parent-idx) (depth + 1)
+
+  ols-add-node : OutlinerState, OutlinerNode -> OutlinerState
+  ols-add-node (ols) (node) = OutlinerState {
+    ols-nodes = list-push (ols.ols-nodes) node,
+    ols-count = ols.ols-count + 1,
+    ols-scroll-y = ols.ols-scroll-y,
+    ols-row-height = ols.ols-row-height,
+    ols-indent = ols.ols-indent
+  }
+
+Section: Interaction
+
+  outliner-toggle-expand : OutlinerState, Integer -> OutlinerState
+  outliner-toggle-expand (ols) (idx) =
+    if idx < 0 then ols
+    else if idx >= ols.ols-count then ols
+    else let node = list-at (ols.ols-nodes) idx
+    in let updated = __record-set node "on-expanded" (if node.on-expanded then False else True)
+    in __record-set ols "ols-nodes" (list-set-at (ols.ols-nodes) idx updated)
+
+  outliner-select : OutlinerState, Integer -> OutlinerState
+  outliner-select (ols) (idx) =
+    ols-select-loop ols idx 0
+
+  ols-select-loop : OutlinerState, Integer, Integer -> OutlinerState
+  ols-select-loop (ols) (target) (i) =
+    if i >= ols.ols-count then ols
+    else let node = list-at (ols.ols-nodes) i
+    in let updated = __record-set node "on-selected" (i == target)
+    in let ols2 = __record-set ols "ols-nodes" (list-set-at (ols.ols-nodes) i updated)
+    in ols-select-loop ols2 target (i + 1)
+
+  outliner-scroll : OutlinerState, Integer -> OutlinerState
+  outliner-scroll (ols) (delta) =
+    let new-y = ols.ols-scroll-y + delta
+    in __record-set ols "ols-scroll-y" (if new-y < 0 then 0 else new-y)
+
+Section: Hit Test
+
+  outliner-row-at : OutlinerState, Integer -> Integer
+  outliner-row-at (ols) (my) =
+    (my + ols.ols-scroll-y) / ols.ols-row-height
+
+Section: Query
+
+  outliner-selected-index : OutlinerState -> Integer
+  outliner-selected-index (ols) = ols-find-sel (ols.ols-nodes) (ols.ols-count) 0
+
+  ols-find-sel : List OutlinerNode, Integer, Integer -> Integer
+  ols-find-sel (nodes) (count) (i) =
+    if i >= count then -1
+    else let n = list-at nodes i
+    in if n.on-selected then n.on-index else ols-find-sel nodes count (i + 1)
+
+Section: Info
+
+  outliner-info : OutlinerState -> Text
+  outliner-info (ols) =
+    show (ols.ols-count) & " nodes, selected=" & show (outliner-selected-index ols)
+
+Page 1

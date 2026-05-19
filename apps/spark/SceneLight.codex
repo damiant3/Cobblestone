@@ -1,0 +1,99 @@
+Chapter: SceneLight
+  cites Math chapter Quaternion
+
+ Scene lighting for the 3D pipeline. Point, directional, and ambient
+ lights with Phong shading computation. Fixed-point scale 1000.
+
+ We say:
+
+Section: Types
+
+  LightKind =
+    | LightDirectional (Vec3)
+    | LightPoint (Vec3) (Integer)
+    | LightAmbient
+
+  SparkLight = record {
+    sl-kind : LightKind,
+    sl-color : Integer,
+    sl-intensity : Integer
+  }
+
+Section: Construction
+
+  light-directional : Vec3, Integer, Integer -> SparkLight
+  light-directional (dir) (color) (intensity) = SparkLight {
+    sl-kind = LightDirectional dir,
+    sl-color = color,
+    sl-intensity = intensity
+  }
+
+  light-point : Vec3, Integer, Integer, Integer -> SparkLight
+  light-point (pos) (radius) (color) (intensity) = SparkLight {
+    sl-kind = LightPoint pos radius,
+    sl-color = color,
+    sl-intensity = intensity
+  }
+
+  light-ambient : Integer, Integer -> SparkLight
+  light-ambient (color) (intensity) = SparkLight {
+    sl-kind = LightAmbient,
+    sl-color = color,
+    sl-intensity = intensity
+  }
+
+Section: Shading
+
+  light-shade : SparkLight, Vec3, Vec3 -> Integer
+  light-shade (light) (pos) (normal) =
+    when light.sl-kind
+      is LightAmbient -> light.sl-intensity
+      is LightDirectional (dir) ->
+        let ndl = vec3-dot normal dir
+        in let clamped = if ndl < 0 then 0 else ndl
+        in clamped * light.sl-intensity / 1000
+      is LightPoint (lpos) (radius) ->
+        let to-light = vec3-subtract lpos pos
+        in let dist-sq = vec3-length-squared to-light
+        in let dist = light-isqrt (dist-sq * 1000)
+        in let ndl = if dist == 0 then 0 else vec3-dot normal (light-v3-normalize to-light)
+        in let clamped = if ndl < 0 then 0 else ndl
+        in let atten = if dist > radius then 0 else (radius - dist) * 1000 / radius
+        in clamped * atten / 1000 * light.sl-intensity / 1000
+
+  light-shade-all : List SparkLight, Vec3, Vec3, Integer, Integer -> Integer
+  light-shade-all (lights) (pos) (normal) (i) (total) =
+    if i >= list-length lights then total
+    else let contrib = light-shade (list-at lights i) pos normal
+    in let new-total = total + contrib
+    in light-shade-all lights pos normal (i + 1) new-total
+
+Section: Color Application
+
+  light-apply-color : Integer, Integer -> Integer
+  light-apply-color (base-color) (shade) =
+    let r = (base-color / 65536) * shade / 1000
+    in let g = (base-color / 256 - base-color / 65536 * 256) * shade / 1000
+    in let b = (base-color - base-color / 256 * 256) * shade / 1000
+    in let cr = if r > 255 then 255 else r
+    in let cg = if g > 255 then 255 else g
+    in let cb = if b > 255 then 255 else b
+    in cr * 65536 + cg * 256 + cb
+
+Section: Helpers
+
+  light-v3-normalize : Vec3 -> Vec3
+  light-v3-normalize (v) =
+    let len = light-isqrt (v.vx * v.vx + v.vy * v.vy + v.vz * v.vz)
+    in if len == 0 then vec3-zero
+    else Vec3 { vx = v.vx * 1000 / len, vy = v.vy * 1000 / len, vz = v.vz * 1000 / len }
+
+  light-isqrt : Integer -> Integer
+  light-isqrt (n) = if n <= 0 then 0 else light-isqrt-loop n (n / 2 + 1)
+
+  light-isqrt-loop : Integer, Integer -> Integer
+  light-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else light-isqrt-loop n next
+
+Page 1

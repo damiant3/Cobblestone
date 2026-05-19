@@ -1,0 +1,183 @@
+Chapter: GpuProxy
+  cites AI chapter Tensor
+  cites Foreword chapter Maybe
+
+ GPU compute proxy protocol. Builds command descriptors for dispatch
+ to a host-side CUDA process via shared memory. Guest writes a
+ command buffer, host reads the buffer, executes on GPU, writes results
+ back. Pure logic. Header is 256 bytes, data region follows.
+
+ We say:
+
+Section: Constants
+  gpu-status-idle : Integer = 0
+  gpu-status-pending : Integer = 1
+  gpu-status-complete : Integer = 2
+  gpu-status-error : Integer = 3
+
+  gpu-op-matmul : Integer = 0
+  gpu-op-matvec : Integer = 1
+  gpu-op-relu : Integer = 2
+  gpu-op-softmax : Integer = 3
+  gpu-op-conv1d : Integer = 4
+
+  gpu-header-size : Integer = 256
+  gpu-data-start : Integer = 256
+
+Section: Command Types
+  GpuCommand = record {
+    gpu-op : Integer,
+    gpu-rows-a : Integer,
+    gpu-cols-a : Integer,
+    gpu-cols-b : Integer,
+    gpu-offset-a : Integer,
+    gpu-offset-b : Integer,
+    gpu-offset-out : Integer
+  }
+
+  GpuResult = record {
+    gpu-result-rows : Integer,
+    gpu-result-cols : Integer,
+    gpu-result-status : Integer
+  }
+
+Section: Command Construction
+  gpu-cmd-matmul : Integer, Integer, Integer -> GpuCommand
+  gpu-cmd-matmul (rows-a) (cols-a) (cols-b) =
+    let size-a = rows-a * cols-a * 4
+    in let size-b = cols-a * cols-b * 4
+    in GpuCommand { gpu-op = gpu-op-matmul, gpu-rows-a = rows-a, gpu-cols-a = cols-a, gpu-cols-b = cols-b, gpu-offset-a = 0, gpu-offset-b = size-a, gpu-offset-out = size-a + size-b }
+
+  gpu-cmd-matvec : Integer, Integer -> GpuCommand
+  gpu-cmd-matvec (rows) (cols) = gpu-cmd-matmul rows cols 1
+
+  gpu-cmd-relu : Integer, Integer -> GpuCommand
+  gpu-cmd-relu (rows) (cols) = GpuCommand { gpu-op = gpu-op-relu, gpu-rows-a = rows, gpu-cols-a = cols, gpu-cols-b = 0, gpu-offset-a = 0, gpu-offset-b = 0, gpu-offset-out = rows * cols * 4 }
+
+  gpu-cmd-softmax : Integer -> GpuCommand
+  gpu-cmd-softmax (length) = GpuCommand { gpu-op = gpu-op-softmax, gpu-rows-a = length, gpu-cols-a = 1, gpu-cols-b = 0, gpu-offset-a = 0, gpu-offset-b = 0, gpu-offset-out = length * 4 }
+
+Section: Buffer Serialization
+  gpu-serialize-cmd : GpuCommand -> List Integer
+  gpu-serialize-cmd (cmd) =
+    let p0 = gpu-write-u32 gpu-status-pending
+    in let p1 = gpu-write-u32 (cmd.gpu-op)
+    in let p2 = gpu-write-u32 (cmd.gpu-rows-a)
+    in let p3 = gpu-write-u32 (cmd.gpu-cols-a)
+    in let p4 = gpu-write-u32 (cmd.gpu-cols-b)
+    in let p5 = gpu-write-u32 (cmd.gpu-offset-a + gpu-data-start)
+    in let p6 = gpu-write-u32 (cmd.gpu-offset-b + gpu-data-start)
+    in let p7 = gpu-write-u32 (cmd.gpu-offset-out + gpu-data-start)
+    in p0 & p1 & p2 & p3 & p4 & p5 & p6 & p7
+
+  gpu-write-u32 : Integer -> List Integer
+  gpu-write-u32 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+  gpu-read-u32 : List Integer, Integer -> Integer
+  gpu-read-u32 (buf) (off) =
+    let b0 = list-at buf off
+    in let b1 = bit-shl (list-at buf (off + 1)) 8
+    in let b2 = bit-shl (list-at buf (off + 2)) 16
+    in let b3 = bit-shl (list-at buf (off + 3)) 24
+    in bit-or b0 (bit-or b1 (bit-or b2 b3))
+
+Section: Tensor to Buffer
+  gpu-tensor-to-f32-bytes : Tensor -> List Integer
+  gpu-tensor-to-f32-bytes (t) = gpu-fixed-to-f32-all (t.data) 0 (list-length (t.data)) []
+
+  gpu-fixed-to-f32-all : List Integer, Integer, Integer, List Integer -> List Integer
+  gpu-fixed-to-f32-all (data) (i) (len) (acc) =
+    if i >= len then acc
+    else gpu-fixed-to-f32-all data (i + 1) len (acc & gpu-fixed-to-f32 (list-at data i))
+
+  gpu-fixed-to-f32 : Integer -> List Integer
+  gpu-fixed-to-f32 (val) =
+    if val == 0 then [0, 0, 0, 0]
+    else let sign = if val < 0 then 1 else 0
+    in let abs-val = if val < 0 then -val else val
+    in let mant = abs-val * 8388608 / 1000
+    in let exp = 127
+    in let adjusted = gpu-normalize-f32 mant exp
+    in let raw = bit-or (bit-shl sign 31) (bit-or (bit-shl (adjusted.f32-exp) 23) (bit-and (adjusted.f32-mant) 8388607))
+    in gpu-write-u32 raw
+
+  F32Parts = record { f32-mant : Integer, f32-exp : Integer }
+
+  gpu-normalize-f32 : Integer, Integer -> F32Parts
+  gpu-normalize-f32 (mant) (exp) =
+    if mant >= 16777216 then gpu-normalize-f32 (mant / 2) (exp + 1)
+    else if mant < 8388608 then if mant == 0 then F32Parts { f32-mant = 0, f32-exp = 0 }
+      else gpu-normalize-f32 (mant * 2) (exp - 1)
+    else F32Parts { f32-mant = mant, f32-exp = exp }
+
+Section: Buffer to Tensor
+  gpu-f32-bytes-to-tensor : List Integer, Integer, Integer -> Tensor
+  gpu-f32-bytes-to-tensor (bytes) (rows) (cols) =
+    let data = gpu-f32-to-fixed-all bytes 0 (rows * cols) []
+    in Tensor { data = data, rows = rows, cols = cols }
+
+  gpu-f32-to-fixed-all : List Integer, Integer, Integer, List Integer -> List Integer
+  gpu-f32-to-fixed-all (bytes) (i) (count) (acc) =
+    if i >= count then acc
+    else let raw = gpu-read-u32 bytes (i * 4)
+    in gpu-f32-to-fixed-all bytes (i + 1) count (list-push acc (gpu-f32-raw-to-fixed raw))
+
+  gpu-f32-raw-to-fixed : Integer -> Integer
+  gpu-f32-raw-to-fixed (raw) =
+    let sign = bit-and (bit-shru raw 31) 1
+    in let exp = bit-and (bit-shru raw 23) 255
+    in let mant = bit-and raw 8388607
+    in if exp == 0 then 0
+    else let frac = 8388608 + mant
+    in let val = frac * 1000 / 8388608
+    in let e = exp - 127
+    in let shifted = if e >= 0 then val * gpu-pow2 e else val / gpu-pow2 (-e)
+    in if sign == 1 then -shifted else shifted
+
+  gpu-pow2 : Integer -> Integer
+  gpu-pow2 (n) = if n <= 0 then 1 else 2 * gpu-pow2 (n - 1)
+
+Section: Full Command Buffer
+  gpu-build-matmul-buffer : Tensor, Tensor -> List Integer
+  gpu-build-matmul-buffer (a) (b) =
+    let cmd = gpu-cmd-matmul (a.rows) (a.cols) (b.cols)
+    in let header = gpu-serialize-cmd cmd & gpu-pad-to (gpu-header-size - 32) []
+    in let data-a = gpu-tensor-to-f32-bytes a
+    in let data-b = gpu-tensor-to-f32-bytes b
+    in header & data-a & data-b
+
+  gpu-pad-to : Integer, List Integer -> List Integer
+  gpu-pad-to (n) (acc) =
+    if n <= 0 then acc
+    else gpu-pad-to (n - 1) (list-push acc 0)
+
+Section: Result Parsing
+  gpu-parse-result : List Integer -> GpuResult
+  gpu-parse-result (buf) =
+    let status = gpu-read-u32 buf 0
+    in let rows = gpu-read-u32 buf 32
+    in let cols = gpu-read-u32 buf 36
+    in GpuResult { gpu-result-rows = rows, gpu-result-cols = cols, gpu-result-status = status }
+
+Section: Queries
+  gpu-is-complete : List Integer -> Boolean
+  gpu-is-complete (buf) = gpu-read-u32 buf 0 == gpu-status-complete
+
+  gpu-is-error : List Integer -> Boolean
+  gpu-is-error (buf) = gpu-read-u32 buf 0 == gpu-status-error
+
+  format-gpu-cmd : GpuCommand -> Text
+  format-gpu-cmd (cmd) =
+    gpu-op-name (cmd.gpu-op) & " " & show (cmd.gpu-rows-a) & "x" & show (cmd.gpu-cols-a)
+    & (if cmd.gpu-cols-b > 0 then " * _x" & show (cmd.gpu-cols-b) else "")
+
+  gpu-op-name : Integer -> Text
+  gpu-op-name (op) =
+    if op == 0 then "MATMUL"
+    else if op == 1 then "MATVEC"
+    else if op == 2 then "RELU"
+    else if op == 3 then "SOFTMAX"
+    else if op == 4 then "CONV1D"
+    else "OP-" & show op
+
+Page 1

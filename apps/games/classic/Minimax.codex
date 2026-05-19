@@ -1,0 +1,210 @@
+Chapter: Minimax
+  cites Games chapter Rng
+  cites Games chapter TicTacToe
+  cites Games chapter Connect4
+
+ Iterative minimax search for bare-metal environments with limited stack.
+ Instead of recursive calls that blow the stack, each search is performed
+ with a flat loop: try every legal move, apply it, then for each response
+ try every legal counter-move and evaluate statically. This gives effective
+ depth-2 (two-ply) lookahead with call depth that never exceeds two
+ function calls. Scores are integers: positive favors player 1, negative
+ favors player 2.
+
+ We say:
+
+Section: Types
+
+  MmConfig = record {
+    max-depth  : Integer,
+    eval-fn-id : Integer
+  }
+
+  MoveScore = record {
+    move  : Integer,
+    score : Integer
+  }
+
+Section: TicTacToe Iterative AI
+
+ Score a finished or evaluated TicTacToe position from player 1's
+ perspective. Win for 1 = +100, win for 2 = -100, draw or ongoing = 0.
+
+  ttt-static-score : TttBoard -> Integer
+  ttt-static-score (b) =
+    if b.game-over then
+      if b.winner == 1 then 100
+      else if b.winner == 2 then -100
+      else 0
+    else 0
+
+ Count empty squares remaining on the board.
+
+  ttt-empty-count : TttBoard, Integer, Integer -> Integer
+  ttt-empty-count (b) (i) (acc) =
+    if i >= 9 then acc
+    else if ttt-empty b i then ttt-empty-count b (i + 1) (acc + 1)
+    else ttt-empty-count b (i + 1) acc
+
+ Evaluate depth-1 response: given a board after our move, let the opponent
+ try every legal reply and return the worst-case score for the maximizing
+ player (player 1). Opponent minimizes.
+
+  ttt-min-response : TttBoard, Integer, Integer -> Integer
+  ttt-min-response (b) (col) (worst) =
+    if col >= 9 then worst
+    else if b.game-over then worst
+    else if ttt-empty b col == False then ttt-min-response b (col + 1) worst
+    else let after = ttt-move b col
+    in let s = ttt-static-score after
+    in let next-worst = if s < worst then s else worst
+    in ttt-min-response b (col + 1) next-worst
+
+ Evaluate depth-1 response for maximizer (player 1 choosing best reply).
+
+  ttt-max-response : TttBoard, Integer, Integer -> Integer
+  ttt-max-response (b) (col) (best) =
+    if col >= 9 then best
+    else if b.game-over then best
+    else if ttt-empty b col == False then ttt-max-response b (col + 1) best
+    else let after = ttt-move b col
+    in let s = ttt-static-score after
+    in let next-best = if s > best then s else best
+    in ttt-max-response b (col + 1) next-best
+
+ Score a single candidate move for the current player. After applying the
+ move, if the game is over we return the static score immediately. Otherwise
+ we let the opponent search their best reply (depth-1 lookahead) and return
+ that. The current player is determined by b.current-player before the move.
+
+  ttt-score-move : TttBoard, Integer -> Integer
+  ttt-score-move (b) (pos) =
+    let after = ttt-move b pos
+    in if after.game-over then ttt-static-score after
+    else if b.current-player == 1 then ttt-min-response after 0 100
+    else ttt-max-response after 0 (-100)
+
+ Search all nine squares, track the best move and score for the current
+ player. Returns the best column index found.
+
+  ttt-best-move : TttBoard, Integer, Integer, Integer -> Integer
+  ttt-best-move (b) (col) (best-col) (best-score) =
+    if col >= 9 then best-col
+    else if b.game-over then best-col
+    else if ttt-empty b col == False then ttt-best-move b (col + 1) best-col best-score
+    else let s = ttt-score-move b col
+    in if b.current-player == 1 then
+      if s > best-score then ttt-best-move b (col + 1) col s
+      else ttt-best-move b (col + 1) best-col best-score
+    else
+      if s < best-score then ttt-best-move b (col + 1) col s
+      else ttt-best-move b (col + 1) best-col best-score
+
+ Public entry point: return the best move index (0-8) for the board's
+ current player using two-ply iterative search.
+
+  ttt-iterative-ai : TttBoard -> Integer
+  ttt-iterative-ai (b) =
+    if b.game-over then -1
+    else let init-score = if b.current-player == 1 then -101 else 101
+    in ttt-best-move b 0 (-1) init-score
+
+Section: Connect4 Iterative AI
+
+ Static heuristic for Connect4 from player 1's perspective.
+ Win = ±1000. Otherwise use center-column preference as tiebreaker.
+
+  c4-static-score : Connect4Board -> Integer
+  c4-static-score (b) =
+    if b.game-over then
+      if b.winner == 1 then 1000
+      else if b.winner == 2 then -1000
+      else 0
+    else c4-positional-score b
+
+ Sum a positional bonus across all filled cells. Center columns score
+ higher for player 1, lower for player 2.
+
+  c4-positional-score : Connect4Board -> Integer
+  c4-positional-score (b) =
+    c4-pos-loop (b.squares) 0 0
+
+  c4-pos-loop : List Integer, Integer, Integer -> Integer
+  c4-pos-loop (sq) (idx) (acc) =
+    if idx >= 42 then acc
+    else let col = idx - (idx / 7) * 7
+    in let bonus = c4-col-bonus col
+    in let piece = list-at sq idx
+    in let delta = if piece == 1 then bonus
+                   else if piece == 2 then -bonus
+                   else 0
+    in c4-pos-loop sq (idx + 1) (acc + delta)
+
+  c4-col-bonus : Integer -> Integer
+  c4-col-bonus (col) =
+    if col == 3 then 4
+    else if col == 2 then 2
+    else if col == 4 then 2
+    else if col == 1 then 1
+    else if col == 5 then 1
+    else 0
+
+ Depth-1 minimizing response: opponent picks worst-for-us reply.
+
+  c4-min-response : Connect4Board, Integer, Integer -> Integer
+  c4-min-response (b) (col) (worst) =
+    if col >= 7 then worst
+    else if b.game-over then worst
+    else if c4-col-full b col then c4-min-response b (col + 1) worst
+    else let after = connect4-drop b col
+    in let s = c4-static-score after
+    in let next-worst = if s < worst then s else worst
+    in c4-min-response b (col + 1) next-worst
+
+ Depth-1 maximizing response: player 1 picks best reply.
+
+  c4-max-response : Connect4Board, Integer, Integer -> Integer
+  c4-max-response (b) (col) (best) =
+    if col >= 7 then best
+    else if b.game-over then best
+    else if c4-col-full b col then c4-max-response b (col + 1) best
+    else let after = connect4-drop b col
+    in let s = c4-static-score after
+    in let next-best = if s > best then s else best
+    in c4-max-response b (col + 1) next-best
+
+ Score a single candidate column drop. Two-ply: apply move, then let
+ opponent pick their best one-ply reply.
+
+  c4-score-move : Connect4Board, Integer -> Integer
+  c4-score-move (b) (col) =
+    let after = connect4-drop b col
+    in if after.game-over then c4-static-score after
+    else if b.current-player == 1 then c4-min-response after 0 1001
+    else c4-max-response after 0 (-1001)
+
+ Scan all seven columns, return the best column for current player.
+
+  c4-best-move : Connect4Board, Integer, Integer, Integer -> Integer
+  c4-best-move (b) (col) (best-col) (best-score) =
+    if col >= 7 then if best-col >= 0 then best-col else 3
+    else if b.game-over then if best-col >= 0 then best-col else 3
+    else if c4-col-full b col then c4-best-move b (col + 1) best-col best-score
+    else let s = c4-score-move b col
+    in if b.current-player == 1 then
+      if s > best-score then c4-best-move b (col + 1) col s
+      else c4-best-move b (col + 1) best-col best-score
+    else
+      if s < best-score then c4-best-move b (col + 1) col s
+      else c4-best-move b (col + 1) best-col best-score
+
+ Public entry point: return the best column (0-6) for the current player
+ using two-ply iterative search.
+
+  c4-iterative-ai : Connect4Board -> Integer
+  c4-iterative-ai (b) =
+    if b.game-over then -1
+    else let init-score = if b.current-player == 1 then -1002 else 1002
+    in c4-best-move b 0 (-1) init-score
+
+Page 1

@@ -1,0 +1,155 @@
+Chapter: NumberTheory
+
+ Number theory primitives — GCD, LCM, modular arithmetic, primality
+ testing, prime sieve, factorization. Building blocks for crypto,
+ protocol design, and hash functions.
+
+ To gcd gives the greatest common divisor of two integers.
+ To lcm gives the least common multiple of two integers.
+ To mod-exp gives modular exponentiation (base^exp mod m).
+ To is-prime gives True when the input is a prime number.
+ To primes-up-to gives all primes up to a limit via sieve.
+ To factor gives the prime factorization as a list of pairs.
+ To euler-totient gives Euler's totient function phi(n).
+ To mod-inverse gives the modular multiplicative inverse.
+
+ We say:
+
+Section: GCD and LCM
+
+  gcd : Integer, Integer -> Integer
+  gcd (a) (b) =
+    let x = if a < 0 then 0 - a else a
+    in let y = if b < 0 then 0 - b else b
+    in gcd-loop x y
+
+  gcd-loop : Integer, Integer -> Integer
+  gcd-loop (a) (b) =
+    if b == 0 then a
+    else gcd-loop b (a - (a / b) * b)
+
+  lcm : Integer, Integer -> Integer
+  lcm (a) (b) =
+    if a == 0 then 0
+    else if b == 0 then 0
+    else let g = gcd a b
+    in (a / g) * b
+
+Section: Modular Arithmetic
+
+  mod-exp : Integer, Integer, Integer -> Integer
+  mod-exp (base) (exp) (m) =
+    if m == 1 then 0
+    else mod-exp-loop (base - (base / m) * m) exp m 1
+
+  mod-exp-loop : Integer, Integer, Integer, Integer -> Integer
+  mod-exp-loop (base) (exp) (m) (result) =
+    if exp <= 0 then result
+    else if bit-and exp 1 == 1 then
+      let r2 = (result * base) - ((result * base) / m) * m
+      in mod-exp-loop ((base * base) - ((base * base) / m) * m) (bit-shru exp 1) m r2
+    else mod-exp-loop ((base * base) - ((base * base) / m) * m) (bit-shru exp 1) m result
+
+  mod-inverse : Integer, Integer -> Integer
+  mod-inverse (a) (m) =
+    let r = extended-gcd a m
+    in let x = r.x
+    in if x < 0 then x + m else x
+
+  ExtGcdResult = record {
+    g : Integer,
+    x : Integer,
+    y : Integer
+  }
+
+  extended-gcd : Integer, Integer -> ExtGcdResult
+  extended-gcd (a) (b) =
+    if b == 0 then ExtGcdResult { g = a, x = 1, y = 0 }
+    else let r = extended-gcd b (a - (a / b) * b)
+    in ExtGcdResult { g = r.g, x = r.y, y = r.x - (a / b) * r.y }
+
+Section: Primality
+
+  is-prime : Integer -> Boolean
+  is-prime (n) =
+    if n < 2 then False
+    else if n < 4 then True
+    else if bit-and n 1 == 0 then False
+    else if n - (n / 3) * 3 == 0 then False
+    else is-prime-loop n 5
+
+  is-prime-loop : Integer, Integer -> Boolean
+  is-prime-loop (n) (i) =
+    if i * i > n then True
+    else if n - (n / i) * i == 0 then False
+    else if n - (n / (i + 2)) * (i + 2) == 0 then False
+    else is-prime-loop n (i + 6)
+
+Section: Prime Sieve
+
+  primes-up-to : Integer -> List Integer
+  primes-up-to (limit) =
+    if limit < 2 then []
+    else sieve-collect limit 2 []
+
+  sieve-collect : Integer, Integer, List Integer -> List Integer
+  sieve-collect (limit) (candidate) (acc) =
+    if candidate > limit then acc
+    else if is-prime candidate then sieve-collect limit (candidate + 1) (list-push acc candidate)
+    else sieve-collect limit (candidate + 1) acc
+
+Section: Factorization
+
+  FactorPair = record {
+    prime : Integer,
+    power : Integer
+  }
+
+  factor : Integer -> List FactorPair
+  factor (n) =
+    if n <= 1 then []
+    else factor-loop n 2 []
+
+  factor-loop : Integer, Integer, List FactorPair -> List FactorPair
+  factor-loop (n) (d) (acc) =
+    if d * d > n then
+      if n > 1 then list-push acc (FactorPair { prime = n, power = 1 })
+      else acc
+    else if n - (n / d) * d == 0 then
+      let r = factor-count n d 0
+      in factor-loop (r.remaining) (d + 1) (list-push acc (FactorPair { prime = d, power = r.count }))
+    else factor-loop n (d + 1) acc
+
+  FactorCountResult = record {
+    remaining : Integer,
+    count : Integer
+  }
+
+  factor-count : Integer, Integer, Integer -> FactorCountResult
+  factor-count (n) (d) (c) =
+    if n - (n / d) * d == 0 then factor-count (n / d) d (c + 1)
+    else FactorCountResult { remaining = n, count = c }
+
+Section: Euler Totient
+
+  euler-totient : Integer -> Integer
+  euler-totient (n) =
+    if n <= 1 then 1
+    else euler-totient-loop n n 2
+
+  euler-totient-loop : Integer, Integer, Integer -> Integer
+  euler-totient-loop (n) (result) (p) =
+    if p * p > n then
+      if n > 1 then result - result / n
+      else result
+    else if n - (n / p) * p == 0 then
+      let n2 = euler-drain n p
+      in euler-totient-loop n2 (result - result / p) (p + 1)
+    else euler-totient-loop n result (p + 1)
+
+  euler-drain : Integer, Integer -> Integer
+  euler-drain (n) (p) =
+    if n - (n / p) * p == 0 then euler-drain (n / p) p
+    else n
+
+Page 1

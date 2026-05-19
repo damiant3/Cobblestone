@@ -1,0 +1,270 @@
+Chapter: Mancala
+  cites Games chapter Rng
+
+ Kalah mancala: 6 pits per side, 4 seeds per pit at start. Players
+ alternate sowing seeds counter-clockwise, capturing opposite pit's
+ seeds when the last seed lands in an empty pit on their side, and
+ earning an extra turn when the last seed lands in their own store.
+ Minimax AI searches to a configurable depth.
+
+ Board layout: indices 0-5 are south pits, index 6 is south store,
+ indices 7-12 are north pits, index 13 is north store.
+
+ We say:
+
+Section: Types
+
+  MancalaBoard = record {
+    pits    : List Integer,
+    turn    : Integer,
+    over    : Boolean
+  }
+
+  MancalaResult = record {
+    south-score : Integer,
+    north-score  : Integer,
+    winner       : Integer
+  }
+
+Section: Construction
+
+  mancala-new : Integer -> MancalaBoard
+  mancala-new (seed) =
+    let pits = mancala-build-pits 0 []
+    in MancalaBoard { pits = pits, turn = 0, over = False }
+
+  mancala-build-pits : Integer, List Integer -> List Integer
+  mancala-build-pits (i) (acc) =
+    if i >= 14 then acc
+    else let v = if i == 6 then 0 else if i == 13 then 0 else 4
+    in mancala-build-pits (i + 1) (list-push acc v)
+
+Section: Pit Queries
+
+  pit-of : MancalaBoard, Integer -> Integer
+  pit-of (b) (i) = list-at (b.pits) i
+
+  south-store : MancalaBoard -> Integer
+  south-store (b) = list-at (b.pits) 6
+
+  north-store : MancalaBoard -> Integer
+  north-store (b) = list-at (b.pits) 13
+
+  is-south-pit : Integer -> Boolean
+  is-south-pit (i) = i >= 0 & i <= 5
+
+  is-north-pit : Integer -> Boolean
+  is-north-pit (i) = i >= 7 & i <= 12
+
+  opposite-pit : Integer -> Integer
+  opposite-pit (i) = 12 - i
+
+Section: Move Legality
+
+  mancala-legal : MancalaBoard, Integer -> Boolean
+  mancala-legal (b) (pit) =
+    if b.over then False
+    else if b.turn == 0 then is-south-pit pit & pit-of b pit > 0
+    else is-north-pit pit & pit-of b pit > 0
+
+Section: Sowing
+
+  mancala-move : MancalaBoard, Integer -> MancalaBoard
+  mancala-move (b) (pit) =
+    if mancala-legal b pit == False then b
+    else let seeds = pit-of b pit
+    in let cleared = list-set-at (b.pits) pit 0
+    in let after-sow = sow-seeds cleared pit seeds b.turn
+    in let last-idx = sow-last-index pit seeds b.turn
+    in let after-cap = check-capture after-sow last-idx b.turn
+    in let after-end = check-game-end after-cap
+    in let extra = if b.turn == 0 then last-idx == 6 else last-idx == 13
+    in let next-turn = if after-end.over then b.turn else if extra then b.turn else 1 - b.turn
+    in MancalaBoard { pits = after-end.pits, turn = next-turn, over = after-end.over }
+
+  sow-seeds : List Integer, Integer, Integer, Integer -> List Integer
+  sow-seeds (pits) (start) (seeds) (player) =
+    sow-loop pits start seeds player 0
+
+  sow-loop : List Integer, Integer, Integer, Integer, Integer -> List Integer
+  sow-loop (pits) (start) (seeds) (player) (placed) =
+    if placed >= seeds then pits
+    else let raw = start + placed + 1
+    in let idx = sow-next-index raw player
+    in let adjusted = if idx < 0 then 0 else idx
+    in sow-loop (list-set-at pits adjusted (list-at pits adjusted + 1)) start seeds player (placed + 1)
+
+  sow-next-index : Integer, Integer -> Integer
+  sow-next-index (raw) (player) =
+    let wrapped = rng-mod raw 14
+    in if player == 0 then
+      if wrapped == 13 then sow-next-index (raw + 1) player
+      else wrapped
+    else
+      if wrapped == 6 then sow-next-index (raw + 1) player
+      else wrapped
+
+  sow-last-index : Integer, Integer, Integer -> Integer
+  sow-last-index (start) (seeds) (player) =
+    sow-last-loop start seeds player 0 start
+
+  sow-last-loop : Integer, Integer, Integer, Integer, Integer -> Integer
+  sow-last-loop (start) (seeds) (player) (placed) (last) =
+    if placed >= seeds then last
+    else let raw = start + placed + 1
+    in let idx = sow-next-index raw player
+    in sow-last-loop start seeds player (placed + 1) idx
+
+Section: Capture
+
+  check-capture : List Integer, Integer, Integer -> MancalaBoard
+  check-capture (pits) (last) (player) =
+    let own-side = if player == 0 then is-south-pit last else is-north-pit last
+    in let landed-empty = list-at pits last == 1
+    in if own-side & landed-empty then
+      let opp = opposite-pit last
+      in let captured = list-at pits opp
+      in if captured > 0 then
+        let store = if player == 0 then 6 else 13
+        in let gain = captured + 1
+        in let p2 = list-set-at pits last 0
+        in let p3 = list-set-at p2 opp 0
+        in let p4 = list-set-at p3 store (list-at p3 store + gain)
+        in MancalaBoard { pits = p4, turn = player, over = False }
+      else MancalaBoard { pits = pits, turn = player, over = False }
+    else MancalaBoard { pits = pits, turn = player, over = False }
+
+Section: End of Game
+
+  check-game-end : MancalaBoard -> MancalaBoard
+  check-game-end (b) =
+    let south-empty = side-empty (b.pits) 0 6
+    in let north-empty = side-empty (b.pits) 7 13
+    in if south-empty then
+      let swept = sweep-side (b.pits) 7 13 13
+      in MancalaBoard { pits = swept, turn = b.turn, over = True }
+    else if north-empty then
+      let swept = sweep-side (b.pits) 0 6 6
+      in MancalaBoard { pits = swept, turn = b.turn, over = True }
+    else b
+
+  side-empty : List Integer, Integer, Integer -> Boolean
+  side-empty (pits) (lo) (hi) =
+    side-empty-loop pits lo hi lo
+
+  side-empty-loop : List Integer, Integer, Integer, Integer -> Boolean
+  side-empty-loop (pits) (lo) (hi) (i) =
+    if i >= hi then True
+    else if list-at pits i > 0 then False
+    else side-empty-loop pits lo hi (i + 1)
+
+  sweep-side : List Integer, Integer, Integer, Integer -> List Integer
+  sweep-side (pits) (lo) (hi) (store) =
+    sweep-loop pits lo hi store lo
+
+  sweep-loop : List Integer, Integer, Integer, Integer, Integer -> List Integer
+  sweep-loop (pits) (lo) (hi) (store) (i) =
+    if i >= hi then pits
+    else let v = list-at pits i
+    in let p2 = list-set-at pits i 0
+    in let p3 = list-set-at p2 store (list-at p2 store + v)
+    in sweep-loop p3 lo hi store (i + 1)
+
+Section: AI — Minimax
+
+  mancala-ai-move : MancalaBoard, Integer -> Integer
+  mancala-ai-move (b) (depth) =
+    minimax-choose b depth b.turn
+
+  minimax-choose : MancalaBoard, Integer, Integer -> Integer
+  minimax-choose (b) (depth) (player) =
+    mm-choose-loop b depth player 0 (if player == 0 then 0 else 7) (if player == 0 then 6 else 13) (-999999) (-1)
+
+  mm-choose-loop : MancalaBoard, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  mm-choose-loop (b) (depth) (player) (i) (lo) (hi) (best-score) (best-pit) =
+    if i + lo >= hi then best-pit
+    else let pit = lo + i
+    in if mancala-legal b pit then
+      let after = mancala-move b pit
+      in let score = minimax after (depth - 1) (-999999) 999999 player
+      in if score > best-score then mm-choose-loop b depth player (i + 1) lo hi score pit
+      else mm-choose-loop b depth player (i + 1) lo hi best-score best-pit
+    else mm-choose-loop b depth player (i + 1) lo hi best-score best-pit
+
+  minimax : MancalaBoard, Integer, Integer, Integer, Integer -> Integer
+  minimax (b) (depth) (alpha) (beta) (player) =
+    if b.over then mancala-eval b player
+    else if depth <= 0 then mancala-eval b player
+    else let maximizing = b.turn == player
+    in if maximizing then mm-max b depth alpha beta player 0 (-999999)
+    else mm-min b depth alpha beta player 0 999999
+
+  mm-max : MancalaBoard, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  mm-max (b) (depth) (alpha) (beta) (player) (i) (best) =
+    if i >= 14 then best
+    else if mancala-legal b i == False then mm-max b depth alpha beta player (i + 1) best
+    else let after = mancala-move b i
+    in let score = minimax after (depth - 1) alpha beta player
+    in let new-best = if score > best then score else best
+    in let new-alpha = if new-best > alpha then new-best else alpha
+    in if new-alpha >= beta then new-best
+    else mm-max b depth new-alpha beta player (i + 1) new-best
+
+  mm-min : MancalaBoard, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  mm-min (b) (depth) (alpha) (beta) (player) (i) (best) =
+    if i >= 14 then best
+    else if mancala-legal b i == False then mm-min b depth alpha beta player (i + 1) best
+    else let after = mancala-move b i
+    in let score = minimax after (depth - 1) alpha beta player
+    in let new-best = if score < best then score else best
+    in let new-beta = if new-best < beta then new-best else beta
+    in if alpha >= new-beta then new-best
+    else mm-min b depth alpha new-beta player (i + 1) new-best
+
+  mancala-eval : MancalaBoard, Integer -> Integer
+  mancala-eval (b) (player) =
+    if player == 0 then south-store b - north-store b
+    else north-store b - south-store b
+
+Section: Game Runner
+
+  run-mancala-game : Integer, Integer -> MancalaResult
+  run-mancala-game (seed) (ai-depth) =
+    let b = mancala-new seed
+    in mancala-loop b ai-depth 0
+
+  mancala-loop : MancalaBoard, Integer, Integer -> MancalaResult
+  mancala-loop (b) (depth) (moves) =
+    if b.over then format-mancala-result b
+    else if moves > 200 then format-mancala-result b
+    else let pit = mancala-ai-move b depth
+    in let next = if pit < 0 then b
+      else mancala-move b pit
+    in if next.over then format-mancala-result next
+    else mancala-loop next depth (moves + 1)
+
+  format-mancala-result : MancalaBoard -> MancalaResult
+  format-mancala-result (b) =
+    let ss = south-store b
+    in let ns = north-store b
+    in let w = if ss > ns then 0 else if ns > ss then 1 else -1
+    in MancalaResult { south-score = ss, north-score = ns, winner = w }
+
+Section: Formatting
+
+  format-mancala-board : MancalaBoard -> Text
+  format-mancala-board (b) =
+    "S[" & format-pit-row (b.pits) 0 6 & "] store=" & show (south-store b) ++
+    " N[" & format-pit-row (b.pits) 7 13 & "] store=" & show (north-store b)
+
+  format-pit-row : List Integer, Integer, Integer -> Text
+  format-pit-row (pits) (lo) (hi) =
+    format-pit-loop pits lo hi lo ""
+
+  format-pit-loop : List Integer, Integer, Integer, Integer, Text -> Text
+  format-pit-loop (pits) (lo) (hi) (i) (acc) =
+    if i >= hi then acc
+    else let sep = if i == lo then "" else ","
+    in format-pit-loop pits lo hi (i + 1) (acc & sep & show (list-at pits i))
+
+Page 1

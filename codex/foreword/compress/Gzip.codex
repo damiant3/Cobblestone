@@ -1,0 +1,116 @@
+Chapter: Gzip
+  cites Compress chapter Deflate
+  cites Foreword chapter Crc32
+
+ Gzip container format (RFC 1952) — wraps Deflate-compressed data
+ with a 10-byte header, optional metadata fields, and an 8-byte
+ trailer containing CRC-32 and original size. The de facto standard
+ for HTTP content-encoding and file compression.
+
+ To gzip-compress gives gzip-wrapped compressed bytes.
+ To gzip-decompress gives the original bytes from a gzip stream.
+ To gzip-valid gives True when input has a valid gzip header.
+ To gzip-verify-trailer gives True when CRC and size match.
+
+ gzip-decompress does not verify the trailer automatically. Call
+ gzip-verify-trailer on the original input and the decompressed
+ output to check integrity.
+
+ We say:
+
+Section: Constants
+
+  gzip-magic-1 : Integer = 31
+  gzip-magic-2 : Integer = 139
+  gzip-method-deflate : Integer = 8
+  gzip-header-size : Integer = 10
+  gzip-trailer-size : Integer = 8
+
+Section: Compression
+
+  gzip-compress : List Integer -> List Integer
+  gzip-compress (input) =
+    let compressed = deflate-compress input
+    in let crc = crc32 input
+    in let size = list-length input
+    in gzip-header-bytes & compressed & gzip-trailer crc size
+
+  gzip-header-bytes : List Integer
+  gzip-header-bytes = [gzip-magic-1, gzip-magic-2, gzip-method-deflate, 0, 0, 0, 0, 0, 0, 255]
+
+  gzip-trailer : Integer, Integer -> List Integer
+  gzip-trailer (crc) (size) =
+    gzip-le32 crc & gzip-le32 (bit-and size 4294967295)
+
+  gzip-le32 : Integer -> List Integer
+  gzip-le32 (n) = [
+    bit-and n 255,
+    bit-and (bit-shru n 8) 255,
+    bit-and (bit-shru n 16) 255,
+    bit-and (bit-shru n 24) 255
+  ]
+
+Section: Decompression
+
+  gzip-decompress : List Integer -> List Integer
+  gzip-decompress (input) =
+    if gzip-valid input == False then []
+    else let payload-start = gzip-skip-header-fields input
+    in let payload-end = list-length input - gzip-trailer-size
+    in let payload = gzip-slice input payload-start (payload-end - payload-start) 0 []
+    in deflate-decompress payload
+
+  gzip-skip-header-fields : List Integer -> Integer
+  gzip-skip-header-fields (input) =
+    let flags = list-at input 3
+    in let o1 = gzip-header-size
+    in let o2 = if bit-and flags 4 > 0 then gzip-skip-extra input o1 else o1
+    in let o3 = if bit-and flags 8 > 0 then gzip-skip-zstring input o2 else o2
+    in let o4 = if bit-and flags 16 > 0 then gzip-skip-zstring input o3 else o3
+    in if bit-and flags 2 > 0 then o4 + 2 else o4
+
+  gzip-skip-extra : List Integer, Integer -> Integer
+  gzip-skip-extra (input) (offset) =
+    let xlen = bit-or (list-at input offset) (bit-shl (list-at input (offset + 1)) 8)
+    in offset + 2 + xlen
+
+  gzip-skip-zstring : List Integer, Integer -> Integer
+  gzip-skip-zstring (input) (offset) =
+    if offset >= list-length input then offset
+    else if list-at input offset == 0 then offset + 1
+    else gzip-skip-zstring input (offset + 1)
+
+Section: Validation
+
+  gzip-valid : List Integer -> Boolean
+  gzip-valid (input) =
+    if list-length input < gzip-header-size + gzip-trailer-size then False
+    else if list-at input 0 /= gzip-magic-1 then False
+    else if list-at input 1 /= gzip-magic-2 then False
+    else list-at input 2 == gzip-method-deflate
+
+Section: Trailer Verification
+
+  gzip-verify-trailer : List Integer, List Integer -> Boolean
+  gzip-verify-trailer (input) (decompressed) =
+    let trailer-off = list-length input - gzip-trailer-size
+    in let stored-crc = gzip-read-le32 input trailer-off
+    in let stored-size = gzip-read-le32 input (trailer-off + 4)
+    in let actual-crc = crc32 decompressed
+    in let actual-size = bit-and (list-length decompressed) 4294967295
+    in if stored-crc == actual-crc then stored-size == actual-size else False
+
+  gzip-read-le32 : List Integer, Integer -> Integer
+  gzip-read-le32 (bs) (off) =
+    bit-or (bit-or (list-at bs off) (bit-shl (list-at bs (off + 1)) 8))
+           (bit-or (bit-shl (list-at bs (off + 2)) 16) (bit-shl (list-at bs (off + 3)) 24))
+
+Section: Helpers
+
+  gzip-slice : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gzip-slice (xs) (start) (count) (i) (acc) =
+    if i >= count then acc
+    else if start + i >= list-length xs then acc
+    else gzip-slice xs start count (i + 1) (list-push acc (list-at xs (start + i)))
+
+Page 1

@@ -1,0 +1,128 @@
+Chapter: KvCache
+
+ Key-Value cache for autoregressive transformer inference. Stores
+ previously computed key and value vectors so each new token only
+ needs to attend to its own Q against the full K/V history, rather
+ than recomputing all positions. Critical for practical LLM speed.
+
+ To kv-cache-new gives an empty cache for given dimensions.
+ To kv-cache-append gives a cache with new K/V vectors appended.
+ To kv-cache-keys gives all cached key vectors.
+ To kv-cache-values gives all cached value vectors.
+ To kv-cache-length gives the number of cached positions.
+ To kv-cache-clear gives an emptied cache.
+
+ We say:
+
+Section: Types
+
+  KvCache = record {
+    kvc-keys : List Integer,
+    kvc-values : List Integer,
+    kvc-dim : Integer,
+    kvc-length : Integer,
+    kvc-max-length : Integer
+  }
+
+  KvCacheLayer = record {
+    kvcl-caches : List KvCache,
+    kvcl-num-layers : Integer
+  }
+
+Section: Construction
+
+  kv-cache-new : Integer, Integer -> KvCache
+  kv-cache-new (dim) (max-length) = KvCache {
+    kvc-keys = [],
+    kvc-values = [],
+    kvc-dim = dim,
+    kvc-length = 0,
+    kvc-max-length = max-length
+  }
+
+  kv-cache-layer-new : Integer, Integer, Integer -> KvCacheLayer
+  kv-cache-layer-new (num-layers) (dim) (max-length) =
+    KvCacheLayer {
+      kvcl-caches = kvc-build-layers num-layers dim max-length 0 [],
+      kvcl-num-layers = num-layers
+    }
+
+  kvc-build-layers : Integer, Integer, Integer, Integer, List KvCache -> List KvCache
+  kvc-build-layers (n) (dim) (max-len) (i) (acc) =
+    if i >= n then acc
+    else kvc-build-layers n dim max-len (i + 1) (list-push acc (kv-cache-new dim max-len))
+
+Section: Append
+
+  kv-cache-append-one : KvCache, List Integer, List Integer -> KvCache
+  kv-cache-append-one (cache) (key-vec) (val-vec) =
+    if cache.kvc-length >= cache.kvc-max-length then
+      kv-cache-evict-and-append cache key-vec val-vec
+    else KvCache {
+      kvc-keys = cache.kvc-keys & key-vec,
+      kvc-values = cache.kvc-values & val-vec,
+      kvc-dim = cache.kvc-dim,
+      kvc-length = cache.kvc-length + 1,
+      kvc-max-length = cache.kvc-max-length
+    }
+
+  kv-cache-evict-and-append : KvCache, List Integer, List Integer -> KvCache
+  kv-cache-evict-and-append (cache) (key-vec) (val-vec) =
+    let dim = cache.kvc-dim
+    in KvCache {
+      kvc-keys = kvc-drop-first (cache.kvc-keys) dim & key-vec,
+      kvc-values = kvc-drop-first (cache.kvc-values) dim & val-vec,
+      kvc-dim = dim,
+      kvc-length = cache.kvc-length,
+      kvc-max-length = cache.kvc-max-length
+    }
+
+  kvc-drop-first : List Integer, Integer -> List Integer
+  kvc-drop-first (xs) (n) = kvc-drop-loop xs n 0 (list-length xs) []
+
+  kvc-drop-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  kvc-drop-loop (xs) (n) (i) (len) (acc) =
+    if i >= len then acc
+    else if i < n then kvc-drop-loop xs n (i + 1) len acc
+    else kvc-drop-loop xs n (i + 1) len (list-push acc (list-at xs i))
+
+Section: Queries
+
+  kv-cache-keys : KvCache -> List Integer
+  kv-cache-keys (cache) = cache.kvc-keys
+
+  kv-cache-values : KvCache -> List Integer
+  kv-cache-values (cache) = cache.kvc-values
+
+  kv-cache-length : KvCache -> Integer
+  kv-cache-length (cache) = cache.kvc-length
+
+  kv-cache-dim : KvCache -> Integer
+  kv-cache-dim (cache) = cache.kvc-dim
+
+  kv-cache-is-full : KvCache -> Boolean
+  kv-cache-is-full (cache) = cache.kvc-length >= cache.kvc-max-length
+
+  kv-cache-clear : KvCache -> KvCache
+  kv-cache-clear (cache) = kv-cache-new (cache.kvc-dim) (cache.kvc-max-length)
+
+Section: Layer Operations
+
+  kv-cache-layer-get : KvCacheLayer, Integer -> KvCache
+  kv-cache-layer-get (layer) (idx) = list-at (layer.kvcl-caches) idx
+
+  kv-cache-layer-set : KvCacheLayer, Integer, KvCache -> KvCacheLayer
+  kv-cache-layer-set (layer) (idx) (cache) =
+    __record-set layer "kvcl-caches" (list-set-at (layer.kvcl-caches) idx cache)
+
+  kv-cache-layer-clear : KvCacheLayer -> KvCacheLayer
+  kv-cache-layer-clear (layer) =
+    kvc-clear-all-loop layer 0 (layer.kvcl-num-layers)
+
+  kvc-clear-all-loop : KvCacheLayer, Integer, Integer -> KvCacheLayer
+  kvc-clear-all-loop (layer) (i) (n) =
+    if i >= n then layer
+    else let cache = kv-cache-layer-get layer i
+    in kvc-clear-all-loop (kv-cache-layer-set layer i (kv-cache-clear cache)) (i + 1) n
+
+Page 1

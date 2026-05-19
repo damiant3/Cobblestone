@@ -1,0 +1,178 @@
+Chapter: SystemDb
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+  cites Foreword chapter Aes256
+  cites Foreword chapter Hkdf
+  cites Foreword chapter Gpt
+  cites Foreword chapter Fat32
+  cites Kernel chapter DiskFacts
+
+ System database stored on the USB boot stick. Uses the DiskFacts
+ format (dual-sector superblock, append-only fact log) to persist
+ identity, boot configuration, trust vouches, and drive registry.
+
+ The system DB lives at a known path on the stick's FAT32 ESP:
+ CODEX/SYSDB.BIN. On first boot, the file does not exist and the
+ system enters the first-boot ceremony.
+
+ To sysdb-is-fresh gives Boolean, True when no identity exists.
+ To sysdb-load-identity gives Maybe IdentityRecord after passphrase unlock.
+ To sysdb-save-identity encrypts and stores a new identity.
+ To sysdb-load-boot-config gives Maybe SysBootConfig.
+ To sysdb-save-boot-config persists boot configuration.
+
+ We say:
+
+Section: Types
+
+  IdentityRecord = record {
+    id-version : Integer,
+    id-salt : List Integer,
+    id-iv : List Integer,
+    id-encrypted-key : List Integer,
+    id-public-key : List Integer,
+    id-created-ticks : Integer
+  }
+
+  SysBootConfig = record {
+    sbc-boot-mode : Integer,
+    sbc-boot-drive-serial : Text,
+    sbc-boot-partition : Integer
+  }
+
+  DriveRecord = record {
+    dr-serial : Text,
+    dr-label : Text,
+    dr-size-mb : Integer,
+    dr-last-seen : Integer
+  }
+
+Section: Constants
+
+  sysdb-kind-identity : Integer = 10
+  sysdb-kind-boot-config : Integer = 11
+  sysdb-kind-trust-vouch : Integer = 12
+  sysdb-kind-drive-registry : Integer = 13
+  sysdb-kind-installed-os : Integer = 14
+
+  sysdb-boot-mode-console : Integer = 0
+  sysdb-boot-mode-ui : Integer = 1
+  sysdb-boot-mode-serial : Integer = 2
+
+Section: Fresh Detection
+
+  sysdb-is-fresh : Fat32Volume -> Boolean
+  sysdb-is-fresh (vol) =
+    fat32-file-exists vol "CODEX/SYSDB.BIN" == False
+
+Section: Key Derivation
+
+  sysdb-derive-key : List Integer, List Integer -> List Integer
+  sysdb-derive-key (passphrase-bytes) (salt) =
+    hkdf salt passphrase-bytes (text-to-bytes "codex-identity") 32
+
+Section: Identity Encryption
+
+  sysdb-encrypt-key : List Integer, List Integer, List Integer -> List Integer
+  sysdb-encrypt-key (private-key) (derived-key) (iv) =
+    let padded = aes256-pkcs7-pad private-key
+    in aes256-cbc-encrypt padded derived-key iv
+
+  sysdb-decrypt-key : List Integer, List Integer, List Integer -> List Integer
+  sysdb-decrypt-key (encrypted) (derived-key) (iv) =
+    let decrypted = aes256-cbc-decrypt encrypted derived-key iv
+    in aes256-pkcs7-unpad decrypted
+
+Section: Identity Serialization
+
+  sysdb-pack-identity : IdentityRecord -> List Integer
+  sysdb-pack-identity (rec) =
+    [rec.id-version]
+    & rec.id-salt
+    & rec.id-iv
+    & rec.id-encrypted-key
+    & rec.id-public-key
+    & sysdb-pack-u64 (rec.id-created-ticks)
+
+  sysdb-unpack-identity : List Integer -> Maybe IdentityRecord
+  sysdb-unpack-identity (data) =
+    if list-length data < 129 then None
+    else let version = list-at data 0
+    in let salt = sysdb-slice data 1 16
+    in let iv = sysdb-slice data 17 16
+    in let enc-key = sysdb-slice data 33 48
+    in let pub-key = sysdb-slice data 81 32
+    in let ticks = sysdb-unpack-u64 data 113
+    in Just (IdentityRecord {
+      id-version = version,
+      id-salt = salt,
+      id-iv = iv,
+      id-encrypted-key = enc-key,
+      id-public-key = pub-key,
+      id-created-ticks = ticks
+    })
+
+Section: Boot Config Serialization
+
+  sysdb-pack-boot-config : SysBootConfig -> List Integer
+  sysdb-pack-boot-config (cfg) =
+    [cfg.sbc-boot-mode, cfg.sbc-boot-partition]
+    & text-to-bytes (cfg.sbc-boot-drive-serial)
+    & [0]
+
+  sysdb-unpack-boot-config : List Integer -> Maybe SysBootConfig
+  sysdb-unpack-boot-config (data) =
+    if list-length data < 3 then None
+    else let mode = list-at data 0
+    in let part = list-at data 1
+    in let serial = sysdb-read-string data 2
+    in Just (SysBootConfig {
+      sbc-boot-mode = mode,
+      sbc-boot-drive-serial = serial,
+      sbc-boot-partition = part
+    })
+
+Section: Byte Helpers
+
+  sysdb-slice : List Integer, Integer, Integer -> List Integer
+  sysdb-slice (data) (off) (len) = sysdb-slice-loop data off len 0 []
+
+  sysdb-slice-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  sysdb-slice-loop (data) (off) (len) (i) (acc) =
+    if i >= len then acc
+    else sysdb-slice-loop data off len (i + 1) (list-push acc (list-at data (off + i)))
+
+  sysdb-pack-u64 : Integer -> List Integer
+  sysdb-pack-u64 (v) = [
+    bit-and v 255,
+    bit-and (bit-shru v 8) 255,
+    bit-and (bit-shru v 16) 255,
+    bit-and (bit-shru v 24) 255,
+    bit-and (bit-shru v 32) 255,
+    bit-and (bit-shru v 40) 255,
+    bit-and (bit-shru v 48) 255,
+    bit-and (bit-shru v 56) 255
+  ]
+
+  sysdb-unpack-u64 : List Integer, Integer -> Integer
+  sysdb-unpack-u64 (data) (off) =
+    bit-or (list-at data off)
+    (bit-or (bit-shl (list-at data (off + 1)) 8)
+    (bit-or (bit-shl (list-at data (off + 2)) 16)
+    (bit-or (bit-shl (list-at data (off + 3)) 24)
+    (bit-or (bit-shl (list-at data (off + 4)) 32)
+    (bit-or (bit-shl (list-at data (off + 5)) 40)
+    (bit-or (bit-shl (list-at data (off + 6)) 48)
+            (bit-shl (list-at data (off + 7)) 56)))))))
+
+  sysdb-read-string : List Integer, Integer -> Text
+  sysdb-read-string (data) (off) = sysdb-read-str-loop data off ""
+
+  sysdb-read-str-loop : List Integer, Integer, Text -> Text
+  sysdb-read-str-loop (data) (off) (acc) =
+    if off >= list-length data then acc
+    else let b = list-at data off
+    in if b == 0 then acc
+    else sysdb-read-str-loop data (off + 1) (acc & char-to-text (code-to-char b))
+
+Page 1

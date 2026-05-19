@@ -1,0 +1,236 @@
+Chapter: Catalog
+  cites Data chapter Schema
+  cites Data chapter Row
+  cites Data chapter Heap
+  cites Data chapter BTreeIndex
+  cites Data chapter Wal
+  cites Data chapter BufferPool
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ The system catalog stores metadata about all tables, columns, and
+ indexes in the database. It is the single source of truth for
+ schema information. DDL operations (create table, create index,
+ drop table) mutate the catalog.
+
+ We say:
+
+Section: Table Entry
+
+  CatalogTable = record {
+    cat-table-id : Integer,
+    cat-table-name : Text,
+    cat-table-def : TableDef,
+    cat-heap : HeapFile,
+    cat-indexes : List CatalogIndex
+  }
+
+Section: Index Entry
+
+  CatalogIndex = record {
+    cat-index-id : Integer,
+    cat-index-def : IndexDef,
+    cat-index-tree : BTreeIdx
+  }
+
+Section: Catalog
+
+  Catalog = record {
+    tables : HamtMap CatalogTable,
+    table-count : Integer,
+    next-table-id : Integer,
+    next-index-id : Integer
+  }
+
+  catalog-new : Catalog
+  catalog-new = Catalog {
+    tables = hamt-empty,
+    table-count = 0,
+    next-table-id = 1,
+    next-index-id = 1
+  }
+
+Section: Create Table
+
+  CatalogResult = record {
+    cat : Catalog,
+    cat-ok : Boolean,
+    cat-msg : Text
+  }
+
+  catalog-create-table : Catalog, TableDef -> CatalogResult
+  catalog-create-table (cat) (tdef) =
+    let existing = hamt-get (cat.tables) (tdef.table-name)
+    in when existing
+      is Just (entry) -> CatalogResult { cat = cat, cat-ok = False, cat-msg = "table already exists: " & tdef.table-name }
+      is None ->
+        let schema = table-schema tdef
+        in let heap = heap-new (tdef.table-name) schema
+        in let entry = CatalogTable {
+          cat-table-id = cat.next-table-id,
+          cat-table-name = tdef.table-name,
+          cat-table-def = tdef,
+          cat-heap = heap,
+          cat-indexes = []
+        }
+        in CatalogResult {
+          cat = Catalog {
+            tables = hamt-set (cat.tables) (tdef.table-name) entry,
+            table-count = cat.table-count + 1,
+            next-table-id = cat.next-table-id + 1,
+            next-index-id = cat.next-index-id
+          },
+          cat-ok = True,
+          cat-msg = "created table " & tdef.table-name
+        }
+
+Section: Drop Table
+
+  catalog-drop-table : Catalog, Text -> CatalogResult
+  catalog-drop-table (cat) (name) =
+    let existing = hamt-get (cat.tables) name
+    in when existing
+      is None -> CatalogResult { cat = cat, cat-ok = False, cat-msg = "table not found: " & name }
+      is Just (entry) ->
+        CatalogResult {
+          cat = Catalog {
+            tables = hamt-remove (cat.tables) name,
+            table-count = cat.table-count - 1,
+            next-table-id = cat.next-table-id,
+            next-index-id = cat.next-index-id
+          },
+          cat-ok = True,
+          cat-msg = "dropped table " & name
+        }
+
+Section: Create Index
+
+  catalog-create-index : Catalog, IndexDef -> CatalogResult
+  catalog-create-index (cat) (idef) =
+    let existing = hamt-get (cat.tables) (idef.table-name)
+    in when existing
+      is None -> CatalogResult { cat = cat, cat-ok = False, cat-msg = "table not found: " & idef.table-name }
+      is Just (entry) ->
+        let idx-entry = CatalogIndex {
+          cat-index-id = cat.next-index-id,
+          cat-index-def = idef,
+          cat-index-tree = btree-new
+        }
+        in let new-entry = CatalogTable {
+          cat-table-id = entry.cat-table-id,
+          cat-table-name = entry.cat-table-name,
+          cat-table-def = entry.cat-table-def,
+          cat-heap = entry.cat-heap,
+          cat-indexes = list-push (entry.cat-indexes) idx-entry
+        }
+        in CatalogResult {
+          cat = Catalog {
+            tables = hamt-set (cat.tables) (idef.table-name) new-entry,
+            table-count = cat.table-count,
+            next-table-id = cat.next-table-id,
+            next-index-id = cat.next-index-id + 1
+          },
+          cat-ok = True,
+          cat-msg = "created index " & idef.index-name & " on " & idef.table-name
+        }
+
+Section: Lookup
+
+  catalog-get-table : Catalog, Text -> Maybe CatalogTable
+  catalog-get-table (cat) (name) = hamt-get (cat.tables) name
+
+  catalog-table-exists : Catalog, Text -> Boolean
+  catalog-table-exists (cat) (name) =
+    when (hamt-get (cat.tables) name)
+      is Just (entry) -> True
+      is None -> False
+
+Section: Insert Row
+
+  CatalogInsertResult = record {
+    cir-cat : Catalog,
+    cir-ok : Boolean,
+    cir-msg : Text
+  }
+
+  catalog-insert-row : Catalog, Text, RowData -> CatalogInsertResult
+  catalog-insert-row (cat) (table-name) (row) =
+    let maybe-entry = hamt-get (cat.tables) table-name
+    in when maybe-entry
+      is None -> CatalogInsertResult { cir-cat = cat, cir-ok = False, cir-msg = "table not found: " & table-name }
+      is Just (entry) ->
+        let vr = validate-row row (entry.cat-table-def)
+        in when vr
+          is DdlError (msg) -> CatalogInsertResult { cir-cat = cat, cir-ok = False, cir-msg = msg }
+          is DdlOk (msg) ->
+            let result = heap-insert (entry.cat-heap) row
+            in if result.ok == False then CatalogInsertResult { cir-cat = cat, cir-ok = False, cir-msg = "page full" }
+            else let rid = RowId { rid-page = result.page-idx, rid-slot = result.slot-idx }
+            in let new-indexes = catalog-update-indexes (entry.cat-indexes) row rid (entry.cat-table-def) 0 (list-length (entry.cat-indexes))
+            in let new-entry = CatalogTable {
+              cat-table-id = entry.cat-table-id,
+              cat-table-name = entry.cat-table-name,
+              cat-table-def = entry.cat-table-def,
+              cat-heap = result.heap,
+              cat-indexes = new-indexes
+            }
+            in CatalogInsertResult {
+              cir-cat = Catalog {
+                tables = hamt-set (cat.tables) table-name new-entry,
+                table-count = cat.table-count,
+                next-table-id = cat.next-table-id,
+                next-index-id = cat.next-index-id
+              },
+              cir-ok = True,
+              cir-msg = "inserted 1 row"
+            }
+
+  catalog-update-indexes : List CatalogIndex, RowData, RowId, TableDef, Integer, Integer -> List CatalogIndex
+  catalog-update-indexes (indexes) (row) (rid) (tdef) (i) (len) =
+    if i >= len then indexes
+    else let ci = list-at indexes i
+    in let key = catalog-extract-key row (ci.cat-index-def.columns) (tdef)
+    in let result = btree-insert (ci.cat-index-tree) key rid
+    in let updated = CatalogIndex {
+      cat-index-id = ci.cat-index-id,
+      cat-index-def = ci.cat-index-def,
+      cat-index-tree = result.bt-tree
+    }
+    in catalog-update-indexes (list-set-at indexes i updated) row rid tdef (i + 1) len
+
+  catalog-extract-key : RowData, List Text, TableDef -> IndexKey
+  catalog-extract-key (row) (col-names) (tdef) =
+    let parts = catalog-extract-parts row col-names 0 (list-length col-names) []
+    in index-key parts
+
+  catalog-extract-parts : RowData, List Text, Integer, Integer, List ColumnValue -> List ColumnValue
+  catalog-extract-parts (row) (names) (i) (len) (acc) =
+    if i >= len then acc
+    else let name = list-at names i
+    in let val = row-get-by-name row name
+    in catalog-extract-parts row names (i + 1) len (list-push acc val)
+
+Section: Scan Table
+
+  catalog-scan : Catalog, Text -> ScanResult
+  catalog-scan (cat) (name) =
+    let maybe-entry = hamt-get (cat.tables) name
+    in when maybe-entry
+      is None -> ScanResult { rows = [], row-ids = [], scan-count = 0 }
+      is Just (entry) -> heap-scan (entry.cat-heap)
+
+Section: Statistics
+
+  catalog-stats : Catalog -> Text
+  catalog-stats (cat) =
+    "tables=" & show (cat.table-count)
+
+  catalog-table-row-count : Catalog, Text -> Integer
+  catalog-table-row-count (cat) (name) =
+    let maybe-entry = hamt-get (cat.tables) name
+    in when maybe-entry
+      is None -> 0
+      is Just (entry) -> heap-row-count (entry.cat-heap)
+
+Page 1

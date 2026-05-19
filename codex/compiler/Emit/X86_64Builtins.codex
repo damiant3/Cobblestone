@@ -1,0 +1,1047 @@
+Chapter: X86-64 Code Generator
+  cites Codex chapter General
+  cites Codex chapter Console
+  cites Codex chapter Files
+  cites Codex chapter Process
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Numbers
+  cites Codex chapter Bitwise
+  cites Codex chapter Lists
+  cites Codex chapter Runtime
+  cites Foreword chapter Sort
+
+Section: Builtin Detection
+
+ Builtin names are kept in a SkipListText, sorted by the same
+ text-compare that skip-list-text-has uses. Source-order here is
+ ASCII for human readability; skip-list-text-from-list sorts the
+ literal into the skip list at binding-init time, not per
+ is-builtin call.
+
+  sorted-builtin-names : SkipListText
+  sorted-builtin-names = skip-list-text-from-list ([
+   "abs",
+   "bit-and",
+   "bit-not",
+   "bit-or",
+   "bit-shl",
+   "bit-shr",
+   "bit-shru",
+   "bit-xor",
+   "__buf-read-bytes",
+   "__buf-write-byte",
+   "__buf-write-bytes",
+   "chan-text-recv",
+   "chan-text-send",
+   "char-at",
+   "char-code",
+   "char-code-at",
+   "char-to-text",
+   "code-to-char",
+   "current-dir",
+   "__deck-alloc",
+   "__deck-enter",
+   "__deck-exit",
+   "__deck-pos",
+   "__deck-set",
+   "fail",
+   "file-exists",
+   "get-args",
+   "__heap-advance",
+   "__heap-restore",
+   "__heap-save",
+   "int-mod",
+   "integer-to-text",
+   "is-digit",
+   "is-letter",
+   "is-whitespace",
+   "__linked-list-empty",
+   "__linked-list-push"
+  ] & [
+   "__linked-list-to-list",
+   "list-append",
+   "list-at",
+   "list-cons",
+   "list-insert-at",
+   "list-length",
+   "list-set-at",
+   "list-snoc",
+   "list-push",
+   "__list-with-capacity",
+   "max",
+   "min",
+   "__narrow",
+   "negate",
+   "print-line",
+   "print-line-raw",
+   "print-line-uni",
+   "print-error",
+   "print-error-uni",
+   "read-file",
+   "read-file-raw",
+   "read-file-uni",
+   "read-line",
+   "read-serial-cce",
+   "__record-set",
+   "run-state",
+   "set-state",
+   "show",
+   "substring",
+   "text-compare",
+   "text-concat-list",
+   "text-contains",
+   "text-length",
+   "text-replace",
+   "text-split",
+   "text-starts-with",
+   "text-to-double-bits",
+   "text-to-integer",
+   "write-binary",
+   "write-file"
+  ])
+
+  is-builtin : SkipListText, Text -> Boolean
+  is-builtin (names) (name) =
+   skip-list-text-has names name
+
+Section: Builtin Emission
+  emit-helper-call-1 : CodegenState, List IRExpr, Text -> EmitResult
+  emit-helper-call-1 (st) (args) (helper) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let st1 = st-append-code (r.state) (mov-rr reg-rdi (r.reg))
+   in let st2 = emit-call-to st1 helper
+   in let tmp = alloc-temp st2
+   in EmitResult {
+   state = st-append-code (tmp.state) (mov-rr (tmp.reg) reg-rax),
+   reg = tmp.reg
+  }
+
+  emit-helper-call-2 : CodegenState, List IRExpr, Text -> EmitResult
+  emit-helper-call-2 (st) (args) (helper) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let loc = alloc-local (r0.state)
+   in let st1 = store-local (loc.state) (loc.reg) (r0.reg)
+   in let r1 = emit-expr st1 (list-at args 1)
+   in let loaded = load-local (r1.state) (loc.reg)
+   in let st2 = st-append-code (loaded.state) (mov-rr reg-rsi (r1.reg))
+   in let st3 = st-append-code st2 (mov-rr reg-rdi (loaded.reg))
+   in let st4 = emit-call-to st3 helper
+   in let tmp = alloc-temp st4
+   in EmitResult {
+   state = st-append-code (tmp.state) (mov-rr (tmp.reg) reg-rax),
+   reg = tmp.reg
+  }
+
+  emit-helper-call-3 : CodegenState, List IRExpr, Text -> EmitResult
+  emit-helper-call-3 (st) (args) (helper) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let loc0 = alloc-local (r0.state)
+   in let st1 = store-local (loc0.state) (loc0.reg) (r0.reg)
+   in let r1 = emit-expr st1 (list-at args 1)
+   in let loc1 = alloc-local (r1.state)
+   in let st2 = store-local (loc1.state) (loc1.reg) (r1.reg)
+   in let r2 = emit-expr st2 (list-at args 2)
+   in let st3 = st-append-code (r2.state) (mov-rr reg-rdx (r2.reg))
+   in let ld1 = load-local st3 (loc1.reg)
+   in let st4 = st-append-code (ld1.state) (mov-rr reg-rsi (ld1.reg))
+   in let ld0 = load-local st4 (loc0.reg)
+   in let st5 = st-append-code (ld0.state) (mov-rr reg-rdi (ld0.reg))
+   in let st6 = emit-call-to st5 helper
+   in let tmp = alloc-temp st6
+   in EmitResult {
+   state = st-append-code (tmp.state) (mov-rr (tmp.reg) reg-rax),
+   reg = tmp.reg
+  }
+
+  emit-text-length-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-text-length-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let tmp = alloc-temp (r.state)
+   in EmitResult {
+   state = st-append-code (tmp.state) (mov-load (tmp.reg) (r.reg) 0),
+   reg = tmp.reg
+  }
+
+  emit-list-length-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-list-length-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let tmp = alloc-temp (r.state)
+   in EmitResult {
+   state = st-append-code (tmp.state) (mov-load (tmp.reg) (r.reg) 0),
+   reg = tmp.reg
+  }
+
+  emit-list-at-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-list-at-builtin (st) (args) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let loc = alloc-local (r0.state)
+   in let st1 = store-local (loc.state) (loc.reg) (r0.reg)
+   in let r1 = emit-expr st1 (list-at args 1)
+   in let list-loaded = load-local (r1.state) (loc.reg)
+   in let addr = alloc-temp (list-loaded.state)
+   in let st2 = st-append-code (addr.state) (mov-rr (addr.reg) (r1.reg))
+   in let st3 = st-append-code st2 (shl-ri (addr.reg) 3)
+   in let st4 = st-append-code st3 (add-rr (addr.reg) (list-loaded.reg))
+   in let rd = alloc-temp st4
+   in EmitResult {
+   state = st-append-code (rd.state) (mov-load (rd.reg) (addr.reg) 8),
+   reg = rd.reg
+  }
+
+  emit-char-at-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-char-at-builtin (st) (args) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let loc = alloc-local (r0.state)
+   in let st1 = store-local (loc.state) (loc.reg) (r0.reg)
+   in let r1 = emit-expr st1 (list-at args 1)
+   in let str-loaded = load-local (r1.state) (loc.reg)
+   in let rd = alloc-temp (str-loaded.state)
+   in let st2 = st-append-code (rd.state) (mov-rr (rd.reg) (r1.reg))
+   in let st3 = st-append-code st2 (add-rr (rd.reg) (str-loaded.reg))
+   in let st4 = st-append-code st3 (movzx-byte (rd.reg) (rd.reg) 8)
+   in EmitResult {
+   state = st4,
+   reg = rd.reg
+  }
+
+  emit-char-code-at-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-char-code-at-builtin (st) (args) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let loc = alloc-local (r0.state)
+   in let st1 = store-local (loc.state) (loc.reg) (r0.reg)
+   in let r1 = emit-expr st1 (list-at args 1)
+   in let text-loaded = load-local (r1.state) (loc.reg)
+   in let rd = alloc-temp (text-loaded.state)
+   in let st2 = st-append-code (rd.state) (mov-rr (rd.reg) (text-loaded.reg))
+   in let st3 = st-append-code st2 (add-rr (rd.reg) (r1.reg))
+   in let st4 = st-append-code st3 (movzx-byte (rd.reg) (rd.reg) 8)
+   in EmitResult {
+   state = st4,
+   reg = rd.reg
+  }
+
+  emit-char-to-text-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-char-to-text-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let loc = alloc-local (r.state)
+   in let st1 = store-local (loc.state) (loc.reg) (r.reg)
+   in let alloc = emit-bivy-alloc st1 16
+   in let st5 = st-append-code (alloc.state) (li reg-r11 1)
+   in let ptr-loaded = load-local st5 (alloc.ptr-loc)
+   in let st6 = st-append-code (ptr-loaded.state) (mov-store (ptr-loaded.reg) reg-r11 0)
+   in let code-loaded = load-local st6 (loc.reg)
+   in let ptr-loaded2 = load-local (code-loaded.state) (alloc.ptr-loc)
+   in let st7 = st-append-code (ptr-loaded2.state) (mov-store-byte (ptr-loaded2.reg) (code-loaded.reg) 8)
+   in let result = load-local st7 (alloc.ptr-loc)
+   in EmitResult {
+   state = result.state,
+   reg = result.reg
+  }
+
+  emit-is-letter-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-is-letter-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (r.state)
+   in let st0 = st-append-code (rd.state) (mov-rr (rd.reg) (r.reg))
+   in let st1 = st-append-code st0 (sub-ri (rd.reg) 13)
+   in let st2 = st-append-code st1 (cmp-ri (rd.reg) 51)
+   in let st3 = st-append-code st2 (setcc cc-be (rd.reg))
+   in let st4 = st-append-code st3 (movzx-byte-self (rd.reg))
+   in EmitResult {
+   state = st4,
+   reg = rd.reg
+  }
+
+  emit-is-digit-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-is-digit-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (r.state)
+   in let st0 = st-append-code (rd.state) (mov-rr (rd.reg) (r.reg))
+   in let st1 = st-append-code st0 (sub-ri (rd.reg) 3)
+   in let st2 = st-append-code st1 (cmp-ri (rd.reg) 9)
+   in let st3 = st-append-code st2 (setcc cc-be (rd.reg))
+   in let st4 = st-append-code st3 (movzx-byte-self (rd.reg))
+   in EmitResult {
+   state = st4,
+   reg = rd.reg
+  }
+
+  emit-is-whitespace-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-is-whitespace-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (r.state)
+   in let st0 = st-append-code (rd.state) (mov-rr (rd.reg) (r.reg))
+   in let st1 = st-append-code st0 (cmp-ri (rd.reg) 2)
+   in let st2 = st-append-code st1 (setcc cc-be (rd.reg))
+   in let st3 = st-append-code st2 (movzx-byte-self (rd.reg))
+   in EmitResult {
+   state = st3,
+   reg = rd.reg
+  }
+
+  emit-negate-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-negate-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (r.state)
+   in let st1 = st-append-code (rd.state) (mov-rr (rd.reg) (r.reg))
+   in let st2 = st-append-code st1 (neg-r (rd.reg))
+   in EmitResult {
+   state = st2,
+   reg = rd.reg
+  }
+
+  emit-narrow-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-narrow-builtin (st) (args) =
+   emit-expr st (list-at args 0)
+
+  emit-abs-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-abs-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (r.state)
+   in let st1 = st-append-code (rd.state) (mov-rr (rd.reg) (r.reg))
+   in let st2 = st-append-code st1 (test-rr (rd.reg) (rd.reg))
+   in let jge-pos = st2.code-len
+   in let st3 = st-append-code st2 (jcc cc-ge 0)
+   in let st4 = st-append-code st3 (neg-r (rd.reg))
+   in let st5 = patch-jcc-at st4 jge-pos (st4.code-len)
+   in EmitResult {
+    state = st5,
+    reg = rd.reg
+   }
+
+  emit-min-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-min-builtin (st) (args) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let loc0 = alloc-local (r0.state)
+   in let st1 = store-local (loc0.state) (loc0.reg) (r0.reg)
+   in let r1 = emit-expr st1 (list-at args 1)
+   in let ld0 = load-local (r1.state) (loc0.reg)
+   in let rd = alloc-temp (ld0.state)
+   in let st2 = st-append-code (rd.state) (mov-rr (rd.reg) (ld0.reg))
+   in let st3 = st-append-code st2 (cmp-rr (rd.reg) (r1.reg))
+   in let jle-pos = st3.code-len
+   in let st4 = st-append-code st3 (jcc cc-le 0)
+   in let st5 = st-append-code st4 (mov-rr (rd.reg) (r1.reg))
+   in let st6 = patch-jcc-at st5 jle-pos (st5.code-len)
+   in EmitResult {
+    state = st6,
+    reg = rd.reg
+   }
+
+  emit-max-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-max-builtin (st) (args) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let loc0 = alloc-local (r0.state)
+   in let st1 = store-local (loc0.state) (loc0.reg) (r0.reg)
+   in let r1 = emit-expr st1 (list-at args 1)
+   in let ld0 = load-local (r1.state) (loc0.reg)
+   in let rd = alloc-temp (ld0.state)
+   in let st2 = st-append-code (rd.state) (mov-rr (rd.reg) (ld0.reg))
+   in let st3 = st-append-code st2 (cmp-rr (rd.reg) (r1.reg))
+   in let jge-pos = st3.code-len
+   in let st4 = st-append-code st3 (jcc cc-ge 0)
+   in let st5 = st-append-code st4 (mov-rr (rd.reg) (r1.reg))
+   in let st6 = patch-jcc-at st5 jge-pos (st5.code-len)
+   in EmitResult {
+    state = st6,
+    reg = rd.reg
+   }
+
+  emit-int-mod-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-int-mod-builtin (st) (args) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let loc0 = alloc-local (r0.state)
+   in let st1 = store-local (loc0.state) (loc0.reg) (r0.reg)
+   in let r1 = emit-expr st1 (list-at args 1)
+   in let loc1 = alloc-local (r1.state)
+   in let st2 = store-local (loc1.state) (loc1.reg) (r1.reg)
+   in let ld0 = load-local st2 (loc0.reg)
+   in let st3 = st-append-code (ld0.state) (mov-rr reg-rax (ld0.reg))
+   in let st4 = st-append-code st3 cqo
+   in let ld1 = load-local st4 (loc1.reg)
+   in let st5 = st-append-code (ld1.state) (idiv-r (ld1.reg))
+   in let rd = alloc-temp st5
+   in let st6 = st-append-code (rd.state) (mov-rr (rd.reg) reg-rdx)
+   in let st7 = st-append-code st6 (test-rr (rd.reg) (rd.reg))
+   in let jge-pos = st7.code-len
+   in let st8 = st-append-code st7 (jcc cc-ge 0)
+   in let rc = alloc-temp st8
+   in let ld1b = load-local (rc.state) (loc1.reg)
+   in let st9 = st-append-code (ld1b.state) (mov-rr (rc.reg) (ld1b.reg))
+   in let sm = alloc-temp st9
+   in let st10 = st-append-code (sm.state) (mov-rr (sm.reg) (rc.reg))
+   in let st11 = st-append-code st10 (sar-ri (sm.reg) 63)
+   in let st12 = st-append-code st11 (xor-rr (rc.reg) (sm.reg))
+   in let st13 = st-append-code st12 (sub-rr (rc.reg) (sm.reg))
+   in let st14 = st-append-code st13 (add-rr (rd.reg) (rc.reg))
+   in let st15 = patch-jcc-at st14 jge-pos (st14.code-len)
+   in EmitResult {
+    state = st15,
+    reg = rd.reg
+   }
+
+  emit-get-args-builtin : CodegenState -> EmitResult
+  emit-get-args-builtin (st) =
+    let rd = alloc-temp st
+   in let st1 = st-append-code (rd.state) (li reg-r11 0)
+   in let st2 = st-append-code st1 (mov-store reg-r10 reg-r11 0)
+   in let st3 = st-append-code st2 (add-ri reg-r10 8)
+   in let st4 = st-append-code st3 (mov-rr (rd.reg) reg-r10)
+   in let st5 = st-append-code st4 (mov-store reg-r10 reg-r11 0)
+   in let st6 = st-append-code st5 (add-ri reg-r10 8)
+   in EmitResult {
+   state = st6,
+   reg = rd.reg
+  }
+
+  emit-current-dir-builtin : CodegenState -> EmitResult
+  emit-current-dir-builtin (st) =
+    let rd = alloc-temp st
+   in let st1 = st-append-code (rd.state) (mov-rr (rd.reg) reg-r10)
+   in let st2 = st-append-code st1 (li reg-r11 0)
+   in let st3 = st-append-code st2 (mov-store reg-r10 reg-r11 0)
+   in let st4 = st-append-code st3 (add-ri reg-r10 8)
+   in EmitResult {
+   state = st4,
+   reg = rd.reg
+  }
+
+  emit-file-exists-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-file-exists-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (r.state)
+   in let st1 = st-append-code (rd.state) (li (rd.reg) 1)
+   in EmitResult {
+   state = st1,
+   reg = rd.reg
+  }
+
+  emit-substring-alloc : CodegenState, Integer, Integer, Integer -> CodegenState
+  emit-substring-alloc (st) (str-loc) (start-loc) (len-loc) =
+    let len-loaded = load-local st len-loc
+   in let st0 = st-append-code (len-loaded.state) (mov-rr reg-r11 (len-loaded.reg))
+   in let st1 = st-append-code st0 (add-ri reg-r11 15)
+   in let st2 = st-append-code st1 (and-ri reg-r11 (-8))
+   in st-append-code st2 (add-rr reg-r10 reg-r11)
+
+  emit-substring-copy : CodegenState, Integer, Integer, Integer, Integer -> CodegenState
+  emit-substring-copy (st) (str-loc) (start-loc) (len-loc) (ptr-loc) =
+    let st0 = st-append-code st (li reg-r11 0)
+   in let sub-loop = st0.code-len
+   in let len-ld = load-local st0 len-loc
+   in let st1 = st-append-code (len-ld.state) (cmp-rr reg-r11 (len-ld.reg))
+   in let sub-exit-pos = st1.code-len
+   in let st2 = st-append-code st1 (jcc cc-ge 0)
+   in let src-ld = load-local st2 str-loc
+   in let start-ld = load-local (src-ld.state) start-loc
+   in let st3 = st-append-code (start-ld.state) (mov-rr reg-rsi (src-ld.reg))
+   in let st4 = st-append-code st3 (add-rr reg-rsi (start-ld.reg))
+   in let st5 = st-append-code st4 (add-rr reg-rsi reg-r11)
+   in let st6 = st-append-code st5 (movzx-byte reg-rsi reg-rsi 8)
+   in let ptr-ld = load-local st6 ptr-loc
+   in let st7 = st-append-code (ptr-ld.state) (mov-rr reg-rdx (ptr-ld.reg))
+   in let st8 = st-append-code st7 (add-rr reg-rdx reg-r11)
+   in let st9 = st-append-code st8 (mov-store-byte reg-rdx reg-rsi 8)
+   in let st10 = st-append-code st9 (add-ri reg-r11 1)
+   in let st11 = st-append-code st10 (jmp (sub-loop - (st10.code-len + 5)))
+   in patch-jcc-at st11 sub-exit-pos (st11.code-len)
+
+  emit-substring-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-substring-builtin (st) (args) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let loc0 = alloc-local (r0.state)
+   in let st1 = store-local (loc0.state) (loc0.reg) (r0.reg)
+   in let r1 = emit-expr st1 (list-at args 1)
+   in let loc1 = alloc-local (r1.state)
+   in let st2 = store-local (loc1.state) (loc1.reg) (r1.reg)
+   in let r2 = emit-expr st2 (list-at args 2)
+   in let loc2 = alloc-local (r2.state)
+   in let st3 = store-local (loc2.state) (loc2.reg) (r2.reg)
+   in let ptr-loc = alloc-local st3
+   in let ptr-tmp = alloc-temp (ptr-loc.state)
+   in let st4 = st-append-code (ptr-tmp.state) (mov-rr (ptr-tmp.reg) reg-r10)
+   in let st5 = store-local st4 (ptr-loc.reg) (ptr-tmp.reg)
+   in let len-ld = load-local st5 (loc2.reg)
+   in let ptr-ld = load-local (len-ld.state) (ptr-loc.reg)
+   in let st6 = st-append-code (ptr-ld.state) (mov-store (ptr-ld.reg) (len-ld.reg) 0)
+   in let st7 = emit-substring-alloc st6 (loc0.reg) (loc1.reg) (loc2.reg)
+   in let st8 = emit-substring-copy st7 (loc0.reg) (loc1.reg) (loc2.reg) (ptr-loc.reg)
+   in let result = load-local st8 (ptr-loc.reg)
+   in EmitResult {
+   state = result.state,
+   reg = result.reg
+  }
+
+  emit-print-line-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-print-line-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let st1 = when st.exit-mode
+    is ExitUefi -> emit-uefi-print-text (r.state) (r.reg)
+    is otherwise -> emit-print-text (r.state) (r.reg)
+   in let rd = alloc-temp st1
+   in EmitResult {
+   state = st-append-code (rd.state) (li (rd.reg) 0),
+   reg = rd.reg
+  }
+
+  emit-print-line-raw-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-print-line-raw-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let st1 = emit-print-text-raw (r.state) (r.reg)
+   in let rd = alloc-temp st1
+   in EmitResult {
+   state = st-append-code (rd.state) (li (rd.reg) 0),
+   reg = rd.reg
+  }
+
+  emit-read-file-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-read-file-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let st1 = st-append-code (r.state) (mov-rr reg-rdi (r.reg))
+   in let st2 = emit-call-to st1 "__bare_metal_read_serial"
+   in let rd = alloc-temp st2
+   in EmitResult {
+   state = st-append-code (rd.state) (mov-rr (rd.reg) reg-rax),
+   reg = rd.reg
+  }
+
+  emit-read-file-raw-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-read-file-raw-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let st1 = st-append-code (r.state) (mov-rr reg-rdi (r.reg))
+   in let st2 = emit-call-to st1 "__bare_metal_read_serial_raw"
+   in let rd = alloc-temp st2
+   in EmitResult {
+   state = st-append-code (rd.state) (mov-rr (rd.reg) reg-rax),
+   reg = rd.reg
+  }
+
+  emit-read-serial-cce-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-read-serial-cce-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let st1 = st-append-code (r.state) (mov-rr reg-rdi (r.reg))
+   in let st2 = emit-call-to st1 "__bare_metal_read_serial_cce"
+   in let rd = alloc-temp st2
+   in EmitResult {
+   state = st-append-code (rd.state) (mov-rr (rd.reg) reg-rax),
+   reg = rd.reg
+  }
+
+  emit-write-file-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-write-file-builtin (st) (args) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let r1 = emit-expr (r0.state) (list-at args 1)
+   in let st1 = emit-print-text-no-newline (r1.state) (r1.reg)
+   in let rd = alloc-temp st1
+   in EmitResult {
+   state = st-append-code (rd.state) (li (rd.reg) 0),
+   reg = rd.reg
+  }
+
+  emit-read-line-builtin : CodegenState -> EmitResult
+  emit-read-line-builtin (st) =
+    let st1 = emit-call-to st "__read_line"
+   in let rd = alloc-temp st1
+   in EmitResult {
+   state = st-append-code (rd.state) (mov-rr (rd.reg) reg-rax),
+   reg = rd.reg
+  }
+
+  emit-write-binary-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-write-binary-builtin (st) (args) =
+    let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let st1 = st-append-code (r.state) (mov-rr reg-rdi (r.reg))
+   in let st2 = emit-call-to st1 "__write_binary"
+   in let rd = alloc-temp st2
+   in EmitResult {
+   state = st-append-code (rd.state) (li (rd.reg) 0),
+   reg = rd.reg
+  }
+
+  emit-linked-list-empty-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-linked-list-empty-builtin (st) (args) =
+   let rd = alloc-temp st
+   in EmitResult {
+   state = st-append-code (rd.state) (li (rd.reg) 0),
+   reg = rd.reg
+  }
+
+  emit-linked-list-push-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-linked-list-push-builtin (st) (args) =
+   let list-result = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let list-loc = alloc-local (list-result.state)
+   in let st1 = store-local (list-loc.state) (list-loc.reg) (list-result.reg)
+   in let val-result = emit-expr st1 (list-at args 1)
+   in let val-loc = alloc-local (val-result.state)
+   in let st2 = store-local (val-loc.state) (val-loc.reg) (val-result.reg)
+   in let ptr = alloc-temp st2
+   in let st3 = st-append-code (ptr.state) (mov-rr (ptr.reg) reg-r10)
+   in let vr = load-local st3 (val-loc.reg)
+   in let st4 = st-append-code (vr.state) (mov-store (ptr.reg) (vr.reg) 0)
+   in let lr = load-local st4 (list-loc.reg)
+   in let st5 = st-append-code (lr.state) (mov-store (ptr.reg) (lr.reg) 8)
+   in let st6 = st-append-code st5 (add-ri reg-r10 16)
+   in EmitResult {
+   state = st6,
+   reg = ptr.reg
+  }
+
+  emit-linked-list-to-list-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-linked-list-to-list-builtin (st) (args) =
+   let head-result = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let st1 = st-append-code (head-result.state) (mov-rr reg-rdi (head-result.reg))
+   in let st2 = emit-call-to st1 "__linked_list_to_list"
+   in let rd = alloc-temp st2
+   in EmitResult {
+   state = st-append-code (rd.state) (mov-rr (rd.reg) reg-rax),
+   reg = rd.reg
+  }
+
+  emit-record-set-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-record-set-builtin (st) (args) =
+    let rec-result = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rec-loc = alloc-local (rec-result.state)
+   in let st1 = store-local (rec-loc.state) (rec-loc.reg) (rec-result.reg)
+   in let field-name = when (list-at args 1)
+    is IrTextLit (s) (sp) -> s
+    is otherwise -> ""
+   in let rec-ty = resolve-constructed-ty st (ir-expr-type (list-at args 0))
+   in let val-result = emit-expr st1 (list-at args 2)
+   in let loaded = load-local (val-result.state) (rec-loc.reg)
+   in when rec-ty
+    is RecordTy (rname) (rargs) (rfields) ->
+     let fot = cce-byte-offset-and-type rfields field-name
+     in EmitResult {
+      state = emit-narrow-store-checked (loaded.state) (fot.type-val) (loaded.reg) (val-result.reg) (fot.offset),
+      reg = loaded.reg
+     }
+    is otherwise ->
+     let st-err = st-add-error (loaded.state) cdx-ir-error ("__record-set: unresolved type for field '" & field-name & "'") (ir-expr-span (list-at args 0))
+     in EmitResult {
+      state = st-append-code st-err [15, 11],
+      reg = loaded.reg
+     }
+
+  emit-heap-save-builtin : CodegenState -> EmitResult
+  emit-heap-save-builtin (st) =
+   let rd = alloc-temp st
+   in EmitResult {
+   state = st-append-code (rd.state) (mov-rr (rd.reg) reg-r10),
+   reg = rd.reg
+  }
+
+  emit-heap-restore-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-heap-restore-builtin (st) (args) =
+   let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let st1 = st-append-code (r.state) (mov-rr reg-r10 (r.reg))
+   in let rd = alloc-temp st1
+   in EmitResult {
+   state = st-append-code (rd.state) (li (rd.reg) 0),
+   reg = rd.reg
+  }
+
+  emit-fail-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-fail-builtin (st) (args) =
+   let msg-result = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (msg-result.state)
+   in EmitResult {
+   state = st-append-code (rd.state) (li reg-rdi try-fail-flag-addr & li reg-rsi 1 & mov-store reg-rdi reg-rsi 0 & li (rd.reg) 0),
+   reg = rd.reg
+  }
+
+  emit-heap-advance-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-heap-advance-builtin (st) (args) =
+   let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (r.state)
+   in let st1 = st-append-code (rd.state) (add-rr reg-r10 (r.reg))
+   in EmitResult {
+   state = st-append-code st1 (li (rd.reg) 0),
+   reg = rd.reg
+  }
+
+  emit-deck-pos-builtin : CodegenState -> EmitResult
+  emit-deck-pos-builtin (st) =
+   let rd = alloc-temp st
+   in let st1 = st-append-code (rd.state) (li (rd.reg) deck-pos-addr)
+   in EmitResult {
+   state = st-append-code st1 (mov-load (rd.reg) (rd.reg) 0),
+   reg = rd.reg
+  }
+
+  emit-deck-set-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-deck-set-builtin (st) (args) =
+   let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let addr-tmp = alloc-temp (r.state)
+   in let st1 = st-append-code (addr-tmp.state) (li (addr-tmp.reg) deck-pos-addr)
+   in let st2 = st-append-code st1 (mov-store (addr-tmp.reg) (r.reg) 0)
+   in let rd = alloc-temp st2
+   in EmitResult {
+   state = st-append-code (rd.state) (li (rd.reg) 0),
+   reg = rd.reg
+  }
+
+  emit-deck-alloc-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-deck-alloc-builtin (st) (args) =
+   let r = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let addr-tmp = alloc-temp (r.state)
+   in let st1 = st-append-code (addr-tmp.state) (li (addr-tmp.reg) deck-pos-addr)
+   in let rd = alloc-temp st1
+   in let st2 = st-append-code (rd.state) (mov-load (rd.reg) (addr-tmp.reg) 0)
+   in let new-tmp = alloc-temp st2
+   in let st3 = st-append-code (new-tmp.state) (mov-rr (new-tmp.reg) (rd.reg))
+   in let st4 = st-append-code st3 (add-rr (new-tmp.reg) (r.reg))
+   in EmitResult {
+   state = st-append-code st4 (mov-store (addr-tmp.reg) (new-tmp.reg) 0),
+   reg = rd.reg
+  }
+
+  emit-deck-enter-builtin : CodegenState -> EmitResult
+  emit-deck-enter-builtin (st) =
+   let t0 = alloc-temp st
+   in let st1 = st-append-code (t0.state) (li (t0.reg) deck-bound-counter-addr)
+   in let t1 = alloc-temp st1
+   in let st2 = st-append-code (t1.state) (mov-load (t1.reg) (t0.reg) 0)
+   in let t2 = alloc-temp st2
+   in let st3 = st-append-code (t2.state) (mov-rr (t2.reg) (t1.reg))
+   in let st4 = st-append-code st3 (add-ri (t2.reg) 1)
+   in let st5 = st-append-code st4 (mov-store (t0.reg) (t2.reg) 0)
+   in let st6 = st-append-code st5 (cmp-ri (t1.reg) 0)
+   in let jcc-pos = st6.code-len
+   in let st7 = st-append-code st6 (jcc cc-ne 0)
+   in let t3 = alloc-temp st7
+   in let st8 = st-append-code (t3.state) (li (t3.reg) bivy-save-addr)
+   in let st9 = st-append-code st8 (mov-store (t3.reg) reg-r10 0)
+   in let t4 = alloc-temp st9
+   in let st10 = st-append-code (t4.state) (li (t4.reg) deck-pos-addr)
+   in let st11 = st-append-code st10 (mov-load reg-r10 (t4.reg) 0)
+   in let st12 = patch-jcc-at st11 jcc-pos (st11.code-len)
+   in let rd = alloc-temp st12
+   in EmitResult {
+   state = st-append-code (rd.state) (li (rd.reg) 0),
+   reg = rd.reg
+  }
+
+  emit-deck-exit-builtin : CodegenState -> EmitResult
+  emit-deck-exit-builtin (st) =
+   let e0 = alloc-temp st
+   in let st1 = st-append-code (e0.state) (li (e0.reg) deck-bound-counter-addr)
+   in let e1 = alloc-temp st1
+   in let st2 = st-append-code (e1.state) (mov-load (e1.reg) (e0.reg) 0)
+   in let st3 = st-append-code st2 (add-ri (e1.reg) (0 - 1))
+   in let st4 = st-append-code st3 (mov-store (e0.reg) (e1.reg) 0)
+   in let jcc-pos = st4.code-len
+   in let st5 = st-append-code st4 (jcc cc-ne 0)
+   in let e2 = alloc-temp st5
+   in let st6 = st-append-code (e2.state) (li (e2.reg) deck-pos-addr)
+   in let st7 = st-append-code st6 (mov-store (e2.reg) reg-r10 0)
+   in let e3 = alloc-temp st7
+   in let st8 = st-append-code (e3.state) (li (e3.reg) bivy-save-addr)
+   in let st9 = st-append-code st8 (mov-load reg-r10 (e3.reg) 0)
+   in let st10 = patch-jcc-at st9 jcc-pos (st9.code-len)
+   in let rd = alloc-temp st10
+   in EmitResult {
+   state = st-append-code (rd.state) (li (rd.reg) 0),
+   reg = rd.reg
+  }
+
+  emit-list-with-capacity-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-list-with-capacity-builtin (st) (args) =
+   let cap-result = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in emit-list-with-capacity-builtin-bivy (cap-result.state) (cap-result.reg)
+
+  emit-list-with-capacity-builtin-bivy : CodegenState, Integer -> EmitResult
+  emit-list-with-capacity-builtin-bivy (st) (cap-reg) =
+   let rd = alloc-temp st
+   in let st1 = st-append-code (rd.state) (mov-store reg-r10 cap-reg 0)
+   in let st2 = st-append-code st1 (add-ri reg-r10 8)
+   in let st3 = st-append-code st2 (mov-rr (rd.reg) reg-r10)
+   in let zero-tmp = alloc-temp st3
+   in let st4 = st-append-code (zero-tmp.state) (li (zero-tmp.reg) 0)
+   in let st5 = st-append-code st4 (mov-store reg-r10 (zero-tmp.reg) 0)
+   in let adv-tmp = alloc-temp st5
+   in let st6 = st-append-code (adv-tmp.state) (mov-rr (adv-tmp.reg) cap-reg)
+   in let st7 = st-append-code st6 (shl-ri (adv-tmp.reg) 3)
+   in let st8 = st-append-code st7 (add-ri (adv-tmp.reg) 8)
+   in EmitResult {
+   state = st-append-code st8 (add-rr reg-r10 (adv-tmp.reg)),
+   reg = rd.reg
+  }
+
+  emit-list-with-capacity-builtin-deck : CodegenState, Integer -> EmitResult
+  emit-list-with-capacity-builtin-deck (st) (cap-reg) =
+   let addr-tmp = alloc-temp st
+   in let st0 = st-append-code (addr-tmp.state) (li (addr-tmp.reg) deck-pos-addr)
+   in let deckp-tmp = alloc-temp st0
+   in let st1 = st-append-code (deckp-tmp.state) (mov-load (deckp-tmp.reg) (addr-tmp.reg) 0)
+   in let st2 = st-append-code st1 (mov-store (deckp-tmp.reg) cap-reg 0)
+   in let st3 = st-append-code st2 (add-ri (deckp-tmp.reg) 8)
+   in let rd = alloc-temp st3
+   in let st4 = st-append-code (rd.state) (mov-rr (rd.reg) (deckp-tmp.reg))
+   in let zero-tmp = alloc-temp st4
+   in let st5 = st-append-code (zero-tmp.state) (li (zero-tmp.reg) 0)
+   in let st6 = st-append-code st5 (mov-store (deckp-tmp.reg) (zero-tmp.reg) 0)
+   in let adv-tmp = alloc-temp st6
+   in let st7 = st-append-code (adv-tmp.state) (mov-rr (adv-tmp.reg) cap-reg)
+   in let st8 = st-append-code st7 (shl-ri (adv-tmp.reg) 3)
+   in let st9 = st-append-code st8 (add-ri (adv-tmp.reg) 8)
+   in let st10 = st-append-code st9 (add-rr (deckp-tmp.reg) (adv-tmp.reg))
+   in EmitResult {
+   state = st-append-code st10 (mov-store (addr-tmp.reg) (deckp-tmp.reg) 0),
+   reg = rd.reg
+  }
+
+  emit-buf-write-byte-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-buf-write-byte-builtin (st) (args) =
+   let base-result = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let base-loc = alloc-local (base-result.state)
+   in let st1 = store-local (base-loc.state) (base-loc.reg) (base-result.reg)
+   in let off-result = emit-expr st1 (list-at args 1)
+   in let off-loc = alloc-local (off-result.state)
+   in let st2 = store-local (off-loc.state) (off-loc.reg) (off-result.reg)
+   in let byte-result = emit-expr st2 (list-at args 2)
+   in let byte-loc = alloc-local (byte-result.state)
+   in let st3 = store-local (byte-loc.state) (byte-loc.reg) (byte-result.reg)
+   in let addr = alloc-temp st3
+   in let base2 = load-local (addr.state) (base-loc.reg)
+   in let off2 = load-local (base2.state) (off-loc.reg)
+   in let st4 = st-append-code (off2.state) (mov-rr (addr.reg) (base2.reg))
+   in let st5 = st-append-code st4 (add-rr (addr.reg) (off2.reg))
+   in let byte2 = load-local st5 (byte-loc.reg)
+   in let st6 = st-append-code (byte2.state) (mov-store-byte (addr.reg) (byte2.reg) 0)
+   in let rd = alloc-temp st6
+   in let off3 = load-local (rd.state) (off-loc.reg)
+   in let st7 = st-append-code (off3.state) (mov-rr (rd.reg) (off3.reg))
+   in EmitResult {
+   state = st-append-code st7 (add-ri (rd.reg) 1),
+   reg = rd.reg
+  }
+
+  emit-buf-write-bytes-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-buf-write-bytes-builtin (st) (args) =
+   let base-result = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let base-loc = alloc-local (base-result.state)
+   in let st1 = store-local (base-loc.state) (base-loc.reg) (base-result.reg)
+   in let off-result = emit-expr st1 (list-at args 1)
+   in let off-loc = alloc-local (off-result.state)
+   in let st2 = store-local (off-loc.state) (off-loc.reg) (off-result.reg)
+   in let list-result = emit-expr st2 (list-at args 2)
+   in let st3 = st-append-code (list-result.state) (mov-rr reg-rdx (list-result.reg))
+   in let off2 = load-local st3 (off-loc.reg)
+   in let st4 = st-append-code (off2.state) (mov-rr reg-rsi (off2.reg))
+   in let base2 = load-local st4 (base-loc.reg)
+   in let st5 = st-append-code (base2.state) (mov-rr reg-rdi (base2.reg))
+   in let st6 = emit-call-to st5 "__buf_write_bytes"
+   in let rd = alloc-temp st6
+   in EmitResult {
+   state = st-append-code (rd.state) (mov-rr (rd.reg) reg-rax),
+   reg = rd.reg
+  }
+
+  emit-buf-read-bytes-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-buf-read-bytes-builtin (st) (args) =
+   let base-result = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let base-loc = alloc-local (base-result.state)
+   in let st1 = store-local (base-loc.state) (base-loc.reg) (base-result.reg)
+   in let off-result = emit-expr st1 (list-at args 1)
+   in let off-loc = alloc-local (off-result.state)
+   in let st2 = store-local (off-loc.state) (off-loc.reg) (off-result.reg)
+   in let count-result = emit-expr st2 (list-at args 2)
+   in let st3 = st-append-code (count-result.state) (mov-rr reg-rdx (count-result.reg))
+   in let off2 = load-local st3 (off-loc.reg)
+   in let st4 = st-append-code (off2.state) (mov-rr reg-rsi (off2.reg))
+   in let base2 = load-local st4 (base-loc.reg)
+   in let st5 = st-append-code (base2.state) (mov-rr reg-rdi (base2.reg))
+   in let st6 = emit-call-to st5 "__buf_read_bytes"
+   in let rd = alloc-temp st6
+   in EmitResult {
+   state = st-append-code (rd.state) (mov-rr (rd.reg) reg-rax),
+   reg = rd.reg
+  }
+
+  emit-bit-op-2 : CodegenState, List IRExpr, (Integer -> Integer -> List Integer) -> EmitResult
+  emit-bit-op-2 (st) (args) (op-bytes) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let loc0 = alloc-local (r0.state)
+   in let st1 = store-local (loc0.state) (loc0.reg) (r0.reg)
+   in let r1 = emit-expr st1 (list-at args 1)
+   in let ld0 = load-local (r1.state) (loc0.reg)
+   in let rd = alloc-temp (ld0.state)
+   in EmitResult {
+    state = st-append-code (rd.state) (mov-rr (rd.reg) (ld0.reg) & op-bytes (rd.reg) (r1.reg)),
+    reg = rd.reg
+   }
+
+  emit-bit-shift : CodegenState, List IRExpr, (Integer -> List Integer) -> EmitResult
+  emit-bit-shift (st) (args) (shift-bytes) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let loc0 = alloc-local (r0.state)
+   in let st1 = store-local (loc0.state) (loc0.reg) (r0.reg)
+   in let r1 = emit-expr st1 (list-at args 1)
+   in let st2 = st-append-code (r1.state) (mov-rr reg-rcx (r1.reg))
+   in let ld0 = load-local st2 (loc0.reg)
+   in let st3 = if int-mod ((ld0.state).next-temp) 6 == 1 then __record-set (ld0.state) "next-temp" ((ld0.state).next-temp + 1) else ld0.state
+   in let rd = alloc-temp st3
+   in EmitResult {
+    state = st-append-code (rd.state) (mov-rr (rd.reg) (ld0.reg) & shift-bytes (rd.reg)),
+    reg = rd.reg
+   }
+
+  emit-bit-not : CodegenState, List IRExpr -> EmitResult
+  emit-bit-not (st) (args) =
+    let r0 = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let rd = alloc-temp (r0.state)
+   in EmitResult {
+    state = st-append-code (rd.state) (mov-rr (rd.reg) (r0.reg) & not-r (rd.reg)),
+    reg = rd.reg
+   }
+
+Section: State Effect
+
+ Integer-width state scoped to a run-state body. State lives in a
+ single stack-slot local whose slot index is tracked on
+ CodegenState.state-local. Nested run-state saves and restores the
+ slot index so inner scopes shadow, not overwrite, outer ones.
+
+  emit-run-state-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-run-state-builtin (st) (args) =
+   let init = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let cell = alloc-local (init.state)
+   in let st1 = store-local (cell.state) (cell.reg) (init.reg)
+   in let saved = st1.state-local
+   in let st2 = __record-set st1 "state-local" (cell.reg)
+   in let body = emit-expr st2 (list-at args 1)
+   in let st3 = __record-set (body.state) "state-local" saved
+   in EmitResult { state = st3, reg = body.reg }
+
+  emit-get-state-builtin : CodegenState -> EmitResult
+  emit-get-state-builtin (st) =
+   if st.state-local < 0 then
+    let tmp = alloc-temp st
+    in EmitResult {
+     state = st-append-code (tmp.state) (li (tmp.reg) 0),
+     reg = tmp.reg
+    }
+   else load-local st (st.state-local)
+
+  emit-set-state-builtin : CodegenState, List IRExpr -> EmitResult
+  emit-set-state-builtin (st) (args) =
+   let v = emit-expr (st-set-tail-pos st False) (list-at args 0)
+   in let st1 = if st.state-local < 0 then v.state
+                else store-local (v.state) (st.state-local) (v.reg)
+   in let rd = alloc-temp st1
+   in EmitResult {
+    state = st-append-code (rd.state) (li (rd.reg) 0),
+    reg = rd.reg
+   }
+
+Section: Builtin Registry
+  BuiltinX86Emitter = record {
+   name : Text,
+   emit : CodegenState, List IRExpr -> EmitResult
+  }
+
+  bsearch-x86-emitter-pos : List BuiltinX86Emitter, Text, Integer, Integer -> Integer
+  bsearch-x86-emitter-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-x86-emitter-pos entries name lo mid
+      else bsearch-x86-emitter-pos entries name (mid + 1) hi
+
+  sort-x86-emitters : List BuiltinX86Emitter -> List BuiltinX86Emitter
+  sort-x86-emitters (xs) = sort-by xs (\a b -> text-compare (a.name) (b.name))
+
+  x86-builtin-emitters : List BuiltinX86Emitter
+  x86-builtin-emitters = sort-x86-emitters ([
+   BuiltinX86Emitter { name = "print-line", emit = \s a -> emit-print-line-raw-builtin s a },
+   BuiltinX86Emitter { name = "print-line-raw", emit = \s a -> emit-print-line-raw-builtin s a },
+   BuiltinX86Emitter { name = "print-line-uni", emit = \s a -> emit-print-line-builtin s a },
+   BuiltinX86Emitter { name = "print-error", emit = \s a -> emit-print-line-raw-builtin s a },
+   BuiltinX86Emitter { name = "print-error-uni", emit = \s a -> emit-print-line-builtin s a },
+   BuiltinX86Emitter { name = "read-file", emit = \s a -> emit-read-serial-cce-builtin s a },
+   BuiltinX86Emitter { name = "read-file-raw", emit = \s a -> emit-read-file-raw-builtin s a },
+   BuiltinX86Emitter { name = "read-file-uni", emit = \s a -> emit-read-file-builtin s a },
+   BuiltinX86Emitter { name = "read-serial-cce", emit = \s a -> emit-read-serial-cce-builtin s a },
+   BuiltinX86Emitter { name = "write-file", emit = \s a -> emit-write-file-builtin s a },
+   BuiltinX86Emitter { name = "read-line", emit = \s a -> emit-read-line-builtin s },
+   BuiltinX86Emitter { name = "write-binary", emit = \s a -> emit-write-binary-builtin s a },
+   BuiltinX86Emitter { name = "text-length", emit = \s a -> emit-text-length-builtin s a },
+   BuiltinX86Emitter { name = "integer-to-text", emit = \s a -> emit-helper-call-1 s a "__itoa" },
+   BuiltinX86Emitter { name = "show", emit = \s a -> emit-show-builtin s a },
+   BuiltinX86Emitter { name = "text-to-integer", emit = \s a -> emit-helper-call-1 s a "__text_to_int" },
+   BuiltinX86Emitter { name = "text-to-double-bits", emit = \s a -> emit-helper-call-1 s a "__text_to_double" },
+   BuiltinX86Emitter { name = "text-replace", emit = \s a -> emit-helper-call-3 s a "__str_replace" },
+   BuiltinX86Emitter { name = "text-contains", emit = \s a -> emit-helper-call-2 s a "__text_contains" },
+   BuiltinX86Emitter { name = "text-starts-with", emit = \s a -> emit-helper-call-2 s a "__text_starts_with" },
+   BuiltinX86Emitter { name = "text-compare", emit = \s a -> emit-helper-call-2 s a "__text_compare" },
+   BuiltinX86Emitter { name = "text-concat-list", emit = \s a -> emit-helper-call-1 s a "__text_concat_list" },
+   BuiltinX86Emitter { name = "text-split", emit = \s a -> emit-helper-call-2 s a "__text_split" },
+   BuiltinX86Emitter { name = "substring", emit = \s a -> emit-substring-builtin s a },
+   BuiltinX86Emitter { name = "list-length", emit = \s a -> emit-list-length-builtin s a },
+   BuiltinX86Emitter { name = "list-at", emit = \s a -> emit-list-at-builtin s a },
+   BuiltinX86Emitter { name = "list-cons", emit = \s a -> emit-helper-call-2 s a "__list_cons" },
+   BuiltinX86Emitter { name = "list-append", emit = \s a -> emit-helper-call-2 s a "__list_append" },
+   BuiltinX86Emitter { name = "list-snoc", emit = \s a -> emit-helper-call-2 s a "__list_snoc" },
+   BuiltinX86Emitter { name = "list-push", emit = \s a -> emit-helper-call-2 s a "__list_snoc" },
+   BuiltinX86Emitter { name = "list-insert-at", emit = \s a -> emit-helper-call-3 s a "__list_insert_at" },
+   BuiltinX86Emitter { name = "list-set-at", emit = \s a -> emit-helper-call-3 s a "__list_set_at" },
+   BuiltinX86Emitter { name = "char-at", emit = \s a -> emit-char-at-builtin s a },
+   BuiltinX86Emitter { name = "char-code-at", emit = \s a -> emit-char-code-at-builtin s a },
+   BuiltinX86Emitter { name = "char-code", emit = \s a -> emit-expr (st-set-tail-pos s False) (list-at a 0) },
+   BuiltinX86Emitter { name = "code-to-char", emit = \s a -> emit-expr (st-set-tail-pos s False) (list-at a 0) },
+   BuiltinX86Emitter { name = "char-to-text", emit = \s a -> emit-char-to-text-builtin s a },
+   BuiltinX86Emitter { name = "is-letter", emit = \s a -> emit-is-letter-builtin s a },
+   BuiltinX86Emitter { name = "is-digit", emit = \s a -> emit-is-digit-builtin s a },
+   BuiltinX86Emitter { name = "is-whitespace", emit = \s a -> emit-is-whitespace-builtin s a },
+   BuiltinX86Emitter { name = "negate", emit = \s a -> emit-negate-builtin s a }
+  ] & [
+   BuiltinX86Emitter { name = "abs", emit = \s a -> emit-abs-builtin s a },
+   BuiltinX86Emitter { name = "min", emit = \s a -> emit-min-builtin s a },
+   BuiltinX86Emitter { name = "max", emit = \s a -> emit-max-builtin s a },
+   BuiltinX86Emitter { name = "__narrow", emit = \s a -> emit-narrow-builtin s a },
+   BuiltinX86Emitter { name = "fail", emit = \s a -> emit-fail-builtin s a },
+   BuiltinX86Emitter { name = "int-mod", emit = \s a -> emit-int-mod-builtin s a },
+   BuiltinX86Emitter { name = "get-args", emit = \s a -> emit-get-args-builtin s },
+   BuiltinX86Emitter { name = "current-dir", emit = \s a -> emit-current-dir-builtin s },
+   BuiltinX86Emitter { name = "__record-set", emit = \s a -> emit-record-set-builtin s a },
+   BuiltinX86Emitter { name = "__linked-list-empty", emit = \s a -> emit-linked-list-empty-builtin s a },
+   BuiltinX86Emitter { name = "__linked-list-push", emit = \s a -> emit-linked-list-push-builtin s a },
+   BuiltinX86Emitter { name = "__linked-list-to-list", emit = \s a -> emit-linked-list-to-list-builtin s a },
+   BuiltinX86Emitter { name = "__heap-save", emit = \s a -> emit-heap-save-builtin s },
+   BuiltinX86Emitter { name = "__heap-restore", emit = \s a -> emit-heap-restore-builtin s a },
+   BuiltinX86Emitter { name = "__heap-advance", emit = \s a -> emit-heap-advance-builtin s a },
+   BuiltinX86Emitter { name = "__deck-pos", emit = \s a -> emit-deck-pos-builtin s },
+   BuiltinX86Emitter { name = "__deck-set", emit = \s a -> emit-deck-set-builtin s a },
+   BuiltinX86Emitter { name = "__deck-alloc", emit = \s a -> emit-deck-alloc-builtin s a },
+   BuiltinX86Emitter { name = "__deck-enter", emit = \s a -> emit-deck-enter-builtin s },
+   BuiltinX86Emitter { name = "__deck-exit", emit = \s a -> emit-deck-exit-builtin s },
+   BuiltinX86Emitter { name = "__list-with-capacity", emit = \s a -> emit-list-with-capacity-builtin s a },
+   BuiltinX86Emitter { name = "__buf-write-byte", emit = \s a -> emit-buf-write-byte-builtin s a },
+   BuiltinX86Emitter { name = "__buf-write-bytes", emit = \s a -> emit-buf-write-bytes-builtin s a },
+   BuiltinX86Emitter { name = "__buf-read-bytes", emit = \s a -> emit-buf-read-bytes-builtin s a },
+   BuiltinX86Emitter { name = "chan-text-send", emit = \s a -> emit-helper-call-2 s a "chan-text-send" },
+   BuiltinX86Emitter { name = "chan-text-recv", emit = \s a -> emit-helper-call-1 s a "chan-text-recv" },
+   BuiltinX86Emitter { name = "bit-and", emit = \s a -> emit-bit-op-2 s a and-rr },
+   BuiltinX86Emitter { name = "bit-or", emit = \s a -> emit-bit-op-2 s a or-rr },
+   BuiltinX86Emitter { name = "bit-xor", emit = \s a -> emit-bit-op-2 s a xor-rr64 },
+   BuiltinX86Emitter { name = "bit-shl", emit = \s a -> emit-bit-shift s a shl-cl },
+   BuiltinX86Emitter { name = "bit-shr", emit = \s a -> emit-bit-shift s a sar-cl },
+   BuiltinX86Emitter { name = "bit-shru", emit = \s a -> emit-bit-shift s a shr-cl },
+   BuiltinX86Emitter { name = "bit-not", emit = \s a -> emit-bit-not s a },
+   BuiltinX86Emitter { name = "file-exists", emit = \s a -> emit-file-exists-builtin s a },
+   BuiltinX86Emitter { name = "run-state", emit = \s a -> emit-run-state-builtin s a },
+   BuiltinX86Emitter { name = "set-state", emit = \s a -> emit-set-state-builtin s a }
+  ])
+
+  emit-builtin : CodegenState, Text, List IRExpr -> EmitResult
+  emit-builtin (st) (name) (args) =
+   let len = list-length x86-builtin-emitters
+   in let pos = bsearch-x86-emitter-pos x86-builtin-emitters name 0 len
+   in if pos >= len then emit-file-exists-builtin st args
+      else let e = list-at x86-builtin-emitters pos
+      in if e.name == name then (e.emit) st args
+         else emit-file-exists-builtin st args
+
+
+Page 4 of 10

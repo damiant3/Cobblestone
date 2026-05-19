@@ -1,0 +1,173 @@
+Chapter: Protocol
+  cites Data chapter Row
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ Wire protocol for Codex DB. Binary, length-prefixed frames over
+ TCP. Supports authentication (Ed25519 challenge-response), queries,
+ prepared statements, transactions, and 2PC coordination.
+
+ We say:
+
+Section: Message Types
+
+  msg-auth-challenge : Integer = 1
+  msg-auth-response : Integer = 2
+  msg-auth-ok : Integer = 3
+  msg-auth-fail : Integer = 4
+
+  msg-query : Integer = 16
+  msg-result-header : Integer = 17
+  msg-result-row : Integer = 18
+  msg-result-complete : Integer = 19
+  msg-error : Integer = 20
+
+  msg-prepare : Integer = 32
+  msg-execute : Integer = 33
+  msg-close-stmt : Integer = 34
+
+  msg-begin : Integer = 48
+  msg-commit : Integer = 49
+  msg-rollback : Integer = 50
+
+  msg-ping : Integer = 64
+  msg-pong : Integer = 65
+
+  msg-2pc-prepare : Integer = 240
+  msg-2pc-vote : Integer = 241
+  msg-2pc-commit : Integer = 242
+  msg-2pc-abort : Integer = 243
+
+Section: Frame
+
+  Frame = record {
+    frame-type : Integer between 0 and 255,
+    frame-payload : List Integer
+  }
+
+  frame-new : Integer, List Integer -> Frame
+  frame-new (ftype) (payload) = Frame { frame-type = ftype, frame-payload = payload }
+
+Section: Encode
+
+  frame-encode : Frame -> List Integer
+  frame-encode (f) =
+    let payload-len = list-length (f.frame-payload)
+    in let total-len = payload-len + 1
+    in let len-bytes = proto-encode-u32 total-len
+    in len-bytes & [f.frame-type] & f.frame-payload
+
+  proto-encode-u32 : Integer -> List Integer
+  proto-encode-u32 (n) =
+    let b3 = bit-and (bit-shr n 24) 255
+    in let b2 = bit-and (bit-shr n 16) 255
+    in let b1 = bit-and (bit-shr n 8) 255
+    in let b0 = bit-and n 255
+    in [b3, b2, b1, b0]
+
+Section: Decode
+
+  FrameDecodeResult = record {
+    fdr-frame : Maybe Frame,
+    fdr-consumed : Integer
+  }
+
+  frame-decode : List Integer -> FrameDecodeResult
+  frame-decode (bytes) =
+    if list-length bytes < 5 then FrameDecodeResult { fdr-frame = None, fdr-consumed = 0 }
+    else let total-len = proto-decode-u32 bytes 0
+    in let needed = total-len + 4
+    in if list-length bytes < needed then FrameDecodeResult { fdr-frame = None, fdr-consumed = 0 }
+    else let ftype = list-at bytes 4
+    in let payload = proto-take-bytes bytes 5 (total-len - 1) []
+    in FrameDecodeResult {
+      fdr-frame = Just (Frame { frame-type = ftype, frame-payload = payload }),
+      fdr-consumed = needed
+    }
+
+  proto-decode-u32 : List Integer, Integer -> Integer
+  proto-decode-u32 (bytes) (offset) =
+    (list-at bytes offset) * 16777216
+    + (list-at bytes (offset + 1)) * 65536
+    + (list-at bytes (offset + 2)) * 256
+    + (list-at bytes (offset + 3))
+
+  proto-take-bytes : List Integer, Integer, Integer, List Integer -> List Integer
+  proto-take-bytes (src) (offset) (len) (acc) =
+    if len <= 0 then acc
+    else proto-take-bytes src (offset + 1) (len - 1) (list-push acc (list-at src offset))
+
+Section: Message Builders
+
+  proto-query-frame : Text -> Frame
+  proto-query-frame (sql) = frame-new msg-query (proto-text-to-bytes sql)
+
+  proto-error-frame : Text -> Frame
+  proto-error-frame (msg) = frame-new msg-error (proto-text-to-bytes msg)
+
+  proto-complete-frame : Integer -> Frame
+  proto-complete-frame (count) = frame-new msg-result-complete (proto-encode-u32 count)
+
+  proto-ping-frame : Frame
+  proto-ping-frame = frame-new msg-ping []
+
+  proto-pong-frame : Frame
+  proto-pong-frame = frame-new msg-pong []
+
+  proto-begin-frame : Frame
+  proto-begin-frame = frame-new msg-begin []
+
+  proto-commit-frame : Frame
+  proto-commit-frame = frame-new msg-commit []
+
+  proto-rollback-frame : Frame
+  proto-rollback-frame = frame-new msg-rollback []
+
+  proto-auth-challenge-frame : List Integer -> Frame
+  proto-auth-challenge-frame (nonce) = frame-new msg-auth-challenge nonce
+
+  proto-auth-ok-frame : Frame
+  proto-auth-ok-frame = frame-new msg-auth-ok []
+
+  proto-auth-fail-frame : Text -> Frame
+  proto-auth-fail-frame (reason) = frame-new msg-auth-fail (proto-text-to-bytes reason)
+
+Section: Text Encoding
+
+  proto-text-to-bytes : Text -> List Integer
+  proto-text-to-bytes (t) = proto-text-loop t 0 (text-length t) []
+
+  proto-text-loop : Text, Integer, Integer, List Integer -> List Integer
+  proto-text-loop (t) (i) (len) (acc) =
+    if i >= len then acc
+    else proto-text-loop t (i + 1) len (list-push acc (text-char-at t i))
+
+  proto-bytes-to-text : List Integer -> Text
+  proto-bytes-to-text (bytes) = proto-btt-loop bytes 0 (list-length bytes) ""
+
+  proto-btt-loop : List Integer, Integer, Integer, Text -> Text
+  proto-btt-loop (bytes) (i) (len) (acc) =
+    if i >= len then acc
+    else proto-btt-loop bytes (i + 1) len (acc & text-from-char (list-at bytes i))
+
+Section: Result Row Encoding
+
+  proto-encode-row-header : List Text -> Frame
+  proto-encode-row-header (col-names) =
+    let payload = proto-encode-string-list col-names
+    in frame-new msg-result-header payload
+
+  proto-encode-string-list : List Text -> List Integer
+  proto-encode-string-list (strs) =
+    let count = proto-encode-u32 (list-length strs)
+    in proto-esl-loop strs 0 (list-length strs) count
+
+  proto-esl-loop : List Text, Integer, Integer, List Integer -> List Integer
+  proto-esl-loop (strs) (i) (len) (acc) =
+    if i >= len then acc
+    else let s = list-at strs i
+    in let bytes = proto-text-to-bytes s
+    in let encoded = proto-encode-u32 (list-length bytes) & bytes
+    in proto-esl-loop strs (i + 1) len (acc & encoded)
+
+Page 1
