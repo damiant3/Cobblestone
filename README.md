@@ -75,11 +75,10 @@ As of 2026-05-19:
   failure … end` — retry loops with bivy-reclaim between attempts,
   optional fallback path, and explicit failure handler. New `fail`
   builtin sets a flag the body's tail checks.
-- **Plug architecture**: emitters move out of compiler core into
-  standalone CDX programs. Compiler emits IR text (S-expressions);
-  plug consumes IR on stdin, emits target source on stdout. C# plug
-  is the first exemplar; Cam's lifting Ada / Babbage / COBOL / C++ /
-  Fortran / Go / Java / JavaScript / Python / Rust / CodexText next.
+- **Plug architecture**: emitters as standalone CDX programs. Compiler
+  emits IR text; plug consumes IR on stdin, emits target source on
+  stdout. Working transpiler plugs: **Ada, Babbage, C#, COBOL,
+  Fortran, JavaScript, Python, Rust** — each with build/run scripts.
 - **Mutable records**: `mutable` keyword with in-place field
   assignment, type-checked immutability enforcement (CDX2060).
 - **Repository restructure**: 31 top-level dirs to 8. codex-vm

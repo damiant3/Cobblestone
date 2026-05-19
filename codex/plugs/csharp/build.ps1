@@ -27,9 +27,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot '..' '..' 'codex.build' 'vm-config.ps1')
+. (Join-Path $PSScriptRoot '..' '..' '..' 'build' 'vm-config.ps1')
 
-$Repo      = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
+$Repo      = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
 $PlugDir   = (Resolve-Path $PSScriptRoot).Path
 $OutDir    = Join-Path $PlugDir 'build-output'
 $OutFile   = Join-Path $OutDir 'csharp-plug.cdx'
@@ -66,9 +66,8 @@ function Add-Chapter {
     $lines.Add('')
 }
 
-Add-Chapter -Path (Join-Path $Repo 'plugs\common\PlugTypes.codex')      -Quire ''
-Add-Chapter -Path (Join-Path $Repo 'codex\Core\SkipListText.codex')     -Quire '' -StripCites @('Phase Allocator')
-Add-Chapter -Path (Join-Path $Repo 'plugs\common\IRTextParser.codex')   -Quire ''
+Add-Chapter -Path (Join-Path $Repo 'codex\plugs\common\PlugTypes.codex')      -Quire ''
+Add-Chapter -Path (Join-Path $Repo 'codex\plugs\common\IRTextParser.codex')   -Quire ''
 Add-Chapter -Path (Join-Path $PlugDir 'CSharpEmitter.codex')            -Quire ''
 Add-Chapter -Path (Join-Path $PlugDir 'CSharpEmitterExpressions.codex') -Quire ''
 Add-Chapter -Path (Join-Path $PlugDir 'CSharpPlug.codex')               -Quire ''
@@ -76,14 +75,14 @@ Add-Chapter -Path (Join-Path $PlugDir 'CSharpPlug.codex')               -Quire '
 # ── Phase 2: resolve foreword cites transitively ─────────────────────
 $citePat = '^\s*cites\s+(Foreword|Kernel|OS|Works|Trust|Net|Verify|Replay|Sched|Observe|Game|Signal|Compress|Encode|Math|Sim|AI|UI|Dev)\s+chapter\s+([A-Za-z_][A-Za-z0-9_-]*)'
 $QuireDirs = @{
-    'Foreword' = 'codex.foreword'; 'Kernel' = 'codex.kernel'; 'OS' = 'codex.os'
-    'Works' = 'codex.works'; 'Trust' = 'codex.os.trust'; 'Net' = 'codex.os.net'
-    'Verify' = 'codex.os.verify'; 'Replay' = 'codex.os.replay'; 'Sched' = 'codex.os.sched'
-    'Observe' = 'codex.os.observe'; 'Game' = 'codex.foreword.game'
-    'Signal' = 'codex.foreword.signal'; 'Compress' = 'codex.foreword.compress'
-    'Encode' = 'codex.foreword.encode'; 'Math' = 'codex.foreword.math'
-    'Sim' = 'codex.foreword.sim'; 'AI' = 'codex.foreword.ai'
-    'UI' = 'codex.foreword.ui'; 'Dev' = 'codex.os.dev'
+    'Foreword' = 'codex\foreword\core'; 'Kernel' = 'codex\os\kernel'; 'OS' = 'codex\os\core'
+    'Works' = 'apps\works'; 'Trust' = 'codex\os\trust'; 'Net' = 'codex\os\net'
+    'Verify' = 'codex\os\verify'; 'Replay' = 'codex\os\replay'; 'Sched' = 'codex\os\sched'
+    'Observe' = 'codex\os\observe'; 'Game' = 'codex\foreword\game'
+    'Signal' = 'codex\foreword\signal'; 'Compress' = 'codex\foreword\compress'
+    'Encode' = 'codex\foreword\encode'; 'Math' = 'codex\foreword\math'
+    'Sim' = 'codex\foreword\sim'; 'AI' = 'codex\foreword\ai'
+    'UI' = 'codex\foreword\ui'; 'Dev' = 'codex\os\dev'
 }
 
 $queue = [System.Collections.Generic.Queue[hashtable]]::new()
