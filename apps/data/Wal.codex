@@ -1,0 +1,223 @@
+Chapter: Wal
+  cites Data chapter Row
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+
+ Write-ahead log for crash recovery. Every mutation writes a redo
+ record before modifying the page. On recovery, replay the log from
+ the last checkpoint. Each record has a log sequence number (LSN)
+ and a CRC for integrity.
+
+ We say:
+
+Section: WAL Record Types
+
+  WalRecordType =
+    | WalInsertRec
+    | WalUpdateRec
+    | WalDeleteRec
+    | WalCommitRec
+    | WalAbortRec
+    | WalCheckpointRec
+    | WalPrepareRec
+    | WalBeginRec
+
+  wal-type-tag : WalRecordType -> Integer
+  wal-type-tag (rt) =
+    when rt
+      is WalInsertRec -> 1
+      is WalUpdateRec -> 2
+      is WalDeleteRec -> 3
+      is WalCommitRec -> 4
+      is WalAbortRec -> 5
+      is WalCheckpointRec -> 6
+      is WalPrepareRec -> 7
+      is WalBeginRec -> 8
+
+Section: WAL Record
+
+  WalRecord = record {
+    wal-lsn : Integer,
+    wal-txn-id : Integer,
+    wal-type : WalRecordType,
+    wal-table-id : Integer,
+    wal-page-id : Integer,
+    wal-slot-id : Integer,
+    wal-data : List Integer,
+    wal-prev-data : List Integer
+  }
+
+  wal-insert : Integer, Integer, Integer, Integer, Integer, List Integer -> WalRecord
+  wal-insert (lsn) (txn) (table) (page) (slot) (data) = WalRecord {
+    wal-lsn = lsn,
+    wal-txn-id = txn,
+    wal-type = WalInsertRec,
+    wal-table-id = table,
+    wal-page-id = page,
+    wal-slot-id = slot,
+    wal-data = data,
+    wal-prev-data = []
+  }
+
+  wal-update : Integer, Integer, Integer, Integer, Integer, List Integer, List Integer -> WalRecord
+  wal-update (lsn) (txn) (table) (page) (slot) (before) (after) = WalRecord {
+    wal-lsn = lsn,
+    wal-txn-id = txn,
+    wal-type = WalUpdateRec,
+    wal-table-id = table,
+    wal-page-id = page,
+    wal-slot-id = slot,
+    wal-data = after,
+    wal-prev-data = before
+  }
+
+  wal-delete : Integer, Integer, Integer, Integer, Integer, List Integer -> WalRecord
+  wal-delete (lsn) (txn) (table) (page) (slot) (data) = WalRecord {
+    wal-lsn = lsn,
+    wal-txn-id = txn,
+    wal-type = WalDeleteRec,
+    wal-table-id = table,
+    wal-page-id = page,
+    wal-slot-id = slot,
+    wal-data = data,
+    wal-prev-data = []
+  }
+
+  wal-begin : Integer, Integer -> WalRecord
+  wal-begin (lsn) (txn) = WalRecord {
+    wal-lsn = lsn,
+    wal-txn-id = txn,
+    wal-type = WalBeginRec,
+    wal-table-id = 0,
+    wal-page-id = 0,
+    wal-slot-id = 0,
+    wal-data = [],
+    wal-prev-data = []
+  }
+
+  wal-commit : Integer, Integer -> WalRecord
+  wal-commit (lsn) (txn) = WalRecord {
+    wal-lsn = lsn,
+    wal-txn-id = txn,
+    wal-type = WalCommitRec,
+    wal-table-id = 0,
+    wal-page-id = 0,
+    wal-slot-id = 0,
+    wal-data = [],
+    wal-prev-data = []
+  }
+
+  wal-abort : Integer, Integer -> WalRecord
+  wal-abort (lsn) (txn) = WalRecord {
+    wal-lsn = lsn,
+    wal-txn-id = txn,
+    wal-type = WalAbortRec,
+    wal-table-id = 0,
+    wal-page-id = 0,
+    wal-slot-id = 0,
+    wal-data = [],
+    wal-prev-data = []
+  }
+
+  wal-checkpoint : Integer -> WalRecord
+  wal-checkpoint (lsn) = WalRecord {
+    wal-lsn = lsn,
+    wal-txn-id = 0,
+    wal-type = WalCheckpointRec,
+    wal-table-id = 0,
+    wal-page-id = 0,
+    wal-slot-id = 0,
+    wal-data = [],
+    wal-prev-data = []
+  }
+
+  wal-prepare : Integer, Integer -> WalRecord
+  wal-prepare (lsn) (txn) = WalRecord {
+    wal-lsn = lsn,
+    wal-txn-id = txn,
+    wal-type = WalPrepareRec,
+    wal-table-id = 0,
+    wal-page-id = 0,
+    wal-slot-id = 0,
+    wal-data = [],
+    wal-prev-data = []
+  }
+
+Section: WAL Log
+
+  WalLog = record {
+    records : List WalRecord,
+    next-lsn : Integer,
+    checkpoint-lsn : Integer
+  }
+
+  wal-log-new : WalLog
+  wal-log-new = WalLog { records = [], next-lsn = 1, checkpoint-lsn = 0 }
+
+  wal-log-append : WalLog, WalRecord -> WalLog
+  wal-log-append (log) (rec) = WalLog {
+    records = list-push (log.records) rec,
+    next-lsn = log.next-lsn + 1,
+    checkpoint-lsn = log.checkpoint-lsn
+  }
+
+  wal-log-lsn : WalLog -> Integer
+  wal-log-lsn (log) = log.next-lsn
+
+Section: Recovery — Redo Pass
+
+  wal-redo-scan : WalLog, Integer -> List WalRecord
+  wal-redo-scan (log) (from-lsn) =
+    wal-redo-filter (log.records) from-lsn 0 (list-length (log.records)) []
+
+  wal-redo-filter : List WalRecord, Integer, Integer, Integer, List WalRecord -> List WalRecord
+  wal-redo-filter (recs) (from-lsn) (i) (len) (acc) =
+    if i >= len then acc
+    else let r = list-at recs i
+    in if r.wal-lsn >= from-lsn then wal-redo-filter recs from-lsn (i + 1) len (list-push acc r)
+    else wal-redo-filter recs from-lsn (i + 1) len acc
+
+Section: Recovery — Find Committed Transactions
+
+  wal-committed-txns : WalLog -> List Integer
+  wal-committed-txns (log) =
+    wal-find-committed (log.records) 0 (list-length (log.records)) []
+
+  wal-find-committed : List WalRecord, Integer, Integer, List Integer -> List Integer
+  wal-find-committed (recs) (i) (len) (acc) =
+    if i >= len then acc
+    else let r = list-at recs i
+    in when (r.wal-type)
+      is WalCommitRec -> wal-find-committed recs (i + 1) len (list-push acc (r.wal-txn-id))
+      is otherwise -> wal-find-committed recs (i + 1) len acc
+
+  wal-is-committed : List Integer, Integer -> Boolean
+  wal-is-committed (txns) (txn-id) = wal-txn-search txns txn-id 0 (list-length txns)
+
+  wal-txn-search : List Integer, Integer, Integer, Integer -> Boolean
+  wal-txn-search (txns) (target) (i) (len) =
+    if i >= len then False
+    else if list-at txns i == target then True
+    else wal-txn-search txns target (i + 1) len
+
+Section: Truncation
+
+  wal-truncate : WalLog, Integer -> WalLog
+  wal-truncate (log) (up-to-lsn) =
+    let kept = wal-redo-scan log up-to-lsn
+    in WalLog {
+      records = kept,
+      next-lsn = log.next-lsn,
+      checkpoint-lsn = up-to-lsn
+    }
+
+Section: Statistics
+
+  wal-record-count : WalLog -> Integer
+  wal-record-count (log) = list-length (log.records)
+
+  wal-last-lsn : WalLog -> Integer
+  wal-last-lsn (log) = log.next-lsn - 1
+
+Page 1

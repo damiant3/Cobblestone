@@ -1,0 +1,263 @@
+Chapter: Yahtzee
+  cites Games chapter Rng
+
+ Yahtzee simulation. 5 dice, up to 3 rolls per turn, 13 scoring categories.
+ Categories: ones(0) twos(1) threes(2) fours(3) fives(4) sixes(5)
+ three-of-kind(6) four-of-kind(7) full-house(8) sm-straight(9)
+ lg-straight(10) yahtzee(11) chance(12).
+ AI uses greedy strategy: pick highest-scoring available category each turn.
+
+ We say:
+
+Section: Types
+
+  YahtzeeState = record {
+    scorecard  : List Integer,
+    scored     : List Integer,
+    dice       : List Integer,
+    rng        : Rng
+  }
+
+  YahtzeeResult = record {
+    final-score : Integer,
+    turns-taken : Integer
+  }
+
+Section: Dice
+
+  yh-roll-dice : Rng -> List Integer
+  yh-roll-dice (r) = yh-roll-n r 5 []
+
+  yh-roll-n : Rng, Integer, List Integer -> List Integer
+  yh-roll-n (r) (n) (acc) =
+    if n <= 0 then acc
+    else let r2 = rng-next r
+    in let face = rng-range r2 1 6
+    in yh-roll-n r2 (n - 1) (list-push acc face)
+
+  yh-reroll-some : List Integer, List Integer, Rng -> List Integer
+  yh-reroll-some (dice) (keep-mask) (r) =
+    yh-reroll-loop dice keep-mask r 0
+
+  yh-reroll-loop : List Integer, List Integer, Rng, Integer -> List Integer
+  yh-reroll-loop (dice) (keep-mask) (r) (i) =
+    if i >= 5 then dice
+    else if list-at keep-mask i == 1 then
+      yh-reroll-loop dice keep-mask r (i + 1)
+    else let r2 = rng-next r
+    in let face = rng-range r2 1 6
+    in let d2 = list-set-at dice i face
+    in yh-reroll-loop d2 keep-mask r2 (i + 1)
+
+  yh-count-face : List Integer, Integer -> Integer
+  yh-count-face (dice) (face) = yh-count-face-loop dice face 0 0
+
+  yh-count-face-loop : List Integer, Integer, Integer, Integer -> Integer
+  yh-count-face-loop (dice) (face) (i) (acc) =
+    if i >= 5 then acc
+    else let got = if list-at dice i == face then 1 else 0
+    in yh-count-face-loop dice face (i + 1) (acc + got)
+
+  yh-sum-all : List Integer -> Integer
+  yh-sum-all (dice) = yh-sum-loop dice 0 0
+
+  yh-sum-loop : List Integer, Integer, Integer -> Integer
+  yh-sum-loop (dice) (i) (acc) =
+    if i >= 5 then acc
+    else yh-sum-loop dice (i + 1) (acc + list-at dice i)
+
+  yh-max-count : List Integer -> Integer
+  yh-max-count (dice) = yh-max-count-loop dice 1 0
+
+  yh-max-count-loop : List Integer, Integer, Integer -> Integer
+  yh-max-count-loop (dice) (face) (best) =
+    if face > 6 then best
+    else let cnt = yh-count-face dice face
+    in let nb = if cnt > best then cnt else best
+    in yh-max-count-loop dice (face + 1) nb
+
+Section: Scoring
+
+  yh-score-upper : List Integer, Integer -> Integer
+  yh-score-upper (dice) (face) =
+    yh-count-face dice face * face
+
+  yh-score-three-kind : List Integer -> Integer
+  yh-score-three-kind (dice) =
+    if yh-max-count dice >= 3 then yh-sum-all dice else 0
+
+  yh-score-four-kind : List Integer -> Integer
+  yh-score-four-kind (dice) =
+    if yh-max-count dice >= 4 then yh-sum-all dice else 0
+
+  yh-score-full-house : List Integer -> Integer
+  yh-score-full-house (dice) =
+    let has-three = yh-has-n-kind dice 3
+    in let has-two = yh-has-n-kind dice 2
+    in if has-three & has-two then 25 else 0
+
+  yh-has-n-kind : List Integer, Integer -> Boolean
+  yh-has-n-kind (dice) (n) = yh-has-n-loop dice n 1
+
+  yh-has-n-loop : List Integer, Integer, Integer -> Boolean
+  yh-has-n-loop (dice) (n) (face) =
+    if face > 6 then False
+    else if yh-count-face dice face == n then True
+    else yh-has-n-loop dice n (face + 1)
+
+  yh-score-sm-straight : List Integer -> Integer
+  yh-score-sm-straight (dice) =
+    let has-run = yh-has-run dice 4
+    in if has-run then 30 else 0
+
+  yh-score-lg-straight : List Integer -> Integer
+  yh-score-lg-straight (dice) =
+    let has-run = yh-has-run dice 5
+    in if has-run then 40 else 0
+
+  yh-has-run : List Integer, Integer -> Boolean
+  yh-has-run (dice) (len) =
+    let p1 = yh-face-present dice 1
+    in let p2 = yh-face-present dice 2
+    in let p3 = yh-face-present dice 3
+    in let p4 = yh-face-present dice 4
+    in let p5 = yh-face-present dice 5
+    in let p6 = yh-face-present dice 6
+    in if len == 5 then
+      (p1 & p2 & p3 & p4 & p5) | (p2 & p3 & p4 & p5 & p6)
+    else
+      (p1 & p2 & p3 & p4) | (p2 & p3 & p4 & p5) | (p3 & p4 & p5 & p6)
+
+  yh-face-present : List Integer, Integer -> Boolean
+  yh-face-present (dice) (face) = yh-count-face dice face > 0
+
+  yh-score-yahtzee : List Integer -> Integer
+  yh-score-yahtzee (dice) =
+    if yh-max-count dice == 5 then 50 else 0
+
+  yh-score-chance : List Integer -> Integer
+  yh-score-chance (dice) = yh-sum-all dice
+
+  yh-score-category : List Integer, Integer -> Integer
+  yh-score-category (dice) (cat) =
+    if cat == 0 then yh-score-upper dice 1
+    else if cat == 1 then yh-score-upper dice 2
+    else if cat == 2 then yh-score-upper dice 3
+    else if cat == 3 then yh-score-upper dice 4
+    else if cat == 4 then yh-score-upper dice 5
+    else if cat == 5 then yh-score-upper dice 6
+    else if cat == 6 then yh-score-three-kind dice
+    else if cat == 7 then yh-score-four-kind dice
+    else if cat == 8 then yh-score-full-house dice
+    else if cat == 9 then yh-score-sm-straight dice
+    else if cat == 10 then yh-score-lg-straight dice
+    else if cat == 11 then yh-score-yahtzee dice
+    else yh-score-chance dice
+
+Section: AI Keep Mask
+
+  yh-build-keep-mask : List Integer -> List Integer
+  yh-build-keep-mask (dice) =
+    let mc = yh-max-count dice
+    in let best-face = yh-best-face dice
+    in yh-build-mask dice best-face 0 []
+
+  yh-best-face : List Integer -> Integer
+  yh-best-face (dice) = yh-best-face-loop dice 1 0 0
+
+  yh-best-face-loop : List Integer, Integer, Integer, Integer -> Integer
+  yh-best-face-loop (dice) (face) (best-face) (best-cnt) =
+    if face > 6 then best-face
+    else let cnt = yh-count-face dice face
+    in if cnt > best-cnt then yh-best-face-loop dice (face + 1) face cnt
+    else yh-best-face-loop dice (face + 1) best-face best-cnt
+
+  yh-build-mask : List Integer, Integer, Integer, List Integer -> List Integer
+  yh-build-mask (dice) (face) (i) (acc) =
+    if i >= 5 then acc
+    else let keep = if list-at dice i == face then 1 else 0
+    in yh-build-mask dice face (i + 1) (list-push acc keep)
+
+Section: AI Turn
+
+  yh-ai-pick-category : List Integer, List Integer, List Integer -> Integer
+  yh-ai-pick-category (dice) (scorecard) (scored) =
+    yh-pick-best-cat dice scorecard scored 0 (-1) (-1)
+
+  yh-pick-best-cat : List Integer, List Integer, List Integer, Integer, Integer, Integer -> Integer
+  yh-pick-best-cat (dice) (scorecard) (scored) (cat) (best-cat) (best-score) =
+    if cat >= 13 then if best-cat < 0 then 12 else best-cat
+    else if list-at scored cat == 1 then
+      yh-pick-best-cat dice scorecard scored (cat + 1) best-cat best-score
+    else let sc = yh-score-category dice cat
+    in if sc > best-score then
+      yh-pick-best-cat dice scorecard scored (cat + 1) cat sc
+    else yh-pick-best-cat dice scorecard scored (cat + 1) best-cat best-score
+
+  yh-do-turn : YahtzeeState -> YahtzeeState
+  yh-do-turn (s) =
+    let r1 = rng-next (s.rng)
+    in let d1 = yh-roll-dice r1
+    in let mask1 = yh-build-keep-mask d1
+    in let r2 = rng-next r1
+    in let d2 = yh-reroll-some d1 mask1 r2
+    in let mask2 = yh-build-keep-mask d2
+    in let r3 = rng-next r2
+    in let d3 = yh-reroll-some d2 mask2 r3
+    in let cat = yh-ai-pick-category d3 (s.scorecard) (s.scored)
+    in let sc = yh-score-category d3 cat
+    in let new-scorecard = list-set-at (s.scorecard) cat sc
+    in let new-scored = list-set-at (s.scored) cat 1
+    in YahtzeeState {
+         scorecard  = new-scorecard,
+         scored     = new-scored,
+         dice       = d3,
+         rng        = r3
+       }
+
+Section: Game Runner
+
+  yh-init : Integer -> YahtzeeState
+  yh-init (seed) =
+    let sc = yh-build-zeroes 13 []
+    in let scored = yh-build-zeroes 13 []
+    in YahtzeeState {
+         scorecard  = sc,
+         scored     = scored,
+         dice       = [],
+         rng        = rng-new seed
+       }
+
+  yh-build-zeroes : Integer, List Integer -> List Integer
+  yh-build-zeroes (n) (acc) =
+    if n <= 0 then acc
+    else yh-build-zeroes (n - 1) (list-push acc 0)
+
+  run-yahtzee-game : Integer -> YahtzeeResult
+  run-yahtzee-game (seed) =
+    let s = yh-init seed
+    in yh-game-loop s 0
+
+  yh-game-loop : YahtzeeState, Integer -> YahtzeeResult
+  yh-game-loop (s) (turns) =
+    if turns >= 13 then yh-make-result s turns
+    else yh-game-loop (yh-do-turn s) (turns + 1)
+
+  yh-make-result : YahtzeeState, Integer -> YahtzeeResult
+  yh-make-result (s) (turns) =
+    let total = yh-total-score (s.scorecard) 0 0
+    in YahtzeeResult { final-score = total, turns-taken = turns }
+
+  yh-total-score : List Integer, Integer, Integer -> Integer
+  yh-total-score (sc) (i) (acc) =
+    if i >= 13 then acc
+    else yh-total-score sc (i + 1) (acc + list-at sc i)
+
+Section: Formatting
+
+  format-yahtzee-result : YahtzeeResult -> Text
+  format-yahtzee-result (r) =
+    "Yahtzee (AI, 13 turns): score=" & show (r.final-score) &
+    " in " & show (r.turns-taken) & " turns"
+
+Page 1

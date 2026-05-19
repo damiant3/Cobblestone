@@ -4,7 +4,7 @@
 
 The bootable IMG ships with source, compiler, editor, and shell. A developer
 can compile, test, and deploy Codex programs from bare metal without any
-host tooling. PowerShell remains as a thin QEMU orchestration layer on the
+host tooling. PowerShell remains as a thin VM orchestration layer on the
 host; all computation moves into Codex.
 
 ## Current State (CL 1123)
@@ -29,7 +29,7 @@ host; all computation moves into Codex.
 | Script | Lines | What it does | Migration path |
 |--------|-------|-------------|---------------|
 | `concat-codex-self.ps1` | 82 | Concatenate compiler source with quire prefixes | Compiler reads from disk via `load-cited-foreword` |
-| `sample-compile-selfhost.ps1` | 175 | Boot QEMU, resolve cites, feed source via serial | Keep QEMU orchestration; cite resolution moves to compiler |
+| `sample-compile-selfhost.ps1` | 175 | Boot VM, resolve cites, feed source via serial | Keep VM orchestration; cite resolution moves to compiler |
 | `make-efi.ps1` | 789 | CDX to PE32+ with UEFI boot menu | PE construction done (CL 1111-1113). Boot menu becomes a Codex UEFI app |
 | `make-usb-image.ps1` | ~200 | GPT + FAT16 disk image | Write Codex FAT16/GPT forewords |
 | `sweep.ps1` | 244 | Parallel test runner | On-disk test runner Codex app |
@@ -42,9 +42,9 @@ host; all computation moves into Codex.
 
 ### What stays as PS1 forever
 
-- `qemu-config.ps1` — QEMU process management, port allocation
-- `run-for-sweep.ps1` — Boot kernel in QEMU, capture serial
-- `clean-zombies.ps1` — Kill orphaned QEMU/WSL processes
+- `vm-config.ps1` — VM process management, port allocation (codex-vm default, QEMU fallback)
+- `test-run.ps1` — Boot kernel in VM, capture serial
+- `clean-zombies.ps1` — Kill orphaned VM/WSL processes
 - `build-gpu-dispatch.ps1` — CUDA/nvcc invocation
 - `stress-sweep.ps1` — Loop driver (just calls sweep.ps1)
 
@@ -55,12 +55,12 @@ host; all computation moves into Codex.
 ```
 +--------------------------------------------------+
 |  Host (Windows)                                   |
-|  PS1: QEMU launch, port management, serial I/O   |
+|  PS1: VM launch, port management, serial I/O      |
 +--------------------------------------------------+
         |  serial / disk image
         v
 +--------------------------------------------------+
-|  Bare Metal (QEMU or real hardware)               |
+|  Bare Metal (codex-vm, QEMU, or real hardware)    |
 |                                                   |
 |  Shell ──> Compiler ──> Test Runner               |
 |    |          |              |                    |
@@ -113,9 +113,9 @@ Replace the stubs in the compiler's codegen:
 
 The compiler needs to know the partition offset. On UEFI boot, the
 SystemTable at 0x8000 provides access to block I/O protocols. On
-multiboot (QEMU), the IDE disk is at known I/O ports.
+multiboot (codex-vm / QEMU), the IDE disk is at known I/O ports.
 
-Decision: **dual-path FileSystem.** Serial-feed mode for QEMU compilation
+Decision: **dual-path FileSystem.** Serial-feed mode for VM compilation
 (current behavior). Disk mode for on-device compilation. Mode selected by
 a flag in the compilation mode header or by detecting whether a disk is
 present.
@@ -152,7 +152,7 @@ Challenge: running a compiled program from within another program.
 Options:
 - **In-process:** compile to memory, jump to entry point, return. Requires resetting heap between tests.
 - **Subprocess:** OS scheduler runs compiled program as a separate task. Requires IPC for output capture.
-- **Self-invoke:** compiler compiles + runs in one step (like current sweep but without QEMU restart).
+- **Self-invoke:** compiler compiles + runs in one step (like current sweep but without VM restart).
 
 Recommendation: in-process with `heap-save`/`heap-restore` between tests.
 The compiler already uses this pattern for phase boundaries.

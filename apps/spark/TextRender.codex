@@ -1,0 +1,195 @@
+Chapter: TextRender
+  cites Game chapter Rasterizer
+
+ Bitmap font text rendering onto a Framebuf. Each glyph is a
+ 5x7 pixel bitmap stored as 7 row-bitmasks (5 bits each).
+ Supports basic ASCII (32-126).
+
+ We say:
+
+Section: Types
+
+  GlyphData = record {
+    gd-rows : List Integer,
+    gd-width : Integer,
+    gd-height : Integer
+  }
+
+  TextStyle = record {
+    ts-color : Integer,
+    ts-scale : Integer,
+    ts-spacing : Integer,
+    ts-line-height : Integer
+  }
+
+Section: Style
+
+  text-style-default : TextStyle
+  text-style-default = TextStyle {
+    ts-color = 16777215,
+    ts-scale = 1,
+    ts-spacing = 1,
+    ts-line-height = 9
+  }
+
+  text-style-new : Integer, Integer -> TextStyle
+  text-style-new (color) (scale) = TextStyle {
+    ts-color = color,
+    ts-scale = scale,
+    ts-spacing = 1,
+    ts-line-height = 7 * scale + 2
+  }
+
+Section: Rendering
+
+  text-render : Framebuf, Text, Integer, Integer, TextStyle -> Framebuf
+  text-render (fb) (txt) (start-x) (start-y) (style) =
+    tr-render-loop fb txt start-x start-y style 0 (text-length txt) start-x
+
+  tr-render-loop : Framebuf, Text, Integer, Integer, TextStyle, Integer, Integer, Integer -> Framebuf
+  tr-render-loop (fb) (txt) (cx) (cy) (style) (i) (len) (start-x) =
+    if i >= len then fb
+    else let ch = char-code (char-at txt i)
+    in if ch == 10 then tr-render-loop fb txt start-x (cy + style.ts-line-height) style (i + 1) len start-x
+    else let fb2 = tr-render-glyph fb ch cx cy style
+    in let advance = (5 + style.ts-spacing) * style.ts-scale
+    in tr-render-loop fb2 txt (cx + advance) cy style (i + 1) len start-x
+
+  tr-render-glyph : Framebuf, Integer, Integer, Integer, TextStyle -> Framebuf
+  tr-render-glyph (fb) (code) (gx) (gy) (style) =
+    if code < 32 then fb
+    else if code > 126 then fb
+    else let glyph = tr-get-glyph code
+    in tr-draw-glyph fb glyph gx gy style 0
+
+  tr-draw-glyph : Framebuf, GlyphData, Integer, Integer, TextStyle, Integer -> Framebuf
+  tr-draw-glyph (fb) (glyph) (gx) (gy) (style) (row) =
+    if row >= glyph.gd-height then fb
+    else let row-bits = list-at (glyph.gd-rows) row
+    in let fb2 = tr-draw-row fb row-bits gx (gy + row * style.ts-scale) style 0 (glyph.gd-width)
+    in tr-draw-glyph fb2 glyph gx gy style (row + 1)
+
+  tr-draw-row : Framebuf, Integer, Integer, Integer, TextStyle, Integer, Integer -> Framebuf
+  tr-draw-row (fb) (bits) (gx) (py) (style) (col) (width) =
+    if col >= width then fb
+    else let bit = bits / tr-pow2 (width - 1 - col) - bits / tr-pow2 (width - col) * 2
+    in let fb2 = if bit == 1 then tr-draw-pixel fb (gx + col * style.ts-scale) py style else fb
+    in tr-draw-row fb2 bits gx py style (col + 1) width
+
+  tr-draw-pixel : Framebuf, Integer, Integer, TextStyle -> Framebuf
+  tr-draw-pixel (fb) (px) (py) (style) =
+    if style.ts-scale <= 1 then
+      if px >= 0 then if px < fb.fb-width then if py >= 0 then if py < fb.fb-height then fb-set fb px py (style.ts-color) else fb else fb else fb else fb
+    else tr-draw-block fb px py (style.ts-scale) (style.ts-color) 0
+
+  tr-draw-block : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  tr-draw-block (fb) (px) (py) (size) (color) (dy) =
+    if dy >= size then fb
+    else let fb2 = tr-draw-block-row fb px (py + dy) size color 0
+    in tr-draw-block fb2 px py size color (dy + 1)
+
+  tr-draw-block-row : Framebuf, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  tr-draw-block-row (fb) (px) (y) (size) (color) (dx) =
+    if dx >= size then fb
+    else let x = px + dx
+    in let fb2 = if x >= 0 then if x < fb.fb-width then if y >= 0 then if y < fb.fb-height then fb-set fb x y color else fb else fb else fb else fb
+    in tr-draw-block-row fb2 px y size color (dx + 1)
+
+  tr-pow2 : Integer -> Integer
+  tr-pow2 (n) =
+    if n <= 0 then 1
+    else 2 * tr-pow2 (n - 1)
+
+Section: Glyph Data
+
+  tr-get-glyph : Integer -> GlyphData
+  tr-get-glyph (code) =
+    if code == 32 then GlyphData { gd-rows = [0, 0, 0, 0, 0, 0, 0], gd-width = 5, gd-height = 7 }
+    else if code == 48 then GlyphData { gd-rows = [14, 17, 19, 21, 25, 17, 14], gd-width = 5, gd-height = 7 }
+    else if code == 49 then GlyphData { gd-rows = [4, 12, 4, 4, 4, 4, 14], gd-width = 5, gd-height = 7 }
+    else if code == 50 then GlyphData { gd-rows = [14, 17, 1, 2, 4, 8, 31], gd-width = 5, gd-height = 7 }
+    else if code == 51 then GlyphData { gd-rows = [14, 17, 1, 6, 1, 17, 14], gd-width = 5, gd-height = 7 }
+    else if code == 52 then GlyphData { gd-rows = [2, 6, 10, 18, 31, 2, 2], gd-width = 5, gd-height = 7 }
+    else if code == 53 then GlyphData { gd-rows = [31, 16, 30, 1, 1, 17, 14], gd-width = 5, gd-height = 7 }
+    else if code == 54 then GlyphData { gd-rows = [14, 16, 30, 17, 17, 17, 14], gd-width = 5, gd-height = 7 }
+    else if code == 55 then GlyphData { gd-rows = [31, 1, 2, 4, 4, 4, 4], gd-width = 5, gd-height = 7 }
+    else if code == 56 then GlyphData { gd-rows = [14, 17, 17, 14, 17, 17, 14], gd-width = 5, gd-height = 7 }
+    else if code == 57 then GlyphData { gd-rows = [14, 17, 17, 15, 1, 1, 14], gd-width = 5, gd-height = 7 }
+    else if code == 65 then GlyphData { gd-rows = [14, 17, 17, 31, 17, 17, 17], gd-width = 5, gd-height = 7 }
+    else if code == 66 then GlyphData { gd-rows = [30, 17, 17, 30, 17, 17, 30], gd-width = 5, gd-height = 7 }
+    else if code == 67 then GlyphData { gd-rows = [14, 17, 16, 16, 16, 17, 14], gd-width = 5, gd-height = 7 }
+    else if code == 68 then GlyphData { gd-rows = [30, 17, 17, 17, 17, 17, 30], gd-width = 5, gd-height = 7 }
+    else if code == 69 then GlyphData { gd-rows = [31, 16, 16, 30, 16, 16, 31], gd-width = 5, gd-height = 7 }
+    else if code == 70 then GlyphData { gd-rows = [31, 16, 16, 30, 16, 16, 16], gd-width = 5, gd-height = 7 }
+    else if code == 71 then GlyphData { gd-rows = [14, 17, 16, 19, 17, 17, 14], gd-width = 5, gd-height = 7 }
+    else if code == 72 then GlyphData { gd-rows = [17, 17, 17, 31, 17, 17, 17], gd-width = 5, gd-height = 7 }
+    else if code == 73 then GlyphData { gd-rows = [14, 4, 4, 4, 4, 4, 14], gd-width = 5, gd-height = 7 }
+    else if code == 74 then GlyphData { gd-rows = [7, 2, 2, 2, 2, 18, 12], gd-width = 5, gd-height = 7 }
+    else if code == 75 then GlyphData { gd-rows = [17, 18, 20, 24, 20, 18, 17], gd-width = 5, gd-height = 7 }
+    else if code == 76 then GlyphData { gd-rows = [16, 16, 16, 16, 16, 16, 31], gd-width = 5, gd-height = 7 }
+    else if code == 77 then GlyphData { gd-rows = [17, 27, 21, 17, 17, 17, 17], gd-width = 5, gd-height = 7 }
+    else if code == 78 then GlyphData { gd-rows = [17, 25, 21, 19, 17, 17, 17], gd-width = 5, gd-height = 7 }
+    else if code == 79 then GlyphData { gd-rows = [14, 17, 17, 17, 17, 17, 14], gd-width = 5, gd-height = 7 }
+    else if code == 80 then GlyphData { gd-rows = [30, 17, 17, 30, 16, 16, 16], gd-width = 5, gd-height = 7 }
+    else if code == 81 then GlyphData { gd-rows = [14, 17, 17, 17, 21, 18, 13], gd-width = 5, gd-height = 7 }
+    else if code == 82 then GlyphData { gd-rows = [30, 17, 17, 30, 20, 18, 17], gd-width = 5, gd-height = 7 }
+    else if code == 83 then GlyphData { gd-rows = [14, 17, 16, 14, 1, 17, 14], gd-width = 5, gd-height = 7 }
+    else if code == 84 then GlyphData { gd-rows = [31, 4, 4, 4, 4, 4, 4], gd-width = 5, gd-height = 7 }
+    else if code == 85 then GlyphData { gd-rows = [17, 17, 17, 17, 17, 17, 14], gd-width = 5, gd-height = 7 }
+    else if code == 86 then GlyphData { gd-rows = [17, 17, 17, 17, 10, 10, 4], gd-width = 5, gd-height = 7 }
+    else if code == 87 then GlyphData { gd-rows = [17, 17, 17, 21, 21, 27, 17], gd-width = 5, gd-height = 7 }
+    else if code == 88 then GlyphData { gd-rows = [17, 17, 10, 4, 10, 17, 17], gd-width = 5, gd-height = 7 }
+    else if code == 89 then GlyphData { gd-rows = [17, 17, 10, 4, 4, 4, 4], gd-width = 5, gd-height = 7 }
+    else if code == 90 then GlyphData { gd-rows = [31, 1, 2, 4, 8, 16, 31], gd-width = 5, gd-height = 7 }
+    else if code == 97 then GlyphData { gd-rows = [0, 0, 14, 1, 15, 17, 15], gd-width = 5, gd-height = 7 }
+    else if code == 98 then GlyphData { gd-rows = [16, 16, 22, 25, 17, 17, 30], gd-width = 5, gd-height = 7 }
+    else if code == 99 then GlyphData { gd-rows = [0, 0, 14, 16, 16, 17, 14], gd-width = 5, gd-height = 7 }
+    else if code == 100 then GlyphData { gd-rows = [1, 1, 15, 17, 17, 17, 15], gd-width = 5, gd-height = 7 }
+    else if code == 101 then GlyphData { gd-rows = [0, 0, 14, 17, 31, 16, 14], gd-width = 5, gd-height = 7 }
+    else if code == 102 then GlyphData { gd-rows = [6, 9, 8, 28, 8, 8, 8], gd-width = 5, gd-height = 7 }
+    else if code == 103 then GlyphData { gd-rows = [0, 0, 15, 17, 15, 1, 14], gd-width = 5, gd-height = 7 }
+    else if code == 104 then GlyphData { gd-rows = [16, 16, 22, 25, 17, 17, 17], gd-width = 5, gd-height = 7 }
+    else if code == 105 then GlyphData { gd-rows = [4, 0, 12, 4, 4, 4, 14], gd-width = 5, gd-height = 7 }
+    else if code == 106 then GlyphData { gd-rows = [2, 0, 6, 2, 2, 18, 12], gd-width = 5, gd-height = 7 }
+    else if code == 107 then GlyphData { gd-rows = [16, 16, 18, 20, 24, 20, 18], gd-width = 5, gd-height = 7 }
+    else if code == 108 then GlyphData { gd-rows = [12, 4, 4, 4, 4, 4, 14], gd-width = 5, gd-height = 7 }
+    else if code == 109 then GlyphData { gd-rows = [0, 0, 26, 21, 21, 17, 17], gd-width = 5, gd-height = 7 }
+    else if code == 110 then GlyphData { gd-rows = [0, 0, 22, 25, 17, 17, 17], gd-width = 5, gd-height = 7 }
+    else if code == 111 then GlyphData { gd-rows = [0, 0, 14, 17, 17, 17, 14], gd-width = 5, gd-height = 7 }
+    else if code == 112 then GlyphData { gd-rows = [0, 0, 30, 17, 30, 16, 16], gd-width = 5, gd-height = 7 }
+    else if code == 114 then GlyphData { gd-rows = [0, 0, 22, 25, 16, 16, 16], gd-width = 5, gd-height = 7 }
+    else if code == 115 then GlyphData { gd-rows = [0, 0, 14, 16, 14, 1, 30], gd-width = 5, gd-height = 7 }
+    else if code == 116 then GlyphData { gd-rows = [4, 4, 14, 4, 4, 4, 2], gd-width = 5, gd-height = 7 }
+    else if code == 117 then GlyphData { gd-rows = [0, 0, 17, 17, 17, 19, 13], gd-width = 5, gd-height = 7 }
+    else if code == 118 then GlyphData { gd-rows = [0, 0, 17, 17, 17, 10, 4], gd-width = 5, gd-height = 7 }
+    else if code == 119 then GlyphData { gd-rows = [0, 0, 17, 17, 21, 21, 10], gd-width = 5, gd-height = 7 }
+    else if code == 120 then GlyphData { gd-rows = [0, 0, 17, 10, 4, 10, 17], gd-width = 5, gd-height = 7 }
+    else if code == 121 then GlyphData { gd-rows = [0, 0, 17, 17, 15, 1, 14], gd-width = 5, gd-height = 7 }
+    else if code == 122 then GlyphData { gd-rows = [0, 0, 31, 2, 4, 8, 31], gd-width = 5, gd-height = 7 }
+    else if code == 124 then GlyphData { gd-rows = [4, 4, 4, 4, 4, 4, 4], gd-width = 5, gd-height = 7 }
+    else if code == 46 then GlyphData { gd-rows = [0, 0, 0, 0, 0, 0, 4], gd-width = 5, gd-height = 7 }
+    else if code == 44 then GlyphData { gd-rows = [0, 0, 0, 0, 0, 4, 8], gd-width = 5, gd-height = 7 }
+    else if code == 58 then GlyphData { gd-rows = [0, 4, 0, 0, 0, 4, 0], gd-width = 5, gd-height = 7 }
+    else if code == 61 then GlyphData { gd-rows = [0, 0, 31, 0, 31, 0, 0], gd-width = 5, gd-height = 7 }
+    else if code == 45 then GlyphData { gd-rows = [0, 0, 0, 14, 0, 0, 0], gd-width = 5, gd-height = 7 }
+    else if code == 40 then GlyphData { gd-rows = [2, 4, 8, 8, 8, 4, 2], gd-width = 5, gd-height = 7 }
+    else if code == 41 then GlyphData { gd-rows = [8, 4, 2, 2, 2, 4, 8], gd-width = 5, gd-height = 7 }
+    else if code == 47 then GlyphData { gd-rows = [1, 1, 2, 4, 8, 16, 16], gd-width = 5, gd-height = 7 }
+    else GlyphData { gd-rows = [31, 17, 17, 17, 17, 17, 31], gd-width = 5, gd-height = 7 }
+
+Section: Measurement
+
+  text-measure-width : Text, TextStyle -> Integer
+  text-measure-width (txt) (style) =
+    text-length txt * (5 + style.ts-spacing) * style.ts-scale
+
+  text-measure-height : TextStyle -> Integer
+  text-measure-height (style) = style.ts-line-height
+
+Section: Info
+
+  text-render-info : TextStyle -> Text
+  text-render-info (style) =
+    "scale=" & show (style.ts-scale) & " color=" & show (style.ts-color)
+
+Page 1

@@ -1,0 +1,248 @@
+Chapter: LockManager
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ Two-phase locking (2PL) lock manager. Supports shared (S) and
+ exclusive (X) locks with intent modes (IS, IX) for hierarchical
+ locking. Lock requests that cannot be immediately granted are
+ queued. Deadlock detection is in a separate module.
+
+ We say:
+
+Section: Lock Modes
+
+  LockMode =
+    | LockShared
+    | LockExclusive
+    | LockIntentShared
+    | LockIntentExclusive
+
+  lock-mode-name : LockMode -> Text
+  lock-mode-name (m) =
+    when m
+      is LockShared -> "S"
+      is LockExclusive -> "X"
+      is LockIntentShared -> "IS"
+      is LockIntentExclusive -> "IX"
+
+  locks-compatible : LockMode, LockMode -> Boolean
+  locks-compatible (held) (requested) =
+    when held
+      is LockShared ->
+        when requested
+          is LockShared -> True
+          is LockIntentShared -> True
+          is LockExclusive -> False
+          is LockIntentExclusive -> False
+      is LockExclusive -> False
+      is LockIntentShared ->
+        when requested
+          is LockShared -> True
+          is LockIntentShared -> True
+          is LockExclusive -> False
+          is LockIntentExclusive -> True
+      is LockIntentExclusive ->
+        when requested
+          is LockIntentShared -> True
+          is LockIntentExclusive -> True
+          is LockShared -> False
+          is LockExclusive -> False
+
+Section: Lock Resource
+
+  LockGranularity =
+    | LockDatabase
+    | LockTable (Text)
+    | LockPage (Text) (Integer)
+    | LockRow (Text) (Integer) (Integer)
+
+  lock-resource-key : LockGranularity -> Text
+  lock-resource-key (g) =
+    when g
+      is LockDatabase -> "DB"
+      is LockTable (t) -> "T:" & t
+      is LockPage (t) (p) -> "P:" & t & ":" & show p
+      is LockRow (t) (p) (s) -> "R:" & t & ":" & show p & ":" & show s
+
+Section: Lock Entry
+
+  LockEntry = record {
+    le-resource : LockGranularity,
+    le-mode : LockMode,
+    le-txn-id : Integer,
+    le-granted : Boolean
+  }
+
+  lock-entry : LockGranularity, LockMode, Integer -> LockEntry
+  lock-entry (res) (mode) (txn) = LockEntry {
+    le-resource = res,
+    le-mode = mode,
+    le-txn-id = txn,
+    le-granted = False
+  }
+
+Section: Lock Table
+
+  LockTable = record {
+    lt-locks : HamtMap (List LockEntry),
+    lt-lock-count : Integer,
+    lt-wait-count : Integer
+  }
+
+  lock-table-new : LockTable
+  lock-table-new = LockTable {
+    lt-locks = hamt-empty,
+    lt-lock-count = 0,
+    lt-wait-count = 0
+  }
+
+Section: Lock Request
+
+  LockResult =
+    | LockGranted
+    | LockWaiting
+    | LockDenied (Text)
+
+  lock-acquire : LockTable, LockGranularity, LockMode, Integer -> (LockTable, LockResult)
+  lock-acquire (lt) (resource) (mode) (txn-id) =
+    let key = lock-resource-key resource
+    in let existing = hamt-get (lt.lt-locks) key
+    in when existing
+      is None ->
+        let entry = LockEntry { le-resource = resource, le-mode = mode, le-txn-id = txn-id, le-granted = True }
+        in let new-lt = LockTable {
+          lt-locks = hamt-set (lt.lt-locks) key [entry],
+          lt-lock-count = lt.lt-lock-count + 1,
+          lt-wait-count = lt.lt-wait-count
+        }
+        in (new-lt, LockGranted)
+      is Just (entries) ->
+        if lock-already-held entries txn-id mode then (lt, LockGranted)
+        else if lock-all-compatible entries mode txn-id then
+          let entry = LockEntry { le-resource = resource, le-mode = mode, le-txn-id = txn-id, le-granted = True }
+          in let new-lt = LockTable {
+            lt-locks = hamt-set (lt.lt-locks) key (list-push entries entry),
+            lt-lock-count = lt.lt-lock-count + 1,
+            lt-wait-count = lt.lt-wait-count
+          }
+          in (new-lt, LockGranted)
+        else let entry = LockEntry { le-resource = resource, le-mode = mode, le-txn-id = txn-id, le-granted = False }
+        in let new-lt = LockTable {
+          lt-locks = hamt-set (lt.lt-locks) key (list-push entries entry),
+          lt-lock-count = lt.lt-lock-count,
+          lt-wait-count = lt.lt-wait-count + 1
+        }
+        in (new-lt, LockWaiting)
+
+  lock-already-held : List LockEntry, Integer, LockMode -> Boolean
+  lock-already-held (entries) (txn-id) (mode) =
+    lock-held-loop entries txn-id mode 0 (list-length entries)
+
+  lock-held-loop : List LockEntry, Integer, LockMode, Integer, Integer -> Boolean
+  lock-held-loop (entries) (txn-id) (mode) (i) (len) =
+    if i >= len then False
+    else let e = list-at entries i
+    in if e.le-txn-id == txn-id then
+      if e.le-granted then True
+      else lock-held-loop entries txn-id mode (i + 1) len
+    else lock-held-loop entries txn-id mode (i + 1) len
+
+  lock-all-compatible : List LockEntry, LockMode, Integer -> Boolean
+  lock-all-compatible (entries) (mode) (txn-id) =
+    lock-compat-loop entries mode txn-id 0 (list-length entries)
+
+  lock-compat-loop : List LockEntry, LockMode, Integer, Integer, Integer -> Boolean
+  lock-compat-loop (entries) (mode) (txn-id) (i) (len) =
+    if i >= len then True
+    else let e = list-at entries i
+    in if e.le-txn-id == txn-id then lock-compat-loop entries mode txn-id (i + 1) len
+    else if e.le-granted == False then lock-compat-loop entries mode txn-id (i + 1) len
+    else if locks-compatible (e.le-mode) mode then lock-compat-loop entries mode txn-id (i + 1) len
+    else False
+
+Section: Release
+
+  lock-release : LockTable, Integer -> LockTable
+  lock-release (lt) (txn-id) =
+    let entries = hamt-to-list (lt.lt-locks)
+    in lock-release-all lt entries txn-id 0 (list-length entries)
+
+  lock-release-all : LockTable, List (HamtEntry (List LockEntry)), Integer, Integer, Integer -> LockTable
+  lock-release-all (lt) (entries) (txn-id) (i) (len) =
+    if i >= len then lt
+    else let entry = list-at entries i
+    in let filtered = lock-remove-txn (entry.value) txn-id 0 (list-length (entry.value)) []
+    in let released = list-length (entry.value) - list-length filtered
+    in let promoted = lock-promote-waiters filtered 0 (list-length filtered)
+    in let new-lt = LockTable {
+      lt-locks = if list-length promoted == 0 then hamt-remove (lt.lt-locks) (entry.key)
+                 else hamt-set (lt.lt-locks) (entry.key) promoted,
+      lt-lock-count = lt.lt-lock-count - released,
+      lt-wait-count = lt.lt-wait-count
+    }
+    in lock-release-all new-lt entries txn-id (i + 1) len
+
+  lock-remove-txn : List LockEntry, Integer, Integer, Integer, List LockEntry -> List LockEntry
+  lock-remove-txn (entries) (txn-id) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in if e.le-txn-id == txn-id then lock-remove-txn entries txn-id (i + 1) len acc
+    else lock-remove-txn entries txn-id (i + 1) len (list-push acc e)
+
+  lock-promote-waiters : List LockEntry, Integer, Integer -> List LockEntry
+  lock-promote-waiters (entries) (i) (len) =
+    if i >= len then entries
+    else let e = list-at entries i
+    in if e.le-granted then lock-promote-waiters entries (i + 1) len
+    else let granted = lock-all-compatible entries (e.le-mode) (e.le-txn-id)
+    in if granted then
+      let promoted = LockEntry { le-resource = e.le-resource, le-mode = e.le-mode, le-txn-id = e.le-txn-id, le-granted = True }
+      in lock-promote-waiters (list-set-at entries i promoted) (i + 1) len
+    else lock-promote-waiters entries (i + 1) len
+
+Section: Wait-For Edges (for deadlock detection)
+
+  WaitEdge = record {
+    we-waiter : Integer,
+    we-holder : Integer
+  }
+
+  lock-wait-edges : LockTable -> List WaitEdge
+  lock-wait-edges (lt) =
+    let entries = hamt-to-list (lt.lt-locks)
+    in lock-collect-edges entries 0 (list-length entries) []
+
+  lock-collect-edges : List (HamtEntry (List LockEntry)), Integer, Integer, List WaitEdge -> List WaitEdge
+  lock-collect-edges (entries) (i) (len) (acc) =
+    if i >= len then acc
+    else let entry = list-at entries i
+    in let edges = lock-edges-for-resource (entry.value) 0 (list-length (entry.value)) acc
+    in lock-collect-edges entries (i + 1) len edges
+
+  lock-edges-for-resource : List LockEntry, Integer, Integer, List WaitEdge -> List WaitEdge
+  lock-edges-for-resource (entries) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in if e.le-granted then lock-edges-for-resource entries (i + 1) len acc
+    else let edges = lock-waiter-to-holders entries (e.le-txn-id) 0 len acc
+    in lock-edges-for-resource entries (i + 1) len edges
+
+  lock-waiter-to-holders : List LockEntry, Integer, Integer, Integer, List WaitEdge -> List WaitEdge
+  lock-waiter-to-holders (entries) (waiter) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in if e.le-granted then
+      if e.le-txn-id /= waiter then
+        lock-waiter-to-holders entries waiter (i + 1) len (list-push acc (WaitEdge { we-waiter = waiter, we-holder = e.le-txn-id }))
+      else lock-waiter-to-holders entries waiter (i + 1) len acc
+    else lock-waiter-to-holders entries waiter (i + 1) len acc
+
+Section: Statistics
+
+  lock-stats : LockTable -> Text
+  lock-stats (lt) =
+    "locks=" & show (lt.lt-lock-count)
+    & " waiting=" & show (lt.lt-wait-count)
+
+Page 1

@@ -1,0 +1,240 @@
+Chapter: SelectionTools
+  cites Game chapter Rasterizer
+  cites Spark chapter Canvas
+
+ 2D selection tools for the image editor: rectangular marquee,
+ elliptical marquee, lasso (polygon), and magic wand (flood
+ fill by color similarity). Selections are stored as bitmasks.
+
+ We say:
+
+Section: Types
+
+  SelectionMask = record {
+    sm-bits : List Integer,
+    sm-width : Integer,
+    sm-height : Integer
+  }
+
+  SelectionOp =
+    | SelReplace
+    | SelAdd
+    | SelSubtract
+    | SelIntersect
+
+  LassoPoint = record {
+    lp-x : Integer,
+    lp-y : Integer
+  }
+
+Section: Construction
+
+  selection-mask-new : Integer, Integer -> SelectionMask
+  selection-mask-new (w) (h) = SelectionMask {
+    sm-bits = sel-zeros (w * h) 0 [],
+    sm-width = w,
+    sm-height = h
+  }
+
+  sel-zeros : Integer, Integer, List Integer -> List Integer
+  sel-zeros (n) (i) (acc) =
+    if i >= n then acc
+    else sel-zeros n (i + 1) (list-push acc 0)
+
+  selection-mask-all : Integer, Integer -> SelectionMask
+  selection-mask-all (w) (h) = SelectionMask {
+    sm-bits = sel-ones (w * h) 0 [],
+    sm-width = w,
+    sm-height = h
+  }
+
+  sel-ones : Integer, Integer, List Integer -> List Integer
+  sel-ones (n) (i) (acc) =
+    if i >= n then acc
+    else sel-ones n (i + 1) (list-push acc 1)
+
+Section: Access
+
+  sel-get : SelectionMask, Integer, Integer -> Integer
+  sel-get (sm) (x) (y) =
+    if x < 0 then 0
+    else if x >= sm.sm-width then 0
+    else if y < 0 then 0
+    else if y >= sm.sm-height then 0
+    else list-at (sm.sm-bits) (y * sm.sm-width + x)
+
+  sel-set : SelectionMask, Integer, Integer, Integer -> SelectionMask
+  sel-set (sm) (x) (y) (val) =
+    if x < 0 then sm
+    else if x >= sm.sm-width then sm
+    else if y < 0 then sm
+    else if y >= sm.sm-height then sm
+    else __record-set sm "sm-bits" (list-set-at (sm.sm-bits) (y * sm.sm-width + x) val)
+
+Section: Rectangular Marquee
+
+  sel-rect : Integer, Integer, Integer, Integer, Integer, Integer -> SelectionMask
+  sel-rect (w) (h) (x0) (y0) (x1) (y1) =
+    let sm = selection-mask-new w h
+    in sel-rect-loop sm x0 y0 x1 y1 y0
+
+  sel-rect-loop : SelectionMask, Integer, Integer, Integer, Integer, Integer -> SelectionMask
+  sel-rect-loop (sm) (x0) (y0) (x1) (y1) (y) =
+    if y > y1 then sm
+    else let sm2 = sel-rect-row sm x0 x1 y x0
+    in sel-rect-loop sm2 x0 y0 x1 y1 (y + 1)
+
+  sel-rect-row : SelectionMask, Integer, Integer, Integer, Integer -> SelectionMask
+  sel-rect-row (sm) (x0) (x1) (y) (x) =
+    if x > x1 then sm
+    else sel-rect-row (sel-set sm x y 1) x0 x1 y (x + 1)
+
+Section: Elliptical Marquee
+
+  sel-ellipse : Integer, Integer, Integer, Integer, Integer, Integer -> SelectionMask
+  sel-ellipse (w) (h) (cx) (cy) (rx) (ry) =
+    let sm = selection-mask-new w h
+    in sel-ellipse-loop sm cx cy rx ry (cy - ry)
+
+  sel-ellipse-loop : SelectionMask, Integer, Integer, Integer, Integer, Integer -> SelectionMask
+  sel-ellipse-loop (sm) (cx) (cy) (rx) (ry) (y) =
+    if y > cy + ry then sm
+    else let dy = y - cy
+    in let x-span = if ry == 0 then 0 else rx * sel-isqrt (ry * ry - dy * dy) / ry
+    in let sm2 = sel-rect-row sm (cx - x-span) (cx + x-span) y (cx - x-span)
+    in sel-ellipse-loop sm2 cx cy rx ry (y + 1)
+
+Section: Lasso (Polygon)
+
+  sel-lasso : Integer, Integer, List LassoPoint, Integer -> SelectionMask
+  sel-lasso (w) (h) (points) (count) =
+    let sm = selection-mask-new w h
+    in if count < 3 then sm
+    else sel-lasso-scan sm points count 0
+
+  sel-lasso-scan : SelectionMask, List LassoPoint, Integer, Integer -> SelectionMask
+  sel-lasso-scan (sm) (points) (count) (y) =
+    if y >= sm.sm-height then sm
+    else let sm2 = sel-lasso-row sm points count y 0
+    in sel-lasso-scan sm2 points count (y + 1)
+
+  sel-lasso-row : SelectionMask, List LassoPoint, Integer, Integer, Integer -> SelectionMask
+  sel-lasso-row (sm) (points) (count) (y) (x) =
+    if x >= sm.sm-width then sm
+    else let inside = sel-point-in-poly points count x y
+    in let sm2 = if inside then sel-set sm x y 1 else sm
+    in sel-lasso-row sm2 points count y (x + 1)
+
+  sel-point-in-poly : List LassoPoint, Integer, Integer, Integer -> Boolean
+  sel-point-in-poly (points) (count) (px) (py) =
+    sel-pip-loop points count px py 0 0
+
+  sel-pip-loop : List LassoPoint, Integer, Integer, Integer, Integer, Integer -> Boolean
+  sel-pip-loop (points) (count) (px) (py) (i) (crossings) =
+    if i >= count then crossings - crossings / 2 * 2 == 1
+    else let p0 = list-at points i
+    in let p1 = list-at points (if i + 1 >= count then 0 else i + 1)
+    in let cross = if p0.lp-y <= py then
+        if p1.lp-y > py then
+          let edge-x = p0.lp-x + (py - p0.lp-y) * (p1.lp-x - p0.lp-x) / (p1.lp-y - p0.lp-y + 1)
+          in if edge-x <= px then 1 else 0
+        else 0
+      else if p1.lp-y <= py then
+        let edge-x = p1.lp-x + (py - p1.lp-y) * (p0.lp-x - p1.lp-x) / (p0.lp-y - p1.lp-y + 1)
+        in if edge-x <= px then 1 else 0
+      else 0
+    in sel-pip-loop points count px py (i + 1) (crossings + cross)
+
+Section: Magic Wand
+
+  sel-magic-wand : Framebuf, Integer, Integer, Integer -> SelectionMask
+  sel-magic-wand (fb) (seed-x) (seed-y) (tolerance) =
+    let sm = selection-mask-new (fb.fb-width) (fb.fb-height)
+    in let target-color = fb-get fb seed-x seed-y
+    in sel-flood fb sm seed-x seed-y target-color tolerance [seed-x + seed-y * fb.fb-width]
+
+  sel-flood : Framebuf, SelectionMask, Integer, Integer, Integer, Integer, List Integer -> SelectionMask
+  sel-flood (fb) (sm) (x) (y) (target) (tol) (queue) =
+    if list-length queue == 0 then sm
+    else let idx = list-at queue 0
+    in let px = idx - idx / fb.fb-width * fb.fb-width
+    in let py = idx / fb.fb-width
+    in if sel-get sm px py == 1 then sel-flood fb sm px py target tol (sel-rest queue)
+    else let color = fb-get fb px py
+    in if sel-color-dist color target <= tol then
+      let sm2 = sel-set sm px py 1
+      in let q2 = sel-rest queue
+      in let q3 = if px > 0 then list-push q2 (idx - 1) else q2
+      in let q4 = if px < fb.fb-width - 1 then list-push q3 (idx + 1) else q3
+      in let q5 = if py > 0 then list-push q4 (idx - fb.fb-width) else q4
+      in let q6 = if py < fb.fb-height - 1 then list-push q5 (idx + fb.fb-width) else q5
+      in sel-flood fb sm2 px py target tol q6
+    else sel-flood fb sm x y target tol (sel-rest queue)
+
+  sel-rest : List Integer -> List Integer
+  sel-rest (queue) = sel-rest-loop queue (list-length queue) 1 []
+
+  sel-rest-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  sel-rest-loop (queue) (len) (i) (acc) =
+    if i >= len then acc
+    else sel-rest-loop queue len (i + 1) (list-push acc (list-at queue i))
+
+  sel-color-dist : Integer, Integer -> Integer
+  sel-color-dist (a) (b) =
+    let ar = a / 65536
+    in let ag = a / 256 - ar * 256
+    in let ab = a - a / 256 * 256
+    in let br2 = b / 65536
+    in let bg = b / 256 - br2 * 256
+    in let bb = b - b / 256 * 256
+    in let dr = ar - br2
+    in let dg = ag - bg
+    in let db = ab - bb
+    in (if dr < 0 then 0 - dr else dr) + (if dg < 0 then 0 - dg else dg) + (if db < 0 then 0 - db else db)
+
+Section: Combine
+
+  sel-combine : SelectionMask, SelectionMask, SelectionOp -> SelectionMask
+  sel-combine (a) (b) (op) =
+    sel-combine-loop a b op 0 (a.sm-width * a.sm-height)
+
+  sel-combine-loop : SelectionMask, SelectionMask, SelectionOp, Integer, Integer -> SelectionMask
+  sel-combine-loop (a) (b) (op) (i) (total) =
+    if i >= total then a
+    else let va = list-at (a.sm-bits) i
+    in let vb = list-at (b.sm-bits) i
+    in let result = when op
+      is SelReplace -> vb
+      is SelAdd -> if va == 1 then 1 else vb
+      is SelSubtract -> if vb == 1 then 0 else va
+      is SelIntersect -> if va == 1 then if vb == 1 then 1 else 0 else 0
+    in let a2 = __record-set a "sm-bits" (list-set-at (a.sm-bits) i result)
+    in sel-combine-loop a2 b op (i + 1) total
+
+Section: Helpers
+
+  sel-isqrt : Integer -> Integer
+  sel-isqrt (n) = if n <= 0 then 0 else sel-isqrt-loop n (n / 2 + 1)
+
+  sel-isqrt-loop : Integer, Integer -> Integer
+  sel-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else sel-isqrt-loop n next
+
+Section: Stats
+
+  sel-pixel-count : SelectionMask -> Integer
+  sel-pixel-count (sm) = sel-count-loop (sm.sm-bits) (sm.sm-width * sm.sm-height) 0 0
+
+  sel-count-loop : List Integer, Integer, Integer, Integer -> Integer
+  sel-count-loop (bits) (total) (i) (count) =
+    if i >= total then count
+    else sel-count-loop bits total (i + 1) (count + list-at bits i)
+
+Section: Info
+
+  selection-info : SelectionMask -> Text
+  selection-info (sm) =
+    show (sm.sm-width) & "x" & show (sm.sm-height) & " sel=" & show (sel-pixel-count sm)
+
+Page 1

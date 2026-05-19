@@ -1,0 +1,219 @@
+Chapter: Page
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+  cites Foreword chapter Crc32
+
+ A page is the fundamental unit of storage. Every page is 8192 bytes.
+ Pages use a slotted layout: a fixed header at the front, a slot
+ directory growing forward from the header, and row data growing
+ backward from the end of the page. Free space sits between the two.
+
+ We say:
+
+Section: Constants
+
+  page-size : Integer = 8192
+
+  page-header-size : Integer = 64
+
+  page-type-data : Integer = 1
+  page-type-index : Integer = 2
+  page-type-overflow : Integer = 3
+  page-type-column : Integer = 4
+  page-type-free : Integer = 5
+  page-type-wal : Integer = 6
+
+Section: Page Header
+
+  PageHeader = record {
+    page-id : Integer,
+    page-type : Integer between 0 and 255,
+    flags : Integer between 0 and 255,
+    free-offset : Integer between 0 and 8192,
+    slot-count : Integer between 0 and 1024,
+    lsn : Integer,
+    checksum : Integer
+  }
+
+  page-header-new : Integer, Integer -> PageHeader
+  page-header-new (pid) (ptype) = PageHeader {
+    page-id = pid,
+    page-type = ptype,
+    flags = 0,
+    free-offset = page-header-size,
+    slot-count = 0,
+    lsn = 0,
+    checksum = 0
+  }
+
+Section: Slot Directory
+
+  SlotEntry = record {
+    slot-offset : Integer between 0 and 8192,
+    slot-length : Integer between 0 and 8192
+  }
+
+  slot-entry-size : Integer = 4
+
+  slot-entry-dead : SlotEntry
+  slot-entry-dead = SlotEntry { slot-offset = 0, slot-length = 0 }
+
+  slot-is-dead : SlotEntry -> Boolean
+  slot-is-dead (s) = s.slot-offset == 0
+
+Section: Page
+
+  Page = record {
+    header : PageHeader,
+    slots : List SlotEntry,
+    data : List Integer
+  }
+
+  page-new : Integer, Integer -> Page
+  page-new (pid) (ptype) = Page {
+    header = page-header-new pid ptype,
+    slots = [],
+    data = page-empty-data
+  }
+
+  page-empty-data : List Integer
+  page-empty-data = page-fill-zeros page-size []
+
+  page-fill-zeros : Integer, List Integer -> List Integer
+  page-fill-zeros (n) (acc) =
+    if n <= 0 then acc
+    else page-fill-zeros (n - 1) (list-push acc 0)
+
+Section: Free Space
+
+  page-free-space : Page -> Integer
+  page-free-space (pg) =
+    let slot-dir-end = page-header-size + (pg.header.slot-count) * slot-entry-size
+    in let data-start = page-data-start pg
+    in if data-start > slot-dir-end then data-start - slot-dir-end
+    else 0
+
+  page-data-start : Page -> Integer
+  page-data-start (pg) =
+    if pg.header.slot-count == 0 then page-size
+    else page-find-min-offset (pg.slots) 0 (pg.header.slot-count) page-size
+
+  page-find-min-offset : List SlotEntry, Integer, Integer, Integer -> Integer
+  page-find-min-offset (slots) (i) (len) (best) =
+    if i >= len then best
+    else let s = list-at slots i
+    in let next = if slot-is-dead s then best
+                  else if s.slot-offset < best then s.slot-offset
+                  else best
+    in page-find-min-offset slots (i + 1) len next
+
+Section: Insert Row
+
+  PageInsertResult = record {
+    page : Page,
+    slot-id : Integer,
+    ok : Boolean
+  }
+
+  page-insert : Page, List Integer -> PageInsertResult
+  page-insert (pg) (row-bytes) =
+    let row-len = list-length row-bytes
+    in let needed = row-len + slot-entry-size
+    in if needed > page-free-space pg then PageInsertResult { page = pg, slot-id = -1, ok = False }
+    else let data-offset = (page-data-start pg) - row-len
+    in let new-data = page-write-bytes (pg.data) data-offset row-bytes 0 row-len
+    in let new-slot = SlotEntry { slot-offset = data-offset, slot-length = row-len }
+    in let new-slots = list-push (pg.slots) new-slot
+    in let new-header = PageHeader {
+      page-id = pg.header.page-id,
+      page-type = pg.header.page-type,
+      flags = pg.header.flags,
+      free-offset = pg.header.free-offset + slot-entry-size,
+      slot-count = pg.header.slot-count + 1,
+      lsn = pg.header.lsn,
+      checksum = 0
+    }
+    in PageInsertResult {
+      page = Page { header = new-header, slots = new-slots, data = new-data },
+      slot-id = pg.header.slot-count,
+      ok = True
+    }
+
+Section: Read Row
+
+  page-read-slot : Page, Integer -> Maybe (List Integer)
+  page-read-slot (pg) (slot-id) =
+    if slot-id < 0 then None
+    else if slot-id >= pg.header.slot-count then None
+    else let s = list-at (pg.slots) slot-id
+    in if slot-is-dead s then None
+    else Just (page-extract-bytes (pg.data) (s.slot-offset) (s.slot-length) 0 [])
+
+  page-extract-bytes : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  page-extract-bytes (data) (offset) (len) (i) (acc) =
+    if i >= len then acc
+    else page-extract-bytes data offset len (i + 1) (list-push acc (list-at data (offset + i)))
+
+Section: Delete Row
+
+  page-delete-slot : Page, Integer -> Page
+  page-delete-slot (pg) (slot-id) =
+    if slot-id < 0 then pg
+    else if slot-id >= pg.header.slot-count then pg
+    else let new-slots = list-set-at (pg.slots) slot-id slot-entry-dead
+    in Page { header = pg.header, slots = new-slots, data = pg.data }
+
+Section: Byte Helpers
+
+  page-write-bytes : List Integer, Integer, List Integer, Integer, Integer -> List Integer
+  page-write-bytes (data) (offset) (src) (i) (len) =
+    if i >= len then data
+    else page-write-bytes (list-set-at data (offset + i) (list-at src i)) offset src (i + 1) len
+
+  page-slot-count : Page -> Integer
+  page-slot-count (pg) = pg.header.slot-count
+
+  page-id : Page -> Integer
+  page-id (pg) = pg.header.page-id
+
+Section: Serialization
+
+  page-write-u16 : List Integer, Integer, Integer -> List Integer
+  page-write-u16 (data) (offset) (val) =
+    let lo = bit-and val 255
+    in let hi = bit-and (bit-shr val 8) 255
+    in list-set-at (list-set-at data offset lo) (offset + 1) hi
+
+  page-read-u16 : List Integer, Integer -> Integer
+  page-read-u16 (data) (offset) =
+    (list-at data offset) + (list-at data (offset + 1)) * 256
+
+  page-write-u32 : List Integer, Integer, Integer -> List Integer
+  page-write-u32 (data) (offset) (val) =
+    let b0 = bit-and val 255
+    in let b1 = bit-and (bit-shr val 8) 255
+    in let b2 = bit-and (bit-shr val 16) 255
+    in let b3 = bit-and (bit-shr val 24) 255
+    in let d1 = list-set-at data offset b0
+    in let d2 = list-set-at d1 (offset + 1) b1
+    in let d3 = list-set-at d2 (offset + 2) b2
+    in list-set-at d3 (offset + 3) b3
+
+  page-read-u32 : List Integer, Integer -> Integer
+  page-read-u32 (data) (offset) =
+    (list-at data offset)
+    + (list-at data (offset + 1)) * 256
+    + (list-at data (offset + 2)) * 65536
+    + (list-at data (offset + 3)) * 16777216
+
+  page-write-u64 : List Integer, Integer, Integer -> List Integer
+  page-write-u64 (data) (offset) (val) =
+    let lo = bit-and val 4294967295
+    in let hi = bit-shr val 32
+    in page-write-u32 (page-write-u32 data offset lo) (offset + 4) hi
+
+  page-read-u64 : List Integer, Integer -> Integer
+  page-read-u64 (data) (offset) =
+    (page-read-u32 data offset) + (page-read-u32 data (offset + 4)) * 4294967296
+
+Page 1

@@ -1,0 +1,185 @@
+Chapter: UvEditor
+  cites Math chapter Quaternion
+  cites Math chapter Geometry
+  cites Game chapter Rasterizer
+  cites Spark chapter Mesh
+  cites Spark chapter TextureMap
+
+ UV coordinate editor. Displays the UV layout of a mesh on a
+ 2D canvas with the texture underneath. Supports selecting,
+ moving, and scaling UV islands. UV coordinates use fixed-point
+ scale 1000 (0 = left/top, 1000 = right/bottom).
+
+ We say:
+
+Section: Types
+
+  UvIsland = record {
+    ui-face-indices : List Integer,
+    ui-face-count : Integer,
+    ui-selected : Boolean
+  }
+
+  UvEditorState = record {
+    ue-islands : List UvIsland,
+    ue-island-count : Integer,
+    ue-active-island : Integer,
+    ue-zoom : Integer,
+    ue-pan-x : Integer,
+    ue-pan-y : Integer,
+    ue-show-grid : Boolean
+  }
+
+Section: Construction
+
+  uv-editor-new : UvEditorState
+  uv-editor-new = UvEditorState {
+    ue-islands = [],
+    ue-island-count = 0,
+    ue-active-island = -1,
+    ue-zoom = 1000,
+    ue-pan-x = 0,
+    ue-pan-y = 0,
+    ue-show-grid = True
+  }
+
+  uv-island-new : UvIsland
+  uv-island-new = UvIsland {
+    ui-face-indices = [],
+    ui-face-count = 0,
+    ui-selected = False
+  }
+
+Section: Island Building
+
+  uv-island-add-face : UvIsland, Integer -> UvIsland
+  uv-island-add-face (island) (face-idx) = UvIsland {
+    ui-face-indices = list-push (island.ui-face-indices) face-idx,
+    ui-face-count = island.ui-face-count + 1,
+    ui-selected = island.ui-selected
+  }
+
+  uv-editor-add-island : UvEditorState, UvIsland -> UvEditorState
+  uv-editor-add-island (ue) (island) = UvEditorState {
+    ue-islands = list-push (ue.ue-islands) island,
+    ue-island-count = ue.ue-island-count + 1,
+    ue-active-island = ue.ue-active-island,
+    ue-zoom = ue.ue-zoom,
+    ue-pan-x = ue.ue-pan-x,
+    ue-pan-y = ue.ue-pan-y,
+    ue-show-grid = ue.ue-show-grid
+  }
+
+  uv-auto-island : TriMesh -> UvEditorState
+  uv-auto-island (mesh) =
+    uv-auto-island-loop mesh 0 uv-editor-new
+
+  uv-auto-island-loop : TriMesh, Integer, UvEditorState -> UvEditorState
+  uv-auto-island-loop (mesh) (fi) (ue) =
+    if fi >= mesh.tm-face-count then ue
+    else let island = uv-island-add-face uv-island-new fi
+    in uv-auto-island-loop mesh (fi + 1) (uv-editor-add-island ue island)
+
+Section: Navigation
+
+  uv-editor-zoom : UvEditorState, Integer -> UvEditorState
+  uv-editor-zoom (ue) (delta) =
+    let new-zoom = ue.ue-zoom + delta
+    in let clamped = if new-zoom < 100 then 100 else if new-zoom > 8000 then 8000 else new-zoom
+    in __record-set ue "ue-zoom" clamped
+
+  uv-editor-pan : UvEditorState, Integer, Integer -> UvEditorState
+  uv-editor-pan (ue) (dx) (dy) =
+    __record-set (__record-set ue "ue-pan-x" (ue.ue-pan-x + dx)) "ue-pan-y" (ue.ue-pan-y + dy)
+
+Section: Selection
+
+  uv-select-island : UvEditorState, Integer -> UvEditorState
+  uv-select-island (ue) (idx) =
+    if idx < 0 then ue
+    else if idx >= ue.ue-island-count then ue
+    else let island = list-at (ue.ue-islands) idx
+    in let updated = __record-set island "ui-selected" True
+    in __record-set (__record-set ue "ue-islands" (list-set-at (ue.ue-islands) idx updated)) "ue-active-island" idx
+
+  uv-deselect-all : UvEditorState -> UvEditorState
+  uv-deselect-all (ue) =
+    uv-deselect-loop ue 0
+
+  uv-deselect-loop : UvEditorState, Integer -> UvEditorState
+  uv-deselect-loop (ue) (i) =
+    if i >= ue.ue-island-count then __record-set ue "ue-active-island" (-1)
+    else let island = list-at (ue.ue-islands) i
+    in let updated = __record-set island "ui-selected" False
+    in let ue2 = __record-set ue "ue-islands" (list-set-at (ue.ue-islands) i updated)
+    in uv-deselect-loop ue2 (i + 1)
+
+Section: UV Transform
+
+  uv-move-selected : UvEditorState, TriMesh, Integer, Integer -> TriMesh
+  uv-move-selected (ue) (mesh) (du) (dv) =
+    uv-move-loop ue mesh du dv 0
+
+  uv-move-loop : UvEditorState, TriMesh, Integer, Integer, Integer -> TriMesh
+  uv-move-loop (ue) (mesh) (du) (dv) (i) =
+    if i >= ue.ue-island-count then mesh
+    else let island = list-at (ue.ue-islands) i
+    in let mesh2 = if island.ui-selected then uv-move-island-faces mesh island du dv 0 else mesh
+    in uv-move-loop ue mesh2 du dv (i + 1)
+
+  uv-move-island-faces : TriMesh, UvIsland, Integer, Integer, Integer -> TriMesh
+  uv-move-island-faces (mesh) (island) (du) (dv) (j) =
+    if j >= island.ui-face-count then mesh
+    else let fi = list-at (island.ui-face-indices) j
+    in let face = tri-mesh-face mesh fi
+    in let mesh2 = uv-offset-vert mesh (face.tf-v0) du dv
+    in let mesh3 = uv-offset-vert mesh2 (face.tf-v1) du dv
+    in let mesh4 = uv-offset-vert mesh3 (face.tf-v2) du dv
+    in uv-move-island-faces mesh4 island du dv (j + 1)
+
+  uv-offset-vert : TriMesh, Integer, Integer, Integer -> TriMesh
+  uv-offset-vert (mesh) (vi) (du) (dv) =
+    let uv = tri-mesh-uv mesh vi
+    in let new-uv = Vec2 { v2x = uv.v2x + du, v2y = uv.v2y + dv }
+    in __record-set mesh "tm-uvs" (list-set-at (mesh.tm-uvs) vi new-uv)
+
+Section: Rendering
+
+  uv-draw-wireframe : Framebuf, UvEditorState, TriMesh, Integer, Integer -> Framebuf
+  uv-draw-wireframe (fb) (ue) (mesh) (canvas-w) (canvas-h) =
+    uv-draw-wire-loop fb ue mesh canvas-w canvas-h 0
+
+  uv-draw-wire-loop : Framebuf, UvEditorState, TriMesh, Integer, Integer, Integer -> Framebuf
+  uv-draw-wire-loop (fb) (ue) (mesh) (cw) (ch) (fi) =
+    if fi >= mesh.tm-face-count then fb
+    else let face = tri-mesh-face mesh fi
+    in let u0 = tri-mesh-uv mesh (face.tf-v0)
+    in let u1 = tri-mesh-uv mesh (face.tf-v1)
+    in let u2 = tri-mesh-uv mesh (face.tf-v2)
+    in let sx0 = uv-to-screen-x ue u0 cw
+    in let sy0 = uv-to-screen-y ue u0 ch
+    in let sx1 = uv-to-screen-x ue u1 cw
+    in let sy1 = uv-to-screen-y ue u1 ch
+    in let sx2 = uv-to-screen-x ue u2 cw
+    in let sy2 = uv-to-screen-y ue u2 ch
+    in let color = 65280
+    in let fb2 = fb-line fb sx0 sy0 sx1 sy1 color
+    in let fb3 = fb-line fb2 sx1 sy1 sx2 sy2 color
+    in let fb4 = fb-line fb3 sx2 sy2 sx0 sy0 color
+    in uv-draw-wire-loop fb4 ue mesh cw ch (fi + 1)
+
+  uv-to-screen-x : UvEditorState, Vec2, Integer -> Integer
+  uv-to-screen-x (ue) (uv) (canvas-w) =
+    (uv.v2x + ue.ue-pan-x) * ue.ue-zoom / 1000 * canvas-w / 1000
+
+  uv-to-screen-y : UvEditorState, Vec2, Integer -> Integer
+  uv-to-screen-y (ue) (uv) (canvas-h) =
+    (uv.v2y + ue.ue-pan-y) * ue.ue-zoom / 1000 * canvas-h / 1000
+
+Section: Info
+
+  uv-editor-info : UvEditorState -> Text
+  uv-editor-info (ue) =
+    show (ue.ue-island-count) & " islands, zoom=" & show (ue.ue-zoom)
+
+Page 1

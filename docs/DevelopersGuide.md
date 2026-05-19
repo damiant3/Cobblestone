@@ -17,6 +17,32 @@ Section: SubName
 Chapters = modules. Sections = sub-modules. `cites` = imports.
 Entry point: `opening` (not `main`).
 
+### Quire Name Resolution for `cites`
+
+The quire name in `cites <QuireName> chapter <Chapter>` is the **last
+segment** of the directory name, capitalized:
+
+| Directory | Quire Name |
+|-----------|-----------|
+| `codex.foreword` | `Foreword` |
+| `codex.foreword.game` | `Game` |
+| `codex.os.net` | `Net` |
+| `codex.os.replay` | `Replay` |
+| `codex.os.dev` | `Dev` |
+| `codex.os.sched` | `Sched` |
+| `codex.os.kernel` | `Kernel` |
+| `codex.magic` | `Magic` |
+
+For intra-quire references (chapter A citing chapter B in the same
+quire), use the quire's own name:
+
+```
+Chapter: ReplayVerifier
+  cites Replay chapter ReplayLog    -- same quire (codex.os.replay)
+  cites Net chapter MessageFraming  -- cross-quire (codex.os.net)
+  cites Foreword chapter Sha256     -- foreword library
+```
+
 ## Identifiers
 
 - Values: `kebab-case` (e.g., `compute-balance`, `list-push`)
@@ -75,7 +101,29 @@ parameters use parens: `map : (a -> b), List a -> List b`.
   __record-set p "name" "Bob"      -- functional update
 ```
 
-No `{ record | field = val }` sugar. Use `__record-set` for updates.
+No `{ record | field = val }` sugar. Use `__record-set` for functional updates.
+
+### Mutable Records
+
+Prefix `mutable` on a record type to allow in-place field assignment:
+
+```
+  mutable Counter = record {
+   value : Integer
+  }
+
+  c = Counter { value = 0 }
+  c.value = c.value + 1              -- in-place field assignment
+```
+
+Field assignment (`r.field = expr`) is valid anywhere, not just in
+act blocks. The type checker rejects field assignment on immutable
+records (CDX2060). Mutable records use `__record-set` under the hood
+but the compiler enforces ownership: CDX2061 (use after consume) and
+CDX2062 (aliasing) are planned for Phase 3 (linearity tracking).
+
+`freeze` (planned): converts `mutable T` to `T`, consuming the
+mutable reference and producing an immutable copy.
 
 ## Variants (Sum Types)
 
@@ -388,7 +436,7 @@ creates deep scope nesting. Split into smaller functions.
 ## Seed Rebuild Procedure
 
 The canonical seed is `seed/Codex.cdx` (CDX binary, bootable via
-QEMU multiboot). `seed/Codex.img` is a UEFI-bootable GPT disk image
+codex-vm or QEMU multiboot). `seed/Codex.img` is a UEFI-bootable GPT disk image
 containing the PE32+ compiler, CDX seed, all source, and docs.
 
 ### Pre-conditions

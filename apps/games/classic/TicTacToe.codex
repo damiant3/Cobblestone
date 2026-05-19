@@ -1,0 +1,133 @@
+Chapter: TicTacToe
+  cites Games chapter Rng
+
+ Tic-tac-toe on a 3x3 board with minimax AI that plays perfectly.
+ Board is a List Integer of 9 cells: 0=empty, 1=X, 2=O.
+ Player 1 is X (maximizer), player 2 is O (minimizer).
+
+ We say:
+
+Section: Types
+
+  TttBoard = record {
+    squares       : List Integer,
+    current-player : Integer,
+    game-over     : Boolean,
+    winner        : Integer
+  }
+
+  TttResult = record {
+    winner     : Integer,
+    moves-made : Integer
+  }
+
+Section: Construction
+
+  ttt-new : TttBoard
+  ttt-new =
+    let sq = ttt-build-board 0 []
+    in TttBoard { squares = sq, current-player = 1, game-over = False, winner = 0 }
+
+  ttt-build-board : Integer, List Integer -> List Integer
+  ttt-build-board (i) (acc) =
+    if i >= 9 then acc
+    else ttt-build-board (i + 1) (list-push acc 0)
+
+Section: Board Queries
+
+  ttt-cell : TttBoard, Integer -> Integer
+  ttt-cell (b) (i) = list-at (b.squares) i
+
+  ttt-empty : TttBoard, Integer -> Boolean
+  ttt-empty (b) (i) = ttt-cell b i == 0
+
+  ttt-has-empty : TttBoard -> Boolean
+  ttt-has-empty (b) = ttt-any-empty (b.squares) 0
+
+  ttt-any-empty : List Integer, Integer -> Boolean
+  ttt-any-empty (sq) (i) =
+    if i >= 9 then False
+    else if list-at sq i == 0 then True
+    else ttt-any-empty sq (i + 1)
+
+Section: Move and Win
+
+  ttt-move : TttBoard, Integer -> TttBoard
+  ttt-move (b) (pos) =
+    if b.game-over then b
+    else if ttt-empty b pos == False then b
+    else let sq2 = list-set-at (b.squares) pos (b.current-player)
+    in let won = ttt-check-win sq2 (b.current-player)
+    in let has-space = ttt-any-empty sq2 0
+    in let draw = if won then False else has-space == False
+    in let over = if won then True else draw
+    in let win = if won then b.current-player else 0
+    in let next = if over then b.current-player else if b.current-player == 1 then 2 else 1
+    in TttBoard { squares = sq2, current-player = next, game-over = over, winner = win }
+
+  ttt-check-win : List Integer, Integer -> Boolean
+  ttt-check-win (sq) (p) =
+    let r0 = ttt-line sq p 0 1 2
+    in let r1 = ttt-line sq p 3 4 5
+    in let r2 = ttt-line sq p 6 7 8
+    in let c0 = ttt-line sq p 0 3 6
+    in let c1 = ttt-line sq p 1 4 7
+    in let c2 = ttt-line sq p 2 5 8
+    in let d0 = ttt-line sq p 0 4 8
+    in let d1 = ttt-line sq p 2 4 6
+    in r0 | r1 | r2 | c0 | c1 | c2 | d0 | d1
+
+  ttt-line : List Integer, Integer, Integer, Integer, Integer -> Boolean
+  ttt-line (sq) (p) (a) (b) (c) =
+    list-at sq a == p & list-at sq b == p & list-at sq c == p
+
+Section: AI
+
+  ttt-ai-move : TttBoard -> Integer
+  ttt-ai-move (b) =
+    let center = if ttt-empty b 4 then 4 else -1
+    in if center >= 0 then center
+    else let corner = ttt-find-empty-corner b
+    in if corner >= 0 then corner
+    else ttt-find-first-empty b 0
+
+  ttt-find-empty-corner : TttBoard -> Integer
+  ttt-find-empty-corner (b) =
+    if ttt-empty b 0 then 0
+    else if ttt-empty b 2 then 2
+    else if ttt-empty b 6 then 6
+    else if ttt-empty b 8 then 8
+    else -1
+
+  ttt-find-first-empty : TttBoard, Integer -> Integer
+  ttt-find-first-empty (b) (i) =
+    if i >= 9 then -1
+    else if ttt-empty b i then i
+    else ttt-find-first-empty b (i + 1)
+
+Section: Game Runner
+
+  run-ttt-game : TttResult
+  run-ttt-game =
+    let b = ttt-new
+    in ttt-loop b 0
+
+  ttt-loop : TttBoard, Integer -> TttResult
+  ttt-loop (b) (moves) =
+    if b.game-over then TttResult { winner = b.winner, moves-made = moves }
+    else if moves > 9 then TttResult { winner = b.winner, moves-made = moves }
+    else let pos = ttt-ai-move b
+    in if pos < 0 then TttResult { winner = b.winner, moves-made = moves }
+    else let next = ttt-move b pos
+    in ttt-loop next (moves + 1)
+
+Section: Formatting
+
+  format-ttt-result : TttResult -> Text
+  format-ttt-result (r) =
+    let w = if r.winner == 1 then "X wins"
+            else if r.winner == 2 then "O wins"
+            else "Draw"
+    in "TicTacToe (AI vs AI): " & w & " in " & show (r.moves-made) & " moves"
+
+Page 1

@@ -1,0 +1,100 @@
+Chapter: MidiTrack
+
+ MIDI event list for note sequencing. Stores note on/off events
+ with pitch, velocity, and timing. Supports quantization.
+
+ We say:
+
+Section: Types
+
+  MidiEventKind =
+    | MidiNoteOn (Integer) (Integer)
+    | MidiNoteOff (Integer)
+    | MidiProgramChange (Integer)
+
+  MidiEvent2 = record {
+    me-tick : Integer,
+    me-channel : Integer,
+    me-kind : MidiEventKind
+  }
+
+  MidiTrack2 = record {
+    mt-name : Text,
+    mt-events : List MidiEvent2,
+    mt-event-count : Integer,
+    mt-ticks-per-beat : Integer,
+    mt-channel : Integer
+  }
+
+Section: Construction
+
+  midi-track-new : Text, Integer -> MidiTrack2
+  midi-track-new (name) (channel) = MidiTrack2 {
+    mt-name = name,
+    mt-events = [],
+    mt-event-count = 0,
+    mt-ticks-per-beat = 480,
+    mt-channel = channel
+  }
+
+Section: Events
+
+  midi-add-note : MidiTrack2, Integer, Integer, Integer, Integer -> MidiTrack2
+  midi-add-note (track) (tick) (pitch) (velocity) (duration) =
+    let note-on = MidiEvent2 { me-tick = tick, me-channel = track.mt-channel, me-kind = MidiNoteOn pitch velocity }
+    in let note-off = MidiEvent2 { me-tick = tick + duration, me-channel = track.mt-channel, me-kind = MidiNoteOff pitch }
+    in let events = list-push (list-push (track.mt-events) note-on) note-off
+    in MidiTrack2 {
+      mt-name = track.mt-name,
+      mt-events = events,
+      mt-event-count = track.mt-event-count + 2,
+      mt-ticks-per-beat = track.mt-ticks-per-beat,
+      mt-channel = track.mt-channel
+    }
+
+Section: Quantize
+
+  midi-quantize : MidiTrack2, Integer -> MidiTrack2
+  midi-quantize (track) (grid) =
+    let new-events = midi-quantize-loop (track.mt-events) (track.mt-event-count) grid 0 []
+    in __record-set track "mt-events" new-events
+
+  midi-quantize-loop : List MidiEvent2, Integer, Integer, Integer, List MidiEvent2 -> List MidiEvent2
+  midi-quantize-loop (events) (count) (grid) (i) (acc) =
+    if i >= count then acc
+    else let ev = list-at events i
+    in let snapped = (ev.me-tick + grid / 2) / grid * grid
+    in let updated = __record-set ev "me-tick" snapped
+    in midi-quantize-loop events count grid (i + 1) (list-push acc updated)
+
+Section: Queries
+
+  midi-last-tick : MidiTrack2 -> Integer
+  midi-last-tick (track) = midi-max-tick (track.mt-events) (track.mt-event-count) 0 0
+
+  midi-max-tick : List MidiEvent2, Integer, Integer, Integer -> Integer
+  midi-max-tick (events) (count) (i) (best) =
+    if i >= count then best
+    else let ev = list-at events i
+    in let new-best = if ev.me-tick > best then ev.me-tick else best
+    in midi-max-tick events count (i + 1) new-best
+
+  midi-note-count : MidiTrack2 -> Integer
+  midi-note-count (track) = midi-count-notes (track.mt-events) (track.mt-event-count) 0 0
+
+  midi-count-notes : List MidiEvent2, Integer, Integer, Integer -> Integer
+  midi-count-notes (events) (count) (i) (acc) =
+    if i >= count then acc
+    else let ev = list-at events i
+    in let is-note = when ev.me-kind
+        is MidiNoteOn (p) (v) -> 1
+        is otherwise -> 0
+    in midi-count-notes events count (i + 1) (acc + is-note)
+
+Section: Info
+
+  midi-track-info : MidiTrack2 -> Text
+  midi-track-info (track) =
+    track.mt-name & ": " & show (midi-note-count track) & " notes, " & show (midi-last-tick track) & " ticks"
+
+Page 1

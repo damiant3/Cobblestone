@@ -1,0 +1,198 @@
+Chapter: WeightPaint
+  cites Math chapter Quaternion
+  cites Game chapter Rasterizer
+  cites Spark chapter Mesh
+  cites Spark chapter Armature
+
+ Vertex weight painting for skeletal mesh deformation. Each vertex
+ stores a list of bone weights that sum to 1000. The paint tool
+ adds or subtracts weight from a selected bone, redistributing
+ to maintain the sum. Visualization renders weights as a heat map.
+
+ We say:
+
+Section: Types
+
+  WeightMap = record {
+    wm-weights : List Integer,
+    wm-vert-count : Integer,
+    wm-bone-count : Integer
+  }
+
+  PaintMode =
+    | PaintAdd
+    | PaintSubtract
+    | PaintSmooth
+    | PaintReplace
+
+  WeightBrush = record {
+    wb-radius : Integer,
+    wb-strength : Integer,
+    wb-falloff : Integer,
+    wb-mode : PaintMode,
+    wb-bone-idx : Integer
+  }
+
+Section: Construction
+
+  weight-map-new : Integer, Integer -> WeightMap
+  weight-map-new (vert-count) (bone-count) =
+    let total = vert-count * bone-count
+    in WeightMap {
+      wm-weights = wp-zeros total 0 [],
+      wm-vert-count = vert-count,
+      wm-bone-count = bone-count
+    }
+
+  wp-zeros : Integer, Integer, List Integer -> List Integer
+  wp-zeros (n) (i) (acc) =
+    if i >= n then acc
+    else wp-zeros n (i + 1) (list-push acc 0)
+
+  weight-brush-new : Integer, Integer, PaintMode, Integer -> WeightBrush
+  weight-brush-new (radius) (strength) (mode) (bone-idx) = WeightBrush {
+    wb-radius = radius,
+    wb-strength = strength,
+    wb-falloff = 500,
+    wb-mode = mode,
+    wb-bone-idx = bone-idx
+  }
+
+Section: Weight Access
+
+  wp-get : WeightMap, Integer, Integer -> Integer
+  wp-get (wm) (vert-idx) (bone-idx) =
+    if vert-idx < 0 then 0
+    else if vert-idx >= wm.wm-vert-count then 0
+    else if bone-idx < 0 then 0
+    else if bone-idx >= wm.wm-bone-count then 0
+    else list-at (wm.wm-weights) (vert-idx * wm.wm-bone-count + bone-idx)
+
+  wp-set : WeightMap, Integer, Integer, Integer -> WeightMap
+  wp-set (wm) (vert-idx) (bone-idx) (weight) =
+    let idx = vert-idx * wm.wm-bone-count + bone-idx
+    in let clamped = wp-clamp weight 0 1000
+    in __record-set wm "wm-weights" (list-set-at (wm.wm-weights) idx clamped)
+
+Section: Initialization
+
+  wp-assign-uniform : WeightMap, Integer, Integer -> WeightMap
+  wp-assign-uniform (wm) (vert-idx) (bone-idx) =
+    wp-set wm vert-idx bone-idx 1000
+
+  wp-assign-blend : WeightMap, Integer, Integer, Integer, Integer, Integer -> WeightMap
+  wp-assign-blend (wm) (vert-idx) (bone-a) (weight-a) (bone-b) (weight-b) =
+    let wm2 = wp-set wm vert-idx bone-a weight-a
+    in wp-set wm2 vert-idx bone-b weight-b
+
+Section: Painting
+
+  wp-paint-vertex : WeightMap, Integer, Integer, Integer, PaintMode -> WeightMap
+  wp-paint-vertex (wm) (vert-idx) (bone-idx) (amount) (mode) =
+    let current = wp-get wm vert-idx bone-idx
+    in let new-val = when mode
+      is PaintAdd -> wp-clamp (current + amount) 0 1000
+      is PaintSubtract -> wp-clamp (current - amount) 0 1000
+      is PaintReplace -> wp-clamp amount 0 1000
+      is PaintSmooth -> current
+    in let wm2 = wp-set wm vert-idx bone-idx new-val
+    in wp-normalize-vertex wm2 vert-idx bone-idx
+
+  wp-normalize-vertex : WeightMap, Integer, Integer -> WeightMap
+  wp-normalize-vertex (wm) (vert-idx) (primary-bone) =
+    let total = wp-sum-vertex wm vert-idx 0 0
+    in if total == 0 then wm
+    else if total == 1000 then wm
+    else let primary-w = wp-get wm vert-idx primary-bone
+    in let other-total = total - primary-w
+    in if other-total <= 0 then wp-set wm vert-idx primary-bone 1000
+    else let target-other = 1000 - primary-w
+    in wp-redistribute wm vert-idx primary-bone other-total target-other 0
+
+  wp-sum-vertex : WeightMap, Integer, Integer, Integer -> Integer
+  wp-sum-vertex (wm) (vert-idx) (bone) (acc) =
+    if bone >= wm.wm-bone-count then acc
+    else wp-sum-vertex wm vert-idx (bone + 1) (acc + wp-get wm vert-idx bone)
+
+  wp-redistribute : WeightMap, Integer, Integer, Integer, Integer, Integer -> WeightMap
+  wp-redistribute (wm) (vert-idx) (skip-bone) (old-total) (new-total) (bone) =
+    if bone >= wm.wm-bone-count then wm
+    else if bone == skip-bone then wp-redistribute wm vert-idx skip-bone old-total new-total (bone + 1)
+    else let w = wp-get wm vert-idx bone
+    in let scaled = if old-total == 0 then 0 else w * new-total / old-total
+    in let wm2 = wp-set wm vert-idx bone scaled
+    in wp-redistribute wm2 vert-idx skip-bone old-total new-total (bone + 1)
+
+Section: Area Painting
+
+  wp-paint-area : WeightMap, TriMesh, WeightBrush, Integer, Integer -> WeightMap
+  wp-paint-area (wm) (mesh) (brush) (cx) (cy) =
+    wp-area-loop wm mesh brush cx cy 0
+
+  wp-area-loop : WeightMap, TriMesh, WeightBrush, Integer, Integer, Integer -> WeightMap
+  wp-area-loop (wm) (mesh) (brush) (cx) (cy) (vi) =
+    if vi >= mesh.tm-vert-count then wm
+    else let v = tri-mesh-vert mesh vi
+    in let dx = v.vx - cx
+    in let dy = v.vy - cy
+    in let dist-sq = dx * dx + dy * dy
+    in let radius-sq = brush.wb-radius * brush.wb-radius
+    in let wm2 = if dist-sq <= radius-sq then
+      let falloff = 1000 - dist-sq * brush.wb-falloff / radius-sq
+      in let effective = brush.wb-strength * falloff / 1000
+      in wp-paint-vertex wm vi (brush.wb-bone-idx) effective (brush.wb-mode)
+    else wm
+    in wp-area-loop wm2 mesh brush cx cy (vi + 1)
+
+Section: Visualization
+
+  wp-heat-color : Integer -> Integer
+  wp-heat-color (weight) =
+    if weight <= 0 then 255
+    else if weight >= 1000 then 16711680
+    else if weight < 333 then
+      let t = weight * 3
+      in (t * 255 / 1000) * 256 + 255 - t * 255 / 1000
+    else if weight < 666 then
+      let t = (weight - 333) * 3
+      in (t * 255 / 1000) * 65536 + (255 - t * 255 / 1000) * 256
+    else let t = (weight - 666) * 3
+    in (255) * 65536 + (t * 255 / 1000) * 256
+
+  wp-visualize : Framebuf, WeightMap, TriMesh, Integer, Integer, Integer -> Framebuf
+  wp-visualize (fb) (wm) (mesh) (bone-idx) (vp-w) (vp-h) =
+    wp-vis-loop fb wm mesh bone-idx vp-w vp-h 0
+
+  wp-vis-loop : Framebuf, WeightMap, TriMesh, Integer, Integer, Integer, Integer -> Framebuf
+  wp-vis-loop (fb) (wm) (mesh) (bone-idx) (vp-w) (vp-h) (fi) =
+    if fi >= mesh.tm-face-count then fb
+    else let face = tri-mesh-face mesh fi
+    in let w0 = wp-get wm (face.tf-v0) bone-idx
+    in let w1 = wp-get wm (face.tf-v1) bone-idx
+    in let w2 = wp-get wm (face.tf-v2) bone-idx
+    in let avg-w = (w0 + w1 + w2) / 3
+    in let color = wp-heat-color avg-w
+    in let v0 = tri-mesh-vert mesh (face.tf-v0)
+    in let v1 = tri-mesh-vert mesh (face.tf-v1)
+    in let v2 = tri-mesh-vert mesh (face.tf-v2)
+    in let sx0 = v0.vx * vp-w / 10000 + vp-w / 2
+    in let sy0 = vp-h / 2 - v0.vy * vp-h / 10000
+    in let sx1 = v1.vx * vp-w / 10000 + vp-w / 2
+    in let sy1 = vp-h / 2 - v1.vy * vp-h / 10000
+    in let sx2 = v2.vx * vp-w / 10000 + vp-w / 2
+    in let sy2 = vp-h / 2 - v2.vy * vp-h / 10000
+    in let fb2 = fb-tri fb sx0 sy0 sx1 sy1 sx2 sy2 color
+    in wp-vis-loop fb2 wm mesh bone-idx vp-w vp-h (fi + 1)
+
+Section: Helpers
+
+  wp-clamp : Integer, Integer, Integer -> Integer
+  wp-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Section: Info
+
+  weight-map-info : WeightMap -> Text
+  weight-map-info (wm) =
+    show (wm.wm-vert-count) & " verts x " & show (wm.wm-bone-count) & " bones"
+
+Page 1

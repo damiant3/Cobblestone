@@ -1,0 +1,114 @@
+Chapter: LayerStack
+  cites Spark chapter Canvas
+
+ Layer stack management: reorder, duplicate, merge down, and
+ delete layers in a Canvas2D.
+
+ We say:
+
+Section: Duplicate
+
+  layer-duplicate : Canvas2D -> Canvas2D
+  layer-duplicate (cv) =
+    let src = canvas-active cv
+    in let copy = CanvasLayer {
+      cl-name = src.cl-name & " copy",
+      cl-pixels = src.cl-pixels,
+      cl-opacity = src.cl-opacity,
+      cl-visible = src.cl-visible,
+      cl-blend = src.cl-blend,
+      cl-locked = False
+    }
+    in Canvas2D {
+      cv-width = cv.cv-width,
+      cv-height = cv.cv-height,
+      cv-layers = ls-insert-after (cv.cv-layers) (cv.cv-active-layer) copy,
+      cv-layer-count = cv.cv-layer-count + 1,
+      cv-active-layer = cv.cv-active-layer + 1,
+      cv-bg-color = cv.cv-bg-color
+    }
+
+Section: Delete
+
+  layer-delete : Canvas2D -> Canvas2D
+  layer-delete (cv) =
+    if cv.cv-layer-count <= 1 then cv
+    else let new-layers = ls-remove-at (cv.cv-layers) (cv.cv-active-layer) 0 (cv.cv-layer-count) []
+    in let new-active = if cv.cv-active-layer >= cv.cv-layer-count - 1 then cv.cv-active-layer - 1 else cv.cv-active-layer
+    in Canvas2D {
+      cv-width = cv.cv-width,
+      cv-height = cv.cv-height,
+      cv-layers = new-layers,
+      cv-layer-count = cv.cv-layer-count - 1,
+      cv-active-layer = new-active,
+      cv-bg-color = cv.cv-bg-color
+    }
+
+Section: Move
+
+  layer-move-up : Canvas2D -> Canvas2D
+  layer-move-up (cv) =
+    if cv.cv-active-layer >= cv.cv-layer-count - 1 then cv
+    else let idx = cv.cv-active-layer
+    in let layers = ls-swap (cv.cv-layers) idx (idx + 1)
+    in __record-set (__record-set cv "cv-layers" layers) "cv-active-layer" (idx + 1)
+
+  layer-move-down : Canvas2D -> Canvas2D
+  layer-move-down (cv) =
+    if cv.cv-active-layer <= 0 then cv
+    else let idx = cv.cv-active-layer
+    in let layers = ls-swap (cv.cv-layers) (idx - 1) idx
+    in __record-set (__record-set cv "cv-layers" layers) "cv-active-layer" (idx - 1)
+
+Section: Merge Down
+
+  layer-merge-down : Canvas2D -> Canvas2D
+  layer-merge-down (cv) =
+    if cv.cv-active-layer <= 0 then cv
+    else let top = list-at (cv.cv-layers) (cv.cv-active-layer)
+    in let bot = list-at (cv.cv-layers) (cv.cv-active-layer - 1)
+    in let merged-fb = canvas-composite (bot.cl-pixels) (top.cl-pixels) (top.cl-opacity) (top.cl-blend) 0 (cv.cv-width * cv.cv-height)
+    in let merged = __record-set bot "cl-pixels" merged-fb
+    in let layers-with-merge = list-set-at (cv.cv-layers) (cv.cv-active-layer - 1) merged
+    in let final-layers = ls-remove-at layers-with-merge (cv.cv-active-layer) 0 (cv.cv-layer-count) []
+    in Canvas2D {
+      cv-width = cv.cv-width,
+      cv-height = cv.cv-height,
+      cv-layers = final-layers,
+      cv-layer-count = cv.cv-layer-count - 1,
+      cv-active-layer = cv.cv-active-layer - 1,
+      cv-bg-color = cv.cv-bg-color
+    }
+
+Section: Info
+
+  layer-info : Canvas2D -> Text
+  layer-info (cv) =
+    show (cv.cv-layer-count) & " layers, active: " & (canvas-active cv).cl-name
+
+Section: List Helpers
+
+  ls-insert-after : List CanvasLayer, Integer, CanvasLayer -> List CanvasLayer
+  ls-insert-after (layers) (idx) (new-layer) =
+    ls-insert-loop layers idx new-layer 0 (list-length layers) [] False
+
+  ls-insert-loop : List CanvasLayer, Integer, CanvasLayer, Integer, Integer, List CanvasLayer, Boolean -> List CanvasLayer
+  ls-insert-loop (src) (idx) (new-item) (i) (n) (acc) (inserted) =
+    if i >= n then if inserted then acc else list-push acc new-item
+    else let acc2 = list-push acc (list-at src i)
+    in if i == idx then ls-insert-loop src idx new-item (i + 1) n (list-push acc2 new-item) True
+    else ls-insert-loop src idx new-item (i + 1) n acc2 inserted
+
+  ls-remove-at : List CanvasLayer, Integer, Integer, Integer, List CanvasLayer -> List CanvasLayer
+  ls-remove-at (src) (skip) (i) (n) (acc) =
+    if i >= n then acc
+    else if i == skip then ls-remove-at src skip (i + 1) n acc
+    else ls-remove-at src skip (i + 1) n (list-push acc (list-at src i))
+
+  ls-swap : List CanvasLayer, Integer, Integer -> List CanvasLayer
+  ls-swap (layers) (a) (b) =
+    let va = list-at layers a
+    in let vb = list-at layers b
+    in list-set-at (list-set-at layers a vb) b va
+
+Page 1

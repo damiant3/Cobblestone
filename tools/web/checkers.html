@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Codex — Checkers</title>
+<link rel="stylesheet" href="/web/style.css?v={{VERSION}}">
+<style>
+  body { background: #1a1408; }
+  .game-page { max-width: 700px; margin: 0 auto; }
+  .bg-scene { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: url('/assets/games/checkers/bg-scene.png') center/cover no-repeat;
+    filter: brightness(0.3) blur(2px); z-index: 0; }
+  .content { position: relative; z-index: 1; }
+
+  .board-wrap { background: url('/assets/games/checkers/board.png') center/cover;
+    border: 4px solid #8a6a3a; border-radius: 8px; padding: 8px;
+    margin-bottom: 16px;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.6), inset 0 2px 8px rgba(0,0,0,0.3); }
+  .ck-grid { display: grid; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr); gap: 2px; aspect-ratio: 1; }
+  .ck-cell { display: flex; align-items: center; justify-content: center; font-size: 28px;
+    border-radius: 2px; min-height: 0; }
+  .ck-light { background: #d4b87833; }
+  .ck-dark { background: #3a221088; }
+  .ck-piece { width: 80%; aspect-ratio: 1; border-radius: 50%;
+    box-shadow: 0 3px 6px rgba(0,0,0,0.5), inset 0 1px 3px rgba(255,255,255,0.15);
+    display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: bold; }
+  .ck-south { background: radial-gradient(circle at 35% 35%, #cc3333, #6a1010); border: 2px solid #aa2020; color: #fcc; }
+  .ck-south-king { background: radial-gradient(circle at 35% 35%, #ff5555, #8a1a1a); border: 2px solid #cc3333; color: #fff; }
+  .ck-north { background: radial-gradient(circle at 35% 35%, #2a2a2a, #0a0a0a); border: 2px solid #444; color: #aaa; }
+  .ck-north-king { background: radial-gradient(circle at 35% 35%, #4a4a4a, #1a1a1a); border: 2px solid #666; color: #ddd; }
+
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+  .controls button { background: linear-gradient(180deg, #3a2a14, #221808);
+    border: 1px solid #8a6a3a; border-radius: 6px; color: #d4a050;
+    font-family: inherit; font-size: 13px; padding: 6px 16px; cursor: pointer; text-transform: uppercase; letter-spacing: 1px; }
+  .controls button:hover { color: #f5d888; }
+  .controls button:disabled { opacity: 0.3; }
+  #status-line { color: #d4a050; font-size: 13px; margin-bottom: 10px; text-align: center; }
+  .speed-label { color: #8a6a3a; font-size: 12px; }
+  .engine-tag { background: #221808; color: #d4a050; font-size: 10px; padding: 2px 8px;
+    border-radius: 4px; margin-left: 12px; border: 1px solid #8a6a3a44; }
+</style>
+</head>
+<body>
+<div class="bg-scene"></div>
+<nav class="topbar" style="background:#1a1408;border-color:#8a6a3a22">
+  <span class="topbar-logo" style="color:#d4a050">&#x2588; CODEX</span>
+  <a href="/#games" class="tab-btn" style="color:#8a6a3a">&#x2190; Games</a>
+  <span class="tab-btn active" style="color:#d4a050;border-color:#d4a050">Checkers</span>
+  <span class="engine-tag">Codex VM</span>
+</nav>
+<div class="content game-page">
+  <div class="controls">
+    <button onclick="startGame()">&#x25B6; Play</button>
+    <button id="btn-pause" onclick="togglePause()" disabled>&#x23F8; Pause</button>
+    <button id="btn-step" onclick="stepOnce()" disabled>&#x23ED; Step</button>
+    <button onclick="resetGame()">&#x21BB; Reset</button>
+    <span class="speed-label">Speed:</span>
+    <input type="range" id="speed" min="1" max="10" value="4" style="width:80px;accent-color:#d4a050" oninput="updateSpeed()">
+  </div>
+  <div id="status-line">Press Play — just like grandpa used to.</div>
+  <div class="board-wrap"><div class="ck-grid" id="board"></div></div>
+</div>
+<script>
+var state,running=false,paused=false,timer,delay=500;
+function updateSpeed(){var v=parseInt(document.getElementById('speed').value);delay=[2000,1200,800,500,350,250,150,80,30,5][v-1]||350}
+async function api(p){try{var r=await fetch(p);return r.json()}catch(e){document.getElementById('status-line').textContent='API error';return null}}
+function render(s){var h='';for(var r=0;r<8;r++)for(var c=0;c<8;c++){var dark=(r+c)%2===1;var v=s.cells[r*8+c];var piece='';if(v===1)piece='<div class="ck-piece ck-south"></div>';else if(v===2)piece='<div class="ck-piece ck-south-king">&#x265A;</div>';else if(v===3)piece='<div class="ck-piece ck-north"></div>';else if(v===4)piece='<div class="ck-piece ck-north-king">&#x265A;</div>';h+='<div class="ck-cell '+(dark?'ck-dark':'ck-light')+'">'+piece+'</div>'}document.getElementById('board').innerHTML=h}
+async function resetGame(){clearTimeout(timer);running=false;paused=false;state=await api('/api/checkers/new?seed='+(Date.now()&0x7FFFFFFF));if(state)render(state);document.getElementById('status-line').textContent='Press Play.';document.getElementById('btn-pause').disabled=true;document.getElementById('btn-step').disabled=true}
+async function startGame(){await resetGame();running=true;document.getElementById('btn-pause').disabled=false;document.getElementById('btn-step').disabled=false;document.getElementById('status-line').textContent='Game on!';updateSpeed();scheduleTick()}
+function togglePause(){if(!running)return;paused=!paused;document.getElementById('btn-pause').textContent=paused?'▶ Resume':'⏸ Pause';document.getElementById('btn-step').disabled=!paused;if(!paused)scheduleTick()}
+function scheduleTick(){if(!paused&&running)timer=setTimeout(tick,delay)}
+async function stepOnce(){if(running)await tick()}
+async function tick(){if(!running||!state)return;if(state.done){var w=state.winner===0?'Red':state.winner===1?'Black':'Nobody';document.getElementById('status-line').textContent=w+' wins! ('+state.moves+' moves)';running=false;return}state=await api('/api/checkers/step');if(!state){running=false;return}render(state);document.getElementById('status-line').textContent=(state.cur===0?'Red':'Black')+'\'s move — #'+state.moves;if(state.done){var w=state.winner===0?'Red':state.winner===1?'Black':'Draw';document.getElementById('status-line').textContent=w+' wins! Good game.';running=false;return}scheduleTick()}
+updateSpeed();resetGame();
+</script>
+</body>
+</html>

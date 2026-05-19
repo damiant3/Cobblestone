@@ -1,0 +1,467 @@
+Chapter: Lexer
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Codex chapter Runtime
+
+ The lexer converts source text into a flat list of tokens.
+
+Section: Character Code Constants
+  cc-newline : Integer = char-code '\n'
+  cc-cr : Integer = -1
+  cc-space : Integer = char-code ' '
+  cc-double-quote : Integer = char-code '"'
+  cc-single-quote : Integer = char-code '\''
+  cc-ampersand : Integer = char-code '&'
+  cc-left-paren : Integer = char-code '('
+  cc-right-paren : Integer = char-code ')'
+  cc-star : Integer = char-code '*'
+  cc-plus : Integer = char-code '+'
+  cc-comma : Integer = char-code ','
+  cc-minus : Integer = char-code '-'
+  cc-dot : Integer = char-code '.'
+  cc-slash : Integer = char-code '/'
+  cc-zero : Integer = char-code '0'
+  cc-nine : Integer = char-code '9'
+  cc-colon : Integer = char-code ':'
+  cc-less : Integer = char-code '<'
+  cc-equals : Integer = char-code '='
+  cc-greater : Integer = char-code '>'
+  cc-first-upper : Integer = char-code 'E'
+  cc-upper-z : Integer = char-code 'Z'
+  cc-left-bracket : Integer = char-code '['
+  cc-backslash : Integer = char-code '\\'
+  cc-right-bracket : Integer = char-code ']'
+  cc-caret : Integer = char-code '^'
+  cc-underscore : Integer = char-code '_'
+  cc-lower-a : Integer = char-code 'a'
+  cc-lower-n : Integer = char-code 'n'
+  cc-lower-r : Integer = char-code 'r'
+  cc-lower-t : Integer = char-code 't'
+  cc-lower-z : Integer = char-code 'z'
+  cc-at : Integer = char-code '@'
+  cc-left-brace : Integer = char-code '{'
+  cc-pipe : Integer = char-code '|'
+  cc-right-brace : Integer = char-code '}'
+
+Section: Character Classification (Integer)
+  is-letter-code : Integer -> Boolean
+  is-letter-code (c) = is-letter (code-to-char c)
+
+  is-digit-code : Integer -> Boolean
+  is-digit-code (c) = is-digit (code-to-char c)
+
+Section: Lexer State
+  LexState = record {
+   source : Text,
+   offset : Integer between 0 and 4294967295,
+   line : Integer between 0 and 131071,
+   column : Integer between 0 and 65535,
+   file-id : Integer between 0 and 65535,
+   errors : LinkedList Diagnostic,
+   prose-mode : Boolean
+  }
+
+  make-lex-state : Text, Integer, LinkedList Diagnostic -> LexState
+  make-lex-state (src) (fid) (pre-errors) =
+   LexState {
+    source = src,
+    offset = 0,
+    line = 1,
+    column = 1,
+    file-id = fid,
+    errors = pre-errors,
+    prose-mode = False
+   }
+
+  make-lex-state-prose : Text, Integer, LinkedList Diagnostic, Boolean -> LexState
+  make-lex-state-prose (src) (fid) (pre-errors) (prose) =
+   LexState {
+    source = src,
+    offset = 0,
+    line = 1,
+    column = 1,
+    file-id = fid,
+    errors = pre-errors,
+    prose-mode = prose
+   }
+
+  add-lex-error : LexState, Integer, Text, SourceSpan -> LexState
+  add-lex-error (st) (code) (msg) (span) =
+   __record-set st "errors" (__linked-list-push (st.errors) (make-error code msg span))
+
+  is-at-end : LexState -> Boolean
+  is-at-end (st) =
+   st.offset >= text-length (st.source)
+
+  peek-code : LexState -> Integer
+  peek-code (st) =
+   if is-at-end st then 0
+   else char-code-at (st.source) (st.offset)
+
+  advance-char : LexState -> LexState
+  advance-char (st) =
+   if peek-code st == cc-newline then LexState {
+     source = st.source,
+     offset = st.offset + 1,
+     line = st.line + 1,
+     column = 1,
+     file-id = st.file-id,
+     errors = st.errors,
+     prose-mode = st.prose-mode
+    }
+    else LexState {
+     source = st.source,
+     offset = st.offset + 1,
+     line = st.line,
+     column = st.column + 1,
+     file-id = st.file-id,
+     errors = st.errors,
+     prose-mode = st.prose-mode
+    }
+
+Section: Whitespace
+  skip-spaces-end : Text, Integer, Integer -> Integer
+  skip-spaces-end (source) (offset) (len) =
+   if offset >= len then offset
+   else if char-code-at source offset == cc-space then skip-spaces-end source (offset + 1) len
+   else offset
+
+  skip-spaces : LexState -> LexState
+  skip-spaces (st) =
+   let len = text-length (st.source)
+   in let stop = skip-spaces-end (st.source) (st.offset) len
+   in if stop == st.offset then st
+      else let new-col = st.column + (stop - st.offset)
+      in let st1 = __record-set st "offset" stop
+      in __record-set st1 "column" new-col
+
+Section: Character Scanning
+  scan-ident-end : Text, Integer, Integer -> Integer
+  scan-ident-end (source) (offset) (len) =
+   if offset >= len then offset
+   else let c = char-code-at source offset
+   in if is-letter-code c then scan-ident-end source (offset + 1) len
+      else if is-digit-code c then scan-ident-end source (offset + 1) len
+      else if c == cc-underscore then scan-ident-end source (offset + 1) len
+      else if c == cc-minus then if offset + 1 >= len then offset
+   else let nc = char-code-at source (offset + 1)
+   in if is-letter-code nc | is-digit-code nc then scan-ident-end source (offset + 1) len
+          else if nc == cc-minus then if offset + 2 >= len then offset
+   else let nnc = char-code-at source (offset + 2)
+   in if is-letter-code nnc | is-digit-code nnc then scan-ident-end source (offset + 2) len
+              else offset
+          else offset
+       else offset
+
+  scan-ident-rest : LexState -> LexState
+  scan-ident-rest (st) =
+   let len = text-length (st.source)
+   in let stop = scan-ident-end (st.source) (st.offset) len
+   in if stop == st.offset then st
+      else let new-col = st.column + (stop - st.offset)
+      in let st1 = __record-set st "offset" stop
+      in __record-set st1 "column" new-col
+
+  scan-digits-end : Text, Integer, Integer -> Integer
+  scan-digits-end (source) (offset) (len) =
+   if offset >= len then offset
+   else let c = char-code-at source offset
+   in if is-digit-code c then scan-digits-end source (offset + 1) len
+      else if c == cc-underscore then scan-digits-end source (offset + 1) len
+      else offset
+
+  scan-digits : LexState -> LexState
+  scan-digits (st) =
+   let len = text-length (st.source)
+   in let stop = scan-digits-end (st.source) (st.offset) len
+   in if stop == st.offset then st
+      else let new-col = st.column + (stop - st.offset)
+      in let st1 = __record-set st "offset" stop
+      in __record-set st1 "column" new-col
+
+  scan-string-end : Text, Integer, Integer -> Integer
+  scan-string-end (source) (offset) (len) =
+   if offset >= len then offset
+   else let c = char-code-at source offset
+   in if c == cc-double-quote then offset + 1
+      else if c == cc-newline then offset
+      else if c == cc-backslash then scan-string-end source (offset + 2) len
+      else scan-string-end source (offset + 1) len
+
+  scan-string-body : LexState -> LexState
+  scan-string-body (st) =
+   let len = text-length (st.source)
+   in let stop = scan-string-end (st.source) (st.offset) len
+   in if stop == st.offset then st
+      else let new-col = st.column + (stop - st.offset)
+      in let st1 = __record-set st "offset" stop
+      in let st2 = __record-set st1 "column" new-col
+      in let terminated = stop <= len & stop > 0 & char-code-at (st.source) (stop - 1) == cc-double-quote
+      in if terminated then st2
+         else let open-span = span-at (st.line) (st.column - 1) (st.offset - 1) 1 (st.file-id)
+         in let err = make-error cdx-unterminated-text "Unterminated text literal: hit end of line before closing '\"'" open-span
+         in __record-set st2 "errors" (__linked-list-push (st2.errors) err)
+
+  validate-escapes-into : Text, Integer, Integer, Integer, Integer, LinkedList Diagnostic -> LinkedList Diagnostic
+  validate-escapes-into (s) (base-line) (base-col) (base-off) (fid) (errs) =
+   validate-escapes-loop s 0 (text-length s) base-line base-col base-off fid errs
+
+  validate-escapes-loop : Text, Integer, Integer, Integer, Integer, Integer, Integer, LinkedList Diagnostic -> LinkedList Diagnostic
+  validate-escapes-loop (s) (i) (len) (line) (col) (off) (fid) (errs) =
+   if i >= len then errs
+   else let c = char-code-at s i
+   in if c == cc-backslash then if i + 1 < len then let nc = char-code-at s (i + 1)
+   in let esc-span = span-at line (col + i) (off + i) 2 fid
+   in if nc == cc-lower-t then validate-escapes-loop s (i + 2) len line col off fid (__linked-list-push errs (make-error cdx-invalid-tab-escape "\\t escape is not valid in CCE; use spaces directly" esc-span))
+          else if nc == cc-lower-r then validate-escapes-loop s (i + 2) len line col off fid (__linked-list-push errs (make-error cdx-invalid-carriage-return-escape "\\r escape is not valid in CCE; use \\n for newlines" esc-span))
+          else validate-escapes-loop s (i + 2) len line col off fid errs
+       else errs
+      else validate-escapes-loop s (i + 1) len line col off fid errs
+
+  decode-escapes : Text -> Text
+  decode-escapes (s) =
+   text-concat-list (decode-escapes-loop s 0 (text-length s) [])
+
+  decode-escapes-loop : Text, Integer, Integer, List Text -> List Text
+  decode-escapes-loop (s) (i) (len) (acc) =
+   if i >= len then acc
+   else let c = char-code-at s i
+   in if c == cc-backslash then if i + 1 < len then let nc = char-code-at s (i + 1)
+   in if nc == cc-lower-n then decode-escapes-loop s (i + 2) len (list-push acc (char-to-text '\n'))
+          else if nc == cc-lower-t then decode-escapes-loop s (i + 2) len (list-push acc "  ")
+          else if nc == cc-lower-r then decode-escapes-loop s (i + 2) len acc
+          else if nc == cc-backslash then decode-escapes-loop s (i + 2) len (list-push acc "\\")
+          else if nc == cc-double-quote then decode-escapes-loop s (i + 2) len (list-push acc "\"")
+          else decode-escapes-loop s (i + 2) len (list-push acc (char-to-text (char-at s (i + 1))))
+       else list-push acc (char-to-text (char-at s i))
+      else decode-escapes-loop s (i + 1) len (list-push acc (char-to-text (char-at s i)))
+
+Section: Keyword Classification
+  classify-word : Text -> TokenKind
+  classify-word (w) =
+   deck-record (
+    if w == "let" then LetKeyword
+    else if w == "in" then InKeyword
+    else if w == "between" then BetweenKeyword
+    else if w == "if" then IfKeyword
+    else if w == "is" then IsKeyword
+    else if w == "otherwise" then OtherwiseKeyword
+    else if w == "then" then ThenKeyword
+    else if w == "else" then ElseKeyword
+    else if w == "when" then WhenKeyword
+    else if w == "where" then WhereKeyword
+    else if w == "act" then ActKeyword
+    else if w == "end" then EndKeyword
+    else if w == "record" then RecordKeyword
+    else if w == "cites" then CitesKeyword
+    else if w == "claim" then ClaimKeyword
+    else if w == "proof" then ProofKeyword
+    else if w == "qed" then QedKeyword
+    else if w == "forall" then ForAllKeyword
+    else if w == "exists" then ThereExistsKeyword
+    else if w == "linear" then LinearKeyword
+    else if w == "mutable" then MutableKeyword
+    else if w == "effect" then EffectKeyword
+    else if w == "with" then WithKeyword
+    else if w == "with-timeout" then WithTimeoutKeyword
+    else if w == "trying" then TryingKeyword
+    else if w == "True" then TrueKeyword
+    else if w == "False" then FalseKeyword
+    else let first-code = char-code-at w 0
+    in if first-code >= cc-first-upper then if first-code <= cc-upper-z then TypeIdentifier
+       else Identifier
+       else Identifier
+   )
+
+Section: Single Token Scanning
+  LexStep =
+   | LexToken (Token) (LexState)
+   | LexEnd
+
+  make-token : TokenKind, Integer, LexState -> Token
+  make-token (kind) (length) (st) =
+   deck-record (Token {
+    kind = kind,
+    source = st.source,
+    offset = st.offset,
+    length = length,
+    line = st.line,
+    column = st.column,
+    file-id = st.file-id
+   })
+
+  extract-text : LexState, Integer, LexState -> Text
+  extract-text (st) (start) (end-st) =
+   substring (st.source) start (end-st.offset - start)
+
+  scan-to-eol-end : Text, Integer, Integer -> Integer
+  scan-to-eol-end (source) (offset) (len) =
+   if offset >= len then offset
+   else let c = char-code-at source offset
+   in if c == cc-newline then offset
+      else scan-to-eol-end source (offset + 1) len
+
+  scan-prose-text : LexState -> LexStep
+  scan-prose-text (s) =
+   let len = text-length (s.source)
+   in let stop = scan-to-eol-end (s.source) (s.offset) len
+   in let tok-len = stop - s.offset
+   in if tok-len == 0 then LexToken (make-token (deck-record ProseText) 0 s) s
+      else let new-col = s.column + tok-len
+   in let s1 = __record-set s "offset" stop
+   in let s2 = __record-set s1 "column" new-col
+   in LexToken (make-token (deck-record ProseText) tok-len s) s2
+
+  skip-prose-line : LexState -> LexStep
+  skip-prose-line (s) =
+   let len = text-length (s.source)
+   in let stop = scan-to-eol-end (s.source) (s.offset) len
+   in let tok-len = stop - s.offset
+   in let new-col = s.column + tok-len
+   in let s1 = __record-set s "offset" stop
+   in let s2 = __record-set s1 "column" new-col
+   in scan-token s2
+
+  scan-token : LexState -> LexStep
+  scan-token (st) =
+   let s = skip-spaces st
+   in if is-at-end s then LexEnd
+   else let c = peek-code s
+   in if c == cc-cr then scan-token (advance-char s)
+         else if s.column == 2 & c /= cc-newline then
+          if s.prose-mode then
+           if c == cc-at then LexToken (make-token (deck-record AtSign) 1 s) (advance-char s)
+           else scan-prose-text s
+          else skip-prose-line s
+         else if c == cc-newline then LexToken (make-token (deck-record Newline) 1 s) (advance-char s)
+         else if c == cc-double-quote then let start = s.offset + 1
+   in let after = scan-string-body (advance-char s)
+   in let body-len = after.offset - start - 1
+   in let safe-len = if body-len < 0 then 0 else body-len
+   in let raw = substring (s.source) start safe-len
+   in let merged-errs = validate-escapes-into raw (s.line) (s.column + 1) start (s.file-id) (after.errors)
+   in let after-with-errs = __record-set after "errors" merged-errs
+   in LexToken (make-token (deck-record TextLiteral) (after.offset - s.offset) s) after-with-errs
+         else if c == cc-single-quote then scan-char-literal s
+         else if is-letter-code c then let start = s.offset
+   in let after = scan-ident-rest (advance-char s)
+   in let word = extract-text s start after
+   in LexToken (make-token (classify-word word) (after.offset - start) s) after
+         else if c == cc-underscore then let start = s.offset
+   in let after = scan-ident-rest (advance-char s)
+   in let word-len = after.offset - start
+   in if word-len == 1 then LexToken (make-token (deck-record Underscore) 1 s) after
+                 else LexToken (make-token (classify-word (extract-text s start after)) word-len s) after
+         else if is-digit-code c then let start = s.offset
+   in let after = scan-digits (advance-char s)
+   in if is-at-end after then LexToken (make-token (deck-record IntegerLiteral) (after.offset - start) s) after
+                 else if peek-code after == cc-dot then
+                  let after-dot = advance-char after
+                  in if is-at-end after-dot then LexToken (make-token (deck-record IntegerLiteral) (after.offset - start) s) after
+                     else if peek-code after-dot == cc-dot then LexToken (make-token (deck-record IntegerLiteral) (after.offset - start) s) after
+                     else let after2 = scan-digits after-dot
+                          in LexToken (make-token (deck-record NumberLiteral) (after2.offset - start) s) after2
+                else LexToken (make-token (deck-record IntegerLiteral) (after.offset - start) s) after
+         else scan-operator s
+
+  scan-operator : LexState -> LexStep
+  scan-operator (s) =
+   let c = peek-code s
+   in let next = advance-char s
+   in if c == cc-left-paren then LexToken (make-token (deck-record LeftParen) 1 s) next
+      else if c == cc-right-paren then LexToken (make-token (deck-record RightParen) 1 s) next
+      else if c == cc-left-bracket then LexToken (make-token (deck-record LeftBracket) 1 s) next
+      else if c == cc-right-bracket then LexToken (make-token (deck-record RightBracket) 1 s) next
+      else if c == cc-left-brace then LexToken (make-token (deck-record LeftBrace) 1 s) next
+      else if c == cc-right-brace then LexToken (make-token (deck-record RightBrace) 1 s) next
+      else if c == cc-comma then LexToken (make-token (deck-record Comma) 1 s) next
+      else if c == cc-dot then
+       let nc = if is-at-end next then 0 else peek-code next
+       in if nc == cc-dot then LexToken (make-token (deck-record DotDot) 2 s) (advance-char next)
+        else LexToken (make-token (deck-record Dot) 1 s) next
+      else if c == cc-caret then LexToken (make-token (deck-record Caret) 1 s) next
+      else if c == cc-ampersand then LexToken (make-token (deck-record Ampersand) 1 s) next
+      else if c == cc-backslash then LexToken (make-token (deck-record Backslash) 1 s) next
+      else scan-multi-char-operator s
+
+  scan-multi-char-operator : LexState -> LexStep
+  scan-multi-char-operator (s) =
+   let c = peek-code s
+   in let next = advance-char s
+   in let nc = if is-at-end next then 0 else peek-code next
+   in if c == cc-plus then if nc == cc-plus then LexToken (make-token (deck-record PlusPlus) 2 s) (advance-char next)
+        else LexToken (make-token (deck-record Plus) 1 s) next
+        else if c == cc-minus then if nc == cc-greater then LexToken (make-token (deck-record Arrow) 2 s) (advance-char next)
+        else LexToken (make-token (deck-record Minus) 1 s) next
+        else if c == cc-star then LexToken (make-token (deck-record Star) 1 s) next
+        else if c == cc-slash then if nc == cc-equals then LexToken (make-token (deck-record NotEquals) 2 s) (advance-char next)
+        else LexToken (make-token (deck-record Slash) 1 s) next
+        else if c == cc-equals then if nc == cc-equals then let next2 = advance-char next
+   in let nc2 = if is-at-end next2 then 0 else peek-code next2
+   in if nc2 == cc-equals then LexToken (make-token (deck-record TripleEquals) 3 s) (advance-char next2)
+                else LexToken (make-token (deck-record DoubleEquals) 2 s) next2
+           else LexToken (make-token (deck-record Equals) 1 s) next
+        else if c == cc-colon then if nc == cc-colon then LexToken (make-token (deck-record ColonColon) 2 s) (advance-char next)
+        else LexToken (make-token (deck-record Colon) 1 s) next
+        else if c == cc-pipe then if nc == cc-minus then LexToken (make-token (deck-record Turnstile) 2 s) (advance-char next)
+        else if nc == cc-greater then LexToken (make-token (deck-record PipeForward) 2 s) (advance-char next)
+        else LexToken (make-token (deck-record Pipe) 1 s) next
+        else if c == cc-less then if nc == cc-equals then LexToken (make-token (deck-record LessOrEqual) 2 s) (advance-char next)
+        else if nc == cc-minus then LexToken (make-token (deck-record LeftArrow) 2 s) (advance-char next)
+        else LexToken (make-token (deck-record LessThan) 1 s) next
+        else if c == cc-greater then if nc == cc-equals then LexToken (make-token (deck-record GreaterOrEqual) 2 s) (advance-char next)
+        else LexToken (make-token (deck-record GreaterThan) 1 s) next
+        else LexToken (make-token (deck-record ErrorToken) 1 s) next
+
+Section: Char Literal
+  scan-char-literal : LexState -> LexStep
+  scan-char-literal (s) =
+   let s1 = advance-char s
+   in if is-at-end s1 then LexToken (make-token (deck-record ErrorToken) (s1.offset - s.offset) s) s1
+      else if peek-code s1 == cc-backslash then let s2 = advance-char s1
+   in if is-at-end s2 then LexToken (make-token (deck-record ErrorToken) (s2.offset - s.offset) s) s2
+   else let esc-code = peek-code s2
+   in let s3 = advance-char s2
+   in let s4 = if is-at-end s3 then s3 else if peek-code s3 == cc-single-quote then advance-char s3 else s3
+   in let esc-span = span-at (s1.line) (s1.column) (s1.offset) 2 (s1.file-id)
+   in let s5 = if esc-code == cc-lower-t then add-lex-error s4 cdx-invalid-tab-escape "\\t escape is not valid in CCE; use a space character instead" esc-span
+               else if esc-code == cc-lower-r then add-lex-error s4 cdx-invalid-carriage-return-escape "\\r escape is not valid in CCE; use '\\n' for newlines" esc-span
+               else s4
+   in LexToken (make-token (deck-record CharLiteral) (s5.offset - s.offset) s) s5
+   else let s2 = advance-char s1
+   in let s3 = if is-at-end s2 then s2 else if peek-code s2 == cc-single-quote then advance-char s2 else s2
+   in LexToken (make-token (deck-record CharLiteral) (s3.offset - s.offset) s) s3
+
+Section: Tokenize All
+  TokenizeResult = record {
+   tokens : List Token,
+   errors : List Diagnostic
+  }
+
+  LexCollected = record {
+   collected-tokens : LinkedList Token,
+   collected-errors : LinkedList Diagnostic
+  }
+
+  tokenize-collect : LexState, LinkedList Token -> LexCollected
+  tokenize-collect (st) (acc) =
+   when scan-token st
+    is LexToken (tok) (next) ->
+     if tok.kind == EndOfFile then LexCollected { collected-tokens = __linked-list-push acc tok, collected-errors = next.errors }
+      else tokenize-collect next (__linked-list-push acc tok)
+    is LexEnd ->
+     LexCollected { collected-tokens = __linked-list-push acc (make-token (deck-record EndOfFile) 0 st), collected-errors = st.errors }
+
+  tokenize : Text, Integer -> TokenizeResult
+  tokenize (src) (fid) =
+   let raw = tokenize-collect (make-lex-state src fid []) []
+   in TokenizeResult { tokens = __linked-list-to-list (raw.collected-tokens), errors = __linked-list-to-list (raw.collected-errors) }
+
+  tokenize-into : Text, Integer, Boolean -> TokenizeResult
+  tokenize-into (src) (fid) (prose) =
+   let raw = tokenize-collect (make-lex-state-prose src fid [] prose) []
+   in deck-record (TokenizeResult { tokens = __linked-list-to-list (raw.collected-tokens), errors = __linked-list-to-list (raw.collected-errors) })
+
+Page 1
+

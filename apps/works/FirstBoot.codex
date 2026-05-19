@@ -1,0 +1,237 @@
+Chapter: FirstBoot
+  cites Works chapter UefiConsole
+  cites Works chapter DevConsoleMenu
+  cites Works chapter DevConsole
+  cites Works chapter AgentAcquisition
+  cites Works chapter AgentRuntime
+  cites Works chapter AgentCoordinator
+  cites Works chapter CdxInspector
+  cites Works chapter SeedVerify
+  cites Foreword chapter Maybe
+  cites Kernel chapter DiskFacts
+  cites Kernel chapter IdentityManager
+
+ First-boot experience. When Codex boots from a USB stick for the
+ first time (no IdentityFact in DiskFacts), FirstBoot runs the
+ first-boot wizard: generate and encrypt identity, choose or
+ acquire an agent, configure upstream, and enter the UEFI console.
+
+ On subsequent boots, FirstBoot checks DiskFacts for an existing
+ identity, prompts for the passphrase, decrypts the key into the
+ pinned kernel memory region, and proceeds to the console or
+ configured boot target.
+
+ We say:
+
+Section: First Boot State
+
+  FirstBootPhase =
+    | PhaseWelcome
+    | PhaseIdentity
+    | PhaseAgentSelect
+    | PhaseAgentSetup
+    | PhaseUpstream
+    | PhaseModeSelect
+    | PhaseSaveConfig
+    | PhaseComplete
+
+  FirstBootState = record {
+    phase : FirstBootPhase,
+    disk-store : DiskFactStore,
+    agent-package : Maybe AgentPackage,
+    agent-runtime : AgentRuntimeState,
+    upstream : UpstreamConfig,
+    selected-mode : BootMode,
+    config-saved : Boolean,
+    status : Text
+  }
+
+  BootMode =
+    | BootDevConsole
+    | BootUi
+    | BootSerialRepl
+
+  boot-mode-label : BootMode -> Text
+  boot-mode-label (m) = when m
+    is BootDevConsole -> "Dev Console (UEFI text)"
+    is BootUi -> "Graphical UI (GOP framebuffer)"
+    is BootSerialRepl -> "Serial REPL (headless)"
+
+Section: Initialization
+
+  first-boot-init : DiskFactStore -> FirstBootState
+  first-boot-init (store) = FirstBootState {
+    phase = PhaseWelcome,
+    disk-store = store,
+    agent-package = None,
+    agent-runtime = runtime-init,
+    upstream = default-upstream,
+    selected-mode = BootDevConsole,
+    config-saved = False,
+    status = ""
+  }
+
+Section: Boot Entry Point
+
+  first-boot-entry : DiskFactStore, Integer -> DiskFactStore
+  first-boot-entry (store) (timestamp) =
+    if sysdb-is-fresh store then
+      first-boot-fresh store timestamp
+    else
+      first-boot-returning store
+
+  first-boot-fresh : DiskFactStore, Integer -> DiskFactStore
+  first-boot-fresh (store) (timestamp) =
+    let w0 = idm-show-lines welcome-lines
+    in let w1 = first-boot-wait-enter
+    in let result = idm-first-boot store timestamp
+    in when (result.1)
+      is IdmOk -> result.0
+      is IdmWrongPassphrase -> result.0
+      is IdmNoIdentity -> result.0
+      is IdmError (msg) ->
+        let w2 = idm-show-lines ["  Error: " & msg]
+        in result.0
+
+  first-boot-returning : DiskFactStore -> DiskFactStore
+  first-boot-returning (store) =
+    first-boot-unlock-loop store 3
+
+  first-boot-unlock-loop : DiskFactStore, Integer -> DiskFactStore
+  first-boot-unlock-loop (store) (retries) =
+    if retries <= 0 then
+      let w = idm-show-lines ["", "  Too many failed attempts.", ""]
+      in store
+    else let result = idm-unlock store
+    in when (result.1)
+      is IdmOk ->
+        let w = idm-show-lines ["", "  Identity unlocked.", ""]
+        in result.0
+      is IdmWrongPassphrase ->
+        let w = idm-show-lines ["  Wrong passphrase. Try again.", ""]
+        in first-boot-unlock-loop store (retries - 1)
+      is IdmNoIdentity ->
+        let w = idm-show-lines ["  No identity found on this stick.", ""]
+        in store
+      is IdmError (msg) ->
+        let w = idm-show-lines ["  Error: " & msg]
+        in store
+
+  first-boot-wait-enter : Integer
+  first-boot-wait-enter =
+    let ch = read-key
+    in if ch == 13 then 0
+    else if ch == 10 then 0
+    else first-boot-wait-enter
+
+Section: Welcome Screen
+
+  welcome-lines : List Text
+  welcome-lines = [
+    "",
+    "  ================================================================",
+    "                      Welcome to Codex",
+    "  ================================================================",
+    "",
+    "  A self-sustaining operating system, compiler, and development",
+    "  environment. Everything on this device was compiled by itself.",
+    "",
+    "  This is first boot. We will:",
+    "    1. Generate your identity (Ed25519 keypair)",
+    "    2. Set up an AI agent (optional)",
+    "    3. Choose your preferred interface",
+    "",
+    "  Press Enter to begin.",
+    ""
+  ]
+
+Section: Identity
+
+ Identity generation, encryption, and persistence are handled by
+ IdentityManager (codex/os/kernel/IdentityManager.codex). The
+ first-boot-entry function above calls idm-first-boot for fresh
+ sticks and idm-unlock for returning users. The private key is
+ stored encrypted in DiskFacts (AES-256-CBC, HKDF-SHA256 key
+ derivation from passphrase) and decrypted into a pinned kernel
+ memory region at unlock time.
+
+Section: Agent Selection
+
+  agent-select-lines : BundledAgentResult -> List Text
+  agent-select-lines (bundled) = [
+    "",
+    "  AI Agent Setup",
+    "  ==============",
+    "",
+    "  An agent helps you write code, navigate the codebase,",
+    "  run builds, and debug problems. It runs locally on this",
+    "  device. For harder problems it can escalate to a larger",
+    "  model on a remote server.",
+    "",
+    "  Available agents:"
+  ] & when bundled
+    is BundledFound (path) -> ["    [B] Bundled agent at " & path]
+    is BundledNone -> ["    (no bundled agent on this image)"]
+  & [
+    "    [L] Load from USB drive or disk path",
+    "    [D] Download from network",
+    "    [S] Skip (no agent)",
+    ""
+  ]
+
+Section: Upstream Configuration
+
+  upstream-config-lines : List Text
+  upstream-config-lines = [
+    "",
+    "  Upstream Server (optional)",
+    "  ==========================",
+    "",
+    "  For complex tasks, the local agent can escalate to a",
+    "  full-size model on a remote server. Enter the server",
+    "  address or press Enter to skip.",
+    ""
+  ]
+
+Section: Mode Selection
+
+  mode-select-menu : MenuState
+  mode-select-menu = menu-new "Choose Interface" [
+    menu-item "Dev Console (text menus, code browser, compiler)" "dev",
+    menu-item "Graphical UI (framebuffer, widgets, mouse)" "ui",
+    menu-item "Serial REPL (headless, for automation)" "serial"
+  ]
+
+Section: Configuration Persistence
+
+ Boot configuration is stored in DiskFacts via SysBootConfig
+ (defined in DiskFacts.codex). The sysdb-write-boot-config and
+ sysdb-find-boot-config functions handle serialization. The
+ IdentityManager writes the initial BootConfigFact during the
+ first-boot ceremony.
+
+  first-boot-save-mode : DiskFactStore, BootMode, Integer -> DiskFactStore
+  first-boot-save-mode (store) (mode) (timestamp) =
+    let mode-int = when mode
+      is BootDevConsole -> sysdb-boot-mode-console
+      is BootUi -> sysdb-boot-mode-ui
+      is BootSerialRepl -> sysdb-boot-mode-serial
+    in let cfg = SysBootConfig {
+      sbc-boot-mode = mode-int,
+      sbc-boot-partition = 0,
+      sbc-boot-drive-serial = ""
+    }
+    in let store2 = sysdb-write-boot-config store cfg timestamp
+    in disk-checkpoint store2
+
+  first-boot-load-mode : DiskFactStore -> BootMode
+  first-boot-load-mode (store) =
+    let cfg-maybe = sysdb-find-boot-config store
+    in when cfg-maybe
+      is None -> BootDevConsole
+      is Just (cfg) ->
+        if cfg.sbc-boot-mode == sysdb-boot-mode-ui then BootUi
+        else if cfg.sbc-boot-mode == sysdb-boot-mode-serial then BootSerialRepl
+        else BootDevConsole
+
+Page 1

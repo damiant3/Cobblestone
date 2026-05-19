@@ -1,0 +1,102 @@
+Chapter: NicPing
+  cites Codex chapter General
+
+ Test NIC: send an ARP request via NE2000 register I/O, check for reply.
+
+Section: NE2000 Ports
+  ne2k-cr : Integer = 768
+  ne2k-bnry : Integer = 771
+  ne2k-tpsr : Integer = 772
+  ne2k-tbcr0 : Integer = 773
+  ne2k-tbcr1 : Integer = 774
+  ne2k-isr : Integer = 775
+  ne2k-rsar0 : Integer = 776
+  ne2k-rsar1 : Integer = 777
+  ne2k-rbcr0 : Integer = 778
+  ne2k-rbcr1 : Integer = 779
+  ne2k-data : Integer = 784
+  ne2k-tx-page : Integer = 64
+
+Section: Helpers
+  setup-dma-write : Integer, Integer -> Integer
+  setup-dma-write (page) (count) =
+    let a = port-out-byte ne2k-rsar0 0
+    in let b = port-out-byte ne2k-rsar1 page
+    in let c = port-out-byte ne2k-rbcr0 (bit-and count 255)
+    in let d = port-out-byte ne2k-rbcr1 (bit-shr count 8)
+    in port-out-byte ne2k-cr 18
+
+  setup-dma-read : Integer, Integer, Integer -> Integer
+  setup-dma-read (lo) (hi) (count) =
+    let a = port-out-byte ne2k-rsar0 lo
+    in let b = port-out-byte ne2k-rsar1 hi
+    in let c = port-out-byte ne2k-rbcr0 (bit-and count 255)
+    in let d = port-out-byte ne2k-rbcr1 (bit-shr count 8)
+    in port-out-byte ne2k-cr 10
+
+  w : Integer -> Integer
+  w (byte) = port-out-byte ne2k-data byte
+
+  r : Integer
+  r = port-in-byte ne2k-data
+
+  transmit : Integer -> Integer
+  transmit (count) =
+    let a = port-out-byte ne2k-tpsr ne2k-tx-page
+    in let b = port-out-byte ne2k-tbcr0 (bit-and count 255)
+    in let c = port-out-byte ne2k-tbcr1 (bit-shr count 8)
+    in port-out-byte ne2k-cr 38
+
+  check-rx : Integer
+  check-rx =
+    let a = port-out-byte ne2k-cr 98
+    in let curr = port-in-byte (768 + 7)
+    in let b = port-out-byte ne2k-cr 34
+    in let bnry = port-in-byte ne2k-bnry
+    in if curr == bnry then 0 else 1
+
+Section: Body
+  opening : [Console] Nothing = act
+    let status = net-status
+    in if status == 0 then print-line "FAIL:no-nic"
+    else act
+      let dma = setup-dma-write ne2k-tx-page 42
+      in let d0 = w 255 in let d1 = w 255 in let d2 = w 255
+      in let d3 = w 255 in let d4 = w 255 in let d5 = w 255
+      in let s0 = w (net-get-hwaddr 0) in let s1 = w (net-get-hwaddr 1)
+      in let s2 = w (net-get-hwaddr 2) in let s3 = w (net-get-hwaddr 3)
+      in let s4 = w (net-get-hwaddr 4) in let s5 = w (net-get-hwaddr 5)
+      in let et0 = w 8 in let et1 = w 6
+      in let hw0 = w 0 in let hw1 = w 1
+      in let pt0 = w 8 in let pt1 = w 0
+      in let hl = w 6 in let pl = w 4
+      in let op0 = w 0 in let op1 = w 1
+      in let sm0 = w (net-get-hwaddr 0) in let sm1 = w (net-get-hwaddr 1)
+      in let sm2 = w (net-get-hwaddr 2) in let sm3 = w (net-get-hwaddr 3)
+      in let sm4 = w (net-get-hwaddr 4) in let sm5 = w (net-get-hwaddr 5)
+      in let si0 = w 10 in let si1 = w 0 in let si2 = w 2 in let si3 = w 15
+      in let tm0 = w 0 in let tm1 = w 0 in let tm2 = w 0
+      in let tm3 = w 0 in let tm4 = w 0 in let tm5 = w 0
+      in let ti0 = w 10 in let ti1 = w 0 in let ti2 = w 2 in let ti3 = w 2
+      in let tx = transmit 42
+      in let isr = port-in-byte ne2k-isr
+      in act
+        print-line ("tx isr=" & show isr)
+        let has-rx = check-rx
+        in act
+          print-line ("rx=" & show has-rx)
+          if has-rx == 1 then act
+            let rd = setup-dma-read 0 70 42
+            in let rxb0 = r in let rxb1 = r in let rxb2 = r in let rxb3 = r
+            in act
+              print-line ("hdr: " & show rxb0 & " " & show rxb1 & " " & show rxb2 & " " & show rxb3)
+              print-line "PASS"
+            end
+          end
+          else print-line "FAIL:no-reply"
+        end
+      end
+    end
+  end
+
+Page 1

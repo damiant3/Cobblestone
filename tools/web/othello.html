@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Codex — Othello</title>
+<link rel="stylesheet" href="/web/style.css?v={{VERSION}}">
+<style>
+  body { background: #0a0d0a; }
+  .game-page { max-width: 600px; margin: 0 auto; }
+  .bg-scene { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: url('/assets/games/othello/bg-scene.png') center/cover no-repeat;
+    filter: brightness(0.3) blur(2px); z-index: 0; }
+  .content { position: relative; z-index: 1; }
+  .board-wrap { background: #1a3a2a88; border: 3px solid #88664488; border-radius: 8px; padding: 8px;
+    margin-bottom: 12px; display: flex; justify-content: center; backdrop-filter: blur(4px);
+    box-shadow: 0 8px 30px rgba(0,0,0,0.4); }
+  .ot-grid { display: grid; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr);
+    gap: 2px; background: #1a6a37; padding: 4px; border-radius: 4px; aspect-ratio: 1; }
+  .ot-cell { background: #1a7a37; border-radius: 2px; display: flex; align-items: center;
+    justify-content: center; aspect-ratio: 1; }
+  .ot-piece { width: 80%; aspect-ratio: 1; border-radius: 50%;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.5), inset 0 1px 3px rgba(255,255,255,0.15); transition: all 0.2s; }
+  .ot-black { background: radial-gradient(circle at 35% 35%, #3a3a3a, #0a0a0a); border: 1px solid #555; }
+  .ot-white { background: radial-gradient(circle at 35% 35%, #fff, #ccc); border: 1px solid #aaa; }
+  .score-bar { display: flex; gap: 24px; justify-content: center; margin-bottom: 10px; font-size: 14px; }
+  .score-bk { color: #aaa; } .score-wh { color: #f5e6c8; }
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+  .controls button { background: linear-gradient(180deg, #2a4a2a, #1a2a1a);
+    border: 1px solid #886644; border-radius: 6px; color: #c8a878;
+    font-family: inherit; font-size: 13px; padding: 6px 16px; cursor: pointer; text-transform: uppercase; letter-spacing: 1px; }
+  .controls button:hover { color: #f5e6c8; }
+  .controls button:disabled { opacity: 0.3; }
+  #status-line { color: #c8a878; font-size: 13px; margin-bottom: 10px; text-align: center; }
+  .speed-label { color: #88664466; font-size: 12px; }
+  .engine-tag { background: #1a2a1a; color: #c8a878; font-size: 10px; padding: 2px 8px;
+    border-radius: 4px; margin-left: 12px; border: 1px solid #88664444; }
+</style>
+</head>
+<body>
+<div class="bg-scene"></div>
+<nav class="topbar" style="background:#0a0d0a;border-color:#88664422">
+  <span class="topbar-logo" style="color:#c8a878">&#x2588; CODEX</span>
+  <a href="/#games" class="tab-btn" style="color:#88664466">&#x2190; Games</a>
+  <span class="tab-btn active" style="color:#c8a878;border-color:#c8a878">Othello</span>
+  <span class="engine-tag">Codex VM</span>
+</nav>
+<div class="content game-page">
+  <div class="controls">
+    <button onclick="startGame()">&#x25B6; Play</button>
+    <button id="btn-pause" onclick="togglePause()" disabled>&#x23F8; Pause</button>
+    <button id="btn-step" onclick="stepOnce()" disabled>&#x23ED; Step</button>
+    <button onclick="resetGame()">&#x21BB; Reset</button>
+    <span class="speed-label">Speed:</span>
+    <input type="range" id="speed" min="1" max="10" value="5" style="width:80px;accent-color:#c8a878" oninput="updateSpeed()">
+  </div>
+  <div id="status-line">A game of turning stones.</div>
+  <div class="score-bar">
+    <span class="score-bk">&#x26AB; Black: <span id="sc-b">2</span></span>
+    <span class="score-wh">&#x26AA; White: <span id="sc-w">2</span></span>
+    <span style="color:#88664466">Move: <span id="sc-m">0</span></span>
+  </div>
+  <div class="board-wrap"><div class="ot-grid" id="board"></div></div>
+</div>
+<script>
+var state,running=false,paused=false,timer,delay=300;
+function updateSpeed(){var v=parseInt(document.getElementById('speed').value);delay=[2000,1200,800,500,350,250,150,80,30,5][v-1]||250}
+async function api(p){try{var r=await fetch(p);return r.json()}catch(e){return null}}
+function render(s){var h='';for(var i=0;i<64;i++){var v=s.cells[i];var piece=v===1?'<div class="ot-piece ot-black"></div>':v===2?'<div class="ot-piece ot-white"></div>':'';h+='<div class="ot-cell">'+piece+'</div>'}document.getElementById('board').innerHTML=h;document.getElementById('sc-b').textContent=s.black;document.getElementById('sc-w').textContent=s.white;document.getElementById('sc-m').textContent=s.moves}
+async function resetGame(){clearTimeout(timer);running=false;paused=false;state=await api('/api/othello/new');if(state)render(state);document.getElementById('status-line').textContent='A game of turning stones.';document.getElementById('btn-pause').disabled=true;document.getElementById('btn-step').disabled=true}
+async function startGame(){await resetGame();running=true;document.getElementById('btn-pause').disabled=false;document.getElementById('btn-step').disabled=false;updateSpeed();scheduleTick()}
+function togglePause(){if(!running)return;paused=!paused;document.getElementById('btn-pause').textContent=paused?'▶ Resume':'⏸ Pause';document.getElementById('btn-step').disabled=!paused;if(!paused)scheduleTick()}
+function scheduleTick(){if(!paused&&running)timer=setTimeout(tick,delay)}
+async function stepOnce(){if(running)await tick()}
+async function tick(){if(!running||!state||state.done){if(state){var w=state.black>state.white?'Black':'White';document.getElementById('status-line').textContent=w+' prevails. (B:'+state.black+' W:'+state.white+')';running=false}return}state=await api('/api/othello/step');if(!state){running=false;return}render(state);if(state.done){var w=state.black>state.white?'Black':'White';document.getElementById('status-line').textContent=w+' prevails. (B:'+state.black+' W:'+state.white+')';running=false;return}document.getElementById('status-line').textContent=(state.cur===1?'Black':'White')+"'s contemplation";scheduleTick()}
+updateSpeed();resetGame();
+</script>
+</body>
+</html>

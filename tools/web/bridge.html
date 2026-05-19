@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Codex — Bridge</title>
+<link rel="stylesheet" href="/web/style.css?v={{VERSION}}">
+<style>
+  body { background: #0d0a06; }
+  .game-page { max-width: 800px; margin: 0 auto; }
+  .bg-scene { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: url('/assets/games/bridge/bg-scene.png') center/cover no-repeat;
+    filter: brightness(0.25) blur(2px); z-index: 0; }
+  .content { position: relative; z-index: 1; }
+
+  .table { background: url('/assets/games/bridge/table.png') center/cover;
+    border: 3px solid #5a4a2a; border-radius: 12px; padding: 30px;
+    margin-bottom: 16px; position: relative;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.7), inset 0 2px 12px rgba(0,0,0,0.4); }
+
+  .seats { display: grid; grid-template-areas: '. north .' 'west center east' '. south .';
+    grid-template-columns: 1fr 2fr 1fr; grid-template-rows: auto auto auto; gap: 12px; }
+  .seat { background: #1a140888; border: 1px solid #8a7a4a33; border-radius: 8px;
+    padding: 12px; text-align: center; backdrop-filter: blur(4px); }
+  .seat-north { grid-area: north; } .seat-south { grid-area: south; }
+  .seat-east { grid-area: east; } .seat-west { grid-area: west; }
+  .seat-center { grid-area: center; display: flex; align-items: center; justify-content: center; min-height: 80px; }
+  .seat-label { font-size: 10px; color: #8a7a4a66; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 4px; }
+  .seat-cards { font-size: 14px; color: #d4c8a8; letter-spacing: 2px; word-spacing: 4px; }
+  .suit-s { color: #aaa; } .suit-h { color: #c44; } .suit-d { color: #c84; } .suit-c { color: #8a8; }
+
+  .result-text { font-size: 20px; font-weight: bold; color: #d4c8a8; letter-spacing: 2px;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.5); }
+  .result-sub { font-size: 12px; color: #8a7a4a66; margin-top: 6px; }
+
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; justify-content: center; }
+  .controls button { background: linear-gradient(180deg, #2a2210, #1a1408);
+    border: 1px solid #8a7a4a; border-radius: 6px; color: #d4c8a8;
+    font-family: inherit; font-size: 14px; padding: 10px 28px; cursor: pointer;
+    letter-spacing: 1px; text-transform: uppercase; }
+  .controls button:hover { color: #f5e6c8; }
+  .controls button:disabled { opacity: 0.3; }
+  .engine-tag { background: #1a1408; color: #d4c8a8; font-size: 10px; padding: 2px 8px;
+    border-radius: 4px; margin-left: 12px; border: 1px solid #8a7a4a44; }
+  .history { background: #0d0a06cc; border: 1px solid #8a7a4a22; border-radius: 6px 6px 0 0;
+    padding: 8px 14px; max-height: 80px; overflow-y: auto; font-size: 11px;
+    color: #8a7a4a66; line-height: 1.6; backdrop-filter: blur(4px);
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 10; }
+</style>
+</head>
+<body>
+<div class="bg-scene"></div>
+<nav class="topbar" style="background:#0d0a06;border-color:#5a4a2a22">
+  <span class="topbar-logo" style="color:#d4c8a8">&#x2588; CODEX</span>
+  <a href="/#games" class="tab-btn" style="color:#8a7a4a66">&#x2190; Games</a>
+  <span class="tab-btn active" style="color:#d4c8a8;border-color:#d4c8a8">Bridge</span>
+  <span class="engine-tag">Codex VM</span>
+</nav>
+<div class="content game-page">
+  <div class="controls"><button onclick="dealHand()">&#x2660; Deal Hand</button></div>
+  <div class="table">
+    <div class="seats">
+      <div class="seat seat-north"><div class="seat-label">North</div><div class="seat-cards" id="north"></div></div>
+      <div class="seat seat-west"><div class="seat-label">West</div><div class="seat-cards" id="west"></div></div>
+      <div class="seat seat-center" id="result"><div style="color:#8a7a4a44;font-style:italic">Shall we play a rubber?</div></div>
+      <div class="seat seat-east"><div class="seat-label">East</div><div class="seat-cards" id="east"></div></div>
+      <div class="seat seat-south"><div class="seat-label">South</div><div class="seat-cards" id="south"></div></div>
+    </div>
+  </div>
+  <div class="history" id="history"></div>
+</div>
+<script>
+var S={s:'<span class="suit-s">&#x2660;</span>',h:'<span class="suit-h">&#x2665;</span>',d:'<span class="suit-d">&#x2666;</span>',c:'<span class="suit-c">&#x2663;</span>'};
+var RANKS='A23456789TJQK',SUITS='shdc';
+function rhand(){var h='';for(var i=0;i<13;i++){var r=RANKS[Math.floor(Math.random()*13)];var s=SUITS[Math.floor(Math.random()*4)];h+=r+S[s]+' '}return h}
+
+async function dealHand(){
+  ['north','south','east','west'].forEach(function(d){document.getElementById(d).innerHTML=rhand()});
+  document.getElementById('result').innerHTML='<div style="color:#d4c8a888;font-style:italic">Bidding...</div>';
+  try{
+    var r=await fetch('/api/run/bridge?seed='+(Date.now()&0x7FFFFFFF));var d=await r.json();
+    ['north','south','east','west'].forEach(function(d){document.getElementById(d).innerHTML=rhand()});
+    document.getElementById('result').innerHTML='<div class="result-text">'+d.result+'</div>';
+    document.getElementById('history').innerHTML=d.result+'<br>'+document.getElementById('history').innerHTML;
+  }catch(e){document.getElementById('result').innerHTML='<div style="color:#c44">'+e.message+'</div>'}
+}
+</script>
+</body>
+</html>

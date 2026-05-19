@@ -1,0 +1,149 @@
+Chapter: SceneGraph
+  cites Math chapter Quaternion
+  cites Math chapter Matrix4
+
+ 3D scene tree with parent-child hierarchy and world transform
+ propagation. Each node has a local transform; world transform
+ is the product of all ancestors. Fixed-point scale 1000.
+
+ We say:
+
+Section: Types
+
+  SceneNodeKind =
+    | SnkEmpty
+    | SnkMesh (Integer)
+    | SnkCamera
+    | SnkLight (Integer)
+    | SnkGroup
+
+  SceneGraphNode = record {
+    sgn-name : Text,
+    sgn-kind : SceneNodeKind,
+    sgn-position : Vec3,
+    sgn-rotation : Quat,
+    sgn-scale : Vec3,
+    sgn-parent : Integer,
+    sgn-visible : Boolean,
+    sgn-id : Integer
+  }
+
+  SceneGraph3D = record {
+    sg-nodes : List SceneGraphNode,
+    sg-count : Integer,
+    sg-next-id : Integer
+  }
+
+Section: Construction
+
+  scene-graph-new : SceneGraph3D
+  scene-graph-new = SceneGraph3D {
+    sg-nodes = [],
+    sg-count = 0,
+    sg-next-id = 1
+  }
+
+Section: Node Management
+
+  sg-add-node : SceneGraph3D, Text, SceneNodeKind, Integer -> SceneGraph3D
+  sg-add-node (sg) (name) (kind) (parent-id) =
+    let node = SceneGraphNode {
+      sgn-name = name,
+      sgn-kind = kind,
+      sgn-position = vec3-zero,
+      sgn-rotation = quat-identity,
+      sgn-scale = vec3-new 1000 1000 1000,
+      sgn-parent = parent-id,
+      sgn-visible = True,
+      sgn-id = sg.sg-next-id
+    }
+    in SceneGraph3D {
+      sg-nodes = list-push (sg.sg-nodes) node,
+      sg-count = sg.sg-count + 1,
+      sg-next-id = sg.sg-next-id + 1
+    }
+
+  sg-get-node : SceneGraph3D, Integer -> SceneGraphNode
+  sg-get-node (sg) (idx) = list-at (sg.sg-nodes) idx
+
+  sg-find-by-id : SceneGraph3D, Integer -> Integer
+  sg-find-by-id (sg) (node-id) = sg-find-loop (sg.sg-nodes) node-id 0 (sg.sg-count)
+
+  sg-find-loop : List SceneGraphNode, Integer, Integer, Integer -> Integer
+  sg-find-loop (nodes) (target) (i) (n) =
+    if i >= n then -1
+    else let node = list-at nodes i
+    in if node.sgn-id == target then i
+    else sg-find-loop nodes target (i + 1) n
+
+Section: Transform
+
+  sg-local-matrix : SceneGraphNode -> Mat4
+  sg-local-matrix (node) =
+    let t = mat4-translate (node.sgn-position.vx) (node.sgn-position.vy) (node.sgn-position.vz)
+    in let r = mat4-from-quat (node.sgn-rotation)
+    in let s = mat4-scale (node.sgn-scale.vx) (node.sgn-scale.vy) (node.sgn-scale.vz)
+    in mat4-mul t (mat4-mul r s)
+
+  sg-world-matrix : SceneGraph3D, Integer -> Mat4
+  sg-world-matrix (sg) (idx) =
+    if idx < 0 then mat4-identity
+    else if idx >= sg.sg-count then mat4-identity
+    else let node = sg-get-node sg idx
+    in let local = sg-local-matrix node
+    in if node.sgn-parent <= 0 then local
+    else let parent-idx = sg-find-by-id sg (node.sgn-parent)
+    in let parent-world = sg-world-matrix sg parent-idx
+    in mat4-mul parent-world local
+
+Section: Mutation
+
+  sg-set-position : SceneGraph3D, Integer, Vec3 -> SceneGraph3D
+  sg-set-position (sg) (idx) (pos) =
+    let node = sg-get-node sg idx
+    in let updated = __record-set node "sgn-position" pos
+    in __record-set sg "sg-nodes" (list-set-at (sg.sg-nodes) idx updated)
+
+  sg-set-rotation : SceneGraph3D, Integer, Quat -> SceneGraph3D
+  sg-set-rotation (sg) (idx) (rot) =
+    let node = sg-get-node sg idx
+    in let updated = __record-set node "sgn-rotation" rot
+    in __record-set sg "sg-nodes" (list-set-at (sg.sg-nodes) idx updated)
+
+  sg-set-scale : SceneGraph3D, Integer, Vec3 -> SceneGraph3D
+  sg-set-scale (sg) (idx) (scl) =
+    let node = sg-get-node sg idx
+    in let updated = __record-set node "sgn-scale" scl
+    in __record-set sg "sg-nodes" (list-set-at (sg.sg-nodes) idx updated)
+
+  sg-set-visible : SceneGraph3D, Integer, Boolean -> SceneGraph3D
+  sg-set-visible (sg) (idx) (vis) =
+    let node = sg-get-node sg idx
+    in let updated = __record-set node "sgn-visible" vis
+    in __record-set sg "sg-nodes" (list-set-at (sg.sg-nodes) idx updated)
+
+Section: Queries
+
+  sg-children : SceneGraph3D, Integer -> List Integer
+  sg-children (sg) (parent-id) = sg-children-loop sg parent-id 0 []
+
+  sg-children-loop : SceneGraph3D, Integer, Integer, List Integer -> List Integer
+  sg-children-loop (sg) (parent-id) (i) (acc) =
+    if i >= sg.sg-count then acc
+    else let node = sg-get-node sg i
+    in let acc2 = if node.sgn-parent == parent-id then list-push acc i else acc
+    in sg-children-loop sg parent-id (i + 1) acc2
+
+  sg-visible-meshes : SceneGraph3D -> List Integer
+  sg-visible-meshes (sg) = sg-vis-mesh-loop sg 0 []
+
+  sg-vis-mesh-loop : SceneGraph3D, Integer, List Integer -> List Integer
+  sg-vis-mesh-loop (sg) (i) (acc) =
+    if i >= sg.sg-count then acc
+    else let node = sg-get-node sg i
+    in let acc2 = when node.sgn-kind
+        is SnkMesh (mid) -> if node.sgn-visible then list-push acc i else acc
+        is otherwise -> acc
+    in sg-vis-mesh-loop sg (i + 1) acc2
+
+Page 1
