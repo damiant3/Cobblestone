@@ -7,9 +7,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot '..' '..' 'codex.build' 'vm-config.ps1')
+. (Join-Path $PSScriptRoot '..' '..' '..' 'build' 'vm-config.ps1')
 
-$Repo     = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
+$Repo     = (Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..')).Path
 $PlugDir  = (Resolve-Path $PSScriptRoot).Path
 $PlugCdx  = Join-Path $PlugDir 'build-output\javascript-plug.cdx'
 $IrDir    = Join-Path $PlugDir 'build-output'

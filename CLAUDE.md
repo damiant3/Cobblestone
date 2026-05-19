@@ -30,23 +30,30 @@ document is in the file above.
 
 ## Docs Index
 
-On session start, read the four mandatory documents and run
-`Get-ChildItem -Path docs -Recurse -Name` to see the live docs tree.
+On session start, read ALL live docs using parallel agents. This costs
+~20K tokens (~2% of context) and eliminates an entire class of mistakes
+where an agent doesn't know about a prior decision, a known condition,
+or a design that's relevant to the current task. Skip `docs/Designs/Done/`
+and `docs/PM/Done/` — those are historical and recoverable from
+`p4 filelog` if needed.
 
-### Mandatory Reading
+### Mandatory Reading (read directly, not via agent)
 
 - `docs/VisionAndVirtues.md` — founding vision, non-negotiables, engineering virtues
 - `docs/DevelopersGuide.md` — language syntax, types, CPL, seed rebuild procedure
 - `docs/DevelopersRulebook.md` — foreword quire catalog, library rules
-- `docs/OperatorsManual.md` — runtime memory model, allocator, build process, platform constraints
+- `docs/OperatorsManual.md` — build process, test harness, VM setup, debugging
+- `docs/ArchitectsSketchbook.md` — memory layout, registers, allocators, phase maps
 
-### Key Entry Points
+### Also Read (via parallel agents at session start)
 
 - `docs/PM/CurrentPlan.md` — current plan
 - `docs/PM/BACKLOG.md` — outstanding work items
 - `docs/Agents/PerforceProcess.md` — shelve/revert/sync protocol
-- `docs/Designs/Active/` — in-progress designs (compiler, hardware, language, OS, features, tools)
-- `docs/Stories/Vision/NewRepository.txt` — the founding prompt
+- `docs/Designs/Active/` — ALL active designs (compiler, hardware, language, OS, features, tools)
+- `docs/PM/Stories/Vision/` — founding prompts
+- `docs/Test/` — known conditions, crash investigations
+- `docs/Reference/` — UEFI spec, paper index
 
 ## Current State
 
@@ -96,31 +103,43 @@ Do not modify code you have not read. Do not guess at file contents. Do
 not assume structure from names. The self-hosted compiler has subtle
 invariants — a wrong assumption will cost hours.
 
-### 3. One thing at a time
+### 3. Read before you build
+
+A build takes 10 minutes. A read takes 30 seconds. When investigating
+a bug, read the code at the crash site before running a build to test
+a hypothesis. When a function is misbehaving, read it. When a type is
+wrong, read the type checker. Do not speculate about what code does and
+then spend a rebuild cycle confirming the speculation was wrong. The
+code is right there. Read it first, form a theory from what it actually
+says, then test. Three reads and one build beats one read and three
+builds every time.
+
+### 4. One thing at a time
 
 Do one thing. Test it. Commit it. Then do the next thing. Do not batch.
 Do not "while I'm here." The compiler is ~21,000 lines of Codex across
 52 files. A wrong change in one place surfaces as a silent corruption
 three pipeline stages later.
 
-### 4. CCE is the internal encoding
+### 5. CCE is the internal encoding
 
 Everything inside the compiler operates on Codex Character Encoding (CCE).
 Unicode conversion happens ONLY at I/O boundaries. Do not introduce Unicode
 assumptions in internal code.
 
-### 5. Never use python, WSL, or Unix tools
+### 6. WSL and Unix tools only for GDB
 
-Use PowerShell (.ps1) or Codex. Do not use WSL, bash, mtools, dd, or any
-Unix/Linux tool except for debugging memory corruption issues. Do not
-introduce dependencies on anything outside the Windows + codex-vm environment.
-If a capability is missing, build it in PowerShell or Codex.
+Use PowerShell (.ps1) or Codex for all normal work. WSL, bash, and Unix
+tools are permitted only for GDB debugging sessions (trace/probe workflow
+documented in OperatorsManual). Do not introduce dependencies on anything
+outside the Windows + codex-vm environment. If a capability is missing,
+build it in PowerShell or Codex.
 
-### 6. The entry-point identifier is `opening`
+### 7. The entry-point identifier is `opening`
 
 A Codex program's entry point is the function named `opening`, not `main`.
 
-### 7. Every review assesses memory and time-complexity risk
+### 8. Every review assesses memory and time-complexity risk
 
 This runs on finite hardware with no GC. Every review must include an
 explicit risk assessment for **heap blow-up** and **time complexity**.
