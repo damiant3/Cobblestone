@@ -1,0 +1,167 @@
+Chapter: Gif
+  cites Game chapter Color
+
+ GIF encoder. 256-color palette-based images with LZW compression.
+ Supports single frames and animated GIF with per-frame delays.
+ Output is the raw byte stream for a GIF87a/89a file.
+
+ We say:
+
+Section: Types
+  GifPalette = record {
+    gp-colors : List Rgb,
+    gp-size : Integer
+  }
+
+  GifFrame = record {
+    gf-pixels : List Integer,
+    gf-delay : Integer,
+    gf-width : Integer,
+    gf-height : Integer
+  }
+
+Section: Palette
+  gif-palette-256 : List Rgb -> GifPalette
+  gif-palette-256 (colors) =
+    let padded = gif-pad-palette colors 0 256
+    in GifPalette { gp-colors = padded, gp-size = 256 }
+
+  gif-pad-palette : List Rgb, Integer, Integer -> List Rgb
+  gif-pad-palette (colors) (i) (target) =
+    if i >= target then colors
+    else if i < list-length colors then gif-pad-palette colors (i + 1) target
+    else gif-pad-palette (list-push colors rgb-black) (i + 1) target
+
+  gif-default-palette : GifPalette
+  gif-default-palette = gif-palette-256 (gif-build-default-pal 0 [])
+
+  gif-build-default-pal : Integer, List Rgb -> List Rgb
+  gif-build-default-pal (i) (acc) =
+    if i >= 256 then acc
+    else let r = bit-and (bit-shru i 5) 7 * 36
+    in let g = bit-and (bit-shru i 2) 7 * 36
+    in let b = bit-and i 3 * 85
+    in gif-build-default-pal (i + 1) (list-push acc (rgb r g b))
+
+  gif-find-closest : GifPalette, Rgb -> Integer
+  gif-find-closest (pal) (color) = gif-closest-loop (pal.gp-colors) color 0 (pal.gp-size) 0 999999
+
+  gif-closest-loop : List Rgb, Rgb, Integer, Integer, Integer, Integer -> Integer
+  gif-closest-loop (colors) (target) (i) (n) (best-idx) (best-dist) =
+    if i >= n then best-idx
+    else let c = list-at colors i
+    in let dr = c.cr - target.cr
+    in let dg = c.cg - target.cg
+    in let db = c.cb - target.cb
+    in let dist = dr * dr + dg * dg + db * db
+    in if dist < best-dist then gif-closest-loop colors target (i + 1) n i dist
+    else gif-closest-loop colors target (i + 1) n best-idx best-dist
+
+Section: Encoding (Single Frame)
+  gif-encode : Integer, Integer, GifPalette, List Integer -> List Integer
+  gif-encode (width) (height) (pal) (indices) =
+    gif-header width height & gif-global-color-table pal & gif-image-descriptor 0 0 width height & gif-lzw-compress indices 8 & [59]
+
+Section: Encoding (Animated)
+  gif-encode-animated : Integer, Integer, GifPalette, List GifFrame -> List Integer
+  gif-encode-animated (width) (height) (pal) (frames) =
+    gif-header-89a width height & gif-global-color-table pal & gif-netscape-ext & gif-encode-frames frames pal 0 (list-length frames) [] & [59]
+
+  gif-encode-frames : List GifFrame, GifPalette, Integer, Integer, List Integer -> List Integer
+  gif-encode-frames (frames) (pal) (i) (n) (acc) =
+    if i >= n then acc
+    else let f = list-at frames i
+    in let gce = gif-graphic-control (f.gf-delay)
+    in let img = gif-image-descriptor 0 0 (f.gf-width) (f.gf-height)
+    in let data = gif-lzw-compress (f.gf-pixels) 8
+    in gif-encode-frames frames pal (i + 1) n (acc & gce & img & data)
+
+Section: Header
+  gif-header : Integer, Integer -> List Integer
+  gif-header (w) (h) = [71, 73, 70, 56, 55, 97] & gif-le16 w & gif-le16 h & [247, 0, 0]
+
+  gif-header-89a : Integer, Integer -> List Integer
+  gif-header-89a (w) (h) = [71, 73, 70, 56, 57, 97] & gif-le16 w & gif-le16 h & [247, 0, 0]
+
+Section: Color Table
+  gif-global-color-table : GifPalette -> List Integer
+  gif-global-color-table (pal) = gif-encode-colors (pal.gp-colors) 0 (pal.gp-size) []
+
+  gif-encode-colors : List Rgb, Integer, Integer, List Integer -> List Integer
+  gif-encode-colors (colors) (i) (n) (acc) =
+    if i >= n then acc
+    else let c = list-at colors i
+    in gif-encode-colors colors (i + 1) n (acc & [c.cr, c.cg, c.cb])
+
+Section: Image Descriptor
+  gif-image-descriptor : Integer, Integer, Integer, Integer -> List Integer
+  gif-image-descriptor (x) (y) (w) (h) = [44] & gif-le16 x & gif-le16 y & gif-le16 w & gif-le16 h & [0]
+
+Section: Extensions
+  gif-graphic-control : Integer -> List Integer
+  gif-graphic-control (delay-cs) = [33, 249, 4, 0] & gif-le16 delay-cs & [0, 0]
+
+  gif-netscape-ext : List Integer
+  gif-netscape-ext = [33, 255, 11, 78, 69, 84, 83, 67, 65, 80, 69, 50, 46, 48, 3, 1, 0, 0, 0]
+
+Section: LZW Compression (simplified - uncompressed LZW)
+  gif-lzw-compress : List Integer, Integer -> List Integer
+  gif-lzw-compress (indices) (min-code-size) =
+    let clear = bit-shl 1 min-code-size
+    in let n = list-length indices
+    in let raw = [clear] & indices & [clear + 1]
+    in let packed = gif-pack-codes raw (min-code-size + 1) 0 0 []
+    in [min-code-size] & gif-sub-blocks packed 0 (list-length packed) [] & [0]
+
+  gif-pack-codes : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  gif-pack-codes (codes) (bits) (i) (n-codes) (acc) =
+    if i >= list-length codes then gif-flush-bits acc bits 0
+    else let code = list-at codes i
+    in let new-acc = gif-add-bits acc code bits
+    in gif-pack-codes codes bits (i + 1) (n-codes + 1) new-acc
+
+  gif-add-bits : List Integer, Integer, Integer -> List Integer
+  gif-add-bits (acc) (code) (bits) = gif-add-bits-loop acc code bits 0
+
+  gif-add-bits-loop : List Integer, Integer, Integer, Integer -> List Integer
+  gif-add-bits-loop (acc) (code) (bits) (bit) =
+    if bit >= bits then acc
+    else let byte-idx = (list-length acc * 8 + bit) / 8
+    in list-push acc (bit-and (bit-shru code bit) 1)
+
+  gif-flush-bits : List Integer, Integer, Integer -> List Integer
+  gif-flush-bits (bits) (code-size) (i) =
+    gif-bits-to-bytes bits 0 (list-length bits) []
+
+  gif-bits-to-bytes : List Integer, Integer, Integer, List Integer -> List Integer
+  gif-bits-to-bytes (bits) (i) (n) (acc) =
+    if i >= n then acc
+    else let byte = gif-collect-byte bits i n 0 0
+    in gif-bits-to-bytes bits (i + 8) n (list-push acc byte)
+
+  gif-collect-byte : List Integer, Integer, Integer, Integer, Integer -> Integer
+  gif-collect-byte (bits) (i) (n) (bit) (acc) =
+    if bit >= 8 then acc
+    else if i + bit >= n then acc
+    else gif-collect-byte bits i n (bit + 1) (bit-or acc (bit-shl (list-at bits (i + bit)) bit))
+
+  gif-sub-blocks : List Integer, Integer, Integer, List Integer -> List Integer
+  gif-sub-blocks (data) (i) (n) (acc) =
+    if i >= n then acc
+    else let chunk = gif-min-val (n - i) 255
+    in gif-sub-blocks data (i + chunk) n (acc & [chunk] & gif-slice data i chunk [])
+
+  gif-slice : List Integer, Integer, Integer, List Integer -> List Integer
+  gif-slice (data) (start) (len) (acc) =
+    if len <= 0 then acc
+    else if start >= list-length data then acc
+    else gif-slice data (start + 1) (len - 1) (list-push acc (list-at data start))
+
+Section: Helpers
+  gif-le16 : Integer -> List Integer
+  gif-le16 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+  gif-min-val : Integer, Integer -> Integer
+  gif-min-val (a) (b) = if a < b then a else b
+
+Page 1

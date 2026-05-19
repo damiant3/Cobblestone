@@ -1,0 +1,97 @@
+Chapter: AnnotationsMigrate
+  cites Works chapter Annotation
+  cites Foreword chapter Maybe
+
+ H5/D.10: schema evolution for annotation sidecars. Each version
+ transition has a forward migration function. The verify pass
+ refuses to load files whose schema-version is newer than the
+ runtime knows; older versions are auto-migrated forward.
+
+ The first version is 1 — what every existing sidecar file
+ implicitly is, since the annotation schema has not yet been
+ versioned at the file level. v2+ migrations are one function
+ per transition.
+
+ We say:
+
+Section: Schema Version
+
+  current-schema-version : Integer = 1
+
+  AnnotationFile = record {
+    schema-version : Integer,
+    annotations : List Annotation
+  }
+
+  needs-migration : Integer -> Boolean
+  needs-migration (file-version) = file-version < current-schema-version
+
+  is-future-version : Integer -> Boolean
+  is-future-version (file-version) = file-version > current-schema-version
+
+  is-current-version : Integer -> Boolean
+  is-current-version (file-version) = file-version == current-schema-version
+
+Section: Migration Status
+
+  MigrationStatus =
+    | MigrationOk
+    | MigrationFutureVersion
+    | MigrationUnknownPath
+
+  migration-status-label : MigrationStatus -> Text
+  migration-status-label (s) = when s
+    is MigrationOk -> "ok"
+    is MigrationFutureVersion -> "future-version"
+    is MigrationUnknownPath -> "unknown-path"
+
+  MigrationResult = record {
+    status : MigrationStatus,
+    file : AnnotationFile,
+    from-version : Integer,
+    to-version : Integer
+  }
+
+Section: Migration Driver
+
+ migrate-forward picks the right chain. For v1 there is nothing
+ to do; future transitions add helpers and dispatch here.
+
+  migrate-forward : AnnotationFile -> MigrationResult
+  migrate-forward (file) =
+    if is-future-version (file.schema-version) then
+      MigrationResult {
+        status = MigrationFutureVersion,
+        file = file,
+        from-version = file.schema-version,
+        to-version = current-schema-version
+      }
+    else if is-current-version (file.schema-version) then
+      MigrationResult {
+        status = MigrationOk,
+        file = file,
+        from-version = file.schema-version,
+        to-version = current-schema-version
+      }
+    else MigrationResult {
+      status = MigrationUnknownPath,
+      file = file,
+      from-version = file.schema-version,
+      to-version = current-schema-version
+    }
+
+Section: File Construction
+
+ The verify pass and the file readers in H7+ build AnnotationFile
+ records from on-disk sidecars. Surface a constructor here so
+ callers don't reach into the record fields directly.
+
+  make-annotation-file : Integer, List Annotation -> AnnotationFile
+  make-annotation-file (version) (anns) =
+    AnnotationFile { schema-version = version, annotations = anns }
+
+  current-annotation-file : List Annotation -> AnnotationFile
+  current-annotation-file (anns) =
+    make-annotation-file current-schema-version anns
+
+Page 1

@@ -1,0 +1,154 @@
+Chapter: BitSet
+
+ Fixed-width bit set backed by a single 32-bit integer. Supports up
+ to 32 named flags. Useful for capability masks, permission sets,
+ feature toggles, and protocol flags. All operations are O(1) except
+ population count which is O(32).
+
+ A BitSet is a record containing:
+   bits -- the underlying 32-bit integer.
+
+ To bitset-empty gives BitSet,
+   creating a bit set with all bits cleared.
+
+ To bitset-all gives BitSet,
+   creating a bit set with all 32 bits set.
+
+ To bitset-from gives BitSet,
+   creating a bit set from a raw integer.
+
+ To bitset-singleton gives BitSet,
+   creating a bit set with exactly one bit set at the given position.
+
+ To bitset-set gives BitSet,
+   returning a new bit set with the given bit position set to 1.
+
+ To bitset-clear gives BitSet,
+   returning a new bit set with the given bit position cleared to 0.
+
+ To bitset-toggle gives BitSet,
+   returning a new bit set with the given bit position flipped.
+
+ To bitset-test gives Boolean,
+   True if the given bit position is set.
+
+ To bitset-union gives BitSet,
+   returning the bitwise OR of two bit sets.
+
+ To bitset-intersect gives BitSet,
+   returning the bitwise AND of two bit sets.
+
+ To bitset-difference gives BitSet,
+   returning bits in the first set that are not in the second.
+
+ To bitset-complement gives BitSet,
+   returning the bitwise NOT of the bit set.
+
+ To bitset-is-empty gives Boolean,
+   True if no bits are set.
+
+ To bitset-count gives Integer,
+   returning the number of set bits via population count.
+
+ To bitset-subset gives Boolean,
+   True if every set bit in the first set is also set in the second.
+
+ To bitset-equal gives Boolean,
+   True if both bit sets have identical bits.
+
+ To bitset-raw gives Integer,
+   returning the underlying integer value.
+
+ To format-bitset gives Text,
+   formatting the bit set as a "0x" prefixed 8-digit hex string.
+
+ We say:
+
+Section: Type
+  BitSet = record {
+    bits : Integer
+  }
+
+Section: Construction
+  bitset-empty : BitSet
+  bitset-empty = BitSet { bits = 0 }
+
+  bitset-all : BitSet
+  bitset-all = BitSet { bits = 4294967295 }
+
+  bitset-from : Integer -> BitSet
+  bitset-from (bits) = BitSet { bits = bits }
+
+  bitset-singleton : Integer -> BitSet
+  bitset-singleton (bit) = BitSet { bits = bit-shl 1 bit }
+
+Section: Operations
+  bitset-set : BitSet, Integer -> BitSet
+  bitset-set (bs) (bit) = BitSet { bits = bit-or (bs.bits) (bit-shl 1 bit) }
+
+  bitset-clear : BitSet, Integer -> BitSet
+  bitset-clear (bs) (bit) = BitSet { bits = bit-and (bs.bits) (bit-xor (bit-shl 1 bit) 4294967295) }
+
+  bitset-toggle : BitSet, Integer -> BitSet
+  bitset-toggle (bs) (bit) = BitSet { bits = bit-xor (bs.bits) (bit-shl 1 bit) }
+
+  bitset-test : BitSet, Integer -> Boolean
+  bitset-test (bs) (bit) = bit-and (bs.bits) (bit-shl 1 bit) > 0
+
+Section: Set Operations
+  bitset-union : BitSet, BitSet -> BitSet
+  bitset-union (a) (b) = BitSet { bits = bit-or (a.bits) (b.bits) }
+
+  bitset-intersect : BitSet, BitSet -> BitSet
+  bitset-intersect (a) (b) = BitSet { bits = bit-and (a.bits) (b.bits) }
+
+  bitset-difference : BitSet, BitSet -> BitSet
+  bitset-difference (a) (b) = BitSet { bits = bit-and (a.bits) (bit-xor (b.bits) 4294967295) }
+
+  bitset-complement : BitSet -> BitSet
+  bitset-complement (bs) = BitSet { bits = bit-xor (bs.bits) 4294967295 }
+
+Section: Queries
+  bitset-is-empty : BitSet -> Boolean
+  bitset-is-empty (bs) = bs.bits == 0
+
+  bitset-count : BitSet -> Integer
+  bitset-count (bs) = bitset-popcount (bs.bits) 0 32
+
+  bitset-popcount : Integer, Integer, Integer -> Integer
+  bitset-popcount (v) (i) (limit) =
+    if i >= limit then 0
+    else (if bit-and v (bit-shl 1 i) > 0 then 1 else 0) + bitset-popcount v (i + 1) limit
+
+  bitset-subset : BitSet, BitSet -> Boolean
+  bitset-subset (sub) (super) = bit-and (sub.bits) (super.bits) == sub.bits
+
+  bitset-equal : BitSet, BitSet -> Boolean
+  bitset-equal (a) (b) = a.bits == b.bits
+
+  bitset-raw : BitSet -> Integer
+  bitset-raw (bs) = bs.bits
+
+Section: Formatting
+  format-bitset : BitSet -> Text
+  format-bitset (bs) = "0x" & bitset-hex (bs.bits)
+
+  bitset-hex : Integer -> Text
+  bitset-hex (v) = bitset-hex-loop v 28 ""
+
+  bitset-hex-loop : Integer, Integer, Text -> Text
+  bitset-hex-loop (v) (shift) (acc) =
+    if shift < 0 then acc
+    else let nibble = bit-and (bit-shru v shift) 15
+    in bitset-hex-loop v (shift - 4) (acc & bitset-nibble nibble)
+
+  bitset-nibble : Integer -> Text
+  bitset-nibble (n) =
+    if n == 0 then "0" else if n == 1 then "1" else if n == 2 then "2"
+    else if n == 3 then "3" else if n == 4 then "4" else if n == 5 then "5"
+    else if n == 6 then "6" else if n == 7 then "7" else if n == 8 then "8"
+    else if n == 9 then "9" else if n == 10 then "a" else if n == 11 then "b"
+    else if n == 12 then "c" else if n == 13 then "d" else if n == 14 then "e"
+    else "f"
+
+Page 1

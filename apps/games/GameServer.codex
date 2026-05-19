@@ -1,0 +1,952 @@
+Chapter: GameServer
+  cites Games chapter Rng
+  cites Games chapter Backgammon
+  cites Games chapter TicTacToe
+  cites Games chapter Minesweeper
+  cites Games chapter Checkers
+  cites Games chapter Connect4
+  cites Games chapter Go
+  cites Games chapter Othello
+  cites Games chapter Mancala
+  cites Games chapter HexGame
+  cites Games chapter Game2048
+  cites Games chapter Life
+  cites Games chapter DotsAndBoxes
+  cites Games chapter Blackjack
+  cites Games chapter War
+  cites Games chapter Poker
+  cites Games chapter RPS
+  cites Games chapter Yahtzee
+  cites Games chapter LiarsDice
+  cites Games chapter Mastermind
+  cites Games chapter Mahjong
+  cites Games chapter Battleship
+  cites Games chapter Monopoly
+  cites Games chapter Risk
+  cites Games chapter Spider
+  cites Games chapter Sudoku
+  cites Games chapter SetGame
+  cites Games chapter RoyalUr
+  cites Games chapter Bridge
+  cites Games chapter CrazyEights
+  cites Games chapter GoFish
+  cites Games chapter Pinochle
+  cites Games chapter PokerVariants
+  cites Games chapter HexWar
+  cites Encode chapter Json
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+  cites Foreword chapter StringUtils
+
+ Bare-metal game server. All games compiled in. Step-by-step for board
+ games, run-to-completion for card and round games.
+
+ We say:
+
+Section: State
+
+  GameStore = record {
+    bg-board   : BackgammonBoard,
+    bg-rng     : Rng,
+    bg-ply     : Integer,
+    bg-active  : Boolean,
+    ttt-board  : TttBoard,
+    ttt-moves  : Integer,
+    ttt-active : Boolean,
+    ms-state   : MinesweeperState,
+    ms-active  : Boolean,
+    ck-board   : CheckerBoard,
+    ck-moves   : Integer,
+    ck-active  : Boolean,
+    ck-rng     : Rng,
+    c4-board   : Connect4Board,
+    c4-moves   : Integer,
+    c4-active  : Boolean,
+    go-board   : GoBoard,
+    go-moves   : Integer,
+    go-active  : Boolean,
+    go-rng     : Rng,
+    ot-board   : OthelloBoard,
+    ot-active  : Boolean,
+    mn-board   : MancalaBoard,
+    mn-active  : Boolean,
+    mn-rng     : Rng,
+    hx-board   : HexBoard,
+    hx-active  : Boolean,
+    g2-state   : G2048State,
+    g2-active  : Boolean,
+    lf-state   : LifeState,
+    lf-gen     : Integer,
+    lf-active  : Boolean,
+    db-board   : DotsBoard,
+    db-active  : Boolean,
+    bs-state   : BsState,
+    bs-active  : Boolean,
+    store-rng  : Rng
+  }
+
+  BgStepResult = record {
+    board  : BackgammonBoard,
+    rng    : Rng,
+    d1     : Integer,
+    d2     : Integer,
+    done   : Boolean,
+    winner : Integer
+  }
+
+  game-store-new : GameStore
+  game-store-new =
+    let r = rng-new 1
+    in GameStore {
+      bg-board = backgammon-new, bg-rng = r, bg-ply = 0, bg-active = False,
+      ttt-board = ttt-new, ttt-moves = 0, ttt-active = False,
+      ms-state = ms-new r, ms-active = False,
+      ck-board = checkers-new 1, ck-moves = 0, ck-active = False, ck-rng = r,
+      c4-board = connect4-new, c4-moves = 0, c4-active = False,
+      go-board = go-new, go-moves = 0, go-active = False, go-rng = r,
+      ot-board = othello-new, ot-active = False,
+      mn-board = mancala-new 4, mn-active = False, mn-rng = r,
+      hx-board = hex-new, hx-active = False,
+      g2-state = g2048-new r, g2-active = False,
+      lf-state = life-seed-grid 1, lf-gen = 0, lf-active = False,
+      db-board = dots-new r, db-active = False,
+      bs-state = BsState { p1-ships = bs-empty-grid, p1-tracking = bs-empty-grid, p2-ships = bs-empty-grid, p2-tracking = bs-empty-grid, p1-hits = 0, p2-hits = 0, p1-shots = 0, p2-shots = 0, rng = r, game-over = False, winner = 0 }, bs-active = False,
+      store-rng = r
+    }
+
+Section: Store Updaters
+
+  set-bg : GameStore, BackgammonBoard, Rng, Integer, Boolean -> GameStore
+  set-bg (s) (b) (r) (p) (a) =
+    let s1 = __record-set s "bg-board" b
+    in let s2 = __record-set s1 "bg-rng" r
+    in let s3 = __record-set s2 "bg-ply" p
+    in __record-set s3 "bg-active" a
+
+  set-ttt : GameStore, TttBoard, Integer, Boolean -> GameStore
+  set-ttt (s) (b) (m) (a) =
+    let s1 = __record-set s "ttt-board" b
+    in let s2 = __record-set s1 "ttt-moves" m
+    in __record-set s2 "ttt-active" a
+
+  set-ms : GameStore, MinesweeperState, Boolean -> GameStore
+  set-ms (s) (st) (a) =
+    let s1 = __record-set s "ms-state" st
+    in __record-set s1 "ms-active" a
+
+  set-ck : GameStore, CheckerBoard, Integer, Rng, Boolean -> GameStore
+  set-ck (s) (b) (m) (r) (a) =
+    let s1 = __record-set s "ck-board" b
+    in let s2 = __record-set s1 "ck-moves" m
+    in let s3 = __record-set s2 "ck-rng" r
+    in __record-set s3 "ck-active" a
+
+  set-c4 : GameStore, Connect4Board, Integer, Boolean -> GameStore
+  set-c4 (s) (b) (m) (a) =
+    let s1 = __record-set s "c4-board" b
+    in let s2 = __record-set s1 "c4-moves" m
+    in __record-set s2 "c4-active" a
+
+  set-go : GameStore, GoBoard, Integer, Rng, Boolean -> GameStore
+  set-go (s) (b) (m) (r) (a) =
+    let s1 = __record-set s "go-board" b
+    in let s2 = __record-set s1 "go-moves" m
+    in let s3 = __record-set s2 "go-rng" r
+    in __record-set s3 "go-active" a
+
+  set-ot : GameStore, OthelloBoard, Boolean -> GameStore
+  set-ot (s) (b) (a) =
+    let s1 = __record-set s "ot-board" b
+    in __record-set s1 "ot-active" a
+
+  set-mn : GameStore, MancalaBoard, Boolean -> GameStore
+  set-mn (s) (b) (a) =
+    let s1 = __record-set s "mn-board" b
+    in __record-set s1 "mn-active" a
+
+  set-hx : GameStore, HexBoard, Boolean -> GameStore
+  set-hx (s) (b) (a) =
+    let s1 = __record-set s "hx-board" b
+    in __record-set s1 "hx-active" a
+
+  set-g2 : GameStore, G2048State, Boolean -> GameStore
+  set-g2 (s) (st) (a) =
+    let s1 = __record-set s "g2-state" st
+    in __record-set s1 "g2-active" a
+
+  set-lf : GameStore, LifeState, Integer, Boolean -> GameStore
+  set-lf (s) (st) (g) (a) =
+    let s1 = __record-set s "lf-state" st
+    in let s2 = __record-set s1 "lf-gen" g
+    in __record-set s2 "lf-active" a
+
+  set-db : GameStore, DotsBoard, Boolean -> GameStore
+  set-db (s) (b) (a) =
+    let s1 = __record-set s "db-board" b
+    in __record-set s1 "db-active" a
+
+  set-bs : GameStore, BsState, Boolean -> GameStore
+  set-bs (s) (st) (a) =
+    let s1 = __record-set s "bs-state" st
+    in __record-set s1 "bs-active" a
+
+Section: Backgammon
+
+  bg-step : BackgammonBoard, Rng -> BgStepResult
+  bg-step (b) (r) =
+    let r1 = rng-next r
+    in let r2 = rng-next r1
+    in let d1 = rng-range r1 1 6
+    in let d2 = rng-range r2 1 6
+    in let b1 = bg-apply-die b d1
+    in let b2 = bg-apply-die b1 d2
+    in let b3 = if d1 == d2 then bg-apply-die b2 d1 else b2
+    in let b4 = if d1 == d2 then bg-apply-die b3 d2 else b3
+    in let next-player = 1 - b.current-player
+    in let b5 = __record-set b4 "current-player" next-player
+    in let done = bg-check-win b5
+    in let w = if done then bg-winner b5 else (-1)
+    in BgStepResult { board = b5, rng = r2, d1 = d1, d2 = d2, done = done, winner = w }
+
+Section: JSON Helpers
+
+  int-list-to-json : List Integer, Integer, Integer, List JsonValue -> List JsonValue
+  int-list-to-json (xs) (i) (len) (acc) =
+    if i >= len then acc
+    else int-list-to-json xs (i + 1) len (list-push acc (json-int (list-at xs i)))
+
+  respond-json : Text -> [Console] Integer
+  respond-json (body) = act
+    print-line-uni ("200 application/json " & body)
+    0
+  end
+
+  respond-error : Text -> [Console] Integer
+  respond-error (msg) = act
+    print-line-uni ("400 application/json {\"error\":\"" & msg & "\"}")
+    0
+  end
+
+  respond-not-found : [Console] Integer
+  respond-not-found = act
+    print-line-uni "404 text/plain Not Found"
+    0
+  end
+
+Section: Board JSON Serializers
+
+  bg-to-json : BackgammonBoard, Integer, Integer, Integer, Boolean, Integer -> Text
+  bg-to-json (b) (ply) (d1) (d2) (done) (winner) =
+    let pts = int-list-to-json (b.points) 0 24 []
+    in json-emit (json-object [
+      json-pair "points" (json-array pts),
+      json-pair "barW" (json-int (b.bar-white)),
+      json-pair "barB" (json-int (b.bar-black)),
+      json-pair "offW" (json-int (b.off-white)),
+      json-pair "offB" (json-int (b.off-black)),
+      json-pair "cur" (json-int (b.current-player)),
+      json-pair "ply" (json-int ply),
+      json-pair "d1" (json-int d1), json-pair "d2" (json-int d2),
+      json-pair "done" (json-bool done),
+      json-pair "winner" (json-int winner)
+    ])
+
+  ttt-to-json : TttBoard, Integer -> Text
+  ttt-to-json (b) (moves) =
+    let sq = int-list-to-json (b.squares) 0 9 []
+    in json-emit (json-object [
+      json-pair "squares" (json-array sq),
+      json-pair "cur" (json-int (b.current-player)),
+      json-pair "moves" (json-int moves),
+      json-pair "done" (json-bool (b.game-over)),
+      json-pair "winner" (json-int (b.winner))
+    ])
+
+  ms-to-json : MinesweeperState -> Text
+  ms-to-json (st) =
+    let rev = int-list-to-json (st.revealed) 0 81 []
+    in let adj = int-list-to-json (st.adjacent) 0 81 []
+    in let mines = int-list-to-json (st.mine-grid) 0 81 []
+    in json-emit (json-object [
+      json-pair "revealed" (json-array rev),
+      json-pair "adjacent" (json-array adj),
+      json-pair "mines" (if st.game-over then json-array mines else json-array []),
+      json-pair "cellsRevealed" (json-int (st.cells-revealed)),
+      json-pair "minesHit" (json-int (st.mines-hit)),
+      json-pair "moves" (json-int (st.moves)),
+      json-pair "done" (json-bool (st.game-over)),
+      json-pair "won" (json-bool (st.won))
+    ])
+
+  ck-to-json : CheckerBoard, Integer -> Text
+  ck-to-json (b) (moves) =
+    let cells = int-list-to-json (b.cells) 0 64 []
+    in json-emit (json-object [
+      json-pair "cells" (json-array cells),
+      json-pair "cur" (json-int (b.turn)),
+      json-pair "moves" (json-int moves),
+      json-pair "done" (json-bool (b.over)),
+      json-pair "winner" (json-int (b.winner))
+    ])
+
+  c4-to-json : Connect4Board, Integer -> Text
+  c4-to-json (b) (moves) =
+    let sq = int-list-to-json (b.squares) 0 42 []
+    in json-emit (json-object [
+      json-pair "squares" (json-array sq),
+      json-pair "cur" (json-int (b.current-player)),
+      json-pair "moves" (json-int moves),
+      json-pair "done" (json-bool (b.game-over)),
+      json-pair "winner" (json-int (b.winner))
+    ])
+
+  go-to-json : GoBoard, Integer -> Text
+  go-to-json (b) (moves) =
+    let stones = int-list-to-json (b.stones) 0 81 []
+    in json-emit (json-object [
+      json-pair "stones" (json-array stones),
+      json-pair "cur" (json-int (b.current-player)),
+      json-pair "moves" (json-int moves),
+      json-pair "blackCap" (json-int (b.black-captures)),
+      json-pair "whiteCap" (json-int (b.white-captures)),
+      json-pair "done" (json-bool (b.game-over)),
+      json-pair "blackScore" (json-int (b.black-score)),
+      json-pair "whiteScore" (json-int (b.white-score))
+    ])
+
+  ot-to-json : OthelloBoard -> Text
+  ot-to-json (b) =
+    let cells = int-list-to-json (b.cells) 0 64 []
+    in json-emit (json-object [
+      json-pair "cells" (json-array cells),
+      json-pair "cur" (json-int (b.current-player)),
+      json-pair "moves" (json-int (b.moves-made)),
+      json-pair "done" (json-bool (b.game-over)),
+      json-pair "black" (json-int (b.black-count)),
+      json-pair "white" (json-int (b.white-count))
+    ])
+
+  mn-to-json : MancalaBoard -> Text
+  mn-to-json (b) =
+    let pits = int-list-to-json (b.pits) 0 14 []
+    in json-emit (json-object [
+      json-pair "pits" (json-array pits),
+      json-pair "cur" (json-int (b.turn)),
+      json-pair "done" (json-bool (b.over))
+    ])
+
+
+  hx-to-json : HexBoard -> Text
+  hx-to-json (b) =
+    let cells = int-list-to-json (b.cells) 0 121 []
+    in json-emit (json-object [
+      json-pair "cells" (json-array cells),
+      json-pair "cur" (json-int (b.current-player)),
+      json-pair "moves" (json-int (b.moves-made)),
+      json-pair "done" (json-bool (b.game-over)),
+      json-pair "winner" (json-int (b.winner))
+    ])
+
+  g2-to-json : G2048State -> Text
+  g2-to-json (st) =
+    let grid = int-list-to-json (st.grid) 0 16 []
+    in json-emit (json-object [
+      json-pair "grid" (json-array grid),
+      json-pair "score" (json-int (st.score)),
+      json-pair "moves" (json-int (st.moves)),
+      json-pair "done" (json-bool (st.game-over))
+    ])
+
+  lf-to-json : LifeState, Integer -> Text
+  lf-to-json (st) (gen) =
+    let cells = int-list-to-json (st.cells) 0 400 []
+    in json-emit (json-object [
+      json-pair "cells" (json-array cells),
+      json-pair "alive" (json-int (st.alive-count)),
+      json-pair "gen" (json-int gen)
+    ])
+
+  db-to-json : DotsBoard -> Text
+  db-to-json (b) =
+    let edges = int-list-to-json (b.edges) 0 24 []
+    in let boxes = int-list-to-json (b.boxes) 0 9 []
+    in json-emit (json-object [
+      json-pair "edges" (json-array edges),
+      json-pair "boxes" (json-array boxes),
+      json-pair "cur" (json-int (b.current-player)),
+      json-pair "p1" (json-int (b.p1-score)),
+      json-pair "p2" (json-int (b.p2-score)),
+      json-pair "moves" (json-int (b.moves-made))
+    ])
+
+  bs-to-json : BsState -> Text
+  bs-to-json (st) =
+    let p1t = int-list-to-json ((st.p1-tracking).cells) 0 100 []
+    in let p2t = int-list-to-json ((st.p2-tracking).cells) 0 100 []
+    in let p1s = if st.game-over then int-list-to-json ((st.p1-ships).cells) 0 100 [] else []
+    in let p2s = if st.game-over then int-list-to-json ((st.p2-ships).cells) 0 100 [] else []
+    in json-emit (json-object [
+      json-pair "p1track" (json-array p1t),
+      json-pair "p2track" (json-array p2t),
+      json-pair "p1ships" (json-array p1s),
+      json-pair "p2ships" (json-array p2s),
+      json-pair "p1hits" (json-int (st.p1-hits)),
+      json-pair "p2hits" (json-int (st.p2-hits)),
+      json-pair "p1shots" (json-int (st.p1-shots)),
+      json-pair "p2shots" (json-int (st.p2-shots)),
+      json-pair "done" (json-bool (st.game-over)),
+      json-pair "winner" (json-int (st.winner))
+    ])
+
+  run-result-json : Text, Text, Integer -> Text
+  run-result-json (game) (summary) (seed) =
+    json-emit (json-object [
+      json-pair "game" (json-str game),
+      json-pair "result" (json-str summary),
+      json-pair "seed" (json-int seed)
+    ])
+
+Section: Step Functions
+
+  ttt-step : TttBoard -> TttBoard
+  ttt-step (b) =
+    if b.game-over then b
+    else let pos = ttt-ai-move b
+    in if pos < 0 then b
+    else ttt-move b pos
+
+  ms-step : MinesweeperState -> MinesweeperState
+  ms-step (st) =
+    if st.game-over then st
+    else let idx = ms-ai-pick st
+    in if idx < 0 then st
+    else ms-reveal st idx
+
+  c4-ai-step : Connect4Board -> Connect4Board
+  c4-ai-step (b) =
+    if b.game-over then b
+    else let col = c4-ai-move b
+    in connect4-drop b col
+
+  ot-ai-step : OthelloBoard -> OthelloBoard
+  ot-ai-step (b) =
+    if b.game-over then b
+    else let move = oth-ai-move b
+    in let row = move / 8
+    in let col = move - row * 8
+    in othello-place b row col
+
+  mn-ai-step : MancalaBoard -> MancalaBoard
+  mn-ai-step (b) =
+    if b.over then b
+    else let pit = mancala-ai-move b 2
+    in mancala-move b pit
+
+
+  hx-ai-step : HexBoard -> HexBoard
+  hx-ai-step (b) =
+    if b.game-over then b
+    else let move = hex-ai-move b
+    in if move < 0 then b
+    else let row = move / 11
+    in let col = move - row * 11
+    in hex-place b row col
+
+  g2-ai-step : G2048State -> G2048State
+  g2-ai-step (st) =
+    if st.game-over then st
+    else let dir = g2048-ai-dir st
+    in g2048-move st dir
+
+  bs-step : BsState -> BsState
+  bs-step (st) =
+    if st.game-over then st
+    else let r1 = rng-next (st.rng)
+    in let p1-idx = bs-ai-pick-shot (st.p1-tracking) r1
+    in let p1-row = p1-idx / 10
+    in let p1-col = p1-idx - p1-row * 10
+    in let new-p1-track = bs-shoot (st.p2-ships) (st.p1-tracking) p1-row p1-col
+    in let new-p1-hits = bs-count-hits new-p1-track 0 0
+    in let r2 = rng-next r1
+    in let p2-idx = bs-ai-pick-shot (st.p2-tracking) r2
+    in let p2-row = p2-idx / 10
+    in let p2-col = p2-idx - p2-row * 10
+    in let new-p2-track = bs-shoot (st.p1-ships) (st.p2-tracking) p2-row p2-col
+    in let new-p2-hits = bs-count-hits new-p2-track 0 0
+    in let p1-won = new-p1-hits >= bs-total-ship-cells
+    in let p2-won = new-p2-hits >= bs-total-ship-cells
+    in let over = p1-won | p2-won
+    in let winner = if p1-won then 1 else if p2-won then 2 else 0
+    in BsState { p1-ships = st.p1-ships, p1-tracking = new-p1-track, p2-ships = st.p2-ships, p2-tracking = new-p2-track, p1-hits = new-p1-hits, p2-hits = new-p2-hits, p1-shots = st.p1-shots + 1, p2-shots = st.p2-shots + 1, rng = r2, game-over = over, winner = winner }
+
+  db-ai-step : DotsBoard -> DotsBoard
+  db-ai-step (b) =
+    let edge = dots-ai-move b
+    in if edge < 0 then b
+    else dots-place b edge
+
+Section: Request Parsing
+
+  extract-path : Text -> Text
+  extract-path (line) =
+    let parts = text-split line " "
+    in if list-length parts < 2 then "/"
+    else let full = list-at parts 1
+    in let qpos = find-char full 63 0
+    in if qpos < 0 then full
+    else text-take full qpos
+
+  extract-query-param : Text, Text -> Text
+  extract-query-param (line) (key) =
+    let parts = text-split line " "
+    in if list-length parts < 2 then ""
+    else let full = list-at parts 1
+    in let qpos = find-char full 63 0
+    in if qpos < 0 then ""
+    else let qs = text-drop full (qpos + 1)
+    in find-param-value qs key
+
+  find-char : Text, Integer, Integer -> Integer
+  find-char (s) (target) (i) =
+    if i >= text-length s then (-1)
+    else if to-unicode (char-code (char-at s i)) == target then i
+    else find-char s target (i + 1)
+
+  find-param-value : Text, Text -> Text
+  find-param-value (qs) (key) =
+    let pairs = text-split qs "&"
+    in find-in-pairs pairs key 0
+
+  find-in-pairs : List Text, Text, Integer -> Text
+  find-in-pairs (pairs) (key) (i) =
+    if i >= list-length pairs then ""
+    else let pair = list-at pairs i
+    in let eqpos = find-char pair 61 0
+    in if eqpos < 0 then find-in-pairs pairs key (i + 1)
+    else let k = text-take pair eqpos
+    in if k == key then text-drop pair (eqpos + 1)
+    else find-in-pairs pairs key (i + 1)
+
+  parse-int : Text, Integer -> Integer
+  parse-int (s) (default-val) =
+    if text-length s == 0 then default-val
+    else parse-int-loop s 0 0
+
+  parse-int-loop : Text, Integer, Integer -> Integer
+  parse-int-loop (s) (i) (acc) =
+    if i >= text-length s then acc
+    else let c = to-unicode (char-code (char-at s i))
+    in if c >= 48 then
+      if c <= 57 then parse-int-loop s (i + 1) (acc * 10 + c - 48)
+      else acc
+    else acc
+
+Section: Request Dispatch
+
+  dispatch-request : GameStore, Text -> [Console] GameStore
+  dispatch-request (store) (line) =
+    let path = extract-path line
+    in if text-starts-with path "/api/backgammon/" then handle-bg store line path
+    else if text-starts-with path "/api/tictactoe/" then handle-ttt store line path
+    else if text-starts-with path "/api/minesweeper/" then handle-ms store line path
+    else if text-starts-with path "/api/checkers/" then handle-ck store line path
+    else if text-starts-with path "/api/connect4/" then handle-c4 store line path
+    else if text-starts-with path "/api/go/" then handle-go-run store line
+    else if text-starts-with path "/api/othello/" then handle-ot store line path
+    else if text-starts-with path "/api/mancala/" then handle-mn store line path
+    else if text-starts-with path "/api/hex/" then handle-hx-run store line
+    else if text-starts-with path "/api/game2048/" then handle-g2 store line path
+    else if text-starts-with path "/api/life/" then handle-lf store line path
+    else if text-starts-with path "/api/dotsandboxes/" then handle-db store line path
+    else if text-starts-with path "/api/sudoku/" then handle-sudoku-solve store line
+    else if text-starts-with path "/api/battleship/" then handle-bs store line path
+    else if text-starts-with path "/api/run/" then handle-run store line path
+    else if text-starts-with path "/api/status" then handle-status store
+    else act
+      pm0 <- respond-not-found
+      store
+    end
+
+  handle-bg : GameStore, Text, Text -> [Console] GameStore
+  handle-bg (store) (line) (path) =
+    if text-starts-with path "/api/backgammon/new" then
+      let seed = parse-int (extract-query-param line "seed") 42
+      in let board = backgammon-new
+      in let ns = set-bg store board (rng-new seed) 0 True
+      in act
+        pm0 <- respond-json (bg-to-json board 0 0 0 False (-1))
+        ns
+      end
+    else if text-starts-with path "/api/backgammon/step" then
+      if store.bg-active == False then act pm0 <- respond-error "no active game"
+        store
+      end
+      else let result = bg-step (store.bg-board) (store.bg-rng)
+      in let np = store.bg-ply + 1
+      in let ns = set-bg store (result.board) (result.rng) np (if result.done then False else True)
+      in act
+        pm0 <- respond-json (bg-to-json (result.board) np (result.d1) (result.d2) (result.done) (result.winner))
+        ns
+      end
+    else act pm0 <- respond-json (bg-to-json (store.bg-board) (store.bg-ply) 0 0 False (-1))
+        store
+      end
+
+  handle-ttt : GameStore, Text, Text -> [Console] GameStore
+  handle-ttt (store) (line) (path) =
+    if text-starts-with path "/api/tictactoe/new" then
+      let board = ttt-new
+      in let ns = set-ttt store board 0 True
+      in act
+        pm0 <- respond-json (ttt-to-json board 0)
+        ns
+      end
+    else if text-starts-with path "/api/tictactoe/step" then
+      if store.ttt-active == False then act pm0 <- respond-error "no active game"
+        store
+      end
+      else let next = ttt-step (store.ttt-board)
+      in let nm = store.ttt-moves + 1
+      in let ns = set-ttt store next nm (if next.game-over then False else True)
+      in act
+        pm0 <- respond-json (ttt-to-json next nm)
+        ns
+      end
+    else act pm0 <- respond-json (ttt-to-json (store.ttt-board) (store.ttt-moves))
+        store
+      end
+
+  handle-ms : GameStore, Text, Text -> [Console] GameStore
+  handle-ms (store) (line) (path) =
+    if text-starts-with path "/api/minesweeper/new" then
+      let seed = parse-int (extract-query-param line "seed") 33
+      in let st = ms-new (rng-new seed)
+      in let ns = set-ms store st True
+      in act
+        pm0 <- respond-json (ms-to-json st)
+        ns
+      end
+    else if text-starts-with path "/api/minesweeper/step" then
+      if store.ms-active == False then act pm0 <- respond-error "no active game"
+        store
+      end
+      else let next = ms-step (store.ms-state)
+      in let ns = set-ms store next (if next.game-over then False else True)
+      in act
+        pm0 <- respond-json (ms-to-json next)
+        ns
+      end
+    else act pm0 <- respond-json (ms-to-json (store.ms-state))
+        store
+      end
+
+  handle-ck : GameStore, Text, Text -> [Console] GameStore
+  handle-ck (store) (line) (path) =
+    if text-starts-with path "/api/checkers/new" then
+      let seed = parse-int (extract-query-param line "seed") 99
+      in let board = checkers-new seed
+      in let ns = set-ck store board 0 (rng-new seed) True
+      in act
+        pm0 <- respond-json (ck-to-json board 0)
+        ns
+      end
+    else if text-starts-with path "/api/checkers/step" then
+      if store.ck-active == False then act pm0 <- respond-error "no active game"
+        store
+      end
+      else let moves = generate-moves (store.ck-board)
+      in if list-length moves == 0 then
+        let db = __record-set (store.ck-board) "over" True
+        in let ns = set-ck store db (store.ck-moves) (store.ck-rng) False
+        in act
+        pm0 <- respond-json (ck-to-json db (store.ck-moves))
+        ns
+      end
+      else let idx = checkers-ai-move (store.ck-board) 3
+      in let next = apply-move (store.ck-board) (list-at moves idx)
+      in let nm = store.ck-moves + 1
+      in let ns = set-ck store next nm (store.ck-rng) (if next.over then False else True)
+      in act
+        pm0 <- respond-json (ck-to-json next nm)
+        ns
+      end
+    else act pm0 <- respond-json (ck-to-json (store.ck-board) (store.ck-moves))
+        store
+      end
+
+  handle-c4 : GameStore, Text, Text -> [Console] GameStore
+  handle-c4 (store) (line) (path) =
+    if text-starts-with path "/api/connect4/new" then
+      let board = connect4-new
+      in let ns = set-c4 store board 0 True
+      in act
+        pm0 <- respond-json (c4-to-json board 0)
+        ns
+      end
+    else if text-starts-with path "/api/connect4/step" then
+      if store.c4-active == False then act pm0 <- respond-error "no active game"
+        store
+      end
+      else let next = c4-ai-step (store.c4-board)
+      in let nm = store.c4-moves + 1
+      in let ns = set-c4 store next nm (if next.game-over then False else True)
+      in act
+        pm0 <- respond-json (c4-to-json next nm)
+        ns
+      end
+    else act pm0 <- respond-json (c4-to-json (store.c4-board) (store.c4-moves))
+        store
+      end
+
+  handle-go-run : GameStore, Text -> [Console] GameStore
+  handle-go-run (store) (line) =
+    let r = run-go-game
+    in act
+      pm0 <- respond-json (run-result-json "go" (format-go-result r) 42)
+      store
+    end
+
+  handle-ot : GameStore, Text, Text -> [Console] GameStore
+  handle-ot (store) (line) (path) =
+    if text-starts-with path "/api/othello/new" then
+      let board = othello-new
+      in let ns = set-ot store board True
+      in act
+        pm0 <- respond-json (ot-to-json board)
+        ns
+      end
+    else if text-starts-with path "/api/othello/step" then
+      if store.ot-active == False then act pm0 <- respond-error "no active game"
+        store
+      end
+      else let next = ot-ai-step (store.ot-board)
+      in let ns = set-ot store next (if next.game-over then False else True)
+      in act
+        pm0 <- respond-json (ot-to-json next)
+        ns
+      end
+    else act pm0 <- respond-json (ot-to-json (store.ot-board))
+        store
+      end
+
+  handle-mn : GameStore, Text, Text -> [Console] GameStore
+  handle-mn (store) (line) (path) =
+    if text-starts-with path "/api/mancala/new" then
+      let board = mancala-new 4
+      in let ns = set-mn store board True
+      in act
+        pm0 <- respond-json (mn-to-json board)
+        ns
+      end
+    else if text-starts-with path "/api/mancala/step" then
+      if store.mn-active == False then act pm0 <- respond-error "no active game"
+        store
+      end
+      else let next = mn-ai-step (store.mn-board)
+      in let ns = set-mn store next (if next.over then False else True)
+      in act
+        pm0 <- respond-json (mn-to-json next)
+        ns
+      end
+    else act pm0 <- respond-json (mn-to-json (store.mn-board))
+        store
+      end
+
+  handle-hx-run : GameStore, Text -> [Console] GameStore
+  handle-hx-run (store) (line) =
+    let r = run-hex-game
+    in act
+      pm0 <- respond-json (run-result-json "hex" (format-hex-result r) 42)
+      store
+    end
+
+  handle-g2 : GameStore, Text, Text -> [Console] GameStore
+  handle-g2 (store) (line) (path) =
+    if text-starts-with path "/api/game2048/new" then
+      let seed = parse-int (extract-query-param line "seed") 42
+      in let st = g2048-new (rng-new seed)
+      in let ns = set-g2 store st True
+      in act
+        pm0 <- respond-json (g2-to-json st)
+        ns
+      end
+    else if text-starts-with path "/api/game2048/step" then
+      if store.g2-active == False then act pm0 <- respond-error "no active game"
+        store
+      end
+      else let next = g2-ai-step (store.g2-state)
+      in let ns = set-g2 store next (if next.game-over then False else True)
+      in act
+        pm0 <- respond-json (g2-to-json next)
+        ns
+      end
+    else act pm0 <- respond-json (g2-to-json (store.g2-state))
+        store
+      end
+
+  handle-lf : GameStore, Text, Text -> [Console] GameStore
+  handle-lf (store) (line) (path) =
+    if text-starts-with path "/api/life/new" then
+      let seed = parse-int (extract-query-param line "seed") 42
+      in let st = life-seed-grid seed
+      in let ns = set-lf store st 0 True
+      in act
+        pm0 <- respond-json (lf-to-json st 0)
+        ns
+      end
+    else if text-starts-with path "/api/life/step" then
+      if store.lf-active == False then act pm0 <- respond-error "no active game"
+        store
+      end
+      else let next = step-life (store.lf-state)
+      in let ng = store.lf-gen + 1
+      in let ns = set-lf store next ng True
+      in act
+        pm0 <- respond-json (lf-to-json next ng)
+        ns
+      end
+    else act pm0 <- respond-json (lf-to-json (store.lf-state) (store.lf-gen))
+        store
+      end
+
+  handle-db : GameStore, Text, Text -> [Console] GameStore
+  handle-db (store) (line) (path) =
+    if text-starts-with path "/api/dotsandboxes/new" then
+      let seed = parse-int (extract-query-param line "seed") 77
+      in let board = dots-new (rng-new seed)
+      in let ns = set-db store board True
+      in act
+        pm0 <- respond-json (db-to-json board)
+        ns
+      end
+    else if text-starts-with path "/api/dotsandboxes/step" then
+      if store.db-active == False then act pm0 <- respond-error "no active game"
+        store
+      end
+      else let next = db-ai-step (store.db-board)
+      in let ns = set-db store next (if next.moves-made >= 24 then False else True)
+      in act
+        pm0 <- respond-json (db-to-json next)
+        ns
+      end
+    else act pm0 <- respond-json (db-to-json (store.db-board))
+        store
+      end
+
+  handle-sudoku-solve : GameStore, Text -> [Console] GameStore
+  handle-sudoku-solve (store) (line) =
+    let seed = parse-int (extract-query-param line "seed") 42
+    in let puzzle = sudoku-new (rng-new seed)
+    in let solved = sudoku-solve puzzle
+    in let pg = int-list-to-json (puzzle.grid) 0 81 []
+    in let sg = int-list-to-json (solved.grid) 0 81 []
+    in let body = json-emit (json-object [
+      json-pair "puzzle" (json-array pg),
+      json-pair "solution" (json-array sg),
+      json-pair "solved" (json-bool (solved.iterations > 0)),
+      json-pair "iterations" (json-int (solved.iterations))
+    ])
+    in act
+      pm0 <- respond-json body
+      store
+    end
+
+  handle-bs : GameStore, Text, Text -> [Console] GameStore
+  handle-bs (store) (line) (path) =
+    if text-starts-with path "/api/battleship/new" then
+      let seed = parse-int (extract-query-param line "seed") 42
+      in let r0 = rng-new seed
+      in let r1 = rng-next r0
+      in let r2 = rng-next r1
+      in let p1s = bs-place-ships r1
+      in let p2s = bs-place-ships r2
+      in let st = BsState { p1-ships = p1s, p1-tracking = bs-empty-grid, p2-ships = p2s, p2-tracking = bs-empty-grid, p1-hits = 0, p2-hits = 0, p1-shots = 0, p2-shots = 0, rng = r2, game-over = False, winner = 0 }
+      in let ns = set-bs store st True
+      in act
+        pm0 <- respond-json (bs-to-json st)
+        ns
+      end
+    else if text-starts-with path "/api/battleship/step" then
+      if store.bs-active == False then act pm0 <- respond-error "no active game"
+        store
+      end
+      else let next = bs-step (store.bs-state)
+      in let ns = set-bs store next (if next.game-over then False else True)
+      in act
+        pm0 <- respond-json (bs-to-json next)
+        ns
+      end
+    else act
+      pm0 <- respond-json (bs-to-json (store.bs-state))
+      store
+    end
+
+  handle-run : GameStore, Text, Text -> [Console] GameStore
+  handle-run (store) (line) (path) =
+    let seed = parse-int (extract-query-param line "seed") 42
+    in let game = text-drop path 9
+    in let result = run-game-by-name game seed
+    in if text-length result > 0 then act
+      pm0 <- respond-json result
+      store
+    end
+    else act pm0 <- respond-not-found
+        store
+      end
+
+  run-game-by-name : Text, Integer -> Text
+  run-game-by-name (name) (seed) =
+    if text-starts-with name "blackjack" then run-result-json "blackjack" (format-blackjack-result (run-blackjack-session seed 10)) seed
+    else if text-starts-with name "bridge" then run-result-json "bridge" (format-bridge-result (run-bridge-hand seed)) seed
+    else if text-starts-with name "crazyeights" then run-result-json "crazyeights" (format-crazy-eights (run-crazy-eights seed 4)) seed
+    else if text-starts-with name "gofish" then run-result-json "gofish" (format-go-fish (run-go-fish seed 4) 4) seed
+    else if text-starts-with name "pinochle" then run-result-json "pinochle" (format-pinochle-result (run-pinochle-hand seed)) seed
+    else if text-starts-with name "pokervariants" then run-result-json "pokervariants" (format-poker-variant (run-poker-variant FiveCardDraw seed 4)) seed
+    else if text-starts-with name "poker" then run-result-json "poker" (format-poker-result (run-poker-session seed 10)) seed
+    else if text-starts-with name "war" then run-result-json "war" (format-war-result (run-war-game seed)) seed
+    else if text-starts-with name "rps" then run-result-json "rps" (format-rps-result (run-rps-series seed 20)) seed
+    else if text-starts-with name "yahtzee" then run-result-json "yahtzee" (format-yahtzee-result (run-yahtzee-game seed)) seed
+    else if text-starts-with name "liarsdice" then run-result-json "liarsdice" (format-liars-result (run-liars-dice seed 4)) seed
+    else if text-starts-with name "mastermind" then run-result-json "mastermind" (format-mastermind-result (run-mastermind-game seed)) seed
+    else if text-starts-with name "mahjong" then run-result-json "mahjong" (format-mahjong-result (run-mahjong-game seed)) seed
+    else if text-starts-with name "hexwar" then run-result-json "hexwar" (format-hexwar-result (run-hexwar-game scenario-stalingrad seed)) seed
+    else if text-starts-with name "battleship" then run-result-json "battleship" (format-battleship-result run-battleship-game) seed
+    else if text-starts-with name "monopoly" then run-result-json "monopoly" (format-monopoly-result (run-monopoly-game seed 4)) seed
+    else if text-starts-with name "risk" then run-result-json "risk" (format-risk-result (run-risk-game seed 4)) seed
+    else if text-starts-with name "spider" then run-result-json "spider" (format-spider-result (run-spider-game seed)) seed
+    else if text-starts-with name "sudoku" then run-result-json "sudoku" (format-sudoku-result run-sudoku-solve) seed
+    else if text-starts-with name "setgame" then run-result-json "setgame" ("Sets found: " & show (run-set-game seed)) seed
+    else if text-starts-with name "royalur" then run-result-json "royalur" (format-ur-result (run-ur-game seed)) seed
+    else ""
+
+  handle-status : GameStore -> [Console] GameStore
+  handle-status (store) =
+    let obj = json-object [
+      json-pair "server" (json-str "Codex GameServer"),
+      json-pair "version" (json-int 2),
+      json-pair "games" (json-int 27)
+    ]
+    in act
+      pm0 <- respond-json (json-emit obj)
+      store
+    end
+
+Section: Server Loop
+
+  opening : [Console] Nothing = act
+    print-line-uni "READY"
+    server-loop game-store-new
+  end
+
+  server-loop : GameStore -> [Console] Nothing
+  server-loop (store) = act
+    line-result <- read-line
+    when line-result
+      is Just (line) -> act
+        new-store <- dispatch-request store line
+        server-loop new-store
+      end
+      is None -> print-line-uni "SERVER-EXIT"
+    end
+
+Page 1

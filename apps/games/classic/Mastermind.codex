@@ -1,0 +1,131 @@
+Chapter: Mastermind
+  cites Games chapter Rng
+
+ Mastermind: a secret 4-peg code chosen from 6 colors (0-5).
+ The guesser receives feedback: black pegs = correct color and position,
+ white pegs = correct color but wrong position.
+ AI guesser uses a simple elimination strategy: start with 0011,
+ then pick the first candidate consistent with all prior feedback.
+ The candidate pool is maintained as a list of consistent codes (encoded
+ as 4-digit base-6 integers: code = d0 + 6*d1 + 36*d2 + 216*d3).
+
+ We say:
+
+Section: Types
+
+  MastermindResult = record {
+    solved        : Boolean,
+    guesses-taken : Integer,
+    secret-code   : Integer
+  }
+
+Section: Code Encoding
+
+  mm-encode : Integer, Integer, Integer, Integer -> Integer
+  mm-encode (d0) (d1) (d2) (d3) = d0 + d1 * 6 + d2 * 36 + d3 * 216
+
+  mm-digit : Integer, Integer -> Integer
+  mm-digit (code) (pos) =
+    if pos == 0 then rng-mod code 6
+    else if pos == 1 then rng-mod (code / 6) 6
+    else if pos == 2 then rng-mod (code / 36) 6
+    else rng-mod (code / 216) 6
+
+Section: Feedback
+
+  mm-score : Integer, Integer -> Integer
+  mm-score (secret) (guess) =
+    let blacks = mm-count-blacks secret guess 0 0
+    in let whites = mm-count-whites secret guess blacks
+    in blacks * 10 + whites
+
+  mm-count-blacks : Integer, Integer, Integer, Integer -> Integer
+  mm-count-blacks (secret) (guess) (pos) (acc) =
+    if pos >= 4 then acc
+    else let match = if mm-digit secret pos == mm-digit guess pos then 1 else 0
+    in mm-count-blacks secret guess (pos + 1) (acc + match)
+
+  mm-count-whites : Integer, Integer, Integer -> Integer
+  mm-count-whites (secret) (guess) (blacks) =
+    let total = mm-color-matches secret guess 0 0
+    in let whites = total - blacks
+    in if whites < 0 then 0 else whites
+
+  mm-color-matches : Integer, Integer, Integer, Integer -> Integer
+  mm-color-matches (secret) (guess) (color) (acc) =
+    if color >= 6 then acc
+    else let sc = mm-count-color secret color 0 0
+    in let gc = mm-count-color guess color 0 0
+    in let matched = if sc < gc then sc else gc
+    in mm-color-matches secret guess (color + 1) (acc + matched)
+
+  mm-count-color : Integer, Integer, Integer, Integer -> Integer
+  mm-count-color (code) (color) (pos) (acc) =
+    if pos >= 4 then acc
+    else let got = if mm-digit code pos == color then 1 else 0
+    in mm-count-color code color (pos + 1) (acc + got)
+
+Section: Candidate Pool
+
+  mm-all-codes : List Integer
+  mm-all-codes = mm-build-codes 0 []
+
+  mm-build-codes : Integer, List Integer -> List Integer
+  mm-build-codes (i) (acc) =
+    if i >= 1296 then acc
+    else mm-build-codes (i + 1) (list-push acc i)
+
+  mm-filter-pool : List Integer, Integer, Integer, Integer -> List Integer
+  mm-filter-pool (pool) (guess) (score) (size) =
+    mm-filter-loop pool guess score size 0 []
+
+  mm-filter-loop : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  mm-filter-loop (pool) (guess) (score) (size) (i) (acc) =
+    if i >= size then acc
+    else let candidate = list-at pool i
+    in let cand-score = mm-score candidate guess
+    in if cand-score == score then
+      mm-filter-loop pool guess score size (i + 1) (list-push acc candidate)
+    else mm-filter-loop pool guess score size (i + 1) acc
+
+Section: Secret Generation
+
+  mm-make-secret : Rng -> Integer
+  mm-make-secret (r) =
+    let r2 = rng-next r
+    in rng-mod (rng-value r2) 1296
+
+Section: Game Runner
+
+  run-mastermind-game : Integer -> MastermindResult
+  run-mastermind-game (seed) =
+    let r = rng-new seed
+    in let secret = mm-make-secret r
+    in let pool = mm-all-codes
+    in let first-guess = mm-encode 0 0 1 1
+    in mm-guess-loop secret pool (list-length pool) first-guess 0
+
+  mm-guess-loop : Integer, List Integer, Integer, Integer, Integer -> MastermindResult
+  mm-guess-loop (secret) (pool) (pool-size) (guess) (attempts) =
+    if attempts >= 10 then
+      MastermindResult { solved = False, guesses-taken = attempts, secret-code = secret }
+    else let score = mm-score secret guess
+    in let new-attempts = attempts + 1
+    in if score == 40 then
+      MastermindResult { solved = True, guesses-taken = new-attempts, secret-code = secret }
+    else let new-pool = mm-filter-pool pool guess score pool-size
+    in let new-size = list-length new-pool
+    in if new-size <= 0 then
+      MastermindResult { solved = False, guesses-taken = new-attempts, secret-code = secret }
+    else let next-guess = list-at new-pool 0
+    in mm-guess-loop secret new-pool new-size next-guess new-attempts
+
+Section: Formatting
+
+  format-mastermind-result : MastermindResult -> Text
+  format-mastermind-result (r) =
+    let outcome = if r.solved then "solved" else "failed"
+    in "Mastermind: " & outcome & " in " & show (r.guesses-taken) &
+       " guesses (secret=" & show (r.secret-code) & ")"
+
+Page 1

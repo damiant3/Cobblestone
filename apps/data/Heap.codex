@@ -1,0 +1,161 @@
+Chapter: Heap
+  cites Data chapter Page
+  cites Data chapter Row
+  cites Data chapter Schema
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ A heap file is an unordered collection of pages that stores rows.
+ Inserts go to the last page with free space. Scans visit every
+ page sequentially. This is the baseline storage method; indexes
+ provide fast lookup on top.
+
+ We say:
+
+Section: Heap File
+
+  HeapFile = record {
+    pages : List Page,
+    page-count : Integer,
+    table-name : Text,
+    schema : RowSchema,
+    row-count : Integer
+  }
+
+  heap-new : Text, RowSchema -> HeapFile
+  heap-new (name) (schema) =
+    let first-page = page-new 0 page-type-data
+    in HeapFile {
+      pages = [first-page],
+      page-count = 1,
+      table-name = name,
+      schema = schema,
+      row-count = 0
+    }
+
+Section: Insert
+
+  HeapInsertResult = record {
+    heap : HeapFile,
+    page-idx : Integer,
+    slot-idx : Integer,
+    ok : Boolean
+  }
+
+  heap-insert : HeapFile, RowData -> HeapInsertResult
+  heap-insert (hf) (row) =
+    let encoded = row-encode row
+    in heap-insert-encoded hf encoded
+
+  heap-insert-encoded : HeapFile, List Integer -> HeapInsertResult
+  heap-insert-encoded (hf) (row-bytes) =
+    let last-idx = hf.page-count - 1
+    in let last-page = list-at (hf.pages) last-idx
+    in let result = page-insert last-page row-bytes
+    in if result.ok then HeapInsertResult {
+      heap = HeapFile {
+        pages = list-set-at (hf.pages) last-idx (result.page),
+        page-count = hf.page-count,
+        table-name = hf.table-name,
+        schema = hf.schema,
+        row-count = hf.row-count + 1
+      },
+      page-idx = last-idx,
+      slot-idx = result.slot-id,
+      ok = True
+    }
+    else let new-page = page-new (hf.page-count) page-type-data
+    in let result2 = page-insert new-page row-bytes
+    in if result2.ok then HeapInsertResult {
+      heap = HeapFile {
+        pages = list-push (hf.pages) (result2.page),
+        page-count = hf.page-count + 1,
+        table-name = hf.table-name,
+        schema = hf.schema,
+        row-count = hf.row-count + 1
+      },
+      page-idx = hf.page-count,
+      slot-idx = result2.slot-id,
+      ok = True
+    }
+    else HeapInsertResult { heap = hf, page-idx = -1, slot-idx = -1, ok = False }
+
+Section: Scan
+
+  RowId = record {
+    rid-page : Integer,
+    rid-slot : Integer
+  }
+
+  ScanResult = record {
+    rows : List RowData,
+    row-ids : List RowId,
+    scan-count : Integer
+  }
+
+  heap-scan : HeapFile -> ScanResult
+  heap-scan (hf) = heap-scan-pages (hf.pages) (hf.schema) 0 (hf.page-count) [] []
+
+  heap-scan-pages : List Page, RowSchema, Integer, Integer, List RowData, List RowId -> ScanResult
+  heap-scan-pages (pages) (schema) (pi) (pcount) (rows) (rids) =
+    if pi >= pcount then ScanResult { rows = rows, row-ids = rids, scan-count = list-length rows }
+    else let pg = list-at pages pi
+    in let result = heap-scan-page pg schema pi 0 (page-slot-count pg) rows rids
+    in heap-scan-pages pages schema (pi + 1) pcount (result.rows) (result.row-ids)
+
+  heap-scan-page : Page, RowSchema, Integer, Integer, Integer, List RowData, List RowId -> ScanResult
+  heap-scan-page (pg) (schema) (pi) (si) (scount) (rows) (rids) =
+    if si >= scount then ScanResult { rows = rows, row-ids = rids, scan-count = list-length rows }
+    else let maybe-bytes = page-read-slot pg si
+    in when maybe-bytes
+      is None -> heap-scan-page pg schema pi (si + 1) scount rows rids
+      is Just (bytes) ->
+        let row = row-decode bytes schema
+        in let rid = RowId { rid-page = pi, rid-slot = si }
+        in heap-scan-page pg schema pi (si + 1) scount (list-push rows row) (list-push rids rid)
+
+Section: Lookup by RowId
+
+  heap-get : HeapFile, RowId -> Maybe RowData
+  heap-get (hf) (rid) =
+    if rid.rid-page < 0 then None
+    else if rid.rid-page >= hf.page-count then None
+    else let pg = list-at (hf.pages) (rid.rid-page)
+    in let maybe-bytes = page-read-slot pg (rid.rid-slot)
+    in when maybe-bytes
+      is None -> None
+      is Just (bytes) -> Just (row-decode bytes (hf.schema))
+
+Section: Delete by RowId
+
+  heap-delete : HeapFile, RowId -> HeapFile
+  heap-delete (hf) (rid) =
+    if rid.rid-page < 0 then hf
+    else if rid.rid-page >= hf.page-count then hf
+    else let pg = list-at (hf.pages) (rid.rid-page)
+    in let new-pg = page-delete-slot pg (rid.rid-slot)
+    in HeapFile {
+      pages = list-set-at (hf.pages) (rid.rid-page) new-pg,
+      page-count = hf.page-count,
+      table-name = hf.table-name,
+      schema = hf.schema,
+      row-count = hf.row-count - 1
+    }
+
+Section: Update by RowId
+
+  heap-update : HeapFile, RowId, RowData -> HeapFile
+  heap-update (hf) (rid) (new-row) =
+    let deleted = heap-delete hf rid
+    in let result = heap-insert deleted new-row
+    in result.heap
+
+Section: Statistics
+
+  heap-row-count : HeapFile -> Integer
+  heap-row-count (hf) = hf.row-count
+
+  heap-page-count : HeapFile -> Integer
+  heap-page-count (hf) = hf.page-count
+
+Page 1

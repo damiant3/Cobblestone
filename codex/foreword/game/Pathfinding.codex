@@ -1,0 +1,83 @@
+Chapter: Pathfinding
+  cites Foreword chapter Maybe
+
+ Dijkstra shortest path on a weighted graph. Complementary to A*
+ (which requires a heuristic). Uses a simple scan for the next
+ unvisited node with minimum distance. O(V^2) — suitable for
+ small graphs; for large graphs use A* with PriorityQueue.
+
+ We say:
+
+Section: Types
+  DijkResult = record {
+    dj-distances : List Integer,
+    dj-parents : List Integer,
+    dj-visited : List Integer
+  }
+
+Section: Dijkstra
+  dijkstra : Integer, List (List Integer), Integer -> DijkResult
+  dijkstra (num-verts) (adj-weights) (source) =
+    let dist = dijk-init-dist num-verts source 0 []
+    in let parent = dijk-init-parent num-verts 0 []
+    in let visited = dijk-init-visited num-verts 0 []
+    in dijk-loop num-verts adj-weights dist parent visited 0
+
+  dijk-init-dist : Integer, Integer, Integer, List Integer -> List Integer
+  dijk-init-dist (n) (src) (i) (acc) =
+    if i >= n then acc
+    else dijk-init-dist n src (i + 1) (list-push acc (if i == src then 0 else 999999999))
+
+  dijk-init-parent : Integer, Integer, List Integer -> List Integer
+  dijk-init-parent (n) (i) (acc) =
+    if i >= n then acc
+    else dijk-init-parent n (i + 1) (list-push acc (0 - 1))
+
+  dijk-init-visited : Integer, Integer, List Integer -> List Integer
+  dijk-init-visited (n) (i) (acc) =
+    if i >= n then acc
+    else dijk-init-visited n (i + 1) (list-push acc 0)
+
+  dijk-loop : Integer, List (List Integer), List Integer, List Integer, List Integer, Integer -> DijkResult
+  dijk-loop (n) (adj) (dist) (parent) (visited) (step) =
+    if step >= n then DijkResult { dj-distances = dist, dj-parents = parent, dj-visited = visited }
+    else let u = dijk-find-min dist visited 0 n (0 - 1) 999999999
+    in if u < 0 then DijkResult { dj-distances = dist, dj-parents = parent, dj-visited = visited }
+    else let visited2 = list-set-at visited u 1
+    in let edges = list-at adj u
+    in let relaxed = dijk-relax-neighbors edges dist parent u 0 (list-length edges)
+    in dijk-loop n adj (relaxed.dj-dist) (relaxed.dj-par) visited2 (step + 1)
+
+  dijk-find-min : List Integer, List Integer, Integer, Integer, Integer, Integer -> Integer
+  dijk-find-min (dist) (visited) (i) (n) (best) (best-d) =
+    if i >= n then best
+    else if list-at visited i == 1 then dijk-find-min dist visited (i + 1) n best best-d
+    else let d = list-at dist i
+    in if d < best-d then dijk-find-min dist visited (i + 1) n i d
+    else dijk-find-min dist visited (i + 1) n best best-d
+
+  DijkRelax = record { dj-dist : List Integer, dj-par : List Integer }
+
+  dijk-relax-neighbors : List Integer, List Integer, List Integer, Integer, Integer, Integer -> DijkRelax
+  dijk-relax-neighbors (edges) (dist) (parent) (u) (i) (len) =
+    if i + 1 >= len then DijkRelax { dj-dist = dist, dj-par = parent }
+    else let v = list-at edges i
+    in let w = list-at edges (i + 1)
+    in let new-d = list-at dist u + w
+    in if new-d < list-at dist v then dijk-relax-neighbors edges (list-set-at dist v new-d) (list-set-at parent v u) u (i + 2) len
+    else dijk-relax-neighbors edges dist parent u (i + 2) len
+
+Section: Path Reconstruction
+  dijk-path : DijkResult, Integer -> List Integer
+  dijk-path (result) (target) = dijk-trace (result.dj-parents) target []
+
+  dijk-trace : List Integer, Integer, List Integer -> List Integer
+  dijk-trace (parents) (node) (acc) =
+    if node < 0 then acc
+    else dijk-trace parents (list-at parents node) ([node] & acc)
+
+Section: Queries
+  dijk-distance : DijkResult, Integer -> Integer
+  dijk-distance (result) (target) = list-at (result.dj-distances) target
+
+Page 1

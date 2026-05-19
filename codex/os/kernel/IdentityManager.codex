@@ -1,0 +1,366 @@
+Chapter: IdentityManager
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Aes256
+  cites Foreword chapter Hkdf
+  cites Foreword chapter Console
+  cites Kernel chapter DiskFacts
+
+ Identity lifecycle manager. Orchestrates the first-boot ceremony
+ (generate keypair, encrypt with passphrase, store to DiskFacts),
+ the unlock flow (prompt passphrase, derive key, decrypt, verify,
+ load to pinned kernel memory), lock and timeout.
+
+ The private key never exists on disk in plaintext. At runtime it
+ lives in a pinned kernel memory region accessible only via the
+ key-load (syscall 15), key-zero (syscall 16), and key-status
+ (syscall 18) kernel calls.
+
+ To idm-first-boot runs the first-boot identity ceremony.
+ To idm-unlock prompts for passphrase and loads the key.
+ To idm-lock zeros the pinned key.
+ To idm-is-unlocked checks if a key is loaded.
+ To idm-check-timeout locks if the timeout has elapsed.
+ To idm-change-passphrase re-encrypts with a new passphrase.
+ To idm-copy-to-drive copies the encrypted identity to another DiskFactStore.
+
+ We say:
+
+Section: Constants
+
+  idm-lock-timeout-ticks : Integer = 32400
+  idm-hkdf-info : List Integer = [99, 111, 100, 101, 120, 45, 105, 100, 101, 110, 116, 105, 116, 121]
+
+Section: Types
+
+  IdmResult =
+    | IdmOk
+    | IdmWrongPassphrase
+    | IdmNoIdentity
+    | IdmError (Text)
+
+Section: First-Boot Ceremony
+
+  idm-first-boot : DiskFactStore, Integer -> (DiskFactStore, IdmResult)
+  idm-first-boot (store) (timestamp) =
+    let seed-bytes = idm-read-device-seed
+    in let kb-entropy = idm-collect-keyboard-entropy
+    in let combined = sha256 (seed-bytes & kb-entropy)
+    in let seed = idm-hash-words-to-bytes combined
+    in let keypair = idm-generate-keypair seed
+    in let pub-key = keypair.ikp-public
+    in let priv-key = keypair.ikp-private
+    in let fingerprint = idm-fingerprint pub-key
+    in let w0 = idm-show-lines [
+      "",
+      "  Identity created.",
+      "  Fingerprint: " & fingerprint,
+      ""
+    ]
+    in let passphrase = idm-prompt-passphrase-create
+    in when passphrase
+      is None -> (store, IdmError "Passphrase mismatch")
+      is Just (pp-bytes) ->
+        let salt = idm-read-random-bytes 16
+        in let iv = idm-read-random-bytes 16
+        in let derived = hkdf salt pp-bytes idm-hkdf-info 32
+        in let derived-bytes = idm-hash-words-to-bytes derived
+        in let encrypted = aes256-cbc-encrypt (aes256-pkcs7-pad priv-key) derived-bytes iv
+        in let rec = IdentityRecord {
+          id-version = 1,
+          id-salt = salt,
+          id-iv = iv,
+          id-encrypted-key = encrypted,
+          id-public-key = pub-key,
+          id-created-ticks = timestamp
+        }
+        in let store2 = sysdb-write-identity store rec timestamp
+        in let default-config = SysBootConfig {
+          sbc-boot-mode = sysdb-boot-mode-console,
+          sbc-boot-partition = 0,
+          sbc-boot-drive-serial = ""
+        }
+        in let store3 = sysdb-write-boot-config store2 default-config timestamp
+        in let store4 = disk-checkpoint store3
+        in let loaded = idm-load-key-to-pinned priv-key
+        in let zeroed = idm-zero-list pp-bytes 0
+        in let zeroed2 = idm-zero-list derived-bytes 0
+        in let zeroed3 = idm-zero-list priv-key 0
+        in let w1 = idm-show-lines [
+          "  Identity saved and loaded.",
+          "  You are now authenticated.",
+          ""
+        ]
+        in (store4, IdmOk)
+
+Section: Unlock Flow
+
+  idm-unlock : DiskFactStore -> (DiskFactStore, IdmResult)
+  idm-unlock (store) =
+    let id-maybe = sysdb-find-identity store
+    in when id-maybe
+      is None -> (store, IdmNoIdentity)
+      is Just (rec) ->
+        let pp-bytes = idm-prompt-passphrase "  Passphrase: "
+        in let derived = hkdf (rec.id-salt) pp-bytes idm-hkdf-info 32
+        in let derived-bytes = idm-hash-words-to-bytes derived
+        in let decrypted-padded = aes256-cbc-decrypt (rec.id-encrypted-key) derived-bytes (rec.id-iv)
+        in let decrypted = aes256-pkcs7-unpad decrypted-padded
+        in let verify-pub = ed25519-public-key decrypted
+        in if idm-bytes-eq verify-pub (rec.id-public-key) then
+          let loaded = idm-load-key-to-pinned decrypted
+          in let zeroed = idm-zero-list pp-bytes 0
+          in let zeroed2 = idm-zero-list derived-bytes 0
+          in let zeroed3 = idm-zero-list decrypted 0
+          in (store, IdmOk)
+        else
+          let zeroed = idm-zero-list pp-bytes 0
+          in let zeroed2 = idm-zero-list derived-bytes 0
+          in let zeroed3 = idm-zero-list decrypted 0
+          in (store, IdmWrongPassphrase)
+
+Section: Lock
+
+  idm-lock : Integer
+  idm-lock = key-zero
+
+  idm-is-unlocked : Boolean
+  idm-is-unlocked = key-status == 1
+
+  idm-check-timeout : Integer -> Integer
+  idm-check-timeout (current-tick) =
+    if key-status == 0 then 0
+    else let lock-tick = idm-read-lock-tick
+    in if lock-tick == 0 then idm-set-lock-tick current-tick
+    else if current-tick - lock-tick > idm-lock-timeout-ticks then key-zero
+    else 0
+
+  idm-reset-timeout : Integer -> Integer
+  idm-reset-timeout (current-tick) = idm-set-lock-tick current-tick
+
+Section: Passphrase Change
+
+  idm-change-passphrase : DiskFactStore, Integer -> (DiskFactStore, IdmResult)
+  idm-change-passphrase (store) (timestamp) =
+    let id-maybe = sysdb-find-identity store
+    in when id-maybe
+      is None -> (store, IdmNoIdentity)
+      is Just (rec) ->
+        let old-pp = idm-prompt-passphrase "  Current passphrase: "
+        in let old-derived = hkdf (rec.id-salt) old-pp idm-hkdf-info 32
+        in let old-derived-bytes = idm-hash-words-to-bytes old-derived
+        in let decrypted-padded = aes256-cbc-decrypt (rec.id-encrypted-key) old-derived-bytes (rec.id-iv)
+        in let decrypted = aes256-pkcs7-unpad decrypted-padded
+        in let verify-pub = ed25519-public-key decrypted
+        in if idm-bytes-eq verify-pub (rec.id-public-key) == False then
+          let z0 = idm-zero-list old-pp 0
+          in let z1 = idm-zero-list old-derived-bytes 0
+          in let z2 = idm-zero-list decrypted 0
+          in (store, IdmWrongPassphrase)
+        else let new-pp = idm-prompt-passphrase-create
+        in when new-pp
+          is None ->
+            let z0 = idm-zero-list old-pp 0
+            in let z1 = idm-zero-list old-derived-bytes 0
+            in let z2 = idm-zero-list decrypted 0
+            in (store, IdmError "Passphrase mismatch")
+          is Just (new-pp-bytes) ->
+            let new-salt = idm-read-random-bytes 16
+            in let new-iv = idm-read-random-bytes 16
+            in let new-derived = hkdf new-salt new-pp-bytes idm-hkdf-info 32
+            in let new-derived-bytes = idm-hash-words-to-bytes new-derived
+            in let new-encrypted = aes256-cbc-encrypt (aes256-pkcs7-pad decrypted) new-derived-bytes new-iv
+            in let new-rec = IdentityRecord {
+              id-version = 1,
+              id-salt = new-salt,
+              id-iv = new-iv,
+              id-encrypted-key = new-encrypted,
+              id-public-key = rec.id-public-key,
+              id-created-ticks = rec.id-created-ticks
+            }
+            in let store2 = sysdb-write-identity store new-rec timestamp
+            in let store3 = disk-checkpoint store2
+            in let z0 = idm-zero-list old-pp 0
+            in let z1 = idm-zero-list old-derived-bytes 0
+            in let z2 = idm-zero-list decrypted 0
+            in let z3 = idm-zero-list new-pp-bytes 0
+            in let z4 = idm-zero-list new-derived-bytes 0
+            in (store3, IdmOk)
+
+Section: Install Copy
+
+  idm-copy-to-drive : DiskFactStore, DiskFactStore, Integer -> DiskFactStore
+  idm-copy-to-drive (source-store) (target-store) (timestamp) =
+    let id-maybe = sysdb-find-identity source-store
+    in when id-maybe
+      is Just (rec) -> let store2 = sysdb-write-identity target-store rec timestamp
+        in disk-checkpoint store2
+      is None -> target-store
+
+Section: Kernel Memory Interface
+
+  idm-load-key-to-pinned : List Integer -> Integer
+  idm-load-key-to-pinned (key-bytes) =
+    let buf = alloc-bytes 32
+    in let w = idm-poke-list buf key-bytes 0
+    in key-load buf
+
+  idm-poke-list : Integer, List Integer, Integer -> Integer
+  idm-poke-list (buf) (bs) (i) =
+    if i >= list-length bs then 0
+    else if i >= 32 then 0
+    else let w = poke-byte buf i (list-at bs i)
+    in idm-poke-list buf bs (i + 1)
+
+  idm-read-lock-tick : Integer
+  idm-read-lock-tick =
+    let buf-addr = 30648
+    in peek-byte buf-addr 0 + bit-shl (peek-byte buf-addr 1) 8
+       + bit-shl (peek-byte buf-addr 2) 16 + bit-shl (peek-byte buf-addr 3) 24
+
+  idm-set-lock-tick : Integer -> Integer
+  idm-set-lock-tick (tick) =
+    let buf-addr = 30648
+    in let w0 = poke-byte buf-addr 0 (bit-and tick 255)
+    in let w1 = poke-byte buf-addr 1 (bit-and (bit-shru tick 8) 255)
+    in let w2 = poke-byte buf-addr 2 (bit-and (bit-shru tick 16) 255)
+    in poke-byte buf-addr 3 (bit-and (bit-shru tick 24) 255)
+
+Section: Syscall Wrappers
+
+  key-load : Integer -> Integer
+  key-load (buf) = __syscall 15 buf
+
+  key-zero : Integer
+  key-zero = __syscall 16 0
+
+  key-status : Integer
+  key-status = __syscall 18 0
+
+Section: Entropy Collection
+
+  idm-read-device-seed : List Integer
+  idm-read-device-seed = idm-peek-bytes 30576 32 0 []
+
+  idm-peek-bytes : Integer, Integer, Integer, List Integer -> List Integer
+  idm-peek-bytes (addr) (len) (i) (acc) =
+    if i >= len then acc
+    else idm-peek-bytes addr len (i + 1) (list-push acc (peek-byte addr i))
+
+  idm-read-random-bytes : Integer -> List Integer
+  idm-read-random-bytes (count) =
+    let seed-addr = 30576
+    in idm-peek-bytes seed-addr count 0 []
+
+  idm-collect-keyboard-entropy : List Integer
+  idm-collect-keyboard-entropy =
+    let w = idm-show-lines [
+      "",
+      "  Type a random sentence for additional entropy,",
+      "  then press Enter:",
+      "  "
+    ]
+    in let input = idm-read-line-bytes
+    in let ticks-after = __syscall 3 0
+    in input & [bit-and ticks-after 255, bit-and (bit-shru ticks-after 8) 255]
+
+Section: Keypair Generation
+
+  IdmKeypair = record {
+    ikp-private : List Integer,
+    ikp-public : List Integer
+  }
+
+  idm-generate-keypair : List Integer -> IdmKeypair
+  idm-generate-keypair (seed-words) =
+    let seed-bytes = idm-take-bytes seed-words 32
+    in let pub = ed25519-public-key seed-bytes
+    in IdmKeypair { ikp-private = seed-bytes, ikp-public = pub }
+
+  idm-take-bytes : List Integer, Integer -> List Integer
+  idm-take-bytes (words) (n) = idm-take-loop words n 0 []
+
+  idm-take-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  idm-take-loop (src) (n) (i) (acc) =
+    if i >= n then acc
+    else if i >= list-length src then list-push acc 0
+    else idm-take-loop src n (i + 1) (list-push acc (list-at src i))
+
+Section: Fingerprint
+
+  idm-fingerprint : List Integer -> Text
+  idm-fingerprint (pub-key) =
+    let hash = sha256 pub-key
+    in sha256-to-hex hash
+
+Section: Console I/O Helpers
+
+  idm-show-lines : List Text -> Integer
+  idm-show-lines (lines) = idm-show-loop lines 0 (list-length lines)
+
+  idm-show-loop : List Text, Integer, Integer -> Integer
+  idm-show-loop (lines) (i) (len) =
+    if i >= len then 0
+    else let w = print-line-uni (list-at lines i)
+    in idm-show-loop lines (i + 1) len
+
+  idm-prompt-passphrase : Text -> List Integer
+  idm-prompt-passphrase (prompt) =
+    let w = print prompt
+    in idm-read-line-bytes
+
+  idm-prompt-passphrase-create : Maybe (List Integer)
+  idm-prompt-passphrase-create =
+    let w0 = print "  Create a passphrase: "
+    in let pp1 = idm-read-line-bytes
+    in let w1 = print "  Confirm passphrase:  "
+    in let pp2 = idm-read-line-bytes
+    in if idm-bytes-eq pp1 pp2 then
+      let z = idm-zero-list pp2 0
+      in Just pp1
+    else
+      let z0 = idm-zero-list pp1 0
+      in let z1 = idm-zero-list pp2 0
+      in let w2 = print-line-uni "  Passphrases do not match."
+      in None
+
+  idm-read-line-bytes : List Integer
+  idm-read-line-bytes = idm-rlb-loop []
+
+  idm-rlb-loop : List Integer -> List Integer
+  idm-rlb-loop (acc) =
+    let ch = read-key
+    in if ch == 0 then idm-rlb-loop acc
+    else if ch == 13 then acc
+    else if ch == 10 then acc
+    else idm-rlb-loop (list-push acc ch)
+
+Section: Byte Utilities
+
+  idm-bytes-eq : List Integer, List Integer -> Boolean
+  idm-bytes-eq (a) (b) =
+    if list-length a /= list-length b then False
+    else idm-bytes-eq-loop a b 0 (list-length a) 0
+
+  idm-bytes-eq-loop : List Integer, List Integer, Integer, Integer, Integer -> Boolean
+  idm-bytes-eq-loop (a) (b) (i) (len) (diff) =
+    if i >= len then diff == 0
+    else idm-bytes-eq-loop a b (i + 1) len (bit-or diff (bit-xor (list-at a i) (list-at b i)))
+
+  idm-zero-list : List Integer, Integer -> Integer
+  idm-zero-list (xs) (i) =
+    if i >= list-length xs then 0
+    else let w = list-set-at xs i 0
+    in idm-zero-list xs (i + 1)
+
+  idm-hash-words-to-bytes : List Integer -> List Integer
+  idm-hash-words-to-bytes (words) = idm-hw2b words 0 (list-length words) []
+
+  idm-hw2b : List Integer, Integer, Integer, List Integer -> List Integer
+  idm-hw2b (words) (i) (len) (acc) =
+    if i >= len then acc
+    else let w = list-at words i
+    in idm-hw2b words (i + 1) len (acc & [bit-and (bit-shru w 24) 255, bit-and (bit-shru w 16) 255, bit-and (bit-shru w 8) 255, bit-and w 255])
+
+Page 1

@@ -1,0 +1,142 @@
+Chapter: AudioEffect
+  cites Foreword chapter CircularBuffer
+  cites Foreword chapter Maybe
+
+ Audio effects: delay, reverb, chorus, distortion, compressor,
+ equalizer (3-band). All operate on List Integer (fixed-point
+ scale 1000 samples).
+
+ We say:
+
+Section: Delay
+  fx-delay : List Integer, Integer, Integer, Integer -> List Integer
+  fx-delay (samples) (delay-samples) (feedback) (mix) =
+    fx-delay-loop samples delay-samples feedback mix 0 (list-length samples) (circbuf-new delay-samples) []
+
+  fx-delay-loop : List Integer, Integer, Integer, Integer, Integer, Integer, CircBuf, List Integer -> List Integer
+  fx-delay-loop (samples) (delay) (feedback) (mix) (i) (n) (buf) (acc) =
+    if i >= n then acc
+    else let dry = list-at samples i
+    in let wet = fx-circbuf-read buf
+    in let mixed = dry * (1000 - mix) / 1000 + wet * mix / 1000
+    in let to-buf = dry + wet * feedback / 1000
+    in let new-buf = circbuf-push-back buf to-buf
+    in fx-delay-loop samples delay feedback mix (i + 1) n new-buf (list-push acc mixed)
+
+  fx-circbuf-read : CircBuf -> Integer
+  fx-circbuf-read (buf) =
+    let front = circbuf-front buf
+    in when front is Just (v) -> v is None -> 0
+
+Section: Simple Reverb (multi-tap delay)
+  fx-reverb : List Integer, Integer, Integer -> List Integer
+  fx-reverb (samples) (room-size) (damping) =
+    let d1 = fx-delay samples room-size 400 300
+    in let d2 = fx-delay samples (room-size * 3 / 4) 350 250
+    in let d3 = fx-delay samples (room-size / 2) 300 200
+    in fx-mix3 d1 d2 d3
+
+  fx-mix3 : List Integer, List Integer, List Integer -> List Integer
+  fx-mix3 (a) (b) (c) = fx-mix3-loop a b c 0 (fx-min3 (list-length a) (list-length b) (list-length c)) []
+
+  fx-mix3-loop : List Integer, List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  fx-mix3-loop (a) (b) (c) (i) (n) (acc) =
+    if i >= n then acc
+    else let val = (list-at a i + list-at b i + list-at c i) / 3
+    in fx-mix3-loop a b c (i + 1) n (list-push acc val)
+
+  fx-min3 : Integer, Integer, Integer -> Integer
+  fx-min3 (a) (b) (c) = let ab = if a < b then a else b in if ab < c then ab else c
+
+Section: Distortion (soft clipping)
+  fx-distortion : List Integer, Integer -> List Integer
+  fx-distortion (samples) (drive) = fx-dist-loop samples drive 0 (list-length samples) []
+
+  fx-dist-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  fx-dist-loop (samples) (drive) (i) (n) (acc) =
+    if i >= n then acc
+    else let val = list-at samples i * drive / 1000
+    in let clipped = fx-soft-clip val
+    in fx-dist-loop samples drive (i + 1) n (list-push acc clipped)
+
+  fx-soft-clip : Integer -> Integer
+  fx-soft-clip (x) =
+    if x > 1000 then 1000
+    else if x < 0 - 1000 then 0 - 1000
+    else let x3 = x * x / 1000 * x / 1000
+    in x - x3 / 3
+
+Section: Compressor
+  fx-compress : List Integer, Integer, Integer -> List Integer
+  fx-compress (samples) (threshold) (ratio) = fx-comp-loop samples threshold ratio 0 (list-length samples) []
+
+  fx-comp-loop : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  fx-comp-loop (samples) (thresh) (ratio) (i) (n) (acc) =
+    if i >= n then acc
+    else let val = list-at samples i
+    in let abs-val = if val < 0 then -val else val
+    in let compressed = if abs-val > thresh then
+      let over = abs-val - thresh
+      in let reduced = thresh + over * 1000 / ratio
+      in if val < 0 then -reduced else reduced
+    else val
+    in fx-comp-loop samples thresh ratio (i + 1) n (list-push acc compressed)
+
+Section: 3-Band EQ
+  fx-eq3 : List Integer, Integer, Integer, Integer -> List Integer
+  fx-eq3 (samples) (low-gain) (mid-gain) (high-gain) =
+    fx-eq3-loop samples low-gain mid-gain high-gain 0 (list-length samples) 0 0 []
+
+  fx-eq3-loop : List Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  fx-eq3-loop (samples) (lg) (mg) (hg) (i) (n) (lp-prev) (hp-prev) (acc) =
+    if i >= n then acc
+    else let val = list-at samples i
+    in let lp = (lp-prev * 900 + val * 100) / 1000
+    in let hp = val - (hp-prev * 900 + val * 100) / 1000
+    in let mp = val - lp - hp
+    in let out = lp * lg / 1000 + mp * mg / 1000 + hp * hg / 1000
+    in fx-eq3-loop samples lg mg hg (i + 1) n lp hp (list-push acc out)
+
+Section: Chorus
+  fx-chorus : List Integer, Integer, Integer, Integer -> List Integer
+  fx-chorus (samples) (depth) (rate) (mix) =
+    fx-chorus-loop samples depth rate mix 0 (list-length samples) (circbuf-new (depth * 2)) []
+
+  fx-chorus-loop : List Integer, Integer, Integer, Integer, Integer, Integer, CircBuf, List Integer -> List Integer
+  fx-chorus-loop (samples) (depth) (rate) (mix) (i) (n) (buf) (acc) =
+    if i >= n then acc
+    else let dry = list-at samples i
+    in let lfo = depth + depth * fx-lfo i rate / 1000
+    in let delayed = fx-circbuf-read buf
+    in let mixed = dry * (1000 - mix) / 1000 + delayed * mix / 1000
+    in let new-buf = circbuf-push-back buf dry
+    in fx-chorus-loop samples depth rate mix (i + 1) n new-buf (list-push acc mixed)
+
+  fx-lfo : Integer, Integer -> Integer
+  fx-lfo (sample) (rate) =
+    let phase = sample * rate * 6283 / 44100
+    in let wrapped = phase - phase / 6283 * 6283
+    in let x = wrapped - 3142
+    in x - x * x / 1000 * x / 6000
+
+Section: Normalize
+  fx-normalize : List Integer, Integer -> List Integer
+  fx-normalize (samples) (target) =
+    let peak = fx-find-peak samples 0 (list-length samples) 0
+    in if peak == 0 then samples
+    else let gain = target * 1000 / peak
+    in fx-norm-loop samples gain 0 (list-length samples) []
+
+  fx-norm-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  fx-norm-loop (samples) (gain) (i) (n) (acc) =
+    if i >= n then acc
+    else fx-norm-loop samples gain (i + 1) n (list-push acc (list-at samples i * gain / 1000))
+
+  fx-find-peak : List Integer, Integer, Integer, Integer -> Integer
+  fx-find-peak (samples) (i) (n) (best) =
+    if i >= n then best
+    else let v = list-at samples i
+    in let abs-v = if v < 0 then -v else v
+    in fx-find-peak samples (i + 1) n (if abs-v > best then abs-v else best)
+
+Page 1

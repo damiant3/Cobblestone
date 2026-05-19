@@ -1,0 +1,154 @@
+Chapter: BPlusTree
+  cites Foreword chapter Maybe
+
+ A BptLeaf is a record containing leaf-keys, leaf-values, and leaf-count.
+ A BptInternal is a record containing int-keys, int-children, and int-count.
+ A BptNode is one of BptLeafNode or BptInternalNode.
+ A BPlusTree is a record containing nodes, root, and count.
+ A BptSplitResult is a record containing left, right, and split-key.
+ To bpt-new gives a BPlusTree with an empty leaf root.
+ To bpt-lookup gives a Maybe Integer for the given key, or None when absent.
+ To bpt-insert gives a new BPlusTree with the key-value pair added.
+ To bpt-count gives the number of entries in the tree.
+ To bpt-contains gives True when the key exists in the tree.
+
+ We say:
+
+Section: Constants
+  bpt-max-keys : Integer = 4
+
+Section: Node Types
+  BptLeaf = record {
+    leaf-keys : List Integer,
+    leaf-values : List Integer,
+    leaf-count : Integer between 0 and 8
+  }
+
+  BptInternal = record {
+    int-keys : List Integer,
+    int-children : List Integer,
+    int-count : Integer between 0 and 8
+  }
+
+  BptNode =
+    | BptLeafNode (BptLeaf)
+    | BptInternalNode (BptInternal)
+
+Section: Tree
+  BPlusTree = record {
+    nodes : List BptNode,
+    root : Integer,
+    count : Integer
+  }
+
+Section: Construction
+  bpt-new : BPlusTree
+  bpt-new = BPlusTree { nodes = [BptLeafNode (BptLeaf { leaf-keys = [], leaf-values = [], leaf-count = 0 })], root = 0, count = 0 }
+
+Section: Lookup
+  bpt-lookup : BPlusTree, Integer -> Maybe Integer
+  bpt-lookup (tree) (key) = bpt-lookup-node tree (tree.root) key
+
+  bpt-lookup-node : BPlusTree, Integer, Integer -> Maybe Integer
+  bpt-lookup-node (tree) (node-idx) (key) =
+    let node = list-at (tree.nodes) node-idx
+    in when node
+      is BptLeafNode (leaf) -> bpt-leaf-find (leaf.leaf-keys) (leaf.leaf-values) key 0 (leaf.leaf-count)
+      is BptInternalNode (internal) ->
+        let child = bpt-route-child internal key
+        in bpt-lookup-node tree child key
+
+  bpt-leaf-find : List Integer, List Integer, Integer, Integer, Integer -> Maybe Integer
+  bpt-leaf-find (keys) (values) (target) (i) (len) =
+    if i >= len then None
+    else if list-at keys i == target then Just (list-at values i)
+    else bpt-leaf-find keys values target (i + 1) len
+
+  bpt-route-child : BptInternal, Integer -> Integer
+  bpt-route-child (internal) (key) = bpt-route-loop (internal.int-keys) (internal.int-children) key 0 (internal.int-count)
+
+  bpt-route-loop : List Integer, List Integer, Integer, Integer, Integer -> Integer
+  bpt-route-loop (keys) (children) (key) (i) (len) =
+    if i >= len then list-at children i
+    else if key < list-at keys i then list-at children i
+    else bpt-route-loop keys children key (i + 1) len
+
+Section: Insert
+  bpt-insert : BPlusTree, Integer, Integer -> BPlusTree
+  bpt-insert (tree) (key) (val) =
+    let node = list-at (tree.nodes) (tree.root)
+    in when node
+      is BptLeafNode (leaf) ->
+        if leaf.leaf-count < bpt-max-keys then
+          let new-leaf = bpt-leaf-insert leaf key val
+          in BPlusTree { nodes = list-set-at (tree.nodes) (tree.root) (BptLeafNode new-leaf), root = tree.root, count = tree.count + 1 }
+        else let split = bpt-leaf-split leaf key val
+        in let left-idx = tree.root
+        in let right-idx = list-length (tree.nodes)
+        in let root-idx = right-idx + 1
+        in let new-internal = BptInternalNode (BptInternal { int-keys = [split.split-key], int-children = [left-idx, right-idx], int-count = 1 })
+        in let nodes2 = list-set-at (tree.nodes) left-idx (BptLeafNode (split.left))
+        in let nodes3 = list-push nodes2 (BptLeafNode (split.right))
+        in let nodes4 = list-push nodes3 new-internal
+        in BPlusTree { nodes = nodes4, root = root-idx, count = tree.count + 1 }
+      is BptInternalNode (internal) -> BPlusTree { nodes = tree.nodes, root = tree.root, count = tree.count }
+
+  bpt-leaf-insert : BptLeaf, Integer, Integer -> BptLeaf
+  bpt-leaf-insert (leaf) (key) (val) =
+    let pos = bpt-find-insert-pos (leaf.leaf-keys) key 0 (leaf.leaf-count)
+    in BptLeaf { leaf-keys = bpt-list-insert (leaf.leaf-keys) pos key, leaf-values = bpt-list-insert (leaf.leaf-values) pos val, leaf-count = leaf.leaf-count + 1 }
+
+  bpt-find-insert-pos : List Integer, Integer, Integer, Integer -> Integer
+  bpt-find-insert-pos (keys) (key) (i) (len) =
+    if i >= len then len
+    else if key < list-at keys i then i
+    else bpt-find-insert-pos keys key (i + 1) len
+
+  bpt-list-insert : List Integer, Integer, Integer -> List Integer
+  bpt-list-insert (xs) (pos) (val) = bpt-insert-loop xs pos val 0 (list-length xs) []
+
+  bpt-insert-loop : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  bpt-insert-loop (xs) (pos) (val) (i) (len) (acc) =
+    if i > len then acc
+    else if i == pos then bpt-insert-loop xs pos val (i + 1) len (list-push (list-push acc val) (if i < len then list-at xs i else val))
+    else if i < len then bpt-insert-loop xs pos val (i + 1) len (list-push acc (list-at xs i))
+    else acc
+
+Section: Split
+  BptSplitResult = record {
+    left : BptLeaf,
+    right : BptLeaf,
+    split-key : Integer
+  }
+
+  bpt-leaf-split : BptLeaf, Integer, Integer -> BptSplitResult
+  bpt-leaf-split (leaf) (key) (val) =
+    let inserted = bpt-leaf-insert leaf key val
+    in let mid = (inserted.leaf-count) / 2
+    in let left-keys = bpt-take (inserted.leaf-keys) 0 mid []
+    in let left-vals = bpt-take (inserted.leaf-values) 0 mid []
+    in let right-keys = bpt-drop (inserted.leaf-keys) mid (inserted.leaf-count) []
+    in let right-vals = bpt-drop (inserted.leaf-values) mid (inserted.leaf-count) []
+    in BptSplitResult { left = BptLeaf { leaf-keys = left-keys, leaf-values = left-vals, leaf-count = mid }, right = BptLeaf { leaf-keys = right-keys, leaf-values = right-vals, leaf-count = inserted.leaf-count - mid }, split-key = list-at right-keys 0 }
+
+  bpt-take : List Integer, Integer, Integer, List Integer -> List Integer
+  bpt-take (xs) (i) (stop) (acc) =
+    if i >= stop then acc
+    else bpt-take xs (i + 1) stop (list-push acc (list-at xs i))
+
+  bpt-drop : List Integer, Integer, Integer, List Integer -> List Integer
+  bpt-drop (xs) (i) (len) (acc) =
+    if i >= len then acc
+    else bpt-drop xs (i + 1) len (list-push acc (list-at xs i))
+
+Section: Queries
+  bpt-count : BPlusTree -> Integer
+  bpt-count (tree) = tree.count
+
+  bpt-contains : BPlusTree, Integer -> Boolean
+  bpt-contains (tree) (key) =
+   when (bpt-lookup tree key)
+    is Just (v) -> True
+    is None -> False
+
+Page 1

@@ -1,0 +1,172 @@
+Chapter: Pci
+  cites Foreword chapter Maybe
+
+ PCI Configuration Space access via I/O ports 0xCF8/0xCFC (CAM).
+ Enumerates devices on bus 0, reads vendor/device IDs, class codes,
+ BARs. Pure logic for address calculation; I/O port access uses
+ builtins port-out-32 and port-in-32.
+
+ We say:
+
+Section: Constants
+  pci-config-addr : Integer = 3320
+  pci-config-data : Integer = 3324
+  pci-vendor-nvidia : Integer = 4318
+  pci-vendor-virtio : Integer = 6900
+  pci-header-type-mask : Integer = 127
+
+Section: Address Encoding
+  pci-address : Integer, Integer, Integer, Integer -> Integer
+  pci-address (bus) (device) (func) (offset) =
+    bit-or 2147483648 (bit-or (bit-shl bus 16) (bit-or (bit-shl device 11) (bit-or (bit-shl func 8) (bit-and offset 252))))
+
+Section: Device Info
+  PciDevice = record {
+    pci-bus : Integer,
+    pci-dev : Integer,
+    pci-func : Integer,
+    pci-vendor : Integer,
+    pci-device-id : Integer,
+    pci-class : Integer,
+    pci-subclass : Integer,
+    pci-header-type : Integer
+  }
+
+  PciBar = record {
+    bar-index : Integer,
+    bar-base : Integer,
+    bar-is-io : Boolean,
+    bar-is-64bit : Boolean
+  }
+
+Section: Device Scanning
+  PciScanResult = record {
+    devices : List PciDevice,
+    count : Integer
+  }
+
+  pci-scan-bus : Integer -> PciScanResult
+  pci-scan-bus (bus) = pci-scan-loop bus 0 0 [] 0
+
+  pci-scan-loop : Integer, Integer, Integer, List PciDevice, Integer -> PciScanResult
+  pci-scan-loop (bus) (dev) (func) (acc) (count) =
+    if dev >= 32 then PciScanResult { devices = acc, count = count }
+    else if func >= 8 then pci-scan-loop bus (dev + 1) 0 acc count
+    else let vendor = pci-read-vendor bus dev func
+    in if vendor == 65535 then
+      if func == 0 then pci-scan-loop bus (dev + 1) 0 acc count
+      else pci-scan-loop bus dev (func + 1) acc count
+    else let device-id = pci-read-device-id bus dev func
+    in let class-info = pci-read-class bus dev func
+    in let hdr-type = pci-read-header-type bus dev func
+    in let entry = PciDevice { pci-bus = bus, pci-dev = dev, pci-func = func, pci-vendor = vendor, pci-device-id = device-id, pci-class = bit-and (bit-shru class-info 8) 255, pci-subclass = bit-and class-info 255, pci-header-type = bit-and hdr-type pci-header-type-mask }
+    in let multi = bit-and hdr-type 128 > 0
+    in if func == 0 then
+      if multi then pci-scan-loop bus dev 1 (list-push acc entry) (count + 1)
+      else pci-scan-loop bus (dev + 1) 0 (list-push acc entry) (count + 1)
+    else pci-scan-loop bus dev (func + 1) (list-push acc entry) (count + 1)
+
+Section: Config Space Reads
+  pci-read-config : Integer, Integer, Integer, Integer -> Integer
+  pci-read-config (bus) (dev) (func) (offset) =
+    let addr = pci-address bus dev func offset
+    in pci-config-read-raw addr offset
+
+  pci-config-read-raw : Integer, Integer -> Integer
+  pci-config-read-raw (addr) (offset) =
+    let w = port-out-32 pci-config-addr addr
+    in w + port-in-32 pci-config-data
+
+  pci-read-vendor : Integer, Integer, Integer -> Integer
+  pci-read-vendor (bus) (dev) (func) = bit-and (pci-read-config bus dev func 0) 65535
+
+  pci-read-device-id : Integer, Integer, Integer -> Integer
+  pci-read-device-id (bus) (dev) (func) = bit-shru (pci-read-config bus dev func 0) 16
+
+  pci-read-class : Integer, Integer, Integer -> Integer
+  pci-read-class (bus) (dev) (func) =
+    let reg = pci-read-config bus dev func 8
+    in bit-shru reg 16
+
+  pci-read-header-type : Integer, Integer, Integer -> Integer
+  pci-read-header-type (bus) (dev) (func) =
+    let reg = pci-read-config bus dev func 12
+    in bit-and (bit-shru reg 16) 255
+
+  pci-read-bar : Integer, Integer, Integer, Integer -> Integer
+  pci-read-bar (bus) (dev) (func) (bar-idx) = pci-read-config bus dev func (16 + bar-idx * 4)
+
+Section: Device Queries
+  pci-find-vendor : PciScanResult, Integer -> Maybe PciDevice
+  pci-find-vendor (scan) (vendor) = pci-find-vendor-loop (scan.devices) vendor 0 (scan.count)
+
+  pci-find-vendor-loop : List PciDevice, Integer, Integer, Integer -> Maybe PciDevice
+  pci-find-vendor-loop (devs) (vendor) (i) (len) =
+    if i >= len then None
+    else let d = list-at devs i
+    in if d.pci-vendor == vendor then Just d
+    else pci-find-vendor-loop devs vendor (i + 1) len
+
+  pci-find-class : PciScanResult, Integer, Integer -> Maybe PciDevice
+  pci-find-class (scan) (cls) (subcls) = pci-find-class-loop (scan.devices) cls subcls 0 (scan.count)
+
+  pci-find-class-loop : List PciDevice, Integer, Integer, Integer, Integer -> Maybe PciDevice
+  pci-find-class-loop (devs) (cls) (subcls) (i) (len) =
+    if i >= len then None
+    else let d = list-at devs i
+    in if d.pci-class == cls then if d.pci-subclass == subcls then Just d
+      else pci-find-class-loop devs cls subcls (i + 1) len
+    else pci-find-class-loop devs cls subcls (i + 1) len
+
+Section: Device ID Search
+  pci-find-device : PciScanResult, Integer, Integer -> Maybe PciDevice
+  pci-find-device (scan) (vendor) (device-id) = pci-find-dev-loop (scan.devices) vendor device-id 0 (scan.count)
+
+  pci-find-dev-loop : List PciDevice, Integer, Integer, Integer, Integer -> Maybe PciDevice
+  pci-find-dev-loop (devs) (vendor) (did) (i) (len) =
+    if i >= len then None
+    else let d = list-at devs i
+    in if d.pci-vendor == vendor then if d.pci-device-id == did then Just d
+      else pci-find-dev-loop devs vendor did (i + 1) len
+    else pci-find-dev-loop devs vendor did (i + 1) len
+
+Section: BAR Parsing
+  pci-parse-bar : Integer, Integer, Integer, Integer -> PciBar
+  pci-parse-bar (bus) (dev) (func) (bar-idx) =
+    let raw = pci-read-bar bus dev func bar-idx
+    in let is-io = bit-and raw 1 == 1
+    in let is-64 = if is-io then False else bit-and (bit-shru raw 1) 3 == 2
+    in let base = if is-io then bit-and raw 65532 else bit-and raw 4294967280
+    in PciBar { bar-index = bar-idx, bar-base = base, bar-is-io = is-io, bar-is-64bit = is-64 }
+
+Section: PCI Config Write
+  pci-write-config : Integer, Integer, Integer, Integer, Integer -> Integer
+  pci-write-config (bus) (dev) (func) (offset) (value) =
+    let addr = pci-address bus dev func offset
+    in let w = port-out-32 pci-config-addr addr
+    in w + port-out-32 pci-config-data value
+
+  pci-enable-mmio : PciDevice -> Integer
+  pci-enable-mmio (d) =
+    let cmd = pci-read-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4
+    in let new-cmd = bit-or cmd 2
+    in pci-write-config (d.pci-bus) (d.pci-dev) (d.pci-func) 4 new-cmd
+
+Section: Formatting
+  format-pci-device : PciDevice -> Text
+  format-pci-device (d) =
+    pci-hex16 (d.pci-vendor) & ":" & pci-hex16 (d.pci-device-id) & " class=" & show (d.pci-class) & "." & show (d.pci-subclass) & " at " & show (d.pci-bus) & ":" & show (d.pci-dev) & "." & show (d.pci-func)
+
+  pci-hex16 : Integer -> Text
+  pci-hex16 (v) = pci-nib (bit-and (bit-shru v 12) 15) & pci-nib (bit-and (bit-shru v 8) 15) & pci-nib (bit-and (bit-shru v 4) 15) & pci-nib (bit-and v 15)
+
+  pci-nib : Integer -> Text
+  pci-nib (n) =
+    if n == 0 then "0" else if n == 1 then "1" else if n == 2 then "2"
+    else if n == 3 then "3" else if n == 4 then "4" else if n == 5 then "5"
+    else if n == 6 then "6" else if n == 7 then "7" else if n == 8 then "8"
+    else if n == 9 then "9" else if n == 10 then "a" else if n == 11 then "b"
+    else if n == 12 then "c" else if n == 13 then "d" else if n == 14 then "e"
+    else "f"
+
+Page 1

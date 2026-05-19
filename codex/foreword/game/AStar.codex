@@ -1,0 +1,131 @@
+Chapter: AStar
+  cites Foreword chapter PriorityQueue
+  cites Foreword chapter Maybe
+
+ A* pathfinding on a 2D grid. Supports blocked cells, diagonal
+ movement, and Manhattan/Chebyshev heuristics. Returns the path
+ as a list of (x, y) coordinate pairs.
+
+ We say:
+
+Section: Grid
+  AStarGrid = record {
+    width : Integer between 1 and 255,
+    height : Integer between 1 and 255,
+    blocked : List Integer
+  }
+
+  AStarPos = record {
+    x : Integer,
+    y : Integer
+  }
+
+  astar-grid-new : Integer, Integer -> AStarGrid
+  astar-grid-new (w) (h) = AStarGrid { width = w, height = h, blocked = astar-zero-cells (w * h) 0 [] }
+
+  astar-zero-cells : Integer, Integer, List Integer -> List Integer
+  astar-zero-cells (n) (i) (acc) =
+    if i >= n then acc
+    else astar-zero-cells n (i + 1) (list-push acc 0)
+
+  astar-block : AStarGrid, Integer, Integer -> AStarGrid
+  astar-block (g) (x) (y) =
+    AStarGrid { width = g.width, height = g.height, blocked = list-set-at (g.blocked) (y * g.width + x) 1 }
+
+  astar-is-blocked : AStarGrid, Integer, Integer -> Boolean
+  astar-is-blocked (g) (x) (y) =
+    if x < 0 then True
+    else if y < 0 then True
+    else if x >= g.width then True
+    else if y >= g.height then True
+    else list-at (g.blocked) (y * g.width + x) == 1
+
+Section: Heuristics
+  astar-manhattan : Integer, Integer, Integer, Integer -> Integer
+  astar-manhattan (x1) (y1) (x2) (y2) =
+    astar-abs (x1 - x2) + astar-abs (y1 - y2)
+
+  astar-abs : Integer -> Integer
+  astar-abs (n) = if n < 0 then -n else n
+
+Section: Pathfinding
+  AStarResult = record {
+    path : List AStarPos,
+    length : Integer,
+    found : Boolean
+  }
+
+  astar-find-path : AStarGrid, AStarPos, AStarPos -> AStarResult
+  astar-find-path (grid) (start) (goal) =
+    let size = grid.width * grid.height
+    in let g-scores = astar-fill size 999999 0 []
+    in let parents = astar-fill size (0 - 1) 0 []
+    in let start-idx = start.y * grid.width + start.x
+    in let g-scores2 = list-set-at g-scores start-idx 0
+    in let h = astar-manhattan (start.x) (start.y) (goal.x) (goal.y)
+    in let open-set = pq-insert pq-empty h start-idx
+    in astar-loop grid goal open-set g-scores2 parents (astar-zero-cells size 0 []) size
+
+  astar-fill : Integer, Integer, Integer, List Integer -> List Integer
+  astar-fill (n) (val) (i) (acc) =
+    if i >= n then acc
+    else astar-fill n val (i + 1) (list-push acc val)
+
+  astar-loop : AStarGrid, AStarPos, PriorityQueue, List Integer, List Integer, List Integer, Integer -> AStarResult
+  astar-loop (grid) (goal) (open-set) (g-scores) (parents) (closed) (size) =
+    if pq-is-empty open-set then AStarResult { path = [], length = 0, found = False }
+    else let pop = pq-pop open-set
+    in let current = pop.entry.value
+    in let cx = current - (current / grid.width) * grid.width
+    in let cy = current / grid.width
+    in if cx == goal.x then if cy == goal.y then
+      let path = astar-reconstruct parents current grid.width []
+      in AStarResult { path = path, length = list-length path, found = True }
+    else astar-expand grid goal (pop.queue) g-scores parents (list-set-at closed current 1) size current cx cy 0
+    else astar-expand grid goal (pop.queue) g-scores parents (list-set-at closed current 1) size current cx cy 0
+
+  astar-expand : AStarGrid, AStarPos, PriorityQueue, List Integer, List Integer, List Integer, Integer, Integer, Integer, Integer, Integer -> AStarResult
+  astar-expand (grid) (goal) (open-set) (g-scores) (parents) (closed) (size) (current) (cx) (cy) (dir) =
+    if dir >= 4 then astar-loop grid goal open-set g-scores parents closed size
+    else let dx = astar-dir-dx dir
+    in let dy = astar-dir-dy dir
+    in let nx = cx + dx
+    in let ny = cy + dy
+    in if astar-is-blocked grid nx ny then astar-expand grid goal open-set g-scores parents closed size current cx cy (dir + 1)
+    else let nidx = ny * grid.width + nx
+    in if list-at closed nidx == 1 then astar-expand grid goal open-set g-scores parents closed size current cx cy (dir + 1)
+    else let new-g = list-at g-scores current + 1
+    in if new-g >= list-at g-scores nidx then astar-expand grid goal open-set g-scores parents closed size current cx cy (dir + 1)
+    else let g2 = list-set-at g-scores nidx new-g
+    in let p2 = list-set-at parents nidx current
+    in let h = astar-manhattan nx ny (goal.x) (goal.y)
+    in let o2 = pq-insert open-set (new-g + h) nidx
+    in astar-expand grid goal o2 g2 p2 closed size current cx cy (dir + 1)
+
+  astar-dir-dx : Integer -> Integer
+  astar-dir-dx (d) = if d == 0 then 1 else if d == 1 then 0 else if d == 2 then 0 - 1 else 0
+
+  astar-dir-dy : Integer -> Integer
+  astar-dir-dy (d) = if d == 0 then 0 else if d == 1 then 1 else if d == 2 then 0 else 0 - 1
+
+  astar-reconstruct : List Integer, Integer, Integer, List AStarPos -> List AStarPos
+  astar-reconstruct (parents) (current) (width) (acc) =
+    let x = current - (current / width) * width
+    in let y = current / width
+    in let path = [AStarPos { x = x, y = y }] & acc
+    in let parent = list-at parents current
+    in if parent < 0 then path
+    else astar-reconstruct parents parent width path
+
+Section: Formatting
+  format-path : List AStarPos -> Text
+  format-path (path) = format-path-loop path 0 (list-length path) ""
+
+  format-path-loop : List AStarPos, Integer, Integer, Text -> Text
+  format-path-loop (path) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at path i
+    in let sep = if i == 0 then "" else "->"
+    in format-path-loop path (i + 1) len (acc & sep & "(" & show (p.x) & "," & show (p.y) & ")")
+
+Page 1

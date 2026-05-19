@@ -1,0 +1,177 @@
+Chapter: Lz4
+
+ LZ4 compression — speed-tier lossless compressor optimized for
+ fast decompression. Uses a hash table for match finding with
+ 4-byte minimum match length. Output is a sequence of literal
+ runs and match copies in LZ4 block format.
+
+ To lz4-compress gives LZ4-compressed bytes from raw input.
+ To lz4-decompress gives original bytes from LZ4-compressed input.
+
+ We say:
+
+Section: Constants
+
+  lz4-min-match : Integer = 4
+  lz4-hash-bits : Integer = 12
+  lz4-hash-size : Integer = 4096
+  lz4-max-distance : Integer = 65535
+  lz4-ml-bits : Integer = 4
+  lz4-ml-mask : Integer = 15
+  lz4-run-mask : Integer = 15
+
+Section: Compression
+
+  lz4-compress : List Integer -> List Integer
+  lz4-compress (input) =
+    let len = list-length input
+    in if len == 0 then []
+    else let table = lz4-init-table lz4-hash-size 0 []
+    in lz4-compress-loop input len table 0 0 []
+
+  lz4-compress-loop : List Integer, Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  lz4-compress-loop (input) (len) (table) (pos) (anchor) (acc) =
+    if pos + lz4-min-match > len then lz4-emit-last-literals input anchor len acc
+    else let h = lz4-hash4 input pos
+    in let ref = list-at table h
+    in let table2 = list-set-at table h pos
+    in if ref < 0 then lz4-compress-loop input len table2 (pos + 1) anchor acc
+    else if pos - ref > lz4-max-distance then lz4-compress-loop input len table2 (pos + 1) anchor acc
+    else if lz4-match4 input pos ref len == False then lz4-compress-loop input len table2 (pos + 1) anchor acc
+    else let match-len = lz4-extend-match input pos ref len
+    in let lit-len = pos - anchor
+    in let offset = pos - ref
+    in let acc2 = lz4-emit-sequence acc lit-len input anchor offset match-len
+    in lz4-compress-loop input len table2 (pos + match-len) (pos + match-len) acc2
+
+Section: Match Finding
+
+  lz4-hash4 : List Integer, Integer -> Integer
+  lz4-hash4 (input) (pos) =
+    let b0 = list-at input pos
+    in let b1 = list-at input (pos + 1)
+    in let b2 = list-at input (pos + 2)
+    in let b3 = list-at input (pos + 3)
+    in let word = bit-or (bit-or b0 (bit-shl b1 8)) (bit-or (bit-shl b2 16) (bit-shl b3 24))
+    in let v = word * 2654435761
+    in let positive = if v < 0 then 0 - v else v
+    in bit-and (bit-shru positive (32 - lz4-hash-bits)) (lz4-hash-size - 1)
+
+  lz4-match4 : List Integer, Integer, Integer, Integer -> Boolean
+  lz4-match4 (input) (a) (b) (len) =
+    if a + 3 >= len then False
+    else if b + 3 >= len then False
+    else if list-at input a == list-at input b then
+      if list-at input (a + 1) == list-at input (b + 1) then
+        if list-at input (a + 2) == list-at input (b + 2) then
+          list-at input (a + 3) == list-at input (b + 3)
+        else False
+      else False
+    else False
+
+  lz4-extend-match : List Integer, Integer, Integer, Integer -> Integer
+  lz4-extend-match (input) (pos) (ref) (len) =
+    lz4-ext-loop input (pos + lz4-min-match) (ref + lz4-min-match) len lz4-min-match
+
+  lz4-ext-loop : List Integer, Integer, Integer, Integer, Integer -> Integer
+  lz4-ext-loop (input) (a) (b) (len) (count) =
+    if a >= len then count
+    else if list-at input a /= list-at input b then count
+    else lz4-ext-loop input (a + 1) (b + 1) len (count + 1)
+
+Section: Sequence Emission
+
+  lz4-emit-sequence : List Integer, Integer, List Integer, Integer, Integer, Integer -> List Integer
+  lz4-emit-sequence (acc) (lit-len) (input) (lit-start) (offset) (match-len) =
+    let ml-code = match-len - lz4-min-match
+    in let token = lz4-make-token lit-len ml-code
+    in let acc2 = list-push acc token
+    in let acc3 = lz4-emit-extra-length acc2 lit-len
+    in let acc4 = lz4-copy-literals acc3 input lit-start lit-len 0
+    in let acc5 = list-push (list-push acc4 (bit-and offset 255)) (bit-and (bit-shru offset 8) 255)
+    in lz4-emit-extra-length acc5 ml-code
+
+  lz4-make-token : Integer, Integer -> Integer
+  lz4-make-token (lit-len) (ml-code) =
+    let lit = if lit-len >= 15 then 15 else lit-len
+    in let ml = if ml-code >= 15 then 15 else ml-code
+    in bit-or (bit-shl lit 4) ml
+
+  lz4-emit-extra-length : List Integer, Integer -> List Integer
+  lz4-emit-extra-length (acc) (len) =
+    if len < 15 then acc
+    else let remaining = len - 15
+    in lz4-emit-extra-loop acc remaining
+
+  lz4-emit-extra-loop : List Integer, Integer -> List Integer
+  lz4-emit-extra-loop (acc) (remaining) =
+    if remaining < 255 then list-push acc remaining
+    else lz4-emit-extra-loop (list-push acc 255) (remaining - 255)
+
+  lz4-emit-last-literals : List Integer, Integer, Integer, List Integer -> List Integer
+  lz4-emit-last-literals (input) (anchor) (len) (acc) =
+    let lit-len = len - anchor
+    in if lit-len == 0 then acc
+    else let token = if lit-len >= 15 then bit-shl 15 4 else bit-shl lit-len 4
+    in let acc2 = list-push acc token
+    in let acc3 = lz4-emit-extra-length acc2 lit-len
+    in lz4-copy-literals acc3 input anchor lit-len 0
+
+  lz4-copy-literals : List Integer, List Integer, Integer, Integer, Integer -> List Integer
+  lz4-copy-literals (acc) (input) (start) (count) (i) =
+    if i >= count then acc
+    else lz4-copy-literals (list-push acc (list-at input (start + i))) input start count (i + 1)
+
+Section: Decompression
+
+  lz4-decompress : List Integer -> List Integer
+  lz4-decompress (input) =
+    lz4-decompress-loop input 0 (list-length input) []
+
+  lz4-decompress-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  lz4-decompress-loop (input) (pos) (len) (acc) =
+    if pos >= len then acc
+    else let token = list-at input pos
+    in let lit-len = bit-shru token 4
+    in let ml-code = bit-and token lz4-ml-mask
+    in let r = lz4-read-extra-length input (pos + 1) len lit-len
+    in let acc2 = lz4-copy-literals acc input (r.next) (r.length) 0
+    in let after-lit = r.next + r.length
+    in if after-lit >= len then acc2
+    else let offset = list-at input after-lit + bit-shl (list-at input (after-lit + 1)) 8
+    in let mr = lz4-read-extra-length input (after-lit + 2) len (ml-code + lz4-min-match)
+    in let acc3 = lz4-copy-match acc2 offset (mr.length) 0
+    in lz4-decompress-loop input (mr.next) len acc3
+
+  Lz4LenResult = record {
+    length : Integer,
+    next : Integer
+  }
+
+  lz4-read-extra-length : List Integer, Integer, Integer, Integer -> Lz4LenResult
+  lz4-read-extra-length (input) (pos) (len) (base) =
+    if base < 15 then Lz4LenResult { length = base, next = pos }
+    else lz4-read-extra-loop input pos len (base - 15)
+
+  lz4-read-extra-loop : List Integer, Integer, Integer, Integer -> Lz4LenResult
+  lz4-read-extra-loop (input) (pos) (len) (extra) =
+    if pos >= len then Lz4LenResult { length = 15 + extra, next = pos }
+    else let b = list-at input pos
+    in if b < 255 then Lz4LenResult { length = 15 + extra + b, next = pos + 1 }
+    else lz4-read-extra-loop input (pos + 1) len (extra + 255)
+
+  lz4-copy-match : List Integer, Integer, Integer, Integer -> List Integer
+  lz4-copy-match (acc) (offset) (length) (i) =
+    if i >= length then acc
+    else let src = list-length acc - offset
+    in let safe-src = if src < 0 then 0 else src
+    in lz4-copy-match (list-push acc (list-at acc safe-src)) offset length (i + 1)
+
+Section: Helpers
+
+  lz4-init-table : Integer, Integer, List Integer -> List Integer
+  lz4-init-table (n) (i) (acc) =
+    if i >= n then acc
+    else lz4-init-table n (i + 1) (list-push acc (0 - 1))
+
+Page 1

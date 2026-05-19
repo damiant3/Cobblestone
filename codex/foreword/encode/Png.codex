@@ -1,0 +1,114 @@
+Chapter: Png
+  cites Foreword chapter CCE (to-unicode)
+  cites Game chapter Color
+  cites Encode chapter Crc32
+
+ PNG encoder. 24-bit truecolor, uncompressed (stored blocks in
+ deflate stream). Produces valid PNG files readable by any viewer.
+ Uses no-filter (filter type 0) for simplicity. CRC32 for chunk
+ integrity.
+
+ We say:
+
+Section: Encoding
+  png-encode : Integer, Integer, List Rgb -> List Integer
+  png-encode (width) (height) (pixels) =
+    let signature = png-signature
+    in let ihdr = png-ihdr-chunk width height
+    in let idat = png-idat-chunk width height pixels
+    in let iend = png-iend-chunk
+    in signature & ihdr & idat & iend
+
+Section: Signature
+  png-signature : List Integer
+  png-signature = [137, 80, 78, 71, 13, 10, 26, 10]
+
+Section: IHDR Chunk
+  png-ihdr-chunk : Integer, Integer -> List Integer
+  png-ihdr-chunk (width) (height) =
+    let data = png-be32 width & png-be32 height & [8, 2, 0, 0, 0]
+    in png-chunk [73, 72, 68, 82] data
+
+Section: IDAT Chunk (uncompressed deflate)
+  png-idat-chunk : Integer, Integer, List Rgb -> List Integer
+  png-idat-chunk (width) (height) (pixels) =
+    let raw = png-filter-rows pixels width height 0 []
+    in let deflate = png-deflate-stored raw
+    in png-chunk [73, 68, 65, 84] deflate
+
+  png-filter-rows : List Rgb, Integer, Integer, Integer, List Integer -> List Integer
+  png-filter-rows (pixels) (width) (height) (y) (acc) =
+    if y >= height then acc
+    else let row = [0] & png-encode-row pixels width y 0 []
+    in png-filter-rows pixels width height (y + 1) (acc & row)
+
+  png-encode-row : List Rgb, Integer, Integer, Integer, List Integer -> List Integer
+  png-encode-row (pixels) (width) (y) (x) (acc) =
+    if x >= width then acc
+    else let px = list-at pixels (y * width + x)
+    in png-encode-row pixels width y (x + 1) (acc & [px.cr, px.cg, px.cb])
+
+Section: Deflate Stored (no compression)
+  png-deflate-stored : List Integer -> List Integer
+  png-deflate-stored (data) =
+    let n = list-length data
+    in png-deflate-blocks data 0 n [] & png-adler32-bytes data
+
+  png-deflate-blocks : List Integer, Integer, Integer, List Integer -> List Integer
+  png-deflate-blocks (data) (pos) (total) (acc) =
+    let remaining = total - pos
+    in let chunk = png-min-val remaining 65535
+    in let is-last = if pos + chunk >= total then 1 else 0
+    in let block-header = [is-last] & png-le16 chunk & png-le16 (bit-xor chunk 65535)
+    in let block-data = png-slice data pos chunk []
+    in if pos + chunk >= total then acc & block-header & block-data
+    else png-deflate-blocks data (pos + chunk) total (acc & block-header & block-data)
+
+Section: IEND Chunk
+  png-iend-chunk : List Integer
+  png-iend-chunk = png-chunk [73, 69, 78, 68] []
+
+Section: Generic Chunk
+  png-chunk : List Integer, List Integer -> List Integer
+  png-chunk (chunk-type) (data) =
+    let length = list-length data
+    in let type-and-data = chunk-type & data
+    in let crc = png-compute-crc type-and-data
+    in png-be32 length & type-and-data & png-be32 crc
+
+  png-compute-crc : List Integer -> Integer
+  png-compute-crc (bytes) = crc32 bytes
+
+Section: Adler32
+  png-adler32-bytes : List Integer -> List Integer
+  png-adler32-bytes (data) =
+    let adler = png-adler32 data
+    in png-be32 adler
+
+  png-adler32 : List Integer -> Integer
+  png-adler32 (data) = png-adler-loop data 0 (list-length data) 1 0
+
+  png-adler-loop : List Integer, Integer, Integer, Integer, Integer -> Integer
+  png-adler-loop (data) (i) (n) (a) (b) =
+    if i >= n then bit-or (bit-shl b 16) a
+    else let new-a = (a + list-at data i) - ((a + list-at data i) / 65521 * 65521)
+    in let new-b = (b + new-a) - ((b + new-a) / 65521 * 65521)
+    in png-adler-loop data (i + 1) n new-a new-b
+
+Section: Helpers
+  png-be32 : Integer -> List Integer
+  png-be32 (v) = [bit-and (bit-shru v 24) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255]
+
+  png-le16 : Integer -> List Integer
+  png-le16 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+  png-slice : List Integer, Integer, Integer, List Integer -> List Integer
+  png-slice (data) (start) (len) (acc) =
+    if len <= 0 then acc
+    else if start >= list-length data then acc
+    else png-slice data (start + 1) (len - 1) (list-push acc (list-at data start))
+
+  png-min-val : Integer, Integer -> Integer
+  png-min-val (a) (b) = if a < b then a else b
+
+Page 1

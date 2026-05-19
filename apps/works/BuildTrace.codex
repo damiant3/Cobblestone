@@ -1,0 +1,114 @@
+Chapter: BuildTrace
+  cites Works chapter BuildRecord
+  cites Works chapter Annotation
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+
+ A BuildTrace is a chain of build records forming the complete
+ history of the repository. Given any artifact or function,
+ the chain reveals when the artifact was introduced, when
+ the artifact last changed, and what gates the artifact passed through.
+
+ We say:
+
+Section: Build Chain
+
+  BuildChain = record {
+    records : HamtMap BuildRecord,
+    by-cl : HamtMap Text,
+    by-output : HamtMap Text,
+    head-cl : Integer
+  }
+
+  build-chain-empty : BuildChain = BuildChain {
+    records = hamt-empty,
+    by-cl = hamt-empty,
+    by-output = hamt-empty,
+    head-cl = 0
+  }
+
+  build-chain-add : BuildChain, BuildRecord -> BuildChain
+  build-chain-add (chain) (br) =
+    BuildChain {
+      records = hamt-set (chain.records) (br.hash) br,
+      by-cl = hamt-set (chain.by-cl) (show (br.cl-number)) (br.hash),
+      by-output = hamt-set (chain.by-output) (br.output-hash) (br.hash),
+      head-cl = if br.cl-number > chain.head-cl then br.cl-number else chain.head-cl
+    }
+
+Section: Queries
+
+  build-for-cl : BuildChain, Integer -> Maybe BuildRecord
+  build-for-cl (chain) (cl) =
+    when hamt-get (chain.by-cl) (show cl)
+      is None -> None
+      is Just (hash) -> hamt-get (chain.records) hash
+
+  build-for-output : BuildChain, Text -> Maybe BuildRecord
+  build-for-output (chain) (output-hash) =
+    when hamt-get (chain.by-output) output-hash
+      is None -> None
+      is Just (hash) -> hamt-get (chain.records) hash
+
+  build-head : BuildChain -> Maybe BuildRecord
+  build-head (chain) =
+    if chain.head-cl == 0 then None
+    else build-for-cl chain (chain.head-cl)
+
+Section: Function Trace
+
+ Walk the build chain backwards from head to find when a specific
+ function was last changed. Returns the build record whose change
+ list includes the function.
+
+  trace-function-change : BuildChain, Text, Text -> Maybe BuildRecord
+  trace-function-change (chain) (file-path) (func-name) =
+    trace-function-loop chain (chain.head-cl) file-path func-name 100
+
+  trace-function-loop : BuildChain, Integer, Text, Text, Integer -> Maybe BuildRecord
+  trace-function-loop (chain) (cl) (file-path) (func-name) (fuel) =
+    if fuel <= 0 then None
+    else when build-for-cl chain cl
+      is None -> None
+      is Just (br) ->
+        if build-has-function-change br file-path func-name then Just br
+        else if br.prior-cl == 0 then None
+        else trace-function-loop chain (br.prior-cl) file-path func-name (fuel - 1)
+
+  build-has-function-change : BuildRecord, Text, Text -> Boolean
+  build-has-function-change (br) (file-path) (func-name) =
+    file-changes-has (br.changes) file-path func-name 0 (list-length (br.changes))
+
+  file-changes-has : List FileChange, Text, Text, Integer, Integer -> Boolean
+  file-changes-has (changes) (file-path) (func-name) (i) (len) =
+    if i >= len then False
+    else let fc = list-at changes i
+    in if fc.path == file-path then func-list-has (fc.functions) func-name 0 (list-length (fc.functions))
+    else file-changes-has changes file-path func-name (i + 1) len
+
+  func-list-has : List FunctionChange, Text, Integer, Integer -> Boolean
+  func-list-has (fcs) (name) (i) (len) =
+    if i >= len then False
+    else if (list-at fcs i).name == name then True
+    else func-list-has fcs name (i + 1) len
+
+Section: Gate History
+
+ Find the last N builds and their gate results. Useful for
+ spotting regressions — if sweep counts drop, trace back to
+ the CL that caused it.
+
+  recent-builds : BuildChain, Integer -> List BuildRecord
+  recent-builds (chain) (count) =
+    recent-builds-loop chain (chain.head-cl) count []
+
+  recent-builds-loop : BuildChain, Integer, Integer, List BuildRecord -> List BuildRecord
+  recent-builds-loop (chain) (cl) (remaining) (acc) =
+    if remaining <= 0 then acc
+    else when build-for-cl chain cl
+      is None -> acc
+      is Just (br) ->
+        if br.prior-cl == 0 then list-push acc br
+        else recent-builds-loop chain (br.prior-cl) (remaining - 1) (list-push acc br)
+
+Page 1

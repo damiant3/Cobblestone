@@ -1,0 +1,273 @@
+Chapter: Pinochle
+  cites Games chapter Rng
+
+ Two-team Pinochle (4 players, teams 0 and 1). 48-card deck:
+ ranks A,10,K,Q,J,9 (encoded 5,4,3,2,1,0) duplicated twice,
+ four suits (0=clubs, 1=diamonds, 2=hearts, 3=spades).
+ Card = suit * 12 + copy * 6 + rank.
+ Scoring: melds then trick points (A=11, 10=10, K=4, Q=3, J=2).
+
+ We say:
+
+Section: Types
+
+  PinochleCard = record {
+    id   : Integer,
+    suit : Integer,
+    rank : Integer,
+    copy : Integer
+  }
+
+  PinochleState = record {
+    deck       : List Integer,
+    h0         : List Integer,
+    h1         : List Integer,
+    h2         : List Integer,
+    h3         : List Integer,
+    trump      : Integer,
+    tricks-won : List Integer
+  }
+
+  PinochleResult = record {
+    team0-score : Integer,
+    team1-score : Integer,
+    winner      : Integer
+  }
+
+Section: Card Helpers
+
+  pin-suit : Integer -> Integer
+  pin-suit (c) = c / 12
+
+  pin-rank : Integer -> Integer
+  pin-rank (c) = rng-mod c 6
+
+  pin-copy : Integer -> Integer
+  pin-copy (c) = rng-mod (c / 6) 2
+
+  pin-point-value : Integer -> Integer
+  pin-point-value (rank) =
+    if rank == 5 then 11
+    else if rank == 4 then 10
+    else if rank == 3 then 4
+    else if rank == 2 then 3
+    else if rank == 1 then 2
+    else 0
+
+  pin-rank-name : Integer -> Text
+  pin-rank-name (rank) =
+    if rank == 5 then "A"
+    else if rank == 4 then "T"
+    else if rank == 3 then "K"
+    else if rank == 2 then "Q"
+    else if rank == 1 then "J"
+    else "9"
+
+Section: Deck
+
+  pin-deck-new : List Integer
+  pin-deck-new = pin-build-deck 0 []
+
+  pin-build-deck : Integer, List Integer -> List Integer
+  pin-build-deck (i) (acc) =
+    if i >= 48 then acc
+    else pin-build-deck (i + 1) (list-push acc i)
+
+  pin-shuffle : List Integer, Rng -> List Integer
+  pin-shuffle (deck) (r) =
+    pin-fy deck 47 r
+
+  pin-fy : List Integer, Integer, Rng -> List Integer
+  pin-fy (deck) (i) (r) =
+    if i <= 0 then deck
+    else let r2 = rng-next r
+    in let j = rng-mod (rng-value r2) (i + 1)
+    in let a = list-at deck i
+    in let b = list-at deck j
+    in let d2 = list-set-at deck i b
+    in let d3 = list-set-at d2 j a
+    in pin-fy d3 (i - 1) r2
+
+  pin-deal : List Integer -> PinochleState
+  pin-deal (deck) =
+    let h0 = pin-collect deck 0 12 []
+    in let h1 = pin-collect deck 12 24 []
+    in let h2 = pin-collect deck 24 36 []
+    in let h3 = pin-collect deck 36 48 []
+    in let trump = pin-suit (list-at deck 0)
+    in let tw = list-push (list-push (list-push (list-push [] 0) 0) 0) 0
+    in PinochleState { deck = deck, h0 = h0, h1 = h1, h2 = h2, h3 = h3, trump = trump, tricks-won = tw }
+
+  pin-collect : List Integer, Integer, Integer, List Integer -> List Integer
+  pin-collect (deck) (lo) (hi) (acc) =
+    if lo >= hi then acc
+    else pin-collect deck (lo + 1) hi (list-push acc (list-at deck lo))
+
+Section: Melding
+
+  count-suit-rank : List Integer, Integer, Integer -> Integer
+  count-suit-rank (hand) (s) (rk) =
+    count-sr-loop hand s rk 0 0
+
+  count-sr-loop : List Integer, Integer, Integer, Integer, Integer -> Integer
+  count-sr-loop (hand) (s) (rk) (i) (acc) =
+    if i >= list-length hand then acc
+    else let c = list-at hand i
+    in let delta = if pin-suit c == s & pin-rank c == rk then 1 else 0
+    in count-sr-loop hand s rk (i + 1) (acc + delta)
+
+  has-sr : List Integer, Integer, Integer -> Boolean
+  has-sr (hand) (s) (rk) = count-sr-loop hand s rk 0 0 >= 1
+
+  meld-marriages : List Integer, Integer -> Integer
+  meld-marriages (hand) (trump) =
+    meld-marriage-loop hand trump 0 0
+
+  meld-marriage-loop : List Integer, Integer, Integer, Integer -> Integer
+  meld-marriage-loop (hand) (trump) (s) (score) =
+    if s >= 4 then score
+    else let has-k = has-sr hand s 3
+    in let has-q = has-sr hand s 2
+    in let pts = if has-k & has-q then if s == trump then 40 else 20 else 0
+    in meld-marriage-loop hand trump (s + 1) (score + pts)
+
+  meld-pinochle : List Integer -> Integer
+  meld-pinochle (hand) =
+    let has-jd = has-sr hand 1 1
+    in let has-qs = has-sr hand 3 2
+    in if has-jd & has-qs then 40 else 0
+
+  meld-around : List Integer, Integer -> Integer
+  meld-around (hand) (rk) =
+    let s0 = count-sr-loop hand 0 rk 0 0 >= 1
+    in let s1 = count-sr-loop hand 1 rk 0 0 >= 1
+    in let s2 = count-sr-loop hand 2 rk 0 0 >= 1
+    in let s3 = count-sr-loop hand 3 rk 0 0 >= 1
+    in if s0 & s1 & s2 & s3 then
+      if rk == 5 then 100
+      else if rk == 3 then 80
+      else if rk == 2 then 60
+      else if rk == 1 then 40
+      else 0
+    else 0
+
+  meld-run : List Integer, Integer -> Integer
+  meld-run (hand) (trump) =
+    let has-a  = has-sr hand trump 5
+    in let has-t  = has-sr hand trump 4
+    in let has-k  = has-sr hand trump 3
+    in let has-q  = has-sr hand trump 2
+    in let has-j  = has-sr hand trump 1
+    in if has-a & has-t & has-k & has-q & has-j then 150 else 0
+
+  score-meld : List Integer, Integer -> Integer
+  score-meld (hand) (trump) =
+    let m = meld-marriages hand trump
+    in let p = meld-pinochle hand
+    in let aa = meld-around hand 5
+    in let ka = meld-around hand 3
+    in let qa = meld-around hand 2
+    in let ja = meld-around hand 1
+    in let run = meld-run hand trump
+    in m + p + aa + ka + qa + ja + run
+
+Section: Trick Points
+
+  score-tricks : List Integer -> Integer
+  score-tricks (cards) =
+    score-tricks-loop cards 0 0
+
+  score-tricks-loop : List Integer, Integer, Integer -> Integer
+  score-tricks-loop (cards) (i) (acc) =
+    if i >= list-length cards then acc
+    else let pts = pin-point-value (pin-rank (list-at cards i))
+    in score-tricks-loop cards (i + 1) (acc + pts)
+
+  pick-card : List Integer, Integer -> Integer
+  pick-card (hand) (idx) =
+    let n = list-length hand
+    in if n == 0 then (-1)
+    else list-at hand (rng-mod idx n)
+
+Section: Simulated Play
+
+  sim-trick : List Integer, List Integer, List Integer, List Integer, Integer -> Integer
+  sim-trick (h0) (h1) (h2) (h3) (trump) =
+    let c0 = if list-length h0 > 0 then list-at h0 0 else 0
+    in let c1 = if list-length h1 > 0 then list-at h1 0 else 0
+    in let c2 = if list-length h2 > 0 then list-at h2 0 else 0
+    in let c3 = if list-length h3 > 0 then list-at h3 0 else 0
+    in let led-suit = pin-suit c0
+    in let w01 = trick-winner c0 c1 led-suit trump
+    in let w012 = trick-winner w01 c2 led-suit trump
+    in let w0123 = trick-winner w012 c3 led-suit trump
+    in let pts = pin-point-value (pin-rank c0) + pin-point-value (pin-rank c1) +
+                 pin-point-value (pin-rank c2) + pin-point-value (pin-rank c3)
+    in if w0123 == c0 | w0123 == c2 then pts * 10 + 0
+    else pts * 10 + 1
+
+  trick-winner : Integer, Integer, Integer, Integer -> Integer
+  trick-winner (current-best) (challenger) (led-suit) (trump) =
+    let bs = pin-suit current-best
+    in let cs = pin-suit challenger
+    in let br = pin-rank current-best
+    in let cr = pin-rank challenger
+    in if cs == bs then
+      if cr > br then challenger else current-best
+    else if cs == trump then challenger
+    else current-best
+
+  play-all-tricks : PinochleState -> Integer
+  play-all-tricks (st) =
+    play-tricks-loop (st.h0) (st.h1) (st.h2) (st.h3) (st.trump) 0 0
+
+  play-tricks-loop : List Integer, List Integer, List Integer, List Integer, Integer, Integer, Integer -> Integer
+  play-tricks-loop (h0) (h1) (h2) (h3) (trump) (trick) (team0-pts) =
+    if list-length h0 == 0 then team0-pts
+    else let result = sim-trick h0 h1 h2 h3 trump
+    in let pts = result / 10
+    in let team-won = rng-mod result 10
+    in let new-t0 = if team-won == 0 then team0-pts + pts else team0-pts
+    in let h0b = drop-first h0
+    in let h1b = drop-first h1
+    in let h2b = drop-first h2
+    in let h3b = drop-first h3
+    in play-tricks-loop h0b h1b h2b h3b trump (trick + 1) new-t0
+
+  drop-first : List Integer -> List Integer
+  drop-first (xs) =
+    drop-first-loop xs 1 []
+
+  drop-first-loop : List Integer, Integer, List Integer -> List Integer
+  drop-first-loop (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else drop-first-loop xs (i + 1) (list-push acc (list-at xs i))
+
+Section: Game Runner
+
+  run-pinochle-hand : Integer -> PinochleResult
+  run-pinochle-hand (seed) =
+    let deck = pin-shuffle pin-deck-new (rng-new seed)
+    in let st = pin-deal deck
+    in let meld0 = score-meld (st.h0) (st.trump) + score-meld (st.h2) (st.trump)
+    in let meld1 = score-meld (st.h1) (st.trump) + score-meld (st.h3) (st.trump)
+    in let trick-pts = play-all-tricks st
+    in let trick1 = trick-pts
+    in let total-pts = score-tricks (st.h0) + score-tricks (st.h1) +
+                       score-tricks (st.h2) + score-tricks (st.h3)
+    in let trick0-pts = trick1
+    in let trick1-pts = total-pts - trick0-pts
+    in let team0 = meld0 + trick0-pts
+    in let team1 = meld1 + trick1-pts
+    in let w = if team0 > team1 then 0 else if team1 > team0 then 1 else (-1)
+    in PinochleResult { team0-score = team0, team1-score = team1, winner = w }
+
+Section: Formatting
+
+  format-pinochle-result : PinochleResult -> Text
+  format-pinochle-result (r) =
+    let w = if r.winner == 0 then "Team0" else if r.winner == 1 then "Team1" else "Tie"
+    in "Pinochle: Team0=" & show (r.team0-score) &
+       " Team1=" & show (r.team1-score) & " winner=" & w
+
+Page 1

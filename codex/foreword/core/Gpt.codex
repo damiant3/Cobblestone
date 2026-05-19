@@ -1,0 +1,416 @@
+Chapter: Gpt
+  cites Foreword chapter Maybe
+
+ Runtime GPT partition table reader and writer. Reads GPT headers
+ and partition entries from disk via block-read-sector, writes new
+ GPT partition tables via block-write-sector. Operates on live
+ block devices, not compile-time buffers.
+
+ To gpt-read gives Maybe GptDisk, parsing the GPT on the current drive.
+ To gpt-read-partition gives Maybe GptPartition, reading a single entry.
+ To gpt-write-table writes a fresh GPT to the current drive.
+ To gpt-wipe-quick zeros the GPT headers and first megabyte.
+
+ We say:
+
+Section: Constants
+
+  gpt-sig-0 : Integer = 69
+  gpt-sig-1 : Integer = 70
+  gpt-sig-2 : Integer = 73
+  gpt-sig-3 : Integer = 32
+  gpt-sig-4 : Integer = 80
+  gpt-sig-5 : Integer = 65
+  gpt-sig-6 : Integer = 82
+  gpt-sig-7 : Integer = 84
+
+Section: Types
+
+  GptPartition = record {
+    gp-type-guid : List Integer,
+    gp-unique-guid : List Integer,
+    gp-start-lba : Integer,
+    gp-end-lba : Integer,
+    gp-attributes : Integer,
+    gp-name : Text
+  }
+
+  GptDisk = record {
+    gd-disk-guid : List Integer,
+    gd-partition-count : Integer,
+    gd-partitions : List GptPartition,
+    gd-total-sectors : Integer
+  }
+
+  GptPartitionSpec = record {
+    gs-type-guid : List Integer,
+    gs-name : Text,
+    gs-size-sectors : Integer
+  }
+
+Section: Little-Endian Read Helpers
+
+  gpt-read-u16 : Integer, Integer -> Integer
+  gpt-read-u16 (buf) (off) =
+    bit-or (peek-byte buf off) (bit-shl (peek-byte buf (off + 1)) 8)
+
+  gpt-read-u32 : Integer, Integer -> Integer
+  gpt-read-u32 (buf) (off) =
+    bit-or (gpt-read-u16 buf off) (bit-shl (gpt-read-u16 buf (off + 2)) 16)
+
+  gpt-read-u64 : Integer, Integer -> Integer
+  gpt-read-u64 (buf) (off) =
+    bit-or (gpt-read-u32 buf off) (bit-shl (gpt-read-u32 buf (off + 4)) 32)
+
+Section: Little-Endian Write Helpers
+
+  gpt-write-u16 : Integer, Integer, Integer -> Integer
+  gpt-write-u16 (buf) (off) (v) =
+    let w0 = poke-byte buf off (bit-and v 255)
+    in let w1 = poke-byte buf (off + 1) (bit-and (bit-shru v 8) 255)
+    in off + 2
+
+  gpt-write-u32 : Integer, Integer, Integer -> Integer
+  gpt-write-u32 (buf) (off) (v) =
+    let w0 = poke-byte buf off (bit-and v 255)
+    in let w1 = poke-byte buf (off + 1) (bit-and (bit-shru v 8) 255)
+    in let w2 = poke-byte buf (off + 2) (bit-and (bit-shru v 16) 255)
+    in let w3 = poke-byte buf (off + 3) (bit-and (bit-shru v 24) 255)
+    in off + 4
+
+  gpt-write-u64 : Integer, Integer, Integer -> Integer
+  gpt-write-u64 (buf) (off) (v) =
+    let w0 = gpt-write-u32 buf off v
+    in gpt-write-u32 buf (off + 4) (bit-shru v 32)
+
+Section: GUID Helpers
+
+  gpt-read-guid : Integer, Integer -> List Integer
+  gpt-read-guid (buf) (off) = gpt-read-guid-loop buf off 0 []
+
+  gpt-read-guid-loop : Integer, Integer, Integer, List Integer -> List Integer
+  gpt-read-guid-loop (buf) (off) (i) (acc) =
+    if i >= 16 then acc
+    else gpt-read-guid-loop buf off (i + 1) (list-push acc (peek-byte buf (off + i)))
+
+  gpt-write-guid : Integer, Integer, List Integer -> Integer
+  gpt-write-guid (buf) (off) (guid) = gpt-write-guid-loop buf off guid 0
+
+  gpt-write-guid-loop : Integer, Integer, List Integer, Integer -> Integer
+  gpt-write-guid-loop (buf) (off) (guid) (i) =
+    if i >= 16 then off + 16
+    else let w = poke-byte buf (off + i) (list-at guid i)
+    in gpt-write-guid-loop buf off guid (i + 1)
+
+  gpt-guid-is-zero : List Integer -> Boolean
+  gpt-guid-is-zero (guid) = gpt-guid-zero-loop guid 0
+
+  gpt-guid-zero-loop : List Integer, Integer -> Boolean
+  gpt-guid-zero-loop (guid) (i) =
+    if i >= 16 then True
+    else if list-at guid i /= 0 then False
+    else gpt-guid-zero-loop guid (i + 1)
+
+Section: Name Extraction
+
+  gpt-read-name : Integer, Integer -> Text
+  gpt-read-name (buf) (off) = gpt-read-name-loop buf off 0 36 ""
+
+  gpt-read-name-loop : Integer, Integer, Integer, Integer, Text -> Text
+  gpt-read-name-loop (buf) (off) (i) (max-chars) (acc) =
+    if i >= max-chars then acc
+    else let lo = peek-byte buf (off + i * 2)
+    in let hi = peek-byte buf (off + i * 2 + 1)
+    in let code = bit-or lo (bit-shl hi 8)
+    in if code == 0 then acc
+    else gpt-read-name-loop buf off (i + 1) max-chars (acc & char-to-text (code-to-char code))
+
+Section: GPT Header Validation
+
+  gpt-check-signature : Integer -> Boolean
+  gpt-check-signature (buf) =
+    peek-byte buf 0 == gpt-sig-0
+    & peek-byte buf 1 == gpt-sig-1
+    & peek-byte buf 2 == gpt-sig-2
+    & peek-byte buf 3 == gpt-sig-3
+    & peek-byte buf 4 == gpt-sig-4
+    & peek-byte buf 5 == gpt-sig-5
+    & peek-byte buf 6 == gpt-sig-6
+    & peek-byte buf 7 == gpt-sig-7
+
+Section: Partition Entry Parsing
+
+  gpt-parse-entry : Integer, Integer -> GptPartition
+  gpt-parse-entry (buf) (off) =
+    GptPartition {
+      gp-type-guid = gpt-read-guid buf off,
+      gp-unique-guid = gpt-read-guid buf (off + 16),
+      gp-start-lba = gpt-read-u64 buf (off + 32),
+      gp-end-lba = gpt-read-u64 buf (off + 40),
+      gp-attributes = gpt-read-u64 buf (off + 48),
+      gp-name = gpt-read-name buf (off + 56)
+    }
+
+  gpt-read-entries : Integer, Integer, Integer, Integer, List GptPartition -> List GptPartition
+  gpt-read-entries (start-lba) (entry-size) (count) (i) (acc) =
+    if i >= count then acc
+    else let entries-per-sector = 512 / entry-size
+    in let sector = start-lba + i / entries-per-sector
+    in let off-in-sector = (i - (i / entries-per-sector) * entries-per-sector) * entry-size
+    in let buf = block-read-sector sector
+    in let entry = gpt-parse-entry buf off-in-sector
+    in if gpt-guid-is-zero (entry.gp-type-guid) then acc
+    else gpt-read-entries start-lba entry-size count (i + 1) (list-push acc entry)
+
+Section: MBR Check
+
+  gpt-check-mbr : Integer -> Boolean
+  gpt-check-mbr (buf) =
+    peek-byte buf 510 == 85 & peek-byte buf 511 == 170
+
+Section: Read GPT
+
+  gpt-read : Maybe GptDisk
+  gpt-read =
+    let mbr-buf = block-read-sector 0
+    in if gpt-check-mbr mbr-buf == False then None
+    else let hdr-buf = block-read-sector 1
+    in if gpt-check-signature hdr-buf == False then None
+    else let entry-start-lba = gpt-read-u64 hdr-buf 72
+    in let entry-count = gpt-read-u32 hdr-buf 80
+    in let entry-size = gpt-read-u32 hdr-buf 84
+    in let disk-guid = gpt-read-guid hdr-buf 56
+    in let backup-lba = gpt-read-u64 hdr-buf 32
+    in let total-sectors = backup-lba + 1
+    in let parts = gpt-read-entries entry-start-lba entry-size entry-count 0 []
+    in Just (GptDisk {
+      gd-disk-guid = disk-guid,
+      gd-partition-count = list-length parts,
+      gd-partitions = parts,
+      gd-total-sectors = total-sectors
+    })
+
+  gpt-read-partition : Integer -> Maybe GptPartition
+  gpt-read-partition (index) =
+    when gpt-read
+      is Just (disk) ->
+        if index >= disk.gd-partition-count then None
+        else Just (list-at (disk.gd-partitions) index)
+      is None -> None
+
+Section: CRC32 for GPT
+
+  gpt-rt-crc32-table : List Integer
+  gpt-rt-crc32-table = gpt-rt-build-crc32 0 []
+
+  gpt-rt-build-crc32 : Integer, List Integer -> List Integer
+  gpt-rt-build-crc32 (i) (acc) =
+    if i >= 256 then acc
+    else gpt-rt-build-crc32 (i + 1) (list-push acc (gpt-rt-crc32-entry i 0))
+
+  gpt-rt-crc32-entry : Integer, Integer -> Integer
+  gpt-rt-crc32-entry (v) (j) =
+    if j >= 8 then v
+    else if bit-and v 1 == 1
+      then gpt-rt-crc32-entry (bit-xor (bit-shru v 1) 3988292384) (j + 1)
+      else gpt-rt-crc32-entry (bit-shru v 1) (j + 1)
+
+  gpt-rt-crc32-bytes : List Integer, Integer -> Integer
+  gpt-rt-crc32-bytes (data) (len) =
+    bit-xor (gpt-rt-crc32-loop data 4294967295 0 len) 4294967295
+
+  gpt-rt-crc32-loop : List Integer, Integer, Integer, Integer -> Integer
+  gpt-rt-crc32-loop (data) (crc) (i) (len) =
+    if i >= len then crc
+    else let b = list-at data i
+    in let idx = bit-and (bit-xor crc b) 255
+    in gpt-rt-crc32-loop data (bit-xor (bit-shru crc 8) (list-at gpt-rt-crc32-table idx)) (i + 1) len
+
+  gpt-rt-crc32-sector : Integer, Integer, Integer -> Integer
+  gpt-rt-crc32-sector (start-lba) (sector-count) (byte-len) =
+    gpt-rt-crc32-sectors-loop start-lba sector-count byte-len 4294967295 0
+
+  gpt-rt-crc32-sectors-loop : Integer, Integer, Integer, Integer, Integer -> Integer
+  gpt-rt-crc32-sectors-loop (lba) (remaining) (byte-len) (crc) (bytes-done) =
+    if remaining <= 0 then bit-xor crc 4294967295
+    else if bytes-done >= byte-len then bit-xor crc 4294967295
+    else let buf = block-read-sector lba
+    in let this-bytes = if byte-len - bytes-done < 512 then byte-len - bytes-done else 512
+    in let new-crc = gpt-rt-crc32-buf-loop buf crc 0 this-bytes
+    in gpt-rt-crc32-sectors-loop (lba + 1) (remaining - 1) byte-len new-crc (bytes-done + this-bytes)
+
+  gpt-rt-crc32-buf-loop : Integer, Integer, Integer, Integer -> Integer
+  gpt-rt-crc32-buf-loop (buf) (crc) (i) (len) =
+    if i >= len then crc
+    else let b = peek-byte buf i
+    in let idx = bit-and (bit-xor crc b) 255
+    in gpt-rt-crc32-buf-loop buf (bit-xor (bit-shru crc 8) (list-at gpt-rt-crc32-table idx)) (i + 1) len
+
+Section: Write GPT
+
+  gpt-write-name-utf16 : Integer, Integer, Text, Integer -> Integer
+  gpt-write-name-utf16 (buf) (off) (name) (i) =
+    if i >= text-length name then off + text-length name * 2
+    else let c = char-code (char-at name i)
+    in let w0 = poke-byte buf (off + i * 2) (bit-and c 255)
+    in let w1 = poke-byte buf (off + i * 2 + 1) (bit-and (bit-shru c 8) 255)
+    in gpt-write-name-utf16 buf off name (i + 1)
+
+  gpt-zero-sector : Integer -> Integer
+  gpt-zero-sector (buf) = gpt-zero-loop buf 0
+
+  gpt-zero-loop : Integer, Integer -> Integer
+  gpt-zero-loop (buf) (i) =
+    if i >= 512 then 0
+    else let w = poke-byte buf i 0
+    in gpt-zero-loop buf (i + 1)
+
+  gpt-write-table : List GptPartitionSpec, Integer, List Integer -> Boolean
+  gpt-write-table (specs) (total-sectors) (disk-guid) =
+    let entry-buf = alloc-bytes 512
+    in let hdr-buf = alloc-bytes 512
+    in let mbr-buf = alloc-bytes 512
+    in let z0 = gpt-zero-sector mbr-buf
+    in let w0 = poke-byte mbr-buf 446 0
+    in let w1 = poke-byte mbr-buf 449 2
+    in let w2 = poke-byte mbr-buf 450 238
+    in let w3 = poke-byte mbr-buf 451 255
+    in let w4 = poke-byte mbr-buf 452 255
+    in let w5 = poke-byte mbr-buf 453 255
+    in let mbr-sec = if total-sectors - 1 > 4294967295 then 4294967295 else total-sectors - 1
+    in let w6 = gpt-write-u32 mbr-buf 454 1
+    in let w7 = gpt-write-u32 mbr-buf 458 mbr-sec
+    in let w8 = poke-byte mbr-buf 510 85
+    in let w9 = poke-byte mbr-buf 511 170
+    in let w10 = block-write-sector 0 mbr-buf
+    in let parts = gpt-layout-partitions specs total-sectors 2048 []
+    in let pe-crc = gpt-write-entries parts entry-buf 2 0
+    in let z1 = gpt-zero-sector hdr-buf
+    in let w11 = poke-byte hdr-buf 0 69
+    in let w12 = poke-byte hdr-buf 1 70
+    in let w13 = poke-byte hdr-buf 2 73
+    in let w14 = poke-byte hdr-buf 3 32
+    in let w15 = poke-byte hdr-buf 4 80
+    in let w16 = poke-byte hdr-buf 5 65
+    in let w17 = poke-byte hdr-buf 6 82
+    in let w18 = poke-byte hdr-buf 7 84
+    in let w19 = gpt-write-u32 hdr-buf 8 65536
+    in let w20 = gpt-write-u32 hdr-buf 12 92
+    in let w21 = gpt-write-u64 hdr-buf 24 1
+    in let w22 = gpt-write-u64 hdr-buf 32 (total-sectors - 1)
+    in let w23 = gpt-write-u64 hdr-buf 40 34
+    in let w24 = gpt-write-u64 hdr-buf 48 (total-sectors - 34)
+    in let w25 = gpt-write-guid hdr-buf 56 disk-guid
+    in let w26 = gpt-write-u64 hdr-buf 72 2
+    in let w27 = gpt-write-u32 hdr-buf 80 128
+    in let w28 = gpt-write-u32 hdr-buf 84 128
+    in let w29 = gpt-write-u32 hdr-buf 88 pe-crc
+    in let hdr-bytes = gpt-read-buf-bytes hdr-buf 0 92 []
+    in let hdr-crc = gpt-rt-crc32-bytes hdr-bytes 92
+    in let w30 = gpt-write-u32 hdr-buf 16 hdr-crc
+    in let w31 = block-write-sector 1 hdr-buf
+    in True
+
+  gpt-read-buf-bytes : Integer, Integer, Integer, List Integer -> List Integer
+  gpt-read-buf-bytes (buf) (off) (len) (acc) =
+    if len <= 0 then acc
+    else gpt-read-buf-bytes buf (off + 1) (len - 1) (list-push acc (peek-byte buf off))
+
+Section: Partition Layout
+
+  GptPartEntry = record {
+    ge-type-guid : List Integer,
+    ge-unique-guid : List Integer,
+    ge-start-lba : Integer,
+    ge-end-lba : Integer,
+    ge-name : Text
+  }
+
+  gpt-layout-partitions : List GptPartitionSpec, Integer, Integer, List GptPartEntry -> List GptPartEntry
+  gpt-layout-partitions (specs) (total-sectors) (next-lba) (acc) =
+    if list-length specs == 0 then acc
+    else if list-length acc >= list-length specs then acc
+    else let idx = list-length acc
+    in let spec = list-at specs idx
+    in let backup-start = total-sectors - 1 - 32
+    in let available = backup-start - next-lba
+    in let size = if spec.gs-size-sectors == 0 then available else spec.gs-size-sectors
+    in let end-lba = next-lba + size - 1
+    in let part-guid = gpt-make-part-guid idx
+    in let entry = GptPartEntry {
+      ge-type-guid = spec.gs-type-guid,
+      ge-unique-guid = part-guid,
+      ge-start-lba = next-lba,
+      ge-end-lba = end-lba,
+      ge-name = spec.gs-name
+    }
+    in gpt-layout-partitions specs total-sectors (end-lba + 1) (list-push acc entry)
+
+  gpt-make-part-guid : Integer -> List Integer
+  gpt-make-part-guid (idx) =
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, bit-and (idx + 1) 255]
+
+Section: Write Partition Entries
+
+  gpt-write-entries : List GptPartEntry, Integer, Integer, Integer -> Integer
+  gpt-write-entries (parts) (buf) (start-lba) (i) =
+    if i >= 128 then
+      gpt-rt-crc32-sector start-lba 32 (32 * 512)
+    else if i >= list-length parts then
+      let z = gpt-zero-sector buf
+      in let entries-per-sector = 512 / 128
+      in let sector = start-lba + i / entries-per-sector
+      in let off = (i - (i / entries-per-sector) * entries-per-sector) * 128
+      in if off == 0 then
+        let ws = block-write-sector sector buf
+        in gpt-write-entries parts buf start-lba (i + entries-per-sector)
+      else gpt-write-entries parts buf start-lba (i + 1)
+    else let part = list-at parts i
+    in let entries-per-sector = 512 / 128
+    in let sector = start-lba + i / entries-per-sector
+    in let off = (i - (i / entries-per-sector) * entries-per-sector) * 128
+    in let z = if off == 0 then gpt-zero-sector buf else 0
+    in let w0 = gpt-write-guid buf off (part.ge-type-guid)
+    in let w1 = gpt-write-guid buf (off + 16) (part.ge-unique-guid)
+    in let w2 = gpt-write-u64 buf (off + 32) (part.ge-start-lba)
+    in let w3 = gpt-write-u64 buf (off + 40) (part.ge-end-lba)
+    in let w4 = gpt-write-name-utf16 buf (off + 56) (part.ge-name) 0
+    in let need-flush = off + 128 >= 512
+    in let w5 = if need-flush then block-write-sector sector buf else 0
+    in gpt-write-entries parts buf start-lba (i + 1)
+
+Section: Well-Known GUIDs
+
+  gpt-esp-type-guid : List Integer = [40, 115, 42, 193, 31, 248, 210, 17, 186, 75, 0, 160, 201, 62, 201, 59]
+  gpt-basic-data-guid : List Integer = [160, 163, 192, 235, 181, 233, 51, 72, 135, 197, 38, 214, 19, 38, 97, 69]
+
+  gpt-is-esp : GptPartition -> Boolean
+  gpt-is-esp (part) = gpt-guid-eq (part.gp-type-guid) gpt-esp-type-guid
+
+  gpt-guid-eq : List Integer, List Integer -> Boolean
+  gpt-guid-eq (a) (b) = gpt-guid-eq-loop a b 0
+
+  gpt-guid-eq-loop : List Integer, List Integer, Integer -> Boolean
+  gpt-guid-eq-loop (a) (b) (i) =
+    if i >= 16 then True
+    else if list-at a i /= list-at b i then False
+    else gpt-guid-eq-loop a b (i + 1)
+
+Section: Quick Wipe
+
+  gpt-wipe-quick : Integer -> Boolean
+  gpt-wipe-quick (total-sectors) =
+    let buf = alloc-bytes 512
+    in let z = gpt-zero-sector buf
+    in let w0 = gpt-wipe-sectors buf 0 2048
+    in let backup-start = total-sectors - 34
+    in let w1 = gpt-wipe-sectors buf backup-start 34
+    in True
+
+  gpt-wipe-sectors : Integer, Integer, Integer -> Integer
+  gpt-wipe-sectors (buf) (start) (count) =
+    if count <= 0 then 0
+    else let w = block-write-sector start buf
+    in gpt-wipe-sectors buf (start + 1) (count - 1)
+
+Page 1

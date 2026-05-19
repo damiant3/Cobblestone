@@ -1,0 +1,130 @@
+Chapter: Bencode
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+
+ Bencode encoding and decoding (BitTorrent serialization format).
+ Supports integers, strings, lists, and dictionaries. Simple,
+ unambiguous, and self-delimiting.
+
+ We say:
+
+Section: Value Type
+  BenValue =
+    | BenInt (Integer)
+    | BenStr (Text)
+    | BenList (List BenValue)
+    | BenDict (List BenPair)
+
+  BenPair = record {
+    ben-key : Text,
+    ben-val : BenValue
+  }
+
+Section: Encoding
+  ben-encode : BenValue -> Text
+  ben-encode (v) = when v
+    is BenInt (n) -> "i" & show n & "e"
+    is BenStr (s) -> show (text-length s) & ":" & s
+    is BenList (items) -> "l" & ben-encode-list items 0 (list-length items) "" & "e"
+    is BenDict (pairs) -> "d" & ben-encode-dict pairs 0 (list-length pairs) "" & "e"
+
+  ben-encode-list : List BenValue, Integer, Integer, Text -> Text
+  ben-encode-list (items) (i) (len) (acc) =
+    if i >= len then acc
+    else ben-encode-list items (i + 1) len (acc & ben-encode (list-at items i))
+
+  ben-encode-dict : List BenPair, Integer, Integer, Text -> Text
+  ben-encode-dict (pairs) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at pairs i
+    in ben-encode-dict pairs (i + 1) len (acc & ben-encode (BenStr (p.ben-key)) & ben-encode (p.ben-val))
+
+Section: Decoding
+  BenDecodeResult = record {
+    ben-value : BenValue,
+    ben-pos : Integer,
+    ben-ok : Boolean
+  }
+
+  ben-decode : Text -> BenDecodeResult
+  ben-decode (s) = ben-decode-at s 0 (text-length s)
+
+  ben-decode-at : Text, Integer, Integer -> BenDecodeResult
+  ben-decode-at (s) (pos) (len) =
+    if pos >= len then BenDecodeResult { ben-value = BenInt 0, ben-pos = pos, ben-ok = False }
+    else let ch = char-code (char-at s pos)
+    in if ch == char-code (char-at "i" 0) then ben-decode-int s (pos + 1) len
+    else if ch == char-code (char-at "l" 0) then ben-decode-list s (pos + 1) len []
+    else if ch == char-code (char-at "d" 0) then ben-decode-dict s (pos + 1) len []
+    else ben-decode-str s pos len
+
+  ben-decode-int : Text, Integer, Integer -> BenDecodeResult
+  ben-decode-int (s) (pos) (len) =
+    let e-pos = ben-find-char s pos len (char-code (char-at "e" 0))
+    in if e-pos >= len then BenDecodeResult { ben-value = BenInt 0, ben-pos = pos, ben-ok = False }
+    else let num-text = substring s pos (e-pos - pos)
+    in BenDecodeResult { ben-value = BenInt (ben-parse-int-text num-text), ben-pos = e-pos + 1, ben-ok = True }
+
+  ben-decode-str : Text, Integer, Integer -> BenDecodeResult
+  ben-decode-str (s) (pos) (len) =
+    let colon = ben-find-char s pos len (char-code (char-at ":" 0))
+    in if colon >= len then BenDecodeResult { ben-value = BenStr "", ben-pos = pos, ben-ok = False }
+    else let str-len = ben-parse-int-text (substring s pos (colon - pos))
+    in let str-start = colon + 1
+    in let str-val = substring s str-start str-len
+    in BenDecodeResult { ben-value = BenStr str-val, ben-pos = str-start + str-len, ben-ok = True }
+
+  ben-decode-list : Text, Integer, Integer, List BenValue -> BenDecodeResult
+  ben-decode-list (s) (pos) (len) (acc) =
+    if pos >= len then BenDecodeResult { ben-value = BenList acc, ben-pos = pos, ben-ok = False }
+    else if char-code (char-at s pos) == char-code (char-at "e" 0) then BenDecodeResult { ben-value = BenList acc, ben-pos = pos + 1, ben-ok = True }
+    else let item = ben-decode-at s pos len
+    in if item.ben-ok then ben-decode-list s (item.ben-pos) len (list-push acc (item.ben-value))
+    else BenDecodeResult { ben-value = BenList acc, ben-pos = pos, ben-ok = False }
+
+  ben-decode-dict : Text, Integer, Integer, List BenPair -> BenDecodeResult
+  ben-decode-dict (s) (pos) (len) (acc) =
+    if pos >= len then BenDecodeResult { ben-value = BenDict acc, ben-pos = pos, ben-ok = False }
+    else if char-code (char-at s pos) == char-code (char-at "e" 0) then BenDecodeResult { ben-value = BenDict acc, ben-pos = pos + 1, ben-ok = True }
+    else let key-result = ben-decode-str s pos len
+    in if key-result.ben-ok == False then BenDecodeResult { ben-value = BenDict acc, ben-pos = pos, ben-ok = False }
+    else let key = when (key-result.ben-value) is BenStr (k) -> k is otherwise -> ""
+    in let val-result = ben-decode-at s (key-result.ben-pos) len
+    in if val-result.ben-ok then ben-decode-dict s (val-result.ben-pos) len (list-push acc (BenPair { ben-key = key, ben-val = val-result.ben-value }))
+    else BenDecodeResult { ben-value = BenDict acc, ben-pos = pos, ben-ok = False }
+
+Section: Helpers
+  ben-find-char : Text, Integer, Integer, Integer -> Integer
+  ben-find-char (s) (i) (len) (target) =
+    if i >= len then len
+    else if char-code (char-at s i) == target then i
+    else ben-find-char s (i + 1) len target
+
+
+  ben-parse-int-text : Text -> Integer
+  ben-parse-int-text (s) = ben-parse-int-loop s 0 (text-length s) 0 False
+
+  ben-parse-int-loop : Text, Integer, Integer, Integer, Boolean -> Integer
+  ben-parse-int-loop (s) (i) (len) (acc) (neg) =
+    if i >= len then if neg then -acc else acc
+    else let ch = char-code (char-at s i)
+    in if ch == char-code (char-at "-" 0) then ben-parse-int-loop s (i + 1) len acc True
+    else let d = ben-digit-value ch
+    in if d >= 0 then ben-parse-int-loop s (i + 1) len (acc * 10 + d) neg
+    else if neg then -acc else acc
+
+  ben-digit-value : Integer -> Integer
+  ben-digit-value (c) =
+    if c == char-code (char-at "0" 0) then 0
+    else if c == char-code (char-at "1" 0) then 1
+    else if c == char-code (char-at "2" 0) then 2
+    else if c == char-code (char-at "3" 0) then 3
+    else if c == char-code (char-at "4" 0) then 4
+    else if c == char-code (char-at "5" 0) then 5
+    else if c == char-code (char-at "6" 0) then 6
+    else if c == char-code (char-at "7" 0) then 7
+    else if c == char-code (char-at "8" 0) then 8
+    else if c == char-code (char-at "9" 0) then 9
+    else 0 - 1
+
+Page 1

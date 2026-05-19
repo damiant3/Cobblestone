@@ -1,0 +1,142 @@
+Chapter: Dialog
+  cites UI chapter Theme
+  cites UI chapter BoxModel
+  cites UI chapter Layout
+  cites UI chapter Widget
+  cites UI chapter Overlay
+
+ Common dialog builders. Produces themed widget trees wrapped in
+ modal overlays. Alert (message + OK), Confirm (message + OK/Cancel),
+ Prompt (message + input + OK/Cancel), Custom (any widget tree).
+
+Section: Dialog Result
+  DialogResult =
+    | DlgOk
+    | DlgCancel
+    | DlgInput (Text)
+    | DlgPending
+
+Section: Dialog Config
+  DialogConfig = record {
+    dlg-title : Text,
+    dlg-message : Text,
+    dlg-width : Integer,
+    dlg-height : Integer,
+    dlg-x : Integer,
+    dlg-y : Integer
+  }
+
+Section: Construction
+  dialog-config : Text, Text, Integer, Integer -> DialogConfig
+  dialog-config (title) (msg) (w) (h) =
+    DialogConfig { dlg-title = title, dlg-message = msg, dlg-width = w, dlg-height = h, dlg-x = 0, dlg-y = 0 }
+
+  dialog-config-centered : Text, Text, Integer, Integer, Integer, Integer -> DialogConfig
+  dialog-config-centered (title) (msg) (w) (h) (screen-w) (screen-h) =
+    DialogConfig { dlg-title = title, dlg-message = msg, dlg-width = w, dlg-height = h, dlg-x = (screen-w - w) / 2, dlg-y = (screen-h - h) / 2 }
+
+Section: Alert Dialog
+  dialog-alert : DialogConfig -> Overlay
+  dialog-alert (cfg) =
+    let title-lbl = widget-label "dlg-title" (cfg.dlg-title)
+    in let msg-lbl = widget-label "dlg-msg" (cfg.dlg-message)
+    in let ok-btn = widget-button "dlg-ok" "OK"
+    in let btn-row = widget-panel "dlg-buttons" DirRow 8 [ok-btn]
+    in let body = widget-panel "dlg-body" DirColumn 8 [title-lbl, msg-lbl, btn-row]
+    in overlay-modal "alert" (cfg.dlg-x) (cfg.dlg-y) (cfg.dlg-width) (cfg.dlg-height) body
+
+Section: Confirm Dialog
+  dialog-confirm : DialogConfig -> Overlay
+  dialog-confirm (cfg) =
+    let title-lbl = widget-label "dlg-title" (cfg.dlg-title)
+    in let msg-lbl = widget-label "dlg-msg" (cfg.dlg-message)
+    in let ok-btn = widget-button "dlg-ok" "OK"
+    in let cancel-btn = widget-button "dlg-cancel" "Cancel"
+    in let btn-row = widget-panel "dlg-buttons" DirRow 8 [ok-btn, cancel-btn]
+    in let body = widget-panel "dlg-body" DirColumn 8 [title-lbl, msg-lbl, btn-row]
+    in overlay-modal "confirm" (cfg.dlg-x) (cfg.dlg-y) (cfg.dlg-width) (cfg.dlg-height) body
+
+Section: Prompt Dialog
+  dialog-prompt : DialogConfig, Text -> Overlay
+  dialog-prompt (cfg) (placeholder) =
+    let title-lbl = widget-label "dlg-title" (cfg.dlg-title)
+    in let msg-lbl = widget-label "dlg-msg" (cfg.dlg-message)
+    in let inp = widget-input "dlg-input" placeholder 0
+    in let ok-btn = widget-button "dlg-ok" "OK"
+    in let cancel-btn = widget-button "dlg-cancel" "Cancel"
+    in let btn-row = widget-panel "dlg-buttons" DirRow 8 [ok-btn, cancel-btn]
+    in let body = widget-panel "dlg-body" DirColumn 8 [title-lbl, msg-lbl, inp, btn-row]
+    in overlay-modal "prompt" (cfg.dlg-x) (cfg.dlg-y) (cfg.dlg-width) (cfg.dlg-height) body
+
+Section: Custom Dialog
+  dialog-custom : Text, Integer, Integer, Integer, Integer, WidgetNode -> Overlay
+  dialog-custom (id) (x) (y) (w) (h) (content) =
+    overlay-modal id x y w h content
+
+Section: Queries
+  dialog-result-name : DialogResult -> Text
+  dialog-result-name (r) = when r
+    is DlgOk -> "ok"
+    is DlgCancel -> "cancel"
+    is DlgInput (t) -> "input"
+    is DlgPending -> "pending"
+
+Section: Dialog Kinds
+
+  DialogKind =
+    | DkAlert
+    | DkConfirm
+    | DkPrompt
+    | DkFileOpen
+    | DkFileSave
+    | DkColorPicker
+    | DkFontPicker
+
+  dialog-kind-name : DialogKind -> Text
+  dialog-kind-name (k) = when k
+    is DkAlert -> "alert"
+    is DkConfirm -> "confirm"
+    is DkPrompt -> "prompt"
+    is DkFileOpen -> "file-open"
+    is DkFileSave -> "file-save"
+    is DkColorPicker -> "color-picker"
+    is DkFontPicker -> "font-picker"
+
+  dialog-kind-has-input : DialogKind -> Boolean
+  dialog-kind-has-input (k) = when k
+    is DkPrompt -> True
+    is DkFileOpen -> True
+    is DkFileSave -> True
+    is otherwise -> False
+
+  dialog-kind-has-cancel : DialogKind -> Boolean
+  dialog-kind-has-cancel (k) = when k
+    is DkAlert -> False
+    is otherwise -> True
+
+  TypedDialog = record {
+    td-kind : DialogKind,
+    td-dialog : Overlay
+  }
+
+  typed-dialog : DialogKind, Text, Text -> TypedDialog
+  typed-dialog (kind) (title) (message) =
+    let cfg = dialog-config title message 300 150
+    in TypedDialog {
+      td-kind = kind,
+      td-dialog = when kind
+        is DkAlert -> dialog-alert cfg
+        is DkConfirm -> dialog-confirm cfg
+        is DkPrompt -> dialog-prompt cfg ""
+        is otherwise -> dialog-confirm cfg
+    }
+
+  typed-dialog-with-input : DialogKind, Text, Text, Text -> TypedDialog
+  typed-dialog-with-input (kind) (title) (message) (default-text) =
+    let cfg = dialog-config title message 300 150
+    in TypedDialog {
+      td-kind = kind,
+      td-dialog = dialog-prompt cfg default-text
+    }
+
+Page 1

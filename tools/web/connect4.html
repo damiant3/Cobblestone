@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Codex — Connect Four!</title>
+<link rel="stylesheet" href="/web/style.css?v={{VERSION}}">
+<style>
+  body { background: #1a0a2a; }
+  .game-page { max-width: 650px; margin: 0 auto; }
+  .bg-scene { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: url('/assets/games/connect4/bg-scene.png') center/cover no-repeat;
+    filter: brightness(0.35) blur(3px); z-index: 0; }
+  .content { position: relative; z-index: 1; }
+  .board-wrap { background: linear-gradient(180deg, #2255cc, #1133aa); border: 6px solid #ff6699;
+    border-radius: 16px; padding: 12px; margin-bottom: 12px;
+    box-shadow: 0 8px 30px rgba(255,100,150,0.3); }
+  .c4-grid { display: grid; grid-template-columns: repeat(7, 1fr); grid-template-rows: repeat(6, 1fr);
+    gap: 6px; aspect-ratio: 7/6; }
+  .c4-cell { background: #0a1a4a; border-radius: 50%; display: flex; align-items: center;
+    justify-content: center; transition: background 0.2s; aspect-ratio: 1;
+    box-shadow: inset 0 2px 6px rgba(0,0,0,0.4); }
+  .c4-p1 { background: radial-gradient(circle at 35% 35%, #ff4466, #cc1133);
+    box-shadow: 0 2px 8px rgba(255,50,100,0.5), inset 0 1px 3px rgba(255,255,255,0.2); }
+  .c4-p2 { background: radial-gradient(circle at 35% 35%, #ffdd33, #ccaa00);
+    box-shadow: 0 2px 8px rgba(255,220,50,0.5), inset 0 1px 3px rgba(255,255,255,0.2); }
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+  .controls button { background: linear-gradient(180deg, #ff6699, #cc3366); border: 2px solid #ff88bb;
+    border-radius: 20px; color: #fff; font-family: inherit; font-size: 14px; padding: 8px 20px;
+    cursor: pointer; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; }
+  .controls button:hover { background: linear-gradient(180deg, #ff88bb, #ee5588); transform: scale(1.05); }
+  .controls button:disabled { opacity: 0.3; }
+  #status-line { color: #ffcc00; font-size: 15px; margin-bottom: 8px; text-align: center; font-weight: bold; }
+  .speed-label { color: #ff88bb; font-size: 12px; }
+  .engine-tag { background: #2a1a4a; color: #ff88bb; font-size: 10px; padding: 2px 8px;
+    border-radius: 10px; margin-left: 12px; border: 1px solid #ff669944; }
+</style>
+</head>
+<body>
+<div class="bg-scene"></div>
+<nav class="topbar" style="background:#1a0a2a;border-color:#ff669944">
+  <span class="topbar-logo" style="color:#ffcc00">&#x2588; CODEX</span>
+  <a href="/#games" class="tab-btn" style="color:#ff88bb">&#x2190; Games</a>
+  <span class="tab-btn active" style="color:#ffcc00;border-color:#ffcc00">Connect Four!</span>
+  <span class="engine-tag">Codex VM</span>
+</nav>
+<div class="content game-page">
+  <div class="controls">
+    <button onclick="startGame()">&#x1F389; PLAY!</button>
+    <button id="btn-pause" onclick="togglePause()" disabled>&#x23F8;</button>
+    <button id="btn-step" onclick="stepOnce()" disabled>&#x23ED;</button>
+    <button onclick="resetGame()">&#x21BB;</button>
+    <span class="speed-label">Speed:</span>
+    <input type="range" id="speed" min="1" max="10" value="4" style="width:80px;accent-color:#ff6699" oninput="updateSpeed()">
+  </div>
+  <div id="status-line">DROP 'EM! &#x1F60E;</div>
+  <div class="board-wrap"><div class="c4-grid" id="board"></div></div>
+</div>
+<script>
+var state,running=false,paused=false,timer,delay=500;
+function updateSpeed(){var v=parseInt(document.getElementById('speed').value);delay=[2000,1200,800,500,350,250,150,80,30,5][v-1]||350}
+async function api(p){try{var r=await fetch(p);return r.json()}catch(e){return null}}
+function render(s){var h='';for(var r=0;r<6;r++)for(var c=0;c<7;c++){var v=s.squares[r*7+c];h+='<div class="c4-cell'+(v===1?' c4-p1':v===2?' c4-p2':'')+'"></div>'}document.getElementById('board').innerHTML=h}
+async function resetGame(){clearTimeout(timer);running=false;paused=false;state=await api('/api/connect4/new');if(state)render(state);document.getElementById('status-line').innerHTML="DROP 'EM! &#x1F60E;";document.getElementById('btn-pause').disabled=true;document.getElementById('btn-step').disabled=true}
+async function startGame(){await resetGame();running=true;document.getElementById('btn-pause').disabled=false;document.getElementById('btn-step').disabled=false;updateSpeed();scheduleTick()}
+function togglePause(){if(!running)return;paused=!paused;document.getElementById('btn-pause').textContent=paused?'▶':'⏸';if(!paused)scheduleTick()}
+function scheduleTick(){if(!paused&&running)timer=setTimeout(tick,delay)}
+async function stepOnce(){if(running)await tick()}
+async function tick(){if(!running||!state)return;if(state.done){document.getElementById('status-line').innerHTML=(state.winner===1?'&#x1F534; RED':'&#x1F7E1; YELLOW')+' WINS!! &#x1F389;&#x1F389;&#x1F389;';running=false;return}state=await api('/api/connect4/step');if(!state){running=false;return}render(state);document.getElementById('status-line').innerHTML=(state.cur===1?'&#x1F534; Red':'&#x1F7E1; Yellow')+"'s turn! Move "+state.moves;if(state.done){document.getElementById('status-line').innerHTML=(state.winner===1?'&#x1F534; RED':'&#x1F7E1; YELLOW')+' WINS!! &#x1F389;';running=false;return}scheduleTick()}
+updateSpeed();resetGame();
+</script>
+</body>
+</html>

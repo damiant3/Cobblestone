@@ -1,0 +1,212 @@
+Chapter: HexGame
+  cites Games chapter Rng
+
+ Hex on an 11x11 board. Player 1 (value 1) connects top to bottom.
+ Player 2 (value 2) connects left to right. No draws possible.
+ Win detection uses BFS flood-fill from the player's starting edge.
+ AI: prefer center cells and cells adjacent to own pieces; block opponent.
+
+ Board is a List Integer of 121 cells (11x11, row-major).
+ 0 = empty, 1 = player 1, 2 = player 2.
+
+ We say:
+
+Section: Types
+
+  HexBoard = record {
+    cells          : List Integer,
+    current-player : Integer,
+    game-over      : Boolean,
+    winner         : Integer,
+    moves-made     : Integer
+  }
+
+  HexResult = record {
+    winner     : Integer,
+    moves-made : Integer
+  }
+
+Section: Construction
+
+  hex-new : HexBoard
+  hex-new =
+    let cells = hex-fill 0 []
+    in HexBoard { cells = cells, current-player = 1, game-over = False, winner = 0, moves-made = 0 }
+
+  hex-fill : Integer, List Integer -> List Integer
+  hex-fill (i) (acc) =
+    if i >= 121 then acc
+    else hex-fill (i + 1) (list-push acc 0)
+
+Section: Board Queries
+
+  hex-cell : List Integer, Integer, Integer -> Integer
+  hex-cell (cells) (row) (col) =
+    if row < 0 then -1
+    else if row >= 11 then -1
+    else if col < 0 then -1
+    else if col >= 11 then -1
+    else list-at cells (row * 11 + col)
+
+Section: Place
+
+  hex-place : HexBoard, Integer, Integer -> HexBoard
+  hex-place (b) (row) (col) =
+    if b.game-over then b
+    else if hex-cell (b.cells) row col /= 0 then b
+    else let new-cells = list-set-at (b.cells) (row * 11 + col) (b.current-player)
+    in let won = hex-check-win new-cells (b.current-player)
+    in let next = if won then b.current-player else if b.current-player == 1 then 2 else 1
+    in HexBoard { cells = new-cells, current-player = next, game-over = won, winner = if won then b.current-player else 0, moves-made = b.moves-made + 1 }
+
+Section: Win Detection (BFS flood-fill)
+
+ For player 1: start from all cells in row 0 owned by player 1,
+ flood fill via hex neighbors, win if we reach row 10.
+ For player 2: start from all cells in col 0 owned by player 2,
+ flood fill, win if we reach col 10.
+ We simulate BFS with a visited list and a queue encoded as a list.
+
+  hex-check-win : List Integer, Integer -> Boolean
+  hex-check-win (cells) (player) =
+    let visited = hex-fill 0 []
+    in let queue = hex-start-queue cells player 0 []
+    in hex-bfs cells player queue visited
+
+  hex-start-queue : List Integer, Integer, Integer, List Integer -> List Integer
+  hex-start-queue (cells) (player) (i) (acc) =
+    if i >= 11 then acc
+    else let idx = if player == 1 then i else i * 11
+    in if list-at cells idx == player then hex-start-queue cells player (i + 1) (list-push acc idx)
+    else hex-start-queue cells player (i + 1) acc
+
+  hex-bfs : List Integer, Integer, List Integer, List Integer -> Boolean
+  hex-bfs (cells) (player) (queue) (visited) =
+    if list-length queue == 0 then False
+    else let idx = list-at queue 0
+    in let rest = hex-list-tail queue
+    in if list-at visited idx /= 0 then hex-bfs cells player rest visited
+    else let row = idx / 11
+    in let col = idx - row * 11
+    in if hex-is-goal player row col then True
+    else let new-visited = list-set-at visited idx 1
+    in let neighbors = hex-neighbors cells player row col
+    in let new-queue = hex-append rest neighbors
+    in hex-bfs cells player new-queue new-visited
+
+  hex-is-goal : Integer, Integer, Integer -> Boolean
+  hex-is-goal (player) (row) (col) =
+    if player == 1 then row == 10
+    else col == 10
+
+  hex-neighbors : List Integer, Integer, Integer, Integer -> List Integer
+  hex-neighbors (cells) (player) (row) (col) =
+    let n0 = hex-check-neighbor cells player row col (row + 1) (col - 1) []
+    in let n1 = hex-check-neighbor cells player row col (row - 1) (col + 1) n0
+    in let n2 = hex-check-neighbor cells player row col row (col + 1) n1
+    in let n3 = hex-check-neighbor cells player row col row (col - 1) n2
+    in let n4 = hex-check-neighbor cells player row col (row + 1) col n3
+    in hex-check-neighbor cells player row col (row - 1) col n4
+
+  hex-check-neighbor : List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  hex-check-neighbor (cells) (player) (row) (col) (nr) (nc) (acc) =
+    let v = hex-cell cells nr nc
+    in if v == player then list-push acc (nr * 11 + nc)
+    else acc
+
+  hex-append : List Integer, List Integer -> List Integer
+  hex-append (a) (b) =
+    hex-append-loop a b 0
+
+  hex-append-loop : List Integer, List Integer, Integer -> List Integer
+  hex-append-loop (a) (b) (i) =
+    if i >= list-length b then a
+    else hex-append-loop (list-push a (list-at b i)) b (i + 1)
+
+  hex-list-tail : List Integer -> List Integer
+  hex-list-tail (xs) = hex-tail-loop xs 1 []
+
+  hex-tail-loop : List Integer, Integer, List Integer -> List Integer
+  hex-tail-loop (xs) (i) (acc) =
+    if i >= list-length xs then acc
+    else hex-tail-loop xs (i + 1) (list-push acc (list-at xs i))
+
+Section: AI
+
+  hex-ai-move : HexBoard -> Integer
+  hex-ai-move (b) =
+    let opp = if b.current-player == 1 then 2 else 1
+    in let block = hex-find-winning-move (b.cells) opp
+    in if block >= 0 then block
+    else let win = hex-find-winning-move (b.cells) (b.current-player)
+    in if win >= 0 then win
+    else hex-best-empty (b.cells) (b.current-player) 0 (-1) (-1)
+
+  hex-find-winning-move : List Integer, Integer -> Integer
+  hex-find-winning-move (cells) (player) =
+    hex-scan-winning cells player 0
+
+  hex-scan-winning : List Integer, Integer, Integer -> Integer
+  hex-scan-winning (cells) (player) (i) =
+    if i >= 121 then -1
+    else if list-at cells i /= 0 then hex-scan-winning cells player (i + 1)
+    else let trial = list-set-at cells i player
+    in if hex-check-win trial player then i
+    else hex-scan-winning cells player (i + 1)
+
+  hex-best-empty : List Integer, Integer, Integer, Integer, Integer -> Integer
+  hex-best-empty (cells) (player) (i) (best-idx) (best-score) =
+    if i >= 121 then best-idx
+    else if list-at cells i /= 0 then hex-best-empty cells player (i + 1) best-idx best-score
+    else let row = i / 11
+    in let col = i - row * 11
+    in let score = hex-score-cell player row col
+    in if score > best-score then hex-best-empty cells player (i + 1) i score
+    else hex-best-empty cells player (i + 1) best-idx best-score
+
+  hex-score-cell : Integer, Integer, Integer -> Integer
+  hex-score-cell (player) (row) (col) =
+    let dr = if row > 5 then 10 - row else row
+    in let dc = if col > 5 then 10 - col else col
+    in let center = dr + dc
+    in if player == 1 then 20 - dr * 2 + center
+    else 20 - dc * 2 + center
+
+  hex-has-empty : List Integer -> Boolean
+  hex-has-empty (cells) = hex-any-empty cells 0
+
+  hex-any-empty : List Integer, Integer -> Boolean
+  hex-any-empty (cells) (i) =
+    if i >= 121 then False
+    else if list-at cells i == 0 then True
+    else hex-any-empty cells (i + 1)
+
+Section: Game Runner
+
+  run-hex-game : HexResult
+  run-hex-game =
+    let b = hex-new
+    in hex-loop b
+
+  hex-loop : HexBoard -> HexResult
+  hex-loop (b) =
+    if b.game-over then HexResult { winner = b.winner, moves-made = b.moves-made }
+    else if b.moves-made > 121 then HexResult { winner = 0, moves-made = b.moves-made }
+    else if hex-has-empty (b.cells) == False then HexResult { winner = 0, moves-made = b.moves-made }
+    else let idx = hex-ai-move b
+    in if idx < 0 then HexResult { winner = 0, moves-made = b.moves-made }
+    else let row = idx / 11
+    in let col = idx - row * 11
+    in let next = hex-place b row col
+    in hex-loop next
+
+Section: Formatting
+
+  format-hex-result : HexResult -> Text
+  format-hex-result (r) =
+    let w = if r.winner == 1 then "Player 1 wins (top-bottom)"
+            else if r.winner == 2 then "Player 2 wins (left-right)"
+            else "No winner"
+    in "HexGame: " & w & " in " & show (r.moves-made) & " moves"
+
+Page 1

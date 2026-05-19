@@ -1,0 +1,233 @@
+Chapter: CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter Sha256
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha512
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter FactStore
+  cites Foreword chapter Fuel
+
+ The CdxVerifier checks a CDX binary's cryptographic signature
+ (Ed25519 over SHA-256), validates header integrity, and evaluates
+ trust policy before authorizing execution.
+
+ We say:
+
+Section: Verification Result
+
+  VerifyPhase =
+    | PhaseIntegrity
+    | PhaseAuthor
+    | PhaseCapabilities
+    | PhaseEffects
+    | PhaseProofs
+
+  VerifyResult = record {
+    accepted : Boolean,
+    phase : VerifyPhase,
+    reason : Text
+  }
+
+  verify-ok : VerifyPhase -> VerifyResult
+  verify-ok (p) = VerifyResult { accepted = True, phase = p, reason = "ok" }
+
+  verify-reject : VerifyPhase, Text -> VerifyResult
+  verify-reject (p) (reason) = VerifyResult { accepted = False, phase = p, reason = reason }
+
+Section: Phase 1 — Integrity
+
+  verify-integrity : List Integer -> VerifyResult
+  verify-integrity (binary) =
+    if list-length binary < cdx-header-fixed-size then
+      verify-reject PhaseIntegrity "binary too small"
+    else if cdx-verify-magic binary == False then
+      verify-reject PhaseIntegrity "bad magic"
+    else if cdx-verify-content-hash binary == False then
+      verify-reject PhaseIntegrity "content hash mismatch"
+    else if cdx-verify-signature binary == False then
+      verify-reject PhaseIntegrity "signature invalid"
+    else verify-ok PhaseIntegrity
+
+Section: Phase 2 — Author
+
+  verify-author : List Integer, TrustLattice, Integer -> VerifyResult
+  verify-author (binary) (lattice) (threshold) =
+    let author-key = read-author-key binary
+    in let score = lattice-trust-score lattice author-key
+    in if score < threshold then
+      verify-reject PhaseAuthor ("trust score " & show score & " below threshold " & show threshold)
+    else verify-ok PhaseAuthor
+
+  read-author-key : List Integer -> Text
+  read-author-key (binary) =
+    bytes-to-hex-range binary 40 72
+
+  bytes-to-hex-range : List Integer, Integer, Integer -> Text
+  bytes-to-hex-range (bs) (start) (stop) =
+    bytes-to-hex-loop bs start stop ""
+
+  bytes-to-hex-loop : List Integer, Integer, Integer, Text -> Text
+  bytes-to-hex-loop (bs) (i) (stop) (acc) =
+    if i >= stop then acc
+    else bytes-to-hex-loop bs (i + 1) stop (acc & byte-to-hex (list-at bs i))
+
+Section: Phase 3 — Capabilities
+
+  verify-capabilities : List Integer, Policy, TrustLattice, Integer -> VerifyResult
+  verify-capabilities (binary) (policy) (lattice) (current-time) =
+    let cap-off = read-le64 binary 136
+    in let cap-sz = read-le64 binary 144
+    in let author-key = read-author-key binary
+    in let trust = lattice-trust-score lattice author-key
+    in let caps = decode-capabilities binary cap-off (cap-off + cap-sz)
+    in check-all-caps caps policy trust author-key current-time 0 (list-length caps)
+
+  decode-capabilities : List Integer, Integer, Integer -> List CdxCapability
+  decode-capabilities (binary) (off) (limit) =
+    decode-caps-loop binary off limit []
+
+  decode-caps-loop : List Integer, Integer, Integer, List CdxCapability -> List CdxCapability
+  decode-caps-loop (binary) (off) (limit) (acc) =
+    if off >= limit then acc
+    else let cap-id = read-le16 binary off
+    in let direction = read-le16 binary (off + 2)
+    in let scope-len = read-le32 binary (off + 4)
+    in let scope = bytes-to-text binary (off + 8) scope-len
+    in let max-dur = read-le64 binary (off + 8 + scope-len)
+    in let cap = CdxCapability { cap-id = cap-id, direction = direction, scope = scope, max-duration = max-dur }
+    in decode-caps-loop binary (off + 16 + scope-len) limit (list-push acc cap)
+
+  read-le16 : List Integer, Integer -> Integer
+  read-le16 (bs) (off) =
+    list-at bs off + bit-shl (list-at bs (off + 1)) 8
+
+  read-le32 : List Integer, Integer -> Integer
+  read-le32 (bs) (off) =
+    list-at bs off + bit-shl (list-at bs (off + 1)) 8
+    + bit-shl (list-at bs (off + 2)) 16 + bit-shl (list-at bs (off + 3)) 24
+
+  bytes-to-text : List Integer, Integer, Integer -> Text
+  bytes-to-text (bs) (off) (len) =
+    bytes-to-text-loop bs off len 0 ""
+
+  bytes-to-text-loop : List Integer, Integer, Integer, Integer, Text -> Text
+  bytes-to-text-loop (bs) (off) (len) (i) (acc) =
+    if i >= len then acc
+    else bytes-to-text-loop bs off len (i + 1) (acc & char-to-text (code-to-char (list-at bs (off + i))))
+
+  cap-name : Integer -> Text
+  cap-name (id) =
+    if id == cdx-cap-console then "Console"
+    else if id == cdx-cap-filesystem then "FileSystem"
+    else if id == cdx-cap-network then "Network"
+    else if id == cdx-cap-concurrent then "Concurrent"
+    else "Unknown"
+
+  check-all-caps : List CdxCapability, Policy, Integer, Text, Integer, Integer, Integer -> VerifyResult
+  check-all-caps (caps) (policy) (trust) (agent) (time) (i) (len) =
+    if i >= len then verify-ok PhaseCapabilities
+    else let c = list-at caps i
+    in let ctx = PolicyContext {
+      capability = cap-name (c.cap-id),
+      direction = c.direction,
+      trust-score = trust,
+      current-time = time,
+      agent-id = agent
+    }
+    in let decision = eval-policy policy ctx
+    in if decision.allowed then check-all-caps caps policy trust agent time (i + 1) len
+    else verify-reject PhaseCapabilities ("capability " & cap-name (c.cap-id) & " denied: " & decision.reason)
+
+Section: Phase 4 — Effects
+
+  verify-effects : List Integer -> VerifyResult
+  verify-effects (binary) =
+    let eff-off = read-le64 binary 152
+    in let eff-sz = read-le64 binary 160
+    in if eff-sz == 0 then verify-ok PhaseEffects
+    else let effects = decode-effects binary eff-off eff-sz
+    in let cap-off = read-le64 binary 136
+    in let cap-sz = read-le64 binary 144
+    in let caps = decode-capabilities binary cap-off (cap-off + cap-sz)
+    in check-effects-covered effects caps 0 (list-length effects)
+
+  check-effects-covered : List Text, List CdxCapability, Integer, Integer -> VerifyResult
+  check-effects-covered (effects) (caps) (i) (len) =
+    if i >= len then verify-ok PhaseEffects
+    else let eff-name = list-at effects i
+    in if effect-has-capability eff-name caps 0 (list-length caps) then
+      check-effects-covered effects caps (i + 1) len
+    else verify-reject PhaseEffects ("effect " & eff-name & " has no matching capability")
+
+  effect-has-capability : Text, List CdxCapability, Integer, Integer -> Boolean
+  effect-has-capability (eff-name) (caps) (i) (len) =
+    if i >= len then False
+    else let c = list-at caps i
+    in if cap-name (c.cap-id) == eff-name then True
+    else effect-has-capability eff-name caps (i + 1) len
+
+Section: Composite Verification
+
+  verify-cdx : List Integer, TrustLattice, Policy, Integer -> VerifyResult
+  verify-cdx (binary) (lattice) (policy) (current-time) =
+    let p1 = verify-integrity binary
+    in if p1.accepted == False then p1
+    else let threshold = read-le16 binary 216
+    in let p2 = verify-author binary lattice threshold
+    in if p2.accepted == False then p2
+    else let p3 = verify-capabilities binary policy lattice current-time
+    in if p3.accepted == False then p3
+    else verify-effects binary
+
+Section: Phase 5 — Proofs
+
+  is-proof-fact : FactKind -> Boolean
+  is-proof-fact (k) = when k
+    is ProofFact -> True
+    is DefinitionFact -> False
+    is VouchFact -> False
+    is PolicyFact -> False
+    is CapabilityFact -> False
+
+  verify-proofs : List Integer, BareFactStore, Integer -> VerifyResult
+  verify-proofs (binary) (store) (fuel) =
+    let flags = read-le16 binary 6
+    in if bit-and flags cdx-flag-has-proofs == 0 then verify-ok PhaseProofs
+    else let ro-off = read-le64 binary 184
+    in let ro-sz = read-le64 binary 192
+    in let proof-off = ro-off + ro-sz
+    in if proof-off >= list-length binary then verify-reject PhaseProofs "proof section out of bounds"
+    else let entries = decode-proof-section binary proof-off
+    in check-all-proofs entries store fuel 0 (list-length entries)
+
+  check-all-proofs : List CdxProofEntry, BareFactStore, Integer, Integer, Integer -> VerifyResult
+  check-all-proofs (entries) (store) (fuel) (i) (len) =
+    if i >= len then verify-ok PhaseProofs
+    else if fuel <= 0 then verify-reject PhaseProofs "fuel exhausted during proof verification"
+    else let entry = list-at entries i
+    in let hash-hex = bytes-to-hex-range (entry.hash-bytes) 0 32
+    in let found = fact-load store hash-hex
+    in when found
+      is None -> verify-reject PhaseProofs ("proof not found: " & proof-kind-name (entry.kind))
+      is Just (f) -> if is-proof-fact (f.kind) then check-all-proofs entries store (fuel - 1) (i + 1) len
+        else verify-reject PhaseProofs ("fact is not a proof: " & fact-kind-name (f.kind))
+
+Section: Full Verification
+
+  verify-cdx-full : List Integer, TrustLattice, Policy, Integer, BareFactStore, Integer -> VerifyResult
+  verify-cdx-full (binary) (lattice) (policy) (current-time) (store) (fuel) =
+    let p1 = verify-integrity binary
+    in if p1.accepted == False then p1
+    else let threshold = read-le16 binary 216
+    in let p2 = verify-author binary lattice threshold
+    in if p2.accepted == False then p2
+    else let p3 = verify-capabilities binary policy lattice current-time
+    in if p3.accepted == False then p3
+    else let p4 = verify-effects binary
+    in if p4.accepted == False then p4
+    else verify-proofs binary store fuel
+
+Page 1

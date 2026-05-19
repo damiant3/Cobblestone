@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Codex — Sudoku</title>
+<link rel="stylesheet" href="/web/style.css?v={{VERSION}}">
+<style>
+  .game-page { max-width: 500px; margin: 0 auto; }
+  .board-wrap { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 16px; display: flex; justify-content: center; }
+  .su-grid { display: grid; grid-template-columns: repeat(9, 36px); grid-template-rows: repeat(9, 36px); gap: 1px; background: #30363d; border: 2px solid #58a6ff; }
+  .su-cell { background: #0d1117; display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: bold; font-family: inherit; }
+  .su-given { color: #e6edf3; }
+  .su-solved { color: #3fb950; }
+  .su-empty { color: #21262d; }
+  .su-cell.box-right { border-right: 2px solid #58a6ff; }
+  .su-cell.box-bottom { border-bottom: 2px solid #58a6ff; }
+  .controls { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; justify-content: center; }
+  .controls button { background: #21262d; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; font-family: inherit; font-size: 14px; padding: 8px 24px; cursor: pointer; }
+  .controls button:hover { border-color: #58a6ff; color: #58a6ff; }
+  .controls button:disabled { opacity: 0.4; cursor: default; }
+  #status-line { color: #8b949e; font-size: 13px; margin-bottom: 12px; text-align: center; }
+  .engine-tag { background: #238636; color: #fff; font-size: 10px; padding: 2px 8px; border-radius: 4px; margin-left: 12px; }
+</style>
+</head>
+<body>
+<nav class="topbar"><span class="topbar-logo">&#x2588; CODEX</span><a href="/#games" class="tab-btn">&#x2190; Games</a><span class="tab-btn active">Sudoku</span><span class="engine-tag">Codex VM</span></nav>
+<div class="content game-page">
+  <div class="controls">
+    <button onclick="generate()">&#x1F9E9; Generate</button>
+    <button id="btn-solve" onclick="animateSolve()" disabled>&#x25B6; Solve</button>
+  </div>
+  <div id="status-line">Press Generate to create a puzzle.</div>
+  <div class="board-wrap"><div class="su-grid" id="board"></div></div>
+</div>
+<script>
+var puzzle=null, solution=null, timer=null;
+
+function renderGrid(grid, solvedCells) {
+  var h='';
+  for(var i=0;i<81;i++){
+    var r=Math.floor(i/9),c=i%9;
+    var cls='su-cell';
+    if(c===2||c===5) cls+=' box-right';
+    if(r===2||r===5) cls+=' box-bottom';
+    var v=grid[i];
+    if(v===0) h+='<div class="'+cls+' su-empty"></div>';
+    else if(solvedCells&&solvedCells[i]) h+='<div class="'+cls+' su-solved">'+v+'</div>';
+    else h+='<div class="'+cls+' su-given">'+v+'</div>';
+  }
+  document.getElementById('board').innerHTML=h;
+}
+
+async function generate(){
+  clearTimeout(timer);
+  document.getElementById('status-line').textContent='Generating...';
+  document.getElementById('btn-solve').disabled=true;
+  try{
+    var r=await fetch('/api/sudoku/new?seed='+(Date.now()&0x7FFFFFFF));
+    var d=await r.json();
+    puzzle=d.puzzle; solution=d.solution;
+    renderGrid(puzzle,null);
+    var givens=puzzle.filter(function(v){return v>0}).length;
+    document.getElementById('status-line').textContent='Puzzle ready — '+givens+' givens. Press Solve to watch.';
+    document.getElementById('btn-solve').disabled=false;
+  }catch(e){
+    document.getElementById('status-line').textContent='Error: '+e.message;
+  }
+}
+
+function animateSolve(){
+  if(!puzzle||!solution) return;
+  document.getElementById('btn-solve').disabled=true;
+  var cells=[];
+  for(var i=0;i<81;i++){if(puzzle[i]===0&&solution[i]>0) cells.push(i)}
+  var current=puzzle.slice();
+  var solvedMap={};
+  var idx=0;
+  function step(){
+    if(idx>=cells.length){
+      document.getElementById('status-line').textContent='Solved!';
+      return;
+    }
+    var ci=cells[idx];
+    current[ci]=solution[ci];
+    solvedMap[ci]=true;
+    renderGrid(current,solvedMap);
+    document.getElementById('status-line').textContent='Filling cell '+(idx+1)+'/'+cells.length;
+    idx++;
+    timer=setTimeout(step,50);
+  }
+  step();
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,157 @@
+Chapter: Optimizer
+  cites Math chapter Cordic
+
+ Gradient-based optimizers for neural network training — SGD with
+ momentum, Adam, and AdamW. Each optimizer maintains per-parameter
+ state (momentum, adaptive learning rates) and produces updated
+ weights from gradients. Uses fixed-point scale-1000 arithmetic.
+
+ To sgd-step gives updated weights after one SGD step.
+ To adam-step gives updated weights after one Adam step.
+ To adamw-step gives updated weights after one AdamW step.
+
+ We say:
+
+Section: SGD
+
+  SgdConfig = record {
+    sgd-lr : Integer,
+    sgd-momentum : Integer,
+    sgd-weight-decay : Integer
+  }
+
+  SgdState = record {
+    sgd-velocity : List Integer
+  }
+
+  sgd-config : Integer, Integer -> SgdConfig
+  sgd-config (lr) (momentum) = SgdConfig {
+    sgd-lr = lr,
+    sgd-momentum = momentum,
+    sgd-weight-decay = 0
+  }
+
+  sgd-init : Integer -> SgdState
+  sgd-init (param-count) = SgdState {
+    sgd-velocity = opt-zeros param-count 0 []
+  }
+
+  SgdResult = record {
+    sgdr-params : List Integer,
+    sgdr-state : SgdState
+  }
+
+  sgd-step : SgdConfig, SgdState, List Integer, List Integer -> SgdResult
+  sgd-step (cfg) (state) (params) (grads) =
+    let n = list-length params
+    in sgd-step-loop cfg state params grads n 0 [] []
+
+  sgd-step-loop : SgdConfig, SgdState, List Integer, List Integer, Integer, Integer, List Integer, List Integer -> SgdResult
+  sgd-step-loop (cfg) (state) (params) (grads) (n) (i) (new-params) (new-vel) =
+    if i >= n then SgdResult {
+      sgdr-params = new-params,
+      sgdr-state = SgdState { sgd-velocity = new-vel }
+    }
+    else let g = list-at grads i + cfg.sgd-weight-decay * list-at params i / 1000
+    in let v = cfg.sgd-momentum * list-at (state.sgd-velocity) i / 1000 + g
+    in let p = list-at params i - cfg.sgd-lr * v / 1000
+    in sgd-step-loop cfg state params grads n (i + 1) (list-push new-params p) (list-push new-vel v)
+
+Section: Adam
+
+  AdamConfig = record {
+    adam-lr : Integer,
+    adam-beta1 : Integer,
+    adam-beta2 : Integer,
+    adam-epsilon : Integer,
+    adam-weight-decay : Integer
+  }
+
+  AdamState = record {
+    adam-m : List Integer,
+    adam-v : List Integer,
+    adam-t : Integer
+  }
+
+  adam-config : Integer -> AdamConfig
+  adam-config (lr) = AdamConfig {
+    adam-lr = lr,
+    adam-beta1 = 900,
+    adam-beta2 = 999,
+    adam-epsilon = 1,
+    adam-weight-decay = 0
+  }
+
+  adam-config-with-epsilon : Integer, Integer -> AdamConfig
+  adam-config-with-epsilon (lr) (eps) = AdamConfig {
+    adam-lr = lr,
+    adam-beta1 = 900,
+    adam-beta2 = 999,
+    adam-epsilon = eps,
+    adam-weight-decay = 0
+  }
+
+  adam-init : Integer -> AdamState
+  adam-init (param-count) = AdamState {
+    adam-m = opt-zeros param-count 0 [],
+    adam-v = opt-zeros param-count 0 [],
+    adam-t = 0
+  }
+
+  AdamResult = record {
+    adamr-params : List Integer,
+    adamr-state : AdamState
+  }
+
+  adam-step : AdamConfig, AdamState, List Integer, List Integer -> AdamResult
+  adam-step (cfg) (state) (params) (grads) =
+    let t = state.adam-t + 1
+    in let n = list-length params
+    in let bc1 = 1000 - opt-pow (cfg.adam-beta1) t
+    in let bc2 = 1000 - opt-pow (cfg.adam-beta2) t
+    in adam-step-loop cfg state params grads n t bc1 bc2 0 [] [] []
+
+  adam-step-loop : AdamConfig, AdamState, List Integer, List Integer, Integer, Integer, Integer, Integer, Integer, List Integer, List Integer, List Integer -> AdamResult
+  adam-step-loop (cfg) (state) (params) (grads) (n) (t) (bc1) (bc2) (i) (new-params) (new-m) (new-v) =
+    if i >= n then AdamResult {
+      adamr-params = new-params,
+      adamr-state = AdamState { adam-m = new-m, adam-v = new-v, adam-t = t }
+    }
+    else let g = list-at grads i
+    in let m = cfg.adam-beta1 * list-at (state.adam-m) i / 1000 + (1000 - cfg.adam-beta1) * g / 1000
+    in let v = cfg.adam-beta2 * list-at (state.adam-v) i / 1000 + (1000 - cfg.adam-beta2) * g * g / (1000 * 1000)
+    in let m-hat = m * 1000 / bc1
+    in let v-hat = v * 1000 / bc2
+    in let update = cfg.adam-lr * m-hat / (cordic-sqrt (v-hat * 1000) + cfg.adam-epsilon)
+    in let p = list-at params i - update
+    in adam-step-loop cfg state params grads n t bc1 bc2 (i + 1) (list-push new-params p) (list-push new-m m) (list-push new-v v)
+
+Section: AdamW
+
+  adamw-step : AdamConfig, AdamState, List Integer, List Integer -> AdamResult
+  adamw-step (cfg) (state) (params) (grads) =
+    let decayed = opt-weight-decay params (cfg.adam-lr) (cfg.adam-weight-decay) 0 (list-length params) []
+    in adam-step cfg state decayed grads
+
+  opt-weight-decay : List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  opt-weight-decay (params) (lr) (wd) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at params i - lr * wd * list-at params i / (1000 * 1000)
+    in opt-weight-decay params lr wd (i + 1) len (list-push acc p)
+
+Section: Helpers
+
+  opt-zeros : Integer, Integer, List Integer -> List Integer
+  opt-zeros (n) (i) (acc) =
+    if i >= n then acc
+    else opt-zeros n (i + 1) (list-push acc 0)
+
+  opt-pow : Integer, Integer -> Integer
+  opt-pow (base) (exp) = opt-pow-loop base exp 1000
+
+  opt-pow-loop : Integer, Integer, Integer -> Integer
+  opt-pow-loop (base) (exp) (acc) =
+    if exp <= 0 then acc
+    else opt-pow-loop base (exp - 1) (acc * base / 1000)
+
+Page 1

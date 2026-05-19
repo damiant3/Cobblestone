@@ -1,0 +1,1208 @@
+Chapter: COBOL Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+
+ Generates COBOL source code from the IR. Uses a variable-counter
+ approach to flatten functional expressions into WORKING-STORAGE
+ variables and imperative PROCEDURE DIVISION paragraphs.
+
+Section: Keywords and Sanitization
+
+  cobol-sanitize : Text -> Text
+  cobol-sanitize (name) = text-replace name "-" "_"
+
+  cobol-upper : Text -> Text
+  cobol-upper (s) = cobol-upper-loop s 0 (text-length s) []
+
+  cobol-upper-loop : Text -> Integer -> Integer -> List Text -> Text
+  cobol-upper-loop (s) (i) (len) (acc) =
+   if i >= len then text-concat-list acc
+   else let c = char-code-at s i
+   in let lower-e = char-code 'e'
+   in let lower-z = char-code 'z'
+   in let upper-e = char-code 'E'
+   in if c >= lower-e then if c <= lower-z then cobol-upper-loop s (i + 1) len (list-snoc acc (char-to-text (code-to-char (c - lower-e + upper-e))))
+                                            else cobol-upper-loop s (i + 1) len (list-snoc acc (char-to-text (code-to-char c)))
+   else cobol-upper-loop s (i + 1) len (list-snoc acc (char-to-text (code-to-char c)))
+
+  cobol-name : Text -> Text
+  cobol-name (name) = cobol-upper (cobol-sanitize name)
+
+  cobol-escape-text : Text -> Text
+  cobol-escape-text (s) = text-replace s "\"" "\"\""
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry -> Text -> Integer -> Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry -> ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef -> Integer -> List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry -> Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then -1
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else -1
+
+Section: Apply Chain
+
+  is-upper-letter : Integer -> Boolean
+  is-upper-letter (code) =
+   if code >= char-code 'E' then code <= char-code 'Z'
+   else False
+
+Section: PIC Clause and Type Helpers
+
+  cobol-pic : CodexType -> Text
+  cobol-pic (ty) =
+   when ty
+    is IntegerTy (lo) (hi) (mode) -> "PIC S9(18)"
+    is NumberTy -> "PIC S9(18)"
+    is TextTy -> "PIC X(256)"
+    is BooleanTy -> "PIC 9(1)"
+    is CharTy -> "PIC S9(18)"
+    is VoidTy -> "PIC S9(18)"
+    is NothingTy -> "PIC S9(18)"
+    is ForAllTy (id) (body) -> cobol-pic body
+    is EffectfulTy (effs) (sc) (ret) -> cobol-pic ret
+    is otherwise -> "PIC S9(18)"
+
+Section: Emission State
+
+  CobolState = record {
+   var-counter : Integer,
+   working-storage : List Text,
+   current-func : Text
+  }
+
+  cobol-alloc-var : CobolState -> Text -> CobolAllocResult
+  cobol-alloc-var (st) (hint) =
+   let next = st.var-counter + 1
+   in let prefix = if text-length (st.current-func) > 0 then st.current-func else "WS"
+   in let vname = prefix ++ "-" ++ hint ++ "-" ++ integer-to-text next
+   in CobolAllocResult {
+    name = vname,
+    state = CobolState {
+     var-counter = next,
+     working-storage = st.working-storage,
+     current-func = st.current-func
+    }
+   }
+
+  CobolAllocResult = record {
+   name : Text,
+   state : CobolState
+  }
+
+  cobol-add-ws : CobolState -> Text -> CobolState
+  cobol-add-ws (st) (line) =
+   CobolState {
+    var-counter = st.var-counter,
+    working-storage = list-snoc (st.working-storage) line,
+    current-func = st.current-func
+   }
+
+  cobol-set-func : CobolState -> Text -> CobolState
+  cobol-set-func (st) (f) =
+   CobolState {
+    var-counter = st.var-counter,
+    working-storage = st.working-storage,
+    current-func = f
+   }
+
+  cobol-initial-state : CobolState
+  cobol-initial-state = CobolState {
+   var-counter = 0,
+   working-storage = [],
+   current-func = ""
+  }
+
+Section: Type Definition Emission
+
+  emit-cobol-type-defs : List ATypeDef -> Integer -> Text
+  emit-cobol-type-defs (tds) (i) =
+   if i >= list-length tds then ""
+   else emit-cobol-type-def (list-at tds i) ++ emit-cobol-type-defs tds (i + 1)
+
+  emit-cobol-type-def : ATypeDef -> Text
+  emit-cobol-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+     let n = cobol-name (name.value)
+     in "       01 WS-" ++ n ++ ".\n" ++ emit-cobol-rec-fields n fields 0
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-cobol-sum-type (name.value) ctors
+
+  emit-cobol-rec-fields : Text -> List ARecordFieldDef -> Integer -> Text
+  emit-cobol-rec-fields (parent) (fields) (i) =
+   if i >= list-length fields then ""
+   else let f = list-at fields i
+   in let fn = cobol-name (f.name.value)
+   in let pic = emit-cobol-atype-pic (f.type-expr)
+   in "         05 WS-" ++ parent ++ "-" ++ fn ++ " " ++ pic ++ ".\n" ++ emit-cobol-rec-fields parent fields (i + 1)
+
+  emit-cobol-atype-pic : ATypeExpr -> Text
+  emit-cobol-atype-pic (te) =
+   when te
+    is ANamedType (name) (s) -> cobol-when-pic-name (name.value)
+    is AFunType (p) (r) (s) -> "PIC S9(18)"
+    is AAppType (base) (args) (s) -> emit-cobol-atype-pic base
+    is AEffectType (effs) (scopes) (r) (s) -> emit-cobol-atype-pic r
+    is ABoundedIntType (b) (lo) (hi) (mode) (s) -> emit-cobol-atype-pic b
+
+  cobol-when-pic-name : Text -> Text
+  cobol-when-pic-name (n) =
+   if n == "Integer" then "PIC S9(18)"
+   else if n == "Number" then "PIC S9(18)"
+   else if n == "Text" then "PIC X(256)"
+   else if n == "Boolean" then "PIC 9(1)"
+   else "PIC S9(18)"
+
+  emit-cobol-sum-type : Text -> List AVariantCtorDef -> Text
+  emit-cobol-sum-type (base-name) (ctors) =
+   let n = cobol-name base-name
+   in let max-fields = cobol-max-ctor-fields ctors 0 0
+   in "       01 WS-" ++ n ++ ".\n" ++
+      "         05 WS-" ++ n ++ "-TAG    PIC 9(2).\n" ++
+      emit-cobol-sum-data-fields n max-fields 0 ++
+      emit-cobol-sum-tags ctors 1
+
+  cobol-max-ctor-fields : List AVariantCtorDef -> Integer -> Integer -> Integer
+  cobol-max-ctor-fields (ctors) (i) (mx) =
+   if i >= list-length ctors then mx
+   else let c = list-at ctors i
+   in let n = list-length (c.fields)
+   in if n > mx then cobol-max-ctor-fields ctors (i + 1) n
+      else cobol-max-ctor-fields ctors (i + 1) mx
+
+  emit-cobol-sum-data-fields : Text -> Integer -> Integer -> Text
+  emit-cobol-sum-data-fields (n) (count) (i) =
+   if i >= count then ""
+   else "         05 WS-" ++ n ++ "-F" ++ integer-to-text i ++ "     PIC S9(18).\n" ++ emit-cobol-sum-data-fields n count (i + 1)
+
+  emit-cobol-sum-tags : List AVariantCtorDef -> Integer -> Text
+  emit-cobol-sum-tags (ctors) (tag-num) =
+   if tag-num > list-length ctors then ""
+   else let c = list-at ctors (tag-num - 1)
+   in let cn = cobol-name (c.name.value)
+   in "       01 TAG-" ++ cn ++ "      PIC 9(2) VALUE " ++ integer-to-text tag-num ++ ".\n" ++ emit-cobol-sum-tags ctors (tag-num + 1)
+
+Section: Expression Emission
+
+  CobolExprResult = record {
+   var-name : Text,
+   code : Text,
+   state : CobolState
+  }
+
+  emit-cobol-expr-to-var : IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-expr-to-var (e) (arities) (st) =
+   when e
+    is IrIntLit (n) (sp) -> CobolExprResult { var-name = integer-to-text n, code = "", state = st }
+    is IrBoolLit (b) (sp) -> CobolExprResult { var-name = if b then "1" else "0", code = "", state = st }
+    is IrTextLit (s) (sp) -> CobolExprResult { var-name = "\"" ++ cobol-escape-text s ++ "\"", code = "", state = st }
+    is IrNumLit (n) (sp) -> CobolExprResult { var-name = integer-to-text n, code = "", state = st }
+    is IrCharLit (n) (sp) -> CobolExprResult { var-name = integer-to-text n, code = "", state = st }
+    is IrName (n) (ty) (sp) -> emit-cobol-name-var n st
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-cobol-binary-var op l r arities st
+    is IrNegate (operand) (sp) -> emit-cobol-negate-var operand arities st
+    is IrIf (c) (t) (el) (ty) (sp) -> emit-cobol-if-var c t el arities st
+    is IrLet (name) (ty) (val) (body) (sp) -> emit-cobol-let-var name ty val body arities st
+    is IrApply (f) (a) (ty) (sp) -> emit-cobol-apply-var e arities st
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-cobol-match-var scrut branches ty arities st
+    is IrRecord (rname) (fields) (ty) (sp) -> emit-cobol-record-var rname fields arities st
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-cobol-field-var rec field arities st
+    is IrAct (stmts) (ty) (sp) -> emit-cobol-act-expr stmts arities st
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-cobol-expr-to-var body arities st
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-cobol-expr-to-var body arities st
+    is IrFork (body) (ty) (sp) -> emit-cobol-expr-to-var body arities st
+    is IrAwait (task) (ty) (sp) -> emit-cobol-expr-to-var task arities st
+    is IrLambda (params) (body) (ty) (sp) ->
+     let alloc = cobol-alloc-var st "LAMBDA"
+     in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       PIC S9(18).")
+     in CobolExprResult {
+      var-name = alloc.name,
+      code = "           DISPLAY \"COBOL: lambda not supported\"\n" ++
+       "           MOVE 0 TO " ++ alloc.name ++ "\n",
+      state = st2
+     }
+    is IrList (elems) (ty) (sp) -> emit-cobol-list-var elems arities st
+    is IrError (msg) (ty) (sp) -> CobolExprResult { var-name = "0", code = "", state = st }
+
+  emit-cobol-name-var : Text -> CobolState -> CobolExprResult
+  emit-cobol-name-var (n) (st) =
+   if n == "True" then CobolExprResult { var-name = "1", code = "", state = st }
+   else if n == "False" then CobolExprResult { var-name = "0", code = "", state = st }
+   else if n == "Nothing" then CobolExprResult { var-name = "0", code = "", state = st }
+   else CobolExprResult { var-name = "WS-" ++ cobol-name n, code = "", state = st }
+
+  emit-cobol-negate-var : IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-negate-var (operand) (arities) (st) =
+   let inner = emit-cobol-expr-to-var operand arities st
+   in let alloc = cobol-alloc-var (inner.state) "NEG"
+   in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       PIC S9(18).")
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = inner.code ++ "           MULTIPLY " ++ inner.var-name ++ " BY -1 GIVING " ++ alloc.name ++ "\n",
+    state = st2
+   }
+
+  emit-cobol-binary-var : IRBinaryOp -> IRExpr -> IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-binary-var (op) (l) (r) (arities) (st) =
+   let left = emit-cobol-expr-to-var l arities st
+   in let right = emit-cobol-expr-to-var r arities (left.state)
+   in let alloc = cobol-alloc-var (right.state) (cobol-bin-hint op)
+   in let pic = cobol-bin-pic op
+   in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       " ++ pic ++ ".")
+   in let stmt = emit-cobol-bin-stmt op (left.var-name) (right.var-name) (alloc.name)
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = left.code ++ right.code ++ stmt,
+    state = st2
+   }
+
+  cobol-bin-pic : IRBinaryOp -> Text
+  cobol-bin-pic (op) =
+   when op
+    is IrAppendText -> "PIC X(256)"
+    is IrEq -> "PIC 9(1)"
+    is IrNotEq -> "PIC 9(1)"
+    is IrLt -> "PIC 9(1)"
+    is IrGt -> "PIC 9(1)"
+    is IrLtEq -> "PIC 9(1)"
+    is IrGtEq -> "PIC 9(1)"
+    is IrAnd -> "PIC 9(1)"
+    is IrOr -> "PIC 9(1)"
+    is IrAddInt -> "PIC S9(18)"
+    is IrSubInt -> "PIC S9(18)"
+    is IrMulInt -> "PIC S9(18)"
+    is IrDivInt -> "PIC S9(18)"
+    is IrPowInt -> "PIC S9(18)"
+    is IrAddNum -> "PIC S9(18)"
+    is IrSubNum -> "PIC S9(18)"
+    is IrMulNum -> "PIC S9(18)"
+    is IrDivNum -> "PIC S9(18)"
+    is IrAppendList -> "PIC S9(18)"
+    is IrConsList -> "PIC S9(18)"
+
+  cobol-bin-hint : IRBinaryOp -> Text
+  cobol-bin-hint (op) =
+   when op
+    is IrAddInt -> "SUM"
+    is IrSubInt -> "DIFF"
+    is IrMulInt -> "PROD"
+    is IrDivInt -> "QUOT"
+    is IrPowInt -> "POW"
+    is IrAddNum -> "SUM"
+    is IrSubNum -> "DIFF"
+    is IrMulNum -> "PROD"
+    is IrDivNum -> "QUOT"
+    is IrEq -> "EQ"
+    is IrNotEq -> "EQ"
+    is IrLt -> "CMP"
+    is IrGt -> "CMP"
+    is IrLtEq -> "CMP"
+    is IrGtEq -> "CMP"
+    is IrAnd -> "LAND"
+    is IrOr -> "LOR"
+    is IrAppendText -> "CONCAT"
+    is IrAppendList -> "LCAT"
+    is IrConsList -> "LCONS"
+
+  emit-cobol-bin-stmt : IRBinaryOp -> Text -> Text -> Text -> Text
+  emit-cobol-bin-stmt (op) (lv) (rv) (result) =
+   when op
+    is IrAddInt -> "           ADD " ++ lv ++ " " ++ rv ++ " GIVING " ++ result ++ "\n"
+    is IrSubInt -> "           SUBTRACT " ++ rv ++ " FROM " ++ lv ++ " GIVING " ++ result ++ "\n"
+    is IrMulInt -> "           MULTIPLY " ++ lv ++ " BY " ++ rv ++ " GIVING " ++ result ++ "\n"
+    is IrDivInt -> "           DIVIDE " ++ lv ++ " BY " ++ rv ++ " GIVING " ++ result ++ "\n"
+    is IrPowInt -> "           COMPUTE " ++ result ++ " = " ++ lv ++ " ** " ++ rv ++ "\n"
+    is IrAddNum -> "           ADD " ++ lv ++ " " ++ rv ++ " GIVING " ++ result ++ "\n"
+    is IrSubNum -> "           SUBTRACT " ++ rv ++ " FROM " ++ lv ++ " GIVING " ++ result ++ "\n"
+    is IrMulNum -> "           MULTIPLY " ++ lv ++ " BY " ++ rv ++ " GIVING " ++ result ++ "\n"
+    is IrDivNum -> "           DIVIDE " ++ lv ++ " BY " ++ rv ++ " GIVING " ++ result ++ "\n"
+    is IrEq -> emit-cobol-cmp-stmt lv "=" rv result
+    is IrNotEq -> emit-cobol-cmp-stmt lv "NOT =" rv result
+    is IrLt -> emit-cobol-cmp-stmt lv "<" rv result
+    is IrGt -> emit-cobol-cmp-stmt lv ">" rv result
+    is IrLtEq -> emit-cobol-cmp-stmt lv "<=" rv result
+    is IrGtEq -> emit-cobol-cmp-stmt lv ">=" rv result
+    is IrAnd ->
+     "           IF " ++ lv ++ " NOT = 0\n" ++
+     "             IF " ++ rv ++ " NOT = 0\n" ++
+     "               MOVE 1 TO " ++ result ++ "\n" ++
+     "             ELSE\n" ++
+     "               MOVE 0 TO " ++ result ++ "\n" ++
+     "             END-IF\n" ++
+     "           ELSE\n" ++
+     "             MOVE 0 TO " ++ result ++ "\n" ++
+     "           END-IF\n"
+    is IrOr ->
+     "           IF " ++ lv ++ " NOT = 0\n" ++
+     "             MOVE 1 TO " ++ result ++ "\n" ++
+     "           ELSE\n" ++
+     "             IF " ++ rv ++ " NOT = 0\n" ++
+     "               MOVE 1 TO " ++ result ++ "\n" ++
+     "             ELSE\n" ++
+     "               MOVE 0 TO " ++ result ++ "\n" ++
+     "             END-IF\n" ++
+     "           END-IF\n"
+    is IrAppendText -> "           STRING " ++ lv ++ " DELIMITED BY SIZE\n                  " ++ rv ++ " DELIMITED BY SIZE\n                  INTO " ++ result ++ "\n"
+    is IrAppendList -> "           DISPLAY \"COBOL: list-append not supported\"\n           MOVE 0 TO " ++ result ++ "\n"
+    is IrConsList -> "           DISPLAY \"COBOL: cons-list not supported\"\n           MOVE 0 TO " ++ result ++ "\n"
+
+  emit-cobol-cmp-stmt : Text -> Text -> Text -> Text -> Text
+  emit-cobol-cmp-stmt (lv) (cmp-op) (rv) (result) =
+   "           IF " ++ lv ++ " " ++ cmp-op ++ " " ++ rv ++ "\n" ++
+   "             MOVE 1 TO " ++ result ++ "\n" ++
+   "           ELSE\n" ++
+   "             MOVE 0 TO " ++ result ++ "\n" ++
+   "           END-IF\n"
+
+  emit-cobol-if-var : IRExpr -> IRExpr -> IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-if-var (c) (t) (el) (arities) (st) =
+   let cond = emit-cobol-expr-to-var c arities st
+   in let alloc = cobol-alloc-var (cond.state) "BRANCH"
+   in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       PIC S9(18).")
+   in let then-r = emit-cobol-expr-to-var t arities st2
+   in let else-r = emit-cobol-expr-to-var el arities (then-r.state)
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = cond.code ++
+     "           IF " ++ cond.var-name ++ " NOT = 0\n" ++
+     then-r.code ++
+     "             MOVE " ++ then-r.var-name ++ " TO " ++ alloc.name ++ "\n" ++
+     "           ELSE\n" ++
+     else-r.code ++
+     "             MOVE " ++ else-r.var-name ++ " TO " ++ alloc.name ++ "\n" ++
+     "           END-IF\n",
+    state = else-r.state
+   }
+
+  emit-cobol-let-var : Text -> CodexType -> IRExpr -> IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-let-var (name) (ty) (val) (body) (arities) (st) =
+   let val-r = emit-cobol-expr-to-var val arities st
+   in let alloc = cobol-alloc-var (val-r.state) (cobol-name name)
+   in let pic = cobol-pic ty
+   in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       " ++ pic ++ ".")
+   in let body-r = emit-cobol-expr-to-var body arities st2
+   in CobolExprResult {
+    var-name = body-r.var-name,
+    code = val-r.code ++ "           MOVE " ++ val-r.var-name ++ " TO " ++ alloc.name ++ "\n" ++ body-r.code,
+    state = body-r.state
+   }
+
+  emit-cobol-apply-var : IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-apply-var (e) (arities) (st) =
+   let chain = collect-apply-chain e []
+   in when chain.root
+    is IrName (n) (ty) (sp) -> emit-cobol-apply-named n (chain.args) arities st
+    is otherwise -> let fallback = emit-cobol-expr-to-var (list-at (chain.args) 0) arities st
+     in CobolExprResult { var-name = fallback.var-name, code = fallback.code, state = fallback.state }
+
+  emit-cobol-apply-named : Text -> List IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-apply-named (n) (args) (arities) (st) =
+   if n == "print-line-uni" then emit-cobol-display args arities st
+   else if n == "show" then emit-cobol-builtin-show args arities st
+   else if n == "integer-to-text" then emit-cobol-builtin-show args arities st
+   else if n == "negate" then emit-cobol-negate-var (list-at args 0) arities st
+   else if n == "text-length" then emit-cobol-builtin-text-length args arities st
+   else if n == "char-at" then emit-cobol-builtin-char-at args arities st
+   else if n == "substring" then emit-cobol-builtin-substring args arities st
+   else if n == "text-to-integer" then emit-cobol-builtin-text-to-integer args arities st
+   else if n == "abs" then emit-cobol-builtin-abs args arities st
+   else if n == "min" then emit-cobol-builtin-min args arities st
+   else if n == "max" then emit-cobol-builtin-max args arities st
+   else if n == "int-mod" then emit-cobol-builtin-int-mod args arities st
+   else if n == "is-letter" then emit-cobol-builtin-is-letter args arities st
+   else if n == "is-digit" then emit-cobol-builtin-is-digit args arities st
+   else if n == "read-file" then emit-cobol-builtin-read-file args arities st
+   else if n == "write-file" then emit-cobol-builtin-write-file args arities st
+   else if n == "process-exit" then emit-cobol-builtin-process-exit args arities st
+   else if n == "bit-and" then emit-cobol-builtin-bit-stub "bit-and" args arities st
+   else if n == "bit-or" then emit-cobol-builtin-bit-stub "bit-or" args arities st
+   else if n == "bit-xor" then emit-cobol-builtin-bit-stub "bit-xor" args arities st
+   else emit-cobol-call-def n args arities st
+
+  emit-cobol-display : List IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-display (args) (arities) (st) =
+   let arg-r = emit-cobol-expr-to-var (list-at args 0) arities st
+   in CobolExprResult {
+    var-name = "0",
+    code = arg-r.code ++ "           DISPLAY " ++ arg-r.var-name ++ "\n",
+    state = arg-r.state
+   }
+
+  emit-cobol-builtin-show : List IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-builtin-show (args) (arities) (st) =
+   let arg-r = emit-cobol-expr-to-var (list-at args 0) arities st
+   in let alloc = cobol-alloc-var (arg-r.state) "SHOW"
+   in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       PIC X(256).")
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = arg-r.code ++ "           MOVE " ++ arg-r.var-name ++ " TO " ++ alloc.name ++ "\n",
+    state = st2
+   }
+
+  emit-cobol-builtin-text-length : List IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-builtin-text-length (args) (arities) (st) =
+   let arg-r = emit-cobol-expr-to-var (list-at args 0) arities st
+   in let alloc = cobol-alloc-var (arg-r.state) "LEN"
+   in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       PIC S9(18).")
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = arg-r.code ++ "           COMPUTE " ++ alloc.name ++ " = FUNCTION LENGTH(" ++ arg-r.var-name ++ ")\n",
+    state = st2
+   }
+
+  emit-cobol-builtin-char-at : List IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-builtin-char-at (args) (arities) (st) =
+   let str-r = emit-cobol-expr-to-var (list-at args 0) arities st
+   in let idx-r = emit-cobol-expr-to-var (list-at args 1) arities (str-r.state)
+   in let alloc = cobol-alloc-var (idx-r.state) "CHAT"
+   in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       PIC X(1).")
+   in let alloc2 = cobol-alloc-var st2 "CIDX"
+   in let st3 = cobol-add-ws (alloc2.state) ("       01 " ++ alloc2.name ++ "       PIC S9(18).")
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = str-r.code ++ idx-r.code ++
+     "           ADD 1 TO " ++ idx-r.var-name ++ " GIVING " ++ alloc2.name ++ "\n" ++
+     "           MOVE " ++ str-r.var-name ++ "(" ++ alloc2.name ++ ":1) TO " ++ alloc.name ++ "\n",
+    state = st3
+   }
+
+  emit-cobol-builtin-substring : List IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-builtin-substring (args) (arities) (st) =
+   let str-r = emit-cobol-expr-to-var (list-at args 0) arities st
+   in let start-r = emit-cobol-expr-to-var (list-at args 1) arities (str-r.state)
+   in let len-r = emit-cobol-expr-to-var (list-at args 2) arities (start-r.state)
+   in let alloc = cobol-alloc-var (len-r.state) "SUB"
+   in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       PIC X(256).")
+   in let alloc2 = cobol-alloc-var st2 "SPOS"
+   in let st3 = cobol-add-ws (alloc2.state) ("       01 " ++ alloc2.name ++ "       PIC S9(18).")
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = str-r.code ++ start-r.code ++ len-r.code ++
+     "           ADD 1 TO " ++ start-r.var-name ++ " GIVING " ++ alloc2.name ++ "\n" ++
+     "           MOVE " ++ str-r.var-name ++ "(" ++ alloc2.name ++ ":" ++ len-r.var-name ++ ") TO " ++ alloc.name ++ "\n",
+    state = st3
+   }
+
+  emit-cobol-builtin-text-to-integer : List IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-builtin-text-to-integer (args) (arities) (st) =
+   let arg-r = emit-cobol-expr-to-var (list-at args 0) arities st
+   in let alloc = cobol-alloc-var (arg-r.state) "NUMV"
+   in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       PIC S9(18).")
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = arg-r.code ++ "           COMPUTE " ++ alloc.name ++ " = FUNCTION NUMVAL(" ++ arg-r.var-name ++ ")\n",
+    state = st2
+   }
+
+  emit-cobol-builtin-abs : List IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-builtin-abs (args) (arities) (st) =
+   let arg-r = emit-cobol-expr-to-var (list-at args 0) arities st
+   in let alloc = cobol-alloc-var (arg-r.state) "ABS"
+   in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       PIC S9(18).")
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = arg-r.code ++ "           COMPUTE " ++ alloc.name ++ " = FUNCTION ABS(" ++ arg-r.var-name ++ ")\n",
+    state = st2
+   }
+
+  emit-cobol-builtin-min : List IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-builtin-min (args) (arities) (st) =
+   let a-r = emit-cobol-expr-to-var (list-at args 0) arities st
+   in let b-r = emit-cobol-expr-to-var (list-at args 1) arities (a-r.state)
+   in let alloc = cobol-alloc-var (b-r.state) "MIN"
+   in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       PIC S9(18).")
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = a-r.code ++ b-r.code ++ "           COMPUTE " ++ alloc.name ++ " = FUNCTION MIN(" ++ a-r.var-name ++ " " ++ b-r.var-name ++ ")\n",
+    state = st2
+   }
+
+  emit-cobol-builtin-max : List IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-builtin-max (args) (arities) (st) =
+   let a-r = emit-cobol-expr-to-var (list-at args 0) arities st
+   in let b-r = emit-cobol-expr-to-var (list-at args 1) arities (a-r.state)
+   in let alloc = cobol-alloc-var (b-r.state) "MAX"
+   in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       PIC S9(18).")
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = a-r.code ++ b-r.code ++ "           COMPUTE " ++ alloc.name ++ " = FUNCTION MAX(" ++ a-r.var-name ++ " " ++ b-r.var-name ++ ")\n",
+    state = st2
+   }
+
+  emit-cobol-builtin-int-mod : List IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-builtin-int-mod (args) (arities) (st) =
+   let a-r = emit-cobol-expr-to-var (list-at args 0) arities st
+   in let b-r = emit-cobol-expr-to-var (list-at args 1) arities (a-r.state)
+   in let alloc = cobol-alloc-var (b-r.state) "MOD"
+   in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       PIC S9(18).")
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = a-r.code ++ b-r.code ++ "           COMPUTE " ++ alloc.name ++ " = FUNCTION MOD(" ++ a-r.var-name ++ " " ++ b-r.var-name ++ ")\n",
+    state = st2
+   }
+
+  emit-cobol-builtin-is-letter : List IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-builtin-is-letter (args) (arities) (st) =
+   let arg-r = emit-cobol-expr-to-var (list-at args 0) arities st
+   in let alloc = cobol-alloc-var (arg-r.state) "ISLT"
+   in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       PIC 9(1).")
+   in let alloc2 = cobol-alloc-var st2 "ORD"
+   in let st3 = cobol-add-ws (alloc2.state) ("       01 " ++ alloc2.name ++ "       PIC S9(18).")
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = arg-r.code ++
+     "           COMPUTE " ++ alloc2.name ++ " = FUNCTION ORD(" ++ arg-r.var-name ++ ")\n" ++
+     "           IF (" ++ alloc2.name ++ " >= 66 AND " ++ alloc2.name ++ " <= 91)\n" ++
+     "              OR (" ++ alloc2.name ++ " >= 98 AND " ++ alloc2.name ++ " <= 123)\n" ++
+     "             MOVE 1 TO " ++ alloc.name ++ "\n" ++
+     "           ELSE\n" ++
+     "             MOVE 0 TO " ++ alloc.name ++ "\n" ++
+     "           END-IF\n",
+    state = st3
+   }
+
+  emit-cobol-builtin-is-digit : List IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-builtin-is-digit (args) (arities) (st) =
+   let arg-r = emit-cobol-expr-to-var (list-at args 0) arities st
+   in let alloc = cobol-alloc-var (arg-r.state) "ISDI"
+   in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       PIC 9(1).")
+   in let alloc2 = cobol-alloc-var st2 "ORD"
+   in let st3 = cobol-add-ws (alloc2.state) ("       01 " ++ alloc2.name ++ "       PIC S9(18).")
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = arg-r.code ++
+     "           COMPUTE " ++ alloc2.name ++ " = FUNCTION ORD(" ++ arg-r.var-name ++ ")\n" ++
+     "           IF " ++ alloc2.name ++ " >= 49 AND " ++ alloc2.name ++ " <= 58\n" ++
+     "             MOVE 1 TO " ++ alloc.name ++ "\n" ++
+     "           ELSE\n" ++
+     "             MOVE 0 TO " ++ alloc.name ++ "\n" ++
+     "           END-IF\n",
+    state = st3
+   }
+
+  emit-cobol-builtin-read-file : List IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-builtin-read-file (args) (arities) (st) =
+   let arg-r = emit-cobol-expr-to-var (list-at args 0) arities st
+   in let alloc = cobol-alloc-var (arg-r.state) "RFILE"
+   in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       PIC X(256).")
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = arg-r.code ++
+     "           OPEN INPUT " ++ arg-r.var-name ++ "\n" ++
+     "           READ " ++ arg-r.var-name ++ " INTO " ++ alloc.name ++ "\n" ++
+     "           CLOSE " ++ arg-r.var-name ++ "\n",
+    state = st2
+   }
+
+  emit-cobol-builtin-write-file : List IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-builtin-write-file (args) (arities) (st) =
+   let path-r = emit-cobol-expr-to-var (list-at args 0) arities st
+   in let data-r = emit-cobol-expr-to-var (list-at args 1) arities (path-r.state)
+   in CobolExprResult {
+    var-name = "0",
+    code = path-r.code ++ data-r.code ++
+     "           OPEN OUTPUT " ++ path-r.var-name ++ "\n" ++
+     "           WRITE " ++ data-r.var-name ++ "\n" ++
+     "           CLOSE " ++ path-r.var-name ++ "\n",
+    state = data-r.state
+   }
+
+  emit-cobol-builtin-process-exit : List IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-builtin-process-exit (args) (arities) (st) =
+   let arg-r = emit-cobol-expr-to-var (list-at args 0) arities st
+   in CobolExprResult {
+    var-name = "0",
+    code = arg-r.code ++ "           MOVE " ++ arg-r.var-name ++ " TO RETURN-CODE\n           STOP RUN\n",
+    state = arg-r.state
+   }
+
+  emit-cobol-builtin-bit-stub : Text -> List IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-builtin-bit-stub (op-name) (args) (arities) (st) =
+   let alloc = cobol-alloc-var st "BIT"
+   in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       PIC S9(18).")
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = "           DISPLAY \"COBOL: " ++ op-name ++ " not supported\"\n" ++
+     "           MOVE 0 TO " ++ alloc.name ++ "\n",
+    state = st2
+   }
+
+  emit-cobol-call-def : Text -> List IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-call-def (n) (args) (arities) (st) =
+   let ar = lookup-arity arities n
+   in if ar < 0 then let fallback = emit-cobol-expr-to-var (list-at args 0) arities st
+      in CobolExprResult { var-name = fallback.var-name, code = fallback.code, state = fallback.state }
+   else let name = cobol-name n
+   in let result = emit-cobol-move-args args name arities st 0
+   in CobolExprResult {
+    var-name = "WS-" ++ name ++ "-RET",
+    code = result.code ++ "           PERFORM " ++ name ++ "-PARA\n",
+    state = result.state
+   }
+
+  CobolMoveResult = record {
+   code : Text,
+   state : CobolState
+  }
+
+  emit-cobol-move-args : List IRExpr -> Text -> List ArityEntry -> CobolState -> Integer -> CobolMoveResult
+  emit-cobol-move-args (args) (func-name) (arities) (st) (i) =
+   if i >= list-length args then CobolMoveResult { code = "", state = st }
+   else let arg-r = emit-cobol-expr-to-var (list-at args i) arities st
+   in let rest = emit-cobol-move-args args func-name arities (arg-r.state) (i + 1)
+   in CobolMoveResult {
+    code = arg-r.code ++ "           MOVE " ++ arg-r.var-name ++ " TO WS-" ++ func-name ++ "-ARG" ++ integer-to-text i ++ "\n" ++ rest.code,
+    state = rest.state
+   }
+
+  emit-cobol-match-var : IRExpr -> List IRBranch -> CodexType -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-match-var (scrut) (branches) (ty) (arities) (st) =
+   let scrut-r = emit-cobol-expr-to-var scrut arities st
+   in let alloc = cobol-alloc-var (scrut-r.state) "MATCH"
+   in let pic = cobol-pic ty
+   in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       " ++ pic ++ ".")
+   in let arms = emit-cobol-match-arms branches (alloc.name) arities st2
+   in CobolExprResult {
+    var-name = alloc.name,
+    code = scrut-r.code ++
+     "           EVALUATE " ++ scrut-r.var-name ++ "-TAG\n" ++
+     arms.code ++
+     "           END-EVALUATE\n",
+    state = arms.state
+   }
+
+  emit-cobol-match-arms : List IRBranch -> Text -> List ArityEntry -> CobolState -> CobolMoveResult
+  emit-cobol-match-arms (branches) (result-var) (arities) (st) =
+   emit-cobol-match-arms-loop branches result-var arities st 0
+
+  emit-cobol-match-arms-loop : List IRBranch -> Text -> List ArityEntry -> CobolState -> Integer -> CobolMoveResult
+  emit-cobol-match-arms-loop (branches) (result-var) (arities) (st) (i) =
+   if i >= list-length branches then CobolMoveResult { code = "", state = st }
+   else let b = list-at branches i
+   in let arm = emit-cobol-match-one-arm b result-var arities st
+   in let rest = emit-cobol-match-arms-loop branches result-var arities (arm.state) (i + 1)
+   in CobolMoveResult { code = arm.code ++ rest.code, state = rest.state }
+
+  CobolArmResult = record {
+   code : Text,
+   state : CobolState
+  }
+
+  emit-cobol-match-one-arm : IRBranch -> Text -> List ArityEntry -> CobolState -> CobolArmResult
+  emit-cobol-match-one-arm (b) (result-var) (arities) (st) =
+   let label = when b.pattern
+    is IrCtorPat (name) (subs) (ty) (sp) -> "             WHEN TAG-" ++ cobol-name name ++ "\n"
+    is IrWildPat (sp) -> "             WHEN OTHER\n"
+    is IrVarPat (vname) (ty) (sp) -> "             WHEN OTHER\n"
+    is IrLitPat (text) (ty) (sp) -> "             WHEN " ++ text ++ "\n"
+   in let body-r = emit-cobol-expr-to-var (b.body) arities st
+   in CobolArmResult {
+    code = label ++ body-r.code ++ "               MOVE " ++ body-r.var-name ++ " TO " ++ result-var ++ "\n",
+    state = body-r.state
+   }
+
+  emit-cobol-record-var : Text -> List IRFieldVal -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-record-var (rname) (fields) (arities) (st) =
+   let rec-name = cobol-name rname
+   in let result-var = "WS-" ++ rec-name
+   in let moves = emit-cobol-record-moves fields rec-name arities st 0
+   in CobolExprResult {
+    var-name = result-var,
+    code = moves.code,
+    state = moves.state
+   }
+
+  emit-cobol-record-moves : List IRFieldVal -> Text -> List ArityEntry -> CobolState -> Integer -> CobolMoveResult
+  emit-cobol-record-moves (fields) (rec-name) (arities) (st) (i) =
+   if i >= list-length fields then CobolMoveResult { code = "", state = st }
+   else let f = list-at fields i
+   in let val-r = emit-cobol-expr-to-var (f.value) arities st
+   in let fn = cobol-name (f.name)
+   in let rest = emit-cobol-record-moves fields rec-name arities (val-r.state) (i + 1)
+   in CobolMoveResult {
+    code = val-r.code ++ "           MOVE " ++ val-r.var-name ++ " TO WS-" ++ rec-name ++ "-" ++ fn ++ "\n" ++ rest.code,
+    state = rest.state
+   }
+
+  emit-cobol-field-var : IRExpr -> Text -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-field-var (rec) (field) (arities) (st) =
+   let rec-r = emit-cobol-expr-to-var rec arities st
+   in let fn = cobol-name field
+   in CobolExprResult {
+    var-name = rec-r.var-name ++ "-" ++ fn,
+    code = rec-r.code,
+    state = rec-r.state
+   }
+
+  emit-cobol-list-var : List IRExpr -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-list-var (elems) (arities) (st) =
+   emit-cobol-list-moves elems arities st 0
+
+  emit-cobol-list-moves : List IRExpr -> List ArityEntry -> CobolState -> Integer -> CobolExprResult
+  emit-cobol-list-moves (elems) (arities) (st) (i) =
+   if i >= list-length elems then CobolExprResult { var-name = "0", code = "", state = st }
+   else let elem-r = emit-cobol-expr-to-var (list-at elems i) arities st
+   in let alloc = cobol-alloc-var (elem-r.state) "LIST"
+   in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       PIC S9(18).")
+   in let rest = emit-cobol-list-moves elems arities st2 (i + 1)
+   in CobolExprResult {
+    var-name = rest.var-name,
+    code = elem-r.code ++ "           MOVE " ++ elem-r.var-name ++ " TO " ++ alloc.name ++ "\n" ++ rest.code,
+    state = rest.state
+   }
+
+  emit-cobol-act-expr : List IRActStmt -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-act-expr (stmts) (arities) (st) =
+   emit-cobol-act-expr-loop stmts arities st 0
+
+  emit-cobol-act-expr-loop : List IRActStmt -> List ArityEntry -> CobolState -> Integer -> CobolExprResult
+  emit-cobol-act-expr-loop (stmts) (arities) (st) (i) =
+   if i >= list-length stmts then CobolExprResult { var-name = "0", code = "", state = st }
+   else let s = list-at stmts i
+   in let r = emit-cobol-act-stmt-expr s arities st
+   in let rest = emit-cobol-act-expr-loop stmts arities (r.state) (i + 1)
+   in CobolExprResult {
+    var-name = if i == list-length stmts - 1 then r.var-name else rest.var-name,
+    code = r.code ++ rest.code,
+    state = rest.state
+   }
+
+  emit-cobol-act-stmt-expr : IRActStmt -> List ArityEntry -> CobolState -> CobolExprResult
+  emit-cobol-act-stmt-expr (s) (arities) (st) =
+   when s
+    is IrDoExec (e) (sp) -> emit-cobol-expr-to-var e arities st
+    is IrDoBind (name) (ty) (val) (sp) ->
+     let val-r = emit-cobol-expr-to-var val arities st
+     in let alloc = cobol-alloc-var (val-r.state) (cobol-name name)
+     in let pic = cobol-pic ty
+     in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       " ++ pic ++ ".")
+     in CobolExprResult {
+      var-name = alloc.name,
+      code = val-r.code ++ "           MOVE " ++ val-r.var-name ++ " TO " ++ alloc.name ++ "\n",
+      state = st2
+     }
+
+Section: Tail Call Optimization
+
+  cobol-is-self-call : IRExpr -> Text -> Boolean
+  cobol-is-self-call (e) (func-name) =
+   let chain = collect-apply-chain e []
+   in when chain.root
+    is IrName (n) (ty) (sp) -> n == func-name
+    is otherwise -> False
+
+  cobol-has-tail-call : IRExpr -> Text -> Boolean
+  cobol-has-tail-call (e) (func-name) =
+   when e
+    is IrIf (c) (t) (el) (ty) (sp) -> cobol-has-tail-call t func-name | cobol-has-tail-call el func-name
+    is IrLet (name) (ty) (val) (body) (sp) -> cobol-has-tail-call body func-name
+    is IrMatch (scrut) (branches) (ty) (sp) -> cobol-has-tail-call-branches branches func-name 0
+    is IrApply (f) (a) (ty) (sp) -> cobol-is-self-call e func-name
+    is otherwise -> False
+
+  cobol-has-tail-call-branches : List IRBranch -> Text -> Integer -> Boolean
+  cobol-has-tail-call-branches (branches) (func-name) (i) =
+   if i == list-length branches then False
+   else let b = list-at branches i
+   in if cobol-has-tail-call (b.body) func-name then True
+      else cobol-has-tail-call-branches branches func-name (i + 1)
+
+  cobol-should-tco : IRDef -> Boolean
+  cobol-should-tco (d) =
+   if list-length (d.params) == 0 then False
+   else cobol-has-tail-call (d.body) (d.name)
+
+  emit-cobol-tco-body : IRExpr -> Text -> List IRParam -> List ArityEntry -> CobolState -> CobolMoveResult
+  emit-cobol-tco-body (e) (func-name) (params) (arities) (st) =
+   let name = cobol-name func-name
+   in when e
+    is IrIf (c) (t) (el) (ty) (sp) ->
+     let cond = emit-cobol-expr-to-var c arities st
+     in let then-r = emit-cobol-tco-body t func-name params arities (cond.state)
+     in let else-r = emit-cobol-tco-body el func-name params arities (then-r.state)
+     in CobolMoveResult {
+      code = cond.code ++
+       "           IF " ++ cond.var-name ++ " NOT = 0\n" ++
+       then-r.code ++
+       "           ELSE\n" ++
+       else-r.code ++
+       "           END-IF\n",
+      state = else-r.state
+     }
+    is IrLet (lname) (ty) (val) (body) (sp) ->
+     let val-r = emit-cobol-expr-to-var val arities st
+     in let alloc = cobol-alloc-var (val-r.state) (cobol-name lname)
+     in let pic = cobol-pic ty
+     in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       " ++ pic ++ ".")
+     in let body-r = emit-cobol-tco-body body func-name params arities st2
+     in CobolMoveResult {
+      code = val-r.code ++ "           MOVE " ++ val-r.var-name ++ " TO " ++ alloc.name ++ "\n" ++ body-r.code,
+      state = body-r.state
+     }
+    is IrMatch (scrut) (branches) (ty) (sp) ->
+     let scrut-r = emit-cobol-expr-to-var scrut arities st
+     in let arms = emit-cobol-tco-match-arms branches func-name params arities (scrut-r.state) 0
+     in CobolMoveResult {
+      code = scrut-r.code ++
+       "           EVALUATE " ++ scrut-r.var-name ++ "-TAG\n" ++
+       arms.code ++
+       "           END-EVALUATE\n",
+      state = arms.state
+     }
+    is IrApply (f) (a) (rty) (sp) ->
+     if cobol-is-self-call e func-name then emit-cobol-tco-jump e func-name params arities st
+     else let res = emit-cobol-expr-to-var e arities st
+     in CobolMoveResult {
+      code = res.code ++ "           MOVE " ++ res.var-name ++ " TO WS-" ++ name ++ "-RET\n" ++
+       "           GO TO " ++ name ++ "-END\n",
+      state = res.state
+     }
+    is IrBinary (op) (l) (r) (ty) (sp) ->
+     let res = emit-cobol-expr-to-var e arities st
+     in CobolMoveResult {
+      code = res.code ++ "           MOVE " ++ res.var-name ++ " TO WS-" ++ name ++ "-RET\n" ++
+       "           GO TO " ++ name ++ "-END\n",
+      state = res.state
+     }
+    is IrIntLit (n) (sp) ->
+     CobolMoveResult {
+      code = "           MOVE " ++ integer-to-text n ++ " TO WS-" ++ name ++ "-RET\n" ++
+       "           GO TO " ++ name ++ "-END\n",
+      state = st
+     }
+    is IrBoolLit (b) (sp) ->
+     CobolMoveResult {
+      code = "           MOVE " ++ (if b then "1" else "0") ++ " TO WS-" ++ name ++ "-RET\n" ++
+       "           GO TO " ++ name ++ "-END\n",
+      state = st
+     }
+    is IrTextLit (s) (sp) ->
+     CobolMoveResult {
+      code = "           MOVE \"" ++ cobol-escape-text s ++ "\" TO WS-" ++ name ++ "-RET\n" ++
+       "           GO TO " ++ name ++ "-END\n",
+      state = st
+     }
+    is IrNumLit (n) (sp) ->
+     CobolMoveResult {
+      code = "           MOVE " ++ integer-to-text n ++ " TO WS-" ++ name ++ "-RET\n" ++
+       "           GO TO " ++ name ++ "-END\n",
+      state = st
+     }
+    is IrCharLit (n) (sp) ->
+     CobolMoveResult {
+      code = "           MOVE " ++ integer-to-text n ++ " TO WS-" ++ name ++ "-RET\n" ++
+       "           GO TO " ++ name ++ "-END\n",
+      state = st
+     }
+    is IrName (n) (ty) (sp) ->
+     let name-r = emit-cobol-name-var n st
+     in CobolMoveResult {
+      code = "           MOVE " ++ name-r.var-name ++ " TO WS-" ++ name ++ "-RET\n" ++
+       "           GO TO " ++ name ++ "-END\n",
+      state = st
+     }
+    is IrNegate (operand) (sp) ->
+     let res = emit-cobol-expr-to-var e arities st
+     in CobolMoveResult {
+      code = res.code ++ "           MOVE " ++ res.var-name ++ " TO WS-" ++ name ++ "-RET\n" ++
+       "           GO TO " ++ name ++ "-END\n",
+      state = res.state
+     }
+    is IrRecord (rname) (fields) (ty) (sp) ->
+     let res = emit-cobol-expr-to-var e arities st
+     in CobolMoveResult {
+      code = res.code ++ "           MOVE " ++ res.var-name ++ " TO WS-" ++ name ++ "-RET\n" ++
+       "           GO TO " ++ name ++ "-END\n",
+      state = res.state
+     }
+    is IrFieldAccess (rec) (field) (ty) (sp) ->
+     let res = emit-cobol-expr-to-var e arities st
+     in CobolMoveResult {
+      code = res.code ++ "           MOVE " ++ res.var-name ++ " TO WS-" ++ name ++ "-RET\n" ++
+       "           GO TO " ++ name ++ "-END\n",
+      state = res.state
+     }
+    is IrAct (stmts) (ty) (sp) ->
+     let res = emit-cobol-expr-to-var e arities st
+     in CobolMoveResult {
+      code = res.code ++ "           MOVE " ++ res.var-name ++ " TO WS-" ++ name ++ "-RET\n" ++
+       "           GO TO " ++ name ++ "-END\n",
+      state = res.state
+     }
+    is IrHandle (eff) (body) (clauses) (ty) (sp) ->
+     emit-cobol-tco-body body func-name params arities st
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) ->
+     emit-cobol-tco-body body func-name params arities st
+    is IrFork (body) (ty) (sp) ->
+     emit-cobol-tco-body body func-name params arities st
+    is IrAwait (task) (ty) (sp) ->
+     let res = emit-cobol-expr-to-var task arities st
+     in CobolMoveResult {
+      code = res.code ++ "           MOVE " ++ res.var-name ++ " TO WS-" ++ name ++ "-RET\n" ++
+       "           GO TO " ++ name ++ "-END\n",
+      state = res.state
+     }
+    is IrLambda (lparams) (lbody) (lty) (sp) ->
+     CobolMoveResult {
+      code = "           DISPLAY \"COBOL: lambda not supported\"\n" ++
+       "           MOVE 0 TO WS-" ++ name ++ "-RET\n" ++
+       "           GO TO " ++ name ++ "-END\n",
+      state = st
+     }
+    is IrList (elems) (lty) (sp) ->
+     let res = emit-cobol-expr-to-var e arities st
+     in CobolMoveResult {
+      code = res.code ++ "           MOVE " ++ res.var-name ++ " TO WS-" ++ name ++ "-RET\n" ++
+       "           GO TO " ++ name ++ "-END\n",
+      state = res.state
+     }
+    is IrError (msg) (ty) (sp) ->
+     CobolMoveResult {
+      code = "           MOVE 0 TO WS-" ++ name ++ "-RET\n" ++
+       "           GO TO " ++ name ++ "-END\n",
+      state = st
+     }
+
+  emit-cobol-tco-match-arms : List IRBranch -> Text -> List IRParam -> List ArityEntry -> CobolState -> Integer -> CobolMoveResult
+  emit-cobol-tco-match-arms (branches) (func-name) (params) (arities) (st) (i) =
+   if i >= list-length branches then CobolMoveResult { code = "", state = st }
+   else let b = list-at branches i
+   in let label = when b.pattern
+    is IrCtorPat (pname) (subs) (ty) (sp) -> "             WHEN TAG-" ++ cobol-name pname ++ "\n"
+    is IrWildPat (sp) -> "             WHEN OTHER\n"
+    is IrVarPat (vname) (ty) (sp) -> "             WHEN OTHER\n"
+    is IrLitPat (text) (ty) (sp) -> "             WHEN " ++ text ++ "\n"
+   in let body-r = emit-cobol-tco-body (b.body) func-name params arities st
+   in let rest = emit-cobol-tco-match-arms branches func-name params arities (body-r.state) (i + 1)
+   in CobolMoveResult { code = label ++ body-r.code ++ rest.code, state = rest.state }
+
+  emit-cobol-tco-jump : IRExpr -> Text -> List IRParam -> List ArityEntry -> CobolState -> CobolMoveResult
+  emit-cobol-tco-jump (e) (func-name) (params) (arities) (st) =
+   let chain = collect-apply-chain e []
+   in let name = cobol-name func-name
+   in emit-cobol-tco-move-args (chain.args) params name arities st 0
+
+  emit-cobol-tco-move-args : List IRExpr -> List IRParam -> Text -> List ArityEntry -> CobolState -> Integer -> CobolMoveResult
+  emit-cobol-tco-move-args (args) (params) (name) (arities) (st) (i) =
+   if i >= list-length args then CobolMoveResult { code = "           GO TO " ++ name ++ "-LOOP\n", state = st }
+   else if i >= list-length params then CobolMoveResult { code = "           GO TO " ++ name ++ "-LOOP\n", state = st }
+   else let p = list-at params i
+   in let pname = cobol-name (p.name)
+   in let arg-r = emit-cobol-expr-to-var (list-at args i) arities st
+   in let rest = emit-cobol-tco-move-args args params name arities (arg-r.state) (i + 1)
+   in CobolMoveResult {
+    code = arg-r.code ++ "           MOVE " ++ arg-r.var-name ++ " TO WS-" ++ name ++ "-" ++ pname ++ "\n" ++ rest.code,
+    state = rest.state
+   }
+
+Section: Definition Emission
+
+  emit-cobol-def-storage : IRDef -> Text
+  emit-cobol-def-storage (d) =
+   let name = cobol-name (d.name)
+   in emit-cobol-param-storage (d.params) name 0 ++
+      "       01 WS-" ++ name ++ "-RET     " ++ cobol-pic (cobol-def-ret-type d) ++ ".\n"
+
+  cobol-def-ret-type : IRDef -> CodexType
+  cobol-def-ret-type (d) =
+   cobol-get-return-type (d.type-val) (list-length (d.params))
+
+  cobol-get-return-type : CodexType -> Integer -> CodexType
+  cobol-get-return-type (ty) (n) =
+   if n == 0 then cobol-strip-forall ty
+   else when cobol-strip-forall ty
+    is FunTy (p) (r) -> cobol-get-return-type r (n - 1)
+    is otherwise -> ty
+
+  cobol-strip-forall : CodexType -> CodexType
+  cobol-strip-forall (ty) =
+   when ty
+    is ForAllTy (id) (body) -> cobol-strip-forall body
+    is otherwise -> ty
+
+  emit-cobol-param-storage : List IRParam -> Text -> Integer -> Text
+  emit-cobol-param-storage (params) (func-name) (i) =
+   if i >= list-length params then ""
+   else let p = list-at params i
+   in let pname = cobol-name (p.name)
+   in let pic = cobol-pic (p.type-val)
+   in "       01 WS-" ++ func-name ++ "-" ++ pname ++ "  " ++ pic ++ ".\n" ++ emit-cobol-param-storage params func-name (i + 1)
+
+  emit-cobol-def-paragraph : IRDef -> List ArityEntry -> CobolState -> CobolDefResult
+  emit-cobol-def-paragraph (d) (arities) (st) =
+   let name = cobol-name (d.name)
+   in let st2 = cobol-set-func st ("WS-" ++ name)
+   in if cobol-should-tco d then emit-cobol-tco-paragraph d arities st2
+      else let res = emit-cobol-expr-to-var (d.body) arities st2
+      in let st3 = cobol-set-func (res.state) ""
+      in CobolDefResult {
+       code = "       " ++ name ++ "-PARA.\n" ++
+        res.code ++
+        "           MOVE " ++ res.var-name ++ " TO WS-" ++ name ++ "-RET\n\n",
+       state = st3
+      }
+
+  CobolDefResult = record {
+   code : Text,
+   state : CobolState
+  }
+
+  emit-cobol-tco-paragraph : IRDef -> List ArityEntry -> CobolState -> CobolDefResult
+  emit-cobol-tco-paragraph (d) (arities) (st) =
+   let name = cobol-name (d.name)
+   in let body-r = emit-cobol-tco-body (d.body) (d.name) (d.params) arities st
+   in let st2 = cobol-set-func (body-r.state) ""
+   in CobolDefResult {
+    code = "       " ++ name ++ "-PARA.\n" ++
+     "       " ++ name ++ "-LOOP.\n" ++
+     body-r.code ++
+     "       " ++ name ++ "-END.\n\n",
+    state = st2
+   }
+
+Section: Chapter Emission
+
+  cobol-opening-entry-point : Text
+  cobol-opening-entry-point = "opening"
+
+  cobol-find-entry : List IRDef -> Integer -> Integer
+  cobol-find-entry (defs) (i) =
+   if i >= list-length defs then -1
+   else let d = list-at defs i
+   in if d.name == cobol-opening-entry-point then if list-length (d.params) == 0 then i
+                                                   else cobol-find-entry defs (i + 1)
+      else cobol-find-entry defs (i + 1)
+
+  emit-cobol-all-defs : List IRDef -> List ArityEntry -> CobolState -> Integer -> Integer -> CobolDefResult
+  emit-cobol-all-defs (defs) (arities) (st) (i) (entry-idx) =
+   if i >= list-length defs then CobolDefResult { code = "", state = st }
+   else if i == entry-idx then emit-cobol-all-defs defs arities st (i + 1) entry-idx
+   else let d = list-at defs i
+   in let r = emit-cobol-def-paragraph d arities st
+   in let rest = emit-cobol-all-defs defs arities (r.state) (i + 1) entry-idx
+   in CobolDefResult { code = r.code ++ rest.code, state = rest.state }
+
+  emit-cobol-def-storage-all : List IRDef -> Integer -> Integer -> Text
+  emit-cobol-def-storage-all (defs) (i) (entry-idx) =
+   if i >= list-length defs then ""
+   else if i == entry-idx then emit-cobol-def-storage-all defs (i + 1) entry-idx
+   else emit-cobol-def-storage (list-at defs i) ++ emit-cobol-def-storage-all defs (i + 1) entry-idx
+
+  cobol-is-effectful : CodexType -> Boolean
+  cobol-is-effectful (ty) =
+   when ty
+    is EffectfulTy (effs) (sc) (ret) -> True
+    is FunTy (p) (r) -> cobol-is-effectful r
+    is ForAllTy (id) (body) -> cobol-is-effectful body
+    is otherwise -> False
+
+  emit-cobol-entry : List IRDef -> Integer -> List ArityEntry -> CobolState -> CobolDefResult
+  emit-cobol-entry (defs) (entry-idx) (arities) (st) =
+   if entry-idx < 0 then
+    if list-length defs == 0 then CobolDefResult {
+     code = "           DISPLAY \"All proofs verified at compile time.\"\n",
+     state = st
+    }
+    else CobolDefResult { code = "", state = st }
+   else let d = list-at defs entry-idx
+   in let is-eff = cobol-is-effectful (d.type-val)
+   in if is-eff then emit-cobol-act-entry (d.body) arities st
+      else let res = emit-cobol-expr-to-var (d.body) arities st
+      in CobolDefResult {
+       code = res.code ++ "           DISPLAY " ++ res.var-name ++ "\n",
+       state = res.state
+      }
+
+  emit-cobol-act-entry : IRExpr -> List ArityEntry -> CobolState -> CobolDefResult
+  emit-cobol-act-entry (e) (arities) (st) =
+   when e
+    is IrAct (stmts) (ty) (sp) -> emit-cobol-act-stmts stmts arities st 0
+    is otherwise -> let res = emit-cobol-expr-to-var e arities st
+     in CobolDefResult { code = res.code, state = res.state }
+
+  emit-cobol-act-stmts : List IRActStmt -> List ArityEntry -> CobolState -> Integer -> CobolDefResult
+  emit-cobol-act-stmts (stmts) (arities) (st) (i) =
+   if i >= list-length stmts then CobolDefResult { code = "", state = st }
+   else let s = list-at stmts i
+   in let r = emit-cobol-act-stmt-top s arities st
+   in let rest = emit-cobol-act-stmts stmts arities (r.state) (i + 1)
+   in CobolDefResult { code = r.code ++ rest.code, state = rest.state }
+
+  emit-cobol-act-stmt-top : IRActStmt -> List ArityEntry -> CobolState -> CobolDefResult
+  emit-cobol-act-stmt-top (s) (arities) (st) =
+   when s
+    is IrDoExec (e) (sp) -> let res = emit-cobol-expr-to-var e arities st
+     in CobolDefResult { code = res.code, state = res.state }
+    is IrDoBind (name) (ty) (val) (sp) ->
+     let res = emit-cobol-expr-to-var val arities st
+     in let alloc = cobol-alloc-var (res.state) (cobol-name name)
+     in let pic = cobol-pic ty
+     in let st2 = cobol-add-ws (alloc.state) ("       01 " ++ alloc.name ++ "       " ++ pic ++ ".")
+     in CobolDefResult {
+      code = res.code ++ "           MOVE " ++ res.var-name ++ " TO " ++ alloc.name ++ "\n",
+      state = st2
+     }
+
+  emit-cobol-ws-lines : List Text -> Integer -> Text
+  emit-cobol-ws-lines (lines) (i) =
+   if i >= list-length lines then ""
+   else list-at lines i ++ "\n" ++ emit-cobol-ws-lines lines (i + 1)
+
+  emit-cobol-chapter : IRChapter -> List ATypeDef -> Text
+  emit-cobol-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let program-id = cobol-name (m.name.value)
+   in let entry-idx = cobol-find-entry (m.defs) 0
+   in let st = cobol-initial-state
+   in let defs-r = emit-cobol-all-defs (m.defs) arities st 0 entry-idx
+   in let entry-r = emit-cobol-entry (m.defs) entry-idx arities (defs-r.state)
+   in "       IDENTIFICATION DIVISION.\n" ++
+      "       PROGRAM-ID. " ++ program-id ++ ".\n\n" ++
+      "       DATA DIVISION.\n" ++
+      "       WORKING-STORAGE SECTION.\n" ++
+      emit-cobol-type-defs type-defs 0 ++
+      emit-cobol-def-storage-all (m.defs) 0 entry-idx ++
+      "       01 WS-RESULT         PIC S9(18).\n" ++
+      "       01 WS-TEMP           PIC S9(18).\n" ++
+      "       01 WS-TEXT-RESULT     PIC X(256).\n" ++
+      emit-cobol-ws-lines (entry-r.state).working-storage 0 ++
+      "\n       PROCEDURE DIVISION.\n" ++
+      defs-r.code ++
+      "       MAIN-LOGIC.\n" ++
+      entry-r.code ++
+      "           STOP RUN.\n\n"
+
+Page 1

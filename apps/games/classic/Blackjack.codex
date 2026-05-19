@@ -1,0 +1,235 @@
+Chapter: Blackjack
+  cites Games chapter Rng
+
+ Blackjack simulation. Cards 0-51: suit = card / 13, rank = card mod 13.
+ Rank values: 0-8 map to 2-10, 9=J=10, 10=Q=10, 11=K=10, 12=A=11 (or 1).
+ Dealer hits on soft 17. AI player uses basic strategy: hit below hard 17.
+ run-blackjack-session plays num-hands hands, tracking wins/losses/pushes.
+
+ We say:
+
+Section: Types
+
+  BlackjackResult = record {
+    wins   : Integer,
+    losses : Integer,
+    pushes : Integer
+  }
+
+  BjState = record {
+    player-cards : List Integer,
+    player-count : Integer,
+    dealer-cards : List Integer,
+    dealer-count : Integer,
+    player-soft  : Boolean,
+    dealer-soft  : Boolean,
+    deck         : List Integer,
+    deck-pos     : Integer,
+    rng          : Rng
+  }
+
+Section: Card Helpers
+
+  bj-rank : Integer -> Integer
+  bj-rank (c) = rng-mod c 13
+
+  bj-card-value : Integer -> Integer
+  bj-card-value (c) =
+    let r = bj-rank c
+    in if r >= 9 then 10
+    else r + 2
+
+Section: Deck
+
+  bj-build-deck : Integer, List Integer -> List Integer
+  bj-build-deck (i) (acc) =
+    if i >= 52 then acc
+    else bj-build-deck (i + 1) (list-push acc i)
+
+  bj-shuffle : List Integer, Rng -> List Integer
+  bj-shuffle (deck) (r) = bj-fy deck 51 r
+
+  bj-fy : List Integer, Integer, Rng -> List Integer
+  bj-fy (deck) (i) (r) =
+    if i <= 0 then deck
+    else let r2 = rng-next r
+    in let j = rng-mod (rng-value r2) (i + 1)
+    in let a = list-at deck i
+    in let b = list-at deck j
+    in let d2 = list-set-at deck i b
+    in let d3 = list-set-at d2 j a
+    in bj-fy d3 (i - 1) r2
+
+Section: Hand Value
+
+  bj-hand-value : List Integer, Integer -> Integer
+  bj-hand-value (cards) (count) =
+    bj-sum-cards cards 0 count
+
+  bj-sum-cards : List Integer, Integer, Integer -> Integer
+  bj-sum-cards (cards) (i) (n) =
+    if i >= n then 0
+    else bj-card-value (list-at cards i) + bj-sum-cards cards (i + 1) n
+
+  bj-has-ace : List Integer, Integer -> Boolean
+  bj-has-ace (cards) (count) =
+    bj-find-ace cards 0 count
+
+  bj-find-ace : List Integer, Integer, Integer -> Boolean
+  bj-find-ace (cards) (i) (n) =
+    if i >= n then False
+    else if bj-rank (list-at cards i) == 12 then True
+    else bj-find-ace cards (i + 1) n
+
+  bj-best-value : List Integer, Integer -> Integer
+  bj-best-value (cards) (count) =
+    let total = bj-sum-cards cards 0 count
+    in let soft = bj-has-ace cards count
+    in if soft & total > 21 then total - 10
+    else total
+
+  bj-is-soft : List Integer, Integer -> Boolean
+  bj-is-soft (cards) (count) =
+    let total = bj-sum-cards cards 0 count
+    in let has-ace = bj-has-ace cards count
+    in has-ace & total <= 21
+
+Section: Deal
+
+  bj-deal-card : BjState, List Integer, Integer -> BjState
+  bj-deal-card (s) (hand) (owner) =
+    let card = list-at (s.deck) (s.deck-pos)
+    in let new-pos = s.deck-pos + 1
+    in if owner == 0 then
+      let new-hand = list-push (s.player-cards) card
+      in let new-count = s.player-count + 1
+      in BjState {
+           player-cards = new-hand,
+           player-count = new-count,
+           dealer-cards = s.dealer-cards,
+           dealer-count = s.dealer-count,
+           player-soft  = bj-is-soft new-hand new-count,
+           dealer-soft  = s.dealer-soft,
+           deck         = s.deck,
+           deck-pos     = new-pos,
+           rng          = s.rng
+         }
+    else
+      let new-hand = list-push (s.dealer-cards) card
+      in let new-count = s.dealer-count + 1
+      in BjState {
+           player-cards = s.player-cards,
+           player-count = s.player-count,
+           dealer-cards = new-hand,
+           dealer-count = new-count,
+           player-soft  = s.player-soft,
+           dealer-soft  = bj-is-soft new-hand new-count,
+           deck         = s.deck,
+           deck-pos     = new-pos,
+           rng          = s.rng
+         }
+
+Section: AI Logic
+
+  bj-player-should-hit : BjState -> Boolean
+  bj-player-should-hit (s) =
+    let val = bj-best-value (s.player-cards) (s.player-count)
+    in val < 17
+
+  bj-dealer-should-hit : BjState -> Boolean
+  bj-dealer-should-hit (s) =
+    let val = bj-best-value (s.dealer-cards) (s.dealer-count)
+    in if val < 17 then True
+    else if val == 17 then s.dealer-soft
+    else False
+
+  bj-player-turn : BjState -> BjState
+  bj-player-turn (s) =
+    if bj-player-should-hit s then
+      let s2 = bj-deal-card s [] 0
+      in bj-player-turn s2
+    else s
+
+  bj-dealer-turn : BjState -> BjState
+  bj-dealer-turn (s) =
+    if bj-dealer-should-hit s then
+      let s2 = bj-deal-card s [] 1
+      in bj-dealer-turn s2
+    else s
+
+Section: Hand Outcome
+
+  bj-is-blackjack : List Integer, Integer -> Boolean
+  bj-is-blackjack (cards) (count) =
+    count == 2 & bj-best-value cards count == 21
+
+  bj-hand-result : BjState -> Integer
+  bj-hand-result (s) =
+    let pval = bj-best-value (s.player-cards) (s.player-count)
+    in let dval = bj-best-value (s.dealer-cards) (s.dealer-count)
+    in let pbj = bj-is-blackjack (s.player-cards) (s.player-count)
+    in let dbj = bj-is-blackjack (s.dealer-cards) (s.dealer-count)
+    in if pval > 21 then (-1)
+    else if dbj & pbj then 0
+    else if pbj then 1
+    else if dbj then (-1)
+    else if dval > 21 then 1
+    else if pval > dval then 1
+    else if pval < dval then (-1)
+    else 0
+
+Section: Game Runner
+
+  bj-fresh-state : Rng -> BjState
+  bj-fresh-state (r) =
+    let r2 = rng-next r
+    in let deck = bj-shuffle (bj-build-deck 0 []) r2
+    in BjState {
+         player-cards = [],
+         player-count = 0,
+         dealer-cards = [],
+         dealer-count = 0,
+         player-soft  = False,
+         dealer-soft  = False,
+         deck         = deck,
+         deck-pos     = 0,
+         rng          = r2
+       }
+
+  bj-play-hand : Rng -> Integer
+  bj-play-hand (r) =
+    let s0 = bj-fresh-state r
+    in let s1 = bj-deal-card s0 [] 0
+    in let s2 = bj-deal-card s1 [] 1
+    in let s3 = bj-deal-card s2 [] 0
+    in let s4 = bj-deal-card s3 [] 1
+    in let s5 = bj-player-turn s4
+    in let pval = bj-best-value (s5.player-cards) (s5.player-count)
+    in if pval > 21 then (-1)
+    else let s6 = bj-dealer-turn s5
+    in bj-hand-result s6
+
+  run-blackjack-session : Integer, Integer -> BlackjackResult
+  run-blackjack-session (seed) (num-hands) =
+    let r = rng-new seed
+    in bj-session-loop r num-hands 0 0 0
+
+  bj-session-loop : Rng, Integer, Integer, Integer, Integer -> BlackjackResult
+  bj-session-loop (r) (remaining) (wins) (losses) (pushes) =
+    if remaining <= 0 then BlackjackResult { wins = wins, losses = losses, pushes = pushes }
+    else let r2 = rng-next r
+    in let outcome = bj-play-hand r2
+    in let new-wins   = if outcome == 1 then wins + 1 else wins
+    in let new-losses = if outcome == (-1) then losses + 1 else losses
+    in let new-pushes = if outcome == 0 then pushes + 1 else pushes
+    in bj-session-loop r2 (remaining - 1) new-wins new-losses new-pushes
+
+Section: Formatting
+
+  format-blackjack-result : BlackjackResult -> Text
+  format-blackjack-result (r) =
+    let total = r.wins + r.losses + r.pushes
+    in "Blackjack (" & show total & " hands): wins=" & show (r.wins) &
+       " losses=" & show (r.losses) & " pushes=" & show (r.pushes)
+
+Page 1

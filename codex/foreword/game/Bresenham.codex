@@ -1,0 +1,74 @@
+Chapter: Bresenham
+
+ Bresenham line and circle rasterization. Produces lists of (x,y)
+ integer coordinate pairs suitable for pixel plotting. No floating
+ point, no division in the inner loop.
+
+ We say:
+
+Section: Point
+  BresPoint = record {
+    bx : Integer,
+    by : Integer
+  }
+
+Section: Line
+  bres-line : Integer, Integer, Integer, Integer -> List BresPoint
+  bres-line (x0) (y0) (x1) (y1) =
+    let dx = bres-abs (x1 - x0)
+    in let dy = -bres-abs (y1 - y0)
+    in let sx = if x0 < x1 then 1 else 0 - 1
+    in let sy = if y0 < y1 then 1 else 0 - 1
+    in bres-line-loop x0 y0 x1 y1 dx dy sx sy (dx + dy) []
+
+  bres-line-loop : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, List BresPoint -> List BresPoint
+  bres-line-loop (x) (y) (x1) (y1) (dx) (dy) (sx) (sy) (err) (acc) =
+    let acc2 = list-push acc (BresPoint { bx = x, by = y })
+    in if x == x1 then if y == y1 then acc2
+      else let e2 = 2 * err
+      in let new-err = if e2 >= dy then err + dy else err
+      in let new-x = if e2 >= dy then x + sx else x
+      in let new-err2 = if e2 <= dx then new-err + dx else new-err
+      in let new-y = if e2 <= dx then y + sy else y
+      in bres-line-loop new-x new-y x1 y1 dx dy sx sy new-err2 acc2
+    else let e2 = 2 * err
+    in let new-err = if e2 >= dy then err + dy else err
+    in let new-x = if e2 >= dy then x + sx else x
+    in let new-err2 = if e2 <= dx then new-err + dx else new-err
+    in let new-y = if e2 <= dx then y + sy else y
+    in bres-line-loop new-x new-y x1 y1 dx dy sx sy new-err2 acc2
+
+Section: Circle
+  bres-circle : Integer, Integer, Integer -> List BresPoint
+  bres-circle (cx) (cy) (r) = bres-circle-loop cx cy r 0 (-r) (1 - r) []
+
+  bres-circle-loop : Integer, Integer, Integer, Integer, Integer, Integer, List BresPoint -> List BresPoint
+  bres-circle-loop (cx) (cy) (r) (x) (y) (err) (acc) =
+    if x > -y then acc
+    else let acc2 = bres-circle-octants cx cy x (-y) acc
+    in let new-err = err + 2 * x + 1
+    in let x2 = x + 1
+    in if new-err > 0 then bres-circle-loop cx cy r x2 (y + 1) (new-err + 2 * (y + 1)) acc2
+    else bres-circle-loop cx cy r x2 y new-err acc2
+
+  bres-circle-octants : Integer, Integer, Integer, Integer, List BresPoint -> List BresPoint
+  bres-circle-octants (cx) (cy) (x) (y) (acc) =
+    acc & [BresPoint { bx = cx + x, by = cy + y }, BresPoint { bx = cx - x, by = cy + y }, BresPoint { bx = cx + x, by = cy - y }, BresPoint { bx = cx - x, by = cy - y }, BresPoint { bx = cx + y, by = cy + x }, BresPoint { bx = cx - y, by = cy + x }, BresPoint { bx = cx + y, by = cy - x }, BresPoint { bx = cx - y, by = cy - x }]
+
+Section: Helpers
+  bres-abs : Integer -> Integer
+  bres-abs (n) = if n < 0 then -n else n
+
+  format-bres-point : BresPoint -> Text
+  format-bres-point (p) = "(" & show (p.bx) & "," & show (p.by) & ")"
+
+  format-bres-points : List BresPoint -> Text
+  format-bres-points (pts) = format-bres-loop pts 0 (list-length pts) ""
+
+  format-bres-loop : List BresPoint, Integer, Integer, Text -> Text
+  format-bres-loop (pts) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i == 0 then "" else " "
+    in format-bres-loop pts (i + 1) len (acc & sep & format-bres-point (list-at pts i))
+
+Page 1

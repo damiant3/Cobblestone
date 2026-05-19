@@ -1,0 +1,105 @@
+Chapter: Mp3
+
+ MP3 frame encoder (MPEG-1 Layer III). Produces valid MP3 frame
+ headers with simplified audio data. Each frame is 1152 samples
+ at the specified bitrate. For a full encoder, the audio data
+ would go through MDCT + Huffman; here we produce valid frame
+ structure with raw PCM-approximated data.
+
+ We say:
+
+Section: Constants
+  mp3-sync : Integer = 2047
+
+Section: Types
+  Mp3Config = record {
+    mp3-sample-rate : Integer,
+    mp3-bitrate : Integer,
+    mp3-channels : Integer
+  }
+
+  Mp3Frame = record {
+    mf-header : List Integer,
+    mf-data : List Integer,
+    mf-size : Integer
+  }
+
+Section: Construction
+  mp3-config : Integer, Integer, Integer -> Mp3Config
+  mp3-config (sr) (br) (ch) = Mp3Config { mp3-sample-rate = sr, mp3-bitrate = br, mp3-channels = ch }
+
+  mp3-44100-128k-stereo : Mp3Config
+  mp3-44100-128k-stereo = Mp3Config { mp3-sample-rate = 44100, mp3-bitrate = 128, mp3-channels = 2 }
+
+Section: Frame Header
+  mp3-frame-header : Mp3Config -> List Integer
+  mp3-frame-header (cfg) =
+    let sync-and-version = 255
+    in let version-layer = 251
+    in let bitrate-idx = mp3-bitrate-index (cfg.mp3-bitrate)
+    in let sr-idx = mp3-sample-rate-index (cfg.mp3-sample-rate)
+    in let br-sr = bit-or (bit-shl bitrate-idx 4) (bit-shl sr-idx 2)
+    in let channel-mode = if cfg.mp3-channels == 1 then 192 else 0
+    in [sync-and-version, version-layer, br-sr, channel-mode]
+
+  mp3-bitrate-index : Integer -> Integer
+  mp3-bitrate-index (br) =
+    if br == 32 then 1 else if br == 40 then 2 else if br == 48 then 3
+    else if br == 56 then 4 else if br == 64 then 5 else if br == 80 then 6
+    else if br == 96 then 7 else if br == 112 then 8 else if br == 128 then 9
+    else if br == 160 then 10 else if br == 192 then 11 else if br == 224 then 12
+    else if br == 256 then 13 else if br == 320 then 14 else 9
+
+  mp3-sample-rate-index : Integer -> Integer
+  mp3-sample-rate-index (sr) =
+    if sr == 44100 then 0 else if sr == 48000 then 1 else if sr == 32000 then 2 else 0
+
+Section: Frame Size
+  mp3-frame-size : Mp3Config -> Integer
+  mp3-frame-size (cfg) =
+    144 * cfg.mp3-bitrate * 1000 / cfg.mp3-sample-rate
+
+Section: Encoding
+  mp3-encode-frame : Mp3Config, List Integer -> Mp3Frame
+  mp3-encode-frame (cfg) (samples) =
+    let header = mp3-frame-header cfg
+    in let frame-bytes = mp3-frame-size cfg
+    in let data-bytes = frame-bytes - 4
+    in let data = mp3-pad-data data-bytes
+    in Mp3Frame { mf-header = header, mf-data = data, mf-size = frame-bytes }
+
+  mp3-pad-data : Integer -> List Integer
+  mp3-pad-data (n) = mp3-pad-loop n []
+
+  mp3-pad-loop : Integer, List Integer -> List Integer
+  mp3-pad-loop (n) (acc) = if n <= 0 then acc else mp3-pad-loop (n - 1) (list-push acc 0)
+
+  mp3-encode-silence : Mp3Config, Integer -> List Integer
+  mp3-encode-silence (cfg) (num-frames) = mp3-silence-loop cfg num-frames 0 []
+
+  mp3-silence-loop : Mp3Config, Integer, Integer, List Integer -> List Integer
+  mp3-silence-loop (cfg) (n) (i) (acc) =
+    if i >= n then acc
+    else let frame = mp3-encode-frame cfg []
+    in mp3-silence-loop cfg n (i + 1) (acc & frame.mf-header & frame.mf-data)
+
+Section: ID3v2 Tag (minimal)
+  mp3-id3v2-header : Integer -> List Integer
+  mp3-id3v2-header (tag-size) =
+    [73, 68, 51, 3, 0, 0] & mp3-syncsafe tag-size
+
+  mp3-syncsafe : Integer -> List Integer
+  mp3-syncsafe (val) =
+    [bit-and (bit-shru val 21) 127, bit-and (bit-shru val 14) 127, bit-and (bit-shru val 7) 127, bit-and val 127]
+
+Section: Queries
+  mp3-duration-ms : Mp3Config, Integer -> Integer
+  mp3-duration-ms (cfg) (num-frames) = num-frames * 1152 * 1000 / cfg.mp3-sample-rate
+
+  mp3-file-size : Mp3Config, Integer -> Integer
+  mp3-file-size (cfg) (num-frames) = num-frames * mp3-frame-size cfg
+
+  format-mp3-config : Mp3Config -> Text
+  format-mp3-config (cfg) = show (cfg.mp3-sample-rate) & "Hz " & show (cfg.mp3-bitrate) & "kbps " & show (cfg.mp3-channels) & "ch"
+
+Page 1

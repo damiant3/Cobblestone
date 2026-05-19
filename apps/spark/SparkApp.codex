@@ -1,0 +1,391 @@
+Chapter: SparkApp
+  cites Foreword chapter Console
+  cites Math chapter Quaternion
+  cites Math chapter Matrix4
+  cites Math chapter Geometry
+  cites Game chapter Rasterizer
+  cites Game chapter Color
+  cites Spark chapter Mesh
+  cites Spark chapter MeshPrimitives
+  cites Spark chapter MeshOps
+  cites Spark chapter DepthBuffer
+  cites Spark chapter SceneCamera
+  cites Spark chapter SceneLight
+  cites Spark chapter Pipeline3D
+  cites Spark chapter SceneGraph
+  cites Spark chapter SceneNode
+  cites Spark chapter SceneMaterial
+  cites Spark chapter SceneRender
+  cites Spark chapter SparkDisplay
+
+ Interactive Spark application. Keyboard-driven 3D viewport with
+ panel layout, scene outliner, toolbar, and status bar rendered
+ to the GOP framebuffer.
+
+ Arrow keys orbit the camera. Z toggles wireframe. G toggles grid.
+ +/- zoom. 1/2/3 add cube/sphere/plane. Delete removes last object.
+ Q quits.
+
+ Run: codex-vm -kernel SparkApp.cdx -gop -mem 2048
+
+ We say:
+
+Section: App State
+
+  AppState = record {
+    as-cam : SparkCamera,
+    as-sg : SceneGraph3D,
+    as-ctx : SceneRenderCtx,
+    as-meshes : List TriMesh,
+    as-mesh-count : Integer,
+    as-yaw : Integer,
+    as-pitch : Integer,
+    as-distance : Integer,
+    as-wireframe : Boolean,
+    as-show-grid : Boolean,
+    as-dirty : Boolean,
+    as-frame : Integer,
+    as-status : Text
+  }
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line-uni "Spark App: starting..."
+    let gd = gop-display-new 640 480
+    in let state = app-init
+    in let w = app-first-render gd state
+    in let w2 = app-loop gd state
+    in act
+      print-line-uni "Spark App: exited."
+    end
+  end
+
+Section: Init
+
+  app-init : AppState
+  app-init =
+    let cam = spark-camera-new 640 480
+    in let lights = [light-directional (vec3-new 577 577 577) 16777215 850, light-ambient 16777215 250]
+    in let cube = mesh-cube 1000
+    in let ctx = render-ctx-new cam lights
+    in let ctx2 = render-ctx-add-mesh ctx cube
+    in let sg = scene-graph-new
+    in let sg2 = sg-add-mesh sg "Cube" 0 0
+    in let sg3 = sg-set-position sg2 0 (vec3-new 0 500 0)
+    in AppState {
+      as-cam = cam,
+      as-sg = sg3,
+      as-ctx = ctx2,
+      as-meshes = [cube],
+      as-mesh-count = 1,
+      as-yaw = 0,
+      as-pitch = 300,
+      as-distance = 5000,
+      as-wireframe = False,
+      as-show-grid = True,
+      as-dirty = True,
+      as-frame = 0,
+      as-status = "Ready"
+    }
+
+Section: Main Loop
+
+  app-kb-addr : Integer = 28680
+
+  app-loop : GopDisplay, AppState -> Integer
+  app-loop (gd) (state) =
+    let sc = peek-byte app-kb-addr 0
+    in if sc /= 0 then
+      let clear = poke-byte app-kb-addr 0 0
+      in if sc >= 128 then app-loop gd state
+      else let ascii = scancode-to-ascii sc
+      in if ascii == 113 then 0
+      else let state2 = app-handle-key state sc ascii
+      in let state3 = if state2.as-dirty then app-render-and-clean gd state2 else state2
+      in app-loop gd state3
+    else app-loop gd state
+
+Section: Key Handling
+
+  app-handle-key : AppState, Integer, Integer -> AppState
+  app-handle-key (state) (scancode) (ascii) =
+    if scancode == 72 then app-orbit state 0 (-50)
+    else if scancode == 80 then app-orbit state 0 50
+    else if scancode == 75 then app-orbit state (-50) 0
+    else if scancode == 77 then app-orbit state 50 0
+    else if scancode == 78 then app-zoom state (-300)
+    else if scancode == 74 then app-zoom state 300
+    else if ascii == 122 then app-toggle-wireframe state
+    else if ascii == 103 then app-toggle-grid state
+    else if ascii == 49 then app-add-cube state
+    else if ascii == 50 then app-add-sphere state
+    else if ascii == 51 then app-add-plane state
+    else state
+
+Section: Camera
+
+  app-orbit : AppState, Integer, Integer -> AppState
+  app-orbit (state) (dyaw) (dpitch) =
+    let new-yaw = state.as-yaw + dyaw
+    in let new-pitch = state.as-pitch + dpitch
+    in let clamped = if new-pitch < -1500 then -1500 else if new-pitch > 1500 then 1500 else new-pitch
+    in let cam = app-compute-camera new-yaw clamped (state.as-distance) 640 480
+    in __record-set (__record-set (__record-set (__record-set state "as-cam" cam) "as-yaw" new-yaw) "as-pitch" clamped) "as-dirty" True
+
+  app-zoom : AppState, Integer -> AppState
+  app-zoom (state) (delta) =
+    let new-dist = state.as-distance + delta
+    in let clamped = if new-dist < 1000 then 1000 else if new-dist > 30000 then 30000 else new-dist
+    in let cam = app-compute-camera (state.as-yaw) (state.as-pitch) clamped 640 480
+    in __record-set (__record-set (__record-set state "as-cam" cam) "as-distance" clamped) "as-dirty" True
+
+  app-compute-camera : Integer, Integer, Integer, Integer, Integer -> SparkCamera
+  app-compute-camera (yaw) (pitch) (dist) (vp-w) (vp-h) =
+    let cos-p = app-cs pitch
+    in let sin-p = app-sn pitch
+    in let cos-y = app-cs yaw
+    in let sin-y = app-sn yaw
+    in let ex = dist * cos-p / 1000 * sin-y / 1000
+    in let ey = dist * sin-p / 1000
+    in let ez = dist * cos-p / 1000 * cos-y / 1000
+    in SparkCamera {
+      sc-eye = vec3-new ex ey ez,
+      sc-target = vec3-zero,
+      sc-up = vec3-new 0 1000 0,
+      sc-projection = CamPersp 1047,
+      sc-near = 100,
+      sc-far = 100000,
+      sc-vp-width = vp-w,
+      sc-vp-height = vp-h
+    }
+
+Section: Toggles
+
+  app-toggle-wireframe : AppState -> AppState
+  app-toggle-wireframe (state) =
+    let wf = if state.as-wireframe then False else True
+    in let status = if wf then "Wireframe" else "Solid"
+    in __record-set (__record-set (__record-set state "as-wireframe" wf) "as-dirty" True) "as-status" status
+
+  app-toggle-grid : AppState -> AppState
+  app-toggle-grid (state) =
+    let gr = if state.as-show-grid then False else True
+    in let status = if gr then "Grid on" else "Grid off"
+    in __record-set (__record-set (__record-set state "as-show-grid" gr) "as-dirty" True) "as-status" status
+
+Section: Add Objects
+
+  app-add-cube : AppState -> AppState
+  app-add-cube (state) =
+    let mesh = mesh-cube 800
+    in app-add-object state mesh "Cube" (vec3-new (state.as-mesh-count * 2000 - 2000) 400 0) 14540253
+
+  app-add-sphere : AppState -> AppState
+  app-add-sphere (state) =
+    let mesh = mesh-sphere 500 6 8
+    in app-add-object state mesh "Sphere" (vec3-new (state.as-mesh-count * 2000 - 2000) 500 0) 16750848
+
+  app-add-plane : AppState -> AppState
+  app-add-plane (state) =
+    let mesh = mesh-plane 6000 6000
+    in app-add-object state mesh "Ground" vec3-zero 8421504
+
+  app-add-object : AppState, TriMesh, Text, Vec3, Integer -> AppState
+  app-add-object (state) (mesh) (name) (pos) (color) =
+    let idx = state.as-mesh-count
+    in let ctx = render-ctx-add-mesh (state.as-ctx) mesh
+    in let sg = sg-add-mesh (state.as-sg) name idx 0
+    in let sg2 = sg-set-position sg idx pos
+    in AppState {
+      as-cam = state.as-cam,
+      as-sg = sg2,
+      as-ctx = ctx,
+      as-meshes = list-push (state.as-meshes) mesh,
+      as-mesh-count = idx + 1,
+      as-yaw = state.as-yaw,
+      as-pitch = state.as-pitch,
+      as-distance = state.as-distance,
+      as-wireframe = state.as-wireframe,
+      as-show-grid = state.as-show-grid,
+      as-dirty = True,
+      as-frame = state.as-frame,
+      as-status = "Added " & name
+    }
+
+Section: Rendering
+
+  app-first-render : GopDisplay, AppState -> Integer
+  app-first-render (gd) (state) =
+    app-render gd state
+
+  app-render-and-clean : GopDisplay, AppState -> AppState
+  app-render-and-clean (gd) (state) =
+    let w = app-render gd state
+    in __record-set (__record-set state "as-dirty" False) "as-frame" (state.as-frame + 1)
+
+  app-render : GopDisplay, AppState -> Integer
+  app-render (gd) (state) =
+    let vp-x = 0
+    in let vp-y = 24
+    in let vp-w = 500
+    in let vp-h = 420
+    in let bg = 2631720
+    in let scene-fb = if state.as-wireframe
+      then scene-render-wireframe (state.as-sg) (app-make-ctx state) vp-w vp-h bg 16777215
+      else scene-render (state.as-sg) (app-make-ctx state) vp-w vp-h bg
+    in let scene-fb2 = if state.as-show-grid then app-draw-grid scene-fb vp-w vp-h else scene-fb
+    in let w0 = gop-fill-solid gd 2105376
+    in let w1 = app-draw-toolbar gd
+    in let w2 = gop-blit-at gd scene-fb2 vp-x vp-y
+    in let w3 = app-draw-sidebar gd state
+    in let w4 = app-draw-statusbar gd state
+    in w4
+
+  app-make-ctx : AppState -> SceneRenderCtx
+  app-make-ctx (state) =
+    let lights = [light-directional (vec3-new 577 577 577) 16777215 850, light-ambient 16777215 250]
+    in let ctx = render-ctx-new (state.as-cam) lights
+    in app-add-meshes-to-ctx ctx (state.as-meshes) (state.as-mesh-count) 0
+
+  app-add-meshes-to-ctx : SceneRenderCtx, List TriMesh, Integer, Integer -> SceneRenderCtx
+  app-add-meshes-to-ctx (ctx) (meshes) (count) (i) =
+    if i >= count then ctx
+    else app-add-meshes-to-ctx (render-ctx-add-mesh ctx (list-at meshes i)) meshes count (i + 1)
+
+Section: Grid Overlay
+
+  app-draw-grid : Framebuf, Integer, Integer -> Framebuf
+  app-draw-grid (fb) (w) (h) =
+    let mid-x = w / 2
+    in let mid-y = h / 2
+    in let fb2 = fb-line fb mid-x 0 mid-x (h - 1) 4473924
+    in fb-line fb2 0 mid-y (w - 1) mid-y 4473924
+
+Section: Toolbar
+
+  app-draw-toolbar : GopDisplay -> Integer
+  app-draw-toolbar (gd) =
+    let w1 = gop-rect gd 0 0 640 24 3355443
+    in let w2 = gop-rect gd 0 23 640 1 4474111
+    in let w3 = app-tb-item gd 8 "1:Cube" 10066329
+    in let w4 = app-tb-item gd 68 "2:Sph" 10066329
+    in let w5 = app-tb-item gd 120 "3:Pln" 10066329
+    in let w6 = app-tb-item gd 180 "Z:Wire" 10066329
+    in let w7 = app-tb-item gd 244 "G:Grid" 10066329
+    in app-tb-item gd 304 "Q:Quit" 10066329
+
+  app-tb-item : GopDisplay, Integer, Text, Integer -> Integer
+  app-tb-item (gd) (x) (label) (color) =
+    let w1 = gop-rect gd x 3 (text-length label * 6 + 8) 18 color
+    in gop-put-text gd (x + 4) 7 label 14540253
+
+Section: Sidebar (Outliner + Properties)
+
+  app-draw-sidebar : GopDisplay, AppState -> Integer
+  app-draw-sidebar (gd) (state) =
+    let sx = 501
+    in let sy = 24
+    in let sw = 139
+    in let sh = 456
+    in let w1 = gop-rect gd sx sy sw sh 2236962
+    in let w2 = gop-rect gd 500 sy 1 sh 4474111
+    in let w3 = gop-rect gd (sx + 4) (sy + 4) (sw - 8) 16 3355443
+    in let w4 = gop-put-text gd (sx + 8) (sy + 8) "OUTLINER" 11184810
+    in let w5 = app-draw-scene-list gd state (sx + 8) (sy + 26) 0
+    in let w6 = gop-rect gd (sx + 4) (sy + 200) (sw - 8) 1 4474111
+    in let w7 = gop-rect gd (sx + 4) (sy + 206) (sw - 8) 16 3355443
+    in let w8 = gop-put-text gd (sx + 8) (sy + 210) "CAMERA" 11184810
+    in let w9 = app-draw-cam-info gd state (sx + 8) (sy + 230)
+    in w9
+
+  app-draw-scene-list : GopDisplay, AppState, Integer, Integer, Integer -> Integer
+  app-draw-scene-list (gd) (state) (x) (y) (i) =
+    if i >= state.as-sg.sg-count then 0
+    else let node = sg-get-node (state.as-sg) i
+    in let icon = app-node-icon node
+    in let w = gop-put-text gd x (y + i * 14) (icon & " " & node.sgn-name) 12632256
+    in app-draw-scene-list gd state x y (i + 1)
+
+  app-node-icon : SceneGraphNode -> Text
+  app-node-icon (node) =
+    when node.sgn-kind
+      is SnkMesh (idx) -> ">"
+      is SnkCamera -> "C"
+      is SnkLight (idx) -> "L"
+      is SnkGroup -> "+"
+      is SnkEmpty -> "-"
+
+  app-draw-cam-info : GopDisplay, AppState, Integer, Integer -> Integer
+  app-draw-cam-info (gd) (state) (x) (y) =
+    let w1 = gop-put-text gd x y ("YAW " & show (state.as-yaw)) 10066329
+    in let w2 = gop-put-text gd x (y + 14) ("PIT " & show (state.as-pitch)) 10066329
+    in gop-put-text gd x (y + 28) ("DST " & show (state.as-distance)) 10066329
+
+Section: Status Bar
+
+  app-draw-statusbar : GopDisplay, AppState -> Integer
+  app-draw-statusbar (gd) (state) =
+    let y = 456
+    in let w1 = gop-rect gd 0 y 640 24 3355443
+    in let w2 = gop-rect gd 0 y 640 1 4474111
+    in let mode = if state.as-wireframe then "WIRE" else "SOLID"
+    in let faces = app-count-faces state 0 0
+    in let w3 = gop-put-text gd 8 (y + 7) (mode & " | " & show (state.as-sg.sg-count) & " obj | " & show faces & " faces") 11184810
+    in gop-put-text gd 400 (y + 7) (state.as-status) 14540253
+
+  app-count-faces : AppState, Integer, Integer -> Integer
+  app-count-faces (state) (i) (acc) =
+    if i >= state.as-mesh-count then acc
+    else let m = list-at (state.as-meshes) i
+    in app-count-faces state (i + 1) (acc + m.tm-face-count)
+
+Section: Trig
+
+  app-sn : Integer -> Integer
+  app-sn (milli-rad) =
+    let x = milli-rad - milli-rad / 6283 * 6283
+    in let x2 = if x > 3141 then x - 6283 else x
+    in let x3 = x2 * x2 / 1000 * x2 / 1000
+    in x2 - x3 / 6
+
+  app-cs : Integer -> Integer
+  app-cs (milli-rad) = app-sn (milli-rad + 1571)
+
+Section: Scancode to ASCII (PS/2 Set 1)
+
+  scancode-to-ascii : Integer -> Integer
+  scancode-to-ascii (sc) =
+    if sc == 2 then 49
+    else if sc == 3 then 50
+    else if sc == 4 then 51
+    else if sc == 5 then 52
+    else if sc == 6 then 53
+    else if sc == 16 then 113
+    else if sc == 17 then 119
+    else if sc == 18 then 101
+    else if sc == 19 then 114
+    else if sc == 20 then 116
+    else if sc == 21 then 121
+    else if sc == 30 then 97
+    else if sc == 31 then 115
+    else if sc == 32 then 100
+    else if sc == 33 then 102
+    else if sc == 34 then 103
+    else if sc == 35 then 104
+    else if sc == 44 then 122
+    else if sc == 45 then 120
+    else if sc == 46 then 99
+    else if sc == 47 then 118
+    else if sc == 48 then 98
+    else if sc == 57 then 32
+    else if sc == 78 then 43
+    else if sc == 74 then 45
+    else if sc == 72 then 0
+    else if sc == 80 then 0
+    else if sc == 75 then 0
+    else if sc == 77 then 0
+    else if sc == 83 then 127
+    else 0
+
+Page 1

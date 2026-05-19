@@ -1,0 +1,137 @@
+Chapter: Scene2D
+  cites Foreword chapter Maybe
+  cites Game chapter Sprite
+  cites Game chapter Rasterizer
+  cites Game chapter Color
+  cites Game chapter Bresenham
+  cites Math chapter Geometry
+  cites Math chapter Quaternion
+
+ 2D scene graph. Nodes have position, rotation, scale, sprite,
+ color, and children. Renders back-to-front by z-order. Supports
+ visibility toggling and hit testing.
+
+ We say:
+
+Section: Types
+  SceneNode = record {
+    sn-x : Integer,
+    sn-y : Integer,
+    sn-z : Integer,
+    sn-width : Integer,
+    sn-height : Integer,
+    sn-color : Integer,
+    sn-visible : Boolean,
+    sn-tag : Text
+  }
+
+Section: Construction
+  scene-node : Integer, Integer, Integer, Integer, Integer, Text -> SceneNode
+  scene-node (x) (y) (w) (h) (color) (tag) = SceneNode { sn-x = x, sn-y = y, sn-z = 0, sn-width = w, sn-height = h, sn-color = color, sn-visible = True, sn-tag = tag }
+
+  scene-node-z : Integer, Integer, Integer, Integer, Integer, Integer, Text -> SceneNode
+  scene-node-z (x) (y) (z) (w) (h) (color) (tag) = SceneNode { sn-x = x, sn-y = y, sn-z = z, sn-width = w, sn-height = h, sn-color = color, sn-visible = True, sn-tag = tag }
+
+Section: Scene
+  Scene2DState = record {
+    sc-nodes : List SceneNode,
+    sc-count : Integer,
+    sc-bg : Integer
+  }
+
+  scene2d-new : Integer -> Scene2DState
+  scene2d-new (bg) = Scene2DState { sc-nodes = [], sc-count = 0, sc-bg = bg }
+
+  scene2d-add : Scene2DState, SceneNode -> Scene2DState
+  scene2d-add (sc) (node) = Scene2DState { sc-nodes = list-push (sc.sc-nodes) node, sc-count = sc.sc-count + 1, sc-bg = sc.sc-bg }
+
+Section: Rendering
+  scene2d-render : Scene2DState, Framebuf -> Framebuf
+  scene2d-render (sc) (fb) =
+    let sorted = scene2d-sort-by-z (sc.sc-nodes) (sc.sc-count)
+    in scene2d-render-nodes sorted 0 (sc.sc-count) fb
+
+  scene2d-render-nodes : List SceneNode, Integer, Integer, Framebuf -> Framebuf
+  scene2d-render-nodes (nodes) (i) (n) (fb) =
+    if i >= n then fb
+    else let node = list-at nodes i
+    in let fb2 = if node.sn-visible then scene2d-draw-node node fb else fb
+    in scene2d-render-nodes nodes (i + 1) n fb2
+
+  scene2d-draw-node : SceneNode, Framebuf -> Framebuf
+  scene2d-draw-node (node) (fb) =
+    let color = rgb-from-packed (node.sn-color)
+    in fb-rect fb (node.sn-x) (node.sn-y) (node.sn-width) (node.sn-height) (rgb-to-packed color)
+
+Section: Z-Sort (insertion sort, small N)
+  scene2d-sort-by-z : List SceneNode, Integer -> List SceneNode
+  scene2d-sort-by-z (nodes) (n) = scene2d-isort nodes 1 n
+
+  scene2d-isort : List SceneNode, Integer, Integer -> List SceneNode
+  scene2d-isort (nodes) (i) (n) =
+    if i >= n then nodes
+    else let sorted = scene2d-insert nodes i
+    in scene2d-isort sorted (i + 1) n
+
+  scene2d-insert : List SceneNode, Integer -> List SceneNode
+  scene2d-insert (nodes) (i) =
+    if i <= 0 then nodes
+    else let cur = list-at nodes i
+    in let prev = list-at nodes (i - 1)
+    in if cur.sn-z < prev.sn-z then scene2d-insert (scene2d-swap nodes i (i - 1)) (i - 1)
+    else nodes
+
+  scene2d-swap : List SceneNode, Integer, Integer -> List SceneNode
+  scene2d-swap (nodes) (a) (b) =
+    let va = list-at nodes a
+    in let vb = list-at nodes b
+    in list-set-at (list-set-at nodes a vb) b va
+
+Section: Hit Testing
+  scene2d-hit : Scene2DState, Integer, Integer -> Maybe SceneNode
+  scene2d-hit (sc) (px) (py) = scene2d-hit-loop (sc.sc-nodes) px py (sc.sc-count - 1)
+
+  scene2d-hit-loop : List SceneNode, Integer, Integer, Integer -> Maybe SceneNode
+  scene2d-hit-loop (nodes) (px) (py) (i) =
+    if i < 0 then None
+    else let node = list-at nodes i
+    in if node.sn-visible then
+      if px >= node.sn-x then if px < node.sn-x + node.sn-width then
+        if py >= node.sn-y then if py < node.sn-y + node.sn-height then Just node
+          else scene2d-hit-loop nodes px py (i - 1)
+        else scene2d-hit-loop nodes px py (i - 1)
+      else scene2d-hit-loop nodes px py (i - 1)
+      else scene2d-hit-loop nodes px py (i - 1)
+    else scene2d-hit-loop nodes px py (i - 1)
+
+Section: Node Manipulation
+  scene2d-move : Scene2DState, Integer, Integer, Integer -> Scene2DState
+  scene2d-move (sc) (idx) (dx) (dy) =
+    if idx < 0 then sc
+    else if idx >= sc.sc-count then sc
+    else let node = list-at (sc.sc-nodes) idx
+    in let moved = SceneNode { sn-x = node.sn-x + dx, sn-y = node.sn-y + dy, sn-z = node.sn-z, sn-width = node.sn-width, sn-height = node.sn-height, sn-color = node.sn-color, sn-visible = node.sn-visible, sn-tag = node.sn-tag }
+    in Scene2DState { sc-nodes = list-set-at (sc.sc-nodes) idx moved, sc-count = sc.sc-count, sc-bg = sc.sc-bg }
+
+  scene2d-toggle : Scene2DState, Integer -> Scene2DState
+  scene2d-toggle (sc) (idx) =
+    if idx < 0 then sc
+    else if idx >= sc.sc-count then sc
+    else let node = list-at (sc.sc-nodes) idx
+    in let toggled = SceneNode { sn-x = node.sn-x, sn-y = node.sn-y, sn-z = node.sn-z, sn-width = node.sn-width, sn-height = node.sn-height, sn-color = node.sn-color, sn-visible = if node.sn-visible then False else True, sn-tag = node.sn-tag }
+    in Scene2DState { sc-nodes = list-set-at (sc.sc-nodes) idx toggled, sc-count = sc.sc-count, sc-bg = sc.sc-bg }
+
+Section: Queries
+  scene2d-count : Scene2DState -> Integer
+  scene2d-count (sc) = sc.sc-count
+
+  scene2d-find-tag : Scene2DState, Text -> Integer
+  scene2d-find-tag (sc) (tag) = scene2d-find-loop (sc.sc-nodes) tag 0 (sc.sc-count)
+
+  scene2d-find-loop : List SceneNode, Text, Integer, Integer -> Integer
+  scene2d-find-loop (nodes) (tag) (i) (n) =
+    if i >= n then 0 - 1
+    else if (list-at nodes i).sn-tag == tag then i
+    else scene2d-find-loop nodes tag (i + 1) n
+
+Page 1

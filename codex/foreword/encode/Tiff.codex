@@ -1,0 +1,99 @@
+Chapter: Tiff
+  cites Game chapter Color
+
+ TIFF encoder. Uncompressed 24-bit RGB, little-endian byte order.
+ Single strip, baseline TIFF 6.0 compliant. Produces files readable
+ by any image viewer.
+
+ We say:
+
+Section: Constants
+  tiff-byte : Integer = 1
+  tiff-short : Integer = 3
+  tiff-long : Integer = 4
+  tiff-rational : Integer = 5
+
+  tag-image-width : Integer = 256
+  tag-image-height : Integer = 257
+  tag-bits-per-sample : Integer = 258
+  tag-compression : Integer = 259
+  tag-photometric : Integer = 262
+  tag-strip-offsets : Integer = 273
+  tag-samples-per-pixel : Integer = 277
+  tag-rows-per-strip : Integer = 278
+  tag-strip-byte-counts : Integer = 279
+  tag-x-resolution : Integer = 282
+  tag-y-resolution : Integer = 283
+  tag-resolution-unit : Integer = 296
+
+Section: Encoding
+  tiff-encode : Integer, Integer, List Rgb -> List Integer
+  tiff-encode (width) (height) (pixels) =
+    let pixel-data = tiff-encode-pixels pixels 0 (list-length pixels) []
+    in let data-size = list-length pixel-data
+    in let ifd-offset = 8
+    in let num-tags = 12
+    in let ifd-size = 2 + num-tags * 12 + 4
+    in let extra-offset = ifd-offset + ifd-size
+    in let bps-offset = extra-offset
+    in let xres-offset = extra-offset + 6
+    in let yres-offset = xres-offset + 8
+    in let data-offset = yres-offset + 8
+    in let header = tiff-header ifd-offset
+    in let ifd = tiff-ifd width height data-offset data-size bps-offset xres-offset yres-offset
+    in let extra = tiff-bps-data & tiff-resolution-data & tiff-resolution-data
+    in header & ifd & extra & pixel-data
+
+Section: Header
+  tiff-header : Integer -> List Integer
+  tiff-header (ifd-offset) = [73, 73, 42, 0] & tiff-le32 ifd-offset
+
+Section: IFD
+  tiff-ifd : Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  tiff-ifd (w) (h) (strip-off) (strip-size) (bps-off) (xres-off) (yres-off) =
+    tiff-le16 12 ++
+    tiff-tag tag-image-width tiff-long 1 w ++
+    tiff-tag tag-image-height tiff-long 1 h ++
+    tiff-tag-offset tag-bits-per-sample tiff-short 3 bps-off ++
+    tiff-tag tag-compression tiff-short 1 1 ++
+    tiff-tag tag-photometric tiff-short 1 2 ++
+    tiff-tag tag-strip-offsets tiff-long 1 strip-off ++
+    tiff-tag tag-samples-per-pixel tiff-short 1 3 ++
+    tiff-tag tag-rows-per-strip tiff-long 1 h ++
+    tiff-tag tag-strip-byte-counts tiff-long 1 strip-size ++
+    tiff-tag-offset tag-x-resolution tiff-rational 1 xres-off ++
+    tiff-tag-offset tag-y-resolution tiff-rational 1 yres-off ++
+    tiff-tag tag-resolution-unit tiff-short 1 2 ++
+    tiff-le32 0
+
+Section: Tag Encoding
+  tiff-tag : Integer, Integer, Integer, Integer -> List Integer
+  tiff-tag (tag-id) (type) (count) (value) =
+    tiff-le16 tag-id & tiff-le16 type & tiff-le32 count & tiff-le32 value
+
+  tiff-tag-offset : Integer, Integer, Integer, Integer -> List Integer
+  tiff-tag-offset (tag-id) (type) (count) (offset) =
+    tiff-le16 tag-id & tiff-le16 type & tiff-le32 count & tiff-le32 offset
+
+Section: Extra Data
+  tiff-bps-data : List Integer
+  tiff-bps-data = tiff-le16 8 & tiff-le16 8 & tiff-le16 8
+
+  tiff-resolution-data : List Integer
+  tiff-resolution-data = tiff-le32 72 & tiff-le32 1
+
+Section: Pixel Data
+  tiff-encode-pixels : List Rgb, Integer, Integer, List Integer -> List Integer
+  tiff-encode-pixels (pixels) (i) (n) (acc) =
+    if i >= n then acc
+    else let px = list-at pixels i
+    in tiff-encode-pixels pixels (i + 1) n (acc & [px.cr, px.cg, px.cb])
+
+Section: Helpers
+  tiff-le16 : Integer -> List Integer
+  tiff-le16 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+  tiff-le32 : Integer -> List Integer
+  tiff-le32 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+Page 1

@@ -1,0 +1,222 @@
+Chapter: Session
+  cites Data chapter Protocol
+  cites Data chapter Catalog
+  cites Data chapter Executor
+  cites Data chapter RelAlgebra
+  cites Data chapter Row
+  cites Data chapter Transaction
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ Per-connection session. Receives frames, dispatches to the query
+ engine or transaction manager, and sends result frames back.
+ Each session may have one active transaction.
+
+ We say:
+
+Section: Session State
+
+  SessionState = record {
+    session-id : Integer,
+    authenticated : Boolean,
+    current-txn : Maybe Integer,
+    queries-run : Integer
+  }
+
+  session-new : Integer -> SessionState
+  session-new (id) = SessionState {
+    session-id = id,
+    authenticated = False,
+    current-txn = None,
+    queries-run = 0
+  }
+
+Section: Session Response
+
+  SessionResponse = record {
+    sr-frames : List Frame,
+    sr-session : SessionState,
+    sr-catalog : Catalog,
+    sr-txn-mgr : TxnManager
+  }
+
+Section: Handle Frame
+
+  session-handle : SessionState, Frame, Catalog, TxnManager -> SessionResponse
+  session-handle (sess) (f) (cat) (mgr) =
+    if f.frame-type == msg-ping then SessionResponse {
+      sr-frames = [proto-pong-frame],
+      sr-session = sess,
+      sr-catalog = cat,
+      sr-txn-mgr = mgr
+    }
+    else if f.frame-type == msg-begin then session-begin sess cat mgr
+    else if f.frame-type == msg-commit then session-commit sess cat mgr
+    else if f.frame-type == msg-rollback then session-rollback sess cat mgr
+    else if f.frame-type == msg-query then session-query sess f cat mgr
+    else SessionResponse {
+      sr-frames = [proto-error-frame "unknown message type"],
+      sr-session = sess,
+      sr-catalog = cat,
+      sr-txn-mgr = mgr
+    }
+
+Section: Begin Transaction
+
+  session-begin : SessionState, Catalog, TxnManager -> SessionResponse
+  session-begin (sess) (cat) (mgr) =
+    when (sess.current-txn)
+      is Just (txn-id) -> SessionResponse {
+        sr-frames = [proto-error-frame "transaction already active"],
+        sr-session = sess,
+        sr-catalog = cat,
+        sr-txn-mgr = mgr
+      }
+      is None ->
+        let result = txn-begin mgr Serializable
+        in let new-sess = SessionState {
+          session-id = sess.session-id,
+          authenticated = sess.authenticated,
+          current-txn = Just (result.tbr-txn.txn-id),
+          queries-run = sess.queries-run
+        }
+        in SessionResponse {
+          sr-frames = [proto-complete-frame 0],
+          sr-session = new-sess,
+          sr-catalog = cat,
+          sr-txn-mgr = result.tbr-mgr
+        }
+
+Section: Commit
+
+  session-commit : SessionState, Catalog, TxnManager -> SessionResponse
+  session-commit (sess) (cat) (mgr) =
+    when (sess.current-txn)
+      is None -> SessionResponse {
+        sr-frames = [proto-error-frame "no active transaction"],
+        sr-session = sess,
+        sr-catalog = cat,
+        sr-txn-mgr = mgr
+      }
+      is Just (txn-id) ->
+        let result = txn-commit mgr txn-id
+        in let new-sess = SessionState {
+          session-id = sess.session-id,
+          authenticated = sess.authenticated,
+          current-txn = None,
+          queries-run = sess.queries-run
+        }
+        in if result.tr-ok then SessionResponse {
+          sr-frames = [proto-complete-frame 0],
+          sr-session = new-sess,
+          sr-catalog = cat,
+          sr-txn-mgr = result.tr-mgr
+        }
+        else SessionResponse {
+          sr-frames = [proto-error-frame (result.tr-msg)],
+          sr-session = sess,
+          sr-catalog = cat,
+          sr-txn-mgr = mgr
+        }
+
+Section: Rollback
+
+  session-rollback : SessionState, Catalog, TxnManager -> SessionResponse
+  session-rollback (sess) (cat) (mgr) =
+    when (sess.current-txn)
+      is None -> SessionResponse {
+        sr-frames = [proto-error-frame "no active transaction"],
+        sr-session = sess,
+        sr-catalog = cat,
+        sr-txn-mgr = mgr
+      }
+      is Just (txn-id) ->
+        let result = txn-abort mgr txn-id
+        in let new-sess = SessionState {
+          session-id = sess.session-id,
+          authenticated = sess.authenticated,
+          current-txn = None,
+          queries-run = sess.queries-run
+        }
+        in SessionResponse {
+          sr-frames = [proto-complete-frame 0],
+          sr-session = new-sess,
+          sr-catalog = cat,
+          sr-txn-mgr = result.tr-mgr
+        }
+
+Section: Query Execution
+
+  session-query : SessionState, Frame, Catalog, TxnManager -> SessionResponse
+  session-query (sess) (f) (cat) (mgr) =
+    let query-text = proto-bytes-to-text (f.frame-payload)
+    in let new-sess = SessionState {
+      session-id = sess.session-id,
+      authenticated = sess.authenticated,
+      current-txn = sess.current-txn,
+      queries-run = sess.queries-run + 1
+    }
+    in let plan = session-parse-simple query-text cat
+    in when plan
+      is None -> SessionResponse {
+        sr-frames = [proto-error-frame ("parse error: " & query-text)],
+        sr-session = new-sess,
+        sr-catalog = cat,
+        sr-txn-mgr = mgr
+      }
+      is Just (op) ->
+        let result = execute cat op
+        in if result.qr-ok == False then SessionResponse {
+          sr-frames = [proto-error-frame (result.qr-msg)],
+          sr-session = new-sess,
+          sr-catalog = cat,
+          sr-txn-mgr = mgr
+        }
+        else let header = proto-encode-row-header (result.qr-schema.col-names)
+        in let row-frames = session-encode-rows (result.qr-rows) 0 (result.qr-count) []
+        in let complete = proto-complete-frame (result.qr-count)
+        in SessionResponse {
+          sr-frames = [header] & row-frames & [complete],
+          sr-session = new-sess,
+          sr-catalog = cat,
+          sr-txn-mgr = mgr
+        }
+
+  session-encode-rows : List RowData, Integer, Integer, List Frame -> List Frame
+  session-encode-rows (rows) (i) (len) (acc) =
+    if i >= len then acc
+    else let row = list-at rows i
+    in let payload = row-encode row
+    in session-encode-rows rows (i + 1) len (list-push acc (frame-new msg-result-row payload))
+
+Section: Simple Query Parser
+
+  session-parse-simple : Text, Catalog -> Maybe RelOp
+  session-parse-simple (query) (cat) =
+    if text-starts-with query "scan " then
+      let table = text-drop query 5
+      in Just (RelScan table)
+    else if text-starts-with query "count " then
+      let table = text-drop query 6
+      in Just (RelGroup (RelScan table) [] [AggSpec { agg-func = AggCount, agg-alias = "count" }])
+    else None
+
+  text-drop : Text, Integer -> Text
+  text-drop (t) (n) = text-drop-loop t n (text-length t) ""
+
+  text-drop-loop : Text, Integer, Integer, Text -> Text
+  text-drop-loop (t) (i) (len) (acc) =
+    if i >= len then acc
+    else text-drop-loop t (i + 1) len (acc & text-from-char (text-char-at t i))
+
+Section: Statistics
+
+  session-stats : SessionState -> Text
+  session-stats (sess) =
+    "session=" & show (sess.session-id)
+    & " queries=" & show (sess.queries-run)
+    & " txn=" & (when (sess.current-txn)
+      is Just (id) -> show id
+      is None -> "none")
+
+Page 1

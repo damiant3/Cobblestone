@@ -1,0 +1,152 @@
+Chapter: DevDebugger
+  cites Works chapter UefiConsole
+  cites Works chapter DevConsoleMenu
+  cites Works chapter HexFormat
+  cites Works chapter CodeBrowser
+  cites Dev chapter MemInspector
+  cites Dev chapter IoInspector
+  cites Dev chapter PerfMonitor
+  cites Foreword chapter Maybe
+
+ Interactive debugger for the UEFI dev console. Memory inspector,
+ port I/O probe, breakpoint table, stack walker, and perf counters.
+ Operates on the live system — no GDB, no host-side tooling.
+
+ We say:
+
+Section: Debugger Mode
+
+  DebugMode =
+    | DebugMemory
+    | DebugIO
+    | DebugBreakpoints
+    | DebugStack
+    | DebugPerf
+    | DebugRegisters
+
+Section: Breakpoint
+
+  Breakpoint = record {
+    id : Integer,
+    address : Integer,
+    original-byte : Integer,
+    enabled : Boolean,
+    hit-count : Integer,
+    label : Text
+  }
+
+  BreakpointTable = record {
+    entries : List Breakpoint,
+    next-id : Integer
+  }
+
+  bp-table-empty : BreakpointTable = BreakpointTable { entries = [], next-id = 1 }
+
+  bp-add : BreakpointTable, Integer, Text -> BreakpointTable
+  bp-add (tbl) (addr) (label) =
+    let orig = peek-byte addr 0
+    in let bp = Breakpoint { id = tbl.next-id, address = addr, original-byte = orig, enabled = True, hit-count = 0, label = label }
+    in let w = poke-byte addr 0 204
+    in BreakpointTable { entries = list-snoc (tbl.entries) bp, next-id = tbl.next-id + 1 }
+
+  bp-remove : BreakpointTable, Integer -> BreakpointTable
+  bp-remove (tbl) (id) =
+    BreakpointTable { entries = bp-filter (tbl.entries) id 0 (list-length (tbl.entries)) [], next-id = tbl.next-id }
+
+  bp-filter : List Breakpoint, Integer, Integer, Integer, List Breakpoint -> List Breakpoint
+  bp-filter (bps) (remove-id) (i) (len) (acc) =
+    if i >= len then acc
+    else let bp = list-at bps i
+    in if bp.id == remove-id then
+      let w = poke-byte (bp.address) 0 (bp.original-byte)
+      in bp-filter bps remove-id (i + 1) len acc
+    else bp-filter bps remove-id (i + 1) len (list-push acc bp)
+
+Section: Debugger State
+
+  DebuggerState = record {
+    mode : DebugMode,
+    breakpoints : BreakpointTable,
+    last-address : Integer,
+    dump-length : Integer,
+    watch-ports : List Integer,
+    status : Text
+  }
+
+  debugger-init : DebuggerState
+  debugger-init = DebuggerState {
+    mode = DebugMemory,
+    breakpoints = bp-table-empty,
+    last-address = 1048576,
+    dump-length = 256,
+    watch-ports = [],
+    status = "Debugger ready"
+  }
+
+Section: Debugger Menu
+
+  debug-menu : MenuState
+  debug-menu = menu-new "Debugger" [
+    menu-item "Memory Dump" "mem",
+    menu-item "Memory Read (byte/word/dword/qword)" "read",
+    menu-item "Memory Write" "write",
+    menu-item "Port I/O" "io",
+    menu-item "Breakpoints" "bp",
+    menu-item "Stack Walk" "stack",
+    menu-item "Perf Counters" "perf",
+    menu-item "Symbol Lookup" "sym",
+    menu-item "Back" "back"
+  ]
+
+Section: Memory Commands
+
+  debug-mem-dump : DebuggerState, Integer, Integer -> List Text
+  debug-mem-dump (dbg) (addr) (len) =
+    debug-dump-lines addr len 0 []
+
+  debug-dump-lines : Integer, Integer, Integer, List Text -> List Text
+  debug-dump-lines (addr) (len) (off) (acc) =
+    if off >= len then acc
+    else let line-bytes = if len - off >= 16 then 16 else len - off
+    in let hex-part = dump-hex-bytes addr off line-bytes 0 ""
+    in let ascii-part = dump-ascii-bytes addr off line-bytes 0 ""
+    in let line = hex-i64 (addr + off) & "  " & hex-part & " |" & ascii-part & "|"
+    in debug-dump-lines addr len (off + 16) (list-push acc line)
+
+  dump-hex-bytes : Integer, Integer, Integer, Integer, Text -> Text
+  dump-hex-bytes (base) (off) (count) (i) (acc) =
+    if i >= 16 then acc
+    else if i >= count then dump-hex-bytes base off count (i + 1) (acc & "   ")
+    else let b = peek-byte base (off + i)
+    in let sep = if i == 8 then "  " else " "
+    in dump-hex-bytes base off count (i + 1) (acc & hex-byte b & sep)
+
+  dump-ascii-bytes : Integer, Integer, Integer, Integer, Text -> Text
+  dump-ascii-bytes (base) (off) (count) (i) (acc) =
+    if i >= count then acc
+    else let b = peek-byte base (off + i)
+    in let ch = if b >= 32 then if b < 127 then char-to-text (code-to-char b) else "." else "."
+    in dump-ascii-bytes base off count (i + 1) (acc & ch)
+
+Section: Symbol Lookup
+
+  debug-sym-lookup : SourceIndex, Text -> Text
+  debug-sym-lookup (idx) (query) =
+    let results = search-by-prefix idx query
+    in if list-length results == 0 then "No symbols matching '" & query & "'"
+    else format-search-results results
+
+Section: Port Watch
+
+  debug-port-watch : List Integer -> List Text
+  debug-port-watch (ports) = debug-port-watch-loop ports 0 (list-length ports) []
+
+  debug-port-watch-loop : List Integer, Integer, Integer, List Text -> List Text
+  debug-port-watch-loop (ports) (i) (len) (acc) =
+    if i >= len then acc
+    else let port = list-at ports i
+    in let val = port-in-byte port
+    in let line = "port 0x" & hex-i32 port & " = 0x" & hex-byte val & " (" & show val & ")"
+    in debug-port-watch-loop ports (i + 1) len (list-push acc line)
+
+Page 1

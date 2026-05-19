@@ -1,0 +1,143 @@
+Chapter: Ethernet
+
+ Ethernet frame construction, ARP request/reply, IPv4 packet framing.
+ All operations are pure — no I/O. Frame bytes are built as List Integer
+ and handed to kernel net-send; received frames from net-recv are parsed.
+
+ We say:
+
+Section: Constants
+  eth-type-ipv4 : Integer = 2048
+  eth-type-arp : Integer = 2054
+  eth-header-size : Integer = 14
+  eth-max-frame : Integer = 1518
+
+  arp-hw-ethernet : Integer = 1
+  arp-op-request : Integer = 1
+  arp-op-reply : Integer = 2
+  arp-packet-size : Integer = 28
+
+  ip-version-ihl : Integer = 69
+  ip-proto-icmp : Integer = 1
+  ip-proto-tcp : Integer = 6
+  ip-proto-udp : Integer = 17
+  ip-header-size : Integer = 20
+
+Section: MAC Helpers
+  mac-bytes : Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  mac-bytes (a) (b) (c) (d) (e) (f) = [a, b, c, d, e, f]
+
+  mac-broadcast : List Integer = [255, 255, 255, 255, 255, 255]
+
+  mac-equal : List Integer, List Integer -> Boolean
+  mac-equal (a) (b) =
+    list-at a 0 == list-at b 0
+    & list-at a 1 == list-at b 1
+    & list-at a 2 == list-at b 2
+    & list-at a 3 == list-at b 3
+    & list-at a 4 == list-at b 4
+    & list-at a 5 == list-at b 5
+
+Section: IP Helpers
+  ip-bytes : Integer, Integer, Integer, Integer -> List Integer
+  ip-bytes (a) (b) (c) (d) = [a, b, c, d]
+
+  ip-equal : List Integer, List Integer -> Boolean
+  ip-equal (a) (b) =
+    list-at a 0 == list-at b 0
+    & list-at a 1 == list-at b 1
+    & list-at a 2 == list-at b 2
+    & list-at a 3 == list-at b 3
+
+Section: Byte Encoding
+  write-be16 : Integer -> List Integer
+  write-be16 (v) = [bit-and (bit-shr v 8) 255, bit-and v 255]
+
+  read-be16 : List Integer, Integer -> Integer
+  read-be16 (buf) (off) =
+    bit-or (bit-shl (list-at buf off) 8) (list-at buf (off + 1))
+
+Section: Ethernet Frames
+  eth-build-frame : List Integer, List Integer, Integer, List Integer -> List Integer
+  eth-build-frame (dst-mac) (src-mac) (ethertype) (payload) =
+    dst-mac & src-mac & write-be16 ethertype & payload
+
+  eth-dst-mac : List Integer -> List Integer
+  eth-dst-mac (frame) = [list-at frame 0, list-at frame 1, list-at frame 2, list-at frame 3, list-at frame 4, list-at frame 5]
+
+  eth-src-mac : List Integer -> List Integer
+  eth-src-mac (frame) = [list-at frame 6, list-at frame 7, list-at frame 8, list-at frame 9, list-at frame 10, list-at frame 11]
+
+  eth-ethertype : List Integer -> Integer
+  eth-ethertype (frame) = read-be16 frame 12
+
+  eth-payload : List Integer -> List Integer
+  eth-payload (frame) = eth-payload-loop frame eth-header-size (list-length frame) []
+
+  eth-payload-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  eth-payload-loop (frame) (i) (len) (acc) =
+    if i >= len then acc
+    else eth-payload-loop frame (i + 1) len (list-push acc (list-at frame i))
+
+Section: ARP
+  ArpPacket = record {
+    op : Integer between 1 and 2,
+    sender-mac : List Integer,
+    sender-ip : List Integer,
+    target-mac : List Integer,
+    target-ip : List Integer
+  }
+
+  arp-build-request : List Integer, List Integer, List Integer -> List Integer
+  arp-build-request (src-mac) (src-ip) (target-ip) =
+    let payload = (write-be16 arp-hw-ethernet & write-be16 eth-type-ipv4 & [6, 4] & write-be16 arp-op-request & src-mac & src-ip & [0, 0, 0, 0, 0, 0] & target-ip)
+    in eth-build-frame mac-broadcast src-mac eth-type-arp payload
+
+  arp-build-reply : List Integer, List Integer, List Integer, List Integer, List Integer -> List Integer
+  arp-build-reply (src-mac) (src-ip) (dst-mac) (dst-ip) (reply-mac) =
+    let payload = (write-be16 arp-hw-ethernet & write-be16 eth-type-ipv4 & [6, 4] & write-be16 arp-op-reply & reply-mac & src-ip & dst-mac & dst-ip)
+    in eth-build-frame dst-mac src-mac eth-type-arp payload
+
+  arp-parse : List Integer -> ArpPacket
+  arp-parse (payload) =
+    ArpPacket {
+      op = read-be16 payload 6,
+      sender-mac = [list-at payload 8, list-at payload 9, list-at payload 10, list-at payload 11, list-at payload 12, list-at payload 13],
+      sender-ip = [list-at payload 14, list-at payload 15, list-at payload 16, list-at payload 17],
+      target-mac = [list-at payload 18, list-at payload 19, list-at payload 20, list-at payload 21, list-at payload 22, list-at payload 23],
+      target-ip = [list-at payload 24, list-at payload 25, list-at payload 26, list-at payload 27]
+    }
+
+Section: IPv4
+  ip-checksum : List Integer, Integer, Integer, Integer -> Integer
+  ip-checksum (hdr) (i) (len) (sum) =
+    if i >= len then
+      let folded = bit-and sum 65535 + bit-shru sum 16
+      in let folded2 = bit-and folded 65535 + bit-shru folded 16
+      in bit-and (bit-xor folded2 65535) 65535
+    else ip-checksum hdr (i + 2) len (sum + read-be16 hdr i)
+
+  ip-build-packet : List Integer, List Integer, Integer, List Integer -> List Integer
+  ip-build-packet (src-ip) (dst-ip) (proto) (payload) =
+    let total-len = ip-header-size + list-length payload
+    in let hdr = ([ip-version-ihl, 0] & write-be16 total-len & [0, 0, 0, 0, 64, proto, 0, 0] & src-ip & dst-ip)
+    in let cksum = ip-checksum hdr 0 ip-header-size 0
+    in let hdr-final = ([ip-version-ihl, 0] & write-be16 total-len & [0, 0, 0, 0, 64, proto] & write-be16 cksum & src-ip & dst-ip)
+    in hdr-final & payload
+
+  ip-src : List Integer -> List Integer
+  ip-src (pkt) = [list-at pkt 12, list-at pkt 13, list-at pkt 14, list-at pkt 15]
+
+  ip-dst : List Integer -> List Integer
+  ip-dst (pkt) = [list-at pkt 16, list-at pkt 17, list-at pkt 18, list-at pkt 19]
+
+  ip-proto : List Integer -> Integer
+  ip-proto (pkt) = list-at pkt 9
+
+  ip-payload : List Integer -> List Integer
+  ip-payload (pkt) = eth-payload-loop pkt ip-header-size (list-length pkt) []
+
+  ip-total-length : List Integer -> Integer
+  ip-total-length (pkt) = read-be16 pkt 2
+
+Page 1

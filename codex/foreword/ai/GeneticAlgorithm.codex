@@ -1,0 +1,157 @@
+Chapter: GeneticAlgorithm
+
+ Genetic algorithm conductor. Integer-encoded chromosomes with
+ tournament selection, single-point crossover, and mutation.
+ Fitness is caller-supplied as a List Integer (one per individual).
+ The GA manages population evolution; the caller evaluates fitness.
+
+ We say:
+
+Section: Types
+  GaChromosome = record {
+    genes : List Integer,
+    gene-count : Integer
+  }
+
+  GaPopulation = record {
+    individuals : List GaChromosome,
+    fitness : List Integer,
+    pop-size : Integer,
+    gene-count : Integer,
+    generation : Integer
+  }
+
+  GaConfig = record {
+    mutation-rate : Integer between 0 and 1000,
+    crossover-rate : Integer between 0 and 1000,
+    tournament-size : Integer between 2 and 16,
+    gene-min : Integer,
+    gene-max : Integer
+  }
+
+Section: Construction
+  ga-config-default : GaConfig
+  ga-config-default = GaConfig { mutation-rate = 50, crossover-rate = 800, tournament-size = 3, gene-min = 0, gene-max = 1000 }
+
+  ga-random-population : Integer, Integer, GaConfig, Integer -> GaPopulation
+  ga-random-population (pop-size) (gene-count) (cfg) (seed) =
+    let inds = ga-gen-individuals pop-size gene-count (cfg.gene-min) (cfg.gene-max) seed 0 []
+    in GaPopulation { individuals = inds, fitness = ga-zero-fitness pop-size 0 [], pop-size = pop-size, gene-count = gene-count, generation = 0 }
+
+  ga-gen-individuals : Integer, Integer, Integer, Integer, Integer, Integer, List GaChromosome -> List GaChromosome
+  ga-gen-individuals (n) (genes) (lo) (hi) (seed) (i) (acc) =
+    if i >= n then acc
+    else let chromo = ga-random-chromo genes lo hi (seed + i * 7919) 0 []
+    in ga-gen-individuals n genes lo hi seed (i + 1) (list-push acc (GaChromosome { genes = chromo, gene-count = genes }))
+
+  ga-random-chromo : Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ga-random-chromo (n) (lo) (hi) (seed) (i) (acc) =
+    if i >= n then acc
+    else let val = ga-rand-range seed i lo hi
+    in ga-random-chromo n lo hi seed (i + 1) (list-push acc val)
+
+  ga-zero-fitness : Integer, Integer, List Integer -> List Integer
+  ga-zero-fitness (n) (i) (acc) =
+    if i >= n then acc
+    else ga-zero-fitness n (i + 1) (list-push acc 0)
+
+Section: Selection (Tournament)
+  ga-tournament-select : GaPopulation, GaConfig, Integer -> Integer
+  ga-tournament-select (pop) (cfg) (seed) =
+    ga-tournament-loop pop (cfg.tournament-size) seed 0 0 (0 - 1)
+
+  ga-tournament-loop : GaPopulation, Integer, Integer, Integer, Integer, Integer -> Integer
+  ga-tournament-loop (pop) (k) (seed) (i) (best-idx) (best-fit) =
+    if i >= k then best-idx
+    else let idx = ga-rand-range seed i 0 (pop.pop-size - 1)
+    in let fit = list-at (pop.fitness) idx
+    in if fit > best-fit then ga-tournament-loop pop k seed (i + 1) idx fit
+    else ga-tournament-loop pop k seed (i + 1) best-idx best-fit
+
+Section: Crossover (Single Point)
+  ga-crossover : GaChromosome, GaChromosome, Integer -> GaChromosome
+  ga-crossover (a) (b) (seed) =
+    let point = ga-rand-range seed 0 1 (a.gene-count - 1)
+    in GaChromosome { genes = ga-splice (a.genes) (b.genes) point 0 (a.gene-count) [], gene-count = a.gene-count }
+
+  ga-splice : List Integer, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ga-splice (a) (b) (point) (i) (len) (acc) =
+    if i >= len then acc
+    else let val = if i < point then list-at a i else list-at b i
+    in ga-splice a b point (i + 1) len (list-push acc val)
+
+Section: Mutation
+  ga-mutate : GaChromosome, GaConfig, Integer -> GaChromosome
+  ga-mutate (chromo) (cfg) (seed) =
+    GaChromosome { genes = ga-mutate-loop (chromo.genes) (cfg.mutation-rate) (cfg.gene-min) (cfg.gene-max) seed 0 (chromo.gene-count) [], gene-count = chromo.gene-count }
+
+  ga-mutate-loop : List Integer, Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ga-mutate-loop (genes) (rate) (lo) (hi) (seed) (i) (len) (acc) =
+    if i >= len then acc
+    else let r = ga-rand-range seed i 0 999
+    in if r < rate then ga-mutate-loop genes rate lo hi seed (i + 1) len (list-push acc (ga-rand-range (seed + i * 31) i lo hi))
+    else ga-mutate-loop genes rate lo hi seed (i + 1) len (list-push acc (list-at genes i))
+
+Section: Evolution Step
+  ga-evolve : GaPopulation, GaConfig, Integer -> GaPopulation
+  ga-evolve (pop) (cfg) (seed) =
+    let new-inds = ga-evolve-loop pop cfg seed 0 (pop.pop-size) []
+    in GaPopulation { individuals = new-inds, fitness = ga-zero-fitness (pop.pop-size) 0 [], pop-size = pop.pop-size, gene-count = pop.gene-count, generation = pop.generation + 1 }
+
+  ga-evolve-loop : GaPopulation, GaConfig, Integer, Integer, Integer, List GaChromosome -> List GaChromosome
+  ga-evolve-loop (pop) (cfg) (seed) (i) (n) (acc) =
+    if i >= n then acc
+    else let p1 = ga-tournament-select pop cfg (seed + i * 101)
+    in let p2 = ga-tournament-select pop cfg (seed + i * 307 + 1)
+    in let child = ga-crossover (list-at (pop.individuals) p1) (list-at (pop.individuals) p2) (seed + i * 503)
+    in let mutated = ga-mutate child cfg (seed + i * 709)
+    in ga-evolve-loop pop cfg seed (i + 1) n (list-push acc mutated)
+
+Section: Fitness Assignment
+  ga-set-fitness : GaPopulation, List Integer -> GaPopulation
+  ga-set-fitness (pop) (fit) = GaPopulation { individuals = pop.individuals, fitness = fit, pop-size = pop.pop-size, gene-count = pop.gene-count, generation = pop.generation }
+
+Section: Queries
+  ga-best-idx : GaPopulation -> Integer
+  ga-best-idx (pop) = ga-find-best (pop.fitness) 0 (pop.pop-size) 0 (0 - 1)
+
+  ga-find-best : List Integer, Integer, Integer, Integer, Integer -> Integer
+  ga-find-best (fit) (i) (len) (best-idx) (best-val) =
+    if i >= len then best-idx
+    else let v = list-at fit i
+    in if v > best-val then ga-find-best fit (i + 1) len i v
+    else ga-find-best fit (i + 1) len best-idx best-val
+
+  ga-best-fitness : GaPopulation -> Integer
+  ga-best-fitness (pop) = list-at (pop.fitness) (ga-best-idx pop)
+
+  ga-best-individual : GaPopulation -> GaChromosome
+  ga-best-individual (pop) = list-at (pop.individuals) (ga-best-idx pop)
+
+  ga-avg-fitness : GaPopulation -> Integer
+  ga-avg-fitness (pop) = ga-sum-fitness (pop.fitness) 0 (pop.pop-size) 0 / pop.pop-size
+
+  ga-sum-fitness : List Integer, Integer, Integer, Integer -> Integer
+  ga-sum-fitness (fit) (i) (len) (acc) =
+    if i >= len then acc
+    else ga-sum-fitness fit (i + 1) len (acc + list-at fit i)
+
+Section: Helpers
+  ga-rand-range : Integer, Integer, Integer, Integer -> Integer
+  ga-rand-range (seed) (idx) (lo) (hi) =
+    let h = bit-xor (seed * 2654435761) (idx * 40503)
+    in let positive = if h < 0 then -h else h
+    in let range = hi - lo + 1
+    in if range <= 0 then lo
+    else lo + (positive - (positive / range) * range)
+
+  format-chromosome : GaChromosome -> Text
+  format-chromosome (c) = ga-fmt-genes (c.genes) 0 (c.gene-count) ""
+
+  ga-fmt-genes : List Integer, Integer, Integer, Text -> Text
+  ga-fmt-genes (genes) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i == 0 then "" else ","
+    in ga-fmt-genes genes (i + 1) len (acc & sep & show (list-at genes i))
+
+Page 1

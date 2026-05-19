@@ -1,0 +1,218 @@
+Chapter: Forensics
+
+  cites Foreword chapter Maybe
+
+
+
+ The Forensics chapter records agent reasoning chains from percept
+
+ to belief to policy to action, forming the audit trail for every
+
+ agent decision.
+
+
+
+ We say:
+
+
+
+Section: Reasoning Chain
+
+
+
+ Every agent decision produces a chain of links explaining how
+
+ percepts led to beliefs, beliefs matched policies, policies
+
+ authorized actions. The chain is the forensic record — the chain answers
+
+ "why did the agent do that?"
+
+
+
+  ForensicLink =
+
+    | FPercept (Text) (Integer)
+
+    | FBelief (Text) (Integer) (List Integer)
+
+    | FPolicy (Text) (Boolean) (Text)
+
+    | FAction (Text) (Text) (Text)
+
+    | FAnomaly (Text) (Text) (Text)
+
+
+
+  ForensicChain = record {
+
+    agent : Text,
+
+    timestamp : Integer,
+
+    links : List ForensicLink,
+
+    summary : Text
+
+  }
+
+
+
+Section: Chain Construction
+
+
+
+  chain-empty : Text, Integer -> ForensicChain
+
+  chain-empty (agent) (ts) = ForensicChain {
+
+    agent = agent, timestamp = ts, links = [], summary = ""
+
+  }
+
+
+
+  chain-add-percept : ForensicChain, Text, Integer -> ForensicChain
+
+  chain-add-percept (c) (source) (confidence) =
+
+    ForensicChain { agent = c.agent, timestamp = c.timestamp,
+
+      links = list-push (c.links) (FPercept source confidence), summary = c.summary }
+
+
+
+  chain-add-belief : ForensicChain, Text, Integer, List Integer -> ForensicChain
+
+  chain-add-belief (c) (description) (confidence) (derived-from) =
+
+    ForensicChain { agent = c.agent, timestamp = c.timestamp,
+
+      links = list-push (c.links) (FBelief description confidence derived-from), summary = c.summary }
+
+
+
+  chain-add-policy : ForensicChain, Text, Boolean, Text -> ForensicChain
+
+  chain-add-policy (c) (rule) (matched) (scope) =
+
+    ForensicChain { agent = c.agent, timestamp = c.timestamp,
+
+      links = list-push (c.links) (FPolicy rule matched scope), summary = c.summary }
+
+
+
+  chain-add-action : ForensicChain, Text, Text, Text -> ForensicChain
+
+  chain-add-action (c) (fx) (target) (result) =
+
+    ForensicChain { agent = c.agent, timestamp = c.timestamp,
+
+      links = list-push (c.links) (FAction fx target result), summary = c.summary }
+
+
+
+  chain-add-anomaly : ForensicChain, Text, Text, Text -> ForensicChain
+
+  chain-add-anomaly (c) (expected) (observed) (gap) =
+
+    ForensicChain { agent = c.agent, timestamp = c.timestamp,
+
+      links = list-push (c.links) (FAnomaly expected observed gap), summary = c.summary }
+
+
+
+  chain-set-summary : ForensicChain, Text -> ForensicChain
+
+  chain-set-summary (c) (s) =
+
+    ForensicChain { agent = c.agent, timestamp = c.timestamp, links = c.links, summary = s }
+
+
+
+Section: Chain Queries
+
+
+
+  chain-length : ForensicChain -> Integer
+
+  chain-length (c) = list-length (c.links)
+
+
+
+  chain-has-anomaly : ForensicChain -> Boolean
+
+  chain-has-anomaly (c) = chain-has-anomaly-loop (c.links) 0 (list-length (c.links))
+
+
+
+  chain-has-anomaly-loop : List ForensicLink, Integer, Integer -> Boolean
+
+  chain-has-anomaly-loop (links) (i) (len) =
+
+    if i == len then False
+
+    else when list-at links i
+
+      is FAnomaly (e) (o) (g) -> True
+
+      is otherwise -> chain-has-anomaly-loop links (i + 1) len
+
+
+
+  chain-action-count : ForensicChain -> Integer
+
+  chain-action-count (c) = chain-action-count-loop (c.links) 0 (list-length (c.links)) 0
+
+
+
+  chain-action-count-loop : List ForensicLink, Integer, Integer, Integer -> Integer
+
+  chain-action-count-loop (links) (i) (len) (count) =
+
+    if i == len then count
+
+    else when list-at links i
+
+      is FAction (e) (t) (r) -> chain-action-count-loop links (i + 1) len (count + 1)
+
+      is otherwise -> chain-action-count-loop links (i + 1) len count
+
+
+
+Section: Rendering
+
+
+
+  link-type-name : ForensicLink -> Text
+
+  link-type-name (link) = when link
+
+    is FPercept (s) (c) -> "Percept"
+
+    is FBelief (d) (c) (refs) -> "Belief"
+
+    is FPolicy (r) (m) (s) -> "Policy"
+
+    is FAction (e) (t) (r) -> "Action"
+
+    is FAnomaly (e) (o) (g) -> "Anomaly"
+
+
+
+  render-chain : ForensicChain -> Text
+
+  render-chain (c) =
+
+    "Agent: " & c.agent & " | Links: " & show (chain-length c)
+
+    & " | Actions: " & show (chain-action-count c)
+
+    & " | Anomalies: " & show (chain-has-anomaly c)
+
+    & " | Summary: " & c.summary
+
+
+
+Page 1
+

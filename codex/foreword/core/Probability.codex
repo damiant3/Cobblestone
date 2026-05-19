@@ -1,0 +1,181 @@
+Chapter: Probability
+
+ Probability distributions — PDF, CDF, sampling, and descriptive
+ parameters for common distributions. Uses fixed-point scale-1000
+ arithmetic for fractional values (Codex convention: 1000 = 1.0,
+ 500 = 0.5, etc.).
+
+ To normal-pdf gives the probability density at x for a normal distribution.
+ To normal-cdf gives the cumulative probability up to x.
+ To poisson-pmf gives the probability mass for a Poisson distribution.
+ To binomial-pmf gives the probability mass for a binomial distribution.
+ To exponential-pdf gives the probability density for an exponential distribution.
+ To uniform-bound gives a seed value bounded into a range.
+
+ We say:
+
+Section: Constants (scale-1000)
+
+  prob-sqrt-2pi : Integer = 2507
+  prob-scale : Integer = 1000
+
+Section: Normal Distribution
+
+  NormalDist = record {
+    mu : Integer,
+    sigma : Integer
+  }
+
+  normal : Integer, Integer -> NormalDist
+  normal (mu) (sigma) = NormalDist { mu = mu, sigma = sigma }
+
+  normal-standard : NormalDist
+  normal-standard = NormalDist { mu = 0, sigma = prob-scale }
+
+  normal-pdf : NormalDist, Integer -> Integer
+  normal-pdf (d) (x) =
+    let z = (x - d.mu) * prob-scale / d.sigma
+    in let z2 = z * z / prob-scale
+    in let exp-term = prob-exp-neg (z2 / 2)
+    in exp-term * prob-scale / (d.sigma * prob-sqrt-2pi / prob-scale)
+
+  normal-cdf : NormalDist, Integer -> Integer
+  normal-cdf (d) (x) =
+    let z = (x - d.mu) * prob-scale / d.sigma
+    in prob-standard-normal-cdf z
+
+  prob-standard-normal-cdf : Integer -> Integer
+  prob-standard-normal-cdf (z) =
+    let t = prob-scale * prob-scale / (prob-scale + 2316 * (if z < 0 then 0 - z else z) / 10000)
+    in let poly = prob-horner-cdf t
+    in let pdf = prob-exp-neg (z * z / (2 * prob-scale))
+    in let tail = pdf * poly / prob-scale
+    in if z < 0 then tail else prob-scale - tail
+
+  prob-horner-cdf : Integer -> Integer
+  prob-horner-cdf (t) =
+    let a1 = 319
+    in let a2 = 0 - 356
+    in let a3 = 1781
+    in let a4 = 0 - 1821
+    in let a5 = 1330
+    in a1 + t * (a2 + t * (a3 + t * (a4 + t * a5 / prob-scale) / prob-scale) / prob-scale) / prob-scale
+
+Section: Poisson Distribution
+
+  PoissonDist = record {
+    lambda : Integer
+  }
+
+  poisson : Integer -> PoissonDist
+  poisson (lam) = PoissonDist { lambda = lam }
+
+  poisson-pmf : PoissonDist, Integer -> Integer
+  poisson-pmf (d) (k) =
+    if k < 0 then 0
+    else let exp-neg-lam = prob-exp-neg (d.lambda)
+    in let lam-k = prob-pow (d.lambda) k
+    in let k-fact = prob-factorial k
+    in exp-neg-lam * lam-k / k-fact
+
+Section: Binomial Distribution
+
+  BinomialDist = record {
+    n : Integer,
+    p : Integer
+  }
+
+  binomial : Integer, Integer -> BinomialDist
+  binomial (trials) (prob) = BinomialDist { n = trials, p = prob }
+
+  binomial-pmf : BinomialDist, Integer -> Integer
+  binomial-pmf (d) (k) =
+    if k < 0 then 0
+    else if k > d.n then 0
+    else let c = prob-choose d.n k
+    in let pk = prob-pow (d.p) k
+    in let qnk = prob-pow (prob-scale - d.p) (d.n - k)
+    in let denom = prob-pow prob-scale (d.n)
+    in c * pk * qnk / denom
+
+  binomial-mean : BinomialDist -> Integer
+  binomial-mean (d) = d.n * d.p / prob-scale
+
+  binomial-variance : BinomialDist -> Integer
+  binomial-variance (d) = d.n * d.p / prob-scale * (prob-scale - d.p) / prob-scale
+
+Section: Exponential Distribution
+
+  ExponentialDist = record {
+    lambda : Integer
+  }
+
+  exponential : Integer -> ExponentialDist
+  exponential (lam) = ExponentialDist { lambda = lam }
+
+  exponential-pdf : ExponentialDist, Integer -> Integer
+  exponential-pdf (d) (x) =
+    if x < 0 then 0
+    else d.lambda * prob-exp-neg (d.lambda * x / prob-scale) / prob-scale
+
+  exponential-cdf : ExponentialDist, Integer -> Integer
+  exponential-cdf (d) (x) =
+    if x < 0 then 0
+    else prob-scale - prob-exp-neg (d.lambda * x / prob-scale)
+
+  exponential-mean : ExponentialDist -> Integer
+  exponential-mean (d) = prob-scale * prob-scale / d.lambda
+
+Section: Uniform Distribution
+
+  uniform-bound : Integer, Integer, Integer -> Integer
+  uniform-bound (lo) (hi) (seed) =
+    if hi <= lo then lo
+    else let range = hi - lo + 1
+    in let positive = if seed < 0 then 0 - seed else seed
+    in lo + (positive - (positive / range) * range)
+
+Section: Helpers
+
+  prob-exp-neg : Integer -> Integer
+  prob-exp-neg (x) =
+    if x <= 0 then prob-scale
+    else if x > 6000 then 0
+    else prob-exp-neg-loop x prob-scale prob-scale 1 10
+
+  prob-exp-neg-loop : Integer, Integer, Integer, Integer, Integer -> Integer
+  prob-exp-neg-loop (x) (term) (sum) (i) (max-terms) =
+    if i > max-terms then sum
+    else let term2 = 0 - term * x / (i * prob-scale)
+    in prob-exp-neg-loop x term2 (sum + term2) (i + 1) max-terms
+
+  prob-pow : Integer, Integer -> Integer
+  prob-pow (base) (exp) =
+    if exp <= 0 then prob-scale
+    else prob-pow-loop base exp prob-scale
+
+  prob-pow-loop : Integer, Integer, Integer -> Integer
+  prob-pow-loop (base) (exp) (acc) =
+    if exp <= 0 then acc
+    else prob-pow-loop base (exp - 1) (acc * base / prob-scale)
+
+  prob-factorial : Integer -> Integer
+  prob-factorial (n) = prob-fact-loop n 1
+
+  prob-fact-loop : Integer, Integer -> Integer
+  prob-fact-loop (n) (acc) =
+    if n <= 1 then acc
+    else prob-fact-loop (n - 1) (acc * n)
+
+  prob-choose : Integer, Integer -> Integer
+  prob-choose (n) (k) =
+    if k > n then 0
+    else if k == 0 then 1
+    else prob-choose-loop n k 1 0
+
+  prob-choose-loop : Integer, Integer, Integer, Integer -> Integer
+  prob-choose-loop (n) (k) (acc) (i) =
+    if i >= k then acc
+    else prob-choose-loop n k (acc * (n - i) / (i + 1)) (i + 1)
+
+Page 1

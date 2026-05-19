@@ -1,0 +1,220 @@
+Chapter: Transaction
+  cites Data chapter Wal
+  cites Data chapter Catalog
+  cites Data chapter Row
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ Transaction state machine. Tracks active transactions, their
+ isolation level, and coordinates with the WAL for durability.
+ Supports begin, commit, abort, and savepoints.
+
+ We say:
+
+Section: Isolation Levels
+
+  IsolationLevel =
+    | ReadUncommitted
+    | ReadCommitted
+    | RepeatableRead
+    | Serializable
+
+  isolation-name : IsolationLevel -> Text
+  isolation-name (level) =
+    when level
+      is ReadUncommitted -> "READ UNCOMMITTED"
+      is ReadCommitted -> "READ COMMITTED"
+      is RepeatableRead -> "REPEATABLE READ"
+      is Serializable -> "SERIALIZABLE"
+
+Section: Transaction State
+
+  TxnState =
+    | TxnActive
+    | TxnCommitted
+    | TxnAborted
+    | TxnPrepared
+
+  TxnInfo = record {
+    txn-id : Integer,
+    txn-state : TxnState,
+    txn-isolation : IsolationLevel,
+    txn-start-lsn : Integer,
+    txn-write-count : Integer
+  }
+
+  txn-new : Integer, IsolationLevel, Integer -> TxnInfo
+  txn-new (id) (level) (start-lsn) = TxnInfo {
+    txn-id = id,
+    txn-state = TxnActive,
+    txn-isolation = level,
+    txn-start-lsn = start-lsn,
+    txn-write-count = 0
+  }
+
+  txn-is-active : TxnInfo -> Boolean
+  txn-is-active (txn) =
+    when (txn.txn-state)
+      is TxnActive -> True
+      is otherwise -> False
+
+  txn-inc-writes : TxnInfo -> TxnInfo
+  txn-inc-writes (txn) = TxnInfo {
+    txn-id = txn.txn-id,
+    txn-state = txn.txn-state,
+    txn-isolation = txn.txn-isolation,
+    txn-start-lsn = txn.txn-start-lsn,
+    txn-write-count = txn.txn-write-count + 1
+  }
+
+Section: Transaction Manager
+
+  TxnManager = record {
+    active-txns : HamtMap TxnInfo,
+    next-txn-id : Integer,
+    wal : WalLog,
+    committed-count : Integer,
+    aborted-count : Integer
+  }
+
+  txn-manager-new : TxnManager
+  txn-manager-new = TxnManager {
+    active-txns = hamt-empty,
+    next-txn-id = 1,
+    wal = wal-log-new,
+    committed-count = 0,
+    aborted-count = 0
+  }
+
+Section: Begin
+
+  TxnBeginResult = record {
+    tbr-mgr : TxnManager,
+    tbr-txn : TxnInfo
+  }
+
+  txn-begin : TxnManager, IsolationLevel -> TxnBeginResult
+  txn-begin (mgr) (level) =
+    let id = mgr.next-txn-id
+    in let lsn = wal-log-lsn (mgr.wal)
+    in let txn = txn-new id level lsn
+    in let wal-rec = wal-begin lsn id
+    in let new-wal = wal-log-append (mgr.wal) wal-rec
+    in TxnBeginResult {
+      tbr-mgr = TxnManager {
+        active-txns = hamt-set (mgr.active-txns) (show id) txn,
+        next-txn-id = id + 1,
+        wal = new-wal,
+        committed-count = mgr.committed-count,
+        aborted-count = mgr.aborted-count
+      },
+      tbr-txn = txn
+    }
+
+Section: Commit
+
+  TxnResult = record {
+    tr-mgr : TxnManager,
+    tr-ok : Boolean,
+    tr-msg : Text
+  }
+
+  txn-commit : TxnManager, Integer -> TxnResult
+  txn-commit (mgr) (txn-id) =
+    let key = show txn-id
+    in let maybe-txn = hamt-get (mgr.active-txns) key
+    in when maybe-txn
+      is None -> TxnResult { tr-mgr = mgr, tr-ok = False, tr-msg = "transaction not found: " & key }
+      is Just (txn) ->
+        if txn-is-active txn == False then TxnResult { tr-mgr = mgr, tr-ok = False, tr-msg = "transaction not active" }
+        else let lsn = wal-log-lsn (mgr.wal)
+        in let wal-rec = wal-commit lsn txn-id
+        in let new-wal = wal-log-append (mgr.wal) wal-rec
+        in let committed = TxnInfo {
+          txn-id = txn.txn-id,
+          txn-state = TxnCommitted,
+          txn-isolation = txn.txn-isolation,
+          txn-start-lsn = txn.txn-start-lsn,
+          txn-write-count = txn.txn-write-count
+        }
+        in TxnResult {
+          tr-mgr = TxnManager {
+            active-txns = hamt-remove (mgr.active-txns) key,
+            next-txn-id = mgr.next-txn-id,
+            wal = new-wal,
+            committed-count = mgr.committed-count + 1,
+            aborted-count = mgr.aborted-count
+          },
+          tr-ok = True,
+          tr-msg = "committed transaction " & key
+        }
+
+Section: Abort
+
+  txn-abort : TxnManager, Integer -> TxnResult
+  txn-abort (mgr) (txn-id) =
+    let key = show txn-id
+    in let maybe-txn = hamt-get (mgr.active-txns) key
+    in when maybe-txn
+      is None -> TxnResult { tr-mgr = mgr, tr-ok = False, tr-msg = "transaction not found: " & key }
+      is Just (txn) ->
+        if txn-is-active txn == False then TxnResult { tr-mgr = mgr, tr-ok = False, tr-msg = "transaction not active" }
+        else let lsn = wal-log-lsn (mgr.wal)
+        in let wal-rec = wal-abort lsn txn-id
+        in let new-wal = wal-log-append (mgr.wal) wal-rec
+        in TxnResult {
+          tr-mgr = TxnManager {
+            active-txns = hamt-remove (mgr.active-txns) key,
+            next-txn-id = mgr.next-txn-id,
+            wal = new-wal,
+            committed-count = mgr.committed-count,
+            aborted-count = mgr.aborted-count + 1
+          },
+          tr-ok = True,
+          tr-msg = "aborted transaction " & key
+        }
+
+Section: WAL Write for DML
+
+  txn-log-insert : TxnManager, Integer, Integer, Integer, Integer, List Integer -> TxnManager
+  txn-log-insert (mgr) (txn-id) (table-id) (page-id) (slot-id) (data) =
+    let lsn = wal-log-lsn (mgr.wal)
+    in let rec = wal-insert lsn txn-id table-id page-id slot-id data
+    in let new-wal = wal-log-append (mgr.wal) rec
+    in let key = show txn-id
+    in let maybe-txn = hamt-get (mgr.active-txns) key
+    in let new-txns = when maybe-txn
+      is None -> mgr.active-txns
+      is Just (txn) -> hamt-set (mgr.active-txns) key (txn-inc-writes txn)
+    in TxnManager {
+      active-txns = new-txns,
+      next-txn-id = mgr.next-txn-id,
+      wal = new-wal,
+      committed-count = mgr.committed-count,
+      aborted-count = mgr.aborted-count
+    }
+
+  txn-log-delete : TxnManager, Integer, Integer, Integer, Integer, List Integer -> TxnManager
+  txn-log-delete (mgr) (txn-id) (table-id) (page-id) (slot-id) (data) =
+    let lsn = wal-log-lsn (mgr.wal)
+    in let rec = wal-delete lsn txn-id table-id page-id slot-id data
+    in let new-wal = wal-log-append (mgr.wal) rec
+    in TxnManager {
+      active-txns = mgr.active-txns,
+      next-txn-id = mgr.next-txn-id,
+      wal = new-wal,
+      committed-count = mgr.committed-count,
+      aborted-count = mgr.aborted-count
+    }
+
+Section: Statistics
+
+  txn-stats : TxnManager -> Text
+  txn-stats (mgr) =
+    "active=" & show (hamt-size (mgr.active-txns))
+    & " committed=" & show (mgr.committed-count)
+    & " aborted=" & show (mgr.aborted-count)
+    & " wal-records=" & show (wal-record-count (mgr.wal))
+
+Page 1

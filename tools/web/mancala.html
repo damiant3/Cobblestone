@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Codex — Mancala</title>
+<link rel="stylesheet" href="/web/style.css?v={{VERSION}}">
+<style>
+  body { background: #1a1408; }
+  .game-page { max-width: 900px; margin: 0 auto; }
+  .bg-scene { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: url('/assets/games/mancala/bg-scene.png') center/cover no-repeat;
+    filter: brightness(0.3) blur(2px); z-index: 0; }
+  .content { position: relative; z-index: 1; }
+
+  .board-wrap { background: url('/assets/games/mancala/board.png') center/cover;
+    border: 4px solid #c8a040; border-radius: 40px; padding: 20px 16px;
+    margin-bottom: 16px;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.7), inset 0 2px 12px rgba(0,0,0,0.4); }
+
+  .mn-board { display: flex; align-items: center; justify-content: center; gap: 8px; }
+  .mn-store { width: 70px; height: 160px; background: #1a140888;
+    border: 2px solid #c8a04066; border-radius: 35px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 32px; font-weight: bold; backdrop-filter: blur(4px); }
+  .store-north { color: #ee6a6a; } .store-south { color: #6aaaee; }
+  .mn-pits { display: flex; flex-direction: column; gap: 10px; }
+  .mn-row { display: flex; gap: 8px; }
+  .mn-pit { width: 64px; height: 64px; background: #1a140888; border: 2px solid #c8a04044;
+    border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    font-size: 22px; font-weight: bold; backdrop-filter: blur(4px); transition: all 0.2s; }
+  .mn-pit.active { border-color: #c8a848; box-shadow: 0 0 8px rgba(200,168,72,0.3); }
+  .mn-pit.north { color: #ee6a6a; } .mn-pit.south { color: #6aaaee; }
+  .mn-label { font-size: 9px; color: #c8a04044; text-align: center; letter-spacing: 1px; text-transform: uppercase; }
+
+  .score-bar { display: flex; justify-content: center; gap: 32px; margin-bottom: 10px; font-size: 13px; }
+  .score-south { color: #6aaaee; } .score-north { color: #ee6a6a; }
+
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; justify-content: center; }
+  .controls button { background: linear-gradient(180deg, #2a2010, #1a1408);
+    border: 1px solid #c8a040; border-radius: 6px; color: #c8a848;
+    font-family: inherit; font-size: 13px; padding: 8px 20px; cursor: pointer; text-transform: uppercase; letter-spacing: 1px; }
+  .controls button:hover { color: #f5e6c8; }
+  .controls button:disabled { opacity: 0.3; }
+  #status-line { color: #c8a848; font-size: 13px; margin-bottom: 8px; text-align: center; }
+  .speed-label { color: #c8a040; font-size: 12px; }
+  .engine-tag { background: #1a1408; color: #c8a848; font-size: 10px; padding: 2px 8px;
+    border-radius: 4px; margin-left: 12px; border: 1px solid #c8a04044; }
+</style>
+</head>
+<body>
+<div class="bg-scene"></div>
+<nav class="topbar" style="background:#1a1408;border-color:#c8a04022">
+  <span class="topbar-logo" style="color:#c8a848">&#x2588; CODEX</span>
+  <a href="/#games" class="tab-btn" style="color:#c8a04066">&#x2190; Games</a>
+  <span class="tab-btn active" style="color:#c8a848;border-color:#c8a848">Mancala</span>
+  <span class="engine-tag">Codex VM</span>
+</nav>
+<div class="content game-page">
+  <div class="controls">
+    <button onclick="startGame()">&#x25B6; Play</button>
+    <button id="btn-pause" onclick="togglePause()" disabled>&#x23F8; Pause</button>
+    <button id="btn-step" onclick="stepOnce()" disabled>&#x23ED; Step</button>
+    <button onclick="resetGame()">&#x21BB; Reset</button>
+    <span class="speed-label">Speed:</span>
+    <input type="range" id="speed" min="1" max="10" value="4" style="width:80px;accent-color:#c8a848" oninput="updateSpeed()">
+  </div>
+  <div id="status-line">Press Play. An ancient game from the temples of Egypt.</div>
+  <div class="board-wrap">
+    <div class="mn-board" id="board"></div>
+  </div>
+</div>
+<script>
+var state,running=false,paused=false,timer,delay=500;
+function updateSpeed(){var v=parseInt(document.getElementById('speed').value);delay=[2000,1200,800,500,350,250,150,80,30,5][v-1]||500}
+async function api(p){try{var r=await fetch(p);return r.json()}catch(e){document.getElementById('status-line').textContent='API error';return null}}
+
+function render(s){
+  var p=s.pits;
+  var h='<div class="mn-store store-north">'+p[13]+'</div><div class="mn-pits">';
+  h+='<div class="mn-label">North</div><div class="mn-row">';
+  for(var i=12;i>=7;i--) h+='<div class="mn-pit north'+(s.cur===1?' active':'')+'">'+p[i]+'</div>';
+  h+='</div><div class="mn-row">';
+  for(var i=0;i<=5;i++) h+='<div class="mn-pit south'+(s.cur===0?' active':'')+'">'+p[i]+'</div>';
+  h+='</div><div class="mn-label">South</div></div><div class="mn-store store-south">'+p[6]+'</div>';
+  document.getElementById('board').innerHTML=h;
+}
+
+async function resetGame(){clearTimeout(timer);running=false;paused=false;state=await api('/api/mancala/new?seed='+(Date.now()&0x7FFFFFFF));if(state)render(state);document.getElementById('status-line').textContent='Press Play.';document.getElementById('btn-pause').disabled=true;document.getElementById('btn-step').disabled=true}
+async function startGame(){await resetGame();running=true;document.getElementById('btn-pause').disabled=false;document.getElementById('btn-step').disabled=false;updateSpeed();scheduleTick()}
+function togglePause(){if(!running)return;paused=!paused;document.getElementById('btn-pause').textContent=paused?'▶ Resume':'⏸ Pause';document.getElementById('btn-step').disabled=!paused;if(!paused)scheduleTick()}
+function scheduleTick(){if(!paused&&running)timer=setTimeout(tick,delay)}
+async function stepOnce(){if(running)await tick()}
+async function tick(){if(!running||!state||state.done){if(state&&state.done){var s=state.pits[6],n=state.pits[13];document.getElementById('status-line').textContent=(s>n?'SOUTH':'NORTH')+' CONQUERS — '+s+' to '+n;running=false}return}state=await api('/api/mancala/step');if(!state){running=false;return}render(state);document.getElementById('status-line').textContent=(state.cur===0?'South':'North')+'\'s sowing';if(state.done){var s=state.pits[6],n=state.pits[13];document.getElementById('status-line').textContent=(s>n?'SOUTH':'NORTH')+' CONQUERS — '+s+' to '+n;running=false;return}scheduleTick()}
+updateSpeed();resetGame();
+</script>
+</body>
+</html>

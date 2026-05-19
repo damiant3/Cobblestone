@@ -1,0 +1,116 @@
+Chapter: ProcessGroup
+  cites OS chapter ServiceRegistry
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ A ProcessGroup collects related processes under a single name,
+ tracking each member's PID and role for coordinated lifecycle
+ management by the OS scheduler.
+
+ We say:
+
+Section: Group Types
+
+  GroupMember = record {
+    name : Text,
+    pid : Integer,
+    role : Text
+  }
+
+  ProcessGroup = record {
+    group-name : Text,
+    members : List GroupMember,
+    member-count : Integer between 0 and 255,
+    leader-pid : Integer
+  }
+
+  GroupRegistry = record {
+    groups : HamtMap ProcessGroup,
+    count : Integer between 0 and 255
+  }
+
+Section: Group Operations
+
+  group-registry-empty : GroupRegistry
+  group-registry-empty = GroupRegistry { groups = hamt-empty, count = 0 }
+
+  group-create : GroupRegistry, Text, Integer -> GroupRegistry
+  group-create (reg) (name) (leader-pid) =
+    if hamt-contains (reg.groups) name then reg
+    else let g = ProcessGroup { group-name = name, members = [], member-count = 0, leader-pid = leader-pid }
+    in GroupRegistry { groups = hamt-set (reg.groups) name g, count = reg.count + 1 }
+
+  group-delete : GroupRegistry, Text -> GroupRegistry
+  group-delete (reg) (name) =
+    if hamt-contains (reg.groups) name then
+      GroupRegistry { groups = hamt-remove (reg.groups) name, count = reg.count - 1 }
+    else reg
+
+  group-lookup : GroupRegistry, Text -> Maybe ProcessGroup
+  group-lookup (reg) (name) = hamt-get (reg.groups) name
+
+  group-count : GroupRegistry -> Integer
+  group-count (reg) = reg.count
+
+Section: Membership
+
+  group-add-member : GroupRegistry, Text, Text, Integer, Text -> GroupRegistry
+  group-add-member (reg) (group-name) (member-name) (pid) (role) =
+    let found = hamt-get (reg.groups) group-name
+    in when found
+      is None -> reg
+      is Just (g) ->
+        let m = GroupMember { name = member-name, pid = pid, role = role }
+        in let updated = ProcessGroup { group-name = g.group-name, members = list-push (g.members) m, member-count = g.member-count + 1, leader-pid = g.leader-pid }
+        in GroupRegistry { groups = hamt-set (reg.groups) group-name updated, count = reg.count }
+
+  group-remove-member : GroupRegistry, Text, Text -> GroupRegistry
+  group-remove-member (reg) (group-name) (member-name) =
+    let found = hamt-get (reg.groups) group-name
+    in when found
+      is None -> reg
+      is Just (g) ->
+        let filtered = filter-members (g.members) member-name 0 (g.member-count) []
+        in let updated = ProcessGroup { group-name = g.group-name, members = filtered, member-count = list-length filtered, leader-pid = g.leader-pid }
+        in GroupRegistry { groups = hamt-set (reg.groups) group-name updated, count = reg.count }
+
+  filter-members : List GroupMember, Text, Integer, Integer, List GroupMember -> List GroupMember
+  filter-members (members) (name) (i) (len) (acc) =
+    if i >= len then acc
+    else let m = list-at members i
+    in if m.name == name then filter-members members name (i + 1) len acc
+    else filter-members members name (i + 1) len (list-push acc m)
+
+Section: Queries
+
+  group-member-count : ProcessGroup -> Integer
+  group-member-count (g) = g.member-count
+
+  group-has-member : ProcessGroup, Text -> Boolean
+  group-has-member (g) (name) = has-member-loop (g.members) name 0 (g.member-count)
+
+  has-member-loop : List GroupMember, Text, Integer, Integer -> Boolean
+  has-member-loop (members) (name) (i) (len) =
+    if i >= len then False
+    else if (list-at members i).name == name then True
+    else has-member-loop members name (i + 1) len
+
+  group-find-by-role : ProcessGroup, Text -> Maybe GroupMember
+  group-find-by-role (g) (role) = find-role-loop (g.members) role 0 (g.member-count)
+
+  find-role-loop : List GroupMember, Text, Integer, Integer -> Maybe GroupMember
+  find-role-loop (members) (role) (i) (len) =
+    if i >= len then None
+    else let m = list-at members i
+    in if m.role == role then Just m
+    else find-role-loop members role (i + 1) len
+
+Section: Formatting
+
+  format-group : ProcessGroup -> Text
+  format-group (g) = g.group-name & " leader=" & show (g.leader-pid) & " members=" & show (g.member-count)
+
+  format-member : GroupMember -> Text
+  format-member (m) = m.name & " pid=" & show (m.pid) & " role=" & m.role
+
+Page 1

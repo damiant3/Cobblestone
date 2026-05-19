@@ -1,0 +1,394 @@
+Chapter: Go
+  cites Games chapter Rng
+
+ Simplified 9x9 Go. Board is a List Integer of 81 cells:
+ 0=empty, 1=black, 2=white. Players alternate placing stones.
+ A group with no liberties is captured. Ko is tracked by a single
+ forbidden point. Scoring uses simple area counting at game end.
+ The AI plays random legal moves with basic heuristics: avoid
+ self-capture, prefer center, capture when possible.
+
+ We say:
+
+Section: Types
+
+  GoBoard = record {
+    stones         : List Integer,
+    current-player : Integer,
+    black-captures : Integer,
+    white-captures : Integer,
+    passes         : Integer,
+    game-over      : Boolean,
+    black-score    : Integer,
+    white-score    : Integer,
+    ko-point       : Integer
+  }
+
+  GoResult = record {
+    black-score    : Integer,
+    white-score    : Integer,
+    black-captures : Integer,
+    white-captures : Integer,
+    winner         : Integer,
+    moves-made     : Integer
+  }
+
+Section: Construction
+
+  go-new : GoBoard
+  go-new =
+    let st = go-fill 0 []
+    in GoBoard { stones = st, current-player = 1, black-captures = 0,
+                 white-captures = 0, passes = 0, game-over = False,
+                 black-score = 0, white-score = 0, ko-point = (-1) }
+
+  go-fill : Integer, List Integer -> List Integer
+  go-fill (i) (acc) =
+    if i >= 81 then acc
+    else go-fill (i + 1) (list-push acc 0)
+
+Section: Board Queries
+
+  go-cell : GoBoard, Integer -> Integer
+  go-cell (b) (i) = list-at (b.stones) i
+
+  go-row : Integer -> Integer
+  go-row (i) = i / 9
+
+  go-col : Integer -> Integer
+  go-col (i) = i - (i / 9) * 9
+
+  go-idx : Integer, Integer -> Integer
+  go-idx (r) (c) = r * 9 + c
+
+  go-in-bounds : Integer -> Boolean
+  go-in-bounds (i) = i >= 0 & i < 81
+
+Section: Neighbors
+
+  go-neighbors : Integer -> List Integer
+  go-neighbors (i) =
+    let r = go-row i
+    in let c = go-col i
+    in let n = go-fill-neighbors r c []
+    in n
+
+  go-fill-neighbors : Integer, Integer, List Integer -> List Integer
+  go-fill-neighbors (r) (c) (acc) =
+    let acc1 = if r > 0 then list-push acc (go-idx (r - 1) c) else acc
+    in let acc2 = if r < 8 then list-push acc1 (go-idx (r + 1) c) else acc1
+    in let acc3 = if c > 0 then list-push acc2 (go-idx r (c - 1)) else acc2
+    in if c < 8 then list-push acc3 (go-idx r (c + 1)) else acc3
+
+Section: Liberty Counting
+
+  count-liberties : List Integer, Integer, Integer -> Integer
+  count-liberties (stones) (start) (color) =
+    let visited = go-fill 0 []
+    in go-liberty-flood stones start color visited 0
+
+  go-liberty-flood : List Integer, Integer, Integer, List Integer, Integer -> Integer
+  go-liberty-flood (stones) (i) (color) (visited) (libs) =
+    if go-in-bounds i == False then libs
+    else if list-at visited i == 1 then libs
+    else let cell = list-at stones i
+    in if cell == 0 then libs + 1
+    else if cell /= color then libs
+    else let visited2 = list-set-at visited i 1
+    in let ns = go-neighbors i
+    in go-flood-neighbors stones color visited2 ns libs
+
+  go-flood-neighbors : List Integer, Integer, List Integer, List Integer, Integer -> Integer
+  go-flood-neighbors (stones) (color) (visited) (ns) (libs) =
+    let n = list-length ns
+    in go-flood-ns-loop stones color visited ns n 0 libs
+
+  go-flood-ns-loop : List Integer, Integer, List Integer, List Integer, Integer, Integer, Integer -> Integer
+  go-flood-ns-loop (stones) (color) (visited) (ns) (n) (i) (libs) =
+    if i >= n then libs
+    else let nb = list-at ns i
+    in if go-in-bounds nb == False then go-flood-ns-loop stones color visited ns n (i + 1) libs
+    else if list-at visited nb == 1 then go-flood-ns-loop stones color visited ns n (i + 1) libs
+    else let cell = list-at stones nb
+    in if cell == 0 then go-flood-ns-loop stones color visited ns n (i + 1) (libs + 1)
+    else if cell /= color then go-flood-ns-loop stones color visited ns n (i + 1) libs
+    else let visited2 = list-set-at visited nb 1
+    in let ns2 = go-neighbors nb
+    in let libs2 = go-flood-ns-loop stones color visited2 ns2 (list-length ns2) 0 libs
+    in go-flood-ns-loop stones color visited2 ns n (i + 1) libs2
+
+Section: Capture
+
+  capture-group : List Integer, Integer, Integer -> List Integer
+  capture-group (stones) (start) (color) =
+    let visited = go-fill 0 []
+    in go-capture-flood stones start color visited
+
+  go-capture-flood : List Integer, Integer, Integer, List Integer -> List Integer
+  go-capture-flood (stones) (i) (color) (visited) =
+    if go-in-bounds i == False then stones
+    else if list-at visited i == 1 then stones
+    else if list-at stones i /= color then stones
+    else let stones2 = list-set-at stones i 0
+    in let visited2 = list-set-at visited i 1
+    in let ns = go-neighbors i
+    in go-capture-neighbors stones2 color visited2 ns
+
+  go-capture-neighbors : List Integer, Integer, List Integer, List Integer -> List Integer
+  go-capture-neighbors (stones) (color) (visited) (ns) =
+    let n = list-length ns
+    in go-capture-ns-loop stones color visited ns n 0
+
+  go-capture-ns-loop : List Integer, Integer, List Integer, List Integer, Integer, Integer -> List Integer
+  go-capture-ns-loop (stones) (color) (visited) (ns) (n) (i) =
+    if i >= n then stones
+    else let nb = list-at ns i
+    in if go-in-bounds nb == False then go-capture-ns-loop stones color visited ns n (i + 1)
+    else if list-at visited nb == 1 then go-capture-ns-loop stones color visited ns n (i + 1)
+    else if list-at stones nb /= color then go-capture-ns-loop stones color visited ns n (i + 1)
+    else let stones2 = go-capture-flood stones nb color visited
+    in go-capture-ns-loop stones2 color visited ns n (i + 1)
+
+  count-group-size : List Integer, Integer, Integer -> Integer
+  count-group-size (stones) (start) (color) =
+    go-size-flood stones start color (go-fill 0 []) 0
+
+  go-size-flood : List Integer, Integer, Integer, List Integer, Integer -> Integer
+  go-size-flood (stones) (i) (color) (visited) (count) =
+    if go-in-bounds i == False then count
+    else if list-at visited i == 1 then count
+    else if list-at stones i /= color then count
+    else let visited2 = list-set-at visited i 1
+    in let ns = go-neighbors i
+    in go-size-ns-loop stones color visited2 ns (list-length ns) 0 (count + 1)
+
+  go-size-ns-loop : List Integer, Integer, List Integer, List Integer, Integer, Integer, Integer -> Integer
+  go-size-ns-loop (stones) (color) (visited) (ns) (n) (i) (count) =
+    if i >= n then count
+    else let nb = list-at ns i
+    in if go-in-bounds nb == False then go-size-ns-loop stones color visited ns n (i + 1) count
+    else if list-at visited nb == 1 then go-size-ns-loop stones color visited ns n (i + 1) count
+    else if list-at stones nb /= color then go-size-ns-loop stones color visited ns n (i + 1) count
+    else let visited2 = list-set-at visited nb 1
+    in let ns2 = go-neighbors nb
+    in let count2 = go-size-ns-loop stones color visited2 ns2 (list-length ns2) 0 (count + 1)
+    in go-size-ns-loop stones color visited2 ns n (i + 1) count2
+
+Section: Place Stone
+
+  go-place-stone : GoBoard, Integer -> GoBoard
+  go-place-stone (b) (i) =
+    if b.game-over then b
+    else if i < 0 then
+      let new-passes = b.passes + 1
+      in let over = new-passes >= 2
+      in let bs = if over then go-score-black (b.stones) 0 else b.black-score
+      in let ws = if over then go-score-white (b.stones) 0 else b.white-score
+      in GoBoard { stones = b.stones, current-player = if b.current-player == 1 then 2 else 1,
+                   black-captures = b.black-captures, white-captures = b.white-captures,
+                   passes = new-passes, game-over = over,
+                   black-score = bs, white-score = ws, ko-point = (-1) }
+    else if go-in-bounds i == False then b
+    else if list-at (b.stones) i /= 0 then b
+    else if i == b.ko-point then b
+    else let stones2 = list-set-at (b.stones) i (b.current-player)
+    in let opponent = if b.current-player == 1 then 2 else 1
+    in let libs-self = count-liberties stones2 i (b.current-player)
+    in if libs-self == 0 then b
+    else let cap-result = go-capture-neighbors-of stones2 i opponent
+    in let stones3 = cap-result.stones
+    in let captured = cap-result.count
+    in let bc2 = if b.current-player == 1 then b.black-captures + captured else b.black-captures
+    in let wc2 = if b.current-player == 2 then b.white-captures + captured else b.white-captures
+    in let new-ko = if captured == 1 then go-find-ko-point stones3 i opponent else (-1)
+    in let next = if b.current-player == 1 then 2 else 1
+    in GoBoard { stones = stones3, current-player = next,
+                 black-captures = bc2, white-captures = wc2,
+                 passes = 0, game-over = False,
+                 black-score = 0, white-score = 0, ko-point = new-ko }
+
+  CaptureResult = record {
+    stones : List Integer,
+    count  : Integer
+  }
+
+  go-capture-neighbors-of : List Integer, Integer, Integer -> CaptureResult
+  go-capture-neighbors-of (stones) (i) (enemy) =
+    let ns = go-neighbors i
+    in go-cap-ns-loop stones enemy ns (list-length ns) 0 0
+
+  go-cap-ns-loop : List Integer, Integer, List Integer, Integer, Integer, Integer -> CaptureResult
+  go-cap-ns-loop (stones) (enemy) (ns) (n) (i) (total) =
+    if i >= n then CaptureResult { stones = stones, count = total }
+    else let nb = list-at ns i
+    in if go-in-bounds nb == False then go-cap-ns-loop stones enemy ns n (i + 1) total
+    else if list-at stones nb /= enemy then go-cap-ns-loop stones enemy ns n (i + 1) total
+    else let libs = count-liberties stones nb enemy
+    in if libs > 0 then go-cap-ns-loop stones enemy ns n (i + 1) total
+    else let sz = count-group-size stones nb enemy
+    in let stones2 = capture-group stones nb enemy
+    in go-cap-ns-loop stones2 enemy ns n (i + 1) (total + sz)
+
+  go-find-ko-point : List Integer, Integer, Integer -> Integer
+  go-find-ko-point (stones) (near) (color) =
+    let ns = go-neighbors near
+    in go-find-ko-ns stones color ns (list-length ns) 0
+
+  go-find-ko-ns : List Integer, Integer, List Integer, Integer, Integer -> Integer
+  go-find-ko-ns (stones) (color) (ns) (n) (i) =
+    if i >= n then (-1)
+    else let nb = list-at ns i
+    in if go-in-bounds nb == False then go-find-ko-ns stones color ns n (i + 1)
+    else if list-at stones nb == 0 then nb
+    else go-find-ko-ns stones color ns n (i + 1)
+
+Section: Scoring
+
+  go-score-black : List Integer, Integer -> Integer
+  go-score-black (stones) (acc) =
+    go-score-black-loop stones 0 acc
+
+  go-score-black-loop : List Integer, Integer, Integer -> Integer
+  go-score-black-loop (stones) (i) (acc) =
+    if i >= 81 then acc
+    else let v = list-at stones i
+    in let delta = if v == 1 then 1 else if v == 0 then go-territory-black stones i else 0
+    in go-score-black-loop stones (i + 1) (acc + delta)
+
+  go-score-white : List Integer, Integer -> Integer
+  go-score-white (stones) (acc) =
+    go-score-white-loop stones 0 acc
+
+  go-score-white-loop : List Integer, Integer, Integer -> Integer
+  go-score-white-loop (stones) (i) (acc) =
+    if i >= 81 then acc
+    else let v = list-at stones i
+    in let delta = if v == 2 then 1 else if v == 0 then go-territory-white stones i else 0
+    in go-score-white-loop stones (i + 1) (acc + delta)
+
+  go-territory-black : List Integer, Integer -> Integer
+  go-territory-black (stones) (i) =
+    let ns = go-neighbors i
+    in let adj-black = go-count-color-adj stones ns (list-length ns) 0 1 0
+    in let adj-white = go-count-color-adj stones ns (list-length ns) 0 2 0
+    in if adj-black > 0 & adj-white == 0 then 1 else 0
+
+  go-territory-white : List Integer, Integer -> Integer
+  go-territory-white (stones) (i) =
+    let ns = go-neighbors i
+    in let adj-black = go-count-color-adj stones ns (list-length ns) 0 1 0
+    in let adj-white = go-count-color-adj stones ns (list-length ns) 0 2 0
+    in if adj-white > 0 & adj-black == 0 then 1 else 0
+
+  go-count-color-adj : List Integer, List Integer, Integer, Integer, Integer, Integer -> Integer
+  go-count-color-adj (stones) (ns) (n) (i) (color) (acc) =
+    if i >= n then acc
+    else let nb = list-at ns i
+    in let delta = if go-in-bounds nb & list-at stones nb == color then 1 else 0
+    in go-count-color-adj stones ns n (i + 1) color (acc + delta)
+
+Section: AI
+
+  go-ai-move : GoBoard, Rng -> Integer
+  go-ai-move (b) (rng) =
+    let cap = go-find-capture b
+    in if cap >= 0 then cap
+    else let center = go-try-center b
+    in if center >= 0 then center
+    else go-random-legal b rng 0 81
+
+  go-find-capture : GoBoard -> Integer
+  go-find-capture (b) =
+    go-find-cap-loop b 0
+
+  go-find-cap-loop : GoBoard, Integer -> Integer
+  go-find-cap-loop (b) (i) =
+    if i >= 81 then (-1)
+    else if list-at (b.stones) i /= 0 then go-find-cap-loop b (i + 1)
+    else if i == b.ko-point then go-find-cap-loop b (i + 1)
+    else let stones2 = list-set-at (b.stones) i (b.current-player)
+    in let libs-self = count-liberties stones2 i (b.current-player)
+    in if libs-self == 0 then go-find-cap-loop b (i + 1)
+    else let opp = if b.current-player == 1 then 2 else 1
+    in let ns = go-neighbors i
+    in if go-has-capturable stones2 ns (list-length ns) 0 opp then i
+    else go-find-cap-loop b (i + 1)
+
+  go-has-capturable : List Integer, List Integer, Integer, Integer, Integer -> Boolean
+  go-has-capturable (stones) (ns) (n) (i) (enemy) =
+    if i >= n then False
+    else let nb = list-at ns i
+    in if go-in-bounds nb == False then go-has-capturable stones ns n (i + 1) enemy
+    else if list-at stones nb /= enemy then go-has-capturable stones ns n (i + 1) enemy
+    else if count-liberties stones nb enemy == 0 then True
+    else go-has-capturable stones ns n (i + 1) enemy
+
+  go-try-center : GoBoard -> Integer
+  go-try-center (b) =
+    go-try-center-loop b 0 go-center-points
+
+  go-center-points : List Integer
+  go-center-points = [40, 30, 32, 48, 50, 20, 22, 60, 62]
+
+  go-try-center-loop : GoBoard, Integer, List Integer -> Integer
+  go-try-center-loop (b) (i) (pts) =
+    if i >= list-length pts then (-1)
+    else let p = list-at pts i
+    in if list-at (b.stones) p /= 0 then go-try-center-loop b (i + 1) pts
+    else if p == b.ko-point then go-try-center-loop b (i + 1) pts
+    else let stones2 = list-set-at (b.stones) p (b.current-player)
+    in let libs = count-liberties stones2 p (b.current-player)
+    in if libs > 0 then p
+    else go-try-center-loop b (i + 1) pts
+
+  go-random-legal : GoBoard, Rng, Integer, Integer -> Integer
+  go-random-legal (b) (rng) (tried) (limit) =
+    if tried >= limit then (-1)
+    else let rng2 = rng-next rng
+    in let i = rng-mod (rng-value rng2) 81
+    in if list-at (b.stones) i /= 0 then go-random-legal b rng2 (tried + 1) limit
+    else if i == b.ko-point then go-random-legal b rng2 (tried + 1) limit
+    else let stones2 = list-set-at (b.stones) i (b.current-player)
+    in let libs = count-liberties stones2 i (b.current-player)
+    in if libs == 0 then go-random-legal b rng2 (tried + 1) limit
+    else i
+
+Section: Game Runner
+
+  run-go-game : GoResult
+  run-go-game =
+    let b = go-new
+    in let rng = rng-new 42
+    in go-loop b rng 0
+
+  go-loop : GoBoard, Rng, Integer -> GoResult
+  go-loop (b) (rng) (moves) =
+    if b.game-over then make-go-result b moves
+    else if moves > 200 then make-go-result b moves
+    else let mv = go-ai-move b rng
+    in let next = go-place-stone b mv
+    in let rng2 = rng-next rng
+    in go-loop next rng2 (moves + 1)
+
+  make-go-result : GoBoard, Integer -> GoResult
+  make-go-result (b) (moves) =
+    let bs = if b.black-score > 0 then b.black-score else go-score-black (b.stones) 0
+    in let ws = if b.white-score > 0 then b.white-score else go-score-white (b.stones) 0
+    in let w = if bs > ws + 6 then 1 else if ws + 6 > bs then 2 else 0
+    in GoResult { black-score = bs, white-score = ws,
+                  black-captures = b.black-captures, white-captures = b.white-captures,
+                  winner = w, moves-made = moves }
+
+Section: Formatting
+
+  format-go-result : GoResult -> Text
+  format-go-result (r) =
+    let w = if r.winner == 1 then "Black wins"
+            else if r.winner == 2 then "White wins (komi)"
+            else "Draw"
+    in "Go 9x9 (AI vs AI): " & w &
+       " B=" & show (r.black-score) & " W=" & show (r.white-score) &
+       " caps=(" & show (r.black-captures) & "/" & show (r.white-captures) & ")" &
+       " moves=" & show (r.moves-made)
+
+Page 1

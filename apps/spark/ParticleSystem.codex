@@ -1,0 +1,318 @@
+Chapter: ParticleSystem
+  cites Math chapter Quaternion
+  cites Game chapter Rasterizer
+
+ GPU-style particle system for visual effects. Particles have
+ position, velocity, life, color, and size. The emitter spawns
+ particles each frame; the updater advances physics and kills
+ expired ones. All values fixed-point scale 1000.
+
+ We say:
+
+Section: Types
+
+  Particle = record {
+    ptl-x : Integer,
+    ptl-y : Integer,
+    ptl-z : Integer,
+    ptl-vx : Integer,
+    ptl-vy : Integer,
+    ptl-vz : Integer,
+    ptl-life : Integer,
+    ptl-max-life : Integer,
+    ptl-color : Integer,
+    ptl-size : Integer,
+    ptl-alive : Boolean
+  }
+
+  EmitterShape =
+    | EmitPoint
+    | EmitSphere (Integer)
+    | EmitCone (Integer) (Integer)
+    | EmitBox (Integer) (Integer) (Integer)
+
+  EmitterConfig = record {
+    ec-shape : EmitterShape,
+    ec-rate : Integer,
+    ec-speed-min : Integer,
+    ec-speed-max : Integer,
+    ec-life-min : Integer,
+    ec-life-max : Integer,
+    ec-size-start : Integer,
+    ec-size-end : Integer,
+    ec-color-start : Integer,
+    ec-color-end : Integer,
+    ec-gravity : Integer
+  }
+
+  ParticlePool = record {
+    pp-particles : List Particle,
+    pp-count : Integer,
+    pp-max : Integer,
+    pp-spawn-accum : Integer,
+    pp-config : EmitterConfig,
+    pp-origin : Vec3,
+    pp-frame : Integer
+  }
+
+Section: Construction
+
+  emitter-config-default : EmitterConfig
+  emitter-config-default = EmitterConfig {
+    ec-shape = EmitPoint,
+    ec-rate = 10,
+    ec-speed-min = 100,
+    ec-speed-max = 500,
+    ec-life-min = 30,
+    ec-life-max = 90,
+    ec-size-start = 4,
+    ec-size-end = 1,
+    ec-gravity = -10,
+    ec-color-start = 16776960,
+    ec-color-end = 16711680
+  }
+
+  emitter-fire : EmitterConfig
+  emitter-fire = EmitterConfig {
+    ec-shape = EmitCone 200 300,
+    ec-rate = 20,
+    ec-speed-min = 200,
+    ec-speed-max = 800,
+    ec-life-min = 20,
+    ec-life-max = 60,
+    ec-size-start = 6,
+    ec-size-end = 2,
+    ec-gravity = -5,
+    ec-color-start = 16776960,
+    ec-color-end = 16711680
+  }
+
+  emitter-snow : EmitterConfig
+  emitter-snow = EmitterConfig {
+    ec-shape = EmitBox 5000 0 5000,
+    ec-rate = 15,
+    ec-speed-min = 20,
+    ec-speed-max = 80,
+    ec-life-min = 120,
+    ec-life-max = 300,
+    ec-size-start = 3,
+    ec-size-end = 3,
+    ec-gravity = -2,
+    ec-color-start = 16777215,
+    ec-color-end = 14540253
+  }
+
+  emitter-sparks : EmitterConfig
+  emitter-sparks = EmitterConfig {
+    ec-shape = EmitSphere 100,
+    ec-rate = 30,
+    ec-speed-min = 500,
+    ec-speed-max = 2000,
+    ec-life-min = 10,
+    ec-life-max = 30,
+    ec-size-start = 2,
+    ec-size-end = 1,
+    ec-gravity = -30,
+    ec-color-start = 16777100,
+    ec-color-end = 16744448
+  }
+
+  particle-pool-new : EmitterConfig, Integer, Vec3 -> ParticlePool
+  particle-pool-new (cfg) (max-particles) (origin) = ParticlePool {
+    pp-particles = [],
+    pp-count = 0,
+    pp-max = max-particles,
+    pp-spawn-accum = 0,
+    pp-config = cfg,
+    pp-origin = origin,
+    pp-frame = 0
+  }
+
+Section: Spawn
+
+  particle-dead : Particle
+  particle-dead = Particle {
+    ptl-x = 0, ptl-y = 0, ptl-z = 0,
+    ptl-vx = 0, ptl-vy = 0, ptl-vz = 0,
+    ptl-life = 0, ptl-max-life = 0,
+    ptl-color = 0, ptl-size = 0, ptl-alive = False
+  }
+
+  particle-spawn : EmitterConfig, Vec3, Integer -> Particle
+  particle-spawn (cfg) (origin) (seed) =
+    let speed = cfg.ec-speed-min + ptl-pseudo-rand seed (cfg.ec-speed-max - cfg.ec-speed-min)
+    in let life = cfg.ec-life-min + ptl-pseudo-rand (seed + 7) (cfg.ec-life-max - cfg.ec-life-min)
+    in let vx = ptl-pseudo-rand (seed + 13) speed - speed / 2
+    in let vy = speed
+    in let vz = ptl-pseudo-rand (seed + 19) speed - speed / 2
+    in Particle {
+      ptl-x = origin.vx,
+      ptl-y = origin.vy,
+      ptl-z = origin.vz,
+      ptl-vx = vx,
+      ptl-vy = vy,
+      ptl-vz = vz,
+      ptl-life = life,
+      ptl-max-life = life,
+      ptl-color = cfg.ec-color-start,
+      ptl-size = cfg.ec-size-start,
+      ptl-alive = True
+    }
+
+  ptl-pseudo-rand : Integer, Integer -> Integer
+  ptl-pseudo-rand (seed) (range) =
+    if range <= 0 then 0
+    else let h = seed * 1103515245 + 12345
+    in let abs-h = if h < 0 then 0 - h else h
+    in abs-h - abs-h / range * range
+
+Section: Update
+
+  particle-pool-tick : ParticlePool -> ParticlePool
+  particle-pool-tick (pool) =
+    let updated = ptl-update-all (pool.pp-particles) (pool.pp-count) (pool.pp-config) 0 [] 0
+    in let alive-count = ptl-list-fst updated
+    in let alive-list = ptl-list-snd updated
+    in let accum = pool.pp-spawn-accum + pool.pp-config.ec-rate
+    in let to-spawn = accum / 10
+    in let new-accum = accum - to-spawn * 10
+    in let spawned = ptl-spawn-batch (pool.pp-config) (pool.pp-origin) alive-list alive-count (pool.pp-max) to-spawn (pool.pp-frame * 37)
+    in ParticlePool {
+      pp-particles = ptl-spawn-snd spawned,
+      pp-count = ptl-spawn-fst spawned,
+      pp-max = pool.pp-max,
+      pp-spawn-accum = new-accum,
+      pp-config = pool.pp-config,
+      pp-origin = pool.pp-origin,
+      pp-frame = pool.pp-frame + 1
+    }
+
+  ptl-update-all : List Particle, Integer, EmitterConfig, Integer, List Particle, Integer -> List Particle
+  ptl-update-all (particles) (count) (cfg) (i) (acc) (alive) =
+    if i >= count then ptl-make-pair alive acc
+    else let p = list-at particles i
+    in if p.ptl-alive then
+      let updated = ptl-update-one p cfg
+      in if updated.ptl-alive then ptl-update-all particles count cfg (i + 1) (list-push acc updated) (alive + 1)
+      else ptl-update-all particles count cfg (i + 1) acc alive
+    else ptl-update-all particles count cfg (i + 1) acc alive
+
+  ptl-update-one : Particle, EmitterConfig -> Particle
+  ptl-update-one (p) (cfg) =
+    let new-life = p.ptl-life - 1
+    in if new-life <= 0 then __record-set p "ptl-alive" False
+    else let t = (p.ptl-max-life - new-life) * 1000 / p.ptl-max-life
+    in let new-size = cfg.ec-size-start + (cfg.ec-size-end - cfg.ec-size-start) * t / 1000
+    in Particle {
+      ptl-x = p.ptl-x + p.ptl-vx,
+      ptl-y = p.ptl-y + p.ptl-vy,
+      ptl-z = p.ptl-z + p.ptl-vz,
+      ptl-vx = p.ptl-vx,
+      ptl-vy = p.ptl-vy + cfg.ec-gravity,
+      ptl-vz = p.ptl-vz,
+      ptl-life = new-life,
+      ptl-max-life = p.ptl-max-life,
+      ptl-color = ptl-lerp-color (cfg.ec-color-start) (cfg.ec-color-end) t,
+      ptl-size = new-size,
+      ptl-alive = True
+    }
+
+  ptl-spawn-batch : EmitterConfig, Vec3, List Particle, Integer, Integer, Integer, Integer -> List Particle
+  ptl-spawn-batch (cfg) (origin) (list) (count) (max) (remaining) (seed) =
+    if remaining <= 0 then ptl-make-pair count list
+    else if count >= max then ptl-make-pair count list
+    else let p = particle-spawn cfg origin seed
+    in ptl-spawn-batch cfg origin (list-push list p) (count + 1) max (remaining - 1) (seed + 23)
+
+Section: Rendering
+
+  particle-pool-render : Framebuf, ParticlePool, Integer, Integer -> Framebuf
+  particle-pool-render (fb) (pool) (vp-w) (vp-h) =
+    ptl-render-loop fb (pool.pp-particles) (pool.pp-count) vp-w vp-h 0
+
+  ptl-render-loop : Framebuf, List Particle, Integer, Integer, Integer, Integer -> Framebuf
+  ptl-render-loop (fb) (particles) (count) (vp-w) (vp-h) (i) =
+    if i >= count then fb
+    else let p = list-at particles i
+    in let fb2 = if p.ptl-alive then ptl-render-one fb p vp-w vp-h else fb
+    in ptl-render-loop fb2 particles count vp-w vp-h (i + 1)
+
+  ptl-render-one : Framebuf, Particle, Integer, Integer -> Framebuf
+  ptl-render-one (fb) (p) (vp-w) (vp-h) =
+    let sx = p.ptl-x * vp-w / 10000 + vp-w / 2
+    in let sy = vp-h / 2 - p.ptl-y * vp-h / 10000
+    in if sx < 0 then fb
+    else if sx >= vp-w then fb
+    else if sy < 0 then fb
+    else if sy >= vp-h then fb
+    else ptl-draw-square fb sx sy (p.ptl-size) (p.ptl-color) vp-w vp-h
+
+  ptl-draw-square : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  ptl-draw-square (fb) (cx) (cy) (half) (color) (w) (h) =
+    ptl-sq-row fb cx cy half color w h (0 - half)
+
+  ptl-sq-row : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  ptl-sq-row (fb) (cx) (cy) (half) (color) (w) (h) (dy) =
+    if dy > half then fb
+    else let y = cy + dy
+    in let fb2 = if y >= 0 then if y < h then ptl-sq-col fb cx y half color w 0 (0 - half) else fb else fb
+    in ptl-sq-row fb2 cx cy half color w h (dy + 1)
+
+  ptl-sq-col : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Framebuf
+  ptl-sq-col (fb) (cx) (y) (half) (color) (w) (dummy) (dx) =
+    if dx > half then fb
+    else let x = cx + dx
+    in let fb2 = if x >= 0 then if x < w then fb-set fb x y color else fb else fb
+    in ptl-sq-col fb2 cx y half color w dummy (dx + 1)
+
+Section: Pair Encoding
+
+  ptl-make-pair : Integer, List Particle -> List Particle
+  ptl-make-pair (count) (list) =
+    list-push (list-push list (Particle { ptl-x = count, ptl-y = 0, ptl-z = 0, ptl-vx = 0, ptl-vy = 0, ptl-vz = 0, ptl-life = 0, ptl-max-life = 0, ptl-color = 0, ptl-size = 0, ptl-alive = False })) particle-dead
+
+  ptl-list-fst : List Particle -> Integer
+  ptl-list-fst (encoded) =
+    let sentinel = list-at encoded (list-length encoded - 2)
+    in sentinel.ptl-x
+
+  ptl-list-snd : List Particle -> List Particle
+  ptl-list-snd (encoded) =
+    ptl-take encoded (list-length encoded - 2) 0 []
+
+  ptl-spawn-fst : List Particle -> Integer
+  ptl-spawn-fst (encoded) = ptl-list-fst encoded
+
+  ptl-spawn-snd : List Particle -> List Particle
+  ptl-spawn-snd (encoded) = ptl-list-snd encoded
+
+  ptl-take : List Particle, Integer, Integer, List Particle -> List Particle
+  ptl-take (src) (n) (i) (acc) =
+    if i >= n then acc
+    else ptl-take src n (i + 1) (list-push acc (list-at src i))
+
+Section: Color Helpers
+
+  ptl-lerp-color : Integer, Integer, Integer -> Integer
+  ptl-lerp-color (a) (b) (t) =
+    let ar = a / 65536
+    in let ag = a / 256 - ar * 256
+    in let ab = a - a / 256 * 256
+    in let br2 = b / 65536
+    in let bg = b / 256 - br2 * 256
+    in let bb = b - b / 256 * 256
+    in let rr = ar + (br2 - ar) * t / 1000
+    in let rg = ag + (bg - ag) * t / 1000
+    in let rb = ab + (bb - ab) * t / 1000
+    in ptl-clamp rr 0 255 * 65536 + ptl-clamp rg 0 255 * 256 + ptl-clamp rb 0 255
+
+  ptl-clamp : Integer, Integer, Integer -> Integer
+  ptl-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Section: Info
+
+  particle-pool-info : ParticlePool -> Text
+  particle-pool-info (pool) =
+    show (pool.pp-count) & "/" & show (pool.pp-max) & " particles, frame " & show (pool.pp-frame)
+
+Page 1

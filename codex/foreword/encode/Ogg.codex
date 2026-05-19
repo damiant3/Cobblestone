@@ -1,0 +1,105 @@
+Chapter: Ogg
+
+ OGG container encoder. Page-based transport format for Vorbis,
+ Opus, and other codecs. Produces valid OGG page headers with
+ CRC32 checksums. Each page holds one or more segments.
+
+ We say:
+
+Section: Constants
+  ogg-magic : List Integer = [79, 103, 103, 83]
+  ogg-version : Integer = 0
+
+Section: Types
+  OggPage = record {
+    op-granule : Integer,
+    op-serial : Integer,
+    op-sequence : Integer,
+    op-segments : List (List Integer),
+    op-is-first : Boolean,
+    op-is-last : Boolean
+  }
+
+Section: Page Encoding
+  ogg-encode-page : OggPage -> List Integer
+  ogg-encode-page (page) =
+    let seg-data = ogg-concat-segments (page.op-segments) 0 (list-length (page.op-segments)) []
+    in let seg-table = ogg-segment-table (page.op-segments) 0 (list-length (page.op-segments)) []
+    in let num-segs = list-length seg-table
+    in let flags = ogg-flags (page.op-is-first) (page.op-is-last)
+    in let header-no-crc = ogg-magic & [ogg-version, flags] & ogg-le64 (page.op-granule) & ogg-le32 (page.op-serial) & ogg-le32 (page.op-sequence) & [0, 0, 0, 0] & [num-segs] & seg-table
+    in let full-no-crc = header-no-crc & seg-data
+    in let crc = ogg-crc32 full-no-crc
+    in ogg-set-crc full-no-crc crc
+
+  ogg-flags : Boolean, Boolean -> Integer
+  ogg-flags (first) (last) =
+    let f = if first then 2 else 0
+    in let l = if last then 4 else 0
+    in bit-or f l
+
+  ogg-segment-table : List (List Integer), Integer, Integer, List Integer -> List Integer
+  ogg-segment-table (segs) (i) (n) (acc) =
+    if i >= n then acc
+    else let seg-len = list-length (list-at segs i)
+    in let entries = ogg-seg-entries seg-len []
+    in ogg-segment-table segs (i + 1) n (acc & entries)
+
+  ogg-seg-entries : Integer, List Integer -> List Integer
+  ogg-seg-entries (remaining) (acc) =
+    if remaining >= 255 then ogg-seg-entries (remaining - 255) (list-push acc 255)
+    else list-push acc remaining
+
+  ogg-concat-segments : List (List Integer), Integer, Integer, List Integer -> List Integer
+  ogg-concat-segments (segs) (i) (n) (acc) =
+    if i >= n then acc
+    else ogg-concat-segments segs (i + 1) n (acc & list-at segs i)
+
+  ogg-set-crc : List Integer, Integer -> List Integer
+  ogg-set-crc (page) (crc) =
+    let p1 = list-set-at page 22 (bit-and crc 255)
+    in let p2 = list-set-at p1 23 (bit-and (bit-shr crc 8) 255)
+    in let p3 = list-set-at p2 24 (bit-and (bit-shr crc 16) 255)
+    in list-set-at p3 25 (bit-and (bit-shr crc 24) 255)
+
+Section: OGG CRC32 (polynomial 0x04C11DB7)
+  ogg-crc32 : List Integer -> Integer
+  ogg-crc32 (data) = ogg-crc-loop data 0 (list-length data) 0
+
+  ogg-crc-loop : List Integer, Integer, Integer, Integer -> Integer
+  ogg-crc-loop (data) (i) (n) (crc) =
+    if i >= n then crc
+    else let byte = list-at data i
+    in let idx = bit-and (bit-xor (bit-shru crc 24) byte) 255
+    in let new-crc = bit-xor (bit-shl crc 8) (ogg-crc-table-val idx)
+    in ogg-crc-loop data (i + 1) n (bit-and new-crc 4294967295)
+
+  ogg-crc-table-val : Integer -> Integer
+  ogg-crc-table-val (idx) =
+    let r = bit-shl idx 24
+    in ogg-crc-reduce r 0
+
+  ogg-crc-reduce : Integer, Integer -> Integer
+  ogg-crc-reduce (r) (bit) =
+    if bit >= 8 then r
+    else if bit-and r 2147483648 > 0 then ogg-crc-reduce (bit-xor (bit-shl r 1) 79764919) (bit + 1)
+    else ogg-crc-reduce (bit-shl r 1) (bit + 1)
+
+Section: Multi-Page Stream
+  ogg-encode-stream : Integer, List (List Integer) -> List Integer
+  ogg-encode-stream (serial) (packets) = ogg-stream-loop serial packets 0 (list-length packets) []
+
+  ogg-stream-loop : Integer, List (List Integer), Integer, Integer, List Integer -> List Integer
+  ogg-stream-loop (serial) (packets) (i) (n) (acc) =
+    if i >= n then acc
+    else let page = OggPage { op-granule = i, op-serial = serial, op-sequence = i, op-segments = [list-at packets i], op-is-first = i == 0, op-is-last = i + 1 >= n }
+    in ogg-stream-loop serial packets (i + 1) n (acc & ogg-encode-page page)
+
+Section: Helpers
+  ogg-le32 : Integer -> List Integer
+  ogg-le32 (v) = [bit-and v 255, bit-and (bit-shr v 8) 255, bit-and (bit-shr v 16) 255, bit-and (bit-shr v 24) 255]
+
+  ogg-le64 : Integer -> List Integer
+  ogg-le64 (v) = ogg-le32 v & ogg-le32 (bit-shr v 32)
+
+Page 1

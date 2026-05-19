@@ -1,0 +1,75 @@
+Chapter: ShellSessionTest
+  cites Codex chapter General
+  cites OS chapter ShellCore
+  cites OS chapter ProgramRegistry
+  cites Verify chapter VerifiedLoader
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter FactStore
+  cites Foreword chapter Fuel
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+Section: Test Data
+  test-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  hello-binary : List Integer
+  hello-binary =
+    cdx-encode-signed (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [
+        CdxCapability { cap-id = cdx-cap-console, direction = cdx-dir-write, scope = "/", max-duration = 0 }
+      ],
+      effects = ["Console"],
+      text-bytes = [144, 195],
+      rodata-bytes = [],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 5000
+    }) test-sk
+
+  author-key : Text = read-author-key hello-binary
+
+Section: Phase Helpers
+
+  setup-state : ShellState
+  setup-state =
+    let s0 = shell-init (policy-empty "codex-os") 100
+    in let r1 = execute-cmd (CmdAddRule "allow-console" "Console" 2) s0
+    in let r2 = execute-cmd (CmdTrust author-key 10000) (r1.new-state)
+    in r2.new-state
+
+  installed-state : ShellState
+  installed-state =
+    let r = execute-cmd (CmdInstall "hello" hello-binary) setup-state
+    in r.new-state
+
+Section: Session
+
+  opening : [Console] Nothing = act
+    let ri = execute-cmd (CmdInstall "hello" hello-binary) setup-state
+    in let rd = execute-cmd (CmdInstall "hello" hello-binary) installed-state
+    in let rl = execute-cmd CmdListPrograms installed-state
+    in let rr = execute-cmd (CmdRun "hello") installed-state
+    in let rs = execute-cmd (CmdStatus "hello") installed-state
+    in let rv = execute-cmd (CmdRevoke "hello" 4) installed-state
+    in let rm = execute-cmd (CmdRun "missing") installed-state
+    in let ru = execute-cmd (CmdUntrust author-key) installed-state
+    in let rf = execute-cmd (CmdInstall "hello2" hello-binary) (ru.new-state)
+    in act
+      print-line-uni (ri.output)
+      print-line-uni (rd.output)
+      print-line-uni (rl.output)
+      print-line-uni (rr.output)
+      print-line-uni (rs.output)
+      print-line-uni (rv.output)
+      print-line-uni (rm.output)
+      print-line-uni (rf.output)
+    end
+  end

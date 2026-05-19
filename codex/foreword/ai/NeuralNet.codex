@@ -1,0 +1,101 @@
+Chapter: NeuralNet
+  cites AI chapter Tensor
+  cites AI chapter Activation
+
+ Feedforward neural network inference. Fixed-point (scale 1000).
+ Layers are weight matrices + bias vectors. Forward pass is
+ matmul + bias + activation. Supports stacking arbitrary layers
+ for MLP inference from pre-trained weights.
+
+ We say:
+
+Section: Layer
+  NnLayer = record {
+    weights : Tensor,
+    bias : Tensor,
+    activation : Integer
+  }
+
+  nn-act-none : Integer = 0
+  nn-act-relu : Integer = 1
+  nn-act-sigmoid : Integer = 2
+  nn-act-tanh : Integer = 3
+  nn-act-gelu : Integer = 4
+  nn-act-softmax : Integer = 5
+
+Section: Network
+  NeuralNetwork = record {
+    layers : List NnLayer,
+    num-layers : Integer
+  }
+
+Section: Construction
+  nn-new : NeuralNetwork
+  nn-new = NeuralNetwork { layers = [], num-layers = 0 }
+
+  nn-add-layer : NeuralNetwork, Tensor, Tensor, Integer -> NeuralNetwork
+  nn-add-layer (net) (weights) (bias) (activation) =
+    let layer = NnLayer { weights = weights, bias = bias, activation = activation }
+    in NeuralNetwork { layers = list-push (net.layers) layer, num-layers = net.num-layers + 1 }
+
+  nn-linear : Integer, Integer, List Integer, List Integer, Integer -> NnLayer
+  nn-linear (in-dim) (out-dim) (weight-data) (bias-data) (activation) =
+    NnLayer { weights = tensor-from out-dim in-dim weight-data, bias = tensor-from out-dim 1 bias-data, activation = activation }
+
+Section: Forward Pass
+  nn-forward : NeuralNetwork, Tensor -> Tensor
+  nn-forward (net) (input) = nn-forward-loop net input 0
+
+  nn-forward-loop : NeuralNetwork, Tensor, Integer -> Tensor
+  nn-forward-loop (net) (x) (i) =
+    if i >= net.num-layers then x
+    else let layer = list-at (net.layers) i
+    in let z = tensor-add (tensor-matmul (layer.weights) x) (layer.bias)
+    in let activated = nn-apply-activation z (layer.activation)
+    in nn-forward-loop net activated (i + 1)
+
+  nn-apply-activation : Tensor, Integer -> Tensor
+  nn-apply-activation (t) (act-type) =
+    if act-type == nn-act-relu then act-relu t
+    else if act-type == nn-act-sigmoid then act-sigmoid t
+    else if act-type == nn-act-tanh then act-tanh t
+    else if act-type == nn-act-gelu then act-gelu t
+    else if act-type == nn-act-softmax then act-softmax t
+    else t
+
+Section: Inference Helpers
+  nn-predict : NeuralNetwork, List Integer -> Integer
+  nn-predict (net) (input) =
+    let result = nn-forward net (tensor-vector input)
+    in tensor-argmax result
+
+  nn-predict-probs : NeuralNetwork, List Integer -> Tensor
+  nn-predict-probs (net) (input) =
+    let result = nn-forward net (tensor-vector input)
+    in act-softmax result
+
+Section: Layer Info
+  nn-layer-shape : NnLayer -> Text
+  nn-layer-shape (layer) = tensor-shape (layer.weights)
+
+  nn-summary : NeuralNetwork -> Text
+  nn-summary (net) = nn-summary-loop net 0 ""
+
+  nn-summary-loop : NeuralNetwork, Integer, Text -> Text
+  nn-summary-loop (net) (i) (acc) =
+    if i >= net.num-layers then acc
+    else let layer = list-at (net.layers) i
+    in let sep = if i == 0 then "" else " -> "
+    in nn-summary-loop net (i + 1) (acc & sep & nn-layer-shape layer)
+
+Section: Weight Statistics
+  nn-param-count : NeuralNetwork -> Integer
+  nn-param-count (net) = nn-count-params (net.layers) 0 (net.num-layers) 0
+
+  nn-count-params : List NnLayer, Integer, Integer, Integer -> Integer
+  nn-count-params (layers) (i) (len) (acc) =
+    if i >= len then acc
+    else let layer = list-at layers i
+    in nn-count-params layers (i + 1) len (acc + tensor-size (layer.weights) + tensor-size (layer.bias))
+
+Page 1

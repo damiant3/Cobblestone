@@ -1,0 +1,201 @@
+Chapter: Dhcp
+  cites Net chapter Udp
+  cites Net chapter Ethernet
+  cites Foreword chapter Maybe
+
+ DHCP client message construction and response parsing (RFC 2131).
+ Supports DISCOVER/REQUEST/ACK flow for IPv4 auto-configuration.
+ Pure logic — no I/O. Messages are UDP payloads on port 67/68.
+
+ We say:
+
+Section: Constants
+  dhcp-server-port : Integer = 67
+  dhcp-client-port : Integer = 68
+  dhcp-op-request : Integer = 1
+  dhcp-op-reply : Integer = 2
+  dhcp-htype-ethernet : Integer = 1
+  dhcp-hlen-ethernet : Integer = 6
+  dhcp-magic-cookie : List Integer = [99, 130, 83, 99]
+  dhcp-header-size : Integer = 236
+
+  dhcp-msg-discover : Integer = 1
+  dhcp-msg-offer : Integer = 2
+  dhcp-msg-request : Integer = 3
+  dhcp-msg-ack : Integer = 5
+  dhcp-msg-nak : Integer = 6
+
+  dhcp-opt-subnet : Integer = 1
+  dhcp-opt-router : Integer = 3
+  dhcp-opt-dns : Integer = 6
+  dhcp-opt-hostname : Integer = 12
+  dhcp-opt-requested-ip : Integer = 50
+  dhcp-opt-lease-time : Integer = 51
+  dhcp-opt-msg-type : Integer = 53
+  dhcp-opt-server-id : Integer = 54
+  dhcp-opt-end : Integer = 255
+
+Section: Lease Result
+  DhcpLease = record {
+    client-ip : List Integer,
+    subnet-mask : List Integer,
+    gateway : List Integer,
+    dns-server : List Integer,
+    server-id : List Integer,
+    lease-time : Integer,
+    msg-type : Integer,
+    valid : Boolean
+  }
+
+  dhcp-lease-empty : DhcpLease
+  dhcp-lease-empty = DhcpLease {
+    client-ip = [0, 0, 0, 0],
+    subnet-mask = [0, 0, 0, 0],
+    gateway = [0, 0, 0, 0],
+    dns-server = [0, 0, 0, 0],
+    server-id = [0, 0, 0, 0],
+    lease-time = 0,
+    msg-type = 0,
+    valid = False
+  }
+
+Section: Message Construction
+  dhcp-build-discover : Integer, List Integer -> List Integer
+  dhcp-build-discover (xid) (client-mac) =
+    dhcp-build-msg xid client-mac [0, 0, 0, 0] dhcp-msg-discover []
+
+  dhcp-build-request : Integer, List Integer, List Integer, List Integer -> List Integer
+  dhcp-build-request (xid) (client-mac) (requested-ip) (server-ip) =
+    let opts = [dhcp-opt-requested-ip, 4] & requested-ip & [dhcp-opt-server-id, 4] & server-ip
+    in dhcp-build-msg xid client-mac [0, 0, 0, 0] dhcp-msg-request opts
+
+  dhcp-build-msg : Integer, List Integer, List Integer, Integer, List Integer -> List Integer
+  dhcp-build-msg (xid) (client-mac) (ci-addr) (msg-type) (extra-opts) =
+    let header = [dhcp-op-request, dhcp-htype-ethernet, dhcp-hlen-ethernet, 0]
+    in let xid-bytes = dhcp-write-be32 xid
+    in let secs-flags = [0, 0, 0, 0]
+    in let ci = ci-addr
+    in let yi = [0, 0, 0, 0]
+    in let si = [0, 0, 0, 0]
+    in let gi = [0, 0, 0, 0]
+    in let chaddr = dhcp-pad-mac client-mac
+    in let sname = dhcp-zeros 64
+    in let file = dhcp-zeros 128
+    in let options = dhcp-magic-cookie & [dhcp-opt-msg-type, 1, msg-type] & extra-opts & [dhcp-opt-end]
+    in header & xid-bytes & secs-flags & ci & yi & si & gi & chaddr & sname & file & options
+
+  dhcp-pad-mac : List Integer -> List Integer
+  dhcp-pad-mac (mac) = mac & dhcp-zeros (16 - list-length mac)
+
+  dhcp-zeros : Integer -> List Integer
+  dhcp-zeros (n) = dhcp-zeros-loop n []
+
+  dhcp-zeros-loop : Integer, List Integer -> List Integer
+  dhcp-zeros-loop (n) (acc) =
+    if n <= 0 then acc
+    else dhcp-zeros-loop (n - 1) (list-push acc 0)
+
+  dhcp-write-be32 : Integer -> List Integer
+  dhcp-write-be32 (v) =
+    [bit-and (bit-shru v 24) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 8) 255, bit-and v 255]
+
+Section: Response Parsing
+  dhcp-parse-response : List Integer -> DhcpLease
+  dhcp-parse-response (data) =
+    let dlen = list-length data
+    in if dlen < dhcp-header-size + 4 then dhcp-lease-empty
+    else let op = list-at data 0
+    in if op /= dhcp-op-reply then dhcp-lease-empty
+    else let yi = [list-at data 16, list-at data 17, list-at data 18, list-at data 19]
+    in let opts-start = dhcp-header-size + 4
+    in dhcp-parse-options data opts-start dlen (DhcpLease {
+      client-ip = yi,
+      subnet-mask = [0, 0, 0, 0],
+      gateway = [0, 0, 0, 0],
+      dns-server = [0, 0, 0, 0],
+      server-id = [0, 0, 0, 0],
+      lease-time = 0,
+      msg-type = 0,
+      valid = True
+    })
+
+  dhcp-parse-options : List Integer, Integer, Integer, DhcpLease -> DhcpLease
+  dhcp-parse-options (data) (i) (dlen) (lease) =
+    if i >= dlen then lease
+    else let opt = list-at data i
+    in if opt == dhcp-opt-end then lease
+    else if opt == 0 then dhcp-parse-options data (i + 1) dlen lease
+    else if i + 1 >= dlen then lease
+    else let olen = list-at data (i + 1)
+    in let val-start = i + 2
+    in let next = val-start + olen
+    in let updated = dhcp-apply-option lease opt data val-start olen
+    in dhcp-parse-options data next dlen updated
+
+  dhcp-apply-option : DhcpLease, Integer, List Integer, Integer, Integer -> DhcpLease
+  dhcp-apply-option (lease) (opt) (data) (off) (olen) =
+    if opt == dhcp-opt-msg-type then
+      if olen >= 1 then DhcpLease { client-ip = lease.client-ip, subnet-mask = lease.subnet-mask, gateway = lease.gateway, dns-server = lease.dns-server, server-id = lease.server-id, lease-time = lease.lease-time, msg-type = list-at data off, valid = lease.valid }
+      else lease
+    else if opt == dhcp-opt-subnet then
+      if olen >= 4 then DhcpLease { client-ip = lease.client-ip, subnet-mask = dhcp-read-ip data off, gateway = lease.gateway, dns-server = lease.dns-server, server-id = lease.server-id, lease-time = lease.lease-time, msg-type = lease.msg-type, valid = lease.valid }
+      else lease
+    else if opt == dhcp-opt-router then
+      if olen >= 4 then DhcpLease { client-ip = lease.client-ip, subnet-mask = lease.subnet-mask, gateway = dhcp-read-ip data off, dns-server = lease.dns-server, server-id = lease.server-id, lease-time = lease.lease-time, msg-type = lease.msg-type, valid = lease.valid }
+      else lease
+    else if opt == dhcp-opt-dns then
+      if olen >= 4 then DhcpLease { client-ip = lease.client-ip, subnet-mask = lease.subnet-mask, gateway = lease.gateway, dns-server = dhcp-read-ip data off, server-id = lease.server-id, lease-time = lease.lease-time, msg-type = lease.msg-type, valid = lease.valid }
+      else lease
+    else if opt == dhcp-opt-server-id then
+      if olen >= 4 then DhcpLease { client-ip = lease.client-ip, subnet-mask = lease.subnet-mask, gateway = lease.gateway, dns-server = lease.dns-server, server-id = dhcp-read-ip data off, lease-time = lease.lease-time, msg-type = lease.msg-type, valid = lease.valid }
+      else lease
+    else if opt == dhcp-opt-lease-time then
+      if olen >= 4 then DhcpLease { client-ip = lease.client-ip, subnet-mask = lease.subnet-mask, gateway = lease.gateway, dns-server = lease.dns-server, server-id = lease.server-id, lease-time = dhcp-read-be32 data off, msg-type = lease.msg-type, valid = lease.valid }
+      else lease
+    else lease
+
+  dhcp-read-ip : List Integer, Integer -> List Integer
+  dhcp-read-ip (data) (off) =
+    [list-at data off, list-at data (off + 1), list-at data (off + 2), list-at data (off + 3)]
+
+  dhcp-read-be32 : List Integer, Integer -> Integer
+  dhcp-read-be32 (data) (off) =
+    let b0 = bit-shl (list-at data off) 24
+    in let b1 = bit-shl (list-at data (off + 1)) 16
+    in let b2 = bit-shl (list-at data (off + 2)) 8
+    in let b3 = list-at data (off + 3)
+    in bit-or b0 (bit-or b1 (bit-or b2 b3))
+
+Section: UDP Integration
+  dhcp-discover-udp : List Integer, Integer -> List Integer
+  dhcp-discover-udp (client-mac) (xid) =
+    let payload = dhcp-build-discover xid client-mac
+    in udp-build dhcp-client-port dhcp-server-port payload
+
+  dhcp-discover-frame : List Integer, Integer -> List Integer
+  dhcp-discover-frame (client-mac) (xid) =
+    let ip-pkt = udp-build-ip-packet [0, 0, 0, 0] [255, 255, 255, 255] dhcp-client-port dhcp-server-port (dhcp-build-discover xid client-mac)
+    in eth-build-frame mac-broadcast client-mac eth-type-ipv4 ip-pkt
+
+Section: Queries
+  dhcp-is-offer : DhcpLease -> Boolean
+  dhcp-is-offer (l) = l.valid & l.msg-type == dhcp-msg-offer
+
+  dhcp-is-ack : DhcpLease -> Boolean
+  dhcp-is-ack (l) = l.valid & l.msg-type == dhcp-msg-ack
+
+Section: Formatting
+  format-dhcp-lease : DhcpLease -> Text
+  format-dhcp-lease (l) =
+    "ip=" & format-dhcp-ip (l.client-ip)
+    & " mask=" & format-dhcp-ip (l.subnet-mask)
+    & " gw=" & format-dhcp-ip (l.gateway)
+    & " dns=" & format-dhcp-ip (l.dns-server)
+    & " lease=" & show (l.lease-time)
+
+  format-dhcp-ip : List Integer -> Text
+  format-dhcp-ip (ip) =
+    show (list-at ip 0) & "." & show (list-at ip 1) & "."
+    & show (list-at ip 2) & "." & show (list-at ip 3)
+
+Page 1

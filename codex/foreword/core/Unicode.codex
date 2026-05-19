@@ -1,0 +1,127 @@
+Chapter: Unicode
+  cites Foreword chapter CCE
+
+ Unicode boundary operations — casefolding, normalization stubs,
+ and grapheme/word/line boundary helpers. Operates at the I/O
+ boundary where CCE text meets external Unicode expectations.
+ Internal compiler operations stay in CCE; this chapter is for
+ display, comparison, and interchange.
+
+ Full NFC/NFD/NFKC/NFKD normalization requires the Unicode
+ Character Database tables (~1MB). This chapter provides the
+ algorithmic framework with ASCII-range fast paths. Full-table
+ normalization is a future extension.
+
+ To unicode-to-lower gives a lowercase copy of the text.
+ To unicode-to-upper gives an uppercase copy of the text.
+ To unicode-casefold gives a casefolded copy for comparison.
+ To unicode-word-boundaries gives word-break positions.
+
+ We say:
+
+Section: Case Conversion
+
+  unicode-to-lower : Text -> Text
+  unicode-to-lower (s) = uni-case-loop s 0 (text-length s) "" 0
+
+  unicode-to-upper : Text -> Text
+  unicode-to-upper (s) = uni-case-loop s 0 (text-length s) "" 1
+
+  unicode-casefold : Text -> Text
+  unicode-casefold (s) = unicode-to-lower s
+
+  uni-case-loop : Text, Integer, Integer, Text, Integer -> Text
+  uni-case-loop (s) (i) (len) (acc) (to-upper) =
+    if i >= len then acc
+    else let c = char-code (char-at s i)
+    in let u = to-unicode c
+    in let converted = if to-upper == 1 then uni-ascii-upper u else uni-ascii-lower u
+    in let cce = from-unicode converted
+    in uni-case-loop s (i + 1) len (acc & char-to-text (code-to-char cce)) to-upper
+
+  uni-ascii-lower : Integer -> Integer
+  uni-ascii-lower (cp) =
+    if cp >= 65 then if cp <= 90 then cp + 32 else cp
+    else cp
+
+  uni-ascii-upper : Integer -> Integer
+  uni-ascii-upper (cp) =
+    if cp >= 97 then if cp <= 122 then cp - 32 else cp
+    else cp
+
+Section: Case-Insensitive Comparison
+
+  unicode-eq-ci : Text, Text -> Boolean
+  unicode-eq-ci (a) (b) = unicode-casefold a == unicode-casefold b
+
+  unicode-compare-ci : Text, Text -> Integer
+  unicode-compare-ci (a) (b) = text-compare (unicode-casefold a) (unicode-casefold b)
+
+Section: Character Classification
+
+  uni-is-letter : Integer -> Boolean
+  uni-is-letter (cp) =
+    if cp >= 65 then if cp <= 90 then True
+    else if cp >= 97 then cp <= 122
+    else False
+    else False
+
+  uni-is-digit : Integer -> Boolean
+  uni-is-digit (cp) =
+    if cp >= 48 then cp <= 57 else False
+
+  uni-is-whitespace : Integer -> Boolean
+  uni-is-whitespace (cp) =
+    if cp == 32 then True
+    else if cp == 9 then True
+    else if cp == 10 then True
+    else if cp == 13 then True
+    else cp == 12
+
+  uni-is-alphanumeric : Integer -> Boolean
+  uni-is-alphanumeric (cp) =
+    if uni-is-letter cp then True else uni-is-digit cp
+
+Section: Word Boundaries
+
+  unicode-word-boundaries : Text -> List Integer
+  unicode-word-boundaries (s) =
+    uni-word-loop s 0 (text-length s) False []
+
+  uni-word-loop : Text, Integer, Integer, Boolean, List Integer -> List Integer
+  uni-word-loop (s) (i) (len) (in-word) (acc) =
+    if i >= len then if in-word then list-push acc i else acc
+    else let cp = to-unicode (char-code (char-at s i))
+    in let is-word = uni-is-alphanumeric cp
+    in if in-word then
+      if is-word then uni-word-loop s (i + 1) len True acc
+      else uni-word-loop s (i + 1) len False (list-push acc i)
+    else if is-word then uni-word-loop s (i + 1) len True (list-push acc i)
+    else uni-word-loop s (i + 1) len False acc
+
+Section: Grapheme Boundaries (ASCII fast path)
+
+  unicode-grapheme-count : Text -> Integer
+  unicode-grapheme-count (s) = text-length s
+
+  unicode-grapheme-at : Text, Integer -> Text
+  unicode-grapheme-at (s) (i) =
+    if i < 0 then ""
+    else if i >= text-length s then ""
+    else char-to-text (char-at s i)
+
+Section: Normalization Stubs
+
+  unicode-nfc : Text -> Text
+  unicode-nfc (s) = s
+
+  unicode-nfd : Text -> Text
+  unicode-nfd (s) = s
+
+  unicode-nfkc : Text -> Text
+  unicode-nfkc (s) = s
+
+  unicode-nfkd : Text -> Text
+  unicode-nfkd (s) = s
+
+Page 1

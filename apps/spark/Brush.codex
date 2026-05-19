@@ -1,0 +1,156 @@
+Chapter: Brush
+  cites Game chapter Rasterizer
+  cites Spark chapter Canvas
+
+ Brush engine for painting on a Canvas2D. Supports round and square
+ shapes with variable size, opacity, and hardness (soft edges).
+
+ We say:
+
+Section: Types
+
+  BrushShape =
+    | BrushRound
+    | BrushSquare
+
+  BrushSettings = record {
+    bs-size : Integer,
+    bs-color : Integer,
+    bs-opacity : Integer,
+    bs-hardness : Integer,
+    bs-shape : BrushShape,
+    bs-spacing : Integer
+  }
+
+Section: Construction
+
+  brush-default : BrushSettings
+  brush-default = BrushSettings {
+    bs-size = 8,
+    bs-color = 0,
+    bs-opacity = 1000,
+    bs-hardness = 1000,
+    bs-shape = BrushRound,
+    bs-spacing = 250
+  }
+
+  brush-new : Integer, Integer, Integer -> BrushSettings
+  brush-new (size) (color) (opacity) = BrushSettings {
+    bs-size = size,
+    bs-color = color,
+    bs-opacity = opacity,
+    bs-hardness = 1000,
+    bs-shape = BrushRound,
+    bs-spacing = 250
+  }
+
+  brush-set-size : BrushSettings, Integer -> BrushSettings
+  brush-set-size (b) (s) = __record-set b "bs-size" s
+
+  brush-set-color : BrushSettings, Integer -> BrushSettings
+  brush-set-color (b) (c) = __record-set b "bs-color" c
+
+  brush-set-hardness : BrushSettings, Integer -> BrushSettings
+  brush-set-hardness (b) (h) = __record-set b "bs-hardness" h
+
+Section: Stamp
+
+  brush-stamp : Canvas2D, BrushSettings, Integer, Integer -> Canvas2D
+  brush-stamp (cv) (br) (cx) (cy) =
+    let r = br.bs-size / 2
+    in when br.bs-shape
+      is BrushRound -> brush-stamp-round cv br cx cy r (-r)
+      is BrushSquare -> brush-stamp-square cv br cx cy r (-r)
+
+  brush-stamp-round : Canvas2D, BrushSettings, Integer, Integer, Integer, Integer -> Canvas2D
+  brush-stamp-round (cv) (br) (cx) (cy) (r) (dy) =
+    if dy > r then cv
+    else let cv2 = brush-stamp-round-row cv br cx cy r (-r) dy
+    in brush-stamp-round cv2 br cx cy r (dy + 1)
+
+  brush-stamp-round-row : Canvas2D, BrushSettings, Integer, Integer, Integer, Integer, Integer -> Canvas2D
+  brush-stamp-round-row (cv) (br) (cx) (cy) (r) (dx) (dy) =
+    if dx > r then cv
+    else let dist-sq = dx * dx + dy * dy
+    in let r-sq = r * r
+    in let cv2 = if dist-sq <= r-sq then
+        let falloff = if br.bs-hardness >= 1000 then br.bs-opacity
+          else let edge = brush-isqrt (dist-sq * 1000) * 1000 / (if r == 0 then 1 else r)
+          in let soft = 1000 - (edge - br.bs-hardness) * 1000 / (1000 - br.bs-hardness + 1)
+          in let clamped = if soft > br.bs-opacity then br.bs-opacity else if soft < 0 then 0 else soft
+          in clamped
+        in let px = cx + dx
+        in let py = cy + dy
+        in if falloff > 0 then brush-apply-pixel cv br px py falloff else cv
+      else cv
+    in brush-stamp-round-row cv2 br cx cy r (dx + 1) dy
+
+  brush-stamp-square : Canvas2D, BrushSettings, Integer, Integer, Integer, Integer -> Canvas2D
+  brush-stamp-square (cv) (br) (cx) (cy) (r) (dy) =
+    if dy > r then cv
+    else let cv2 = brush-stamp-sq-row cv br cx cy r (-r) dy
+    in brush-stamp-square cv2 br cx cy r (dy + 1)
+
+  brush-stamp-sq-row : Canvas2D, BrushSettings, Integer, Integer, Integer, Integer, Integer -> Canvas2D
+  brush-stamp-sq-row (cv) (br) (cx) (cy) (r) (dx) (dy) =
+    if dx > r then cv
+    else let cv2 = brush-apply-pixel cv br (cx + dx) (cy + dy) (br.bs-opacity)
+    in brush-stamp-sq-row cv2 br cx cy r (dx + 1) dy
+
+Section: Pixel Application
+
+  brush-apply-pixel : Canvas2D, BrushSettings, Integer, Integer, Integer -> Canvas2D
+  brush-apply-pixel (cv) (br) (x) (y) (alpha) =
+    if x < 0 then cv
+    else if y < 0 then cv
+    else if x >= cv.cv-width then cv
+    else if y >= cv.cv-height then cv
+    else let existing = canvas-get-pixel cv x y
+    in let blended = brush-lerp-color existing (br.bs-color) alpha
+    in canvas-set-pixel cv x y blended
+
+  brush-lerp-color : Integer, Integer, Integer -> Integer
+  brush-lerp-color (dst) (src) (alpha) =
+    let dr = dst / 65536
+    in let dg = dst / 256 - dr * 256
+    in let db = dst - dst / 256 * 256
+    in let sr = src / 65536
+    in let sg = src / 256 - sr * 256
+    in let sb = src - src / 256 * 256
+    in let fr = dr + (sr - dr) * alpha / 1000
+    in let fg = dg + (sg - dg) * alpha / 1000
+    in let fb2 = db + (sb - db) * alpha / 1000
+    in cv-clamp fr 0 255 * 65536 + cv-clamp fg 0 255 * 256 + cv-clamp fb2 0 255
+
+Section: Stroke
+
+  brush-stroke : Canvas2D, BrushSettings, Integer, Integer, Integer, Integer -> Canvas2D
+  brush-stroke (cv) (br) (x0) (y0) (x1) (y1) =
+    let dx = x1 - x0
+    in let dy = y1 - y0
+    in let dist = brush-isqrt ((dx * dx + dy * dy) * 1000)
+    in let step = if br.bs-spacing <= 0 then 1 else br.bs-size * br.bs-spacing / 1000
+    in let actual-step = if step < 1 then 1 else step
+    in let steps = if actual-step == 0 then 1 else dist / actual-step + 1
+    in brush-stroke-loop cv br x0 y0 dx dy steps 0 dist
+
+  brush-stroke-loop : Canvas2D, BrushSettings, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Canvas2D
+  brush-stroke-loop (cv) (br) (x0) (y0) (dx) (dy) (steps) (i) (dist) =
+    if i >= steps then cv
+    else let t = if steps <= 1 then 0 else i * 1000 / (steps - 1)
+    in let px = x0 + dx * t / 1000
+    in let py = y0 + dy * t / 1000
+    in let cv2 = brush-stamp cv br px py
+    in brush-stroke-loop cv2 br x0 y0 dx dy steps (i + 1) dist
+
+Section: Helpers
+
+  brush-isqrt : Integer -> Integer
+  brush-isqrt (n) = if n <= 0 then 0 else brush-isqrt-loop n (n / 2 + 1)
+
+  brush-isqrt-loop : Integer, Integer -> Integer
+  brush-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else brush-isqrt-loop n next
+
+Page 1

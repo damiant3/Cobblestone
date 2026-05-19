@@ -1,0 +1,50 @@
+Chapter: Crc32
+  cites Foreword chapter CCE (to-unicode)
+
+ CRC-32 (ISO 3309 / ITU-T V.42) checksum. Uses the standard
+ polynomial 0xEDB88320 (bit-reversed). Operates on List Integer
+ byte arrays.
+
+ We say:
+
+Section: Table
+  crc32-table : List Integer
+  crc32-table = crc32-build-table 0 []
+
+  crc32-build-table : Integer, List Integer -> List Integer
+  crc32-build-table (i) (acc) =
+    if i >= 256 then acc
+    else crc32-build-table (i + 1) (list-push acc (crc32-table-entry i 0))
+
+  crc32-table-entry : Integer, Integer -> Integer
+  crc32-table-entry (c) (k) =
+    if k >= 8 then c
+    else if bit-and c 1 == 1
+      then crc32-table-entry (bit-xor (bit-shru c 1) 3988292384) (k + 1)
+      else crc32-table-entry (bit-shru c 1) (k + 1)
+
+Section: Checksum
+  crc32 : List Integer -> Integer
+  crc32 (bs) = bit-xor (crc32-update 4294967295 bs 0 (list-length bs)) 4294967295
+
+  crc32-update : Integer, List Integer, Integer, Integer -> Integer
+  crc32-update (crc) (bs) (i) (len) =
+    if i >= len then crc
+    else let b = list-at bs i
+    in let idx = bit-and (bit-xor crc b) 255
+    in let new-crc = bit-xor (list-at crc32-table idx) (bit-shru crc 8)
+    in crc32-update new-crc bs (i + 1) len
+
+  crc32-of-text : Text -> Integer
+  crc32-of-text (s) = crc32 (crc32-text-bytes s 0 (text-length s) [])
+
+  crc32-text-bytes : Text, Integer, Integer, List Integer -> List Integer
+  crc32-text-bytes (s) (i) (len) (acc) =
+    if i >= len then acc
+    else crc32-text-bytes s (i + 1) len (list-push acc (to-unicode (char-code (char-at s i))))
+
+Section: Queries
+  crc32-verify : List Integer, Integer -> Boolean
+  crc32-verify (bs) (expected) = crc32 bs == expected
+
+Page 1

@@ -1,0 +1,166 @@
+Chapter: TextureMap
+  cites Game chapter Rasterizer
+  cites Game chapter Color
+
+ Texture storage and UV-mapped sampling. Textures are stored as
+ flat pixel arrays with bilinear filtering. UV coordinates use
+ fixed-point scale 1000 (0 = left/top, 1000 = right/bottom).
+
+ We say:
+
+Section: Types
+
+  TextureWrap =
+    | WrapRepeat
+    | WrapClamp
+    | WrapMirror
+
+  TextureFilter =
+    | FilterNearest
+    | FilterBilinear
+
+  Texture2D = record {
+    tex-width : Integer,
+    tex-height : Integer,
+    tex-pixels : List Integer,
+    tex-wrap : TextureWrap,
+    tex-filter : TextureFilter
+  }
+
+Section: Construction
+
+  texture-new : Integer, Integer, Integer -> Texture2D
+  texture-new (w) (h) (fill) =
+    Texture2D {
+      tex-width = w,
+      tex-height = h,
+      tex-pixels = tex-fill-pixels (w * h) fill [],
+      tex-wrap = WrapRepeat,
+      tex-filter = FilterNearest
+    }
+
+  tex-fill-pixels : Integer, Integer, List Integer -> List Integer
+  tex-fill-pixels (remaining) (color) (acc) =
+    if remaining <= 0 then acc
+    else tex-fill-pixels (remaining - 1) color (list-push acc color)
+
+  texture-from-framebuf : Framebuf -> Texture2D
+  texture-from-framebuf (fb) =
+    Texture2D {
+      tex-width = fb.fb-width,
+      tex-height = fb.fb-height,
+      tex-pixels = fb.fb-pixels,
+      tex-wrap = WrapRepeat,
+      tex-filter = FilterBilinear
+    }
+
+Section: Configuration
+
+  texture-set-wrap : Texture2D, TextureWrap -> Texture2D
+  texture-set-wrap (tex) (wrap) = __record-set tex "tex-wrap" wrap
+
+  texture-set-filter : Texture2D, TextureFilter -> Texture2D
+  texture-set-filter (tex) (filt) = __record-set tex "tex-filter" filt
+
+Section: Sampling
+
+  texture-sample : Texture2D, Integer, Integer -> Integer
+  texture-sample (tex) (u) (v) =
+    when tex.tex-filter
+      is FilterNearest -> tex-sample-nearest tex u v
+      is FilterBilinear -> tex-sample-bilinear tex u v
+
+  tex-sample-nearest : Texture2D, Integer, Integer -> Integer
+  tex-sample-nearest (tex) (u) (v) =
+    let wu = tex-wrap-coord u (tex.tex-wrap)
+    in let wv = tex-wrap-coord v (tex.tex-wrap)
+    in let px = wu * tex.tex-width / 1000
+    in let py = wv * tex.tex-height / 1000
+    in let cx = tex-clamp-i px 0 (tex.tex-width - 1)
+    in let cy = tex-clamp-i py 0 (tex.tex-height - 1)
+    in list-at (tex.tex-pixels) (cy * tex.tex-width + cx)
+
+  tex-sample-bilinear : Texture2D, Integer, Integer -> Integer
+  tex-sample-bilinear (tex) (u) (v) =
+    let wu = tex-wrap-coord u (tex.tex-wrap)
+    in let wv = tex-wrap-coord v (tex.tex-wrap)
+    in let fx = wu * tex.tex-width
+    in let fy = wv * tex.tex-height
+    in let x0 = fx / 1000
+    in let y0 = fy / 1000
+    in let x1 = tex-clamp-i (x0 + 1) 0 (tex.tex-width - 1)
+    in let y1 = tex-clamp-i (y0 + 1) 0 (tex.tex-height - 1)
+    in let cx0 = tex-clamp-i x0 0 (tex.tex-width - 1)
+    in let cy0 = tex-clamp-i y0 0 (tex.tex-height - 1)
+    in let frac-x = fx - x0 * 1000
+    in let frac-y = fy - y0 * 1000
+    in let c00 = list-at (tex.tex-pixels) (cy0 * tex.tex-width + cx0)
+    in let c10 = list-at (tex.tex-pixels) (cy0 * tex.tex-width + x1)
+    in let c01 = list-at (tex.tex-pixels) (y1 * tex.tex-width + cx0)
+    in let c11 = list-at (tex.tex-pixels) (y1 * tex.tex-width + x1)
+    in tex-lerp-color (tex-lerp-color c00 c10 frac-x) (tex-lerp-color c01 c11 frac-x) frac-y
+
+Section: Coordinate Helpers
+
+  tex-wrap-coord : Integer, TextureWrap -> Integer
+  tex-wrap-coord (c) (wrap) =
+    when wrap
+      is WrapRepeat -> let m = c - c / 1000 * 1000 in if m < 0 then m + 1000 else m
+      is WrapClamp -> tex-clamp-i c 0 999
+      is WrapMirror ->
+        let period = c / 1000
+        in let frac = c - period * 1000
+        in let abs-frac = if frac < 0 then 0 - frac else frac
+        in if period - period / 2 * 2 == 0 then abs-frac else 1000 - abs-frac
+
+  tex-clamp-i : Integer, Integer, Integer -> Integer
+  tex-clamp-i (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Section: Color Interpolation
+
+  tex-lerp-color : Integer, Integer, Integer -> Integer
+  tex-lerp-color (a) (b) (t) =
+    let ar = a / 65536
+    in let ag = a / 256 - ar * 256
+    in let ab = a - a / 256 * 256
+    in let br2 = b / 65536
+    in let bg = b / 256 - br2 * 256
+    in let bb = b - b / 256 * 256
+    in let rr = ar + (br2 - ar) * t / 1000
+    in let rg = ag + (bg - ag) * t / 1000
+    in let rb = ab + (bb - ab) * t / 1000
+    in tex-clamp-i rr 0 255 * 65536 + tex-clamp-i rg 0 255 * 256 + tex-clamp-i rb 0 255
+
+Section: Procedural Textures
+
+  texture-checkerboard : Integer, Integer, Integer, Integer, Integer -> Texture2D
+  texture-checkerboard (w) (h) (size) (color-a) (color-b) =
+    Texture2D {
+      tex-width = w,
+      tex-height = h,
+      tex-pixels = tex-checker-pixels w h size color-a color-b 0 [],
+      tex-wrap = WrapRepeat,
+      tex-filter = FilterNearest
+    }
+
+  tex-checker-pixels : Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  tex-checker-pixels (w) (h) (size) (ca) (cb) (i) (acc) =
+    if i >= w * h then acc
+    else let x = i - i / w * w
+    in let y = i / w
+    in let cx = x / size
+    in let cy = y / size
+    in let check = cx + cy - (cx + cy) / 2 * 2
+    in let color = if check == 0 then ca else cb
+    in tex-checker-pixels w h size ca cb (i + 1) (list-push acc color)
+
+  texture-solid : Integer, Integer, Integer -> Texture2D
+  texture-solid (w) (h) (color) = texture-new w h color
+
+Section: Info
+
+  texture-info : Texture2D -> Text
+  texture-info (tex) =
+    show (tex.tex-width) & "x" & show (tex.tex-height)
+
+Page 1
