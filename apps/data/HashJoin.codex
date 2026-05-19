@@ -1,0 +1,139 @@
+Chapter: HashJoin
+  cites Data chapter Row
+  cites Data chapter RelAlgebra
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ Hash join for equi-join predicates on large unsorted relations.
+ Build phase: hash the smaller (build) side into a hash table.
+ Probe phase: scan the larger (probe) side and look up matches.
+
+ We say:
+
+Section: Hash Join
+
+  HashJoinResult = record {
+    hj-rows : List RowData,
+    hj-count : Integer,
+    hj-build-size : Integer,
+    hj-probe-count : Integer
+  }
+
+  hash-join : List RowData, List RowData, Text, Text -> HashJoinResult
+  hash-join (build-rows) (probe-rows) (build-col) (probe-col) =
+    let ht = hj-build build-rows build-col 0 (list-length build-rows) hamt-empty
+    in let result = hj-probe probe-rows build-rows ht probe-col build-col 0 (list-length probe-rows) [] 0
+    in result
+
+  hj-build : List RowData, Text, Integer, Integer, HamtMap (List Integer) -> HamtMap (List Integer)
+  hj-build (rows) (col) (i) (len) (ht) =
+    if i >= len then ht
+    else let row = list-at rows i
+    in let key = val-to-text (row-get-by-name row col)
+    in let existing = hamt-get ht key
+    in let updated = when existing
+      is None -> hamt-set ht key [i]
+      is Just (idxs) -> hamt-set ht key (list-push idxs i)
+    in hj-build rows col (i + 1) len updated
+
+  hj-probe : List RowData, List RowData, HamtMap (List Integer), Text, Text, Integer, Integer, List RowData, Integer -> HashJoinResult
+  hj-probe (probe-rows) (build-rows) (ht) (probe-col) (build-col) (i) (len) (acc) (probes) =
+    if i >= len then HashJoinResult { hj-rows = acc, hj-count = list-length acc, hj-build-size = hamt-size ht, hj-probe-count = probes }
+    else let prow = list-at probe-rows i
+    in let key = val-to-text (row-get-by-name prow probe-col)
+    in let matches = hamt-get ht key
+    in when matches
+      is None -> hj-probe probe-rows build-rows ht probe-col build-col (i + 1) len acc (probes + 1)
+      is Just (idxs) ->
+        let joined = hj-emit-matches prow build-rows idxs 0 (list-length idxs) acc
+        in hj-probe probe-rows build-rows ht probe-col build-col (i + 1) len joined (probes + 1)
+
+  hj-emit-matches : RowData, List RowData, List Integer, Integer, Integer, List RowData -> List RowData
+  hj-emit-matches (prow) (build-rows) (idxs) (i) (len) (acc) =
+    if i >= len then acc
+    else let brow = list-at build-rows (list-at idxs i)
+    in let combined = hj-merge-rows prow brow
+    in hj-emit-matches prow build-rows idxs (i + 1) len (list-push acc combined)
+
+  hj-merge-rows : RowData, RowData -> RowData
+  hj-merge-rows (a) (b) =
+    let schema = schema-new (a.schema.col-names & b.schema.col-names) (a.schema.col-types & b.schema.col-types)
+    in row-new schema (a.values & b.values)
+
+Section: Left Hash Join
+
+  hash-left-join : List RowData, List RowData, Text, Text -> HashJoinResult
+  hash-left-join (left-rows) (right-rows) (left-col) (right-col) =
+    let ht = hj-build right-rows right-col 0 (list-length right-rows) hamt-empty
+    in hj-left-probe left-rows right-rows ht left-col right-col 0 (list-length left-rows) []
+
+  hj-left-probe : List RowData, List RowData, HamtMap (List Integer), Text, Text, Integer, Integer, List RowData -> HashJoinResult
+  hj-left-probe (left-rows) (right-rows) (ht) (left-col) (right-col) (i) (len) (acc) =
+    if i >= len then HashJoinResult { hj-rows = acc, hj-count = list-length acc, hj-build-size = hamt-size ht, hj-probe-count = i }
+    else let lrow = list-at left-rows i
+    in let key = val-to-text (row-get-by-name lrow left-col)
+    in let matches = hamt-get ht key
+    in when matches
+      is None ->
+        let null-right = hj-null-row right-rows
+        in let combined = hj-merge-rows lrow null-right
+        in hj-left-probe left-rows right-rows ht left-col right-col (i + 1) len (list-push acc combined)
+      is Just (idxs) ->
+        let joined = hj-emit-matches lrow right-rows idxs 0 (list-length idxs) acc
+        in hj-left-probe left-rows right-rows ht left-col right-col (i + 1) len joined
+
+  hj-null-row : List RowData -> RowData
+  hj-null-row (sample-rows) =
+    if list-length sample-rows == 0 then row-new (schema-new [] []) []
+    else let sample = list-at sample-rows 0
+    in let nulls = hj-make-nulls (list-length (sample.values)) []
+    in row-new (sample.schema) nulls
+
+  hj-make-nulls : Integer, List ColumnValue -> List ColumnValue
+  hj-make-nulls (n) (acc) =
+    if n <= 0 then acc
+    else hj-make-nulls (n - 1) (list-push acc ValNull)
+
+Section: Semi Join (exists check)
+
+  hash-semi-join : List RowData, List RowData, Text, Text -> List RowData
+  hash-semi-join (left-rows) (right-rows) (left-col) (right-col) =
+    let ht = hj-build-keys right-rows right-col 0 (list-length right-rows) hamt-empty
+    in hj-semi-filter left-rows ht left-col 0 (list-length left-rows) []
+
+  hj-build-keys : List RowData, Text, Integer, Integer, HamtMap Integer -> HamtMap Integer
+  hj-build-keys (rows) (col) (i) (len) (ht) =
+    if i >= len then ht
+    else let row = list-at rows i
+    in let key = val-to-text (row-get-by-name row col)
+    in hj-build-keys rows col (i + 1) len (hamt-set ht key 1)
+
+  hj-semi-filter : List RowData, HamtMap Integer, Text, Integer, Integer, List RowData -> List RowData
+  hj-semi-filter (rows) (ht) (col) (i) (len) (acc) =
+    if i >= len then acc
+    else let row = list-at rows i
+    in let key = val-to-text (row-get-by-name row col)
+    in let found = hamt-get ht key
+    in when found
+      is Just (v) -> hj-semi-filter rows ht col (i + 1) len (list-push acc row)
+      is None -> hj-semi-filter rows ht col (i + 1) len acc
+
+Section: Anti Join (not exists)
+
+  hash-anti-join : List RowData, List RowData, Text, Text -> List RowData
+  hash-anti-join (left-rows) (right-rows) (left-col) (right-col) =
+    let ht = hj-build-keys right-rows right-col 0 (list-length right-rows) hamt-empty
+    in hj-anti-filter left-rows ht left-col 0 (list-length left-rows) []
+
+  hj-anti-filter : List RowData, HamtMap Integer, Text, Integer, Integer, List RowData -> List RowData
+  hj-anti-filter (rows) (ht) (col) (i) (len) (acc) =
+    if i >= len then acc
+    else let row = list-at rows i
+    in let key = val-to-text (row-get-by-name row col)
+    in let found = hamt-get ht key
+    in when found
+      is Just (v) -> hj-anti-filter rows ht col (i + 1) len acc
+      is None -> hj-anti-filter rows ht col (i + 1) len (list-push acc row)
+
+Page 1

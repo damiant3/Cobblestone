@@ -1,0 +1,187 @@
+Chapter: BrushEngine
+  cites Game chapter Rasterizer
+  cites Spark chapter Canvas
+  cites Spark chapter Brush
+  cites Spark chapter ColorPicker
+
+ Advanced brush engine with pressure sensitivity, opacity
+ dynamics, shape rotation, and scatter. Extends the basic
+ Brush module with a stamp-based rendering approach.
+ All values fixed-point scale 1000.
+
+ We say:
+
+Section: Types
+
+  BrushDynamics = record {
+    bd-size-pressure : Boolean,
+    bd-opacity-pressure : Boolean,
+    bd-scatter : Integer,
+    bd-spacing : Integer,
+    bd-rotation : Integer,
+    bd-rotation-jitter : Integer
+  }
+
+  BrushTip =
+    | TipRound
+    | TipSquare
+    | TipDiamond
+    | TipSoft
+
+  AdvancedBrush = record {
+    ab-size : Integer,
+    ab-color : Integer,
+    ab-opacity : Integer,
+    ab-hardness : Integer,
+    ab-tip : BrushTip,
+    ab-dynamics : BrushDynamics
+  }
+
+  StrokePoint = record {
+    stp-x : Integer,
+    stp-y : Integer,
+    stp-pressure : Integer
+  }
+
+Section: Construction
+
+  brush-dynamics-default : BrushDynamics
+  brush-dynamics-default = BrushDynamics {
+    bd-size-pressure = True,
+    bd-opacity-pressure = False,
+    bd-scatter = 0,
+    bd-spacing = 250,
+    bd-rotation = 0,
+    bd-rotation-jitter = 0
+  }
+
+  advanced-brush-new : Integer, Integer, BrushTip -> AdvancedBrush
+  advanced-brush-new (size) (color) (tip) = AdvancedBrush {
+    ab-size = size,
+    ab-color = color,
+    ab-opacity = 1000,
+    ab-hardness = 1000,
+    ab-tip = tip,
+    ab-dynamics = brush-dynamics-default
+  }
+
+  advanced-brush-set-dynamics : AdvancedBrush, BrushDynamics -> AdvancedBrush
+  advanced-brush-set-dynamics (b) (dyn) = __record-set b "ab-dynamics" dyn
+
+Section: Stroke
+
+  brush-engine-stroke : Canvas2D, AdvancedBrush, List StrokePoint, Integer -> Canvas2D
+  brush-engine-stroke (cv) (brush) (points) (count) =
+    be-stroke-loop cv brush points count 0
+
+  be-stroke-loop : Canvas2D, AdvancedBrush, List StrokePoint, Integer, Integer -> Canvas2D
+  be-stroke-loop (cv) (brush) (points) (count) (i) =
+    if i >= count then cv
+    else let pt = list-at points i
+    in let cv2 = be-stamp-at cv brush pt
+    in be-stroke-loop cv2 brush points count (i + 1)
+
+  be-stamp-at : Canvas2D, AdvancedBrush, StrokePoint -> Canvas2D
+  be-stamp-at (cv) (brush) (pt) =
+    let effective-size = if brush.ab-dynamics.bd-size-pressure then brush.ab-size * pt.stp-pressure / 1000 else brush.ab-size
+    in let effective-opacity = if brush.ab-dynamics.bd-opacity-pressure then brush.ab-opacity * pt.stp-pressure / 1000 else brush.ab-opacity
+    in let half = effective-size / 2
+    in be-stamp-rect cv brush (pt.stp-x - half) (pt.stp-y - half) effective-size effective-opacity
+
+  be-stamp-rect : Canvas2D, AdvancedBrush, Integer, Integer, Integer, Integer -> Canvas2D
+  be-stamp-rect (cv) (brush) (x0) (y0) (size) (opacity) =
+    be-stamp-rows cv brush x0 y0 size opacity 0
+
+  be-stamp-rows : Canvas2D, AdvancedBrush, Integer, Integer, Integer, Integer, Integer -> Canvas2D
+  be-stamp-rows (cv) (brush) (x0) (y0) (size) (opacity) (dy) =
+    if dy >= size then cv
+    else let cv2 = be-stamp-cols cv brush x0 (y0 + dy) size opacity dy 0
+    in be-stamp-rows cv2 brush x0 y0 size opacity (dy + 1)
+
+  be-stamp-cols : Canvas2D, AdvancedBrush, Integer, Integer, Integer, Integer, Integer, Integer -> Canvas2D
+  be-stamp-cols (cv) (brush) (x0) (y) (size) (opacity) (dy) (dx) =
+    if dx >= size then cv
+    else let x = x0 + dx
+    in let inside = be-tip-test brush (dx * 1000 / size) (dy * 1000 / size)
+    in let cv2 = if inside then
+      if x >= 0 then if x < cv.cv-width then if y >= 0 then if y < cv.cv-height then
+        let alpha = be-hardness-alpha brush (dx * 1000 / size) (dy * 1000 / size) * opacity / 1000
+        in let existing = canvas-get-pixel cv x y
+        in let blended = be-blend-alpha existing (brush.ab-color) alpha
+        in canvas-set-pixel cv x y blended
+      else cv else cv else cv else cv
+    else cv
+    in be-stamp-cols cv2 brush x0 y size opacity dy (dx + 1)
+
+Section: Tip Shape
+
+  be-tip-test : AdvancedBrush, Integer, Integer -> Boolean
+  be-tip-test (brush) (u) (v) =
+    when brush.ab-tip
+      is TipRound -> be-in-circle u v
+      is TipSquare -> True
+      is TipDiamond -> be-in-diamond u v
+      is TipSoft -> be-in-circle u v
+
+  be-in-circle : Integer, Integer -> Boolean
+  be-in-circle (u) (v) =
+    let du = u - 500
+    in let dv = v - 500
+    in du * du + dv * dv <= 250000
+
+  be-in-diamond : Integer, Integer -> Boolean
+  be-in-diamond (u) (v) =
+    let du = if u - 500 < 0 then 500 - u else u - 500
+    in let dv = if v - 500 < 0 then 500 - v else v - 500
+    in du + dv <= 500
+
+Section: Hardness
+
+  be-hardness-alpha : AdvancedBrush, Integer, Integer -> Integer
+  be-hardness-alpha (brush) (u) (v) =
+    when brush.ab-tip
+      is TipSoft ->
+        let du = u - 500
+        in let dv = v - 500
+        in let dist-sq = du * du + dv * dv
+        in let dist = be-isqrt dist-sq
+        in let edge = 500 - dist
+        in if edge < 0 then 0 else edge * 2
+      is otherwise -> brush.ab-hardness
+
+Section: Color Blending
+
+  be-blend-alpha : Integer, Integer, Integer -> Integer
+  be-blend-alpha (dst) (src) (alpha) =
+    let dr = dst / 65536
+    in let dg = dst / 256 - dr * 256
+    in let db = dst - dst / 256 * 256
+    in let sr = src / 65536
+    in let sg = src / 256 - sr * 256
+    in let sb = src - src / 256 * 256
+    in let rr = dr + (sr - dr) * alpha / 1000
+    in let rg = dg + (sg - dg) * alpha / 1000
+    in let rb = db + (sb - db) * alpha / 1000
+    in be-clamp rr 0 255 * 65536 + be-clamp rg 0 255 * 256 + be-clamp rb 0 255
+
+Section: Helpers
+
+  be-isqrt : Integer -> Integer
+  be-isqrt (n) = if n <= 0 then 0 else be-isqrt-loop n (n / 2 + 1)
+
+  be-isqrt-loop : Integer, Integer -> Integer
+  be-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else be-isqrt-loop n next
+
+  be-clamp : Integer, Integer, Integer -> Integer
+  be-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Section: Info
+
+  advanced-brush-info : AdvancedBrush -> Text
+  advanced-brush-info (b) =
+    let tip = when b.ab-tip is TipRound -> "round" is TipSquare -> "square" is TipDiamond -> "diamond" is TipSoft -> "soft"
+    in "size=" & show (b.ab-size) & " " & tip & " opacity=" & show (b.ab-opacity)
+
+Page 1

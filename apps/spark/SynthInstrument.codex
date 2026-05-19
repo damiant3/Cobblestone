@@ -1,0 +1,102 @@
+Chapter: SynthInstrument
+
+ Instrument presets wrapping the foreword Synth and Oscillator
+ modules. Generates PCM samples for MIDI note playback.
+
+ We say:
+
+Section: Types
+
+  InstrumentKind =
+    | InstSine
+    | InstSquare
+    | InstSaw
+    | InstTriangle
+
+  InstrumentPreset = record {
+    ip-name : Text,
+    ip-kind : InstrumentKind,
+    ip-attack : Integer,
+    ip-decay : Integer,
+    ip-sustain : Integer,
+    ip-release : Integer,
+    ip-volume : Integer
+  }
+
+Section: Presets
+
+  inst-piano : InstrumentPreset
+  inst-piano = InstrumentPreset {
+    ip-name = "Piano",
+    ip-kind = InstSine,
+    ip-attack = 10,
+    ip-decay = 100,
+    ip-sustain = 600,
+    ip-release = 200,
+    ip-volume = 800
+  }
+
+  inst-bass : InstrumentPreset
+  inst-bass = InstrumentPreset {
+    ip-name = "Bass",
+    ip-kind = InstSquare,
+    ip-attack = 5,
+    ip-decay = 50,
+    ip-sustain = 800,
+    ip-release = 100,
+    ip-volume = 900
+  }
+
+  inst-lead : InstrumentPreset
+  inst-lead = InstrumentPreset {
+    ip-name = "Lead",
+    ip-kind = InstSaw,
+    ip-attack = 20,
+    ip-decay = 80,
+    ip-sustain = 700,
+    ip-release = 300,
+    ip-volume = 700
+  }
+
+  inst-pad : InstrumentPreset
+  inst-pad = InstrumentPreset {
+    ip-name = "Pad",
+    ip-kind = InstTriangle,
+    ip-attack = 200,
+    ip-decay = 100,
+    ip-sustain = 900,
+    ip-release = 500,
+    ip-volume = 500
+  }
+
+Section: Tone Generation
+
+  inst-generate-tone : InstrumentPreset, Integer, Integer, Integer -> List Integer
+  inst-generate-tone (preset) (freq) (duration-samples) (sample-rate) =
+    inst-gen-loop preset freq duration-samples sample-rate 0 []
+
+  inst-gen-loop : InstrumentPreset, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  inst-gen-loop (preset) (freq) (dur) (sr) (i) (acc) =
+    if i >= dur then acc
+    else let phase = i * freq * 6283 / sr / 1000
+    in let wave = when preset.ip-kind
+        is InstSine -> inst-sin-approx phase
+        is InstSquare -> if phase - phase / 3141 * 3141 < 1570 then 1000 else -1000
+        is InstSaw -> phase * 1000 / 3141 - 1000
+        is InstTriangle -> let half = phase - phase / 3141 * 3141
+          in if half < 1570 then half * 1000 / 1570 * 2 - 1000 else (3141 - half) * 1000 / 1570 * 2 - 1000
+    in let sample = wave * preset.ip-volume / 1000
+    in inst-gen-loop preset freq dur sr (i + 1) (list-push acc sample)
+
+Section: Helpers
+
+  inst-sin-approx : Integer -> Integer
+  inst-sin-approx (milli-rad) =
+    let x = milli-rad - milli-rad / 6283 * 6283
+    in let x3 = x * x / 1000 * x / 1000
+    in x - x3 / 6
+
+  inst-info : InstrumentPreset -> Text
+  inst-info (p) = p.ip-name
+
+Page 1

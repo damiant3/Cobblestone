@@ -1,0 +1,260 @@
+Chapter: SparkIntro
+  cites Foreword chapter Console
+  cites Math chapter Quaternion
+  cites Math chapter Matrix4
+  cites Math chapter Geometry
+  cites Game chapter Rasterizer
+  cites Game chapter Color
+  cites Spark chapter Mesh
+  cites Spark chapter MeshPrimitives
+  cites Spark chapter DepthBuffer
+  cites Spark chapter SceneCamera
+  cites Spark chapter SceneLight
+  cites Spark chapter Pipeline3D
+  cites Spark chapter SceneGraph
+  cites Spark chapter SceneNode
+  cites Spark chapter SceneMaterial
+  cites Spark chapter SceneRender
+  cites Spark chapter SparkDisplay
+
+ Animated intro sequence. A silver sphere enters from the upper
+ right, bounces toward the center of the screen with diminishing
+ arcs, then explodes white hot and fades to reveal the workspace.
+ Run with: codex-vm -kernel SparkIntro.cdx -gop -mem 2048
+
+ We say:
+
+Section: Entry
+
+  opening : [Console] Nothing = act
+    print-line "Spark Intro: starting..."
+    let vp-w = 640
+    in let vp-h = 480
+    in let gd = gop-display-new vp-w vp-h
+    in let center-x = vp-w / 2
+    in let center-y = vp-h / 2
+    in let ball-size = 48
+    in let ball-fb = intro-render-ball ball-size
+    in let w0 = gop-fill-solid gd 1710618
+    in let w1 = intro-bounce-phase gd ball-fb center-x center-y ball-size vp-w vp-h
+    in let w2 = intro-flash-phase gd center-x center-y vp-w vp-h
+    in let w3 = intro-fade-phase gd vp-w vp-h
+    in let w4 = intro-draw-title gd center-x center-y vp-w vp-h
+    in act
+      print-line "Spark Intro: complete. Close window to exit."
+      let halt = intro-spin 0
+      in print-line "exit"
+    end
+  end
+
+Section: Ball Rendering
+
+  intro-render-ball : Integer -> Framebuf
+  intro-render-ball (size) =
+    let cam = SparkCamera {
+      sc-eye = vec3-new 0 0 3000,
+      sc-target = vec3-zero,
+      sc-up = vec3-new 0 1000 0,
+      sc-projection = CamPersp 800,
+      sc-near = 100,
+      sc-far = 50000,
+      sc-vp-width = size,
+      sc-vp-height = size
+    }
+    in let sphere = mesh-sphere 800 6 8
+    in let lights = [light-directional (vec3-new 400 700 577) 16777215 950, light-ambient 16777215 300]
+    in let ctx = render-ctx-new cam lights
+    in let ctx2 = render-ctx-add-mesh ctx sphere
+    in let sg = scene-graph-new
+    in let sg2 = sg-add-mesh sg "Ball" 0 0
+    in scene-render sg2 ctx2 size size 0
+
+Section: Bounce Phase
+
+  intro-bounce-phase : GopDisplay, Framebuf, Integer, Integer, Integer, Integer, Integer -> Integer
+  intro-bounce-phase (gd) (ball-fb) (cx) (cy) (size) (vp-w) (vp-h) =
+    intro-bounce-loop gd ball-fb cx cy size vp-w vp-h 0 40
+
+  intro-bounce-loop : GopDisplay, Framebuf, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  intro-bounce-loop (gd) (ball-fb) (cx) (cy) (size) (vp-w) (vp-h) (frame) (total) =
+    if frame >= total then 0
+    else let t = frame * 1000 / total
+    in let pos = intro-ball-position cx cy vp-w vp-h t
+    in let bx = intro-pos-x pos
+    in let by = intro-pos-y pos
+    in let half = size / 2
+    in let w = gop-fill-solid gd 1710618
+    in let w2 = gop-blit-sprite gd ball-fb (bx - half) (by - half)
+    in intro-bounce-loop gd ball-fb cx cy size vp-w vp-h (frame + 1) total
+
+  intro-ball-position : Integer, Integer, Integer, Integer, Integer -> Integer
+  intro-ball-position (cx) (cy) (vp-w) (vp-h) (t) =
+    let start-x = vp-w - 60
+    in let start-y = 60
+    in let x = start-x + (cx - start-x) * t / 1000
+    in let base-y = start-y + (cy - start-y) * t / 1000
+    in let bounce-amp = (1000 - t) * (1000 - t) / 1000 * (vp-h / 4) / 1000
+    in let bounce-freq = t * 12
+    in let bounce-phase = bounce-freq - bounce-freq / 6283 * 6283
+    in let bounce-y = intro-abs (bounce-amp * intro-sin-approx bounce-phase / 1000)
+    in intro-pack-pos x (base-y - bounce-y)
+
+  intro-pack-pos : Integer, Integer -> Integer
+  intro-pack-pos (x) (y) = x * 10000 + y
+
+  intro-pos-x : Integer -> Integer
+  intro-pos-x (packed) = packed / 10000
+
+  intro-pos-y : Integer -> Integer
+  intro-pos-y (packed) = packed - packed / 10000 * 10000
+
+Section: Flash Phase
+
+  intro-flash-phase : GopDisplay, Integer, Integer, Integer, Integer -> Integer
+  intro-flash-phase (gd) (cx) (cy) (vp-w) (vp-h) =
+    intro-flash-loop gd cx cy vp-w vp-h 0 20
+
+  intro-flash-loop : GopDisplay, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  intro-flash-loop (gd) (cx) (cy) (vp-w) (vp-h) (frame) (total) =
+    if frame >= total then 0
+    else let t = frame * 1000 / total
+    in let radius = t * (vp-w / 2 + 100) / 1000
+    in let bright = if t < 500 then 255 else 255 * (1000 - t) / 500
+    in let cbright = if bright > 255 then 255 else if bright < 0 then 0 else bright
+    in let color = cbright * 65536 + cbright * 256 + cbright
+    in let r2 = radius * radius
+    in let w = intro-flash-ring gd cx cy radius r2 color vp-w vp-h
+    in intro-flash-loop gd cx cy vp-w vp-h (frame + 1) total
+
+  intro-flash-ring : GopDisplay, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  intro-flash-ring (gd) (cx) (cy) (radius) (r2) (color) (vp-w) (vp-h) =
+    let inner = if radius > 20 then (radius - 20) * (radius - 20) else 0
+    in intro-ring-y gd cx cy radius r2 inner color vp-w vp-h (cy - radius)
+
+  intro-ring-y : GopDisplay, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  intro-ring-y (gd) (cx) (cy) (radius) (r2) (inner) (color) (vp-w) (vp-h) (y) =
+    if y > cy + radius then 0
+    else if y < 0 then intro-ring-y gd cx cy radius r2 inner color vp-w vp-h (y + 1)
+    else if y >= vp-h then 0
+    else let dy = y - cy
+    in let dy2 = dy * dy
+    in let span = intro-isqrt (r2 - dy2)
+    in let x0 = if cx - span < 0 then 0 else cx - span
+    in let x1 = if cx + span >= vp-w then vp-w - 1 else cx + span
+    in let w = intro-ring-x gd x0 x1 y dy2 inner r2 color
+    in intro-ring-y gd cx cy radius r2 inner color vp-w vp-h (y + 1)
+
+  intro-ring-x : GopDisplay, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  intro-ring-x (gd) (x) (x1) (y) (dy2) (inner) (r2) (color) =
+    if x > x1 then 0
+    else let dx = x - gd.gd-width / 2
+    in let dist2 = dx * dx + dy2
+    in let w = if dist2 >= inner then gop-put-pixel gd x y color else 0
+    in intro-ring-x gd (x + 1) x1 y dy2 inner r2 color
+
+Section: Fade Phase
+
+  intro-fade-phase : GopDisplay, Integer, Integer -> Integer
+  intro-fade-phase (gd) (vp-w) (vp-h) =
+    intro-fade-loop gd vp-w vp-h 0 15
+
+  intro-fade-loop : GopDisplay, Integer, Integer, Integer, Integer -> Integer
+  intro-fade-loop (gd) (vp-w) (vp-h) (frame) (total) =
+    if frame >= total then 0
+    else let t = frame * 1000 / total
+    in let gray = 255 - 255 * t / 1000
+    in let bg-r = 26 + (gray - 26) * (1000 - t) / 1000
+    in let bg-g = 26 + (gray - 26) * (1000 - t) / 1000
+    in let bg-b = 26 + (gray - 26) * (1000 - t) / 1000
+    in let cbg = intro-clamp bg-r 0 255 * 65536 + intro-clamp bg-g 0 255 * 256 + intro-clamp bg-b 0 255
+    in let w = gop-fill-solid gd cbg
+    in intro-fade-loop gd vp-w vp-h (frame + 1) total
+
+Section: Title Draw
+
+  intro-draw-title : GopDisplay, Integer, Integer, Integer, Integer -> Integer
+  intro-draw-title (gd) (cx) (cy) (vp-w) (vp-h) =
+    let bg = gop-fill-solid gd 1710618
+    in let bar-h = 2
+    in let bar-y = cy - 20
+    in let bar-w = 200
+    in let bar-x = cx - bar-w / 2
+    in let w1 = gop-rect gd bar-x bar-y bar-w bar-h 4474111
+    in let w2 = gop-rect gd bar-x (bar-y + 40) bar-w bar-h 4474111
+    in let title-x = cx - 60
+    in let title-y = cy - 4
+    in let w3 = intro-draw-letters gd title-x title-y 16777215
+    in w3
+
+  intro-draw-letters : GopDisplay, Integer, Integer, Integer -> Integer
+  intro-draw-letters (gd) (x) (y) (color) =
+    let w1 = intro-draw-S gd x y color
+    in let w2 = intro-draw-P gd (x + 18) y color
+    in let w3 = intro-draw-A gd (x + 36) y color
+    in let w4 = intro-draw-R gd (x + 54) y color
+    in let w5 = intro-draw-K gd (x + 72) y color
+    in w5
+
+  intro-draw-S : GopDisplay, Integer, Integer, Integer -> Integer
+  intro-draw-S (gd) (x) (y) (c) =
+    let w1 = gop-rect gd (x + 2) y 10 2 c
+    in let w2 = gop-rect gd x (y + 2) 2 6 c
+    in let w3 = gop-rect gd (x + 2) (y + 8) 10 2 c
+    in let w4 = gop-rect gd (x + 10) (y + 10) 2 6 c
+    in gop-rect gd (x + 2) (y + 16) 10 2 c
+
+  intro-draw-P : GopDisplay, Integer, Integer, Integer -> Integer
+  intro-draw-P (gd) (x) (y) (c) =
+    let w1 = gop-rect gd x y 2 18 c
+    in let w2 = gop-rect gd (x + 2) y 8 2 c
+    in let w3 = gop-rect gd (x + 10) (y + 2) 2 6 c
+    in gop-rect gd (x + 2) (y + 8) 8 2 c
+
+  intro-draw-A : GopDisplay, Integer, Integer, Integer -> Integer
+  intro-draw-A (gd) (x) (y) (c) =
+    let w1 = gop-rect gd (x + 2) y 8 2 c
+    in let w2 = gop-rect gd x (y + 2) 2 16 c
+    in let w3 = gop-rect gd (x + 10) (y + 2) 2 16 c
+    in gop-rect gd (x + 2) (y + 8) 8 2 c
+
+  intro-draw-R : GopDisplay, Integer, Integer, Integer -> Integer
+  intro-draw-R (gd) (x) (y) (c) =
+    let w1 = gop-rect gd x y 2 18 c
+    in let w2 = gop-rect gd (x + 2) y 8 2 c
+    in let w3 = gop-rect gd (x + 10) (y + 2) 2 6 c
+    in let w4 = gop-rect gd (x + 2) (y + 8) 8 2 c
+    in gop-rect gd (x + 6) (y + 10) 2 8 c
+
+  intro-draw-K : GopDisplay, Integer, Integer, Integer -> Integer
+  intro-draw-K (gd) (x) (y) (c) =
+    let w1 = gop-rect gd x y 2 18 c
+    in let w2 = gop-rect gd (x + 8) y 2 8 c
+    in let w3 = gop-rect gd (x + 4) (y + 6) 4 4 c
+    in gop-rect gd (x + 8) (y + 10) 2 8 c
+
+Section: Helpers
+
+  intro-sin-approx : Integer -> Integer
+  intro-sin-approx (milli-rad) =
+    let x = milli-rad
+    in let x3 = x * x / 1000 * x / 1000
+    in x - x3 / 6
+
+  intro-abs : Integer -> Integer
+  intro-abs (n) = if n < 0 then 0 - n else n
+
+  intro-isqrt : Integer -> Integer
+  intro-isqrt (n) = if n <= 0 then 0 else intro-isqrt-loop n (n / 2 + 1)
+
+  intro-isqrt-loop : Integer, Integer -> Integer
+  intro-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else intro-isqrt-loop n next
+
+  intro-clamp : Integer, Integer, Integer -> Integer
+  intro-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+  intro-spin : Integer -> Integer
+  intro-spin (n) = intro-spin (n + 1)
+
+Page 1

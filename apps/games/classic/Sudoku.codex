@@ -1,0 +1,190 @@
+Chapter: Sudoku
+  cites Games chapter Rng
+
+ Sudoku: 9x9 grid, 81 cells. Values 1-9, 0=empty.
+ Generation: fill the three diagonal 3x3 boxes independently (no conflict
+ possible among them), then solve the rest with backtracking.
+ Then remove cells to create the puzzle. Solver uses backtracking.
+ SudokuState holds the working grid and iteration count.
+
+ We say:
+
+Section: Types
+
+  SudokuState = record {
+    grid       : List Integer,
+    iterations : Integer
+  }
+
+  SudokuResult = record {
+    solved     : Boolean,
+    iterations : Integer,
+    givens     : Integer
+  }
+
+Section: Construction
+
+  sudoku-new : Rng -> SudokuState
+  sudoku-new (rng) =
+    let empty = sudoku-fill 0 []
+    in let st = SudokuState { grid = empty, iterations = 0 }
+    in let st1 = sudoku-fill-box st rng 0 0
+    in let r2 = rng-next rng
+    in let st2 = sudoku-fill-box st1 r2 3 3
+    in let r3 = rng-next r2
+    in sudoku-fill-box st2 r3 6 6
+
+  sudoku-fill : Integer, List Integer -> List Integer
+  sudoku-fill (i) (acc) =
+    if i >= 81 then acc
+    else sudoku-fill (i + 1) (list-push acc 0)
+
+  sudoku-fill-box : SudokuState, Rng, Integer, Integer -> SudokuState
+  sudoku-fill-box (st) (rng) (box-row) (box-col) =
+    let digits = sudoku-shuffle-digits rng
+    in sudoku-place-digits st digits box-row box-col 0
+
+  sudoku-place-digits : SudokuState, List Integer, Integer, Integer, Integer -> SudokuState
+  sudoku-place-digits (st) (digits) (box-row) (box-col) (i) =
+    if i >= 9 then st
+    else let dr = i / 3
+    in let dc = i - dr * 3
+    in let row = box-row + dr
+    in let col = box-col + dc
+    in let val = list-at digits i
+    in let new-grid = list-set-at (st.grid) (row * 9 + col) val
+    in sudoku-place-digits (SudokuState { grid = new-grid, iterations = st.iterations }) digits box-row box-col (i + 1)
+
+  sudoku-shuffle-digits : Rng -> List Integer
+  sudoku-shuffle-digits (rng) =
+    let base = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    in sudoku-shuffle-loop base rng 8
+
+  sudoku-shuffle-loop : List Integer, Rng, Integer -> List Integer
+  sudoku-shuffle-loop (arr) (rng) (i) =
+    if i <= 0 then arr
+    else let r = rng-next rng
+    in let j = rng-range r 0 i
+    in let ai = list-at arr i
+    in let aj = list-at arr j
+    in let arr2 = list-set-at arr i aj
+    in let arr3 = list-set-at arr2 j ai
+    in sudoku-shuffle-loop arr3 r (i - 1)
+
+Section: Validity Checks
+
+  sudoku-cell : List Integer, Integer, Integer -> Integer
+  sudoku-cell (grid) (row) (col) = list-at grid (row * 9 + col)
+
+  sudoku-valid-row : List Integer, Integer, Integer -> Boolean
+  sudoku-valid-row (grid) (row) (val) =
+    sudoku-check-row grid row val 0
+
+  sudoku-check-row : List Integer, Integer, Integer, Integer -> Boolean
+  sudoku-check-row (grid) (row) (val) (col) =
+    if col >= 9 then True
+    else if sudoku-cell grid row col == val then False
+    else sudoku-check-row grid row val (col + 1)
+
+  sudoku-valid-col : List Integer, Integer, Integer -> Boolean
+  sudoku-valid-col (grid) (col) (val) =
+    sudoku-check-col grid col val 0
+
+  sudoku-check-col : List Integer, Integer, Integer, Integer -> Boolean
+  sudoku-check-col (grid) (col) (val) (row) =
+    if row >= 9 then True
+    else if sudoku-cell grid row col == val then False
+    else sudoku-check-col grid col val (row + 1)
+
+  sudoku-valid-box : List Integer, Integer, Integer, Integer -> Boolean
+  sudoku-valid-box (grid) (row) (col) (val) =
+    let br = row - rng-mod row 3
+    in let bc = col - rng-mod col 3
+    in sudoku-check-box grid br bc val 0
+
+  sudoku-check-box : List Integer, Integer, Integer, Integer, Integer -> Boolean
+  sudoku-check-box (grid) (br) (bc) (val) (i) =
+    if i >= 9 then True
+    else let dr = i / 3
+    in let dc = i - dr * 3
+    in if sudoku-cell grid (br + dr) (bc + dc) == val then False
+    else sudoku-check-box grid br bc val (i + 1)
+
+  sudoku-is-valid : List Integer, Integer, Integer, Integer -> Boolean
+  sudoku-is-valid (grid) (row) (col) (val) =
+    sudoku-valid-row grid row val &
+    sudoku-valid-col grid col val &
+    sudoku-valid-box grid row col val
+
+Section: Backtracking Solver
+
+  sudoku-solve : SudokuState -> SudokuState
+  sudoku-solve (st) =
+    let empty = sudoku-find-empty (st.grid) 0
+    in if empty < 0 then st
+    else let row = empty / 9
+    in let col = empty - row * 9
+    in sudoku-try-values st row col 1
+
+  sudoku-find-empty : List Integer, Integer -> Integer
+  sudoku-find-empty (grid) (i) =
+    if i >= 81 then -1
+    else if list-at grid i == 0 then i
+    else sudoku-find-empty grid (i + 1)
+
+  sudoku-try-values : SudokuState, Integer, Integer, Integer -> SudokuState
+  sudoku-try-values (st) (row) (col) (val) =
+    if val > 9 then SudokuState { grid = st.grid, iterations = st.iterations }
+    else let new-iter = st.iterations + 1
+    in if sudoku-is-valid (st.grid) row col val == False then
+      sudoku-try-values (SudokuState { grid = st.grid, iterations = new-iter }) row col (val + 1)
+    else let new-grid = list-set-at (st.grid) (row * 9 + col) val
+    in let st2 = sudoku-solve (SudokuState { grid = new-grid, iterations = new-iter })
+    in let solved = sudoku-find-empty (st2.grid) 0 < 0
+    in if solved then st2
+    else let cleared = list-set-at (st2.grid) (row * 9 + col) 0
+    in sudoku-try-values (SudokuState { grid = cleared, iterations = st2.iterations }) row col (val + 1)
+
+Section: Puzzle Creation (remove cells)
+
+  sudoku-remove-cells : SudokuState, Rng, Integer -> SudokuState
+  sudoku-remove-cells (st) (rng) (count) =
+    if count <= 0 then st
+    else let r = rng-next rng
+    in let idx = rng-range r 0 80
+    in if list-at (st.grid) idx == 0 then sudoku-remove-cells st r (count - 1)
+    else let new-grid = list-set-at (st.grid) idx 0
+    in sudoku-remove-cells (SudokuState { grid = new-grid, iterations = st.iterations }) r (count - 1)
+
+  sudoku-count-givens : List Integer -> Integer
+  sudoku-count-givens (grid) =
+    sudoku-count-given-loop grid 0 0
+
+  sudoku-count-given-loop : List Integer, Integer, Integer -> Integer
+  sudoku-count-given-loop (grid) (i) (acc) =
+    if i >= 81 then acc
+    else if list-at grid i /= 0 then sudoku-count-given-loop grid (i + 1) (acc + 1)
+    else sudoku-count-given-loop grid (i + 1) acc
+
+Section: Game Runner
+
+  run-sudoku-solve : SudokuResult
+  run-sudoku-solve =
+    let rng = rng-new 55
+    in let st0 = sudoku-new rng
+    in let filled = sudoku-solve st0
+    in let r2 = rng-next rng
+    in let puzzle = sudoku-remove-cells filled r2 40
+    in let givens = sudoku-count-givens (puzzle.grid)
+    in let solution = sudoku-solve puzzle
+    in let solved = sudoku-find-empty (solution.grid) 0 < 0
+    in SudokuResult { solved = solved, iterations = solution.iterations, givens = givens }
+
+Section: Formatting
+
+  format-sudoku-result : SudokuResult -> Text
+  format-sudoku-result (r) =
+    let outcome = if r.solved then "Solved" else "Unsolved"
+    in "Sudoku: " & outcome & " givens=" & show (r.givens) & " iterations=" & show (r.iterations)
+
+Page 1

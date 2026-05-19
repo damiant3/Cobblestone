@@ -1,0 +1,186 @@
+Chapter: PanelLayout
+  cites Game chapter Rasterizer
+
+ Splits the window into resizable panels: viewport, properties,
+ timeline, outliner, and asset browser. Each panel has a region
+ (x, y, width, height) and can be resized by dragging borders.
+
+ We say:
+
+Section: Types
+
+  PanelKind =
+    | PanelViewport
+    | PanelProperties
+    | PanelTimeline
+    | PanelOutliner
+    | PanelAssetBrowser
+    | PanelConsole
+
+  Panel = record {
+    pn-kind : PanelKind,
+    pn-x : Integer,
+    pn-y : Integer,
+    pn-width : Integer,
+    pn-height : Integer,
+    pn-visible : Boolean,
+    pn-focused : Boolean,
+    pn-min-width : Integer,
+    pn-min-height : Integer
+  }
+
+  LayoutState = record {
+    ls-panels : List Panel,
+    ls-panel-count : Integer,
+    ls-window-width : Integer,
+    ls-window-height : Integer,
+    ls-border-width : Integer,
+    ls-resizing : Integer,
+    ls-header-height : Integer
+  }
+
+Section: Construction
+
+  panel-new : PanelKind, Integer, Integer, Integer, Integer -> Panel
+  panel-new (kind) (x) (y) (w) (h) = Panel {
+    pn-kind = kind,
+    pn-x = x,
+    pn-y = y,
+    pn-width = w,
+    pn-height = h,
+    pn-visible = True,
+    pn-focused = False,
+    pn-min-width = 100,
+    pn-min-height = 60
+  }
+
+  layout-new : Integer, Integer -> LayoutState
+  layout-new (w) (h) = LayoutState {
+    ls-panels = [],
+    ls-panel-count = 0,
+    ls-window-width = w,
+    ls-window-height = h,
+    ls-border-width = 2,
+    ls-resizing = -1,
+    ls-header-height = 24
+  }
+
+Section: Default Layout
+
+  layout-default : Integer, Integer -> LayoutState
+  layout-default (w) (h) =
+    let header = 24
+    in let props-w = w / 4
+    in let outliner-h = h / 3
+    in let timeline-h = h / 4
+    in let vp-w = w - props-w
+    in let vp-h = h - header - timeline-h
+    in let ls = layout-new w h
+    in let ls2 = layout-add-panel ls (panel-new PanelViewport 0 header vp-w vp-h)
+    in let ls3 = layout-add-panel ls2 (panel-new PanelProperties vp-w header props-w (h - header))
+    in let ls4 = layout-add-panel ls3 (panel-new PanelTimeline 0 (header + vp-h) vp-w timeline-h)
+    in ls4
+
+  layout-with-outliner : Integer, Integer -> LayoutState
+  layout-with-outliner (w) (h) =
+    let header = 24
+    in let props-w = w / 5
+    in let outliner-w = w / 6
+    in let timeline-h = h / 4
+    in let vp-w = w - props-w - outliner-w
+    in let vp-h = h - header - timeline-h
+    in let ls = layout-new w h
+    in let ls2 = layout-add-panel ls (panel-new PanelOutliner 0 header outliner-w (h - header))
+    in let ls3 = layout-add-panel ls2 (panel-new PanelViewport outliner-w header vp-w vp-h)
+    in let ls4 = layout-add-panel ls3 (panel-new PanelProperties (outliner-w + vp-w) header props-w (h - header))
+    in layout-add-panel ls4 (panel-new PanelTimeline outliner-w (header + vp-h) vp-w timeline-h)
+
+Section: Panel Management
+
+  layout-add-panel : LayoutState, Panel -> LayoutState
+  layout-add-panel (ls) (panel) = LayoutState {
+    ls-panels = list-push (ls.ls-panels) panel,
+    ls-panel-count = ls.ls-panel-count + 1,
+    ls-window-width = ls.ls-window-width,
+    ls-window-height = ls.ls-window-height,
+    ls-border-width = ls.ls-border-width,
+    ls-resizing = ls.ls-resizing,
+    ls-header-height = ls.ls-header-height
+  }
+
+  layout-get-panel : LayoutState, Integer -> Panel
+  layout-get-panel (ls) (i) = list-at (ls.ls-panels) i
+
+  layout-toggle-panel : LayoutState, Integer -> LayoutState
+  layout-toggle-panel (ls) (idx) =
+    if idx < 0 then ls
+    else if idx >= ls.ls-panel-count then ls
+    else let p = layout-get-panel ls idx
+    in let toggled = __record-set p "pn-visible" (if p.pn-visible then False else True)
+    in __record-set ls "ls-panels" (list-set-at (ls.ls-panels) idx toggled)
+
+  layout-focus-panel : LayoutState, Integer -> LayoutState
+  layout-focus-panel (ls) (idx) =
+    layout-focus-loop ls 0 idx
+
+  layout-focus-loop : LayoutState, Integer, Integer -> LayoutState
+  layout-focus-loop (ls) (i) (target) =
+    if i >= ls.ls-panel-count then ls
+    else let p = layout-get-panel ls i
+    in let updated = __record-set p "pn-focused" (i == target)
+    in let ls2 = __record-set ls "ls-panels" (list-set-at (ls.ls-panels) i updated)
+    in layout-focus-loop ls2 (i + 1) target
+
+Section: Hit Testing
+
+  layout-panel-at : LayoutState, Integer, Integer -> Integer
+  layout-panel-at (ls) (mx) (my) =
+    layout-hit-loop ls mx my 0
+
+  layout-hit-loop : LayoutState, Integer, Integer, Integer -> Integer
+  layout-hit-loop (ls) (mx) (my) (i) =
+    if i >= ls.ls-panel-count then -1
+    else let p = layout-get-panel ls i
+    in if p.pn-visible then
+      if mx >= p.pn-x then if mx < p.pn-x + p.pn-width then
+        if my >= p.pn-y then if my < p.pn-y + p.pn-height then i
+        else layout-hit-loop ls mx my (i + 1) else layout-hit-loop ls mx my (i + 1)
+      else layout-hit-loop ls mx my (i + 1) else layout-hit-loop ls mx my (i + 1)
+    else layout-hit-loop ls mx my (i + 1)
+
+Section: Drawing
+
+  layout-draw-borders : Framebuf, LayoutState, Integer -> Framebuf
+  layout-draw-borders (fb) (ls) (color) =
+    layout-border-loop fb ls color 0
+
+  layout-border-loop : Framebuf, LayoutState, Integer, Integer -> Framebuf
+  layout-border-loop (fb) (ls) (color) (i) =
+    if i >= ls.ls-panel-count then fb
+    else let p = layout-get-panel ls i
+    in let fb2 = if p.pn-visible then
+      let border-color = if p.pn-focused then 4474111 else color
+      in fb-rect fb (p.pn-x) (p.pn-y) (p.pn-width) (ls.ls-border-width) border-color
+    else fb
+    in layout-border-loop fb2 ls color (i + 1)
+
+Section: Info
+
+  layout-info : LayoutState -> Text
+  layout-info (ls) =
+    show (ls.ls-panel-count) & " panels, " & show (ls.ls-window-width) & "x" & show (ls.ls-window-height)
+
+  panel-info : Panel -> Text
+  panel-info (p) =
+    let kind = when p.pn-kind
+      is PanelViewport -> "Viewport"
+      is PanelProperties -> "Properties"
+      is PanelTimeline -> "Timeline"
+      is PanelOutliner -> "Outliner"
+      is PanelAssetBrowser -> "Assets"
+      is PanelConsole -> "Console"
+    in kind & " " & show (p.pn-width) & "x" & show (p.pn-height) &
+      (if p.pn-focused then " [focus]" else "") &
+      (if p.pn-visible then "" else " [hidden]")
+
+Page 1

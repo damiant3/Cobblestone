@@ -1,0 +1,166 @@
+Chapter: Life
+  cites Games chapter Rng
+
+ Conway's Game of Life on a 20x20 toroidal grid.
+ LifeState holds 400 cells as a flat List Integer (row*20+col), 0=dead 1=alive.
+ Rules: B3 (born with exactly 3 neighbors), S23 (survive with 2 or 3 neighbors).
+ Seeded patterns: glider at (1,1), blinker at (10,10), block at (15,15).
+ run-life-sim runs for the given number of generations.
+ Stable detection: if alive count unchanged for 5 consecutive steps, halt early.
+
+ We say:
+
+Section: Types
+
+  LifeState = record {
+    cells : List Integer,
+    alive-count : Integer
+  }
+
+  LifeResult = record {
+    final-alive  : Integer,
+    generations  : Integer,
+    stable       : Boolean
+  }
+
+Section: Grid Helpers
+
+  life-idx : Integer, Integer -> Integer
+  life-idx (row) (col) = row * 20 + col
+
+  life-wrap : Integer -> Integer
+  life-wrap (n) =
+    if n < 0 then n + 20
+    else if n >= 20 then n - 20
+    else n
+
+  life-get : LifeState, Integer, Integer -> Integer
+  life-get (s) (row) (col) =
+    list-at (s.cells) (life-idx (life-wrap row) (life-wrap col))
+
+  life-count-neighbors : LifeState, Integer, Integer -> Integer
+  life-count-neighbors (s) (row) (col) =
+    let n0 = life-get s (row - 1) (col - 1)
+    in let n1 = life-get s (row - 1) col
+    in let n2 = life-get s (row - 1) (col + 1)
+    in let n3 = life-get s row (col - 1)
+    in let n4 = life-get s row (col + 1)
+    in let n5 = life-get s (row + 1) (col - 1)
+    in let n6 = life-get s (row + 1) col
+    in let n7 = life-get s (row + 1) (col + 1)
+    in n0 + n1 + n2 + n3 + n4 + n5 + n6 + n7
+
+  life-next-cell : LifeState, Integer, Integer -> Integer
+  life-next-cell (s) (row) (col) =
+    let alive = life-get s row col
+    in let nbrs = life-count-neighbors s row col
+    in if alive == 1 then
+      if nbrs == 2 then 1
+      else if nbrs == 3 then 1
+      else 0
+    else
+      if nbrs == 3 then 1
+      else 0
+
+Section: Step
+
+  step-life : LifeState -> LifeState
+  step-life (s) =
+    let new-cells = life-step-all s 0 0 []
+    in let cnt = life-count-alive new-cells 0 0
+    in LifeState { cells = new-cells, alive-count = cnt }
+
+  life-step-all : LifeState, Integer, Integer, List Integer -> List Integer
+  life-step-all (s) (row) (col) (acc) =
+    if row >= 20 then acc
+    else if col >= 20 then life-step-all s (row + 1) 0 acc
+    else let next = life-next-cell s row col
+    in life-step-all s row (col + 1) (list-push acc next)
+
+  life-count-alive : List Integer, Integer, Integer -> Integer
+  life-count-alive (cells) (i) (acc) =
+    if i >= 400 then acc
+    else life-count-alive cells (i + 1) (acc + list-at cells i)
+
+Section: Initial Patterns
+
+  life-empty-grid : List Integer
+  life-empty-grid = life-build-grid 400 []
+
+  life-build-grid : Integer, List Integer -> List Integer
+  life-build-grid (n) (acc) =
+    if n <= 0 then acc
+    else life-build-grid (n - 1) (list-push acc 0)
+
+  life-set-cell : List Integer, Integer, Integer -> List Integer
+  life-set-cell (cells) (row) (col) =
+    list-set-at cells (life-idx (life-wrap row) (life-wrap col)) 1
+
+  life-place-glider : List Integer, Integer, Integer -> List Integer
+  life-place-glider (cells) (r) (c) =
+    let c1 = life-set-cell cells r (c + 1)
+    in let c2 = life-set-cell c1 (r + 1) (c + 2)
+    in let c3 = life-set-cell c2 (r + 2) c
+    in let c4 = life-set-cell c3 (r + 2) (c + 1)
+    in life-set-cell c4 (r + 2) (c + 2)
+
+  life-place-blinker : List Integer, Integer, Integer -> List Integer
+  life-place-blinker (cells) (r) (c) =
+    let c1 = life-set-cell cells r c
+    in let c2 = life-set-cell c1 r (c + 1)
+    in life-set-cell c2 r (c + 2)
+
+  life-place-block : List Integer, Integer, Integer -> List Integer
+  life-place-block (cells) (r) (c) =
+    let c1 = life-set-cell cells r c
+    in let c2 = life-set-cell c1 r (c + 1)
+    in let c3 = life-set-cell c2 (r + 1) c
+    in life-set-cell c3 (r + 1) (c + 1)
+
+  life-seed-grid : Integer -> LifeState
+  life-seed-grid (seed) =
+    let base = life-empty-grid
+    in let g1 = life-place-glider base 1 1
+    in let g2 = life-place-blinker g1 10 10
+    in let g3 = life-place-block g2 15 15
+    in let r = rng-new seed
+    in let g4 = life-scatter g3 r 0 5
+    in let cnt = life-count-alive g4 0 0
+    in LifeState { cells = g4, alive-count = cnt }
+
+  life-scatter : List Integer, Rng, Integer, Integer -> List Integer
+  life-scatter (cells) (r) (i) (n) =
+    if i >= n then cells
+    else let r2 = rng-next r
+    in let row = rng-mod (rng-value r2) 20
+    in let r3 = rng-next r2
+    in let col = rng-mod (rng-value r3) 20
+    in let c2 = life-set-cell cells row col
+    in life-scatter c2 r3 (i + 1) n
+
+Section: Game Runner
+
+  run-life-sim : Integer, Integer -> LifeResult
+  run-life-sim (seed) (generations) =
+    let s = life-seed-grid seed
+    in life-loop s generations 0 (-1) 0
+
+  life-loop : LifeState, Integer, Integer, Integer, Integer -> LifeResult
+  life-loop (s) (max-gen) (gen) (prev-count) (stable-streak) =
+    if gen >= max-gen then
+      LifeResult { final-alive = s.alive-count, generations = gen, stable = False }
+    else if stable-streak >= 5 then
+      LifeResult { final-alive = s.alive-count, generations = gen, stable = True }
+    else let next = step-life s
+    in let new-streak = if next.alive-count == s.alive-count then stable-streak + 1 else 0
+    in life-loop next max-gen (gen + 1) (s.alive-count) new-streak
+
+Section: Formatting
+
+  format-life-result : LifeResult -> Text
+  format-life-result (r) =
+    let status = if r.stable then "stable" else "running"
+    in "Life (20x20): " & show (r.final-alive) & " alive after " &
+       show (r.generations) & " generations (" & status & ")"
+
+Page 1

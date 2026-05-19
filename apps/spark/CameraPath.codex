@@ -1,0 +1,159 @@
+Chapter: CameraPath
+  cites Math chapter Quaternion
+  cites Math chapter Matrix4
+  cites Spark chapter SceneCamera
+
+ Animated camera paths for cinematic sequences. Supports
+ dolly, orbit, and spline-based camera movement with
+ look-at tracking. Fixed-point scale 1000.
+
+ We say:
+
+Section: Types
+
+  CameraPathKind =
+    | CamDolly
+    | CamOrbit
+    | CamSpline
+
+  CameraWaypoint = record {
+    cw-position : Vec3,
+    cw-target : Vec3,
+    cw-fov : Integer,
+    cw-frame : Integer
+  }
+
+  CameraPathState = record {
+    cp-waypoints : List CameraWaypoint,
+    cp-waypoint-count : Integer,
+    cp-kind : CameraPathKind,
+    cp-current-frame : Integer,
+    cp-looping : Boolean
+  }
+
+Section: Construction
+
+  cam-path-new : CameraPathKind -> CameraPathState
+  cam-path-new (kind) = CameraPathState {
+    cp-waypoints = [],
+    cp-waypoint-count = 0,
+    cp-kind = kind,
+    cp-current-frame = 0,
+    cp-looping = False
+  }
+
+  cam-waypoint : Vec3, Vec3, Integer, Integer -> CameraWaypoint
+  cam-waypoint (pos) (target) (fov) (frame) = CameraWaypoint {
+    cw-position = pos,
+    cw-target = target,
+    cw-fov = fov,
+    cw-frame = frame
+  }
+
+Section: Path Building
+
+  cam-path-add : CameraPathState, CameraWaypoint -> CameraPathState
+  cam-path-add (cp) (wp) = CameraPathState {
+    cp-waypoints = list-push (cp.cp-waypoints) wp,
+    cp-waypoint-count = cp.cp-waypoint-count + 1,
+    cp-kind = cp.cp-kind,
+    cp-current-frame = cp.cp-current-frame,
+    cp-looping = cp.cp-looping
+  }
+
+  cam-path-set-looping : CameraPathState, Boolean -> CameraPathState
+  cam-path-set-looping (cp) (loop) = __record-set cp "cp-looping" loop
+
+Section: Evaluation
+
+  cam-path-eval : CameraPathState, Integer -> CameraWaypoint
+  cam-path-eval (cp) (frame) =
+    if cp.cp-waypoint-count == 0 then cam-waypoint vec3-zero vec3-zero 785 0
+    else if cp.cp-waypoint-count == 1 then list-at (cp.cp-waypoints) 0
+    else cam-find-segment (cp.cp-waypoints) (cp.cp-waypoint-count) frame 0
+
+  cam-find-segment : List CameraWaypoint, Integer, Integer, Integer -> CameraWaypoint
+  cam-find-segment (wps) (count) (frame) (i) =
+    if i >= count - 1 then list-at wps (count - 1)
+    else let w0 = list-at wps i
+    in let w1 = list-at wps (i + 1)
+    in if frame <= w0.cw-frame then w0
+    else if frame < w1.cw-frame then
+      let t = (frame - w0.cw-frame) * 1000 / (w1.cw-frame - w0.cw-frame)
+      in cam-lerp-waypoint w0 w1 t
+    else cam-find-segment wps count frame (i + 1)
+
+  cam-lerp-waypoint : CameraWaypoint, CameraWaypoint, Integer -> CameraWaypoint
+  cam-lerp-waypoint (a) (b) (t) = CameraWaypoint {
+    cw-position = cam-lerp-vec3 (a.cw-position) (b.cw-position) t,
+    cw-target = cam-lerp-vec3 (a.cw-target) (b.cw-target) t,
+    cw-fov = a.cw-fov + (b.cw-fov - a.cw-fov) * t / 1000,
+    cw-frame = a.cw-frame + (b.cw-frame - a.cw-frame) * t / 1000
+  }
+
+  cam-lerp-vec3 : Vec3, Vec3, Integer -> Vec3
+  cam-lerp-vec3 (a) (b) (t) = Vec3 {
+    vx = a.vx + (b.vx - a.vx) * t / 1000,
+    vy = a.vy + (b.vy - a.vy) * t / 1000,
+    vz = a.vz + (b.vz - a.vz) * t / 1000
+  }
+
+Section: Orbit
+
+  cam-orbit-position : Vec3, Integer, Integer, Integer -> Vec3
+  cam-orbit-position (center) (distance) (yaw-milli) (pitch-milli) =
+    let cos-p = cam-cos-approx pitch-milli
+    in let sin-p = cam-sin-approx pitch-milli
+    in let cos-y = cam-cos-approx yaw-milli
+    in let sin-y = cam-sin-approx yaw-milli
+    in let x = center.vx + distance * cos-p / 1000 * sin-y / 1000
+    in let y = center.vy + distance * sin-p / 1000
+    in let z = center.vz + distance * cos-p / 1000 * cos-y / 1000
+    in vec3-new x y z
+
+Section: View Matrix from Path
+
+  cam-path-view-matrix : CameraPathState, Integer -> Mat4
+  cam-path-view-matrix (cp) (frame) =
+    let wp = cam-path-eval cp frame
+    in mat4-look-at (wp.cw-position) (wp.cw-target) (vec3-new 0 1000 0)
+
+Section: Playback
+
+  cam-path-advance : CameraPathState -> CameraPathState
+  cam-path-advance (cp) =
+    let next = cp.cp-current-frame + 1
+    in let last-wp = if cp.cp-waypoint-count > 0 then list-at (cp.cp-waypoints) (cp.cp-waypoint-count - 1) else cam-waypoint vec3-zero vec3-zero 785 0
+    in let final-frame = if next > last-wp.cw-frame then
+        if cp.cp-looping then 0 else last-wp.cw-frame
+      else next
+    in __record-set cp "cp-current-frame" final-frame
+
+  cam-path-duration : CameraPathState -> Integer
+  cam-path-duration (cp) =
+    if cp.cp-waypoint-count == 0 then 0
+    else let last = list-at (cp.cp-waypoints) (cp.cp-waypoint-count - 1)
+    in last.cw-frame
+
+Section: Trig Helpers
+
+  cam-sin-approx : Integer -> Integer
+  cam-sin-approx (milli-rad) =
+    let x = milli-rad
+    in let x3 = x * x / 1000 * x / 1000
+    in x - x3 / 6
+
+  cam-cos-approx : Integer -> Integer
+  cam-cos-approx (milli-rad) =
+    let x2 = milli-rad * milli-rad / 1000
+    in let x4 = x2 * x2 / 1000
+    in 1000 - x2 / 2 + x4 / 24
+
+Section: Info
+
+  cam-path-info : CameraPathState -> Text
+  cam-path-info (cp) =
+    let kind = when cp.cp-kind is CamDolly -> "dolly" is CamOrbit -> "orbit" is CamSpline -> "spline"
+    in kind & " " & show (cp.cp-waypoint-count) & " waypoints, frame " & show (cp.cp-current-frame)
+
+Page 1

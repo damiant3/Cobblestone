@@ -1,0 +1,179 @@
+Chapter: Schema
+  cites Data chapter Row
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ Schema definitions for tables, columns, indexes, and constraints.
+ DDL operations produce new schema objects; the catalog stores them.
+
+ We say:
+
+Section: Column Definition
+
+  ColumnDef = record {
+    col-name : Text,
+    col-type : ColumnType,
+    nullable : Boolean,
+    default-val : Maybe ColumnValue
+  }
+
+  col-def : Text, ColumnType -> ColumnDef
+  col-def (name) (ctype) = ColumnDef {
+    col-name = name,
+    col-type = ctype,
+    nullable = True,
+    default-val = None
+  }
+
+  col-def-not-null : Text, ColumnType -> ColumnDef
+  col-def-not-null (name) (ctype) = ColumnDef {
+    col-name = name,
+    col-type = ctype,
+    nullable = False,
+    default-val = None
+  }
+
+  col-def-with-default : Text, ColumnType, ColumnValue -> ColumnDef
+  col-def-with-default (name) (ctype) (dval) = ColumnDef {
+    col-name = name,
+    col-type = ctype,
+    nullable = True,
+    default-val = Just dval
+  }
+
+Section: Index Definition
+
+  IndexKind =
+    | BTreeIdx
+    | HashIdx
+
+  IndexDef = record {
+    index-name : Text,
+    table-name : Text,
+    columns : List Text,
+    kind : IndexKind,
+    is-unique : Boolean
+  }
+
+  index-def : Text, Text, List Text -> IndexDef
+  index-def (name) (table) (cols) = IndexDef {
+    index-name = name,
+    table-name = table,
+    columns = cols,
+    kind = BTreeIdx,
+    is-unique = False
+  }
+
+  index-def-unique : Text, Text, List Text -> IndexDef
+  index-def-unique (name) (table) (cols) = IndexDef {
+    index-name = name,
+    table-name = table,
+    columns = cols,
+    kind = BTreeIdx,
+    is-unique = True
+  }
+
+Section: Constraint
+
+  ConstraintKind =
+    | PrimaryKey (List Text)
+    | ForeignKey (Text) (List Text)
+    | Unique (List Text)
+    | Check (Text)
+
+  ConstraintDef = record {
+    constraint-name : Text,
+    kind : ConstraintKind
+  }
+
+Section: Table Definition
+
+  TableDef = record {
+    table-name : Text,
+    columns : List ColumnDef,
+    col-count : Integer between 0 and 256,
+    constraints : List ConstraintDef,
+    next-row-id : Integer
+  }
+
+  table-def : Text, List ColumnDef -> TableDef
+  table-def (name) (cols) = TableDef {
+    table-name = name,
+    columns = cols,
+    col-count = list-length cols,
+    constraints = [],
+    next-row-id = 1
+  }
+
+  table-def-with-pk : Text, List ColumnDef, List Text -> TableDef
+  table-def-with-pk (name) (cols) (pk-cols) = TableDef {
+    table-name = name,
+    columns = cols,
+    col-count = list-length cols,
+    constraints = [ConstraintDef { constraint-name = name & "_pk", kind = PrimaryKey pk-cols }],
+    next-row-id = 1
+  }
+
+  table-schema : TableDef -> RowSchema
+  table-schema (tdef) =
+    let names = table-col-names (tdef.columns) 0 (tdef.col-count) []
+    in let types = table-col-types (tdef.columns) 0 (tdef.col-count) []
+    in schema-new names types
+
+  table-col-names : List ColumnDef, Integer, Integer, List Text -> List Text
+  table-col-names (cols) (i) (len) (acc) =
+    if i >= len then acc
+    else let cd = list-at cols i
+    in table-col-names cols (i + 1) len (list-push acc (cd.col-name))
+
+  table-col-types : List ColumnDef, Integer, Integer, List ColumnType -> List ColumnType
+  table-col-types (cols) (i) (len) (acc) =
+    if i >= len then acc
+    else let cd = list-at cols i
+    in table-col-types cols (i + 1) len (list-push acc (cd.col-type))
+
+Section: DDL Results
+
+  DdlResult =
+    | DdlOk (Text)
+    | DdlError (Text)
+
+  ddl-ok : Text -> DdlResult
+  ddl-ok (msg) = DdlOk msg
+
+  ddl-error : Text -> DdlResult
+  ddl-error (msg) = DdlError msg
+
+Section: Validation
+
+  validate-row : RowData, TableDef -> DdlResult
+  validate-row (row) (tdef) =
+    if list-length (row.values) /= tdef.col-count then ddl-error "column count mismatch"
+    else validate-row-cols (row.values) (tdef.columns) 0 (tdef.col-count)
+
+  validate-row-cols : List ColumnValue, List ColumnDef, Integer, Integer -> DdlResult
+  validate-row-cols (vals) (cols) (i) (len) =
+    if i >= len then ddl-ok "valid"
+    else let v = list-at vals i
+    in let cd = list-at cols i
+    in if val-is-null v then
+      if cd.nullable then validate-row-cols vals cols (i + 1) len
+      else ddl-error ("column " & cd.col-name & " is not nullable")
+    else let type-ok = validate-col-type v (cd.col-type)
+    in if type-ok then validate-row-cols vals cols (i + 1) len
+    else ddl-error ("type mismatch for column " & cd.col-name)
+
+  validate-col-type : ColumnValue, ColumnType -> Boolean
+  validate-col-type (v) (ct) =
+    when ct
+      is ColInteger -> when v
+        is ValInteger (n) -> True
+        is otherwise -> False
+      is ColText -> when v
+        is ValText (t) -> True
+        is otherwise -> False
+      is ColBoolean -> when v
+        is ValBoolean (b) -> True
+        is otherwise -> False
+
+Page 1

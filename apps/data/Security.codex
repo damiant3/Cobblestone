@@ -1,0 +1,342 @@
+Chapter: Security
+  cites Data chapter Row
+  cites Data chapter Schema
+  cites Data chapter RelAlgebra
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Aes
+
+ Database security: authentication, authorization levels, views
+ bound to auth levels, row-level security, column-level encryption,
+ and time-window access controls.
+
+ We say:
+
+Section: Authentication
+
+  AuthLevel =
+    | AuthNone
+    | AuthReadOnly
+    | AuthReadWrite
+    | AuthAdmin
+
+  auth-level-name : AuthLevel -> Text
+  auth-level-name (level) =
+    when level
+      is AuthNone -> "none"
+      is AuthReadOnly -> "read-only"
+      is AuthReadWrite -> "read-write"
+      is AuthAdmin -> "admin"
+
+  auth-can-read : AuthLevel -> Boolean
+  auth-can-read (level) =
+    when level
+      is AuthNone -> False
+      is otherwise -> True
+
+  auth-can-write : AuthLevel -> Boolean
+  auth-can-write (level) =
+    when level
+      is AuthReadWrite -> True
+      is AuthAdmin -> True
+      is otherwise -> False
+
+  auth-is-admin : AuthLevel -> Boolean
+  auth-is-admin (level) =
+    when level
+      is AuthAdmin -> True
+      is otherwise -> False
+
+Section: User Account
+
+  DbUser = record {
+    user-name : Text,
+    user-pubkey-hash : Text,
+    user-auth-level : AuthLevel,
+    user-enabled : Boolean,
+    user-login-count : Integer,
+    user-last-login : Integer
+  }
+
+  user-new : Text, Text, AuthLevel -> DbUser
+  user-new (name) (pubkey-hash) (level) = DbUser {
+    user-name = name,
+    user-pubkey-hash = pubkey-hash,
+    user-auth-level = level,
+    user-enabled = True,
+    user-login-count = 0,
+    user-last-login = 0
+  }
+
+  user-admin : Text, Text -> DbUser
+  user-admin (name) (pubkey-hash) = user-new name pubkey-hash AuthAdmin
+
+  user-reader : Text, Text -> DbUser
+  user-reader (name) (pubkey-hash) = user-new name pubkey-hash AuthReadOnly
+
+  user-writer : Text, Text -> DbUser
+  user-writer (name) (pubkey-hash) = user-new name pubkey-hash AuthReadWrite
+
+Section: User Store
+
+  UserStore = record {
+    us-users : HamtMap DbUser,
+    us-count : Integer
+  }
+
+  user-store-new : UserStore
+  user-store-new = UserStore { us-users = hamt-empty, us-count = 0 }
+
+  user-store-add : UserStore, DbUser -> UserStore
+  user-store-add (store) (user) =
+    UserStore { us-users = hamt-set (store.us-users) (user.user-name) user, us-count = store.us-count + 1 }
+
+  user-store-remove : UserStore, Text -> UserStore
+  user-store-remove (store) (name) =
+    UserStore { us-users = hamt-remove (store.us-users) name, us-count = store.us-count - 1 }
+
+  user-store-lookup : UserStore, Text -> Maybe DbUser
+  user-store-lookup (store) (name) = hamt-get (store.us-users) name
+
+  user-store-disable : UserStore, Text -> UserStore
+  user-store-disable (store) (name) =
+    let found = hamt-get (store.us-users) name
+    in when found
+      is None -> store
+      is Just (u) ->
+        let disabled = DbUser { user-name = u.user-name, user-pubkey-hash = u.user-pubkey-hash, user-auth-level = u.user-auth-level, user-enabled = False, user-login-count = u.user-login-count, user-last-login = u.user-last-login }
+        in UserStore { us-users = hamt-set (store.us-users) name disabled, us-count = store.us-count }
+
+  authenticate : UserStore, Text, Text -> Maybe DbUser
+  authenticate (store) (name) (challenge-response-hash) =
+    let found = hamt-get (store.us-users) name
+    in when found
+      is None -> None
+      is Just (u) ->
+        if u.user-enabled == False then None
+        else if u.user-pubkey-hash == challenge-response-hash then Just u
+        else None
+
+Section: Authorized Views
+
+  DbView = record {
+    view-name : Text,
+    view-query : RelOp,
+    view-min-auth : AuthLevel,
+    view-owner : Text
+  }
+
+  ViewStore = record {
+    vs-views : HamtMap DbView,
+    vs-count : Integer
+  }
+
+  view-store-new : ViewStore
+  view-store-new = ViewStore { vs-views = hamt-empty, vs-count = 0 }
+
+  view-create : ViewStore, DbView -> ViewStore
+  view-create (store) (view) =
+    ViewStore { vs-views = hamt-set (store.vs-views) (view.view-name) view, vs-count = store.vs-count + 1 }
+
+  view-drop : ViewStore, Text -> ViewStore
+  view-drop (store) (name) =
+    ViewStore { vs-views = hamt-remove (store.vs-views) name, vs-count = store.vs-count - 1 }
+
+  view-lookup : ViewStore, Text, AuthLevel -> Maybe RelOp
+  view-lookup (store) (name) (caller-auth) =
+    let found = hamt-get (store.vs-views) name
+    in when found
+      is None -> None
+      is Just (v) ->
+        if auth-level-rank caller-auth >= auth-level-rank (v.view-min-auth) then Just (v.view-query)
+        else None
+
+  auth-level-rank : AuthLevel -> Integer
+  auth-level-rank (level) =
+    when level
+      is AuthNone -> 0
+      is AuthReadOnly -> 1
+      is AuthReadWrite -> 2
+      is AuthAdmin -> 3
+
+Section: Row-Level Security
+
+  RowPolicy = record {
+    rp-table : Text,
+    rp-name : Text,
+    rp-predicate : Predicate,
+    rp-applies-to : AuthLevel
+  }
+
+  RowPolicyStore = record {
+    rps-policies : List RowPolicy,
+    rps-count : Integer
+  }
+
+  row-policy-store-new : RowPolicyStore
+  row-policy-store-new = RowPolicyStore { rps-policies = [], rps-count = 0 }
+
+  row-policy-add : RowPolicyStore, RowPolicy -> RowPolicyStore
+  row-policy-add (store) (policy) =
+    RowPolicyStore { rps-policies = list-push (store.rps-policies) policy, rps-count = store.rps-count + 1 }
+
+  row-policy-for-table : RowPolicyStore, Text, AuthLevel -> Maybe Predicate
+  row-policy-for-table (store) (table) (auth) =
+    rp-find-loop (store.rps-policies) table auth 0 (store.rps-count)
+
+  rp-find-loop : List RowPolicy, Text, AuthLevel, Integer, Integer -> Maybe Predicate
+  rp-find-loop (policies) (table) (auth) (i) (len) =
+    if i >= len then None
+    else let p = list-at policies i
+    in if p.rp-table == table then
+      if auth-level-rank auth <= auth-level-rank (p.rp-applies-to) then Just (p.rp-predicate)
+      else rp-find-loop policies table auth (i + 1) len
+    else rp-find-loop policies table auth (i + 1) len
+
+  apply-row-security : RelOp, RowPolicyStore, Text, AuthLevel -> RelOp
+  apply-row-security (op) (store) (table) (auth) =
+    let policy = row-policy-for-table store table auth
+    in when policy
+      is None -> op
+      is Just (pred) -> RelFilter op pred
+
+Section: Column-Level Encryption
+
+  EncryptedColumn = record {
+    ec-table : Text,
+    ec-column : Text,
+    ec-key-hash : Text
+  }
+
+  ColumnEncryptionStore = record {
+    ces-columns : List EncryptedColumn,
+    ces-count : Integer
+  }
+
+  col-encrypt-store-new : ColumnEncryptionStore
+  col-encrypt-store-new = ColumnEncryptionStore { ces-columns = [], ces-count = 0 }
+
+  col-encrypt-add : ColumnEncryptionStore, EncryptedColumn -> ColumnEncryptionStore
+  col-encrypt-add (store) (ec) =
+    ColumnEncryptionStore { ces-columns = list-push (store.ces-columns) ec, ces-count = store.ces-count + 1 }
+
+  col-is-encrypted : ColumnEncryptionStore, Text, Text -> Boolean
+  col-is-encrypted (store) (table) (col) =
+    ce-check-loop (store.ces-columns) table col 0 (store.ces-count)
+
+  ce-check-loop : List EncryptedColumn, Text, Text, Integer, Integer -> Boolean
+  ce-check-loop (cols) (table) (col-name) (i) (len) =
+    if i >= len then False
+    else let ec = list-at cols i
+    in if ec.ec-table == table then if ec.ec-column == col-name then True else ce-check-loop cols table col-name (i + 1) len
+    else ce-check-loop cols table col-name (i + 1) len
+
+  encrypt-row-value : ColumnValue, Text -> ColumnValue
+  encrypt-row-value (val) (key-hash) =
+    when val
+      is ValText (t) ->
+        let encrypted = sha256-hex (key-hash & ":" & t)
+        in ValText ("ENC:" & encrypted)
+      is ValInteger (n) ->
+        let encrypted = sha256-hex (key-hash & ":" & show n)
+        in ValText ("ENC:" & encrypted)
+      is otherwise -> val
+
+  mask-encrypted-value : ColumnValue -> ColumnValue
+  mask-encrypted-value (val) =
+    when val
+      is ValText (t) ->
+        if text-starts-with t "ENC:" then ValText "****"
+        else val
+      is otherwise -> val
+
+Section: Time-Window Access
+
+  TimeWindow = record {
+    tw-name : Text,
+    tw-table : Text,
+    tw-start-hour : Integer between 0 and 23,
+    tw-end-hour : Integer between 0 and 23,
+    tw-days : List Integer,
+    tw-auth-level : AuthLevel
+  }
+
+  TimeWindowStore = record {
+    tws-windows : List TimeWindow,
+    tws-count : Integer
+  }
+
+  time-window-store-new : TimeWindowStore
+  time-window-store-new = TimeWindowStore { tws-windows = [], tws-count = 0 }
+
+  time-window-add : TimeWindowStore, TimeWindow -> TimeWindowStore
+  time-window-add (store) (tw) =
+    TimeWindowStore { tws-windows = list-push (store.tws-windows) tw, tws-count = store.tws-count + 1 }
+
+  time-window-check : TimeWindowStore, Text, AuthLevel, Integer, Integer -> Boolean
+  time-window-check (store) (table) (auth) (hour) (day-of-week) =
+    tw-check-loop (store.tws-windows) table auth hour day-of-week 0 (store.tws-count)
+
+  tw-check-loop : List TimeWindow, Text, AuthLevel, Integer, Integer, Integer, Integer -> Boolean
+  tw-check-loop (windows) (table) (auth) (hour) (dow) (i) (len) =
+    if i >= len then True
+    else let tw = list-at windows i
+    in if tw.tw-table == table then
+      if auth-level-rank auth <= auth-level-rank (tw.tw-auth-level) then
+        if tw-in-window hour (tw.tw-start-hour) (tw.tw-end-hour) then
+          if tw-day-allowed (tw.tw-days) dow then tw-check-loop windows table auth hour dow (i + 1) len
+          else False
+        else False
+      else tw-check-loop windows table auth hour dow (i + 1) len
+    else tw-check-loop windows table auth hour dow (i + 1) len
+
+  tw-in-window : Integer, Integer, Integer -> Boolean
+  tw-in-window (hour) (start) (end) =
+    if start <= end then hour >= start & hour < end
+    else hour >= start | hour < end
+
+  tw-day-allowed : List Integer, Integer -> Boolean
+  tw-day-allowed (days) (dow) =
+    if list-length days == 0 then True
+    else tw-day-loop days dow 0 (list-length days)
+
+  tw-day-loop : List Integer, Integer, Integer, Integer -> Boolean
+  tw-day-loop (days) (dow) (i) (len) =
+    if i >= len then False
+    else if list-at days i == dow then True
+    else tw-day-loop days dow (i + 1) len
+
+Section: Combined Security Context
+
+  SecurityContext = record {
+    sc-users : UserStore,
+    sc-views : ViewStore,
+    sc-row-policies : RowPolicyStore,
+    sc-col-encryption : ColumnEncryptionStore,
+    sc-time-windows : TimeWindowStore,
+    sc-current-user : Maybe DbUser
+  }
+
+  security-context-new : SecurityContext
+  security-context-new = SecurityContext {
+    sc-users = user-store-new,
+    sc-views = view-store-new,
+    sc-row-policies = row-policy-store-new,
+    sc-col-encryption = col-encrypt-store-new,
+    sc-time-windows = time-window-store-new,
+    sc-current-user = None
+  }
+
+  sc-auth-level : SecurityContext -> AuthLevel
+  sc-auth-level (ctx) =
+    when (ctx.sc-current-user)
+      is None -> AuthNone
+      is Just (u) -> u.user-auth-level
+
+  sc-is-admin : SecurityContext -> Boolean
+  sc-is-admin (ctx) = auth-is-admin (sc-auth-level ctx)
+
+Page 1

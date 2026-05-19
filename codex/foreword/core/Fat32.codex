@@ -1,0 +1,513 @@
+Chapter: Fat32
+  cites Foreword chapter Maybe
+  cites Foreword chapter Fat16
+
+ Runtime FAT32 filesystem reader and writer. Reads and writes files
+ on FAT32 partitions via block-read-sector and block-write-sector.
+ Extends the FAT16 reader patterns to 32-bit cluster entries, the
+ FS Info sector, and writable directory entries and FAT chains.
+
+ To fat32-init gives a Fat32Volume from a partition start sector.
+ To fat32-read-bytes gives Maybe (List Integer), the raw bytes of a file.
+ To fat32-read-text gives Maybe Text, the text contents of a file.
+ To fat32-file-exists gives Boolean.
+ To fat32-list-root gives List Text, the names in the root directory.
+ To fat32-format formats a partition as FAT32.
+ To fat32-write-file writes a file to a FAT32 partition.
+ To fat32-mkdir creates a directory.
+
+ We say:
+
+Section: Types
+
+  Fat32Volume = record {
+    f32-part-start : Integer,
+    f32-bytes-per-sector : Integer,
+    f32-sectors-per-cluster : Integer,
+    f32-reserved-sectors : Integer,
+    f32-num-fats : Integer,
+    f32-fat-sectors : Integer,
+    f32-root-cluster : Integer,
+    f32-fat-start : Integer,
+    f32-data-start : Integer,
+    f32-total-clusters : Integer,
+    f32-next-free : Integer
+  }
+
+Section: BPB Parsing
+
+  fat32-init : Integer -> Fat32Volume
+  fat32-init (part-start) =
+    let buf = block-read-sector part-start
+    in let bps = fat16-read-u16 buf 11
+    in let spc = peek-byte buf 13
+    in let reserved = fat16-read-u16 buf 14
+    in let nfats = peek-byte buf 16
+    in let fat-sz = fat16-read-u32 buf 36
+    in let root-cluster = fat16-read-u32 buf 44
+    in let fat-start = part-start + reserved
+    in let data-start = fat-start + nfats * fat-sz
+    in let total-sectors = fat16-read-u32 buf 32
+    in let data-sectors = total-sectors - (reserved + nfats * fat-sz)
+    in let total-clusters = data-sectors / spc
+    in let next-free = fat32-read-fsinfo-next-free part-start
+    in Fat32Volume {
+      f32-part-start = part-start,
+      f32-bytes-per-sector = bps,
+      f32-sectors-per-cluster = spc,
+      f32-reserved-sectors = reserved,
+      f32-num-fats = nfats,
+      f32-fat-sectors = fat-sz,
+      f32-root-cluster = root-cluster,
+      f32-fat-start = fat-start,
+      f32-data-start = data-start,
+      f32-total-clusters = total-clusters,
+      f32-next-free = next-free
+    }
+
+  fat32-read-fsinfo-next-free : Integer -> Integer
+  fat32-read-fsinfo-next-free (part-start) =
+    let buf = block-read-sector (part-start + 1)
+    in let sig = fat16-read-u32 buf 0
+    in if sig /= 1098025042 then 3
+    else let nf = fat16-read-u32 buf 492
+    in if nf == 4294967295 then 3 else nf
+
+Section: FAT Chain
+
+  fat32-next-cluster : Fat32Volume, Integer -> Integer
+  fat32-next-cluster (vol) (cluster) =
+    let byte-off = cluster * 4
+    in let sector = (vol.f32-fat-start) + byte-off / 512
+    in let off = byte-off - (byte-off / 512) * 512
+    in let buf = block-read-sector sector
+    in bit-and (fat16-read-u32 buf off) 268435455
+
+  fat32-is-end : Integer -> Boolean
+  fat32-is-end (cluster) = cluster >= 268435448
+
+  fat32-cluster-sector : Fat32Volume, Integer -> Integer
+  fat32-cluster-sector (vol) (cluster) =
+    (vol.f32-data-start) + (cluster - 2) * (vol.f32-sectors-per-cluster)
+
+Section: FAT Write
+
+  fat32-set-fat-entry : Fat32Volume, Integer, Integer -> Integer
+  fat32-set-fat-entry (vol) (cluster) (value) =
+    let byte-off = cluster * 4
+    in let sector = (vol.f32-fat-start) + byte-off / 512
+    in let off = byte-off - (byte-off / 512) * 512
+    in let buf = block-read-sector sector
+    in let w0 = poke-byte buf off (bit-and value 255)
+    in let w1 = poke-byte buf (off + 1) (bit-and (bit-shru value 8) 255)
+    in let w2 = poke-byte buf (off + 2) (bit-and (bit-shru value 16) 255)
+    in let w3 = poke-byte buf (off + 3) (bit-and (bit-shru value 24) 255)
+    in let w4 = block-write-sector sector buf
+    in let fat2-sector = sector + (vol.f32-fat-sectors)
+    in let buf2 = block-read-sector fat2-sector
+    in let w5 = poke-byte buf2 off (bit-and value 255)
+    in let w6 = poke-byte buf2 (off + 1) (bit-and (bit-shru value 8) 255)
+    in let w7 = poke-byte buf2 (off + 2) (bit-and (bit-shru value 16) 255)
+    in let w8 = poke-byte buf2 (off + 3) (bit-and (bit-shru value 24) 255)
+    in block-write-sector fat2-sector buf2
+
+  fat32-alloc-cluster : Fat32Volume, Integer -> Integer
+  fat32-alloc-cluster (vol) (start) =
+    fat32-alloc-loop vol start (vol.f32-total-clusters + 2)
+
+  fat32-alloc-loop : Fat32Volume, Integer, Integer -> Integer
+  fat32-alloc-loop (vol) (cluster) (limit) =
+    if cluster >= limit then 0
+    else let val = fat32-next-cluster vol cluster
+    in if val == 0 then cluster
+    else fat32-alloc-loop vol (cluster + 1) limit
+
+  fat32-alloc-chain : Fat32Volume, Integer, Integer, Integer -> Integer
+  fat32-alloc-chain (vol) (count) (search-from) (first) =
+    if count <= 0 then first
+    else let c = fat32-alloc-cluster vol search-from
+    in if c == 0 then 0
+    else if first == 0
+      then let w = fat32-set-fat-entry vol c 268435455
+      in fat32-alloc-chain vol (count - 1) (c + 1) c
+    else let prev-last = fat32-find-chain-end vol first
+    in let w0 = fat32-set-fat-entry vol prev-last c
+    in let w1 = fat32-set-fat-entry vol c 268435455
+    in fat32-alloc-chain vol (count - 1) (c + 1) first
+
+  fat32-find-chain-end : Fat32Volume, Integer -> Integer
+  fat32-find-chain-end (vol) (cluster) =
+    let next = fat32-next-cluster vol cluster
+    in if fat32-is-end next then cluster
+    else fat32-find-chain-end vol next
+
+Section: Directory Reading
+
+  fat32-find-in-dir : Fat32Volume, Integer, Text -> Maybe Fat16DirEntry
+  fat32-find-in-dir (vol) (cluster) (name) =
+    if fat32-is-end cluster then None
+    else if cluster < 2 then None
+    else let sector = fat32-cluster-sector vol cluster
+    in let spc = vol.f32-sectors-per-cluster
+    in let result = fat32-scan-dir-sectors vol name sector spc
+    in when result
+      is Just (entry) -> Just entry
+      is None -> let next = fat32-next-cluster vol cluster
+        in fat32-find-in-dir vol next name
+
+  fat32-scan-dir-sectors : Fat32Volume, Text, Integer, Integer -> Maybe Fat16DirEntry
+  fat32-scan-dir-sectors (vol) (name) (sector) (remaining) =
+    if remaining == 0 then None
+    else let buf = block-read-sector sector
+    in let entries-per-sector = 512 / 32
+    in let result = fat16-scan-sector-entries buf name 0 entries-per-sector
+    in when result
+      is Just (entry) -> Just entry
+      is None -> fat32-scan-dir-sectors vol name (sector + 1) (remaining - 1)
+
+Section: Path Resolution
+
+  fat32-resolve-path : Fat32Volume, Text -> Maybe Fat16DirEntry
+  fat32-resolve-path (vol) (path) =
+    let parts = fat16-split-path path
+    in fat32-walk-path vol parts 0 (list-length parts) (vol.f32-root-cluster)
+
+  fat32-walk-path : Fat32Volume, List Text, Integer, Integer, Integer -> Maybe Fat16DirEntry
+  fat32-walk-path (vol) (parts) (depth) (total) (dir-cluster) =
+    if depth >= total then None
+    else let name = list-at parts depth
+    in let found = fat32-find-in-dir vol dir-cluster name
+    in when found
+      is Just (entry) ->
+        if depth == total - 1 then Just entry
+        else if bit-and (entry.de-attr) 16 == 16
+          then let child-cluster = entry.de-cluster
+          in fat32-walk-path vol parts (depth + 1) total child-cluster
+          else None
+      is None -> None
+
+Section: File Reading
+
+  fat32-read-cluster-bytes : Fat32Volume, Integer, Integer, Integer, List Integer -> List Integer
+  fat32-read-cluster-bytes (vol) (cluster) (remaining) (sector-off) (acc) =
+    if remaining <= 0 then acc
+    else if fat32-is-end cluster then acc
+    else if cluster < 2 then acc
+    else let sector = fat32-cluster-sector vol cluster + sector-off
+    in let buf = block-read-sector sector
+    in let bytes-this = if remaining < 512 then remaining else 512
+    in let acc2 = fat16-copy-bytes buf 0 bytes-this acc
+    in let next-off = sector-off + 1
+    in if next-off >= (vol.f32-sectors-per-cluster)
+      then fat32-read-cluster-bytes vol (fat32-next-cluster vol cluster) (remaining - bytes-this) 0 acc2
+      else fat32-read-cluster-bytes vol cluster (remaining - bytes-this) next-off acc2
+
+  fat32-read-bytes : Fat32Volume, Text -> Maybe (List Integer)
+  fat32-read-bytes (vol) (path) =
+    when fat32-resolve-path vol path
+      is Just (entry) -> Just (fat32-read-cluster-bytes vol (entry.de-cluster) (entry.de-size) 0 [])
+      is None -> None
+
+  fat32-read-text : Fat32Volume, Text -> Maybe Text
+  fat32-read-text (vol) (path) =
+    when fat32-read-bytes vol path
+      is Just (bs) -> Just (fat16-bytes-to-text bs 0 (list-length bs) "")
+      is None -> None
+
+  fat32-file-exists : Fat32Volume, Text -> Boolean
+  fat32-file-exists (vol) (path) =
+    when fat32-resolve-path vol path
+      is Just (entry) -> True
+      is None -> False
+
+Section: Root Listing
+
+  fat32-list-root : Fat32Volume -> List Text
+  fat32-list-root (vol) =
+    fat32-list-dir-cluster vol (vol.f32-root-cluster) []
+
+  fat32-list-dir-cluster : Fat32Volume, Integer, List Text -> List Text
+  fat32-list-dir-cluster (vol) (cluster) (acc) =
+    if fat32-is-end cluster then acc
+    else if cluster < 2 then acc
+    else let sector = fat32-cluster-sector vol cluster
+    in let spc = vol.f32-sectors-per-cluster
+    in let acc2 = fat32-list-dir-sectors sector spc acc
+    in fat32-list-dir-cluster vol (fat32-next-cluster vol cluster) acc2
+
+  fat32-list-dir-sectors : Integer, Integer, List Text -> List Text
+  fat32-list-dir-sectors (sector) (remaining) (acc) =
+    if remaining == 0 then acc
+    else let buf = block-read-sector sector
+    in let acc2 = fat16-list-sector-entries buf 0 16 acc
+    in fat32-list-dir-sectors (sector + 1) (remaining - 1) acc2
+
+Section: File Writing
+
+  fat32-write-file : Fat32Volume, Text, List Integer -> Boolean
+  fat32-write-file (vol) (path) (data) =
+    let parts = fat16-split-path path
+    in let dir-cluster = fat32-ensure-parent-dirs vol parts 0 (list-length parts - 1) (vol.f32-root-cluster)
+    in if dir-cluster == 0 then False
+    else let file-name = list-at parts (list-length parts - 1)
+    in let data-len = list-length data
+    in let clusters-needed = if data-len == 0 then 1 else (data-len + (vol.f32-sectors-per-cluster) * 512 - 1) / ((vol.f32-sectors-per-cluster) * 512)
+    in let first-cluster = fat32-alloc-chain vol clusters-needed (vol.f32-next-free) 0
+    in if first-cluster == 0 then False
+    else let w0 = fat32-write-data-to-chain vol first-cluster data 0
+    in let w1 = fat32-add-dir-entry vol dir-cluster file-name 32 first-cluster data-len
+    in True
+
+  fat32-write-data-to-chain : Fat32Volume, Integer, List Integer, Integer -> Integer
+  fat32-write-data-to-chain (vol) (cluster) (data) (offset) =
+    if offset >= list-length data then 0
+    else if fat32-is-end cluster then 0
+    else let cluster-bytes = (vol.f32-sectors-per-cluster) * 512
+    in let w = fat32-write-cluster-data vol cluster data offset cluster-bytes
+    in let next = fat32-next-cluster vol cluster
+    in fat32-write-data-to-chain vol next data (offset + cluster-bytes)
+
+  fat32-write-cluster-data : Fat32Volume, Integer, List Integer, Integer, Integer -> Integer
+  fat32-write-cluster-data (vol) (cluster) (data) (offset) (cluster-bytes) =
+    fat32-write-cluster-sectors vol cluster data offset 0 (vol.f32-sectors-per-cluster)
+
+  fat32-write-cluster-sectors : Fat32Volume, Integer, List Integer, Integer, Integer, Integer -> Integer
+  fat32-write-cluster-sectors (vol) (cluster) (data) (offset) (sec-idx) (spc) =
+    if sec-idx >= spc then 0
+    else let sector = fat32-cluster-sector vol cluster + sec-idx
+    in let buf = alloc-bytes 512
+    in let z = fat32-zero-buf buf 0
+    in let byte-off = offset + sec-idx * 512
+    in let w = fat32-fill-buf buf data byte-off 0 512
+    in let ws = block-write-sector sector buf
+    in fat32-write-cluster-sectors vol cluster data offset (sec-idx + 1) spc
+
+  fat32-zero-buf : Integer, Integer -> Integer
+  fat32-zero-buf (buf) (i) =
+    if i >= 512 then 0
+    else let w = poke-byte buf i 0
+    in fat32-zero-buf buf (i + 1)
+
+  fat32-fill-buf : Integer, List Integer, Integer, Integer, Integer -> Integer
+  fat32-fill-buf (buf) (data) (data-off) (buf-off) (count) =
+    if buf-off >= count then 0
+    else if data-off >= list-length data then 0
+    else let w = poke-byte buf buf-off (list-at data data-off)
+    in fat32-fill-buf buf data (data-off + 1) (buf-off + 1) count
+
+Section: Directory Entry Writing
+
+  fat32-add-dir-entry : Fat32Volume, Integer, Text, Integer, Integer, Integer -> Integer
+  fat32-add-dir-entry (vol) (dir-cluster) (name) (attr) (cluster) (size) =
+    let name83 = fat32-to-83 name
+    in fat32-add-entry-to-cluster vol dir-cluster name83 attr cluster size
+
+  fat32-add-entry-to-cluster : Fat32Volume, Integer, Text, Integer, Integer, Integer -> Integer
+  fat32-add-entry-to-cluster (vol) (cluster) (name83) (attr) (file-cluster) (size) =
+    if fat32-is-end cluster then 0
+    else let sector = fat32-cluster-sector vol cluster
+    in let spc = vol.f32-sectors-per-cluster
+    in let result = fat32-find-free-entry-sectors sector spc
+    in if result >= 0 then
+      let s = result / 16
+      in let off = (result - (result / 16) * 16) * 32
+      in fat32-write-entry-at (sector + s) off name83 attr file-cluster size
+    else let next = fat32-next-cluster vol cluster
+    in if fat32-is-end next then 0
+    else fat32-add-entry-to-cluster vol next name83 attr file-cluster size
+
+  fat32-find-free-entry-sectors : Integer, Integer -> Integer
+  fat32-find-free-entry-sectors (sector) (remaining) =
+    if remaining == 0 then 0 - 1
+    else let buf = block-read-sector sector
+    in let result = fat32-find-free-in-sector buf 0 16
+    in if result >= 0 then (sector - sector) * 16 + result
+    else fat32-find-free-entry-sectors (sector + 1) (remaining - 1)
+
+  fat32-find-free-in-sector : Integer, Integer, Integer -> Integer
+  fat32-find-free-in-sector (buf) (i) (count) =
+    if i >= count then 0 - 1
+    else let first = peek-byte buf (i * 32)
+    in if first == 0 then i
+    else if first == 229 then i
+    else fat32-find-free-in-sector buf (i + 1) count
+
+  fat32-write-entry-at : Integer, Integer, Text, Integer, Integer, Integer -> Integer
+  fat32-write-entry-at (sector) (off) (name83) (attr) (cluster) (size) =
+    let buf = block-read-sector sector
+    in let w0 = fat32-write-name83 buf off name83 0
+    in let w1 = poke-byte buf (off + 11) attr
+    in let w2 = poke-byte buf (off + 20) (bit-and (bit-shru cluster 16) 255)
+    in let w3 = poke-byte buf (off + 21) (bit-and (bit-shru cluster 24) 255)
+    in let w4 = poke-byte buf (off + 26) (bit-and cluster 255)
+    in let w5 = poke-byte buf (off + 27) (bit-and (bit-shru cluster 8) 255)
+    in let w6 = poke-byte buf (off + 28) (bit-and size 255)
+    in let w7 = poke-byte buf (off + 29) (bit-and (bit-shru size 8) 255)
+    in let w8 = poke-byte buf (off + 30) (bit-and (bit-shru size 16) 255)
+    in let w9 = poke-byte buf (off + 31) (bit-and (bit-shru size 24) 255)
+    in block-write-sector sector buf
+
+  fat32-write-name83 : Integer, Integer, Text, Integer -> Integer
+  fat32-write-name83 (buf) (off) (name) (i) =
+    if i >= 11 then 0
+    else if i >= text-length name then
+      let w = poke-byte buf (off + i) 32
+      in fat32-write-name83 buf off name (i + 1)
+    else let w = poke-byte buf (off + i) (char-code (char-at name i))
+    in fat32-write-name83 buf off name (i + 1)
+
+Section: 8.3 Name Conversion
+
+  fat32-to-83 : Text -> Text
+  fat32-to-83 (name) =
+    let dot = fat32-find-dot name 0 (text-length name)
+    in if dot < 0
+      then fat32-pad-right (fat16-upper name) 11
+      else let base = fat32-pad-right (fat16-upper (substring name 0 dot)) 8
+      in let ext = fat32-pad-right (fat16-upper (substring name (dot + 1) (text-length name - dot - 1))) 3
+      in base & ext
+
+  fat32-find-dot : Text, Integer, Integer -> Integer
+  fat32-find-dot (s) (i) (len) =
+    if i >= len then 0 - 1
+    else if char-code (char-at s i) == 46 then i
+    else fat32-find-dot s (i + 1) len
+
+  fat32-pad-right : Text, Integer -> Text
+  fat32-pad-right (s) (width) =
+    if text-length s >= width then substring s 0 width
+    else fat32-pad-right (s & " ") width
+
+Section: Directory Creation
+
+  fat32-mkdir : Fat32Volume, Integer, Text -> Integer
+  fat32-mkdir (vol) (parent-cluster) (name) =
+    let dir-cluster = fat32-alloc-chain vol 1 (vol.f32-next-free) 0
+    in if dir-cluster == 0 then 0
+    else let sector = fat32-cluster-sector vol dir-cluster
+    in let buf = alloc-bytes 512
+    in let z = fat32-zero-buf buf 0
+    in let w0 = fat32-write-name83 buf 0 ".          " 0
+    in let w1 = poke-byte buf 11 16
+    in let w2 = poke-byte buf 26 (bit-and dir-cluster 255)
+    in let w3 = poke-byte buf 27 (bit-and (bit-shru dir-cluster 8) 255)
+    in let w4 = poke-byte buf 20 (bit-and (bit-shru dir-cluster 16) 255)
+    in let w5 = poke-byte buf 21 (bit-and (bit-shru dir-cluster 24) 255)
+    in let w6 = fat32-write-name83 buf 32 "..         " 0
+    in let w7 = poke-byte buf 43 16
+    in let w8 = poke-byte buf 58 (bit-and parent-cluster 255)
+    in let w9 = poke-byte buf 59 (bit-and (bit-shru parent-cluster 8) 255)
+    in let w10 = poke-byte buf 52 (bit-and (bit-shru parent-cluster 16) 255)
+    in let w11 = poke-byte buf 53 (bit-and (bit-shru parent-cluster 24) 255)
+    in let ws = block-write-sector sector buf
+    in let w12 = fat32-add-dir-entry vol parent-cluster name 16 dir-cluster 0
+    in dir-cluster
+
+  fat32-ensure-parent-dirs : Fat32Volume, List Text, Integer, Integer, Integer -> Integer
+  fat32-ensure-parent-dirs (vol) (parts) (depth) (stop) (current) =
+    if depth >= stop then current
+    else let name = list-at parts depth
+    in let found = fat32-find-in-dir vol current name
+    in when found
+      is Just (entry) ->
+        if bit-and (entry.de-attr) 16 == 16
+          then fat32-ensure-parent-dirs vol parts (depth + 1) stop (entry.de-cluster)
+          else 0
+      is None ->
+        let new-dir = fat32-mkdir vol current name
+        in if new-dir == 0 then 0
+        else fat32-ensure-parent-dirs vol parts (depth + 1) stop new-dir
+
+Section: Format
+
+  fat32-format : Integer, Integer, Text -> Boolean
+  fat32-format (part-start) (part-sectors) (label) =
+    let spc = fat32-pick-spc part-sectors
+    in let reserved = 32
+    in let clusters-est = part-sectors - reserved
+    in let fat-bytes = (clusters-est + 2) * 4
+    in let fat-sectors = (fat-bytes + 511) / 512
+    in let data-start-sect = reserved + 2 * fat-sectors
+    in let buf = alloc-bytes 512
+    in let z = fat32-zero-buf buf 0
+    in let w0 = poke-byte buf 0 235
+    in let w1 = poke-byte buf 1 88
+    in let w2 = poke-byte buf 2 144
+    in let w3 = fat32-write-name83 buf 3 "CODEXOS " 0
+    in let w4 = fat32-fmt-u16 buf 11 512
+    in let w5 = poke-byte buf 13 spc
+    in let w6 = fat32-fmt-u16 buf 14 reserved
+    in let w7 = poke-byte buf 16 2
+    in let w8 = poke-byte buf 21 248
+    in let w9 = fat32-fmt-u16 buf 24 63
+    in let w10 = fat32-fmt-u16 buf 26 255
+    in let w11 = fat32-fmt-u32 buf 28 part-start
+    in let w12 = fat32-fmt-u32 buf 32 part-sectors
+    in let w13 = fat32-fmt-u32 buf 36 fat-sectors
+    in let w14 = fat32-fmt-u32 buf 44 2
+    in let w15 = fat32-fmt-u16 buf 48 1
+    in let w16 = fat32-fmt-u16 buf 50 6
+    in let w17 = poke-byte buf 66 41
+    in let w18 = fat32-write-name83 buf 71 (fat32-pad-right label 11) 0
+    in let w19 = fat32-write-name83 buf 82 "FAT32   " 0
+    in let w20 = poke-byte buf 510 85
+    in let w21 = poke-byte buf 511 170
+    in let w22 = block-write-sector part-start buf
+    in let z2 = fat32-zero-buf buf 0
+    in let w23 = fat32-fmt-u32 buf 0 1098025042
+    in let w24 = fat32-fmt-u32 buf 484 1633967730
+    in let w25 = fat32-fmt-u32 buf 488 (part-sectors / spc - 10)
+    in let w26 = fat32-fmt-u32 buf 492 3
+    in let w27 = poke-byte buf 510 85
+    in let w28 = poke-byte buf 511 170
+    in let w29 = block-write-sector (part-start + 1) buf
+    in let w30 = fat32-write-empty-fat part-start reserved fat-sectors
+    in let root-sector = part-start + data-start-sect
+    in let z3 = fat32-zero-buf buf 0
+    in let w31 = fat32-write-name83 buf 0 (fat32-pad-right label 11) 0
+    in let w32 = poke-byte buf 11 8
+    in let w33 = block-write-sector root-sector buf
+    in True
+
+  fat32-write-empty-fat : Integer, Integer, Integer -> Integer
+  fat32-write-empty-fat (part-start) (reserved) (fat-sectors) =
+    let fat1-start = part-start + reserved
+    in let buf = alloc-bytes 512
+    in let z = fat32-zero-buf buf 0
+    in let w0 = fat32-fmt-u32 buf 0 268435448
+    in let w1 = fat32-fmt-u32 buf 4 268435455
+    in let w2 = fat32-fmt-u32 buf 8 268435455
+    in let w3 = block-write-sector fat1-start buf
+    in let w4 = block-write-sector (fat1-start + fat-sectors) buf
+    in let z2 = fat32-zero-buf buf 0
+    in let w5 = fat32-zero-fat-sectors buf (fat1-start + 1) (fat-sectors - 1)
+    in fat32-zero-fat-sectors buf (fat1-start + fat-sectors + 1) (fat-sectors - 1)
+
+  fat32-zero-fat-sectors : Integer, Integer, Integer -> Integer
+  fat32-zero-fat-sectors (buf) (sector) (count) =
+    if count <= 0 then 0
+    else let w = block-write-sector sector buf
+    in fat32-zero-fat-sectors buf (sector + 1) (count - 1)
+
+  fat32-pick-spc : Integer -> Integer
+  fat32-pick-spc (sectors) =
+    if sectors < 16384 then 1
+    else if sectors < 2097152 then 8
+    else if sectors < 16777216 then 32
+    else 64
+
+Section: Format Helpers
+
+  fat32-fmt-u16 : Integer, Integer, Integer -> Integer
+  fat32-fmt-u16 (buf) (off) (v) =
+    let w0 = poke-byte buf off (bit-and v 255)
+    in poke-byte buf (off + 1) (bit-and (bit-shru v 8) 255)
+
+  fat32-fmt-u32 : Integer, Integer, Integer -> Integer
+  fat32-fmt-u32 (buf) (off) (v) =
+    let w0 = poke-byte buf off (bit-and v 255)
+    in let w1 = poke-byte buf (off + 1) (bit-and (bit-shru v 8) 255)
+    in let w2 = poke-byte buf (off + 2) (bit-and (bit-shru v 16) 255)
+    in poke-byte buf (off + 3) (bit-and (bit-shru v 24) 255)
+
+Page 1

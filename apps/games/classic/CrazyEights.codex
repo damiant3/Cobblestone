@@ -1,0 +1,386 @@
+Chapter: CrazyEights
+  cites Games chapter Rng
+
+ Crazy Eights: standard 52-card deck, 2-4 players, 7 cards each.
+ Card encoding: 0-51, rank = card mod 13 (0=2,1=3,...,6=8,...,12=A),
+ suit = card / 13. Play a card matching the top discard's rank or suit.
+ Eights (rank 6) are wild; player chooses new suit. Special: rank 0
+ (2s) makes next player draw 2. First player to empty hand wins.
+ AI plays matching non-eight first, then eight choosing most-held suit,
+ then draws if forced.
+
+ We say:
+
+Section: Types
+
+  CrazyEightsState = record {
+    hands          : List Integer,
+    hand-sizes     : List Integer,
+    draw-pile      : List Integer,
+    pile-size      : Integer,
+    discard-rank   : Integer,
+    discard-suit   : Integer,
+    current-player : Integer,
+    num-players    : Integer,
+    direction      : Integer,
+    draw-penalty   : Integer,
+    game-over      : Boolean,
+    winner         : Integer,
+    declared-suit  : Integer
+  }
+
+  CrazyEightsResult = record {
+    winner      : Integer,
+    turns       : Integer,
+    num-players : Integer
+  }
+
+Section: Card Helpers
+
+  ce-rank : Integer -> Integer
+  ce-rank (c) = rng-mod c 13
+
+  ce-suit : Integer -> Integer
+  ce-suit (c) = c / 13
+
+Section: Deck
+
+  ce-build-deck : Integer, List Integer -> List Integer
+  ce-build-deck (i) (acc) =
+    if i >= 52 then acc
+    else ce-build-deck (i + 1) (list-push acc i)
+
+  ce-shuffle : List Integer, Rng -> List Integer
+  ce-shuffle (deck) (r) = ce-fy deck 51 r
+
+  ce-fy : List Integer, Integer, Rng -> List Integer
+  ce-fy (deck) (i) (r) =
+    if i <= 0 then deck
+    else let r2 = rng-next r
+    in let j = rng-mod (rng-value r2) (i + 1)
+    in let a = list-at deck i
+    in let b = list-at deck j
+    in let d2 = list-set-at deck i b
+    in let d3 = list-set-at d2 j a
+    in ce-fy d3 (i - 1) r2
+
+Section: Hand Storage
+
+ Hands stored as flat list: num-players * 52 slots. Slot = player*52 + card-idx.
+
+  ce-hand-has : CrazyEightsState, Integer, Integer -> Boolean
+  ce-hand-has (s) (player) (card-idx) =
+    list-at (s.hands) (player * 52 + card-idx) == 1
+
+  ce-hand-set : CrazyEightsState, Integer, Integer, Integer -> CrazyEightsState
+  ce-hand-set (s) (player) (card-idx) (val) =
+    let slot = player * 52 + card-idx
+    in let old = list-at (s.hands) slot
+    in let delta = val - old
+    in let new-hands = list-set-at (s.hands) slot val
+    in let new-size = list-at (s.hand-sizes) player + delta
+    in let new-sizes = list-set-at (s.hand-sizes) player new-size
+    in CrazyEightsState {
+         hands = new-hands,
+         hand-sizes = new-sizes,
+         draw-pile = s.draw-pile,
+         pile-size = s.pile-size,
+         discard-rank = s.discard-rank,
+         discard-suit = s.discard-suit,
+         current-player = s.current-player,
+         num-players = s.num-players,
+         direction = s.direction,
+         draw-penalty = s.draw-penalty,
+         game-over = s.game-over,
+         winner = s.winner,
+         declared-suit = s.declared-suit
+       }
+
+Section: Initialization
+
+  ce-build-zeroes : Integer, Integer, List Integer -> List Integer
+  ce-build-zeroes (i) (n) (acc) =
+    if i >= n then acc
+    else ce-build-zeroes (i + 1) n (list-push acc 0)
+
+  ce-init : Integer, Integer -> CrazyEightsState
+  ce-init (seed) (num-players) =
+    let np = if num-players < 2 then 2 else if num-players > 4 then 4 else num-players
+    in let deck = ce-shuffle (ce-build-deck 0 []) (rng-new seed)
+    in let hand-slots = ce-build-zeroes 0 (np * 52) []
+    in let sizes = ce-build-zeroes 0 np []
+    in let pile-list = ce-build-zeroes 0 52 []
+    in let s0 = CrazyEightsState {
+         hands = hand-slots,
+         hand-sizes = sizes,
+         draw-pile = pile-list,
+         pile-size = 0,
+         discard-rank = 0,
+         discard-suit = 0,
+         current-player = 0,
+         num-players = np,
+         direction = 1,
+         draw-penalty = 0,
+         game-over = False,
+         winner = 0,
+         declared-suit = 0
+       }
+    in let s1 = ce-deal s0 deck 0 np 0
+    in let top-card = list-at deck (7 * np)
+    in let pile-start = 7 * np + 1
+    in let s2 = ce-load-pile s1 deck pile-start 0 (52 - pile-start)
+    in CrazyEightsState {
+         hands = s2.hands,
+         hand-sizes = s2.hand-sizes,
+         draw-pile = s2.draw-pile,
+         pile-size = s2.pile-size,
+         discard-rank = ce-rank top-card,
+         discard-suit = ce-suit top-card,
+         current-player = 0,
+         num-players = np,
+         direction = 1,
+         draw-penalty = 0,
+         game-over = False,
+         winner = 0,
+         declared-suit = ce-suit top-card
+       }
+
+  ce-deal : CrazyEightsState, List Integer, Integer, Integer, Integer -> CrazyEightsState
+  ce-deal (s) (deck) (dealt) (np) (player) =
+    if dealt >= 7 * np then s
+    else let actual-player = dealt / 7
+    in let card-idx = list-at deck dealt
+    in let s2 = ce-hand-set s actual-player card-idx 1
+    in ce-deal s2 deck (dealt + 1) np player
+
+  ce-load-pile : CrazyEightsState, List Integer, Integer, Integer, Integer -> CrazyEightsState
+  ce-load-pile (s) (deck) (start) (i) (count) =
+    if i >= count then s
+    else if start + i >= 52 then s
+    else let card-idx = list-at deck (start + i)
+    in let new-pile = list-set-at (s.draw-pile) i card-idx
+    in let s2 = CrazyEightsState {
+         hands = s.hands,
+         hand-sizes = s.hand-sizes,
+         draw-pile = new-pile,
+         pile-size = s.pile-size + 1,
+         discard-rank = s.discard-rank,
+         discard-suit = s.discard-suit,
+         current-player = s.current-player,
+         num-players = s.num-players,
+         direction = s.direction,
+         draw-penalty = s.draw-penalty,
+         game-over = s.game-over,
+         winner = s.winner,
+         declared-suit = s.declared-suit
+       }
+    in ce-load-pile s2 deck start (i + 1) count
+
+Section: Play Logic
+
+  ce-can-play : CrazyEightsState, Integer, Integer -> Boolean
+  ce-can-play (s) (player) (card-idx) =
+    if ce-hand-has s player card-idx == False then False
+    else let r = ce-rank card-idx
+    in let suit = ce-suit card-idx
+    in if r == 6 then True
+    else if r == s.discard-rank then True
+    else suit == s.declared-suit
+
+  ce-find-play : CrazyEightsState, Integer -> Integer
+  ce-find-play (s) (player) =
+    ce-find-non-eight s player 0
+
+  ce-find-non-eight : CrazyEightsState, Integer, Integer -> Integer
+  ce-find-non-eight (s) (player) (i) =
+    if i >= 52 then ce-find-eight s player 0
+    else if ce-hand-has s player i == False then ce-find-non-eight s player (i + 1)
+    else let r = ce-rank i
+    in if r == 6 then ce-find-non-eight s player (i + 1)
+    else if ce-can-play s player i then i
+    else ce-find-non-eight s player (i + 1)
+
+  ce-find-eight : CrazyEightsState, Integer, Integer -> Integer
+  ce-find-eight (s) (player) (i) =
+    if i >= 52 then (-1)
+    else if ce-hand-has s player i == False then ce-find-eight s player (i + 1)
+    else let r = ce-rank i
+    in if r == 6 then i
+    else ce-find-eight s player (i + 1)
+
+  ce-best-suit-for-player : CrazyEightsState, Integer -> Integer
+  ce-best-suit-for-player (s) (player) =
+    ce-best-suit-loop s player 0 0 0
+
+  ce-best-suit-loop : CrazyEightsState, Integer, Integer, Integer, Integer -> Integer
+  ce-best-suit-loop (s) (player) (suit) (best-suit) (best-count) =
+    if suit >= 4 then best-suit
+    else let cnt = ce-count-suit-in-hand s player suit
+    in if cnt > best-count then ce-best-suit-loop s player (suit + 1) suit cnt
+    else ce-best-suit-loop s player (suit + 1) best-suit best-count
+
+  ce-count-suit-in-hand : CrazyEightsState, Integer, Integer -> Integer
+  ce-count-suit-in-hand (s) (player) (suit) =
+    ce-count-suit-loop s player suit 0 0
+
+  ce-count-suit-loop : CrazyEightsState, Integer, Integer, Integer, Integer -> Integer
+  ce-count-suit-loop (s) (player) (suit) (rank) (acc) =
+    if rank >= 13 then acc
+    else let card-idx = suit * 13 + rank
+    in let held = if ce-hand-has s player card-idx then 1 else 0
+    in ce-count-suit-loop s player suit (rank + 1) (acc + held)
+
+Section: Drawing
+
+  ce-draw-one : CrazyEightsState, Integer -> CrazyEightsState
+  ce-draw-one (s) (player) =
+    if s.pile-size <= 0 then s
+    else let card-idx = list-at (s.draw-pile) 0
+    in let new-pile = ce-shift-pile (s.draw-pile) 0 (s.pile-size)
+    in let s2 = CrazyEightsState {
+         hands = s.hands,
+         hand-sizes = s.hand-sizes,
+         draw-pile = new-pile,
+         pile-size = s.pile-size - 1,
+         discard-rank = s.discard-rank,
+         discard-suit = s.discard-suit,
+         current-player = s.current-player,
+         num-players = s.num-players,
+         direction = s.direction,
+         draw-penalty = s.draw-penalty,
+         game-over = s.game-over,
+         winner = s.winner,
+         declared-suit = s.declared-suit
+       }
+    in ce-hand-set s2 player card-idx 1
+
+  ce-shift-pile : List Integer, Integer, Integer -> List Integer
+  ce-shift-pile (pile) (i) (sz) =
+    if i + 1 >= sz then pile
+    else let next = list-at pile (i + 1)
+    in let p2 = list-set-at pile i next
+    in ce-shift-pile p2 (i + 1) sz
+
+  ce-draw-n : CrazyEightsState, Integer, Integer -> CrazyEightsState
+  ce-draw-n (s) (player) (n) =
+    if n <= 0 then s
+    else ce-draw-n (ce-draw-one s player) player (n - 1)
+
+Section: Advance Player
+
+  ce-next-player : CrazyEightsState -> Integer
+  ce-next-player (s) =
+    rng-mod (s.current-player + s.direction + s.num-players) s.num-players
+
+  ce-advance : CrazyEightsState -> CrazyEightsState
+  ce-advance (s) =
+    let next = ce-next-player s
+    in CrazyEightsState {
+         hands = s.hands,
+         hand-sizes = s.hand-sizes,
+         draw-pile = s.draw-pile,
+         pile-size = s.pile-size,
+         discard-rank = s.discard-rank,
+         discard-suit = s.discard-suit,
+         current-player = next,
+         num-players = s.num-players,
+         direction = s.direction,
+         draw-penalty = s.draw-penalty,
+         game-over = s.game-over,
+         winner = s.winner,
+         declared-suit = s.declared-suit
+       }
+
+Section: Play Card
+
+  ce-play-card : CrazyEightsState, Integer, Integer -> CrazyEightsState
+  ce-play-card (s) (player) (card-idx) =
+    let r = ce-rank card-idx
+    in let new-suit = if r == 6 then ce-best-suit-for-player s player else ce-suit card-idx
+    in let s2 = ce-hand-set s player card-idx 0
+    in let is-two = r == 0
+    in let new-penalty = if is-two then s2.draw-penalty + 2 else s2.draw-penalty
+    in let s3 = CrazyEightsState {
+         hands = s2.hands,
+         hand-sizes = s2.hand-sizes,
+         draw-pile = s2.draw-pile,
+         pile-size = s2.pile-size,
+         discard-rank = r,
+         discard-suit = ce-suit card-idx,
+         current-player = s2.current-player,
+         num-players = s2.num-players,
+         direction = s2.direction,
+         draw-penalty = new-penalty,
+         game-over = s2.game-over,
+         winner = s2.winner,
+         declared-suit = new-suit
+       }
+    in if list-at (s3.hand-sizes) player == 0 then
+      CrazyEightsState {
+        hands = s3.hands,
+        hand-sizes = s3.hand-sizes,
+        draw-pile = s3.draw-pile,
+        pile-size = s3.pile-size,
+        discard-rank = s3.discard-rank,
+        discard-suit = s3.discard-suit,
+        current-player = s3.current-player,
+        num-players = s3.num-players,
+        direction = s3.direction,
+        draw-penalty = s3.draw-penalty,
+        game-over = True,
+        winner = player,
+        declared-suit = s3.declared-suit
+      }
+    else ce-advance s3
+
+Section: Turn
+
+  ce-do-turn : CrazyEightsState -> CrazyEightsState
+  ce-do-turn (s) =
+    if s.game-over then s
+    else let player = s.current-player
+    in if s.draw-penalty > 0 then
+      let s2 = ce-draw-n s player (s.draw-penalty)
+      in let s3 = CrazyEightsState {
+           hands = s2.hands,
+           hand-sizes = s2.hand-sizes,
+           draw-pile = s2.draw-pile,
+           pile-size = s2.pile-size,
+           discard-rank = s2.discard-rank,
+           discard-suit = s2.discard-suit,
+           current-player = s2.current-player,
+           num-players = s2.num-players,
+           direction = s2.direction,
+           draw-penalty = 0,
+           game-over = s2.game-over,
+           winner = s2.winner,
+           declared-suit = s2.declared-suit
+         }
+      in ce-advance s3
+    else let card = ce-find-play s player
+    in if card >= 0 then ce-play-card s player card
+    else let s2 = ce-draw-one s player
+    in ce-advance s2
+
+Section: Game Runner
+
+  run-crazy-eights : Integer, Integer -> CrazyEightsResult
+  run-crazy-eights (seed) (num-players) =
+    let np = if num-players < 2 then 2 else if num-players > 4 then 4 else num-players
+    in let s = ce-init seed np
+    in ce-loop s 0
+
+  ce-loop : CrazyEightsState, Integer -> CrazyEightsResult
+  ce-loop (s) (turns) =
+    if s.game-over then CrazyEightsResult { winner = s.winner, turns = turns, num-players = s.num-players }
+    else if turns > 1000 then CrazyEightsResult { winner = (-1), turns = turns, num-players = s.num-players }
+    else ce-loop (ce-do-turn s) (turns + 1)
+
+Section: Formatting
+
+  format-crazy-eights : CrazyEightsResult -> Text
+  format-crazy-eights (r) =
+    let w = if r.winner < 0 then "Draw" else "P" & show (r.winner + 1)
+    in "CrazyEights (" & show r.num-players & "p, " & show r.turns & " turns): winner=" & w
+
+Page 1

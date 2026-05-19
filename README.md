@@ -38,7 +38,7 @@ Built solo by one human in collaboration with a fleet of AI agents, in
 
 ## Verified
 
-As of 2026-05-16:
+As of 2026-05-18:
 
 - **CDX fixed point**: pingpong all phases green — text round-trip
   (stage1 === stage2) + CDX fixed-point (stage1.cdx === stage2.cdx),
@@ -80,17 +80,21 @@ As of 2026-05-16:
   plug consumes IR on stdin, emits target source on stdout. C# plug
   is the first exemplar; Cam's lifting Ada / Babbage / COBOL / C++ /
   Fortran / Go / Java / JavaScript / Python / Rust / CodexText next.
-- **Sample battery**: 581 samples; 171 compiled + run in the gate
-  battery (18 skipped heavy-compute).
+- **Mutable records**: `mutable` keyword with in-place field
+  assignment, type-checked immutability enforcement (CDX2060).
+- **Repository restructure**: 31 top-level dirs to 8. codex-vm
+  replaces QEMU as default VM (WHP-based, NE2000 NIC, VGA, UEFI).
+- **Sample battery**: 156 samples; 103 pass, 2 fail (pre-existing),
+  51 skipped.
 
 The compiler is a hard fixed point of itself on bare metal.
 
-**`seed/Codex.cdx`** (2,109,248 bytes) — the canonical seed:
+**`seed/Codex.cdx`** (2,134,336 bytes) — the canonical seed:
 
 | Algorithm | Digest |
 |---|---|
-| MD5    | `7F9D966AE5BC137E0FB3BECAEBF072F0` |
-| SHA-256 | `4BA66C6DF21A9A2108970F4095A90D10E1BB3D663CCB2F7D7EE856C432D13DDC` |
+| MD5    | `D0421F0A4D2BFF2B18B18B1ED0829168` |
+| SHA-256 | `72E0EEE9416EBB143F2C0459E31D71B393356FA572A00752DD2CCD1AA1AC466F` |
 
 **`seed/Codex.img`** (8,388,608 bytes / 8 MB) — UEFI-bootable FAT16 GPT disk image:
 
@@ -160,7 +164,8 @@ Section: Functions
 
 ## Quick Start
 
-**Prerequisites**: QEMU (with WHPX on Windows) for the bare-metal path.
+**Prerequisites**: `codex-vm.exe` (build via `tools/build-vm.ps1`) or
+QEMU (with WHPX) for the bare-metal path.
 
 ```powershell
 # Sample battery (bare-metal selfhost, ~2-5s per sample; -Jobs N for parallel)
@@ -170,10 +175,10 @@ codex.build/test.ps1 -Jobs 4
 codex.build/build.ps1
 ```
 
-### Try it without building (just QEMU + the seed CDX)
+### Try it without building (just codex-vm + the seed CDX)
 
 The CDX in `seed/Codex.cdx` is a complete compiler. Boot it under
-QEMU, hand it source bytes on serial, and it hands back CDX or ELF,
+codex-vm, hand it source bytes on serial, and it hands back CDX or ELF,
 C# or Codex-text over the same socket — the output format is selected
 by the mode line. Two helpers wrap the protocol — feed and run:
 
@@ -182,18 +187,18 @@ by the mode line. Two helpers wrap the protocol — feed and run:
 New-Item -ItemType Directory -Force build-output/bare-metal, build-output/try
 Copy-Item seed/Codex.cdx build-output/bare-metal/Codex.cdx
 
-# Compile a sample with the seed (boots QEMU, sends source, reads emitted CDX).
+# Compile a sample with the seed (boots codex-vm, sends source, reads emitted CDX).
 codex.build/test-compile.ps1 -Src codex.test/hello.codex -Out build-output/try/hello.cdx -Log build-output/try/build.log
 
-# Boot the just-compiled program in QEMU and capture its serial output.
+# Boot the just-compiled program and capture its serial output.
 codex.build/test-run.ps1 -Kernel build-output/try/hello.cdx -OutFile build-output/try/hello.out
 Get-Content build-output/try/hello.out
 ```
 
 Two-channel serial: COM1 carries data (source in, CDX or runtime stdout
 out), COM2 carries control (`READY` greeting). Inspect
-`codex.build/test-compile.ps1` and `codex.build/qemu-config.ps1` to see the
-raw `qemu-system-x86_64` invocation.
+`codex.build/test-compile.ps1` and `codex.build/vm-config.ps1` to see the
+VM invocation (codex-vm by default, QEMU via `$env:USE_QEMU=1`).
 
 ---
 
@@ -388,7 +393,7 @@ old/                      Retired C# reference compiler — historical only
 |-----------|------|------|
 | Foundation | Reference compiler in C#, type system, IR, transpiler backends | 2026-03-14 |
 | Self-hosting (BS1) | Fixed point — stage 1 === stage 3 | 2026-03-16 |
-| Bare metal | x86-64 ELF on QEMU, no OS, no libc | 2026-03-23 |
+| Bare metal | x86-64 ELF on bare-metal VM, no OS, no libc | 2026-03-23 |
 | Pingpong (BS2) | Bare-metal semantic equivalence | 2026-04-07 |
 | **Self-sustaining (BS3)** | **Bare-metal CDX reproduces itself byte-identical** | **2026-04-24** |
 | CDX binary format | Signed CDX with SHA-256, capability tables, effect metadata | 2026-04-30 |
@@ -477,7 +482,7 @@ codegen diffs against IR invariants in a single pass. The Agent SDK's
 parallel-agent model let multiple agents work distinct CLs simultaneously
 without cross-contaminating their reasoning. The harness's permission model
 and sandboxing made it safe to give the agents direct access to git, p4, WSL,
-QEMU, and gdb without supervising every command. Persistent memory across
+codex-vm, and gdb without supervising every command. Persistent memory across
 sessions meant context compounded instead of evaporating between runs.
 
 Forty-one days from project start to a self-sustaining bare-metal compiler is

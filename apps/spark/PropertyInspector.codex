@@ -1,0 +1,148 @@
+Chapter: PropertyInspector
+  cites Math chapter Quaternion
+  cites Spark chapter Project
+  cites Spark chapter SceneGraph
+  cites Spark chapter SceneMaterial
+
+ Property inspector for viewing and editing selected object
+ properties. Displays transform, material, mesh stats, and
+ visibility. Returns edit actions for the command system.
+
+ We say:
+
+Section: Types
+
+  PropKind =
+    | PropInteger (Integer)
+    | PropFloat3 (Vec3)
+    | PropColor (Integer)
+    | PropBool (Boolean)
+    | PropText (Text)
+    | PropEnum (Text) (List Text)
+
+  PropEntry = record {
+    pe-name : Text,
+    pe-value : PropKind,
+    pe-editable : Boolean,
+    pe-group : Text
+  }
+
+  InspectorState = record {
+    ins-entries : List PropEntry,
+    ins-entry-count : Integer,
+    ins-scroll-y : Integer,
+    ins-expanded-groups : List Text,
+    ins-row-height : Integer
+  }
+
+Section: Construction
+
+  inspector-new : InspectorState
+  inspector-new = InspectorState {
+    ins-entries = [],
+    ins-entry-count = 0,
+    ins-scroll-y = 0,
+    ins-expanded-groups = ["Transform", "Material", "Mesh", "Display"],
+    ins-row-height = 20
+  }
+
+  prop-entry : Text, PropKind, Boolean, Text -> PropEntry
+  prop-entry (name) (value) (editable) (group) = PropEntry {
+    pe-name = name,
+    pe-value = value,
+    pe-editable = editable,
+    pe-group = group
+  }
+
+Section: Build From Selection
+
+  inspector-from-object : SceneObject -> InspectorState
+  inspector-from-object (obj) =
+    let ins = inspector-new
+    in let ins2 = ins-add ins (prop-entry "Name" (PropText (obj.so-name)) True "Object")
+    in let ins3 = ins-add ins2 (prop-entry "Visible" (PropBool (obj.so-visible)) True "Object")
+    in let ins4 = ins-add ins3 (prop-entry "Position" (PropFloat3 (obj.so-position)) True "Transform")
+    in let ins5 = ins-add ins4 (prop-entry "Scale" (PropFloat3 (obj.so-scale)) True "Transform")
+    in let ins6 = ins-add ins5 (prop-entry "Color" (PropColor (obj.so-color)) True "Material")
+    in let ins7 = ins-add ins6 (prop-entry "Vertices" (PropInteger (obj.so-mesh.tm-vert-count)) False "Mesh")
+    in ins-add ins7 (prop-entry "Faces" (PropInteger (obj.so-mesh.tm-face-count)) False "Mesh")
+
+  inspector-from-scene-node : SceneGraphNode -> InspectorState
+  inspector-from-scene-node (node) =
+    let ins = inspector-new
+    in let ins2 = ins-add ins (prop-entry "Name" (PropText (node.sgn-name)) True "Object")
+    in let ins3 = ins-add ins2 (prop-entry "Visible" (PropBool (node.sgn-visible)) True "Object")
+    in let ins4 = ins-add ins3 (prop-entry "Position" (PropFloat3 (node.sgn-position)) True "Transform")
+    in let ins5 = ins-add ins4 (prop-entry "Rotation" (PropFloat3 (vec3-new (node.sgn-rotation.x) (node.sgn-rotation.y) (node.sgn-rotation.z))) False "Transform")
+    in ins-add ins5 (prop-entry "Scale" (PropFloat3 (node.sgn-scale)) True "Transform")
+
+Section: Entry Management
+
+  ins-add : InspectorState, PropEntry -> InspectorState
+  ins-add (ins) (entry) = InspectorState {
+    ins-entries = list-push (ins.ins-entries) entry,
+    ins-entry-count = ins.ins-entry-count + 1,
+    ins-scroll-y = ins.ins-scroll-y,
+    ins-expanded-groups = ins.ins-expanded-groups,
+    ins-row-height = ins.ins-row-height
+  }
+
+  ins-get : InspectorState, Integer -> PropEntry
+  ins-get (ins) (i) = list-at (ins.ins-entries) i
+
+Section: Group Expand/Collapse
+
+  ins-toggle-group : InspectorState, Text -> InspectorState
+  ins-toggle-group (ins) (group) =
+    if ins-group-expanded ins group then
+      __record-set ins "ins-expanded-groups" (ins-remove-group (ins.ins-expanded-groups) group 0 [])
+    else __record-set ins "ins-expanded-groups" (list-push (ins.ins-expanded-groups) group)
+
+  ins-group-expanded : InspectorState, Text -> Boolean
+  ins-group-expanded (ins) (group) =
+    ins-group-check (ins.ins-expanded-groups) group 0
+
+  ins-group-check : List Text, Text, Integer -> Boolean
+  ins-group-check (groups) (target) (i) =
+    if i >= list-length groups then False
+    else if text-starts-with (list-at groups i) target then
+      if text-length (list-at groups i) == text-length target then True
+      else ins-group-check groups target (i + 1)
+    else ins-group-check groups target (i + 1)
+
+  ins-remove-group : List Text, Text, Integer, List Text -> List Text
+  ins-remove-group (groups) (target) (i) (acc) =
+    if i >= list-length groups then acc
+    else let g = list-at groups i
+    in let keep = if text-length g == text-length target then
+        if text-starts-with g target then False else True
+      else True
+    in ins-remove-group groups target (i + 1) (if keep then list-push acc g else acc)
+
+Section: Scroll
+
+  ins-scroll : InspectorState, Integer -> InspectorState
+  ins-scroll (ins) (delta) =
+    let new-y = ins.ins-scroll-y + delta
+    in let clamped = if new-y < 0 then 0 else new-y
+    in __record-set ins "ins-scroll-y" clamped
+
+Section: Value Formatting
+
+  prop-value-text : PropKind -> Text
+  prop-value-text (val) =
+    when val
+      is PropInteger (n) -> show n
+      is PropFloat3 (v) -> "(" & show (v.vx) & ", " & show (v.vy) & ", " & show (v.vz) & ")"
+      is PropColor (c) -> "#" & show c
+      is PropBool (b) -> if b then "True" else "False"
+      is PropText (t) -> t
+      is PropEnum (selected) (options) -> selected
+
+Section: Info
+
+  inspector-info : InspectorState -> Text
+  inspector-info (ins) =
+    show (ins.ins-entry-count) & " properties"
+
+Page 1

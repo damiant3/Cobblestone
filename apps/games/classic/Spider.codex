@@ -1,0 +1,380 @@
+Chapter: Spider
+  cites Games chapter Rng
+
+ Spider Solitaire, 2-suit variant. 104 cards (suits 0 and 1,
+ ranks 0-12 each appearing 4 times). 10 tableau columns receive
+ the initial deal (cols 0-3 get 6 cards, cols 4-9 get 5 cards).
+ Cards represented as integers: rank = card mod 13, suit = card / 13.
+ Sequences of same-suit descending cards can be moved as a unit.
+ A complete K-through-A run of the same suit is removed.
+ The stock holds 50 remaining cards dealt 10 at a time.
+ The greedy AI prefers completing suits, then uncovering cards,
+ then any legal sequence move.
+
+ We say:
+
+Section: Types
+
+  SpiderState = record {
+    col0            : List Integer,
+    col1            : List Integer,
+    col2            : List Integer,
+    col3            : List Integer,
+    col4            : List Integer,
+    col5            : List Integer,
+    col6            : List Integer,
+    col7            : List Integer,
+    col8            : List Integer,
+    col9            : List Integer,
+    stock           : List Integer,
+    completed-suits : Integer,
+    moves           : Integer
+  }
+
+  SpiderResult = record {
+    completed-suits : Integer,
+    moves           : Integer,
+    won             : Boolean
+  }
+
+  SpiderMove = record {
+    from-col  : Integer,
+    seq-start : Integer,
+    to-col    : Integer
+  }
+
+Section: Card Helpers
+
+  sp-rank : Integer -> Integer
+  sp-rank (c) = rng-mod c 13
+
+  sp-suit : Integer -> Integer
+  sp-suit (c) = c / 13
+
+Section: Deck Building
+
+  spider-deck-new : Integer -> List Integer
+  spider-deck-new (seed) =
+    let deck = sp-fill-deck 0 []
+    in sp-shuffle deck seed 103
+
+  sp-fill-deck : Integer, List Integer -> List Integer
+  sp-fill-deck (i) (acc) =
+    if i >= 104 then acc
+    else sp-fill-deck (i + 1) (list-push acc i)
+
+  sp-shuffle : List Integer, Integer, Integer -> List Integer
+  sp-shuffle (deck) (seed) (i) =
+    if i <= 0 then deck
+    else let rng = rng-new (seed * 7 + i)
+    in let j = rng-mod (rng-value (rng-next rng)) (i + 1)
+    in let vi = list-at deck i
+    in let vj = list-at deck j
+    in let d2 = list-set-at deck i vj
+    in let d3 = list-set-at d2 j vi
+    in sp-shuffle d3 seed (i - 1)
+
+Section: Column Access
+
+  sp-get-col : SpiderState, Integer -> List Integer
+  sp-get-col (st) (c) =
+    if c == 0 then st.col0
+    else if c == 1 then st.col1
+    else if c == 2 then st.col2
+    else if c == 3 then st.col3
+    else if c == 4 then st.col4
+    else if c == 5 then st.col5
+    else if c == 6 then st.col6
+    else if c == 7 then st.col7
+    else if c == 8 then st.col8
+    else st.col9
+
+  sp-set-col : SpiderState, Integer, List Integer -> SpiderState
+  sp-set-col (st) (c) (col) =
+    if c == 0 then SpiderState { col0 = col, col1 = st.col1, col2 = st.col2, col3 = st.col3,
+                                  col4 = st.col4, col5 = st.col5, col6 = st.col6, col7 = st.col7,
+                                  col8 = st.col8, col9 = st.col9, stock = st.stock,
+                                  completed-suits = st.completed-suits, moves = st.moves }
+    else if c == 1 then SpiderState { col0 = st.col0, col1 = col, col2 = st.col2, col3 = st.col3,
+                                       col4 = st.col4, col5 = st.col5, col6 = st.col6, col7 = st.col7,
+                                       col8 = st.col8, col9 = st.col9, stock = st.stock,
+                                       completed-suits = st.completed-suits, moves = st.moves }
+    else if c == 2 then SpiderState { col0 = st.col0, col1 = st.col1, col2 = col, col3 = st.col3,
+                                       col4 = st.col4, col5 = st.col5, col6 = st.col6, col7 = st.col7,
+                                       col8 = st.col8, col9 = st.col9, stock = st.stock,
+                                       completed-suits = st.completed-suits, moves = st.moves }
+    else if c == 3 then SpiderState { col0 = st.col0, col1 = st.col1, col2 = st.col2, col3 = col,
+                                       col4 = st.col4, col5 = st.col5, col6 = st.col6, col7 = st.col7,
+                                       col8 = st.col8, col9 = st.col9, stock = st.stock,
+                                       completed-suits = st.completed-suits, moves = st.moves }
+    else if c == 4 then SpiderState { col0 = st.col0, col1 = st.col1, col2 = st.col2, col3 = st.col3,
+                                       col4 = col, col5 = st.col5, col6 = st.col6, col7 = st.col7,
+                                       col8 = st.col8, col9 = st.col9, stock = st.stock,
+                                       completed-suits = st.completed-suits, moves = st.moves }
+    else if c == 5 then SpiderState { col0 = st.col0, col1 = st.col1, col2 = st.col2, col3 = st.col3,
+                                       col4 = st.col4, col5 = col, col6 = st.col6, col7 = st.col7,
+                                       col8 = st.col8, col9 = st.col9, stock = st.stock,
+                                       completed-suits = st.completed-suits, moves = st.moves }
+    else if c == 6 then SpiderState { col0 = st.col0, col1 = st.col1, col2 = st.col2, col3 = st.col3,
+                                       col4 = st.col4, col5 = st.col5, col6 = col, col7 = st.col7,
+                                       col8 = st.col8, col9 = st.col9, stock = st.stock,
+                                       completed-suits = st.completed-suits, moves = st.moves }
+    else if c == 7 then SpiderState { col0 = st.col0, col1 = st.col1, col2 = st.col2, col3 = st.col3,
+                                       col4 = st.col4, col5 = st.col5, col6 = st.col6, col7 = col,
+                                       col8 = st.col8, col9 = st.col9, stock = st.stock,
+                                       completed-suits = st.completed-suits, moves = st.moves }
+    else if c == 8 then SpiderState { col0 = st.col0, col1 = st.col1, col2 = st.col2, col3 = st.col3,
+                                       col4 = st.col4, col5 = st.col5, col6 = st.col6, col7 = st.col7,
+                                       col8 = col, col9 = st.col9, stock = st.stock,
+                                       completed-suits = st.completed-suits, moves = st.moves }
+    else SpiderState { col0 = st.col0, col1 = st.col1, col2 = st.col2, col3 = st.col3,
+                       col4 = st.col4, col5 = st.col5, col6 = st.col6, col7 = st.col7,
+                       col8 = st.col8, col9 = col, stock = st.stock,
+                       completed-suits = st.completed-suits, moves = st.moves }
+
+Section: Construction
+
+  spider-new : Integer -> SpiderState
+  spider-new (seed) =
+    let deck = spider-deck-new seed
+    in sp-deal deck
+
+  sp-deal : List Integer -> SpiderState
+  sp-deal (deck) =
+    let c0 = sp-take-col deck 0 6
+    in let c1 = sp-take-col deck 6 6
+    in let c2 = sp-take-col deck 12 6
+    in let c3 = sp-take-col deck 18 6
+    in let c4 = sp-take-col deck 24 5
+    in let c5 = sp-take-col deck 29 5
+    in let c6 = sp-take-col deck 34 5
+    in let c7 = sp-take-col deck 39 5
+    in let c8 = sp-take-col deck 44 5
+    in let c9 = sp-take-col deck 49 5
+    in let stock = sp-take-col deck 54 50
+    in SpiderState { col0 = c0, col1 = c1, col2 = c2, col3 = c3,
+                     col4 = c4, col5 = c5, col6 = c6, col7 = c7,
+                     col8 = c8, col9 = c9, stock = stock,
+                     completed-suits = 0, moves = 0 }
+
+  sp-take-col : List Integer, Integer, Integer -> List Integer
+  sp-take-col (deck) (start) (count) =
+    sp-take-loop deck start count 0 []
+
+  sp-take-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  sp-take-loop (deck) (start) (count) (i) (acc) =
+    if i >= count then acc
+    else sp-take-loop deck start count (i + 1) (list-push acc (list-at deck (start + i)))
+
+Section: Sequence Logic
+
+  sp-seq-len : List Integer, Integer -> Integer
+  sp-seq-len (col) (from-idx) =
+    let n = list-length col
+    in if from-idx >= n then 0
+    else sp-seq-loop col from-idx (from-idx + 1) 1
+
+  sp-seq-loop : List Integer, Integer, Integer, Integer -> Integer
+  sp-seq-loop (col) (prev) (i) (len) =
+    let n = list-length col
+    in if i >= n then len
+    else let c-prev = list-at col prev
+    in let c-curr = list-at col i
+    in if sp-rank c-curr /= sp-rank c-prev - 1 then len
+    else if sp-suit c-curr /= sp-suit c-prev then len
+    else sp-seq-loop col i (i + 1) (len + 1)
+
+  sp-can-move : List Integer, List Integer, Integer -> Boolean
+  sp-can-move (from-col) (to-col) (seq-start) =
+    let to-n = list-length to-col
+    in if to-n == 0 then True
+    else let top-from = list-at from-col seq-start
+    in let top-to = list-at to-col (to-n - 1)
+    in sp-rank top-from == sp-rank top-to - 1
+
+Section: Move Execution
+
+  sp-apply-move : SpiderState, SpiderMove -> SpiderState
+  sp-apply-move (st) (m) =
+    let from-col = sp-get-col st (m.from-col)
+    in let to-col = sp-get-col st (m.to-col)
+    in let from-n = list-length from-col
+    in let seq-count = from-n - m.seq-start
+    in let moved = sp-take-from-end from-col m.seq-start seq-count
+    in let trimmed = sp-drop-from-end from-col seq-count
+    in let new-to = sp-append-cols to-col moved 0 (list-length moved)
+    in let st2 = sp-set-col st (m.from-col) trimmed
+    in let st3 = sp-set-col st2 (m.to-col) new-to
+    in let st4 = SpiderState { col0 = st3.col0, col1 = st3.col1, col2 = st3.col2, col3 = st3.col3,
+                                col4 = st3.col4, col5 = st3.col5, col6 = st3.col6, col7 = st3.col7,
+                                col8 = st3.col8, col9 = st3.col9, stock = st3.stock,
+                                completed-suits = st3.completed-suits, moves = st3.moves + 1 }
+    in sp-check-complete st4 (m.to-col)
+
+  sp-take-from-end : List Integer, Integer, Integer -> List Integer
+  sp-take-from-end (col) (start) (count) =
+    sp-take-loop col start count 0 []
+
+  sp-drop-from-end : List Integer, Integer -> List Integer
+  sp-drop-from-end (col) (count) =
+    let n = list-length col
+    in sp-take-loop col 0 (n - count) 0 []
+
+  sp-append-cols : List Integer, List Integer, Integer, Integer -> List Integer
+  sp-append-cols (base) (extra) (i) (n) =
+    if i >= n then base
+    else sp-append-cols (list-push base (list-at extra i)) extra (i + 1) n
+
+Section: Complete Suite Check
+
+  sp-check-complete : SpiderState, Integer -> SpiderState
+  sp-check-complete (st) (col-idx) =
+    let col = sp-get-col st col-idx
+    in let n = list-length col
+    in if n < 13 then st
+    else let seq-len = sp-seq-len col (n - 13)
+    in if seq-len < 13 then st
+    else let top = list-at col (n - 13)
+    in if sp-rank top /= 12 then st
+    else let trimmed = sp-drop-from-end col 13
+    in let st2 = sp-set-col st col-idx trimmed
+    in SpiderState { col0 = st2.col0, col1 = st2.col1, col2 = st2.col2, col3 = st2.col3,
+                     col4 = st2.col4, col5 = st2.col5, col6 = st2.col6, col7 = st2.col7,
+                     col8 = st2.col8, col9 = st2.col9, stock = st2.stock,
+                     completed-suits = st2.completed-suits + 1, moves = st2.moves }
+
+Section: Stock Deal
+
+  sp-deal-stock : SpiderState -> SpiderState
+  sp-deal-stock (st) =
+    let n = list-length (st.stock)
+    in if n < 10 then st
+    else let st2 = sp-deal-one st 0 0
+    in let st3 = sp-deal-one st2 1 1
+    in let st4 = sp-deal-one st3 2 2
+    in let st5 = sp-deal-one st4 3 3
+    in let st6 = sp-deal-one st5 4 4
+    in let st7 = sp-deal-one st6 5 5
+    in let st8 = sp-deal-one st7 6 6
+    in let st9 = sp-deal-one st8 7 7
+    in let st10 = sp-deal-one st9 8 8
+    in let st11 = sp-deal-one st10 9 9
+    in let new-stock = sp-drop-from-end (st11.stock) 10
+    in SpiderState { col0 = st11.col0, col1 = st11.col1, col2 = st11.col2, col3 = st11.col3,
+                     col4 = st11.col4, col5 = st11.col5, col6 = st11.col6, col7 = st11.col7,
+                     col8 = st11.col8, col9 = st11.col9, stock = new-stock,
+                     completed-suits = st11.completed-suits, moves = st11.moves }
+
+  sp-deal-one : SpiderState, Integer, Integer -> SpiderState
+  sp-deal-one (st) (col-idx) (stock-idx) =
+    let sn = list-length (st.stock)
+    in if stock-idx >= sn then st
+    else let card = list-at (st.stock) (sn - 1 - stock-idx)
+    in let col = sp-get-col st col-idx
+    in let col2 = list-push col card
+    in sp-set-col st col-idx col2
+
+Section: AI — Greedy Solver
+
+  sp-find-best-move : SpiderState -> Integer
+  sp-find-best-move (st) =
+    let suit-move = sp-find-completing-move st 0
+    in if suit-move >= 0 then suit-move
+    else sp-find-any-move st 0
+
+  sp-find-completing-move : SpiderState, Integer -> Integer
+  sp-find-completing-move (st) (from-c) =
+    if from-c >= 10 then (-1)
+    else let col = sp-get-col st from-c
+    in let n = list-length col
+    in if n == 0 then sp-find-completing-move st (from-c + 1)
+    else let seq-start = n - sp-seq-len col (n - 1)
+    in let m = sp-find-target-completing st from-c seq-start 0
+    in if m >= 0 then m
+    else sp-find-completing-move st (from-c + 1)
+
+  sp-find-target-completing : SpiderState, Integer, Integer, Integer -> Integer
+  sp-find-target-completing (st) (from-c) (seq-start) (to-c) =
+    if to-c >= 10 then (-1)
+    else if to-c == from-c then sp-find-target-completing st from-c seq-start (to-c + 1)
+    else let from-col = sp-get-col st from-c
+    in let to-col = sp-get-col st to-c
+    in if sp-can-move from-col to-col seq-start == False then
+      sp-find-target-completing st from-c seq-start (to-c + 1)
+    else let score = sp-move-score st from-c seq-start to-c
+    in if score >= 100 then from-c * 1000 + seq-start * 10 + to-c
+    else sp-find-target-completing st from-c seq-start (to-c + 1)
+
+  sp-find-any-move : SpiderState, Integer -> Integer
+  sp-find-any-move (st) (from-c) =
+    if from-c >= 10 then (-1)
+    else let col = sp-get-col st from-c
+    in let n = list-length col
+    in if n == 0 then sp-find-any-move st (from-c + 1)
+    else let seq-start = n - sp-seq-len col (n - 1)
+    in let m = sp-find-any-target st from-c seq-start 0
+    in if m >= 0 then m
+    else sp-find-any-move st (from-c + 1)
+
+  sp-find-any-target : SpiderState, Integer, Integer, Integer -> Integer
+  sp-find-any-target (st) (from-c) (seq-start) (to-c) =
+    if to-c >= 10 then (-1)
+    else if to-c == from-c then sp-find-any-target st from-c seq-start (to-c + 1)
+    else let from-col = sp-get-col st from-c
+    in let to-col = sp-get-col st to-c
+    in if sp-can-move from-col to-col seq-start == False then
+      sp-find-any-target st from-c seq-start (to-c + 1)
+    else from-c * 1000 + seq-start * 10 + to-c
+
+  sp-move-score : SpiderState, Integer, Integer, Integer -> Integer
+  sp-move-score (st) (from-c) (seq-start) (to-c) =
+    let from-col = sp-get-col st from-c
+    in let to-col = sp-get-col st to-c
+    in let to-n = list-length to-col
+    in if to-n == 0 then 10
+    else let top-to = list-at to-col (to-n - 1)
+    in let top-from = list-at from-col seq-start
+    in let suit-match = sp-suit top-from == sp-suit top-to
+    in if suit-match then 100 else 10
+
+  sp-decode-move : Integer -> SpiderMove
+  sp-decode-move (code) =
+    let from-c = code / 1000
+    in let rem = rng-mod code 1000
+    in let seq-start = rem / 10
+    in let to-c = rng-mod rem 10
+    in SpiderMove { from-col = from-c, seq-start = seq-start, to-col = to-c }
+
+Section: Game Runner
+
+  run-spider-game : Integer -> SpiderResult
+  run-spider-game (seed) =
+    let st = spider-new seed
+    in spider-loop st 0
+
+  spider-loop : SpiderState, Integer -> SpiderResult
+  spider-loop (st) (deals-used) =
+    if st.completed-suits >= 8 then
+      SpiderResult { completed-suits = st.completed-suits, moves = st.moves, won = True }
+    else if st.moves > 500 then
+      SpiderResult { completed-suits = st.completed-suits, moves = st.moves, won = False }
+    else let move-code = sp-find-best-move st
+    in if move-code >= 0 then
+      let m = sp-decode-move move-code
+      in let st2 = sp-apply-move st m
+      in spider-loop st2 deals-used
+    else if deals-used < 5 & list-length (st.stock) >= 10 then
+      let st2 = sp-deal-stock st
+      in spider-loop st2 (deals-used + 1)
+    else SpiderResult { completed-suits = st.completed-suits, moves = st.moves, won = False }
+
+Section: Formatting
+
+  format-spider-result : SpiderResult -> Text
+  format-spider-result (r) =
+    let status = if r.won then "Won!" else "Incomplete"
+    in "Spider Solitaire (2-suit): " & status &
+       " suits=" & show (r.completed-suits) & "/8" &
+       " moves=" & show (r.moves)
+
+Page 1

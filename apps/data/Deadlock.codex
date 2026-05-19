@@ -1,0 +1,125 @@
+Chapter: Deadlock
+  cites Data chapter LockManager
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ Deadlock detection via wait-for graph cycle detection. Uses DFS
+ to find cycles. When a cycle is found, selects the youngest
+ transaction (highest txn-id) as the victim to abort.
+
+ We say:
+
+Section: Wait-For Graph
+
+  WaitForGraph = record {
+    wfg-edges : List WaitEdge,
+    wfg-nodes : List Integer,
+    wfg-count : Integer
+  }
+
+  wfg-build : List WaitEdge -> WaitForGraph
+  wfg-build (edges) =
+    let nodes = wfg-collect-nodes edges 0 (list-length edges) hamt-empty []
+    in WaitForGraph {
+      wfg-edges = edges,
+      wfg-nodes = nodes,
+      wfg-count = list-length nodes
+    }
+
+  wfg-collect-nodes : List WaitEdge, Integer, Integer, HamtMap Integer, List Integer -> List Integer
+  wfg-collect-nodes (edges) (i) (len) (seen) (acc) =
+    if i >= len then acc
+    else let e = list-at edges i
+    in let s1 = show (e.we-waiter)
+    in let s2 = show (e.we-holder)
+    in let acc2 = when (hamt-get seen s1)
+      is Just (v) -> acc
+      is None -> list-push acc (e.we-waiter)
+    in let seen2 = hamt-set seen s1 1
+    in let acc3 = when (hamt-get seen2 s2)
+      is Just (v) -> acc2
+      is None -> list-push acc2 (e.we-holder)
+    in let seen3 = hamt-set seen2 s2 1
+    in wfg-collect-nodes edges (i + 1) len seen3 acc3
+
+Section: Cycle Detection (DFS)
+
+  DeadlockResult =
+    | NoDeadlock
+    | DeadlockFound (List Integer)
+
+  detect-deadlock : WaitForGraph -> DeadlockResult
+  detect-deadlock (wfg) =
+    detect-from-nodes (wfg.wfg-nodes) (wfg.wfg-edges) 0 (wfg.wfg-count) hamt-empty
+
+  detect-from-nodes : List Integer, List WaitEdge, Integer, Integer, HamtMap Integer -> DeadlockResult
+  detect-from-nodes (nodes) (edges) (i) (len) (visited) =
+    if i >= len then NoDeadlock
+    else let node = list-at nodes i
+    in let key = show node
+    in let already = hamt-get visited key
+    in when already
+      is Just (v) -> detect-from-nodes nodes edges (i + 1) len visited
+      is None ->
+        let result = dfs-visit node edges [node] (hamt-set hamt-empty key 1) visited
+        in when result
+          is DeadlockFound (cycle) -> DeadlockFound cycle
+          is NoDeadlock ->
+            let new-visited = hamt-set visited key 1
+            in detect-from-nodes nodes edges (i + 1) len new-visited
+
+  dfs-visit : Integer, List WaitEdge, List Integer, HamtMap Integer, HamtMap Integer -> DeadlockResult
+  dfs-visit (node) (edges) (path) (on-stack) (visited) =
+    let neighbors = wfg-successors edges node
+    in dfs-check-neighbors neighbors edges path on-stack visited 0 (list-length neighbors)
+
+  dfs-check-neighbors : List Integer, List WaitEdge, List Integer, HamtMap Integer, HamtMap Integer, Integer, Integer -> DeadlockResult
+  dfs-check-neighbors (neighbors) (edges) (path) (on-stack) (visited) (i) (len) =
+    if i >= len then NoDeadlock
+    else let next = list-at neighbors i
+    in let key = show next
+    in let on = hamt-get on-stack key
+    in when on
+      is Just (v) -> DeadlockFound (list-push path next)
+      is None ->
+        let already = hamt-get visited key
+        in when already
+          is Just (v) -> dfs-check-neighbors neighbors edges path on-stack visited (i + 1) len
+          is None ->
+            let result = dfs-visit next edges (list-push path next) (hamt-set on-stack key 1) visited
+            in when result
+              is DeadlockFound (cycle) -> DeadlockFound cycle
+              is NoDeadlock -> dfs-check-neighbors neighbors edges path on-stack visited (i + 1) len
+
+  wfg-successors : List WaitEdge, Integer -> List Integer
+  wfg-successors (edges) (node) = wfg-succ-loop edges node 0 (list-length edges) []
+
+  wfg-succ-loop : List WaitEdge, Integer, Integer, Integer, List Integer -> List Integer
+  wfg-succ-loop (edges) (node) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at edges i
+    in if e.we-waiter == node then wfg-succ-loop edges node (i + 1) len (list-push acc (e.we-holder))
+    else wfg-succ-loop edges node (i + 1) len acc
+
+Section: Victim Selection
+
+  select-victim : List Integer -> Integer
+  select-victim (cycle) = select-max cycle 0 (list-length cycle) 0
+
+  select-max : List Integer, Integer, Integer, Integer -> Integer
+  select-max (ids) (i) (len) (best) =
+    if i >= len then best
+    else let id = list-at ids i
+    in select-max ids (i + 1) len (if id > best then id else best)
+
+Section: Full Detection Pipeline
+
+  check-deadlocks : LockTable -> DeadlockResult
+  check-deadlocks (lt) =
+    let edges = lock-wait-edges lt
+    in if list-length edges == 0 then NoDeadlock
+    else let wfg = wfg-build edges
+    in detect-deadlock wfg
+
+Page 1

@@ -1,6 +1,6 @@
 # Current Plan — Closing the Toolbox
 
-**Updated**: 2026-05-12
+**Updated**: 2026-05-18
 
 This file is forward-looking only. Past work is in the Perforce log; if
 you want milestones, run `p4 changes -m 100 //Codex/main/...`. Don't
@@ -38,7 +38,24 @@ We are close. Not there.
 - **Append-only mutation log** (CL 1524): CRC-framed log replaces
   mutable JSON sidecar writes for annotations.
 - **Test harness overhauled** (CL 1505): fatal detection, per-test
-  timing, 30s timeout, `.fatal` category. Battery: 171/171 pass.
+  timing, 30s timeout, `.fatal` category. Battery: 176/190 pass
+  (CLs 1536-1541 promoted 5 skipped tests).
+- **Repository restructure** (CL 1630): 31 top-level dirs to 8.
+  `codex/compiler/`, `codex/foreword/`, `codex/os/`, `apps/`,
+  `build/`, `tools/`, `docs/`, `seed/`.
+- **codex-vm replaces QEMU** (CL 1592+1632): WHP-based VM host is
+  default for all build/test scripts. Shadow register file workaround
+  for WHP GPR corruption. NE2000 NIC, VGA display, PS/2 keyboard,
+  UEFI emulation (CL 1696).
+- **Mutable records** (CL 1636+1740): `mutable` keyword, field
+  assignment syntax, type checking with CDX2060/2061/2062.
+  Phase 3 (linearity tracking, `freeze`) pending.
+- **Codex.Spark** (CL 1715+): 3D modeling framework — meshes,
+  textures, armatures, IK, weight painting, particle systems,
+  material editor, interactive app shell.
+- **Seed** (CL 1802): 2,134,336 bytes. Restored variant-match REPL
+  exit (reverted CL 1768 runtime flag). 103/105 pass (db-test,
+  sort-test pre-existing).
 
 The remaining gap to the vision is the *wiring* — chapters that exist
 but aren't yet the default path, plus a handful of capabilities that
@@ -49,21 +66,20 @@ still rely on host tools.
 ### 1. PS1 wire-out — replace external-script gates with internal paths
 
 The Codex-native gate chapters exist (`VmCompile`, `VmRunner`,
-`VmPingpong`, `VmSweep`, all CL 1153) but the canonical `pwsh -File
-codex.build/pingpong-self.ps1` and `sweep.ps1` invocations still drive
-QEMU directly. Until the PS1 scripts are deleted (or reduced to thin
-shims that call into Codex), "Codex compiles itself" is true only
-under the assumption that someone runs PowerShell first.
+`VmPingpong`, `VmSweep`, all CL 1153) and `codex-vm.exe` is now the
+default VM for all PS1 build/test scripts (`vm-config.ps1`; QEMU
+available via `$env:USE_QEMU=1`). Until the PS1 scripts are deleted
+(or reduced to thin shims that call into Codex), "Codex compiles
+itself" is true only under the assumption that someone runs PowerShell
+first.
 
-- Wire `codex-vm.exe` into `build.ps1`, `test.ps1`,
-  `sample-compile-selfhost.ps1`, `run-for-test.ps1` as the QEMU
-  drop-in replacement.
+- ~~Wire `codex-vm.exe` into build/test scripts~~ — done.
 - Add DevConsole menu items that drive `vm-pingpong` and `vm-sweep`
   from inside the booted system. The menu placeholders ("Run All
   Samples", "Run Failing Only") under the Sweep mode are still stubs
   in `DevConsole.codex`.
 - Once the dev-console paths are green, delete the PS1 scripts.
-  `qemu-config.ps1`, `clean-zombies.ps1`, `run-with-disk.ps1`,
+  `vm-config.ps1`, `clean-zombies.ps1`, `run-with-disk.ps1`,
   `stress-sweep.ps1`, the `test-disk-*.ps1` family, and
   `test-self-verify.ps1` should all go.
 - Keep at most one PS1 — a thin shim that knows how to bring up
@@ -155,7 +171,7 @@ store of code. To finish:
 Editor gaps (partially closed CL 1521-1523):
 - ~~Find / replace~~ — done (CL 1521).
 - ~~Multi-file~~ — done, BufferList (CL 1523).
-- ~~Undo / redo stack~~ — undo done (CL 1521); redo not yet.
+- ~~Undo / redo stack~~ — done (undo CL 1521, redo CL 1543).
 - ~~Key dispatch~~ — done, full keyboard handling (CL 1522).
 - Syntax highlighting in GUI mode (`UI` substrate has the primitives;
   not wired).
@@ -188,17 +204,11 @@ Compiler-correctness work, not user-facing, but each one moves the
 heap HWM down and improves the chance that compile-on-stick succeeds
 on lower-RAM boards.
 
-### 9. Append-only mutation log for annotations
+### ~~9. Append-only mutation log for annotations~~ — done (CL 1524)
 
-`AnnotationStore` rewrites JSON sidecars on every mutation — no crash
-safety, no mutation history, no staleness tracking against depot state.
-Replace the mutable sidecar writes with an append-only, CRC-framed
-mutation log (`codex.annotations/.log/`). JSON sidecars become a
-materialized view rebuilt from the log. Each mutation carries a
-`depot-cl` field so agents can query whether annotations are stale
-relative to recent code changes. ~300–500 LOC on top of existing
-annotation infrastructure. Should land after H2, before H7. See
-Addendum I in `docs/Designs/Active/Compiler/Annotations.md`.
+`MutationLog.codex` implements append-only CRC-framed log with
+`log-append`, `log-entries`, `log-is-stale`, `log-since`, `log-replay`.
+JSON sidecars are materialized views.
 
 ## No Dates
 

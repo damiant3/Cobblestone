@@ -1,0 +1,124 @@
+Chapter: RPS
+  cites Games chapter Rng
+
+ Rock-Paper-Scissors. Best of N rounds, two AI players.
+ Moves: 0=Rock, 1=Paper, 2=Scissors.
+ AI uses weighted random based on opponent history: tracks how often
+ the opponent played each move and biases toward the counter-move.
+ Player 1 counters player 2's history; player 2 counters player 1's history.
+
+ We say:
+
+Section: Types
+
+  RPSState = record {
+    p1-counts : List Integer,
+    p2-counts : List Integer,
+    p1-wins   : Integer,
+    p2-wins   : Integer,
+    ties      : Integer,
+    rng       : Rng
+  }
+
+  RPSResult = record {
+    p1-wins : Integer,
+    p2-wins : Integer,
+    ties    : Integer
+  }
+
+Section: Move Logic
+
+  rps-beats : Integer -> Integer
+  rps-beats (move) =
+    if move == 0 then 2
+    else if move == 1 then 0
+    else 1
+
+  rps-outcome : Integer, Integer -> Integer
+  rps-outcome (m1) (m2) =
+    if m1 == m2 then 0
+    else if rps-beats m1 == m2 then 1
+    else (-1)
+
+Section: Weighted AI
+
+  rps-weighted-move : List Integer, Rng -> Integer
+  rps-weighted-move (opp-counts) (r) =
+    let c0 = list-at opp-counts 0
+    in let c1 = list-at opp-counts 1
+    in let c2 = list-at opp-counts 2
+    in let total = c0 + c1 + c2
+    in if total == 0 then rng-mod (rng-value r) 3
+    else let counter0 = rps-beats 0
+    in let counter1 = rps-beats 1
+    in let counter2 = rps-beats 2
+    in let w0 = c0 + 1
+    in let w1 = c1 + 1
+    in let w2 = c2 + 1
+    in let best-counter = rps-pick-counter w0 w1 w2 counter0 counter1 counter2
+    in let fuzz = rng-mod (rng-value r) (total + 3)
+    in if fuzz < 2 then rng-mod (rng-value r) 3
+    else best-counter
+
+  rps-pick-counter : Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  rps-pick-counter (w0) (w1) (w2) (c0) (c1) (c2) =
+    if w0 >= w1 & w0 >= w2 then c0
+    else if w1 >= w0 & w1 >= w2 then c1
+    else c2
+
+Section: Turn
+
+  rps-do-round : RPSState -> RPSState
+  rps-do-round (s) =
+    let r1 = rng-next (s.rng)
+    in let r2 = rng-next r1
+    in let m1 = rps-weighted-move (s.p2-counts) r1
+    in let m2 = rps-weighted-move (s.p1-counts) r2
+    in let result = rps-outcome m1 m2
+    in let new-p1-counts = list-set-at (s.p1-counts) m1 (list-at (s.p1-counts) m1 + 1)
+    in let new-p2-counts = list-set-at (s.p2-counts) m2 (list-at (s.p2-counts) m2 + 1)
+    in let new-p1-wins = if result == 1 then s.p1-wins + 1 else s.p1-wins
+    in let new-p2-wins = if result == (-1) then s.p2-wins + 1 else s.p2-wins
+    in let new-ties = if result == 0 then s.ties + 1 else s.ties
+    in RPSState {
+         p1-counts = new-p1-counts,
+         p2-counts = new-p2-counts,
+         p1-wins   = new-p1-wins,
+         p2-wins   = new-p2-wins,
+         ties      = new-ties,
+         rng       = r2
+       }
+
+Section: Game Runner
+
+  rps-init : Integer -> RPSState
+  rps-init (seed) =
+    RPSState {
+      p1-counts = [0, 0, 0],
+      p2-counts = [0, 0, 0],
+      p1-wins   = 0,
+      p2-wins   = 0,
+      ties      = 0,
+      rng       = rng-new seed
+    }
+
+  run-rps-series : Integer, Integer -> RPSResult
+  run-rps-series (seed) (num-rounds) =
+    let s = rps-init seed
+    in rps-loop s num-rounds
+
+  rps-loop : RPSState, Integer -> RPSResult
+  rps-loop (s) (remaining) =
+    if remaining <= 0 then
+      RPSResult { p1-wins = s.p1-wins, p2-wins = s.p2-wins, ties = s.ties }
+    else rps-loop (rps-do-round s) (remaining - 1)
+
+Section: Formatting
+
+  format-rps-result : RPSResult -> Text
+  format-rps-result (r) =
+    let total = r.p1-wins + r.p2-wins + r.ties
+    in "RPS (" & show total & " rounds): P1=" & show (r.p1-wins) &
+       " P2=" & show (r.p2-wins) & " ties=" & show (r.ties)
+
+Page 1
