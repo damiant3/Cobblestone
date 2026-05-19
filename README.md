@@ -140,22 +140,24 @@ assuming.
 
 ```codex
 Chapter: Greeting
-  cites Codex chapter Text
+  cites Foreword chapter Console
 
   A small program that greets the user by name. The opening declares
-  `[Console]` in its type — the effect is part of the contract, not a
+  [Console] in its type — the effect is part of the contract, not a
   surprise that happens at runtime.
 
 Section: Functions
 
   greet : Text -> Text
-  greet (name) = "Hello, " ++ name ++ "!"
+  greet (name) = "Hello, " & name & "!"
 
   opening : [Console] Nothing = act
     print-line "What is your name?"
     name <- read-line
     print-line (greet name)
   end
+
+Page 1
 ```
 
 ---
@@ -186,7 +188,7 @@ New-Item -ItemType Directory -Force build-output/bare-metal, build-output/try
 Copy-Item seed/Codex.cdx build-output/bare-metal/Codex.cdx
 
 # Compile a sample with the seed (boots codex-vm, sends source, reads emitted CDX).
-build/test-compile.ps1 -Src codex.test/hello.codex -Out build-output/try/hello.cdx -Log build-output/try/build.log
+build/test-compile.ps1 -Src codex/test/hello.codex -Out build-output/try/hello.cdx -Log build-output/try/build.log
 
 # Boot the just-compiled program and capture its serial output.
 build/test-run.ps1 -Kernel build-output/try/hello.cdx -OutFile build-output/try/hello.out
@@ -204,9 +206,9 @@ VM invocation (codex-vm by default, QEMU via `$env:USE_QEMU=1`).
 
 ```codex
 Chapter: Feature Tour
-  cites Codex chapter Text
+  cites Foreword chapter Console
 
-Section: Sum types
+Section: Sum Types
 
   Shape =
     | Circle (Integer)
@@ -219,17 +221,93 @@ Section: Records
     age : Integer
   }
 
-Section: Pattern matching
+Section: Mutable Records
+
+  mutable Counter = record {
+    value : Integer
+  }
+
+  increment : Counter -> Counter
+  increment (c) =
+    c.value = c.value + 1
+    c
+
+Section: Pattern Matching
 
   area : Shape -> Integer
   area (s) = when s
     is Circle (r) -> r * r * 3
     is Rectangle (w) (h) -> w * h
 
+  classify : Integer -> Text
+  classify (n) = when n
+    is 0 -> "zero"
+    is 1 -> "one"
+    is otherwise -> "other"
+
+Section: Effects and Act Blocks
+
+  greet : Text -> [Console] Nothing
+  greet (name) = act
+    print-line ("Hello, " & name & "!")
+  end
+
+  ask-name : [Console] Text
+  ask-name = act
+    print-line "What is your name?"
+    result <- read-line
+    when result
+      is Just (name) -> name
+      is None -> "stranger"
+  end
+
+Section: Effect Handlers
+
+  effect Counter where
+    tick : [Counter] Integer
+
+  counted : Integer
+  counted = with Counter (tick + tick + tick)
+    tick (resume) = resume 1
+
+Section: Resilient Act Blocks
+
+  fetch-config : [Console, FileSystem] Text
+  fetch-config = trying 3 times
+    act
+      content <- read-file "config.cdx"
+      content
+    end
+  falling back to
+    act
+      print-line "Using default config"
+      "{}"
+    end
+  on failure
+    act
+      print-line "All attempts failed"
+      ""
+    end
+
 Section: Polymorphism
 
-  identity : a -> a
+  identity : f -> f
   identity (x) = x
+
+Section: Multi-Parameter Types
+
+  add : Integer, Integer -> Integer
+  add (x) (y) = x + y
+
+  apply : (Integer, Integer -> Integer), Integer, Integer -> Integer
+  apply (f) (x) (y) = f x y
+
+Section: Linear Types
+
+  open-file : Text -> [FileSystem] linear FileHandle
+  close-file : linear FileHandle -> [FileSystem] Nothing
+
+Page 1
 ```
 
 ### Bounded integers (subtypes + auto-narrowing)
@@ -331,59 +409,64 @@ with **516 modules** total (575 including the 59-file compiler):
 
 | Quire | Directory | Count | Highlights |
 |-------|-----------|------:|------------|
-| **Foreword** | `codex.foreword/` | 82 | Hamt, Sort, PriorityQueue, Trie, LruCache, UnionFind, Graph, B+Tree, Deque, Rope, IntervalTree, ConsistentHash, BloomFilter, Regex, DateTime, Ed25519, SHA-256/512, CCE, MathLib, ListUtils, Path, Format, Hkdf, Deflate, Gzip, NumberTheory, Filter, Probability, Locale |
-| **Game** | `codex.foreword.game/` | 26 | A*, Dijkstra, DiamondSquare, HexMap, Voronoi, FloodFill, Octree, Quadtree, Bresenham, CellularAutomata, ECS, StateMachine, Tween, TileMap, CardDeck, Rasterizer, Sprite, Scene2D, Color, Raytracer, Klondike, Camera, Kinematics, SaveSlot, Netcode, Inventory |
-| **AI** | `codex.foreword.ai/` | 19 | Tensor, NeuralNet, Activation, GGUF, SparseLattice, KNN, DecisionTree, GeneticAlgorithm, Tokenizer, Reservoir, GpuProxy, DiffusionScheduler, Transformer, KvCache, Sampling, Optimizer, Attention, Embedding, Loss |
-| **UI** | `codex.foreword.ui/` | 28 | Theme (3 built-in), Widget, Layout, Render, Surface, Event, Binding, Animation, Icon (5 sizes), Overlay, Sound, Font (CCE), Cursor, Scroll, Focus, Dialog, Orchestrator, Selection, TextField, Clipboard, Constraint, Drag, RichText, Window, Touch, Charts, Accessibility |
-| **Signal** | `codex.foreword.signal/` | 14 | FFT, Perlin, Convolution, ADSR Envelope, Resample, Wavelet, Pitch |
-| **Compress** | `codex.foreword.compress/` | 8 | LZ77, Huffman, RLE, Deflate, Gzip, Lz4, Zstd, Brotli |
-| **Encode** | `codex.foreword.encode/` | 32 | JSON (parser + emitter), Base64, Hex, URI, UUID, CSV, CRC32, GrayCode, Bencode, Protobuf, Toml, Cbor, Yaml, MessagePack |
-| **Math** | `codex.foreword.math/` | 12 | Quaternion, Matrix4, Bezier, CORDIC, Complex, Catmull-Rom Spline, Geodesic, LinearAlgebra, Vector, Numeric, Decimal |
-| **Sim** | `codex.foreword.sim/` | 7 | Verlet Physics, Collision (AABB/sphere), ParticleSystem, Steering (Reynolds), Optimize, SpatialHash |
-| **Net** | `codex.os.net/` | 15 | Ethernet, ARP, IPv4, TCP, UDP, ICMP, DNS, DHCP, NTP, Syslog, TFTP, NetworkConfig, Router, HttpClient, Tls (with AesGcm + X25519) |
-| **Kernel** | `codex.kernel/` | 16 | DiskFacts, Vga, VgaGraphics, Pci, Keyboard, Mouse, BitmapFont, Console, DiagnosticShell, GpuBridge, Ivshmem, Usb, UsbAudio, Xhci, VmSerial, VmIde |
-| **OS** | `codex.os.*` | 41 | Trust lattice, verifier, scheduler, IPC, identity, shell, clarifier, replay, observability, dev tools |
-| **Works** | `codex.works/` | 53 | DevConsole, UefiConsole, DevConsoleMenu, CodeBrowser, ConsoleEditor, FirstBoot, UefiBoot, AgentRuntime, AgentCoordinator, AgentAcquisition, CompilerDriver, VmCompile, VmPingpong, VmSweep, Http, WebServer, AnnotationDriver, AnnotationsSidecar |
-| **Spark** | `apps/spark/` | 85 | 3D modeling (mesh, CSG, subdivision, extrusion, lathe), software rasterizer (depth, flat-shade, wireframe, multi-pass), image editor (layers, blend modes, brushes, filters, histogram, levels, selections, effects), animation (keyframes, bezier curves, skeletal IK, camera paths, particles, timeline), audio/DAW (synth, MIDI, mixer, DSP, spectrum), video compositor, procedural noise, interactive GOP framebuffer UI, command system, panel layout |
-| **Games** | `apps/games/` | 56 | CodexMagic card game, classic board games (chess, go, hex, backgammon, checkers), game server, AI opponents, web portal |
-| **DB** | `apps/db/` | 38 | Relational database server, B-tree indexes, query planner, WAL, transactions, deadlock detection |
+| **Foreword** | `codex/foreword/core/` | 82 | Hamt, Sort, PriorityQueue, Trie, LruCache, UnionFind, Graph, B+Tree, Deque, Rope, IntervalTree, ConsistentHash, BloomFilter, Regex, DateTime, Ed25519, SHA-256/512, CCE, MathLib, Path, Format, Hkdf, NumberTheory, Probability, Locale |
+| **Game** | `codex/foreword/game/` | 26 | A*, Dijkstra, DiamondSquare, HexMap, Voronoi, FloodFill, Octree, Quadtree, Bresenham, CellularAutomata, ECS, StateMachine, Tween, TileMap, CardDeck, Rasterizer, Sprite, Scene2D, Color, Raytracer, Klondike, Camera |
+| **AI** | `codex/foreword/ai/` | 19 | Tensor, NeuralNet, Transformer, GGUF, SparseLattice, KNN, DecisionTree, GeneticAlgorithm, Tokenizer, KvCache, Sampling, Optimizer, Attention, Embedding, Loss, DiffusionScheduler |
+| **UI** | `codex/foreword/ui/` | 28 | Theme (3 built-in), Widget, Layout, Render, Surface, Event, Binding, Animation, Icon (5 sizes), Overlay, Sound, Font (CCE), Cursor, Scroll, Focus, Dialog, Orchestrator, Selection, TextField, Clipboard, RichText, Charts, Accessibility |
+| **Signal** | `codex/foreword/signal/` | 14 | FFT, Perlin, Convolution, ADSR Envelope, Resample, Wavelet, Pitch |
+| **Compress** | `codex/foreword/compress/` | 8 | LZ77, Huffman, RLE, Deflate, Gzip, Lz4, Zstd, Brotli |
+| **Encode** | `codex/foreword/encode/` | 32 | JSON, Base64, Hex, URI, UUID, CSV, CRC32, Protobuf, Toml, Cbor, Yaml, MessagePack, Bencode, GrayCode |
+| **Math** | `codex/foreword/math/` | 12 | Quaternion, Matrix4, Bezier, CORDIC, Complex, Spline, Geodesic, LinearAlgebra, Numeric, Decimal |
+| **Sim** | `codex/foreword/sim/` | 7 | Verlet Physics, Collision, ParticleSystem, Steering, SpatialHash |
+| **Net** | `codex/os/net/` | 15 | Ethernet, ARP, IPv4, TCP, UDP, ICMP, DNS, DHCP, NTP, Syslog, TFTP, HttpClient, Tls (AesGcm + X25519) |
+| **Kernel** | `codex/os/kernel/` | 16 | DiskFacts, Vga, VgaGraphics, Pci, Keyboard, Mouse, BitmapFont, Console, DiagnosticShell, GpuBridge, Usb, UsbAudio, Xhci, VmSerial, VmIde |
+| **OS** | `codex/os/*/` | 41 | Trust lattice, verifier, scheduler, IPC, identity, shell, clarifier, replay, observability, dev tools |
+| **Works** | `apps/works/` | 53 | DevConsole, UefiConsole, ConsoleEditor, FirstBoot, AgentRuntime, AgentCoordinator, AgentAcquisition, VmCompile, VmPingpong, VmSweep, Http, WebServer, AnnotationDriver |
+| **Spark** | `apps/spark/` | 85 | 3D modeling, software rasterizer, image editor, animation/skeletal IK, audio/DAW, video compositor, procedural noise, interactive GOP framebuffer UI |
+| **Games** | `apps/games/` | 56 | CodexMagic card game engine, classic board games, game server, AI opponents, web portal |
+| **Data** | `apps/data/` | 38 | Relational database server, B-tree indexes, query planner, WAL, transactions, deadlock detection |
 
 Quires cite each other via `cites Game chapter AStar` or
-`cites Net chapter Tcp`. The compiler and build harness
-resolve quire names to directories at load time.
+`cites Net chapter Tcp`. The quire name is the last segment
+of the directory name, capitalized.
 
 ---
 
 ## Project Structure
 
 ```
-codex/                    Self-hosted compiler (59 files, ~30.5K lines)
-codex.foreword/           Core forewords — data structures, crypto (82 modules)
-codex.foreword.game/      Game — A*, hex, ECS, physics, terrain (26 modules)
-codex.foreword.ai/        AI — tensors, neural nets, GGUF, transformer (19 modules)
-codex.foreword.ui/        UI — theme, widget, layout, render, compositor (28 modules)
-codex.foreword.signal/    Signal — FFT, Perlin, convolution (14 modules)
-codex.foreword.compress/  Compression — LZ77, Huffman, RLE, Deflate, Lz4, Zstd, Brotli (8 modules)
-codex.foreword.encode/    Encoding — JSON, Base64, Protobuf, CSV, Toml, Cbor, Yaml (32 modules)
-codex.foreword.math/      Math — quaternions, matrices, Bezier, LinearAlgebra (12 modules)
-codex.foreword.sim/       Simulation — physics, collision, particles (7 modules)
-codex.kernel/             Kernel — disk I/O, VGA, keyboard, font, diag (16 modules)
-codex.os/                 OS core — shell, registry, clarifier (4 modules)
-codex.os.trust/           Trust — lattice, policy, sessions (11 modules)
-codex.os.net/             Networking — full TCP/IP + protocols (15 modules)
-codex.os.verify/          Verification — 5-phase CDX verifier (5 modules)
-codex.os.dev/             Developer tools — debugger, inspectors (5 modules)
-codex.os.replay/          Replay — deterministic record/replay (3 modules)
-codex.os.sched/           Scheduler — process groups, watchdog (6 modules)
-codex.os.observe/         Observability — metrics, health, journal (7 modules)
-codex.works/              Application — console, agents, VM tools, first boot, annotations (53 modules)
-apps/spark/               Codex.Spark — creative suite: 3D, image, animation, audio, video (85 modules)
-apps/games/               CodexMagic — card game, classic games, game server (56 modules)
-apps/db/                  Codex.DB — relational database server (38 modules)
-codex.annotations/        On-disk annotation sidecars (JSON facts about chapters)
-plugs/                    Plug architecture — IR-text-driven emitters (csharp + common parser)
-codex.test/               Compiler samples + OS integration tests (581 samples)
-build/              Build/test harness (PowerShell)
+codex/
+  compiler/               Self-hosted compiler (59 files, ~30.5K lines)
+  foreword/
+    core/                 Core forewords — data structures, crypto (82 modules)
+    ai/                   AI — tensors, neural nets, GGUF, transformer (19 modules)
+    compress/             Compression — LZ77, Huffman, RLE, Deflate, Zstd, Brotli (8 modules)
+    encode/               Encoding — JSON, Base64, Protobuf, Toml, Cbor, Yaml (32 modules)
+    game/                 Game — A*, hex, ECS, physics, terrain (26 modules)
+    math/                 Math — quaternions, matrices, Bezier, CORDIC (12 modules)
+    signal/               Signal — FFT, Perlin, convolution, wavelet (14 modules)
+    sim/                  Simulation — physics, collision, particles (7 modules)
+    ui/                   UI — themeable widgets, layout, compositor (28 modules)
+  os/
+    core/                 OS core — shell, registry, clarifier (4 modules)
+    dev/                  Developer tools — debugger, inspectors (5 modules)
+    kernel/               Kernel — disk I/O, VGA, keyboard, font (16 modules)
+    net/                  Networking — full TCP/IP + protocols (15 modules)
+    observe/              Observability — metrics, health, journal (7 modules)
+    replay/               Replay — deterministic record/replay (3 modules)
+    sched/                Scheduler — process groups, watchdog (6 modules)
+    trust/                Trust — lattice, policy, sessions (11 modules)
+    verify/               Verification — 5-phase CDX verifier (5 modules)
+  plugs/                  Plug architecture — IR-text-driven emitters
+  test/                   Compiler samples + OS integration tests (581 samples)
+apps/
+  works/                  Console, agents, VM tools, first boot (53 modules)
+  spark/                  Codex.Spark — 3D, image, animation, audio, video (85 modules)
+  games/                  CodexMagic — card game, classic games, web portal (56 modules)
+  data/                   Codex.DB — relational database server (38 modules)
+annotations/              On-disk annotation sidecars (JSON facts)
+build/                    Build/test harness (PowerShell)
+tools/                    codex-vm, status server, USB writer, VS extensions
 seed/                     Bootstrap seed CDX (~2.1 MB) + UEFI disk image (8 MB)
 docs/                     Design documents, plans, stories
 old/                      Retired C# reference compiler — historical only
