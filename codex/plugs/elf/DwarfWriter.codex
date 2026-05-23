@@ -1,0 +1,193 @@
+Chapter: DWARF Writer
+  cites Codex chapter Lists
+  cites Codex chapter Text
+  cites Codex chapter Characters
+
+ Minimal DWARF 4 encoder for bare-metal ELF debug info. The info-table
+ writer streams into a pre-allocated buf via __buf-write-bytes rather
+ than building a giant List Integer — bare-metal has no GC so intermediate
+ lists blow the heap.
+ Ported from codex/compiler/Emit/DwarfWriter.codex for plug use.
+ The CCE-to-Unicode table is built from Foreword CCE chapter.
+
+Section: Constants
+  dw-tag-compile-unit : Integer = 17
+
+  dw-tag-subprogram : Integer = 46
+
+  dw-children-yes : Integer = 1
+
+  dw-children-no : Integer = 0
+
+  dw-at-name : Integer = 3
+
+  dw-at-low-pc : Integer = 17
+
+  dw-at-high-pc : Integer = 18
+
+  dw-at-language : Integer = 19
+
+  dw-at-producer : Integer = 37
+
+  dw-form-addr : Integer = 1
+
+  dw-form-data1 : Integer = 11
+
+  dw-form-string : Integer = 8
+
+  dw-lang-c : Integer = 2
+
+Section: CCE to ASCII Table
+
+  byte-clamp-forward : List Integer, Integer, Integer, List Integer -> List Integer
+  byte-clamp-forward (table) (i) (n) (acc) =
+   if i >= n then acc
+   else let v = list-at table i
+   in let clamped = if v > 127 then 63 else v
+   in byte-clamp-forward table (i + 1) n (list-push acc clamped)
+
+  build-cce-to-ascii-table : List Integer -> List Integer
+  build-cce-to-ascii-table (cce-table) =
+   byte-clamp-forward cce-table 0 128 []
+
+Section: Helpers
+
+  dwarf-write-ascii-loop : Integer, Integer, Text, Integer, Integer, List Integer -> Integer
+  dwarf-write-ascii-loop (buf) (off) (s) (i) (n) (table) =
+   if i == n then off
+   else let cce = char-code-at s i
+    in let ascii = list-at table cce
+    in let w = __buf-write-byte buf off ascii
+    in dwarf-write-ascii-loop buf (off + 1) s (i + 1) n table
+
+  dwarf-write-string-buf : Integer, Integer, Text, List Integer -> Integer
+  dwarf-write-string-buf (buf) (off) (s) (table) =
+   let after-text = dwarf-write-ascii-loop buf off s 0 (text-length s) table
+   in let w = __buf-write-byte buf after-text 0
+   in after-text + 1
+
+  dwarf-write-i64-buf : Integer, Integer, Integer -> Integer
+  dwarf-write-i64-buf (buf) (off) (v) =
+   let w0 = __buf-write-byte buf off (int-mod v 256)
+   in let w1 = __buf-write-byte buf (off + 1) (int-mod (floor-div v 256) 256)
+   in let w2 = __buf-write-byte buf (off + 2) (int-mod (floor-div v 65536) 256)
+   in let w3 = __buf-write-byte buf (off + 3) (int-mod (floor-div v 16777216) 256)
+   in let w4 = __buf-write-byte buf (off + 4) (int-mod (floor-div v 4294967296) 256)
+   in let w5 = __buf-write-byte buf (off + 5) (int-mod (floor-div v 1099511627776) 256)
+   in let w6 = __buf-write-byte buf (off + 6) (int-mod (floor-div v 281474976710656) 256)
+   in let w7 = __buf-write-byte buf (off + 7) (int-mod (floor-div v 72057594037927936) 256)
+   in off + 8
+
+Section: Abbrev table
+  dwarf-abbrev-bytes : List Integer
+  dwarf-abbrev-bytes =
+   [1, dw-tag-compile-unit, dw-children-yes]
+   & [dw-at-producer, dw-form-string]
+   & [dw-at-language, dw-form-data1]
+   & [dw-at-name, dw-form-string]
+   & [dw-at-low-pc, dw-form-addr]
+   & [dw-at-high-pc, dw-form-addr]
+   & [0, 0]
+   & [2, dw-tag-subprogram, dw-children-no]
+   & [dw-at-name, dw-form-string]
+   & [dw-at-low-pc, dw-form-addr]
+   & [dw-at-high-pc, dw-form-addr]
+   & [0, 0]
+   & [0]
+
+Section: Info table length
+
+  sum-subprogram-lengths : List Text, Integer, Integer, Integer -> Integer
+  sum-subprogram-lengths (names) (i) (n) (acc) =
+   if i == n then acc
+   else sum-subprogram-lengths names (i + 1) n (acc + 18 + text-length (list-at names i))
+
+  dwarf-info-length : List Text, List Integer -> Integer
+  dwarf-info-length (names) (offsets) =
+   let fs-len = list-length names
+   in let header = 11
+   in let cu-static = 37
+   in header + cu-static + sum-subprogram-lengths names 0 fs-len 0
+
+Section: Info table streaming writer
+
+  emit-subprograms-write : Integer, Integer, List Text, List Integer, Integer, Integer, Integer, Integer, List Integer -> Integer
+  emit-subprograms-write (buf) (off) (names) (offsets) (tb) (text-size) (i) (n) (table) =
+   if i == n then off
+   else let name = list-at names i
+    in let start-off = list-at offsets i
+    in let end-off = if i + 1 == n then text-size else list-at offsets (i + 1)
+    in let w1 = __buf-write-byte buf off 2
+    in let o2 = dwarf-write-string-buf buf (off + 1) name table
+    in let o3 = dwarf-write-i64-buf buf o2 (tb + start-off)
+    in let o4 = dwarf-write-i64-buf buf o3 (tb + end-off)
+    in emit-subprograms-write buf o4 names offsets tb text-size (i + 1) n table
+
+  emit-compile-unit-die-write : Integer, Integer, List Text, List Integer, Integer, Integer, List Integer -> Integer
+  emit-compile-unit-die-write (buf) (off) (names) (offsets) (tb) (text-size) (table) =
+   let w1 = __buf-write-byte buf off 1
+   in let o2 = dwarf-write-string-buf buf (off + 1) "Codex" table
+   in let w3 = __buf-write-byte buf o2 dw-lang-c
+   in let o4 = dwarf-write-string-buf buf (o2 + 1) "Codex" table
+   in let o5 = dwarf-write-i64-buf buf o4 tb
+   in let o6 = dwarf-write-i64-buf buf o5 (tb + text-size)
+   in let o7 = emit-subprograms-write buf o6 names offsets tb text-size 0 (list-length names) table
+   in let w8 = __buf-write-byte buf o7 0
+   in o7 + 1
+
+  dwarf-info-write : Integer, Integer, List Text, List Integer, Integer, Integer, List Integer -> Integer
+  dwarf-info-write (buf) (off) (names) (offsets) (tb) (text-size) (table) =
+   let start = off
+   in let o1 = __buf-write-bytes buf off [0, 0, 0, 0]
+   in let o2 = __buf-write-bytes buf o1 (write-i16 4)
+   in let o3 = __buf-write-bytes buf o2 (write-i32 0)
+   in let o4 = __buf-write-bytes buf o3 [8]
+   in let info-end = emit-compile-unit-die-write buf o4 names offsets tb text-size table
+   in let content-len = info-end - start - 4
+   in let patch = __buf-write-bytes buf start (write-i32 content-len)
+   in info-end
+
+Section: Shstrtab
+
+  ShstrTab = record {
+   bytes : List Integer,
+   text-off : Integer between 0 and 4294967295,
+   rodata-off : Integer between 0 and 4294967295,
+   debug-info-off : Integer between 0 and 4294967295,
+   debug-abbrev-off : Integer between 0 and 4294967295,
+   shstrtab-off : Integer between 0 and 4294967295
+  }
+
+  shstrtab-section-bytes : List Integer
+  shstrtab-section-bytes =
+   [0]
+   & [46, 116, 101, 120, 116, 0]
+   & [46, 114, 111, 100, 97, 116, 97, 0]
+   & [46, 100, 101, 98, 117, 103, 95, 105, 110, 102, 111, 0]
+   & [46, 100, 101, 98, 117, 103, 95, 97, 98, 98, 114, 101, 118, 0]
+   & [46, 115, 104, 115, 116, 114, 116, 97, 98, 0]
+
+  build-shstrtab : ShstrTab
+  build-shstrtab =
+   ShstrTab {
+    bytes = shstrtab-section-bytes,
+    text-off = 1,
+    rodata-off = 7,
+    debug-info-off = 15,
+    debug-abbrev-off = 27,
+    shstrtab-off = 41
+   }
+
+Section: Section headers
+  elf32-shent : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  elf32-shent (name) (type) (flags) (addr) (off) (size) (link) (info) (addralign) (entsize) =
+   write-i32 name
+   & write-i32 type
+   & write-i32 flags
+   & write-i32 addr
+   & write-i32 off
+   & write-i32 size
+   & write-i32 link
+   & write-i32 info
+   & write-i32 addralign
+   & write-i32 entsize
