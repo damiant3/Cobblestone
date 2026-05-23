@@ -111,7 +111,7 @@ try {
     if ($DiskFile -and (Test-Path -PathType Leaf $DiskFile)) {
         $diskArgs = @('-drive', "file=$DiskFile,format=raw,if=ide,index=0")
     }
-    $run = Start-QemuRun -Kernel $Kernel -ConnectTimeoutSec $connectBudget -MemMB 2048 -PCore $PCore -ExtraArgs $diskArgs
+    $run = Start-VmRun -Kernel $Kernel -ConnectTimeoutSec $connectBudget -MemMB 2048 -PCore $PCore -ExtraArgs $diskArgs
     if (-not $run) {
         Write-SweepLog "$sample run-fail no-connect"
         [System.IO.File]::WriteAllText($OutFile, '', [System.Text.UTF8Encoding]::new($false))
@@ -207,7 +207,7 @@ try {
     exit 0
 } finally {
     if ($run) {
-        Close-Qemu -Conn $run.Conn -Process $run.Process
+        Close-Vm -Conn $run.Conn -Process $run.Process
         Remove-Item -Force $run.StdoutFile, $run.StderrFile -ErrorAction SilentlyContinue
     }
 }

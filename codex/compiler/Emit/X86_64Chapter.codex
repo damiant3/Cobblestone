@@ -3,13 +3,9 @@ Chapter: X86-64 Code Generator
   cites Codex chapter Runtime
   cites Foreword chapter Sha256
   cites Emit chapter Emit Allocator (init-emit-workspace)
-  cites Emit chapter PE Writer (build-pe-from-cdx, build-uefi-app-pe-from-cdx)
-  cites Emit chapter GPT Writer (gpt-write-all, gpt-part-start-lba, gpt-sector-size)
-  cites Emit chapter FAT32 Writer (fat32-compute-layout, fat32-write-all)
-  cites Emit chapter FAT16 Writer (fat16w-compute-layout, fat16w-write-all)
   cites Codex chapter Build Settings (code-buffer-size, data-buffer-size, accum-capacity)
 
- Bare-metal start routine, chapter entry point (x86-64-emit-elf),
+ Bare-metal start routine, chapter entry point (x86-64-emit-cdx),
  and the two IR-rewrite / boundary-check passes (ConstructedTy resolve,
  ErrorTy boundary check) that run before codegen.
 
@@ -357,7 +353,16 @@ Section: Bare-Metal Start
    in let st45b = st-append-code st45a (mov-store reg-rdi reg-r10 0)
    in let st46 = st-append-code st45b (li reg-rdi heap-hwm-addr)
    in let st47 = st-append-code st46 (mov-store reg-rdi reg-r10 0)
-   in let st48 = emit-call-to st47 opening-entry-point
+   in let st47a = st-append-code st47 (li reg-rax 0)
+   in let st47b = st-append-code st47a (li reg-rdi stdin-eof-flag-addr)
+   in let st47c = st-append-code st47b (mov-store reg-rdi reg-rax 0)
+   in let st47d = st-append-code st47c (li reg-rdi stdin-eof-settled-addr)
+   in let st47e = st-append-code st47d (mov-store reg-rdi reg-rax 0)
+   in let st47f = st-append-code st47e (li reg-rdi try-fail-flag-addr)
+   in let st47g = st-append-code st47f (mov-store reg-rdi reg-rax 0)
+   in let st47h = st-append-code st47g (li reg-rdi deck-bound-counter-addr)
+   in let st47i = st-append-code st47h (mov-store reg-rdi reg-rax 0)
+   in let st48 = emit-call-to st47i opening-entry-point
    in let st48b = emit-opening-result-print st48
    in let st49 = emit-update-heap-hwm st48b
    in let st50 = emit-control-string st49 [72, 69, 65, 80, 58]
@@ -535,7 +540,9 @@ Section: Finalize
    user-arities = [],
    bag = empty-bag,
    deck-bound = False,
-   effect-op-addrs = []
+   effect-op-addrs = [],
+   vm-profile = vm-profile-spec,
+   poison-alloc = False
   }
 
   x86-64-init-codegen-sorted : List TypeBinding -> CodegenState
@@ -584,7 +591,9 @@ Section: Finalize
    user-arities = [],
    bag = empty-bag,
    deck-bound = False,
-   effect-op-addrs = []
+   effect-op-addrs = [],
+   vm-profile = vm-profile-spec,
+   poison-alloc = False
   }
 
   collect-direct-addr-patches : List Integer, List Integer, Integer, Integer, List PatchEntry -> List PatchEntry
@@ -631,85 +640,6 @@ Section: Finalize
    in let restored = __heap-restore hp
    in buf-copy-chunked dst (dst-off + chunk) src (src-off + chunk) (remaining - chunk)
 
-  x86-64-finalize-elf : CodegenState, Integer -> EmitChapterResult
-  x86-64-finalize-elf (st1) (far-jump-patch-pos) =
-   let isr-result = emit-isr-stubs st1
-   in let syscall-result = emit-syscall-handler (isr-result.state)
-   in let st2 = emit-start (syscall-result.state) (isr-result.first-stub-vaddr) (syscall-result.handler-offset)
-   in let func-map = build-offset-table-parallel (st2.fo-names) (st2.fo-offsets)
-   in let st2a = check-call-patch-targets st2 func-map 0
-   in let st2b = check-func-addr-targets st2a func-map 0
-   in let st2c = check-runtime-symbol st2b func-map "__start"
-   in let st2d = check-runtime-symbol st2c func-map "__out_of_memory"
-   in let start-offset = offset-table-lookup func-map "__start"
-   in let start-addr = bare-metal-load-addr + start-offset
-   in let w-fj = buf-write-i32 (st2d.workspace.code-buffer) (far-jump-patch-pos + 1) start-addr
-   in let w-call = apply-call-patches-direct (st2d.workspace.code-buffer) (st2d.cp-offsets) (st2d.cp-targets) func-map 0
-   in let w-addr = apply-func-addr-patches-direct (st2d.workspace.code-buffer) (st2d.fa-offsets) (st2d.fa-targets) func-map bare-metal-load-addr 0
-   in let data-vaddr = compute-data-vaddr-bare (st2d.code-len)
-   in let w-rodata = apply-rodata-patches-direct (st2d.workspace.code-buffer) (st2d.rf-poffsets) (st2d.rf-roffsets) data-vaddr 0
-   in let oom-offset = offset-table-lookup func-map "__out_of_memory"
-   in let w-overflow = apply-overflow-patches-direct (st2d.workspace.code-buffer) (st2d.stack-overflow-checks) oom-offset 0
-   in let w-direct = apply-direct-addr-patches-direct (st2d.workspace.code-buffer) (st2d.da-poffsets) (st2d.da-offsets) bare-metal-load-addr 0
-   in let code-len = st2d.code-len
-   in let data-len = st2d.data-len
-   in let load-addr = bare-metal-load-addr
-   in let headers-end = elf32-header-size + elf32-phdr-size * 2
-   in let note-offset = align-up headers-end 4
-   in let text-start = align-up (note-offset + 20) 16
-   in let text-end = text-start + code-len
-   in let rodata-start = align-up text-end 8
-   in let loadable-end = rodata-start + data-len
-   in let entry = load-addr + 32
-   in let seg-filesz = loadable-end - text-start
-   in let seg-memsz = seg-filesz + bare-metal-ram-size - bare-metal-heap-base
-   in let debug-info-off = align-up loadable-end 8
-   in let debug-info-len = dwarf-info-length (st2d.fo-names) (st2d.fo-offsets)
-   in let debug-abbrev-off = debug-info-off + debug-info-len
-   in let debug-abbrev-len = list-length dwarf-abbrev-bytes
-   in let shstrtab = build-shstrtab
-   in let shstrtab-off = debug-abbrev-off + debug-abbrev-len
-   in let shstrtab-len = list-length (shstrtab.bytes)
-   in let shoff = align-up (shstrtab-off + shstrtab-len) 8
-   in let shent-size = 40
-   in let sh-num = 6
-   in let data-vaddr = load-addr + (rodata-start - text-start)
-   in let file-size = shoff + shent-size * sh-num
-   in let elf-buf = __heap-save
-   in let ha = __heap-advance file-size
-   in let hdr = elf32-header-bytes-shdrs entry elf32-header-size 2 shoff sh-num 5
-   in let bw0 = __buf-write-bytes elf-buf 0 hdr
-   in let ph1 = phdr-32 pt-load text-start load-addr load-addr seg-filesz seg-memsz pf-rwx elf-page-size
-   in let bw1 = __buf-write-bytes elf-buf elf32-header-size ph1
-   in let ph2 = phdr-32 pt-note note-offset 0 0 20 20 pf-r 4
-   in let bw2 = __buf-write-bytes elf-buf (elf32-header-size + elf32-phdr-size) ph2
-   in let note = pvh-note entry
-   in let bw3 = __buf-write-bytes elf-buf note-offset note
-   in let bw4 = buf-copy-chunked elf-buf text-start (st2d.workspace.code-buffer) 0 code-len
-   in let bw5 = buf-copy-chunked elf-buf rodata-start (st2d.workspace.data-buffer) 0 data-len
-   in let cce-table = cce-to-unicode-byte-table
-   in let bw6 = dwarf-info-write elf-buf debug-info-off (st2d.fo-names) (st2d.fo-offsets) load-addr code-len cce-table
-   in let bw7 = __buf-write-bytes elf-buf debug-abbrev-off dwarf-abbrev-bytes
-   in let bw8 = __buf-write-bytes elf-buf shstrtab-off (shstrtab.bytes)
-   in let sh-null = elf32-shent 0 0 0 0 0 0 0 0 0 0
-   in let sh-text = elf32-shent (shstrtab.text-off) 1 6 load-addr text-start code-len 0 0 16 0
-   in let sh-rodata = elf32-shent (shstrtab.rodata-off) 1 2 data-vaddr rodata-start data-len 0 0 8 0
-   in let sh-di = elf32-shent (shstrtab.debug-info-off) 1 0 0 debug-info-off debug-info-len 0 0 1 0
-   in let sh-da = elf32-shent (shstrtab.debug-abbrev-off) 1 0 0 debug-abbrev-off debug-abbrev-len 0 0 1 0
-   in let sh-ss = elf32-shent (shstrtab.shstrtab-off) 3 0 0 shstrtab-off shstrtab-len 0 0 1 0
-   in let bw9 = __buf-write-bytes elf-buf shoff sh-null
-   in let bwa = __buf-write-bytes elf-buf (shoff + shent-size) sh-text
-   in let bwb = __buf-write-bytes elf-buf (shoff + shent-size * 2) sh-rodata
-   in let bwc = __buf-write-bytes elf-buf (shoff + shent-size * 3) sh-di
-   in let bwd = __buf-write-bytes elf-buf (shoff + shent-size * 4) sh-da
-   in let bwe = __buf-write-bytes elf-buf (shoff + shent-size * 5) sh-ss
-   in let elf-bytes = __buf-read-bytes elf-buf 0 file-size
-   in EmitChapterResult {
-    bytes = elf-bytes,
-    bag = st2d.bag,
-    symbol-map = []
-   }
-
   x86-64-apply-patches-and-build-cdx : CodegenState, Integer, Boolean -> EmitChapterResult
   x86-64-apply-patches-and-build-cdx (st) (far-jump-patch-pos) (has-oom) =
    let func-map = build-offset-table-parallel (st.fo-names) (st.fo-offsets)
@@ -739,10 +669,13 @@ Section: Finalize
    in let cap-size = 0
    in let text-offset = cdx-header-size + cap-size
    in let rodata-offset = text-offset + text-aligned
-   in let header = cdx-build-header content-hash text-offset code-len rodata-offset data-len start-offset
-   in let smap = build-symbol-map (st2d.fo-names) (st2d.fo-offsets) bare-metal-load-addr code-len 0 (list-length (st2d.fo-names)) []
+   in let func-count = list-length (st2d.fo-names)
+   in let debug-map = build-debug-map (st2d.fo-names) (st2d.fo-offsets) code-len func-count
+   in let debug-off = if func-count > 0 then cdx-header-size + list-length content else 0
+   in let header = cdx-build-header content-hash text-offset code-len rodata-offset data-len start-offset debug-off
+   in let smap = build-symbol-map (st2d.fo-names) (st2d.fo-offsets) bare-metal-load-addr code-len 0 func-count []
    in EmitChapterResult {
-    bytes = header & content,
+    bytes = header & content & debug-map,
     bag = st2d.bag,
     symbol-map = smap
    }
@@ -754,11 +687,12 @@ Section: Finalize
    in let st2 = emit-start (syscall-result.state) (isr-result.first-stub-vaddr) (syscall-result.handler-offset)
    in x86-64-apply-patches-and-build-cdx st2 far-jump-patch-pos True
 
-  cdx-build-header : List Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
-  cdx-build-header (hash) (text-off) (text-sz) (ro-off) (ro-sz) (entry-off) =
+  cdx-build-header : List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  cdx-build-header (hash) (text-off) (text-sz) (ro-off) (ro-sz) (entry-off) (debug-off) =
    let magic = [67, 68, 88, 49]
    in let version = cdx-le16 1
-   in let flags = cdx-le16 3
+   in let flag-val = if debug-off > 0 then 19 else 3
+   in let flags = cdx-le16 flag-val
    in let hash-bytes = cdx-hash-to-bytes hash 0 []
    in let author-hash = cdx-zeros 32
    in let reserved = cdx-zeros 64
@@ -772,7 +706,7 @@ Section: Finalize
    in let stack = cdx-le32 1048576
    in let heap = cdx-le32 (bare-metal-ram-size - bare-metal-heap-base)
    in let trust = cdx-le16 5000 & cdx-le16 0
-   in let tail = cdx-le32 0
+   in let tail = cdx-le32 debug-off
    in magic & version & flags & hash-bytes & author-hash & reserved & cap-off & cap-sz & proof-off & proof-sz & text & rodata & entry & stack & heap & trust & tail
 
   cdx-hash-to-bytes : List Integer, Integer, List Integer -> List Integer
@@ -829,6 +763,54 @@ Section: Symbol Map
    else if n == 9 then "9" else if n == 10 then "A" else if n == 11 then "B"
    else if n == 12 then "C" else if n == 13 then "D" else if n == 14 then "E"
    else "F"
+
+Section: Binary Debug Map (MAP1)
+
+  map1-magic : List Integer = [77, 65, 80, 49]
+
+  MapStrings = record {
+   bytes : List Integer,
+   offsets : List Integer
+  }
+
+  build-debug-map : List Text, List Integer, Integer, Integer -> List Integer
+  build-debug-map (names) (offsets) (code-len) (count) =
+   if count == 0 then []
+   else let strings = build-map-strings names 0 count []
+   in let entries-size = count * 12
+   in let strings-off = 12 + entries-size
+   in let entries = build-map-entries offsets names (strings.offsets) code-len 0 count []
+   in map1-magic & cdx-le32 count & cdx-le32 strings-off & entries & (strings.bytes)
+
+  build-map-strings : List Text, Integer, Integer, List Integer -> MapStrings
+  build-map-strings (names) (i) (count) (acc-offsets) =
+   build-map-strings-inc names 0 count 0 []
+
+  build-map-strings-inc : List Text, Integer, Integer, Integer, List Integer -> MapStrings
+  build-map-strings-inc (names) (i) (count) (running-off) (acc-offsets) =
+   if i >= count then MapStrings { bytes = build-map-string-bytes names 0 count [], offsets = acc-offsets }
+   else let name-len = text-length (list-at names i) + 1
+   in build-map-strings-inc names (i + 1) count (running-off + name-len) (list-push acc-offsets running-off)
+
+  build-map-string-bytes : List Text, Integer, Integer, List Integer -> List Integer
+  build-map-string-bytes (names) (i) (count) (acc) =
+   if i >= count then acc
+   else let name = list-at names i
+   in let acc1 = map-text-to-cce-bytes name 0 (text-length name) acc
+   in build-map-string-bytes names (i + 1) count (list-push acc1 0)
+
+  map-text-to-cce-bytes : Text, Integer, Integer, List Integer -> List Integer
+  map-text-to-cce-bytes (t) (i) (len) (acc) =
+   if i >= len then acc
+   else map-text-to-cce-bytes t (i + 1) len (list-push acc (char-code-at t i))
+
+  build-map-entries : List Integer, List Text, List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  build-map-entries (offsets) (names) (str-offsets) (code-len) (i) (count) (acc) =
+   if i >= count then acc
+   else let off = list-at offsets i
+   in let size = if i + 1 < count then (list-at offsets (i + 1)) - off else code-len - off
+   in let str-off = list-at str-offsets i
+   in build-map-entries offsets names str-offsets code-len (i + 1) count (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push acc (bit-and off 255)) (bit-and (bit-shr off 8) 255)) (bit-and (bit-shr off 16) 255)) (bit-and (bit-shr off 24) 255)) (bit-and size 255)) (bit-and (bit-shr size 8) 255)) (bit-and (bit-shr size 16) 255)) (bit-and (bit-shr size 24) 255)) (bit-and str-off 255)) (bit-and (bit-shr str-off 8) 255)) (bit-and (bit-shr str-off 16) 255)) (bit-and (bit-shr str-off 24) 255))
 
 Section: ConstructedTy Rewrite Pass
 
@@ -968,60 +950,19 @@ Section: ConstructedTy Rewrite Pass
    if i == len then acc
    else rewrite-ir-defs tdefs defs (i + 1) len (list-push acc (rewrite-ir-def tdefs (list-at defs i)))
 
-  x86-64-emit-elf : IRChapter, TypeEnv -> EmitChapterResult
-  x86-64-emit-elf (m) (env) = x86-64-emit-elf-with-options m env ExitRepl WatchdogProgress
-
-  x86-64-emit-elf-with-exit-mode : IRChapter, TypeEnv, X86_64ExitMode -> EmitChapterResult
-  x86-64-emit-elf-with-exit-mode (m) (env) (mode) = x86-64-emit-elf-with-options m env mode WatchdogProgress
-
-  x86-64-emit-elf-with-options : IRChapter, TypeEnv, X86_64ExitMode, X86_64WatchdogMode -> EmitChapterResult
-  x86-64-emit-elf-with-options (m) (env) (exit-mode) (wd-mode) =
-   x86-64-emit-elf-with-profile m env exit-mode wd-mode vm-profile-spec
-
-  x86-64-emit-elf-with-profile : IRChapter, TypeEnv, X86_64ExitMode, X86_64WatchdogMode, VmProfile -> EmitChapterResult
-  x86-64-emit-elf-with-profile (m) (env) (exit-mode) (wd-mode) (profile) =
-   when exit-mode
-    is ExitAcpiS5 ->
-     EmitChapterResult {
-      bytes = [],
-      bag = bag-add empty-bag (make-error cdx-emit-not-implemented "ExitAcpiS5 not implemented (ACPI S5 shutdown requires a DSDT walker; tracked for post-MM4)" synthetic-span),
-      symbol-map = []
-     }
-    is otherwise ->
-     let emit-deck = emit-build (list-length (m.defs) * 65536 + 16777216)
-     in let de = __deck-enter
-     in let tramp = bare-metal-trampoline
-     in let tdefs = sort-type-bindings (env.bindings) 0 (list-length (env.bindings)) []
-     in let st0 = x86-64-init-codegen-sorted tdefs
-     in let st-mode = __record-set st0 "exit-mode" exit-mode
-     in let st-wd = __record-set st-mode "watchdog-mode" wd-mode
-     in let st-vp = __record-set st-wd "vm-profile" profile
-     in let st-eo = __record-set st-vp "effect-op-addrs" (assign-effect-op-addrs (m.effect-op-names) 0 (list-length (m.effect-op-names)) [])
-     in let defs-resolved = rewrite-ir-defs tdefs (m.defs) 0 (list-length (m.defs)) []
-     in let m-lifted = lift-lambdas (__record-set m "defs" defs-resolved)
-     in let defs-lifted = m-lifted.defs
-     in let ret-ty = opening-bare-print-type defs-lifted
-     in let st-ret = __record-set st-eo "opening-ret-type" ret-ty
-     in let arities = build-x86-arities defs-lifted 0 (list-length defs-lifted) []
-     in let st-ar = __record-set st-ret "user-arities" arities
-     in let st0a = emit-runtime-helpers st-ar
-     in let dx = __deck-exit
-     in let st1 = emit-all-defs st0a defs-lifted 0
-     in x86-64-finalize-elf st1 (tramp.far-jump-patch-pos)
-
-
   x86-64-emit-cdx : IRChapter, TypeEnv -> EmitChapterResult
-  x86-64-emit-cdx (m) (env) = x86-64-emit-cdx-with-exit-mode m env Exit
+  x86-64-emit-cdx (m) (env) = x86-64-emit-cdx-with-exit-mode m env Exit False
 
-  x86-64-emit-cdx-with-exit-mode : IRChapter, TypeEnv, X86_64ExitMode -> EmitChapterResult
-  x86-64-emit-cdx-with-exit-mode (m) (env) (exit-mode) =
+  x86-64-emit-cdx-with-exit-mode : IRChapter, TypeEnv, X86_64ExitMode, Boolean -> EmitChapterResult
+  x86-64-emit-cdx-with-exit-mode (m) (env) (exit-mode) (poison) =
    let emit-deck = emit-build (list-length (m.defs) * 65536 + 16777216)
    in let de = __deck-enter
    in let tramp = bare-metal-trampoline
    in let tdefs = sort-type-bindings (env.bindings) 0 (list-length (env.bindings)) []
    in let st0 = x86-64-init-codegen-sorted tdefs
    in let st-mode = __record-set st0 "exit-mode" exit-mode
-   in let st-wd = __record-set st-mode "watchdog-mode" WatchdogProgress
+   in let st-poison = __record-set st-mode "poison-alloc" poison
+   in let st-wd = __record-set st-poison "watchdog-mode" WatchdogProgress
    in let st-eo2 = __record-set st-wd "effect-op-addrs" (assign-effect-op-addrs (m.effect-op-names) 0 (list-length (m.effect-op-names)) [])
    in let defs-resolved = rewrite-ir-defs tdefs (m.defs) 0 (list-length (m.defs)) []
    in let m-lifted = lift-lambdas (__record-set m "defs" defs-resolved)
@@ -1034,161 +975,6 @@ Section: ConstructedTy Rewrite Pass
    in let dx = __deck-exit
    in let st1 = emit-all-defs st0a defs-lifted 0
    in x86-64-finalize-cdx st1 (tramp.far-jump-patch-pos)
-
-  x86-64-emit-uefi-app : IRChapter, TypeEnv -> EmitChapterResult
-  x86-64-emit-uefi-app (m) (env) =
-   let emit-deck = emit-build (list-length (m.defs) * 65536 + 16777216)
-   in let de = __deck-enter
-   in let tramp = bare-metal-trampoline
-   in let tdefs = sort-type-bindings (env.bindings) 0 (list-length (env.bindings)) []
-   in let st0 = x86-64-init-codegen-sorted tdefs
-   in let st-mode = __record-set st0 "exit-mode" ExitUefi
-   in let st-wd = __record-set st-mode "watchdog-mode" WatchdogProgress
-   in let st-eo2 = __record-set st-wd "effect-op-addrs" (assign-effect-op-addrs (m.effect-op-names) 0 (list-length (m.effect-op-names)) [])
-   in let defs-resolved = rewrite-ir-defs tdefs (m.defs) 0 (list-length (m.defs)) []
-   in let m-lifted = lift-lambdas (__record-set m "defs" defs-resolved)
-   in let defs-lifted = m-lifted.defs
-   in let ret-ty = opening-bare-print-type defs-lifted
-   in let st-ret = __record-set st-eo2 "opening-ret-type" ret-ty
-   in let arities = build-x86-arities defs-lifted 0 (list-length defs-lifted) []
-   in let st-ar = __record-set st-ret "user-arities" arities
-   in let st0a = emit-runtime-helpers st-ar
-   in let dx = __deck-exit
-   in let st1 = emit-all-defs st0a defs-lifted 0
-   in let st2 = emit-uefi-start st1
-   in let func-map = build-offset-table-parallel (st2.fo-names) (st2.fo-offsets)
-   in let st2a = check-call-patch-targets st2 func-map 0
-   in let st2b = check-func-addr-targets st2a func-map 0
-   in let st2c = check-runtime-symbol st2b func-map "__start"
-   in let start-offset = offset-table-lookup func-map "__start"
-   in let start-addr = bare-metal-load-addr + start-offset
-   in let w-fj = buf-write-i32 (st2c.workspace.code-buffer) (tramp.far-jump-patch-pos + 1) start-addr
-   in let w-call = apply-call-patches-direct (st2c.workspace.code-buffer) (st2c.cp-offsets) (st2c.cp-targets) func-map 0
-   in let w-addr = apply-func-addr-patches-direct (st2c.workspace.code-buffer) (st2c.fa-offsets) (st2c.fa-targets) func-map bare-metal-load-addr 0
-   in let data-vaddr = compute-data-vaddr-bare (st2c.code-len)
-   in let w-rodata = apply-rodata-patches-direct (st2c.workspace.code-buffer) (st2c.rf-poffsets) (st2c.rf-roffsets) data-vaddr 0
-   in let w-direct = apply-direct-addr-patches-direct (st2c.workspace.code-buffer) (st2c.da-poffsets) (st2c.da-offsets) bare-metal-load-addr 0
-   in let code-len = st2c.code-len
-   in let data-len = st2c.data-len
-   in let text-bytes = __buf-read-bytes (st2c.workspace.code-buffer) 0 code-len
-   in let rodata-bytes = __buf-read-bytes (st2c.workspace.data-buffer) 0 data-len
-   in let text-aligned = align-up code-len 8
-   in let pad-len = text-aligned - code-len
-   in let padding = cdx-zeros pad-len
-   in let content = text-bytes & padding & rodata-bytes
-   in let content-hash = sha256 content
-   in let cdx-header-size = 224
-   in let text-offset = cdx-header-size
-   in let rodata-offset = text-offset + text-aligned
-   in let header = cdx-build-header content-hash text-offset code-len rodata-offset data-len start-offset
-   in let cdx = header & content
-   in let efi-bytes = build-uefi-app-pe-from-cdx cdx 1024
-   in EmitChapterResult {
-    bytes = efi-bytes,
-    bag = st2c.bag,
-    symbol-map = []
-   }
-
-  x86-64-emit-efi : IRChapter, TypeEnv -> EmitChapterResult
-  x86-64-emit-efi (m) (env) =
-   let emit-deck = emit-build (list-length (m.defs) * 65536 + 16777216)
-   in let de = __deck-enter
-   in let tramp = bare-metal-trampoline
-   in let tdefs = sort-type-bindings (env.bindings) 0 (list-length (env.bindings)) []
-   in let st0 = x86-64-init-codegen-sorted tdefs
-   in let st-mode = __record-set st0 "exit-mode" Exit
-   in let st-wd = __record-set st-mode "watchdog-mode" WatchdogProgress
-   in let st-eo2 = __record-set st-wd "effect-op-addrs" (assign-effect-op-addrs (m.effect-op-names) 0 (list-length (m.effect-op-names)) [])
-   in let defs-resolved = rewrite-ir-defs tdefs (m.defs) 0 (list-length (m.defs)) []
-   in let m-lifted = lift-lambdas (__record-set m "defs" defs-resolved)
-   in let defs-lifted = m-lifted.defs
-   in let ret-ty = opening-bare-print-type defs-lifted
-   in let st-ret = __record-set st-eo2 "opening-ret-type" ret-ty
-   in let arities = build-x86-arities defs-lifted 0 (list-length defs-lifted) []
-   in let st-ar = __record-set st-ret "user-arities" arities
-   in let st0a = emit-runtime-helpers st-ar
-   in let dx = __deck-exit
-   in let st1 = emit-all-defs st0a defs-lifted 0
-   in x86-64-finalize-efi st1 (tramp.far-jump-patch-pos)
-
-  x86-64-finalize-efi : CodegenState, Integer -> EmitChapterResult
-  x86-64-finalize-efi (st1) (far-jump-patch-pos) =
-   let cdx-result = x86-64-finalize-cdx st1 far-jump-patch-pos
-   in if bag-has-errors (cdx-result.bag) then cdx-result
-   else EmitChapterResult {
-    bytes = build-pe-from-cdx (cdx-result.bytes),
-    bag = cdx-result.bag,
-    symbol-map = cdx-result.symbol-map
-   }
-
-  EmitImgResult = record {
-   buf-addr : Integer,
-   buf-size : Integer,
-   bag : DiagnosticBag
-  }
-
-  ImgFsType =
-   | ImgFat16
-   | ImgFat32
-
-  img-sectors-for-fs : ImgFsType -> Integer
-  img-sectors-for-fs (fs) = when fs
-    is ImgFat32 -> 64 * 2048
-    is ImgFat16 -> 8 * 2048
-
-  x86-64-emit-img : IRChapter, TypeEnv, ImgFsType, Text, Boolean, Integer -> EmitImgResult
-  x86-64-emit-img (m) (env) (fs-type) (source) (uefi-pe) (heap-pages) =
-   let emit-deck = emit-build (list-length (m.defs) * 65536 + 16777216)
-   in let de = __deck-enter
-   in let tramp = bare-metal-trampoline
-   in let tdefs = sort-type-bindings (env.bindings) 0 (list-length (env.bindings)) []
-   in let st0 = x86-64-init-codegen-sorted tdefs
-   in let exit-mode = if uefi-pe then ExitUefi else Exit
-   in let st-mode = __record-set st0 "exit-mode" exit-mode
-   in let st-wd = __record-set st-mode "watchdog-mode" WatchdogProgress
-   in let st-eo2 = __record-set st-wd "effect-op-addrs" (assign-effect-op-addrs (m.effect-op-names) 0 (list-length (m.effect-op-names)) [])
-   in let defs-resolved = rewrite-ir-defs tdefs (m.defs) 0 (list-length (m.defs)) []
-   in let m-lifted = lift-lambdas (__record-set m "defs" defs-resolved)
-   in let defs-lifted = m-lifted.defs
-   in let ret-ty = opening-bare-print-type defs-lifted
-   in let st-ret = __record-set st-eo2 "opening-ret-type" ret-ty
-   in let arities = build-x86-arities defs-lifted 0 (list-length defs-lifted) []
-   in let st-ar = __record-set st-ret "user-arities" arities
-   in let st0a = emit-runtime-helpers st-ar
-   in let dx = __deck-exit
-   in let st1 = emit-all-defs st0a defs-lifted 0
-   in x86-64-finalize-img st1 (tramp.far-jump-patch-pos) emit-deck fs-type source uefi-pe heap-pages
-
-  x86-64-finalize-uefi-cdx : CodegenState, Integer -> EmitChapterResult
-  x86-64-finalize-uefi-cdx (st1) (far-jump-patch-pos) =
-   let st2 = emit-uefi-start st1
-   in x86-64-apply-patches-and-build-cdx st2 far-jump-patch-pos False
-
-  x86-64-finalize-img : CodegenState, Integer, Integer, ImgFsType, Text, Boolean, Integer -> EmitImgResult
-  x86-64-finalize-img (st1) (far-jump-patch-pos) (emit-mark) (fs-type) (source) (uefi-pe) (heap-pages) =
-   let cdx-result = if uefi-pe then x86-64-finalize-uefi-cdx st1 far-jump-patch-pos else x86-64-finalize-cdx st1 far-jump-patch-pos
-   in if bag-has-errors (cdx-result.bag) then EmitImgResult { buf-addr = 0, buf-size = 0, bag = cdx-result.bag }
-   else let cdx-bytes = cdx-result.bytes
-   in let cdx-size = list-length cdx-bytes
-   in let w-save = __buf-write-bytes emit-mark 0 cdx-bytes
-   in let restored = __heap-restore emit-mark
-   in let advanced = __heap-advance cdx-size
-   in let cdx-bytes2 = __buf-read-bytes emit-mark 0 cdx-size
-   in let efi-bytes = if uefi-pe then build-uefi-app-pe-from-cdx cdx-bytes2 heap-pages else build-pe-from-cdx cdx-bytes2
-   in let total-sectors = img-sectors-for-fs fs-type
-   in let img-bytes = total-sectors * gpt-sector-size
-   in let img-buf = __heap-save
-   in let img-advance = __heap-advance img-bytes
-   in let w0 = gpt-write-all img-buf total-sectors
-   in when fs-type
-     is ImgFat32 ->
-       let lay = fat32-compute-layout total-sectors
-       in let w1 = fat32-write-all img-buf lay efi-bytes cdx-bytes2
-       in EmitImgResult { buf-addr = img-buf, buf-size = img-bytes, bag = empty-bag }
-     is ImgFat16 ->
-       let lay = fat16w-compute-layout total-sectors
-       in let w1 = fat16w-write-all img-buf lay efi-bytes cdx-bytes2 source
-       in EmitImgResult { buf-addr = img-buf, buf-size = img-bytes, bag = empty-bag }
 
   assign-effect-op-addrs : List Text, Integer, Integer, List EffectOpAddr -> List EffectOpAddr
   assign-effect-op-addrs (names) (i) (len) (acc) =

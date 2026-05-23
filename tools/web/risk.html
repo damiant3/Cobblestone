@@ -5,48 +5,207 @@
 <title>Codex — Risk</title>
 <link rel="stylesheet" href="/web/style.css?v={{VERSION}}">
 <style>
-  body { background: #1a0a0a;  }
-  .game-page { max-width: 700px; margin: 0 auto; }
+  body { background: #1a0a0a; }
+  .game-page { max-width: 780px; margin: 0 auto; }
   .bg-scene { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
     background: url('/assets/games/risk/bg-scene.png') center/cover no-repeat;
     filter: brightness(0.3) blur(2px); z-index: 0; }
   .content { position: relative; z-index: 1; }
-  .arena { background: #1a0a0acc; border: 2px solid #cc333344; border-radius: 12px;
-    padding: 30px; margin-bottom: 16px; text-align: center; min-height: 200px;
-    backdrop-filter: blur(8px); box-shadow: 0 8px 30px rgba(0,0,0,0.5);
-    display: flex; flex-direction: column; align-items: center; justify-content: center; }
-  .result-text { font-size: 18px; font-weight: bold; color: #ff5544; margin-top: 16px; line-height: 1.6; }
-  .flavor { color: #cc333388; font-size: 13px; font-style: italic; margin-top: 8px; }
-  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; justify-content: center; }
-  .controls button { background: linear-gradient(180deg, #cc3333, #1a0a0a);
-    border: 1px solid #cc3333; border-radius: 6px; color: #ff5544;
-    font-family: inherit; font-size: 14px; padding: 10px 28px; cursor: pointer;
-    text-transform: uppercase; letter-spacing: 1px; }
-  .controls button:hover { color: #fff; }
+  .arena { background: #1a0a0acc; border: 3px solid #ff554433; border-radius: 16px;
+    padding: 24px; margin-bottom: 12px;
+    backdrop-filter: blur(8px); box-shadow: 0 8px 30px rgba(0,0,0,0.5); }
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; justify-content: center; }
+  .controls button { background: linear-gradient(180deg, #ff5544, #1a0a0a); border: 2px solid #ff5544;
+    border-radius: 20px; color: #fff; font-family: inherit; font-size: 14px; padding: 8px 24px;
+    cursor: pointer; font-weight: bold; }
+  .controls button:hover { transform: scale(1.05); }
   .controls button:disabled { opacity: 0.3; }
-  .engine-tag { background: #1a0a0a; color: #cc3333; font-size: 10px; padding: 2px 8px;
-    border-radius: 4px; margin-left: 12px; border: 1px solid #cc333344; }
-  .history { background: #1a0a0acc; border: 1px solid #cc333322; border-radius: 6px 6px 0 0;
-    padding: 8px 14px; max-height: 80px; overflow-y: auto; font-size: 11px;
-    color: #cc333366; line-height: 1.6; backdrop-filter: blur(4px);
-    position: fixed; bottom: 0; left: 0; right: 0; z-index: 10; }
+  .speed-label { color: #ff554466; font-size: 12px; }
+  .engine-tag { background: #1a0a0a; color: #ff5544; font-size: 10px; padding: 2px 8px;
+    border-radius: 10px; margin-left: 12px; border: 1px solid #ff554444; }
+  .section-label { color: #ff554488; font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+    margin-bottom: 8px; text-align: center; }
+
+  .turn-info { text-align: center; margin-bottom: 12px; }
+  .turn-big { font-size: 42px; font-weight: bold; color: #ff5544; }
+  .turn-sub { font-size: 14px; color: #ff554466; }
+  .progress-bar { background: #1a0a0a; border: 1px solid #ff554433; border-radius: 8px; height: 12px;
+    margin: 10px 0; overflow: hidden; }
+  .progress-fill { background: linear-gradient(90deg, #ff5544, #cc2211); height: 100%;
+    transition: width 0.3s; border-radius: 8px; }
+
+  /* Territory grid */
+  .terr-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 12px 0; }
+  .terr-card { border-radius: 10px; border: 2px solid #ff554422; padding: 12px 8px;
+    text-align: center; transition: all 0.3s; position: relative;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+  .terr-card .terr-name { font-size: 11px; color: #fff; font-weight: bold; margin-bottom: 4px; }
+  .terr-card .terr-armies { font-size: 28px; font-weight: bold; color: #fff; text-shadow: 0 2px 4px rgba(0,0,0,0.5); }
+  .terr-card .terr-owner { font-size: 9px; color: rgba(255,255,255,0.7); text-transform: uppercase; letter-spacing: 1px; }
+  .owner-0 { background: linear-gradient(135deg, #e74c3c88, #c0392b88); border-color: #e74c3c66; }
+  .owner-1 { background: linear-gradient(135deg, #3498db88, #2980b988); border-color: #3498db66; }
+  .owner-2 { background: linear-gradient(135deg, #2ecc7188, #27ae6088); border-color: #2ecc7166; }
+  .owner-3 { background: linear-gradient(135deg, #f1c40f88, #e67e2288); border-color: #f1c40f66; }
+
+  /* Player summary */
+  .player-row { display: flex; justify-content: center; gap: 16px; flex-wrap: wrap; margin: 12px 0; }
+  .p-card { background: #1a0a0a88; border: 2px solid #ff554422; border-radius: 10px;
+    padding: 10px 16px; text-align: center; min-width: 100px; transition: all 0.3s; }
+  .p-card.p-active { border-color: #ff5544; box-shadow: 0 0 16px rgba(255,85,68,0.2); }
+  .p-card.p-dead { opacity: 0.25; }
+  .p-name { font-size: 12px; font-weight: bold; margin-bottom: 2px; }
+  .p-name-0 { color: #e74c3c; } .p-name-1 { color: #3498db; }
+  .p-name-2 { color: #2ecc71; } .p-name-3 { color: #f1c40f; }
+  .p-stat { font-size: 10px; color: #ff554466; }
+  .p-armies { font-size: 22px; font-weight: bold; color: #ff5544; }
+
+  .result-banner { text-align: center; padding: 20px; border-radius: 12px; margin-top: 16px;
+    font-size: 22px; font-weight: bold; animation: conquer 0.6s; }
+  .result-win { background: #ff554420; border: 2px solid #ff554444; color: #ff5544; }
+  @keyframes conquer { from { opacity: 0; transform: scale(0.8); } to { opacity: 1; transform: scale(1); } }
+  .rules { background: #1a0a0a99; border: 1px solid #ff554422; border-radius: 8px; padding: 16px;
+    margin-top: 16px; color: #ff554488; font-size: 13px; line-height: 1.6; }
+  .rules summary { color: #ff5544; cursor: pointer; font-weight: bold; font-size: 14px; }
+  .rules p { margin: 8px 0; }
 </style>
 </head>
 <body>
 <div class="bg-scene"></div>
-<nav class="topbar" style="background:#1a0a0a;border-color:#cc333322">
+<nav class="topbar" style="background:#1a0a0a;border-color:#ff554422">
   <span class="topbar-logo" style="color:#ff5544">&#x2588; CODEX</span>
-  <a href="/#games" class="tab-btn" style="color:#cc333366">&#x2190; Games</a>
+  <a href="/#games" class="tab-btn" style="color:#ff554466">&#x2190; Games</a>
   <span class="tab-btn active" style="color:#ff5544;border-color:#ff5544">Risk</span>
   <span class="engine-tag">Codex VM</span>
 </nav>
 <div class="content game-page">
-  <div class="controls"><button id="btn" onclick="runGame()">&#x1F30D; Conquer!</button></div>
-  <div class="arena" id="arena"><div style="color:#cc333388">THE WORLD IS NOT ENOUGH.</div></div>
-  <div class="history" id="history"></div>
+  <div class="controls">
+    <button onclick="startGame()">&#x25B6; Play</button>
+    <button id="btn-pause" onclick="togglePause()" disabled>&#x23F8; Pause</button>
+    <button id="btn-step" onclick="stepOnce()" disabled>&#x23ED; Step</button>
+    <button onclick="resetGame()">&#x21BB; Reset</button>
+    <span class="speed-label">Speed:</span>
+    <input type="range" id="speed" min="1" max="10" value="5" style="width:80px;accent-color:#ff5544" oninput="updateSpeed()">
+  </div>
+  <div id="status-line" style="color:#ff5544;font-size:16px;text-align:center;margin-bottom:10px;font-weight:bold">Risk — Press Play to conquer!</div>
+  <div class="arena">
+    <div class="turn-info">
+      <div class="turn-big" id="turn-num">0</div>
+      <div class="turn-sub">Turn <span id="turn-of">0</span> / 100 &mdash; <span id="cur-player">-</span></div>
+    </div>
+    <div class="progress-bar"><div class="progress-fill" id="progress" style="width:0%"></div></div>
+    <div class="section-label">Territories</div>
+    <div class="terr-grid" id="terr-grid"></div>
+    <div class="section-label">Commanders</div>
+    <div class="player-row" id="player-row"></div>
+    <div id="result-area"></div>
+  </div>
+  <details class="rules">
+    <summary>How to Play Risk</summary>
+    <p><b>Goal:</b> Conquer all 12 territories. Last player standing wins.</p>
+    <p><b>Flow:</b> Each turn, the current player deploys reinforcement armies, then attacks neighboring territories. Combat is dice-based: attacker and defender each roll, highest die wins.</p>
+    <p><b>Elimination:</b> When a player loses all territories, they are eliminated.</p>
+    <p><b>This simulation:</b> AI plays up to 100 turns with 4 commanders fighting over 12 territories.</p>
+  </details>
 </div>
 <script>
-async function runGame(){var b=document.getElementById('btn');b.disabled=true;var a=document.getElementById('arena');a.innerHTML='<div style="color:#ff5544">Running on Codex VM...</div>';try{var r=await fetch('/api/run/risk?seed='+(Date.now()&0x7FFFFFFF));var d=await r.json();a.innerHTML='<div class="result-text">'+d.result+'</div><div class="flavor">EMPIRE ESTABLISHED</div>';document.getElementById('history').innerHTML=d.result+'<br>'+document.getElementById('history').innerHTML}catch(e){a.innerHTML='<div style="color:#ff4444">'+e.message+'</div>'}b.disabled=false}
+var state,running=false,paused=false,timer,delay=350;
+var MAX_TURNS=100;
+var PLAYER_NAMES=['General Red','Admiral Blue','Marshal Green','Warlord Gold'];
+var TERR_NAMES=['Northland','Eastmark','Southreach','Westhold','Iron Hills','Storm Coast',
+  'Greenfield','Ashlands','Frostpeak','Sunvalley','Darkwood','Goldplain'];
+
+function updateSpeed(){var v=parseInt(document.getElementById('speed').value);delay=[2000,1200,800,500,350,250,150,80,30,5][v-1]||350}
+async function api(p){try{var r=await fetch(p);return r.json()}catch(e){document.getElementById('status-line').textContent='Connection error';return null}}
+
+function render(s){
+  var turn=s.turn||0;
+  document.getElementById('turn-num').textContent=turn;
+  document.getElementById('turn-of').textContent=turn;
+  var pct=Math.min(100,(turn/MAX_TURNS)*100);
+  document.getElementById('progress').style.width=pct+'%';
+  document.getElementById('cur-player').textContent=s.cur!=null?PLAYER_NAMES[s.cur%4]:'—';
+
+  // Territories
+  var terrs=s.territories||[];
+  var tg=document.getElementById('terr-grid');
+  var h='';
+  for(var i=0;i<12;i++){
+    var t=terrs[i]||{owner:0,armies:0};
+    h+='<div class="terr-card owner-'+(t.owner%4)+'">';
+    h+='<div class="terr-name">'+TERR_NAMES[i]+'</div>';
+    h+='<div class="terr-armies">'+t.armies+'</div>';
+    h+='<div class="terr-owner">'+PLAYER_NAMES[t.owner%4]+'</div>';
+    h+='</div>';
+  }
+  tg.innerHTML=h;
+
+  // Players
+  var np=s.numPlayers||4;
+  var players=s.players||[];
+  var pr=document.getElementById('player-row');
+  h='';
+  for(var i=0;i<np;i++){
+    var p=players[i]||{alive:true,armies:0};
+    var isActive=(s.cur===i&&!s.done);
+    var cls='p-card';
+    if(isActive) cls+=' p-active';
+    if(!p.alive) cls+=' p-dead';
+    h+='<div class="'+cls+'">';
+    h+='<div class="p-name p-name-'+i+'">'+PLAYER_NAMES[i%4]+'</div>';
+    h+='<div class="p-armies">'+p.armies+'</div>';
+    h+='<div class="p-stat">'+(p.alive?(isActive?'Attacking':'Alive'):'Eliminated')+'</div>';
+    h+='</div>';
+  }
+  pr.innerHTML=h;
+
+  // Result
+  var resultArea=document.getElementById('result-area');
+  if(s.done){
+    if(s.winner!=null){
+      resultArea.innerHTML='<div class="result-banner result-win">'+PLAYER_NAMES[s.winner%4]+' Conquers All!</div>';
+      document.getElementById('status-line').textContent=PLAYER_NAMES[s.winner%4]+' wins! (turn '+turn+')';
+    } else {
+      resultArea.innerHTML='<div class="result-banner result-win">War ended at turn '+turn+'!</div>';
+      document.getElementById('status-line').textContent='Game over at turn '+turn;
+    }
+    running=false;
+  } else {
+    resultArea.innerHTML='';
+    document.getElementById('status-line').textContent='Turn '+turn+' — '+PLAYER_NAMES[(s.cur||0)%4]+'\'s assault';
+  }
+}
+
+async function resetGame(){
+  clearTimeout(timer);running=false;paused=false;
+  state=await api('/api/risk/new?seed='+(Date.now()&0x7FFFFFFF));
+  if(state) render(state);
+  document.getElementById('status-line').textContent='Risk — Press Play to conquer!';
+  document.getElementById('result-area').innerHTML='';
+  document.getElementById('btn-pause').disabled=true;
+  document.getElementById('btn-step').disabled=true;
+}
+async function startGame(){
+  await resetGame();running=true;
+  document.getElementById('btn-pause').disabled=false;
+  document.getElementById('btn-step').disabled=false;
+  updateSpeed();scheduleTick();
+}
+function togglePause(){
+  if(!running)return;paused=!paused;
+  document.getElementById('btn-pause').textContent=paused?'▶ Resume':'⏸ Pause';
+  document.getElementById('btn-step').disabled=!paused;
+  if(!paused)scheduleTick();
+}
+function scheduleTick(){if(!paused&&running)timer=setTimeout(tick,delay)}
+async function stepOnce(){if(running&&paused)await tick()}
+async function tick(){
+  if(!running||!state||state.done){running=false;return}
+  state=await api('/api/risk/step');
+  if(!state){running=false;return}
+  render(state);
+  if(!state.done)scheduleTick();else running=false;
+}
+updateSpeed();resetGame();
 </script>
 </body>
 </html>

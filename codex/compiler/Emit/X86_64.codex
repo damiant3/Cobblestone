@@ -835,9 +835,57 @@ Section: Expression Emission
    reg = rd.reg
   }
 
+  is-and-op : IRBinaryOp -> Boolean
+  is-and-op (op) =
+   when op
+    is IrAnd -> True
+    is otherwise -> False
+
+  is-or-op : IRBinaryOp -> Boolean
+  is-or-op (op) =
+   when op
+    is IrOr -> True
+    is otherwise -> False
+
+  emit-short-circuit-and : CodegenState, IRExpr, IRExpr -> EmitResult
+  emit-short-circuit-and (st) (left) (right) =
+   let l = emit-expr (st-set-tail-pos st False) left
+   in let st1 = st-append-code (l.state) (test-rr (l.reg) (l.reg))
+   in let je-false-pos = st1.code-len
+   in let st2 = st-append-code st1 (jcc cc-e 0)
+   in let r = emit-expr st2 right
+   in let result-loc = alloc-local (r.state)
+   in let st3 = store-local (result-loc.state) (result-loc.reg) (r.reg)
+   in let jmp-end-pos = st3.code-len
+   in let st4 = st-append-code st3 (jmp 0)
+   in let st5 = patch-jcc-at st4 je-false-pos (st4.code-len)
+   in let false-lit = emit-int-lit st5 0
+   in let st6 = store-local (false-lit.state) (result-loc.reg) (false-lit.reg)
+   in let st7 = patch-jmp-at st6 jmp-end-pos (st6.code-len)
+   in load-local st7 (result-loc.reg)
+
+  emit-short-circuit-or : CodegenState, IRExpr, IRExpr -> EmitResult
+  emit-short-circuit-or (st) (left) (right) =
+   let l = emit-expr (st-set-tail-pos st False) left
+   in let st1 = st-append-code (l.state) (test-rr (l.reg) (l.reg))
+   in let jne-true-pos = st1.code-len
+   in let st2 = st-append-code st1 (jcc cc-ne 0)
+   in let r = emit-expr st2 right
+   in let result-loc = alloc-local (r.state)
+   in let st3 = store-local (result-loc.state) (result-loc.reg) (r.reg)
+   in let jmp-end-pos = st3.code-len
+   in let st4 = st-append-code st3 (jmp 0)
+   in let st5 = patch-jcc-at st4 jne-true-pos (st4.code-len)
+   in let true-lit = emit-int-lit st5 1
+   in let st6 = store-local (true-lit.state) (result-loc.reg) (true-lit.reg)
+   in let st7 = patch-jmp-at st6 jmp-end-pos (st6.code-len)
+   in load-local st7 (result-loc.reg)
+
   emit-binary : CodegenState, IRBinaryOp, IRExpr, IRExpr -> EmitResult
   emit-binary (st) (op) (left) (right) =
    if is-append-list-op op then emit-append-list st left right
+   else if is-and-op op then emit-short-circuit-and st left right
+   else if is-or-op op then emit-short-circuit-or st left right
    else emit-binary-standard st op left right
 
   emit-append-list : CodegenState, IRExpr, IRExpr -> EmitResult

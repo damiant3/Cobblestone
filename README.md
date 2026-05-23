@@ -82,28 +82,43 @@ As of 2026-05-19:
 - **Mutable records**: `mutable` keyword with in-place field
   assignment, type-checked immutability enforcement (CDX2060).
 - **Repository restructure**: 31 top-level dirs to 8. codex-vm
-  replaces QEMU as default VM (WHP-based, NE2000 NIC, VGA, UEFI).
-- **Sample battery**: 581 samples; 105/105 pass, 0 fail in the gate
+  replaces QEMU as default VM (WHP-based, ~4500 lines C: PCI, xHCI USB,
+  Intel HDA audio, HPET, IOAPIC, ACPI, SMBIOS, UEFI firmware, Bochs VBE).
+- **Sample battery**: 203 samples; 105/105 pass, 0 fail in the gate
   battery.
 - **Codex.Spark creative suite**: 85-module application (3D modeling,
   image editor, animation, audio/DAW, video compositor, skeletal
   animation, particles, procedural noise, interactive UI shell) running
   on bare metal with GOP framebuffer display via codex-vm.
-- **Codex.DB**: relational database server (38 modules).
+- **Codex.DB**: relational database server (42 modules). Typed schemas,
+  pipe-forward queries (`RelScan |> RelFilter |> RelSort |> execute`),
+  MVCC transactions, WAL, B-tree indexes, hash joins, full-text search,
+  replication, graph store, column store, time series, spatial indexes.
+- **SystemDb**: on-device persistent store (DiskFacts format) for
+  identity, boot config, trust vouches, and drive registry. Lives on
+  the boot stick as `CODEX/SYSDB.BIN`.
 - **CodexMagic game server**: 56 game modules with web portal.
 
 The compiler is a hard fixed point of itself on bare metal.
 
-**`seed/Codex.cdx`** (2,165,928 bytes) — the canonical seed:
+**`seed/Codex.cdx`** (2,154,704 bytes) — the canonical seed:
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `D71A65C65B36BA1460A2DAEB99ADDCD3C1422D336086779AA38E9017BCB85465` |
+| SHA-256 (file) | `678549CE3D33CED01A2A3A78233E3A7F56CACBD3EBD06BA77320F02FB1969A15` |
+| SHA-256 (content, embedded) | `4a3cb0d459c84537bc837157abe1109cb3dbf109102bc2b7422803af4c46dd04` |
+
+**`seed/Codex.img`** (8,388,608 bytes) — bootable GPT disk image:
+
+| Algorithm | Digest |
+|---|---|
+| SHA-256 | `032F31425613BBD5034423395D9C2ACEBF3896F1EC50556AE256CEC31D9DF5F0` |
 
 The IMG contains `EFI/BOOT/BOOTX64.EFI` (interactive UEFI dev console as a
-UEFI PE32+ application) and `SOURCE.CDX` (compiler source) in an 8 MB
-FAT16 GPT image. Colored menu with keyboard navigation. Escape to reboot.
-Tested on real Asus TUF hardware.
+UEFI PE32+ application) and `SOURCE.SRC` (compiler source) in an 8 MB
+FAT16 GPT image. Colored menu with keyboard navigation, live RTC clock,
+system info screen. Tested on real Asus TUF hardware and codex-vm (auto-
+extracts PE from GPT, no manual extraction needed).
 
 Flash to USB (requires elevated PowerShell):
 
@@ -177,9 +192,11 @@ build/build.ps1
 ### Try it without building (just codex-vm + the seed CDX)
 
 The CDX in `seed/Codex.cdx` is a complete compiler. Boot it under
-codex-vm, hand it source bytes on serial, and it hands back CDX or ELF,
-C# or Codex-text over the same socket — the output format is selected
-by the mode line. Two helpers wrap the protocol — feed and run:
+codex-vm, hand it source bytes on serial, and it hands back CDX or
+Codex-text over the same socket — the output format is selected by
+the mode line. Container formats (ELF, PE, GPT/FAT images) are
+produced by plug CDX binaries in `codex/plugs/`. Two helpers wrap
+the protocol — feed and run:
 
 ```powershell
 # Stage the seed where the helpers expect it.
@@ -306,6 +323,41 @@ Section: Linear Types
   open-file : Text -> [FileSystem] linear FileHandle
   close-file : linear FileHandle -> [FileSystem] Nothing
 
+Section: Database Queries (Codex.DB)
+
+  employees-table : TableDef
+  employees-table = table-def-with-pk "employees" [
+    col-def-not-null "id" ColInteger,
+    col-def-not-null "name" ColText,
+    col-def-not-null "department" ColText,
+    col-def "salary" ColInteger
+  ] ["id"]
+
+  engineering-roster : Catalog -> QueryResult
+  engineering-roster (cat) =
+    RelScan "employees"
+      |> RelFilter (PredColCmp "department" CmpEq (ValText "Engineering"))
+      |> RelProject (proj-columns ["name", "salary"])
+      |> RelSort [SortSpec { sort-col = "salary", sort-dir = SortDesc }]
+      |> execute cat
+
+  department-summary : Catalog -> QueryResult
+  department-summary (cat) =
+    RelScan "employees"
+      |> RelGroup ["department"] [
+        AggSpec { agg-func = AggCount, agg-alias = "headcount" },
+        AggSpec { agg-func = AggSum "salary", agg-alias = "total-salary" }
+      ]
+      |> execute cat
+
+Section: System Database (SystemDb)
+
+  SysBootConfig = record {
+    sbc-boot-mode : Integer,
+    sbc-boot-drive-serial : Text,
+    sbc-boot-partition : Integer
+  }
+
 Page 1
 ```
 
@@ -404,11 +456,11 @@ Unicode exists only at I/O boundaries. Internally, everything is CCE.
 ## Library Quires
 
 Code outside the compiler is organized into **24 quires** (library namespaces)
-with **516 modules** total (575 including the 59-file compiler):
+with **367 modules** total (420 including the 53-file compiler):
 
 | Quire | Directory | Count | Highlights |
 |-------|-----------|------:|------------|
-| **Foreword** | `codex/foreword/core/` | 82 | Hamt, Sort, PriorityQueue, Trie, LruCache, UnionFind, Graph, B+Tree, Deque, Rope, IntervalTree, ConsistentHash, BloomFilter, Regex, DateTime, Ed25519, SHA-256/512, CCE, MathLib, Path, Format, Hkdf, NumberTheory, Probability, Locale |
+| **Foreword** | `codex/foreword/core/` | 89 | Hamt, Sort, PriorityQueue, Trie, LruCache, UnionFind, Graph, B+Tree, Deque, Rope, IntervalTree, ConsistentHash, BloomFilter, Regex, DateTime, Ed25519, SHA-256/512, CCE, MathLib, Path, Format, Hkdf, NumberTheory, Probability, Locale |
 | **Game** | `codex/foreword/game/` | 26 | A*, Dijkstra, DiamondSquare, HexMap, Voronoi, FloodFill, Octree, Quadtree, Bresenham, CellularAutomata, ECS, StateMachine, Tween, TileMap, CardDeck, Rasterizer, Sprite, Scene2D, Color, Raytracer, Klondike, Camera |
 | **AI** | `codex/foreword/ai/` | 19 | Tensor, NeuralNet, Transformer, GGUF, SparseLattice, KNN, DecisionTree, GeneticAlgorithm, Tokenizer, KvCache, Sampling, Optimizer, Attention, Embedding, Loss, DiffusionScheduler |
 | **UI** | `codex/foreword/ui/` | 28 | Theme (3 built-in), Widget, Layout, Render, Surface, Event, Binding, Animation, Icon (5 sizes), Overlay, Sound, Font (CCE), Cursor, Scroll, Focus, Dialog, Orchestrator, Selection, TextField, Clipboard, RichText, Charts, Accessibility |
@@ -417,9 +469,9 @@ with **516 modules** total (575 including the 59-file compiler):
 | **Encode** | `codex/foreword/encode/` | 32 | JSON, Base64, Hex, URI, UUID, CSV, CRC32, Protobuf, Toml, Cbor, Yaml, MessagePack, Bencode, GrayCode |
 | **Math** | `codex/foreword/math/` | 12 | Quaternion, Matrix4, Bezier, CORDIC, Complex, Spline, Geodesic, LinearAlgebra, Numeric, Decimal |
 | **Sim** | `codex/foreword/sim/` | 7 | Verlet Physics, Collision, ParticleSystem, Steering, SpatialHash |
-| **Net** | `codex/os/net/` | 15 | Ethernet, ARP, IPv4, TCP, UDP, ICMP, DNS, DHCP, NTP, Syslog, TFTP, HttpClient, Tls (AesGcm + X25519) |
-| **Kernel** | `codex/os/kernel/` | 16 | DiskFacts, Vga, VgaGraphics, Pci, Keyboard, Mouse, BitmapFont, Console, DiagnosticShell, GpuBridge, Usb, UsbAudio, Xhci, VmSerial, VmIde |
-| **OS** | `codex/os/*/` | 41 | Trust lattice, verifier, scheduler, IPC, identity, shell, clarifier, replay, observability, dev tools |
+| **Net** | `codex/os/net/` | 16 | Ethernet, ARP, IPv4, TCP, UDP, ICMP, DNS, DHCP, NTP, Syslog, TFTP, HttpClient, Tls (AesGcm + X25519) |
+| **Kernel** | `codex/os/kernel/` | 22 | DiskFacts, DriveManager, Vga, VgaGraphics, Pci, Keyboard, Mouse, BitmapFont, Console, DiagnosticShell, GpuBridge, IdentityManager, Ivshmem, Ne2k, SystemDb, Usb, UsbAudio, UsbMassStorage, UsbVideo, Xhci, VmSerial, VmIde |
+| **OS** | `codex/os/*/` | 57 | Trust lattice, verifier, scheduler, IPC, identity, shell, clarifier, replay, observability, dev tools |
 | **Works** | `apps/works/` | 53 | DevConsole, UefiConsole, ConsoleEditor, FirstBoot, AgentRuntime, AgentCoordinator, AgentAcquisition, VmCompile, VmPingpong, VmSweep, Http, WebServer, AnnotationDriver |
 | **Spark** | `apps/spark/` | 85 | 3D modeling, software rasterizer, image editor, animation/skeletal IK, audio/DAW, video compositor, procedural noise, interactive GOP framebuffer UI |
 | **Games** | `apps/games/` | 56 | CodexMagic card game engine, classic board games, game server, AI opponents, web portal |
@@ -437,7 +489,7 @@ of the directory name, capitalized.
 codex/
   compiler/               Self-hosted compiler (59 files, ~30.5K lines)
   foreword/
-    core/                 Core forewords — data structures, crypto (82 modules)
+    core/                 Core forewords — data structures, crypto (89 modules)
     ai/                   AI — tensors, neural nets, GGUF, transformer (19 modules)
     compress/             Compression — LZ77, Huffman, RLE, Deflate, Zstd, Brotli (8 modules)
     encode/               Encoding — JSON, Base64, Protobuf, Toml, Cbor, Yaml (32 modules)
@@ -449,15 +501,15 @@ codex/
   os/
     core/                 OS core — shell, registry, clarifier (4 modules)
     dev/                  Developer tools — debugger, inspectors (5 modules)
-    kernel/               Kernel — disk I/O, VGA, keyboard, font (16 modules)
-    net/                  Networking — full TCP/IP + protocols (15 modules)
+    kernel/               Kernel — disk, VGA, USB, PCI, audio, video (22 modules)
+    net/                  Networking — full TCP/IP + protocols (16 modules)
     observe/              Observability — metrics, health, journal (7 modules)
     replay/               Replay — deterministic record/replay (3 modules)
     sched/                Scheduler — process groups, watchdog (6 modules)
     trust/                Trust — lattice, policy, sessions (11 modules)
     verify/               Verification — 5-phase CDX verifier (5 modules)
   plugs/                  Plug architecture — IR-text-driven emitters
-  test/                   Compiler samples + OS integration tests (581 samples)
+  test/                   Compiler samples + OS integration tests (203 samples)
 apps/
   works/                  Console, agents, VM tools, first boot (53 modules)
   spark/                  Codex.Spark — 3D, image, animation, audio, video (85 modules)
@@ -538,6 +590,12 @@ old/                      Retired C# reference compiler — historical only
 | CodexMagic | Card game + game server with web portal (56 modules) | 2026-05-18 |
 | Mutable records | `__record-set-mut` for in-place mutation under linear ownership | 2026-05-18 |
 | **575 modules** | **24 quires, 59 compiler files, 581+ test samples** | **2026-05-18** |
+| Emitter Exodus | PE, ELF, GPT, FAT writers extracted from compiler to plug CDX binaries | 2026-05-23 |
+| **codex-vm hardware** | **PCI, xHCI USB (mass storage + HID + UVC camera), Intel HDA audio, HPET, IOAPIC, ACPI, SMBIOS, Bochs VBE, PC speaker — VM grows from 400 to ~4500 lines** | **2026-05-23** |
+| UsbVideo.codex | USB Video Class kernel driver: discovery, Probe/Commit, YUYV-to-RGB, framebuffer blit | 2026-05-23 |
+| Hardware tests | 5 new test samples: pci-scan, xhci-discover, uvc-discover, usb-msc-detect, hda-codec | 2026-05-23 |
+| xHCI transfers | Xhci.codex: command/transfer ring management, bulk/control transfers, event ring | 2026-05-23 |
+| **420 modules** | **24 quires, 53 compiler files (post-Exodus), 203 test samples** | **2026-05-23** |
 
 ---
 

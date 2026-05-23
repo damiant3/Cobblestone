@@ -18,21 +18,31 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot
 $outDir = Join-Path $root 'build-output\disk-compile-test'
 if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
-$compile = Join-Path $PSScriptRoot 'test-compile.ps1'
+$compile = Join-Path $PSScriptRoot 'compile.ps1'
 $runScript = Join-Path $PSScriptRoot 'test-run.ps1'
 
 Write-Host "=== DISK compile test ===" -ForegroundColor Cyan
 
-# Step 1: Build FAT16 IMG with source embedded
-Write-Host "Step 1: Build FAT16 IMG..."
+# Step 1: Build FAT16 IMG with source embedded via plug chain
+Write-Host "Step 1a: Compile source to CDX..."
 $imgOut = Join-Path $outDir 'disk-test.img'
-$imgLog = Join-Path $outDir 'img-build.log'
-& pwsh -NoProfile -File $compile -Src $SampleSrc -Out $imgOut -Log $imgLog -PCore $PCore -Img -Fat16
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path $imgOut)) {
-    Write-Host "FAIL: IMG build failed" -ForegroundColor Red
-    if (Test-Path $imgLog) { Get-Content $imgLog | Write-Host }
+$cdxOut = Join-Path $outDir 'disk-test.cdx'
+$cdxLog = Join-Path $outDir 'cdx-build.log'
+& pwsh -NoProfile -File $compile -Src $SampleSrc -Out $cdxOut -Log $cdxLog -PCore $PCore
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $cdxOut)) {
+    Write-Host "FAIL: CDX compile failed" -ForegroundColor Red
+    if (Test-Path $cdxLog) { Get-Content $cdxLog | Write-Host }
     exit 1
 }
+Write-Host "Step 1b: CDX -> PE via plug..."
+$peOut = Join-Path $outDir 'disk-test.efi'
+$pePlug = Join-Path $root 'codex\plugs\pe\run.ps1'
+& pwsh -NoProfile -File $pePlug -CdxInput $cdxOut -Out $peOut
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $peOut)) { Write-Host "FAIL: PE plug failed"; exit 1 }
+Write-Host "Step 1c: PE + CDX -> FAT16 IMG via plug..."
+$imgPlug = Join-Path $root 'codex\plugs\img\run.ps1'
+& pwsh -NoProfile -File $imgPlug -PeInput $peOut -CdxInput $cdxOut -Out $imgOut -Fat16 -Source $SampleSrc
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $imgOut)) { Write-Host "FAIL: IMG plug failed"; exit 1 }
 Write-Host "  IMG: $((Get-Item $imgOut).Length) bytes"
 
 # Step 2: Boot compiler with IMG as IDE disk, send DISK mode
@@ -41,11 +51,11 @@ $Stage0 = Join-Path $root 'build-output\bare-metal\Codex.cdx'
 if (-not (Test-Path $Stage0)) { Write-Host "FAIL: no compiler CDX at $Stage0"; exit 1 }
 
 $diskArgs = @('-drive', "file=$imgOut,format=raw,if=ide,index=0")
-$run = Start-QemuRun -Kernel $Stage0 -ConnectTimeoutSec 10 -MemMB 2048 -PCore $PCore -ExtraArgs $diskArgs
+$run = Start-VmRun -Kernel $Stage0 -ConnectTimeoutSec 10 -MemMB 2048 -PCore $PCore -ExtraArgs $diskArgs
 if (-not $run) { Write-Host "FAIL: VM did not start"; exit 1 }
 
 try {
-    if (-not (Read-QemuReady -Conn $run.Conn -TimeoutSec 30)) {
+    if (-not (Read-VmReady -Conn $run.Conn -TimeoutSec 30)) {
         Write-Host "FAIL: no READY"; exit 1
     }
     $stream = $run.Conn.Data.GetStream()
@@ -91,7 +101,7 @@ try {
     [System.IO.File]::WriteAllBytes($cdxOut, $binBytes)
     Write-Host "  Written: $cdxOut"
 } finally {
-    Close-Qemu -Conn $run.Conn -Process $run.Process
+    Close-Vm -Conn $run.Conn -Process $run.Process
 }
 
 # Step 3: Boot the compiled CDX, check output

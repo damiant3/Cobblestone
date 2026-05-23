@@ -33,6 +33,7 @@
   .engine-tag { background: #fff4; color: #cc4411; font-size: 10px; padding: 2px 8px;
     border-radius: 10px; margin-left: 12px; border: 1px solid #ff663344; }
 </style>
+<script src="/web/game-engine.js"></script>
 </head>
 <body>
 <div class="bg-scene"></div>
@@ -53,19 +54,28 @@
   </div>
   <div id="status-line">GRAB YOUR CRAYONS! &#x1F58D;</div>
   <div class="score-bar"><span style="color:#ff3300">&#x1F534; P1: <span id="sc-1">0</span></span><span style="color:#0033cc">&#x1F535; P2: <span id="sc-2">0</span></span><span style="color:#cc8866"><span id="sc-m">0</span>/24</span></div>
+  <div id="narration" style="text-align:center;font-size:14px;font-weight:bold;min-height:20px;margin-bottom:8px;color:#ff6633"></div>
   <div class="board-wrap"><div class="db-grid" id="board"></div></div>
+  <details style="background:#1a0a0099;border:1px solid #ff663322;border-radius:8px;padding:16px;margin-top:12px;color:#cc886688;font-size:13px;line-height:1.6">
+    <summary style="color:#ff6633;cursor:pointer;font-weight:bold;font-size:14px">How to Play Dots and Boxes</summary>
+    <p><b>Goal:</b> Complete more boxes than your opponent on a 4x4 dot grid.</p>
+    <p><b>Play:</b> Take turns drawing one line between adjacent dots. When you complete the 4th side of a box, you score it and go again.</p>
+    <p><b>Strategy:</b> Avoid giving your opponent chains of boxes. Force them to open chains for you to claim.</p>
+    <p><b>End:</b> Game ends when all 24 lines are drawn (9 boxes total). Most boxes wins.</p>
+  </details>
 </div>
 <script>
 var state,running=false,paused=false,timer,delay=500;
 function updateSpeed(){var v=parseInt(document.getElementById('speed').value);delay=[2000,1200,800,500,350,250,150,80,30,5][v-1]||500}
-async function api(p){try{var r=await fetch(p);return r.json()}catch(e){return null}}
+async function api(p){try{var r=await fetch(p);return r.json()}catch(e){document.getElementById('status-line').textContent='Connection error';return null}}
 function render(s){var e=s.edges,b=s.boxes;var h='';for(var gr=0;gr<7;gr++){for(var gc=0;gc<7;gc++){if(gr%2===0&&gc%2===0)h+='<div class="db-dot"></div>';else if(gr%2===0&&gc%2===1){var ei=Math.floor(gr/2)*3+Math.floor(gc/2);h+='<div class="db-hedge '+(e[ei]?'db-on':'db-off')+'"></div>'}else if(gr%2===1&&gc%2===0){var ei=12+Math.floor(gr/2)*4+Math.floor(gc/2);h+='<div class="db-vedge '+(e[ei]?'db-on':'db-off')+'"></div>'}else{var bi=Math.floor(gr/2)*3+Math.floor(gc/2);h+='<div class="db-box db-box-'+b[bi]+'">'+(b[bi]?b[bi]:'')+'</div>'}}}document.getElementById('board').innerHTML=h;document.getElementById('sc-1').textContent=s.p1;document.getElementById('sc-2').textContent=s.p2;document.getElementById('sc-m').textContent=s.moves}
 async function resetGame(){clearTimeout(timer);running=false;paused=false;state=await api('/api/dotsandboxes/new?seed='+(Date.now()&0x7FFFFFFF));if(state)render(state);document.getElementById('status-line').innerHTML="GRAB YOUR CRAYONS! &#x1F58D;";document.getElementById('btn-pause').disabled=true;document.getElementById('btn-step').disabled=true}
 async function startGame(){await resetGame();running=true;document.getElementById('btn-pause').disabled=false;document.getElementById('btn-step').disabled=false;updateSpeed();scheduleTick()}
 function togglePause(){if(!running)return;paused=!paused;if(!paused)scheduleTick()}
 function scheduleTick(){if(!paused&&running)timer=setTimeout(tick,delay)}
 async function stepOnce(){if(running)await tick()}
-async function tick(){if(!running||!state||state.moves>=24){if(state)document.getElementById('status-line').innerHTML=(state.p1>state.p2?'&#x1F534; P1':'&#x1F535; P2')+' WINS!! &#x1F389;';running=false;return}state=await api('/api/dotsandboxes/step');if(!state){running=false;return}render(state);if(state.moves>=24){document.getElementById('status-line').innerHTML=(state.p1>state.p2?'&#x1F534; P1':'&#x1F535; P2')+' WINS!! &#x1F389;';running=false;return}document.getElementById('status-line').innerHTML='P'+(state.cur+1)+"'s turn! &#x270F;";scheduleTick()}
+var prevP1=0,prevP2=0;
+async function tick(){if(!running||!state||state.moves>=24){if(state){var w=state.p1>state.p2?'P1':state.p2>state.p1?'P2':'Tie';document.getElementById('status-line').innerHTML=(w==='Tie'?'It\'s a tie!':'&#x1F389; '+w+' WINS!')+'  ('+state.p1+'-'+state.p2+')'}running=false;return}prevP1=state.p1;prevP2=state.p2;state=await api('/api/dotsandboxes/step');if(!state){running=false;return}render(state);var boxScored=state.p1>prevP1||state.p2>prevP2;var who='P'+(state.cur===0?'2':'1');if(boxScored)document.getElementById('narration').textContent=who+' completes a box! ('+state.p1+'-'+state.p2+')';else document.getElementById('narration').textContent=who+' draws a line';if(state.moves>=24){var w=state.p1>state.p2?'P1':state.p2>state.p1?'P2':'Tie';document.getElementById('status-line').innerHTML=(w==='Tie'?'Tie game!':'&#x1F389; '+w+' WINS!')+'  ('+state.p1+'-'+state.p2+')';running=false;return}document.getElementById('status-line').innerHTML='P'+(state.cur+1)+"'s turn — move "+state.moves+'/24';scheduleTick()}
 updateSpeed();resetGame();
 </script>
 </body>

@@ -6,7 +6,7 @@ Codex is a new programming language, self-sustaining compiler, tools, operating 
 
 The project was started 3/14/2026.
 
-### The Founding Vision (docs/Stories/Vision/NewRepository.txt)
+### The Founding Vision (docs/PM/Stories/Vision/NewRepository.txt)
 
 The original prompt that started the project:
 
@@ -53,7 +53,8 @@ and `docs/PM/Done/` — those are historical and recoverable from
 - `docs/Designs/Active/` — ALL active designs (compiler, hardware, language, OS, features, tools)
 - `docs/PM/Stories/Vision/` — founding prompts
 - `docs/Test/` — known conditions, crash investigations
-- `docs/Reference/` — UEFI spec, paper index
+- `docs/Reference/` — UEFI specs, AMI Aptio, paper index
+- `docs/ReadingNotes/` — observations from external projects (NVlabs/Sana, etc.)
 
 ## Current State
 
@@ -65,6 +66,14 @@ byte-identical to itself. No C# anywhere in the chain.
 The canonical artifact is `seed/Codex.cdx` — a ~2.1 MB
 self-sustaining CDX binary, bootable via codex-vm (or QEMU multiboot).
 The CDX is the root of trust.
+
+`tools/codex-vm.exe` is a ~4500-line C program (WHP hypervisor) that
+emulates: PCI bus, xHCI USB (mass storage + HID keyboard + UVC camera),
+Intel HDA audio with host waveOut, Bochs VBE display, NE2K NIC with
+NAT, IDE disk, HPET, IOAPIC, ACPI/SMBIOS tables, UEFI firmware
+(LocateProtocol, Block I/O, memory map, auto-extract PE from GPT
+images), VGA text, GOP framebuffer, PS/2, CMOS RTC, PC speaker.
+Build with `tools/build-vm.ps1`.
 
 ### Bootstrap History — 2026-04-24: The cord is cut
 
@@ -92,10 +101,16 @@ change that touches codegen must pass all gates before it is done. If
 any gate is red, shelve changes, notify Damian, and re-evaluate.
 
 ```powershell
-codex.build/test.ps1                      # Sample battery (~2-5s per sample)
-codex.build/test.ps1 -Jobs 4              # Parallel test
-codex.build/build.ps1                     # Text round-trip + CDX fixed-point (all gates)
+build/test.ps1                      # Sample battery (~2-5s per sample)
+build/test.ps1 -Jobs 4              # Parallel test
+build/build.ps1                     # Text round-trip + CDX fixed-point (all gates)
+build/compile.ps1 -Src X -Out Y     # Compile a single .codex file (was test-compile.ps1)
 ```
+
+Container formats (ELF, PE, GPT/FAT disk images) are produced by
+**plug CDX binaries** in `codex/plugs/`, not by the compiler itself.
+The compiler emits CDX or text. Plugs receive IR or CDX over TCP and
+produce the final binary format.
 
 ### 2. Read before you write
 
@@ -117,8 +132,8 @@ builds every time.
 ### 4. One thing at a time
 
 Do one thing. Test it. Commit it. Then do the next thing. Do not batch.
-Do not "while I'm here." The compiler is ~21,000 lines of Codex across
-52 files. A wrong change in one place surfaces as a silent corruption
+Do not "while I'm here." The compiler is ~29,000 lines of Codex across
+53 files. A wrong change in one place surfaces as a silent corruption
 three pipeline stages later.
 
 ### 5. CCE is the internal encoding

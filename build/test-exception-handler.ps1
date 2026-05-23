@@ -13,7 +13,7 @@ $ErrorActionPreference = 'Stop'
 
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 if (-not $CodexCdx) { $CodexCdx = Join-Path $Repo 'seed\Codex.cdx' }
-$compile = Join-Path $PSScriptRoot 'test-compile.ps1'
+$compile = Join-Path $PSScriptRoot 'compile.ps1'
 $outDir = Join-Path $Repo 'build-output\exc-test'
 if (Test-Path $outDir) { Remove-Item -Recurse -Force $outDir }
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
@@ -46,7 +46,7 @@ foreach ($s in $samples) {
         continue
     }
 
-    $run = Start-QemuRun -Kernel $cdx -ConnectTimeoutSec 5 -MemMB 2048
+    $run = Start-VmRun -Kernel $cdx -ConnectTimeoutSec 5 -MemMB 2048
     if (-not $run) {
         Write-Host "FAIL (vm start)"
         $fail++
@@ -78,7 +78,7 @@ foreach ($s in $samples) {
         }
         $output = [System.Text.Encoding]::UTF8.GetString($allBytes.ToArray())
     } finally {
-        Close-Qemu -Conn $run.Conn -Process $run.Process
+        Close-Vm -Conn $run.Conn -Process $run.Process
         Remove-Item -Force $run.StdoutFile, $run.StderrFile -ErrorAction SilentlyContinue
     }
 

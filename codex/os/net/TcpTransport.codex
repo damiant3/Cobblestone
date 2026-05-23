@@ -51,7 +51,13 @@ Section: Receive Processing
 
   transport-feed-data : TcpTransportState, List Integer -> TcpTransportState
   transport-feed-data (ts) (data) =
-    TcpTransportState { session = ts.session, recv-buf = ts.recv-buf & data, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+    let buf = list-push-all (ts.recv-buf) data 0 (list-length data)
+    in TcpTransportState { session = ts.session, recv-buf = buf, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+
+  list-push-all : List Integer, List Integer, Integer, Integer -> List Integer
+  list-push-all (dst) (src) (i) (n) =
+    if i >= n then dst
+    else list-push-all (list-push dst (list-at src i)) src (i + 1) n
 
   transport-try-recv : TcpTransportState -> TransportRecvResult
   transport-try-recv (ts) =
@@ -77,7 +83,8 @@ Section: Feed Inbound Frame
   transport-process-frame : TcpTransportState, List Integer -> TransportRecvResult
   transport-process-frame (ts) (frame) =
     let r = net-process-frame (ts.session) frame
-    in let ts1 = TcpTransportState { session = r.session, recv-buf = ts.recv-buf & r.data, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+    in let buf = list-push-all (ts.recv-buf) (r.data) 0 (list-length (r.data))
+    in let ts1 = TcpTransportState { session = r.session, recv-buf = buf, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
     in transport-try-recv ts1
 
 Section: Connection Lifecycle

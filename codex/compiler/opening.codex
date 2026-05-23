@@ -13,8 +13,7 @@ Chapter: Opening
   cites Emit chapter Codex Emitter (emit-codex-text-chapter, emit-type-defs, emit-def)
   cites Emit chapter IR Text Emitter (emit-ir-chapter)
   cites Emit chapter Emit Allocator (emit-build)
-  cites Emit chapter X86-64 Code Generator (x86-64-emit-elf, x86-64-emit-elf-with-exit-mode, x86-64-emit-elf-with-options, x86-64-emit-elf-with-profile, x86-64-emit-cdx, x86-64-emit-cdx-with-exit-mode, x86-64-emit-efi, x86-64-emit-uefi-app, x86-64-emit-img, EmitImgResult, ImgFsType, ImgFat16, ImgFat32, X86_64ExitMode, ExitRepl, Exit, ExitAcpiS5, ExitUefi, X86_64WatchdogMode, WatchdogProgress, WatchdogPet)
-  cites Codex chapter VM Profile (VmProfile, vm-profile-spec, vm-profile-qemu-11-0-0, lookup-vm-profile)
+  cites Emit chapter X86-64 Code Generator (x86-64-emit-cdx, x86-64-emit-cdx-with-exit-mode, X86_64ExitMode, ExitRepl, Exit, X86_64WatchdogMode, WatchdogProgress, WatchdogPet)
   cites Semantics chapter Name Resolution (resolve-chapter, check-entry-point-duplicate, check-duplicate-cites)
 
 Section: Compile Flags
@@ -513,41 +512,13 @@ Section: Binary Compilation
  (CDX, riscv-bare, ...) will dispatch from here once we have more than
  one.
 
-  compile-to-elf : CompileFrontend -> EmitChapterResult
-  compile-to-elf (fe) =
-   compile-to-elf-with-profile fe Exit WatchdogProgress vm-profile-spec
-
-  compile-to-elf-with-options : CompileFrontend, X86_64ExitMode, X86_64WatchdogMode -> EmitChapterResult
-  compile-to-elf-with-options (fe) (exit-mode) (wd-mode) =
-   compile-to-elf-with-profile fe exit-mode wd-mode vm-profile-spec
-
-  compile-to-elf-with-profile : CompileFrontend, X86_64ExitMode, X86_64WatchdogMode, VmProfile -> EmitChapterResult
-  compile-to-elf-with-profile (fe) (exit-mode) (wd-mode) (profile) =
-   if bag-has-errors (fe.bag) then EmitChapterResult { bytes = [], bag = fe.bag, symbol-map = [] }
-   else let emit-result = x86-64-emit-elf-with-profile (fe.ir) (fe.type-env) exit-mode wd-mode profile
-    in EmitChapterResult {
-     bytes = emit-result.bytes,
-     bag = bag-merge-all [fe.bag, emit-result.bag],
-     symbol-map = emit-result.symbol-map
-    }
-
   compile-to-cdx : CompileFrontend -> EmitChapterResult
-  compile-to-cdx (fe) = compile-to-cdx-with-exit-mode fe Exit
+  compile-to-cdx (fe) = compile-to-cdx-with-exit-mode fe Exit False
 
-  compile-to-cdx-with-exit-mode : CompileFrontend, X86_64ExitMode -> EmitChapterResult
-  compile-to-cdx-with-exit-mode (fe) (exit-mode) =
+  compile-to-cdx-with-exit-mode : CompileFrontend, X86_64ExitMode, Boolean -> EmitChapterResult
+  compile-to-cdx-with-exit-mode (fe) (exit-mode) (poison) =
    if bag-has-errors (fe.bag) then EmitChapterResult { bytes = [], bag = fe.bag, symbol-map = [] }
-   else let emit-result = x86-64-emit-cdx-with-exit-mode (fe.ir) (fe.type-env) exit-mode
-    in EmitChapterResult {
-     bytes = emit-result.bytes,
-     bag = bag-merge-all [fe.bag, emit-result.bag],
-     symbol-map = emit-result.symbol-map
-    }
-
-  compile-to-efi : CompileFrontend -> EmitChapterResult
-  compile-to-efi (fe) =
-   if bag-has-errors (fe.bag) then EmitChapterResult { bytes = [], bag = fe.bag, symbol-map = [] }
-   else let emit-result = x86-64-emit-efi (fe.ir) (fe.type-env)
+   else let emit-result = x86-64-emit-cdx-with-exit-mode (fe.ir) (fe.type-env) exit-mode poison
     in EmitChapterResult {
      bytes = emit-result.bytes,
      bag = bag-merge-all [fe.bag, emit-result.bag],
@@ -695,114 +666,26 @@ Section: Entry Point
   emit-cdx (source) (mode) (flags) =
    let exit-mode = if has-mode-flag mode "repl" then ExitRepl else Exit
    in let is-repl = has-mode-flag mode "repl"
-   in let result = compile-to-cdx-with-exit-mode (compile-frontend source "Codex_Codex" flags) exit-mode
+   in let poison = has-mode-flag mode "poison"
+   in let debug = has-mode-flag mode "debug"
    in act
-    print-codegen-error-header (bag-errors (result.bag))
-    print-bag-notices (result.bag)
-    if is-repl then emit-binary-tail result
-    else emit-binary-tail-with-map result
-   end
-
-  emit-efi : Text, CompileFlags -> [Console, FileSystem] Nothing
-  emit-efi (source) (flags) =
-   let result = compile-to-efi (compile-frontend source "Codex_Codex" flags)
-   in act
-    print-codegen-error-header (bag-errors (result.bag))
-    emit-binary-tail-with-map result
-   end
-
-  compile-to-uefi-app : CompileFrontend -> EmitChapterResult
-  compile-to-uefi-app (fe) =
-   if bag-has-errors (fe.bag) then EmitChapterResult { bytes = [], bag = fe.bag, symbol-map = [] }
-   else let result = x86-64-emit-uefi-app (fe.ir) (fe.type-env)
-    in EmitChapterResult { bytes = result.bytes, bag = bag-merge-all [fe.bag, result.bag], symbol-map = result.symbol-map }
-
-  emit-uefi-app : Text, CompileFlags -> [Console, FileSystem] Nothing
-  emit-uefi-app (source) (flags) =
-   let fe = compile-frontend source "Program" flags
-   in let result = compile-to-uefi-app fe
-   in act
-    print-codegen-error-header (bag-errors (result.bag))
-    emit-binary-tail-with-map result
-   end
-
-  uefi-heap-pages-heuristic : Integer -> Integer
-  uefi-heap-pages-heuristic (source-len) =
-   let estimated = source-len * 30 / 4096
-   in if estimated < 1024 then 1024 else estimated
-
-  parse-decimal : Text -> Integer
-  parse-decimal (s) = parse-decimal-loop s 0 (text-length s) 0
-
-  parse-decimal-loop : Text, Integer, Integer, Integer -> Integer
-  parse-decimal-loop (s) (i) (len) (acc) =
-   if i >= len then acc
-   else let c = char-code (char-at s i)
-   in if c >= 3 then if c <= 12 then parse-decimal-loop s (i + 1) len (acc * 10 + c - 3) else acc
-   else acc
-
-  parse-mode-heap : Text -> Integer
-  parse-mode-heap (mode) =
-   let parts = text-split mode " "
-   in find-heap-flag parts 0 (list-length parts)
-
-  find-heap-flag : List Text, Integer, Integer -> Integer
-  find-heap-flag (parts) (i) (len) =
-   if i >= len then 0
-   else let part = list-at parts i
-   in if text-starts-with part "heap=" then parse-decimal (substring part 5 (text-length part - 5))
-   else find-heap-flag parts (i + 1) len
-
-  emit-img : Text, CompileFlags, ImgFsType, Boolean, Integer -> [Console, FileSystem] Nothing
-  emit-img (source) (flags) (fs-type) (uefi-pe) (requested-heap) =
-   let fe = compile-frontend source "Codex_Codex" flags
-   in if bag-has-errors (fe.bag) then act
-    print-codegen-error-header (bag-errors (fe.bag))
-    print-line-uni "CODEGEN-HALTED: errors in bag; no binary emitted"
-   end
-   else let heuristic = uefi-heap-pages-heuristic (text-length source)
-   in let heap-pages = if requested-heap > 0 then requested-heap else if uefi-pe then heuristic else 1024
-   in act
-    if uefi-pe then act
-      print-line-uni ("WD:UEFI-HEAP:" & integer-to-text (heap-pages * 4) & "KB (" & integer-to-text heap-pages & " pages, source=" & integer-to-text (text-length source) & "B)")
-      if requested-heap > 0 then
-        if requested-heap < heuristic then print-line-uni ("WD:UEFI-HEAP-WARN: specified " & integer-to-text requested-heap & " < heuristic " & integer-to-text heuristic & " pages")
-        else print-line-uni ""
-      else print-line-uni ""
-    end
+    if debug then print-line-uni ("DBG:frontend src=" & show (text-length source))
     else print-line-uni ""
-    let result = x86-64-emit-img (fe.ir) (fe.type-env) fs-type source uefi-pe heap-pages
+    let fe = compile-frontend source "Codex_Codex" flags
     in act
+     if debug then act
+      print-line-uni ("DBG:emit defs=" & show (list-length (fe.ir.defs)))
+      dbg-print-def-names (fe.ir.defs) 0 (list-length (fe.ir.defs))
+     end
+     else print-line-uni ""
+     let result = compile-to-cdx-with-exit-mode fe exit-mode poison
+     in act
       print-codegen-error-header (bag-errors (result.bag))
-      if bag-has-errors (result.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no binary emitted"
-      else act
-        print-line-uni ("SIZE:" & integer-to-text (result.buf-size))
-        stream-buf-to-serial (result.buf-addr) 0 (result.buf-size)
-      end
+      print-bag-notices (result.bag)
+      if is-repl then emit-binary-tail result
+      else emit-binary-tail-with-map result
+     end
     end
-   end
-
-  stream-buf-to-serial : Integer, Integer, Integer -> [Console] Nothing
-  stream-buf-to-serial (buf) (off) (remaining) =
-   if remaining <= 0 then act print-line-uni "" end
-   else let chunk = if remaining > 65536 then 65536 else remaining
-   in let hp = __heap-save
-   in let data = __buf-read-bytes buf off chunk
-   in act
-    write-binary data
-    let restored = __heap-restore hp
-    in stream-buf-to-serial buf (off + chunk) (remaining - chunk)
-   end
-
-  emit-binary : Text, VmProfile, CompileFlags -> [Console, FileSystem] Nothing
-  emit-binary (source) (profile) (flags) =
-   let fe = compile-frontend source "Codex_Codex" flags
-   in let result = compile-to-elf-with-profile fe Exit WatchdogProgress profile
-   in let h-post-emit = __heap-save
-   in act
-    print-codegen-error-header (bag-errors (result.bag))
-    emit-binary-tail-with-map result
-    print-line-uni (format-heap-marks-wd (fe.heap-marks & [h-post-emit]) & format-phase-metrics-wd (fe.phase-metrics))
    end
 
   emit-binary-tail : EmitChapterResult -> [Console, FileSystem] Nothing
@@ -877,7 +760,7 @@ Section: Entry Point
     else act
      let ir-text = emit-ir-chapter (fe.ir) (fe.scoped.type-defs)
      in print-line-uni ("SIZE:" & show (text-length ir-text))
-     print-line-uni ir-text
+     print-line ir-text
     end
     let h-post-emit = __heap-save
     in print-line-uni (format-heap-marks-wd (fe.heap-marks & [h-pre-emit, h-post-emit]))
@@ -897,12 +780,6 @@ Section: Entry Point
    in if list-length parts == 0 then mode
       else list-at parts 0
 
-  parse-mode-profile : Text -> VmProfile
-  parse-mode-profile (mode) =
-   let parts = text-split mode " "
-   in if list-length parts < 2 then vm-profile-spec
-      else lookup-vm-profile (list-at parts 1)
-
   has-mode-flag : Text, Text -> Boolean
   has-mode-flag (mode) (flag) =
    let parts = text-split mode " "
@@ -914,13 +791,19 @@ Section: Entry Point
    else if list-at parts i == flag then True
    else has-flag-loop parts flag (i + 1) len
 
+  dbg-print-def-names : List IRDef, Integer, Integer -> [Console] Nothing
+  dbg-print-def-names (defs) (i) (len) = act
+   if i >= len then print-line-uni ""
+   else let d = list-at defs i
+   in act
+    print-line-uni ("DBG:def " & show i & " " & d.name)
+    dbg-print-def-names defs (i + 1) len
+   end
+  end
+
   parse-mode-flags : Text -> CompileFlags
   parse-mode-flags (mode) =
    CompileFlags { prose = has-mode-flag mode "prose" }
-
-  parse-img-fs-type : Text -> ImgFsType
-  parse-img-fs-type (mode) =
-   if has-mode-flag mode "fat16" then ImgFat16 else ImgFat32
 
   disk-partition-start : Integer = 2048
 
@@ -936,19 +819,10 @@ Section: Entry Point
           in let full = foreword-prefix & source
           in let flags = parse-mode-flags mode
           in let clean = normalize-whitespace full
-          in let target = parse-disk-target mode
-          in if target == "ELF" then emit-binary clean (parse-mode-profile mode) flags
-          else if target == "EFI" then emit-efi clean flags
-          else emit-cdx clean mode flags
+          in emit-cdx clean mode flags
         is None -> print-line-uni ("DISK: file not found: " & path)
     is None -> print-line-uni "DISK: no path on stdin"
   end
-
-  parse-disk-target : Text -> Text
-  parse-disk-target (mode) =
-   let parts = text-split mode " "
-   in if list-length parts >= 2 then list-at parts 1
-   else "CDX"
 
   dispatch-on-mode : Text -> [Console, FileSystem] Nothing
   dispatch-on-mode (mode) = act
@@ -956,14 +830,9 @@ Section: Entry Point
    in if cmd == "DISK" then emit-from-disk mode
    else act
     source <- read-file-uni mode
-    let profile = parse-mode-profile mode
-    in let flags = parse-mode-flags mode
+    let flags = parse-mode-flags mode
     in let clean = normalize-whitespace source
     in if cmd == "CDX" then emit-cdx clean mode flags
-       else if cmd == "ELF" then emit-binary clean profile flags
-       else if cmd == "EFI" then emit-efi clean flags
-       else if cmd == "UEFI" then emit-uefi-app clean flags
-       else if cmd == "IMG" then emit-img clean flags (parse-img-fs-type mode) (has-mode-flag mode "uefi") (parse-mode-heap mode)
        else if cmd == "IR-UNI" then emit-ir-uni clean flags
        else if cmd == "IR-CCE" then emit-ir-cce clean flags
        else if cmd == "MEASURE" then emit-measure clean flags

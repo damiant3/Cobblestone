@@ -45,9 +45,6 @@ $GameCatalog = @(
     @{ Id='tictactoe';     Name='Tic-Tac-Toe';        Cat='Board';    Desc='3x3 classic with perfect-play minimax AI'; Players='2'; Icon='&#x274C;' }
     @{ Id='war';           Name='War';                 Cat='Card';     Desc='Flip and compare — ties trigger war rounds'; Players='2'; Icon='&#x1F4A5;' }
     @{ Id='yahtzee';       Name='Yahtzee';             Cat='Dice';     Desc='5 dice, 3 rolls, 13 scoring categories'; Players='1+'; Icon='&#x1F3AF;' }
-    @{ Id='minimax';       Name='Minimax';             Cat='Utility';  Desc='Iterative depth-2 AI framework for board games'; Players='-'; Icon='&#x1F9E0;' }
-    @{ Id='rng';           Name='RNG';                 Cat='Utility';  Desc='LCG-based deterministic pseudo-random generator'; Players='-'; Icon='&#x1F3B0;' }
-    @{ Id='gamesdemo';     Name='Games Demo';          Cat='Utility';  Desc='Entry point that runs all classic games'; Players='-'; Icon='&#x25B6;' }
     @{ Id='magic';         Name='Magic: The Gathering'; Cat='Magic';   Desc='Full rules engine — 20 modules, AI personalities, tournaments'; Players='2'; Icon='&#x2728;' }
 )
 
@@ -311,7 +308,7 @@ function Start-GameVm {
         $src = Join-Path $Repo 'apps\games\GameServer.codex'
         $log = Join-Path $Repo 'build\output\game-server.log'
         New-Item -ItemType Directory -Force (Split-Path $cdx) | Out-Null
-        & pwsh -NoProfile -File (Join-Path $Repo 'build\test-compile.ps1') -Src $src -Out $cdx -Log $log 2>&1 | Out-Null
+        & pwsh -NoProfile -File (Join-Path $Repo 'build\compile.ps1') -Src $src -Out $cdx -Log $log 2>&1 | Out-Null
         if (-not (Test-Path -PathType Leaf $cdx)) {
             Write-Host "  Compilation failed. Game API unavailable." -ForegroundColor Red
             return
@@ -319,7 +316,7 @@ function Start-GameVm {
         Write-Host "  Compiled: $((Get-Item $cdx).Length) bytes" -ForegroundColor Green
     }
     Write-Host "Booting game server VM..." -ForegroundColor Yellow
-    $run = Start-QemuRun -Kernel $cdx -ConnectTimeoutSec 30 -MemMB 2048
+    $run = Start-VmRun -Kernel $cdx -ConnectTimeoutSec 30 -MemMB 2048
     if (-not $run) {
         Write-Host "  Game VM failed to start." -ForegroundColor Red
         return
@@ -342,7 +339,7 @@ function Start-GameVm {
         Write-Host "  Game server ready." -ForegroundColor Green
     } else {
         Write-Host "  Game server did not signal READY." -ForegroundColor Red
-        Close-Qemu -Conn $run.Conn -Process $run.Process
+        Close-Vm -Conn $run.Conn -Process $run.Process
         $script:GameVm = $null; $script:GameStream = $null
     }
 }
@@ -420,7 +417,7 @@ try {
             elseif ($path -like '/api/*') {
                 if (-not $script:GameStream) {
                     Write-Host "  Game VM down — restarting..." -ForegroundColor Yellow
-                    if ($script:GameVm) { Close-Qemu -Conn $script:GameVm.Conn -Process $script:GameVm.Process 2>$null }
+                    if ($script:GameVm) { Close-Vm -Conn $script:GameVm.Conn -Process $script:GameVm.Process 2>$null }
                     Start-GameVm
                 }
                 if (-not $script:GameStream) {
@@ -454,7 +451,7 @@ try {
                         }
                     } else {
                         Write-Host "  Game VM timeout — restarting..." -ForegroundColor Yellow
-                        if ($script:GameVm) { Close-Qemu -Conn $script:GameVm.Conn -Process $script:GameVm.Process 2>$null }
+                        if ($script:GameVm) { Close-Vm -Conn $script:GameVm.Conn -Process $script:GameVm.Process 2>$null }
                         $script:GameVm = $null; $script:GameStream = $null
                         Start-GameVm
                         $resp.StatusCode = 504
@@ -491,6 +488,6 @@ try {
     $listener.Close()
     if ($script:GameVm) {
         Write-Host "Shutting down game VM..." -ForegroundColor Gray
-        Close-Qemu -Conn $script:GameVm.Conn -Process $script:GameVm.Process
+        Close-Vm -Conn $script:GameVm.Conn -Process $script:GameVm.Process
     }
 }

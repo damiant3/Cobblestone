@@ -6,7 +6,7 @@ A foreword quire is a library package marked `"foreword": true` in its
 `codex.project.json`. Foreword modules compile before user code and
 make their types and functions automatically available.
 
-### codex.foreword (86 modules) — Core
+### codex.foreword (89 modules) — Core
 
 The standard library. Core types, collections, cryptography, text,
 data structures, networking, and system utilities.
@@ -91,11 +91,12 @@ The self-hosted compiler. Subdirectories: Ast, Core, Emit, IR,
 Semantics, Syntax, Types. Do not modify without reading the code first
 and passing both gates (sample battery + pingpong).
 
-### codex.kernel (16 modules) — Hardware Drivers
+### codex.kernel (22 modules) — Hardware Drivers
 
 Bare-metal hardware interfaces: BitmapFont, Console, DiagnosticShell,
-DiskFacts, GpuBridge, Ivshmem, Keyboard, Mouse, Pci, Usb, UsbAudio,
-Vga, VgaGraphics, VmIde, VmSerial, Xhci
+DiskFacts, DriveManager, GpuBridge, IdentityManager, Ivshmem,
+Keyboard, Mouse, Ne2k, Pci, SystemDb, Usb, UsbAudio, UsbMassStorage,
+UsbVideo, Vga, VgaGraphics, VmIde, VmSerial, Xhci
 
 ### codex.os (51 modules) — Operating System
 

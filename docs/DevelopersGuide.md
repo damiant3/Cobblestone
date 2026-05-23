@@ -446,11 +446,11 @@ containing the PE32+ compiler, CDX seed, all source, and docs.
 
 ### Steps
 
-1. **Run pingpong** — `codex.build/pingpong-self.ps1`. All phases must PASS.
-2. **Install new seed** — `Copy-Item build-output\bare-metal\Codex.cdx seed\Codex.cdx -Force`
-3. **Build bootable image** — `codex.build/build-boot-img.ps1`
-4. **Verify sweep** — `codex.build/sweep.ps1 -Jobs 4`. Must match or exceed prior pass count.
-5. **Self-verify** — `codex.build/test-self-verify.ps1`. Must print "THE SEED VERIFIES ITSELF".
+1. **Run full build** — `build/build.ps1`. All phases must PASS (text round-trip + CDX fixed-point + test battery).
+2. **Install new seed** — `Copy-Item build/output/Sut.cdx seed\Codex.cdx -Force`
+3. **Build bootable image** — `build/build-boot-img.ps1`
+4. **Verify sweep** — `build/test.ps1 -Jobs 4`. Must match or exceed prior pass count.
+5. **Self-verify** — `build/test-self-verify.ps1`. Must print "THE SEED VERIFIES ITSELF".
 6. **Capture digests** — `Get-FileHash -Algorithm SHA256 seed\Codex.cdx`, same for `.img`.
 7. **Update files** — README.md (digest tables, sample counts), `docs/PM/CurrentPlan.md` (seed size, sweep counts), `docs/PM/BACKLOG.md` (sweep counts).
 8. **Submit to Perforce** — `p4 submit -d "seed: rebuild for CL <N>"`

@@ -35,13 +35,12 @@ function Add-Chapter {
 }
 
 Add-Chapter -Path (Join-Path $Repo 'codex\plugs\common\PlugTypes.codex')
-Add-Chapter -Path (Join-Path $Repo 'codex\compiler\Core\SkipListText.codex') -StripCites @('Phase Allocator')
 Add-Chapter -Path (Join-Path $Repo 'codex\plugs\common\IRTextParser.codex')
 Add-Chapter -Path (Join-Path $PlugDir 'PythonEmitter.codex')
 Add-Chapter -Path (Join-Path $PlugDir 'PythonPlug.codex')
 
 # ── Resolve foreword cites ───────────────────────────────────────────
-$citePat = '^\s*cites\s+(Foreword|Kernel|OS|Works|Trust|Net|Verify|Replay|Sched|Observe|Game|Signal|Compress|Encode|Math|Sim|AI|UI|Dev)\s+chapter\s+([A-Za-z_][A-Za-z0-9_-]*)'
+$citePat = '^\s*cites\s+(Foreword|Kernel|OS|Works|Trust|Net|Verify|Replay|Sched|Observe|Game|Signal|Compress|Encode|Math|Sim|AI|UI|Dev|Magic|Games|Spark|Data)\s+chapter\s+([A-Za-z_][A-Za-z0-9_-]*)'
 $QuireDirs = @{
     'Foreword' = 'codex\foreword\core'; 'Kernel' = 'codex\os\kernel'; 'OS' = 'codex\os\core'
     'Works' = 'apps\works'; 'Trust' = 'codex\os\trust'; 'Net' = 'codex\os\net'
@@ -51,6 +50,8 @@ $QuireDirs = @{
     'Encode' = 'codex\foreword\encode'; 'Math' = 'codex\foreword\math'
     'Sim' = 'codex\foreword\sim'; 'AI' = 'codex\foreword\ai'
     'UI' = 'codex\foreword\ui'; 'Dev' = 'codex\os\dev'
+    'Magic' = 'apps\games\magic'; 'Games' = 'apps\games\classic'
+    'Spark' = 'apps\spark'; 'Data' = 'apps\data'
 }
 $queue = [System.Collections.Generic.Queue[hashtable]]::new()
 $seen = @{}
@@ -95,10 +96,10 @@ $body = (($preLines + $lines) -join "`n") + "`n"
 Write-Host "[python-plug] bundled $($preLines.Count + $lines.Count) lines, $($body.Length) bytes"
 
 # ── Compile via seed CDX ─────────────────────────────────────────────
-$run = Start-QemuRun -Kernel $Stage0 -ConnectTimeoutSec 60 -MemMB 4096
+$run = Start-VmRun -Kernel $Stage0 -ConnectTimeoutSec 60 -MemMB 4096
 if (-not $run) { [Console]::Error.WriteLine("FAIL: QEMU did not start"); exit 4 }
 try {
-    if (-not (Read-QemuReady -Conn $run.Conn -TimeoutSec 30)) { [Console]::Error.WriteLine("FAIL: no READY"); exit 4 }
+    if (-not (Read-VmReady -Conn $run.Conn -TimeoutSec 30)) { [Console]::Error.WriteLine("FAIL: no READY"); exit 4 }
     $stream = $run.Conn.Data.GetStream()
     $stream.Write([System.Text.Encoding]::UTF8.GetBytes("CDX`n"), 0, 4)
     $srcBytes = [System.IO.File]::ReadAllBytes($BundleSrc)
@@ -124,6 +125,6 @@ try {
     Write-Host "[python-plug] OK: $OutFile ($binSize bytes)"
     exit 0
 } finally {
-    Close-Qemu -Conn $run.Conn -Process $run.Process
+    Close-Vm -Conn $run.Conn -Process $run.Process
     Remove-Item -Force $run.StdoutFile, $run.StderrFile -ErrorAction SilentlyContinue
 }

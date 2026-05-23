@@ -1,12 +1,16 @@
-# Run the C# plug over a Codex source file and capture C# output.
+# Run the C# plug over a Codex source file via TCP.
 #
 #   <Codex source.codex>
-#     │
-#     ▼  build/test-compile.ps1 -Ir
-#   <IR S-expression text>
-#     │
-#     ▼  csharp-plug.cdx (booted in QEMU, IR text on stdin via CCE)
-#   <C# source on stdout via CCE>
+#     |
+#     v  build/compile.ps1 -IrCce
+#   <IR text (CCE)>
+#     |
+#     v  TCP to csharp-plug.cdx (booted in codex-vm)
+#   <C# source via TCP>
+#
+# The host listens on a TCP port. The plug CDX connects to it
+# (port passed via -args). IR is sent as a length-prefixed message
+# (tag=1), C# source comes back as tag=2.
 #
 # Usage:
 #   plugs/csharp/run.ps1 -Src <source.codex> -Out <out.cs>
@@ -29,119 +33,140 @@ $IrFile   = Join-Path $IrDir 'last-run.ir'
 $LogFile  = Join-Path $IrDir 'run.log'
 
 if (-not (Test-Path -PathType Leaf $PlugCdx)) {
-    [Console]::Error.WriteLine("MISSING: $PlugCdx — run plugs/csharp/build.ps1 first")
+    [Console]::Error.WriteLine("MISSING: $PlugCdx -- run plugs/csharp/build.ps1 first")
     exit 2
 }
 
-# ── CCE encode/decode tables ───────────────────────────────────────────
-$script:CceToUnicode = @(
-    0, 10, 32,
-    48, 49, 50, 51, 52, 53, 54, 55, 56, 57,
-    101, 116, 97, 111, 105, 110, 115, 104, 114, 100,
-    108, 99, 117, 109, 119, 102, 103, 121, 112, 98,
-    118, 107, 106, 120, 113, 122,
-    69, 84, 65, 79, 73, 78, 83, 72, 82, 68,
-    76, 67, 85, 77, 87, 70, 71, 89, 80, 66,
-    86, 75, 74, 88, 81, 90,
-    46, 44, 33, 63, 58, 59, 39, 34, 45, 40, 41,
-    43, 61, 42, 60, 62,
-    47, 64, 35, 38, 95, 92, 124, 91, 93, 123, 125, 126, 96,
-    94,
-    36, 37,
-    233, 232, 234, 235, 225, 224, 226, 228,
-    243, 244, 246, 250, 252, 241, 231, 237
-)
-
-$script:UnicodeToCce = [byte[]]::new(256)
-for ($i = 0; $i -lt 256; $i++) { $script:UnicodeToCce[$i] = 68 }
-for ($i = 0; $i -lt $script:CceToUnicode.Length; $i++) {
-    $u = $script:CceToUnicode[$i] % 256
-    $script:UnicodeToCce[$u] = [byte]$i
-}
-
-function ConvertTo-Cce {
-    param([byte[]]$Bytes)
-    $out = [byte[]]::new($Bytes.Length)
-    for ($i = 0; $i -lt $Bytes.Length; $i++) {
-        $out[$i] = $script:UnicodeToCce[$Bytes[$i]]
-    }
-    return $out
-}
-
-function Read-CceStreamLine {
-    param([System.IO.Stream]$Stream, [int]$TimeoutSec = 60)
-    $buf = [System.Collections.Generic.List[byte]]::new()
-    $one = [byte[]]::new(1)
-    $deadline = (Get-Date).AddSeconds($TimeoutSec)
-    while ($true) {
-        $remainMs = [int][math]::Max(100, ($deadline - (Get-Date)).TotalMilliseconds)
-        if ($Stream.CanTimeout) { $Stream.ReadTimeout = $remainMs }
-        try { $n = $Stream.Read($one, 0, 1) } catch { return $null }
-        if ($n -le 0) { return $null }
-        if ($one[0] -eq 10) {
-            $sb = [System.Text.StringBuilder]::new($buf.Count)
-            foreach ($b in $buf) {
-                if ($b -lt $script:CceToUnicode.Length) {
-                    [void]$sb.Append([char]$script:CceToUnicode[$b])
-                } else {
-                    [void]$sb.Append([char]0xFFFD)
-                }
-            }
-            return $sb.ToString().TrimEnd("`r")
-        }
-        $buf.Add($one[0])
-    }
-}
-
-# ── Phase 1: Codex source -> IR text via main compiler ──────────────
-$compileScript = Join-Path $Repo 'build\test-compile.ps1'
-& $compileScript -Src $Src -Out $IrFile -Log $LogFile -Ir
+# ── Phase 1: Codex source -> IR text ────────────────────────────────
+$compileScript = Join-Path $Repo 'build\compile.ps1'
+& pwsh -File $compileScript -Src $Src -Out $IrFile -Log $LogFile -IrCce
 if ($LASTEXITCODE -ne 0) {
     [Console]::Error.WriteLine("FAIL: IR emit step exited $LASTEXITCODE; see $LogFile")
     exit 3
 }
-Write-Host "[csharp-run] IR: $((Get-Item $IrFile).Length) bytes"
+$irBytes = [System.IO.File]::ReadAllBytes($IrFile)
+Write-Host "[csharp-run] IR: $($irBytes.Length) bytes"
 
-# ── Phase 2: IR text -> C# via plug CDX (raw CCE on wire) ──────────
-$run = Start-QemuRun -Kernel $PlugCdx -ConnectTimeoutSec 30 -MemMB 2048
+# ── Phase 2: Start TCP listener ─────────────────────────────────────
+$plugPort = 9100
+$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $plugPort)
+$listener.Start()
+Write-Host "[csharp-run] Listening on port $plugPort"
+
+# ── Phase 3: Boot plug CDX ──────────────────────────────────────────
+$run = Start-VmRun -Kernel $PlugCdx -ConnectTimeoutSec 30 -MemMB 4096
 if (-not $run) {
-    [Console]::Error.WriteLine("FAIL: QEMU did not listen after 4 attempts")
+    $listener.Stop()
+    [Console]::Error.WriteLine("FAIL: VM did not start")
     exit 4
 }
 
 try {
+    # Wait for READY on serial control channel (boot confirmation)
     $conn = $run.Conn
-    if (-not (Read-QemuReady -Conn $conn -TimeoutSec 30)) {
+    if (-not (Read-VmReady -Conn $conn -TimeoutSec 30)) {
         [Console]::Error.WriteLine("READY not received within 30s")
         exit 4
     }
-    $stream = $conn.Data.GetStream()
 
-    $irBytes = [System.IO.File]::ReadAllBytes($IrFile)
-    $cceBytes = ConvertTo-Cce -Bytes $irBytes
-    $stream.Write($cceBytes, 0, $cceBytes.Length)
-    $stream.WriteByte(0)
-    $stream.Flush()
-
-    $lines = [System.Collections.Generic.List[string]]::new()
-    while ($true) {
-        $line = Read-CceStreamLine -Stream $stream -TimeoutSec 60
-        if ($null -eq $line) { break }
-        if ($line.StartsWith('CODEGEN-HALTED') -or $line.StartsWith('CODEGEN-ERRORS')) {
-            [Console]::Error.WriteLine("FAIL: $line")
+    # Accept TCP connection from plug
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    while (-not $listener.Pending()) {
+        if ([DateTime]::UtcNow -gt $deadline) {
+            [Console]::Error.WriteLine("FAIL: plug did not connect within 30s")
             exit 5
         }
-        if ($line.StartsWith('WD:')) { [Console]::Error.WriteLine(">>> $line"); continue }
-        if ($line.StartsWith('HEAP:')) { break }
-        $lines.Add($line)
+        Start-Sleep -Milliseconds 50
     }
-    $body = ($lines -join "`n") + "`n"
-    [System.IO.File]::WriteAllText($Out, $body, [System.Text.UTF8Encoding]::new($false))
-    Write-Host "[csharp-run] OK: $Out ($($body.Length) bytes)"
+    $tcpClient = $listener.AcceptTcpClient()
+    $tcpStream = $tcpClient.GetStream()
+    $listener.Stop()
+    Write-Host "[csharp-run] Plug connected"
+
+    # ── Phase 4: Send IR as framed message (tag=1) ──────────────────
+    # Frame format: [4-byte LE length][1-byte tag][payload]
+    $msgLen = $irBytes.Length + 1  # payload = tag + ir bytes
+    $header = [BitConverter]::GetBytes([int]$msgLen)
+    $tcpStream.Write($header, 0, 4)
+    $tcpStream.WriteByte(1)  # tag = 1 (IR)
+    $tcpStream.Write($irBytes, 0, $irBytes.Length)
+    $tcpStream.Flush()
+    Write-Host "[csharp-run] Sent IR ($($irBytes.Length) bytes)"
+
+    # ── Phase 5: Receive C# output until plug sends FIN ────────────────
+    # The plug sends all C# data then calls net-io-close (FIN). We read
+    # until Read returns 0 (EOF = FIN received). Then we close our side,
+    # which signals the plug to exit. No timeouts needed for the data
+    # path — only a deadline for the overall operation.
+    $tcpStream.ReadTimeout = 120000  # 2 minutes for large programs
+    $allBytes = [System.Collections.Generic.List[byte]]::new(65536)
+    $readBuf = [byte[]]::new(8192)
+    try {
+        while ($true) {
+            $n = $tcpStream.Read($readBuf, 0, $readBuf.Length)
+            if ($n -le 0) { break }
+            for ($bi = 0; $bi -lt $n; $bi++) { $allBytes.Add($readBuf[$bi]) }
+        }
+    } catch {}
+    $csText = [System.Text.Encoding]::UTF8.GetString($allBytes.ToArray())
+    [System.IO.File]::WriteAllText($Out, $csText, [System.Text.UTF8Encoding]::new($false))
+    Write-Host "[csharp-run] OK: $Out ($($csText.Length) chars)"
+
+    # Close our side — the plug's drain-wait sees this and exits cleanly
+    $tcpClient.Close()
+
+    # ── Phase 5b: Drain serial for diagnostic output ─────────────────
+    $serialDrain = ''
+    $dataStream = $conn.Data.GetStream()
+    $dataStream.ReadTimeout = 5000
+    $sBuf = [byte[]]::new(4096)
+    try {
+        while ($true) {
+            $sn = $dataStream.Read($sBuf, 0, $sBuf.Length)
+            if ($sn -le 0) { break }
+            $serialDrain += [System.Text.Encoding]::UTF8.GetString($sBuf, 0, $sn)
+        }
+    } catch {}
+    if ($serialDrain.Length -gt 0) { Write-Host "[csharp-run] Serial: $serialDrain" }
     exit 0
 } finally {
+    if ($listener.Server.IsBound) { try { $listener.Stop() } catch {} }
+    $serial = ''
+    if ($run -and $run.Conn -and $run.Conn.Data) {
+        try {
+            $run.Conn.Data.ReadTimeout = 2000
+            $buf = [byte[]]::new(4096)
+            while ($true) { $n = $run.Conn.Data.Read($buf, 0, $buf.Length); if ($n -le 0) { break }; $serial += [System.Text.Encoding]::UTF8.GetString($buf, 0, $n) }
+        } catch {}
+        if ($serial.Length -gt 0) { Write-Host "[csharp-run] Serial:"; Write-Host $serial }
+    }
     if ($run) {
-        Close-Qemu -Conn $run.Conn -Process $run.Process
+        Close-Vm -Conn $run.Conn -Process $run.Process
+        if ($run.StderrFile -and (Test-Path $run.StderrFile)) {
+            for ($retry = 0; $retry -lt 10; $retry++) { try { $stderr = [System.IO.File]::ReadAllText($run.StderrFile).Trim(); break } catch { Start-Sleep -Milliseconds 200 } }
+            if (-not $stderr) { $stderr = '' }
+            if ($stderr.Length -gt 0) {
+                [Console]::Error.WriteLine("[csharp-run] VM stderr:")
+                [Console]::Error.WriteLine($stderr)
+                if ($stderr -match 'RIP=0x([0-9a-fA-F]+)') {
+                    $crashRip = [Convert]::ToInt64($matches[1], 16)
+                    $mapPath = Join-Path $PlugDir 'build-output\csharp-plug.map'
+                    if (Test-Path $mapPath) {
+                        foreach ($ml in Get-Content $mapPath) {
+                            if ($ml -match '^(0x[0-9a-fA-F]+)\s+(\d+)\s+(.+)$') {
+                                $addr = [Convert]::ToInt64($matches[1], 16)
+                                $size = [int]$matches[2]
+                                if ($crashRip -ge $addr -and $crashRip -lt ($addr + $size)) {
+                                    $offset = $crashRip - $addr
+                                    [Console]::Error.WriteLine("CRASH: $($matches[3]) at $($matches[1]) (offset +$offset)")
+                                    break
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         Remove-Item -Force $run.StdoutFile, $run.StderrFile -ErrorAction SilentlyContinue
     }
 }

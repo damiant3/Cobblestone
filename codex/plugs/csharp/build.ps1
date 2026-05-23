@@ -38,7 +38,7 @@ $LogFile   = Join-Path $OutDir 'build.log'
 $Stage0    = Join-Path $Repo 'build-output\bare-metal\Codex.cdx'
 
 if (-not (Test-Path -PathType Leaf $Stage0)) {
-    [Console]::Error.WriteLine("MISSING: $Stage0 — run build/build.ps1 first to build the self-host")
+    [Console]::Error.WriteLine("MISSING: $Stage0 -- run build/build.ps1 first to build the self-host")
     exit 2
 }
 
@@ -73,7 +73,7 @@ Add-Chapter -Path (Join-Path $PlugDir 'CSharpEmitterExpressions.codex') -Quire '
 Add-Chapter -Path (Join-Path $PlugDir 'CSharpPlug.codex')               -Quire ''
 
 # ── Phase 2: resolve foreword cites transitively ─────────────────────
-$citePat = '^\s*cites\s+(Foreword|Kernel|OS|Works|Trust|Net|Verify|Replay|Sched|Observe|Game|Signal|Compress|Encode|Math|Sim|AI|UI|Dev)\s+chapter\s+([A-Za-z_][A-Za-z0-9_-]*)'
+$citePat = '^\s*cites\s+(Foreword|Kernel|OS|Works|Trust|Net|Verify|Replay|Sched|Observe|Game|Signal|Compress|Encode|Math|Sim|AI|UI|Dev|Magic|Games|Spark|Data)\s+chapter\s+([A-Za-z_][A-Za-z0-9_-]*)'
 $QuireDirs = @{
     'Foreword' = 'codex\foreword\core'; 'Kernel' = 'codex\os\kernel'; 'OS' = 'codex\os\core'
     'Works' = 'apps\works'; 'Trust' = 'codex\os\trust'; 'Net' = 'codex\os\net'
@@ -83,6 +83,8 @@ $QuireDirs = @{
     'Encode' = 'codex\foreword\encode'; 'Math' = 'codex\foreword\math'
     'Sim' = 'codex\foreword\sim'; 'AI' = 'codex\foreword\ai'
     'UI' = 'codex\foreword\ui'; 'Dev' = 'codex\os\dev'
+    'Magic' = 'apps\games\magic'; 'Games' = 'apps\games\classic'
+    'Spark' = 'apps\spark'; 'Data' = 'apps\data'
 }
 
 $queue = [System.Collections.Generic.Queue[hashtable]]::new()
@@ -134,7 +136,7 @@ $body = (($preLines + $lines) -join "`n") + "`n"
 Write-Host "[csharp-plug] bundled $($preLines.Count + $lines.Count) lines, $($body.Length) bytes"
 
 # ── Phase 3: compile via seed CDX in CDX mode ───────────────────────
-$run = Start-QemuRun -Kernel $Stage0 -ConnectTimeoutSec 30 -MemMB 2048
+$run = Start-VmRun -Kernel $Stage0 -ConnectTimeoutSec 30 -MemMB 2048
 if (-not $run) {
     [Console]::Error.WriteLine("FAIL: QEMU did not listen after 4 attempts")
     exit 4
@@ -142,7 +144,7 @@ if (-not $run) {
 
 try {
     $conn = $run.Conn
-    if (-not (Read-QemuReady -Conn $conn -TimeoutSec 30)) {
+    if (-not (Read-VmReady -Conn $conn -TimeoutSec 30)) {
         [Console]::Error.WriteLine("READY not received within 30s")
         exit 4
     }
@@ -188,10 +190,30 @@ try {
     }
     [System.IO.File]::WriteAllBytes($OutFile, $bytes)
     Write-Host "[csharp-plug] OK: $OutFile ($binSize bytes)"
+
+    # Read symbol map if present.
+    $mapLine = Read-StreamLine -Stream $stream -TimeoutSec 5
+    if ($null -ne $mapLine -and $mapLine.StartsWith('MAP:')) {
+        $mapCount = 0
+        if ($mapLine.Substring(4) -match '^\d+') { $mapCount = [int]$matches[0] }
+        if ($mapCount -gt 0) {
+            $mapFile = [System.IO.Path]::ChangeExtension($OutFile, '.map')
+            $mapLines = [System.Collections.Generic.List[string]]::new($mapCount + 2)
+            [void]$mapLines.Add('# Codex Symbol Map')
+            [void]$mapLines.Add('# Address         Size  Name')
+            while ($true) {
+                $ml = Read-StreamLine -Stream $stream -TimeoutSec 5
+                if ($null -eq $ml -or $ml.StartsWith('MAP-END')) { break }
+                [void]$mapLines.Add($ml)
+            }
+            [System.IO.File]::WriteAllLines($mapFile, $mapLines, [System.Text.UTF8Encoding]::new($false))
+            Write-Host "[csharp-plug] MAP: $mapFile ($mapCount entries)"
+        }
+    }
     exit 0
 } finally {
     if ($run) {
-        Close-Qemu -Conn $run.Conn -Process $run.Process
+        Close-Vm -Conn $run.Conn -Process $run.Process
         Remove-Item -Force $run.StdoutFile, $run.StderrFile -ErrorAction SilentlyContinue
     }
 }

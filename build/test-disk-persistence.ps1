@@ -12,7 +12,7 @@ $buildDir = Join-Path $root 'build-output\bare-metal'
 $diskDir  = Join-Path $root 'build-output\disk'
 $diskImg  = Join-Path $diskDir 'persist-test.img'
 $runDisk  = Join-Path $PSScriptRoot 'run-with-disk.ps1'
-$compile  = Join-Path $PSScriptRoot 'test-compile.ps1'
+$compile  = Join-Path $PSScriptRoot 'compile.ps1'
 
 if (-not (Test-Path $diskDir)) { New-Item -ItemType Directory -Path $diskDir -Force | Out-Null }
 

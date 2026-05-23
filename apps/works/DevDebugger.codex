@@ -70,7 +70,8 @@ Section: Debugger State
     last-address : Integer,
     dump-length : Integer,
     watch-ports : List Integer,
-    status : Text
+    status : Text,
+    map1 : Maybe Map1Info
   }
 
   debugger-init : DebuggerState
@@ -80,7 +81,8 @@ Section: Debugger State
     last-address = 1048576,
     dump-length = 256,
     watch-ports = [],
-    status = "Debugger ready"
+    status = "Debugger ready",
+    map1 = None
   }
 
 Section: Debugger Menu
@@ -95,6 +97,7 @@ Section: Debugger Menu
     menu-item "Stack Walk" "stack",
     menu-item "Perf Counters" "perf",
     menu-item "Symbol Lookup" "sym",
+    menu-item "Address Lookup" "addr",
     menu-item "Back" "back"
   ]
 
@@ -135,6 +138,88 @@ Section: Symbol Lookup
     let results = search-by-prefix idx query
     in if list-length results == 0 then "No symbols matching '" & query & "'"
     else format-search-results results
+
+Section: MAP1 Debug Map
+
+  Map1Info = record {
+    base : Integer,
+    count : Integer,
+    strings-base : Integer
+  }
+
+  map1-magic-le : Integer = 826361677
+
+  map1-find : Maybe Map1Info
+  map1-find =
+    map1-scan 1048576 5242880
+
+  map1-scan : Integer, Integer -> Maybe Map1Info
+  map1-scan (addr) (limit) =
+    if addr >= limit then None
+    else let word = peek-32 addr 0
+    in if word == map1-magic-le then map1-validate addr
+    else map1-scan (addr + 4) limit
+
+  map1-validate : Integer -> Maybe Map1Info
+  map1-validate (addr) =
+    let count = peek-32 addr 4
+    in let str-off = peek-32 addr 8
+    in if count > 0 then if count < 100000 then if str-off == 12 + count * 12
+       then Just (Map1Info { base = addr, count = count, strings-base = addr + str-off })
+       else None
+       else None
+    else None
+
+  Map1Entry = record {
+    code-offset : Integer,
+    code-size : Integer,
+    name-offset : Integer
+  }
+
+  map1-read-entry : Integer, Integer -> Map1Entry
+  map1-read-entry (base) (i) =
+    let addr = base + 12 + i * 12
+    in Map1Entry { code-offset = peek-32 addr 0, code-size = peek-32 addr 4, name-offset = peek-32 addr 8 }
+
+  map1-lookup : Map1Info, Integer -> Maybe Map1Entry
+  map1-lookup (info) (target) =
+    map1-bsearch info target 0 (info.count)
+
+  map1-bsearch : Map1Info, Integer, Integer, Integer -> Maybe Map1Entry
+  map1-bsearch (info) (target) (lo) (hi) =
+    if lo >= hi then None
+    else let mid = lo + (hi - lo) / 2
+    in let entry = map1-read-entry (info.base) mid
+    in if target < entry.code-offset then map1-bsearch info target lo mid
+    else if target >= entry.code-offset + entry.code-size then map1-bsearch info target (mid + 1) hi
+    else Just entry
+
+  map1-read-name : Map1Info, Integer -> Text
+  map1-read-name (info) (name-off) =
+    map1-read-chars (info.strings-base + name-off) 0 ""
+
+  map1-read-chars : Integer, Integer, Text -> Text
+  map1-read-chars (addr) (i) (acc) =
+    let b = peek-byte addr i
+    in if b == 0 then acc
+    else if i > 200 then acc
+    else map1-read-chars addr (i + 1) (acc & char-to-text (code-to-char b))
+
+  resolve-addr : DebuggerState, Integer -> Text
+  resolve-addr (dbg) (rip) =
+    let info = when (dbg.map1)
+      is Just (m) -> Just m
+      is None -> map1-find
+    in when info
+      is None -> "<no debug info>"
+      is Just (m) ->
+        let target = rip - 1048576
+        in when (map1-lookup m target)
+          is None -> "<unknown 0x" & hex-i64 rip & ">"
+          is Just (entry) ->
+            let name = map1-read-name m (entry.name-offset)
+            in let off = target - entry.code-offset
+            in name & "+0x" & hex-i32 off
 
 Section: Port Watch
 

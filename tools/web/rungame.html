@@ -10,13 +10,18 @@
   .result-text { font-size: 18px; color: #e6edf3; margin-bottom: 8px; line-height: 1.6; }
   .result-seed { font-size: 12px; color: #484f58; }
   .spinner { color: #58a6ff; font-size: 14px; }
+  .stats-row { display: flex; gap: 32px; margin-top: 12px; }
+  .stat-box { text-align: center; }
+  .stat-val { font-size: 32px; font-weight: bold; color: #58a6ff; }
+  .stat-lbl { font-size: 10px; color: #8b949e; text-transform: uppercase; }
   .controls { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; justify-content: center; }
   .controls button { background: #21262d; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; font-family: inherit; font-size: 14px; padding: 8px 24px; cursor: pointer; }
   .controls button:hover { border-color: #58a6ff; color: #58a6ff; }
   .controls button:disabled { opacity: 0.4; cursor: default; }
+  .speed-label { color: #8b949e; font-size: 12px; }
   .engine-tag { background: #238636; color: #fff; font-size: 10px; padding: 2px 8px; border-radius: 4px; margin-left: 12px; }
-  .history { background: #0d1117; border: 1px solid #21262d; border-radius: 6px; padding: 10px 14px; font-size: 12px; color: #8b949e; line-height: 1.8; max-height: 200px; overflow-y: auto; }
 </style>
+<script src="/web/game-engine.js"></script>
 </head>
 <body>
 <nav class="topbar">
@@ -27,46 +32,44 @@
 </nav>
 <div class="content game-page">
   <div class="controls">
-    <button id="btn-run" onclick="runGame()">&#x25B6; Run Game</button>
-    <button onclick="runGame()">&#x21BB; Again</button>
+    <button id="btn-run" onclick="playSession()">&#x25B6; Play</button>
+    <span class="speed-label">Rounds:</span>
+    <input type="range" id="rounds" min="1" max="10" value="3" style="width:80px;accent-color:#58a6ff">
   </div>
+  <div id="status-line" style="color:#58a6ff;font-size:16px;text-align:center;margin-bottom:10px;font-weight:bold"></div>
   <div class="result-card" id="result">
-    <div class="spinner">Press Run to play a simulated game on the Codex VM.</div>
+    <div class="spinner">Press Play to run games on the Codex VM.</div>
+    <div class="stats-row">
+      <div class="stat-box"><div class="stat-val" id="s-played">0</div><div class="stat-lbl">Played</div></div>
+    </div>
   </div>
-  <div class="history" id="history"></div>
+  <details class="game-log"><summary>Game Log</summary><div class="log-body" id="history"></div></details>
 </div>
 <script>
-var GAME_NAMES = {
-  blackjack:'Blackjack',bridge:'Bridge',crazyeights:'Crazy Eights',
-  gofish:'Go Fish',pinochle:'Pinochle',poker:'Poker',
-  pokervariants:'Poker Variants',war:'War',rps:'Rock Paper Scissors',
-  yahtzee:'Yahtzee',liarsdice:"Liar's Dice",mastermind:'Mastermind',
-  mahjong:'Mahjong Solitaire',hexwar:'Hex War',battleship:'Battleship',
-  monopoly:'Monopoly',risk:'Risk',spider:'Spider Solitaire',
-  sudoku:'Sudoku',setgame:'The Set Game',magic:'Magic: The Gathering'
-};
-var gameId = location.pathname.split('/').pop();
-var gameName = GAME_NAMES[gameId] || gameId;
-document.title = 'Codex — ' + gameName;
-document.getElementById('game-title').textContent = gameName;
-
-async function runGame() {
-  var btn = document.getElementById('btn-run');
-  btn.disabled = true;
-  document.getElementById('result').innerHTML = '<div class="spinner">Running ' + gameName + ' on Codex VM...</div>';
-  var seed = Date.now() & 0x7FFFFFFF;
-  try {
-    var resp = await fetch('/api/run/' + gameId + '?seed=' + seed);
-    var data = await resp.json();
-    document.getElementById('result').innerHTML =
-      '<div class="result-text">' + data.result + '</div>' +
-      '<div class="result-seed">seed: ' + data.seed + '</div>';
-    var hist = document.getElementById('history');
-    hist.innerHTML = data.result + '<br>' + hist.innerHTML;
-  } catch (e) {
-    document.getElementById('result').innerHTML = '<div class="spinner" style="color:#f85149">Error: ' + e.message + '</div>';
+var gameId=location.pathname.split('/').pop();
+var NAMES={blackjack:'Blackjack',bridge:'Bridge',crazyeights:'Crazy Eights',gofish:'Go Fish',pinochle:'Pinochle',poker:'Poker',pokervariants:'Poker Variants',war:'War',rps:'RPS',yahtzee:'Yahtzee',liarsdice:"Liar's Dice",mastermind:'Mastermind',mahjong:'Mahjong',hexwar:'Hex War',battleship:'Battleship',monopoly:'Monopoly',risk:'Risk',spider:'Spider',sudoku:'Sudoku',setgame:'Set Game',royalur:'Royal Ur',magic:'Magic'};
+var gameName=NAMES[gameId]||gameId;
+document.title='Codex — '+gameName;
+document.getElementById('game-title').textContent=gameName;
+document.getElementById('status-line').textContent=gameName;
+var played=0;
+async function playSession(){
+  var btn=document.getElementById('btn-run');btn.disabled=true;
+  var rounds=parseInt(document.getElementById('rounds').value)||3;
+  for(var i=0;i<rounds;i++){
+    document.getElementById('status-line').textContent='Round '+(i+1)+' of '+rounds+'...';
+    try{
+      var r=await fetch('/api/run/'+gameId+'?seed='+((Date.now()+i*7919)&0x7FFFFFFF));var d=await r.json();
+      var msg=d.result||d.error||'No result';
+      played++;
+      document.getElementById('s-played').textContent=played;
+      document.getElementById('result').innerHTML='<div class="result-text">'+msg+'</div><div class="result-seed">seed: '+(d.seed||'?')+'</div><div class="stats-row"><div class="stat-box"><div class="stat-val">'+played+'</div><div class="stat-lbl">Played</div></div></div>';
+      document.getElementById('history').innerHTML='R'+(i+1)+': '+msg+'<br>'+document.getElementById('history').innerHTML;
+    }catch(e){document.getElementById('result').innerHTML='<div class="spinner" style="color:#f85149">Error: '+e.message+'</div>';break}
+    if(i<rounds-1)await new Promise(function(r){setTimeout(r,700)});
   }
-  btn.disabled = false;
+  document.getElementById('status-line').textContent=gameName+' — '+played+' games played';
+  btn.disabled=false;
 }
 </script>
 </body>

@@ -1,6 +1,6 @@
 # Current Plan — Closing the Toolbox
 
-**Updated**: 2026-05-18
+**Updated**: 2026-05-20
 
 This file is forward-looking only. Past work is in the Perforce log; if
 you want milestones, run `p4 changes -m 100 //Codex/main/...`. Don't
@@ -61,6 +61,19 @@ We are close. Not there.
   miss, reading stale heap in REPL batch mode. Root cause of
   handler-nested batch GPF and likely the plug crash. Seed: 2,165,928
   bytes, hard fixed point. 105/105 pass, 0 fail.
+- **Short-circuit `&`/`|`** (CL 1885): `IrAnd`/`IrOr` now emit
+  conditional jumps instead of bitwise ops. Right operand is only
+  evaluated when needed. Eliminates the entire class of non-short-circuit
+  guard bugs. Seed: 2,172,408 bytes.
+- **Plug pipeline functional** (CLs 1899-1906): All 8 language emitters
+  (C#, Rust, Python, JS, Ada, COBOL, Fortran, Babbage) handle
+  `IrFieldStore` and `IrTry`. `-IrCce` compiler mode fixed (was
+  outputting Unicode). Curried application fix in Rust emitter.
+  Shared `IRTextParser` parses both new IR nodes.
+- **Foreword library fixes** (CL 1908): Huffman tree (recursive variant
+  + proper walk), Graph DFS (visited-state propagation), Bresenham
+  (dead branch), Convolution (div-by-zero), HexFormat (spacing).
+- **Seed** (CL 1907): 2,173,280 bytes. Hard fixed point. 105/105 pass.
 
 The remaining gap to the vision is the *wiring* — chapters that exist
 but aren't yet the default path, plus a handful of capabilities that
@@ -125,10 +138,28 @@ critical one for the USB-stick promise. Need:
 `Get-Disk` + raw `\\.\PhysicalDrive` writes to install Codex onto a
 USB stick. To remove this dependency we need:
 
-- USB MSC (Mass Storage Class) driver in `codex.kernel`. We have ATA
-  PIO; USB is the gap.
-- "Install to USB" mode in DevConsole that lists detected USB block
-  devices and writes the current .img to one.
+- ~~USB MSC (Mass Storage Class) driver in `codex.kernel`~~ — done.
+  `UsbMassStorage.codex` implements Bulk-Only Transport (BBB) with
+  SCSI READ(10)/WRITE(10)/READ CAPACITY/INQUIRY/TEST UNIT READY.
+  Discovers MSC devices via XHCI port probing.
+- ~~DriveManager USB integration~~ — done. `dm-enumerate-drives` now
+  probes USB MSC devices after ATA. USB drives appear with
+  `di-is-usb = True` and carry `di-usb-device` for direct MSC access.
+  `dm-install-usb` writes sectors from a source ATA drive to a USB
+  target via MSC bulk transport.
+- ~~"Install to USB" mode in DevConsole~~ — done. Drive Manager menu
+  has "Install Codex to USB" item. Dispatch enumerates USB drives,
+  selects first, and calls `dm-install-usb`.
+- Test: `usb-msc-test.codex` covers protocol structures (CBW/CSW
+  encoding, SCSI command building, inquiry/capacity parsing).
+- ~~XHCI transfer ring completion~~ — done. `Xhci.codex` rewritten
+  with full ring infrastructure: command ring with link TRB wrap,
+  event ring with cycle-bit polling, DCBAA, port reset, Enable Slot,
+  Address Device, Configure Endpoint, control transfers (setup/data/
+  status stages), and bulk in/out via Normal TRBs. Discovery now reads
+  real capability registers (cap-length, HCSPARAMS1, doorbell offset,
+  runtime offset). Tests: `xhci-enum-test.codex`.
+- Remaining: end-to-end validation on a physical USB stick.
 - Acceptable interim: keep `write-usb.ps1` as the *first* install only,
   then Codex-on-Codex installs (one stick reflashing another) work
   without leaving the system.
@@ -209,7 +240,18 @@ Compiler-correctness work, not user-facing, but each one moves the
 heap HWM down and improves the chance that compile-on-stick succeeds
 on lower-RAM boards.
 
-### ~~9. Append-only mutation log for annotations~~ — done (CL 1524)
+### 9. Plug emitters — complete the transpilation pipeline
+
+All 8 emitters now handle the full IR node set (CL 1899). Remaining:
+- Rust `rs-escape-text` still emits wrong Unicode escapes (CCE byte
+  values instead of codepoints). All string literals garbled.
+- C# plug emitter hangs on O(n^2) string concat in `emit-cce-runtime`
+  (~50 chained `&`). Not a compiler bug — needs restructuring to
+  stream output or use `text-concat-list`.
+- No end-to-end test: compile → plug → target-language compile → run.
+  The plugs produce source text but nothing verifies it compiles.
+
+### ~~10. Append-only mutation log for annotations~~ — done (CL 1524)
 
 `MutationLog.codex` implements append-only CRC-framed log with
 `log-append`, `log-entries`, `log-is-stale`, `log-since`, `log-replay`.

@@ -192,6 +192,62 @@ Section: ATypeExpr Emission
    if i == len then acc
    else ir-emit-atype-expr-list-acc xs (i + 1) len (list-push acc (" " & ir-emit-atype-expr (list-at xs i)))
 
+Section: Type Parameter Inference
+
+ When a type-def has empty tparams (the parser found no explicit type
+ parameters between the name and =), scan field types to find implicit
+ type parameters: lowercase-initial names in type position.
+
+  ir-tparam-name-p : Text -> Boolean
+  ir-tparam-name-p (name) =
+   if text-length name == 0 then False
+   else let code = char-code-at name 0
+   in code >= char-code-at "e" 0 & code <= char-code-at "z" 0
+
+  ir-text-in-list : List Text, Text, Integer, Integer -> Boolean
+  ir-text-in-list (xs) (target) (i) (len) =
+   if i == len then False
+   else if list-at xs i == target then True
+   else ir-text-in-list xs target (i + 1) len
+
+  ir-collect-atexpr-tparams : ATypeExpr, List Text -> List Text
+  ir-collect-atexpr-tparams (te) (acc) =
+   when te
+    is ANamedType (name) (s) ->
+     if ir-tparam-name-p (name.value) & ir-text-in-list acc (name.value) 0 (list-length acc) == False
+     then list-push acc (name.value)
+     else acc
+    is AFunType (p) (r) (s) ->
+     ir-collect-atexpr-tparams r (ir-collect-atexpr-tparams p acc)
+    is AAppType (base) (args) (s) ->
+     ir-collect-atexpr-list-tparams args 0 (list-length args) (ir-collect-atexpr-tparams base acc)
+    is AEffectType (effs) (scopes) (r) (s) ->
+     ir-collect-atexpr-tparams r acc
+    is ABoundedIntType (b) (lo) (hi) (mode) (s) ->
+     ir-collect-atexpr-tparams b acc
+
+  ir-collect-atexpr-list-tparams : List ATypeExpr, Integer, Integer, List Text -> List Text
+  ir-collect-atexpr-list-tparams (xs) (i) (len) (acc) =
+   if i == len then acc
+   else ir-collect-atexpr-list-tparams xs (i + 1) len (ir-collect-atexpr-tparams (list-at xs i) acc)
+
+  ir-collect-rec-field-tparams : List ARecordFieldDef, Integer, Integer, List Text -> List Text
+  ir-collect-rec-field-tparams (fields) (i) (len) (acc) =
+   if i == len then acc
+   else let f = list-at fields i
+   in ir-collect-rec-field-tparams fields (i + 1) len (ir-collect-atexpr-tparams (f.type-expr) acc)
+
+  ir-collect-var-ctor-tparams : List AVariantCtorDef, Integer, Integer, List Text -> List Text
+  ir-collect-var-ctor-tparams (ctors) (i) (len) (acc) =
+   if i == len then acc
+   else let c = list-at ctors i
+   in ir-collect-var-ctor-tparams ctors (i + 1) len (ir-collect-atexpr-list-tparams (c.fields) 0 (list-length (c.fields)) acc)
+
+  ir-emit-tparams-text : List Name, List Text -> Text
+  ir-emit-tparams-text (explicit) (inferred) =
+   if list-length explicit > 0 then ir-cat (ir-names-quoted explicit 0 [])
+   else ir-cat (ir-strs-quoted inferred 0 [])
+
 Section: ATypeDef Emission
 
   ir-emit-atype-defs : List ATypeDef, Integer -> Text
@@ -206,8 +262,12 @@ Section: ATypeDef Emission
   ir-emit-atype-def : ATypeDef -> Text
   ir-emit-atype-def (td) =
    when td
-    is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) -> "(rec-def " & ir-quote (name.value) & " (tparams" & ir-cat (ir-names-quoted tparams 0 []) & ") (fields" & ir-emit-rec-field-defs fields 0 & "))"
-    is AVariantTypeDef (name) (tparams) (ctors) (s) -> "(var-def " & ir-quote (name.value) & " (tparams" & ir-cat (ir-names-quoted tparams 0 []) & ") (ctors" & ir-emit-var-ctor-defs ctors 0 & "))"
+    is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
+     let inferred = ir-collect-rec-field-tparams fields 0 (list-length fields) []
+     in "(rec-def " & ir-quote (name.value) & " (tparams" & ir-emit-tparams-text tparams inferred & ") (fields" & ir-emit-rec-field-defs fields 0 & "))"
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     let inferred = ir-collect-var-ctor-tparams ctors 0 (list-length ctors) []
+     in "(var-def " & ir-quote (name.value) & " (tparams" & ir-emit-tparams-text tparams inferred & ") (ctors" & ir-emit-var-ctor-defs ctors 0 & "))"
 
   ir-emit-rec-field-defs : List ARecordFieldDef, Integer -> Text
   ir-emit-rec-field-defs (xs) (i) =
@@ -277,6 +337,7 @@ Section: IRExpr Emission
     is IrRecord (n) (fs) (ty) (sp) -> "(record " & ir-quote n & " (fields" & ir-emit-field-vals fs 0 & ") " & ir-emit-type ty & ")"
     is IrFieldAccess (r) (f) (ty) (sp) -> "(field-access " & ir-emit-expr r & " " & ir-quote f & " " & ir-emit-type ty & ")"
     is IrFieldStore (r) (f) (v) (ty) (sp) -> "(field-store " & ir-emit-expr r & " " & ir-quote f & " " & ir-emit-expr v & " " & ir-emit-type ty & ")"
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> "(try " & integer-to-text max & " (body" & ir-emit-act-stmts body 0 & ") (fallback" & ir-emit-act-stmts fb 0 & ") (fail" & ir-emit-act-stmts fail 0 & ") " & ir-emit-type ty & ")"
     is IrFork (b) (ty) (sp) -> "(fork " & ir-emit-expr b & " " & ir-emit-type ty & ")"
     is IrAwait (t) (ty) (sp) -> "(await " & ir-emit-expr t & " " & ir-emit-type ty & ")"
     is IrError (m) (ty) (sp) -> "(error " & ir-quote m & " " & ir-emit-type ty & ")"
