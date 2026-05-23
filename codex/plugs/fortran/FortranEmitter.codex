@@ -19,7 +19,7 @@ Section: Keywords and Sanitization
    "assignment", "sequence", "private", "public", "protected",
    "double", "precision", "kind", "len", "trim", "merge"]
 
-  fort-is-keyword : Text -> Integer -> Boolean
+  fort-is-keyword : Text, Integer -> Boolean
   fort-is-keyword (name) (i) =
    if i == list-length fort-keywords then False
    else if list-at fort-keywords i == name then True
@@ -37,7 +37,7 @@ Section: Keywords and Sanitization
   fort-indent : Integer -> Text
   fort-indent (n) = fort-indent-loop n ""
 
-  fort-indent-loop : Integer -> Text -> Text
+  fort-indent-loop : Integer, Text -> Text
   fort-indent-loop (n) (acc) =
    if n <= 0 then acc
    else fort-indent-loop (n - 1) (acc ++ "  ")
@@ -50,7 +50,7 @@ Section: Arity Map
    generic-count : Integer between 0 and 255
   }
 
-  bsearch-arity-pos : List ArityEntry -> Text -> Integer -> Integer -> Integer
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
   bsearch-arity-pos (entries) (name) (lo) (hi) =
    if lo >= hi then lo
    else let mid = lo + (hi - lo) / 2
@@ -58,13 +58,13 @@ Section: Arity Map
    in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
       else bsearch-arity-pos entries name (mid + 1) hi
 
-  sorted-insert-arity : List ArityEntry -> ArityEntry -> List ArityEntry
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
   sorted-insert-arity (xs) (e) =
    let len = list-length xs
    in let pos = bsearch-arity-pos xs (e.name) 0 len
    in list-insert-at xs pos e
 
-  build-arity-map : List IRDef -> Integer -> List ArityEntry -> List ArityEntry
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
   build-arity-map (defs) (i) (acc) =
    if i == list-length defs then acc
    else let d = list-at defs i
@@ -74,7 +74,7 @@ Section: Arity Map
     generic-count = 0
    }))
 
-  lookup-arity : List ArityEntry -> Text -> Integer
+  lookup-arity : List ArityEntry, Text -> Integer
   lookup-arity (entries) (name) =
    let len = list-length entries
    in let pos = bsearch-arity-pos entries name 0 len
@@ -112,7 +112,7 @@ Section: Type Emission
     is ConstructedTy (name) (args) -> "type(" ++ fort-sanitize (name.value) ++ ")"
     is EffectfulTy (effects) (sc) (ret) -> fort-type ret
 
-  fort-return-type : CodexType -> Integer -> CodexType
+  fort-return-type : CodexType, Integer -> CodexType
   fort-return-type (ty) (n) =
    if n == 0 then fort-strip-forall ty
    else when fort-strip-forall ty
@@ -127,7 +127,7 @@ Section: Type Emission
 
 Section: Type Definition Emission
 
-  emit-fort-type-defs : List ATypeDef -> Integer -> Text
+  emit-fort-type-defs : List ATypeDef, Integer -> Text
   emit-fort-type-defs (tds) (i) =
    if i == list-length tds then ""
    else emit-fort-type-def (list-at tds i) ++ "\n" ++ emit-fort-type-defs tds (i + 1)
@@ -140,41 +140,41 @@ Section: Type Definition Emission
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      emit-fort-variant-tags ctors 0 1 ++ "  type :: " ++ fort-sanitize (name.value) ++ "\n    integer :: tag\n" ++ emit-fort-variant-fields ctors 0 0 ++ "  end type " ++ fort-sanitize (name.value) ++ "\n"
 
-  emit-fort-record-fields : List ARecordFieldDef -> Integer -> Text
+  emit-fort-record-fields : List ARecordFieldDef, Integer -> Text
   emit-fort-record-fields (fields) (i) =
    if i == list-length fields then ""
    else let f = list-at fields i
    in "    integer(8) :: " ++ fort-sanitize (f.name.value) ++ "\n" ++ emit-fort-record-fields fields (i + 1)
 
-  emit-fort-variant-tags : List AVariantCtorDef -> Integer -> Integer -> Text
+  emit-fort-variant-tags : List AVariantCtorDef, Integer, Integer -> Text
   emit-fort-variant-tags (ctors) (i) (tag) =
    if i == list-length ctors then ""
    else let c = list-at ctors i
    in "  integer, parameter :: TAG_" ++ fort-sanitize (c.name.value) ++ " = " ++ integer-to-text tag ++ "\n" ++ emit-fort-variant-tags ctors (i + 1) (tag + 1)
 
-  emit-fort-variant-max-fields : List AVariantCtorDef -> Integer -> Integer -> Integer
+  emit-fort-variant-max-fields : List AVariantCtorDef, Integer, Integer -> Integer
   emit-fort-variant-max-fields (ctors) (i) (mx) =
    if i == list-length ctors then mx
    else let c = list-at ctors i
    in let n = list-length (c.fields)
    in emit-fort-variant-max-fields ctors (i + 1) (if n > mx then n else mx)
 
-  emit-fort-variant-fields : List AVariantCtorDef -> Integer -> Integer -> Text
+  emit-fort-variant-fields : List AVariantCtorDef, Integer, Integer -> Text
   emit-fort-variant-fields (ctors) (f) (mx-check) =
    let mx = emit-fort-variant-max-fields ctors 0 0
    in emit-fort-variant-field-lines f mx
 
-  emit-fort-variant-field-lines : Integer -> Integer -> Text
+  emit-fort-variant-field-lines : Integer, Integer -> Text
   emit-fort-variant-field-lines (f) (mx) =
    if f >= mx then ""
    else "    integer(8) :: field" ++ integer-to-text f ++ "\n" ++ emit-fort-variant-field-lines (f + 1) mx
 
 Section: Expression Emission
 
-  fort-emit-expr : IRExpr -> List ArityEntry -> Text
+  fort-emit-expr : IRExpr, List ArityEntry -> Text
   fort-emit-expr (e) (arities) = fort-emit-expr-at e arities 0
 
-  fort-emit-expr-at : IRExpr -> List ArityEntry -> Integer -> Text
+  fort-emit-expr-at : IRExpr, List ArityEntry, Integer -> Text
   fort-emit-expr-at (e) (arities) (depth) =
    if depth >= 256 then "0"
    else when e
@@ -197,12 +197,14 @@ Section: Expression Emission
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> fort-emit-expr-at body arities (depth + 1)
     is IrRecord (name) (fields) (ty) (sp) -> fort-emit-record name fields arities
     is IrFieldAccess (rec) (field) (ty) (sp) -> fort-emit-expr-at rec arities (depth + 1) ++ "%" ++ fort-sanitize field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "0"
     is IrFork (body) (ty) (sp) -> fort-emit-expr-at body arities (depth + 1)
     is IrAwait (task) (ty) (sp) -> fort-emit-expr-at task arities (depth + 1)
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "0"
     is IrError (msg) (ty) (sp) -> "0"
     is otherwise -> "0"
 
-  fort-emit-name : Text -> CodexType -> List ArityEntry -> Text
+  fort-emit-name : Text, CodexType, List ArityEntry -> Text
   fort-emit-name (n) (ty) (arities) =
    if n == "True" then ".true."
    else if n == "False" then ".false."
@@ -211,7 +213,7 @@ Section: Expression Emission
    in if ar == 0 then fort-sanitize n ++ "()"
       else fort-sanitize n
 
-  fort-emit-binary : IRBinaryOp -> IRExpr -> IRExpr -> List ArityEntry -> Integer -> Text
+  fort-emit-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
   fort-emit-binary (op) (l) (r) (arities) (depth) =
    when op
     is IrAppendText -> "trim(" ++ fort-emit-expr-at l arities (depth + 1) ++ ") // trim(" ++ fort-emit-expr-at r arities (depth + 1) ++ ")"
@@ -241,28 +243,28 @@ Section: Expression Emission
     is IrOr -> ".or."
     is otherwise -> "+"
 
-  fort-emit-record : Text -> List IRFieldVal -> List ArityEntry -> Text
+  fort-emit-record : Text, List IRFieldVal, List ArityEntry -> Text
   fort-emit-record (name) (fields) (arities) =
    fort-sanitize name ++ "(" ++ fort-emit-record-args fields 0 arities ++ ")"
 
-  fort-emit-record-args : List IRFieldVal -> Integer -> List ArityEntry -> Text
+  fort-emit-record-args : List IRFieldVal, Integer, List ArityEntry -> Text
   fort-emit-record-args (fields) (i) (arities) =
    if i == list-length fields then ""
    else let sep = if i > 0 then ", " else ""
    in sep ++ fort-emit-expr (list-at fields i).value arities ++ fort-emit-record-args fields (i + 1) arities
 
-  fort-emit-list : List IRExpr -> List ArityEntry -> Text
+  fort-emit-list : List IRExpr, List ArityEntry -> Text
   fort-emit-list (elems) (arities) =
    if list-length elems == 0 then "(/ /)"
    else "(/ " ++ fort-emit-list-elems elems 0 arities ++ " /)"
 
-  fort-emit-list-elems : List IRExpr -> Integer -> List ArityEntry -> Text
+  fort-emit-list-elems : List IRExpr, Integer, List ArityEntry -> Text
   fort-emit-list-elems (elems) (i) (arities) =
    if i == list-length elems then ""
    else if i == list-length elems - 1 then fort-emit-expr (list-at elems i) arities
    else fort-emit-expr (list-at elems i) arities ++ ", " ++ fort-emit-list-elems elems (i + 1) arities
 
-  fort-emit-act-expr : List IRActStmt -> List ArityEntry -> Text
+  fort-emit-act-expr : List IRActStmt, List ArityEntry -> Text
   fort-emit-act-expr (stmts) (arities) =
    if list-length stmts == 0 then "0"
    else let last = list-at stmts (list-length stmts - 1)
@@ -270,25 +272,25 @@ Section: Expression Emission
     is IrDoExec (e) (sp) -> fort-emit-expr e arities
     is IrDoBind (name) (ty) (val) (sp) -> fort-emit-expr val arities
 
-  fort-emit-match : IRExpr -> List IRBranch -> List ArityEntry -> Integer -> Text
+  fort-emit-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
   fort-emit-match (scrut) (branches) (arities) (depth) =
    if list-length branches == 0 then "0"
    else fort-emit-match-merge branches scrut arities depth 0
 
-  fort-emit-match-merge : List IRBranch -> IRExpr -> List ArityEntry -> Integer -> Integer -> Text
+  fort-emit-match-merge : List IRBranch, IRExpr, List ArityEntry, Integer, Integer -> Text
   fort-emit-match-merge (branches) (scrut) (arities) (depth) (i) =
    if i >= list-length branches - 1 then fort-emit-expr-at (list-at branches i).body arities (depth + 1)
    else let b = list-at branches i
    in "merge(" ++ fort-emit-expr-at (b.body) arities (depth + 1) ++ ", " ++ fort-emit-match-merge branches scrut arities depth (i + 1) ++ ", " ++ fort-emit-match-cond (b.pattern) scrut arities (depth + 1) ++ ")"
 
-  fort-emit-match-cond : IRPat -> IRExpr -> List ArityEntry -> Integer -> Text
+  fort-emit-match-cond : IRPat, IRExpr, List ArityEntry, Integer -> Text
   fort-emit-match-cond (pat) (scrut) (arities) (depth) =
    when pat
     is IrCtorPat (name) (subs) (ty) (sp) -> fort-emit-expr-at scrut arities depth ++ "%tag == TAG_" ++ fort-sanitize name
     is IrLitPat (text) (ty) (sp) -> fort-emit-expr-at scrut arities depth ++ " == " ++ text
     is otherwise -> ".true."
 
-  fort-emit-apply : IRExpr -> List ArityEntry -> Text
+  fort-emit-apply : IRExpr, List ArityEntry -> Text
   fort-emit-apply (e) (arities) =
    let chain = collect-apply-chain e []
    in let root = chain.root
@@ -297,7 +299,7 @@ Section: Expression Emission
     is IrName (n) (ty) (sp) -> fort-emit-apply-name n args arities
     is otherwise -> fort-emit-expr root arities ++ "(" ++ fort-emit-apply-args args arities 0 ++ ")"
 
-  fort-emit-apply-name : Text -> List IRExpr -> List ArityEntry -> Text
+  fort-emit-apply-name : Text, List IRExpr, List ArityEntry -> Text
   fort-emit-apply-name (n) (args) (arities) =
    let fort-bi = fort-try-builtin n args arities
    in if text-length fort-bi > 0 then fort-bi
@@ -306,7 +308,7 @@ Section: Expression Emission
                       else fort-sanitize n ++ "(" ++ fort-emit-apply-args args arities 0 ++ ")"
       else fort-sanitize n ++ "(" ++ fort-emit-apply-args args arities 0 ++ ")"
 
-  fort-try-builtin : Text -> List IRExpr -> List ArityEntry -> Text
+  fort-try-builtin : Text, List IRExpr, List ArityEntry -> Text
   fort-try-builtin (n) (args) (arities) =
    if n == "show" then fort-emit-bi-show args arities
    else if n == "negate" then "(-" ++ fort-emit-expr (list-at args 0) arities ++ ")"
@@ -355,28 +357,28 @@ Section: Expression Emission
    else if n == "await" then fort-emit-expr (list-at args 0) arities
    else ""
 
-  fort-emit-bi-show : List IRExpr -> List ArityEntry -> Text
+  fort-emit-bi-show : List IRExpr, List ArityEntry -> Text
   fort-emit-bi-show (args) (arities) =
    "fort_integer_to_text(" ++ fort-emit-expr (list-at args 0) arities ++ ")"
 
-  fort-emit-bi-substring : List IRExpr -> List ArityEntry -> Text
+  fort-emit-bi-substring : List IRExpr, List ArityEntry -> Text
   fort-emit-bi-substring (args) (arities) =
    let a0 = fort-emit-expr (list-at args 0) arities
    in let a1 = fort-emit-expr (list-at args 1) arities
    in let a2 = fort-emit-expr (list-at args 2) arities
    in a0 ++ "(int(" ++ a1 ++ ")+1:int(" ++ a1 ++ ")+int(" ++ a2 ++ "))"
 
-  fort-emit-bi-is-letter : List IRExpr -> List ArityEntry -> Text
+  fort-emit-bi-is-letter : List IRExpr, List ArityEntry -> Text
   fort-emit-bi-is-letter (args) (arities) =
    let a0 = fort-emit-expr (list-at args 0) arities
    in "(" ++ a0 ++ " >= 13_8 .and. " ++ a0 ++ " <= 64_8)"
 
-  fort-emit-bi-is-digit : List IRExpr -> List ArityEntry -> Text
+  fort-emit-bi-is-digit : List IRExpr, List ArityEntry -> Text
   fort-emit-bi-is-digit (args) (arities) =
    let a0 = fort-emit-expr (list-at args 0) arities
    in "(" ++ a0 ++ " >= 3_8 .and. " ++ a0 ++ " <= 12_8)"
 
-  fort-emit-apply-args : List IRExpr -> List ArityEntry -> Integer -> Text
+  fort-emit-apply-args : List IRExpr, List ArityEntry, Integer -> Text
   fort-emit-apply-args (args) (arities) (i) =
    if i == list-length args then ""
    else if i == list-length args - 1 then fort-emit-expr (list-at args i) arities
@@ -384,14 +386,14 @@ Section: Expression Emission
 
 Section: Tail Call Optimization
 
-  fort-is-self-call : IRExpr -> Text -> Boolean
+  fort-is-self-call : IRExpr, Text -> Boolean
   fort-is-self-call (e) (func-name) =
    let chain = collect-apply-chain e []
    in when (chain.root)
     is IrName (n) (ty) (sp) -> n == func-name
     is otherwise -> False
 
-  fort-has-tail-call : IRExpr -> Text -> Boolean
+  fort-has-tail-call : IRExpr, Text -> Boolean
   fort-has-tail-call (e) (func-name) =
    when e
     is IrIf (c) (t) (el) (ty) (sp) -> fort-has-tail-call t func-name | fort-has-tail-call el func-name
@@ -400,7 +402,7 @@ Section: Tail Call Optimization
     is IrApply (f) (a) (ty) (sp) -> fort-is-self-call e func-name
     is otherwise -> False
 
-  fort-has-tail-call-branches : List IRBranch -> Text -> Integer -> Boolean
+  fort-has-tail-call-branches : List IRBranch, Text, Integer -> Boolean
   fort-has-tail-call-branches (branches) (func-name) (i) =
    if i == list-length branches then False
    else if fort-has-tail-call (list-at branches i).body func-name then True
@@ -411,38 +413,38 @@ Section: Tail Call Optimization
    if list-length (d.params) == 0 then False
    else fort-has-tail-call (d.body) (d.name)
 
-  fort-emit-tco-def : IRDef -> List ArityEntry -> Text
+  fort-emit-tco-def : IRDef, List ArityEntry -> Text
   fort-emit-tco-def (d) (arities) =
    let name = fort-sanitize (d.name)
    in let ret = fort-return-type (d.type-val) (list-length (d.params))
    in fort-type ret ++ " function " ++ name ++ "(" ++ fort-emit-tco-in-params (d.params) 0 ++ ")\n" ++ fort-emit-tco-in-decls (d.params) 0 ++ fort-emit-tco-local-decls (d.params) 0 ++ fort-emit-tco-copy-in (d.params) 0 ++ "    do while (.true.)\n" ++ fort-emit-tco-body (d.body) (d.name) (d.params) arities ++ "    end do\n  end function " ++ name ++ "\n"
 
-  fort-emit-tco-in-params : List IRParam -> Integer -> Text
+  fort-emit-tco-in-params : List IRParam, Integer -> Text
   fort-emit-tco-in-params (params) (i) =
    if i == list-length params then ""
    else let p = list-at params i
    in let sep = if i > 0 then ", " else ""
    in sep ++ fort-sanitize (p.name) ++ "_in" ++ fort-emit-tco-in-params params (i + 1)
 
-  fort-emit-tco-in-decls : List IRParam -> Integer -> Text
+  fort-emit-tco-in-decls : List IRParam, Integer -> Text
   fort-emit-tco-in-decls (params) (i) =
    if i == list-length params then ""
    else let p = list-at params i
    in "    " ++ fort-type (p.type-val) ++ ", intent(in) :: " ++ fort-sanitize (p.name) ++ "_in\n" ++ fort-emit-tco-in-decls params (i + 1)
 
-  fort-emit-tco-local-decls : List IRParam -> Integer -> Text
+  fort-emit-tco-local-decls : List IRParam, Integer -> Text
   fort-emit-tco-local-decls (params) (i) =
    if i == list-length params then ""
    else let p = list-at params i
    in "    " ++ fort-type (p.type-val) ++ " :: " ++ fort-sanitize (p.name) ++ "\n" ++ fort-emit-tco-local-decls params (i + 1)
 
-  fort-emit-tco-copy-in : List IRParam -> Integer -> Text
+  fort-emit-tco-copy-in : List IRParam, Integer -> Text
   fort-emit-tco-copy-in (params) (i) =
    if i == list-length params then ""
    else let p = list-at params i
    in "    " ++ fort-sanitize (p.name) ++ " = " ++ fort-sanitize (p.name) ++ "_in\n" ++ fort-emit-tco-copy-in params (i + 1)
 
-  fort-emit-tco-body : IRExpr -> Text -> List IRParam -> List ArityEntry -> Text
+  fort-emit-tco-body : IRExpr, Text, List IRParam, List ArityEntry -> Text
   fort-emit-tco-body (e) (func-name) (params) (arities) =
    when e
     is IrIf (c) (t) (el) (ty) (sp) -> "      if (" ++ fort-emit-expr c arities ++ ") then\n" ++ fort-emit-tco-body t func-name params arities ++ "      else\n" ++ fort-emit-tco-body el func-name params arities ++ "      end if\n"
@@ -453,12 +455,12 @@ Section: Tail Call Optimization
      else "      " ++ fort-sanitize func-name ++ " = " ++ fort-emit-expr e arities ++ "\n      return\n"
     is otherwise -> "      " ++ fort-sanitize func-name ++ " = " ++ fort-emit-expr e arities ++ "\n      return\n"
 
-  fort-emit-tco-match : IRExpr -> List IRBranch -> Text -> List IRParam -> List ArityEntry -> Text
+  fort-emit-tco-match : IRExpr, List IRBranch, Text, List IRParam, List ArityEntry -> Text
   fort-emit-tco-match (scrut) (branches) (func-name) (params) (arities) =
    if list-length branches == 0 then "      " ++ fort-sanitize func-name ++ " = 0\n      return\n"
    else fort-emit-tco-match-branches branches scrut func-name params arities 0
 
-  fort-emit-tco-match-branches : List IRBranch -> IRExpr -> Text -> List IRParam -> List ArityEntry -> Integer -> Text
+  fort-emit-tco-match-branches : List IRBranch, IRExpr, Text, List IRParam, List ArityEntry, Integer -> Text
   fort-emit-tco-match-branches (branches) (scrut) (func-name) (params) (arities) (i) =
    if i >= list-length branches then ""
    else let b = list-at branches i
@@ -466,12 +468,12 @@ Section: Tail Call Optimization
    in if is-last then fort-emit-tco-body (b.body) func-name params arities
    else "      if (" ++ fort-emit-match-cond (b.pattern) scrut arities 0 ++ ") then\n" ++ fort-emit-tco-body (b.body) func-name params arities ++ "      else\n" ++ fort-emit-tco-match-branches branches scrut func-name params arities (i + 1) ++ "      end if\n"
 
-  fort-emit-tco-jump : IRExpr -> List IRParam -> List ArityEntry -> Text
+  fort-emit-tco-jump : IRExpr, List IRParam, List ArityEntry -> Text
   fort-emit-tco-jump (e) (params) (arities) =
    let chain = collect-apply-chain e []
    in fort-emit-tco-assigns (chain.args) params arities 0 ++ "      cycle\n"
 
-  fort-emit-tco-assigns : List IRExpr -> List IRParam -> List ArityEntry -> Integer -> Text
+  fort-emit-tco-assigns : List IRExpr, List IRParam, List ArityEntry, Integer -> Text
   fort-emit-tco-assigns (args) (params) (arities) (i) =
    if i == list-length args then ""
    else if i >= list-length params then ""
@@ -480,12 +482,12 @@ Section: Tail Call Optimization
 
 Section: Definition Emission
 
-  fort-emit-def : IRDef -> List ArityEntry -> Text
+  fort-emit-def : IRDef, List ArityEntry -> Text
   fort-emit-def (d) (arities) =
    if fort-should-tco d then "  " ++ fort-emit-tco-def d arities
    else fort-emit-regular-def d arities
 
-  fort-emit-regular-def : IRDef -> List ArityEntry -> Text
+  fort-emit-regular-def : IRDef, List ArityEntry -> Text
   fort-emit-regular-def (d) (arities) =
    let name = fort-sanitize (d.name)
    in let is-proc = fort-is-effectful (d.type-val)
@@ -499,41 +501,41 @@ Section: Definition Emission
     is ForAllTy (id) (body) -> fort-is-effectful body
     is otherwise -> False
 
-  fort-emit-subroutine : IRDef -> Text -> List ArityEntry -> Text
+  fort-emit-subroutine : IRDef, Text, List ArityEntry -> Text
   fort-emit-subroutine (d) (name) (arities) =
    "  subroutine " ++ name ++ "(" ++ fort-emit-param-names (d.params) 0 ++ ")\n" ++ fort-emit-param-decls (d.params) 0 ++ "    implicit none\n" ++ fort-emit-statement (d.body) arities 2 ++ "  end subroutine " ++ name ++ "\n"
 
-  fort-emit-function : IRDef -> Text -> List ArityEntry -> Text
+  fort-emit-function : IRDef, Text, List ArityEntry -> Text
   fort-emit-function (d) (name) (arities) =
    let ret = fort-return-type (d.type-val) (list-length (d.params))
    in "  " ++ fort-type ret ++ " function " ++ name ++ "(" ++ fort-emit-param-names (d.params) 0 ++ ")\n" ++ fort-emit-param-decls (d.params) 0 ++ "    " ++ name ++ " = " ++ fort-emit-expr (d.body) arities ++ "\n  end function " ++ name ++ "\n"
 
-  fort-emit-param-names : List IRParam -> Integer -> Text
+  fort-emit-param-names : List IRParam, Integer -> Text
   fort-emit-param-names (params) (i) =
    if i == list-length params then ""
    else let p = list-at params i
    in let sep = if i > 0 then ", " else ""
    in sep ++ fort-sanitize (p.name) ++ fort-emit-param-names params (i + 1)
 
-  fort-emit-param-decls : List IRParam -> Integer -> Text
+  fort-emit-param-decls : List IRParam, Integer -> Text
   fort-emit-param-decls (params) (i) =
    if i == list-length params then ""
    else let p = list-at params i
    in "    " ++ fort-type (p.type-val) ++ ", intent(in) :: " ++ fort-sanitize (p.name) ++ "\n" ++ fort-emit-param-decls params (i + 1)
 
-  fort-emit-statement : IRExpr -> List ArityEntry -> Integer -> Text
+  fort-emit-statement : IRExpr, List ArityEntry, Integer -> Text
   fort-emit-statement (e) (arities) (indent) =
    when e
     is IrAct (stmts) (ty) (sp) -> fort-emit-act-stmts stmts arities indent 0
     is otherwise -> fort-indent indent ++ fort-emit-expr e arities ++ "\n"
 
-  fort-emit-act-stmts : List IRActStmt -> List ArityEntry -> Integer -> Integer -> Text
+  fort-emit-act-stmts : List IRActStmt, List ArityEntry, Integer, Integer -> Text
   fort-emit-act-stmts (stmts) (arities) (indent) (i) =
    if i == list-length stmts then ""
    else let s = list-at stmts i
    in fort-emit-act-stmt s arities indent ++ fort-emit-act-stmts stmts arities indent (i + 1)
 
-  fort-emit-act-stmt : IRActStmt -> List ArityEntry -> Integer -> Text
+  fort-emit-act-stmt : IRActStmt, List ArityEntry, Integer -> Text
   fort-emit-act-stmt (s) (arities) (indent) =
    when s
     is IrDoExec (e) (sp) -> fort-indent indent ++ fort-emit-expr e arities ++ "\n"
@@ -547,25 +549,25 @@ Section: Chapter Emission
    else if list-length (m.defs) == 1 then (list-at (m.defs) 0).name /= "opening"
    else False
 
-  fort-find-opening : List IRDef -> Integer -> Integer
+  fort-find-opening : List IRDef, Integer -> Integer
   fort-find-opening (defs) (i) =
    if i == list-length defs then -1
    else if (list-at defs i).name == "opening" then i
    else fort-find-opening defs (i + 1)
 
-  fort-emit-module-defs : List IRDef -> List ArityEntry -> Integer -> Integer -> Text
+  fort-emit-module-defs : List IRDef, List ArityEntry, Integer, Integer -> Text
   fort-emit-module-defs (defs) (arities) (i) (opening-idx) =
    if i == list-length defs then ""
    else if i == opening-idx then fort-emit-module-defs defs arities (i + 1) opening-idx
    else fort-emit-def (list-at defs i) arities ++ "\n" ++ fort-emit-module-defs defs arities (i + 1) opening-idx
 
-  fort-emit-opening-body : IRDef -> List ArityEntry -> Text
+  fort-emit-opening-body : IRDef, List ArityEntry -> Text
   fort-emit-opening-body (d) (arities) =
    let is-eff = fort-is-effectful (d.type-val)
    in if is-eff then fort-emit-statement (d.body) arities 1
       else "  print *, " ++ fort-emit-expr (d.body) arities ++ "\n"
 
-  emit-fortran-chapter : IRChapter -> List ATypeDef -> Text
+  emit-fortran-chapter : IRChapter, List ATypeDef -> Text
   emit-fortran-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
    in let mod-name = fort-sanitize (m.name.value)

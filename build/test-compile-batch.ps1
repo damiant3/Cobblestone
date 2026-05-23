@@ -138,7 +138,19 @@ function Compile-One {
             break
         }
         if ($line.StartsWith('!EXC')) {
-            Add-Content -Path $log -Value $line -Encoding UTF8
+            $excLines = [System.Collections.Generic.List[string]]::new()
+            $excLines.Add($line)
+            for ($si = 0; $si -lt 4; $si++) {
+                $sline = Read-StreamLine -Stream $DataStream -TimeoutSec 2
+                if ($null -eq $sline) { break }
+                $excLines.Add($sline)
+                if (-not $sline.Contains('S[')) { break }
+            }
+            $report = Format-CrashReport $excLines.ToArray()
+            foreach ($rl in $report) {
+                Add-Content -Path $log -Value $rl -Encoding UTF8
+                [Console]::Error.WriteLine("  $rl")
+            }
             $status = 'fatal'
             break
         }
@@ -207,13 +219,13 @@ function Compile-One {
 
 $run = $null
 try {
-    $run = Start-QemuRun -Kernel $Stage0 -ConnectTimeoutSec 30 -MemMB 2048 -PCore $PCore
+    $run = Start-VmRun -Kernel $Stage0 -ConnectTimeoutSec 30 -MemMB 2048 -PCore $PCore
     if (-not $run) {
         Write-Error "VM failed to start"
         exit 3
     }
 
-    if (-not (Read-QemuReady -Conn $run.Conn -TimeoutSec 30)) {
+    if (-not (Read-VmReady -Conn $run.Conn -TimeoutSec 30)) {
         Write-Error "READY not received"
         exit 3
     }
@@ -242,13 +254,13 @@ try {
             '99' | Set-Content -Path $exitFile -Encoding UTF8
 
             # Compiler crashed. Restart VM for remaining items.
-            Close-Qemu -Conn $run.Conn -Process $run.Process
-            $run = Start-QemuRun -Kernel $Stage0 -ConnectTimeoutSec 30 -MemMB 2048 -PCore $PCore
+            Close-Vm -Conn $run.Conn -Process $run.Process
+            $run = Start-VmRun -Kernel $Stage0 -ConnectTimeoutSec 30 -MemMB 2048 -PCore $PCore
             if (-not $run) {
                 Write-Error "VM restart failed at item $i"
                 exit 3
             }
-            if (-not (Read-QemuReady -Conn $run.Conn -TimeoutSec 30)) {
+            if (-not (Read-VmReady -Conn $run.Conn -TimeoutSec 30)) {
                 Write-Error "READY not received after restart"
                 exit 3
             }
@@ -258,12 +270,12 @@ try {
     }
 
     Write-SweepLog "batch-done pcore=$PCore compiled=$($sources.Count)"
-    Close-Qemu -Conn $run.Conn -Process $run.Process
+    Close-Vm -Conn $run.Conn -Process $run.Process
     Remove-Item -Force $run.StdoutFile, $run.StderrFile -ErrorAction SilentlyContinue
     $run = $null
 } finally {
     if ($run) {
-        Close-Qemu -Conn $run.Conn -Process $run.Process
+        Close-Vm -Conn $run.Conn -Process $run.Process
         Remove-Item -Force $run.StdoutFile, $run.StderrFile -ErrorAction SilentlyContinue
     }
 }

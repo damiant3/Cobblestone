@@ -4,7 +4,6 @@ Chapter: IdentityManager
   cites Foreword chapter Ed25519
   cites Foreword chapter Aes256
   cites Foreword chapter Hkdf
-  cites Foreword chapter Console
   cites Kernel chapter DiskFacts
 
  Identity lifecycle manager. Orchestrates the first-boot ceremony
@@ -40,9 +39,14 @@ Section: Types
     | IdmNoIdentity
     | IdmError (Text)
 
+  IdmOutcome = record {
+    idm-store : DiskFactStore,
+    idm-result : IdmResult
+  }
+
 Section: First-Boot Ceremony
 
-  idm-first-boot : DiskFactStore, Integer -> (DiskFactStore, IdmResult)
+  idm-first-boot : DiskFactStore, Integer -> IdmOutcome
   idm-first-boot (store) (timestamp) =
     let seed-bytes = idm-read-device-seed
     in let kb-entropy = idm-collect-keyboard-entropy
@@ -60,7 +64,7 @@ Section: First-Boot Ceremony
     ]
     in let passphrase = idm-prompt-passphrase-create
     in when passphrase
-      is None -> (store, IdmError "Passphrase mismatch")
+      is None -> IdmOutcome { idm-store = store, idm-result = IdmError "Passphrase mismatch" }
       is Just (pp-bytes) ->
         let salt = idm-read-random-bytes 16
         in let iv = idm-read-random-bytes 16
@@ -92,15 +96,15 @@ Section: First-Boot Ceremony
           "  You are now authenticated.",
           ""
         ]
-        in (store4, IdmOk)
+        in IdmOutcome { idm-store = store4, idm-result = IdmOk }
 
 Section: Unlock Flow
 
-  idm-unlock : DiskFactStore -> (DiskFactStore, IdmResult)
+  idm-unlock : DiskFactStore -> IdmOutcome
   idm-unlock (store) =
     let id-maybe = sysdb-find-identity store
     in when id-maybe
-      is None -> (store, IdmNoIdentity)
+      is None -> IdmOutcome { idm-store = store, idm-result = IdmNoIdentity }
       is Just (rec) ->
         let pp-bytes = idm-prompt-passphrase "  Passphrase: "
         in let derived = hkdf (rec.id-salt) pp-bytes idm-hkdf-info 32
@@ -113,12 +117,12 @@ Section: Unlock Flow
           in let zeroed = idm-zero-list pp-bytes 0
           in let zeroed2 = idm-zero-list derived-bytes 0
           in let zeroed3 = idm-zero-list decrypted 0
-          in (store, IdmOk)
+          in IdmOutcome { idm-store = store, idm-result = IdmOk }
         else
           let zeroed = idm-zero-list pp-bytes 0
           in let zeroed2 = idm-zero-list derived-bytes 0
           in let zeroed3 = idm-zero-list decrypted 0
-          in (store, IdmWrongPassphrase)
+          in IdmOutcome { idm-store = store, idm-result = IdmWrongPassphrase }
 
 Section: Lock
 
@@ -141,11 +145,11 @@ Section: Lock
 
 Section: Passphrase Change
 
-  idm-change-passphrase : DiskFactStore, Integer -> (DiskFactStore, IdmResult)
+  idm-change-passphrase : DiskFactStore, Integer -> IdmOutcome
   idm-change-passphrase (store) (timestamp) =
     let id-maybe = sysdb-find-identity store
     in when id-maybe
-      is None -> (store, IdmNoIdentity)
+      is None -> IdmOutcome { idm-store = store, idm-result = IdmNoIdentity }
       is Just (rec) ->
         let old-pp = idm-prompt-passphrase "  Current passphrase: "
         in let old-derived = hkdf (rec.id-salt) old-pp idm-hkdf-info 32
@@ -157,14 +161,14 @@ Section: Passphrase Change
           let z0 = idm-zero-list old-pp 0
           in let z1 = idm-zero-list old-derived-bytes 0
           in let z2 = idm-zero-list decrypted 0
-          in (store, IdmWrongPassphrase)
+          in IdmOutcome { idm-store = store, idm-result = IdmWrongPassphrase }
         else let new-pp = idm-prompt-passphrase-create
         in when new-pp
           is None ->
             let z0 = idm-zero-list old-pp 0
             in let z1 = idm-zero-list old-derived-bytes 0
             in let z2 = idm-zero-list decrypted 0
-            in (store, IdmError "Passphrase mismatch")
+            in IdmOutcome { idm-store = store, idm-result = IdmError "Passphrase mismatch" }
           is Just (new-pp-bytes) ->
             let new-salt = idm-read-random-bytes 16
             in let new-iv = idm-read-random-bytes 16
@@ -186,7 +190,7 @@ Section: Passphrase Change
             in let z2 = idm-zero-list decrypted 0
             in let z3 = idm-zero-list new-pp-bytes 0
             in let z4 = idm-zero-list new-derived-bytes 0
-            in (store3, IdmOk)
+            in IdmOutcome { idm-store = store3, idm-result = IdmOk }
 
 Section: Install Copy
 

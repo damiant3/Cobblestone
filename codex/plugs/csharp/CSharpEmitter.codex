@@ -12,6 +12,35 @@ Section: Type Definition Emission
    if i == list-length tds then ""
    else emit-type-def (list-at tds i) & "\n" & emit-type-defs tds (i + 1)
 
+  infer-tparams-from-fields : List ARecordFieldDef, Integer, List Name -> List Name
+  infer-tparams-from-fields (fields) (i) (acc) =
+   if i >= list-length fields then acc
+   else let f = list-at fields i
+   in infer-tparams-from-fields fields (i + 1) (infer-tparams-from-type-expr (f.type-expr) acc)
+
+  infer-tparams-from-type-expr : ATypeExpr, List Name -> List Name
+  infer-tparams-from-type-expr (te) (acc) =
+   when te
+    is ANamedType (name) (s) ->
+     if is-type-var-name (name.value) then
+      if tparam-already-present acc (name.value) 0 then acc
+      else list-push acc name
+     else acc
+    is AAppType (base) (args) (s) -> infer-tparams-from-type-exprs args 0 acc
+    is AFunType (p) (r) (s) -> infer-tparams-from-type-expr r (infer-tparams-from-type-expr p acc)
+    is otherwise -> acc
+
+  infer-tparams-from-type-exprs : List ATypeExpr, Integer, List Name -> List Name
+  infer-tparams-from-type-exprs (args) (i) (acc) =
+   if i >= list-length args then acc
+   else infer-tparams-from-type-exprs args (i + 1) (infer-tparams-from-type-expr (list-at args i) acc)
+
+  tparam-already-present : List Name, Text, Integer -> Boolean
+  tparam-already-present (ns) (v) (i) =
+   if i >= list-length ns then False
+   else if (list-at ns i).value == v then True
+   else tparam-already-present ns v (i + 1)
+
   emit-type-def : ATypeDef -> Text
   emit-type-def (td) =
    when td
@@ -20,7 +49,13 @@ Section: Type Definition Emission
      in "public sealed record " & sanitize (name.value) & gen & "(" & emit-record-field-defs fields tparams 0 & ");\n"
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      let gen = emit-tparameter-suffix tparams
-     in "public abstract record " & sanitize (name.value) & gen & ";\n" & emit-variant-ctors ctors name tparams 0 & "\n"
+     in if list-length ctors == 1 then
+      if (list-at ctors 0).name.value == name.value then
+       let c = list-at ctors 0
+       in if list-length (c.fields) == 0 then "public sealed record " & sanitize (name.value) & gen & ";\n\n"
+          else "public sealed record " & sanitize (name.value) & gen & "(" & emit-ctor-fields (c.fields) tparams 0 & ");\n\n"
+      else "public abstract record " & sanitize (name.value) & gen & ";\n" & emit-variant-ctors ctors name tparams 0 & "\n"
+     else "public abstract record " & sanitize (name.value) & gen & ";\n" & emit-variant-ctors ctors name tparams 0 & "\n"
 
   emit-tparameter-suffix : List Name -> Text
   emit-tparameter-suffix (tparams) =
@@ -78,6 +113,13 @@ Section: Type Definition Emission
    else if (list-at tparams i).value == name then i
    else find-tparam-index tparams name (i + 1)
 
+  is-type-var-name : Text -> Boolean
+  is-type-var-name (n) =
+   if text-length n == 1 then
+    let c = char-code (char-at n 0)
+    in c >= 13 & c <= 38
+   else False
+
   when-type-name : Text -> Text
   when-type-name (n) =
    if n == "Integer" then "long"
@@ -86,6 +128,7 @@ Section: Type Definition Emission
    else if n == "Boolean" then "bool"
    else if n == "List" then "List"
    else if n == "LinkedList" then "List"
+   else if is-type-var-name n then "object"
    else sanitize n
 
   emit-type-expr-list : List ATypeExpr, Integer -> Text
@@ -146,6 +189,12 @@ Section: Generic Helpers
    else if i == list-length ids - 1 then "T" & integer-to-text (list-at ids i)
    else "T" & integer-to-text (list-at ids i) & ", " & emit-type-params ids (i + 1)
 
+  collect-record-field-tvar-ids : List RecordField, Integer, List Integer -> List Integer
+  collect-record-field-tvar-ids (fields) (i) (acc) =
+   if i == list-length fields then acc
+   else let f = list-at fields i
+   in collect-record-field-tvar-ids fields (i + 1) (collect-type-var-ids (f.type-val) acc)
+
   extract-ctor-type-args : CodexType -> Text
   extract-ctor-type-args (ty) =
    when ty
@@ -156,8 +205,10 @@ Section: Generic Helpers
      if list-length args == 0 then ""
      else "<" & emit-cs-type-args args 0 & ">"
     is RecordTy (name) (args) (fields) ->
-     if list-length args == 0 then ""
-     else "<" & emit-cs-type-args args 0 & ">"
+     if list-length args > 0 then "<" & emit-cs-type-args args 0 & ">"
+     else let ids = collect-record-field-tvar-ids fields 0 []
+     in if list-length ids == 0 then ""
+     else "<" & emit-type-params ids 0 & ">"
     is otherwise -> ""
 
   cs-type-or-object : CodexType -> Text
@@ -478,7 +529,7 @@ Section: Chapter Emission
     is EffectfulTy (effs) (sc) (inner) -> class-name & "." & opening-entry-point & "();\n\n"
     is NothingTy -> class-name & "." & opening-entry-point & "();\n\n"
     is VoidTy -> class-name & "." & opening-entry-point & "();\n\n"
-    is TextTy -> "Console.WriteLine(_Cce.ToUnicode(" & class-name & "." & opening-entry-point & "()));\n\n"
+    is TextTy -> "Console.WriteLine(" & class-name & "." & opening-entry-point & "());\n\n"
     is otherwise -> "Console.WriteLine(" & class-name & "." & opening-entry-point & "());\n\n"
 
   emit-csharp-text-chapter : IRChapter, List ATypeDef -> Text
@@ -488,6 +539,14 @@ Section: Chapter Emission
    in let class-name = "Codex_" & sanitize (m.name.value)
    in let entry = opening-emit-entry class-name (opening-return-type (m.defs))
    in text-concat-list ([header, entry, emit-cce-runtime, emit-buf-runtime, emit-state-runtime, emit-type-defs type-defs 0, emit-class-header (m.name.value)] & emit-defs-list (m.defs) 0 arities & ["}\n"])
+
+  emit-csharp-parts : IRChapter, List ATypeDef -> List Text
+  emit-csharp-parts (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Linq;\nusing System.Threading.Tasks;\n\n"
+   in let class-name = "Codex_" & sanitize (m.name.value)
+   in let entry = opening-emit-entry class-name (opening-return-type (m.defs))
+   in [header, entry, emit-cce-runtime, emit-buf-runtime, emit-state-runtime, emit-type-defs type-defs 0, emit-class-header (m.name.value)] & emit-defs-list (m.defs) 0 arities & ["}\n"]
 
   emit-chapter : IRChapter -> Text
   emit-chapter (m) =

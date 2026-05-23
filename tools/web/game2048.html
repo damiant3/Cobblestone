@@ -36,6 +36,7 @@
   .engine-tag { background: #2a1a4a; color: #cc66ff; font-size: 10px; padding: 2px 8px;
     border-radius: 10px; margin-left: 12px; border: 1px solid #aa44ff44; }
 </style>
+<script src="/web/game-engine.js"></script>
 </head>
 <body>
 <div class="bg-scene"></div>
@@ -49,24 +50,36 @@
   <div class="controls">
     <button onclick="startGame()">&#x1F680; GO!</button>
     <button id="btn-pause" onclick="togglePause()" disabled>&#x23F8;</button>
+    <button id="btn-step" onclick="stepOnce()" disabled>&#x23ED;</button>
     <button onclick="resetGame()">&#x21BB;</button>
     <span class="speed-label">Speed:</span>
     <input type="range" id="speed" min="1" max="10" value="6" style="width:80px;accent-color:#ff00ff" oninput="updateSpeed()">
   </div>
   <div id="status-line">SLIDE THOSE TILES! &#x1F4A5;</div>
   <div class="score-bar"><span style="color:#ffcc00">Score: <span id="sc-s">0</span></span><span style="color:#ff00ff">Moves: <span id="sc-m">0</span></span></div>
+  <div id="narration" style="text-align:center;font-size:14px;font-weight:bold;min-height:20px;margin-bottom:8px;color:#ff00ff"></div>
   <div class="board-wrap"><div class="g2-grid" id="board"></div></div>
+  <details style="background:#1a0a2a99;border:1px solid #cc66ff22;border-radius:8px;padding:16px;margin-top:12px;color:#cc66ff88;font-size:13px;line-height:1.6">
+    <summary style="color:#ff00ff;cursor:pointer;font-weight:bold;font-size:14px">How to Play 2048</summary>
+    <p><b>Goal:</b> Slide and merge tiles to create a 2048 tile (or higher).</p>
+    <p><b>Play:</b> Each turn, all tiles slide in one direction. When two tiles of the same value collide, they merge into one tile with double the value.</p>
+    <p><b>Spawning:</b> After each move, a new tile (2 or 4) appears in a random empty cell.</p>
+    <p><b>End:</b> The game ends when no more moves are possible (board full, no adjacent matches).</p>
+    <p><b>This simulation:</b> AI picks the best direction each move using a heuristic strategy.</p>
+  </details>
 </div>
 <script>
 var state,running=false,paused=false,timer,delay=150;
 function updateSpeed(){var v=parseInt(document.getElementById('speed').value);delay=[2000,1200,800,500,350,250,150,80,30,5][v-1]||150}
-async function api(p){try{var r=await fetch(p);return r.json()}catch(e){return null}}
+async function api(p){try{var r=await fetch(p);return r.json()}catch(e){document.getElementById('status-line').textContent='Connection error';return null}}
 function render(s){var h='';for(var i=0;i<16;i++){var v=s.grid[i];var cls='g2-'+(v<=2048?v:'2048');h+='<div class="g2-cell '+cls+'">'+(v||'')+'</div>'}document.getElementById('board').innerHTML=h;document.getElementById('sc-s').textContent=s.score;document.getElementById('sc-m').textContent=s.moves}
-async function resetGame(){clearTimeout(timer);running=false;paused=false;state=await api('/api/game2048/new?seed='+(Date.now()&0x7FFFFFFF));if(state)render(state);document.getElementById('status-line').innerHTML="SLIDE THOSE TILES! &#x1F4A5;";document.getElementById('btn-pause').disabled=true}
-async function startGame(){await resetGame();running=true;document.getElementById('btn-pause').disabled=false;updateSpeed();scheduleTick()}
-function togglePause(){if(!running)return;paused=!paused;document.getElementById('btn-pause').textContent=paused?'▶':'⏸';if(!paused)scheduleTick()}
+async function resetGame(){clearTimeout(timer);running=false;paused=false;state=await api('/api/game2048/new?seed='+(Date.now()&0x7FFFFFFF));if(state)render(state);document.getElementById('status-line').innerHTML="SLIDE THOSE TILES! &#x1F4A5;";document.getElementById('btn-pause').disabled=true;document.getElementById('btn-step').disabled=true}
+async function startGame(){await resetGame();running=true;document.getElementById('btn-pause').disabled=false;document.getElementById('btn-step').disabled=false;updateSpeed();scheduleTick()}
+function togglePause(){if(!running)return;paused=!paused;document.getElementById('btn-pause').textContent=paused?'▶':'⏸';document.getElementById('btn-step').disabled=!paused;if(!paused)scheduleTick()}
 function scheduleTick(){if(!paused&&running)timer=setTimeout(tick,delay)}
-async function tick(){if(!running||!state||state.done){if(state)document.getElementById('status-line').innerHTML='GAME OVER! Score: '+state.score+' &#x1F4A3;';running=false;return}state=await api('/api/game2048/step');if(!state){running=false;return}render(state);if(state.done){document.getElementById('status-line').innerHTML='BOOM! Final: '+state.score+' &#x1F389;';running=false;return}document.getElementById('status-line').innerHTML='Score: '+state.score+' &#x1F525;';scheduleTick()}
+async function stepOnce(){if(running&&paused)await tick()}
+var prevScore=0,prevMax=0;
+async function tick(){if(!running||!state||state.done){if(state)document.getElementById('status-line').innerHTML='GAME OVER! Score: '+state.score+' in '+state.moves+' moves';running=false;return}prevScore=state.score;prevMax=state.grid?Math.max.apply(null,state.grid):0;state=await api('/api/game2048/step');if(!state){running=false;return}render(state);var newMax=state.grid?Math.max.apply(null,state.grid):0;var gained=state.score-prevScore;var nar='Move '+state.moves;if(newMax>prevMax)nar+=' — new '+newMax+' tile!';else if(gained>0)nar+=' — +'+gained+' points';document.getElementById('narration').textContent=nar;if(state.done){document.getElementById('status-line').innerHTML='Final: '+state.score+' points, highest tile: '+newMax;running=false;return}document.getElementById('status-line').innerHTML='Score: '+state.score+' — Move '+state.moves;scheduleTick()}
 updateSpeed();resetGame();
 </script>
 </body>

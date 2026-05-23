@@ -32,7 +32,7 @@ Section: Arity Map
    generic-count : Integer between 0 and 255
   }
 
-  bsearch-arity-pos : List ArityEntry -> Text -> Integer -> Integer -> Integer
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
   bsearch-arity-pos (entries) (name) (lo) (hi) =
    if lo >= hi then lo
    else let mid = lo + (hi - lo) / 2
@@ -40,13 +40,13 @@ Section: Arity Map
    in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
       else bsearch-arity-pos entries name (mid + 1) hi
 
-  sorted-insert-arity : List ArityEntry -> ArityEntry -> List ArityEntry
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
   sorted-insert-arity (xs) (e) =
    let len = list-length xs
    in let pos = bsearch-arity-pos xs (e.name) 0 len
    in list-insert-at xs pos e
 
-  build-arity-map : List IRDef -> Integer -> List ArityEntry -> List ArityEntry
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
   build-arity-map (defs) (i) (acc) =
    if i == list-length defs then acc
    else let d = list-at defs i
@@ -56,7 +56,7 @@ Section: Arity Map
     generic-count = 0
    }))
 
-  lookup-arity : List ArityEntry -> Text -> Integer
+  lookup-arity : List ArityEntry, Text -> Integer
   lookup-arity (entries) (name) =
    let len = list-length entries
    in let pos = bsearch-arity-pos entries name 0 len
@@ -66,7 +66,7 @@ Section: Arity Map
 
 Section: Apply Chain
 
-  bab-leaf-chain : IRExpr -> List IRExpr -> ApplyChain
+  bab-leaf-chain : IRExpr, List IRExpr -> ApplyChain
   bab-leaf-chain (e) (acc) = ApplyChain { root = e, args = acc }
 
 Section: Store Allocation
@@ -85,11 +85,11 @@ Section: Store Allocation
   bab-initial-state : BabState
   bab-initial-state = BabState { next-store = 10, store-map = [], label-counter = 0 }
 
-  bab-lookup-store : List BabBinding -> Text -> Integer
+  bab-lookup-store : List BabBinding, Text -> Integer
   bab-lookup-store (bindings) (name) =
    bab-lookup-loop bindings name 0
 
-  bab-lookup-loop : List BabBinding -> Text -> Integer -> Integer
+  bab-lookup-loop : List BabBinding, Text, Integer -> Integer
   bab-lookup-loop (bindings) (name) (i) =
    if i == list-length bindings then -1
    else let b = list-at bindings i
@@ -101,7 +101,7 @@ Section: Store Allocation
    state : BabState
   }
 
-  bab-alloc : BabState -> Text -> BabAllocResult
+  bab-alloc : BabState, Text -> BabAllocResult
   bab-alloc (st) (name) =
    let existing = bab-lookup-store (st.store-map) name
    in if existing >= 0 then BabAllocResult { col = existing, state = st }
@@ -127,7 +127,7 @@ Section: Store Allocation
 
 Section: Type Definition Emission
 
-  emit-bab-type-defs : List ATypeDef -> Integer -> Text
+  emit-bab-type-defs : List ATypeDef, Integer -> Text
   emit-bab-type-defs (tds) (i) =
    if i == list-length tds then ""
    else ". Type: " ++ bab-type-def-name (list-at tds i) ++ " (represented as Store columns)\n" ++ emit-bab-type-defs tds (i + 1)
@@ -145,7 +145,7 @@ Section: Expression Emission
    state : BabState
   }
 
-  bab-emit-to-store : IRExpr -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-to-store : IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-to-store (e) (target) (st) (arities) =
    when e
     is IrIntLit (n) (sp) -> BabEmitResult {
@@ -185,14 +185,22 @@ Section: Expression Emission
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> bab-emit-to-store body target st arities
     is IrRecord (rname) (fields) (ty) (sp) -> bab-emit-record-to-store fields target st arities
     is IrFieldAccess (rec) (field) (ty) (sp) -> bab-emit-to-store rec target st arities
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> BabEmitResult {
+     text = ". field-store not supported on Analytical Engine\n",
+     state = st
+    }
     is IrFork (body) (ty) (sp) -> bab-emit-to-store body target st arities
     is IrAwait (task) (ty) (sp) -> bab-emit-to-store task target st arities
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> BabEmitResult {
+     text = ". try not supported on Analytical Engine\nN000\nS" ++ bab-format-col target ++ "\n",
+     state = st
+    }
     is IrError (msg) (ty) (sp) -> BabEmitResult {
      text = ". error: " ++ msg ++ "\nN000\nS" ++ bab-format-col target ++ "\n",
      state = st
     }
 
-  bab-emit-name-to-store : Text -> Integer -> BabState -> BabEmitResult
+  bab-emit-name-to-store : Text, Integer, BabState -> BabEmitResult
   bab-emit-name-to-store (n) (target) (st) =
    let src = bab-lookup-store (st.store-map) n
    in if src >= 0 then BabEmitResult {
@@ -204,7 +212,7 @@ Section: Expression Emission
     state = st
    }
 
-  bab-emit-binary-to-store : IRBinaryOp -> IRExpr -> IRExpr -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-binary-to-store : IRBinaryOp, IRExpr, IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-binary-to-store (op) (l) (r) (target) (st) (arities) =
    when op
     is IrAppendText -> BabEmitResult {
@@ -237,7 +245,7 @@ Section: Expression Emission
     is IrAnd -> bab-emit-simple-binary-to-store op l r target st arities
     is IrOr -> bab-emit-simple-binary-to-store op l r target st arities
 
-  bab-emit-simple-binary-to-store : IRBinaryOp -> IRExpr -> IRExpr -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-simple-binary-to-store : IRBinaryOp, IRExpr, IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-simple-binary-to-store (op) (l) (r) (target) (st) (arities) =
    let la = bab-alloc st "_left"
    in let ra = bab-alloc (la.state) "_right"
@@ -248,7 +256,7 @@ Section: Expression Emission
     state = rr.state
    }
 
-  bab-emit-pow-to-store : IRExpr -> IRExpr -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-pow-to-store : IRExpr, IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-pow-to-store (base) (exp) (target) (st) (arities) =
    let ba = bab-alloc st "_pow_base"
    in let ea = bab-alloc (ba.state) "_pow_exp"
@@ -272,7 +280,7 @@ Section: Expression Emission
     state = l2r.state
    }
 
-  bab-emit-negate-to-store : IRExpr -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-negate-to-store : IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-negate-to-store (operand) (target) (st) (arities) =
    let na = bab-alloc st "_neg"
    in let nr = bab-emit-to-store operand (na.col) (na.state) arities
@@ -281,7 +289,7 @@ Section: Expression Emission
     state = nr.state
    }
 
-  bab-emit-if-to-store : IRExpr -> IRExpr -> IRExpr -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-if-to-store : IRExpr, IRExpr, IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-if-to-store (cond) (t) (el) (target) (st) (arities) =
    let ca = bab-alloc st "_if_cond"
    in let cr = bab-emit-to-store cond (ca.col) (ca.state) arities
@@ -294,18 +302,18 @@ Section: Expression Emission
     state = er.state
    }
 
-  bab-emit-let-to-store : Text -> IRExpr -> IRExpr -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-let-to-store : Text, IRExpr, IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-let-to-store (name) (val) (body) (target) (st) (arities) =
    let la = bab-alloc st name
    in let vr = bab-emit-to-store val (la.col) (la.state) arities
    in bab-emit-to-store body target (vr.state) arities
 
-  bab-emit-apply-to-store : IRExpr -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-apply-to-store : IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-apply-to-store (e) (target) (st) (arities) =
    let chain = collect-apply-chain e []
    in bab-emit-apply-root chain target st arities
 
-  bab-emit-apply-root : ApplyChain -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-apply-root : ApplyChain, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-apply-root (chain) (target) (st) (arities) =
    when chain.root
     is IrName (n) (ty) (sp) -> bab-emit-apply-named n (chain.args) target st arities
@@ -327,11 +335,13 @@ Section: Expression Emission
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> bab-emit-to-store (chain.root) target st arities
     is IrRecord (n) (fs) (ty) (sp) -> bab-emit-to-store (chain.root) target st arities
     is IrFieldAccess (r) (f) (ty) (sp) -> bab-emit-to-store (chain.root) target st arities
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> bab-emit-to-store (chain.root) target st arities
     is IrFork (body) (ty) (sp) -> bab-emit-to-store (chain.root) target st arities
     is IrAwait (task) (ty) (sp) -> bab-emit-to-store (chain.root) target st arities
+    is IrTry (mx) (bd) (fb) (fs) (ty) (sp) -> bab-emit-to-store (chain.root) target st arities
     is IrError (m) (ty) (sp) -> bab-emit-to-store (chain.root) target st arities
 
-  bab-emit-apply-named : Text -> List IRExpr -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-apply-named : Text, List IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-apply-named (n) (args) (target) (st) (arities) =
    if n == "negate" then bab-emit-builtin-negate (list-at args 0) target st arities
    else if n == "abs" then bab-emit-builtin-abs (list-at args 0) target st arities
@@ -358,7 +368,7 @@ Section: Expression Emission
    else if n == "show" then bab-emit-to-store (list-at args 0) target st arities
    else bab-emit-call-def n args target st arities
 
-  bab-emit-call-def : Text -> List IRExpr -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-call-def : Text, List IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-call-def (n) (args) (target) (st) (arities) =
    let ar = lookup-arity arities n
    in if ar < 0 then BabEmitResult {
@@ -371,7 +381,7 @@ Section: Expression Emission
     state = arg-r.state
    }
 
-  bab-emit-call-args : List IRExpr -> Integer -> BabState -> List ArityEntry -> Integer -> BabEmitResult
+  bab-emit-call-args : List IRExpr, Integer, BabState, List ArityEntry, Integer -> BabEmitResult
   bab-emit-call-args (args) (target) (st) (arities) (i) =
    if i >= list-length args then BabEmitResult { text = "", state = st }
    else let aa = bab-alloc st ("_arg_" ++ integer-to-text i)
@@ -379,7 +389,7 @@ Section: Expression Emission
    in let rest = bab-emit-call-args args target (ar.state) arities (i + 1)
    in BabEmitResult { text = ar.text ++ rest.text, state = rest.state }
 
-  bab-emit-builtin-print : IRExpr -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-builtin-print : IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-builtin-print (arg) (target) (st) (arities) =
    let pa = bab-alloc st "_print"
    in let pr = bab-emit-to-store arg (pa.col) (pa.state) arities
@@ -389,7 +399,7 @@ Section: Expression Emission
     state = pr.state
    }
 
-  bab-emit-builtin-negate : IRExpr -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-builtin-negate : IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-builtin-negate (arg) (target) (st) (arities) =
    let na = bab-alloc st "_negate"
    in let nr = bab-emit-to-store arg (na.col) (na.state) arities
@@ -398,7 +408,7 @@ Section: Expression Emission
     state = nr.state
    }
 
-  bab-emit-builtin-abs : IRExpr -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-builtin-abs : IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-builtin-abs (arg) (target) (st) (arities) =
    let aa = bab-alloc st "_abs"
    in let ar = bab-emit-to-store arg (aa.col) (aa.state) arities
@@ -416,7 +426,7 @@ Section: Expression Emission
     state = l2r.state
    }
 
-  bab-emit-builtin-min : IRExpr -> IRExpr -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-builtin-min : IRExpr, IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-builtin-min (a) (b) (target) (st) (arities) =
    let la = bab-alloc st "_min_a"
    in let ra = bab-alloc (la.state) "_min_b"
@@ -436,7 +446,7 @@ Section: Expression Emission
     state = l2r.state
    }
 
-  bab-emit-builtin-max : IRExpr -> IRExpr -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-builtin-max : IRExpr, IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-builtin-max (a) (b) (target) (st) (arities) =
    let la = bab-alloc st "_max_a"
    in let ra = bab-alloc (la.state) "_max_b"
@@ -456,7 +466,7 @@ Section: Expression Emission
     state = l2r.state
    }
 
-  bab-emit-builtin-mod : IRExpr -> IRExpr -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-builtin-mod : IRExpr, IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-builtin-mod (a) (b) (target) (st) (arities) =
    let la = bab-alloc st "_mod_a"
    in let ra = bab-alloc (la.state) "_mod_b"
@@ -500,7 +510,7 @@ Section: Expression Emission
 
 Section: List, Match, Act, Record Emission
 
-  bab-emit-list-to-store : List IRExpr -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-list-to-store : List IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-list-to-store (es) (target) (st) (arities) =
    if list-length es == 0 then BabEmitResult {
     text = ". empty list\nN000\nS" ++ bab-format-col target ++ "\n",
@@ -508,7 +518,7 @@ Section: List, Match, Act, Record Emission
    }
    else bab-emit-list-elems es target st arities 0
 
-  bab-emit-list-elems : List IRExpr -> Integer -> BabState -> List ArityEntry -> Integer -> BabEmitResult
+  bab-emit-list-elems : List IRExpr, Integer, BabState, List ArityEntry, Integer -> BabEmitResult
   bab-emit-list-elems (es) (target) (st) (arities) (i) =
    if i >= list-length es then BabEmitResult { text = "", state = st }
    else let ea = bab-alloc st ("_list_" ++ integer-to-text i)
@@ -519,7 +529,7 @@ Section: List, Match, Act, Record Emission
     state = rest.state
    }
 
-  bab-emit-match-to-store : IRExpr -> List IRBranch -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-match-to-store : IRExpr, List IRBranch, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-match-to-store (scrut) (branches) (target) (st) (arities) =
    let sa = bab-alloc st "_match_scrut"
    in let sr = bab-emit-to-store scrut (sa.col) (sa.state) arities
@@ -530,11 +540,11 @@ Section: List, Match, Act, Record Emission
     state = arms.state
    }
 
-  bab-emit-match-arms : List IRBranch -> Integer -> Integer -> BabState -> List ArityEntry -> Integer -> BabEmitResult
+  bab-emit-match-arms : List IRBranch, Integer, Integer, BabState, List ArityEntry, Integer -> BabEmitResult
   bab-emit-match-arms (branches) (scrut-col) (target) (st) (arities) (end-label) =
    bab-emit-match-arms-loop branches scrut-col target st arities end-label 0
 
-  bab-emit-match-arms-loop : List IRBranch -> Integer -> Integer -> BabState -> List ArityEntry -> Integer -> Integer -> BabEmitResult
+  bab-emit-match-arms-loop : List IRBranch, Integer, Integer, BabState, List ArityEntry, Integer, Integer -> BabEmitResult
   bab-emit-match-arms-loop (branches) (scrut-col) (target) (st) (arities) (end-label) (i) =
    if i >= list-length branches then BabEmitResult { text = "", state = st }
    else let b = list-at branches i
@@ -543,7 +553,7 @@ Section: List, Match, Act, Record Emission
    in let rest = bab-emit-match-arms-loop branches scrut-col target (arm.state) arities end-label (i + 1)
    in BabEmitResult { text = arm.text ++ rest.text, state = rest.state }
 
-  bab-emit-match-one-arm : IRBranch -> Integer -> Integer -> BabState -> List ArityEntry -> Integer -> Boolean -> BabEmitResult
+  bab-emit-match-one-arm : IRBranch, Integer, Integer, BabState, List ArityEntry, Integer, Boolean -> BabEmitResult
   bab-emit-match-one-arm (b) (scrut-col) (target) (st) (arities) (end-label) (is-last) =
    when b.pattern
     is IrWildPat (sp) -> bab-emit-to-store (b.body) target st arities
@@ -584,11 +594,11 @@ Section: List, Match, Act, Record Emission
    else if s == "False" then 0
    else 0
 
-  bab-emit-act-to-store : List IRActStmt -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-act-to-store : List IRActStmt, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-act-to-store (stmts) (target) (st) (arities) =
    bab-emit-act-stmts-loop stmts target st arities 0
 
-  bab-emit-act-stmts-loop : List IRActStmt -> Integer -> BabState -> List ArityEntry -> Integer -> BabEmitResult
+  bab-emit-act-stmts-loop : List IRActStmt, Integer, BabState, List ArityEntry, Integer -> BabEmitResult
   bab-emit-act-stmts-loop (stmts) (target) (st) (arities) (i) =
    if i >= list-length stmts then BabEmitResult {
     text = "",
@@ -603,7 +613,7 @@ Section: List, Match, Act, Record Emission
     state = rest.state
    }
 
-  bab-emit-act-one-stmt : IRActStmt -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-act-one-stmt : IRActStmt, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-act-one-stmt (s) (target) (st) (arities) =
    when s
     is IrDoBind (name) (ty) (val) (sp) ->
@@ -611,11 +621,11 @@ Section: List, Match, Act, Record Emission
      in bab-emit-to-store val (ba.col) (ba.state) arities
     is IrDoExec (e) (sp) -> bab-emit-to-store e target st arities
 
-  bab-emit-record-to-store : List IRFieldVal -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-record-to-store : List IRFieldVal, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-record-to-store (fields) (target) (st) (arities) =
    bab-emit-record-fields fields target st arities 0
 
-  bab-emit-record-fields : List IRFieldVal -> Integer -> BabState -> List ArityEntry -> Integer -> BabEmitResult
+  bab-emit-record-fields : List IRFieldVal, Integer, BabState, List ArityEntry, Integer -> BabEmitResult
   bab-emit-record-fields (fields) (target) (st) (arities) (i) =
    if i >= list-length fields then BabEmitResult { text = "", state = st }
    else let f = list-at fields i
@@ -626,7 +636,7 @@ Section: List, Match, Act, Record Emission
 
 Section: Tail Call Optimization
 
-  bab-is-self-call : IRExpr -> Text -> Boolean
+  bab-is-self-call : IRExpr, Text -> Boolean
   bab-is-self-call (e) (func-name) =
    let chain = collect-apply-chain e []
    in when chain.root
@@ -649,11 +659,13 @@ Section: Tail Call Optimization
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> False
     is IrRecord (n) (fs) (ty) (sp) -> False
     is IrFieldAccess (r) (f) (ty) (sp) -> False
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> False
     is IrFork (body) (ty) (sp) -> False
     is IrAwait (task) (ty) (sp) -> False
+    is IrTry (mx) (bd) (fb) (fs) (ty) (sp) -> False
     is IrError (m) (ty) (sp) -> False
 
-  bab-has-tail-call : IRExpr -> Text -> Boolean
+  bab-has-tail-call : IRExpr, Text -> Boolean
   bab-has-tail-call (e) (func-name) =
    when e
     is IrIf (c) (t) (el) (ty) (sp) -> bab-has-tail-call t func-name | bab-has-tail-call el func-name
@@ -675,11 +687,13 @@ Section: Tail Call Optimization
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> False
     is IrRecord (n) (fs) (ty) (sp) -> False
     is IrFieldAccess (r) (f) (ty) (sp) -> False
+    is IrFieldStore (r) (f) (v) (ty) (sp) -> False
     is IrFork (body) (ty) (sp) -> False
     is IrAwait (task) (ty) (sp) -> False
+    is IrTry (mx) (bd) (fb) (fs) (ty) (sp) -> False
     is IrError (m) (ty) (sp) -> False
 
-  bab-has-tail-call-branches : List IRBranch -> Text -> Integer -> Boolean
+  bab-has-tail-call-branches : List IRBranch, Text, Integer -> Boolean
   bab-has-tail-call-branches (branches) (func-name) (i) =
    if i == list-length branches then False
    else let b = list-at branches i
@@ -691,7 +705,7 @@ Section: Tail Call Optimization
    if list-length (d.params) == 0 then False
    else bab-has-tail-call (d.body) (d.name)
 
-  bab-emit-tco-body : IRExpr -> Text -> List IRParam -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-tco-body : IRExpr, Text, List IRParam, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-tco-body (e) (func-name) (params) (result-col) (st) (arities) =
    when e
     is IrIf (c) (t) (el) (ty) (sp) ->
@@ -746,15 +760,17 @@ Section: Tail Call Optimization
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> bab-emit-to-store e result-col st arities
     is IrRecord (rn) (fs) (ty) (sp) -> bab-emit-to-store e result-col st arities
     is IrFieldAccess (rec) (f) (ty) (sp) -> bab-emit-to-store e result-col st arities
+    is IrFieldStore (rec) (f) (v) (ty) (sp) -> bab-emit-to-store e result-col st arities
     is IrFork (body) (ty) (sp) -> bab-emit-to-store e result-col st arities
     is IrAwait (task) (ty) (sp) -> bab-emit-to-store e result-col st arities
+    is IrTry (mx) (bd) (fb) (fs) (ty) (sp) -> bab-emit-to-store e result-col st arities
     is IrError (m) (ty) (sp) -> bab-emit-to-store e result-col st arities
 
-  bab-emit-tco-match-arms : List IRBranch -> Text -> List IRParam -> Integer -> Integer -> BabState -> List ArityEntry -> Integer -> BabEmitResult
+  bab-emit-tco-match-arms : List IRBranch, Text, List IRParam, Integer, Integer, BabState, List ArityEntry, Integer -> BabEmitResult
   bab-emit-tco-match-arms (branches) (func-name) (params) (result-col) (scrut-col) (st) (arities) (end-label) =
    bab-emit-tco-match-arms-loop branches func-name params result-col scrut-col st arities end-label 0
 
-  bab-emit-tco-match-arms-loop : List IRBranch -> Text -> List IRParam -> Integer -> Integer -> BabState -> List ArityEntry -> Integer -> Integer -> BabEmitResult
+  bab-emit-tco-match-arms-loop : List IRBranch, Text, List IRParam, Integer, Integer, BabState, List ArityEntry, Integer, Integer -> BabEmitResult
   bab-emit-tco-match-arms-loop (branches) (func-name) (params) (result-col) (scrut-col) (st) (arities) (end-label) (i) =
    if i >= list-length branches then BabEmitResult { text = "", state = st }
    else let b = list-at branches i
@@ -763,7 +779,7 @@ Section: Tail Call Optimization
    in let rest = bab-emit-tco-match-arms-loop branches func-name params result-col scrut-col (arm.state) arities end-label (i + 1)
    in BabEmitResult { text = arm.text ++ rest.text, state = rest.state }
 
-  bab-emit-tco-match-one-arm : IRBranch -> Text -> List IRParam -> Integer -> Integer -> BabState -> List ArityEntry -> Integer -> Boolean -> BabEmitResult
+  bab-emit-tco-match-one-arm : IRBranch, Text, List IRParam, Integer, Integer, BabState, List ArityEntry, Integer, Boolean -> BabEmitResult
   bab-emit-tco-match-one-arm (b) (func-name) (params) (result-col) (scrut-col) (st) (arities) (end-label) (is-last) =
    when b.pattern
     is IrWildPat (sp) -> bab-emit-tco-body (b.body) func-name params result-col st arities
@@ -798,12 +814,12 @@ Section: Tail Call Optimization
       state = body-r.state
      }
 
-  bab-emit-tco-jump : IRExpr -> Text -> List IRParam -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-tco-jump : IRExpr, Text, List IRParam, BabState, List ArityEntry -> BabEmitResult
   bab-emit-tco-jump (e) (func-name) (params) (st) (arities) =
    let chain = collect-apply-chain e []
    in bab-emit-tco-move-args (chain.args) params st arities 0
 
-  bab-emit-tco-move-args : List IRExpr -> List IRParam -> BabState -> List ArityEntry -> Integer -> BabEmitResult
+  bab-emit-tco-move-args : List IRExpr, List IRParam, BabState, List ArityEntry, Integer -> BabEmitResult
   bab-emit-tco-move-args (args) (params) (st) (arities) (i) =
    if i >= list-length args then BabEmitResult { text = "CB TCO_LOOP\n", state = st }
    else if i >= list-length params then BabEmitResult { text = "CB TCO_LOOP\n", state = st }
@@ -819,7 +835,7 @@ Section: Tail Call Optimization
 
 Section: Definition Emission
 
-  bab-emit-def : IRDef -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-def : IRDef, BabState, List ArityEntry -> BabEmitResult
   bab-emit-def (d) (st) (arities) =
    let header = ". === FUNCTION: " ++ d.name ++ " ===\n"
    in let st2 = bab-alloc-params (d.params) st 0
@@ -842,7 +858,7 @@ Section: Definition Emission
    state : BabState
   }
 
-  bab-alloc-params : List IRParam -> BabState -> Integer -> BabParamResult
+  bab-alloc-params : List IRParam, BabState, Integer -> BabParamResult
   bab-alloc-params (params) (st) (i) =
    if i == list-length params then BabParamResult { text = "", state = st }
    else let p = list-at params i
@@ -855,13 +871,13 @@ Section: Definition Emission
 
 Section: Chapter Emission
 
-  bab-find-opening : List IRDef -> Integer -> Integer
+  bab-find-opening : List IRDef, Integer -> Integer
   bab-find-opening (defs) (i) =
    if i == list-length defs then -1
    else if (list-at defs i).name == "opening" then i
    else bab-find-opening defs (i + 1)
 
-  bab-emit-non-opening-defs : List IRDef -> Integer -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-non-opening-defs : List IRDef, Integer, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-non-opening-defs (defs) (i) (opening-idx) (st) (arities) =
    if i == list-length defs then BabEmitResult { text = "", state = st }
    else if i == opening-idx then bab-emit-non-opening-defs defs (i + 1) opening-idx st arities
@@ -869,7 +885,7 @@ Section: Chapter Emission
    in let rest = bab-emit-non-opening-defs defs (i + 1) opening-idx (r.state) arities
    in BabEmitResult { text = r.text ++ "\n" ++ rest.text, state = rest.state }
 
-  bab-emit-opening-body : IRExpr -> Integer -> BabState -> List ArityEntry -> BabEmitResult
+  bab-emit-opening-body : IRExpr, Integer, BabState, List ArityEntry -> BabEmitResult
   bab-emit-opening-body (e) (target) (st) (arities) =
    when e
     is IrAct (stmts) (ty) (sp) -> bab-emit-act-to-store stmts target st arities
@@ -891,11 +907,13 @@ Section: Chapter Emission
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> bab-emit-to-store e target st arities
     is IrRecord (rname) (fields) (ty) (sp) -> bab-emit-to-store e target st arities
     is IrFieldAccess (rec) (field) (ty) (sp) -> bab-emit-to-store e target st arities
+    is IrFieldStore (rec) (field) (v) (ty) (sp) -> bab-emit-to-store e target st arities
     is IrFork (body) (ty) (sp) -> bab-emit-to-store e target st arities
     is IrAwait (task) (ty) (sp) -> bab-emit-to-store e target st arities
+    is IrTry (mx) (bd) (fb) (fs) (ty) (sp) -> bab-emit-to-store e target st arities
     is IrError (msg) (ty) (sp) -> bab-emit-to-store e target st arities
 
-  emit-babbage-chapter : IRChapter -> List ATypeDef -> Text
+  emit-babbage-chapter : IRChapter, List ATypeDef -> Text
   emit-babbage-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
    in let opening-idx = bab-find-opening (m.defs) 0

@@ -14,11 +14,11 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'vm-config.ps1')
 
-$run = Start-QemuRun -Kernel $Kernel -ConnectTimeoutSec 30 -MemMB 2048 -PCore $PCore -ExtraArgs @('-drive', "file=$Disk,format=raw,if=ide,index=0")
+$run = Start-VmRun -Kernel $Kernel -ConnectTimeoutSec 30 -MemMB 2048 -PCore $PCore -ExtraArgs @('-drive', "file=$Disk,format=raw,if=ide,index=0")
 if (-not $run) { Write-Host 'FAIL: VM did not start with disk'; exit 1 }
 
 try {
-    if (-not (Read-QemuReady -Conn $run.Conn -TimeoutSec 30)) {
+    if (-not (Read-VmReady -Conn $run.Conn -TimeoutSec 30)) {
         Write-Host 'FAIL: READY not received'; exit 1
     }
     $stream = $run.Conn.Data.GetStream()
@@ -40,6 +40,6 @@ try {
     }
     exit 0
 } finally {
-    Close-Qemu -Conn $run.Conn -Process $run.Process
+    Close-Vm -Conn $run.Conn -Process $run.Process
     Remove-Item -Force $run.StdoutFile, $run.StderrFile -ErrorAction SilentlyContinue
 }

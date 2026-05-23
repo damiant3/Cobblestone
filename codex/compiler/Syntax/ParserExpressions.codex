@@ -66,11 +66,15 @@ Section: Expression Parsing
 
   parse-application : ParseState -> ParseExprResult
   parse-application (st) =
-   let func-result = parse-atom st
-   in unwrap-expr-ok func-result parse-app-loop
+   let app-col = (current st).column
+   in let func-result = parse-atom st
+   in unwrap-expr-ok func-result (app-loop-start app-col)
 
-  parse-app-loop : Expr, ParseState -> ParseExprResult
-  parse-app-loop (func) (st) =
+  app-loop-start : Integer, Expr, ParseState -> ParseExprResult
+  app-loop-start (app-col) (func) (st) = parse-app-loop app-col func st
+
+  parse-app-loop : Integer, Expr, ParseState -> ParseExprResult
+  parse-app-loop (app-col) (func) (st) =
    if parse-fuel-exhausted st then ExprOk func (emit-parse-fuel-error st "parse-app-loop")
    else let st-fueled = consume-parse-fuel st
    in if is-compound func then parse-dot-only func st-fueled
@@ -78,12 +82,35 @@ Section: Expression Parsing
    else let st1 = if st-fueled.paren-depth > 0 then skip-newlines st-fueled else st-fueled
    in if is-app-start (current-kind st1) then
      let arg-result = parse-atom st1
-     in unwrap-expr-ok arg-result (continue-app func)
-   else parse-field-access func st1
+     in unwrap-expr-ok arg-result (continue-app app-col func)
+   else let st2 = check-multiline-app app-col func st1
+   in parse-field-access func st2
 
-  continue-app : Expr, Expr, ParseState -> ParseExprResult
-  continue-app (func) (arg) (st) =
-   parse-app-loop (deck-record (AppExpr func arg)) st
+  is-applied : Expr -> Boolean
+  is-applied (e) = when e
+   is AppExpr (f) (a) -> True
+   is otherwise -> False
+
+  check-multiline-app : Integer, Expr, ParseState -> ParseState
+  check-multiline-app (app-col) (func) (st) =
+   if st.paren-depth > 0 then st
+   else if is-applied func == False then st
+   else if st.pos == 0 then st
+   else let peek-pos = skip-newlines-pos (st.tokens) (st.pos) (list-length (st.tokens))
+   in if peek-pos == st.pos then st
+   else if peek-pos >= list-length (st.tokens) - 1 then st
+   else let next-tok = list-at (st.tokens) peek-pos
+   in let last-tok = list-at (st.tokens) (st.pos - 1)
+   in if is-left-paren (next-tok.kind) | is-left-bracket (next-tok.kind)
+      then if next-tok.line > last-tok.line
+           then let span = span-at (next-tok.line) (next-tok.column) (next-tok.offset) (next-tok.length) (next-tok.file-id)
+                in __record-set st "bag" (bag-add (st.bag) (make-warning cdx-multiline-application ("Application ended at newline; '" & token-text next-tok & "' on line " & integer-to-text (next-tok.line) & " is not parsed as an argument (column " & integer-to-text (next-tok.column) & ", application started at column " & integer-to-text app-col & "). Place all arguments on one line or wrap in parentheses.") span))
+           else st
+      else st
+
+  continue-app : Integer, Expr, Expr, ParseState -> ParseExprResult
+  continue-app (app-col) (func) (arg) (st) =
+   parse-app-loop app-col (deck-record (AppExpr func arg)) st
 
   parse-atom : ParseState -> ParseExprResult
   parse-atom (st) =

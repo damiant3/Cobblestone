@@ -1,18 +1,79 @@
 Chapter: CobolPlug
-  cites Codex chapter Console
-  cites Codex chapter Files
+  cites Codex chapter General
   cites Codex chapter Text
+  cites Codex chapter Characters
   cites Codex chapter Lists
+  cites Net chapter NetIO
+  cites Net chapter NetworkStack
+  cites Net chapter TcpTransport
+  cites Kernel chapter Ne2k
+  cites Foreword chapter CCE
 
- Entry point for the COBOL emit-plug.
+ Plug entry. Connects to host TCP server on port 9100,
+ receives IR text, runs the emitter, sends source back.
+
+Section: Helpers
+
+  text-to-bytes-chunk : Text, Integer, Integer, List Integer -> List Integer
+  text-to-bytes-chunk (s) (i) (stop) (acc) =
+   if i >= stop then acc
+   else text-to-bytes-chunk s (i + 1) stop (list-push acc (to-unicode (char-code (char-at s i))))
+
+  bytes-to-text-chunk : List Integer, Integer, Integer, Text -> Text
+  bytes-to-text-chunk (bs) (i) (stop) (acc) =
+   if i >= stop then acc
+   else bytes-to-text-chunk bs (i + 1) stop (acc & char-to-text (code-to-char (list-at bs i)))
+
+  bytes-to-text : List Integer, Integer, Integer, Text -> Text
+  bytes-to-text (bs) (off) (total) (acc) =
+   if off >= total then acc
+   else let stop = if off + 256 > total then total else off + 256
+   in let chunk = bytes-to-text-chunk bs off stop ""
+   in bytes-to-text bs stop total (acc & chunk)
+
+  local-mac : List Integer = [82, 84, 0, 18, 52, 86]
+  local-ip : List Integer = [10, 0, 2, 15]
+  gateway-ip : List Integer = [10, 0, 2, 2]
+  host-ip : List Integer = [127, 0, 0, 1]
+
+Section: Streaming Send
+
+  send-text-loop : TcpTransportState, Text, Integer, Integer -> TcpTransportState
+  send-text-loop (ts) (t) (off) (len) =
+   if off >= len then ts
+   else let stop = if off + 1400 > len then len else off + 1400
+   in let chunk = text-to-bytes-chunk t off stop []
+   in let r = net-send (ts.session) chunk
+   in let ts1 = TcpTransportState { session = r.session, recv-buf = ts.recv-buf, messages-sent = ts.messages-sent, messages-received = ts.messages-received }
+   in let ts2 = flush-transport-outbox ts1
+   in send-text-loop ts2 t stop len
+
+  send-text : TcpTransportState, Text -> TcpTransportState
+  send-text (ts) (t) = send-text-loop ts t 0 (text-length t)
+
+Section: Drain
+
+  drain-wait : TcpTransportState, Integer -> Integer
+  drain-wait (ts) (tries) =
+   if tries > 5000000 then 0
+   else let frame = ne2k-recv-frame
+   in if list-length frame == 0 then drain-wait ts (tries + 1)
+   else 0
 
 Section: Body
 
   opening : [Console, FileSystem] Nothing = act
-   source <- read-file ""
-   let parsed = parse-ir-chapter source
-   in let cobol-text = emit-cobol-chapter (parsed.chapter) (parsed.type-defs)
-   in print-line-uni cobol-text
+   let sess = net-session-new local-mac local-ip gateway-ip 49152 9100 host-ip 1000
+   in let ts = transport-new sess
+   in let ts1 = net-io-connect ts
+   in let recv = net-io-recv-loop ts1 0
+   in if recv.has-message then
+    let ir-text = bytes-to-text (recv.body) 0 (list-length (recv.body)) ""
+    in let parsed = parse-ir-chapter ir-text
+    in let output = emit-cobol-chapter (parsed.chapter) (parsed.type-defs)
+    in let ts2 = send-text (recv.transport) output
+    in let ts3 = net-io-close ts2
+    in let drained = drain-wait ts3 0
+    in act print-line-uni ("OK defs=" & show (list-length ((parsed.chapter).defs) + drained - drained)) end
+   else act print-line-uni "FAIL" end
   end
-
-Page 1

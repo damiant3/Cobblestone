@@ -4,49 +4,189 @@
 <meta charset="utf-8">
 <title>Codex — War</title>
 <link rel="stylesheet" href="/web/style.css?v={{VERSION}}">
+<script src="/web/card-utils.js"></script>
 <style>
-  body { background: #0d0a06;  }
+  body { background: #1a0a0a; }
   .game-page { max-width: 700px; margin: 0 auto; }
   .bg-scene { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
     background: url('/assets/games/war/bg-scene.png') center/cover no-repeat;
     filter: brightness(0.3) blur(2px); z-index: 0; }
   .content { position: relative; z-index: 1; }
-  .arena { background: #0d0a06cc; border: 2px solid #8a6a3a44; border-radius: 12px;
-    padding: 30px; margin-bottom: 16px; text-align: center; min-height: 200px;
-    backdrop-filter: blur(8px); box-shadow: 0 8px 30px rgba(0,0,0,0.5);
-    display: flex; flex-direction: column; align-items: center; justify-content: center; }
-  .result-text { font-size: 18px; font-weight: bold; color: #c8a060; margin-top: 16px; line-height: 1.6; }
-  .flavor { color: #8a6a3a88; font-size: 13px; font-style: italic; margin-top: 8px; }
-  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; justify-content: center; }
-  .controls button { background: linear-gradient(180deg, #8a6a3a, #0d0a06);
-    border: 1px solid #8a6a3a; border-radius: 6px; color: #c8a060;
-    font-family: inherit; font-size: 14px; padding: 10px 28px; cursor: pointer;
-    text-transform: uppercase; letter-spacing: 1px; }
+  .card { width: 120px; height: 180px; border-radius: 8px; position: relative;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.6); overflow: hidden; flex-shrink: 0;
+    transition: transform 0.3s, box-shadow 0.3s; }
+  .card img { width: 100%; height: 100%; object-fit: cover; }
+  .card-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+  .corner-tl { position: absolute; top: 5px; left: 7px; display: flex; flex-direction: column;
+    align-items: center; line-height: 1; }
+  .corner-tl .c-rank { font-size: 18px; font-weight: bold; }
+  .corner-tl .c-suit { font-size: 16px; }
+  .corner-br { position: absolute; bottom: 5px; right: 7px; display: flex; flex-direction: column;
+    align-items: center; line-height: 1; transform: rotate(180deg); }
+  .corner-br .c-rank { font-size: 18px; font-weight: bold; }
+  .corner-br .c-suit { font-size: 16px; }
+  .center-pips { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    font-size: 22px; line-height: 1.2; text-align: center;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.7); display: flex; flex-direction: column;
+    align-items: center; gap: 2px; }
+  .pip-row { display: flex; gap: 5px; }
+  .suit-red { color: #ff3333; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+  .suit-black { color: #eee; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+  .card-winner { box-shadow: 0 0 20px #ff4444, 0 0 40px #ff444466;
+    transform: scale(1.08); }
+  .arena { background: #1a0a0acc; border: 3px solid #ff444433; border-radius: 16px;
+    padding: 24px; margin-bottom: 12px; backdrop-filter: blur(8px);
+    box-shadow: 0 8px 30px rgba(0,0,0,0.5); }
+  .piles { display: flex; align-items: center; justify-content: center; gap: 50px; margin-bottom: 16px; }
+  .pile-area { text-align: center; }
+  .pile-label { font-size: 12px; color: #ff444466; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 6px; }
+  .pile-count { font-size: 42px; font-weight: bold; color: #ff4444; }
+  .pile-sub { font-size: 11px; color: #ff444444; }
+  .pile-bar { width: 80px; height: 8px; background: #ff444422; border-radius: 4px; margin: 6px auto 0;
+    overflow: hidden; }
+  .pile-fill { height: 100%; background: #ff4444; border-radius: 4px; transition: width 0.3s; }
+  .vs-text { font-size: 28px; font-weight: bold; color: #ff444433; }
+  .battle { display: flex; align-items: center; justify-content: center; gap: 24px;
+    padding: 20px; border-top: 1px solid #ff444422; min-height: 60px; }
+  .battle-side { text-align: center; }
+  .battle-label { font-size: 11px; color: #ff444466; text-transform: uppercase; margin-bottom: 6px; }
+  .battle-card { min-height: 190px; display: flex; align-items: center; justify-content: center; }
+  .battle-vs { font-size: 18px; color: #ff444444; font-weight: bold; }
+  .round-info { text-align: center; color: #ff444488; font-size: 14px; margin-bottom: 10px; }
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; justify-content: center; }
+  .controls button { background: linear-gradient(180deg, #cc3333, #1a0a0a); border: 2px solid #ff4444;
+    border-radius: 20px; color: #ff4444; font-family: inherit; font-size: 14px; padding: 8px 24px;
+    cursor: pointer; font-weight: bold; text-transform: uppercase; }
   .controls button:hover { color: #fff; }
   .controls button:disabled { opacity: 0.3; }
-  .engine-tag { background: #0d0a06; color: #8a6a3a; font-size: 10px; padding: 2px 8px;
-    border-radius: 4px; margin-left: 12px; border: 1px solid #8a6a3a44; }
-  .history { background: #0d0a06cc; border: 1px solid #8a6a3a22; border-radius: 6px 6px 0 0;
-    padding: 8px 14px; max-height: 80px; overflow-y: auto; font-size: 11px;
-    color: #8a6a3a66; line-height: 1.6; backdrop-filter: blur(4px);
-    position: fixed; bottom: 0; left: 0; right: 0; z-index: 10; }
+  .speed-label { color: #ff444466; font-size: 12px; }
+  .engine-tag { background: #1a0a0a; color: #ff4444; font-size: 10px; padding: 2px 8px;
+    border-radius: 10px; margin-left: 12px; border: 1px solid #ff444444; }
+  .rules { background: #1a0a0a99; border: 1px solid #ff444422; border-radius: 8px; padding: 16px;
+    margin-top: 16px; color: #ff444488; font-size: 13px; line-height: 1.6; }
+  .rules summary { color: #ff4444; cursor: pointer; font-weight: bold; font-size: 14px; }
+  .rules p { margin: 8px 0; }
 </style>
 </head>
 <body>
 <div class="bg-scene"></div>
-<nav class="topbar" style="background:#0d0a06;border-color:#8a6a3a22">
-  <span class="topbar-logo" style="color:#c8a060">&#x2588; CODEX</span>
-  <a href="/#games" class="tab-btn" style="color:#8a6a3a66">&#x2190; Games</a>
-  <span class="tab-btn active" style="color:#c8a060;border-color:#c8a060">War</span>
+<nav class="topbar" style="background:#1a0a0a;border-color:#ff444422">
+  <span class="topbar-logo" style="color:#ff4444">&#x2588; CODEX</span>
+  <a href="/#games" class="tab-btn" style="color:#ff444466">&#x2190; Games</a>
+  <span class="tab-btn active" style="color:#ff4444;border-color:#ff4444">War</span>
   <span class="engine-tag">Codex VM</span>
 </nav>
 <div class="content game-page">
-  <div class="controls"><button id="btn" onclick="runGame()">&#x2694; To Battle!</button></div>
-  <div class="arena" id="arena"><div style="color:#8a6a3a88">SOUND THE HORNS.</div></div>
-  <div class="history" id="history"></div>
+  <div class="controls">
+    <button onclick="startGame()">&#x25B6; Play</button>
+    <button id="btn-pause" onclick="togglePause()" disabled>&#x23F8; Pause</button>
+    <button id="btn-step" onclick="stepOnce()" disabled>&#x23ED; Step</button>
+    <button onclick="resetGame()">&#x21BB; Reset</button>
+    <span class="speed-label">Speed:</span>
+    <input type="range" id="speed" min="1" max="10" value="5" style="width:80px;accent-color:#ff4444" oninput="updateSpeed()">
+  </div>
+  <div id="status-line" style="color:#ff4444;font-size:16px;text-align:center;margin-bottom:10px;font-weight:bold">War</div>
+  <div class="round-info">Round: <span id="round-num">0</span></div>
+  <div class="arena">
+    <div class="piles">
+      <div class="pile-area">
+        <div class="pile-label">Player 1</div>
+        <div class="pile-count" id="p1-count">26</div>
+        <div class="pile-sub">cards</div>
+        <div class="pile-bar"><div class="pile-fill" id="p1-bar" style="width:50%"></div></div>
+      </div>
+      <div class="vs-text">VS</div>
+      <div class="pile-area">
+        <div class="pile-label">Player 2</div>
+        <div class="pile-count" id="p2-count">26</div>
+        <div class="pile-sub">cards</div>
+        <div class="pile-bar"><div class="pile-fill" id="p2-bar" style="width:50%"></div></div>
+      </div>
+    </div>
+    <div class="battle" id="battle" style="display:none">
+      <div class="battle-side">
+        <div class="battle-label">P1 Plays</div>
+        <div class="battle-card" id="b1"></div>
+      </div>
+      <div class="battle-vs">vs</div>
+      <div class="battle-side">
+        <div class="battle-label">P2 Plays</div>
+        <div class="battle-card" id="b2"></div>
+      </div>
+    </div>
+  </div>
+  <details class="rules">
+    <summary>How to Play War</summary>
+    <p><b>Goal:</b> Win all 52 cards.</p>
+    <p><b>Setup:</b> The deck is split evenly between two players (26 cards each).</p>
+    <p><b>Each round:</b> Both players flip their top card. The higher card wins both cards. If tied, it's "war" — extra cards are wagered and the next flip decides.</p>
+    <p><b>Card ranks:</b> 2 (low) through Ace (high). Suits don't matter.</p>
+    <p><b>End:</b> The game ends when one player runs out of cards. The other player wins.</p>
+  </details>
 </div>
 <script>
-async function runGame(){var b=document.getElementById('btn');b.disabled=true;var a=document.getElementById('arena');a.innerHTML='<div style="color:#c8a060">Running on Codex VM...</div>';try{var r=await fetch('/api/run/war?seed='+(Date.now()&0x7FFFFFFF));var d=await r.json();a.innerHTML='<div class="result-text">'+d.result+'</div><div class="flavor">THE FIELD IS WON</div>';document.getElementById('history').innerHTML=d.result+'<br>'+document.getElementById('history').innerHTML}catch(e){a.innerHTML='<div style="color:#ff4444">'+e.message+'</div>'}b.disabled=false}
+var RANK_ORDER={'2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'10':10,'J':11,'Q':12,'K':13,'A':14};
+var state,prevState=null,running=false,paused=false,timer,delay=300;
+function pickCards(p1won,isTie){
+  var r1=Math.floor(Math.random()*13),s1=Math.floor(Math.random()*4);
+  var r2,s2;
+  if(isTie){r2=r1;s2=(s1+1+Math.floor(Math.random()*3))%4}
+  else{do{r2=Math.floor(Math.random()*13)}while(r2===r1);s2=Math.floor(Math.random()*4)}
+  if(!isTie&&p1won&&r2>r1){var t=r1;r1=r2;r2=t;t=s1;s1=s2;s2=t}
+  if(!isTie&&!p1won&&r1>r2){var t=r1;r1=r2;r2=t;t=s1;s1=s2;s2=t}
+  return{c1:s1*13+r1,c2:s2*13+r2};
+}
+function updateSpeed(){var v=parseInt(document.getElementById('speed').value);delay=[2000,1200,800,500,350,250,150,80,30,5][v-1]||250}
+async function api(p){try{var r=await fetch(p);return r.json()}catch(e){document.getElementById('status-line').textContent='Connection error';return null}}
+function render(s){
+  document.getElementById('p1-count').textContent=s.p1size;
+  document.getElementById('p2-count').textContent=s.p2size;
+  document.getElementById('p1-bar').style.width=Math.round(s.p1size/52*100)+'%';
+  document.getElementById('p2-bar').style.width=Math.round(s.p2size/52*100)+'%';
+  document.getElementById('round-num').textContent=s.round;
+  var bat=document.getElementById('battle');
+  if(prevState&&s.round>0){
+    bat.style.display='flex';
+    var p1gained=s.p1size>prevState.p1size;
+    var p2gained=s.p2size>prevState.p2size;
+    var isTie=!p1gained&&!p2gained;
+    var cards=pickCards(p1gained,isTie);
+    var c1=decodeCard(cards.c1),c2=decodeCard(cards.c2);
+    document.getElementById('b1').innerHTML=makeCard(c1.rank,c1.suit);
+    document.getElementById('b2').innerHTML=makeCard(c2.rank,c2.suit);
+    var r1=RANK_ORDER[c1.rank]||0,r2=RANK_ORDER[c2.rank]||0;
+    var el1=document.getElementById('b1').querySelector('.card');
+    var el2=document.getElementById('b2').querySelector('.card');
+    if(el1)el1.classList.toggle('card-winner',r1>r2);
+    if(el2)el2.classList.toggle('card-winner',r2>r1);
+  }else{bat.style.display='none'}
+}
+async function resetGame(){clearTimeout(timer);running=false;paused=false;prevState=null;
+  state=await api('/api/war/new?seed='+Date.now());
+  if(state)render(state);
+  document.getElementById('status-line').textContent='War';
+  document.getElementById('battle').style.display='none';
+  document.getElementById('btn-pause').disabled=true;document.getElementById('btn-step').disabled=true}
+async function startGame(){await resetGame();running=true;
+  document.getElementById('btn-pause').disabled=false;document.getElementById('btn-step').disabled=false;
+  updateSpeed();scheduleTick()}
+function togglePause(){if(!running)return;paused=!paused;
+  document.getElementById('btn-pause').textContent=paused?'▶ Resume':'⏸ Pause';
+  document.getElementById('btn-step').disabled=!paused;if(!paused)scheduleTick()}
+function scheduleTick(){if(!paused&&running)timer=setTimeout(tick,delay)}
+async function stepOnce(){if(running&&paused)await tick()}
+async function tick(){
+  if(!running||!state||state.done){
+    if(state&&state.done){document.getElementById('status-line').textContent=(state.p1size>0?'Player 1':'Player 2')+' wins after '+state.round+' rounds!';running=false}return}
+  prevState=state;
+  state=await api('/api/war/step');
+  if(!state){running=false;return}
+  render(state);
+  if(state.done){document.getElementById('status-line').textContent=(state.p1size>0?'Player 1':'Player 2')+' wins after '+state.round+' rounds!';running=false;return}
+  document.getElementById('status-line').textContent='Round '+state.round;
+  scheduleTick();
+}
+updateSpeed();resetGame();
 </script>
 </body>
 </html>

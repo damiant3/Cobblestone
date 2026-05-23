@@ -21,7 +21,7 @@ Section: Keywords and Sanitization
   ada-is-keyword : Text -> Boolean
   ada-is-keyword (n) = ada-is-keyword-loop n ada-keywords 0
 
-  ada-is-keyword-loop : Text -> List Text -> Integer -> Boolean
+  ada-is-keyword-loop : Text, List Text, Integer -> Boolean
   ada-is-keyword-loop (n) (kws) (i) =
    if i >= list-length kws then False
    else if list-at kws i == n then True
@@ -54,7 +54,7 @@ Section: Keywords and Sanitization
   ada-indent : Integer -> Text
   ada-indent (n) = ada-indent-loop n ""
 
-  ada-indent-loop : Integer -> Text -> Text
+  ada-indent-loop : Integer, Text -> Text
   ada-indent-loop (n) (acc) =
    if n <= 0 then acc
    else ada-indent-loop (n - 1) (acc ++ "   ")
@@ -67,7 +67,7 @@ Section: Arity Map
    generic-count : Integer between 0 and 255
   }
 
-  bsearch-arity-pos : List ArityEntry -> Text -> Integer -> Integer -> Integer
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
   bsearch-arity-pos (entries) (name) (lo) (hi) =
    if lo >= hi then lo
    else let mid = lo + (hi - lo) / 2
@@ -75,13 +75,13 @@ Section: Arity Map
    in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
       else bsearch-arity-pos entries name (mid + 1) hi
 
-  sorted-insert-arity : List ArityEntry -> ArityEntry -> List ArityEntry
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
   sorted-insert-arity (xs) (e) =
    let len = list-length xs
    in let pos = bsearch-arity-pos xs (e.name) 0 len
    in list-insert-at xs pos e
 
-  build-arity-map : List IRDef -> Integer -> List ArityEntry -> List ArityEntry
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
   build-arity-map (defs) (i) (acc) =
    if i == list-length defs then acc
    else let d = list-at defs i
@@ -91,7 +91,7 @@ Section: Arity Map
     generic-count = 0
    }))
 
-  lookup-arity : List ArityEntry -> Text -> Integer
+  lookup-arity : List ArityEntry, Text -> Integer
   lookup-arity (entries) (name) =
    let len = list-length entries
    in let pos = bsearch-arity-pos entries name 0 len
@@ -131,7 +131,7 @@ Section: Type Emission
 
 Section: Type Definition Emission
 
-  emit-ada-type-defs : List ATypeDef -> Integer -> Text
+  emit-ada-type-defs : List ATypeDef, Integer -> Text
   emit-ada-type-defs (tds) (i) =
    if i == list-length tds then ""
    else emit-ada-type-def (list-at tds i) ++ "\n" ++ emit-ada-type-defs tds (i + 1)
@@ -145,7 +145,7 @@ Section: Type Definition Emission
     is AVariantTypeDef (name) (tparams) (ctors) (s) ->
      emit-ada-sum-type (name.value) ctors
 
-  emit-ada-record-fields : List ARecordFieldDef -> Integer -> Text
+  emit-ada-record-fields : List ARecordFieldDef, Integer -> Text
   emit-ada-record-fields (fields) (i) =
    if i >= list-length fields then ""
    else let f = list-at fields i
@@ -168,7 +168,7 @@ Section: Type Definition Emission
    else if n == "Boolean" then "Boolean"
    else ada-cap-sanitize n
 
-  emit-ada-sum-type : Text -> List AVariantCtorDef -> Text
+  emit-ada-sum-type : Text, List AVariantCtorDef -> Text
   emit-ada-sum-type (base-name) (ctors) =
    let n = ada-cap-sanitize base-name
    in "   type " ++ n ++ "_Tag is (" ++ emit-ada-tag-list ctors 0 ++ ");\n" ++
@@ -176,7 +176,7 @@ Section: Type Definition Emission
       "      case Kind is\n" ++ emit-ada-sum-branches ctors 0 ++
       "      end case;\n   end record;\n\n"
 
-  emit-ada-tag-list : List AVariantCtorDef -> Integer -> Text
+  emit-ada-tag-list : List AVariantCtorDef, Integer -> Text
   emit-ada-tag-list (ctors) (i) =
    if i >= list-length ctors then ""
    else let c = list-at ctors i
@@ -184,14 +184,14 @@ Section: Type Definition Emission
    in if i == list-length ctors - 1 then tag
       else tag ++ ", " ++ emit-ada-tag-list ctors (i + 1)
 
-  emit-ada-sum-branches : List AVariantCtorDef -> Integer -> Text
+  emit-ada-sum-branches : List AVariantCtorDef, Integer -> Text
   emit-ada-sum-branches (ctors) (i) =
    if i >= list-length ctors then ""
    else let c = list-at ctors i
    in let tag = "Tag_" ++ ada-cap-sanitize (c.name.value)
    in "         when " ++ tag ++ " =>\n" ++ emit-ada-sum-fields c tag 0 ++ emit-ada-sum-branches ctors (i + 1)
 
-  emit-ada-sum-fields : AVariantCtorDef -> Text -> Integer -> Text
+  emit-ada-sum-fields : AVariantCtorDef, Text, Integer -> Text
   emit-ada-sum-fields (c) (tag) (i) =
    if list-length (c.fields) == 0 then "            null;\n"
    else if i >= list-length (c.fields) then ""
@@ -199,10 +199,10 @@ Section: Type Definition Emission
 
 Section: Expression Emission
 
-  emit-ada-expr : IRExpr -> List ArityEntry -> Text
+  emit-ada-expr : IRExpr, List ArityEntry -> Text
   emit-ada-expr (e) (arities) = emit-ada-expr-at e arities 0
 
-  emit-ada-expr-at : IRExpr -> List ArityEntry -> Integer -> Text
+  emit-ada-expr-at : IRExpr, List ArityEntry, Integer -> Text
   emit-ada-expr-at (e) (arities) (depth) =
    if depth >= 256 then "null"
    else when e
@@ -223,14 +223,16 @@ Section: Expression Emission
     is IrAct (stmts) (ty) (sp) -> emit-ada-act-expr stmts arities
     is IrRecord (name) (fields) (ty) (sp) -> emit-ada-record fields arities
     is IrFieldAccess (rec) (field) (ty) (sp) -> emit-ada-expr-at rec arities (depth + 1) ++ "." ++ ada-cap-sanitize field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> emit-ada-expr-at rec arities (depth + 1) ++ "'Update(" ++ ada-cap-sanitize field ++ " => " ++ emit-ada-expr-at val arities (depth + 1) ++ ")"
     is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-ada-expr-at body arities (depth + 1)
     is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-ada-expr-at body arities (depth + 1)
     is IrFork (body) (ty) (sp) -> emit-ada-expr-at body arities (depth + 1)
     is IrAwait (task) (ty) (sp) -> emit-ada-expr-at task arities (depth + 1)
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "null"
     is IrError (msg) (ty) (sp) -> "raise Program_Error"
     is otherwise -> "null"
 
-  emit-ada-name : Text -> CodexType -> List ArityEntry -> Text
+  emit-ada-name : Text, CodexType, List ArityEntry -> Text
   emit-ada-name (n) (ty) (arities) =
    if n == "read-line" then "To_Unbounded_String(Get_Line)"
    else if n == "True" then "True"
@@ -242,12 +244,12 @@ Section: Expression Emission
         else ada-cap-sanitize n
    else ada-cap-sanitize n
 
-  emit-ada-ctor-nullary : Text -> CodexType -> Text
+  emit-ada-ctor-nullary : Text, CodexType -> Text
   emit-ada-ctor-nullary (n) (ty) =
    let tag = "Tag_" ++ ada-cap-sanitize n
    in "(Kind => " ++ tag ++ ")"
 
-  emit-ada-binary : IRBinaryOp -> IRExpr -> IRExpr -> List ArityEntry -> Text
+  emit-ada-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
   emit-ada-binary (op) (l) (r) (arities) =
    when op
     is IrAppendText -> "(" ++ emit-ada-expr l arities ++ " & " ++ emit-ada-expr r arities ++ ")"
@@ -277,7 +279,7 @@ Section: Expression Emission
     is IrOr -> "or else"
     is otherwise -> "+"
 
-  emit-ada-apply : IRExpr -> List ArityEntry -> Text
+  emit-ada-apply : IRExpr, List ArityEntry -> Text
   emit-ada-apply (e) (arities) =
    let chain = collect-apply-chain e []
    in let root = chain.root
@@ -286,7 +288,7 @@ Section: Expression Emission
     is IrName (n) (ty) (sp) -> emit-ada-apply-named n ty args arities e
     is otherwise -> emit-ada-expr-curried e arities
 
-  emit-ada-apply-named : Text -> CodexType -> List IRExpr -> List ArityEntry -> IRExpr -> Text
+  emit-ada-apply-named : Text, CodexType, List IRExpr, List ArityEntry, IRExpr -> Text
   emit-ada-apply-named (n) (ty) (args) (arities) (original) =
    if n == "show" then "To_Unbounded_String(Long_Long_Integer'Image(" ++ emit-ada-expr (list-at args 0) arities ++ "))"
    else if n == "print-line-uni" then "Put_Line(To_String(" ++ emit-ada-expr (list-at args 0) arities ++ "))"
@@ -338,17 +340,17 @@ Section: Expression Emission
         else emit-ada-func-apply n args arities original
    else emit-ada-expr-curried original arities
 
-  emit-ada-ctor-apply : Text -> List IRExpr -> List ArityEntry -> Text
+  emit-ada-ctor-apply : Text, List IRExpr, List ArityEntry -> Text
   emit-ada-ctor-apply (n) (args) (arities) =
    let tag = "Tag_" ++ ada-cap-sanitize n
    in "(Kind => " ++ tag ++ emit-ada-ctor-fields tag args arities 0 ++ ")"
 
-  emit-ada-ctor-fields : Text -> List IRExpr -> List ArityEntry -> Integer -> Text
+  emit-ada-ctor-fields : Text, List IRExpr, List ArityEntry, Integer -> Text
   emit-ada-ctor-fields (tag) (args) (arities) (i) =
    if i >= list-length args then ""
    else ", " ++ tag ++ "_F" ++ integer-to-text i ++ " => " ++ emit-ada-expr (list-at args i) arities ++ emit-ada-ctor-fields tag args arities (i + 1)
 
-  emit-ada-func-apply : Text -> List IRExpr -> List ArityEntry -> IRExpr -> Text
+  emit-ada-func-apply : Text, List IRExpr, List ArityEntry, IRExpr -> Text
   emit-ada-func-apply (n) (args) (arities) (original) =
    let ar = lookup-arity arities n
    in if ar > 1 then if list-length args == ar then ada-cap-sanitize n ++ "(" ++ emit-ada-apply-args args arities 0 ++ ")"
@@ -356,29 +358,29 @@ Section: Expression Emission
    else if ar == 1 then ada-cap-sanitize n ++ "(" ++ emit-ada-expr (list-at args 0) arities ++ ")"
    else emit-ada-expr-curried original arities
 
-  emit-ada-apply-args : List IRExpr -> List ArityEntry -> Integer -> Text
+  emit-ada-apply-args : List IRExpr, List ArityEntry, Integer -> Text
   emit-ada-apply-args (args) (arities) (i) =
    if i >= list-length args then ""
    else if i == list-length args - 1 then emit-ada-expr (list-at args i) arities
    else emit-ada-expr (list-at args i) arities ++ ", " ++ emit-ada-apply-args args arities (i + 1)
 
-  emit-ada-expr-curried : IRExpr -> List ArityEntry -> Text
+  emit-ada-expr-curried : IRExpr, List ArityEntry -> Text
   emit-ada-expr-curried (e) (arities) =
    when e
     is IrApply (f) (a) (ty) (sp) -> emit-ada-expr f arities ++ "(" ++ emit-ada-expr a arities ++ ")"
     is otherwise -> emit-ada-expr e arities
 
-  emit-ada-match : IRExpr -> List IRBranch -> List ArityEntry -> Text
+  emit-ada-match : IRExpr, List IRBranch, List ArityEntry -> Text
   emit-ada-match (scrut) (branches) (arities) =
    "(case " ++ emit-ada-expr scrut arities ++ ".Kind is " ++ emit-ada-match-arms branches arities 0 ++ "when others => raise Program_Error)"
 
-  emit-ada-match-arms : List IRBranch -> List ArityEntry -> Integer -> Text
+  emit-ada-match-arms : List IRBranch, List ArityEntry, Integer -> Text
   emit-ada-match-arms (branches) (arities) (i) =
    if i >= list-length branches then ""
    else let b = list-at branches i
    in emit-ada-match-arm b arities ++ emit-ada-match-arms branches arities (i + 1)
 
-  emit-ada-match-arm : IRBranch -> List ArityEntry -> Text
+  emit-ada-match-arm : IRBranch, List ArityEntry -> Text
   emit-ada-match-arm (b) (arities) =
    when b.pattern
     is IrCtorPat (name) (subs) (ty) (sp) ->
@@ -387,52 +389,52 @@ Section: Expression Emission
     is IrVarPat (name) (ty) (sp) -> "when others => " ++ emit-ada-expr (b.body) arities ++ ", "
     is otherwise -> ""
 
-  emit-ada-record : List IRFieldVal -> List ArityEntry -> Text
+  emit-ada-record : List IRFieldVal, List ArityEntry -> Text
   emit-ada-record (fields) (arities) =
    "(" ++ emit-ada-record-field-vals fields arities 0 ++ ")"
 
-  emit-ada-record-field-vals : List IRFieldVal -> List ArityEntry -> Integer -> Text
+  emit-ada-record-field-vals : List IRFieldVal, List ArityEntry, Integer -> Text
   emit-ada-record-field-vals (fields) (arities) (i) =
    if i >= list-length fields then ""
    else let f = list-at fields i
    in let sep = if i > 0 then ", " else ""
    in sep ++ ada-cap-sanitize (f.name) ++ " => " ++ emit-ada-expr (f.value) arities ++ emit-ada-record-field-vals fields arities (i + 1)
 
-  emit-ada-builtin-text-replace : List IRExpr -> List ArityEntry -> Text
+  emit-ada-builtin-text-replace : List IRExpr, List ArityEntry -> Text
   emit-ada-builtin-text-replace (args) (arities) =
    let a0 = emit-ada-expr (list-at args 0) arities
    in let a1 = emit-ada-expr (list-at args 1) arities
    in let a2 = emit-ada-expr (list-at args 2) arities
    in "To_Unbounded_String(Ada.Strings.Fixed.Replace_Slice(To_String(" ++ a0 ++ "), Ada.Strings.Fixed.Index(To_String(" ++ a0 ++ "), To_String(" ++ a1 ++ ")), Ada.Strings.Fixed.Index(To_String(" ++ a0 ++ "), To_String(" ++ a1 ++ ")) + Length(" ++ a1 ++ ") - 1, To_String(" ++ a2 ++ ")))"
 
-  emit-ada-builtin-text-concat-list : List IRExpr -> List ArityEntry -> Text
+  emit-ada-builtin-text-concat-list : List IRExpr, List ArityEntry -> Text
   emit-ada-builtin-text-concat-list (args) (arities) =
    "Null_Unbounded_String"
 
-  emit-ada-builtin-read-file : List IRExpr -> List ArityEntry -> Text
+  emit-ada-builtin-read-file : List IRExpr, List ArityEntry -> Text
   emit-ada-builtin-read-file (args) (arities) =
    let a0 = emit-ada-expr (list-at args 0) arities
    in "To_Unbounded_String(Ada.Strings.Unbounded.Text_IO.Get_Line(Ada.Text_IO.Open(To_String(" ++ a0 ++ "))))"
 
-  emit-ada-builtin-write-file : List IRExpr -> List ArityEntry -> Text
+  emit-ada-builtin-write-file : List IRExpr, List ArityEntry -> Text
   emit-ada-builtin-write-file (args) (arities) =
    let a0 = emit-ada-expr (list-at args 0) arities
    in let a1 = emit-ada-expr (list-at args 1) arities
    in "Ada.Text_IO.Put_Line(Ada.Text_IO.Create(To_String(" ++ a0 ++ ")), To_String(" ++ a1 ++ "))"
 
-  emit-ada-builtin-record-set : List IRExpr -> List ArityEntry -> Text
+  emit-ada-builtin-record-set : List IRExpr, List ArityEntry -> Text
   emit-ada-builtin-record-set (args) (arities) =
    let field-name = when (list-at args 1)
     is IrTextLit (s) (sp) -> s
     is otherwise -> ""
    in emit-ada-expr (list-at args 0) arities ++ "'Update(" ++ ada-cap-sanitize field-name ++ " => " ++ emit-ada-expr (list-at args 2) arities ++ ")"
 
-  emit-ada-builtin-set-state : List IRExpr -> List ArityEntry -> Text
+  emit-ada-builtin-set-state : List IRExpr, List ArityEntry -> Text
   emit-ada-builtin-set-state (args) (arities) =
    let a0 = emit-ada-expr (list-at args 0) arities
    in "State_Value := " ++ a0
 
-  emit-ada-builtin-run-state : List IRExpr -> List ArityEntry -> Text
+  emit-ada-builtin-run-state : List IRExpr, List ArityEntry -> Text
   emit-ada-builtin-run-state (args) (arities) =
    let a0 = emit-ada-expr (list-at args 0) arities
    in let a1 = emit-ada-expr (list-at args 1) arities
@@ -440,14 +442,14 @@ Section: Expression Emission
 
 Section: Tail Call Optimization
 
-  ada-is-self-call : IRExpr -> Text -> Boolean
+  ada-is-self-call : IRExpr, Text -> Boolean
   ada-is-self-call (e) (func-name) =
    let chain = collect-apply-chain e []
    in when chain.root
     is IrName (n) (ty) (sp) -> n == func-name
     is otherwise -> False
 
-  ada-has-tail-call : IRExpr -> Text -> Boolean
+  ada-has-tail-call : IRExpr, Text -> Boolean
   ada-has-tail-call (e) (func-name) =
    when e
     is IrIf (c) (t) (el) (ty) (sp) -> ada-has-tail-call t func-name | ada-has-tail-call el func-name
@@ -456,7 +458,7 @@ Section: Tail Call Optimization
     is IrApply (f) (a) (ty) (sp) -> ada-is-self-call e func-name
     is otherwise -> False
 
-  ada-has-tail-call-branches : List IRBranch -> Text -> Integer -> Boolean
+  ada-has-tail-call-branches : List IRBranch, Text, Integer -> Boolean
   ada-has-tail-call-branches (branches) (func-name) (i) =
    if i == list-length branches then False
    else let b = list-at branches i
@@ -470,7 +472,7 @@ Section: Tail Call Optimization
 
 Section: Definition Emission
 
-  emit-ada-def : IRDef -> List ArityEntry -> Text
+  emit-ada-def : IRDef, List ArityEntry -> Text
   emit-ada-def (d) (arities) =
    if ada-should-tco d then emit-ada-tco-def d arities
    else let ret = ada-get-return-type (d.type-val) (list-length (d.params))
@@ -486,7 +488,7 @@ Section: Definition Emission
     is ForAllTy (id) (body) -> ada-is-effectful body
     is otherwise -> False
 
-  ada-get-return-type : CodexType -> Integer -> CodexType
+  ada-get-return-type : CodexType, Integer -> CodexType
   ada-get-return-type (ty) (n) =
    if n == 0 then ada-strip-forall ty
    else when ada-strip-forall ty
@@ -499,14 +501,14 @@ Section: Definition Emission
     is ForAllTy (id) (body) -> ada-strip-forall body
     is otherwise -> ty
 
-  emit-ada-procedure : IRDef -> List ArityEntry -> Text
+  emit-ada-procedure : IRDef, List ArityEntry -> Text
   emit-ada-procedure (d) (arities) =
    let name = ada-cap-sanitize (d.name)
    in "   procedure " ++ name ++ (if list-length (d.params) > 0 then "(" ++ emit-ada-def-params (d.params) 0 ++ ")" else "") ++ " is\n" ++
       "   begin\n" ++ emit-ada-statement (d.body) arities 2 ++
       "   end " ++ name ++ ";\n"
 
-  emit-ada-function : IRDef -> List ArityEntry -> CodexType -> Text
+  emit-ada-function : IRDef, List ArityEntry, CodexType -> Text
   emit-ada-function (d) (arities) (ret) =
    let name = ada-cap-sanitize (d.name)
    in "   function " ++ name ++ (if list-length (d.params) > 0 then "(" ++ emit-ada-def-params (d.params) 0 ++ ")" else "") ++ " return " ++ ada-type ret ++ " is\n" ++
@@ -514,13 +516,13 @@ Section: Definition Emission
       "      return " ++ emit-ada-expr (d.body) arities ++ ";\n" ++
       "   end " ++ name ++ ";\n"
 
-  emit-ada-def-params : List IRParam -> Integer -> Text
+  emit-ada-def-params : List IRParam, Integer -> Text
   emit-ada-def-params (params) (i) =
    if i == list-length params then ""
    else let p = list-at params i
    in ada-cap-sanitize (p.name) ++ " : " ++ ada-type (p.type-val) ++ (if i < list-length params - 1 then "; " else "") ++ emit-ada-def-params params (i + 1)
 
-  emit-ada-tco-def : IRDef -> List ArityEntry -> Text
+  emit-ada-tco-def : IRDef, List ArityEntry -> Text
   emit-ada-tco-def (d) (arities) =
    let name = ada-cap-sanitize (d.name)
    in let ret = ada-get-return-type (d.type-val) (list-length (d.params))
@@ -532,19 +534,19 @@ Section: Definition Emission
       "      end loop;\n" ++
       "   end " ++ name ++ ";\n"
 
-  emit-ada-tco-params : List IRParam -> Integer -> Text
+  emit-ada-tco-params : List IRParam, Integer -> Text
   emit-ada-tco-params (params) (i) =
    if i == list-length params then ""
    else let p = list-at params i
    in ada-cap-sanitize (p.name) ++ "_0 : " ++ ada-type (p.type-val) ++ (if i < list-length params - 1 then "; " else "") ++ emit-ada-tco-params params (i + 1)
 
-  emit-ada-tco-vars : List IRParam -> Integer -> Text
+  emit-ada-tco-vars : List IRParam, Integer -> Text
   emit-ada-tco-vars (params) (i) =
    if i >= list-length params then ""
    else let p = list-at params i
    in "      " ++ ada-cap-sanitize (p.name) ++ " : " ++ ada-type (p.type-val) ++ " := " ++ ada-cap-sanitize (p.name) ++ "_0;\n" ++ emit-ada-tco-vars params (i + 1)
 
-  emit-ada-tco-body : IRExpr -> Text -> List IRParam -> List ArityEntry -> Integer -> Text
+  emit-ada-tco-body : IRExpr, Text, List IRParam, List ArityEntry, Integer -> Text
   emit-ada-tco-body (e) (func-name) (params) (arities) (indent) =
    let pad = ada-indent indent
    in when e
@@ -569,25 +571,25 @@ Section: Definition Emission
      else pad ++ "return " ++ emit-ada-expr e arities ++ ";\n"
     is otherwise -> pad ++ "return " ++ emit-ada-expr e arities ++ ";\n"
 
-  emit-ada-tco-jump : IRExpr -> List IRParam -> List ArityEntry -> Integer -> Text
+  emit-ada-tco-jump : IRExpr, List IRParam, List ArityEntry, Integer -> Text
   emit-ada-tco-jump (e) (params) (arities) (indent) =
    let chain = collect-apply-chain e []
    in let pad = ada-indent indent
    in emit-ada-tco-assigns (chain.args) params arities pad 0
 
-  emit-ada-tco-assigns : List IRExpr -> List IRParam -> List ArityEntry -> Text -> Integer -> Text
+  emit-ada-tco-assigns : List IRExpr, List IRParam, List ArityEntry, Text, Integer -> Text
   emit-ada-tco-assigns (args) (params) (arities) (pad) (i) =
    if i >= list-length args then ""
    else if i >= list-length params then ""
    else let p = list-at params i
    in pad ++ ada-cap-sanitize (p.name) ++ " := " ++ emit-ada-expr (list-at args i) arities ++ ";\n" ++ emit-ada-tco-assigns args params arities pad (i + 1)
 
-  emit-ada-act-expr : List IRActStmt -> List ArityEntry -> Text
+  emit-ada-act-expr : List IRActStmt, List ArityEntry -> Text
   emit-ada-act-expr (stmts) (arities) =
    if list-length stmts == 0 then "null"
    else "(declare " ++ emit-ada-act-expr-binds stmts arities 0 ++ "begin " ++ emit-ada-act-expr-body stmts arities 0 ++ "end)"
 
-  emit-ada-act-expr-binds : List IRActStmt -> List ArityEntry -> Integer -> Text
+  emit-ada-act-expr-binds : List IRActStmt, List ArityEntry, Integer -> Text
   emit-ada-act-expr-binds (stmts) (arities) (i) =
    if i >= list-length stmts then ""
    else let s = list-at stmts i
@@ -595,7 +597,7 @@ Section: Definition Emission
     is IrDoBind (name) (ty) (val) (sp) -> ada-cap-sanitize name ++ " : " ++ ada-type ty ++ " := " ++ emit-ada-expr val arities ++ "; " ++ emit-ada-act-expr-binds stmts arities (i + 1)
     is IrDoExec (e) (sp) -> emit-ada-act-expr-binds stmts arities (i + 1)
 
-  emit-ada-act-expr-body : List IRActStmt -> List ArityEntry -> Integer -> Text
+  emit-ada-act-expr-body : List IRActStmt, List ArityEntry, Integer -> Text
   emit-ada-act-expr-body (stmts) (arities) (i) =
    if i >= list-length stmts then ""
    else let s = list-at stmts i
@@ -604,17 +606,17 @@ Section: Definition Emission
     is IrDoExec (e) (sp) -> if is-last then "return " ++ emit-ada-expr e arities ++ "; " else emit-ada-expr e arities ++ "; " ++ emit-ada-act-expr-body stmts arities (i + 1)
     is IrDoBind (name) (ty) (val) (sp) -> emit-ada-act-expr-body stmts arities (i + 1)
 
-  emit-ada-list-elems : List IRExpr -> List ArityEntry -> Integer -> Text
+  emit-ada-list-elems : List IRExpr, List ArityEntry, Integer -> Text
   emit-ada-list-elems (elems) (arities) (i) =
    if i >= list-length elems then ""
    else if i == list-length elems - 1 then emit-ada-expr (list-at elems i) arities
    else emit-ada-expr (list-at elems i) arities ++ ", " ++ emit-ada-list-elems elems arities (i + 1)
 
-  emit-ada-tco-match-arms : List IRBranch -> Text -> List IRParam -> List ArityEntry -> Integer -> Text
+  emit-ada-tco-match-arms : List IRBranch, Text, List IRParam, List ArityEntry, Integer -> Text
   emit-ada-tco-match-arms (branches) (func-name) (params) (arities) (indent) =
    emit-ada-tco-match-arms-loop branches func-name params arities indent 0
 
-  emit-ada-tco-match-arms-loop : List IRBranch -> Text -> List IRParam -> List ArityEntry -> Integer -> Integer -> Text
+  emit-ada-tco-match-arms-loop : List IRBranch, Text, List IRParam, List ArityEntry, Integer, Integer -> Text
   emit-ada-tco-match-arms-loop (branches) (func-name) (params) (arities) (indent) (i) =
    if i >= list-length branches then let pad = ada-indent (indent + 1) in pad ++ "when others => raise Program_Error;\n"
    else let b = list-at branches i
@@ -632,20 +634,20 @@ Section: Definition Emission
      emit-ada-tco-body (b.body) func-name params arities (indent + 2)
     is otherwise -> emit-ada-tco-match-arms-loop branches func-name params arities indent (i + 1)
 
-  emit-ada-statement : IRExpr -> List ArityEntry -> Integer -> Text
+  emit-ada-statement : IRExpr, List ArityEntry, Integer -> Text
   emit-ada-statement (e) (arities) (indent) =
    let pad = ada-indent indent
    in when e
     is IrAct (stmts) (ty) (sp) -> emit-ada-act-stmts stmts arities indent 0
     is otherwise -> pad ++ emit-ada-expr e arities ++ ";\n"
 
-  emit-ada-act-stmts : List IRActStmt -> List ArityEntry -> Integer -> Integer -> Text
+  emit-ada-act-stmts : List IRActStmt, List ArityEntry, Integer, Integer -> Text
   emit-ada-act-stmts (stmts) (arities) (indent) (i) =
    if i >= list-length stmts then ""
    else let s = list-at stmts i
    in emit-ada-act-stmt s arities indent ++ emit-ada-act-stmts stmts arities indent (i + 1)
 
-  emit-ada-act-stmt : IRActStmt -> List ArityEntry -> Integer -> Text
+  emit-ada-act-stmt : IRActStmt, List ArityEntry, Integer -> Text
   emit-ada-act-stmt (s) (arities) (indent) =
    let pad = ada-indent indent
    in when s
@@ -657,20 +659,20 @@ Section: Chapter Emission
   ada-opening-entry-point : Text
   ada-opening-entry-point = "opening"
 
-  ada-find-entry : List IRDef -> Integer -> Integer
+  ada-find-entry : List IRDef, Integer -> Integer
   ada-find-entry (defs) (i) =
    if i >= list-length defs then -1
    else let d = list-at defs i
    in if d.name == ada-opening-entry-point then i
       else ada-find-entry defs (i + 1)
 
-  emit-ada-defs : List IRDef -> List ArityEntry -> Integer -> Integer -> Text
+  emit-ada-defs : List IRDef, List ArityEntry, Integer, Integer -> Text
   emit-ada-defs (defs) (arities) (i) (entry-idx) =
    if i >= list-length defs then ""
    else if i == entry-idx then emit-ada-defs defs arities (i + 1) entry-idx
    else emit-ada-def (list-at defs i) arities ++ "\n" ++ emit-ada-defs defs arities (i + 1) entry-idx
 
-  emit-ada-entry-body : List IRDef -> Integer -> List ArityEntry -> Text
+  emit-ada-entry-body : List IRDef, Integer, List ArityEntry -> Text
   emit-ada-entry-body (defs) (entry-idx) (arities) =
    if entry-idx < 0 then if list-length defs == 0 then "   Put_Line(\"All proofs verified at compile time.\");\n"
                           else "   null;\n"
@@ -680,7 +682,7 @@ Section: Chapter Emission
       else let ret = ada-get-return-type (d.type-val) (list-length (d.params))
       in emit-ada-entry-print (d.body) ret arities
 
-  emit-ada-entry-print : IRExpr -> CodexType -> List ArityEntry -> Text
+  emit-ada-entry-print : IRExpr, CodexType, List ArityEntry -> Text
   emit-ada-entry-print (body) (ret) (arities) =
    when ret
     is IntegerTy (lo) (hi) (mode) -> "   Put(Long_Long_Integer'Image(" ++ emit-ada-expr body arities ++ "));\n   New_Line;\n"
@@ -688,7 +690,7 @@ Section: Chapter Emission
     is TextTy -> "   Put_Line(To_String(" ++ emit-ada-expr body arities ++ "));\n"
     is otherwise -> "   Put_Line(\"<result>\");\n"
 
-  emit-ada-chapter : IRChapter -> List ATypeDef -> Text
+  emit-ada-chapter : IRChapter, List ATypeDef -> Text
   emit-ada-chapter (m) (type-defs) =
    let arities = build-arity-map (m.defs) 0 []
    in let pkg = ada-cap-sanitize (m.name.value)

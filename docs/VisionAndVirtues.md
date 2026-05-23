@@ -141,7 +141,7 @@ Before implementing a feature, read the paper:
 The compiler is its own specification. The acceptance test for any
 codegen change is that the self-host remains a fixed point of itself:
 Phase 4 (text round-trip) and Phase 5 (CDX byte-identity). Both run
-under `codex.build/pingpong-self.ps1`. If either is red, shelve and
+under `build/build.ps1`. If either is red, shelve and
 re-evaluate.
 
 ### 12. Survey Before You Allocate

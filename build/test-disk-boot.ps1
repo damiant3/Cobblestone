@@ -18,15 +18,15 @@ if ($script:UseCodexVm) {
     $conn = $run.Conn; $proc = $run.Process
     $stdoutFile = $run.StdoutFile; $stderrFile = $run.StderrFile
 } else {
-    $dataPort = Get-QemuPort
+    $dataPort = Get-VmPort
     $ctrlPort = $dataPort + 1
     Write-Host "  QEMU mode: ports $dataPort/$ctrlPort" -ForegroundColor Gray
     $qemuArgs = @(
         '-accel', 'tcg', '-cpu', 'max',
         '-machine', 'kernel-irqchip=off',
         '-drive', "file=$Img,format=raw,if=ide",
-        '-chardev', (Get-QemuChardevData -Port $dataPort),
-        '-chardev', (Get-QemuChardevCtrl -Port $ctrlPort),
+        '-chardev', (Get-VmChardevData -Port $dataPort),
+        '-chardev', (Get-VmChardevCtrl -Port $ctrlPort),
         '-serial', 'chardev:ch0',
         '-serial', 'chardev:ch1',
         '-device', 'isa-debug-exit,iobase=0xf4,iosize=0x04',
@@ -45,7 +45,7 @@ if ($script:UseCodexVm) {
         Get-Content $stderrFile | Write-Host -ForegroundColor Red
         exit 1
     }
-    $conn = Connect-Qemu -DataPort $dataPort -CtrlPort $ctrlPort -TimeoutSec 30
+    $conn = Connect-Vm -DataPort $dataPort -CtrlPort $ctrlPort -TimeoutSec 30
     if (-not $conn) {
         Write-Host "FAIL: could not connect to QEMU serial ports" -ForegroundColor Red
         Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
@@ -67,10 +67,10 @@ if ($ready) {
     Write-Host "SUCCESS: Kernel booted from disk image!" -ForegroundColor Green
 } else {
     Write-Host "FAIL: no READY received" -ForegroundColor Red
-    Close-Qemu -Conn $conn -Process $proc
+    Close-Vm -Conn $conn -Process $proc
     Remove-Item -Force $stdoutFile, $stderrFile -ErrorAction SilentlyContinue
     exit 1
 }
 
-Close-Qemu -Conn $conn -Process $proc
+Close-Vm -Conn $conn -Process $proc
 Remove-Item -Force $stdoutFile, $stderrFile -ErrorAction SilentlyContinue

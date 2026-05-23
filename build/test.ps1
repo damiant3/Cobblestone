@@ -24,7 +24,7 @@
 [CmdletBinding()]
 param(
     [string]$CodexCdx,
-    [int]$Jobs = 7,
+    [int]$Jobs = 4,
     [switch]$ErrorsOnly,
     [switch]$NoErrors,
     [switch]$Apps,

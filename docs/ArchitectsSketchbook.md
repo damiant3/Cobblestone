@@ -331,8 +331,8 @@ capacities. The code generator writes into these buffers via
 `data-len` in `CodegenState`.
 
 After code generation, the code and data buffers are assembled into
-the final CDX or ELF binary by the format writers (`CdxWriter.codex`,
-`ElfWriter.codex`).
+the final CDX binary by `CdxWriter.codex`. Container formats (ELF,
+PE, GPT/FAT images) are produced by plug CDX binaries in `codex/plugs/`.
 
 ## Heap and Stack
 

@@ -137,16 +137,31 @@ p4 submit -c <CL>
 
 After merge-down is complete, copy the child's state up to the parent.
 
+**You must specify the parent client with `-c`.** If your `.p4config` points
+at the child client, a bare `p4 copy` targets the wrong workspace. Always
+use `-c <parent-client>` to ensure files open on the parent.
+
 ```powershell
-# 1. Copy up (no -r: child-to-parent is the default direction)
-p4 copy -S //Codex/<CHILD_STREAM>
+# 1. Copy up — specify the PARENT client, use --from with the child stream
+#    Example: child is CodexMagic, parent client targets main
+p4 -c BigWhite_Codex_gollum_main copy --from CodexMagic
 
-# 2. This opens files in a pending CL on the PARENT workspace.
-#    The copy-up workspace must be mapped to the parent stream.
+# 2. Resolve if needed (accept theirs for clean copy-up)
+p4 -c BigWhite_Codex_gollum_main resolve -at
 
-# 3. Resolve if needed
-p4 resolve -am
+# 3. Submit on the parent client
+p4 -c BigWhite_Codex_gollum_main submit -d "Copy up from CodexMagic: <description>"
 ```
+
+If you don't have a parent client, create one:
+```powershell
+p4 client -S //Codex/main BigWhite_Codex_<agent>_main
+# Set Root to a separate directory (e.g. D:\Projects\NewRepository-<agent>-main)
+```
+
+Common agent client names:
+- `BigWhite_Codex_<agent>_main` — main stream (copy-up client)
+- `BigWhite_Codex_<agent>` — dev stream working client
 
 ### Seed Verification During Copy-Up
 

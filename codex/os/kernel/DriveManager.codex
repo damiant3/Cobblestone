@@ -251,6 +251,135 @@ Section: Install Codex
           is None -> 0
       is None -> 0
 
+Section: Dual-Boot Install
+
+  DmDualBootResult =
+    | DualBootOk (Text)
+    | DualBootFail (Text)
+
+  dm-find-esp : GptDisk -> Maybe GptPartition
+  dm-find-esp (disk) = dm-find-esp-loop (disk.gd-partitions) 0 (list-length (disk.gd-partitions))
+
+  dm-find-esp-loop : List GptPartition, Integer, Integer -> Maybe GptPartition
+  dm-find-esp-loop (parts) (i) (len) =
+    if i >= len then None
+    else let p = list-at parts i
+    in if gpt-is-esp p then Just p
+    else dm-find-esp-loop parts (i + 1) len
+
+  dm-find-free-after : GptDisk -> Integer
+  dm-find-free-after (disk) =
+    let last-end = dm-last-partition-end (disk.gd-partitions) 0 (list-length (disk.gd-partitions)) 2048
+    in let backup-start = disk.gd-total-sectors - 33
+    in if last-end + 2048 < backup-start then last-end + 1
+    else 0
+
+  dm-last-partition-end : List GptPartition, Integer, Integer, Integer -> Integer
+  dm-last-partition-end (parts) (i) (len) (best) =
+    if i >= len then best
+    else let p = list-at parts i
+    in let e = p.gp-end-lba
+    in dm-last-partition-end parts (i + 1) len (if e > best then e else best)
+
+  dm-free-sectors : GptDisk -> Integer
+  dm-free-sectors (disk) =
+    let free-start = dm-find-free-after disk
+    in if free-start == 0 then 0
+    else let backup-start = disk.gd-total-sectors - 33
+    in backup-start - free-start
+
+  dm-add-gpt-partition : Integer, Integer, List Integer, Text -> Boolean
+  dm-add-gpt-partition (start-lba) (end-lba) (type-guid) (name) =
+    let hdr-buf = block-read-sector 1
+    in if gpt-check-signature hdr-buf == False then False
+    else let entry-start = gpt-read-u64 hdr-buf 72
+    in let entry-count = gpt-read-u32 hdr-buf 80
+    in let entry-size = gpt-read-u32 hdr-buf 84
+    in let slot = dm-find-empty-slot entry-start entry-size entry-count 0
+    in if slot < 0 then False
+    else let entries-per-sector = 512 / entry-size
+    in let sector = entry-start + slot / entries-per-sector
+    in let off = (slot - (slot / entries-per-sector) * entries-per-sector) * entry-size
+    in let buf = block-read-sector sector
+    in let w0 = gpt-write-guid buf off type-guid
+    in let w1 = gpt-write-guid buf (off + 16) (gpt-make-part-guid slot)
+    in let w2 = gpt-write-u64 buf (off + 32) start-lba
+    in let w3 = gpt-write-u64 buf (off + 40) end-lba
+    in let w4 = gpt-write-u64 buf (off + 48) 0
+    in let w5 = dm-write-name-utf16 buf (off + 56) name 0
+    in let w6 = block-write-sector sector buf
+    in let pe-crc = gpt-rt-crc32-sector entry-start 32 (entry-count * entry-size)
+    in let w7 = dm-update-gpt-header hdr-buf pe-crc
+    in True
+
+  dm-find-empty-slot : Integer, Integer, Integer, Integer -> Integer
+  dm-find-empty-slot (entry-start) (entry-size) (count) (i) =
+    if i >= count then 0 - 1
+    else let entries-per-sector = 512 / entry-size
+    in let sector = entry-start + i / entries-per-sector
+    in let off = (i - (i / entries-per-sector) * entries-per-sector) * entry-size
+    in let buf = block-read-sector sector
+    in let guid = gpt-read-guid buf off
+    in if gpt-guid-is-zero guid then i
+    else dm-find-empty-slot entry-start entry-size count (i + 1)
+
+  dm-write-name-utf16 : Integer, Integer, Text, Integer -> Integer
+  dm-write-name-utf16 (buf) (off) (name) (i) =
+    if i >= text-length name then off + text-length name * 2
+    else let c = char-code (char-at name i)
+    in let w0 = poke-byte buf (off + i * 2) (bit-and c 255)
+    in let w1 = poke-byte buf (off + i * 2 + 1) (bit-and (bit-shru c 8) 255)
+    in dm-write-name-utf16 buf off name (i + 1)
+
+  dm-update-gpt-header : Integer, Integer -> Integer
+  dm-update-gpt-header (hdr-buf) (pe-crc) =
+    let w0 = gpt-write-u32 hdr-buf 16 0
+    in let w1 = gpt-write-u32 hdr-buf 88 pe-crc
+    in let hdr-bytes = gpt-read-buf-bytes hdr-buf 0 92 []
+    in let hdr-crc = gpt-rt-crc32-bytes hdr-bytes 92
+    in let w2 = gpt-write-u32 hdr-buf 16 hdr-crc
+    in block-write-sector 1 hdr-buf
+
+  dm-install-alongside : DriveInfo, Integer -> DmDualBootResult
+  dm-install-alongside (drive) (src-drive-index) =
+    let w = block-select (drive.di-index)
+    in let gpt-result = gpt-read
+    in when gpt-result
+      is None -> DualBootFail "No GPT found on target drive"
+      is Just (disk) ->
+        let esp-result = dm-find-esp disk
+        in when esp-result
+          is None -> DualBootFail "No EFI System Partition found"
+          is Just (esp) ->
+            let free-start = dm-find-free-after disk
+            in if free-start == 0 then DualBootFail "No free space after last partition"
+            else let free-secs = dm-free-sectors disk
+            in if free-secs < 2048 then DualBootFail ("Not enough free space: " & show (free-secs / 2048) & " MB")
+            else let backup-start = disk.gd-total-sectors - 33
+            in let codex-end = backup-start - 1
+            in let w0 = dm-add-gpt-partition free-start codex-end gpt-basic-data-guid "Codex Data"
+            in let esp-vol = fat32-init (esp.gp-start-lba)
+            in let w1 = block-select src-drive-index
+            in let src-vol = fat16-init uefi-partition-start
+            in let kernel = fat16-read-bytes src-vol "BOOTX64.EFI"
+            in let w2 = block-select (drive.di-index)
+            in when kernel
+              is Just (data) ->
+                let w3 = fat32-mkdir esp-vol (esp-vol.f32-root-cluster) "EFI"
+                in let efi-entry = fat32-find-in-dir esp-vol (esp-vol.f32-root-cluster) "EFI"
+                in when efi-entry
+                  is Just (efi-dir) ->
+                    let w4 = fat32-mkdir esp-vol (efi-dir.de-cluster) "Codex"
+                    in let codex-entry = fat32-find-in-dir esp-vol (efi-dir.de-cluster) "Codex"
+                    in when codex-entry
+                      is Just (codex-dir) ->
+                        let w5 = fat32-write-file esp-vol "EFI/Codex/codex.efi" data
+                        in let free-mb = free-secs / 2048
+                        in DualBootOk ("Installed to " & drive.di-model & " (" & show free-mb & " MB) - reboot and select Codex from UEFI boot menu")
+                      is None -> DualBootFail "Could not create EFI/Codex directory"
+                  is None -> DualBootFail "Could not access EFI directory on ESP"
+              is None -> DualBootFail "Could not read boot image from USB stick"
+
 Section: Wipe
 
   dm-wipe-quick-drive : DriveInfo -> Boolean

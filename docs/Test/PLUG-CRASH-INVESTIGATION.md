@@ -156,6 +156,70 @@ The 4-byte code address is written at the aligned address 0x1A6F7C8 (= R15+3). C
 2. **Check `emit-load-known-func-offset`**: This function creates movabs patches at specific code offsets. If the offset is wrong, the patch writes to the wrong location.
 3. **Heap layout analysis**: Determine what's allocated immediately before 0x1A6F7C8 and immediately after. If a closure record starts at 0x1A6F7C0 (8-aligned), its code-ptr at +0 would be at 0x1A6F7C0, overlapping bytes 0-7 — NOT 0x1A6F7C8. The 3-byte offset doesn't match a simple adjacency.
 
+## Session 6 — 2026-05-20 (agent eek): RESOLVED
+
+### Root Cause
+
+Non-short-circuit `&` in `lookup-expr-type` (Unifier.codex, line 143):
+
+```codex
+in if pos < len & (list-at entries pos).key == k
+```
+
+`&` on Booleans compiles to `IrAnd`, which evaluates BOTH operands
+unconditionally. When `pos >= len`, the right side executes
+`list-at entries pos` — an out-of-bounds read past the end of the
+`expr-types` list. This reads whatever is adjacent on the heap:
+stale data, a partial record, or a code-section address.
+
+The OOB value propagated through the type environment during the
+CHECK phase. By the LOWER phase, the sorted `all-types` list
+(`sort-bindings (types & env.bindings)`) contained a corrupt entry.
+`bsearch-text-pos` hit this entry at the midpoint, dereferenced the
+corrupt `.name` field (which contained bytes from a `builtin-type-env`
+return address shifted by 3 bytes), and page-faulted.
+
+### Why WHPX-Only
+
+The bug fires under both WHPX and TCG. Serial I/O chunking differences
+change heap layout during the LEX phase. Under TCG the OOB read
+happened to land on zeros or harmless padding; under WHPX it landed
+on a live code-section address, producing a visibly corrupt pointer.
+The crash was latent under TCG, not absent.
+
+### Probe B Result
+
+All four drifting CR2 values (0x2EE56A, 0x2EE7AF, 0x2EEEF7, 0x2EF19C)
+resolve to `builtin-type-env` (0x2E7888, 52079 bytes) in the current
+seed's symbol map. These are return addresses from within that massive
+function, which builds the initial type environment during CHECK. The
+OOB read captured these stale return addresses from the stack or from
+previously-freed bivy scratch adjacent to the list.
+
+### Fix
+
+CL 1845 (Damian, 2026-05-19) split the non-short-circuit guard into
+nested `if` statements:
+
+```codex
+in if pos < len
+   then if (list-at entries pos).key == k
+        then (list-at entries pos).ty
+        else ErrorTy
+   else ErrorTy
+```
+
+### Verification
+
+Plug build with post-CL-1845 seed succeeds cleanly:
+
+```
+[csharp-plug] bundled 2969 lines, 128486 bytes
+[csharp-plug] OK: csharp-plug.cdx (360632 bytes)
+```
+
+No page fault. No `!EXC`. Status: **CLOSED**.
+
 ## Files Modified During Investigation
 
 - `codex/Emit/X86_64Boot.codex` (CL 1552-1553, 1557): Added CR2 + R15 to exception dump. Added register restore on preemption no-switch path (irrelevant to bug but correct fix for a latent scheduler issue).

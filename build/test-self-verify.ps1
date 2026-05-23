@@ -7,7 +7,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$compile = Join-Path $PSScriptRoot 'test-compile.ps1'
+$compile = Join-Path $PSScriptRoot 'compile.ps1'
 $run     = Join-Path $PSScriptRoot 'test-run.ps1'
 
 if (-not (Test-Path $Seed)) { throw "Seed not found: $Seed" }
@@ -38,14 +38,14 @@ Section: Body
     in let sig-valid = ed25519-verify pub-key content-hash sig
     in let has-author = list-at header 40 + list-at header 41 + list-at header 42 + list-at header 43
     in act
-      print-line ("SIZE: $seedLen")
-      print-line ("MAGIC: " ++ show magic-ok)
-      print-line ("SIGNATURE: " ++ show sig-valid)
-      print-line ("AUTHOR-KEY-PRESENT: " ++ show (has-author > 0))
+      print-line-uni ("SIZE: $seedLen")
+      print-line-uni ("MAGIC: " ++ show magic-ok)
+      print-line-uni ("SIGNATURE: " ++ show sig-valid)
+      print-line-uni ("AUTHOR-KEY-PRESENT: " ++ show (has-author > 0))
       if magic-ok then if sig-valid then
-        print-line "THE SEED VERIFIES ITSELF"
-      else print-line "SIGNATURE INVALID"
-      else print-line "BAD MAGIC"
+        print-line-uni "THE SEED VERIFIES ITSELF"
+      else print-line-uni "SIGNATURE INVALID"
+      else print-line-uni "BAD MAGIC"
     end
   end
 "@

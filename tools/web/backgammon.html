@@ -39,16 +39,20 @@
 
   .case { flex: 1; background: url('/assets/games/backgammon/wood-case.png') center/cover;
     border: 3px solid #6a4a2a; border-radius: 8px; padding: 6px;
-    box-shadow: 0 6px 30px rgba(0,0,0,0.6), inset 0 1px 3px rgba(255,255,255,0.05); }
+    box-shadow: 0 6px 30px rgba(0,0,0,0.6), inset 0 1px 3px rgba(255,255,255,0.05);
+    background-image: url('/assets/games/backgammon/wood-case.png'),
+      repeating-linear-gradient(90deg, transparent 0px, transparent 38px, #3a221066 38px, #3a221066 40px); }
 
-  .field { display: flex; background: url('/assets/games/backgammon/leather.png') center/cover;
+  .field { display: flex; background: url('/assets/games/backgammon/felt-dark.png') center/cover;
     border-radius: 4px; overflow: hidden; height: 440px; position: relative; }
   .half { flex: 1; display: flex; flex-direction: column; justify-content: space-between; padding: 4px 2px; }
 
   .bar { width: 36px; display: flex; flex-direction: column; align-items: center;
     justify-content: center; gap: 6px;
-    background: linear-gradient(180deg, #3a2210cc, #2a1a0ecc);
-    border-left: 1px solid #8a6a3a33; border-right: 1px solid #8a6a3a33; }
+    background: linear-gradient(90deg, #3a2210 0%, #5a3a1a 15%, #5a3a1a 85%, #3a2210 100%);
+    border-left: 2px solid #b8963a; border-right: 2px solid #b8963a;
+    box-shadow: inset 0 0 8px rgba(0,0,0,0.5);
+    background-image: repeating-linear-gradient(180deg, transparent 0px, transparent 48px, #b8963a55 48px, #b8963a55 50px); }
   .bar-pip { width: 28px; height: 28px; border-radius: 50%; font-size: 12px; font-weight: bold;
     display: none; align-items: center; justify-content: center; }
   .bar-pip.visible { display: flex; }
@@ -68,9 +72,11 @@
   .point.top .tri { top: 0; height: 180px; clip-path: polygon(50% 100%, 0% 0%, 100% 0%); }
   .point.bot .tri { bottom: 0; height: 180px; clip-path: polygon(50% 0%, 0% 100%, 100% 100%); }
   .tri-dark { background: url('/assets/games/backgammon/leather.png') center/cover;
-    filter: brightness(0.5) saturate(1.5) hue-rotate(-10deg); }
-  .tri-light { background: url('/assets/games/backgammon/leather.png') center/cover;
-    filter: brightness(0.9) saturate(0.8) sepia(0.3); }
+    filter: brightness(0.6) saturate(1.2);
+    border: 1px solid #5a3a1a88; outline: 1px dashed #8a6a3a33; }
+  .tri-light { background: url('/assets/games/backgammon/felt-gold.png') center/cover;
+    filter: brightness(0.85);
+    border: 1px solid #c8a86844; outline: 1px dashed #c8a86833; }
 
   .pt-num { position: absolute; z-index: 3; font-size: 8px; color: #8a6a3a55; }
   .point.top .pt-num { bottom: 0; }
@@ -79,7 +85,8 @@
   .piece { width: 36px; height: 36px; border-radius: 50%; z-index: 2;
     box-shadow: 0 2px 5px rgba(0,0,0,0.5), inset 0 1px 3px rgba(255,255,255,0.2);
     display: flex; align-items: center; justify-content: center;
-    font-size: 11px; font-weight: bold; }
+    font-size: 11px; font-weight: bold;
+    transition: transform 0.15s ease-out, opacity 0.15s; }
   .piece-w { background: radial-gradient(circle at 35% 35%, #fff8e8, #d4b878);
     border: 2px solid #b89848; color: #8a6a3a; }
   .piece-b { background: radial-gradient(circle at 35% 35%, #8b2020, #4a0a0a);
@@ -143,7 +150,20 @@
     </div>
   </div>
 
-  <div class="move-log" id="move-log"></div>
+  <div id="narration" style="text-align:center;font-size:14px;font-weight:bold;color:#d4a050;min-height:20px;margin-bottom:8px"></div>
+  <details class="game-log" open><summary>Move Log</summary><div class="log-body" id="move-log"></div></details>
+  <details class="game-log" style="margin-top:8px">
+    <summary style="color:#d4a050;cursor:pointer;font-weight:bold;font-size:13px">How to Play Backgammon</summary>
+    <div class="log-body" style="color:#8a6a3a;font-size:12px;line-height:1.6;padding:8px">
+      <p><b>Goal:</b> Move all 15 of your pieces off the board before your opponent.</p>
+      <p><b>Setup:</b> 24 narrow triangles (points). Each player starts with 15 pieces in a standard arrangement.</p>
+      <p><b>Movement:</b> Roll two dice. Move pieces forward by the number shown. Doubles mean four moves instead of two.</p>
+      <p><b>Hitting:</b> Landing on a point with a single opponent piece sends it to the bar. It must re-enter before other pieces can move.</p>
+      <p><b>Bearing off:</b> Once all your pieces are in your home board (last 6 points), you can start removing them.</p>
+      <p><b>Bar:</b> Pieces on the bar must re-enter the board through the opponent's home board.</p>
+      <p><b>This simulation:</b> AI plays both sides. Watch pieces move point to point with dice rolls shown.</p>
+    </div>
+  </details>
 </div>
 
 <script>
@@ -246,14 +266,19 @@ async function tick() {
 
   var pName = prevCur===0?'White':'Red';
   var pClass = prevCur===0?'ply-w':'ply-b';
+  var d1 = state.d1||0, d2 = state.d2||0;
   document.getElementById('dice-overlay').innerHTML =
-    '<span class="die-face">'+DICE[state.d1]+'</span><span class="die-face">'+DICE[state.d2]+'</span>' +
-    (state.d1===state.d2?'<span style="color:#d4a050;font-size:11px;font-weight:bold">2x</span>':'');
+    '<span class="die-face">'+(DICE[d1]||'')+'</span><span class="die-face">'+(DICE[d2]||'')+'</span>' +
+    (d1===d2&&d1>0?'<span style="color:#d4a050;font-size:11px;font-weight:bold">2x</span>':'');
+
+  var doubles = d1===d2&&d1>0?' (doubles!)':'';
+  var narText = pName+' rolls '+d1+'+'+d2+'='+( d1+d2)+doubles;
+  document.getElementById('narration').textContent = narText;
   document.getElementById('status-line').textContent =
     state.done ? (state.winner===0?'White':'Red')+' wins!' : (state.cur===0?'White':'Red')+"'s turn";
 
   var log = document.getElementById('move-log');
-  log.innerHTML += '<span class="'+pClass+'">'+state.ply+'. '+pName+' ['+state.d1+','+state.d2+']</span><br>';
+  log.innerHTML += '<span class="'+pClass+'">'+state.ply+'. '+pName+' ['+d1+','+d2+']'+doubles+'</span><br>';
   log.scrollTop = log.scrollHeight;
   scheduleTick();
 }

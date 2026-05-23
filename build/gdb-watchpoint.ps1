@@ -109,7 +109,7 @@ try {
     $savedAccel = $script:QemuAccelFlags
     $script:QemuAccelFlags = @('-accel', $Accel)
     Write-Host "[1/4] Starting QEMU ($Accel mode) with GDB stub on :1234..."
-    $run = Start-QemuRun -Kernel $Kernel -ConnectTimeoutSec 30 -MemMB 2048 -ExtraArgs @('-gdb', 'tcp::1234', '-S')
+    $run = Start-VmRun -Kernel $Kernel -ConnectTimeoutSec 30 -MemMB 2048 -ExtraArgs @('-gdb', 'tcp::1234', '-S')
     $script:QemuAccelFlags = $savedAccel
     if (-not $run) { Write-Error "QEMU failed to start"; exit 3 }
     Write-Host "  PID=$($run.Process.Id)"
@@ -124,7 +124,7 @@ try {
     # Wait for READY (CPU is now running via GDB continue)
     Write-Host "[3/4] Waiting for READY..."
     $conn = $run.Conn
-    if (-not (Read-QemuReady -Conn $conn -TimeoutSec 120)) {
+    if (-not (Read-VmReady -Conn $conn -TimeoutSec 120)) {
         Write-Host "READY not received within 120s."
         Write-Host "GDB output so far:"
         if (Test-Path $gdbOut) { Get-Content $gdbOut | Select-Object -First 10 }
@@ -172,6 +172,6 @@ try {
         Write-Host $errTxt
     }
 } finally {
-    if ($run) { Close-Qemu -Conn $run.Conn -Process $run.Process }
+    if ($run) { Close-Vm -Conn $run.Conn -Process $run.Process }
     Remove-Item -Force $gdbFile, $gdbOut, $gdbErr -ErrorAction SilentlyContinue
 }
