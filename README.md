@@ -91,7 +91,7 @@ As of 2026-05-19:
   animation, particles, procedural noise, interactive UI shell) running
   on bare metal with GOP framebuffer display via codex-vm.
 - **Codex.DB**: relational database server (42 modules). Typed schemas,
-  pipe-forward queries (`RelScan |> RelFilter |> RelSort |> execute`),
+  pipe-forward queries (`RelScan |> RelFilter |> RelSort |> query`),
   MVCC transactions, WAL, B-tree indexes, hash joins, full-text search,
   replication, graph store, column store, time series, spatial indexes.
 - **SystemDb**: on-device persistent store (DiskFacts format) for
@@ -339,7 +339,7 @@ Section: Database Queries (Codex.DB)
       |> RelFilter (PredColCmp "department" CmpEq (ValText "Engineering"))
       |> RelProject (proj-columns ["name", "salary"])
       |> RelSort [SortSpec { sort-col = "salary", sort-dir = SortDesc }]
-      |> execute cat
+      |> query cat
 
   department-summary : Catalog -> QueryResult
   department-summary (cat) =
@@ -348,7 +348,7 @@ Section: Database Queries (Codex.DB)
         AggSpec { agg-func = AggCount, agg-alias = "headcount" },
         AggSpec { agg-func = AggSum "salary", agg-alias = "total-salary" }
       ]
-      |> execute cat
+      |> query cat
 
 Section: System Database (SystemDb)
 
