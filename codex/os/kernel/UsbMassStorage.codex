@@ -1,0 +1,561 @@
+Chapter: UsbMassStorage
+  cites Kernel chapter Usb
+  cites Kernel chapter Xhci
+  cites Kernel chapter Pci
+  cites Foreword chapter Maybe
+
+ USB Mass Storage Class driver. Implements Bulk-Only Transport (BBB)
+ protocol with SCSI Transparent Command Set for block-level access
+ to USB storage devices (flash drives, external disks). Provides
+ sector read and write operations compatible with the block-select /
+ block-read-sector / block-write-sector syscall interface used by
+ DriveManager and DiskFacts.
+
+ To msc-discover gives a list of detected USB mass storage devices.
+ To msc-read-sector reads a 512-byte sector from the device at a
+   given LBA and returns the buffer address.
+ To msc-write-sector writes a 512-byte buffer to the device at a
+   given LBA.
+ To msc-sector-count gives the total sector count of the device.
+
+ We say:
+
+Section: USB MSC Constants
+
+  msc-class : Integer = 8
+  msc-subclass-scsi : Integer = 6
+  msc-protocol-bbb : Integer = 80
+
+  msc-cbw-signature : Integer = 1128420949
+  msc-csw-signature : Integer = 1396855381
+
+  msc-cbw-direction-out : Integer = 0
+  msc-cbw-direction-in : Integer = 128
+
+  msc-cbw-length : Integer = 31
+  msc-csw-length : Integer = 13
+
+Section: SCSI Command Constants
+
+  scsi-test-unit-ready : Integer = 0
+  scsi-request-sense : Integer = 3
+  scsi-inquiry : Integer = 18
+  scsi-read-capacity-10 : Integer = 37
+  scsi-read-10 : Integer = 40
+  scsi-write-10 : Integer = 42
+
+  scsi-sense-length : Integer = 18
+
+Section: MSC Device State
+
+  MscDevice = record {
+    msc-slot : Integer,
+    msc-bulk-in-ep : Integer,
+    msc-bulk-out-ep : Integer,
+    msc-max-packet-in : Integer,
+    msc-max-packet-out : Integer,
+    msc-max-lun : Integer,
+    msc-sector-count : Integer,
+    msc-sector-size : Integer,
+    msc-tag : Integer,
+    msc-vendor : Text,
+    msc-product : Text,
+    msc-found : Boolean
+  }
+
+  msc-not-found : MscDevice
+  msc-not-found = MscDevice {
+    msc-slot = 0,
+    msc-bulk-in-ep = 0,
+    msc-bulk-out-ep = 0,
+    msc-max-packet-in = 0,
+    msc-max-packet-out = 0,
+    msc-max-lun = 0,
+    msc-sector-count = 0,
+    msc-sector-size = 512,
+    msc-tag = 1,
+    msc-vendor = "",
+    msc-product = "",
+    msc-found = False
+  }
+
+Section: Device Detection
+
+  msc-detect : UsbInterface, List UsbEndpoint, Integer -> Maybe MscDevice
+  msc-detect (iface) (endpoints) (slot) =
+    if iface.if-class == msc-class then
+      if iface.if-subclass == msc-subclass-scsi then
+        if iface.if-protocol == msc-protocol-bbb then
+          let bulk-in = msc-find-bulk-in endpoints 0 (list-length endpoints)
+          in let bulk-out = msc-find-bulk-out endpoints 0 (list-length endpoints)
+          in when bulk-in
+            is Just (ep-in) -> when bulk-out
+              is Just (ep-out) -> Just (MscDevice {
+                msc-slot = slot,
+                msc-bulk-in-ep = ep-in.ep-address,
+                msc-bulk-out-ep = ep-out.ep-address,
+                msc-max-packet-in = ep-in.ep-max-packet,
+                msc-max-packet-out = ep-out.ep-max-packet,
+                msc-max-lun = 0,
+                msc-sector-count = 0,
+                msc-sector-size = 512,
+                msc-tag = 1,
+                msc-vendor = "",
+                msc-product = "",
+                msc-found = True
+              })
+              is None -> None
+            is None -> None
+        else None
+      else None
+    else None
+
+  msc-find-bulk-in : List UsbEndpoint, Integer, Integer -> Maybe UsbEndpoint
+  msc-find-bulk-in (eps) (i) (len) =
+    if i >= len then None
+    else let ep = list-at eps i
+    in if ep.ep-type == usb-ep-type-bulk then
+      if ep.ep-direction == usb-ep-dir-in then Just ep
+      else msc-find-bulk-in eps (i + 1) len
+    else msc-find-bulk-in eps (i + 1) len
+
+  msc-find-bulk-out : List UsbEndpoint, Integer, Integer -> Maybe UsbEndpoint
+  msc-find-bulk-out (eps) (i) (len) =
+    if i >= len then None
+    else let ep = list-at eps i
+    in if ep.ep-type == usb-ep-type-bulk then
+      if ep.ep-direction == usb-ep-dir-out then Just ep
+      else msc-find-bulk-out eps (i + 1) len
+    else msc-find-bulk-out eps (i + 1) len
+
+Section: Command Block Wrapper (CBW)
+
+  MscCbw = record {
+    cbw-tag : Integer,
+    cbw-transfer-length : Integer,
+    cbw-flags : Integer,
+    cbw-lun : Integer,
+    cbw-cb-length : Integer,
+    cbw-cb : List Integer
+  }
+
+  msc-encode-cbw : MscCbw -> List Integer
+  msc-encode-cbw (cbw) =
+    let sig = msc-le32 msc-cbw-signature
+    in let tag = msc-le32 (cbw.cbw-tag)
+    in let xfer = msc-le32 (cbw.cbw-transfer-length)
+    in let flags-byte = [cbw.cbw-flags]
+    in let lun-byte = [cbw.cbw-lun]
+    in let cb-len = [cbw.cbw-cb-length]
+    in let cb-padded = msc-pad-cb (cbw.cbw-cb) 0 16
+    in sig & tag & xfer & flags-byte & lun-byte & cb-len & cb-padded
+
+  msc-pad-cb : List Integer, Integer, Integer -> List Integer
+  msc-pad-cb (cb) (i) (target) =
+    if i >= target then []
+    else if i < list-length cb then [list-at cb i] & msc-pad-cb cb (i + 1) target
+    else [0] & msc-pad-cb cb (i + 1) target
+
+Section: Command Status Wrapper (CSW)
+
+  MscCsw = record {
+    csw-tag : Integer,
+    csw-data-residue : Integer,
+    csw-status : Integer
+  }
+
+  msc-csw-passed : Integer = 0
+  msc-csw-failed : Integer = 1
+  msc-csw-phase-error : Integer = 2
+
+  msc-parse-csw : List Integer -> MscCsw
+  msc-parse-csw (bytes) =
+    let sig = msc-unpack-le32 bytes 0
+    in let tag = msc-unpack-le32 bytes 4
+    in let residue = msc-unpack-le32 bytes 8
+    in let status = list-at bytes 12
+    in MscCsw { csw-tag = tag, csw-data-residue = residue, csw-status = status }
+
+  msc-csw-ok : MscCsw -> Boolean
+  msc-csw-ok (csw) = csw.csw-status == msc-csw-passed
+
+Section: SCSI Commands
+
+  msc-build-inquiry : Integer -> MscCbw
+  msc-build-inquiry (tag) =
+    MscCbw {
+      cbw-tag = tag,
+      cbw-transfer-length = 36,
+      cbw-flags = msc-cbw-direction-in,
+      cbw-lun = 0,
+      cbw-cb-length = 6,
+      cbw-cb = [scsi-inquiry, 0, 0, 0, 36, 0]
+    }
+
+  msc-build-test-unit-ready : Integer -> MscCbw
+  msc-build-test-unit-ready (tag) =
+    MscCbw {
+      cbw-tag = tag,
+      cbw-transfer-length = 0,
+      cbw-flags = msc-cbw-direction-out,
+      cbw-lun = 0,
+      cbw-cb-length = 6,
+      cbw-cb = [scsi-test-unit-ready, 0, 0, 0, 0, 0]
+    }
+
+  msc-build-request-sense : Integer -> MscCbw
+  msc-build-request-sense (tag) =
+    MscCbw {
+      cbw-tag = tag,
+      cbw-transfer-length = scsi-sense-length,
+      cbw-flags = msc-cbw-direction-in,
+      cbw-lun = 0,
+      cbw-cb-length = 6,
+      cbw-cb = [scsi-request-sense, 0, 0, 0, scsi-sense-length, 0]
+    }
+
+  msc-build-read-capacity : Integer -> MscCbw
+  msc-build-read-capacity (tag) =
+    MscCbw {
+      cbw-tag = tag,
+      cbw-transfer-length = 8,
+      cbw-flags = msc-cbw-direction-in,
+      cbw-lun = 0,
+      cbw-cb-length = 10,
+      cbw-cb = [scsi-read-capacity-10, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    }
+
+  msc-build-read-10 : Integer, Integer, Integer -> MscCbw
+  msc-build-read-10 (tag) (lba) (sector-count) =
+    MscCbw {
+      cbw-tag = tag,
+      cbw-transfer-length = sector-count * 512,
+      cbw-flags = msc-cbw-direction-in,
+      cbw-lun = 0,
+      cbw-cb-length = 10,
+      cbw-cb = [scsi-read-10, 0,
+        bit-and (bit-shru lba 24) 255,
+        bit-and (bit-shru lba 16) 255,
+        bit-and (bit-shru lba 8) 255,
+        bit-and lba 255,
+        0,
+        bit-and (bit-shru sector-count 8) 255,
+        bit-and sector-count 255,
+        0]
+    }
+
+  msc-build-write-10 : Integer, Integer, Integer -> MscCbw
+  msc-build-write-10 (tag) (lba) (sector-count) =
+    MscCbw {
+      cbw-tag = tag,
+      cbw-transfer-length = sector-count * 512,
+      cbw-flags = msc-cbw-direction-out,
+      cbw-lun = 0,
+      cbw-cb-length = 10,
+      cbw-cb = [scsi-write-10, 0,
+        bit-and (bit-shru lba 24) 255,
+        bit-and (bit-shru lba 16) 255,
+        bit-and (bit-shru lba 8) 255,
+        bit-and lba 255,
+        0,
+        bit-and (bit-shru sector-count 8) 255,
+        bit-and sector-count 255,
+        0]
+    }
+
+Section: SCSI Response Parsing
+
+  ScsiInquiryData = record {
+    inq-device-type : Integer,
+    inq-removable : Boolean,
+    inq-vendor : Text,
+    inq-product : Text,
+    inq-revision : Text
+  }
+
+  msc-parse-inquiry : List Integer -> ScsiInquiryData
+  msc-parse-inquiry (bytes) =
+    let dev-type = bit-and (list-at bytes 0) 31
+    in let removable = bit-and (list-at bytes 1) 128 > 0
+    in let vendor = msc-extract-text bytes 8 8
+    in let product = msc-extract-text bytes 16 16
+    in let revision = msc-extract-text bytes 32 4
+    in ScsiInquiryData {
+      inq-device-type = dev-type,
+      inq-removable = removable,
+      inq-vendor = vendor,
+      inq-product = product,
+      inq-revision = revision
+    }
+
+  ScsiCapacity = record {
+    cap-last-lba : Integer,
+    cap-block-size : Integer,
+    cap-total-sectors : Integer
+  }
+
+  msc-parse-read-capacity : List Integer -> ScsiCapacity
+  msc-parse-read-capacity (bytes) =
+    let last-lba = msc-unpack-be32 bytes 0
+    in let block-size = msc-unpack-be32 bytes 4
+    in ScsiCapacity {
+      cap-last-lba = last-lba,
+      cap-block-size = block-size,
+      cap-total-sectors = last-lba + 1
+    }
+
+Section: Transport Layer
+
+  MscTransferResult = record {
+    mtr-data : List Integer,
+    mtr-csw : MscCsw,
+    mtr-device : MscDevice,
+    mtr-ok : Boolean
+  }
+
+  msc-next-tag : MscDevice -> MscDevice
+  msc-next-tag (dev) = __record-set dev "msc-tag" (dev.msc-tag + 1)
+
+  msc-clear-halt : Integer, Integer -> Integer
+  msc-clear-halt (slot) (endpoint-addr) =
+    usb-control-transfer slot (usb-setup-clear-halt endpoint-addr)
+
+  msc-transfer-in : MscDevice, MscCbw -> MscTransferResult
+  msc-transfer-in (dev) (cbw) =
+    let cbw-bytes = msc-encode-cbw cbw
+    in let w = usb-bulk-out (dev.msc-slot) (dev.msc-bulk-out-ep) cbw-bytes
+    in let data = usb-bulk-in (dev.msc-slot) (dev.msc-bulk-in-ep) (cbw.cbw-transfer-length)
+    in let cleared = if list-length data == 0 then msc-clear-halt (dev.msc-slot) (dev.msc-bulk-in-ep) else 0
+    in let csw-bytes = usb-bulk-in (dev.msc-slot) (dev.msc-bulk-in-ep) msc-csw-length
+    in let csw = msc-parse-csw csw-bytes
+    in MscTransferResult {
+      mtr-data = data,
+      mtr-csw = csw,
+      mtr-device = msc-next-tag dev,
+      mtr-ok = msc-csw-ok csw
+    }
+
+  msc-transfer-out : MscDevice, MscCbw, List Integer -> MscTransferResult
+  msc-transfer-out (dev) (cbw) (data) =
+    let cbw-bytes = msc-encode-cbw cbw
+    in let w = usb-bulk-out (dev.msc-slot) (dev.msc-bulk-out-ep) cbw-bytes
+    in let w2 = usb-bulk-out (dev.msc-slot) (dev.msc-bulk-out-ep) data
+    in let cleared = if w2 == 0 - 1 then msc-clear-halt (dev.msc-slot) (dev.msc-bulk-out-ep) else 0
+    in let csw-bytes = usb-bulk-in (dev.msc-slot) (dev.msc-bulk-in-ep) msc-csw-length
+    in let csw = msc-parse-csw csw-bytes
+    in MscTransferResult {
+      mtr-data = [],
+      mtr-csw = csw,
+      mtr-device = msc-next-tag dev,
+      mtr-ok = msc-csw-ok csw
+    }
+
+  msc-transfer-nodata : MscDevice, MscCbw -> MscTransferResult
+  msc-transfer-nodata (dev) (cbw) =
+    let cbw-bytes = msc-encode-cbw cbw
+    in let w = usb-bulk-out (dev.msc-slot) (dev.msc-bulk-out-ep) cbw-bytes
+    in let csw-bytes = usb-bulk-in (dev.msc-slot) (dev.msc-bulk-in-ep) msc-csw-length
+    in let csw = msc-parse-csw csw-bytes
+    in MscTransferResult {
+      mtr-data = [],
+      mtr-csw = csw,
+      mtr-device = msc-next-tag dev,
+      mtr-ok = msc-csw-ok csw
+    }
+
+Section: High-Level Operations
+
+  msc-inquiry : MscDevice -> MscTransferResult
+  msc-inquiry (dev) =
+    let cbw = msc-build-inquiry (dev.msc-tag)
+    in msc-transfer-in dev cbw
+
+  msc-test-unit-ready : MscDevice -> MscTransferResult
+  msc-test-unit-ready (dev) =
+    let cbw = msc-build-test-unit-ready (dev.msc-tag)
+    in msc-transfer-nodata dev cbw
+
+  msc-request-sense : MscDevice -> MscTransferResult
+  msc-request-sense (dev) =
+    let cbw = msc-build-request-sense (dev.msc-tag)
+    in msc-transfer-in dev cbw
+
+  msc-read-capacity : MscDevice -> MscTransferResult
+  msc-read-capacity (dev) =
+    let cbw = msc-build-read-capacity (dev.msc-tag)
+    in msc-transfer-in dev cbw
+
+  msc-read-sector : MscDevice, Integer -> MscTransferResult
+  msc-read-sector (dev) (lba) =
+    let cbw = msc-build-read-10 (dev.msc-tag) lba 1
+    in msc-transfer-in dev cbw
+
+  msc-write-sector : MscDevice, Integer, List Integer -> MscTransferResult
+  msc-write-sector (dev) (lba) (data) =
+    let cbw = msc-build-write-10 (dev.msc-tag) lba 1
+    in msc-transfer-out dev cbw data
+
+Section: Device Initialization
+
+  msc-init-device : MscDevice -> MscDevice
+  msc-init-device (dev) =
+    let tur-result = msc-test-unit-ready dev
+    in let dev2 = tur-result.mtr-device
+    in let inq-result = msc-inquiry dev2
+    in let dev3 = inq-result.mtr-device
+    in let dev4 = if inq-result.mtr-ok then
+      let inq = msc-parse-inquiry (inq-result.mtr-data)
+      in __record-set (__record-set dev3 "msc-vendor" (inq.inq-vendor)) "msc-product" (inq.inq-product)
+    else dev3
+    in let cap-result = msc-read-capacity dev4
+    in let dev5 = cap-result.mtr-device
+    in if cap-result.mtr-ok then
+      let cap = msc-parse-read-capacity (cap-result.mtr-data)
+      in __record-set (__record-set dev5 "msc-sector-count" (cap.cap-total-sectors)) "msc-sector-size" (cap.cap-block-size)
+    else dev5
+
+Section: Discovery
+
+  msc-discover : XhciController -> List MscDevice
+  msc-discover (xhci) =
+    if xhci.xc-found == False then []
+    else msc-probe-ports xhci 1 (xhci.xc-max-ports + 1) []
+
+  msc-probe-ports : XhciController, Integer, Integer, List MscDevice -> List MscDevice
+  msc-probe-ports (xhci) (port) (max-port) (acc) =
+    if port >= max-port then acc
+    else let port-reg = xhci.xc-op-base + 1024 + (port - 1) * 16
+    in let portsc = peek-32 port-reg 0
+    in let connected = bit-and portsc 1 > 0
+    in if connected then
+      let slot = usb-enable-slot xhci port
+      in if slot > 0 then
+        let config-desc = usb-get-config-desc slot
+        in let iface-result = msc-scan-interfaces config-desc 0 (list-length config-desc) slot
+        in when iface-result
+          is Just (dev) ->
+            let initialized = msc-init-device dev
+            in msc-probe-ports xhci (port + 1) max-port (list-push acc initialized)
+          is None -> msc-probe-ports xhci (port + 1) max-port acc
+      else msc-probe-ports xhci (port + 1) max-port acc
+    else msc-probe-ports xhci (port + 1) max-port acc
+
+  msc-scan-interfaces : List Integer, Integer, Integer, Integer -> Maybe MscDevice
+  msc-scan-interfaces (desc) (offset) (len) (slot) =
+    if offset >= len then None
+    else let desc-len = list-at desc offset
+    in let desc-type = list-at desc (offset + 1)
+    in if desc-type == usb-desc-interface then
+      let iface = usb-parse-interface desc offset
+      in if iface.if-class == msc-class then
+        if iface.if-subclass == msc-subclass-scsi then
+          if iface.if-protocol == msc-protocol-bbb then
+            let endpoints = msc-collect-endpoints desc (offset + desc-len) len iface.if-num-endpoints []
+            in msc-detect iface endpoints slot
+          else msc-scan-interfaces desc (offset + desc-len) len slot
+        else msc-scan-interfaces desc (offset + desc-len) len slot
+      else msc-scan-interfaces desc (offset + desc-len) len slot
+    else msc-scan-interfaces desc (offset + desc-len) len slot
+
+  msc-collect-endpoints : List Integer, Integer, Integer, Integer, List UsbEndpoint -> List UsbEndpoint
+  msc-collect-endpoints (desc) (offset) (len) (remaining) (acc) =
+    if remaining <= 0 then acc
+    else if offset >= len then acc
+    else let desc-len = list-at desc offset
+    in let desc-type = list-at desc (offset + 1)
+    in if desc-type == usb-desc-endpoint then
+      let ep = usb-parse-endpoint desc offset
+      in msc-collect-endpoints desc (offset + desc-len) len (remaining - 1) (list-push acc ep)
+    else msc-collect-endpoints desc (offset + desc-len) len remaining acc
+
+Section: Block Layer Integration
+
+  MscBlockDevice = record {
+    mbd-device : MscDevice,
+    mbd-drive-index : Integer,
+    mbd-model : Text,
+    mbd-serial : Text,
+    mbd-sector-count : Integer,
+    mbd-size-mb : Integer
+  }
+
+  msc-to-block-device : MscDevice, Integer -> MscBlockDevice
+  msc-to-block-device (dev) (drive-index) =
+    let model = msc-trim (dev.msc-vendor & " " & dev.msc-product)
+    in MscBlockDevice {
+      mbd-device = dev,
+      mbd-drive-index = drive-index,
+      mbd-model = model,
+      mbd-serial = "USB-" & show (dev.msc-slot),
+      mbd-sector-count = dev.msc-sector-count,
+      mbd-size-mb = dev.msc-sector-count / 2048
+    }
+
+Section: Helpers
+
+  msc-le32 : Integer -> List Integer
+  msc-le32 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+  msc-unpack-le32 : List Integer, Integer -> Integer
+  msc-unpack-le32 (bytes) (off) =
+    bit-or (list-at bytes off) (bit-or (bit-shl (list-at bytes (off + 1)) 8) (bit-or (bit-shl (list-at bytes (off + 2)) 16) (bit-shl (list-at bytes (off + 3)) 24)))
+
+  msc-unpack-be32 : List Integer, Integer -> Integer
+  msc-unpack-be32 (bytes) (off) =
+    bit-or (bit-shl (list-at bytes off) 24) (bit-or (bit-shl (list-at bytes (off + 1)) 16) (bit-or (bit-shl (list-at bytes (off + 2)) 8) (list-at bytes (off + 3))))
+
+  msc-extract-text : List Integer, Integer, Integer -> Text
+  msc-extract-text (bytes) (start) (len) =
+    msc-extract-loop bytes start (start + len) ""
+
+  msc-extract-loop : List Integer, Integer, Integer, Text -> Text
+  msc-extract-loop (bytes) (i) (end-idx) (acc) =
+    if i >= end-idx then msc-trim acc
+    else let b = list-at bytes i
+    in if b >= 32 then
+      if b <= 126 then msc-extract-loop bytes (i + 1) end-idx (acc & char-to-text (code-to-char b))
+      else msc-extract-loop bytes (i + 1) end-idx acc
+    else msc-extract-loop bytes (i + 1) end-idx acc
+
+  msc-trim : Text -> Text
+  msc-trim (s) = msc-trim-right s (text-length s - 1)
+
+  msc-trim-right : Text, Integer -> Text
+  msc-trim-right (s) (i) =
+    if i < 0 then ""
+    else if char-code (char-at s i) == 32 then msc-trim-right s (i - 1)
+    else substring s 0 (i + 1)
+
+Section: Formatting
+
+  format-msc-device : MscDevice -> Text
+  format-msc-device (dev) =
+    if dev.msc-found then
+      "USB MSC: " & dev.msc-vendor & " " & dev.msc-product
+      & " sectors=" & show (dev.msc-sector-count)
+      & " (" & show (dev.msc-sector-count / 2048) & " MB)"
+      & " ep-in=" & show (dev.msc-bulk-in-ep)
+      & " ep-out=" & show (dev.msc-bulk-out-ep)
+    else "USB MSC: not found"
+
+  format-msc-inquiry : ScsiInquiryData -> Text
+  format-msc-inquiry (inq) =
+    "SCSI: type=" & show (inq.inq-device-type)
+    & " removable=" & (if inq.inq-removable then "yes" else "no")
+    & " vendor=" & inq.inq-vendor
+    & " product=" & inq.inq-product
+    & " rev=" & inq.inq-revision
+
+  format-msc-capacity : ScsiCapacity -> Text
+  format-msc-capacity (cap) =
+    "Capacity: " & show (cap.cap-total-sectors) & " sectors"
+    & " (" & show (cap.cap-total-sectors / 2048) & " MB)"
+    & " block-size=" & show (cap.cap-block-size)
+
+  format-msc-csw : MscCsw -> Text
+  format-msc-csw (csw) =
+    "CSW: tag=" & show (csw.csw-tag)
+    & " residue=" & show (csw.csw-data-residue)
+    & " status=" & (if csw.csw-status == 0 then "PASS" else if csw.csw-status == 1 then "FAIL" else "PHASE-ERROR")
+
+Page 1
