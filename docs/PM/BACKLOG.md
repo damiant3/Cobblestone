@@ -1,6 +1,6 @@
 # Backlog — Outstanding Work
 
-**Updated**: 2026-05-20
+**Updated**: 2026-05-23
 
 ## Active — Ongoing
 
@@ -29,3 +29,9 @@
 | 5 | ~~Plug crash (page fault in bsearch-text-pos)~~ | **Confirmed fixed by CL 1845 + seed rebuild.** See `docs/Test/PLUG-CRASH-INVESTIGATION.md` Session 6. |
 | 6 | ~~Plug IrFieldStore/IrTry support~~ | **Fixed CL 1899/1906.** All 8 emitters handle mutable records and try/fail. `-IrCce` compiler mode fixed. Shared `IRTextParser` parses both nodes. |
 | 7 | ~~Foreword library bugs~~ | **Fixed CL 1908.** Huffman (stale indices + dead walk), Graph DFS (visited state), Bresenham (dead branch), Convolution (div-by-zero), HexFormat (spacing). |
+| 12 | ~~Emitter Exodus~~ | **Done CLs 2029-2042.** PE, ELF, IMG writers extracted from compiler to plug CDX binaries. Compiler slimmed from 59 to 53 files. |
+| 13 | ~~codex-vm hardware~~ | **Done CLs 2024-2063.** PCI, xHCI, HDA, HPET, IOAPIC, ACPI, SMBIOS, Bochs VBE, UEFI firmware, USB devices. VM: 400→4500 lines. |
+| 14 | ~~Static bounds prover~~ | **Done CLs 2073-2095.** ir-expr-proven-range: literal, field, add, sub, mul, div, mod, bit-and, bit-shru, negate, if/else. CDX4010 diagnostic. Short-circuit AND/OR codegen. |
+| 15 | ~~Plug emitter fixes~~ | **Done CLs 2091-2101.** Rust+JS Unicode escapes, C# O(n²) concat, deprecated ++ removal (2661 replacements). |
+| 16 | ~~Debugger wiring~~ | **Done CLs 2093-2104.** Symbolic breakpoints, backtrace, registers, perf, single-step, all views wired. codex-vm: #BP/#DB exception handling. |
+| 17 | ~~Editor undo/redo~~ | **Done CLs 2102-2103.** Ctrl+Z/Ctrl+Y, undo snapshots on all edits. |

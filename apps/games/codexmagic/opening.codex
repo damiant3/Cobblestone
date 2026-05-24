@@ -1,0 +1,76 @@
+Chapter: Opening
+  cites CodexMagic chapter Mana
+  cites CodexMagic chapter Card
+  cites CodexMagic chapter GameState
+  cites CodexMagic chapter General
+  cites CodexMagic chapter Supervisor
+  cites CodexMagic chapter Engine
+  cites CodexMagic chapter Trigger
+  cites CodexMagic chapter Token
+  cites CodexMagic chapter Deck
+  cites CodexMagic chapter Season
+  cites CodexMagic chapter CardPool
+
+ Entry point. Sets up a test game with the full card pool, starter
+ decks, validates them, runs a match, and reports results.
+
+ We say:
+
+Section: Setup
+
+  draw-n-cards : GameState, Integer, Integer -> GameState
+  draw-n-cards (gs) (player-idx) (n) =
+    if n <= 0 then gs
+    else let p = get-player gs player-idx
+    in let p2 = player-draw p
+    in let gs2 = set-player gs player-idx p2
+    in draw-n-cards gs2 player-idx (n - 1)
+
+  load-shuffled-deck : GameState, Integer, List Integer, Integer -> GameState
+  load-shuffled-deck (gs) (player-idx) (cards) (i) =
+    if i >= list-length cards then gs
+    else let p = get-player gs player-idx
+    in let p2 = PlayerState { general = p.general, mana-pool = p.mana-pool, library = list-push (p.library) (list-at cards i), hand = p.hand, graveyard = p.graveyard, exile = p.exile, land-drop-used = p.land-drop-used, land-drops-per-turn = p.land-drops-per-turn }
+    in let gs2 = set-player gs player-idx p2
+    in load-shuffled-deck gs2 player-idx cards (i + 1)
+
+Section: Entry Point
+
+  opening : [Console] Nothing
+  opening =
+    let templates = full-card-pool
+    in let gen-a = general-warlord
+    in let gen-b = general-dawn-commander
+    in let deck-a = gen-starter-deck gen-a templates 42
+    in let deck-b = gen-starter-deck gen-b templates 99
+    in let valid-a = validate-deck deck-a templates gen-a
+    in let valid-b = validate-deck deck-b templates gen-b
+    in let gs = game-new templates gen-a gen-b
+    in let gs2 = load-shuffled-deck gs 0 (shuffle-deck (deck-a.cards) 777) 0
+    in let gs3 = load-shuffled-deck gs2 1 (shuffle-deck (deck-b.cards) 888) 0
+    in let gs4 = draw-n-cards gs3 0 7
+    in let gs5 = draw-n-cards gs4 1 7
+    in let result = run-game gs5 20
+    in let p0 = get-player result 0
+    in let p1 = get-player result 1
+    in let rgen0 = get-general result 0
+    in let rgen1 = get-general result 1
+    in act
+      print-line-uni "=== CodexMagic Test ==="
+      print-line-uni ""
+      print-line-uni ("General A: " & format-general gen-a)
+      print-line-uni ("General B: " & format-general gen-b)
+      print-line-uni ("Deck A: " & show (deck-a.num-cards) & " cards")
+      print-line-uni ("Deck B: " & show (deck-b.num-cards) & " cards")
+      print-line-uni ("Valid A: " & if valid-a.valid then "YES" else valid-a.reason)
+      print-line-uni ("Valid B: " & if valid-b.valid then "YES" else valid-b.reason)
+      print-line-uni ""
+      print-line-uni ("Result: " & format-general-state rgen0 (p0.general) result 0)
+      print-line-uni ("        " & format-general-state rgen1 (p1.general) result 1)
+      print-line-uni ("Turns: " & show (result.turn-number))
+      print-line-uni (if result.game-over then "Winner: Player " & show (result.winner) else "Draw")
+      print-line-uni ""
+      print-line-uni "=== Done ==="
+    end
+
+Page 1

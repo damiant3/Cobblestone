@@ -17,7 +17,7 @@ Six zones, each a list of card references (entity IDs):
 
 ```
 PlayerState = record {
-  life : Integer,
+  general : GeneralState,
   mana-pool : ManaPool,
   library : List CardId,
   hand : List CardId,
@@ -28,7 +28,40 @@ PlayerState = record {
 }
 ```
 
-Default: 20 life, 1 land drop per turn.
+Default: 1 land drop per turn. Life total is on the General, not the
+player (see below).
+
+## General State
+
+The General is the player's avatar. It starts on the battlefield in
+the command zone and carries the life total that determines win/loss.
+
+```
+GeneralState = record {
+  card-id : CardId,
+  life : Integer,              -- default 30, set by GeneralTemplate
+  damage-marked : Integer,     -- combat/effect damage this turn
+  counters : List Counter,
+  is-tapped : Boolean,
+  modifiers : List Modifier    -- temporary P/T/D changes, auras, etc.
+}
+```
+
+The General is always on the battlefield — it cannot be exiled,
+bounced to hand, or destroyed. Effects that would remove the General
+from the battlefield are negated. The General can be tapped and
+untaps normally during the untap step.
+
+Damage dealt to the General reduces its `life`, not its toughness.
+The General's toughness determines how much damage it can absorb in
+a single combat step before excess carries over (see
+[Combat.md](Combat.md)), but the General is never destroyed by
+damage — it stays on the battlefield until `life` reaches 0.
+
+**Army Loyalty** is derived, not stored — it is the sum of CMC of all
+non-token creatures the player controls. It changes as creatures enter
+and leave the battlefield. See [Cards.md](Cards.md) for how the
+General's abilities consume and scale with army loyalty.
 
 ## Game Record
 

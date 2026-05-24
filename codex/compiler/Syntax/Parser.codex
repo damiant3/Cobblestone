@@ -88,6 +88,10 @@ Section: Type Parsing
      in let st2 = advance st-fueled
      in let right-result = parse-type st2
      in unwrap-type-ok right-result (make-fun-type-arrow left arrow-span)
+    else if current-kind st-fueled == TripleEquals then let eq-span = token-to-span (current st-fueled)
+     in let st2 = advance st-fueled
+     in let right-result = parse-type st2
+     in unwrap-type-ok right-result (make-prop-eq-type left eq-span)
     else if is-comma (current-kind st-fueled) then if comma-starts-type-param st-fueled
      then let st2 = skip-newlines (advance st-fueled)
        in let right-result = parse-type st2
@@ -107,6 +111,10 @@ Section: Type Parsing
   make-fun-type : TypeExpr, TypeExpr, ParseState -> ParseTypeResult
   make-fun-type (left) (right) (st) =
    TypeOk (deck-record (FunType left right)) st
+
+  make-prop-eq-type : TypeExpr, SourceSpan, TypeExpr, ParseState -> ParseTypeResult
+  make-prop-eq-type (left) (span) (right) (st) =
+   TypeOk (deck-record (PropEqType left right span)) st
 
   make-fun-type-arrow : TypeExpr, SourceSpan, TypeExpr, ParseState -> ParseTypeResult
   make-fun-type-arrow (left) (arrow-span) (right) (st) =
@@ -262,9 +270,49 @@ Section: Definition Parsing
   parse-definition : ParseState -> ParseDefResult
   parse-definition (st) =
    if is-done st then ParseDefResult { maybe-def = None, state = st }
+   else if is-claim-keyword (current-kind st) then skip-claim-def st
+   else if is-proof-keyword (current-kind st) then parse-definition (advance st)
    else if is-ident (current-kind st) then try-parse-def st
    else if is-type-ident (current-kind st) then try-parse-def st
      else ParseDefResult { maybe-def = None, state = st }
+
+  parse-claim-annotation : ParseState -> AnnotationNode
+  parse-claim-annotation (st) =
+   let st1 = advance st
+   in if is-ident (current-kind st1) then
+    let name = token-text (current st1)
+    in let prop = collect-claim-prop (advance st1) ""
+    in deck-record (AnnotationNode { kind = "claim", target = name, body = prop })
+   else deck-record (AnnotationNode { kind = "claim", target = "", body = "" })
+
+  collect-claim-prop : ParseState, Text -> Text
+  collect-claim-prop (st) (acc) =
+   if is-done st then acc
+   else when current-kind st
+    is Newline -> acc
+    is otherwise -> collect-claim-prop (advance st) (acc & " " & token-text (current st))
+
+  skip-claim-def : ParseState -> ParseDefResult
+  skip-claim-def (st) =
+   let col = (current st).column
+   in let st2 = advance st
+   in let st3 = skip-claim-tokens st2 col
+   in parse-definition st3
+
+  skip-claim-tokens : ParseState, Integer -> ParseState
+  skip-claim-tokens (st) (col) =
+   if is-done st then st
+   else if (current st).column <= col & is-claim-or-def-start (current-kind st) then st
+   else skip-claim-tokens (advance st) col
+
+  is-claim-or-def-start : TokenKind -> Boolean
+  is-claim-or-def-start (k) =
+   when k
+    is Identifier -> True
+    is TypeIdentifier -> True
+    is ClaimKeyword -> True
+    is ProofKeyword -> True
+    is otherwise -> False
 
   try-parse-def : ParseState -> ParseDefResult
   try-parse-def (st) =
@@ -774,6 +822,9 @@ Section: Document Parsing
    else if is-effect-keyword (current-kind st) then parse-top-level-effect defs type-defs effect-defs imports ch-title sec-titles prose blocks anns st
    else if is-at-sign st then let ann = parse-annotation-line st
      in parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns ann) (skip-to-next-line st)
+   else if is-claim-keyword (current-kind st) then let claim-ann = parse-claim-annotation st
+     in parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns claim-ann) (skip-to-next-line st)
+   else if is-proof-keyword (current-kind st) then try-top-level-def defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (advance st)
    else if is-prose-line st then let pr = collect-prose-with-text st prose blocks
      in parse-top-level defs type-defs effect-defs imports ch-title sec-titles (pr.lines) (pr.blocks) anns (pr.state)
    else if (current st).column > 3 then parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (skip-to-next-line st)

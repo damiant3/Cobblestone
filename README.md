@@ -79,6 +79,16 @@ As of 2026-05-19:
   emits IR text; plug consumes IR on stdin, emits target source on
   stdout. Working transpiler plugs: **Ada, Babbage, C#, COBOL,
   Fortran, JavaScript, Python, Rust** — each with build/run scripts.
+- **Dependent types**: `PropEqTy` — the first type carrying value
+  information. `===` in type position produces propositional equality;
+  `Refl` verified by the unifier (invalid proofs are type errors).
+  `Proof` as first-class type name. Proof erasure at emit (zero machine
+  code for proof definitions). `claim`/`proof` parser with `induction`
+  keyword. Proof builtins: Refl, sym, trans, cong, assume.
+- **Static bounds prover**: compiler proves bounded-integer range safety
+  at compile time and elides runtime bounds checks (CDX4010). Handles
+  literals, field access, arithmetic (+, -, *, /), int-mod, bit-and,
+  bit-shru, negation, if/else union.
 - **Mutable records**: `mutable` keyword with in-place field
   assignment, type-checked immutability enforcement (CDX2060).
 - **Repository restructure**: 31 top-level dirs to 8. codex-vm
@@ -595,7 +605,13 @@ old/                      Retired C# reference compiler — historical only
 | UsbVideo.codex | USB Video Class kernel driver: discovery, Probe/Commit, YUYV-to-RGB, framebuffer blit | 2026-05-23 |
 | Hardware tests | 5 new test samples: pci-scan, xhci-discover, uvc-discover, usb-msc-detect, hda-codec | 2026-05-23 |
 | xHCI transfers | Xhci.codex: command/transfer ring management, bulk/control transfers, event ring | 2026-05-23 |
-| **420 modules** | **24 quires, 53 compiler files (post-Exodus), 203 test samples** | **2026-05-23** |
+| **Static bounds prover** | **Compiler proves bounded-integer range safety at compile time, elides runtime checks (CDX4010). Handles literals, fields, arithmetic (+,-,*,/), int-mod, bit-and, bit-shru, negate, if/else union** | **2026-05-23** |
+| Short-circuit AND/OR | `IrAnd`/`IrOr` emit proper short-circuit codegen (test + jcc, no right-operand eval when unnecessary) | 2026-05-23 |
+| Plug emitter fixes | Rust + JS Unicode escape (CCE→codepoint), C# O(n²) concat→text-concat-list, deprecated `++`→`&` across all 6 emitters (2661 replacements) | 2026-05-23 |
+| Debugger | Symbolic breakpoints (name→MAP1→INT3), backtrace (stack walk + symbol resolve), register dump, perf counters, single-step (#DB), all views wired | 2026-05-23 |
+| Editor undo/redo | Ctrl+Z/Ctrl+Y wired to undo/redo stacks, snapshots on every edit (char, backspace, delete, enter) | 2026-05-23 |
+| **Dependent types** | **PropEqTy: types carry values. `Nil === Nil` in type position produces PropEqTy; `Refl` verified by unifier; invalid proofs are type errors. ProofTy, proof erasure (zero machine code), CDX4020 diagnostic. Builtins: Refl, sym, trans, cong, assume. claim/proof parser, induction keyword.** | **2026-05-23** |
+| **420 modules** | **24 quires, 53 compiler files, 205 test samples** | **2026-05-23** |
 
 ---
 

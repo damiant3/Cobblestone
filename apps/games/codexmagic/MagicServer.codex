@@ -1,0 +1,646 @@
+Chapter: MagicServer
+  cites CodexMagic chapter Mana
+  cites CodexMagic chapter Card
+  cites CodexMagic chapter GameState
+  cites CodexMagic chapter General
+  cites CodexMagic chapter Supervisor
+  cites CodexMagic chapter Engine
+  cites CodexMagic chapter Deck
+  cites CodexMagic chapter Matchmaking
+  cites CodexMagic chapter Season
+  cites CodexMagic chapter CardPool
+  cites CodexMagic chapter Token
+  cites CodexMagic chapter MatchRecord
+  cites CodexMagic chapter Trigger
+  cites CodexMagic chapter Auth
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+
+ HTTP request handler for CodexMagic. Boots as a server, listens
+ for request lines on serial, dispatches to game/pool/deck/store
+ handlers, responds with JSON.
+
+ We say:
+
+Section: Server State
+
+  MagicStore = record {
+    game : GameState,
+    game-active : Boolean,
+    templates : List CardTemplate,
+    generals : List GeneralTemplate,
+    accounts : List PlayerAccount,
+    num-accounts : Integer,
+    tokens : List CardToken,
+    ledger : ManaCoinLedger,
+    current-season : Season,
+    match-record : MatchRecord,
+    account-keys : List AccountKey,
+    next-nonce : Integer
+  }
+
+  magic-store-new : MagicStore
+  magic-store-new =
+    let s1 = season-new 2026 3 "Age of Embers"
+    in let s1b = season-activate s1
+    in MagicStore { game = game-new full-card-pool general-warlord general-dawn-commander, game-active = False, templates = full-card-pool, generals = [general-warlord, general-high-sage, general-verdant-keeper, general-shadow-prince, general-dawn-commander], accounts = [account-new 0 "Player-1" 0 SubFree], num-accounts = 1, tokens = [], ledger = ledger-new 100, current-season = s1b, match-record = match-record-new 0 0 0 0 0, account-keys = [], next-nonce = 1000 }
+
+  update-store-game : MagicStore, GameState, Boolean -> MagicStore
+  update-store-game (store) (gs) (active) = MagicStore { game = gs, game-active = active, templates = store.templates, generals = store.generals, accounts = store.accounts, num-accounts = store.num-accounts, tokens = store.tokens, ledger = store.ledger, current-season = store.current-season, match-record = store.match-record, account-keys = store.account-keys, next-nonce = store.next-nonce }
+
+  update-store-ledger : MagicStore, ManaCoinLedger -> MagicStore
+  update-store-ledger (store) (new-ledger) = MagicStore { game = store.game, game-active = store.game-active, templates = store.templates, generals = store.generals, accounts = store.accounts, num-accounts = store.num-accounts, tokens = store.tokens, ledger = new-ledger, current-season = store.current-season, match-record = store.match-record, account-keys = store.account-keys, next-nonce = store.next-nonce }
+
+  update-store-tokens : MagicStore, List CardToken, ManaCoinLedger -> MagicStore
+  update-store-tokens (store) (new-tokens) (new-ledger) = MagicStore { game = store.game, game-active = store.game-active, templates = store.templates, generals = store.generals, accounts = store.accounts, num-accounts = store.num-accounts, tokens = new-tokens, ledger = new-ledger, current-season = store.current-season, match-record = store.match-record, account-keys = store.account-keys, next-nonce = store.next-nonce }
+
+  update-store-accounts : MagicStore, List PlayerAccount, Integer -> MagicStore
+  update-store-accounts (store) (new-accts) (new-count) = MagicStore { game = store.game, game-active = store.game-active, templates = store.templates, generals = store.generals, accounts = new-accts, num-accounts = new-count, tokens = store.tokens, ledger = store.ledger, current-season = store.current-season, match-record = store.match-record, account-keys = store.account-keys, next-nonce = store.next-nonce }
+
+Section: Response Helpers
+
+  respond-json : Text -> [Console] Integer
+  respond-json (body) = act
+    print-line-uni ("200 application/json " & body)
+    0
+  end
+
+  respond-error : Text -> [Console] Integer
+  respond-error (msg) = act
+    print-line-uni ("400 application/json {\"error\":\"" & msg & "\"}")
+    0
+  end
+
+  respond-not-found : [Console] Integer
+  respond-not-found = act
+    print-line-uni "404 text/plain Not Found"
+    0
+  end
+
+Section: String Helpers
+
+  text-take : Text, Integer -> Text
+  text-take (s) (n) = text-take-loop s n 0 ""
+
+  text-take-loop : Text, Integer, Integer, Text -> Text
+  text-take-loop (s) (n) (i) (acc) =
+    if i >= n then acc
+    else if i >= text-length s then acc
+    else text-take-loop s n (i + 1) (acc & char-to-text (char-at s i))
+
+  text-drop : Text, Integer -> Text
+  text-drop (s) (n) = text-drop-loop s n 0 (text-length s) ""
+
+  text-drop-loop : Text, Integer, Integer, Integer, Text -> Text
+  text-drop-loop (s) (start) (i) (len) (acc) =
+    if i >= len then acc
+    else if i < start then text-drop-loop s start (i + 1) len acc
+    else text-drop-loop s start (i + 1) len (acc & char-to-text (char-at s i))
+
+Section: Request Parsing
+
+  extract-path : Text -> Text
+  extract-path (line) =
+    let parts = text-split line " "
+    in if list-length parts < 2 then "/"
+    else let full = list-at parts 1
+    in let qpos = find-char full 63 0
+    in if qpos < 0 then full
+    else text-take full qpos
+
+  extract-query-param : Text, Text -> Text
+  extract-query-param (line) (key) =
+    let parts = text-split line " "
+    in if list-length parts < 2 then ""
+    else let full = list-at parts 1
+    in let qpos = find-char full 63 0
+    in if qpos < 0 then ""
+    else let qs = text-drop full (qpos + 1)
+    in find-param-value qs key
+
+  find-char : Text, Integer, Integer -> Integer
+  find-char (s) (target) (i) =
+    if i >= text-length s then (-1)
+    else if to-unicode (char-code (char-at s i)) == target then i
+    else find-char s target (i + 1)
+
+  find-param-value : Text, Text -> Text
+  find-param-value (qs) (key) =
+    let pairs = text-split qs "&"
+    in find-in-pairs pairs key 0
+
+  find-in-pairs : List Text, Text, Integer -> Text
+  find-in-pairs (pairs) (key) (i) =
+    if i >= list-length pairs then ""
+    else let pair = list-at pairs i
+    in let eqpos = find-char pair 61 0
+    in if eqpos < 0 then find-in-pairs pairs key (i + 1)
+    else let k = text-take pair eqpos
+    in if k == key then text-drop pair (eqpos + 1)
+    else find-in-pairs pairs key (i + 1)
+
+  parse-int : Text, Integer -> Integer
+  parse-int (s) (default-val) =
+    if text-length s == 0 then default-val
+    else parse-int-loop s 0 0
+
+  parse-int-loop : Text, Integer, Integer -> Integer
+  parse-int-loop (s) (i) (acc) =
+    if i >= text-length s then acc
+    else let c = to-unicode (char-code (char-at s i))
+    in if c >= 48 then
+      if c <= 57 then parse-int-loop s (i + 1) (acc * 10 + c - 48)
+      else acc
+    else acc
+
+Section: Request Dispatch
+
+  dispatch-request : MagicStore, Text -> [Console] MagicStore
+  dispatch-request (store) (line) =
+    let path = extract-path line
+    in if text-starts-with path "/api/magic/game/" then handle-game store line path
+    else if text-starts-with path "/api/magic/pool" then handle-pool store
+    else if text-starts-with path "/api/magic/deck/" then handle-deck store line path
+    else if text-starts-with path "/api/magic/store/" then handle-store store line path
+    else if text-starts-with path "/api/magic/auth/" then handle-auth store line path
+    else if text-starts-with path "/api/magic/account/" then handle-account store line path
+    else if text-starts-with path "/api/magic/queue/" then handle-queue store line path
+    else if text-starts-with path "/api/magic/match/" then handle-match store line path
+    else if text-starts-with path "/api/magic/season" then handle-season store
+    else if text-starts-with path "/api/magic/status" then handle-magic-status store
+    else act
+      pm0 <- respond-not-found
+      store
+    end
+
+Section: Game Handlers
+
+  handle-game : MagicStore, Text, Text -> [Console] MagicStore
+  handle-game (store) (line) (path) =
+    if text-starts-with path "/api/magic/game/new" then handle-game-new store line
+    else if text-starts-with path "/api/magic/game/step" then handle-game-step store
+    else if text-starts-with path "/api/magic/game/state" then handle-game-state store
+    else act pm0 <- respond-not-found
+      store
+    end
+
+  handle-game-new : MagicStore, Text -> [Console] MagicStore
+  handle-game-new (store) (line) =
+    let gen-a = get-general-by-id (store.generals) 0
+    in let gen-b = get-general-by-id (store.generals) 4
+    in let deck-a = gen-starter-deck gen-a (store.templates) 42
+    in let deck-b = gen-starter-deck gen-b (store.templates) 99
+    in let gs = game-new (store.templates) gen-a gen-b
+    in let gs2 = load-deck-cards gs 0 (shuffle-deck (deck-a.cards) 777) 0
+    in let gs3 = load-deck-cards gs2 1 (shuffle-deck (deck-b.cards) 888) 0
+    in let gs4 = draw-cards gs3 0 7
+    in let gs5 = draw-cards gs4 1 7
+    in let ns = update-store-game store gs5 True
+    in act
+      pm0 <- respond-json (game-state-to-json gs5 gen-a gen-b (store.templates))
+      ns
+    end
+
+  handle-game-step : MagicStore -> [Console] MagicStore
+  handle-game-step (store) =
+    if store.game-active == False then act pm0 <- respond-error "no active game"
+      store
+    end
+    else if store.game.game-over then act pm0 <- respond-error "game is over"
+      store
+    end
+    else let gs = store.game
+    in let gs2 = run-turn gs
+    in let gs3 = check-state-based-actions gs2
+    in let gs4 = if gs3.game-over then gs3 else advance-turn gs3
+    in let gen-a = get-general-by-id (store.generals) 0
+    in let gen-b = get-general-by-id (store.generals) 4
+    in let ns = update-store-game store gs4 (if gs4.game-over then False else True)
+    in let ns2 = if gs4.game-over then finalize-match ns gs4 else ns
+    in act
+      pm0 <- respond-json (game-state-to-json gs4 gen-a gen-b (store.templates))
+      ns2
+    end
+
+  finalize-match : MagicStore, GameState -> MagicStore
+  finalize-match (store) (gs) =
+    let mr = finalize-record (store.match-record) gs
+    in let acct-0 = get-account (store.accounts) 0
+    in let acct-1 = get-account (store.accounts) (if store.num-accounts > 1 then 1 else 0)
+    in let winner-acct = if gs.winner == 0 then acct-0 else acct-1
+    in let loser-acct = if gs.winner == 0 then acct-1 else acct-0
+    in let ratings = update-ratings winner-acct loser-acct 0
+    in let acct-0-new = apply-rating-update acct-0 (if gs.winner == 0 then ratings.winner-new-rating else ratings.loser-new-rating) (gs.winner == 0)
+    in let new-accts = set-account (store.accounts) 0 acct-0-new
+    in let reward = if gs.winner == 0 then 50 else 10
+    in let ledger2 = ledger-mint (store.ledger) 0 reward
+    in MagicStore { game = store.game, game-active = False, templates = store.templates, generals = store.generals, accounts = new-accts, num-accounts = store.num-accounts, tokens = store.tokens, ledger = ledger2, current-season = store.current-season, match-record = mr, account-keys = store.account-keys, next-nonce = store.next-nonce }
+
+  handle-game-state : MagicStore -> [Console] MagicStore
+  handle-game-state (store) =
+    let gen-a = get-general-by-id (store.generals) 0
+    in let gen-b = get-general-by-id (store.generals) 4
+    in act
+      pm0 <- respond-json (game-state-to-json (store.game) gen-a gen-b (store.templates))
+      store
+    end
+
+Section: Pool Handler
+
+  handle-pool : MagicStore -> [Console] MagicStore
+  handle-pool (store) =
+    let cards-json = templates-to-json-str (store.templates) 0 (list-length (store.templates)) ""
+    in act
+      pm0 <- respond-json ("{\"cards\":[" & cards-json & "],\"count\":" & show (list-length (store.templates)) & "}")
+      store
+    end
+
+
+Section: Deck Handler
+
+  handle-deck : MagicStore, Text, Text -> [Console] MagicStore
+  handle-deck (store) (line) (path) =
+    if text-starts-with path "/api/magic/deck/generate" then
+      let gen-id = parse-int (extract-query-param line "general") 0
+      in let seed = parse-int (extract-query-param line "seed") 42
+      in let gen = get-general-by-id (store.generals) gen-id
+      in let deck = gen-starter-deck gen (store.templates) seed
+      in let cards-json = int-list-to-str (deck.cards) 0 (deck.num-cards) ""
+      in act
+        pm0 <- respond-json ("{\"cards\":[" & cards-json & "],\"count\":" & show (deck.num-cards) & ",\"general\":" & show gen-id & "}")
+        store
+      end
+    else if text-starts-with path "/api/magic/deck/validate" then
+      let gen-id = parse-int (extract-query-param line "general") 0
+      in let gen = get-general-by-id (store.generals) gen-id
+      in act
+        pm0 <- respond-json ("{\"valid\":true,\"reason\":\"\"}")
+        store
+      end
+    else act pm0 <- respond-not-found
+      store
+    end
+
+Section: Store Handler
+
+  handle-store : MagicStore, Text, Text -> [Console] MagicStore
+  handle-store (store) (line) (path) =
+    if text-starts-with path "/api/magic/store/crack" then handle-crack-pack store line
+    else if text-starts-with path "/api/magic/store/balance" then handle-balance store line
+    else if text-starts-with path "/api/magic/store/buy-coin" then handle-buy-coin store line
+    else if text-starts-with path "/api/magic/store/generals" then handle-generals-list store
+    else act pm0 <- respond-not-found
+      store
+    end
+
+  handle-crack-pack : MagicStore, Text -> [Console] MagicStore
+  handle-crack-pack (store) (line) =
+    let acct-id = parse-int (extract-query-param line "account") 0
+    in let seed = parse-int (extract-query-param line "seed") 42
+    in let cost = 100
+    in let bal = ledger-balance (store.ledger) acct-id
+    in if bal < cost then act
+      pm0 <- respond-error "insufficient mana coin"
+      store
+    end
+    else let acct = get-account (store.accounts) acct-id
+    in let sub-bonus = sub-upgrade-bonus (acct.subscription)
+    in let ledger2 = ledger-burn (store.ledger) acct-id cost
+    in let pack = crack-pack (store.templates) seed sub-bonus
+    in let tokens2 = mint-pack-cards (store.tokens) (pack.cards) acct-id seed 0 (pack.num-cards)
+    in let cards-json = int-list-to-str (pack.cards) 0 (pack.num-cards) ""
+    in let ns = update-store-tokens store tokens2 ledger2
+    in act
+      pm0 <- respond-json ("{\"cards\":[" & cards-json & "],\"count\":" & show (pack.num-cards) & ",\"balance\":" & show (ledger-balance ledger2 acct-id) & ",\"tokens-minted\":" & show (list-length tokens2) & "}")
+      ns
+    end
+
+  mint-pack-cards : List CardToken, List Integer, Integer, Integer, Integer, Integer -> List CardToken
+  mint-pack-cards (tokens) (cards) (owner) (time) (i) (len) =
+    if i >= len then tokens
+    else let tokens2 = mint-token tokens (list-at cards i) owner time MintPack
+    in mint-pack-cards tokens2 cards owner time (i + 1) len
+
+  handle-balance : MagicStore, Text -> [Console] MagicStore
+  handle-balance (store) (line) =
+    let acct-id = parse-int (extract-query-param line "account") 0
+    in let bal = ledger-balance (store.ledger) acct-id
+    in let acct = get-account (store.accounts) acct-id
+    in act
+      pm0 <- respond-json ("{\"balance\":" & show bal & ",\"sub-tier\":" & jstr (sub-tier-name (acct.subscription)) & ",\"tokens-owned\":" & show (count-tokens-owned (store.tokens) acct-id 0 (list-length (store.tokens)) 0) & "}")
+      store
+    end
+
+  count-tokens-owned : List CardToken, Integer, Integer, Integer, Integer -> Integer
+  count-tokens-owned (tokens) (owner) (i) (len) (acc) =
+    if i >= len then acc
+    else let t = list-at tokens i
+    in if t.owner == owner then count-tokens-owned tokens owner (i + 1) len (acc + 1)
+    else count-tokens-owned tokens owner (i + 1) len acc
+
+  handle-buy-coin : MagicStore, Text -> [Console] MagicStore
+  handle-buy-coin (store) (line) =
+    let acct-id = parse-int (extract-query-param line "account") 0
+    in let amount = parse-int (extract-query-param line "amount") 100
+    in let ledger2 = ledger-mint (store.ledger) acct-id amount
+    in let ns = update-store-ledger store ledger2
+    in act
+      pm0 <- respond-json ("{\"balance\":" & show (ledger-balance ledger2 acct-id) & ",\"minted\":" & show amount & "}")
+      ns
+    end
+
+  handle-generals-list : MagicStore -> [Console] MagicStore
+  handle-generals-list (store) =
+    let json = generals-list-to-json (store.generals) 0 (list-length (store.generals)) ""
+    in act
+      pm0 <- respond-json ("{\"generals\":[" & json & "]}")
+      store
+    end
+
+  generals-list-to-json : List GeneralTemplate, Integer, Integer, Text -> Text
+  generals-list-to-json (generals) (i) (len) (acc) =
+    if i >= len then acc
+    else let g = list-at generals i
+    in let sep = if i > 0 then "," else ""
+    in let gj = sep & "{\"id\":" & show (g.id) & ",\"name\":" & jstr (g.name) & ",\"power\":" & show (g.power) & ",\"toughness\":" & show (g.toughness) & ",\"defense\":" & show (g.defense) & ",\"life\":" & show (g.life) & "}"
+    in generals-list-to-json generals (i + 1) len (acc & gj)
+
+Section: Queue Handler
+
+  handle-queue : MagicStore, Text, Text -> [Console] MagicStore
+  handle-queue (store) (line) (path) =
+    if text-starts-with path "/api/magic/queue/join" then handle-queue-join store line
+    else if text-starts-with path "/api/magic/queue/status" then handle-queue-status store line
+    else act pm0 <- respond-not-found
+      store
+    end
+
+  handle-queue-join : MagicStore, Text -> [Console] MagicStore
+  handle-queue-join (store) (line) =
+    let acct-id = parse-int (extract-query-param line "account") 0
+    in let format-str = extract-query-param line "format"
+    in let tier-str = extract-query-param line "tier"
+    in let acct = get-account (store.accounts) acct-id
+    in act
+      pm0 <- respond-json ("{\"queued\":true,\"account\":" & show acct-id & ",\"format\":" & jstr format-str & ",\"tier\":" & jstr tier-str & ",\"rating\":" & show (acct.rating) & ",\"rank\":" & jstr (rank-name (acct.rank)) & ",\"match-id\":1,\"status\":\"matched\"}")
+      store
+    end
+
+  handle-queue-status : MagicStore, Text -> [Console] MagicStore
+  handle-queue-status (store) (line) =
+    act
+      pm0 <- respond-json "{\"status\":\"matched\",\"match-id\":1,\"wait-time\":0}"
+      store
+    end
+
+Section: Match Handler
+
+  handle-match : MagicStore, Text, Text -> [Console] MagicStore
+  handle-match (store) (line) (path) =
+    if text-starts-with path "/api/magic/match/result" then handle-match-result store
+    else if text-starts-with path "/api/magic/match/history" then handle-match-history store line
+    else act pm0 <- respond-not-found
+      store
+    end
+
+  handle-match-result : MagicStore -> [Console] MagicStore
+  handle-match-result (store) =
+    let mr = store.match-record
+    in act
+      pm0 <- respond-json ("{\"match-id\":" & show (mr.match-id) & ",\"winner\":" & show (mr.winner) & ",\"turns\":" & show (mr.turns-played) & ",\"life-a\":" & show (mr.final-life-a) & ",\"life-b\":" & show (mr.final-life-b) & ",\"loyalty-a\":" & show (mr.final-loyalty-a) & ",\"loyalty-b\":" & show (mr.final-loyalty-b) & ",\"actions\":" & show (mr.action-count) & "}")
+      store
+    end
+
+  handle-match-history : MagicStore, Text -> [Console] MagicStore
+  handle-match-history (store) (line) =
+    let acct-id = parse-int (extract-query-param line "account") 0
+    in let acct = get-account (store.accounts) acct-id
+    in act
+      pm0 <- respond-json ("{\"account\":" & show acct-id & ",\"wins\":" & show (acct.wins) & ",\"losses\":" & show (acct.losses) & ",\"rating\":" & show (acct.rating) & ",\"rank\":" & jstr (rank-name (acct.rank)) & "}")
+      store
+    end
+
+Section: Auth Handler
+
+  handle-auth : MagicStore, Text, Text -> [Console] MagicStore
+  handle-auth (store) (line) (path) =
+    if text-starts-with path "/api/magic/auth/challenge" then handle-auth-challenge store line
+    else if text-starts-with path "/api/magic/auth/verify" then handle-auth-verify store line
+    else act pm0 <- respond-not-found
+      store
+    end
+
+  handle-auth-challenge : MagicStore, Text -> [Console] MagicStore
+  handle-auth-challenge (store) (line) =
+    let challenge = generate-challenge (store.next-nonce)
+    in let ns = MagicStore { game = store.game, game-active = store.game-active, templates = store.templates, generals = store.generals, accounts = store.accounts, num-accounts = store.num-accounts, tokens = store.tokens, ledger = store.ledger, current-season = store.current-season, match-record = store.match-record, account-keys = store.account-keys, next-nonce = store.next-nonce + 1 }
+    in act
+      pm0 <- respond-json ("{\"nonce\":" & show (challenge.nonce) & ",\"timestamp\":" & show (challenge.timestamp) & "}")
+      ns
+    end
+
+  handle-auth-verify : MagicStore, Text -> [Console] MagicStore
+  handle-auth-verify (store) (line) =
+    let acct-id = parse-int (extract-query-param line "id") 0
+    in let nonce = parse-int (extract-query-param line "nonce") 0
+    in let sig-high = parse-int (extract-query-param line "sig-high") 0
+    in let sig-low = parse-int (extract-query-param line "sig-low") 0
+    in let token = AuthToken { account-id = acct-id, nonce = nonce, signature-high = sig-high, signature-low = sig-low }
+    in let pubkey = find-account-key (store.account-keys) acct-id 0 (list-length (store.account-keys))
+    in let valid = verify-signature token pubkey
+    in if valid then
+      let session = create-session acct-id (store.next-nonce) 3600
+      in let ns = MagicStore { game = store.game, game-active = store.game-active, templates = store.templates, generals = store.generals, accounts = store.accounts, num-accounts = store.num-accounts, tokens = store.tokens, ledger = store.ledger, current-season = store.current-season, match-record = store.match-record, account-keys = store.account-keys, next-nonce = store.next-nonce + 1 }
+      in act
+        pm0 <- respond-json ("{\"verified\":true,\"session-id\":" & show (session.session-id) & ",\"expires\":" & show (session.expires-at) & "}")
+        ns
+      end
+    else act
+      pm0 <- respond-error "signature verification failed"
+      store
+    end
+
+Section: Account Handler
+
+  handle-account : MagicStore, Text, Text -> [Console] MagicStore
+  handle-account (store) (line) (path) =
+    if text-starts-with path "/api/magic/account/new" then handle-account-new store line
+    else if text-starts-with path "/api/magic/account/profile" then handle-account-profile store line
+    else if text-starts-with path "/api/magic/account/subscribe" then handle-subscribe store line
+    else act pm0 <- respond-not-found
+      store
+    end
+
+  handle-account-new : MagicStore, Text -> [Console] MagicStore
+  handle-account-new (store) (line) =
+    let name = extract-query-param line "name"
+    in let gen-id = parse-int (extract-query-param line "general") 0
+    in let pk-high = parse-int (extract-query-param line "pk-high") 0
+    in let pk-low = parse-int (extract-query-param line "pk-low") 0
+    in let display-name = if text-length name == 0 then "Player-" & show (store.num-accounts + 1) else name
+    in let acct = account-new (store.num-accounts) display-name gen-id SubFree
+    in let new-accts = list-push (store.accounts) acct
+    in let ledger2 = ledger-mint (store.ledger) (store.num-accounts) 500
+    in let pubkey = PublicKey { key-high = pk-high, key-low = pk-low }
+    in let ak = account-key-new (store.num-accounts) pubkey (store.next-nonce)
+    in let new-keys = list-push (store.account-keys) ak
+    in let ns = MagicStore { game = store.game, game-active = store.game-active, templates = store.templates, generals = store.generals, accounts = new-accts, num-accounts = store.num-accounts + 1, tokens = store.tokens, ledger = ledger2, current-season = store.current-season, match-record = store.match-record, account-keys = new-keys, next-nonce = store.next-nonce + 1 }
+    in act
+      pm0 <- respond-json ("{\"account-id\":" & show (acct.account-id) & ",\"name\":" & jstr display-name & ",\"rating\":" & show (acct.rating) & ",\"rank\":" & jstr (rank-name (acct.rank)) & ",\"balance\":500,\"public-key\":" & jstr (format-public-key pubkey) & "}")
+      ns
+    end
+
+  handle-account-profile : MagicStore, Text -> [Console] MagicStore
+  handle-account-profile (store) (line) =
+    let acct-id = parse-int (extract-query-param line "id") 0
+    in let acct = get-account (store.accounts) acct-id
+    in let bal = ledger-balance (store.ledger) acct-id
+    in let token-count = count-tokens-owned (store.tokens) acct-id 0 (list-length (store.tokens)) 0
+    in act
+      pm0 <- respond-json ("{\"account-id\":" & show (acct.account-id) & ",\"name\":" & jstr (acct.name) & ",\"rating\":" & show (acct.rating) & ",\"rank\":" & jstr (rank-name (acct.rank)) & ",\"wins\":" & show (acct.wins) & ",\"losses\":" & show (acct.losses) & ",\"balance\":" & show bal & ",\"tokens\":" & show token-count & ",\"subscription\":" & jstr (sub-tier-name (acct.subscription)) & "}")
+      store
+    end
+
+  handle-subscribe : MagicStore, Text -> [Console] MagicStore
+  handle-subscribe (store) (line) =
+    let acct-id = parse-int (extract-query-param line "id") 0
+    in let tier-str = extract-query-param line "tier"
+    in let tier = parse-sub-tier tier-str
+    in let acct = get-account (store.accounts) acct-id
+    in let updated = PlayerAccount { account-id = acct.account-id, name = acct.name, rating = acct.rating, rank = acct.rank, wins = acct.wins, losses = acct.losses, general-id = acct.general-id, subscription = tier }
+    in let new-accts = set-account (store.accounts) acct-id updated
+    in let ns = update-store-accounts store new-accts (store.num-accounts)
+    in act
+      pm0 <- respond-json ("{\"account-id\":" & show acct-id & ",\"subscription\":" & jstr (sub-tier-name tier) & ",\"upgrade-bonus\":" & show (sub-upgrade-bonus tier) & "}")
+      ns
+    end
+
+  parse-sub-tier : Text -> SubscriptionTier
+  parse-sub-tier (s) =
+    if s == "bronze" then SubBronze
+    else if s == "silver" then SubSilver
+    else if s == "gold" then SubGold
+    else if s == "platinum" then SubPlatinum
+    else SubFree
+
+  get-account : List PlayerAccount, Integer -> PlayerAccount
+  get-account (accounts) (id) =
+    if id >= list-length accounts then account-new 0 "Unknown" 0 SubFree
+    else list-at accounts id
+
+  set-account : List PlayerAccount, Integer, PlayerAccount -> List PlayerAccount
+  set-account (accounts) (id) (acct) =
+    if id >= list-length accounts then accounts
+    else list-set-at accounts id acct
+
+Section: Season Handler
+
+  handle-season : MagicStore -> [Console] MagicStore
+  handle-season (store) =
+    let s = store.current-season
+    in act
+      pm0 <- respond-json ("{\"name\":" & jstr (s.name) & ",\"year\":" & show (s.id.year) & ",\"quarter\":" & show (s.id.quarter) & ",\"pool-size\":" & show (s.pool-size) & ",\"bans\":" & show (list-length (s.banned)) & ",\"active\":" & jbool (s.active) & "}")
+      store
+    end
+
+Section: Status Handler
+
+  handle-magic-status : MagicStore -> [Console] MagicStore
+  handle-magic-status (store) =
+    act
+      pm0 <- respond-json ("{\"server\":\"CodexMagic\",\"version\":2,\"cards\":" & show (list-length (store.templates)) & ",\"generals\":" & show (list-length (store.generals)) & ",\"accounts\":" & show (store.num-accounts) & ",\"tokens\":" & show (list-length (store.tokens)) & ",\"coin-supply\":" & show (store.ledger.total-supply) & ",\"game-active\":" & jbool (store.game-active) & "}")
+      store
+    end
+
+Section: JSON Serializers
+
+  jstr : Text -> Text
+  jstr (s) = "\"" & s & "\""
+
+  jbool : Boolean -> Text
+  jbool (b) = if b then "true" else "false"
+
+  game-state-to-json : GameState, GeneralTemplate, GeneralTemplate, List CardTemplate -> Text
+  game-state-to-json (gs) (gen-a) (gen-b) (templates) =
+    let p0 = get-player gs 0
+    in let p1 = get-player gs 1
+    in "{\"turn\":" & show (gs.turn-number) & ",\"step\":" & show (gs.step) & ",\"active-player\":" & show (gs.active-player) & ",\"game-over\":" & jbool (gs.game-over) & ",\"winner\":" & show (gs.winner) & ",\"generals\":[" & general-to-json gen-a (p0.general) (army-loyalty gs 0) & "," & general-to-json gen-b (p1.general) (army-loyalty gs 1) & "],\"battlefield\":[" & battlefield-to-json (gs.battlefield) templates 0 (list-length (gs.battlefield)) "" & "],\"hands\":[{\"size\":" & show (list-length (p0.hand)) & ",\"cards\":[" & int-list-to-str (p0.hand) 0 (list-length (p0.hand)) "" & "]},{\"size\":" & show (list-length (p1.hand)) & "}],\"libraries\":[" & show (list-length (p0.library)) & "," & show (list-length (p1.library)) & "],\"mana-pools\":[" & mana-pool-to-json (p0.mana-pool) & "," & mana-pool-to-json (p1.mana-pool) & "]}"
+
+  general-to-json : GeneralTemplate, GeneralState, Integer -> Text
+  general-to-json (template) (state) (loyalty) =
+    "{\"name\":" & jstr (template.name) & ",\"power\":" & show (template.power + state.power-mod) & ",\"toughness\":" & show (template.toughness + state.toughness-mod) & ",\"defense\":" & show (template.defense + state.defense-mod) & ",\"life\":" & show (state.life) & ",\"starting-life\":" & show (template.life) & ",\"loyalty\":" & show loyalty & ",\"tapped\":" & jbool (state.is-tapped) & "}"
+
+  battlefield-to-json : List Permanent, List CardTemplate, Integer, Integer, Text -> Text
+  battlefield-to-json (perms) (templates) (i) (len) (acc) =
+    if i >= len then acc
+    else let perm = list-at perms i
+    in let t = list-at templates (perm.template-id)
+    in let sep = if i > 0 then "," else ""
+    in let pj = sep & "{\"id\":" & show (perm.id) & ",\"name\":" & jstr (t.name) & ",\"template-id\":" & show (perm.template-id) & ",\"controller\":" & show (perm.controller) & ",\"type\":" & jstr (card-type-name (t.card-type)) & ",\"power\":" & show (t.power + perm.power-mod) & ",\"toughness\":" & show (t.toughness + perm.toughness-mod) & ",\"defense\":" & show (t.defense + perm.defense-mod) & ",\"tapped\":" & jbool (perm.tapped) & ",\"summoning-sick\":" & jbool (perm.summoning-sick) & ",\"damage-marked\":" & show (perm.damage-marked) & "}"
+    in battlefield-to-json perms templates (i + 1) len (acc & pj)
+
+  mana-pool-to-json : ManaPool -> Text
+  mana-pool-to-json (pool) =
+    "{\"W\":" & show (pool.white) & ",\"U\":" & show (pool.blue) & ",\"B\":" & show (pool.black) & ",\"R\":" & show (pool.red) & ",\"G\":" & show (pool.green) & ",\"C\":" & show (pool.colorless) & "}"
+
+  templates-to-json-str : List CardTemplate, Integer, Integer, Text -> Text
+  templates-to-json-str (templates) (i) (len) (acc) =
+    if i >= len then acc
+    else let t = list-at templates i
+    in let sep = if i > 0 then "," else ""
+    in let tj = sep & "{\"id\":" & show (t.id) & ",\"name\":" & jstr (t.name) & ",\"type\":" & jstr (card-type-name (t.card-type)) & ",\"power\":" & show (t.power) & ",\"toughness\":" & show (t.toughness) & ",\"defense\":" & show (t.defense) & ",\"rarity\":" & jstr (rarity-name (t.rarity)) & ",\"cost\":{\"white\":" & show (t.mana-cost.white) & ",\"blue\":" & show (t.mana-cost.blue) & ",\"black\":" & show (t.mana-cost.black) & ",\"red\":" & show (t.mana-cost.red) & ",\"green\":" & show (t.mana-cost.green) & ",\"generic\":" & show (t.mana-cost.generic) & "}}"
+    in templates-to-json-str templates (i + 1) len (acc & tj)
+
+  int-list-to-str : List Integer, Integer, Integer, Text -> Text
+  int-list-to-str (xs) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i > 0 then "," else ""
+    in int-list-to-str xs (i + 1) len (acc & sep & show (list-at xs i))
+
+Section: Helpers
+
+  get-general-by-id : List GeneralTemplate, Integer -> GeneralTemplate
+  get-general-by-id (generals) (id) = find-general-loop generals id 0 (list-length generals)
+
+  find-general-loop : List GeneralTemplate, Integer, Integer, Integer -> GeneralTemplate
+  find-general-loop (generals) (id) (i) (len) =
+    if i >= len then list-at generals 0
+    else let g = list-at generals i
+    in if g.id == id then g
+    else find-general-loop generals id (i + 1) len
+
+  load-deck-cards : GameState, Integer, List Integer, Integer -> GameState
+  load-deck-cards (gs) (player-idx) (cards) (i) =
+    if i >= list-length cards then gs
+    else let p = get-player gs player-idx
+    in let p2 = PlayerState { general = p.general, mana-pool = p.mana-pool, library = list-push (p.library) (list-at cards i), hand = p.hand, graveyard = p.graveyard, exile = p.exile, land-drop-used = p.land-drop-used, land-drops-per-turn = p.land-drops-per-turn }
+    in let gs2 = set-player gs player-idx p2
+    in load-deck-cards gs2 player-idx cards (i + 1)
+
+  draw-cards : GameState, Integer, Integer -> GameState
+  draw-cards (gs) (player-idx) (n) =
+    if n <= 0 then gs
+    else let p = get-player gs player-idx
+    in let p2 = player-draw p
+    in let gs2 = set-player gs player-idx p2
+    in draw-cards gs2 player-idx (n - 1)
+
+Section: Server Loop
+
+  opening : [Console] Nothing = act
+    print-line-uni "READY"
+    server-loop magic-store-new
+  end
+
+  server-loop : MagicStore -> [Console] Nothing
+  server-loop (store) = act
+    line-result <- read-line
+    when line-result
+      is Just (line) -> act
+        new-store <- dispatch-request store line
+        server-loop new-store
+      end
+      is None -> print-line-uni "SERVER-EXIT"
+    end
+
+Page 1

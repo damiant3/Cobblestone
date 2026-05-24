@@ -463,6 +463,157 @@ Section: Narrow-store with overflow-mode dispatch
  emit the same trap shape (jcc + ud2) for OvError; OvClamping uses
  cmp-ri + jcc + mov-ri32 to saturate when out of range.
 
+  add-range : Integer, Integer, Integer, Integer -> CodexType
+  add-range (l-lo) (l-hi) (r-lo) (r-hi) =
+   if l-lo < 0 then int-ty-default
+   else if r-lo < 0 then int-ty-default
+   else let res-hi = l-hi + r-hi
+   in if res-hi < l-hi then int-ty-default
+   else IntegerTy (l-lo + r-lo) res-hi OvError
+
+  sub-range : Integer, Integer, Integer, Integer -> CodexType
+  sub-range (l-lo) (l-hi) (r-lo) (r-hi) =
+   if l-lo < 0 then int-ty-default
+   else if r-lo < 0 then int-ty-default
+   else IntegerTy (l-lo - r-hi) (l-hi - r-lo) OvError
+
+  mul-range : Integer, Integer, Integer, Integer -> CodexType
+  mul-range (l-lo) (l-hi) (r-lo) (r-hi) =
+   if l-lo < 0 then int-ty-default
+   else if r-lo < 0 then int-ty-default
+   else if r-hi == 0 then IntegerTy 0 0 OvError
+   else if l-hi > i64-max / r-hi then int-ty-default
+   else IntegerTy (l-lo * r-lo) (l-hi * r-hi) OvError
+
+  div-range : Integer, Integer, Integer, Integer -> CodexType
+  div-range (l-lo) (l-hi) (r-lo) (r-hi) =
+   if l-lo < 0 then int-ty-default
+   else if r-lo <= 0 then int-ty-default
+   else IntegerTy (l-lo / r-hi) (l-hi / r-lo) OvError
+
+  union-range : CodexType, CodexType -> CodexType
+  union-range (a) (b) =
+   when a
+    is IntegerTy (a-lo) (a-hi) (am) ->
+     when b
+      is IntegerTy (b-lo) (b-hi) (bm) ->
+       let lo = if a-lo <= b-lo then a-lo else b-lo
+       in let hi = if a-hi >= b-hi then a-hi else b-hi
+       in IntegerTy lo hi OvError
+      is otherwise -> int-ty-default
+    is otherwise -> int-ty-default
+
+  binary-proven-range : IRBinaryOp, CodexType, CodexType -> CodexType
+  binary-proven-range (op) (lt) (rt) =
+   when lt
+    is IntegerTy (l-lo) (l-hi) (lm) ->
+     when rt
+      is IntegerTy (r-lo) (r-hi) (rm) ->
+       when op
+        is IrAddInt -> add-range l-lo l-hi r-lo r-hi
+        is IrSubInt -> sub-range l-lo l-hi r-lo r-hi
+        is IrMulInt -> mul-range l-lo l-hi r-lo r-hi
+        is IrDivInt -> div-range l-lo l-hi r-lo r-hi
+        is otherwise -> int-ty-default
+      is otherwise -> int-ty-default
+    is otherwise -> int-ty-default
+
+  proven-mod : IRExpr, IRExpr -> CodexType
+  proven-mod (x-expr) (n-expr) =
+   let nr = ir-expr-proven-range n-expr
+   in when nr
+    is IntegerTy (n-lo) (n-hi) (nm) ->
+     if n-lo > 0 then IntegerTy 0 (n-hi - 1) OvError
+     else int-ty-default
+    is otherwise -> int-ty-default
+
+  proven-bitand : IRExpr, IRExpr -> CodexType
+  proven-bitand (x-expr) (y-expr) =
+   let xr = ir-expr-proven-range x-expr
+   in let yr = ir-expr-proven-range y-expr
+   in when xr
+    is IntegerTy (x-lo) (x-hi) (xm) ->
+     when yr
+      is IntegerTy (y-lo) (y-hi) (ym) ->
+       if x-lo >= 0 & y-lo >= 0
+       then let hi = if x-hi <= y-hi then x-hi else y-hi
+            in IntegerTy 0 hi OvError
+       else int-ty-default
+      is otherwise -> int-ty-default
+    is otherwise -> int-ty-default
+
+  proven-shru : IRExpr, IRExpr -> CodexType
+  proven-shru (x-expr) (n-expr) =
+   let xr = ir-expr-proven-range x-expr
+   in let nr = ir-expr-proven-range n-expr
+   in when xr
+    is IntegerTy (x-lo) (x-hi) (xm) ->
+     when nr
+      is IntegerTy (n-lo) (n-hi) (nm) ->
+       if x-lo >= 0 & n-lo >= 0
+       then IntegerTy (bit-shru x-lo n-hi) (bit-shru x-hi n-lo) OvError
+       else int-ty-default
+      is otherwise -> int-ty-default
+    is otherwise -> int-ty-default
+
+  ir-expr-proven-range : IRExpr -> CodexType
+  ir-expr-proven-range (e) =
+   when e
+    is IrIntLit (v) (s) -> IntegerTy v v OvError
+    is IrFieldAccess (rec) (fname) (vty) (sp) ->
+     when vty
+      is IntegerTy (lo) (hi) (mode) -> vty
+      is otherwise -> int-ty-default
+    is IrApply (func) (arg) (ty) (sp) ->
+     when func
+      is IrName (n) (nty) (nsp) ->
+       if n == "__narrow" then ir-expr-proven-range arg else int-ty-default
+      is IrApply (inner-func) (inner-arg) (ity) (isp) ->
+       when inner-func
+        is IrName (n) (nty) (nsp) ->
+         if n == "int-mod" then proven-mod inner-arg arg
+         else if n == "bit-and" then proven-bitand inner-arg arg
+         else if n == "bit-shru" then proven-shru inner-arg arg
+         else int-ty-default
+        is otherwise -> int-ty-default
+      is otherwise -> int-ty-default
+    is IrNegate (x) (s) ->
+     let inner = ir-expr-proven-range x
+     in when inner
+      is IntegerTy (lo) (hi) (m) ->
+       if lo == i64-min then int-ty-default
+       else IntegerTy (negate hi) (negate lo) m
+      is otherwise -> int-ty-default
+    is IrBinary (op) (l) (r) (t) (s) ->
+     let lb = ir-expr-proven-range l
+     in let rb = ir-expr-proven-range r
+     in binary-proven-range op lb rb
+    is IrIf (cond) (then-e) (else-e) (t) (s) ->
+     union-range (ir-expr-proven-range then-e) (ir-expr-proven-range else-e)
+    is otherwise -> int-ty-default
+
+  bounds-subset : CodexType, CodexType -> Boolean
+  bounds-subset (value-ty) (field-ty) =
+   when value-ty
+    is IntegerTy (v-lo) (v-hi) (vm) ->
+     when field-ty
+      is IntegerTy (f-lo) (f-hi) (fm) ->
+       v-lo >= f-lo & v-hi <= f-hi
+      is otherwise -> False
+    is otherwise -> False
+
+  value-fits-field : IRExpr, CodexType -> Boolean
+  value-fits-field (val-expr) (field-ty) =
+   bounds-subset (ir-expr-proven-range val-expr) field-ty
+
+  emit-narrow-store-proven : CodegenState, CodexType, Integer, Integer, Integer, IRExpr -> CodegenState
+  emit-narrow-store-proven (st) (ty) (rd) (rs) (offset) (val-expr) =
+   if value-fits-field val-expr ty
+   then let width = field-byte-width ty
+        in let st1 = st-add-info st cdx-bounds-proven "bounds proven: runtime check elided" (ir-expr-span val-expr)
+        in st-append-code st1 (emit-narrow-store width rd rs offset)
+   else emit-narrow-store-checked st ty rd rs offset
+
   emit-narrow-store-checked : CodegenState, CodexType, Integer, Integer, Integer -> CodegenState
   emit-narrow-store-checked (st) (ty) (rd) (rs) (offset) =
    let width = field-byte-width ty
