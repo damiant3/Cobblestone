@@ -43,9 +43,10 @@ Section: Frontend
  report measurements without a parallel pipeline.
 
   CompileFrontend = record {
-   scoped : AChapter,
+   type-defs : List ATypeDef,
    ir : IRChapter,
-   type-env : TypeEnv,
+   cdx-ir : IRChapter,
+   sorted-type-defs : List TypeBinding,
    bag : DiagnosticBag,
    heap-marks : List Integer,
    phase-metrics : List PhaseMetrics
@@ -89,17 +90,6 @@ Section: Frontend
   halted-frontend : DiagnosticBag, List Integer -> CompileFrontend
   halted-frontend (bag) (marks) =
    let blank-name = Name { value = "" }
-   in let blank-scoped = AChapter {
-       name = blank-name,
-       defs = [],
-       type-defs = [],
-       effect-defs = [],
-       citations = [],
-       chapter-title = "",
-       prose = "",
-       section-titles = [],
-       span = synthetic-span
-      }
    in let blank-ir = IRChapter {
        name = blank-name,
        defs = [],
@@ -107,12 +97,14 @@ Section: Frontend
        prose = "",
        section-titles = [],
        ctor-names = [],
+       effect-op-names = [],
        span = synthetic-span
       }
    in CompileFrontend {
-    scoped = blank-scoped,
+    type-defs = [],
     ir = blank-ir,
-    type-env = empty-type-env,
+    cdx-ir = blank-ir,
+    sorted-type-defs = [],
     bag = bag,
     heap-marks = marks,
     phase-metrics = []
@@ -324,17 +316,29 @@ Section: Frontend
   compile-frontend (source) (chapter-name) (flags) =
    let checked = compile-checked source chapter-name flags
    in if bag-has-errors (checked.bag) then halted-frontend (checked.bag) (checked.heap-marks)
-   else let lower-deck-height = text-length source * 300 + 1048576
+   else let lower-deck-height = text-length source * 600 + 1048576
    in let lower-base = build lower-deck-height
    in let lower-phase = phase-start
    in let ir = deck-record (lower-chapter (checked.scoped) (checked.types) (checked.type-env) (checked.ust) (checked.ctor-names))
+   in let stds = deck-record (sort-bindings (checked.type-env.bindings))
+   in let cdx-chapter = deck-record (lift-lambdas (IRChapter {
+    name = ir.name,
+    defs = rewrite-ir-defs stds (ir.defs) 0 (list-length (ir.defs)) [],
+    chapter-title = ir.chapter-title,
+    prose = ir.prose,
+    section-titles = ir.section-titles,
+    ctor-names = ir.ctor-names,
+    effect-op-names = ir.effect-op-names,
+    span = ir.span
+   }))
    in let lower-metrics = phase-measure lower-phase
    in let lower-ov = check-deck-overflow (lower-metrics.deck-end - lower-metrics.deck-origin) lower-deck-height
    in let lower-phase-metrics = deck-record (list-push (checked.phase-metrics) lower-metrics)
    in let result = deck-record (CompileFrontend {
-    scoped = checked.scoped,
+    type-defs = checked.scoped.type-defs,
     ir = ir,
-    type-env = checked.type-env,
+    cdx-ir = cdx-chapter,
+    sorted-type-defs = stds,
     bag = checked.bag,
     heap-marks = checked.heap-marks,
     phase-metrics = lower-phase-metrics
@@ -497,7 +501,7 @@ Section: Text Compilation
   compile-text : CompileFrontend, CompileTarget -> Text
   compile-text (fe) (target) =
    if bag-has-errors (fe.bag) then ""
-   else emit-for-text-target target (fe.ir) (fe.scoped.type-defs)
+   else emit-for-text-target target (fe.ir) (fe.type-defs)
 
   emit-for-text-target : CompileTarget, IRChapter, List ATypeDef -> Text
   emit-for-text-target (target) (ir) (type-defs) =
@@ -518,7 +522,7 @@ Section: Binary Compilation
   compile-to-cdx-with-exit-mode : CompileFrontend, X86_64ExitMode, Boolean -> EmitChapterResult
   compile-to-cdx-with-exit-mode (fe) (exit-mode) (poison) =
    if bag-has-errors (fe.bag) then EmitChapterResult { bytes = [], bag = fe.bag, symbol-map = [] }
-   else let emit-result = x86-64-emit-cdx-with-exit-mode (fe.ir) (fe.type-env) exit-mode poison
+   else let emit-result = x86-64-emit-cdx-with-exit-mode (fe.cdx-ir) (fe.sorted-type-defs) exit-mode poison
     in EmitChapterResult {
      bytes = emit-result.bytes,
      bag = bag-merge-all [fe.bag, emit-result.bag],
@@ -642,7 +646,7 @@ Section: Streaming Emission
       then let header = if fe.ir.chapter-title == "" then ""
            else "Chapter: " & fe.ir.chapter-title & "\n\n"
              & if fe.ir.prose == "" then "" else " " & fe.ir.prose & "\n\n"
-      in let type-defs-text = emit-type-defs (fe.scoped.type-defs) 0
+      in let type-defs-text = emit-type-defs (fe.type-defs) 0
       in act
        print-line-uni wd-marks
        print-line-uni (header & type-defs-text)
@@ -651,7 +655,7 @@ Section: Streaming Emission
    in let header = if fe.ir.chapter-title == "" then ""
       else "Chapter: " & fe.ir.chapter-title & "\n\n"
         & if fe.ir.prose == "" then "" else " " & fe.ir.prose & "\n\n"
-   in let type-defs-text = emit-type-defs (fe.scoped.type-defs) 0
+   in let type-defs-text = emit-type-defs (fe.type-defs) 0
    in let first-text = emit-def (list-at ir-defs 0) (fe.ir.ctor-names)
    in act
     print-line-uni wd-marks
@@ -743,7 +747,7 @@ Section: Entry Point
     if bag-has-errors (fe.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no IR emitted"
     else act
      print-line-uni "IR-BEGIN"
-     print-line-uni (emit-ir-chapter (fe.ir) (fe.scoped.type-defs))
+     print-line-uni (emit-ir-chapter (fe.ir) (fe.type-defs))
      print-line-uni "IR-END"
     end
     let h-post-emit = __heap-save
@@ -758,7 +762,7 @@ Section: Entry Point
     print-codegen-error-header (bag-errors (fe.bag))
     if bag-has-errors (fe.bag) then print-line-uni "CODEGEN-HALTED: errors in bag; no IR emitted"
     else act
-     let ir-text = emit-ir-chapter (fe.ir) (fe.scoped.type-defs)
+     let ir-text = emit-ir-chapter (fe.ir) (fe.type-defs)
      in print-line-uni ("SIZE:" & show (text-length ir-text))
      print-line ir-text
     end

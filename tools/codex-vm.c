@@ -2947,7 +2947,7 @@ static void create_vm(size_t mem_mb) {
 
     /* Enable exception exit for vector 1 (debug trap / single step) */
     memset(&prop, 0, sizeof(prop));
-    prop.ExceptionExitBitmap = (1ULL << 1) | (1ULL << 6) | (1ULL << 13) | (1ULL << 14);  /* #DB, #UD, #GP, #PF */
+    prop.ExceptionExitBitmap = (1ULL << 1) | (1ULL << 3) | (1ULL << 6) | (1ULL << 13) | (1ULL << 14);  /* #DB, #BP, #UD, #GP, #PF */
     WHvSetPartitionProperty(partition, WHvPartitionPropertyCodeExceptionExitBitmap, &prop, sizeof(prop.ExceptionExitBitmap));
 
     guest_mem = VirtualAlloc(NULL, guest_mem_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
@@ -4039,10 +4039,42 @@ int main(int argc, char **argv) {
             window_registered = 0;
             /* Fall through to post-exit logic which will inject */
             break;
-        case WHvRunVpExitReasonException:
-            fprintf(stderr, "Exception vector=%d at RIP=0x%llx\n",
-                ctx.VpException.ExceptionType, ctx.VpContext.Rip);
+        case WHvRunVpExitReasonException: {
+            int vec = ctx.VpException.ExceptionType;
+            unsigned long long exc_rip = ctx.VpContext.Rip;
+            if (vec == 1 || vec == 3) {
+                /* #DB (single-step/watchpoint) or #BP (INT3 breakpoint)
+                   Write exception info to guest memory at 0x7100 for kernel debugger:
+                   +0: vector (8 bytes), +8: RIP (8 bytes), +16: RSP (8 bytes), +24: flags (8 bytes) */
+                if (0x7100 + 32 <= guest_mem_size) {
+                    unsigned char *exc = (unsigned char *)guest_mem + 0x7100;
+                    *(unsigned long long *)(exc + 0) = (unsigned long long)vec;
+                    *(unsigned long long *)(exc + 8) = exc_rip;
+                    /* Read RSP and RFLAGS */
+                    WHV_REGISTER_NAME enames[2] = { WHvX64RegisterRsp, WHvX64RegisterRflags };
+                    WHV_REGISTER_VALUE evals[2];
+                    WHvGetVirtualProcessorRegisters(partition, 0, enames, 2, evals);
+                    *(unsigned long long *)(exc + 16) = evals[0].Reg64;
+                    *(unsigned long long *)(exc + 24) = evals[1].Reg64;
+                    /* For single-step (#DB), clear TF to stop stepping */
+                    if (vec == 1) {
+                        evals[1].Reg64 &= ~0x100ULL; /* clear TF */
+                        WHvSetVirtualProcessorRegisters(partition, 0, &enames[1], 1, &evals[1]);
+                    }
+                    /* For breakpoint (#BP), RIP points after INT3 — back up 1 byte */
+                    if (vec == 3) {
+                        WHV_REGISTER_NAME rip_name = WHvX64RegisterRip;
+                        WHV_REGISTER_VALUE rip_val;
+                        rip_val.Reg64 = exc_rip - 1;
+                        WHvSetVirtualProcessorRegisters(partition, 0, &rip_name, 1, &rip_val);
+                    }
+                }
+                fprintf(stderr, "%s at RIP=0x%llx\n", vec == 1 ? "Single-step" : "Breakpoint", exc_rip);
+                break; /* continue execution — guest debugger reads 0x7100 */
+            }
+            fprintf(stderr, "Exception vector=%d at RIP=0x%llx\n", vec, exc_rip);
             goto done;
+        }
         case WHvRunVpExitReasonMemoryAccess:
             if (uefi_mode && ctx.MemoryAccess.AccessInfo.AccessType == 2 && uefi_handle_trap(&ctx)) {
                 break;  /* UEFI protocol call handled */

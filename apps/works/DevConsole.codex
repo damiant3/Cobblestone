@@ -57,6 +57,8 @@ Section: Console State
     search-results : List SearchResult,
     editor : Maybe EditorState,
     debugger : DebuggerState,
+    undo-stack : UndoStack,
+    redo-stack : UndoStack,
     view-scroll : Integer,
     view-chapter-idx : Integer,
     status : Text,
@@ -74,6 +76,8 @@ Section: Console State
       search-results = [],
       editor = None,
       debugger = debugger-init,
+      undo-stack = undo-stack-new 50,
+      redo-stack = undo-stack-new 50,
       view-scroll = 0,
       view-chapter-idx = 0,
       status = "Codex Dev Console",
@@ -188,9 +192,13 @@ Section: Debugger Dispatch
     else if key == "bp" then
       let dbg = __record-set (state.debugger) "mode" DebugBreakpoints
       in __record-set (__record-set state "debugger" dbg) "status" ("Breakpoints: " & show (list-length (state.debugger.breakpoints.entries)))
+    else if key == "bp-add" then __record-set state "status" "Enter function name:"
     else if key == "stack" then
       let dbg = __record-set (state.debugger) "mode" DebugStack
-      in __record-set (__record-set state "debugger" dbg) "status" "Stack walk"
+      in __record-set (__record-set state "debugger" dbg) "status" "Backtrace"
+    else if key == "bt" then
+      let dbg = __record-set (state.debugger) "mode" DebugStack
+      in __record-set (__record-set state "debugger" dbg) "status" "Backtrace"
     else if key == "perf" then
       let dbg = __record-set (state.debugger) "mode" DebugPerf
       in __record-set (__record-set state "debugger" dbg) "status" "Perf counters"
@@ -205,10 +213,10 @@ Section: Debugger Dispatch
     in when dbg.mode
       is DebugMemory -> debug-mem-dump dbg (dbg.last-address) (dbg.dump-length)
       is DebugIO -> debug-port-watch (dbg.watch-ports)
-      is DebugBreakpoints -> render-breakpoint-list (dbg.breakpoints.entries) 0 (list-length (dbg.breakpoints.entries)) []
-      is DebugStack -> ["  (stack walk not yet connected)"]
-      is DebugPerf -> ["  (perf counters not yet connected)"]
-      is DebugRegisters -> ["  (register dump not yet connected)"]
+      is DebugBreakpoints -> bp-list-text (dbg.breakpoints)
+      is DebugStack -> debug-backtrace-from-exc dbg
+      is DebugPerf -> debug-perf-view
+      is DebugRegisters -> debug-register-view
 
   render-breakpoint-list : List Breakpoint, Integer, Integer, List Text -> List Text
   render-breakpoint-list (bps) (i) (len) (acc) =

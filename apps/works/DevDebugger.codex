@@ -94,7 +94,9 @@ Section: Debugger Menu
     menu-item "Memory Write" "write",
     menu-item "Port I/O" "io",
     menu-item "Breakpoints" "bp",
+    menu-item "Add Breakpoint (by name)" "bp-add",
     menu-item "Stack Walk" "stack",
+    menu-item "Backtrace" "bt",
     menu-item "Perf Counters" "perf",
     menu-item "Symbol Lookup" "sym",
     menu-item "Address Lookup" "addr",
@@ -220,6 +222,108 @@ Section: MAP1 Debug Map
             let name = map1-read-name m (entry.name-offset)
             in let off = target - entry.code-offset
             in name & "+0x" & hex-i32 off
+
+Section: Symbolic Breakpoints
+
+  map1-find-by-name : Map1Info, Text -> Maybe Map1Entry
+  map1-find-by-name (info) (name) =
+    map1-name-scan info name 0 (info.count)
+
+  map1-name-scan : Map1Info, Text, Integer, Integer -> Maybe Map1Entry
+  map1-name-scan (info) (name) (i) (count) =
+    if i >= count then None
+    else let entry = map1-read-entry (info.base) i
+    in let entry-name = map1-read-name info (entry.name-offset)
+    in if entry-name == name then Just entry
+    else map1-name-scan info name (i + 1) count
+
+  bp-add-symbolic : DebuggerState, Text -> DebuggerState
+  bp-add-symbolic (dbg) (name) =
+    let info = when (dbg.map1)
+      is Just (m) -> Just m
+      is None -> map1-find
+    in let dbg1 = when info is Just (m) -> __record-set dbg "map1" (Just m) is None -> dbg
+    in when info
+      is None -> __record-set dbg1 "status" "No debug map found"
+      is Just (m) ->
+        when map1-find-by-name m name
+          is None -> __record-set dbg1 "status" ("Symbol not found: " & name)
+          is Just (entry) ->
+            let addr = 1048576 + entry.code-offset
+            in let tbl = bp-add (dbg1.breakpoints) addr name
+            in let d2 = __record-set dbg1 "breakpoints" tbl
+            in __record-set d2 "status" ("Breakpoint #" & show (tbl.next-id - 1) & " at " & name & " (0x" & hex-i64 addr & ")")
+
+  bp-list-text : BreakpointTable -> List Text
+  bp-list-text (tbl) =
+    if list-length (tbl.entries) == 0 then ["  (no breakpoints)"]
+    else bp-list-format (tbl.entries) 0 (list-length (tbl.entries)) []
+
+  bp-list-format : List Breakpoint, Integer, Integer, List Text -> List Text
+  bp-list-format (bps) (i) (len) (acc) =
+    if i >= len then acc
+    else let bp = list-at bps i
+    in let en = if bp.enabled then "ON " else "OFF"
+    in let line = "  #" & show (bp.id) & " " & en & " 0x" & hex-i64 (bp.address) & " hits=" & show (bp.hit-count) & " " & bp.label
+    in bp-list-format bps (i + 1) len (list-push acc line)
+
+Section: Exception Info
+
+  debug-exc-addr : Integer = 28928
+  debug-exc-vector-off : Integer = 0
+  debug-exc-rip-off : Integer = 8
+  debug-exc-rsp-off : Integer = 16
+  debug-exc-flags-off : Integer = 24
+
+  debug-read-exc-vector : Integer = peek-qword debug-exc-addr debug-exc-vector-off
+  debug-read-exc-rip : Integer = peek-qword debug-exc-addr debug-exc-rip-off
+  debug-read-exc-rsp : Integer = peek-qword debug-exc-addr debug-exc-rsp-off
+
+Section: Backtrace
+
+  debug-backtrace : DebuggerState, Integer, Integer -> List Text
+  debug-backtrace (dbg) (rsp) (max-frames) =
+    debug-bt-walk dbg rsp max-frames 0 []
+
+  debug-bt-walk : DebuggerState, Integer, Integer, Integer, List Text -> List Text
+  debug-bt-walk (dbg) (rsp) (max) (depth) (acc) =
+    if depth >= max then acc
+    else if rsp == 0 then acc
+    else if rsp >= 2147483648 then acc
+    else let ret-addr = peek-qword rsp 0
+    in if ret-addr == 0 then acc
+    else let sym = resolve-addr dbg ret-addr
+    in let line = "  #" & show depth & " 0x" & hex-i64 ret-addr & " " & sym
+    in debug-bt-walk dbg (rsp + 8) max (depth + 1) (list-push acc line)
+
+  debug-backtrace-from-exc : DebuggerState -> List Text
+  debug-backtrace-from-exc (dbg) =
+    let rsp = debug-read-exc-rsp
+    in let rip = debug-read-exc-rip
+    in let rip-sym = resolve-addr dbg rip
+    in let header = "  => 0x" & hex-i64 rip & " " & rip-sym
+    in [header] & debug-backtrace dbg rsp 16
+
+Section: Register View
+
+  debug-register-view : List Text
+  debug-register-view =
+    let rip = debug-read-exc-rip
+    in let rsp = debug-read-exc-rsp
+    in let vec = debug-read-exc-vector
+    in ["  Registers (from last exception):",
+        "  RIP = 0x" & hex-i64 rip,
+        "  RSP = 0x" & hex-i64 rsp,
+        "  Vector = " & show vec]
+
+Section: Perf View
+
+  debug-perf-view : List Text
+  debug-perf-view =
+    let hpet-lo = peek-32 4275830784 240
+    in let hpet-hi = peek-32 4275830784 244
+    in ["  Performance Counters:",
+        "  HPET counter = 0x" & hex-i32 hpet-hi & hex-i32 hpet-lo]
 
 Section: Port Watch
 

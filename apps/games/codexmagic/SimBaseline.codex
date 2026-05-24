@@ -1,0 +1,200 @@
+Chapter: SimBaseline
+  cites CodexMagic chapter Mana
+  cites CodexMagic chapter Card
+  cites CodexMagic chapter GameState
+  cites CodexMagic chapter General
+  cites CodexMagic chapter Supervisor
+  cites CodexMagic chapter Engine
+  cites CodexMagic chapter Action
+  cites CodexMagic chapter Deck
+  cites CodexMagic chapter GameRules
+  cites CodexMagic chapter Simulate
+  cites Foreword chapter Maybe
+
+ Baseline simulation: mirror matches with vanilla 1/1 creatures,
+ powerless generals, identical decks. No mulligans, no fixes, no
+ turn cap. Pure measurement of first-player advantage and basic
+ game dynamics with all variables eliminated.
+
+ We say:
+
+Section: Vanilla Card Pool
+
+  vanilla-land : CardTemplate
+  vanilla-land = CardTemplate { id = 0, name = "Plains", mana-cost = mana-cost-zero, card-type = Land, rarity = Common, subtypes = [], is-legendary = False, is-basic = True, power = 0, toughness = 0, defense = 0, keywords = keywords-none, abilities = [ManaAbility activation-cost-tap White 1], color = color-set-empty, is-token = False }
+
+  vanilla-creature : CardTemplate
+  vanilla-creature = CardTemplate { id = 1, name = "Soldier", mana-cost = mana-cost-w 1, card-type = Creature, rarity = Common, subtypes = [], is-legendary = False, is-basic = False, power = 1, toughness = 1, defense = 0, keywords = keywords-none, abilities = [], color = cost-colors (mana-cost-w 1), is-token = False }
+
+  vanilla-pool : List CardTemplate
+  vanilla-pool = [vanilla-land, vanilla-creature]
+
+Section: Vanilla General
+
+  vanilla-general : GeneralTemplate
+  vanilla-general = GeneralTemplate { id = 0, name = "Vanilla General", mana-cost = mana-cost-w 1, subtypes = [], power = 1, toughness = 1, defense = 0, life = 20, keywords = keywords-none, abilities = [], modifiers = [], color = cost-colors (mana-cost-w 1) }
+
+Section: Vanilla Deck
+
+  vanilla-deck : List Integer
+  vanilla-deck = build-vanilla-deck 0 20 []
+
+  build-vanilla-deck : Integer, Integer, List Integer -> List Integer
+  build-vanilla-deck (i) (lands) (acc) =
+    if i < lands then build-vanilla-deck (i + 1) lands (list-push acc 0)
+    else if i < 40 then build-vanilla-deck (i + 1) lands (list-push acc 1)
+    else acc
+
+Section: Dry Rules
+
+  rules-dry : RuleSet
+  rules-dry = RuleSet { mulligan-style = MulliganNone, screw-fix = ScrewFixNone, flood-fix = FloodFixNone, fairness = FairnessNone, turn-cap = 30, sudden-death = False, sudden-death-base = 0, sudden-death-escalation = 0, starting-hand-size = 7, starting-life = 20 }
+
+Section: Test Runner
+
+  run-vanilla-test : Integer, Integer -> SimAggregate
+  run-vanilla-test (num-games) (base-seed) =
+    run-vanilla-loop num-games base-seed 0 aggregate-empty
+
+  run-vanilla-loop : Integer, Integer, Integer, SimAggregate -> SimAggregate
+  run-vanilla-loop (total) (base-seed) (i) (agg) =
+    if i >= total then agg
+    else let seed = base-seed + i * 97
+    in let gs = game-new vanilla-pool vanilla-general vanilla-general
+    in let gs2 = load-vanilla-deck gs 0 (shuffle-vanilla (vanilla-deck) (seed + 1))
+    in let gs3 = load-vanilla-deck gs2 1 (shuffle-vanilla (vanilla-deck) (seed + 2))
+    in let gs4 = draw-n-sim gs3 0 7
+    in let gs5 = draw-n-sim gs4 1 7
+    in let metrics = run-sim-game gs5 rules-dry vanilla-general vanilla-general seed
+    in let agg2 = aggregate-add agg metrics 30
+    in run-vanilla-loop total base-seed (i + 1) agg2
+
+  load-vanilla-deck : GameState, Integer, List Integer -> GameState
+  load-vanilla-deck (gs) (player) (cards) = load-vanilla-loop gs player cards 0
+
+  load-vanilla-loop : GameState, Integer, List Integer, Integer -> GameState
+  load-vanilla-loop (gs) (player) (cards) (i) =
+    if i >= list-length cards then gs
+    else let p = get-player gs player
+    in let p2 = PlayerState { general = p.general, mana-pool = p.mana-pool, library = list-push (p.library) (list-at cards i), hand = p.hand, graveyard = p.graveyard, exile = p.exile, land-drop-used = p.land-drop-used, land-drops-per-turn = p.land-drops-per-turn }
+    in let gs2 = set-player gs player p2
+    in load-vanilla-loop gs2 player cards (i + 1)
+
+  shuffle-vanilla : List Integer, Integer -> List Integer
+  shuffle-vanilla (cards) (seed) = fy-shuffle cards seed (list-length cards - 1)
+
+  fy-shuffle : List Integer, Integer, Integer -> List Integer
+  fy-shuffle (cards) (seed) (i) =
+    if i <= 0 then cards
+    else let r = rng-new (seed + i * 37)
+    in let j = rng-mod (rng-value r) (i + 1)
+    in let vi = list-at cards i
+    in let vj = list-at cards j
+    in let c2 = list-set-at cards i vj
+    in let c3 = list-set-at c2 j vi
+    in fy-shuffle c3 (seed + i * 13) (i - 1)
+
+Section: Varied Land Count Tests
+
+  run-land-count-test : Integer, Integer, Integer -> SimAggregate
+  run-land-count-test (num-lands) (num-games) (base-seed) =
+    run-lc-loop num-lands num-games base-seed 0 aggregate-empty
+
+  run-lc-loop : Integer, Integer, Integer, Integer, SimAggregate -> SimAggregate
+  run-lc-loop (num-lands) (total) (base-seed) (i) (agg) =
+    if i >= total then agg
+    else let seed = base-seed + i * 97
+    in let deck = build-vanilla-deck 0 num-lands []
+    in let gs = game-new vanilla-pool vanilla-general vanilla-general
+    in let gs2 = load-vanilla-deck gs 0 (shuffle-vanilla deck (seed + 1))
+    in let gs3 = load-vanilla-deck gs2 1 (shuffle-vanilla deck (seed + 2))
+    in let gs4 = draw-n-sim gs3 0 7
+    in let gs5 = draw-n-sim gs4 1 7
+    in let metrics = run-sim-game gs5 rules-dry vanilla-general vanilla-general seed
+    in let agg2 = aggregate-add agg metrics 30
+    in run-lc-loop num-lands total base-seed (i + 1) agg2
+
+Section: Creature Size Variants
+
+  make-vanilla-creature-sized : Integer, Integer, Integer -> CardTemplate
+  make-vanilla-creature-sized (pow) (tou) (def) = CardTemplate { id = 1, name = "Soldier", mana-cost = mana-cost-w 1, card-type = Creature, rarity = Common, subtypes = [], is-legendary = False, is-basic = False, power = pow, toughness = tou, defense = def, keywords = keywords-none, abilities = [], color = cost-colors (mana-cost-w 1), is-token = False }
+
+  make-sized-pool : Integer, Integer, Integer -> List CardTemplate
+  make-sized-pool (pow) (tou) (def) = [vanilla-land, make-vanilla-creature-sized pow tou def]
+
+  run-sized-test : Integer, Integer, Integer, Integer, Integer -> SimAggregate
+  run-sized-test (pow) (tou) (def) (num-games) (base-seed) =
+    let pool = make-sized-pool pow tou def
+    in let deck = build-vanilla-deck 0 20 []
+    in let gen = vanilla-general
+    in run-sized-loop pool deck gen num-games base-seed 0 aggregate-empty
+
+  run-sized-loop : List CardTemplate, List Integer, GeneralTemplate, Integer, Integer, Integer, SimAggregate -> SimAggregate
+  run-sized-loop (pool) (deck) (gen) (total) (base-seed) (i) (agg) =
+    if i >= total then agg
+    else let seed = base-seed + i * 97
+    in let gs = game-new pool gen gen
+    in let gs2 = load-vanilla-deck gs 0 (shuffle-vanilla deck (seed + 1))
+    in let gs3 = load-vanilla-deck gs2 1 (shuffle-vanilla deck (seed + 2))
+    in let gs4 = draw-n-sim gs3 0 7
+    in let gs5 = draw-n-sim gs4 1 7
+    in let metrics = run-sim-game gs5 rules-dry gen gen seed
+    in let agg2 = aggregate-add agg metrics 30
+    in run-sized-loop pool deck gen total base-seed (i + 1) agg2
+
+Section: Entry Point
+
+  opening : [Console] Nothing
+  opening =
+    let n = 3
+    in let seed = 42
+    in let test-1x1 = run-vanilla-test n seed
+    in act
+      print-line-uni "=== Baseline (3 games, 1/1/0) ==="
+      print-line-uni (format-aggregate test-1x1 rules-dry)
+      print-line-uni "=== Done ==="
+    end
+
+Section: Debug Helpers
+
+  count-bf-creatures : List Permanent, List CardTemplate, Integer, Integer, Integer, Integer -> Integer
+  count-bf-creatures (perms) (templates) (player) (i) (len) (acc) =
+    if i >= len then acc
+    else let perm = list-at perms i
+    in if perm.controller == player then
+      let t = list-at templates (perm.template-id)
+      in when t.card-type
+        is Creature -> count-bf-creatures perms templates player (i + 1) len (acc + 1)
+        is otherwise -> count-bf-creatures perms templates player (i + 1) len acc
+    else count-bf-creatures perms templates player (i + 1) len acc
+
+  count-bf-lands : List Permanent, List CardTemplate, Integer, Integer, Integer, Integer -> Integer
+  count-bf-lands (perms) (templates) (player) (i) (len) (acc) =
+    if i >= len then acc
+    else let perm = list-at perms i
+    in if perm.controller == player then
+      let t = list-at templates (perm.template-id)
+      in when t.card-type
+        is Land -> count-bf-lands perms templates player (i + 1) len (acc + 1)
+        is otherwise -> count-bf-lands perms templates player (i + 1) len acc
+    else count-bf-lands perms templates player (i + 1) len acc
+
+  count-bf-tapped : List Permanent, Integer, Integer, Integer, Integer -> Integer
+  count-bf-tapped (perms) (player) (i) (len) (acc) =
+    if i >= len then acc
+    else let perm = list-at perms i
+    in if perm.controller == player then
+      if perm.tapped then count-bf-tapped perms player (i + 1) len (acc + 1)
+      else count-bf-tapped perms player (i + 1) len acc
+    else count-bf-tapped perms player (i + 1) len acc
+
+  count-bf-sick : List Permanent, Integer, Integer, Integer, Integer -> Integer
+  count-bf-sick (perms) (player) (i) (len) (acc) =
+    if i >= len then acc
+    else let perm = list-at perms i
+    in if perm.controller == player then
+      if perm.summoning-sick then count-bf-sick perms player (i + 1) len (acc + 1)
+      else count-bf-sick perms player (i + 1) len acc
+    else count-bf-sick perms player (i + 1) len acc
+
+Page 1

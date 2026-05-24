@@ -468,7 +468,17 @@ Section: Editor Key Handling
     else if uefi-key-is-ctrl-g key then
       __record-set state "status" "Go to line: (type number, press Enter)"
     else if uefi-key-is-ctrl-z key then
-      __record-set state "status" "Undo (not yet wired to stack)"
+      let result = editor-undo e (state.undo-stack) (state.redo-stack)
+      in let s1 = __record-set state "editor" (Just (result.editor))
+      in let s2 = __record-set s1 "undo-stack" (result.undo)
+      in let s3 = __record-set s2 "redo-stack" (result.redo)
+      in __record-set s3 "status" (result.editor.status)
+    else if uefi-key-is-ctrl-y key then
+      let result = editor-redo e (state.undo-stack) (state.redo-stack)
+      in let s1 = __record-set state "editor" (Just (result.editor))
+      in let s2 = __record-set s1 "undo-stack" (result.undo)
+      in let s3 = __record-set s2 "redo-stack" (result.redo)
+      in __record-set s3 "status" (result.editor.status)
     else if uefi-key-is-arrow-up key then
       let e2 = editor-move-up e
       in __record-set (__record-set state "editor" (Just e2)) "status" (editor-status-line e2)
@@ -495,30 +505,52 @@ Section: Editor Key Handling
       in let e2 = __record-set e "cursor-col" line-len
       in __record-set (__record-set state "editor" (Just e2)) "status" (editor-status-line e2)
     else if uefi-key-is-enter key then
-      let e2 = editor-insert-newline e
-      in __record-set (__record-set state "editor" (Just e2)) "status" (editor-status-line e2)
+      let us = undo-push (state.undo-stack) e
+      in let e2 = editor-insert-newline e
+      in let s1 = __record-set state "undo-stack" us
+      in __record-set (__record-set s1 "editor" (Just e2)) "status" (editor-status-line e2)
     else if uefi-key-is-backspace key then
-      let e2 = editor-delete-char e
-      in __record-set (__record-set state "editor" (Just e2)) "status" (editor-status-line e2)
+      let us = undo-push (state.undo-stack) e
+      in let e2 = editor-delete-char e
+      in let s1 = __record-set state "undo-stack" us
+      in __record-set (__record-set s1 "editor" (Just e2)) "status" (editor-status-line e2)
     else if uefi-key-is-delete key then
-      let e2 = editor-delete-forward e
-      in __record-set (__record-set state "editor" (Just e2)) "status" (editor-status-line e2)
+      let us = undo-push (state.undo-stack) e
+      in let e2 = editor-delete-forward e
+      in let s1 = __record-set state "undo-stack" us
+      in __record-set (__record-set s1 "editor" (Just e2)) "status" (editor-status-line e2)
     else if uefi-key-is-char key then
-      let e2 = editor-insert-char e (key.char-code)
-      in __record-set (__record-set state "editor" (Just e2)) "status" (editor-status-line e2)
+      let us = undo-push (state.undo-stack) e
+      in let e2 = editor-insert-char e (key.char-code)
+      in let s1 = __record-set state "undo-stack" us
+      in __record-set (__record-set s1 "editor" (Just e2)) "status" (editor-status-line e2)
     else state
 
 Section: Debug Menu Dispatch
 
   dispatch-debug-menu : Text, DevConsoleState -> DevConsoleState
   dispatch-debug-menu (key) (state) =
-    if key == "mem" then __record-set state "status" "Memory Dump: enter address (hex)"
+    if key == "mem" then
+      let dbg = __record-set (state.debugger) "mode" DebugMemory
+      in __record-set (__record-set state "debugger" dbg) "status" ("Memory @ 0x" & hex-i64 (state.debugger.last-address))
     else if key == "read" then __record-set state "status" "Memory Read: enter address"
     else if key == "write" then __record-set state "status" "Memory Write: enter address value"
-    else if key == "io" then __record-set state "status" "Port I/O: enter port number"
-    else if key == "bp" then __record-set state "status" "Breakpoints: enter address to toggle"
-    else if key == "stack" then __record-set state "status" "Stack Walk: scanning from RSP..."
-    else if key == "perf" then __record-set state "status" "Perf Counters: reading..."
+    else if key == "io" then
+      let dbg = __record-set (state.debugger) "mode" DebugIO
+      in __record-set (__record-set state "debugger" dbg) "status" "Port I/O watch"
+    else if key == "bp" then
+      let dbg = __record-set (state.debugger) "mode" DebugBreakpoints
+      in __record-set (__record-set state "debugger" dbg) "status" ("Breakpoints: " & show (list-length (state.debugger.breakpoints.entries)))
+    else if key == "bp-add" then __record-set state "status" "Enter function name for breakpoint:"
+    else if key == "stack" then
+      let dbg = __record-set (state.debugger) "mode" DebugStack
+      in __record-set (__record-set state "debugger" dbg) "status" "Backtrace"
+    else if key == "bt" then
+      let dbg = __record-set (state.debugger) "mode" DebugStack
+      in __record-set (__record-set state "debugger" dbg) "status" "Backtrace"
+    else if key == "perf" then
+      let dbg = __record-set (state.debugger) "mode" DebugPerf
+      in __record-set (__record-set state "debugger" dbg) "status" "Perf counters"
     else if key == "sym" then __record-set state "status" "Symbol Lookup: enter name"
     else if key == "back" then
       let s = __record-set state "mode" ModeMainMenu
