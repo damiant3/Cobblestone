@@ -155,6 +155,27 @@ via cheap token generation. A card that creates ten 1/1 tokens
 shouldn't give the General 10 loyalty worth of free abilities. Only
 mana investment counts.
 
+### General Leveling
+
+Generals have tiered abilities that unlock at army loyalty
+thresholds. Each General card prints three ability tiers:
+
+| Loyalty Threshold | Unlock |
+|-------------------|--------|
+| 5 | First loyalty ability |
+| 10 | Second loyalty ability |
+| 20 | Ultimate ability |
+
+Abilities are locked until the threshold is reached. If creatures
+die and loyalty drops below a threshold, the ability locks again.
+This creates a natural dramatic arc: early game is creature
+development, mid-game is General activation, late-game is
+loyalty-powered finishers. The opponent can de-level your General
+by killing your army.
+
+See [GameBalance.md](GameBalance.md) section 3.5 for design
+rationale and simulation data on General leveling impact.
+
 ## Card Template
 
 The static definition shared by all copies of a card:

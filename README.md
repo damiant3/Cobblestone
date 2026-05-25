@@ -38,7 +38,7 @@ Built solo by one human in collaboration with a fleet of AI agents, in
 
 ## Verified
 
-As of 2026-05-19:
+As of 2026-05-24:
 
 - **CDX fixed point**: pingpong all phases green — text round-trip
   (stage1 === stage2) + CDX fixed-point (stage1.cdx === stage2.cdx),
@@ -77,8 +77,13 @@ As of 2026-05-19:
   builtin sets a flag the body's tail checks.
 - **Plug architecture**: emitters as standalone CDX programs. Compiler
   emits IR text; plug consumes IR on stdin, emits target source on
-  stdout. Working transpiler plugs: **Ada, Babbage, C#, COBOL,
-  Fortran, JavaScript, Python, Rust** — each with build/run scripts.
+  stdout. **40 transpiler plugs** across languages (Ada, Babbage, C#,
+  Clojure, COBOL, D, Elixir, Fortran, Go, Groovy, Haskell, Java,
+  JavaScript, Julia, Kotlin, Lua, Nim, Objective-C, OCaml, Pascal,
+  Perl, PHP, Python, Ruby, Rust, Scala, Scheme, Swift, TypeScript,
+  WASM, Zig), UI frameworks (Angular, Electron, Flutter, GTK, HTML,
+  Jetpack Compose, MAUI, Qt, React, Svelte, SwiftUI, Vue, WinForms,
+  WPF), and binary formats (CDX, ELF, PE, IMG).
 - **Dependent types**: `PropEqTy` — the first type carrying value
   information. `===` in type position produces propositional equality;
   `Refl` verified by the unifier (invalid proofs are type errors).
@@ -94,8 +99,8 @@ As of 2026-05-19:
 - **Repository restructure**: 31 top-level dirs to 8. codex-vm
   replaces QEMU as default VM (WHP-based, ~4500 lines C: PCI, xHCI USB,
   Intel HDA audio, HPET, IOAPIC, ACPI, SMBIOS, UEFI firmware, Bochs VBE).
-- **Sample battery**: 203 samples; 105/105 pass, 0 fail in the gate
-  battery.
+- **Sample battery**: 160 samples; 108/108 pass, 0 fail in the gate
+  battery (52 skipped: slow, fatal, or platform-specific).
 - **Codex.Spark creative suite**: 85-module application (3D modeling,
   image editor, animation, audio/DAW, video compositor, skeletal
   animation, particles, procedural noise, interactive UI shell) running
@@ -111,18 +116,17 @@ As of 2026-05-19:
 
 The compiler is a hard fixed point of itself on bare metal.
 
-**`seed/Codex.cdx`** (2,154,704 bytes) — the canonical seed:
+**`seed/Codex.cdx`** (2,193,225 bytes) — the canonical seed:
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 (file) | `678549CE3D33CED01A2A3A78233E3A7F56CACBD3EBD06BA77320F02FB1969A15` |
-| SHA-256 (content, embedded) | `4a3cb0d459c84537bc837157abe1109cb3dbf109102bc2b7422803af4c46dd04` |
+| SHA-256 (file) | `AC6DB291BBCB4F7BB6599AE74C68373ACB519C1E74450175DC3C38459A93717F` |
 
 **`seed/Codex.img`** (8,388,608 bytes) — bootable GPT disk image:
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 | `032F31425613BBD5034423395D9C2ACEBF3896F1EC50556AE256CEC31D9DF5F0` |
+| SHA-256 | `3233F3F1B183F6D655121398C058B45CA7BCD51A54434F8F3C0DCD4E430C2484` |
 
 The IMG contains `EFI/BOOT/BOOTX64.EFI` (interactive UEFI dev console as a
 UEFI PE32+ application) and `SOURCE.SRC` (compiler source) in an 8 MB
@@ -368,8 +372,58 @@ Section: System Database (SystemDb)
     sbc-boot-partition : Integer
   }
 
+Section: Proofs and Dependent Types
+
+  nil-eq : Nil === Nil
+  nil-eq = Refl
+
+  sym-proof : Nil === Nil
+  sym-proof = sym Refl
+
+  chain-proof : Nil === Nil
+  chain-proof = trans Refl Refl
+
+  wrap-proof : Proof
+  wrap-proof = assume
+
 Page 1
 ```
+
+### Proofs and dependent types
+
+Codex has dependent types — types that carry values. The `===` operator
+in type position creates a *propositional equality type*. The proof term
+`Refl` inhabits `a === a` for any `a`; the unifier rejects it when both
+sides differ.
+
+```codex
+  nil-eq : Nil === Nil
+  nil-eq = Refl              -- TYPE-CHECKS: both sides are Nil
+
+  -- bad : Nil === Cons
+  -- bad = Refl              -- REJECTED: Nil /= Cons
+```
+
+Proof terms: `Refl` (reflexivity), `sym` (symmetry: `a === b -> b === a`),
+`trans` (transitivity: `a === b -> b === c -> a === c`), `assume` (axiom).
+All proofs are **erased at emit time** — they generate zero machine code.
+The `claim`/`proof`/`qed` syntax declares and discharges proof obligations:
+
+```codex
+  claim id-nil : Nil === Nil
+  proof id-nil = Refl
+  qed
+
+  claim chain : 5 === 5
+  proof chain = trans Refl Refl
+  qed
+```
+
+The compiler also statically proves bounded-integer range safety. When it
+can prove a value fits within a field's declared bounds, the runtime check
+is elided (CDX4010). The bounds prover handles literals, field access,
+arithmetic, `int-mod`, `bit-and`, `bit-shru`, negation, if/else, and
+let-bound values.
 
 ### Bounded integers (subtypes + auto-narrowing)
 
@@ -413,11 +467,15 @@ Source (.codex)
     → NameResolver  resolved names + citations
     → TypeChecker   bidirectional type inference
     → Lowering      typed intermediate representation
+    → Resolve       ConstructedTy → concrete RecordTy/SumTy (CDX path)
+    → LambdaLifting nested lambdas → top-level defs (CDX path)
     → Emitter       target source code / machine code
 ```
 
 The pipeline lives in `codex/` — the self-hosted compiler,
-~30,500 lines across 59 `.codex` files. This is the only path that is
+~29,300 lines across 54 `.codex` files. Each phase has its own deck
+allocation and `phase-compact` cycle; cumulative deck ~228 MB, peak
+working set ~252 MB for selfhost. This is the only path that is
 maintained, exercised, and load-bearing.
 
 The original C# reference implementation under `old/src/` was the

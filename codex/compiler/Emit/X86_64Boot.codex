@@ -60,6 +60,10 @@ Section: Memory Address Map
   nic-rx-buf-addr : Integer = 33056
   nic-tx-buf-addr : Integer = 34592
   try-fail-flag-addr : Integer = 36128
+  prof-enabled-addr : Integer = 36136
+  prof-cursor-addr : Integer = 36144
+  prof-max-samples : Integer = 65536
+  prof-buf-addr : Integer = 36160
   serial-ring-buf-addr : Integer = 5242880
 
 Section: Size and Threshold Constants
@@ -508,7 +512,27 @@ Section: Common Interrupt Handler
    in let st9 = st-append-code st8 (mov-load reg-rsi reg-rdi 0)
    in let st10 = st-append-code st9 (add-ri reg-rsi 1)
    in let st11 = st-append-code st10 (mov-store reg-rdi reg-rsi 0)
-   in let st11-wd = emit-watchdog-timer-check st11
+   in let pr0 = st-append-code st11 (li reg-rdi prof-enabled-addr)
+   in let pr1 = st-append-code pr0 (mov-load reg-rdi reg-rdi 0)
+   in let pr2 = st-append-code pr1 (test-rr reg-rdi reg-rdi)
+   in let prof-skip = pr2.code-len
+   in let pr3 = st-append-code pr2 (jcc cc-e 0)
+   in let pr4 = st-append-code pr3 (li reg-rdi prof-cursor-addr)
+   in let pr5 = st-append-code pr4 (mov-load reg-rsi reg-rdi 0)
+   in let pr6 = st-append-code pr5 (cmp-ri reg-rsi prof-max-samples)
+   in let prof-full = pr6.code-len
+   in let pr7 = st-append-code pr6 (jcc cc-ge 0)
+   in let pr8 = st-append-code pr7 (mov-load reg-rcx reg-rsp 40)
+   in let pr9 = st-append-code pr8 (li reg-rdx prof-buf-addr)
+   in let pr10 = st-append-code pr9 (mov-rr reg-rax reg-rsi)
+   in let pr11 = st-append-code pr10 (shl-ri reg-rax 3)
+   in let pr12 = st-append-code pr11 (add-rr reg-rdx reg-rax)
+   in let pr13 = st-append-code pr12 (mov-store reg-rdx reg-rcx 0)
+   in let pr14 = st-append-code pr13 (add-ri reg-rsi 1)
+   in let pr15 = st-append-code pr14 (mov-store reg-rdi reg-rsi 0)
+   in let pr16 = patch-jcc-at pr15 prof-skip (pr15.code-len)
+   in let pr17 = patch-jcc-at pr16 prof-full (pr16.code-len)
+   in let st11-wd = emit-watchdog-timer-check pr17
    in let st11-y0 = st-append-code st11-wd (li reg-rdi sched-current-task-addr)
    in let st11-y1 = st-append-code st11-y0 (mov-load reg-rdi reg-rdi 0)
    in let st11-y2 = st-append-code st11-y1 (cmp-ri reg-rdi 0)

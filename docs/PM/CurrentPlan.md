@@ -73,7 +73,10 @@ We are close. Not there.
 - **Foreword library fixes** (CL 1908): Huffman tree (recursive variant
   + proper walk), Graph DFS (visited-state propagation), Bresenham
   (dead branch), Convolution (div-by-zero), HexFormat (spacing).
-- **Seed** (CL 1907): 2,173,280 bytes. Hard fixed point. 105/105 pass.
+- **Seed** (CL 2247): 2,181,200 bytes. Hard fixed point. 108/108 pass.
+  Parser `is-page-marker` fix (type name `Page` no longer swallowed).
+  TCP transport: raw buffer receive (O(n) vs O(n²)), NAT half-close,
+  plug framed protocol. Boot image rebuilt (8 MB FAT16).
 
 The remaining gap to the vision is the *wiring* — chapters that exist
 but aren't yet the default path, plus a handful of capabilities that

@@ -314,3 +314,18 @@ pack and direct-sale prices to regulate card injection into the economy.
 - Rate limits on free trades
 - Bot detection on pack purchasing patterns
 - Coin supply is transparent and auditable
+
+## Clan Economies
+
+Clans operate parallel economies alongside the global Mana Coin
+system. Each clan mints its own currency for intra-clan trading,
+tournament prizes, and library deposits. Clan coin can be exchanged
+for Mana Coin at a clan-set exchange rate, with the clan treasury
+acting as counterparty.
+
+Clan packs are sold for Mana Coin (30% platform fee, 40-60% to clan
+treasury). Cards from clan packs are standard tokens tradeable on
+the global market.
+
+See [Clans.md](Clans.md) for full clan economy design including
+treasury management, exchange mechanics, and custom pack definitions.

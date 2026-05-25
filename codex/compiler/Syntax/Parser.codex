@@ -276,6 +276,11 @@ Section: Definition Parsing
    else if is-type-ident (current-kind st) then try-parse-def st
      else ParseDefResult { maybe-def = None, state = st }
 
+  is-simple-claim : ParseState -> Boolean
+  is-simple-claim (st) =
+   if is-ident (peek-kind st 1) then is-colon (peek-kind st 2)
+   else False
+
   parse-claim-annotation : ParseState -> AnnotationNode
   parse-claim-annotation (st) =
    let st1 = advance st
@@ -353,8 +358,9 @@ Section: Definition Parsing
 
   parse-def-body-with-ann : List TypeAnn, ParseState -> ParseDefResult
   parse-def-body-with-ann (ann) (st) =
-   let name-tok = current st
-   in let st2 = advance st
+   let st-skip = if is-proof-keyword (current-kind st) then advance st else st
+   in let name-tok = current st-skip
+   in let st2 = advance st-skip
    in parse-def-params-then ann name-tok [] st2
 
   parse-def-params-then : List TypeAnn, Token, LinkedList Token, ParseState -> ParseDefResult
@@ -473,7 +479,7 @@ Section: Type Definition Parsing
     })),
     state = advance st
    }
-   else if is-ident-like (current-kind st) then parse-one-record-field name-tok tparams is-mut acc st
+   else if is-field-name-token (current-kind st) then parse-one-record-field name-tok tparams is-mut acc st
    else ParseTypeDefResult {
     maybe-type-def = Just (deck-record (TypeDef {
      name = name-tok,
@@ -652,11 +658,18 @@ Section: Document Parsing
          else False
     else False
 
+  is-page-number : TokenKind -> Boolean
+  is-page-number (k) =
+   when k
+    is IntegerLiteral -> True
+    is otherwise -> False
+
   is-page-marker : ParseState -> Boolean
   is-page-marker (st) =
    if is-type-ident (current-kind st) then let tok = current st
-      in if tok.length == 4 then (token-text tok) == "Page"
+      in if tok.length == 4 then if (token-text tok) == "Page" then is-page-number (peek-kind st 1)
          else False
+      else False
     else False
 
   extract-header-title : ParseState -> Text
@@ -822,7 +835,9 @@ Section: Document Parsing
    else if is-effect-keyword (current-kind st) then parse-top-level-effect defs type-defs effect-defs imports ch-title sec-titles prose blocks anns st
    else if is-at-sign st then let ann = parse-annotation-line st
      in parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns ann) (skip-to-next-line st)
-   else if is-claim-keyword (current-kind st) then let claim-ann = parse-claim-annotation st
+   else if is-claim-keyword (current-kind st) then
+    if is-simple-claim st then try-top-level-def defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (advance st)
+    else let claim-ann = parse-claim-annotation st
      in parse-top-level defs type-defs effect-defs imports ch-title sec-titles prose blocks (__linked-list-push anns claim-ann) (skip-to-next-line st)
    else if is-proof-keyword (current-kind st) then try-top-level-def defs type-defs effect-defs imports ch-title sec-titles prose blocks anns (advance st)
    else if is-prose-line st then let pr = collect-prose-with-text st prose blocks

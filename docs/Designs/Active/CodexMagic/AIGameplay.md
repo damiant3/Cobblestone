@@ -283,3 +283,22 @@ freeze):
 
 Total player interaction: one decision point, ~5 seconds. The turn
 resolves in ~10 seconds total instead of 60+ in traditional play.
+
+## Stack and Cycle Handling
+
+The AI supervisor manages two complex subsystems that players never
+see directly:
+
+**Stack resolution:** The spell stack ([SpellStack.md](SpellStack.md))
+resolves behind the scenes. When instant-speed interaction occurs,
+the AI presents decision points: "Opponent targets your creature.
+Respond?" The player sees options, not the stack's LIFO mechanics.
+
+**Bailout cycles:** When infinite loops include player decision
+points ([CycleDetection.md](CycleDetection.md)), the AI handles the
+prompt. In single-player bailouts, the AI recommends an iteration
+count based on board state. In contested cycles (both players have
+decision nodes), the AI plays each player's side according to their
+posture -- aggressive stance continues favorable cycles, defensive
+stance bails early. Players can always override the AI's cycle
+decisions.

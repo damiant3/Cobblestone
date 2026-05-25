@@ -193,11 +193,31 @@ All phase work runs inside `deck-record(...)`, so R10 points at the
 deck during phase execution. Bivy usage is near-zero (only the 16-byte
 `PhaseStart` record per phase).
 
-### Phase Deck Layout (selfhost, ~1.15 MB source)
+### Phase Deck Layout (selfhost, ~1.16 MB source)
 
 Deck heights are computed from source length (S bytes) using survey
 multipliers in `codex/opening.codex`. Values below are for the
-selfhost compiler (S ≈ 1,174,009 bytes, ~500 defs).
+selfhost compiler (S ≈ 1,158,497 bytes, ~500 defs). The pipeline
+has 8 frontend phases plus the emit phase. ConstructedTy resolution
+and lambda lifting were moved out of the emitter into their own
+phases (CLs 2135, 2169), each with an independent `phase-compact`
+cycle so bivy scratch is reclaimed between passes.
+
+Measured deck and bivy usage (CL 2169, TEXT-mode selfhost):
+
+| Phase | Deck Usage | Bivy HWM | Survey |
+|-------|-----------|----------|--------|
+| LEX | 11.2 MB | 21.7 MB | S × 10 + 1 MB |
+| PARSE | 5.3 MB | 25.1 MB | S × 5 + 1 MB |
+| DESUGAR | 19.0 MB | 0.04 MB | S × 18 + 1 MB |
+| SCOPE | 11.5 MB | 31.3 MB | S × 35 + 1 MB |
+| CHECK | 65.9 MB | ~0 | S × 75 + 1 MB |
+| LOWER | 90.9 MB | 457 MB | S × 300 + 1 MB |
+| RESOLVE | 7.7 MB | 438 MB | S × 200 + 1 MB |
+| LIFT | 16.3 MB | 445 MB | S × 200 + 1 MB |
+| EMIT | ~48 MB | per-func | defs × 64 KB + 16 MB |
+
+Cumulative deck: ~228 MB. Peak working set: ~673 MB (during lower).
 
 ```
 Heap
@@ -206,48 +226,51 @@ base     Phase decks (sealed, read-only)         Bivy
 0x600000  │  init-phase-allocator (mountain base)│   after each
           ├──────────────────────────────────────┤   phase)
           │  LEX deck                            │
-          │  Survey: S × 10 + 1 MB ≈ 12.7 MB    │
+          │  Survey: S × 10 + 1 MB               │
           │  Tokens, offset table                │
           ├──────────────────────────────────────┤
           │  PARSE deck                          │
-          │  Survey: S × 5 + 1 MB ≈ 6.9 MB      │
+          │  Survey: S × 5 + 1 MB                │
           │  AST nodes, chapter index, def list  │
           ├──────────────────────────────────────┤
           │  DESUGAR deck                        │
-          │  Survey: S × 18 + 1 MB ≈ 22.1 MB    │
+          │  Survey: S × 18 + 1 MB               │
           │  Desugared AST                       │
           ├──────────────────────────────────────┤
           │  SCOPE deck                          │
-          │  Survey: S × 35 + 1 MB ≈ 42.1 MB    │
+          │  Survey: S × 35 + 1 MB               │
           │  Name bindings, slug-mangled names   │
           ├──────────────────────────────────────┤
           │  CHECK deck                          │
-          │  Survey: S × 75 + 1 MB ≈ 89.1 MB    │
+          │  Survey: S × 75 + 1 MB               │
           │  Type environment, resolved types    │
           ├──────────────────────────────────────┤
           │  LOWER deck                          │
-          │  Survey: S × 300 + 1 MB ≈ 353.2 MB  │
-          │  IR defs, IR expressions, lambda list│
+          │  Survey: S × 300 + 1 MB              │
+          │  IR defs, IR expressions             │
           ├──────────────────────────────────────┤
-          │  EMIT deck (CL 1563: deck-everything)│
+          │  RESOLVE deck                        │
+          │  Survey: S × 200 + 1 MB              │
+          │  ConstructedTy → RecordTy/SumTy,     │
+          │  sorted type bindings                │
+          ├──────────────────────────────────────┤
+          │  LIFT deck                           │
+          │  Survey: S × 200 + 1 MB              │
+          │  Lambda-lifted defs (CDX path only)  │
+          ├──────────────────────────────────────┤
+          │  EMIT deck                           │
           │  Survey: defs × 64 KB + 16 MB        │
-          │  ≈ 48 MB for ~500 defs               │
-          │  Contains:                           │
-          │    Sorted TypeBindings (sort-by)     │
-          │    EmitWorkspace (code + data bufs)  │
-          │    Accumulator lists (11 × 32K cap)  │
-          │    Rewritten IR (deck-record nodes)  │
-          │    Lambda-lifted defs                │
-          │    User arities                      │
-          │    Per-function CodegenState (deck-   │
-          │     record in emit-all-defs)         │
+          │  EmitWorkspace (code + data bufs)    │
+          │  Accumulator lists (11 × 32K cap)    │
+          │  User arities                        │
+          │  Per-function CodegenState            │
           ├──────────────────────────────────────┤
           │  (bivy: per-function scratch)        │
           │  Reclaimed by __heap-save/restore    │
           │  in emit-all-defs loop               │
           └──────────────────────────────────────┘
                               ▲
-                              │ gap (~1.4 GB for 2 GB RAM)
+                              │ gap (~1.3 GB for 2 GB RAM)
                               ▼
           ┌──────────────────────────────────────┐
 0x80000000│  Stack top (grows downward)          │
@@ -257,16 +280,18 @@ base     Phase decks (sealed, read-only)         Bivy
 
 ### Emit Phase Detail
 
-After `emit-build` creates the emit deck and `__deck-enter` swaps R10
-to it, the emit init allocates in this order (all on the deck):
+ConstructedTy resolution and lambda lifting run in their own phases
+before emit (RESOLVE and LIFT). The emitter receives pre-resolved,
+pre-lifted IR and a sorted `List TypeBinding`. After `emit-build`
+creates the emit deck and `__deck-enter` swaps R10, the emit init
+allocates in this order (all on the deck):
 
 ```
 Emit deck
 ──────────────────────────────────────────────────────────────
 1. bare-metal-trampoline        ~100 bytes   Boot stub
 2. init-emit-workspace          4.5 MB       Code buf (4 MB) + data buf (512 KB)
-3. sort-type-bindings           ~10 KB       Sorted TypeBinding list (577+ entries)
-4. CodegenState                 ~300 bytes   With 11 pre-allocated accumulator lists:
+3. CodegenState                 ~300 bytes   With 11 pre-allocated accumulator lists:
      fo-names, fo-offsets          2 × 256 KB   Function offset table
      cp-offsets, cp-targets        2 × 1 MB     Call patch table (4× capacity)
      fa-offsets, fa-targets        2 × 256 KB   Far-address patch table
@@ -275,14 +300,12 @@ Emit deck
      stack-overflow-checks         1 × 256 KB   Stack overflow check positions
                                 ─────────
                                 ~5 MB total accumulator backing buffers
-5. rewrite-ir-defs              variable     IR with ConstructedTy resolved (deck-record)
-6. lift-lambdas                 variable     Lambda-lifted IR defs
-7. build-x86-arities            ~10 KB       Sorted arity table
-8. emit-runtime-helpers          (writes to code buffer, no deck alloc)
+4. build-x86-arities            ~10 KB       Sorted arity table
+5. emit-runtime-helpers          (writes to code buffer, no deck alloc)
 ──────────────────────────────────────────────────────────────
    __deck-exit (R10 back to bivy)
 
-9. emit-all-defs loop:
+6. emit-all-defs loop:
      Per function:
        __heap-save h
        emit-function → writes machine code to code buffer,
@@ -291,7 +314,7 @@ Emit deck
        __heap-restore h (reclaims per-function scratch: locals, temps, spills)
        deck-record(codegen-carry-forward) → new CodegenState on deck (~300 bytes)
 
-10. x86-64-finalize-* → patches, ELF/CDX header, output
+7. x86-64-finalize-* → patches, CDX header, output
 ```
 
 ### Accumulator Capacity

@@ -181,5 +181,19 @@ in a World Championship combining all four seasonal metas:
 | Year-end | World Championship | All-season Vintage format |
 
 Thematic alignment is a guideline, not a constraint. The AI may propose
-themes that subvert expectations — a spring season about predatory
+themes that subvert expectations -- a spring season about predatory
 growth, a winter season about volcanic activity under ice.
+
+## Cross-References
+
+- **Keyword costing:** [GameBalance.md](GameBalance.md) section 8.6
+  provides simulation-tested costing guidelines for First Strike,
+  Trample, Flying, Haste, Deathtouch, Vigilance, and Lifelink.
+  Mechanic selection should reference these power rankings.
+- **Format rotation:** [Formats.md](Formats.md) defines how seasons
+  rotate through Modern (last 2 seasons) and Legacy (all seasons).
+- **Clan mechanics:** [Clans.md](Clans.md) allows clans to
+  experiment with seasonal mechanics via house rules. Successful
+  experiments can inform future season design.
+- **Clan packs:** Clans can create themed packs from any season's
+  pool. See [Clans.md](Clans.md) for custom pack definitions.

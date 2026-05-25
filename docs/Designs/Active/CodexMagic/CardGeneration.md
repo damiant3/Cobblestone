@@ -215,3 +215,22 @@ It is unique in the entire game world. These are the crown jewels —
 their value comes from absolute scarcity, guaranteed uniqueness of
 art, and their tournament history. Pulling one from a pack is a
 headline event.
+
+## Clan Custom Packs
+
+Clans use this same pipeline to produce themed packs. The clan
+provides a `ClanPackDef` with mechanic filters (ban/allow keywords,
+complexity caps), content theme (flavor tone, creature types,
+setting), art direction (style, palette, content restrictions), and
+profanity level (enforced by age bracket). The pipeline generates
+cards matching the clan's specifications and routes them through the
+same QA gate.
+
+Clan packs are sold for Mana Coin (30% platform, 40-60% clan
+treasury). Cards from clan packs are standard tokens — mechanically
+identical to global cards, just themed differently. A "Shepherd of
+the Valley" from a church clan plays the same as an "Iron Sentinel"
+from the global pool if they share the same stats and keywords.
+
+See [Clans.md](Clans.md) for full custom pack definitions, content
+theming, and age-appropriate content enforcement.

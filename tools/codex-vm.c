@@ -2397,7 +2397,7 @@ static NatConn *nat_alloc(void) {
 }
 
 /* Pending RX frames for the guest */
-#define RX_QUEUE_SIZE 32
+#define RX_QUEUE_SIZE 256
 #define RX_FRAME_MAX 1536
 typedef struct {
     unsigned char data[RX_FRAME_MAX];
@@ -2408,11 +2408,15 @@ static RxFrame rx_queue[RX_QUEUE_SIZE];
 static int rx_queue_head = 0, rx_queue_count = 0;
 
 static void rx_enqueue(unsigned char *data, int len) {
-    if (rx_queue_count >= RX_QUEUE_SIZE || len > RX_FRAME_MAX) return;
+    if (rx_queue_count >= RX_QUEUE_SIZE || len > RX_FRAME_MAX) {
+        fprintf(stderr, "rx_enqueue DROP: q=%d len=%d max=%d\n", rx_queue_count, len, RX_FRAME_MAX);
+        return;
+    }
     int idx = (rx_queue_head + rx_queue_count) % RX_QUEUE_SIZE;
     memcpy(rx_queue[idx].data, data, len);
     rx_queue[idx].len = len;
     rx_queue_count++;
+    fprintf(stderr, "rx_enqueue: q=%d len=%d\n", rx_queue_count, len);
 }
 
 /* IP checksum helper */
@@ -2585,13 +2589,14 @@ static void nat_handle_tx(unsigned char *frame, int len) {
                                     0x11, /* FIN+ACK */
                                     NULL, 0);
                 shutdown(c->sock, SD_SEND);
-                c->state = 3;
+                if (c->state == 4) { closesocket(c->sock); c->active = 0; }
+                else c->state = 3;
             }
         }
         else if (flags & 0x10) {
             /* ACK (possibly with data) */
             NatConn *c = nat_find(sport, dport, dst_ip);
-            if (c && payload_len > 0 && c->state == 2) {
+            if (c && payload_len > 0 && (c->state == 2 || c->state == 4)) {
                 /* Forward data to host */
                 send(c->sock, (char*)payload, payload_len, 0);
                 /* ACK the data */
@@ -2619,10 +2624,18 @@ static void nat_poll_rx(void) {
     unsigned char guest_ip[4] = {NAT_GUEST_IP0, NAT_GUEST_IP1, NAT_GUEST_IP2, NAT_GUEST_IP3};
     for (int i = 0; i < NAT_MAX_CONN; i++) {
         NatConn *c = &nat_conns[i];
-        if (!c->active || c->state != 2) continue;
+        if (!c->active || (c->state != 2 && c->state != 4)) continue;
+        if (rx_queue_count >= RX_QUEUE_SIZE - 1) { continue; }
         unsigned char buf[1400];
         int n = recv(c->sock, (char*)buf, sizeof(buf), 0);
+        if (n < 0) {
+            static int neg_count = 0;
+            if (neg_count++ < 5) fprintf(stderr, "NAT recv: n=%d err=%d state=%d sock=%lld\n", n, WSAGetLastError(), c->state, (long long)c->sock);
+        }
         if (n > 0) {
+            static int nat_rx_total = 0;
+            nat_rx_total += n;
+            if (nat_rx_total % 100000 < n) fprintf(stderr, "NAT RX: total=%d chunk=%d q=%d\n", nat_rx_total, n, rx_queue_count);
             c->ack_offset++;
             nat_build_tcp_frame(ne2k.par, c->dst_ip, guest_ip,
                                 c->dst_port, c->guest_port,
@@ -2631,20 +2644,27 @@ static void nat_poll_rx(void) {
                                 buf, n);
             c->ack_offset += n - 1;
         } else if (n == 0) {
-            /* Connection closed by remote */
+            /* Remote half-closed (sent FIN). Deliver FIN to guest.
+               Move to state 4: stop reading but keep forwarding
+               guest TX data back to the host socket. */
             nat_build_tcp_frame(ne2k.par, c->dst_ip, guest_ip,
                                 c->dst_port, c->guest_port,
                                 c->ack_offset + 1, c->seq_offset + 1,
                                 0x11, /* FIN+ACK */
                                 NULL, 0);
-            closesocket(c->sock);
-            c->state = 3;
+            c->state = 4;
         }
     }
 }
 
 /* Inject queued RX frames into the NE2000 ring buffer */
 static void ne2k_inject_rx(void) {
+    static int inject_debug = 0;
+    if (rx_queue_count > 0 && inject_debug < 5) {
+        fprintf(stderr, "inject_rx: q=%d pstart=%d pstop=%d curr=%d bnry=%d\n",
+            rx_queue_count, ne2k.pstart, ne2k.pstop, ne2k.curr, ne2k.bnry);
+        inject_debug++;
+    }
     while (rx_queue_count > 0) {
         RxFrame *f = &rx_queue[rx_queue_head];
         /* Pad odd-length frames to even: the guest uses REP INSW (word DMA)
@@ -4228,7 +4248,7 @@ int main(int argc, char **argv) {
         }
 
         /* Poll NAT sockets for incoming data and inject into NE2000 ring buffer */
-        if (exits % 100 == 0) { nat_poll_rx(); ne2k_inject_rx(); }
+        if (exits % 10 == 0) { nat_poll_rx(); ne2k_inject_rx(); }
 
         /* (page-protection watchpoint is handled inline in MemoryAccess case) */
     }

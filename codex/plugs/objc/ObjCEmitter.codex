@@ -1,0 +1,323 @@
+Chapter: ObjC Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates Objective-C source code from the IR.
+
+Section: Keywords and Sanitization
+
+  oc-keywords : List Text =
+   ["auto", "break", "case", "char", "const",
+    "continue", "default", "do", "double", "else",
+    "enum", "extern", "float", "for", "goto",
+    "if", "inline", "int", "long", "register",
+    "return", "short", "signed", "sizeof", "static",
+    "struct", "switch", "typedef", "union", "unsigned",
+    "void", "volatile", "while", "id", "self",
+    "super", "nil", "YES", "NO", "NULL"]
+
+  is-oc-keyword-loop : List Text, Text, Integer, Integer -> Boolean
+  is-oc-keyword-loop (kws) (name) (i) (len) =
+   if i == len then False
+   else if list-at kws i == name then True
+   else is-oc-keyword-loop kws name (i + 1) len
+
+  is-oc-keyword : Text -> Boolean
+  is-oc-keyword (name) = is-oc-keyword-loop oc-keywords name 0 (list-length oc-keywords)
+
+  oc-sanitize : Text -> Text
+  oc-sanitize (name) =
+   let s = text-replace name "-" "_"
+   in if is-oc-keyword s then "_" & s
+      else s
+
+  oc-escape-text : Text -> Text
+  oc-escape-text (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in let s3 = text-replace s2 "\n" "\\n"
+   in s3
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then -1
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else -1
+
+Section: Apply Chain
+
+  is-upper-letter : Integer -> Boolean
+  is-upper-letter (code) =
+   if code >= char-code 'E' then code <= char-code 'Z'
+   else False
+
+Section: Type Definition Emission
+
+  emit-oc-type-defs : List ATypeDef, Integer -> Text
+  emit-oc-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-oc-type-def (list-at tds i) & emit-oc-type-defs tds (i + 1)
+
+  emit-oc-type-def : ATypeDef -> Text
+  emit-oc-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+     emit-oc-record-type (name.value) fields
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-oc-sum-type ctors
+
+  emit-oc-sum-type : List AVariantCtorDef -> Text
+  emit-oc-sum-type (ctors) =
+   emit-oc-sum-type-loop ctors 0 (list-length ctors)
+
+  emit-oc-sum-type-loop : List AVariantCtorDef, Integer, Integer -> Text
+  emit-oc-sum-type-loop (ctors) (i) (len) =
+   if i == len then ""
+   else let c = list-at ctors i
+   in emit-oc-ctor c & emit-oc-sum-type-loop ctors (i + 1) len
+
+  emit-oc-ctor : AVariantCtorDef -> Text
+  emit-oc-ctor (c) =
+   let name = oc-sanitize (c.name.value)
+   in "NSDictionary *" & name & "(void) { return @{@\"tag\": @\"" & c.name.value & "\"}; }\n"
+
+  emit-oc-record-type : Text, List ARecordFieldDef -> Text
+  emit-oc-record-type (name) (fields) =
+   let sname = oc-sanitize name
+   in "NSMutableDictionary *" & sname & "_new(" & emit-oc-record-params fields 0 & ") {\n  NSMutableDictionary *r = [NSMutableDictionary new];\n" & emit-oc-record-assigns fields 0 & "  return r;\n}\n\n"
+
+  emit-oc-record-params : List ARecordFieldDef, Integer -> Text
+  emit-oc-record-params (fields) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in let sep = if i > 0 then ", " else ""
+   in sep & "id " & oc-sanitize (f.name.value) & emit-oc-record-params fields (i + 1)
+
+  emit-oc-record-assigns : List ARecordFieldDef, Integer -> Text
+  emit-oc-record-assigns (fields) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in "  r[@\"" & f.name.value & "\"] = " & oc-sanitize (f.name.value) & ";\n" & emit-oc-record-assigns fields (i + 1)
+
+Section: Expression Emission
+
+  oc-max-depth : Integer = 256
+
+  emit-oc-expr : IRExpr, List ArityEntry -> Text
+  emit-oc-expr (e) (arities) = emit-oc-expr-at e arities 0
+
+  emit-oc-expr-at : IRExpr, List ArityEntry, Integer -> Text
+  emit-oc-expr-at (e) (arities) (depth) =
+   if depth >= oc-max-depth then "nil"
+   else when e
+    is IrIntLit (n) (sp) -> "@(" & integer-to-text n & ")"
+    is IrNumLit (n) (sp) -> "@(" & integer-to-text n & ".0)"
+    is IrTextLit (s) (sp) -> "@\"" & oc-escape-text s & "\""
+    is IrBoolLit (b) (sp) -> if b then "@YES" else "@NO"
+    is IrCharLit (n) (sp) -> "@(" & integer-to-text n & ")"
+    is IrName (n) (ty) (sp) -> emit-oc-name n ty arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-oc-binary op l r arities
+    is IrNegate (operand) (sp) -> "@(-[" & emit-oc-expr-at operand arities (depth + 1) & " integerValue])"
+    is IrIf (c) (t) (el) (ty) (sp) -> "([" & emit-oc-expr-at c arities (depth + 1) & " boolValue] ? " & emit-oc-expr-at t arities (depth + 1) & " : " & emit-oc-expr-at el arities (depth + 1) & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "(^{ id " & oc-sanitize name & " = " & emit-oc-expr-at val arities (depth + 1) & "; return " & emit-oc-expr-at body arities (depth + 1) & "; }())"
+    is IrApply (f) (a) (ty) (sp) -> emit-oc-apply e arities
+    is IrLambda (params) (body) (ty) (sp) -> "^(" & emit-oc-lambda-params params 0 & ") { return " & emit-oc-expr body arities & "; }"
+    is IrList (elems) (ty) (sp) -> "[@[" & emit-oc-list-elems elems 0 arities & "] mutableCopy]"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-oc-match scrut branches arities
+    is IrAct (stmts) (ty) (sp) -> emit-oc-act stmts arities
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-oc-expr-at body arities (depth + 1)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-oc-expr-at body arities (depth + 1)
+    is IrRecord (name) (fields) (ty) (sp) -> emit-oc-record name fields arities
+    is IrFieldAccess (rec) (field) (ty) (sp) -> "[" & emit-oc-expr-at rec arities (depth + 1) & " objectForKey:@\"" & field & "\"]"
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(^{ NSMutableDictionary *_r = [" & emit-oc-expr-at rec arities (depth + 1) & " mutableCopy]; _r[@\"" & field & "\"] = " & emit-oc-expr-at val arities (depth + 1) & "; return _r; }())"
+    is IrFork (body) (ty) (sp) -> emit-oc-expr-at body arities (depth + 1)
+    is IrAwait (task) (ty) (sp) -> emit-oc-expr-at task arities (depth + 1)
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> emit-oc-act body arities
+    is IrError (msg) (ty) (sp) -> "[NSException raise:@\"Error\" format:@\"" & oc-escape-text msg & "\"]"
+
+  emit-oc-name : Text, CodexType, List ArityEntry -> Text
+  emit-oc-name (n) (ty) (arities) =
+   if n == "True" then "@YES"
+   else if n == "False" then "@NO"
+   else if n == "Nothing" then "nil"
+   else oc-sanitize n
+
+  emit-oc-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
+  emit-oc-binary (op) (l) (r) (arities) =
+   when op
+    is IrAppendText -> "[" & emit-oc-expr l arities & " stringByAppendingString:" & emit-oc-expr r arities & "]"
+    is IrAppendList -> "(^{ NSMutableArray *_a = [" & emit-oc-expr l arities & " mutableCopy]; [_a addObjectsFromArray:" & emit-oc-expr r arities & "]; return _a; }())"
+    is IrConsList -> "(^{ NSMutableArray *_a = [@[" & emit-oc-expr l arities & "] mutableCopy]; [_a addObjectsFromArray:" & emit-oc-expr r arities & "]; return _a; }())"
+    is IrAnd -> "@([" & emit-oc-expr l arities & " boolValue] && [" & emit-oc-expr r arities & " boolValue])"
+    is IrOr -> "@([" & emit-oc-expr l arities & " boolValue] || [" & emit-oc-expr r arities & " boolValue])"
+    is otherwise -> "@([" & emit-oc-expr l arities & " integerValue] " & oc-bin-op-symbol op & " [" & emit-oc-expr r arities & " integerValue])"
+
+  oc-bin-op-symbol : IRBinaryOp -> Text
+  oc-bin-op-symbol (op) =
+   when op
+    is IrAddInt -> "+"
+    is IrSubInt -> "-"
+    is IrMulInt -> "*"
+    is IrDivInt -> "/"
+    is IrPowInt -> "^"
+    is IrAddNum -> "+"
+    is IrSubNum -> "-"
+    is IrMulNum -> "*"
+    is IrDivNum -> "/"
+    is IrEq -> "=="
+    is IrNotEq -> "!="
+    is IrLt -> "<"
+    is IrGt -> ">"
+    is IrLtEq -> "<="
+    is IrGtEq -> ">="
+    is IrAnd -> "&&"
+    is IrOr -> "||"
+    is IrAppendText -> "+"
+    is IrAppendList -> "+"
+    is IrConsList -> "+"
+
+  emit-oc-lambda-params : List IRParam, Integer -> Text
+  emit-oc-lambda-params (params) (i) =
+   if i == list-length params then ""
+   else if i == list-length params - 1 then "id " & oc-sanitize ((list-at params i).name)
+   else "id " & oc-sanitize ((list-at params i).name) & ", " & emit-oc-lambda-params params (i + 1)
+
+  emit-oc-list-elems : List IRExpr, Integer, List ArityEntry -> Text
+  emit-oc-list-elems (elems) (i) (arities) =
+   if i == list-length elems then ""
+   else if i == list-length elems - 1 then emit-oc-expr (list-at elems i) arities
+   else emit-oc-expr (list-at elems i) arities & ", " & emit-oc-list-elems elems (i + 1) arities
+
+  emit-oc-record : Text, List IRFieldVal, List ArityEntry -> Text
+  emit-oc-record (name) (fields) (arities) =
+   "[@{" & emit-oc-record-vals fields 0 arities & "} mutableCopy]"
+
+  emit-oc-record-vals : List IRFieldVal, Integer, List ArityEntry -> Text
+  emit-oc-record-vals (fields) (i) (arities) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in let sep = if i > 0 then ", " else ""
+   in sep & "@\"" & f.name & "\": " & emit-oc-expr (f.value) arities & emit-oc-record-vals fields (i + 1) arities
+
+  emit-oc-match : IRExpr, List IRBranch, List ArityEntry -> Text
+  emit-oc-match (scrut) (branches) (arities) =
+   "(^{ id _s = " & emit-oc-expr scrut arities & "; " & emit-oc-match-arms branches 0 arities & "return nil; }())"
+
+  emit-oc-match-arms : List IRBranch, Integer, List ArityEntry -> Text
+  emit-oc-match-arms (branches) (i) (arities) =
+   if i == list-length branches then ""
+   else let b = list-at branches i
+   in emit-oc-match-arm (b.pattern) (b.body) arities & emit-oc-match-arms branches (i + 1) arities
+
+  emit-oc-match-arm : IRPat, IRExpr, List ArityEntry -> Text
+  emit-oc-match-arm (pat) (body) (arities) =
+   when pat
+    is IrLitPat (text) (ty) (sp) -> "if ([_s isEqual:" & text & "]) return " & emit-oc-expr body arities & "; "
+    is IrCtorPat (name) (subs) (ty) (sp) -> "if ([[_s objectForKey:@\"tag\"] isEqual:@\"" & name & "\"]) return " & emit-oc-expr body arities & "; "
+    is IrVarPat (name) (ty) (sp) -> "{ id " & oc-sanitize name & " = _s; return " & emit-oc-expr body arities & "; } "
+    is IrWildPat (sp) -> "return " & emit-oc-expr body arities & "; "
+
+  emit-oc-act : List IRActStmt, List ArityEntry -> Text
+  emit-oc-act (stmts) (arities) =
+   "(^{ " & emit-oc-act-stmts stmts 0 arities & " }())"
+
+  emit-oc-act-stmts : List IRActStmt, Integer, List ArityEntry -> Text
+  emit-oc-act-stmts (stmts) (i) (arities) =
+   if i == list-length stmts then "return nil;"
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in (when s
+    is IrDoBind (name) (ty) (val) (sp) -> "id " & oc-sanitize name & " = " & emit-oc-expr val arities & "; "
+    is IrDoExec (e) (sp) -> if is-last then "return " & emit-oc-expr e arities & "; " else emit-oc-expr e arities & "; ") & emit-oc-act-stmts stmts (i + 1) arities
+
+Section: Apply Emission
+
+  emit-oc-apply : IRExpr, List ArityEntry -> Text
+  emit-oc-apply (e) (arities) =
+   let chain = collect-apply-chain e []
+   in let root = chain.root
+   in let args = chain.args
+   in when root
+    is IrName (n) (ty) (sp) ->
+     if n == "print-line-uni" then "NSLog(@\"%@\", " & emit-oc-expr (list-at args 0) arities & ")"
+     else oc-sanitize n & "(" & emit-oc-apply-args args arities 0 & ")"
+    is otherwise -> emit-oc-expr-curried e arities
+
+  emit-oc-apply-args : List IRExpr, List ArityEntry, Integer -> Text
+  emit-oc-apply-args (args) (arities) (i) =
+   if i == list-length args then ""
+   else if i == list-length args - 1 then emit-oc-expr (list-at args i) arities
+   else emit-oc-expr (list-at args i) arities & ", " & emit-oc-apply-args args arities (i + 1)
+
+  emit-oc-expr-curried : IRExpr, List ArityEntry -> Text
+  emit-oc-expr-curried (e) (arities) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> emit-oc-expr f arities & "(" & emit-oc-expr a arities & ")"
+    is otherwise -> emit-oc-expr e arities
+
+Section: Definition Emission
+
+  emit-oc-def : IRDef, List ArityEntry -> Text
+  emit-oc-def (d) (arities) =
+   let name = oc-sanitize (d.name)
+   in let params-text = emit-oc-def-params (d.params) 0
+   in "id " & name & "(" & params-text & ") {\n  return " & emit-oc-expr (d.body) arities & ";\n}\n\n"
+
+  emit-oc-def-params : List IRParam, Integer -> Text
+  emit-oc-def-params (params) (i) =
+   if i == list-length params then ""
+   else if i == list-length params - 1 then "id " & oc-sanitize ((list-at params i).name)
+   else "id " & oc-sanitize ((list-at params i).name) & ", " & emit-oc-def-params params (i + 1)
+
+  emit-oc-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-oc-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-oc-def (list-at defs i) arities & emit-oc-defs defs (i + 1) arities
+
+Section: Chapter Emission
+
+  emit-objc-chapter : IRChapter, List ATypeDef -> Text
+  emit-objc-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "#import <Foundation/Foundation.h>\n\n"
+   in let types-text = emit-oc-type-defs type-defs 0
+   in let defs-text = emit-oc-defs (m.defs) 0 arities
+   in header & types-text & defs-text & "int main(int argc, const char *argv[]) {\n  @autoreleasepool {\n    " & oc-sanitize opening-entry-point & "();\n  }\n  return 0;\n}\n"
+
+Page 1

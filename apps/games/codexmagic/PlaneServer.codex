@@ -1,0 +1,780 @@
+Chapter: PlaneServer
+  cites CodexMagic chapter GameRegistry
+  cites CodexMagic chapter PlanarExchange
+  cites CodexMagic chapter CrossPlaneItems
+  cites CodexMagic chapter RPGEngine
+  cites CodexMagic chapter CampaignWorld
+  cites CodexMagic chapter GMEconomy
+  cites CodexMagic chapter DungeonProgression
+  cites CodexMagic chapter Token
+  cites CodexMagic chapter ClanEconomy
+  cites CodexMagic chapter Clan
+  cites CodexMagic chapter Auth
+  cites CodexMagic chapter ServerUtil
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+
+ Plane Server - the service that manages the multiverse. Handles
+ game registration, cross-plane item conversion, dungeon invasion,
+ portal management, the planar exchange marketplace, GM licensing,
+ dungeon progression, and RPG session management. This is the hub
+ that all game instances talk to for cross-game operations.
+
+ We say:
+
+Section: Plane Server State
+
+  PlaneServerState = record {
+    registry : GameRegistryState,
+    exchange : PlanarExchangeState,
+    manifests : List ItemManifest,
+    invasions : List Invasion,
+    portals : List Portal,
+    gm-licenses : List GMLicense,
+    dungeon-progress : List DungeonProgress,
+    campaigns : List CampaignWorld,
+    characters : List RPGCharacter,
+    dungeon-runs : List DungeonRun,
+    global-ledger : ManaCoinLedger,
+    next-invasion-id : Integer,
+    next-portal-id : Integer,
+    next-gm-id : Integer,
+    next-campaign-id : Integer,
+    next-char-id : Integer,
+    next-run-id : Integer,
+    platform-revenue : Integer
+  }
+
+  plane-server-new : PlaneServerState
+  plane-server-new =
+    let reg = registry-new
+    in let exch = exchange-new
+    in let exch2 = register-plane exch 1 "Chess"
+    in let exch3 = register-plane exch2 2 "Checkers"
+    in let exch4 = register-plane exch3 3 "CodexMagic"
+    in PlaneServerState {
+      registry = reg,
+      exchange = exch4,
+      manifests = [],
+      invasions = [],
+      portals = [],
+      gm-licenses = [],
+      dungeon-progress = [],
+      campaigns = [],
+      characters = [],
+      dungeon-runs = [],
+      global-ledger = ledger-new 10000,
+      next-invasion-id = 1,
+      next-portal-id = 1,
+      next-gm-id = 1,
+      next-campaign-id = 1,
+      next-char-id = 1,
+      next-run-id = 1,
+      platform-revenue = 0
+    }
+
+Section: Request Dispatch
+
+  dispatch-plane-request : PlaneServerState, Text -> [Console] PlaneServerState
+  dispatch-plane-request (state) (line) =
+    let path = extract-path line
+    in if text-starts-with path "/api/plane/status" then handle-plane-status state
+    else if text-starts-with path "/api/plane/registry/" then handle-registry state line path
+    else if text-starts-with path "/api/plane/exchange/" then handle-exchange state line path
+    else if text-starts-with path "/api/plane/manifest/" then handle-manifest state line path
+    else if text-starts-with path "/api/plane/invasion/" then handle-invasion state line path
+    else if text-starts-with path "/api/plane/portal/" then handle-portal state line path
+    else if text-starts-with path "/api/plane/gm/" then handle-gm state line path
+    else if text-starts-with path "/api/plane/dungeon/" then handle-dungeon state line path
+    else if text-starts-with path "/api/plane/rpg/" then handle-rpg state line path
+    else if text-starts-with path "/api/plane/subgame/" then handle-subgame state line path
+    else act
+      pm0 <- respond-not-found
+      state
+    end
+
+Section: Status
+
+  handle-plane-status : PlaneServerState -> [Console] PlaneServerState
+  handle-plane-status (state) =
+    let stats = exchange-stats (state.exchange)
+    in act
+      pm0 <- respond-json ("{\"server\":\"PlaneServer\",\"games\":" & show (game-count (state.registry)) & ",\"items\":" & show (stats.total-items) & ",\"listings\":" & show (stats.total-listings) & ",\"trades\":" & show (stats.total-trades) & ",\"volume\":" & show (stats.total-volume) & ",\"planes\":" & show (stats.planes-registered) & ",\"gm-licenses\":" & show (list-length (state.gm-licenses)) & ",\"campaigns\":" & show (list-length (state.campaigns)) & ",\"characters\":" & show (list-length (state.characters)) & ",\"active-runs\":" & show (count-active-runs (state.dungeon-runs) 0 (list-length (state.dungeon-runs)) 0) & ",\"portals\":" & show (list-length (state.portals)) & ",\"invasions\":" & show (list-length (state.invasions)) & ",\"revenue\":" & show (state.platform-revenue) & "}")
+      state
+    end
+
+  count-active-runs : List DungeonRun, Integer, Integer, Integer -> Integer
+  count-active-runs (runs) (i) (len) (acc) =
+    if i >= len then acc
+    else let r = list-at runs i
+    in when r.status
+      is RunActive -> count-active-runs runs (i + 1) len (acc + 1)
+      is RunCompleted -> count-active-runs runs (i + 1) len acc
+      is RunFailed -> count-active-runs runs (i + 1) len acc
+      is RunAbandoned -> count-active-runs runs (i + 1) len acc
+
+Section: Game Registry Handlers
+
+  handle-registry : PlaneServerState, Text, Text -> [Console] PlaneServerState
+  handle-registry (state) (line) (path) =
+    if text-starts-with path "/api/plane/registry/register" then handle-reg-register state line
+    else if text-starts-with path "/api/plane/registry/list" then handle-reg-list state
+    else if text-starts-with path "/api/plane/registry/game" then handle-reg-game state line
+    else act pm0 <- respond-not-found
+      state
+    end
+
+  handle-reg-register : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-reg-register (state) (line) =
+    let name = extract-query-param line "name"
+    in let desc = extract-query-param line "desc"
+    in let registrar = parse-int (extract-query-param line "account") 0
+    in let game-type-str = extract-query-param line "type"
+    in let gtype = parse-game-type game-type-str
+    in let reg2 = register-game (state.registry) name gtype ResultWinLose (Exactly 2) registrar 0 desc
+    in let exch2 = register-plane (state.exchange) (reg2.next-game-id - 1) name
+    in let state2 = set-plane-registry state reg2
+    in let state3 = set-plane-exchange state2 exch2
+    in act
+      pm0 <- respond-json ("{\"registered\":true,\"game-id\":" & show (reg2.next-game-id - 1) & ",\"name\":" & jstr name & "}")
+      state3
+    end
+
+  parse-game-type : Text -> GameType
+  parse-game-type (s) =
+    if s == "card" then GameCardBattle
+    else if s == "board" then GameBoardClassic
+    else if s == "puzzle" then GamePuzzle
+    else if s == "dexterity" then GameDexterity
+    else if s == "trivia" then GameTrivial
+    else GameCustom s
+
+  handle-reg-list : PlaneServerState -> [Console] PlaneServerState
+  handle-reg-list (state) =
+    let games = state.registry.games
+    in let json = games-to-json games 0 (list-length games) ""
+    in act
+      pm0 <- respond-json ("{\"games\":[" & json & "],\"count\":" & show (list-length games) & "}")
+      state
+    end
+
+  games-to-json : List RegisteredGame, Integer, Integer, Text -> Text
+  games-to-json (games) (i) (len) (acc) =
+    if i >= len then acc
+    else let g = list-at games i
+    in let sep = if i > 0 then "," else ""
+    in let gj = sep & "{\"id\":" & show (g.game-id) & ",\"name\":" & jstr (g.name) & ",\"type\":" & jstr (game-type-name (g.game-type)) & ",\"active\":" & jbool (g.active) & ",\"duration\":" & show (g.avg-duration) & "}"
+    in games-to-json games (i + 1) len (acc & gj)
+
+  handle-reg-game : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-reg-game (state) (line) =
+    let game-id = parse-int (extract-query-param line "id") 0
+    in let g = find-game (state.registry) game-id
+    in act
+      pm0 <- respond-json ("{\"id\":" & show (g.game-id) & ",\"name\":" & jstr (g.name) & ",\"type\":" & jstr (game-type-name (g.game-type)) & ",\"active\":" & jbool (g.active) & ",\"description\":" & jstr (g.description) & "}")
+      state
+    end
+
+Section: Exchange Handlers
+
+  handle-exchange : PlaneServerState, Text, Text -> [Console] PlaneServerState
+  handle-exchange (state) (line) (path) =
+    if text-starts-with path "/api/plane/exchange/mint" then handle-exch-mint state line
+    else if text-starts-with path "/api/plane/exchange/list-item" then handle-exch-list-item state line
+    else if text-starts-with path "/api/plane/exchange/buy" then handle-exch-buy state line
+    else if text-starts-with path "/api/plane/exchange/listings" then handle-exch-listings state
+    else if text-starts-with path "/api/plane/exchange/inventory" then handle-exch-inventory state line
+    else if text-starts-with path "/api/plane/exchange/stats" then handle-exch-stats state
+    else act pm0 <- respond-not-found
+      state
+    end
+
+  handle-exch-mint : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-exch-mint (state) (line) =
+    let game-id = parse-int (extract-query-param line "game") 0
+    in let name = extract-query-param line "name"
+    in let ptype-str = extract-query-param line "type"
+    in let value = parse-int (extract-query-param line "value") 10
+    in let owner = parse-int (extract-query-param line "owner") 0
+    in let ptype = parse-planar-type ptype-str
+    in let exch2 = mint-planar-item (state.exchange) game-id "mint" name ptype value owner 0
+    in let manifest = manifest-new (exch2.next-planar-id - 1)
+    in let state2 = set-plane-exchange state exch2
+    in let state3 = PlaneServerState { registry = state2.registry, exchange = state2.exchange, manifests = list-push (state2.manifests) manifest, invasions = state2.invasions, portals = state2.portals, gm-licenses = state2.gm-licenses, dungeon-progress = state2.dungeon-progress, campaigns = state2.campaigns, characters = state2.characters, dungeon-runs = state2.dungeon-runs, global-ledger = state2.global-ledger, next-invasion-id = state2.next-invasion-id, next-portal-id = state2.next-portal-id, next-gm-id = state2.next-gm-id, next-campaign-id = state2.next-campaign-id, next-char-id = state2.next-char-id, next-run-id = state2.next-run-id, platform-revenue = state2.platform-revenue }
+    in act
+      pm0 <- respond-json ("{\"minted\":true,\"planar-id\":" & show (exch2.next-planar-id - 1) & ",\"name\":" & jstr name & ",\"game\":" & show game-id & ",\"value\":" & show value & "}")
+      state3
+    end
+
+  parse-planar-type : Text -> PlanarItemType
+  parse-planar-type (s) =
+    if s == "card" then PlanarCard
+    else if s == "rpg-item" then PlanarRPGItem
+    else if s == "vehicle-part" then PlanarVehiclePart
+    else if s == "key" then PlanarKey
+    else if s == "cosmetic" then PlanarCosmetic
+    else if s == "material" then PlanarMaterial
+    else PlanarCustom s
+
+  handle-exch-list-item : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-exch-list-item (state) (line) =
+    let planar-id = parse-int (extract-query-param line "item") 0
+    in let seller = parse-int (extract-query-param line "seller") 0
+    in let price = parse-int (extract-query-param line "price") 0
+    in let exch2 = list-item-for-sale (state.exchange) planar-id seller price GlobalManaCoin 0
+    in let state2 = set-plane-exchange state exch2
+    in act
+      pm0 <- respond-json ("{\"listed\":true,\"item\":" & show planar-id & ",\"price\":" & show price & "}")
+      state2
+    end
+
+  handle-exch-buy : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-exch-buy (state) (line) =
+    let listing-id = parse-int (extract-query-param line "listing") 0
+    in let buyer = parse-int (extract-query-param line "buyer") 0
+    in let result = buy-listed-item (state.exchange) (state.global-ledger) listing-id buyer 0
+    in if result.success == False then act
+      pm0 <- respond-error "purchase failed"
+      state
+    end
+    else let state2 = set-plane-exchange state (result.exchange)
+    in let state3 = set-plane-ledger state2 (result.ledger)
+    in let state4 = add-platform-revenue state3 (parse-int (extract-query-param line "price") 0 / 10)
+    in act
+      pm0 <- respond-json ("{\"bought\":true,\"listing\":" & show listing-id & ",\"buyer\":" & show buyer & "}")
+      state4
+    end
+
+  handle-exch-listings : PlaneServerState -> [Console] PlaneServerState
+  handle-exch-listings (state) =
+    let active = active-listings (state.exchange)
+    in let json = listings-to-json active 0 (list-length active) ""
+    in act
+      pm0 <- respond-json ("{\"listings\":[" & json & "],\"count\":" & show (list-length active) & "}")
+      state
+    end
+
+  listings-to-json : List ExchangeListing, Integer, Integer, Text -> Text
+  listings-to-json (listings) (i) (len) (acc) =
+    if i >= len then acc
+    else let l = list-at listings i
+    in let sep = if i > 0 then "," else ""
+    in let lj = sep & "{\"id\":" & show (l.listing-id) & ",\"item\":" & show (l.planar-id) & ",\"seller\":" & show (l.seller) & ",\"price\":" & show (l.price) & "}"
+    in listings-to-json listings (i + 1) len (acc & lj)
+
+  handle-exch-inventory : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-exch-inventory (state) (line) =
+    let owner = parse-int (extract-query-param line "owner") 0
+    in let items = items-owned-by (state.exchange) owner
+    in act
+      pm0 <- respond-json ("{\"owner\":" & show owner & ",\"items\":" & show (list-length items) & "}")
+      state
+    end
+
+  handle-exch-stats : PlaneServerState -> [Console] PlaneServerState
+  handle-exch-stats (state) =
+    let stats = exchange-stats (state.exchange)
+    in act
+      pm0 <- respond-json ("{\"total-items\":" & show (stats.total-items) & ",\"total-listings\":" & show (stats.total-listings) & ",\"total-trades\":" & show (stats.total-trades) & ",\"total-volume\":" & show (stats.total-volume) & ",\"planes\":" & show (stats.planes-registered) & "}")
+      state
+    end
+
+Section: Manifest Handlers - Item conversion between games
+
+  handle-manifest : PlaneServerState, Text, Text -> [Console] PlaneServerState
+  handle-manifest (state) (line) (path) =
+    if text-starts-with path "/api/plane/manifest/convert" then handle-manifest-convert state line
+    else if text-starts-with path "/api/plane/manifest/view" then handle-manifest-view state line
+    else act pm0 <- respond-not-found
+      state
+    end
+
+  handle-manifest-convert : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-manifest-convert (state) (line) =
+    let planar-id = parse-int (extract-query-param line "item") 0
+    in let target-game = parse-int (extract-query-param line "target-game") 0
+    in let owner = parse-int (extract-query-param line "owner") 0
+    in let cost = parse-int (extract-query-param line "cost") 25
+    in let bal = ledger-balance (state.global-ledger) owner
+    in if bal < cost then act
+      pm0 <- respond-error "insufficient coin for conversion"
+      state
+    end
+    else let ledger2 = ledger-burn (state.global-ledger) owner cost
+    in let state2 = set-plane-ledger state ledger2
+    in let state3 = add-platform-revenue state2 cost
+    in act
+      pm0 <- respond-json ("{\"converted\":true,\"item\":" & show planar-id & ",\"target-game\":" & show target-game & ",\"cost\":" & show cost & "}")
+      state3
+    end
+
+  handle-manifest-view : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-manifest-view (state) (line) =
+    let planar-id = parse-int (extract-query-param line "item") 0
+    in let manifest = find-manifest (state.manifests) planar-id 0 (list-length (state.manifests))
+    in act
+      pm0 <- respond-json ("{\"item\":" & show planar-id & ",\"manifestations\":" & show (list-length (manifest.manifestations)) & "}")
+      state
+    end
+
+  find-manifest : List ItemManifest, Integer, Integer, Integer -> ItemManifest
+  find-manifest (manifests) (planar-id) (i) (len) =
+    if i >= len then manifest-new planar-id
+    else let m = list-at manifests i
+    in if m.planar-id == planar-id then m
+    else find-manifest manifests planar-id (i + 1) len
+
+Section: Invasion Handlers
+
+  handle-invasion : PlaneServerState, Text, Text -> [Console] PlaneServerState
+  handle-invasion (state) (line) (path) =
+    if text-starts-with path "/api/plane/invasion/spawn-monster" then handle-inv-spawn state line
+    else if text-starts-with path "/api/plane/invasion/drop-loot" then handle-inv-loot state line
+    else if text-starts-with path "/api/plane/invasion/open-portal" then handle-inv-portal state line
+    else if text-starts-with path "/api/plane/invasion/approve" then handle-inv-approve state line
+    else if text-starts-with path "/api/plane/invasion/list" then handle-inv-list state line
+    else act pm0 <- respond-not-found
+      state
+    end
+
+  handle-inv-spawn : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-inv-spawn (state) (line) =
+    let invader = parse-int (extract-query-param line "account") 0
+    in let invader-clan = parse-int (extract-query-param line "clan") 0
+    in let target-dungeon = parse-int (extract-query-param line "dungeon") 0
+    in let monster-hp = parse-int (extract-query-param line "hp") 20
+    in let monster-atk = parse-int (extract-query-param line "attack") 3
+    in let monster-name = extract-query-param line "name"
+    in let same-clan = extract-query-param line "same-clan" == "true"
+    in let monster = Combatant { combatant-id = 0, cbt-name = monster-name, is-player = False, char-id = 0, cbt-hp = monster-hp, cbt-max-hp = monster-hp, cbt-ac = 12, cbt-attack-bonus = monster-atk, cbt-damage-die = 6, cbt-damage-bonus = 1, cbt-initiative = 10, cbt-alive = True }
+    in let result = attempt-invasion (state.next-invasion-id) invader invader-clan target-dungeon (InvadeSpawnMonster monster) (state.global-ledger) same-clan 0
+    in if result.success == False then act
+      pm0 <- respond-error (result.reason)
+      state
+    end
+    else let state2 = PlaneServerState { registry = state.registry, exchange = state.exchange, manifests = state.manifests, invasions = list-push (state.invasions) (result.invasion), portals = state.portals, gm-licenses = state.gm-licenses, dungeon-progress = state.dungeon-progress, campaigns = state.campaigns, characters = state.characters, dungeon-runs = state.dungeon-runs, global-ledger = result.ledger, next-invasion-id = state.next-invasion-id + 1, next-portal-id = state.next-portal-id, next-gm-id = state.next-gm-id, next-campaign-id = state.next-campaign-id, next-char-id = state.next-char-id, next-run-id = state.next-run-id, platform-revenue = state.platform-revenue + result.invasion.cost-paid }
+    in act
+      pm0 <- respond-json ("{\"invaded\":true,\"invasion-id\":" & show (state.next-invasion-id) & ",\"cost\":" & show (result.invasion.cost-paid) & ",\"approved\":" & jbool (result.invasion.approved) & "}")
+      state2
+    end
+
+  handle-inv-loot : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-inv-loot (state) (line) =
+    let invader = parse-int (extract-query-param line "account") 0
+    in let target-dungeon = parse-int (extract-query-param line "dungeon") 0
+    in let item-name = extract-query-param line "name"
+    in let item-value = parse-int (extract-query-param line "value") 10
+    in let same-clan = extract-query-param line "same-clan" == "true"
+    in let item = ItemToken { item-id = 0, name = item-name, item-type = Weapon, rarity = ItemCommon, stats = item-stats-empty, value = item-value, tradeable = True, bound-to = -1, source-dungeon = target-dungeon, source-campaign = 0 }
+    in let result = attempt-invasion (state.next-invasion-id) invader 0 target-dungeon (InvadeSpawnLoot item) (state.global-ledger) same-clan 0
+    in if result.success == False then act
+      pm0 <- respond-error (result.reason)
+      state
+    end
+    else let state2 = PlaneServerState { registry = state.registry, exchange = state.exchange, manifests = state.manifests, invasions = list-push (state.invasions) (result.invasion), portals = state.portals, gm-licenses = state.gm-licenses, dungeon-progress = state.dungeon-progress, campaigns = state.campaigns, characters = state.characters, dungeon-runs = state.dungeon-runs, global-ledger = result.ledger, next-invasion-id = state.next-invasion-id + 1, next-portal-id = state.next-portal-id, next-gm-id = state.next-gm-id, next-campaign-id = state.next-campaign-id, next-char-id = state.next-char-id, next-run-id = state.next-run-id, platform-revenue = state.platform-revenue + result.invasion.cost-paid }
+    in act
+      pm0 <- respond-json ("{\"invaded\":true,\"invasion-id\":" & show (state.next-invasion-id) & ",\"cost\":" & show (result.invasion.cost-paid) & ",\"item\":" & jstr item-name & "}")
+      state2
+    end
+
+  handle-inv-portal : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-inv-portal (state) (line) =
+    let invader = parse-int (extract-query-param line "account") 0
+    in let target-dungeon = parse-int (extract-query-param line "dungeon") 0
+    in let dest-game = parse-int (extract-query-param line "dest-game") 0
+    in let same-clan = extract-query-param line "same-clan" == "true"
+    in let result = attempt-invasion (state.next-invasion-id) invader 0 target-dungeon (InvadeOpenPortal dest-game) (state.global-ledger) same-clan 0
+    in if result.success == False then act
+      pm0 <- respond-error (result.reason)
+      state
+    end
+    else let portal = portal-new (state.next-portal-id) 0 target-dungeon 1 dest-game "portal" 10
+    in let state2 = PlaneServerState { registry = state.registry, exchange = state.exchange, manifests = state.manifests, invasions = list-push (state.invasions) (result.invasion), portals = list-push (state.portals) portal, gm-licenses = state.gm-licenses, dungeon-progress = state.dungeon-progress, campaigns = state.campaigns, characters = state.characters, dungeon-runs = state.dungeon-runs, global-ledger = result.ledger, next-invasion-id = state.next-invasion-id + 1, next-portal-id = state.next-portal-id + 1, next-gm-id = state.next-gm-id, next-campaign-id = state.next-campaign-id, next-char-id = state.next-char-id, next-run-id = state.next-run-id, platform-revenue = state.platform-revenue + result.invasion.cost-paid }
+    in act
+      pm0 <- respond-json ("{\"portal-opened\":true,\"portal-id\":" & show (state.next-portal-id) & ",\"destination\":" & show dest-game & ",\"cost\":" & show (result.invasion.cost-paid) & "}")
+      state2
+    end
+
+  handle-inv-approve : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-inv-approve (state) (line) =
+    let invasion-id = parse-int (extract-query-param line "id") 0
+    in let new-invasions = approve-invasion-in-list (state.invasions) invasion-id 0 (list-length (state.invasions)) []
+    in let state2 = PlaneServerState { registry = state.registry, exchange = state.exchange, manifests = state.manifests, invasions = new-invasions, portals = state.portals, gm-licenses = state.gm-licenses, dungeon-progress = state.dungeon-progress, campaigns = state.campaigns, characters = state.characters, dungeon-runs = state.dungeon-runs, global-ledger = state.global-ledger, next-invasion-id = state.next-invasion-id, next-portal-id = state.next-portal-id, next-gm-id = state.next-gm-id, next-campaign-id = state.next-campaign-id, next-char-id = state.next-char-id, next-run-id = state.next-run-id, platform-revenue = state.platform-revenue }
+    in act
+      pm0 <- respond-json ("{\"approved\":true,\"invasion\":" & show invasion-id & "}")
+      state2
+    end
+
+  approve-invasion-in-list : List Invasion, Integer, Integer, Integer, List Invasion -> List Invasion
+  approve-invasion-in-list (invasions) (id) (i) (len) (acc) =
+    if i >= len then acc
+    else let inv = list-at invasions i
+    in if inv.invasion-id == id then approve-invasion-in-list invasions id (i + 1) len (list-push acc (approve-invasion inv))
+    else approve-invasion-in-list invasions id (i + 1) len (list-push acc inv)
+
+  handle-inv-list : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-inv-list (state) (line) =
+    let dungeon-id = parse-int (extract-query-param line "dungeon") 0
+    in act
+      pm0 <- respond-json ("{\"dungeon\":" & show dungeon-id & ",\"invasions\":" & show (list-length (state.invasions)) & "}")
+      state
+    end
+
+Section: Portal Handlers
+
+  handle-portal : PlaneServerState, Text, Text -> [Console] PlaneServerState
+  handle-portal (state) (line) (path) =
+    if text-starts-with path "/api/plane/portal/use" then handle-portal-use state line
+    else if text-starts-with path "/api/plane/portal/list" then handle-portal-list state
+    else act pm0 <- respond-not-found
+      state
+    end
+
+  handle-portal-use : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-portal-use (state) (line) =
+    let portal-id = parse-int (extract-query-param line "portal") 0
+    in let user = parse-int (extract-query-param line "account") 0
+    in let portal = find-portal (state.portals) portal-id 0 (list-length (state.portals))
+    in if portal.portal-id < 0 then act
+      pm0 <- respond-error "portal not found"
+      state
+    end
+    else let result = use-portal portal (state.global-ledger) user
+    in if result.success == False then act
+      pm0 <- respond-error "cannot use portal: insufficient coin or inactive"
+      state
+    end
+    else let state2 = set-plane-ledger state (result.ledger)
+    in act
+      pm0 <- respond-json ("{\"entered\":true,\"portal\":" & show portal-id & ",\"destination\":" & show (result.destination-game) & ",\"subgame-spawned\":" & jbool (result.subgame-spawned) & "}")
+      state2
+    end
+
+  find-portal : List Portal, Integer, Integer, Integer -> Portal
+  find-portal (portals) (id) (i) (len) =
+    if i >= len then Portal { portal-id = -1, source-game = 0, source-dungeon = 0, source-floor = 0, destination-game = 0, destination-instance = "", cost-to-enter = 0, one-way = False, reward-on-return = PlanarCustom "None", active = False }
+    else let p = list-at portals i
+    in if p.portal-id == id then p
+    else find-portal portals id (i + 1) len
+
+  handle-portal-list : PlaneServerState -> [Console] PlaneServerState
+  handle-portal-list (state) =
+    let json = portals-to-json (state.portals) 0 (list-length (state.portals)) ""
+    in act
+      pm0 <- respond-json ("{\"portals\":[" & json & "],\"count\":" & show (list-length (state.portals)) & "}")
+      state
+    end
+
+  portals-to-json : List Portal, Integer, Integer, Text -> Text
+  portals-to-json (portals) (i) (len) (acc) =
+    if i >= len then acc
+    else let p = list-at portals i
+    in let sep = if i > 0 then "," else ""
+    in let pj = sep & "{\"id\":" & show (p.portal-id) & ",\"src-dungeon\":" & show (p.source-dungeon) & ",\"dest-game\":" & show (p.destination-game) & ",\"cost\":" & show (p.cost-to-enter) & ",\"active\":" & jbool (p.active) & "}"
+    in portals-to-json portals (i + 1) len (acc & pj)
+
+Section: GM Handlers
+
+  handle-gm : PlaneServerState, Text, Text -> [Console] PlaneServerState
+  handle-gm (state) (line) (path) =
+    if text-starts-with path "/api/plane/gm/license" then handle-gm-license state line
+    else if text-starts-with path "/api/plane/gm/deposit" then handle-gm-deposit state line
+    else if text-starts-with path "/api/plane/gm/status" then handle-gm-status state line
+    else act pm0 <- respond-not-found
+      state
+    end
+
+  handle-gm-license : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-gm-license (state) (line) =
+    let account-id = parse-int (extract-query-param line "account") 0
+    in let clan-id = parse-int (extract-query-param line "clan") 0
+    in let license = gm-license-new (state.next-gm-id) account-id clan-id 0
+    in let state2 = PlaneServerState { registry = state.registry, exchange = state.exchange, manifests = state.manifests, invasions = state.invasions, portals = state.portals, gm-licenses = list-push (state.gm-licenses) license, dungeon-progress = state.dungeon-progress, campaigns = state.campaigns, characters = state.characters, dungeon-runs = state.dungeon-runs, global-ledger = state.global-ledger, next-invasion-id = state.next-invasion-id, next-portal-id = state.next-portal-id, next-gm-id = state.next-gm-id + 1, next-campaign-id = state.next-campaign-id, next-char-id = state.next-char-id, next-run-id = state.next-run-id, platform-revenue = state.platform-revenue }
+    in act
+      pm0 <- respond-json ("{\"licensed\":true,\"gm-id\":" & show (state.next-gm-id) & ",\"tier\":\"Apprentice\",\"balance\":0}")
+      state2
+    end
+
+  handle-gm-deposit : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-gm-deposit (state) (line) =
+    let gm-id = parse-int (extract-query-param line "gm") 0
+    in let amount = parse-int (extract-query-param line "amount") 0
+    in let account-id = parse-int (extract-query-param line "account") 0
+    in let bal = ledger-balance (state.global-ledger) account-id
+    in if bal < amount then act
+      pm0 <- respond-error "insufficient global balance"
+      state
+    end
+    else let ledger2 = ledger-burn (state.global-ledger) account-id amount
+    in let new-licenses = deposit-to-gm (state.gm-licenses) gm-id amount 0 (list-length (state.gm-licenses)) []
+    in let state2 = PlaneServerState { registry = state.registry, exchange = state.exchange, manifests = state.manifests, invasions = state.invasions, portals = state.portals, gm-licenses = new-licenses, dungeon-progress = state.dungeon-progress, campaigns = state.campaigns, characters = state.characters, dungeon-runs = state.dungeon-runs, global-ledger = ledger2, next-invasion-id = state.next-invasion-id, next-portal-id = state.next-portal-id, next-gm-id = state.next-gm-id, next-campaign-id = state.next-campaign-id, next-char-id = state.next-char-id, next-run-id = state.next-run-id, platform-revenue = state.platform-revenue }
+    in act
+      pm0 <- respond-json ("{\"deposited\":true,\"gm\":" & show gm-id & ",\"amount\":" & show amount & "}")
+      state2
+    end
+
+  deposit-to-gm : List GMLicense, Integer, Integer, Integer, Integer, List GMLicense -> List GMLicense
+  deposit-to-gm (licenses) (gm-id) (amount) (i) (len) (acc) =
+    if i >= len then acc
+    else let l = list-at licenses i
+    in if l.gm-id == gm-id then deposit-to-gm licenses gm-id amount (i + 1) len (list-push acc (gm-deposit l amount))
+    else deposit-to-gm licenses gm-id amount (i + 1) len (list-push acc l)
+
+  handle-gm-status : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-gm-status (state) (line) =
+    let gm-id = parse-int (extract-query-param line "gm") 0
+    in let license = find-gm-license (state.gm-licenses) gm-id 0 (list-length (state.gm-licenses))
+    in act
+      pm0 <- respond-json ("{\"gm-id\":" & show (license.gm-id) & ",\"tier\":" & jstr (gm-tier-name (license.tier)) & ",\"xp\":" & show (license.experience) & ",\"balance\":" & show (license.balance) & ",\"revenue\":" & show (license.total-revenue) & ",\"spent\":" & show (license.total-spent) & ",\"plays\":" & show (license.total-plays) & ",\"reputation\":" & show (license.reputation) & "}")
+      state
+    end
+
+  find-gm-license : List GMLicense, Integer, Integer, Integer -> GMLicense
+  find-gm-license (licenses) (gm-id) (i) (len) =
+    if i >= len then gm-license-new 0 0 0 0
+    else let l = list-at licenses i
+    in if l.gm-id == gm-id then l
+    else find-gm-license licenses gm-id (i + 1) len
+
+Section: Dungeon Handlers
+
+  handle-dungeon : PlaneServerState, Text, Text -> [Console] PlaneServerState
+  handle-dungeon (state) (line) (path) =
+    if text-starts-with path "/api/plane/dungeon/start-run" then handle-dungeon-start state line
+    else if text-starts-with path "/api/plane/dungeon/complete" then handle-dungeon-complete state line
+    else if text-starts-with path "/api/plane/dungeon/progress" then handle-dungeon-progress state line
+    else act pm0 <- respond-not-found
+      state
+    end
+
+  handle-dungeon-start : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-dungeon-start (state) (line) =
+    let dungeon-id = parse-int (extract-query-param line "dungeon") 0
+    in let player = parse-int (extract-query-param line "account") 0
+    in let char-id = parse-int (extract-query-param line "char") 0
+    in let entry-fee = parse-int (extract-query-param line "fee") 10
+    in let bal = ledger-balance (state.global-ledger) player
+    in if bal < entry-fee then act
+      pm0 <- respond-error "insufficient coin for entry fee"
+      state
+    end
+    else let ledger2 = ledger-burn (state.global-ledger) player entry-fee
+    in let run = dungeon-run-new (state.next-run-id) dungeon-id 0 player char-id 0
+    in let state2 = PlaneServerState { registry = state.registry, exchange = state.exchange, manifests = state.manifests, invasions = state.invasions, portals = state.portals, gm-licenses = state.gm-licenses, dungeon-progress = state.dungeon-progress, campaigns = state.campaigns, characters = state.characters, dungeon-runs = list-push (state.dungeon-runs) run, global-ledger = ledger2, next-invasion-id = state.next-invasion-id, next-portal-id = state.next-portal-id, next-gm-id = state.next-gm-id, next-campaign-id = state.next-campaign-id, next-char-id = state.next-char-id, next-run-id = state.next-run-id + 1, platform-revenue = state.platform-revenue + entry-fee * 15 / 100 }
+    in act
+      pm0 <- respond-json ("{\"started\":true,\"run-id\":" & show (state.next-run-id) & ",\"dungeon\":" & show dungeon-id & ",\"fee-paid\":" & show entry-fee & "}")
+      state2
+    end
+
+  handle-dungeon-complete : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-dungeon-complete (state) (line) =
+    let run-id = parse-int (extract-query-param line "run") 0
+    in let new-runs = complete-run-in-list (state.dungeon-runs) run-id 0 (list-length (state.dungeon-runs)) []
+    in let state2 = PlaneServerState { registry = state.registry, exchange = state.exchange, manifests = state.manifests, invasions = state.invasions, portals = state.portals, gm-licenses = state.gm-licenses, dungeon-progress = state.dungeon-progress, campaigns = state.campaigns, characters = state.characters, dungeon-runs = new-runs, global-ledger = state.global-ledger, next-invasion-id = state.next-invasion-id, next-portal-id = state.next-portal-id, next-gm-id = state.next-gm-id, next-campaign-id = state.next-campaign-id, next-char-id = state.next-char-id, next-run-id = state.next-run-id, platform-revenue = state.platform-revenue }
+    in act
+      pm0 <- respond-json ("{\"completed\":true,\"run\":" & show run-id & "}")
+      state2
+    end
+
+  complete-run-in-list : List DungeonRun, Integer, Integer, Integer, List DungeonRun -> List DungeonRun
+  complete-run-in-list (runs) (id) (i) (len) (acc) =
+    if i >= len then acc
+    else let r = list-at runs i
+    in if r.run-id == id then complete-run-in-list runs id (i + 1) len (list-push acc (complete-run r 0))
+    else complete-run-in-list runs id (i + 1) len (list-push acc r)
+
+  handle-dungeon-progress : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-dungeon-progress (state) (line) =
+    let dungeon-id = parse-int (extract-query-param line "dungeon") 0
+    in let prog = find-progress (state.dungeon-progress) dungeon-id 0 (list-length (state.dungeon-progress))
+    in act
+      pm0 <- respond-json ("{\"dungeon\":" & show dungeon-id & ",\"stage\":" & jstr (stage-name (prog.current-stage)) & ",\"clears\":" & show (prog.total-clears) & ",\"revenue\":" & show (prog.total-revenue) & ",\"public-floors\":" & show (prog.public-floors) & ",\"qa-clears\":" & show (prog.qa-clears) & "}")
+      state
+    end
+
+  find-progress : List DungeonProgress, Integer, Integer, Integer -> DungeonProgress
+  find-progress (progs) (dungeon-id) (i) (len) =
+    if i >= len then progress-new dungeon-id 0
+    else let p = list-at progs i
+    in if p.dungeon-id == dungeon-id then p
+    else find-progress progs dungeon-id (i + 1) len
+
+Section: RPG Handlers
+
+  handle-rpg : PlaneServerState, Text, Text -> [Console] PlaneServerState
+  handle-rpg (state) (line) (path) =
+    if text-starts-with path "/api/plane/rpg/create-char" then handle-rpg-create-char state line
+    else if text-starts-with path "/api/plane/rpg/char-status" then handle-rpg-char-status state line
+    else if text-starts-with path "/api/plane/rpg/create-world" then handle-rpg-create-world state line
+    else if text-starts-with path "/api/plane/rpg/world-list" then handle-rpg-world-list state
+    else act pm0 <- respond-not-found
+      state
+    end
+
+  handle-rpg-create-char : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-rpg-create-char (state) (line) =
+    let owner = parse-int (extract-query-param line "account") 0
+    in let name = extract-query-param line "name"
+    in let class-id = parse-int (extract-query-param line "class") 1
+    in let race-id = parse-int (extract-query-param line "race") 1
+    in let campaign = parse-int (extract-query-param line "campaign") 0
+    in let cls = get-class-by-id class-id
+    in let race = get-race-by-id race-id
+    in let char = char-new (state.next-char-id) owner name cls race campaign
+    in let state2 = PlaneServerState { registry = state.registry, exchange = state.exchange, manifests = state.manifests, invasions = state.invasions, portals = state.portals, gm-licenses = state.gm-licenses, dungeon-progress = state.dungeon-progress, campaigns = state.campaigns, characters = list-push (state.characters) char, dungeon-runs = state.dungeon-runs, global-ledger = state.global-ledger, next-invasion-id = state.next-invasion-id, next-portal-id = state.next-portal-id, next-gm-id = state.next-gm-id, next-campaign-id = state.next-campaign-id, next-char-id = state.next-char-id + 1, next-run-id = state.next-run-id, platform-revenue = state.platform-revenue }
+    in act
+      pm0 <- respond-json ("{\"created\":true,\"char-id\":" & show (state.next-char-id) & ",\"name\":" & jstr name & ",\"class\":" & jstr (cls.name) & ",\"race\":" & jstr (race.name) & ",\"hp\":" & show (char.hp) & "}")
+      state2
+    end
+
+  get-class-by-id : Integer -> HeroClass
+  get-class-by-id (id) =
+    if id == 2 then class-mage
+    else if id == 3 then class-rogue
+    else if id == 4 then class-cleric
+    else class-warrior
+
+  get-race-by-id : Integer -> CharRace
+  get-race-by-id (id) =
+    if id == 2 then race-elf
+    else if id == 3 then race-dwarf
+    else if id == 4 then race-halfling
+    else race-human
+
+  handle-rpg-char-status : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-rpg-char-status (state) (line) =
+    let char-id = parse-int (extract-query-param line "char") 0
+    in let char = find-rpg-char (state.characters) char-id 0 (list-length (state.characters))
+    in act
+      pm0 <- respond-json ("{\"char-id\":" & show (char.char-id) & ",\"name\":" & jstr (char.name) & ",\"class\":" & jstr (char.class.name) & ",\"race\":" & jstr (char.race.name) & ",\"level\":" & show (char.level) & ",\"hp\":" & show (char.hp) & "/" & show (char.max-hp) & ",\"xp\":" & show (char.experience) & ",\"gold\":" & show (char.gold) & ",\"items\":" & show (list-length (char.inventory)) & ",\"status\":" & jstr (char-status-name (char.status)) & "}")
+      state
+    end
+
+  find-rpg-char : List RPGCharacter, Integer, Integer, Integer -> RPGCharacter
+  find-rpg-char (chars) (id) (i) (len) =
+    if i >= len then char-new 0 0 "Unknown" class-warrior race-human 0
+    else let c = list-at chars i
+    in if c.char-id == id then c
+    else find-rpg-char chars id (i + 1) len
+
+  handle-rpg-create-world : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-rpg-create-world (state) (line) =
+    let clan-id = parse-int (extract-query-param line "clan") 0
+    in let creator = parse-int (extract-query-param line "account") 0
+    in let name = extract-query-param line "name"
+    in let desc = extract-query-param line "desc"
+    in let world = world-new (state.next-campaign-id) clan-id name desc creator 0
+    in let state2 = PlaneServerState { registry = state.registry, exchange = state.exchange, manifests = state.manifests, invasions = state.invasions, portals = state.portals, gm-licenses = state.gm-licenses, dungeon-progress = state.dungeon-progress, campaigns = list-push (state.campaigns) world, characters = state.characters, dungeon-runs = state.dungeon-runs, global-ledger = state.global-ledger, next-invasion-id = state.next-invasion-id, next-portal-id = state.next-portal-id, next-gm-id = state.next-gm-id, next-campaign-id = state.next-campaign-id + 1, next-char-id = state.next-char-id, next-run-id = state.next-run-id, platform-revenue = state.platform-revenue }
+    in act
+      pm0 <- respond-json ("{\"created\":true,\"world-id\":" & show (state.next-campaign-id) & ",\"name\":" & jstr name & ",\"clan\":" & show clan-id & "}")
+      state2
+    end
+
+  handle-rpg-world-list : PlaneServerState -> [Console] PlaneServerState
+  handle-rpg-world-list (state) =
+    let json = worlds-to-json (state.campaigns) 0 (list-length (state.campaigns)) ""
+    in act
+      pm0 <- respond-json ("{\"worlds\":[" & json & "],\"count\":" & show (list-length (state.campaigns)) & "}")
+      state
+    end
+
+  worlds-to-json : List CampaignWorld, Integer, Integer, Text -> Text
+  worlds-to-json (worlds) (i) (len) (acc) =
+    if i >= len then acc
+    else let w = list-at worlds i
+    in let sep = if i > 0 then "," else ""
+    in let wj = sep & "{\"id\":" & show (w.world-id) & ",\"name\":" & jstr (w.name) & ",\"clan\":" & show (w.clan-id) & ",\"published\":" & jbool (w.published) & ",\"plays\":" & show (w.play-count) & "}"
+    in worlds-to-json worlds (i + 1) len (acc & wj)
+
+Section: Subgame Handlers
+
+  handle-subgame : PlaneServerState, Text, Text -> [Console] PlaneServerState
+  handle-subgame (state) (line) (path) =
+    if text-starts-with path "/api/plane/subgame/create" then handle-sub-create state line
+    else if text-starts-with path "/api/plane/subgame/resolve" then handle-sub-resolve state line
+    else if text-starts-with path "/api/plane/subgame/active" then handle-sub-active state
+    else act pm0 <- respond-not-found
+      state
+    end
+
+  handle-sub-create : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-sub-create (state) (line) =
+    let parent-game = parse-int (extract-query-param line "parent-game") 0
+    in let parent-match = parse-int (extract-query-param line "parent-match") 0
+    in let subgame-id = parse-int (extract-query-param line "subgame") 0
+    in let player-a = parse-int (extract-query-param line "player-a") 0
+    in let player-b = parse-int (extract-query-param line "player-b") 0
+    in let effect-type = extract-query-param line "effect"
+    in let effect-val = parse-int (extract-query-param line "effect-val") 5
+    in let fx = parse-effect effect-type effect-val
+    in let reg2 = create-subgame (state.registry) parent-game parent-match subgame-id player-a player-b fx 0
+    in let state2 = set-plane-registry state reg2
+    in act
+      pm0 <- respond-json ("{\"created\":true,\"session-id\":" & show (reg2.next-session-id - 1) & ",\"parent\":" & show parent-game & ",\"subgame\":" & show subgame-id & "}")
+      state2
+    end
+
+  parse-effect : Text, Integer -> SubgameEffect
+  parse-effect (etype) (val) =
+    if etype == "lose-life" then EffectLoseLife val
+    else if etype == "gain-life" then EffectGainLife val
+    else if etype == "draw" then EffectDrawCards val
+    else if etype == "discard" then EffectDiscardCards val
+    else if etype == "extra-turn" then EffectExtraTurn
+    else if etype == "coin" then EffectCoinReward val
+    else if etype == "destroy" then EffectDestroyPermanent
+    else EffectCustom etype
+
+  handle-sub-resolve : PlaneServerState, Text -> [Console] PlaneServerState
+  handle-sub-resolve (state) (line) =
+    let session-id = parse-int (extract-query-param line "session") 0
+    in let winner = parse-int (extract-query-param line "winner") 0
+    in let result = SubgameWinner winner
+    in let reg2 = resolve-subgame (state.registry) session-id result 0
+    in let state2 = set-plane-registry state reg2
+    in act
+      pm0 <- respond-json ("{\"resolved\":true,\"session\":" & show session-id & ",\"winner\":" & show winner & "}")
+      state2
+    end
+
+  handle-sub-active : PlaneServerState -> [Console] PlaneServerState
+  handle-sub-active (state) =
+    let count = active-session-count (state.registry)
+    in act
+      pm0 <- respond-json ("{\"active-subgames\":" & show count & "}")
+      state
+    end
+
+Section: State Updaters
+
+  set-plane-registry : PlaneServerState, GameRegistryState -> PlaneServerState
+  set-plane-registry (state) (reg) = PlaneServerState { registry = reg, exchange = state.exchange, manifests = state.manifests, invasions = state.invasions, portals = state.portals, gm-licenses = state.gm-licenses, dungeon-progress = state.dungeon-progress, campaigns = state.campaigns, characters = state.characters, dungeon-runs = state.dungeon-runs, global-ledger = state.global-ledger, next-invasion-id = state.next-invasion-id, next-portal-id = state.next-portal-id, next-gm-id = state.next-gm-id, next-campaign-id = state.next-campaign-id, next-char-id = state.next-char-id, next-run-id = state.next-run-id, platform-revenue = state.platform-revenue }
+
+  set-plane-exchange : PlaneServerState, PlanarExchangeState -> PlaneServerState
+  set-plane-exchange (state) (exch) = PlaneServerState { registry = state.registry, exchange = exch, manifests = state.manifests, invasions = state.invasions, portals = state.portals, gm-licenses = state.gm-licenses, dungeon-progress = state.dungeon-progress, campaigns = state.campaigns, characters = state.characters, dungeon-runs = state.dungeon-runs, global-ledger = state.global-ledger, next-invasion-id = state.next-invasion-id, next-portal-id = state.next-portal-id, next-gm-id = state.next-gm-id, next-campaign-id = state.next-campaign-id, next-char-id = state.next-char-id, next-run-id = state.next-run-id, platform-revenue = state.platform-revenue }
+
+  set-plane-ledger : PlaneServerState, ManaCoinLedger -> PlaneServerState
+  set-plane-ledger (state) (ledger) = PlaneServerState { registry = state.registry, exchange = state.exchange, manifests = state.manifests, invasions = state.invasions, portals = state.portals, gm-licenses = state.gm-licenses, dungeon-progress = state.dungeon-progress, campaigns = state.campaigns, characters = state.characters, dungeon-runs = state.dungeon-runs, global-ledger = ledger, next-invasion-id = state.next-invasion-id, next-portal-id = state.next-portal-id, next-gm-id = state.next-gm-id, next-campaign-id = state.next-campaign-id, next-char-id = state.next-char-id, next-run-id = state.next-run-id, platform-revenue = state.platform-revenue }
+
+  add-platform-revenue : PlaneServerState, Integer -> PlaneServerState
+  add-platform-revenue (state) (amount) = PlaneServerState { registry = state.registry, exchange = state.exchange, manifests = state.manifests, invasions = state.invasions, portals = state.portals, gm-licenses = state.gm-licenses, dungeon-progress = state.dungeon-progress, campaigns = state.campaigns, characters = state.characters, dungeon-runs = state.dungeon-runs, global-ledger = state.global-ledger, next-invasion-id = state.next-invasion-id, next-portal-id = state.next-portal-id, next-gm-id = state.next-gm-id, next-campaign-id = state.next-campaign-id, next-char-id = state.next-char-id, next-run-id = state.next-run-id, platform-revenue = state.platform-revenue + amount }
+
+Section: Server Loop
+
+  opening : [Console] Nothing = act
+    print-line-uni "PLANE-SERVER READY"
+    plane-server-loop plane-server-new
+  end
+
+  plane-server-loop : PlaneServerState -> [Console] Nothing
+  plane-server-loop (state) = act
+    line-result <- read-line
+    when line-result
+      is Just (line) -> act
+        new-state <- dispatch-plane-request state line
+        plane-server-loop new-state
+      end
+      is None -> print-line-uni "PLANE-SERVER-EXIT"
+    end
+
+Page 1

@@ -63,14 +63,14 @@ Section: Slot Directory
 
 Section: Page
 
-  Page = record {
+  DbPage = record {
     header : PageHeader,
     slots : List SlotEntry,
     data : List Integer
   }
 
-  page-new : Integer, Integer -> Page
-  page-new (pid) (ptype) = Page {
+  page-new : Integer, Integer -> DbPage
+  page-new (pid) (ptype) = DbPage {
     header = page-header-new pid ptype,
     slots = [],
     data = page-empty-data
@@ -86,14 +86,14 @@ Section: Page
 
 Section: Free Space
 
-  page-free-space : Page -> Integer
+  page-free-space : DbPage -> Integer
   page-free-space (pg) =
     let slot-dir-end = page-header-size + (pg.header.slot-count) * slot-entry-size
     in let data-start = page-data-start pg
     in if data-start > slot-dir-end then data-start - slot-dir-end
     else 0
 
-  page-data-start : Page -> Integer
+  page-data-start : DbPage -> Integer
   page-data-start (pg) =
     if pg.header.slot-count == 0 then page-size
     else page-find-min-offset (pg.slots) 0 (pg.header.slot-count) page-size
@@ -110,12 +110,12 @@ Section: Free Space
 Section: Insert Row
 
   PageInsertResult = record {
-    page : Page,
+    page : DbPage,
     slot-id : Integer,
     ok : Boolean
   }
 
-  page-insert : Page, List Integer -> PageInsertResult
+  page-insert : DbPage, List Integer -> PageInsertResult
   page-insert (pg) (row-bytes) =
     let row-len = list-length row-bytes
     in let needed = row-len + slot-entry-size
@@ -134,14 +134,14 @@ Section: Insert Row
       checksum = 0
     }
     in PageInsertResult {
-      page = Page { header = new-header, slots = new-slots, data = new-data },
+      page = DbPage { header = new-header, slots = new-slots, data = new-data },
       slot-id = pg.header.slot-count,
       ok = True
     }
 
 Section: Read Row
 
-  page-read-slot : Page, Integer -> Maybe (List Integer)
+  page-read-slot : DbPage, Integer -> Maybe (List Integer)
   page-read-slot (pg) (slot-id) =
     if slot-id < 0 then None
     else if slot-id >= pg.header.slot-count then None
@@ -156,12 +156,12 @@ Section: Read Row
 
 Section: Delete Row
 
-  page-delete-slot : Page, Integer -> Page
+  page-delete-slot : DbPage, Integer -> DbPage
   page-delete-slot (pg) (slot-id) =
     if slot-id < 0 then pg
     else if slot-id >= pg.header.slot-count then pg
     else let new-slots = list-set-at (pg.slots) slot-id slot-entry-dead
-    in Page { header = pg.header, slots = new-slots, data = pg.data }
+    in DbPage { header = pg.header, slots = new-slots, data = pg.data }
 
 Section: Byte Helpers
 
@@ -170,10 +170,10 @@ Section: Byte Helpers
     if i >= len then data
     else page-write-bytes (list-set-at data (offset + i) (list-at src i)) offset src (i + 1) len
 
-  page-slot-count : Page -> Integer
+  page-slot-count : DbPage -> Integer
   page-slot-count (pg) = pg.header.slot-count
 
-  page-id : Page -> Integer
+  page-id : DbPage -> Integer
   page-id (pg) = pg.header.page-id
 
 Section: Serialization

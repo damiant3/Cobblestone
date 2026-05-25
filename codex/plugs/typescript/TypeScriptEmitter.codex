@@ -1,0 +1,291 @@
+Chapter: TypeScript Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates TypeScript source code from the IR.
+
+Section: Sanitization
+
+  ts-sanitize : Text -> Text
+  ts-sanitize (name) =
+   text-replace (text-replace name "-" "_") "'" ""
+
+  ts-escape : Text -> Text
+  ts-escape (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in let s3 = text-replace s2 "\n" "\\n"
+   in s3
+
+  ts-indent : Integer -> Text
+  ts-indent (n) =
+   if n <= 0 then ""
+   else "  " & ts-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then 0
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else 0
+
+Section: Expression Emission
+
+  emit-ts-expr : IRExpr, List ArityEntry, Integer -> Text
+  emit-ts-expr (e) (arities) (indent) =
+   when e
+    is IrIntLit (n) (sp) -> show n
+    is IrNumLit (n) (sp) -> show n
+    is IrTextLit (s) (sp) -> "\"" & ts-escape s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> "String.fromCharCode(" & show n & ")"
+    is IrName (n) (ty) (sp) -> ts-sanitize n
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-ts-binary op l r arities indent
+    is IrNegate (x) (sp) -> "(-(" & emit-ts-expr x arities indent & "))"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-ts-expr c arities indent & " ? " & emit-ts-expr t arities indent & " : " & emit-ts-expr el arities indent & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "(() => { const " & ts-sanitize name & " = " & emit-ts-expr val arities indent & "; return " & emit-ts-expr body arities indent & "; })()"
+    is IrApply (f) (a) (ty) (sp) -> emit-ts-apply e arities indent
+    is IrLambda (params) (body) (ty) (sp) -> "(" & emit-ts-params params 0 & "): any => " & emit-ts-expr body arities indent
+    is IrList (elems) (ty) (sp) -> "[" & emit-ts-list-elems elems arities indent 0 & "]"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-ts-match scrut branches arities indent
+    is IrAct (stmts) (ty) (sp) -> emit-ts-act stmts arities indent
+    is IrRecord (name) (fields) (ty) (sp) -> "{ _type: \"" & name & "\"" & emit-ts-record-fields fields arities indent 0 & " }"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-ts-expr rec arities indent & "." & ts-sanitize field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(" & emit-ts-expr rec arities indent & "." & ts-sanitize field & " = " & emit-ts-expr val arities indent & ")"
+    is IrFork (body) (ty) (sp) -> "Promise.resolve().then(() => " & emit-ts-expr body arities indent & ")"
+    is IrAwait (task) (ty) (sp) -> "(await " & emit-ts-expr task arities indent & ")"
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-ts-expr body arities indent
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-ts-expr body arities indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> "/* try */"
+    is IrError (msg) (ty) (sp) -> "(() => { throw new Error(\"" & ts-escape msg & "\"); })()"
+
+Section: Binary Operators
+
+  emit-ts-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-ts-binary (op) (l) (r) (arities) (indent) =
+   let lhs = emit-ts-expr l arities indent
+   in let rhs = emit-ts-expr r arities indent
+   in when op
+    is IrAddInt -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt -> "(" & lhs & " * " & rhs & ")"
+    is IrDivInt -> "Math.trunc(" & lhs & " / " & rhs & ")"
+    is IrPowInt -> "(" & lhs & " ** " & rhs & ")"
+    is IrAddNum -> "(" & lhs & " + " & rhs & ")"
+    is IrSubNum -> "(" & lhs & " - " & rhs & ")"
+    is IrMulNum -> "(" & lhs & " * " & rhs & ")"
+    is IrDivNum -> "(" & lhs & " / " & rhs & ")"
+    is IrEq -> "(" & lhs & " === " & rhs & ")"
+    is IrNotEq -> "(" & lhs & " !== " & rhs & ")"
+    is IrLt -> "(" & lhs & " < " & rhs & ")"
+    is IrGt -> "(" & lhs & " > " & rhs & ")"
+    is IrLtEq -> "(" & lhs & " <= " & rhs & ")"
+    is IrGtEq -> "(" & lhs & " >= " & rhs & ")"
+    is IrAnd -> "(" & lhs & " && " & rhs & ")"
+    is IrOr -> "(" & lhs & " || " & rhs & ")"
+    is IrAppendText -> "(" & lhs & " + " & rhs & ")"
+    is IrAppendList -> "([..." & lhs & ", ..." & rhs & "])"
+    is IrConsList -> "[" & lhs & ", ..." & rhs & "]"
+
+Section: Apply and Helpers
+
+
+  emit-ts-apply : IRExpr, List ArityEntry, Integer -> Text
+  emit-ts-apply (e) (arities) (indent) =
+   let chain = collect-apply-chain e []
+   in let func = emit-ts-expr (chain.root) arities indent
+   in func & "(" & emit-ts-apply-args (chain.args) arities indent 0 & ")"
+
+  emit-ts-apply-args : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-ts-apply-args (args) (arities) (indent) (i) =
+   if i == list-length args then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-ts-expr (list-at args i) arities indent & emit-ts-apply-args args arities indent (i + 1)
+
+  emit-ts-params : List IRParam, Integer -> Text
+  emit-ts-params (params) (i) =
+   if i == list-length params then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & ts-sanitize (list-at params i).name & ": any" & emit-ts-params params (i + 1)
+
+  emit-ts-list-elems : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-ts-list-elems (elems) (arities) (indent) (i) =
+   if i == list-length elems then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-ts-expr (list-at elems i) arities indent & emit-ts-list-elems elems arities indent (i + 1)
+
+  emit-ts-record-fields : List IRFieldVal, List ArityEntry, Integer, Integer -> Text
+  emit-ts-record-fields (fields) (arities) (indent) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in ", " & ts-sanitize (f.name) & ": " & emit-ts-expr (f.value) arities indent & emit-ts-record-fields fields arities indent (i + 1)
+
+Section: Match
+
+  emit-ts-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-ts-match (scrut) (branches) (arities) (indent) =
+   "(() => { const _s: any = " & emit-ts-expr scrut arities indent & "; " & emit-ts-branches branches arities indent 0 & " })()"
+
+  emit-ts-branches : List IRBranch, List ArityEntry, Integer, Integer -> Text
+  emit-ts-branches (branches) (arities) (indent) (i) =
+   if i == list-length branches then "throw new Error('non-exhaustive match');"
+   else let b = list-at branches i
+   in let cond = emit-ts-pat-cond (b.pattern) "_s"
+   in let binds = emit-ts-pat-binds (b.pattern) "_s"
+   in let body = emit-ts-expr (b.body) arities indent
+   in "if (" & cond & ") { " & binds & "return " & body & "; } else " & emit-ts-branches branches arities indent (i + 1)
+
+  emit-ts-pat-cond : IRPat, Text -> Text
+  emit-ts-pat-cond (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "true"
+    is IrLitPat (text) (ty) (sp) -> scrut & " === " & text
+    is IrCtorPat (name) (subs) (ty) (sp) -> scrut & "._tag === \"" & name & "\""
+    is IrWildPat (sp) -> "true"
+
+  emit-ts-pat-binds : IRPat, Text -> Text
+  emit-ts-pat-binds (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "const " & ts-sanitize name & ": any = " & scrut & "; "
+    is IrLitPat (text) (ty) (sp) -> ""
+    is IrCtorPat (name) (subs) (ty) (sp) -> emit-ts-ctor-binds subs scrut 0
+    is IrWildPat (sp) -> ""
+
+  emit-ts-ctor-binds : List IRPat, Text, Integer -> Text
+  emit-ts-ctor-binds (subs) (scrut) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in let access = scrut & "._" & show i
+   in emit-ts-pat-binds sub access & emit-ts-ctor-binds subs scrut (i + 1)
+
+Section: Act Blocks
+
+  emit-ts-act : List IRActStmt, List ArityEntry, Integer -> Text
+  emit-ts-act (stmts) (arities) (indent) =
+   "(() => {\n" & emit-ts-act-stmts stmts arities (indent + 1) 0 & ts-indent indent & "})()"
+
+  emit-ts-act-stmts : List IRActStmt, List ArityEntry, Integer, Integer -> Text
+  emit-ts-act-stmts (stmts) (arities) (indent) (i) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) -> ts-indent indent & "const " & ts-sanitize name & ": any = " & emit-ts-expr val arities indent & ";\n" & emit-ts-act-stmts stmts arities indent (i + 1)
+    is IrDoExec (e) (sp) ->
+     if is-last then ts-indent indent & "return " & emit-ts-expr e arities indent & ";\n"
+     else ts-indent indent & emit-ts-expr e arities indent & ";\n" & emit-ts-act-stmts stmts arities indent (i + 1)
+
+Section: Type Definitions
+
+  emit-ts-type-def : ATypeDef -> Text
+  emit-ts-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
+     "interface " & ts-sanitize (name.value) & " { _type: string; " & emit-ts-iface-fields fields 0 & "}\nfunction " & ts-sanitize (name.value) & "(fields: any): any { return { _type: \"" & name.value & "\", ...fields }; }\n"
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-ts-variant-type name ctors
+
+  emit-ts-iface-fields : List ARecordFieldDef, Integer -> Text
+  emit-ts-iface-fields (fields) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in ts-sanitize (f.name.value) & ": any; " & emit-ts-iface-fields fields (i + 1)
+
+  emit-ts-variant-type : Name, List AVariantCtorDef -> Text
+  emit-ts-variant-type (name) (ctors) =
+   "type " & ts-sanitize (name.value) & " = " & emit-ts-union-members ctors 0 & ";\n" & emit-ts-variant-ctors ctors 0
+
+  emit-ts-union-members : List AVariantCtorDef, Integer -> Text
+  emit-ts-union-members (ctors) (i) =
+   if i == list-length ctors then "never"
+   else let c = list-at ctors i
+   in let sep = if i > 0 then " | " else ""
+   in sep & "{ _tag: \"" & c.name.value & "\" }" & emit-ts-union-members ctors (i + 1)
+
+  emit-ts-variant-ctors : List AVariantCtorDef, Integer -> Text
+  emit-ts-variant-ctors (ctors) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+   in let n = list-length (c.fields)
+   in let ctor-text = if n == 0 then "const " & ts-sanitize (c.name.value) & ": any = { _tag: \"" & c.name.value & "\" };\n"
+      else "function " & ts-sanitize (c.name.value) & "(" & emit-ts-ctor-params n 0 & "): any { return { _tag: \"" & c.name.value & "\"" & emit-ts-ctor-fields n 0 & " }; }\n"
+   in ctor-text & emit-ts-variant-ctors ctors (i + 1)
+
+  emit-ts-ctor-params : Integer, Integer -> Text
+  emit-ts-ctor-params (n) (i) =
+   if i == n then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & "_" & show i & ": any" & emit-ts-ctor-params n (i + 1)
+
+  emit-ts-ctor-fields : Integer, Integer -> Text
+  emit-ts-ctor-fields (n) (i) =
+   if i == n then ""
+   else ", _" & show i & ": _" & show i & emit-ts-ctor-fields n (i + 1)
+
+Section: Definition Emission
+
+  emit-ts-def : IRDef, List ArityEntry -> Text
+  emit-ts-def (d) (arities) =
+   if text-length (d.name) == 0 then ""
+   else let sname = ts-sanitize (d.name)
+   in if list-length (d.params) == 0
+      then "const " & sname & ": any = " & emit-ts-expr (d.body) arities 0 & ";\n\n"
+      else "function " & sname & "(" & emit-ts-params (d.params) 0 & "): any {\n  return " & emit-ts-expr (d.body) arities 1 & ";\n}\n\n"
+
+  emit-ts-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-ts-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-ts-def (list-at defs i) arities & emit-ts-defs defs (i + 1) arities
+
+  emit-ts-type-defs : List ATypeDef, Integer -> Text
+  emit-ts-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-ts-type-def (list-at tds i) & emit-ts-type-defs tds (i + 1)
+
+Section: TypeScript Module Assembly
+
+  emit-typescript-chapter : IRChapter, List ATypeDef -> Text
+  emit-typescript-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let builtins = "function print_line_uni(s: string): void { console.log(s); }\nfunction show(n: any): string { return String(n); }\nfunction text_length(s: string): number { return s.length; }\nfunction text_replace(s: string, a: string, b: string): string { return s.split(a).join(b); }\nfunction text_compare(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs: any[]): number { return xs.length; }\nfunction list_at(xs: any[], i: number): any { return xs[i]; }\nfunction integer_to_text(n: number): string { return String(n); }\nfunction char_code(c: any): number { return typeof c === 'string' ? c.charCodeAt(0) : c; }\nfunction char_at(s: string, i: number): string { return s[i]; }\nfunction negate(n: number): number { return -n; }\n\n"
+   in let types-text = emit-ts-type-defs type-defs 0
+   in let defs-text = emit-ts-defs (m.defs) 0 arities
+   in let entry = "// Entry\ntry { (opening as any)(); } catch(e) { console.error(e); }\n"
+   in builtins & types-text & defs-text & entry
+
+Page 1

@@ -182,3 +182,11 @@ retrievable by hash from any node in the network.
 Replays are viewable in the client with full animation, pause,
 rewind, and speed controls. Tournament replays are public — anyone
 can watch and learn.
+
+## Clan and Tournament Integration
+
+Clan tournaments and inter-clan challenges use the same network
+infrastructure. Clan matches are recorded on-chain with clan
+provenance metadata. See [Clans.md](Clans.md) for clan tournament
+and challenge definitions, and [Formats.md](Formats.md) for the
+format configurations that matchmaking supports.

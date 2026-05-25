@@ -68,6 +68,14 @@ The turn structure maps onto a `StateMachine` from the foreword:
 - The FSM enforces legal phase transitions
 - Illegal actions (e.g., casting a sorcery during combat) are rejected by checking current state
 
+## Turn Caps
+
+Turn count limits vary by format. The default (Modern) is 12 turns,
+after which Sudden Death begins -- both Generals take escalating
+damage each turn. See [Formats.md](Formats.md) for per-format caps
+and [GameBalance.md](GameBalance.md) section 3.4 for rationale.
+Blitz: 8 turns. Sealed: 15. Singleton: 20.
+
 ## Active Player / Non-Active Player (APNAP)
 
 When multiple triggered abilities trigger simultaneously:

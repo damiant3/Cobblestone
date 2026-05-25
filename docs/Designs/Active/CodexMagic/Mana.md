@@ -89,6 +89,21 @@ A card's color identity includes:
 For the engine, color identity is precomputed on the CardTemplate as
 a `ColorSet` record.
 
+## Resource Conversion (Optional Mechanics)
+
+Two optional mechanics address mana screw and flood. These are
+configurable per format via the RuleSet and are marked [EXPLORE]
+pending simulation validation.
+
+- **Screw fix:** Discard any card for 1 colorless mana. Unlimited
+  per turn. Self-balancing because cards are worth far more than
+  1 mana.
+- **Flood fix:** Discard 2 land cards from hand to draw 1 card.
+  Once per turn. 2-for-1 rate ensures mitigation, not advantage.
+
+See [GameBalance.md](GameBalance.md) section 3.1 for full analysis,
+degenerate case testing, and simulation questions.
+
 ## Mana Constraints
 
 In the early rules subset we're implementing:

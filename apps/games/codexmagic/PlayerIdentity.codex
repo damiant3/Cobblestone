@@ -1,0 +1,289 @@
+Chapter: PlayerIdentity
+  cites CodexMagic chapter Auth
+  cites CodexMagic chapter GameRegistry
+  cites CodexMagic chapter RPGEngine
+  cites CodexMagic chapter Token
+  cites CodexMagic chapter Clan
+
+ Unified player identity spanning all games in the multiverse.
+ One account, one reputation, one inventory across every plane.
+ Tracks achievements, play history, social connections, and
+ cross-game statistics. This is the "passport" that travels
+ between all registered games.
+
+ We say:
+
+Section: Universal Profile
+
+  PlayerProfile = record {
+    account-id : Integer,
+    display-name : Text,
+    title : Text,
+    clan-id : Integer,
+    clan-role : Integer,
+    joined-at : Integer,
+    global-reputation : Integer,
+    total-games-played : Integer,
+    total-wins : Integer,
+    total-losses : Integer,
+    total-draws : Integer,
+    mana-coin-earned : Integer,
+    mana-coin-spent : Integer,
+    items-owned : Integer,
+    characters-created : Integer,
+    dungeons-cleared : Integer,
+    achievements : List Achievement,
+    game-stats : List GameStat,
+    social : SocialState,
+    preferences : PlayerPrefs
+  }
+
+  GameStat = record {
+    game-id : Integer,
+    games-played : Integer,
+    wins : Integer,
+    losses : Integer,
+    rating : Integer,
+    peak-rating : Integer,
+    time-played : Integer,
+    last-played : Integer
+  }
+
+  SocialState = record {
+    friends : List Integer,
+    blocked : List Integer,
+    pending-invites : List Integer,
+    groups : List Integer
+  }
+
+  PlayerPrefs = record {
+    preferred-games : List Integer,
+    auto-accept-subgame : Boolean,
+    invasion-opt-in : Boolean,
+    cross-age-play : Boolean,
+    notification-level : Integer
+  }
+
+Section: Profile Creation
+
+  profile-new : Integer, Text, Integer -> PlayerProfile
+  profile-new (account-id) (name) (time) =
+    PlayerProfile {
+      account-id = account-id,
+      display-name = name,
+      title = "Newcomer",
+      clan-id = -1,
+      clan-role = 0,
+      joined-at = time,
+      global-reputation = 0,
+      total-games-played = 0,
+      total-wins = 0,
+      total-losses = 0,
+      total-draws = 0,
+      mana-coin-earned = 0,
+      mana-coin-spent = 0,
+      items-owned = 0,
+      characters-created = 0,
+      dungeons-cleared = 0,
+      achievements = [],
+      game-stats = [],
+      social = SocialState { friends = [], blocked = [], pending-invites = [], groups = [] },
+      preferences = PlayerPrefs { preferred-games = [], auto-accept-subgame = True, invasion-opt-in = True, cross-age-play = False, notification-level = 2 }
+    }
+
+Section: Achievements
+
+  Achievement = record {
+    achievement-id : Integer,
+    name : Text,
+    description : Text,
+    category : AchievementCategory,
+    tier : AchievementTier,
+    earned-at : Integer,
+    game-id : Integer
+  }
+
+  AchievementCategory =
+    | AchCombat
+    | AchEconomy
+    | AchSocial
+    | AchExploration
+    | AchCreation
+    | AchCrossPlane
+    | AchMeta
+
+  AchievementTier =
+    | TierBronze
+    | TierSilver
+    | TierGold
+    | TierPlatinum
+    | TierDiamond
+
+  achievement-tier-name : AchievementTier -> Text
+  achievement-tier-name (t) =
+    when t
+      is TierBronze -> "Bronze"
+      is TierSilver -> "Silver"
+      is TierGold -> "Gold"
+      is TierPlatinum -> "Platinum"
+      is TierDiamond -> "Diamond"
+
+  grant-achievement : PlayerProfile, Achievement -> PlayerProfile
+  grant-achievement (profile) (ach) =
+    let rep-gain = when ach.tier
+      is TierBronze -> 5
+      is TierSilver -> 15
+      is TierGold -> 30
+      is TierPlatinum -> 50
+      is TierDiamond -> 100
+    in PlayerProfile {
+      account-id = profile.account-id,
+      display-name = profile.display-name,
+      title = profile.title,
+      clan-id = profile.clan-id,
+      clan-role = profile.clan-role,
+      joined-at = profile.joined-at,
+      global-reputation = profile.global-reputation + rep-gain,
+      total-games-played = profile.total-games-played,
+      total-wins = profile.total-wins,
+      total-losses = profile.total-losses,
+      total-draws = profile.total-draws,
+      mana-coin-earned = profile.mana-coin-earned,
+      mana-coin-spent = profile.mana-coin-spent,
+      items-owned = profile.items-owned,
+      characters-created = profile.characters-created,
+      dungeons-cleared = profile.dungeons-cleared,
+      achievements = list-push (profile.achievements) ach,
+      game-stats = profile.game-stats,
+      social = profile.social,
+      preferences = profile.preferences
+    }
+
+Section: Game Result Recording
+
+  record-game-result : PlayerProfile, Integer, Boolean, Boolean -> PlayerProfile
+  record-game-result (profile) (game-id) (won) (draw) =
+    let new-wins = if won then profile.total-wins + 1 else profile.total-wins
+    in let new-losses = if won == False then if draw == False then profile.total-losses + 1 else profile.total-losses else profile.total-losses
+    in let new-draws = if draw then profile.total-draws + 1 else profile.total-draws
+    in let new-stats = update-game-stat (profile.game-stats) game-id won 0 (list-length (profile.game-stats)) []
+    in PlayerProfile {
+      account-id = profile.account-id,
+      display-name = profile.display-name,
+      title = profile.title,
+      clan-id = profile.clan-id,
+      clan-role = profile.clan-role,
+      joined-at = profile.joined-at,
+      global-reputation = profile.global-reputation + (if won then 2 else 1),
+      total-games-played = profile.total-games-played + 1,
+      total-wins = new-wins,
+      total-losses = new-losses,
+      total-draws = new-draws,
+      mana-coin-earned = profile.mana-coin-earned,
+      mana-coin-spent = profile.mana-coin-spent,
+      items-owned = profile.items-owned,
+      characters-created = profile.characters-created,
+      dungeons-cleared = profile.dungeons-cleared,
+      achievements = profile.achievements,
+      game-stats = new-stats,
+      social = profile.social,
+      preferences = profile.preferences
+    }
+
+  update-game-stat : List GameStat, Integer, Boolean, Integer, Integer, List GameStat -> List GameStat
+  update-game-stat (stats) (game-id) (won) (i) (len) (acc) =
+    if i >= len then
+      let new-stat = GameStat { game-id = game-id, games-played = 1, wins = if won then 1 else 0, losses = if won then 0 else 1, rating = 1000, peak-rating = 1000, time-played = 0, last-played = 0 }
+      in list-push acc new-stat
+    else let s = list-at stats i
+    in if s.game-id == game-id then
+      let updated = GameStat { game-id = s.game-id, games-played = s.games-played + 1, wins = if won then s.wins + 1 else s.wins, losses = if won then s.losses else s.losses + 1, rating = s.rating + (if won then 25 else (-20)), peak-rating = if s.rating + 25 > s.peak-rating then s.rating + 25 else s.peak-rating, time-played = s.time-played, last-played = 0 }
+      in update-game-stat stats game-id won (i + 1) len (list-push acc updated)
+    else update-game-stat stats game-id won (i + 1) len (list-push acc s)
+
+Section: Title Progression
+
+  compute-title : PlayerProfile -> Text
+  compute-title (profile) =
+    if profile.global-reputation >= 5000 then "Legend"
+    else if profile.global-reputation >= 2000 then "Champion"
+    else if profile.global-reputation >= 1000 then "Veteran"
+    else if profile.global-reputation >= 500 then "Adventurer"
+    else if profile.global-reputation >= 100 then "Traveler"
+    else if profile.total-games-played >= 10 then "Initiate"
+    else "Newcomer"
+
+  update-title : PlayerProfile -> PlayerProfile
+  update-title (profile) =
+    let new-title = compute-title profile
+    in PlayerProfile {
+      account-id = profile.account-id,
+      display-name = profile.display-name,
+      title = new-title,
+      clan-id = profile.clan-id,
+      clan-role = profile.clan-role,
+      joined-at = profile.joined-at,
+      global-reputation = profile.global-reputation,
+      total-games-played = profile.total-games-played,
+      total-wins = profile.total-wins,
+      total-losses = profile.total-losses,
+      total-draws = profile.total-draws,
+      mana-coin-earned = profile.mana-coin-earned,
+      mana-coin-spent = profile.mana-coin-spent,
+      items-owned = profile.items-owned,
+      characters-created = profile.characters-created,
+      dungeons-cleared = profile.dungeons-cleared,
+      achievements = profile.achievements,
+      game-stats = profile.game-stats,
+      social = profile.social,
+      preferences = profile.preferences
+    }
+
+Section: Social Operations
+
+  add-friend : PlayerProfile, Integer -> PlayerProfile
+  add-friend (profile) (friend-id) =
+    let new-social = SocialState { friends = list-push (profile.social.friends) friend-id, blocked = profile.social.blocked, pending-invites = profile.social.pending-invites, groups = profile.social.groups }
+    in set-profile-social profile new-social
+
+  block-player : PlayerProfile, Integer -> PlayerProfile
+  block-player (profile) (target) =
+    let new-social = SocialState { friends = remove-from-int-list (profile.social.friends) target 0 (list-length (profile.social.friends)) [], blocked = list-push (profile.social.blocked) target, pending-invites = profile.social.pending-invites, groups = profile.social.groups }
+    in set-profile-social profile new-social
+
+  set-profile-social : PlayerProfile, SocialState -> PlayerProfile
+  set-profile-social (profile) (social) =
+    PlayerProfile { account-id = profile.account-id, display-name = profile.display-name, title = profile.title, clan-id = profile.clan-id, clan-role = profile.clan-role, joined-at = profile.joined-at, global-reputation = profile.global-reputation, total-games-played = profile.total-games-played, total-wins = profile.total-wins, total-losses = profile.total-losses, total-draws = profile.total-draws, mana-coin-earned = profile.mana-coin-earned, mana-coin-spent = profile.mana-coin-spent, items-owned = profile.items-owned, characters-created = profile.characters-created, dungeons-cleared = profile.dungeons-cleared, achievements = profile.achievements, game-stats = profile.game-stats, social = social, preferences = profile.preferences }
+
+  remove-from-int-list : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  remove-from-int-list (xs) (target) (i) (len) (acc) =
+    if i >= len then acc
+    else let x = list-at xs i
+    in if x == target then remove-from-int-list xs target (i + 1) len acc
+    else remove-from-int-list xs target (i + 1) len (list-push acc x)
+
+Section: Cross-Game Rating
+
+  get-game-rating : PlayerProfile, Integer -> Integer
+  get-game-rating (profile) (game-id) =
+    find-game-rating (profile.game-stats) game-id 0 (list-length (profile.game-stats))
+
+  find-game-rating : List GameStat, Integer, Integer, Integer -> Integer
+  find-game-rating (stats) (game-id) (i) (len) =
+    if i >= len then 1000
+    else let s = list-at stats i
+    in if s.game-id == game-id then s.rating
+    else find-game-rating stats game-id (i + 1) len
+
+  composite-rating : PlayerProfile -> Integer
+  composite-rating (profile) =
+    avg-ratings (profile.game-stats) 0 (list-length (profile.game-stats)) 0 0
+
+  avg-ratings : List GameStat, Integer, Integer, Integer, Integer -> Integer
+  avg-ratings (stats) (i) (len) (sum) (count) =
+    if i >= len then if count == 0 then 1000 else sum / count
+    else let s = list-at stats i
+    in if s.games-played >= 5 then avg-ratings stats (i + 1) len (sum + s.rating) (count + 1)
+    else avg-ratings stats (i + 1) len sum count
+
+Page 1

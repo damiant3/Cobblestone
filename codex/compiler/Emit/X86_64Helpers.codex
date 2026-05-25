@@ -534,7 +534,13 @@ Section: I/O Boundary Helpers
 
    in let st28 = st-append-code st27 (jcc cc-e 0)
 
-   in let st29 = st-append-code st28 (add-rr reg-rax reg-r12)
+   in let st28a = st-append-code st28 (cmp-ri reg-rax 128)
+
+   in let skip-high = st28a.code-len
+
+   in let st28b = st-append-code st28a (jcc cc-ge 0)
+
+   in let st29 = st-append-code st28b (add-rr reg-rax reg-r12)
 
    in let st30 = st-append-code st29 (movzx-byte reg-rax reg-rax 0)
 
@@ -550,7 +556,9 @@ Section: I/O Boundary Helpers
 
    in let st36 = patch-jcc-at st35 skip-cr (st35.code-len)
 
-   in let st37 = st-append-code st36 (jmp (read-loop - (st36.code-len + 5)))
+   in let st36a = patch-jcc-at st36 skip-high (st36.code-len)
+
+   in let st37 = st-append-code st36a (jmp (read-loop - (st36a.code-len + 5)))
 
    in let st38 = patch-jcc-at st37 got-eot (st37.code-len)
 
@@ -938,9 +946,59 @@ Section: I/O Boundary Helpers
 
    in let st87 = emit-uefi-read-key-helper st86
 
-   in emit-uefi-read-key-ex-helper st87
+   in let st88 = emit-uefi-read-key-ex-helper st87
+
+   in let st89 = emit-prof-start-helper st88
+
+   in emit-prof-dump-helper st89
 
 
+
+  emit-prof-start-helper : CodegenState -> CodegenState
+  emit-prof-start-helper (st) =
+   let st1 = record-func-offset st "__prof_start"
+   in let st2 = st-append-code st1 (li reg-rdi prof-enabled-addr)
+   in let st3 = st-append-code st2 (li reg-rax 1)
+   in let st4 = st-append-code st3 (mov-store reg-rdi reg-rax 0)
+   in let st5 = st-append-code st4 (li reg-rdi prof-cursor-addr)
+   in let st6 = st-append-code st5 (li reg-rax 0)
+   in let st7 = st-append-code st6 (mov-store reg-rdi reg-rax 0)
+   in st-append-code st7 [195]
+
+  emit-prof-dump-helper : CodegenState -> CodegenState
+  emit-prof-dump-helper (st) =
+   let st1 = record-func-offset st "__prof_dump"
+   in let st2 = st-append-code st1 (push-r reg-rbx)
+   in let st3 = st-append-code st2 (push-r reg-r12)
+   in let st4 = st-append-code st3 (push-r reg-r13)
+   in let st5 = st-append-code st4 (li reg-rdi prof-enabled-addr)
+   in let st6 = st-append-code st5 (li reg-rax 0)
+   in let st7 = st-append-code st6 (mov-store reg-rdi reg-rax 0)
+   in let st8 = st-append-code st7 (li reg-rdi prof-cursor-addr)
+   in let st9 = st-append-code st8 (mov-load reg-r12 reg-rdi 0)
+   in let st10 = emit-oom-string st9 [80, 82, 79, 70, 58] 0
+   in let st11 = st-append-code st10 (mov-rr reg-rdi reg-r12)
+   in let st12 = emit-call-to st11 "__itoa"
+   in let st13 = emit-print-text st12 reg-rax
+   in let st14 = st-append-code st13 (li reg-rbx 0)
+   in let loop-top = st14.code-len
+   in let st15 = st-append-code st14 (cmp-rr reg-rbx reg-r12)
+   in let done-pos = st15.code-len
+   in let st16 = st-append-code st15 (jcc cc-ge 0)
+   in let st17 = emit-oom-string st16 [80, 82, 79, 70, 58] 0
+   in let st18 = st-append-code st17 (mov-rr reg-rax reg-rbx)
+   in let st19 = st-append-code st18 (shl-ri reg-rax 3)
+   in let st20 = st-append-code st19 (add-ri reg-rax prof-buf-addr)
+   in let st21 = st-append-code st20 (mov-load reg-rdi reg-rax 0)
+   in let st22 = emit-print-hex-qword-rdi st21
+   in let st23 = emit-serial-wait-and-send st22 10
+   in let st24 = st-append-code st23 (add-ri reg-rbx 1)
+   in let st25 = st-append-code st24 (jmp (loop-top - (st24.code-len + 5)))
+   in let st26 = patch-jcc-at st25 done-pos (st25.code-len)
+   in let st27 = st-append-code st26 (pop-r reg-r13)
+   in let st28 = st-append-code st27 (pop-r reg-r12)
+   in let st29 = st-append-code st28 (pop-r reg-rbx)
+   in st-append-code st29 [195]
 
   emit-uefi-print-helper : CodegenState -> CodegenState
 

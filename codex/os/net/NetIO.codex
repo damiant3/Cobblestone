@@ -23,7 +23,7 @@ Section: Flush Outbox
    let count = net-outbox-count (ts.session)
    in let flushed = flush-outbox-loop (ts.session) 0 count
    in let cleared = set-outbox (ts.session) []
-   in TcpTransportState { session = cleared, recv-buf = ts.recv-buf, messages-sent = ts.messages-sent + flushed - flushed, messages-received = ts.messages-received }
+   in TcpTransportState { session = cleared, recv-buf = [], recv-base = ts.recv-base, recv-len = ts.recv-len, recv-cap = ts.recv-cap, messages-sent = ts.messages-sent + flushed - flushed, messages-received = ts.messages-received }
 
 Section: Connect and Wait
 
@@ -36,8 +36,10 @@ Section: Connect and Wait
   net-io-wait-established : TcpTransportState, Integer -> TcpTransportState
   net-io-wait-established (ts) (tries) =
    if tries > 10000 then ts
-   else let frame = ne2k-recv-frame
-   in if list-length frame == 0 then net-io-wait-established ts (tries + 1)
+   else let hp = __heap-save
+   in let frame = ne2k-recv-frame
+   in if list-length frame == 0 then let restored = __heap-restore hp
+     in net-io-wait-established ts (tries + 1)
    else let r = transport-process-frame ts frame
    in let ts1 = flush-transport-outbox (r.transport)
    in when (ts1.session).conn.state
@@ -68,10 +70,10 @@ Section: Receive
   net-io-recv-loop : TcpTransportState, Integer -> TransportRecvResult
   net-io-recv-loop (ts) (tries) =
    if tries > 50000000 then TransportRecvResult { transport = ts, tag = 0, body = [], has-message = False }
-   else let check = transport-try-recv ts
-   in if check.has-message then check
-   else let frame = ne2k-recv-frame
-   in if list-length frame == 0 then net-io-recv-loop ts (tries + 1)
+   else let hp = __heap-save
+   in let frame = ne2k-recv-frame
+   in if list-length frame == 0 then let restored = __heap-restore hp
+     in net-io-recv-loop ts (tries + 1)
    else let r = transport-process-frame ts frame
    in let ts1 = flush-transport-outbox (r.transport)
    in if r.has-message then TransportRecvResult { transport = ts1, tag = r.tag, body = r.body, has-message = True }

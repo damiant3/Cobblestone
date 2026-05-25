@@ -1,0 +1,328 @@
+Chapter: GTK Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates Python + GTK4 application code from the IR.
+
+Section: Sanitization
+
+  gtk-sanitize : Text -> Text
+  gtk-sanitize (name) =
+   text-replace (text-replace name "-" "_") "'" ""
+
+  gtk-escape : Text -> Text
+  gtk-escape (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in let s3 = text-replace s2 "\n" "\\n"
+   in s3
+
+  gtk-indent : Integer -> Text
+  gtk-indent (n) =
+   if n <= 0 then ""
+   else "    " & gtk-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then -1
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else -1
+
+Section: Expression Emission
+
+  emit-gtk-expr : IRExpr, List ArityEntry -> Text
+  emit-gtk-expr (e) (arities) =
+   when e
+    is IrIntLit (n) (sp) -> show n
+    is IrNumLit (n) (sp) -> "struct.unpack('=d', struct.pack('=q', " & show n & "))[0]"
+    is IrTextLit (s) (sp) -> "\"" & gtk-escape s & "\""
+    is IrBoolLit (b) (sp) -> if b then "True" else "False"
+    is IrCharLit (n) (sp) -> show n
+    is IrName (n) (ty) (sp) -> gtk-sanitize n
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-gtk-binary op l r arities
+    is IrNegate (x) (sp) -> "(-" & emit-gtk-expr x arities & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-gtk-expr t arities & " if " & emit-gtk-expr c arities & " else " & emit-gtk-expr el arities & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "(lambda " & gtk-sanitize name & ": " & emit-gtk-expr body arities & ")(" & emit-gtk-expr val arities & ")"
+    is IrApply (f) (a) (ty) (sp) -> emit-gtk-apply e arities
+    is IrLambda (params) (body) (ty) (sp) -> "(lambda " & emit-gtk-lambda-params params 0 & ": " & emit-gtk-expr body arities & ")"
+    is IrList (elems) (ty) (sp) -> "[" & emit-gtk-list-elems elems arities 0 & "]"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-gtk-match scrut branches arities
+    is IrAct (stmts) (ty) (sp) -> emit-gtk-act stmts arities
+    is IrRecord (name) (fields) (ty) (sp) -> gtk-sanitize name & "(" & emit-gtk-record-fields fields arities 0 & ")"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-gtk-expr rec arities & "." & gtk-sanitize field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(lambda _r: (setattr(_r, '" & gtk-sanitize field & "', " & emit-gtk-expr val arities & "), _r)[-1])(" & emit-gtk-expr rec arities & ")"
+    is IrFork (body) (ty) (sp) -> "__import__('concurrent.futures').ThreadPoolExecutor().submit(lambda: (" & emit-gtk-expr body arities & ")(None))"
+    is IrAwait (task) (ty) (sp) -> "(" & emit-gtk-expr task arities & ").result()"
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-gtk-expr body arities
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-gtk-expr body arities
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> "/* try */"
+    is IrError (msg) (ty) (sp) -> "(lambda: (_ for _ in ()).throw(Exception(\"" & gtk-escape msg & "\")))()"
+
+Section: Binary Operators
+
+  emit-gtk-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
+  emit-gtk-binary (op) (l) (r) (arities) =
+   let lhs = emit-gtk-expr l arities
+   in let rhs = emit-gtk-expr r arities
+   in when op
+    is IrAddInt -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt -> "(" & lhs & " * " & rhs & ")"
+    is IrDivInt -> "(" & lhs & " // " & rhs & ")"
+    is IrPowInt -> "(" & lhs & " ** " & rhs & ")"
+    is IrAddNum -> "(" & lhs & " + " & rhs & ")"
+    is IrSubNum -> "(" & lhs & " - " & rhs & ")"
+    is IrMulNum -> "(" & lhs & " * " & rhs & ")"
+    is IrDivNum -> "(" & lhs & " / " & rhs & ")"
+    is IrEq -> "(" & lhs & " == " & rhs & ")"
+    is IrNotEq -> "(" & lhs & " != " & rhs & ")"
+    is IrLt -> "(" & lhs & " < " & rhs & ")"
+    is IrGt -> "(" & lhs & " > " & rhs & ")"
+    is IrLtEq -> "(" & lhs & " <= " & rhs & ")"
+    is IrGtEq -> "(" & lhs & " >= " & rhs & ")"
+    is IrAnd -> "(" & lhs & " and " & rhs & ")"
+    is IrOr -> "(" & lhs & " or " & rhs & ")"
+    is IrAppendText -> "(" & lhs & " + " & rhs & ")"
+    is IrAppendList -> "(" & lhs & " + " & rhs & ")"
+    is IrConsList -> "[" & lhs & "] + " & rhs
+
+Section: Apply and Helpers
+
+
+  emit-gtk-apply : IRExpr, List ArityEntry -> Text
+  emit-gtk-apply (e) (arities) =
+   let chain = collect-apply-chain e []
+   in let func = emit-gtk-expr (chain.root) arities
+   in func & "(" & emit-gtk-apply-args (chain.args) arities 0 & ")"
+
+  emit-gtk-apply-args : List IRExpr, List ArityEntry, Integer -> Text
+  emit-gtk-apply-args (args) (arities) (i) =
+   if i == list-length args then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-gtk-expr (list-at args i) arities & emit-gtk-apply-args args arities (i + 1)
+
+  emit-gtk-lambda-params : List IRParam, Integer -> Text
+  emit-gtk-lambda-params (params) (i) =
+   if i == list-length params then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & gtk-sanitize (list-at params i).name & emit-gtk-lambda-params params (i + 1)
+
+  emit-gtk-list-elems : List IRExpr, List ArityEntry, Integer -> Text
+  emit-gtk-list-elems (elems) (arities) (i) =
+   if i == list-length elems then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-gtk-expr (list-at elems i) arities & emit-gtk-list-elems elems arities (i + 1)
+
+  emit-gtk-record-fields : List IRFieldVal, List ArityEntry, Integer -> Text
+  emit-gtk-record-fields (fields) (arities) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in let sep = if i > 0 then ", " else ""
+   in sep & gtk-sanitize (f.name) & "=" & emit-gtk-expr (f.value) arities & emit-gtk-record-fields fields arities (i + 1)
+
+Section: Match
+
+  emit-gtk-match : IRExpr, List IRBranch, List ArityEntry -> Text
+  emit-gtk-match (scrut) (branches) (arities) =
+   "(lambda _s: " & emit-gtk-match-body branches arities 0 0 & ")(" & emit-gtk-expr scrut arities & ")"
+
+  emit-gtk-match-body : List IRBranch, List ArityEntry, Integer, Integer -> Text
+  emit-gtk-match-body (branches) (arities) (i) (opens) =
+   if i == list-length branches then "(_ for _ in ()).throw(Exception('non-exhaustive match'))" & emit-gtk-close opens
+   else let b = list-at branches i
+   in emit-gtk-match-arm (b.pattern) (b.body) branches arities i opens
+
+  emit-gtk-match-arm : IRPat, IRExpr, List IRBranch, List ArityEntry, Integer, Integer -> Text
+  emit-gtk-match-arm (pat) (body) (branches) (arities) (i) (opens) =
+   when pat
+    is IrLitPat (text) (ty) (sp) ->
+     let pre = if i > 0 then " else " else ""
+     in pre & "(" & emit-gtk-expr body arities & " if _s == " & text & emit-gtk-match-body branches arities (i + 1) (opens + 1)
+    is IrCtorPat (name) (subs) (ty) (sp) ->
+     let pre = if i > 0 then " else " else ""
+     in pre & "(" & emit-gtk-ctor-body subs body arities & " if isinstance(_s, " & gtk-sanitize name & ")" & emit-gtk-match-body branches arities (i + 1) (opens + 1)
+    is IrVarPat (name) (ty) (sp) ->
+     let pre = if i > 0 then " else " else ""
+     in pre & "(lambda " & gtk-sanitize name & ": " & emit-gtk-expr body arities & ")(_s)" & emit-gtk-close opens
+    is IrWildPat (sp) ->
+     let pre = if i > 0 then " else " else ""
+     in pre & emit-gtk-expr body arities & emit-gtk-close opens
+
+  emit-gtk-ctor-body : List IRPat, IRExpr, List ArityEntry -> Text
+  emit-gtk-ctor-body (subs) (body) (arities) =
+   let binds = collect-gtk-binds subs 0
+   in if list-length binds == 0 then emit-gtk-expr body arities
+      else "(lambda " & emit-gtk-bind-names binds 0 & ": " & emit-gtk-expr body arities & ")(" & emit-gtk-bind-accesses binds 0 & ")"
+
+  GtkBind = record { name : Text, access : Text }
+
+  collect-gtk-binds : List IRPat, Integer -> List GtkBind
+  collect-gtk-binds (subs) (i) =
+   if i == list-length subs then []
+   else let sub = list-at subs i
+   in let rest = collect-gtk-binds subs (i + 1)
+   in when sub
+    is IrVarPat (name) (ty) (sp) -> [GtkBind { name = name, access = "_s.field" & show i }] & rest
+    is otherwise -> rest
+
+  emit-gtk-bind-names : List GtkBind, Integer -> Text
+  emit-gtk-bind-names (bs) (i) =
+   if i == list-length bs then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & gtk-sanitize ((list-at bs i).name) & emit-gtk-bind-names bs (i + 1)
+
+  emit-gtk-bind-accesses : List GtkBind, Integer -> Text
+  emit-gtk-bind-accesses (bs) (i) =
+   if i == list-length bs then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & (list-at bs i).access & emit-gtk-bind-accesses bs (i + 1)
+
+  emit-gtk-close : Integer -> Text
+  emit-gtk-close (n) =
+   if n <= 0 then ""
+   else ")" & emit-gtk-close (n - 1)
+
+Section: Act Blocks
+
+  emit-gtk-act : List IRActStmt, List ArityEntry -> Text
+  emit-gtk-act (stmts) (arities) =
+   if gtk-has-binds stmts 0 then "(lambda: (" & emit-gtk-bind-chain stmts 0 arities & "))()"
+   else "(lambda: [" & emit-gtk-act-elems stmts 0 arities & "][-1])()"
+
+  gtk-has-binds : List IRActStmt, Integer -> Boolean
+  gtk-has-binds (stmts) (i) =
+   if i == list-length stmts then False
+   else when (list-at stmts i)
+    is IrDoBind (name) (ty) (val) (sp) -> True
+    is IrDoExec (e) (sp) -> gtk-has-binds stmts (i + 1)
+
+  emit-gtk-bind-chain : List IRActStmt, Integer, List ArityEntry -> Text
+  emit-gtk-bind-chain (stmts) (i) (arities) =
+   if i == list-length stmts then "None"
+   else let s = list-at stmts i
+   in if i == list-length stmts - 1 then
+    when s
+     is IrDoBind (name) (ty) (val) (sp) -> "(lambda " & gtk-sanitize name & ": " & gtk-sanitize name & ")(" & emit-gtk-expr val arities & ")"
+     is IrDoExec (e) (sp) -> emit-gtk-expr e arities
+   else when s
+    is IrDoBind (name) (ty) (val) (sp) -> "(lambda " & gtk-sanitize name & ": " & emit-gtk-bind-chain stmts (i + 1) arities & ")(" & emit-gtk-expr val arities & ")"
+    is IrDoExec (e) (sp) -> "[" & emit-gtk-expr e arities & ", " & emit-gtk-bind-chain stmts (i + 1) arities & "][-1]"
+
+  emit-gtk-act-elems : List IRActStmt, Integer, List ArityEntry -> Text
+  emit-gtk-act-elems (stmts) (i) (arities) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in let elem = when s
+    is IrDoBind (name) (ty) (val) (sp) -> emit-gtk-expr val arities
+    is IrDoExec (e) (sp) -> emit-gtk-expr e arities
+   in if i == list-length stmts - 1 then elem
+      else elem & ", " & emit-gtk-act-elems stmts (i + 1) arities
+
+Section: Type Definitions
+
+  emit-gtk-type-def : ATypeDef -> Text
+  emit-gtk-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
+     let sname = gtk-sanitize (name.value)
+     in "@dataclass\nclass " & sname & ":\n" & emit-gtk-record-field-defs fields 0 & "\n"
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-gtk-variant-ctor-defs ctors 0
+
+  emit-gtk-record-field-defs : List ARecordFieldDef, Integer -> Text
+  emit-gtk-record-field-defs (fields) (i) =
+   if i == list-length fields then "    pass\n"
+   else let f = list-at fields i
+   in "    " & gtk-sanitize (f.name.value) & " = None\n" & emit-gtk-record-field-defs fields (i + 1)
+
+  emit-gtk-variant-ctor-defs : List AVariantCtorDef, Integer -> Text
+  emit-gtk-variant-ctor-defs (ctors) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+   in let n = list-length (c.fields)
+   in let sname = gtk-sanitize (c.name.value)
+   in (if n == 0 then "@dataclass\nclass " & sname & ":\n    tag = \"" & c.name.value & "\"\n\n"
+       else "@dataclass\nclass " & sname & ":\n" & emit-gtk-ctor-field-defs n 0 & "    tag = \"" & c.name.value & "\"\n\n")
+      & emit-gtk-variant-ctor-defs ctors (i + 1)
+
+  emit-gtk-ctor-field-defs : Integer, Integer -> Text
+  emit-gtk-ctor-field-defs (n) (i) =
+   if i == n then ""
+   else "    field" & show i & " = None\n" & emit-gtk-ctor-field-defs n (i + 1)
+
+Section: Definition Emission
+
+  emit-gtk-def : IRDef, List ArityEntry -> Text
+  emit-gtk-def (d) (arities) =
+   if text-length (d.name) == 0 then ""
+   else let sname = gtk-sanitize (d.name)
+   in if list-length (d.params) == 0
+      then "def " & sname & "():\n    return " & emit-gtk-expr (d.body) arities & "\n\n"
+      else "def " & sname & "(" & emit-gtk-def-params (d.params) 0 & "):\n    return " & emit-gtk-expr (d.body) arities & "\n\n"
+
+  emit-gtk-def-params : List IRParam, Integer -> Text
+  emit-gtk-def-params (params) (i) =
+   if i == list-length params then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & gtk-sanitize (list-at params i).name & emit-gtk-def-params params (i + 1)
+
+  emit-gtk-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-gtk-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-gtk-def (list-at defs i) arities & emit-gtk-defs defs (i + 1) arities
+
+  emit-gtk-type-defs : List ATypeDef, Integer -> Text
+  emit-gtk-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-gtk-type-def (list-at tds i) & emit-gtk-type-defs tds (i + 1)
+
+Section: GTK Application Assembly
+
+  emit-gtk-chapter : IRChapter, List ATypeDef -> Text
+  emit-gtk-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if m.chapter-title == "" then "App" else m.chapter-title
+   in let imports = "import gi\ngi.require_version('Gtk', '4.0')\nfrom gi.repository import Gtk\nfrom dataclasses import dataclass\nimport struct\n\n"
+   in let builtins = "_output_lines = []\ndef print_line_uni(s):\n    _output_lines.append(str(s))\ndef show(n): return str(n)\ndef text_length(s): return len(s)\ndef text_replace(s, a, b): return s.replace(a, b)\ndef text_compare(a, b): return 0 if a == b else (-1 if a < b else 1)\ndef list_length(xs): return len(xs)\ndef list_at(xs, i): return xs[i]\ndef integer_to_text(n): return str(n)\ndef negate(n): return -n\n\n"
+   in let types-text = emit-gtk-type-defs type-defs 0
+   in let defs-text = emit-gtk-defs (m.defs) 0 arities
+   in let gtk-app = "class AppWindow(Gtk.ApplicationWindow):\n    def __init__(self, app):\n        super().__init__(application=app, title=\"" & gtk-escape title & "\")\n        self.set_default_size(640, 480)\n        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)\n        box.set_margin_top(10)\n        box.set_margin_start(10)\n        try:\n            opening()\n        except Exception as e:\n            _output_lines.append(str(e))\n        for line in _output_lines:\n            label = Gtk.Label(label=line, xalign=0)\n            box.append(label)\n        self.set_child(box)\n\ndef on_activate(app):\n    win = AppWindow(app)\n    win.present()\n\napp = Gtk.Application()\napp.connect('activate', on_activate)\napp.run(None)\n"
+   in imports & builtins & types-text & defs-text & gtk-app
+
+Page 1

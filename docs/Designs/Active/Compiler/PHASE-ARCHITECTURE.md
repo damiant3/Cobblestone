@@ -1,10 +1,13 @@
 # Phase Architecture
 
-**Status:** Partially implemented (2026-05-02). The vocabulary,
-allocator primitives, per-phase build, phase-measure, and phase-compact
-are in place across all 6 frontend phases (CLs 500, 552, 632–645). The
-emitter wall is enforced (CL 644). Outstanding: lower/emit isolation,
-escape invariant enforcement, TCO reset removal, survey tightening.
+**Status:** Partially implemented. The vocabulary, allocator
+primitives, per-phase build, phase-measure, and phase-compact are in
+place across all 8 frontend phases (CLs 500, 552, 632–645, 2135,
+2169). ConstructedTy resolution and lambda lifting were extracted
+from the x86 emitter into their own phases with independent compact
+cycles (CLs 2135, 2148, 2157, 2169). The emitter wall is enforced
+(CL 644). Outstanding: escape invariant enforcement, TCO reset
+removal, survey tightening, lower-phase bivy reduction.
 
 **Empirical limit observed (2026-05-02 audit):** within-phase scratch
 that the discipline reclaims is small — bivy-usage measured at 16
@@ -95,9 +98,10 @@ pre-declared, and not part of the phase's schema.
 | parse | Build AST | AST nodes, chapter/section index, def list, cite list |
 | scope | Resolve names | name binding table, slug-mangled names |
 | types | Type-check, infer | type environment, resolved types per expression |
-| lower | Desugar to IR | IR defs, IR expressions, lambda list |
-| lambda-lift | Lift nested lambdas | final IR with top-level defs, closure envs |
-| emit | Generate target code | target output buffer(s) (`.text`, `.rodata`, DWARF, patches) |
+| lower | Desugar to IR | IR defs, IR expressions |
+| resolve | Resolve ConstructedTy | IR with concrete RecordTy/SumTy, sorted type bindings |
+| lift | Lift nested lambdas | final IR with top-level defs, closure envs (CDX path) |
+| emit | Generate target code | target output buffer(s) (`.text`, `.rodata`, patches) |
 
 Each phase also pitches a bivy for whatever scratch its algorithm
 requires — lexer state, parser stack, unification scratch, codegen
@@ -112,8 +116,9 @@ decks plus source text):
 - scope surveys the parse deck
 - types surveys the scope deck and parse deck
 - lower surveys the types deck and parse deck
-- lambda-lift surveys the lower deck
-- emit surveys the lambda-lift deck
+- resolve surveys the lower deck
+- lift surveys the resolve deck
+- emit surveys the lift deck
 
 A survey never consults its own phase's in-progress state. This keeps
 the survey cheap (bounded by already-sealed material) and ensures
@@ -298,7 +303,7 @@ propagate the implementation consequences here.
    behavior. Go/no-go on continuing.
 4. **Parse, scope, types phases.** If the lex conversion holds,
    these are mechanical.
-5. **Lower, lambda-lift, emit.** The hardest; these have the largest
+5. ✅ **Lower, resolve, lift, emit.** (CL 2169) Separated. These have the largest
    decks and the most interdependent surveys. Address last.
 
 If the lex conversion reveals unexpected difficulty, stop and revise
@@ -318,9 +323,9 @@ implementation strategy is what's being tested.
 Migration path status vs. the plan above:
 
 1. ✅ **Vocabulary + allocator primitives.** `pitch`, `build`, `strike`, `seal`, `deck-record` in Phase Allocator. `EmitWorkspace`, `init-emit-workspace`, `emit-build` in Emit Allocator. `phase-start`, `phase-measure`, `phase-compact` for lifecycle.
-2. ✅ **All 6 frontend phases converted.** Lex, parse, desugar, scope, type-check, lower — each with per-phase `build(survey)`, `phase-start`, deck-record work, `phase-measure`, result sealed on deck, `phase-compact`.
+2. ✅ **All 8 frontend phases converted.** Lex, parse, desugar, scope, type-check, lower, resolve, lift — each with per-phase `build(survey)`, `phase-start`, deck-record work, `phase-measure`, result sealed on deck, `phase-compact`.
 3. ✅ **Measure.** Full phase metrics surfaced in watchdog output (deck-origin, deck-end, deck-usage, bivy-hwm, bivy-usage per phase). Per-phase surveys based on measured multipliers.
-4. ✅ **Emitter wall.** `emit-build` gives the emitter its own deck for IR rewrites. Frontend deck is read-only to the emitter. `deck-record` calls in `rewrite-ir-defs` write to the emitter's deck, not the frontend's.
+4. ✅ **Emitter wall.** `emit-build` gives the emitter its own deck. Frontend deck is read-only to the emitter. ConstructedTy resolution (`rewrite-ir-defs`) and lambda lifting now run in their own frontend phases (RESOLVE, LIFT) before the emitter sees the IR. The x86 emitter takes `(IRChapter, List TypeBinding)` — no `TypeEnv`.
 5. ⬜ **Remove TCO reset.** Not yet addressed.
 6. ⬜ **Escape invariant enforcement.** Not yet addressed.
 7. ⬜ **Survey tightening.** Current multipliers are generous (10% headroom over measurements). Can be tightened further as the codebase stabilizes.
@@ -336,7 +341,9 @@ Source: selfhost compiler (~892 KB). Per-phase builds with compact.
 | desugar | 58,709,008 | 72,661,648 | **13.9 MB** | 18x + 1 MB |
 | scope | 72,661,680 | 100,729,280 | **28.1 MB** | 35x + 1 MB |
 | check | 100,729,448 | 156,376,416 | **55.6 MB** | 65x + 1 MB |
-| lower | (not yet measured in text-streaming path) | | | 48x + 1 MB |
+| lower | 90.9 MB | 457 MB | 91 MB | S × 300 + 1 MB |
+| resolve | 7.7 MB | 438 MB | 8 MB | S × 200 + 1 MB |
+| lift | 16.3 MB | 445 MB | 16 MB | S × 200 + 1 MB |
 | **total (5 phases)** | | | **148.6 MB** | |
 
 Bivy usage: 16 bytes per phase (the PhaseStart record). All real allocations go to the deck via `deck-record`. Strikes reclaim bivy only.
@@ -346,7 +353,7 @@ Key observations:
 - **Memory reduced from 260 MB to ~149 MB** — per-phase builds right-sized from measurements, each with ~10% headroom.
 - **Check is the heaviest phase** (55.6 MB) — type inference allocates extensively. Scope (28 MB) and lex (27 MB) are next.
 - **Deck-pos cascades correctly** — each phase starts where the previous sealed its deck.
-- **Emitter wall enforced** — `emit-build` gives the emitter its own deck for IR rewrites. Frontend deck is read-only to the emitter.
+- **Emitter wall enforced** — `emit-build` gives the emitter its own deck. ConstructedTy resolution and lambda lifting run in dedicated frontend phases (RESOLVE, LIFT) with their own compact cycles. The emitter receives pre-resolved, pre-lifted IR.
 - **Phase-measure/phase-compact split** — metrics captured while bivy is live, result sealed on deck, then compact. No allocations after compact.
 
 ### Emitter encapsulation status
