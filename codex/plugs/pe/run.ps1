@@ -127,6 +127,9 @@ try {
 } finally {
     if ($listener.Server.IsBound) { try { $listener.Stop() } catch {} }
     if ($run) {
+        Write-Host "[pe-run] VM stderr:"
+        Copy-Item $run.StderrFile "test-output/vm-stderr.txt" -Force -ErrorAction SilentlyContinue
+        Get-Content $run.StderrFile -Tail 40 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $_" }
         Close-Vm -Conn $run.Conn -Process $run.Process
         Remove-Item -Force $run.StdoutFile, $run.StderrFile -ErrorAction SilentlyContinue
     }
