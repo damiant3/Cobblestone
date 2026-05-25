@@ -1,0 +1,337 @@
+Chapter: ChainCore
+  cites CodexMagic chapter Auth
+  cites Foreword chapter Maybe
+
+ Block structure and hash chain for the ManaCoin main chain.
+ Blocks contain transactions, are hash-linked, and signed by
+ the validator (us). This is a permissioned chain — we produce
+ blocks, clans produce sidechain blocks. The chain is the
+ immutable audit trail that backs the in-memory ledger.
+
+ We say:
+
+Section: Cryptographic Primitives
+
+  Hash256 = record {
+    h0 : Integer,
+    h1 : Integer,
+    h2 : Integer,
+    h3 : Integer
+  }
+
+  hash-zero : Hash256
+  hash-zero = Hash256 { h0 = 0, h1 = 0, h2 = 0, h3 = 0 }
+
+  hash-eq : Hash256, Hash256 -> Boolean
+  hash-eq (a) (b) = a.h0 == b.h0 & a.h1 == b.h1 & a.h2 == b.h2 & a.h3 == b.h3
+
+  hash-combine : Hash256, Integer -> Hash256
+  hash-combine (h) (val) =
+    let mixed = val * 2654435761
+    in let x0 = bit-xor (h.h0 * 31 + mixed) (h.h1)
+    in let x1 = bit-xor (h.h1 * 37 + mixed) (h.h2)
+    in let x2 = bit-xor (h.h2 * 41 + mixed) (h.h3)
+    in let x3 = bit-xor (h.h3 * 43 + mixed) (h.h0)
+    in Hash256 { h0 = x0, h1 = x1, h2 = x2, h3 = x3 }
+
+  hash-combine-text : Hash256, Text -> Hash256
+  hash-combine-text (h) (t) =
+    hash-text-loop h t 0 (text-length t)
+
+  hash-text-loop : Hash256, Text, Integer, Integer -> Hash256
+  hash-text-loop (h) (t) (i) (len) =
+    if i >= len then h
+    else let c = char-code (char-at t i)
+    in hash-text-loop (hash-combine h c) t (i + 1) len
+
+  hash-finalize : Hash256 -> Hash256
+  hash-finalize (h) =
+    let f0 = bit-xor h.h0 (h.h0 / 65536)
+    in let f1 = bit-xor h.h1 (h.h1 / 65536)
+    in let f2 = bit-xor h.h2 (h.h2 / 65536)
+    in let f3 = bit-xor h.h3 (h.h3 / 65536)
+    in Hash256 { h0 = f0 * 2246822519, h1 = f1 * 2246822519, h2 = f2 * 2246822519, h3 = f3 * 2246822519 }
+
+Section: Transactions
+
+  ChainTx = record {
+    tx-hash : Hash256,
+    sender : Integer,
+    receiver : Integer,
+    amount : Integer,
+    tx-type : ChainTxType,
+    nonce : Integer,
+    timestamp : Integer,
+    sig-high : Integer,
+    sig-low : Integer,
+    data-field : Integer
+  }
+
+  ChainTxType =
+    | TxTransfer
+    | TxMint
+    | TxBurn
+    | TxPackCrack
+    | TxTradeSettle
+    | TxBridgeLock
+    | TxBridgeRelease
+    | TxStake
+    | TxReward
+    | TxFee
+
+  tx-type-id : ChainTxType -> Integer
+  tx-type-id (t) =
+    when t
+      is TxTransfer -> 1
+      is TxMint -> 2
+      is TxBurn -> 3
+      is TxPackCrack -> 4
+      is TxTradeSettle -> 5
+      is TxBridgeLock -> 6
+      is TxBridgeRelease -> 7
+      is TxStake -> 8
+      is TxReward -> 9
+      is TxFee -> 10
+
+  compute-tx-hash : Integer, Integer, Integer, Integer, Integer, Integer -> Hash256
+  compute-tx-hash (sender) (receiver) (amount) (tx-type) (nonce) (timestamp) =
+    let h = hash-combine hash-zero sender
+    in let h2 = hash-combine h receiver
+    in let h3 = hash-combine h2 amount
+    in let h4 = hash-combine h3 tx-type
+    in let h5 = hash-combine h4 nonce
+    in let h6 = hash-combine h5 timestamp
+    in hash-finalize h6
+
+  create-tx : Integer, Integer, Integer, ChainTxType, Integer, Integer, Integer, Integer -> ChainTx
+  create-tx (sender) (receiver) (amount) (ttype) (nonce) (timestamp) (sig-high) (sig-low) =
+    let h = compute-tx-hash sender receiver amount (tx-type-id ttype) nonce timestamp
+    in ChainTx { tx-hash = h, sender = sender, receiver = receiver, amount = amount, tx-type = ttype, nonce = nonce, timestamp = timestamp, sig-high = sig-high, sig-low = sig-low, data-field = 0 }
+
+Section: Block Structure
+
+  BlockHeader = record {
+    block-height : Integer,
+    prev-hash : Hash256,
+    timestamp : Integer,
+    tx-count : Integer,
+    merkle-root : Hash256,
+    validator : Integer,
+    validator-sig-high : Integer,
+    validator-sig-low : Integer
+  }
+
+  Block = record {
+    header : BlockHeader,
+    transactions : List ChainTx,
+    block-hash : Hash256
+  }
+
+  compute-block-hash : BlockHeader -> Hash256
+  compute-block-hash (hdr) =
+    let h = hash-combine hash-zero (hdr.block-height)
+    in let h2 = hash-combine h (hdr.prev-hash.h0)
+    in let h3 = hash-combine h2 (hdr.prev-hash.h1)
+    in let h4 = hash-combine h3 (hdr.timestamp)
+    in let h5 = hash-combine h4 (hdr.tx-count)
+    in let h6 = hash-combine h5 (hdr.merkle-root.h0)
+    in let h7 = hash-combine h6 (hdr.merkle-root.h1)
+    in let h8 = hash-combine h7 (hdr.validator)
+    in hash-finalize h8
+
+Section: Merkle Tree
+
+  compute-merkle-root : List ChainTx, Integer, Integer -> Hash256
+  compute-merkle-root (txs) (i) (len) =
+    if len == 0 then hash-zero
+    else if len == 1 then (list-at txs 0).tx-hash
+    else merkle-fold txs 0 len hash-zero
+
+  merkle-fold : List ChainTx, Integer, Integer, Hash256 -> Hash256
+  merkle-fold (txs) (i) (len) (acc) =
+    if i >= len then hash-finalize acc
+    else let tx = list-at txs i
+    in let combined = hash-combine (hash-combine acc (tx.tx-hash.h0)) (tx.tx-hash.h1)
+    in merkle-fold txs (i + 1) len combined
+
+Section: Block Creation
+
+  create-block : Integer, Hash256, List ChainTx, Integer, Integer, Integer, Integer -> Block
+  create-block (height) (prev-hash) (txs) (validator) (timestamp) (val-sig-high) (val-sig-low) =
+    let merkle = compute-merkle-root txs 0 (list-length txs)
+    in let hdr = BlockHeader { block-height = height, prev-hash = prev-hash, timestamp = timestamp, tx-count = list-length txs, merkle-root = merkle, validator = validator, validator-sig-high = val-sig-high, validator-sig-low = val-sig-low }
+    in let bhash = compute-block-hash hdr
+    in Block { header = hdr, transactions = txs, block-hash = bhash }
+
+Section: Genesis Block
+
+  genesis-block : Integer -> Block
+  genesis-block (timestamp) =
+    let platform-key-tx = create-tx 0 0 0 TxMint 0 timestamp 0 0
+    in create-block 0 hash-zero [platform-key-tx] 0 timestamp 0 0
+
+Section: Chain State
+
+  ChainState = record {
+    blocks : List Block,
+    height : Integer,
+    tip-hash : Hash256,
+    total-txs : Integer,
+    accounts : List AccountState,
+    pending-pool : List ChainTx,
+    validator-key : Integer
+  }
+
+  AccountState = record {
+    account-id : Integer,
+    balance : Integer,
+    nonce : Integer,
+    last-active : Integer
+  }
+
+  chain-new : Integer -> ChainState
+  chain-new (timestamp) =
+    let gen = genesis-block timestamp
+    in ChainState {
+      blocks = [gen],
+      height = 0,
+      tip-hash = gen.block-hash,
+      total-txs = 1,
+      accounts = [],
+      pending-pool = [],
+      validator-key = 0
+    }
+
+Section: Block Validation
+
+  BlockValidation = record {
+    valid : Boolean,
+    reason : Text
+  }
+
+  validate-block : Block, Hash256, Integer -> BlockValidation
+  validate-block (block) (expected-prev-hash) (expected-height) =
+    if block.header.block-height /= expected-height then BlockValidation { valid = False, reason = "Wrong height" }
+    else if hash-eq (block.header.prev-hash) expected-prev-hash == False then BlockValidation { valid = False, reason = "Prev hash mismatch" }
+    else let recomputed = compute-block-hash (block.header)
+    in if hash-eq recomputed (block.block-hash) == False then BlockValidation { valid = False, reason = "Block hash mismatch" }
+    else let merkle-check = compute-merkle-root (block.transactions) 0 (list-length (block.transactions))
+    in if hash-eq merkle-check (block.header.merkle-root) == False then BlockValidation { valid = False, reason = "Merkle root mismatch" }
+    else BlockValidation { valid = True, reason = "" }
+
+Section: Chain Operations
+
+  submit-tx : ChainState, ChainTx -> ChainState
+  submit-tx (state) (tx) =
+    ChainState { blocks = state.blocks, height = state.height, tip-hash = state.tip-hash, total-txs = state.total-txs, accounts = state.accounts, pending-pool = list-push (state.pending-pool) tx, validator-key = state.validator-key }
+
+  produce-block : ChainState, Integer, Integer, Integer -> ChainState
+  produce-block (state) (timestamp) (val-sig-high) (val-sig-low) =
+    if list-length (state.pending-pool) == 0 then state
+    else let new-height = state.height + 1
+    in let block = create-block new-height (state.tip-hash) (state.pending-pool) (state.validator-key) timestamp val-sig-high val-sig-low
+    in let accounts2 = apply-block-txs (state.accounts) (state.pending-pool) 0 (list-length (state.pending-pool))
+    in ChainState {
+      blocks = list-push (state.blocks) block,
+      height = new-height,
+      tip-hash = block.block-hash,
+      total-txs = state.total-txs + list-length (state.pending-pool),
+      accounts = accounts2,
+      pending-pool = [],
+      validator-key = state.validator-key
+    }
+
+  apply-block-txs : List AccountState, List ChainTx, Integer, Integer -> List AccountState
+  apply-block-txs (accounts) (txs) (i) (len) =
+    if i >= len then accounts
+    else let tx = list-at txs i
+    in let accounts2 = apply-single-tx accounts tx
+    in apply-block-txs accounts2 txs (i + 1) len
+
+  apply-single-tx : List AccountState, ChainTx -> List AccountState
+  apply-single-tx (accounts) (tx) =
+    when tx.tx-type
+      is TxMint -> credit-account accounts (tx.receiver) (tx.amount) (tx.timestamp)
+      is TxBurn -> debit-account accounts (tx.sender) (tx.amount) (tx.timestamp)
+      is TxTransfer -> transfer-accounts accounts (tx.sender) (tx.receiver) (tx.amount) (tx.timestamp)
+      is TxPackCrack -> debit-account accounts (tx.sender) (tx.amount) (tx.timestamp)
+      is TxTradeSettle -> transfer-accounts accounts (tx.sender) (tx.receiver) (tx.amount) (tx.timestamp)
+      is TxBridgeLock -> debit-account accounts (tx.sender) (tx.amount) (tx.timestamp)
+      is TxBridgeRelease -> credit-account accounts (tx.receiver) (tx.amount) (tx.timestamp)
+      is TxStake -> debit-account accounts (tx.sender) (tx.amount) (tx.timestamp)
+      is TxReward -> credit-account accounts (tx.receiver) (tx.amount) (tx.timestamp)
+      is TxFee -> debit-account accounts (tx.sender) (tx.amount) (tx.timestamp)
+
+Section: Account Operations
+
+  get-account-state : List AccountState, Integer -> AccountState
+  get-account-state (accounts) (id) =
+    find-account-state accounts id 0 (list-length accounts)
+
+  find-account-state : List AccountState, Integer, Integer, Integer -> AccountState
+  find-account-state (accounts) (id) (i) (len) =
+    if i >= len then AccountState { account-id = id, balance = 0, nonce = 0, last-active = 0 }
+    else let a = list-at accounts i
+    in if a.account-id == id then a
+    else find-account-state accounts id (i + 1) len
+
+  credit-account : List AccountState, Integer, Integer, Integer -> List AccountState
+  credit-account (accounts) (id) (amount) (time) =
+    upsert-account accounts id amount 0 time 0 (list-length accounts) [] False
+
+  debit-account : List AccountState, Integer, Integer, Integer -> List AccountState
+  debit-account (accounts) (id) (amount) (time) =
+    upsert-account accounts id (0 - amount) 0 time 0 (list-length accounts) [] False
+
+  transfer-accounts : List AccountState, Integer, Integer, Integer, Integer -> List AccountState
+  transfer-accounts (accounts) (from) (to) (amount) (time) =
+    let a2 = debit-account accounts from amount time
+    in credit-account a2 to amount time
+
+  upsert-account : List AccountState, Integer, Integer, Integer, Integer, Integer, Integer, List AccountState, Boolean -> List AccountState
+  upsert-account (accounts) (id) (delta) (nonce-inc) (time) (i) (len) (acc) (found) =
+    if i >= len then
+      if found then acc
+      else let new-bal = if delta > 0 then delta else 0
+      in list-push acc (AccountState { account-id = id, balance = new-bal, nonce = nonce-inc, last-active = time })
+    else let a = list-at accounts i
+    in if a.account-id == id then
+      let new-bal = a.balance + delta
+      in let safe-bal = if new-bal < 0 then 0 else new-bal
+      in upsert-account accounts id delta nonce-inc time (i + 1) len (list-push acc (AccountState { account-id = id, balance = safe-bal, nonce = a.nonce + 1, last-active = time })) True
+    else upsert-account accounts id delta nonce-inc time (i + 1) len (list-push acc a) found
+
+Section: Chain Queries
+
+  get-balance : ChainState, Integer -> Integer
+  get-balance (state) (account-id) =
+    let acct = get-account-state (state.accounts) account-id
+    in acct.balance
+
+  get-nonce : ChainState, Integer -> Integer
+  get-nonce (state) (account-id) =
+    let acct = get-account-state (state.accounts) account-id
+    in acct.nonce
+
+  get-block-at : ChainState, Integer -> Block
+  get-block-at (state) (height) =
+    if height > state.height then genesis-block 0
+    else if height >= list-length (state.blocks) then genesis-block 0
+    else list-at (state.blocks) height
+
+  pending-count : ChainState -> Integer
+  pending-count (state) = list-length (state.pending-pool)
+
+  chain-stats : ChainState -> ChainStats
+  chain-stats (state) =
+    ChainStats { height = state.height, total-txs = state.total-txs, accounts = list-length (state.accounts), pending = list-length (state.pending-pool), tip-hash = state.tip-hash }
+
+  ChainStats = record {
+    height : Integer,
+    total-txs : Integer,
+    accounts : Integer,
+    pending : Integer,
+    tip-hash : Hash256
+  }
+
+Page 1

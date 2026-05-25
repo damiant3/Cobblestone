@@ -1,0 +1,237 @@
+Chapter: Binding
+  cites UI chapter Theme
+  cites UI chapter BoxModel
+  cites UI chapter Widget
+
+ Reactive data binding. An Observable holds a value and a list of
+ bindings. When the value changes, all bound targets get notified
+ via a pending-updates list. The orchestrator drains this list each
+ tick to update widgets.
+
+Section: Observable
+  Observable = record {
+    obs-id : Text,
+    obs-value : Integer,
+    obs-prev : Integer,
+    obs-dirty : Boolean
+  }
+
+  ObsText = record {
+    ot-id : Text,
+    ot-value : Text,
+    ot-prev : Text,
+    ot-dirty : Boolean
+  }
+
+Section: Binding
+  BindingKind =
+    | BindLabel (Text)
+    | BindGauge (Text)
+    | BindVisible (Text)
+    | BindState (Text)
+    | BindCustom (Text) (Text)
+
+  Binding = record {
+    bd-source : Text,
+    bd-target : BindingKind,
+    bd-transform : Integer
+  }
+
+Section: Binding Table
+  BindingTable = record {
+    bt-observables : List Observable,
+    bt-obs-count : Integer,
+    bt-text-obs : List ObsText,
+    bt-text-count : Integer,
+    bt-bindings : List Binding,
+    bt-bind-count : Integer
+  }
+
+Section: Construction
+  observable : Text, Integer -> Observable
+  observable (id) (val) =
+    Observable { obs-id = id, obs-value = val, obs-prev = val, obs-dirty = False }
+
+  obs-text : Text, Text -> ObsText
+  obs-text (id) (val) =
+    ObsText { ot-id = id, ot-value = val, ot-prev = val, ot-dirty = False }
+
+  binding-table-new : BindingTable
+  binding-table-new =
+    BindingTable { bt-observables = [], bt-obs-count = 0, bt-text-obs = [], bt-text-count = 0, bt-bindings = [], bt-bind-count = 0 }
+
+Section: Observable Management
+  bt-add-obs : BindingTable, Observable -> BindingTable
+  bt-add-obs (bt) (obs) =
+    BindingTable {
+      bt-observables = list-push (bt.bt-observables) obs,
+      bt-obs-count = bt.bt-obs-count + 1,
+      bt-text-obs = bt.bt-text-obs, bt-text-count = bt.bt-text-count,
+      bt-bindings = bt.bt-bindings, bt-bind-count = bt.bt-bind-count
+    }
+
+  bt-add-text-obs : BindingTable, ObsText -> BindingTable
+  bt-add-text-obs (bt) (ot) =
+    BindingTable {
+      bt-observables = bt.bt-observables, bt-obs-count = bt.bt-obs-count,
+      bt-text-obs = list-push (bt.bt-text-obs) ot,
+      bt-text-count = bt.bt-text-count + 1,
+      bt-bindings = bt.bt-bindings, bt-bind-count = bt.bt-bind-count
+    }
+
+  bt-add-binding : BindingTable, Binding -> BindingTable
+  bt-add-binding (bt) (b) =
+    BindingTable {
+      bt-observables = bt.bt-observables, bt-obs-count = bt.bt-obs-count,
+      bt-text-obs = bt.bt-text-obs, bt-text-count = bt.bt-text-count,
+      bt-bindings = list-push (bt.bt-bindings) b,
+      bt-bind-count = bt.bt-bind-count + 1
+    }
+
+Section: Value Updates
+  bt-set : BindingTable, Text, Integer -> BindingTable
+  bt-set (bt) (id) (val) =
+    let updated = bt-set-obs (bt.bt-observables) id val 0 (bt.bt-obs-count) []
+    in BindingTable {
+      bt-observables = updated, bt-obs-count = bt.bt-obs-count,
+      bt-text-obs = bt.bt-text-obs, bt-text-count = bt.bt-text-count,
+      bt-bindings = bt.bt-bindings, bt-bind-count = bt.bt-bind-count
+    }
+
+  bt-set-obs : List Observable, Text, Integer, Integer, Integer, List Observable -> List Observable
+  bt-set-obs (obs) (id) (val) (i) (n) (acc) =
+    if i >= n then acc
+    else let o = list-at obs i
+    in if o.obs-id == id then
+      let updated = Observable { obs-id = o.obs-id, obs-value = val, obs-prev = o.obs-value, obs-dirty = True }
+      in bt-set-obs obs id val (i + 1) n (list-push acc updated)
+    else bt-set-obs obs id val (i + 1) n (list-push acc o)
+
+  bt-set-text : BindingTable, Text, Text -> BindingTable
+  bt-set-text (bt) (id) (val) =
+    let updated = bt-set-text-obs (bt.bt-text-obs) id val 0 (bt.bt-text-count) []
+    in BindingTable {
+      bt-observables = bt.bt-observables, bt-obs-count = bt.bt-obs-count,
+      bt-text-obs = updated, bt-text-count = bt.bt-text-count,
+      bt-bindings = bt.bt-bindings, bt-bind-count = bt.bt-bind-count
+    }
+
+  bt-set-text-obs : List ObsText, Text, Text, Integer, Integer, List ObsText -> List ObsText
+  bt-set-text-obs (obs) (id) (val) (i) (n) (acc) =
+    if i >= n then acc
+    else let o = list-at obs i
+    in if o.ot-id == id then
+      let updated = ObsText { ot-id = o.ot-id, ot-value = val, ot-prev = o.ot-value, ot-dirty = True }
+      in bt-set-text-obs obs id val (i + 1) n (list-push acc updated)
+    else bt-set-text-obs obs id val (i + 1) n (list-push acc o)
+
+Section: Queries
+  bt-get : BindingTable, Text -> Integer
+  bt-get (bt) (id) = bt-get-loop (bt.bt-observables) id 0 (bt.bt-obs-count)
+
+  bt-get-loop : List Observable, Text, Integer, Integer -> Integer
+  bt-get-loop (obs) (id) (i) (n) =
+    if i >= n then 0
+    else let o = list-at obs i
+    in if o.obs-id == id then o.obs-value
+    else bt-get-loop obs id (i + 1) n
+
+  bt-get-text : BindingTable, Text -> Text
+  bt-get-text (bt) (id) = bt-get-text-loop (bt.bt-text-obs) id 0 (bt.bt-text-count)
+
+  bt-get-text-loop : List ObsText, Text, Integer, Integer -> Text
+  bt-get-text-loop (obs) (id) (i) (n) =
+    if i >= n then ""
+    else let o = list-at obs i
+    in if o.ot-id == id then o.ot-value
+    else bt-get-text-loop obs id (i + 1) n
+
+  bt-is-dirty : BindingTable, Text -> Boolean
+  bt-is-dirty (bt) (id) = bt-dirty-loop (bt.bt-observables) id 0 (bt.bt-obs-count)
+
+  bt-dirty-loop : List Observable, Text, Integer, Integer -> Boolean
+  bt-dirty-loop (obs) (id) (i) (n) =
+    if i >= n then False
+    else let o = list-at obs i
+    in if o.obs-id == id then o.obs-dirty
+    else bt-dirty-loop obs id (i + 1) n
+
+Section: Dirty Collection
+  PendingUpdate = record {
+    pu-target-kind : BindingKind,
+    pu-int-value : Integer,
+    pu-text-value : Text
+  }
+
+  bt-collect-dirty : BindingTable -> List PendingUpdate
+  bt-collect-dirty (bt) =
+    bt-collect-loop (bt.bt-bindings) (bt.bt-observables) (bt.bt-obs-count) 0 (bt.bt-bind-count) []
+
+  bt-collect-loop : List Binding, List Observable, Integer, Integer, Integer, List PendingUpdate -> List PendingUpdate
+  bt-collect-loop (bindings) (obs) (obs-count) (i) (n) (acc) =
+    if i >= n then acc
+    else let b = list-at bindings i
+    in let dirty = bt-source-dirty obs (b.bd-source) 0 obs-count
+    in if dirty then
+      let val = bt-source-value obs (b.bd-source) 0 obs-count
+      in let pu = PendingUpdate { pu-target-kind = b.bd-target, pu-int-value = val, pu-text-value = "" }
+      in bt-collect-loop bindings obs obs-count (i + 1) n (list-push acc pu)
+    else bt-collect-loop bindings obs obs-count (i + 1) n acc
+
+  bt-source-dirty : List Observable, Text, Integer, Integer -> Boolean
+  bt-source-dirty (obs) (id) (i) (n) =
+    if i >= n then False
+    else let o = list-at obs i
+    in if o.obs-id == id then o.obs-dirty
+    else bt-source-dirty obs id (i + 1) n
+
+  bt-source-value : List Observable, Text, Integer, Integer -> Integer
+  bt-source-value (obs) (id) (i) (n) =
+    if i >= n then 0
+    else let o = list-at obs i
+    in if o.obs-id == id then o.obs-value
+    else bt-source-value obs id (i + 1) n
+
+Section: Clean
+  bt-clean : BindingTable -> BindingTable
+  bt-clean (bt) =
+    let cleaned = bt-clean-obs (bt.bt-observables) 0 (bt.bt-obs-count) []
+    in let cleaned-t = bt-clean-text (bt.bt-text-obs) 0 (bt.bt-text-count) []
+    in BindingTable {
+      bt-observables = cleaned, bt-obs-count = bt.bt-obs-count,
+      bt-text-obs = cleaned-t, bt-text-count = bt.bt-text-count,
+      bt-bindings = bt.bt-bindings, bt-bind-count = bt.bt-bind-count
+    }
+
+  bt-clean-obs : List Observable, Integer, Integer, List Observable -> List Observable
+  bt-clean-obs (obs) (i) (n) (acc) =
+    if i >= n then acc
+    else let o = list-at obs i
+    in let cleaned = Observable { obs-id = o.obs-id, obs-value = o.obs-value, obs-prev = o.obs-value, obs-dirty = False }
+    in bt-clean-obs obs (i + 1) n (list-push acc cleaned)
+
+  bt-clean-text : List ObsText, Integer, Integer, List ObsText -> List ObsText
+  bt-clean-text (obs) (i) (n) (acc) =
+    if i >= n then acc
+    else let o = list-at obs i
+    in let cleaned = ObsText { ot-id = o.ot-id, ot-value = o.ot-value, ot-prev = o.ot-value, ot-dirty = False }
+    in bt-clean-text obs (i + 1) n (list-push acc cleaned)
+
+Section: Binding Construction Helpers
+  bind-to-label : Text, Text -> Binding
+  bind-to-label (source) (widget-id) =
+    Binding { bd-source = source, bd-target = BindLabel widget-id, bd-transform = 0 }
+
+  bind-to-gauge : Text, Text -> Binding
+  bind-to-gauge (source) (widget-id) =
+    Binding { bd-source = source, bd-target = BindGauge widget-id, bd-transform = 0 }
+
+  bind-to-visible : Text, Text -> Binding
+  bind-to-visible (source) (widget-id) =
+    Binding { bd-source = source, bd-target = BindVisible widget-id, bd-transform = 0 }
+
+  bind-to-state : Text, Text -> Binding
+  bind-to-state (source) (widget-id) =
+    Binding { bd-source = source, bd-target = BindState widget-id, bd-transform = 0 }
+
+Page 1

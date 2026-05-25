@@ -1,0 +1,132 @@
+Chapter: Format
+
+ Text formatting utilities — pad, align, repeat, join lists with
+ separators, number formatting with commas and fixed widths. Builds
+ on show and integer-to-text for structured output.
+
+ To fmt-pad-left gives text padded on the left to a minimum width.
+ To fmt-pad-right gives text padded on the right to a minimum width.
+ To fmt-center gives text centered within a width.
+ To fmt-repeat gives a string repeated N times.
+ To fmt-join gives list elements joined with a separator.
+ To fmt-commas gives an integer with comma-separated thousands.
+ To fmt-hex gives an integer as a hexadecimal string.
+ To fmt-fixed-width gives an integer right-aligned in a field.
+
+ We say:
+
+Section: Padding
+
+  fmt-pad-left : Text, Integer, Text -> Text
+  fmt-pad-left (s) (width) (fill) =
+    let deficit = width - text-length s
+    in if deficit <= 0 then s
+    else fmt-repeat fill deficit & s
+
+  fmt-pad-right : Text, Integer, Text -> Text
+  fmt-pad-right (s) (width) (fill) =
+    let deficit = width - text-length s
+    in if deficit <= 0 then s
+    else s & fmt-repeat fill deficit
+
+  fmt-center : Text, Integer, Text -> Text
+  fmt-center (s) (width) (fill) =
+    let deficit = width - text-length s
+    in if deficit <= 0 then s
+    else let left = deficit / 2
+    in let right = deficit - left
+    in fmt-repeat fill left & s & fmt-repeat fill right
+
+Section: Repeat
+
+  fmt-repeat : Text, Integer -> Text
+  fmt-repeat (s) (n) = fmt-repeat-loop s n ""
+
+  fmt-repeat-loop : Text, Integer, Text -> Text
+  fmt-repeat-loop (s) (n) (acc) =
+    if n <= 0 then acc
+    else fmt-repeat-loop s (n - 1) (acc & s)
+
+Section: Join
+
+  fmt-join : List Text, Text -> Text
+  fmt-join (xs) (sep) = fmt-join-loop xs sep 0 (list-length xs) ""
+
+  fmt-join-loop : List Text, Text, Integer, Integer, Text -> Text
+  fmt-join-loop (xs) (sep) (i) (len) (acc) =
+    if i >= len then acc
+    else let prefix = if i == 0 then "" else sep
+    in fmt-join-loop xs sep (i + 1) len (acc & prefix & list-at xs i)
+
+  fmt-join-ints : List Integer, Text -> Text
+  fmt-join-ints (xs) (sep) = fmt-join-ints-loop xs sep 0 (list-length xs) ""
+
+  fmt-join-ints-loop : List Integer, Text, Integer, Integer, Text -> Text
+  fmt-join-ints-loop (xs) (sep) (i) (len) (acc) =
+    if i >= len then acc
+    else let prefix = if i == 0 then "" else sep
+    in fmt-join-ints-loop xs sep (i + 1) len (acc & prefix & show (list-at xs i))
+
+Section: Number Formatting
+
+  fmt-commas : Integer -> Text
+  fmt-commas (n) =
+    if n < 0 then "-" & fmt-commas (0 - n)
+    else let raw = show n
+    in fmt-insert-commas raw
+
+  fmt-insert-commas : Text -> Text
+  fmt-insert-commas (s) =
+    let len = text-length s
+    in if len <= 3 then s
+    else fmt-comma-loop s (len - 1) 0 ""
+
+  fmt-comma-loop : Text, Integer, Integer, Text -> Text
+  fmt-comma-loop (s) (i) (count) (acc) =
+    if i < 0 then acc
+    else let c = char-to-text (char-at s i)
+    in let sep = if count > 0 then if count - (count / 3) * 3 == 0 then "," else "" else ""
+    in fmt-comma-loop s (i - 1) (count + 1) (c & sep & acc)
+
+  fmt-fixed-width : Integer, Integer -> Text
+  fmt-fixed-width (n) (width) =
+    fmt-pad-left (show n) width " "
+
+Section: Hexadecimal
+
+  fmt-hex : Integer -> Text
+  fmt-hex (n) =
+    if n == 0 then "0"
+    else if n < 0 then "-" & fmt-hex (0 - n)
+    else fmt-hex-loop n ""
+
+  fmt-hex-loop : Integer, Text -> Text
+  fmt-hex-loop (n) (acc) =
+    if n == 0 then acc
+    else let digit = bit-and n 15
+    in let c = fmt-hex-digit digit
+    in fmt-hex-loop (bit-shru n 4) (c & acc)
+
+  fmt-hex-digit : Integer -> Text
+  fmt-hex-digit (d) =
+    if d < 10 then show d
+    else if d == 10 then "a"
+    else if d == 11 then "b"
+    else if d == 12 then "c"
+    else if d == 13 then "d"
+    else if d == 14 then "e"
+    else "f"
+
+  fmt-hex-pad : Integer, Integer -> Text
+  fmt-hex-pad (n) (width) =
+    fmt-pad-left (fmt-hex n) width "0"
+
+Section: Boolean and Maybe
+
+  fmt-bool : Boolean -> Text
+  fmt-bool (b) = if b then "true" else "false"
+
+  fmt-yes-no : Boolean -> Text
+  fmt-yes-no (b) = if b then "yes" else "no"
+
+Page 1

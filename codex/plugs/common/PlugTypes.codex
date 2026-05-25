@@ -1,0 +1,368 @@
+Chapter: Plug Types
+  cites Codex chapter General
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Numbers
+  cites Codex chapter Lists
+
+Section: Core Types
+  Name = record {
+   value : Text
+  }
+
+  make-name : Text -> Name
+  make-name (s) =
+   Name { value = s }
+
+  SourcePosition = record {
+   line : Integer between 0 and 65535,
+   column : Integer between 0 and 65535,
+   offset : Integer between 0 and 4294967295
+  }
+
+  SourceSpan = record {
+   start : SourcePosition,
+   end : SourcePosition,
+   file-id : Integer between 0 and 65535,
+   provenance : Provenance
+  }
+
+  Provenance =
+   | ProvParsed
+   | ProvDesugared
+   | ProvSynthetic
+
+  make-position : Integer, Integer, Integer -> SourcePosition
+  make-position (line) (col) (offset) =
+   deck-record (SourcePosition {
+    line = line,
+    column = col,
+    offset = offset
+   })
+
+  make-span : SourcePosition, SourcePosition, Integer, Provenance -> SourceSpan
+  make-span (s) (e) (fid) (prov) =
+   deck-record (SourceSpan {
+    start = s,
+    end = e,
+    file-id = fid,
+    provenance = prov
+   })
+
+  synthetic-span : SourceSpan
+  synthetic-span =
+   SourceSpan {
+    start = SourcePosition { line = 0, column = 0, offset = 0 },
+    end = SourcePosition { line = 0, column = 0, offset = 0 },
+    file-id = 0,
+    provenance = ProvSynthetic
+   }
+
+Section: Language Types
+  CodexType =
+   | IntegerTy (Integer) (Integer) (OverflowMode)
+   | NumberTy
+   | TextTy
+   | BooleanTy
+   | CharTy
+   | VoidTy
+   | NothingTy
+   | ErrorTy
+   | FunTy (CodexType) (CodexType)
+   | ListTy (CodexType)
+   | LinkedListTy (CodexType)
+   | TypeVar (Integer)
+   | ForAllTy (Integer) (CodexType)
+   | SumTy (Name) (List CodexType) (List SumCtor)
+   | RecordTy (Name) (List CodexType) (List RecordField)
+   | ConstructedTy (Name) (List CodexType)
+   | EffectfulTy (List Name) (List Text) (CodexType)
+
+  SumCtor = record {
+   name : Name,
+   fields : List CodexType
+  }
+
+  RecordField = record {
+   name : Name,
+   type-val : CodexType
+  }
+
+  OverflowMode =
+   | OvError
+   | OvWrapping
+   | OvClamping
+
+  i64-max : Integer = 9223372036854775807
+
+  i64-min : Integer = 0 - 9223372036854775807 - 1
+
+  int-ty-default : CodexType = IntegerTy i64-min i64-max OvError
+
+Section: AST Types
+  LiteralKind =
+   | IntLit
+   | NumLit
+   | TextLit
+   | CharLit
+   | BoolLit
+
+  BinaryOp =
+   | OpAdd
+   | OpSub
+   | OpMul
+   | OpDiv
+   | OpPow
+   | OpEq
+   | OpNotEq
+   | OpLt
+   | OpGt
+   | OpLtEq
+   | OpGtEq
+   | OpDefEq
+   | OpAppend
+   | OpCons
+   | OpAnd
+   | OpOr
+
+  AExpr =
+   | ALitExpr (Text) (LiteralKind) (SourceSpan)
+   | ANameExpr (Name) (SourceSpan)
+   | AApplyExpr (AExpr) (AExpr) (SourceSpan)
+   | ABinaryExpr (AExpr) (BinaryOp) (AExpr) (SourceSpan)
+   | AUnaryExpr (AExpr) (SourceSpan)
+   | AIfExpr (AExpr) (AExpr) (AExpr) (SourceSpan)
+   | ALetExpr (List ALetBind) (AExpr) (SourceSpan)
+   | ALambdaExpr (List Name) (AExpr) (SourceSpan)
+   | AMatchExpr (AExpr) (List AMatchArm) (SourceSpan)
+   | AListExpr (List AExpr) (SourceSpan)
+   | ARecordExpr (Name) (List AFieldExpr) (SourceSpan)
+   | AFieldAccess (AExpr) (Name) (SourceSpan)
+   | AActExpr (List AActStmt) (SourceSpan)
+   | AHandleExpr (Name) (AExpr) (List AHandleClause) (SourceSpan)
+   | AWithTimeoutExpr (Text) (List Name) (List Text) (AExpr) (SourceSpan)
+   | ATryExpr (Integer) (List AActStmt) (List AActStmt) (List AActStmt) (SourceSpan)
+   | AErrorExpr (Text) (SourceSpan)
+
+  ALetBind = record {
+   name : Name,
+   value : AExpr,
+   span : SourceSpan
+  }
+
+  AMatchArm = record {
+   pattern : APat,
+   body : AExpr,
+   span : SourceSpan
+  }
+
+  AFieldExpr = record {
+   name : Name,
+   value : AExpr,
+   span : SourceSpan
+  }
+
+  AActStmt =
+   | AActBindStmt (Name) (AExpr) (SourceSpan)
+   | AActExprStmt (AExpr) (SourceSpan)
+
+  AHandleClause = record {
+   op-name : Name,
+   params : List Name,
+   resume-name : Name,
+   body : AExpr,
+   span : SourceSpan
+  }
+
+  APat =
+   | AVarPat (Name) (SourceSpan)
+   | ALitPat (Text) (LiteralKind) (SourceSpan)
+   | ACtorPat (Name) (List APat) (SourceSpan)
+   | AWildPat (SourceSpan)
+
+  ATypeExpr =
+   | ANamedType (Name) (SourceSpan)
+   | AFunType (ATypeExpr) (ATypeExpr) (SourceSpan)
+   | AAppType (ATypeExpr) (List ATypeExpr) (SourceSpan)
+   | AEffectType (List Name) (List Text) (ATypeExpr) (SourceSpan)
+   | ABoundedIntType (ATypeExpr) (Integer) (Integer) (OverflowMode) (SourceSpan)
+
+  AParam = record {
+   name : Name,
+   span : SourceSpan
+  }
+
+  ADef = record {
+   name : Name,
+   params : List AParam,
+   declared-type : List ATypeExpr,
+   body : AExpr,
+   chapter-slug : Text,
+   span : SourceSpan
+  }
+
+  ARecordFieldDef = record {
+   name : Name,
+   type-expr : ATypeExpr,
+   span : SourceSpan
+  }
+
+  AVariantCtorDef = record {
+   name : Name,
+   fields : List ATypeExpr,
+   span : SourceSpan
+  }
+
+  ATypeDef =
+   | ARecordTypeDef (Name) (List Name) (List ARecordFieldDef) (SourceSpan)
+   | AVariantTypeDef (Name) (List Name) (List AVariantCtorDef) (SourceSpan)
+
+Section: IR Types
+  IRBinaryOp =
+   | IrAddInt | IrSubInt | IrMulInt | IrDivInt | IrPowInt
+   | IrAddNum | IrSubNum | IrMulNum | IrDivNum
+   | IrEq | IrNotEq | IrLt | IrGt | IrLtEq | IrGtEq
+   | IrAnd | IrOr
+   | IrAppendText | IrAppendList
+   | IrConsList
+
+  IRExpr =
+   | IrIntLit (Integer) (SourceSpan)
+   | IrNumLit (Integer) (SourceSpan)
+   | IrTextLit (Text) (SourceSpan)
+   | IrBoolLit (Boolean) (SourceSpan)
+   | IrCharLit (Integer) (SourceSpan)
+   | IrName (Text) (CodexType) (SourceSpan)
+   | IrBinary (IRBinaryOp) (IRExpr) (IRExpr) (CodexType) (SourceSpan)
+   | IrNegate (IRExpr) (SourceSpan)
+   | IrIf (IRExpr) (IRExpr) (IRExpr) (CodexType) (SourceSpan)
+   | IrLet (Text) (CodexType) (IRExpr) (IRExpr) (SourceSpan)
+   | IrApply (IRExpr) (IRExpr) (CodexType) (SourceSpan)
+   | IrLambda (List IRParam) (IRExpr) (CodexType) (SourceSpan)
+   | IrList (List IRExpr) (CodexType) (SourceSpan)
+   | IrMatch (IRExpr) (List IRBranch) (CodexType) (SourceSpan)
+   | IrAct (List IRActStmt) (CodexType) (SourceSpan)
+   | IrHandle (Text) (IRExpr) (List IRHandleClause) (CodexType) (SourceSpan)
+   | IrWithTimeout (Integer) (List Text) (List Text) (IRExpr) (CodexType) (SourceSpan)
+   | IrRecord (Text) (List IRFieldVal) (CodexType) (SourceSpan)
+   | IrFieldAccess (IRExpr) (Text) (CodexType) (SourceSpan)
+   | IrFieldStore (IRExpr) (Text) (IRExpr) (CodexType) (SourceSpan)
+   | IrFork (IRExpr) (CodexType) (SourceSpan)
+   | IrAwait (IRExpr) (CodexType) (SourceSpan)
+   | IrTry (Integer) (List IRActStmt) (List IRActStmt) (List IRActStmt) (CodexType) (SourceSpan)
+   | IrError (Text) (CodexType) (SourceSpan)
+
+  IRParam = record {
+   name : Text,
+   type-val : CodexType,
+   span : SourceSpan
+  }
+
+  IRBranch = record {
+   pattern : IRPat,
+   body : IRExpr,
+   span : SourceSpan
+  }
+
+  IRPat =
+   | IrVarPat (Text) (CodexType) (SourceSpan)
+   | IrLitPat (Text) (CodexType) (SourceSpan)
+   | IrCtorPat (Text) (List IRPat) (CodexType) (SourceSpan)
+   | IrWildPat (SourceSpan)
+
+  IRActStmt =
+   | IrDoBind (Text) (CodexType) (IRExpr) (SourceSpan)
+   | IrDoExec (IRExpr) (SourceSpan)
+
+  IRHandleClause = record {
+   op-name : Text,
+   params : List Text,
+   resume-name : Text,
+   body : IRExpr,
+   span : SourceSpan
+  }
+
+  IRFieldVal = record {
+   name : Text,
+   value : IRExpr,
+   span : SourceSpan
+  }
+
+  IRDef = record {
+   name : Text,
+   params : List IRParam,
+   type-val : CodexType,
+   body : IRExpr,
+   chapter-slug : Text,
+   span : SourceSpan
+  }
+
+  IRChapter = record {
+   name : Name,
+   defs : List IRDef,
+   chapter-title : Text,
+   prose : Text,
+   section-titles : List Text,
+   ctor-names : List Text,
+   effect-op-names : List Text,
+   span : SourceSpan
+  }
+
+  ir-expr-type : IRExpr -> CodexType
+  ir-expr-type (e) =
+   when e
+    is IrIntLit (v) (s) -> int-ty-default
+    is IrNumLit (v) (s) -> NumberTy
+    is IrTextLit (v) (s) -> TextTy
+    is IrBoolLit (v) (s) -> BooleanTy
+    is IrCharLit (v) (s) -> CharTy
+    is IrName (n) (t) (s) -> t
+    is IrBinary (op) (l) (r) (t) (s) -> t
+    is IrNegate (x) (s) -> int-ty-default
+    is IrIf (c) (th) (el) (t) (s) -> t
+    is IrLet (n) (t) (v) (b) (s) -> ir-expr-type b
+    is IrApply (f) (a) (t) (s) -> t
+    is IrLambda (ps) (b) (t) (s) -> t
+    is IrList (es) (t) (s) -> ListTy t
+    is IrMatch (sc) (bs) (t) (s) -> t
+    is IrAct (ss) (t) (s) -> t
+    is IrHandle (eff) (h) (cs) (t) (s) -> t
+    is IrWithTimeout (secs) (effs) (scopes) (body) (t) (s) -> t
+    is IrRecord (n) (fs) (t) (s) -> t
+    is IrFieldAccess (r) (f) (t) (s) -> t
+    is IrFieldStore (r) (f) (v) (t) (s) -> t
+    is IrFork (body) (t) (s) -> t
+    is IrAwait (task) (t) (s) -> t
+    is IrTry (max) (body) (fb) (fail) (t) (s) -> t
+    is IrError (m) (t) (s) -> t
+
+Section: Emitter Helpers
+  ApplyChain = record {
+   root : IRExpr,
+   args : List IRExpr
+  }
+
+  collect-apply-chain : IRExpr, List IRExpr -> ApplyChain
+  collect-apply-chain (e) (acc) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> collect-apply-chain f ([a] & acc)
+    is otherwise -> ApplyChain {
+     root = e,
+     args = acc
+    }
+
+  strip-fun-args : CodexType -> CodexType
+  strip-fun-args (ty) =
+   when ty
+    is FunTy (p) (r) -> strip-fun-args r
+    is ForAllTy (id) (body) -> strip-fun-args body
+    is otherwise -> ty
+
+Section: Plug Utilities
+
+  deck-record : a -> a
+  deck-record (x) = x
+
+  opening-entry-point : Text = "opening"
+
+Page 1

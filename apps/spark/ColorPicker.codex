@@ -1,0 +1,160 @@
+Chapter: ColorPicker
+  cites Game chapter Color
+
+ HSV color model and color picker state. All channels use
+ fixed-point scale 1000 (hue 0-360000, saturation 0-1000,
+ value 0-1000). Converts between HSV and packed RGB.
+
+ We say:
+
+Section: Types
+
+  HsvColor = record {
+    hsv-h : Integer,
+    hsv-s : Integer,
+    hsv-v : Integer
+  }
+
+  PickerState = record {
+    pk-hsv : HsvColor,
+    pk-rgb : Integer,
+    pk-history : List Integer,
+    pk-history-count : Integer
+  }
+
+Section: HSV Construction
+
+  hsv-new : Integer, Integer, Integer -> HsvColor
+  hsv-new (h) (s) (v) = HsvColor {
+    hsv-h = hsv-wrap-hue h,
+    hsv-s = hsv-clamp s 0 1000,
+    hsv-v = hsv-clamp v 0 1000
+  }
+
+  hsv-wrap-hue : Integer -> Integer
+  hsv-wrap-hue (h) =
+    let m = h - h / 360000 * 360000
+    in if m < 0 then m + 360000 else m
+
+  hsv-clamp : Integer, Integer, Integer -> Integer
+  hsv-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Section: HSV to RGB
+
+  hsv-to-rgb : HsvColor -> Integer
+  hsv-to-rgb (hsv) =
+    let h = hsv.hsv-h
+    in let s = hsv.hsv-s
+    in let v = hsv.hsv-v
+    in let c = v * s / 1000
+    in let sector = h / 60000
+    in let frac = h - sector * 60000
+    in let x = c * (1000 - hsv-abs (frac * 1000 / 60000 * 2 - 1000)) / 1000
+    in let m = v - c
+    in let rgb = hsv-sector-rgb sector c x
+    in let r = hsv-clamp ((rgb / 65536 + m) * 255 / 1000) 0 255
+    in let g = hsv-clamp ((rgb / 256 - rgb / 65536 * 256 + m) * 255 / 1000) 0 255
+    in let b = hsv-clamp ((rgb - rgb / 256 * 256 + m) * 255 / 1000) 0 255
+    in r * 65536 + g * 256 + b
+
+  hsv-sector-rgb : Integer, Integer, Integer -> Integer
+  hsv-sector-rgb (sector) (c) (x) =
+    if sector == 0 then c * 65536 + x * 256 + 0
+    else if sector == 1 then x * 65536 + c * 256 + 0
+    else if sector == 2 then 0 * 65536 + c * 256 + x
+    else if sector == 3 then 0 * 65536 + x * 256 + c
+    else if sector == 4 then x * 65536 + 0 * 256 + c
+    else c * 65536 + 0 * 256 + x
+
+  hsv-abs : Integer -> Integer
+  hsv-abs (n) = if n < 0 then 0 - n else n
+
+Section: RGB to HSV
+
+  rgb-to-hsv : Integer -> HsvColor
+  rgb-to-hsv (rgb) =
+    let r = rgb / 65536 * 1000 / 255
+    in let g = (rgb / 256 - rgb / 65536 * 256) * 1000 / 255
+    in let b = (rgb - rgb / 256 * 256) * 1000 / 255
+    in let mx = hsv-max3 r g b
+    in let mn = hsv-min3 r g b
+    in let delta = mx - mn
+    in let v = mx
+    in let s = if mx == 0 then 0 else delta * 1000 / mx
+    in let h = if delta == 0 then 0
+      else if mx == r then (g - b) * 60000 / delta
+      else if mx == g then 120000 + (b - r) * 60000 / delta
+      else 240000 + (r - g) * 60000 / delta
+    in HsvColor { hsv-h = hsv-wrap-hue h, hsv-s = s, hsv-v = v }
+
+  hsv-max3 : Integer, Integer, Integer -> Integer
+  hsv-max3 (a) (b) (c) =
+    let m = if a > b then a else b
+    in if m > c then m else c
+
+  hsv-min3 : Integer, Integer, Integer -> Integer
+  hsv-min3 (a) (b) (c) =
+    let m = if a < b then a else b
+    in if m < c then m else c
+
+Section: Picker State
+
+  picker-new : Integer -> PickerState
+  picker-new (initial-rgb) = PickerState {
+    pk-hsv = rgb-to-hsv initial-rgb,
+    pk-rgb = initial-rgb,
+    pk-history = [initial-rgb],
+    pk-history-count = 1
+  }
+
+  picker-set-hsv : PickerState, Integer, Integer, Integer -> PickerState
+  picker-set-hsv (pk) (h) (s) (v) =
+    let hsv = hsv-new h s v
+    in let rgb = hsv-to-rgb hsv
+    in PickerState {
+      pk-hsv = hsv,
+      pk-rgb = rgb,
+      pk-history = list-push (pk.pk-history) rgb,
+      pk-history-count = pk.pk-history-count + 1
+    }
+
+  picker-set-rgb : PickerState, Integer -> PickerState
+  picker-set-rgb (pk) (rgb) = PickerState {
+    pk-hsv = rgb-to-hsv rgb,
+    pk-rgb = rgb,
+    pk-history = list-push (pk.pk-history) rgb,
+    pk-history-count = pk.pk-history-count + 1
+  }
+
+  picker-rgb : PickerState -> Integer
+  picker-rgb (pk) = pk.pk-rgb
+
+Section: Color Operations
+
+  color-lighten : Integer, Integer -> Integer
+  color-lighten (rgb) (amount) =
+    let hsv = rgb-to-hsv rgb
+    in hsv-to-rgb (hsv-new (hsv.hsv-h) (hsv.hsv-s) (hsv-clamp (hsv.hsv-v + amount) 0 1000))
+
+  color-darken : Integer, Integer -> Integer
+  color-darken (rgb) (amount) =
+    let hsv = rgb-to-hsv rgb
+    in hsv-to-rgb (hsv-new (hsv.hsv-h) (hsv.hsv-s) (hsv-clamp (hsv.hsv-v - amount) 0 1000))
+
+  color-saturate : Integer, Integer -> Integer
+  color-saturate (rgb) (amount) =
+    let hsv = rgb-to-hsv rgb
+    in hsv-to-rgb (hsv-new (hsv.hsv-h) (hsv-clamp (hsv.hsv-s + amount) 0 1000) (hsv.hsv-v))
+
+  color-complement : Integer -> Integer
+  color-complement (rgb) =
+    let hsv = rgb-to-hsv rgb
+    in hsv-to-rgb (hsv-new (hsv.hsv-h + 180000) (hsv.hsv-s) (hsv.hsv-v))
+
+Section: Info
+
+  picker-info : PickerState -> Text
+  picker-info (pk) =
+    "rgb=" & show (pk.pk-rgb) & " h=" & show (pk.pk-hsv.hsv-h) & " s=" & show (pk.pk-hsv.hsv-s) & " v=" & show (pk.pk-hsv.hsv-v)
+
+Page 1

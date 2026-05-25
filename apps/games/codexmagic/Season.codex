@@ -1,0 +1,123 @@
+Chapter: Season
+  cites CodexMagic chapter Mana
+  cites CodexMagic chapter Card
+
+ Seasonal content management. Each season has a card pool, mechanic
+ set, and balance state. Season manifests are immutable once released.
+ Balance adjustments are bans and restrictions, never card edits.
+
+ We say:
+
+Section: Season Record
+
+  SeasonId = record {
+    year : Integer,
+    quarter : Integer
+  }
+
+  Season = record {
+    id : SeasonId,
+    name : Text,
+    card-pool : List Integer,
+    pool-size : Integer,
+    banned : List Integer,
+    restricted : List Integer,
+    active : Boolean
+  }
+
+  season-new : Integer, Integer, Text -> Season
+  season-new (year) (quarter) (name) = Season { id = SeasonId { year = year, quarter = quarter }, name = name, card-pool = [], pool-size = 0, banned = [], restricted = [], active = False }
+
+  season-add-card : Season, Integer -> Season
+  season-add-card (s) (card-id) = Season { id = s.id, name = s.name, card-pool = list-push (s.card-pool) card-id, pool-size = s.pool-size + 1, banned = s.banned, restricted = s.restricted, active = s.active }
+
+  season-activate : Season -> Season
+  season-activate (s) = Season { id = s.id, name = s.name, card-pool = s.card-pool, pool-size = s.pool-size, banned = s.banned, restricted = s.restricted, active = True }
+
+Section: Bans and Restrictions
+
+  BalanceAction =
+   | BanCard (Integer)
+   | RestrictCard (Integer)
+   | UnbanCard (Integer)
+   | UnrestrictCard (Integer)
+
+  apply-balance-action : Season, BalanceAction -> Season
+  apply-balance-action (s) (action) =
+    when action
+      is BanCard (card-id) -> Season { id = s.id, name = s.name, card-pool = s.card-pool, pool-size = s.pool-size, banned = list-push (s.banned) card-id, restricted = s.restricted, active = s.active }
+      is RestrictCard (card-id) -> Season { id = s.id, name = s.name, card-pool = s.card-pool, pool-size = s.pool-size, banned = s.banned, restricted = list-push (s.restricted) card-id, active = s.active }
+      is UnbanCard (card-id) -> Season { id = s.id, name = s.name, card-pool = s.card-pool, pool-size = s.pool-size, banned = remove-int (s.banned) card-id, restricted = s.restricted, active = s.active }
+      is UnrestrictCard (card-id) -> Season { id = s.id, name = s.name, card-pool = s.card-pool, pool-size = s.pool-size, banned = s.banned, restricted = remove-int (s.restricted) card-id, active = s.active }
+
+  is-banned : Season, Integer -> Boolean
+  is-banned (s) (card-id) = int-in-list (s.banned) card-id 0 (list-length (s.banned))
+
+  is-restricted : Season, Integer -> Boolean
+  is-restricted (s) (card-id) = int-in-list (s.restricted) card-id 0 (list-length (s.restricted))
+
+  is-legal-in-season : Season, Integer -> Boolean
+  is-legal-in-season (s) (card-id) =
+    if is-banned s card-id then False
+    else int-in-list (s.card-pool) card-id 0 (s.pool-size)
+
+Section: Standard Format Legality
+
+  is-standard-legal : List Season, Integer -> Boolean
+  is-standard-legal (seasons) (card-id) = check-standard-loop seasons card-id 0 (list-length seasons)
+
+  check-standard-loop : List Season, Integer, Integer, Integer -> Boolean
+  check-standard-loop (seasons) (card-id) (i) (len) =
+    if i >= len then False
+    else let s = list-at seasons i
+    in if s.active then
+      if is-legal-in-season s card-id then True
+      else check-standard-loop seasons card-id (i + 1) len
+    else check-standard-loop seasons card-id (i + 1) len
+
+Section: Season Rewards
+
+  SeasonReward =
+   | RewardManaCoin (Integer)
+   | RewardPack (Integer)
+   | RewardCardVariant (Integer)
+
+  rank-season-reward : RankBracket -> List SeasonReward
+  rank-season-reward (rank) =
+    when rank
+      is Bronze -> [RewardManaCoin 100]
+      is Silver -> [RewardManaCoin 200, RewardPack 1]
+      is Gold -> [RewardManaCoin 400, RewardPack 2]
+      is Platinum -> [RewardManaCoin 800, RewardPack 3]
+      is Diamond -> [RewardManaCoin 1500, RewardPack 5]
+      is Master -> [RewardManaCoin 3000, RewardPack 8]
+      is Grandmaster -> [RewardManaCoin 5000, RewardPack 12, RewardCardVariant 1]
+
+Section: Utility
+
+  int-in-list : List Integer, Integer, Integer, Integer -> Boolean
+  int-in-list (xs) (val) (i) (len) =
+    if i >= len then False
+    else if list-at xs i == val then True
+    else int-in-list xs val (i + 1) len
+
+  remove-int : List Integer, Integer -> List Integer
+  remove-int (xs) (val) = remove-int-loop xs val 0 (list-length xs) []
+
+  remove-int-loop : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  remove-int-loop (xs) (val) (i) (len) (acc) =
+    if i >= len then acc
+    else let item = list-at xs i
+    in if item == val then remove-int-loop xs (-1) (i + 1) len acc
+    else remove-int-loop xs val (i + 1) len (list-push acc item)
+
+Section: Formatting
+
+  format-season : Season -> Text
+  format-season (s) =
+    s.name & " [Q" & show (s.id.quarter) & " " & show (s.id.year) & " | Cards: " & show (s.pool-size) & " | Bans: " & show (list-length (s.banned)) & "]"
+
+  format-season-id : SeasonId -> Text
+  format-season-id (sid) = show (sid.year) & "-Q" & show (sid.quarter)
+
+Page 1

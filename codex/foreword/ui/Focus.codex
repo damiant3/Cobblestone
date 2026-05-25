@@ -1,0 +1,121 @@
+Chapter: Focus
+  cites UI chapter Theme
+  cites UI chapter BoxModel
+  cites UI chapter Widget
+
+ Focus management. A FocusRing holds an ordered list of focusable
+ widget IDs. Tab advances, shift-tab retreats, wrapping at ends.
+ Propagates focus/blur state to the widget tree.
+
+Section: Focus Ring
+  FocusRing = record {
+    fr-ids : List Text,
+    fr-count : Integer,
+    fr-current : Integer
+  }
+
+Section: Construction
+  focus-ring : List Text -> FocusRing
+  focus-ring (ids) =
+    FocusRing { fr-ids = ids, fr-count = list-length ids, fr-current = 0 - 1 }
+
+  focus-ring-empty : FocusRing
+  focus-ring-empty = FocusRing { fr-ids = [], fr-count = 0, fr-current = 0 - 1 }
+
+Section: Navigation
+  focus-next : FocusRing -> FocusRing
+  focus-next (fr) =
+    if fr.fr-count == 0 then fr
+    else let next = fr.fr-current + 1
+    in let wrapped = if next >= fr.fr-count then 0 else next
+    in FocusRing { fr-ids = fr.fr-ids, fr-count = fr.fr-count, fr-current = wrapped }
+
+  focus-prev : FocusRing -> FocusRing
+  focus-prev (fr) =
+    if fr.fr-count == 0 then fr
+    else let prev = fr.fr-current - 1
+    in let wrapped = if prev < 0 then fr.fr-count - 1 else prev
+    in FocusRing { fr-ids = fr.fr-ids, fr-count = fr.fr-count, fr-current = wrapped }
+
+  focus-set : FocusRing, Text -> FocusRing
+  focus-set (fr) (id) =
+    let idx = fr-find-id (fr.fr-ids) id 0 (fr.fr-count)
+    in FocusRing { fr-ids = fr.fr-ids, fr-count = fr.fr-count, fr-current = idx }
+
+  focus-clear : FocusRing -> FocusRing
+  focus-clear (fr) =
+    FocusRing { fr-ids = fr.fr-ids, fr-count = fr.fr-count, fr-current = 0 - 1 }
+
+Section: Modification
+  focus-add : FocusRing, Text -> FocusRing
+  focus-add (fr) (id) =
+    FocusRing { fr-ids = list-push (fr.fr-ids) id, fr-count = fr.fr-count + 1, fr-current = fr.fr-current }
+
+  focus-remove : FocusRing, Text -> FocusRing
+  focus-remove (fr) (id) =
+    let filtered = fr-filter (fr.fr-ids) id 0 (fr.fr-count) []
+    in let new-count = list-length filtered
+    in let adjusted = if fr.fr-current >= new-count then new-count - 1 else fr.fr-current
+    in FocusRing { fr-ids = filtered, fr-count = new-count, fr-current = adjusted }
+
+  fr-filter : List Text, Text, Integer, Integer, List Text -> List Text
+  fr-filter (ids) (target) (i) (n) (acc) =
+    if i >= n then acc
+    else let id = list-at ids i
+    in if id == target then fr-filter ids target (i + 1) n acc
+    else fr-filter ids target (i + 1) n (list-push acc id)
+
+Section: Queries
+  focus-current : FocusRing -> Text
+  focus-current (fr) =
+    if fr.fr-current < 0 then ""
+    else if fr.fr-current >= fr.fr-count then ""
+    else list-at (fr.fr-ids) (fr.fr-current)
+
+  focus-has-focus : FocusRing -> Boolean
+  focus-has-focus (fr) = fr.fr-current >= 0
+
+  focus-is-focused : FocusRing, Text -> Boolean
+  focus-is-focused (fr) (id) = focus-current fr == id
+
+  fr-find-id : List Text, Text, Integer, Integer -> Integer
+  fr-find-id (ids) (target) (i) (n) =
+    if i >= n then 0 - 1
+    else if list-at ids i == target then i
+    else fr-find-id ids target (i + 1) n
+
+Section: Widget State Propagation
+  focus-apply : FocusRing, WidgetNode -> WidgetNode
+  focus-apply (fr) (w) =
+    let focused-id = focus-current fr
+    in focus-apply-node w focused-id
+
+  focus-apply-node : WidgetNode, Text -> WidgetNode
+  focus-apply-node (w) (focused-id) =
+    let new-state = if w.wn-id == focused-id then state-focused else
+      if w.wn-state == state-focused then state-normal else w.wn-state
+    in let children = focus-apply-children (w.wn-children) focused-id 0 (w.wn-child-count) []
+    in WidgetNode {
+      wn-kind = w.wn-kind, wn-state = new-state, wn-id = w.wn-id,
+      wn-children = children, wn-child-count = w.wn-child-count,
+      wn-layout-dir = w.wn-layout-dir, wn-gap = w.wn-gap,
+      wn-flex = w.wn-flex, wn-min-w = w.wn-min-w, wn-min-h = w.wn-min-h,
+      wn-bounds = w.wn-bounds
+    }
+
+  focus-apply-children : List WidgetNode, Text, Integer, Integer, List WidgetNode -> List WidgetNode
+  focus-apply-children (children) (focused-id) (i) (n) (acc) =
+    if i >= n then acc
+    else let child = focus-apply-node (list-at children i) focused-id
+    in focus-apply-children children focused-id (i + 1) n (list-push acc child)
+
+Section: Tab Key Constants
+  key-tab : Integer
+  key-tab = 9
+
+Section: Formatting
+  format-focus : FocusRing -> Text
+  format-focus (fr) =
+    "focus(" & focus-current fr & " " & show (fr.fr-current) & "/" & show (fr.fr-count) & ")"
+
+Page 1

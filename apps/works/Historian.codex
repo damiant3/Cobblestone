@@ -1,0 +1,183 @@
+Chapter: Historian
+  cites Works chapter Annotation
+  cites Works chapter AnnotationStore
+  cites Works chapter RepoProtocol
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+
+ H12: the Historian role walks the supersession chain for any
+ annotation and renders attribution + verdicts. Given a starting
+ annotation hash, follows supersession-target until the latest
+ entry; at each step records the author and any verdicts
+ attached.
+
+ The chain is a finite list — we terminate either when no
+ successor is mapped or when we revisit a hash (loop guard).
+
+ We say:
+
+Section: History Step
+
+  HistoryStep = record {
+    annotation-hash : Text,
+    annotation : Annotation,
+    verdicts : List Verdict,
+    superseded-by : Text,
+    has-successor : Boolean
+  }
+
+  History = record {
+    initial-hash : Text,
+    steps : List HistoryStep,
+    step-count : Integer,
+    terminated-at : Text
+  }
+
+  empty-history : Text -> History
+  empty-history (start) = History {
+    initial-hash = start,
+    steps = [],
+    step-count = 0,
+    terminated-at = start
+  }
+
+Section: Walking the Chain
+
+ walk-history follows the supersession map from the starting
+ hash, looking up each annotation's body and verdicts.
+ Maximum chain length is bounded — 64 hops should be far more
+ than any realistic supersession chain.
+
+  max-chain-depth : Integer = 64
+
+  walk-history : RepoState, Text -> History
+  walk-history (repo) (start) =
+    walk-history-loop repo start 0 (empty-history start)
+
+  walk-history-loop : RepoState, Text, Integer, History -> History
+  walk-history-loop (repo) (current) (depth) (acc) =
+    if depth >= max-chain-depth then finalize-history acc current
+    else let step-result = build-step repo current
+    in let acc2 = History {
+      initial-hash = acc.initial-hash,
+      steps = list-snoc (acc.steps) step-result,
+      step-count = acc.step-count + 1,
+      terminated-at = current
+    }
+    in if step-result.has-successor == False then acc2
+    else walk-history-loop repo (step-result.superseded-by) (depth + 1) acc2
+
+  finalize-history : History, Text -> History
+  finalize-history (h) (final) = History {
+    initial-hash = h.initial-hash,
+    steps = h.steps,
+    step-count = h.step-count,
+    terminated-at = final
+  }
+
+Section: Building One Step
+
+  build-step : RepoState, Text -> HistoryStep
+  build-step (repo) (hash) =
+    let ann-maybe = annotation-get (repo.annotations) hash
+    in let succ-maybe = supersession-target repo hash
+    in build-step-from-lookups hash ann-maybe succ-maybe (verdicts-for-hash repo hash)
+
+  build-step-from-lookups : Text, Maybe Annotation, Maybe Text, List Verdict -> HistoryStep
+  build-step-from-lookups (hash) (ann-maybe) (succ-maybe) (vs) =
+    let ann = when ann-maybe
+      is Just (a) -> a
+      is None -> placeholder-annotation hash
+    in let succ-info = supersession-info succ-maybe
+    in HistoryStep {
+      annotation-hash = hash,
+      annotation = ann,
+      verdicts = vs,
+      superseded-by = succ-info.hash,
+      has-successor = succ-info.has
+    }
+
+  SupersessionInfo = record {
+    hash : Text,
+    has : Boolean
+  }
+
+  supersession-info : Maybe Text -> SupersessionInfo
+  supersession-info (m) = when m
+    is None -> SupersessionInfo { hash = "", has = False }
+    is Just (h) -> SupersessionInfo { hash = h, has = True }
+
+  placeholder-annotation : Text -> Annotation
+  placeholder-annotation (hash) = Annotation {
+    hash = hash,
+    target = AnnotationTarget { chapter = "?", path = "?" },
+    kind = Rationale,
+    author = "(unknown)",
+    body = "(annotation body not in local store)",
+    timestamp = 0
+  }
+
+Section: Verdict Lookup
+
+ The supersession key is an annotation hash, but verdicts are
+ keyed by proposal id. The two are equal only when a proposal
+ was authored from the same content as the underlying annotation
+ — which is the H7 publish-proposal flow's invariant. Look up
+ by hash; empty list if no proposal carried this hash.
+
+  verdicts-for-hash : RepoState, Text -> List Verdict
+  verdicts-for-hash (repo) (hash) =
+    when hamt-get (repo.verdicts) hash
+      is None -> []
+      is Just (vs) -> vs
+
+Section: Formatting
+
+  format-history : History -> Text
+  format-history (h) =
+    if h.step-count == 0 then "(no history)"
+    else "History from " & h.initial-hash & "\n"
+      & format-history-steps (h.steps) 0 (h.step-count) ""
+
+  format-history-steps : List HistoryStep, Integer, Integer, Text -> Text
+  format-history-steps (steps) (i) (n) (acc) =
+    if i >= n then acc
+    else let s = list-at steps i
+    in let line = format-history-step s i & "\n"
+    in format-history-steps steps (i + 1) n (acc & line)
+
+  format-history-step : HistoryStep, Integer -> Text
+  format-history-step (s) (i) =
+    "  " & show (i + 1) & ". "
+    & s.annotation.author
+    & " @ " & show (s.annotation.timestamp)
+    & "  [" & format-step-tail s & "]"
+
+  format-step-tail : HistoryStep -> Text
+  format-step-tail (s) =
+    let v-summary = if list-length (s.verdicts) == 0
+      then "no verdicts"
+      else show (list-length (s.verdicts)) & " verdicts"
+    in let s-summary = if s.has-successor
+      then "superseded by " & s.superseded-by
+      else "tip"
+    in v-summary & ", " & s-summary
+
+Section: Brief Forms
+
+  history-author-list : History -> List Text
+  history-author-list (h) =
+    collect-authors (h.steps) 0 (h.step-count) []
+
+  collect-authors : List HistoryStep, Integer, Integer, List Text -> List Text
+  collect-authors (steps) (i) (n) (acc) =
+    if i >= n then acc
+    else let s = list-at steps i
+    in collect-authors steps (i + 1) n (list-snoc acc (s.annotation.author))
+
+  history-tip-author : History -> Text
+  history-tip-author (h) =
+    if h.step-count == 0 then ""
+    else (list-at (h.steps) (h.step-count - 1)).annotation.author
+
+Page 1

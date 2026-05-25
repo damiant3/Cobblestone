@@ -1,0 +1,415 @@
+Chapter: Json
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+
+ Minimal JSON value representation, emitter, and parser.
+ Supports null, booleans, integers, strings, arrays, and objects.
+ Objects are lists of key-value pairs (preserves insertion order).
+
+ We say:
+
+Section: Value Type
+  JsonValue =
+    | JsonNull
+    | JsonBool (Boolean)
+    | JsonInt (Integer)
+    | JsonStr (Text)
+    | JsonArray (List JsonValue)
+    | JsonObject (List JsonPair)
+
+  JsonPair = record {
+    key : Text,
+    value : JsonValue
+  }
+
+Section: Constructors
+  json-null : JsonValue = JsonNull
+
+  json-bool : Boolean -> JsonValue
+  json-bool (b) = JsonBool b
+
+  json-int : Integer -> JsonValue
+  json-int (n) = JsonInt n
+
+  json-str : Text -> JsonValue
+  json-str (s) = JsonStr s
+
+  json-array : List JsonValue -> JsonValue
+  json-array (items) = JsonArray items
+
+  json-object : List JsonPair -> JsonValue
+  json-object (pairs) = JsonObject pairs
+
+  json-pair : Text, JsonValue -> JsonPair
+  json-pair (k) (v) = JsonPair { key = k, value = v }
+
+Section: Emitter
+  json-emit : JsonValue -> Text
+  json-emit (v) = when v
+    is JsonNull -> "null"
+    is JsonBool (b) -> if b then "true" else "false"
+    is JsonInt (n) -> show n
+    is JsonStr (s) -> json-quote s
+    is JsonArray (items) -> "[" & json-emit-array items 0 (list-length items) "" & "]"
+    is JsonObject (pairs) -> "{" & json-emit-object pairs 0 (list-length pairs) "" & "}"
+
+  json-quote : Text -> Text
+  json-quote (s) = "\"" & json-escape s 0 (text-length s) "" & "\""
+
+  json-escape : Text, Integer, Integer, Text -> Text
+  json-escape (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = char-code (char-at s i)
+    in let u = to-unicode c
+    in if u == 34 then json-escape s (i + 1) len (acc & "\\\"")
+    else if u == 92 then json-escape s (i + 1) len (acc & "\\\\")
+    else if u == 10 then json-escape s (i + 1) len (acc & "\\n")
+    else if u == 13 then json-escape s (i + 1) len (acc & "\\r")
+    else if u == 9 then json-escape s (i + 1) len (acc & "\\t")
+    else json-escape s (i + 1) len (acc & char-to-text (char-at s i))
+
+  json-emit-array : List JsonValue, Integer, Integer, Text -> Text
+  json-emit-array (items) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i == 0 then "" else ","
+    in json-emit-array items (i + 1) len (acc & sep & json-emit (list-at items i))
+
+  json-emit-object : List JsonPair, Integer, Integer, Text -> Text
+  json-emit-object (pairs) (i) (len) (acc) =
+    if i >= len then acc
+    else let sep = if i == 0 then "" else ","
+    in let p = list-at pairs i
+    in json-emit-object pairs (i + 1) len (acc & sep & json-quote (p.key) & ":" & json-emit (p.value))
+
+Section: Object Access
+  json-get : JsonValue, Text -> Maybe JsonValue
+  json-get (v) (key) = when v
+    is JsonObject (pairs) -> json-find-key pairs key 0 (list-length pairs)
+    is otherwise -> None
+
+  json-find-key : List JsonPair, Text, Integer, Integer -> Maybe JsonValue
+  json-find-key (pairs) (key) (i) (len) =
+    if i >= len then None
+    else let p = list-at pairs i
+    in if p.key == key then Just (p.value)
+    else json-find-key pairs key (i + 1) len
+
+  json-get-str : JsonValue, Text, Text -> Text
+  json-get-str (v) (key) (default-val) =
+    let found = json-get v key
+    in when found
+      is Just (jv) -> when jv
+        is JsonStr (s) -> s
+        is otherwise -> default-val
+      is None -> default-val
+
+  json-get-int : JsonValue, Text, Integer -> Integer
+  json-get-int (v) (key) (default-val) =
+    let found = json-get v key
+    in when found
+      is Just (jv) -> when jv
+        is JsonInt (n) -> n
+        is otherwise -> default-val
+      is None -> default-val
+
+  json-get-bool : JsonValue, Text, Boolean -> Boolean
+  json-get-bool (v) (key) (default-val) =
+    let found = json-get v key
+    in when found
+      is Just (jv) -> when jv
+        is JsonBool (b) -> b
+        is otherwise -> default-val
+      is None -> default-val
+
+Section: Array Access
+  json-array-length : JsonValue -> Integer
+  json-array-length (v) = when v
+    is JsonArray (items) -> list-length items
+    is otherwise -> 0
+
+  json-array-at : JsonValue, Integer -> Maybe JsonValue
+  json-array-at (v) (i) = when v
+    is JsonArray (items) ->
+      if i < 0 then None
+      else if i >= list-length items then None
+      else Just (list-at items i)
+    is otherwise -> None
+
+Section: Parser
+
+ Recursive-descent JSON parser. Total: malformed input yields
+ None, never crashes the caller. Handles null, booleans, integer
+ numbers, double-quoted strings with the standard escapes
+ (\" \\ \/ \b \f \n \r \t \uXXXX), arrays, and objects.
+ Whitespace tolerant per RFC 8259.
+
+  JsonParseResult = record {
+    value : JsonValue,
+    next : Integer,
+    ok : Boolean
+  }
+
+  parse-fail : Integer -> JsonParseResult
+  parse-fail (at) = JsonParseResult { value = JsonNull, next = at, ok = False }
+
+  parse-ok : JsonValue, Integer -> JsonParseResult
+  parse-ok (v) (next) = JsonParseResult { value = v, next = next, ok = True }
+
+  json-parse : Text -> Maybe JsonValue
+  json-parse (s) =
+    let r = json-parse-value s 0 (text-length s)
+    in if r.ok then Just (r.value) else None
+
+Section: Whitespace and Codepoints
+
+ All character comparisons go through to-unicode so the parser
+ is correct on the CCE-internal source. The JSON syntax tokens
+ are all ASCII, where CCE and Unicode agree, but using
+ to-unicode keeps the convention consistent with json-escape.
+
+  cp-at : Text, Integer -> Integer
+  cp-at (s) (i) = to-unicode (char-code (char-at s i))
+
+  is-ws : Integer -> Boolean
+  is-ws (cp) =
+    if cp == 32 then True
+    else if cp == 9 then True
+    else if cp == 10 then True
+    else if cp == 13 then True
+    else False
+
+  skip-ws : Text, Integer, Integer -> Integer
+  skip-ws (s) (i) (len) =
+    if i >= len then i
+    else if is-ws (cp-at s i) then skip-ws s (i + 1) len
+    else i
+
+  is-digit : Integer -> Boolean
+  is-digit (cp) = if cp >= 48 then if cp <= 57 then True else False else False
+
+  is-hex-digit : Integer -> Boolean
+  is-hex-digit (cp) =
+    if is-digit cp then True
+    else if cp >= 65 then if cp <= 70 then True
+      else if cp >= 97 then if cp <= 102 then True else False
+      else False
+    else if cp >= 97 then if cp <= 102 then True else False
+    else False
+
+  hex-digit-value : Integer -> Integer
+  hex-digit-value (cp) =
+    if is-digit cp then cp - 48
+    else if cp >= 97 then cp - 87
+    else cp - 55
+
+Section: Value Dispatch
+
+  json-parse-value : Text, Integer, Integer -> JsonParseResult
+  json-parse-value (s) (i) (len) =
+    let p = skip-ws s i len
+    in if p >= len then parse-fail p
+    else dispatch-on-first s p len (cp-at s p)
+
+  dispatch-on-first : Text, Integer, Integer, Integer -> JsonParseResult
+  dispatch-on-first (s) (i) (len) (cp) =
+    if cp == 110 then json-parse-null s i len
+    else if cp == 116 then json-parse-true s i len
+    else if cp == 102 then json-parse-false s i len
+    else if cp == 34 then json-parse-string-value s i len
+    else if cp == 91 then json-parse-array s i len
+    else if cp == 123 then json-parse-object s i len
+    else if cp == 45 then json-parse-number s i len
+    else if is-digit cp then json-parse-number s i len
+    else parse-fail i
+
+Section: Literal Keywords
+
+  match-keyword : Text, Integer, Integer, Text -> Boolean
+  match-keyword (s) (i) (len) (kw) =
+    let kn = text-length kw
+    in if i + kn > len then False
+    else substring s i kn == kw
+
+  json-parse-null : Text, Integer, Integer -> JsonParseResult
+  json-parse-null (s) (i) (len) =
+    if match-keyword s i len "null" then parse-ok JsonNull (i + 4)
+    else parse-fail i
+
+  json-parse-true : Text, Integer, Integer -> JsonParseResult
+  json-parse-true (s) (i) (len) =
+    if match-keyword s i len "true" then parse-ok (JsonBool True) (i + 4)
+    else parse-fail i
+
+  json-parse-false : Text, Integer, Integer -> JsonParseResult
+  json-parse-false (s) (i) (len) =
+    if match-keyword s i len "false" then parse-ok (JsonBool False) (i + 5)
+    else parse-fail i
+
+Section: Numbers
+
+ Integers only. Optional leading minus, then one-or-more digits.
+ Decimal points and exponents are rejected — the existing
+ JsonInt is integer-typed.
+
+  json-parse-number : Text, Integer, Integer -> JsonParseResult
+  json-parse-number (s) (i) (len) =
+    let neg = is-minus s i len
+    in let start = if neg then i + 1 else i
+    in let stop = scan-digits s start len
+    in if stop == start then parse-fail i
+    else parse-ok (JsonInt (digits-to-int s start stop neg 0)) stop
+
+  is-minus : Text, Integer, Integer -> Boolean
+  is-minus (s) (i) (len) =
+    if i >= len then False
+    else cp-at s i == 45
+
+  scan-digits : Text, Integer, Integer -> Integer
+  scan-digits (s) (i) (len) =
+    if i >= len then i
+    else if is-digit (cp-at s i) then scan-digits s (i + 1) len
+    else i
+
+  digits-to-int : Text, Integer, Integer, Boolean, Integer -> Integer
+  digits-to-int (s) (i) (stop) (neg) (acc) =
+    if i >= stop then if neg then 0 - acc else acc
+    else digits-to-int s (i + 1) stop neg (acc * 10 + (cp-at s i - 48))
+
+Section: Strings
+
+ Double-quoted, with the standard JSON escapes. \uXXXX yields
+ the codepoint converted back to CCE via from-unicode.
+
+  json-parse-string-value : Text, Integer, Integer -> JsonParseResult
+  json-parse-string-value (s) (i) (len) =
+    let r = read-string-body s (i + 1) len ""
+    in if r.ok then parse-ok (JsonStr (r.value-text)) (r.next)
+    else parse-fail i
+
+  StringReadResult = record {
+    value-text : Text,
+    next : Integer,
+    ok : Boolean
+  }
+
+  string-fail : Integer -> StringReadResult
+  string-fail (at) = StringReadResult { value-text = "", next = at, ok = False }
+
+  string-ok : Text, Integer -> StringReadResult
+  string-ok (t) (n) = StringReadResult { value-text = t, next = n, ok = True }
+
+  read-string-body : Text, Integer, Integer, Text -> StringReadResult
+  read-string-body (s) (i) (len) (acc) =
+    if i >= len then string-fail i
+    else read-string-step s i len acc (cp-at s i)
+
+  read-string-step : Text, Integer, Integer, Text, Integer -> StringReadResult
+  read-string-step (s) (i) (len) (acc) (cp) =
+    if cp == 34 then string-ok acc (i + 1)
+    else if cp == 92 then read-string-escape s (i + 1) len acc
+    else read-string-body s (i + 1) len (acc & char-to-text (char-at s i))
+
+  read-string-escape : Text, Integer, Integer, Text -> StringReadResult
+  read-string-escape (s) (i) (len) (acc) =
+    if i >= len then string-fail i
+    else apply-escape s i len acc (cp-at s i)
+
+  apply-escape : Text, Integer, Integer, Text, Integer -> StringReadResult
+  apply-escape (s) (i) (len) (acc) (cp) =
+    if cp == 34 then read-string-body s (i + 1) len (acc & "\"")
+    else if cp == 92 then read-string-body s (i + 1) len (acc & "\\")
+    else if cp == 47 then read-string-body s (i + 1) len (acc & "/")
+    else if cp == 98 then read-string-body s (i + 1) len (acc & char-to-text (code-to-char (from-unicode 8)))
+    else if cp == 102 then read-string-body s (i + 1) len (acc & char-to-text (code-to-char (from-unicode 12)))
+    else if cp == 110 then read-string-body s (i + 1) len (acc & "\n")
+    else if cp == 114 then read-string-body s (i + 1) len (acc & char-to-text (code-to-char (from-unicode 13)))
+    else if cp == 116 then read-string-body s (i + 1) len (acc & char-to-text (code-to-char (from-unicode 9)))
+    else if cp == 117 then read-unicode-escape s (i + 1) len acc
+    else string-fail i
+
+  read-unicode-escape : Text, Integer, Integer, Text -> StringReadResult
+  read-unicode-escape (s) (i) (len) (acc) =
+    if i + 4 > len then string-fail i
+    else if four-hex-digits s i then
+      let cp = unicode-from-hex-quad s i
+      in read-string-body s (i + 4) len (acc & char-to-text (code-to-char (from-unicode cp)))
+    else string-fail i
+
+  four-hex-digits : Text, Integer -> Boolean
+  four-hex-digits (s) (i) =
+    if is-hex-digit (cp-at s i) == False then False
+    else if is-hex-digit (cp-at s (i + 1)) == False then False
+    else if is-hex-digit (cp-at s (i + 2)) == False then False
+    else if is-hex-digit (cp-at s (i + 3)) == False then False
+    else True
+
+  unicode-from-hex-quad : Text, Integer -> Integer
+  unicode-from-hex-quad (s) (i) =
+    hex-digit-value (cp-at s i) * 4096
+    + hex-digit-value (cp-at s (i + 1)) * 256
+    + hex-digit-value (cp-at s (i + 2)) * 16
+    + hex-digit-value (cp-at s (i + 3))
+
+Section: Arrays
+
+  json-parse-array : Text, Integer, Integer -> JsonParseResult
+  json-parse-array (s) (i) (len) =
+    let p = skip-ws s (i + 1) len
+    in if p >= len then parse-fail i
+    else if cp-at s p == 93 then parse-ok (JsonArray []) (p + 1)
+    else read-array-items s p len []
+
+  read-array-items : Text, Integer, Integer, List JsonValue -> JsonParseResult
+  read-array-items (s) (i) (len) (acc) =
+    let r = json-parse-value s i len
+    in if r.ok == False then parse-fail i
+    else array-after-item s (skip-ws s (r.next) len) len (list-snoc acc (r.value))
+
+  array-after-item : Text, Integer, Integer, List JsonValue -> JsonParseResult
+  array-after-item (s) (i) (len) (acc) =
+    if i >= len then parse-fail i
+    else if cp-at s i == 93 then parse-ok (JsonArray acc) (i + 1)
+    else if cp-at s i == 44 then read-array-items s (skip-ws s (i + 1) len) len acc
+    else parse-fail i
+
+Section: Objects
+
+  json-parse-object : Text, Integer, Integer -> JsonParseResult
+  json-parse-object (s) (i) (len) =
+    let p = skip-ws s (i + 1) len
+    in if p >= len then parse-fail i
+    else if cp-at s p == 125 then parse-ok (JsonObject []) (p + 1)
+    else read-object-pairs s p len []
+
+  read-object-pairs : Text, Integer, Integer, List JsonPair -> JsonParseResult
+  read-object-pairs (s) (i) (len) (acc) =
+    if i >= len then parse-fail i
+    else if cp-at s i == 34 then read-object-key-value s i len acc
+    else parse-fail i
+
+  read-object-key-value : Text, Integer, Integer, List JsonPair -> JsonParseResult
+  read-object-key-value (s) (i) (len) (acc) =
+    let kr = read-string-body s (i + 1) len ""
+    in if kr.ok == False then parse-fail i
+    else expect-colon-then-value s (skip-ws s (kr.next) len) len acc (kr.value-text)
+
+  expect-colon-then-value : Text, Integer, Integer, List JsonPair, Text -> JsonParseResult
+  expect-colon-then-value (s) (i) (len) (acc) (key) =
+    if i >= len then parse-fail i
+    else if cp-at s i == 58 then read-object-value s (skip-ws s (i + 1) len) len acc key
+    else parse-fail i
+
+  read-object-value : Text, Integer, Integer, List JsonPair, Text -> JsonParseResult
+  read-object-value (s) (i) (len) (acc) (key) =
+    let r = json-parse-value s i len
+    in if r.ok == False then parse-fail i
+    else object-after-value s (skip-ws s (r.next) len) len (list-snoc acc (json-pair key (r.value)))
+
+  object-after-value : Text, Integer, Integer, List JsonPair -> JsonParseResult
+  object-after-value (s) (i) (len) (acc) =
+    if i >= len then parse-fail i
+    else if cp-at s i == 125 then parse-ok (JsonObject acc) (i + 1)
+    else if cp-at s i == 44 then read-object-pairs s (skip-ws s (i + 1) len) len acc
+    else parse-fail i
+
+Page 1

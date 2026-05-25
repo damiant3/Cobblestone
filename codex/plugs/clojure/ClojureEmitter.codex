@@ -1,0 +1,317 @@
+Chapter: Clojure Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates Clojure source code from the IR.
+
+Section: Keywords and Sanitization
+
+  clj-keywords : List Text =
+   ["catch", "def", "defn", "do", "else", "finally", "fn", "if",
+    "import", "in", "let", "loop", "monitor-enter", "monitor-exit",
+    "new", "nil", "quote", "recur", "require", "set!", "throw",
+    "try", "var", "when", "cond", "case", "defmacro", "ns"]
+
+  clj-is-keyword : Text, Integer -> Boolean
+  clj-is-keyword (name) (i) =
+   if i == list-length clj-keywords then False
+   else if list-at clj-keywords i == name then True
+   else clj-is-keyword name (i + 1)
+
+  clj-sanitize : Text -> Text
+  clj-sanitize (name) =
+   let s = text-replace name "_" "-"
+   in if clj-is-keyword s then s & "-v"
+      else s
+
+  clj-escape : Text -> Text
+  clj-escape (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in text-replace s2 "\n" "\\n"
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then -1
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else -1
+
+Section: Apply Chain
+
+  is-upper-letter : Integer -> Boolean
+  is-upper-letter (code) =
+   if code >= char-code 'E' then code <= char-code 'Z'
+   else False
+
+Section: Type Definition Emission
+
+  emit-clj-type-defs : List ATypeDef, Integer -> Text
+  emit-clj-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-clj-type-def (list-at tds i) & emit-clj-type-defs tds (i + 1)
+
+  emit-clj-type-def : ATypeDef -> Text
+  emit-clj-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+     "(defn make-" & clj-sanitize (name.value) & " [& args] (into {:_type \"" & name.value & "\"} (map vector " & emit-clj-record-keys fields 0 & " args)))\n"
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-clj-ctors ctors 0
+
+  emit-clj-record-keys : List ARecordFieldDef, Integer -> Text
+  emit-clj-record-keys (fields) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in let sep = if i > 0 then " " else ""
+   in sep & ":" & clj-sanitize (f.name.value) & emit-clj-record-keys fields (i + 1)
+
+  emit-clj-ctors : List AVariantCtorDef, Integer -> Text
+  emit-clj-ctors (ctors) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+   in "(defn make-" & clj-sanitize (c.name.value) & " [& args] (into {:tag \"" & c.name.value & "\"} (map-indexed (fn [i v] [(keyword (str \"field\" i)) v]) args)))\n" & emit-clj-ctors ctors (i + 1)
+
+Section: Expression Emission
+
+  emit-clj-expr : IRExpr, List ArityEntry -> Text
+  emit-clj-expr (e) (arities) = emit-clj-expr-at e arities 0
+
+  emit-clj-expr-at : IRExpr, List ArityEntry, Integer -> Text
+  emit-clj-expr-at (e) (arities) (depth) =
+   if depth >= 256 then "nil"
+   else when e
+    is IrIntLit (n) (sp) -> integer-to-text n
+    is IrNumLit (n) (sp) -> integer-to-text n & ".0"
+    is IrTextLit (s) (sp) -> "\"" & clj-escape s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> integer-to-text n
+    is IrName (n) (ty) (sp) -> emit-clj-name n arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-clj-binary op l r arities
+    is IrNegate (operand) (sp) -> "(- " & emit-clj-expr-at operand arities (depth + 1) & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-clj-expr-at c arities (depth + 1) & " " & emit-clj-expr-at t arities (depth + 1) & " " & emit-clj-expr-at el arities (depth + 1) & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "(let [" & clj-sanitize name & " " & emit-clj-expr-at val arities (depth + 1) & "] " & emit-clj-expr-at body arities (depth + 1) & ")"
+    is IrApply (f) (a) (ty) (sp) -> emit-clj-apply e arities
+    is IrLambda (params) (body) (ty) (sp) -> "(fn [" & emit-clj-lambda-params params 0 & "] " & emit-clj-expr body arities & ")"
+    is IrList (elems) (ty) (sp) -> "[" & emit-clj-list-elems elems 0 arities & "]"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-clj-match scrut branches arities depth
+    is IrAct (stmts) (ty) (sp) -> emit-clj-act stmts arities
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-clj-expr-at body arities (depth + 1)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-clj-expr-at body arities (depth + 1)
+    is IrRecord (name) (fields) (ty) (sp) -> "(make-" & clj-sanitize name & " " & emit-clj-field-vals fields 0 arities & ")"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> "(:" & clj-sanitize field & " " & emit-clj-expr-at rec arities (depth + 1) & ")"
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(assoc " & emit-clj-expr-at rec arities (depth + 1) & " :" & clj-sanitize field & " " & emit-clj-expr-at val arities (depth + 1) & ")"
+    is IrFork (body) (ty) (sp) -> "(future " & emit-clj-expr-at body arities (depth + 1) & ")"
+    is IrAwait (task) (ty) (sp) -> "(deref " & emit-clj-expr-at task arities (depth + 1) & ")"
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "(try " & emit-clj-act body arities & " (catch Exception e " & emit-clj-act fb arities & "))"
+    is IrError (msg) (ty) (sp) -> "(throw (Exception. \"" & clj-escape msg & "\"))"
+
+  emit-clj-name : Text, List ArityEntry -> Text
+  emit-clj-name (n) (arities) =
+   if n == "True" then "true"
+   else if n == "False" then "false"
+   else if n == "Nothing" then "nil"
+   else let ar = lookup-arity arities n
+   in if ar == 0 then "(" & clj-sanitize n & ")"
+      else clj-sanitize n
+
+  emit-clj-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
+  emit-clj-binary (op) (l) (r) (arities) =
+   when op
+    is IrAppendText -> "(str " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
+    is IrAppendList -> "(into " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
+    is IrConsList -> "(into [" & emit-clj-expr l arities & "] " & emit-clj-expr r arities & ")"
+    is IrDivInt -> "(quot " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
+    is IrEq -> "(= " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
+    is IrNotEq -> "(not= " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
+    is IrAnd -> "(and " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
+    is IrOr -> "(or " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
+    is otherwise -> "(" & clj-bin-op op & " " & emit-clj-expr l arities & " " & emit-clj-expr r arities & ")"
+
+  clj-bin-op : IRBinaryOp -> Text
+  clj-bin-op (op) =
+   when op
+    is IrAddInt -> "+"  is IrSubInt -> "-"  is IrMulInt -> "*"  is IrDivInt -> "quot"
+    is IrPowInt -> "Math/pow"  is IrAddNum -> "+"  is IrSubNum -> "-"  is IrMulNum -> "*"
+    is IrDivNum -> "/"  is IrEq -> "="  is IrNotEq -> "not="
+    is IrLt -> "<"  is IrGt -> ">"  is IrLtEq -> "<="  is IrGtEq -> ">="
+    is IrAnd -> "and"  is IrOr -> "or"  is IrAppendText -> "str"
+    is IrAppendList -> "into"  is IrConsList -> "cons"
+
+  emit-clj-lambda-params : List IRParam, Integer -> Text
+  emit-clj-lambda-params (params) (i) =
+   if i == list-length params then ""
+   else if i == list-length params - 1 then clj-sanitize ((list-at params i).name)
+   else clj-sanitize ((list-at params i).name) & " " & emit-clj-lambda-params params (i + 1)
+
+  emit-clj-list-elems : List IRExpr, Integer, List ArityEntry -> Text
+  emit-clj-list-elems (elems) (i) (arities) =
+   if i == list-length elems then ""
+   else if i == list-length elems - 1 then emit-clj-expr (list-at elems i) arities
+   else emit-clj-expr (list-at elems i) arities & " " & emit-clj-list-elems elems (i + 1) arities
+
+  emit-clj-field-vals : List IRFieldVal, Integer, List ArityEntry -> Text
+  emit-clj-field-vals (fields) (i) (arities) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in let sep = if i > 0 then " " else ""
+   in sep & emit-clj-expr (f.value) arities & emit-clj-field-vals fields (i + 1) arities
+
+  emit-clj-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-clj-match (scrut) (branches) (arities) (depth) =
+   "(let [_s " & emit-clj-expr scrut arities & "] (cond " & emit-clj-match-body branches 0 arities depth & " :else (throw (Exception. \"Non-exhaustive match\"))))"
+
+  emit-clj-match-body : List IRBranch, Integer, List ArityEntry, Integer -> Text
+  emit-clj-match-body (branches) (i) (arities) (depth) =
+   if i == list-length branches then ""
+   else let b = list-at branches i
+   in emit-clj-match-arm (b.pattern) (b.body) arities depth & " " & emit-clj-match-body branches (i + 1) arities depth
+
+  emit-clj-match-arm : IRPat, IRExpr, List ArityEntry, Integer -> Text
+  emit-clj-match-arm (pat) (body) (arities) (depth) =
+   when pat
+    is IrLitPat (text) (ty) (sp) -> "(= _s " & text & ") " & emit-clj-expr body arities
+    is IrCtorPat (name) (subs) (ty) (sp) -> "(= (:tag _s) \"" & name & "\") " & emit-clj-ctor-bind subs body arities
+    is IrVarPat (name) (ty) (sp) -> ":else (let [" & clj-sanitize name & " _s] " & emit-clj-expr body arities & ")"
+    is IrWildPat (sp) -> ":else " & emit-clj-expr body arities
+
+  emit-clj-ctor-bind : List IRPat, IRExpr, List ArityEntry -> Text
+  emit-clj-ctor-bind (subs) (body) (arities) =
+   "(let [" & emit-clj-ctor-bindings subs 0 & "] " & emit-clj-expr body arities & ")"
+
+  emit-clj-ctor-bindings : List IRPat, Integer -> Text
+  emit-clj-ctor-bindings (subs) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in (when sub
+    is IrVarPat (name) (ty) (sp) -> clj-sanitize name & " (:field" & integer-to-text i & " _s) "
+    is otherwise -> "") & emit-clj-ctor-bindings subs (i + 1)
+
+  emit-clj-act : List IRActStmt, List ArityEntry -> Text
+  emit-clj-act (stmts) (arities) =
+   "(do " & emit-clj-act-stmts stmts 0 arities & ")"
+
+  emit-clj-act-stmts : List IRActStmt, Integer, List ArityEntry -> Text
+  emit-clj-act-stmts (stmts) (i) (arities) =
+   if i == list-length stmts then "nil"
+   else let s = list-at stmts i
+   in (when s
+    is IrDoBind (name) (ty) (val) (sp) -> "(def " & clj-sanitize name & " " & emit-clj-expr val arities & ") "
+    is IrDoExec (e) (sp) -> emit-clj-expr e arities & " ") & (if i < list-length stmts - 1 then emit-clj-act-stmts stmts (i + 1) arities else "")
+
+Section: Apply Emission
+
+  emit-clj-apply : IRExpr, List ArityEntry -> Text
+  emit-clj-apply (e) (arities) =
+   let chain = collect-apply-chain e []
+   in let root = chain.root
+   in let args = chain.args
+   in when root
+    is IrName (n) (ty) (sp) ->
+     let bi = clj-try-builtin n args arities
+     in if text-length bi > 0 then bi
+     else "(" & clj-sanitize n & " " & emit-clj-apply-args args arities 0 & ")"
+    is otherwise -> "(" & emit-clj-expr root arities & " " & emit-clj-apply-args args arities 0 & ")"
+
+  emit-clj-apply-args : List IRExpr, List ArityEntry, Integer -> Text
+  emit-clj-apply-args (args) (arities) (i) =
+   if i == list-length args then ""
+   else if i == list-length args - 1 then emit-clj-expr (list-at args i) arities
+        else emit-clj-expr (list-at args i) arities & " " & emit-clj-apply-args args arities (i + 1)
+
+  clj-try-builtin : Text, List IRExpr, List ArityEntry -> Text
+  clj-try-builtin (n) (args) (arities) =
+   if n == "print-line-uni" then "(println " & emit-clj-expr (list-at args 0) arities & ")"
+   else if n == "show" then "(str " & emit-clj-expr (list-at args 0) arities & ")"
+   else if n == "integer-to-text" then "(str " & emit-clj-expr (list-at args 0) arities & ")"
+   else if n == "text-to-integer" then "(Long/parseLong " & emit-clj-expr (list-at args 0) arities & ")"
+   else if n == "text-length" then "(count " & emit-clj-expr (list-at args 0) arities & ")"
+   else if n == "list-length" then "(count " & emit-clj-expr (list-at args 0) arities & ")"
+   else if n == "list-at" then "(nth " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
+   else if n == "char-at" then "(int (nth " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & "))"
+   else if n == "char-code" then emit-clj-expr (list-at args 0) arities
+   else if n == "char-to-text" then "(str (char " & emit-clj-expr (list-at args 0) arities & "))"
+   else if n == "substring" then "(subs " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & " (+ " & emit-clj-expr (list-at args 1) arities & " " & emit-clj-expr (list-at args 2) arities & "))"
+   else if n == "text-compare" then "(compare " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
+   else if n == "text-replace" then "(clojure.string/replace " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & " " & emit-clj-expr (list-at args 2) arities & ")"
+   else if n == "text-contains" then "(clojure.string/includes? " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
+   else if n == "read-file" then "(slurp " & emit-clj-expr (list-at args 0) arities & ")"
+   else if n == "write-file" then "(spit " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
+   else if n == "process-exit" then "(System/exit " & emit-clj-expr (list-at args 0) arities & ")"
+   else if n == "int-mod" then "(mod " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
+   else if n == "negate" then "(- " & emit-clj-expr (list-at args 0) arities & ")"
+   else if n == "min" then "(min " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
+   else if n == "max" then "(max " & emit-clj-expr (list-at args 0) arities & " " & emit-clj-expr (list-at args 1) arities & ")"
+   else if n == "abs" then "(Math/abs " & emit-clj-expr (list-at args 0) arities & ")"
+   else ""
+
+Section: Definition Emission
+
+  emit-clj-def : IRDef, List ArityEntry -> Text
+  emit-clj-def (d) (arities) =
+   let name = clj-sanitize (d.name)
+   in "(defn " & name & " [" & emit-clj-lambda-params (d.params) 0 & "] " & emit-clj-expr (d.body) arities & ")\n\n"
+
+  emit-clj-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-clj-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-clj-def (list-at defs i) arities & emit-clj-defs defs (i + 1) arities
+
+Section: Chapter Emission
+
+  emit-clojure-chapter : IRChapter, List ATypeDef -> Text
+  emit-clojure-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let header = "(ns codex.main\n  (:require [clojure.string]))\n\n"
+   in let types-text = emit-clj-type-defs type-defs 0
+   in let defs-text = emit-clj-defs (m.defs) 0 arities
+   in let entry = clj-emit-entry (m.defs)
+   in header & types-text & defs-text & entry
+
+  clj-emit-entry : List IRDef -> Text
+  clj-emit-entry (defs) = clj-emit-entry-loop defs 0
+
+  clj-emit-entry-loop : List IRDef, Integer -> Text
+  clj-emit-entry-loop (defs) (i) =
+   if i >= list-length defs then ""
+   else let d = list-at defs i
+   in if d.name == opening-entry-point then
+    if list-length (d.params) == 0 then "(" & clj-sanitize opening-entry-point & ")\n" else ""
+   else clj-emit-entry-loop defs (i + 1)
+
+Page 1

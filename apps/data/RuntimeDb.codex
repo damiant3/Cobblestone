@@ -1,0 +1,426 @@
+Chapter: RuntimeDb
+  cites Data chapter Catalog
+  cites Data chapter Schema
+  cites Data chapter Row
+  cites Data chapter Heap
+  cites Data chapter RelAlgebra
+  cites Data chapter Executor
+  cites Data chapter ChangeStream
+  cites Data chapter AuditLog
+  cites Data chapter TimeSeries
+  cites Data chapter SystemDb
+  cites Data chapter Security
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter Sha256
+
+ Central runtime database for the Codex OS. Stores configuration,
+ policies, service registry, capabilities, resource quotas, feature
+ flags, and app metadata. All apps and OS subsystems read from the
+ same source. Changes propagate via CDC and are audited. This is
+ the backbone that turns a collection of apps into a coherent
+ system.
+
+ We say:
+
+Section: Runtime Database State
+
+  RuntimeDb = record {
+    rdb-catalog : Catalog,
+    rdb-sysdb : SysDb,
+    rdb-audit : AuditLog,
+    rdb-stream : ChangeStream,
+    rdb-metrics : TsStore,
+    rdb-security : SecurityContext,
+    rdb-version : Integer
+  }
+
+  rdb-new : RuntimeDb
+  rdb-new =
+    let cat = catalog-new
+    in let cat2 = rdb-bootstrap-tables cat
+    in RuntimeDb {
+      rdb-catalog = cat2,
+      rdb-sysdb = sysdb-new,
+      rdb-audit = audit-log-new,
+      rdb-stream = cs-new,
+      rdb-metrics = ts-store-new,
+      rdb-security = security-context-new,
+      rdb-version = 1
+    }
+
+Section: System Tables
+
+  rdb-bootstrap-tables : Catalog -> Catalog
+  rdb-bootstrap-tables (cat) =
+    let c1 = crt cat (table-def "sys_config" [
+      col-def-not-null "namespace" ColText,
+      col-def-not-null "key" ColText,
+      col-def-not-null "value" ColText,
+      col-def "description" ColText,
+      col-def "updated-by" ColText,
+      col-def "updated-at" ColInteger
+    ])
+    in let c2 = crt c1 (table-def "sys_policies" [
+      col-def-not-null "policy-id" ColInteger,
+      col-def-not-null "name" ColText,
+      col-def-not-null "scope" ColText,
+      col-def-not-null "effect" ColText,
+      col-def "condition" ColText,
+      col-def "priority" ColInteger,
+      col-def "enabled" ColBoolean
+    ])
+    in let c3 = crt c2 (table-def "sys_services" [
+      col-def-not-null "service-name" ColText,
+      col-def-not-null "address" ColText,
+      col-def "port" ColInteger,
+      col-def "status" ColText,
+      col-def "version" ColText,
+      col-def "registered-at" ColInteger,
+      col-def "last-heartbeat" ColInteger,
+      col-def "capabilities" ColText
+    ])
+    in let c4 = crt c3 (table-def "sys_capabilities" [
+      col-def-not-null "app-name" ColText,
+      col-def-not-null "capability" ColText,
+      col-def "granted-by" ColText,
+      col-def "granted-at" ColInteger,
+      col-def "expires-at" ColInteger,
+      col-def "scope" ColText
+    ])
+    in let c5 = crt c4 (table-def "sys_quotas" [
+      col-def-not-null "app-name" ColText,
+      col-def-not-null "resource" ColText,
+      col-def "limit" ColInteger,
+      col-def "used" ColInteger,
+      col-def "unit" ColText
+    ])
+    in let c6 = crt c5 (table-def "sys_features" [
+      col-def-not-null "flag-name" ColText,
+      col-def "enabled" ColBoolean,
+      col-def "rollout-pct" ColInteger,
+      col-def "scope" ColText,
+      col-def "description" ColText
+    ])
+    in let c7 = crt c6 (table-def "sys_apps" [
+      col-def-not-null "app-name" ColText,
+      col-def "version" ColText,
+      col-def "status" ColText,
+      col-def "started-at" ColInteger,
+      col-def "pid" ColInteger,
+      col-def "owner" ColText,
+      col-def "depends-on" ColText
+    ])
+    in let c8 = crt c7 (table-def "sys_events" [
+      col-def-not-null "event-id" ColInteger,
+      col-def-not-null "event-type" ColText,
+      col-def-not-null "source" ColText,
+      col-def "target" ColText,
+      col-def "payload" ColText,
+      col-def "timestamp" ColInteger,
+      col-def "handled" ColBoolean
+    ])
+    in let c9 = crt c8 (table-def "sys_deny_list" [
+      col-def-not-null "address" ColText,
+      col-def "reason" ColText,
+      col-def "source-app" ColText,
+      col-def "added-at" ColInteger,
+      col-def "expires-at" ColInteger,
+      col-def "auto" ColBoolean
+    ])
+    in c9
+
+  crt : Catalog, TableDef -> Catalog
+  crt (cat) (tdef) = (catalog-create-table cat tdef).cat
+
+Section: Configuration
+
+  ConfigEntry = record {
+    ce-namespace : Text,
+    ce-key : Text,
+    ce-value : Text,
+    ce-description : Text
+  }
+
+  rdb-set-config : RuntimeDb, Text, Text, Text, Text, Integer -> RuntimeDb
+  rdb-set-config (rdb) (namespace) (key) (value) (user) (timestamp) =
+    let schema = rdb-config-schema
+    in let row = row-new schema [ValText namespace, ValText key, ValText value, ValText "", ValText user, ValInteger timestamp]
+    in let cat2 = (catalog-insert-row (rdb.rdb-catalog) "sys_config" row).cir-cat
+    in let audit2 = audit-record-insert (rdb.rdb-audit) user "sys_config" (namespace & "." & key) [ValText value] 0 timestamp
+    in rdb-with-catalog-audit rdb cat2 audit2
+
+  rdb-get-config : RuntimeDb, Text, Text -> Text
+  rdb-get-config (rdb) (namespace) (key) =
+    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_config") (PredAnd (PredColCmp "namespace" CmpEq (ValText namespace)) (PredColCmp "key" CmpEq (ValText key))))
+    in if qr.qr-count == 0 then ""
+    else val-to-text (row-get-by-name (list-at (qr.qr-rows) (qr.qr-count - 1)) "value")
+
+  rdb-get-config-or : RuntimeDb, Text, Text, Text -> Text
+  rdb-get-config-or (rdb) (namespace) (key) (default) =
+    let v = rdb-get-config rdb namespace key
+    in if text-length v == 0 then default else v
+
+  rdb-list-config : RuntimeDb, Text -> List RowData
+  rdb-list-config (rdb) (namespace) =
+    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_config") (PredColCmp "namespace" CmpEq (ValText namespace)))
+    in qr.qr-rows
+
+  rdb-config-schema : RowSchema
+  rdb-config-schema = table-schema (table-def "sys_config" [col-def-not-null "namespace" ColText, col-def-not-null "key" ColText, col-def-not-null "value" ColText, col-def "description" ColText, col-def "updated-by" ColText, col-def "updated-at" ColInteger])
+
+Section: Service Registry
+
+  rdb-register-service : RuntimeDb, Text, Text, Integer, Text, Text, Integer -> RuntimeDb
+  rdb-register-service (rdb) (name) (addr) (port) (version) (capabilities) (timestamp) =
+    let schema = rdb-service-schema
+    in let row = row-new schema [ValText name, ValText addr, ValInteger port, ValText "running", ValText version, ValInteger timestamp, ValInteger timestamp, ValText capabilities]
+    in let cat2 = (catalog-insert-row (rdb.rdb-catalog) "sys_services" row).cir-cat
+    in let audit2 = audit-record-insert (rdb.rdb-audit) "system" "sys_services" name [ValText addr, ValInteger port] 0 timestamp
+    in let sysdb2 = sysdb-register-app (rdb.rdb-sysdb) name
+    in rdb-with-all rdb cat2 audit2 sysdb2
+
+  rdb-heartbeat : RuntimeDb, Text, Integer -> RuntimeDb
+  rdb-heartbeat (rdb) (service-name) (timestamp) =
+    let metrics2 = ts-store-append (rdb.rdb-metrics) ("heartbeat:" & service-name) (TsPoint { ts-time = timestamp, ts-value = 1, ts-tags = [] })
+    in RuntimeDb { rdb-catalog = rdb.rdb-catalog, rdb-sysdb = rdb.rdb-sysdb, rdb-audit = rdb.rdb-audit, rdb-stream = rdb.rdb-stream, rdb-metrics = metrics2, rdb-security = rdb.rdb-security, rdb-version = rdb.rdb-version }
+
+  rdb-list-services : RuntimeDb -> List RowData
+  rdb-list-services (rdb) =
+    let qr = execute (rdb.rdb-catalog) (RelScan "sys_services")
+    in qr.qr-rows
+
+  rdb-find-service : RuntimeDb, Text -> Maybe RowData
+  rdb-find-service (rdb) (name) =
+    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_services") (PredColCmp "service-name" CmpEq (ValText name)))
+    in if qr.qr-count == 0 then None else Just (list-at (qr.qr-rows) 0)
+
+  rdb-service-schema : RowSchema
+  rdb-service-schema = table-schema (table-def "sys_services" [col-def-not-null "service-name" ColText, col-def-not-null "address" ColText, col-def "port" ColInteger, col-def "status" ColText, col-def "version" ColText, col-def "registered-at" ColInteger, col-def "last-heartbeat" ColInteger, col-def "capabilities" ColText])
+
+Section: Policy Management
+
+  rdb-add-policy : RuntimeDb, Integer, Text, Text, Text, Text, Integer, Text, Integer -> RuntimeDb
+  rdb-add-policy (rdb) (id) (name) (scope) (effect) (condition) (priority) (user) (timestamp) =
+    let schema = rdb-policy-schema
+    in let row = row-new schema [ValInteger id, ValText name, ValText scope, ValText effect, ValText condition, ValInteger priority, ValBoolean True]
+    in let cat2 = (catalog-insert-row (rdb.rdb-catalog) "sys_policies" row).cir-cat
+    in let audit2 = audit-record-ddl (rdb.rdb-audit) user "sys_policies" ("add policy: " & name) timestamp
+    in rdb-with-catalog-audit rdb cat2 audit2
+
+  rdb-list-policies : RuntimeDb -> List RowData
+  rdb-list-policies (rdb) =
+    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_policies") (PredColCmp "enabled" CmpEq (ValBoolean True)))
+    in qr.qr-rows
+
+  rdb-policies-for-scope : RuntimeDb, Text -> List RowData
+  rdb-policies-for-scope (rdb) (scope) =
+    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_policies") (PredAnd (PredColCmp "scope" CmpEq (ValText scope)) (PredColCmp "enabled" CmpEq (ValBoolean True))))
+    in qr.qr-rows
+
+  rdb-evaluate-policy : RuntimeDb, Text, Text -> Text
+  rdb-evaluate-policy (rdb) (scope) (request) =
+    let policies = rdb-policies-for-scope rdb scope
+    in rdb-eval-loop policies request 0 (list-length policies) "allow"
+
+  rdb-eval-loop : List RowData, Text, Integer, Integer, Text -> Text
+  rdb-eval-loop (policies) (request) (i) (len) (result) =
+    if i >= len then result
+    else let p = list-at policies i
+    in let effect = val-to-text (row-get-by-name p "effect")
+    in if effect == "deny" then "deny"
+    else rdb-eval-loop policies request (i + 1) len result
+
+  rdb-policy-schema : RowSchema
+  rdb-policy-schema = table-schema (table-def "sys_policies" [col-def-not-null "policy-id" ColInteger, col-def-not-null "name" ColText, col-def-not-null "scope" ColText, col-def-not-null "effect" ColText, col-def "condition" ColText, col-def "priority" ColInteger, col-def "enabled" ColBoolean])
+
+Section: Capability Grants
+
+  rdb-grant-capability : RuntimeDb, Text, Text, Text, Integer, Integer, Text -> RuntimeDb
+  rdb-grant-capability (rdb) (app) (capability) (granted-by) (timestamp) (expires) (scope) =
+    let schema = rdb-cap-schema
+    in let row = row-new schema [ValText app, ValText capability, ValText granted-by, ValInteger timestamp, ValInteger expires, ValText scope]
+    in let cat2 = (catalog-insert-row (rdb.rdb-catalog) "sys_capabilities" row).cir-cat
+    in let audit2 = audit-record-insert (rdb.rdb-audit) granted-by "sys_capabilities" (app & ":" & capability) [ValText scope] 0 timestamp
+    in rdb-with-catalog-audit rdb cat2 audit2
+
+  rdb-check-capability : RuntimeDb, Text, Text, Integer -> Boolean
+  rdb-check-capability (rdb) (app) (capability) (now) =
+    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_capabilities") (PredAnd (PredColCmp "app-name" CmpEq (ValText app)) (PredColCmp "capability" CmpEq (ValText capability))))
+    in rdb-cap-valid-loop (qr.qr-rows) now 0 (qr.qr-count)
+
+  rdb-cap-valid-loop : List RowData, Integer, Integer, Integer -> Boolean
+  rdb-cap-valid-loop (rows) (now) (i) (len) =
+    if i >= len then False
+    else let row = list-at rows i
+    in let expires = val-to-integer (row-get-by-name row "expires-at")
+    in if expires == 0 | now < expires then True
+    else rdb-cap-valid-loop rows now (i + 1) len
+
+  rdb-app-capabilities : RuntimeDb, Text -> List Text
+  rdb-app-capabilities (rdb) (app) =
+    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_capabilities") (PredColCmp "app-name" CmpEq (ValText app)))
+    in rdb-extract-caps (qr.qr-rows) 0 (qr.qr-count) []
+
+  rdb-extract-caps : List RowData, Integer, Integer, List Text -> List Text
+  rdb-extract-caps (rows) (i) (len) (acc) =
+    if i >= len then acc
+    else rdb-extract-caps rows (i + 1) len (list-push acc (val-to-text (row-get-by-name (list-at rows i) "capability")))
+
+  rdb-cap-schema : RowSchema
+  rdb-cap-schema = table-schema (table-def "sys_capabilities" [col-def-not-null "app-name" ColText, col-def-not-null "capability" ColText, col-def "granted-by" ColText, col-def "granted-at" ColInteger, col-def "expires-at" ColInteger, col-def "scope" ColText])
+
+Section: Resource Quotas
+
+  rdb-set-quota : RuntimeDb, Text, Text, Integer, Text, Text, Integer -> RuntimeDb
+  rdb-set-quota (rdb) (app) (resource) (limit) (unit) (user) (timestamp) =
+    let schema = rdb-quota-schema
+    in let row = row-new schema [ValText app, ValText resource, ValInteger limit, ValInteger 0, ValText unit]
+    in let cat2 = (catalog-insert-row (rdb.rdb-catalog) "sys_quotas" row).cir-cat
+    in let audit2 = audit-record-insert (rdb.rdb-audit) user "sys_quotas" (app & ":" & resource) [ValInteger limit, ValText unit] 0 timestamp
+    in rdb-with-catalog-audit rdb cat2 audit2
+
+  rdb-check-quota : RuntimeDb, Text, Text -> Boolean
+  rdb-check-quota (rdb) (app) (resource) =
+    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_quotas") (PredAnd (PredColCmp "app-name" CmpEq (ValText app)) (PredColCmp "resource" CmpEq (ValText resource))))
+    in if qr.qr-count == 0 then True
+    else let row = list-at (qr.qr-rows) 0
+    in let limit = val-to-integer (row-get-by-name row "limit")
+    in let used = val-to-integer (row-get-by-name row "used")
+    in used < limit
+
+  rdb-quota-schema : RowSchema
+  rdb-quota-schema = table-schema (table-def "sys_quotas" [col-def-not-null "app-name" ColText, col-def-not-null "resource" ColText, col-def "limit" ColInteger, col-def "used" ColInteger, col-def "unit" ColText])
+
+Section: Feature Flags
+
+  rdb-set-feature : RuntimeDb, Text, Boolean, Integer, Text, Text, Integer -> RuntimeDb
+  rdb-set-feature (rdb) (flag) (enabled) (rollout-pct) (scope) (user) (timestamp) =
+    let schema = rdb-feature-schema
+    in let row = row-new schema [ValText flag, ValBoolean enabled, ValInteger rollout-pct, ValText scope, ValText ""]
+    in let cat2 = (catalog-insert-row (rdb.rdb-catalog) "sys_features" row).cir-cat
+    in let audit2 = audit-record-ddl (rdb.rdb-audit) user "sys_features" ("set flag " & flag & "=" & show enabled) timestamp
+    in rdb-with-catalog-audit rdb cat2 audit2
+
+  rdb-check-feature : RuntimeDb, Text -> Boolean
+  rdb-check-feature (rdb) (flag) =
+    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_features") (PredColCmp "flag-name" CmpEq (ValText flag)))
+    in if qr.qr-count == 0 then False
+    else val-to-boolean (row-get-by-name (list-at (qr.qr-rows) (qr.qr-count - 1)) "enabled")
+
+  rdb-feature-rollout : RuntimeDb, Text, Integer -> Boolean
+  rdb-feature-rollout (rdb) (flag) (hash-value) =
+    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_features") (PredColCmp "flag-name" CmpEq (ValText flag)))
+    in if qr.qr-count == 0 then False
+    else let row = list-at (qr.qr-rows) (qr.qr-count - 1)
+    in let enabled = val-to-boolean (row-get-by-name row "enabled")
+    in if enabled == False then False
+    else let pct = val-to-integer (row-get-by-name row "rollout-pct")
+    in if pct >= 100 then True
+    else let bucket = hash-value - (hash-value / 100) * 100
+    in bucket < pct
+
+  rdb-feature-schema : RowSchema
+  rdb-feature-schema = table-schema (table-def "sys_features" [col-def-not-null "flag-name" ColText, col-def "enabled" ColBoolean, col-def "rollout-pct" ColInteger, col-def "scope" ColText, col-def "description" ColText])
+
+Section: Shared Deny List
+
+  rdb-add-deny : RuntimeDb, Text, Text, Text, Integer, Integer, Boolean -> RuntimeDb
+  rdb-add-deny (rdb) (addr) (reason) (source-app) (timestamp) (ttl) (auto) =
+    let schema = rdb-deny-schema
+    in let row = row-new schema [ValText addr, ValText reason, ValText source-app, ValInteger timestamp, ValInteger (timestamp + ttl), ValBoolean auto]
+    in let cat2 = (catalog-insert-row (rdb.rdb-catalog) "sys_deny_list" row).cir-cat
+    in let sysdb2 = sysdb-deny (rdb.rdb-sysdb) addr reason timestamp ttl
+    in let audit2 = audit-record-insert (rdb.rdb-audit) source-app "sys_deny_list" addr [ValText reason] 0 timestamp
+    in rdb-with-all rdb cat2 audit2 sysdb2
+
+  rdb-is-denied : RuntimeDb, Text, Integer -> Boolean
+  rdb-is-denied (rdb) (addr) (now) =
+    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_deny_list") (PredColCmp "address" CmpEq (ValText addr)))
+    in rdb-deny-active (qr.qr-rows) now 0 (qr.qr-count)
+
+  rdb-deny-active : List RowData, Integer, Integer, Integer -> Boolean
+  rdb-deny-active (rows) (now) (i) (len) =
+    if i >= len then False
+    else let row = list-at rows i
+    in let expires = val-to-integer (row-get-by-name row "expires-at")
+    in if expires == 0 | now < expires then True
+    else rdb-deny-active rows now (i + 1) len
+
+  rdb-deny-schema : RowSchema
+  rdb-deny-schema = table-schema (table-def "sys_deny_list" [col-def-not-null "address" ColText, col-def "reason" ColText, col-def "source-app" ColText, col-def "added-at" ColInteger, col-def "expires-at" ColInteger, col-def "auto" ColBoolean])
+
+Section: App Lifecycle
+
+  rdb-register-app : RuntimeDb, Text, Text, Text, Integer -> RuntimeDb
+  rdb-register-app (rdb) (app-name) (version) (owner) (timestamp) =
+    let schema = rdb-app-schema
+    in let row = row-new schema [ValText app-name, ValText version, ValText "starting", ValInteger timestamp, ValInteger 0, ValText owner, ValText ""]
+    in let cat2 = (catalog-insert-row (rdb.rdb-catalog) "sys_apps" row).cir-cat
+    in let audit2 = audit-record-insert (rdb.rdb-audit) owner "sys_apps" app-name [ValText version] 0 timestamp
+    in rdb-with-catalog-audit rdb cat2 audit2
+
+  rdb-list-apps : RuntimeDb -> List RowData
+  rdb-list-apps (rdb) =
+    let qr = execute (rdb.rdb-catalog) (RelScan "sys_apps")
+    in qr.qr-rows
+
+  rdb-app-schema : RowSchema
+  rdb-app-schema = table-schema (table-def "sys_apps" [col-def-not-null "app-name" ColText, col-def "version" ColText, col-def "status" ColText, col-def "started-at" ColInteger, col-def "pid" ColInteger, col-def "owner" ColText, col-def "depends-on" ColText])
+
+Section: Event Bus
+
+  rdb-emit-event : RuntimeDb, Integer, Text, Text, Text, Text, Integer -> RuntimeDb
+  rdb-emit-event (rdb) (event-id) (event-type) (source) (target) (payload) (timestamp) =
+    let schema = rdb-event-schema
+    in let row = row-new schema [ValInteger event-id, ValText event-type, ValText source, ValText target, ValText payload, ValInteger timestamp, ValBoolean False]
+    in let cat2 = (catalog-insert-row (rdb.rdb-catalog) "sys_events" row).cir-cat
+    in rdb-with-catalog rdb cat2
+
+  rdb-pending-events : RuntimeDb, Text -> List RowData
+  rdb-pending-events (rdb) (target) =
+    let qr = execute (rdb.rdb-catalog) (RelFilter (RelScan "sys_events") (PredAnd (PredColCmp "target" CmpEq (ValText target)) (PredColCmp "handled" CmpEq (ValBoolean False))))
+    in qr.qr-rows
+
+  rdb-event-schema : RowSchema
+  rdb-event-schema = table-schema (table-def "sys_events" [col-def-not-null "event-id" ColInteger, col-def-not-null "event-type" ColText, col-def-not-null "source" ColText, col-def "target" ColText, col-def "payload" ColText, col-def "timestamp" ColInteger, col-def "handled" ColBoolean])
+
+Section: Metrics Recording
+
+  rdb-record-metric : RuntimeDb, Text, Integer, Integer -> RuntimeDb
+  rdb-record-metric (rdb) (metric-name) (value) (timestamp) =
+    let store = rdb.rdb-metrics
+    in let existing = hamt-get (store.tsst-series) metric-name
+    in let store2 = when existing
+      is None -> ts-store-create store metric-name
+      is Just (s) -> store
+    in let store3 = ts-store-append store2 metric-name (TsPoint { ts-time = timestamp, ts-value = value, ts-tags = [] })
+    in RuntimeDb { rdb-catalog = rdb.rdb-catalog, rdb-sysdb = rdb.rdb-sysdb, rdb-audit = rdb.rdb-audit, rdb-stream = rdb.rdb-stream, rdb-metrics = store3, rdb-security = rdb.rdb-security, rdb-version = rdb.rdb-version }
+
+  rdb-query-metric : RuntimeDb, Text, Integer, Integer -> List TsPoint
+  rdb-query-metric (rdb) (metric-name) (start) (end) =
+    ts-store-query (rdb.rdb-metrics) metric-name start end
+
+Section: Helpers
+
+  rdb-with-catalog : RuntimeDb, Catalog -> RuntimeDb
+  rdb-with-catalog (rdb) (cat) = RuntimeDb { rdb-catalog = cat, rdb-sysdb = rdb.rdb-sysdb, rdb-audit = rdb.rdb-audit, rdb-stream = rdb.rdb-stream, rdb-metrics = rdb.rdb-metrics, rdb-security = rdb.rdb-security, rdb-version = rdb.rdb-version + 1 }
+
+  rdb-with-catalog-audit : RuntimeDb, Catalog, AuditLog -> RuntimeDb
+  rdb-with-catalog-audit (rdb) (cat) (audit) = RuntimeDb { rdb-catalog = cat, rdb-sysdb = rdb.rdb-sysdb, rdb-audit = audit, rdb-stream = rdb.rdb-stream, rdb-metrics = rdb.rdb-metrics, rdb-security = rdb.rdb-security, rdb-version = rdb.rdb-version + 1 }
+
+  rdb-with-all : RuntimeDb, Catalog, AuditLog, SysDb -> RuntimeDb
+  rdb-with-all (rdb) (cat) (audit) (sysdb) = RuntimeDb { rdb-catalog = cat, rdb-sysdb = sysdb, rdb-audit = audit, rdb-stream = rdb.rdb-stream, rdb-metrics = rdb.rdb-metrics, rdb-security = rdb.rdb-security, rdb-version = rdb.rdb-version + 1 }
+
+Section: Statistics
+
+  rdb-stats : RuntimeDb -> Text
+  rdb-stats (rdb) =
+    "runtime-db v" & show (rdb.rdb-version)
+    & " tables=" & show (rdb.rdb-catalog.table-count)
+    & " " & audit-stats (rdb.rdb-audit)
+    & " " & sysdb-stats (rdb.rdb-sysdb)
+    & " " & ts-store-stats (rdb.rdb-metrics)
+
+Page 1

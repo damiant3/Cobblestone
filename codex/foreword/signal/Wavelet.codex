@@ -1,0 +1,163 @@
+Chapter: Wavelet
+
+ Discrete wavelet transform using the Haar wavelet with integer
+ lifting scheme for exact reconstruction. Forward: det = a - b,
+ avg = b + det/2. Inverse: b = avg - det/2, a = b + det.
+ Lossless for all integer inputs. Useful for signal compression,
+ denoising, and multi-resolution analysis.
+
+ To dwt-forward gives the wavelet coefficients from a signal.
+ To dwt-inverse gives the reconstructed signal from coefficients.
+ To dwt-denoise gives a denoised signal via coefficient thresholding.
+ To dwt-compress gives coefficients with small values zeroed.
+
+ We say:
+
+Section: Forward Transform
+
+  dwt-forward : List Integer -> List Integer
+  dwt-forward (signal) =
+    let n = list-length signal
+    in if n < 2 then signal
+    else dwt-forward-levels signal n
+
+  dwt-forward-levels : List Integer, Integer -> List Integer
+  dwt-forward-levels (data) (len) =
+    if len < 2 then data
+    else let stepped = dwt-forward-step data len
+    in dwt-forward-levels stepped (len / 2)
+
+  dwt-forward-step : List Integer, Integer -> List Integer
+  dwt-forward-step (data) (len) =
+    let half = len / 2
+    in let result = dwt-fwd-pairs data half 0 [] []
+    in let tail = dwt-copy-tail data len (list-length data) []
+    in result.averages & result.details & tail
+
+  DwtStepResult = record {
+    averages : List Integer,
+    details : List Integer
+  }
+
+  dwt-fwd-pairs : List Integer, Integer, Integer, List Integer, List Integer -> DwtStepResult
+  dwt-fwd-pairs (data) (half) (i) (avgs) (dets) =
+    if i >= half then DwtStepResult { averages = avgs, details = dets }
+    else let a = list-at data (2 * i)
+    in let b = list-at data (2 * i + 1)
+    in let det = a - b
+    in let avg = b + det / 2
+    in dwt-fwd-pairs data half (i + 1) (list-push avgs avg) (list-push dets det)
+
+  dwt-copy-tail : List Integer, Integer, Integer, List Integer -> List Integer
+  dwt-copy-tail (data) (start) (len) (acc) =
+    if start >= len then acc
+    else dwt-copy-tail data (start + 1) len (list-push acc (list-at data start))
+
+Section: Inverse Transform
+
+  dwt-inverse : List Integer -> List Integer
+  dwt-inverse (coeffs) =
+    let n = list-length coeffs
+    in if n < 2 then coeffs
+    else dwt-inverse-levels coeffs n 2
+
+  dwt-inverse-levels : List Integer, Integer, Integer -> List Integer
+  dwt-inverse-levels (data) (n) (len) =
+    if len > n then data
+    else let stepped = dwt-inverse-step data len
+    in dwt-inverse-levels stepped n (len * 2)
+
+  dwt-inverse-step : List Integer, Integer -> List Integer
+  dwt-inverse-step (data) (len) =
+    let half = len / 2
+    in let result = dwt-inv-pairs data half 0 []
+    in let tail = dwt-copy-tail data len (list-length data) []
+    in result & tail
+
+  dwt-inv-pairs : List Integer, Integer, Integer, List Integer -> List Integer
+  dwt-inv-pairs (data) (half) (i) (acc) =
+    if i >= half then acc
+    else let avg = list-at data i
+    in let det = list-at data (half + i)
+    in let b = avg - det / 2
+    in let a = b + det
+    in dwt-inv-pairs data half (i + 1) (list-push (list-push acc a) b)
+
+Section: Denoising
+
+  dwt-denoise : List Integer, Integer -> List Integer
+  dwt-denoise (signal) (threshold) =
+    let coeffs = dwt-forward signal
+    in let thresholded = dwt-soft-threshold coeffs threshold 0 (list-length coeffs) []
+    in dwt-inverse thresholded
+
+  dwt-soft-threshold : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  dwt-soft-threshold (coeffs) (threshold) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = list-at coeffs i
+    in let abs-c = if c < 0 then 0 - c else c
+    in let t = if abs-c <= threshold then 0
+      else if c > 0 then c - threshold
+      else c + threshold
+    in dwt-soft-threshold coeffs threshold (i + 1) len (list-push acc t)
+
+Section: Compression
+
+  dwt-compress : List Integer, Integer -> List Integer
+  dwt-compress (signal) (keep-percent) =
+    let coeffs = dwt-forward signal
+    in let n = list-length coeffs
+    in let sorted-abs = dwt-sort-abs coeffs 0 n []
+    in let cutoff-idx = n - n * keep-percent / 100
+    in let threshold = if cutoff-idx >= n then 0 else list-at sorted-abs cutoff-idx
+    in dwt-hard-threshold coeffs threshold 0 n []
+
+  dwt-hard-threshold : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  dwt-hard-threshold (coeffs) (threshold) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = list-at coeffs i
+    in let abs-c = if c < 0 then 0 - c else c
+    in dwt-hard-threshold coeffs threshold (i + 1) len (list-push acc (if abs-c < threshold then 0 else c))
+
+  dwt-sort-abs : List Integer, Integer, Integer, List Integer -> List Integer
+  dwt-sort-abs (coeffs) (i) (len) (acc) =
+    if i >= len then dwt-insertion-sort acc 0 (list-length acc)
+    else let c = list-at coeffs i
+    in dwt-sort-abs coeffs (i + 1) len (list-push acc (if c < 0 then 0 - c else c))
+
+  dwt-insertion-sort : List Integer, Integer, Integer -> List Integer
+  dwt-insertion-sort (xs) (i) (len) =
+    if i >= len then xs
+    else dwt-insertion-sort (dwt-insert xs i) (i + 1) len
+
+  dwt-insert : List Integer, Integer -> List Integer
+  dwt-insert (xs) (i) =
+    if i <= 0 then xs
+    else if list-at xs i < list-at xs (i - 1) then
+      dwt-insert (list-set-at (list-set-at xs i (list-at xs (i - 1))) (i - 1) (list-at xs i)) (i - 1)
+    else xs
+
+Section: Queries
+
+  dwt-energy : List Integer -> Integer
+  dwt-energy (coeffs) = dwt-energy-loop coeffs 0 (list-length coeffs) 0
+
+  dwt-energy-loop : List Integer, Integer, Integer, Integer -> Integer
+  dwt-energy-loop (coeffs) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = list-at coeffs i
+    in dwt-energy-loop coeffs (i + 1) len (acc + c * c / 1000)
+
+  dwt-sparsity : List Integer -> Integer
+  dwt-sparsity (coeffs) =
+    let n = list-length coeffs
+    in if n == 0 then 0
+    else let zeros = dwt-count-zeros coeffs 0 n 0
+    in zeros * 1000 / n
+
+  dwt-count-zeros : List Integer, Integer, Integer, Integer -> Integer
+  dwt-count-zeros (coeffs) (i) (len) (acc) =
+    if i >= len then acc
+    else dwt-count-zeros coeffs (i + 1) len (acc + (if list-at coeffs i == 0 then 1 else 0))
+
+Page 1

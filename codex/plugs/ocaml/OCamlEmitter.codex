@@ -1,0 +1,336 @@
+Chapter: OCaml Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates OCaml source code from the IR.
+
+Section: Keywords and Sanitization
+
+  ml-keywords : List Text =
+   ["and", "as", "assert", "asr", "begin",
+    "class", "constraint", "do", "done", "downto",
+    "else", "end", "exception", "external", "false",
+    "for", "fun", "function", "functor", "if",
+    "in", "include", "inherit", "initializer", "land",
+    "lazy", "let", "lor", "lsl", "lsr",
+    "lxor", "match", "method", "mod", "module",
+    "mutable", "new", "nonrec", "object", "of",
+    "open", "or", "private", "rec", "sig",
+    "struct", "then", "to", "true", "try",
+    "type", "val", "virtual", "when", "while", "with"]
+
+  is-ml-keyword-loop : List Text, Text, Integer, Integer -> Boolean
+  is-ml-keyword-loop (kws) (name) (i) (len) =
+   if i == len then False
+   else if list-at kws i == name then True
+   else is-ml-keyword-loop kws name (i + 1) len
+
+  is-ml-keyword : Text -> Boolean
+  is-ml-keyword (name) = is-ml-keyword-loop ml-keywords name 0 (list-length ml-keywords)
+
+  ml-sanitize : Text -> Text
+  ml-sanitize (name) =
+   let s = text-replace name "-" "_"
+   in if is-ml-keyword s then s & "'"
+      else s
+
+  ml-escape-text : Text -> Text
+  ml-escape-text (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in let s3 = text-replace s2 "\n" "\\n"
+   in s3
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then -1
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else -1
+
+Section: Apply Chain
+
+  is-upper-letter : Integer -> Boolean
+  is-upper-letter (code) =
+   if code >= char-code 'E' then code <= char-code 'Z'
+   else False
+
+Section: Type Definition Emission
+
+  emit-ml-type-defs : List ATypeDef, Integer -> Text
+  emit-ml-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-ml-type-def (list-at tds i) & emit-ml-type-defs tds (i + 1)
+
+  emit-ml-type-def : ATypeDef -> Text
+  emit-ml-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (s) ->
+     emit-ml-record-type (name.value) fields
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-ml-sum-type (name.value) ctors
+
+  emit-ml-sum-type : Text, List AVariantCtorDef -> Text
+  emit-ml-sum-type (name) (ctors) =
+   "type " & ml-sanitize name & " =\n" & emit-ml-ctors ctors 0 (list-length ctors) & "\n"
+
+  emit-ml-ctors : List AVariantCtorDef, Integer, Integer -> Text
+  emit-ml-ctors (ctors) (i) (len) =
+   if i == len then ""
+   else let c = list-at ctors i
+   in "  | " & ml-sanitize (c.name.value) & emit-ml-ctor-fields (c.fields) 0 & "\n" & emit-ml-ctors ctors (i + 1) len
+
+  emit-ml-ctor-fields : List ATypeExpr, Integer -> Text
+  emit-ml-ctor-fields (fields) (i) =
+   if i == list-length fields then ""
+   else if i == 0 then " of string" & emit-ml-ctor-fields-rest fields 1
+   else ""
+
+  emit-ml-ctor-fields-rest : List ATypeExpr, Integer -> Text
+  emit-ml-ctor-fields-rest (fields) (i) =
+   if i == list-length fields then ""
+   else " * string" & emit-ml-ctor-fields-rest fields (i + 1)
+
+  emit-ml-record-type : Text, List ARecordFieldDef -> Text
+  emit-ml-record-type (name) (fields) =
+   let sname = ml-sanitize name
+   in "type " & sname & " = { " & emit-ml-record-fields fields 0 & " }\n\n"
+
+  emit-ml-record-fields : List ARecordFieldDef, Integer -> Text
+  emit-ml-record-fields (fields) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in let sep = if i > 0 then "; " else ""
+   in sep & ml-sanitize (f.name.value) & " : string" & emit-ml-record-fields fields (i + 1)
+
+Section: Expression Emission
+
+  ml-max-depth : Integer = 256
+
+  emit-ml-expr : IRExpr, List ArityEntry -> Text
+  emit-ml-expr (e) (arities) = emit-ml-expr-at e arities 0
+
+  emit-ml-expr-at : IRExpr, List ArityEntry, Integer -> Text
+  emit-ml-expr-at (e) (arities) (depth) =
+   if depth >= ml-max-depth then "failwith \"depth\""
+   else when e
+    is IrIntLit (n) (sp) -> integer-to-text n
+    is IrNumLit (n) (sp) -> integer-to-text n & ".0"
+    is IrTextLit (s) (sp) -> "\"" & ml-escape-text s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> integer-to-text n
+    is IrName (n) (ty) (sp) -> emit-ml-name n ty arities
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-ml-binary op l r arities
+    is IrNegate (operand) (sp) -> "(- " & emit-ml-expr-at operand arities (depth + 1) & ")"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(if " & emit-ml-expr-at c arities (depth + 1) & " then " & emit-ml-expr-at t arities (depth + 1) & " else " & emit-ml-expr-at el arities (depth + 1) & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "(let " & ml-sanitize name & " = " & emit-ml-expr-at val arities (depth + 1) & " in " & emit-ml-expr-at body arities (depth + 1) & ")"
+    is IrApply (f) (a) (ty) (sp) -> emit-ml-apply e arities
+    is IrLambda (params) (body) (ty) (sp) -> "(fun " & emit-ml-lambda-params params 0 & " -> " & emit-ml-expr body arities & ")"
+    is IrList (elems) (ty) (sp) -> "[" & emit-ml-list-elems elems 0 arities & "]"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-ml-match scrut branches arities
+    is IrAct (stmts) (ty) (sp) -> emit-ml-act stmts arities
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-ml-expr-at body arities (depth + 1)
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-ml-expr-at body arities (depth + 1)
+    is IrRecord (name) (fields) (ty) (sp) -> emit-ml-record name fields arities
+    is IrFieldAccess (rec) (field) (ty) (sp) -> "(" & emit-ml-expr-at rec arities (depth + 1) & ")." & ml-sanitize field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "{ " & emit-ml-expr-at rec arities (depth + 1) & " with " & ml-sanitize field & " = " & emit-ml-expr-at val arities (depth + 1) & " }"
+    is IrFork (body) (ty) (sp) -> emit-ml-expr-at body arities (depth + 1)
+    is IrAwait (task) (ty) (sp) -> emit-ml-expr-at task arities (depth + 1)
+    is IrTry (max) (body) (fb) (fail-stmts) (ty) (sp) -> "(try " & emit-ml-act body arities & " with _ -> " & emit-ml-act fb arities & ")"
+    is IrError (msg) (ty) (sp) -> "(failwith \"" & ml-escape-text msg & "\")"
+
+  emit-ml-name : Text, CodexType, List ArityEntry -> Text
+  emit-ml-name (n) (ty) (arities) =
+   if n == "read-line" then "read_line ()"
+   else if n == "show" then "string_of_int"
+   else if n == "True" then "true"
+   else if n == "False" then "false"
+   else if n == "Nothing" then "None"
+   else ml-sanitize n
+
+  emit-ml-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry -> Text
+  emit-ml-binary (op) (l) (r) (arities) =
+   when op
+    is IrAppendText -> "(" & emit-ml-expr l arities & " ^ " & emit-ml-expr r arities & ")"
+    is IrAppendList -> "(" & emit-ml-expr l arities & " @ " & emit-ml-expr r arities & ")"
+    is IrConsList -> "(" & emit-ml-expr l arities & " :: " & emit-ml-expr r arities & ")"
+    is IrAnd -> "(" & emit-ml-expr l arities & " && " & emit-ml-expr r arities & ")"
+    is IrOr -> "(" & emit-ml-expr l arities & " || " & emit-ml-expr r arities & ")"
+    is otherwise -> "(" & emit-ml-expr l arities & " " & ml-bin-op-symbol op & " " & emit-ml-expr r arities & ")"
+
+  ml-bin-op-symbol : IRBinaryOp -> Text
+  ml-bin-op-symbol (op) =
+   when op
+    is IrAddInt -> "+"
+    is IrSubInt -> "-"
+    is IrMulInt -> "*"
+    is IrDivInt -> "/"
+    is IrPowInt -> "**"
+    is IrAddNum -> "+."
+    is IrSubNum -> "-."
+    is IrMulNum -> "*."
+    is IrDivNum -> "/."
+    is IrEq -> "="
+    is IrNotEq -> "<>"
+    is IrLt -> "<"
+    is IrGt -> ">"
+    is IrLtEq -> "<="
+    is IrGtEq -> ">="
+    is IrAnd -> "&&"
+    is IrOr -> "||"
+    is IrAppendText -> "^"
+    is IrAppendList -> "@"
+    is IrConsList -> "::"
+
+  emit-ml-lambda-params : List IRParam, Integer -> Text
+  emit-ml-lambda-params (params) (i) =
+   if i == list-length params then ""
+   else ml-sanitize ((list-at params i).name) & " " & emit-ml-lambda-params params (i + 1)
+
+  emit-ml-list-elems : List IRExpr, Integer, List ArityEntry -> Text
+  emit-ml-list-elems (elems) (i) (arities) =
+   if i == list-length elems then ""
+   else if i == list-length elems - 1 then emit-ml-expr (list-at elems i) arities
+   else emit-ml-expr (list-at elems i) arities & "; " & emit-ml-list-elems elems (i + 1) arities
+
+  emit-ml-record : Text, List IRFieldVal, List ArityEntry -> Text
+  emit-ml-record (name) (fields) (arities) =
+   "{ " & emit-ml-record-vals fields 0 arities & " }"
+
+  emit-ml-record-vals : List IRFieldVal, Integer, List ArityEntry -> Text
+  emit-ml-record-vals (fields) (i) (arities) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in let sep = if i > 0 then "; " else ""
+   in sep & ml-sanitize (f.name) & " = " & emit-ml-expr (f.value) arities & emit-ml-record-vals fields (i + 1) arities
+
+  emit-ml-match : IRExpr, List IRBranch, List ArityEntry -> Text
+  emit-ml-match (scrut) (branches) (arities) =
+   "(match " & emit-ml-expr scrut arities & " with " & emit-ml-match-arms branches 0 arities & ")"
+
+  emit-ml-match-arms : List IRBranch, Integer, List ArityEntry -> Text
+  emit-ml-match-arms (branches) (i) (arities) =
+   if i == list-length branches then ""
+   else let b = list-at branches i
+   in "| " & emit-ml-pat (b.pattern) & " -> " & emit-ml-expr (b.body) arities & " " & emit-ml-match-arms branches (i + 1) arities
+
+  emit-ml-pat : IRPat -> Text
+  emit-ml-pat (pat) =
+   when pat
+    is IrLitPat (text) (ty) (sp) -> text
+    is IrCtorPat (name) (subs) (ty) (sp) -> ml-sanitize name & emit-ml-sub-pats subs 0
+    is IrVarPat (name) (ty) (sp) -> ml-sanitize name
+    is IrWildPat (sp) -> "_"
+
+  emit-ml-sub-pats : List IRPat, Integer -> Text
+  emit-ml-sub-pats (subs) (i) =
+   if i == list-length subs then ""
+   else if i == 0 then " (" & emit-ml-pat (list-at subs 0) & emit-ml-sub-pats-rest subs 1 & ")"
+   else ""
+
+  emit-ml-sub-pats-rest : List IRPat, Integer -> Text
+  emit-ml-sub-pats-rest (subs) (i) =
+   if i == list-length subs then ""
+   else ", " & emit-ml-pat (list-at subs i) & emit-ml-sub-pats-rest subs (i + 1)
+
+  emit-ml-act : List IRActStmt, List ArityEntry -> Text
+  emit-ml-act (stmts) (arities) =
+   "(begin " & emit-ml-act-stmts stmts 0 arities & " end)"
+
+  emit-ml-act-stmts : List IRActStmt, Integer, List ArityEntry -> Text
+  emit-ml-act-stmts (stmts) (i) (arities) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in let sep = if i > 0 then "; " else ""
+   in sep & (when s
+    is IrDoBind (name) (ty) (val) (sp) -> "let " & ml-sanitize name & " = " & emit-ml-expr val arities & " in"
+    is IrDoExec (e) (sp) -> emit-ml-expr e arities) & emit-ml-act-stmts stmts (i + 1) arities
+
+Section: Apply Emission
+
+  emit-ml-apply : IRExpr, List ArityEntry -> Text
+  emit-ml-apply (e) (arities) =
+   let chain = collect-apply-chain e []
+   in let root = chain.root
+   in let args = chain.args
+   in when root
+    is IrName (n) (ty) (sp) ->
+     if n == "print-line-uni" then "Printf.printf \"%s\\n\" " & emit-ml-expr (list-at args 0) arities
+     else "(" & ml-sanitize n & " " & emit-ml-apply-args args arities 0 & ")"
+    is otherwise -> emit-ml-expr-curried e arities
+
+  emit-ml-apply-args : List IRExpr, List ArityEntry, Integer -> Text
+  emit-ml-apply-args (args) (arities) (i) =
+   if i == list-length args then ""
+   else if i == list-length args - 1 then emit-ml-expr (list-at args i) arities
+   else emit-ml-expr (list-at args i) arities & " " & emit-ml-apply-args args arities (i + 1)
+
+  emit-ml-expr-curried : IRExpr, List ArityEntry -> Text
+  emit-ml-expr-curried (e) (arities) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> "(" & emit-ml-expr f arities & " " & emit-ml-expr a arities & ")"
+    is otherwise -> emit-ml-expr e arities
+
+Section: Definition Emission
+
+  emit-ml-def : IRDef, List ArityEntry -> Text
+  emit-ml-def (d) (arities) =
+   let name = ml-sanitize (d.name)
+   in let params-text = emit-ml-def-params (d.params) 0
+   in "let " & name & " " & params-text & "= " & emit-ml-expr (d.body) arities & "\n\n"
+
+  emit-ml-def-params : List IRParam, Integer -> Text
+  emit-ml-def-params (params) (i) =
+   if i == list-length params then ""
+   else ml-sanitize ((list-at params i).name) & " " & emit-ml-def-params params (i + 1)
+
+  emit-ml-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-ml-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-ml-def (list-at defs i) arities & emit-ml-defs defs (i + 1) arities
+
+Section: Chapter Emission
+
+  emit-ocaml-chapter : IRChapter, List ATypeDef -> Text
+  emit-ocaml-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let types-text = emit-ml-type-defs type-defs 0
+   in let defs-text = emit-ml-defs (m.defs) 0 arities
+   in types-text & defs-text & "let () = " & ml-sanitize opening-entry-point & " ()\n"
+
+Page 1

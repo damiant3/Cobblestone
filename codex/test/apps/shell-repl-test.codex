@@ -1,0 +1,61 @@
+Chapter: ShellReplTest
+  cites Codex chapter General
+  cites Works chapter ShellDispatch
+  cites Works chapter ShellParser
+  cites OS chapter ShellCore
+  cites Works chapter ShellClarifier
+  cites OS chapter ProgramRegistry
+  cites Verify chapter VerifiedLoader
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter FactStore
+  cites OS chapter Clarifier
+  cites Foreword chapter Fuel
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter TextSearch
+  cites Foreword chapter CCE
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+Section: Test Data
+
+  test-sk : List Integer = [157, 97, 177, 157, 239, 253, 90, 96, 186, 132, 74, 244, 146, 236, 44, 196, 68, 73, 197, 105, 123, 50, 105, 25, 112, 59, 172, 3, 28, 174, 127, 96]
+
+  hello-binary : List Integer
+  hello-binary =
+    cdx-encode-signed (CdxBinaryParts {
+      flags = cdx-flag-bare-metal,
+      capabilities = [
+        CdxCapability { cap-id = cdx-cap-console, direction = cdx-dir-write, scope = "/", max-duration = 0 }
+      ],
+      effects = ["Console"],
+      text-bytes = [144, 195],
+      rodata-bytes = [],
+      entry-offset = 0,
+      stack-size = 65536,
+      heap-size = 65536,
+      trust-threshold = 5000
+    }) test-sk
+
+  author-key : Text = read-author-key hello-binary
+
+Section: Setup
+
+  test-store : BinaryStore
+  test-store = binary-store-add binary-store-empty "hello" hello-binary
+
+  test-state : ShellState
+  test-state =
+    let s0 = shell-init (policy-empty "codex-os") 100
+    in let r1 = execute-cmd (CmdAddRule "allow-console" "Console" 2) s0
+    in let r2 = execute-cmd (CmdTrust author-key 10000) (r1.new-state)
+    in r2.new-state
+
+Section: Session
+
+  opening : [Console] Nothing =
+    shell-start "Codex Shell v0.2" test-state test-store

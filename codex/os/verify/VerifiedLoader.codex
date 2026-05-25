@@ -1,0 +1,105 @@
+Chapter: VerifiedLoader
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter FactStore
+  cites Foreword chapter Fuel
+  cites Foreword chapter Sha256
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha512
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ The VerifiedLoader combines CdxVerifier checks with trust-lattice
+ policy evaluation, then maps verified CDX binaries into runnable
+ process images with kernel-granted capability bits.
+
+ We say:
+
+Section: Kernel Capability Bits
+
+  kern-cap-concurrent : Integer = 3
+
+  kern-cap-console-read : Integer = 4
+
+  kern-cap-console-write : Integer = 5
+
+  kern-cap-filesystem-read : Integer = 6
+
+  kern-cap-filesystem-write : Integer = 7
+
+  kern-cap-network-read : Integer = 8
+
+  kern-cap-network-write : Integer = 9
+
+  kern-cap-block-device : Integer = 10
+
+  kern-cap-ipc : Integer = 11
+
+Section: Load Decision
+
+  CapGrant = record {
+    bitmask : Integer,
+    cap-count : Integer between 0 and 255
+  }
+
+  LoadDecision =
+    | LoadApproved (CapGrant)
+    | LoadDenied (VerifyResult)
+
+Section: Capability Mapping
+
+  dir-bits : Integer, Integer, Integer -> Integer
+  dir-bits (direction) (read-bit) (write-bit) =
+    if direction == cdx-dir-read then bit-shl 1 read-bit
+    else if direction == cdx-dir-write then bit-shl 1 write-bit
+    else bit-or (bit-shl 1 read-bit) (bit-shl 1 write-bit)
+
+  cdx-cap-to-kern-bits : CdxCapability -> Integer
+  cdx-cap-to-kern-bits (cap) =
+    if cap.cap-id == cdx-cap-console then dir-bits (cap.direction) kern-cap-console-read kern-cap-console-write
+    else if cap.cap-id == cdx-cap-filesystem then dir-bits (cap.direction) kern-cap-filesystem-read kern-cap-filesystem-write
+    else if cap.cap-id == cdx-cap-network then dir-bits (cap.direction) kern-cap-network-read kern-cap-network-write
+    else if cap.cap-id == cdx-cap-concurrent then bit-shl 1 kern-cap-concurrent
+    else 0
+
+  cdx-caps-to-bitmask : List CdxCapability -> Integer
+  cdx-caps-to-bitmask (caps) =
+    caps-bitmask-loop caps 0 (list-length caps) 0
+
+  caps-bitmask-loop : List CdxCapability, Integer, Integer, Integer -> Integer
+  caps-bitmask-loop (caps) (i) (len) (acc) =
+    if i >= len then acc
+    else let cap = list-at caps i
+    in caps-bitmask-loop caps (i + 1) len (bit-or acc (cdx-cap-to-kern-bits cap))
+
+Section: Load Evaluation
+
+  evaluate-load : List Integer, TrustLattice, Policy, Integer, BareFactStore, Integer -> LoadDecision
+  evaluate-load (binary) (lattice) (policy) (current-time) (store) (fuel) =
+    let result = verify-cdx-full binary lattice policy current-time store fuel
+    in if result.accepted then
+      let cap-off = read-le64 binary 136
+      in let cap-sz = read-le64 binary 144
+      in let caps = decode-capabilities binary cap-off (cap-off + cap-sz)
+      in let bitmask = cdx-caps-to-bitmask caps
+      in LoadApproved (CapGrant { bitmask = bitmask, cap-count = list-length caps })
+    else LoadDenied result
+
+  load-approved : LoadDecision -> Boolean
+  load-approved (d) = when d
+    is LoadApproved (g) -> True
+    is LoadDenied (r) -> False
+
+  load-bitmask : LoadDecision -> Integer
+  load-bitmask (d) = when d
+    is LoadApproved (g) -> g.bitmask
+    is LoadDenied (r) -> 0
+
+  load-reason : LoadDecision -> Text
+  load-reason (d) = when d
+    is LoadApproved (g) -> "approved"
+    is LoadDenied (r) -> r.reason
+
+Page 1

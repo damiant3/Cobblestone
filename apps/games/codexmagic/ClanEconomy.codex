@@ -1,0 +1,343 @@
+Chapter: ClanEconomy
+  cites CodexMagic chapter Clan
+  cites CodexMagic chapter Token
+
+ Clan economy: clan coin minting, treasury management, exchange
+ between clan coin and global ManaCoin. The platform is the
+ authorizing authority — clans buy clan tokens from the platform
+ using global tokens.
+
+ We say:
+
+Section: Clan Economy State
+
+  ClanEconomy = record {
+    clan-id : Integer,
+    coin-name : Text,
+    coin-supply : Integer,
+    coin-burned : Integer,
+    mint-authority : Integer,
+    exchange-enabled : Boolean,
+    exchange-rate : Integer,
+    exchange-fee : Integer,
+    treasury-balance : Integer,
+    member-balances : List ClanBalance,
+    transaction-log : List ClanTransaction
+  }
+
+  ClanBalance = record {
+    account-id : Integer,
+    balance : Integer
+  }
+
+  ClanTransaction = record {
+    tx-id : Integer,
+    tx-type : ClanTxType,
+    from-account : Integer,
+    to-account : Integer,
+    amount : Integer,
+    timestamp : Integer,
+    memo : Text
+  }
+
+  ClanTxType =
+    | TxMint
+    | TxBurn
+    | TxTransfer
+    | TxExchangeBuy
+    | TxExchangeSell
+    | TxTreasuryDeposit
+    | TxTreasuryWithdraw
+    | TxTournamentEntry
+    | TxTournamentPrize
+    | TxLibraryDeposit
+    | TxLibraryReturn
+    | TxDues
+
+  tx-type-name : ClanTxType -> Text
+  tx-type-name (t) =
+    when t
+      is TxMint -> "Mint"
+      is TxBurn -> "Burn"
+      is TxTransfer -> "Transfer"
+      is TxExchangeBuy -> "Exchange Buy"
+      is TxExchangeSell -> "Exchange Sell"
+      is TxTreasuryDeposit -> "Treasury Deposit"
+      is TxTreasuryWithdraw -> "Treasury Withdraw"
+      is TxTournamentEntry -> "Tournament Entry"
+      is TxTournamentPrize -> "Tournament Prize"
+      is TxLibraryDeposit -> "Library Deposit"
+      is TxLibraryReturn -> "Library Return"
+      is TxDues -> "Dues"
+
+Section: Economy Creation
+
+  clan-economy-new : Integer, Text, Integer -> ClanEconomy
+  clan-economy-new (clan-id) (coin-name) (exchange-rate) =
+    ClanEconomy {
+      clan-id = clan-id,
+      coin-name = coin-name,
+      coin-supply = 0,
+      coin-burned = 0,
+      mint-authority = 4,
+      exchange-enabled = True,
+      exchange-rate = exchange-rate,
+      exchange-fee = 5,
+      treasury-balance = 0,
+      member-balances = [],
+      transaction-log = []
+    }
+
+Section: Member Balance Management
+
+  get-clan-balance : ClanEconomy, Integer -> Integer
+  get-clan-balance (econ) (account-id) =
+    find-clan-balance (econ.member-balances) account-id 0 (list-length (econ.member-balances))
+
+  find-clan-balance : List ClanBalance, Integer, Integer, Integer -> Integer
+  find-clan-balance (balances) (account-id) (i) (len) =
+    if i >= len then 0
+    else let b = list-at balances i
+    in if b.account-id == account-id then b.balance
+    else find-clan-balance balances account-id (i + 1) len
+
+  set-clan-balance : List ClanBalance, Integer, Integer -> List ClanBalance
+  set-clan-balance (balances) (account-id) (new-balance) =
+    set-clan-balance-loop balances account-id new-balance 0 (list-length balances) False []
+
+  set-clan-balance-loop : List ClanBalance, Integer, Integer, Integer, Integer, Boolean, List ClanBalance -> List ClanBalance
+  set-clan-balance-loop (balances) (account-id) (new-balance) (i) (len) (found) (acc) =
+    if i >= len then
+      if found then acc
+      else list-push acc (ClanBalance { account-id = account-id, balance = new-balance })
+    else let b = list-at balances i
+    in if b.account-id == account-id then
+      set-clan-balance-loop balances account-id new-balance (i + 1) len True (list-push acc (ClanBalance { account-id = account-id, balance = new-balance }))
+    else set-clan-balance-loop balances account-id new-balance (i + 1) len found (list-push acc b)
+
+Section: Clan Coin Operations
+
+  clan-mint : ClanEconomy, Integer, Integer, Integer -> ClanEconomy
+  clan-mint (econ) (to-account) (amount) (time) =
+    let new-bal = get-clan-balance econ to-account + amount
+    in let new-balances = set-clan-balance (econ.member-balances) to-account new-bal
+    in let tx = ClanTransaction { tx-id = list-length (econ.transaction-log), tx-type = TxMint, from-account = -1, to-account = to-account, amount = amount, timestamp = time, memo = "Mint" }
+    in ClanEconomy {
+      clan-id = econ.clan-id,
+      coin-name = econ.coin-name,
+      coin-supply = econ.coin-supply + amount,
+      coin-burned = econ.coin-burned,
+      mint-authority = econ.mint-authority,
+      exchange-enabled = econ.exchange-enabled,
+      exchange-rate = econ.exchange-rate,
+      exchange-fee = econ.exchange-fee,
+      treasury-balance = econ.treasury-balance,
+      member-balances = new-balances,
+      transaction-log = list-push (econ.transaction-log) tx
+    }
+
+  clan-burn : ClanEconomy, Integer, Integer, Integer -> ClanEconomy
+  clan-burn (econ) (from-account) (amount) (time) =
+    let current = get-clan-balance econ from-account
+    in let to-burn = if amount > current then current else amount
+    in let new-bal = current - to-burn
+    in let new-balances = set-clan-balance (econ.member-balances) from-account new-bal
+    in let tx = ClanTransaction { tx-id = list-length (econ.transaction-log), tx-type = TxBurn, from-account = from-account, to-account = -1, amount = to-burn, timestamp = time, memo = "Burn" }
+    in ClanEconomy {
+      clan-id = econ.clan-id,
+      coin-name = econ.coin-name,
+      coin-supply = econ.coin-supply - to-burn,
+      coin-burned = econ.coin-burned + to-burn,
+      mint-authority = econ.mint-authority,
+      exchange-enabled = econ.exchange-enabled,
+      exchange-rate = econ.exchange-rate,
+      exchange-fee = econ.exchange-fee,
+      treasury-balance = econ.treasury-balance,
+      member-balances = new-balances,
+      transaction-log = list-push (econ.transaction-log) tx
+    }
+
+  clan-transfer : ClanEconomy, Integer, Integer, Integer, Integer -> ClanTransferResult
+  clan-transfer (econ) (from) (to) (amount) (time) =
+    let from-bal = get-clan-balance econ from
+    in if from-bal < amount then ClanTransferResult { economy = econ, success = False }
+    else let new-from = from-bal - amount
+    in let to-bal = get-clan-balance econ to
+    in let new-to = to-bal + amount
+    in let balances2 = set-clan-balance (econ.member-balances) from new-from
+    in let balances3 = set-clan-balance balances2 to new-to
+    in let tx = ClanTransaction { tx-id = list-length (econ.transaction-log), tx-type = TxTransfer, from-account = from, to-account = to, amount = amount, timestamp = time, memo = "Transfer" }
+    in let econ2 = ClanEconomy {
+      clan-id = econ.clan-id,
+      coin-name = econ.coin-name,
+      coin-supply = econ.coin-supply,
+      coin-burned = econ.coin-burned,
+      mint-authority = econ.mint-authority,
+      exchange-enabled = econ.exchange-enabled,
+      exchange-rate = econ.exchange-rate,
+      exchange-fee = econ.exchange-fee,
+      treasury-balance = econ.treasury-balance,
+      member-balances = balances3,
+      transaction-log = list-push (econ.transaction-log) tx
+    }
+    in ClanTransferResult { economy = econ2, success = True }
+
+  ClanTransferResult = record {
+    economy : ClanEconomy,
+    success : Boolean
+  }
+
+Section: Exchange — Clan Coin <-> Global ManaCoin
+
+  ExchangeResult = record {
+    economy : ClanEconomy,
+    global-ledger : ManaCoinLedger,
+    success : Boolean,
+    clan-amount : Integer,
+    global-amount : Integer
+  }
+
+  exchange-buy-clan-coin : ClanEconomy, ManaCoinLedger, Integer, Integer, Integer -> ExchangeResult
+  exchange-buy-clan-coin (econ) (ledger) (account-id) (global-amount) (time) =
+    if econ.exchange-enabled == False then ExchangeResult { economy = econ, global-ledger = ledger, success = False, clan-amount = 0, global-amount = 0 }
+    else let global-bal = ledger-balance ledger account-id
+    in if global-bal < global-amount then ExchangeResult { economy = econ, global-ledger = ledger, success = False, clan-amount = 0, global-amount = 0 }
+    else let clan-amount = global-amount * econ.exchange-rate / 100
+    in let fee-amount = clan-amount * econ.exchange-fee / 100
+    in let net-clan = clan-amount - fee-amount
+    in let ledger2 = ledger-transfer ledger account-id 0 global-amount
+    in let econ2 = clan-mint econ account-id net-clan time
+    in let econ3 = ClanEconomy {
+      clan-id = econ2.clan-id,
+      coin-name = econ2.coin-name,
+      coin-supply = econ2.coin-supply,
+      coin-burned = econ2.coin-burned + fee-amount,
+      mint-authority = econ2.mint-authority,
+      exchange-enabled = econ2.exchange-enabled,
+      exchange-rate = econ2.exchange-rate,
+      exchange-fee = econ2.exchange-fee,
+      treasury-balance = econ2.treasury-balance + global-amount,
+      member-balances = econ2.member-balances,
+      transaction-log = econ2.transaction-log
+    }
+    in ExchangeResult { economy = econ3, global-ledger = ledger2, success = True, clan-amount = net-clan, global-amount = global-amount }
+
+  exchange-sell-clan-coin : ClanEconomy, ManaCoinLedger, Integer, Integer, Integer -> ExchangeResult
+  exchange-sell-clan-coin (econ) (ledger) (account-id) (clan-amount) (time) =
+    if econ.exchange-enabled == False then ExchangeResult { economy = econ, global-ledger = ledger, success = False, clan-amount = 0, global-amount = 0 }
+    else let clan-bal = get-clan-balance econ account-id
+    in if clan-bal < clan-amount then ExchangeResult { economy = econ, global-ledger = ledger, success = False, clan-amount = 0, global-amount = 0 }
+    else let global-amount = clan-amount * 100 / econ.exchange-rate
+    in if econ.treasury-balance < global-amount then ExchangeResult { economy = econ, global-ledger = ledger, success = False, clan-amount = 0, global-amount = 0 }
+    else let fee-amount = clan-amount * econ.exchange-fee / 100
+    in let econ2 = clan-burn econ account-id clan-amount time
+    in let econ3 = ClanEconomy {
+      clan-id = econ2.clan-id,
+      coin-name = econ2.coin-name,
+      coin-supply = econ2.coin-supply,
+      coin-burned = econ2.coin-burned + fee-amount,
+      mint-authority = econ2.mint-authority,
+      exchange-enabled = econ2.exchange-enabled,
+      exchange-rate = econ2.exchange-rate,
+      exchange-fee = econ2.exchange-fee,
+      treasury-balance = econ2.treasury-balance - global-amount,
+      member-balances = econ2.member-balances,
+      transaction-log = econ2.transaction-log
+    }
+    in let ledger2 = ledger-transfer ledger 0 account-id global-amount
+    in ExchangeResult { economy = econ3, global-ledger = ledger2, success = True, clan-amount = clan-amount, global-amount = global-amount }
+
+Section: Treasury Operations
+
+  treasury-deposit : ClanEconomy, ManaCoinLedger, Integer, Integer, Integer -> ExchangeResult
+  treasury-deposit (econ) (ledger) (account-id) (amount) (time) =
+    let bal = ledger-balance ledger account-id
+    in if bal < amount then ExchangeResult { economy = econ, global-ledger = ledger, success = False, clan-amount = 0, global-amount = 0 }
+    else let ledger2 = ledger-transfer ledger account-id 0 amount
+    in let tx = ClanTransaction { tx-id = list-length (econ.transaction-log), tx-type = TxTreasuryDeposit, from-account = account-id, to-account = -1, amount = amount, timestamp = time, memo = "Treasury deposit" }
+    in let econ2 = ClanEconomy {
+      clan-id = econ.clan-id,
+      coin-name = econ.coin-name,
+      coin-supply = econ.coin-supply,
+      coin-burned = econ.coin-burned,
+      mint-authority = econ.mint-authority,
+      exchange-enabled = econ.exchange-enabled,
+      exchange-rate = econ.exchange-rate,
+      exchange-fee = econ.exchange-fee,
+      treasury-balance = econ.treasury-balance + amount,
+      member-balances = econ.member-balances,
+      transaction-log = list-push (econ.transaction-log) tx
+    }
+    in ExchangeResult { economy = econ2, global-ledger = ledger2, success = True, clan-amount = 0, global-amount = amount }
+
+  treasury-withdraw : ClanEconomy, ManaCoinLedger, Integer, Integer, Integer -> ExchangeResult
+  treasury-withdraw (econ) (ledger) (to-account) (amount) (time) =
+    if econ.treasury-balance < amount then ExchangeResult { economy = econ, global-ledger = ledger, success = False, clan-amount = 0, global-amount = 0 }
+    else let ledger2 = ledger-mint ledger to-account amount
+    in let tx = ClanTransaction { tx-id = list-length (econ.transaction-log), tx-type = TxTreasuryWithdraw, from-account = -1, to-account = to-account, amount = amount, timestamp = time, memo = "Treasury withdraw" }
+    in let econ2 = ClanEconomy {
+      clan-id = econ.clan-id,
+      coin-name = econ.coin-name,
+      coin-supply = econ.coin-supply,
+      coin-burned = econ.coin-burned,
+      mint-authority = econ.mint-authority,
+      exchange-enabled = econ.exchange-enabled,
+      exchange-rate = econ.exchange-rate,
+      exchange-fee = econ.exchange-fee,
+      treasury-balance = econ.treasury-balance - amount,
+      member-balances = econ.member-balances,
+      transaction-log = list-push (econ.transaction-log) tx
+    }
+    in ExchangeResult { economy = econ2, global-ledger = ledger2, success = True, clan-amount = 0, global-amount = amount }
+
+Section: Configuration
+
+  set-exchange-rate : ClanEconomy, Integer -> ClanEconomy
+  set-exchange-rate (econ) (rate) =
+    ClanEconomy {
+      clan-id = econ.clan-id,
+      coin-name = econ.coin-name,
+      coin-supply = econ.coin-supply,
+      coin-burned = econ.coin-burned,
+      mint-authority = econ.mint-authority,
+      exchange-enabled = econ.exchange-enabled,
+      exchange-rate = rate,
+      exchange-fee = econ.exchange-fee,
+      treasury-balance = econ.treasury-balance,
+      member-balances = econ.member-balances,
+      transaction-log = econ.transaction-log
+    }
+
+  set-exchange-fee : ClanEconomy, Integer -> ClanEconomy
+  set-exchange-fee (econ) (fee) =
+    ClanEconomy {
+      clan-id = econ.clan-id,
+      coin-name = econ.coin-name,
+      coin-supply = econ.coin-supply,
+      coin-burned = econ.coin-burned,
+      mint-authority = econ.mint-authority,
+      exchange-enabled = econ.exchange-enabled,
+      exchange-rate = econ.exchange-rate,
+      exchange-fee = fee,
+      treasury-balance = econ.treasury-balance,
+      member-balances = econ.member-balances,
+      transaction-log = econ.transaction-log
+    }
+
+  toggle-exchange : ClanEconomy, Boolean -> ClanEconomy
+  toggle-exchange (econ) (enabled) =
+    ClanEconomy {
+      clan-id = econ.clan-id,
+      coin-name = econ.coin-name,
+      coin-supply = econ.coin-supply,
+      coin-burned = econ.coin-burned,
+      mint-authority = econ.mint-authority,
+      exchange-enabled = enabled,
+      exchange-rate = econ.exchange-rate,
+      exchange-fee = econ.exchange-fee,
+      treasury-balance = econ.treasury-balance,
+      member-balances = econ.member-balances,
+      transaction-log = econ.transaction-log
+    }
+
+Page 1

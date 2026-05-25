@@ -1,0 +1,282 @@
+Chapter: WPF Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates WPF XAML + C# code-behind from the IR.
+
+Section: Sanitization
+
+  wpf-sanitize : Text -> Text
+  wpf-sanitize (name) =
+   let s = text-replace name "-" "_"
+   in text-replace s "'" ""
+
+  cs-escape : Text -> Text
+  cs-escape (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in let s3 = text-replace s2 "\n" "\\n"
+   in s3
+
+  wpf-indent : Integer -> Text
+  wpf-indent (n) =
+   if n <= 0 then ""
+   else "    " & wpf-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then 0
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else 0
+
+Section: C# Expression Emission
+
+  emit-cs-expr : IRExpr, List ArityEntry, Integer -> Text
+  emit-cs-expr (e) (arities) (indent) =
+   when e
+    is IrIntLit (n) (sp) -> show n & "L"
+    is IrNumLit (n) (sp) -> "BitConverter.Int64BitsToDouble(" & show n & "L)"
+    is IrTextLit (s) (sp) -> "\"" & cs-escape s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> "((char)" & show n & ")"
+    is IrName (n) (ty) (sp) -> wpf-sanitize n
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-cs-binary op l r arities indent
+    is IrNegate (x) (sp) -> "(-(" & emit-cs-expr x arities indent & "))"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-cs-expr c arities indent & " ? " & emit-cs-expr t arities indent & " : " & emit-cs-expr el arities indent & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> emit-cs-let name val body arities indent
+    is IrApply (f) (a) (ty) (sp) -> emit-cs-apply e arities indent
+    is IrLambda (params) (body) (ty) (sp) -> "((" & emit-cs-param-names params 0 & ") => " & emit-cs-expr body arities indent & ")"
+    is IrList (elems) (ty) (sp) -> "new List<dynamic> { " & emit-cs-list-elems elems arities indent 0 & " }"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-cs-match scrut branches arities indent
+    is IrAct (stmts) (ty) (sp) -> emit-cs-act stmts arities indent
+    is IrRecord (name) (fields) (ty) (sp) -> "new Dictionary<string,dynamic> { [\"_type\"] = \"" & name & "\"" & emit-cs-record-fields fields arities indent 0 & " }"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> "((" & emit-cs-expr rec arities indent & ")[\"" & field & "\"])"
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "((" & emit-cs-expr rec arities indent & ")[\"" & field & "\"] = " & emit-cs-expr val arities indent & ")"
+    is IrFork (body) (ty) (sp) -> "Task.Run(() => " & emit-cs-expr body arities indent & ")"
+    is IrAwait (task) (ty) (sp) -> "(await " & emit-cs-expr task arities indent & ")"
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-cs-expr body arities indent
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-cs-expr body arities indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-cs-expr body arities indent
+    is IrError (msg) (ty) (sp) -> "throw new Exception(\"" & cs-escape msg & "\")"
+
+Section: Binary Operators
+
+  emit-cs-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-cs-binary (op) (l) (r) (arities) (indent) =
+   let lhs = emit-cs-expr l arities indent
+   in let rhs = emit-cs-expr r arities indent
+   in when op
+    is IrAddInt -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt -> "(" & lhs & " * " & rhs & ")"
+    is IrDivInt -> "(" & lhs & " / " & rhs & ")"
+    is IrPowInt -> "((long)Math.Pow(" & lhs & ", " & rhs & "))"
+    is IrAddNum -> "(" & lhs & " + " & rhs & ")"
+    is IrSubNum -> "(" & lhs & " - " & rhs & ")"
+    is IrMulNum -> "(" & lhs & " * " & rhs & ")"
+    is IrDivNum -> "(" & lhs & " / " & rhs & ")"
+    is IrEq -> "object.Equals(" & lhs & ", " & rhs & ")"
+    is IrNotEq -> "!object.Equals(" & lhs & ", " & rhs & ")"
+    is IrLt -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") < 0)"
+    is IrGt -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") > 0)"
+    is IrLtEq -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") <= 0)"
+    is IrGtEq -> "(((IComparable)" & lhs & ").CompareTo(" & rhs & ") >= 0)"
+    is IrAnd -> "(" & lhs & " && " & rhs & ")"
+    is IrOr -> "(" & lhs & " || " & rhs & ")"
+    is IrAppendText -> "(\"\" + " & lhs & " + " & rhs & ")"
+    is IrAppendList -> "((List<dynamic>)" & lhs & ").Concat((List<dynamic>)" & rhs & ").ToList()"
+    is IrConsList -> "new List<dynamic> { " & lhs & " }.Concat((List<dynamic>)" & rhs & ").ToList()"
+
+Section: Let, Apply, Match, Act
+
+  emit-cs-let : Text, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-cs-let (name) (val) (body) (arities) (indent) =
+   "((Func<dynamic>)(() => {\n" & wpf-indent (indent + 1) & "dynamic " & wpf-sanitize name & " = " & emit-cs-expr val arities (indent + 1) & ";\n" & wpf-indent (indent + 1) & "return " & emit-cs-expr body arities (indent + 1) & ";\n" & wpf-indent indent & "}))()"
+
+  FlatApply = record {
+   root : IRExpr,
+   args : List IRExpr
+  }
+
+  collect-apply-chain : IRExpr, List IRExpr -> FlatApply
+  collect-apply-chain (e) (acc) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> collect-apply-chain f ([a] & acc)
+    is otherwise -> FlatApply { root = e, args = acc }
+
+  emit-cs-apply : IRExpr, List ArityEntry, Integer -> Text
+  emit-cs-apply (e) (arities) (indent) =
+   let chain = collect-apply-chain e []
+   in let func = emit-cs-expr (chain.root) arities indent
+   in func & "(" & emit-cs-apply-args (chain.args) arities indent 0 & ")"
+
+  emit-cs-apply-args : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-cs-apply-args (args) (arities) (indent) (i) =
+   if i == list-length args then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-cs-expr (list-at args i) arities indent & emit-cs-apply-args args arities indent (i + 1)
+
+  emit-cs-param-names : List IRParam, Integer -> Text
+  emit-cs-param-names (params) (i) =
+   if i == list-length params then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & "dynamic " & wpf-sanitize (list-at params i).name & emit-cs-param-names params (i + 1)
+
+  emit-cs-list-elems : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-cs-list-elems (elems) (arities) (indent) (i) =
+   if i == list-length elems then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-cs-expr (list-at elems i) arities indent & emit-cs-list-elems elems arities indent (i + 1)
+
+  emit-cs-record-fields : List IRFieldVal, List ArityEntry, Integer, Integer -> Text
+  emit-cs-record-fields (fields) (arities) (indent) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in ", [\"" & f.name & "\"] = " & emit-cs-expr (f.value) arities indent & emit-cs-record-fields fields arities indent (i + 1)
+
+  emit-cs-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-cs-match (scrut) (branches) (arities) (indent) =
+   let sv = emit-cs-expr scrut arities indent
+   in "((Func<dynamic>)(() => {\n" & wpf-indent (indent + 1) & "dynamic _s = " & sv & ";\n" & emit-cs-branches branches arities (indent + 1) 0 & wpf-indent (indent + 1) & "throw new Exception(\"non-exhaustive match\");\n" & wpf-indent indent & "}))()"
+
+  emit-cs-branches : List IRBranch, List ArityEntry, Integer, Integer -> Text
+  emit-cs-branches (branches) (arities) (indent) (i) =
+   if i == list-length branches then ""
+   else let b = list-at branches i
+   in let cond = emit-cs-pattern-cond (b.pattern) "_s"
+   in let binds = emit-cs-pattern-binds (b.pattern) "_s" indent
+   in wpf-indent indent & "if (" & cond & ") {\n" & binds & wpf-indent (indent + 1) & "return " & emit-cs-expr (b.body) arities indent & ";\n" & wpf-indent indent & "}\n" & emit-cs-branches branches arities indent (i + 1)
+
+  emit-cs-pattern-cond : IRPat, Text -> Text
+  emit-cs-pattern-cond (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "true"
+    is IrLitPat (text) (ty) (sp) -> "object.Equals(" & scrut & ", (dynamic)" & text & ")"
+    is IrCtorPat (name) (subs) (ty) (sp) -> "(string)" & scrut & "[\"_tag\"] == \"" & name & "\""
+    is IrWildPat (sp) -> "true"
+
+  emit-cs-pattern-binds : IRPat, Text, Integer -> Text
+  emit-cs-pattern-binds (p) (scrut) (indent) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> wpf-indent (indent + 1) & "dynamic " & wpf-sanitize name & " = " & scrut & ";\n"
+    is IrLitPat (text) (ty) (sp) -> ""
+    is IrCtorPat (name) (subs) (ty) (sp) -> emit-cs-ctor-binds subs scrut indent 0
+    is IrWildPat (sp) -> ""
+
+  emit-cs-ctor-binds : List IRPat, Text, Integer, Integer -> Text
+  emit-cs-ctor-binds (subs) (scrut) (indent) (i) =
+   if i == list-length subs then ""
+   else let field-access = scrut & "[\"_" & show i & "\"]"
+   in emit-cs-pattern-binds (list-at subs i) field-access indent & emit-cs-ctor-binds subs scrut indent (i + 1)
+
+  emit-cs-act : List IRActStmt, List ArityEntry, Integer -> Text
+  emit-cs-act (stmts) (arities) (indent) =
+   "((Func<dynamic>)(() => {\n" & emit-cs-act-stmts stmts arities (indent + 1) 0 & wpf-indent indent & "}))()"
+
+  emit-cs-act-stmts : List IRActStmt, List ArityEntry, Integer, Integer -> Text
+  emit-cs-act-stmts (stmts) (arities) (indent) (i) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) -> wpf-indent indent & "dynamic " & wpf-sanitize name & " = " & emit-cs-expr val arities indent & ";\n" & emit-cs-act-stmts stmts arities indent (i + 1)
+    is IrDoExec (e) (sp) ->
+     if is-last then wpf-indent indent & "return " & emit-cs-expr e arities indent & ";\n"
+     else wpf-indent indent & emit-cs-expr e arities indent & ";\n" & emit-cs-act-stmts stmts arities indent (i + 1)
+
+Section: Type and Definition Emission
+
+  emit-cs-type-def : ATypeDef -> Text
+  emit-cs-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) -> ""
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-cs-variant-ctors ctors 0
+
+  emit-cs-variant-ctors : List AVariantCtorDef, Integer -> Text
+  emit-cs-variant-ctors (ctors) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+   in let n = list-length (c.fields)
+   in let ctor-text = if n == 0 then "static readonly Dictionary<string,dynamic> " & wpf-sanitize (c.name.value) & " = new() { [\"_tag\"] = \"" & c.name.value & "\" };\n"
+      else "static Dictionary<string,dynamic> " & wpf-sanitize (c.name.value) & "(" & emit-cs-ctor-params n 0 & ") => new() { [\"_tag\"] = \"" & c.name.value & "\"" & emit-cs-ctor-fields n 0 & " };\n"
+   in ctor-text & emit-cs-variant-ctors ctors (i + 1)
+
+  emit-cs-ctor-params : Integer, Integer -> Text
+  emit-cs-ctor-params (n) (i) =
+   if i == n then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & "dynamic _" & show i & emit-cs-ctor-params n (i + 1)
+
+  emit-cs-ctor-fields : Integer, Integer -> Text
+  emit-cs-ctor-fields (n) (i) =
+   if i == n then ""
+   else ", [\"_" & show i & "\"] = _" & show i & emit-cs-ctor-fields n (i + 1)
+
+  emit-cs-def : IRDef, List ArityEntry -> Text
+  emit-cs-def (d) (arities) =
+   if text-length (d.name) == 0 then ""
+   else let sname = wpf-sanitize (d.name)
+   in if list-length (d.params) == 0
+      then wpf-indent 2 & "static dynamic " & sname & " = " & emit-cs-expr (d.body) arities 2 & ";\n\n"
+      else wpf-indent 2 & "static dynamic " & sname & "(" & emit-cs-param-names (d.params) 0 & ") {\n" & wpf-indent 3 & "return " & emit-cs-expr (d.body) arities 3 & ";\n" & wpf-indent 2 & "}\n\n"
+
+  emit-cs-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-cs-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-cs-def (list-at defs i) arities & emit-cs-defs defs (i + 1) arities
+
+  emit-cs-type-defs : List ATypeDef, Integer -> Text
+  emit-cs-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-cs-type-def (list-at tds i) & emit-cs-type-defs tds (i + 1)
+
+Section: WPF Assembly
+
+  emit-wpf-chapter : IRChapter, List ATypeDef -> Text
+  emit-wpf-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if m.chapter-title == "" then "CodexApp" else wpf-sanitize (m.chapter-title)
+   in let header = "using System;\nusing System.Collections.Generic;\nusing System.Linq;\nusing System.Windows;\nusing System.Windows.Controls;\n\nnamespace " & title & "\n{\n    public partial class MainWindow : Window\n    {\n"
+   in let builtins = wpf-indent 2 & "static void print_line_uni(dynamic s) { _output.Add(s?.ToString() ?? \"\"); }\n" & wpf-indent 2 & "static void print_line(dynamic s) { print_line_uni(s); }\n" & wpf-indent 2 & "static string show(dynamic n) { return n?.ToString() ?? \"\"; }\n" & wpf-indent 2 & "static long text_length(string s) { return s.Length; }\n" & wpf-indent 2 & "static string text_replace(string s, string a, string b) { return s.Replace(a, b); }\n" & wpf-indent 2 & "static long text_compare(string a, string b) { return string.Compare(a, b, StringComparison.Ordinal); }\n" & wpf-indent 2 & "static long list_length(dynamic xs) { return ((List<dynamic>)xs).Count; }\n" & wpf-indent 2 & "static dynamic list_at(dynamic xs, long i) { return ((List<dynamic>)xs)[(int)i]; }\n" & wpf-indent 2 & "static List<dynamic> list_push(dynamic xs, dynamic x) { var r = new List<dynamic>((List<dynamic>)xs); r.Add(x); return r; }\n" & wpf-indent 2 & "static string integer_to_text(long n) { return n.ToString(); }\n" & wpf-indent 2 & "static long negate(long n) { return -n; }\n" & wpf-indent 2 & "static List<string> _output = new();\n\n"
+   in let types-text = emit-cs-type-defs type-defs 0
+   in let defs-text = emit-cs-defs (m.defs) 0 arities
+   in let constructor = wpf-indent 2 & "public MainWindow()\n" & wpf-indent 2 & "{\n" & wpf-indent 3 & "InitializeComponent();\n" & wpf-indent 3 & "try { opening(); } catch (Exception ex) { _output.Add(\"ERROR: \" + ex.Message); }\n" & wpf-indent 3 & "var panel = new StackPanel();\n" & wpf-indent 3 & "foreach (var line in _output) panel.Children.Add(new TextBlock { Text = line, Margin = new Thickness(4) });\n" & wpf-indent 3 & "Content = new ScrollViewer { Content = panel };\n" & wpf-indent 2 & "}\n"
+   in let footer = "    }\n}\n"
+   in header & builtins & types-text & defs-text & constructor & footer

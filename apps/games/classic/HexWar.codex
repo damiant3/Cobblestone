@@ -1,0 +1,1169 @@
+Chapter: HexWar
+  cites Games chapter Rng
+
+ Hex-and-counter wargame engine in the Avalon Hill tradition.
+ Covers Panzerblitz, Squad Leader, Stalingrad, Afrika Korps, and any
+ similar game. Everything is data-driven: terrain costs, unit stats,
+ and the CRT are all lookup tables. A new scenario is a new config
+ record, not new code.
+
+ Axial hex coordinates. Terrain encoded as integers 0-9. Unit types
+ encoded as integers 0-9. Combat results encoded as integers 0-4:
+ 0=AE (attacker eliminated), 1=AR (attacker retreat), 2=EX (exchange),
+ 3=DR (defender retreat), 4=DE (defender eliminated).
+
+ We say:
+
+Section: Hex Grid
+
+  HexCoord = record {
+    q : Integer,
+    r : Integer
+  }
+
+  hex-distance : HexCoord, HexCoord -> Integer
+  hex-distance (a) (b) =
+    let dq = a.q - b.q
+    in let dr = a.r - b.r
+    in let ds = dq + dr
+    in let aq = if dq < 0 then -dq else dq
+    in let ar = if dr < 0 then -dr else dr
+    in let as = if ds < 0 then -ds else ds
+    in let sum = aq + ar + as
+    in sum / 2
+
+  hex-neighbor-q : Integer, Integer -> Integer
+  hex-neighbor-q (dir) (q) =
+    if dir == 0 then q + 1
+    else if dir == 1 then q + 1
+    else if dir == 2 then q
+    else if dir == 3 then q - 1
+    else if dir == 4 then q - 1
+    else q
+
+  hex-neighbor-r : Integer, Integer -> Integer
+  hex-neighbor-r (dir) (r) =
+    if dir == 0 then r
+    else if dir == 1 then r - 1
+    else if dir == 2 then r - 1
+    else if dir == 3 then r
+    else if dir == 4 then r + 1
+    else r + 1
+
+  hex-neighbors : HexCoord -> List HexCoord
+  hex-neighbors (h) =
+    hex-neighbors-loop h 0 []
+
+  hex-neighbors-loop : HexCoord, Integer, List HexCoord -> List HexCoord
+  hex-neighbors-loop (h) (dir) (acc) =
+    if dir >= 6 then acc
+    else let nq = hex-neighbor-q dir h.q
+    in let nr = hex-neighbor-r dir h.r
+    in hex-neighbors-loop h (dir + 1) (list-push acc (HexCoord { q = nq, r = nr }))
+
+  hex-valid : HexCoord, Integer, Integer -> Boolean
+  hex-valid (h) (width) (height) =
+    h.q >= 0 & h.q < width & h.r >= 0 & h.r < height
+
+  hex-index : HexCoord, Integer -> Integer
+  hex-index (h) (width) = h.r * width + h.q
+
+  hex-from-index : Integer, Integer -> HexCoord
+  hex-from-index (idx) (width) =
+    HexCoord { q = rng-mod idx width, r = idx / width }
+
+Section: Terrain System
+
+ TerrainType integers: 0=Clear, 1=Forest, 2=Hill, 3=Mountain,
+ 4=River, 5=Road, 6=City, 7=Marsh, 8=Desert, 9=Ocean.
+
+  TerrainHex = record {
+    terrain      : Integer,
+    elevation    : Integer,
+    fortified    : Boolean,
+    victory-point : Boolean
+  }
+
+ Movement cost table: 10 terrain types x 3 unit categories
+ (0=foot/infantry, 1=armor/mech, 2=all). Encoded as flat list
+ of length 30, indexed by terrain*3 + unit-category.
+ Value 99 means impassable.
+
+  terrain-move-cost : List Integer
+  terrain-move-cost =
+    list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+    (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+    (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+    [] 1) 1) 1)
+       2) 3) 99)
+       2) 2) 2)
+       3) 99) 99)
+       2) 3) 99)
+       1) 1) 1)
+       2) 2) 2)
+       3) 99) 99)
+       1) 2) 1)
+       99) 99) 99)
+
+  terrain-defense-bonus : List Integer
+  terrain-defense-bonus =
+    list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+    [] 0) 1) 1) 2) 0) 0) 2) 1) 0) 99)
+
+  get-move-cost : Integer, Integer -> Integer
+  get-move-cost (terrain) (unit-cat) =
+    list-at terrain-move-cost (terrain * 3 + unit-cat)
+
+  get-defense-bonus : Integer -> Integer
+  get-defense-bonus (terrain) =
+    list-at terrain-defense-bonus terrain
+
+  unit-category : Integer -> Integer
+  unit-category (type-id) =
+    if type-id == 0 then 0
+    else if type-id == 1 then 1
+    else if type-id == 2 then 0
+    else if type-id == 3 then 1
+    else if type-id == 4 then 0
+    else if type-id == 5 then 0
+    else if type-id == 6 then 1
+    else if type-id == 7 then 1
+    else if type-id == 8 then 0
+    else 2
+
+Section: Unit System
+
+ UnitType integers: 0=Infantry, 1=Armor, 2=Artillery, 3=Mechanized,
+ 4=Cavalry, 5=HQ, 6=AntiTank, 7=AntiAir, 8=Engineer, 9=Supply.
+
+  Unit = record {
+    id           : Integer,
+    type-id      : Integer,
+    owner        : Integer,
+    q            : Integer,
+    r            : Integer,
+    strength     : Integer,
+    max-strength : Integer,
+    movement     : Integer,
+    max-movement : Integer,
+    attack       : Integer,
+    defense      : Integer,
+    range        : Integer,
+    experience   : Integer,
+    disrupted    : Boolean,
+    eliminated   : Boolean,
+    has-moved    : Boolean,
+    has-attacked : Boolean
+  }
+
+ Unit stats table: 10 types x 6 stats (attack, defense, move, range,
+ max-strength, category). Flat list of 60 entries.
+
+  unit-stats-table : List Integer
+  unit-stats-table =
+    list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+    (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+    (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+    (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+    (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+    (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+    [] 3) 3) 4) 1) 6) 0)
+       6) 4) 6) 1) 4) 1)
+       4) 2) 3) 3) 4) 0)
+       5) 4) 5) 1) 4) 1)
+       3) 3) 6) 1) 4) 0)
+       1) 1) 3) 1) 2) 0)
+       5) 4) 4) 1) 4) 1)
+       3) 5) 4) 1) 4) 1)
+       3) 3) 4) 1) 4) 0)
+       1) 1) 4) 1) 2) 2)
+
+  unit-stat : Integer, Integer -> Integer
+  unit-stat (type-id) (stat) =
+    list-at unit-stats-table (type-id * 6 + stat)
+
+  make-unit : Integer, Integer, Integer, Integer, Integer -> Unit
+  make-unit (id) (type-id) (owner) (q) (r) =
+    let atk = unit-stat type-id 0
+    in let def = unit-stat type-id 1
+    in let mov = unit-stat type-id 2
+    in let rng = unit-stat type-id 3
+    in let str = unit-stat type-id 4
+    in Unit {
+         id = id, type-id = type-id, owner = owner,
+         q = q, r = r,
+         strength = str, max-strength = str,
+         movement = mov, max-movement = mov,
+         attack = atk, defense = def, range = rng,
+         experience = 0,
+         disrupted = False, eliminated = False,
+         has-moved = False, has-attacked = False
+       }
+
+  hex-unit-count : List Unit, Integer, Integer -> Integer
+  hex-unit-count (units) (q) (r) =
+    hex-unit-count-loop units q r 0 0
+
+  hex-unit-count-loop : List Unit, Integer, Integer, Integer, Integer -> Integer
+  hex-unit-count-loop (units) (q) (r) (i) (acc) =
+    if i >= list-length units then acc
+    else let u = list-at units i
+    in let here = if u.q == q & u.r == r & u.eliminated == False then 1 else 0
+    in hex-unit-count-loop units q r (i + 1) (acc + here)
+
+Section: Combat Resolution
+
+ CRT encoded as flat list. Odds columns: 0=1:3, 1=1:2, 2=1:1,
+ 3=2:1, 4=3:1, 5=4:1, 6=5:1+. Die rows 1-6, 6 columns each.
+ Results: 0=AE, 1=AR, 2=EX, 3=DR, 4=DE.
+
+  crt-table : List Integer
+  crt-table =
+    list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+    (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+    (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+    (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+    (list-push (list-push
+    [] 0) 0) 1) 1) 2) 3)
+       0) 1) 1) 2) 3) 3)
+       1) 1) 2) 3) 3) 4)
+       1) 1) 2) 3) 4) 4)
+       1) 2) 3) 3) 4) 4)
+       2) 2) 3) 4) 4) 4)
+       2) 3) 3) 4) 4) 4)
+
+  crt-lookup : Integer, Integer -> Integer
+  crt-lookup (die) (col) =
+    let row = die - 1
+    in list-at crt-table (row * 6 + col)
+
+  calc-odds-col : Integer, Integer -> Integer
+  calc-odds-col (atk) (def) =
+    if def <= 0 then 5
+    else let ratio = atk / def
+    in if ratio == 0 then
+         if atk * 2 <= def then 0 else 1
+       else if ratio >= 4 then 5
+       else if ratio >= 3 then 4
+       else if ratio >= 2 then 3
+       else 2
+
+  apply-column-shifts : Integer, Integer -> Integer
+  apply-column-shifts (col) (shifts) =
+    let shifted = col + shifts
+    in if shifted < 0 then 0
+    else if shifted > 5 then 5
+    else shifted
+
+  combat-result : Integer, Integer, Integer, Integer -> Integer
+  combat-result (atk-str) (def-str) (terrain-bonus) (die) =
+    let base-col = calc-odds-col atk-str def-str
+    in let shifted = apply-column-shifts base-col (-terrain-bonus)
+    in crt-lookup die shifted
+
+  artillery-support : List Unit, Integer, Integer, Integer -> Integer
+  artillery-support (units) (target-q) (target-r) (owner) =
+    arty-support-loop units target-q target-r owner 0 0
+
+  arty-support-loop : List Unit, Integer, Integer, Integer, Integer, Integer -> Integer
+  arty-support-loop (units) (tq) (tr) (owner) (i) (acc) =
+    if i >= list-length units then acc
+    else let u = list-at units i
+    in let is-arty = if u.type-id == 2 & u.owner == owner & u.eliminated == False & u.has-attacked == False then 1 else 0
+    in let dist = hex-distance (HexCoord { q = u.q, r = u.r }) (HexCoord { q = tq, r = tr })
+    in let in-range = if dist <= u.range & dist > 1 then 1 else 0
+    in let contrib = is-arty * in-range * u.strength
+    in arty-support-loop units tq tr owner (i + 1) (acc + contrib)
+
+Section: Movement System
+
+  can-enter-hex : Integer, Integer, List TerrainHex, Integer, Integer -> Boolean
+  can-enter-hex (q) (r) (terrain-data) (width) (type-id) =
+    let idx = r * width + q
+    in let th = list-at terrain-data idx
+    in let cat = unit-category type-id
+    in let cost = get-move-cost th.terrain cat
+    in cost < 99
+
+  hex-move-cost : Integer, Integer, List TerrainHex, Integer, Integer -> Integer
+  hex-move-cost (q) (r) (terrain-data) (width) (type-id) =
+    let idx = r * width + q
+    in let th = list-at terrain-data idx
+    in let cat = unit-category type-id
+    in let base = get-move-cost th.terrain cat
+    in let road-bonus = if th.terrain == 5 then (-1) else 0
+    in let adjusted = base + road-bonus
+    in if adjusted < 1 then 1 else adjusted
+
+  in-enemy-zoc : HexCoord, List Unit, Integer -> Boolean
+  in-enemy-zoc (h) (units) (owner) =
+    zoc-check-loop h units owner 0
+
+  zoc-check-loop : HexCoord, List Unit, Integer, Integer -> Boolean
+  zoc-check-loop (h) (units) (owner) (i) =
+    if i >= list-length units then False
+    else let u = list-at units i
+    in if u.owner == owner then zoc-check-loop h units owner (i + 1)
+    else if u.eliminated then zoc-check-loop h units owner (i + 1)
+    else let ud = hex-distance h (HexCoord { q = u.q, r = u.r })
+    in if ud <= 1 then True
+    else zoc-check-loop h units owner (i + 1)
+
+  zoc-move-penalty : HexCoord, List Unit, Integer -> Integer
+  zoc-move-penalty (h) (units) (owner) =
+    if in-enemy-zoc h units owner then 2 else 0
+
+  can-move-to : Unit, Integer, Integer, List TerrainHex, List Unit, Integer -> Boolean
+  can-move-to (u) (tq) (tr) (terrain-data) (units) (width) =
+    let cost = hex-move-cost tq tr terrain-data width u.type-id
+    in let penalty = zoc-move-penalty (HexCoord { q = tq, r = tr }) units u.owner
+    in let total = cost + penalty
+    in u.movement >= total & can-enter-hex tq tr terrain-data width u.type-id
+
+  spend-movement : Unit, Integer, Integer, List TerrainHex, List Unit, Integer -> Unit
+  spend-movement (u) (tq) (tr) (terrain-data) (units) (width) =
+    let cost = hex-move-cost tq tr terrain-data width u.type-id
+    in let penalty = zoc-move-penalty (HexCoord { q = tq, r = tr }) units u.owner
+    in let total = cost + penalty
+    in __record-set (__record-set (__record-set u "q" tq) "r" tr) "movement" (u.movement - total)
+
+Section: Supply System
+
+  is-supply-source : Integer, Integer, Integer, Integer, Integer -> Boolean
+  is-supply-source (q) (r) (owner) (map-width) (map-height) =
+    if owner == 0 then q == 0
+    else q == map-width - 1
+
+  trace-supply-loop : HexCoord, List Unit, Integer, Integer, Integer, Integer -> Boolean
+  trace-supply-loop (h) (units) (owner) (width) (height) (fuel) =
+    if fuel <= 0 then False
+    else if is-supply-source h.q h.r owner width height then True
+    else let blocked = in-enemy-zoc h units owner
+    in if blocked then False
+    else trace-supply-neighbor h units owner width height fuel 0
+
+  trace-supply-neighbor : HexCoord, List Unit, Integer, Integer, Integer, Integer, Integer -> Boolean
+  trace-supply-neighbor (h) (units) (owner) (width) (height) (fuel) (dir) =
+    if dir >= 6 then False
+    else let nq = hex-neighbor-q dir h.q
+    in let nr = hex-neighbor-r dir h.r
+    in let nh = HexCoord { q = nq, r = nr }
+    in if hex-valid nh width height == False then trace-supply-neighbor h units owner width height fuel (dir + 1)
+    else if trace-supply-loop nh units owner width height (fuel - 1) then True
+    else trace-supply-neighbor h units owner width height fuel (dir + 1)
+
+  unit-in-supply : Unit, List Unit, Integer, Integer -> Boolean
+  unit-in-supply (u) (units) (width) (height) =
+    let h = HexCoord { q = u.q, r = u.r }
+    in trace-supply-loop h units u.owner width height 8
+
+Section: Turn Structure
+
+  Phase = record {
+    number : Integer
+  }
+
+  phase-movement : Integer
+  phase-movement = 0
+
+  phase-combat : Integer
+  phase-combat = 1
+
+  phase-exploitation : Integer
+  phase-exploitation = 2
+
+  Turn = record {
+    number        : Integer,
+    phase         : Integer,
+    active-player : Integer
+  }
+
+  advance-phase : Turn, Integer -> Turn
+  advance-phase (t) (num-players) =
+    if t.phase < 2 then
+      Turn { number = t.number, phase = t.phase + 1, active-player = t.active-player }
+    else let next-player = rng-mod (t.active-player + 1) num-players
+    in let next-num = if next-player == 0 then t.number + 1 else t.number
+    in Turn { number = next-num, phase = 0, active-player = next-player }
+
+  reset-units-for-turn : List Unit -> List Unit
+  reset-units-for-turn (units) =
+    reset-units-loop units 0
+
+  reset-units-loop : List Unit, Integer -> List Unit
+  reset-units-loop (units) (i) =
+    if i >= list-length units then units
+    else let u = list-at units i
+    in let u2 = __record-set (__record-set (__record-set u "has-moved" False) "has-attacked" False) "movement" u.max-movement
+    in reset-units-loop (list-set-at units i u2) (i + 1)
+
+Section: Game Configuration
+
+  WargameConfig = record {
+    map-width      : Integer,
+    map-height     : Integer,
+    num-players    : Integer,
+    turn-limit     : Integer,
+    stacking-limit : Integer,
+    terrain-data   : List TerrainHex,
+    unit-roster    : List Unit
+  }
+
+  flat-terrain : Integer, Integer -> List TerrainHex
+  flat-terrain (w) (h) =
+    flat-terrain-loop w h (w * h) 0 []
+
+  flat-terrain-loop : Integer, Integer, Integer, Integer, List TerrainHex -> List TerrainHex
+  flat-terrain-loop (w) (h) (total) (i) (acc) =
+    if i >= total then acc
+    else let th = TerrainHex { terrain = 0, elevation = 0, fortified = False, victory-point = False }
+    in flat-terrain-loop w h total (i + 1) (list-push acc th)
+
+  set-terrain-at : List TerrainHex, Integer, Integer, Integer, Integer, Integer, Boolean, Boolean -> List TerrainHex
+  set-terrain-at (td) (width) (q) (r) (terr) (elev) (fort) (vp) =
+    let idx = r * width + q
+    in let th = TerrainHex { terrain = terr, elevation = elev, fortified = fort, victory-point = vp }
+    in list-set-at td idx th
+
+  scenario-stalingrad : WargameConfig
+  scenario-stalingrad =
+    let w = 20
+    in let h = 15
+    in let td0 = flat-terrain w h
+    in let td1 = set-terrain-at td0 w 10 7 6 1 True True
+    in let td2 = set-terrain-at td1 w 11 7 2 1 False True
+    in let td3 = set-terrain-at td2 w 9 7 4 0 False False
+    in let td4 = set-terrain-at td3 w 10 5 2 0 False False
+    in let td5 = set-terrain-at td4 w 10 9 1 0 False False
+    in let ru1 = make-unit 0 0 0 0 7
+    in let ru2 = make-unit 1 1 0 1 7
+    in let ru3 = make-unit 2 2 0 0 8
+    in let ge1 = make-unit 3 0 1 19 7
+    in let ge2 = make-unit 4 1 1 18 7
+    in let ge3 = make-unit 5 6 1 19 8
+    in let roster = list-push (list-push (list-push (list-push (list-push (list-push [] ru1) ru2) ru3) ge1) ge2) ge3
+    in WargameConfig {
+         map-width = w, map-height = h,
+         num-players = 2, turn-limit = 20,
+         stacking-limit = 3,
+         terrain-data = td5,
+         unit-roster = roster
+       }
+
+  scenario-normandy : WargameConfig
+  scenario-normandy =
+    let w = 15
+    in let h = 12
+    in let td0 = flat-terrain w h
+    in let td1 = set-terrain-at td0 w 0 0 9 0 False False
+    in let td2 = set-terrain-at td1 w 1 0 9 0 False False
+    in let td3 = set-terrain-at td2 w 7 5 6 0 False True
+    in let td4 = set-terrain-at td3 w 7 3 1 0 False False
+    in let td5 = set-terrain-at td4 w 3 4 2 1 False False
+    in let al1 = make-unit 0 0 0 0 11
+    in let al2 = make-unit 1 3 0 1 11
+    in let ax1 = make-unit 2 0 1 14 5
+    in let ax2 = make-unit 3 1 1 13 5
+    in let roster = list-push (list-push (list-push (list-push [] al1) al2) ax1) ax2
+    in WargameConfig {
+         map-width = w, map-height = h,
+         num-players = 2, turn-limit = 12,
+         stacking-limit = 2,
+         terrain-data = td5,
+         unit-roster = roster
+       }
+
+  scenario-bulge : WargameConfig
+  scenario-bulge =
+    let w = 18
+    in let h = 14
+    in let td0 = flat-terrain w h
+    in let td1 = set-terrain-at td0 w 9 7 1 0 False True
+    in let td2 = set-terrain-at td1 w 8 6 2 1 False False
+    in let td3 = set-terrain-at td2 w 10 8 1 0 False False
+    in let td4 = set-terrain-at td3 w 4 4 2 1 False True
+    in let us1 = make-unit 0 0 0 0 7
+    in let us2 = make-unit 1 6 0 1 7
+    in let ge1 = make-unit 2 0 1 17 7
+    in let ge2 = make-unit 3 1 1 16 7
+    in let ge3 = make-unit 4 2 1 17 6
+    in let roster = list-push (list-push (list-push (list-push (list-push [] us1) us2) ge1) ge2) ge3
+    in WargameConfig {
+         map-width = w, map-height = h,
+         num-players = 2, turn-limit = 16,
+         stacking-limit = 3,
+         terrain-data = td4,
+         unit-roster = roster
+       }
+
+  scenario-panzerblitz : WargameConfig
+  scenario-panzerblitz =
+    let w = 16
+    in let h = 12
+    in let td0 = flat-terrain w h
+    in let td1 = set-terrain-at td0 w 2 2 1 0 False False
+    in let td2 = set-terrain-at td1 w 3 3 1 0 False False
+    in let td3 = set-terrain-at td2 w 4 2 1 0 False False
+    in let td4 = set-terrain-at td3 w 5 4 2 1 False False
+    in let td5 = set-terrain-at td4 w 6 3 2 1 False False
+    in let td6 = set-terrain-at td5 w 7 5 1 0 False False
+    in let td7 = set-terrain-at td6 w 8 4 6 1 True True
+    in let td8 = set-terrain-at td7 w 10 6 6 1 True True
+    in let td9 = set-terrain-at td8 w 12 3 2 1 False False
+    in let td10 = set-terrain-at td9 w 13 4 1 0 False False
+    in let ge1 = make-unit 0 1 1 14 5
+    in let ge2 = make-unit 1 1 1 15 5
+    in let ge3 = make-unit 2 1 1 14 6
+    in let ge4 = make-unit 3 6 1 15 6
+    in let ge5 = make-unit 4 3 1 13 5
+    in let ge6 = make-unit 5 5 1 15 4
+    in let so1 = make-unit 6 0 0 0 5
+    in let so2 = make-unit 7 0 0 1 5
+    in let so3 = make-unit 8 0 0 0 6
+    in let so4 = make-unit 9 0 0 1 6
+    in let so5 = make-unit 10 0 0 0 4
+    in let so6 = make-unit 11 0 0 1 4
+    in let so7 = make-unit 12 2 0 2 5
+    in let so8 = make-unit 13 0 0 2 6
+    in let roster = list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+                    (list-push (list-push (list-push (list-push (list-push (list-push [] ge1) ge2) ge3) ge4)
+                    ge5) ge6) so1) so2) so3) so4) so5) so6) so7) so8
+    in WargameConfig {
+         map-width = w, map-height = h,
+         num-players = 2, turn-limit = 15,
+         stacking-limit = 3,
+         terrain-data = td10,
+         unit-roster = roster
+       }
+
+  scenario-gettysburg : WargameConfig
+  scenario-gettysburg =
+    let w = 20
+    in let h = 16
+    in let td0 = flat-terrain w h
+    in let td1 = set-terrain-at td0 w 12 8 2 2 False True
+    in let td2 = set-terrain-at td1 w 13 9 2 2 False True
+    in let td3 = set-terrain-at td2 w 14 10 2 2 False False
+    in let td4 = set-terrain-at td3 w 11 12 2 2 False True
+    in let td5 = set-terrain-at td4 w 12 13 2 2 False False
+    in let td6 = set-terrain-at td5 w 10 7 5 0 False False
+    in let td7 = set-terrain-at td6 w 10 8 5 0 False False
+    in let td8 = set-terrain-at td7 w 10 9 5 0 False False
+    in let td9 = set-terrain-at td8 w 10 5 6 1 False True
+    in let td10 = set-terrain-at td9 w 8 8 1 0 False False
+    in let td11 = set-terrain-at td10 w 9 9 1 0 False False
+    in let un1 = make-unit 0 0 0 12 7
+    in let un2 = make-unit 1 0 0 13 8
+    in let un3 = make-unit 2 0 0 12 9
+    in let un4 = make-unit 3 0 0 11 11
+    in let un5 = make-unit 4 2 0 13 7
+    in let un6 = make-unit 5 2 0 12 11
+    in let un7 = make-unit 6 5 0 14 8
+    in let co1 = make-unit 7 0 1 1 8
+    in let co2 = make-unit 8 0 1 2 8
+    in let co3 = make-unit 9 0 1 1 9
+    in let co4 = make-unit 10 0 1 2 9
+    in let co5 = make-unit 11 0 1 1 7
+    in let co6 = make-unit 12 2 1 0 8
+    in let co7 = make-unit 13 2 1 0 9
+    in let co8 = make-unit 14 4 1 2 7
+    in let roster = list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+                    (list-push (list-push (list-push (list-push (list-push (list-push (list-push [] un1) un2)
+                    un3) un4) un5) un6) un7) co1) co2) co3) co4) co5) co6) co7) co8
+    in WargameConfig {
+         map-width = w, map-height = h,
+         num-players = 2, turn-limit = 20,
+         stacking-limit = 3,
+         terrain-data = td11,
+         unit-roster = roster
+       }
+
+  scenario-afrika-korps : WargameConfig
+  scenario-afrika-korps =
+    let w = 24
+    in let h = 10
+    in let td0 = flat-terrain w h
+    in let td1 = set-terrain-at td0 w 0 0 8 0 False False
+    in let td2 = set-terrain-at td1 w 1 0 8 0 False False
+    in let td3 = set-terrain-at td2 w 5 4 8 0 False False
+    in let td4 = set-terrain-at td3 w 6 4 8 0 False False
+    in let td5 = set-terrain-at td4 w 10 4 8 0 False False
+    in let td6 = set-terrain-at td5 w 11 4 8 0 False False
+    in let td7 = set-terrain-at td6 w 16 4 8 0 False False
+    in let td8 = set-terrain-at td7 w 17 4 8 0 False False
+    in let td9 = set-terrain-at td8 w 6 2 6 1 False True
+    in let td10 = set-terrain-at td9 w 14 3 6 1 False True
+    in let td11 = set-terrain-at td10 w 20 2 6 1 False True
+    in let td12 = set-terrain-at td11 w 0 0 5 0 False False
+    in let td13 = set-terrain-at td12 w 6 0 5 0 False False
+    in let td14 = set-terrain-at td13 w 12 0 5 0 False False
+    in let td15 = set-terrain-at td14 w 18 0 5 0 False False
+    in let ax1 = make-unit 0 1 1 22 4
+    in let ax2 = make-unit 1 1 1 23 4
+    in let ax3 = make-unit 2 3 1 22 3
+    in let ax4 = make-unit 3 3 1 23 3
+    in let ax5 = make-unit 4 2 1 23 5
+    in let ax6 = make-unit 5 5 1 23 2
+    in let al1 = make-unit 6 0 0 0 4
+    in let al2 = make-unit 7 0 0 1 4
+    in let al3 = make-unit 8 0 0 0 5
+    in let al4 = make-unit 9 1 0 1 5
+    in let al5 = make-unit 10 2 0 0 3
+    in let al6 = make-unit 11 5 0 0 2
+    in let roster = list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+                    (list-push (list-push (list-push (list-push [] ax1) ax2) ax3) ax4) ax5) ax6)
+                    al1) al2) al3) al4) al5) al6
+    in WargameConfig {
+         map-width = w, map-height = h,
+         num-players = 2, turn-limit = 25,
+         stacking-limit = 2,
+         terrain-data = td15,
+         unit-roster = roster
+       }
+
+  scenario-waterloo : WargameConfig
+  scenario-waterloo =
+    let w = 14
+    in let h = 12
+    in let td0 = flat-terrain w h
+    in let td1 = set-terrain-at td0 w 7 4 2 1 False True
+    in let td2 = set-terrain-at td1 w 8 4 2 1 False False
+    in let td3 = set-terrain-at td2 w 6 5 2 1 False False
+    in let td4 = set-terrain-at td3 w 9 3 2 1 False False
+    in let td5 = set-terrain-at td4 w 7 6 6 0 False True
+    in let td6 = set-terrain-at td5 w 4 8 6 0 False True
+    in let td7 = set-terrain-at td6 w 7 3 5 0 False False
+    in let td8 = set-terrain-at td7 w 7 2 5 0 False False
+    in let td9 = set-terrain-at td8 w 7 1 5 0 False False
+    in let fr1 = make-unit 0 0 1 0 6
+    in let fr2 = make-unit 1 0 1 1 6
+    in let fr3 = make-unit 2 0 1 0 5
+    in let fr4 = make-unit 3 4 1 1 5
+    in let fr5 = make-unit 4 4 1 0 7
+    in let fr6 = make-unit 5 2 1 0 4
+    in let fr7 = make-unit 6 2 1 1 4
+    in let fr8 = make-unit 7 5 1 0 3
+    in let aa1 = make-unit 8 0 0 12 4
+    in let aa2 = make-unit 9 0 0 13 4
+    in let aa3 = make-unit 10 0 0 12 5
+    in let aa4 = make-unit 11 2 0 13 3
+    in let aa5 = make-unit 12 4 0 13 5
+    in let roster = list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+                    (list-push (list-push (list-push (list-push (list-push [] fr1) fr2) fr3) fr4) fr5) fr6)
+                    fr7) fr8) aa1) aa2) aa3) aa4) aa5
+    in WargameConfig {
+         map-width = w, map-height = h,
+         num-players = 2, turn-limit = 18,
+         stacking-limit = 3,
+         terrain-data = td9,
+         unit-roster = roster
+       }
+
+  scenario-midway : WargameConfig
+  scenario-midway =
+    let w = 20
+    in let h = 20
+    in let td0 = flat-terrain w h
+    in let td1 = set-terrain-at td0 w 0 0 9 0 False False
+    in let td2 = set-terrain-at td1 w 1 0 9 0 False False
+    in let td3 = set-terrain-at td2 w 2 0 9 0 False False
+    in let td4 = set-terrain-at td3 w 0 1 9 0 False False
+    in let td5 = set-terrain-at td4 w 1 1 9 0 False False
+    in let td6 = set-terrain-at td5 w 2 1 9 0 False False
+    in let td7 = set-terrain-at td6 w 10 10 6 1 True True
+    in let td8 = set-terrain-at td7 w 11 10 6 1 True True
+    in let td9 = set-terrain-at td8 w 10 11 9 0 False False
+    in let td10 = set-terrain-at td9 w 3 3 9 0 False False
+    in let td11 = set-terrain-at td10 w 5 5 9 0 False False
+    in let td12 = set-terrain-at td11 w 7 7 9 0 False False
+    in let jp1 = make-unit 0 5 1 1 1
+    in let jp2 = make-unit 1 5 1 2 2
+    in let jp3 = make-unit 2 5 1 0 2
+    in let jp4 = make-unit 3 2 1 1 2
+    in let jp5 = make-unit 4 2 1 2 1
+    in let jp6 = make-unit 5 0 1 1 3
+    in let jp7 = make-unit 6 0 1 2 3
+    in let us1 = make-unit 7 5 0 17 17
+    in let us2 = make-unit 8 5 0 18 17
+    in let us3 = make-unit 9 5 0 17 18
+    in let us4 = make-unit 10 2 0 18 18
+    in let us5 = make-unit 11 0 0 10 10
+    in let us6 = make-unit 12 0 0 11 10
+    in let roster = list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+                    (list-push (list-push (list-push (list-push (list-push [] jp1) jp2) jp3) jp4) jp5) jp6)
+                    jp7) us1) us2) us3) us4) us5) us6
+    in WargameConfig {
+         map-width = w, map-height = h,
+         num-players = 2, turn-limit = 12,
+         stacking-limit = 2,
+         terrain-data = td12,
+         unit-roster = roster
+       }
+
+  scenario-kursk : WargameConfig
+  scenario-kursk =
+    let w = 22
+    in let h = 18
+    in let td0 = flat-terrain w h
+    in let td1 = set-terrain-at td0 w 8 8 6 1 True True
+    in let td2 = set-terrain-at td1 w 9 8 6 1 True False
+    in let td3 = set-terrain-at td2 w 8 9 7 0 False False
+    in let td4 = set-terrain-at td3 w 9 9 7 0 False False
+    in let td5 = set-terrain-at td4 w 10 9 7 0 False False
+    in let td6 = set-terrain-at td5 w 7 8 7 0 False False
+    in let td7 = set-terrain-at td6 w 11 8 6 1 True True
+    in let td8 = set-terrain-at td7 w 12 7 6 1 True False
+    in let td9 = set-terrain-at td8 w 5 5 7 0 False False
+    in let td10 = set-terrain-at td9 w 6 6 7 0 False False
+    in let td11 = set-terrain-at td10 w 14 10 7 0 False False
+    in let td12 = set-terrain-at td11 w 15 11 7 0 False False
+    in let ge1 = make-unit 0 1 1 20 9
+    in let ge2 = make-unit 1 1 1 21 9
+    in let ge3 = make-unit 2 1 1 20 8
+    in let ge4 = make-unit 3 1 1 21 8
+    in let ge5 = make-unit 4 3 1 21 10
+    in let ge6 = make-unit 5 2 1 21 7
+    in let ge7 = make-unit 6 6 1 20 10
+    in let ge8 = make-unit 7 5 1 21 11
+    in let so1 = make-unit 8 0 0 0 9
+    in let so2 = make-unit 9 0 0 1 9
+    in let so3 = make-unit 10 0 0 0 8
+    in let so4 = make-unit 11 0 0 1 8
+    in let so5 = make-unit 12 1 0 2 9
+    in let so6 = make-unit 13 2 0 0 7
+    in let so7 = make-unit 14 6 0 1 7
+    in let so8 = make-unit 15 5 0 0 6
+    in let roster = list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+                    (list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+                    [] ge1) ge2) ge3) ge4) ge5) ge6) ge7) ge8)
+                    so1) so2) so3) so4) so5) so6) so7) so8
+    in WargameConfig {
+         map-width = w, map-height = h,
+         num-players = 2, turn-limit = 20,
+         stacking-limit = 3,
+         terrain-data = td12,
+         unit-roster = roster
+       }
+
+  scenario-market-garden : WargameConfig
+  scenario-market-garden =
+    let w = 10
+    in let h = 24
+    in let td0 = flat-terrain w h
+    in let td1 = set-terrain-at td0 w 5 5 5 0 False False
+    in let td2 = set-terrain-at td1 w 5 6 5 0 False False
+    in let td3 = set-terrain-at td2 w 5 7 5 0 False False
+    in let td4 = set-terrain-at td3 w 5 8 5 0 False False
+    in let td5 = set-terrain-at td4 w 5 9 5 0 False False
+    in let td6 = set-terrain-at td5 w 5 10 5 0 False False
+    in let td7 = set-terrain-at td6 w 5 11 5 0 False False
+    in let td8 = set-terrain-at td7 w 5 12 5 0 False False
+    in let td9 = set-terrain-at td8 w 5 13 5 0 False False
+    in let td10 = set-terrain-at td9 w 5 14 5 0 False False
+    in let td11 = set-terrain-at td10 w 4 8 4 0 False False
+    in let td12 = set-terrain-at td11 w 4 14 4 0 False False
+    in let td13 = set-terrain-at td12 w 3 6 1 0 False False
+    in let td14 = set-terrain-at td13 w 6 6 1 0 False False
+    in let td15 = set-terrain-at td14 w 3 12 1 0 False False
+    in let td16 = set-terrain-at td15 w 6 12 1 0 False False
+    in let td17 = set-terrain-at td16 w 5 18 6 1 True True
+    in let td18 = set-terrain-at td17 w 5 10 6 1 True True
+    in let al1 = make-unit 0 0 0 5 22
+    in let al2 = make-unit 1 0 0 4 22
+    in let al3 = make-unit 2 0 0 6 22
+    in let al4 = make-unit 3 1 0 5 23
+    in let al5 = make-unit 4 0 0 5 18
+    in let al6 = make-unit 5 0 0 5 10
+    in let al7 = make-unit 6 8 0 4 18
+    in let ge1 = make-unit 7 0 1 2 5
+    in let ge2 = make-unit 8 0 1 7 5
+    in let ge3 = make-unit 9 0 1 2 11
+    in let ge4 = make-unit 10 0 1 7 11
+    in let ge5 = make-unit 11 2 1 1 8
+    in let ge6 = make-unit 12 6 1 8 8
+    in let roster = list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+                    (list-push (list-push (list-push (list-push (list-push [] al1) al2) al3) al4) al5) al6)
+                    al7) ge1) ge2) ge3) ge4) ge5) ge6
+    in WargameConfig {
+         map-width = w, map-height = h,
+         num-players = 2, turn-limit = 18,
+         stacking-limit = 3,
+         terrain-data = td18,
+         unit-roster = roster
+       }
+
+  scenario-guadalcanal : WargameConfig
+  scenario-guadalcanal =
+    let w = 16
+    in let h = 14
+    in let td0 = flat-terrain w h
+    in let td1 = set-terrain-at td0 w 0 0 9 0 False False
+    in let td2 = set-terrain-at td1 w 1 0 9 0 False False
+    in let td3 = set-terrain-at td2 w 0 13 9 0 False False
+    in let td4 = set-terrain-at td3 w 1 13 9 0 False False
+    in let td5 = set-terrain-at td4 w 2 3 1 0 False False
+    in let td6 = set-terrain-at td5 w 3 4 1 0 False False
+    in let td7 = set-terrain-at td6 w 4 3 1 0 False False
+    in let td8 = set-terrain-at td7 w 5 4 1 0 False False
+    in let td9 = set-terrain-at td8 w 2 8 1 0 False False
+    in let td10 = set-terrain-at td9 w 3 9 1 0 False False
+    in let td11 = set-terrain-at td10 w 4 8 1 0 False False
+    in let td12 = set-terrain-at td11 w 8 6 6 1 True True
+    in let td13 = set-terrain-at td12 w 8 7 6 1 True False
+    in let us1 = make-unit 0 0 0 7 6
+    in let us2 = make-unit 1 0 0 8 6
+    in let us3 = make-unit 2 0 0 9 6
+    in let us4 = make-unit 3 0 0 8 5
+    in let us5 = make-unit 4 2 0 9 7
+    in let us6 = make-unit 5 8 0 7 7
+    in let jp1 = make-unit 6 0 1 15 0
+    in let jp2 = make-unit 7 0 1 15 1
+    in let jp3 = make-unit 8 0 1 15 13
+    in let jp4 = make-unit 9 0 1 15 12
+    in let jp5 = make-unit 10 0 1 14 6
+    in let jp6 = make-unit 11 0 1 14 7
+    in let roster = list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+                    (list-push (list-push (list-push (list-push [] us1) us2) us3) us4) us5) us6)
+                    jp1) jp2) jp3) jp4) jp5) jp6
+    in WargameConfig {
+         map-width = w, map-height = h,
+         num-players = 2, turn-limit = 16,
+         stacking-limit = 3,
+         terrain-data = td13,
+         unit-roster = roster
+       }
+
+  scenario-austerlitz : WargameConfig
+  scenario-austerlitz =
+    let w = 18
+    in let h = 14
+    in let td0 = flat-terrain w h
+    in let td1 = set-terrain-at td0 w 9 8 4 0 False False
+    in let td2 = set-terrain-at td1 w 10 8 4 0 False False
+    in let td3 = set-terrain-at td2 w 11 8 4 0 False False
+    in let td4 = set-terrain-at td3 w 12 8 4 0 False False
+    in let td5 = set-terrain-at td4 w 8 5 2 2 False True
+    in let td6 = set-terrain-at td5 w 9 5 2 2 False True
+    in let td7 = set-terrain-at td6 w 10 4 2 2 False False
+    in let td8 = set-terrain-at td7 w 5 7 6 0 False True
+    in let td9 = set-terrain-at td8 w 12 6 6 0 False True
+    in let td10 = set-terrain-at td9 w 7 6 5 0 False False
+    in let td11 = set-terrain-at td10 w 8 6 5 0 False False
+    in let td12 = set-terrain-at td11 w 9 6 5 0 False False
+    in let fr1 = make-unit 0 0 1 0 7
+    in let fr2 = make-unit 1 0 1 1 7
+    in let fr3 = make-unit 2 0 1 0 6
+    in let fr4 = make-unit 3 4 1 1 6
+    in let fr5 = make-unit 4 4 1 0 8
+    in let fr6 = make-unit 5 2 1 0 5
+    in let fr7 = make-unit 6 5 1 0 4
+    in let ra1 = make-unit 7 0 0 16 5
+    in let ra2 = make-unit 8 0 0 17 5
+    in let ra3 = make-unit 9 0 0 16 6
+    in let ra4 = make-unit 10 0 0 17 6
+    in let ra5 = make-unit 11 2 0 17 4
+    in let ra6 = make-unit 12 4 0 16 7
+    in let roster = list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+                    (list-push (list-push (list-push (list-push (list-push [] fr1) fr2) fr3) fr4) fr5) fr6)
+                    fr7) ra1) ra2) ra3) ra4) ra5) ra6
+    in WargameConfig {
+         map-width = w, map-height = h,
+         num-players = 2, turn-limit = 15,
+         stacking-limit = 3,
+         terrain-data = td12,
+         unit-roster = roster
+       }
+
+  scenario-blitzkrieg : WargameConfig
+  scenario-blitzkrieg =
+    let w = 12
+    in let h = 10
+    in let td0 = flat-terrain w h
+    in let td1 = set-terrain-at td0 w 3 4 2 1 False False
+    in let td2 = set-terrain-at td1 w 4 3 1 0 False False
+    in let td3 = set-terrain-at td2 w 5 5 4 0 False False
+    in let td4 = set-terrain-at td3 w 6 4 5 0 False False
+    in let td5 = set-terrain-at td4 w 6 5 5 0 False False
+    in let td6 = set-terrain-at td5 w 7 3 2 1 False False
+    in let td7 = set-terrain-at td6 w 8 6 1 0 False False
+    in let td8 = set-terrain-at td7 w 6 2 6 1 True True
+    in let td9 = set-terrain-at td8 w 6 7 6 1 True True
+    in let bl1 = make-unit 0 0 0 0 4
+    in let bl2 = make-unit 1 0 0 1 4
+    in let bl3 = make-unit 2 1 0 0 5
+    in let bl4 = make-unit 3 2 0 0 3
+    in let bl5 = make-unit 4 5 0 1 3
+    in let bl6 = make-unit 5 8 0 1 5
+    in let re1 = make-unit 6 0 1 11 4
+    in let re2 = make-unit 7 0 1 10 4
+    in let re3 = make-unit 8 1 1 11 5
+    in let re4 = make-unit 9 2 1 11 3
+    in let re5 = make-unit 10 5 1 10 3
+    in let re6 = make-unit 11 8 1 10 5
+    in let roster = list-push (list-push (list-push (list-push (list-push (list-push (list-push (list-push
+                    (list-push (list-push (list-push (list-push [] bl1) bl2) bl3) bl4) bl5) bl6)
+                    re1) re2) re3) re4) re5) re6
+    in WargameConfig {
+         map-width = w, map-height = h,
+         num-players = 2, turn-limit = 10,
+         stacking-limit = 3,
+         terrain-data = td9,
+         unit-roster = roster
+       }
+
+Section: AI
+
+  ai-find-target : List Unit, Integer, List TerrainHex, Integer -> Integer
+  ai-find-target (units) (owner) (terrain-data) (width) =
+    ai-target-loop units owner terrain-data width 0 (-1) 999
+
+  ai-target-loop : List Unit, Integer, List TerrainHex, Integer, Integer, Integer, Integer -> Integer
+  ai-target-loop (units) (owner) (td) (width) (i) (best) (best-str) =
+    if i >= list-length units then best
+    else let u = list-at units i
+    in if u.owner == owner then ai-target-loop units owner td width (i + 1) best best-str
+    else if u.eliminated then ai-target-loop units owner td width (i + 1) best best-str
+    else let adj = ai-any-adjacent-friendly units owner u.q u.r
+    in if adj == False then ai-target-loop units owner td width (i + 1) best best-str
+    else if u.strength < best-str then ai-target-loop units owner td width (i + 1) i u.strength
+    else ai-target-loop units owner td width (i + 1) best best-str
+
+  ai-any-adjacent-friendly : List Unit, Integer, Integer, Integer -> Boolean
+  ai-any-adjacent-friendly (units) (owner) (eq) (er) =
+    ai-adj-loop units owner eq er 0
+
+  ai-adj-loop : List Unit, Integer, Integer, Integer, Integer -> Boolean
+  ai-adj-loop (units) (owner) (eq) (er) (i) =
+    if i >= list-length units then False
+    else let u = list-at units i
+    in if u.owner /= owner then ai-adj-loop units owner eq er (i + 1)
+    else if u.eliminated then ai-adj-loop units owner eq er (i + 1)
+    else let dist = hex-distance (HexCoord { q = u.q, r = u.r }) (HexCoord { q = eq, r = er })
+    in if dist <= 1 then True
+    else ai-adj-loop units owner eq er (i + 1)
+
+  ai-find-advance-target : List TerrainHex, Integer, Integer -> Integer
+  ai-find-advance-target (terrain-data) (width) (height) =
+    ai-advance-loop terrain-data width height 0 (-1)
+
+  ai-advance-loop : List TerrainHex, Integer, Integer, Integer, Integer -> Integer
+  ai-advance-loop (td) (width) (height) (i) (best) =
+    if i >= list-length td then best
+    else let th = list-at td i
+    in if th.victory-point == False then ai-advance-loop td width height (i + 1) best
+    else ai-advance-loop td width height (i + 1) i
+
+  ai-count-vp : List TerrainHex, List Unit, Integer -> Integer
+  ai-count-vp (terrain-data) (units) (owner) =
+    ai-vp-loop terrain-data units owner 0 0
+
+  ai-vp-loop : List TerrainHex, List Unit, Integer, Integer, Integer -> Integer
+  ai-vp-loop (td) (units) (owner) (i) (acc) =
+    if i >= list-length td then acc
+    else let th = list-at td i
+    in if th.victory-point == False then ai-vp-loop td units owner (i + 1) acc
+    else let held = ai-hex-held-by units owner i
+    in let delta = if held then 1 else 0
+    in ai-vp-loop td units owner (i + 1) (acc + delta)
+
+  ai-hex-held-by : List Unit, Integer, Integer -> Boolean
+  ai-hex-held-by (units) (owner) (idx) =
+    ai-hex-held-loop units owner idx 0
+
+  ai-hex-held-loop : List Unit, Integer, Integer, Integer -> Boolean
+  ai-hex-held-loop (units) (owner) (idx) (i) =
+    if i >= list-length units then False
+    else let u = list-at units i
+    in if u.eliminated then ai-hex-held-loop units owner idx (i + 1)
+    else if u.owner /= owner then ai-hex-held-loop units owner idx (i + 1)
+    else let uid = u.r * 1000 + u.q
+    in if uid == idx then True
+    else ai-hex-held-loop units owner idx (i + 1)
+
+Section: Game Runner
+
+  HexwarResult = record {
+    winner      : Integer,
+    turns       : Integer,
+    units-lost-a : Integer,
+    units-lost-b : Integer,
+    vp-a        : Integer,
+    vp-b        : Integer
+  }
+
+  count-eliminated : List Unit, Integer -> Integer
+  count-eliminated (units) (owner) =
+    count-elim-loop units owner 0 0
+
+  count-elim-loop : List Unit, Integer, Integer, Integer -> Integer
+  count-elim-loop (units) (owner) (i) (acc) =
+    if i >= list-length units then acc
+    else let u = list-at units i
+    in let delta = if u.owner == owner & u.eliminated then 1 else 0
+    in count-elim-loop units owner (i + 1) (acc + delta)
+
+  count-alive : List Unit, Integer -> Integer
+  count-alive (units) (owner) =
+    count-alive-loop units owner 0 0
+
+  count-alive-loop : List Unit, Integer, Integer, Integer -> Integer
+  count-alive-loop (units) (owner) (i) (acc) =
+    if i >= list-length units then acc
+    else let u = list-at units i
+    in let delta = if u.owner == owner & u.eliminated == False then 1 else 0
+    in count-alive-loop units owner (i + 1) (acc + delta)
+
+  determine-winner : List Unit, List TerrainHex, Integer, Integer -> Integer
+  determine-winner (units) (terrain-data) (turn) (turn-limit) =
+    let alive-a = count-alive units 0
+    in let alive-b = count-alive units 1
+    in if alive-a == 0 then 1
+    else if alive-b == 0 then 0
+    else let vp-a = ai-count-vp terrain-data units 0
+    in let vp-b = ai-count-vp terrain-data units 1
+    in if vp-a > vp-b then 0
+    else if vp-b > vp-a then 1
+    else (-1)
+
+  run-hexwar-turn : List Unit, List TerrainHex, Integer, Integer, Rng -> List Unit
+  run-hexwar-turn (units) (terrain-data) (active-player) (width) (r) =
+    let units2 = reset-units-for-turn units
+    in let r2 = rng-next r
+    in let target = ai-find-target units2 active-player terrain-data width
+    in if target < 0 then units2
+    else let tu = list-at units2 target
+    in let def-str = tu.strength
+    in let def-hex = list-at terrain-data (tu.r * width + tu.q)
+    in let def-bonus = get-defense-bonus def-hex.terrain
+    in let atk-str = ai-count-attack-strength units2 active-player tu.q tu.r
+    in let arty = artillery-support units2 tu.q tu.r active-player
+    in let total-atk = atk-str + arty
+    in let die = rng-range r2 1 6
+    in let result = combat-result total-atk def-str def-bonus die
+    in apply-combat-result units2 target result active-player r2
+
+  ai-count-attack-strength : List Unit, Integer, Integer, Integer -> Integer
+  ai-count-attack-strength (units) (owner) (tq) (tr) =
+    ai-atk-str-loop units owner tq tr 0 0
+
+  ai-atk-str-loop : List Unit, Integer, Integer, Integer, Integer, Integer -> Integer
+  ai-atk-str-loop (units) (owner) (tq) (tr) (i) (acc) =
+    if i >= list-length units then acc
+    else let u = list-at units i
+    in if u.owner /= owner then ai-atk-str-loop units owner tq tr (i + 1) acc
+    else if u.eliminated then ai-atk-str-loop units owner tq tr (i + 1) acc
+    else let dist = hex-distance (HexCoord { q = u.q, r = u.r }) (HexCoord { q = tq, r = tr })
+    in let adj = if dist <= 1 & u.type-id /= 2 then u.attack else 0
+    in ai-atk-str-loop units owner tq tr (i + 1) (acc + adj)
+
+  apply-combat-result : List Unit, Integer, Integer, Integer, Rng -> List Unit
+  apply-combat-result (units) (def-idx) (result) (atk-owner) (r) =
+    if result == 0 then eliminate-attackers units atk-owner def-idx
+    else if result == 1 then retreat-attackers units atk-owner def-idx r
+    else if result == 2 then
+      let u2 = eliminate-one units def-idx
+      in eliminate-attackers u2 atk-owner def-idx
+    else if result == 3 then retreat-defender units def-idx r
+    else eliminate-defender units def-idx
+
+  eliminate-defender : List Unit, Integer -> List Unit
+  eliminate-defender (units) (def-idx) =
+    let u = list-at units def-idx
+    in let u2 = __record-set u "eliminated" True
+    in list-set-at units def-idx u2
+
+  eliminate-one : List Unit, Integer -> List Unit
+  eliminate-one (units) (def-idx) =
+    eliminate-defender units def-idx
+
+  eliminate-attackers : List Unit, Integer, Integer -> List Unit
+  eliminate-attackers (units) (owner) (def-idx) =
+    elim-atk-loop units owner def-idx 0
+
+  elim-atk-loop : List Unit, Integer, Integer, Integer -> List Unit
+  elim-atk-loop (units) (owner) (def-idx) (i) =
+    if i >= list-length units then units
+    else let u = list-at units i
+    in if u.owner /= owner then elim-atk-loop units owner def-idx (i + 1)
+    else if u.eliminated then elim-atk-loop units owner def-idx (i + 1)
+    else let du = list-at units def-idx
+    in let dist = hex-distance (HexCoord { q = u.q, r = u.r }) (HexCoord { q = du.q, r = du.r })
+    in if dist > 1 then elim-atk-loop units owner def-idx (i + 1)
+    else let u2 = __record-set u "eliminated" True
+    in elim-atk-loop (list-set-at units i u2) owner def-idx (i + 1)
+
+  retreat-defender : List Unit, Integer, Rng -> List Unit
+  retreat-defender (units) (def-idx) (r) =
+    let u = list-at units def-idx
+    in let dir = rng-mod (rng-value r) 6
+    in let nq = hex-neighbor-q dir u.q
+    in let nr = hex-neighbor-r dir u.r
+    in let u2 = __record-set (__record-set u "q" nq) "r" nr
+    in list-set-at units def-idx u2
+
+  retreat-attackers : List Unit, Integer, Integer, Rng -> List Unit
+  retreat-attackers (units) (owner) (def-idx) (r) =
+    retreat-atk-loop units owner def-idx r 0
+
+  retreat-atk-loop : List Unit, Integer, Integer, Rng, Integer -> List Unit
+  retreat-atk-loop (units) (owner) (def-idx) (r) (i) =
+    if i >= list-length units then units
+    else let u = list-at units i
+    in if u.owner /= owner then retreat-atk-loop units owner def-idx r (i + 1)
+    else if u.eliminated then retreat-atk-loop units owner def-idx r (i + 1)
+    else let du = list-at units def-idx
+    in let dist = hex-distance (HexCoord { q = u.q, r = u.r }) (HexCoord { q = du.q, r = du.r })
+    in if dist > 1 then retreat-atk-loop units owner def-idx r (i + 1)
+    else let dir = rng-mod (rng-value r) 6
+    in let opp = rng-mod (dir + 3) 6
+    in let nq = hex-neighbor-q opp u.q
+    in let nr = hex-neighbor-r opp u.r
+    in let u2 = __record-set (__record-set u "q" nq) "r" nr
+    in retreat-atk-loop (list-set-at units i u2) owner def-idx r (i + 1)
+
+  run-hexwar-game : WargameConfig, Integer -> HexwarResult
+  run-hexwar-game (cfg) (seed) =
+    hexwar-loop cfg (rng-new seed) cfg.unit-roster 0 0
+
+  hexwar-loop : WargameConfig, Rng, List Unit, Integer, Integer -> HexwarResult
+  hexwar-loop (cfg) (r) (units) (turn) (active-player) =
+    if turn >= cfg.turn-limit then hexwar-finish cfg units turn
+    else if count-alive units 0 == 0 then hexwar-finish cfg units turn
+    else if count-alive units 1 == 0 then hexwar-finish cfg units turn
+    else let r2 = rng-next r
+    in let units2 = run-hexwar-turn units cfg.terrain-data active-player cfg.map-width r2
+    in let next-player = rng-mod (active-player + 1) cfg.num-players
+    in let next-turn = if next-player == 0 then turn + 1 else turn
+    in hexwar-loop cfg r2 units2 next-turn next-player
+
+  hexwar-finish : WargameConfig, List Unit, Integer -> HexwarResult
+  hexwar-finish (cfg) (units) (turn) =
+    let winner = determine-winner units cfg.terrain-data turn cfg.turn-limit
+    in let la = count-eliminated units 0
+    in let lb = count-eliminated units 1
+    in let va = ai-count-vp cfg.terrain-data units 0
+    in let vb = ai-count-vp cfg.terrain-data units 1
+    in HexwarResult {
+         winner = winner,
+         turns = turn,
+         units-lost-a = la,
+         units-lost-b = lb,
+         vp-a = va,
+         vp-b = vb
+       }
+
+Section: Formatting
+
+  format-hexwar-result : HexwarResult -> Text
+  format-hexwar-result (res) =
+    let w = if res.winner == 0 then "Player A"
+            else if res.winner == 1 then "Player B"
+            else "Draw"
+    in "HexWar: winner=" & w
+       & " turns=" & show res.turns
+       & " A-lost=" & show res.units-lost-a
+       & " B-lost=" & show res.units-lost-b
+       & " VP A=" & show res.vp-a
+       & " VP B=" & show res.vp-b
+
+Page 1

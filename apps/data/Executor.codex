@@ -1,0 +1,458 @@
+Chapter: Executor
+  cites Data chapter RelAlgebra
+  cites Data chapter Catalog
+  cites Data chapter Row
+  cites Data chapter Schema
+  cites Data chapter Heap
+  cites Data chapter BTreeIndex
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sort
+  cites Foreword chapter Hamt
+
+ Volcano-style query executor. Walks the RelOp tree and materializes
+ results. Each operator produces a list of rows. Future optimization:
+ streaming iterators instead of full materialization.
+
+ We say:
+
+Section: Query Result
+
+  QueryResult = record {
+    qr-rows : List RowData,
+    qr-count : Integer,
+    qr-schema : RowSchema,
+    qr-ok : Boolean,
+    qr-msg : Text
+  }
+
+  qr-ok : List RowData, RowSchema -> QueryResult
+  qr-ok (rows) (schema) = QueryResult {
+    qr-rows = rows,
+    qr-count = list-length rows,
+    qr-schema = schema,
+    qr-ok = True,
+    qr-msg = ""
+  }
+
+  qr-error : Text -> QueryResult
+  qr-error (msg) = QueryResult {
+    qr-rows = [],
+    qr-count = 0,
+    qr-schema = schema-new [] [],
+    qr-ok = False,
+    qr-msg = msg
+  }
+
+  qr-empty : QueryResult
+  qr-empty = qr-ok [] (schema-new [] [])
+
+Section: Execute
+
+  query : Catalog, RelOp -> QueryResult
+  query (cat) (op) =
+    when op
+      is RelScan (table-name) -> exec-scan cat table-name
+      is RelFilter (child) (pred) -> exec-filter cat child pred
+      is RelProject (child) (proj) -> exec-project cat child proj
+      is RelSort (child) (specs) -> exec-sort cat child specs
+      is RelLimit (child) (n) -> exec-limit cat child n
+      is RelDistinct (child) -> exec-distinct cat child
+      is RelJoin (left) (right) (pred) -> exec-join cat left right pred
+      is RelLeftJoin (left) (right) (pred) -> exec-left-join cat left right pred
+      is RelGroup (child) (cols) (aggs) -> exec-group cat child cols aggs
+      is RelUnion (left) (right) -> exec-union cat left right
+      is RelIntersect (left) (right) -> exec-intersect cat left right
+      is RelExcept (left) (right) -> exec-except cat left right
+
+Section: Scan
+
+  exec-scan : Catalog, Text -> QueryResult
+  exec-scan (cat) (table-name) =
+    let maybe-entry = catalog-get-table cat table-name
+    in when maybe-entry
+      is None -> qr-error ("table not found: " & table-name)
+      is Just (entry) ->
+        let result = heap-scan (entry.cat-heap)
+        in qr-ok (result.rows) (entry.cat-heap.schema)
+
+Section: Filter
+
+  exec-filter : Catalog, RelOp, Predicate -> QueryResult
+  exec-filter (cat) (child) (pred) =
+    let input = query cat child
+    in if input.qr-ok == False then input
+    else let filtered = exec-filter-rows (input.qr-rows) pred 0 (input.qr-count) []
+    in qr-ok filtered (input.qr-schema)
+
+  exec-filter-rows : List RowData, Predicate, Integer, Integer, List RowData -> List RowData
+  exec-filter-rows (rows) (pred) (i) (len) (acc) =
+    if i >= len then acc
+    else let row = list-at rows i
+    in if pred-eval pred row then exec-filter-rows rows pred (i + 1) len (list-push acc row)
+    else exec-filter-rows rows pred (i + 1) len acc
+
+Section: Project
+
+  exec-project : Catalog, RelOp, Projection -> QueryResult
+  exec-project (cat) (child) (proj) =
+    let input = query cat child
+    in if input.qr-ok == False then input
+    else let projected = exec-project-rows (input.qr-rows) proj 0 (input.qr-count) []
+    in if list-length projected == 0 then qr-ok projected (input.qr-schema)
+    else qr-ok projected ((list-at projected 0).schema)
+
+  exec-project-rows : List RowData, Projection, Integer, Integer, List RowData -> List RowData
+  exec-project-rows (rows) (proj) (i) (len) (acc) =
+    if i >= len then acc
+    else let row = list-at rows i
+    in exec-project-rows rows proj (i + 1) len (list-push acc (proj-apply proj row))
+
+Section: Sort
+
+  exec-sort : Catalog, RelOp, List SortSpec -> QueryResult
+  exec-sort (cat) (child) (specs) =
+    let input = query cat child
+    in if input.qr-ok == False then input
+    else let sorted = sort-by (input.qr-rows) (exec-sort-cmp specs)
+    in qr-ok sorted (input.qr-schema)
+
+  exec-sort-cmp : List SortSpec -> (RowData, RowData -> Integer)
+  exec-sort-cmp (specs) = \a -> \b -> exec-sort-cmp-loop specs a b 0 (list-length specs)
+
+  exec-sort-cmp-loop : List SortSpec, RowData, RowData, Integer, Integer -> Integer
+  exec-sort-cmp-loop (specs) (a) (b) (i) (len) =
+    if i >= len then 0
+    else let spec = list-at specs i
+    in let va = row-get-by-name a (spec.sort-col)
+    in let vb = row-get-by-name b (spec.sort-col)
+    in let cmp = val-compare va vb
+    in let directed = when (spec.sort-dir)
+      is SortAsc -> cmp
+      is SortDesc -> negate cmp
+    in if directed /= 0 then directed
+    else exec-sort-cmp-loop specs a b (i + 1) len
+
+Section: Limit
+
+  exec-limit : Catalog, RelOp, Integer -> QueryResult
+  exec-limit (cat) (child) (n) =
+    let input = query cat child
+    in if input.qr-ok == False then input
+    else let taken = exec-take-rows (input.qr-rows) n 0 []
+    in qr-ok taken (input.qr-schema)
+
+  exec-take-rows : List RowData, Integer, Integer, List RowData -> List RowData
+  exec-take-rows (rows) (n) (i) (acc) =
+    if i >= n then acc
+    else if i >= list-length rows then acc
+    else exec-take-rows rows n (i + 1) (list-push acc (list-at rows i))
+
+Section: Distinct
+
+  exec-distinct : Catalog, RelOp -> QueryResult
+  exec-distinct (cat) (child) =
+    let input = query cat child
+    in if input.qr-ok == False then input
+    else let unique = exec-distinct-rows (input.qr-rows) 0 (input.qr-count) [] hamt-empty
+    in qr-ok unique (input.qr-schema)
+
+  exec-distinct-rows : List RowData, Integer, Integer, List RowData, HamtMap Integer -> List RowData
+  exec-distinct-rows (rows) (i) (len) (acc) (seen) =
+    if i >= len then acc
+    else let row = list-at rows i
+    in let key = exec-row-hash row
+    in let already = hamt-get seen key
+    in when already
+      is Just (v) -> exec-distinct-rows rows (i + 1) len acc seen
+      is None -> exec-distinct-rows rows (i + 1) len (list-push acc row) (hamt-set seen key 1)
+
+  exec-row-hash : RowData -> Text
+  exec-row-hash (row) = exec-row-hash-loop (row.values) 0 (list-length (row.values)) ""
+
+  exec-row-hash-loop : List ColumnValue, Integer, Integer, Text -> Text
+  exec-row-hash-loop (vals) (i) (len) (acc) =
+    if i >= len then acc
+    else let v = list-at vals i
+    in let t = val-to-text v
+    in exec-row-hash-loop vals (i + 1) len (acc & "|" & t)
+
+Section: Nested Loop Join
+
+  exec-join : Catalog, RelOp, RelOp, Predicate -> QueryResult
+  exec-join (cat) (left-op) (right-op) (pred) =
+    let left = query cat left-op
+    in if left.qr-ok == False then left
+    else let right = query cat right-op
+    in if right.qr-ok == False then right
+    else let joined = exec-nested-loop (left.qr-rows) (right.qr-rows) pred 0 (left.qr-count) (right.qr-rows) (right.qr-count) []
+    in let schema = exec-merge-schemas (left.qr-schema) (right.qr-schema)
+    in qr-ok joined schema
+
+  exec-nested-loop : List RowData, List RowData, Predicate, Integer, Integer, List RowData, Integer, List RowData -> List RowData
+  exec-nested-loop (lefts) (rights) (pred) (li) (lcount) (rall) (rcount) (acc) =
+    if li >= lcount then acc
+    else let lrow = list-at lefts li
+    in let matched = exec-join-inner lrow rall pred 0 rcount acc
+    in exec-nested-loop lefts rights pred (li + 1) lcount rall rcount matched
+
+  exec-join-inner : RowData, List RowData, Predicate, Integer, Integer, List RowData -> List RowData
+  exec-join-inner (lrow) (rights) (pred) (ri) (rcount) (acc) =
+    if ri >= rcount then acc
+    else let rrow = list-at rights ri
+    in let combined = exec-merge-rows lrow rrow
+    in if pred-eval pred combined then exec-join-inner lrow rights pred (ri + 1) rcount (list-push acc combined)
+    else exec-join-inner lrow rights pred (ri + 1) rcount acc
+
+Section: Left Join
+
+  exec-left-join : Catalog, RelOp, RelOp, Predicate -> QueryResult
+  exec-left-join (cat) (left-op) (right-op) (pred) =
+    let left = query cat left-op
+    in if left.qr-ok == False then left
+    else let right = query cat right-op
+    in if right.qr-ok == False then right
+    else let joined = exec-left-join-loop (left.qr-rows) (right.qr-rows) pred 0 (left.qr-count) (right.qr-rows) (right.qr-count) (right.qr-schema) []
+    in let schema = exec-merge-schemas (left.qr-schema) (right.qr-schema)
+    in qr-ok joined schema
+
+  exec-left-join-loop : List RowData, List RowData, Predicate, Integer, Integer, List RowData, Integer, RowSchema, List RowData -> List RowData
+  exec-left-join-loop (lefts) (rights) (pred) (li) (lcount) (rall) (rcount) (rschema) (acc) =
+    if li >= lcount then acc
+    else let lrow = list-at lefts li
+    in let matched = exec-left-find-match lrow rall pred 0 rcount
+    in when matched
+      is None ->
+        let null-right = exec-null-row rschema
+        in let combined = exec-merge-rows lrow null-right
+        in exec-left-join-loop lefts rights pred (li + 1) lcount rall rcount rschema (list-push acc combined)
+      is Just (rrow) ->
+        let combined = exec-merge-rows lrow rrow
+        in exec-left-join-loop lefts rights pred (li + 1) lcount rall rcount rschema (list-push acc combined)
+
+  exec-left-find-match : RowData, List RowData, Predicate, Integer, Integer -> Maybe RowData
+  exec-left-find-match (lrow) (rights) (pred) (ri) (rcount) =
+    if ri >= rcount then None
+    else let rrow = list-at rights ri
+    in let combined = exec-merge-rows lrow rrow
+    in if pred-eval pred combined then Just rrow
+    else exec-left-find-match lrow rights pred (ri + 1) rcount
+
+Section: Row Merging
+
+  exec-merge-rows : RowData, RowData -> RowData
+  exec-merge-rows (a) (b) =
+    let schema = exec-merge-schemas (a.schema) (b.schema)
+    in let vals = a.values & b.values
+    in row-new schema vals
+
+  exec-merge-schemas : RowSchema, RowSchema -> RowSchema
+  exec-merge-schemas (a) (b) =
+    schema-new (a.col-names & b.col-names) (a.col-types & b.col-types)
+
+  exec-null-row : RowSchema -> RowData
+  exec-null-row (schema) =
+    let nulls = exec-make-nulls (schema.col-count) []
+    in row-new schema nulls
+
+  exec-make-nulls : Integer, List ColumnValue -> List ColumnValue
+  exec-make-nulls (n) (acc) =
+    if n <= 0 then acc
+    else exec-make-nulls (n - 1) (list-push acc ValNull)
+
+Section: Group By
+
+  exec-group : Catalog, RelOp, List Text, List AggSpec -> QueryResult
+  exec-group (cat) (child) (group-cols) (aggs) =
+    let input = query cat child
+    in if input.qr-ok == False then input
+    else let groups = exec-build-groups (input.qr-rows) group-cols 0 (input.qr-count) hamt-empty
+    in let result-rows = exec-aggregate-groups groups group-cols aggs (input.qr-schema)
+    in let result-schema = exec-group-schema group-cols aggs (input.qr-schema)
+    in qr-ok result-rows result-schema
+
+  exec-build-groups : List RowData, List Text, Integer, Integer, HamtMap (List RowData) -> HamtMap (List RowData)
+  exec-build-groups (rows) (group-cols) (i) (len) (groups) =
+    if i >= len then groups
+    else let row = list-at rows i
+    in let key = exec-group-key row group-cols
+    in let existing = hamt-get groups key
+    in let updated = when existing
+      is None -> hamt-set groups key [row]
+      is Just (members) -> hamt-set groups key (list-push members row)
+    in exec-build-groups rows group-cols (i + 1) len updated
+
+  exec-group-key : RowData, List Text -> Text
+  exec-group-key (row) (cols) = exec-group-key-loop row cols 0 (list-length cols) ""
+
+  exec-group-key-loop : RowData, List Text, Integer, Integer, Text -> Text
+  exec-group-key-loop (row) (cols) (i) (len) (acc) =
+    if i >= len then acc
+    else let col = list-at cols i
+    in let v = row-get-by-name row col
+    in exec-group-key-loop row cols (i + 1) len (acc & "|" & val-to-text v)
+
+  exec-aggregate-groups : HamtMap (List RowData), List Text, List AggSpec, RowSchema -> List RowData
+  exec-aggregate-groups (groups) (group-cols) (aggs) (input-schema) =
+    let entries = hamt-to-list groups
+    in exec-agg-entries entries group-cols aggs input-schema 0 (list-length entries) []
+
+  exec-agg-entries : List (HamtEntry (List RowData)), List Text, List AggSpec, RowSchema, Integer, Integer, List RowData -> List RowData
+  exec-agg-entries (entries) (group-cols) (aggs) (schema) (i) (len) (acc) =
+    if i >= len then acc
+    else let entry = list-at entries i
+    in let members = entry.value
+    in let first = list-at members 0
+    in let group-vals = exec-extract-group-vals first group-cols 0 (list-length group-cols) []
+    in let agg-vals = exec-compute-aggs members aggs 0 (list-length aggs) []
+    in let all-vals = group-vals & agg-vals
+    in let result-schema = exec-group-schema group-cols aggs schema
+    in let row = row-new result-schema all-vals
+    in exec-agg-entries entries group-cols aggs schema (i + 1) len (list-push acc row)
+
+  exec-extract-group-vals : RowData, List Text, Integer, Integer, List ColumnValue -> List ColumnValue
+  exec-extract-group-vals (row) (cols) (i) (len) (acc) =
+    if i >= len then acc
+    else let col = list-at cols i
+    in exec-extract-group-vals row cols (i + 1) len (list-push acc (row-get-by-name row col))
+
+  exec-compute-aggs : List RowData, List AggSpec, Integer, Integer, List ColumnValue -> List ColumnValue
+  exec-compute-aggs (members) (aggs) (i) (len) (acc) =
+    if i >= len then acc
+    else let spec = list-at aggs i
+    in let val = exec-compute-one-agg members (spec.agg-func) 0 (list-length members)
+    in exec-compute-aggs members aggs (i + 1) len (list-push acc val)
+
+  exec-compute-one-agg : List RowData, AggFunc, Integer, Integer -> ColumnValue
+  exec-compute-one-agg (members) (func) (i) (len) =
+    when func
+      is AggCount -> ValInteger len
+      is AggSum (col) -> ValInteger (exec-sum-col members col 0 len 0)
+      is AggMin (col) -> exec-min-col members col 0 len
+      is AggMax (col) -> exec-max-col members col 0 len
+      is AggAvg (col) ->
+        if len == 0 then ValNull
+        else let s = exec-sum-col members col 0 len 0
+        in ValInteger (s / len)
+
+  exec-sum-col : List RowData, Text, Integer, Integer, Integer -> Integer
+  exec-sum-col (members) (col) (i) (len) (acc) =
+    if i >= len then acc
+    else let row = list-at members i
+    in let v = row-get-by-name row col
+    in exec-sum-col members col (i + 1) len (acc + val-to-integer v)
+
+  exec-min-col : List RowData, Text, Integer, Integer -> ColumnValue
+  exec-min-col (members) (col) (i) (len) =
+    if i >= len then ValNull
+    else if i == 0 then
+      let v = row-get-by-name (list-at members 0) col
+      in exec-min-col-loop members col 1 len v
+    else ValNull
+
+  exec-min-col-loop : List RowData, Text, Integer, Integer, ColumnValue -> ColumnValue
+  exec-min-col-loop (members) (col) (i) (len) (best) =
+    if i >= len then best
+    else let v = row-get-by-name (list-at members i) col
+    in let cmp = val-compare v best
+    in exec-min-col-loop members col (i + 1) len (if cmp < 0 then v else best)
+
+  exec-max-col : List RowData, Text, Integer, Integer -> ColumnValue
+  exec-max-col (members) (col) (i) (len) =
+    if i >= len then ValNull
+    else if i == 0 then
+      let v = row-get-by-name (list-at members 0) col
+      in exec-max-col-loop members col 1 len v
+    else ValNull
+
+  exec-max-col-loop : List RowData, Text, Integer, Integer, ColumnValue -> ColumnValue
+  exec-max-col-loop (members) (col) (i) (len) (best) =
+    if i >= len then best
+    else let v = row-get-by-name (list-at members i) col
+    in let cmp = val-compare v best
+    in exec-max-col-loop members col (i + 1) len (if cmp > 0 then v else best)
+
+  exec-group-schema : List Text, List AggSpec, RowSchema -> RowSchema
+  exec-group-schema (group-cols) (aggs) (input-schema) =
+    let group-names = group-cols
+    in let group-types = exec-group-col-types group-cols input-schema 0 (list-length group-cols) []
+    in let agg-names = exec-agg-names aggs 0 (list-length aggs) []
+    in let agg-types = exec-agg-types aggs 0 (list-length aggs) []
+    in schema-new (group-names & agg-names) (group-types & agg-types)
+
+  exec-group-col-types : List Text, RowSchema, Integer, Integer, List ColumnType -> List ColumnType
+  exec-group-col-types (cols) (schema) (i) (len) (acc) =
+    if i >= len then acc
+    else let col = list-at cols i
+    in let idx = row-find-col (schema.col-names) col 0 (schema.col-count)
+    in let ct = if idx < 0 then ColInteger else list-at (schema.col-types) idx
+    in exec-group-col-types cols schema (i + 1) len (list-push acc ct)
+
+  exec-agg-names : List AggSpec, Integer, Integer, List Text -> List Text
+  exec-agg-names (aggs) (i) (len) (acc) =
+    if i >= len then acc
+    else let spec = list-at aggs i
+    in exec-agg-names aggs (i + 1) len (list-push acc (spec.agg-alias))
+
+  exec-agg-types : List AggSpec, Integer, Integer, List ColumnType -> List ColumnType
+  exec-agg-types (aggs) (i) (len) (acc) =
+    if i >= len then acc
+    else exec-agg-types aggs (i + 1) len (list-push acc ColInteger)
+
+Section: Set Operations
+
+  exec-union : Catalog, RelOp, RelOp -> QueryResult
+  exec-union (cat) (left-op) (right-op) =
+    let left = query cat left-op
+    in if left.qr-ok == False then left
+    else let right = query cat right-op
+    in if right.qr-ok == False then right
+    else qr-ok (left.qr-rows & right.qr-rows) (left.qr-schema)
+
+  exec-intersect : Catalog, RelOp, RelOp -> QueryResult
+  exec-intersect (cat) (left-op) (right-op) =
+    let left = query cat left-op
+    in if left.qr-ok == False then left
+    else let right = query cat right-op
+    in if right.qr-ok == False then right
+    else let right-set = exec-build-row-set (right.qr-rows) 0 (right.qr-count) hamt-empty
+    in let matched = exec-intersect-filter (left.qr-rows) right-set 0 (left.qr-count) []
+    in qr-ok matched (left.qr-schema)
+
+  exec-build-row-set : List RowData, Integer, Integer, HamtMap Integer -> HamtMap Integer
+  exec-build-row-set (rows) (i) (len) (set) =
+    if i >= len then set
+    else let key = exec-row-hash (list-at rows i)
+    in exec-build-row-set rows (i + 1) len (hamt-set set key 1)
+
+  exec-intersect-filter : List RowData, HamtMap Integer, Integer, Integer, List RowData -> List RowData
+  exec-intersect-filter (rows) (set) (i) (len) (acc) =
+    if i >= len then acc
+    else let row = list-at rows i
+    in let key = exec-row-hash row
+    in let found = hamt-get set key
+    in when found
+      is Just (v) -> exec-intersect-filter rows set (i + 1) len (list-push acc row)
+      is None -> exec-intersect-filter rows set (i + 1) len acc
+
+  exec-except : Catalog, RelOp, RelOp -> QueryResult
+  exec-except (cat) (left-op) (right-op) =
+    let left = query cat left-op
+    in if left.qr-ok == False then left
+    else let right = query cat right-op
+    in if right.qr-ok == False then right
+    else let right-set = exec-build-row-set (right.qr-rows) 0 (right.qr-count) hamt-empty
+    in let remaining = exec-except-filter (left.qr-rows) right-set 0 (left.qr-count) []
+    in qr-ok remaining (left.qr-schema)
+
+  exec-except-filter : List RowData, HamtMap Integer, Integer, Integer, List RowData -> List RowData
+  exec-except-filter (rows) (set) (i) (len) (acc) =
+    if i >= len then acc
+    else let row = list-at rows i
+    in let key = exec-row-hash row
+    in let found = hamt-get set key
+    in when found
+      is Just (v) -> exec-except-filter rows set (i + 1) len acc
+      is None -> exec-except-filter rows set (i + 1) len (list-push acc row)
+
+Page 1

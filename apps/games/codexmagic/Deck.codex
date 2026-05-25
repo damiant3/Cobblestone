@@ -1,0 +1,259 @@
+Chapter: Deck
+  cites CodexMagic chapter Mana
+  cites CodexMagic chapter Card
+  cites CodexMagic chapter Token
+
+ Deck construction and validation. Decks must meet format rules:
+ minimum size, max copies per card, color identity must match the
+ General. Shuffle uses Fisher-Yates on an RNG seed.
+
+ We say:
+
+Section: Deck Record
+
+  DeckList = record {
+    general-id : Integer,
+    cards : List Integer,
+    num-cards : Integer,
+    format : Format
+  }
+
+  Format =
+   | FormatStandard
+   | FormatVintage
+   | FormatDraft
+   | FormatSealed
+
+  format-name : Format -> Text
+  format-name (f) =
+    when f
+      is FormatStandard -> "Standard"
+      is FormatVintage -> "Vintage"
+      is FormatDraft -> "Draft"
+      is FormatSealed -> "Sealed"
+
+  min-deck-size : Format -> Integer
+  min-deck-size (f) =
+    when f
+      is FormatStandard -> 60
+      is FormatVintage -> 60
+      is FormatDraft -> 40
+      is FormatSealed -> 40
+
+  max-copies : Format -> Integer
+  max-copies (f) =
+    when f
+      is FormatStandard -> 4
+      is FormatVintage -> 4
+      is FormatDraft -> 100
+      is FormatSealed -> 100
+
+Section: Validation
+
+  ValidationResult = record {
+    valid : Boolean,
+    reason : Text
+  }
+
+  validate-ok : ValidationResult
+  validate-ok = ValidationResult { valid = True, reason = "" }
+
+  validate-fail : Text -> ValidationResult
+  validate-fail (reason) = ValidationResult { valid = False, reason = reason }
+
+  validate-deck : DeckList, List CardTemplate, GeneralTemplate -> ValidationResult
+  validate-deck (deck) (templates) (general) =
+    let size-check = check-deck-size deck
+    in if size-check.valid == False then size-check
+    else let copy-check = check-max-copies deck templates
+    in if copy-check.valid == False then copy-check
+    else let color-check = check-color-identity deck templates general
+    in if color-check.valid == False then color-check
+    else let basic-check = check-no-general-in-deck deck templates
+    in basic-check
+
+  check-deck-size : DeckList -> ValidationResult
+  check-deck-size (deck) =
+    let min = min-deck-size (deck.format)
+    in if deck.num-cards < min then validate-fail ("Deck has " & show (deck.num-cards) & " cards, minimum is " & show min)
+    else validate-ok
+
+  check-max-copies : DeckList, List CardTemplate -> ValidationResult
+  check-max-copies (deck) (templates) =
+    let limit = max-copies (deck.format)
+    in check-copies-loop (deck.cards) templates limit 0 (deck.num-cards)
+
+  check-copies-loop : List Integer, List CardTemplate, Integer, Integer, Integer -> ValidationResult
+  check-copies-loop (cards) (templates) (limit) (i) (len) =
+    if i >= len then validate-ok
+    else let card-id = list-at cards i
+    in let t = list-at templates card-id
+    in if t.is-basic then check-copies-loop cards templates limit (i + 1) len
+    else let count = count-card-in-list cards card-id 0 len 0
+    in if count > limit then validate-fail (t.name & " appears " & show count & " times, max is " & show limit)
+    else check-copies-loop cards templates limit (i + 1) len
+
+  count-card-in-list : List Integer, Integer, Integer, Integer, Integer -> Integer
+  count-card-in-list (cards) (target) (i) (len) (acc) =
+    if i >= len then acc
+    else if list-at cards i == target then count-card-in-list cards target (i + 1) len (acc + 1)
+    else count-card-in-list cards target (i + 1) len acc
+
+  check-color-identity : DeckList, List CardTemplate, GeneralTemplate -> ValidationResult
+  check-color-identity (deck) (templates) (general) =
+    let gen-colors = general.color
+    in check-color-loop (deck.cards) templates gen-colors 0 (deck.num-cards)
+
+  check-color-loop : List Integer, List CardTemplate, ColorSet, Integer, Integer -> ValidationResult
+  check-color-loop (cards) (templates) (gen-colors) (i) (len) =
+    if i >= len then validate-ok
+    else let card-id = list-at cards i
+    in let t = list-at templates card-id
+    in let card-colors = t.color
+    in if color-outside-identity card-colors gen-colors then validate-fail (t.name & " is outside General's color identity")
+    else check-color-loop cards templates gen-colors (i + 1) len
+
+  color-outside-identity : ColorSet, ColorSet -> Boolean
+  color-outside-identity (card) (gen) =
+    if card.white then if gen.white == False then True else check-rest-colors card gen
+    else check-rest-colors card gen
+
+  check-rest-colors : ColorSet, ColorSet -> Boolean
+  check-rest-colors (card) (gen) =
+    if card.blue then if gen.blue == False then True else check-br-colors card gen
+    else check-br-colors card gen
+
+  check-br-colors : ColorSet, ColorSet -> Boolean
+  check-br-colors (card) (gen) =
+    if card.black then if gen.black == False then True else check-rg-colors card gen
+    else check-rg-colors card gen
+
+  check-rg-colors : ColorSet, ColorSet -> Boolean
+  check-rg-colors (card) (gen) =
+    if card.red then if gen.red == False then True else check-g-color card gen
+    else check-g-color card gen
+
+  check-g-color : ColorSet, ColorSet -> Boolean
+  check-g-color (card) (gen) =
+    if card.green then if gen.green == False then True else False
+    else False
+
+  check-no-general-in-deck : DeckList, List CardTemplate -> ValidationResult
+  check-no-general-in-deck (deck) (templates) = check-no-general-loop (deck.cards) templates 0 (deck.num-cards)
+
+  check-no-general-loop : List Integer, List CardTemplate, Integer, Integer -> ValidationResult
+  check-no-general-loop (cards) (templates) (i) (len) =
+    if i >= len then validate-ok
+    else let card-id = list-at cards i
+    in let t = list-at templates card-id
+    in when t.card-type
+      is General -> validate-fail "General card type cannot appear in the deck"
+      is otherwise -> check-no-general-loop cards templates (i + 1) len
+
+Section: Shuffle
+
+  shuffle-deck : List Integer, Integer -> List Integer
+  shuffle-deck (cards) (seed) =
+    let len = list-length cards
+    in fisher-yates cards (rng-new seed) (len - 1)
+
+  fisher-yates : List Integer, Rng, Integer -> List Integer
+  fisher-yates (cards) (r) (i) =
+    if i <= 0 then cards
+    else let j = rng-mod (rng-value r) (i + 1)
+    in let val-i = list-at cards i
+    in let val-j = list-at cards j
+    in let cards2 = list-set-at cards i val-j
+    in let cards3 = list-set-at cards2 j val-i
+    in fisher-yates cards3 (rng-next r) (i - 1)
+
+Section: Deck Construction Helpers
+
+  make-deck : Integer, List Integer, Format -> DeckList
+  make-deck (general-id) (cards) (format) = DeckList { general-id = general-id, cards = cards, num-cards = list-length cards, format = format }
+
+  add-n-copies : List Integer, Integer, Integer -> List Integer
+  add-n-copies (cards) (card-id) (n) =
+    if n <= 0 then cards
+    else add-n-copies (list-push cards card-id) card-id (n - 1)
+
+Section: Starter Deck Generation
+
+  gen-starter-deck : GeneralTemplate, List CardTemplate, Integer -> DeckList
+  gen-starter-deck (general) (templates) (seed) =
+    let r = rng-new seed
+    in let lands = pick-lands-for-general general templates 24
+    in let spells = pick-spells-for-general general templates r 36 0 []
+    in let all-cards = append-int-lists lands spells
+    in make-deck (general.id) all-cards FormatStandard
+
+  pick-lands-for-general : GeneralTemplate, List CardTemplate, Integer -> List Integer
+  pick-lands-for-general (general) (templates) (count) =
+    let land-id = find-basic-land-for-color templates (primary-color (general.color)) 0 (list-length templates)
+    in if land-id >= 0 then add-n-copies [] land-id count
+    else add-n-copies [] 0 count
+
+  primary-color : ColorSet -> ManaColor
+  primary-color (cs) =
+    if cs.white then White
+    else if cs.blue then Blue
+    else if cs.black then Black
+    else if cs.red then Red
+    else if cs.green then Green
+    else Colorless
+
+  find-basic-land-for-color : List CardTemplate, ManaColor, Integer, Integer -> Integer
+  find-basic-land-for-color (templates) (color) (i) (len) =
+    if i >= len then -1
+    else let t = list-at templates i
+    in when t.card-type
+      is Land ->
+        if t.is-basic then
+          if has-mana-ability-for-color (t.abilities) color 0 (list-length (t.abilities)) then t.id
+          else find-basic-land-for-color templates color (i + 1) len
+        else find-basic-land-for-color templates color (i + 1) len
+      is otherwise -> find-basic-land-for-color templates color (i + 1) len
+
+  has-mana-ability-for-color : List Ability, ManaColor, Integer, Integer -> Boolean
+  has-mana-ability-for-color (abs) (color) (i) (len) =
+    if i >= len then False
+    else when list-at abs i
+      is ManaAbility (cost) (c) (amount) -> mana-color-eq c color
+      is otherwise -> has-mana-ability-for-color abs color (i + 1) len
+
+  mana-color-eq : ManaColor, ManaColor -> Boolean
+  mana-color-eq (a) (b) =
+    when a
+      is White -> when b
+        is White -> True
+        is otherwise -> False
+      is Blue -> when b
+        is Blue -> True
+        is otherwise -> False
+      is Black -> when b
+        is Black -> True
+        is otherwise -> False
+      is Red -> when b
+        is Red -> True
+        is otherwise -> False
+      is Green -> when b
+        is Green -> True
+        is otherwise -> False
+      is Colorless -> when b
+        is Colorless -> True
+        is otherwise -> False
+
+  pick-spells-for-general : GeneralTemplate, List CardTemplate, Rng, Integer, Integer, List Integer -> List Integer
+  pick-spells-for-general (general) (templates) (r) (target) (picked) (acc) =
+    if picked >= target then acc
+    else let idx = rng-mod (rng-value r) (list-length templates)
+    in let t = list-at templates idx
+    in when t.card-type
+      is Land -> pick-spells-for-general general templates (rng-next r) target picked acc
+      is General -> pick-spells-for-general general templates (rng-next r) target picked acc
+      is otherwise ->
+        if t.is-token then pick-spells-for-general general templates (rng-next r) target picked acc
+        else if color-outside-identity (t.color) (general.color) then pick-spells-for-general general templates (rng-next r) target picked acc
+        else pick-spells-for-general general templates (rng-next r) target (picked + 1) (list-push acc (t.id))
+
+Page 1

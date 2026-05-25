@@ -1,0 +1,402 @@
+Chapter: DriveManager
+  cites Foreword chapter Maybe
+  cites Foreword chapter Gpt
+  cites Foreword chapter Fat32
+  cites Kernel chapter SystemDb
+
+ Drive Manager for the UEFI console. Enumerates ATA drives, displays
+ partition tables, and provides format, partition, install, wipe, and
+ copy operations. All disk operations go through block-read-sector,
+ block-write-sector, and block-select syscalls.
+
+ To dm-enumerate-drives gives List DriveInfo, scanning all ATA channels.
+ To dm-inspect-drive gives DriveInspection for a selected drive.
+ To dm-format-partition formats a partition as FAT32 or Codex FS.
+ To dm-partition-drive writes a fresh GPT with the given scheme.
+ To dm-install-codex installs Codex to a target drive from the USB stick.
+ To dm-wipe-quick zeros GPT headers on a drive.
+
+ We say:
+
+Section: Drive Info Types
+
+  DriveInfo = record {
+    di-index : Integer,
+    di-channel : Integer,
+    di-position : Integer,
+    di-model : Text,
+    di-serial : Text,
+    di-sector-count : Integer,
+    di-size-mb : Integer
+  }
+
+  DriveInspection = record {
+    dinsp-drive : DriveInfo,
+    dinsp-gpt : Maybe GptDisk,
+    dinsp-partitions : List PartitionInfo
+  }
+
+  PartitionInfo = record {
+    pi-index : Integer,
+    pi-name : Text,
+    pi-start-lba : Integer,
+    pi-end-lba : Integer,
+    pi-size-mb : Integer,
+    pi-fs-type : Text
+  }
+
+  PartitionScheme =
+    | SchemeSingle
+    | SchemeEspPlusData
+    | SchemeEspPlusDataPreserve
+    | SchemeCustom
+
+Section: ATA Constants
+
+  ata-primary-base : Integer = 496
+  ata-primary-ctrl : Integer = 886
+  ata-secondary-base : Integer = 368
+  ata-secondary-ctrl : Integer = 886
+
+  ata-cmd-identify : Integer = 236
+  ata-status-bsy : Integer = 128
+  ata-status-drq : Integer = 8
+
+Section: Drive Enumeration
+
+  dm-enumerate-drives : List DriveInfo
+  dm-enumerate-drives =
+    dm-try-drive 0 0 0 (dm-try-drive 1 0 1 (dm-try-drive 2 1 0 (dm-try-drive 3 1 1 [])))
+
+  dm-try-drive : Integer, Integer, Integer, List DriveInfo -> List DriveInfo
+  dm-try-drive (index) (channel) (position) (acc) =
+    let w = block-select index
+    in let count = block-sector-count
+    in if count <= 0 then acc
+    else let model = dm-read-model
+    in let serial = dm-read-serial
+    in let size-mb = count / 2048
+    in list-push acc (DriveInfo {
+      di-index = index,
+      di-channel = channel,
+      di-position = position,
+      di-model = model,
+      di-serial = serial,
+      di-sector-count = count,
+      di-size-mb = size-mb
+    })
+
+  dm-read-model : Text
+  dm-read-model = dm-read-identify-string 27 20
+
+  dm-read-serial : Text
+  dm-read-serial = dm-read-identify-string 10 10
+
+  dm-read-identify-string : Integer, Integer -> Text
+  dm-read-identify-string (word-start) (word-count) =
+    dm-ident-str-loop word-start word-count 0 ""
+
+  dm-ident-str-loop : Integer, Integer, Integer, Text -> Text
+  dm-ident-str-loop (start) (count) (i) (acc) =
+    if i >= count then fat16-trim-spaces acc
+    else let w = dm-read-identify-word (start + i)
+    in let hi = bit-and (bit-shru w 8) 255
+    in let lo = bit-and w 255
+    in dm-ident-str-loop start count (i + 1) (acc & char-to-text (code-to-char hi) & char-to-text (code-to-char lo))
+
+  dm-read-identify-word : Integer -> Integer
+  dm-read-identify-word (word-index) =
+    let buf-addr = 29488
+    in peek-byte buf-addr (word-index * 2) + bit-shl (peek-byte buf-addr (word-index * 2 + 1)) 8
+
+Section: Drive Inspection
+
+  dm-inspect-drive : DriveInfo -> DriveInspection
+  dm-inspect-drive (drive) =
+    let w = block-select (drive.di-index)
+    in let gpt-result = gpt-read
+    in let parts = when gpt-result
+      is Just (disk) -> dm-map-partitions (disk.gd-partitions) 0
+      is None -> []
+    in DriveInspection {
+      dinsp-drive = drive,
+      dinsp-gpt = gpt-result,
+      dinsp-partitions = parts
+    }
+
+  dm-map-partitions : List GptPartition, Integer -> List PartitionInfo
+  dm-map-partitions (parts) (i) =
+    if i >= list-length parts then []
+    else let p = list-at parts i
+    in let size-sectors = (p.gp-end-lba) - (p.gp-start-lba) + 1
+    in let size-mb = size-sectors / 2048
+    in let fs = dm-detect-fs (p.gp-start-lba)
+    in let info = PartitionInfo {
+      pi-index = i,
+      pi-name = p.gp-name,
+      pi-start-lba = p.gp-start-lba,
+      pi-end-lba = p.gp-end-lba,
+      pi-size-mb = size-mb,
+      pi-fs-type = fs
+    }
+    in list-push (dm-map-partitions parts (i + 1)) info
+
+Section: Filesystem Detection
+
+  dm-detect-fs : Integer -> Text
+  dm-detect-fs (start-lba) =
+    let buf = block-read-sector start-lba
+    in let sig = peek-byte buf 510
+    in let sig2 = peek-byte buf 511
+    in if sig == 85 & sig2 == 170 then
+      let oem = dm-read-oem buf
+      in if oem == "FAT32   " then "FAT32"
+      else if dm-check-codexfs buf then "Codex FS"
+      else "Unknown (bootable)"
+    else if dm-check-codexfs buf then "Codex FS"
+    else "Empty"
+
+  dm-read-oem : Integer -> Text
+  dm-read-oem (buf) = dm-read-oem-loop buf 82 8 ""
+
+  dm-read-oem-loop : Integer, Integer, Integer, Text -> Text
+  dm-read-oem-loop (buf) (off) (remaining) (acc) =
+    if remaining <= 0 then acc
+    else dm-read-oem-loop buf (off + 1) (remaining - 1) (acc & char-to-text (code-to-char (peek-byte buf off)))
+
+  dm-check-codexfs : Integer -> Boolean
+  dm-check-codexfs (buf) =
+    peek-byte buf 0 == 67
+    & peek-byte buf 1 == 79
+    & peek-byte buf 2 == 68
+    & peek-byte buf 3 == 69
+    & peek-byte buf 4 == 88
+    & peek-byte buf 5 == 70
+    & peek-byte buf 6 == 83
+    & peek-byte buf 7 == 49
+
+Section: Partition Drive
+
+  dm-partition-esp-plus-data : Integer, List Integer -> Boolean
+  dm-partition-esp-plus-data (total-sectors) (disk-guid) =
+    let esp-sectors = 1048576
+    in let specs = [
+      GptPartitionSpec {
+        gs-type-guid = gpt-esp-type-guid,
+        gs-name = "EFI System",
+        gs-size-sectors = esp-sectors
+      },
+      GptPartitionSpec {
+        gs-type-guid = gpt-basic-data-guid,
+        gs-name = "Codex Data",
+        gs-size-sectors = 0
+      }
+    ]
+    in gpt-write-table specs total-sectors disk-guid
+
+  dm-partition-single : Integer, List Integer -> Boolean
+  dm-partition-single (total-sectors) (disk-guid) =
+    let specs = [
+      GptPartitionSpec {
+        gs-type-guid = gpt-basic-data-guid,
+        gs-name = "Codex",
+        gs-size-sectors = 0
+      }
+    ]
+    in gpt-write-table specs total-sectors disk-guid
+
+Section: Format Partition
+
+  dm-format-fat32 : Integer, Integer, Text -> Boolean
+  dm-format-fat32 (start-lba) (sector-count) (label) =
+    fat32-format start-lba sector-count label
+
+Section: Install Codex
+
+  dm-install-codex : DriveInfo, Integer, Fat32Volume -> Boolean
+  dm-install-codex (target) (stick-drive-index) (stick-vol) =
+    let w0 = block-select (target.di-index)
+    in let disk-guid = [42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42]
+    in let w1 = dm-partition-esp-plus-data (target.di-sector-count) disk-guid
+    in when gpt-read
+      is None -> False
+      is Just (disk) ->
+        if disk.gd-partition-count < 2 then False
+        else let esp = list-at (disk.gd-partitions) 0
+        in let esp-start = esp.gp-start-lba
+        in let esp-sectors = (esp.gp-end-lba) - esp-start + 1
+        in let w2 = fat32-format esp-start esp-sectors "CODEX OS"
+        in let target-vol = fat32-init esp-start
+        in let w3 = dm-copy-boot-files stick-drive-index stick-vol target-vol (target.di-index)
+        in True
+
+  dm-copy-boot-files : Integer, Fat32Volume, Fat32Volume, Integer -> Integer
+  dm-copy-boot-files (src-drive) (src-vol) (dst-vol) (dst-drive) =
+    let w0 = block-select src-drive
+    in let kernel = fat32-read-bytes src-vol "EFI/BOOT/BOOTX64.EFI"
+    in let w1 = block-select dst-drive
+    in when kernel
+      is Just (data) ->
+        let w2 = fat32-mkdir dst-vol (dst-vol.f32-root-cluster) "EFI"
+        in let efi-entry = fat32-find-in-dir dst-vol (dst-vol.f32-root-cluster) "EFI"
+        in when efi-entry
+          is Just (efi-dir) ->
+            let w3 = fat32-mkdir dst-vol (efi-dir.de-cluster) "BOOT"
+            in let boot-entry = fat32-find-in-dir dst-vol (efi-dir.de-cluster) "BOOT"
+            in when boot-entry
+              is Just (boot-dir) ->
+                let w4 = fat32-write-file dst-vol "EFI/BOOT/BOOTX64.EFI" data
+                in 1
+              is None -> 0
+          is None -> 0
+      is None -> 0
+
+Section: Dual-Boot Install
+
+  DmDualBootResult =
+    | DualBootOk (Text)
+    | DualBootFail (Text)
+
+  dm-find-esp : GptDisk -> Maybe GptPartition
+  dm-find-esp (disk) = dm-find-esp-loop (disk.gd-partitions) 0 (list-length (disk.gd-partitions))
+
+  dm-find-esp-loop : List GptPartition, Integer, Integer -> Maybe GptPartition
+  dm-find-esp-loop (parts) (i) (len) =
+    if i >= len then None
+    else let p = list-at parts i
+    in if gpt-is-esp p then Just p
+    else dm-find-esp-loop parts (i + 1) len
+
+  dm-find-free-after : GptDisk -> Integer
+  dm-find-free-after (disk) =
+    let last-end = dm-last-partition-end (disk.gd-partitions) 0 (list-length (disk.gd-partitions)) 2048
+    in let backup-start = disk.gd-total-sectors - 33
+    in if last-end + 2048 < backup-start then last-end + 1
+    else 0
+
+  dm-last-partition-end : List GptPartition, Integer, Integer, Integer -> Integer
+  dm-last-partition-end (parts) (i) (len) (best) =
+    if i >= len then best
+    else let p = list-at parts i
+    in let e = p.gp-end-lba
+    in dm-last-partition-end parts (i + 1) len (if e > best then e else best)
+
+  dm-free-sectors : GptDisk -> Integer
+  dm-free-sectors (disk) =
+    let free-start = dm-find-free-after disk
+    in if free-start == 0 then 0
+    else let backup-start = disk.gd-total-sectors - 33
+    in backup-start - free-start
+
+  dm-add-gpt-partition : Integer, Integer, List Integer, Text -> Boolean
+  dm-add-gpt-partition (start-lba) (end-lba) (type-guid) (name) =
+    let hdr-buf = block-read-sector 1
+    in if gpt-check-signature hdr-buf == False then False
+    else let entry-start = gpt-read-u64 hdr-buf 72
+    in let entry-count = gpt-read-u32 hdr-buf 80
+    in let entry-size = gpt-read-u32 hdr-buf 84
+    in let slot = dm-find-empty-slot entry-start entry-size entry-count 0
+    in if slot < 0 then False
+    else let entries-per-sector = 512 / entry-size
+    in let sector = entry-start + slot / entries-per-sector
+    in let off = (slot - (slot / entries-per-sector) * entries-per-sector) * entry-size
+    in let buf = block-read-sector sector
+    in let w0 = gpt-write-guid buf off type-guid
+    in let w1 = gpt-write-guid buf (off + 16) (gpt-make-part-guid slot)
+    in let w2 = gpt-write-u64 buf (off + 32) start-lba
+    in let w3 = gpt-write-u64 buf (off + 40) end-lba
+    in let w4 = gpt-write-u64 buf (off + 48) 0
+    in let w5 = dm-write-name-utf16 buf (off + 56) name 0
+    in let w6 = block-write-sector sector buf
+    in let pe-crc = gpt-rt-crc32-sector entry-start 32 (entry-count * entry-size)
+    in let w7 = dm-update-gpt-header hdr-buf pe-crc
+    in True
+
+  dm-find-empty-slot : Integer, Integer, Integer, Integer -> Integer
+  dm-find-empty-slot (entry-start) (entry-size) (count) (i) =
+    if i >= count then 0 - 1
+    else let entries-per-sector = 512 / entry-size
+    in let sector = entry-start + i / entries-per-sector
+    in let off = (i - (i / entries-per-sector) * entries-per-sector) * entry-size
+    in let buf = block-read-sector sector
+    in let guid = gpt-read-guid buf off
+    in if gpt-guid-is-zero guid then i
+    else dm-find-empty-slot entry-start entry-size count (i + 1)
+
+  dm-write-name-utf16 : Integer, Integer, Text, Integer -> Integer
+  dm-write-name-utf16 (buf) (off) (name) (i) =
+    if i >= text-length name then off + text-length name * 2
+    else let c = char-code (char-at name i)
+    in let w0 = poke-byte buf (off + i * 2) (bit-and c 255)
+    in let w1 = poke-byte buf (off + i * 2 + 1) (bit-and (bit-shru c 8) 255)
+    in dm-write-name-utf16 buf off name (i + 1)
+
+  dm-update-gpt-header : Integer, Integer -> Integer
+  dm-update-gpt-header (hdr-buf) (pe-crc) =
+    let w0 = gpt-write-u32 hdr-buf 16 0
+    in let w1 = gpt-write-u32 hdr-buf 88 pe-crc
+    in let hdr-bytes = gpt-read-buf-bytes hdr-buf 0 92 []
+    in let hdr-crc = gpt-rt-crc32-bytes hdr-bytes 92
+    in let w2 = gpt-write-u32 hdr-buf 16 hdr-crc
+    in block-write-sector 1 hdr-buf
+
+  dm-install-alongside : DriveInfo, Integer -> DmDualBootResult
+  dm-install-alongside (drive) (src-drive-index) =
+    let w = block-select (drive.di-index)
+    in let gpt-result = gpt-read
+    in when gpt-result
+      is None -> DualBootFail "No GPT found on target drive"
+      is Just (disk) ->
+        let esp-result = dm-find-esp disk
+        in when esp-result
+          is None -> DualBootFail "No EFI System Partition found"
+          is Just (esp) ->
+            let free-start = dm-find-free-after disk
+            in if free-start == 0 then DualBootFail "No free space after last partition"
+            else let free-secs = dm-free-sectors disk
+            in if free-secs < 2048 then DualBootFail ("Not enough free space: " & show (free-secs / 2048) & " MB")
+            else let backup-start = disk.gd-total-sectors - 33
+            in let codex-end = backup-start - 1
+            in let w0 = dm-add-gpt-partition free-start codex-end gpt-basic-data-guid "Codex Data"
+            in let esp-vol = fat32-init (esp.gp-start-lba)
+            in let w1 = block-select src-drive-index
+            in let src-vol = fat16-init uefi-partition-start
+            in let kernel = fat16-read-bytes src-vol "BOOTX64.EFI"
+            in let w2 = block-select (drive.di-index)
+            in when kernel
+              is Just (data) ->
+                let w3 = fat32-mkdir esp-vol (esp-vol.f32-root-cluster) "EFI"
+                in let efi-entry = fat32-find-in-dir esp-vol (esp-vol.f32-root-cluster) "EFI"
+                in when efi-entry
+                  is Just (efi-dir) ->
+                    let w4 = fat32-mkdir esp-vol (efi-dir.de-cluster) "Codex"
+                    in let codex-entry = fat32-find-in-dir esp-vol (efi-dir.de-cluster) "Codex"
+                    in when codex-entry
+                      is Just (codex-dir) ->
+                        let w5 = fat32-write-file esp-vol "EFI/Codex/codex.efi" data
+                        in let free-mb = free-secs / 2048
+                        in DualBootOk ("Installed to " & drive.di-model & " (" & show free-mb & " MB) - reboot and select Codex from UEFI boot menu")
+                      is None -> DualBootFail "Could not create EFI/Codex directory"
+                  is None -> DualBootFail "Could not access EFI directory on ESP"
+              is None -> DualBootFail "Could not read boot image from USB stick"
+
+Section: Wipe
+
+  dm-wipe-quick-drive : DriveInfo -> Boolean
+  dm-wipe-quick-drive (drive) =
+    let w = block-select (drive.di-index)
+    in gpt-wipe-quick (drive.di-sector-count)
+
+Section: Display Helpers
+
+  dm-drive-label : DriveInfo -> Text
+  dm-drive-label (drive) =
+    let channel-name = if drive.di-channel == 0 then "Primary" else "Secondary"
+    in let pos-name = if drive.di-position == 0 then "Master" else "Slave"
+    in "ATA " & channel-name & " " & pos-name & "  " & drive.di-model & "  " & show (drive.di-size-mb) & " MB"
+
+  dm-partition-label : PartitionInfo -> Text
+  dm-partition-label (part) =
+    "  " & part.pi-name & " (" & part.pi-fs-type & ", " & show (part.pi-size-mb) & " MB)"
+
+Page 1

@@ -1,0 +1,109 @@
+Chapter: ServiceRegistry
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ A ServiceRegistry maps service names to running processes,
+ tracking state (running, stopped, failed), capabilities, and
+ health for the OS scheduler and watchdog.
+
+ We say:
+
+Section: Service Entry
+
+  ServiceState =
+    | ServiceRunning
+    | ServiceStopped
+    | ServiceFailed (Text)
+
+  ServiceEntry = record {
+    name : Text,
+    pid : Integer,
+    capabilities : Integer,
+    state : ServiceState,
+    restarts : Integer between 0 and 65535
+  }
+
+  ServiceRegistry = record {
+    services : HamtMap ServiceEntry,
+    count : Integer between 0 and 65535
+  }
+
+Section: Registry Operations
+
+  service-registry-empty : ServiceRegistry
+  service-registry-empty = ServiceRegistry { services = hamt-empty, count = 0 }
+
+  service-register : ServiceRegistry, Text, Integer, Integer -> ServiceRegistry
+  service-register (reg) (name) (pid) (caps) =
+    if hamt-contains (reg.services) name then reg
+    else let entry = ServiceEntry { name = name, pid = pid, capabilities = caps, state = ServiceRunning, restarts = 0 }
+    in ServiceRegistry { services = hamt-set (reg.services) name entry, count = reg.count + 1 }
+
+  service-unregister : ServiceRegistry, Text -> ServiceRegistry
+  service-unregister (reg) (name) =
+    if hamt-contains (reg.services) name then
+      ServiceRegistry { services = hamt-remove (reg.services) name, count = reg.count - 1 }
+    else reg
+
+  service-lookup : ServiceRegistry, Text -> Maybe ServiceEntry
+  service-lookup (reg) (name) = hamt-get (reg.services) name
+
+  service-exists : ServiceRegistry, Text -> Boolean
+  service-exists (reg) (name) = hamt-contains (reg.services) name
+
+  service-count : ServiceRegistry -> Integer
+  service-count (reg) = reg.count
+
+Section: State Transitions
+
+  service-mark-stopped : ServiceRegistry, Text -> ServiceRegistry
+  service-mark-stopped (reg) (name) =
+    let found = hamt-get (reg.services) name
+    in when found
+      is None -> reg
+      is Just (entry) ->
+        let updated = ServiceEntry { name = entry.name, pid = entry.pid, capabilities = entry.capabilities, state = ServiceStopped, restarts = entry.restarts }
+        in ServiceRegistry { services = hamt-set (reg.services) name updated, count = reg.count }
+
+  service-mark-failed : ServiceRegistry, Text, Text -> ServiceRegistry
+  service-mark-failed (reg) (name) (reason) =
+    let found = hamt-get (reg.services) name
+    in when found
+      is None -> reg
+      is Just (entry) ->
+        let updated = ServiceEntry { name = entry.name, pid = entry.pid, capabilities = entry.capabilities, state = ServiceFailed reason, restarts = entry.restarts }
+        in ServiceRegistry { services = hamt-set (reg.services) name updated, count = reg.count }
+
+  service-mark-restarted : ServiceRegistry, Text, Integer -> ServiceRegistry
+  service-mark-restarted (reg) (name) (new-pid) =
+    let found = hamt-get (reg.services) name
+    in when found
+      is None -> reg
+      is Just (entry) ->
+        let updated = ServiceEntry { name = entry.name, pid = new-pid, capabilities = entry.capabilities, state = ServiceRunning, restarts = entry.restarts + 1 }
+        in ServiceRegistry { services = hamt-set (reg.services) name updated, count = reg.count }
+
+Section: Capability Queries
+
+  service-has-cap : ServiceEntry, Integer -> Boolean
+  service-has-cap (entry) (bit) =
+    bit-and (entry.capabilities) (bit-shl 1 bit) /= 0
+
+  service-is-running : ServiceEntry -> Boolean
+  service-is-running (entry) = when (entry.state)
+    is ServiceRunning -> True
+    is otherwise -> False
+
+Section: Formatting
+
+  format-service-state : ServiceState -> Text
+  format-service-state (s) = when s
+    is ServiceRunning -> "running"
+    is ServiceStopped -> "stopped"
+    is ServiceFailed (reason) -> "failed: " & reason
+
+  format-service : ServiceEntry -> Text
+  format-service (entry) =
+    entry.name & " pid=" & show (entry.pid) & " caps=" & show (entry.capabilities) & " state=" & format-service-state (entry.state) & " restarts=" & show (entry.restarts)
+
+Page 1

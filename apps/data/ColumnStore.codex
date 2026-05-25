@@ -1,0 +1,249 @@
+Chapter: ColumnStore
+  cites Data chapter Row
+  cites Data chapter Schema
+  cites Data chapter Page
+  cites Foreword chapter List
+  cites Foreword chapter Maybe
+
+ Columnar storage for OLAP workloads. Data is stored column-by-column
+ rather than row-by-row. Enables efficient scans that read only the
+ needed columns, and supports encoding (run-length, dictionary) for
+ compression.
+
+ We say:
+
+Section: Column Chunk
+
+  ColumnEncoding =
+    | EncodePlain
+    | EncodeRunLength
+    | EncodeDictionary
+
+  ColumnChunk = record {
+    cc-name : Text,
+    cc-type : ColumnType,
+    cc-encoding : ColumnEncoding,
+    cc-values : List ColumnValue,
+    cc-count : Integer
+  }
+
+  cc-new : Text, ColumnType -> ColumnChunk
+  cc-new (name) (ctype) = ColumnChunk {
+    cc-name = name,
+    cc-type = ctype,
+    cc-encoding = EncodePlain,
+    cc-values = [],
+    cc-count = 0
+  }
+
+  cc-append : ColumnChunk, ColumnValue -> ColumnChunk
+  cc-append (cc) (val) = ColumnChunk {
+    cc-name = cc.cc-name,
+    cc-type = cc.cc-type,
+    cc-encoding = cc.cc-encoding,
+    cc-values = list-push (cc.cc-values) val,
+    cc-count = cc.cc-count + 1
+  }
+
+  cc-get : ColumnChunk, Integer -> ColumnValue
+  cc-get (cc) (idx) =
+    if idx < 0 then ValNull
+    else if idx >= cc.cc-count then ValNull
+    else list-at (cc.cc-values) idx
+
+Section: Columnar Table
+
+  ColumnarTable = record {
+    ct-name : Text,
+    ct-columns : List ColumnChunk,
+    ct-col-count : Integer,
+    ct-row-count : Integer
+  }
+
+  ct-new : Text, RowSchema -> ColumnarTable
+  ct-new (name) (schema) =
+    let cols = ct-init-columns (schema.col-names) (schema.col-types) 0 (schema.col-count) []
+    in ColumnarTable {
+      ct-name = name,
+      ct-columns = cols,
+      ct-col-count = schema.col-count,
+      ct-row-count = 0
+    }
+
+  ct-init-columns : List Text, List ColumnType, Integer, Integer, List ColumnChunk -> List ColumnChunk
+  ct-init-columns (names) (types) (i) (len) (acc) =
+    if i >= len then acc
+    else ct-init-columns names types (i + 1) len (list-push acc (cc-new (list-at names i) (list-at types i)))
+
+Section: Insert Row
+
+  ct-insert : ColumnarTable, RowData -> ColumnarTable
+  ct-insert (ct) (row) =
+    let new-cols = ct-append-to-columns (ct.ct-columns) (row.values) 0 (ct.ct-col-count)
+    in ColumnarTable {
+      ct-name = ct.ct-name,
+      ct-columns = new-cols,
+      ct-col-count = ct.ct-col-count,
+      ct-row-count = ct.ct-row-count + 1
+    }
+
+  ct-append-to-columns : List ColumnChunk, List ColumnValue, Integer, Integer -> List ColumnChunk
+  ct-append-to-columns (cols) (vals) (i) (len) =
+    if i >= len then cols
+    else let cc = list-at cols i
+    in let val = if i < list-length vals then list-at vals i else ValNull
+    in let updated = cc-append cc val
+    in ct-append-to-columns (list-set-at cols i updated) vals (i + 1) len
+
+Section: Bulk Load
+
+  ct-bulk-load : ColumnarTable, List RowData -> ColumnarTable
+  ct-bulk-load (ct) (rows) = ct-bulk-loop ct rows 0 (list-length rows)
+
+  ct-bulk-loop : ColumnarTable, List RowData, Integer, Integer -> ColumnarTable
+  ct-bulk-loop (ct) (rows) (i) (len) =
+    if i >= len then ct
+    else ct-bulk-loop (ct-insert ct (list-at rows i)) rows (i + 1) len
+
+Section: Column Scan
+
+  ct-scan-column : ColumnarTable, Text -> List ColumnValue
+  ct-scan-column (ct) (col-name) =
+    let idx = ct-find-col (ct.ct-columns) col-name 0 (ct.ct-col-count)
+    in if idx < 0 then []
+    else (list-at (ct.ct-columns) idx).cc-values
+
+  ct-find-col : List ColumnChunk, Text, Integer, Integer -> Integer
+  ct-find-col (cols) (name) (i) (len) =
+    if i >= len then -1
+    else if (list-at cols i).cc-name == name then i
+    else ct-find-col cols name (i + 1) len
+
+Section: Columnar Aggregation
+
+  ct-sum : ColumnarTable, Text -> Integer
+  ct-sum (ct) (col-name) =
+    let vals = ct-scan-column ct col-name
+    in ct-sum-loop vals 0 (list-length vals) 0
+
+  ct-sum-loop : List ColumnValue, Integer, Integer, Integer -> Integer
+  ct-sum-loop (vals) (i) (len) (acc) =
+    if i >= len then acc
+    else let v = list-at vals i
+    in ct-sum-loop vals (i + 1) len (acc + val-to-integer v)
+
+  ct-count : ColumnarTable -> Integer
+  ct-count (ct) = ct.ct-row-count
+
+  ct-min : ColumnarTable, Text -> ColumnValue
+  ct-min (ct) (col-name) =
+    let vals = ct-scan-column ct col-name
+    in if list-length vals == 0 then ValNull
+    else ct-min-loop vals 1 (list-length vals) (list-at vals 0)
+
+  ct-min-loop : List ColumnValue, Integer, Integer, ColumnValue -> ColumnValue
+  ct-min-loop (vals) (i) (len) (best) =
+    if i >= len then best
+    else let v = list-at vals i
+    in let cmp = val-compare v best
+    in ct-min-loop vals (i + 1) len (if cmp < 0 then v else best)
+
+  ct-max : ColumnarTable, Text -> ColumnValue
+  ct-max (ct) (col-name) =
+    let vals = ct-scan-column ct col-name
+    in if list-length vals == 0 then ValNull
+    else ct-max-loop vals 1 (list-length vals) (list-at vals 0)
+
+  ct-max-loop : List ColumnValue, Integer, Integer, ColumnValue -> ColumnValue
+  ct-max-loop (vals) (i) (len) (best) =
+    if i >= len then best
+    else let v = list-at vals i
+    in let cmp = val-compare v best
+    in ct-max-loop vals (i + 1) len (if cmp > 0 then v else best)
+
+  ct-avg : ColumnarTable, Text -> Integer
+  ct-avg (ct) (col-name) =
+    if ct.ct-row-count == 0 then 0
+    else (ct-sum ct col-name) / ct.ct-row-count
+
+Section: Filtered Scan
+
+  ct-scan-where : ColumnarTable, Text, CmpOp, ColumnValue -> List Integer
+  ct-scan-where (ct) (col-name) (op) (val) =
+    let col-idx = ct-find-col (ct.ct-columns) col-name 0 (ct.ct-col-count)
+    in if col-idx < 0 then []
+    else let cc = list-at (ct.ct-columns) col-idx
+    in ct-filter-col (cc.cc-values) op val 0 (cc.cc-count) []
+
+  ct-filter-col : List ColumnValue, CmpOp, ColumnValue, Integer, Integer, List Integer -> List Integer
+  ct-filter-col (vals) (op) (target) (i) (len) (acc) =
+    if i >= len then acc
+    else let v = list-at vals i
+    in let cmp = val-compare v target
+    in if cmp-eval op cmp then ct-filter-col vals op target (i + 1) len (list-push acc i)
+    else ct-filter-col vals op target (i + 1) len acc
+
+Section: Materialize Rows
+
+  ct-materialize : ColumnarTable, List Integer -> List RowData
+  ct-materialize (ct) (row-idxs) =
+    ct-mat-loop ct row-idxs 0 (list-length row-idxs) []
+
+  ct-mat-loop : ColumnarTable, List Integer, Integer, Integer, List RowData -> List RowData
+  ct-mat-loop (ct) (idxs) (i) (len) (acc) =
+    if i >= len then acc
+    else let rid = list-at idxs i
+    in let row = ct-extract-row ct rid
+    in ct-mat-loop ct idxs (i + 1) len (list-push acc row)
+
+  ct-extract-row : ColumnarTable, Integer -> RowData
+  ct-extract-row (ct) (row-idx) =
+    let vals = ct-extract-vals (ct.ct-columns) row-idx 0 (ct.ct-col-count) []
+    in let names = ct-col-names (ct.ct-columns) 0 (ct.ct-col-count) []
+    in let types = ct-col-types (ct.ct-columns) 0 (ct.ct-col-count) []
+    in row-new (schema-new names types) vals
+
+  ct-extract-vals : List ColumnChunk, Integer, Integer, Integer, List ColumnValue -> List ColumnValue
+  ct-extract-vals (cols) (row-idx) (i) (len) (acc) =
+    if i >= len then acc
+    else ct-extract-vals cols row-idx (i + 1) len (list-push acc (cc-get (list-at cols i) row-idx))
+
+  ct-col-names : List ColumnChunk, Integer, Integer, List Text -> List Text
+  ct-col-names (cols) (i) (len) (acc) =
+    if i >= len then acc
+    else ct-col-names cols (i + 1) len (list-push acc (list-at cols i).cc-name)
+
+  ct-col-types : List ColumnChunk, Integer, Integer, List ColumnType -> List ColumnType
+  ct-col-types (cols) (i) (len) (acc) =
+    if i >= len then acc
+    else ct-col-types cols (i + 1) len (list-push acc (list-at cols i).cc-type)
+
+Section: Run-Length Encoding
+
+  RleEntry = record {
+    rle-value : ColumnValue,
+    rle-count : Integer
+  }
+
+  rle-encode : List ColumnValue -> List RleEntry
+  rle-encode (vals) =
+    if list-length vals == 0 then []
+    else rle-encode-loop vals 1 (list-length vals) (list-at vals 0) 1 []
+
+  rle-encode-loop : List ColumnValue, Integer, Integer, ColumnValue, Integer, List RleEntry -> List RleEntry
+  rle-encode-loop (vals) (i) (len) (current) (count) (acc) =
+    if i >= len then list-push acc (RleEntry { rle-value = current, rle-count = count })
+    else let v = list-at vals i
+    in if val-compare v current == 0 then rle-encode-loop vals (i + 1) len current (count + 1) acc
+    else rle-encode-loop vals (i + 1) len v 1 (list-push acc (RleEntry { rle-value = current, rle-count = count }))
+
+  rle-sum : List RleEntry -> Integer
+  rle-sum (entries) = rle-sum-loop entries 0 (list-length entries) 0
+
+  rle-sum-loop : List RleEntry, Integer, Integer, Integer -> Integer
+  rle-sum-loop (entries) (i) (len) (acc) =
+    if i >= len then acc
+    else let e = list-at entries i
+    in rle-sum-loop entries (i + 1) len (acc + val-to-integer (e.rle-value) * (e.rle-count))
+
+Page 1

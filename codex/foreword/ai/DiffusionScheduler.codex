@@ -1,0 +1,140 @@
+Chapter: DiffusionScheduler
+
+ Diffusion model noise scheduler. Implements DDPM and DDIM
+ schedules for forward/reverse diffusion. Linear and cosine beta
+ schedules. Fixed-point (scale 1000).
+
+ We say:
+
+Section: Types
+  NoiseSchedule = record {
+    ns-betas : List Integer,
+    ns-alphas : List Integer,
+    ns-alpha-cumprod : List Integer,
+    ns-steps : Integer
+  }
+
+Section: Linear Beta Schedule
+  linear-schedule : Integer, Integer, Integer -> NoiseSchedule
+  linear-schedule (steps) (beta-start) (beta-end) =
+    let betas = ns-build-linear steps beta-start beta-end 0 []
+    in let alphas = ns-compute-alphas betas 0 steps []
+    in let alpha-cp = ns-compute-cumprod alphas 0 steps 1000 []
+    in NoiseSchedule { ns-betas = betas, ns-alphas = alphas, ns-alpha-cumprod = alpha-cp, ns-steps = steps }
+
+  ns-build-linear : Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ns-build-linear (steps) (start) (stop) (i) (acc) =
+    if i >= steps then acc
+    else let beta = start + (stop - start) * i / (steps - 1)
+    in ns-build-linear steps start stop (i + 1) (list-push acc beta)
+
+Section: Cosine Beta Schedule
+  cosine-schedule : Integer -> NoiseSchedule
+  cosine-schedule (steps) =
+    let alpha-cp = ns-build-cosine steps 0 []
+    in let betas = ns-cumprod-to-betas alpha-cp 0 steps []
+    in let alphas = ns-compute-alphas betas 0 steps []
+    in NoiseSchedule { ns-betas = betas, ns-alphas = alphas, ns-alpha-cumprod = alpha-cp, ns-steps = steps }
+
+  ns-build-cosine : Integer, Integer, List Integer -> List Integer
+  ns-build-cosine (steps) (i) (acc) =
+    if i >= steps then acc
+    else let t = i * 1000 / steps
+    in let angle = (t + 8) * 1571 / 1008
+    in let cos-val = ns-cos angle
+    in let alpha-bar = cos-val * cos-val / 1000
+    in let clamped = if alpha-bar < 1 then 1 else if alpha-bar > 999 then 999 else alpha-bar
+    in ns-build-cosine steps (i + 1) (list-push acc clamped)
+
+  ns-cumprod-to-betas : List Integer, Integer, Integer, List Integer -> List Integer
+  ns-cumprod-to-betas (acp) (i) (n) (acc) =
+    if i >= n then acc
+    else let prev = if i == 0 then 1000 else list-at acp (i - 1)
+    in let cur = list-at acp i
+    in let beta = if prev == 0 then 0 else 1000 - cur * 1000 / prev
+    in let clamped = if beta < 1 then 1 else if beta > 999 then 999 else beta
+    in ns-cumprod-to-betas acp (i + 1) n (list-push acc clamped)
+
+Section: Forward Process (add noise)
+  diffusion-add-noise : List Integer, List Integer, Integer, NoiseSchedule -> List Integer
+  diffusion-add-noise (x0) (noise) (t) (schedule) =
+    let alpha-bar = list-at (schedule.ns-alpha-cumprod) t
+    in let sqrt-ab = ns-isqrt (alpha-bar * 1000)
+    in let sqrt-one-minus = ns-isqrt ((1000 - alpha-bar) * 1000)
+    in ns-noise-mix x0 noise sqrt-ab sqrt-one-minus 0 (list-length x0) []
+
+  ns-noise-mix : List Integer, List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ns-noise-mix (x0) (noise) (sa) (sn) (i) (n) (acc) =
+    if i >= n then acc
+    else let val = list-at x0 i * sa / 1000 + list-at noise i * sn / 1000
+    in ns-noise-mix x0 noise sa sn (i + 1) n (list-push acc val)
+
+Section: Reverse Step (DDPM)
+  diffusion-reverse-step : List Integer, List Integer, Integer, NoiseSchedule -> List Integer
+  diffusion-reverse-step (xt) (predicted-noise) (t) (schedule) =
+    let beta = list-at (schedule.ns-betas) t
+    in let alpha = list-at (schedule.ns-alphas) t
+    in let alpha-bar = list-at (schedule.ns-alpha-cumprod) t
+    in let sqrt-alpha = ns-isqrt (alpha * 1000)
+    in let coeff = beta * 1000 / ns-isqrt ((1000 - alpha-bar) * 1000)
+    in ns-denoise-step xt predicted-noise sqrt-alpha coeff 0 (list-length xt) []
+
+  ns-denoise-step : List Integer, List Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ns-denoise-step (xt) (noise) (sa) (coeff) (i) (n) (acc) =
+    if i >= n then acc
+    else let val = (list-at xt i - list-at noise i * coeff / 1000) * 1000 / sa
+    in ns-denoise-step xt noise sa coeff (i + 1) n (list-push acc val)
+
+Section: DDIM Step (deterministic)
+  diffusion-ddim-step : List Integer, List Integer, Integer, Integer, NoiseSchedule -> List Integer
+  diffusion-ddim-step (xt) (predicted-noise) (t) (t-prev) (schedule) =
+    let at = list-at (schedule.ns-alpha-cumprod) t
+    in let ap = if t-prev >= 0 then list-at (schedule.ns-alpha-cumprod) t-prev else 1000
+    in let sqrt-at = ns-isqrt (at * 1000)
+    in let sqrt-ap = ns-isqrt (ap * 1000)
+    in let sqrt-one-minus-at = ns-isqrt ((1000 - at) * 1000)
+    in ns-ddim-combine xt predicted-noise sqrt-at sqrt-ap sqrt-one-minus-at 0 (list-length xt) []
+
+  ns-ddim-combine : List Integer, List Integer, Integer, Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ns-ddim-combine (xt) (noise) (sat) (sap) (somat) (i) (n) (acc) =
+    if i >= n then acc
+    else let x0-pred = if somat == 0 then list-at xt i else (list-at xt i - list-at noise i * somat / 1000) * 1000 / sat
+    in let val = x0-pred * sap / 1000
+    in ns-ddim-combine xt noise sat sap somat (i + 1) n (list-push acc val)
+
+Section: Helpers
+  ns-compute-alphas : List Integer, Integer, Integer, List Integer -> List Integer
+  ns-compute-alphas (betas) (i) (n) (acc) =
+    if i >= n then acc
+    else ns-compute-alphas betas (i + 1) n (list-push acc (1000 - list-at betas i))
+
+  ns-compute-cumprod : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  ns-compute-cumprod (alphas) (i) (n) (running) (acc) =
+    if i >= n then acc
+    else let new-val = running * list-at alphas i / 1000
+    in ns-compute-cumprod alphas (i + 1) n new-val (list-push acc new-val)
+
+  ns-cos : Integer -> Integer
+  ns-cos (x) = let x2 = x * x / 1000 in let x4 = x2 * x2 / 1000 in 1000 - x2 / 2 + x4 / 24
+
+  ns-isqrt : Integer -> Integer
+  ns-isqrt (n) = if n <= 0 then 0 else ns-isqrt-loop n (n / 2 + 1)
+
+  ns-isqrt-loop : Integer, Integer -> Integer
+  ns-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else ns-isqrt-loop n next
+
+Section: Queries
+  schedule-snr : NoiseSchedule, Integer -> Integer
+  schedule-snr (schedule) (t) =
+    let abar = list-at (schedule.ns-alpha-cumprod) t
+    in if abar >= 1000 then 999999
+    else abar * 1000 / (1000 - abar)
+
+Section: Formatting
+  format-schedule : NoiseSchedule -> Text
+  format-schedule (s) =
+    "steps=" & show (s.ns-steps) & " beta[0]=" & show (list-at (s.ns-betas) 0) & " beta[-1]=" & show (list-at (s.ns-betas) (s.ns-steps - 1)) & " abar[-1]=" & show (list-at (s.ns-alpha-cumprod) (s.ns-steps - 1))
+
+Page 1

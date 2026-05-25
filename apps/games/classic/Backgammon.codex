@@ -1,0 +1,256 @@
+Chapter: Backgammon
+  cites Games chapter Rng
+
+ Backgammon: 24 points, 15 pieces per side. Board encoded as
+ List Integer of 24 values: positive = white pieces (count),
+ negative = black pieces (count), 0 = empty.
+ White moves from point 24 toward point 1; black the reverse.
+ bar-white / bar-black: pieces on the bar. off-white / off-black:
+ borne off. Dice are 2d6; doubles = 4 moves.
+
+ We say:
+
+Section: Types
+
+  BackgammonBoard = record {
+    points     : List Integer,
+    bar-white  : Integer,
+    bar-black  : Integer,
+    off-white  : Integer,
+    off-black  : Integer,
+    current-player : Integer
+  }
+
+  BgMove = record {
+    from-pt : Integer,
+    die-val : Integer
+  }
+
+  BgResult = record {
+    winner     : Integer,
+    plies      : Integer
+  }
+
+Section: Board Construction
+
+  backgammon-new : BackgammonBoard
+  backgammon-new =
+    let pts = bg-initial 0 []
+    in BackgammonBoard { points = pts, bar-white = 0, bar-black = 0,
+                         off-white = 0, off-black = 0, current-player = 0 }
+
+  bg-initial : Integer, List Integer -> List Integer
+  bg-initial (i) (acc) =
+    if i >= 24 then acc
+    else let v = bg-start-val i
+    in bg-initial (i + 1) (list-push acc v)
+
+  bg-start-val : Integer -> Integer
+  bg-start-val (i) =
+    if i == 0  then 2
+    else if i == 5  then (-5)
+    else if i == 7  then (-3)
+    else if i == 11 then 5
+    else if i == 12 then (-5)
+    else if i == 16 then 3
+    else if i == 18 then 5
+    else if i == 23 then (-2)
+    else 0
+
+Section: Board Queries
+
+  pt-count : BackgammonBoard, Integer -> Integer
+  pt-count (b) (i) =
+    let v = list-at (b.points) i
+    in if v < 0 then -v else v
+
+  pt-owner : BackgammonBoard, Integer -> Integer
+  pt-owner (b) (i) =
+    let v = list-at (b.points) i
+    in if v > 0 then 0
+    else if v < 0 then 1
+    else (-1)
+
+  pt-blocked : BackgammonBoard, Integer, Integer -> Boolean
+  pt-blocked (b) (pt) (player) =
+    let owner = pt-owner b pt
+    in let count = pt-count b pt
+    in owner /= player & count >= 2
+
+  on-bar : BackgammonBoard, Integer -> Boolean
+  on-bar (b) (player) =
+    if player == 0 then b.bar-white > 0 else b.bar-black > 0
+
+  all-in-home : BackgammonBoard, Integer -> Boolean
+  all-in-home (b) (player) =
+    if player == 0 then all-white-home b
+    else all-black-home b
+
+  all-white-home : BackgammonBoard -> Boolean
+  all-white-home (b) =
+    let out = all-white-out b 0 0
+    in out == 0
+
+  all-white-out : BackgammonBoard, Integer, Integer -> Integer
+  all-white-out (b) (i) (acc) =
+    if i >= 18 then acc
+    else let v = list-at (b.points) i
+    in let delta = if v > 0 then v else 0
+    in all-white-out b (i + 1) (acc + delta)
+
+  all-black-home : BackgammonBoard -> Boolean
+  all-black-home (b) =
+    let out = all-black-out b 0 0
+    in out == 0
+
+  all-black-out : BackgammonBoard, Integer, Integer -> Integer
+  all-black-out (b) (i) (acc) =
+    if i >= 6 then acc
+    else let v = list-at (b.points) i
+    in let delta = if v < 0 then -v else 0
+    in all-black-out b (i + 1) (acc + delta)
+
+Section: Move Application
+
+  bg-enter-from-bar : BackgammonBoard, Integer -> BackgammonBoard
+  bg-enter-from-bar (b) (die) =
+    let player = b.current-player
+    in let target = if player == 0 then 24 - die else die - 1
+    in if target < 0 then b
+    else if target >= 24 then b
+    else if pt-blocked b target player then b
+    else let owner = pt-owner b target
+    in let is-hit = owner /= player & pt-count b target == 1
+    in let pts = b.points
+    in let old-val = list-at pts target
+    in let new-val = if player == 0 then
+      if is-hit then 1 else old-val + 1
+    else
+      if is-hit then (-1) else old-val - 1
+    in let pts2 = list-set-at pts target new-val
+    in let new-bw = if player == 0 then b.bar-white - 1 else b.bar-white
+    in let new-bb = if player == 1 then b.bar-black - 1 else b.bar-black
+    in let new-hit-bw = if is-hit & player == 0 then new-bb + 1 else new-bb
+    in let new-hit-bb = if is-hit & player == 1 then new-bw + 1 else new-bw
+    in BackgammonBoard { points = pts2, bar-white = new-hit-bb, bar-black = new-hit-bw,
+                         off-white = b.off-white, off-black = b.off-black, current-player = player }
+
+  bg-move-piece : BackgammonBoard, Integer, Integer -> BackgammonBoard
+  bg-move-piece (b) (from-pt) (die) =
+    let player = b.current-player
+    in let target = if player == 0 then from-pt - die else from-pt + die
+    in let bearing-off = if player == 0 then target < 0 else target >= 24
+    in if bearing-off then
+      let pts = b.points
+      in let old-val = list-at pts from-pt
+      in let new-val = if player == 0 then old-val - 1 else old-val + 1
+      in let pts2 = list-set-at pts from-pt new-val
+      in let new-ow = if player == 0 then b.off-white + 1 else b.off-white
+      in let new-ob = if player == 1 then b.off-black + 1 else b.off-black
+      in BackgammonBoard { points = pts2, bar-white = b.bar-white, bar-black = b.bar-black,
+                           off-white = new-ow, off-black = new-ob, current-player = player }
+    else if target < 0 then b
+    else if target >= 24 then b
+    else if pt-blocked b target player then b
+    else let pts = b.points
+    in let owner = pt-owner b target
+    in let is-hit = owner /= player & pt-count b target == 1
+    in let old-from = list-at pts from-pt
+    in let new-from = if player == 0 then old-from - 1 else old-from + 1
+    in let pts2 = list-set-at pts from-pt new-from
+    in let old-to = list-at pts2 target
+    in let new-to = if player == 0 then
+      if is-hit then 1 else old-to + 1
+    else
+      if is-hit then (-1) else old-to - 1
+    in let pts3 = list-set-at pts2 target new-to
+    in let new-bw = if is-hit & player == 0 then b.bar-black + 1 else b.bar-black
+    in let new-bb = if is-hit & player == 1 then b.bar-white + 1 else b.bar-white
+    in BackgammonBoard { points = pts3, bar-white = new-bb, bar-black = new-bw,
+                         off-white = b.off-white, off-black = b.off-black, current-player = player }
+
+Section: AI Move Selection
+
+  bg-apply-die : BackgammonBoard, Integer -> BackgammonBoard
+  bg-apply-die (b) (die) =
+    let player = b.current-player
+    in if on-bar b player then bg-enter-from-bar b die
+    else let best-pt = bg-pick-point b die player
+    in if best-pt < 0 then b
+    else bg-move-piece b best-pt die
+
+  bg-pick-point : BackgammonBoard, Integer, Integer -> Integer
+  bg-pick-point (b) (die) (player) =
+    bg-pick-loop b die player 0 (-1) (-1)
+
+  bg-pick-loop : BackgammonBoard, Integer, Integer, Integer, Integer, Integer -> Integer
+  bg-pick-loop (b) (die) (player) (i) (best-pt) (best-score) =
+    if i >= 24 then best-pt
+    else let v = list-at (b.points) i
+    in let mine = if player == 0 then v > 0 else v < 0
+    in if mine == False then bg-pick-loop b die player (i + 1) best-pt best-score
+    else let target = if player == 0 then i - die else i + die
+    in let bearing-off = if player == 0 then target < 0 else target >= 24
+    in let can-move = if bearing-off then all-in-home b player
+      else if target < 0 then False
+      else if target >= 24 then False
+      else pt-blocked b target player == False
+    in if can-move == False then bg-pick-loop b die player (i + 1) best-pt best-score
+    else let score = bg-score-move b i target player bearing-off
+    in if score > best-score then bg-pick-loop b die player (i + 1) i score
+    else bg-pick-loop b die player (i + 1) best-pt best-score
+
+  bg-score-move : BackgammonBoard, Integer, Integer, Integer, Boolean -> Integer
+  bg-score-move (b) (from-pt) (target) (player) (bearing-off) =
+    if bearing-off then 1000
+    else let is-hit = pt-owner b target /= player & pt-count b target == 1
+    in let makes-point = pt-owner b target == player & pt-count b target >= 1
+    in let forward = if player == 0 then from-pt - target else target - from-pt
+    in if is-hit then 500 + forward
+    else if makes-point then 200 + forward
+    else forward
+
+Section: Win Detection
+
+  bg-check-win : BackgammonBoard -> Boolean
+  bg-check-win (b) =
+    b.off-white >= 15 | b.off-black >= 15
+
+  bg-winner : BackgammonBoard -> Integer
+  bg-winner (b) =
+    if b.off-white >= 15 then 0
+    else if b.off-black >= 15 then 1
+    else (-1)
+
+Section: Game Runner
+
+  run-backgammon-game : Integer -> BgResult
+  run-backgammon-game (seed) =
+    let b = backgammon-new
+    in let r = rng-new seed
+    in bg-game-loop b r 0
+
+  bg-game-loop : BackgammonBoard, Rng, Integer -> BgResult
+  bg-game-loop (b) (r) (plies) =
+    if bg-check-win b then BgResult { winner = bg-winner b, plies = plies }
+    else if plies > 500 then BgResult { winner = (-1), plies = plies }
+    else let r1 = rng-next r
+    in let r2 = rng-next r1
+    in let d1 = rng-range r1 1 6
+    in let d2 = rng-range r2 1 6
+    in let b1 = bg-apply-die b d1
+    in let b2 = bg-apply-die b1 d2
+    in let b3 = if d1 == d2 then bg-apply-die b2 d1 else b2
+    in let b4 = if d1 == d2 then bg-apply-die b3 d2 else b3
+    in let next-player = 1 - b.current-player
+    in let b5 = __record-set b4 "current-player" next-player
+    in bg-game-loop b5 r2 (plies + 1)
+
+Section: Formatting
+
+  format-backgammon-result : BgResult -> Text
+  format-backgammon-result (r) =
+    let w = if r.winner == 0 then "White" else if r.winner == 1 then "Black" else "Draw"
+    in "Backgammon: " & w & " wins in " & show (r.plies) & " plies"
+
+Page 1

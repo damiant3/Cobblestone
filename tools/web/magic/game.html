@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CodexMagic</title>
+  <link rel="stylesheet" href="/web/magic/magic.css">
+</head>
+<body>
+
+<div class="topbar">
+  <h1>CodexMagic</h1>
+  <div class="nav">
+    <a href="/web/magic/game.html" class="active">Game</a>
+    <a href="/web/magic/collection.html">Collection</a>
+    <a href="/web/magic/store.html">Store</a>
+    <a href="/web/magic/queue.html">Queue</a>
+    <a href="/web/magic/profile.html">Profile</a>
+  </div>
+  <div id="account-bar" style="font-size:13px;"></div>
+</div>
+
+<div class="controls" id="controls">
+  <button class="primary" onclick="newGame()">New Game</button>
+  <button id="btn-play" onclick="togglePlay()" disabled>Auto</button>
+  <button id="btn-step" onclick="stepOnce()" disabled>Step</button>
+  <label>Speed</label>
+  <input type="range" id="speed" min="100" max="2000" value="600" step="100" oninput="updateSpeed()">
+  <label>Stance</label>
+  <select id="stance" onchange="setPosture()">
+    <option value="balanced">Balanced</option>
+    <option value="aggressive">Aggressive</option>
+    <option value="defensive">Defensive</option>
+    <option value="tempo">Tempo</option>
+    <option value="control">Control</option>
+  </select>
+  <span class="phase-label" id="phase-label">-</span>
+  <span class="turn-label" id="turn-label">-</span>
+</div>
+
+<div class="game-board" id="board">
+  <!-- Opponent General -->
+  <div class="general-zone opponent" id="zone-opp-general">
+    <div class="general-info"><span class="name">Waiting...</span></div>
+  </div>
+
+  <!-- Opponent Battlefield -->
+  <div class="zone zone-opponent" id="zone-opp-field">
+    <div class="zone-label">OPP</div>
+    <div class="zone-cards" id="opp-field-cards"></div>
+  </div>
+
+  <!-- Combat Zone -->
+  <div class="zone zone-combat" id="zone-combat">
+    <div class="zone-label">COMBAT</div>
+    <div class="zone-cards" id="combat-cards"></div>
+  </div>
+
+  <!-- Player Battlefield -->
+  <div class="zone zone-player" id="zone-player-field">
+    <div class="zone-label">YOU</div>
+    <div class="zone-cards" id="player-field-cards"></div>
+  </div>
+
+  <!-- Player General -->
+  <div class="general-zone player" id="zone-player-general">
+    <div class="general-info"><span class="name">Waiting...</span></div>
+  </div>
+
+  <!-- Player Hand -->
+  <div class="zone zone-hand" id="zone-hand">
+    <div class="zone-label">HAND</div>
+    <div class="zone-cards" id="hand-cards"></div>
+  </div>
+</div>
+
+<div class="status-bar" id="status-bar">
+  <span id="mana-display">Mana: -</span>
+  <span id="loyalty-display">Loyalty: -</span>
+  <span id="library-display">Library: -</span>
+  <span id="graveyard-display">Graveyard: -</span>
+</div>
+
+<div class="game-log" id="game-log"></div>
+
+<!-- Decision Modal -->
+<div class="decision-overlay" id="decision-overlay" style="display:none">
+  <div class="decision-modal" id="decision-modal"></div>
+</div>
+
+<script src="/web/magic/card-render.js"></script>
+<script src="/web/magic/magic.js"></script>
+<script>
+var state = null;
+var running = false;
+var timer = null;
+var delay = 600;
+var matchId = null;
+
+function updateSpeed() {
+  delay = parseInt(document.getElementById('speed').value);
+}
+
+async function newGame() {
+  clearLog();
+  addLog('Starting new game...');
+  const seed = Date.now() % 100000;
+  state = await apiCall('/game/new?seed=' + seed);
+  if (!state) { addLog('Failed to start game', 'action-damage'); return; }
+  matchId = state['match-id'] || 1;
+  running = false;
+  document.getElementById('btn-play').disabled = false;
+  document.getElementById('btn-step').disabled = false;
+  render(state);
+  addLog('Game started. Turn 1.');
+}
+
+function togglePlay() {
+  running = !running;
+  document.getElementById('btn-play').textContent = running ? 'Pause' : 'Auto';
+  if (running) scheduleTick();
+}
+
+function scheduleTick() {
+  if (running && !timer) {
+    timer = setTimeout(tick, delay);
+  }
+}
+
+async function tick() {
+  timer = null;
+  if (!running || !state) return;
+  if (state['game-over']) { running = false; return; }
+  await stepOnce();
+  if (running) scheduleTick();
+}
+
+async function stepOnce() {
+  if (!state) return;
+  if (state['game-over']) return;
+  const prev = state;
+  state = await apiCall('/game/step?match=' + matchId);
+  if (!state) {
+    addLog('Server error on step', 'action-damage');
+    running = false;
+    return;
+  }
+  if (state.turn !== prev.turn) {
+    addLog('--- Turn ' + state.turn + ' (Player ' + state['active-player'] + ') ---');
+  }
+  if (state['last-action']) {
+    addLog(state['last-action']);
+  }
+  render(state);
+  if (state['game-over']) {
+    running = false;
+    document.getElementById('btn-play').textContent = 'Auto';
+    addLog('=== Game Over! Winner: Player ' + state.winner + ' ===', 'action-cast');
+  }
+  if (state.decision) {
+    running = false;
+    document.getElementById('btn-play').textContent = 'Auto';
+    showDecision(state.decision);
+  }
+}
+
+async function setPosture() {
+  if (!matchId) return;
+  const stance = document.getElementById('stance').value;
+  await apiCall('/game/posture?match=' + matchId + '&stance=' + stance);
+}
+
+function render(s) {
+  if (!s) return;
+
+  // Phase / Turn
+  document.getElementById('phase-label').textContent = phaseName(s.step || 0);
+  document.getElementById('turn-label').textContent = 'Turn ' + (s.turn || 1);
+
+  // Generals
+  renderGeneral('zone-opp-general', s.generals ? s.generals[1] : null, 'opponent');
+  renderGeneral('zone-player-general', s.generals ? s.generals[0] : null, 'player');
+
+  // Battlefield
+  renderBattlefield('opp-field-cards', s.battlefield, 1, s.templates);
+  renderBattlefield('player-field-cards', s.battlefield, 0, s.templates);
+
+  // Combat
+  renderCombat(s.battlefield, s.templates);
+
+  // Hand
+  renderHand(s.hands ? s.hands[0] : null, s.templates);
+
+  // Status bar
+  renderStatus(s);
+}
+
+function renderGeneral(zoneId, gen, side) {
+  const zone = document.getElementById(zoneId);
+  if (!gen) return;
+  const lifeMax = gen['starting-life'] || 30;
+  const life = gen.life || 0;
+  const cls = lifeClass(life, lifeMax);
+  zone.innerHTML = `
+    <div class="general-info">
+      <div class="name">${gen.name || 'Unknown General'}</div>
+      <div class="stats">
+        ${gen.power || 0}/${gen.toughness || 0}/${gen.defense || 0}
+        | Loyalty: ${gen.loyalty || 0}
+        ${gen['stance-override'] ? '| ' + gen['stance-override'] : ''}
+      </div>
+    </div>
+    <div class="general-life-big ${cls}">${life}</div>
+  `;
+}
+
+function renderBattlefield(containerId, battlefield, controller, templates) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  container.innerHTML = '';
+  if (!battlefield) return;
+  for (const perm of battlefield) {
+    if (perm.controller !== controller) continue;
+    if (perm.attacking || perm.blocking) continue;
+    const t = templates ? templates[perm['template-id']] : null;
+    if (!t) continue;
+    const card = buildCardData(perm, t);
+    container.appendChild(renderCardSmall(card, { tapped: perm.tapped }));
+  }
+}
+
+function renderCombat(battlefield, templates) {
+  const container = document.getElementById('combat-cards');
+  if (!container) return;
+  container.innerHTML = '';
+  if (!battlefield) return;
+  for (const perm of battlefield) {
+    if (!perm.attacking && !perm.blocking) continue;
+    const t = templates ? templates[perm['template-id']] : null;
+    if (!t) continue;
+    const card = buildCardData(perm, t);
+    container.appendChild(renderCardSmall(card, {
+      attacking: perm.attacking,
+      blocking: perm.blocking
+    }));
+  }
+}
+
+function renderHand(hand, templates) {
+  const container = document.getElementById('hand-cards');
+  if (!container) return;
+  container.innerHTML = '';
+  if (!hand || !hand.cards) {
+    if (hand && hand.size !== undefined) {
+      for (let i = 0; i < hand.size; i++) {
+        const el = document.createElement('div');
+        el.className = 'magic-card card-small';
+        el.style.borderColor = '#30363d';
+        el.innerHTML = '<div class="card-name-small">Card</div>';
+        container.appendChild(el);
+      }
+    }
+    return;
+  }
+  for (const cardId of hand.cards) {
+    const card = buildHandCard(cardId, templates || []);
+    container.appendChild(renderCardSmall(card));
+  }
+}
+
+function renderStatus(s) {
+  const pool = s['mana-pools'] ? s['mana-pools'][0] : null;
+  if (pool) {
+    document.getElementById('mana-display').textContent =
+      'Mana: W:' + pool.W + ' U:' + pool.U + ' B:' + pool.B +
+      ' R:' + pool.R + ' G:' + pool.G + ' C:' + pool.C;
+  }
+  document.getElementById('loyalty-display').textContent =
+    'Loyalty: ' + (s.generals && s.generals[0] ? s.generals[0].loyalty || 0 : 0);
+  document.getElementById('library-display').textContent =
+    'Library: ' + (s.libraries ? s.libraries[0] : '?');
+  document.getElementById('graveyard-display').textContent =
+    'Graveyard: ' + (s.graveyards && s.graveyards[0] ? s.graveyards[0].length : 0);
+}
+
+function showDecision(decision) {
+  const overlay = document.getElementById('decision-overlay');
+  const modal = document.getElementById('decision-modal');
+  let html = '<h3>Decision Required</h3>';
+  html += '<div class="situation">' + decision.situation + '</div>';
+  for (let i = 0; i < decision.options.length; i++) {
+    const opt = decision.options[i];
+    const rec = i === decision.recommended ? ' recommended' : '';
+    html += `<button class="decision-option${rec}" onclick="chooseOption(${i})">
+      ${opt.description}
+      <span class="risk">${opt.risk || ''}</span>
+    </button>`;
+  }
+  html += '<div class="decision-timer">Timeout: <span id="decision-countdown">' + (decision['time-limit'] || 30) + '</span>s</div>';
+  modal.innerHTML = html;
+  overlay.style.display = 'flex';
+}
+
+async function chooseOption(idx) {
+  document.getElementById('decision-overlay').style.display = 'none';
+  state = await apiCall('/game/override?match=' + matchId + '&choice=' + idx);
+  if (state) render(state);
+}
+
+updateSpeed();
+ensureAccount();
+</script>
+</body>
+</html>

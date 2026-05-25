@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Codex — Go Fish</title>
+<link rel="stylesheet" href="/web/style.css?v={{VERSION}}">
+<script src="/web/card-utils.js"></script>
+<style>
+  body { background: #0a0a1a; }
+  .game-page { max-width: 800px; margin: 0 auto; }
+  .bg-scene { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: url('/assets/games/gofish/bg-scene.png') center/cover no-repeat;
+    filter: brightness(0.3) blur(2px); z-index: 0; }
+  .content { position: relative; z-index: 1; }
+  .card-sm { display: inline-block; background: #fff; border-radius: 5px; padding: 3px 6px;
+    margin: 2px; font-size: 14px; font-weight: bold; border: 1px solid #aaa;
+    min-width: 30px; text-align: center; box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+    transition: transform 0.15s; }
+  .card-sm:hover { transform: translateY(-3px); }
+  .suit-red { color: #cc2222; }
+  .suit-black { color: #222; }
+  .table { background: #0a0a2acc; border: 3px solid #4488cc33; border-radius: 20px; padding: 20px;
+    margin-bottom: 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+    backdrop-filter: blur(4px); }
+  .player-seat { padding: 12px; border-radius: 10px; margin-bottom: 10px;
+    border: 2px solid transparent; transition: all 0.3s; background: #0a0a1a44; }
+  .player-seat.active { border-color: #4488cc66; background: #4488cc11; }
+  .player-seat.winner { border-color: #c8a848; background: #c8a84822; }
+  .seat-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .seat-name { font-size: 13px; color: #4488cc88; text-transform: uppercase; letter-spacing: 1px; }
+  .seat-books { font-size: 14px; color: #c8a848; font-weight: bold; }
+  .seat-cards { display: flex; flex-wrap: wrap; gap: 2px; min-height: 28px; }
+  .pond { text-align: center; margin: 14px 0; padding: 12px; border-radius: 10px;
+    background: #1a2a4a44; border: 1px solid #4488cc22; }
+  .pond-label { font-size: 12px; color: #4488cc66; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 4px; }
+  .pond-count { font-size: 28px; font-weight: bold; color: #4488cc; }
+  .progress { margin: 10px 0; text-align: center; }
+  .progress-bar { width: 100%; height: 6px; background: #4488cc22; border-radius: 3px; overflow: hidden; }
+  .progress-fill { height: 100%; background: #4488cc; border-radius: 3px; transition: width 0.3s; }
+  .progress-text { font-size: 11px; color: #4488cc66; margin-top: 3px; }
+  .narration { text-align: center; font-size: 15px; font-weight: bold; padding: 8px; margin: 10px 0;
+    border-radius: 8px; min-height: 22px; }
+  .nar-ask { color: #4488cc; background: #4488cc11; }
+  .nar-fish { color: #cc8844; background: #cc884411; }
+  .nar-book { color: #c8a848; background: #c8a84822; }
+  .nar-win { color: #c8a848; background: #c8a84822; border: 1px solid #c8a84844; font-size: 20px; }
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; justify-content: center; }
+  .controls button { background: linear-gradient(180deg, #1a3a6a, #0a0a1a);
+    border: 1px solid #4488cc; border-radius: 6px; color: #4488cc;
+    font-family: inherit; font-size: 14px; padding: 8px 24px; cursor: pointer;
+    text-transform: uppercase; letter-spacing: 1px; }
+  .controls button:hover { color: #88ccff; }
+  .controls button:disabled { opacity: 0.3; }
+  .speed-label { color: #4488cc66; font-size: 12px; }
+  .engine-tag { background: #0a0a1a; color: #4488cc; font-size: 10px; padding: 2px 8px;
+    border-radius: 4px; margin-left: 12px; border: 1px solid #4488cc44; }
+  .rules { background: #0a0a1a99; border: 1px solid #4488cc22; border-radius: 8px; padding: 16px;
+    margin-top: 16px; color: #4488cc88; font-size: 13px; line-height: 1.6; }
+  .rules summary { color: #4488cc; cursor: pointer; font-weight: bold; font-size: 14px; }
+  .rules p { margin: 8px 0; }
+</style>
+</head>
+<body>
+<div class="bg-scene"></div>
+<nav class="topbar" style="background:#0a0a1a;border-color:#4488cc22">
+  <span class="topbar-logo" style="color:#4488cc">&#x2588; CODEX</span>
+  <a href="/#games" class="tab-btn" style="color:#4488cc66">&#x2190; Games</a>
+  <span class="tab-btn active" style="color:#4488cc;border-color:#4488cc">Go Fish</span>
+  <span class="engine-tag">Codex VM</span>
+</nav>
+<div class="content game-page">
+  <div class="controls">
+    <button id="btn-new" onclick="newGame()">&#x1F41F; New Game</button>
+    <button id="btn-play" onclick="togglePlay()" disabled>&#x25B6; Play</button>
+    <button id="btn-step" onclick="doStep()" disabled>&#x23ED; Next Turn</button>
+    <span class="speed-label">Speed:</span>
+    <input type="range" id="speed" min="1" max="10" value="5" style="width:80px;accent-color:#4488cc" oninput="updateSpeed()">
+  </div>
+  <div id="status-line" style="color:#4488cc;font-size:16px;text-align:center;margin-bottom:10px;font-weight:bold">Click New Game to start</div>
+  <div class="table">
+    <div id="players"></div>
+    <div class="pond">
+      <div class="pond-label">Fishing Pond</div>
+      <div class="pond-count" id="pile-size">0</div>
+    </div>
+    <div id="narration" class="narration"></div>
+    <div class="progress">
+      <div class="progress-bar"><div class="progress-fill" id="prog-fill" style="width:0%"></div></div>
+      <div class="progress-text"><span id="total-books">0</span> / 13 books completed</div>
+    </div>
+  </div>
+  <details class="rules">
+    <summary>How to Play Go Fish</summary>
+    <p><b>Goal:</b> Collect the most "books" (four cards of the same rank).</p>
+    <p><b>Play:</b> On your turn, ask another player for a specific rank. If they have it, they hand it over. If not — "Go Fish!" — draw from the pond.</p>
+    <p><b>Books:</b> When you collect all 4 cards of a rank, that's a book.</p>
+    <p><b>End:</b> Game ends when all 13 books are completed. Most books wins.</p>
+    <p><b>Spectator mode:</b> You can see every player's cards as the AI plays.</p>
+  </details>
+</div>
+<script>
+var state=null,prev=null,running=false,timer=null,delay=500,turnNum=0,gameStarted=false;
+
+function updateSpeed(){var v=parseInt(document.getElementById('speed').value);delay=[2000,1400,1000,700,500,350,200,120,60,20][v-1]||500}
+async function api(p){try{var r=await fetch(p);return r.json()}catch(e){document.getElementById('status-line').textContent='Connection error';return null}}
+
+function renderPlayers(s){
+  var el=document.getElementById('players');
+  var h='';
+  for(var i=0;i<s.numPlayers;i++){
+    var cls='player-seat';
+    if(!s.done&&s.cur===i) cls+=' active';
+    var maxB=0,w=-1;
+    if(s.done){for(var j=0;j<s.numPlayers;j++){if(s.books[j]>maxB){maxB=s.books[j];w=j}};if(i===w)cls+=' winner'}
+    var books=s.books[i]||0;
+    h+='<div class="'+cls+'">';
+    h+='<div class="seat-header"><span class="seat-name">Player '+(i+1)+(s.cur===i&&!s.done?' &#x1F449;':'')+'</span>';
+    h+='<span class="seat-books">&#x1F4D7; '+books+' books</span></div>';
+    h+='<div class="seat-cards">';
+    if(s.hands&&s.hands[i]){
+      var cards=s.hands[i];
+      for(var j=0;j<cards.length;j++){
+        var c=decodeCard(cards[j]);
+        h+=makeSmallCard(c.rank,c.suit);
+      }
+    }
+    h+='</div></div>';
+  }
+  el.innerHTML=h;
+}
+
+function narrate(s){
+  var nar=document.getElementById('narration');
+  if(!prev){nar.textContent='Cards dealt — Go Fish!';nar.className='narration nar-ask';return}
+  if(s.done){
+    var maxB=0,w=-1;for(var i=0;i<s.numPlayers;i++){if(s.books[i]>maxB){maxB=s.books[i];w=i}}
+    nar.textContent='Player '+(w+1)+' wins with '+maxB+' books!';nar.className='narration nar-win';return;
+  }
+  var who=prev.cur;
+  var oldBooks=prev.books[who]||0,newBooks=s.books[who]||0;
+  var oldPile=prev.pileSize,newPile=s.pileSize;
+  if(newBooks>oldBooks){
+    nar.textContent='Player '+(who+1)+' completed a book! ('+newBooks+' total)';
+    nar.className='narration nar-book';
+  }else if(newPile<oldPile){
+    nar.textContent='Player '+(who+1)+': Go Fish! (drew a card)';
+    nar.className='narration nar-fish';
+  }else{
+    nar.textContent='Player '+(who+1)+' got cards from opponent';
+    nar.className='narration nar-ask';
+  }
+}
+
+function render(s){
+  renderPlayers(s);
+  document.getElementById('pile-size').textContent=s.pileSize;
+  document.getElementById('total-books').textContent=s.totalBooks;
+  document.getElementById('prog-fill').style.width=Math.round(s.totalBooks/13*100)+'%';
+  narrate(s);
+  if(s.done){
+    var maxB=0,w=-1;for(var i=0;i<s.numPlayers;i++){if(s.books[i]>maxB){maxB=s.books[i];w=i}}
+    document.getElementById('status-line').textContent='Player '+(w+1)+' wins with '+maxB+' books!';
+    running=false;updateBtns();
+  }else{
+    document.getElementById('status-line').textContent='Turn '+turnNum+' — Player '+(s.cur+1)+'\'s turn';
+  }
+}
+
+async function newGame(){
+  clearTimeout(timer);running=false;turnNum=0;prev=null;
+  state=await api('/api/gofish/new?seed='+Date.now());
+  gameStarted=true;
+  if(state)render(state);
+  document.getElementById('status-line').textContent='Game ready — see all cards as AI plays';
+  document.getElementById('narration').textContent='';document.getElementById('narration').className='narration';
+  updateBtns();
+}
+
+async function doStep(){
+  if(!state||state.done)return;
+  prev=state;
+  state=await api('/api/gofish/step');
+  if(!state){running=false;updateBtns();return}
+  turnNum++;render(state);
+}
+
+function togglePlay(){
+  if(running){running=false;clearTimeout(timer);updateBtns();return}
+  if(!state||state.done)return;
+  running=true;updateBtns();scheduleTick();
+}
+function scheduleTick(){if(running)timer=setTimeout(tick,delay)}
+async function tick(){
+  if(!running||!state||state.done){running=false;updateBtns();return}
+  await doStep();
+  if(state&&!state.done&&running)scheduleTick();else{running=false;updateBtns()}
+}
+
+function updateBtns(){
+  document.getElementById('btn-new').disabled=running;
+  document.getElementById('btn-play').disabled=!gameStarted||(state&&state.done);
+  document.getElementById('btn-play').innerHTML=running?'&#x23F8; Pause':'&#x25B6; Play';
+  document.getElementById('btn-step').disabled=running||!gameStarted||(state&&state.done);
+}
+updateSpeed();updateBtns();
+</script>
+</body>
+</html>

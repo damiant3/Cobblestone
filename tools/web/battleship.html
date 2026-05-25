@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Codex — Battleship</title>
+<link rel="stylesheet" href="/web/style.css?v={{VERSION}}">
+<style>
+  body { background: #060d0a; }
+  .game-page { max-width: 900px; margin: 0 auto; }
+  .bg-scene { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: url('/assets/games/battleship/bg-scene.png') center/cover no-repeat;
+    filter: brightness(0.25) blur(2px); z-index: 0; }
+  .content { position: relative; z-index: 1; }
+
+  .boards { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .board-panel { background: url('/assets/games/battleship/grid.png') center/cover;
+    border: 2px solid #2a6a4a; border-radius: 8px; padding: 8px;
+    box-shadow: 0 4px 20px rgba(0,40,20,0.5), inset 0 0 20px rgba(0,255,100,0.03); }
+  .board-label { color: #3a8; font-size: 11px; text-align: center; margin-bottom: 4px;
+    text-transform: uppercase; letter-spacing: 2px; font-weight: bold; }
+  .bs-grid { display: grid; grid-template-columns: repeat(10, 30px); grid-template-rows: repeat(10, 30px); gap: 2px; }
+  .bs-cell { border-radius: 2px; display: flex; align-items: center; justify-content: center; font-size: 14px; }
+  .bs-water { background: #0a1a1588; border: 1px solid #1a3a2a44; }
+  .bs-miss { background: #1a2a2088; color: #3a5a4a; border: 1px solid #2a4a3a44; }
+  .bs-hit { background: #ff330033; color: #ff4444; border: 1px solid #aa333344; animation: pulse 1s infinite; }
+  .bs-ship { background: #2a4a3a88; border: 1px solid #3a6a5a; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+
+  .score-bar { display: flex; gap: 24px; justify-content: center; margin-bottom: 10px; font-size: 13px; color: #3a8; }
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+  .controls button { background: linear-gradient(180deg, #1a3a2a, #0a1a10);
+    border: 1px solid #2a6a4a; border-radius: 6px; color: #3a8;
+    font-family: inherit; font-size: 13px; padding: 6px 16px; cursor: pointer;
+    text-transform: uppercase; letter-spacing: 1px; }
+  .controls button:hover { color: #5fc; border-color: #3a8; }
+  .controls button:disabled { opacity: 0.3; }
+  #status-line { color: #3a8; font-size: 13px; margin-bottom: 8px; text-align: center; }
+  .speed-label { color: #2a6a4a; font-size: 12px; }
+  .engine-tag { background: #0a1a10; color: #3a8; font-size: 10px; padding: 2px 8px;
+    border-radius: 4px; margin-left: 12px; border: 1px solid #2a6a4a44; }
+</style>
+<script src="/web/game-engine.js"></script>
+</head>
+<body>
+<div class="bg-scene"></div>
+<nav class="topbar" style="background:#060d0a;border-color:#2a6a4a22">
+  <span class="topbar-logo" style="color:#3a8">&#x2588; CODEX</span>
+  <a href="/#games" class="tab-btn" style="color:#2a6a4a">&#x2190; Games</a>
+  <span class="tab-btn active" style="color:#3a8;border-color:#3a8">Battleship</span>
+  <span class="engine-tag">Codex VM</span>
+</nav>
+<div class="content game-page">
+  <div class="controls">
+    <button onclick="startGame()">&#x25B6; Engage</button>
+    <button id="btn-pause" onclick="togglePause()" disabled>&#x23F8; Hold</button>
+    <button id="btn-step" onclick="stepOnce()" disabled>&#x23ED; Fire</button>
+    <button onclick="resetGame()">&#x21BB; Reset</button>
+    <span class="speed-label">Rate:</span>
+    <input type="range" id="speed" min="1" max="10" value="5" style="width:80px;accent-color:#3a8" oninput="updateSpeed()">
+  </div>
+  <div id="status-line">AWAITING ORDERS, ADMIRAL.</div>
+  <div class="score-bar">
+    <span>FLEET 1 hits: <span id="sc-p1">0</span>/17</span>
+    <span>FLEET 2 hits: <span id="sc-p2">0</span>/17</span>
+    <span>SALVO: <span id="sc-r">0</span></span>
+  </div>
+  <div id="narration" style="text-align:center;font-size:14px;font-weight:bold;color:#3a8;min-height:20px;margin-bottom:8px"></div>
+  <div class="boards">
+    <div class="board-panel"><div class="board-label">Fleet 1 Attacks</div><div class="bs-grid" id="grid1"></div></div>
+    <div class="board-panel"><div class="board-label">Fleet 2 Attacks</div><div class="bs-grid" id="grid2"></div></div>
+  </div>
+  <details style="background:#060d0a99;border:1px solid #2a6a4a22;border-radius:8px;padding:16px;margin-top:16px;color:#2a6a4a88;font-size:13px;line-height:1.6">
+    <summary style="color:#3a8;cursor:pointer;font-weight:bold;font-size:14px">How to Play Battleship</summary>
+    <p><b>Goal:</b> Sink all of your opponent's ships before they sink yours.</p>
+    <p><b>Setup:</b> Each fleet places 5 ships on a 10x10 grid. Ships cannot overlap.</p>
+    <p><b>Firing:</b> Each turn, both fleets fire one salvo at a grid coordinate. A hit is marked with an explosion, a miss with a dot.</p>
+    <p><b>Ships:</b> Carrier (5), Battleship (4), Cruiser (3), Submarine (3), Destroyer (2) = 17 cells total.</p>
+    <p><b>Victory:</b> First fleet to score 17 hits (sinking all enemy ships) wins.</p>
+    <p><b>This simulation:</b> AI plays both fleets. Watch the grids fill with hits and misses until one fleet is destroyed.</p>
+  </details>
+</div>
+<script>
+var state,running=false,paused=false,timer,delay=250;
+function updateSpeed(){var v=parseInt(document.getElementById('speed').value);delay=[2000,1200,800,500,350,250,150,80,30,5][v-1]||250}
+async function api(p){try{var r=await fetch(p);return r.json()}catch(e){document.getElementById('status-line').textContent='COMMS ERROR';return null}}
+function renderGrid(id,track,ships){var h='';for(var i=0;i<100;i++){var v=track[i];var isShip=ships&&ships.length>0&&ships[i]===1;if(v===2)h+='<div class="bs-cell bs-hit">&#x1F4A5;</div>';else if(v===1)h+='<div class="bs-cell bs-miss">&#x2022;</div>';else if(isShip)h+='<div class="bs-cell bs-ship">&#x25A0;</div>';else h+='<div class="bs-cell bs-water"></div>'}document.getElementById(id).innerHTML=h}
+function render(s){renderGrid('grid1',s.p1track,s.p2ships);renderGrid('grid2',s.p2track,s.p1ships);document.getElementById('sc-p1').textContent=s.p1hits;document.getElementById('sc-p2').textContent=s.p2hits;document.getElementById('sc-r').textContent=s.p1shots}
+async function resetGame(){clearTimeout(timer);running=false;paused=false;state=await api('/api/battleship/new?seed='+(Date.now()&0x7FFFFFFF));if(state)render(state);document.getElementById('status-line').textContent='AWAITING ORDERS, ADMIRAL.';document.getElementById('btn-pause').disabled=true;document.getElementById('btn-step').disabled=true}
+async function startGame(){await resetGame();running=true;document.getElementById('btn-pause').disabled=false;document.getElementById('btn-step').disabled=false;updateSpeed();document.getElementById('status-line').textContent='ENGAGEMENT COMMENCED';scheduleTick()}
+function togglePause(){if(!running)return;paused=!paused;document.getElementById('btn-pause').textContent=paused?'▶ Resume':'⏸ Hold';document.getElementById('btn-step').disabled=!paused;if(!paused)scheduleTick()}
+function scheduleTick(){if(!paused&&running)timer=setTimeout(tick,delay)}
+async function stepOnce(){if(running)await tick()}
+var prevState=null;
+async function tick(){if(!running||!state)return;if(state.done){var w=state.winner===1?'FLEET 1':'FLEET 2';document.getElementById('status-line').textContent=w+' VICTORIOUS — ENEMY FLEET DESTROYED ('+state.p1shots+' salvos)';running=false;document.getElementById('btn-pause').disabled=true;document.getElementById('btn-step').disabled=true;return}prevState=state;state=await api('/api/battleship/step');if(!state){running=false;return}render(state);var nar=document.getElementById('narration');if(prevState){var p1new=state.p1hits-prevState.p1hits;var p2new=state.p2hits-prevState.p2hits;var msg='Salvo '+state.p1shots+': ';if(p1new>0)msg+='Fleet 1 HIT! ';else msg+='Fleet 1 miss. ';if(p2new>0)msg+='Fleet 2 HIT!';else msg+='Fleet 2 miss.';nar.textContent=msg}if(state.done){var w=state.winner===1?'FLEET 1':'FLEET 2';document.getElementById('status-line').textContent=w+' VICTORIOUS — '+state.p1shots+' SALVOS FIRED';running=false;document.getElementById('btn-pause').disabled=true;return}document.getElementById('status-line').textContent='SALVO '+state.p1shots+' — F1:'+state.p1hits+'/17 F2:'+state.p2hits+'/17';scheduleTick()}
+updateSpeed();resetGame();
+</script>
+</body>
+</html>

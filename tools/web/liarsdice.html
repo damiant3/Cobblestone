@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Codex — Liar's Dice</title>
+<link rel="stylesheet" href="/web/style.css?v={{VERSION}}">
+<style>
+  body { background: #1a1008; }
+  .game-page { max-width: 760px; margin: 0 auto; }
+  .bg-scene { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: url('/assets/games/liarsdice/bg-scene.png') center/cover no-repeat;
+    filter: brightness(0.3) blur(2px); z-index: 0; }
+  .content { position: relative; z-index: 1; }
+  .arena { background: #1a1008cc; border: 3px solid #c8840033; border-radius: 16px;
+    padding: 30px; margin-bottom: 12px; min-height: 200px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px;
+    backdrop-filter: blur(8px); box-shadow: 0 8px 30px rgba(0,0,0,0.5); }
+  .bid-area { text-align: center; margin-bottom: 4px; min-height: 140px; }
+  .bid-box { display: inline-block; background: #1a100888; border: 3px solid #c8840066; border-radius: 14px;
+    padding: 16px 32px; min-width: 180px; min-height: 80px; }
+  .bid-val { font-size: 32px; font-weight: bold; color: #c88400; }
+  .bid-detail { font-size: 16px; color: #c88400cc; margin-top: 4px; }
+  .bid-label { font-size: 11px; color: #c8840066; text-transform: uppercase; letter-spacing: 2px; margin-top: 8px; }
+  .bid-meta { font-size: 12px; color: #c8840066; margin-top: 6px; }
+  .players { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; width: 100%; min-height: 160px; }
+  .player { text-align: center; padding: 14px 18px; background: #1a100888; border: 2px solid #c8840033;
+    border-radius: 12px; min-width: 110px; transition: all 0.3s; position: relative; flex: 0 1 auto; }
+  .player.active { border-color: #c88400; box-shadow: 0 0 16px rgba(200,132,0,0.4); }
+  .player.active::before { content: '\25BC'; position: absolute; top: -18px; left: 50%; transform: translateX(-50%);
+    color: #c88400; font-size: 14px; }
+  .player.elim { opacity: 0.25; }
+  .player.elim .player-label { text-decoration: line-through; }
+  .player.winner { border-color: #ffcc00; box-shadow: 0 0 20px rgba(255,204,0,0.5); }
+  .player.winner .player-label { color: #ffcc00; }
+  .player-label { font-size: 11px; color: #c8840066; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 8px; }
+  .player-dice { font-size: 28px; letter-spacing: 4px; min-height: 34px; }
+  .dice-face { display: inline-block; margin: 0 1px; }
+  .player-sub { font-size: 10px; color: #c8840044; margin-top: 6px; }
+  .dice-count-badge { display: inline-block; background: #c8840033; color: #c88400; font-size: 12px;
+    padding: 2px 8px; border-radius: 10px; font-weight: bold; }
+  .info-row { display: flex; gap: 24px; font-size: 14px; color: #c8840088; }
+  .info-item { display: flex; align-items: center; gap: 6px; }
+  .info-val { color: #c88400; font-weight: bold; }
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; justify-content: center; }
+  .controls button { background: linear-gradient(180deg, #c88400, #1a1008); border: 2px solid #c88400;
+    border-radius: 20px; color: #fff; font-family: inherit; font-size: 14px; padding: 8px 24px;
+    cursor: pointer; font-weight: bold; text-transform: uppercase; }
+  .controls button:hover { transform: scale(1.05); }
+  .controls button:disabled { opacity: 0.3; }
+  .speed-label { color: #c8840066; font-size: 12px; }
+  .engine-tag { background: #1a1008; color: #c88400; font-size: 10px; padding: 2px 8px;
+    border-radius: 10px; margin-left: 12px; border: 1px solid #c8840044; }
+  .rules { background: #1a100899; border: 1px solid #c8840022; border-radius: 8px; padding: 16px;
+    margin-top: 16px; color: #c8840088; font-size: 13px; line-height: 1.6; }
+  .rules summary { color: #c88400; cursor: pointer; font-weight: bold; font-size: 14px; }
+  .rules p { margin: 8px 0; }
+</style>
+</head>
+<body>
+<div class="bg-scene"></div>
+<nav class="topbar" style="background:#1a1008;border-color:#c8840022">
+  <span class="topbar-logo" style="color:#c88400">&#x2588; CODEX</span>
+  <a href="/#games" class="tab-btn" style="color:#c8840066">&#x2190; Games</a>
+  <span class="tab-btn active" style="color:#c88400;border-color:#c88400">Liar's Dice</span>
+  <span class="engine-tag">Codex VM</span>
+</nav>
+<div class="content game-page">
+  <div class="controls">
+    <button onclick="startGame()">&#x25B6; Play</button>
+    <button id="btn-pause" onclick="togglePause()" disabled>&#x23F8; Pause</button>
+    <button id="btn-step" onclick="stepOnce()" disabled>&#x23ED; Step</button>
+    <button onclick="resetGame()">&#x21BB; Reset</button>
+    <span class="speed-label">Speed:</span>
+    <input type="range" id="speed" min="1" max="10" value="5" style="width:80px;accent-color:#c88400" oninput="updateSpeed()">
+  </div>
+  <div id="status-line" style="color:#c88400;font-size:16px;text-align:center;margin-bottom:10px;font-weight:bold">Liar's Dice!</div>
+  <div class="arena">
+    <div class="bid-area" id="bid-area"></div>
+    <div class="players" id="players"></div>
+    <div class="info-row" id="info-row"></div>
+  </div>
+  <details class="rules">
+    <summary>How to Play Liar's Dice</summary>
+    <p><b>Goal:</b> Be the last player with dice remaining.</p>
+    <p><b>Each round:</b> All players secretly roll their dice. Players take turns bidding on the total number of a specific face value among ALL dice on the table.</p>
+    <p><b>Bidding:</b> Each bid must raise the quantity or the face value. A player may challenge the previous bid by calling "Liar!"</p>
+    <p><b>Challenge:</b> All dice are revealed. If the bid was too high, the bidder loses a die. If the bid was valid, the challenger loses a die.</p>
+    <p><b>End:</b> When a player loses all their dice, they're eliminated. Last player standing wins.</p>
+  </details>
+</div>
+<script>
+var state,running=false,paused=false,timer,delay=300;
+var DICE_FACES=['⚀','⚁','⚂','⚃','⚄','⚅'];
+function updateSpeed(){var v=parseInt(document.getElementById('speed').value);delay=[2000,1200,800,500,350,250,150,80,30,5][v-1]||250}
+async function api(p){try{var r=await fetch(p);return r.json()}catch(e){document.getElementById('status-line').textContent='Connection error';return null}}
+
+function decodeBid(bid){
+  if(!bid||bid===0) return null;
+  var qty=Math.floor(bid/10);
+  var face=bid%10;
+  return {qty:qty,face:face};
+}
+
+function bidText(bid){
+  var d=decodeBid(bid);
+  if(!d) return '--';
+  var word=['zero','one','two','three','four','five','six','seven','eight','nine','ten',
+            'eleven','twelve','thirteen','fourteen','fifteen','sixteen','seventeen','eighteen','nineteen','twenty'];
+  var qw=(d.qty<word.length)?word[d.qty]:(''+d.qty);
+  return qw+' '+d.face+(d.qty===1?'':'s');
+}
+
+function bidDiceVisual(bid){
+  var d=decodeBid(bid);
+  if(!d) return '';
+  var s='';
+  var icon=DICE_FACES[d.face-1]||('⚀');
+  for(var i=0;i<Math.min(d.qty,10);i++) s+=icon;
+  if(d.qty>10) s+=' ...';
+  return s;
+}
+
+function renderBid(s){
+  var html='<div class="bid-box">';
+  if(s.bid&&s.bid>0){
+    html+='<div class="bid-val">'+bidText(s.bid)+'</div>';
+    html+='<div style="font-size:24px;min-height:32px;margin-top:4px">'+bidDiceVisual(s.bid)+'</div>';
+  } else {
+    html+='<div class="bid-val">--</div>';
+    html+='<div style="font-size:24px;min-height:32px;margin-top:4px">&nbsp;</div>';
+  }
+  html+='</div><div class="bid-label">Current Bid</div>';
+  if(s.lastBidder!==undefined&&s.lastBidder>=0&&s.bid>0){
+    html+='<div class="bid-meta">Bid by Player '+(s.lastBidder+1)+'</div>';
+  } else {
+    html+='<div class="bid-meta">&nbsp;</div>';
+  }
+  return html;
+}
+
+function renderPlayerDice(s,playerIdx){
+  var start=playerIdx*5;
+  var html='<div class="player-dice">';
+  var count=0;
+  for(var j=0;j<5;j++){
+    var val=s.dicePools[start+j];
+    if(val&&val>0){
+      html+='<span class="dice-face">'+DICE_FACES[val-1]+'</span>';
+      count++;
+    }
+  }
+  if(count===0) html+='<span style="color:#c8840033">--</span>';
+  html+='</div>';
+  return html;
+}
+
+function render(s){
+  document.getElementById('bid-area').innerHTML=renderBid(s);
+
+  var h='';
+  for(var i=0;i<s.numPlayers;i++){
+    var isAlive=s.alive[i];
+    var cls='player';
+    if(s.done&&isAlive) cls+=' winner';
+    else if(!isAlive) cls+=' elim';
+    else if(s.cur===i&&!s.done) cls+=' active';
+    h+='<div class="'+cls+'">';
+    h+='<div class="player-label">Player '+(i+1)+'</div>';
+    if(isAlive){
+      h+=renderPlayerDice(s,i);
+      h+='<div class="player-sub"><span class="dice-count-badge">'+(s.diceCounts[i]||0)+' dice</span></div>';
+    } else {
+      h+='<div class="player-dice" style="font-size:20px;color:#c8840033">eliminated</div>';
+      h+='<div class="player-sub">out</div>';
+    }
+    h+='</div>';
+  }
+  document.getElementById('players').innerHTML=h;
+
+  var totalD=0;for(var i=0;i<s.numPlayers;i++)totalD+=(s.diceCounts[i]||0);
+  document.getElementById('info-row').innerHTML=
+    '<div class="info-item">Players alive: <span class="info-val">'+s.aliveCount+'</span></div>'+
+    '<div class="info-item">Total dice: <span class="info-val">'+totalD+'</span></div>';
+}
+
+async function resetGame(){clearTimeout(timer);running=false;paused=false;
+  state=await api('/api/liarsdice/new?seed='+Date.now());
+  if(state)render(state);
+  document.getElementById('status-line').textContent='Liar\'s Dice!';
+  document.getElementById('btn-pause').disabled=true;document.getElementById('btn-step').disabled=true}
+async function startGame(){await resetGame();running=true;
+  document.getElementById('btn-pause').disabled=false;document.getElementById('btn-step').disabled=false;
+  updateSpeed();scheduleTick()}
+function togglePause(){if(!running)return;paused=!paused;
+  document.getElementById('btn-pause').textContent=paused?'▶ Resume':'⏸ Pause';
+  document.getElementById('btn-step').disabled=!paused;if(!paused)scheduleTick()}
+function scheduleTick(){if(!paused&&running)timer=setTimeout(tick,delay)}
+async function stepOnce(){if(running&&paused)await tick()}
+var prevBid=0,prevAlive=0;
+async function tick(){
+  if(!running||!state||state.done){
+    if(state&&state.done){showWinner(state);running=false}return}
+  prevBid=state.bid||0;prevAlive=state.aliveCount||0;
+  state=await api('/api/liarsdice/step');
+  if(!state){running=false;return}
+  render(state);
+  var nar='';
+  if((state.aliveCount||0)<prevAlive) nar='A player was eliminated! ('+state.aliveCount+' remain)';
+  else if(state.bid!==prevBid) nar='Player '+(state.lastBidder+1)+' bids '+bidText(state.bid);
+  else nar='Player '+(state.cur+1)+'\'s turn';
+  document.getElementById('status-line').textContent=nar;
+  if(state.done){showWinner(state);running=false;return}
+  scheduleTick();
+}
+function showWinner(s){
+  var wi=-1;
+  for(var i=0;i<s.numPlayers;i++){if(s.alive[i]){wi=i;break}}
+  document.getElementById('status-line').textContent='Player '+(wi+1)+' wins! Last one standing!';
+  render(s);
+}
+updateSpeed();resetGame();
+</script>
+</body>
+</html>

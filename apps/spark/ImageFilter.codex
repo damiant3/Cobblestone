@@ -1,0 +1,152 @@
+Chapter: ImageFilter
+  cites Game chapter Rasterizer
+  cites Spark chapter Canvas
+
+ Image filters: blur, brightness, contrast, invert, grayscale.
+ All operate on the active layer of a Canvas2D. Each filter has
+ its own pixel loop to avoid higher-order function overhead.
+
+ We say:
+
+Section: Layer Helper
+
+  filt-update-layer : Canvas2D, Framebuf -> Canvas2D
+  filt-update-layer (cv) (new-fb) =
+    let layer = canvas-active cv
+    in let updated = __record-set layer "cl-pixels" new-fb
+    in __record-set cv "cv-layers" (list-set-at (cv.cv-layers) (cv.cv-active-layer) updated)
+
+Section: Brightness
+
+  filter-brightness : Canvas2D, Integer -> Canvas2D
+  filter-brightness (cv) (amount) =
+    let layer = canvas-active cv
+    in let fb = layer.cl-pixels
+    in let new-fb = filt-bright-loop fb (fb.fb-width * fb.fb-height) 0 amount
+    in filt-update-layer cv new-fb
+
+  filt-bright-loop : Framebuf, Integer, Integer, Integer -> Framebuf
+  filt-bright-loop (fb) (total) (i) (amount) =
+    if i >= total then fb
+    else let color = list-at (fb.fb-pixels) i
+    in let r = color / 65536 + amount
+    in let g = (color / 256 - color / 65536 * 256) + amount
+    in let b = (color - color / 256 * 256) + amount
+    in let nc = filt-clamp r 0 255 * 65536 + filt-clamp g 0 255 * 256 + filt-clamp b 0 255
+    in let fb2 = Framebuf { fb-width = fb.fb-width, fb-height = fb.fb-height, fb-pixels = list-set-at (fb.fb-pixels) i nc }
+    in filt-bright-loop fb2 total (i + 1) amount
+
+Section: Contrast
+
+  filter-contrast : Canvas2D, Integer -> Canvas2D
+  filter-contrast (cv) (factor) =
+    let layer = canvas-active cv
+    in let fb = layer.cl-pixels
+    in let new-fb = filt-contrast-loop fb (fb.fb-width * fb.fb-height) 0 factor
+    in filt-update-layer cv new-fb
+
+  filt-contrast-loop : Framebuf, Integer, Integer, Integer -> Framebuf
+  filt-contrast-loop (fb) (total) (i) (factor) =
+    if i >= total then fb
+    else let color = list-at (fb.fb-pixels) i
+    in let r = color / 65536
+    in let g = color / 256 - r * 256
+    in let b = color - color / 256 * 256
+    in let cr = 128 + (r - 128) * factor / 1000
+    in let cg = 128 + (g - 128) * factor / 1000
+    in let cb = 128 + (b - 128) * factor / 1000
+    in let nc = filt-clamp cr 0 255 * 65536 + filt-clamp cg 0 255 * 256 + filt-clamp cb 0 255
+    in let fb2 = Framebuf { fb-width = fb.fb-width, fb-height = fb.fb-height, fb-pixels = list-set-at (fb.fb-pixels) i nc }
+    in filt-contrast-loop fb2 total (i + 1) factor
+
+Section: Invert
+
+  filter-invert : Canvas2D -> Canvas2D
+  filter-invert (cv) =
+    let layer = canvas-active cv
+    in let fb = layer.cl-pixels
+    in let new-fb = filt-invert-loop fb (fb.fb-width * fb.fb-height) 0
+    in filt-update-layer cv new-fb
+
+  filt-invert-loop : Framebuf, Integer, Integer -> Framebuf
+  filt-invert-loop (fb) (total) (i) =
+    if i >= total then fb
+    else let color = list-at (fb.fb-pixels) i
+    in let r = 255 - color / 65536
+    in let g = 255 - (color / 256 - color / 65536 * 256)
+    in let b = 255 - (color - color / 256 * 256)
+    in let nc = r * 65536 + g * 256 + b
+    in let fb2 = Framebuf { fb-width = fb.fb-width, fb-height = fb.fb-height, fb-pixels = list-set-at (fb.fb-pixels) i nc }
+    in filt-invert-loop fb2 total (i + 1)
+
+Section: Grayscale
+
+  filter-grayscale : Canvas2D -> Canvas2D
+  filter-grayscale (cv) =
+    let layer = canvas-active cv
+    in let fb = layer.cl-pixels
+    in let new-fb = filt-gray-loop fb (fb.fb-width * fb.fb-height) 0
+    in filt-update-layer cv new-fb
+
+  filt-gray-loop : Framebuf, Integer, Integer -> Framebuf
+  filt-gray-loop (fb) (total) (i) =
+    if i >= total then fb
+    else let color = list-at (fb.fb-pixels) i
+    in let r = color / 65536
+    in let g = color / 256 - r * 256
+    in let b = color - color / 256 * 256
+    in let lum = (r * 299 + g * 587 + b * 114) / 1000
+    in let nc = lum * 65536 + lum * 256 + lum
+    in let fb2 = Framebuf { fb-width = fb.fb-width, fb-height = fb.fb-height, fb-pixels = list-set-at (fb.fb-pixels) i nc }
+    in filt-gray-loop fb2 total (i + 1)
+
+Section: Box Blur
+
+  filter-blur : Canvas2D, Integer -> Canvas2D
+  filter-blur (cv) (radius) =
+    let layer = canvas-active cv
+    in let fb = layer.cl-pixels
+    in let w = fb.fb-width
+    in let h = fb.fb-height
+    in let new-fb = filt-blur-pixels fb w h radius 0 0 (fb-new w h 0)
+    in filt-update-layer cv new-fb
+
+  filt-blur-pixels : Framebuf, Integer, Integer, Integer, Integer, Integer, Framebuf -> Framebuf
+  filt-blur-pixels (src) (w) (h) (r) (x) (y) (dst) =
+    if y >= h then dst
+    else if x >= w then filt-blur-pixels src w h r 0 (y + 1) dst
+    else let color = filt-sample-box src w h x y r
+    in let dst2 = fb-set dst x y color
+    in filt-blur-pixels src w h r (x + 1) y dst2
+
+  filt-sample-box : Framebuf, Integer, Integer, Integer, Integer, Integer -> Integer
+  filt-sample-box (fb) (w) (h) (cx) (cy) (r) =
+    filt-box-accum fb w h cx cy r (-r) (-r) 0 0 0 0
+
+  filt-box-accum : Framebuf, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  filt-box-accum (fb) (w) (h) (cx) (cy) (r) (dx) (dy) (sr) (sg) (sb) (count) =
+    if dy > r then
+      if count == 0 then 0
+      else let ar = sr / count
+      in let ag = sg / count
+      in let ab = sb / count
+      in ar * 65536 + ag * 256 + ab
+    else if dx > r then filt-box-accum fb w h cx cy r (-r) (dy + 1) sr sg sb count
+    else let px = cx + dx
+    in let py = cy + dy
+    in if px < 0 then filt-box-accum fb w h cx cy r (dx + 1) dy sr sg sb count
+    else if py < 0 then filt-box-accum fb w h cx cy r (dx + 1) dy sr sg sb count
+    else if px >= w then filt-box-accum fb w h cx cy r (dx + 1) dy sr sg sb count
+    else if py >= h then filt-box-accum fb w h cx cy r (dx + 1) dy sr sg sb count
+    else let c = fb-get fb px py
+    in let cr = c / 65536
+    in let cg = c / 256 - cr * 256
+    in let cb = c - c / 256 * 256
+    in filt-box-accum fb w h cx cy r (dx + 1) dy (sr + cr) (sg + cg) (sb + cb) (count + 1)
+
+Section: Helpers
+
+  filt-clamp : Integer, Integer, Integer -> Integer
+  filt-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+Page 1

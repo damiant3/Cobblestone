@@ -1,0 +1,286 @@
+Chapter: Svelte Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates Svelte components from the IR.
+
+Section: Sanitization
+
+  sv-sanitize : Text -> Text
+  sv-sanitize (name) =
+   text-replace (text-replace name "-" "_") "'" ""
+
+  sv-escape : Text -> Text
+  sv-escape (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in let s3 = text-replace s2 "\n" "\\n"
+   in s3
+
+  sv-indent : Integer -> Text
+  sv-indent (n) =
+   if n <= 0 then ""
+   else "  " & sv-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then 0
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else 0
+
+Section: Expression Emission
+
+  emit-sv-expr : IRExpr, List ArityEntry, Integer -> Text
+  emit-sv-expr (e) (arities) (indent) =
+   when e
+    is IrIntLit (n) (sp) -> show n
+    is IrNumLit (n) (sp) -> show n
+    is IrTextLit (s) (sp) -> "\"" & sv-escape s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> "String.fromCharCode(" & show n & ")"
+    is IrName (n) (ty) (sp) -> sv-sanitize n
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-sv-binary op l r arities indent
+    is IrNegate (x) (sp) -> "(-(" & emit-sv-expr x arities indent & "))"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-sv-expr c arities indent & " ? " & emit-sv-expr t arities indent & " : " & emit-sv-expr el arities indent & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> "(() => { const " & sv-sanitize name & " = " & emit-sv-expr val arities indent & "; return " & emit-sv-expr body arities indent & "; })()"
+    is IrApply (f) (a) (ty) (sp) -> emit-sv-apply e arities indent
+    is IrLambda (params) (body) (ty) (sp) -> "(" & emit-sv-params params 0 & ") => " & emit-sv-expr body arities indent
+    is IrList (elems) (ty) (sp) -> "[" & emit-sv-list-elems elems arities indent 0 & "]"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-sv-match scrut branches arities indent
+    is IrAct (stmts) (ty) (sp) -> emit-sv-act stmts arities indent
+    is IrRecord (name) (fields) (ty) (sp) -> "{ _type: \"" & name & "\"" & emit-sv-record-fields fields arities indent 0 & " }"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-sv-expr rec arities indent & "." & sv-sanitize field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(" & emit-sv-expr rec arities indent & "." & sv-sanitize field & " = " & emit-sv-expr val arities indent & ")"
+    is IrFork (body) (ty) (sp) -> "Promise.resolve().then(() => " & emit-sv-expr body arities indent & ")"
+    is IrAwait (task) (ty) (sp) -> "(await " & emit-sv-expr task arities indent & ")"
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-sv-expr body arities indent
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-sv-expr body arities indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-sv-expr body arities indent
+    is IrError (msg) (ty) (sp) -> "(() => { throw new Error(\"" & sv-escape msg & "\"); })()"
+
+Section: Binary Operators
+
+  emit-sv-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-sv-binary (op) (l) (r) (arities) (indent) =
+   let lhs = emit-sv-expr l arities indent
+   in let rhs = emit-sv-expr r arities indent
+   in when op
+    is IrAddInt -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt -> "(" & lhs & " * " & rhs & ")"
+    is IrDivInt -> "Math.trunc(" & lhs & " / " & rhs & ")"
+    is IrPowInt -> "(" & lhs & " ** " & rhs & ")"
+    is IrAddNum -> "(" & lhs & " + " & rhs & ")"
+    is IrSubNum -> "(" & lhs & " - " & rhs & ")"
+    is IrMulNum -> "(" & lhs & " * " & rhs & ")"
+    is IrDivNum -> "(" & lhs & " / " & rhs & ")"
+    is IrEq -> "(" & lhs & " === " & rhs & ")"
+    is IrNotEq -> "(" & lhs & " !== " & rhs & ")"
+    is IrLt -> "(" & lhs & " < " & rhs & ")"
+    is IrGt -> "(" & lhs & " > " & rhs & ")"
+    is IrLtEq -> "(" & lhs & " <= " & rhs & ")"
+    is IrGtEq -> "(" & lhs & " >= " & rhs & ")"
+    is IrAnd -> "(" & lhs & " && " & rhs & ")"
+    is IrOr -> "(" & lhs & " || " & rhs & ")"
+    is IrAppendText -> "(" & lhs & " + " & rhs & ")"
+    is IrAppendList -> "([..." & lhs & ", ..." & rhs & "])"
+    is IrConsList -> "[" & lhs & ", ..." & rhs & "]"
+
+Section: Apply and Helpers
+
+  FlatApply = record {
+   root : IRExpr,
+   args : List IRExpr
+  }
+
+  collect-apply-chain : IRExpr, List IRExpr -> FlatApply
+  collect-apply-chain (e) (acc) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> collect-apply-chain f ([a] & acc)
+    is otherwise -> FlatApply { root = e, args = acc }
+
+  emit-sv-apply : IRExpr, List ArityEntry, Integer -> Text
+  emit-sv-apply (e) (arities) (indent) =
+   let chain = collect-apply-chain e []
+   in let func = emit-sv-expr (chain.root) arities indent
+   in func & "(" & emit-sv-apply-args (chain.args) arities indent 0 & ")"
+
+  emit-sv-apply-args : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-sv-apply-args (args) (arities) (indent) (i) =
+   if i == list-length args then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-sv-expr (list-at args i) arities indent & emit-sv-apply-args args arities indent (i + 1)
+
+  emit-sv-params : List IRParam, Integer -> Text
+  emit-sv-params (params) (i) =
+   if i == list-length params then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & sv-sanitize (list-at params i).name & emit-sv-params params (i + 1)
+
+  emit-sv-list-elems : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-sv-list-elems (elems) (arities) (indent) (i) =
+   if i == list-length elems then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-sv-expr (list-at elems i) arities indent & emit-sv-list-elems elems arities indent (i + 1)
+
+  emit-sv-record-fields : List IRFieldVal, List ArityEntry, Integer, Integer -> Text
+  emit-sv-record-fields (fields) (arities) (indent) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in ", " & sv-sanitize (f.name) & ": " & emit-sv-expr (f.value) arities indent & emit-sv-record-fields fields arities indent (i + 1)
+
+Section: Match
+
+  emit-sv-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-sv-match (scrut) (branches) (arities) (indent) =
+   "(() => { const _s = " & emit-sv-expr scrut arities indent & "; " & emit-sv-branches branches arities indent 0 & " })()"
+
+  emit-sv-branches : List IRBranch, List ArityEntry, Integer, Integer -> Text
+  emit-sv-branches (branches) (arities) (indent) (i) =
+   if i == list-length branches then "throw new Error('non-exhaustive match');"
+   else let b = list-at branches i
+   in let cond = emit-sv-pat-cond (b.pattern) "_s"
+   in let binds = emit-sv-pat-binds (b.pattern) "_s"
+   in let body = emit-sv-expr (b.body) arities indent
+   in "if (" & cond & ") { " & binds & "return " & body & "; } else " & emit-sv-branches branches arities indent (i + 1)
+
+  emit-sv-pat-cond : IRPat, Text -> Text
+  emit-sv-pat-cond (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "true"
+    is IrLitPat (text) (ty) (sp) -> scrut & " === " & text
+    is IrCtorPat (name) (subs) (ty) (sp) -> scrut & "._tag === \"" & name & "\""
+    is IrWildPat (sp) -> "true"
+
+  emit-sv-pat-binds : IRPat, Text -> Text
+  emit-sv-pat-binds (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "const " & sv-sanitize name & " = " & scrut & "; "
+    is IrLitPat (text) (ty) (sp) -> ""
+    is IrCtorPat (name) (subs) (ty) (sp) -> emit-sv-ctor-binds subs scrut 0
+    is IrWildPat (sp) -> ""
+
+  emit-sv-ctor-binds : List IRPat, Text, Integer -> Text
+  emit-sv-ctor-binds (subs) (scrut) (i) =
+   if i == list-length subs then ""
+   else let sub = list-at subs i
+   in let access = scrut & "._" & show i
+   in emit-sv-pat-binds sub access & emit-sv-ctor-binds subs scrut (i + 1)
+
+Section: Act Blocks
+
+  emit-sv-act : List IRActStmt, List ArityEntry, Integer -> Text
+  emit-sv-act (stmts) (arities) (indent) =
+   "(() => {\n" & emit-sv-act-stmts stmts arities (indent + 1) 0 & sv-indent indent & "})()"
+
+  emit-sv-act-stmts : List IRActStmt, List ArityEntry, Integer, Integer -> Text
+  emit-sv-act-stmts (stmts) (arities) (indent) (i) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) -> sv-indent indent & "const " & sv-sanitize name & " = " & emit-sv-expr val arities indent & ";\n" & emit-sv-act-stmts stmts arities indent (i + 1)
+    is IrDoExec (e) (sp) ->
+     if is-last then sv-indent indent & "return " & emit-sv-expr e arities indent & ";\n"
+     else sv-indent indent & emit-sv-expr e arities indent & ";\n" & emit-sv-act-stmts stmts arities indent (i + 1)
+
+Section: Type Definitions
+
+  emit-sv-type-def : ATypeDef -> Text
+  emit-sv-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
+     "function " & sv-sanitize (name.value) & "(fields) { return { _type: \"" & name.value & "\", ...fields }; }\n"
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-sv-variant-ctors ctors 0
+
+  emit-sv-variant-ctors : List AVariantCtorDef, Integer -> Text
+  emit-sv-variant-ctors (ctors) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+   in let n = list-length (c.fields)
+   in let ctor-text = if n == 0 then "const " & sv-sanitize (c.name.value) & " = { _tag: \"" & c.name.value & "\" };\n"
+      else "function " & sv-sanitize (c.name.value) & "(" & emit-sv-ctor-params n 0 & ") { return { _tag: \"" & c.name.value & "\"" & emit-sv-ctor-fields n 0 & " }; }\n"
+   in ctor-text & emit-sv-variant-ctors ctors (i + 1)
+
+  emit-sv-ctor-params : Integer, Integer -> Text
+  emit-sv-ctor-params (n) (i) =
+   if i == n then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & "_" & show i & emit-sv-ctor-params n (i + 1)
+
+  emit-sv-ctor-fields : Integer, Integer -> Text
+  emit-sv-ctor-fields (n) (i) =
+   if i == n then ""
+   else ", _" & show i & ": _" & show i & emit-sv-ctor-fields n (i + 1)
+
+Section: Definition Emission
+
+  emit-sv-def : IRDef, List ArityEntry -> Text
+  emit-sv-def (d) (arities) =
+   if text-length (d.name) == 0 then ""
+   else let sname = sv-sanitize (d.name)
+   in if list-length (d.params) == 0
+      then "const " & sname & " = " & emit-sv-expr (d.body) arities 0 & ";\n\n"
+      else "function " & sname & "(" & emit-sv-params (d.params) 0 & ") {\n  return " & emit-sv-expr (d.body) arities 1 & ";\n}\n\n"
+
+  emit-sv-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-sv-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-sv-def (list-at defs i) arities & emit-sv-defs defs (i + 1) arities
+
+  emit-sv-type-defs : List ATypeDef, Integer -> Text
+  emit-sv-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-sv-type-def (list-at tds i) & emit-sv-type-defs tds (i + 1)
+
+Section: Svelte Component Assembly
+
+  emit-svelte-chapter : IRChapter, List ATypeDef -> Text
+  emit-svelte-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let builtins = "function print_line_uni(s) { output.push(s); output = output; }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction integer_to_text(n) { return String(n); }\nfunction negate(n) { return -n; }\n\n"
+   in let types-text = emit-sv-type-defs type-defs 0
+   in let defs-text = emit-sv-defs (m.defs) 0 arities
+   in let script = "<script>\nimport { onMount } from 'svelte';\n\nlet output = $state([]);\n\n" & builtins & types-text & defs-text & "onMount(() => {\n  try { opening(); } catch(e) { console.error(e); }\n});\n</script>\n\n"
+   in let template = "{#each output as line, i}\n  <div>{line}</div>\n{/each}\n\n"
+   in let style = "<style>\ndiv { font-family: system-ui, sans-serif; padding: 0.25rem; }\n</style>\n"
+   in script & template & style
+
+Page 1

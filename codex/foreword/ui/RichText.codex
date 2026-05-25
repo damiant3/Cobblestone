@@ -1,0 +1,155 @@
+Chapter: RichText
+  cites Foreword chapter Maybe
+
+ Styled text spans — rich text as a sequence of styled runs, each
+ with font attributes (bold, italic, underline, color, size) and
+ optional hyperlink. Used for text display beyond plain monospace:
+ code highlighting, documentation rendering, styled labels.
+
+ To rich-text-plain gives a single unstyled run.
+ To rich-text-bold gives a bold run.
+ To rich-text-link gives a hyperlinked run.
+ To rich-text-concat gives two rich texts joined.
+ To rich-text-length gives the total character count.
+
+ We say:
+
+Section: Types
+
+  TextStyle = record {
+    ts-bold : Boolean,
+    ts-italic : Boolean,
+    ts-underline : Boolean,
+    ts-strikethrough : Boolean,
+    ts-color : Integer,
+    ts-bg-color : Integer,
+    ts-font-size : Integer,
+    ts-font-family : Text
+  }
+
+  TextRun = record {
+    tr-text : Text,
+    tr-style : TextStyle,
+    tr-link : Text
+  }
+
+  RichText = record {
+    rt-runs : List TextRun,
+    rt-run-count : Integer
+  }
+
+Section: Default Style
+
+  text-style-default : TextStyle = TextStyle {
+    ts-bold = False,
+    ts-italic = False,
+    ts-underline = False,
+    ts-strikethrough = False,
+    ts-color = 0,
+    ts-bg-color = 0,
+    ts-font-size = 14,
+    ts-font-family = "monospace"
+  }
+
+  text-style-bold : TextStyle
+  text-style-bold = TextStyle { ts-bold = True, ts-italic = False, ts-underline = False, ts-strikethrough = False, ts-color = 0, ts-bg-color = 0, ts-font-size = 14, ts-font-family = "monospace" }
+
+  text-style-italic : TextStyle
+  text-style-italic = TextStyle { ts-bold = False, ts-italic = True, ts-underline = False, ts-strikethrough = False, ts-color = 0, ts-bg-color = 0, ts-font-size = 14, ts-font-family = "monospace" }
+
+  text-style-colored : Integer -> TextStyle
+  text-style-colored (color) = TextStyle { ts-bold = False, ts-italic = False, ts-underline = False, ts-strikethrough = False, ts-color = color, ts-bg-color = 0, ts-font-size = 14, ts-font-family = "monospace" }
+
+  text-style-sized : Integer -> TextStyle
+  text-style-sized (size) = TextStyle { ts-bold = False, ts-italic = False, ts-underline = False, ts-strikethrough = False, ts-color = 0, ts-bg-color = 0, ts-font-size = size, ts-font-family = "monospace" }
+
+Section: Construction
+
+  rich-text-empty : RichText = RichText { rt-runs = [], rt-run-count = 0 }
+
+  rich-text-plain : Text -> RichText
+  rich-text-plain (s) = RichText {
+    rt-runs = [TextRun { tr-text = s, tr-style = text-style-default, tr-link = "" }],
+    rt-run-count = 1
+  }
+
+  rich-text-styled : Text, TextStyle -> RichText
+  rich-text-styled (s) (style) = RichText {
+    rt-runs = [TextRun { tr-text = s, tr-style = style, tr-link = "" }],
+    rt-run-count = 1
+  }
+
+  rich-text-bold : Text -> RichText
+  rich-text-bold (s) = rich-text-styled s text-style-bold
+
+  rich-text-italic : Text -> RichText
+  rich-text-italic (s) = rich-text-styled s text-style-italic
+
+  rich-text-colored : Text, Integer -> RichText
+  rich-text-colored (s) (color) = rich-text-styled s (text-style-colored color)
+
+  rich-text-link : Text, Text -> RichText
+  rich-text-link (label) (url) = RichText {
+    rt-runs = [TextRun { tr-text = label, tr-style = TextStyle { ts-bold = False, ts-italic = False, ts-underline = True, ts-strikethrough = False, ts-color = 0, ts-bg-color = 0, ts-font-size = 14, ts-font-family = "monospace" }, tr-link = url }],
+    rt-run-count = 1
+  }
+
+Section: Combination
+
+  rich-text-concat : RichText, RichText -> RichText
+  rich-text-concat (a) (b) = RichText {
+    rt-runs = a.rt-runs & b.rt-runs,
+    rt-run-count = a.rt-run-count + b.rt-run-count
+  }
+
+  rich-text-append : RichText, Text -> RichText
+  rich-text-append (rt) (s) = rich-text-concat rt (rich-text-plain s)
+
+  rich-text-join : List RichText -> RichText
+  rich-text-join (parts) = rt-join-loop parts 0 (list-length parts) rich-text-empty
+
+  rt-join-loop : List RichText, Integer, Integer, RichText -> RichText
+  rt-join-loop (parts) (i) (len) (acc) =
+    if i >= len then acc
+    else rt-join-loop parts (i + 1) len (rich-text-concat acc (list-at parts i))
+
+Section: Queries
+
+  rich-text-length : RichText -> Integer
+  rich-text-length (rt) = rt-length-loop (rt.rt-runs) 0 (rt.rt-run-count) 0
+
+  rt-length-loop : List TextRun, Integer, Integer, Integer -> Integer
+  rt-length-loop (runs) (i) (len) (acc) =
+    if i >= len then acc
+    else rt-length-loop runs (i + 1) len (acc + text-length ((list-at runs i).tr-text))
+
+  rich-text-plain-text : RichText -> Text
+  rich-text-plain-text (rt) = rt-plain-loop (rt.rt-runs) 0 (rt.rt-run-count) ""
+
+  rt-plain-loop : List TextRun, Integer, Integer, Text -> Text
+  rt-plain-loop (runs) (i) (len) (acc) =
+    if i >= len then acc
+    else rt-plain-loop runs (i + 1) len (acc & (list-at runs i).tr-text)
+
+  rich-text-run-at : RichText, Integer -> Maybe TextRun
+  rich-text-run-at (rt) (char-pos) =
+    rt-run-at-loop (rt.rt-runs) 0 (rt.rt-run-count) char-pos 0
+
+  rt-run-at-loop : List TextRun, Integer, Integer, Integer, Integer -> Maybe TextRun
+  rt-run-at-loop (runs) (i) (len) (target) (offset) =
+    if i >= len then None
+    else let run = list-at runs i
+    in let run-len = text-length (run.tr-text)
+    in if target < offset + run-len then Just run
+    else rt-run-at-loop runs (i + 1) len target (offset + run-len)
+
+Section: Highlighting
+
+  rich-text-highlight : Text, Integer, Integer, Integer -> RichText
+  rich-text-highlight (s) (start) (end-pos) (color) =
+    let before = if start > 0 then substring s 0 start else ""
+    in let highlighted = substring s start (end-pos - start)
+    in let after = if end-pos < text-length s then substring s end-pos (text-length s - end-pos) else ""
+    in rich-text-concat (rich-text-concat (rich-text-plain before) (rich-text-colored highlighted color)) (rich-text-plain after)
+
+Page 1

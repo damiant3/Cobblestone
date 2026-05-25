@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Codex — Conway's Life</title>
+<link rel="stylesheet" href="/web/style.css?v={{VERSION}}">
+<style>
+  body { background: #0a0d06; }
+  .game-page { max-width: 600px; margin: 0 auto; }
+  .bg-scene { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: url('/assets/games/life/bg-scene.png') center/cover no-repeat;
+    filter: brightness(0.25) blur(2px); z-index: 0; }
+  .content { position: relative; z-index: 1; }
+  .board-wrap { background: #0a0d0688; border: 2px solid #33ff3344; border-radius: 8px; padding: 6px;
+    margin-bottom: 12px; display: flex; justify-content: center;
+    backdrop-filter: blur(4px); box-shadow: 0 0 30px rgba(50,255,50,0.05); }
+  .lf-grid { display: grid; grid-template-columns: repeat(20, 22px); grid-template-rows: repeat(20, 22px); gap: 1px; }
+  .lf-cell { border-radius: 2px; transition: background 0.1s; }
+  .lf-dead { background: #0a1a0a; }
+  .lf-alive { background: #33ff33; box-shadow: 0 0 4px rgba(50,255,50,0.5); }
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+  .controls button { background: linear-gradient(180deg, #1a3a1a, #0a1a0a);
+    border: 1px solid #33ff33; border-radius: 6px; color: #33ff33;
+    font-family: inherit; font-size: 13px; padding: 6px 16px; cursor: pointer;
+    text-transform: uppercase; letter-spacing: 1px; }
+  .controls button:hover { color: #88ff88; box-shadow: 0 0 8px rgba(50,255,50,0.2); }
+  .controls button:disabled { opacity: 0.3; }
+  #status-line { color: #33ff33; font-size: 13px; margin-bottom: 8px; text-align: center; font-family: 'Courier New', monospace; }
+  .speed-label { color: #33ff3366; font-size: 12px; }
+  .engine-tag { background: #0a1a0a; color: #33ff33; font-size: 10px; padding: 2px 8px;
+    border-radius: 4px; margin-left: 12px; border: 1px solid #33ff3344; }
+</style>
+<script src="/web/game-engine.js"></script>
+</head>
+<body>
+<div class="bg-scene"></div>
+<nav class="topbar" style="background:#0a0d06;border-color:#33ff3322">
+  <span class="topbar-logo" style="color:#33ff33">&#x2588; CODEX</span>
+  <a href="/#games" class="tab-btn" style="color:#33ff3366">&#x2190; Games</a>
+  <span class="tab-btn active" style="color:#33ff33;border-color:#33ff33">Conway's Life</span>
+  <span class="engine-tag">Codex VM</span>
+</nav>
+<div class="content game-page">
+  <div class="controls">
+    <button onclick="startGame()">&#x25B6; RUN</button>
+    <button id="btn-pause" onclick="togglePause()" disabled>&#x23F8; HALT</button>
+    <button id="btn-step" onclick="stepOnce()" disabled>&#x23ED; STEP</button>
+    <button onclick="resetGame()">&#x21BB; SEED</button>
+    <span class="speed-label">FREQ:</span>
+    <input type="range" id="speed" min="1" max="10" value="7" style="width:80px;accent-color:#33ff33" oninput="updateSpeed()">
+  </div>
+  <div id="status-line">SYSTEM READY. AWAITING SEED.</div>
+  <div class="board-wrap"><div class="lf-grid" id="board"></div></div>
+  <details style="background:#0a1a0a99;border:1px solid #33ff3322;border-radius:8px;padding:16px;margin-top:12px;color:#33ff3388;font-size:13px;line-height:1.6">
+    <summary style="color:#33ff33;cursor:pointer;font-weight:bold;font-size:14px">How to Play Conway's Life</summary>
+    <p>Conway's Game of Life. Each cell is alive or dead. A dead cell with exactly 3 alive neighbors becomes alive. An alive cell with 2 or 3 alive neighbors survives, otherwise it dies. 20x20 toroidal grid (edges wrap). The AI seeds an initial pattern and steps through generations.</p>
+  </details>
+</div>
+<script>
+var state,running=false,paused=false,timer,delay=80;
+function updateSpeed(){var v=parseInt(document.getElementById('speed').value);delay=[2000,1200,800,500,350,250,150,80,30,5][v-1]||80}
+async function api(p){try{var r=await fetch(p);return r.json()}catch(e){document.getElementById('status-line').textContent='Connection error';return null}}
+function render(s){var h='';for(var i=0;i<400;i++){h+='<div class="lf-cell '+(s.cells[i]?'lf-alive':'lf-dead')+'"></div>'}document.getElementById('board').innerHTML=h;document.getElementById('status-line').textContent='GEN '+s.gen+' | POPULATION: '+s.alive+' | STATUS: RUNNING'}
+async function resetGame(){clearTimeout(timer);running=false;paused=false;state=await api('/api/life/new?seed='+(Date.now()&0x7FFFFFFF));if(state)render(state);document.getElementById('status-line').textContent='SYSTEM READY. SEED LOADED.';document.getElementById('btn-pause').disabled=true;document.getElementById('btn-step').disabled=true}
+async function startGame(){await resetGame();running=true;document.getElementById('btn-pause').disabled=false;document.getElementById('btn-step').disabled=false;updateSpeed();scheduleTick()}
+function togglePause(){if(!running)return;paused=!paused;document.getElementById('btn-pause').textContent=paused?'▶ RUN':'⏸ HALT';if(!paused)scheduleTick()}
+function scheduleTick(){if(!paused&&running)timer=setTimeout(tick,delay)}
+async function stepOnce(){if(running)await tick()}
+async function tick(){if(!running||!state)return;state=await api('/api/life/step');if(!state){running=false;return}render(state);scheduleTick()}
+updateSpeed();resetGame();
+</script>
+</body>
+</html>

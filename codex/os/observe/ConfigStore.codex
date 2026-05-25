@@ -1,0 +1,98 @@
+Chapter: ConfigStore
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+  cites Foreword chapter TextSearch
+
+ A ConfigStore holds typed key-value configuration (text, integer,
+ boolean) in a HAMT, with lookup, update, and prefix-search
+ operations for OS and service configuration.
+
+ We say:
+
+Section: Config Types
+
+  ConfigValue =
+    | CfgText (Text)
+    | CfgInt (Integer)
+    | CfgBool (Boolean)
+
+  ConfigStore = record {
+    entries : HamtMap ConfigValue,
+    count : Integer between 0 and 65535
+  }
+
+Section: Store Operations
+
+  config-empty : ConfigStore
+  config-empty = ConfigStore { entries = hamt-empty, count = 0 }
+
+  config-set-text : ConfigStore, Text, Text -> ConfigStore
+  config-set-text (store) (key) (val) =
+    let had = hamt-contains (store.entries) key
+    in ConfigStore { entries = hamt-set (store.entries) key (CfgText val), count = if had then store.count else store.count + 1 }
+
+  config-set-int : ConfigStore, Text, Integer -> ConfigStore
+  config-set-int (store) (key) (val) =
+    let had = hamt-contains (store.entries) key
+    in ConfigStore { entries = hamt-set (store.entries) key (CfgInt val), count = if had then store.count else store.count + 1 }
+
+  config-set-bool : ConfigStore, Text, Boolean -> ConfigStore
+  config-set-bool (store) (key) (val) =
+    let had = hamt-contains (store.entries) key
+    in ConfigStore { entries = hamt-set (store.entries) key (CfgBool val), count = if had then store.count else store.count + 1 }
+
+Section: Retrieval
+
+  config-get : ConfigStore, Text -> Maybe ConfigValue
+  config-get (store) (key) = hamt-get (store.entries) key
+
+  config-get-text : ConfigStore, Text, Text -> Text
+  config-get-text (store) (key) (default) =
+    let found = hamt-get (store.entries) key
+    in when found
+      is Just (v) -> when v
+        is CfgText (t) -> t
+        is otherwise -> default
+      is None -> default
+
+  config-get-int : ConfigStore, Text, Integer -> Integer
+  config-get-int (store) (key) (default) =
+    let found = hamt-get (store.entries) key
+    in when found
+      is Just (v) -> when v
+        is CfgInt (n) -> n
+        is otherwise -> default
+      is None -> default
+
+  config-get-bool : ConfigStore, Text, Boolean -> Boolean
+  config-get-bool (store) (key) (default) =
+    let found = hamt-get (store.entries) key
+    in when found
+      is Just (v) -> when v
+        is CfgBool (b) -> b
+        is otherwise -> default
+      is None -> default
+
+Section: Queries
+
+  config-has : ConfigStore, Text -> Boolean
+  config-has (store) (key) = hamt-contains (store.entries) key
+
+  config-count : ConfigStore -> Integer
+  config-count (store) = store.count
+
+  config-remove : ConfigStore, Text -> ConfigStore
+  config-remove (store) (key) =
+    if hamt-contains (store.entries) key then
+      ConfigStore { entries = hamt-remove (store.entries) key, count = store.count - 1 }
+    else store
+
+Section: Formatting
+
+  format-config-value : ConfigValue -> Text
+  format-config-value (v) = when v
+    is CfgText (t) -> "\"" & t & "\""
+    is CfgInt (n) -> show n
+    is CfgBool (b) -> if b then "true" else "false"
+
+Page 1

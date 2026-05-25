@@ -1,0 +1,124 @@
+Chapter: Collision
+
+ 2D and 3D collision detection primitives. AABB, sphere, point-in-box,
+ and separating axis tests. Fixed-point (scale 1000). Returns contact
+ normal and penetration depth for resolution.
+
+ We say:
+
+Section: Results
+  CollisionResult = record {
+    collides : Boolean,
+    penetration : Integer,
+    normal-x : Integer,
+    normal-y : Integer,
+    normal-z : Integer
+  }
+
+  col-no-collision : CollisionResult
+  col-no-collision = CollisionResult { collides = False, penetration = 0, normal-x = 0, normal-y = 0, normal-z = 0 }
+
+Section: AABB
+  AABB = record {
+    aabb-x : Integer, aabb-y : Integer, aabb-z : Integer,
+    aabb-hw : Integer, aabb-hh : Integer, aabb-hd : Integer
+  }
+
+  aabb-new : Integer, Integer, Integer, Integer, Integer, Integer -> AABB
+  aabb-new (x) (y) (z) (hw) (hh) (hd) = AABB { aabb-x = x, aabb-y = y, aabb-z = z, aabb-hw = hw, aabb-hh = hh, aabb-hd = hd }
+
+  col-aabb-aabb : AABB, AABB -> CollisionResult
+  col-aabb-aabb (a) (b) =
+    let dx = col-abs (a.aabb-x - b.aabb-x)
+    in let dy = col-abs (a.aabb-y - b.aabb-y)
+    in let dz = col-abs (a.aabb-z - b.aabb-z)
+    in let ox = a.aabb-hw + b.aabb-hw - dx
+    in let oy = a.aabb-hh + b.aabb-hh - dy
+    in let oz = a.aabb-hd + b.aabb-hd - dz
+    in if ox <= 0 then col-no-collision
+    else if oy <= 0 then col-no-collision
+    else if oz <= 0 then col-no-collision
+    else if ox <= oy then if ox <= oz then CollisionResult { collides = True, penetration = ox, normal-x = col-sign (b.aabb-x - a.aabb-x), normal-y = 0, normal-z = 0 }
+      else CollisionResult { collides = True, penetration = oz, normal-x = 0, normal-y = 0, normal-z = col-sign (b.aabb-z - a.aabb-z) }
+    else if oy <= oz then CollisionResult { collides = True, penetration = oy, normal-x = 0, normal-y = col-sign (b.aabb-y - a.aabb-y), normal-z = 0 }
+    else CollisionResult { collides = True, penetration = oz, normal-x = 0, normal-y = 0, normal-z = col-sign (b.aabb-z - a.aabb-z) }
+
+Section: Sphere
+  Sphere = record {
+    sp-x : Integer, sp-y : Integer, sp-z : Integer,
+    sp-radius : Integer
+  }
+
+  sphere-new : Integer, Integer, Integer, Integer -> Sphere
+  sphere-new (x) (y) (z) (r) = Sphere { sp-x = x, sp-y = y, sp-z = z, sp-radius = r }
+
+  col-sphere-sphere : Sphere, Sphere -> CollisionResult
+  col-sphere-sphere (a) (b) =
+    let dx = b.sp-x - a.sp-x
+    in let dy = b.sp-y - a.sp-y
+    in let dz = b.sp-z - a.sp-z
+    in let dist-sq = dx * dx + dy * dy + dz * dz
+    in let min-dist = a.sp-radius + b.sp-radius
+    in if dist-sq > min-dist * min-dist then col-no-collision
+    else let dist = col-isqrt dist-sq
+    in let pen = min-dist - dist
+    in if dist == 0 then CollisionResult { collides = True, penetration = pen, normal-x = 0, normal-y = 1000, normal-z = 0 }
+    else CollisionResult { collides = True, penetration = pen, normal-x = dx * 1000 / dist, normal-y = dy * 1000 / dist, normal-z = dz * 1000 / dist }
+
+  col-sphere-aabb : Sphere, AABB -> CollisionResult
+  col-sphere-aabb (s) (b) =
+    let cx = col-clamp (s.sp-x) (b.aabb-x - b.aabb-hw) (b.aabb-x + b.aabb-hw)
+    in let cy = col-clamp (s.sp-y) (b.aabb-y - b.aabb-hh) (b.aabb-y + b.aabb-hh)
+    in let cz = col-clamp (s.sp-z) (b.aabb-z - b.aabb-hd) (b.aabb-z + b.aabb-hd)
+    in let dx = s.sp-x - cx
+    in let dy = s.sp-y - cy
+    in let dz = s.sp-z - cz
+    in let dist-sq = dx * dx + dy * dy + dz * dz
+    in if dist-sq > s.sp-radius * s.sp-radius then col-no-collision
+    else let dist = col-isqrt dist-sq
+    in let pen = s.sp-radius - dist
+    in if dist == 0 then CollisionResult { collides = True, penetration = pen, normal-x = 0, normal-y = 1000, normal-z = 0 }
+    else CollisionResult { collides = True, penetration = pen, normal-x = dx * 1000 / dist, normal-y = dy * 1000 / dist, normal-z = dz * 1000 / dist }
+
+Section: 2D Circle
+  Circle2D = record {
+    cx : Integer, cy : Integer,
+    cr : Integer
+  }
+
+  col-circle-circle : Circle2D, Circle2D -> Boolean
+  col-circle-circle (a) (b) =
+    let dx = b.cx - a.cx
+    in let dy = b.cy - a.cy
+    in let min-dist = a.cr + b.cr
+    in dx * dx + dy * dy <= min-dist * min-dist
+
+  col-point-in-rect : Integer, Integer, Integer, Integer, Integer, Integer -> Boolean
+  col-point-in-rect (px) (py) (rx) (ry) (rw) (rh) =
+    px >= rx & px < rx + rw & py >= ry & py < ry + rh
+
+Section: Helpers
+  col-abs : Integer -> Integer
+  col-abs (n) = if n < 0 then -n else n
+
+  col-sign : Integer -> Integer
+  col-sign (n) = if n > 0 then 1000 else if n < 0 then 0 - 1000 else 0
+
+  col-clamp : Integer, Integer, Integer -> Integer
+  col-clamp (v) (lo) (hi) = if v < lo then lo else if v > hi then hi else v
+
+  col-isqrt : Integer -> Integer
+  col-isqrt (n) = if n <= 0 then 0 else col-isqrt-loop n (n / 2 + 1)
+
+  col-isqrt-loop : Integer, Integer -> Integer
+  col-isqrt-loop (n) (guess) =
+    let next = (guess + n / guess) / 2
+    in if next >= guess then guess else col-isqrt-loop n next
+
+Section: Formatting
+  format-collision : CollisionResult -> Text
+  format-collision (c) =
+    if c.collides then "HIT pen=" & show (c.penetration) & " n=(" & show (c.normal-x) & "," & show (c.normal-y) & "," & show (c.normal-z) & ")"
+    else "MISS"
+
+Page 1

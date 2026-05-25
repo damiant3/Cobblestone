@@ -1,0 +1,120 @@
+Chapter: Discussion
+  cites Works chapter Annotation
+  cites Foreword chapter FactStore
+  cites Foreword chapter Hamt
+  cites Foreword chapter Maybe
+  cites Foreword chapter Sha256
+
+ Threaded discussions attached to annotation targets. A Discussion
+ is an ordered sequence of posts, each content-addressed. Discussions
+ are the discourse mechanism from the Codex repository protocol —
+ arguments attached to specific definitions, not vague commentary.
+
+ We say:
+
+Section: Post
+
+  Post = record {
+    hash : Text,
+    thread-id : Text,
+    author : Text,
+    body : Text,
+    timestamp : Integer,
+    parent-hash : Text
+  }
+
+  create-post : Text, Text, Text, Integer, Text -> Post
+  create-post (thread-id) (author) (body) (ts) (parent) =
+    let content = thread-id & "|" & author & "|" & body & "|" & parent
+    in let hash = sha256-to-hex (sha256 (text-to-bytes content))
+    in Post { hash = hash, thread-id = thread-id, author = author, body = body, timestamp = ts, parent-hash = parent }
+
+  create-root-post : Text, Text, Text, Integer -> Post
+  create-root-post (thread-id) (author) (body) (ts) =
+    create-post thread-id author body ts ""
+
+Section: Thread
+
+ A thread is a discussion anchored to an annotation target.
+ Posts form a tree via parent-hash. The thread-id is the
+ content hash of the target key, giving stable identity.
+
+  Thread = record {
+    thread-id : Text,
+    target : AnnotationTarget,
+    posts : List Post,
+    post-count : Integer between 0 and 4294967295
+  }
+
+  create-thread : AnnotationTarget -> Thread
+  create-thread (target) =
+    let tid = sha256-to-hex (sha256 (text-to-bytes (target-key target)))
+    in Thread { thread-id = tid, target = target, posts = [], post-count = 0 }
+
+  thread-add-post : Thread, Post -> Thread
+  thread-add-post (thread) (post) =
+    Thread {
+      thread-id = thread.thread-id,
+      target = thread.target,
+      posts = list-snoc (thread.posts) post,
+      post-count = thread.post-count + 1
+    }
+
+  thread-reply : Thread, Text, Text, Integer -> Thread
+  thread-reply (thread) (author) (body) (ts) =
+    let parent = if thread.post-count == 0 then ""
+                 else (list-at (thread.posts) (thread.post-count - 1)).hash
+    in let post = create-post (thread.thread-id) author body ts parent
+    in thread-add-post thread post
+
+Section: Discussion Store
+
+ Maps thread-ids to threads. Keyed by target; you can find
+ all discussions on a given definition.
+
+  DiscussionStore = record {
+    threads : HamtMap Thread,
+    by-target : HamtMap Text,
+    count : Integer between 0 and 4294967295
+  }
+
+  discussion-store-empty : DiscussionStore = DiscussionStore {
+    threads = hamt-empty,
+    by-target = hamt-empty,
+    count = 0
+  }
+
+  discussion-open : DiscussionStore, AnnotationTarget -> DiscussionStore
+  discussion-open (store) (target) =
+    let thread = create-thread target
+    in let key = target-key target
+    in if hamt-contains (store.by-target) key then store
+    else DiscussionStore {
+      threads = hamt-set (store.threads) (thread.thread-id) thread,
+      by-target = hamt-set (store.by-target) key (thread.thread-id),
+      count = store.count + 1
+    }
+
+  discussion-post : DiscussionStore, Text, Text, Text, Integer -> DiscussionStore
+  discussion-post (store) (thread-id) (author) (body) (ts) =
+    when hamt-get (store.threads) thread-id
+      is None -> store
+      is Just (thread) ->
+        let updated = thread-reply thread author body ts
+        in DiscussionStore {
+          threads = hamt-set (store.threads) thread-id updated,
+          by-target = store.by-target,
+          count = store.count
+        }
+
+  discussion-for-target : DiscussionStore, AnnotationTarget -> Maybe Thread
+  discussion-for-target (store) (target) =
+    let key = target-key target
+    in when hamt-get (store.by-target) key
+      is None -> None
+      is Just (tid) -> hamt-get (store.threads) tid
+
+  discussion-count : DiscussionStore -> Integer
+  discussion-count (store) = store.count
+
+Page 1

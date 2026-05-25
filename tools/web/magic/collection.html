@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CodexMagic - Collection</title>
+  <link rel="stylesheet" href="/web/magic/magic.css">
+  <style>
+    .page { display: flex; gap: 16px; padding: 16px 24px; height: calc(100vh - 50px); }
+    .collection-panel { flex: 2; overflow-y: auto; }
+    .deck-panel { flex: 1; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; overflow-y: auto; }
+    .filter-bar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+    .filter-bar select, .filter-bar input { background: var(--bg); color: var(--text); border: 1px solid var(--border); padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+    .card-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+    .deck-list { list-style: none; }
+    .deck-list li { padding: 4px 0; font-size: 13px; display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); cursor: pointer; }
+    .deck-list li:hover { color: var(--red); }
+    .deck-stats { margin-top: 12px; font-size: 12px; color: var(--text-dim); }
+    .deck-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .deck-header h3 { font-size: 14px; }
+    .valid { color: var(--green); }
+    .invalid { color: var(--red); }
+    .mana-curve { display: flex; gap: 2px; align-items: flex-end; height: 60px; margin-top: 8px; }
+    .curve-bar { background: var(--blue); min-width: 20px; border-radius: 2px 2px 0 0; text-align: center; font-size: 9px; color: var(--text-dim); }
+    .curve-label { font-size: 9px; text-align: center; color: var(--text-dim); margin-top: 2px; }
+    .collection-stats { font-size: 12px; color: var(--text-dim); margin-bottom: 8px; }
+    .acct-name { font-weight: bold; margin-right: 12px; }
+    .acct-rank { color: var(--blue); margin-right: 12px; }
+    .acct-balance { color: var(--gold); }
+    #account-bar { font-size: 13px; padding: 4px 0; }
+    .btn { background: var(--border); color: var(--text); border: 1px solid var(--border); padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+    .btn:hover { background: #3d444d; }
+  </style>
+</head>
+<body>
+<div class="topbar">
+  <h1>CodexMagic</h1>
+  <div class="nav">
+    <a href="/web/magic/game.html">Game</a>
+    <a href="/web/magic/collection.html" class="active">Collection</a>
+    <a href="/web/magic/store.html">Store</a>
+    <a href="/web/magic/queue.html">Queue</a>
+    <a href="/web/magic/profile.html">Profile</a>
+  </div>
+</div>
+
+<div class="page">
+  <div class="collection-panel">
+    <div id="account-bar">Loading...</div>
+    <div class="filter-bar">
+      <select id="filter-color" onchange="filterCards()">
+        <option value="">All Colors</option>
+        <option value="W">White</option><option value="U">Blue</option>
+        <option value="B">Black</option><option value="R">Red</option>
+        <option value="G">Green</option><option value="C">Colorless</option>
+      </select>
+      <select id="filter-type" onchange="filterCards()">
+        <option value="">All Types</option>
+        <option value="Creature">Creature</option><option value="Instant">Instant</option>
+        <option value="Sorcery">Sorcery</option><option value="Enchantment">Enchantment</option>
+        <option value="Artifact">Artifact</option><option value="Land">Land</option>
+      </select>
+      <select id="filter-rarity" onchange="filterCards()">
+        <option value="">All Rarities</option>
+        <option value="Common">Common</option><option value="Uncommon">Uncommon</option>
+        <option value="Rare">Rare</option><option value="Mythic">Mythic</option>
+      </select>
+      <input type="text" id="search" placeholder="Search..." oninput="filterCards()">
+    </div>
+    <div class="collection-stats" id="collection-stats">Loading pool...</div>
+    <div class="card-grid" id="card-grid"></div>
+  </div>
+
+  <div class="deck-panel">
+    <div class="deck-header">
+      <h3>Deck Builder</h3>
+      <span id="deck-valid" class="valid"></span>
+    </div>
+    <div style="margin-bottom: 8px;">
+      <label style="font-size:12px; color:var(--text-dim);">General:</label>
+      <select id="general-select" onchange="onGeneralChange()" style="width:100%; background:var(--bg); color:var(--text); border:1px solid var(--border); padding:4px; border-radius:4px; font-size:12px;">
+      </select>
+    </div>
+    <div id="deck-count" style="font-size:13px; margin-bottom:8px;">0 cards</div>
+    <ul class="deck-list" id="deck-list"></ul>
+    <div class="mana-curve" id="mana-curve"></div>
+    <div style="margin-top:12px; display:flex; gap:8px;">
+      <button class="btn" onclick="autofillDeck()" style="flex:1;">Auto-fill</button>
+      <button class="btn" onclick="clearDeck()" style="flex:1;">Clear</button>
+      <button class="btn" onclick="validateDeck()" style="flex:1;">Validate</button>
+    </div>
+  </div>
+</div>
+
+<script src="/web/magic/card-render.js"></script>
+<script src="/web/magic/magic.js"></script>
+<script>
+var pool = [];
+var deck = [];
+var generals = [];
+
+async function init() {
+  await ensureAccount();
+  var data = await apiCall('/pool');
+  if (data && data.cards) {
+    pool = data.cards;
+    document.getElementById('collection-stats').textContent = pool.length + ' cards in pool';
+    renderPool(pool);
+  }
+  var gdata = await apiCall('/store/generals');
+  if (gdata && gdata.generals) {
+    generals = gdata.generals;
+    var sel = document.getElementById('general-select');
+    sel.innerHTML = '';
+    for (var g of generals) {
+      var opt = document.createElement('option');
+      opt.value = g.id;
+      opt.textContent = g.name + ' (' + g.power + '/' + g.toughness + '/' + g.defense + ')';
+      sel.appendChild(opt);
+    }
+  }
+}
+
+function filterCards() {
+  var type = document.getElementById('filter-type').value;
+  var rarity = document.getElementById('filter-rarity').value;
+  var search = document.getElementById('search').value.toLowerCase();
+  var color = document.getElementById('filter-color').value;
+  var filtered = pool.filter(function(c) {
+    if (type && c.type !== type) return false;
+    if (rarity && c.rarity !== rarity) return false;
+    if (search && c.name.toLowerCase().indexOf(search) === -1) return false;
+    if (color) {
+      if (!c.cost) return color === 'C';
+      if (color === 'W' && !c.cost.white) return false;
+      if (color === 'U' && !c.cost.blue) return false;
+      if (color === 'B' && !c.cost.black) return false;
+      if (color === 'R' && !c.cost.red) return false;
+      if (color === 'G' && !c.cost.green) return false;
+      if (color === 'C') {
+        var total = (c.cost.white||0)+(c.cost.blue||0)+(c.cost.black||0)+(c.cost.red||0)+(c.cost.green||0);
+        if (total > 0) return false;
+      }
+    }
+    return true;
+  });
+  renderPool(filtered);
+}
+
+function renderPool(cards) {
+  var grid = document.getElementById('card-grid');
+  grid.innerHTML = '';
+  for (var c of cards) {
+    var el = renderCard(c, { size: 'normal', onClick: addToDeck });
+    grid.appendChild(el);
+  }
+  if (cards.length === 0) {
+    grid.innerHTML = '<div style="color:var(--text-dim); padding:24px;">No cards match filters</div>';
+  }
+}
+
+function addToDeck(card) {
+  var id = card.id !== undefined ? card.id : 0;
+  deck.push(id);
+  renderDeck();
+}
+
+function removeFromDeck(idx) {
+  deck.splice(idx, 1);
+  renderDeck();
+}
+
+function clearDeck() { deck = []; renderDeck(); }
+
+async function autofillDeck() {
+  var gen = document.getElementById('general-select').value;
+  var data = await apiCall('/deck/generate?general=' + gen + '&seed=' + Date.now());
+  if (data && data.cards) {
+    deck = data.cards;
+    renderDeck();
+  }
+}
+
+async function validateDeck() {
+  var gen = document.getElementById('general-select').value;
+  var data = await apiCall('/deck/validate?general=' + gen + '&cards=' + deck.join(','));
+  var el = document.getElementById('deck-valid');
+  if (data && data.valid) {
+    el.textContent = 'VALID';
+    el.className = 'valid';
+  } else {
+    el.textContent = data ? data.reason : 'INVALID';
+    el.className = 'invalid';
+  }
+}
+
+function onGeneralChange() {
+  document.getElementById('deck-valid').textContent = '';
+}
+
+function renderDeck() {
+  var list = document.getElementById('deck-list');
+  var counts = {};
+  var order = [];
+  for (var id of deck) {
+    if (!counts[id]) { counts[id] = 0; order.push(id); }
+    counts[id]++;
+  }
+  list.innerHTML = '';
+  for (var i = 0; i < order.length; i++) {
+    var id = order[i];
+    var card = pool.find(function(c) { return c.id === parseInt(id); });
+    var li = document.createElement('li');
+    li.innerHTML = '<span>' + (card ? card.name : 'Card #' + id) + '</span><span class="count">x' + counts[id] + '</span>';
+    li.onclick = (function(cardId) { return function() { var idx = deck.indexOf(cardId); if (idx >= 0) removeFromDeck(idx); }; })(parseInt(id));
+    list.appendChild(li);
+  }
+  document.getElementById('deck-count').textContent = deck.length + ' cards';
+  renderManaCurve();
+  document.getElementById('deck-valid').textContent = '';
+}
+
+function renderManaCurve() {
+  var curve = document.getElementById('mana-curve');
+  var buckets = [0,0,0,0,0,0,0,0];
+  for (var id of deck) {
+    var card = pool.find(function(c) { return c.id === parseInt(id); });
+    if (card && card.cost) {
+      var cmc = (card.cost.white||0)+(card.cost.blue||0)+(card.cost.black||0)+(card.cost.red||0)+(card.cost.green||0)+(card.cost.generic||0);
+      var bucket = cmc > 7 ? 7 : cmc;
+      buckets[bucket]++;
+    }
+  }
+  var max = Math.max.apply(null, buckets) || 1;
+  curve.innerHTML = '';
+  for (var i = 0; i < 8; i++) {
+    var h = buckets[i] / max * 50;
+    var div = document.createElement('div');
+    div.style.display = 'flex';
+    div.style.flexDirection = 'column';
+    div.style.alignItems = 'center';
+    div.innerHTML = '<div class="curve-bar" style="height:' + Math.max(h, 2) + 'px">' + (buckets[i] || '') + '</div><div class="curve-label">' + (i < 7 ? i : '7+') + '</div>';
+    curve.appendChild(div);
+  }
+}
+
+init();
+</script>
+</body>
+</html>

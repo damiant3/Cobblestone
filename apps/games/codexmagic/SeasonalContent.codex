@@ -1,0 +1,314 @@
+Chapter: SeasonalContent
+  cites CodexMagic chapter GameRegistry
+  cites CodexMagic chapter RPGEngine
+  cites CodexMagic chapter CampaignWorld
+  cites CodexMagic chapter PlanarExchange
+  cites CodexMagic chapter Clan
+  cites CodexMagic chapter Token
+
+ Seasonal content rotation that spans all games in the multiverse.
+ Seasons are 3-month periods with unique themes, rewards, challenges,
+ and cross-game events. A season might add new cards, new dungeon
+ themes, new portal destinations, and a seasonal leaderboard that
+ tracks performance across all planes simultaneously.
+
+ Seasons create FOMO (stuff goes away), drive engagement (seasonal
+ rewards), and keep the economy fresh (new items entering, old items
+ becoming vintage). The seasonal pass is the primary recurring
+ revenue driver alongside ManaCoin sales.
+
+ We say:
+
+Section: Season Definition
+
+  MultiSeason = record {
+    season-id : Integer,
+    name : Text,
+    theme : SeasonTheme,
+    start-time : Integer,
+    end-time : Integer,
+    status : SeasonStatus,
+    pass-tiers : List PassTier,
+    challenges : List SeasonChallenge,
+    rewards-pool : List SeasonReward,
+    cross-game-events : List CrossGameEvent,
+    leaderboard : List LeaderboardEntry,
+    total-participants : Integer,
+    total-revenue : Integer
+  }
+
+  SeasonTheme = record {
+    theme-name : Text,
+    color-palette : Text,
+    art-style : Text,
+    lore : Text,
+    featured-game : Integer,
+    featured-clan : Integer
+  }
+
+  SeasonStatus =
+    | SeasonUpcoming
+    | SeasonActive
+    | SeasonEnding
+    | SeasonComplete
+    | SeasonArchived
+
+  season-status-name : SeasonStatus -> Text
+  season-status-name (s) =
+    when s
+      is SeasonUpcoming -> "Upcoming"
+      is SeasonActive -> "Active"
+      is SeasonEnding -> "Ending Soon"
+      is SeasonComplete -> "Complete"
+      is SeasonArchived -> "Archived"
+
+Section: Season Pass — The battle pass
+
+  PassTier = record {
+    tier-num : Integer,
+    xp-required : Integer,
+    free-reward : Integer,
+    premium-reward : Integer,
+    description : Text
+  }
+
+  PlayerSeasonProgress = record {
+    player-id : Integer,
+    season-id : Integer,
+    current-tier : Integer,
+    total-xp : Integer,
+    premium-pass : Boolean,
+    challenges-completed : Integer,
+    rewards-claimed : List Integer,
+    games-played-this-season : Integer,
+    last-played : Integer
+  }
+
+  season-progress-new : Integer, Integer -> PlayerSeasonProgress
+  season-progress-new (player-id) (season-id) =
+    PlayerSeasonProgress {
+      player-id = player-id,
+      season-id = season-id,
+      current-tier = 0,
+      total-xp = 0,
+      premium-pass = False,
+      challenges-completed = 0,
+      rewards-claimed = [],
+      games-played-this-season = 0,
+      last-played = 0
+    }
+
+  grant-season-xp : PlayerSeasonProgress, Integer, List PassTier -> PlayerSeasonProgress
+  grant-season-xp (progress) (xp) (tiers) =
+    let new-xp = progress.total-xp + xp
+    in let new-tier = compute-tier new-xp tiers 0 (list-length tiers)
+    in PlayerSeasonProgress {
+      player-id = progress.player-id,
+      season-id = progress.season-id,
+      current-tier = new-tier,
+      total-xp = new-xp,
+      premium-pass = progress.premium-pass,
+      challenges-completed = progress.challenges-completed,
+      rewards-claimed = progress.rewards-claimed,
+      games-played-this-season = progress.games-played-this-season + 1,
+      last-played = 0
+    }
+
+  compute-tier : Integer, List PassTier, Integer, Integer -> Integer
+  compute-tier (xp) (tiers) (i) (len) =
+    if i >= len then len
+    else let t = list-at tiers i
+    in if xp < t.xp-required then i
+    else compute-tier xp tiers (i + 1) len
+
+Section: Season Challenges — Cross-game objectives
+
+  SeasonChallenge = record {
+    challenge-id : Integer,
+    name : Text,
+    description : Text,
+    challenge-type : ChallengeType,
+    target-count : Integer,
+    xp-reward : Integer,
+    coin-reward : Integer,
+    item-reward : Integer,
+    game-filter : Integer,
+    repeatable : Boolean
+  }
+
+  ChallengeType =
+    | ChalWinGames (Integer)
+    | ChalPlayGames (Integer)
+    | ChalClearDungeons (Integer)
+    | ChalTradeitems (Integer)
+    | ChalConvertItems (Integer)
+    | ChalUsePortals (Integer)
+    | ChalWinSubgames (Integer)
+    | ChalEarnGold (Integer)
+    | ChalDefeatBoss
+    | ChalInvadeOther
+    | ChalCompleteTournament
+    | ChalReachRating (Integer)
+
+Section: Cross-Game Events — Seasonal special events
+
+  CrossGameEvent = record {
+    event-id : Integer,
+    name : Text,
+    description : Text,
+    event-type : EventType,
+    games-affected : List Integer,
+    start-time : Integer,
+    end-time : Integer,
+    active : Boolean,
+    participation : Integer,
+    modifiers : List EventModifier
+  }
+
+  EventType =
+    | DoubleXP
+    | DoubleGold
+    | BossRush
+    | PortalStorm
+    | TreasureHunt
+    | InvasionWeek
+    | TournamentSeries
+    | CustomEvent (Text)
+
+  EventModifier = record {
+    modifier-name : Text,
+    multiplier : Integer,
+    applies-to : Text
+  }
+
+Section: Seasonal Rewards
+
+  SeasonReward = record {
+    reward-id : Integer,
+    tier : Integer,
+    reward-type : RewardType,
+    value : Integer,
+    name : Text,
+    exclusive : Boolean
+  }
+
+  RewardType =
+    | RewardManaCoin
+    | RewardCard (Integer)
+    | RewardItem (Integer)
+    | RewardCosmetic (Text)
+    | RewardTitle (Text)
+    | RewardPack
+    | RewardDungeonKey (Integer)
+    | RewardPortalPass
+
+Section: Leaderboards — Cross-plane rankings
+
+  LeaderboardEntry = record {
+    player-id : Integer,
+    score : Integer,
+    games-played : Integer,
+    planes-visited : Integer,
+    dungeons-cleared : Integer,
+    items-traded : Integer,
+    rank : Integer
+  }
+
+  compute-season-score : PlayerSeasonProgress, Integer, Integer, Integer -> Integer
+  compute-season-score (progress) (wins) (dungeons) (trades) =
+    let base = progress.total-xp
+    in let win-bonus = wins * 10
+    in let dungeon-bonus = dungeons * 25
+    in let trade-bonus = trades * 5
+    in base + win-bonus + dungeon-bonus + trade-bonus
+
+  update-leaderboard : List LeaderboardEntry, Integer, Integer -> List LeaderboardEntry
+  update-leaderboard (board) (player-id) (new-score) =
+    update-lb-entry board player-id new-score 0 (list-length board) []
+
+  update-lb-entry : List LeaderboardEntry, Integer, Integer, Integer, Integer, List LeaderboardEntry -> List LeaderboardEntry
+  update-lb-entry (board) (pid) (score) (i) (len) (acc) =
+    if i >= len then
+      list-push acc (LeaderboardEntry { player-id = pid, score = score, games-played = 1, planes-visited = 0, dungeons-cleared = 0, items-traded = 0, rank = len + 1 })
+    else let e = list-at board i
+    in if e.player-id == pid then
+      update-lb-entry board pid score (i + 1) len (list-push acc (LeaderboardEntry { player-id = e.player-id, score = score, games-played = e.games-played + 1, planes-visited = e.planes-visited, dungeons-cleared = e.dungeons-cleared, items-traded = e.items-traded, rank = e.rank }))
+    else update-lb-entry board pid score (i + 1) len (list-push acc e)
+
+Section: Season Creation
+
+  create-season : Integer, Text, SeasonTheme, Integer, Integer -> MultiSeason
+  create-season (id) (name) (theme) (start) (duration) =
+    let default-tiers = build-default-tiers 0 50 []
+    in MultiSeason {
+      season-id = id,
+      name = name,
+      theme = theme,
+      start-time = start,
+      end-time = start + duration,
+      status = SeasonUpcoming,
+      pass-tiers = default-tiers,
+      challenges = [],
+      rewards-pool = [],
+      cross-game-events = [],
+      leaderboard = [],
+      total-participants = 0,
+      total-revenue = 0
+    }
+
+  build-default-tiers : Integer, Integer, List PassTier -> List PassTier
+  build-default-tiers (i) (max-tiers) (acc) =
+    if i >= max-tiers then acc
+    else let tier = PassTier { tier-num = i + 1, xp-required = (i + 1) * 100, free-reward = i * 10, premium-reward = i * 25, description = "Tier " & show (i + 1) }
+    in build-default-tiers (i + 1) max-tiers (list-push acc tier)
+
+  activate-season : MultiSeason -> MultiSeason
+  activate-season (season) =
+    MultiSeason { season-id = season.season-id, name = season.name, theme = season.theme, start-time = season.start-time, end-time = season.end-time, status = SeasonActive, pass-tiers = season.pass-tiers, challenges = season.challenges, rewards-pool = season.rewards-pool, cross-game-events = season.cross-game-events, leaderboard = season.leaderboard, total-participants = season.total-participants, total-revenue = season.total-revenue }
+
+  end-season : MultiSeason -> MultiSeason
+  end-season (season) =
+    MultiSeason { season-id = season.season-id, name = season.name, theme = season.theme, start-time = season.start-time, end-time = season.end-time, status = SeasonComplete, pass-tiers = season.pass-tiers, challenges = season.challenges, rewards-pool = season.rewards-pool, cross-game-events = season.cross-game-events, leaderboard = season.leaderboard, total-participants = season.total-participants, total-revenue = season.total-revenue }
+
+Section: Premium Pass Purchase
+
+  buy-premium-pass : PlayerSeasonProgress, Integer -> PlayerSeasonProgress
+  buy-premium-pass (progress) (time) =
+    PlayerSeasonProgress { player-id = progress.player-id, season-id = progress.season-id, current-tier = progress.current-tier, total-xp = progress.total-xp, premium-pass = True, challenges-completed = progress.challenges-completed, rewards-claimed = progress.rewards-claimed, games-played-this-season = progress.games-played-this-season, last-played = time }
+
+  pass-price : Integer
+  pass-price = 500
+
+Section: XP Sources — How players earn season XP across all games
+
+  xp-for-card-game-win : Integer
+  xp-for-card-game-win = 20
+
+  xp-for-card-game-loss : Integer
+  xp-for-card-game-loss = 5
+
+  xp-for-dungeon-floor : Integer
+  xp-for-dungeon-floor = 15
+
+  xp-for-dungeon-clear : Integer
+  xp-for-dungeon-clear = 50
+
+  xp-for-trade : Integer
+  xp-for-trade = 5
+
+  xp-for-portal-use : Integer
+  xp-for-portal-use = 10
+
+  xp-for-subgame-win : Integer
+  xp-for-subgame-win = 30
+
+  xp-for-challenge-complete : Integer
+  xp-for-challenge-complete = 100
+
+  xp-for-tournament-play : Integer
+  xp-for-tournament-play = 25
+
+  xp-for-invasion : Integer
+  xp-for-invasion = 15
+
+Page 1

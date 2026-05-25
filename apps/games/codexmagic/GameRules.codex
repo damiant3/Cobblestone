@@ -1,0 +1,374 @@
+Chapter: GameRules
+  cites CodexMagic chapter Mana
+  cites CodexMagic chapter Card
+  cites CodexMagic chapter GameState
+
+ Pluggable game rules: mulligan strategies, first-turn fairness
+ compensation, mana screw/flood remediation, turn caps, and sudden
+ death. Each mechanic is a configuration flag in the RuleSet record.
+ The engine reads the RuleSet to decide which mechanics are active.
+ Simulation toggles these to compare outcomes.
+
+ We say:
+
+Section: Rule Set
+
+  RuleSet = record {
+    mulligan-style : MulliganStyle,
+    screw-fix : ScrewFix,
+    flood-fix : FloodFix,
+    fairness : FairnessMode,
+    turn-cap : Integer,
+    sudden-death : Boolean,
+    sudden-death-base : Integer,
+    sudden-death-escalation : Integer,
+    starting-hand-size : Integer,
+    starting-life : Integer
+  }
+
+Section: Mulligan Styles
+
+  MulliganStyle =
+   | MulliganNone
+   | MulliganParis
+   | MulliganVancouver
+   | MulliganLondon
+
+  mulligan-style-name : MulliganStyle -> Text
+  mulligan-style-name (ms) =
+    when ms
+      is MulliganNone -> "None"
+      is MulliganParis -> "Paris"
+      is MulliganVancouver -> "Vancouver"
+      is MulliganLondon -> "London"
+
+Section: Screw Fix Modes
+
+  ScrewFix =
+   | ScrewFixNone
+   | ScrewFixDiscard
+   | ScrewFixDiscardColored
+
+  screw-fix-name : ScrewFix -> Text
+  screw-fix-name (sf) =
+    when sf
+      is ScrewFixNone -> "None"
+      is ScrewFixDiscard -> "Discard-for-colorless"
+      is ScrewFixDiscardColored -> "Discard-for-colored"
+
+Section: Flood Fix Modes
+
+  FloodFix =
+   | FloodFixNone
+   | FloodFixPitch2Draw1
+   | FloodFixPitch1Draw1
+
+  flood-fix-name : FloodFix -> Text
+  flood-fix-name (ff) =
+    when ff
+      is FloodFixNone -> "None"
+      is FloodFixPitch2Draw1 -> "Pitch-2-Draw-1"
+      is FloodFixPitch1Draw1 -> "Pitch-1-Draw-1"
+
+Section: Fairness Modes
+
+  FairnessMode =
+   | FairnessNone
+   | FairnessLifeBonus (Integer)
+   | FairnessLifeAndLoyalty (Integer) (Integer)
+   | FairnessCoinForSecond
+
+  fairness-name : FairnessMode -> Text
+  fairness-name (fm) =
+    when fm
+      is FairnessNone -> "None"
+      is FairnessLifeBonus (n) -> "Life+" & show n
+      is FairnessLifeAndLoyalty (l) (y) -> "Life+" & show l & "/Loyalty+" & show y
+      is FairnessCoinForSecond -> "Coin"
+
+Section: Preset Rule Sets
+
+  rules-baseline : RuleSet
+  rules-baseline = RuleSet { mulligan-style = MulliganNone, screw-fix = ScrewFixNone, flood-fix = FloodFixNone, fairness = FairnessNone, turn-cap = 50, sudden-death = False, sudden-death-base = 0, sudden-death-escalation = 0, starting-hand-size = 7, starting-life = 30 }
+
+  rules-mtg-classic : RuleSet
+  rules-mtg-classic = RuleSet { mulligan-style = MulliganLondon, screw-fix = ScrewFixNone, flood-fix = FloodFixNone, fairness = FairnessNone, turn-cap = 50, sudden-death = False, sudden-death-base = 0, sudden-death-escalation = 0, starting-hand-size = 7, starting-life = 30 }
+
+  rules-codexmagic-proposed : RuleSet
+  rules-codexmagic-proposed = RuleSet { mulligan-style = MulliganLondon, screw-fix = ScrewFixDiscard, flood-fix = FloodFixPitch2Draw1, fairness = FairnessLifeAndLoyalty 5 1, turn-cap = 12, sudden-death = True, sudden-death-base = 3, sudden-death-escalation = 1, starting-hand-size = 7, starting-life = 30 }
+
+  rules-aggressive-fix : RuleSet
+  rules-aggressive-fix = RuleSet { mulligan-style = MulliganLondon, screw-fix = ScrewFixDiscardColored, flood-fix = FloodFixPitch1Draw1, fairness = FairnessLifeAndLoyalty 7 2, turn-cap = 10, sudden-death = True, sudden-death-base = 5, sudden-death-escalation = 2, starting-hand-size = 7, starting-life = 30 }
+
+  rules-minimal-fix : RuleSet
+  rules-minimal-fix = RuleSet { mulligan-style = MulliganVancouver, screw-fix = ScrewFixDiscard, flood-fix = FloodFixNone, fairness = FairnessLifeBonus 5, turn-cap = 15, sudden-death = True, sudden-death-base = 2, sudden-death-escalation = 1, starting-hand-size = 7, starting-life = 30 }
+
+Section: Rule Application - Mulligan
+
+  apply-mulligan : GameState, RuleSet, Integer, Integer, Integer -> GameState
+  apply-mulligan (gs) (rules) (player) (mulligans) (seed) =
+    when rules.mulligan-style
+      is MulliganNone -> gs
+      is MulliganParis -> apply-paris-mulligan gs player mulligans seed
+      is MulliganVancouver -> apply-vancouver-mulligan gs player mulligans seed
+      is MulliganLondon -> apply-london-mulligan gs player mulligans seed
+
+  should-mulligan : GameState, Integer, List CardTemplate -> Boolean
+  should-mulligan (gs) (player) (templates) =
+    let p = get-player gs player
+    in let lands = count-lands-in-hand (p.hand) templates 0 (list-length (p.hand)) 0
+    in let hand-size = list-length (p.hand)
+    in if hand-size <= 4 then False
+    else if lands == 0 then True
+    else if lands == 1 then hand-size >= 7
+    else if lands >= hand-size - 1 then True
+    else False
+
+  count-lands-in-hand : List Integer, List CardTemplate, Integer, Integer, Integer -> Integer
+  count-lands-in-hand (hand) (templates) (i) (len) (acc) =
+    if i >= len then acc
+    else let card-id = list-at hand i
+    in if card-id < list-length templates then
+      let t = list-at templates card-id
+      in when t.card-type
+        is Land -> count-lands-in-hand hand templates (i + 1) len (acc + 1)
+        is otherwise -> count-lands-in-hand hand templates (i + 1) len acc
+    else count-lands-in-hand hand templates (i + 1) len acc
+
+  apply-paris-mulligan : GameState, Integer, Integer, Integer -> GameState
+  apply-paris-mulligan (gs) (player) (mulligans) (seed) =
+    let p = get-player gs player
+    in let new-hand-size = 7 - mulligans
+    in if new-hand-size < 4 then gs
+    else let gs2 = return-hand-to-library gs player
+    in let gs3 = shuffle-library gs2 player seed
+    in draw-n-from-lib gs3 player new-hand-size
+
+  apply-vancouver-mulligan : GameState, Integer, Integer, Integer -> GameState
+  apply-vancouver-mulligan (gs) (player) (mulligans) (seed) =
+    apply-paris-mulligan gs player mulligans seed
+
+  apply-london-mulligan : GameState, Integer, Integer, Integer -> GameState
+  apply-london-mulligan (gs) (player) (mulligans) (seed) =
+    let gs2 = return-hand-to-library gs player
+    in let gs3 = shuffle-library gs2 player seed
+    in let gs4 = draw-n-from-lib gs3 player 7
+    in bottom-n-cards gs4 player mulligans seed
+
+  return-hand-to-library : GameState, Integer -> GameState
+  return-hand-to-library (gs) (player) =
+    let p = get-player gs player
+    in let new-lib = append-int-to-list (p.library) (p.hand) 0 (list-length (p.hand))
+    in let p2 = PlayerState { general = p.general, mana-pool = p.mana-pool, library = new-lib, hand = [], graveyard = p.graveyard, exile = p.exile, land-drop-used = p.land-drop-used, land-drops-per-turn = p.land-drops-per-turn }
+    in set-player gs player p2
+
+  append-int-to-list : List Integer, List Integer, Integer, Integer -> List Integer
+  append-int-to-list (base) (src) (i) (len) =
+    if i >= len then base
+    else append-int-to-list (list-push base (list-at src i)) src (i + 1) len
+
+  shuffle-library : GameState, Integer, Integer -> GameState
+  shuffle-library (gs) (player) (seed) =
+    let p = get-player gs player
+    in let shuffled = fisher-yates-shuffle (p.library) seed (list-length (p.library) - 1)
+    in let p2 = PlayerState { general = p.general, mana-pool = p.mana-pool, library = shuffled, hand = p.hand, graveyard = p.graveyard, exile = p.exile, land-drop-used = p.land-drop-used, land-drops-per-turn = p.land-drops-per-turn }
+    in set-player gs player p2
+
+  fisher-yates-shuffle : List Integer, Integer, Integer -> List Integer
+  fisher-yates-shuffle (cards) (seed) (i) =
+    if i <= 0 then cards
+    else let r = rng-new (seed + i * 37)
+    in let j = rng-mod (rng-value r) (i + 1)
+    in let val-i = list-at cards i
+    in let val-j = list-at cards j
+    in let cards2 = list-set-at cards i val-j
+    in let cards3 = list-set-at cards2 j val-i
+    in fisher-yates-shuffle cards3 (seed + i * 13) (i - 1)
+
+  draw-n-from-lib : GameState, Integer, Integer -> GameState
+  draw-n-from-lib (gs) (player) (n) =
+    if n <= 0 then gs
+    else let p = get-player gs player
+    in let p2 = player-draw p
+    in let gs2 = set-player gs player p2
+    in draw-n-from-lib gs2 player (n - 1)
+
+  bottom-n-cards : GameState, Integer, Integer, Integer -> GameState
+  bottom-n-cards (gs) (player) (n) (seed) =
+    if n <= 0 then gs
+    else let p = get-player gs player
+    in if list-length (p.hand) <= 0 then gs
+    else let worst-idx = find-worst-card-idx (p.hand) (gs.templates) 0 (list-length (p.hand)) 0 999
+    in let card-id = list-at (p.hand) worst-idx
+    in let new-hand = remove-at-idx (p.hand) worst-idx 0 (list-length (p.hand)) []
+    in let p2 = PlayerState { general = p.general, mana-pool = p.mana-pool, library = list-push (p.library) card-id, hand = new-hand, graveyard = p.graveyard, exile = p.exile, land-drop-used = p.land-drop-used, land-drops-per-turn = p.land-drops-per-turn }
+    in let gs2 = set-player gs player p2
+    in bottom-n-cards gs2 player (n - 1) (seed + 1)
+
+  find-worst-card-idx : List Integer, List CardTemplate, Integer, Integer, Integer, Integer -> Integer
+  find-worst-card-idx (hand) (templates) (i) (len) (best-idx) (best-cmc) =
+    if i >= len then best-idx
+    else let card-id = list-at hand i
+    in if card-id >= list-length templates then find-worst-card-idx hand templates (i + 1) len best-idx best-cmc
+    else let t = list-at templates card-id
+    in let card-cmc = cmc (t.mana-cost)
+    in if card-cmc < best-cmc then find-worst-card-idx hand templates (i + 1) len i card-cmc
+    else find-worst-card-idx hand templates (i + 1) len best-idx best-cmc
+
+  remove-at-idx : List Integer, Integer, Integer, Integer, List Integer -> List Integer
+  remove-at-idx (xs) (target-idx) (i) (len) (acc) =
+    if i >= len then acc
+    else if i == target-idx then remove-at-idx xs target-idx (i + 1) len acc
+    else remove-at-idx xs target-idx (i + 1) len (list-push acc (list-at xs i))
+
+Section: Rule Application - Screw Fix
+
+  apply-screw-fix : GameState, RuleSet, Integer -> GameState
+  apply-screw-fix (gs) (rules) (player) =
+    when rules.screw-fix
+      is ScrewFixNone -> gs
+      is ScrewFixDiscard -> auto-discard-for-mana gs player False
+      is ScrewFixDiscardColored -> auto-discard-for-mana gs player True
+
+  auto-discard-for-mana : GameState, Integer, Boolean -> GameState
+  auto-discard-for-mana (gs) (player) (colored) =
+    let p = get-player gs player
+    in let lands-in-play = count-lands-on-field (gs.battlefield) (gs.templates) player 0 (list-length (gs.battlefield)) 0
+    in let lands-in-hand = count-lands-in-hand (p.hand) (gs.templates) 0 (list-length (p.hand)) 0
+    in if lands-in-hand > 0 then gs
+    else if lands-in-play > 0 then gs
+    else if list-length (p.hand) <= 1 then gs
+    else discard-worst-for-mana gs player colored
+
+  discard-worst-for-mana : GameState, Integer, Boolean -> GameState
+  discard-worst-for-mana (gs) (player) (colored) =
+    let p = get-player gs player
+    in let worst-idx = find-worst-card-idx (p.hand) (gs.templates) 0 (list-length (p.hand)) 0 999
+    in let card-id = list-at (p.hand) worst-idx
+    in let new-hand = remove-at-idx (p.hand) worst-idx 0 (list-length (p.hand)) []
+    in let mana-color = if colored then card-primary-color (gs.templates) card-id else Colorless
+    in let new-pool = mana-pool-add (p.mana-pool) mana-color 1
+    in let p2 = PlayerState { general = p.general, mana-pool = new-pool, library = p.library, hand = new-hand, graveyard = list-push (p.graveyard) card-id, exile = p.exile, land-drop-used = p.land-drop-used, land-drops-per-turn = p.land-drops-per-turn }
+    in set-player gs player p2
+
+  card-primary-color : List CardTemplate, Integer -> ManaColor
+  card-primary-color (templates) (card-id) =
+    if card-id >= list-length templates then Colorless
+    else let t = list-at templates card-id
+    in let cost = t.mana-cost
+    in if cost.red > 0 then Red
+    else if cost.white > 0 then White
+    else if cost.blue > 0 then Blue
+    else if cost.black > 0 then Black
+    else if cost.green > 0 then Green
+    else Colorless
+
+  count-lands-on-field : List Permanent, List CardTemplate, Integer, Integer, Integer, Integer -> Integer
+  count-lands-on-field (perms) (templates) (player) (i) (len) (acc) =
+    if i >= len then acc
+    else let perm = list-at perms i
+    in if perm.controller == player then
+      let t = list-at templates (perm.template-id)
+      in when t.card-type
+        is Land -> count-lands-on-field perms templates player (i + 1) len (acc + 1)
+        is otherwise -> count-lands-on-field perms templates player (i + 1) len acc
+    else count-lands-on-field perms templates player (i + 1) len acc
+
+Section: Rule Application - Flood Fix
+
+  apply-flood-fix : GameState, RuleSet, Integer -> GameState
+  apply-flood-fix (gs) (rules) (player) =
+    when rules.flood-fix
+      is FloodFixNone -> gs
+      is FloodFixPitch2Draw1 -> auto-pitch-lands gs player 2
+      is FloodFixPitch1Draw1 -> auto-pitch-lands gs player 1
+
+  auto-pitch-lands : GameState, Integer, Integer -> GameState
+  auto-pitch-lands (gs) (player) (cost) =
+    let p = get-player gs player
+    in let lands-in-hand = count-lands-in-hand (p.hand) (gs.templates) 0 (list-length (p.hand)) 0
+    in if lands-in-hand < cost + 1 then gs
+    else if list-length (p.library) == 0 then gs
+    else pitch-lands-and-draw gs player cost
+
+  pitch-lands-and-draw : GameState, Integer, Integer -> GameState
+  pitch-lands-and-draw (gs) (player) (cost) =
+    if cost <= 0 then
+      let p = get-player gs player
+      in let p2 = player-draw p
+      in set-player gs player p2
+    else let p = get-player gs player
+    in let land-idx = find-land-idx-in-hand (p.hand) (gs.templates) 0 (list-length (p.hand))
+    in if land-idx < 0 then gs
+    else let card-id = list-at (p.hand) land-idx
+    in let new-hand = remove-at-idx (p.hand) land-idx 0 (list-length (p.hand)) []
+    in let p2 = PlayerState { general = p.general, mana-pool = p.mana-pool, library = p.library, hand = new-hand, graveyard = list-push (p.graveyard) card-id, exile = p.exile, land-drop-used = p.land-drop-used, land-drops-per-turn = p.land-drops-per-turn }
+    in let gs2 = set-player gs player p2
+    in pitch-lands-and-draw gs2 player (cost - 1)
+
+  find-land-idx-in-hand : List Integer, List CardTemplate, Integer, Integer -> Integer
+  find-land-idx-in-hand (hand) (templates) (i) (len) =
+    if i >= len then -1
+    else let card-id = list-at hand i
+    in if card-id >= list-length templates then find-land-idx-in-hand hand templates (i + 1) len
+    else let t = list-at templates card-id
+    in when t.card-type
+      is Land -> i
+      is otherwise -> find-land-idx-in-hand hand templates (i + 1) len
+
+Section: Rule Application - Fairness
+
+  apply-fairness : GameState, RuleSet -> GameState
+  apply-fairness (gs) (rules) =
+    when rules.fairness
+      is FairnessNone -> gs
+      is FairnessLifeBonus (n) -> add-second-player-life gs n
+      is FairnessLifeAndLoyalty (l) (y) -> add-second-player-life gs l
+      is FairnessCoinForSecond -> gs
+
+  add-second-player-life : GameState, Integer -> GameState
+  add-second-player-life (gs) (bonus) =
+    let p1 = get-player gs 1
+    in let new-gen = general-gain-life (p1.general) bonus
+    in let p1b = PlayerState { general = new-gen, mana-pool = p1.mana-pool, library = p1.library, hand = p1.hand, graveyard = p1.graveyard, exile = p1.exile, land-drop-used = p1.land-drop-used, land-drops-per-turn = p1.land-drops-per-turn }
+    in set-player gs 1 p1b
+
+Section: Rule Application - Sudden Death
+
+  apply-sudden-death : GameState, RuleSet -> GameState
+  apply-sudden-death (gs) (rules) =
+    if rules.sudden-death == False then gs
+    else if gs.turn-number <= rules.turn-cap then gs
+    else let extra-turns = gs.turn-number - rules.turn-cap
+    in let damage = rules.sudden-death-base + (extra-turns - 1) * rules.sudden-death-escalation
+    in let p0 = get-player gs 0
+    in let p1 = get-player gs 1
+    in let p0b = PlayerState { general = general-deal-damage (p0.general) damage, mana-pool = p0.mana-pool, library = p0.library, hand = p0.hand, graveyard = p0.graveyard, exile = p0.exile, land-drop-used = p0.land-drop-used, land-drops-per-turn = p0.land-drops-per-turn }
+    in let p1b = PlayerState { general = general-deal-damage (p1.general) damage, mana-pool = p1.mana-pool, library = p1.library, hand = p1.hand, graveyard = p1.graveyard, exile = p1.exile, land-drop-used = p1.land-drop-used, land-drops-per-turn = p1.land-drops-per-turn }
+    in let gs2 = set-player gs 0 p0b
+    in set-player gs2 1 p1b
+
+Section: Formatting
+
+  format-rules : RuleSet -> Text
+  format-rules (rules) =
+    "Mulligan:" & mulligan-style-name (rules.mulligan-style) & " Screw:" & screw-fix-name (rules.screw-fix) & " Flood:" & flood-fix-name (rules.flood-fix) & " Fair:" & fairness-name (rules.fairness) & " Cap:" & show (rules.turn-cap) & " SD:" & if rules.sudden-death then show (rules.sudden-death-base) & "+" & show (rules.sudden-death-escalation) else "off"
+
+Section: RNG helpers
+
+  rng-new : Integer -> Rng
+  rng-new (seed) = Rng { state = if seed == 0 then 1 else seed }
+
+  rng-next : Rng -> Rng
+  rng-next (r) = Rng { state = r.state * 1103515245 + 12345 }
+
+  rng-value : Rng -> Integer
+  rng-value (r) = if r.state < 0 then 0 - r.state else r.state
+
+  rng-mod : Integer, Integer -> Integer
+  rng-mod (val) (modulus) =
+    if modulus <= 0 then 0
+    else let v = if val < 0 then 0 - val else val
+    in v - (v / modulus) * modulus
+
+Page 1

@@ -1,0 +1,422 @@
+Chapter: TrustTransport
+  cites Trust chapter AgentProtocol
+  cites Net chapter TcpTransport
+  cites Trust chapter Handshake
+  cites Net chapter MessageFraming
+  cites Trust chapter TrustLattice
+  cites Net chapter NetworkStack
+  cites Net chapter Tcp
+  cites Net chapter Ethernet
+  cites Foreword chapter ProofOfWork
+  cites Foreword chapter Sha256
+
+ Trust network transport — connects the agent protocol to the TCP
+ transport layer. Performs authenticated handshake over TCP, then
+ serializes and deserializes AgentMessage values on the wire. The
+ capability and control messages have rich typed bodies; the
+ knowledge-publication messages (Annotate, Verdict) carry opaque
+ payload bytes whose encoding belongs to the Works layer.
+
+ We say:
+
+Section: Session State
+  TrustSession = record {
+    transport : TcpTransportState,
+    peer-key : List Integer,
+    peer-trust : Integer between 0 and 65535,
+    authenticated : Boolean,
+    messages-exchanged : Integer between 0 and 4294967295
+  }
+
+  trust-session-new : TcpTransportState -> TrustSession
+  trust-session-new (ts) = TrustSession { transport = ts, peer-key = [], peer-trust = 0, authenticated = False, messages-exchanged = 0 }
+
+Section: Handshake Over Transport
+  TrustConnectResult = record {
+    session : TrustSession,
+    success : Boolean,
+    error : Text
+  }
+
+  trust-initiate : TrustSession, List Integer, Integer, Integer -> TrustConnectResult
+  trust-initiate (sess) (my-key) (difficulty) (max-attempts) =
+    let hello = hs-create-hello my-key difficulty max-attempts
+    in let hello-body = frame-encode-bytes (hello.public-key) & frame-encode-bytes (hello.pow-nonce) & frame-le32 (hello.pow-difficulty)
+    in let sr = transport-send-message (sess.transport) tag-hello hello-body
+    in TrustConnectResult {
+      session = TrustSession { transport = sr.transport, peer-key = sess.peer-key, peer-trust = sess.peer-trust, authenticated = False, messages-exchanged = sess.messages-exchanged },
+      success = sr.success,
+      error = ""
+    }
+
+  trust-respond-hello : TrustSession, List Integer, TrustLattice, Integer -> TrustConnectResult
+  trust-respond-hello (sess) (challenge-nonce) (lattice) (required-difficulty) =
+    let rr = transport-try-recv (sess.transport)
+    in if rr.has-message == False then TrustConnectResult { session = sess, success = False, error = "no hello received" }
+    else if rr.tag /= tag-hello then TrustConnectResult { session = TrustSession { transport = rr.transport, peer-key = [], peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged }, success = False, error = "expected hello" }
+    else let hello = decode-hello-body (rr.body)
+    in let hr = hs-receive-hello hello challenge-nonce lattice required-difficulty
+    in if hs-is-failed (hr.state) then TrustConnectResult { session = TrustSession { transport = rr.transport, peer-key = [], peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged }, success = False, error = hs-failure-reason (hr.state) }
+    else let sr = transport-send-message (rr.transport) tag-challenge (frame-encode-bytes challenge-nonce)
+    in TrustConnectResult {
+      session = TrustSession { transport = sr.transport, peer-key = hello.public-key, peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged },
+      success = True,
+      error = ""
+    }
+
+  trust-complete-as-initiator : TrustSession, List Integer -> TrustConnectResult
+  trust-complete-as-initiator (sess) (signed-nonce) =
+    let rr = transport-try-recv (sess.transport)
+    in if rr.has-message == False then TrustConnectResult { session = sess, success = False, error = "no challenge received" }
+    else if rr.tag /= tag-challenge then TrustConnectResult { session = TrustSession { transport = rr.transport, peer-key = sess.peer-key, peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged }, success = False, error = "expected challenge" }
+    else let sr = transport-send-message (rr.transport) tag-prove (frame-encode-bytes signed-nonce)
+    in let rr2 = transport-try-recv (sr.transport)
+    in if rr2.has-message == False then TrustConnectResult { session = TrustSession { transport = sr.transport, peer-key = sess.peer-key, peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged }, success = False, error = "no accept/reject" }
+    else if rr2.tag == tag-accept then
+      let score = frame-read-le32 (rr2.body) 0
+      in TrustConnectResult {
+        session = TrustSession { transport = rr2.transport, peer-key = sess.peer-key, peer-trust = score, authenticated = True, messages-exchanged = sess.messages-exchanged },
+        success = True,
+        error = ""
+      }
+    else TrustConnectResult { session = TrustSession { transport = rr2.transport, peer-key = sess.peer-key, peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged }, success = False, error = "rejected" }
+
+  trust-complete-as-responder : TrustSession, List Integer, TrustLattice -> TrustConnectResult
+  trust-complete-as-responder (sess) (challenge-nonce) (lattice) =
+    let rr = transport-try-recv (sess.transport)
+    in if rr.has-message == False then TrustConnectResult { session = sess, success = False, error = "no prove received" }
+    else if rr.tag /= tag-prove then TrustConnectResult { session = TrustSession { transport = rr.transport, peer-key = sess.peer-key, peer-trust = 0, authenticated = False, messages-exchanged = sess.messages-exchanged }, success = False, error = "expected prove" }
+    else let hr = hs-receive-prove challenge-nonce (sess.peer-key) lattice
+    in let score = hs-trust-score (hr.state)
+    in let sr = transport-send-message (rr.transport) tag-accept (frame-le32 score)
+    in TrustConnectResult {
+      session = TrustSession { transport = sr.transport, peer-key = sess.peer-key, peer-trust = score, authenticated = True, messages-exchanged = sess.messages-exchanged },
+      success = True,
+      error = ""
+    }
+
+Section: Hello Decode
+  decode-hello-body : List Integer -> HelloMsg
+  decode-hello-body (bs) =
+    let kr = frame-decode-bytes bs 0
+    in let nr = frame-decode-bytes bs (kr.next-offset)
+    in let diff = frame-read-le32 bs (nr.next-offset)
+    in HelloMsg { public-key = kr.value, pow-nonce = nr.value, pow-difficulty = diff }
+
+Section: Agent Message Serialization
+  encode-agent-msg : AgentMessage -> Integer
+  encode-agent-msg (m) = when m
+    is MsgPropose (p) -> tag-propose
+    is MsgGrant (g) -> tag-grant
+    is MsgDeny (d) -> tag-deny
+    is MsgExplain (e) -> tag-explain
+    is MsgNarrate (n) -> tag-narrate
+    is MsgInterrupt (i) -> tag-interrupt
+    is MsgHandoff (h) -> tag-handoff
+    is MsgAnnotate (a) -> tag-annotate
+    is MsgVerdict (v) -> tag-verdict
+
+  encode-agent-msg-body : AgentMessage -> List Integer
+  encode-agent-msg-body (m) = when m
+    is MsgPropose (p) -> encode-propose-body p
+    is MsgGrant (g) -> encode-grant-body g
+    is MsgDeny (d) -> encode-deny-body d
+    is MsgExplain (e) -> encode-explain-body e
+    is MsgNarrate (n) -> encode-narrate-body n
+    is MsgInterrupt (i) -> encode-interrupt-body i
+    is MsgHandoff (h) -> encode-handoff-body h
+    is MsgAnnotate (a) -> encode-annotate-body a
+    is MsgVerdict (v) -> encode-verdict-body v
+
+  encode-propose-body : ProposeMsg -> List Integer
+  encode-propose-body (p) =
+    frame-encode-bytes (p.id) & frame-encode-bytes (p.from.public-key) & frame-encode-bytes (p.to.public-key) & encode-capability (p.capability) & frame-le64 (p.expires) & frame-encode-bytes (p.signature)
+
+  encode-grant-body : GrantMsg -> List Integer
+  encode-grant-body (g) =
+    frame-encode-bytes (g.id) & frame-encode-bytes (g.proposal) & frame-encode-bytes (g.from.public-key) & encode-capability (g.capability) & encode-scope (g.scope) & frame-le64 (g.expires) & frame-encode-bytes (g.signature)
+
+  encode-deny-body : DenyMsg -> List Integer
+  encode-deny-body (d) =
+    frame-encode-bytes (d.id) & frame-encode-bytes (d.proposal) & frame-encode-bytes (d.from.public-key) & encode-denial-reason (d.reason) & frame-encode-bytes (d.signature)
+
+  encode-explain-body : ExplainMsg -> List Integer
+  encode-explain-body (e) =
+    frame-encode-bytes (e.id) & frame-encode-bytes (e.from.public-key) & frame-encode-bytes (e.to.public-key) & frame-encode-bytes (e.subject) & [encode-explain-depth (e.depth)] & frame-encode-bytes (e.signature)
+
+  encode-narrate-body : NarrateMsg -> List Integer
+  encode-narrate-body (n) =
+    frame-encode-bytes (n.id) & frame-encode-bytes (n.in-reply-to) & frame-encode-bytes (n.from.public-key) & frame-encode-text (n.summary) & frame-encode-bytes (n.signature)
+
+  encode-interrupt-body : InterruptMsg -> List Integer
+  encode-interrupt-body (i) =
+    frame-encode-bytes (i.id) & frame-encode-bytes (i.from.public-key) & frame-encode-bytes (i.to.public-key) & [encode-interrupt-reason (i.reason)] & encode-interrupt-action (i.action) & frame-encode-bytes (i.signature)
+
+  encode-handoff-body : HandoffMsg -> List Integer
+  encode-handoff-body (h) =
+    frame-encode-bytes (h.id) & frame-encode-bytes (h.from.public-key) & frame-encode-bytes (h.to.public-key) & encode-capability (h.capability) & encode-scope (h.scope) & frame-le64 (h.expires) & [bool-to-byte (h.revoke-from), bool-to-byte (h.audit-required)] & frame-encode-bytes (h.signature)
+
+  encode-annotate-body : AnnotateMsg -> List Integer
+  encode-annotate-body (a) =
+    frame-encode-bytes (a.id) & frame-encode-bytes (a.from.public-key) & frame-encode-bytes (a.payload) & frame-encode-bytes (a.signature)
+
+  encode-verdict-body : VerdictMsg -> List Integer
+  encode-verdict-body (v) =
+    frame-encode-bytes (v.id) & frame-encode-bytes (v.from.public-key) & frame-encode-bytes (v.in-reply-to) & frame-encode-bytes (v.payload) & frame-encode-bytes (v.signature)
+
+Section: Sub-Encoders
+  encode-capability : Capability -> List Integer
+  encode-capability (c) = frame-encode-text (c.name) & [c.direction] & frame-encode-text (c.scope)
+
+  encode-scope : Scope -> List Integer
+  encode-scope (s) = [s.direction] & frame-encode-text (s.path) & frame-le32 (s.duration)
+
+  encode-denial-reason : DenialReason -> List Integer
+  encode-denial-reason (r) = when r
+    is InsufficientTrust -> [0]
+    is PolicyViolation -> [1]
+    is Expired -> [2]
+    is CustomDenial (t) -> [3] & frame-encode-text t
+
+  encode-explain-depth : ExplainDepth -> Integer
+  encode-explain-depth (d) = when d
+    is Summary -> 0
+    is Full -> 1
+    is Exhaustive -> 2
+
+  encode-interrupt-reason : InterruptReason -> Integer
+  encode-interrupt-reason (r) = when r
+    is Emergency -> 0
+    is PolicyRevoked -> 1
+    is ContextChanged -> 2
+    is Timeout -> 3
+
+  encode-interrupt-action : InterruptAction -> List Integer
+  encode-interrupt-action (a) = when a
+    is Pause -> [0]
+    is Abort -> [1]
+    is FallbackTo (bs) -> [2] & frame-encode-bytes bs
+
+  bool-to-byte : Boolean -> Integer
+  bool-to-byte (b) = if b then 1 else 0
+
+Section: Agent Message Deserialization
+  decode-agent-msg : Integer, List Integer -> AgentMessage
+  decode-agent-msg (tag) (body) =
+    if tag == tag-propose then MsgPropose (decode-propose-body body)
+    else if tag == tag-grant then MsgGrant (decode-grant-body body)
+    else if tag == tag-deny then MsgDeny (decode-deny-body body)
+    else if tag == tag-explain then MsgExplain (decode-explain-body body)
+    else if tag == tag-narrate then MsgNarrate (decode-narrate-body body)
+    else if tag == tag-interrupt then MsgInterrupt (decode-interrupt-body body)
+    else if tag == tag-handoff then MsgHandoff (decode-handoff-body body)
+    else if tag == tag-annotate then MsgAnnotate (decode-annotate-body body)
+    else MsgVerdict (decode-verdict-body body)
+
+  decode-propose-body : List Integer -> ProposeMsg
+  decode-propose-body (bs) =
+    let r1 = frame-decode-bytes bs 0
+    in let r2 = frame-decode-bytes bs (r1.next-offset)
+    in let r3 = frame-decode-bytes bs (r2.next-offset)
+    in let cr = decode-capability bs (r3.next-offset)
+    in let expires = frame-read-le64 bs (cr.next-offset)
+    in let r4 = frame-decode-bytes bs (cr.next-offset + 8)
+    in ProposeMsg { id = r1.value, from = AgentIdentity { public-key = r2.value }, to = AgentIdentity { public-key = r3.value }, capability = cr.cap, context = [], expires = expires, signature = r4.value }
+
+  decode-grant-body : List Integer -> GrantMsg
+  decode-grant-body (bs) =
+    let r1 = frame-decode-bytes bs 0
+    in let r2 = frame-decode-bytes bs (r1.next-offset)
+    in let r3 = frame-decode-bytes bs (r2.next-offset)
+    in let cr = decode-capability bs (r3.next-offset)
+    in let sr = decode-scope bs (cr.next-offset)
+    in let expires = frame-read-le64 bs (sr.next-offset)
+    in let r4 = frame-decode-bytes bs (sr.next-offset + 8)
+    in GrantMsg { id = r1.value, proposal = r2.value, from = AgentIdentity { public-key = r3.value }, capability = cr.cap, scope = sr.scope, expires = expires, conditions = [], signature = r4.value }
+
+  decode-deny-body : List Integer -> DenyMsg
+  decode-deny-body (bs) =
+    let r1 = frame-decode-bytes bs 0
+    in let r2 = frame-decode-bytes bs (r1.next-offset)
+    in let r3 = frame-decode-bytes bs (r2.next-offset)
+    in let dr = decode-denial-reason bs (r3.next-offset)
+    in let r4 = frame-decode-bytes bs (dr.next-offset)
+    in DenyMsg { id = r1.value, proposal = r2.value, from = AgentIdentity { public-key = r3.value }, reason = dr.reason, evidence = [], signature = r4.value }
+
+  decode-explain-body : List Integer -> ExplainMsg
+  decode-explain-body (bs) =
+    let r1 = frame-decode-bytes bs 0
+    in let r2 = frame-decode-bytes bs (r1.next-offset)
+    in let r3 = frame-decode-bytes bs (r2.next-offset)
+    in let r4 = frame-decode-bytes bs (r3.next-offset)
+    in let depth = decode-explain-depth (list-at bs (r4.next-offset))
+    in let r5 = frame-decode-bytes bs (r4.next-offset + 1)
+    in ExplainMsg { id = r1.value, from = AgentIdentity { public-key = r2.value }, to = AgentIdentity { public-key = r3.value }, subject = r4.value, depth = depth, signature = r5.value }
+
+  decode-narrate-body : List Integer -> NarrateMsg
+  decode-narrate-body (bs) =
+    let r1 = frame-decode-bytes bs 0
+    in let r2 = frame-decode-bytes bs (r1.next-offset)
+    in let r3 = frame-decode-bytes bs (r2.next-offset)
+    in let tr = frame-decode-text bs (r3.next-offset)
+    in let r4 = frame-decode-bytes bs (tr.next-offset)
+    in NarrateMsg { id = r1.value, in-reply-to = r2.value, from = AgentIdentity { public-key = r3.value }, chain = [], summary = tr.value, signature = r4.value }
+
+  decode-interrupt-body : List Integer -> InterruptMsg
+  decode-interrupt-body (bs) =
+    let r1 = frame-decode-bytes bs 0
+    in let r2 = frame-decode-bytes bs (r1.next-offset)
+    in let r3 = frame-decode-bytes bs (r2.next-offset)
+    in let reason = decode-interrupt-reason (list-at bs (r3.next-offset))
+    in let ar = decode-interrupt-action bs (r3.next-offset + 1)
+    in let r4 = frame-decode-bytes bs (ar.next-offset)
+    in InterruptMsg { id = r1.value, from = AgentIdentity { public-key = r2.value }, to = AgentIdentity { public-key = r3.value }, reason = reason, action = ar.action, authority = [], signature = r4.value }
+
+  decode-handoff-body : List Integer -> HandoffMsg
+  decode-handoff-body (bs) =
+    let r1 = frame-decode-bytes bs 0
+    in let r2 = frame-decode-bytes bs (r1.next-offset)
+    in let r3 = frame-decode-bytes bs (r2.next-offset)
+    in let cr = decode-capability bs (r3.next-offset)
+    in let sr = decode-scope bs (cr.next-offset)
+    in let expires = frame-read-le64 bs (sr.next-offset)
+    in let revoke = list-at bs (sr.next-offset + 8)
+    in let audit = list-at bs (sr.next-offset + 9)
+    in let r4 = frame-decode-bytes bs (sr.next-offset + 10)
+    in HandoffMsg { id = r1.value, from = AgentIdentity { public-key = r2.value }, to = AgentIdentity { public-key = r3.value }, capability = cr.cap, scope = sr.scope, expires = expires, revoke-from = revoke == 1, audit-required = audit == 1, signature = r4.value }
+
+  decode-annotate-body : List Integer -> AnnotateMsg
+  decode-annotate-body (bs) =
+    let r1 = frame-decode-bytes bs 0
+    in let r2 = frame-decode-bytes bs (r1.next-offset)
+    in let r3 = frame-decode-bytes bs (r2.next-offset)
+    in let r4 = frame-decode-bytes bs (r3.next-offset)
+    in AnnotateMsg { id = r1.value, from = AgentIdentity { public-key = r2.value }, payload = r3.value, signature = r4.value }
+
+  decode-verdict-body : List Integer -> VerdictMsg
+  decode-verdict-body (bs) =
+    let r1 = frame-decode-bytes bs 0
+    in let r2 = frame-decode-bytes bs (r1.next-offset)
+    in let r3 = frame-decode-bytes bs (r2.next-offset)
+    in let r4 = frame-decode-bytes bs (r3.next-offset)
+    in let r5 = frame-decode-bytes bs (r4.next-offset)
+    in VerdictMsg { id = r1.value, from = AgentIdentity { public-key = r2.value }, in-reply-to = r3.value, payload = r4.value, signature = r5.value }
+
+Section: Sub-Decoders
+  CapDecodeResult = record {
+    cap : Capability,
+    next-offset : Integer between 0 and 4294967295
+  }
+
+  decode-capability : List Integer, Integer -> CapDecodeResult
+  decode-capability (bs) (off) =
+    let nr = frame-decode-text bs off
+    in let dir = list-at bs (nr.next-offset)
+    in let sr = frame-decode-text bs (nr.next-offset + 1)
+    in CapDecodeResult { cap = Capability { name = nr.value, direction = dir, scope = sr.value }, next-offset = sr.next-offset }
+
+  ScopeDecodeResult = record {
+    scope : Scope,
+    next-offset : Integer between 0 and 4294967295
+  }
+
+  decode-scope : List Integer, Integer -> ScopeDecodeResult
+  decode-scope (bs) (off) =
+    let dir = list-at bs off
+    in let pr = frame-decode-text bs (off + 1)
+    in let dur = frame-read-le32 bs (pr.next-offset)
+    in ScopeDecodeResult { scope = Scope { direction = dir, path = pr.value, duration = dur }, next-offset = pr.next-offset + 4 }
+
+  DenialDecodeResult = record {
+    reason : DenialReason,
+    next-offset : Integer between 0 and 4294967295
+  }
+
+  decode-denial-reason : List Integer, Integer -> DenialDecodeResult
+  decode-denial-reason (bs) (off) =
+    let tag = list-at bs off
+    in if tag == 0 then DenialDecodeResult { reason = InsufficientTrust, next-offset = off + 1 }
+    else if tag == 1 then DenialDecodeResult { reason = PolicyViolation, next-offset = off + 1 }
+    else if tag == 2 then DenialDecodeResult { reason = Expired, next-offset = off + 1 }
+    else let tr = frame-decode-text bs (off + 1)
+    in DenialDecodeResult { reason = CustomDenial (tr.value), next-offset = tr.next-offset }
+
+  decode-explain-depth : Integer -> ExplainDepth
+  decode-explain-depth (b) =
+    if b == 0 then Summary
+    else if b == 1 then Full
+    else Exhaustive
+
+  decode-interrupt-reason : Integer -> InterruptReason
+  decode-interrupt-reason (b) =
+    if b == 0 then Emergency
+    else if b == 1 then PolicyRevoked
+    else if b == 2 then ContextChanged
+    else Timeout
+
+  ActionDecodeResult = record {
+    action : InterruptAction,
+    next-offset : Integer between 0 and 4294967295
+  }
+
+  decode-interrupt-action : List Integer, Integer -> ActionDecodeResult
+  decode-interrupt-action (bs) (off) =
+    let tag = list-at bs off
+    in if tag == 0 then ActionDecodeResult { action = Pause, next-offset = off + 1 }
+    else if tag == 1 then ActionDecodeResult { action = Abort, next-offset = off + 1 }
+    else let br = frame-decode-bytes bs (off + 1)
+    in ActionDecodeResult { action = FallbackTo (br.value), next-offset = br.next-offset }
+
+Section: Send and Receive Agent Messages
+  TrustSendResult = record {
+    session : TrustSession,
+    success : Boolean
+  }
+
+  trust-send : TrustSession, AgentMessage -> TrustSendResult
+  trust-send (sess) (msg) =
+    let tag = encode-agent-msg msg
+    in let body = encode-agent-msg-body msg
+    in let sr = transport-send-message (sess.transport) tag body
+    in TrustSendResult {
+      session = TrustSession { transport = sr.transport, peer-key = sess.peer-key, peer-trust = sess.peer-trust, authenticated = sess.authenticated, messages-exchanged = sess.messages-exchanged + 1 },
+      success = sr.success
+    }
+
+  TrustRecvResult = record {
+    session : TrustSession,
+    message : AgentMessage,
+    has-message : Boolean
+  }
+
+  trust-recv : TrustSession -> TrustRecvResult
+  trust-recv (sess) =
+    let rr = transport-try-recv (sess.transport)
+    in if rr.has-message == False then TrustRecvResult {
+      session = TrustSession { transport = rr.transport, peer-key = sess.peer-key, peer-trust = sess.peer-trust, authenticated = sess.authenticated, messages-exchanged = sess.messages-exchanged },
+      message = MsgDeny (DenyMsg { id = [], proposal = [], from = AgentIdentity { public-key = [] }, reason = InsufficientTrust, evidence = [], signature = [] }),
+      has-message = False
+    }
+    else let msg = decode-agent-msg (rr.tag) (rr.body)
+    in TrustRecvResult {
+      session = TrustSession { transport = rr.transport, peer-key = sess.peer-key, peer-trust = sess.peer-trust, authenticated = sess.authenticated, messages-exchanged = sess.messages-exchanged + 1 },
+      message = msg,
+      has-message = True
+    }
+
+  trust-feed-frame : TrustSession, List Integer -> TrustSession
+  trust-feed-frame (sess) (frame) =
+    let rr = transport-process-frame (sess.transport) frame
+    in TrustSession { transport = TcpTransportState { session = (rr.transport).session, recv-buf = (rr.transport).recv-buf, messages-sent = (rr.transport).messages-sent, messages-received = (rr.transport).messages-received }, peer-key = sess.peer-key, peer-trust = sess.peer-trust, authenticated = sess.authenticated, messages-exchanged = sess.messages-exchanged }
+
+Section: Session Queries
+  trust-is-authenticated : TrustSession -> Boolean
+  trust-is-authenticated (sess) = sess.authenticated
+
+  trust-peer-score : TrustSession -> Integer
+  trust-peer-score (sess) = sess.peer-trust
+
+  trust-stats : TrustSession -> Text
+  trust-stats (sess) = "auth=" & show (sess.authenticated) & " trust=" & show (sess.peer-trust) & " msgs=" & show (sess.messages-exchanged) & " " & transport-stats (sess.transport)
+
+Page 1

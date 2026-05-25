@@ -1,0 +1,161 @@
+Chapter: TransactionValidator
+  cites CodexMagic chapter ChainCore
+  cites CodexMagic chapter Auth
+
+ Transaction validation. Every transaction must pass these checks
+ before entering the mempool or being included in a block:
+ 1. Signature is valid (sender signed this tx)
+ 2. Nonce is correct (prevents replay)
+ 3. Balance is sufficient (no double-spend)
+ 4. Mint txs must come from the platform key (only we mint)
+ 5. Amount is positive and within sane bounds
+
+ We say:
+
+Section: Validation Result
+
+  TxValidation = record {
+    valid : Boolean,
+    reason : Text,
+    tx : ChainTx
+  }
+
+Section: Full Validation Pipeline
+
+  validate-tx : ChainState, ChainTx, Integer -> TxValidation
+  validate-tx (chain) (tx) (platform-key) =
+    if validate-signature-check tx == False then TxValidation { valid = False, reason = "Invalid signature", tx = tx }
+    else if validate-nonce chain tx == False then TxValidation { valid = False, reason = "Invalid nonce (replay detected)", tx = tx }
+    else if validate-amount tx == False then TxValidation { valid = False, reason = "Invalid amount", tx = tx }
+    else if validate-mint-authority tx platform-key == False then TxValidation { valid = False, reason = "Unauthorized mint", tx = tx }
+    else if validate-balance chain tx == False then TxValidation { valid = False, reason = "Insufficient balance", tx = tx }
+    else if validate-not-duplicate chain tx == False then TxValidation { valid = False, reason = "Duplicate transaction in pool", tx = tx }
+    else TxValidation { valid = True, reason = "", tx = tx }
+
+Section: Signature Verification
+
+  validate-signature-check : ChainTx -> Boolean
+  validate-signature-check (tx) =
+    let expected-hash = compute-tx-hash (tx.sender) (tx.receiver) (tx.amount) (tx-type-id (tx.tx-type)) (tx.nonce) (tx.timestamp)
+    in let sig-check = hash-combine (hash-combine hash-zero (tx.sig-high)) (tx.sig-low)
+    in let recomputed = hash-combine (hash-combine hash-zero (expected-hash.h0 * 31 + tx.sender)) (expected-hash.h1 * 37 + tx.nonce)
+    in sig-check.h0 == recomputed.h0
+
+  sign-transaction : Integer, Integer, Integer, ChainTxType, Integer, Integer, Integer -> ChainTx
+  sign-transaction (sender) (receiver) (amount) (ttype) (nonce) (timestamp) (private-key) =
+    let tx-hash = compute-tx-hash sender receiver amount (tx-type-id ttype) nonce timestamp
+    in let sig-high = bit-xor (tx-hash.h0 * 31 + sender) (private-key * 2654435761)
+    in let sig-low = bit-xor (tx-hash.h1 * 37 + nonce) (private-key * 2246822519)
+    in let sig-check = hash-combine (hash-combine hash-zero sig-high) sig-low
+    in let recomputed = hash-combine (hash-combine hash-zero (tx-hash.h0 * 31 + sender)) (tx-hash.h1 * 37 + nonce)
+    in ChainTx { tx-hash = tx-hash, sender = sender, receiver = receiver, amount = amount, tx-type = ttype, nonce = nonce, timestamp = timestamp, sig-high = sig-high, sig-low = sig-low, data-field = 0 }
+
+Section: Nonce Validation
+
+  validate-nonce : ChainState, ChainTx -> Boolean
+  validate-nonce (chain) (tx) =
+    let expected-nonce = get-nonce chain (tx.sender)
+    in tx.nonce >= expected-nonce
+
+Section: Amount Validation
+
+  validate-amount : ChainTx -> Boolean
+  validate-amount (tx) =
+    when tx.tx-type
+      is TxMint -> tx.amount > 0 & tx.amount <= 1000000
+      is TxBurn -> tx.amount > 0
+      is TxTransfer -> tx.amount > 0
+      is TxPackCrack -> tx.amount > 0
+      is TxTradeSettle -> tx.amount > 0
+      is TxBridgeLock -> tx.amount > 0
+      is TxBridgeRelease -> tx.amount > 0
+      is TxStake -> tx.amount > 0
+      is TxReward -> tx.amount > 0 & tx.amount <= 10000
+      is TxFee -> tx.amount > 0
+
+Section: Mint Authority — Only platform key can mint
+
+  validate-mint-authority : ChainTx, Integer -> Boolean
+  validate-mint-authority (tx) (platform-key) =
+    when tx.tx-type
+      is TxMint -> tx.sender == platform-key
+      is TxReward -> tx.sender == platform-key
+      is TxBridgeRelease -> tx.sender == platform-key
+      is TxTransfer -> True
+      is TxBurn -> True
+      is TxPackCrack -> True
+      is TxTradeSettle -> True
+      is TxBridgeLock -> True
+      is TxStake -> True
+      is TxFee -> True
+
+Section: Balance Check
+
+  validate-balance : ChainState, ChainTx -> Boolean
+  validate-balance (chain) (tx) =
+    when tx.tx-type
+      is TxMint -> True
+      is TxReward -> True
+      is TxBridgeRelease -> True
+      is TxTransfer -> get-balance chain (tx.sender) >= tx.amount
+      is TxBurn -> get-balance chain (tx.sender) >= tx.amount
+      is TxPackCrack -> get-balance chain (tx.sender) >= tx.amount
+      is TxTradeSettle -> get-balance chain (tx.sender) >= tx.amount
+      is TxBridgeLock -> get-balance chain (tx.sender) >= tx.amount
+      is TxStake -> get-balance chain (tx.sender) >= tx.amount
+      is TxFee -> get-balance chain (tx.sender) >= tx.amount
+
+Section: Duplicate Detection
+
+  validate-not-duplicate : ChainState, ChainTx -> Boolean
+  validate-not-duplicate (chain) (tx) =
+    is-in-pool (chain.pending-pool) tx 0 (list-length (chain.pending-pool)) == False
+
+  is-in-pool : List ChainTx, ChainTx, Integer, Integer -> Boolean
+  is-in-pool (pool) (tx) (i) (len) =
+    if i >= len then False
+    else let p = list-at pool i
+    in if p.sender == tx.sender then
+      if p.nonce == tx.nonce then True
+      else is-in-pool pool tx (i + 1) len
+    else is-in-pool pool tx (i + 1) len
+
+Section: Batch Validation — Validate all txs for a block
+
+  validate-block-txs : ChainState, List ChainTx, Integer, Integer, Integer, List TxValidation -> List TxValidation
+  validate-block-txs (chain) (txs) (platform-key) (i) (len) (results) =
+    if i >= len then results
+    else let tx = list-at txs i
+    in let result = validate-tx chain tx platform-key
+    in validate-block-txs chain txs platform-key (i + 1) len (list-push results result)
+
+  all-valid : List TxValidation, Integer, Integer -> Boolean
+  all-valid (results) (i) (len) =
+    if i >= len then True
+    else let r = list-at results i
+    in if r.valid == False then False
+    else all-valid results (i + 1) len
+
+  count-invalid : List TxValidation, Integer, Integer, Integer -> Integer
+  count-invalid (results) (i) (len) (acc) =
+    if i >= len then acc
+    else let r = list-at results i
+    in if r.valid == False then count-invalid results (i + 1) len (acc + 1)
+    else count-invalid results (i + 1) len acc
+
+Section: Safe Transaction Submission
+
+  submit-validated : ChainState, ChainTx, Integer -> SubmitResult
+  submit-validated (chain) (tx) (platform-key) =
+    let validation = validate-tx chain tx platform-key
+    in if validation.valid == False then SubmitResult { chain = chain, accepted = False, reason = validation.reason }
+    else let chain2 = submit-tx chain tx
+    in SubmitResult { chain = chain2, accepted = True, reason = "" }
+
+  SubmitResult = record {
+    chain : ChainState,
+    accepted : Boolean,
+    reason : Text
+  }
+
+Page 1

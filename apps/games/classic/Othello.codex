@@ -1,0 +1,217 @@
+Chapter: Othello
+  cites Games chapter Rng
+
+ Othello (Reversi) on an 8x8 board. 64 cells: 0=empty, 1=black, 2=white.
+ Black plays first. Legal moves must flip at least one opponent piece.
+ Pieces are flipped in all 8 directions from the placed piece.
+ AI picks the move that flips the most opponent pieces.
+
+ We say:
+
+Section: Types
+
+  OthelloBoard = record {
+    cells          : List Integer,
+    current-player : Integer,
+    game-over      : Boolean,
+    black-count    : Integer,
+    white-count    : Integer,
+    moves-made     : Integer
+  }
+
+  OthelloResult = record {
+    winner      : Integer,
+    black-count : Integer,
+    white-count : Integer,
+    moves-made  : Integer
+  }
+
+Section: Construction
+
+  othello-new : OthelloBoard
+  othello-new =
+    let cells = oth-build-empty 0 []
+    in let c1 = list-set-at cells 27 2
+    in let c2 = list-set-at c1 28 1
+    in let c3 = list-set-at c2 35 1
+    in let c4 = list-set-at c3 36 2
+    in OthelloBoard { cells = c4, current-player = 1, game-over = False, black-count = 2, white-count = 2, moves-made = 0 }
+
+  oth-build-empty : Integer, List Integer -> List Integer
+  oth-build-empty (i) (acc) =
+    if i >= 64 then acc
+    else oth-build-empty (i + 1) (list-push acc 0)
+
+Section: Board Queries
+
+  oth-cell : List Integer, Integer, Integer -> Integer
+  oth-cell (cells) (row) (col) =
+    if row < 0 then -1
+    else if row >= 8 then -1
+    else if col < 0 then -1
+    else if col >= 8 then -1
+    else list-at cells (row * 8 + col)
+
+  oth-opponent : Integer -> Integer
+  oth-opponent (p) = if p == 1 then 2 else 1
+
+Section: Direction Helpers
+
+  oth-dir-row : Integer -> Integer
+  oth-dir-row (d) =
+    if d == 0 then -1
+    else if d == 1 then -1
+    else if d == 2 then 0
+    else if d == 3 then 1
+    else if d == 4 then 1
+    else if d == 5 then 1
+    else if d == 6 then 0
+    else -1
+
+  oth-dir-col : Integer -> Integer
+  oth-dir-col (d) =
+    if d == 0 then 0
+    else if d == 1 then 1
+    else if d == 2 then 1
+    else if d == 3 then 1
+    else if d == 4 then 0
+    else if d == 5 then -1
+    else if d == 6 then -1
+    else -1
+
+  oth-count-flips-dir : List Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  oth-count-flips-dir (cells) (player) (row) (col) (dr) (dc) =
+    oth-count-loop cells player row col dr dc 0
+
+  oth-count-loop : List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  oth-count-loop (cells) (player) (row) (col) (dr) (dc) (count) =
+    let r2 = row + dr
+    in let c2 = col + dc
+    in let v = oth-cell cells r2 c2
+    in if v == -1 then 0
+    else if v == 0 then 0
+    else if v == player then count
+    else oth-count-loop cells player r2 c2 dr dc (count + 1)
+
+  oth-flips-for-move : List Integer, Integer, Integer, Integer -> Integer
+  oth-flips-for-move (cells) (player) (row) (col) =
+    let opp = oth-opponent player
+    in let f0 = oth-count-flips-dir cells player row col (oth-dir-row 0) (oth-dir-col 0)
+    in let f1 = oth-count-flips-dir cells player row col (oth-dir-row 1) (oth-dir-col 1)
+    in let f2 = oth-count-flips-dir cells player row col (oth-dir-row 2) (oth-dir-col 2)
+    in let f3 = oth-count-flips-dir cells player row col (oth-dir-row 3) (oth-dir-col 3)
+    in let f4 = oth-count-flips-dir cells player row col (oth-dir-row 4) (oth-dir-col 4)
+    in let f5 = oth-count-flips-dir cells player row col (oth-dir-row 5) (oth-dir-col 5)
+    in let f6 = oth-count-flips-dir cells player row col (oth-dir-row 6) (oth-dir-col 6)
+    in let f7 = oth-count-flips-dir cells player row col (-1) (-1)
+    in f0 + f1 + f2 + f3 + f4 + f5 + f6 + f7
+
+  oth-is-legal : List Integer, Integer, Integer, Integer -> Boolean
+  oth-is-legal (cells) (player) (row) (col) =
+    if oth-cell cells row col /= 0 then False
+    else oth-flips-for-move cells player row col > 0
+
+Section: Apply Flips
+
+  oth-apply-dir : List Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  oth-apply-dir (cells) (player) (row) (col) (dr) (dc) =
+    let count = oth-count-flips-dir cells player row col dr dc
+    in if count == 0 then cells
+    else oth-flip-loop cells player (row + dr) (col + dc) dr dc count
+
+  oth-flip-loop : List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  oth-flip-loop (cells) (player) (row) (col) (dr) (dc) (remaining) =
+    if remaining <= 0 then cells
+    else let idx = row * 8 + col
+    in let c2 = list-set-at cells idx player
+    in oth-flip-loop c2 player (row + dr) (col + dc) dr dc (remaining - 1)
+
+  oth-apply-move : List Integer, Integer, Integer, Integer -> List Integer
+  oth-apply-move (cells) (player) (row) (col) =
+    let c0 = list-set-at cells (row * 8 + col) player
+    in let c1 = oth-apply-dir c0 player row col (oth-dir-row 0) (oth-dir-col 0)
+    in let c2 = oth-apply-dir c1 player row col (oth-dir-row 1) (oth-dir-col 1)
+    in let c3 = oth-apply-dir c2 player row col (oth-dir-row 2) (oth-dir-col 2)
+    in let c4 = oth-apply-dir c3 player row col (oth-dir-row 3) (oth-dir-col 3)
+    in let c5 = oth-apply-dir c4 player row col (oth-dir-row 4) (oth-dir-col 4)
+    in let c6 = oth-apply-dir c5 player row col (oth-dir-row 5) (oth-dir-col 5)
+    in let c7 = oth-apply-dir c6 player row col (oth-dir-row 6) (oth-dir-col 6)
+    in oth-apply-dir c7 player row col (-1) (-1)
+
+Section: Count Pieces
+
+  oth-count-player : List Integer, Integer, Integer, Integer -> Integer
+  oth-count-player (cells) (player) (i) (acc) =
+    if i >= 64 then acc
+    else if list-at cells i == player then oth-count-player cells player (i + 1) (acc + 1)
+    else oth-count-player cells player (i + 1) acc
+
+  oth-has-legal-move : List Integer, Integer, Integer -> Boolean
+  oth-has-legal-move (cells) (player) (i) =
+    if i >= 64 then False
+    else let row = i / 8
+    in let col = i - row * 8
+    in if oth-is-legal cells player row col then True
+    else oth-has-legal-move cells player (i + 1)
+
+Section: Place Piece
+
+  othello-place : OthelloBoard, Integer, Integer -> OthelloBoard
+  othello-place (b) (row) (col) =
+    if b.game-over then b
+    else if oth-is-legal (b.cells) (b.current-player) row col == False then b
+    else let new-cells = oth-apply-move (b.cells) (b.current-player) row col
+    in let bc = oth-count-player new-cells 1 0 0
+    in let wc = oth-count-player new-cells 2 0 0
+    in let opp = oth-opponent (b.current-player)
+    in let opp-can-move = oth-has-legal-move new-cells opp 0
+    in let next-player = if opp-can-move then opp else b.current-player
+    in let me-can-move = oth-has-legal-move new-cells next-player 0
+    in let over = if me-can-move then False else True
+    in let winner = if over then (if bc > wc then 1 else if wc > bc then 2 else 0) else 0
+    in OthelloBoard { cells = new-cells, current-player = next-player, game-over = over, black-count = bc, white-count = wc, moves-made = b.moves-made + 1 }
+
+Section: AI
+
+  oth-ai-move : OthelloBoard -> Integer
+  oth-ai-move (b) =
+    oth-find-best (b.cells) (b.current-player) 0 (-1) (-1)
+
+  oth-find-best : List Integer, Integer, Integer, Integer, Integer -> Integer
+  oth-find-best (cells) (player) (i) (best-idx) (best-flips) =
+    if i >= 64 then best-idx
+    else let row = i / 8
+    in let col = i - row * 8
+    in if oth-is-legal cells player row col == False then oth-find-best cells player (i + 1) best-idx best-flips
+    else let flips = oth-flips-for-move cells player row col
+    in if flips > best-flips then oth-find-best cells player (i + 1) i flips
+    else oth-find-best cells player (i + 1) best-idx best-flips
+
+Section: Game Runner
+
+  run-othello-game : OthelloResult
+  run-othello-game =
+    let b = othello-new
+    in oth-loop b
+
+  oth-loop : OthelloBoard -> OthelloResult
+  oth-loop (b) =
+    if b.game-over then OthelloResult { winner = b.current-player, black-count = b.black-count, white-count = b.white-count, moves-made = b.moves-made }
+    else if b.moves-made > 64 then OthelloResult { winner = 0, black-count = b.black-count, white-count = b.white-count, moves-made = b.moves-made }
+    else let idx = oth-ai-move b
+    in if idx < 0 then OthelloResult { winner = 0, black-count = b.black-count, white-count = b.white-count, moves-made = b.moves-made }
+    else let row = idx / 8
+    in let col = idx - row * 8
+    in let next = othello-place b row col
+    in oth-loop next
+
+Section: Formatting
+
+  format-othello-result : OthelloResult -> Text
+  format-othello-result (r) =
+    let w = if r.winner == 1 then "Black wins"
+            else if r.winner == 2 then "White wins"
+            else "Draw"
+    in "Othello: " & w & " Black=" & show (r.black-count) & " White=" & show (r.white-count) & " in " & show (r.moves-made) & " moves"
+
+Page 1

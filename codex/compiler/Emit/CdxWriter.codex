@@ -1,0 +1,80 @@
+Chapter: CDX Binary Format Writer
+  cites Codex chapter Lists
+  cites Emit chapter X86-64 Code Generator (write-i16, write-i32, write-i64, pad-zeros, align-up)
+
+ Produces CDX1 binaries: header with trust metadata, capability
+ manifest, proof hashes, then code and data sections.
+
+Section: CDX Format Constants
+  cdx-magic : List Integer = [67, 68, 88, 49]
+
+  cdx-format-version : Integer = 1
+
+  cdx-fixed-header-size : Integer = 224
+
+  cdx-content-hash-size : Integer = 32
+
+  cdx-author-key-size : Integer = 32
+
+  cdx-signature-size : Integer = 64
+
+Section: CDX Flags
+  cdx-flag-bare-metal : Integer = 1
+
+  cdx-flag-needs-heap : Integer = 2
+
+  cdx-flag-needs-stack-guard : Integer = 4
+
+  cdx-flag-has-proofs : Integer = 8
+
+  cdx-flag-has-debug-info : Integer = 16
+
+Section: CDX Header
+  cdx-header-bytes : Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> List Integer
+  cdx-header-bytes (flags) (cap-off) (cap-sz) (proof-off) (proof-sz) (text-off) (text-sz) (rodata-off) (rodata-sz) (entry) (stack-sz) (heap-sz) (debug-off) =
+   cdx-magic
+   & write-i16 cdx-format-version
+   & write-i16 flags
+   & pad-zeros cdx-content-hash-size
+   & pad-zeros cdx-author-key-size
+   & pad-zeros cdx-signature-size
+   & write-i64 cap-off
+   & write-i64 cap-sz
+   & write-i64 proof-off
+   & write-i64 proof-sz
+   & write-i64 text-off
+   & write-i64 text-sz
+   & write-i64 rodata-off
+   & write-i64 rodata-sz
+   & write-i64 entry
+   & write-i32 stack-sz
+   & write-i32 heap-sz
+   & write-i16 0
+   & write-i16 0
+   & write-i32 debug-off
+
+Section: CDX Binary Builder
+  build-cdx : Integer, Integer, Integer, Integer, List Integer, List Integer, List Integer -> List Integer
+  build-cdx (flags) (entry-offset) (stack-size) (heap-size) (text) (rodata) (debug) =
+   let hdr = cdx-fixed-header-size
+   in let text-size = list-length text
+   in let rodata-size = list-length rodata
+   in let debug-size = list-length debug
+   in let debug-off = if debug-size > 0 then hdr + text-size + rodata-size else 0
+   in let debug-flags = if debug-size > 0 then flags + cdx-flag-has-debug-info else flags
+   in cdx-header-bytes debug-flags hdr 0 hdr 0 hdr text-size (hdr + text-size) rodata-size entry-offset stack-size heap-size debug-off
+   & text
+   & rodata
+   & debug
+
+  build-cdx-bare-metal : Integer, Integer, Integer, List Integer, List Integer, List Integer -> List Integer
+  build-cdx-bare-metal (entry-offset) (stack-size) (heap-size) (text) (rodata) (debug) =
+   build-cdx (cdx-flag-bare-metal + cdx-flag-needs-heap) entry-offset stack-size heap-size text rodata debug
+
+Section: Layout Helpers
+  compute-data-vaddr-bare : Integer -> Integer
+  compute-data-vaddr-bare (text-size) =
+   1048576 + align-up text-size 8
+
+Page 1
+

@@ -1,0 +1,215 @@
+Chapter: SparkDisplay
+  cites Foreword chapter CCE
+  cites Game chapter Rasterizer
+  cites Game chapter Color
+  cites Spark chapter TextRender
+
+ Bridge between Spark's Framebuf (logical pixel array) and the
+ hardware display. Supports two backends:
+   1. GOP framebuffer (poke-32 to a fixed physical address)
+   2. VGA graphics mode (via VgaGraphics, Bochs VBE — QEMU only)
+ The GOP path works with codex-vm's -gop flag. The framebuffer
+ is at physical address 0x40000000. Pixels are BGRA 32-bit.
+
+ We say:
+
+Section: Constants
+
+  gop-fb-base : Integer = 1073741824
+
+Section: Types
+
+  GopDisplay = record {
+    gd-width : Integer,
+    gd-height : Integer,
+    gd-stride : Integer,
+    gd-fb-addr : Integer
+  }
+
+Section: Construction
+
+  gop-display-new : Integer, Integer -> GopDisplay
+  gop-display-new (w) (h) = GopDisplay {
+    gd-width = w,
+    gd-height = h,
+    gd-stride = w,
+    gd-fb-addr = gop-fb-base
+  }
+
+Section: Pixel Write
+
+  gop-put-pixel : GopDisplay, Integer, Integer, Integer -> Integer
+  gop-put-pixel (gd) (x) (y) (color) =
+    if x < 0 then 0
+    else if y < 0 then 0
+    else if x >= gd.gd-width then 0
+    else if y >= gd.gd-height then 0
+    else let r = color / 65536
+    in let g = color / 256 - r * 256
+    in let b = color - color / 256 * 256
+    in let bgra = b + g * 256 + r * 65536
+    in let offset = (y * gd.gd-stride + x) * 4
+    in poke-32 (gd.gd-fb-addr) offset bgra
+
+Section: Clear
+
+  gop-clear : GopDisplay, Integer -> Integer
+  gop-clear (gd) (color) =
+    gop-clear-loop gd color 0 0
+
+  gop-clear-loop : GopDisplay, Integer, Integer, Integer -> Integer
+  gop-clear-loop (gd) (color) (x) (y) =
+    if y >= gd.gd-height then 0
+    else if x >= gd.gd-width then gop-clear-loop gd color 0 (y + 1)
+    else let w = gop-put-pixel gd x y color
+    in gop-clear-loop gd color (x + 1) y
+
+Section: Blit Framebuf
+
+  gop-blit : GopDisplay, Framebuf -> Integer
+  gop-blit (gd) (fb) =
+    gop-blit-loop gd fb 0 0
+
+  gop-blit-loop : GopDisplay, Framebuf, Integer, Integer -> Integer
+  gop-blit-loop (gd) (fb) (x) (y) =
+    if y >= fb.fb-height then 0
+    else if y >= gd.gd-height then 0
+    else if x >= fb.fb-width then gop-blit-loop gd fb 0 (y + 1)
+    else let px = list-at (fb.fb-pixels) (y * fb.fb-width + x)
+    in let w = gop-put-pixel gd x y px
+    in gop-blit-loop gd fb (x + 1) y
+
+  gop-blit-at : GopDisplay, Framebuf, Integer, Integer -> Integer
+  gop-blit-at (gd) (fb) (ox) (oy) =
+    gop-blit-at-loop gd fb ox oy 0 0
+
+  gop-blit-at-loop : GopDisplay, Framebuf, Integer, Integer, Integer, Integer -> Integer
+  gop-blit-at-loop (gd) (fb) (ox) (oy) (x) (y) =
+    if y >= fb.fb-height then 0
+    else if x >= fb.fb-width then gop-blit-at-loop gd fb ox oy 0 (y + 1)
+    else let dx = x + ox
+    in let dy = y + oy
+    in let px = list-at (fb.fb-pixels) (y * fb.fb-width + x)
+    in let w = if px /= 0 then gop-put-pixel gd dx dy px else 0
+    in gop-blit-at-loop gd fb ox oy (x + 1) y
+
+Section: Fast Fills
+
+  gop-fill-solid : GopDisplay, Integer -> Integer
+  gop-fill-solid (gd) (color) =
+    let r = color / 65536
+    in let g = color / 256 - r * 256
+    in let b = color - color / 256 * 256
+    in let bgra = b + g * 256 + r * 65536
+    in let total = gd.gd-width * gd.gd-height
+    in gop-fill-loop (gd.gd-fb-addr) bgra 0 total
+
+  gop-fill-loop : Integer, Integer, Integer, Integer -> Integer
+  gop-fill-loop (base) (bgra) (i) (total) =
+    if i >= total then 0
+    else let w = poke-32 base (i * 4) bgra
+    in gop-fill-loop base bgra (i + 1) total
+
+  gop-blit-sprite : GopDisplay, Framebuf, Integer, Integer -> Integer
+  gop-blit-sprite (gd) (fb) (ox) (oy) =
+    gop-sprite-loop gd fb ox oy 0 0
+
+  gop-sprite-loop : GopDisplay, Framebuf, Integer, Integer, Integer, Integer -> Integer
+  gop-sprite-loop (gd) (fb) (ox) (oy) (x) (y) =
+    if y >= fb.fb-height then 0
+    else if x >= fb.fb-width then gop-sprite-loop gd fb ox oy 0 (y + 1)
+    else let px = list-at (fb.fb-pixels) (y * fb.fb-width + x)
+    in let w = if px /= 0 then gop-put-pixel gd (ox + x) (oy + y) px else 0
+    in gop-sprite-loop gd fb ox oy (x + 1) y
+
+  gop-fade-rect : GopDisplay, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-fade-rect (gd) (x0) (y0) (w) (h) (color) (alpha) =
+    gop-fade-loop gd x0 y0 w h color alpha 0 0
+
+  gop-fade-loop : GopDisplay, Integer, Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-fade-loop (gd) (x0) (y0) (w) (h) (color) (alpha) (dx) (dy) =
+    if dy >= h then 0
+    else if dx >= w then gop-fade-loop gd x0 y0 w h color alpha 0 (dy + 1)
+    else let px = x0 + dx
+    in let py = y0 + dy
+    in let w2 = if px >= 0 then if px < gd.gd-width then if py >= 0 then if py < gd.gd-height then
+      let off = (py * gd.gd-stride + px) * 4
+      in let existing = peek-32 (gd.gd-fb-addr) off
+      in let er = existing / 65536
+      in let eg = existing / 256 - er * 256
+      in let eb = existing - existing / 256 * 256
+      in let cr = color / 65536
+      in let cg = color / 256 - cr * 256
+      in let cb = color - color / 256 * 256
+      in let nr = er + (cr - er) * alpha / 1000
+      in let ng = eg + (cg - eg) * alpha / 1000
+      in let nb = eb + (cb - eb) * alpha / 1000
+      in gop-put-pixel gd px py (nr * 65536 + ng * 256 + nb)
+    else 0 else 0 else 0 else 0
+    in gop-fade-loop gd x0 y0 w h color alpha (dx + 1) dy
+
+Section: Rectangle
+
+  gop-rect : GopDisplay, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-rect (gd) (x) (y) (w) (h) (color) =
+    gop-rect-loop gd x y w h color 0
+
+  gop-rect-loop : GopDisplay, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-rect-loop (gd) (x) (y) (w) (h) (color) (dy) =
+    if dy >= h then 0
+    else let w2 = gop-hline gd x (x + w - 1) (y + dy) color
+    in gop-rect-loop gd x y w h color (dy + 1)
+
+  gop-hline : GopDisplay, Integer, Integer, Integer, Integer -> Integer
+  gop-hline (gd) (x0) (x1) (y) (color) =
+    if x0 > x1 then 0
+    else let w = gop-put-pixel gd x0 y color
+    in gop-hline gd (x0 + 1) x1 y color
+
+Section: Text (full ASCII via TextRender glyph table)
+
+  gop-put-char : GopDisplay, Integer, Integer, Integer, Integer -> Integer
+  gop-put-char (gd) (x) (y) (cce-ch) (color) =
+    let ch = to-unicode cce-ch
+    in if ch < 32 then 0
+    else if ch > 126 then 0
+    else let glyph = tr-get-glyph ch
+    in gop-glyph-rows gd x y glyph color 0
+
+  gop-glyph-rows : GopDisplay, Integer, Integer, GlyphData, Integer, Integer -> Integer
+  gop-glyph-rows (gd) (x) (y) (glyph) (color) (row) =
+    if row >= glyph.gd-height then 0
+    else let bits = list-at (glyph.gd-rows) row
+    in let w = gop-glyph-cols gd x (y + row) bits color 0 (glyph.gd-width)
+    in gop-glyph-rows gd x y glyph color (row + 1)
+
+  gop-glyph-cols : GopDisplay, Integer, Integer, Integer, Integer, Integer, Integer -> Integer
+  gop-glyph-cols (gd) (x) (y) (bits) (color) (col) (width) =
+    if col >= width then 0
+    else let bit = bits / gop-pow2 (width - 1 - col) - bits / gop-pow2 (width - col) * 2
+    in let w = if bit == 1 then gop-put-pixel gd (x + col) y color else 0
+    in gop-glyph-cols gd x y bits color (col + 1) width
+
+  gop-pow2 : Integer -> Integer
+  gop-pow2 (n) = if n <= 0 then 1 else 2 * gop-pow2 (n - 1)
+
+Section: Text String
+
+  gop-put-text : GopDisplay, Integer, Integer, Text, Integer -> Integer
+  gop-put-text (gd) (x) (y) (s) (color) =
+    gop-text-loop gd x y s color 0 (text-length s)
+
+  gop-text-loop : GopDisplay, Integer, Integer, Text, Integer, Integer, Integer -> Integer
+  gop-text-loop (gd) (x) (y) (s) (color) (i) (len) =
+    if i >= len then 0
+    else let ch = char-code (char-at s i)
+    in let w = gop-put-char gd (x + i * 6) y ch color
+    in gop-text-loop gd x y s color (i + 1) len
+
+Section: Info
+
+  gop-display-info : GopDisplay -> Text
+  gop-display-info (gd) =
+    show (gd.gd-width) & "x" & show (gd.gd-height) & " fb=0x" & show (gd.gd-fb-addr)
+
+Page 1

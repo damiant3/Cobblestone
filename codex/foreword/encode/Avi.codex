@@ -1,0 +1,134 @@
+Chapter: Avi
+  cites Game chapter Color
+
+ AVI container encoder. RIFF-based Audio Video Interleave format.
+ Wraps uncompressed RGB video frames with optional PCM audio.
+ Produces valid AVI files playable by standard players.
+
+ We say:
+
+Section: Types
+  AviConfig = record {
+    avi-width : Integer,
+    avi-height : Integer,
+    avi-fps : Integer,
+    avi-sample-rate : Integer,
+    avi-channels : Integer
+  }
+
+Section: Construction
+  avi-config : Integer, Integer, Integer -> AviConfig
+  avi-config (w) (h) (fps) = AviConfig { avi-width = w, avi-height = h, avi-fps = fps, avi-sample-rate = 0, avi-channels = 0 }
+
+  avi-config-audio : Integer, Integer, Integer, Integer, Integer -> AviConfig
+  avi-config-audio (w) (h) (fps) (sr) (ch) = AviConfig { avi-width = w, avi-height = h, avi-fps = fps, avi-sample-rate = sr, avi-channels = ch }
+
+Section: Encoding
+  avi-encode : AviConfig, List (List Rgb) -> List Integer
+  avi-encode (cfg) (frames) =
+    let num-frames = list-length frames
+    in let frame-size = cfg.avi-width * cfg.avi-height * 3
+    in let movi-data = avi-encode-movi frames cfg.avi-width cfg.avi-height 0 num-frames []
+    in let movi-size = list-length movi-data
+    in let hdrl = avi-hdrl cfg num-frames
+    in let movi = avi-riff-list [109, 111, 118, 105] movi-data
+    in let avi-data = hdrl & movi
+    in avi-riff [65, 86, 73, 32] avi-data
+
+Section: RIFF Structure
+  avi-riff : List Integer, List Integer -> List Integer
+  avi-riff (form-type) (data) =
+    [82, 73, 70, 70] & avi-le32 (4 + list-length data) & form-type & data
+
+  avi-riff-list : List Integer, List Integer -> List Integer
+  avi-riff-list (list-type) (data) =
+    [76, 73, 83, 84] & avi-le32 (4 + list-length data) & list-type & data
+
+  avi-riff-chunk : List Integer, List Integer -> List Integer
+  avi-riff-chunk (chunk-id) (data) =
+    chunk-id & avi-le32 (list-length data) & data & avi-pad-to-even (list-length data)
+
+  avi-pad-to-even : Integer -> List Integer
+  avi-pad-to-even (size) = if size - size / 2 * 2 == 1 then [0] else []
+
+Section: Header List
+  avi-hdrl : AviConfig, Integer -> List Integer
+  avi-hdrl (cfg) (num-frames) =
+    let avih = avi-main-header cfg num-frames
+    in let strl = avi-stream-list-video cfg num-frames
+    in avi-riff-list [104, 100, 114, 108] (avih & strl)
+
+  avi-main-header : AviConfig, Integer -> List Integer
+  avi-main-header (cfg) (num-frames) =
+    let usec-per-frame = 1000000 / cfg.avi-fps
+    in let frame-size = cfg.avi-width * cfg.avi-height * 3
+    in avi-riff-chunk [97, 118, 105, 104] (avi-le32 usec-per-frame & avi-le32 0 & avi-le32 0 & avi-le32 16 & avi-le32 num-frames & avi-le32 0 & avi-le32 1 & avi-le32 frame-size & avi-le32 (cfg.avi-width) & avi-le32 (cfg.avi-height) & avi-le32 0 & avi-le32 0 & avi-le32 0 & avi-le32 0)
+
+Section: Video Stream
+  avi-stream-list-video : AviConfig, Integer -> List Integer
+  avi-stream-list-video (cfg) (num-frames) =
+    let strh = avi-stream-header-video cfg num-frames
+    in let strf = avi-stream-format-video cfg
+    in avi-riff-list [115, 116, 114, 108] (strh & strf)
+
+  avi-stream-header-video : AviConfig, Integer -> List Integer
+  avi-stream-header-video (cfg) (num-frames) =
+    avi-riff-chunk [115, 116, 114, 104] ([118, 105, 100, 115] & avi-le32 0 & avi-le32 0 & avi-le32 0 & avi-le32 0 & avi-le32 1 & avi-le32 (cfg.avi-fps) & avi-le32 0 & avi-le32 num-frames & avi-le32 0 & avi-le32 0 & avi-le32 0 & avi-le16 0 & avi-le16 0 & avi-le16 (cfg.avi-width) & avi-le16 (cfg.avi-height))
+
+  avi-stream-format-video : AviConfig -> List Integer
+  avi-stream-format-video (cfg) =
+    let bmp-size = cfg.avi-width * cfg.avi-height * 3
+    in avi-riff-chunk [115, 116, 114, 102] (avi-le32 40 & avi-le32 (cfg.avi-width) & avi-le32 (cfg.avi-height) & avi-le16 1 & avi-le16 24 & avi-le32 0 & avi-le32 bmp-size & avi-le32 0 & avi-le32 0 & avi-le32 0 & avi-le32 0)
+
+Section: Movie Data
+  avi-encode-movi : List (List Rgb), Integer, Integer, Integer, Integer, List Integer -> List Integer
+  avi-encode-movi (frames) (w) (h) (i) (n) (acc) =
+    if i >= n then acc
+    else let frame-pixels = list-at frames i
+    in let frame-data = avi-encode-frame-rgb frame-pixels w h
+    in let chunk = avi-riff-chunk [48, 48, 100, 99] frame-data
+    in avi-encode-movi frames w h (i + 1) n (acc & chunk)
+
+  avi-encode-frame-rgb : List Rgb, Integer, Integer -> List Integer
+  avi-encode-frame-rgb (pixels) (w) (h) = avi-frame-rows pixels w h (h - 1) []
+
+  avi-frame-rows : List Rgb, Integer, Integer, Integer, List Integer -> List Integer
+  avi-frame-rows (pixels) (w) (h) (y) (acc) =
+    if y < 0 then acc
+    else let row = avi-frame-row pixels w y 0 []
+    in let padding = avi-row-padding (w * 3)
+    in avi-frame-rows pixels w h (y - 1) (acc & row & padding)
+
+  avi-frame-row : List Rgb, Integer, Integer, Integer, List Integer -> List Integer
+  avi-frame-row (pixels) (w) (y) (x) (acc) =
+    if x >= w then acc
+    else let px = list-at pixels (y * w + x)
+    in avi-frame-row pixels w y (x + 1) (acc & [px.cb, px.cg, px.cr])
+
+  avi-row-padding : Integer -> List Integer
+  avi-row-padding (row-bytes) =
+    let pad = (4 - row-bytes + row-bytes / 4 * 4) - (4 - row-bytes + row-bytes / 4 * 4) / 4 * 4
+    in avi-pad-n pad []
+
+  avi-pad-n : Integer, List Integer -> List Integer
+  avi-pad-n (n) (acc) = if n <= 0 then acc else avi-pad-n (n - 1) (list-push acc 0)
+
+Section: Helpers
+  avi-le16 : Integer -> List Integer
+  avi-le16 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255]
+
+  avi-le32 : Integer -> List Integer
+  avi-le32 (v) = [bit-and v 255, bit-and (bit-shru v 8) 255, bit-and (bit-shru v 16) 255, bit-and (bit-shru v 24) 255]
+
+Section: Queries
+  avi-file-size : AviConfig, Integer -> Integer
+  avi-file-size (cfg) (num-frames) =
+    let frame-bytes = cfg.avi-width * cfg.avi-height * 3
+    in 2048 + num-frames * (frame-bytes + 8)
+
+  avi-duration-ms : AviConfig, Integer -> Integer
+  avi-duration-ms (cfg) (num-frames) =
+    if cfg.avi-fps <= 0 then 0
+    else num-frames * 1000 / cfg.avi-fps
+
+Page 1

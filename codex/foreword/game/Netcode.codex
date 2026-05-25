@@ -1,0 +1,215 @@
+Chapter: Netcode
+  cites Foreword chapter Maybe
+
+ Rollback netcode for real-time multiplayer games. Tracks input
+ history per player, detects desync via state checksums, and
+ supports rollback + resimulate when authoritative inputs arrive
+ late. Frame-based — each frame has a set of player inputs and
+ a game-state checksum.
+
+ To netcode-new gives a new netcode session.
+ To netcode-add-local-input gives a session with local input recorded.
+ To netcode-add-remote-input gives a session with remote input applied.
+ To netcode-should-rollback gives True when resimulation is needed.
+ To netcode-advance gives a session advanced by one frame.
+
+ We say:
+
+Section: Types
+
+  PlayerInput = record {
+    pi-player : Integer,
+    pi-frame : Integer,
+    pi-data : List Integer,
+    pi-confirmed : Boolean
+  }
+
+  FrameState = record {
+    fs-frame : Integer,
+    fs-inputs : List PlayerInput,
+    fs-checksum : Integer,
+    fs-confirmed : Boolean
+  }
+
+  NetcodeSession = record {
+    nc-local-player : Integer,
+    nc-current-frame : Integer,
+    nc-frame-history : List FrameState,
+    nc-history-len : Integer,
+    nc-max-rollback : Integer,
+    nc-input-delay : Integer,
+    nc-desync-frame : Integer,
+    nc-pending-inputs : List PlayerInput
+  }
+
+Section: Construction
+
+  netcode-new : Integer, Integer, Integer -> NetcodeSession
+  netcode-new (local-player) (max-rollback) (input-delay) = NetcodeSession {
+    nc-local-player = local-player,
+    nc-current-frame = 0,
+    nc-frame-history = [],
+    nc-history-len = 0,
+    nc-max-rollback = max-rollback,
+    nc-input-delay = input-delay,
+    nc-desync-frame = 0 - 1,
+    nc-pending-inputs = []
+  }
+
+Section: Local Input
+
+  netcode-add-local-input : NetcodeSession, List Integer -> NetcodeSession
+  netcode-add-local-input (nc) (data) =
+    let input = PlayerInput {
+      pi-player = nc.nc-local-player,
+      pi-frame = nc.nc-current-frame + nc.nc-input-delay,
+      pi-data = data,
+      pi-confirmed = True
+    }
+    in nc-add-input-to-frame nc input
+
+Section: Remote Input
+
+  netcode-add-remote-input : NetcodeSession, Integer, Integer, List Integer -> NetcodeSession
+  netcode-add-remote-input (nc) (player) (frame) (data) =
+    let input = PlayerInput {
+      pi-player = player,
+      pi-frame = frame,
+      pi-data = data,
+      pi-confirmed = True
+    }
+    in nc-add-input-to-frame nc input
+
+Section: Frame Advance
+
+  netcode-advance : NetcodeSession, Integer -> NetcodeSession
+  netcode-advance (nc) (checksum) =
+    let frame-inputs = nc-drain-pending (nc.nc-pending-inputs) (nc.nc-current-frame) 0 (list-length (nc.nc-pending-inputs)) []
+    in let remaining = nc-keep-pending (nc.nc-pending-inputs) (nc.nc-current-frame) 0 (list-length (nc.nc-pending-inputs)) []
+    in let frame = FrameState {
+      fs-frame = nc.nc-current-frame,
+      fs-inputs = frame-inputs,
+      fs-checksum = checksum,
+      fs-confirmed = False
+    }
+    in let trimmed = nc-trim-history (list-push (nc.nc-frame-history) frame) (nc.nc-history-len + 1) (nc.nc-max-rollback * 2)
+    in NetcodeSession {
+      nc-local-player = nc.nc-local-player,
+      nc-current-frame = nc.nc-current-frame + 1,
+      nc-frame-history = trimmed,
+      nc-history-len = list-length trimmed,
+      nc-max-rollback = nc.nc-max-rollback,
+      nc-input-delay = nc.nc-input-delay,
+      nc-desync-frame = nc.nc-desync-frame,
+      nc-pending-inputs = remaining
+    }
+
+  nc-drain-pending : List PlayerInput, Integer, Integer, Integer, List PlayerInput -> List PlayerInput
+  nc-drain-pending (pending) (frame) (i) (len) (acc) =
+    if i >= len then acc
+    else let inp = list-at pending i
+    in if inp.pi-frame == frame then nc-drain-pending pending frame (i + 1) len (list-push acc inp)
+    else nc-drain-pending pending frame (i + 1) len acc
+
+  nc-keep-pending : List PlayerInput, Integer, Integer, Integer, List PlayerInput -> List PlayerInput
+  nc-keep-pending (pending) (frame) (i) (len) (acc) =
+    if i >= len then acc
+    else let inp = list-at pending i
+    in if inp.pi-frame == frame then nc-keep-pending pending frame (i + 1) len acc
+    else nc-keep-pending pending frame (i + 1) len (list-push acc inp)
+
+Section: Rollback Detection
+
+  netcode-should-rollback : NetcodeSession, Integer -> Boolean
+  netcode-should-rollback (nc) (frame) =
+    if frame < nc.nc-current-frame - nc.nc-max-rollback then False
+    else nc-has-new-confirmed nc frame
+
+  nc-has-new-confirmed : NetcodeSession, Integer -> Boolean
+  nc-has-new-confirmed (nc) (frame) =
+    nc-check-confirmed (nc.nc-frame-history) frame 0 (nc.nc-history-len)
+
+  nc-check-confirmed : List FrameState, Integer, Integer, Integer -> Boolean
+  nc-check-confirmed (history) (frame) (i) (len) =
+    if i >= len then False
+    else let fs = list-at history i
+    in if fs.fs-frame == frame then nc-any-unconfirmed (fs.fs-inputs) 0 (list-length (fs.fs-inputs))
+    else nc-check-confirmed history frame (i + 1) len
+
+  nc-any-unconfirmed : List PlayerInput, Integer, Integer -> Boolean
+  nc-any-unconfirmed (inputs) (i) (len) =
+    if i >= len then False
+    else if (list-at inputs i).pi-confirmed == False then True
+    else nc-any-unconfirmed inputs (i + 1) len
+
+Section: Desync Detection
+
+  netcode-check-desync : NetcodeSession, Integer, Integer -> NetcodeSession
+  netcode-check-desync (nc) (frame) (remote-checksum) =
+    let local = nc-find-checksum (nc.nc-frame-history) frame 0 (nc.nc-history-len)
+    in if local == remote-checksum then nc
+    else __record-set nc "nc-desync-frame" frame
+
+  nc-find-checksum : List FrameState, Integer, Integer, Integer -> Integer
+  nc-find-checksum (history) (frame) (i) (len) =
+    if i >= len then 0
+    else let fs = list-at history i
+    in if fs.fs-frame == frame then fs.fs-checksum
+    else nc-find-checksum history frame (i + 1) len
+
+  netcode-has-desync : NetcodeSession -> Boolean
+  netcode-has-desync (nc) = nc.nc-desync-frame >= 0
+
+Section: Queries
+
+  netcode-frame : NetcodeSession -> Integer
+  netcode-frame (nc) = nc.nc-current-frame
+
+  netcode-rollback-frames : NetcodeSession, Integer -> Integer
+  netcode-rollback-frames (nc) (target-frame) =
+    nc.nc-current-frame - target-frame
+
+  netcode-inputs-for-frame : NetcodeSession, Integer -> List PlayerInput
+  netcode-inputs-for-frame (nc) (frame) =
+    nc-get-inputs (nc.nc-frame-history) frame 0 (nc.nc-history-len)
+
+  nc-get-inputs : List FrameState, Integer, Integer, Integer -> List PlayerInput
+  nc-get-inputs (history) (frame) (i) (len) =
+    if i >= len then []
+    else let fs = list-at history i
+    in if fs.fs-frame == frame then fs.fs-inputs
+    else nc-get-inputs history frame (i + 1) len
+
+Section: Helpers
+
+  nc-add-input-to-frame : NetcodeSession, PlayerInput -> NetcodeSession
+  nc-add-input-to-frame (nc) (input) =
+    let found = nc-try-insert (nc.nc-frame-history) input 0 (nc.nc-history-len)
+    in if found.nc-inserted then __record-set nc "nc-frame-history" (found.nc-history)
+    else __record-set nc "nc-pending-inputs" (list-push (nc.nc-pending-inputs) input)
+
+  NcInsertResult = record {
+    nc-history : List FrameState,
+    nc-inserted : Boolean
+  }
+
+  nc-try-insert : List FrameState, PlayerInput, Integer, Integer -> NcInsertResult
+  nc-try-insert (history) (input) (i) (len) =
+    if i >= len then NcInsertResult { nc-history = history, nc-inserted = False }
+    else let fs = list-at history i
+    in if fs.fs-frame == input.pi-frame then
+      NcInsertResult { nc-history = list-set-at history i (__record-set fs "fs-inputs" (list-push (fs.fs-inputs) input)), nc-inserted = True }
+    else nc-try-insert history input (i + 1) len
+
+  nc-trim-history : List FrameState, Integer, Integer -> List FrameState
+  nc-trim-history (history) (len) (max-len) =
+    if len <= max-len then history
+    else nc-drop-oldest history (len - max-len) 0 []
+
+  nc-drop-oldest : List FrameState, Integer, Integer, List FrameState -> List FrameState
+  nc-drop-oldest (history) (drop-count) (i) (acc) =
+    if i >= list-length history then acc
+    else if i < drop-count then nc-drop-oldest history drop-count (i + 1) acc
+    else nc-drop-oldest history drop-count (i + 1) (list-push acc (list-at history i))
+
+Page 1

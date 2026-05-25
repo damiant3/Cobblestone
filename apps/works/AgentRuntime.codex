@@ -1,0 +1,181 @@
+Chapter: AgentRuntime
+  cites AI chapter NeuralNet
+  cites AI chapter Tensor
+  cites AI chapter Tokenizer
+  cites AI chapter Gguf
+  cites AI chapter Activation
+  cites Kernel chapter GpuBridge
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ Local inference runtime for on-device AI agents. AgentRuntime
+ loads a GGUF model from disk, dequantizes weights, and runs
+ inference via the NeuralNet forward pass. Small models (< 1B
+ params in Q4) fit in 4-8 GB — the 16 GB USB stick has room for
+ the OS, source, and a purpose-built agent model.
+
+ AgentRuntime has two execution paths.
+ Local path uses CPU-only fixed-point inference via Tensor and NeuralNet.
+ GPU path offloads matmul to host CUDA via GpuBridge on COM3.
+
+ We say:
+
+Section: Model Spec
+
+  ModelSpec = record {
+    name : Text,
+    path : Text,
+    context-length : Integer,
+    vocab-size : Integer,
+    embedding-dim : Integer,
+    num-layers : Integer,
+    quantization : Quantization,
+    size-bytes : Integer
+  }
+
+  Quantization =
+    | QuantNone
+    | QuantQ4_0
+    | QuantQ8_0
+
+  quantization-label : Quantization -> Text
+  quantization-label (q) = when q
+    is QuantNone -> "f32"
+    is QuantQ4_0 -> "Q4_0"
+    is QuantQ8_0 -> "Q8_0"
+
+Section: Inference Mode
+
+  InferenceMode =
+    | InferLocal
+    | InferGpu
+
+  InferenceConfig = record {
+    mode : InferenceMode,
+    max-tokens : Integer,
+    temperature : Integer,
+    top-k : Integer
+  }
+
+  default-inference-config : InferenceConfig = InferenceConfig {
+    mode = InferLocal,
+    max-tokens = 256,
+    temperature = 700,
+    top-k = 40
+  }
+
+Section: Runtime State
+
+  AgentRuntimeState = record {
+    model-spec : Maybe ModelSpec,
+    network : Maybe NeuralNetwork,
+    tokenizer-vocab : List Text,
+    gpu-bridge : GpuBridge,
+    inference-config : InferenceConfig,
+    loaded : Boolean,
+    token-count : Integer
+  }
+
+  runtime-init : AgentRuntimeState
+  runtime-init = AgentRuntimeState {
+    model-spec = None,
+    network = None,
+    tokenizer-vocab = [],
+    gpu-bridge = gpu-bridge-init,
+    inference-config = default-inference-config,
+    loaded = False,
+    token-count = 0
+  }
+
+Section: Model Loading
+
+  ModelLoadResult =
+    | ModelLoaded (AgentRuntimeState)
+    | ModelLoadError (Text)
+
+  load-model-from-path : AgentRuntimeState, Text -> ModelLoadResult
+  load-model-from-path (rt) (path) =
+    if file-exists path == False then ModelLoadError ("File not found: " & path)
+    else ModelLoaded rt
+
+Section: Token Generation
+
+  GenerateResult = record {
+    tokens : List Integer,
+    text : Text,
+    token-count : Integer,
+    finished : Boolean
+  }
+
+  empty-generate-result : GenerateResult = GenerateResult {
+    tokens = [],
+    text = "",
+    token-count = 0,
+    finished = False
+  }
+
+Section: Chat Interface
+
+  ChatMessage = record {
+    role : ChatRole,
+    content : Text
+  }
+
+  ChatRole =
+    | RoleSystem
+    | RoleUser
+    | RoleAssistant
+
+  ChatHistory = record {
+    messages : List ChatMessage,
+    message-count : Integer,
+    system-prompt : Text
+  }
+
+  chat-new : Text -> ChatHistory
+  chat-new (system-prompt) = ChatHistory {
+    messages = [ChatMessage { role = RoleSystem, content = system-prompt }],
+    message-count = 1,
+    system-prompt = system-prompt
+  }
+
+  chat-add-user : ChatHistory, Text -> ChatHistory
+  chat-add-user (h) (content) = ChatHistory {
+    messages = list-push (h.messages) (ChatMessage { role = RoleUser, content = content }),
+    message-count = h.message-count + 1,
+    system-prompt = h.system-prompt
+  }
+
+  chat-add-assistant : ChatHistory, Text -> ChatHistory
+  chat-add-assistant (h) (content) = ChatHistory {
+    messages = list-push (h.messages) (ChatMessage { role = RoleAssistant, content = content }),
+    message-count = h.message-count + 1,
+    system-prompt = h.system-prompt
+  }
+
+Section: Formatting
+
+  format-model-spec : ModelSpec -> Text
+  format-model-spec (m) =
+    m.name & " (" & quantization-label (m.quantization) & ")"
+    & "\n  context: " & show (m.context-length)
+    & " vocab: " & show (m.vocab-size)
+    & " embed: " & show (m.embedding-dim)
+    & " layers: " & show (m.num-layers)
+    & "\n  size: " & show (m.size-bytes / 1048576) & " MB"
+
+  format-runtime-status : AgentRuntimeState -> Text
+  format-runtime-status (rt) =
+    if rt.loaded then
+      when rt.model-spec
+        is Just (spec) -> "Model: " & format-model-spec spec & "\nTokens generated: " & show (rt.token-count)
+        is None -> "Runtime loaded (no model info)"
+    else "No model loaded"
+
+  role-label : ChatRole -> Text
+  role-label (r) = when r
+    is RoleSystem -> "system"
+    is RoleUser -> "user"
+    is RoleAssistant -> "assistant"
+
+Page 1

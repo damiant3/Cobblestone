@@ -1,0 +1,172 @@
+Chapter: Aes256
+  cites Foreword chapter Aes
+
+ AES-256 block cipher extending the AES-128 implementation with
+ a 256-bit key schedule (60 words, 240 bytes) and 14 encryption
+ rounds. Supports ECB (single-block) and CBC (chained) modes.
+
+ To aes256-expand-key gives List Integer,
+   expanding a 32-byte key into a 240-byte round-key schedule.
+
+ To aes256-encrypt-block gives List Integer,
+   encrypting a single 16-byte block under the expanded key in 14 rounds.
+
+ To aes256-cbc-encrypt gives List Integer,
+   encrypting plaintext in CBC mode with AES-256.
+
+ To aes256-cbc-decrypt gives List Integer,
+   decrypting ciphertext in CBC mode with AES-256.
+
+ We say:
+
+Section: Key Expansion (AES-256)
+
+  aes256-expand-key : List Integer -> List Integer
+  aes256-expand-key (key) = aes256-key-exp key 8 60 1
+
+  aes256-key-exp : List Integer, Integer, Integer, Integer -> List Integer
+  aes256-key-exp (w) (i) (n) (rcon) =
+    if i >= n then w
+    else let prev = aes-word-at w (i - 1)
+    in let back = aes-word-at w (i - 8)
+    in let mod8 = i - (i / 8) * 8
+    in let temp = if mod8 == 0 then aes-xor-words back (aes-sub-word (aes-rot-word prev) rcon)
+      else if mod8 == 4 then aes-xor-words back (aes256-sub-word-no-rcon prev)
+      else aes-xor-words back prev
+    in let new-rcon = if mod8 == 0 then aes-next-rcon rcon else rcon
+    in aes256-key-exp (w & aes-word-to-bytes temp) (i + 1) n new-rcon
+
+  aes256-sub-word-no-rcon : Integer -> Integer
+  aes256-sub-word-no-rcon (w) =
+    let b0 = list-at aes-sbox (bit-and (bit-shru w 24) 255)
+    in let b1 = list-at aes-sbox (bit-and (bit-shru w 16) 255)
+    in let b2 = list-at aes-sbox (bit-and (bit-shru w 8) 255)
+    in let b3 = list-at aes-sbox (bit-and w 255)
+    in bit-or (bit-shl b0 24) (bit-or (bit-shl b1 16) (bit-or (bit-shl b2 8) b3))
+
+Section: Block Encryption (AES-256)
+
+  aes256-encrypt-block : List Integer, List Integer -> List Integer
+  aes256-encrypt-block (block) (expanded-key) =
+    let state = aes-add-round-key block expanded-key 0
+    in let after-rounds = aes-enc-rounds state expanded-key 1 14
+    in let sub = aes-sub-bytes after-rounds
+    in let shifted = aes-shift-rows sub
+    in aes-add-round-key shifted expanded-key 14
+
+Section: Block Decryption (AES-256)
+
+  aes256-inv-shift-rows : List Integer -> List Integer
+  aes256-inv-shift-rows (s) =
+    [list-at s 0, list-at s 13, list-at s 10, list-at s 7, list-at s 4, list-at s 1, list-at s 14, list-at s 11, list-at s 8, list-at s 5, list-at s 2, list-at s 15, list-at s 12, list-at s 9, list-at s 6, list-at s 3]
+
+  aes256-inv-sub-bytes : List Integer -> List Integer
+  aes256-inv-sub-bytes (state) = aes256-isb-loop state 0 16 []
+
+  aes256-isb-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  aes256-isb-loop (state) (i) (n) (acc) =
+    if i >= n then acc
+    else aes256-isb-loop state (i + 1) n (list-push acc (list-at aes-inv-sbox (list-at state i)))
+
+  aes256-gmul : Integer, Integer -> Integer
+  aes256-gmul (a) (b) = aes256-gmul-loop a b 0 0
+
+  aes256-gmul-loop : Integer, Integer, Integer, Integer -> Integer
+  aes256-gmul-loop (a) (b) (p) (i) =
+    if i >= 8 then p
+    else let p2 = if bit-and b 1 == 1 then bit-xor p a else p
+    in let carry = bit-and a 128
+    in let a2 = bit-and (bit-shl a 1) 255
+    in let a3 = if carry /= 0 then bit-xor a2 27 else a2
+    in aes256-gmul-loop a3 (bit-shru b 1) p2 (i + 1)
+
+  aes256-inv-mix-col : List Integer, Integer -> List Integer
+  aes256-inv-mix-col (s) (c) =
+    let a0 = list-at s c
+    in let a1 = list-at s (c + 1)
+    in let a2 = list-at s (c + 2)
+    in let a3 = list-at s (c + 3)
+    in [bit-xor (aes256-gmul a0 14) (bit-xor (aes256-gmul a1 11) (bit-xor (aes256-gmul a2 13) (aes256-gmul a3 9))),
+        bit-xor (aes256-gmul a0 9) (bit-xor (aes256-gmul a1 14) (bit-xor (aes256-gmul a2 11) (aes256-gmul a3 13))),
+        bit-xor (aes256-gmul a0 13) (bit-xor (aes256-gmul a1 9) (bit-xor (aes256-gmul a2 14) (aes256-gmul a3 11))),
+        bit-xor (aes256-gmul a0 11) (bit-xor (aes256-gmul a1 13) (bit-xor (aes256-gmul a2 9) (aes256-gmul a3 14)))]
+
+  aes256-inv-mix-columns : List Integer -> List Integer
+  aes256-inv-mix-columns (s) =
+    aes256-inv-mix-col s 0 & aes256-inv-mix-col s 4 & aes256-inv-mix-col s 8 & aes256-inv-mix-col s 12
+
+  aes256-decrypt-block : List Integer, List Integer -> List Integer
+  aes256-decrypt-block (block) (expanded-key) =
+    let state = aes-add-round-key block expanded-key 14
+    in let after-rounds = aes256-dec-rounds state expanded-key 13 1
+    in let inv-sub = aes256-inv-sub-bytes after-rounds
+    in let inv-shift = aes256-inv-shift-rows inv-sub
+    in aes-add-round-key inv-shift expanded-key 0
+
+  aes256-dec-rounds : List Integer, List Integer, Integer, Integer -> List Integer
+  aes256-dec-rounds (state) (key) (round) (stop) =
+    if round < stop then state
+    else let inv-sub = aes256-inv-sub-bytes state
+    in let inv-shift = aes256-inv-shift-rows inv-sub
+    in let added = aes-add-round-key inv-shift key round
+    in let inv-mixed = aes256-inv-mix-columns added
+    in aes256-dec-rounds inv-mixed key (round - 1) stop
+
+Section: CBC Mode (AES-256)
+
+  aes256-cbc-encrypt : List Integer, List Integer, List Integer -> List Integer
+  aes256-cbc-encrypt (plaintext) (key) (iv) =
+    let expanded = aes256-expand-key key
+    in aes256-cbc-enc-loop plaintext expanded iv 0 (list-length plaintext) []
+
+  aes256-cbc-enc-loop : List Integer, List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  aes256-cbc-enc-loop (pt) (key) (prev) (i) (n) (acc) =
+    if i + 16 > n then acc
+    else let block = aes-get-block pt i
+    in let xored = aes-xor-blocks block prev
+    in let encrypted = aes256-encrypt-block xored key
+    in aes256-cbc-enc-loop pt key encrypted (i + 16) n (acc & encrypted)
+
+  aes256-cbc-decrypt : List Integer, List Integer, List Integer -> List Integer
+  aes256-cbc-decrypt (ciphertext) (key) (iv) =
+    let expanded = aes256-expand-key key
+    in aes256-cbc-dec-loop ciphertext expanded iv 0 (list-length ciphertext) []
+
+  aes256-cbc-dec-loop : List Integer, List Integer, List Integer, Integer, Integer, List Integer -> List Integer
+  aes256-cbc-dec-loop (ct) (key) (prev) (i) (n) (acc) =
+    if i + 16 > n then acc
+    else let block = aes-get-block ct i
+    in let decrypted = aes256-decrypt-block block key
+    in let plaintext = aes-xor-blocks decrypted prev
+    in aes256-cbc-dec-loop ct key block (i + 16) n (acc & plaintext)
+
+Section: PKCS7 Padding
+
+  aes256-pkcs7-pad : List Integer -> List Integer
+  aes256-pkcs7-pad (data) =
+    let pad-len = 16 - (list-length data - (list-length data / 16) * 16)
+    in aes256-pad-loop data pad-len pad-len
+
+  aes256-pad-loop : List Integer, Integer, Integer -> List Integer
+  aes256-pad-loop (data) (val) (remaining) =
+    if remaining <= 0 then data
+    else aes256-pad-loop (list-push data val) val (remaining - 1)
+
+  aes256-pkcs7-unpad : List Integer -> List Integer
+  aes256-pkcs7-unpad (data) =
+    let len = list-length data
+    in if len == 0 then data
+    else let pad-val = list-at data (len - 1)
+    in if pad-val < 1 then data
+    else if pad-val > 16 then data
+    else aes256-take data (len - pad-val)
+
+  aes256-take : List Integer, Integer -> List Integer
+  aes256-take (xs) (n) = aes256-take-loop xs n 0 []
+
+  aes256-take-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  aes256-take-loop (xs) (n) (i) (acc) =
+    if i >= n then acc
+    else aes256-take-loop xs n (i + 1) (list-push acc (list-at xs i))
+
+Page 1

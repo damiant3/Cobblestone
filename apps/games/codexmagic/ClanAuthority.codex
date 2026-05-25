@@ -1,0 +1,391 @@
+Chapter: ClanAuthority
+  cites CodexMagic chapter Clan
+  cites CodexMagic chapter ClanEconomy
+  cites CodexMagic chapter Token
+  cites CodexMagic chapter Auth
+
+ Platform-side clan authority. The central server that authorizes
+ clan creation, manages the global registry of clans, handles
+ global ManaCoin purchases by clans, and validates inter-clan
+ operations. This is the "us" in "they buy clan tokens from us."
+
+ Clans register with the platform, receive authorization tokens,
+ and then operate independently on their own instances. The platform
+ tracks:
+ - Which clans exist and their public keys
+ - Global ManaCoin balances (clan treasuries draw from here)
+ - Inter-clan challenge validation
+ - Pack approval pipeline
+ - Revenue collection (platform fees from pack sales)
+
+ We say:
+
+Section: Platform State
+
+  PlatformAuthority = record {
+    registered-clans : List ClanRegistration,
+    num-clans : Integer,
+    global-ledger : ManaCoinLedger,
+    platform-revenue : Integer,
+    pending-approvals : List PackApproval,
+    challenge-registry : List RegisteredChallenge,
+    next-clan-id : Integer,
+    next-approval-id : Integer,
+    auth-keys : List PlatformAuthKey
+  }
+
+  ClanRegistration = record {
+    clan-id : Integer,
+    name : Text,
+    tag : Text,
+    founder : Integer,
+    instance-key : PublicKey,
+    registered-at : Integer,
+    authorized : Boolean,
+    treasury-account : Integer,
+    member-count : Integer,
+    rank : ClanRank,
+    last-sync : Integer
+  }
+
+  PlatformAuthKey = record {
+    clan-id : Integer,
+    auth-token : Integer,
+    issued-at : Integer,
+    valid : Boolean
+  }
+
+  PackApproval = record {
+    approval-id : Integer,
+    clan-id : Integer,
+    pack-name : Text,
+    price : Integer,
+    card-count : Integer,
+    status : ApprovalStatus,
+    submitted-at : Integer,
+    reviewed-at : Integer
+  }
+
+  ApprovalStatus =
+    | ApprovalPending
+    | ApprovalApproved
+    | ApprovalRejected
+
+  approval-status-name : ApprovalStatus -> Text
+  approval-status-name (s) =
+    when s
+      is ApprovalPending -> "Pending"
+      is ApprovalApproved -> "Approved"
+      is ApprovalRejected -> "Rejected"
+
+  RegisteredChallenge = record {
+    challenge-id : Integer,
+    challenger-clan : Integer,
+    defender-clan : Integer,
+    stake-amount : Integer,
+    validated : Boolean,
+    escrow-held : Boolean
+  }
+
+Section: Platform Initialization
+
+  platform-new : PlatformAuthority
+  platform-new =
+    PlatformAuthority {
+      registered-clans = [],
+      num-clans = 0,
+      global-ledger = ledger-new 10000,
+      platform-revenue = 0,
+      pending-approvals = [],
+      challenge-registry = [],
+      next-clan-id = 1,
+      next-approval-id = 1,
+      auth-keys = []
+    }
+
+Section: Clan Registration
+
+  RegisterResult = record {
+    platform : PlatformAuthority,
+    clan-id : Integer,
+    auth-token : Integer,
+    success : Boolean
+  }
+
+  register-clan : PlatformAuthority, Text, Text, Integer, PublicKey, Integer -> RegisterResult
+  register-clan (platform) (name) (tag) (founder) (instance-key) (time) =
+    if tag-taken (platform.registered-clans) tag 0 (list-length (platform.registered-clans)) then
+      RegisterResult { platform = platform, clan-id = -1, auth-token = 0, success = False }
+    else let clan-id = platform.next-clan-id
+    in let treasury-account = platform.num-clans + 1000
+    in let reg = ClanRegistration {
+      clan-id = clan-id,
+      name = name,
+      tag = tag,
+      founder = founder,
+      instance-key = instance-key,
+      registered-at = time,
+      authorized = False,
+      treasury-account = treasury-account,
+      member-count = 1,
+      rank = ClanUnranked,
+      last-sync = 0
+    }
+    in let auth-token = hash-mix (clan-id * 31 + time) 2654435761
+    in let auth-key = PlatformAuthKey { clan-id = clan-id, auth-token = auth-token, issued-at = time, valid = True }
+    in let ledger2 = grow-ledger (platform.global-ledger) (treasury-account + 1)
+    in let platform2 = PlatformAuthority {
+      registered-clans = list-push (platform.registered-clans) reg,
+      num-clans = platform.num-clans + 1,
+      global-ledger = ledger2,
+      platform-revenue = platform.platform-revenue,
+      pending-approvals = platform.pending-approvals,
+      challenge-registry = platform.challenge-registry,
+      next-clan-id = platform.next-clan-id + 1,
+      next-approval-id = platform.next-approval-id,
+      auth-keys = list-push (platform.auth-keys) auth-key
+    }
+    in RegisterResult { platform = platform2, clan-id = clan-id, auth-token = auth-token, success = True }
+
+  tag-taken : List ClanRegistration, Text, Integer, Integer -> Boolean
+  tag-taken (clans) (tag) (i) (len) =
+    if i >= len then False
+    else let c = list-at clans i
+    in if c.tag == tag then True
+    else tag-taken clans tag (i + 1) len
+
+  grow-ledger : ManaCoinLedger, Integer -> ManaCoinLedger
+  grow-ledger (ledger) (new-size) =
+    let current-size = list-length (ledger.balances)
+    in if current-size >= new-size then ledger
+    else let new-balances = extend-balances (ledger.balances) current-size new-size
+    in ManaCoinLedger { balances = new-balances, total-supply = ledger.total-supply, total-burned = ledger.total-burned }
+
+  extend-balances : List Integer, Integer, Integer -> List Integer
+  extend-balances (balances) (current) (target) =
+    if current >= target then balances
+    else extend-balances (list-push balances 0) (current + 1) target
+
+Section: Authorization
+
+  authorize-clan : PlatformAuthority, Integer, Integer -> PlatformAuthority
+  authorize-clan (platform) (clan-id) (auth-token) =
+    if verify-auth-token (platform.auth-keys) clan-id auth-token 0 (list-length (platform.auth-keys)) == False then platform
+    else let new-clans = set-clan-authorized (platform.registered-clans) clan-id 0 (list-length (platform.registered-clans)) []
+    in PlatformAuthority {
+      registered-clans = new-clans,
+      num-clans = platform.num-clans,
+      global-ledger = platform.global-ledger,
+      platform-revenue = platform.platform-revenue,
+      pending-approvals = platform.pending-approvals,
+      challenge-registry = platform.challenge-registry,
+      next-clan-id = platform.next-clan-id,
+      next-approval-id = platform.next-approval-id,
+      auth-keys = platform.auth-keys
+    }
+
+  verify-auth-token : List PlatformAuthKey, Integer, Integer, Integer, Integer -> Boolean
+  verify-auth-token (keys) (clan-id) (token) (i) (len) =
+    if i >= len then False
+    else let k = list-at keys i
+    in if k.clan-id == clan-id then
+      if k.auth-token == token then k.valid
+      else verify-auth-token keys clan-id token (i + 1) len
+    else verify-auth-token keys clan-id token (i + 1) len
+
+  set-clan-authorized : List ClanRegistration, Integer, Integer, Integer, List ClanRegistration -> List ClanRegistration
+  set-clan-authorized (clans) (clan-id) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = list-at clans i
+    in if c.clan-id == clan-id then
+      set-clan-authorized clans clan-id (i + 1) len (list-push acc (ClanRegistration { clan-id = c.clan-id, name = c.name, tag = c.tag, founder = c.founder, instance-key = c.instance-key, registered-at = c.registered-at, authorized = True, treasury-account = c.treasury-account, member-count = c.member-count, rank = c.rank, last-sync = c.last-sync }))
+    else set-clan-authorized clans clan-id (i + 1) len (list-push acc c)
+
+Section: Global Token Purchase — Clans buying ManaCoin for their treasury
+
+  TokenPurchaseResult = record {
+    platform : PlatformAuthority,
+    amount : Integer,
+    success : Boolean
+  }
+
+  purchase-global-tokens : PlatformAuthority, Integer, Integer, Integer -> TokenPurchaseResult
+  purchase-global-tokens (platform) (clan-id) (amount) (time) =
+    let reg = find-registration (platform.registered-clans) clan-id 0 (list-length (platform.registered-clans))
+    in if reg.clan-id < 0 then TokenPurchaseResult { platform = platform, amount = 0, success = False }
+    else if reg.authorized == False then TokenPurchaseResult { platform = platform, amount = 0, success = False }
+    else let ledger2 = ledger-mint (platform.global-ledger) (reg.treasury-account) amount
+    in let platform2 = PlatformAuthority {
+      registered-clans = platform.registered-clans,
+      num-clans = platform.num-clans,
+      global-ledger = ledger2,
+      platform-revenue = platform.platform-revenue + amount,
+      pending-approvals = platform.pending-approvals,
+      challenge-registry = platform.challenge-registry,
+      next-clan-id = platform.next-clan-id,
+      next-approval-id = platform.next-approval-id,
+      auth-keys = platform.auth-keys
+    }
+    in TokenPurchaseResult { platform = platform2, amount = amount, success = True }
+
+  find-registration : List ClanRegistration, Integer, Integer, Integer -> ClanRegistration
+  find-registration (clans) (clan-id) (i) (len) =
+    if i >= len then ClanRegistration { clan-id = -1, name = "", tag = "", founder = 0, instance-key = PublicKey { key-high = 0, key-low = 0 }, registered-at = 0, authorized = False, treasury-account = 0, member-count = 0, rank = ClanUnranked, last-sync = 0 }
+    else let c = list-at clans i
+    in if c.clan-id == clan-id then c
+    else find-registration clans clan-id (i + 1) len
+
+Section: Pack Approval Pipeline
+
+  submit-pack-for-approval : PlatformAuthority, Integer, Text, Integer, Integer, Integer -> PlatformAuthority
+  submit-pack-for-approval (platform) (clan-id) (pack-name) (price) (card-count) (time) =
+    let approval = PackApproval {
+      approval-id = platform.next-approval-id,
+      clan-id = clan-id,
+      pack-name = pack-name,
+      price = price,
+      card-count = card-count,
+      status = ApprovalPending,
+      submitted-at = time,
+      reviewed-at = 0
+    }
+    in PlatformAuthority {
+      registered-clans = platform.registered-clans,
+      num-clans = platform.num-clans,
+      global-ledger = platform.global-ledger,
+      platform-revenue = platform.platform-revenue,
+      pending-approvals = list-push (platform.pending-approvals) approval,
+      challenge-registry = platform.challenge-registry,
+      next-clan-id = platform.next-clan-id,
+      next-approval-id = platform.next-approval-id + 1,
+      auth-keys = platform.auth-keys
+    }
+
+  review-pack-approval : PlatformAuthority, Integer, Boolean, Integer -> PlatformAuthority
+  review-pack-approval (platform) (approval-id) (approved) (time) =
+    let new-status = if approved then ApprovalApproved else ApprovalRejected
+    in let new-approvals = update-approval (platform.pending-approvals) approval-id new-status time 0 (list-length (platform.pending-approvals)) []
+    in PlatformAuthority {
+      registered-clans = platform.registered-clans,
+      num-clans = platform.num-clans,
+      global-ledger = platform.global-ledger,
+      platform-revenue = platform.platform-revenue,
+      pending-approvals = new-approvals,
+      challenge-registry = platform.challenge-registry,
+      next-clan-id = platform.next-clan-id,
+      next-approval-id = platform.next-approval-id,
+      auth-keys = platform.auth-keys
+    }
+
+  update-approval : List PackApproval, Integer, ApprovalStatus, Integer, Integer, Integer, List PackApproval -> List PackApproval
+  update-approval (approvals) (id) (new-status) (time) (i) (len) (acc) =
+    if i >= len then acc
+    else let a = list-at approvals i
+    in if a.approval-id == id then
+      update-approval approvals id new-status time (i + 1) len (list-push acc (PackApproval { approval-id = a.approval-id, clan-id = a.clan-id, pack-name = a.pack-name, price = a.price, card-count = a.card-count, status = new-status, submitted-at = a.submitted-at, reviewed-at = time }))
+    else update-approval approvals id new-status time (i + 1) len (list-push acc a)
+
+Section: Revenue Collection from Pack Sales
+
+  collect-pack-revenue : PlatformAuthority, Integer, Integer -> PlatformAuthority
+  collect-pack-revenue (platform) (clan-id) (platform-cut) =
+    PlatformAuthority {
+      registered-clans = platform.registered-clans,
+      num-clans = platform.num-clans,
+      global-ledger = platform.global-ledger,
+      platform-revenue = platform.platform-revenue + platform-cut,
+      pending-approvals = platform.pending-approvals,
+      challenge-registry = platform.challenge-registry,
+      next-clan-id = platform.next-clan-id,
+      next-approval-id = platform.next-approval-id,
+      auth-keys = platform.auth-keys
+    }
+
+Section: Challenge Validation
+
+  register-challenge : PlatformAuthority, Integer, Integer, Integer, Integer -> PlatformAuthority
+  register-challenge (platform) (challenger) (defender) (stake) (challenge-id) =
+    let reg-chal = RegisteredChallenge { challenge-id = challenge-id, challenger-clan = challenger, defender-clan = defender, stake-amount = stake, validated = True, escrow-held = stake > 0 }
+    in PlatformAuthority {
+      registered-clans = platform.registered-clans,
+      num-clans = platform.num-clans,
+      global-ledger = platform.global-ledger,
+      platform-revenue = platform.platform-revenue,
+      pending-approvals = platform.pending-approvals,
+      challenge-registry = list-push (platform.challenge-registry) reg-chal,
+      next-clan-id = platform.next-clan-id,
+      next-approval-id = platform.next-approval-id,
+      auth-keys = platform.auth-keys
+    }
+
+  is-clan-authorized : PlatformAuthority, Integer -> Boolean
+  is-clan-authorized (platform) (clan-id) =
+    check-authorized (platform.registered-clans) clan-id 0 (list-length (platform.registered-clans))
+
+  check-authorized : List ClanRegistration, Integer, Integer, Integer -> Boolean
+  check-authorized (clans) (clan-id) (i) (len) =
+    if i >= len then False
+    else let c = list-at clans i
+    in if c.clan-id == clan-id then c.authorized
+    else check-authorized clans clan-id (i + 1) len
+
+Section: Sync — Clans report their state back to the platform
+
+  sync-clan-state : PlatformAuthority, Integer, Integer, Integer, Integer -> PlatformAuthority
+  sync-clan-state (platform) (clan-id) (member-count) (reputation) (time) =
+    let new-rank = compute-clan-rank reputation
+    in let new-clans = update-clan-sync (platform.registered-clans) clan-id member-count new-rank time 0 (list-length (platform.registered-clans)) []
+    in PlatformAuthority {
+      registered-clans = new-clans,
+      num-clans = platform.num-clans,
+      global-ledger = platform.global-ledger,
+      platform-revenue = platform.platform-revenue,
+      pending-approvals = platform.pending-approvals,
+      challenge-registry = platform.challenge-registry,
+      next-clan-id = platform.next-clan-id,
+      next-approval-id = platform.next-approval-id,
+      auth-keys = platform.auth-keys
+    }
+
+  update-clan-sync : List ClanRegistration, Integer, Integer, ClanRank, Integer, Integer, Integer, List ClanRegistration -> List ClanRegistration
+  update-clan-sync (clans) (clan-id) (members) (rank) (time) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = list-at clans i
+    in if c.clan-id == clan-id then
+      update-clan-sync clans clan-id members rank time (i + 1) len (list-push acc (ClanRegistration { clan-id = c.clan-id, name = c.name, tag = c.tag, founder = c.founder, instance-key = c.instance-key, registered-at = c.registered-at, authorized = c.authorized, treasury-account = c.treasury-account, member-count = members, rank = rank, last-sync = time }))
+    else update-clan-sync clans clan-id members rank time (i + 1) len (list-push acc c)
+
+Section: Queries
+
+  get-clan-treasury-balance : PlatformAuthority, Integer -> Integer
+  get-clan-treasury-balance (platform) (clan-id) =
+    let reg = find-registration (platform.registered-clans) clan-id 0 (list-length (platform.registered-clans))
+    in if reg.clan-id < 0 then 0
+    else ledger-balance (platform.global-ledger) (reg.treasury-account)
+
+  list-authorized-clans : List ClanRegistration, Integer, Integer, List ClanRegistration -> List ClanRegistration
+  list-authorized-clans (clans) (i) (len) (acc) =
+    if i >= len then acc
+    else let c = list-at clans i
+    in if c.authorized then list-authorized-clans clans (i + 1) len (list-push acc c)
+    else list-authorized-clans clans (i + 1) len acc
+
+  platform-clan-count : PlatformAuthority -> Integer
+  platform-clan-count (platform) = platform.num-clans
+
+  platform-total-revenue : PlatformAuthority -> Integer
+  platform-total-revenue (platform) = platform.platform-revenue
+
+Section: Hash Helper
+
+  hash-mix : Integer, Integer -> Integer
+  hash-mix (val) (prime) =
+    let v1 = val * prime
+    in let v2 = xor-int v1 (v1 / 65536)
+    in let v3 = v2 * 2246822519
+    in xor-int v3 (v3 / 8192)
+
+  xor-int : Integer, Integer -> Integer
+  xor-int (a) (b) = bit-xor a b
+
+Page 1

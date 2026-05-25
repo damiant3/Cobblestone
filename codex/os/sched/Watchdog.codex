@@ -1,0 +1,105 @@
+Chapter: Watchdog
+  cites OS chapter ServiceRegistry
+  cites Observe chapter HealthCheck
+  cites OS chapter ShellCore
+  cites OS chapter ProgramRegistry
+  cites Verify chapter VerifiedLoader
+  cites Verify chapter CdxVerifier
+  cites Verify chapter CdxBinary
+  cites Trust chapter TrustLattice
+  cites Trust chapter PolicyEngine
+  cites Foreword chapter FactStore
+  cites Foreword chapter Fuel
+  cites Foreword chapter Ed25519
+  cites Foreword chapter Sha256
+  cites Foreword chapter Sha512
+  cites Foreword chapter Maybe
+  cites Foreword chapter Hamt
+
+ The Watchdog monitors service health and takes corrective action
+ (restart, remove, alert) when a service fails health checks or
+ exceeds configured failure thresholds.
+
+ We say:
+
+Section: Watchdog Action
+
+  WatchdogAction =
+    | WdNoAction
+    | WdRestart (Text) (Integer)
+    | WdRemove (Text)
+    | WdAlert (Text)
+
+  WatchdogResult = record {
+    registry : ServiceRegistry,
+    actions : List WatchdogAction,
+    action-count : Integer between 0 and 255
+  }
+
+Section: Watchdog Policy
+
+  WatchdogPolicy = record {
+    max-restarts : Integer between 0 and 255,
+    restart-failed : Boolean,
+    remove-exceeded : Boolean
+  }
+
+  default-policy : WatchdogPolicy
+  default-policy = WatchdogPolicy { max-restarts = 3, restart-failed = True, remove-exceeded = True }
+
+  strict-policy : WatchdogPolicy
+  strict-policy = WatchdogPolicy { max-restarts = 1, restart-failed = True, remove-exceeded = True }
+
+  lenient-policy : WatchdogPolicy
+  lenient-policy = WatchdogPolicy { max-restarts = 10, restart-failed = True, remove-exceeded = False }
+
+Section: Watchdog Scan
+
+  watchdog-scan : ServiceRegistry, WatchdogPolicy, Integer -> WatchdogResult
+  watchdog-scan (reg) (policy) (next-pid) =
+    scan-services reg policy next-pid 0 (service-count reg) [] reg
+
+  scan-services : ServiceRegistry, WatchdogPolicy, Integer, Integer, Integer, List WatchdogAction, ServiceRegistry -> WatchdogResult
+  scan-services (reg) (policy) (next-pid) (i) (len) (actions) (updated-reg) =
+    if i >= len then WatchdogResult { registry = updated-reg, actions = actions, action-count = list-length actions }
+    else scan-services reg policy next-pid (i + 1) len actions updated-reg
+
+  watchdog-check-service : ServiceRegistry, Text, WatchdogPolicy, Integer -> WatchdogAction
+  watchdog-check-service (reg) (name) (policy) (next-pid) =
+    let found = service-lookup reg name
+    in when found
+      is None -> WdNoAction
+      is Just (entry) -> when (entry.state)
+        is ServiceRunning -> WdNoAction
+        is ServiceStopped -> WdNoAction
+        is ServiceFailed (reason) ->
+          if entry.restarts >= policy.max-restarts then
+            if policy.remove-exceeded then WdRemove name
+            else WdAlert ("service " & name & " exceeded max restarts")
+          else if policy.restart-failed then WdRestart name (next-pid)
+          else WdAlert ("service " & name & " failed: " & reason)
+
+Section: Apply Actions
+
+  watchdog-apply : ServiceRegistry, WatchdogAction -> ServiceRegistry
+  watchdog-apply (reg) (action) = when action
+    is WdNoAction -> reg
+    is WdRestart (name) (pid) -> service-mark-restarted reg name pid
+    is WdRemove (name) -> service-unregister reg name
+    is WdAlert (msg) -> reg
+
+  watchdog-apply-all : ServiceRegistry, List WatchdogAction, Integer, Integer -> ServiceRegistry
+  watchdog-apply-all (reg) (actions) (i) (len) =
+    if i >= len then reg
+    else watchdog-apply-all (watchdog-apply reg (list-at actions i)) actions (i + 1) len
+
+Section: Formatting
+
+  watchdog-format-action : WatchdogAction -> Text
+  watchdog-format-action (a) = when a
+    is WdNoAction -> "no-action"
+    is WdRestart (name) (pid) -> "restart " & name & " pid=" & show pid
+    is WdRemove (name) -> "remove " & name
+    is WdAlert (msg) -> "alert: " & msg
+
+Page 1

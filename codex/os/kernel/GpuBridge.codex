@@ -1,0 +1,136 @@
+Chapter: GpuBridge
+  cites AI chapter GpuProxy
+  cites AI chapter Tensor
+  cites Foreword chapter Maybe
+
+ Guest-side GPU compute bridge via serial port. Sends command
+ buffer over COM3, host proxy executes on CUDA, returns result.
+ Uses port I/O at 0x3E8 (COM3). Fixed-point scale 1000.
+
+ We say:
+
+Section: Constants
+  gpu-com3-port : Integer = 1000
+  gpu-com3-lsr : Integer = 1005
+
+Section: State
+  GpuBridge = record {
+    bridge-port : Integer,
+    bridge-ready : Boolean
+  }
+
+Section: Initialization
+  gpu-bridge-init : GpuBridge
+  gpu-bridge-init = GpuBridge { bridge-port = gpu-com3-port, bridge-ready = True }
+
+Section: Serial I/O
+  gpu-serial-send-byte : Integer, Integer -> Integer
+  gpu-serial-send-byte (port) (val) =
+    let ready = gpu-wait-tx-ready port 10000
+    in ready + port-out-byte port val
+
+  gpu-wait-tx-ready : Integer, Integer -> Integer
+  gpu-wait-tx-ready (port) (fuel) =
+    if fuel <= 0 then 0
+    else let lsr = port-in-byte (port + 5)
+    in if bit-and lsr 32 > 0 then 0
+    else gpu-wait-tx-ready port (fuel - 1)
+
+  gpu-recv-byte : Integer, Integer -> Integer
+  gpu-recv-byte (port) (fuel) =
+    if fuel <= 0 then 0 - 1
+    else let lsr = port-in-byte (port + 5)
+    in if bit-and lsr 1 > 0 then port-in-byte port
+    else gpu-recv-byte port (fuel - 1)
+
+Section: Buffer Write
+  gpu-send-u32 : Integer, Integer -> Integer
+  gpu-send-u32 (port) (val) =
+    let w0 = gpu-serial-send-byte port (bit-and val 255)
+    in let w1 = gpu-serial-send-byte port (bit-and (bit-shru val 8) 255)
+    in let w2 = gpu-serial-send-byte port (bit-and (bit-shru val 16) 255)
+    in let w3 = gpu-serial-send-byte port (bit-and (bit-shru val 24) 255)
+    in w0 + w1 + w2 + w3
+
+  gpu-recv-u32 : Integer -> Integer
+  gpu-recv-u32 (port) =
+    let b0 = gpu-recv-byte port 10000000
+    in let b1 = gpu-recv-byte port 10000000
+    in let b2 = gpu-recv-byte port 10000000
+    in let b3 = gpu-recv-byte port 10000000
+    in if b0 < 0 then 0 - 1
+    else bit-or b0 (bit-or (bit-shl b1 8) (bit-or (bit-shl b2 16) (bit-shl b3 24)))
+
+Section: F32 Conversion
+  gpu-send-f32 : Integer, Integer -> Integer
+  gpu-send-f32 (port) (fixed-val) =
+    let bytes = gpu-fixed-to-f32 fixed-val
+    in let w0 = gpu-serial-send-byte port (list-at bytes 0)
+    in let w1 = gpu-serial-send-byte port (list-at bytes 1)
+    in let w2 = gpu-serial-send-byte port (list-at bytes 2)
+    in let w3 = gpu-serial-send-byte port (list-at bytes 3)
+    in w0 + w1 + w2 + w3
+
+  gpu-recv-f32 : Integer -> Integer
+  gpu-recv-f32 (port) =
+    let raw = gpu-recv-u32 port
+    in if raw < 0 then 0
+    else gpu-f32-raw-to-fixed raw
+
+Section: Tensor Send/Recv
+  gpu-send-tensor-data : Integer, Tensor, Integer, Integer -> Integer
+  gpu-send-tensor-data (port) (t) (i) (len) =
+    if i >= len then 0
+    else let w = gpu-send-f32 port (list-at (t.data) i)
+    in w + gpu-send-tensor-data port t (i + 1) len
+
+  gpu-recv-tensor-data : Integer, Integer, Integer -> List Integer
+  gpu-recv-tensor-data (port) (count) (i) =
+    if i >= count then []
+    else let val = gpu-recv-f32 port
+    in [val] & gpu-recv-tensor-data port count (i + 1)
+
+Section: High-Level Operations
+  gpu-bridge-matmul : GpuBridge, Tensor, Tensor -> Maybe Tensor
+  gpu-bridge-matmul (bridge) (a) (b) =
+    let port = bridge.bridge-port
+    in let cmd = gpu-cmd-matmul (a.rows) (a.cols) (b.cols)
+    in let wh = gpu-send-u32 port gpu-status-pending
+    in let w1 = gpu-send-u32 port (cmd.gpu-op)
+    in let w2 = gpu-send-u32 port (cmd.gpu-rows-a)
+    in let w3 = gpu-send-u32 port (cmd.gpu-cols-a)
+    in let w4 = gpu-send-u32 port (cmd.gpu-cols-b)
+    in let wa = gpu-send-tensor-data port a 0 (list-length (a.data))
+    in let wb = gpu-send-tensor-data port b 0 (list-length (b.data))
+    in let status = gpu-recv-u32 port
+    in if status == gpu-status-complete then
+      let result-rows = gpu-recv-u32 port
+      in let result-cols = gpu-recv-u32 port
+      in let result-data = gpu-recv-tensor-data port (result-rows * result-cols) 0
+      in Just (Tensor { data = result-data, rows = result-rows, cols = result-cols })
+    else None
+
+  gpu-bridge-relu : GpuBridge, Tensor -> Maybe Tensor
+  gpu-bridge-relu (bridge) (t) =
+    let port = bridge.bridge-port
+    in let cmd = gpu-cmd-relu (t.rows) (t.cols)
+    in let wh = gpu-send-u32 port gpu-status-pending
+    in let w1 = gpu-send-u32 port (cmd.gpu-op)
+    in let w2 = gpu-send-u32 port (cmd.gpu-rows-a)
+    in let w3 = gpu-send-u32 port (cmd.gpu-cols-a)
+    in let w4 = gpu-send-u32 port 0
+    in let wt = gpu-send-tensor-data port t 0 (list-length (t.data))
+    in let status = gpu-recv-u32 port
+    in if status == gpu-status-complete then
+      let n = t.rows * t.cols
+      in let result-data = gpu-recv-tensor-data port n 0
+      in Just (Tensor { data = result-data, rows = t.rows, cols = t.cols })
+    else None
+
+Section: Formatting
+  format-gpu-bridge : GpuBridge -> Text
+  format-gpu-bridge (bridge) =
+    if bridge.bridge-ready then "gpu-bridge: serial on COM3"
+    else "gpu-bridge: not available"
+
+Page 1

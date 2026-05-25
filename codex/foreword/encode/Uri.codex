@@ -1,0 +1,131 @@
+Chapter: Uri
+  cites Foreword chapter Maybe
+  cites Foreword chapter CCE
+
+ URI parsing and construction (RFC 3986 subset). Breaks a URI
+ string into scheme, host, port, path, and query components.
+
+ We say:
+
+Section: Components
+  UriComponents = record {
+    scheme : Text,
+    host : Text,
+    port : Integer,
+    path : Text,
+    query : Text,
+    valid : Boolean
+  }
+
+Section: Parsing
+  uri-parse : Text -> UriComponents
+  uri-parse (s) =
+    let len = text-length s
+    in let scheme-end = uri-find-char s 0 len (char-code (char-at ":" 0))
+    in if scheme-end >= len then uri-parse-relative s len
+    else if scheme-end + 2 < len then
+      if char-code (char-at s (scheme-end + 1)) == char-code (char-at "/" 0) then
+        if char-code (char-at s (scheme-end + 2)) == char-code (char-at "/" 0) then
+          let scheme = substring s 0 scheme-end
+          in uri-parse-authority s (scheme-end + 3) len scheme
+        else uri-parse-relative s len
+      else uri-parse-relative s len
+    else uri-parse-relative s len
+
+  uri-parse-relative : Text, Integer -> UriComponents
+  uri-parse-relative (s) (len) =
+    let query-start = uri-find-char s 0 len (char-code (char-at "?" 0))
+    in let path = substring s 0 query-start
+    in let query = if query-start < len then substring s (query-start + 1) (len - query-start - 1) else ""
+    in UriComponents { scheme = "", host = "", port = 0, path = path, query = query, valid = True }
+
+  uri-parse-authority : Text, Integer, Integer, Text -> UriComponents
+  uri-parse-authority (s) (start) (len) (scheme) =
+    let path-start = uri-find-char s start len (char-code (char-at "/" 0))
+    in let authority = substring s start (path-start - start)
+    in let colon-pos = uri-find-char-in authority 0 (text-length authority) (char-code (char-at ":" 0))
+    in let host = if colon-pos < text-length authority then substring authority 0 colon-pos else authority
+    in let port = if colon-pos < text-length authority then uri-parse-int authority (colon-pos + 1) (text-length authority) 0 else uri-default-port scheme
+    in let query-start = uri-find-char s path-start len (char-code (char-at "?" 0))
+    in let path = if path-start < len then substring s path-start (query-start - path-start) else "/"
+    in let query = if query-start < len then substring s (query-start + 1) (len - query-start - 1) else ""
+    in UriComponents { scheme = scheme, host = host, port = port, path = path, query = query, valid = True }
+
+  uri-default-port : Text -> Integer
+  uri-default-port (scheme) =
+    if scheme == "http" then 80
+    else if scheme == "https" then 443
+    else if scheme == "ftp" then 21
+    else 0
+
+Section: String Helpers
+  uri-find-char : Text, Integer, Integer, Integer -> Integer
+  uri-find-char (s) (i) (len) (target) =
+    if i >= len then len
+    else if char-code (char-at s i) == target then i
+    else uri-find-char s (i + 1) len target
+
+  uri-find-char-in : Text, Integer, Integer, Integer -> Integer
+  uri-find-char-in (s) (i) (len) (target) = uri-find-char s i len target
+
+
+  uri-parse-int : Text, Integer, Integer, Integer -> Integer
+  uri-parse-int (s) (i) (len) (acc) =
+    if i >= len then acc
+    else let d = uri-digit-value (char-code (char-at s i))
+    in if d < 0 then acc
+    else uri-parse-int s (i + 1) len (acc * 10 + d)
+
+  uri-digit-value : Integer -> Integer
+  uri-digit-value (c) =
+    if c == char-code (char-at "0" 0) then 0
+    else if c == char-code (char-at "1" 0) then 1
+    else if c == char-code (char-at "2" 0) then 2
+    else if c == char-code (char-at "3" 0) then 3
+    else if c == char-code (char-at "4" 0) then 4
+    else if c == char-code (char-at "5" 0) then 5
+    else if c == char-code (char-at "6" 0) then 6
+    else if c == char-code (char-at "7" 0) then 7
+    else if c == char-code (char-at "8" 0) then 8
+    else if c == char-code (char-at "9" 0) then 9
+    else 0 - 1
+
+Section: Construction
+  uri-build : Text, Text, Integer, Text -> Text
+  uri-build (scheme) (host) (port) (path) =
+    let authority = if port == uri-default-port scheme then host
+      else if port == 0 then host
+      else host & ":" & show port
+    in scheme & "://" & authority & path
+
+Section: Query String Parsing
+  QueryParam = record {
+    param-key : Text,
+    param-value : Text
+  }
+
+  uri-parse-query : Text -> List QueryParam
+  uri-parse-query (q) = uri-parse-query-loop q 0 (text-length q) [] "" ""  True
+
+  uri-parse-query-loop : Text, Integer, Integer, List QueryParam, Text, Text, Boolean -> List QueryParam
+  uri-parse-query-loop (q) (i) (len) (acc) (key) (val) (in-key) =
+    if i >= len then
+      if text-length key > 0 then list-push acc (QueryParam { param-key = key, param-value = val })
+      else acc
+    else let c = char-code (char-at q i)
+    in if c == char-code (char-at "&" 0) then
+      let acc2 = if text-length key > 0 then list-push acc (QueryParam { param-key = key, param-value = val }) else acc
+      in uri-parse-query-loop q (i + 1) len acc2 "" "" True
+    else if c == char-code (char-at "=" 0) then
+      if in-key then uri-parse-query-loop q (i + 1) len acc key "" False
+      else uri-parse-query-loop q (i + 1) len acc key (val & char-to-text (char-at q i)) False
+    else if in-key then uri-parse-query-loop q (i + 1) len acc (key & char-to-text (char-at q i)) val True
+    else uri-parse-query-loop q (i + 1) len acc key (val & char-to-text (char-at q i)) False
+
+Section: Formatting
+  format-uri : UriComponents -> Text
+  format-uri (u) =
+    if text-length (u.scheme) > 0 then uri-build (u.scheme) (u.host) (u.port) (u.path) & (if text-length (u.query) > 0 then "?" & u.query else "")
+    else u.path & (if text-length (u.query) > 0 then "?" & u.query else "")
+
+Page 1

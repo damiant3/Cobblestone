@@ -1,0 +1,87 @@
+Chapter: Lz77
+
+ LZ77 compression and decompression. Encodes repeated byte sequences
+ as back-references (offset, length). Window size 255, max match 255.
+ Token format: 0 + literal byte, or 1 + offset + length for a match.
+
+ We say:
+
+Section: Constants
+  lz77-window-size : Integer = 255
+  lz77-min-match : Integer = 3
+  lz77-max-match : Integer = 255
+
+Section: Token Type
+  Lz77Token =
+    | Lz77Literal (Integer)
+    | Lz77Match (Integer) (Integer)
+
+Section: Compression
+  lz77-compress : List Integer -> List Integer
+  lz77-compress (input) = lz77-compress-loop input 0 (list-length input) []
+
+  lz77-compress-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  lz77-compress-loop (input) (pos) (len) (acc) =
+    if pos >= len then acc
+    else let match = lz77-find-match input pos len
+    in when match
+      is Lz77Match (off) (mlen) -> lz77-compress-loop input (pos + mlen) len (acc & [1, off, mlen])
+      is Lz77Literal (b) -> lz77-compress-loop input (pos + 1) len (list-push acc 0 & [b])
+
+  lz77-find-match : List Integer, Integer, Integer -> Lz77Token
+  lz77-find-match (input) (pos) (len) =
+    let window-start = if pos > lz77-window-size then pos - lz77-window-size else 0
+    in lz77-best-match input pos len window-start pos 0 0
+
+  lz77-best-match : List Integer, Integer, Integer, Integer, Integer, Integer, Integer -> Lz77Token
+  lz77-best-match (input) (pos) (len) (scan) (scan-end) (best-off) (best-len) =
+    if scan >= scan-end then
+      if best-len >= lz77-min-match then Lz77Match (pos - best-off) best-len
+      else Lz77Literal (list-at input pos)
+    else let mlen = lz77-match-length input scan pos len 0
+    in if mlen > best-len then
+      if mlen >= lz77-max-match then Lz77Match (pos - scan) lz77-max-match
+      else lz77-best-match input pos len (scan + 1) scan-end scan mlen
+    else lz77-best-match input pos len (scan + 1) scan-end best-off best-len
+
+  lz77-match-length : List Integer, Integer, Integer, Integer, Integer -> Integer
+  lz77-match-length (input) (a) (b) (len) (count) =
+    if count >= lz77-max-match then count
+    else if b + count >= len then count
+    else if list-at input (a + count) == list-at input (b + count) then lz77-match-length input a b len (count + 1)
+    else count
+
+Section: Decompression
+  lz77-decompress : List Integer -> List Integer
+  lz77-decompress (tokens) = lz77-decompress-loop tokens 0 (list-length tokens) []
+
+  lz77-decompress-loop : List Integer, Integer, Integer, List Integer -> List Integer
+  lz77-decompress-loop (tokens) (i) (tlen) (output) =
+    if i >= tlen then output
+    else let tag = list-at tokens i
+    in if tag == 0 then
+      if i + 1 >= tlen then output
+      else lz77-decompress-loop tokens (i + 2) tlen (list-push output (list-at tokens (i + 1)))
+    else if tag == 1 then
+      if i + 2 >= tlen then output
+      else let off = list-at tokens (i + 1)
+      in let mlen = list-at tokens (i + 2)
+      in let start = list-length output - off
+      in let expanded = lz77-copy-match output start mlen
+      in lz77-decompress-loop tokens (i + 3) tlen expanded
+    else lz77-decompress-loop tokens (i + 1) tlen output
+
+  lz77-copy-match : List Integer, Integer, Integer -> List Integer
+  lz77-copy-match (output) (src) (remaining) =
+    if remaining <= 0 then output
+    else let byte = list-at output src
+    in lz77-copy-match (list-push output byte) (src + 1) (remaining - 1)
+
+Section: Queries
+  lz77-ratio : List Integer, List Integer -> Text
+  lz77-ratio (original) (compressed) =
+    let orig-len = list-length original
+    in let comp-len = list-length compressed
+    in show orig-len & "->" & show comp-len
+
+Page 1

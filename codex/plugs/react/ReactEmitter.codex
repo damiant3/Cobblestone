@@ -1,0 +1,293 @@
+Chapter: React Emitter
+  cites Codex chapter Text
+  cites Codex chapter Characters
+  cites Codex chapter Lists
+  cites Foreword chapter Sort
+
+ Generates React JSX components from the IR.
+
+Section: Sanitization
+
+  react-sanitize : Text -> Text
+  react-sanitize (name) =
+   text-replace (text-replace name "-" "_") "'" ""
+
+  jsx-escape : Text -> Text
+  jsx-escape (s) =
+   let s1 = text-replace s "&" "&amp;"
+   in let s2 = text-replace s1 "<" "&lt;"
+   in let s3 = text-replace s2 ">" "&gt;"
+   in let s4 = text-replace s3 "\"" "&quot;"
+   in s4
+
+  js-escape : Text -> Text
+  js-escape (s) =
+   let s1 = text-replace s "\\" "\\\\"
+   in let s2 = text-replace s1 "\"" "\\\""
+   in let s3 = text-replace s2 "\n" "\\n"
+   in s3
+
+  react-indent : Integer -> Text
+  react-indent (n) =
+   if n <= 0 then ""
+   else "  " & react-indent (n - 1)
+
+Section: Arity Map
+
+  ArityEntry = record {
+   name : Text,
+   arity : Integer between 0 and 255,
+   generic-count : Integer between 0 and 255
+  }
+
+  bsearch-arity-pos : List ArityEntry, Text, Integer, Integer -> Integer
+  bsearch-arity-pos (entries) (name) (lo) (hi) =
+   if lo >= hi then lo
+   else let mid = lo + (hi - lo) / 2
+   in let mid-name = (list-at entries mid).name
+   in if text-compare name mid-name <= 0 then bsearch-arity-pos entries name lo mid
+      else bsearch-arity-pos entries name (mid + 1) hi
+
+  sorted-insert-arity : List ArityEntry, ArityEntry -> List ArityEntry
+  sorted-insert-arity (xs) (e) =
+   let len = list-length xs
+   in let pos = bsearch-arity-pos xs (e.name) 0 len
+   in list-insert-at xs pos e
+
+  build-arity-map : List IRDef, Integer, List ArityEntry -> List ArityEntry
+  build-arity-map (defs) (i) (acc) =
+   if i == list-length defs then acc
+   else let d = list-at defs i
+   in build-arity-map defs (i + 1) (sorted-insert-arity acc (ArityEntry {
+    name = d.name,
+    arity = list-length (d.params),
+    generic-count = 0
+   }))
+
+  lookup-arity : List ArityEntry, Text -> Integer
+  lookup-arity (entries) (name) =
+   let len = list-length entries
+   in let pos = bsearch-arity-pos entries name 0 len
+   in if pos >= len then 0
+      else let e = list-at entries pos
+      in if e.name == name then e.arity else 0
+
+Section: Expression Emission
+
+  emit-jsx-expr : IRExpr, List ArityEntry, Integer -> Text
+  emit-jsx-expr (e) (arities) (indent) =
+   when e
+    is IrIntLit (n) (sp) -> show n
+    is IrNumLit (n) (sp) -> show n
+    is IrTextLit (s) (sp) -> "\"" & js-escape s & "\""
+    is IrBoolLit (b) (sp) -> if b then "true" else "false"
+    is IrCharLit (n) (sp) -> "String.fromCharCode(" & show n & ")"
+    is IrName (n) (ty) (sp) -> react-sanitize n
+    is IrBinary (op) (l) (r) (ty) (sp) -> emit-jsx-binary op l r arities indent
+    is IrNegate (x) (sp) -> "(-(" & emit-jsx-expr x arities indent & "))"
+    is IrIf (c) (t) (el) (ty) (sp) -> "(" & emit-jsx-expr c arities indent & " ? " & emit-jsx-expr t arities indent & " : " & emit-jsx-expr el arities indent & ")"
+    is IrLet (name) (ty) (val) (body) (sp) -> emit-jsx-let name val body arities indent
+    is IrApply (f) (a) (ty) (sp) -> emit-jsx-apply e arities indent
+    is IrLambda (params) (body) (ty) (sp) -> "(" & emit-jsx-param-names params 0 & ") => " & emit-jsx-expr body arities indent
+    is IrList (elems) (ty) (sp) -> "[" & emit-jsx-list-elems elems arities indent 0 & "]"
+    is IrMatch (scrut) (branches) (ty) (sp) -> emit-jsx-match scrut branches arities indent
+    is IrAct (stmts) (ty) (sp) -> emit-jsx-act stmts arities indent
+    is IrRecord (name) (fields) (ty) (sp) -> "{ _type: \"" & name & "\"" & emit-jsx-record-fields fields arities indent 0 & " }"
+    is IrFieldAccess (rec) (field) (ty) (sp) -> emit-jsx-expr rec arities indent & "." & react-sanitize field
+    is IrFieldStore (rec) (field) (val) (ty) (sp) -> "(" & emit-jsx-expr rec arities indent & "." & react-sanitize field & " = " & emit-jsx-expr val arities indent & ")"
+    is IrFork (body) (ty) (sp) -> "Promise.resolve().then(() => " & emit-jsx-expr body arities indent & ")"
+    is IrAwait (task) (ty) (sp) -> "(await " & emit-jsx-expr task arities indent & ")"
+    is IrHandle (eff) (body) (clauses) (ty) (sp) -> emit-jsx-expr body arities indent
+    is IrWithTimeout (secs) (effs) (scopes) (body) (ty) (sp) -> emit-jsx-expr body arities indent
+    is IrTry (max) (body) (fb) (fail) (ty) (sp) -> emit-jsx-expr body arities indent
+    is IrError (msg) (ty) (sp) -> "(() => { throw new Error(\"" & js-escape msg & "\"); })()"
+
+Section: Binary Operators
+
+  emit-jsx-binary : IRBinaryOp, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-jsx-binary (op) (l) (r) (arities) (indent) =
+   let lhs = emit-jsx-expr l arities indent
+   in let rhs = emit-jsx-expr r arities indent
+   in when op
+    is IrAddInt -> "(" & lhs & " + " & rhs & ")"
+    is IrSubInt -> "(" & lhs & " - " & rhs & ")"
+    is IrMulInt -> "(" & lhs & " * " & rhs & ")"
+    is IrDivInt -> "Math.trunc(" & lhs & " / " & rhs & ")"
+    is IrPowInt -> "(" & lhs & " ** " & rhs & ")"
+    is IrAddNum -> "(" & lhs & " + " & rhs & ")"
+    is IrSubNum -> "(" & lhs & " - " & rhs & ")"
+    is IrMulNum -> "(" & lhs & " * " & rhs & ")"
+    is IrDivNum -> "(" & lhs & " / " & rhs & ")"
+    is IrEq -> "(" & lhs & " === " & rhs & ")"
+    is IrNotEq -> "(" & lhs & " !== " & rhs & ")"
+    is IrLt -> "(" & lhs & " < " & rhs & ")"
+    is IrGt -> "(" & lhs & " > " & rhs & ")"
+    is IrLtEq -> "(" & lhs & " <= " & rhs & ")"
+    is IrGtEq -> "(" & lhs & " >= " & rhs & ")"
+    is IrAnd -> "(" & lhs & " && " & rhs & ")"
+    is IrOr -> "(" & lhs & " || " & rhs & ")"
+    is IrAppendText -> "(" & lhs & " + " & rhs & ")"
+    is IrAppendList -> "([..." & lhs & ", ..." & rhs & "])"
+    is IrConsList -> "[" & lhs & ", ..." & rhs & "]"
+
+Section: Let, Apply, Match, Act
+
+  emit-jsx-let : Text, IRExpr, IRExpr, List ArityEntry, Integer -> Text
+  emit-jsx-let (name) (val) (body) (arities) (indent) =
+   "(() => {\n" & react-indent (indent + 1) & "const " & react-sanitize name & " = " & emit-jsx-expr val arities (indent + 1) & ";\n" & react-indent (indent + 1) & "return " & emit-jsx-expr body arities (indent + 1) & ";\n" & react-indent indent & "})()"
+
+  FlatApply = record {
+   root : IRExpr,
+   args : List IRExpr
+  }
+
+  collect-apply-chain : IRExpr, List IRExpr -> FlatApply
+  collect-apply-chain (e) (acc) =
+   when e
+    is IrApply (f) (a) (ty) (sp) -> collect-apply-chain f ([a] & acc)
+    is otherwise -> FlatApply { root = e, args = acc }
+
+  emit-jsx-apply : IRExpr, List ArityEntry, Integer -> Text
+  emit-jsx-apply (e) (arities) (indent) =
+   let chain = collect-apply-chain e []
+   in let func = emit-jsx-expr (chain.root) arities indent
+   in func & "(" & emit-jsx-apply-args (chain.args) arities indent 0 & ")"
+
+  emit-jsx-apply-args : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-jsx-apply-args (args) (arities) (indent) (i) =
+   if i == list-length args then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-jsx-expr (list-at args i) arities indent & emit-jsx-apply-args args arities indent (i + 1)
+
+  emit-jsx-param-names : List IRParam, Integer -> Text
+  emit-jsx-param-names (params) (i) =
+   if i == list-length params then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & react-sanitize (list-at params i).name & emit-jsx-param-names params (i + 1)
+
+  emit-jsx-list-elems : List IRExpr, List ArityEntry, Integer, Integer -> Text
+  emit-jsx-list-elems (elems) (arities) (indent) (i) =
+   if i == list-length elems then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & emit-jsx-expr (list-at elems i) arities indent & emit-jsx-list-elems elems arities indent (i + 1)
+
+  emit-jsx-record-fields : List IRFieldVal, List ArityEntry, Integer, Integer -> Text
+  emit-jsx-record-fields (fields) (arities) (indent) (i) =
+   if i == list-length fields then ""
+   else let f = list-at fields i
+   in ", " & react-sanitize (f.name) & ": " & emit-jsx-expr (f.value) arities indent & emit-jsx-record-fields fields arities indent (i + 1)
+
+  emit-jsx-match : IRExpr, List IRBranch, List ArityEntry, Integer -> Text
+  emit-jsx-match (scrut) (branches) (arities) (indent) =
+   let sv = emit-jsx-expr scrut arities indent
+   in "(() => {\n" & react-indent (indent + 1) & "const _s = " & sv & ";\n" & emit-jsx-branches branches arities (indent + 1) 0 & react-indent indent & "})()"
+
+  emit-jsx-branches : List IRBranch, List ArityEntry, Integer, Integer -> Text
+  emit-jsx-branches (branches) (arities) (indent) (i) =
+   if i == list-length branches then react-indent indent & "throw new Error('non-exhaustive match');\n"
+   else let b = list-at branches i
+   in let cond = emit-jsx-pattern-cond (b.pattern) "_s"
+   in let binds = emit-jsx-pattern-binds (b.pattern) "_s" indent
+   in let body = emit-jsx-expr (b.body) arities indent
+   in let kw = if i == 0 then "if" else "} else if"
+   in react-indent indent & kw & " (" & cond & ") {\n" & binds & react-indent (indent + 1) & "return " & body & ";\n" & emit-jsx-branches branches arities indent (i + 1)
+
+  emit-jsx-pattern-cond : IRPat, Text -> Text
+  emit-jsx-pattern-cond (p) (scrut) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> "true"
+    is IrLitPat (text) (ty) (sp) -> scrut & " === " & text
+    is IrCtorPat (name) (subs) (ty) (sp) -> scrut & "._tag === \"" & name & "\""
+    is IrWildPat (sp) -> "true"
+
+  emit-jsx-pattern-binds : IRPat, Text, Integer -> Text
+  emit-jsx-pattern-binds (p) (scrut) (indent) =
+   when p
+    is IrVarPat (name) (ty) (sp) -> react-indent (indent + 1) & "const " & react-sanitize name & " = " & scrut & ";\n"
+    is IrLitPat (text) (ty) (sp) -> ""
+    is IrCtorPat (name) (subs) (ty) (sp) -> emit-jsx-ctor-binds subs scrut indent 0
+    is IrWildPat (sp) -> ""
+
+  emit-jsx-ctor-binds : List IRPat, Text, Integer, Integer -> Text
+  emit-jsx-ctor-binds (subs) (scrut) (indent) (i) =
+   if i == list-length subs then ""
+   else let field-access = scrut & "._" & show i
+   in emit-jsx-pattern-binds (list-at subs i) field-access indent & emit-jsx-ctor-binds subs scrut indent (i + 1)
+
+  emit-jsx-act : List IRActStmt, List ArityEntry, Integer -> Text
+  emit-jsx-act (stmts) (arities) (indent) =
+   "(() => {\n" & emit-jsx-act-stmts stmts arities (indent + 1) 0 & react-indent indent & "})()"
+
+  emit-jsx-act-stmts : List IRActStmt, List ArityEntry, Integer, Integer -> Text
+  emit-jsx-act-stmts (stmts) (arities) (indent) (i) =
+   if i == list-length stmts then ""
+   else let s = list-at stmts i
+   in let is-last = i == list-length stmts - 1
+   in when s
+    is IrDoBind (name) (ty) (val) (sp) -> react-indent indent & "const " & react-sanitize name & " = " & emit-jsx-expr val arities indent & ";\n" & emit-jsx-act-stmts stmts arities indent (i + 1)
+    is IrDoExec (e) (sp) ->
+     if is-last then react-indent indent & "return " & emit-jsx-expr e arities indent & ";\n"
+     else react-indent indent & emit-jsx-expr e arities indent & ";\n" & emit-jsx-act-stmts stmts arities indent (i + 1)
+
+Section: Type Definitions
+
+  emit-jsx-type-def : ATypeDef -> Text
+  emit-jsx-type-def (td) =
+   when td
+    is ARecordTypeDef (name) (tparams) (fields) (is-mut) (s) ->
+     "function " & react-sanitize (name.value) & "(fields) { return { _type: \"" & name.value & "\", ...fields }; }\n"
+    is AVariantTypeDef (name) (tparams) (ctors) (s) ->
+     emit-jsx-variant-ctors ctors 0
+
+  emit-jsx-variant-ctors : List AVariantCtorDef, Integer -> Text
+  emit-jsx-variant-ctors (ctors) (i) =
+   if i == list-length ctors then ""
+   else let c = list-at ctors i
+   in let n = list-length (c.fields)
+   in let ctor-text = if n == 0 then "const " & react-sanitize (c.name.value) & " = { _tag: \"" & c.name.value & "\" };\n"
+      else "function " & react-sanitize (c.name.value) & "(" & emit-jsx-ctor-params n 0 & ") { return { _tag: \"" & c.name.value & "\"" & emit-jsx-ctor-fields n 0 & " }; }\n"
+   in ctor-text & emit-jsx-variant-ctors ctors (i + 1)
+
+  emit-jsx-ctor-params : Integer, Integer -> Text
+  emit-jsx-ctor-params (n) (i) =
+   if i == n then ""
+   else let sep = if i > 0 then ", " else ""
+   in sep & "_" & show i & emit-jsx-ctor-params n (i + 1)
+
+  emit-jsx-ctor-fields : Integer, Integer -> Text
+  emit-jsx-ctor-fields (n) (i) =
+   if i == n then ""
+   else ", _" & show i & ": _" & show i & emit-jsx-ctor-fields n (i + 1)
+
+Section: Definition Emission
+
+  emit-jsx-def : IRDef, List ArityEntry -> Text
+  emit-jsx-def (d) (arities) =
+   if text-length (d.name) == 0 then ""
+   else let sname = react-sanitize (d.name)
+   in if list-length (d.params) == 0
+      then "const " & sname & " = " & emit-jsx-expr (d.body) arities 0 & ";\n\n"
+      else "function " & sname & "(" & emit-jsx-param-names (d.params) 0 & ") {\n  return " & emit-jsx-expr (d.body) arities 1 & ";\n}\n\n"
+
+  emit-jsx-defs : List IRDef, Integer, List ArityEntry -> Text
+  emit-jsx-defs (defs) (i) (arities) =
+   if i == list-length defs then ""
+   else emit-jsx-def (list-at defs i) arities & emit-jsx-defs defs (i + 1) arities
+
+  emit-jsx-type-defs : List ATypeDef, Integer -> Text
+  emit-jsx-type-defs (tds) (i) =
+   if i == list-length tds then ""
+   else emit-jsx-type-def (list-at tds i) & emit-jsx-type-defs tds (i + 1)
+
+Section: React Component Assembly
+
+  emit-react-chapter : IRChapter, List ATypeDef -> Text
+  emit-react-chapter (m) (type-defs) =
+   let arities = build-arity-map (m.defs) 0 []
+   in let title = if m.chapter-title == "" then "App" else m.chapter-title
+   in let imports = "import React, { useState, useEffect, useRef } from 'react';\n\n"
+   in let builtins = "function print_line_uni(s) { console.log(s); }\nfunction print_line(s) { console.log(s); }\nfunction show(n) { return String(n); }\nfunction text_length(s) { return s.length; }\nfunction text_replace(s, a, b) { return s.split(a).join(b); }\nfunction text_compare(a, b) { return a < b ? -1 : a > b ? 1 : 0; }\nfunction list_length(xs) { return xs.length; }\nfunction list_at(xs, i) { return xs[i]; }\nfunction list_push(xs, x) { return [...xs, x]; }\nfunction integer_to_text(n) { return String(n); }\nfunction char_code(c) { return c.charCodeAt ? c.charCodeAt(0) : c; }\nfunction char_at(s, i) { return s[i]; }\nfunction negate(n) { return -n; }\n\n"
+   in let types-text = emit-jsx-type-defs type-defs 0
+   in let defs-text = emit-jsx-defs (m.defs) 0 arities
+   in let component = "export default function " & react-sanitize title & "() {\n  const [output, setOutput] = useState([]);\n  useEffect(() => {\n    const _print = print_line_uni;\n    print_line_uni = (s) => setOutput(prev => [...prev, s]);\n    try { opening(); } catch(e) { console.error(e); }\n    print_line_uni = _print;\n  }, []);\n  return (\n    <div className=\"app\">\n      {output.map((line, i) => <div key={i}>{line}</div>)}\n    </div>\n  );\n}\n"
+   in imports & builtins & types-text & defs-text & component
