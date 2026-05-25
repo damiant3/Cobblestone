@@ -51,7 +51,7 @@ function Invoke-BuildText {
         $stream = $run.Conn.Data.GetStream()
         $hdr = [System.Text.Encoding]::UTF8.GetBytes("TEXT`n")
         $stream.Write($hdr, 0, $hdr.Length)
-        $srcBytes = [System.IO.File]::ReadAllBytes($InputFile)
+        $srcBytes = Normalize-TripleNewlines ([System.IO.File]::ReadAllBytes($InputFile))
         $stream.Write($srcBytes, 0, $srcBytes.Length)
         $stream.WriteByte(4)
         $stream.Flush()
@@ -116,6 +116,12 @@ Measure-Phase 'source-concat' {
     if (-not (Test-Path -PathType Leaf $Concat))  { Write-Host "FAIL: $Concat missing"; exit 1 }
     & pwsh -NoProfile -File $Concat -CodexDir (Join-Path $Repo 'codex\compiler') -OutFile $CodexSrc
     if (-not (Test-Path -PathType Leaf $CodexSrc)) { Write-Host 'FAIL: source concat produced no file'; exit 1 }
+}
+
+# Check if source constants match the seed — warn if they differ.
+$chkConst = Join-Path $PSScriptRoot 'check-constants.ps1'
+if (Test-Path $chkConst) {
+    & pwsh -NoProfile -File $chkConst 2>&1 | ForEach-Object { Write-Host "  $_" }
 }
 
 Write-Host 'The latest in a series of personal crises seems insurmountable.'
@@ -342,5 +348,10 @@ foreach ($kv in $phaseTimings.GetEnumerator()) {
 }
 Write-Host ("  {0}  {1,7:N1}s" -f 'TOTAL'.PadRight($maxName), $buildTimer.Elapsed.TotalSeconds)
 Write-Host ''
+
+# Update constants hash to match the new seed.
+if (Test-Path $chkConst) {
+    & pwsh -NoProfile -File $chkConst -Update 2>&1 | ForEach-Object { Write-Host "  $_" }
+}
 
 exit 0

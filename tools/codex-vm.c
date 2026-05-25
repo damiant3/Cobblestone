@@ -28,6 +28,28 @@ static void *guest_mem;
 static size_t guest_mem_size;
 static WHV_PARTITION_HANDLE partition;
 
+/* System-wide mutex: serialize WHP partition create/destroy across all
+   codex-vm instances.  vid.sys on Win11 26100 corrupts its kernel heap
+   when multiple processes hit WHvCreatePartition / WHvDeletePartition /
+   WHvMapGpaRange concurrently — cascade of 20 event-viewer entries and
+   bug checks 0xD1, 0x13A, 0x50.  Named mutex ensures one-at-a-time. */
+static HANDLE whp_mutex;
+static void whp_lock(void) {
+    if (!whp_mutex) whp_mutex = CreateMutexA(NULL, FALSE, "Global\\CodexVmWhpMutex");
+    if (whp_mutex) WaitForSingleObject(whp_mutex, 30000);
+}
+static void whp_unlock(void) {
+    if (whp_mutex) ReleaseMutex(whp_mutex);
+}
+static void cleanup_whp(void) {
+    if (!partition) return;
+    whp_lock();
+    WHvDeleteVirtualProcessor(partition, 0);
+    WHvDeletePartition(partition);
+    partition = NULL;
+    whp_unlock();
+}
+
 /* VGA constants (used by both VGA display and UEFI emulation) */
 #define VGA_BASE     0xB8000
 #define VGA_COLS     80
@@ -96,6 +118,10 @@ static unsigned char vk_to_scancode(int vk) {
 /* ══ Mouse State ══ */
 #define MOUSE_BUF_ADDR 28684
 static int mouse_captured = 0;
+static volatile unsigned char pending_mouse[3] = {0};
+static volatile int pending_mouse_valid = 0;
+static volatile unsigned long long pending_kbd_scancode = 0;
+static volatile int pending_kbd_valid = 0;
 
 /* Forward declaration — full definition + instance below serial/PIC/NE2K */
 typedef struct IdeState_ {
@@ -2027,6 +2053,13 @@ static HFONT vga_font;
 static int vga_headless = 0;
 static volatile int vga_running = 1;
 
+/* Shadow buffers: the VGA thread reads ONLY from these, never from guest_mem.
+   The main loop copies guest_mem -> shadow between VP exits.  This avoids
+   concurrent host/guest access to WHP-mapped pages (triggers vid.sys 0xD1). */
+static unsigned char shadow_vga[VGA_COLS * VGA_ROWS * 2];
+static unsigned char *shadow_gop = NULL;
+static volatile int shadow_gop_w = 0, shadow_gop_h = 0, shadow_gop_stride = 0;
+
 static const COLORREF vga_palette[16] = {
     RGB(0,0,0),       RGB(0,0,170),     RGB(0,170,0),     RGB(0,170,170),
     RGB(170,0,0),     RGB(170,0,170),   RGB(170,85,0),    RGB(170,170,170),
@@ -2035,35 +2068,32 @@ static const COLORREF vga_palette[16] = {
 };
 
 static void vga_paint(HWND hwnd) {
-    if (!guest_mem) return;
     PAINTSTRUCT ps;
     HDC hdc = BeginPaint(hwnd, &ps);
 
-    if (gop_active && GOP_FB_ADDR + (unsigned long long)(gop_width * gop_height * 4) <= guest_mem_size) {
-        /* GOP framebuffer mode — render pixels from guest memory */
+    if (shadow_gop && shadow_gop_w > 0 && shadow_gop_h > 0) {
+        /* GOP framebuffer mode — render from shadow (never guest_mem) */
         BITMAPINFO bmi;
         memset(&bmi, 0, sizeof(bmi));
         bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bmi.bmiHeader.biWidth = gop_stride;
-        bmi.bmiHeader.biHeight = -gop_height;  /* top-down */
+        bmi.bmiHeader.biWidth = shadow_gop_stride;
+        bmi.bmiHeader.biHeight = -shadow_gop_h;  /* top-down */
         bmi.bmiHeader.biPlanes = 1;
         bmi.bmiHeader.biBitCount = 32;
         bmi.bmiHeader.biCompression = BI_RGB;
-        unsigned char *fb = (unsigned char *)guest_mem + GOP_FB_ADDR;
-        StretchDIBits(hdc, 0, 0, gop_width, gop_height,
-                      0, 0, gop_stride, gop_height,
-                      fb, &bmi, DIB_RGB_COLORS, SRCCOPY);
+        StretchDIBits(hdc, 0, 0, shadow_gop_w, shadow_gop_h,
+                      0, 0, shadow_gop_stride, shadow_gop_h,
+                      shadow_gop, &bmi, DIB_RGB_COLORS, SRCCOPY);
     } else {
-        /* Text mode — render VGA character buffer */
+        /* Text mode — render from shadow VGA buffer (never guest_mem) */
         HFONT old = (HFONT)SelectObject(hdc, vga_font);
         SetBkMode(hdc, OPAQUE);
-        unsigned char *vga = (unsigned char *)guest_mem + VGA_BASE;
         char ch[2] = {0, 0};
         for (int row = 0; row < VGA_ROWS; row++) {
             for (int col = 0; col < VGA_COLS; col++) {
                 int off = (row * VGA_COLS + col) * 2;
-                unsigned char c = vga[off];
-                unsigned char attr = vga[off + 1];
+                unsigned char c = shadow_vga[off];
+                unsigned char attr = shadow_vga[off + 1];
                 int fg = attr & 0x0F;
                 int bg = (attr >> 4) & 0x0F;
                 SetTextColor(hdc, vga_palette[fg]);
@@ -2086,18 +2116,15 @@ static LRESULT CALLBACK vga_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_TIMER:
         if (wp == VGA_TIMER_ID) {
             InvalidateRect(hwnd, NULL, FALSE);
-            if (hda.sd0ctl & 2) hda_drain_stream(); /* poll HDA stream DMA */
+            /* HDA drain moved to main loop — must not touch guest_mem here */
         }
         return 0;
     case WM_KEYDOWN: {
         unsigned char sc = vk_to_scancode((int)wp);
         if (sc) {
             kbd_enqueue(sc); kbd_irq_pending = 1;
-            /* Also write scancode to guest memory at key-buffer-addr (28680)
-               so bare-metal Codex apps can read it via peek-byte */
-            if (guest_mem && 28680 + 8 <= guest_mem_size) {
-                *(unsigned long long *)((unsigned char *)guest_mem + 28680) = (unsigned long long)sc;
-            }
+            pending_kbd_scancode = (unsigned long long)sc;
+            pending_kbd_valid = 1;
         }
         return 0;
     }
@@ -2109,7 +2136,7 @@ static LRESULT CALLBACK vga_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN:
     case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP:
     case WM_MOUSEMOVE:
-        if (guest_mem && (msg == WM_LBUTTONDOWN || mouse_captured)) {
+        if (msg == WM_LBUTTONDOWN || mouse_captured) {
             if (!mouse_captured && msg == WM_LBUTTONDOWN) {
                 SetCapture(hwnd); mouse_captured = 1;
             }
@@ -2125,10 +2152,10 @@ static LRESULT CALLBACK vga_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (wp & MK_MBUTTON) flags |= 4;
             if (dx < 0) flags |= 0x10;
             if (dy < 0) flags |= 0x20;
-            unsigned char *mbuf = (unsigned char *)guest_mem + MOUSE_BUF_ADDR;
-            mbuf[0] = flags;
-            mbuf[1] = (unsigned char)(dx & 0xFF);
-            mbuf[2] = (unsigned char)(dy & 0xFF);
+            pending_mouse[0] = flags;
+            pending_mouse[1] = (unsigned char)(dx & 0xFF);
+            pending_mouse[2] = (unsigned char)(dy & 0xFF);
+            pending_mouse_valid = 1;
         }
         if (msg == WM_RBUTTONDOWN && mouse_captured) {
             ReleaseCapture(); mouse_captured = 0;
@@ -2739,6 +2766,26 @@ static int watch_active = 0;
 
 static void die(const char *msg) { fprintf(stderr, "FATAL: %s\n", msg); exit(1); }
 
+/* Shutdown watchdog: runs in a background thread, polls serial socket
+   health every 500ms.  When the harness closes the socket (or the process
+   receives Ctrl+C), the watchdog calls WHvCancelRunVirtualProcessor to
+   break the main loop out of the blocking WHvRunVirtualProcessor call.
+   This lets the main loop exit through the normal cleanup path
+   (WHvDeletePartition), avoiding vid.sys kernel heap corruption (0x13A)
+   that results from TerminateProcess killing us mid-hypervisor-call. */
+static volatile int shutdown_requested = 0;
+
+static BOOL WINAPI ctrl_handler(DWORD type) {
+    (void)type;
+    shutdown_requested = 1;
+    if (partition) WHvCancelRunVirtualProcessor(partition, 0, 0);
+    return TRUE;
+}
+
+/* Shutdown watchdog removed — socket probing caused false positives
+   during binary transfer (idle ctrl channel misread as disconnect),
+   truncating the output.  Partition cleanup relies on atexit + mutex. */
+
 /* ── Serial ────────────────────────────────────────────────────────── */
 
 static void serial_init(SerialPort *sp, int port) {
@@ -2778,6 +2825,7 @@ static int serial_has_data(SerialPort *sp) {
     ioctlsocket(sp->client, FIONREAD, &avail);
     return avail > 0;
 }
+
 
 static int guest_ring_has_room(void) {
     unsigned long long wpos = *(unsigned long long*)((char*)guest_mem + SERIAL_RING_WPOS_ADDR);
@@ -2948,6 +2996,7 @@ static void create_vm(size_t mem_mb) {
     guest_mem_size = mem_mb * 1024ULL * 1024ULL;
     if (guest_mem_size > MAX_MEM) guest_mem_size = MAX_MEM;
 
+    whp_lock();
     hr = WHvCreatePartition(&partition);
     if (FAILED(hr)) { fprintf(stderr, "WHvCreatePartition: 0x%lx\n", hr); exit(1); }
 
@@ -2980,6 +3029,7 @@ static void create_vm(size_t mem_mb) {
 
     hr = WHvCreateVirtualProcessor(partition, 0, 0);
     if (FAILED(hr)) { fprintf(stderr, "WHvCreateVirtualProcessor: 0x%lx\n", hr); exit(1); }
+    whp_unlock();
 
     if (uefi_mode) {
         uefi_alloc_hi = guest_mem_size - 0x100000; /* top-down allocator starts below top 1MB */
@@ -3829,10 +3879,47 @@ static int try_inject_serial_interrupt(void) {
 
 /* (monitor thread removed — page protection provides precise trapping) */
 
+/* ── Shadow buffer sync (main thread only, between VP exits) ───────── */
+
+static void sync_shadow_buffers(void) {
+    /* Copy VGA text buffer */
+    if (VGA_BASE + sizeof(shadow_vga) <= guest_mem_size)
+        memcpy(shadow_vga, (unsigned char *)guest_mem + VGA_BASE, sizeof(shadow_vga));
+
+    /* Copy GOP framebuffer */
+    if (gop_active && gop_width > 0 && gop_height > 0) {
+        size_t fb_bytes = (size_t)gop_width * gop_height * 4;
+        if (!shadow_gop) shadow_gop = (unsigned char *)calloc(1, GOP_FB_SIZE);
+        if (shadow_gop && GOP_FB_ADDR + fb_bytes <= guest_mem_size) {
+            memcpy(shadow_gop, (unsigned char *)guest_mem + GOP_FB_ADDR, fb_bytes);
+            shadow_gop_w = gop_width;
+            shadow_gop_h = gop_height;
+            shadow_gop_stride = gop_stride;
+        }
+    }
+
+    /* Flush pending keyboard scancode to guest memory */
+    if (pending_kbd_valid && 28680 + 8 <= guest_mem_size) {
+        *(unsigned long long *)((unsigned char *)guest_mem + 28680) = pending_kbd_scancode;
+        pending_kbd_valid = 0;
+    }
+
+    /* Flush pending mouse state to guest memory */
+    if (pending_mouse_valid && MOUSE_BUF_ADDR + 3 <= (int)guest_mem_size) {
+        unsigned char *mbuf = (unsigned char *)guest_mem + MOUSE_BUF_ADDR;
+        mbuf[0] = pending_mouse[0];
+        mbuf[1] = pending_mouse[1];
+        mbuf[2] = pending_mouse[2];
+        pending_mouse_valid = 0;
+    }
+}
+
 /* ── Main loop ─────────────────────────────────────────────────────── */
 
 int main(int argc, char **argv) {
-    const char *kernel = NULL, *disk = NULL, *boot_args = NULL;
+    SetConsoleCtrlHandler(ctrl_handler, TRUE);
+    atexit(cleanup_whp);
+    const char *kernel = NULL, *disk = NULL, *boot_args = NULL, *trace_file = NULL;
     int mem_mb = 2048, data_port = 12345, ctrl_port = 12346;
 
     for (int i = 1; i < argc; i++) {
@@ -3849,6 +3936,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-gop-width") && i+1 < argc) { gop_width = atoi(argv[++i]); gop_stride = gop_width; gop_active = 1; }
         else if (!strcmp(argv[i], "-gop-height") && i+1 < argc) { gop_height = atoi(argv[++i]); gop_active = 1; }
         else if (!strcmp(argv[i], "-args") && i+1 < argc) boot_args = argv[++i];
+        else if (!strcmp(argv[i], "-trace-file") && i+1 < argc) trace_file = argv[++i];
     }
     if (!kernel) {
         fprintf(stderr, "Usage: codex-vm -kernel file.cdx [-disk file.img] [-mem MB]\n"
@@ -3925,6 +4013,7 @@ int main(int argc, char **argv) {
         serial_accept(&com1);
         serial_accept(&com2);
         fprintf(stderr, "Connected. Running guest (mem=%dMB)...\n", mem_mb);
+        /* (shutdown watchdog removed — caused binary truncation) */
     } else {
         fprintf(stderr, "UEFI VM starting (mem=%dMB)...\n", mem_mb);
     }
@@ -4203,6 +4292,10 @@ int main(int argc, char **argv) {
         WHvGetVirtualProcessorRegisters(partition, 0, shadow_names, 16, shadow_gprs);
         shadow_valid = 1;
 
+        /* ── Sync shadow buffers + HDA while VP is NOT running ── */
+        if (exits % 64 == 0) sync_shadow_buffers();
+        if (hda.sd0ctl & 2) hda_drain_stream();
+
         /* ── Post-exit: decide what interrupt to queue ── */
         if (pending_irq < 0) {
             int vec = pic_master.vector_base ? pic_master.vector_base : 32;
@@ -4250,10 +4343,30 @@ int main(int argc, char **argv) {
         /* Poll NAT sockets for incoming data and inject into NE2000 ring buffer */
         if (exits % 10 == 0) { nat_poll_rx(); ne2k_inject_rx(); }
 
-        /* (page-protection watchpoint is handled inline in MemoryAccess case) */
+        /* Ctrl+C/Break handler sets shutdown_requested */
+        if (shutdown_requested) {
+            debug_exit_code = 0;
+            goto done;
+        }
     }
 done:
     fprintf(stderr, "VM exited (code=%d, exits=%llu, watch_hits=%d)\n", debug_exit_code, exits, watch_hit_count);
+    if (trace_file && guest_mem) {
+        unsigned long long te = 560448, tc = 560456, tb = 560464;
+        if (te + 8 <= guest_mem_size) {
+            unsigned long long enabled = *(unsigned long long *)((unsigned char *)guest_mem + te);
+            unsigned long long cursor = *(unsigned long long *)((unsigned char *)guest_mem + tc);
+            if (enabled && cursor > 0 && tb + cursor * 16 <= guest_mem_size) {
+                FILE *tf = fopen(trace_file, "wb");
+                if (tf) {
+                    fwrite(&cursor, 8, 1, tf);
+                    fwrite((unsigned char *)guest_mem + tb, 16, (size_t)cursor, tf);
+                    fclose(tf);
+                    fprintf(stderr, "Trace: %llu allocations -> %s\n", cursor, trace_file);
+                }
+            }
+        }
+    }
     /* Close any NAT sockets still open. Connections in state 3 already
        had shutdown(SD_SEND) called by the FIN handler — buffered data
        drains normally. Active connections get a graceful half-close. */
@@ -4266,10 +4379,9 @@ done:
     }
     serial_close(&com1);
     serial_close(&com2);
-    WHvDeleteVirtualProcessor(partition, 0);
-    WHvDeletePartition(partition);
+    cleanup_whp();  /* also runs via atexit if we exit abnormally */
     if (ide.data) free(ide.data);
-    VirtualFree(guest_mem, 0, MEM_RELEASE);
+    if (guest_mem) { VirtualFree(guest_mem, 0, MEM_RELEASE); guest_mem = NULL; }
     WSACleanup();
     return (debug_exit_code >= 0) ? (debug_exit_code << 1) | 1 : 0;
 }

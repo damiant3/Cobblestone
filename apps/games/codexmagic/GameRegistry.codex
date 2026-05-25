@@ -3,8 +3,8 @@ Chapter: GameRegistry
   cites CodexMagic chapter ClanFormat
   cites CodexMagic chapter Auth
 
- Universal game registry. Any game — CodexMagic, chess, checkers,
- a clan's custom format, a third-party card game — can be registered
+ Universal game registry. Any game - CodexMagic, chess, checkers,
+ a clan's custom format, a third-party card game - can be registered
  with the platform. A registered game has an identity, a result type,
  and a protocol for resolving outcomes.
 
@@ -113,7 +113,7 @@ Section: Game Registration
   register-clan-format-as-game : GameRegistryState, ClanFormat, Text, Integer, Integer -> GameRegistryState
   register-clan-format-as-game (registry) (fmt) (clan-name) (registrar) (time) =
     let name = clan-name & ": " & fmt.name
-    in let desc = "Custom format — Life:" & show (fmt.base-life) & " Turns:" & show (fmt.base-turn-cap) & " Deck:" & show (fmt.deck-min) & "-" & show (fmt.deck-max)
+    in let desc = "Custom format - Life:" & show (fmt.base-life) & " Turns:" & show (fmt.base-turn-cap) & " Deck:" & show (fmt.deck-min) & "-" & show (fmt.deck-max)
     in register-game registry name GameCardBattle ResultWinLose (Exactly 2) registrar time desc
 
   find-game : GameRegistryState, Integer -> RegisteredGame
@@ -138,7 +138,7 @@ Section: Game Registration
     in if g.name == name then g
     else find-game-name-loop games name (i + 1) len
 
-Section: Subgame Sessions — Shahrazad Abstracted
+Section: Subgame Sessions - Shahrazad Abstracted
 
   SubgameSession = record {
     session-id : Integer,
@@ -149,7 +149,7 @@ Section: Subgame Sessions — Shahrazad Abstracted
     player-b : Integer,
     status : SubgameStatus,
     result : SubgameResult,
-    effect : SubgameEffect,
+    fx : SubgameEffect,
     created-at : Integer,
     resolved-at : Integer
   }
@@ -199,7 +199,7 @@ Section: Subgame Sessions — Shahrazad Abstracted
 Section: Subgame Lifecycle
 
   create-subgame : GameRegistryState, Integer, Integer, Integer, Integer, Integer, SubgameEffect, Integer -> GameRegistryState
-  create-subgame (registry) (parent-game) (parent-match) (subgame-id) (player-a) (player-b) (effect) (time) =
+  create-subgame (registry) (parent-game) (parent-match) (subgame-id) (player-a) (player-b) (fx) (time) =
     let session = SubgameSession {
       session-id = registry.next-session-id,
       parent-game-id = parent-game,
@@ -209,7 +209,7 @@ Section: Subgame Lifecycle
       player-b = player-b,
       status = SubgamePending,
       result = SubgameNoResult,
-      effect = effect,
+      fx = fx,
       created-at = time,
       resolved-at = 0
     }
@@ -255,8 +255,8 @@ Section: Effect Resolution
   SubgameEffectResult = record {
     winner : Integer,
     loser : Integer,
-    winner-effect : SubgameEffect,
-    loser-effect : SubgameEffect,
+    winner-fx : SubgameEffect,
+    loser-fx : SubgameEffect,
     applied : Boolean
   }
 
@@ -268,8 +268,8 @@ Section: Effect Resolution
         in SubgameEffectResult {
           winner = winner-id,
           loser = loser-id,
-          winner-effect = session.effect,
-          loser-effect = invert-effect (session.effect),
+          winner-effect = session.fx,
+          loser-effect = invert-effect (session.fx),
           applied = True
         }
       is SubgameDraw ->
@@ -288,14 +288,14 @@ Section: Effect Resolution
           loser-effect = EffectCustom "Unresolved",
           applied = False
         }
-      is SubgameScore (a-score, b-score) ->
+      is SubgameScore (a-score) (b-score) ->
         let winner-id = if a-score > b-score then session.player-a else session.player-b
         in let loser-id = if a-score > b-score then session.player-b else session.player-a
         in SubgameEffectResult {
           winner = winner-id,
           loser = loser-id,
-          winner-effect = session.effect,
-          loser-effect = invert-effect (session.effect),
+          winner-effect = session.fx,
+          loser-effect = invert-effect (session.fx),
           applied = True
         }
 
@@ -316,7 +316,7 @@ Section: Shahrazad Card Templates
   SubgameCardDef = record {
     card-name : Text,
     target-game-id : Integer,
-    winner-effect : SubgameEffect,
+    winner-fx : SubgameEffect,
     loser-penalty : SubgameEffect,
     timeout-turns : Integer,
     allow-decline : Boolean,
@@ -406,10 +406,10 @@ Section: Subgame Nesting Control
   pop-subgame : SubgameContext -> SubgameContext
   pop-subgame (ctx) =
     if ctx.depth <= 0 then ctx
-    else SubgameContext { depth = ctx.depth - 1, parent-sessions = list-drop-last (ctx.parent-sessions), max-depth = ctx.max-depth }
+    else SubgameContext { depth = ctx.depth - 1, parent-sessions = pop-session-list (ctx.parent-sessions), max-depth = ctx.max-depth }
 
-  list-drop-last : List Integer -> List Integer
-  list-drop-last (xs) =
+  pop-session-list : List Integer -> List Integer
+  pop-session-list (xs) =
     if list-length xs <= 1 then []
     else drop-last-loop xs 0 (list-length xs - 1) []
 
@@ -425,7 +425,7 @@ Section: Session Helpers
     if i >= len then acc
     else let s = list-at sessions i
     in if s.session-id == id then
-      update-session-status sessions id new-status (i + 1) len (list-push acc (SubgameSession { session-id = s.session-id, parent-game-id = s.parent-game-id, parent-match-id = s.parent-match-id, subgame-id = s.subgame-id, player-a = s.player-a, player-b = s.player-b, status = new-status, result = s.result, effect = s.effect, created-at = s.created-at, resolved-at = s.resolved-at }))
+      update-session-status sessions id new-status (i + 1) len (list-push acc (SubgameSession { session-id = s.session-id, parent-game-id = s.parent-game-id, parent-match-id = s.parent-match-id, subgame-id = s.subgame-id, player-a = s.player-a, player-b = s.player-b, status = new-status, result = s.result, fx = s.fx, created-at = s.created-at, resolved-at = s.resolved-at }))
     else update-session-status sessions id new-status (i + 1) len (list-push acc s)
 
   resolve-session : List SubgameSession, Integer, SubgameResult, Integer, Integer, Integer, List SubgameSession -> List SubgameSession
@@ -433,7 +433,7 @@ Section: Session Helpers
     if i >= len then acc
     else let s = list-at sessions i
     in if s.session-id == id then
-      resolve-session sessions id result time (i + 1) len (list-push acc (SubgameSession { session-id = s.session-id, parent-game-id = s.parent-game-id, parent-match-id = s.parent-match-id, subgame-id = s.subgame-id, player-a = s.player-a, player-b = s.player-b, status = SubgameResolved, result = result, effect = s.effect, created-at = s.created-at, resolved-at = time }))
+      resolve-session sessions id result time (i + 1) len (list-push acc (SubgameSession { session-id = s.session-id, parent-game-id = s.parent-game-id, parent-match-id = s.parent-match-id, subgame-id = s.subgame-id, player-a = s.player-a, player-b = s.player-b, status = SubgameResolved, result = result, fx = s.fx, created-at = s.created-at, resolved-at = time }))
     else resolve-session sessions id result time (i + 1) len (list-push acc s)
 
   update-session-resolved : List SubgameSession, Integer, SubgameStatus, SubgameResult, Integer, Integer, Integer, List SubgameSession -> List SubgameSession
@@ -441,7 +441,7 @@ Section: Session Helpers
     if i >= len then acc
     else let s = list-at sessions i
     in if s.session-id == id then
-      update-session-resolved sessions id status result time (i + 1) len (list-push acc (SubgameSession { session-id = s.session-id, parent-game-id = s.parent-game-id, parent-match-id = s.parent-match-id, subgame-id = s.subgame-id, player-a = s.player-a, player-b = s.player-b, status = status, result = result, effect = s.effect, created-at = s.created-at, resolved-at = time }))
+      update-session-resolved sessions id status result time (i + 1) len (list-push acc (SubgameSession { session-id = s.session-id, parent-game-id = s.parent-game-id, parent-match-id = s.parent-match-id, subgame-id = s.subgame-id, player-a = s.player-a, player-b = s.player-b, status = status, result = result, fx = s.fx, created-at = s.created-at, resolved-at = time }))
     else update-session-resolved sessions id status result time (i + 1) len (list-push acc s)
 
   get-session : GameRegistryState, Integer -> SubgameSession
@@ -450,7 +450,7 @@ Section: Session Helpers
 
   find-session-loop : List SubgameSession, Integer, Integer, Integer -> SubgameSession
   find-session-loop (sessions) (id) (i) (len) =
-    if i >= len then SubgameSession { session-id = -1, parent-game-id = 0, parent-match-id = 0, subgame-id = 0, player-a = 0, player-b = 0, status = SubgameAbandoned, result = SubgameNoResult, effect = EffectCustom "Not found", created-at = 0, resolved-at = 0 }
+    if i >= len then SubgameSession { session-id = -1, parent-game-id = 0, parent-match-id = 0, subgame-id = 0, player-a = 0, player-b = 0, status = SubgameAbandoned, result = SubgameNoResult, fx = EffectCustom "Not found", created-at = 0, resolved-at = 0 }
     else let s = list-at sessions i
     in if s.session-id == id then s
     else find-session-loop sessions id (i + 1) len

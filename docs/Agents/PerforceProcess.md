@@ -118,19 +118,43 @@ This gives anyone a clear path back to main without archaeology.
 Bring parent changes into the child stream before copying up. This ensures
 the child is a superset of the parent.
 
+**You are responsible for semantic merge of every file.** Do not bulk-accept
+with `-ay` or `-at`. For each file in the merge:
+
+1. Check if YOU have pending edits or recently submitted changes to that
+   file. Run `p4 opened` and review your shelved CLs.
+2. If the file is untouched on your side, accept theirs (`-at`).
+3. If BOTH sides changed the file, diff the incoming version against yours
+   and merge manually. Your WIP changes will be silently overwritten by
+   `-at` and silently kept (discarding theirs) by `-ay` — both are wrong
+   when the file has changes on both sides.
+4. If in doubt, `p4 diff2` the two versions before resolving.
+
+**The failure mode is silent.** A bulk `-at` overwrites your `-Trace` flag.
+A bulk `-ay` drops main's bug fix. Neither produces an error. The only
+signal is a test failure or a crash hours later.
+
 ```powershell
 # 1. Merge down from parent (use -r for reverse = parent-to-child)
-#    -Af forces the merge even if Perforce thinks it's not needed
-p4 merge -c <CL> -Af -S //Codex/<CHILD_STREAM> -r
+p4 merge -S //Codex/<CHILD_STREAM> -r
 
-# 2. Resolve — accept ours if child has superseded parent's work
-p4 resolve -ay    # accept yours (child wins)
-# Or for selective merging:
-p4 resolve -am    # auto-merge where possible, manual for conflicts
+# 2. Review each file — DO NOT BULK-RESOLVE
+p4 resolve -n   # preview what needs resolving
+
+# For files you haven't touched:
+p4 resolve -at <file>    # accept theirs
+
+# For files with changes on both sides:
+p4 diff2 //Codex/main/<file> //Codex/<CHILD>/<file>   # inspect
+p4 resolve -am <file>    # auto-merge, or manual if conflicts
+
+# For files where you want to keep your version:
+p4 resolve -ay <file>    # accept yours — but ONLY if you've verified
+                         # that main's changes are already incorporated
+                         # or intentionally excluded
 
 # 3. Submit the merge-down CL
-p4 shelve -d -c <CL>   # delete shelf if shelved
-p4 submit -c <CL>
+p4 submit -d "merge down from main (CLs ...)"
 ```
 
 ### Copy-Up (Child → Parent)

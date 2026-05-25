@@ -38,7 +38,7 @@ Built solo by one human in collaboration with a fleet of AI agents, in
 
 ## Verified
 
-As of 2026-05-24:
+As of 2026-05-25:
 
 - **CDX fixed point**: pingpong all phases green — text round-trip
   (stage1 === stage2) + CDX fixed-point (stage1.cdx === stage2.cdx),
@@ -92,15 +92,22 @@ As of 2026-05-24:
   keyword. Proof builtins: Refl, sym, trans, cong, assume.
 - **Static bounds prover**: compiler proves bounded-integer range safety
   at compile time and elides runtime bounds checks (CDX4010). Handles
-  literals, field access, arithmetic (+, -, *, /), int-mod, bit-and,
-  bit-shru, negation, if/else union.
+  literals, field access, int-mod, bit-and, negation. O(1) shallow
+  analysis per narrow store (10x compile speedup over prior deep walker).
+- **Deck overflow guard**: all 8 compiler phases (LEX, PARSE, DESUGAR,
+  SCOPE, CHECK, LOWER, RESOLVE, LIFT) detect when deck allocation
+  exceeds its survey budget and emit CDX9002 instead of silently
+  corrupting memory.
+- **Fuzz corpus**: 44 adversarial inputs (binary garbage, huge
+  identifiers, deep nesting, unclosed syntax, 100KB lines, recursive
+  types, keyword abuse) — 0 crashes.
 - **Mutable records**: `mutable` keyword with in-place field
   assignment, type-checked immutability enforcement (CDX2060).
 - **Repository restructure**: 31 top-level dirs to 8. codex-vm
   replaces QEMU as default VM (WHP-based, ~4500 lines C: PCI, xHCI USB,
   Intel HDA audio, HPET, IOAPIC, ACPI, SMBIOS, UEFI firmware, Bochs VBE).
-- **Sample battery**: 160 samples; 108/108 pass, 0 fail in the gate
-  battery (52 skipped: slow, fatal, or platform-specific).
+- **Sample battery**: 210 samples (incl. 44 fuzz/adversarial); 156 pass,
+  0 fail in the gate battery (54 skipped: slow, fatal, or platform-specific).
 - **Codex.Spark creative suite**: 85-module application (3D modeling,
   image editor, animation, audio/DAW, video compositor, skeletal
   animation, particles, procedural noise, interactive UI shell) running
@@ -116,11 +123,11 @@ As of 2026-05-24:
 
 The compiler is a hard fixed point of itself on bare metal.
 
-**`seed/Codex.cdx`** (2,181,200 bytes) — the canonical seed:
+**`seed/Codex.cdx`** (2,194,745 bytes) — the canonical seed:
 
 | Algorithm | Digest |
 |---|---|
-| SHA-256 (file) | `FE03B6CF9C6BD081B9B5E3D949C683F713ED6C4674C6AC8CC8C3BEC9953A1EF2` |
+| SHA-256 (file) | `300190EDA5D89734DE5335C01367230BA4C27FFAF72834C9E705B9C596EA1509` |
 
 **`seed/Codex.img`** (8,388,608 bytes) — bootable GPT disk image:
 

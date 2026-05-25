@@ -7,7 +7,7 @@ Chapter: CrossPlaneItems
   cites CodexMagic chapter ClanEconomy
 
  Cross-plane item utility and dungeon interaction. Items exist
- across game boundaries — a CodexMagic card becomes a spell in
+ across game boundaries - a CodexMagic card becomes a spell in
  the RPG, a vehicle part in a racer, a key in someone's dungeon.
  Players spend coin to explore other people's games, spawn content
  in foreign dungeons, and transfer relevant bits back to their
@@ -17,7 +17,7 @@ Chapter: CrossPlaneItems
 
  We say:
 
-Section: Item Manifestation — One item, many forms
+Section: Item Manifestation - One item, many forms
 
   ItemManifest = record {
     planar-id : Integer,
@@ -60,7 +60,7 @@ Section: Item Manifestation — One item, many forms
     | CondSingleUse
     | CondCostPerUse (Integer)
 
-Section: Spell Manifest — Card becomes spell
+Section: Spell Manifest - Card becomes spell
 
   SpellManifest = record {
     spell-name : Text,
@@ -68,7 +68,7 @@ Section: Spell Manifest — Card becomes spell
     mp-cost : Integer,
     damage : Integer,
     heal : Integer,
-    effect : SpellEffect,
+    spell-fx : SpellEffect,
     range : Integer,
     area : Integer,
     duration : Integer
@@ -81,7 +81,7 @@ Section: Spell Manifest — Card becomes spell
     | Transmutation
     | Necromancy
     | Divination
-    | Enchantment
+    | SpellEnchantment
     | Illusion
 
   SpellEffect =
@@ -149,7 +149,7 @@ Section: Weapon / Armor / Key / Part Manifests
     effect-on-step : Text
   }
 
-Section: Conversion Rules — How items transform between planes
+Section: Conversion Rules - How items transform between planes
 
   ConversionTemplate = record {
     template-id : Integer,
@@ -169,7 +169,7 @@ Section: Conversion Rules — How items transform between planes
       source-game = 3,
       source-type = PlanarCard,
       target-game = 0,
-      target-form = FormSpell (SpellManifest { spell-name = "Card Invocation", school = Evocation, mp-cost = 5, damage = 10, heal = 0, effect = SpellDamage, range = 3, area = 1, duration = 0 }),
+      target-form = FormSpell (SpellManifest { spell-name = "Card Invocation", school = Evocation, mp-cost = 5, damage = 10, heal = 0, spell-fx = SpellDamage, range = 3, area = 1, duration = 0 }),
       power-scaling = 100,
       cost-to-convert = 25,
       reversible = True
@@ -246,12 +246,12 @@ Section: Item Conversion Operations
     in if m.game-id == game-id then m
     else find-manifestation manifests game-id (i + 1) len
 
-Section: Dungeon Invasion — Spawn content in other people's worlds
+Section: Dungeon Invasion - Spawn content in other people's worlds
 
   InvasionType =
     | InvadeSpawnMonster (Combatant)
     | InvadeSpawnLoot (ItemToken)
-    | InvadePlaceTrap (Trap)
+    | InvadePlaceTrap (DungeonTrap)
     | InvadeSpawnEvent (Text)
     | InvadeOpenPortal (Integer)
     | InvadeDropKey (KeyManifest)
@@ -261,7 +261,7 @@ Section: Dungeon Invasion — Spawn content in other people's worlds
     when inv
       is InvadeSpawnMonster (m) -> "Spawn Monster: " & m.name
       is InvadeSpawnLoot (item) -> "Drop Loot: " & item.name
-      is InvadePlaceTrap (t) -> "Place Trap: " & t.name
+      is InvadePlaceTrap (t) -> "Place Trap: " & t.trap-name
       is InvadeSpawnEvent (desc) -> "Event: " & desc
       is InvadeOpenPortal (dest) -> "Open Portal to game #" & show dest
       is InvadeDropKey (k) -> "Drop Key: " & k.key-name
@@ -285,15 +285,19 @@ Section: Dungeon Invasion — Spawn content in other people's worlds
     foreign-clan-surcharge : Integer
   }
 
-  compute-invasion-cost : InvasionType, Boolean -> Integer
-  compute-invasion-cost (inv) (same-clan) =
-    let base = when inv
+  invasion-base-cost : InvasionType -> Integer
+  invasion-base-cost (inv) =
+    when inv
       is InvadeSpawnMonster (m) -> 50 + m.max-hp * 2
       is InvadeSpawnLoot (item) -> 30 + item.value
-      is InvadePlaceTrap (t) -> 20 + t.damage * 3
+      is InvadePlaceTrap (t) -> 20 + t.trap-damage * 3
       is InvadeSpawnEvent (desc) -> 100
       is InvadeOpenPortal (dest) -> 200
       is InvadeDropKey (k) -> 150
+
+  compute-invasion-cost : InvasionType, Boolean -> Integer
+  compute-invasion-cost (inv) (same-clan) =
+    let base = invasion-base-cost inv
     in if same-clan then base
     else base * 3 / 2
 
@@ -324,7 +328,7 @@ Section: Invasion Operations
     if inv.approved == False then inv
     else Invasion { invasion-id = inv.invasion-id, invader = inv.invader, invader-clan = inv.invader-clan, target-dungeon = inv.target-dungeon, target-clan = inv.target-clan, invasion-type = inv.invasion-type, cost-paid = inv.cost-paid, approved = inv.approved, executed = True, timestamp = inv.timestamp }
 
-Section: Portal Mechanics — Games spawn other games
+Section: Portal Mechanics - Games spawn other games
 
   Portal = record {
     portal-id : Integer,
@@ -369,7 +373,7 @@ Section: Portal Mechanics — Games spawn other games
     else let ledger2 = ledger-burn ledger user (portal.cost-to-enter)
     in PortalUseResult { ledger = ledger2, subgame-spawned = True, destination-game = portal.destination-game, success = True }
 
-Section: Loot Extraction — Bring stuff back from other planes
+Section: Loot Extraction - Bring stuff back from other planes
 
   ExtractionResult = record {
     manifest : ItemManifest,
@@ -392,31 +396,47 @@ Section: Loot Extraction — Bring stuff back from other planes
     in if item.planar-id == planar-id then item.owner
     else find-item-owner items planar-id (i + 1) len
 
-Section: Auto-Manifest — Determine what an item becomes in a new game
+Section: Auto-Manifest - Determine what an item becomes in a new game
 
   auto-manifest : PlanarItemType, Integer, Integer -> ManifestForm
   auto-manifest (source-type) (target-game-type) (power-level) =
     when source-type
-      is PlanarCard ->
-        if target-game-type == 1 then FormSpell (SpellManifest { spell-name = "Card Invocation", school = Evocation, mp-cost = power-level / 4, damage = power-level / 2, heal = 0, effect = SpellDamage, range = 3, area = 1, duration = 0 })
-        else if target-game-type == 2 then FormWeapon (WeaponManifest { weapon-name = "Enchanted Blade", damage-die = power-level / 3, damage-bonus = power-level / 10, attack-bonus = power-level / 20, weapon-type = "Magic", special-ability = "Card Strike" })
-        else FormCustom "Card Token"
-      is PlanarRPGItem ->
-        if target-game-type == 3 then FormCard 0
-        else if target-game-type == 4 then FormVehiclePart (PartManifest { part-name = "Salvaged", part-slot = "Misc", speed-bonus = power-level / 5, handling-bonus = power-level / 10, durability-bonus = power-level / 8 })
-        else FormCustom "Artifact"
-      is PlanarVehiclePart ->
-        if target-game-type == 1 then FormConsumable (ConsumableManifest { item-name = "Fuel Cell", heal-amount = 0, buff-type = "Speed", buff-duration = 3 })
-        else FormCustom "Mechanical Component"
+      is PlanarCard -> auto-manifest-card target-game-type power-level
+      is PlanarRPGItem -> auto-manifest-rpg target-game-type power-level
+      is PlanarVehiclePart -> auto-manifest-vehicle target-game-type
       is PlanarKey ->
-        FormKey (KeyManifest { key-name = "Planar Key", unlocks-dungeon = 0, unlocks-floor = 0, unlocks-region = 0, one-time = True })
-      is PlanarCosmetic ->
-        FormCustom "Cosmetic"
+        let k = KeyManifest { key-name = "Planar Key", unlocks-dungeon = 0, unlocks-floor = 0, unlocks-region = 0, one-time = True }
+        in FormKey k
+      is PlanarCosmetic -> FormCustom "Cosmetic"
       is PlanarMaterial ->
-        FormConsumable (ConsumableManifest { item-name = "Raw Material", heal-amount = 0, buff-type = "Craft", buff-duration = 0 })
-      is PlanarCurrency (amount) ->
-        FormCustom (show amount & " coin equivalent")
-      is PlanarCustom (name) ->
-        FormCustom name
+        let mat-c = ConsumableManifest { item-name = "Raw Material", heal-amount = 0, buff-type = "Craft", buff-duration = 0 }
+        in FormConsumable mat-c
+      is PlanarCurrency (amount) -> FormCustom (show amount & " coin equivalent")
+      is PlanarCustom (name) -> FormCustom name
+
+  auto-manifest-card : Integer, Integer -> ManifestForm
+  auto-manifest-card (target-game-type) (power-level) =
+    if target-game-type == 1 then
+      let spell = SpellManifest { spell-name = "Card Invocation", school = Evocation, mp-cost = power-level / 4, damage = power-level / 2, heal = 0, spell-fx = SpellDamage, range = 3, area = 1, duration = 0 }
+      in FormSpell spell
+    else if target-game-type == 2 then
+      let wpn = WeaponManifest { weapon-name = "Enchanted Blade", damage-die = power-level / 3, damage-bonus = power-level / 10, attack-bonus = power-level / 20, weapon-type = "Magic", special-ability = "Card Strike" }
+      in FormWeapon wpn
+    else FormCustom "Card Token"
+
+  auto-manifest-rpg : Integer, Integer -> ManifestForm
+  auto-manifest-rpg (target-game-type) (power-level) =
+    if target-game-type == 3 then FormCard 0
+    else if target-game-type == 4 then
+      let part = PartManifest { part-name = "Salvaged", part-slot = "Misc", speed-bonus = power-level / 5, handling-bonus = power-level / 10, durability-bonus = power-level / 8 }
+      in FormVehiclePart part
+    else FormCustom "Artifact"
+
+  auto-manifest-vehicle : Integer -> ManifestForm
+  auto-manifest-vehicle (target-game-type) =
+    if target-game-type == 1 then
+      let c = ConsumableManifest { item-name = "Fuel Cell", heal-amount = 0, buff-type = "Speed", buff-duration = 3 }
+      in FormConsumable c
+    else FormCustom "Mechanical Component"
 
 Page 1

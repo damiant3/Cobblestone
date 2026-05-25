@@ -463,81 +463,10 @@ Section: Narrow-store with overflow-mode dispatch
  emit the same trap shape (jcc + ud2) for OvError; OvClamping uses
  cmp-ri + jcc + mov-ri32 to saturate when out of range.
 
-  add-range : Integer, Integer, Integer, Integer -> CodexType
-  add-range (l-lo) (l-hi) (r-lo) (r-hi) =
-   if l-lo < 0 then int-ty-default
-   else if r-lo < 0 then int-ty-default
-   else let res-hi = l-hi + r-hi
-   in if res-hi < l-hi then int-ty-default
-   else IntegerTy (l-lo + r-lo) res-hi OvError
-
-  sub-range : Integer, Integer, Integer, Integer -> CodexType
-  sub-range (l-lo) (l-hi) (r-lo) (r-hi) =
-   if l-lo < 0 then int-ty-default
-   else if r-lo < 0 then int-ty-default
-   else IntegerTy (l-lo - r-hi) (l-hi - r-lo) OvError
-
-  mul-range : Integer, Integer, Integer, Integer -> CodexType
-  mul-range (l-lo) (l-hi) (r-lo) (r-hi) =
-   if l-lo < 0 then int-ty-default
-   else if r-lo < 0 then int-ty-default
-   else if r-hi == 0 then IntegerTy 0 0 OvError
-   else if l-hi > i64-max / r-hi then int-ty-default
-   else IntegerTy (l-lo * r-lo) (l-hi * r-hi) OvError
-
-  div-range : Integer, Integer, Integer, Integer -> CodexType
-  div-range (l-lo) (l-hi) (r-lo) (r-hi) =
-   if l-lo < 0 then int-ty-default
-   else if r-lo <= 0 then int-ty-default
-   else IntegerTy (l-lo / r-hi) (l-hi / r-lo) OvError
-
-  union-range : CodexType, CodexType -> CodexType
-  union-range (a) (b) =
-   when a
-    is IntegerTy (a-lo) (a-hi) (am) ->
-     when b
-      is IntegerTy (b-lo) (b-hi) (bm) ->
-       let lo = if a-lo <= b-lo then a-lo else b-lo
-       in let hi = if a-hi >= b-hi then a-hi else b-hi
-       in IntegerTy lo hi OvError
-      is otherwise -> int-ty-default
-    is otherwise -> int-ty-default
-
-  binary-proven-range : IRBinaryOp, CodexType, CodexType -> CodexType
-  binary-proven-range (op) (lt) (rt) =
-   when lt
-    is IntegerTy (l-lo) (l-hi) (lm) ->
-     when rt
-      is IntegerTy (r-lo) (r-hi) (rm) ->
-       when op
-        is IrAddInt -> add-range l-lo l-hi r-lo r-hi
-        is IrSubInt -> sub-range l-lo l-hi r-lo r-hi
-        is IrMulInt -> mul-range l-lo l-hi r-lo r-hi
-        is IrDivInt -> div-range l-lo l-hi r-lo r-hi
-        is otherwise -> int-ty-default
-      is otherwise -> int-ty-default
-    is otherwise -> int-ty-default
-
-  RangeEntry = record {
-   rng-name : Text,
-   rng-type : CodexType
-  }
-
-  lookup-range : List RangeEntry, Text, Integer -> CodexType
-  lookup-range (env) (name) (i) =
-   if i == list-length env then int-ty-default
-   else let e = list-at env i
-   in if e.rng-name == name then e.rng-type
-   else lookup-range env name (i + 1)
-
   ir-expr-proven-range : IRExpr -> CodexType
-  ir-expr-proven-range (e) = ir-proven-env e []
-
-  ir-proven-env : IRExpr, List RangeEntry -> CodexType
-  ir-proven-env (e) (env) =
+  ir-expr-proven-range (e) =
    when e
     is IrIntLit (v) (s) -> IntegerTy v v OvError
-    is IrName (n) (t) (s) -> lookup-range env n 0
     is IrFieldAccess (rec) (fname) (vty) (sp) ->
      when vty
       is IntegerTy (lo) (hi) (mode) -> vty
@@ -545,47 +474,37 @@ Section: Narrow-store with overflow-mode dispatch
     is IrApply (func) (arg) (ty) (sp) ->
      when func
       is IrName (n) (nty) (nsp) ->
-       if n == "__narrow" then ir-proven-env arg env else int-ty-default
+       if n == "__narrow" then ir-expr-proven-range arg else int-ty-default
       is IrApply (inner-func) (inner-arg) (ity) (isp) ->
        when inner-func
         is IrName (n) (nty) (nsp) ->
-         if n == "int-mod" then proven-mod inner-arg arg env
-         else if n == "bit-and" then proven-bitand inner-arg arg env
-         else if n == "bit-shru" then proven-shru inner-arg arg env
+         if n == "int-mod" then proven-mod-shallow inner-arg arg
+         else if n == "bit-and" then proven-bitand-shallow inner-arg arg
          else int-ty-default
         is otherwise -> int-ty-default
       is otherwise -> int-ty-default
     is IrNegate (x) (s) ->
-     let inner = ir-proven-env x env
+     let inner = ir-expr-proven-range x
      in when inner
       is IntegerTy (lo) (hi) (m) ->
        if lo == i64-min then int-ty-default
        else IntegerTy (negate hi) (negate lo) m
       is otherwise -> int-ty-default
-    is IrBinary (op) (l) (r) (t) (s) ->
-     let lb = ir-proven-env l env
-     in let rb = ir-proven-env r env
-     in binary-proven-range op lb rb
-    is IrIf (cond) (then-e) (else-e) (t) (s) ->
-     union-range (ir-proven-env then-e env) (ir-proven-env else-e env)
-    is IrLet (name) (ty) (value) (body) (s) ->
-     let val-range = ir-proven-env value env
-     in ir-proven-env body (list-push env (RangeEntry { rng-name = name, rng-type = val-range }))
     is otherwise -> int-ty-default
 
-  proven-mod : IRExpr, IRExpr, List RangeEntry -> CodexType
-  proven-mod (x-expr) (n-expr) (env) =
-   let nr = ir-proven-env n-expr env
+  proven-mod-shallow : IRExpr, IRExpr -> CodexType
+  proven-mod-shallow (x-expr) (n-expr) =
+   let nr = ir-expr-proven-range n-expr
    in when nr
     is IntegerTy (n-lo) (n-hi) (nm) ->
      if n-lo > 0 then IntegerTy 0 (n-hi - 1) OvError
      else int-ty-default
     is otherwise -> int-ty-default
 
-  proven-bitand : IRExpr, IRExpr, List RangeEntry -> CodexType
-  proven-bitand (x-expr) (y-expr) (env) =
-   let xr = ir-proven-env x-expr env
-   in let yr = ir-proven-env y-expr env
+  proven-bitand-shallow : IRExpr, IRExpr -> CodexType
+  proven-bitand-shallow (x-expr) (y-expr) =
+   let xr = ir-expr-proven-range x-expr
+   in let yr = ir-expr-proven-range y-expr
    in when xr
     is IntegerTy (x-lo) (x-hi) (xm) ->
      when yr
@@ -593,20 +512,6 @@ Section: Narrow-store with overflow-mode dispatch
        if x-lo >= 0 & y-lo >= 0
        then let hi = if x-hi <= y-hi then x-hi else y-hi
             in IntegerTy 0 hi OvError
-       else int-ty-default
-      is otherwise -> int-ty-default
-    is otherwise -> int-ty-default
-
-  proven-shru : IRExpr, IRExpr, List RangeEntry -> CodexType
-  proven-shru (x-expr) (n-expr) (env) =
-   let xr = ir-proven-env x-expr env
-   in let nr = ir-proven-env n-expr env
-   in when xr
-    is IntegerTy (x-lo) (x-hi) (xm) ->
-     when nr
-      is IntegerTy (n-lo) (n-hi) (nm) ->
-       if x-lo >= 0 & n-lo >= 0
-       then IntegerTy (bit-shru x-lo n-hi) (bit-shru x-hi n-lo) OvError
        else int-ty-default
       is otherwise -> int-ty-default
     is otherwise -> int-ty-default
