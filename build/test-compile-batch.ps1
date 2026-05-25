@@ -113,7 +113,8 @@ function Compile-One {
     }
 
     $hdr = [System.Text.Encoding]::UTF8.GetBytes("CDX`n")
-    $srcBytes = [System.IO.File]::ReadAllBytes($SrcPath)
+    $fwBytes = Normalize-TripleNewlines $fwBytes
+    $srcBytes = Normalize-TripleNewlines ([System.IO.File]::ReadAllBytes($SrcPath))
     $DataStream.Write($hdr, 0, $hdr.Length)
     if ($fwBytes.Length -gt 0) { $DataStream.Write($fwBytes, 0, $fwBytes.Length) }
     $DataStream.Write($srcBytes, 0, $srcBytes.Length)
@@ -192,7 +193,7 @@ function Compile-One {
             '5' | Set-Content -Path $exitFile -Encoding UTF8
         }
     } elseif ($status -eq 'halted') {
-        '4' | Set-Content -Path $exitFile -Encoding UTF8
+        '7' | Set-Content -Path $exitFile -Encoding UTF8
     } else {
         '4' | Set-Content -Path $exitFile -Encoding UTF8
     }

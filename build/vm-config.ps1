@@ -117,13 +117,25 @@ function Read-VmReady {
 
 function Close-Vm {
     param($Conn, $Process)
+    # Close sockets first — codex-vm's shutdown watchdog thread detects
+    # the disconnect within 500ms, calls WHvCancelRunVirtualProcessor to
+    # break the main loop, and the process exits through the normal
+    # cleanup path (WHvDeletePartition + VirtualFree).
+    # This avoids vid.sys kernel heap corruption (bug check 0x13A) that
+    # results from TerminateProcess killing us mid-hypervisor-call.
     if ($Conn) {
         if ($Conn.Data) { try { $Conn.Data.Dispose() } catch {} }
         if ($Conn.Ctrl) { try { $Conn.Ctrl.Dispose() } catch {} }
     }
     if ($Process -and -not $Process.HasExited) {
-        try { Stop-Process -Id $Process.Id -Force -ErrorAction Stop } catch {}
-        for ($i = 0; $i -lt 10 -and -not $Process.HasExited; $i++) { Start-Sleep -Milliseconds 100 }
+        # Wait up to 5s for the watchdog-triggered graceful exit
+        for ($i = 0; $i -lt 50 -and -not $Process.HasExited; $i++) { Start-Sleep -Milliseconds 100 }
+        if (-not $Process.HasExited) {
+            # Last resort — force kill.  The watchdog should have cleaned
+            # up WHP by now, but if not, this risks 0x13A.
+            try { Stop-Process -Id $Process.Id -Force -ErrorAction Stop } catch {}
+            for ($i = 0; $i -lt 10 -and -not $Process.HasExited; $i++) { Start-Sleep -Milliseconds 100 }
+        }
         if (-not $Process.HasExited) {
             try { & taskkill.exe /F /T /PID $Process.Id 2>&1 | Out-Null } catch {}
         }
@@ -162,6 +174,24 @@ function ConvertTo-Cce {
         $out[$i] = $script:UnicodeToCce[$Bytes[$i]]
     }
     return $out
+}
+
+function Normalize-TripleNewlines {
+    param([byte[]]$Bytes)
+    if ($null -eq $Bytes -or $Bytes.Length -eq 0) { return ,(New-Object byte[] 0) }
+    $nl = 0x0A
+    $out = [System.IO.MemoryStream]::new($Bytes.Length)
+    $run = 0
+    for ($i = 0; $i -lt $Bytes.Length; $i++) {
+        if ($Bytes[$i] -eq $nl) {
+            $run++
+            if ($run -le 2) { $out.WriteByte($nl) }
+        } else {
+            $run = 0
+            $out.WriteByte($Bytes[$i])
+        }
+    }
+    return ,$out.ToArray()
 }
 
 # Append a timestamped line to $env:CODEX_SWEEP_LOG (no-op if unset). Safe
@@ -340,6 +370,7 @@ function Start-VmRun {
         $conn = Connect-Vm -DataPort $dataPort -CtrlPort $ctrlPort -TimeoutSec $ConnectTimeoutSec
         if ($conn) { return @{ Process = $proc; Conn = $conn; StdoutFile = $stdoutFile; StderrFile = $stderrFile } }
         try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
+        Start-Sleep -Milliseconds 500
     }
     Remove-Item -Force $stdoutFile, $stderrFile -ErrorAction SilentlyContinue
     return $null
@@ -371,6 +402,7 @@ function Start-CodexVmRun {
         $conn = Connect-Vm -DataPort $dataPort -CtrlPort $ctrlPort -TimeoutSec $ConnectTimeoutSec
         if ($conn) { return @{ Process = $proc; Conn = $conn; StdoutFile = $stdoutFile; StderrFile = $stderrFile } }
         try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch {}
+        Start-Sleep -Milliseconds 500
     }
     Remove-Item -Force $stdoutFile, $stderrFile -ErrorAction SilentlyContinue
     return $null

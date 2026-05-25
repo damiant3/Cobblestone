@@ -24,7 +24,9 @@ param(
     [string]$Break = '',
     [string]$Watch = '',
     [int]$WatchSize = 8,
-    [switch]$DebugMode
+    [switch]$DebugMode,
+    [switch]$Profile,
+    [switch]$Trace
 )
 
 Set-StrictMode -Version Latest
@@ -120,6 +122,10 @@ try {
 
     # Memory watchpoint: resolve function name to guest address.
     $vmExtra = @()
+    if ($Trace) {
+        $traceOut = [System.IO.Path]::ChangeExtension($Out, '.trace')
+        $vmExtra += @('-trace-file', $traceOut)
+    }
     if ($Watch) {
         $watchAddr = Resolve-Name -Name $Watch
         if ($watchAddr -eq 0) {
@@ -152,10 +158,12 @@ try {
     if ($Repl) { $mode = "$mode repl" }
     if ($Poison) { $mode = "$mode poison" }
     if ($DebugMode) { $mode = "$mode debug" }
+    if ($Profile) { $mode = "$mode profile" }
+    if ($Trace) { $mode = "$mode trace" }
     $hdr = [System.Text.Encoding]::UTF8.GetBytes("$mode`n")
     $stream.Write($hdr, 0, $hdr.Length)
-    $fwBytes  = [System.IO.File]::ReadAllBytes($fwTmp)
-    $srcBytes = [System.IO.File]::ReadAllBytes($Src)
+    $fwBytes  = Normalize-TripleNewlines ([System.IO.File]::ReadAllBytes($fwTmp))
+    $srcBytes = Normalize-TripleNewlines ([System.IO.File]::ReadAllBytes($Src))
     $debugAll = New-Object byte[] ($fwBytes.Length + $srcBytes.Length)
     if ($fwBytes.Length -gt 0) { [Array]::Copy($fwBytes, 0, $debugAll, 0, $fwBytes.Length) }
     if ($srcBytes.Length -gt 0) { [Array]::Copy($srcBytes, 0, $debugAll, $fwBytes.Length, $srcBytes.Length) }
@@ -257,8 +265,19 @@ try {
         exit 4
     }
 
+    if ($status -eq 'halted') {
+        # Compiler detected errors and halted cleanly — not a crash.
+        # Drain remaining diagnostics into log.
+        while ($true) {
+            $line = Read-StreamLine -Stream $stream -TimeoutSec 5
+            if ($null -eq $line) { break }
+            Add-Content -Path $Log -Value $line -Encoding UTF8
+            if ($line.StartsWith('HEAP:')) { break }
+        }
+        exit 7
+    }
+
     if ($status -ne 'size') {
-        # Drain remaining text into log so diagnostics are visible.
         while ($true) {
             $line = Read-StreamLine -Stream $stream -TimeoutSec 5
             if ($null -eq $line) { break }
@@ -299,6 +318,27 @@ try {
             [System.IO.File]::WriteAllLines($mapFile, $mapLines, [System.Text.UTF8Encoding]::new($false))
         }
     }
+
+    # Read trace output if present (TRACE:<count> + T:hex:hex lines + TRACE-END).
+    if ($Trace) {
+        $traceHdr = Read-StreamLine -Stream $stream -TimeoutSec 10
+        if ($null -ne $traceHdr -and $traceHdr.StartsWith('TRACE:')) {
+            $traceCount = 0
+            if ($traceHdr.Substring(6) -match '^\d+') { $traceCount = [int]$matches[0] }
+            $traceFile = [System.IO.Path]::ChangeExtension($Out, '.trace')
+            $traceLines = [System.Collections.Generic.List[string]]::new($traceCount)
+            while ($true) {
+                $tl = Read-StreamLine -Stream $stream -TimeoutSec 10
+                if ($null -eq $tl -or $tl.StartsWith('TRACE-END')) { break }
+                [void]$traceLines.Add($tl)
+            }
+            if ($traceLines.Count -gt 0) {
+                [System.IO.File]::WriteAllLines($traceFile, $traceLines, [System.Text.UTF8Encoding]::new($false))
+                [Console]::Error.WriteLine("  trace: $($traceLines.Count) allocations -> $traceFile")
+            }
+        }
+    }
+
     exit 0
 
 } finally {

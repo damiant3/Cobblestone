@@ -9,6 +9,7 @@
 #   build/test.ps1 [-CodexCdx FP] [-Jobs N] [-ErrorsOnly | -NoErrors]
 #   build/test.ps1 -FW      # also include codex\test\forewords\*.codex
 #   build/test.ps1 -Apps    # also include codex\test\apps\*.codex
+#   build/test.ps1 -Fuzz    # also include codex\test\fuzz\*.codex
 #   build/test.ps1 -All     # all of the above
 #   build/test.ps1 -All -Slow  # include slow tests too
 #   build/test.ps1 -Fatal     # include fatal tests (GPF/exception demos)
@@ -30,6 +31,7 @@ param(
     [switch]$Apps,
     [switch]$FW,
     [switch]$All,
+    [switch]$Fuzz,
     [switch]$Slow,
     [switch]$Fatal
 )
@@ -55,6 +57,9 @@ if ($Scope -eq 'both' -or $Scope -eq 'positive') {
     }
     if ($FW -or $All) {
         Get-ChildItem -Path 'codex\test\forewords\*.codex' -File -ErrorAction SilentlyContinue | ForEach-Object { $tests.Add($_.FullName) }
+    }
+    if ($Fuzz -or $All) {
+        Get-ChildItem -Path 'codex\test\fuzz\*.codex' -File -ErrorAction SilentlyContinue | ForEach-Object { $tests.Add($_.FullName) }
     }
 }
 if ($Scope -eq 'both' -or $Scope -eq 'errors') {

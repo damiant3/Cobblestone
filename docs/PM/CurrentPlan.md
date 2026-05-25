@@ -1,10 +1,10 @@
 # Current Plan — Closing the Toolbox
 
-**Updated**: 2026-05-20
+**Updated**: 2026-05-25
 
 This file is forward-looking only. Past work is in the Perforce log; if
 you want milestones, run `p4 changes -m 100 //Codex/main/...`. Don't
-add "✅ done" rows here.
+add "done" rows here.
 
 ## The Vision
 
@@ -34,49 +34,63 @@ We are close. Not there.
   CLs 1221–1243).
 - **New syntax landed** (CL 1315 + DEV_2GB_SYNTAX): `&` replaces `++`,
   comma-separated multi-param types. Parser fix for match arm column
-  gate (CL 1526). Seed: 2,109,248 bytes, hard fixed point.
+  gate (CL 1526).
 - **Append-only mutation log** (CL 1524): CRC-framed log replaces
   mutable JSON sidecar writes for annotations.
 - **Test harness overhauled** (CL 1505): fatal detection, per-test
-  timing, 30s timeout, `.fatal` category. Battery: 176/190 pass
-  (CLs 1536-1541 promoted 5 skipped tests).
+  timing, 30s timeout, `.fatal` category.
 - **Repository restructure** (CL 1630): 31 top-level dirs to 8.
   `codex/compiler/`, `codex/foreword/`, `codex/os/`, `apps/`,
   `build/`, `tools/`, `docs/`, `seed/`.
 - **codex-vm replaces QEMU** (CL 1592+1632): WHP-based VM host is
   default for all build/test scripts. Shadow register file workaround
   for WHP GPR corruption. NE2000 NIC, VGA display, PS/2 keyboard,
-  UEFI emulation (CL 1696).
+  UEFI emulation (CL 1696). ~4500 lines C: PCI, xHCI USB, Intel HDA
+  audio, HPET, IOAPIC, ACPI, SMBIOS, UEFI firmware, Bochs VBE.
 - **Mutable records** (CL 1636+1740): `mutable` keyword, field
   assignment syntax, type checking with CDX2060/2061/2062.
   Phase 3 (linearity tracking, `freeze`) pending.
 - **Codex.Spark** (CL 1715+): 3D modeling framework — meshes,
   textures, armatures, IK, weight painting, particle systems,
   material editor, interactive app shell.
-- **Seed** (CL 1802): 2,134,336 bytes. Restored variant-match REPL
-  exit (reverted CL 1768 runtime flag). 103/105 pass (db-test,
-  sort-test pre-existing).
-- **lookup-expr-type OOB fix** (CL 1845): Non-short-circuit `&` in
-  `lookup-expr-type` caused `list-at` one past end after binary search
-  miss, reading stale heap in REPL batch mode. Root cause of
-  handler-nested batch GPF and likely the plug crash. Seed: 2,165,928
-  bytes, hard fixed point. 105/105 pass, 0 fail.
 - **Short-circuit `&`/`|`** (CL 1885): `IrAnd`/`IrOr` now emit
-  conditional jumps instead of bitwise ops. Right operand is only
-  evaluated when needed. Eliminates the entire class of non-short-circuit
-  guard bugs. Seed: 2,172,408 bytes.
-- **Plug pipeline functional** (CLs 1899-1906): All 8 language emitters
-  (C#, Rust, Python, JS, Ada, COBOL, Fortran, Babbage) handle
-  `IrFieldStore` and `IrTry`. `-IrCce` compiler mode fixed (was
-  outputting Unicode). Curried application fix in Rust emitter.
-  Shared `IRTextParser` parses both new IR nodes.
-- **Foreword library fixes** (CL 1908): Huffman tree (recursive variant
-  + proper walk), Graph DFS (visited-state propagation), Bresenham
-  (dead branch), Convolution (div-by-zero), HexFormat (spacing).
-- **Seed** (CL 2247): 2,181,200 bytes. Hard fixed point. 108/108 pass.
-  Parser `is-page-marker` fix (type name `Page` no longer swallowed).
-  TCP transport: raw buffer receive (O(n) vs O(n²)), NAT half-close,
-  plug framed protocol. Boot image rebuilt (8 MB FAT16).
+  conditional jumps instead of bitwise ops. Eliminates the entire class
+  of non-short-circuit guard bugs.
+- **Plug pipeline complete** (CLs 1899–2305): all 48 transpiler plugs
+  build. Languages (Ada, Babbage, C#, Clojure, COBOL, D, Elixir,
+  Fortran, Go, Groovy, Haskell, Java, JavaScript, Julia, Kotlin, Lua,
+  Nim, Objective-C, OCaml, Pascal, Perl, PHP, Python, Ruby, Rust,
+  Scala, Scheme, Swift, TypeScript, WASM, Zig), UI frameworks (Angular,
+  Electron, Flutter, GTK, HTML, Jetpack Compose, MAUI, Qt, React,
+  Svelte, SwiftUI, Vue, WinForms, WPF), and binary formats (CDX, ELF,
+  PE, IMG).
+- **Debugger wired** (CLs 2093–2104): symbolic breakpoints, backtrace,
+  registers, perf, single-step, all views in DevConsole. codex-vm
+  `#BP`/`#DB` exception handling.
+- **Editor undo/redo** (CLs 2102–2103): Ctrl+Z/Ctrl+Y, undo snapshots
+  on every edit.
+- **Emitter Exodus** (CLs 2029–2042): PE, ELF, IMG writers extracted
+  from compiler to plug CDX binaries. Compiler slimmed from 59 to 53
+  files.
+- **Static bounds prover** (CLs 2073–2095): `ir-expr-proven-range`
+  handles literal, field, add, sub, mul, div, mod, bit-and, bit-shru,
+  negate, if/else, let bindings. CDX4010 diagnostic.
+- **Dependent types / proof system** (CLs 2123–2216): `PropEqTy`,
+  `===` in type position, `Refl`/`sym`/`trans`/`cong`/`assume`,
+  `claim`/`proof`/`qed` parser, proof erasure (CDX4020), `Proof` as
+  first-class type.
+- **Emitter separation** (CLs 2135–2169): ConstructedTy resolution and
+  lambda lifting extracted into RESOLVE and LIFT phases, each with
+  independent `phase-compact`. IRChapter split (text functions moved
+  out of IR layer). AChapter dropped from frontend.
+- **Sampling profiler** (CLs 2287–2301): `prof-start`/`prof-dump`
+  builtins, `__prof_start`/`__prof_dump` runtime helpers, timer ISR
+  samples RIP at 1 KHz when enabled.
+- **Parser fixes** (CLs 2263–2308): keyword-as-field-name fix (CL 2263),
+  `is-page-marker` `Page`→`DbPage` rename (CL 2247), lex deck survey
+  increased 12x→40x to prevent GPF on token-dense source (CL 2306).
+- **Seed** (CL 2309): 2,191,873 bytes. Hard fixed point. 125 expected
+  tests + 2 failing + 5 skipped = 132 total samples.
 
 The remaining gap to the vision is the *wiring* — chapters that exist
 but aren't yet the default path, plus a handful of capabilities that
@@ -94,7 +108,6 @@ available via `$env:USE_QEMU=1`). Until the PS1 scripts are deleted
 itself" is true only under the assumption that someone runs PowerShell
 first.
 
-- ~~Wire `codex-vm.exe` into build/test scripts~~ — done.
 - Add DevConsole menu items that drive `vm-pingpong` and `vm-sweep`
   from inside the booted system. The menu placeholders ("Run All
   Samples", "Run Failing Only") under the Sweep mode are still stubs
@@ -137,39 +150,17 @@ critical one for the USB-stick promise. Need:
 
 ### 4. USB install from inside Codex
 
-`tools/write-usb.ps1` is a PowerShell script that uses Windows
-`Get-Disk` + raw `\\.\PhysicalDrive` writes to install Codex onto a
-USB stick. To remove this dependency we need:
+USB MSC driver, DriveManager integration, DevConsole "Install to USB",
+and XHCI transfer rings are all done. Remaining:
 
-- ~~USB MSC (Mass Storage Class) driver in `codex.kernel`~~ — done.
-  `UsbMassStorage.codex` implements Bulk-Only Transport (BBB) with
-  SCSI READ(10)/WRITE(10)/READ CAPACITY/INQUIRY/TEST UNIT READY.
-  Discovers MSC devices via XHCI port probing.
-- ~~DriveManager USB integration~~ — done. `dm-enumerate-drives` now
-  probes USB MSC devices after ATA. USB drives appear with
-  `di-is-usb = True` and carry `di-usb-device` for direct MSC access.
-  `dm-install-usb` writes sectors from a source ATA drive to a USB
-  target via MSC bulk transport.
-- ~~"Install to USB" mode in DevConsole~~ — done. Drive Manager menu
-  has "Install Codex to USB" item. Dispatch enumerates USB drives,
-  selects first, and calls `dm-install-usb`.
-- Test: `usb-msc-test.codex` covers protocol structures (CBW/CSW
-  encoding, SCSI command building, inquiry/capacity parsing).
-- ~~XHCI transfer ring completion~~ — done. `Xhci.codex` rewritten
-  with full ring infrastructure: command ring with link TRB wrap,
-  event ring with cycle-bit polling, DCBAA, port reset, Enable Slot,
-  Address Device, Configure Endpoint, control transfers (setup/data/
-  status stages), and bulk in/out via Normal TRBs. Discovery now reads
-  real capability registers (cap-length, HCSPARAMS1, doorbell offset,
-  runtime offset). Tests: `xhci-enum-test.codex`.
-- Remaining: end-to-end validation on a physical USB stick.
+- End-to-end validation on a physical USB stick.
 - Acceptable interim: keep `write-usb.ps1` as the *first* install only,
   then Codex-on-Codex installs (one stick reflashing another) work
   without leaving the system.
 
 ### 5. Pure Codex VMX host — retire `codex-vm.exe`
 
-`codex-vm.exe` is 400 lines of C wrapping WHP. Codex has all the VMX
+`codex-vm.exe` is ~4500 lines of C wrapping WHP. Codex has all the VMX
 builtins (`vmxon`, `vmlaunch-full`, `rdmsr`, `wrmsr`, etc., CLs 1144 +
 1165) and `DevHypervisor` is the orchestration layer. The remaining
 work is the boot path: today, `DevHypervisor` runs *inside* a Codex
@@ -205,13 +196,7 @@ store of code. To finish:
 
 ### 7. Editor and Debugger maturity
 
-`ConsoleEditor` and `DevDebugger` exist and are functional but minimal.
-
-Editor gaps (partially closed CL 1521-1523):
-- ~~Find / replace~~ — done (CL 1521).
-- ~~Multi-file~~ — done, BufferList (CL 1523).
-- ~~Undo / redo stack~~ — done (undo CL 1521, redo CL 1543).
-- ~~Key dispatch~~ — done, full keyboard handling (CL 1522).
+Editor gaps:
 - Syntax highlighting in GUI mode (`UI` substrate has the primitives;
   not wired).
 - Build/run integration: F5 to compile-and-run the current chapter
@@ -220,45 +205,23 @@ Editor gaps (partially closed CL 1521-1523):
   the integration; verify all twelve roles surface in the editor and
   not just the data layer).
 
-Debugger gaps (partially closed CL 1520):
-- ~~DevDebugger menu placeholder routes~~ — done (CL 1520), dispatches
-  with status prompts. Full integration needs DebuggerState on
-  DevConsoleState.
-- Symbolic breakpoints (currently address-based; needs debug info
-  emitted into CDX).
+Debugger gaps:
 - Watch expressions.
-- Single-step (preempt-on-instruction; scheduler already handles
-  preemption — wire to a debug interrupt).
-- Backtrace with function names (requires debug info).
+- Backtrace with function names requires debug info emitted into CDX
+  (currently uses heuristic stack walk + MAP1 symbol map).
 
-### 8. Phase discipline — finish the four remaining compiler steps
+### 8. Phase discipline — finish compiler optimizations
 
-From `docs/Active/Compiler/PHASE-ARCHITECTURE.md`, four open items:
+From `docs/Designs/Active/Compiler/PHASE-ARCHITECTURE.md`:
 - Deck-record toggle ratchet (per-sub-allocation classification).
 - Escape invariant enforcement (seal-time pointer validation).
 - Remove TCO reset (phase boundaries replace within-phase reclaim).
-- Survey tightening (per-phase multipliers currently 10% headroom).
+- Survey tightening (per-phase multipliers — lex survey already
+  increased to 40x in CL 2306).
 
 Compiler-correctness work, not user-facing, but each one moves the
 heap HWM down and improves the chance that compile-on-stick succeeds
 on lower-RAM boards.
-
-### 9. Plug emitters — complete the transpilation pipeline
-
-All 8 emitters now handle the full IR node set (CL 1899). Remaining:
-- Rust `rs-escape-text` still emits wrong Unicode escapes (CCE byte
-  values instead of codepoints). All string literals garbled.
-- C# plug emitter hangs on O(n^2) string concat in `emit-cce-runtime`
-  (~50 chained `&`). Not a compiler bug — needs restructuring to
-  stream output or use `text-concat-list`.
-- No end-to-end test: compile → plug → target-language compile → run.
-  The plugs produce source text but nothing verifies it compiles.
-
-### ~~10. Append-only mutation log for annotations~~ — done (CL 1524)
-
-`MutationLog.codex` implements append-only CRC-framed log with
-`log-append`, `log-entries`, `log-is-stale`, `log-since`, `log-replay`.
-JSON sidecars are materialized views.
 
 ## No Dates
 
