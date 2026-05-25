@@ -14,7 +14,6 @@ Section: Resolve Type Expression
     is AAppType (ctor) (args) (s) -> resolve-applied-type tdm ctor args
     is AEffectType (effs) (scopes) (ret) (s) -> deck-record (EffectfulTy effs scopes (resolve-type-expr tdm ret))
     is ABoundedIntType (base) (lo) (hi) (mode) (s) -> resolve-bounded-int-type tdm base lo hi mode
-    is APropEqType (left) (right) (s) -> deck-record (PropEqTy (resolve-type-expr tdm left) (resolve-type-expr tdm right))
 
   resolve-bounded-int-type : List TypeBinding, ATypeExpr, Integer, Integer, OverflowMode -> CodexType
   resolve-bounded-int-type (tdm) (base) (lo) (hi) (mode) =
@@ -49,7 +48,6 @@ Section: Resolve Type Expression
    else if name == "Boolean" then BooleanTy
    else if name == "Char" then CharTy
    else if name == "Nothing" then NothingTy
-   else if name == "Proof" then ProofTy
    else lookup-type-def tdm name
 
   lookup-type-def : List TypeBinding, Text -> CodexType
@@ -420,14 +418,24 @@ Section: Check Chapter
      collect-mutable-names tdefs (i + 1) len acc
   check-chapter : AChapter -> ChapterResult
   check-chapter (mod) =
-   let tdm = build-type-def-map (mod.type-defs) 0 (list-length (mod.type-defs)) []
+   let pre-subs = deck-record (__list-with-capacity 16384)
+   in let init-subs = list-push (list-push pre-subs (deck-record (TypeVar 0))) (deck-record (TypeVar 1))
+   in let pre-expr-types = deck-record (__list-with-capacity 65536)
+   in let init-ust = deck-record (UnificationState {
+    substitutions = init-subs,
+    next-id = 2,
+    bag = empty-bag,
+    expr-types = pre-expr-types
+   })
+   in let pre-types-acc = deck-record (__list-with-capacity (list-length (mod.defs)))
+   in let tdm = build-type-def-map (mod.type-defs) 0 (list-length (mod.type-defs)) []
    in let arity-errors = check-all-type-arities tdm mod
-   in let tenv = register-type-defs empty-unification-state builtin-type-env tdm (mod.type-defs) 0 (list-length (mod.type-defs))
+   in let tenv = register-type-defs init-ust builtin-type-env tdm (mod.type-defs) 0 (list-length (mod.type-defs))
    in let st-with-arity = add-diagnostics-to-state (tenv.state) arity-errors 0 (list-length arity-errors)
    in let env-with-mut = register-mutable-markers (tenv.env) (mod.type-defs) 0 (list-length (mod.type-defs))
    in let env = register-all-defs st-with-arity env-with-mut tdm (mod.defs) 0 (list-length (mod.defs))
    in let env2 = register-effect-ops (env.state) (env.env) tdm (mod.effect-defs) 0 (list-length (mod.effect-defs))
-   in check-all-defs (env2.state) (env2.env) (mod.defs) 0 (list-length (mod.defs)) []
+   in check-all-defs (env2.state) (env2.env) (mod.defs) 0 (list-length (mod.defs)) pre-types-acc
 
   add-diagnostics-to-state : UnificationState, List Diagnostic, Integer, Integer -> UnificationState
   add-diagnostics-to-state (st) (diags) (i) (len) =
